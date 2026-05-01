@@ -1,0 +1,111 @@
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+CONFIG_USB_HOST_HW_BUFFER_BIAS_IN=y
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
+CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=500
+CONFIG_USB_HOST_RESET_HOLD_MS=30
+CONFIG_USB_HOST_RESET_RECOVERY_MS=300
+CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=10
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+# Disable task WDT monitoring of the CPU1 idle task. Core 1 runs our
+# compute-bound DSP pipeline (p25_rx_task and dsd_decode, both priority
+# 5), and the idle task can genuinely starve for multi-second stretches
+# during sustained USB bulk reads + DSP + FD audio processing. The WDT
+# warnings that result are just noise — nothing is actually stuck.
+# CPU0 idle monitoring is still enabled (default), so infinite loops
+# or hangs in TUI / USB host / diag / beep / fd_audio tasks are still
+# caught.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# ── Release-grade optimization ──────────────────────────────
+# Default was -Og (debug), which is 5-10x slower than -O2 for
+# our float-heavy DSP path. This is the single biggest factor
+# in whether the RX pipeline can keep up with 960 kSPS from the
+# RTL-SDR. -O2 + silent asserts is the standard release config.
+#
+# If debugging a crash, temporarily revert by commenting these
+# out — -Og produces more readable backtraces.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="1.0.0"
+# ── Console / panic routing ────────────────────────────────
+# UART0 is the FTDI-bridged USB CDC port (the on-board USB-C) — IDF
+# console, panics, and (when CONFIG_ENABLE_TUI=y) the TUI.
+#
+# Secondary console is OFF. The ESP32-P4's USB-Serial-JTAG peripheral
+# is not broken out to a connector on the P4-NANO board, so there's
+# nowhere for it to come out anyway.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+# ── User interface ──────────────────────────────────────────
+# TUI parked. Re-enable for development:
+#   CONFIG_ENABLE_TUI=y
+# CONFIG_ENABLE_TUI is not set
+# ── Telemetry sinks ─────────────────────────────────────────
+# Per-record P25 telemetry on two channels:
+#   UART1 GPIO 32  — kv text  (diag_kv)
+#   UART2 GPIO 3   — JSONL    (diag_json)  [was ADS-B output]
+# The general firmware event log on UART3 GPIO 2 (diaglog.c) is
+# always compiled in — distinct from the two telemetry channels above.
+# Note: UART2 GPIO 3 is the same wire previously used by the deleted
+# event_stream ADS-B JSONL output. Repurposed for P25 telemetry.
+CONFIG_DIAG_KV_UART=y
+CONFIG_DIAG_JSON_USBJTAG=y
+# ── Apps ────────────────────────────────────────────────────
+CONFIG_APP_P25=y
+# CONFIG_APP_ADSB is not set
+# CONFIG_APP_VHF is not set
+# ── P25 Radio Configuration ─────────────────────────────────
+# These knobs are also available via `idf.py menuconfig` under
+# "ESP32-P4 SDR Tool → P25 Radio Configuration". Edit here for
+# defaults that survive across menuconfig sessions, or via
+# menuconfig for one-off experimentation. After changing, run:
+#   idf.py reconfigure && idf.py build flash monitor
+#
+# Center frequency in Hz. 154785000 = 154.7850 MHz.
+CONFIG_P25_TUNE_FREQ_HZ=154785000
+# Tune offset in Hz. Set to 0 — DC spike isn't easily fixable with the
+# existing DSP pipeline. The adaptive NCO can track ~kHz-scale residual
+# drift, but a forced 5 kHz hardware offset puts the signal outside what
+# downstream symbol timing recovery can handle without a full software
+# fs/4 mixer (which we don't have yet).
+#
+# Future: implement a real software mixer at the IQ stage (pre-decimation)
+# that subtracts the offset cleanly. That's how dsd-neo handles DC spike
+# avoidance. Until then, leave at 0.
+CONFIG_P25_TUNE_OFFSET_HZ=0
+# Sample rate in Hz. 960000 is what we've been running.
+CONFIG_P25_SAMPLE_RATE=960000
+# Tuner LNA gain in tenths of dB. 390 = 39.0 dB. R820T max is 49.6 dB
+# (496). Try 421 or higher for weak/distant signals.
+CONFIG_P25_TUNER_GAIN_TENTHS=390
+# Force Kconfig gain at boot (ignore NVS). Default y so changes to
+# P25_TUNER_GAIN_TENTHS take effect on next flash without needing
+# to erase-flash. Set to n later when you want gain adjustments via
+# the 'g' keybind to persist across reboots.
+CONFIG_P25_FORCE_KCONFIG_GAIN=y
+# PPM correction. 0 = trust the crystal. Run kalibrate-rtl to measure.
+CONFIG_P25_FREQ_CORRECTION_PPM=0
+# RTL2832U chip-side digital AGC. Default off — the R820T LNA gain
+# above is what you actually want to tune.
+# CONFIG_P25_RTL_AGC_ENABLE is not set
+# Tuner IF bandwidth (Hz, 0 = driver auto).
+CONFIG_P25_TUNER_BANDWIDTH_HZ=0
+# Bias tee (5V DC on antenna connector). Only enable for active
+# antennas / external LNAs.
+# CONFIG_P25_BIAS_TEE_ENABLE is not set
+# Direct sampling for HF (0=off, 1=I, 2=Q). Leave at 0 for VHF/UHF.
+CONFIG_P25_DIRECT_SAMPLING=0
