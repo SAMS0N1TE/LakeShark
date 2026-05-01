@@ -1,0 +1,281 @@
+menu "ESP32-P4 SDR Tool"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config APP_QUIT_PIN
+        int "App Quit button GPIO pin"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+        default 0
+        help
+            GPIO pin used as the quit button. Pulled up by default; pressing
+            to GND triggers an orderly shutdown of the USB host and tasks.
+
+    menu "User Interface"
+
+        config ENABLE_TUI
+            bool "Enable terminal UI (TUI)"
+            default y
+            help
+                When enabled, the device renders a full-screen ANSI terminal UI
+                over UART0 with a plane table, event log, waterfall, and
+                settings pages. Requires a 128x38+ terminal. When disabled,
+                the firmware boots headless and uses whichever output sinks
+                are configured below.
+
+    endmenu
+
+    menu "Output Sinks"
+
+        config OUTPUT_HUMAN_LOG
+            bool "Human-readable ESP_LOG output to UART"
+            default y if !ENABLE_TUI
+            default n
+            help
+                Routes ESP_LOG calls to the UART for direct viewing.
+                Useful when running headless without the TUI. Safe to
+                enable alongside the event stream; the two formats are
+                visually distinct.
+
+        config OUTPUT_EVENT_STREAM
+            bool "Machine-readable JSONL event stream over UART"
+            default n
+            help
+                Emits one JSON object per line for every published event
+                (new contact, lost contact, position fix, etc) on a
+                dedicated UART. Each line is prefixed with ASCII 0x1E
+                and ends with LF so a host can resync mid-stream.
+
+        config OUTPUT_EVENT_STREAM_UART_NUM
+            int "Event stream UART number (0-4)"
+            depends on OUTPUT_EVENT_STREAM
+            default 2
+            range 0 4
+            help
+                Which HP UART to use. UART0 is the console (TUI/log) -
+                don't pick that. UART1 is the P25 diag channel (GPIO 32) -
+                don't pick that either if P25_DIAG_UART is enabled.
+                UART2 is a safe default.
+
+        config OUTPUT_EVENT_STREAM_TX_GPIO
+            int "Event stream TX GPIO"
+            depends on OUTPUT_EVENT_STREAM
+            default 17
+            range 0 54
+            help
+                GPIO pin for the event stream UART TX. ESP32-P4 caveats:
+                stay at 36 or lower to avoid LDO power-domain issues
+                with higher GPIOs. Avoid 24/25 (USB-JTAG), 34-38
+                (strapping pins), 46 (USB VBUS enable on this firmware),
+                and 32 (P25 diag UART). Wire this pin to your host's RX.
+
+    endmenu
+
+    menu "Radio Apps"
+
+        config APP_ADSB
+            bool "ADS-B (1090 MHz Mode-S)"
+            default y
+            help
+                Receives 1090 MHz extended squitter messages from aircraft
+                using an RTL-SDR dongle. Decodes ICAO, callsign, altitude,
+                velocity, heading, vertical rate, and CPR position pairs.
+
+        config ADSB_RX_LAT_UDEG
+            int "Receiver latitude (microdegrees)"
+            depends on APP_ADSB
+            default 0
+            range -90000000 90000000
+            help
+                Latitude of the receiver in microdegrees (degrees * 1e6).
+                Example: Laconia NH (43.5275 N) = 43527500.
+                When set (non-zero), enables locally-unambiguous CPR
+                decoding from the very first position frame, instead of
+                waiting for an even/odd pair. Aircraft that send only one
+                or two position squitters before drifting out of range
+                will now produce a position fix.
+                Leave at 0 to disable receiver-anchored local decoding;
+                the firmware still does global decoding (even+odd pair)
+                and per-aircraft local decoding from prior fixes.
+
+        config ADSB_RX_LON_UDEG
+            int "Receiver longitude (microdegrees)"
+            depends on APP_ADSB
+            default 0
+            range -180000000 180000000
+            help
+                Longitude of the receiver in microdegrees (degrees * 1e6).
+                Example: Laconia NH (71.5375 W) = -71537500. Negative for
+                West, positive for East. See ADSB_RX_LAT_UDEG.
+
+        config APP_VHF
+            bool "VHF FM (scaffold)"
+            default n
+            help
+                Scaffold for a future VHF FM receiver app. Registers with
+                the app framework but does not yet decode anything. Enabling
+                this currently has no runtime effect beyond making the app
+                selectable from the multi-app cycle key.
+
+        config APP_P25
+            bool "P25 Phase 1 (digital voice)"
+            default y
+            help
+                Project 25 Phase 1 (FDMA) digital voice decoder. Decodes
+                C4FM and CQPSK on a single talkgroup at 154.785 MHz default
+                (configurable). Includes BCH(63,16,11) NID correction,
+                Reed-Solomon HDU/LDU correction, IMBE+ voice synthesis via
+                mbelib, and a UART1 telemetry channel for diagnostics.
+
+    endmenu
+
+    menu "P25 Diagnostics"
+        depends on APP_P25
+
+        config P25_DIAG_UART
+            bool "Enable UART1 telemetry channel"
+            default y
+            help
+                When enabled, P25 emits one CSV-ish status line per
+                second on UART1 (GPIO 32 TX / GPIO 33 RX, 921600 baud).
+                Useful for inspecting BCH success rates, sync attempts,
+                and frame counts without polluting the TUI.
+
+    endmenu
+
+    menu "P25 Radio Configuration"
+        depends on APP_P25
+
+        config P25_TUNE_FREQ_HZ
+            int "Center frequency (Hz)"
+            default 154785000
+            range 24000000 1766000000
+            help
+                Frequency the RTL-SDR tunes to at startup. Set the channel
+                you want to listen on (e.g. 154785000 for 154.7850 MHz).
+                Range is the R820T's documented 24-1766 MHz span.
+
+                If P25_TUNE_OFFSET_HZ is non-zero, the radio will be tuned
+                to (FREQ + OFFSET) and the DSP will mix back down by OFFSET
+                so the actual decoded frequency is still FREQ.
+
+        config P25_TUNE_OFFSET_HZ
+            int "RX tune offset (Hz, 0 = no offset)"
+            default 0
+            range -500000 500000
+            help
+                When non-zero, tune the RTL-SDR this far away from the
+                target frequency, then mix back to baseband in software.
+                This is the standard workaround for the R820T's LO
+                leakage / DC spike at the carrier — parking your signal
+                on top of the dongle's worst spur is what causes the
+                "weak signal" symptoms even with proper antenna.
+
+                Recommended: 50000 (50 kHz). Negative values tune below.
+                Set to 0 if your signal level is already strong enough
+                that DC spike doesn't matter.
+
+                NOTE: this knob only takes effect if the DSP NCO mix is
+                wired to subtract the offset. Currently it is just a
+                tuning offset to test in band-around-DC vs band-offset.
+
+        config P25_SAMPLE_RATE
+            int "RTL-SDR sample rate (Hz)"
+            default 960000
+            range 225000 3200000
+            help
+                IQ sample rate from the dongle. P25 needs >= 240 kHz
+                for the 4800 baud × 50× oversampling chain. Don't go
+                above 1.92 MHz on ESP32-P4 — the USB read loop and
+                DSP can't keep up.
+
+                Standard values: 960000 (current), 1024000, 1200000,
+                1920000. Below 480000 risks aliasing on adjacent-channel
+                signals.
+
+        config P25_TUNER_GAIN_TENTHS
+            int "Tuner LNA gain (tenths of dB, 0 = auto)"
+            default 390
+            range 0 496
+            help
+                R820T tuner gain in tenths of a dB. 390 = 39.0 dB.
+                Standard R820T discrete steps: 0, 9, 14, 27, 37, 77,
+                87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297,
+                328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480,
+                496. Values between are clamped to nearest step.
+
+                For weak signal (P25 simulcast, distant TX): try 421+.
+                For strong signal: try 280 to avoid front-end overload.
+                Set to 0 to enable the dongle's built-in AGC (not
+                recommended — the dongle's AGC is slow and dumb).
+
+        config P25_FORCE_KCONFIG_GAIN
+            bool "Always use Kconfig gain at boot (ignore saved NVS)"
+            default y
+            help
+                When enabled, the gain at boot is always taken from
+                P25_TUNER_GAIN_TENTHS above, regardless of any value
+                previously saved to NVS via runtime adjustments.
+
+                Without this, the saved NVS value wins on every boot
+                after the first, which means changes to
+                P25_TUNER_GAIN_TENTHS in Kconfig won't take effect
+                unless you also run `idf.py erase-flash` to wipe NVS.
+
+                Enable while iterating on Kconfig values during
+                development. Disable later if you want runtime gain
+                adjustments (via the 'g' keybind / settings page) to
+                persist across reboots.
+
+        config P25_FREQ_CORRECTION_PPM
+            int "Crystal frequency correction (PPM)"
+            default 0
+            range -1000 1000
+            help
+                RTL-SDR crystals drift typically ±20-50 PPM from spec.
+                If decodes work but the slicer struggles, your tuner
+                may be off frequency. Run kalibrate-rtl on a known
+                signal to measure.
+
+                Values typically -50 to +50. NESDR Smart v5 dongles
+                tend to be within ±5 PPM out of the box.
+
+        config P25_RTL_AGC_ENABLE
+            bool "Enable RTL2832U digital AGC"
+            default n
+            help
+                Enables the AGC inside the RTL2832U demodulator chip
+                (separate from the R820T tuner gain above). Some users
+                report this helps with weak signals; others find it
+                makes things worse by amplifying noise. Default off.
+
+        config P25_TUNER_BANDWIDTH_HZ
+            int "Tuner IF bandwidth (Hz, 0 = auto)"
+            default 0
+            range 0 8000000
+            help
+                R820T IF filter bandwidth. 0 = auto (let the driver
+                pick based on sample rate). Typical: 2000000 (2 MHz)
+                for narrowband P25. Tighter bandwidth reduces noise
+                from adjacent channels.
+
+        config P25_BIAS_TEE_ENABLE
+            bool "Enable bias tee (5V on antenna)"
+            default n
+            help
+                Powers an active antenna or LNA via the antenna
+                connector. ONLY enable if your antenna actually
+                consumes the 5V — otherwise the dongle is just
+                heating up for no reason.
+
+        config P25_DIRECT_SAMPLING
+            int "Direct sampling mode (0=off, 1=I, 2=Q)"
+            default 0
+            range 0 2
+            help
+                RTL-SDR direct sampling for HF reception (below
+                28 MHz). Bypasses the R820T tuner entirely. Leave
+                at 0 for VHF/UHF P25 reception.
+
+    endmenu
+
+endmenu
