@@ -21,3 +21,4 @@ serial*.txt
 # Excluded from public repo
 /docs/
 /tools/
+/build_headless/

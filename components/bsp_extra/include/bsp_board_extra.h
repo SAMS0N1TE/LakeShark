@@ -134,6 +134,17 @@ esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_writ
 esp_err_t bsp_extra_codec_init();
 
 /**
+ * @brief Initialize codec play handle only (no microphone codec).
+ *
+ * For output-only boards without the ES7210 mic ADC (e.g. ESP32-P4-NANO).
+ *
+ * @return
+ *      - ESP_OK: Success
+ *      - Others: Fail
+ */
+esp_err_t bsp_extra_codec_init_speaker_only();
+
+/**
  * @brief Initialize audio player task.
  *
  * @param path file path
