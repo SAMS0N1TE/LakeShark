@@ -1,0 +1,118 @@
+/**
+ * @file i_superframe_service.hpp
+ * @brief Interface for superframe management service
+ */
+
+#pragma once
+
+#include "types/error_codes/result.hpp"
+#include "types/protocols/lora_mesh/superframe.hpp"
+
+namespace loramesher {
+
+namespace protocols {
+namespace lora_mesh {
+
+/**
+ * @brief Interface for superframe management service
+ * 
+ * Defines the interface for managing superframe timing and synchronization
+ */
+class ISuperframeService {
+   public:
+    /**
+     * @brief Virtual destructor
+     */
+    virtual ~ISuperframeService() = default;
+
+    /**
+     * @brief Start the superframe
+     * 
+     * @return Result Success if started successfully
+     */
+    virtual Result StartSuperframe() = 0;
+
+    /**
+     * @brief Stop the superframe
+     * 
+     * @return Result Success if stopped successfully
+     */
+    virtual Result StopSuperframe() = 0;
+
+    /**
+     * @brief Handle transition to a new superframe
+     * 
+     * @return Result Success if handled successfully
+     */
+    virtual Result HandleNewSuperframe() = 0;
+
+    /**
+     * @brief Check if superframe is synchronized
+     * 
+     * @return bool True if synchronized
+     */
+    virtual bool IsSynchronized() const = 0;
+
+    /**
+     * @brief Set whether the superframe is synchronized
+     * 
+     * @param synchronized True if synchronized, false otherwise
+     */
+    virtual void SetSynchronized(bool synchronized) = 0;
+
+    /**
+     * @brief Synchronize with external superframe timing
+     * 
+     * @param external_slot_start_time Time when external slot started
+     * @param external_slot Slot number of external superframe
+     * @return Result Success if synchronized successfully
+     */
+    virtual Result SynchronizeWith(uint32_t external_slot_start_time,
+                                   uint16_t external_slot) = 0;
+
+    /**
+     * @brief Update superframe configuration
+     * 
+     * @param total_slots Total number of slots in superframe
+     * @param slot_duration_ms Duration of each slot in milliseconds
+     * @param update_superframe Whether to update the superframe immediately
+     * @return Result Success if updated successfully
+     */
+    virtual Result UpdateSuperframeConfig(uint16_t total_slots,
+                                          uint32_t slot_duration_ms = 0,
+                                          bool update_superframe = true) = 0;
+
+    /**
+     * @brief Prevent updating the start time on a new superframe
+     * It is used when synchronizing with an external time source and
+     * still we want to execute a new superframe without resetting the start time.
+     * 
+     * @return Result Success if the operation completed successfully
+     */
+    virtual Result DoNotUpdateStartTimeOnNewSuperframe() = 0;
+
+    virtual uint32_t GetSlotDuration() const = 0;
+
+    virtual uint32_t GetTimeSinceSuperframeStart() = 0;
+
+    /**
+      * @brief Get current superframe duration
+      * 
+      * @return uint32_t Duration of the superframe in milliseconds
+      */
+    virtual uint32_t GetSuperframeDuration() const = 0;
+
+    static constexpr uint32_t DEFAULT_DISCOVERY_SLOT_COUNT = 10;
+    /// Fallback slot duration used during discovery before radio ToA is known.
+    /// The NM auto-calculates the operational value in CreateNetwork() via
+    /// CalculateMinSlotDuration(): ToA(max_packet) + guard_time + margin.
+    static constexpr uint32_t DEFAULT_SLOT_DURATION_MS = 1000;
+    static constexpr uint32_t DEFAULT_DISCOVERY_TIMEOUT_MS =
+        DEFAULT_SLOT_DURATION_MS * DEFAULT_DISCOVERY_SLOT_COUNT * 3;
+    static constexpr uint32_t DEFAULT_CONTROL_SLOT_COUNT = 10;
+    static constexpr uint32_t DEFAULT_SLEEP_SLOT_COUNT = 10;
+};
+
+}  // namespace lora_mesh
+}  // namespace protocols
+}  // namespace loramesher

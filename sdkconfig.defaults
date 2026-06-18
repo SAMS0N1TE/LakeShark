@@ -1,0 +1,133 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 5.5.0 Project Minimal Configuration
+#
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_VFLIP=n
+CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP=n
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_ORPHAN_SECTIONS_PLACE=y
+# Monospace bitmap font for the terminal-style ADS-B/P25 GUIs (see sdr_ui).
+CONFIG_LV_FONT_UNSCII_16=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+# code/rodata run from FLASH, not PSRAM, so instruction fetches don't contend
+# with the DSI framebuffer DMA on the PSRAM bus (the choppy-audio root cause).
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=n
+CONFIG_SPIRAM_RODATA=n
+CONFIG_SPIRAM_XIP_FROM_PSRAM=n
+# LakeShark needs internal RAM headroom this board doesn't have under the
+# stock CAPS_ALLOC model (only ~222 KiB internal total, shared with mesh +
+# esp_hosted + LVGL + the new USB host). Switch to USE_MALLOC so large
+# dynamic allocations (P25 DSD buffers, USB transfer buffers) spill to the
+# 27 MB of PSRAM; allocations < ALWAYSINTERNAL and DMA-tagged ones still go
+# internal. Without this, USB host fails "HCD Pipe alloc NO_MEM" at boot and
+# opening P25 crashes when its DSD buffers can't allocate.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# Also place LakeShark's three large static buffers (Mode-S maglut ~65 KB,
+# ADS-B mode_s_t state ~32 KB, P25 dsd sample ring ~32 KB) in PSRAM via
+# EXT_RAM_BSS_ATTR (those are .bss, not malloc, so USE_MALLOC alone misses them).
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=n
+CONFIG_VFS_MAX_COUNT=15
+CONFIG_ESP_BROOKESIA_LOG_STYLE_STD=y
+CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM=y
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
+CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
+CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
+CONFIG_CAMERA_OV5647=y
+CONFIG_CAMERA_OV5647_AUTO_DETECT=y
+CONFIG_CAMERA_OV5647_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800x800_50FPS=y
+CONFIG_CAMERA_OV5647_MIPI_IF_FORMAT_INDEX_DAFAULT=2
+CONFIG_CAMERA_OV5647_CSI_LINESYNC_ENABLE=y
+CONFIG_CAMERA_OV5647_ISP_AF_ENABLE=y
+CONFIG_CAMERA_OV5647_DEFAULT_IPA_JSON_CONFIGURATION_FILE=y
+CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+CONFIG_LV_COLOR_SCREEN_TRANSP=y
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_MEM_CUSTOM_INCLUDE="esp_heap_caps.h"
+CONFIG_LV_MEMCPY_MEMSET_STD=y
+CONFIG_LV_CIRCLE_CACHE_SIZE=10
+CONFIG_LV_LAYER_SIMPLE_BUF_SIZE=102400
+CONFIG_LV_IMG_CACHE_DEF_SIZE=20
+CONFIG_LV_GRAD_CACHE_DEF_SIZE=10240
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+CONFIG_LV_FONT_MONTSERRAT_8=y
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_26=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_30=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_34=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_38=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_42=y
+CONFIG_LV_FONT_MONTSERRAT_44=y
+CONFIG_LV_FONT_MONTSERRAT_46=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_USE_MONKEY=y
+CONFIG_LV_USE_DEMO_WIDGETS=y
+CONFIG_LV_USE_DEMO_BENCHMARK=y
+CONFIG_LV_USE_DEMO_STRESS=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPI_FLASH_SUPPORT_GD_CHIP=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+# Route esp_hosted's ~47 KB SDIO mempool to PSRAM instead of scarce internal
+# DMA SRAM. Without this, sdio_mempool_create() asserts at boot on ESP32-P4
+# because no contiguous chunk of MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA that big
+# survives the pre-main init storm. GDMA on P4 reaches PSRAM through cache,
+# so there's no throughput penalty for the WiFi-remote path.
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+# Don't force-restart the whole chip when SDIO to the C6 has a hiccup. Without
+# this, a single failed webhook to an unreachable host (e.g. ARP retry storm)
+# can cascade into a full system reboot. With it off, esp_hosted logs the
+# failure and tries to recover the SDIO link in place; LCD/touch/HTTP/telnet
+# all stay running. Matches the upstream host_hosted_events example default.
+CONFIG_ESP_HOSTED_TRANSPORT_RESTART_ON_FAILURE=n
+# arduino-esp32 is used as a plain library (for LoRaMesher's SPI/GPIO); keep
+# brookesia's app_main as the entry point instead of Arduino's setup()/loop().
+CONFIG_AUTOSTART_ARDUINO=n
+# LoRaMesher (and RadioLib) use C++ exceptions + RTTI; ESP-IDF defaults them off.
+# PlatformIO-arduino has them on, which is why the gateway_p4 build worked.
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_RTTI=y
+# Enabling exceptions makes GCC14 stricter and trips false-positive
+# warnings-as-errors in third-party C++ (esp-brookesia, etc.). This is IDF's
+# official switch to drop the new GCC14 warning classes project-wide.
+CONFIG_COMPILER_DISABLE_GCC14_WARNINGS=y
+# UI responsiveness: poll touch at 100 Hz and redraw at ~60 FPS (defaults are
+# 30 ms / ~33 Hz, which felt sluggish). See main.cpp for LVGL task core pinning.
+CONFIG_LV_DISP_DEF_REFR_PERIOD=16
+CONFIG_LV_INDEV_DEF_READ_PERIOD=10
+
+# Allow the P25 decode task's static stack to live in PSRAM (internal RAM is
+# exhausted on the LCD build; the decode stack is never used with cache disabled).
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+
+# USB host: allow bulk transfer DMA buffers in PSRAM so the RTL-SDR streaming
+# pool can keep enough transfers in flight (internal DMA RAM is starved by
+# LVGL/DSI/audio). Without this only ~32KB posts -> HS endpoint idles between
+# reposts -> RTL FIFO overflow -> choppy audio.
+CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y

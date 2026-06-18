@@ -1,0 +1,10 @@
+dependencies:
+  console_cmd_ping:
+    version: '*'
+  espressif/eppp_link:
+    version: '*'
+  espressif/iperf-cmd: ^0.1.1
+  espressif/mqtt:
+    rules:
+    - if: idf_version >=6.0
+      version: ^1.0.0

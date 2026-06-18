@@ -1,0 +1,30 @@
+{
+    "title": "Windows",
+    "grid": { "cols": 4, "rows": 6 },
+    "widgets": [
+        { "id": "lock",      "type": "button", "title": "Lock",      "col": 0, "row": 0, "w": 2, "h": 1,
+          "webhook": "http://192.168.40.218:5050/lock" },
+        { "id": "sleep",     "type": "button", "title": "Sleep",     "col": 2, "row": 0, "w": 2, "h": 1,
+          "webhook": "http://192.168.40.218:5050/sleep" },
+
+        { "id": "restart",   "type": "button", "title": "Restart",   "col": 0, "row": 1, "w": 2, "h": 1,
+          "webhook": "http://192.168.40.218:5050/restart" },
+        { "id": "shutdown",  "type": "button", "title": "Shutdown",  "col": 2, "row": 1, "w": 2, "h": 1,
+          "webhook": "http://192.168.40.218:5050/shutdown" },
+
+        { "id": "vol_down",  "type": "button", "title": "Vol -",     "col": 0, "row": 2, "w": 1, "h": 1,
+          "webhook": "http://192.168.40.218:5050/volume_down" },
+        { "id": "mute",      "type": "button", "title": "Mute",      "col": 1, "row": 2, "w": 2, "h": 1,
+          "webhook": "http://192.168.40.218:5050/mute" },
+        { "id": "vol_up",    "type": "button", "title": "Vol +",     "col": 3, "row": 2, "w": 1, "h": 1,
+          "webhook": "http://192.168.40.218:5050/volume_up" },
+
+        { "id": "screenshot","type": "button", "title": "Screenshot","col": 0, "row": 3, "w": 4, "h": 1,
+          "webhook": "http://192.168.40.218:5050/screenshot" },
+
+        { "id": "cpu",       "type": "label",  "title": "CPU",       "col": 0, "row": 4, "w": 2, "h": 1, "value": "--%" },
+        { "id": "ram",       "type": "label",  "title": "RAM",       "col": 2, "row": 4, "w": 2, "h": 1, "value": "--%" },
+        { "id": "last_seen", "type": "label",  "title": "Last seen", "col": 0, "row": 5, "w": 4, "h": 1, "value": "never (agent not running?)" }
+    ]
+}
+

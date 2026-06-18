@@ -1,0 +1,12 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # arduino-esp32 as a component: provides the Arduino core (SPIClass, GPIO,
+  # timing) that LoRaMesher + RadioLib build against. 3.2.x targets IDF 5.4.
+  espressif/arduino-esp32:
+    version: ">=3.2.0,<3.3.0"
+
+  espressif/esp_wifi_remote:
+    version: "0.*"
+
+  espressif/esp-brookesia:
+    version: "^0.4.2"   # bumped from "0.4.*" to pin the minor 24h-clock + 720x1280 fixes

@@ -1,0 +1,78 @@
+#pragma once
+
+#include "config/system_config.hpp"
+
+#ifdef DEBUG
+
+#include "../test/utils/mock_radio.hpp"
+#include "hardware/radiolib/radiolib_radio.hpp"
+#include "mocks/mock_radio.hpp"
+#include "os/os_port.hpp"
+#include "utils/logger.hpp"
+
+namespace loramesher {
+namespace radio {
+
+class RadioLibRadio;
+
+// Forward declare test::MockRadio
+namespace test {
+class MockRadio;
+}
+
+/**
+ * @brief Get the mock radio from RadioLibRadio for testing purposes
+ * 
+ * This function allows tests to access the mock radio inside RadioLibRadio
+ * to set expectations.
+ * 
+ * @param radio The RadioLibRadio instance
+ * @return test::MockRadio& Reference to the mock radio for setting expectations
+ * @throws std::runtime_error if the current module is not a MockRadio
+ */
+inline test::MockRadio& GetRadioLibMockForTesting(RadioLibRadio& radio) {
+#if defined(PLATFORMIO)
+    // PlatformIO specific code
+    // Maybe use the static type checking approach when in PlatformIO
+    auto* mock_radio = static_cast<MockRadio*>(radio.current_module_.get());
+#else
+    // Non-PlatformIO builds might have RTTI enabled
+    auto* mock_radio = dynamic_cast<MockRadio*>(radio.current_module_.get());
+#endif
+    if (!mock_radio) {
+        throw std::runtime_error("Current module is not a MockRadio");
+    }
+    return GetMockForTesting(*mock_radio);
+}
+
+}  // namespace radio
+}  // namespace loramesher
+
+// Implementation of NotifyProcessingTask for test MockRadio
+// This is implemented here because we need access to RadioLibRadio's private members
+namespace loramesher {
+namespace radio {
+namespace test {
+
+inline void MockRadio::NotifyProcessingTask() {
+    if (radio_lib_instance_ && radio_lib_instance_->processing_task_) {
+        LOG_DEBUG(
+            "MockRadio: Notifying processing task for RadioLibRadio instance "
+            "%p",
+            static_cast<void*>(radio_lib_instance_));
+        GetRTOS().NotifyTaskFromISR(radio_lib_instance_->processing_task_);
+    } else {
+        LOG_ERROR(
+            "MockRadio: Cannot notify processing task - instance: %p, task: %p",
+            static_cast<void*>(radio_lib_instance_),
+            radio_lib_instance_
+                ? static_cast<void*>(radio_lib_instance_->processing_task_)
+                : nullptr);
+    }
+}
+
+}  // namespace test
+}  // namespace radio
+}  // namespace loramesher
+
+#endif  // DEBUG

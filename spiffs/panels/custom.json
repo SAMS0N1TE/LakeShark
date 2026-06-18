@@ -1,0 +1,10 @@
+{
+    "title": "Custom",
+    "grid": { "cols": 4, "rows": 6 },
+    "widgets": [
+        { "id": "demo_btn",    "type": "button", "title": "Button",   "col": 0, "row": 0, "w": 2, "h": 1 },
+        { "id": "demo_toggle", "type": "toggle", "title": "Toggle",   "col": 2, "row": 0, "w": 2, "h": 1, "value": false },
+        { "id": "demo_slider", "type": "slider", "title": "Slider",   "col": 0, "row": 1, "w": 4, "h": 1, "min": 0, "max": 100, "value": 50 },
+        { "id": "demo_label",  "type": "label",  "title": "Label",    "col": 0, "row": 2, "w": 4, "h": 1, "value": "(set me via POST /api/panels/custom/widgets/demo_label)" }
+    ]
+}

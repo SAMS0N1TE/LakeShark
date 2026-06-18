@@ -1,0 +1,23 @@
+# ESP-IDF build output
+/build/
+
+# IDF config backups / generated
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# Serial captures / debug logs
+*.log
+serial*.txt
+
+# Editor / OS
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
+
+# Excluded from public repo
+/docs/
+/tools/

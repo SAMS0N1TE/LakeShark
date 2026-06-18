@@ -1,0 +1,15 @@
+menu "Example Configurations"
+    config LAKESHARK_HEADLESS
+        bool "Headless build (UART console, no display/GUI)"
+        default n
+        help
+            Build the headless variant: boot straight into the radio backend and
+            a UART console instead of the Brookesia touch GUI. Shares the same
+            radio core (P25 / FM / ADS-B). Leave OFF for the GUI build.
+
+    config EXAMPLE_ENABLE_SD_CARD
+        bool "Enable SD Card"
+        default n
+        help
+            Enabling this option will initialize the SD card, so the SD card needs to be inserted into the slot. Additionally, if using the Video Player example, an MJPEG format video must be saved on the SD card.
+endmenu

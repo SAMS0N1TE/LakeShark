@@ -1,0 +1,14 @@
+{
+    "title": "Lab bench",
+    "grid": { "cols": 4, "rows": 6 },
+    "widgets": [
+        { "id": "led1",     "type": "toggle", "title": "LED 1",      "col": 0, "row": 0, "w": 2, "h": 1, "value": false },
+        { "id": "led2",     "type": "toggle", "title": "LED 2",      "col": 2, "row": 0, "w": 2, "h": 1, "value": false },
+        { "id": "fan",      "type": "slider", "title": "Fan speed",  "col": 0, "row": 1, "w": 4, "h": 1, "min": 0, "max": 100, "value": 30 },
+        { "id": "volume",   "type": "slider", "title": "Volume",     "col": 0, "row": 2, "w": 4, "h": 1, "min": 0, "max": 100, "value": 70 },
+        { "id": "test",     "type": "button", "title": "Run test",   "col": 0, "row": 3, "w": 2, "h": 1 },
+        { "id": "calibrate","type": "button", "title": "Calibrate",  "col": 2, "row": 3, "w": 2, "h": 1 },
+        { "id": "status",   "type": "label",  "title": "Status",     "col": 0, "row": 4, "w": 4, "h": 1, "value": "idle" },
+        { "id": "uptime",   "type": "label",  "title": "Uptime",     "col": 0, "row": 5, "w": 4, "h": 1, "value": "0s" }
+    ]
+}

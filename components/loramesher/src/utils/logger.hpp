@@ -1,0 +1,337 @@
+// utils/logger.hpp
+#pragma once
+
+#include <atomic>
+#include <cstdarg>
+#include <memory>
+
+#include "config/system_config.hpp"
+#include "os/rtos.hpp"
+
+#ifndef LORAMESHER_BUILD_ARDUINO
+#include <ctime>
+#include <iostream>
+#endif
+
+namespace loramesher {
+
+#ifndef LOGGER_DISABLE_COLORS
+
+/**
+ * @brief ANSI color codes for terminal output
+ */
+struct Colors {
+    static constexpr const char* kReset = "\033[0m\r";
+    static constexpr const char* kRed = "\033[31m";
+    static constexpr const char* kGreen = "\033[32m";
+    static constexpr const char* kYellow = "\033[33m";
+    static constexpr const char* kBlue = "\033[34m";
+    static constexpr const char* kMagenta = "\033[35m";
+    static constexpr const char* kCyan = "\033[36m";
+    static constexpr const char* kWhite = "\033[37m";
+};
+
+#endif  // LOGGER_DISABLE_COLORS
+
+/**
+ * @brief Enumeration for different logging levels.
+ */
+enum class LogLevel { kDebug, kInfo, kWarning, kError };
+
+/**
+ * @brief Abstract interface for log output handlers.
+ */
+class LogHandler {
+   public:
+    virtual ~LogHandler() = default;
+
+    /**
+     * @brief Write a log message.
+     * @param level The severity level of the message.
+     * @param node_addr Node address prefix (empty string if none).
+     * @param message The message to be logged.
+     */
+    virtual void Write(LogLevel level, const char* node_addr,
+                       const char* message) = 0;
+
+    /**
+     * @brief Flushes any buffered log messages.
+     * 
+     * This ensures all pending log messages are written to the output device.
+     */
+    virtual void Flush() = 0;
+
+   protected:
+#ifndef LOGGER_DISABLE_COLORS
+    /**
+     * @brief Get color code for log level
+     * @param level Log level
+     * @return Color code string
+     */
+    const char* GetColorForLevel(LogLevel level) const {
+        switch (level) {
+            case LogLevel::kDebug:
+                return Colors::kCyan;
+            case LogLevel::kInfo:
+                return Colors::kGreen;
+            case LogLevel::kWarning:
+                return Colors::kYellow;
+            case LogLevel::kError:
+                return Colors::kRed;
+            default:
+                return Colors::kWhite;
+        }
+    }
+#endif  // LOGGER_DISABLE_COLORS
+};
+
+#ifdef LORAMESHER_BUILD_ARDUINO
+/**
+ * @brief Arduino-specific Serial output handler implementation.
+ */
+class SerialLogHandler : public LogHandler {
+   public:
+    /**
+     * @brief Constructor that initializes Serial if not already done
+     * @param baud_rate The baud rate for Serial communication
+     */
+    explicit SerialLogHandler(unsigned long baud_rate = 115200) {
+        if (!Serial) {
+            Serial.begin(baud_rate);
+        }
+    }
+
+    void Write(LogLevel level, const char* node_addr,
+               const char* message) override {
+        const char* level_str;
+        switch (level) {
+            case LogLevel::kDebug:
+                level_str = "DEBUG";
+                break;
+            case LogLevel::kInfo:
+                level_str = "INFO";
+                break;
+            case LogLevel::kWarning:
+                level_str = "WARNING";
+                break;
+            case LogLevel::kError:
+                level_str = "ERROR";
+                break;
+            default:
+                level_str = "UNKNOWN";
+                break;
+        }
+
+#ifndef LOGGER_DISABLE_COLORS
+        const char* color = GetColorForLevel(level);
+        Serial.print(color);
+#endif
+        Serial.print("[");
+        Serial.print(level_str);
+        Serial.print("] ");
+        if (node_addr[0] != '\0') {
+            Serial.print("[");
+            Serial.print(node_addr);
+            Serial.print("] ");
+        }
+        Serial.print(message);
+#ifndef LOGGER_DISABLE_COLORS
+        Serial.println(Colors::kReset);
+#endif
+    }
+
+    void Flush() override {
+        Serial.flush();  // This waits for TX buffer to be empty
+    }
+};
+
+#else
+/**
+ * @brief Native console output handler implementation.
+ */
+class ConsoleLogHandler : public LogHandler {
+   public:
+    void Write(LogLevel level, const char* node_addr,
+               const char* message) override {
+        const char* level_str;
+        switch (level) {
+            case LogLevel::kDebug:
+                level_str = "DEBUG";
+                break;
+            case LogLevel::kInfo:
+                level_str = "INFO";
+                break;
+            case LogLevel::kWarning:
+                level_str = "WARNING";
+                break;
+            case LogLevel::kError:
+                level_str = "ERROR";
+                break;
+            default:
+                level_str = "UNKNOWN";
+                break;
+        }
+
+#ifndef LOGGER_DISABLE_COLORS
+        const char* color = GetColorForLevel(level);
+        std::cout << color << " [" << level_str << "] ";
+        if (node_addr[0] != '\0')
+            std::cout << "[" << node_addr << "] ";
+        std::cout << message << Colors::kReset << std::endl;
+#else
+        std::cout << " [" << level_str << "] ";
+        if (node_addr[0] != '\0')
+            std::cout << "[" << node_addr << "] ";
+        std::cout << message << std::endl;
+#endif
+    }
+
+    void Flush() override { std::cout.flush(); }
+};
+#endif
+
+/**
+ * @brief Main logger class providing logging functionality.
+ * 
+ * This class implements a configurable logging system that can be used
+ * across the library. It supports different log levels and custom handlers.
+ */
+class Logger {
+   public:
+    Logger();
+
+    /**
+     * @brief Destructor for Logger
+     *
+     * NOTE: This destructor intentionally does NOT delete the system semaphore
+     * to avoid undefined behavior during static destruction. Deleting a locked
+     * std::timed_mutex causes SIGABRT. This is a leak-by-design pattern that is
+     * standard for global infrastructure objects. The OS reclaims this memory
+     * when the process exits.
+     */
+    ~Logger();
+
+    /**
+     * @brief Set the minimum log level to be processed.
+     * @param level The minimum log level.
+     */
+    void SetLogLevel(LogLevel level);
+
+    /**
+     * @brief Set a custom log handler.
+     * @param handler Unique pointer to the log handler implementation.
+     */
+    void SetHandler(std::unique_ptr<LogHandler> handler);
+
+    /**
+     * @brief Log a pre-formatted message (bypasses vsnprintf buffer limit).
+     * @param level The severity level of the message.
+     * @param message The null-terminated message to log.
+     * @thread_safety Thread-safe
+     */
+    void LogRaw(LogLevel level, const char* message);
+
+    /**
+     * @brief Log a formatted message with the specified level.
+     * @param level The severity level of the message.
+     * @param format The format string.
+     * @param ... Variable arguments for formatting.
+     * @thread_safety Thread-safe
+     */
+    void Log(LogLevel level, const char* format, ...);
+
+    /**
+     * @brief Flushes all pending log messages.
+     * 
+     * This method ensures that all buffered log messages are written to 
+     * the output device before returning. It's particularly useful before 
+     * system resets or critical operations.
+     * 
+     * @thread_safety Thread-safe
+     */
+    void Flush();
+
+    // Convenience methods for different log levels with formatting
+    template <typename... Args>
+    void Debug(const char* format, Args... args) {
+        Log(LogLevel::kDebug, format, args...);
+    }
+
+    template <typename... Args>
+    void Info(const char* format, Args... args) {
+        Log(LogLevel::kInfo, format, args...);
+    }
+
+    template <typename... Args>
+    void Warning(const char* format, Args... args) {
+        Log(LogLevel::kWarning, format, args...);
+    }
+
+    template <typename... Args>
+    void Error(const char* format, Args... args) {
+        Log(LogLevel::kError, format, args...);
+    }
+
+    Logger(const Logger&) = delete;
+    Logger& operator=(const Logger&) = delete;
+
+   private:
+    LogLevel min_log_level_{LogLevel::kDebug};
+    std::unique_ptr<LogHandler> handler_;
+    // Binary semaphore for thread safety using RTOS abstraction
+    os::SemaphoreHandle_t logger_semaphore_;
+    // Shutdown flag to prevent logging during destruction (atomic for thread safety)
+    std::atomic<bool> shutdown_requested_{false};
+
+    void LogMessage(LogLevel level, const char* message);
+    void EnsureSemaphoreInitialized();
+};
+
+/**
+ * @brief Global logger instance
+ */
+extern Logger LOG;
+
+// Convenience macros for logging with format strings
+// NOTE: Using ##__VA_ARGS__ (GNU extension) instead of C++20 __VA_OPT__(,)
+// for compatibility with cppcheck < 2.14. The ##__VA_ARGS__ token-paste removes
+// the trailing comma when no arguments are provided, which is functionally
+// identical to __VA_OPT__(,). This is supported by GCC, Clang, and MSVC.
+// The resulting -Wgnu-zero-variadic-macro-arguments warning is suppressed in
+// CMakeLists.txt when building with Clang.
+// See: https://github.com/danmar/simplecpp/issues/191
+#if LORAMESHER_LOG_LEVEL <= 0
+#define LOG_DEBUG(fmt, ...) loramesher::LOG.Debug(fmt, ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(fmt, ...) \
+    do {                    \
+    } while (0)  // Compiles to nothing
+#endif
+
+#if LORAMESHER_LOG_LEVEL <= 1
+#define LOG_INFO(fmt, ...) loramesher::LOG.Info(fmt, ##__VA_ARGS__)
+#else
+#define LOG_INFO(fmt, ...) \
+    do {                   \
+    } while (0)
+#endif
+
+#if LORAMESHER_LOG_LEVEL <= 2
+#define LOG_WARNING(fmt, ...) loramesher::LOG.Warning(fmt, ##__VA_ARGS__)
+#else
+#define LOG_WARNING(fmt, ...) \
+    do {                      \
+    } while (0)
+#endif
+
+#if LORAMESHER_LOG_LEVEL <= 3
+#define LOG_ERROR(fmt, ...) loramesher::LOG.Error(fmt, ##__VA_ARGS__)
+#else
+#define LOG_ERROR(fmt, ...) \
+    do {                    \
+    } while (0)
+#endif
+
+#define LOG_FLUSH() loramesher::LOG.Flush()
+
+}  // namespace loramesher
