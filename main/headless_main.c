@@ -2,32 +2,41 @@
  *
  * Selected at build time by CONFIG_LAKESHARK_HEADLESS (see main/CMakeLists.txt).
  * Boots the same radio core as the GUI build (P25 / FM / ADS-B) but with no
- * display, Brookesia, or LVGL - just the backend and a serial console.
+ * display, Brookesia, or LVGL - just the backend and a serial command console.
  *
- * Target board: ESP32-P4-NANO. A single press of the BOOT button (GPIO35)
- * cycles the active mode P25 -> ADS-B -> FM -> P25. app_switch_to() (reached
- * via lakeshark_select_*) tears the previous mode down and brings the next one
- * up, keeping the radio live across the switch.
+ * Target board: ESP32-P4-NANO.
+ *  - BOOT button (GPIO35) cycles P25 -> ADS-B -> FM -> P25.
+ *  - USB host VBUS enable on GPIO46 (the linked 86-box BSP does not drive it, so
+ *    without this the RTL-SDR never enumerates on the nano).
+ *  - Speaker amp (NS4150B) enable on GPIO53, forced high (the codec gives it as
+ *    its pa_pin but it must be asserted or the speaker is silent on the nano).
+ *
+ * A small serial console exposes the basic controls; type `help` for the list.
  */
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_console.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "lakeshark_backend.h"
+#include "audio_out.h"
+#include "tone.h"
 
 static const char *TAG = "headless";
 
-/* BOOT button on the P4 (active-low, internal pull-up). Single press = cycle. */
-#define BOOT_BTN_GPIO   GPIO_NUM_35
-/* USB host VBUS load-switch enable on the NANO board (active-high). The 86-box
- * BSP this firmware links against does not drive it, so power it here or the
- * RTL-SDR never enumerates on the nano. */
-#define USB_VBUS_GPIO   GPIO_NUM_46
+#define BOOT_BTN_GPIO   GPIO_NUM_35    /* active-low, internal pull-up */
+#define USB_VBUS_GPIO   GPIO_NUM_46    /* USB host VBUS enable (active-high) */
+#define PA_CTRL_GPIO    GPIO_NUM_53    /* NS4150B speaker amp enable (active-high) */
+#define DEFAULT_VOLUME  85             /* louder than the GUI's 35 default */
 
 typedef struct {
     const char *name;
@@ -43,11 +52,23 @@ static const hl_mode_t s_modes[] = {
 
 static volatile int s_mode = 0;
 
+static void pa_on(void) { gpio_set_level(PA_CTRL_GPIO, 1); }
+
+static uint32_t cur_freq_hz(void)
+{
+    switch (s_mode) {
+    case 0:  return lakeshark_p25_get_freq();
+    case 2:  return lakeshark_fm_get_freq();
+    default: return 1090000000UL;     /* ADS-B is fixed at 1090 MHz */
+    }
+}
+
 static void select_mode(int idx)
 {
     s_mode = idx;
     ESP_LOGI(TAG, ">>> mode: %s", s_modes[idx].name);
     s_modes[idx].select();
+    pa_on();                          /* re-assert amp after the codec reconfig */
 }
 
 static void cycle_next(void)
@@ -55,8 +76,7 @@ static void cycle_next(void)
     select_mode((s_mode + 1) % N_MODES);
 }
 
-/* Debounced single-press detector. Fires cycle_next() on each clean press
- * (high->low edge that holds stable). */
+/* Debounced single-press detector; fires cycle_next() on each clean press. */
 static void boot_btn_task(void *arg)
 {
     (void)arg;
@@ -65,10 +85,10 @@ static void boot_btn_task(void *arg)
         int lvl = gpio_get_level(BOOT_BTN_GPIO);
         if (lvl == stable) {
             cnt = 0;
-        } else if (++cnt >= 2) {            /* ~40 ms held -> accept new level */
+        } else if (++cnt >= 2) {       /* ~40 ms held -> accept new level */
             stable = lvl;
             cnt = 0;
-            if (prev == 1 && stable == 0) { /* press */
+            if (prev == 1 && stable == 0) {
                 cycle_next();
             }
             prev = stable;
@@ -79,15 +99,16 @@ static void boot_btn_task(void *arg)
 
 static void gpio_init(void)
 {
-    gpio_config_t vbus = {
-        .pin_bit_mask = 1ULL << USB_VBUS_GPIO,
+    gpio_config_t out = {
+        .pin_bit_mask = (1ULL << USB_VBUS_GPIO) | (1ULL << PA_CTRL_GPIO),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&vbus);
-    gpio_set_level(USB_VBUS_GPIO, 1);       /* power the USB host port */
+    gpio_config(&out);
+    gpio_set_level(USB_VBUS_GPIO, 1);  /* power the USB host port */
+    gpio_set_level(PA_CTRL_GPIO, 1);   /* enable the speaker amp */
 
     gpio_config_t btn = {
         .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
@@ -99,6 +120,111 @@ static void gpio_init(void)
     gpio_config(&btn);
 }
 
+/* ---------------------------------------------------------------- console -- */
+
+static int cmd_status(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  "
+           "free_int=%u  free_psram=%u\n",
+           s_modes[s_mode].name, cur_freq_hz() / 1e6,
+           audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
+           audio_is_muted(),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return 0;
+}
+
+static int cmd_mode(int argc, char **argv)
+{
+    if (argc < 2) { printf("usage: mode p25|adsb|fm|next\n"); return 0; }
+    if      (!strcmp(argv[1], "next")) cycle_next();
+    else if (!strcmp(argv[1], "p25"))  select_mode(0);
+    else if (!strcmp(argv[1], "adsb")) select_mode(1);
+    else if (!strcmp(argv[1], "fm"))   select_mode(2);
+    else { printf("unknown mode '%s' (p25|adsb|fm|next)\n", argv[1]); return 0; }
+    printf("mode=%s\n", s_modes[s_mode].name);
+    return 0;
+}
+
+static int cmd_vol(int argc, char **argv)
+{
+    if (argc < 2) { printf("vol=%d\n", audio_volume_get()); return 0; }
+    if (argv[1][0] == '+' || argv[1][0] == '-') audio_volume_delta(atoi(argv[1]));
+    else                                         audio_volume_set(atoi(argv[1]));
+    printf("vol=%d\n", audio_volume_get());
+    return 0;
+}
+
+static int cmd_freq(int argc, char **argv)
+{
+    if (argc < 2) { printf("freq=%.4f MHz\n", cur_freq_hz() / 1e6); return 0; }
+    uint32_t hz = (uint32_t)(atof(argv[1]) * 1e6 + 0.5);
+    if      (s_mode == 0) lakeshark_p25_set_freq(hz);
+    else if (s_mode == 2) lakeshark_fm_set_freq(hz);
+    else { printf("ADS-B is fixed at 1090 MHz\n"); return 0; }
+    printf("freq=%.4f MHz\n", hz / 1e6);
+    return 0;
+}
+
+static int cmd_gain(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("gain=%.1f dB\n", lakeshark_radio_get_gain_tenths() / 10.0);
+        return 0;
+    }
+    if (!strcmp(argv[1], "auto")) {
+        if      (s_mode == 0) lakeshark_p25_agc();
+        else if (s_mode == 1) lakeshark_adsb_agc();
+        else                  lakeshark_fm_agc();
+        printf("gain=auto\n");
+        return 0;
+    }
+    lakeshark_radio_set_gain((int)(atof(argv[1]) * 10 + 0.5));
+    printf("gain=%.1f dB\n", lakeshark_radio_get_gain_tenths() / 10.0);
+    return 0;
+}
+
+static int cmd_mute(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    audio_toggle_mute();
+    printf("mute=%d\n", audio_is_muted());
+    return 0;
+}
+
+static void console_start(void)
+{
+    esp_console_repl_t *repl = NULL;
+    esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    repl_cfg.prompt = "lakeshark>";
+    repl_cfg.max_cmdline_length = 128;
+
+    esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl));
+
+    const esp_console_cmd_t cmds[] = {
+        { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
+          .func = &cmd_status },
+        { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|next",
+          .func = &cmd_mode },
+        { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
+          .func = &cmd_vol },
+        { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
+          .func = &cmd_freq },
+        { .command = "gain",   .help = "RF gain in dB, or 'auto'", .hint = "<dB|auto>",
+          .func = &cmd_gain },
+        { .command = "mute",   .help = "Toggle audio mute", .func = &cmd_mute },
+    };
+    esp_console_register_help_command();
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
+    }
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+}
+
+/* ------------------------------------------------------------------- main -- */
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -108,7 +234,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    gpio_init();                                  /* VBUS high before USB host */
+    gpio_init();                                  /* VBUS + amp on, BOOT input */
 
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_ERROR_CHECK(bsp_extra_codec_init_speaker_only());  /* nano: no ES7210 mic */
@@ -122,14 +248,22 @@ void app_main(void)
     /* Default to P25 and run (the GUI build boots parked; headless runs). */
     select_mode(0);
     lakeshark_radio_unpark();
+    audio_volume_set(DEFAULT_VOLUME);
+
+    /* Audible boot chime: confirms boot (no screen) and proves the speaker path. */
+    vTaskDelay(pdMS_TO_TICKS(700));
+    pa_on();
+    audio_out_ensure_unmuted();
+    snd_boot();
 
     xTaskCreate(boot_btn_task, "boot_btn", 3072, NULL, 5, NULL);
 
-    while (1) {
-        ESP_LOGI(TAG, "alive: %s  free_int=%u free_psram=%u",
-                 s_modes[s_mode].name,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
+    /* Quiet the per-second radio telemetry so it doesn't bury the console
+     * prompt. Use `status` for current state; these stay at ERROR. */
+    esp_log_level_set("P25TEL",  ESP_LOG_ERROR);
+    esp_log_level_set("P25DIAG", ESP_LOG_ERROR);
+    esp_log_level_set("ADSB",    ESP_LOG_ERROR);
+
+    console_start();
+    ESP_LOGI(TAG, "console ready - type 'help' for commands");
 }

@@ -4,7 +4,8 @@ if(CONFIG_LAKESHARK_HEADLESS)
     # excluding them entirely is a follow-up optimization.)
     idf_component_register(
         SRCS headless_main.c bsod.c
-        INCLUDE_DIRS .)
+        INCLUDE_DIRS .
+        PRIV_REQUIRES console)
 else()
     idf_component_register(
         SRCS main.cpp boot_splash.cpp bsod.c
