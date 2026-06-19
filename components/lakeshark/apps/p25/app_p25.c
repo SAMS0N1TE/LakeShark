@@ -279,9 +279,6 @@ static void p25_rx_task(void *arg)
     dsd_abort = 0;
     TaskHandle_t dec_h = NULL;
     if (!s_dsd_running) {
-        /* Dynamic create -> stack comes from internal RAM (not PSRAM). Internal
-         * stack speeds the IMBE decode and stops it contending with the DSI
-         * framebuffer DMA on the PSRAM bus (was the blue-flash + chop cause). */
         xTaskCreatePinnedToCore(dsd_decoder_task, "dsd_decode",
                                 DSD_STACK_WORDS, NULL, 5, &dec_h, 1);
     }

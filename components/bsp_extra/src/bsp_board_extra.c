@@ -172,10 +172,6 @@ esp_err_t bsp_extra_codec_init_speaker_only()
         return ESP_OK;
     }
 
-    /* Output-only path for boards without the ES7210 mic ADC (e.g. ESP32-P4-NANO).
-     * The radio never records, and every record_dev_handle use is NULL-guarded,
-     * so leaving it NULL is safe. Skips the microphone init that otherwise
-     * asserts in the BSP when the ES7210 is absent. */
     play_dev_handle = bsp_audio_codec_speaker_init();
     assert((play_dev_handle) && "play_dev_handle not initialized");
 

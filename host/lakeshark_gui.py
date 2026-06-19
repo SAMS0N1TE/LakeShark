@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""LakeShark headless control panel.
-
-A tiny local web GUI that drives the headless firmware's serial console
-(P25 / ADS-B / FM incl. POCSAG, volume, frequency, gain, mute). The headless
-board has no screen, so this runs on your computer and talks to it over the USB
-serial port.
-
-Usage:
-    python3 lakeshark_gui.py                 # /dev/ttyACM0, http://127.0.0.1:8674
-    python3 lakeshark_gui.py -p /dev/ttyUSB0 --http 9000
-
-Only dependency is pyserial (`pip install pyserial`).
-"""
 import argparse
 import json
 import os
@@ -26,8 +13,6 @@ try:
 except ImportError:
     raise SystemExit("pyserial not found - install it with:  pip install pyserial")
 
-# Windows 95 UI font (W95FA by Alina Sava, SIL OFL), served locally so the GUI
-# needs no internet. Falls back to a sans stack if the file is missing.
 _FONT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "W95FA.woff")
 try:
     with open(_FONT_FILE, "rb") as _f:
@@ -37,8 +22,6 @@ except Exception:
 
 
 class Radio:
-    """Owns the serial port: writes commands, tails output, parses `status`."""
-
     STATUS_RE = re.compile(
         r"mode=(\S+)\s+freq=([\d.]+)\s*MHz\s+vol=(\d+)\s+"
         r"gain=([\d.]+)\s*dB\s+mute=(\d+)"
@@ -50,7 +33,7 @@ class Radio:
         self.ser.port = port
         self.ser.baudrate = baud
         self.ser.timeout = 0.2
-        self.ser.dtr = False           # don't reset the board on connect
+        self.ser.dtr = False
         self.ser.rts = False
         self.ser.open()
         try:
@@ -61,12 +44,12 @@ class Radio:
         self.lock = threading.Lock()
         self.log = []
         self.state = {}
-        self.aircraft = {}     # icao -> latest fields
-        self.pages = []        # POCSAG pages, newest last
+        self.aircraft = {}
+        self.pages = []
         self._rx = b""
         threading.Thread(target=self._reader, daemon=True).start()
         threading.Thread(target=self._poller, daemon=True).start()
-        self.send("feed on")   # ADS-B JSON feed to the console (CartoTUI + this GUI)
+        self.send("feed on")
 
     def send(self, cmd):
         with self.lock:

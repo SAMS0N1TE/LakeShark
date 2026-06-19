@@ -211,10 +211,6 @@ esp_err_t audio_out_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Core 1, pri 11: above the P25 decode task (pri 5) so it drains the ring on
-     * time, below the USB stream pump (pri 12). The decode stack now lives in
-     * internal RAM (see app_p25.c) so it no longer stalls past an LDU's audio
-     * budget -> ring stays primed. (Core 0 starved IDLE0 -> Task WDT.) */
     BaseType_t ok = xTaskCreatePinnedToCore(audio_player_task, "audio_out",
                                             AUDIO_TASK_STACK, NULL, 11, &s_task, 1);
     if (ok != pdTRUE) {

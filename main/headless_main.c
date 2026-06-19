@@ -1,18 +1,3 @@
-/* headless_main.c - UART-console entry for the headless LakeShark build.
- *
- * Selected at build time by CONFIG_LAKESHARK_HEADLESS (see main/CMakeLists.txt).
- * Boots the same radio core as the GUI build (P25 / FM / ADS-B) but with no
- * display, Brookesia, or LVGL - just the backend and a serial command console.
- *
- * Target board: ESP32-P4-NANO.
- *  - BOOT button (GPIO35) cycles P25 -> ADS-B -> FM -> P25.
- *  - USB host VBUS enable on GPIO46 (the linked 86-box BSP does not drive it, so
- *    without this the RTL-SDR never enumerates on the nano).
- *  - Speaker amp (NS4150B) enable on GPIO53, forced high (the codec gives it as
- *    its pa_pin but it must be asserted or the speaker is silent on the nano).
- *
- * A small serial console exposes the basic controls; type `help` for the list.
- */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -33,10 +18,10 @@
 
 static const char *TAG = "headless";
 
-#define BOOT_BTN_GPIO   GPIO_NUM_35    /* active-low, internal pull-up */
-#define USB_VBUS_GPIO   GPIO_NUM_46    /* USB host VBUS enable (active-high) */
-#define PA_CTRL_GPIO    GPIO_NUM_53    /* NS4150B speaker amp enable (active-high) */
-#define DEFAULT_VOLUME  85             /* louder than the GUI's 35 default */
+#define BOOT_BTN_GPIO   GPIO_NUM_35
+#define USB_VBUS_GPIO   GPIO_NUM_46
+#define PA_CTRL_GPIO    GPIO_NUM_53
+#define DEFAULT_VOLUME  85
 
 typedef struct {
     const char *name;
@@ -50,9 +35,8 @@ static const hl_mode_t s_modes[] = {
 };
 #define N_MODES ((int)(sizeof(s_modes) / sizeof(s_modes[0])))
 
-/* FM sub-modes, indexed by the firmware enum (LISTEN=0 SCAN=1 POCSAG=2 WFM=3). */
 static const char *s_fm_modes[] = { "listen", "scan", "pocsag", "wfm" };
-#define FM_IDX 2   /* index of "FM" in s_modes */
+#define FM_IDX 2
 
 static volatile int s_mode = 0;
 
@@ -63,7 +47,7 @@ static uint32_t cur_freq_hz(void)
     switch (s_mode) {
     case 0:  return lakeshark_p25_get_freq();
     case 2:  return lakeshark_fm_get_freq();
-    default: return 1090000000UL;     /* ADS-B is fixed at 1090 MHz */
+    default: return 1090000000UL;
     }
 }
 
@@ -72,7 +56,7 @@ static void select_mode(int idx)
     s_mode = idx;
     ESP_LOGI(TAG, ">>> mode: %s", s_modes[idx].name);
     s_modes[idx].select();
-    pa_on();                          /* re-assert amp after the codec reconfig */
+    pa_on();
 }
 
 static void cycle_next(void)
@@ -80,7 +64,6 @@ static void cycle_next(void)
     select_mode((s_mode + 1) % N_MODES);
 }
 
-/* Debounced single-press detector; fires cycle_next() on each clean press. */
 static void boot_btn_task(void *arg)
 {
     (void)arg;
@@ -89,7 +72,7 @@ static void boot_btn_task(void *arg)
         int lvl = gpio_get_level(BOOT_BTN_GPIO);
         if (lvl == stable) {
             cnt = 0;
-        } else if (++cnt >= 2) {       /* ~40 ms held -> accept new level */
+        } else if (++cnt >= 2) {
             stable = lvl;
             cnt = 0;
             if (prev == 1 && stable == 0) {
@@ -111,8 +94,8 @@ static void gpio_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&out);
-    gpio_set_level(USB_VBUS_GPIO, 1);  /* power the USB host port */
-    gpio_set_level(PA_CTRL_GPIO, 1);   /* enable the speaker amp */
+    gpio_set_level(USB_VBUS_GPIO, 1);
+    gpio_set_level(PA_CTRL_GPIO, 1);
 
     gpio_config_t btn = {
         .pin_bit_mask = 1ULL << BOOT_BTN_GPIO,
@@ -123,8 +106,6 @@ static void gpio_init(void)
     };
     gpio_config(&btn);
 }
-
-/* ---------------------------------------------------------------- console -- */
 
 static int cmd_status(int argc, char **argv)
 {
@@ -162,9 +143,9 @@ static int cmd_fm(int argc, char **argv)
     for (int i = 0; i < 4; i++) {
         if (!strcmp(argv[1], s_fm_modes[i])) { m = i; break; }
     }
-    if (m < 0 && !strcmp(argv[1], "nbfm")) m = 0;   /* alias */
+    if (m < 0 && !strcmp(argv[1], "nbfm")) m = 0;
     if (m < 0) { printf("usage: fm listen|scan|pocsag|wfm\n"); return 0; }
-    if (s_mode != FM_IDX) select_mode(FM_IDX);      /* hop into FM first */
+    if (s_mode != FM_IDX) select_mode(FM_IDX);
     lakeshark_fm_set_mode(m);
     pa_on();
     printf("mode=FM submode=%s\n", s_fm_modes[m]);
@@ -263,8 +244,6 @@ static void console_start(void)
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
 
-/* ------------------------------------------------------------------- main -- */
-
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -274,23 +253,20 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    gpio_init();                                  /* VBUS + amp on, BOOT input */
+    gpio_init();
 
     ESP_ERROR_CHECK(bsp_spiffs_mount());
-    ESP_ERROR_CHECK(bsp_extra_codec_init_speaker_only());  /* nano: no ES7210 mic */
+    ESP_ERROR_CHECK(bsp_extra_codec_init_speaker_only());
 
     ESP_LOGI(TAG, "LakeShark headless boot - radio core, no display (NANO)");
     ESP_LOGI(TAG, "BOOT button (GPIO%d) cycles P25 -> ADS-B -> FM", BOOT_BTN_GPIO);
 
-    /* Brings up USB host + RTL-SDR and registers the P25 / FM / ADS-B apps. */
     lakeshark_backend_start();
 
-    /* Default to P25 and run (the GUI build boots parked; headless runs). */
     select_mode(0);
     lakeshark_radio_unpark();
     audio_volume_set(DEFAULT_VOLUME);
 
-    /* Audible boot chime: confirms boot (no screen) and proves the speaker path. */
     vTaskDelay(pdMS_TO_TICKS(700));
     pa_on();
     audio_out_ensure_unmuted();
@@ -298,8 +274,6 @@ void app_main(void)
 
     xTaskCreate(boot_btn_task, "boot_btn", 3072, NULL, 5, NULL);
 
-    /* Quiet the per-second radio telemetry so it doesn't bury the console
-     * prompt. Use `status` for current state; these stay at ERROR. */
     esp_log_level_set("P25TEL",  ESP_LOG_ERROR);
     esp_log_level_set("P25DIAG", ESP_LOG_ERROR);
     esp_log_level_set("ADSB",    ESP_LOG_ERROR);
