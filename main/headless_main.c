@@ -130,12 +130,24 @@ static int cmd_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
     printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
-           "free_int=%u  free_psram=%u\n",
+           "feed=%s  free_int=%u  free_psram=%u\n",
            s_modes[s_mode].name, cur_freq_hz() / 1e6,
            audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
            audio_is_muted(), s_fm_modes[lakeshark_fm_get_mode() & 3],
+           lakeshark_cartotui_enabled() ? "on" : "off",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return 0;
+}
+
+static int cmd_feed(int argc, char **argv)
+{
+    if (argc >= 2) {
+        if      (!strcmp(argv[1], "on"))  lakeshark_cartotui_set_enabled(true);
+        else if (!strcmp(argv[1], "off")) lakeshark_cartotui_set_enabled(false);
+        else { printf("usage: feed on|off\n"); return 0; }
+    }
+    printf("feed=%s\n", lakeshark_cartotui_enabled() ? "on" : "off");
     return 0;
 }
 
@@ -240,6 +252,8 @@ static void console_start(void)
           .func = &cmd_freq },
         { .command = "gain",   .help = "RF gain in dB, or 'auto'", .hint = "<dB|auto>",
           .func = &cmd_gain },
+        { .command = "feed",   .help = "ADS-B JSON feed to console (CartoTUI)",
+          .hint = "on|off", .func = &cmd_feed },
         { .command = "mute",   .help = "Toggle audio mute", .func = &cmd_mute },
     };
     esp_console_register_help_command();

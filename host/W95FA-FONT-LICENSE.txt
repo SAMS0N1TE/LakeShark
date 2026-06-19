@@ -1,0 +1,9 @@
+W95FA.woff bundled with the control panel.
+
+Font:    W95FA
+Author:  Alina Sava
+License: SIL Open Font License 1.1 (OFL)
+Source:  https://fontsarena.com/w95fa-by-alina-sava/
+
+The OFL permits bundling and redistribution with the software. Full license
+text: https://openfontlicense.org

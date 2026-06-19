@@ -22,3 +22,6 @@ serial*.txt
 /docs/
 /tools/
 /build_headless/
+
+__pycache__/
+*.pyc
