@@ -59,6 +59,13 @@ is included one level up in the original tree; plain `idf.py` works the same.
   No launcher: it boots into the last-used app, a persistent bottom rail (and the
   BOOT button) switches systems, and `< >` edge buttons flip each app's tabs.
 
+
+## Sneak Peaks for Box 86 3D prints WIP
+
+<img width="1920" height="1920" alt="HighFront" src="https://github.com/user-attachments/assets/9d375356-a956-4024-9c1d-b8af96045b2a" />
+<img width="1920" height="1920" alt="Back" src="https://github.com/user-attachments/assets/675aa297-e619-4799-ae6c-2f93e1925994" />
+<img width="1920" height="1920" alt="Low - Copy" src="https://github.com/user-attachments/assets/43cc9a11-f0ca-4ed7-8ecd-8e9f56073d97" />
+
 ## Credits & licenses
 
 This project is released under the **GNU GPL v3** (see `LICENSE`), as required by
