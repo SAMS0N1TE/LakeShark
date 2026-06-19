@@ -79,12 +79,14 @@ class Radio:
     def _parse(self, line):
         m = self.STATUS_RE.search(line)
         if m:
+            fm = re.search(r"fmmode=(\w+)", line)
             self.state = {
                 "mode": m.group(1),
                 "freq": float(m.group(2)),
                 "vol": int(m.group(3)),
                 "gain": float(m.group(4)),
                 "mute": bool(int(m.group(5))),
+                "fmmode": fm.group(1) if fm else "",
                 "t": time.time(),
             }
 
@@ -99,63 +101,89 @@ class Radio:
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>LakeShark</title><style>
-:root{--gold:#E0C27A;--bg:#070A09;--panel:#0e1513;--edge:#C9A24A;--txt:#cfe0d8;--dim:#7c8a83}
-*{box-sizing:border-box;font-family:'DejaVu Sans Mono',Consolas,monospace}
-body{background:var(--bg);color:var(--txt);margin:0;padding:18px;max-width:760px;margin:0 auto}
-h1{color:var(--gold);letter-spacing:4px;font-size:26px;margin:4px 0 14px;text-align:center}
-.panel{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:14px;margin-bottom:14px}
-.lcd{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
-.lcd .cell{flex:1;min-width:110px;text-align:center}
-.lcd .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px}
-.lcd .v{color:var(--gold);font-size:22px;margin-top:3px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
-.row label{color:var(--dim);width:64px;font-size:13px}
-button{background:#16201d;color:var(--txt);border:1px solid var(--edge);border-radius:6px;
- padding:9px 12px;cursor:pointer;font-size:14px}
-button:hover{background:#1d2a26}button.on{background:var(--edge);color:#0a0a0a;font-weight:bold}
-input[type=text]{background:#0a100e;color:var(--gold);border:1px solid var(--edge);
- border-radius:6px;padding:8px;width:120px;font-size:15px}
-input[type=range]{flex:1;accent-color:var(--gold)}
-#log{background:#050807;border:1px solid #1c2a26;border-radius:6px;height:200px;
- overflow:auto;padding:8px;font-size:12px;color:#9fb3aa;white-space:pre-wrap}
-.muted{color:#e39b96 !important}
+<title>LakeShark Control Panel</title><style>
+*{box-sizing:border-box}
+body{background:#008080;color:#000;font:12px Tahoma,'MS Sans Serif',Geneva,sans-serif;margin:0;padding:14px}
+.win{max-width:600px;margin:0 auto;background:#c0c0c0;
+ border:2px solid;border-color:#dfdfdf #000 #000 #dfdfdf;box-shadow:1px 1px 0 #808080}
+.title{background:linear-gradient(90deg,#000080,#1084d0);color:#fff;font-weight:bold;
+ padding:3px 6px;margin:2px;display:flex;justify-content:space-between;align-items:center}
+.title .x{background:#c0c0c0;color:#000;border:2px solid;border-color:#dfdfdf #000 #000 #dfdfdf;
+ width:18px;height:16px;line-height:11px;text-align:center;font-weight:bold}
+.client{padding:8px}
+fieldset{border:2px groove #dfdfdf;margin:0 0 8px;padding:7px 9px 9px}
+legend{padding:0 4px;font-weight:bold}
+.grid{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px 8px;align-items:center}
+.lbl{color:#000;white-space:nowrap}
+.fld{border:2px solid;border-color:#808080 #fff #fff #808080;background:#fff;
+ padding:2px 6px;font:12px 'Courier New',monospace;min-height:19px}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:5px 0}
+.row .lbl{width:58px}
+button{font:12px Tahoma,sans-serif;background:#c0c0c0;color:#000;cursor:pointer;padding:4px 10px;
+ min-width:62px;border:2px solid;border-color:#dfdfdf #000 #000 #dfdfdf}
+button:active,button.on{border-color:#000 #dfdfdf #dfdfdf #000;background:#b6b6b6;
+ box-shadow:inset 1px 1px 0 #808080}
+button.on{font-weight:bold}
+input[type=text]{border:2px solid;border-color:#808080 #fff #fff #808080;background:#fff;
+ padding:3px 4px;font:12px 'Courier New',monospace;width:130px}
+input[type=range]{-webkit-appearance:none;appearance:none;height:21px;background:transparent;flex:1;min-width:120px}
+input[type=range]::-webkit-slider-runnable-track{height:4px;background:#808080;
+ border:1px solid;border-color:#000 #fff #fff #000}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:19px;margin-top:-9px;
+ background:#c0c0c0;border:2px solid;border-color:#dfdfdf #000 #000 #dfdfdf}
+input[type=range]::-moz-range-track{height:4px;background:#808080;border:1px solid #000}
+input[type=range]::-moz-range-thumb{width:9px;height:17px;background:#c0c0c0;border:2px solid;
+ border-color:#dfdfdf #000 #000 #dfdfdf;border-radius:0}
+#log{border:2px solid;border-color:#808080 #fff #fff #808080;background:#fff;height:150px;
+ overflow:auto;padding:4px;font:11px 'Courier New',monospace;white-space:pre-wrap;color:#000}
+.status .x{background:#c0c0c0;color:#888}
 </style></head><body>
-<h1>&#9698; LAKESHARK</h1>
-<div class=panel><div class=lcd>
- <div class=cell><div class=k>Mode</div><div class=v id=s_mode>--</div></div>
- <div class=cell><div class=k>Freq MHz</div><div class=v id=s_freq>--</div></div>
- <div class=cell><div class=k>Vol</div><div class=v id=s_vol>--</div></div>
- <div class=cell><div class=k>Gain dB</div><div class=v id=s_gain>--</div></div>
- <div class=cell><div class=k>Mute</div><div class=v id=s_mute>--</div></div>
-</div></div>
-<div class=panel>
- <div class=row><label>Mode</label>
-  <button id=m_p25 onclick="cmd('mode p25')">P25</button>
-  <button id=m_adsb onclick="cmd('mode adsb')">ADS-B</button>
-  <button id=m_fm onclick="cmd('mode fm')">FM</button></div>
- <div class=row><label>Volume</label>
-  <input type=range id=vol min=0 max=100 oninput="vlbl.textContent=this.value"
-   onchange="cmd('vol '+this.value)"><span id=vlbl style="width:34px;color:var(--gold)">--</span></div>
- <div class=row><label>Freq</label>
-  <input type=text id=freq placeholder="MHz e.g. 154.785">
-  <button onclick="cmd('freq '+freq.value)">Tune</button></div>
- <div class=row><label>Gain</label>
-  <input type=text id=gain placeholder="dB e.g. 30">
-  <button onclick="cmd('gain '+gain.value)">Set</button>
-  <button onclick="cmd('gain auto')">Auto</button></div>
- <div class=row><label>&nbsp;</label>
-  <button onclick="cmd('mute')">Mute / Unmute</button>
-  <button onclick="cmd('status')">Refresh</button></div>
+<div class=win>
+ <div class=title><span>&#9698; LakeShark Control Panel</span><span class=x>x</span></div>
+ <div class=client>
+  <fieldset><legend>Status</legend><div class=grid>
+   <span class=lbl>Mode</span><span class=fld id=s_mode>--</span>
+   <span class=lbl>Freq (MHz)</span><span class=fld id=s_freq>--</span>
+   <span class=lbl>Volume</span><span class=fld id=s_vol>--</span>
+   <span class=lbl>Gain (dB)</span><span class=fld id=s_gain>--</span>
+   <span class=lbl>Mute</span><span class=fld id=s_mute>--</span>
+   <span class=lbl>FM sub-mode</span><span class=fld id=s_fm>--</span>
+  </div></fieldset>
+  <fieldset><legend>Mode</legend><div class=row>
+   <button id=m_p25 onclick="cmd('mode p25')">P25</button>
+   <button id=m_adsb onclick="cmd('mode adsb')">ADS-B</button>
+   <button id=m_fm onclick="cmd('mode fm')">FM</button></div></fieldset>
+  <fieldset><legend>FM sub-mode</legend><div class=row>
+   <button id=f_listen onclick="cmd('fm listen')">LISTEN</button>
+   <button id=f_scan onclick="cmd('fm scan')">SCAN</button>
+   <button id=f_pocsag onclick="cmd('fm pocsag')">POCSAG</button>
+   <button id=f_wfm onclick="cmd('fm wfm')">WFM</button></div></fieldset>
+  <fieldset><legend>Controls</legend>
+   <div class=row><span class=lbl>Volume</span>
+    <input type=range id=vol min=0 max=100 oninput="vlbl.textContent=this.value"
+     onchange="cmd('vol '+this.value)"><span class=fld id=vlbl style=width:34px>--</span></div>
+   <div class=row><span class=lbl>Freq</span>
+    <input type=text id=freq placeholder="MHz e.g. 154.785">
+    <button onclick="cmd('freq '+freq.value)">Tune</button></div>
+   <div class=row><span class=lbl>Gain</span>
+    <input type=text id=gain placeholder="dB e.g. 30">
+    <button onclick="cmd('gain '+gain.value)">Set</button>
+    <button onclick="cmd('gain auto')">Auto</button></div>
+   <div class=row><span class=lbl>&nbsp;</span>
+    <button onclick="cmd('mute')">Mute</button>
+    <button onclick="cmd('status')">Refresh</button></div>
+  </fieldset>
+  <fieldset><legend>Serial log</legend><div id=log></div></fieldset>
+ </div>
 </div>
-<div class=panel><div class=k style="color:var(--dim);font-size:11px;margin-bottom:6px">SERIAL LOG</div>
- <div id=log></div></div>
 <script>
 function cmd(c){fetch('/cmd',{method:'POST',body:c});}
 let dragging=false;
 const volEl=document.getElementById('vol');
 volEl.addEventListener('mousedown',()=>dragging=true);
 volEl.addEventListener('mouseup',()=>dragging=false);
+function setOn(ids,active){for(const id of ids){var e=document.getElementById(id);
+ if(e)e.classList.toggle('on',id===active);}}
 async function tick(){
  try{
   const r=await fetch('/state');const d=await r.json();const s=d.state||{};
@@ -164,11 +192,11 @@ async function tick(){
    document.getElementById('s_freq').textContent=s.freq.toFixed(4);
    document.getElementById('s_vol').textContent=s.vol;
    document.getElementById('s_gain').textContent=s.gain.toFixed(1);
-   const mu=document.getElementById('s_mute');mu.textContent=s.mute?'ON':'off';
-   mu.className='v'+(s.mute?' muted':'');
-   for(const id of ['m_p25','m_adsb','m_fm'])document.getElementById(id).classList.remove('on');
-   const map={'P25':'m_p25','ADS-B':'m_adsb','FM':'m_fm'};
-   if(map[s.mode])document.getElementById(map[s.mode]).classList.add('on');
+   document.getElementById('s_mute').textContent=s.mute?'ON':'off';
+   document.getElementById('s_fm').textContent=(s.fmmode||'--').toUpperCase();
+   setOn(['m_p25','m_adsb','m_fm'],{'P25':'m_p25','ADS-B':'m_adsb','FM':'m_fm'}[s.mode]);
+   setOn(['f_listen','f_scan','f_pocsag','f_wfm'],
+     (s.mode==='FM')?({'listen':'f_listen','scan':'f_scan','pocsag':'f_pocsag','wfm':'f_wfm'}[s.fmmode]):null);
    if(!dragging){volEl.value=s.vol;document.getElementById('vlbl').textContent=s.vol;}
   }
   const lg=document.getElementById('log');const atBottom=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-20;

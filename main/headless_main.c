@@ -50,6 +50,10 @@ static const hl_mode_t s_modes[] = {
 };
 #define N_MODES ((int)(sizeof(s_modes) / sizeof(s_modes[0])))
 
+/* FM sub-modes, indexed by the firmware enum (LISTEN=0 SCAN=1 POCSAG=2 WFM=3). */
+static const char *s_fm_modes[] = { "listen", "scan", "pocsag", "wfm" };
+#define FM_IDX 2   /* index of "FM" in s_modes */
+
 static volatile int s_mode = 0;
 
 static void pa_on(void) { gpio_set_level(PA_CTRL_GPIO, 1); }
@@ -125,13 +129,33 @@ static void gpio_init(void)
 static int cmd_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  "
+    printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
            "free_int=%u  free_psram=%u\n",
            s_modes[s_mode].name, cur_freq_hz() / 1e6,
            audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
-           audio_is_muted(),
+           audio_is_muted(), s_fm_modes[lakeshark_fm_get_mode() & 3],
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return 0;
+}
+
+static int cmd_fm(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("fm submode=%s (listen|scan|pocsag|wfm)\n",
+               s_fm_modes[lakeshark_fm_get_mode() & 3]);
+        return 0;
+    }
+    int m = -1;
+    for (int i = 0; i < 4; i++) {
+        if (!strcmp(argv[1], s_fm_modes[i])) { m = i; break; }
+    }
+    if (m < 0 && !strcmp(argv[1], "nbfm")) m = 0;   /* alias */
+    if (m < 0) { printf("usage: fm listen|scan|pocsag|wfm\n"); return 0; }
+    if (s_mode != FM_IDX) select_mode(FM_IDX);      /* hop into FM first */
+    lakeshark_fm_set_mode(m);
+    pa_on();
+    printf("mode=FM submode=%s\n", s_fm_modes[m]);
     return 0;
 }
 
@@ -208,6 +232,8 @@ static void console_start(void)
           .func = &cmd_status },
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|next",
           .func = &cmd_mode },
+        { .command = "fm",     .help = "FM sub-mode (hops into FM)",
+          .hint = "listen|scan|pocsag|wfm", .func = &cmd_fm },
         { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
           .func = &cmd_vol },
         { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
