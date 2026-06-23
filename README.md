@@ -44,21 +44,25 @@ is included one level up in the original tree; plain `idf.py` works the same.
 > in-place. After switching host OS, run `idf.py fullclean` once (the `build/`
 > cache stores absolute paths).
 
-## Architecture highlights
+## Architecture & specs
 
-- **Integer FM front end** | a fixed-point `rtl_fm`-derived pipeline at 256 kSPS
-  (FM) / 240 kSPS (P25) replaces a float chain that saturated a core; the demod
-  runs comfortably real-time with zero IQ drops.
-- **Decoupled USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ
-  ring; a pump task reposts so the demod never blocks USB servicing.
-- **Fixed-point IMBE** | P25 voice uses OP25's integer `imbe_vocoder` (no
-  per-sample `cosf`), bringing one LDU's synthesis well under real-time on the P4.
-- **Low-power TUI graphics** | the radio UIs use monospace text meters/sparklines
-  instead of live `lv_bar`/`lv_chart` redraws to keep audio glitch-free.
-- **Custom LCD shell** | a hand-rolled LVGL UI styled like a handheld radio screen
-  (pastel-on-black, mono font, bordered LCD faces, segmented ASCII touch sliders).
-  No launcher: it boots into the last-used app, a persistent bottom rail (and the
-  BOOT button) switches systems, and `< >` edge buttons flip each app's tabs.
+- **SoC/board** | ESP32-P4 (dual-core RISC-V) on the Waveshare ESP32-P4-NANO or
+  Smart 86 Box. 32 MB flash, PSRAM at 200 MHz, 720x720 MIPI-DSI capacitive touch LCD.
+- **Sample rates** | RTL-SDR over USB host runs at 240 kSPS for P25, 256 kSPS for
+  FM/POCSAG, and 2 MSPS for ADS-B. Audio out is 16 kHz mono.
+- **Integer DSP** | the FM front end is a fixed-point `rtl_fm`-derived pipeline and
+  P25 voice uses OP25's integer `imbe_vocoder`, so there's no per-sample `cosf`.
+  Demod runs real-time with no IQ drops, and one P25 LDU decodes well under real-time.
+- **USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ ring. A pump
+  task reposts them so the demod never blocks USB servicing.
+- **Audio** | 16 kHz output ring with a prebuffer sized above one decode burst, so
+  the bursty IMBE/FM output doesn't chop.
+- **LCD shell** | a custom LVGL UI styled like a handheld radio. Pastel on black,
+  mono font, bordered LCD faces, segmented ASCII touch sliders, and text meters
+  instead of live `lv_bar`/`lv_chart` redraws. No launcher: it boots into the
+  last-used app, a bottom rail and the BOOT button switch systems, and the `< >`
+  buttons flip each app's tabs. Brightness, auto-dim, volume, and boot sound
+  persist in NVS.
 
 
 ## Sneak Peaks for Box 86 3D prints WIP
