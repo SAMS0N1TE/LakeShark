@@ -1,4 +1,8 @@
-<img width="1280" height="214" alt="LakeShark" src="assets/lakeshark_banner.png" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/a4e9f4bf-8d01-4cd1-9f7b-f2164c2c01cd">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/fc9460f3-ceef-4c8a-93f7-e803cc38361d">
+  <img alt="lakeshark_banner" src="https://github.com/user-attachments/assets/a4e9f4bf-8d01-4cd1-9f7b-f2164c2c01cd" width="1280" height="214">
+</picture>
 
 A handheld SDR scanner running on the Waveshare [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm?srsltid=AfmBOoqwx_UtnddP57XurmPjLDD6xyBxvlo3kfWMzl45RvUZGmMNA4tY) and the [ESP32-P4 Smart 86 Box](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4b.htm) with an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) plugged into its USB host port.
 
