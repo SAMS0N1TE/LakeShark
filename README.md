@@ -11,13 +11,13 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 ## <°)))><
 
-- **P25** — Project 25 Phase 1 (C4FM) trunked/conventional digital voice.
+- **P25** | Project 25 Phase 1 (C4FM) trunked/conventional digital voice.
   On-device IMBE voice decode using OP25's fixed-point vocoder; live NAC / TG /
   SRC, BCH health, and display.
-- **FM Monitor** — wideband broadcast FM, narrowband FM voice (LISTEN), band
-  SCAN, and POCSAG pager decode — sharing one integer `rtl_fm`-style front end.
-- **ADS-B** — 1090 MHz aircraft tracking.
-- **LoRa Mesh** — on-board SX1262 + LoRaMesher gateway with a live node/link view, VERY WIP.
+- **FM Monitor** | wideband broadcast FM, narrowband FM voice (LISTEN), band
+  SCAN, and POCSAG pager decode | sharing one integer `rtl_fm`-style front end.
+- **ADS-B** | 1090 MHz aircraft tracking.
+- **LoRa Mesh** | on-board SX1262 + LoRaMesher gateway with a live node/link view, VERY WIP.
 
 ## Hardware notes
 
@@ -46,16 +46,16 @@ is included one level up in the original tree; plain `idf.py` works the same.
 
 ## Architecture highlights
 
-- **Integer FM front end** — a fixed-point `rtl_fm`-derived pipeline at 256 kSPS
+- **Integer FM front end** | a fixed-point `rtl_fm`-derived pipeline at 256 kSPS
   (FM) / 240 kSPS (P25) replaces a float chain that saturated a core; the demod
   runs comfortably real-time with zero IQ drops.
-- **Decoupled USB streaming** — self-resubmitting USB transfers fill a PSRAM IQ
+- **Decoupled USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ
   ring; a pump task reposts so the demod never blocks USB servicing.
-- **Fixed-point IMBE** — P25 voice uses OP25's integer `imbe_vocoder` (no
+- **Fixed-point IMBE** | P25 voice uses OP25's integer `imbe_vocoder` (no
   per-sample `cosf`), bringing one LDU's synthesis well under real-time on the P4.
-- **Low-power TUI graphics** — the radio UIs use monospace text meters/sparklines
+- **Low-power TUI graphics** | the radio UIs use monospace text meters/sparklines
   instead of live `lv_bar`/`lv_chart` redraws to keep audio glitch-free.
-- **Custom LCD shell** — a hand-rolled LVGL UI styled like a handheld radio screen
+- **Custom LCD shell** | a hand-rolled LVGL UI styled like a handheld radio screen
   (pastel-on-black, mono font, bordered LCD faces, segmented ASCII touch sliders).
   No launcher: it boots into the last-used app, a persistent bottom rail (and the
   BOOT button) switches systems, and `< >` edge buttons flip each app's tabs.
@@ -72,13 +72,13 @@ is included one level up in the original tree; plain `idf.py` works the same.
 This project is released under the **GNU GPL v3** (see `LICENSE`), as required by
 its GPL dependencies. It bundles and builds on:
 
-- [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) — Osmocom (GPL-2.0+)
+- [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) | Osmocom (GPL-2.0+)
 - [xtrsdr](https://github.com/XTR1984/xtrsdr) - For the amazing work with getting it lean enough for the ESP32.
-- [OP25 `imbe_vocoder`](https://github.com/boatbod/op25) — Pavel Yazev (GPL-3.0+)
-- [mbelib](https://github.com/szechyjs/mbelib) — ISC (kept as a fallback decoder)
-- [DSD / dsd-fme](https://github.com/lwvmobile/dsd-fme) — P25 framing (GPL)
-- [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) — mesh networking
-- [esp-brookesia](https://github.com/espressif/esp-brookesia) — UI launcher
+- [OP25 `imbe_vocoder`](https://github.com/boatbod/op25) | Pavel Yazev (GPL-3.0+)
+- [mbelib](https://github.com/szechyjs/mbelib) | ISC (kept as a fallback decoder)
+- [DSD / dsd-fme](https://github.com/lwvmobile/dsd-fme) | P25 framing (GPL)
+- [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) | mesh networking
+- [esp-brookesia](https://github.com/espressif/esp-brookesia) | UI launcher
 - Espressif ESP-IDF and the Waveshare ESP32-P4 BSP
 
 Original copyright/license headers in third-party sources are preserved verbatim.
