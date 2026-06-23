@@ -1,7 +1,6 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
-https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09
 A handheld SDR scanner running on the Waveshare [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm?srsltid=AfmBOoqwx_UtnddP57XurmPjLDD6xyBxvlo3kfWMzl45RvUZGmMNA4tY) and the [ESP32-P4 Smart 86 Box](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4b.htm) with an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) plugged into its USB host port.
 
 It's currently in a very early devlopment stage and will be broken up into a few different releases. Right now I will release a headless firmware and a GUI version. The GUI started on [esp-brookesia](https://github.com/espressif/esp-brookesia) but I've since swapped it for my own handheld-radio LCD shell (boots straight into the last app, no launcher, a bottom row switches between systems). I will try my best to get these to be cross compatible with different boards and configurations, so please submit an issue if you have trouble.
