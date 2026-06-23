@@ -119,6 +119,102 @@ void settings_fav_set(const app_t *a, int slot, uint32_t hz)
 }
 void settings_fav_clear(const app_t *a, int slot) { settings_fav_set(a, slot, 0); }
 
+bool settings_get_home(float *lat, float *lon)
+{
+    if (!s_nvs_ok) return false;
+    int32_t ilat = 0, ilon = 0;
+    if (nvs_get_i32(s_nvs, "home_lat", &ilat) != ESP_OK) return false;
+    if (nvs_get_i32(s_nvs, "home_lon", &ilon) != ESP_OK) return false;
+    if (ilat == 0 && ilon == 0) return false;
+    if (lat) *lat = (float)ilat / 1000000.0f;
+    if (lon) *lon = (float)ilon / 1000000.0f;
+    return true;
+}
+void settings_set_home(float lat, float lon)
+{
+    if (!s_nvs_ok) return;
+    nvs_set_i32(s_nvs, "home_lat", (int32_t)(lat * 1000000.0f));
+    nvs_set_i32(s_nvs, "home_lon", (int32_t)(lon * 1000000.0f));
+    nvs_commit(s_nvs);
+}
+
+int settings_get_brightness(void)
+{
+    if (!s_nvs_ok) return 80;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "brightness", &v) != ESP_OK || v < 5 || v > 100) return 80;
+    return (int)v;
+}
+void settings_set_brightness(int pct)
+{
+    if (!s_nvs_ok) return;
+    if (pct < 5)   pct = 5;
+    if (pct > 100) pct = 100;
+    nvs_set_u8(s_nvs, "brightness", (uint8_t)pct);
+    nvs_commit(s_nvs);
+}
+
+bool settings_get_autodim(void)
+{
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "autodim", &v) != ESP_OK) return true;
+    return v != 0;
+}
+void settings_set_autodim(bool en)
+{
+    if (!s_nvs_ok) return;
+    nvs_set_u8(s_nvs, "autodim", en ? 1 : 0);
+    nvs_commit(s_nvs);
+}
+int settings_get_autodim_timeout(void)
+{
+    if (!s_nvs_ok) return 30;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "autodim_to", &v) != ESP_OK || v < 5) return 30;
+    return (int)v;
+}
+void settings_set_autodim_timeout(int seconds)
+{
+    if (!s_nvs_ok) return;
+    if (seconds < 5)   seconds = 5;
+    if (seconds > 240) seconds = 240;
+    nvs_set_u8(s_nvs, "autodim_to", (uint8_t)seconds);
+    nvs_commit(s_nvs);
+}
+
+int settings_get_volume(void)
+{
+    if (!s_nvs_ok) return 35;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "volume", &v) != ESP_OK || v > 100) return 35;
+    return (int)v;
+}
+void settings_set_volume(int pct)
+{
+    if (!s_nvs_ok) return;
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    nvs_set_u8(s_nvs, "volume", (uint8_t)pct);
+    nvs_commit(s_nvs);
+}
+
+int settings_get_boot_sound(void)
+{
+    if (!s_nvs_ok) return 1;
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "boot_snd", &v) != ESP_OK || v > 2) return 1;
+    return (int)v;
+}
+void settings_set_boot_sound(int mode)
+{
+    if (!s_nvs_ok) return;
+    if (mode < 0) mode = 0;
+    if (mode > 2) mode = 2;
+    nvs_set_u8(s_nvs, "boot_snd", (uint8_t)mode);
+    nvs_commit(s_nvs);
+}
+
 int settings_voice_preset_get(void)
 {
     if (!s_nvs_ok) return 0;

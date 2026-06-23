@@ -21,11 +21,17 @@ public:
 private:
     void buildDecodeTab(lv_obj_t *parent);
     void buildSignalTab(lv_obj_t *parent);
+    void buildScanTab(lv_obj_t *parent);
     void buildSettingsTab(lv_obj_t *parent);
     void updateDecode(void);
     void updateSignal(void);
+    void updateScan(void);
     void updateSettings(void);
     void rateSample(void);
+
+    static void scanToggleCb(lv_event_t *e);
+    static void scanSkipCb(lv_event_t *e);
+    static void scanTableCb(lv_event_t *e);
 
     static void timerCb(lv_timer_t *t);
     static void freqDownCb(lv_event_t *e);
@@ -82,6 +88,7 @@ private:
     lv_obj_t *_d_radio  = nullptr;
     lv_obj_t *_d_status = nullptr;
     lv_obj_t *_d_beepbtn_lbl = nullptr;
+    lv_obj_t *_d_scan_btn_lbl = nullptr;
 
     sdr_seg_t *_d_gain_slider = nullptr;
     lv_obj_t  *_d_gain_lbl    = nullptr;
@@ -124,4 +131,8 @@ private:
     sdr_seg_t *_set_gate_slider = nullptr;
     lv_obj_t *_set_mute_val   = nullptr;
     lv_obj_t *_set_reboot_val = nullptr;
+
+    lv_obj_t  *_scan_status   = nullptr;
+    lv_obj_t  *_scan_btn_lbl  = nullptr;
+    lv_obj_t  *_scan_table    = nullptr;
 };

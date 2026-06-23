@@ -294,6 +294,7 @@ sdr_seg_t *sdr_seg_slider(lv_obj_t *parent, lv_color_t color, int max, int value
 
     lv_obj_t *l = sdr_label(p, sdr_font_mono(), SDR_TEXT);
     lv_obj_set_width(l, lv_pct(100));
+    lv_label_set_text(l, "");
 
     lv_obj_t *bar = lv_label_create(p);
     lv_obj_set_style_text_font(bar, sdr_font_mono(), 0);

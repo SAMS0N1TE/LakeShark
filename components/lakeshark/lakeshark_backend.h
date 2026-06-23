@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 void lakeshark_backend_start(void);
+void lakeshark_boot_sound(void);
 
 void lakeshark_select_adsb(void);
 void lakeshark_select_p25(void);
@@ -55,6 +56,7 @@ void        lakeshark_p25_set_mode(int idx);
 void        lakeshark_p25_reset_stats(void);
 void        lakeshark_p25_gain_step(void);
 void        lakeshark_p25_agc(void);
+bool        lakeshark_p25_agc_enabled(void);
 int         lakeshark_p25_gain_tenths(void);
 void        lakeshark_p25_beep_toggle(void);
 bool        lakeshark_p25_beep_enabled(void);

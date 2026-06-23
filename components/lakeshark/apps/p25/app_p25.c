@@ -23,6 +23,7 @@
 
 #include "p25_state.h"
 #include "scanner.h"
+#include "scan_engine.h"
 #include "diag.h"
 
 p25_state_t       P25 = {0};
@@ -32,13 +33,15 @@ rtlsdr_dev_t     *rtldev = NULL;
 dsp_state_t       s_dsp;
 dsd_opts          s_dsd_opts;
 dsd_state         s_dsd_state;
-EXT_RAM_BSS_ATTR dsd_sample_ring_t s_ring;
+dsd_sample_ring_t s_ring;
 
 int autoscan_bch_ok_flag = 0;
 int dsd_bch_fail_counter = 0;
 volatile int rtl_gain_request = -1;
 
 volatile uint32_t s_p25_freq_req = 0;
+volatile float    p25_rx_power   = 0.0f;
+volatile bool     p25_agc_on     = false;
 
 #define P25_STRONG_SIGNAL_GAIN 280
 
@@ -73,11 +76,13 @@ void dsd_yield(void) { vTaskDelay(1); }
 void audio_beep_request(int kind)
 {
     if (!P25.sync_beep_enabled) return;
-    if (kind == 1) {
-        audio_tone(800.0f,  0.08f, 0.06f);
-        audio_tone(1200.0f, 0.08f, 0.06f);
-        audio_tone(1600.0f, 0.08f, 0.06f);
-    }
+    if (kind != 1) return;
+
+    static int64_t last_sync_us = 0;
+    int64_t now = esp_timer_get_time();
+    bool new_keyup = (now - last_sync_us) > 1500000LL;
+    last_sync_us = now;
+    if (new_keyup) snd_p25_chirp();
 }
 
 extern void audio_write_p25_voice(const int16_t *src8k, int n);
@@ -280,7 +285,7 @@ static void p25_rx_task(void *arg)
     TaskHandle_t dec_h = NULL;
     if (!s_dsd_running) {
         xTaskCreatePinnedToCore(dsd_decoder_task, "dsd_decode",
-                                DSD_STACK_WORDS, NULL, 5, &dec_h, 1);
+                                DSD_STACK_WORDS, NULL, 10, &dec_h, 1);
     }
     ESP_LOGW("P25DBG", "dsd_decode create = %s (internal stack)",
              dec_h ? "OK" : "FAILED");
@@ -326,12 +331,16 @@ static void p25_rx_task(void *arg)
                 rtlsdr_reset_buffer(dev);
                 rtlsdr_stream_reset();
             }
+            s_ring.write_idx = s_ring.read_idx;
+            P25.dsd_has_sync = false;
+            P25.sync_active_until_us = 0;
             sys_log(1, "Tuned: %.4f MHz", f / 1e6);
         }
 
         if (rtl_gain_request >= 0) {
             int gain = rtl_gain_request;
             rtl_gain_request = -1;
+            p25_agc_on = false;
             P25.rtl_gain_tenths = gain;
             if (dev) {
                 rtlsdr_set_tuner_gain_mode(dev, gain == 0 ? 0 : 1);
@@ -369,6 +378,19 @@ static void p25_rx_task(void *arg)
         if (full && got >= P25_USB_BUF_LENGTH) {
             read_errors = 0;
             iq_bucket += P25_USB_BUF_LENGTH;
+
+            if (scan_engine_active()) {
+                int peak = 0;
+                for (int i = 0; i + 1 < P25_USB_BUF_LENGTH; i += 8) {
+                    int di = (int)s_iq_buf[i]     - 128;
+                    int dq = (int)s_iq_buf[i + 1] - 128;
+                    int a = di < 0 ? -di : di;
+                    int b = dq < 0 ? -dq : dq;
+                    if (a > peak) peak = a;
+                    if (b > peak) peak = b;
+                }
+                p25_rx_power = (float)peak / 127.5f;
+            }
 
             {
                 static int64_t last_iqr_us = 0;

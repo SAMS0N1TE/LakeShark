@@ -148,6 +148,8 @@ void AppADSB::buildListTab(lv_obj_t *parent)
 
     _list_table = lv_table_create(parent);
     lv_obj_set_width(_list_table, lv_pct(100));
+    lv_obj_set_flex_grow(_list_table, 1);
+    lv_obj_set_scrollbar_mode(_list_table, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_style_text_font(_list_table, sdr_font_mono_sm(), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(_list_table, COL_PANEL, LV_PART_ITEMS);
     lv_obj_set_style_text_color(_list_table, COL_TEXT, LV_PART_ITEMS);
@@ -160,6 +162,7 @@ void AppADSB::buildListTab(lv_obj_t *parent)
     lv_obj_set_style_bg_opa(_list_table, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(_list_table, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(_list_table, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_bottom(_list_table, 12, LV_PART_MAIN);
 
     lv_table_set_col_cnt(_list_table, 9);
 
@@ -541,20 +544,10 @@ void AppADSB::buildRadarTab(lv_obj_t *parent)
 
 void AppADSB::updateRadar(void)
 {
-    double lat[RADAR_MAX], lon[RADAR_MAX];
-    const char *cs[RADAR_MAX];
-    uint32_t ic[RADAR_MAX];
-    int n = 0;
-    double slat = 0, slon = 0;
-    for (int i = 0; i < ADSB_MAX_TRACKED && n < RADAR_MAX; i++) {
-        const adsb_aircraft_t *a = adsb_state_get(i);
-        if (!a || !a->active || !a->pos_valid) continue;
-        lat[n] = a->lat; lon[n] = a->lon; ic[n] = a->icao;
-        cs[n] = a->callsign[0] ? a->callsign : nullptr;
-        slat += a->lat; slon += a->lon; n++;
-    }
-    if (n == 0) {
-        lv_label_set_text(_radar_hdr, "RADAR   (no positioned aircraft yet)");
+    float home_lat = 0, home_lon = 0;
+    if (!settings_get_home(&home_lat, &home_lon)) {
+        lv_label_set_text(_radar_hdr,
+            "RADAR   set home location:  home <lat> <lon>");
         for (int i = 0; i < RADAR_MAX; i++) {
             lv_obj_add_flag(_radar_dot[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(_radar_lbl[i], LV_OBJ_FLAG_HIDDEN);
@@ -562,21 +555,50 @@ void AppADSB::updateRadar(void)
         return;
     }
 
-    double lat0 = slat / n, lon0 = slon / n;
-    double clat = cos(lat0 * 0.017453292519943295);
     const double DEG2NM = 60.0;
-    double xs[RADAR_MAX], ys[RADAR_MAX], maxr = 0.1;
-    for (int i = 0; i < n; i++) {
-        xs[i] = (lon[i] - lon0) * clat * DEG2NM;
-        ys[i] = (lat[i] - lat0) * DEG2NM;
-        double r = sqrt(xs[i] * xs[i] + ys[i] * ys[i]);
-        if (r > maxr) maxr = r;
+    double clat = cos((double)home_lat * 0.017453292519943295);
+
+    double xs[RADAR_MAX], ys[RADAR_MAX], rr[RADAR_MAX];
+    const char *cs[RADAR_MAX];
+    uint32_t ic[RADAR_MAX];
+    int n = 0;
+    double maxr = 0;
+    for (int i = 0; i < ADSB_MAX_TRACKED && n < RADAR_MAX; i++) {
+        const adsb_aircraft_t *a = adsb_state_get(i);
+        if (!a || !a->active || !a->pos_valid) continue;
+        double x = ((double)a->lon - home_lon) * clat * DEG2NM;
+        double y = ((double)a->lat - home_lat) * DEG2NM;
+        xs[n] = x; ys[n] = y;
+        rr[n] = sqrt(x * x + y * y);
+        if (rr[n] > maxr) maxr = rr[n];
+        ic[n] = a->icao;
+        cs[n] = a->callsign[0] ? a->callsign : nullptr;
+        n++;
     }
+
+    if (n == 0) {
+        lv_label_set_text(_radar_hdr, "RADAR   (no positioned aircraft in range)");
+        for (int i = 0; i < RADAR_MAX; i++) {
+            lv_obj_add_flag(_radar_dot[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(_radar_lbl[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    static const double RINGS[] = { 10, 25, 50, 100, 200, 400 };
+    const int NRINGS = (int)(sizeof(RINGS) / sizeof(RINGS[0]));
+    double range = RINGS[NRINGS - 1];
+    for (int i = 0; i < NRINGS; i++) {
+        if (maxr <= RINGS[i]) { range = RINGS[i]; break; }
+    }
+
     const double OUT_PX = 460 / 2 - 14;
-    double scale = OUT_PX / maxr;
+    double scale = OUT_PX / range;
     for (int i = 0; i < n; i++) {
-        int dx = (int)(xs[i] * scale);
-        int dy = (int)(-ys[i] * scale);
+        double x = xs[i], y = ys[i], r = rr[i];
+        if (r > range && r > 0) { double k = range / r; x *= k; y *= k; }
+        int dx = (int)(x * scale);
+        int dy = (int)(-y * scale);
         lv_obj_align(_radar_dot[i], LV_ALIGN_CENTER, dx, dy);
         lv_obj_clear_flag(_radar_dot[i], LV_OBJ_FLAG_HIDDEN);
         char tag[12];
@@ -590,8 +612,9 @@ void AppADSB::updateRadar(void)
         lv_obj_add_flag(_radar_dot[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(_radar_lbl[i], LV_OBJ_FLAG_HIDDEN);
     }
-    char hdr[72];
-    snprintf(hdr, sizeof(hdr), "RADAR   %d aircraft   outer ring ~%.0f nm", n, maxr);
+    char hdr[88];
+    snprintf(hdr, sizeof(hdr), "RADAR   %d aircraft   range %.0f nm   home %.3f,%.3f",
+             n, range, (double)home_lat, (double)home_lon);
     lv_label_set_text(_radar_hdr, hdr);
 }
 

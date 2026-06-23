@@ -15,8 +15,6 @@ extern "C" {
 
 #include "sdr_ui/sdr_ui.h"
 
-LV_IMG_DECLARE(img_app_music_player);
-
 #define COL_LABEL   SDR_LABEL
 #define COL_TEXT    SDR_TEXT
 #define COL_BRIGHT  SDR_BRIGHT

@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "audio_evt";
@@ -83,9 +84,29 @@ static void audio_task(void *arg)
 {
     audio_msg_t msg;
     while (1) {
-        if (xQueueReceive(s_audio_q, &msg, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(s_audio_q, &msg, portMAX_DELAY) != pdTRUE) continue;
+
+        if (msg.kind == AUDIO_EVT_NEW_CONTACT &&
+            s_mode[AUDIO_EVT_NEW_CONTACT] == AUD_MODE_VOICE) {
+            int extra = 0;
+            audio_msg_t m2;
+            UBaseType_t pending = uxQueueMessagesWaiting(s_audio_q);
+            for (UBaseType_t i = 0; i < pending; i++) {
+                if (xQueueReceive(s_audio_q, &m2, 0) != pdTRUE) break;
+                if (m2.kind == AUDIO_EVT_NEW_CONTACT) extra++;
+                else handle_msg(&m2);
+            }
             handle_msg(&msg);
+            if (extra > 0) {
+                char buf[48];
+                snprintf(buf, sizeof(buf), "AND %d MORE.", extra);
+                audio_out_ensure_unmuted();
+                sam_tts_speak(buf);
+            }
+            continue;
         }
+
+        handle_msg(&msg);
     }
 }
 

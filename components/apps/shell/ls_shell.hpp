@@ -9,7 +9,7 @@ public:
     static LsShell &instance(void);
 
     void begin(void);
-    void registerApp(LsApp *app);
+    void registerApp(LsApp *app, bool show_in_rail = true);
     void start(const char *prefer = nullptr);
 
     void launch(LsApp *app);
@@ -43,5 +43,6 @@ private:
     static const int MAX_APPS = 16;
     LsApp     *_apps[MAX_APPS]     = {nullptr};
     lv_obj_t  *_rail_btn[MAX_APPS] = {nullptr};
+    bool       _rail_hidden[MAX_APPS] = {false};
     int        _app_count = 0;
 };

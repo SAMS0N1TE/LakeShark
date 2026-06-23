@@ -8,6 +8,8 @@
 #include "esp_check.h"
 #include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "settings.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -19,8 +21,11 @@
 #include "adsb_gui/AppADSB.hpp"
 #include "mesh/MeshController.hpp"
 #include "file_browser/FileBrowser.hpp"
+#include "settings/AppSettings.hpp"
 
 #include "lakeshark_backend.h"
+#include "display_ctl.h"
+#include "ls_ctl.h"
 #include "boot_splash.h"
 #include "bsod.h"
 
@@ -55,6 +60,8 @@ static void boot_btn_init(void)
 
 extern "C" void app_main(void)
 {
+    ESP_LOGW(TAG, "boot: reset_reason=%d", (int)esp_reset_reason());
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -109,11 +116,16 @@ extern "C" void app_main(void)
     shell.registerApp(new AppFM());
     shell.registerApp(new AppADSB());
     shell.registerApp(new MeshController());
-    shell.registerApp(new AppFileBrowser());
+    shell.registerApp(new LsSettings());
+    shell.registerApp(new AppFileBrowser(), false);
 
     bsp_display_unlock();
 
     lakeshark_backend_start();
+    display_ctl_init();
+    ls_ctl_start_repl();
+
+    if (!recovering) lakeshark_boot_sound();
 
     bsp_display_lock(0);
     if (!recovering) lakeshark_boot_splash_hide();

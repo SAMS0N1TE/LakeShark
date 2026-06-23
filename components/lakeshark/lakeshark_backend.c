@@ -9,6 +9,8 @@
 
 #include "app_registry.h"
 #include "settings.h"
+#include "scan_channels.h"
+#include "scan_engine.h"
 #include "perf.h"
 #include "event_bus.h"
 #include "usb_host.h"
@@ -20,6 +22,7 @@
 #include "audio_out.h"
 #include "audio_events.h"
 #include "sam_tts.h"
+#include "tone.h"
 #include "event_stream.h"
 
 #include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
@@ -52,6 +55,7 @@ void lakeshark_backend_start(void)
 
     event_bus_init();
     settings_init();
+    scan_channels_init();
 
     event_stream_init();
 
@@ -60,6 +64,10 @@ void lakeshark_backend_start(void)
     s_fm_idx   = fm_app_register();
 
     app_switch_worker_start();
+    scan_engine_init();
+
+    esp_log_level_set("P25DIAG", ESP_LOG_ERROR);
+    esp_log_level_set("P25DBG",  ESP_LOG_ERROR);
 
     {
         int p  = settings_voice_preset_get();
@@ -100,6 +108,24 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     ESP_LOGI(TAG, "backend started (adsb=%d p25=%d)", s_adsb_idx, s_p25_idx);
+}
+
+void lakeshark_boot_sound(void)
+{
+    int mode = settings_get_boot_sound();
+    if (mode == 1) {
+        snd_boot();
+        static const int16_t sil[1600] = {0};
+        audio_write_mono(sil, 1600);
+    } else if (mode == 2) {
+        sam_tts_speak("WELCOME.");
+    } else {
+        return;
+    }
+
+    for (int i = 0; i < 250 && audio_out_ring_avail() > 320; i++)
+        vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(90));
 }
 
 void lakeshark_select_adsb(void) { if (s_adsb_idx >= 0) app_switch_to(s_adsb_idx); }
@@ -232,12 +258,17 @@ void lakeshark_p25_gain_step(void)
     if (a) settings_set_gain(a, gains[next_idx]);
 }
 
+extern volatile bool p25_agc_on;
+
 void lakeshark_p25_agc(void)
 {
-    rtl_gain_request = 0;
+    p25_agc_on = false;
+    rtl_gain_request = 280;
     const app_t *a = app_current();
-    if (a) settings_set_gain(a, 0);
+    if (a) settings_set_gain(a, 280);
 }
+
+bool lakeshark_p25_agc_enabled(void) { return p25_agc_on; }
 
 int lakeshark_p25_gain_tenths(void) { return P25.rtl_gain_tenths; }
 

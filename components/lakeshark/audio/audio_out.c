@@ -8,12 +8,13 @@
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include "bsp_board_extra.h"
+#include "settings.h"
 #include <math.h>
 
 static const char *TAG = "audio_out";
 
-#define RING_MS         256
-#define PREBUF_MS       120
+#define RING_MS         600
+#define PREBUF_MS       280
 #define RING_BYTES      (AUDIO_RATE_HZ * RING_MS  / 1000 * (int)sizeof(int16_t))
 #define PREBUF_BYTES    (AUDIO_RATE_HZ * PREBUF_MS / 1000 * (int)sizeof(int16_t))
 #define CHUNK_FRAMES    256
@@ -197,6 +198,7 @@ esp_err_t audio_out_init(void)
         ESP_LOGW(TAG, "codec set_fs failed: %s (continuing)", esp_err_to_name(err));
     }
 
+    s_volume = settings_get_volume();
     int set = 0;
     bsp_extra_codec_volume_set(s_volume, &set);
 
@@ -269,7 +271,9 @@ void audio_volume_set(int v)
 {
     if (v < 0)   v = 0;
     if (v > 100) v = 100;
+    if (v == s_volume) return;
     s_volume = v;
     int set = 0;
     bsp_extra_codec_volume_set(s_volume, &set);
+    settings_set_volume(s_volume);
 }

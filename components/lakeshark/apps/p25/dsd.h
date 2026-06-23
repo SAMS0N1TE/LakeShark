@@ -12,7 +12,7 @@
 #define SAMPLE_RATE_IN  24000   /* session 9: was 48000 */
 #define SAMPLE_RATE_OUT 8000
 
-#define DSD_SAMPLE_RING_SIZE 16384
+#define DSD_SAMPLE_RING_SIZE 8192
 
 extern int exitflag;
 

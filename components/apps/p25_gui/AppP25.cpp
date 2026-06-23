@@ -13,6 +13,8 @@ extern "C" {
 #include "sam_tts.h"
 #include "audio_events.h"
 #include "audio_out.h"
+#include "scan_channels.h"
+#include "scan_engine.h"
 }
 
 #include "sdr_ui/sdr_ui.h"
@@ -105,6 +107,8 @@ static void p25_seg_vol(void *, int v)         { audio_volume_set(v); }
 static void p25_seg_gain_live(void *, int v)   { lakeshark_radio_set_gain_live(v); }
 static void p25_seg_gain_commit(void *, int v) { lakeshark_radio_set_gain(v); }
 static void p25_seg_gate(void *, int v)        { lakeshark_p25_set_voice_gate(v); }
+static void p25_seg_hang(void *, int v)        { scan_engine_set_hang_ms(v * 500); }
+static void p25_seg_thresh(void *, int v)      { scan_engine_set_threshold_db((float)v); }
 
 /* Text meter (mono ASCII bar) -- intentionally NOT an lv_bar: live lv_bar
  * redraws contend with the DSI framebuffer DMA during P25 voice decode and
@@ -160,6 +164,7 @@ bool AppP25::run(lv_obj_t *parent)
 
     buildDecodeTab(lv_tabview_add_tab(_tabview, "DECODE"));
     buildSignalTab(lv_tabview_add_tab(_tabview, "SIGNAL"));
+    buildScanTab(lv_tabview_add_tab(_tabview, "SCAN"));
     buildSettingsTab(lv_tabview_add_tab(_tabview, "CONFIG"));
 
     _timer = lv_timer_create(timerCb, 250, this);
@@ -242,7 +247,7 @@ void AppP25::buildDecodeTab(lv_obj_t *parent)
     lv_obj_set_flex_align(btns, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
 
-    btn_pastel(make_btn(btns, "SET F", freqEntryCb, this), 0x8CB6D9);
+    btn_pastel(make_btn(btns, "SCAN", scanToggleCb, this, &_d_scan_btn_lbl), 0x8CB6D9);
     btn_pastel(make_btn(btns, "MODE",  modeCb,      this), 0xE0C27A);
     btn_pastel(make_btn(btns, "AGC",   agcCb,       this), 0xE0C27A);
     btn_pastel(make_btn(btns, "RESET", resetCb,     this), 0xE39B96);
@@ -273,8 +278,8 @@ void AppP25::updateDecode(void)
     int ok = P25.dsd_bch_ok_count, fail = P25.dsd_bch_fail_count, tot = ok + fail;
     int pct10 = tot > 0 ? (ok * 1000) / tot : 0;
     char nac[16];
-    if (P25.dsd_nac)              snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
-    else if (P25.dsd_last_ok_nac) snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_last_ok_nac);
+    if (P25.dsd_last_ok_nac)      snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_last_ok_nac);
+    else if (P25.dsd_nac)         snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
     else                          snprintf(nac, sizeof(nac), "-----");
     snprintf(buf, sizeof(buf),
              "NAC %s    TG %s%d    SRC %s%d\nFRAME %s   DUID %s\nBCH ok %d  fail %d  ratio %d.%d%%   VOICE %d",
@@ -322,9 +327,14 @@ void AppP25::updateDecode(void)
 
     if (_d_beepbtn_lbl)
         lv_label_set_text(_d_beepbtn_lbl, P25.sync_beep_enabled ? "BEEP*" : "BEEP");
+    if (_d_scan_btn_lbl)
+        lv_label_set_text(_d_scan_btn_lbl, scan_engine_active() ? "STOP" : "SCAN");
 
     if (_d_gain_lbl) {
-        if (P25.rtl_gain_tenths <= 0) lv_label_set_text(_d_gain_lbl, "GAIN  AGC");
+        if (lakeshark_p25_agc_enabled())
+            lv_label_set_text_fmt(_d_gain_lbl, "GAIN  AGC %d.%d",
+                                  P25.rtl_gain_tenths / 10, P25.rtl_gain_tenths % 10);
+        else if (P25.rtl_gain_tenths <= 0) lv_label_set_text(_d_gain_lbl, "GAIN  AGC");
         else lv_label_set_text_fmt(_d_gain_lbl, "GAIN  %d.%d dB",
                                    P25.rtl_gain_tenths / 10, P25.rtl_gain_tenths % 10);
     }
@@ -409,8 +419,8 @@ void AppP25::updateSignal(void)
     rateSample();
 
     char buf[200], nac[16];
-    if (P25.dsd_nac)              snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
-    else if (P25.dsd_last_ok_nac) snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_last_ok_nac);
+    if (P25.dsd_last_ok_nac)      snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_last_ok_nac);
+    else if (P25.dsd_nac)         snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
     else                          snprintf(nac, sizeof(nac), "-----");
     snprintf(buf, sizeof(buf), "DEMOD %lu.%03lu MHz    MOD %s    NAC %s",
              (unsigned long)(s_tune_freq_hz / 1000000UL),
@@ -445,6 +455,116 @@ void AppP25::updateSignal(void)
     snprintf(buf, sizeof(buf), "LAST ERR: %s", P25.dsd_err_str[0] ? P25.dsd_err_str : "(none)");
     lv_label_set_text(_s_err, buf);
     lv_obj_set_style_text_color(_s_err, P25.dsd_err_str[0] ? COL_AMBER : COL_DIM, 0);
+}
+
+void AppP25::buildScanTab(lv_obj_t *parent)
+{
+    lv_obj_set_style_pad_all(parent, 8, 0);
+    lv_obj_set_style_pad_row(parent, 6, 0);
+    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *hp = sdr_lcd_panel(parent, SDR_PAS_GOLD);
+    _scan_status = sdr_label(hp, &lv_font_montserrat_16, SDR_PAS_GREEN);
+    lv_obj_set_width(_scan_status, lv_pct(100));
+    lv_label_set_text(_scan_status, "scanner idle");
+
+    sdr_setrow_t r;
+    sdr_setting_row(parent, "CONTROL", &r);
+    lv_label_set_text(r.value, "");
+    sdr_btn(r.controls, "SCAN", scanToggleCb, this, &_scan_btn_lbl);
+    sdr_btn(r.controls, "SKIP", scanSkipCb,   this, nullptr);
+
+    sdr_section(parent, "HANG TIME  (x0.5s)");
+    lv_obj_t *dh = nullptr;
+    sdr_seg_slider(parent, SDR_PAS_CYAN, 10, scan_engine_get_hang_ms() / 500,
+                   p25_seg_hang, this, &dh);
+
+    sdr_section(parent, "CARRIER SQUELCH  (level)");
+    lv_obj_t *dt = nullptr;
+    sdr_seg_slider(parent, SDR_PAS_LAV, 30, (int)scan_engine_get_threshold_db(),
+                   p25_seg_thresh, this, &dt);
+
+    sdr_section(parent, "CHANNELS  (tap row = lock / unlock)");
+
+    _scan_table = lv_table_create(parent);
+    lv_obj_set_width(_scan_table, lv_pct(100));
+    lv_obj_set_flex_grow(_scan_table, 1);
+    lv_obj_set_style_text_font(_scan_table, sdr_font_mono_sm(), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(_scan_table, COL_PANEL, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(_scan_table, COL_TEXT, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(_scan_table, 0, LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(_scan_table, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(_scan_table, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(_scan_table, 6, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(_scan_table, COL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(_scan_table, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(_scan_table, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(_scan_table, 0, LV_PART_MAIN);
+
+    lv_table_set_col_cnt(_scan_table, 5);
+    static const int cw[5] = {52, 150, 132, 64, 110};
+    for (int c = 0; c < 5; c++) lv_table_set_col_width(_scan_table, c, cw[c]);
+    lv_table_set_row_cnt(_scan_table, 1);
+    static const char *hdr[5] = {"#", "NAME", "FREQ", "MODE", "FLAG"};
+    for (int c = 0; c < 5; c++) lv_table_set_cell_value(_scan_table, 0, c, hdr[c]);
+    lv_obj_add_event_cb(_scan_table, scanTableCb, LV_EVENT_VALUE_CHANGED, this);
+
+    updateScan();
+}
+
+void AppP25::updateScan(void)
+{
+    if (_scan_status) {
+        char st[96];
+        scan_engine_status(st, sizeof(st));
+        lv_label_set_text(_scan_status, st);
+    }
+    if (_scan_btn_lbl)
+        lv_label_set_text(_scan_btn_lbl, scan_engine_active() ? "STOP" : "SCAN");
+
+    if (!_scan_table) return;
+    int n   = scan_channels_count();
+    int cur = scan_engine_current();
+    for (int i = 0; i < n; i++) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (!c) continue;
+        int row = i + 1;
+        char num[8], freq[16], flag[12];
+        snprintf(num, sizeof(num), "%s%d", (i == cur) ? ">" : "", i);
+        snprintf(freq, sizeof(freq), "%.4f", c->freq_hz / 1e6);
+        if (!(c->flags & SCAN_FLAG_ENABLED))   snprintf(flag, sizeof(flag), "OFF");
+        else if (c->flags & SCAN_FLAG_LOCKOUT) snprintf(flag, sizeof(flag), "%sLOCK",
+                                                        (c->flags & SCAN_FLAG_PRIORITY) ? "PRI " : "");
+        else if (c->flags & SCAN_FLAG_PRIORITY) snprintf(flag, sizeof(flag), "PRI");
+        else                                    flag[0] = 0;
+        lv_table_set_cell_value(_scan_table, row, 0, num);
+        lv_table_set_cell_value(_scan_table, row, 1, c->name);
+        lv_table_set_cell_value(_scan_table, row, 2, freq);
+        lv_table_set_cell_value(_scan_table, row, 3, scan_mode_name(c->mode));
+        lv_table_set_cell_value(_scan_table, row, 4, flag);
+    }
+    lv_table_set_row_cnt(_scan_table, n > 0 ? n + 1 : 2);
+    if (n == 0) lv_table_set_cell_value(_scan_table, 1, 0, "(no channels - load via serial)");
+}
+
+void AppP25::scanToggleCb(lv_event_t *)
+{
+    if (scan_engine_active()) scan_engine_stop();
+    else                      scan_engine_start();
+}
+
+void AppP25::scanSkipCb(lv_event_t *) { scan_engine_skip(); }
+
+void AppP25::scanTableCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    uint16_t row = 0, col = 0;
+    lv_table_get_selected_cell(self->_scan_table, &row, &col);
+    if (row < 1) return;
+    int idx = (int)row - 1;
+    const scan_channel_t *c = scan_channel_get(idx);
+    if (!c) return;
+    scan_channel_set_lockout(idx, !(c->flags & SCAN_FLAG_LOCKOUT));
 }
 
 void AppP25::buildSettingsTab(lv_obj_t *parent)
@@ -548,7 +668,11 @@ void AppP25::updateSettings(void)
     }
     if (_set_gain_val) {
         int g = lakeshark_p25_gain_tenths();
-        if (g <= 0) lv_label_set_text(_set_gain_val, "AGC");
+        if (lakeshark_p25_agc_enabled()) {
+            snprintf(b, sizeof(b), "AGC  %d.%d dB", g / 10, g % 10);
+            lv_label_set_text(_set_gain_val, b);
+        }
+        else if (g <= 0) lv_label_set_text(_set_gain_val, "AGC");
         else { snprintf(b, sizeof(b), "%d.%d dB", g / 10, g % 10);
                lv_label_set_text(_set_gain_val, b); }
     }
@@ -669,7 +793,8 @@ void AppP25::timerCb(lv_timer_t *t)
     switch (lv_tabview_get_tab_act(self->_tabview)) {
         case 0:  self->updateDecode();   break;
         case 1:  self->updateSignal();   break;
-        case 2:  self->updateSettings(); break;
+        case 2:  self->updateScan();     break;
+        case 3:  self->updateSettings(); break;
         default: break;
     }
 }
@@ -677,7 +802,7 @@ void AppP25::timerCb(lv_timer_t *t)
 void AppP25::switchTab(int delta)
 {
     if (!_tabview) return;
-    const int N = 3;
+    const int N = 4;
     int cur = (int)lv_tabview_get_tab_act(_tabview);
     lv_tabview_set_act(_tabview, (cur + delta + N) % N, LV_ANIM_OFF);
 }

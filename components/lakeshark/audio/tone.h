@@ -8,6 +8,8 @@ extern "C" {
 
 void audio_tone(float freq, float dur_s, float amp);
 
+void snd_p25_chirp(void);
+
 void snd_boot(void);
 void snd_new_contact(void);
 void snd_lost_contact(void);

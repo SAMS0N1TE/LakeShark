@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_console.h"
+#include "ls_ctl.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 
@@ -241,6 +242,7 @@ static void console_start(void)
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
         ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
     }
+    ls_ctl_register_commands();
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
 

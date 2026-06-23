@@ -35,10 +35,12 @@ idf_component_register(
         esp_driver_uart
         esp_timer
         nvs_flash
+        console
         mbelib
         imbe_vocoder
         esp32_p4_wifi6_touch_lcd_4b
         bsp_extra
+        lvgl
 )
 
 # ---- Per-file flags replicated verbatim from LakeShark/main/CMakeLists.txt.

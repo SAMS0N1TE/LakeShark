@@ -21,6 +21,31 @@ void audio_tone(float freq, float dur_s, float amp)
     }
 }
 
+void snd_p25_chirp(void)
+{
+    static int16_t buf[2048];
+    const float f1 = 1760.0f, f2 = 2350.0f;
+    const float amp = 4800.0f;
+    const int n1 = (int)(AUDIO_RATE_HZ * 0.045f);
+    const int n2 = (int)(AUDIO_RATE_HZ * 0.050f);
+    int total = n1 + n2;
+    if (total > 2048) total = 2048;
+    const int fade_in  = (int)(AUDIO_RATE_HZ * 0.005f);
+    const int fade_out = (int)(AUDIO_RATE_HZ * 0.010f);
+
+    float ph = 0.0f;
+    for (int i = 0; i < total; i++) {
+        float f = (i < n1) ? f1 : f2;
+        ph += 2.0f * (float)M_PI * f / (float)AUDIO_RATE_HZ;
+        if (ph > 2.0f * (float)M_PI) ph -= 2.0f * (float)M_PI;
+        float env = 1.0f;
+        if (i < fade_in)                env = (float)i / (float)fade_in;
+        else if (i >= total - fade_out) env = (float)(total - i) / (float)fade_out;
+        buf[i] = (int16_t)(sinf(ph) * amp * env);
+    }
+    audio_write_mono(buf, total);
+}
+
 void snd_boot(void)
 {
     audio_tone(440.0f, 0.06f, 7000.0f);

@@ -122,16 +122,18 @@ void LsShell::buildTabArrows(void)
     }
 }
 
-void LsShell::registerApp(LsApp *app)
+void LsShell::registerApp(LsApp *app, bool show_in_rail)
 {
     if (!app || _app_count >= MAX_APPS) return;
     app->init();
+    _rail_hidden[_app_count] = !show_in_rail;
     _apps[_app_count++] = app;
 }
 
 void LsShell::buildRail(void)
 {
     for (int i = 0; i < _app_count; i++) {
+        if (_rail_hidden[i]) { _rail_btn[i] = nullptr; continue; }
         lv_obj_t *b = lv_btn_create(_rail);
         lv_obj_set_height(b, RAIL_H - 18);
         lv_obj_set_flex_grow(b, 1);
@@ -203,7 +205,10 @@ void LsShell::cycleNext(void)
     if (_app_count <= 1) return;
     int cur = 0;
     for (int i = 0; i < _app_count; i++) if (_apps[i] == _current) { cur = i; break; }
-    launch(_apps[(cur + 1) % _app_count]);
+    for (int step = 1; step <= _app_count; step++) {
+        int n = (cur + step) % _app_count;
+        if (!_rail_hidden[n]) { launch(_apps[n]); return; }
+    }
 }
 
 void LsShell::home(void)   { }
