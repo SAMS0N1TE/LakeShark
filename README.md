@@ -26,8 +26,8 @@ Grab the build for your board and flash it. Each release is a single image with 
 | Board | Build | Release |
 |-------|-------|---------|
 | ESP32-P4-NANO | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) |
-| ESP32-P4 Smart 86 Box (ESP32-P4-WIFI6) | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) |
-| ESP32-P4 Smart 86 Box (ESP32-P4-WIFI6) | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) |
+| ESP32-P4-WIFI6-Touch-LCD-4B (Smart 86 Box) | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) |
+| ESP32-P4-WIFI6 | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) |
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
 
