@@ -19,6 +19,18 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 - **ADS-B** | 1090 MHz aircraft tracking.
 - **LoRa Mesh** | on-board SX1262 + LoRaMesher gateway with a live node/link view, VERY WIP.
 
+## Downloads
+
+Grab the build for your board and flash it. Each release is a single image with flash instructions, or build from source below.
+
+| Board | Build | Release |
+|-------|-------|---------|
+| ESP32-P4-NANO | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) |
+| ESP32-P4 Smart 86 Box (ESP32-P4-WIFI6) | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) |
+| ESP32-P4 Smart 86 Box (ESP32-P4-WIFI6) | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) |
+
+All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
+
 ## Hardware notes
 
 You need a Waveshare ESP32-P4-NANO or ESP32-P4 Smart 86 Box because of how the USB host pinout and PSRAM are wired. Other ESP32-P4 boards probably work but I haven't tried them. RTL-SDR V3/V4 are the target dongles; older V3 sticks work but you'd lose the triplexer routing (Not crazy important in my tests). In my opinion, I wouldn't try sourcing the V4's as they're a dead end in terms of support. 
