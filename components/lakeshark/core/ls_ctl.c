@@ -3,7 +3,10 @@
 #include "scan_channels.h"
 #include "scan_engine.h"
 #include "lakeshark_backend.h"
+#include "audio_out.h"
 #include "esp_console.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -121,9 +124,78 @@ static int cmd_p25gate(int argc, char **argv)
     return 0;
 }
 
+static void eq_print(void)
+{
+    printf("eq=%s  hpf=%.0f Hz  bass=%+.1f  mid=%+.1f  treble=%+.1f dB\n",
+           audio_voice_eq_enabled() ? "on" : "off", audio_voice_eq_hpf(),
+           audio_voice_eq_bass_db(), audio_voice_eq_mid_db(), audio_voice_eq_treble_db());
+}
+
+static int cmd_eq(int argc, char **argv)
+{
+    if (argc < 2) {
+        eq_print();
+        printf("usage: eq on|off | eq hpf <Hz> | eq bass|mid|treble <dB>\n");
+        return 0;
+    }
+    if (!strcmp(argv[1], "on"))  { audio_voice_eq_enable(true);  eq_print(); return 0; }
+    if (!strcmp(argv[1], "off")) { audio_voice_eq_enable(false); eq_print(); return 0; }
+    if (argc >= 3) {
+        float v = (float)atof(argv[2]);
+        if      (!strcmp(argv[1], "hpf"))    audio_voice_eq_set_hpf(v);
+        else if (!strcmp(argv[1], "bass"))   audio_voice_eq_set_bass(v);
+        else if (!strcmp(argv[1], "mid"))    audio_voice_eq_set_mid(v);
+        else if (!strcmp(argv[1], "treble")) audio_voice_eq_set_treble(v);
+        else { printf("usage: eq on|off | eq hpf <Hz> | eq bass|mid|treble <dB>\n"); return 0; }
+        eq_print();
+        return 0;
+    }
+    printf("usage: eq on|off | eq hpf <Hz> | eq bass|mid|treble <dB>\n");
+    return 0;
+}
+
+static int cmd_rx(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    lakeshark_rx_telem_t t;
+    lakeshark_p25_rx_telem(&t);
+
+    static int     prev_vc = -1;
+    static int64_t last_change = 0;
+    int64_t now = esp_timer_get_time();
+    if (prev_vc >= 0 && t.voice_count != prev_vc) last_change = now;
+    prev_vc = t.voice_count;
+    int active = (last_change != 0) && (now - last_change < 1500000);
+
+    int tot = t.bch_ok + t.bch_fail;
+    int okpct = tot > 0 ? (t.bch_ok * 100) / tot : 0;
+
+    printf("$RX active=%d nac=%03X tg=%d src=%d enc=%d sync=%d syncn=%d mod=%s "
+           "ok=%d fail=%d okpct=%d lvl=%.3f dm=%.1f vox=%d drops=%u under=%u "
+           "freq=%.4f vol=%d gain=%.1f mute=%d "
+           "eq=%d hpf=%.0f bass=%.1f mid=%.1f treble=%.1f fint=%u fpsram=%u\n",
+           active, (unsigned)(t.nac & 0xFFF), t.tg, t.src, t.enc,
+           t.has_sync, t.sync_count, t.modulation,
+           t.bch_ok, t.bch_fail, okpct, (double)t.iq_level, (double)t.decode_ms,
+           t.voice_count, (unsigned)t.drops, (unsigned)t.under,
+           lakeshark_p25_get_freq() / 1e6,
+           audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
+           audio_is_muted() ? 1 : 0,
+           audio_voice_eq_enabled() ? 1 : 0, (double)audio_voice_eq_hpf(),
+           (double)audio_voice_eq_bass_db(), (double)audio_voice_eq_mid_db(),
+           (double)audio_voice_eq_treble_db(),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return 0;
+}
+
 void ls_ctl_register_commands(void)
 {
     const esp_console_cmd_t cmds[] = {
+        { .command = "eq", .help = "P25 voice EQ (highpass + bass/mid/treble)",
+          .hint = "on|off|hpf <Hz>|bass|mid|treble <dB>", .func = &cmd_eq },
+        { .command = "rx", .help = "P25 RX telemetry (active/nac/level/decode health)",
+          .func = &cmd_rx },
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
         { .command = "home", .help = "Get/set home QTH for the radar",

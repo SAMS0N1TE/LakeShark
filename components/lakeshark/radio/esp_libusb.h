@@ -34,13 +34,12 @@ typedef struct
     SemaphoreHandle_t done_sem;
 } class_adsb_dev;
 
-static const char *TAG_ADSB = "ADSB";
+static const char *TAG_ADSB = "RTL";
 void init_adsb_dev();
 void bulk_transfer_read_cb(usb_transfer_t *transfer);
 void transfer_read_cb(usb_transfer_t *transfer);
 int esp_libusb_bulk_transfer(class_driver_t *driver_obj, unsigned char endpoint, unsigned char *data, int length, int *transferred, unsigned int timeout);
 void esp_libusb_bulk_teardown(void);
-
 int      esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint);
 void     esp_libusb_stream_stop(void);
 int      esp_libusb_stream_read(unsigned char *dst, int max);

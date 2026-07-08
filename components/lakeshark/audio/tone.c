@@ -48,11 +48,9 @@ void snd_p25_chirp(void)
 
 void snd_boot(void)
 {
-    audio_tone(440.0f, 0.06f, 7000.0f);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    audio_tone(660.0f, 0.06f, 7000.0f);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    audio_tone(880.0f, 0.10f, 7000.0f);
+    audio_tone(440.0f, 0.12f, 8500.0f);
+    audio_tone(660.0f, 0.12f, 8500.0f);
+    audio_tone(880.0f, 0.16f, 8500.0f);
 }
 
 void snd_new_contact(void)

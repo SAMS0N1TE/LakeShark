@@ -22,6 +22,7 @@
 #include "rtl-sdr.h"
 
 #include "p25_state.h"
+#include "p25_qual.h"
 #include "scanner.h"
 #include "scan_engine.h"
 #include "diag.h"
@@ -146,6 +147,11 @@ static void dsd_decoder_task(void *arg)
 
     s_dsd_running = true;
     int64_t s_tel_us = 0;
+    bool     q_active = false;
+    int64_t  q_t0 = 0, q_last_sync_us = 0;
+    int      q_bch_ok0 = 0, q_bch_fail0 = 0, q_voice0 = 0;
+    uint32_t q_under0 = 0, q_drop0 = 0;
+    int      q_nac = 0;
     while (s_app_active) {
         esp_task_wdt_reset();
         diag_emit_periodic();
@@ -201,6 +207,22 @@ static void dsd_decoder_task(void *arg)
             P25.dsd_bch_ok_count = autoscan_bch_ok_flag;
             P25.dsd_bch_fail_count = dsd_bch_fail_counter;
             if (s_dsd_state.nac != 0) P25.dsd_last_ok_nac = s_dsd_state.nac;
+            P25.dsd_enc = s_dsd_state.p25kid;
+
+            {
+                int64_t now = esp_timer_get_time();
+                if (!q_active) {
+                    q_active    = true;
+                    q_t0        = now;
+                    q_bch_ok0   = P25.dsd_bch_ok_count;
+                    q_bch_fail0 = P25.dsd_bch_fail_count;
+                    q_voice0    = P25.dsd_voice_count;
+                    q_under0    = audio_underruns_get();
+                    q_drop0     = audio_drops_get();
+                }
+                q_last_sync_us = now;
+                q_nac = P25.dsd_nac;
+            }
 
             if (s_dsd_state.pcm_out_write > 0) {
                 P25.dsd_voice_count++;
@@ -243,6 +265,33 @@ static void dsd_decoder_task(void *arg)
             }
             extern int dsp_has_signal_lock;
             dsp_has_signal_lock = 0;
+        }
+
+        if (q_active) {
+            int64_t now = esp_timer_get_time();
+            if (now - q_last_sync_us > 1500000LL) {
+                int dok   = P25.dsd_bch_ok_count   - q_bch_ok0;   if (dok   < 0) dok   = 0;
+                int dfail = P25.dsd_bch_fail_count - q_bch_fail0; if (dfail < 0) dfail = 0;
+                int dvox  = P25.dsd_voice_count    - q_voice0;    if (dvox  < 0) dvox  = 0;
+                uint32_t dund = audio_underruns_get() - q_under0;
+                uint32_t ddrp = audio_drops_get()     - q_drop0;
+                int tot   = dok + dfail;
+                int okpct = tot > 0 ? (dok * 100) / tot : 0;
+                double dur = (double)(now - q_t0) / 1e6 - 1.5;
+                if (dur < 0) dur = 0;
+                ESP_LOGW("P25QUAL",
+                    "nac=%03X dur=%.1fs bchOK=%d bchFAIL=%d ok%%=%d vox=%d under=%u drop=%u dec=%.0fms",
+                    q_nac, dur, dok, dfail, okpct, dvox,
+                    (unsigned)dund, (unsigned)ddrp, (double)P25.dsd_decode_ms);
+                p25_qual_rec_t qr = {
+                    .nac = (uint32_t)q_nac, .dur_s = (float)dur,
+                    .bch_ok = dok, .bch_fail = dfail, .ok_pct = okpct,
+                    .vox = dvox, .under = dund, .drop = ddrp,
+                    .dec_ms = (int)(P25.dsd_decode_ms + 0.5f),
+                };
+                p25_qual_push(&qr);
+                q_active = false;
+            }
         }
     }
     esp_task_wdt_delete(NULL);
@@ -524,7 +573,7 @@ static void p25_on_enter(void)
 
     scanner_init();
     s_p25_freq_req = 0;
-    audio_out_reset();    /* re-assert 16k codec rate + re-prime ring (fixes first-launch chop) */
+    audio_out_reset();
 
     extern rtlsdr_dev_t *rtlsdr_dev_get(void);
     rtldev = rtlsdr_dev_get();

@@ -1,5 +1,7 @@
 
 #include "lakeshark_backend.h"
+#include <stdio.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -204,6 +206,26 @@ void lakeshark_p25_set_freq(uint32_t hz)
 }
 
 uint32_t lakeshark_p25_get_freq(void) { return s_tune_freq_hz; }
+
+void lakeshark_p25_rx_telem(lakeshark_rx_telem_t *t)
+{
+    if (!t) return;
+    t->nac         = P25.dsd_nac;
+    t->voice_count = P25.dsd_voice_count;
+    t->bch_ok      = P25.dsd_bch_ok_count;
+    t->bch_fail    = P25.dsd_bch_fail_count;
+    t->iq_level    = P25.iq_level;
+    t->drops       = audio_drops_get();
+    t->under       = audio_underruns_get();
+    t->tg          = P25.dsd_tg;
+    t->src         = P25.dsd_src;
+    t->enc         = P25.dsd_enc;
+    t->has_sync    = P25.dsd_has_sync ? 1 : 0;
+    t->sync_count  = P25.dsd_sync_count;
+    t->decode_ms   = P25.dsd_decode_ms;
+    snprintf(t->modulation, sizeof(t->modulation), "%s",
+             P25.dsd_modulation[0] ? P25.dsd_modulation : "-");
+}
 
 const char *lakeshark_p25_cycle_mode(void)
 {

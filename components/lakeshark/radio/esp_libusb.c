@@ -307,7 +307,7 @@ static void stream_pump_task(void *arg)
                 }
             } else {
                 stall_secs = 0;
-                ESP_LOGW(TAG_ADSB, "stream throughput: %u B/s (%.2f MB/s), dropped=%llu",
+                ESP_LOGD(TAG_ADSB, "stream throughput: %u B/s (%.2f MB/s), dropped=%llu",
                          (unsigned)bytes, bytes / 1e6, (unsigned long long)s_sdropped);
             }
             last_head = s_shead; last_log = now;

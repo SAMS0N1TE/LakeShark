@@ -74,25 +74,167 @@ void audio_write_mono_blocking(const int16_t *samples, int n)
     }
 }
 
+typedef struct { float b0, b1, b2, a1, a2; float z1, z2; } biquad_t;
+
+#define EQ_BASS_HZ    120.0f
+#define EQ_MID_HZ    1500.0f
+#define EQ_TREBLE_HZ 3500.0f
+
+static biquad_t     s_hpf, s_bass, s_mid, s_treble;
+static volatile bool s_eq_on = true;
+static float        s_eq_hpf_hz    = 250.0f;
+static float        s_eq_bass_db   = 0.0f;
+static float        s_eq_mid_db    = 2.0f;
+static float        s_eq_treble_db = 2.0f;
+static bool         s_eq_ready     = false;
+
+static void biquad_hpf(biquad_t *bq, float fs, float f0, float q)
+{
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float c = cosf(w0), s = sinf(w0);
+    float alpha = s / (2.0f * q);
+    float a0 = 1.0f + alpha;
+    bq->b0 = ((1.0f + c) * 0.5f) / a0;
+    bq->b1 = (-(1.0f + c)) / a0;
+    bq->b2 = ((1.0f + c) * 0.5f) / a0;
+    bq->a1 = (-2.0f * c) / a0;
+    bq->a2 = (1.0f - alpha) / a0;
+}
+
+static void biquad_peak(biquad_t *bq, float fs, float f0, float q, float gain_db)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float c = cosf(w0), s = sinf(w0);
+    float alpha = s / (2.0f * q);
+    float a0 = 1.0f + alpha / A;
+    bq->b0 = (1.0f + alpha * A) / a0;
+    bq->b1 = (-2.0f * c) / a0;
+    bq->b2 = (1.0f - alpha * A) / a0;
+    bq->a1 = (-2.0f * c) / a0;
+    bq->a2 = (1.0f - alpha / A) / a0;
+}
+
+static void biquad_lowshelf(biquad_t *bq, float fs, float f0, float gain_db)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float c = cosf(w0), s = sinf(w0);
+    float alpha = s * 0.70710678f;
+    float ap1 = A + 1.0f, am1 = A - 1.0f, ta = 2.0f * sqrtf(A) * alpha;
+    float a0 = ap1 + am1 * c + ta;
+    bq->b0 = (A * (ap1 - am1 * c + ta)) / a0;
+    bq->b1 = (2.0f * A * (am1 - ap1 * c)) / a0;
+    bq->b2 = (A * (ap1 - am1 * c - ta)) / a0;
+    bq->a1 = (-2.0f * (am1 + ap1 * c)) / a0;
+    bq->a2 = (ap1 + am1 * c - ta) / a0;
+}
+
+static void biquad_highshelf(biquad_t *bq, float fs, float f0, float gain_db)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float c = cosf(w0), s = sinf(w0);
+    float alpha = s * 0.70710678f;
+    float ap1 = A + 1.0f, am1 = A - 1.0f, ta = 2.0f * sqrtf(A) * alpha;
+    float a0 = ap1 - am1 * c + ta;
+    bq->b0 = (A * (ap1 + am1 * c + ta)) / a0;
+    bq->b1 = (-2.0f * A * (am1 + ap1 * c)) / a0;
+    bq->b2 = (A * (ap1 + am1 * c - ta)) / a0;
+    bq->a1 = (2.0f * (am1 - ap1 * c)) / a0;
+    bq->a2 = (ap1 - am1 * c - ta) / a0;
+}
+
+static inline float biquad_run(biquad_t *bq, float x)
+{
+    float y = bq->b0 * x + bq->z1;
+    bq->z1 = bq->b1 * x - bq->a1 * y + bq->z2;
+    bq->z2 = bq->b2 * x - bq->a2 * y;
+    return y;
+}
+
+static void eq_recompute(void)
+{
+    float fs = (float)AUDIO_RATE_HZ;
+    biquad_hpf(&s_hpf, fs, s_eq_hpf_hz, 0.7071f);
+    biquad_lowshelf(&s_bass, fs, EQ_BASS_HZ, s_eq_bass_db);
+    biquad_peak(&s_mid, fs, EQ_MID_HZ, 0.9f, s_eq_mid_db);
+    biquad_highshelf(&s_treble, fs, EQ_TREBLE_HZ, s_eq_treble_db);
+    s_eq_ready = true;
+}
+
+static inline float eq_chain(float x)
+{
+    x = biquad_run(&s_hpf, x);
+    x = biquad_run(&s_bass, x);
+    x = biquad_run(&s_mid, x);
+    x = biquad_run(&s_treble, x);
+    return x;
+}
+
+static inline int16_t clip16(float v)
+{
+    if (v >  32767.0f) return  32767;
+    if (v < -32768.0f) return -32768;
+    return (int16_t)v;
+}
+
 void audio_write_p25_voice(const int16_t *src8k, int n)
 {
     if (n <= 0) return;
+    if (!s_eq_ready) eq_recompute();
+
     static int16_t up16k[1024];
-    static int16_t prev = 0;
+    static float r0 = 0, r1 = 0, r2 = 0, r3 = 0;
+
+    bool eq = s_eq_on;
     int i = 0;
     while (i < n) {
         int chunk_in = n - i;
         if (chunk_in > 512) chunk_in = 512;
+        int o = 0;
         for (int k = 0; k < chunk_in; k++) {
-            int16_t s = src8k[i + k];
-            up16k[k * 2]     = (int16_t)(((int)prev + (int)s) >> 1);
-            up16k[k * 2 + 1] = s;
-            prev = s;
+            r0 = r1; r1 = r2; r2 = r3; r3 = (float)src8k[i + k];
+            float e  = r1;
+            float od = (-r0 + 9.0f * r1 + 9.0f * r2 - r3) * (1.0f / 16.0f);
+            if (eq) {
+                e  = eq_chain(e);
+                od = eq_chain(od);
+            }
+            up16k[o++] = clip16(e);
+            up16k[o++] = clip16(od);
         }
-        audio_write_mono(up16k, chunk_in * 2);
+        audio_write_mono(up16k, o);
         i += chunk_in;
     }
 }
+
+void audio_voice_eq_enable(bool on) { s_eq_on = on; }
+bool audio_voice_eq_enabled(void)   { return s_eq_on; }
+
+void audio_voice_eq_set_hpf(float hz)
+{
+    if (hz < 20.0f)   hz = 20.0f;
+    if (hz > 1000.0f) hz = 1000.0f;
+    s_eq_hpf_hz = hz;
+    eq_recompute();
+}
+
+static float clamp_db(float db)
+{
+    if (db < -12.0f) return -12.0f;
+    if (db >  12.0f) return  12.0f;
+    return db;
+}
+
+void audio_voice_eq_set_bass(float db)   { s_eq_bass_db   = clamp_db(db); eq_recompute(); }
+void audio_voice_eq_set_mid(float db)    { s_eq_mid_db    = clamp_db(db); eq_recompute(); }
+void audio_voice_eq_set_treble(float db) { s_eq_treble_db = clamp_db(db); eq_recompute(); }
+
+float audio_voice_eq_hpf(void)       { return s_eq_hpf_hz; }
+float audio_voice_eq_bass_db(void)   { return s_eq_bass_db; }
+float audio_voice_eq_mid_db(void)    { return s_eq_mid_db; }
+float audio_voice_eq_treble_db(void) { return s_eq_treble_db; }
 
 #define AUDIO_DIAG_TONE 0
 
@@ -145,7 +287,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
         if (s_reprime) {
             s_reprime = false;
             if (s_ring) xStreamBufferReset(s_ring);
-            playing = false;   /* re-fill the prebuffer cleanly before output */
+            playing = false;
         }
         if (!playing) {
 
@@ -192,11 +334,6 @@ esp_err_t audio_out_init(void)
     if (s_ready) return ESP_OK;
 
     bsp_extra_codec_init();
-
-    esp_err_t err = bsp_extra_codec_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "codec set_fs failed: %s (continuing)", esp_err_to_name(err));
-    }
 
     s_volume = settings_get_volume();
     int set = 0;
@@ -245,18 +382,11 @@ void audio_out_ensure_unmuted(void)
 void audio_out_reset(void)
 {
     if (!s_ready) return;
-    /* Re-assert the codec sample rate and re-prime the output ring. Fixes the
-     * first-P25-launch chop: the audio path could come up draining faster than
-     * it is filled (continuous underruns) until a full reconfigure -- which
-     * previously only the Settings audio control did -- corrected it. Calling
-     * this on radio-app entry makes the first launch match that good state. */
-    esp_err_t err = bsp_extra_codec_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
-    if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
     int set = 0;
     bsp_extra_codec_volume_set(s_volume, &set);
     s_reprime = true;
-    ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
-             esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
+    ESP_LOGW(TAG, "audio_out_reset: reprime vol=%d ring_avail=%u",
+             s_volume, (unsigned)audio_out_ring_avail());
 }
 
 bool audio_is_muted(void) { return s_muted; }

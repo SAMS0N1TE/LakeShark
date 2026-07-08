@@ -9,7 +9,7 @@
 #include "mbelib.h"
 #include "p25p1_heuristics.h"
 
-#define SAMPLE_RATE_IN  24000   /* session 9: was 48000 */
+#define SAMPLE_RATE_IN  24000   
 #define SAMPLE_RATE_OUT 8000
 
 #define DSD_SAMPLE_RING_SIZE 8192
@@ -102,20 +102,12 @@ typedef struct {
     int aout_max_buf_idx;
     int samplesPerSymbol;
     int symbolCenter;
-    /* ──────────────────────────────────────────────────────────────
-     * Session 10: C4FM clock-assist TED state (ported from DSD-Neo
-     * src/dsp/dsd_symbol.c::maybe_c4fm_clock). Mueller-&-Müller mode.
-     * Observes early/mid/late samples around symbolCenter each symbol,
-     * builds a run of consistent directional error, and nudges
-     * symbolCenter ±1 when the run reaches 4 consecutive hits.
-     * Cooldown prevents chatter after a nudge.
-     * ────────────────────────────────────────────────────────────── */
-    int c4fm_clk_mode;        /* 0=off, 1=Early-Late, 2=Mueller-Müller */
-    int c4fm_clk_prev_dec;    /* sliced decision from previous symbol, {-3,-1,1,3} or 0 = none yet */
-    int c4fm_clk_run_dir;     /* current run direction: -1 / 0 / +1 */
-    int c4fm_clk_run_len;     /* consecutive symbols in same direction */
-    int c4fm_clk_cooldown;    /* symbols remaining before next nudge allowed */
-    int c4fm_clk_nudges;      /* diagnostic: total nudges performed since init */
+    int c4fm_clk_mode;        
+    int c4fm_clk_prev_dec;    
+    int c4fm_clk_run_dir;     
+    int c4fm_clk_run_len;     
+    int c4fm_clk_cooldown;    
+    int c4fm_clk_nudges;      
     char algid[9];
     char keyid[17];
     int currentslot;
@@ -137,10 +129,6 @@ typedef struct {
 #define INV_P25P1_SYNC "333331331133111131311111"
 #define P25P1_SYNC     "111113113311333313133333"
 
-/* Set to 1 to make the decode task bail out of blocking sample reads
- * immediately (on P25 app teardown). Prevents the dsd task from wedging in
- * starved ring reads past the drain timeout and being re-created over its
- * still-running static stack. */
 extern volatile int dsd_abort;
 
 void initOpts(dsd_opts *opts);

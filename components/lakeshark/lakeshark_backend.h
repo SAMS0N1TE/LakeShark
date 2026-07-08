@@ -12,6 +12,25 @@ extern "C" {
 void lakeshark_backend_start(void);
 void lakeshark_boot_sound(void);
 
+typedef struct {
+    int      nac;
+    int      voice_count;
+    int      bch_ok;
+    int      bch_fail;
+    float    iq_level;
+    uint32_t drops;
+    uint32_t under;
+    int      tg;
+    int      src;
+    int      enc;
+    int      has_sync;
+    int      sync_count;
+    float    decode_ms;
+    char     modulation[8];
+} lakeshark_rx_telem_t;
+
+void lakeshark_p25_rx_telem(lakeshark_rx_telem_t *t);
+
 void lakeshark_select_adsb(void);
 void lakeshark_select_p25(void);
 void lakeshark_select_fm(void);

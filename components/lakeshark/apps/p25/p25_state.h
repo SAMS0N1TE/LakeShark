@@ -64,6 +64,7 @@ typedef struct {
     int      dsd_bch_fail_count;
     int      dsd_last_ok_nac;
     char     dsd_last_ok_duid[4];
+    int      dsd_enc;
 
     int64_t  voice_active_until_us;
 
