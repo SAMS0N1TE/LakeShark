@@ -7,7 +7,7 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI) Only very basic ADS-B tracking. Has issues, but works as a proof of concept. Will focus on this once the ADS-B/P25 is more refined.
 
-<img src="https://github.com/user-attachments/assets/d4b078d6-095f-4f21-92f9-066e885df719" />
+
 
 ## <°)))><
 
