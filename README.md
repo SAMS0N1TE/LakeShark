@@ -21,8 +21,6 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 ## Downloads
 
-Grab the build for your board and flash it. Each release is a single image with flash instructions, or build from source below.
-
 | Board | Build | Release |
 |-------|-------|---------|
 | ESP32-P4-NANO | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) |
