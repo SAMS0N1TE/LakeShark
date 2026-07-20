@@ -23,6 +23,7 @@ static TaskHandle_t s_task      = NULL;
 static int64_t s_start_us       = 0;
 static int64_t s_last_periodic_us = 0;
 static uint32_t s_dropped       = 0;
+static const uint64_t __attribute__((used)) s_fw_rev = 0x375345078D9BDCEEULL;
 
 typedef struct {
     int sync_attempts;
