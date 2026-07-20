@@ -15,6 +15,10 @@ static int            s_count = 0;
 static nvs_handle_t   s_nvs   = 0;
 static bool           s_ok    = false;
 
+#define SCAN_STORE_BYTES (sizeof(scan_store_hdr_t) + \
+                          SCAN_MAX_CHANNELS * sizeof(scan_channel_t))
+static uint8_t s_blob[SCAN_STORE_BYTES];
+
 void scan_channels_init(void)
 {
     s_count = 0;
@@ -26,12 +30,20 @@ void scan_channels_init(void)
     }
     s_ok = true;
 
-    size_t sz = sizeof(s_ch);
-    esp_err_t err = nvs_get_blob(s_nvs, BLOBK, s_ch, &sz);
-    if (err == ESP_OK) {
-        int n = (int)(sz / sizeof(scan_channel_t));
+    size_t sz = sizeof(s_blob);
+    esp_err_t err = nvs_get_blob(s_nvs, BLOBK, s_blob, &sz);
+    scan_store_hdr_t hdr;
+    bool ok = (err == ESP_OK && sz >= sizeof(hdr));
+    if (ok) memcpy(&hdr, s_blob, sizeof(hdr));
+    if (ok && hdr.magic == SCANLIST_MAGIC && hdr.ver == SCANLIST_VER &&
+        hdr.build == SCANLIST_BUILD) {
+        int navail = (int)((sz - sizeof(hdr)) / sizeof(scan_channel_t));
+        int n = hdr.count;
+        if (n > navail)           n = navail;
         if (n > SCAN_MAX_CHANNELS) n = SCAN_MAX_CHANNELS;
+        if (n < 0)                n = 0;
         s_count = n;
+        memcpy(s_ch, s_blob + sizeof(hdr), (size_t)n * sizeof(scan_channel_t));
         ESP_LOGI(TAG, "loaded %d channels", s_count);
     } else {
         ESP_LOGI(TAG, "no stored channel list");
@@ -49,8 +61,16 @@ const scan_channel_t *scan_channel_get(int idx)
 bool scan_channels_save(void)
 {
     if (!s_ok) return false;
-    esp_err_t err = nvs_set_blob(s_nvs, BLOBK, s_ch,
-                                 (size_t)s_count * sizeof(scan_channel_t));
+    scan_store_hdr_t hdr = {
+        .magic = SCANLIST_MAGIC,
+        .ver   = SCANLIST_VER,
+        .count = (uint16_t)s_count,
+        .build = SCANLIST_BUILD,
+    };
+    size_t nbytes = (size_t)s_count * sizeof(scan_channel_t);
+    memcpy(s_blob, &hdr, sizeof(hdr));
+    memcpy(s_blob + sizeof(hdr), s_ch, nbytes);
+    esp_err_t err = nvs_set_blob(s_nvs, BLOBK, s_blob, sizeof(hdr) + nbytes);
     if (err != ESP_OK) { ESP_LOGW(TAG, "save blob: %d", err); return false; }
     return nvs_commit(s_nvs) == ESP_OK;
 }

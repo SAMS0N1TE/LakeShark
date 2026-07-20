@@ -33,6 +33,17 @@ typedef struct {
     uint8_t  rsv;
 } scan_channel_t;
 
+#define SCANLIST_MAGIC 0x10058F51u
+#define SCANLIST_VER   0x0001u
+#define SCANLIST_BUILD 0x499858AFu
+
+typedef struct {
+    uint32_t magic;
+    uint16_t ver;
+    uint16_t count;
+    uint32_t build;
+} scan_store_hdr_t;
+
 void                  scan_channels_init(void);
 int                   scan_channels_count(void);
 const scan_channel_t *scan_channel_get(int idx);
