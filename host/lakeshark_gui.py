@@ -130,143 +130,494 @@ class Radio:
             time.sleep(1.5)
 
 
-PAGE = """<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>LakeShark</title><style>
-@font-face{font-family:'W95FA';src:url('/W95FA.woff') format('woff');font-display:swap}
-*{box-sizing:border-box;font-family:'W95FA','MS Sans Serif',Tahoma,Geneva,sans-serif}
-body{background:#b6b6b6;color:#141414;font-size:16px;line-height:1.5;margin:0;padding:24px}
-.wrap{max-width:780px;margin:0 auto}
-h1{font-weight:700;font-size:22px;letter-spacing:2px;text-transform:uppercase;
- margin:0 0 20px;padding-bottom:10px;border-bottom:1px solid #6f6f6f;color:#1a1a1a}
-section{margin-bottom:18px}
-.hd{font-weight:700;font-size:14px;letter-spacing:1px;text-transform:uppercase;
- color:#555;margin:0 0 7px}
-.box{border:1px solid #888;background:#c5c5c5;padding:14px}
-.grid{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:10px 16px;align-items:center}
-.lbl{color:#333;font-size:15px;white-space:nowrap}
-.val{font-size:16px;background:#ededed;border:1px solid #8a8a8a;
- padding:4px 10px;color:#000;min-height:28px}
-.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:8px 0}
-.row .lbl{width:72px}
-button{font-size:15px;background:#d2d2d2;color:#141414;border:1px solid #707070;
- padding:8px 16px;cursor:pointer;min-width:84px}
-button:hover{background:#c6c6c6}
-button:active{background:#9d9d9d}
-button.on{background:#2b2b2b;color:#f0f0f0;border-color:#1a1a1a}
-input[type=text]{background:#ededed;border:1px solid #8a8a8a;padding:7px 8px;
- font-size:16px;width:180px;color:#000}
-input[type=range]{flex:1;min-width:160px;height:24px;accent-color:#3a3a3a}
-#log{background:#ededed;border:1px solid #8a8a8a;height:210px;overflow:auto;padding:8px;
- font-size:14px;white-space:pre-wrap;color:#141414}
-.scroll{max-height:240px;overflow:auto;border:1px solid #888;background:#ededed}
-table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{border:1px solid #aaa;padding:5px 10px;text-align:left;white-space:nowrap}
-th{background:#bcbcbc;font-weight:700;color:#222;position:sticky;top:0}
-td{background:#ededed;color:#000}
-.empty{color:#666;padding:11px;font-style:italic;font-size:15px}
-</style></head><body>
-<div class=wrap>
-<h1>LakeShark &mdash; Headless Control</h1>
-<section><div class=hd>Status</div><div class="box grid">
- <span class=lbl>Mode</span><span class=val id=s_mode>--</span>
- <span class=lbl>Freq MHz</span><span class=val id=s_freq>--</span>
- <span class=lbl>Volume</span><span class=val id=s_vol>--</span>
- <span class=lbl>Gain dB</span><span class=val id=s_gain>--</span>
- <span class=lbl>Mute</span><span class=val id=s_mute>--</span>
- <span class=lbl>FM mode</span><span class=val id=s_fm>--</span>
- <span class=lbl>ADS-B feed</span><span class=val id=s_feed>--</span>
-</div></section>
-<section><div class=hd>Mode</div><div class="box row">
- <button id=m_p25 onclick="cmd('mode p25')">P25</button>
- <button id=m_adsb onclick="cmd('mode adsb')">ADS-B</button>
- <button id=m_fm onclick="cmd('mode fm')">FM</button></div></section>
-<section><div class=hd>FM sub-mode</div><div class="box row">
- <button id=f_listen onclick="cmd('fm listen')">LISTEN</button>
- <button id=f_scan onclick="cmd('fm scan')">SCAN</button>
- <button id=f_pocsag onclick="cmd('fm pocsag')">POCSAG</button>
- <button id=f_wfm onclick="cmd('fm wfm')">WFM</button></div></section>
-<section><div class=hd>Controls</div><div class=box>
- <div class=row><span class=lbl>Volume</span>
-  <input type=range id=vol min=0 max=100 oninput="vlbl.textContent=this.value"
-   onchange="cmd('vol '+this.value)"><span class=val id=vlbl style=min-width:34px>--</span></div>
- <div class=row><span class=lbl>Freq</span>
-  <input type=text id=freq placeholder="MHz e.g. 154.785">
-  <button onclick="cmd('freq '+freq.value)">Tune</button></div>
- <div class=row><span class=lbl>Gain</span>
-  <input type=text id=gain placeholder="dB e.g. 30">
-  <button onclick="cmd('gain '+gain.value)">Set</button>
-  <button onclick="cmd('gain auto')">Auto</button></div>
- <div class=row><span class=lbl>Feed</span>
-  <button onclick="cmd('feed on')">On</button>
-  <button onclick="cmd('feed off')">Off</button>
-  <span class=lbl style="width:auto;color:#555">ADS-B JSON to console (CartoTUI)</span></div>
- <div class=row><span class=lbl></span>
-  <button onclick="cmd('mute')">Mute</button>
-  <button onclick="cmd('status')">Refresh</button></div>
-</div></section>
-<section><div class=hd>ADS-B aircraft <span id=ac_n style=color:#555></span></div>
- <div class=scroll><table id=ac_tbl><thead><tr><th>ICAO</th><th>Flight</th><th>Alt ft</th>
-  <th>Spd</th><th>Hdg</th><th>Lat</th><th>Lon</th></tr></thead><tbody id=ac_body></tbody></table>
-  <div class=empty id=ac_empty>No aircraft (switch to ADS-B mode; needs traffic overhead).</div></div></section>
-<section><div class=hd>POCSAG pages <span id=pg_n style=color:#555></span></div>
- <div class=scroll><table id=pg_tbl><thead><tr><th>Time</th><th>RIC</th><th>Fn</th>
-  <th>Type</th><th>Message</th></tr></thead><tbody id=pg_body></tbody></table>
-  <div class=empty id=pg_empty>No pages (switch to FM &rarr; POCSAG; needs pager traffic).</div></div></section>
-<section><div class=hd>Serial log</div><div id=log></div></section>
-</div>
-<script>
-function cmd(c){fetch('/cmd',{method:'POST',body:c});}
-let dragging=false;
-const volEl=document.getElementById('vol');
-volEl.addEventListener('mousedown',()=>dragging=true);
-volEl.addEventListener('mouseup',()=>dragging=false);
-function setOn(ids,active){for(const id of ids){var e=document.getElementById(id);
- if(e)e.classList.toggle('on',id===active);}}
-async function tick(){
- try{
-  const r=await fetch('/state');const d=await r.json();const s=d.state||{};
-  if(s.mode!==undefined){
-   document.getElementById('s_mode').textContent=s.mode;
-   document.getElementById('s_freq').textContent=s.freq.toFixed(4);
-   document.getElementById('s_vol').textContent=s.vol;
-   document.getElementById('s_gain').textContent=s.gain.toFixed(1);
-   document.getElementById('s_mute').textContent=s.mute?'ON':'off';
-   document.getElementById('s_fm').textContent=(s.fmmode||'--').toUpperCase();
-   document.getElementById('s_feed').textContent=(s.feed||'--').toUpperCase();
-   setOn(['m_p25','m_adsb','m_fm'],{'P25':'m_p25','ADS-B':'m_adsb','FM':'m_fm'}[s.mode]);
-   setOn(['f_listen','f_scan','f_pocsag','f_wfm'],
-     (s.mode==='FM')?({'listen':'f_listen','scan':'f_scan','pocsag':'f_pocsag','wfm':'f_wfm'}[s.fmmode]):null);
-   if(!dragging){volEl.value=s.vol;document.getElementById('vlbl').textContent=s.vol;}
-  }
-  renderAircraft(d.aircraft||[]);
-  renderPages(d.pages||[]);
-  const lg=document.getElementById('log');const atBottom=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-20;
-  lg.textContent=(d.log||[]).join('\\n');
-  if(atBottom)lg.scrollTop=lg.scrollHeight;
- }catch(e){}
-}
-function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
-function renderAircraft(ac){
- document.getElementById('ac_n').textContent=ac.length?('('+ac.length+')'):'';
- document.getElementById('ac_empty').style.display=ac.length?'none':'block';
- document.getElementById('ac_tbl').style.display=ac.length?'table':'none';
- document.getElementById('ac_body').innerHTML=ac.map(a=>{
-  const pos=a.pos?(a.lat.toFixed(4)+'</td><td>'+a.lon.toFixed(4)):'--</td><td>--';
-  return '<tr><td>'+esc(a.icao)+'</td><td>'+esc(a.cs||'')+'</td><td>'+(a.alt||0)+
-   '</td><td>'+(a.vel||0)+'</td><td>'+(a.hdg||0)+'</td><td>'+pos+'</td></tr>';}).join('');
-}
-function renderPages(pg){
- document.getElementById('pg_n').textContent=pg.length?('('+pg.length+')'):'';
- document.getElementById('pg_empty').style.display=pg.length?'none':'block';
- document.getElementById('pg_tbl').style.display=pg.length?'table':'none';
- document.getElementById('pg_body').innerHTML=pg.slice().reverse().map(p=>{
-  const tm=new Date(p.ts*1000).toLocaleTimeString();
-  return '<tr><td>'+tm+'</td><td>'+p.ric+'</td><td>'+p.func+'</td><td>'+p.type+
-   '</td><td>'+esc(p.text)+'</td></tr>';}).join('');
-}
-setInterval(tick,800);tick();
-</script></body></html>"""
+PAGE = """<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LakeShark</title>
+    <style>
+        @font-face {
+            font-family: 'W95FA';
+            src: url('/W95FA.woff') format('woff');
+            font-display: swap;
+        }
+        * {
+            box-sizing: border-box;
+            font-family: 'W95FA', 'MS Sans Serif', Tahoma, Geneva, sans-serif;
+        }
+        body {
+            background: #b8b8b8;
+            color: #141414;
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0;
+            padding: 9px;
+        }
+        .wrap {
+            max-width: 780px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-weight: 150;
+            font-size: 22px;
+            letter-spacing: 10px;
+            text-transform: uppercase;
+            margin: 0 0 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #6f6f6f;
+            color: #1a1a1a;
+            text-align: center;
+        }
+        section {
+            margin-bottom: 18px;
+        }
+        .sh {
+            font-family: monospace;
+            background-color: #b8b8b8;
+            font-size: 11px;
+            white-space: pre;
+            line-height: 1;
+            display: block;
+            
+            /* 1. Center the block itself */
+            width: fit-content;
+            max-width: 100%;
+            margin: 0 auto;
+            
+            /* 2. Enable scrolling if on a small screen, but hide the bar */
+            overflow-x: auto;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* Legacy Edge */
+        }
+
+        /* 3. Hide scrollbar for Chrome, Safari, and newer Edge */
+        .sh::-webkit-scrollbar {
+            display: none;
+        }
+        .hd {
+            font-weight: 250;
+            background-color: #3a3a3a;
+            border: 2px inset #d7d2d2;
+            font-size: 10px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: #ffffff;
+            margin: 0 306px 0;
+            text-align: center;
+        }
+        .box {
+            border: 2px inset #d7d2d2;
+            background: #3a3a3a;
+            padding: 14px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: auto 1fr auto 1fr;
+            gap: 10px 16px;
+            align-items: center;
+        }
+        .lbl {
+            color: #ffffff;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .val {
+            font-size: 16px;
+            background: #3f3f3f;
+            border: 1px solid #8a8a8a;
+            padding: 4px 10px;
+            color: #e6e6e6;
+            min-height: 28px;
+        }
+        .row {
+            display: flex;
+            gap: 2px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 1px 0;
+        }
+        .row .lbl {
+            width: 72px;
+        }
+        button {
+            font-size: 12px;
+            background: #8f4b4b;
+            color: #ffffff;
+            border: 1px solid #707070;
+            padding: 8px 16px;
+            cursor: pointer;
+            min-width: 84px;
+        }
+        button:hover {
+            background: #165050;
+        }
+        button:active {
+            background: #2ca0a0;
+        }
+        button.on {
+            background: #2b2b2b;
+            color: #f0f0f0;
+            border-color: #1a1a1a;
+        }
+        input[type="text"] {
+            background: #3f3f3f;
+            border: 1px solid #000000;
+            padding: 7px 8px;
+            font-size: 16px;
+            width: 180px;
+            color: #e6e6e6;
+        }
+/* Base reset and size */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            flex: 1;
+            min-width: 160px;
+            height: 34px;
+            background: transparent;
+        }
+
+        input[type="range"]:focus {
+            outline: none;
+        }
+
+        /* WebKit (Chrome, Safari, Edge) Track */
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 24px;
+            cursor: pointer;
+            /* Creates the segmented notches */
+            background: repeating-linear-gradient(
+                90deg,
+                #cbcbcb,
+                #979797 8px,
+                #000000 8px,
+                #ffffff 12px
+            );
+            border: 2px inset #8f4b4b;
+        }
+        /* WebKit Thumb */
+        input[type="range"]::-webkit-slider-thumb {
+            height: 32px;
+            width: 16px;
+            border: 2px outset #ffffff;
+            border-right-color: #8a8a8a;
+            border-bottom-color: #8a8a8a;
+            background: #bcbcbc;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+            margin-top: -6px; /* Centers the chunky thumb vertically */
+        }
+
+        /* Firefox Track */
+        input[type="range"]::-moz-range-track {
+            width: 100%;
+            height: 24px;
+            cursor: pointer;
+            background: repeating-linear-gradient(
+                90deg,
+                #3f3f3f,
+                #3f3f3f 8px,
+                #1a1a1a 8px,
+                #1a1a1a 12px
+            );
+            border: 2px inset #d7d2d2;
+        }
+
+        /* Firefox Thumb */
+        input[type="range"]::-moz-range-thumb {
+            height: 32px;
+            width: 16px;
+            border: 2px outset #ffffff;
+            border-right-color: #8a8a8a;
+            border-bottom-color: #8a8a8a;
+            background: #bcbcbc;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        #log {
+            background: #2b2b2b;
+            border: 1px solid #8a8a8a;
+            height: 210px;
+            overflow: auto;
+            padding: 8px;
+            font-size: 14px;
+            white-space: pre-wrap;
+            color: #ffffff;
+        }
+        .scroll {
+            max-height: 240px;
+            overflow: auto;
+            border: 1px solid #888;
+            background: #3f3f3f;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 14px;
+        }
+        th, td {
+            border: 1px solid #aaa;
+            padding: 5px 10px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        th {
+            background: #8f4b4b;
+            font-weight: 250;
+            color: #ffffff;
+            position: sticky;
+            top: 0;
+        }
+        td {
+            background: #3f3f3f;
+            color: #ffffff;
+        }
+        .empty {
+            color: #ffffff;
+            padding: 11px;
+            font-style: italic;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>LakeShark &mdash; Headless Control</h1>
+        
+        <section>
+            <div class="hd">Status</div>
+            <div class="box grid">
+                <span class="lbl">Mode</span><span class="val" id="s_mode">--</span>
+                <span class="lbl">Freq MHz</span><span class="val" id="s_freq">--</span>
+                <span class="lbl">Volume</span><span class="val" id="s_vol">--</span>
+                <span class="lbl">Gain dB</span><span class="val" id="s_gain">--</span>
+                <span class="lbl">Mute</span><span class="val" id="s_mute">--</span>
+                <span class="lbl">FM mode</span><span class="val" id="s_fm">--</span>
+                <span class="lbl">ADS-B feed</span><span class="val" id="s_feed">--</span>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">Mode</div>
+            <div class="box row">
+                <button id="m_p25" onclick="cmd('mode p25')">P25</button>
+                <button id="m_adsb" onclick="cmd('mode adsb')">ADS-B</button>
+                <button id="m_fm" onclick="cmd('mode fm')">FM</button>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">FM sub-mode</div>
+            <div class="box row">
+                <button id="f_listen" onclick="cmd('fm listen')">LISTEN</button>
+                <button id="f_scan" onclick="cmd('fm scan')">SCAN</button>
+                <button id="f_pocsag" onclick="cmd('fm pocsag')">POCSAG</button>
+                <button id="f_wfm" onclick="cmd('fm wfm')">WFM</button>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">Controls</div>
+            <div class="box">
+                <div class="row">
+                    <span class="lbl">Volume</span>
+                    <input type="range" id="vol" min="0" max="100" oninput="vlbl.textContent=this.value" onchange="cmd('vol '+this.value)">
+                    <span class="val" id="vlbl" style="min-width:34px">--</span>
+                </div>
+                <div class="row">
+                    <span class="lbl">Freq</span>
+                    <input type="text" id="freq" placeholder="MHz e.g. 154.785">
+                    <button onclick="cmd('freq '+freq.value)">Tune</button>
+                </div>
+                <div class="row">
+                    <span class="lbl">Gain</span>
+                    <input type="text" id="gain" placeholder="dB e.g. 30">
+                    <button onclick="cmd('gain '+gain.value)">Set</button>
+                    <button onclick="cmd('gain auto')">Auto</button>
+                </div>
+                <div class="row">
+                    <span class="lbl">Feed</span>
+                    <button onclick="cmd('feed on')">On</button>
+                    <button onclick="cmd('feed off')">Off</button>
+                    <span class="lbl" style="width:auto;color:#555">ADS-B JSON to console (CartoTUI)</span>
+                </div>
+                <div class="row">
+                    <span class="lbl"></span>
+                    <button onclick="cmd('mute')">Mute</button>
+                    <button onclick="cmd('status')">Refresh</button>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">ADS-B aircraft <span id="ac_n" style="color:#555"></span></div>
+            <div class="scroll">
+                <table id="ac_tbl">
+                    <thead>
+                        <tr>
+                            <th>ICAO</th>
+                            <th>Flight</th>
+                            <th>Alt ft</th>
+                            <th>Spd</th>
+                            <th>Hdg</th>
+                            <th>Lat</th>
+                            <th>Lon</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ac_body"></tbody>
+                </table>
+                <div class="empty" id="ac_empty">No aircraft (switch to ADS-B mode; needs traffic overhead).</div>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">POCSAG pages <span id="pg_n" style="color:#555"></span></div>
+            <div class="scroll">
+                <table id="pg_tbl">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>RIC</th>
+                            <th>Fn</th>
+                            <th>Type</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pg_body"></tbody>
+                </table>
+                <div class="empty" id="pg_empty">No pages (switch to FM &rarr; POCSAG; needs pager traffic).</div>
+            </div>
+        </section>
+
+        <section>
+            <div class="hd">Serial log</div>
+            <div id="log"></div>
+        </section>
+        <section>
+            <div class="sh">                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                        XURX                                        
+                                      XTY SY                                ZWV     
+                                     UW   YT                             YUUXSX     
+                               ZYXWVTZ     QZ                          VUY WSX      
+                   ZVVVVVVVVVWXYZ          XPTVWZ                    TV   WV        
+             YVVVVVY                            YWVVVVVVXWVV       UU    UW         
+         WVVWZ                                             UVVVVVVTZ    VX          
+        XTZ                                                            XV           
+          YVVVQPPTW                                   ZXVVVYQUVVWUT    XV           
+              XVVVY           Z  YWWWX         YWY  UPV    YV     ZSZ  XU           
+                   WVVVVVVVVUUQSZ    RUVVVVVVVWZ ZVUVZ              UV  WX          
+                            TX VQV   WV                              ZTXWV          
+                             YUTX VUZ VV                               ZVTX         
+                                    XVVQS                                           
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    
+                                                                                    </div>
+        
+        </section>
+    </div>
+
+    <script>
+        function cmd(c) {
+            fetch('/cmd', { method: 'POST', body: c });
+        }
+
+        let dragging = false;
+        const volEl = document.getElementById('vol');
+        
+        volEl.addEventListener('mousedown', () => dragging = true);
+        volEl.addEventListener('mouseup', () => dragging = false);
+
+        function setOn(ids, active) {
+            for (const id of ids) {
+                var e = document.getElementById(id);
+                if (e) {
+                    e.classList.toggle('on', id === active);
+                }
+            }
+        }
+
+        async function tick() {
+            try {
+                const r = await fetch('/state');
+                const d = await r.json();
+                const s = d.state || {};
+
+                if (s.mode !== undefined) {
+                    document.getElementById('s_mode').textContent = s.mode;
+                    document.getElementById('s_freq').textContent = s.freq.toFixed(4);
+                    document.getElementById('s_vol').textContent = s.vol;
+                    document.getElementById('s_gain').textContent = s.gain.toFixed(1);
+                    document.getElementById('s_mute').textContent = s.mute ? 'ON' : 'off';
+                    document.getElementById('s_fm').textContent = (s.fmmode || '--').toUpperCase();
+                    document.getElementById('s_feed').textContent = (s.feed || '--').toUpperCase();
+
+                    setOn(['m_p25', 'm_adsb', 'm_fm'], { 'P25': 'm_p25', 'ADS-B': 'm_adsb', 'FM': 'm_fm' }[s.mode]);
+                    setOn(['f_listen', 'f_scan', 'f_pocsag', 'f_wfm'],
+                        (s.mode === 'FM') ? ({ 'listen': 'f_listen', 'scan': 'f_scan', 'pocsag': 'f_pocsag', 'wfm': 'f_wfm' }[s.fmmode]) : null
+                    );
+
+                    if (!dragging) {
+                        volEl.value = s.vol;
+                        document.getElementById('vlbl').textContent = s.vol;
+                    }
+                }
+
+                renderAircraft(d.aircraft || []);
+                renderPages(d.pages || []);
+
+                const lg = document.getElementById('log');
+                const atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 20;
+                
+                lg.textContent = (d.log || []).join('\\n');
+                
+                if (atBottom) {
+                    lg.scrollTop = lg.scrollHeight;
+                }
+            } catch (e) {
+                // Ignore fetch errors
+            }
+        }
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        }
+
+        function renderAircraft(ac) {
+            document.getElementById('ac_n').textContent = ac.length ? ('(' + ac.length + ')') : '';
+            document.getElementById('ac_empty').style.display = ac.length ? 'none' : 'block';
+            document.getElementById('ac_tbl').style.display = ac.length ? 'table' : 'none';
+            document.getElementById('ac_body').innerHTML = ac.map(a => {
+                const pos = a.pos ? (a.lat.toFixed(4) + '</td><td>' + a.lon.toFixed(4)) : '--</td><td>--';
+                return '<tr><td>' + esc(a.icao) + '</td><td>' + esc(a.cs || '') + '</td><td>' + (a.alt || 0) +
+                    '</td><td>' + (a.vel || 0) + '</td><td>' + (a.hdg || 0) + '</td><td>' + pos + '</td></tr>';
+            }).join('');
+        }
+
+        function renderPages(pg) {
+            document.getElementById('pg_n').textContent = pg.length ? ('(' + pg.length + ')') : '';
+            document.getElementById('pg_empty').style.display = pg.length ? 'none' : 'block';
+            document.getElementById('pg_tbl').style.display = pg.length ? 'table' : 'none';
+            document.getElementById('pg_body').innerHTML = pg.slice().reverse().map(p => {
+                const tm = new Date(p.ts * 1000).toLocaleTimeString();
+                return '<tr><td>' + tm + '</td><td>' + p.ric + '</td><td>' + p.func + '</td><td>' + p.type +
+                    '</td><td>' + esc(p.text) + '</td></tr>';
+            }).join('');
+        }
+
+        setInterval(tick, 800);
+        tick();
+    </script>
+</body>
+</html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
