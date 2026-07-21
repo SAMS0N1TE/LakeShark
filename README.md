@@ -19,7 +19,7 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 - **ADS-B** | 1090 MHz aircraft tracking.
 - **LoRa Mesh** | on-board SX1262 + LoRaMesher gateway with a live node/link view, VERY WIP.
 
-## Downloads
+## ><> Downloads
 
 | Board | Build | Release |
 |-------|-------|---------|
@@ -29,7 +29,7 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
 
-## Hardware notes
+## }<((((()°> Hardware notes
 
 You need a Waveshare ESP32-P4-NANO or ESP32-P4 Smart 86 Box because of how the USB host pinout and PSRAM are wired. Other ESP32-P4 boards probably work but I haven't tried them. RTL-SDR V3/V4 are the target dongles; older V3 sticks work but you'd lose the triplexer routing (Not crazy important in my tests). In my opinion, I wouldn't try sourcing the V4's as they're a dead end in terms of support. 
 
@@ -37,7 +37,7 @@ Pin mapping for the audio: I²S MCLK=13 BCK=12 WS=10 DOUT=9 DIN=11, codec PA ena
 
 - Optional SX1262 LoRa module for the mesh app WIP.
 
-## Build & flash
+## ><)))O> Build & flash
 
 Requires **ESP-IDF v5.4.3** (configured with Python 3.12). From the project dir:
 
