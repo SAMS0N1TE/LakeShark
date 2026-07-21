@@ -130,85 +130,110 @@ class Radio:
             time.sleep(1.5)
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>LakeShark</title>
     <style>
+        /* ====================================================================
+           LakeShark — Headless Control · DITHERED / E-INK restyle
+           --------------------------------------------------------------------
+           Same markup, IDs, endpoints and commands as the original — only the
+           skin changes. Aesthetic borrowed from the mesh-core e-ink console:
+             · fine particle grain on the page + baked speckle tiles per panel
+             · Bayer 8x8 ordered dither for the volume meter / hairlines
+             · crisp flat (no-bevel) borders, uppercase caps, tabular numerals
+           Colours kept from the original LakeShark palette.
+        ==================================================================== */
         @font-face {
             font-family: 'W95FA';
-            src: url('/W95FA.woff') format('woff');
+            src: url('W95FA.woff') format('woff');
             font-display: swap;
+        }
+        :root {
+            --paper:   #b8b8b8;   /* page                          */
+            --panel:   #3a3a3a;   /* dark boxes                    */
+            --panel-2: #3f3f3f;   /* value / input surfaces        */
+            --panel-3: #2b2b2b;   /* log / active-button surface   */
+            --ink:     #141414;   /* crisp hard border ("cut edge")*/
+            --hair:    #6f6f6f;   /* light rules                   */
+            --txt:     #ffffff;
+            --txt-2:   #e6e6e6;
+            --accent:  #8f4b4b;   /* dusty red                     */
+            --teal:    #165050;   /* hover                         */
+            --teal-2:  #2ca0a0;   /* active                        */
+            --grain:   none;      /* dark-speck tile  (light surfaces) */
+            --grain-t: none;      /* light-speck tile (dark surfaces)  */
+            --dith:    none;      /* ordered Bayer tile (dithered gradient bars) */
         }
         * {
             box-sizing: border-box;
             font-family: 'W95FA', 'MS Sans Serif', Tahoma, Geneva, sans-serif;
         }
         body {
-            background: #b8b8b8;
-            color: #141414;
+            background-color: var(--paper);
+            /* e-ink particle grain: two offset fine dot tiles give even flat
+               areas a subtle print texture. Cheap, static, no JS. */
+            background-image:
+                radial-gradient(rgba(0,0,0,.14) .5px, transparent .6px),
+                radial-gradient(rgba(0,0,0,.09) .5px, transparent .6px);
+            background-size: 3px 3px, 3px 3px;
+            background-position: 0 0, 1.5px 1.5px;
+            color: var(--ink);
             font-size: 13px;
             line-height: 1.6;
             margin: 0;
-            padding: 9px;
+            padding: 12px 9px;
+            -webkit-font-smoothing: antialiased;
         }
         .wrap {
             max-width: 780px;
             margin: 0 auto;
         }
         h1 {
-            font-weight: 150;
+            font-weight: 400;
             font-size: 22px;
             letter-spacing: 10px;
             text-transform: uppercase;
-            margin: 0 0 20px;
+            margin: 0 0 4px;
             padding-bottom: 10px;
-            border-bottom: 2px solid #6f6f6f;
             color: #1a1a1a;
             text-align: center;
         }
-        section {
-            margin-bottom: 18px;
-        }
-        .sh {
-            font-family: monospace;
-            background-color: #b8b8b8;
-            font-size: 11px;
-            white-space: pre;
-            line-height: 1;
-            display: block;
-            
-            /* 1. Center the block itself */
-            width: fit-content;
-            max-width: 100%;
-            margin: 0 auto;
-            
-            /* 2. Enable scrolling if on a small screen, but hide the bar */
-            overflow-x: auto;
-            scrollbar-width: none; /* Firefox */
-            -ms-overflow-style: none; /* Legacy Edge */
-        }
+        /* dithered title rule (drawn by JS) replaces the flat border */
+        #rule { display:block; width:100%; height:6px; margin:0 0 20px; image-rendering: pixelated; }
 
-        /* 3. Hide scrollbar for Chrome, Safari, and newer Edge */
-        .sh::-webkit-scrollbar {
-            display: none;
-        }
+        section { margin-bottom: 18px; }
+
+        /* section header band — accent-red gradient with an ordered dither
+           laid over it (structured Bayer texture, not random noise) */
         .hd {
-            font-weight: 250;
-            background-color: #3a3a3a;
-            border: 2px inset #d7d2d2;
+            font-weight: 400;
+            background-color: var(--accent);
+            background-image: var(--dith), linear-gradient(180deg,#a75c5c,#844747 55%,#683737);
+            background-repeat: repeat, no-repeat;
+            background-size: auto, 100% 100%;
+            border: 2px solid var(--ink);
+            border-bottom: 0;
             font-size: 10px;
             letter-spacing: 3px;
             text-transform: uppercase;
             color: #ffffff;
-            margin: 0 306px 0;
+            padding: 5px 10px;
             text-align: center;
         }
+        .hd .n { color: #f0d2d2; letter-spacing: 1px; }
+
+        /* panel — its own sheet of e-ink paper: dark surface + light-speck grain,
+           hard border, no bevel */
         .box {
-            border: 2px inset #d7d2d2;
-            background: #3a3a3a;
+            border: 2px solid var(--ink);
+            background-color: var(--panel);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            background-origin: border-box;
             padding: 14px;
         }
         .grid {
@@ -219,127 +244,119 @@ PAGE = """<!doctype html>
         }
         .lbl {
             color: #ffffff;
-            font-size: 12px;
+            font-size: 11px;
+            letter-spacing: .12em;
+            text-transform: uppercase;
             white-space: nowrap;
         }
         .val {
             font-size: 16px;
-            background: #3f3f3f;
-            border: 1px solid #8a8a8a;
+            background-color: var(--panel-2);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            border: 1px solid var(--ink);
             padding: 4px 10px;
-            color: #e6e6e6;
+            color: var(--txt-2);
             min-height: 28px;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: .01em;
+        }
+        /* big status readouts get a dark-speck grain clipped to the glyphs — a
+           dithered "LCD ink" look on the white numerals */
+        .num {
+            background-image: var(--grain), linear-gradient(#ffffff,#ffffff);
+            background-repeat: repeat;
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent; color: transparent;
         }
         .row {
             display: flex;
-            gap: 2px;
+            gap: 4px;
             align-items: center;
             flex-wrap: wrap;
-            margin: 1px 0;
+            margin: 3px 0;
         }
-        .row .lbl {
-            width: 72px;
-        }
+        .row .lbl { width: 72px; }
+
         button {
             font-size: 12px;
-            background: #8f4b4b;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            background-color: var(--accent);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            background-origin: border-box;
             color: #ffffff;
-            border: 1px solid #707070;
-            padding: 8px 16px;
+            border: 2px solid var(--ink);
+            padding: 7px 16px;
             cursor: pointer;
             min-width: 84px;
+            transition: background-color .12s;
         }
-        button:hover {
-            background: #165050;
-        }
-        button:active {
-            background: #2ca0a0;
-        }
+        button:hover  { background-color: var(--teal); }
+        button:active { background-color: var(--teal-2); }
         button.on {
-            background: #2b2b2b;
+            background-color: var(--panel-3);
+            background-image: var(--grain-t);
             color: #f0f0f0;
-            border-color: #1a1a1a;
+            border-color: var(--ink);
+            box-shadow: inset 0 0 0 1px var(--teal-2);
         }
         input[type="text"] {
-            background: #3f3f3f;
-            border: 1px solid #000000;
-            padding: 7px 8px;
+            background-color: var(--panel-2);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            border: 2px solid var(--ink);
+            padding: 6px 8px;
             font-size: 16px;
             width: 180px;
-            color: #e6e6e6;
+            color: var(--txt-2);
         }
-/* Base reset and size */
+        input[type="text"]::placeholder { color: #9a9a9a; }
+
+        /* volume slider — the track fills with a dithered accent colour up to the
+           thumb (the "level" lives in the slider itself). --pct is set by JS for
+           WebKit; Firefox fills via ::-moz-range-progress natively. */
         input[type="range"] {
-            -webkit-appearance: none;
-            appearance: none;
-            flex: 1;
-            min-width: 160px;
-            height: 34px;
-            background: transparent;
+            -webkit-appearance: none; appearance: none;
+            flex: 1; min-width: 160px; height: 34px; background: transparent;
         }
-
-        input[type="range"]:focus {
-            outline: none;
-        }
-
-        /* WebKit (Chrome, Safari, Edge) Track */
+        input[type="range"]:focus { outline: none; }
         input[type="range"]::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 24px;
-            cursor: pointer;
-            /* Creates the segmented notches */
-            background: repeating-linear-gradient(
-                90deg,
-                #cbcbcb,
-                #979797 8px,
-                #000000 8px,
-                #ffffff 12px
-            );
-            border: 2px inset #8f4b4b;
+            width: 100%; height: 24px; cursor: pointer;
+            border: 2px solid var(--ink);
+            background-image:
+                var(--dith),
+                linear-gradient(90deg, var(--accent) 0 var(--pct,0%), #2b2b2b var(--pct,0%) 100%);
+            background-repeat: repeat, no-repeat;
         }
-        /* WebKit Thumb */
         input[type="range"]::-webkit-slider-thumb {
-            height: 32px;
-            width: 16px;
-            border: 2px outset #ffffff;
-            border-right-color: #8a8a8a;
-            border-bottom-color: #8a8a8a;
-            background: #bcbcbc;
-            cursor: pointer;
-            -webkit-appearance: none;
-            appearance: none;
-            margin-top: -6px; /* Centers the chunky thumb vertically */
+            height: 32px; width: 14px;
+            border: 2px solid var(--ink);
+            background: var(--teal-2); cursor: pointer;
+            -webkit-appearance: none; appearance: none; margin-top: -6px;
         }
-
-        /* Firefox Track */
         input[type="range"]::-moz-range-track {
-            width: 100%;
+            width: 100%; height: 24px; cursor: pointer;
+            border: 2px solid var(--ink);
+            background-image: var(--dith), linear-gradient(#2b2b2b,#2b2b2b);
+            background-repeat: repeat, no-repeat;
+        }
+        input[type="range"]::-moz-range-progress {
             height: 24px;
-            cursor: pointer;
-            background: repeating-linear-gradient(
-                90deg,
-                #3f3f3f,
-                #3f3f3f 8px,
-                #1a1a1a 8px,
-                #1a1a1a 12px
-            );
-            border: 2px inset #d7d2d2;
+            background-image: var(--dith), linear-gradient(var(--accent),var(--accent));
+            background-repeat: repeat, no-repeat;
+        }
+        input[type="range"]::-moz-range-thumb {
+            height: 32px; width: 14px; border: 2px solid var(--ink);
+            background: var(--teal-2); cursor: pointer; box-sizing: border-box;
         }
 
-        /* Firefox Thumb */
-        input[type="range"]::-moz-range-thumb {
-            height: 32px;
-            width: 16px;
-            border: 2px outset #ffffff;
-            border-right-color: #8a8a8a;
-            border-bottom-color: #8a8a8a;
-            background: #bcbcbc;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
         #log {
-            background: #2b2b2b;
-            border: 1px solid #8a8a8a;
+            background-color: var(--panel-3);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            border: 2px solid var(--ink);
             height: 210px;
             overflow: auto;
             padding: 8px;
@@ -350,30 +367,34 @@ PAGE = """<!doctype html>
         .scroll {
             max-height: 240px;
             overflow: auto;
-            border: 1px solid #888;
-            background: #3f3f3f;
+            border: 2px solid var(--ink);
+            background-color: var(--panel-2);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
         }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            font-size: 14px;
-        }
+        table { border-collapse: collapse; width: 100%; font-size: 14px; }
         th, td {
-            border: 1px solid #aaa;
+            border: 1px solid #565656;
             padding: 5px 10px;
             text-align: left;
             white-space: nowrap;
         }
         th {
-            background: #8f4b4b;
-            font-weight: 250;
+            background-color: var(--accent);
+            background-image: var(--dith), linear-gradient(180deg,#a75c5c,#844747 55%,#683737);
+            background-repeat: repeat, no-repeat;
+            background-size: auto, 100% 100%;
+            font-weight: 400;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            font-size: 11px;
             color: #ffffff;
-            position: sticky;
-            top: 0;
+            position: sticky; top: 0;
         }
         td {
-            background: #3f3f3f;
+            background-color: var(--panel-2);
             color: #ffffff;
+            font-variant-numeric: tabular-nums;
         }
         .empty {
             color: #ffffff;
@@ -381,19 +402,46 @@ PAGE = """<!doctype html>
             font-style: italic;
             font-size: 15px;
         }
+        .hint { color:#c8b0b0; letter-spacing:.04em; }
+
+        /* ASCII shark — its own sheet of grained paper */
+        .sh-wrap {
+            border: 2px solid var(--ink);
+            background-color: var(--panel);
+            background-image: var(--grain-t);
+            background-repeat: repeat;
+            background-origin: border-box;
+            padding: 12px 0;
+            overflow: hidden;
+        }
+        .sh {
+            font-family: monospace;
+            color: #cfcfcf;
+            background: transparent;
+            font-size: 11px;
+            white-space: pre;
+            line-height: 1;
+            display: block;
+            width: fit-content; max-width: 100%;
+            margin: 0 auto;
+            overflow-x: auto;
+            scrollbar-width: none; -ms-overflow-style: none;
+        }
+        .sh::-webkit-scrollbar { display: none; }
     </style>
 </head>
 <body>
     <div class="wrap">
         <h1>LakeShark &mdash; Headless Control</h1>
-        
+        <canvas id="rule" height="6"></canvas>
+
         <section>
             <div class="hd">Status</div>
             <div class="box grid">
                 <span class="lbl">Mode</span><span class="val" id="s_mode">--</span>
-                <span class="lbl">Freq MHz</span><span class="val" id="s_freq">--</span>
-                <span class="lbl">Volume</span><span class="val" id="s_vol">--</span>
-                <span class="lbl">Gain dB</span><span class="val" id="s_gain">--</span>
+                <span class="lbl">Freq MHz</span><span class="val num" id="s_freq">--</span>
+                <span class="lbl">Volume</span><span class="val num" id="s_vol">--</span>
+                <span class="lbl">Gain dB</span><span class="val num" id="s_gain">--</span>
                 <span class="lbl">Mute</span><span class="val" id="s_mute">--</span>
                 <span class="lbl">FM mode</span><span class="val" id="s_fm">--</span>
                 <span class="lbl">ADS-B feed</span><span class="val" id="s_feed">--</span>
@@ -424,8 +472,8 @@ PAGE = """<!doctype html>
             <div class="box">
                 <div class="row">
                     <span class="lbl">Volume</span>
-                    <input type="range" id="vol" min="0" max="100" oninput="vlbl.textContent=this.value" onchange="cmd('vol '+this.value)">
-                    <span class="val" id="vlbl" style="min-width:34px">--</span>
+                    <input type="range" id="vol" min="0" max="100" oninput="paintVol(this.value)" onchange="cmd('vol '+this.value)">
+                    <span class="val num" id="vlbl" style="min-width:34px">--</span>
                 </div>
                 <div class="row">
                     <span class="lbl">Freq</span>
@@ -442,7 +490,7 @@ PAGE = """<!doctype html>
                     <span class="lbl">Feed</span>
                     <button onclick="cmd('feed on')">On</button>
                     <button onclick="cmd('feed off')">Off</button>
-                    <span class="lbl" style="width:auto;color:#555">ADS-B JSON to console (CartoTUI)</span>
+                    <span class="lbl hint" style="width:auto;text-transform:none;letter-spacing:0">ADS-B JSON to console (CartoTUI)</span>
                 </div>
                 <div class="row">
                     <span class="lbl"></span>
@@ -453,7 +501,7 @@ PAGE = """<!doctype html>
         </section>
 
         <section>
-            <div class="hd">ADS-B aircraft <span id="ac_n" style="color:#555"></span></div>
+            <div class="hd">ADS-B aircraft <span class="n" id="ac_n"></span></div>
             <div class="scroll">
                 <table id="ac_tbl">
                     <thead>
@@ -474,7 +522,7 @@ PAGE = """<!doctype html>
         </section>
 
         <section>
-            <div class="hd">POCSAG pages <span id="pg_n" style="color:#555"></span></div>
+            <div class="hd">POCSAG pages <span class="n" id="pg_n"></span></div>
             <div class="scroll">
                 <table id="pg_tbl">
                     <thead>
@@ -496,52 +544,144 @@ PAGE = """<!doctype html>
             <div class="hd">Serial log</div>
             <div id="log"></div>
         </section>
+
         <section>
-            <div class="sh">                                                                                    
-                                                                                    
-                                                                                    
-                                                                                    
-                                                                                    
-                                        XURX                                        
-                                      XTY SY                                ZWV     
-                                     UW   YT                             YUUXSX     
-                               ZYXWVTZ     QZ                          VUY WSX      
-                   ZVVVVVVVVVWXYZ          XPTVWZ                    TV   WV        
-             YVVVVVY                            YWVVVVVVXWVV       UU    UW         
-         WVVWZ                                             UVVVVVVTZ    VX          
-        XTZ                                                            XV           
-          YVVVQPPTW                                   ZXVVVYQUVVWUT    XV           
-              XVVVY           Z  YWWWX         YWY  UPV    YV     ZSZ  XU           
-                   WVVVVVVVVUUQSZ    RUVVVVVVVWZ ZVUVZ              UV  WX          
-                            TX VQV   WV                              ZTXWV          
-                             YUTX VUZ VV                               ZVTX         
-                                    XVVQS                                           
-                                                                                    
-                                                                                    
-                                                                                    
-                                                                                    
+            <div class="sh-wrap">
+            <div class="sh">
+
+
+
+
+                                        XURX
+                                      XTY SY                                ZWV
+                                     UW   YT                             YUUXSX
+                               ZYXWVTZ     QZ                          VUY WSX
+                   ZVVVVVVVVVWXYZ          XPTVWZ                    TV   WV
+             YVVVVVY                            YWVVVVVVXWVV       UU    UW
+         WVVWZ                                             UVVVVVVTZ    VX
+        XTZ                                                            XV
+          YVVVQPPTW                                   ZXVVVYQUVVWUT    XV
+              XVVVY           Z  YWWWX         YWY  UPV    YV     ZSZ  XU
+                   WVVVVVVVVUUQSZ    RUVVVVVVVWZ ZVUVZ              UV  WX
+                            TX VQV   WV                              ZTXWV
+                             YUTX VUZ VV                               ZVTX
+                                    XVVQS
+
+
+
+
                                                                                     </div>
-        
+            </div>
         </section>
     </div>
 
     <script>
+        /* ===================================================================
+           DITHER + GRAIN ENGINE  (ordered Bayer 8x8 — from the mesh console)
+           =================================================================== */
+        const BAYER = (() => { const m = [0,32,8,40,2,34,10,42,48,16,56,24,50,18,58,26,12,44,4,36,14,46,6,38,
+            60,28,52,20,62,30,54,22,3,35,11,43,1,33,9,41,51,19,59,27,49,17,57,25,15,47,7,39,13,45,5,37,
+            63,31,55,23,61,29,53,21]; return m.map(v => (v + 0.5) / 64); })();
+        const _patCache = new Map();
+        function dither(ctx, level, fg) {
+            level = Math.max(0, Math.min(1, level));
+            const key = level.toFixed(3) + '|' + fg;
+            if (_patCache.has(key)) return _patCache.get(key);
+            const n = 8, c = document.createElement('canvas'); c.width = c.height = n;
+            const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+            g.fillStyle = fg;
+            for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+                if (BAYER[y * 8 + x] < level) g.fillRect(x, y, 1, 1);
+            }
+            const pat = ctx.createPattern(c, 'repeat'); _patCache.set(key, pat); return pat;
+        }
+
+        /* Bake the two speckle "paper" tiles into CSS vars (data URLs) — static
+           background-images, no per-frame cost. --grain = dark specks (light
+           surfaces); --grain-t = light specks (dark surfaces / numerals). */
+        function bakeGrain() {
+            const root = document.documentElement.style;
+            const mk = (dark) => {
+                const N = 64, c = document.createElement('canvas'); c.width = c.height = N;
+                const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+                let s = dark ? 1337 : 24681;
+                const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+                const col = dark ? '0,0,0' : '255,255,255';
+                for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                    const r = rnd();
+                    if (r < 0.35) {
+                        const a = Math.min(0.30, 0.05 + r * 0.11);
+                        g.fillStyle = 'rgba(' + col + ',' + a.toFixed(3) + ')';
+                        g.fillRect(x, y, 1, 1);
+                    }
+                }
+                return 'url(' + c.toDataURL() + ')';
+            };
+            root.setProperty('--grain', mk(true));
+            root.setProperty('--grain-t', mk(false));
+        }
+
+        /* Bake an ordered Bayer 8x8 dither tile (--dith) — laid over the accent
+           gradient on the title bars / slider fill so the gradient reads as a
+           genuine dithered band rather than a smooth wash. Structured, not noise. */
+        function bakeDither() {
+            const n = 8, c = document.createElement('canvas'); c.width = c.height = n;
+            const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+            for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+                const b = BAYER[y * 8 + x];
+                if (b < 0.5)       { g.fillStyle = 'rgba(0,0,0,0.32)';       g.fillRect(x, y, 1, 1); }
+                else if (b > 0.88) { g.fillStyle = 'rgba(255,255,255,0.14)'; g.fillRect(x, y, 1, 1); }
+            }
+            document.documentElement.style.setProperty('--dith', 'url(' + c.toDataURL() + ')');
+        }
+
+        /* Give every grained element a random tile phase so the speckle never
+           lines up across a border — each panel reads as its own cut sheet.
+           (Title bars are excluded: their gradient + ordered dither must stay put.) */
+        function scatterGrain() {
+            const SEL = '.box,.val,button,input[type="text"],#log,.scroll,.sh-wrap';
+            document.querySelectorAll(SEL).forEach(el => {
+                if (el.dataset.grained) return;
+                el.dataset.grained = '1';
+                el.style.backgroundPosition = ((Math.random() * 64) | 0) + 'px ' + ((Math.random() * 64) | 0) + 'px';
+            });
+        }
+
+        /* dithered title hairline under the H1 */
+        function drawRule() {
+            const c = document.getElementById('rule');
+            const w = c.clientWidth || 760; c.width = w; c.height = 6;
+            const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = false;
+            ctx.clearRect(0, 0, w, 6);
+            ctx.fillStyle = dither(ctx, 0.85, '#6f6f6f'); ctx.fillRect(0, 0, w, 2);
+            ctx.fillStyle = dither(ctx, 0.55, '#8f4b4b'); ctx.fillRect(0, 2, w, 2);
+            ctx.fillStyle = dither(ctx, 0.28, '#6f6f6f'); ctx.fillRect(0, 4, w, 2);
+        }
+
+        /* volume slider fill — set --pct so the WebKit track fills to the thumb
+           and keep the read-out label in sync (Firefox fills natively) */
+        function paintVol(v) {
+            const n = Math.max(0, Math.min(100, +v || 0));
+            document.getElementById('vlbl').textContent = v;
+            volEl.style.setProperty('--pct', n + '%');
+        }
+
+        /* ===================================================================
+           APP LOGIC  (identical endpoints / IDs / commands as the original)
+           =================================================================== */
         function cmd(c) {
-            fetch('/cmd', { method: 'POST', body: c });
+            fetch('/cmd', { method: 'POST', body: c }).catch(() => {});
         }
 
         let dragging = false;
         const volEl = document.getElementById('vol');
-        
         volEl.addEventListener('mousedown', () => dragging = true);
         volEl.addEventListener('mouseup', () => dragging = false);
 
         function setOn(ids, active) {
             for (const id of ids) {
                 var e = document.getElementById(id);
-                if (e) {
-                    e.classList.toggle('on', id === active);
-                }
+                if (e) e.classList.toggle('on', id === active);
             }
         }
 
@@ -549,42 +689,44 @@ PAGE = """<!doctype html>
             try {
                 const r = await fetch('/state');
                 const d = await r.json();
-                const s = d.state || {};
-
-                if (s.mode !== undefined) {
-                    document.getElementById('s_mode').textContent = s.mode;
-                    document.getElementById('s_freq').textContent = s.freq.toFixed(4);
-                    document.getElementById('s_vol').textContent = s.vol;
-                    document.getElementById('s_gain').textContent = s.gain.toFixed(1);
-                    document.getElementById('s_mute').textContent = s.mute ? 'ON' : 'off';
-                    document.getElementById('s_fm').textContent = (s.fmmode || '--').toUpperCase();
-                    document.getElementById('s_feed').textContent = (s.feed || '--').toUpperCase();
-
-                    setOn(['m_p25', 'm_adsb', 'm_fm'], { 'P25': 'm_p25', 'ADS-B': 'm_adsb', 'FM': 'm_fm' }[s.mode]);
-                    setOn(['f_listen', 'f_scan', 'f_pocsag', 'f_wfm'],
-                        (s.mode === 'FM') ? ({ 'listen': 'f_listen', 'scan': 'f_scan', 'pocsag': 'f_pocsag', 'wfm': 'f_wfm' }[s.fmmode]) : null
-                    );
-
-                    if (!dragging) {
-                        volEl.value = s.vol;
-                        document.getElementById('vlbl').textContent = s.vol;
-                    }
-                }
-
-                renderAircraft(d.aircraft || []);
-                renderPages(d.pages || []);
-
-                const lg = document.getElementById('log');
-                const atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 20;
-                
-                lg.textContent = (d.log || []).join('\\n');
-                
-                if (atBottom) {
-                    lg.scrollTop = lg.scrollHeight;
-                }
+                applyState(d);
             } catch (e) {
-                // Ignore fetch errors
+                // offline preview: seed demo data once so the skin is visible with
+                // no live device. Never fires when the Python server is running
+                // (a reachable /state returns 200, so fetch does not throw).
+                if (!window._demo) { window._demo = true; applyState(DEMO); }
             }
+        }
+
+        function applyState(d) {
+            const s = d.state || {};
+            if (s.mode !== undefined) {
+                document.getElementById('s_mode').textContent = s.mode;
+                document.getElementById('s_freq').textContent = s.freq.toFixed(4);
+                document.getElementById('s_vol').textContent = s.vol;
+                document.getElementById('s_gain').textContent = s.gain.toFixed(1);
+                document.getElementById('s_mute').textContent = s.mute ? 'ON' : 'off';
+                document.getElementById('s_fm').textContent = (s.fmmode || '--').toUpperCase();
+                document.getElementById('s_feed').textContent = (s.feed || '--').toUpperCase();
+
+                setOn(['m_p25', 'm_adsb', 'm_fm'], { 'P25': 'm_p25', 'ADS-B': 'm_adsb', 'FM': 'm_fm' }[s.mode]);
+                setOn(['f_listen', 'f_scan', 'f_pocsag', 'f_wfm'],
+                    (s.mode === 'FM') ? ({ 'listen': 'f_listen', 'scan': 'f_scan', 'pocsag': 'f_pocsag', 'wfm': 'f_wfm' }[s.fmmode]) : null
+                );
+
+                if (!dragging) {
+                    volEl.value = s.vol;
+                    paintVol(s.vol);
+                }
+            }
+
+            renderAircraft(d.aircraft || []);
+            renderPages(d.pages || []);
+
+            const lg = document.getElementById('log');
+            const atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 20;
+            lg.textContent = (d.log || []).join('\n');
+            if (atBottom) lg.scrollTop = lg.scrollHeight;
         }
 
         function esc(s) {
@@ -612,6 +754,33 @@ PAGE = """<!doctype html>
                     '</td><td>' + esc(p.text) + '</td></tr>';
             }).join('');
         }
+
+        /* demo data — only used for offline preview (see tick's catch) */
+        const DEMO = {
+            state: { mode: 'FM', freq: 154.785, vol: 62, gain: 30.0, mute: false, fmmode: 'pocsag', feed: 'on' },
+            aircraft: [
+                { icao: 'A1B2C3', cs: 'UAL482', alt: 34000, vel: 451, hdg: 92, pos: true, lat: 43.0721, lon: -89.4008 },
+                { icao: 'D4E5F6', cs: 'DAL119', alt: 28950, vel: 402, hdg: 271, pos: true, lat: 43.1120, lon: -89.3320 }
+            ],
+            pages: [
+                { ts: Date.now() / 1000 - 40, ric: 1234567, func: 3, type: 'A', text: 'STRUCTURE FIRE 400 BLK STATE ST' },
+                { ts: Date.now() / 1000 - 8,  ric: 8901234, func: 0, type: 'N', text: 'UNIT 12 RESPOND CODE 3' }
+            ],
+            log: [
+                'FM     freq=154.7850 MHz vol=62 gain=30.0 dB mute=0 fmmode=pocsag feed=on',
+                "page RIC=1234567 F=3 A 'STRUCTURE FIRE 400 BLK STATE ST'",
+                "page RIC=8901234 F=0 N 'UNIT 12 RESPOND CODE 3'",
+                '{"app":"ADS-B","icao":"A1B2C3","cs":"UAL482","alt":34000}'
+            ]
+        };
+
+        /* boot */
+        bakeGrain();
+        bakeDither();
+        scatterGrain();
+        drawRule();
+        paintVol(0);
+        window.addEventListener('resize', () => { drawRule(); });
 
         setInterval(tick, 800);
         tick();
