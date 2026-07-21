@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     import serial
+    import serial.tools.list_ports
 except ImportError:
     raise SystemExit("pyserial not found - install it with:  pip install pyserial")
 
@@ -23,7 +24,7 @@ except Exception:
 
 class Radio:
     STATUS_RE = re.compile(
-        r"mode=(\S+)\s+freq=([\d.]+)\s*MHz\s+vol=(\d+)\s+"
+        r"(\S+)\s+freq=([\d.]+)\s*MHz\s+vol=(\d+)\s+"
         r"gain=([\d.]+)\s*dB\s+mute=(\d+)"
     )
     POC_RE = re.compile(r"page RIC=(\d+)\s+F=(\d+)\s+([TAN])\s+'(.*)'")
@@ -309,20 +310,50 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200, "text/plain", b"ok")
         else:
             self._reply(404, "text/plain", b"not found")
-
+    
+def prompt_for_port():
+    ports = serial.tools.list_ports.comports()
+    
+    if not ports:
+        print("No serial ports dude.")
+        manual_port = input("Please gimmie the port bud (e.g., COM3 or /dev/ttyACM0): ")
+        
+        if not manual_port.strip():
+            raise SystemExit("No serial ports found! Please stand up and turn 360 degrees, then plug in your device.")
+        
+        return manual_port.strip()
+        
+    print("Avaible serial ports:")
+    for i, port in enumerate(ports):
+        print(f"[{i}] {port.device} - {port.description}")
+        
+    while True:    
+        choice = input("Enter the number of the port you want to use pleaseeeeeee: ")
+    
+        try:
+            selected_port = ports[int(choice)].device
+            print(f"Selected: {selected_port}")
+            return selected_port
+        except (ValueError, IndexError):
+            # raise SystemExit("Invalid selection. Nice job, I'm dying now. Goodbye World.")
+            print("Invalid selection. Please type the number in the brackets.")
 
 def main():
     ap = argparse.ArgumentParser(description="LakeShark headless control panel")
-    ap.add_argument("-p", "--port", default="/dev/ttyACM0", help="serial port")
+    ap.add_argument("-p", "--port", default=None, help="serial port")
     ap.add_argument("-b", "--baud", type=int, default=115200)
     ap.add_argument("--http", type=int, default=8674, help="local web port")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+    
+    port_to_use = args.port
+    if port_to_use is None:
+        port_to_use = prompt_for_port()
 
-    Handler.radio = Radio(args.port, args.baud)
+    Handler.radio = Radio(port_to_use, args.baud)
     url = "http://127.0.0.1:%d" % args.http
     httpd = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
-    print("LakeShark control panel on %s  ->  %s" % (args.port, url))
+    print("LakeShark control panel on %s  ->  %s" % (port_to_use, url))
     if not args.no_browser:
         try:
             webbrowser.open(url)
