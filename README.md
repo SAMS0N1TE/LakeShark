@@ -7,7 +7,9 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI) Only very basic ADS-B tracking. Has issues, but works as a proof of concept. Will focus on this once the ADS-B/P25 is more refined.
 
-<img width="1920" height="1080" alt="P25_wide_cinematic" src="https://github.com/user-attachments/assets/a5292d43-d100-45d5-8b9e-4018b3c28cf9" />
+<img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
+<img width="1920" height="1080" alt="P25_wide_lowfront_left" src="https://github.com/user-attachments/assets/d1166cca-6460-4524-8f1e-995bfe8ea90e" />
+
 
 
 ## <°)))><
@@ -79,7 +81,7 @@ is included one level up in the original tree; plain `idf.py` works the same.
 ## 3D Print Sneak Peaks
 <img width="1920" height="1080" alt="P25_view01" src="https://github.com/user-attachments/assets/969d1022-49da-4c47-bc8f-cdc49c12cf5a" />
 <img width="1920" height="1080" alt="P25_hero_frontleft" src="https://github.com/user-attachments/assets/ba981369-dc47-4faa-b557-26ab81a61523" />
-
+<img width="1920" height="1080" alt="P25_wide_cinematic" src="https://github.com/user-attachments/assets/a5292d43-d100-45d5-8b9e-4018b3c28cf9" />
 
 
 
