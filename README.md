@@ -7,6 +7,7 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI) Only very basic ADS-B tracking. Has issues, but works as a proof of concept. Will focus on this once the ADS-B/P25 is more refined.
 
+<img width="1920" height="1080" alt="P25_wide_cinematic" src="https://github.com/user-attachments/assets/a5292d43-d100-45d5-8b9e-4018b3c28cf9" />
 
 
 ## <°)))><
@@ -75,11 +76,13 @@ is included one level up in the original tree; plain `idf.py` works the same.
   persist in NVS.
 
 
-## Sneak Peaks for Box 86 3D prints WIP
+## 3D Print Sneak Peaks
+<img width="1920" height="1080" alt="P25_view01" src="https://github.com/user-attachments/assets/969d1022-49da-4c47-bc8f-cdc49c12cf5a" />
+<img width="1920" height="1080" alt="P25_hero_frontleft" src="https://github.com/user-attachments/assets/ba981369-dc47-4faa-b557-26ab81a61523" />
 
-<img width="1920" height="1920" alt="HighFront" src="https://github.com/user-attachments/assets/9d375356-a956-4024-9c1d-b8af96045b2a" />
-<img width="1920" height="1920" alt="Back" src="https://github.com/user-attachments/assets/675aa297-e619-4799-ae6c-2f93e1925994" />
-<img width="1920" height="1920" alt="Low - Copy" src="https://github.com/user-attachments/assets/43cc9a11-f0ca-4ed7-8ecd-8e9f56073d97" />
+
+
+
 
 ## Credits & licenses
 
