@@ -5,7 +5,7 @@ A handheld SDR scanner running on the Waveshare [ESP32-P4-NANO](https://www.wave
 
 It's currently in a very early devlopment stage and will be broken up into a few different releases. Right now I will release a headless firmware and a GUI version. The GUI started on [esp-brookesia](https://github.com/espressif/esp-brookesia) but I've since swapped it for my own handheld-radio LCD shell. I will try my best to get these to be cross compatible with different boards and configurations, so please submit an issue if you have trouble.
 
-Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI).
+Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI)
 
 <img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
 
