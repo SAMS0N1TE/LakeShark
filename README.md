@@ -3,14 +3,11 @@
 
 A handheld SDR scanner running on the Waveshare [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm?srsltid=AfmBOoqwx_UtnddP57XurmPjLDD6xyBxvlo3kfWMzl45RvUZGmMNA4tY) and the [ESP32-P4 Smart 86 Box](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4b.htm) with an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) plugged into its USB host port.
 
-It's currently in a very early devlopment stage and will be broken up into a few different releases. Right now I will release a headless firmware and a GUI version. The GUI started on [esp-brookesia](https://github.com/espressif/esp-brookesia) but I've since swapped it for my own handheld-radio LCD shell (boots straight into the last app, no launcher, a bottom row switches between systems). I will try my best to get these to be cross compatible with different boards and configurations, so please submit an issue if you have trouble.
+It's currently in a very early devlopment stage and will be broken up into a few different releases. Right now I will release a headless firmware and a GUI version. The GUI started on [esp-brookesia](https://github.com/espressif/esp-brookesia) but I've since swapped it for my own handheld-radio LCD shell. I will try my best to get these to be cross compatible with different boards and configurations, so please submit an issue if you have trouble.
 
-Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI) Only very basic ADS-B tracking. Has issues, but works as a proof of concept. Will focus on this once the ADS-B/P25 is more refined.
+Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI).
 
 <img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
-<img width="1920" height="1080" alt="P25_wide_lowfront_left" src="https://github.com/user-attachments/assets/d1166cca-6460-4524-8f1e-995bfe8ea90e" />
-
-
 
 ## <°)))><
 
@@ -34,7 +31,7 @@ All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/rel
 
 ## }<((((()°> Hardware notes
 
-You need a Waveshare ESP32-P4-NANO or ESP32-P4 Smart 86 Box because of how the USB host pinout and PSRAM are wired. Other ESP32-P4 boards probably work but I haven't tried them. RTL-SDR V3/V4 are the target dongles; older V3 sticks work but you'd lose the triplexer routing (Not crazy important in my tests). In my opinion, I wouldn't try sourcing the V4's as they're a dead end in terms of support. 
+You need a Waveshare ESP32-P4-NANO, ESP32-P4 Smart 86 Box, or ESP32-P4-WIFI6 because of how the USB host pinout and PSRAM are wired. Other ESP32-P4 boards probably work but I haven't tried them, but will continue to add to the roster. RTL-SDR V3/V4 are the target dongles; older V3 sticks work but you'd lose the triplexer routing (Not crazy important in my tests). In my opinion, I wouldn't try sourcing the V4's as they're a dead end in terms of support. 
 
 Pin mapping for the audio: I²S MCLK=13 BCK=12 WS=10 DOUT=9 DIN=11, codec PA enable on GPIO 53, I²C SDA=7 SCL=8, USB VBUS enable on 46 for nano board. Smart 86 Box requires soldering. Will type out a tutorial soon. Not a hard thing to do at all though. 
 
@@ -64,21 +61,14 @@ is included one level up in the original tree; plain `idf.py` works the same.
 - **Sample rates** | RTL-SDR over USB host runs at 240 kSPS for P25, 256 kSPS for
   FM/POCSAG, and 2 MSPS for ADS-B. Audio out is 16 kHz mono.
 - **Integer DSP** | the FM front end is a fixed-point `rtl_fm`-derived pipeline and
-  P25 voice uses OP25's integer `imbe_vocoder`, so there's no per-sample `cosf`.
-  Demod runs real-time with no IQ drops, and one P25 LDU decodes well under real-time.
-- **USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ ring. A pump
-  task reposts them so the demod never blocks USB servicing.
-- **Audio** | 16 kHz output ring with a prebuffer sized above one decode burst, so
-  the bursty IMBE/FM output doesn't chop.
-- **LCD shell** | a custom LVGL UI styled like a handheld radio. Pastel on black,
-  mono font, bordered LCD faces, segmented ASCII touch sliders, and text meters
-  instead of live `lv_bar`/`lv_chart` redraws. No launcher: it boots into the
-  last-used app, a bottom rail and the BOOT button switch systems, and the `< >`
-  buttons flip each app's tabs. Brightness, auto-dim, volume, and boot sound
-  persist in NVS.
+  P25 voice uses OP25's integer `imbe_vocoder`. Demod runs real-time with no IQ drops, and one P25 LDU decodes well under real-time.
+- **USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ ring. 
+- **Audio** | 16 kHz output ring with a prebuffer sized above one decode burst.
+- **LCD shell** | a custom LVGL UI.
 
 
 ## 3D Print Sneak Peaks
+<img width="1920" height="1080" alt="P25_wide_lowfront_left" src="https://github.com/user-attachments/assets/d1166cca-6460-4524-8f1e-995bfe8ea90e" />
 <img width="1920" height="1080" alt="P25_view01" src="https://github.com/user-attachments/assets/969d1022-49da-4c47-bc8f-cdc49c12cf5a" />
 <img width="1920" height="1080" alt="P25_hero_frontleft" src="https://github.com/user-attachments/assets/ba981369-dc47-4faa-b557-26ab81a61523" />
 <img width="1920" height="1080" alt="P25_wide_cinematic" src="https://github.com/user-attachments/assets/a5292d43-d100-45d5-8b9e-4018b3c28cf9" />
