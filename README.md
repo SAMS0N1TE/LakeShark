@@ -21,11 +21,11 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 ## ><> Downloads
 
-| Board | Build | Release |
-|-------|-------|---------|
-| ESP32-P4-NANO | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) |
-| ESP32-P4-WIFI6-Touch-LCD-4B (Smart 86 Box) | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) |
-| ESP32-P4-WIFI6 | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) |
+| Board | Flash | Build | Release |
+|-------|-------|-------|---------|
+| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) |
+| [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) |
+| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) |
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
 
@@ -57,7 +57,7 @@ is included one level up in the original tree; plain `idf.py` works the same.
 ## Architecture & specs
 
 - **SoC/board** | ESP32-P4 (dual-core RISC-V) on the Waveshare ESP32-P4-NANO or
-  Smart 86 Box. 32 MB flash, PSRAM at 200 MHz, 720x720 MIPI-DSI capacitive touch LCD.
+  Smart 86 Box. 16 MB flash, PSRAM at 200 MHz, 720x720 MIPI-DSI capacitive touch LCD.
 - **Sample rates** | RTL-SDR over USB host runs at 240 kSPS for P25, 256 kSPS for
   FM/POCSAG, and 2 MSPS for ADS-B. Audio out is 16 kHz mono.
 - **Integer DSP** | the FM front end is a fixed-point `rtl_fm`-derived pipeline and
