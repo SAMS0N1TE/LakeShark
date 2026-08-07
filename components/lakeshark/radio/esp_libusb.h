@@ -46,5 +46,8 @@ void     esp_libusb_stream_stop(void);
 int      esp_libusb_stream_read(unsigned char *dst, int max);
 void     esp_libusb_stream_reset(void);
 uint32_t esp_libusb_stream_avail(void);
+
+uint64_t esp_libusb_stream_dropped(void);
+int      esp_libusb_stream_slots(void);
 int esp_libusb_control_transfer(class_driver_t *driver_obj, uint8_t bm_req_type, uint8_t b_request, uint16_t wValue, uint16_t wIndex, unsigned char *data, uint16_t wLength, unsigned int timeout);
 void esp_libusb_get_string_descriptor_ascii(const usb_str_desc_t *str_desc, char *str);

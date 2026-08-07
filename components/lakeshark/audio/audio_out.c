@@ -1,4 +1,3 @@
-
 #include "audio_out.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -39,10 +38,13 @@ static int16_t s_silence[CHUNK_FRAMES * 2];
 static volatile uint32_t s_audio_drops = 0;
 static volatile uint32_t s_underruns   = 0;
 static volatile bool     s_reprime     = false;
+static volatile bool     s_play_now    = false;
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
 uint32_t audio_out_ring_avail(void){ return s_ring ? (uint32_t)xStreamBufferBytesAvailable(s_ring) : 0; }
+
+void audio_out_play_now(void) { s_play_now = true; }
 
 void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 {
@@ -145,11 +147,15 @@ static void IRAM_ATTR audio_player_task(void *arg)
         if (s_reprime) {
             s_reprime = false;
             if (s_ring) xStreamBufferReset(s_ring);
-            playing = false;   /* re-fill the prebuffer cleanly before output */
+            playing = false;
         }
         if (!playing) {
+            size_t avail = xStreamBufferBytesAvailable(s_ring);
 
-            if (xStreamBufferBytesAvailable(s_ring) >= (size_t)PREBUF_BYTES) {
+            bool force = s_play_now && avail > 0;
+            if (force) s_play_now = false;
+
+            if (force || avail >= (size_t)PREBUF_BYTES) {
                 playing = true;
                 last_data = esp_timer_get_time();
             } else {
@@ -245,11 +251,7 @@ void audio_out_ensure_unmuted(void)
 void audio_out_reset(void)
 {
     if (!s_ready) return;
-    /* Re-assert the codec sample rate and re-prime the output ring. Fixes the
-     * first-P25-launch chop: the audio path could come up draining faster than
-     * it is filled (continuous underruns) until a full reconfigure -- which
-     * previously only the Settings audio control did -- corrected it. Calling
-     * this on radio-app entry makes the first launch match that good state. */
+
     esp_err_t err = bsp_extra_codec_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
     int set = 0;

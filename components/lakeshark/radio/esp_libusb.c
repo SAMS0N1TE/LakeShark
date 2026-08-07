@@ -1,4 +1,3 @@
-
 #include "usb/usb_host.h"
 #include "esp_log.h"
 #include "esp_libusb.h"
@@ -137,7 +136,7 @@ static int s_teardowns     = 0;
 
 static void bulk_recover(class_driver_t *driver_obj, unsigned char endpoint)
 {
-    usb_host_endpoint_clear(driver_obj->dev_hdl, endpoint);
+
     usb_host_endpoint_halt(driver_obj->dev_hdl, endpoint);
     usb_host_endpoint_flush(driver_obj->dev_hdl, endpoint);
     usb_host_endpoint_clear(driver_obj->dev_hdl, endpoint);
@@ -216,7 +215,9 @@ int esp_libusb_bulk_transfer(class_driver_t *driver_obj, unsigned char endpoint,
     return 0;
 }
 
-#define STREAM_XFER_NUM   8
+#ifndef STREAM_XFER_NUM
+#define STREAM_XFER_NUM   16
+#endif
 #define STREAM_XFER_LEN   16384
 #define STREAM_RING_SIZE  (256u * 1024u)
 
@@ -392,6 +393,15 @@ int esp_libusb_stream_read(uint8_t *dst, int max)
 
 void     esp_libusb_stream_reset(void) { s_stail = s_shead; }
 uint32_t esp_libusb_stream_avail(void) { return s_shead - s_stail; }
+
+uint64_t esp_libusb_stream_dropped(void) { return s_sdropped; }
+
+int esp_libusb_stream_slots(void)
+{
+    int n = 0;
+    for (int i = 0; i < STREAM_XFER_NUM; i++) if (s_sxfer[i]) n++;
+    return n;
+}
 
 int esp_libusb_control_transfer(class_driver_t *driver_obj, uint8_t bm_req_type, uint8_t b_request, uint16_t wValue, uint16_t wIndex, unsigned char *data, uint16_t wLength, unsigned int timeout)
 {

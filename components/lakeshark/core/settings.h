@@ -1,4 +1,3 @@
-
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
@@ -50,6 +49,8 @@ int  settings_voice_lowpass_get(void);
 void settings_voice_lowpass_set(int mode);
 int  settings_voice_lowshelf_get(void);
 void settings_voice_lowshelf_set(int mode);
+
+void settings_write_stats(uint32_t *done, uint32_t *dropped, uint32_t *commits);
 
 #ifdef __cplusplus
 }

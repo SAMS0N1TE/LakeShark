@@ -1,4 +1,3 @@
-
 #ifndef DIAG_H
 #define DIAG_H
 
@@ -9,6 +8,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define DIAG_UART_ENABLE       0
 
 #define DIAG_UART_NUM          1
 #define DIAG_UART_TX_PIN       32

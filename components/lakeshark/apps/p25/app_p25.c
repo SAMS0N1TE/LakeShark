@@ -150,6 +150,9 @@ static void dsd_decoder_task(void *arg)
         esp_task_wdt_reset();
         diag_emit_periodic();
 
+        P25.dsd_bch_ok_count   = autoscan_bch_ok_flag;
+        P25.dsd_bch_fail_count = dsd_bch_fail_counter;
+
         int64_t tel_now = esp_timer_get_time();
         if (tel_now - s_tel_us > 1000000LL) {
             s_tel_us = tel_now;
@@ -175,9 +178,19 @@ static void dsd_decoder_task(void *arg)
             P25.sync_active_until_us = esp_timer_get_time() + 500000LL;
             extern int dsp_has_signal_lock;
             dsp_has_signal_lock = 1;
-            P25.dsd_nac = s_dsd_state.nac;
-            P25.dsd_tg = s_dsd_state.lasttg;
-            P25.dsd_src = s_dsd_state.lastsrc;
+
+            if (s_dsd_state.nac != 0) {
+                P25.dsd_nac = s_dsd_state.nac;
+                P25.nac_seen_us = esp_timer_get_time();
+            }
+            if (s_dsd_state.lasttg != 0) {
+                P25.dsd_tg = s_dsd_state.lasttg;
+                P25.tg_seen_us = esp_timer_get_time();
+            }
+            if (s_dsd_state.lastsrc != 0) {
+                P25.dsd_src = s_dsd_state.lastsrc;
+                P25.src_seen_us = esp_timer_get_time();
+            }
             snprintf(P25.dsd_ftype, sizeof(P25.dsd_ftype), "%s", s_dsd_state.ftype);
             if (s_dsd_state.rf_mod == 0) strcpy(P25.dsd_modulation, "C4FM");
             else if (s_dsd_state.rf_mod == 1) strcpy(P25.dsd_modulation, "QPSK");
@@ -193,13 +206,17 @@ static void dsd_decoder_task(void *arg)
 
             esp_task_wdt_reset();
 
-            P25.dsd_tg = s_dsd_state.lasttg;
-            P25.dsd_src = s_dsd_state.lastsrc;
+            if (s_dsd_state.lasttg != 0) {
+                P25.dsd_tg = s_dsd_state.lasttg;
+                P25.tg_seen_us = esp_timer_get_time();
+            }
+            if (s_dsd_state.lastsrc != 0) {
+                P25.dsd_src = s_dsd_state.lastsrc;
+                P25.src_seen_us = esp_timer_get_time();
+            }
             snprintf(P25.dsd_fsubtype, sizeof(P25.dsd_fsubtype), "%s", s_dsd_state.fsubtype);
             snprintf(P25.dsd_err_str, sizeof(P25.dsd_err_str), "%s", s_dsd_state.err_str);
 
-            P25.dsd_bch_ok_count = autoscan_bch_ok_flag;
-            P25.dsd_bch_fail_count = dsd_bch_fail_counter;
             if (s_dsd_state.nac != 0) P25.dsd_last_ok_nac = s_dsd_state.nac;
 
             if (s_dsd_state.pcm_out_write > 0) {
@@ -266,6 +283,8 @@ static void p25_rx_task(void *arg)
     if (!s_iq_buf) {
         sys_log(4, "OOM rx buffer");
         s_rx_running = false;
+
+        s_app_active = false;
         vTaskDelete(NULL);
         return;
     }
@@ -284,8 +303,9 @@ static void p25_rx_task(void *arg)
     dsd_abort = 0;
     TaskHandle_t dec_h = NULL;
     if (!s_dsd_running) {
+
         xTaskCreatePinnedToCore(dsd_decoder_task, "dsd_decode",
-                                DSD_STACK_WORDS, NULL, 10, &dec_h, 1);
+                                DSD_STACK_WORDS, NULL, 10, &dec_h, 0);
     }
     ESP_LOGW("P25DBG", "dsd_decode create = %s (internal stack)",
              dec_h ? "OK" : "FAILED");
@@ -393,6 +413,21 @@ static void p25_rx_task(void *arg)
             }
 
             {
+                int peak_fast = 0;
+                for (int i = 0; i + 1 < P25_USB_BUF_LENGTH; i += 8) {
+                    int di = (int)s_iq_buf[i]     - 128;
+                    int dq = (int)s_iq_buf[i + 1] - 128;
+                    int a = di < 0 ? -di : di;
+                    int b = dq < 0 ? -dq : dq;
+                    if (a > peak_fast) peak_fast = a;
+                    if (b > peak_fast) peak_fast = b;
+                }
+                float lvl = (float)peak_fast / 127.5f;
+
+                P25.iq_level = P25.iq_level * 0.6f + lvl * 0.4f;
+            }
+
+            {
                 static int64_t last_iqr_us = 0;
                 int64_t tnow_iqr = esp_timer_get_time();
                 if (tnow_iqr - last_iqr_us > 1000000LL) {
@@ -424,7 +459,6 @@ static void p25_rx_task(void *arg)
                     float ms = (float)sumsq / (float)(2 * half_n);
                     float rms_norm = sqrtf(ms) / 127.5f;
                     float peak_norm = (float)peak_dev / 127.5f;
-                    P25.iq_level = peak_norm;
 
                     int rms_mmm  = (int)(rms_norm  * 1000.0f + 0.5f);
                     int peak_mmm = (int)(peak_norm * 1000.0f + 0.5f);
@@ -495,12 +529,25 @@ static void p25_on_enter(void)
 {
     if (s_app_active) return;
 
+    if (s_rx_running || s_dsd_running) {
+        for (int i = 0; i < 200 && (s_rx_running || s_dsd_running); i++)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if (s_rx_running || s_dsd_running) {
+            sys_log(4, "P25 enter refused: previous tasks still running "
+                       "(rx=%d dsd=%d)", s_rx_running, s_dsd_running);
+            return;
+        }
+    }
+
     diag_init();
 
     P25.dsd_has_sync       = false;
     P25.dsd_nac            = 0;
     P25.dsd_tg             = 0;
     P25.dsd_src            = 0;
+    P25.nac_seen_us        = 0;
+    P25.tg_seen_us         = 0;
+    P25.src_seen_us        = 0;
     P25.dsd_ftype[0]       = 0;
     P25.dsd_fsubtype[0]    = 0;
     P25.dsd_err_str[0]     = 0;
@@ -524,7 +571,7 @@ static void p25_on_enter(void)
 
     scanner_init();
     s_p25_freq_req = 0;
-    audio_out_reset();    /* re-assert 16k codec rate + re-prime ring (fixes first-launch chop) */
+    audio_out_reset();
 
     extern rtlsdr_dev_t *rtlsdr_dev_get(void);
     rtldev = rtlsdr_dev_get();

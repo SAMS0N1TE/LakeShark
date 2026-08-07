@@ -1,4 +1,3 @@
-
 #include "fm_app.h"
 #include "fm_state.h"
 #include "fm_dsp.h"
@@ -256,8 +255,8 @@ static void fm_rx_task(void *arg)
                 if (!stream_started && rtlsdr_stream_start(s_dev) == 0) stream_started = true;
                 ESP_LOGI(TAG, "device acquired late: %.4f MHz", FM.freq_hz / 1e6);
             } else {
+
                 vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
             }
         }
 
@@ -292,7 +291,8 @@ static void fm_rx_task(void *arg)
             if (FM.scan_peak_hz) { FM.freq_hz = FM.scan_peak_hz; }
         }
 
-        if (!s_active || !s_dev) break;
+        if (!s_active) break;
+        if (!s_dev) continue;
 
         if (!stream_started) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
         int got = 0; bool full = true;
@@ -408,6 +408,13 @@ static void fm_defaults_once(void)
 static void fm_on_enter(void)
 {
     if (s_active) return;
+
+    for (int i = 0; i < 200 && s_running; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_running) {
+        ESP_LOGE(TAG, "previous fm_rx_task still alive - refusing to start a second one");
+        return;
+    }
+
     fm_defaults_once();
 
     fm_dsp_init(&s_dsp);
@@ -540,7 +547,8 @@ int  lakeshark_fm_get_baud(void)     { return FM.pocsag_baud; }
 
 void lakeshark_fm_squelch_delta(int d)
 {
-    int v = FM.squelch_tenths + d;
+    int base = (s_squelch_req >= 0) ? s_squelch_req : FM.squelch_tenths;
+    int v = base + d;
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     s_squelch_req = v;
@@ -551,7 +559,11 @@ void lakeshark_fm_set_squelch(int v)
     if (v > 100) v = 100;
     s_squelch_req = v;
 }
-int  lakeshark_fm_squelch_get(void) { return FM.squelch_tenths; }
+int  lakeshark_fm_squelch_get(void)
+{
+    int pending = s_squelch_req;
+    return (pending >= 0) ? pending : FM.squelch_tenths;
+}
 
 void lakeshark_fm_scan_restart(void) { s_scan_restart = true; }
 void lakeshark_fm_tune_to_peak(void)

@@ -1,4 +1,3 @@
-
 #include "tone.h"
 #include "audio_out.h"
 #include "freertos/FreeRTOS.h"
@@ -10,6 +9,8 @@ void audio_tone(float freq, float dur_s, float amp)
 {
     int total = (int)(AUDIO_RATE_HZ * dur_s);
     static int16_t buf[256];
+
+    audio_out_play_now();
     for (int i = 0; i < total; i += 256) {
         int chunk = total - i;
         if (chunk > 256) chunk = 256;
@@ -32,6 +33,8 @@ void snd_p25_chirp(void)
     if (total > 2048) total = 2048;
     const int fade_in  = (int)(AUDIO_RATE_HZ * 0.005f);
     const int fade_out = (int)(AUDIO_RATE_HZ * 0.010f);
+
+    audio_out_play_now();
 
     float ph = 0.0f;
     for (int i = 0; i < total; i++) {
@@ -72,4 +75,69 @@ void snd_lost_contact(void)
 void snd_position_fix(void)
 {
     audio_tone(1800.0f, 0.02f, 3000.0f);
+}
+
+static void moto_tone(float freq, float dur_s, float amp)
+{
+    int total = (int)(AUDIO_RATE_HZ * dur_s);
+    static int16_t buf[256];
+    const int fade = (int)(AUDIO_RATE_HZ * 0.003f);
+
+    audio_out_play_now();
+
+    float ph = 0.0f, ph3 = 0.0f;
+    for (int i = 0; i < total; i += 256) {
+        int chunk = total - i;
+        if (chunk > 256) chunk = 256;
+        for (int j = 0; j < chunk; j++) {
+            int n = i + j;
+            ph  += 2.0f * (float)M_PI * freq         / (float)AUDIO_RATE_HZ;
+            ph3 += 2.0f * (float)M_PI * freq * 3.0f  / (float)AUDIO_RATE_HZ;
+            if (ph  > 2.0f * (float)M_PI) ph  -= 2.0f * (float)M_PI;
+            if (ph3 > 2.0f * (float)M_PI) ph3 -= 2.0f * (float)M_PI;
+
+            float env = 1.0f;
+            if (n < fade)                env = (float)n / (float)fade;
+            else if (n >= total - fade)  env = (float)(total - n) / (float)fade;
+
+            float s = sinf(ph) + 0.18f * sinf(ph3);
+            buf[j] = (int16_t)(s * amp * env * 0.85f);
+        }
+        audio_write_mono(buf, chunk);
+    }
+}
+
+void snd_moto_power_on(void)
+{
+
+    moto_tone(784.0f,  0.070f, 7000.0f);
+    moto_tone(1046.5f, 0.070f, 7200.0f);
+    moto_tone(1318.5f, 0.130f, 7600.0f);
+}
+
+void snd_moto_alert(void)
+{
+
+    for (int i = 0; i < 2; i++) {
+        moto_tone(1244.5f, 0.090f, 7200.0f);
+        moto_tone(1661.0f, 0.090f, 7200.0f);
+        vTaskDelay(pdMS_TO_TICKS(60));
+    }
+}
+
+void snd_moto_bonk(void)
+{
+
+    moto_tone(311.1f, 0.110f, 6500.0f);
+    vTaskDelay(pdMS_TO_TICKS(45));
+    moto_tone(233.1f, 0.170f, 6500.0f);
+}
+
+void snd_moto_full(void)
+{
+    snd_moto_power_on();
+    vTaskDelay(pdMS_TO_TICKS(260));
+    snd_moto_alert();
+    vTaskDelay(pdMS_TO_TICKS(260));
+    snd_moto_bonk();
 }

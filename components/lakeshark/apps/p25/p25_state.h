@@ -69,6 +69,10 @@ typedef struct {
 
     int64_t  sync_active_until_us;
 
+    int64_t  nac_seen_us;
+    int64_t  tg_seen_us;
+    int64_t  src_seen_us;
+
     float    demod_gain;
     bool     demod_invert;
     int      rtl_gain_tenths;

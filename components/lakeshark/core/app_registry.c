@@ -1,4 +1,3 @@
-
 #include "app_registry.h"
 #include "event_bus.h"
 #include "freertos/FreeRTOS.h"
@@ -32,6 +31,15 @@ bool app_usb_autoreboot(void)        { return s_usb_autoreboot; }
 #define APP_REQ_RECOVER (-4)
 
 extern int rtlsdr_dev_reopen(void);
+
+extern void rtlsdr_stream_stop(void);
+extern void esp_libusb_bulk_teardown(void);
+
+static void radio_pipe_hard_stop(void)
+{
+    rtlsdr_stream_stop();
+    esp_libusb_bulk_teardown();
+}
 
 #define RECOVER_MAGIC 0x52534352u
 #define RECOVER_LOOP_MAX 2
@@ -87,6 +95,7 @@ static void do_park(void)
     const app_t *cur = s_apps[s_current_app];
     ESP_LOGI(TAG, "parking radio app '%s'", cur ? cur->name : "?");
     if (cur && cur->on_exit) cur->on_exit();
+    radio_pipe_hard_stop();
     s_parked = true;
     s_switch_in_flight = false;
 }
@@ -120,6 +129,7 @@ static void do_switch(int idx)
              s_parked ? " (from parked)" : "");
 
     if (idx != s_current_app && old && old->on_exit && !s_parked) old->on_exit();
+    radio_pipe_hard_stop();
 
     s_parked      = false;
     s_current_app = idx;
@@ -144,6 +154,7 @@ static void do_recover(void)
     s_switch_in_flight = true;
     ESP_LOGW(TAG, "USB pipe wedged -- recovering radio app '%s'", cur ? cur->name : "?");
     if (cur && cur->on_exit)  cur->on_exit();
+    radio_pipe_hard_stop();
 
     if (rtlsdr_dev_reopen() == 0) {
         if (cur && cur->on_enter) cur->on_enter();

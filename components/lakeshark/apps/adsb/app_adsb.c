@@ -39,10 +39,40 @@ static void age_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static uint32_t s_cfg_freq = 1090000000UL;
+static int      s_cfg_gain = 496;
+
+static void adsb_cache_settings(const app_t *a)
+{
+    if (!a) return;
+    uint32_t freq = settings_get_freq(a);
+    int      gain = settings_get_gain(a);
+
+    if (freq < 1080000000UL || freq > 1100000000UL) {
+        freq = 1090000000UL;
+        settings_set_freq(a, freq);
+    }
+    if (gain <= 0) {
+        gain = 496;
+        settings_set_gain(a, gain);
+    }
+    s_cfg_freq = freq;
+    s_cfg_gain = gain;
+}
+
 static void adsb_on_enter(void)
 {
 
     if (adsb_rx_should_run) return;
+
+    for (int i = 0; i < 200 && (adsb_rx_running || s_age_running); i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (adsb_rx_running || s_age_running) {
+        ESP_LOGE(TAG, "previous ADS-B tasks still alive (rx=%d age=%d) - refusing to start "
+                      "a second reader; reboot to clear",
+                 adsb_rx_running, s_age_running);
+        return;
+    }
 
 #ifdef CONFIG_ENABLE_TUI
     adsb_on_enter_tui();
@@ -50,17 +80,8 @@ static void adsb_on_enter(void)
 
     rtlsdr_dev_t *dev = rtlsdr_dev_get();
     if (dev) {
-        const app_t *cur = app_current();
-        uint32_t freq = cur ? settings_get_freq(cur) : 1090000000UL;
-        int      gain = cur ? settings_get_gain(cur) : 496;
-        if (freq < 1080000000UL || freq > 1100000000UL) {
-            freq = 1090000000UL;
-            if (cur) settings_set_freq(cur, freq);
-        }
-        if (gain <= 0) {
-            gain = 496;
-            if (cur) settings_set_gain(cur, gain);
-        }
+        uint32_t freq = s_cfg_freq;
+        int      gain = s_cfg_gain;
         rtlsdr_set_center_freq(dev, freq);
         rtlsdr_set_sample_rate(dev, 2000000);
         rtlsdr_set_tuner_gain_mode(dev, 1);
@@ -167,5 +188,8 @@ const app_t *adsb_app_desc(void) { return &ADSB_APP; }
 int adsb_app_register(void)
 {
     adsb_decode_init();
-    return app_register(&ADSB_APP);
+    int idx = app_register(&ADSB_APP);
+
+    adsb_cache_settings(&ADSB_APP);
+    return idx;
 }

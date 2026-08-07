@@ -1,9 +1,11 @@
-
 #include "lakeshark_backend.h"
+
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 
@@ -16,6 +18,8 @@
 #include "usb_host.h"
 
 #include "p25_state.h"
+#include "fm_state.h"
+#include "adsb_state.h"
 #include "dsp_pipeline.h"
 #include "rtl-sdr.h"
 
@@ -141,6 +145,10 @@ bool lakeshark_radio_device_ready(void) { return rtlsdr_dev_get() != NULL; }
 
 const char *lakeshark_recovery_take_app(void) { return app_recovery_take(); }
 
+void lakeshark_radio_recover(void)              { app_request_recover(); }
+void lakeshark_set_usb_autoreboot(bool en)      { app_set_usb_autoreboot(en); }
+bool lakeshark_usb_autoreboot(void)             { return app_usb_autoreboot(); }
+
 static void adsb_apply_gain(int g);
 
 void lakeshark_radio_set_gain(int tenths)
@@ -244,6 +252,13 @@ void lakeshark_p25_reset_stats(void)
     P25.dsd_bch_fail_count = 0;
     autoscan_bch_ok_flag   = 0;
     dsd_bch_fail_counter   = 0;
+
+    P25.dsd_nac     = 0;
+    P25.dsd_tg      = 0;
+    P25.dsd_src     = 0;
+    P25.nac_seen_us = 0;
+    P25.tg_seen_us  = 0;
+    P25.src_seen_us = 0;
 }
 
 void lakeshark_p25_gain_step(void)
@@ -287,6 +302,143 @@ void lakeshark_p25_set_voice_gate(int v)
     p25_voice_gate = v;
 }
 int lakeshark_p25_voice_gate(void) { return p25_voice_gate; }
+
+void lakeshark_p25_telemetry(lakeshark_p25_tel_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    int64_t now = esp_timer_get_time();
+
+    out->freq_hz           = s_tune_freq_hz;
+    out->demod_mode        = (int)s_dsp.mode;
+    out->gain_tenths       = P25.rtl_gain_tenths;
+    out->agc_on            = p25_agc_on ? 1 : 0;
+    out->nac               = P25.dsd_nac;
+    out->tg                = P25.dsd_tg;
+    out->src               = P25.dsd_src;
+    out->has_sync          = (P25.dsd_has_sync || now < P25.sync_active_until_us) ? 1 : 0;
+    out->voice_active      = (now < P25.voice_active_until_us) ? 1 : 0;
+    out->sync_count        = P25.dsd_sync_count;
+    out->voice_count       = P25.dsd_voice_count;
+    out->bch_ok            = P25.dsd_bch_ok_count;
+    out->bch_fail          = P25.dsd_bch_fail_count;
+    out->iq_level          = (int)(P25.iq_level * 1000.0f);
+    out->polarity_inverted = P25.demod_invert ? 1 : 0;
+    out->beep              = P25.sync_beep_enabled ? 1 : 0;
+    out->voice_gate        = p25_voice_gate;
+    out->rtl_ready         = lakeshark_radio_device_ready() ? 1 : 0;
+    out->ring_fill         = P25.ring_fill;
+    out->ring_size         = P25.ring_size;
+    out->read_errors       = P25.read_errors;
+    out->iq_bytes_sec      = P25.iq_bytes_sec;
+    out->audio_drops       = P25.audio_drops;
+    out->decode_us         = (int)(P25.dsd_decode_ms * 1000.0f);
+
+    out->nac_age_ms = P25.nac_seen_us ? (int)((now - P25.nac_seen_us) / 1000) : -1;
+    out->tg_age_ms  = P25.tg_seen_us  ? (int)((now - P25.tg_seen_us)  / 1000) : -1;
+    out->src_age_ms = P25.src_seen_us ? (int)((now - P25.src_seen_us) / 1000) : -1;
+
+    strlcpy(out->ftype, P25.dsd_ftype, sizeof(out->ftype));
+    strlcpy(out->err,   P25.dsd_err_str, sizeof(out->err));
+}
+
+void lakeshark_adsb_telemetry(lakeshark_adsb_tel_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    int64_t now = esp_timer_get_time();
+
+    out->freq_hz      = 1090000000UL;
+    out->gain_tenths  = lakeshark_adsb_gain_tenths();
+    out->rtl_ready    = lakeshark_radio_device_ready() ? 1 : 0;
+    out->iq_bytes_sec = perf_get_bytes_per_sec();
+
+    out->tracked      = adsb_state_active_count();
+    out->msgs_total   = perf_get_msgs_total();
+    out->msgs_sec     = perf_get_msgs_per_sec();
+    out->crc_good     = perf_get_crc_good();
+    out->crc_err      = perf_get_crc_err();
+    out->bursts_sec   = perf_get_bursts_per_sec();
+    out->mag_avg      = perf_get_mag_avg();
+    out->mag_peak     = perf_get_mag_peak();
+
+    int64_t last_good = perf_get_last_good_us();
+    out->last_msg_ms  = last_good ? (int)((now - last_good) / 1000) : -1;
+
+    for (int slot = 0; slot < ADSB_MAX_TRACKED; slot++) {
+        const adsb_aircraft_t *a = adsb_state_get(slot);
+        if (a && a->active) out->n_aircraft++;
+    }
+    if (out->n_aircraft > LAKESHARK_ADSB_MAX) out->n_aircraft = LAKESHARK_ADSB_MAX;
+}
+
+bool lakeshark_adsb_aircraft_at(int index, lakeshark_adsb_ac_t *out)
+{
+    if (!out || index < 0) return false;
+
+    int64_t now = esp_timer_get_time();
+    int dense = 0;
+
+    for (int slot = 0; slot < ADSB_MAX_TRACKED; slot++) {
+        const adsb_aircraft_t *a = adsb_state_get(slot);
+        if (!a || !a->active) continue;
+        if (dense++ != index) continue;
+
+        memset(out, 0, sizeof(*out));
+        out->icao      = a->icao;
+        strlcpy(out->callsign, a->callsign, sizeof(out->callsign));
+        out->altitude  = a->altitude;
+        out->velocity  = a->velocity;
+        out->heading   = a->heading;
+        out->vert_rate = a->vert_rate;
+        out->lat       = a->lat;
+        out->lon       = a->lon;
+        out->pos_valid = a->pos_valid ? 1 : 0;
+        out->msg_count = a->msg_count;
+        out->age_ms    = a->last_seen_us ? (int)((now - a->last_seen_us) / 1000) : -1;
+        return true;
+    }
+    return false;
+}
+
+void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    out->submode        = (int)FM.mode;
+    out->freq_hz        = FM.freq_hz;
+    out->gain_tenths    = FM.gain_tenths;
+    out->iq_level       = (int)(FM.iq_level * 1000.0f);
+    out->audio_level    = (int)(FM.audio_level * 1000.0f);
+    out->squelch_tenths = FM.squelch_tenths;
+    out->squelch_open   = FM.squelch_open ? 1 : 0;
+    out->iq_bytes_sec   = FM.iq_bytes_sec;
+    out->read_errors    = (int)FM.read_errors;
+
+    out->scan_start_hz  = FM.scan_start_hz;
+    out->scan_stop_hz   = FM.scan_stop_hz;
+    out->scan_peak_hz   = FM.scan_peak_hz;
+    out->scan_peak_db   = (int)(FM.scan_peak_db * 10.0f);
+    out->scan_sweeps    = FM.scan_sweeps;
+
+    out->pocsag_baud   = FM.pocsag_baud;
+    out->pocsag_auto   = FM.pocsag_auto ? 1 : 0;
+    out->pocsag_sync   = FM.pocsag_sync ? 1 : 0;
+    out->pocsag_pages  = FM.pocsag_pages;
+    out->pocsag_frames = FM.pocsag_frames;
+
+    if (FM.page_count > 0) {
+        int idx = (FM.page_head - 1 + FM_PAGE_LOG_MAX) % FM_PAGE_LOG_MAX;
+        const fm_page_t *p = &FM.pages[idx];
+        out->pocsag_last_addr = p->address;
+        out->pocsag_last_baud = p->baud;
+        out->pocsag_last_type = p->type;
+        strlcpy(out->pocsag_last_text, p->text, sizeof(out->pocsag_last_text));
+    }
+}
 
 extern rtlsdr_dev_t *rtlsdr_dev_get(void);
 

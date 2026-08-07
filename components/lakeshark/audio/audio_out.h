@@ -1,4 +1,3 @@
-
 #ifndef AUDIO_OUT_H
 #define AUDIO_OUT_H
 
@@ -27,9 +26,9 @@ int  audio_volume_get(void);
 
 void audio_out_ensure_unmuted(void);
 
-/* Re-assert codec rate + re-prime the output ring. Call on radio-app entry to
- * avoid the first-launch underrun chop (see audio_out.c). */
 void audio_out_reset(void);
+
+void audio_out_play_now(void);
 
 uint32_t audio_drops_get(void);
 uint32_t audio_underruns_get(void);

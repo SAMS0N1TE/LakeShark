@@ -1,4 +1,3 @@
-
 #include "diag.h"
 #include "p25_state.h"
 
@@ -80,6 +79,7 @@ void diag_init(void)
         return;
     }
 
+#if DIAG_UART_ENABLE
     if (!uart_is_driver_installed(DIAG_UART_NUM)) {
         const uart_config_t cfg = {
             .baud_rate  = DIAG_UART_BAUD,
@@ -102,6 +102,10 @@ void diag_init(void)
 
     diag_line("BOOT", "diag_init ok uart=%d tx=%d rx=%d baud=%d",
               DIAG_UART_NUM, DIAG_UART_TX_PIN, DIAG_UART_RX_PIN, DIAG_UART_BAUD);
+#else
+    ESP_LOGI(TAG, "diag UART disabled - GPIO%d/%d belong to the flipper link",
+             DIAG_UART_TX_PIN, DIAG_UART_RX_PIN);
+#endif
     diag_line("BOOT", "phase=1 target_freq=154785000 expect=P25p1_NH");
 }
 
