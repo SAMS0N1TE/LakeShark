@@ -1,4 +1,6 @@
 #include "audio_out.h"
+#include "audio_eq.h"
+#include "tone.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/stream_buffer.h"
@@ -147,6 +149,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
         if (s_reprime) {
             s_reprime = false;
             if (s_ring) xStreamBufferReset(s_ring);
+            audio_eq_reset_state();
             playing = false;
         }
         if (!playing) {
@@ -172,9 +175,9 @@ static void IRAM_ATTR audio_player_task(void *arg)
 
         if (frames > 0) {
             last_data = esp_timer_get_time();
-            float vol = s_volume / 100.0f;
+            audio_eq_process(mono, frames);
             for (int i = 0; i < frames; i++) {
-                int16_t s = (int16_t)(mono[i] * vol);
+                int16_t s = mono[i];
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;
             }
             size_t wr = 0;
@@ -208,6 +211,8 @@ esp_err_t audio_out_init(void)
     int set = 0;
     bsp_extra_codec_volume_set(s_volume, &set);
 
+    audio_eq_init(AUDIO_RATE_HZ);
+
     s_push_lock = xSemaphoreCreateMutex();
 
     s_ring_buf = heap_caps_malloc(RING_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -225,6 +230,8 @@ esp_err_t audio_out_init(void)
         ESP_LOGE(TAG, "audio task create failed");
         return ESP_FAIL;
     }
+
+    snd_test_init();
 
     s_ready = true;
     ESP_LOGI(TAG, "audio_out ready: ring=%dms prebuf=%dms vol=%d",

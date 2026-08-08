@@ -50,6 +50,19 @@ void settings_voice_lowpass_set(int mode);
 int  settings_voice_lowshelf_get(void);
 void settings_voice_lowshelf_set(int mode);
 
+int  settings_eq_preset_get(void);
+void settings_eq_preset_set(int v);
+int  settings_eq_hp_get(void);
+void settings_eq_hp_set(int v);
+int  settings_eq_bass_get(void);
+void settings_eq_bass_set(int v);
+int  settings_eq_treb_get(void);
+void settings_eq_treb_set(int v);
+int  settings_eq_punch_get(void);
+void settings_eq_punch_set(int v);
+int  settings_eq_loud_get(void);
+void settings_eq_loud_set(int v);
+
 void settings_write_stats(uint32_t *done, uint32_t *dropped, uint32_t *commits);
 
 #ifdef __cplusplus

@@ -20,12 +20,12 @@ static bool         s_nvs_ok = false;
 #define SET_QUIET_MS    300
 #define SET_STACK_WORDS (4096 / sizeof(StackType_t))
 
-typedef enum { SV_U8, SV_U32, SV_I32 } sv_type_t;
+typedef enum { SV_U8, SV_I8, SV_U32, SV_I32 } sv_type_t;
 
 typedef struct {
     char      key[NVS_KEY_NAME_MAX_SIZE];
     sv_type_t type;
-    union { uint8_t u8; uint32_t u32; int32_t i32; } v;
+    union { uint8_t u8; int8_t i8; uint32_t u32; int32_t i32; } v;
 } set_write_t;
 
 static QueueHandle_t   s_wq = NULL;
@@ -39,6 +39,7 @@ static void nvs_apply(const set_write_t *w)
 {
     switch (w->type) {
     case SV_U8:  nvs_set_u8 (s_nvs, w->key, w->v.u8);  break;
+    case SV_I8:  nvs_set_i8 (s_nvs, w->key, w->v.i8);  break;
     case SV_U32: nvs_set_u32(s_nvs, w->key, w->v.u32); break;
     case SV_I32: nvs_set_i32(s_nvs, w->key, w->v.i32); break;
     }
@@ -95,6 +96,7 @@ static void set_put(const char *key, sv_type_t type, uint32_t raw)
     w.type = type;
     switch (type) {
     case SV_U8:  w.v.u8  = (uint8_t)raw;  break;
+    case SV_I8:  w.v.i8  = (int8_t)raw;   break;
     case SV_U32: w.v.u32 = raw;           break;
     case SV_I32: w.v.i32 = (int32_t)raw;  break;
     }
@@ -346,6 +348,36 @@ void settings_voice_lowpass_set(int m)
     if (!s_nvs_ok || m < 0 || m > 2) return;
     sput_u8("voice_lp", (uint8_t)m);
 }
+static int eq_get_i(const char *key, int deflt, int lo, int hi)
+{
+    if (!s_nvs_ok) return deflt;
+    int8_t v = 0;
+    if (nvs_get_i8(s_nvs, key, &v) != ESP_OK) return deflt;
+    if (v < lo || v > hi) return deflt;
+    return (int)v;
+}
+
+static void eq_set_i(const char *key, int v, int lo, int hi)
+{
+    if (!s_nvs_ok) return;
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    set_put(key, SV_I8, (uint32_t)(int32_t)v);
+}
+
+int  settings_eq_preset_get(void)      { return eq_get_i("eq_preset", 1,   0,  4);   }
+void settings_eq_preset_set(int v)     { eq_set_i("eq_preset", v,   0,  4);          }
+int  settings_eq_hp_get(void)          { return eq_get_i("eq_hp",    18,  0,  40);   }
+void settings_eq_hp_set(int v)         { eq_set_i("eq_hp",    v,   0,  40);          }
+int  settings_eq_bass_get(void)        { return eq_get_i("eq_bass",  6,  -6,  12);   }
+void settings_eq_bass_set(int v)       { eq_set_i("eq_bass",  v,  -6,  12);          }
+int  settings_eq_treb_get(void)        { return eq_get_i("eq_treb", -2,  -8,   8);   }
+void settings_eq_treb_set(int v)       { eq_set_i("eq_treb",  v,  -8,   8);          }
+int  settings_eq_punch_get(void)       { return eq_get_i("eq_punch", 30,  0, 100);   }
+void settings_eq_punch_set(int v)      { eq_set_i("eq_punch", v,   0, 100);          }
+int  settings_eq_loud_get(void)        { return eq_get_i("eq_loud",  1,   0,   3);   }
+void settings_eq_loud_set(int v)       { eq_set_i("eq_loud",  v,   0,   3);          }
+
 int settings_voice_lowshelf_get(void)
 {
     if (!s_nvs_ok) return 0;

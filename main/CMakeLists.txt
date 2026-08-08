@@ -3,9 +3,9 @@ if(CONFIG_LAKESHARK_HEADLESS)
     # still compiled below for now since the GUI components pull them in;
     # excluding them entirely is a follow-up optimization.)
     idf_component_register(
-        SRCS headless_main.c bsod.c
+        SRCS headless_main.c flipper_link.c ble_link.c bsod.c
         INCLUDE_DIRS .
-        PRIV_REQUIRES console)
+        PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark espressif__esp_hosted bt)
 else()
     idf_component_register(
         SRCS main.cpp boot_splash.cpp bsod.c
