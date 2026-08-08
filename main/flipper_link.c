@@ -1,5 +1,3 @@
-/* flipper_link - serial control head protocol for LakeShark. See header. */
-
 #include "flipper_link.h"
 
 #include <ctype.h>
@@ -41,14 +39,11 @@ static uint32_t s_rx_lines  = 0;
 static uint32_t s_tx_lines  = 0;
 static uint32_t s_bad_lines = 0;
 
-/* Set when a command asks for an out-of-band immediate telemetry frame. */
 static volatile bool s_stat_now = false;
-
 
 static esp_err_t link_install(void);
 static void      link_uninstall(void);
 
-/* Which radio app is live, so commands and telemetry can follow it. */
 typedef enum { HOST_MODE_P25, HOST_MODE_ADSB, HOST_MODE_FM } host_mode_t;
 
 static host_mode_t host_mode(void)
@@ -61,14 +56,11 @@ static host_mode_t host_mode(void)
     return HOST_MODE_P25;
 }
 
-/* ------------------------------------------------------------------ utils */
-
 static void str_upper(char *s)
 {
     for (; *s; s++) *s = (char)toupper((unsigned char)*s);
 }
 
-/* Split `line` in place into at most `max` whitespace-delimited tokens. */
 static int tokenize(char *line, char **argv, int max)
 {
     int argc = 0;
@@ -83,8 +75,6 @@ static int tokenize(char *line, char **argv, int max)
     return argc;
 }
 
-/* dsd_err_str and friends can contain spaces, which would break the
- * key=value telemetry framing. Squash them. */
 static void sanitize(char *s)
 {
     for (; *s; s++) {
@@ -104,56 +94,21 @@ static bool parse_i32(const char *s, int32_t *out)
     return true;
 }
 
-/* Accepts "851.0125" (MHz), "851012500" (Hz) or "851012.5" (kHz-ish). We treat
- * anything under 10000 as MHz and anything else as Hz, which covers every
- * sensible P25 entry without needing a unit suffix. */
 static bool parse_freq_hz(const char *s, uint32_t *out)
 {
     if (!s || !*s) return false;
     char *end = NULL;
     double v = strtod(s, &end);
     if (end == s || v <= 0) return false;
-    if (v < 10000.0) v *= 1e6;          /* MHz */
+    if (v < 10000.0) v *= 1e6;
     if (v < 1e6 || v > 2.0e9) return false;
     *out = (uint32_t)(v + 0.5);
     return true;
 }
 
-/* ------------------------------------------------------------- telemetry */
-
-/* How long the dongle has been claiming to be ready while delivering nothing.
- *
- * The failure this exists for: nudge the P4 and the RTL-SDR's USB connection
- * drops out from under the host stack. `rtl` still reads 1 - the device handle
- * is open - but no transfers are posted and `bps` sits at 0 for ever. The log
- * says `USB HOST: Get EP handle error: ESP_ERR_NOT_FOUND` once and then nothing.
- * From the head it looks exactly like a quiet band, which is why it went
- * unnoticed until someone power-cycled the board.
- *
- * Two failures look identical from the head and are worth telling apart,
- * because they need different recoveries. Both were seen on hardware:
- *
- *   - The SoC ran out of internal RAM (an app switch could not get its task
- *     stack). REBOOT fixes this, because the heap is rebuilt from scratch.
- *   - The dongle's USB connection was physically disturbed. REBOOT does NOT fix
- *     this - it is the dongle that needs reinitialising, and it survives an SoC
- *     reset - so only `SDR power`, which drops its VBUS, recovers it.
- *
- * This counter only reports the second class: it requires the device to claim
- * readiness, which a crashed or rebooting SoC does not.
- *
- * Each builder records the byte rate it just reported, and this turns a run of
- * zeroes into a number the head can put on screen. */
 static uint32_t s_last_bps = 0;
 static int64_t  s_bps_ok_us = 0;
 
-/* Set once the dongle has actually delivered samples in the current mode.
- *
- * Without this, a mode that has never streamed reads as "stalled" from the
- * moment it is entered, which is not the same thing at all and must not trigger
- * recovery: ADS-B currently reports rtl=1 with bps=0 indefinitely, so an
- * unguarded detector would sit there recovering a receiver that was never
- * running. Only a receiver that WAS working and then stopped is a stall. */
 static bool s_bps_seen = false;
 
 static int sdr_stall_s(void)
@@ -161,8 +116,7 @@ static int sdr_stall_s(void)
     int64_t now = esp_timer_get_time();
 
     if (!lakeshark_radio_device_ready()) {
-        /* Not claiming to be ready, so "stalled" is not the right word for it -
-         * the head shows "no SDR" from the rtl key instead. */
+
         s_bps_ok_us = now;
         return 0;
     }
@@ -178,9 +132,6 @@ static int sdr_stall_s(void)
     return (int)((now - s_bps_ok_us) / 1000000LL);
 }
 
-/* Called when the app changes: the new app has not streamed yet, and carrying
- * the previous one's "it was working" over to it is how a healthy mode switch
- * gets mistaken for a stall. */
 static void sdr_stall_reset(void)
 {
     s_bps_seen  = false;
@@ -188,21 +139,6 @@ static void sdr_stall_reset(void)
     s_bps_ok_us = esp_timer_get_time();
 }
 
-/* Health keys for the head's Device page: uptime seconds, free internal and
- * free DMA-capable bytes. Internal/DMA RAM is the scarce resource on this board
- * and the failures when it runs out are indirect (an SDIO assert, a task stack
- * silently landing in PSRAM), so it is worth a permanent readout rather than a
- * command you have to remember to run.
- *
- * Emitted at 1 Hz, not on every frame. They change slowly, and on BLE the frame
- * length is not free: the ACL buffer is malloc'd from the internal heap by the
- * VHCI transport, and a failed allocation there is a hard assert that reboots
- * the radio (see ble_write()). Adding ~25 bytes to all five frames a second is
- * exactly the kind of pressure worth not adding. The head carries the last
- * values forward across frames that omit them.
- *
- * Appended by build_telemetry(), which is also what terminates the line - the
- * per-mode builders below deliberately do not emit the newline themselves. */
 static int append_sys(char *buf, size_t len, int n)
 {
     static int64_t last_us = 0;
@@ -212,10 +148,7 @@ static int append_sys(char *buf, size_t len, int n)
     int stall = sdr_stall_s();
 
     int64_t now = esp_timer_get_time();
-    /* The stall counter is the exception to the 1 Hz rule: once the dongle has
-     * gone quiet the head should say so on the next frame, not up to a second
-     * later, because "is it a quiet band or is my radio dead" is exactly the
-     * question this answers. */
+
     bool due = !last_us || (now - last_us >= 1000000LL);
     if (!due && stall == 0) return n;
     if (due) last_us = now;
@@ -245,9 +178,6 @@ int flipper_link_eq_snapshot(char *buf, size_t len)
     return n;
 }
 
-/* FM frame. Same "$ " framing and the same common keys (f/g/v/mu/rtl/iq/re/bps/
- * md) as the P25 one, so the head's parser needs no special case - it just sees
- * md=FM and the fm* keys appear. */
 static int build_telemetry_fm(char *buf, size_t len)
 {
     static const char *sub[] = { "listen", "scan", "pocsag", "wfm" };
@@ -280,18 +210,6 @@ static int build_telemetry_fm(char *buf, size_t len)
         (unsigned long)t.pocsag_last_addr, t.pocsag_last_baud, ptype, text);
 }
 
-/* ADS-B frame. Same "$ " framing and common keys as the others, plus md=ADSB.
- *
- * There was no ADS-B frame at all before: build_telemetry() fell through to the
- * P25 branch, so a head in ADS-B mode was shown a frozen P25 talkgroup and a
- * dead S-meter under an "ADS-B" label. That is a large part of why the on-screen
- * detail "does not work most of the time".
- *
- * The tracked table can hold 16 aircraft and a full dump would not fit in
- * TEL_MAX, so each frame carries a window of AC_PER_FRAME entries starting at
- * `aci`, and the window advances every frame. At 5 Hz the whole table refreshes
- * in under a second, and the head reassembles it by slot rather than having to
- * ask for more. */
 #define AC_PER_FRAME 4
 
 static int build_telemetry_adsb(char *buf, size_t len)
@@ -317,11 +235,6 @@ static int build_telemetry_adsb(char *buf, size_t len)
         s_ac_cursor, t.n_aircraft);
     if (n < 0) return n;
 
-    /* One token per aircraft: a<slot>=ICAO,CALL,ALT,SPD,HDG,VS,AGEms,MSGS
-     * Callsign is sanitised like every other string field, and '-' stands in for
-     * one that has not been decoded yet. */
-    /* One record at a time: a whole table of these on this task's stack is what
-     * overflowed it (see lakeshark_adsb_telemetry's header comment). */
     for (int k = 0; k < AC_PER_FRAME && (size_t)n < len - 1; k++) {
         int idx = s_ac_cursor + k;
         if (idx >= t.n_aircraft) break;
@@ -381,8 +294,6 @@ static int build_telemetry_p25(char *buf, size_t len)
         mode, ftype, err);
 }
 
-/* Dispatch to the live app's builder, append the common health keys, terminate.
- * Owning the newline here is what lets append_sys() add to any frame. */
 static int build_telemetry(char *buf, size_t len)
 {
     int n;
@@ -392,8 +303,7 @@ static int build_telemetry(char *buf, size_t len)
     default:             n = build_telemetry_p25(buf, len);  break;
     }
     if (n < 0) return n;
-    /* snprintf reports what it *would* have written, not what it did, so a
-     * truncated frame would otherwise index past the buffer here. */
+
     if ((size_t)n >= len - 2) n = (int)len - 2;
 
     n = append_sys(buf, len, n);
@@ -402,8 +312,6 @@ static int build_telemetry(char *buf, size_t len)
     buf[n]   = '\0';
     return n;
 }
-
-/* --------------------------------------------------------- command table */
 
 static void eq_reply(char *reply, size_t reply_len)
 {
@@ -442,8 +350,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         } else if (host_mode() == HOST_MODE_ADSB) {
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
-            /* Route by the active app: tuning P25 while the head is showing FM
-             * silently did nothing, which looked like a dead link. */
+
             if (host_mode() == HOST_MODE_FM) lakeshark_fm_set_freq(hz);
             else                             lakeshark_p25_set_freq(hz);
             s_stat_now = true;
@@ -469,7 +376,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         }
 
     } else if (!strcmp(cmd, "FM")) {
-        /* Sub-mode select; hops into FM the way the console `fm` command does. */
+
         static const char *names[] = { "listen", "scan", "pocsag", "wfm" };
         if (!a1) {
             snprintf(reply, reply_len, "+OK fm=%s\n", names[lakeshark_fm_get_mode() & 3]);
@@ -513,7 +420,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         if (!a1) {
             snprintf(reply, reply_len, "+OK pb=%d\n", lakeshark_fm_get_baud());
         } else if (parse_i32(a1, &n)) {
-            lakeshark_fm_set_baud((int)n);   /* 0 = auto, else 512/1200/2400 */
+            lakeshark_fm_set_baud((int)n);
             s_stat_now = true;
             snprintf(reply, reply_len, "+OK pb=%d\n", lakeshark_fm_get_baud());
         } else {
@@ -614,9 +521,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
                  lakeshark_p25_polarity_inverted() ? 1 : 0);
 
     } else if (!strcmp(cmd, "BEEP")) {
-        /* "BEEP NOW" plays a tone immediately. Kept distinct from the 0/1 form
-         * below, which only arms the P25 sync beep and makes no sound by
-         * itself - so it can never answer "is the speaker actually working?". */
+
         if (a1 && !strcasecmp(a1, "NOW")) {
             if (!s_host.play_test_sound) {
                 snprintf(reply, reply_len, "-ERR no test sound\n");
@@ -668,31 +573,17 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         snprintf(reply, reply_len, "+OK md=%s\n",
                  s_host.current_mode_name ? s_host.current_mode_name() : "?");
 
-    /* ---- device management ------------------------------------------------
-     *
-     * The radio normally lives out of reach - on a battery, in another room,
-     * with no console attached - so every recovery action that used to require
-     * the USB-C port has a protocol equivalent here. All of them reply before
-     * doing anything disruptive, so the head sees an acknowledgement rather
-     * than a link that simply goes quiet.
-     */
     } else if (!strcmp(cmd, "REBOOT")) {
         if (!s_host.reboot) {
             snprintf(reply, reply_len, "-ERR no reboot hook\n");
             return;
         }
-        /* Answer first. The reply is written by the caller once we return, and
-         * the hook defers the actual restart, so the head gets its +OK and can
-         * show "rebooting" instead of "link lost". */
+
         snprintf(reply, reply_len, "+OK rebooting\n");
         s_host.reboot();
 
     } else if (!strcmp(cmd, "LOG")) {
-        /* Same runtime log control as the console `log` command. Worth having
-         * on the protocol because the situation where you most want to turn
-         * logging up is the one where the radio is not on your desk - and
-         * turning it DOWN remotely matters too, since a chatty tag costs the
-         * radio real time on whatever task emits it. */
+
         if (!s_host.set_log_level) {
             snprintf(reply, reply_len, "-ERR no log hook\n");
             return;
@@ -720,12 +611,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         snprintf(reply, reply_len, "+OK %s\n", info);
 
     } else if (!strcmp(cmd, "C6")) {
-        /* The ESP32-C6 carries the BLE controller. When BLE stops working the
-         * co-processor is the first thing to bounce, and until now that meant
-         * `c6 reset` on the console - unreachable exactly when BLE is the only
-         * link you have. Over UART this is a genuine recovery path; over BLE it
-         * will cut the link it arrived on, which is expected and worth doing
-         * when the alternative is walking to the radio. */
+
         if (a1 && !strcasecmp(a1, "reset")) {
             if (!s_host.c6_reset) { snprintf(reply, reply_len, "-ERR no c6 hook\n"); return; }
             snprintf(reply, reply_len, "+OK c6 reset\n");
@@ -740,20 +626,14 @@ static void handle_line(char *line, char *reply, size_t reply_len)
 
     } else if (!strcmp(cmd, "SDR")) {
         if (a1 && !strcasecmp(a1, "reset")) {
-            /* Soft restart: park and unpark the stream. Fixes the "rtl=0 bps=0
-             * after a mode switch" case. Does NOT fix a dongle whose USB
-             * connection dropped - for that see POWER below. */
+
             if (!s_host.sdr_reset) { snprintf(reply, reply_len, "-ERR no sdr hook\n"); return; }
             s_host.sdr_reset();
             s_stat_now = true;
             snprintf(reply, reply_len, "+OK sdr reset rtl=%d\n",
                      lakeshark_radio_device_ready() ? 1 : 0);
         } else if (a1 && !strcasecmp(a1, "recover")) {
-            /* The in-place recovery the LCD build already had and headless
-             * never wired up: app_request_recover() exits the app, calls
-             * rtlsdr_dev_reopen() - a real USB device reopen, which is the step
-             * park/unpark cannot do - and re-enters. Far cheaper than the power
-             * cycle below, and it is what should be tried first. */
+
             if (!s_host.sdr_recover) {
                 snprintf(reply, reply_len, "-ERR no sdr recover hook\n");
                 return;
@@ -762,13 +642,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "+OK sdr recovering\n");
 
         } else if (a1 && !strcasecmp(a1, "power")) {
-            /* Cut the dongle's VBUS and bring it back, forcing a full USB
-             * re-enumeration. This is the one recovery that works when the
-             * connection has been physically disturbed: the dongle keeps its
-             * own state across an SoC reset, so REBOOT does not clear it and
-             * only a power cycle does - which until now meant unplugging the
-             * board. Takes a few seconds and drops the RF stream while it
-             * happens, so it is a deliberate action, never automatic. */
+
             if (!s_host.sdr_power_cycle) {
                 snprintf(reply, reply_len, "-ERR no sdr power hook\n");
                 return;
@@ -781,10 +655,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         }
 
     } else if (!strcmp(cmd, "BLE")) {
-        /* Radio-side BLE. The handoff's sequencing rule is "bring the P4's BLE
-         * down before switching the head into BLE mode" - which was impossible
-         * from the head. Over UART it now is, which makes the documented safe
-         * switch a thing the head can perform on its own. */
+
         if (!s_host.ble_enable) {
             snprintf(reply, reply_len, "-ERR no ble hook\n");
             return;
@@ -886,33 +757,14 @@ int flipper_link_snapshot(char *buf, size_t len)
     return build_telemetry(buf, len);
 }
 
-/* Header GPIOs that are free on the ESP32-P4-NANO. Deliberately excludes the
- * UART0 console (37/38), the I2C/I2S/codec block (7-13, 53), the USB1P1 pins
- * (24-27) and the boot strap (35). GPIO32/33 are in the list now that the P25
- * diag UART has released them. */
 static const int SCAN_PINS[] = {
     33, 32, 45, 47, 48, 0, 1, 2, 3, 6, 4, 5, 20, 21, 22, 23, 36,
 };
 #define N_SCAN_PINS ((int)(sizeof(SCAN_PINS) / sizeof(SCAN_PINS[0])))
 
-/* Two pins on the header are actually control lines and must never be swept:
- *
- *   GPIO46 - USB-host VBUS enable. Reconfiguring it, especially with a
- *            pull-down, browns out the RTL-SDR.
- *   GPIO54 - ESP32-C6 reset/enable (CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE).
- *            Floating it even briefly can reset the Wi-Fi/BT co-processor and
- *            tear down the ESP-Hosted link.
- *
- * Both are absent from SCAN_PINS; these guards cover the probe path too, and
- * the case where someone points the link at one of them by hand. */
 #define VBUS_EN_GPIO 46
 #define C6_EN_GPIO   54
 
-/* Measured on a P4-NANO with nothing attached to the headers and the head's app
- * closed: these three read 100% high against the internal pull-down, so the
- * board has its own pull-ups on them. They are not evidence of a wire, and the
- * probe must not report them as one. Re-measure if the board revision changes:
- * `link probe` with every jumper off gives the baseline directly. */
 static const int IDLE_HIGH_PINS[] = { 32, 36 };
 
 static bool pin_idles_high(int pin)
@@ -932,8 +784,6 @@ int flipper_link_scan_rx(int dwell_ms)
     bool was_running = s_run;
     if (was_running) flipper_link_stop();
 
-    /* Park TX on a pin nothing else uses so the scan cannot drive the very
-     * line it is listening to. */
     s_cfg.tx_gpio = -1;
     esp_err_t err = link_install();
     if (err != ESP_OK) {
@@ -950,8 +800,7 @@ int flipper_link_scan_rx(int dwell_ms)
     size_t best_n = 0;
     for (int i = 0; i < N_SCAN_PINS; i++) {
         int pin = SCAN_PINS[i];
-        /* uart_set_pin puts a pull-up on RX, so an unconnected pin idles high
-         * and yields zero bytes rather than noise. */
+
         if (uart_set_pin(s_cfg.uart_num, UART_PIN_NO_CHANGE, pin,
                          UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
             printf("  GPIO%-2d : (cannot route)\n", pin);
@@ -987,9 +836,6 @@ int flipper_link_scan_rx(int dwell_ms)
     return best;
 }
 
-/* Sample one pin as a plain input with the internal pull-down engaged and
- * report what percentage of samples still read high. Nothing but an external
- * driver can hold a pulled-down pin up. */
 static int probe_pin_pct(int pin)
 {
     gpio_config_t in = {
@@ -1001,17 +847,15 @@ static int probe_pin_pct(int pin)
     };
     if (gpio_config(&in) != ESP_OK) return -1;
 
-    /* Let the pull-down settle against whatever capacitance is on the net. */
     vTaskDelay(pdMS_TO_TICKS(5));
 
     int high = 0;
     const int samples = 200;
     for (int i = 0; i < samples; i++) {
         if (gpio_get_level(pin)) high++;
-        esp_rom_delay_us(100);      /* 20 ms total - ~2300 bit times at 115200 */
+        esp_rom_delay_us(100);
     }
 
-    /* Leave the pin floating rather than holding a pull-down on the head's TX. */
     in.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_config(&in);
 
@@ -1024,7 +868,6 @@ int flipper_link_probe_rx(void)
     bool was_running = s_run;
     if (was_running) flipper_link_stop();
 
-    /* Two INFO lines per pin from the gpio driver would bury the results. */
     esp_log_level_t gpio_lvl = esp_log_level_get("gpio");
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
@@ -1088,8 +931,6 @@ void flipper_link_inject(const char *line, char *reply, size_t reply_len)
     handle_line(tmp, reply, reply_len);
 }
 
-/* --------------------------------------------------------------- runtime */
-
 static void link_write(const char *s, int len)
 {
     if (!s_installed) return;
@@ -1127,7 +968,7 @@ static void link_task(void *arg)
             } else if (pos < FL_LINE_MAX - 1) {
                 line[pos++] = c;
             } else {
-                /* Overlong line: drop it rather than emit a bogus command. */
+
                 pos = 0;
                 s_bad_lines++;
             }
@@ -1164,9 +1005,6 @@ static esp_err_t link_install(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    /* Other subsystems claim UARTs at runtime (the P25 diag port takes UART1),
-     * so if the configured port is already spoken for, walk the remaining HP
-     * UARTs rather than leaving the head with no link at all. */
     if (uart_is_driver_installed(s_cfg.uart_num)) {
         int found = -1;
         for (int u = SOC_UART_HP_NUM - 1; u >= 1; u--) {
@@ -1202,10 +1040,6 @@ static void link_uninstall(void)
 
     if (s_cfg.tx_gpio < 0) return;
 
-    /* Hand TX back as a plain output driven high, which is a UART line's idle
-     * state, so the head never sees a spurious start bit while we are down.
-     * (This also keeps the old GPIO46 default safe: that pin is the USB-host
-     * VBUS enable, and releasing it low would brown out the dongle.) */
     gpio_config_t out = {
         .pin_bit_mask = 1ULL << s_cfg.tx_gpio,
         .mode         = GPIO_MODE_OUTPUT,
@@ -1217,17 +1051,13 @@ static void link_uninstall(void)
     gpio_set_level(s_cfg.tx_gpio, 1);
 }
 
-/* If we have been talking for a while and the head has never answered, its TX
- * wire may simply be on a different header pin than configured. Sweep for it
- * and adopt whatever is actually clocking bytes in. Costs ~12 s of telemetry
- * downtime, but only ever runs when nothing is listening anyway. */
 static void heal_task(void *arg)
 {
     (void)arg;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(60000));
         if (!s_run || s_rx_lines > 0) continue;
-        if (s_tx_lines < 50) continue;   /* not really transmitting yet */
+        if (s_tx_lines < 50) continue;
 
         ESP_LOGW(TAG, "no RX after %lu TX frames - sweeping header pins for the head",
                  (unsigned long)s_tx_lines);
@@ -1255,11 +1085,7 @@ esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
     }
 
     s_run = true;
-    /* 6 KB, not 4. link_task holds line[192] + reply[256] + tel[512] + rx[128]
-     * before it calls anything, and the telemetry builders below it nest
-     * snprintf over a mode-specific snapshot. 4 KB overflowed outright once the
-     * ADS-B snapshot grew, and the failure mode is a stack-protection panic
-     * that only appears in one mode - worth paying for headroom here. */
+
     if (xTaskCreate(link_task, "fliplink", 6144, NULL, 5, &s_task) != pdPASS) {
         s_run = false;
         link_uninstall();
@@ -1271,8 +1097,6 @@ esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
         healer_started = (xTaskCreate(heal_task, "fl_heal", 4096, NULL, 3, NULL) == pdPASS);
     }
 
-    /* Announce ourselves so a head that is already listening latches on
-     * without having to poll. */
     char hello[64];
     int  len = snprintf(hello, sizeof(hello), "+HELLO %d LakeShark\n",
                         FLIPPER_LINK_PROTO_VERSION);
