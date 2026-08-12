@@ -798,10 +798,25 @@ static int cmd_rec(int argc, char **argv)
         printf("    mag now=%d floor=%d thresh=%d   last=%s\n",
                s.mag_now, s.mag_floor, s.mag_thresh,
                s.last_file[0] ? s.last_file : "-");
+        /*LS-516*/
+        {
+            char bw[16];
+            if (s.bw_hz) snprintf(bw, sizeof(bw), "%.0f kHz", s.bw_hz / 1000.0);
+            else         snprintf(bw, sizeof(bw), "auto");
+            printf("    bw=%s minp=%lu us maxspan=%lu ms minedges=%d\n",
+                   bw, (unsigned long)s.min_pulse_us,
+                   (unsigned long)(s.max_span_us / 1000u), s.min_edges);
+        }
+        /*LS-517*/
+        printf("    ended=%s  mark %lu-%lu us  ~%lu baud\n",
+               rec_end_reason_name(s.end_reason),
+               (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
+               (unsigned long)s.baud_est);
         if (app_current_index() < 0 || strcmp(s_modes[s_mode].name, "REC") != 0) {
             printf("    note: not in REC mode - run 'mode rec' first\n");
         }
-        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|arm|stop|save <name>|list|cat|rm>\n");
+        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|arm|stop|save <name>|list|cat|rm>\n");
         return 0;
     }
 
@@ -820,6 +835,22 @@ static int cmd_rec(int argc, char **argv)
     } else if (!strcmp(argv[1], "gap") && argc >= 3) {
         rec_set_gap_ms(atoi(argv[2]));
         printf("rec gap=%d ms (silence that ends one transmission)\n", rec_get_gap_ms());
+    /*LS-516*/
+    } else if (!strcmp(argv[1], "bw") && argc >= 3) {
+        rec_set_bw((uint32_t)(atof(argv[2]) * 1000.0 + 0.5));
+        if (rec_get_bw()) printf("rec bw=%.0f kHz\n", rec_get_bw() / 1000.0);
+        else              printf("rec bw=auto\n");
+    } else if (!strcmp(argv[1], "minp") && argc >= 3) {
+        rec_set_min_pulse((uint32_t)atoi(argv[2]));
+        printf("rec minp=%lu us (shorter transitions merge into the previous edge)\n",
+               (unsigned long)rec_get_min_pulse());
+    } else if (!strcmp(argv[1], "maxspan") && argc >= 3) {
+        rec_set_max_span((uint32_t)atoi(argv[2]) * 1000u);
+        printf("rec maxspan=%lu ms\n", (unsigned long)(rec_get_max_span() / 1000u));
+    } else if (!strcmp(argv[1], "minedges") && argc >= 3) {
+        rec_set_min_edges(atoi(argv[2]));
+        printf("rec minedges=%d (fewer is treated as a blip and discarded)\n",
+               rec_get_min_edges());
     } else if (!strcmp(argv[1], "thresh") && argc >= 3) {
         rec_set_thresh(atoi(argv[2]));
         printf("rec thresh=%d (%s) - watch 'mag now' with no signal, set above that\n",
@@ -845,7 +876,8 @@ static int cmd_rec(int argc, char **argv)
     } else if (!strcmp(argv[1], "rm") && argc >= 3) {
         printf("%s\n", rec_remove(argv[2]) == 0 ? "removed" : "not found");
     } else {
-        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|arm|stop|save <name>|list|cat|rm>\n");
+        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|arm|stop|save <name>|list|cat|rm>\n");
     }
     return 0;
 }

@@ -313,13 +313,19 @@ static int build_telemetry_rec(char *buf, size_t len)
 
     return snprintf(buf, len,
         "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu md=REC "
-        "rph=%d red=%d rsp=%lu rmg=%d rfl=%d rth=%d rtf=%d rgp=%d rcp=%lu rlf=%s",
+        "rph=%d red=%d rsp=%lu rmg=%d rfl=%d rth=%d rtf=%d rgp=%d rcp=%lu "
+        /*LS-516*/ /*LS-517*/
+        "rbw=%lu rmp=%lu rms=%lu rme=%d ren=%d rmn=%lu rmx=%lu rbd=%lu rlf=%s",
         (unsigned long)s.freq_hz, s.gain_tenths,
         audio_volume_get(), audio_is_muted() ? 1 : 0,
         lakeshark_radio_device_ready() ? 1 : 0, (unsigned long)s.bytes_sec,
         (int)s.phase, s.edges, (unsigned long)s.span_us,
         s.mag_now, s.mag_floor, s.mag_thresh, s.thresh_fixed, s.gap_ms,
-        (unsigned long)s.captures, last);
+        (unsigned long)s.captures,
+        (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
+        (unsigned long)s.max_span_us, s.min_edges, s.end_reason,
+        (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
+        (unsigned long)s.baud_est, last);
 }
 
 static int build_telemetry(char *buf, size_t len)
@@ -359,9 +365,14 @@ static void rec_reply_status(char *reply, size_t reply_len)
 {
     rec_status_t s;
     rec_get_status(&s);
-    snprintf(reply, reply_len, "+OK ph=%d e=%d sp=%lu f=%lu th=%d gp=%d\n",
+    snprintf(reply, reply_len,
+             "+OK ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
+             /*LS-516*/
+             " bw=%lu mp=%lu ms=%lu me=%d\n",
              (int)s.phase, s.edges, (unsigned long)s.span_us,
-             (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms);
+             (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms,
+             (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
+             (unsigned long)s.max_span_us, s.min_edges);
 }
 
 static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
@@ -433,6 +444,46 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         s_stat_now = true;
         rec_reply_status(reply, reply_len);
 
+    } else if (!strcmp(up, "BW")) {
+        /*LS-516*/
+        if (!arg || !parse_i32(arg, &n)) {
+            snprintf(reply, reply_len, "-ERR rec bw\n");
+            return;
+        }
+        rec_set_bw(n > 0 ? (uint32_t)n : 0);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "MINP")) {
+        /*LS-516*/
+        if (!arg || !parse_i32(arg, &n) || n <= 0) {
+            snprintf(reply, reply_len, "-ERR rec minp\n");
+            return;
+        }
+        rec_set_min_pulse((uint32_t)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "MAXSPAN")) {
+        /*LS-516*/
+        if (!arg || !parse_i32(arg, &n) || n <= 0) {
+            snprintf(reply, reply_len, "-ERR rec maxspan\n");
+            return;
+        }
+        rec_set_max_span((uint32_t)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "MINEDGES")) {
+        /*LS-516*/
+        if (!arg || !parse_i32(arg, &n) || n <= 0) {
+            snprintf(reply, reply_len, "-ERR rec minedges\n");
+            return;
+        }
+        rec_set_min_edges((int)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
     } else if (!strcmp(up, "SAVE")) {
         char path[64];
         int w = rec_save(arg && *arg ? arg : "capture", path, sizeof(path));
@@ -455,33 +506,21 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec busy\n");
             return;
         }
-        /*LS-515*/
-        if (reply_len < 32) {
-            snprintf(reply, reply_len, "-ERR rec get\n");
-            return;
+        int w = snprintf(reply, reply_len, "%%D %ld %d", (long)off, got);
+        for (int i = 0; i < got && w > 0 && (size_t)w < reply_len - 2; i++) {
+            int k = snprintf(reply + w, reply_len - (size_t)w, " %ld", (long)edge[i]);
+            if (k < 0) break;
+            w += k;
         }
-        char   vals[REC_CHUNK_EDGES * 12 + 1];
-        size_t budget = sizeof(vals) - 1;
-        if (budget > reply_len - 24) budget = reply_len - 24;
-
-        size_t vw  = 0;
-        int    fit = 0;
-        for (int i = 0; i < got; i++) {
-            char one[16];
-            int  k = snprintf(one, sizeof(one), " %ld", (long)edge[i]);
-            if (k < 0 || k >= (int)sizeof(one)) break;
-            if (vw + (size_t)k > budget) break;
-            memcpy(vals + vw, one, (size_t)k);
-            vw += (size_t)k;
-            fit++;
-        }
-        vals[vw] = '\0';
-
-        snprintf(reply, reply_len, "%%D %ld %d%s\n", (long)off, fit, vals);
+        if (w < 0) w = 0;
+        if ((size_t)w > reply_len - 2) w = (int)reply_len - 2;
+        reply[w++] = '\n';
+        reply[w]   = '\0';
 
     } else {
         snprintf(reply, reply_len,
-                 "-ERR rec <arm|stop|freq|gain|thresh|gap|save|get>\n");
+                 "-ERR rec <arm|stop|freq|gain|thresh|gap|bw|minp|maxspan|"
+                 "minedges|save|get>\n");
     }
 }
 

@@ -53,6 +53,16 @@ static int      s_thresh_fixed = 0;
 /*LS-504*/
 static uint32_t s_gap_end_us = REC_GAP_END_US;
 
+/*LS-516*/
+static uint32_t s_bw_hz        = 0;
+static uint32_t s_min_pulse_us = REC_MIN_PULSE_US;
+static uint32_t s_max_span_us  = REC_MAX_SPAN_US;
+static int      s_min_edges    = REC_MIN_EDGES;
+
+/*LS-517*/
+static int      s_end_reason = REC_END_NONE;
+static uint32_t s_min_mark_us = 0, s_max_mark_us = 0, s_baud_est = 0;
+
 static bool     s_level  = false;
 static uint32_t s_run_samples = 0;
 static uint32_t s_span_us = 0;
@@ -74,6 +84,43 @@ static void rec_reset_capture(void)
     s_level = false;
     s_run_samples = 0;
     s_span_us = 0;
+    /*LS-517*/
+    s_end_reason  = REC_END_NONE;
+    s_min_mark_us = 0;
+    s_max_mark_us = 0;
+    s_baud_est    = 0;
+}
+
+/*LS-517*/
+static void rec_finish(int reason)
+{
+    s_end_reason = reason;
+
+    uint32_t mn = 0, mx = 0;
+    if (s_edge) {
+        for (int i = 0; i < s_edges; i++) {
+            if (s_edge[i] <= 0) continue;
+            uint32_t v = (uint32_t)s_edge[i];
+            if (!mn || v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+    }
+    s_min_mark_us = mn;
+    s_max_mark_us = mx;
+    s_baud_est    = mn ? (uint32_t)(1000000UL / mn) : 0;
+
+    s_phase = REC_DONE;
+    s_captures++;
+}
+
+const char *rec_end_reason_name(int reason)
+{
+    switch (reason) {
+    case REC_END_GAP:   return "gap";
+    case REC_END_SPAN:  return "span cap";
+    case REC_END_EDGES: return "edge cap";
+    default:            return "-";
+    }
 }
 
 static void edge_push(bool level, uint32_t samples)
@@ -143,7 +190,7 @@ static void slice_block(const uint8_t *iq, int len)
 
         if (s_phase == REC_ARMED) {
             /*LS-502*/
-            if (!hi && s_level && run_us >= REC_MIN_PULSE_US) {
+            if (!hi && s_level && run_us >= s_min_pulse_us) {
                 s_phase = REC_CAPTURING;
                 rec_reset_capture();
                 s_edge[s_edges++] = (int32_t)run_us;
@@ -160,7 +207,7 @@ static void slice_block(const uint8_t *iq, int len)
         }
 
         if (s_phase == REC_CAPTURING) {
-            if (run_us >= REC_MIN_PULSE_US) {
+            if (run_us >= s_min_pulse_us) {
                 edge_push(s_level, s_run_samples);
             } else if (s_edges > 0) {
                 s_edge[s_edges - 1] += s_edge[s_edges - 1] > 0
@@ -187,16 +234,23 @@ static void slice_block(const uint8_t *iq, int len)
         }
         /*LS-504*/
         bool quiet_end = (!s_level && idle_us >= s_gap_end_us);
-        if (quiet_end && s_edges < REC_MIN_EDGES) {
+        if (quiet_end && s_edges < s_min_edges) {
             ESP_LOGD(TAG, "discarding %d-edge blip, still armed", s_edges);
             rec_reset_capture();
             s_phase = REC_ARMED;
-        } else if (quiet_end || s_span_us >= REC_MAX_SPAN_US ||
+        } else if (quiet_end || s_span_us >= s_max_span_us ||
                    s_edges >= REC_MAX_EDGES) {
-            s_phase = REC_DONE;
-            s_captures++;
-            ESP_LOGI(TAG, "capture done: %d edges, %lu us span",
-                     s_edges, (unsigned long)s_span_us);
+            /*LS-517*/
+            int reason = quiet_end            ? REC_END_GAP
+                       : s_edges >= REC_MAX_EDGES ? REC_END_EDGES
+                                                  : REC_END_SPAN;
+            rec_finish(reason);
+            ESP_LOGI(TAG, "capture done: %d edges, %lu us span, ended on %s"
+                          " (mark %lu-%lu us, ~%lu baud)",
+                     s_edges, (unsigned long)s_span_us,
+                     rec_end_reason_name(reason),
+                     (unsigned long)s_min_mark_us, (unsigned long)s_max_mark_us,
+                     (unsigned long)s_baud_est);
         }
     }
 }
@@ -205,7 +259,8 @@ static void rec_apply_radio(void)
 {
     if (!s_dev) return;
     rtlsdr_set_sample_rate(s_dev, REC_RTL_RATE);
-    rtlsdr_set_tuner_bandwidth(s_dev, 0);
+    /*LS-516*/
+    rtlsdr_set_tuner_bandwidth(s_dev, s_bw_hz);
     rtlsdr_set_tuner_gain_mode(s_dev, s_gain > 0 ? 1 : 0);
     if (s_gain > 0) rtlsdr_set_tuner_gain(s_dev, s_gain);
     rtlsdr_set_agc_mode(s_dev, s_gain > 0 ? 0 : 1);
@@ -352,6 +407,16 @@ void rec_get_status(rec_status_t *out)
     out->gap_ms       = rec_get_gap_ms();
     out->captures    = s_captures;
     out->bytes_sec   = s_bytes_sec;
+    /*LS-516*/
+    out->bw_hz        = s_bw_hz;
+    out->min_pulse_us = s_min_pulse_us;
+    out->max_span_us  = s_max_span_us;
+    out->min_edges    = s_min_edges;
+    /*LS-517*/
+    out->end_reason  = s_end_reason;
+    out->min_mark_us = s_min_mark_us;
+    out->max_mark_us = s_max_mark_us;
+    out->baud_est    = s_baud_est;
     strlcpy(out->last_file, s_last_file, sizeof(out->last_file));
 }
 
@@ -438,6 +503,44 @@ void rec_set_gap_ms(int ms)
 }
 
 int rec_get_gap_ms(void) { return (int)(s_gap_end_us / 1000u); }
+
+/*LS-516*/
+void rec_set_bw(uint32_t hz)
+{
+    if (hz && hz < 50000u)   hz = 50000u;
+    if (hz > 8000000u)       hz = 8000000u;
+    s_bw_hz = hz;
+    if (s_dev) rtlsdr_set_tuner_bandwidth(s_dev, s_bw_hz);
+}
+
+uint32_t rec_get_bw(void) { return s_bw_hz; }
+
+void rec_set_min_pulse(uint32_t us)
+{
+    if (us < 4)     us = 4;
+    if (us > 10000) us = 10000;
+    s_min_pulse_us = us;
+}
+
+uint32_t rec_get_min_pulse(void) { return s_min_pulse_us; }
+
+void rec_set_max_span(uint32_t us)
+{
+    if (us < 10000)     us = 10000;
+    if (us > 30000000u) us = 30000000u;
+    s_max_span_us = us;
+}
+
+uint32_t rec_get_max_span(void) { return s_max_span_us; }
+
+void rec_set_min_edges(int n)
+{
+    if (n < 2)             n = 2;
+    if (n > REC_MAX_EDGES) n = REC_MAX_EDGES;
+    s_min_edges = n;
+}
+
+int rec_get_min_edges(void) { return s_min_edges; }
 
 static void sanitize_name(const char *in, char *out, size_t len)
 {
