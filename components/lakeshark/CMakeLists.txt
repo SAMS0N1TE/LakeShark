@@ -15,6 +15,7 @@ file(GLOB_RECURSE LS_SRCS
     apps/p25/*.c
     apps/p25/*.cpp
     apps/fm/*.c
+    apps/rec/*.c
 )
 list(APPEND LS_SRCS lakeshark_backend.c)
 
@@ -29,6 +30,7 @@ idf_component_register(
         apps/adsb
         apps/p25
         apps/fm
+        apps/rec
     REQUIRES
         usb
         driver

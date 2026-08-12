@@ -28,6 +28,8 @@
 #include "ble_link.h"
 #include "settings.h"
 #include "esp_libusb.h"
+/*LS-500*/
+#include "rec_state.h"
 #include "ls_board.h"
 
 static const char *TAG = "headless";
@@ -53,6 +55,8 @@ static const hl_mode_t s_modes[] = {
     { "P25",   lakeshark_select_p25  },
     { "ADS-B", lakeshark_select_adsb },
     { "FM",    lakeshark_select_fm   },
+    /*LS-500*/
+    { "REC",   lakeshark_select_rec  },
 };
 #define N_MODES ((int)(sizeof(s_modes) / sizeof(s_modes[0])))
 
@@ -460,6 +464,7 @@ static void hl_select_mode_by_name(const char *name)
     if      (!strcasecmp(name, "p25"))  select_mode(0);
     else if (!strcasecmp(name, "adsb")) select_mode(1);
     else if (!strcasecmp(name, "fm"))   select_mode(2);
+    else if (!strcasecmp(name, "rec"))  select_mode(3);
 }
 
 static const char *hl_current_mode_name(void) { return s_modes[s_mode].name; }
@@ -727,6 +732,89 @@ static int cmd_link(int argc, char **argv)
                "|scan [ms]|probe]\n"
                "  probe = pull-down continuity test: finds the head's TX wire\n"
                "          even if it landed on the wrong header pin.\n");
+    }
+    return 0;
+}
+
+/*LS-500*/
+static const char *rec_phase_name(rec_phase_t p)
+{
+    switch (p) {
+    case REC_IDLE:      return "idle";
+    case REC_ARMED:     return "armed";
+    case REC_CAPTURING: return "capturing";
+    case REC_DONE:      return "done";
+    }
+    return "?";
+}
+
+static void rec_emit_console(const char *line, void *ctx)
+{
+    (void)ctx;
+    printf("%s\n", line);
+}
+
+static int cmd_rec(int argc, char **argv)
+{
+    if (argc < 2 || !strcmp(argv[1], "status")) {
+        rec_status_t s;
+        rec_get_status(&s);
+        printf("rec %s  %.4f MHz  gain=%.1f dB  edges=%d span=%lu us  captures=%lu\n",
+               rec_phase_name(s.phase), s.freq_hz / 1e6, s.gain_tenths / 10.0,
+               s.edges, (unsigned long)s.span_us, (unsigned long)s.captures);
+        printf("    mag now=%d floor=%d thresh=%d   last=%s\n",
+               s.mag_now, s.mag_floor, s.mag_thresh,
+               s.last_file[0] ? s.last_file : "-");
+        if (app_current_index() < 0 || strcmp(s_modes[s_mode].name, "REC") != 0) {
+            printf("    note: not in REC mode - run 'mode rec' first\n");
+        }
+        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|arm|stop|save <name>|list|cat|rm>\n");
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "arm")) {
+        /*LS-501*/
+        if (!rec_active()) {
+            select_mode(3);
+            for (int i = 0; i < 100 && !rec_active(); i++) vTaskDelay(pdMS_TO_TICKS(20));
+            if (!rec_active()) { printf("REC app did not start\n"); return 0; }
+        }
+        rec_arm();
+        printf("armed at %.4f MHz - transmit now\n", rec_get_freq() / 1e6);
+    } else if (!strcmp(argv[1], "stop")) {
+        rec_disarm();
+        printf("disarmed\n");
+    } else if (!strcmp(argv[1], "freq") && argc >= 3) {
+        uint32_t hz = (uint32_t)(atof(argv[2]) * 1e6 + 0.5);
+        rec_set_freq(hz);
+        printf("rec freq=%.4f MHz\n", rec_get_freq() / 1e6);
+    } else if (!strcmp(argv[1], "gap") && argc >= 3) {
+        rec_set_gap_ms(atoi(argv[2]));
+        printf("rec gap=%d ms (silence that ends one transmission)\n", rec_get_gap_ms());
+    } else if (!strcmp(argv[1], "thresh") && argc >= 3) {
+        rec_set_thresh(atoi(argv[2]));
+        printf("rec thresh=%d (%s) - watch 'mag now' with no signal, set above that\n",
+               rec_get_thresh(), rec_get_thresh() > 0 ? "fixed" : "auto");
+    } else if (!strcmp(argv[1], "gain") && argc >= 3) {
+        rec_set_gain((int)(atof(argv[2]) * 10 + 0.5));
+        printf("rec gain set\n");
+    } else if (!strcmp(argv[1], "save")) {
+        char path[64];
+        int n = rec_save(argc >= 3 ? argv[2] : "capture", path, sizeof(path));
+        if (n > 0) printf("wrote %s (%d edges)\n", path, n);
+        else if (n == -1) printf("nothing captured yet\n");
+        else printf("write failed (%d)\n", n);
+    } else if (!strcmp(argv[1], "list")) {
+        char buf[512];
+        int n = rec_list(buf, sizeof(buf));
+        printf("%d capture(s)%s%s\n", n, n ? ": " : "", buf);
+    } else if (!strcmp(argv[1], "cat") && argc >= 3) {
+        int n = rec_dump(argv[2], rec_emit_console, NULL);
+        if (n < 0) printf("no such capture '%s'\n", argv[2]);
+    } else if (!strcmp(argv[1], "rm") && argc >= 3) {
+        printf("%s\n", rec_remove(argv[2]) == 0 ? "removed" : "not found");
+    } else {
+        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|arm|stop|save <name>|list|cat|rm>\n");
     }
     return 0;
 }
@@ -1091,7 +1179,7 @@ static void console_start(void)
     const esp_console_cmd_t cmds[] = {
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
-        { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|next",
+        { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",
           .hint = "listen|scan|pocsag|wfm", .func = &cmd_fm },
@@ -1104,6 +1192,9 @@ static void console_start(void)
         { .command = "feed",   .help = "ADS-B JSON feed to console (CartoTUI)",
           .hint = "on|off", .func = &cmd_feed },
         { .command = "mute",   .help = "Toggle audio mute", .func = &cmd_mute },
+        { .command = "rec",    .help = "OOK recorder - captures to a Flipper SubGhz .sub file",
+          .hint = "<freq MHz|gain <dB>|arm|stop|save <name>|list|cat <name>|rm <name>>",
+          .func = &cmd_rec },
         { .command = "beep",   .help = "Play the boot chime - proves the speaker path",
           .func = &cmd_beep },
         { .command = "ble",    .help = "BLE control head link (P4 is central)",

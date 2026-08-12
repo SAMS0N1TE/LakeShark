@@ -37,6 +37,8 @@ static const char *TAG = "lakeshark";
 extern int adsb_app_register(void);
 extern int p25_app_register(void);
 extern int fm_app_register(void);
+/*LS-500*/
+extern int rec_app_register(void);
 
 extern volatile int rtl_gain_request;
 extern int          autoscan_bch_ok_flag;
@@ -45,6 +47,7 @@ extern int          dsd_bch_fail_counter;
 static int s_adsb_idx = -1;
 static int s_p25_idx  = -1;
 static int s_fm_idx   = -1;
+static int s_rec_idx  = -1;
 static bool s_started = false;
 
 void lakeshark_backend_start(void)
@@ -67,6 +70,7 @@ void lakeshark_backend_start(void)
     s_adsb_idx = adsb_app_register();
     s_p25_idx  = p25_app_register();
     s_fm_idx   = fm_app_register();
+    s_rec_idx  = rec_app_register();
 
     app_switch_worker_start();
     scan_engine_init();
@@ -136,6 +140,8 @@ void lakeshark_boot_sound(void)
 void lakeshark_select_adsb(void) { if (s_adsb_idx >= 0) app_switch_to(s_adsb_idx); }
 void lakeshark_select_p25(void)  { if (s_p25_idx  >= 0) app_switch_to(s_p25_idx);  }
 void lakeshark_select_fm(void)   { if (s_fm_idx   >= 0) app_switch_to(s_fm_idx);   }
+/*LS-500*/
+void lakeshark_select_rec(void)  { if (s_rec_idx  >= 0) app_switch_to(s_rec_idx);  }
 
 void lakeshark_radio_park(void)    { app_park();   }
 void lakeshark_radio_unpark(void)  { app_unpark(); }

@@ -14,6 +14,7 @@ void lakeshark_boot_sound(void);
 void lakeshark_select_adsb(void);
 void lakeshark_select_p25(void);
 void lakeshark_select_fm(void);
+void lakeshark_select_rec(void);
 
 void     lakeshark_fm_set_mode(int mode);
 int      lakeshark_fm_get_mode(void);
