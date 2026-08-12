@@ -77,6 +77,8 @@ static const char *LOG_QUIET_TAGS[] = { "P25TEL", "P25DIAG", "ADSB", "NimBLE" };
 
 #define NVS_NS   "lakeshark"
 #define NVS_VOL  "vol"
+/*LS-308*/
+#define NVS_MODE "mode"
 
 static int settings_load_volume(void)
 {
@@ -96,6 +98,28 @@ static void settings_save_volume(int v)
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_i32(h, NVS_VOL, (int32_t)v);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/*LS-308*/
+static int settings_load_mode(void)
+{
+    nvs_handle_t h;
+    int32_t m = 0;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_i32(h, NVS_MODE, &m) != ESP_OK) m = 0;
+        nvs_close(h);
+    }
+    if (m < 0 || m >= N_MODES) m = 0;
+    return (int)m;
+}
+
+static void settings_save_mode(int m)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_i32(h, NVS_MODE, (int32_t)m);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -211,6 +235,27 @@ static void settings_task(void *arg)
                         ESP_LOGE(TAG, "SDR has delivered nothing for %ds and cannot be "
                                       "recovered automatically.", stall);
                     }
+                }
+            }
+        }
+
+        /*LS-308*/
+        {
+            static int mode_seen  = -1;
+            static int mode_saved = -1;
+            static int mode_ms    = 0;
+            int m = s_mode;
+
+            if (mode_saved < 0) mode_saved = settings_load_mode();
+            if (m != mode_seen) {
+                mode_seen = m;
+                mode_ms   = 0;
+            } else if (m != mode_saved) {
+                mode_ms += 250;
+                if (mode_ms >= 2000) {
+                    settings_save_mode(m);
+                    mode_saved = m;
+                    ESP_LOGI(TAG, "mode %s saved", s_modes[m].name);
                 }
             }
         }
@@ -1160,12 +1205,15 @@ void app_main(void)
     lakeshark_set_usb_autoreboot(false);
 
     {
+        /*LS-308*/
         const char *resume = lakeshark_recovery_take_app();
         if (resume && *resume) {
             ESP_LOGW(TAG, "rebooted to recover the USB dongle - resuming '%s'", resume);
             hl_select_mode_by_name(!strcasecmp(resume, "ADS-B") ? "adsb" : resume);
         } else {
-            select_mode(0);
+            int m = settings_load_mode();
+            ESP_LOGI(TAG, "restoring last mode: %s", s_modes[m].name);
+            select_mode(m);
         }
     }
     lakeshark_radio_unpark();
