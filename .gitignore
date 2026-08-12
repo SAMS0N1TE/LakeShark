@@ -26,6 +26,8 @@ serial*.txt
 /LAKESHARK_MARKERS.txt
 /sdkconfig.board
 /c6_firmware/
+/cmd.py
+/passive.py
 /LCD_4_3_Docs/
 
 __pycache__/
