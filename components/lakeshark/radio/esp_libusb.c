@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include <string.h>
 
 static class_adsb_dev *adsbdev;
@@ -231,10 +232,16 @@ static uint64_t           s_sdropped;
 static QueueHandle_t      s_squeue;
 static TaskHandle_t       s_spump;
 
+/*LS-401*/
+#define LS_STREAM_JOIN_MS 2000
+static SemaphoreHandle_t  s_spump_done;
+
+/*LS-402*/
 static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
 {
     uint32_t head  = s_shead;
-    uint32_t space = STREAM_RING_SIZE - (head - s_stail);
+    uint32_t tail  = __atomic_load_n(&s_stail, __ATOMIC_ACQUIRE);
+    uint32_t space = STREAM_RING_SIZE - (head - tail);
     if (len > space) { s_sdropped += len; return; }
     uint32_t off   = head % STREAM_RING_SIZE;
     uint32_t first = STREAM_RING_SIZE - off;
@@ -244,7 +251,7 @@ static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
         memcpy(s_sring + off, buf, first);
         memcpy(s_sring, buf + first, len - first);
     }
-    s_shead = head + len;
+    __atomic_store_n(&s_shead, head + len, __ATOMIC_RELEASE);
 }
 
 static void IRAM_ATTR stream_xfer_cb(usb_transfer_t *t)
@@ -314,7 +321,9 @@ static void stream_pump_task(void *arg)
             last_head = s_shead; last_log = now;
         }
     }
+    /*LS-401*/
     s_spump = NULL;
+    if (s_spump_done) xSemaphoreGive(s_spump_done);
     vTaskDelete(NULL);
 }
 
@@ -330,13 +339,25 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     }
     if (!s_squeue) s_squeue = xQueueCreate(STREAM_XFER_NUM * 2, sizeof(int));
     if (!s_squeue) { ESP_LOGE(TAG_ADSB, "stream queue alloc failed"); return -1; }
+    /*LS-401*/
+    if (!s_spump_done) s_spump_done = xSemaphoreCreateBinary();
+    if (!s_spump_done) { ESP_LOGE(TAG_ADSB, "stream join sem alloc failed"); return -1; }
+
+    /*LS-401*/
+    for (int i = 0; i < 40 && s_spump; i++) vTaskDelay(pdMS_TO_TICKS(5));
+    if (s_spump) {
+        ESP_LOGE(TAG_ADSB, "previous rtl_pump has not exited - refusing to start a "
+                           "stream that would have no pump to repost transfers");
+        return -1;
+    }
+    xSemaphoreTake(s_spump_done, 0);
+
     xQueueReset(s_squeue);
     s_shead = s_stail = 0; s_sdropped = 0;
     s_sdev = driver_obj->dev_hdl; s_sep = endpoint;
     s_streaming = true;
 
-    if (!s_spump)
-        xTaskCreatePinnedToCore(stream_pump_task, "rtl_pump", 4096, NULL, 12, &s_spump, 1);
+    xTaskCreatePinnedToCore(stream_pump_task, "rtl_pump", 4096, NULL, 12, &s_spump, 1);
 
     int posted = 0;
     for (int i = 0; i < STREAM_XFER_NUM; i++) {
@@ -358,25 +379,46 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     return 0;
 }
 
+/*LS-401*/
 void esp_libusb_stream_stop(void)
 {
     if (!s_streaming) return;
     s_streaming = false;
 
-    for (int i = 0; i < 20 && s_spump; i++) vTaskDelay(pdMS_TO_TICKS(5));
-    usb_host_endpoint_halt(s_sdev, s_sep);
-    usb_host_endpoint_flush(s_sdev, s_sep);
-    usb_host_endpoint_clear(s_sdev, s_sep);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    for (int i = 0; i < STREAM_XFER_NUM; i++) {
-        if (s_sxfer[i]) { usb_host_transfer_free(s_sxfer[i]); s_sxfer[i] = NULL; }
+    bool joined = true;
+    if (s_spump) {
+        joined = s_spump_done &&
+                 xSemaphoreTake(s_spump_done, pdMS_TO_TICKS(LS_STREAM_JOIN_MS)) == pdTRUE;
     }
+
+    if (s_sdev) {
+        usb_host_endpoint_halt(s_sdev, s_sep);
+        usb_host_endpoint_flush(s_sdev, s_sep);
+        usb_host_endpoint_clear(s_sdev, s_sep);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    if (!joined) {
+        ESP_LOGE(TAG_ADSB, "rtl_pump did not exit within %d ms - leaking %d transfer "
+                           "slots rather than freeing buffers the USB stack may still "
+                           "be writing to", LS_STREAM_JOIN_MS, esp_libusb_stream_slots());
+        for (int i = 0; i < STREAM_XFER_NUM; i++) s_sxfer[i] = NULL;
+    } else {
+        for (int i = 0; i < STREAM_XFER_NUM; i++) {
+            if (s_sxfer[i]) { usb_host_transfer_free(s_sxfer[i]); s_sxfer[i] = NULL; }
+        }
+    }
+
+    /*LS-403*/
+    s_sdev = NULL;
+    s_sep  = 0;
 }
 
+/*LS-402*/
 int esp_libusb_stream_read(uint8_t *dst, int max)
 {
     uint32_t tail  = s_stail;
-    uint32_t avail = s_shead - tail;
+    uint32_t avail = __atomic_load_n(&s_shead, __ATOMIC_ACQUIRE) - tail;
     if (avail == 0) return 0;
     if ((uint32_t)max > avail) max = (int)avail;
     uint32_t off   = tail % STREAM_RING_SIZE;
@@ -387,12 +429,20 @@ int esp_libusb_stream_read(uint8_t *dst, int max)
         memcpy(dst, s_sring + off, first);
         memcpy(dst + first, s_sring, (size_t)max - first);
     }
-    s_stail = tail + (uint32_t)max;
+    __atomic_store_n(&s_stail, tail + (uint32_t)max, __ATOMIC_RELEASE);
     return max;
 }
 
-void     esp_libusb_stream_reset(void) { s_stail = s_shead; }
-uint32_t esp_libusb_stream_avail(void) { return s_shead - s_stail; }
+void esp_libusb_stream_reset(void)
+{
+    __atomic_store_n(&s_stail, __atomic_load_n(&s_shead, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+}
+
+uint32_t esp_libusb_stream_avail(void)
+{
+    return __atomic_load_n(&s_shead, __ATOMIC_ACQUIRE) - s_stail;
+}
 
 uint64_t esp_libusb_stream_dropped(void) { return s_sdropped; }
 

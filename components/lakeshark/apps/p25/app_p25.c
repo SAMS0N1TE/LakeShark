@@ -32,7 +32,8 @@ uint32_t          s_tune_freq_hz = 154785000UL;
 rtlsdr_dev_t     *rtldev = NULL;
 dsp_state_t       s_dsp;
 dsd_opts          s_dsd_opts;
-dsd_state         s_dsd_state;
+/*LS-405*/
+EXT_RAM_BSS_ATTR dsd_state s_dsd_state;
 dsd_sample_ring_t s_ring;
 
 int autoscan_bch_ok_flag = 0;
@@ -138,7 +139,8 @@ static void dsd_decoder_task(void *arg)
              esp_ptr_internal(s_dsd_state.audio_out_float_buf) ? 'I' : 'P',
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
-    static int16_t pcm_buf[2000];
+    /*LS-405*/
+    static EXT_RAM_BSS_ATTR int16_t pcm_buf[2000];
     s_dsd_state.pcm_out_buf = pcm_buf;
     s_dsd_state.pcm_out_size = 2000;
     s_dsd_state.pcm_out_write = 0;
@@ -291,7 +293,8 @@ static void p25_rx_task(void *arg)
     sys_log(1, "RX buf OK %d bytes heap=%lu",
             P25_USB_BUF_LENGTH, (unsigned long)esp_get_free_heap_size());
 
-    static int16_t audio_buf[8192];
+    /*LS-405*/
+    static EXT_RAM_BSS_ATTR int16_t audio_buf[8192];
 
     ESP_LOGW("P25DBG", "pre-decode-task: free_int=%u largest_int=%u free_psram=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

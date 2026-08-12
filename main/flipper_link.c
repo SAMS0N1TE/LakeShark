@@ -19,6 +19,8 @@
 #include "audio_out.h"
 #include "audio_eq.h"
 #include "tone.h"
+#include "ls_board.h"
+#include "ble_link.h"
 
 static const char *TAG = "fl_link";
 
@@ -757,15 +759,15 @@ int flipper_link_snapshot(char *buf, size_t len)
     return build_telemetry(buf, len);
 }
 
-static const int SCAN_PINS[] = {
-    33, 32, 45, 47, 48, 0, 1, 2, 3, 6, 4, 5, 20, 21, 22, 23, 36,
-};
+/*LS-202*/
+static const int SCAN_PINS[] = LS_BOARD_LINK_SCAN_PINS;
 #define N_SCAN_PINS ((int)(sizeof(SCAN_PINS) / sizeof(SCAN_PINS[0])))
 
-#define VBUS_EN_GPIO 46
-#define C6_EN_GPIO   54
+/*LS-203*/
+#define VBUS_EN_GPIO LS_BOARD_VBUS_EN_GPIO
+#define C6_EN_GPIO   LS_BOARD_C6_EN_GPIO
 
-static const int IDLE_HIGH_PINS[] = { 32, 36 };
+static const int IDLE_HIGH_PINS[] = { LS_BOARD_LINK_TX_GPIO, 36 };
 
 static bool pin_idles_high(int pin)
 {
@@ -880,7 +882,9 @@ int flipper_link_probe_rx(void)
     int best = -1, best_pct = 0, found = 0;
     for (int i = 0; i < N_SCAN_PINS; i++) {
         int pin = SCAN_PINS[i];
-        if (pin == VBUS_EN_GPIO || pin == C6_EN_GPIO) continue;
+        /*LS-203*/
+        if (LS_BOARD_HAS_VBUS_CTRL && pin == VBUS_EN_GPIO) continue;
+        if (pin == C6_EN_GPIO) continue;
 
         int pct = probe_pin_pct(pin);
         if (pct < 0) {
@@ -1051,22 +1055,42 @@ static void link_uninstall(void)
     gpio_set_level(s_cfg.tx_gpio, 1);
 }
 
+/*LS-201*/
+#define LS_HEAL_MAX_SWEEPS 3
+
 static void heal_task(void *arg)
 {
     (void)arg;
+    int  sweeps   = 0;
+    bool told_ble = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(60000));
         if (!s_run || s_rx_lines > 0) continue;
         if (s_tx_lines < 50) continue;
 
-        ESP_LOGW(TAG, "no RX after %lu TX frames - sweeping header pins for the head",
-                 (unsigned long)s_tx_lines);
+        if (ble_link_state() == BLE_LINK_READY) {
+            if (!told_ble) {
+                ESP_LOGI(TAG, "head is on BLE - leaving the UART pins alone");
+                told_ble = true;
+            }
+            continue;
+        }
+
+        if (sweeps >= LS_HEAL_MAX_SWEEPS) continue;
+        sweeps++;
+
+        ESP_LOGW(TAG, "no RX after %lu TX frames - sweeping header pins for the head "
+                      "(attempt %d of %d)",
+                 (unsigned long)s_tx_lines, sweeps, LS_HEAL_MAX_SWEEPS);
         int pin = flipper_link_scan_rx(700);
         if (pin >= 0 && pin != s_cfg.rx_gpio) {
             flipper_link_cfg_t c = s_cfg;
             c.rx_gpio = pin;
             ESP_LOGW(TAG, "adopting GPIO%d as link RX", pin);
             flipper_link_reconfigure(&c);
+        } else if (sweeps >= LS_HEAL_MAX_SWEEPS) {
+            ESP_LOGW(TAG, "giving up on the UART sweep - use 'link pins <rx> <tx>' "
+                          "or run the head over BLE");
         }
     }
 }

@@ -22,6 +22,11 @@ serial*.txt
 /docs/
 /tools/
 /build_headless/
+/build_*/
+/LAKESHARK_MARKERS.txt
+/sdkconfig.board
+/c6_firmware/
+/LCD_4_3_Docs/
 
 __pycache__/
 *.pyc

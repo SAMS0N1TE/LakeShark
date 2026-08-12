@@ -94,11 +94,7 @@ CONFIG_SPI_FLASH_SUPPORT_GD_CHIP=y
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
-# Route esp_hosted's ~47 KB SDIO mempool to PSRAM instead of scarce internal
-# DMA SRAM. Without this, sdio_mempool_create() asserts at boot on ESP32-P4
-# because no contiguous chunk of MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA that big
-# survives the pre-main init storm. GDMA on P4 reaches PSRAM through cache,
-# so there's no throughput penalty for the WiFi-remote path.
+# LS-006
 CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 # Don't force-restart the whole chip when SDIO to the C6 has a hiccup. Without
 # this, a single failed webhook to an unreachable host (e.g. ARP retry storm)

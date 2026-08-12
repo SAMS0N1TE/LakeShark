@@ -1,4 +1,62 @@
 menu "Example Configurations"
+    choice LS_BOARD
+        prompt "LakeShark target board"
+        default LS_BOARD_P4_NANO
+        help
+            Selects the board profile in components/lakeshark/core/ls_board.h.
+            Everything the boards share (I2C, I2S, PA enable, uSD, the SDIO link
+            to the on-board ESP32-C6) is identical across the Waveshare ESP32-P4
+            family; this choice covers what actually differs - USB VBUS control,
+            the display, and which header pins the Flipper link can use.
+
+        config LS_BOARD_P4_NANO
+            bool "Waveshare ESP32-P4-NANO (16MB)"
+
+        config LS_BOARD_P4_WIFI6
+            bool "Waveshare ESP32-P4-WIFI6 (32MB, no LCD)"
+
+        config LS_BOARD_P4_TOUCH_LCD_4B
+            bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B / Smart 86 Box (32MB)"
+
+        config LS_BOARD_P4_TOUCH_LCD_43
+            bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (32MB)"
+    endchoice
+
+    config LS_VBUS_EN_GPIO
+        int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
+        default 46 if LS_BOARD_P4_NANO
+        default 46 if LS_BOARD_P4_WIFI6
+        default -1 if LS_BOARD_P4_TOUCH_LCD_4B
+        default -1 if LS_BOARD_P4_TOUCH_LCD_43
+        default -1
+        help
+            GPIO driving the load switch that feeds VBUS on the USB host port.
+            The firmware drops it to force an unresponsive RTL-SDR to
+            re-enumerate ('SDR power', and the automatic stall recovery).
+
+            Set to -1 if the host port is powered directly. On a board with no
+            switch the power cycle is skipped rather than driving an unrelated
+            pin, and the console says so.
+
+            GPIO46 is confirmed on the ESP32-P4-NANO. It is the assumed default
+            on the ESP32-P4-WIFI6 as well because the rest of that board's
+            peripheral wiring matches the NANO exactly, but it has not been
+            confirmed against hardware - note that GPIO46 is also broken out on
+            the pin header of both boards, so the header alone does not settle
+            it. See LS-002.
+
+    config LS_DEFAULT_VOLUME
+        int "Default audio volume (0-100)"
+        range 0 100
+        default 50
+        help
+            Volume used when NVS has no saved value yet - i.e. a fresh board, or
+            after an NVS erase. Applied before the boot chime plays.
+
+            Once you change the volume at runtime it is saved to NVS after ~1.5 s
+            and that saved value wins on every later boot, so this only governs
+            first boot.
+
     config LAKESHARK_HEADLESS
         bool "Headless build (UART console, no display/GUI)"
         default n

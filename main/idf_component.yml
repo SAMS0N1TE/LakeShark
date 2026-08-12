@@ -8,12 +8,9 @@ dependencies:
   espressif/esp_wifi_remote:
     version: "0.*"
 
-  # Pinned to match the ESP-Hosted slave firmware already on the C6
-  # (network_adapter 2.12.3). The transport works across the skew, but HCI
-  # commands time out with the 2.12.12 host, so keep host and slave in step.
-  # If the C6 is ever reflashed, bump both together.
+  # LS-008
   espressif/esp_hosted:
-    version: "==2.12.3"
+    version: "==2.12.9"
 
   espressif/esp-brookesia:
     version: "^0.4.2"   # bumped from "0.4.*" to pin the minor 24h-clock + 720x1280 fixes

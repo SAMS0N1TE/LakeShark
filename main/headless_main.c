@@ -5,6 +5,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
@@ -27,13 +28,21 @@
 #include "ble_link.h"
 #include "settings.h"
 #include "esp_libusb.h"
+#include "ls_board.h"
 
 static const char *TAG = "headless";
 
-#define BOOT_BTN_GPIO   GPIO_NUM_35
-#define USB_VBUS_GPIO   GPIO_NUM_46
-#define PA_CTRL_GPIO    GPIO_NUM_53
-#define DEFAULT_VOLUME  85
+/*LS-304*/
+#define BOOT_BTN_GPIO   ((gpio_num_t)LS_BOARD_BOOT_BTN_GPIO)
+#define USB_VBUS_GPIO   ((gpio_num_t)LS_BOARD_VBUS_EN_GPIO)
+#define PA_CTRL_GPIO    ((gpio_num_t)LS_BOARD_PA_EN_GPIO)
+
+/*LS-306*/
+#ifdef CONFIG_LS_DEFAULT_VOLUME
+#define DEFAULT_VOLUME  CONFIG_LS_DEFAULT_VOLUME
+#else
+#define DEFAULT_VOLUME  50
+#endif
 
 typedef struct {
     const char *name;
@@ -95,12 +104,13 @@ static void settings_save_volume(int v)
 static StackType_t  s_settings_stack[SETTINGS_STACK_WORDS];
 static StaticTask_t s_settings_tcb;
 
+/*LS-303*/
 #define SDR_STALL_RECOVER_S 20
-#define SDR_STALL_MAX_TRIES 3
+#define SDR_STALL_MAX_TRIES 5
 
 #define SDR_STALL_RETRY_S   20
 
-#define SDR_ABSENT_POWER_S  15
+#define SDR_ABSENT_POWER_S  30
 
 #define SDR_PWR_MAGIC       0x53445057u
 #define SDR_PWR_MAX         2
@@ -109,8 +119,15 @@ static RTC_NOINIT_ATTR uint32_t s_sdr_pwr_count;
 
 static void hl_sdr_power_cycle(void);
 
+/*LS-303*/
 static bool sdr_auto_power_cycle(const char *why)
 {
+    if (!LS_BOARD_HAS_VBUS_CTRL) {
+        ESP_LOGE(TAG, "SDR %s. %s cannot cut VBUS in software, so there is "
+                      "nothing left to try automatically - replug the dongle.",
+                 why, LS_BOARD_NAME);
+        return false;
+    }
     if (s_sdr_pwr_magic != SDR_PWR_MAGIC) {
         s_sdr_pwr_magic = SDR_PWR_MAGIC;
         s_sdr_pwr_count = 0;
@@ -187,7 +204,10 @@ static void settings_task(void *arg)
                 } else if (!stall_told) {
                     stall_told = true;
 
-                    if (!sdr_auto_power_cycle("silent after three in-place recoveries")) {
+                    char why[64];
+                    snprintf(why, sizeof(why),
+                             "silent after %d in-place recoveries", SDR_STALL_MAX_TRIES);
+                    if (!sdr_auto_power_cycle(why)) {
                         ESP_LOGE(TAG, "SDR has delivered nothing for %ds and cannot be "
                                       "recovered automatically.", stall);
                     }
@@ -257,15 +277,24 @@ static void boot_btn_task(void *arg)
 
 static void gpio_init(void)
 {
+    /*LS-302*/
+#if LS_BOARD_HAS_VBUS_CTRL
+    uint64_t out_mask = (1ULL << PA_CTRL_GPIO) | (1ULL << LS_BOARD_VBUS_EN_GPIO);
+#else
+    uint64_t out_mask = (1ULL << PA_CTRL_GPIO);
+#endif
+
     gpio_config_t out = {
-        .pin_bit_mask = (1ULL << USB_VBUS_GPIO) | (1ULL << PA_CTRL_GPIO),
+        .pin_bit_mask = out_mask,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&out);
+#if LS_BOARD_HAS_VBUS_CTRL
     gpio_set_level(USB_VBUS_GPIO, 1);
+#endif
     gpio_set_level(PA_CTRL_GPIO, 1);
 
     gpio_config_t btn = {
@@ -417,13 +446,63 @@ static void hl_reboot(void)
 static void c6_drive(int level);
 static int  c6_read_en(void);
 
-static void hl_c6_reset(void)
+/*LS-301*/
+typedef enum { DEFER_NONE = 0, DEFER_SDR_RESET, DEFER_C6_RESET } defer_job_t;
+
+#define DEFER_STACK_WORDS (3072 / sizeof(StackType_t))
+static StackType_t   s_defer_stack[DEFER_STACK_WORDS];
+static StaticTask_t  s_defer_tcb;
+static QueueHandle_t s_defer_q = NULL;
+
+static void defer_task(void *arg)
 {
-    c6_drive(0);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    c6_drive(1);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    (void)arg;
+    defer_job_t job;
+    for (;;) {
+        if (xQueueReceive(s_defer_q, &job, portMAX_DELAY) != pdTRUE) continue;
+
+        vTaskDelay(pdMS_TO_TICKS(150));
+
+        switch (job) {
+        case DEFER_SDR_RESET:
+            ESP_LOGW(TAG, "SDR reset requested by the head");
+            lakeshark_radio_park();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            lakeshark_radio_unpark();
+            break;
+        case DEFER_C6_RESET:
+            ESP_LOGW(TAG, "C6 reset requested by the head - the BLE link will "
+                          "drop until the co-processor is back");
+            c6_drive(0);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            c6_drive(1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            break;
+        default:
+            break;
+        }
+    }
 }
+
+static void defer_start(void)
+{
+    if (s_defer_q) return;
+    s_defer_q = xQueueCreate(4, sizeof(defer_job_t));
+    if (!s_defer_q) {
+        ESP_LOGE(TAG, "deferred job queue alloc failed");
+        return;
+    }
+    xTaskCreateStatic(defer_task, "hl_defer", DEFER_STACK_WORDS, NULL, 4,
+                      s_defer_stack, &s_defer_tcb);
+}
+
+static void defer_post(defer_job_t job)
+{
+    if (!s_defer_q) return;
+    xQueueSend(s_defer_q, &job, 0);
+}
+
+static void hl_c6_reset(void) { defer_post(DEFER_C6_RESET); }
 
 static int hl_c6_up(void) { return esp_hosted_connect_to_slave(); }
 
@@ -442,13 +521,8 @@ static bool hl_set_log_level(const char *tag, const char *level)
     return false;
 }
 
-static void hl_sdr_reset(void)
-{
-
-    lakeshark_radio_park();
-    vTaskDelay(pdMS_TO_TICKS(200));
-    lakeshark_radio_unpark();
-}
+/*LS-301*/
+static void hl_sdr_reset(void) { defer_post(DEFER_SDR_RESET); }
 
 #define SDRPWR_STACK_WORDS (3072 / sizeof(StackType_t))
 static StackType_t  s_sdrpwr_stack[SDRPWR_STACK_WORDS];
@@ -459,7 +533,7 @@ static void sdr_power_task(void *arg)
 {
     (void)arg;
 
-    ESP_LOGW(TAG, "SDR power cycle: dropping VBUS (GPIO%d)", USB_VBUS_GPIO);
+    ESP_LOGW(TAG, "SDR power cycle: dropping VBUS (GPIO%d)", (int)USB_VBUS_GPIO);
     lakeshark_radio_park();
     vTaskDelay(pdMS_TO_TICKS(300));
 
@@ -474,8 +548,15 @@ static void sdr_power_task(void *arg)
     esp_restart();
 }
 
+/*LS-302*/
 static void hl_sdr_power_cycle(void)
 {
+    if (!LS_BOARD_HAS_VBUS_CTRL) {
+        ESP_LOGW(TAG, "%s has no VBUS switch on the USB host port - cannot power "
+                      "cycle the dongle in software. Replug it, or run "
+                      "'SDR recover'.", LS_BOARD_NAME);
+        return;
+    }
     if (s_sdrpwr_busy) return;
     s_sdrpwr_busy = true;
     xTaskCreateStatic(sdr_power_task, "sdr_pwr", SDRPWR_STACK_WORDS, NULL, 5,
@@ -516,18 +597,24 @@ static const char *reset_reason_name(void)
     }
 }
 
+/*LS-305*/
+static char s_c6_fw[16] = "?";
+
 static void hl_sys_info(char *out, size_t len)
 {
     uint32_t up = hl_uptime_s();
     snprintf(out, len,
-             "up=%lus rst=%s idf=%s int=%u dma=%u psram=%u mode=%s rtl=%d c6=%d",
+             "up=%lus rst=%s idf=%s int=%u dma=%u psram=%u mode=%s rtl=%d c6=%d "
+             "c6fw=%s hostfw=%d.%d.%d board=%s",
              (unsigned long)up, reset_reason_name(), esp_get_idf_version(),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              s_modes[s_mode].name,
              lakeshark_radio_device_ready() ? 1 : 0,
-             c6_read_en());
+             c6_read_en(), s_c6_fw,
+             ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
+             ESP_HOSTED_VERSION_PATCH_1, LS_BOARD_NAME);
 }
 
 static const flipper_link_host_t s_link_host = {
@@ -611,7 +698,8 @@ static int cmd_beep(int argc, char **argv)
     return 0;
 }
 
-#define C6_EN_GPIO GPIO_NUM_54
+/*LS-304*/
+#define C6_EN_GPIO ((gpio_num_t)LS_BOARD_C6_EN_GPIO)
 
 static int c6_read_en(void)
 {
@@ -644,19 +732,62 @@ static void c6_release(void)
     (void)c6_read_en();
 }
 
+/*LS-305*/
+static void c6_print_versions(void)
+{
+    printf("c6 host esp_hosted : %d.%d.%d\n",
+           ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
+           ESP_HOSTED_VERSION_PATCH_1);
+
+    esp_hosted_coprocessor_fwver_t v = { 0 };
+    int e = esp_hosted_get_coprocessor_fwversion(&v);
+    if (e != 0) {
+        printf("c6 slave firmware  : unreachable (rc=%d) - is the C6 up? try 'c6 up'\n", e);
+        return;
+    }
+    printf("c6 slave firmware  : %lu.%lu.%lu\n",
+           (unsigned long)v.major1, (unsigned long)v.minor1,
+           (unsigned long)v.patch1);
+
+    uint32_t chip_id = 0;
+    char     target[24] = { 0 };
+    if (esp_hosted_get_cp_info(&chip_id, target, sizeof(target)) == 0) {
+        printf("c6 co-processor    : %s (chip id 0x%lx)\n",
+               target[0] ? target : "?", (unsigned long)chip_id);
+    }
+
+    if ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
+        (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1) {
+        printf("c6 MISMATCH on major.minor - this is the documented cause of RPC and "
+               "HCI timeouts. Reflash the C6 with the matching esp_hosted slave "
+               "build.\n");
+    } else if ((uint32_t)ESP_HOSTED_VERSION_PATCH_1 != v.patch1) {
+        printf("c6 patch levels differ (host %d, slave %lu). esp_hosted only enforces "
+               "major.minor, so this is usually benign.\n",
+               ESP_HOSTED_VERSION_PATCH_1, (unsigned long)v.patch1);
+    } else {
+        printf("c6 host and co-processor firmware are in step.\n");
+    }
+}
+
 static int cmd_c6(int argc, char **argv)
 {
     if (argc < 2) {
         printf("c6 en=%d (GPIO%d, undriven read)  1=C6 running, 0=in reset\n",
-               c6_read_en(), C6_EN_GPIO);
-        printf("usage: c6 <0|1|reset|release>\n"
+               c6_read_en(), (int)C6_EN_GPIO);
+        c6_print_versions();
+        printf("usage: c6 <0|1|up|ver|reset|release>\n"
                "  0/1      drive EN low/high and hold it\n"
+               "  up       (re)connect the ESP-Hosted transport\n"
+               "  ver      host vs co-processor firmware versions\n"
                "  reset    pulse EN low 200ms then high, rebooting the C6\n"
                "  release  stop driving; let the board pull-up hold it\n");
         return 0;
     }
 
-    if (!strcmp(argv[1], "up")) {
+    if (!strcmp(argv[1], "ver")) {
+        c6_print_versions();
+    } else if (!strcmp(argv[1], "up")) {
 
         printf("c6: connecting to co-processor...\n");
         int e = esp_hosted_connect_to_slave();
@@ -694,6 +825,31 @@ static int cmd_ble(int argc, char **argv)
                name[0] ? name : "-", addr[0] ? addr : "-",
                ble_link_tel_hz(),
                (unsigned long)rx, (unsigned long)tx, (unsigned long)drops);
+        /*LS-111*/
+        {
+            uint16_t th = 0, ss = 0, se = 0;
+            uint32_t foreign = 0;
+            ble_link_rx_debug(&th, &ss, &se, &foreign);
+            uint32_t nrx = 0, nbytes = 0;
+            ble_link_notify_stats(&nrx, &nbytes);
+            printf("ble rx path: notify handle=%u service=%u..%u  ignored=%lu\n",
+                   th, ss, se, (unsigned long)foreign);
+            printf("ble rx raw : notifications=%lu bytes=%lu -> lines=%lu%s\n",
+                   (unsigned long)nrx, (unsigned long)nbytes, (unsigned long)rx,
+                   (nrx && rx > nrx)
+                       ? "   (more lines than notifications: the head packs "
+                         "repeats into one notification)"
+                   : (rx && nrx > rx)
+                       ? "   (more notifications than lines: partial frames)"
+                       : "");
+            if (rx == 0 && tx > 50) {
+                printf("*** the head has never sent us a line. It receives fine "
+                       "(%lu frames out), so this is the Flipper->P4 direction: "
+                       "either the app is not notifying, or it notifies on a "
+                       "handle outside %u..%u (see 'ignored' above).\n",
+                       (unsigned long)tx, ss, se);
+            }
+        }
         if (ble_link_passkey_pending()) {
             printf("*** PAIRING: the head is showing a 6-digit code - "
                    "enter it with:  ble pin <code>\n");
@@ -868,6 +1024,7 @@ static int cmd_fl(int argc, char **argv)
     return 0;
 }
 
+/*LS-307*/
 static void console_start(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -876,7 +1033,15 @@ static void console_start(void)
     repl_cfg.max_cmdline_length = 128;
 
     esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl));
+    esp_err_t cerr = esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl);
+    if (cerr != ESP_OK) {
+        ESP_LOGE(TAG, "console REPL unavailable: %s (internal=%u largest=%u). "
+                      "Radio and links keep running; the head still works.",
+                 esp_err_to_name(cerr),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return;
+    }
 
     const esp_console_cmd_t cmds[] = {
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
@@ -899,8 +1064,8 @@ static void console_start(void)
         { .command = "ble",    .help = "BLE control head link (P4 is central)",
           .hint = "<on|off|rescan|pin <code>|name <s>|tel <hz>|verbose <0|1>>",
           .func = &cmd_ble },
-        { .command = "c6",     .help = "ESP32-C6 enable line (GPIO54)",
-          .hint = "<0|1|reset|invreset>", .func = &cmd_c6 },
+        { .command = "c6",     .help = "ESP32-C6 co-processor: enable line, transport, firmware versions",
+          .hint = "<0|1|up|ver|reset|release>", .func = &cmd_c6 },
         { .command = "link",   .help = "Flipper serial head control",
           .hint = "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]",
           .func = &cmd_link },
@@ -917,10 +1082,17 @@ static void console_start(void)
     };
     esp_console_register_help_command();
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
-        ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
+        esp_err_t rerr = esp_console_cmd_register(&cmds[i]);
+        if (rerr != ESP_OK) {
+            ESP_LOGW(TAG, "console command '%s' not registered: %s",
+                     cmds[i].command, esp_err_to_name(rerr));
+        }
     }
     ls_ctl_register_commands();
-    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+    esp_err_t serr = esp_console_start_repl(repl);
+    if (serr != ESP_OK) {
+        ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));
+    }
 }
 
 void app_main(void)
@@ -933,12 +1105,20 @@ void app_main(void)
     ESP_ERROR_CHECK(err);
 
     gpio_init();
+    defer_start();
 
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_ERROR_CHECK(bsp_extra_codec_init_speaker_only());
 
-    ESP_LOGI(TAG, "LakeShark headless boot - radio core, no display (NANO)");
-    ESP_LOGI(TAG, "BOOT button (GPIO%d) cycles P25 -> ADS-B -> FM", BOOT_BTN_GPIO);
+    ESP_LOGI(TAG, "LakeShark headless boot - radio core, no display (%s)",
+             LS_BOARD_NAME);
+    ESP_LOGI(TAG, "BOOT button (GPIO%d) cycles P25 -> ADS-B -> FM",
+             (int)BOOT_BTN_GPIO);
+    if (LS_BOARD_HAS_VBUS_CTRL) {
+        ESP_LOGI(TAG, "USB host VBUS switch on GPIO%d", (int)USB_VBUS_GPIO);
+    } else {
+        ESP_LOGI(TAG, "no USB host VBUS switch - the dongle is hard-powered");
+    }
 
     ESP_LOGW(TAG, "heap before C6/BLE: internal=%u DMA=%u largest-DMA=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -950,6 +1130,22 @@ void app_main(void)
                  e == 0 ? "up" : "FAILED", e);
 
         if (e == 0) {
+            /*LS-305*/
+            esp_hosted_coprocessor_fwver_t v = { 0 };
+            if (esp_hosted_get_coprocessor_fwversion(&v) == 0) {
+                snprintf(s_c6_fw, sizeof(s_c6_fw), "%lu.%lu.%lu",
+                         (unsigned long)v.major1, (unsigned long)v.minor1,
+                         (unsigned long)v.patch1);
+                bool skew = ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
+                             (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1);
+                ESP_LOGW(TAG, "C6 esp_hosted: host %d.%d.%d, co-processor %s%s",
+                         ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
+                         ESP_HOSTED_VERSION_PATCH_1, s_c6_fw,
+                         skew ? "  <-- MISMATCH, expect RPC/HCI timeouts" : "");
+            } else {
+                ESP_LOGW(TAG, "C6 firmware version query failed");
+            }
+
             esp_err_t be = ble_link_start();
             ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
         }

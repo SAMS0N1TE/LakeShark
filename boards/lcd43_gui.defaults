@@ -1,0 +1,11 @@
+# LS-004 / LS-901  ESP32-P4-WIFI6-Touch-LCD-4.3, GUI build.
+# Unverified: written from the product page, board not in hand. See LS-901.
+# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui.defaults"
+
+CONFIG_LS_BOARD_P4_TOUCH_LCD_43=y
+CONFIG_LAKESHARK_HEADLESS=n
+
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_32m.csv"

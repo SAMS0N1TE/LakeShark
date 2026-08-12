@@ -27,6 +27,7 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 | [ESP32-P4-NANO Flipper Build](https://github.com/SAMS0N1TE/LakeShark-Flipper) | 16MB | Flipper controlled via BT/UART (P25 / ADS-B / FM / POCSAG) | [v0.4.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.4.0) | [v2.1](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.1) |
 | [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) | n/a |
 | [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless P25, serial console + host control panel | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) | n/a |
+| [ESP32-P4-WIFI6 Flipper Build](https://github.com/SAMS0N1TE/LakeShark-Flipper) | 32MB | Flipper controlled via BLE/UART (P25 / ADS-B / FM / POCSAG) | unreleased | [v2.2](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.2) |
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
 

@@ -74,7 +74,8 @@ static volatile bool     s_tune_peak_req = false;
 static volatile bool     s_scan_restart  = false;
 
 static rtlsdr_dev_t *s_dev   = NULL;
-static fm_dsp_t      s_dsp;
+/*LS-405*/
+static EXT_RAM_BSS_ATTR fm_dsp_t s_dsp;
 
 static const int     POC_BAUDS[3] = { 512, 1200, 2400 };
 static pocsag_ctx_t *s_poc[3] = { NULL, NULL, NULL };
@@ -224,8 +225,9 @@ static void fm_rx_task(void *arg)
     s_dev = rtlsdr_dev_get();
     uint8_t *iq = malloc(FM_USB_BUF_LENGTH);
 
-    static float   demod[1100];
-    static int16_t pcm[600];
+    /*LS-405*/
+    static EXT_RAM_BSS_ATTR float   demod[1100];
+    static EXT_RAM_BSS_ATTR int16_t pcm[600];
 
     if (!iq) { ESP_LOGE(TAG, "OOM iq buf"); s_running = false; vTaskDelete(NULL); return; }
     if (!s_dev) ESP_LOGW(TAG, "no RTL device at entry");

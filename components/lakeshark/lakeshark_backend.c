@@ -29,7 +29,8 @@
 #include "tone.h"
 #include "event_stream.h"
 
-#include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
+/*LS-001*/
+#include "bsp/esp-bsp.h"
 
 static const char *TAG = "lakeshark";
 

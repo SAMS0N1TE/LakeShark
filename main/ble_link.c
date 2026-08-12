@@ -6,6 +6,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -46,11 +47,31 @@ static const ble_uuid128_t CHR_TX = BLE_UUID128_INIT(
     0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4b,
     0x52, 0x41, 0x48, 0x53, 0x45, 0x4b, 0x41, 0x4c);
 
-#define LINE_MAX  192
+#define BLE_LINE_MAX  192
 #define REPLY_MAX 256
 #define TEL_MAX   512
 
 #define NO_SVC_BACKOFF_S 8
+
+/*LS-106*/
+#define RECONNECT_BACKOFF_MS      1500
+#define RECONNECT_BACKOFF_MAX_MS  20000
+
+/*LS-102*/
+#define BLE_MIN_PAYLOAD 20
+
+/*LS-104*/
+#define CONN_ITVL_MIN_UNITS  24
+#define CONN_ITVL_MAX_UNITS  48
+#define CONN_LATENCY         0
+#define CONN_TIMEOUT_UNITS   400
+
+/*LS-101*/
+#define CMD_Q_DEPTH 8
+
+typedef struct {
+    char line[BLE_LINE_MAX];
+} ble_cmd_t;
 
 static volatile ble_link_state_t s_state = BLE_LINK_OFF;
 static volatile bool s_run     = false;
@@ -86,10 +107,28 @@ static bool     s_disc_started = false;
 
 static bool     s_stack_up     = false;
 
-static char s_line[LINE_MAX];
+static char s_line[BLE_LINE_MAX];
 static int  s_line_pos = 0;
 
 static TaskHandle_t s_tel_task = NULL;
+
+/*LS-101*/
+static QueueHandle_t s_cmd_q    = NULL;
+static TaskHandle_t  s_cmd_task = NULL;
+
+/*LS-103*/
+static volatile uint16_t s_mtu = 0;
+
+/*LS-106*/
+static uint32_t s_backoff_ms = RECONNECT_BACKOFF_MS;
+
+/*LS-111*/
+static uint16_t s_svc_start = 0, s_svc_end = 0;
+static uint32_t s_notify_foreign = 0;
+
+/*LS-113*/
+static uint32_t s_notify_rx = 0;
+static uint32_t s_notify_bytes = 0;
 
 static int  gap_event(struct ble_gap_event *event, void *arg);
 static void start_scan(void);
@@ -132,6 +171,23 @@ void ble_link_stats(uint32_t *rx, uint32_t *tx, uint32_t *drops)
     if (drops) *drops = s_drops;
 }
 
+/*LS-111*/
+void ble_link_rx_debug(uint16_t *tx_hnd, uint16_t *svc_start, uint16_t *svc_end,
+                       uint32_t *foreign)
+{
+    if (tx_hnd)    *tx_hnd    = s_tx_hnd;
+    if (svc_start) *svc_start = s_svc_start;
+    if (svc_end)   *svc_end   = s_svc_end;
+    if (foreign)   *foreign   = s_notify_foreign;
+}
+
+/*LS-113*/
+void ble_link_notify_stats(uint32_t *notifies, uint32_t *bytes)
+{
+    if (notifies) *notifies = s_notify_rx;
+    if (bytes)    *bytes    = s_notify_bytes;
+}
+
 void ble_link_set_tel_hz(int hz)
 {
     if (hz < 0)  hz = 0;
@@ -149,9 +205,26 @@ void ble_link_allow_telemetry(bool allow)
     s_tel_allowed = allow;
 }
 
+/*LS-102*/
+static int ble_payload_cap(uint16_t conn)
+{
+    uint16_t mtu = s_mtu;
+    if (!mtu) mtu = ble_att_mtu(conn);
+    int cap = (int)mtu - 3;
+    if (cap < BLE_MIN_PAYLOAD) cap = BLE_MIN_PAYLOAD;
+    return cap;
+}
+
+/*LS-105*/
 static bool ble_write(const char *data, int len)
 {
-    if (s_state != BLE_LINK_READY || !s_rx_hnd) return false;
+    uint16_t conn = s_conn;
+    uint16_t hnd  = s_rx_hnd;
+
+    if (s_state != BLE_LINK_READY || !hnd || conn == BLE_HS_CONN_HANDLE_NONE) {
+        return false;
+    }
+    if (len <= 0) return true;
 
     if (os_msys_num_free() < 4) {
         s_drops++;
@@ -162,8 +235,11 @@ static bool ble_write(const char *data, int len)
         return false;
     }
 
+    int cap = ble_payload_cap(conn);
+
     size_t largest = heap_caps_get_largest_free_block(BLE_TX_ALLOC_CAPS);
-    size_t need    = (size_t)len + BLE_TX_HDR_BYTES + BLE_TX_ALIGN_SLACK +
+    size_t chunk   = (size_t)(len < cap ? len : cap);
+    size_t need    = chunk + BLE_TX_HDR_BYTES + BLE_TX_ALIGN_SLACK +
                      BLE_TX_DMA_MARGIN;
     if (largest < need) {
         s_drops++;
@@ -175,32 +251,59 @@ static bool ble_write(const char *data, int len)
         return false;
     }
 
-    int cap = (int)ble_att_mtu(s_conn) - 3;
-    if (cap > 0 && len > cap) {
-        s_drops++;
-        if (s_drops < 5 || s_verbose) {
-            ESP_LOGW(TAG, "frame of %d B exceeds the %d B the MTU allows - dropped",
-                     len, cap);
+    int sent = 0;
+    while (sent < len) {
+        int n = len - sent;
+        if (n > cap) n = cap;
+
+        int rc = s_rx_no_rsp
+                     ? ble_gattc_write_no_rsp_flat(conn, hnd, data + sent, (uint16_t)n)
+                     : ble_gattc_write_flat(conn, hnd, data + sent, (uint16_t)n,
+                                            NULL, NULL);
+        if (rc != 0) {
+            s_drops++;
+            if (s_verbose || s_drops < 5) {
+                ESP_LOGW(TAG, "write failed rc=%d (%d of %d B out)", rc, sent, len);
+            }
+            /*LS-109*/
+            if (sent > 0 && data[len - 1] == '\n') {
+                ble_gattc_write_no_rsp_flat(conn, hnd, "\n", 1);
+            }
+            return false;
         }
-        return false;
-    }
-    int rc = s_rx_no_rsp
-                 ? ble_gattc_write_no_rsp_flat(s_conn, s_rx_hnd, data, (uint16_t)len)
-                 : ble_gattc_write_flat(s_conn, s_rx_hnd, data, (uint16_t)len, NULL, NULL);
-    if (rc != 0) {
-        s_drops++;
-        if (s_verbose || s_drops < 5) ESP_LOGW(TAG, "write failed rc=%d", rc);
-        return false;
+        sent += n;
+
+        if (sent < len && os_msys_num_free() < 4) {
+            vTaskDelay(1);
+        }
     }
     s_tx_frames++;
     return true;
+}
+
+/*LS-101*/
+static void cmd_task(void *arg)
+{
+    (void)arg;
+    ble_cmd_t cmd;
+    char      reply[REPLY_MAX];
+
+    for (;;) {
+        if (xQueueReceive(s_cmd_q, &cmd, pdMS_TO_TICKS(200)) != pdTRUE) continue;
+        if (!s_run) continue;
+
+        reply[0] = '\0';
+        flipper_link_inject(cmd.line, reply, sizeof(reply));
+        if (reply[0]) ble_write(reply, (int)strlen(reply));
+    }
 }
 
 static void tel_task(void *arg)
 {
     (void)arg;
     char tel[TEL_MAX];
-    while (s_run) {
+    for (;;) {
+        if (!s_run) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
 
         int64_t due = s_rescan_at_us;
         if (due && esp_timer_get_time() >= due) {
@@ -208,6 +311,7 @@ static void tel_task(void *arg)
             if (s_state != BLE_LINK_READY) start_scan();
         }
 
+        /*LS-107*/
         int hz = s_tel_hz;
         if (hz <= 0 || s_state != BLE_LINK_READY || !s_tel_allowed) {
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -223,13 +327,11 @@ static void tel_task(void *arg)
         if (eqn > 0) ble_write(eqline, eqn);
         vTaskDelay(pdMS_TO_TICKS(1000 / hz));
     }
-    s_tel_task = NULL;
-    vTaskDelete(NULL);
 }
 
+/*LS-101*/
 static void feed_rx(const uint8_t *data, int len)
 {
-    char reply[REPLY_MAX];
     for (int i = 0; i < len; i++) {
         char c = (char)data[i];
         if (c == '\n' || c == '\r') {
@@ -237,11 +339,20 @@ static void feed_rx(const uint8_t *data, int len)
                 s_line[s_line_pos] = '\0';
                 s_rx_lines++;
                 if (s_verbose) ESP_LOGI(TAG, "RX <%s>", s_line);
-                flipper_link_inject(s_line, reply, sizeof(reply));
-                if (reply[0]) ble_write(reply, (int)strlen(reply));
+
+                if (s_cmd_q) {
+                    ble_cmd_t cmd;
+                    strlcpy(cmd.line, s_line, sizeof(cmd.line));
+                    if (xQueueSend(s_cmd_q, &cmd, 0) != pdTRUE) {
+                        s_drops++;
+                        if (s_drops < 5 || s_verbose) {
+                            ESP_LOGW(TAG, "command queue full - dropped <%s>", s_line);
+                        }
+                    }
+                }
                 s_line_pos = 0;
             }
-        } else if (s_line_pos < LINE_MAX - 1) {
+        } else if (s_line_pos < BLE_LINE_MAX - 1) {
             s_line[s_line_pos++] = c;
         } else {
             s_line_pos = 0;
@@ -260,8 +371,24 @@ static int on_cccd_written(uint16_t conn, const struct ble_gatt_error *err,
         return 0;
     }
     s_state = BLE_LINK_READY;
+    s_backoff_ms = RECONNECT_BACKOFF_MS;
     ESP_LOGI(TAG, "link ready: %s [%s] - subscribed, telemetry at %d Hz",
              s_peer_name, s_peer_addr, s_tel_hz);
+
+    /*LS-104*/
+    {
+        struct ble_gap_upd_params up = { 0 };
+        up.itvl_min            = CONN_ITVL_MIN_UNITS;
+        up.itvl_max            = CONN_ITVL_MAX_UNITS;
+        up.latency             = CONN_LATENCY;
+        up.supervision_timeout = CONN_TIMEOUT_UNITS;
+        up.min_ce_len          = 0;
+        up.max_ce_len          = 0;
+        int urc = ble_gap_update_params(s_conn, &up);
+        if (urc != 0 && urc != BLE_HS_EALREADY) {
+            ESP_LOGW(TAG, "conn param update rc=%d - staying on the peer's terms", urc);
+        }
+    }
 
     char hello[64];
     int n = snprintf(hello, sizeof(hello), "+HELLO %d LakeShark\n",
@@ -354,6 +481,9 @@ static int on_svc(uint16_t conn, const struct ble_gatt_error *err,
     (void)arg;
 
     if (err->status == 0 && svc) {
+        /*LS-111*/
+        s_svc_start = svc->start_handle;
+        s_svc_end   = svc->end_handle;
         ESP_LOGI(TAG, "serial service at handles %u..%u",
                  svc->start_handle, svc->end_handle);
         int rc = ble_gattc_disc_all_chrs(conn, svc->start_handle,
@@ -507,8 +637,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
-            ESP_LOGW(TAG, "connect failed status=%d", event->connect.status);
-            start_scan();
+            /*LS-106*/
+            ESP_LOGW(TAG, "connect failed status=%d - retrying in %lu ms",
+                     event->connect.status, (unsigned long)s_backoff_ms);
+            s_rescan_at_us = esp_timer_get_time() + (int64_t)s_backoff_ms * 1000;
+            s_state        = BLE_LINK_SCANNING;
+            s_backoff_ms *= 2;
+            if (s_backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
+                s_backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+            }
             return 0;
         }
         s_conn    = event->connect.conn_handle;
@@ -517,7 +654,17 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_pair_failed  = false;
         s_pk_wait      = false;
         s_disc_started = false;
+        s_mtu          = 0;
+        s_svc_start = s_svc_end = 0;
         s_state = BLE_LINK_DISCOVERING;
+
+        /*LS-103*/
+        {
+            int mrc = ble_gattc_exchange_mtu(s_conn, NULL, NULL);
+            if (mrc != 0 && mrc != BLE_HS_EALREADY) {
+                ESP_LOGW(TAG, "early exchange_mtu rc=%d", mrc);
+            }
+        }
 
         int src = ble_gap_security_initiate(s_conn);
         if (src != 0 && src != BLE_HS_EALREADY) {
@@ -534,6 +681,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_conn   = BLE_HS_CONN_HANDLE_NONE;
         s_rx_hnd = s_tx_hnd = s_tx_cccd = 0;
         s_pk_wait      = false;
+        s_mtu          = 0;
+        s_svc_start = s_svc_end = 0;
 
         s_pk_early_valid = false;
         s_disc_started = false;
@@ -558,12 +707,48 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
             s_state = BLE_LINK_SCANNING;
         } else {
-            start_scan();
+            /*LS-106*/
+            s_rescan_at_us = esp_timer_get_time() + (int64_t)s_backoff_ms * 1000;
+            s_state        = BLE_LINK_SCANNING;
+            ESP_LOGI(TAG, "rescanning in %lu ms", (unsigned long)s_backoff_ms);
+            s_backoff_ms *= 2;
+            if (s_backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
+                s_backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+            }
         }
         return 0;
 
+    /*LS-111*/
     case BLE_GAP_EVENT_NOTIFY_RX: {
-        if (event->notify_rx.attr_handle != s_tx_hnd) return 0;
+        uint16_t h = event->notify_rx.attr_handle;
+        if (h != s_tx_hnd) {
+            s_notify_foreign++;
+            static int64_t last_us = 0;
+            int64_t now = esp_timer_get_time();
+            if (s_verbose || s_notify_foreign <= 3 || now - last_us > 5000000LL) {
+                last_us = now;
+                ESP_LOGW(TAG, "notification on handle %u ignored (expected %u, "
+                              "service %u..%u) - %lu so far", h, s_tx_hnd,
+                         s_svc_start, s_svc_end,
+                         (unsigned long)s_notify_foreign);
+            }
+            return 0;
+        }
+        /*LS-113*/
+        s_notify_rx++;
+        {
+            int total = 0, segs = 0;
+            for (struct os_mbuf *m = event->notify_rx.om; m; m = SLIST_NEXT(m, om_next)) {
+                total += m->om_len;
+                segs++;
+            }
+            s_notify_bytes += (uint32_t)total;
+            if (s_verbose) {
+                ESP_LOGI(TAG, "notify #%lu h=%u len=%d segs=%d",
+                         (unsigned long)s_notify_rx, h, total, segs);
+            }
+        }
+
         struct os_mbuf *om = event->notify_rx.om;
         while (om) {
             feed_rx(om->om_data, om->om_len);
@@ -602,9 +787,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         s_disc_started = true;
-
-        int mrc = ble_gattc_exchange_mtu(s_conn, NULL, NULL);
-        if (mrc != 0) ESP_LOGW(TAG, "exchange_mtu rc=%d", mrc);
 
         ESP_LOGI(TAG, "paired, discovering serial service");
         ble_gattc_disc_svc_by_uuid(s_conn, &SVC_SERIAL.u, on_svc, NULL);
@@ -667,9 +849,26 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
 
+    /*LS-103*/
     case BLE_GAP_EVENT_MTU:
-        ESP_LOGI(TAG, "MTU now %d", event->mtu.value);
+        s_mtu = event->mtu.value;
+        ESP_LOGI(TAG, "MTU now %d (payload cap %d B)", event->mtu.value,
+                 ble_payload_cap(event->mtu.conn_handle));
         return 0;
+
+    /*LS-104*/
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc d;
+        if (event->conn_update.status == 0 &&
+            ble_gap_conn_find(s_conn, &d) == 0) {
+            ESP_LOGI(TAG, "conn params: itvl=%u latency=%u timeout=%u",
+                     d.conn_itvl, d.conn_latency, d.supervision_timeout);
+        } else if (event->conn_update.status != 0) {
+            ESP_LOGW(TAG, "conn param update rejected status=%d",
+                     event->conn_update.status);
+        }
+        return 0;
+    }
 
     default:
         return 0;
@@ -696,6 +895,29 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+/*LS-101*/
+static bool workers_start(void)
+{
+    if (!s_cmd_q) {
+        s_cmd_q = xQueueCreate(CMD_Q_DEPTH, sizeof(ble_cmd_t));
+        if (!s_cmd_q) {
+            ESP_LOGE(TAG, "command queue alloc failed");
+            return false;
+        }
+    }
+    if (!s_cmd_task &&
+        xTaskCreate(cmd_task, "ble_cmd", 4608, NULL, 4, &s_cmd_task) != pdPASS) {
+        ESP_LOGE(TAG, "command task create failed");
+        return false;
+    }
+    if (!s_tel_task &&
+        xTaskCreate(tel_task, "ble_tel", 6144, NULL, 4, &s_tel_task) != pdPASS) {
+        ESP_LOGE(TAG, "telemetry task create failed");
+        return false;
+    }
+    return true;
+}
+
 esp_err_t ble_link_start(void)
 {
     if (s_run) return ESP_ERR_INVALID_STATE;
@@ -704,21 +926,33 @@ esp_err_t ble_link_start(void)
         s_run   = true;
         s_state = BLE_LINK_SCANNING;
         s_rescan_at_us = 0;
+        s_backoff_ms   = RECONNECT_BACKOFF_MS;
 
-        if (!s_tel_task) {
-            xTaskCreate(tel_task, "ble_tel", 6144, NULL, 4, &s_tel_task);
+        if (!workers_start()) {
+            s_run = false;
+            return ESP_ERR_NO_MEM;
         }
         start_scan();
         return ESP_OK;
     }
 
+    /*LS-110*/
     esp_err_t rc = esp_hosted_bt_controller_init();
     ESP_LOGI(TAG, "co-processor bt_controller_init: %s", esp_err_to_name(rc));
-    if (rc != ESP_OK) return rc;
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "co-processor refused to arm its BT controller. Its "
+                      "ESP-Hosted slave firmware is too old to answer the "
+                      "FeatureControl RPC - reflash the C6 (see c6_firmware/). "
+                      "Leaving BLE off; the rest of the radio runs normally.");
+        return rc;
+    }
 
     rc = esp_hosted_bt_controller_enable();
     ESP_LOGI(TAG, "co-processor bt_controller_enable: %s", esp_err_to_name(rc));
-    if (rc != ESP_OK) return rc;
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "co-processor BT controller would not enable - leaving BLE off");
+        return rc;
+    }
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
@@ -743,16 +977,25 @@ esp_err_t ble_link_start(void)
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb  = ble_store_util_status_rr;
 
+    /*LS-112*/
     ble_svc_gap_init();
     ble_svc_gap_device_name_set("LakeShark");
 
-    s_stack_up = true;
-    s_run      = true;
-    s_state    = BLE_LINK_SYNCING;
+    /*LS-103*/
+    {
+        int prc = ble_att_set_preferred_mtu(MYNEWT_VAL(BLE_ATT_PREFERRED_MTU));
+        if (prc != 0) ESP_LOGW(TAG, "preferred MTU rc=%d", prc);
+    }
+
+    s_stack_up   = true;
+    s_run        = true;
+    s_state      = BLE_LINK_SYNCING;
+    s_backoff_ms = RECONNECT_BACKOFF_MS;
     nimble_port_freertos_init(host_task);
 
-    if (!s_tel_task) {
-        xTaskCreate(tel_task, "ble_tel", 6144, NULL, 4, &s_tel_task);
+    if (!workers_start()) {
+        s_run = false;
+        return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }

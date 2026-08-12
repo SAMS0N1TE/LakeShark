@@ -31,6 +31,11 @@ void ble_link_peer(char *name, size_t name_len, char *addr, size_t addr_len);
 
 void ble_link_stats(uint32_t *rx_lines, uint32_t *tx_frames, uint32_t *drops);
 
+void ble_link_rx_debug(uint16_t *tx_hnd, uint16_t *svc_start, uint16_t *svc_end,
+                       uint32_t *foreign);
+
+void ble_link_notify_stats(uint32_t *notifies, uint32_t *bytes);
+
 void ble_link_set_tel_hz(int hz);
 int  ble_link_tel_hz(void);
 
