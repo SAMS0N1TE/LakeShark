@@ -57,6 +57,12 @@ static bool     s_level  = false;
 static uint32_t s_run_samples = 0;
 static uint32_t s_span_us = 0;
 
+/*LS-506*/
+static volatile bool s_arm_pending = false;
+
+/*LS-507*/
+static volatile uint32_t s_bytes_sec = 0;
+
 static inline uint32_t samples_to_us(uint32_t n)
 {
     return (uint32_t)(((uint64_t)n * REC_US_PER_SAMPLE_Q8) >> 8);
@@ -217,6 +223,10 @@ static void rec_rx_task(void *arg)
     ESP_LOGI(TAG, "rx task up: %.4f MHz %u kSPS gain=%d",
              s_freq_hz / 1e6, (unsigned)(REC_RTL_RATE / 1000), s_gain);
 
+    /*LS-507*/
+    int64_t  win_us = esp_timer_get_time();
+    uint32_t win_bytes = 0;
+
     while (s_active) {
         if (!s_dev) {
             s_dev = rtlsdr_dev_get();
@@ -230,6 +240,17 @@ static void rec_rx_task(void *arg)
         }
 
         int got = rtlsdr_stream_read(iq, REC_USB_BUF);
+
+        /*LS-507*/
+        if (got > 0) win_bytes += (uint32_t)got;
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - win_us >= 1000000) {
+            s_bytes_sec = (uint32_t)(((uint64_t)win_bytes * 1000000u) /
+                                     (uint64_t)(now_us - win_us));
+            win_bytes = 0;
+            win_us = now_us;
+        }
+
         if (got <= 0) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
@@ -240,6 +261,7 @@ static void rec_rx_task(void *arg)
         }
     }
 
+    s_bytes_sec = 0;
     free(iq);
     s_running = false;
     vTaskDelete(NULL);
@@ -274,10 +296,17 @@ static void rec_on_enter(void)
 
     s_active = true;
     xTaskCreatePinnedToCore(rec_rx_task, "rec_rx", 4096, NULL, 6, NULL, 1);
+
+    /*LS-506*/
+    if (s_arm_pending) {
+        s_arm_pending = false;
+        rec_arm();
+    }
 }
 
 static void rec_on_exit(void)
 {
+    s_arm_pending = false;
     s_active = false;
     for (int i = 0; i < 300 && s_running; i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (s_running) ESP_LOGW(TAG, "drain timeout");
@@ -316,7 +345,26 @@ void rec_get_status(rec_status_t *out)
     out->thresh_fixed = s_thresh_fixed;
     out->gap_ms       = rec_get_gap_ms();
     out->captures    = s_captures;
+    out->bytes_sec   = s_bytes_sec;
     strlcpy(out->last_file, s_last_file, sizeof(out->last_file));
+}
+
+/*LS-507*/
+uint32_t rec_bytes_sec(void) { return s_bytes_sec; }
+
+/*LS-508*/
+int rec_edge_count(void) { return s_edges; }
+
+int rec_edges_copy(int from, int32_t *out, int max)
+{
+    if (!out || max <= 0 || from < 0) return -1;
+    if (s_phase == REC_CAPTURING) return -1;
+    if (!s_edge || from >= s_edges) return 0;
+
+    int n = s_edges - from;
+    if (n > max) n = max;
+    memcpy(out, s_edge + from, (size_t)n * sizeof(int32_t));
+    return n;
 }
 
 void rec_set_freq(uint32_t hz)
@@ -349,7 +397,21 @@ void rec_arm(void)
     ESP_LOGI(TAG, "armed at %.4f MHz - waiting for carrier", s_freq_hz / 1e6);
 }
 
-void rec_disarm(void) { s_phase = REC_IDLE; }
+/*LS-506*/
+void rec_arm_request(void)
+{
+    if (s_active) {
+        rec_arm();
+        return;
+    }
+    s_arm_pending = true;
+}
+
+void rec_disarm(void)
+{
+    s_arm_pending = false;
+    s_phase = REC_IDLE;
+}
 
 /*LS-503*/
 void rec_set_thresh(int absolute)

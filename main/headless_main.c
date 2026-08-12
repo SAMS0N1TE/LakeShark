@@ -773,13 +773,9 @@ static int cmd_rec(int argc, char **argv)
     }
 
     if (!strcmp(argv[1], "arm")) {
-        /*LS-501*/
-        if (!rec_active()) {
-            select_mode(3);
-            for (int i = 0; i < 100 && !rec_active(); i++) vTaskDelay(pdMS_TO_TICKS(20));
-            if (!rec_active()) { printf("REC app did not start\n"); return 0; }
-        }
-        rec_arm();
+        /*LS-501*/ /*LS-506*/
+        if (!rec_active()) select_mode(3);
+        rec_arm_request();
         printf("armed at %.4f MHz - transmit now\n", rec_get_freq() / 1e6);
     } else if (!strcmp(argv[1], "stop")) {
         rec_disarm();

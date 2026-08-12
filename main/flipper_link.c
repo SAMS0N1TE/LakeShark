@@ -21,11 +21,13 @@
 #include "tone.h"
 #include "ls_board.h"
 #include "ble_link.h"
+#include "rec_state.h"
 
 static const char *TAG = "fl_link";
 
 #define FL_LINE_MAX    192
-#define REPLY_MAX   256
+/*LS-511*/
+#define REPLY_MAX   384
 #define TEL_MAX     576
 #define RX_BUF_SZ   1024
 #define TX_BUF_SZ   2048
@@ -46,7 +48,7 @@ static volatile bool s_stat_now = false;
 static esp_err_t link_install(void);
 static void      link_uninstall(void);
 
-typedef enum { HOST_MODE_P25, HOST_MODE_ADSB, HOST_MODE_FM } host_mode_t;
+typedef enum { HOST_MODE_P25, HOST_MODE_ADSB, HOST_MODE_FM, HOST_MODE_REC } host_mode_t;
 
 static host_mode_t host_mode(void)
 {
@@ -55,6 +57,8 @@ static host_mode_t host_mode(void)
     if (!strcasecmp(n, "FM"))    return HOST_MODE_FM;
     if (!strcasecmp(n, "ADS-B")) return HOST_MODE_ADSB;
     if (!strcasecmp(n, "ADSB"))  return HOST_MODE_ADSB;
+    /*LS-510*/
+    if (!strcasecmp(n, "REC"))   return HOST_MODE_REC;
     return HOST_MODE_P25;
 }
 
@@ -296,12 +300,35 @@ static int build_telemetry_p25(char *buf, size_t len)
         mode, ftype, err);
 }
 
+/*LS-510*/
+static int build_telemetry_rec(char *buf, size_t len)
+{
+    rec_status_t s;
+    rec_get_status(&s);
+    s_last_bps = s.bytes_sec;
+
+    char last[24];
+    strlcpy(last, s.last_file[0] ? s.last_file : "-", sizeof(last));
+    sanitize(last);
+
+    return snprintf(buf, len,
+        "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu md=REC "
+        "rph=%d red=%d rsp=%lu rmg=%d rfl=%d rth=%d rtf=%d rgp=%d rcp=%lu rlf=%s",
+        (unsigned long)s.freq_hz, s.gain_tenths,
+        audio_volume_get(), audio_is_muted() ? 1 : 0,
+        lakeshark_radio_device_ready() ? 1 : 0, (unsigned long)s.bytes_sec,
+        (int)s.phase, s.edges, (unsigned long)s.span_us,
+        s.mag_now, s.mag_floor, s.mag_thresh, s.thresh_fixed, s.gap_ms,
+        (unsigned long)s.captures, last);
+}
+
 static int build_telemetry(char *buf, size_t len)
 {
     int n;
     switch (host_mode()) {
     case HOST_MODE_FM:   n = build_telemetry_fm(buf, len);   break;
     case HOST_MODE_ADSB: n = build_telemetry_adsb(buf, len); break;
+    case HOST_MODE_REC:  n = build_telemetry_rec(buf, len);  break;
     default:             n = build_telemetry_p25(buf, len);  break;
     }
     if (n < 0) return n;
@@ -323,6 +350,124 @@ static void eq_reply(char *reply, size_t reply_len)
              "+OK eq=%s hp=%d bass=%+d treb=%+d punch=%d loud=%d\n",
              audio_eq_preset_name(eq.preset), eq.hp10 * 10,
              eq.bass_db, eq.treb_db, eq.punch, eq.loud);
+}
+
+/*LS-511*/
+#define REC_CHUNK_EDGES 32
+
+static void rec_reply_status(char *reply, size_t reply_len)
+{
+    rec_status_t s;
+    rec_get_status(&s);
+    snprintf(reply, reply_len, "+OK ph=%d e=%d sp=%lu f=%lu th=%d gp=%d\n",
+             (int)s.phase, s.edges, (unsigned long)s.span_us,
+             (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms);
+}
+
+static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
+{
+    const char *sub = (argc > 1) ? argv[1] : NULL;
+    const char *arg = (argc > 2) ? argv[2] : NULL;
+    int32_t n = 0;
+
+    if (!sub) {
+        rec_reply_status(reply, reply_len);
+        return;
+    }
+
+    char up[16];
+    strlcpy(up, sub, sizeof(up));
+    str_upper(up);
+
+    if (!strcmp(up, "ARM")) {
+        /*LS-506*/
+        if (host_mode() != HOST_MODE_REC && s_host.select_mode_by_name) {
+            sdr_stall_reset();
+            s_host.select_mode_by_name("rec");
+        }
+        rec_arm_request();
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "STOP")) {
+        rec_disarm();
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "FREQ")) {
+        uint32_t hz;
+        if (!arg || !parse_freq_hz(arg, &hz)) {
+            snprintf(reply, reply_len, "-ERR rec freq\n");
+            return;
+        }
+        rec_set_freq(hz);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "GAIN")) {
+        if (!arg || !parse_i32(arg, &n)) {
+            snprintf(reply, reply_len, "-ERR rec gain\n");
+            return;
+        }
+        rec_set_gain((int)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "THRESH")) {
+        /*LS-503*/
+        if (!arg || !parse_i32(arg, &n)) {
+            snprintf(reply, reply_len, "-ERR rec thresh\n");
+            return;
+        }
+        rec_set_thresh((int)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "GAP")) {
+        /*LS-504*/
+        if (!arg || !parse_i32(arg, &n)) {
+            snprintf(reply, reply_len, "-ERR rec gap\n");
+            return;
+        }
+        rec_set_gap_ms((int)n);
+        s_stat_now = true;
+        rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "SAVE")) {
+        char path[64];
+        int w = rec_save(arg && *arg ? arg : "capture", path, sizeof(path));
+        if (w > 0)       snprintf(reply, reply_len, "+OK saved %s %d\n", path, w);
+        else if (w == -1) snprintf(reply, reply_len, "-ERR nothing captured\n");
+        else              snprintf(reply, reply_len, "-ERR write %d\n", w);
+
+    } else if (!strcmp(up, "GET")) {
+        /*LS-511*/
+        int32_t off = 0;
+        if (arg && !parse_i32(arg, &off)) {
+            snprintf(reply, reply_len, "-ERR rec get\n");
+            return;
+        }
+        int32_t edge[REC_CHUNK_EDGES];
+        int got = rec_edges_copy((int)off, edge, REC_CHUNK_EDGES);
+        if (got < 0) {
+            snprintf(reply, reply_len, "-ERR rec busy\n");
+            return;
+        }
+        int w = snprintf(reply, reply_len, "%%D %ld %d", (long)off, got);
+        for (int i = 0; i < got && w > 0 && (size_t)w < reply_len - 2; i++) {
+            int k = snprintf(reply + w, reply_len - (size_t)w, " %ld", (long)edge[i]);
+            if (k < 0) break;
+            w += k;
+        }
+        if (w < 0) w = 0;
+        if ((size_t)w > reply_len - 2) w = (int)reply_len - 2;
+        reply[w++] = '\n';
+        reply[w]   = '\0';
+
+    } else {
+        snprintf(reply, reply_len,
+                 "-ERR rec <arm|stop|freq|gain|thresh|gap|save|get>\n");
+    }
 }
 
 static void handle_line(char *line, char *reply, size_t reply_len)
@@ -353,8 +498,10 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
 
-            if (host_mode() == HOST_MODE_FM) lakeshark_fm_set_freq(hz);
-            else                             lakeshark_p25_set_freq(hz);
+            /*LS-510*/
+            if      (host_mode() == HOST_MODE_FM)  lakeshark_fm_set_freq(hz);
+            else if (host_mode() == HOST_MODE_REC) rec_set_freq(hz);
+            else                                   lakeshark_p25_set_freq(hz);
             s_stat_now = true;
             snprintf(reply, reply_len, "+OK f=%lu\n", (unsigned long)hz);
         }
@@ -369,6 +516,13 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             if (host_mode() == HOST_MODE_FM) {
                 lakeshark_fm_tune((int)n);
                 now = lakeshark_fm_get_freq();
+            } else if (host_mode() == HOST_MODE_REC) {
+                /*LS-510*/
+                int64_t want = (int64_t)rec_get_freq() + n;
+                if (want < 1000000LL)    want = 1000000LL;
+                if (want > 2000000000LL) want = 2000000000LL;
+                rec_set_freq((uint32_t)want);
+                now = rec_get_freq();
             } else {
                 lakeshark_p25_tune((int)n);
                 now = lakeshark_p25_get_freq();
@@ -481,13 +635,17 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         strlcpy(up, a1, sizeof(up));
         str_upper(up);
         if (!strcmp(up, "AUTO")) {
-            lakeshark_p25_agc();
+            /*LS-510*/
+            if (host_mode() == HOST_MODE_REC) rec_set_gain(0);
+            else                              lakeshark_p25_agc();
         } else if (!strcmp(up, "STEP")) {
             lakeshark_p25_gain_step();
         } else if (parse_i32(a1, &n)) {
             if (n < 0) n = 0;
             if (n > 496) n = 496;
-            lakeshark_radio_set_gain((int)n);
+            /*LS-510*/
+            if (host_mode() == HOST_MODE_REC) rec_set_gain((int)n);
+            else                              lakeshark_radio_set_gain((int)n);
         } else {
             snprintf(reply, reply_len, "-ERR gain\n");
             return;
@@ -558,6 +716,10 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         lakeshark_p25_reset_stats();
         s_stat_now = true;
         snprintf(reply, reply_len, "+OK\n");
+
+    } else if (!strcmp(cmd, "REC")) {
+        /*LS-511*/
+        handle_rec(argc, argv, reply, reply_len);
 
     } else if (!strcmp(cmd, "MODE")) {
         if (!a1) {

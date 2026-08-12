@@ -48,7 +48,8 @@ static const ble_uuid128_t CHR_TX = BLE_UUID128_INIT(
     0x52, 0x41, 0x48, 0x53, 0x45, 0x4b, 0x41, 0x4c);
 
 #define BLE_LINE_MAX  192
-#define REPLY_MAX 256
+/*LS-511*/
+#define REPLY_MAX 384
 #define TEL_MAX   512
 
 #define NO_SVC_BACKOFF_S 8

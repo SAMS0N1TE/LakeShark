@@ -40,6 +40,7 @@ typedef struct {
     int         thresh_fixed;
     int         gap_ms;
     uint32_t    captures;
+    uint32_t    bytes_sec;
     char        last_file[40];
 } rec_status_t;
 
@@ -58,7 +59,16 @@ int  rec_get_gap_ms(void);
 
 bool rec_active(void);
 void rec_arm(void);
+/*LS-506*/
+void rec_arm_request(void);
 void rec_disarm(void);
+
+/*LS-507*/
+uint32_t rec_bytes_sec(void);
+
+/*LS-508*/
+int rec_edge_count(void);
+int rec_edges_copy(int from, int32_t *out, int max);
 
 int  rec_save(const char *name, char *path_out, size_t path_len);
 
