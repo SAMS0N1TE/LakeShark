@@ -907,7 +907,8 @@ static bool workers_start(void)
         }
     }
     if (!s_cmd_task &&
-        xTaskCreate(cmd_task, "ble_cmd", 4608, NULL, 4, &s_cmd_task) != pdPASS) {
+        /*LS-114*/
+        xTaskCreate(cmd_task, "ble_cmd", 6144, NULL, 4, &s_cmd_task) != pdPASS) {
         ESP_LOGE(TAG, "command task create failed");
         return false;
     }

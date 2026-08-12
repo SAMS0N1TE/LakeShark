@@ -438,6 +438,8 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         int w = rec_save(arg && *arg ? arg : "capture", path, sizeof(path));
         if (w > 0)       snprintf(reply, reply_len, "+OK saved %s %d\n", path, w);
         else if (w == -1) snprintf(reply, reply_len, "-ERR nothing captured\n");
+        /*LS-513*/
+        else if (w == -3) snprintf(reply, reply_len, "-ERR rec busy\n");
         else              snprintf(reply, reply_len, "-ERR write %d\n", w);
 
     } else if (!strcmp(up, "GET")) {
@@ -453,16 +455,29 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec busy\n");
             return;
         }
-        int w = snprintf(reply, reply_len, "%%D %ld %d", (long)off, got);
-        for (int i = 0; i < got && w > 0 && (size_t)w < reply_len - 2; i++) {
-            int k = snprintf(reply + w, reply_len - (size_t)w, " %ld", (long)edge[i]);
-            if (k < 0) break;
-            w += k;
+        /*LS-515*/
+        if (reply_len < 32) {
+            snprintf(reply, reply_len, "-ERR rec get\n");
+            return;
         }
-        if (w < 0) w = 0;
-        if ((size_t)w > reply_len - 2) w = (int)reply_len - 2;
-        reply[w++] = '\n';
-        reply[w]   = '\0';
+        char   vals[REC_CHUNK_EDGES * 12 + 1];
+        size_t budget = sizeof(vals) - 1;
+        if (budget > reply_len - 24) budget = reply_len - 24;
+
+        size_t vw  = 0;
+        int    fit = 0;
+        for (int i = 0; i < got; i++) {
+            char one[16];
+            int  k = snprintf(one, sizeof(one), " %ld", (long)edge[i]);
+            if (k < 0 || k >= (int)sizeof(one)) break;
+            if (vw + (size_t)k > budget) break;
+            memcpy(vals + vw, one, (size_t)k);
+            vw += (size_t)k;
+            fit++;
+        }
+        vals[vw] = '\0';
+
+        snprintf(reply, reply_len, "%%D %ld %d%s\n", (long)off, fit, vals);
 
     } else {
         snprintf(reply, reply_len,

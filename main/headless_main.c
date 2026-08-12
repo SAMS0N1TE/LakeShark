@@ -83,6 +83,8 @@ static const char *LOG_QUIET_TAGS[] = { "P25TEL", "P25DIAG", "ADSB", "NimBLE" };
 #define NVS_VOL  "vol"
 /*LS-308*/
 #define NVS_MODE "mode"
+/*LS-310*/
+#define NVS_MODENM "modenm"
 
 static int settings_load_volume(void)
 {
@@ -110,20 +112,34 @@ static void settings_save_volume(int v)
 static int settings_load_mode(void)
 {
     nvs_handle_t h;
-    int32_t m = 0;
+    int idx = 0;
+
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_i32(h, NVS_MODE, &m) != ESP_OK) m = 0;
+        /*LS-310*/
+        char   name[16];
+        size_t len = sizeof(name);
+        if (nvs_get_str(h, NVS_MODENM, name, &len) == ESP_OK) {
+            for (int i = 0; i < N_MODES; i++) {
+                if (!strcasecmp(name, s_modes[i].name)) { idx = i; break; }
+            }
+        } else {
+            int32_t m = 0;
+            if (nvs_get_i32(h, NVS_MODE, &m) == ESP_OK && m >= 0 && m < N_MODES) {
+                idx = (int)m;
+            }
+        }
         nvs_close(h);
     }
-    if (m < 0 || m >= N_MODES) m = 0;
-    return (int)m;
+    return idx;
 }
 
 static void settings_save_mode(int m)
 {
+    if (m < 0 || m >= N_MODES) return;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_i32(h, NVS_MODE, (int32_t)m);
+    /*LS-310*/
+    nvs_set_str(h, NVS_MODENM, s_modes[m].name);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -304,6 +320,19 @@ static void cycle_next(void)
     select_mode((s_mode + 1) % N_MODES);
 }
 
+/*LS-309*/
+static bool hl_mode_index_by_name(const char *name, int *out)
+{
+    if (!name || !*name || !out) return false;
+    if      (!strcasecmp(name, "p25"))   *out = 0;
+    else if (!strcasecmp(name, "adsb") ||
+             !strcasecmp(name, "ads-b")) *out = 1;
+    else if (!strcasecmp(name, "fm"))    *out = 2;
+    else if (!strcasecmp(name, "rec"))   *out = 3;
+    else return false;
+    return true;
+}
+
 static void boot_btn_task(void *arg)
 {
     (void)arg;
@@ -403,12 +432,12 @@ static int cmd_fm(int argc, char **argv)
 
 static int cmd_mode(int argc, char **argv)
 {
-    if (argc < 2) { printf("usage: mode p25|adsb|fm|next\n"); return 0; }
-    if      (!strcmp(argv[1], "next")) cycle_next();
-    else if (!strcmp(argv[1], "p25"))  select_mode(0);
-    else if (!strcmp(argv[1], "adsb")) select_mode(1);
-    else if (!strcmp(argv[1], "fm"))   select_mode(2);
-    else { printf("unknown mode '%s' (p25|adsb|fm|next)\n", argv[1]); return 0; }
+    if (argc < 2) { printf("usage: mode p25|adsb|fm|rec|next\n"); return 0; }
+    int idx;
+    if (!strcmp(argv[1], "next")) cycle_next();
+    /*LS-309*/
+    else if (hl_mode_index_by_name(argv[1], &idx)) select_mode(idx);
+    else { printf("unknown mode '%s' (p25|adsb|fm|rec|next)\n", argv[1]); return 0; }
     printf("mode=%s\n", s_modes[s_mode].name);
     return 0;
 }
@@ -461,10 +490,14 @@ static int cmd_mute(int argc, char **argv)
 
 static void hl_select_mode_by_name(const char *name)
 {
-    if      (!strcasecmp(name, "p25"))  select_mode(0);
-    else if (!strcasecmp(name, "adsb")) select_mode(1);
-    else if (!strcasecmp(name, "fm"))   select_mode(2);
-    else if (!strcasecmp(name, "rec"))  select_mode(3);
+    int idx;
+    /*LS-309*/
+    if (!hl_mode_index_by_name(name, &idx)) {
+        ESP_LOGW(TAG, "unknown mode name '%s' - staying on %s",
+                 name ? name : "(null)", s_modes[s_mode].name);
+        return;
+    }
+    select_mode(idx);
 }
 
 static const char *hl_current_mode_name(void) { return s_modes[s_mode].name; }
@@ -799,6 +832,8 @@ static int cmd_rec(int argc, char **argv)
         int n = rec_save(argc >= 3 ? argv[2] : "capture", path, sizeof(path));
         if (n > 0) printf("wrote %s (%d edges)\n", path, n);
         else if (n == -1) printf("nothing captured yet\n");
+        /*LS-513*/
+        else if (n == -3) printf("capture still running - wait for it to end\n");
         else printf("write failed (%d)\n", n);
     } else if (!strcmp(argv[1], "list")) {
         char buf[512];
@@ -1294,14 +1329,20 @@ void app_main(void)
     {
         /*LS-308*/
         const char *resume = lakeshark_recovery_take_app();
+        int m = settings_load_mode();
+        /*LS-309*/
         if (resume && *resume) {
-            ESP_LOGW(TAG, "rebooted to recover the USB dongle - resuming '%s'", resume);
-            hl_select_mode_by_name(!strcasecmp(resume, "ADS-B") ? "adsb" : resume);
+            if (hl_mode_index_by_name(resume, &m)) {
+                ESP_LOGW(TAG, "rebooted to recover the USB dongle - resuming '%s'",
+                         resume);
+            } else {
+                ESP_LOGW(TAG, "rebooted to recover the USB dongle but '%s' is not a "
+                              "known mode - falling back to the saved mode", resume);
+            }
         } else {
-            int m = settings_load_mode();
             ESP_LOGI(TAG, "restoring last mode: %s", s_modes[m].name);
-            select_mode(m);
         }
+        select_mode(m);
     }
     lakeshark_radio_unpark();
     audio_volume_set(settings_load_volume());

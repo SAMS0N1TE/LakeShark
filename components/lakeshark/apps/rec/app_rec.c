@@ -101,6 +101,9 @@ static void edge_push(bool level, uint32_t samples)
 
 static void slice_block(const uint8_t *iq, int len)
 {
+    /*LS-514*/
+    int blk_peak = 0;
+
     for (int i = 0; i + 1 < len; i += 2) {
         int di = (int)iq[i]     - 127;
         int dq = (int)iq[i + 1] - 127;
@@ -108,7 +111,8 @@ static void slice_block(const uint8_t *iq, int len)
         if (dq < 0) dq = -dq;
         int mag = di + dq;
 
-        s_mag_now = mag;
+        /*LS-514*/
+        if (mag > blk_peak) blk_peak = mag;
 
         /*LS-502*/
         s_floor_acc += mag - (s_floor_acc >> REC_FLOOR_SHIFT);
@@ -168,6 +172,9 @@ static void slice_block(const uint8_t *iq, int len)
         s_level = hi;
         s_run_samples = 1;
     }
+
+    /*LS-514*/
+    s_mag_now = blk_peak;
 
     if (s_phase == REC_CAPTURING) {
         /*LS-505*/
@@ -256,9 +263,8 @@ static void rec_rx_task(void *arg)
             continue;
         }
 
-        if (s_phase == REC_ARMED || s_phase == REC_CAPTURING) {
-            slice_block(iq, got);
-        }
+        /*LS-514*/
+        slice_block(iq, got);
     }
 
     s_bytes_sec = 0;
@@ -449,6 +455,8 @@ static void sanitize_name(const char *in, char *out, size_t len)
 
 int rec_save(const char *name, char *path_out, size_t path_len)
 {
+    /*LS-513*/
+    if (s_phase == REC_CAPTURING) return -3;
     if (s_edges <= 0) return -1;
 
     char clean[24];
