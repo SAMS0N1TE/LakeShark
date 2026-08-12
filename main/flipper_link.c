@@ -323,7 +323,7 @@ static int build_telemetry_rec(char *buf, size_t len)
         s.mag_now, s.mag_floor, s.mag_thresh, s.thresh_fixed, s.gap_ms,
         (unsigned long)s.captures,
         (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
-        (unsigned long)s.max_span_us, s.min_edges, s.end_reason,
+        (unsigned long)(s.max_span_us / 1000u), s.min_edges, s.end_reason,
         (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
         (unsigned long)s.baud_est, last);
 }
@@ -372,7 +372,7 @@ static void rec_reply_status(char *reply, size_t reply_len)
              (int)s.phase, s.edges, (unsigned long)s.span_us,
              (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms,
              (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
-             (unsigned long)s.max_span_us, s.min_edges);
+             (unsigned long)(s.max_span_us / 1000u), s.min_edges);
 }
 
 static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
@@ -470,7 +470,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec maxspan\n");
             return;
         }
-        rec_set_max_span((uint32_t)n);
+        rec_set_max_span((uint32_t)n * 1000u);
         s_stat_now = true;
         rec_reply_status(reply, reply_len);
 
