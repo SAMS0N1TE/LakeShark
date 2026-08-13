@@ -5,6 +5,11 @@
 CONFIG_LS_BOARD_P4_TOUCH_LCD_43=y
 CONFIG_LAKESHARK_HEADLESS=n
 
+# LS-016  The uSD is on SDMMC slot 0 (D0-D3 39-42, CMD 44, CLK 43) and the C6
+# is on slot 1, so they do not collide. Power is LDO VO4, acquired inside
+# bsp_sdcard_mount. A missing card is not fatal - see LS-016 in main.cpp.
+CONFIG_EXAMPLE_ENABLE_SD_CARD=y
+
 # LS-904  SETTLED: this board has NO software VBUS control. Waveshare's own BSP
 # documents bsp_usb_host_start()'s power mode and current limit as "Not used on
 # this board", and its body only calls usb_host_install() - no GPIO anywhere.

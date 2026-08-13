@@ -97,8 +97,16 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "SPIFFS mount successfully");
 
 #if CONFIG_EXAMPLE_ENABLE_SD_CARD
-    ESP_ERROR_CHECK(bsp_sdcard_mount());
-    ESP_LOGI(TAG, "SD card mount successfully");
+    /*LS-016*/
+    {
+        esp_err_t sd = bsp_sdcard_mount();
+        if (sd == ESP_OK) {
+            ESP_LOGI(TAG, "SD card mounted at %s", BSP_SD_MOUNT_POINT);
+        } else {
+            ESP_LOGW(TAG, "no SD card (%s) - running without it",
+                     esp_err_to_name(sd));
+        }
+    }
 #endif
 
     ESP_ERROR_CHECK(bsp_extra_codec_init());

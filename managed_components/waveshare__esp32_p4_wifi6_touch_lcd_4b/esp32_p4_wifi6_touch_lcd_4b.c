@@ -505,7 +505,14 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
     ESP_LOGI(TAG, "Install Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 LCD control panel");
     esp_lcd_dpi_panel_config_t dpi_config = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 30,
+        /* PATCH (lakeshark) LS-906: 20 MHz, not Waveshare's 30. Same reason the
+         * 4B runs at 24 (see the patch below): the framebuffer DMA is a
+         * continuous PSRAM read that starves the radio's audio/demod, which
+         * executes from PSRAM via XIP -> choppy audio. 30 MHz here is 60 MB/s,
+         * MORE than the 4B's proven-good 48 MB/s, and it was audibly choppy.
+         * 20 MHz is 40 MB/s and still ~40 fps at 480x800 (576x870 with
+         * blanking), because this panel has fewer pixels than the 4B. */
+        .dpi_clock_freq_mhz = 20,
         .virtual_channel = 0,
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB888,
