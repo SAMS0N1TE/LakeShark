@@ -97,11 +97,19 @@ AppADSB::~AppADSB() = default;
 
 bool AppADSB::init(void)   { return true; }
 
-bool AppADSB::pause(void)  { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppADSB::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-600*/
 bool AppADSB::resume(void)
 {
     lakeshark_select_adsb();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 

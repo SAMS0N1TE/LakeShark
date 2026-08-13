@@ -112,11 +112,19 @@ AppFM::AppFM()
 AppFM::~AppFM() = default;
 
 bool AppFM::init(void)   { return true; }
-bool AppFM::pause(void)  { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppFM::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-600*/
 bool AppFM::resume(void)
 {
     lakeshark_select_fm();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 

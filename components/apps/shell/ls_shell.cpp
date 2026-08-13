@@ -40,9 +40,8 @@ LsShell &LsShell::instance(void)
     return s;
 }
 
-static void reset_content(lv_obj_t *c)
+static void style_container(lv_obj_t *c)
 {
-    lv_obj_clean(c);
     lv_obj_set_style_pad_all(c, 0, 0);
     lv_obj_set_style_pad_row(c, 0, 0);
     lv_obj_set_style_pad_column(c, 0, 0);
@@ -68,7 +67,7 @@ void LsShell::begin(void)
     _content = lv_obj_create(_root);
     lv_obj_set_pos(_content, 0, 0);
     lv_obj_set_size(_content, hor, ver - RAIL_H);
-    reset_content(_content);
+    style_container(_content);
 
     _rail = lv_obj_create(_root);
     lv_obj_set_size(_rail, hor, RAIL_H);
@@ -164,16 +163,74 @@ void LsShell::start(const char *prefer)
         launch(_apps[0]);
 }
 
+/*LS-600*/
+int LsShell::indexOf(LsApp *app) const
+{
+    for (int i = 0; i < _app_count; i++) if (_apps[i] == app) return i;
+    return -1;
+}
+
+/*LS-600*/
+lv_obj_t *LsShell::containerFor(int idx)
+{
+    if (idx < 0 || idx >= _app_count) return nullptr;
+    if (_app_cont[idx]) return _app_cont[idx];
+
+    lv_obj_t *c = lv_obj_create(_content);
+    lv_obj_set_pos(c, 0, 0);
+    lv_obj_set_size(c, lv_pct(100), lv_pct(100));
+    style_container(c);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    _app_cont[idx] = c;
+    return c;
+}
+
+/*LS-600*/
 void LsShell::launch(LsApp *app)
 {
-    if (!app) return;
-    if (_current && _current != app) _current->close();
+    if (!app || app == _current) return;
+
+    const int idx = indexOf(app);
+    if (idx < 0) return;
+
+    if (_current) {
+        const int prev = indexOf(_current);
+        _current->pause();
+        if (prev >= 0 && _app_cont[prev])
+            lv_obj_add_flag(_app_cont[prev], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lv_obj_t *cont = containerFor(idx);
+    if (!cont) return;
+
+    const bool first = !_app_built[idx];
     _current = app;
-    reset_content(_content);
-    ESP_LOGI(TAG, "launch: %s", app->name());
-    app->run(_content);
+
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_HIDDEN);
+
+    if (first) {
+        ESP_LOGI(TAG, "build+launch: %s", app->name());
+        _app_built[idx] = true;
+        app->run(cont);
+    } else {
+        ESP_LOGI(TAG, "resume: %s", app->name());
+        app->resume();
+    }
+
     updateRail();
     save_last_app(app->name());
+}
+
+/*LS-600*/
+void LsShell::closeAll(void)
+{
+    for (int i = 0; i < _app_count; i++) {
+        if (!_app_built[i]) continue;
+        if (_apps[i]) _apps[i]->close();
+        _app_built[i] = false;
+        if (_app_cont[i]) { lv_obj_del(_app_cont[i]); _app_cont[i] = nullptr; }
+    }
+    _current = nullptr;
 }
 
 bool LsShell::launchByName(const char *name)

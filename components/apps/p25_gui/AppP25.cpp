@@ -129,11 +129,19 @@ AppP25::~AppP25() = default;
 
 bool AppP25::init(void)   { return true; }
 
-bool AppP25::pause(void)  { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppP25::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-600*/
 bool AppP25::resume(void)
 {
     lakeshark_select_p25();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 
