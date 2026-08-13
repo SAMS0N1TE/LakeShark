@@ -27,17 +27,13 @@ private:
     void buildRail(void);
     void updateRail(void);
 
-    void buildTabArrows(void);
-
     static void railBtnCb(lv_event_t *e);
-    static void tabPrevCb(lv_event_t *e);
-    static void tabNextCb(lv_event_t *e);
+    /*LS-905*/
+    static void gestureCb(lv_event_t *e);
 
     lv_obj_t *_root     = nullptr;
     lv_obj_t *_content  = nullptr;
     lv_obj_t *_rail     = nullptr;
-    lv_obj_t *_tab_prev = nullptr;
-    lv_obj_t *_tab_next = nullptr;
     LsApp    *_current  = nullptr;
 
     static const int MAX_APPS = 16;

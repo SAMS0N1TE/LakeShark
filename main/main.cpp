@@ -24,6 +24,7 @@
 #include "settings/AppSettings.hpp"
 
 #include "lakeshark_backend.h"
+#include "ls_board.h"
 #include "display_ctl.h"
 #include "ls_ctl.h"
 #include "boot_splash.h"
@@ -46,6 +47,25 @@ static void boot_btn_poll_cb(lv_timer_t *)
     }
 }
 
+/*LS-015*/
+static void vbus_init(void)
+{
+#if LS_BOARD_HAS_VBUS_CTRL
+    gpio_config_t io = {};
+    io.pin_bit_mask = 1ULL << LS_BOARD_VBUS_EN_GPIO;
+    io.mode = GPIO_MODE_OUTPUT;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io);
+    gpio_set_level((gpio_num_t)LS_BOARD_VBUS_EN_GPIO, 1);
+    ESP_LOGI(TAG, "USB host VBUS switch on GPIO%d - enabled",
+             (int)LS_BOARD_VBUS_EN_GPIO);
+#else
+    ESP_LOGI(TAG, "no USB host VBUS switch on this board - port is hard-powered");
+#endif
+}
+
 static void boot_btn_init(void)
 {
     gpio_config_t io = {};
@@ -61,6 +81,9 @@ static void boot_btn_init(void)
 extern "C" void app_main(void)
 {
     ESP_LOGW(TAG, "boot: reset_reason=%d", (int)esp_reset_reason());
+
+    /*LS-015*/
+    vbus_init();
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)

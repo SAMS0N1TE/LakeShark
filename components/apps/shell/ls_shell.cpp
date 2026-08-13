@@ -10,7 +10,6 @@
 static const char *TAG = "ls_shell";
 
 #define RAIL_H   76
-#define ARROW_W  50
 #define RAIL_BG  lv_color_hex(0x0C0E0D)
 
 #define LAST_MAGIC 0x4C415354u
@@ -65,9 +64,10 @@ void LsShell::begin(void)
     const int hor = lv_disp_get_hor_res(NULL);
     const int ver = lv_disp_get_ver_res(NULL);
 
+    /*LS-905*/
     _content = lv_obj_create(_root);
-    lv_obj_set_pos(_content, ARROW_W, 0);
-    lv_obj_set_size(_content, hor - 2 * ARROW_W, ver - RAIL_H);
+    lv_obj_set_pos(_content, 0, 0);
+    lv_obj_set_size(_content, hor, ver - RAIL_H);
     reset_content(_content);
 
     _rail = lv_obj_create(_root);
@@ -87,38 +87,26 @@ void LsShell::begin(void)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(_rail, LV_OBJ_FLAG_SCROLLABLE);
 
-    buildTabArrows();
+    /*LS-905*/
+    lv_obj_add_event_cb(_root, gestureCb, LV_EVENT_GESTURE, this);
 
     lv_scr_load(_root);
     ESP_LOGI(TAG, "shell begin: %dx%d, rail=%d", hor, ver, RAIL_H);
 }
 
-void LsShell::buildTabArrows(void)
+/*LS-905*/
+void LsShell::gestureCb(lv_event_t *e)
 {
-    const int ver = lv_disp_get_ver_res(NULL);
-    struct { lv_obj_t **slot; const char *txt; lv_align_t al; lv_event_cb_t cb; } a[] = {
-        { &_tab_prev, "<", LV_ALIGN_TOP_LEFT,  tabPrevCb },
-        { &_tab_next, ">", LV_ALIGN_TOP_RIGHT, tabNextCb },
-    };
-    for (auto &e : a) {
-        lv_obj_t *b = lv_btn_create(_root);
-        lv_obj_set_size(b, ARROW_W, ver - RAIL_H);
-        lv_obj_align(b, e.al, 0, 0);
-        lv_obj_set_style_bg_color(b, RAIL_BG, 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(b, SDR_PANEL_HI, LV_STATE_PRESSED);
-        lv_obj_set_style_border_color(b, SDR_GOLD, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_border_side(b, e.al == LV_ALIGN_TOP_LEFT ? LV_BORDER_SIDE_RIGHT
-                                                                  : LV_BORDER_SIDE_LEFT, 0);
-        lv_obj_set_style_radius(b, 0, 0);
-        lv_obj_add_event_cb(b, e.cb, LV_EVENT_CLICKED, this);
-        lv_obj_t *l = lv_label_create(b);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
-        lv_obj_set_style_text_color(l, SDR_PAS_GOLD, 0);
-        lv_label_set_text(l, e.txt);
-        lv_obj_center(l);
-        *e.slot = b;
+    LsShell *self = static_cast<LsShell *>(lv_event_get_user_data(e));
+    if (!self || !self->_current) return;
+
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return;
+
+    switch (lv_indev_get_gesture_dir(indev)) {
+    case LV_DIR_LEFT:  self->_current->switchTab(+1); break;
+    case LV_DIR_RIGHT: self->_current->switchTab(-1); break;
+    default: break;
     }
 }
 
@@ -224,14 +212,3 @@ void LsShell::railBtnCb(lv_event_t *e)
     if (self && app && app != self->_current) self->launch(app);
 }
 
-void LsShell::tabPrevCb(lv_event_t *e)
-{
-    LsShell *self = static_cast<LsShell *>(lv_event_get_user_data(e));
-    if (self && self->_current) self->_current->switchTab(-1);
-}
-
-void LsShell::tabNextCb(lv_event_t *e)
-{
-    LsShell *self = static_cast<LsShell *>(lv_event_get_user_data(e));
-    if (self && self->_current) self->_current->switchTab(+1);
-}

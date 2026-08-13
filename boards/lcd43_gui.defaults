@@ -5,6 +5,13 @@
 CONFIG_LS_BOARD_P4_TOUCH_LCD_43=y
 CONFIG_LAKESHARK_HEADLESS=n
 
+# LS-904  SETTLED: this board has NO software VBUS control. Waveshare's own BSP
+# documents bsp_usb_host_start()'s power mode and current limit as "Not used on
+# this board", and its body only calls usb_host_install() - no GPIO anywhere.
+# Q3 is auto-enabled from VBUS presence, not driven by a pin. Do NOT guess 46
+# here: GPIO46 is the audio PA enable in Waveshare's own 06_I2SCodec example.
+CONFIG_LS_VBUS_EN_GPIO=-1
+
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
