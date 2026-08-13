@@ -120,6 +120,13 @@ bool AppFM::pause(void)
     return true;
 }
 
+/*LS-604*/
+bool AppFM::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
 /*LS-600*/
 bool AppFM::resume(void)
 {

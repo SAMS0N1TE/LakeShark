@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "shell/ls_statusbar.hpp"
 
 class LsApp;
 
@@ -15,6 +16,8 @@ public:
     void launch(LsApp *app);
     bool launchByName(const char *name);
     void cycleNext(void);
+    /*LS-604*/
+    void cycleApp(int delta);
     /*LS-600*/
     void closeAll(void);
 
@@ -36,11 +39,16 @@ private:
     static void railBtnCb(lv_event_t *e);
     /*LS-905*/
     static void gestureCb(lv_event_t *e);
+    /*LS-603*/
+    static void statusTapCb(lv_event_t *e);
 
     lv_obj_t *_root     = nullptr;
     lv_obj_t *_content  = nullptr;
     lv_obj_t *_rail     = nullptr;
     LsApp    *_current  = nullptr;
+
+    /*LS-603*/
+    LsStatusBar _status;
 
     static const int MAX_APPS = 16;
     LsApp     *_apps[MAX_APPS]     = {nullptr};

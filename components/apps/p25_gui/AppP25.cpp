@@ -137,6 +137,13 @@ bool AppP25::pause(void)
     return true;
 }
 
+/*LS-604*/
+bool AppP25::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
 /*LS-600*/
 bool AppP25::resume(void)
 {

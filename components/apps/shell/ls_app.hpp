@@ -15,6 +15,11 @@ public:
     virtual bool pause(void)             { return true; }
     virtual bool resume(void)            { return true; }
 
+    /*LS-604*/
+    virtual bool background(void)        { return pause(); }
+    /*LS-604*/
+    virtual bool passive(void) const     { return false; }
+
     virtual void switchTab(int delta)    { (void)delta; }
 
     const char *name(void) const { return _name; }

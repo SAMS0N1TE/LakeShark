@@ -105,6 +105,13 @@ bool AppADSB::pause(void)
     return true;
 }
 
+/*LS-604*/
+bool AppADSB::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
 /*LS-600*/
 bool AppADSB::resume(void)
 {

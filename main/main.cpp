@@ -16,6 +16,10 @@
 #include "bsp_board_extra.h"
 
 #include "shell/ls_shell.hpp"
+/*LS-602*/
+#include "shell/ls_hub.h"
+/*LS-604*/
+#include "home/AppHome.hpp"
 #include "p25_gui/AppP25.hpp"
 #include "fm_gui/AppFM.hpp"
 #include "adsb_gui/AppADSB.hpp"
@@ -54,6 +58,8 @@ static void c6_probe(void)
     int e = esp_hosted_connect_to_slave();
     if (e != 0) {
         ESP_LOGW(TAG, "C6 co-processor link FAILED (%d) - no BLE on this build", e);
+        /*LS-603*/
+        ls_hub_set_c6(0);
         return;
     }
 
@@ -61,8 +67,13 @@ static void c6_probe(void)
     if (esp_hosted_get_coprocessor_fwversion(&v) != 0) {
         ESP_LOGW(TAG, "C6 link up but the slave will not report a version - "
                       "that is the pre-2.5.2 factory image, it must be reflashed");
+        /*LS-603*/
+        ls_hub_set_c6(0);
         return;
     }
+
+    /*LS-603*/
+    ls_hub_set_c6(1);
 
     ESP_LOGI(TAG, "C6 esp_hosted: host %d.%d.%d, co-processor %lu.%lu.%lu",
              ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
@@ -132,6 +143,8 @@ extern "C" void app_main(void)
     /*LS-016*/
     {
         esp_err_t sd = bsp_sdcard_mount();
+        /*LS-603*/
+        ls_hub_set_sd(sd == ESP_OK);
         if (sd == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted at %s", BSP_SD_MOUNT_POINT);
         } else {
@@ -175,6 +188,8 @@ extern "C" void app_main(void)
     LsShell &shell = LsShell::instance();
     shell.begin();
 
+    /*LS-604*/
+    shell.registerApp(new AppHome());
     shell.registerApp(new AppP25());
     shell.registerApp(new AppFM());
     shell.registerApp(new AppADSB());

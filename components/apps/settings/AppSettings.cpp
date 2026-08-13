@@ -193,6 +193,20 @@ void LsSettings::dlModeCb(lv_event_t *)
 
 bool LsSettings::back(void) { return exitToLauncher(); }
 
+/*LS-604*/
+bool LsSettings::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
+/*LS-604*/
+bool LsSettings::resume(void)
+{
+    if (_timer) { lv_timer_resume(_timer); timerCb(_timer); }
+    return true;
+}
+
 bool LsSettings::close(void)
 {
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
