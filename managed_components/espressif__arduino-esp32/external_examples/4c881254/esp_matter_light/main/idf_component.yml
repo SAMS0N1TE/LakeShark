@@ -1,6 +1,0 @@
-dependencies:
-  espressif/arduino-esp32:
-    pre_release: true
-    version: '>=3.0.5'
-  espressif/esp_matter:
-    version: '>=1.3.0'

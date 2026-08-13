@@ -15,7 +15,6 @@ typedef struct {
     unsigned int backtrace[60];
 } arduino_panic_info_t;
 typedef void (*arduino_panic_handler_t)(arduino_panic_info_t *info, void *arg);
-extern void set_arduino_panic_handler(arduino_panic_handler_t handler, void *arg);
 
 #define BSOD_W   720
 #define BSOD_H   720

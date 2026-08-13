@@ -19,12 +19,13 @@
 #include "p25_gui/AppP25.hpp"
 #include "fm_gui/AppFM.hpp"
 #include "adsb_gui/AppADSB.hpp"
-#include "mesh/MeshController.hpp"
 #include "file_browser/FileBrowser.hpp"
 #include "settings/AppSettings.hpp"
 
 #include "lakeshark_backend.h"
 #include "ls_board.h"
+/*LS-017*/
+#include "esp_hosted.h"
 #include "display_ctl.h"
 #include "ls_ctl.h"
 #include "boot_splash.h"
@@ -44,6 +45,35 @@ static void boot_btn_poll_cb(lv_timer_t *)
     else if (++cnt >= 2) { stable = lvl; cnt = 0;
         if (prev == 1 && stable == 0) LsShell::instance().cycleNext();
         prev = stable;
+    }
+}
+
+/*LS-017*/
+static void c6_probe(void)
+{
+    int e = esp_hosted_connect_to_slave();
+    if (e != 0) {
+        ESP_LOGW(TAG, "C6 co-processor link FAILED (%d) - no BLE on this build", e);
+        return;
+    }
+
+    esp_hosted_coprocessor_fwver_t v = {};
+    if (esp_hosted_get_coprocessor_fwversion(&v) != 0) {
+        ESP_LOGW(TAG, "C6 link up but the slave will not report a version - "
+                      "that is the pre-2.5.2 factory image, it must be reflashed");
+        return;
+    }
+
+    ESP_LOGI(TAG, "C6 esp_hosted: host %d.%d.%d, co-processor %lu.%lu.%lu",
+             ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
+             ESP_HOSTED_VERSION_PATCH_1,
+             (unsigned long)v.major1, (unsigned long)v.minor1,
+             (unsigned long)v.patch1);
+
+    if ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
+        (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1) {
+        ESP_LOGE(TAG, "C6 MAJOR.MINOR MISMATCH - RPC will time out and BLE will "
+                      "not start. Reflash the C6 from c6_firmware/ (LS-013).");
     }
 }
 
@@ -84,6 +114,8 @@ extern "C" void app_main(void)
 
     /*LS-015*/
     vbus_init();
+    /*LS-017*/
+    c6_probe();
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -146,7 +178,6 @@ extern "C" void app_main(void)
     shell.registerApp(new AppP25());
     shell.registerApp(new AppFM());
     shell.registerApp(new AppADSB());
-    shell.registerApp(new MeshController());
     shell.registerApp(new LsSettings());
     shell.registerApp(new AppFileBrowser(), false);
 
