@@ -52,39 +52,49 @@ bool AppHome::run(lv_obj_t *parent)
     /*LS-604*/
     if (!lakeshark_radio_running()) lakeshark_select_p25();
 
+    /*LS-606*/
+    lv_obj_update_layout(parent);
+
     _sub = ls_hub_subscribe(hubCb, this);
+    /*LS-606*/
+    _theme_sub = sdr_theme_on_change(themeCb, this);
     return true;
+}
+
+/*LS-606*/
+void AppHome::themeCb(void *ud)
+{
+    AppHome *self = static_cast<AppHome *>(ud);
+    if (self->_caret) lv_obj_set_style_text_color(self->_caret, sdr_accent(), 0);
+    if (self->_face)  lv_obj_set_style_border_color(self->_face, sdr_accent_dim(), 0);
+    self->apply(ls_hub_state(), LS_HUB_ALL);
 }
 
 /*LS-604*/
 void AppHome::buildFace(lv_obj_t *parent)
 {
-    _face = sdr_lcd_panel(parent, SDR_ACCENT_DIM);
+    _face = sdr_lcd_panel(parent, sdr_accent_dim());
+    lv_obj_set_style_pad_row(_face, 5, 0);
     lv_obj_add_flag(_face, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_face, faceCb, LV_EVENT_CLICKED, this);
 
-    lv_obj_t *head = sdr_row(_face, LV_FLEX_ALIGN_SPACE_BETWEEN);
-    sdr_micro(head, "NOW MONITORING");
-    _state = sdr_chip(head, "IDLE", SDR_DIM);
-
-    _mode = sdr_value(_face, &lv_font_montserrat_26, SDR_PAS_GOLD);
-    lv_obj_set_style_text_letter_space(_mode, 3, 0);
+    _mode = sdr_value(_face, &lv_font_montserrat_20, SDR_IDLE);
+    lv_obj_set_style_text_letter_space(_mode, 4, 0);
     lv_label_set_text(_mode, "--");
 
-    _freq = sdr_value(_face, &lv_font_montserrat_48, SDR_PAS_AMBER);
+    _freq = sdr_value(_face, &lv_font_montserrat_48, SDR_OFF);
     lv_obj_set_width(_freq, lv_pct(100));
     lv_obj_set_style_text_align(_freq, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_letter_space(_freq, 2, 0);
     lv_label_set_text(_freq, "---.----");
 
-    _detail = sdr_value(_face, sdr_font_mono(), SDR_PAS_CYAN);
+    _detail = sdr_value(_face, sdr_font_mono(), SDR_IDLE);
     lv_obj_set_width(_detail, lv_pct(100));
     lv_obj_set_style_text_align(_detail, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(_detail, "STANDBY");
 
-    _meter = sdr_value(_face, sdr_font_mono_sm(), SDR_DIM);
-    lv_obj_set_width(_meter, lv_pct(100));
-    lv_label_set_text(_meter, "");
+    /*LS-606*/
+    _meter = sdr_meter(_face, "SIG ");
 }
 
 /*LS-604*/
@@ -142,8 +152,8 @@ void AppHome::buildSystem(lv_obj_t *parent)
 
     lv_obj_t *tick = sdr_row(parent, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_top(tick, 2, 0);
-    lv_obj_t *caret = sdr_micro(tick, ">");
-    lv_obj_set_style_text_color(caret, SDR_ACCENT, 0);
+    _caret = sdr_micro(tick, ">");
+    lv_obj_set_style_text_color(_caret, sdr_accent(), 0);
     _ticker = sdr_value(tick, sdr_font_mono_sm(), SDR_DIM);
     lv_obj_set_flex_grow(_ticker, 1);
     lv_label_set_text(_ticker, "READY");
@@ -159,24 +169,23 @@ void AppHome::apply(const ls_hub_state_t *s, uint32_t dirty)
 {
     if (!_visible) return;
 
+    /*LS-606*/
     if (dirty & (LS_HUB_RADIO | LS_HUB_SIGNAL)) {
         sdr_text_if_changed(_mode, s->rtl_ready ? s->mode : "--");
+        sdr_color_if_changed(_mode, !s->rtl_ready ? SDR_OFF
+                                  : s->parked     ? SDR_IDLE
+                                  : s->active     ? sdr_accent() : SDR_LABEL);
 
-        const char *st = !s->rtl_ready ? "NO DONGLE"
-                       : s->parked     ? "PARKED"
-                       : s->active     ? "ACTIVE" : "MONITOR";
-        lv_color_t sc = !s->rtl_ready ? SDR_ERR
-                      : s->parked     ? SDR_WARN
-                      : s->active     ? SDR_OK : SDR_PAS_CYAN;
-        sdr_chip_set(_state, st, sc);
-        sdr_chip_live(_state, s->active);
-
-        lv_color_t ec = !s->rtl_ready ? SDR_ERR : s->active ? SDR_OK : SDR_ACCENT_DIM;
-        if (lv_obj_get_style_border_color(_face, 0).full != ec.full)
+        lv_color_t ec = !s->rtl_ready ? SDR_RULE
+                      : s->active     ? sdr_accent() : sdr_accent_dim();
+        if (lv_obj_get_style_border_color(_face, 0).full != ec.full) {
             lv_obj_set_style_border_color(_face, ec, 0);
+            lv_obj_set_style_outline_color(_face, s->active ? sdr_accent_bg()
+                                                            : SDR_LCD_EDGE, 0);
+        }
     }
 
-    if (dirty & LS_HUB_TUNE) {
+    if (dirty & (LS_HUB_TUNE | LS_HUB_RADIO | LS_HUB_SIGNAL)) {
         char f[24];
         if (s->freq_hz)
             snprintf(f, sizeof(f), "%lu.%04lu",
@@ -185,20 +194,22 @@ void AppHome::apply(const ls_hub_state_t *s, uint32_t dirty)
         else
             snprintf(f, sizeof(f), "---.----");
         sdr_text_if_changed(_freq, f);
-        sdr_color_if_changed(_freq, s->rtl_ready ? SDR_PAS_AMBER : SDR_DIM);
+        sdr_color_if_changed(_freq, !s->rtl_ready ? SDR_OFF
+                                  : s->parked     ? SDR_IDLE
+                                  : s->active     ? sdr_accent() : SDR_TEXT);
     }
 
     if (dirty & LS_HUB_SIGNAL) {
         sdr_text_if_changed(_detail, s->rtl_ready ? s->detail : "PLUG IN AN RTL-SDR");
+        sdr_color_if_changed(_detail, !s->rtl_ready ? SDR_ERR
+                                    : s->active     ? SDR_TEXT : SDR_IDLE);
 
-        char bar[96];
-        sdr_ascii_bar(bar, sizeof(bar), s->sig_pct, sdr_bar_width(_meter, 10));
-        char line[112];
-        snprintf(line, sizeof(line), "SIG [%s] %3d%%", bar, s->sig_pct);
-        sdr_text_if_changed(_meter, line);
-        sdr_color_if_changed(_meter, s->sig_pct >= 95 ? SDR_ERR
-                                   : s->active        ? SDR_OK
-                                   : s->sig_pct < 8   ? SDR_DIM : SDR_PAS_CYAN);
+        /*LS-606*/
+        sdr_meter_set(_meter, s->sig_pct,
+                      !s->rtl_ready    ? SDR_OFF
+                      : s->sig_pct >= 95 ? SDR_ERR
+                      : s->active        ? sdr_accent()
+                      : s->sig_pct < 8   ? SDR_OFF : SDR_IDLE);
 
         char iq[16];
         snprintf(iq, sizeof(iq), "%luK/s", (unsigned long)(s->iq_bytes_sec / 1000));
@@ -244,7 +255,9 @@ bool AppHome::resume(void)
 bool AppHome::close(void)
 {
     if (_sub >= 0) { ls_hub_unsubscribe(_sub); _sub = -1; }
-    _face = _mode = _state = _freq = _detail = _meter = nullptr;
+    /*LS-606*/
+    if (_theme_sub >= 0) { sdr_theme_off_change(_theme_sub); _theme_sub = -1; }
+    _face = _mode = _freq = _detail = _meter = _caret = nullptr;
     _sys_rtl = _sys_sd = _sys_c6 = _sys_iq = _ticker = nullptr;
     return true;
 }

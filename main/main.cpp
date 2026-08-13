@@ -18,6 +18,8 @@
 #include "shell/ls_shell.hpp"
 /*LS-602*/
 #include "shell/ls_hub.h"
+/*LS-606*/
+#include "sdr_ui/sdr_ui.h"
 /*LS-604*/
 #include "home/AppHome.hpp"
 #include "p25_gui/AppP25.hpp"
@@ -205,6 +207,8 @@ extern "C" void app_main(void)
     if (!recovering) lakeshark_boot_sound();
 
     bsp_display_lock(0);
+    /*LS-606*/
+    sdr_theme_set((sdr_theme_t)settings_get_theme());
     if (!recovering) lakeshark_boot_splash_hide();
     shell.start(recover_app);
     boot_btn_init();

@@ -65,6 +65,10 @@ void LsShell::begin(void)
     const int hor = lv_disp_get_hor_res(NULL);
     const int ver = lv_disp_get_ver_res(NULL);
 
+    /*LS-606*/
+    sdr_theme_init();
+    sdr_theme_on_change(themeCb, this);
+
     /*LS-602*/
     ls_hub_start();
 
@@ -100,6 +104,13 @@ void LsShell::begin(void)
     lv_scr_load(_root);
     ESP_LOGI(TAG, "shell begin: %dx%d, status=%d rail=%d",
              hor, ver, SDR_STATUS_H, RAIL_H);
+}
+
+/*LS-606*/
+void LsShell::themeCb(void *ud)
+{
+    LsShell *self = static_cast<LsShell *>(ud);
+    if (self) self->updateRail();
 }
 
 /*LS-603*/
@@ -176,13 +187,13 @@ void LsShell::updateRail(void)
         if (!b) continue;
         const bool active = (_apps[i] == _current);
 
-        lv_obj_set_style_bg_color(b, active ? SDR_ACCENT_BG : RAIL_BG, 0);
-        lv_obj_set_style_border_color(b, active ? SDR_ACCENT : RAIL_BG, 0);
+        lv_obj_set_style_bg_color(b, active ? sdr_accent_bg() : RAIL_BG, 0);
+        lv_obj_set_style_border_color(b, active ? sdr_accent() : RAIL_BG, 0);
 
         lv_obj_t *ic = lv_obj_get_child(b, 0);
-        if (ic) lv_obj_set_style_img_recolor(ic, active ? SDR_ACCENT : SDR_DIM, 0);
+        if (ic) lv_obj_set_style_img_recolor(ic, active ? sdr_accent() : SDR_DIM, 0);
         lv_obj_t *l = lv_obj_get_child(b, 1);
-        if (l) lv_obj_set_style_text_color(l, active ? SDR_ACCENT : SDR_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, active ? sdr_accent() : SDR_DIM, 0);
     }
 }
 

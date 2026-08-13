@@ -72,6 +72,8 @@ lv_obj_t *LsStatusBar::build(lv_obj_t *parent, int w, lv_event_cb_t tap, void *u
     }
 
     _sub = ls_hub_subscribe(hubCb, this);
+    /*LS-606*/
+    sdr_theme_on_change(themeCb, this);
     return _bar;
 }
 
@@ -80,14 +82,21 @@ void LsStatusBar::hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud)
     static_cast<LsStatusBar *>(ud)->apply(s, dirty);
 }
 
+/*LS-606*/
+void LsStatusBar::themeCb(void *ud)
+{
+    static_cast<LsStatusBar *>(ud)->apply(ls_hub_state(), LS_HUB_ALL);
+}
+
 /*LS-603*/
 void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
 {
+    /*LS-606*/
     if (dirty & (LS_HUB_RADIO | LS_HUB_SIGNAL)) {
         lv_color_t dc = !s->rtl_ready ? SDR_ERR
                       : s->parked     ? SDR_WARN
-                      : s->active     ? SDR_OK
-                                      : SDR_PAS_CYAN;
+                      : s->active     ? sdr_accent()
+                                      : SDR_IDLE;
         if (lv_obj_get_style_bg_color(_dot, 0).full != dc.full)
             lv_obj_set_style_bg_color(_dot, dc, 0);
 
@@ -96,7 +105,7 @@ void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
     }
 
     if (dirty & LS_HUB_RADIO) {
-        sdr_color_if_changed(_usb, s->rtl_ready ? SDR_ACCENT : SDR_DIM);
+        sdr_color_if_changed(_usb, s->rtl_ready ? SDR_TEXT : SDR_DIM);
         sdr_color_if_changed(_sd,  s->sd_present ? SDR_TEXT : SDR_DIM);
         sdr_color_if_changed(_bt,  s->c6_state == 1 ? SDR_TEXT : SDR_DIM);
 
@@ -116,13 +125,13 @@ void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
         char bar[BAR_SEGS + 2];
         sdr_ascii_bar(bar, sizeof(bar), s->rtl_ready ? s->sig_pct : 0, BAR_SEGS);
         sdr_text_if_changed(_bars, bar);
-        sdr_color_if_changed(_bars, !s->rtl_ready  ? SDR_DIM
+        sdr_color_if_changed(_bars, !s->rtl_ready    ? SDR_OFF
                                   : s->sig_pct >= 95 ? SDR_ERR
-                                  : s->active        ? SDR_OK
-                                  : s->sig_pct < 8   ? SDR_DIM : SDR_PAS_CYAN);
+                                  : s->active        ? sdr_accent()
+                                  : s->sig_pct < 8   ? SDR_OFF : SDR_IDLE);
     }
 
-    if (dirty & LS_HUB_TUNE) {
+    if (dirty & (LS_HUB_TUNE | LS_HUB_RADIO)) {
         char f[24];
         if (s->freq_hz)
             snprintf(f, sizeof(f), "%lu.%04lu",
@@ -131,6 +140,8 @@ void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
         else
             snprintf(f, sizeof(f), "---.----");
         sdr_text_if_changed(_freq, f);
+        /*LS-606*/
+        sdr_color_if_changed(_freq, s->rtl_ready ? SDR_BRIGHT : SDR_OFF);
     }
 
     if (dirty & LS_HUB_AUDIO) {

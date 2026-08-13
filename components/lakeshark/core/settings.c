@@ -324,6 +324,23 @@ void settings_set_boot_sound(int mode)
     sput_u8("boot_snd", (uint8_t)mode);
 }
 
+/*LS-606*/
+int settings_get_theme(void)
+{
+    if (!s_nvs_ok) return 0;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "ui_theme", &v) != ESP_OK) return 0;
+    return (int)v;
+}
+
+/*LS-606*/
+void settings_set_theme(int theme)
+{
+    if (!s_nvs_ok) return;
+    if (theme < 0) theme = 0;
+    sput_u8("ui_theme", (uint8_t)theme);
+}
+
 int settings_voice_preset_get(void)
 {
     if (!s_nvs_ok) return 0;

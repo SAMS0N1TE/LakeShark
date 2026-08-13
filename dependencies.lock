@@ -36,7 +36,7 @@ dependencies:
   esp_lvgl_port:
     dependencies: []
     source:
-      path: D:\assasdad\LakeShark\LakeShark_NON_GIT\components\esp_lvgl_port
+      path: C:\Users\black\AppData\Local\Temp\claude\C--\6965695d-40dd-4934-9e37-160d2c9d6603\scratchpad\LakeShark-temp-snapshot\components\esp_lvgl_port
       type: local
     version: 2.5.0
   espressif/cmake_utilities:

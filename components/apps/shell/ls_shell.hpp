@@ -41,6 +41,8 @@ private:
     static void gestureCb(lv_event_t *e);
     /*LS-603*/
     static void statusTapCb(lv_event_t *e);
+    /*LS-606*/
+    static void themeCb(void *ud);
 
     lv_obj_t *_root     = nullptr;
     lv_obj_t *_content  = nullptr;

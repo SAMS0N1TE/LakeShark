@@ -26,13 +26,16 @@ private:
 
     static void tileCb(lv_event_t *e);
     static void faceCb(lv_event_t *e);
+    /*LS-606*/
+    static void themeCb(void *ud);
 
     lv_obj_t *_face   = nullptr;
     lv_obj_t *_mode   = nullptr;
-    lv_obj_t *_state  = nullptr;
     lv_obj_t *_freq   = nullptr;
     lv_obj_t *_detail = nullptr;
     lv_obj_t *_meter  = nullptr;
+    /*LS-606*/
+    lv_obj_t *_caret  = nullptr;
 
     lv_obj_t *_sys_rtl = nullptr;
     lv_obj_t *_sys_sd  = nullptr;
@@ -42,4 +45,6 @@ private:
 
     bool _visible = true;
     int  _sub     = -1;
+    /*LS-606*/
+    int  _theme_sub = -1;
 };

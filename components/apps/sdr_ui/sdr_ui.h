@@ -38,12 +38,13 @@
 /*LS-605*/
 #define SDR_CHASSIS    lv_color_hex(0x06080A)
 #define SDR_RULE       lv_color_hex(0x23282C)
-#define SDR_ACCENT     SDR_GOLD
-#define SDR_ACCENT_DIM lv_color_hex(0x8A5C18)
-#define SDR_ACCENT_BG  lv_color_hex(0x241905)
 #define SDR_OK         SDR_PAS_GREEN
 #define SDR_WARN       SDR_PAS_AMBER
 #define SDR_ERR        SDR_PAS_ROSE
+
+/*LS-606*/
+#define SDR_OFF        lv_color_hex(0x394045)
+#define SDR_IDLE       lv_color_hex(0x6E777D)
 
 #define SDR_STATUS_H   30
 #define SDR_RAIL_H     76
@@ -51,6 +52,30 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*LS-606*/
+typedef enum {
+    SDR_THEME_RED = 0,
+    SDR_THEME_WHITE,
+    SDR_THEME_BLUE,
+    SDR_THEME_COUNT
+} sdr_theme_t;
+
+/*LS-606*/
+void        sdr_theme_init(void);
+void        sdr_theme_set(sdr_theme_t t);
+sdr_theme_t sdr_theme_get(void);
+const char *sdr_theme_name(sdr_theme_t t);
+
+/*LS-606*/
+lv_color_t sdr_accent(void);
+lv_color_t sdr_accent_dim(void);
+lv_color_t sdr_accent_bg(void);
+
+/*LS-606*/
+typedef void (*sdr_theme_cb_t)(void *ud);
+int  sdr_theme_on_change(sdr_theme_cb_t cb, void *ud);
+void sdr_theme_off_change(int id);
 
 const lv_font_t *sdr_font_mono(void);
 const lv_font_t *sdr_font_mono_sm(void);
@@ -93,11 +118,6 @@ lv_obj_t *sdr_micro(lv_obj_t *parent, const char *txt);
 lv_obj_t *sdr_value(lv_obj_t *parent, const lv_font_t *font, lv_color_t color);
 
 /*LS-605*/
-lv_obj_t *sdr_chip(lv_obj_t *parent, const char *txt, lv_color_t color);
-void      sdr_chip_set(lv_obj_t *chip, const char *txt, lv_color_t color);
-void      sdr_chip_live(lv_obj_t *chip, bool live);
-
-/*LS-605*/
 lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
                    const char *sub, lv_event_cb_t cb, void *ud);
 void      sdr_tile_accent(lv_obj_t *tile, lv_color_t color);
@@ -108,6 +128,10 @@ void sdr_color_if_changed(lv_obj_t *obj, lv_color_t color);
 
 /*LS-605*/
 void sdr_ascii_bar(char *dst, int cap, int pct, int width);
+
+/*LS-606*/
+lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag);
+void      sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color);
 
 typedef struct sdr_seg sdr_seg_t;
 typedef void (*sdr_seg_cb_t)(void *ud, int value);

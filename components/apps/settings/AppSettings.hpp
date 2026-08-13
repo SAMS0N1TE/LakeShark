@@ -28,6 +28,8 @@ private:
     static void autodimCb(lv_event_t *e);
     static void dimToCb(lv_event_t *e);
     static void bootSndCb(lv_event_t *e);
+    /*LS-606*/
+    static void themeCb(lv_event_t *e);
 
     lv_timer_t *_timer       = nullptr;
     lv_obj_t   *_heap_val    = nullptr;
@@ -38,4 +40,6 @@ private:
     lv_obj_t   *_autodim_val = nullptr;
     lv_obj_t   *_dimto_val   = nullptr;
     lv_obj_t   *_boot_val    = nullptr;
+    /*LS-606*/
+    lv_obj_t   *_theme_val   = nullptr;
 };

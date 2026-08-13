@@ -10,6 +10,8 @@ public:
 
 private:
     static void hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud);
+    /*LS-606*/
+    static void themeCb(void *ud);
     void apply(const ls_hub_state_t *s, uint32_t dirty);
 
     lv_obj_t *_bar  = nullptr;
