@@ -41,8 +41,6 @@ CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=n
 CONFIG_VFS_MAX_COUNT=15
-CONFIG_ESP_BROOKESIA_LOG_STYLE_STD=y
-CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM=y
 CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
 CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
 CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
@@ -102,15 +100,13 @@ CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 # failure and tries to recover the SDIO link in place; LCD/touch/HTTP/telnet
 # all stay running. Matches the upstream host_hosted_events example default.
 CONFIG_ESP_HOSTED_TRANSPORT_RESTART_ON_FAILURE=n
-# arduino-esp32 is used as a plain library (for LoRaMesher's SPI/GPIO); keep
-# brookesia's app_main as the entry point instead of Arduino's setup()/loop().
-CONFIG_AUTOSTART_ARDUINO=n
-# LoRaMesher (and RadioLib) use C++ exceptions + RTTI; ESP-IDF defaults them off.
-# PlatformIO-arduino has them on, which is why the gateway_p4 build worked.
+# LS-421  Exceptions and RTTI were turned on for LoRaMesher and RadioLib, both
+# of which left in d84f487. Nothing in the tree is known to need them now;
+# they are kept on only until someone measures a build with them off.
 CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_COMPILER_CXX_RTTI=y
 # Enabling exceptions makes GCC14 stricter and trips false-positive
-# warnings-as-errors in third-party C++ (esp-brookesia, etc.). This is IDF's
+# warnings-as-errors in third-party C++. This is IDF's
 # official switch to drop the new GCC14 warning classes project-wide.
 CONFIG_COMPILER_DISABLE_GCC14_WARNINGS=y
 # UI responsiveness: poll touch at 100 Hz and redraw at ~60 FPS (defaults are
