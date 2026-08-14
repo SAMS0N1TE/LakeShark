@@ -29,6 +29,8 @@ serial*.txt
 /cmd.py
 /passive.py
 /LCD_4_3_Docs/
+/URH_Files/
+/flipper-app/
 
 __pycache__/
 *.pyc
