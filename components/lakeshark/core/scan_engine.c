@@ -3,6 +3,9 @@
 #include "app_registry.h"
 #include "settings.h"
 #include "p25_state.h"
+/*LS-713*/
+#include "fm_state.h"
+#include "lakeshark_backend.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -56,10 +59,43 @@ static int           s_force_idx = -1;
 static bool sess_skipped(int idx) { return idx >= 0 && idx < 64 && ((s_session_skip >> idx) & 1ULL); }
 static void sess_skip(int idx)    { if (idx >= 0 && idx < 64) s_session_skip |= (1ULL << idx); }
 
-static bool p25_foreground(void)
+/*LS-713*/
+/* The scanner scans the mode the foreground app can actually demodulate. It
+   does NOT switch apps to change mode - that would fight the shell for the
+   screen. In P25 this behaves exactly as it always has; in FM it scans the
+   NFM channels instead. WFM is deliberately not scanned. */
+static int foreground_mode(void)
 {
     const app_t *a = app_current();
-    return a && a->name && strcmp(a->name, "P25") == 0;
+    if (!a || !a->name) return -1;
+    if (strcmp(a->name, "P25") == 0) return SCAN_MODE_P25;
+    if (strcmp(a->name, "FM")  == 0) return SCAN_MODE_NFM;
+    return -1;
+}
+
+/* Mode the current sweep is built for; -1 when no scannable app is up. */
+static int s_fg_mode = -1;
+
+static bool scan_foreground(void) { return foreground_mode() == s_fg_mode && s_fg_mode >= 0; }
+
+/*LS-713*/
+static void tune_to(const scan_channel_t *c)
+{
+    if (c->mode == SCAN_MODE_P25) s_p25_freq_req = c->freq_hz;
+    else                          lakeshark_fm_set_freq(c->freq_hz);
+}
+
+/*LS-713*/
+static int rx_power_pct(int mode)
+{
+    float v = (mode == SCAN_MODE_P25) ? p25_rx_power : FM.iq_level;
+    return (int)(v * 100.0f + 0.5f);
+}
+
+/* P25 has a sync word to converge on; NFM has only carrier/squelch. */
+static bool carrier_held(int mode)
+{
+    return (mode == SCAN_MODE_P25) ? P25.dsd_has_sync : FM.squelch_open;
 }
 
 /*LS-703*/
@@ -72,7 +108,8 @@ static bool channel_eligible(const scan_channel_t *c)
 {
     if (!(c->flags & SCAN_FLAG_ENABLED)) return false;
     if (c->flags & SCAN_FLAG_LOCKOUT)    return false;
-    if (c->mode != SCAN_MODE_P25)        return false;
+    /*LS-713*/
+    if (c->mode != s_fg_mode)            return false;
     return zone_admits(c);
 }
 
@@ -88,7 +125,8 @@ static void empty_reason(char *buf, size_t n)
         if (!c) continue;
         if (!(c->flags & SCAN_FLAG_ENABLED)) { off++;  continue; }
         if (c->flags & SCAN_FLAG_LOCKOUT)    { lock++; continue; }
-        if (c->mode != SCAN_MODE_P25)        { mode++; continue; }
+        /*LS-713*/
+        if (c->mode != s_fg_mode)            { mode++; continue; }
         if (!zone_admits(c))                 { zone++; continue; }
         if (sess_skipped(i))                 { skip++; continue; }
     }
@@ -116,15 +154,15 @@ static void rebuild_order(void)
 }
 
 /*LS-701*/
-static int measure_peak(int settle_ms, int win_ms)
+static int measure_peak(int settle_ms, int win_ms, int mode)
 {
     vTaskDelay(pdMS_TO_TICKS(settle_ms));
 
     int pk = 0;
     int64_t t0 = esp_timer_get_time();
     while (esp_timer_get_time() - t0 < (int64_t)win_ms * 1000) {
-        if (!s_enabled || !p25_foreground()) break;
-        int p = (int)(p25_rx_power * 100.0f + 0.5f);
+        if (!s_enabled || !scan_foreground()) break;
+        int p = rx_power_pct(mode);
         if (p > pk) pk = p;
         vTaskDelay(pdMS_TO_TICKS(POWER_POLL_MS));
     }
@@ -142,9 +180,9 @@ static int priority_sample(void)
         if (!channel_eligible(c)) continue;
         if (sess_skipped(i)) continue;
 
-        s_p25_freq_req = c->freq_hz;
-        int pk = measure_peak(PRI_SETTLE_MS, PRI_MEASURE_MS);
-        if (!s_enabled || !p25_foreground()) return -1;
+        tune_to(c);
+        int pk = measure_peak(PRI_SETTLE_MS, PRI_MEASURE_MS, c->mode);
+        if (!s_enabled || !scan_foreground()) return -1;
         if (pk >= s_thresh) return i;
     }
     return -1;
@@ -160,11 +198,21 @@ static void scan_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(120));
             continue;
         }
-        if (!p25_foreground()) {
-            s_cur = -1;
-            strncpy(s_status, "open P25 app to scan", sizeof(s_status) - 1);
+        /*LS-713*/
+        const int fg = foreground_mode();
+        if (fg < 0) {
+            s_cur     = -1;
+            s_fg_mode = -1;
+            strncpy(s_status, "open P25 or FM to scan", sizeof(s_status) - 1);
             vTaskDelay(pdMS_TO_TICKS(150));
             continue;
+        }
+        if (fg != s_fg_mode) {
+            /* The built order belongs to the old mode - throw it away. */
+            s_fg_mode   = fg;
+            s_order_n   = 0;
+            s_order_pos = 0;
+            s_cur       = -1;
         }
 
         /*LS-705*/
@@ -193,17 +241,18 @@ static void scan_task(void *arg)
 
         const scan_channel_t *c = scan_channel_get(idx);
         /*LS-700*/
-        if (!c || c->mode != SCAN_MODE_P25) {
+        /*LS-713*/
+        if (!c || c->mode != s_fg_mode) {
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
 
-        s_p25_freq_req = c->freq_hz;
+        tune_to(c);
 
         /*LS-701*/
-        int pwi = measure_peak(SETTLE_MS, MEASURE_MS);
+        int pwi = measure_peak(SETTLE_MS, MEASURE_MS, c->mode);
         if (pwi > s_pk_acc) s_pk_acc = pwi;
-        if (!s_enabled || !p25_foreground()) continue;
+        if (!s_enabled || !scan_foreground()) continue;
 
         if (pwi < s_thresh) {
             snprintf(s_status, sizeof(s_status), "SCAN %-9s p=%02d", c->name, pwi);
@@ -211,12 +260,18 @@ static void scan_task(void *arg)
         }
         snprintf(s_status, sizeof(s_status), "CHECK %-9s p=%02d", c->name, pwi);
 
-        int64_t t0 = esp_timer_get_time();
-        bool sync = false;
-        while (esp_timer_get_time() - t0 < (int64_t)SYNC_DWELL_MS * 1000) {
-            if (!s_enabled || !p25_foreground()) break;
-            if (P25.dsd_has_sync) { sync = true; break; }
-            vTaskDelay(pdMS_TO_TICKS(20));
+        /*LS-713*/
+        /* P25 has to re-converge on the sync word after every retune, which is
+           what SYNC_DWELL_MS buys. NFM has no sync - a carrier over threshold
+           already IS the hit, so waiting 900 ms would just miss the call. */
+        bool sync = (c->mode != SCAN_MODE_P25);
+        if (!sync) {
+            int64_t t0 = esp_timer_get_time();
+            while (esp_timer_get_time() - t0 < (int64_t)SYNC_DWELL_MS * 1000) {
+                if (!s_enabled || !scan_foreground()) break;
+                if (P25.dsd_has_sync) { sync = true; break; }
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
         }
         if (!sync) continue;
 
@@ -230,9 +285,10 @@ static void scan_task(void *arg)
         int64_t last = esp_timer_get_time();
         int64_t pri_next = esp_timer_get_time() + (int64_t)s_pri_ms * 1000;
         for (;;) {
-            if (!s_enabled || !p25_foreground()) break;
+            if (!s_enabled || !scan_foreground()) break;
             if (s_skip_req) { s_skip_req = false; sess_skip(idx); break; }
-            if (P25.dsd_has_sync) last = esp_timer_get_time();
+            /*LS-713*/
+            if (carrier_held(c->mode)) last = esp_timer_get_time();
             else if (esp_timer_get_time() - last > (int64_t)s_hang_ms * 1000) break;
 
             /*LS-704*/
@@ -242,7 +298,9 @@ static void scan_task(void *arg)
                     s_force_idx = hit;
                     break;
                 }
-                s_p25_freq_req = hold_hz;
+                /*LS-713*/
+                if (c->mode == SCAN_MODE_P25) s_p25_freq_req = hold_hz;
+                else                          lakeshark_fm_set_freq(hold_hz);
                 last = esp_timer_get_time();
                 pri_next = esp_timer_get_time() + (int64_t)s_pri_ms * 1000;
             }
