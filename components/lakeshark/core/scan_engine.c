@@ -81,8 +81,9 @@ static bool scan_foreground(void) { return foreground_mode() == s_fg_mode && s_f
 /*LS-713*/
 static void tune_to(const scan_channel_t *c)
 {
+    /*LS-717*/
     if (c->mode == SCAN_MODE_P25) s_p25_freq_req = c->freq_hz;
-    else                          lakeshark_fm_set_freq(c->freq_hz);
+    else                          lakeshark_fm_tune_transient(c->freq_hz);
 }
 
 /*LS-713*/
@@ -299,8 +300,9 @@ static void scan_task(void *arg)
                     break;
                 }
                 /*LS-713*/
+                /*LS-717*/
                 if (c->mode == SCAN_MODE_P25) s_p25_freq_req = hold_hz;
-                else                          lakeshark_fm_set_freq(hold_hz);
+                else                          lakeshark_fm_tune_transient(hold_hz);
                 last = esp_timer_get_time();
                 pri_next = esp_timer_get_time() + (int64_t)s_pri_ms * 1000;
             }

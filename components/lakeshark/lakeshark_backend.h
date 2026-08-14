@@ -20,6 +20,8 @@ void     lakeshark_fm_set_mode(int mode);
 int      lakeshark_fm_get_mode(void);
 void     lakeshark_fm_tune(int delta_hz);
 void     lakeshark_fm_set_freq(uint32_t hz);
+/*LS-717*/
+void     lakeshark_fm_tune_transient(uint32_t hz);
 uint32_t lakeshark_fm_get_freq(void);
 void     lakeshark_fm_gain_step(void);
 void     lakeshark_fm_agc(void);

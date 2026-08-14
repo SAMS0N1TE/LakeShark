@@ -508,6 +508,19 @@ void lakeshark_fm_set_freq(uint32_t hz)
 }
 uint32_t lakeshark_fm_get_freq(void) { return FM.freq_hz; }
 
+/*LS-717*/
+/* Retune without persisting. The scanner hops every ~120 ms, and going
+   through lakeshark_fm_set_freq() for that queued an NVS write per hop:
+   flash wear, a settings queue that starts dropping the user's real
+   changes, and a saved FM frequency quietly replaced by whichever channel
+   the sweep sampled last. The sweep is transient - it must not be sticky. */
+void lakeshark_fm_tune_transient(uint32_t hz)
+{
+    if (hz < 1000000UL) return;
+    FM.freq_hz = hz;
+    s_freq_req = hz;
+}
+
 void lakeshark_fm_gain_step(void)
 {
     static const int ladder[] = { 0, 90, 200, 300, 408, 496 };
