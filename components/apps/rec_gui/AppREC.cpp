@@ -75,11 +75,26 @@ AppREC::~AppREC() = default;
 
 bool AppREC::init(void)  { return true; }
 
-bool AppREC::pause(void) { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppREC::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-604*/
+bool AppREC::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
+/*LS-600*/
 bool AppREC::resume(void)
 {
     lakeshark_select_rec();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 

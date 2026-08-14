@@ -43,6 +43,13 @@ void settings_set_volume(int pct);
 int  settings_get_boot_sound(void);
 void settings_set_boot_sound(int mode);
 
+/*LS-606*/
+int  settings_get_theme(void);
+void settings_set_theme(int theme);
+
+/*LS-608*/
+void settings_reset_app(const app_t *a);
+
 int  settings_voice_preset_get(void);
 void settings_voice_preset_set(int preset);
 int  settings_voice_lowpass_get(void);

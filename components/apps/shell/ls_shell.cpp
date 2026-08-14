@@ -1,5 +1,7 @@
 #include "shell/ls_shell.hpp"
 #include "shell/ls_app.hpp"
+#include "shell/ls_hub.h"
+#include "shell/ls_icons.h"
 
 #include "sdr_ui/sdr_ui.h"
 #include "esp_log.h"
@@ -9,8 +11,8 @@
 
 static const char *TAG = "ls_shell";
 
-#define RAIL_H   76
-#define RAIL_BG  lv_color_hex(0x0C0E0D)
+#define RAIL_H   SDR_RAIL_H
+#define RAIL_BG  SDR_CHASSIS
 
 #define LAST_MAGIC 0x4C415354u
 static RTC_NOINIT_ATTR uint32_t s_last_magic;
@@ -40,9 +42,8 @@ LsShell &LsShell::instance(void)
     return s;
 }
 
-static void reset_content(lv_obj_t *c)
+static void style_container(lv_obj_t *c)
 {
-    lv_obj_clean(c);
     lv_obj_set_style_pad_all(c, 0, 0);
     lv_obj_set_style_pad_row(c, 0, 0);
     lv_obj_set_style_pad_column(c, 0, 0);
@@ -64,24 +65,34 @@ void LsShell::begin(void)
     const int hor = lv_disp_get_hor_res(NULL);
     const int ver = lv_disp_get_ver_res(NULL);
 
+    /*LS-606*/
+    sdr_theme_init();
+    sdr_theme_on_change(themeCb, this);
+
+    /*LS-602*/
+    ls_hub_start();
+
+    /*LS-603*/
+    _status.build(_root, hor, statusTapCb, this);
+
     /*LS-905*/
     _content = lv_obj_create(_root);
-    lv_obj_set_pos(_content, 0, 0);
-    lv_obj_set_size(_content, hor, ver - RAIL_H);
-    reset_content(_content);
+    lv_obj_set_pos(_content, 0, SDR_STATUS_H);
+    lv_obj_set_size(_content, hor, ver - RAIL_H - SDR_STATUS_H);
+    style_container(_content);
 
     _rail = lv_obj_create(_root);
     lv_obj_set_size(_rail, hor, RAIL_H);
     lv_obj_align(_rail, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(_rail, RAIL_BG, 0);
     lv_obj_set_style_bg_opa(_rail, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(_rail, SDR_GOLD, 0);
+    lv_obj_set_style_border_color(_rail, SDR_RULE, 0);
     lv_obj_set_style_border_width(_rail, 1, 0);
     lv_obj_set_style_border_side(_rail, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_radius(_rail, 0, 0);
-    lv_obj_set_style_pad_hor(_rail, 8, 0);
-    lv_obj_set_style_pad_ver(_rail, 8, 0);
-    lv_obj_set_style_pad_column(_rail, 6, 0);
+    lv_obj_set_style_pad_hor(_rail, 4, 0);
+    lv_obj_set_style_pad_ver(_rail, 0, 0);
+    lv_obj_set_style_pad_column(_rail, 2, 0);
     lv_obj_set_flex_flow(_rail, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(_rail, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -91,7 +102,22 @@ void LsShell::begin(void)
     lv_obj_add_event_cb(_root, gestureCb, LV_EVENT_GESTURE, this);
 
     lv_scr_load(_root);
-    ESP_LOGI(TAG, "shell begin: %dx%d, rail=%d", hor, ver, RAIL_H);
+    ESP_LOGI(TAG, "shell begin: %dx%d, status=%d rail=%d",
+             hor, ver, SDR_STATUS_H, RAIL_H);
+}
+
+/*LS-606*/
+void LsShell::themeCb(void *ud)
+{
+    LsShell *self = static_cast<LsShell *>(ud);
+    if (self) self->updateRail();
+}
+
+/*LS-603*/
+void LsShell::statusTapCb(lv_event_t *e)
+{
+    LsShell *self = static_cast<LsShell *>(lv_event_get_user_data(e));
+    if (self) self->home();
 }
 
 /*LS-905*/
@@ -118,39 +144,56 @@ void LsShell::registerApp(LsApp *app, bool show_in_rail)
     _apps[_app_count++] = app;
 }
 
+/*LS-605*/
 void LsShell::buildRail(void)
 {
     for (int i = 0; i < _app_count; i++) {
         if (_rail_hidden[i]) { _rail_btn[i] = nullptr; continue; }
         lv_obj_t *b = lv_btn_create(_rail);
-        lv_obj_set_height(b, RAIL_H - 18);
+        lv_obj_set_height(b, RAIL_H - 1);
         lv_obj_set_flex_grow(b, 1);
-        lv_obj_set_style_radius(b, 3, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_pad_all(b, 2, 0);
+        lv_obj_set_style_radius(b, 0, 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(b, 2, 0);
+        lv_obj_set_style_border_side(b, LV_BORDER_SIDE_TOP, 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_set_style_pad_row(b, 3, 0);
+        lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
         lv_obj_set_user_data(b, _apps[i]);
         lv_obj_add_event_cb(b, railBtnCb, LV_EVENT_CLICKED, this);
 
+        lv_obj_t *ic = lv_img_create(b);
+        lv_img_set_src(ic, ls_icon_for(_apps[i]->icon(), 32));
+        lv_obj_set_style_img_recolor_opa(ic, LV_OPA_COVER, 0);
+
         lv_obj_t *l = lv_label_create(b);
         lv_obj_set_style_text_font(l, sdr_font_mono_sm(), 0);
+        lv_obj_set_style_text_letter_space(l, 1, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
         lv_label_set_text(l, _apps[i]->name());
-        lv_obj_center(l);
         _rail_btn[i] = b;
     }
     updateRail();
 }
 
+/*LS-605*/
 void LsShell::updateRail(void)
 {
     for (int i = 0; i < _app_count; i++) {
         lv_obj_t *b = _rail_btn[i];
         if (!b) continue;
-        bool active = (_apps[i] == _current);
-        lv_obj_set_style_bg_color(b, active ? SDR_PAS_GOLD : lv_color_hex(0x1A1C1B), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(b, active ? SDR_BRIGHT : SDR_BORDER, 0);
-        lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_obj_set_style_text_color(l, active ? lv_color_hex(0x141008) : SDR_DIM, 0);
+        const bool active = (_apps[i] == _current);
+
+        lv_obj_set_style_bg_color(b, active ? sdr_accent_bg() : RAIL_BG, 0);
+        lv_obj_set_style_border_color(b, active ? sdr_accent() : RAIL_BG, 0);
+
+        lv_obj_t *ic = lv_obj_get_child(b, 0);
+        if (ic) lv_obj_set_style_img_recolor(ic, active ? sdr_accent() : SDR_DIM, 0);
+        lv_obj_t *l = lv_obj_get_child(b, 1);
+        if (l) lv_obj_set_style_text_color(l, active ? sdr_accent() : SDR_DIM, 0);
     }
 }
 
@@ -164,16 +207,76 @@ void LsShell::start(const char *prefer)
         launch(_apps[0]);
 }
 
+/*LS-600*/
+int LsShell::indexOf(LsApp *app) const
+{
+    for (int i = 0; i < _app_count; i++) if (_apps[i] == app) return i;
+    return -1;
+}
+
+/*LS-600*/
+lv_obj_t *LsShell::containerFor(int idx)
+{
+    if (idx < 0 || idx >= _app_count) return nullptr;
+    if (_app_cont[idx]) return _app_cont[idx];
+
+    lv_obj_t *c = lv_obj_create(_content);
+    lv_obj_set_pos(c, 0, 0);
+    lv_obj_set_size(c, lv_pct(100), lv_pct(100));
+    style_container(c);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    _app_cont[idx] = c;
+    return c;
+}
+
+/*LS-600*/
 void LsShell::launch(LsApp *app)
 {
-    if (!app) return;
-    if (_current && _current != app) _current->close();
+    if (!app || app == _current) return;
+
+    const int idx = indexOf(app);
+    if (idx < 0) return;
+
+    if (_current) {
+        const int prev = indexOf(_current);
+        /*LS-604*/
+        if (app->passive()) _current->background();
+        else                _current->pause();
+        if (prev >= 0 && _app_cont[prev])
+            lv_obj_add_flag(_app_cont[prev], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lv_obj_t *cont = containerFor(idx);
+    if (!cont) return;
+
+    const bool first = !_app_built[idx];
     _current = app;
-    reset_content(_content);
-    ESP_LOGI(TAG, "launch: %s", app->name());
-    app->run(_content);
+
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_HIDDEN);
+
+    if (first) {
+        ESP_LOGI(TAG, "build+launch: %s", app->name());
+        _app_built[idx] = true;
+        app->run(cont);
+    } else {
+        ESP_LOGI(TAG, "resume: %s", app->name());
+        app->resume();
+    }
+
     updateRail();
     save_last_app(app->name());
+}
+
+/*LS-600*/
+void LsShell::closeAll(void)
+{
+    for (int i = 0; i < _app_count; i++) {
+        if (!_app_built[i]) continue;
+        if (_apps[i]) _apps[i]->close();
+        _app_built[i] = false;
+        if (_app_cont[i]) { lv_obj_del(_app_cont[i]); _app_cont[i] = nullptr; }
+    }
+    _current = nullptr;
 }
 
 bool LsShell::launchByName(const char *name)
@@ -188,18 +291,29 @@ bool LsShell::launchByName(const char *name)
     return false;
 }
 
-void LsShell::cycleNext(void)
+void LsShell::cycleNext(void) { cycleApp(+1); }
+
+/*LS-604*/
+void LsShell::cycleApp(int delta)
 {
     if (_app_count <= 1) return;
+    if (delta == 0) delta = 1;
+
     int cur = 0;
     for (int i = 0; i < _app_count; i++) if (_apps[i] == _current) { cur = i; break; }
+
+    const int dir = delta > 0 ? 1 : -1;
+    int n = cur;
     for (int step = 1; step <= _app_count; step++) {
-        int n = (cur + step) % _app_count;
+        n += dir;
+        if (n < 0) n = _app_count - 1;
+        if (n >= _app_count) n = 0;
         if (!_rail_hidden[n]) { launch(_apps[n]); return; }
     }
 }
 
-void LsShell::home(void)   { }
+/*LS-604*/
+void LsShell::home(void) { launchByName("HOME"); }
 
 void LsShell::goBack(void) { if (_current) _current->back(); }
 

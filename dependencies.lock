@@ -36,7 +36,7 @@ dependencies:
   esp_lvgl_port:
     dependencies: []
     source:
-      path: D:\assasdad\LakeShark\LakeShark_NON_GIT\components\esp_lvgl_port
+      path: C:\Users\black\AppData\Local\Temp\claude\C--\6965695d-40dd-4934-9e37-160d2c9d6603\scratchpad\LakeShark-temp-snapshot\components\esp_lvgl_port
       type: local
     version: 2.5.0
   espressif/cmake_utilities:
@@ -63,24 +63,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.5
-  espressif/esp-brookesia:
-    component_hash: 59eed9b0d2fb11a33fd88175c6c6f4559c74a612b8d4828f0254d116046b4052
-    dependencies:
-    - name: espressif/cmake_utilities
-      registry_url: https://components.espressif.com
-      require: private
-      version: 0.*
-    - name: idf
-      require: private
-      version: '>=5.0'
-    - name: lvgl/lvgl
-      registry_url: https://components.espressif.com
-      require: public
-      version: '>=8.3,<9'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 0.4.2
   espressif/esp_codec_dev:
     component_hash: df70f10af8d7b922add7b9d07372c9c97ab356e58d72b7a892050227c2d44348
     dependencies:
@@ -234,13 +216,12 @@ dependencies:
 direct_dependencies:
 - chmorgan/esp-audio-player
 - chmorgan/esp-file-iterator
-- espressif/esp-brookesia
 - espressif/esp_hosted
 - espressif/esp_lcd_st7701
 - espressif/esp_wifi_remote
 - idf
 - lvgl/lvgl
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 02d12a762c1190fa282e986f93c9e4383ec1fa1cbdfa77e6fac4420ba1d28639
+manifest_hash: 1ed0308c7db7e8582891cd3d750d3623109853a11236eb037d1f80a0507c23a2
 target: esp32p4
 version: 2.0.0

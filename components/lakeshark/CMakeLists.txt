@@ -1,7 +1,6 @@
-# LakeShark radio/DSP backend, vendored into the Brookesia phone project and
-# built headless (CONFIG_ENABLE_TUI is left unset). The TUI renderers
-# (adsb_render.c, p25_tui.c), ui/, audio_stub, and core/app_main.c are NOT
-# vendored - Brookesia owns app_main and the display.
+# LakeShark radio/DSP backend, built headless (CONFIG_ENABLE_TUI is left
+# unset). The TUI renderers (adsb_render.c, p25_tui.c), ui/, audio_stub and
+# core/app_main.c are NOT vendored - main/ owns app_main and the display.
 #
 # The excluded TUI files were removed when the tree was vendored, so a glob
 # over the radio/core/audio/app dirs yields exactly the headless set.

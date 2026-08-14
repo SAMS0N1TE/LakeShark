@@ -63,6 +63,11 @@ bool LsSettings::run(lv_obj_t *parent)
     sdr_seg_slider(parent, SDR_PAS_GOLD, 100, display_ctl_get_user(),
                    seg_brightness, this, &_bright_lbl);
 
+    /*LS-606*/
+    sdr_setting_row(parent, "ACCENT", &r);
+    _theme_val = r.value;
+    sdr_btn(r.controls, "CHANGE", themeCb, this, nullptr);
+
     sdr_setting_row(parent, "AUTO-DIM", &r);
     _autodim_val = r.value;
     sdr_btn(r.controls, "TOGGLE", autodimCb, this, nullptr);
@@ -141,6 +146,11 @@ void LsSettings::timerCb(lv_timer_t *t)
         lv_label_set_text_fmt(self->_bright_lbl, "BRIGHTNESS  %d", display_ctl_get_user());
     if (self->_vol_lbl)
         lv_label_set_text_fmt(self->_vol_lbl, "VOLUME  %d", audio_volume_get());
+    /*LS-606*/
+    if (self->_theme_val) {
+        lv_label_set_text(self->_theme_val, sdr_theme_name(sdr_theme_get()));
+        lv_obj_set_style_text_color(self->_theme_val, sdr_accent(), 0);
+    }
     if (self->_boot_val) {
         static const char *bn[] = { "OFF", "BEEP", "VOICE" };
         int m = settings_get_boot_sound();
@@ -175,6 +185,14 @@ void LsSettings::bootSndCb(lv_event_t *)
     settings_set_boot_sound((settings_get_boot_sound() + 1) % 3);
 }
 
+/*LS-606*/
+void LsSettings::themeCb(lv_event_t *)
+{
+    sdr_theme_t next = (sdr_theme_t)((sdr_theme_get() + 1) % SDR_THEME_COUNT);
+    sdr_theme_set(next);
+    settings_set_theme((int)next);
+}
+
 void LsSettings::usbRebootCb(lv_event_t *)
 {
     app_set_usb_autoreboot(!app_usb_autoreboot());
@@ -193,10 +211,26 @@ void LsSettings::dlModeCb(lv_event_t *)
 
 bool LsSettings::back(void) { return exitToLauncher(); }
 
+/*LS-604*/
+bool LsSettings::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
+/*LS-604*/
+bool LsSettings::resume(void)
+{
+    if (_timer) { lv_timer_resume(_timer); timerCb(_timer); }
+    return true;
+}
+
 bool LsSettings::close(void)
 {
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _heap_val = _bright_lbl = _vol_lbl = _usb_val = _mute_val = nullptr;
+    /*LS-606*/
+    _theme_val = nullptr;
     _autodim_val = _dimto_val = nullptr;
     _boot_val = nullptr;
     return true;

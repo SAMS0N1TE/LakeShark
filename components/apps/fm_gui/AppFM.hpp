@@ -16,9 +16,14 @@ public:
     bool init(void) override;
     bool pause(void) override;
     bool resume(void) override;
+    /*LS-604*/
+    bool background(void) override;
     void switchTab(int delta) override;
 
 private:
+    /*LS-608*/
+    lv_obj_t *_reset_val = nullptr;
+
     void buildVfoTab(lv_obj_t *parent);
     void buildPocsagTab(lv_obj_t *parent);
     void buildScanTab(lv_obj_t *parent);
@@ -29,6 +34,8 @@ private:
     void updateConfig(void);
 
     static void timerCb(lv_timer_t *t);
+    /*LS-608*/
+    static void resetCb(lv_event_t *e);
 
     static void modeCb(lv_event_t *e);
     static void stepDownCb(lv_event_t *e);

@@ -112,11 +112,26 @@ AppFM::AppFM()
 AppFM::~AppFM() = default;
 
 bool AppFM::init(void)   { return true; }
-bool AppFM::pause(void)  { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppFM::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-604*/
+bool AppFM::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
+/*LS-600*/
 bool AppFM::resume(void)
 {
     lakeshark_select_fm();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 
@@ -575,6 +590,13 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
     lv_label_set_text(_c_diag, "");
 
     updateConfig();
+
+    /*LS-608*/
+    sdr_section(parent, "DEFAULTS");
+    sdr_setting_row(parent, "RESET THIS APP", &r);
+    _reset_val = r.value;
+    lv_label_set_text(_reset_val, "");
+    sdr_hold_btn(r.controls, "HOLD 2", 2000, resetCb, this);
 }
 
 void AppFM::updateConfig(void)
@@ -769,4 +791,17 @@ void AppFM::freqKbCb(lv_event_t *e)
 void AppFM::closeFreqEntry(void)
 {
     if (_freq_modal) { lv_obj_del(_freq_modal); _freq_modal = nullptr; _freq_ta = nullptr; }
+}
+
+/*LS-608*/
+void AppFM::resetCb(lv_event_t *e)
+{
+    AppFM *self = static_cast<AppFM *>(lv_event_get_user_data(e));
+    settings_reset_app(app_current());
+    lakeshark_radio_park();
+    lakeshark_select_fm();
+    if (self && self->_reset_val) {
+        lv_label_set_text(self->_reset_val, "RESTORED");
+        lv_obj_set_style_text_color(self->_reset_val, SDR_OK, 0);
+    }
 }

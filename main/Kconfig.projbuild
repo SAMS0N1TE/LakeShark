@@ -62,7 +62,7 @@ menu "Example Configurations"
         default n
         help
             Build the headless variant: boot straight into the radio backend and
-            a UART console instead of the Brookesia touch GUI. Shares the same
+            a UART console instead of the LVGL touch GUI. Shares the same
             radio core (P25 / FM / ADS-B). Leave OFF for the GUI build.
 
     config EXAMPLE_ENABLE_SD_CARD

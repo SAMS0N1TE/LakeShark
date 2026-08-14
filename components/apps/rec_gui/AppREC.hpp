@@ -17,6 +17,8 @@ public:
     bool init(void) override;
     bool pause(void) override;
     bool resume(void) override;
+    /*LS-604*/
+    bool background(void) override;
     void switchTab(int delta) override;
 
 private:

@@ -324,6 +324,56 @@ void settings_set_boot_sound(int mode)
     sput_u8("boot_snd", (uint8_t)mode);
 }
 
+/*LS-608*/
+void settings_reset_app(const app_t *a)
+{
+    if (!s_nvs_ok || !a || !a->name) return;
+
+    char pfx[16];
+    mk_key(pfx, sizeof(pfx), a->name, "");
+    const size_t plen = strlen(pfx);
+    if (plen < 2) return;
+
+    char doomed[24][NVS_KEY_NAME_MAX_SIZE];
+    int  n = 0;
+
+    nvs_iterator_t it = NULL;
+    esp_err_t err = nvs_entry_find("nvs", NS, NVS_TYPE_ANY, &it);
+    while (err == ESP_OK && it && n < (int)(sizeof(doomed) / sizeof(doomed[0]))) {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        if (strncmp(info.key, pfx, plen) == 0) {
+            memcpy(doomed[n], info.key, sizeof(info.key));
+            doomed[n][NVS_KEY_NAME_MAX_SIZE - 1] = 0;
+            n++;
+        }
+        err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+
+    for (int i = 0; i < n; i++) nvs_erase_key(s_nvs, doomed[i]);
+    if (n) nvs_commit(s_nvs);
+
+    ESP_LOGW(TAG, "reset '%s' to defaults (%d keys erased)", a->name, n);
+}
+
+/*LS-606*/
+int settings_get_theme(void)
+{
+    if (!s_nvs_ok) return 0;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "ui_theme", &v) != ESP_OK) return 0;
+    return (int)v;
+}
+
+/*LS-606*/
+void settings_set_theme(int theme)
+{
+    if (!s_nvs_ok) return;
+    if (theme < 0) theme = 0;
+    sput_u8("ui_theme", (uint8_t)theme);
+}
+
 int settings_voice_preset_get(void)
 {
     if (!s_nvs_ok) return 0;

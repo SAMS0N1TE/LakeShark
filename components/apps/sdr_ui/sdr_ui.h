@@ -3,40 +3,79 @@
 
 #include "lvgl.h"
 
-#define SDR_BG        lv_color_hex(0x1A1A1A)
-#define SDR_PANEL     lv_color_hex(0x2B2B2B)
-#define SDR_PANEL_HI  lv_color_hex(0x363636)
-#define SDR_SUNKEN    lv_color_hex(0x141414)
-#define SDR_BORDER    lv_color_hex(0x484848)
-#define SDR_BORDER_HI lv_color_hex(0x6E6E6E)
-#define SDR_BEVEL_LO  lv_color_hex(0x0E0E0E)
-#define SDR_LABEL     lv_color_hex(0x9A9A9A)
-#define SDR_TEXT      lv_color_hex(0xD4D4D4)
-#define SDR_BRIGHT    lv_color_hex(0xFFFFFF)
-#define SDR_DIM       lv_color_hex(0x707070)
-#define SDR_GREEN     lv_color_hex(0x68B25E)
-#define SDR_AMBER     lv_color_hex(0xC9923C)
-#define SDR_RED       lv_color_hex(0xC85A52)
-#define SDR_CYAN      lv_color_hex(0xCFCAB6)
-#define SDR_GOLD      lv_color_hex(0xC9A24A)
-#define SDR_MAGENTA   lv_color_hex(0xB07AA0)
-#define SDR_BTN       lv_color_hex(0x3A3A3A)
-#define SDR_BTN_HI    lv_color_hex(0x1E1E1E)
+/*LS-605*/
+#define SDR_BG        lv_color_hex(0x0A0C0D)
+#define SDR_PANEL     lv_color_hex(0x171A1C)
+#define SDR_PANEL_HI  lv_color_hex(0x21262A)
+#define SDR_SUNKEN    lv_color_hex(0x0D1012)
+#define SDR_BORDER    lv_color_hex(0x2C3237)
+#define SDR_BORDER_HI lv_color_hex(0x4A5259)
+#define SDR_BEVEL_LO  lv_color_hex(0x050708)
+#define SDR_LABEL     lv_color_hex(0x79838B)
+#define SDR_TEXT      lv_color_hex(0xC8D0D6)
+#define SDR_BRIGHT    lv_color_hex(0xF4F7F9)
+#define SDR_DIM       lv_color_hex(0x515A61)
+#define SDR_GREEN     lv_color_hex(0x5FCB86)
+#define SDR_AMBER     lv_color_hex(0xE3A83F)
+#define SDR_RED       lv_color_hex(0xE45B50)
+#define SDR_CYAN      lv_color_hex(0x84D2CE)
+#define SDR_GOLD      lv_color_hex(0xF2A233)
+#define SDR_MAGENTA   lv_color_hex(0xB782B0)
+#define SDR_BTN       lv_color_hex(0x1D2226)
+#define SDR_BTN_HI    lv_color_hex(0x0F1315)
 
-#define SDR_PAS_BLUE   lv_color_hex(0x8CB6D9)
-#define SDR_PAS_GREEN  lv_color_hex(0x8FC9AE)
-#define SDR_PAS_GOLD   lv_color_hex(0xE0C27A)
-#define SDR_PAS_ROSE   lv_color_hex(0xE39B96)
-#define SDR_PAS_LAV    lv_color_hex(0xB3A7E0)
-#define SDR_PAS_CYAN   lv_color_hex(0x9AD6D6)
-#define SDR_PAS_AMBER  lv_color_hex(0xE6B873)
-#define SDR_PAS_MINT   lv_color_hex(0x9FE0C4)
-#define SDR_LCD_BG     lv_color_hex(0x070A09)
-#define SDR_LCD_EDGE   lv_color_hex(0x101816)
+#define SDR_PAS_BLUE   lv_color_hex(0x86B8E2)
+#define SDR_PAS_GREEN  lv_color_hex(0x83CFAB)
+#define SDR_PAS_GOLD   lv_color_hex(0xEFC272)
+#define SDR_PAS_ROSE   lv_color_hex(0xE9968F)
+#define SDR_PAS_LAV    lv_color_hex(0xB0A4E4)
+#define SDR_PAS_CYAN   lv_color_hex(0x92DADA)
+#define SDR_PAS_AMBER  lv_color_hex(0xF0B767)
+#define SDR_PAS_MINT   lv_color_hex(0x9BE4C4)
+#define SDR_LCD_BG     lv_color_hex(0x050809)
+#define SDR_LCD_EDGE   lv_color_hex(0x0D1517)
+
+/*LS-605*/
+#define SDR_CHASSIS    lv_color_hex(0x06080A)
+#define SDR_RULE       lv_color_hex(0x23282C)
+#define SDR_OK         SDR_PAS_GREEN
+#define SDR_WARN       SDR_PAS_AMBER
+#define SDR_ERR        SDR_PAS_ROSE
+
+/*LS-606*/
+#define SDR_OFF        lv_color_hex(0x394045)
+#define SDR_IDLE       lv_color_hex(0x6E777D)
+
+#define SDR_STATUS_H   30
+#define SDR_RAIL_H     76
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*LS-606*/
+typedef enum {
+    SDR_THEME_RED = 0,
+    SDR_THEME_WHITE,
+    SDR_THEME_BLUE,
+    SDR_THEME_COUNT
+} sdr_theme_t;
+
+/*LS-606*/
+void        sdr_theme_init(void);
+void        sdr_theme_set(sdr_theme_t t);
+sdr_theme_t sdr_theme_get(void);
+const char *sdr_theme_name(sdr_theme_t t);
+
+/*LS-606*/
+lv_color_t sdr_accent(void);
+lv_color_t sdr_accent_dim(void);
+lv_color_t sdr_accent_bg(void);
+
+/*LS-606*/
+typedef void (*sdr_theme_cb_t)(void *ud);
+int  sdr_theme_on_change(sdr_theme_cb_t cb, void *ud);
+void sdr_theme_off_change(int id);
 
 const lv_font_t *sdr_font_mono(void);
 const lv_font_t *sdr_font_mono_sm(void);
@@ -65,6 +104,38 @@ typedef struct {
 void sdr_setting_row(lv_obj_t *parent, const char *name, sdr_setrow_t *out);
 
 lv_obj_t *sdr_lcd_panel(lv_obj_t *parent, lv_color_t edge);
+
+/*LS-605*/
+lv_obj_t *sdr_row(lv_obj_t *parent, lv_flex_align_t justify);
+
+/*LS-605*/
+lv_obj_t *sdr_rule(lv_obj_t *parent);
+
+/*LS-605*/
+lv_obj_t *sdr_micro(lv_obj_t *parent, const char *txt);
+
+/*LS-605*/
+lv_obj_t *sdr_value(lv_obj_t *parent, const lv_font_t *font, lv_color_t color);
+
+/*LS-605*/
+lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
+                   const char *sub, lv_event_cb_t cb, void *ud);
+void      sdr_tile_accent(lv_obj_t *tile, lv_color_t color);
+
+/*LS-605*/
+void sdr_text_if_changed(lv_obj_t *label, const char *txt);
+void sdr_color_if_changed(lv_obj_t *obj, lv_color_t color);
+
+/*LS-605*/
+void sdr_ascii_bar(char *dst, int cap, int pct, int width);
+
+/*LS-606*/
+lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag);
+void      sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color);
+
+/*LS-608*/
+lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
+                       lv_event_cb_t cb, void *ud);
 
 typedef struct sdr_seg sdr_seg_t;
 typedef void (*sdr_seg_cb_t)(void *ud, int value);

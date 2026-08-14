@@ -7,5 +7,9 @@ dependencies:
   espressif/esp_hosted:
     version: "==2.12.9"
 
-  espressif/esp-brookesia:
-    version: "^0.4.2"   # bumped from "0.4.*" to pin the minor 24h-clock + 720x1280 fixes
+  # LS-601  esp-brookesia was the only thing constraining LVGL to 8.x
+  # (it asked >=8.3,<9). esp_lvgl_port and the Waveshare BSP both ask
+  # >=8,<10, so dropping brookesia silently resolved LVGL 9.5.0 and broke
+  # the build. The whole sdr_ui shell is written against 8.4 - see LS-903.
+  lvgl/lvgl:
+    version: "==8.4.0"
