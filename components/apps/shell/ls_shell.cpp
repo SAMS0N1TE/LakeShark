@@ -31,6 +31,34 @@ static const char *load_last_app(void)
     return (s_last_magic == LAST_MAGIC && s_last_app[0]) ? s_last_app : nullptr;
 }
 
+/*LS-715*/
+/* Resuming the last app turns any crash-on-open into a boot loop: the app
+   faults, the board reboots, the shell opens the same app, it faults again,
+   and there is no way back to HOME from the field. So arm a marker across the
+   reboot before opening an app and clear it once the app has survived a few
+   seconds. A marker still set at startup means that app did not survive being
+   opened, and we refuse to open it again. */
+#define ENTER_MAGIC 0x4C534E54u
+static RTC_NOINIT_ATTR uint32_t s_enter_magic;
+static RTC_NOINIT_ATTR char     s_enter_app[24];
+
+static void enter_arm(const char *name)
+{
+    if (!name) return;
+    strncpy(s_enter_app, name, sizeof(s_enter_app) - 1);
+    s_enter_app[sizeof(s_enter_app) - 1] = 0;
+    s_enter_magic = ENTER_MAGIC;
+}
+
+static void enter_disarm(void) { s_enter_magic = 0; s_enter_app[0] = 0; }
+
+static const char *enter_pending(void)
+{
+    return (s_enter_magic == ENTER_MAGIC && s_enter_app[0]) ? s_enter_app : nullptr;
+}
+
+static void enter_survived_cb(lv_timer_t *) { enter_disarm(); }
+
 
 bool LsApp::back(void)           { return exitToLauncher(); }
 bool LsApp::exitToLauncher(void) { return true; }
@@ -201,7 +229,16 @@ void LsShell::start(const char *prefer)
 {
     buildRail();
 
-    const char *target = prefer ? prefer : load_last_app();
+    const char *target  = prefer ? prefer : load_last_app();
+
+    /*LS-715*/
+    const char *pending = enter_pending();
+    if (!prefer && pending && target && strcmp(pending, target) == 0) {
+        ESP_LOGW(TAG, "%s did not survive being opened last boot - "
+                      "starting at HOME instead", pending);
+        target = nullptr;
+    }
+    enter_disarm();
 
     if (!(target && launchByName(target)) && _app_count > 0)
         launch(_apps[0]);
@@ -254,6 +291,9 @@ void LsShell::launch(LsApp *app)
 
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_HIDDEN);
 
+    /*LS-715*/
+    enter_arm(app->name());
+
     if (first) {
         ESP_LOGI(TAG, "build+launch: %s", app->name());
         _app_built[idx] = true;
@@ -265,6 +305,10 @@ void LsShell::launch(LsApp *app)
 
     updateRail();
     save_last_app(app->name());
+
+    /*LS-715*/
+    if (lv_timer_t *g = lv_timer_create(enter_survived_cb, 5000, nullptr))
+        lv_timer_set_repeat_count(g, 1);
 }
 
 /*LS-600*/
