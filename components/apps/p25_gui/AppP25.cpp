@@ -544,10 +544,13 @@ void AppP25::buildScanTab(lv_obj_t *parent)
     _ch_val = r.value;
     sdr_btn(r.controls, "ADD",  chAddCb,  this, nullptr);
     sdr_btn(r.controls, "NAME", chNameCb, this, nullptr);
+    /*LS-711*/
+    sdr_btn(r.controls, "LOCK", chLockCb, this, nullptr);
     sdr_btn(r.controls, "DEL",  chDelCb,  this, nullptr);
     updateChSel();
 
-    sdr_section(parent, "CHANNELS  (tap row = lock / unlock)");
+    /*LS-711*/
+    sdr_section(parent, "CHANNELS  (tap row = select)");
 
     _scan_table = lv_table_create(parent);
     lv_obj_set_width(_scan_table, lv_pct(100));
@@ -641,9 +644,19 @@ void AppP25::scanTableCb(lv_event_t *e)
     int idx = (int)row - 1;
     const scan_channel_t *c = scan_channel_get(idx);
     if (!c) return;
-    scan_channel_set_lockout(idx, !(c->flags & SCAN_FLAG_LOCKOUT));
-    /*LS-706*/
+    /*LS-711*/
     self->_sel_idx = idx;
+    self->updateChSel();
+}
+
+/*LS-711*/
+void AppP25::chLockCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    if (!self || self->_sel_idx < 0) return;
+    const scan_channel_t *c = scan_channel_get(self->_sel_idx);
+    if (!c) return;
+    scan_channel_set_lockout(self->_sel_idx, !(c->flags & SCAN_FLAG_LOCKOUT));
     self->updateChSel();
 }
 
@@ -682,7 +695,9 @@ void AppP25::updateChSel(void)
     if (!_ch_val) return;
     const scan_channel_t *c = (_sel_idx >= 0) ? scan_channel_get(_sel_idx) : nullptr;
     if (!c) { lv_label_set_text(_ch_val, "none"); _sel_idx = -1; return; }
-    lv_label_set_text_fmt(_ch_val, "%d %s", _sel_idx, c->name);
+    /*LS-711*/
+    lv_label_set_text_fmt(_ch_val, "%d %s%s", _sel_idx, c->name,
+                          (c->flags & SCAN_FLAG_LOCKOUT) ? " LOCK" : "");
 }
 
 /*LS-706*/

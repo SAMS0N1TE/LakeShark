@@ -76,6 +76,26 @@ static bool channel_eligible(const scan_channel_t *c)
     return zone_admits(c);
 }
 
+/*LS-711*/
+static void empty_reason(char *buf, size_t n)
+{
+    int total = scan_channels_count();
+    if (total <= 0) { snprintf(buf, n, "no channels - add one"); return; }
+
+    int lock = 0, off = 0, zone = 0, mode = 0, skip = 0;
+    for (int i = 0; i < total; i++) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (!c) continue;
+        if (!(c->flags & SCAN_FLAG_ENABLED)) { off++;  continue; }
+        if (c->flags & SCAN_FLAG_LOCKOUT)    { lock++; continue; }
+        if (c->mode != SCAN_MODE_P25)        { mode++; continue; }
+        if (!zone_admits(c))                 { zone++; continue; }
+        if (sess_skipped(i))                 { skip++; continue; }
+    }
+    snprintf(buf, n, "%d ch none eligible: %dlock %doff %dzone %dmode %dskip",
+             total, lock, off, zone, mode, skip);
+}
+
 static void rebuild_order(void)
 {
     s_order_n = 0;
@@ -155,7 +175,8 @@ static void scan_task(void *arg)
         }
         if (s_order_n == 0) {
             s_cur = -1;
-            strncpy(s_status, "no channels", sizeof(s_status) - 1);
+            /*LS-711*/
+            empty_reason(s_status, sizeof(s_status));
             vTaskDelay(pdMS_TO_TICKS(300));
             continue;
         }

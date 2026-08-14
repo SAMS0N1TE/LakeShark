@@ -41,6 +41,8 @@ private:
     /*LS-706*/
     static void chAddCb(lv_event_t *e);
     static void chDelCb(lv_event_t *e);
+    /*LS-711*/
+    static void chLockCb(lv_event_t *e);
     static void chNameCb(lv_event_t *e);
     static void nameKbCb(lv_event_t *e);
     void        openNameEntry(void);
