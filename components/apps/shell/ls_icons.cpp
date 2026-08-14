@@ -142,6 +142,28 @@ static const char *const SETTINGS[ICON_H] = {
     "................",
 };
 
+/*LS-716*/
+/* AppREC asks for "rec" and the table had no entry, so the rail drew an empty
+   button. Placeholder record dot - replace the grid, not the wiring. */
+static const char *const REC[ICON_H] = {
+    "................",
+    "................",
+    ".....XXXXXX.....",
+    "...XXXXXXXXXX...",
+    "..XXXXXXXXXXXX..",
+    "..XXXXXXXXXXXX..",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    "..XXXXXXXXXXXX..",
+    "..XXXXXXXXXXXX..",
+    "...XXXXXXXXXX...",
+    ".....XXXXXX.....",
+    "................",
+    "................",
+};
+
 /*LS-605*/
 static lv_img_dsc_t *build(const char *const *rows, int gw, int gh, int blk)
 {
@@ -189,6 +211,8 @@ const lv_img_dsc_t *ls_icon_for(const char *key, int px)
         { "adsb",     ADSB,     {nullptr} },
         { "mesh",     MESH,     {nullptr} },
         { "files",    FILES,    {nullptr} },
+        /*LS-716*/
+        { "rec",      REC,      {nullptr} },
         { "home",     HOME,     {nullptr} },
         { "settings", SETTINGS, {nullptr} },
     };
