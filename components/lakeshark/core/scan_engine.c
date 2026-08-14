@@ -26,7 +26,8 @@ static const char *TAG = "scaneng";
 #define SYNC_DWELL_MS    900
 #define DEFAULT_HANG_MS  3000
 /*LS-702*/
-#define DEFAULT_THRESH   10
+/*LS-709*/
+#define DEFAULT_THRESH   4
 /*LS-703*/
 #define ZONE_ALL         (-1)
 /*LS-704*/

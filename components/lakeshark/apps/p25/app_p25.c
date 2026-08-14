@@ -348,17 +348,20 @@ static void p25_rx_task(void *arg)
 
         if (s_p25_freq_req) {
             uint32_t f = s_p25_freq_req; s_p25_freq_req = 0;
-            s_tune_freq_hz = f;
-            if (dev) {
-                rtlsdr_set_center_freq(dev, f);
-                /*LS-708*/
-                if (!scan_engine_active()) rtlsdr_reset_buffer(dev);
-                rtlsdr_stream_reset();
+            /*LS-710*/
+            if (f != s_tune_freq_hz) {
+                s_tune_freq_hz = f;
+                if (dev) {
+                    rtlsdr_set_center_freq(dev, f);
+                    /*LS-708*/
+                    if (!scan_engine_active()) rtlsdr_reset_buffer(dev);
+                    rtlsdr_stream_reset();
+                }
+                s_ring.write_idx = s_ring.read_idx;
+                P25.dsd_has_sync = false;
+                P25.sync_active_until_us = 0;
+                sys_log(1, "Tuned: %.4f MHz", f / 1e6);
             }
-            s_ring.write_idx = s_ring.read_idx;
-            P25.dsd_has_sync = false;
-            P25.sync_active_until_us = 0;
-            sys_log(1, "Tuned: %.4f MHz", f / 1e6);
         }
 
         if (rtl_gain_request >= 0) {
@@ -403,17 +406,19 @@ static void p25_rx_task(void *arg)
             read_errors = 0;
             iq_bucket += P25_USB_BUF_LENGTH;
 
+            /*LS-709*/
             if (scan_engine_active()) {
-                int peak = 0;
+                uint32_t sum = 0;
+                uint32_t cnt = 0;
                 for (int i = 0; i + 1 < P25_USB_BUF_LENGTH; i += 8) {
                     int di = (int)s_iq_buf[i]     - 128;
                     int dq = (int)s_iq_buf[i + 1] - 128;
                     int a = di < 0 ? -di : di;
                     int b = dq < 0 ? -dq : dq;
-                    if (a > peak) peak = a;
-                    if (b > peak) peak = b;
+                    sum += (uint32_t)(a + b);
+                    cnt++;
                 }
-                p25_rx_power = (float)peak / 127.5f;
+                p25_rx_power = cnt ? ((float)sum / (float)cnt) / 254.0f : 0.0f;
             }
 
             {
