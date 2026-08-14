@@ -3,6 +3,8 @@
 #include "scan_channels.h"
 #include "scan_engine.h"
 #include "lakeshark_backend.h"
+/*LS-018*/
+#include "audio_out.h"
 #include "esp_console.h"
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
@@ -121,9 +123,33 @@ static int cmd_p25gate(int argc, char **argv)
     return 0;
 }
 
+/*LS-018*/
+static int cmd_vol(int argc, char **argv)
+{
+    if (argc < 2) { printf("vol=%d mute=%d\n", audio_volume_get(), audio_is_muted()); return 0; }
+    if (argv[1][0] == '+' || argv[1][0] == '-') audio_volume_delta(atoi(argv[1]));
+    else                                         audio_volume_set(atoi(argv[1]));
+    printf("vol=%d\n", audio_volume_get());
+    return 0;
+}
+
+/*LS-018*/
+static int cmd_mute(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    audio_toggle_mute();
+    printf("mute=%d\n", audio_is_muted());
+    return 0;
+}
+
 void ls_ctl_register_commands(void)
 {
     const esp_console_cmd_t cmds[] = {
+        /*LS-018*/
+        { .command = "vol",     .help = "Volume 0-100 (or +n / -n)",
+          .hint = "<n|+n|-n>", .func = &cmd_vol },
+        { .command = "mute",    .help = "Toggle audio mute",
+          .func = &cmd_mute },
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
         { .command = "home", .help = "Get/set home QTH for the radar",

@@ -21,6 +21,9 @@ public:
 
     lv_obj_t *content(void) { return _content; }
 
+    /*LS-019*/
+    LsApp *current(void) { return _current; }
+
 private:
     LsShell() = default;
 

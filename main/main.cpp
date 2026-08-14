@@ -19,6 +19,8 @@
 #include "p25_gui/AppP25.hpp"
 #include "fm_gui/AppFM.hpp"
 #include "adsb_gui/AppADSB.hpp"
+/*LS-020*/
+#include "rec_gui/AppREC.hpp"
 #include "file_browser/FileBrowser.hpp"
 #include "settings/AppSettings.hpp"
 
@@ -28,6 +30,8 @@
 #include "esp_hosted.h"
 #include "display_ctl.h"
 #include "ls_ctl.h"
+/*LS-019*/
+#include "gui_link.h"
 #include "boot_splash.h"
 #include "bsod.h"
 
@@ -53,7 +57,8 @@ static void c6_probe(void)
 {
     int e = esp_hosted_connect_to_slave();
     if (e != 0) {
-        ESP_LOGW(TAG, "C6 co-processor link FAILED (%d) - no BLE on this build", e);
+        /*LS-019*/
+        ESP_LOGW(TAG, "C6 co-processor link FAILED (%d) - BLE will not start", e);
         return;
     }
 
@@ -178,6 +183,8 @@ extern "C" void app_main(void)
     shell.registerApp(new AppP25());
     shell.registerApp(new AppFM());
     shell.registerApp(new AppADSB());
+    /*LS-020*/
+    shell.registerApp(new AppREC());
     shell.registerApp(new LsSettings());
     shell.registerApp(new AppFileBrowser(), false);
 
@@ -194,4 +201,7 @@ extern "C" void app_main(void)
     shell.start(recover_app);
     boot_btn_init();
     bsp_display_unlock();
+
+    /*LS-019*/
+    gui_link_start();
 }
