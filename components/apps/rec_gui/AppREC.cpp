@@ -22,13 +22,14 @@ extern "C" {
 
 struct rec_preset_t { const char *name; uint32_t hz; };
 
-/*LS-020*/
+/*LS-024*/
 static const rec_preset_t REC_PRESETS[] = {
-    { "OOK 433.92", 433920000UL },
-    { "OOK 434.42", 434420000UL },
-    { "OOK 315.00", 315000000UL },
-    { "OOK 868.35", 868350000UL },
-    { "FSK 432.80", 432800000UL },
+    { "TX rem 433.66", 433660000UL },
+    { "TX rem 433.89", 433890000UL },
+    { "OOK 433.92",    433920000UL },
+    { "OOK 434.42",    434420000UL },
+    { "OOK 315.00",    315000000UL },
+    { "OOK 868.35",    868350000UL },
 };
 #define N_PRESETS ((int)(sizeof(REC_PRESETS) / sizeof(REC_PRESETS[0])))
 
