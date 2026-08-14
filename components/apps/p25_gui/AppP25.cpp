@@ -108,7 +108,8 @@ static void p25_seg_gain_live(void *, int v)   { lakeshark_radio_set_gain_live(v
 static void p25_seg_gain_commit(void *, int v) { lakeshark_radio_set_gain(v); }
 static void p25_seg_gate(void *, int v)        { lakeshark_p25_set_voice_gate(v); }
 static void p25_seg_hang(void *, int v)        { scan_engine_set_hang_ms(v * 500); }
-static void p25_seg_thresh(void *, int v)      { scan_engine_set_threshold_db((float)v); }
+/*LS-702*/
+static void p25_seg_thresh(void *, int v)      { scan_engine_set_threshold_pct(v); }
 
 /* Text meter (mono ASCII bar) -- intentionally NOT an lv_bar: live lv_bar
  * redraws contend with the DSI framebuffer DMA during P25 voice decode and
@@ -155,13 +156,21 @@ bool AppP25::resume(void)
 bool AppP25::back(void)
 {
     if (_freq_modal) { closeFreqEntry(); return true; }
+    /*LS-706*/
+    if (_name_modal) { closeNameEntry(); return true; }
     return exitToLauncher();
 }
 
 bool AppP25::close(void)
 {
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
+    /*LS-706*/
+    closeFreqEntry();
+    closeNameEntry();
     _tabview = nullptr;
+    _scan_table = nullptr;
+    _zone_val = nullptr;
+    _ch_val = nullptr;
     lakeshark_radio_park();
     return true;
 }
@@ -517,10 +526,26 @@ void AppP25::buildScanTab(lv_obj_t *parent)
     sdr_seg_slider(parent, SDR_PAS_CYAN, 10, scan_engine_get_hang_ms() / 500,
                    p25_seg_hang, this, &dh);
 
-    sdr_section(parent, "CARRIER SQUELCH  (level)");
+    /*LS-702*/
+    sdr_section(parent, "CARRIER SQUELCH  (% of full scale)");
     lv_obj_t *dt = nullptr;
-    sdr_seg_slider(parent, SDR_PAS_LAV, 30, (int)scan_engine_get_threshold_db(),
+    sdr_seg_slider(parent, SDR_PAS_LAV, 30, scan_engine_get_threshold_pct(),
                    p25_seg_thresh, this, &dt);
+
+    /*LS-703*/
+    sdr_setting_row(parent, "ZONE", &r);
+    _zone_val = r.value;
+    sdr_btn(r.controls, "<", zonePrevCb, this, nullptr);
+    sdr_btn(r.controls, ">", zoneNextCb, this, nullptr);
+    updateZone();
+
+    /*LS-706*/
+    sdr_setting_row(parent, "CHANNEL", &r);
+    _ch_val = r.value;
+    sdr_btn(r.controls, "ADD",  chAddCb,  this, nullptr);
+    sdr_btn(r.controls, "NAME", chNameCb, this, nullptr);
+    sdr_btn(r.controls, "DEL",  chDelCb,  this, nullptr);
+    updateChSel();
 
     sdr_section(parent, "CHANNELS  (tap row = lock / unlock)");
 
@@ -617,6 +642,150 @@ void AppP25::scanTableCb(lv_event_t *e)
     const scan_channel_t *c = scan_channel_get(idx);
     if (!c) return;
     scan_channel_set_lockout(idx, !(c->flags & SCAN_FLAG_LOCKOUT));
+    /*LS-706*/
+    self->_sel_idx = idx;
+    self->updateChSel();
+}
+
+/*LS-703*/
+void AppP25::updateZone(void)
+{
+    if (!_zone_val) return;
+    int z = scan_engine_get_zone();
+    if (z < 0) lv_label_set_text(_zone_val, "ALL");
+    else       lv_label_set_text_fmt(_zone_val, "%d", z);
+}
+
+/*LS-703*/
+void AppP25::zonePrevCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    int z = scan_engine_get_zone();
+    z = (z < 0) ? (SCAN_MAX_ZONES - 1) : (z - 1);
+    scan_engine_set_zone(z);
+    if (self) self->updateZone();
+}
+
+/*LS-703*/
+void AppP25::zoneNextCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    int z = scan_engine_get_zone();
+    z = (z < 0 || z >= SCAN_MAX_ZONES - 1) ? -1 : (z + 1);
+    scan_engine_set_zone(z);
+    if (self) self->updateZone();
+}
+
+/*LS-706*/
+void AppP25::updateChSel(void)
+{
+    if (!_ch_val) return;
+    const scan_channel_t *c = (_sel_idx >= 0) ? scan_channel_get(_sel_idx) : nullptr;
+    if (!c) { lv_label_set_text(_ch_val, "none"); _sel_idx = -1; return; }
+    lv_label_set_text_fmt(_ch_val, "%d %s", _sel_idx, c->name);
+}
+
+/*LS-706*/
+void AppP25::chAddCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    uint32_t hz = lakeshark_p25_get_freq();
+    if (hz == 0) return;
+
+    /*LS-706*/
+    int dup = scan_channel_find_freq(hz);
+    if (dup >= 0) {
+        if (self) { self->_sel_idx = dup; self->updateChSel(); }
+        return;
+    }
+
+    int zone = scan_engine_get_zone();
+    if (zone < 0) zone = 0;
+
+    int idx = scan_channel_add(nullptr, hz, SCAN_MODE_P25, (uint8_t)zone);
+    if (idx < 0) {
+        if (self && self->_ch_val) lv_label_set_text(self->_ch_val, "list full");
+        return;
+    }
+    if (self) { self->_sel_idx = idx; self->updateChSel(); }
+}
+
+/*LS-706*/
+void AppP25::chDelCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    if (!self || self->_sel_idx < 0) return;
+    scan_channel_remove(self->_sel_idx);
+    self->_sel_idx = -1;
+    self->updateChSel();
+}
+
+/*LS-706*/
+void AppP25::chNameCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    if (!self || self->_sel_idx < 0) return;
+    self->openNameEntry();
+}
+
+/*LS-706*/
+void AppP25::openNameEntry(void)
+{
+    if (_name_modal) return;
+    const scan_channel_t *c = scan_channel_get(_sel_idx);
+    if (!c) return;
+
+    lv_obj_t *bg = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(bg, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(bg, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(bg, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(bg, 0, 0);
+    lv_obj_set_style_radius(bg, 0, 0);
+    lv_obj_set_style_pad_all(bg, 10, 0);
+    lv_obj_set_style_pad_row(bg, 8, 0);
+    lv_obj_clear_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(bg, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(bg, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    _name_modal = bg;
+
+    lv_obj_t *title = sdr_label(bg, &lv_font_montserrat_16, SDR_CYAN);
+    lv_label_set_text_fmt(title, "NAME CHANNEL %d  -  %.4f MHz",
+                          _sel_idx, c->freq_hz / 1e6);
+
+    lv_obj_t *ta = lv_textarea_create(bg);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, SCAN_NAME_LEN - 1);
+    lv_textarea_set_text(ta, c->name);
+    lv_obj_set_width(ta, lv_pct(80));
+    lv_obj_set_style_text_font(ta, sdr_font_mono(), 0);
+    _name_ta = ta;
+
+    lv_obj_t *kb = lv_keyboard_create(bg);
+    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_UPPER);
+    lv_keyboard_set_textarea(kb, ta);
+    lv_obj_set_width(kb, lv_pct(100));
+    lv_obj_set_flex_grow(kb, 1);
+    lv_obj_add_event_cb(kb, nameKbCb, LV_EVENT_READY,  this);
+    lv_obj_add_event_cb(kb, nameKbCb, LV_EVENT_CANCEL, this);
+}
+
+/*LS-706*/
+void AppP25::nameKbCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    if (!self) return;
+    if (lv_event_get_code(e) == LV_EVENT_READY && self->_name_ta) {
+        const char *t = lv_textarea_get_text(self->_name_ta);
+        if (t && *t) scan_channel_set_name(self->_sel_idx, t);
+    }
+    self->closeNameEntry();
+    self->updateChSel();
+}
+
+/*LS-706*/
+void AppP25::closeNameEntry(void)
+{
+    if (_name_modal) { lv_obj_del(_name_modal); _name_modal = nullptr; _name_ta = nullptr; }
 }
 
 void AppP25::buildSettingsTab(lv_obj_t *parent)

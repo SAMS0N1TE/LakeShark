@@ -374,6 +374,23 @@ void settings_set_theme(int theme)
     sput_u8("ui_theme", (uint8_t)theme);
 }
 
+/*LS-703*/
+int settings_get_scan_zone(void)
+{
+    if (!s_nvs_ok) return 0;
+    int8_t v = 0;
+    if (nvs_get_i8(s_nvs, "scan_zone", &v) != ESP_OK) return 0;
+    return (int)v;
+}
+
+/*LS-703*/
+void settings_set_scan_zone(int zone)
+{
+    if (!s_nvs_ok) return;
+    if (zone < -1) zone = -1;
+    if (nvs_set_i8(s_nvs, "scan_zone", (int8_t)zone) == ESP_OK) nvs_commit(s_nvs);
+}
+
 int settings_voice_preset_get(void)
 {
     if (!s_nvs_ok) return 0;

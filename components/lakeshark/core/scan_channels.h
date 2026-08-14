@@ -53,6 +53,10 @@ bool  scan_channel_remove(int idx);
 bool  scan_channel_set_lockout(int idx, bool on);
 bool  scan_channel_set_priority(int idx, bool on);
 bool  scan_channel_set_enabled(int idx, bool on);
+/*LS-706*/
+bool  scan_channel_set_name(int idx, const char *name);
+/*LS-706*/
+int   scan_channel_find_freq(uint32_t freq_hz);
 void  scan_channels_clear(void);
 
 bool  scan_channels_save(void);

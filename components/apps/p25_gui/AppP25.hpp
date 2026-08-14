@@ -34,6 +34,18 @@ private:
     static void scanToggleCb(lv_event_t *e);
     static void scanSkipCb(lv_event_t *e);
     static void scanTableCb(lv_event_t *e);
+    /*LS-703*/
+    static void zonePrevCb(lv_event_t *e);
+    static void zoneNextCb(lv_event_t *e);
+    void        updateZone(void);
+    /*LS-706*/
+    static void chAddCb(lv_event_t *e);
+    static void chDelCb(lv_event_t *e);
+    static void chNameCb(lv_event_t *e);
+    static void nameKbCb(lv_event_t *e);
+    void        openNameEntry(void);
+    void        closeNameEntry(void);
+    void        updateChSel(void);
 
     static void timerCb(lv_timer_t *t);
     /*LS-608*/
@@ -144,4 +156,12 @@ private:
     lv_obj_t  *_scan_table    = nullptr;
     /*LS-608*/
     lv_obj_t  *_reset_val     = nullptr;
+
+    /*LS-703*/
+    lv_obj_t  *_zone_val      = nullptr;
+    /*LS-706*/
+    int        _sel_idx       = -1;
+    lv_obj_t  *_ch_val        = nullptr;
+    lv_obj_t  *_name_modal    = nullptr;
+    lv_obj_t  *_name_ta       = nullptr;
 };

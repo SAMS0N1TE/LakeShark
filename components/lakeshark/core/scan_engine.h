@@ -16,11 +16,21 @@ bool scan_engine_active(void);
 
 void scan_engine_skip(void);
 void scan_engine_set_hang_ms(int ms);
-void scan_engine_set_threshold_db(float margin_db);
+/*LS-702*/
+void scan_engine_set_threshold_pct(int pct);
+/*LS-703*/
+void scan_engine_set_zone(int zone);
+/*LS-704*/
+void scan_engine_set_priority_ms(int ms);
 
 int   scan_engine_current(void);
 int   scan_engine_get_hang_ms(void);
-float scan_engine_get_threshold_db(void);
+/*LS-702*/
+int   scan_engine_get_threshold_pct(void);
+/*LS-703*/
+int   scan_engine_get_zone(void);
+/*LS-704*/
+int   scan_engine_get_priority_ms(void);
 
 void scan_engine_status(char *buf, size_t n);
 

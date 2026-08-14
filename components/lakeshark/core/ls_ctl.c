@@ -85,7 +85,22 @@ static int cmd_ch(int argc, char **argv)
     }
     if (!strcmp(argv[1], "clear")) { scan_channels_clear(); printf("cleared\n"); return 0; }
 
-    printf("usage: ch [list|add|del|lock|pri|en|clear]\n");
+    /*LS-703*/
+    if (!strcmp(argv[1], "zone")) {
+        if (argc < 3) {
+            int z = scan_engine_get_zone();
+            if (z < 0) printf("zone=all\n"); else printf("zone=%d\n", z);
+            return 0;
+        }
+        int z = !strcmp(argv[2], "all") ? -1 : atoi(argv[2]);
+        scan_engine_set_zone(z);
+        z = scan_engine_get_zone();
+        if (z < 0) printf("zone=all - every channel is in the sweep\n");
+        else       printf("zone=%d - only channels in zone %d are scanned\n", z, z);
+        return 0;
+    }
+
+    printf("usage: ch [list|add|del|lock|pri|en|clear|zone <0-7|all>]\n");
     return 0;
 }
 
@@ -103,11 +118,27 @@ static int cmd_scan(int argc, char **argv)
         if (argc < 3) { printf("usage: scan hang <ms>\n"); return 0; }
         scan_engine_set_hang_ms(atoi(argv[2])); printf("hang=%d ms\n", atoi(argv[2])); return 0;
     }
+    /*LS-702*/
     if (!strcmp(argv[1], "thresh")) {
-        if (argc < 3) { printf("usage: scan thresh <dB-over-floor>\n"); return 0; }
-        scan_engine_set_threshold_db((float)atof(argv[2])); printf("thresh=%s dB\n", argv[2]); return 0;
+        if (argc < 3) { printf("usage: scan thresh <1-100 %% of full scale>\n"); return 0; }
+        scan_engine_set_threshold_pct(atoi(argv[2]));
+        printf("thresh=%d %% of full scale\n", scan_engine_get_threshold_pct());
+        return 0;
     }
-    printf("usage: scan [on|off|status|skip|hang <ms>|thresh <db>]\n");
+    /*LS-704*/
+    if (!strcmp(argv[1], "pri")) {
+        if (argc < 3) {
+            printf("pri=%d ms\n", scan_engine_get_priority_ms());
+            return 0;
+        }
+        int ms = !strcmp(argv[2], "off") ? 0 : atoi(argv[2]);
+        scan_engine_set_priority_ms(ms);
+        int now = scan_engine_get_priority_ms();
+        if (now) printf("pri=%d ms - holds are interrupted to sample priority channels\n", now);
+        else     printf("pri=off\n");
+        return 0;
+    }
+    printf("usage: scan [on|off|status|skip|hang <ms>|thresh <1-100>|pri <ms|off>]\n");
     return 0;
 }
 
@@ -154,10 +185,12 @@ void ls_ctl_register_commands(void)
           .hint = "<0-99>", .func = &cmd_p25gate },
         { .command = "home", .help = "Get/set home QTH for the radar",
           .hint = "<lat> <lon>", .func = &cmd_home },
+        /*LS-703*/
         { .command = "ch", .help = "Scanner channel list",
-          .hint = "list|add|del|lock|pri|en|clear", .func = &cmd_ch },
+          .hint = "list|add|del|lock|pri|en|clear|zone <0-7|all>", .func = &cmd_ch },
+        /*LS-702*/
         { .command = "scan", .help = "Channel scanner control",
-          .hint = "on|off|status|skip|hang <ms>|thresh <db>", .func = &cmd_scan },
+          .hint = "on|off|status|skip|hang <ms>|thresh <1-100>|pri <ms|off>", .func = &cmd_scan },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         esp_console_cmd_register(&cmds[i]);
@@ -205,7 +238,8 @@ void ls_ctl_start_repl(void)
     if (!uart_is_driver_installed(CONFIG_ESP_CONSOLE_UART_NUM)) {
         uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 512, 0, 0, NULL, 0);
     }
-    static EXT_RAM_BSS_ATTR StackType_t cli_stack[4096 / sizeof(StackType_t)];
+    /*LS-707*/
+    static StackType_t cli_stack[4096 / sizeof(StackType_t)];
     static StaticTask_t cli_tcb;
     xTaskCreateStaticPinnedToCore(cli_task, "ls_cli", 4096 / sizeof(StackType_t),
                                   NULL, 3, cli_stack, &cli_tcb, 0);

@@ -351,7 +351,8 @@ static void p25_rx_task(void *arg)
             s_tune_freq_hz = f;
             if (dev) {
                 rtlsdr_set_center_freq(dev, f);
-                rtlsdr_reset_buffer(dev);
+                /*LS-708*/
+                if (!scan_engine_active()) rtlsdr_reset_buffer(dev);
                 rtlsdr_stream_reset();
             }
             s_ring.write_idx = s_ring.read_idx;

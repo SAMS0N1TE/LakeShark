@@ -47,6 +47,10 @@ void settings_set_boot_sound(int mode);
 int  settings_get_theme(void);
 void settings_set_theme(int theme);
 
+/*LS-703*/
+int  settings_get_scan_zone(void);
+void settings_set_scan_zone(int zone);
+
 /*LS-608*/
 void settings_reset_app(const app_t *a);
 

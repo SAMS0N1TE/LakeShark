@@ -123,6 +123,25 @@ bool scan_channel_set_lockout(int idx, bool on)  { return set_flag(idx, SCAN_FLA
 bool scan_channel_set_priority(int idx, bool on) { return set_flag(idx, SCAN_FLAG_PRIORITY, on); }
 bool scan_channel_set_enabled(int idx, bool on)  { return set_flag(idx, SCAN_FLAG_ENABLED,  on); }
 
+/*LS-706*/
+bool scan_channel_set_name(int idx, const char *name)
+{
+    if (idx < 0 || idx >= s_count) return false;
+    if (!name || !*name) return false;
+    strncpy(s_ch[idx].name, name, SCAN_NAME_LEN - 1);
+    s_ch[idx].name[SCAN_NAME_LEN - 1] = 0;
+    scan_channels_save();
+    return true;
+}
+
+/*LS-706*/
+int scan_channel_find_freq(uint32_t freq_hz)
+{
+    for (int i = 0; i < s_count; i++)
+        if (s_ch[i].freq_hz == freq_hz) return i;
+    return -1;
+}
+
 void scan_channels_clear(void)
 {
     s_count = 0;
