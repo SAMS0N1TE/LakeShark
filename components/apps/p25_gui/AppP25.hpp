@@ -36,6 +36,11 @@ private:
     static void scanTableCb(lv_event_t *e);
 
     static void timerCb(lv_timer_t *t);
+    /*LS-608*/
+    static void defaultsCb(lv_event_t *e);
+    /*LS-607*/
+    static void scanFitCb(lv_event_t *e);
+    static void scanFit(lv_obj_t *t);
     static void freqDownCb(lv_event_t *e);
     static void freqUpCb(lv_event_t *e);
     static void freqEntryCb(lv_event_t *e);
@@ -137,4 +142,6 @@ private:
     lv_obj_t  *_scan_status   = nullptr;
     lv_obj_t  *_scan_btn_lbl  = nullptr;
     lv_obj_t  *_scan_table    = nullptr;
+    /*LS-608*/
+    lv_obj_t  *_reset_val     = nullptr;
 };

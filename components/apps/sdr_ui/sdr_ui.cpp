@@ -690,6 +690,94 @@ lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag)
     return m;
 }
 
+/*LS-608*/
+typedef struct {
+    lv_obj_t *lbl;
+    char      base[20];
+    uint32_t  hold_ms;
+    uint32_t  t0;
+    int       shown;
+    bool      fired;
+} sdr_hold_t;
+
+static void hold_reset(sdr_hold_t *h)
+{
+    h->t0 = 0;
+    h->shown = -1;
+    h->fired = false;
+    sdr_text_if_changed(h->lbl, h->base);
+    sdr_color_if_changed(h->lbl, SDR_TEXT);
+}
+
+static void hold_cb(lv_event_t *e)
+{
+    sdr_hold_t *h = (sdr_hold_t *)lv_event_get_user_data(e);
+    lv_obj_t   *b = lv_event_get_target(e);
+    if (!h) return;
+
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_PRESSED:
+        h->t0 = lv_tick_get();
+        h->shown = -1;
+        h->fired = false;
+        break;
+
+    case LV_EVENT_PRESSING: {
+        if (!h->t0 || h->fired) break;
+        const uint32_t el = lv_tick_elaps(h->t0);
+        if (el >= h->hold_ms) {
+            h->fired = true;
+            sdr_text_if_changed(h->lbl, "DONE");
+            sdr_color_if_changed(h->lbl, SDR_OK);
+            lv_event_send(b, LV_EVENT_READY, NULL);
+            break;
+        }
+        const int left = (int)((h->hold_ms - el + 999) / 1000);
+        if (left != h->shown) {
+            h->shown = left;
+            char t[24];
+            snprintf(t, sizeof(t), "HOLD %d", left);
+            sdr_text_if_changed(h->lbl, t);
+            sdr_color_if_changed(h->lbl, SDR_WARN);
+        }
+        break;
+    }
+
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+        if (!h->fired) hold_reset(h);
+        break;
+
+    case LV_EVENT_DELETE:
+        free(h);
+        break;
+
+    default: break;
+    }
+}
+
+/*LS-608*/
+lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
+                       lv_event_cb_t cb, void *ud)
+{
+    sdr_hold_t *h = (sdr_hold_t *)calloc(1, sizeof(sdr_hold_t));
+    if (!h) return nullptr;
+    h->hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 2000;
+    h->shown = -1;
+    strncpy(h->base, txt ? txt : "HOLD", sizeof(h->base) - 1);
+
+    lv_obj_t *b = sdr_btn(parent, h->base, nullptr, nullptr, &h->lbl);
+    lv_obj_set_style_border_color(b, SDR_WARN, 0);
+
+    lv_obj_add_event_cb(b, hold_cb, LV_EVENT_PRESSED, h);
+    lv_obj_add_event_cb(b, hold_cb, LV_EVENT_PRESSING, h);
+    lv_obj_add_event_cb(b, hold_cb, LV_EVENT_RELEASED, h);
+    lv_obj_add_event_cb(b, hold_cb, LV_EVENT_PRESS_LOST, h);
+    lv_obj_add_event_cb(b, hold_cb, LV_EVENT_DELETE, h);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_READY, ud);
+    return b;
+}
+
 /*LS-606*/
 void sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color)
 {

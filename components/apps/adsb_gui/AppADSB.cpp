@@ -704,6 +704,13 @@ void AppADSB::buildSettingsTab(lv_obj_t *parent)
     sdr_btn(r.controls, "TOGGLE", cartoCb, this, nullptr);
 
     updateSettings();
+
+    /*LS-608*/
+    sdr_section(parent, "DEFAULTS");
+    sdr_setting_row(parent, "RESET THIS APP", &r);
+    _reset_val = r.value;
+    lv_label_set_text(_reset_val, "");
+    sdr_hold_btn(r.controls, "HOLD 2", 2000, resetCb, this);
 }
 
 void AppADSB::updateSettings(void)
@@ -845,4 +852,17 @@ void AppADSB::agcBtnCb(lv_event_t *e)
 {
     (void)e;
     lakeshark_adsb_agc();
+}
+
+/*LS-608*/
+void AppADSB::resetCb(lv_event_t *e)
+{
+    AppADSB *self = static_cast<AppADSB *>(lv_event_get_user_data(e));
+    settings_reset_app(app_current());
+    lakeshark_radio_park();
+    lakeshark_select_adsb();
+    if (self && self->_reset_val) {
+        lv_label_set_text(self->_reset_val, "RESTORED");
+        lv_obj_set_style_text_color(self->_reset_val, SDR_OK, 0);
+    }
 }

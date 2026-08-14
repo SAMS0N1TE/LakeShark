@@ -133,6 +133,10 @@ void sdr_ascii_bar(char *dst, int cap, int pct, int width);
 lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag);
 void      sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color);
 
+/*LS-608*/
+lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
+                       lv_event_cb_t cb, void *ud);
+
 typedef struct sdr_seg sdr_seg_t;
 typedef void (*sdr_seg_cb_t)(void *ud, int value);
 

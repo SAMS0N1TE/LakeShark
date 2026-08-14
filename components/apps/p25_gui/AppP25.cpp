@@ -472,6 +472,29 @@ void AppP25::updateSignal(void)
     lv_obj_set_style_text_color(_s_err, P25.dsd_err_str[0] ? COL_AMBER : COL_DIM, 0);
 }
 
+/*LS-607*/
+void AppP25::scanFit(lv_obj_t *t)
+{
+    if (!t) return;
+    const int w = lv_obj_get_content_width(t);
+    if (w < 240) return;
+
+    static const int pct[4] = { 9, 31, 25, 13 };
+    int used = 0;
+    for (int c = 0; c < 4; c++) {
+        int cw = (w * pct[c]) / 100;
+        lv_table_set_col_width(t, c, cw);
+        used += cw;
+    }
+    lv_table_set_col_width(t, 4, w - used);
+}
+
+/*LS-607*/
+void AppP25::scanFitCb(lv_event_t *e)
+{
+    scanFit(lv_event_get_target(e));
+}
+
 void AppP25::buildScanTab(lv_obj_t *parent)
 {
     lv_obj_set_style_pad_all(parent, 8, 0);
@@ -517,12 +540,17 @@ void AppP25::buildScanTab(lv_obj_t *parent)
     lv_obj_set_style_pad_all(_scan_table, 0, LV_PART_MAIN);
 
     lv_table_set_col_cnt(_scan_table, 5);
-    static const int cw[5] = {52, 150, 132, 64, 110};
-    for (int c = 0; c < 5; c++) lv_table_set_col_width(_scan_table, c, cw[c]);
     lv_table_set_row_cnt(_scan_table, 1);
     static const char *hdr[5] = {"#", "NAME", "FREQ", "MODE", "FLAG"};
-    for (int c = 0; c < 5; c++) lv_table_set_cell_value(_scan_table, 0, c, hdr[c]);
+    for (int c = 0; c < 5; c++) {
+        lv_table_set_cell_value(_scan_table, 0, c, hdr[c]);
+        /*LS-607*/
+        lv_table_add_cell_ctrl(_scan_table, 0, c, LV_TABLE_CELL_CTRL_TEXT_CROP);
+    }
     lv_obj_add_event_cb(_scan_table, scanTableCb, LV_EVENT_VALUE_CHANGED, this);
+    /*LS-607*/
+    lv_obj_add_event_cb(_scan_table, scanFitCb, LV_EVENT_SIZE_CHANGED, this);
+    scanFit(_scan_table);
 
     updateScan();
 }
@@ -557,9 +585,18 @@ void AppP25::updateScan(void)
         lv_table_set_cell_value(_scan_table, row, 2, freq);
         lv_table_set_cell_value(_scan_table, row, 3, scan_mode_name(c->mode));
         lv_table_set_cell_value(_scan_table, row, 4, flag);
+        /*LS-607*/
+        for (int col = 0; col < 5; col++)
+            lv_table_add_cell_ctrl(_scan_table, row, col, LV_TABLE_CELL_CTRL_TEXT_CROP);
     }
     lv_table_set_row_cnt(_scan_table, n > 0 ? n + 1 : 2);
-    if (n == 0) lv_table_set_cell_value(_scan_table, 1, 0, "(no channels - load via serial)");
+    /*LS-607*/
+    if (n == 0) {
+        lv_table_set_cell_value(_scan_table, 1, 0, "-");
+        lv_table_set_cell_value(_scan_table, 1, 1, "NO CHANNELS");
+        for (int col = 0; col < 5; col++)
+            lv_table_add_cell_ctrl(_scan_table, 1, col, LV_TABLE_CELL_CTRL_TEXT_CROP);
+    }
 }
 
 void AppP25::scanToggleCb(lv_event_t *)
@@ -668,6 +705,13 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
     sdr_setting_row(parent, "USB AUTO-REBOOT", &r);
     _set_reboot_val = r.value;
     sdr_btn(r.controls, "TOGGLE", rebootToggleCb, this, nullptr);
+
+    /*LS-608*/
+    sdr_section(parent, "DEFAULTS");
+    sdr_setting_row(parent, "RESET THIS APP", &r);
+    _reset_val = r.value;
+    lv_label_set_text(_reset_val, "");
+    sdr_hold_btn(r.controls, "HOLD 2", 2000, defaultsCb, this);
 
     updateSettings();
 }
@@ -891,3 +935,16 @@ void AppP25::resetCb(lv_event_t *)    { lakeshark_p25_reset_stats(); }
 void AppP25::gainCb(lv_event_t *)     { lakeshark_p25_gain_step(); }
 void AppP25::agcCb(lv_event_t *)      { lakeshark_p25_agc(); }
 void AppP25::beepCb(lv_event_t *)     { lakeshark_p25_beep_toggle(); }
+
+/*LS-608*/
+void AppP25::defaultsCb(lv_event_t *e)
+{
+    AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
+    settings_reset_app(app_current());
+    lakeshark_radio_park();
+    lakeshark_select_p25();
+    if (self && self->_reset_val) {
+        lv_label_set_text(self->_reset_val, "RESTORED");
+        lv_obj_set_style_text_color(self->_reset_val, SDR_OK, 0);
+    }
+}
