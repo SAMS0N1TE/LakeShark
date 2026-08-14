@@ -103,6 +103,8 @@ static volatile bool     s_pk_early_valid = false;
 static volatile uint32_t s_pk_early = 0;
 
 static bool     s_pair_failed  = false;
+/*LS-714*/
+static int      s_last_enc_status = 0;
 static volatile int64_t s_rescan_at_us = 0;
 
 static bool     s_disc_started = false;
@@ -689,12 +691,29 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_pk_early_valid = false;
         s_disc_started = false;
 
-        if (event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL) ||
-            event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING)) {
-            ESP_LOGW(TAG, "head rejected our stored keys - forgetting the bond, "
-                          "expect a fresh passkey on the next attempt");
-            ble_store_util_delete_peer(&s_peer_id);
-            s_pair_failed = true;
+        /*LS-714*/
+        /* AUTH_FAIL covers two different failures. The head can reject the
+           KEYS we stored, which is worth forgetting the bond over. Or it can
+           refuse our security level outright (SM_ERR_AUTHREQ) - which is what
+           a head with the app closed looks like, and has nothing to do with
+           the keys. Deleting the bond on that second case destroyed a working
+           bond every retry, forcing a fresh passkey on the next real connect. */
+        {
+            const bool authreq_refusal =
+                (s_last_enc_status == BLE_HS_SM_PEER_ERR(BLE_SM_ERR_AUTHREQ));
+
+            if (authreq_refusal) {
+                ESP_LOGW(TAG, "head refused our security level - keeping the bond "
+                              "(is the LakeShark app open on the head?)");
+                s_pair_failed = true;
+            } else if (event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_AUTH_FAIL) ||
+                       event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING)) {
+                ESP_LOGW(TAG, "head rejected our stored keys - forgetting the bond, "
+                              "expect a fresh passkey on the next attempt");
+                ble_store_util_delete_peer(&s_peer_id);
+                s_pair_failed = true;
+            }
+            s_last_enc_status = 0;
         }
 
         if (!s_run) {
@@ -765,6 +784,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (s_pair_failed) return 0;
             s_pair_failed = true;
             s_pk_wait     = false;
+            /*LS-714*/
+            s_last_enc_status = event->enc_change.status;
             ESP_LOGE(TAG, "pairing failed status=%d%s", event->enc_change.status,
                      event->enc_change.status == BLE_HS_SM_PEER_ERR(BLE_SM_ERR_AUTHREQ)
                          ? " (head rejected our authentication requirements)"
