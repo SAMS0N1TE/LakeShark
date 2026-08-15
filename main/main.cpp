@@ -45,18 +45,17 @@ extern "C" esp_lcd_panel_handle_t bsp_get_dsi_panel(void);
 
 static const char *TAG = "main";
 
-#define BOOT_BTN_GPIO  GPIO_NUM_35
 
-static void boot_btn_poll_cb(lv_timer_t *)
-{
-    static int prev = 1, stable = 1, cnt = 0;
-    int lvl = gpio_get_level(BOOT_BTN_GPIO);
-    if (lvl == stable) { cnt = 0; }
-    else if (++cnt >= 2) { stable = lvl; cnt = 0;
-        if (prev == 1 && stable == 0) LsShell::instance().cycleNext();
-        prev = stable;
-    }
-}
+/*LS-721*/
+/* The BOOT button is no longer read. It duplicated a gesture that already
+   exists - horizontal swipe on HOME cycles apps - and the button is worth
+   more as hardware: it is now wired to the K (on/off) pin of the external
+   boost module, because the housing has no room for a switch of its own.
+   The pin is left COMPLETELY UNCONFIGURED on purpose. The old init enabled
+   the P4 internal pull-up on GPIO35, which would fight the module's K line
+   (measured idling at ~1.3 V) and could hold it where the module misreads
+   it. Nothing here may drive, pull or poll GPIO35 again while it is wired
+   to K. */
 
 /*LS-017*/
 static void c6_probe(void)
@@ -112,18 +111,6 @@ static void vbus_init(void)
 #else
     ESP_LOGI(TAG, "no USB host VBUS switch on this board - port is hard-powered");
 #endif
-}
-
-static void boot_btn_init(void)
-{
-    gpio_config_t io = {};
-    io.pin_bit_mask = 1ULL << BOOT_BTN_GPIO;
-    io.mode = GPIO_MODE_INPUT;
-    io.pull_up_en = GPIO_PULLUP_ENABLE;
-    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&io);
-    lv_timer_create(boot_btn_poll_cb, 40, NULL);
 }
 
 extern "C" void app_main(void)
@@ -218,7 +205,6 @@ extern "C" void app_main(void)
     sdr_theme_set((sdr_theme_t)settings_get_theme());
     if (!recovering) lakeshark_boot_splash_hide();
     shell.start(recover_app);
-    boot_btn_init();
     bsp_display_unlock();
 
     /*LS-019*/
