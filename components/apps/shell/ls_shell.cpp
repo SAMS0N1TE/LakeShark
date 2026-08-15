@@ -6,6 +6,8 @@
 #include "sdr_ui/sdr_ui.h"
 #include "esp_log.h"
 #include "esp_attr.h"
+/*LS-720*/
+#include "esp_system.h"
 
 #include <cstring>
 
@@ -232,10 +234,21 @@ void LsShell::start(const char *prefer)
     const char *target  = prefer ? prefer : load_last_app();
 
     /*LS-715*/
+    /*LS-720*/
+    /* Only a FAULT reset means the app killed us. A flash, the reset button or
+       a power-on also leave the marker armed if they land inside the 5 s
+       window, and treating those as a crash sent every reflash to HOME and
+       made the guard cry wolf. Brownout is excluded deliberately: a sagging
+       battery is not the app's fault, and blaming it would hide the real
+       cause behind a wrong diagnosis. */
+    const esp_reset_reason_t rr = esp_reset_reason();
+    const bool fault_reset = (rr == ESP_RST_PANIC)   || (rr == ESP_RST_INT_WDT) ||
+                             (rr == ESP_RST_TASK_WDT) || (rr == ESP_RST_WDT);
+
     const char *pending = enter_pending();
-    if (!prefer && pending && target && strcmp(pending, target) == 0) {
-        ESP_LOGW(TAG, "%s did not survive being opened last boot - "
-                      "starting at HOME instead", pending);
+    if (fault_reset && !prefer && pending && target && strcmp(pending, target) == 0) {
+        ESP_LOGW(TAG, "%s did not survive being opened last boot (reset reason %d) - "
+                      "starting at HOME instead", pending, (int)rr);
         target = nullptr;
     }
     enter_disarm();
