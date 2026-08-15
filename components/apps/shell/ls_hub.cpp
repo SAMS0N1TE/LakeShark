@@ -8,6 +8,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "esp_timer.h"
+/*LS-719*/
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 extern "C" {
 #include "app_registry.h"
@@ -190,6 +194,82 @@ static void poll_audio(uint32_t *dirty)
     if (muted != s_state.muted) { s_state.muted = muted; *dirty |= LS_HUB_AUDIO; }
 }
 
+/*LS-719*/
+/* BAT_ADC is GPIO20 (ADC1 ch4), found empirically with `bat` - the net is in
+   neither Waveshare's BSP header nor the vendor package, and appears exactly
+   once in their schematic, at the divider. R12 200K / R15 100K off BAT, so the
+   pin reads BAT/3. GPIO20 held to +/-2 raw counts across repeats while GPIO21
+   and 22 drifted, which is a driven node against two floating ones.
+   Do NOT widen this scan to GPIO16..19: those are the C6 SDIO bus. */
+#define BATT_ADC_CHAN    ADC_CHANNEL_4
+#define BATT_DIVIDER     3
+#define BATT_ABSENT_MV   2500
+#define BATT_PERIOD_MS   5000
+
+static adc_oneshot_unit_handle_t s_badc = nullptr;
+static adc_cali_handle_t         s_bcal = nullptr;
+
+static void batt_init(void)
+{
+    adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
+    if (adc_oneshot_new_unit(&ucfg, &s_badc) != ESP_OK) { s_badc = nullptr; return; }
+    adc_oneshot_chan_cfg_t c = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
+    if (adc_oneshot_config_channel(s_badc, BATT_ADC_CHAN, &c) != ESP_OK) {
+        adc_oneshot_del_unit(s_badc); s_badc = nullptr; return;
+    }
+    adc_cali_curve_fitting_config_t ccfg = {
+        .unit_id  = ADC_UNIT_1,
+        .atten    = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_cali_create_scheme_curve_fitting(&ccfg, &s_bcal) != ESP_OK) s_bcal = nullptr;
+}
+
+/* Resting LiPo curve. Rough by nature - under load it reads low, and while
+   charging it reads high because this is the terminal voltage, not coulombs. */
+static int batt_mv_to_pct(int mv)
+{
+    static const struct { int mv; int pct; } C[] = {
+        { 4200, 100 }, { 4000, 80 }, { 3850, 60 }, { 3700, 40 },
+        { 3550, 20 },  { 3300,  5 }, { 3000,  0 },
+    };
+    if (mv >= C[0].mv) return 100;
+    const int n = (int)(sizeof(C) / sizeof(C[0]));
+    if (mv <= C[n - 1].mv) return 0;
+    for (int i = 0; i < n - 1; i++) {
+        if (mv > C[i + 1].mv) {
+            const int span = C[i].mv  - C[i + 1].mv;
+            const int rise = C[i].pct - C[i + 1].pct;
+            return C[i + 1].pct + ((mv - C[i + 1].mv) * rise + span / 2) / span;
+        }
+    }
+    return 0;
+}
+
+static void poll_battery(uint32_t *dirty)
+{
+    if (!s_badc || !s_bcal) return;
+
+    static uint32_t next_at = 0;
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now < next_at) return;
+    next_at = now + BATT_PERIOD_MS;
+
+    int raw = 0, acc = 0, got = 0;
+    for (int i = 0; i < 8; i++)
+        if (adc_oneshot_read(s_badc, BATT_ADC_CHAN, &raw) == ESP_OK) { acc += raw; got++; }
+    if (!got) return;
+
+    int mv = 0;
+    if (adc_cali_raw_to_voltage(s_bcal, acc / got, &mv) != ESP_OK) return;
+
+    const int bat_mv = mv * BATT_DIVIDER;
+    /* No pack fitted leaves the divider floating; do not invent a reading. */
+    const int pct = (bat_mv < BATT_ABSENT_MV) ? -1 : batt_mv_to_pct(bat_mv);
+
+    if (pct != s_state.batt_pct) { s_state.batt_pct = pct; *dirty |= LS_HUB_RADIO; }
+}
+
 /*LS-602*/
 static void hub_tick(lv_timer_t *)
 {
@@ -199,6 +279,8 @@ static void hub_tick(lv_timer_t *)
     poll_radio(&dirty);
     poll_mode(&dirty);
     poll_audio(&dirty);
+    /*LS-719*/
+    poll_battery(&dirty);
 
     if (s_prime) { s_prime = false; dirty = LS_HUB_ALL; }
     fanout(dirty);
@@ -217,6 +299,9 @@ void ls_hub_start(void)
     s_state.c6_state = -1;
     s_state.volume   = audio_volume_get();
     s_state.muted    = audio_is_muted();
+
+    /*LS-719*/
+    batt_init();
 
     s_evtq = xQueueCreate(HUB_EVT_DEPTH, sizeof(hub_evt_t));
 
