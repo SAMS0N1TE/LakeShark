@@ -2,11 +2,20 @@
    LakeShark original. Not librtlsdr - see UPSTREAM.md in this
    directory for which files here are third-party and which are ours. */
 #include "iq_app_control.h"
+#include "freertos/FreeRTOS.h"
 
 #include <string.h>
 
+/* LS-915: rec_rx was captured spinning here while starving IDLE1. A bare
+ * atomic flag lets a high-priority reader preempt its lower-priority owner
+ * on the same core forever. Hold the FreeRTOS SMP critical section before
+ * taking the flag so its owner cannot be descheduled until it releases it.
+ * These sections only copy control state; no I/O or blocking calls occur. */
+static portMUX_TYPE s_control_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static void control_lock(ls_iq_control_t *control)
 {
+    portENTER_CRITICAL(&s_control_mux);
     while (__atomic_test_and_set(&control->writer_lock, __ATOMIC_ACQUIRE)) {
     }
 }
@@ -14,6 +23,7 @@ static void control_lock(ls_iq_control_t *control)
 static void control_unlock(ls_iq_control_t *control)
 {
     __atomic_clear(&control->writer_lock, __ATOMIC_RELEASE);
+    portEXIT_CRITICAL(&s_control_mux);
 }
 
 void ls_iq_control_reset(ls_iq_control_t *control)

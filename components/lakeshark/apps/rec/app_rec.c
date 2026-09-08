@@ -20,6 +20,7 @@
 #include "radio_endpoint.h"
 #include "rec_state.h"
 #include "rec_unique_name.h"
+#include "rec_file_open.h"
 #include "rec_list_format.h"
 #include "rec_sidecar.h"
 /*LS-961*/
@@ -963,7 +964,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     /* "wx" refuses to open an existing file, so a stale .part from a
        previous crashed session cannot be silently truncated - the
        operator sees it and can delete it deliberately. */
-    FILE *f = fopen(part_path, "wx");
+    FILE *f = rec_file_open_new(part_path);
     if (!f) {
         ESP_LOGE(TAG, "cannot open %s for write", part_path);
         return -2;

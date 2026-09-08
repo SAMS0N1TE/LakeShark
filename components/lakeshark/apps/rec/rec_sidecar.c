@@ -5,6 +5,7 @@
    and prove no field goes missing across a save/reload. */
 
 #include "rec_sidecar.h"
+#include "rec_file_open.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -198,7 +199,7 @@ int rec_sidecar_write(const char *dir, const char *base, const rec_sidecar_t *s)
     /* "wx" refuses to open an existing file - a stale sidecar from a
        previous capture must not be silently paved over, same rule
        rec_save enforces on the .sub. */
-    FILE *f = fopen(path, "wx");
+    FILE *f = rec_file_open_new(path);
     if (!f) return -1;
 
     size_t wrote = fwrite(body, 1, (size_t)n, f);

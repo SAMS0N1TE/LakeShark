@@ -119,7 +119,7 @@ Pin mapping for the audio: I²S MCLK=13 BCK=12 WS=10 DOUT=9 DIN=11, codec PA ena
 
 ## ><)))O> Build & flash
 
-Requires **ESP-IDF v5.5.4** and its managed Python environment. Each board needs
+Requires **ESP-IDF v5.4.3** and its managed Python environment. Each board needs
 its own build directory and sdkconfig:
 
 ```bash

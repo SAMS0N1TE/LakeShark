@@ -105,6 +105,7 @@ ls_text_entry_t *ls_text_entry_open(const ls_text_entry_config_t *config,
         lv_obj_set_style_border_width(kb, 0, 0);
         lv_obj_set_style_pad_all(kb, 6, 0);
         lv_obj_set_style_text_font(kb, config->large ? &lv_font_montserrat_24 : sdr_font_mono(), 0);
+        lv_obj_set_style_text_font(kb, config->large ? &lv_font_montserrat_24 : sdr_font_mono(), LV_PART_ITEMS);
         lv_obj_set_style_bg_color(kb, SDR_PANEL, LV_PART_ITEMS);
         lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
         lv_obj_set_style_text_color(kb, SDR_TEXT, LV_PART_ITEMS);

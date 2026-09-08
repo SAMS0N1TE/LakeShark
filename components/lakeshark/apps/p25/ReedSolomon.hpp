@@ -1,3 +1,82 @@
+/*
+ * DSD-derived helper; attribution restored in LakeShark on 2026-09-08.
+ * Verified comparison source (not a claim of the original import revision):
+ * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/include/ReedSolomon.hpp
+ * Local code matches that source after removing comments and whitespace.
+ * The following DSD notice is preserved from that revision's COPYRIGHT;
+ * any additional original-author notice below is preserved separately.
+ *
+ * Copyright (C) 2010 DSD Author
+ * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/**
+ * Code taken and adapted from www.eccpage.com/rs.c
+ * Credit goes to Mr Simon Rockliff.
+ *
+ * Tried before with the implementation from ITPP library but couldn't make it produce the same outputs
+ * expected from the P25 transmissions that I have tested. This implementation does work.
+ */
+
+/* This program is an encoder/decoder for Reed-Solomon codes. Encoding is in
+ systematic form, decoding via the Berlekamp iterative algorithm.
+ In the present form , the constants mm, nn, tt, and kk=nn-2tt must be
+ specified  (the double letters are used simply to avoid clashes with
+ other n,k,t used in other programs into which this was incorporated!)
+ Also, the irreducible polynomial used to generate GF(2**mm) must also be
+ entered -- these can be found in Lin and Costello, and also Clark and Cain.
+
+ The representation of the elements of GF(2**m) is either in index form,
+ where the number is the power of the primitive element alpha, which is
+ convenient for multiplication (add the powers modulo 2**m-1) or in
+ polynomial form, where the bits represent the coefficients of the
+ polynomial representation of the number, which is the most convenient form
+ for addition.  The two forms are swapped between via lookup tables.
+ This leads to fairly messy looking expressions, but unfortunately, there
+ is no easy alternative when working with Galois arithmetic.
+
+ The code is not written in the most elegant way, but to the best
+ of my knowledge, (no absolute guarantees!), it works.
+ However, when including it into a simulation program, you may want to do
+ some conversion of global variables (used here because I am lazy!) to
+ local variables where appropriate, and passing parameters (eg array
+ addresses) to the functions  may be a sensible move to reduce the number
+ of global variables and thus decrease the chance of a bug being introduced.
+
+ This program does not handle erasures at present, but should not be hard
+ to adapt to do this, as it is just an adjustment to the Berlekamp-Massey
+ algorithm. It also does not attempt to decode past the BCH bound -- see
+ Blahut "Theory and practice of error control codes" for how to do this.
+
+ Simon Rockliff, University of Adelaide   21/9/89
+
+ 26/6/91 Slight modifications to remove a compiler dependent bug which hadn't
+ previously surfaced. A few extra comments added for clarity.
+ Appears to all work fine, ready for posting to net!
+
+ Notice
+ --------
+ This program may be freely modified and/or given to whoever wants it.
+ A condition of such distribution is that the author's contribution be
+ acknowledged by his name being left in the comments heading the program,
+ however no responsibility is accepted for any financial or other loss which
+ may result from some unforseen errors or malfunctioning of the program
+ during use.
+ Simon Rockliff, 26th June 1991
+ */
+
 
 #ifndef REEDSOLOMON_HPP_b1405fdab6374ba2a4e65e8d45ec3d80
 #define REEDSOLOMON_HPP_b1405fdab6374ba2a4e65e8d45ec3d80

@@ -13,8 +13,21 @@ LV_FONT_DECLARE(lv_font_lsmono_14);
     digits change, which needs a fixed pitch; LVGL's only built-in monospace
     is unscii, whose fixed 8x16 cell renders far too large for these panels.
     DejaVu is under the Bitstream Vera licence, so it can ship. */
-const lv_font_t *sdr_font_mono(void)    { return &lv_font_lsmono_16; }
-const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_lsmono_14; }
+/* LS-774 follow-up: generated mono fonts cover ASCII32..126 only. LVGL
+ * keyboards use private-use backspace/enter/arrow/OK glyphs, so selecting
+ * mono made those keys blank. Retain fixed-pitch text and supply the same-
+ * size built-in symbol font for missing glyphs, including other app labels.
+ * Copy the descriptor; generated const font data may live in read-only flash. */
+const lv_font_t *sdr_font_mono(void)
+{
+    static const lv_font_t font=[] { auto f=lv_font_lsmono_16; f.fallback=&lv_font_montserrat_16; return f; }();
+    return &font;
+}
+const lv_font_t *sdr_font_mono_sm(void)
+{
+    static const lv_font_t font=[] { auto f=lv_font_lsmono_14; f.fallback=&lv_font_montserrat_14; return f; }();
+    return &font;
+}
 const lv_font_t *sdr_font_ui(void)      { return &lv_font_montserrat_14; }
 
 /*LS-606*/

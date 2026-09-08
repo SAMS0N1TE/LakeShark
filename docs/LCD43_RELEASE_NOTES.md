@@ -1,75 +1,21 @@
-# LakeShark LCD4.3 experimental preview
+LCD-4.3 application update for the Waveshare 32 MB, 480x800 board.
 
-Prepared September 7, 2026. Local release candidate; not published.
+- Fixes recording command stack exhaustion and a recording-control lock that could starve the receiver CPU.
+- Keeps FATFS work buffers in internal RAM and adds completed-load metadata.
+- Restores missing symbol glyphs in mono-font labels and keyboard buttons.
 
-For the Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3, 480×800 display,
-32 MB flash. This is an application-only upgrade for an already compatible
-LakeShark installation, not a universal installer or an all-board release.
+The owner confirmed the end-to-end hardware test: a recording downloaded to the Flipper and replayed successfully on the current LCD recovery firmware. The recording recovery also completed over 15 minutes without watchdog or late-display errors, and 200/250-edge UART downloads matched expected counts and durations. This exact font-update application passed the host gate, LCD build, flash hash verification and a short display health check with zero late frames.
 
-## Included changes
+Download `lakeshark-lcd43-v1.0.4-app.zip` for an existing LCD-4.3 installation. Follow its README: app-only at `0x10000`; settings/storage are preserved. This is not a first-install bundle and must not be flashed to another board. The optional debug archive contains the matching ELF.
 
-- Foreground applications unload before another application takes ownership
-  of the radio; shared UI allocations stay in PSRAM when resized.
-- Shared receiver headers, dark text/password/numeric keyboards, ACARS
-  receiver controls, and selectable HOME receiver/status/clock widgets.
-- Wi-Fi network discovery and connection controls in Settings.
-- Bounded crash inspection that does not parse a stored ELF dump on-device.
-- P25 first-frame threshold seeding and corrected CQPSK discriminator polarity.
-- AUTO acquisition windows count delivered IQ, preserve the winning DSP
-  state, and discard results that cross a demodulator configuration change.
-- Invalid P25 encryption metadata is rejected; IMBE decoder allocation uses
-  PSRAM and fails safely instead of allowing an unchecked allocation failure.
+The Flipper FAP was not updated; automated alternating BLE-transfer integrity and the new paired-app ACK handling remain unverified. Visual confirmation of every affected glyph screen and audible P25 during the final short check remain pending. Source provenance and exact hashes are included in the application archive.
 
-These changes do not add P25 Phase 2 voice, DMR voice, mesh chat, or LoRa TX.
+## Exact released image
 
-## Exact candidate
+- Release: v1.0.4, LCD-4.3 only, ESP-IDF 5.4.3.
+- Application SHA256: `1272f0b4da537e7ac8a1ec83c883a1030d9647b69d7d3ccf991929887b83e4a5`.
+- Matching ELF SHA256: `be16864859e033653ae646e2e973cc554d1780269f9b220d7fc83ffd2bdcde45`.
+- Embedded version: `1.0.4-g84fb9af6ec15-dirty`; this is the exact tested incremental image, not a rebuild after publication.
+- Source base: `84fb9af6ec15c7e76a8df287bd20ce37db0b99dd` plus the six-file patch included in the application archive. The release tag also restores verified upstream comment notices; those comments do not alter firmware behavior.
 
-| Item | Identity |
-|---|---|
-| Firmware version | `1.0.1-gfc9fb8104ab9-dirty` |
-| ESP-IDF | `v5.5.4` |
-| Tested C6 / Hosted firmware | `2.12.9` / `2.12.9`; not bundled |
-| Application SHA256 | `ef70d1c3554d372430d3030853b7b15d696fe2435c21cf94291e24e96eddeb20` |
-| Upgrade offset | `0x10000`, only with the verified compatible partition layout |
-
-The build contains uncommitted changes. Its Git revision alone is not a full
-source identity. Use the package manifest and hashes to identify this binary;
-the manifest describes the scope and limitations of its source fingerprint.
-
-## Validation
-
-The combined host tests, 37 C++ header checks and LCD4.3 firmware build passed.
-On the exact candidate, application-only flashing verified the image hash;
-boot and P25 reception ran through 49 seconds without an observed panic/reset,
-with approximately 0.49 MB/s IQ delivery and no reported USB/ring drops.
-
-The test channel was quiet. **Audible P25 voice and live trunk following have
-not been verified on this candidate.** An earlier build received 12 valid NIDs
-from a 20-frame control-only RF fixture; that is not a voice test or a test of
-this exact binary. Host IMBE tests produce nonzero PCM from synthetic harmonics,
-not verified intelligible speech from the LCD speaker.
-
-## Known limitations
-
-- P25 warm C4FM-to-CQPSK switching still has a documented fixture packet-loss
-  case: 19 valid NIDs but 14 valid TSBKs. The test remains marked known-failing.
-- Complete touch/layout acceptance, MAP crash replay, long transition soak,
-  Wi-Fi reconnect, on-air ACARS and full capture workflows remain unverified.
-- A SIGNAL callback exceeded its 20 ms budget during the bounded hardware
-  check. Do not interpret this preview as a complete P25 performance fix.
-- LCD4.3 battery/power routing remains hardware-specific. Other boards must
-  not use this image.
-
-## Installation and reporting
-
-Read [Quickstart](LCD43_QUICKSTART.md) and the packaged
-`FLASH_INSTRUCTIONS.txt` before upgrading. Keep the matching ELF and previous
-known-working application for recovery. Do not erase settings or crash evidence.
-For failures, use [Troubleshooting](LCD43_TROUBLESHOOTING.md).
-
-## Publication status
-
-Public distribution is pending review of SAM permissions, font provenance,
-complete third-party notices and corresponding source, followed by maintainer
-approval. Including a notice is not itself permission to redistribute. See
-[Third-party review](THIRD_PARTY_REVIEW.md). No download is announced by this draft.
+The earlier experimental-preview notes described another image and are superseded by this release record. For first installation use the LCD-4.3 v1.0.3 full package before this application-only update.
