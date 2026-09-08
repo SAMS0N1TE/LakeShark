@@ -68,6 +68,19 @@ html, body {
 #p1 .panel-num { background: var(--num-badge-bg-1); color: var(--num-badge-text-1); }
 #p2 .panel-num { background: var(--num-badge-bg-2); color: var(--num-badge-text-2); }
 #p3 .panel-num { background: var(--num-badge-bg-3); color: var(--num-badge-text-3); }
+#p4 .panel-num { background: #a2e8c4; color: #085c38; }
+#p5 .panel-num { background: #e8c4a2; color: #7a3e08; }
+
+label { display: block; margin: 0 0 6px 0; }
+label > input, label > select, label > textarea { display: block; margin-top: 2px; }
+input[type=text], select, textarea {
+    font-family: var(--font-data); font-size: 11px;
+    background: #fff; border: 2px inset var(--sys-bg);
+    padding: 2px 3px; color: #000;
+}
+textarea { width: 100%; resize: vertical; }
+.grid2 { display: flex; gap: 12px; flex-wrap: wrap; }
+.grid2 > label { flex: 1 1 180px; }
 .panel-content { padding: 8px; }
 
 p { margin: 0 0 6px 0; line-height: 1.45; }
@@ -262,8 +275,147 @@ dl.tsh dd { margin: 2px 0 0 0; padding-left: 12px; border-left: 2px solid var(--
         </div>
     </section>
 
+    <section class="panel" id="p4">
+        <div class="panel-header"><span class="panel-num">C</span><span>MAPS</span></div>
+        <div class="panel-content">
+
+            <p>The ADS-B map on the Flipper draws from a <code>map.pmtiles</code>
+            archive on the SD card. Without one it shows the frame and the scale
+            bar and nothing else. Pick your area below and the page writes the
+            two commands that build it.</p>
+
+            <fieldset>
+                <legend>Your area</legend>
+                <div class="grid2">
+                    <label>Latitude <input type="text" id="mlat" value="43.4443" size="12"></label>
+                    <label>Longitude <input type="text" id="mlon" value="-71.6478" size="12"></label>
+                </div>
+                <p class="muted" style="margin-top:6px;">
+                    Use the centre of where you watch from. The Flipper map opens
+                    here. If you do not know it, right click your spot on
+                    <a href="https://www.openstreetmap.org/" target="_blank" rel="noopener">openstreetmap.org</a>
+                    and read the coordinates.
+                </p>
+
+                <label>Coverage
+                    <select id="msize">
+                        <option value="local">Local, 25 km of street detail</option>
+                        <option value="area" selected>Area, 25 km detail plus 100 km around it</option>
+                        <option value="wide">Wide, adds regional context out to 300 km</option>
+                    </select>
+                </label>
+
+                <table class="kit" id="mplan" style="margin-top:8px;"></table>
+                <p id="mtotal" class="muted"></p>
+            </fieldset>
+
+            <fieldset>
+                <legend>Build it</legend>
+                <ol>
+                    <li>Download <a href="/tools/lakeshark-maps.zip">lakeshark-maps.zip</a> and unzip it.</li>
+                    <li>Open a terminal in that folder and run these. Python 3, nothing else to install.</li>
+                </ol>
+                <pre class="cmd" id="mcmd"></pre>
+                <button type="button" id="mcopy">Copy commands</button>
+                <div class="info-block">
+                    Tiles come from <a href="https://versatiles.org/" target="_blank" rel="noopener">VersaTiles</a>,
+                    which is free to use. The fetcher asks for five a second and
+                    resumes if you stop it, so a big area can be done in stages.
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Where it goes</legend>
+                <p>Copy <code>map.pmtiles</code> to the Flipper SD card at:</p>
+                <pre class="cmd">apps_data/lakeshark_p25/map.pmtiles</pre>
+                <p>Already running ZeroMesh? Skip it. The app reads ZeroMesh's
+                copy if it does not find its own.</p>
+            </fieldset>
+
+        </div>
+    </section>
+
+    <section class="panel" id="p5">
+        <div class="panel-header"><span class="panel-num">D</span><span>PRESETS</span></div>
+        <div class="panel-content">
+
+            <p>Two file makers. Both run in this page and save straight to your
+            downloads. Nothing is sent anywhere.</p>
+
+            <fieldset>
+                <legend>P25 system profile</legend>
+                <p class="muted">Loaded from the radio's PROGRAM tab, RELOAD button.
+                Look your system up on
+                <a href="https://www.radioreference.com/" target="_blank" rel="noopener">RadioReference</a>
+                and copy the control channels in.</p>
+
+                <div class="grid2">
+                    <label>System name <input type="text" id="psys" maxlength="24" value="" placeholder="Statewide"></label>
+                    <label>Site <input type="text" id="psite" maxlength="24" value="" placeholder="Site 1"></label>
+                </div>
+
+                <label>Control channels, one per line, MHz or Hz. Up to 16.
+                    <textarea id="pctrl" rows="4" placeholder="154.7850&#10;155.4750"></textarea>
+                </label>
+
+                <label>Talkgroups, one per line as <code>id,name</code>. Optional, up to 64.
+                    Put a <code>!</code> after the name to make it priority.
+                    <textarea id="ptg" rows="4" placeholder="101,Fire Dispatch!&#10;102,EMS"></textarea>
+                </label>
+
+                <div class="grid2">
+                    <label>Demod
+                        <select id="pdemod">
+                            <option value="auto" selected>auto</option>
+                            <option value="c4fm">c4fm</option>
+                            <option value="cqpsk">cqpsk</option>
+                        </select>
+                    </label>
+                    <label>Skip encrypted calls
+                        <select id="penc">
+                            <option value="true" selected>yes</option>
+                            <option value="false">no</option>
+                        </select>
+                    </label>
+                </div>
+
+                <p id="pstat" class="muted"></p>
+                <button type="button" id="pmake">Save p25_profile.txt</button>
+                <p class="muted">Goes on the radio's SD card as
+                <code>/sdcard/p25_profile.txt</code>.</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>Channel memories</legend>
+                <p class="muted">The memory page on the Flipper head. One list per
+                receiver.</p>
+
+                <label>Receiver
+                    <select id="cmode">
+                        <option value="p25">P25</option>
+                        <option value="fm" selected>FM</option>
+                        <option value="pocsag">POCSAG</option>
+                        <option value="adsb">ADS-B</option>
+                        <option value="rec">REC</option>
+                    </select>
+                </label>
+
+                <label>One per line as <code>frequency,name</code>. MHz or Hz.
+                    Up to 32, names cut at 14 characters.
+                    <textarea id="clist" rows="6" placeholder="162.550,NOAA 1&#10;146.520,2m Calling"></textarea>
+                </label>
+
+                <p id="cstat" class="muted"></p>
+                <button type="button" id="cmake">Save channel list</button>
+                <p class="muted">Goes on the Flipper SD at
+                <code id="cpath">apps_data/lakeshark_p25/ch_fm.txt</code>.</p>
+            </fieldset>
+
+        </div>
+    </section>
+
     <section class="panel" id="p3">
-        <div class="panel-header"><span class="panel-num">C</span><span>USING IT</span></div>
+        <div class="panel-header"><span class="panel-num">E</span><span>USING IT</span></div>
         <div class="panel-content">
 
             <fieldset>
@@ -342,5 +494,244 @@ dl.tsh dd { margin: 2px 0 0 0; padding-left: 12px; border-left: 2px solid var(--
     }
 }());
 </script>
+<script>
+(function () {
+    "use strict";
+
+    /* ---------------------------------------------------------- maps */
+
+    /* Detail where you would zoom in, context where you would not. A flat
+       z6-14 box over 300 km is tens of thousands of tiles; pmtiles holds an
+       arbitrary set, so the archive does not have to be a rectangle. */
+    var PLANS = {
+        local: [[25, 13, 14]],
+        area:  [[100, 10, 11], [40, 12, 12], [25, 13, 14]],
+        wide:  [[300, 6, 9], [100, 10, 11], [40, 12, 12], [25, 13, 14]]
+    };
+
+    function bbox(lat, lon, km) {
+        var dlat = km / 111.0;
+        var dlon = km / (111.0 * Math.cos(lat * Math.PI / 180));
+        return [lon - dlon, lat - dlat, lon + dlon, lat + dlat];
+    }
+
+    function tileCount(b, z) {
+        var n = Math.pow(2, z);
+        function xt(lon) { return Math.floor((lon + 180) / 360 * n); }
+        function yt(lat) {
+            var r = lat * Math.PI / 180;
+            return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
+        }
+        var x0 = xt(b[0]), x1 = xt(b[2]);
+        var y0 = yt(b[3]), y1 = yt(b[1]);
+        return (Math.abs(x1 - x0) + 1) * (Math.abs(y1 - y0) + 1);
+    }
+
+    var el = function (id) { return document.getElementById(id); };
+
+    function updateMap() {
+        var lat = parseFloat(el("mlat").value);
+        var lon = parseFloat(el("mlon").value);
+        var plan = PLANS[el("msize").value];
+        var rows = "<tr><th>Ring</th><th>Zoom</th><th>Tiles</th></tr>";
+        var total = 0;
+        var lines = [];
+
+        if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 85 || Math.abs(lon) > 180) {
+            el("mplan").innerHTML = "";
+            el("mtotal").textContent = "Enter a latitude and longitude.";
+            el("mcmd").textContent = "";
+            return;
+        }
+
+        plan.forEach(function (p) {
+            var km = p[0], zlo = p[1], zhi = p[2];
+            var b = bbox(lat, lon, km);
+            var n = 0;
+            for (var z = zlo; z <= zhi; z++) n += tileCount(b, z);
+            total += n;
+            rows += "<tr><td>" + km + " km</td><td>z" + zlo +
+                    (zhi > zlo ? " to z" + zhi : "") +
+                    "</td><td class='n'>" + n.toLocaleString() + "</td></tr>";
+            lines.push("python fetch_tiles.py tiles --bbox=" +
+                       b.map(function (v) { return v.toFixed(4); }).join(",") +
+                       " --min-zoom " + zlo + " --max-zoom " + zhi);
+        });
+
+        el("mplan").innerHTML = rows;
+
+        /* Measured on the bench: Shortbread MVT averages a bit over 20 KB
+           before packing, and the fetcher is rate limited to five a second. */
+        var mb = Math.round(total * 21 / 1024);
+        var mins = Math.ceil(total / 5 / 60);
+        el("mtotal").textContent = total.toLocaleString() + " tiles, roughly " +
+            mb + " MB to download, about " + mins +
+            (mins === 1 ? " minute." : " minutes.");
+
+        lines.push("python build_pmtiles.py tiles map.pmtiles --simplify --leaf-size 256");
+        el("mcmd").textContent = lines.join("\n");
+    }
+
+    ["mlat", "mlon", "msize"].forEach(function (id) {
+        var n = el(id);
+        if (n) { n.addEventListener("input", updateMap); n.addEventListener("change", updateMap); }
+    });
+
+    if (el("mcopy")) {
+        el("mcopy").addEventListener("click", function () {
+            var t = el("mcmd").textContent;
+            navigator.clipboard.writeText(t).then(function () {
+                el("mcopy").textContent = "Copied";
+                setTimeout(function () { el("mcopy").textContent = "Copy commands"; }, 1200);
+            }, function () {
+                el("mcopy").textContent = "Select it and copy";
+            });
+        });
+    }
+
+    /* ------------------------------------------------------- downloads */
+
+    function save(name, text) {
+        var b = new Blob([text], { type: "text/plain" });
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(b);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    }
+
+    /* Both file formats want integer hertz. People type MHz. Anything under a
+       thousand is read as MHz, which covers every band this radio tunes and
+       still lets a raw hertz value through unchanged. */
+    function toHz(s) {
+        var v = parseFloat(String(s).replace(/[, ]/g, ""));
+        if (!isFinite(v) || v <= 0) return 0;
+        return v < 1000 ? Math.round(v * 1e6) : Math.round(v);
+    }
+
+    /* ----------------------------------------------------- p25 profile */
+
+    function p25Build() {
+        var errs = [];
+        var sys = el("psys").value.trim();
+        var site = el("psite").value.trim();
+        if (!sys) errs.push("system name is required");
+        if (!site) errs.push("site is required");
+
+        var ctrl = [];
+        el("pctrl").value.split(/\r?\n/).forEach(function (line) {
+            line = line.trim();
+            if (!line) return;
+            var hz = toHz(line);
+            if (!hz) { errs.push("cannot read frequency: " + line); return; }
+            if (ctrl.indexOf(hz) >= 0) { errs.push("duplicate control: " + line); return; }
+            ctrl.push(hz);
+        });
+        if (!ctrl.length) errs.push("at least one control channel is required");
+        if (ctrl.length > 16) errs.push("16 control channels maximum, you have " + ctrl.length);
+
+        var tgs = [], ids = [], prio = 0;
+        el("ptg").value.split(/\r?\n/).forEach(function (line) {
+            line = line.trim();
+            if (!line) return;
+            var c = line.indexOf(",");
+            if (c < 0) { errs.push("talkgroup needs id,name: " + line); return; }
+            var id = parseInt(line.slice(0, c), 10);
+            var name = line.slice(c + 1).trim();
+            var p = 0;
+            if (name.slice(-1) === "!") { p = 1; name = name.slice(0, -1).trim(); prio++; }
+            if (!(id >= 1 && id <= 65535)) { errs.push("talkgroup id out of range: " + line); return; }
+            if (ids.indexOf(id) >= 0) { errs.push("duplicate talkgroup: " + id); return; }
+            ids.push(id);
+            tgs.push("tg=" + id + "|" + name.slice(0, 23) + "|true|" + p);
+        });
+        if (tgs.length > 64) errs.push("64 talkgroups maximum, you have " + tgs.length);
+        if (prio > 16) errs.push("16 priority talkgroups maximum, you marked " + prio);
+
+        return { errs: errs, ctrl: ctrl, tgs: tgs, sys: sys, site: site };
+    }
+
+    function p25Check() {
+        var r = p25Build();
+        var s = el("pstat");
+        if (r.errs.length) {
+            s.textContent = r.errs[0];
+            s.style.color = "#8b0000";
+        } else {
+            s.textContent = r.ctrl.length + " control, " + r.tgs.length + " talkgroups.";
+            s.style.color = "";
+        }
+    }
+
+    ["psys", "psite", "pctrl", "ptg"].forEach(function (id) {
+        var n = el(id);
+        if (n) n.addEventListener("input", p25Check);
+    });
+
+    if (el("pmake")) {
+        el("pmake").addEventListener("click", function () {
+            var r = p25Build();
+            if (r.errs.length) { p25Check(); return; }
+            var out = ["# LakeShark P25 profile",
+                       "version=1",
+                       "system=" + r.sys,
+                       "site=" + r.site];
+            r.ctrl.forEach(function (hz) { out.push("control=" + hz); });
+            out.push("preferred=" + r.ctrl[0]);
+            out.push("demod=" + el("pdemod").value);
+            out.push("encrypted_skip=" + el("penc").value);
+            out.push("auto_follow=true");
+            r.tgs.forEach(function (t) { out.push(t); });
+            save("p25_profile.txt", out.join("\n") + "\n");
+        });
+    }
+
+    /* --------------------------------------------------- channel lists */
+
+    function chanBuild() {
+        var errs = [], rows = [];
+        el("clist").value.split(/\r?\n/).forEach(function (line) {
+            line = line.trim();
+            if (!line || line.charAt(0) === "#") return;
+            var c = line.indexOf(",");
+            if (c < 0) { errs.push("needs frequency,name: " + line); return; }
+            var hz = toHz(line.slice(0, c));
+            var name = line.slice(c + 1).trim().slice(0, 14);
+            if (hz < 1000000) { errs.push("frequency too low: " + line); return; }
+            rows.push(hz + "," + name);
+        });
+        if (rows.length > 32) errs.push("32 channels maximum, you have " + rows.length);
+        return { errs: errs, rows: rows };
+    }
+
+    function chanCheck() {
+        var r = chanBuild();
+        var s = el("cstat");
+        if (r.errs.length) { s.textContent = r.errs[0]; s.style.color = "#8b0000"; }
+        else { s.textContent = r.rows.length + " channels."; s.style.color = ""; }
+        el("cpath").textContent = "apps_data/lakeshark_p25/ch_" + el("cmode").value + ".txt";
+    }
+
+    ["clist", "cmode"].forEach(function (id) {
+        var n = el(id);
+        if (n) { n.addEventListener("input", chanCheck); n.addEventListener("change", chanCheck); }
+    });
+
+    if (el("cmake")) {
+        el("cmake").addEventListener("click", function () {
+            var r = chanBuild();
+            if (r.errs.length) { chanCheck(); return; }
+            save("ch_" + el("cmode").value + ".txt", r.rows.join("\n") + "\n");
+        });
+    }
+
+    updateMap();
+    p25Check();
+    chanCheck();
+}());
+</script>
+
 </body>
 </html>
