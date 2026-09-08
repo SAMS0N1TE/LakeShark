@@ -7,6 +7,24 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI)
 
+## ><)))°> The Flipper head
+
+The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) drives the
+radio over Bluetooth or the GPIO header, so the receiver can sit in a bag with
+the antenna and you keep the Flipper in your hand.
+
+| | |
+| --- | --- |
+| ![launcher](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/launcher.png) | ![p25](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/p25_vfo.png) |
+| ![traffic](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_traffic.png) | ![map](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_map.png) |
+| ![pocsag](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/pocsag.png) | ![alerts](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/set_alerts.png) |
+
+**[Flipper user guide](https://github.com/SAMS0N1TE/LakeShark-Flipper/blob/main/docs/wiki/Home.md)** — setup, controls, and all 44 screenshots.
+
+**Don't power the ESP32-P4 from the Flipper's 5V pin.**
+
+## Radio display
+
 | | |
 | --- | --- |
 | <img src="docs/screenshots/p4_home.png" width="380" /> | <img src="docs/screenshots/p4_p25.png" width="380" /> |
@@ -88,19 +106,6 @@ This is not the case with the LCD 4.3 variant. Removing the same MOSFET does let
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
 
-## ><)))°> The Flipper head
-
-The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) drives the
-radio over Bluetooth or the GPIO header, so the receiver can sit in a bag with
-the antenna and you keep the Flipper in your hand.
-
-| | |
-| --- | --- |
-| ![launcher](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/launcher.png) | ![p25](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/p25_vfo.png) |
-| ![traffic](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/adsb_traffic.png) | ![map](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/adsb_map.png) |
-| ![pocsag](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/pocsag.png) | ![alerts](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/set_alerts.png) |
-
-**Don't power the ESP32-P4 from the Flipper's 5V pin.**
 
 ## ><)))°> Coming soon
 
