@@ -41,6 +41,16 @@ static volatile uint32_t s_audio_drops = 0;
 static volatile uint32_t s_underruns   = 0;
 static volatile bool     s_reprime     = false;
 static volatile bool     s_play_now    = false;
+/*LS-799  When live radio audio last reached the ring. FM and P25 voice both
+   arrive through audio_write_mono; speech arrives through the blocking
+   variant. All three push into the same stream buffer, so before this they
+   interleaved chunk by chunk and came out as two voices over each other with
+   static between them. P25 voice only started actually decoding once the
+   HDU/ESS work landed, which is why speech had the speaker to itself until
+   now. Live traffic wins; speech yields. */
+static volatile int64_t  s_live_us     = 0;
+static volatile uint32_t s_tts_yielded = 0;
+#define AUDIO_LIVE_HOLD_US 300000
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
@@ -52,6 +62,9 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 {
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
+    /*LS-799  Live radio audio claims the speaker. */
+    s_live_us = esp_timer_get_time();
+
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
     size_t want = (size_t)n * sizeof(int16_t);
     size_t sent = xStreamBufferSend(s_ring, samples, want, 0);
@@ -60,9 +73,22 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
     if (sent < want) s_audio_drops++;
 }
 
+/*LS-799*/
+bool audio_out_live_active(void)
+{
+    int64_t last = s_live_us;
+    if (last == 0) return false;
+    return (esp_timer_get_time() - last) < AUDIO_LIVE_HOLD_US;
+}
+
+uint32_t audio_out_tts_yielded(void) { return s_tts_yielded; }
+
 void audio_write_mono_blocking(const int16_t *samples, int n)
 {
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
+
+    /*LS-799  Do not start speaking over a live transmission. */
+    if (audio_out_live_active()) { s_tts_yielded++; return; }
 
     const uint8_t *p = (const uint8_t *)samples;
     size_t remaining = (size_t)n * sizeof(int16_t);
@@ -70,6 +96,9 @@ void audio_write_mono_blocking(const int16_t *samples, int n)
 
     while (remaining > 0) {
         if (s_muted) break;
+        /*LS-799  A transmission that starts mid-utterance stops it, rather
+           than letting the two share the ring. */
+        if (audio_out_live_active()) { s_tts_yielded++; break; }
         if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(100)) != pdTRUE) break;
         size_t sent = xStreamBufferSend(s_ring, p, remaining, pdMS_TO_TICKS(100));
         xSemaphoreGive(s_push_lock);

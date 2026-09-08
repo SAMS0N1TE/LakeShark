@@ -1,3 +1,17 @@
+/*
+ * FCI FC2580 tuner driver, taken from the kernel driver that can be found
+ * on http://linux.terratec.de/tv_en.html
+ *
+ * This driver is a mess, and should be cleaned up/rewritten.
+ *
+ */
+
+/* Notice of change (GPL-2.0-or-later section 2a): this file is distributed
+   by LakeShark under the terms of the GNU General Public License version 2
+   or later, as part of librtlsdr. The upstream comment above was missing
+   from this tree and has been restored verbatim from osmocom/rtl-sdr; the
+   code itself is unmodified. See COPYRIGHT.librtlsdr and UPSTREAM.md. */
+
 
 #include <stdint.h>
 

@@ -16,12 +16,19 @@
 #include "soc/soc_caps.h"
 
 #include "lakeshark_backend.h"
+#include "fm_state.h"
+#include "fm_mode_label.h"
 #include "audio_out.h"
 #include "audio_eq.h"
 #include "tone.h"
 #include "ls_board.h"
+#include "flipper_link_telemetry.h"
 #include "ble_link.h"
 #include "rec_state.h"
+/*LS-411*/
+#include "radio_health.h"
+/*LS-220*/
+#include "ls_version.h"
 
 static const char *TAG = "fl_link";
 
@@ -112,61 +119,41 @@ static bool parse_freq_hz(const char *s, uint32_t *out)
     return true;
 }
 
-static uint32_t s_last_bps = 0;
-static int64_t  s_bps_ok_us = 0;
-
-static bool s_bps_seen = false;
-
+/*LS-411*/
 static int sdr_stall_s(void)
 {
-    int64_t now = esp_timer_get_time();
-
-    if (!lakeshark_radio_device_ready()) {
-
-        s_bps_ok_us = now;
-        return 0;
-    }
-    if (s_last_bps > 0) {
-        s_bps_ok_us = now;
-        s_bps_seen  = true;
-        return 0;
-    }
-    if (!s_bps_seen || s_bps_ok_us == 0) {
-        s_bps_ok_us = now;
-        return 0;
-    }
-    return (int)((now - s_bps_ok_us) / 1000000LL);
+    radio_health_snapshot_t health;
+    return radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &health)
+               ? health.stall_s : 0;
 }
 
 static void sdr_stall_reset(void)
 {
-    s_bps_seen  = false;
-    s_last_bps  = 0;
-    s_bps_ok_us = esp_timer_get_time();
+    radio_health_note_progress_reset(LS_RADIO_ENDPOINT_RTL_USB);
 }
 
-static int append_sys(char *buf, size_t len, int n)
+static rh_state_t sdr_health_state(void)
 {
-    static int64_t last_us = 0;
+    radio_health_snapshot_t health;
+    return radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &health)
+               ? health.state : RH_ABSENT;
+}
 
-    if (n < 0 || (size_t)n >= len - 1) return n;
-
-    int stall = sdr_stall_s();
-
-    int64_t now = esp_timer_get_time();
-
-    bool due = !last_us || (now - last_us >= 1000000LL);
-    if (!due && stall == 0) return n;
-    if (due) last_us = now;
-
-    uint32_t up = s_host.uptime_s ? s_host.uptime_s() : 0;
+static ls_telemetry_common_t telemetry_common(void)
+{
     uint32_t fi = 0, fd = 0, fp = 0;
     if (s_host.heap_stats) s_host.heap_stats(&fi, &fd, &fp);
 
-    int w = snprintf(buf + n, len - (size_t)n, " up=%lu fi=%lu fd=%lu stl=%d",
-                     (unsigned long)up, (unsigned long)fi, (unsigned long)fd, stall);
-    if (w < 0 || (size_t)(n + w) >= len - 1) return n;
-    return n + w;
+    return (ls_telemetry_common_t){
+        .volume = audio_volume_get(),
+        .muted = audio_is_muted() ? 1 : 0,
+        .rtl_ready = lakeshark_iq_receiver_ready() ? 1 : 0,
+        .uptime_s = s_host.uptime_s ? s_host.uptime_s() : 0,
+        .free_internal = fi,
+        .free_dma = fd,
+        .sdr_stall_s = sdr_stall_s(),
+        .rhs_state = radio_health_state_name(sdr_health_state()),
+    };
 }
 
 int flipper_link_eq_snapshot(char *buf, size_t len)
@@ -186,118 +173,30 @@ int flipper_link_eq_snapshot(char *buf, size_t len)
 
 static int build_telemetry_fm(char *buf, size_t len)
 {
-    static const char *sub[] = { "listen", "scan", "pocsag", "wfm" };
-
     lakeshark_fm_tel_t t;
     lakeshark_fm_telemetry(&t);
-    s_last_bps = t.iq_bytes_sec;
-
-    char text[80];
-    strlcpy(text, t.pocsag_last_text[0] ? t.pocsag_last_text : "-", sizeof(text));
-    sanitize(text);
-
-    char ptype[2] = { t.pocsag_last_type ? t.pocsag_last_type : '-', 0 };
-
-    return snprintf(buf, len,
-        "$ f=%lu g=%d v=%d mu=%d iq=%d rtl=%d re=%d bps=%lu md=FM "
-        "fm=%s sq=%d so=%d au=%d "
-        "ss=%lu se=%lu spk=%lu sdb=%d sw=%lu "
-        "pb=%d pau=%d psy=%d pp=%lu pf=%lu pa=%lu pbd=%d pty=%s ptx=%s",
-        (unsigned long)t.freq_hz, t.gain_tenths,
-        audio_volume_get(), audio_is_muted() ? 1 : 0,
-        t.iq_level, lakeshark_radio_device_ready() ? 1 : 0, t.read_errors,
-        (unsigned long)t.iq_bytes_sec,
-        sub[t.submode & 3], t.squelch_tenths, t.squelch_open, t.audio_level,
-        (unsigned long)t.scan_start_hz, (unsigned long)t.scan_stop_hz,
-        (unsigned long)t.scan_peak_hz, t.scan_peak_db,
-        (unsigned long)t.scan_sweeps,
-        t.pocsag_baud, t.pocsag_auto, t.pocsag_sync,
-        (unsigned long)t.pocsag_pages, (unsigned long)t.pocsag_frames,
-        (unsigned long)t.pocsag_last_addr, t.pocsag_last_baud, ptype, text);
+    ls_telemetry_common_t common = telemetry_common();
+    return ls_telemetry_build_fm(buf, len, &t, &common);
 }
 
 #define AC_PER_FRAME 4
 
 static int build_telemetry_adsb(char *buf, size_t len)
 {
-    static int s_ac_cursor = 0;
-
     lakeshark_adsb_tel_t t;
     lakeshark_adsb_telemetry(&t);
-    s_last_bps = t.iq_bytes_sec;
-
-    if (t.n_aircraft <= 0) s_ac_cursor = 0;
-    else if (s_ac_cursor >= t.n_aircraft) s_ac_cursor = 0;
-
-    int n = snprintf(buf, len,
-        "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu md=ADSB "
-        "ac=%d mt=%d mps=%d cg=%d ce=%d bps1=%d mga=%d mgp=%d lms=%d "
-        "aci=%d acn=%d",
-        (unsigned long)t.freq_hz, t.gain_tenths,
-        audio_volume_get(), audio_is_muted() ? 1 : 0,
-        t.rtl_ready, (unsigned long)t.iq_bytes_sec,
-        t.tracked, t.msgs_total, t.msgs_sec, t.crc_good, t.crc_err,
-        t.bursts_sec, t.mag_avg, t.mag_peak, t.last_msg_ms,
-        s_ac_cursor, t.n_aircraft);
-    if (n < 0) return n;
-
-    for (int k = 0; k < AC_PER_FRAME && (size_t)n < len - 1; k++) {
-        int idx = s_ac_cursor + k;
-        if (idx >= t.n_aircraft) break;
-
-        lakeshark_adsb_ac_t a;
-        if (!lakeshark_adsb_aircraft_at(idx, &a)) break;
-
-        char call[12];
-        strlcpy(call, a.callsign[0] ? a.callsign : "-", sizeof(call));
-        sanitize(call);
-
-        int w = snprintf(buf + n, len - (size_t)n,
-                         " a%d=%06lX,%s,%d,%d,%d,%d,%d,%d",
-                         idx, (unsigned long)a.icao, call,
-                         a.altitude, a.velocity, a.heading, a.vert_rate,
-                         a.age_ms, a.msg_count);
-        if (w < 0 || (size_t)(n + w) >= len - 1) break;
-        n += w;
-    }
-
-    s_ac_cursor += AC_PER_FRAME;
-    if (s_ac_cursor >= t.n_aircraft) s_ac_cursor = 0;
-
-    return n;
+    ls_telemetry_common_t common = telemetry_common();
+    return ls_telemetry_build_adsb(buf, len, &t, &common);
 }
 
 static int build_telemetry_p25(char *buf, size_t len)
 {
-
     lakeshark_p25_tel_t t;
     lakeshark_p25_telemetry(&t);
-    s_last_bps = t.iq_bytes_sec;
-
-    char ftype[16];
-    char err[64];
-    strlcpy(ftype, t.ftype[0] ? t.ftype : "-", sizeof(ftype));
-    strlcpy(err,   t.err[0]   ? t.err   : "-", sizeof(err));
-    sanitize(ftype);
-    sanitize(err);
-
     const char *mode = (s_host.current_mode_name ? s_host.current_mode_name() : "P25");
-
-    return snprintf(buf, len,
-        "$ f=%lu dm=%d dmn=%s g=%d agc=%d v=%d mu=%d "
-        "nac=%d tg=%d src=%d na=%d ta=%d sa=%d sy=%d vo=%d sc=%d vc=%d bo=%d bf=%d "
-        "iq=%d pol=%d bp=%d vg=%d rtl=%d rf=%d rs=%d re=%d "
-        "bps=%lu ad=%lu dus=%d md=%s ft=%s e=%s",
-        (unsigned long)t.freq_hz, t.demod_mode, lakeshark_p25_mode_name(),
-        t.gain_tenths, t.agc_on, audio_volume_get(), audio_is_muted() ? 1 : 0,
-        t.nac, t.tg, t.src,
-        t.nac_age_ms, t.tg_age_ms, t.src_age_ms,
-        t.has_sync, t.voice_active,
-        t.sync_count, t.voice_count, t.bch_ok, t.bch_fail,
-        t.iq_level, t.polarity_inverted, t.beep, t.voice_gate, t.rtl_ready,
-        t.ring_fill, t.ring_size, t.read_errors,
-        (unsigned long)t.iq_bytes_sec, (unsigned long)t.audio_drops, t.decode_us,
-        mode, ftype, err);
+    ls_telemetry_common_t common = telemetry_common();
+    return ls_telemetry_build_p25(buf, len, &t, mode, lakeshark_p25_mode_name(),
+                                  &common);
 }
 
 /*LS-510*/
@@ -305,27 +204,8 @@ static int build_telemetry_rec(char *buf, size_t len)
 {
     rec_status_t s;
     rec_get_status(&s);
-    s_last_bps = s.bytes_sec;
-
-    char last[24];
-    strlcpy(last, s.last_file[0] ? s.last_file : "-", sizeof(last));
-    sanitize(last);
-
-    return snprintf(buf, len,
-        "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu md=REC "
-        "rph=%d red=%d rsp=%lu rmg=%d rfl=%d rth=%d rtf=%d rgp=%d rcp=%lu "
-        /*LS-516*/ /*LS-517*/
-        "rbw=%lu rmp=%lu rms=%lu rme=%d ren=%d rmn=%lu rmx=%lu rbd=%lu rlf=%s",
-        (unsigned long)s.freq_hz, s.gain_tenths,
-        audio_volume_get(), audio_is_muted() ? 1 : 0,
-        lakeshark_radio_device_ready() ? 1 : 0, (unsigned long)s.bytes_sec,
-        (int)s.phase, s.edges, (unsigned long)s.span_us,
-        s.mag_now, s.mag_floor, s.mag_thresh, s.thresh_fixed, s.gap_ms,
-        (unsigned long)s.captures,
-        (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
-        (unsigned long)(s.max_span_us / 1000u), s.min_edges, s.end_reason,
-        (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
-        (unsigned long)s.baud_est, last);
+    ls_telemetry_common_t common = telemetry_common();
+    return ls_telemetry_build_rec(buf, len, &s, &common);
 }
 
 static int build_telemetry(char *buf, size_t len)
@@ -341,8 +221,6 @@ static int build_telemetry(char *buf, size_t len)
 
     if ((size_t)n >= len - 2) n = (int)len - 2;
 
-    n = append_sys(buf, len, n);
-
     buf[n++] = '\n';
     buf[n]   = '\0';
     return n;
@@ -356,6 +234,28 @@ static void eq_reply(char *reply, size_t reply_len)
              "+OK eq=%s hp=%d bass=%+d treb=%+d punch=%d loud=%d\n",
              audio_eq_preset_name(eq.preset), eq.hp10 * 10,
              eq.bass_db, eq.treb_db, eq.punch, eq.loud);
+}
+
+static void receiver_reply(char *reply, size_t reply_len)
+{
+    if (!reply || reply_len == 0) return;
+    static const char prefix[] = "+OK ";
+    if (reply_len <= sizeof(prefix) - 1) {
+        reply[0] = '\0';
+        return;
+    }
+    memcpy(reply, prefix, sizeof(prefix));
+    size_t used = sizeof(prefix) - 1;
+    int n = lakeshark_receiver_status(reply + used, reply_len - used);
+    if (n < 0) n = 0;
+    used += strnlen(reply + used, reply_len - used);
+    if (used + 1 < reply_len) {
+        reply[used++] = '\n';
+        reply[used] = '\0';
+    } else if (reply_len >= 2) {
+        reply[reply_len - 2] = '\n';
+        reply[reply_len - 1] = '\0';
+    }
 }
 
 /*LS-511*/
@@ -493,6 +393,62 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         else if (w == -3) snprintf(reply, reply_len, "-ERR rec busy\n");
         else              snprintf(reply, reply_len, "-ERR write %d\n", w);
 
+    } else if (!strcmp(up, "LS")) {
+        /*LS-032*/
+        /* One saved capture per round trip:
+               %S <index> <total> <freq_hz> <bytes> <name>
+           A zero total means nothing is saved. The head walks index 0..total-1
+           to build its list. Deliberately NOT one reply carrying every name -
+           REPLY_MAX is 384 and a directory has no bound, so that reply would
+           truncate silently, which is the failure LS-515 was written about. */
+        int32_t idx = 0;
+        if (arg && !parse_i32(arg, &idx)) {
+            snprintf(reply, reply_len, "-ERR rec ls\n");
+            return;
+        }
+        char name[40];
+        uint32_t freq = 0;
+        long size = -1;
+        int total = rec_file_info((int)idx, name, sizeof(name), &freq, &size);
+        if (total <= 0 || idx < 0 || idx >= total) {
+            snprintf(reply, reply_len, "%%S %ld %d 0 0 -\n", (long)idx, total);
+            return;
+        }
+        snprintf(reply, reply_len, "%%S %ld %d %lu %ld %s\n",
+                 (long)idx, total, (unsigned long)freq, size, name);
+
+    } else if (!strcmp(up, "LOAD")) {
+        /*LS-032*/
+        int32_t idx = 0;
+        if (!arg || !parse_i32(arg, &idx)) {
+            snprintf(reply, reply_len, "-ERR rec load\n");
+            return;
+        }
+        int n = rec_load((int)idx);
+        if (n == -3)      snprintf(reply, reply_len, "-ERR rec busy\n");
+        else if (n == -1) snprintf(reply, reply_len, "-ERR no such capture\n");
+        else if (n < 0)   snprintf(reply, reply_len, "-ERR load %d\n", n);
+        else {
+            s_stat_now = true;
+            rec_reply_status(reply, reply_len);
+        }
+
+    } else if (!strcmp(up, "DEL")) {
+        /*LS-032*/
+        int32_t idx = 0;
+        if (!arg || !parse_i32(arg, &idx)) {
+            snprintf(reply, reply_len, "-ERR rec del\n");
+            return;
+        }
+        char name[40];
+        int total = rec_file_info((int)idx, name, sizeof(name), NULL, NULL);
+        if (total <= 0 || idx < 0 || idx >= total) {
+            snprintf(reply, reply_len, "-ERR no such capture\n");
+            return;
+        }
+        snprintf(reply, reply_len, rec_remove(name) == 0
+                 ? "+OK deleted %s\n" : "-ERR delete %s\n", name);
+
     } else if (!strcmp(up, "GET")) {
         /*LS-511*/
         int32_t off = 0;
@@ -520,7 +476,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
     } else {
         snprintf(reply, reply_len,
                  "-ERR rec <arm|stop|freq|gain|thresh|gap|bw|minp|maxspan|"
-                 "minedges|save|get>\n");
+                 "minedges|save|get|ls|load|del>\n");
     }
 }
 
@@ -540,19 +496,35 @@ static void handle_line(char *line, char *reply, size_t reply_len)
     if (!strcmp(cmd, "PING")) {
         snprintf(reply, reply_len, "+PONG %d LakeShark\n", FLIPPER_LINK_PROTO_VERSION);
 
+    /*LS-220*/
+    /* `VER` - one line describing the firmware, so the head can put "which
+       LakeShark am I talking to" next to its own version.  The line is
+       assembled by ls_version_format() and covered by test_ls_version, so
+       the string here cannot silently drift out of shape.  sanitize()
+       swaps whitespace and '=' for '_' so a single reply line survives
+       the protocol without needing a special-case parser. */
+    } else if (!strcmp(cmd, "VER")) {
+        char v[LS_VERSION_LINE_MAX];
+        ls_version_line(v, sizeof(v));
+        sanitize(v);
+        snprintf(reply, reply_len, "+OK %s\n", v);
+
     } else if (!strcmp(cmd, "STAT")) {
         s_stat_now = true;
-        snprintf(reply, reply_len, "+OK\n");
+        receiver_reply(reply, reply_len);
 
     } else if (!strcmp(cmd, "FREQ")) {
         uint32_t hz;
-        if (!a1 || !parse_freq_hz(a1, &hz)) {
+        if (!a1) {
+            receiver_reply(reply, reply_len);
+        } else if (!parse_freq_hz(a1, &hz)) {
             snprintf(reply, reply_len, "-ERR freq\n");
         } else if (host_mode() == HOST_MODE_ADSB) {
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
 
-            /*LS-510*/
+            /*LS-510*/ /*LS-416*/
+            sdr_stall_reset();
             if      (host_mode() == HOST_MODE_FM)  lakeshark_fm_set_freq(hz);
             else if (host_mode() == HOST_MODE_REC) rec_set_freq(hz);
             else                                   lakeshark_p25_set_freq(hz);
@@ -567,6 +539,8 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
             uint32_t now;
+            /*LS-416*/
+            sdr_stall_reset();
             if (host_mode() == HOST_MODE_FM) {
                 lakeshark_fm_tune((int)n);
                 now = lakeshark_fm_get_freq();
@@ -586,29 +560,28 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         }
 
     } else if (!strcmp(cmd, "FM")) {
-
-        static const char *names[] = { "listen", "scan", "pocsag", "wfm" };
         if (!a1) {
-            snprintf(reply, reply_len, "+OK fm=%s\n", names[lakeshark_fm_get_mode() & 3]);
+            snprintf(reply, reply_len, "+OK fm=%s\n", fm_mode_command_name(
+                     (fm_mode_t)lakeshark_fm_get_mode()));
             return;
         }
-        char up[16];
-        strlcpy(up, a1, sizeof(up));
-        for (char *p = up; *p; p++) *p = (char)tolower((unsigned char)*p);
 
-        int m = -1;
-        for (int i = 0; i < 4; i++) if (!strcmp(up, names[i])) { m = i; break; }
-        if (m < 0 && !strcmp(up, "nbfm")) m = 0;
-        if (m < 0 && parse_i32(a1, &n) && n >= 0 && n <= 3) m = (int)n;
-        if (m < 0) { snprintf(reply, reply_len, "-ERR fm\n"); return; }
+        fm_mode_t mode;
+        if (!fm_mode_parse(a1, &mode)) {
+            snprintf(reply, reply_len, "-ERR fm\n");
+            return;
+        }
 
         if (host_mode() != HOST_MODE_FM && s_host.select_mode_by_name) {
             sdr_stall_reset();
             s_host.select_mode_by_name("fm");
         }
-        lakeshark_fm_set_mode(m);
+        /* The LCD host switch is asynchronous. lakeshark_fm_set_mode() is a
+           persistent request latch consumed by fm_rx_task after AppFM enters,
+           so issue it after validation even while P25 is still reported. */
+        lakeshark_fm_set_mode((int)mode);
         s_stat_now = true;
-        snprintf(reply, reply_len, "+OK fm=%s\n", names[m]);
+        snprintf(reply, reply_len, "+OK fm=%s\n", fm_mode_command_name(mode));
 
     } else if (!strcmp(cmd, "SQL")) {
         if (!a1) {
@@ -718,7 +691,9 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         str_upper(up);
         if (!strcmp(up, "CYCLE")) {
             lakeshark_p25_cycle_mode();
-        } else if (parse_i32(a1, &n) && n >= 0 && n <= 3) {
+        } else if (!strcmp(up, "AUTO")) {
+            lakeshark_p25_set_mode(-1);
+        } else if (parse_i32(a1, &n) && n >= -1 && n <= 3) {
             lakeshark_p25_set_mode((int)n);
         } else {
             snprintf(reply, reply_len, "-ERR demod\n");
@@ -849,7 +824,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             s_host.sdr_reset();
             s_stat_now = true;
             snprintf(reply, reply_len, "+OK sdr reset rtl=%d\n",
-                     lakeshark_radio_device_ready() ? 1 : 0);
+                     lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB) ? 1 : 0);
         } else if (a1 && !strcasecmp(a1, "recover")) {
 
             if (!s_host.sdr_recover) {
@@ -868,8 +843,9 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "+OK sdr power cycling\n");
             s_host.sdr_power_cycle();
         } else {
-            snprintf(reply, reply_len, "+OK rtl=%d stl=%d\n",
-                     lakeshark_radio_device_ready() ? 1 : 0, sdr_stall_s());
+            /* LS-1000: use the selected receiver snapshot rather than mapping
+               every running stream onto the RTL health slot. */
+            receiver_reply(reply, reply_len);
         }
 
     } else if (!strcmp(cmd, "BLE")) {
@@ -974,6 +950,19 @@ int flipper_link_snapshot(char *buf, size_t len)
 {
     return build_telemetry(buf, len);
 }
+
+/*LS-909  The wired head link needs pins this board may not have declared.
+
+   SCAN_PINS and IDLE_HIGH_PINS below expand LS_BOARD_LINK_SCAN_PINS and
+   LS_BOARD_LINK_TX_GPIO unconditionally, so any variant that has not had
+   its expansion header measured fails to compile here - which is what the
+   T-Display-P4 did, and why that target had never once been built. A board
+   whose UART pins are unknown should build with the wired link absent, not
+   fail; BLE is a separate transport and does not need these at all.
+
+   ls_caps.h already derives LS_HAS_LINK_UART from exactly that fact. It just
+   had no consumer. This is the consumer. */
+#if LS_HAS_LINK_UART
 
 /*LS-202*/
 static const int SCAN_PINS[] = LS_BOARD_LINK_SCAN_PINS;
@@ -1099,7 +1088,7 @@ int flipper_link_probe_rx(void)
     for (int i = 0; i < N_SCAN_PINS; i++) {
         int pin = SCAN_PINS[i];
         /*LS-203*/
-        if (LS_BOARD_HAS_VBUS_CTRL && pin == VBUS_EN_GPIO) continue;
+        if (LS_HAS_VBUS_CTRL && pin == VBUS_EN_GPIO) continue;
         if (pin == C6_EN_GPIO) continue;
 
         int pct = probe_pin_pct(pin);
@@ -1143,6 +1132,27 @@ int flipper_link_probe_rx(void)
     if (was_running) flipper_link_start(&s_cfg, NULL);
     return best;
 }
+
+#else  /* !LS_HAS_LINK_UART */
+
+/*LS-909  No wired link pins declared for this board. Say so, rather than
+   scanning a header that was never measured and reporting a false result. */
+int flipper_link_scan_rx(int dwell_ms)
+{
+    (void)dwell_ms;
+    printf("this board declares no wired head-link pins - nothing to scan.\n"
+           "  see LS_BOARD_LINK_SCAN_PINS in components/lakeshark/board/variants/\n");
+    return -1;
+}
+
+int flipper_link_probe_rx(void)
+{
+    printf("this board declares no wired head-link pins - nothing to probe.\n");
+    return -1;
+}
+
+#endif /* LS_HAS_LINK_UART */
+
 
 void flipper_link_inject(const char *line, char *reply, size_t reply_len)
 {
@@ -1337,9 +1347,17 @@ esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
         healer_started = (xTaskCreate(heal_task, "fl_heal", 4096, NULL, 3, NULL) == pdPASS);
     }
 
-    char hello[64];
-    int  len = snprintf(hello, sizeof(hello), "+HELLO %d LakeShark\n",
-                        FLIPPER_LINK_PROTO_VERSION);
+    /*LS-220*/
+    /* Include the version in the HELLO so the head sees which firmware it
+       just connected to without having to ask.  A stale head that only
+       parses `+HELLO %d LakeShark` still matches (the version is appended
+       after "LakeShark ", not before). */
+    char v[LS_VERSION_LINE_MAX];
+    ls_version_line(v, sizeof(v));
+    sanitize(v);
+    char hello[LS_VERSION_LINE_MAX + 32];
+    int  len = snprintf(hello, sizeof(hello), "+HELLO %d LakeShark %s\n",
+                        FLIPPER_LINK_PROTO_VERSION, v);
     link_write(hello, len);
     return ESP_OK;
 }
@@ -1376,3 +1394,4 @@ void flipper_link_stats(uint32_t *rx_lines, uint32_t *tx_lines, uint32_t *bad_li
     if (tx_lines)  *tx_lines  = s_tx_lines;
     if (bad_lines) *bad_lines = s_bad_lines;
 }
+

@@ -148,7 +148,8 @@ void snd_moto_full(void)
 #define TEST_AMP        8000.0f
 #define TEST_CHUNK      160
 #define TEST_PACE_MS    8
-#define TEST_STACK_WORDS (3072 / sizeof(StackType_t))
+/*LS-806  3072 with 2488 unused - about 584 B in use. */
+#define TEST_STACK_WORDS (2048 / sizeof(StackType_t))
 
 static const char *TEST_NAMES[SND_TEST_COUNT] = {
     "sweep", "bass", "noise", "tone", "chirp", "moto"

@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "iq_app_control.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +42,16 @@ typedef struct {
     rec_phase_t phase;
     uint32_t    freq_hz;
     int         gain_tenths;
+    uint64_t    effective_freq_hz;
+    int         effective_gain_tenths;
+    bool        effective_freq_known;
+    bool        effective_gain_known;
+    ls_iq_result_state_t tune_state;
+    ls_iq_result_state_t gain_state;
+    ls_radio_err_t tune_error;
+    ls_radio_err_t gain_error;
+    bool        receiver_streaming;
+    ls_radio_err_t receiver_error;
     int         edges;
     uint32_t    span_us;
     int         mag_now;
@@ -49,7 +61,7 @@ typedef struct {
     int         gap_ms;
     uint32_t    captures;
     uint32_t    bytes_sec;
-    char        last_file[40];
+    char        last_file[64];
     /*LS-516*/
     uint32_t    bw_hz;
     uint32_t    min_pulse_us;
@@ -60,11 +72,35 @@ typedef struct {
     uint32_t    min_mark_us;
     uint32_t    max_mark_us;
     uint32_t    baud_est;
+    /*LS-960*/
+    int         mag_peak;             /* peak seen across the last capture */
+    int         mag_floor_at_start;   /* floor when the capture started */
+    /*LS-961*/
+    /* Free bytes on the capture volume at the moment rec_get_status()
+       was called.  UINT64_MAX means "probe failed" - the REC screen and
+       the console command render that as "?" so the operator knows the
+       filesystem could not be queried rather than that it is at zero. */
+    uint64_t    bytes_free;
 } rec_status_t;
+
+/* Lightweight read-only state for always-on presentation consumers. Unlike
+   rec_get_status(), this does not probe capture-volume free space. */
+typedef struct {
+    rec_phase_t phase;
+    uint32_t    freq_hz;
+    int         edges;
+    int         mag_now;
+    int         mag_thresh;
+    uint32_t    bytes_sec;
+    uint32_t    captures;
+    bool        receiver_streaming;
+} rec_hub_status_t;
 
 int  rec_app_register(void);
 
 void rec_get_status(rec_status_t *out);
+void rec_get_hub_status(rec_hub_status_t *out);
+void rec_get_receiver_status(ls_iq_control_status_t *out);
 void rec_set_freq(uint32_t hz);
 uint32_t rec_get_freq(void);
 void rec_set_gain(int tenths);
@@ -88,6 +124,30 @@ int      rec_get_min_edges(void);
 /*LS-517*/
 const char *rec_end_reason_name(int reason);
 
+/*LS-963*/
+/* The SCOUT view. When enabled, the rx task folds IQ into an FFT and
+   publishes a normalised 0..1 spectrum resampled to `n` bins across the
+   REC_SCOUT_SPAN_HZ window centred on rec_get_freq().  The bins are the
+   fftshifted MAX-per-column reading over the last few accumulations, so a
+   narrow carrier does not get averaged away against its silent neighbours.
+   Capture continues to run underneath - the FFT is a fold, not a retune -
+   so ARMED and CAPTURING remain honest with the scout tab up. */
+#define REC_SCOUT_SPAN_HZ  200000u
+
+void     rec_scout_enable(bool on);
+bool     rec_scout_enabled(void);
+/* Copy the current spectrum out.  Returns false when the average is
+   empty (freshly enabled or just reset).  out is normalised 0..1 where
+   1.0 corresponds to REC_SCOUT_TOP_DB and 0.0 to REC_SCOUT_FLOOR_DB. */
+bool     rec_scout_read(float *out, int n);
+/* Peak within the last published spectrum, in Hz absolute and normalised
+   0..1 level.  Returns 0 in hz_out if no peak has been observed yet. */
+void     rec_scout_peak(uint32_t *hz_out, float *level_out);
+/* Sweep counter - the number of complete spectra published since scout
+   was enabled.  Used by the GUI to drive the waterfall and to measure
+   frame rate. */
+uint32_t rec_scout_sweeps(void);
+
 bool rec_active(void);
 void rec_arm(void);
 /*LS-506*/
@@ -101,9 +161,31 @@ uint32_t rec_bytes_sec(void);
 int rec_edge_count(void);
 int rec_edges_copy(int from, int32_t *out, int max);
 
+/*LS-961*/
+/* Return the free-byte count of the volume rec_dir() points at, or
+   UINT64_MAX if the probe (statvfs) failed - which the caller must treat
+   as "do not write".  Cheap enough to call from the REC timer tick and
+   the console; no cache. */
+uint64_t rec_dir_free_bytes(void);
+
+/* Save as <name>_<wall-clock>.sub, or <name>_up-<seconds>s.sub before time
+   sync. A numeric collision suffix is added without modifying old files. */
 int  rec_save(const char *name, char *path_out, size_t path_len);
 
-int  rec_list(char *out, size_t len);
+/*LS-907*/
+/* Returns the total number of .sub captures in rec_dir(), independent of
+   whether they all fit in `out`.  Writes as many "<name> (<size> B)"
+   chunks as the buffer holds, separated by ", ", and sets *out_truncated
+   (when non-null) to true when the buffer filled before every entry was
+   written.  The caller compares the returned total against its own row
+   cap to detect row-capacity truncation, so both limits can be reported
+   honestly. */
+int  rec_list(char *out, size_t len, bool *out_truncated);
+/*LS-031*/
+const char *rec_dir(void);
+/*LS-032*/
+int  rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size);
+int  rec_load(int index);
 int  rec_dump(const char *name, void (*emit)(const char *line, void *ctx), void *ctx);
 int  rec_remove(const char *name);
 

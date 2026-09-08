@@ -19,8 +19,17 @@ CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
 
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# LS-814  These two were off, and the NANO headless build did not link:
+# undefined reference to ble_svc_gap_init from ble_link_start().
+#
+# ble_link.c is a GAP CENTRAL - it scans (ble_gap_disc) and connects out to
+# the Flipper, it never advertises. But ble_svc_gap_init() registers the GAP
+# *service*, which is a GATT SERVER service, and NimBLE only builds that when
+# the peripheral role is on. So a central still needs ROLE_PERIPHERAL here.
+# Every role on, as boards/wifi6_headless_ble.defaults documents under LS-112.
+# Verified on hardware 2026-09-05: BLE comes up and connects to the head.
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=498
 CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24

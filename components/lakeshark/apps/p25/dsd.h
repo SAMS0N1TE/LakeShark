@@ -8,11 +8,19 @@
 #include <stdint.h>
 #include "mbelib.h"
 #include "p25p1_heuristics.h"
+#include "p25_acquisition.h"
 
-#define SAMPLE_RATE_IN  24000   /* session 9: was 48000 */
+/* LS-731: the live 240 kSPS IQ path decimates by five and DSD consumes ten
+ * samples per 4800-baud symbol.  The old 24 kHz declaration was unused, but
+ * contradicted both sides of that measured 48 kHz boundary. */
+#define SAMPLE_RATE_IN  48000
 #define SAMPLE_RATE_OUT 8000
 
 #define DSD_SAMPLE_RING_SIZE 8192
+#define P25_TSDU_DIBIT_COUNT 303
+#define P25_IDEN_TABLE_SIZE 16
+#define P25_NEIGHBOR_TABLE_SIZE 16
+#define P25_TSBK_OPCODE_COUNT 64
 
 extern int exitflag;
 
@@ -23,6 +31,73 @@ typedef struct {
 } dsd_sample_ring_t;
 
 typedef struct {
+    uint64_t base_hz;
+    uint32_t spacing_hz;
+    /* LS-131: transmit offset carried by IDEN_UP (0x3d) and IDEN_UP_VU (0x34).
+     * VU form has a signed 14-bit field (bit 24 sign + 13-bit magnitude), UHF
+     * form is 9 bits (bit 29 sign + 8-bit magnitude); both are units of
+     * 250 kHz. Stored here in Hz already scaled and signed. */
+    int32_t  tx_offset_hz;
+    /* LS-131: channel bandwidth in Hz. 0x3d carries a 9-bit field in 125 Hz
+     * units; 0x34 carries a 4-bit code where 4 => 6.25 kHz and 5 => 12.5 kHz.
+     * Normalised here so a filter chooser does not need the source opcode. */
+    uint32_t channel_bw_hz;
+    /* TDMA logical channels share one RF carrier. Zero identifies FDMA (or
+     * an entry not populated yet); a nonzero value is the number of logical
+     * slots carried at each frequency. */
+    uint8_t slots_per_carrier;
+    uint8_t channel_type;
+    uint8_t valid;
+    uint8_t voice_unsupported; /* LS-739: FDMA half-rate is not Phase I IMBE. */
+} p25_iden_entry_t;
+
+typedef enum {
+    P25_CALL_NONE = 0,
+    P25_CALL_PHASE1,
+    P25_CALL_UNSUPPORTED,
+    P25_CALL_MISSING_IDEN,
+    P25_CALL_INVALID,
+} p25_call_support_t;
+
+/* LS-739: resolved grant evidence, independent of the legacy zero-frequency
+ * safety gate. slots_per_carrier defaults to ONE for FDMA; slot is zero-based.
+ * No allocation: six entries cover both pairs in each of three TSDU blocks. */
+typedef struct {
+    uint64_t carrier_hz;
+    uint32_t source;
+    uint32_t wacn;
+    uint16_t sysid;
+    uint16_t nac;
+    uint16_t channel;
+    uint16_t talkgroup;
+    uint8_t slot;
+    uint8_t slots_per_carrier;
+    uint8_t channel_type;
+    uint8_t system_valid;
+    uint8_t service_options;
+    p25_call_support_t support;
+} p25_call_info_t;
+
+#define P25_GRANTS_PER_TSDU 6
+
+/* LS-652: adjacent-site broadcast (ADJ_STS_BCST, opcode 0x3c) entry. Stored
+ * so a roaming decision can pick the strongest neighbour when the current
+ * site fades - without this, walking out of range of a control channel
+ * means the radio goes deaf rather than moving to a working neighbour.
+ * freq_hz is resolved via the iden table at parse time; it can be 0 when
+ * the iden for that channel has not yet been broadcast. */
+typedef struct {
+    uint8_t  valid;
+    uint8_t  rfss_id;
+    uint8_t  site_id;
+    uint8_t  lra;
+    uint16_t sysid;
+    uint16_t channel;
+    uint8_t  service_class;
+    uint64_t freq_hz;
+} p25_neighbor_entry_t;
+
+typedef struct dsd_opts {
     int errorbars;
     int verbose;
     int p25enc;
@@ -47,7 +122,8 @@ typedef struct {
     dsd_sample_ring_t *ring;
 } dsd_opts;
 
-typedef struct {
+typedef struct dsd_state {
+    p25_hunt_status_t acquisition_hunt;
     int *dibit_buf;
     int *dibit_buf_p;
     int repeat;
@@ -118,6 +194,23 @@ typedef struct {
     int c4fm_clk_nudges;      /* diagnostic: total nudges performed since init */
     char algid[9];
     char keyid[17];
+    /* LS-610: Encryption Sync Stream from LDU2 (ALGID, KID, 72-bit MI).
+     * Kept in decoder state so the vocoder gate in process_IMBE can consult
+     * ALGID directly rather than KID. Before LS-610 the ESS was recovered by
+     * processLDU2 and then discarded, and the mute test guarded on KID - a
+     * legitimate 0 on ADP systems - so encrypted voice reached the vocoder.
+     * p25_ess_valid stays 0 until an LDU2 has been seen on this call; an
+     * unknown ALGID must pass audio (a followed grant may start with no HDU
+     * and several LDU1s before the first LDU2). Cleared on TDU, TDULC and
+     * talkgroup change so a mute from one call does not silence the next. */
+    uint8_t  p25_algid;
+    uint16_t p25_kid;
+    uint8_t  p25_mi[9];
+    uint8_t  p25_ess_valid;
+    /* LS-611: cumulative IMBE frames dropped by the encryption gate. Read by
+     * the UI/console; incremented inside process_IMBE, so a fault report that
+     * says "it went quiet" can be answered with "42 frames muted on TG X". */
+    uint32_t p25_enc_muted_frames;
     int currentslot;
     mbe_parms *cur_mp;
     mbe_parms *prev_mp;
@@ -127,6 +220,170 @@ typedef struct {
     unsigned int debug_header_errors;
     unsigned int debug_header_critical_errors;
     int last_dibit;
+    /* LS-020: TSDUs were counted and then discarded, leaving no payload for
+     * trunking. Keep the 303 wire-order dibits in the PSRAM-resident decoder
+     * state; later decoding stages can consume them without demod-path allocs. */
+    uint8_t p25_tsdu_dibits[P25_TSDU_DIBIT_COUNT];
+    unsigned int p25_tsdu_dibit_count;
+    /* LS-030: TSBKs used to stop at raw capture, so channel grants could not
+     * be resolved. The 16-entry IDEN table and latest decoded control-channel
+     * fields live with the PSRAM-resident decoder state and need no hot-path
+     * allocation. */
+    p25_iden_entry_t p25_iden_table[P25_IDEN_TABLE_SIZE];
+    uint8_t p25_tsbk_last_opcode;
+    uint16_t p25_tsbk_channel;
+    uint16_t p25_tsbk_talkgroup;
+    uint32_t p25_tsbk_source;
+    uint64_t p25_tsbk_frequency_hz;
+    p25_call_info_t p25_grants[P25_GRANTS_PER_TSDU];
+    uint8_t p25_grant_count;
+    uint8_t p25_grant_batch_valid;
+    uint32_t p25_grant_generation;
+    /* Validated current frame, not lastp25type (which also tracks fallbacks). */
+    uint8_t p25_frame_valid;
+    uint8_t p25_frame_duid;
+    uint8_t p25_frame_tsbks;
+    uint16_t p25_control_nac;
+    uint8_t p25_control_nac_valid;
+    unsigned int p25_phase2_grant_count;
+    uint16_t p25_phase2_last_talkgroup;
+    uint64_t p25_phase2_last_frequency_hz;
+    uint8_t p25_phase2_last_slot;
+    uint8_t p25_phase2_last_slots_per_carrier;
+    uint32_t p25_tsbk_wacn;
+    uint16_t p25_tsbk_sysid;
+    /* LS-693: zero is representable on the wire, so value!=0 cannot mean
+     * "decoded". Generations advance only on CRC-valid broadcasts and let the
+     * bounded health snapshot age each retained identity class independently. */
+    uint8_t p25_net_valid;
+    uint32_t p25_net_generation;
+    uint32_t p25_rfss_generation;
+    uint32_t p25_sccb_generation;
+    uint32_t p25_neighbor_generation;
+    unsigned int p25_tsbk_valid_count;
+    unsigned int p25_tsbk_crc_errors;
+    unsigned int p25_tsbk_trellis_errors;
+    /* LS-132: vendor TSBKs (MFID other than 0x00 / 0x01) are counted rather
+     * than parsed with the standard bit layout. See p25_tsbk_parse. */
+    unsigned int p25_tsbk_vendor_count;
+    uint8_t p25_tsbk_last_vendor_mfid;
+    /* LS-652: per-opcode counter for TSBKs the parser recognises but does
+     * nothing with. Before this a `default: return 0` in the switch meant
+     * "we do not support that" was a silent zero - on an unfamiliar system
+     * the operator could not tell whether the site emitted an opcode we
+     * ignored or nothing at all. Indexed by the 6-bit opcode so the index
+     * matches what appears on a wire trace; 64 uint16_ts is 128 bytes. */
+    uint16_t p25_tsbk_unhandled[P25_TSBK_OPCODE_COUNT];
+    /* LS-652: RFSS_STS_BCST (0x3a). Which RFSS/site this control channel
+     * belongs to. Otherwise a guess - the site ID does not appear anywhere
+     * else on the control channel. */
+    uint8_t  p25_rfss_valid;
+    uint8_t  p25_rfss_lra;
+    uint8_t  p25_rfss_id;
+    uint8_t  p25_rfss_site_id;
+    uint16_t p25_rfss_sysid;
+    uint16_t p25_rfss_ch_t;
+    uint16_t p25_rfss_ch_r;
+    uint8_t  p25_rfss_svc_class;
+    /* LS-652: SCCB (0x39 SCCB_EXP / 0x3e SCCB). Secondary control channel
+     * broadcast - a site running more than one control channel. */
+    uint8_t  p25_sccb_valid;
+    uint8_t  p25_sccb_rfss_id;
+    uint8_t  p25_sccb_site_id;
+    uint16_t p25_sccb_ch1;
+    uint16_t p25_sccb_ch2;
+    uint8_t  p25_sccb_svc_class1;
+    uint8_t  p25_sccb_svc_class2;
+    /* LS-652: SYS_SRV_BCST (0x38). Which services the system offers. */
+    uint8_t  p25_sys_srv_valid;
+    uint32_t p25_sys_srv_available;
+    uint32_t p25_sys_srv_supported;
+    uint8_t  p25_sys_srv_twv;
+    /* LS-652: SYNC_BCST (0x30). System time and microslot count, needed
+     * for Phase 2 slot alignment - stored here even though no consumer
+     * uses it yet so 656's work can pick it up. */
+    uint8_t  p25_sync_valid;
+    uint16_t p25_sync_microslot;
+    uint32_t p25_sync_us;
+    uint32_t p25_sync_month_day;
+    uint32_t p25_sync_year;
+    /* LS-652: adjacent site table populated by ADJ_STS_BCST (0x3c). Each
+     * broadcast overwrites the slot keyed by (rfss_id, site_id) so the
+     * list does not grow when a site re-announces itself. p25_neighbor_count
+     * is the number of valid slots, useful as a "have we heard any" flag. */
+    p25_neighbor_entry_t p25_neighbors[P25_NEIGHBOR_TABLE_SIZE];
+    uint8_t              p25_neighbor_count;
+    /* LS-652: data-channel grants (0x10 GRP_D_CH_GRANT / 0x14 SNDCP_CH_GRANT).
+     * We cannot decode the payload, but counting them keeps a busy data
+     * exchange from looking like a broken follower. Never written to the
+     * voice-grant fields so the follower cannot chase them. */
+    unsigned int p25_data_grant_count;
+    uint16_t     p25_last_data_channel;
+    uint16_t     p25_last_data_group;
+    /* LS-652: telephone interconnect grants (0x08 / 0x09). Voice, but
+     * private-to-phone - kept in its own slot so the operator can see a
+     * radio-to-phone patch happened without it being labelled as a normal
+     * talkgroup call. Not fed to the follower today; a later task will
+     * decide whether to add a distinct label and follow it. */
+    unsigned int p25_interconnect_grant_count;
+    uint16_t     p25_last_interconnect_channel;
+    uint32_t     p25_last_interconnect_address;
+    /* LS-652: unit-to-unit voice (0x04 UU_V_CH_GRANT, 0x05 UU_ANS_REQ,
+     * 0x06 UU_V_CH_GRANT_UPDT). Private calls - some systems carry
+     * significant traffic here. Not routed to the follower for now: the
+     * follower keys on a talkgroup, and a unit-to-unit call has a target
+     * address rather than a talkgroup. Exposed so the operator can see it. */
+    unsigned int p25_uu_grant_count;
+    uint16_t     p25_last_uu_channel;
+    uint32_t     p25_last_uu_source;
+    uint32_t     p25_last_uu_target;
+    /* LS-652: registration/affiliation responses (0x20 ACK_RSP_FNE,
+     * 0x27 DENY_RSP, 0x28 GRP_AFF_RSP, 0x2c UNIT_REG_RSP, 0x2f U_DE_REG_ACK).
+     * The raw material for a "who is on this system" view. A DENY explains
+     * a grant that never produced audio, which currently looks like the
+     * decoder is broken. */
+    unsigned int p25_reg_event_count;
+    uint8_t      p25_last_reg_opcode;
+    uint8_t      p25_last_reg_reason;
+    uint32_t     p25_last_reg_source;
+    uint32_t     p25_last_reg_target;
+    /* LS-650: LDU1/TDULC Link Control Word. Voice-channel identity comes
+     * from the LCW - a call joined mid-stream (missed grant, brief
+     * control-channel loss) has no talkgroup or source until the first LDU1
+     * arrives. Before this the LCW parser only knew LCO 0x00 and only wrote
+     * state->lasttg / state->lastsrc; late entry was labelled 0/0 and the
+     * emergency, encrypted and priority flags were never read.
+     *
+     * These fields live beside state->p25_tsbk_talkgroup / source (populated
+     * by TSBK grants and consumed by the grant follower) - the LCW is
+     * authoritative for "who is talking here" and the TSBK is authoritative
+     * for "where should I be", and the grant follower never reads the LCW
+     * fields, so an LCW-derived TG cannot cause a retune. */
+    uint8_t  p25_lcw_valid;
+    uint8_t  p25_lcw_lco;
+    uint8_t  p25_lcw_mfid;
+    uint8_t  p25_lcw_svc_options;
+    uint8_t  p25_lcw_emergency;
+    uint8_t  p25_lcw_encrypted;
+    uint8_t  p25_lcw_priority;
+    uint8_t  p25_lcw_is_unit_to_unit;
+    uint8_t  p25_lcw_is_regroup;
+    uint16_t p25_lcw_talkgroup;
+    uint32_t p25_lcw_source;
+    uint32_t p25_lcw_target;
+    uint16_t p25_lcw_patch_sg;
+    uint32_t p25_lcw_ok_count;
+    uint32_t p25_lcw_fec_reject_count;
+    /* Talker alias reassembly. Header LCO 0x15 declares a byte count; blocks
+     * 0x16/0x17/0x18 each carry 7 characters. A truncated sequence times
+     * out (p25_lcw_alias_start_us + P25_LCW_ALIAS_TIMEOUT_US) so a partial
+     * alias is dropped rather than shown. */
+    uint8_t  p25_lcw_alias_expected;
+    uint8_t  p25_lcw_alias_blocks;
+    uint8_t  p25_lcw_alias_len;
+    uint8_t  p25_lcw_alias_ready;
+    char     p25_lcw_alias[32];
+    int64_t  p25_lcw_alias_start_us;
     P25Heuristics p25_heuristics;
     P25Heuristics inv_p25_heuristics;
     short *pcm_out_buf;
@@ -160,7 +417,17 @@ void processLDU1(dsd_opts *opts, dsd_state *state);
 void processLDU2(dsd_opts *opts, dsd_state *state);
 void processTDU(dsd_opts *opts, dsd_state *state);
 void processTDULC(dsd_opts *opts, dsd_state *state);
-void processP25lcw(dsd_opts *opts, dsd_state *state, char *lcformat, char *mfid, char *lcinfo);
+void processP25lcw(dsd_opts *opts, dsd_state *state, char *lcformat, char *mfid, char *lcinfo, int fec_ok);
+/* LS-650: byte-oriented dispatcher. processP25lcw wraps this after converting
+ * the bit-strings coming out of LDU1/TDULC. Bench tests call the byte form
+ * directly. Returns 1 when the LCW was recognised and state was updated, 0
+ * when it was ignored (unknown LCO, vendor MFID, or fec_ok == 0). */
+#define P25_LCW_LCINFO_BYTES 7
+#define P25_LCW_ALIAS_TIMEOUT_US 2000000LL
+int p25_lcw_dispatch(dsd_state *state, uint8_t lco, uint8_t mfid,
+                     const uint8_t lcinfo[P25_LCW_LCINFO_BYTES],
+                     int fec_ok, int64_t now_us);
+void p25_lcw_call_clear(dsd_state *state);
 void processMbeFrame(dsd_opts *opts, dsd_state *state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]);
 void processAudio(dsd_opts *opts, dsd_state *state);
 void upsample(dsd_state *state, float invalue);
@@ -169,5 +436,21 @@ short nxdn_filter(short sample);
 
 int dsd_ring_available(dsd_sample_ring_t *r);
 int16_t dsd_ring_read_one(dsd_sample_ring_t *r);
+
+/* LS-610 */
+void p25_ess_clear(dsd_state *state);
+const char *p25_algid_name(uint8_t algid);
+int  p25_ldu_should_mute_encrypted(const dsd_state *state, const dsd_opts *opts);
+/* LS-611: byte-in predicate for the grant follower - it does not carry a
+ * dsd_state and only needs the CLEAR vs anything-else decision. */
+int  p25_algid_is_encrypted(uint8_t algid);
+
+/* LS-652: format a control-channel status summary (IDEN table, neighbour
+ * list, TSBK counts, unhandled opcodes) into a caller-supplied buffer.
+ * The console `p25tsbk` command prints this; bench cases assert against
+ * substrings of it so what is on-screen and what is in the tests cannot
+ * disagree. Returns the number of characters that would be written if the
+ * buffer were unbounded (as snprintf does). */
+size_t p25_tsbk_status_format(const dsd_state *state, char *buf, size_t buf_sz);
 
 #endif

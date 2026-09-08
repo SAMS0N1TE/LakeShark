@@ -387,5 +387,8 @@ processTDULC (dsd_opts* opts, dsd_state* state)
   lcinfo[54]  = dodeca_data[0][10] + '0';
   lcinfo[55]  = dodeca_data[0][11] + '0';
 
-  processP25lcw (opts, state, lcformat, mfid, lcinfo);
+  /* LS-650: TDULC is Reed-Solomon(24,12,13)-protected on the same 12+12 hex
+   * words as LDU1. Reject on irrecoverable error rather than acting on the
+   * possibly wrong TG that terminated the call. */
+  processP25lcw (opts, state, lcformat, mfid, lcinfo, irrecoverable_errors == 0);
 }

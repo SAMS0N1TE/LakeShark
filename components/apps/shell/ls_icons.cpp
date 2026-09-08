@@ -164,6 +164,52 @@ static const char *const REC[ICON_H] = {
     "................",
 };
 
+/* ACARS: an aircraft silhouette with a message ribbon underneath - the
+   panel it launches is a message log, not a positional picture, so the
+   icon says "text from an aircraft" rather than reusing the ADS-B glyph
+   and misleading a first-time user into thinking they landed there. */
+static const char *const ACARS[ICON_H] = {
+    "................",
+    ".......XX.......",
+    "......XXXX......",
+    "XX...XXXXXX...XX",
+    "XXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXX",
+    "......XXXX......",
+    "......XXXX......",
+    "................",
+    "..XXXXXXXXXXXX..",
+    "..X..........X..",
+    "..X.XX.XXXX.XX..",
+    "..X..........X..",
+    "..X.XXXXXXXX.X..",
+    "..XXXXXXXXXXXX..",
+    "................",
+};
+
+/*LS-737*/
+/* AppMap asks for "map". Folded-map outline; 1-bit, recoloured at runtime,
+   16x16 because that is the only size dividing cleanly into the 32 px rail
+   and the 48 px tiles (LS-716). */
+static const char *const MAP[ICON_H] = {
+    "................",
+    "................",
+    "..XXXXX..XXXXX..",
+    ".XX...XXXX...XX.",
+    ".X.....XX.....X.",
+    ".X..X..XX..X..X.",
+    ".X.XXX.XX.XXX.X.",
+    ".X..X..XX..X..X.",
+    ".X.....XX.....X.",
+    ".X..XX.XX.XX..X.",
+    ".X.X..XXXX..X.X.",
+    ".X.....XX.....X.",
+    ".XX...XXXX...XX.",
+    "..XXXXX..XXXXX..",
+    "................",
+    "................",
+};
+
 /*LS-605*/
 static lv_img_dsc_t *build(const char *const *rows, int gw, int gh, int blk)
 {
@@ -209,10 +255,13 @@ const lv_img_dsc_t *ls_icon_for(const char *key, int px)
         { "p25",      P25,      {nullptr} },
         { "fm",       FM,       {nullptr} },
         { "adsb",     ADSB,     {nullptr} },
+        { "acars",    ACARS,    {nullptr} },
         { "mesh",     MESH,     {nullptr} },
         { "files",    FILES,    {nullptr} },
         /*LS-716*/
         { "rec",      REC,      {nullptr} },
+        /*LS-737*/
+        { "map",      MAP,      {nullptr} },
         { "home",     HOME,     {nullptr} },
         { "settings", SETTINGS, {nullptr} },
     };

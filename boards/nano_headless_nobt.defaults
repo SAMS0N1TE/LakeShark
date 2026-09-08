@@ -1,0 +1,24 @@
+# LS-816  ESP32-P4-NANO, headless radio core, NO BLE - UART head and serial
+# console only. Worked example of turning the BLE control head off.
+#
+# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_headless_nobt.defaults"
+#
+# Clearing CONFIG_BT_ENABLED is enough on its own: LS_BLE_HEAD depends on it,
+# so it goes off too and main/ builds ble_link_stub.c in place of ble_link.c.
+# The `ble` console commands still exist and report DISABLED. The Flipper head
+# over UART is completely unaffected - flipper_link.c is always built.
+CONFIG_BT_ENABLED=n
+CONFIG_LS_BLE_HEAD=n
+
+# LS-004  ESP32-P4-NANO, headless radio core, Flipper head over BLE (and UART).
+# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_headless_ble.defaults"
+
+CONFIG_LS_BOARD_P4_NANO=y
+CONFIG_LAKESHARK_HEADLESS=y
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_16m.csv"
+
+#

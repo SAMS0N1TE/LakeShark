@@ -13,3 +13,11 @@ dependencies:
   # the build. The whole sdr_ui shell is written against 8.4 - see LS-903.
   lvgl/lvgl:
     version: "==8.4.0"
+
+  # LS-160  The Waveshare BSP's optional dependency otherwise makes the
+  # component manager consult the registry when its lock entry is stale.
+  # Keep the override relative to this manifest so every checkout uses the
+  # vendored component instead of recording another worktree's path.
+  espressif/esp_lvgl_port:
+    version: "==2.5.0"
+    override_path: "../components/esp_lvgl_port"

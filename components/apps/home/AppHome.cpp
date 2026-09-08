@@ -1,22 +1,34 @@
 #include "AppHome.hpp"
 #include "shell/ls_shell.hpp"
 #include "sdr_ui/sdr_ui.h"
+#include "ui/ls_ui.h"
+#include "home/home_widget_view.h"
 
 #include <cstdio>
 #include <cstring>
 
 extern "C" {
 #include "lakeshark_backend.h"
+#include "settings.h"
+#include "ls_time.h"
 }
 
 /*LS-604*/
 static const struct { const char *app; const char *icon; const char *title;
-                      const char *sub; uint32_t accent; } TILES[] = {
-    { "P25",      "p25",      "P25",   "DIGITAL VOICE", 0xF0B767 },
-    { "FM",       "fm",       "FM",    "ANALOG / PAGE", 0x83CFAB },
-    { "ADS-B",    "adsb",     "ADS-B", "AIR TRAFFIC",   0x86B8E2 },
-    { "Files",    "files",    "FILES", "SD BROWSER",    0x92DADA },
-    { "Settings", "settings", "CONFIG","DEVICE",        0xB0A4E4 },
+                      const char *sub; ls_ui_color_role_t accent; } TILES[] = {
+    { "P25",      "p25",      "P25",   "DIGITAL VOICE", LS_UI_COLOR_ID_RED },
+    { "FM",       "fm",       "FM",    "ANALOG / PAGE", LS_UI_COLOR_ID_TEAL },
+    { "ADS-B",    "adsb",     "ADS-B", "AIR TRAFFIC",   LS_UI_COLOR_ID_BLUE },
+    /*LS-794  REC was reachable from the rail but had no tile here, so HOME
+       did not show the one app that writes to the SD card. The "rec" icon
+       already existed in the icon table. */
+    { "REC",      "rec",      "REC",   "CAPTURE / SCOUT", LS_UI_COLOR_ID_ORANGE },
+    { "ACARS",    "acars",    "ACARS", "AIRCRAFT TEXT", LS_UI_COLOR_ID_VIOLET },
+    { "Files",    "files",    "FILES", "SD BROWSER",    LS_UI_COLOR_ID_STEEL },
+    /*LS-743*/
+    { "MUSIC",    "files",    "MUSIC", "PLAYER",        LS_UI_COLOR_ID_ROSE },
+    { "MAP",      "map",      "MAP",   "NAV / ADS-B",   LS_UI_COLOR_ID_GREEN },
+    { "Settings", "settings", "CONFIG","DEVICE",        LS_UI_COLOR_DIM_TEXT },
 };
 
 AppHome::AppHome() : LsApp("HOME", "home") {}
@@ -29,28 +41,32 @@ void AppHome::tileCb(lv_event_t *e)
 }
 
 /*LS-604*/
-void AppHome::faceCb(lv_event_t *)
+void AppHome::faceCb(lv_event_t *e)
 {
-    const ls_hub_state_t *s = ls_hub_state();
-    if (s && s->mode[0] && strcmp(s->mode, "--") != 0)
-        LsShell::instance().launchByName(s->mode);
+    auto *self = static_cast<AppHome *>(lv_event_get_user_data(e));
+    if (!self || self->_widget != HOME_WIDGET_RECEIVER) return;
+    if (self->_last_receiver_app[0])
+        LsShell::instance().launchByName(self->_last_receiver_app);
 }
 
 bool AppHome::run(lv_obj_t *parent)
 {
-    sdr_style_screen(parent);
-    lv_obj_set_style_pad_all(parent, 8, 0);
-    lv_obj_set_style_pad_row(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(parent, LV_DIR_VER);
+    /* LS-746: pause hides the hub subscription; reconstruction must restore
+     * visibility even though the lightweight app descriptor is reused. */
+    _visible = true;
+    _widget = (home_widget_id_t)settings_get_home_widget();
+    ls_ui_screen_t screen;
+    ls_ui_screen_create(parent, nullptr, false, LS_UI_COLOR_ACCENT, &screen);
+    _screen_readout = screen.readout;
+    _screen_lamp = screen.lamp;
+    ls_ui_screen_set_readout(&screen, "OVERVIEW");
+    parent = screen.content;
 
     buildFace(parent);
     buildTiles(parent);
-    buildSystem(parent);
 
-    /*LS-604*/
-    if (!lakeshark_radio_running()) lakeshark_select_p25();
+    /*LS-697  HOME is passive. Entering it must not choose a backend, unpark
+      a receiver, or retune merely to make the face non-empty. */
 
     /*LS-606*/
     lv_obj_update_layout(parent);
@@ -58,6 +74,8 @@ bool AppHome::run(lv_obj_t *parent)
     _sub = ls_hub_subscribe(hubCb, this);
     /*LS-606*/
     _theme_sub = sdr_theme_on_change(themeCb, this);
+    apply(ls_hub_state(), LS_HUB_ALL);
+    _clock_timer = lv_timer_create(clockCb, 1000, this);
     return true;
 }
 
@@ -65,36 +83,102 @@ bool AppHome::run(lv_obj_t *parent)
 void AppHome::themeCb(void *ud)
 {
     AppHome *self = static_cast<AppHome *>(ud);
-    if (self->_caret) lv_obj_set_style_text_color(self->_caret, sdr_accent(), 0);
-    if (self->_face)  lv_obj_set_style_border_color(self->_face, sdr_accent_dim(), 0);
+    ls_ui_frame_color(self->_face, sdr_accent_dim());
     self->apply(ls_hub_state(), LS_HUB_ALL);
 }
 
 /*LS-604*/
 void AppHome::buildFace(lv_obj_t *parent)
 {
+    /* Stable IDs and a single picker table are the extension point for future
+     * implemented widgets. No unavailable transport is advertised here. */
+    static const char *choices[HOME_WIDGET_COUNT] = { "RECEIVER", "SYSTEM", "CLOCK" };
+    auto *picker = ls_ui_button_group(parent);
+    for (int i = 0; i < HOME_WIDGET_COUNT; ++i) {
+        _widget_buttons[i] = ls_ui_group_button(picker, choices[i],
+            i == _widget ? LS_BTN_TOGGLE_ON : LS_BTN_TOGGLE_OFF,
+            widgetCb, this, nullptr);
+    }
     _face = sdr_lcd_panel(parent, sdr_accent_dim());
-    lv_obj_set_style_pad_row(_face, 5, 0);
     lv_obj_add_flag(_face, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_face, faceCb, LV_EVENT_CLICKED, this);
 
     _mode = sdr_value(_face, &lv_font_montserrat_20, SDR_IDLE);
-    lv_obj_set_style_text_letter_space(_mode, 4, 0);
+    lv_obj_set_width(_mode, lv_pct(100));
+    lv_label_set_long_mode(_mode, LV_LABEL_LONG_WRAP);
     lv_label_set_text(_mode, "--");
 
-    _freq = sdr_value(_face, &lv_font_montserrat_48, SDR_OFF);
+    _freq = sdr_value(_face, &lv_font_montserrat_32, SDR_TEXT);
     lv_obj_set_width(_freq, lv_pct(100));
     lv_obj_set_style_text_align(_freq, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_letter_space(_freq, 2, 0);
+    lv_label_set_long_mode(_freq, LV_LABEL_LONG_WRAP);
     lv_label_set_text(_freq, "---.----");
 
-    _detail = sdr_value(_face, sdr_font_mono(), SDR_IDLE);
+    /* Prose, not a column of figures, so it does not need the fixed-pitch
+       face - and asking for one costs height and width it cannot spare: the
+       mono face is 8 px per character and on the 720x720 panel this line
+       wrapped and pushed the picker into a scrollbar. */
+    _detail = sdr_value(_face, sdr_font_ui(), SDR_IDLE);
     lv_obj_set_width(_detail, lv_pct(100));
     lv_obj_set_style_text_align(_detail, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(_detail, "STANDBY");
 
-    /*LS-606*/
-    _meter = sdr_meter(_face, "SIG ");
+    lv_label_set_long_mode(_detail, LV_LABEL_LONG_WRAP);
+    _save_status = sdr_value(_face, sdr_font_mono_sm(), SDR_WARN);
+    lv_obj_set_width(_save_status, lv_pct(100));
+    lv_label_set_long_mode(_save_status, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(_save_status, LV_OBJ_FLAG_HIDDEN);
+}
+
+void AppHome::widgetCb(lv_event_t *e)
+{
+    auto *self = static_cast<AppHome *>(lv_event_get_user_data(e));
+    for (int i = 0; i < HOME_WIDGET_COUNT; ++i) {
+        if (lv_event_get_target(e) != self->_widget_buttons[i]) continue;
+        if (!settings_set_home_widget(i)) {
+            lv_label_set_text(self->_save_status, "Selection not saved - try again");
+            lv_obj_clear_flag(self->_save_status, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
+        self->_widget = (home_widget_id_t)i;
+        lv_obj_add_flag(self->_save_status, LV_OBJ_FLAG_HIDDEN);
+        self->refreshWidget(ls_hub_state());
+        return;
+    }
+}
+
+void AppHome::clockCb(lv_timer_t *timer)
+{
+    auto *self = static_cast<AppHome *>(timer->user_data);
+    if (self->_visible && self->_widget == HOME_WIDGET_CLOCK)
+        self->refreshWidget(ls_hub_state());
+}
+
+void AppHome::refreshWidget(const ls_hub_state_t *s)
+{
+    if (!_face) return;
+    if (s && s->freq_hz && s->target_app[0]) {
+        _last_freq_hz = s->freq_hz;
+        snprintf(_last_receiver_app, sizeof(_last_receiver_app), "%s", s->target_app);
+    }
+    ls_hub_state_t receiver = {};
+    receiver.freq_hz = _last_freq_hz;
+    snprintf(receiver.target_app, sizeof(receiver.target_app), "%s", _last_receiver_app);
+    home_widget_view_t view;
+    home_widget_present(_widget, _widget == HOME_WIDGET_RECEIVER ? &receiver : s,
+        ls_time_is_synced(), time(nullptr), &view);
+    sdr_text_if_changed(_mode, view.title);
+    sdr_text_if_changed(_freq, view.value);
+    sdr_text_if_changed(_detail, view.detail);
+    sdr_color_if_changed(_mode, sdr_accent());
+    sdr_color_if_changed(_freq, SDR_TEXT);
+    sdr_color_if_changed(_detail, SDR_LABEL);
+    for (int i = 0; i < HOME_WIDGET_COUNT; ++i)
+        ls_ui_button_set_role(_widget_buttons[i], i == _widget
+            ? LS_BTN_TOGGLE_ON : LS_BTN_TOGGLE_OFF);
+    if (_widget == HOME_WIDGET_RECEIVER && _last_receiver_app[0])
+        lv_obj_add_flag(_face, LV_OBJ_FLAG_CLICKABLE);
+    else lv_obj_clear_flag(_face, LV_OBJ_FLAG_CLICKABLE);
 }
 
 /*LS-604*/
@@ -102,61 +186,26 @@ void AppHome::buildTiles(lv_obj_t *parent)
 {
     sdr_section(parent, "LAUNCH");
 
-    lv_obj_t *grid = lv_obj_create(parent);
-    lv_obj_set_width(grid, lv_pct(100));
-    lv_obj_set_height(grid, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(grid, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_style_pad_all(grid, 0, 0);
-    lv_obj_set_style_pad_row(grid, 6, 0);
-    lv_obj_set_style_pad_column(grid, 6, 0);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_START);
-    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *grid = ls_ui_controls(parent);
+    lv_obj_update_layout(parent);
+    int columns = lv_obj_get_content_width(parent) / 128;
+    if (columns < 2) columns = 2;
+    if (columns > 4) columns = 4;
 
     const int n = (int)(sizeof(TILES) / sizeof(TILES[0]));
     for (int i = 0; i < n; i++) {
         lv_obj_t *t = sdr_tile(grid, TILES[i].icon, TILES[i].title, TILES[i].sub,
                                tileCb, (void *)TILES[i].app);
-        lv_obj_set_width(t, lv_pct(32));
-        sdr_tile_accent(t, lv_color_hex(TILES[i].accent));
+        lv_obj_set_width(t, lv_pct(100 / columns - 1));
+        for (uint32_t child = 0; child < lv_obj_get_child_cnt(t); ++child) {
+            auto *item = lv_obj_get_child(t, child);
+            if (!lv_obj_check_type(item, &lv_label_class)) continue;
+            lv_obj_set_width(item, lv_pct(100));
+            lv_label_set_long_mode(item, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_align(item, LV_TEXT_ALIGN_CENTER, 0);
+        }
+        sdr_tile_accent(t, ls_ui_color(TILES[i].accent));
     }
-}
-
-/*LS-604*/
-static lv_obj_t *sys_cell(lv_obj_t *parent, const char *name)
-{
-    lv_obj_t *row = sdr_row(parent, LV_FLEX_ALIGN_SPACE_BETWEEN);
-    lv_obj_set_width(row, lv_pct(48));
-    sdr_micro(row, name);
-    lv_obj_t *v = sdr_value(row, sdr_font_mono_sm(), SDR_TEXT);
-    lv_label_set_text(v, "--");
-    return v;
-}
-
-/*LS-604*/
-void AppHome::buildSystem(lv_obj_t *parent)
-{
-    sdr_section(parent, "SYSTEM");
-
-    lv_obj_t *p = sdr_panel(parent);
-    lv_obj_set_flex_flow(p, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_row(p, 5, 0);
-    lv_obj_set_style_pad_column(p, 10, 0);
-
-    _sys_rtl = sys_cell(p, "RTL");
-    _sys_sd  = sys_cell(p, "SD");
-    _sys_c6  = sys_cell(p, "C6");
-    _sys_iq  = sys_cell(p, "IQ");
-
-    lv_obj_t *tick = sdr_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_top(tick, 2, 0);
-    _caret = sdr_micro(tick, ">");
-    lv_obj_set_style_text_color(_caret, sdr_accent(), 0);
-    _ticker = sdr_value(tick, sdr_font_mono_sm(), SDR_DIM);
-    lv_obj_set_flex_grow(_ticker, 1);
-    lv_label_set_text(_ticker, "READY");
 }
 
 void AppHome::hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud)
@@ -167,98 +216,37 @@ void AppHome::hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud)
 /*LS-604*/
 void AppHome::apply(const ls_hub_state_t *s, uint32_t dirty)
 {
-    if (!_visible) return;
-
-    /*LS-606*/
-    if (dirty & (LS_HUB_RADIO | LS_HUB_SIGNAL)) {
-        sdr_text_if_changed(_mode, s->rtl_ready ? s->mode : "--");
-        sdr_color_if_changed(_mode, !s->rtl_ready ? SDR_OFF
-                                  : s->parked     ? SDR_IDLE
-                                  : s->active     ? sdr_accent() : SDR_LABEL);
-
-        lv_color_t ec = !s->rtl_ready ? SDR_RULE
-                      : s->active     ? sdr_accent() : sdr_accent_dim();
-        if (lv_obj_get_style_border_color(_face, 0).full != ec.full) {
-            lv_obj_set_style_border_color(_face, ec, 0);
-            lv_obj_set_style_outline_color(_face, s->active ? sdr_accent_bg()
-                                                            : SDR_LCD_EDGE, 0);
-        }
-    }
-
-    if (dirty & (LS_HUB_TUNE | LS_HUB_RADIO | LS_HUB_SIGNAL)) {
-        char f[24];
-        if (s->freq_hz)
-            snprintf(f, sizeof(f), "%lu.%04lu",
-                     (unsigned long)(s->freq_hz / 1000000UL),
-                     (unsigned long)((s->freq_hz / 100UL) % 10000UL));
-        else
-            snprintf(f, sizeof(f), "---.----");
-        sdr_text_if_changed(_freq, f);
-        sdr_color_if_changed(_freq, !s->rtl_ready ? SDR_OFF
-                                  : s->parked     ? SDR_IDLE
-                                  : s->active     ? sdr_accent() : SDR_TEXT);
-    }
-
-    if (dirty & LS_HUB_SIGNAL) {
-        sdr_text_if_changed(_detail, s->rtl_ready ? s->detail : "PLUG IN AN RTL-SDR");
-        sdr_color_if_changed(_detail, !s->rtl_ready ? SDR_ERR
-                                    : s->active     ? SDR_TEXT : SDR_IDLE);
-
-        /*LS-606*/
-        sdr_meter_set(_meter, s->sig_pct,
-                      !s->rtl_ready    ? SDR_OFF
-                      : s->sig_pct >= 95 ? SDR_ERR
-                      : s->active        ? sdr_accent()
-                      : s->sig_pct < 8   ? SDR_OFF : SDR_IDLE);
-
-        char iq[16];
-        snprintf(iq, sizeof(iq), "%luK/s", (unsigned long)(s->iq_bytes_sec / 1000));
-        sdr_text_if_changed(_sys_iq, iq);
-        sdr_color_if_changed(_sys_iq, s->iq_bytes_sec ? SDR_TEXT : SDR_DIM);
-    }
-
-    if (dirty & LS_HUB_RADIO) {
-        sdr_text_if_changed(_sys_rtl, !s->rtl_ready ? "ABSENT"
-                                    : s->parked     ? "PARKED" : "STREAMING");
-        sdr_color_if_changed(_sys_rtl, !s->rtl_ready ? SDR_ERR
-                                     : s->parked     ? SDR_WARN : SDR_OK);
-
-        sdr_text_if_changed(_sys_sd, s->sd_present ? "MOUNTED" : "NONE");
-        sdr_color_if_changed(_sys_sd, s->sd_present ? SDR_TEXT : SDR_DIM);
-
-        sdr_text_if_changed(_sys_c6, s->c6_state == 1 ? "LINKED"
-                                   : s->c6_state == 0 ? "DOWN" : "--");
-        sdr_color_if_changed(_sys_c6, s->c6_state == 1 ? SDR_TEXT
-                                    : s->c6_state == 0 ? SDR_WARN : SDR_DIM);
-    }
-
-    if (dirty & LS_HUB_EVENT) {
-        char l[LS_HUB_LINE_MAX];
-        if (ls_hub_last_line(l, sizeof(l))) {
-            sdr_text_if_changed(_ticker, l);
-            sdr_color_if_changed(_ticker, SDR_TEXT);
-        }
-    }
+    if (!_visible || !s) return;
+    refreshWidget(s);
 }
 
 /*LS-604*/
-bool AppHome::pause(void)  { _visible = false; return true; }
+bool AppHome::pause(void)
+{
+    _visible = false;
+    if (_clock_timer) lv_timer_pause(_clock_timer);
+    return true;
+}
 
 /*LS-604*/
 bool AppHome::resume(void)
 {
     _visible = true;
+    if (_clock_timer) lv_timer_resume(_clock_timer);
     apply(ls_hub_state(), LS_HUB_ALL);
     return true;
 }
 
 bool AppHome::close(void)
 {
+    _visible = false;
+    if (_clock_timer) { lv_timer_del(_clock_timer); _clock_timer = nullptr; }
     if (_sub >= 0) { ls_hub_unsubscribe(_sub); _sub = -1; }
     /*LS-606*/
     if (_theme_sub >= 0) { sdr_theme_off_change(_theme_sub); _theme_sub = -1; }
-    _face = _mode = _freq = _detail = _meter = _caret = nullptr;
-    _sys_rtl = _sys_sd = _sys_c6 = _sys_iq = _ticker = nullptr;
+    _face = _mode = _freq = _detail = nullptr;
+    _save_status = nullptr;
+    for (auto &button : _widget_buttons) button = nullptr;
     return true;
 }
 

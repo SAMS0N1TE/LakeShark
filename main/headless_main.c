@@ -14,6 +14,11 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "ls_ctl.h"
+/*LS-210*/
+#include "ls_crash.h"
+#include "ls_nvs_safe.h"
+/*LS-994*/
+#include "ls_safe_mode.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/gpio.h"
@@ -21,16 +26,27 @@
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "lakeshark_backend.h"
+#include "fm_state.h"
+#include "fm_mode_label.h"
 #include "audio_out.h"
 #include "tone.h"
 #include "flipper_link.h"
 #include "esp_hosted.h"
 #include "ble_link.h"
 #include "settings.h"
-#include "esp_libusb.h"
+/*LS-406*/
+#include "radio_health.h"
+#include "rtlsdr_dev.h"
+/* rtlsdr_stream_* live here; esp_libusb.h is private to the radio component. */
+#include "rtl-sdr.h"
 /*LS-500*/
 #include "rec_state.h"
+/*LS-961*/
+#include "rec_space.h"
 #include "ls_board.h"
+/*LS-220*/
+#include "ls_version.h"
+#include "ls_cpu_busy.h"
 
 static const char *TAG = "headless";
 
@@ -60,7 +76,6 @@ static const hl_mode_t s_modes[] = {
 };
 #define N_MODES ((int)(sizeof(s_modes) / sizeof(s_modes[0])))
 
-static const char *s_fm_modes[] = { "listen", "scan", "pocsag", "wfm" };
 #define FM_IDX 2
 
 static volatile int s_mode = 0;
@@ -148,12 +163,7 @@ static void settings_save_mode(int m)
 static StackType_t  s_settings_stack[SETTINGS_STACK_WORDS];
 static StaticTask_t s_settings_tcb;
 
-/*LS-303*/
-#define SDR_STALL_RECOVER_S 20
-#define SDR_STALL_MAX_TRIES 5
-
-#define SDR_STALL_RETRY_S   20
-
+/*LS-303*/ /*LS-410*/
 #define SDR_ABSENT_POWER_S  30
 
 #define SDR_PWR_MAGIC       0x53445057u
@@ -162,11 +172,13 @@ static RTC_NOINIT_ATTR uint32_t s_sdr_pwr_magic;
 static RTC_NOINIT_ATTR uint32_t s_sdr_pwr_count;
 
 static void hl_sdr_power_cycle(void);
+/*LS-418*/
+static bool hl_sdr_power_cycle_now(void);
 
 /*LS-303*/
 static bool sdr_auto_power_cycle(const char *why)
 {
-    if (!LS_BOARD_HAS_VBUS_CTRL) {
+    if (!LS_HAS_VBUS_CTRL) {
         ESP_LOGE(TAG, "SDR %s. %s cannot cut VBUS in software, so there is "
                       "nothing left to try automatically - replug the dongle.",
                  why, LS_BOARD_NAME);
@@ -182,10 +194,15 @@ static bool sdr_auto_power_cycle(const char *why)
                  why, (unsigned long)s_sdr_pwr_count);
         return false;
     }
+    /*LS-418*/
+    if (!hl_sdr_power_cycle_now()) {
+        ESP_LOGE(TAG, "SDR %s, and the power cycle did not start (one is already "
+                      "running) - not counting it against the budget.", why);
+        return false;
+    }
     s_sdr_pwr_count++;
     ESP_LOGW(TAG, "SDR %s - power cycling the dongle (attempt %lu of %d)",
              why, (unsigned long)s_sdr_pwr_count, SDR_PWR_MAX);
-    hl_sdr_power_cycle();
     return true;
 }
 
@@ -195,15 +212,25 @@ static void sdr_health_ok(void)
     s_sdr_pwr_count = 0;
 }
 
+/*LS-406*/
+static bool hl_health_power_cycle(const char *endpoint_id)
+{
+    if (!endpoint_id || strcmp(endpoint_id, LS_RADIO_ENDPOINT_RTL_USB) != 0)
+        return false;
+    return sdr_auto_power_cycle("the pipe stayed silent through every in-place recovery");
+}
+
+static void hl_health_recover(const char *endpoint_id)
+{
+    lakeshark_radio_recover(endpoint_id);
+}
+
 static void settings_task(void *arg)
 {
     (void)arg;
     int last_seen  = audio_volume_get();
     int last_saved = last_seen;
     int stable_ms  = 0;
-    int stall_next = SDR_STALL_RECOVER_S;
-    int stall_tries = 0;
-    bool stall_told = false;
     int absent_ms  = 0;
     bool absent_told = false;
     int healthy_ms = 0;
@@ -211,9 +238,14 @@ static void settings_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
 
+        /* LS-1003: settings_task already has the watchdog cadence.  Sharing
+           it preserves internal RAM for cache-safe radio task stacks. */
+        radio_health_tick();
+
+        /*LS-410*/
         {
-            int stall = flipper_link_sdr_stall_s();
-            bool present = lakeshark_radio_device_ready();
+            bool present = lakeshark_radio_endpoint_ready(
+                LS_RADIO_ENDPOINT_RTL_USB);
 
             if (!present) {
                 absent_ms += 250;
@@ -224,37 +256,18 @@ static void settings_task(void *arg)
                 }
             } else {
                 absent_told = false;
-                absent_ms = 0;
-            }
+                absent_ms   = 0;
 
-            if (present && stall == 0) {
-                stall_next  = SDR_STALL_RECOVER_S;
-                stall_tries = 0;
-                stall_told  = false;
-
-                healthy_ms += 250;
-                if (healthy_ms >= 10000) {
-                    healthy_ms = 0;
-                    sdr_health_ok();
-                }
-            } else if (present && stall >= stall_next) {
-                healthy_ms = 0;
-                if (stall_tries < SDR_STALL_MAX_TRIES) {
-                    stall_tries++;
-                    stall_next = stall + SDR_STALL_RETRY_S;
-                    ESP_LOGW(TAG, "SDR silent for %ds - attempting in-place USB recovery",
-                             stall);
-                    lakeshark_radio_recover();
-                } else if (!stall_told) {
-                    stall_told = true;
-
-                    char why[64];
-                    snprintf(why, sizeof(why),
-                             "silent after %d in-place recoveries", SDR_STALL_MAX_TRIES);
-                    if (!sdr_auto_power_cycle(why)) {
-                        ESP_LOGE(TAG, "SDR has delivered nothing for %ds and cannot be "
-                                      "recovered automatically.", stall);
+                radio_health_snapshot_t health;
+                if (radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &health) &&
+                    health.state == RH_OK) {
+                    healthy_ms += 250;
+                    if (healthy_ms >= 10000) {
+                        healthy_ms = 0;
+                        sdr_health_ok();
                     }
+                } else {
+                    healthy_ms = 0;
                 }
             }
         }
@@ -356,7 +369,7 @@ static void boot_btn_task(void *arg)
 static void gpio_init(void)
 {
     /*LS-302*/
-#if LS_BOARD_HAS_VBUS_CTRL
+#if LS_HAS_VBUS_CTRL
     uint64_t out_mask = (1ULL << PA_CTRL_GPIO) | (1ULL << LS_BOARD_VBUS_EN_GPIO);
 #else
     uint64_t out_mask = (1ULL << PA_CTRL_GPIO);
@@ -370,7 +383,7 @@ static void gpio_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&out);
-#if LS_BOARD_HAS_VBUS_CTRL
+#if LS_HAS_VBUS_CTRL
     gpio_set_level(USB_VBUS_GPIO, 1);
 #endif
     gpio_set_level(PA_CTRL_GPIO, 1);
@@ -392,10 +405,50 @@ static int cmd_status(int argc, char **argv)
            "feed=%s  free_int=%u  free_psram=%u\n",
            s_modes[s_mode].name, cur_freq_hz() / 1e6,
            audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
-           audio_is_muted(), s_fm_modes[lakeshark_fm_get_mode() & 3],
+               audio_is_muted(), fm_mode_label(lakeshark_fm_get_mode()),
            lakeshark_cartotui_enabled() ? "on" : "off",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    /*LS-412*/
+    {
+        char rh[128];
+        radio_health_report(LS_RADIO_ENDPOINT_RTL_USB, rh, sizeof(rh));
+        printf("%s\n", rh);
+    }
+    return 0;
+}
+
+/*LS-414*/
+static int cmd_rtl(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[1], "detach")) {
+        printf("simulating a dongle detach - the device object will be torn down.\n"
+               "Only a real VBUS cycle or a replug brings it back ('SDR power').\n");
+        /*LS-819  Park and free BEFORE marking the device gone, which is what
+           LS-413's rtlsdr_dev_teardown() exists to do. Calling
+           radio_health_note_detached() first panicked the USB task:
+
+             Guru Meditation (Load access fault) MTVAL 0x0
+               hcd_urb_dequeue <- usbh_ep_dequeue_urb
+               <- usb_host_client_handle_events <- class_driver_task
+
+           because note_device_gone() nulls s_sdev, and esp_libusb_stream_stop()
+           then skips its own `if (s_sdev)` halt/flush/clear - so the 16
+           in-flight URBs were never cancelled, and the transfers backing them
+           were freed underneath the host controller.
+
+           A REAL unplug wants s_sdev nulled first: the device is gone and
+           touching the endpoint is wrong. A SIMULATED one must cancel first,
+           because the device is still sitting there. Order matters, and it is
+           the opposite of the real path. */
+        rtlsdr_dev_teardown();
+        return 0;
+    }
+
+    char rh[128];
+    radio_health_report(LS_RADIO_ENDPOINT_RTL_USB, rh, sizeof(rh));
+    printf("%s\n", rh);
+    if (argc < 2) printf("usage: rtl [detach]\n");
     return 0;
 }
 
@@ -413,20 +466,19 @@ static int cmd_feed(int argc, char **argv)
 static int cmd_fm(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("fm submode=%s (listen|scan|pocsag|wfm)\n",
-               s_fm_modes[lakeshark_fm_get_mode() & 3]);
+        printf("fm submode=%s (listen|scan|pocsag|wfm|acars|flex)\n",
+               fm_mode_command_name((fm_mode_t)lakeshark_fm_get_mode()));
         return 0;
     }
-    int m = -1;
-    for (int i = 0; i < 4; i++) {
-        if (!strcmp(argv[1], s_fm_modes[i])) { m = i; break; }
+    fm_mode_t mode;
+    if (!fm_mode_parse(argv[1], &mode)) {
+        printf("usage: fm listen|scan|pocsag|wfm|acars|flex\n");
+        return 0;
     }
-    if (m < 0 && !strcmp(argv[1], "nbfm")) m = 0;
-    if (m < 0) { printf("usage: fm listen|scan|pocsag|wfm\n"); return 0; }
     if (s_mode != FM_IDX) select_mode(FM_IDX);
-    lakeshark_fm_set_mode(m);
+    lakeshark_fm_set_mode((int)mode);
     pa_on();
-    printf("mode=FM submode=%s\n", s_fm_modes[m]);
+    printf("mode=FM submode=%s\n", fm_mode_command_name(mode));
     return 0;
 }
 
@@ -589,7 +641,10 @@ static void hl_c6_reset(void) { defer_post(DEFER_C6_RESET); }
 
 static int hl_c6_up(void) { return esp_hosted_connect_to_slave(); }
 
-static void hl_sdr_recover(void) { lakeshark_radio_recover(); }
+static void hl_sdr_recover(void)
+{
+    lakeshark_radio_recover(LS_RADIO_ENDPOINT_RTL_USB);
+}
 
 static bool hl_set_log_level(const char *tag, const char *level)
 {
@@ -624,26 +679,46 @@ static void sdr_power_task(void *arg)
 
     vTaskDelay(pdMS_TO_TICKS(1200));
     gpio_set_level(USB_VBUS_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(800));
 
-    ESP_LOGW(TAG, "SDR power cycle: VBUS restored, restarting to re-enumerate");
+    /*LS-414*/
+    ESP_LOGW(TAG, "SDR power cycle: VBUS restored - waiting for the dongle to "
+                  "re-enumerate on its own");
+    for (int i = 0; i < 80; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB)) {
+            ESP_LOGW(TAG, "SDR power cycle: re-enumerated after %d ms, no restart needed",
+                     (i + 1) * 100);
+            s_sdrpwr_busy = false;
+            vTaskDelete(NULL);
+            return;
+        }
+    }
+
+    ESP_LOGE(TAG, "SDR power cycle: nothing re-enumerated in 8 s - restarting");
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
 }
 
 /*LS-302*/
-static void hl_sdr_power_cycle(void)
+/*LS-418*/
+static bool hl_sdr_power_cycle_now(void)
 {
-    if (!LS_BOARD_HAS_VBUS_CTRL) {
+    if (!LS_HAS_VBUS_CTRL) {
         ESP_LOGW(TAG, "%s has no VBUS switch on the USB host port - cannot power "
                       "cycle the dongle in software. Replug it, or run "
                       "'SDR recover'.", LS_BOARD_NAME);
-        return;
+        return false;
     }
-    if (s_sdrpwr_busy) return;
+    if (s_sdrpwr_busy) return false;
     s_sdrpwr_busy = true;
     xTaskCreateStatic(sdr_power_task, "sdr_pwr", SDRPWR_STACK_WORDS, NULL, 5,
                       s_sdrpwr_stack, &s_sdrpwr_tcb);
+    return true;
+}
+
+static void hl_sdr_power_cycle(void)
+{
+    (void)hl_sdr_power_cycle_now();
 }
 
 static void hl_ble_enable(bool on)
@@ -686,15 +761,23 @@ static char s_c6_fw[16] = "?";
 static void hl_sys_info(char *out, size_t len)
 {
     uint32_t up = hl_uptime_s();
+    /*LS-220*/
+    /* Firmware version: PROJECT_VER as IDF derived it from git describe
+       --dirty.  The head reads this off the SYS reply so a screenshot on
+       the Flipper side is enough to tie an observation back to a commit. */
+    ls_version_info_t vi;
+    ls_version_get(&vi);
     snprintf(out, len,
-             "up=%lus rst=%s idf=%s int=%u dma=%u psram=%u mode=%s rtl=%d c6=%d "
-             "c6fw=%s hostfw=%d.%d.%d board=%s",
-             (unsigned long)up, reset_reason_name(), esp_get_idf_version(),
+             "up=%lus rst=%s ver=%s dirty=%d idf=%s int=%u dma=%u psram=%u "
+             "mode=%s rtl=%d c6=%d c6fw=%s hostfw=%d.%d.%d board=%s",
+             (unsigned long)up, reset_reason_name(),
+             vi.version, ls_version_is_dirty(vi.version) ? 1 : 0,
+             esp_get_idf_version(),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              s_modes[s_mode].name,
-             lakeshark_radio_device_ready() ? 1 : 0,
+              lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB) ? 1 : 0,
              c6_read_en(), s_c6_fw,
              ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
              ESP_HOSTED_VERSION_PATCH_1, LS_BOARD_NAME);
@@ -812,6 +895,20 @@ static int cmd_rec(int argc, char **argv)
                rec_end_reason_name(s.end_reason),
                (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
                (unsigned long)s.baud_est);
+        /*LS-961*/
+        /* Free-space line so the operator can see the volume filling
+           up from the console without a separate command.  UINT64_MAX
+           means the probe failed (statvfs not implemented on the
+           mount, or a permissions error) - report it as "?" rather
+           than as zero so it does not read like a full disk. */
+        if (s.bytes_free == UINT64_MAX) {
+            printf("    dir=%s   free=?\n", rec_dir());
+        } else {
+            char human[16];
+            rec_space_format_free(human, sizeof(human), s.bytes_free);
+            printf("    dir=%s   free=%s (%llu B)\n",
+                   rec_dir(), human, (unsigned long long)s.bytes_free);
+        }
         if (app_current_index() < 0 || strcmp(s_modes[s_mode].name, "REC") != 0) {
             printf("    note: not in REC mode - run 'mode rec' first\n");
         }
@@ -865,11 +962,26 @@ static int cmd_rec(int argc, char **argv)
         else if (n == -1) printf("nothing captured yet\n");
         /*LS-513*/
         else if (n == -3) printf("capture still running - wait for it to end\n");
+        /*LS-961*/
+        else if (n == -4) {
+            rec_status_t sst;
+            rec_get_status(&sst);
+            char detail[80];
+            rec_space_format_shortage(detail, sizeof(detail),
+                rec_space_estimate_bytes(sst.edges), sst.bytes_free);
+            printf("save refused: %s\n", detail);
+        }
         else printf("write failed (%d)\n", n);
     } else if (!strcmp(argv[1], "list")) {
         char buf[512];
-        int n = rec_list(buf, sizeof(buf));
-        printf("%d capture(s)%s%s\n", n, n ? ": " : "", buf);
+        /*LS-907*/
+        /* Report the true total and flag byte-buffer truncation so the
+           console cannot claim a shorter list is complete when longer
+           names filled the buffer before every capture was named. */
+        bool trunc = false;
+        int n = rec_list(buf, sizeof(buf), &trunc);
+        printf("%d capture(s)%s%s%s\n", n, n ? ": " : "", buf,
+               trunc ? " (list truncated)" : "");
     } else if (!strcmp(argv[1], "cat") && argc >= 3) {
         int n = rec_dump(argv[2], rec_emit_console, NULL);
         if (n < 0) printf("no such capture '%s'\n", argv[2]);
@@ -1010,15 +1122,19 @@ static int cmd_c6(int argc, char **argv)
 static int cmd_ble(int argc, char **argv)
 {
     if (argc < 2) {
-        char name[32], addr[20], filt[24];
+        char name[32], addr[20], filt[24], pin[24];
         uint32_t rx, tx, drops;
         ble_link_peer(name, sizeof(name), addr, sizeof(addr));
         ble_link_get_name_filter(filt, sizeof(filt));
         ble_link_stats(&rx, &tx, &drops);
-        printf("ble=%s filter=\"%s\" peer=%s [%s] tel=%dHz  rx_lines=%lu "
-               "tx_frames=%lu drops=%lu\n",
+        /*LS-993  Show the pinned peer and whether this board currently holds
+           a link, so `ble` alone answers "which board am I talking to". */
+        bool pinned = ble_link_get_pinned(pin, sizeof(pin));
+        printf("ble=%s filter=\"%s\" peer=%s [%s] pin=%s conn=%d tel=%dHz  "
+               "rx_lines=%lu tx_frames=%lu drops=%lu\n",
                ble_link_state_name(), filt,
                name[0] ? name : "-", addr[0] ? addr : "-",
+               pinned ? pin : "-", ble_link_is_connected() ? 1 : 0,
                ble_link_tel_hz(),
                (unsigned long)rx, (unsigned long)tx, (unsigned long)drops);
         /*LS-111*/
@@ -1048,10 +1164,15 @@ static int cmd_ble(int argc, char **argv)
         }
         if (ble_link_passkey_pending()) {
             printf("*** PAIRING: the head is showing a 6-digit code - "
-                   "enter it with:  ble pin <code>\n");
+                   "enter it with:  ble passkey <code>\n");
         }
-        printf("usage: ble <on|off|rescan|pin <code>|name <substr>|tel <hz>|"
-               "verbose <0|1>>\n");
+        /*LS-813*/
+        if (ble_link_stock_head_seen() && rx == 0) {
+            printf("*** a Flipper is on the air advertising its own BLE "
+                   "profile, not ours - open the LakeShark app on it\n");
+        }
+        printf("usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
+               "verbose <0|1>|pin [addr]|unpin|forget|show>\n");
         return 0;
     }
 
@@ -1063,15 +1184,51 @@ static int cmd_ble(int argc, char **argv)
     } else if (!strcmp(argv[1], "rescan")) {
         ble_link_rescan();
         printf("ble rescanning\n");
-    } else if (!strcmp(argv[1], "pin") && argc >= 3) {
+    } else if (!strcmp(argv[1], "passkey") && argc >= 3) {
+        /*LS-993  `pin` used to submit the passkey; it now pins the peer.
+           Passkey submission moved to `passkey` so the verb reads truthfully
+           and the two operations no longer share a name. */
         esp_err_t e = ble_link_submit_passkey((uint32_t)strtoul(argv[2], NULL, 10));
         if (e == ESP_ERR_INVALID_STATE) {
             printf("ble: nothing is waiting for a passkey right now\n");
         } else if (e == ESP_ERR_INVALID_ARG) {
             printf("ble: the passkey is 6 digits (0-999999)\n");
         } else {
-            printf("ble pin: %s\n", esp_err_to_name(e));
+            printf("ble passkey: %s\n", esp_err_to_name(e));
         }
+    /*LS-993*/
+    } else if (!strcmp(argv[1], "pin")) {
+        const char *addr = (argc >= 3) ? argv[2] : NULL;
+        esp_err_t e = ble_link_pin_peer(addr);
+        if (e == ESP_ERR_INVALID_ARG) {
+            printf("ble: pin needs an address like aa:bb:cc:dd:ee:ff\n");
+        } else if (e == ESP_ERR_NOT_FOUND) {
+            printf("ble: nothing connected - pin an explicit address, or wait "
+                   "for a link\n");
+        } else {
+            char cur[24];
+            ble_link_get_pinned(cur, sizeof(cur));
+            printf("ble pin=%s (persists across reboot; other advertisers with "
+                   "our service are ignored)\n", cur);
+        }
+    } else if (!strcmp(argv[1], "unpin")) {
+        ble_link_unpin_peer();
+        printf("ble unpinned (scanner falls back to any matching device)\n");
+    /*LS-980  Manual escape hatch for a bond left in NVS by older firmware that
+       still asked for bonding + Secure Connections against a GapPairingNone
+       head.  New firmware never initiates pairing, so the auto-wipe on AUTHREQ
+       never fires. */
+    } else if (!strcmp(argv[1], "forget")) {
+        esp_err_t e = ble_link_forget_bonds();
+        printf("ble forget: %s\n", esp_err_to_name(e));
+    } else if (!strcmp(argv[1], "show")) {
+        char name[32], addr[20], pin[24];
+        ble_link_peer(name, sizeof(name), addr, sizeof(addr));
+        bool pinned = ble_link_get_pinned(pin, sizeof(pin));
+        printf("ble state=%s conn=%d peer=%s [%s] pin=%s\n",
+               ble_link_state_name(), ble_link_is_connected() ? 1 : 0,
+               name[0] ? name : "-", addr[0] ? addr : "-",
+               pinned ? pin : "-");
     } else if (!strcmp(argv[1], "name") && argc >= 3) {
         ble_link_set_name_filter(argv[2]);
         printf("ble filter=\"%s\" (rescan to apply)\n", argv[2]);
@@ -1082,8 +1239,8 @@ static int cmd_ble(int argc, char **argv)
         ble_link_set_verbose(atoi(argv[2]) != 0);
         printf("ble verbose=%s\n", argv[2]);
     } else {
-        printf("usage: ble <on|off|rescan|pin <code>|name <substr>|tel <hz>|"
-               "verbose <0|1>>\n");
+        printf("usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
+               "verbose <0|1>|pin [addr]|unpin|forget|show>\n");
     }
     return 0;
 }
@@ -1164,10 +1321,17 @@ static int cmd_heap(int argc, char **argv)
            (unsigned)hi.largest_free_block,
            (unsigned)hi.minimum_free_bytes);
 
+    int core0_pct, core1_pct;
+    if (ls_cpu_busy(&core0_pct, &core1_pct)) {
+        printf("cpu busy : core0=%d%% core1=%d%%\n", core0_pct, core1_pct);
+    } else {
+        printf("cpu busy : core0=-- core1=-- (first sample; run heap again)\n");
+    }
+
     printf("usb iq   : %d transfer slots in flight, %llu B dropped, ring avail=%u\n",
-           esp_libusb_stream_slots(),
-           (unsigned long long)esp_libusb_stream_dropped(),
-           (unsigned)esp_libusb_stream_avail());
+           rtlsdr_stream_slots(),
+           (unsigned long long)rtlsdr_stream_dropped(),
+           (unsigned)rtlsdr_stream_avail());
 
     uint32_t done = 0, dropped = 0, commits = 0;
     settings_write_stats(&done, &dropped, &commits);
@@ -1221,7 +1385,10 @@ static int cmd_fl(int argc, char **argv)
 }
 
 /*LS-307*/
-static void console_start(void)
+/*LS-994  full=false registers only the recovery set. Everything below
+   dereferences the radio backend, the audio path or the BLE link, none of
+   which safe mode started. */
+static void console_start(bool full)
 {
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -1242,10 +1409,13 @@ static void console_start(void)
     const esp_console_cmd_t cmds[] = {
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
+        /*LS-414*/
+        { .command = "rtl", .help = "RTL health; 'rtl detach' simulates an unplug",
+          .func = &cmd_rtl },
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",
-          .hint = "listen|scan|pocsag|wfm", .func = &cmd_fm },
+          .hint = "listen|scan|pocsag|wfm|acars|flex", .func = &cmd_fm },
         { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
           .func = &cmd_vol },
         { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
@@ -1261,7 +1431,8 @@ static void console_start(void)
         { .command = "beep",   .help = "Play the boot chime - proves the speaker path",
           .func = &cmd_beep },
         { .command = "ble",    .help = "BLE control head link (P4 is central)",
-          .hint = "<on|off|rescan|pin <code>|name <s>|tel <hz>|verbose <0|1>>",
+          .hint = "<on|off|rescan|passkey <code>|name <s>|tel <hz>|"
+                  "verbose <0|1>|pin [addr]|unpin|forget|show>",
           .func = &cmd_ble },
         { .command = "c6",     .help = "ESP32-C6 co-processor: enable line, transport, firmware versions",
           .hint = "<0|1|up|ver|reset|release>", .func = &cmd_c6 },
@@ -1280,40 +1451,95 @@ static void console_start(void)
           .hint = "<PING|FREQ|VOL|GAIN|DEMOD|...>", .func = &cmd_fl },
     };
     esp_console_register_help_command();
-    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
-        esp_err_t rerr = esp_console_cmd_register(&cmds[i]);
-        if (rerr != ESP_OK) {
-            ESP_LOGW(TAG, "console command '%s' not registered: %s",
-                     cmds[i].command, esp_err_to_name(rerr));
+    if (full) {
+        for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+            esp_err_t rerr = esp_console_cmd_register(&cmds[i]);
+            if (rerr != ESP_OK) {
+                ESP_LOGW(TAG, "console command '%s' not registered: %s",
+                         cmds[i].command, esp_err_to_name(rerr));
+            }
         }
+        ls_ctl_register_commands();
+    } else {
+        (void)cmds;
+        ls_ctl_register_recovery_commands();
     }
-    ls_ctl_register_commands();
     esp_err_t serr = esp_console_start_repl(repl);
     if (serr != ESP_OK) {
         ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));
     }
 }
 
+/*LS-994  Headless safe mode. No display to fall back on, so the report is
+   the serial log and the recovery console. Nothing that can fault is started:
+   no gpio_init/PA, no NVS, no SPIFFS, no codec, no C6, no BLE, no backend, no
+   mode restore, no boot chime. */
+static void headless_safe_main(const ls_safe_boot_plan_t *plan)
+{
+    ls_crash_boot_setup();
+    ls_safe_note_dump(ls_crash_present() ? LS_SAFE_DUMP_PRESENT
+                                         : LS_SAFE_DUMP_NONE);
+
+    static char report[LS_SAFE_REPORT_MAX];
+    ls_safe_report(report, sizeof(report));
+    ESP_LOGE(TAG, "SAFE MODE report follows");
+    fputs(report, stdout);
+    fflush(stdout);
+
+    if (plan->console) console_start(false);
+    ESP_LOGW(TAG, "safe mode ready - radio, audio, C6 and BLE were not "
+                  "started. 'safemode normal' retries a normal boot.");
+}
+
 void app_main(void)
 {
+    /*LS-994  First, before anything that can fault. */
+    const ls_safe_boot_t *boot = ls_safe_boot_begin();
+    ls_safe_boot_plan_t plan;
+    ls_safe_boot_plan(boot->safe, &plan);
+    if (boot->safe) {
+        headless_safe_main(&plan);
+        return;
+    }
+
+    ls_safe_stage(LS_SAFE_STAGE_NVS);
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
+        /*LS-994  Normal-boot behaviour only; safe mode never reaches here, so
+           a recovery session cannot erase the settings partition. */
+        if (plan.storage_autorepair) {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            err = nvs_flash_init();
+        }
     }
     ESP_ERROR_CHECK(err);
+
+    /* LS-686: initialize before BLE can load its pinned peer. Storage is
+       static cache-safe DRAM, so this does not depend on heap availability. */
+    esp_err_t nvs_worker_err = ls_nvs_init();
+    if (nvs_worker_err != ESP_OK)
+        ESP_LOGE(TAG, "NVS dispatcher init failed: %s",
+                 esp_err_to_name(nvs_worker_err));
 
     gpio_init();
     defer_start();
 
+    /*LS-210*/
+    ls_crash_boot_setup();
+    /*LS-994*/
+    ls_safe_note_dump(ls_crash_present() ? LS_SAFE_DUMP_PRESENT
+                                         : LS_SAFE_DUMP_NONE);
+
+    ls_safe_stage(LS_SAFE_STAGE_STORAGE);
     ESP_ERROR_CHECK(bsp_spiffs_mount());
+    ls_safe_stage(LS_SAFE_STAGE_CODEC);
     ESP_ERROR_CHECK(bsp_extra_codec_init_speaker_only());
 
     ESP_LOGI(TAG, "LakeShark headless boot - radio core, no display (%s)",
              LS_BOARD_NAME);
     ESP_LOGI(TAG, "BOOT button (GPIO%d) cycles P25 -> ADS-B -> FM",
              (int)BOOT_BTN_GPIO);
-    if (LS_BOARD_HAS_VBUS_CTRL) {
+    if (LS_HAS_VBUS_CTRL) {
         ESP_LOGI(TAG, "USB host VBUS switch on GPIO%d", (int)USB_VBUS_GPIO);
     } else {
         ESP_LOGI(TAG, "no USB host VBUS switch - the dongle is hard-powered");
@@ -1323,6 +1549,7 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    ls_safe_stage(LS_SAFE_STAGE_C6);
     {
         int e = esp_hosted_connect_to_slave();
         ESP_LOGI(TAG, "ESP-Hosted co-processor link: %s (%d)",
@@ -1354,10 +1581,10 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
+    ls_safe_stage(LS_SAFE_STAGE_BACKEND);
     lakeshark_backend_start();
 
-    lakeshark_set_usb_autoreboot(false);
-
+    ls_safe_stage(LS_SAFE_STAGE_APPS);
     {
         /*LS-308*/
         const char *resume = lakeshark_recovery_take_app();
@@ -1388,6 +1615,16 @@ void app_main(void)
     xTaskCreateStatic(settings_task, "settings", SETTINGS_STACK_WORDS, NULL, 2,
                       s_settings_stack, &s_settings_tcb);
 
+    /*LS-406*/
+    {
+        radio_health_hooks_t rh = {
+            .request_recovery = hl_health_recover,
+            .power_cycle = hl_health_power_cycle,
+            .power_cycle_endpoint_id = LS_RADIO_ENDPOINT_RTL_USB,
+        };
+        radio_health_init(&rh);
+    }
+
     vTaskDelay(pdMS_TO_TICKS(1500));
     flipper_link_cfg_t link_cfg = FLIPPER_LINK_CFG_DEFAULT();
     esp_err_t lerr = flipper_link_start(&link_cfg, &s_link_host);
@@ -1407,6 +1644,11 @@ void app_main(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     ble_link_allow_telemetry(true);
 
-    console_start();
+    console_start(true);
     ESP_LOGI(TAG, "console ready - type 'help' for commands");
+
+    /*LS-994  Not healthy yet: the one-shot at LS_SAFE_HEALTHY_MS clears the
+       startup fault counter, not the end of app_main. */
+    ls_safe_stage(LS_SAFE_STAGE_RUNNING);
+    ls_safe_healthy_arm();
 }

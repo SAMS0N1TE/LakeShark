@@ -21,6 +21,11 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+/* Notice of change (GPL-2.0-or-later section 2a), LakeShark 2026.
+   Modified for the ESP32-P4 port: logging routed through ESP_LOG.
+   Upstream is osmocom/rtl-sdr; see COPYRIGHT.librtlsdr and UPSTREAM.md
+   in this directory. */
+
 #include <stdint.h>
 #include <stdio.h>
 

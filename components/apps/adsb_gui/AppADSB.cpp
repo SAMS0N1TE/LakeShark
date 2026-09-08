@@ -36,6 +36,7 @@ const uint8_t  *perf_history_mag_avg(void);
 }
 
 #include "sdr_ui/sdr_ui.h"
+#include "ui/ls_ui.h"
 
 static inline int clampi(int v, int lo, int hi)
 {
@@ -78,7 +79,14 @@ static void fmt_elapsed(char *out, size_t n, int64_t us)
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t color)
 {
     (void)font;
-    return sdr_label(parent, sdr_font_mono(), color);
+    lv_obj_t *label = sdr_label(parent, sdr_font_mono(), color);
+    /*LS-790  Default to the parent's width so text wraps inside the panel.
+       Without it a label sizes to its own text and simply runs off the right
+       edge of the screen, which is what the DEMOD ACTIVITY legend and the RF
+       DIAG line did. Every call site here wants that; making it the default
+       stops the next label added to this app from repeating it. */
+    lv_obj_set_width(label, lv_pct(100));
+    return label;
 }
 
 static lv_obj_t *make_panel(lv_obj_t *parent)
@@ -134,18 +142,18 @@ bool AppADSB::run(lv_obj_t *parent)
 {
     lakeshark_select_adsb();
 
-    lv_obj_t *scr = parent;
-    sdr_style_screen(scr);
+    ls_ui_screen_t screen;
+    ls_ui_screen_create(parent, "ADS-B", true, LS_UI_COLOR_ID_BLUE, &screen);
+    _screen_readout = screen.readout;
+    _screen_lamp = screen.lamp;
+    ls_ui_screen_set_readout(&screen, "1090.000 MHz");
+    _tabview = screen.tabs;
 
-    _tabview = lv_tabview_create(scr, LV_DIR_TOP, 44);
-    lv_obj_set_size(_tabview, lv_pct(100), lv_pct(100));
-    sdr_style_tabview(_tabview);
-
-    buildListTab(lv_tabview_add_tab(_tabview, "LIST"));
-    buildTrackTab(lv_tabview_add_tab(_tabview, "TRACK"));
-    buildDiagTab(lv_tabview_add_tab(_tabview, "DIAG"));
-    buildRadarTab(lv_tabview_add_tab(_tabview, "RADAR"));
-    buildSettingsTab(lv_tabview_add_tab(_tabview, "CONFIG"));
+    buildListTab(ls_ui_screen_add_tab(&screen, "LIST"));
+    buildTrackTab(ls_ui_screen_add_tab(&screen, "TRACK"));
+    buildDiagTab(ls_ui_screen_add_tab(&screen, "DIAG"));
+    buildRadarTab(ls_ui_screen_add_tab(&screen, "RADAR"));
+    buildSettingsTab(ls_ui_screen_add_tab(&screen, "CONFIG"));
 
     _timer = lv_timer_create(timerCb, 250, this);
     return true;
@@ -153,10 +161,9 @@ bool AppADSB::run(lv_obj_t *parent)
 
 void AppADSB::buildListTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
-    lv_obj_t *hdrp = sdr_lcd_panel(parent, SDR_PAS_GOLD);
+    lv_obj_t *hdrp = sdr_lcd_panel(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_BLUE));
     _list_hdr = sdr_label(hdrp, &lv_font_montserrat_20, SDR_PAS_GREEN);
     lv_obj_set_width(_list_hdr, lv_pct(100));
     lv_label_set_text(_list_hdr, "AIRCRAFT 0   MSGS 0 (0/s)   CRC 0/0");
@@ -168,16 +175,10 @@ void AppADSB::buildListTab(lv_obj_t *parent)
     lv_obj_set_style_text_font(_list_table, sdr_font_mono_sm(), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(_list_table, COL_PANEL, LV_PART_ITEMS);
     lv_obj_set_style_text_color(_list_table, COL_TEXT, LV_PART_ITEMS);
-    lv_obj_set_style_border_width(_list_table, 0, LV_PART_ITEMS);
-    lv_obj_set_style_pad_top(_list_table, 3, LV_PART_ITEMS);
-    lv_obj_set_style_pad_bottom(_list_table, 3, LV_PART_ITEMS);
-    lv_obj_set_style_pad_left(_list_table, 4, LV_PART_ITEMS);
 
     lv_obj_set_style_bg_color(_list_table, COL_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(_list_table, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(_list_table, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(_list_table, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_bottom(_list_table, 12, LV_PART_MAIN);
+    ls_ui_style_table(_list_table);
 
     lv_table_set_col_cnt(_list_table, 9);
 
@@ -188,18 +189,11 @@ void AppADSB::buildListTab(lv_obj_t *parent)
     for (int c = 0; c < 9; c++) lv_table_set_cell_value(_list_table, 0, c, hdr[c]);
     lv_obj_add_event_cb(_list_table, tableClickCb, LV_EVENT_VALUE_CHANGED, this);
 
-    lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, lv_pct(100), 48);
-    lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 2, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *row = ls_ui_controls(parent);
 
-    sdr_btn(row, LV_SYMBOL_PLUS " TEST", testBtnCb, this, nullptr);
-    sdr_btn(row, "GAIN", gainBtnCb, this, &_gain_lbl);
-    sdr_btn(row, "AGC",  agcBtnCb,  this, nullptr);
+    ls_ui_button(row, LV_SYMBOL_PLUS " TEST", LS_BTN_DEFAULT, testBtnCb, this, nullptr);
+    ls_ui_button(row, "GAIN", LS_BTN_DEFAULT, gainBtnCb, this, &_gain_lbl);
+    ls_ui_button(row, "AGC", LS_BTN_TOGGLE_OFF, agcBtnCb, this, nullptr);
 }
 
 void AppADSB::updateList(void)
@@ -209,6 +203,8 @@ void AppADSB::updateList(void)
              perf_get_active_count(), perf_get_msgs_total(), perf_get_msgs_per_sec(),
              perf_get_crc_good(), perf_get_crc_err());
     lv_label_set_text(_list_hdr, buf);
+    ls_ui_lamp_set(_screen_lamp, perf_get_msgs_per_sec() > 0,
+                   LS_UI_COLOR_ACCENT);
 
     if (_gain_lbl) {
         int g = lakeshark_adsb_gain_tenths();
@@ -254,10 +250,10 @@ void AppADSB::updateList(void)
 
 void AppADSB::buildTrackTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
     _trk_hdr = make_label(parent, &lv_font_montserrat_16, COL_BRIGHT);
+    lv_obj_set_width(_trk_hdr, lv_pct(100));      /*LS-790*/
     lv_label_set_text(_trk_hdr, "No aircraft selected");
 
     lv_obj_t *p1 = make_panel(parent);
@@ -282,19 +278,13 @@ void AppADSB::buildTrackTab(lv_obj_t *parent)
     lv_chart_set_point_count(_trk_chart, 32);
     lv_chart_set_update_mode(_trk_chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_obj_set_style_bg_color(_trk_chart, COL_PANEL, 0);
-    lv_obj_set_style_border_width(_trk_chart, 0, 0);
+    ls_ui_style_plot(_trk_chart);
     _trk_series = lv_chart_add_series(_trk_chart, COL_GREEN, LV_CHART_AXIS_PRIMARY_Y);
 
-    lv_obj_t *nav = lv_obj_create(parent);
-    lv_obj_set_size(nav, lv_pct(100), 48);
-    lv_obj_set_style_bg_opa(nav, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(nav, 0, 0);
-    lv_obj_set_style_pad_all(nav, 2, 0);
-    lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *nav = ls_ui_controls(parent);
 
-    sdr_btn(nav, LV_SYMBOL_LEFT " PREV", prevBtnCb, this, nullptr);
-    sdr_btn(nav, "NEXT " LV_SYMBOL_RIGHT, nextBtnCb, this, nullptr);
+    ls_ui_button(nav, LV_SYMBOL_LEFT " PREV", LS_BTN_DEFAULT, prevBtnCb, this, nullptr);
+    ls_ui_button(nav, "NEXT " LV_SYMBOL_RIGHT, LS_BTN_DEFAULT, nextBtnCb, this, nullptr);
 }
 
 void AppADSB::updateTrack(void)
@@ -377,28 +367,35 @@ static lv_color_t mag_color(int v)
 
 void AppADSB::buildDiagTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
+    /*LS-790  Every label on this tab sized itself to its own text and so ran
+       off the right edge of the screen - the DEMOD ACTIVITY legend was cut at
+       "cyan=mag", and the RF DIAG line lost its uptime. _diag_cum was already
+       given a width and was the only one that wrapped; give the rest the same
+       so the text stays inside the panel. */
     _diag_hdr = make_label(parent, &lv_font_montserrat_14, COL_TEXT);
+    lv_obj_set_width(_diag_hdr, lv_pct(100));
     lv_label_set_text(_diag_hdr, "RF DIAGNOSTICS");
 
     lv_obj_t *p1 = make_panel(parent);
     lv_obj_set_flex_flow(p1, LV_FLEX_FLOW_COLUMN);
     _diag_inlbl = make_label(p1, &lv_font_montserrat_14, COL_TEXT);
+    lv_obj_set_width(_diag_inlbl, lv_pct(100));   /*LS-790*/
     lv_label_set_text(_diag_inlbl, "INPUT LEVEL");
     _diag_inbar = lv_bar_create(p1);
     lv_obj_set_size(_diag_inbar, lv_pct(100), 16);
     lv_bar_set_range(_diag_inbar, 0, 255);
 
     lv_obj_t *clbl = make_label(parent, &lv_font_montserrat_12, COL_LABEL);
-    lv_label_set_text(clbl, "DEMOD ACTIVITY (60s)  green=bursts amber=crc cyan=mag");
+    lv_obj_set_width(clbl, lv_pct(100));          /*LS-790*/
+    lv_label_set_text(clbl, "DEMOD ACTIVITY (60s)\ngreen=bursts  amber=crc  cyan=magnitude");
     _diag_chart = lv_chart_create(parent);
     lv_obj_set_size(_diag_chart, lv_pct(100), 96);
     lv_chart_set_type(_diag_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(_diag_chart, PERF_HISTORY_LEN);
     lv_obj_set_style_bg_color(_diag_chart, COL_PANEL, 0);
-    lv_obj_set_style_border_width(_diag_chart, 0, 0);
+    ls_ui_style_plot(_diag_chart);
     lv_obj_set_style_width(_diag_chart, 0, LV_PART_INDICATOR);
     lv_obj_set_style_height(_diag_chart, 0, LV_PART_INDICATOR);
     _s_bursts = lv_chart_add_series(_diag_chart, COL_GREEN, LV_CHART_AXIS_PRIMARY_Y);
@@ -413,6 +410,7 @@ void AppADSB::buildDiagTab(lv_obj_t *parent)
     lv_obj_t *p3 = make_panel(parent);
     lv_obj_set_flex_flow(p3, LV_FLEX_FLOW_COLUMN);
     _diag_usblbl = make_label(p3, &lv_font_montserrat_14, COL_TEXT);
+    lv_obj_set_width(_diag_usblbl, lv_pct(100));  /*LS-790*/
     lv_label_set_text(_diag_usblbl, "USB DATA PATH");
     _diag_usbbar = lv_bar_create(p3);
     lv_obj_set_size(_diag_usbbar, lv_pct(100), 16);
@@ -483,28 +481,24 @@ void AppADSB::updateDiag(void)
 
 void AppADSB::buildRadarTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
     _radar_hdr = sdr_label(parent, sdr_font_mono(), SDR_CYAN);
     lv_label_set_text(_radar_hdr, "RADAR");
 
-    const int SZ = 460;
+    int SZ = lv_disp_get_hor_res(lv_obj_get_disp(parent));
+    int avail_h = lv_disp_get_ver_res(lv_obj_get_disp(parent));
+    if (avail_h < SZ) SZ = avail_h;
     lv_obj_t *scope = lv_obj_create(parent);
     _radar_scope = scope;
     lv_obj_set_size(scope, SZ, SZ);
-    lv_obj_set_style_bg_color(scope, SDR_PANEL, 0);
-    lv_obj_set_style_bg_opa(scope, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(scope, 2, 0);
-    lv_obj_set_style_border_color(scope, SDR_BORDER, 0);
-    lv_obj_set_style_border_width(scope, 1, 0);
-    lv_obj_set_style_pad_all(scope, 0, 0);
+    ls_ui_style_plot(scope);
     lv_obj_clear_flag(scope, LV_OBJ_FLAG_SCROLLABLE);
 
     auto deco = [](lv_obj_t *o) {
-        lv_obj_set_style_border_width(o, 0, 0);
+        lv_obj_remove_style_all(o);
         lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
     };
@@ -514,11 +508,8 @@ void AppADSB::buildRadarTab(lv_obj_t *parent)
         lv_obj_t *ring = lv_obj_create(scope);
         lv_obj_set_size(ring, radii[i] * 2, radii[i] * 2);
         lv_obj_align(ring, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(ring, LV_OPA_0, 0);
-        lv_obj_set_style_border_color(ring, SDR_BORDER, 0);
-        lv_obj_set_style_border_opa(ring, LV_OPA_40, 0);
-        lv_obj_set_style_border_width(ring, 1, 0);
+        ls_ui_style_circle(ring, LS_UI_COLOR_PANEL_BORDER, true);
         lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
     }
@@ -537,15 +528,13 @@ void AppADSB::buildRadarTab(lv_obj_t *parent)
 
     lv_obj_t *ctr = lv_obj_create(scope);
     lv_obj_set_size(ctr, 8, 8); lv_obj_align(ctr, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(ctr, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(ctr, SDR_AMBER, 0);
+    ls_ui_style_circle(ctr, LS_UI_COLOR_WARN, false);
     deco(ctr);
 
     for (int i = 0; i < RADAR_MAX; i++) {
         lv_obj_t *d = lv_obj_create(scope);
         lv_obj_set_size(d, 9, 9);
-        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(d, SDR_GREEN, 0);
+        ls_ui_style_circle(d, LS_UI_COLOR_ACCENT, false);
         deco(d);
         lv_obj_add_flag(d, LV_OBJ_FLAG_HIDDEN);
         _radar_dot[i] = d;
@@ -574,7 +563,11 @@ void AppADSB::updateRadar(void)
     double clat = cos((double)home_lat * 0.017453292519943295);
 
     double xs[RADAR_MAX], ys[RADAR_MAX], rr[RADAR_MAX];
-    const char *cs[RADAR_MAX];
+    /*LS-752*/
+    /* Copy the callsign rather than holding a pointer into the live aircraft
+       table: adsb_rx writes it with strcpy() while this runs on the LVGL
+       thread, so a borrowed pointer can be read mid-write. */
+    char cs[RADAR_MAX][10];
     uint32_t ic[RADAR_MAX];
     int n = 0;
     double maxr = 0;
@@ -587,7 +580,7 @@ void AppADSB::updateRadar(void)
         rr[n] = sqrt(x * x + y * y);
         if (rr[n] > maxr) maxr = rr[n];
         ic[n] = a->icao;
-        cs[n] = a->callsign[0] ? a->callsign : nullptr;
+        snprintf(cs[n], sizeof(cs[n]), "%s", a->callsign);
         n++;
     }
 
@@ -617,8 +610,8 @@ void AppADSB::updateRadar(void)
         lv_obj_align(_radar_dot[i], LV_ALIGN_CENTER, dx, dy);
         lv_obj_clear_flag(_radar_dot[i], LV_OBJ_FLAG_HIDDEN);
         char tag[12];
-        if (cs[i]) snprintf(tag, sizeof(tag), "%s", cs[i]);
-        else       snprintf(tag, sizeof(tag), "%lX", (unsigned long)ic[i]);
+        if (cs[i][0]) snprintf(tag, sizeof(tag), "%s", cs[i]);
+        else          snprintf(tag, sizeof(tag), "%lX", (unsigned long)ic[i]);
         lv_label_set_text(_radar_lbl[i], tag);
         lv_obj_align(_radar_lbl[i], LV_ALIGN_CENTER, dx + 9, dy - 7);
         lv_obj_clear_flag(_radar_lbl[i], LV_OBJ_FLAG_HIDDEN);
@@ -635,9 +628,7 @@ void AppADSB::updateRadar(void)
 
 void AppADSB::buildSettingsTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 8, 0);
-    lv_obj_set_style_pad_row(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
     sdr_setrow_t r;
 
@@ -650,43 +641,43 @@ void AppADSB::buildSettingsTab(lv_obj_t *parent)
 
     sdr_setting_row(parent, "GAIN", &r);
     _set_gain_val = r.value;
-    sdr_btn(r.controls, "STEP", setGainStepCb, this, nullptr);
-    sdr_btn(r.controls, "AGC",  setAgcCb,      this, nullptr);
+    ls_ui_button(r.controls, "STEP", LS_BTN_DEFAULT, setGainStepCb, this, nullptr);
+    ls_ui_button(r.controls, "AGC", LS_BTN_TOGGLE_OFF, setAgcCb, this, nullptr);
 
     sdr_section(parent, "VOICE (SAM)");
 
     sdr_setting_row(parent, "PRESET", &r);
     _set_preset_val = r.value;
-    sdr_btn(r.controls, "<", presetLeftCb,  this, nullptr);
-    sdr_btn(r.controls, ">", presetRightCb, this, nullptr);
+    ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, presetLeftCb, this, nullptr);
+    ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, presetRightCb, this, nullptr);
 
     sdr_setting_row(parent, "LOW-PASS", &r);
     _set_lp_val = r.value;
-    sdr_btn(r.controls, "<", lpLeftCb,  this, nullptr);
-    sdr_btn(r.controls, ">", lpRightCb, this, nullptr);
+    ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, lpLeftCb, this, nullptr);
+    ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, lpRightCb, this, nullptr);
 
     sdr_setting_row(parent, "LOW-SHELF", &r);
     _set_shelf_val = r.value;
-    sdr_btn(r.controls, "<", shelfLeftCb,  this, nullptr);
-    sdr_btn(r.controls, ">", shelfRightCb, this, nullptr);
+    ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, shelfLeftCb, this, nullptr);
+    ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, shelfRightCb, this, nullptr);
 
     sdr_setting_row(parent, "VOICE TEST", &r);
     lv_label_set_text(r.value, "");
-    sdr_btn(r.controls, "SPEAK", voiceTestCb, this, nullptr);
+    ls_ui_button(r.controls, "SPEAK", LS_BTN_PRIMARY, voiceTestCb, this, nullptr);
 
     sdr_section(parent, "CALLOUTS  (off / beep / voice)");
 
     sdr_setting_row(parent, "NEW CONTACT", &r);
     _set_new_val = r.value;
-    sdr_btn(r.controls, "CYCLE", newCycleCb, this, nullptr);
+    ls_ui_button(r.controls, "CYCLE", LS_BTN_DEFAULT, newCycleCb, this, nullptr);
 
     sdr_setting_row(parent, "LOST", &r);
     _set_lost_val = r.value;
-    sdr_btn(r.controls, "CYCLE", lostCycleCb, this, nullptr);
+    ls_ui_button(r.controls, "CYCLE", LS_BTN_DEFAULT, lostCycleCb, this, nullptr);
 
     sdr_setting_row(parent, "POSITION", &r);
     _set_pos_val = r.value;
-    sdr_btn(r.controls, "CYCLE", posCycleCb, this, nullptr);
+    ls_ui_button(r.controls, "CYCLE", LS_BTN_DEFAULT, posCycleCb, this, nullptr);
 
     sdr_section(parent, "AUDIO");
 
@@ -695,13 +686,13 @@ void AppADSB::buildSettingsTab(lv_obj_t *parent)
 
     sdr_setting_row(parent, "MUTE", &r);
     _set_mute_val = r.value;
-    sdr_btn(r.controls, "TOGGLE", muteCb, this, nullptr);
+    ls_ui_button(r.controls, "TOGGLE", LS_BTN_TOGGLE_OFF, muteCb, this, nullptr);
 
     sdr_section(parent, "OUTPUT  (CartoTUI on a host PC)");
 
     sdr_setting_row(parent, "CARTOTUI FEED", &r);
     _set_carto_val = r.value;
-    sdr_btn(r.controls, "TOGGLE", cartoCb, this, nullptr);
+    ls_ui_button(r.controls, "TOGGLE", LS_BTN_TOGGLE_OFF, cartoCb, this, nullptr);
 
     updateSettings();
 

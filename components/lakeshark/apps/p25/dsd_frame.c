@@ -12,9 +12,29 @@ extern void audio_beep_request(beep_kind_t kind);
 #endif
 
 #include "p25p1_check_nid.h"
+#include "p25_tsbk.h"
 
 extern int autoscan_bch_ok_flag;
 extern int dsd_bch_fail_counter;
+
+static void
+captureTSDU(dsd_opts *opts, dsd_state *state)
+{
+    if (state->p25_frame_valid) {
+        /* LS-739: two systems may reuse IDEN and TG values. A validated new
+         * control NAC retires the old plan before even the first grant. */
+        if (state->p25_control_nac_valid && state->p25_control_nac != state->nac)
+            p25_tsbk_reset_system(state);
+        state->p25_control_nac = (uint16_t)state->nac;
+        state->p25_control_nac_valid = 1;
+    }
+    state->p25_tsdu_dibit_count = 0;
+    for (unsigned int i = 0; i < P25_TSDU_DIBIT_COUNT; i++)
+        state->p25_tsdu_dibits[i] = (uint8_t)getDibit(opts, state);
+    state->p25_tsdu_dibit_count = P25_TSDU_DIBIT_COUNT;
+    state->p25_frame_tsbks = (uint8_t)p25_tsbk_process_tsdu(
+        state, state->p25_tsdu_dibits, state->p25_tsdu_dibit_count);
+}
 
 void
 printFrameInfo(dsd_opts *opts, dsd_state *state)
@@ -46,6 +66,9 @@ processFrame(dsd_opts *opts, dsd_state *state)
     int bch_ec = -1;
 
     int nid_dibits[33] = {0};
+
+    state->p25_frame_valid = 0;
+    state->p25_frame_tsbks = 0;
 
     nac[12] = 0;
     duid[2] = 0;
@@ -156,10 +179,28 @@ processFrame(dsd_opts *opts, dsd_state *state)
         }
     }
 
+    /* LS-739: an uncorrectable NID used to dispatch plausible raw DUIDs or
+     * guess the next LDU. A corrupt candidate must not reach the vocoder or
+     * look like a terminator/relock. Verified with damaged BCH fixtures. */
+    if (!check_result) {
+        state->pcm_out_write = 0;
+        return;
+    }
+    state->p25_frame_valid = 1;
+    state->p25_frame_duid = (uint8_t)((duid[0] - '0') * 4 + duid[1] - '0');
+
+    /* LS-610: a talkgroup change means we are on a new call, so the ALGID
+     * from the previous LDU2 no longer applies. Snapshot before dispatch;
+     * if the frame writes a new non-zero lasttg, clear the ESS. */
+    int pre_tg = state->lasttg;
+
     if (strcmp(duid, "00") == 0) {
         diag_count_frame("00");
         if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" HDU\n"); }
         mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+        /* HDU begins a new call. Its parser may replace this unknown ESS
+         * only after the header passes FEC. */
+        p25_ess_clear(state);
         state->lastp25type = 2;
         sprintf(state->fsubtype, " HDU          ");
         processHDU(opts, state);
@@ -194,6 +235,13 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastsrc = 0;
         state->lastp25type = 0;
         state->err_str[0] = 0;
+        /* LS-610: TDULC ends a call. Clear ESS so the next call starts
+         * unknown - anything else lets a mute leak from one call to the
+         * next until reboot. */
+        p25_ess_clear(state);
+        /* LS-650: same for the LCW identity, or the next call would inherit
+         * the previous emergency flag, alias and TG label. */
+        p25_lcw_call_clear(state);
         sprintf(state->fsubtype, " TDULC        ");
         state->numtdulc++;
         processTDULC(opts, state);
@@ -206,6 +254,10 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastsrc = 0;
         state->lastp25type = 0;
         state->err_str[0] = 0;
+        /* LS-610: same as TDULC - end of call, drop the ESS. */
+        p25_ess_clear(state);
+        /* LS-650: and the LCW identity, for the same reason. */
+        p25_lcw_call_clear(state);
         sprintf(state->fsubtype, " TDU          ");
         processTDU(opts, state);
     } else if (strcmp(duid, "13") == 0) {
@@ -215,32 +267,25 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastsrc = 0;
         state->lastp25type = 3;
         sprintf(state->fsubtype, " TSDU         ");
-        skipDibit(opts, state, 328 - 25);
+        captureTSDU(opts, state);
     } else if (strcmp(duid, "30") == 0) {
         diag_count_frame("30");
         if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" PDU\n"); }
         state->lastp25type = 4;
         sprintf(state->fsubtype, " PDU          ");
     } else if (state->lastp25type == 1) {
-        diag_count_frame("22");
-        if (opts->errorbars == 1) { printFrameInfo(opts, state); printf("(LDU2) "); }
-        state->lastp25type = 2;
-        sprintf(state->fsubtype, "(LDU2)        ");
-        state->numtdulc = 0;
-        processLDU2(opts, state);
+        /* LS-739: a validated but unsupported DUID is not an inferred LDU. */
+        state->p25_frame_valid = 0;
+        state->pcm_out_write = 0;
     } else if (state->lastp25type == 2) {
-        diag_count_frame("11");
-        if (opts->errorbars == 1) { printFrameInfo(opts, state); printf("(LDU1) "); }
-        state->lastp25type = 1;
-        sprintf(state->fsubtype, "(LDU1)        ");
-        state->numtdulc = 0;
-        processLDU1(opts, state);
+        state->p25_frame_valid = 0;
+        state->pcm_out_write = 0;
     } else if (state->lastp25type == 3) {
         diag_count_frame("13");
         if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" (TSDU)\n"); }
         state->lastp25type = 3;
         sprintf(state->fsubtype, "(TSDU)        ");
-        skipDibit(opts, state, 328 - 25);
+        captureTSDU(opts, state);
     } else if (state->lastp25type == 4) {
         diag_count_frame("30");
         if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" (PDU)\n"); }
@@ -253,5 +298,20 @@ processFrame(dsd_opts *opts, dsd_state *state)
             printFrameInfo(opts, state);
             printf(" duid:%s *Unknown DUID*\n", duid);
         }
+    }
+
+    /* LS-610: if the frame we just dispatched landed a different talkgroup,
+     * the ESS from the prior call no longer applies. Comparing after the
+     * dispatch catches HDU (talkgroup set in processHDU) and LDU1 (talkgroup
+     * set inside the LC parser); TDU/TDULC already cleared above. */
+    if (state->lasttg != 0 && pre_tg != 0 && state->lasttg != pre_tg) {
+        /* HDU already retired the prior ESS before publishing its own.
+         * Do not erase that freshly validated header on a TG change. */
+        if (strcmp(duid, "00") != 0) p25_ess_clear(state);
+        /* LS-739: LCW here is the NEW call, not the old one. Clearing it
+         * erased validated identity and hid a mismatch from the follower.
+         * Retire old PCM; the LCW parser retires aliases before replacing
+         * identity, so the new group/source remains available to compare. */
+        state->pcm_out_write = 0;
     }
 }

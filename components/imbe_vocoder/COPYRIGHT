@@ -1,0 +1,35 @@
+IMBE vocoder — copyright and licence
+====================================
+
+    Project 25 IMBE Encoder/Decoder Fixed-Point implementation
+    Developed by Pavel Yazev E-mail: pyazev@gmail.com
+    Version 1.0 (c) Copyright 2009
+
+    This is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 3, or (at your option)
+    any later version.
+
+    The software is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+    See the GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this; see the file COPYING.  If not, write to the Free
+    Software Foundation, Inc., 51 Franklin Street, Boston, MA
+    02110-1301, USA.
+
+GPL-3.0-or-later. The full text is the repository root `LICENSE`.
+
+Reached here from OP25 (<https://github.com/boatbod/op25>),
+`op25/gr-op25_repeater/lib/imbe_vocoder/`. See `UPSTREAM.md`.
+
+Patent notice
+-------------
+
+IMBE and AMBE are covered by patents held by Digital Voice Systems, Inc. A
+software licence is not a patent licence. Building or shipping a device that
+decodes these codecs is your responsibility to clear; the GPL says so itself
+(GPLv3 section 11) — if patent obligations would stop you conveying this
+software freely, you may not convey it at all.

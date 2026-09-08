@@ -33,12 +33,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.0.3
-  esp_lvgl_port:
-    dependencies: []
-    source:
-      path: C:\Users\black\AppData\Local\Temp\claude\C--\6965695d-40dd-4934-9e37-160d2c9d6603\scratchpad\LakeShark-temp-snapshot\components\esp_lvgl_port
-      type: local
-    version: 2.5.0
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -124,6 +118,12 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.2.1
+  espressif/esp_lvgl_port:
+    dependencies: []
+    source:
+      path: D:\assasdad\LakeShark\LakeShark_NON_GIT\components\esp_lvgl_port
+      type: local
+    version: 2.5.0
   espressif/esp_serial_slave_link:
     component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
     dependencies:
@@ -157,7 +157,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.4.3
+    version: 5.5.4
   lvgl/lvgl:
     component_hash: d7c1ac037ae6e85d94897f807d6e7ba0946a83e720074fc95a4f6241da9f9f53
     dependencies: []
@@ -218,10 +218,11 @@ direct_dependencies:
 - chmorgan/esp-file-iterator
 - espressif/esp_hosted
 - espressif/esp_lcd_st7701
+- espressif/esp_lvgl_port
 - espressif/esp_wifi_remote
 - idf
 - lvgl/lvgl
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 1ed0308c7db7e8582891cd3d750d3623109853a11236eb037d1f80a0507c23a2
+manifest_hash: 8f6922e07e029443025bf9615eccea8456ce661cb7d4a04011eca229d41f7620
 target: esp32p4
 version: 2.0.0

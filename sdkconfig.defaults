@@ -58,6 +58,17 @@ CONFIG_LV_COLOR_SCREEN_TRANSP=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEM_CUSTOM_INCLUDE="esp_heap_caps.h"
 CONFIG_LV_MEMCPY_MEMSET_STD=y
+# LS-782: the shared palette is dark but the LVGL default theme is light, so
+# any object that never paints a background came out white on a dark screen
+# (the REC/SCOUT readout panels, FREQ SET/PEAK). Painting each site by hand
+# is what LS-774 did; this makes the fallback degrade to the right colour.
+CONFIG_LV_THEME_DEFAULT_DARK=y
+
+# LS-797: do NOT enable CONFIG_LCD_DSI_ISR_CACHE_SAFE for the blue frame. It
+# was tried on 2026-09-07 and measured: late frames stayed at the same rate
+# (10 in 77 s, against 10 in 89 s before), so a flash write holding the cache
+# disabled is not the cause. It only costs IRAM. The real cause is PSRAM
+# bandwidth - see LS-798.
 CONFIG_LV_CIRCLE_CACHE_SIZE=10
 CONFIG_LV_LAYER_SIMPLE_BUF_SIZE=102400
 CONFIG_LV_IMG_CACHE_DEF_SIZE=20
@@ -123,3 +134,27 @@ CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 # LVGL/DSI/audio). Without this only ~32KB posts -> HS endpoint idles between
 # reposts -> RTL FIFO overflow -> choppy audio.
 CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y
+
+# LS-734  Save panic backtraces to the coredump partition instead of discarding
+# them. LS-020 (the REC crash) has gone undiagnosed for multiple sessions
+# specifically because "no panic backtrace has been captured" - the firmware was
+# built with ESP_COREDUMP_ENABLE_TO_NONE, so a crash printed to a console nobody
+# was attached to and was then gone. Reading one back:
+#   idf.py -p <port> coredump-info      (needs build/lakeshark.elf to match)
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
+CONFIG_ESP_COREDUMP_STACK_SIZE=1792
+
+# LS-815  ESP32-P4 silicon revision. Pinned, because leaving it unset means
+# the toolchain picks it: IDF 5.5.4 defaults to REV_MIN_301, and that image
+# will not even flash onto the boards this project runs on -
+#   "bootloader.bin requires chip revision in range [v3.1 - v3.99]
+#    (this chip is revision v1.3)"
+# Every board in use is early silicon (the bench NANO reports v1.3), and the
+# committed sdkconfig from the last working build has REV_MIN_1. IDF makes
+# pre-v3.0 and >=v3.0 mutually exclusive, so if a v3.x board ever turns up it
+# needs its own build - not a reason to leave this unpinned today.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_1=y

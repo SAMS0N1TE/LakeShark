@@ -1,9 +1,9 @@
-menu "Example Configurations"
+menu "LakeShark"
     choice LS_BOARD
         prompt "LakeShark target board"
         default LS_BOARD_P4_NANO
         help
-            Selects the board profile in components/lakeshark/core/ls_board.h.
+            Selects the board profile in components/lakeshark/board/.
             Everything the boards share (I2C, I2S, PA enable, uSD, the SDIO link
             to the on-board ESP32-C6) is identical across the Waveshare ESP32-P4
             family; this choice covers what actually differs - USB VBUS control,
@@ -20,6 +20,7 @@ menu "Example Configurations"
 
         config LS_BOARD_P4_TOUCH_LCD_43
             bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (32MB)"
+
     endchoice
 
     config LS_VBUS_EN_GPIO
@@ -56,6 +57,30 @@ menu "Example Configurations"
             Once you change the volume at runtime it is saved to NVS after ~1.5 s
             and that saved value wins on every later boot, so this only governs
             first boot.
+
+    config LS_BLE_HEAD
+        bool "BLE control head (Flipper / host over BLE)"
+        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        default y
+        help
+            Build the BLE control head: LakeShark scans for a Flipper running
+            the LakeShark app and connects out to it, carrying the same
+            command set as the UART head.
+
+            Turn this OFF if you only ever use the UART head or the serial
+            console. The BLE link and the whole NimBLE stack drop out of the
+            build, which is a large flash and RAM saving on a board that will
+            never use it.
+
+            The `ble` console commands still exist with this off - they report
+            that the build has no radio head rather than disappearing, so a
+            missing command never looks like a firmware fault. The UART head
+            is unaffected either way: flipper_link.c is the command parser for
+            both transports and is always built.
+
+            This depends on BT_ENABLED, so clearing CONFIG_BT_ENABLED turns it
+            off on its own. To drop BLE entirely, clear both - see
+            boards/nano_headless_nobt.defaults for a worked example.
 
     config LAKESHARK_HEADLESS
         bool "Headless build (UART console, no display/GUI)"

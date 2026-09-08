@@ -22,6 +22,7 @@ typedef struct {
     bool     rtl_ready;
     bool     parked;
     char     mode[8];
+    char     target_app[8];
     uint32_t freq_hz;
 
     int      sig_pct;

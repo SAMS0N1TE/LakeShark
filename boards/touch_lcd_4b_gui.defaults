@@ -1,0 +1,46 @@
+# LS-820  ESP32-P4-WIFI6-Touch-LCD-4B / Smart 86 Box, GUI build.
+#
+# BUILD COVERAGE ONLY - NOT VERIFIED ON HARDWARE.
+#
+# This board shipped as v0.2.0 and had a variant header and a Kconfig entry
+# but NO defaults file, so it could not be built non-interactively at all and
+# nothing in CI ever compiled it. A board that cannot be built is a board that
+# rots: the NANO's build was broken for an unknown length of time for exactly
+# that reason (LS-814, the NimBLE roles).
+#
+# Every line below except the board selection is copied verbatim from
+# boards/lcd43_gui.defaults, because these two boards differ only in the panel
+# and both are 32MB with no software VBUS control (see the variant headers).
+# The VBUS -1 and 32MB/partition choices agree with p4_touch_lcd_4b.h.
+#
+# If you have this board in hand: check the SD card slot and the BLE block
+# against it, then delete this warning. Until then treat a green CI build as
+# "it still compiles", not "it still works".
+#
+# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/touch_lcd_4b_gui.defaults"
+CONFIG_LS_BOARD_P4_TOUCH_LCD_4B=y
+CONFIG_LAKESHARK_HEADLESS=n
+CONFIG_EXAMPLE_ENABLE_SD_CARD=y
+CONFIG_LS_VBUS_EN_GPIO=-1
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_32m.csv"
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_NVS_PERSIST=y

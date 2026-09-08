@@ -1,0 +1,51 @@
+librtlsdr (rtl-sdr) — copyright and licence
+===========================================
+
+Part of this directory is librtlsdr, from the Osmocom rtl-sdr project:
+
+    https://osmocom.org/projects/rtl-sdr
+    https://github.com/osmocom/rtl-sdr
+
+    Copyright (C) 2012-2014 by Steve Markgraf <steve@steve-m.de>
+    Copyright (C) 2012 by Dimitri Stolnikov <horiz0n@gmx.net>
+    Copyright (C) 2011-2012 by Harald Welte <laforge@gnumonks.org>
+    Copyright (C) 2012 by Sylvain Munaut <tnt@246tNt.com>
+    Copyright (C) 2012 by Hoernchen <la@tfc-server.de>
+    Copyright (C) 2012 by Hans-Frieder Vogt <hfvogt@gmx.net>
+    Copyright (C) 2013 by Mauro Carvalho Chehab <mchehab@redhat.com>
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+Upstream's own COPYING file is the text of GPL version 2. The per-file headers
+in this directory grant "version 2 of the License, or (at your option) any
+later version", so this material is **GPL-2.0-or-later**. That is why LakeShark
+as a whole can be, and is, distributed under GPL-3.0: GPL-2.0-or-later permits
+relicensing the combined work to GPLv3. A GPL-2.0-**only** dependency would not
+permit that, so if a file here is ever replaced from a fork that dropped the
+"or later" wording, the root licence has to be revisited.
+
+The full GPLv3 text is in the repository root `LICENSE`. GPLv2 is not bundled
+separately because nothing here is GPL-2.0-only; if that changes, add it.
+
+Per-file provenance, and which files this project modified, is recorded in
+`UPSTREAM.md` beside this file. Modified upstream files carry a "Notice of
+change" comment as GPL-2.0-or-later section 2(a) requires.
+
+Source-code obligation
+----------------------
+
+Distributing firmware built from this directory triggers the GPL's source
+obligation for the whole combined work, not only for these files. The
+corresponding source has to be the actual modified sources these binaries were
+built from — see `docs/THIRD_PARTY_REVIEW.md` for the export closure.

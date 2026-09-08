@@ -512,6 +512,12 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
          * MORE than the 4B's proven-good 48 MB/s, and it was audibly choppy.
          * 20 MHz is 40 MB/s and still ~40 fps at 480x800 (576x870 with
          * blanking), because this panel has fewer pixels than the 4B. */
+        /* LS-798: 16 MHz was tried here and reverted. The theory was PSRAM
+         * bandwidth - the waterfall's full-canvas copy contending with this
+         * framebuffer read - but removing that copy entirely (LS-801) did not
+         * change the late-frame rate either, so bandwidth is not the cause and
+         * 20% of the frame rate is not worth buying nothing. Whatever delays
+         * the refresh on P25 is not the DSI's share of the bus. */
         .dpi_clock_freq_mhz = 20,
         .virtual_channel = 0,
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888

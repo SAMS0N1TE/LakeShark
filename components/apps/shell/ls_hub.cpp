@@ -1,4 +1,5 @@
 #include "shell/ls_hub.h"
+#include "shell/ls_hub_present.h"
 
 #include "lvgl.h"
 
@@ -18,6 +19,8 @@ extern "C" {
 #include "audio_out.h"
 #include "event_bus.h"
 #include "lakeshark_backend.h"
+#include "fm_state.h"
+#include "rec_state.h"
 }
 
 #define HUB_PERIOD_MS   250
@@ -41,6 +44,7 @@ static bool           s_started;
 static int  s_sd     = -1;
 static int  s_c6     = -1;
 static bool s_prime  = true;
+static char s_backend_mode[LS_HUB_MODE_MAX] = "--";
 
 static void fanout(uint32_t dirty)
 {
@@ -105,7 +109,7 @@ static void drain_events(uint32_t *dirty)
 
 static void poll_radio(uint32_t *dirty)
 {
-    const bool ready  = lakeshark_radio_device_ready();
+    const bool ready  = lakeshark_iq_receiver_ready();
     const bool parked = !lakeshark_radio_running();
 
     if (ready != s_state.rtl_ready) { s_state.rtl_ready = ready; *dirty |= LS_HUB_RADIO; }
@@ -113,9 +117,9 @@ static void poll_radio(uint32_t *dirty)
 
     const app_t *cur  = app_current();
     const char  *name = (cur && cur->name) ? cur->name : "--";
-    if (strncmp(name, s_state.mode, sizeof(s_state.mode) - 1) != 0) {
-        strncpy(s_state.mode, name, sizeof(s_state.mode) - 1);
-        s_state.mode[sizeof(s_state.mode) - 1] = 0;
+    if (strncmp(name, s_backend_mode, sizeof(s_backend_mode) - 1) != 0) {
+        strncpy(s_backend_mode, name, sizeof(s_backend_mode) - 1);
+        s_backend_mode[sizeof(s_backend_mode) - 1] = 0;
         *dirty |= LS_HUB_RADIO | LS_HUB_TUNE | LS_HUB_SIGNAL;
     }
 
@@ -127,60 +131,80 @@ static void poll_radio(uint32_t *dirty)
 
 static void poll_mode(uint32_t *dirty)
 {
-    uint32_t freq = 0;
-    int      sig  = 0;
-    bool     act  = false;
-    int      contacts = s_state.contacts;
-    uint32_t iq   = 0;
-    char     det[sizeof(s_state.detail)];
-    det[0] = 0;
+    ls_hub_observation_t o = {};
+    o.backend_mode  = s_backend_mode;
+    o.receiver_ready = s_state.rtl_ready;
+    o.parked         = s_state.parked;
 
-    if (strcmp(s_state.mode, "P25") == 0) {
+    if (strcmp(s_backend_mode, "P25") == 0) {
         lakeshark_p25_tel_t t;
         lakeshark_p25_telemetry(&t);
-        freq = t.freq_hz;
-        sig  = t.iq_level / 10;
-        act  = t.voice_active != 0;
-        iq   = t.iq_bytes_sec;
-        if (t.nac)      snprintf(det, sizeof(det), "NAC %03X  TG %d", t.nac, t.tg);
-        else if (t.has_sync) snprintf(det, sizeof(det), "SYNC  %s", t.ftype);
-        else            snprintf(det, sizeof(det), "NO SYNC");
-    } else if (strcmp(s_state.mode, "FM") == 0) {
+        o.freq_hz       = t.freq_hz;
+        o.signal_pct    = t.iq_level / 10;
+        o.active        = t.voice_active != 0;
+        o.iq_bytes_sec  = t.iq_bytes_sec;
+        o.p25_nac       = t.nac;
+        o.p25_tg        = t.tg;
+        o.p25_has_sync  = t.has_sync != 0;
+        o.p25_ftype     = t.ftype;
+    } else if (strcmp(s_backend_mode, "FM") == 0) {
         lakeshark_fm_tel_t t;
         lakeshark_fm_telemetry(&t);
-        freq = t.freq_hz;
-        sig  = t.iq_level / 10;
-        act  = t.squelch_open != 0;
-        iq   = t.iq_bytes_sec;
-        snprintf(det, sizeof(det), "%s  SQL %d.%d",
-                 act ? "OPEN" : "QUIET",
-                 t.squelch_tenths / 10, t.squelch_tenths % 10);
-    } else if (strcmp(s_state.mode, "ADS-B") == 0) {
+        o.receiver_ready    = o.receiver_ready && t.receiver_streaming != 0;
+        o.freq_hz           = t.freq_hz;
+        o.signal_pct        = t.iq_level / 10;
+        o.active            = t.squelch_open != 0;
+        o.iq_bytes_sec      = t.iq_bytes_sec;
+        o.fm_submode        = t.submode;
+        o.fm_squelch_tenths = t.squelch_tenths;
+    } else if (strcmp(s_backend_mode, "ADS-B") == 0) {
         lakeshark_adsb_tel_t t;
         lakeshark_adsb_telemetry(&t);
-        freq = t.freq_hz;
-        sig  = t.mag_peak > 0 ? ((t.mag_peak >> 8) * 100) / 255 : 0;
-        act  = t.last_msg_ms >= 0 && t.last_msg_ms < 3000;
-        iq   = t.iq_bytes_sec;
-        contacts = t.tracked;
-        snprintf(det, sizeof(det), "%d TRACKED  %d/s", t.tracked, t.msgs_sec);
-    } else {
-        snprintf(det, sizeof(det), "IDLE");
+        o.freq_hz       = t.freq_hz;
+        o.signal_pct    = t.mag_peak > 0 ? ((t.mag_peak >> 8) * 100) / 255 : 0;
+        o.active        = t.last_msg_ms >= 0 && t.last_msg_ms < 3000;
+        o.iq_bytes_sec  = t.iq_bytes_sec;
+        o.adsb_tracked  = t.tracked;
+        o.adsb_msgs_sec = t.msgs_sec;
+    } else if (strcmp(s_backend_mode, "REC") == 0) {
+        rec_hub_status_t t;
+        rec_get_hub_status(&t);
+        o.receiver_ready = o.receiver_ready && t.receiver_streaming;
+        o.freq_hz        = t.freq_hz;
+        o.iq_bytes_sec   = t.bytes_sec;
+        o.rec_phase      = (int)t.phase;
+        o.rec_edges      = t.edges;
+        o.rec_mag_now    = t.mag_now;
+        o.rec_mag_thresh = t.mag_thresh;
     }
 
-    if (sig < 0)   sig = 0;
-    if (sig > 100) sig = 100;
+    ls_hub_presentation_t p;
+    ls_hub_present(&o, &p);
 
-    if (freq != s_state.freq_hz) { s_state.freq_hz = freq; *dirty |= LS_HUB_TUNE; }
+    if (strcmp(p.mode, s_state.mode) != 0 ||
+        strcmp(p.target_app, s_state.target_app) != 0) {
+        strncpy(s_state.mode, p.mode, sizeof(s_state.mode) - 1);
+        s_state.mode[sizeof(s_state.mode) - 1] = 0;
+        strncpy(s_state.target_app, p.target_app,
+                sizeof(s_state.target_app) - 1);
+        s_state.target_app[sizeof(s_state.target_app) - 1] = 0;
+        *dirty |= LS_HUB_RADIO | LS_HUB_TUNE | LS_HUB_SIGNAL;
+    }
 
-    if (sig != s_state.sig_pct || act != s_state.active ||
-        contacts != s_state.contacts || iq != s_state.iq_bytes_sec ||
-        strcmp(det, s_state.detail) != 0) {
-        s_state.sig_pct      = sig;
-        s_state.active       = act;
-        s_state.contacts     = contacts;
-        s_state.iq_bytes_sec = iq;
-        strncpy(s_state.detail, det, sizeof(s_state.detail) - 1);
+    if (p.freq_hz != s_state.freq_hz) {
+        s_state.freq_hz = p.freq_hz;
+        *dirty |= LS_HUB_TUNE;
+    }
+
+    if (p.signal_pct != s_state.sig_pct || p.active != s_state.active ||
+        p.contacts != s_state.contacts ||
+        p.iq_bytes_sec != s_state.iq_bytes_sec ||
+        strcmp(p.detail, s_state.detail) != 0) {
+        s_state.sig_pct      = p.signal_pct;
+        s_state.active       = p.active;
+        s_state.contacts     = p.contacts;
+        s_state.iq_bytes_sec = p.iq_bytes_sec;
+        strncpy(s_state.detail, p.detail, sizeof(s_state.detail) - 1);
         s_state.detail[sizeof(s_state.detail) - 1] = 0;
         *dirty |= LS_HUB_SIGNAL;
     }
@@ -294,6 +318,8 @@ void ls_hub_start(void)
 
     memset(&s_state, 0, sizeof(s_state));
     strcpy(s_state.mode, "--");
+    s_state.target_app[0] = 0;
+    strcpy(s_backend_mode, "--");
     s_state.parked   = true;
     s_state.batt_pct = -1;
     s_state.c6_state = -1;

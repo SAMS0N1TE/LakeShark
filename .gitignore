@@ -19,8 +19,20 @@ serial*.txt
 .DS_Store
 
 # Excluded from public repo
-/docs/
-/tools/
+/docs/*
+!/docs/LCD43_RELEASE_NOTES.md
+!/docs/LCD43_QUICKSTART.md
+!/docs/LCD43_FIRST_FLASH.md
+!/docs/LCD43_TROUBLESHOOTING.md
+!/docs/THIRD_PARTY_REVIEW.md
+/tools/*
+!/tools/p25_profile.example
+!/tools/package_lcd43_app.py
+!/tools/PACKAGE_LCD43_APP.md
+!/tools/lakeshark_upgrade.py
+!/tools/LAKESHARK_UPGRADE.md
+!/tools/lcd43-local-license-paths.json
+!/tools/lcd43-release-docs.json
 /build_headless/
 /build_*/
 /LAKESHARK_MARKERS.txt
@@ -34,3 +46,33 @@ serial*.txt
 
 __pycache__/
 *.pyc
+bench/build/
+bench/build-asan/
+bench/logs/
+bench/claims/
+
+# Working notes and agent wiring stay local - they are not documentation.
+bench/NOTES.md
+bench/HANDOFF.md
+AGENTS.md
+bench/agents.local.json
+bench/upstream.json
+bench/upstream.ps1
+
+# Secrets. This repo is pushed to a remote, and the point of that remote is to
+# check that nothing leaks - so the patterns are here rather than relied on.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/boards/*.key
+*credentials*.json
+*secrets*.json
+*.local.json
+
+# Built firmware bundles for the web installer. Regenerate with the offsets in
+# docs/LCD43_FIRST_FLASH.md; binaries do not belong in the source tree, and
+# these carry the same distribution questions as any other released image.
+/dist/lakeshark-lcd43/
+/dist/site/fw/

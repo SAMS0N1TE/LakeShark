@@ -1,6 +1,10 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   LakeShark original. Not librtlsdr - see UPSTREAM.md in this
+   directory for which files here are third-party and which are ours. */
 
 #include "usb_host.h"
-#include "rtlsdr_dev.h"
+#include "rtl_adapter_private.h"
+#include "hackrf_adapter_private.h"
 #include "event_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,11 +53,6 @@ typedef struct {
 
 static class_driver_t *s_driver_obj;
 
-usb_host_client_handle_t class_driver_client_handle(void)
-{
-    return s_driver_obj ? s_driver_obj->constant.client_hdl : NULL;
-}
-
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
 {
     class_driver_t *driver_obj = (class_driver_t *)arg;
@@ -63,11 +62,16 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         driver_obj->mux_protected.device[event_msg->new_dev.address].dev_addr =
             event_msg->new_dev.address;
         event_bus_publish_simple(EVT_DEVICE_ATTACHED, "usb");
-        rtlsdr_dev_setup_async(event_msg->new_dev.address,
-                               driver_obj->constant.client_hdl);
+        rtl_adapter_probe_async(event_msg->new_dev.address,
+                                driver_obj->constant.client_hdl);
+        hackrf_adapter_probe_async(event_msg->new_dev.address,
+                                   driver_obj->constant.client_hdl);
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
+        /*LS-407*/
+        (void)rtl_adapter_note_removed(event_msg->dev_gone.dev_hdl);
+        (void)hackrf_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);
         for (uint8_t i = 0; i < DEV_MAX_COUNT; i++) {
             if (driver_obj->mux_protected.device[i].dev_hdl ==

@@ -1,0 +1,10 @@
+include("${CMAKE_CURRENT_LIST_DIR}/ls_build_identity.cmake")
+if(NOT DEFINED LS_IDENTITY_SOURCE OR NOT DEFINED LS_IDENTITY_PRODUCT OR
+   NOT DEFINED LS_IDENTITY_HEADER)
+    message(FATAL_ERROR "Build identity refresh requires source, product and header paths")
+endif()
+ls_identity_query(identity "${LS_IDENTITY_SOURCE}" "${LS_IDENTITY_PRODUCT}")
+ls_identity_write_header("${LS_IDENTITY_HEADER}" "${identity}")
+if(DEFINED LS_IDENTITY_METADATA)
+    ls_identity_write_metadata("${LS_IDENTITY_METADATA}" "${identity}")
+endif()

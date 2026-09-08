@@ -17,6 +17,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* Notice of change (GPL-2.0-or-later section 2a), LakeShark 2026.
+   Modified for the ESP32-P4 port: declarations trimmed to the subset this
+   firmware builds.
+   Upstream is osmocom/rtl-sdr; see COPYRIGHT.librtlsdr and UPSTREAM.md
+   in this directory. */
+
 #ifndef __RTL_SDR_H
 #define __RTL_SDR_H
 
@@ -26,13 +32,9 @@ extern "C"
 #endif
 
 #include <stdint.h>
-#include "usb/usb_host.h"
 #include <rtl-sdr_export.h>
 
     typedef struct rtlsdr_dev rtlsdr_dev_t;
-
-    RTLSDR_API void esp_action_get_dev_desc(rtlsdr_dev_t *dev);
-    RTLSDR_API int rtlsdr_open(rtlsdr_dev_t **dev, uint8_t index, usb_host_client_handle_t client_hdl);
 
     RTLSDR_API int rtlsdr_close(rtlsdr_dev_t *dev);
     RTLSDR_API int rtlsdr_reset_interface(rtlsdr_dev_t *dev);
@@ -79,6 +81,8 @@ extern "C"
 
     RTLSDR_API int rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t *dev, uint32_t bw);
 
+    RTLSDR_API uint32_t rtlsdr_get_tuner_bandwidth(rtlsdr_dev_t *dev);
+
     RTLSDR_API int rtlsdr_get_tuner_gain(rtlsdr_dev_t *dev);
 
     RTLSDR_API int rtlsdr_set_tuner_if_gain(rtlsdr_dev_t *dev, int stage, int gain);
@@ -114,6 +118,11 @@ extern "C"
     RTLSDR_API int      rtlsdr_stream_read(void *buf, int max);
     RTLSDR_API void     rtlsdr_stream_reset(void);
     RTLSDR_API uint32_t rtlsdr_stream_avail(void);
+    /* Ring depth and the running drop count, for diagnostics. Public wrappers
+       because esp_libusb.h is private to this component now and main/ has no
+       business reaching into it - it only wants to print these. */
+    RTLSDR_API int      rtlsdr_stream_slots(void);
+    RTLSDR_API uint64_t rtlsdr_stream_dropped(void);
 
     typedef void (*rtlsdr_read_async_cb_t)(unsigned char *buf, uint32_t len, void *ctx);
 

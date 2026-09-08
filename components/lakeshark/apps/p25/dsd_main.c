@@ -73,6 +73,7 @@ void initOpts(dsd_opts *opts)
 void initState(dsd_state *state)
 {
     int i;
+    memset(&state->acquisition_hunt, 0, sizeof(state->acquisition_hunt));
     DSD_KEEP(dibit_buf, int, 10000, DSD_MALLOC);
     if (!state->dibit_buf) { ESP_LOGE(TAG_DSD, "dibit_buf alloc FAILED"); return; }
     state->dibit_buf_p = state->dibit_buf + 200;
@@ -144,6 +145,10 @@ void initState(dsd_state *state)
     state->c4fm_clk_nudges = 0;
     memset(state->algid, 0, 9);
     memset(state->keyid, 0, 17);
+    state->p25_algid = 0;
+    state->p25_kid = 0;
+    memset(state->p25_mi, 0, sizeof(state->p25_mi));
+    state->p25_ess_valid = 0;
     state->currentslot = 0;
     DSD_KEEP(cur_mp, mbe_parms, 1, DSD_MALLOC_FAST);
     DSD_KEEP(prev_mp, mbe_parms, 1, DSD_MALLOC_FAST);
@@ -155,6 +160,89 @@ void initState(dsd_state *state)
     state->debug_header_errors = 0;
     state->debug_header_critical_errors = 0;
     state->last_dibit = 0;
+    state->p25_tsdu_dibit_count = 0;
+    memset(state->p25_iden_table, 0, sizeof(state->p25_iden_table));
+    state->p25_tsbk_last_opcode = 0;
+    state->p25_tsbk_channel = 0;
+    state->p25_tsbk_talkgroup = 0;
+    state->p25_tsbk_source = 0;
+    state->p25_tsbk_frequency_hz = 0;
+    memset(state->p25_grants, 0, sizeof(state->p25_grants));
+    state->p25_grant_count = 0;
+    state->p25_grant_batch_valid = 0;
+    state->p25_grant_generation = 0;
+    state->p25_frame_valid = 0;
+    state->p25_frame_duid = 0;
+    state->p25_frame_tsbks = 0;
+    state->p25_control_nac = 0;
+    state->p25_control_nac_valid = 0;
+    state->p25_phase2_grant_count = 0;
+    state->p25_phase2_last_talkgroup = 0;
+    state->p25_phase2_last_frequency_hz = 0;
+    state->p25_phase2_last_slot = 0;
+    state->p25_phase2_last_slots_per_carrier = 0;
+    state->p25_tsbk_wacn = 0;
+    state->p25_tsbk_sysid = 0;
+    state->p25_net_valid = 0;
+    state->p25_net_generation = 0;
+    state->p25_rfss_generation = 0;
+    state->p25_sccb_generation = 0;
+    state->p25_neighbor_generation = 0;
+    state->p25_tsbk_valid_count = 0;
+    state->p25_tsbk_crc_errors = 0;
+    state->p25_tsbk_trellis_errors = 0;
+    state->p25_tsbk_vendor_count = 0;
+    state->p25_tsbk_last_vendor_mfid = 0;
+    /* LS-652: unhandled-opcode counters and per-broadcast state added by
+     * the wider TSBK dispatch. All zero on entry: neither RFSS nor SCCB
+     * nor SYS_SRV nor SYNC nor any neighbour has been seen yet. */
+    memset(state->p25_tsbk_unhandled, 0, sizeof(state->p25_tsbk_unhandled));
+    state->p25_rfss_valid = 0;
+    state->p25_rfss_lra = 0;
+    state->p25_rfss_id = 0;
+    state->p25_rfss_site_id = 0;
+    state->p25_rfss_sysid = 0;
+    state->p25_rfss_ch_t = 0;
+    state->p25_rfss_ch_r = 0;
+    state->p25_rfss_svc_class = 0;
+    state->p25_sccb_valid = 0;
+    state->p25_sccb_rfss_id = 0;
+    state->p25_sccb_site_id = 0;
+    state->p25_sccb_ch1 = 0;
+    state->p25_sccb_ch2 = 0;
+    state->p25_sccb_svc_class1 = 0;
+    state->p25_sccb_svc_class2 = 0;
+    state->p25_sys_srv_valid = 0;
+    state->p25_sys_srv_available = 0;
+    state->p25_sys_srv_supported = 0;
+    state->p25_sys_srv_twv = 0;
+    state->p25_sync_valid = 0;
+    state->p25_sync_microslot = 0;
+    state->p25_sync_us = 0;
+    state->p25_sync_month_day = 0;
+    state->p25_sync_year = 0;
+    memset(state->p25_neighbors, 0, sizeof(state->p25_neighbors));
+    state->p25_neighbor_count = 0;
+    state->p25_data_grant_count = 0;
+    state->p25_last_data_channel = 0;
+    state->p25_last_data_group = 0;
+    state->p25_interconnect_grant_count = 0;
+    state->p25_last_interconnect_channel = 0;
+    state->p25_last_interconnect_address = 0;
+    state->p25_uu_grant_count = 0;
+    state->p25_last_uu_channel = 0;
+    state->p25_last_uu_source = 0;
+    state->p25_last_uu_target = 0;
+    state->p25_reg_event_count = 0;
+    state->p25_last_reg_opcode = 0;
+    state->p25_last_reg_reason = 0;
+    state->p25_last_reg_source = 0;
+    state->p25_last_reg_target = 0;
+    /* LS-650: zero the LCW state alongside TSBK state. p25_lcw_call_clear
+     * does the same reset used on TDU/TDULC/talkgroup change. */
+    state->p25_lcw_ok_count = 0;
+    state->p25_lcw_fec_reject_count = 0;
+    p25_lcw_call_clear(state);
     initialize_p25_heuristics(&state->p25_heuristics);
     initialize_p25_heuristics(&state->inv_p25_heuristics);
     state->pcm_out_buf = NULL;
@@ -164,6 +252,9 @@ void initState(dsd_state *state)
 
 void noCarrier(dsd_opts *opts, dsd_state *state)
 {
+    state->p25_frame_valid = 0;
+    state->p25_frame_tsbks = 0;
+    state->pcm_out_write = 0;
     state->dibit_buf_p = state->dibit_buf + 200;
     memset(state->dibit_buf, 0, sizeof(int) * 200);
     state->jitter = -1;
@@ -192,11 +283,16 @@ void noCarrier(dsd_opts *opts, dsd_state *state)
     state->debug_audio_errors = 0;
     state->debug_header_errors = 0;
     state->debug_header_critical_errors = 0;
+    state->p25_tsdu_dibit_count = 0;
 
     state->c4fm_clk_prev_dec = 0;
     state->c4fm_clk_run_dir = 0;
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
+    p25_ess_clear(state);
+    /* LS-650: no-carrier is end-of-call; drop the LCW identity too so the
+     * next sync starts unlabelled rather than showing the last TG. */
+    p25_lcw_call_clear(state);
 }
 
 void upsample(dsd_state *state, float invalue)
@@ -312,7 +408,7 @@ void processMbeFrame(dsd_opts *opts, dsd_state *state, char imbe_fr[8][23], char
         for (int b = 0; b < 88; b++)
             if (imbe_d[b] & 1) imbe88[b >> 3] |= (uint8_t)(0x80 >> (b & 7));
         int16_t snd[160];
-        imbe_shim_decode_88(imbe88, snd);
+    if (!imbe_shim_try_decode_88(imbe88, snd)) return;
         for (int k = 0; k < 160; k++)
             state->audio_out_temp_buf[k] = (float)snd[k];
         state->err_str[0] = 0;

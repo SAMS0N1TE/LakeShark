@@ -20,6 +20,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
+#include "bsp_extra_player_state.h"
 
 static const char *TAG = "bsp_extra_board";
 
@@ -32,7 +33,6 @@ static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 
 static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
-static char audio_file_path[128];
 
 /**************************************************************************************************
  *
@@ -210,56 +210,18 @@ esp_err_t bsp_extra_player_del(void)
 
     ESP_RETURN_ON_ERROR(audio_player_delete(), TAG, "audio_player_delete failed");
 
-    return ESP_OK;
-}
-
-esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_t **ret_instance)
-{
-    ESP_RETURN_ON_FALSE(path, ESP_FAIL, TAG, "path is NULL");
-    ESP_RETURN_ON_FALSE(ret_instance, ESP_FAIL, TAG, "ret_instance is NULL");
-
-    file_iterator_instance_t *file_iterator = file_iterator_new(path);
-    ESP_RETURN_ON_FALSE(file_iterator, ESP_FAIL, TAG, "file_iterator_new failed, %s", path);
-
-    *ret_instance = file_iterator;
+    /*LS-753*/
+    bsp_extra_player_state_reset();
 
     return ESP_OK;
 }
 
-esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int index)
-{
-    ESP_RETURN_ON_FALSE(instance, ESP_FAIL, TAG, "instance is NULL");
-
-    ESP_LOGI(TAG, "play_index(%d)", index);
-    char filename[128];
-    int retval = file_iterator_get_full_path_from_index(instance, index, filename, sizeof(filename));
-    ESP_RETURN_ON_FALSE(retval != 0, ESP_FAIL, TAG, "file_iterator_get_full_path_from_index failed");
-
-    ESP_LOGI(TAG, "opening file '%s'", filename);
-    FILE *fp = fopen(filename, "rb");
-    ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
-
-    ESP_LOGI(TAG, "Playing '%s'", filename);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
-
-    memcpy(audio_file_path, filename, sizeof(audio_file_path));
-
-    return ESP_OK;
-}
-
-esp_err_t bsp_extra_player_play_file(const char *file_path)
-{
-    ESP_LOGI(TAG, "opening file '%s'", file_path);
-    FILE *fp = fopen(file_path, "rb");
-    ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
-
-    ESP_LOGI(TAG, "Playing '%s'", file_path);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
-
-    memcpy(audio_file_path, file_path, sizeof(audio_file_path));
-
-    return ESP_OK;
-}
+/*LS-756*/
+/* bsp_extra_file_instance_init, bsp_extra_player_play_index,
+   bsp_extra_player_play_file and bsp_extra_player_is_playing_by_path live
+   in bsp_extra_player_open.c so the fopen -> audio_player_play handoff can
+   be exercised on the host bench without dragging the codec/i2s/gpio stack
+   in with it.  Every failure after fopen there closes the file. */
 
 void bsp_extra_player_register_callback(audio_player_cb_t cb, void *user_data)
 {
@@ -267,12 +229,32 @@ void bsp_extra_player_register_callback(audio_player_cb_t cb, void *user_data)
     audio_idle_cb_user_data = user_data;
 }
 
-bool bsp_extra_player_is_playing_by_path(const char *file_path)
-{
-    return (strcmp(audio_file_path, file_path) == 0);
-}
-
+/*LS-753*/
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index)
 {
-    return (index == file_iterator_get_index(instance));
+    return bsp_extra_player_state_is_playing_by_index(instance, index);
+}
+
+/*LS-753*/
+bool bsp_extra_player_is_active_by_index(file_iterator_instance_t *instance, int index)
+{
+    return bsp_extra_player_state_is_active_by_index(instance, index);
+}
+
+/*LS-753*/
+const char *bsp_extra_player_active_path(void)
+{
+    return bsp_extra_player_state_active_path();
+}
+
+/*LS-753*/
+bool bsp_extra_player_is_playing_path(void)
+{
+    return bsp_extra_player_state_is_playing_path();
+}
+
+/*LS-753*/
+bool bsp_extra_player_is_active_path(void)
+{
+    return bsp_extra_player_state_is_active_path();
 }

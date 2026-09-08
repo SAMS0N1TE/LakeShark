@@ -58,7 +58,17 @@ const scan_channel_t *scan_channel_get(int idx)
     return &s_ch[idx];
 }
 
-bool scan_channels_save(void)
+/*LS-722*/
+/* Every mutator below ends in scan_channels_save(), which is one nvs_set_blob
+   plus one nvs_commit. That is right for hand editing - one edit, one commit,
+   nothing lost if the board dies - and wrong for a bulk push, where an N
+   channel import costs N erase/write cycles to store a list that only has to
+   land once. Batching makes save() defer instead of skip: the writes still
+   happen, they just coalesce into a single commit at batch_end. */
+static int  s_batch = 0;
+static bool s_dirty = false;
+
+static bool save_now(void)
 {
     if (!s_ok) return false;
     scan_store_hdr_t hdr = {
@@ -74,6 +84,32 @@ bool scan_channels_save(void)
     if (err != ESP_OK) { ESP_LOGW(TAG, "save blob: %d", err); return false; }
     return nvs_commit(s_nvs) == ESP_OK;
 }
+
+/*LS-722*/
+bool scan_channels_save(void)
+{
+    if (s_batch > 0) { s_dirty = true; return true; }
+    return save_now();
+}
+
+/*LS-722*/
+void scan_channels_batch_begin(void)
+{
+    s_batch++;
+}
+
+/*LS-722*/
+bool scan_channels_batch_end(void)
+{
+    if (s_batch > 0) s_batch--;
+    if (s_batch > 0) return true;          /* nested - the outermost commits */
+    if (!s_dirty)    return true;          /* nothing changed, nothing to write */
+    s_dirty = false;
+    return save_now();
+}
+
+/*LS-722*/
+bool scan_channels_batching(void) { return s_batch > 0; }
 
 int scan_channel_add(const char *name, uint32_t freq_hz, scan_mode_t mode, uint8_t zone)
 {
@@ -139,6 +175,18 @@ int scan_channel_find_freq(uint32_t freq_hz)
 {
     for (int i = 0; i < s_count; i++)
         if (s_ch[i].freq_hz == freq_hz) return i;
+    return -1;
+}
+
+/*LS-723*/
+/* Dedup is PER ZONE, not per frequency. Zones are separate banks - the same
+   frequency legitimately appears in two of them (a travel channel carried in
+   both the home and the trip zone), and a global match would silently refuse
+   the second one. Within one zone a repeat is always a duplicate. */
+int scan_channel_find_freq_zone(uint32_t freq_hz, uint8_t zone)
+{
+    for (int i = 0; i < s_count; i++)
+        if (s_ch[i].freq_hz == freq_hz && s_ch[i].zone == zone) return i;
     return -1;
 }
 

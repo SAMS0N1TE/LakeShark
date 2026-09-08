@@ -3,3 +3,12 @@ nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
 factory,  app,  factory, ,        9M,
 storage,  data, spiffs,  ,        4M,
+# LS-734 / LS-817  The 16MB table never got the coredump partition that
+# b0a2799 added to partitions_32m.csv, so ESP_COREDUMP_ENABLE_TO_FLASH=y had
+# nowhere to write and every NANO boot printed
+#   E esp_core_dump_flash: No core dump partition found!
+# twice, then threw away every panic backtrace. Same reasoning as the 32MB
+# table: appended LAST so nvs/phy_init/factory/storage keep their offsets -
+# the app still flashes at 0x10000 and stored channels in nvs at 0x9000
+# survive. 9M + 4M + 64K is comfortably inside 16MB.
+coredump, data, coredump, ,       64K,

@@ -5,25 +5,33 @@
 #include <cstdlib>
 #include <cstring>
 
-LV_FONT_DECLARE(lv_font_consolas_16);
-LV_FONT_DECLARE(lv_font_consolas_14);
+LV_FONT_DECLARE(lv_font_unscii_16);
 
-const lv_font_t *sdr_font_mono(void)    { return &lv_font_consolas_16; }
-const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_consolas_14; }
+/*  The readouts need a fixed pitch - columns of numbers that move when a
+    digit changes are unreadable at a glance - and unscii is LVGL's own
+    monospace face, so it carries LVGL's licence rather than needing one of
+    its own. The Consolas conversions that used to sit here had no recorded
+    provenance and no redistribution authority; see docs/THIRD_PARTY_REVIEW.md.
+
+    unscii is a single 8x16 face, so there is no smaller mono to fall back on.
+    The small variant takes montserrat 14 instead: it is proportional, but it
+    is the right height, and height is what matters here - pointing it at the
+    16px face grew every compact readout by two pixels and pushed the home
+    widget picker into a scrollbar, which the gate caught. Anything that needs
+    columns to line up should be asking for sdr_font_mono(). */
+const lv_font_t *sdr_font_mono(void)    { return &lv_font_unscii_16; }
+const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_montserrat_14; }
 const lv_font_t *sdr_font_ui(void)      { return &lv_font_montserrat_14; }
 
 /*LS-606*/
 typedef struct {
     const char *name;
-    uint32_t    accent;
-    uint32_t    dim;
-    uint32_t    bg;
 } sdr_pal_t;
 
 static const sdr_pal_t THEMES[SDR_THEME_COUNT] = {
-    { "RED",   0xD93B30, 0x6E2019, 0x230806 },
-    { "WHITE", 0xDCE4E9, 0x545E65, 0x1A1F23 },
-    { "BLUE",  0x3E8FD9, 0x1D4467, 0x061622 },
+    { "RED" },
+    { "WHITE" },
+    { "BLUE" },
 };
 
 #define SDR_THEME_MAX_CB 8
@@ -36,9 +44,9 @@ static bool           s_styles_ready;
 static sdr_theme_cb_t s_cb[SDR_THEME_MAX_CB];
 static void          *s_cb_ud[SDR_THEME_MAX_CB];
 
-lv_color_t sdr_accent(void)     { return lv_color_hex(THEMES[s_theme].accent); }
-lv_color_t sdr_accent_dim(void) { return lv_color_hex(THEMES[s_theme].dim); }
-lv_color_t sdr_accent_bg(void)  { return lv_color_hex(THEMES[s_theme].bg); }
+lv_color_t sdr_accent(void)     { return lv_color_hex(ls_ui_palette_theme_hex(s_theme, LS_UI_THEME_ACCENT)); }
+lv_color_t sdr_accent_dim(void) { return lv_color_hex(ls_ui_palette_theme_hex(s_theme, LS_UI_THEME_DIM)); }
+lv_color_t sdr_accent_bg(void)  { return lv_color_hex(ls_ui_palette_theme_hex(s_theme, LS_UI_THEME_BACKGROUND)); }
 
 sdr_theme_t sdr_theme_get(void) { return s_theme; }
 
@@ -278,12 +286,12 @@ void sdr_setting_row(lv_obj_t *parent, const char *name, sdr_setrow_t *out)
 
     lv_obj_t *ctl = lv_obj_create(row);
     lv_obj_set_height(ctl, LV_SIZE_CONTENT);
-    lv_obj_set_width(ctl, LV_SIZE_CONTENT);
+    lv_obj_set_width(ctl, lv_pct(65));
     lv_obj_set_style_bg_opa(ctl, LV_OPA_0, 0);
     lv_obj_set_style_border_width(ctl, 0, 0);
     lv_obj_set_style_pad_all(ctl, 0, 0);
     lv_obj_set_style_pad_column(ctl, 6, 0);
-    lv_obj_set_flex_flow(ctl, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(ctl, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(ctl, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(ctl, LV_OBJ_FLAG_SCROLLABLE);

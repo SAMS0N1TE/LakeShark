@@ -1,3 +1,9 @@
+/*
+ * Project 25 IMBE Encoder/Decoder Fixed-Point implementation
+ * Developed by Pavel Yazev E-mail: pyazev@gmail.com
+ * Version 1.0 (c) Copyright 2009
+ */
+
 #include "imbe_vocoder_impl.h"
 #include "imbe_vocoder.h"
 

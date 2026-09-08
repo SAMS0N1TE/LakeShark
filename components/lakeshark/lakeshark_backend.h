@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
+
+#include "radio_endpoint.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +18,16 @@ void lakeshark_select_adsb(void);
 void lakeshark_select_p25(void);
 void lakeshark_select_fm(void);
 void lakeshark_select_rec(void);
+
+/* AppACARS's radio hook.  ACARS lives inside the FM app as a mode - it
+   reuses the RTL session, the NFM demodulator and the tuner - so
+   foregrounding the panel means switching the backend to FM and asking
+   for FM_MODE_ACARS.  These wrappers keep AppACARS from having to know
+   the enum layout of fm_mode_t. */
+void     lakeshark_acars_start(void);
+void     lakeshark_acars_stop (void);
+uint32_t lakeshark_acars_get_freq(void);
+void     lakeshark_acars_set_freq(uint32_t hz);
 
 void     lakeshark_fm_set_mode(int mode);
 int      lakeshark_fm_get_mode(void);
@@ -41,10 +54,16 @@ uint32_t lakeshark_fm_scan_peak_hz(void);
 void lakeshark_radio_park(void);
 void lakeshark_radio_unpark(void);
 bool lakeshark_radio_running(void);
-bool lakeshark_radio_device_ready(void);
+bool lakeshark_radio_ready(const ls_radio_requirements_t *requirements);
+bool lakeshark_iq_receiver_ready(void);
+bool lakeshark_radio_endpoint_ready(const char *endpoint_id);
 const char *lakeshark_recovery_take_app(void);
 
-void        lakeshark_radio_recover(void);
+/* Bounded, read-only receiver snapshot for console diagnostics.  The text
+   preserves unavailable values as '?' and never changes tuning or counters. */
+int lakeshark_receiver_status(char *out, size_t len);
+
+void        lakeshark_radio_recover(const char *endpoint_id);
 
 void        lakeshark_set_usb_autoreboot(bool en);
 bool        lakeshark_usb_autoreboot(void);
@@ -115,6 +134,16 @@ typedef struct {
     int      submode;
     uint32_t freq_hz;
     int      gain_tenths;
+    uint64_t effective_freq_hz;
+    int      effective_gain_tenths;
+    int      effective_freq_known;
+    int      effective_gain_known;
+    int      tune_state;
+    int      gain_state;
+    int      tune_error;
+    int      gain_error;
+    int      receiver_streaming;
+    int      receiver_error;
     int      iq_level;
     int      audio_level;
     int      squelch_tenths;

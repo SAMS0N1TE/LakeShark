@@ -216,6 +216,38 @@ bool bsp_extra_player_is_playing_by_path(const char *file_path);
  */
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index);
 
+/**
+ * @brief Check if the audio file at the specified index is loaded and active
+ *        (playing OR paused).
+ *
+ * @param instance The file iterator instance.
+ * @param index The index of the file to check.
+ * @return
+ *     - true: The audio file at the specified index is currently playing or
+ *             paused - i.e., the player still points at it.
+ *     - false: The audio file at the specified index is stopped or replaced.
+ */
+bool bsp_extra_player_is_active_by_index(file_iterator_instance_t *instance, int index);
+
+/**
+ * @brief Return the path of a direct-file (Files-to-Music) track that is
+ *        currently loaded, or NULL when nothing is loaded by path.
+ *
+ * The returned pointer is owned by the state module and is valid until the
+ * next play/reset call.
+ */
+const char *bsp_extra_player_active_path(void);
+
+/**
+ * @brief True while a direct-file track is currently playing.
+ */
+bool bsp_extra_player_is_playing_path(void);
+
+/**
+ * @brief True while a direct-file track is loaded (playing OR paused).
+ */
+bool bsp_extra_player_is_active_path(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2,49 +2,53 @@
 #pragma once
 
 #include "lvgl.h"
+#include "ui/ls_ui_palette.h"
 
-/*LS-605*/
-#define SDR_BG        lv_color_hex(0x0A0C0D)
-#define SDR_PANEL     lv_color_hex(0x171A1C)
-#define SDR_PANEL_HI  lv_color_hex(0x21262A)
-#define SDR_SUNKEN    lv_color_hex(0x0D1012)
-#define SDR_BORDER    lv_color_hex(0x2C3237)
-#define SDR_BORDER_HI lv_color_hex(0x4A5259)
-#define SDR_BEVEL_LO  lv_color_hex(0x050708)
-#define SDR_LABEL     lv_color_hex(0x79838B)
-#define SDR_TEXT      lv_color_hex(0xC8D0D6)
-#define SDR_BRIGHT    lv_color_hex(0xF4F7F9)
-#define SDR_DIM       lv_color_hex(0x515A61)
-#define SDR_GREEN     lv_color_hex(0x5FCB86)
-#define SDR_AMBER     lv_color_hex(0xE3A83F)
-#define SDR_RED       lv_color_hex(0xE45B50)
-#define SDR_CYAN      lv_color_hex(0x84D2CE)
-#define SDR_GOLD      lv_color_hex(0xF2A233)
-#define SDR_MAGENTA   lv_color_hex(0xB782B0)
-#define SDR_BTN       lv_color_hex(0x1D2226)
-#define SDR_BTN_HI    lv_color_hex(0x0F1315)
+/* LS-460: compatibility names keep older screens source-compatible while all
+ * shared primitives draw from the role palette. New app code uses LS_UI_*.
+ * The hue aliases intentionally collapse onto meaning instead of preserving
+ * the 33-colour vocabulary this kit replaces. */
+#define SDR_ROLE_COLOR(role) lv_color_hex(ls_ui_palette_hex((role)))
+#define SDR_BG        SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
+#define SDR_PANEL     SDR_ROLE_COLOR(LS_UI_COLOR_PANEL)
+#define SDR_PANEL_HI  SDR_ROLE_COLOR(LS_UI_COLOR_PANEL)
+#define SDR_SUNKEN    SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
+#define SDR_BORDER    SDR_ROLE_COLOR(LS_UI_COLOR_PANEL_BORDER)
+#define SDR_BORDER_HI SDR_ROLE_COLOR(LS_UI_COLOR_PANEL_BORDER)
+#define SDR_BEVEL_LO  SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
+#define SDR_LABEL     SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
+#define SDR_TEXT      SDR_ROLE_COLOR(LS_UI_COLOR_TEXT)
+#define SDR_BRIGHT    SDR_ROLE_COLOR(LS_UI_COLOR_TEXT)
+#define SDR_DIM       SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
+#define SDR_GREEN     SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_AMBER     SDR_ROLE_COLOR(LS_UI_COLOR_WARN)
+#define SDR_RED       SDR_ROLE_COLOR(LS_UI_COLOR_ALARM)
+#define SDR_CYAN      SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_GOLD      SDR_ROLE_COLOR(LS_UI_COLOR_WARN)
+#define SDR_MAGENTA   SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_BTN       SDR_ROLE_COLOR(LS_UI_COLOR_PANEL)
+#define SDR_BTN_HI    SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
 
-#define SDR_PAS_BLUE   lv_color_hex(0x86B8E2)
-#define SDR_PAS_GREEN  lv_color_hex(0x83CFAB)
-#define SDR_PAS_GOLD   lv_color_hex(0xEFC272)
-#define SDR_PAS_ROSE   lv_color_hex(0xE9968F)
-#define SDR_PAS_LAV    lv_color_hex(0xB0A4E4)
-#define SDR_PAS_CYAN   lv_color_hex(0x92DADA)
-#define SDR_PAS_AMBER  lv_color_hex(0xF0B767)
-#define SDR_PAS_MINT   lv_color_hex(0x9BE4C4)
-#define SDR_LCD_BG     lv_color_hex(0x050809)
-#define SDR_LCD_EDGE   lv_color_hex(0x0D1517)
+#define SDR_PAS_BLUE  SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_PAS_GREEN SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_PAS_GOLD  SDR_ROLE_COLOR(LS_UI_COLOR_WARN)
+#define SDR_PAS_ROSE  SDR_ROLE_COLOR(LS_UI_COLOR_ALARM)
+#define SDR_PAS_LAV   SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_PAS_CYAN  SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_PAS_AMBER SDR_ROLE_COLOR(LS_UI_COLOR_WARN)
+#define SDR_PAS_MINT  SDR_ROLE_COLOR(LS_UI_COLOR_ACCENT)
+#define SDR_LCD_BG    SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
+#define SDR_LCD_EDGE  SDR_ROLE_COLOR(LS_UI_COLOR_PANEL_BORDER)
 
-/*LS-605*/
-#define SDR_CHASSIS    lv_color_hex(0x06080A)
-#define SDR_RULE       lv_color_hex(0x23282C)
+#define SDR_CHASSIS   SDR_ROLE_COLOR(LS_UI_COLOR_BACKGROUND)
+#define SDR_RULE      SDR_ROLE_COLOR(LS_UI_COLOR_PANEL_BORDER)
 #define SDR_OK         SDR_PAS_GREEN
 #define SDR_WARN       SDR_PAS_AMBER
 #define SDR_ERR        SDR_PAS_ROSE
 
 /*LS-606*/
-#define SDR_OFF        lv_color_hex(0x394045)
-#define SDR_IDLE       lv_color_hex(0x6E777D)
+#define SDR_OFF        SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
+#define SDR_IDLE       SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
 
 #define SDR_STATUS_H   30
 #define SDR_RAIL_H     76

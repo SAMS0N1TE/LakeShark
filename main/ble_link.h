@@ -4,19 +4,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "ble_link_core.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum {
-    BLE_LINK_OFF,
-    BLE_LINK_SYNCING,
-    BLE_LINK_SCANNING,
-    BLE_LINK_CONNECTING,
-    BLE_LINK_DISCOVERING,
-    BLE_LINK_READY,
-} ble_link_state_t;
+/* ble_link_state_t and ble_link_state_name_of() live in ble_link_core.h so the
+   bench can drive the state graph without an ESP-IDF build. */
 
 esp_err_t ble_link_start(void);
 void      ble_link_stop(void);
@@ -47,6 +42,46 @@ void ble_link_rescan(void);
 
 bool      ble_link_passkey_pending(void);
 esp_err_t ble_link_submit_passkey(uint32_t code);
+
+/*LS-993  Peer pin management.  A pinned peer wins over an unknown one
+   advertising the same service, so two boards no longer race for one
+   Flipper.  The pinned address survives a reboot (NVS-backed). */
+
+/* Report whether a peer is pinned, and if so its address as
+   "aa:bb:cc:dd:ee:ff" (matches ble_link_peer's addr format).  Returns
+   true when out_addr was filled with a real address, false otherwise. */
+bool ble_link_get_pinned(char *out_addr, size_t out_len);
+
+/*LS-813  True when a Flipper advertising its OWN BLE profile - not
+   ours - was heard in the last two minutes. That is a head sitting
+   right there with the LakeShark app closed, which looks identical to
+   "no head on the air" unless the status line says otherwise. */
+bool ble_link_stock_head_seen(void);
+
+/* Pin `addr` as this board's peer, or - if addr is NULL or empty - pin
+   whichever peer is currently connected.  Returns ESP_OK on success,
+   ESP_ERR_INVALID_ARG when addr is malformed, ESP_ERR_NOT_FOUND when
+   asked to pin the current peer and nothing is connected. */
+esp_err_t ble_link_pin_peer(const char *addr);
+
+/* Forget the pinned peer.  The scanner falls back to matching by service. */
+void ble_link_unpin_peer(void);
+
+/*LS-980  Forget every stored bond and unpin the peer, dropping the current
+   connection so the next attempt starts from a clean slate.
+
+   Old firmware asked for bonding + Secure Connections against a Flipper that
+   offers GapPairingNone; the head refused with SM_ERR_AUTHREQ and the retry
+   path reconnected into the same wall (LS-714 kept the "unusable" bond because
+   it could not tell an AUTHREQ from the more benign passkey timeout).  New
+   firmware never initiates pairing at all, so the automatic ENC_CHANGE-driven
+   wipe never fires - a bond written by older firmware would otherwise sit in
+   NVS forever.  This is the manual escape hatch: run once after upgrading, or
+   any time the head's security posture changed. */
+esp_err_t ble_link_forget_bonds(void);
+
+/* True when a GATT connection is currently up (used by `ble show`). */
+bool ble_link_is_connected(void);
 
 #ifdef __cplusplus
 }

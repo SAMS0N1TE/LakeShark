@@ -21,6 +21,8 @@ public:
     void switchTab(int delta) override;
 
 private:
+    lv_obj_t *_screen_readout = nullptr;
+    lv_obj_t *_screen_lamp = nullptr;
     /*LS-608*/
     lv_obj_t *_reset_val = nullptr;
 
