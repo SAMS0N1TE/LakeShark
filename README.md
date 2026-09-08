@@ -36,7 +36,7 @@ exists because people spent years getting these right and then gave them away.
 | [LVGL](https://lvgl.io/) | The graphics toolkit the panel UI is built in |
 | [esp-brookesia](https://github.com/espressif/esp-brookesia) | Espressif. The GUI started here before it moved to its own shell |
 | [Waveshare ESP32-P4 BSP](https://www.waveshare.com/) | Board support for the carriers |
-| [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) | The mesh side, still WIP |
+| [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) | The mesh side, not implemented and planning to move to Meshcore/Meshtastic |
 
 **Maps, fonts and the rest**
 
