@@ -60,16 +60,14 @@ who should not have to install a toolchain to try a receiver. ESP32-P4 is a
 supported chip family there. It is not deployed — `dist/site/DEPLOY.md` has the
 upload steps and the reason the firmware directory is still held back.
 
-## The storage image and the music
+## The storage image
 
 `spiffs/` is built into `storage.bin` by `spiffs_create_partition_image()` in
-`main/CMakeLists.txt`, and `spiffs/music/` holds five MP3s whose redistribution
-rights are unresolved (see [THIRD_PARTY_REVIEW.md](THIRD_PARTY_REVIEW.md)).
+`main/CMakeLists.txt`.
 
-The bundle under `dist/lakeshark-lcd43/` therefore ships a storage image
-rebuilt from `spiffs/panels/` alone. The board boots and runs normally on it;
-MUSIC simply starts empty and reads from the SD card instead. Rebuild that
-image with the geometry the firmware expects, or SPIFFS will not mount:
+MUSIC starts empty and plays from the SD card, which is where your own files
+go. If you rebuild the storage image yourself, use the geometry the firmware
+expects or SPIFFS will not mount:
 
 ```bash
 python $IDF_PATH/components/spiffs/spiffsgen.py 8388608 <input-dir> storage.bin \

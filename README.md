@@ -124,7 +124,6 @@ dependencies. Builds on:
 - LVGL, the shared graphical toolkit; retain its bundled licence.
 - Helix MP3 and ESP audio-player components; nested decoder notices differ
   from the outer component licence and must be retained separately.
-- SAM speech synthesis; its bundled permission status remains unresolved.
 
 See the [third-party review](docs/THIRD_PARTY_REVIEW.md) for the release
 inventory and outstanding font/SAM/source-distribution checks. The project's
