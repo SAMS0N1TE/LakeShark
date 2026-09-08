@@ -57,12 +57,6 @@ static inline int clampi(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/*LS-846  Four fixed lines - NAC/TG/SRC, FRAME/DUID, BCH, TSBK - plus one
-   optional line each for trunking, encryption and the link control word. None
-   of those three embed a newline of their own, so seven is the ceiling. Keep
-   this in step with the snprintf in updateDecode. */
-#define P25_DECODE_MAX_LINES 7
-
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t color)
 {
     (void)font;
@@ -335,28 +329,6 @@ void AppP25::buildDecodeTab(lv_obj_t *parent)
     lv_obj_t *p1 = make_panel(parent);
     _d_decode = make_label(p1, &lv_font_montserrat_16, COL_TEXT);
     lv_obj_set_width(_d_decode, lv_pct(100));
-    /*LS-846  Hold this block at its tallest, always.
-
-       The decode text is four lines, plus one each for trunking, encryption
-       and the link control word - and the LCW only becomes valid once voice
-       is up. So the block grew by up to three lines at the exact moment a
-       call started, the panel grew with it, the gain and volume sliders were
-       shoved down the screen, and the tab overflowed into a scrollbar. The
-       controls moved out from under the operator's thumb precisely when they
-       were most likely to be reaching for them.
-
-       Same fix as LS-807 on the status label, and for the same reason: a
-       readout that changes size is a readout that moves everything below it.
-       Reserving the maximum costs three lines of blank panel while idle and
-       buys a layout that never reflows. Clip rather than wrap, so an
-       over-long line cannot add a fifth way to grow either. */
-    {
-        const lv_font_t *mono = sdr_font_mono();
-        lv_coord_t gap = lv_obj_get_style_text_line_space(_d_decode, LV_PART_MAIN);
-        lv_obj_set_height(_d_decode,
-                          P25_DECODE_MAX_LINES * (lv_font_get_line_height(mono) + gap));
-        lv_label_set_long_mode(_d_decode, LV_LABEL_LONG_CLIP);
-    }
 
     lv_obj_t *identity_panel = make_panel(parent);
     _d_identity = make_label(identity_panel, &lv_font_montserrat_14, COL_TEXT);
@@ -578,25 +550,27 @@ void AppP25::updateDecode(void)
     if (P25.p25_lcw_valid && P25.p25_lcw_emergency)
         ls_ui_lamp_set(_d_led, true, LS_UI_COLOR_ALARM);
 
+    /*LS-846  Two lines, and they never become three.
+
+       The counters that used to live here - BCH ok/fail, the TSBK tallies,
+       the frame type and DUID - are how well the decoder is doing, not who is
+       talking, and they are a HEALTH question. Keeping them here cost four
+       lines of the tab and, worse, three of the lines only appeared once
+       voice came up, so the block grew at the exact moment a call started and
+       shoved the gain and volume sliders down the screen.
+
+       What is left is the call: who, and one line of status. Encryption first
+       because it decides whether there is any point listening, then trunking,
+       then the link control word. One of them at a time, so the height is
+       fixed and nothing below it can move. */
+    const char *status = enc[0]   ? enc :
+                         trunk[0] ? trunk :
+                         lcw[0]   ? lcw : "";
+
     snprintf(buf, sizeof(buf),
-             "NAC %s    TG %s%d    SRC %s%d\n"
-             "FRAME %s   DUID %s\n"
-             "BCH ok %d  fail %d  ratio %d.%d%%   VOICE %d\n"
-             "TSBK ok %u  err %u%s%s%s%s%s%s",
-             nac,
-             P25.dsd_tg ? "" : "", P25.dsd_tg,
-             P25.dsd_src ? "" : "", P25.dsd_src,
-             P25.dsd_ftype[0] ? P25.dsd_ftype : "----",
-             P25.dsd_fsubtype[0] ? P25.dsd_fsubtype : "----",
-             ok, fail, pct10 / 10, pct10 % 10, P25.dsd_voice_count,
-              (unsigned)(have_health ? health.tsbk_valid : P25.p25_tsbk_ok_count),
-              (unsigned)(have_health ? health.tsbk_invalid : P25.p25_tsbk_err_count),
-             trunk[0] ? "\n" : "",
-             trunk,
-             enc[0] ? "\n" : "",
-             enc,
-             lcw[0] ? "\n" : "",
-             lcw);
+             "NAC %s    TG %d    SRC %d\n"
+             "%s",
+             nac, P25.dsd_tg, P25.dsd_src, status);
     set_text_if_changed(_d_decode, buf);
     if (_d_identity) {
         static char identity[320];
