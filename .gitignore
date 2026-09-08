@@ -76,3 +76,6 @@ bench/upstream.ps1
 # these carry the same distribution questions as any other released image.
 /dist/lakeshark-lcd43/
 /dist/site/fw/
+node_modules/
+package-lock.json
+package.json

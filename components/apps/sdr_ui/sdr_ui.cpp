@@ -5,22 +5,16 @@
 #include <cstdlib>
 #include <cstring>
 
-LV_FONT_DECLARE(lv_font_unscii_16);
+LV_FONT_DECLARE(lv_font_lsmono_16);
+LV_FONT_DECLARE(lv_font_lsmono_14);
 
-/*  The readouts need a fixed pitch - columns of numbers that move when a
-    digit changes are unreadable at a glance - and unscii is LVGL's own
-    monospace face, so it carries LVGL's licence rather than needing one of
-    its own. The Consolas conversions that used to sit here had no recorded
-    provenance and no redistribution authority; see docs/THIRD_PARTY_REVIEW.md.
-
-    unscii is a single 8x16 face, so there is no smaller mono to fall back on.
-    The small variant takes montserrat 14 instead: it is proportional, but it
-    is the right height, and height is what matters here - pointing it at the
-    16px face grew every compact readout by two pixels and pushed the home
-    widget picker into a scrollbar, which the gate caught. Anything that needs
-    columns to line up should be asking for sdr_font_mono(). */
-const lv_font_t *sdr_font_mono(void)    { return &lv_font_unscii_16; }
-const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_montserrat_14; }
+/*  DejaVu Sans Mono, converted at the two sizes the readouts are laid out
+    for. The readouts are columns of figures and they have to hold still as
+    digits change, which needs a fixed pitch; LVGL's only built-in monospace
+    is unscii, whose fixed 8x16 cell renders far too large for these panels.
+    DejaVu is under the Bitstream Vera licence, so it can ship. */
+const lv_font_t *sdr_font_mono(void)    { return &lv_font_lsmono_16; }
+const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_lsmono_14; }
 const lv_font_t *sdr_font_ui(void)      { return &lv_font_montserrat_14; }
 
 /*LS-606*/
