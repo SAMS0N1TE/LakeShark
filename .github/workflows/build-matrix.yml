@@ -1,0 +1,56 @@
+# Every board, every push.
+#
+# This is the honest answer to "does this still build for the NANO?" - a
+# question that otherwise cannot be answered without plugging one in. The
+# board layer only stays cheap if breaking a board you do not own is loud.
+name: build matrix
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one broken board must not hide the others
+      matrix:
+        include:
+          - name: p4-nano
+            defaults: boards/nano_headless_ble.defaults
+          - name: p4-wifi6
+            defaults: boards/wifi6_headless_ble.defaults
+          - name: p4-touch-lcd-43
+            defaults: boards/lcd43_gui.defaults
+          - name: p4-touch-lcd-4b
+            defaults: boards/touch_lcd_4b_gui.defaults
+          - name: p4-nano-nobt
+            defaults: boards/nano_headless_nobt.defaults
+
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32p4
+          command: >-
+            idf.py
+            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}"
+            build
+
+      - name: Report size
+        run: |
+          echo "### ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          ls -l build/lakeshark.bin | awk '{print "firmware: " $5 " bytes"}' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lakeshark-${{ matrix.name }}
+          path: |
+            build/lakeshark.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+          if-no-files-found: error

@@ -9,11 +9,20 @@ extern "C" {
 #include "app_registry.h"
 #include "settings.h"
 #include "fm_state.h"
+#include "fm_mode_label.h"
 #include "lakeshark_backend.h"
 #include "audio_out.h"
+/*LS-731*/
+#include "scan_engine.h"
+/*LS-767*/
+#include "fm_sweep_arbitration.h"
+/*LS-200*/
+#include "ls_time.h"
 }
 
 #include "sdr_ui/sdr_ui.h"
+#include "ui/ls_ui.h"
+#include "ui/ls_receiver_status.h"
 
 #define COL_LABEL   SDR_LABEL
 #define COL_TEXT    SDR_TEXT
@@ -26,7 +35,35 @@ extern "C" {
 #define COL_RED     SDR_RED
 #define COL_PANEL   SDR_PANEL
 
-static const char *MODE_NAMES[FM_MODE_COUNT] = { "LISTEN", "SCAN", "POCSAG", "WFM" };
+/*LS-746*/ /*LS-749*/
+/* TAB ORDER, NAMED ONCE. run() adds the tabs, timerCb dispatches on the active
+   index and switchTab wraps on the count - three places that must agree with
+   an order expressed nowhere. Inserting SCAN at 1 already shifted all of them
+   silently. These names do not create a compile-time link, but they make the
+   next insertion a one-line edit instead of a hunt. */
+enum {
+    TAB_VFO = 0,
+    TAB_SCAN,
+    TAB_PAGES,
+    TAB_SWEEP,
+    TAB_CONFIG,
+    TAB_COUNT
+};
+
+/*LS-731*/
+/* The MODE button cycles DEMODULATORS only. SWEEP is a job, not a
+   demodulator: it drives the tuner across a band and parks nowhere, so
+   landing on it while cycling looking for WFM stops audio dead with no
+   indication why. It is reached from the SWEEP tab's own button now. */
+static const fm_mode_t MODE_CYCLE[] = {
+    FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG, FM_MODE_FLEX
+};
+static const int       MODE_CYCLE_N = (int)(sizeof(MODE_CYCLE) / sizeof(MODE_CYCLE[0]));
+
+static const char *FLEX_RATE_LEVEL[] = {
+    "1600 bps / 2-level", "3200 bps / 2-level",
+    "3200 bps / 4-level", "6400 bps / 4-level"
+};
 
 static const int   STEP_HZ[]   = { 5000, 10000, 12500, 25000, 100000, 1000000 };
 static const char *STEP_NAME[] = { "5k", "10k", "12.5k", "25k", "100k", "1M" };
@@ -84,25 +121,25 @@ static void fm_seg_vol(void *, int v)  { audio_volume_set(v); }
 static lv_obj_t *make_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud,
                           int w = 90, int h = 48)
 {
-    lv_obj_t *b = sdr_btn(parent, txt, cb, ud, nullptr);
-    lv_obj_set_size(b, w, h);
-    return b;
+    (void)w;
+    (void)h;
+    return ls_ui_button(parent, txt, LS_BTN_DEFAULT, cb, ud, nullptr);
 }
 
 static lv_obj_t *btn_row(lv_obj_t *parent)
 {
-    lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(row, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 2, 0);
-    lv_obj_set_style_pad_column(row, 6, 0);
-    lv_obj_set_style_pad_row(row, 6, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    return row;
+    return ls_ui_controls(parent);
 }
+
+/*LS-767*/
+/* Hook trampolines for fm_sweep_start_arbitrated(). Kept at file scope so
+   fm_sweep_hooks_t can hold their C-language addresses without a std::function
+   or a capturing lambda. The ctx is unused - the hooks all resolve to
+   translation-unit-global state (scan_engine's s_enabled, the FM app's mode). */
+static bool fm_sweep_hook_scanner_active(void *)   { return scan_engine_active(); }
+static void fm_sweep_hook_scanner_stop(void *)     { scan_engine_stop(); }
+static void fm_sweep_hook_enter_sweep_mode(void *) { lakeshark_fm_set_mode(FM_MODE_SCAN); }
+static void fm_sweep_hook_restart_sweep(void *)    { lakeshark_fm_scan_restart(); }
 
 AppFM::AppFM()
     : LsApp("FM", "fm")
@@ -112,25 +149,47 @@ AppFM::AppFM()
 AppFM::~AppFM() = default;
 
 bool AppFM::init(void)   { return true; }
-bool AppFM::pause(void)  { lakeshark_radio_park(); return true; }
+/*LS-600*/
+bool AppFM::pause(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    lakeshark_radio_park();
+    return true;
+}
 
+/*LS-604*/
+bool AppFM::background(void)
+{
+    if (_timer) lv_timer_pause(_timer);
+    return true;
+}
+
+/*LS-600*/
 bool AppFM::resume(void)
 {
     lakeshark_select_fm();
+    if (_timer) lv_timer_resume(_timer);
     return true;
 }
 
 bool AppFM::back(void)
 {
-    if (_freq_modal) { closeFreqEntry(); return true; }
+    if (_freq_entry) { closeFreqEntry(); return true; }
     return exitToLauncher();
 }
 
 bool AppFM::close(void)
 {
+    _wf_sweep = 0;
+    _last_mode = -1;
     closeFreqEntry();
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _tabview = nullptr;
+    /*LS-746*/
+    _scan_panel.forget();
+    ls_spectrum_waterfall_forget(&_s_spectrum);
+    /*LS-767*/
+    fm_sweep_configure(nullptr);
     lakeshark_radio_park();
     return true;
 }
@@ -139,17 +198,39 @@ bool AppFM::run(lv_obj_t *parent)
 {
     lakeshark_select_fm();
 
-    lv_obj_t *scr = parent;
-    sdr_style_screen(scr);
+    /*LS-767*/
+    /* Wire the sweep-arbitration gateway to this app's tuner. Cleared in
+       close() so a stale hook cannot fire after the app is gone. */
+    const fm_sweep_hooks_t sweep_hooks = {
+        fm_sweep_hook_scanner_active,
+        fm_sweep_hook_scanner_stop,
+        fm_sweep_hook_enter_sweep_mode,
+        fm_sweep_hook_restart_sweep,
+        nullptr,
+    };
+    fm_sweep_configure(&sweep_hooks);
 
-    _tabview = lv_tabview_create(scr, LV_DIR_TOP, 44);
-    lv_obj_set_size(_tabview, lv_pct(100), lv_pct(100));
-    sdr_style_tabview(_tabview);
+    ls_ui_screen_t screen;
+    ls_ui_screen_create(parent, "FM", true, LS_UI_COLOR_ID_TEAL, &screen);
+    _screen_readout = screen.readout;
+    _screen_lamp = screen.lamp;
+    ls_ui_screen_set_readout(&screen, "FM RADIO");
+    _tabview = screen.tabs;
 
-    buildVfoTab(lv_tabview_add_tab(_tabview, "VFO"));
-    buildPocsagTab(lv_tabview_add_tab(_tabview, "POCSAG"));
-    buildScanTab(lv_tabview_add_tab(_tabview, "SCAN"));
-    buildConfigTab(lv_tabview_add_tab(_tabview, "CONFIG"));
+    buildVfoTab(ls_ui_screen_add_tab(&screen, "VFO"));
+    /*LS-746*/
+    /* SCAN sits next to VFO because the channel/band scanner is an NFM job -
+       this is where someone reaches for it. It was previously only fully
+       controllable from the P25 app, which is the wrong app for a 12.5 kHz
+       NFM grid scan. SWEEP stays separate and further right: it measures a
+       band and plots it, it does not stop and listen. Three things could be
+       called scanning and the tab order is now the distinction (LS-733). */
+    buildScanCtlTab(ls_ui_screen_add_tab(&screen, "SCAN"));
+    /*LS-984  FLEX pages share the pager list; the protocol is printed on
+       every row below. */
+    buildPageTab(ls_ui_screen_add_tab(&screen, "PAGES"));
+    buildScanTab(ls_ui_screen_add_tab(&screen, "SWEEP"));
+    buildConfigTab(ls_ui_screen_add_tab(&screen, "CONFIG"));
 
     _timer = lv_timer_create(timerCb, 200, this);
     return true;
@@ -178,31 +259,24 @@ static lv_obj_t *meter_label(lv_obj_t *parent)
 
 void AppFM::buildVfoTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_style_pad_row(parent, 5, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
-    lv_obj_t *face = sdr_lcd_panel(parent, SDR_PAS_AMBER);
+    lv_obj_t *face = sdr_lcd_panel(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL));
 
     lv_obj_t *strap = lv_obj_create(face);
     lv_obj_set_size(strap, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(strap, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(strap, 0, 0);
-    lv_obj_set_style_pad_all(strap, 0, 0);
+    ls_ui_style_lcd_row(strap);
     lv_obj_set_flex_flow(strap, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(strap, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(strap, LV_OBJ_FLAG_SCROLLABLE);
 
-    _v_mode = sdr_label(strap, &lv_font_montserrat_28, SDR_PAS_GOLD);
+    _v_mode = sdr_label(strap, &lv_font_montserrat_28, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL));
     lv_obj_set_style_text_letter_space(_v_mode, 2, 0);
     lv_label_set_text(_v_mode, "POCSAG");
 
     lv_obj_t *rxbox = lv_obj_create(strap);
     lv_obj_set_size(rxbox, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(rxbox, LV_OPA_0, 0);
-    lv_obj_set_style_border_width(rxbox, 0, 0);
-    lv_obj_set_style_pad_all(rxbox, 0, 0);
-    lv_obj_set_style_pad_column(rxbox, 6, 0);
+    ls_ui_style_lcd_row(rxbox);
     lv_obj_set_flex_flow(rxbox, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(rxbox, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(rxbox, LV_OBJ_FLAG_SCROLLABLE);
@@ -213,7 +287,7 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
     _v_rx = sdr_label(rxbox, &lv_font_montserrat_22, COL_DIM);
     lv_label_set_text(_v_rx, "RX");
 
-    _v_freq = sdr_label(face, &lv_font_montserrat_48, SDR_PAS_AMBER);
+    _v_freq = sdr_label(face, &lv_font_montserrat_48, SDR_ROLE_COLOR(LS_UI_COLOR_TEXT));
     lv_obj_set_width(_v_freq, lv_pct(100));
     lv_obj_set_style_text_align(_v_freq, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_letter_space(_v_freq, 2, 0);
@@ -235,18 +309,17 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
     lv_label_set_text(_v_diag, "");
 
     lv_obj_t *kp = btn_row(parent);
-    { lv_obj_t *l = nullptr; lv_obj_t *b = sdr_btn(kp, "-", stepDownCb, this, &l);
-      lv_obj_set_size(b, 96, 52); _v_dn_lbl = l; }
-    { lv_obj_t *b = sdr_btn(kp, "STEP", stepCycleCb, this, nullptr);
-      lv_obj_set_size(b, 96, 52); }
-    { lv_obj_t *l = nullptr; lv_obj_t *b = sdr_btn(kp, "+", stepUpCb, this, &l);
-      lv_obj_set_size(b, 96, 52); _v_up_lbl = l; }
+    { lv_obj_t *l = nullptr;
+      ls_ui_button(kp, "-", LS_BTN_DEFAULT, stepDownCb, this, &l); _v_dn_lbl = l; }
+    ls_ui_button(kp, "STEP", LS_BTN_DEFAULT, stepCycleCb, this, nullptr);
+    { lv_obj_t *l = nullptr;
+      ls_ui_button(kp, "+", LS_BTN_DEFAULT, stepUpCb, this, &l); _v_up_lbl = l; }
 
     _v_step_lbl = mono(parent, COL_CYAN);
     lv_obj_set_width(_v_step_lbl, lv_pct(100));
     lv_obj_set_style_text_align(_v_step_lbl, LV_TEXT_ALIGN_CENTER, 0);
 
-    _v_gain_slider = sdr_seg_slider(parent, SDR_PAS_AMBER, 496, FM.gain_tenths,
+    _v_gain_slider = sdr_seg_slider(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL), 496, FM.gain_tenths,
                                     fm_seg_gain_live, this, &_v_gain_lbl);
     sdr_seg_on_release(_v_gain_slider, fm_seg_gain_commit);
     _v_sq_slider   = sdr_seg_slider(parent, SDR_PAS_CYAN, 100, FM.squelch_tenths,
@@ -260,17 +333,72 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
     make_btn(ar, "AGC",  agcCb,       this, 70, 44);
     make_btn(ar, "-1M",  tuneDeltaCb, (void *)(intptr_t)(-1000000), 66, 44);
     make_btn(ar, "+1M",  tuneDeltaCb, (void *)(intptr_t)(1000000),  66, 44);
+
+    /*LS-731*/
+    /* Second row: the channel scanner. Its own row rather than squeezed in
+       above, because it is a different kind of control - the row above tunes
+       one radio, this one runs a list - and the row wraps anyway at 480 px. */
+    lv_obj_t *sr = btn_row(parent);
+    { lv_obj_t *l = nullptr;
+      ls_ui_button(sr, "SCAN", LS_BTN_TOGGLE_OFF, scanToggleCb, this, &l);
+      _v_scan_lbl = l; }
+    make_btn(sr, "SKIP", scanSkipCb, this, 90, 44);
+    /*LS-746*/
+    /* AUTO SQ moved to the SCAN tab with the rest of the scanner settings.
+       What stays here is deliberately only START/STOP and SKIP - the two
+       things you reach for with the radio already in your hand. The SCAN tab
+       is the authoritative surface; this row is a shortcut into it, not a
+       second copy of it. */
+    _v_scan_state = mono(sr, COL_LABEL);
+    lv_label_set_text(_v_scan_state, "scanner off");
+}
+
+/*LS-746*/
+void AppFM::buildScanCtlTab(lv_obj_t *parent)
+{
+    ls_ui_style_content(parent);
+
+    _scan_panel.build(parent);
 }
 
 void AppFM::updateVfo(void)
 {
-    if (_v_mode) lv_label_set_text(_v_mode, MODE_NAMES[FM.mode % FM_MODE_COUNT]);
-    if (_v_freq) { char fb[16]; mhz_str(fb, sizeof(fb), FM.freq_hz, 4); lv_label_set_text(_v_freq, fb); }
+    ls_iq_control_status_t radio;
+    ls_receiver_presentation_t receiver;
+    fm_get_receiver_status(&radio);
+    ls_receiver_present(&radio, &receiver);
+
+    if (_v_mode) lv_label_set_text(_v_mode, fm_mode_label(FM.mode));
+
+    /*LS-731*/
+    /* Show what the scanner is actually doing, on the panel that has the
+       button. scan_engine_status() is the same string the console prints -
+       one source of truth, so the screen and `scan status` can never
+       disagree about whether it is holding. */
+    if (_v_scan_lbl)
+        lv_label_set_text(_v_scan_lbl, scan_engine_active() ? "STOP" : "SCAN");
+    if (_v_scan_state) {
+        if (scan_engine_active()) {
+            char st[96];
+            scan_engine_status(st, sizeof(st));
+            lv_label_set_text(_v_scan_state, st);
+            lv_obj_set_style_text_color(_v_scan_state, sdr_accent(), 0);
+        } else {
+            lv_label_set_text(_v_scan_state, "scanner off");
+            lv_obj_set_style_text_color(_v_scan_state, COL_LABEL, 0);
+        }
+    }
+    if (_v_freq) {
+        char fb[24];
+        mhz_str(fb, sizeof(fb), FM.freq_hz, 4);
+        lv_label_set_text(_v_freq, fb);
+        ls_ui_readout_set(_screen_readout, fb);
+    }
 
     bool busy = false;
     const char *rxtxt = "RX";
     lv_color_t lampc = COL_GREEN;
-    char status[48];
+    char status[96];
     if (FM.mode == FM_MODE_LISTEN) {
         busy = FM.squelch_open;
         rxtxt = busy ? "BUSY" : "RX";
@@ -285,6 +413,13 @@ void AppFM::updateVfo(void)
         lampc = COL_CYAN;
         char bs[24]; fm_baud_str(bs, sizeof(bs));
         snprintf(status, sizeof(status), "MHz   %s   %s", bs, busy ? "SYNC" : "hunting");
+    } else if (FM.mode == FM_MODE_FLEX) {
+        busy = FM.flex_sync;
+        rxtxt = busy ? "SYNC" : "RX";
+        lampc = COL_CYAN;
+        unsigned mode = FM.flex_mode < 4 ? FM.flex_mode : 0;
+        snprintf(status, sizeof(status), "MHz   %s   %s",
+                 FLEX_RATE_LEVEL[mode], busy ? "SYNC" : "hunting");
     } else {
         busy = (FM.iq_level > 0.25f);
         rxtxt = busy ? "HIT" : "SCAN";
@@ -294,16 +429,27 @@ void AppFM::updateVfo(void)
         mhz_str(z, sizeof(z), FM.scan_stop_hz, 1);
         snprintf(status, sizeof(status), "MHz   scanning %s-%s", a, z);
     }
+    if (!receiver.available) {
+        busy = false;
+        rxtxt = "NO RX";
+        lampc = COL_RED;
+        snprintf(status, sizeof(status), "%s", receiver.connection);
+    } else if (receiver.tune_attention ||
+               (radio.effective_center_known &&
+                radio.requested_center_hz != radio.effective_center_hz)) {
+        snprintf(status, sizeof(status), "%s", receiver.frequency);
+    }
     if (_v_status) lv_label_set_text(_v_status, status);
     if (_v_lamp) {
         lv_led_set_color(_v_lamp, lampc);
         if (busy) lv_led_on(_v_lamp); else lv_led_off(_v_lamp);
     }
+    ls_ui_lamp_set(_screen_lamp, busy, LS_UI_COLOR_ACCENT);
     if (_v_rx) {
         lv_label_set_text(_v_rx, rxtxt);
         lv_obj_set_style_text_color(_v_rx, busy ? lampc : COL_DIM, 0);
     }
-    if (_v_freq) lv_obj_set_style_text_color(_v_freq, busy ? SDR_PAS_GREEN : SDR_PAS_AMBER, 0);
+    if (_v_freq) lv_obj_set_style_text_color(_v_freq, busy ? SDR_PAS_GREEN : SDR_ROLE_COLOR(LS_UI_COLOR_TEXT), 0);
 
     int s = clampi((int)(FM.iq_level * 100.0f + 0.5f), 0, 100);
     bool clip = FM.iq_level >= 0.97f;
@@ -332,15 +478,15 @@ void AppFM::updateVfo(void)
     if (_v_diag) {
         lv_label_set_text_fmt(_v_diag,
             "IQ %3d%%  AF %3d%%   %s %luKB/s  ERR %lu",
-            s, af, (FM.iq_bytes_sec > 0) ? "DEV" : "no-dev",
+            s, af, receiver.available ? "DEV" : "NO RX",
             (unsigned long)(FM.iq_bytes_sec / 1024), (unsigned long)FM.read_errors);
-        lv_obj_set_style_text_color(_v_diag, (FM.iq_bytes_sec > 0) ? COL_LABEL : COL_RED, 0);
+        lv_obj_set_style_text_color(_v_diag, receiver.available ? COL_LABEL : COL_RED, 0);
     }
 
     if (_v_gain_lbl) {
-        if (FM.gain_tenths == 0) lv_label_set_text(_v_gain_lbl, "GAIN  AGC");
-        else lv_label_set_text_fmt(_v_gain_lbl, "GAIN  %d.%d dB",
-                                   FM.gain_tenths / 10, FM.gain_tenths % 10);
+        lv_label_set_text_fmt(_v_gain_lbl, "GAIN  %s", receiver.gain);
+        lv_obj_set_style_text_color(_v_gain_lbl,
+            receiver.gain_attention ? COL_RED : COL_LABEL, 0);
     }
     sdr_seg_set(_v_gain_slider, FM.gain_tenths);
 
@@ -351,34 +497,26 @@ void AppFM::updateVfo(void)
     sdr_seg_set(_v_vol_slider, audio_volume_get());
 }
 
-void AppFM::buildPocsagTab(lv_obj_t *parent)
+void AppFM::buildPageTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_style_pad_row(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
-    lv_obj_t *strap = lv_obj_create(parent);
-    lv_obj_set_size(strap, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(strap, COL_PANEL, 0);
-    lv_obj_set_style_border_width(strap, 0, 0);
-    lv_obj_set_style_radius(strap, 6, 0);
-    lv_obj_set_style_pad_all(strap, 8, 0);
-    lv_obj_set_style_pad_column(strap, 10, 0);
+    lv_obj_t *strap = ls_ui_panel(parent, nullptr);
     lv_obj_set_flex_flow(strap, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(strap, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(strap, LV_OBJ_FLAG_SCROLLABLE);
 
-    _p_lamp = lv_led_create(strap);
-    lv_obj_set_size(_p_lamp, 16, 16);
-    lv_led_set_color(_p_lamp, COL_CYAN);
-    lv_led_off(_p_lamp);
+    _p_lamp = ls_ui_lamp(strap, LS_UI_COLOR_ACCENT);
+    /*LS-827  Kill the glow. lv_led draws its halo as a SHADOW, and the
+       default shadow width is far wider than the 16x16 widget - it spilled
+       out of the strap and printed over the text beside it. A sync lamp only
+       has to be on or off; it does not need to bleed. */
     _p_strap = sdr_label(strap, &lv_font_montserrat_16, COL_TEXT);
     lv_obj_set_flex_grow(_p_strap, 1);
     lv_label_set_text(_p_strap, "HUNT  baud 1200");
 
     {
-        lv_obj_t *baudb = sdr_btn(strap, "BAUD", baudCb, this, nullptr);
-        lv_obj_set_size(baudb, 90, 40);
+    _p_baud = ls_ui_button(strap, "BAUD", LS_BTN_DEFAULT, baudCb, this, nullptr);
     }
 
     lv_obj_t *cp = sdr_panel(parent);
@@ -391,13 +529,12 @@ void AppFM::buildPocsagTab(lv_obj_t *parent)
     lv_obj_t *logbox = lv_obj_create(parent);
     lv_obj_set_width(logbox, lv_pct(100));
     lv_obj_set_flex_grow(logbox, 1);
-    lv_obj_set_style_bg_color(logbox, lv_color_hex(0x141414), 0);
-    lv_obj_set_style_bg_opa(logbox, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(logbox, SDR_BORDER, 0);
-    lv_obj_set_style_border_width(logbox, 1, 0);
-    lv_obj_set_style_radius(logbox, 4, 0);
-    lv_obj_set_style_pad_all(logbox, 8, 0);
+    ls_ui_style_scroll_panel(logbox);
     lv_obj_set_scroll_dir(logbox, LV_DIR_VER);
+    /*LS-827  The box scrolled but never showed a bar, so there was no way to
+       tell there was more above or below. Force it visible and give it enough
+       width and contrast to be usable with a finger. */
+    lv_obj_set_scrollbar_mode(logbox, LV_SCROLLBAR_MODE_ON);
 
     _p_log = sdr_label(logbox, sdr_font_mono(), COL_TEXT);
     lv_obj_set_width(_p_log, lv_pct(100));
@@ -405,32 +542,91 @@ void AppFM::buildPocsagTab(lv_obj_t *parent)
     lv_label_set_text(_p_log, "(listening for pages...)");
 }
 
-void AppFM::updatePocsag(void)
+void AppFM::updatePages(void)
 {
-    if (_p_lamp) { if (FM.pocsag_sync) lv_led_on(_p_lamp); else lv_led_off(_p_lamp); }
+    ls_iq_control_status_t radio;
+    ls_receiver_presentation_t receiver;
+    fm_get_receiver_status(&radio);
+    ls_receiver_present(&radio, &receiver);
+    bool flex = FM.mode == FM_MODE_FLEX;
+    bool sync = receiver.available &&
+                (flex ? FM.flex_sync : FM.pocsag_sync);
+    if (_p_lamp) { if (sync) lv_led_on(_p_lamp); else lv_led_off(_p_lamp); }
+    if (_p_baud) {
+        if (flex) lv_obj_add_flag(_p_baud, LV_OBJ_FLAG_HIDDEN);
+        else      lv_obj_clear_flag(_p_baud, LV_OBJ_FLAG_HIDDEN);
+    }
     if (_p_strap) {
-        char bs[24]; fm_baud_str(bs, sizeof(bs));
-        char fb[16]; mhz_str(fb, sizeof(fb), FM.freq_hz, 4);
-        lv_label_set_text_fmt(_p_strap, "%s   %s   %s MHz",
-            FM.pocsag_sync ? "SYNC" : "HUNT", bs, fb);
-        lv_obj_set_style_text_color(_p_strap, FM.pocsag_sync ? COL_GREEN : COL_DIM, 0);
+        if (!receiver.available) {
+            /*LS-789*/
+            lv_label_set_text_fmt(_p_strap, "%s\n%s",
+                                  receiver.connection, receiver.frequency);
+        } else if (flex) {
+            unsigned mode = FM.flex_mode < 4 ? FM.flex_mode : 0;
+            lv_label_set_text_fmt(_p_strap, "FLEX %s   %s   %s\nHUNT: 1600/2  3200/2  3200/4  6400/4",
+                sync ? "SYNC" : "HUNT", FLEX_RATE_LEVEL[mode], receiver.frequency);
+        } else {
+            char bs[24]; fm_baud_str(bs, sizeof(bs));
+            /*LS-789  One line could not hold status, baud and frequency beside
+               the BAUD button, so LVGL broke it wherever it ran out - mid
+               number, "152." on one line and "6000 MHz" on the next. Break it
+               deliberately instead, the way the FLEX branch above already
+               does: the frequency gets its own line and the strap is always
+               two lines, so its height no longer changes as values do. */
+            lv_label_set_text_fmt(_p_strap, "POCSAG %s   %s\n%s",
+                sync ? "SYNC" : "HUNT", bs, receiver.frequency);
+        }
+        lv_obj_set_style_text_color(_p_strap,
+            !receiver.available || receiver.tune_attention ? COL_RED
+                                                           : sync ? COL_GREEN : COL_DIM, 0);
     }
     if (_p_counts) {
-        lv_label_set_text_fmt(_p_counts,
-            "frames %lu  pages %lu  cw-err %lu\naddr %lu  msg %lu  (msg=0 -> tone only)",
-            (unsigned long)FM.pocsag_frames, (unsigned long)FM.pocsag_pages,
-            (unsigned long)FM.pocsag_cw_errs,
-            (unsigned long)FM.pocsag_addr, (unsigned long)FM.pocsag_msg);
+        if (flex) {
+            lv_label_set_text_fmt(_p_counts, "FLEX frames %lu  pages %lu  cw-err %lu  near %d",
+                (unsigned long)FM.flex_frames, (unsigned long)FM.flex_pages,
+                (unsigned long)FM.flex_cw_errs, FM.flex_near_min);
+        } else {
+            lv_label_set_text_fmt(_p_counts,
+                "POCSAG frames %lu  pages %lu  cw-err %lu\naddr %lu  msg %lu  (msg=0 -> tone only)",
+                (unsigned long)FM.pocsag_frames, (unsigned long)FM.pocsag_pages,
+                (unsigned long)FM.pocsag_cw_errs,
+                (unsigned long)FM.pocsag_addr, (unsigned long)FM.pocsag_msg);
+        }
     }
     if (_p_log) {
-        char buf[700]; int off = 0;
+        /*LS-827  700 B held barely two pages once messages got long, so the
+           log looked empty even when the ring was full. */
+        char buf[1600]; int off = 0;
         int n = FM.page_count;
-        for (int k = 0; k < n && off < (int)sizeof(buf) - 110; k++) {
+        for (int k = 0; k < n && off < (int)sizeof(buf) - 180; k++) {
             int idx = (FM.page_head - 1 - k + FM_PAGE_LOG_MAX * 2) % FM_PAGE_LOG_MAX;
             const fm_page_t *p = &FM.pages[idx];
-            const char *tn = (p->type == 'A') ? "ALPHA" : (p->type == 'N') ? "NUM" : "TONE";
-            off += snprintf(buf + off, sizeof(buf) - off, "RIC %lu  F%d  %d %s  %s\n",
-                            (unsigned long)p->address, p->function, p->baud, tn, p->text);
+            /*LS-826  '?' is a real outcome, not a tone: the page decoded but
+               neither the alphanumeric nor the numeric reading was convincing.
+               Showing it as TONE hid the difference between "this pager sent
+               no message" and "we could not read the message". */
+            const char *tn = (p->type == 'A') ? "ALPHA"
+                           : (p->type == 'N') ? "NUM"
+                           : (p->type == '?') ? "RAW?"
+                                              : "TONE";
+            /*LS-200  Real time if it was known when the page landed, else
+               the uptime marker. Rendered through ls_time_render_stamp_at
+               so the same "no plausible-looking wrong date" property the
+               bench pins is what the panel shows. */
+            char stamp[LS_TIME_STAMP_MAX];
+            ls_time_render_stamp_at(stamp, sizeof(stamp),
+                                    (time_t)p->ts_epoch, p->ts_us);
+            if (p->protocol == FM_PAGE_PROTOCOL_FLEX) {
+                off += snprintf(buf + off, sizeof(buf) - off,
+                                "FLEX    %s  ADDR %lu  %d %s  %s\n",
+                                stamp, (unsigned long)p->address,
+                                p->baud, tn, p->text);
+            } else {
+                off += snprintf(buf + off, sizeof(buf) - off,
+                                "POCSAG  %s  RIC %lu  F%d  %d %s  %s\n",
+                                stamp, (unsigned long)p->address,
+                                p->function, p->baud, tn, p->text);
+            }
         }
         if (off == 0) snprintf(buf, sizeof(buf), "(listening for pages...)");
         lv_label_set_text(_p_log, buf);
@@ -439,36 +635,37 @@ void AppFM::updatePocsag(void)
 
 void AppFM::buildScanTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 6, 0);
-    lv_obj_set_style_pad_row(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
-    lv_obj_t *ip = sdr_panel(parent);
+    lv_obj_t *ip = ls_ui_panel(parent, "SWEEP STATUS");
     _s_info = mono(ip, COL_TEXT);
     lv_obj_set_width(_s_info, lv_pct(100));
     lv_label_set_text(_s_info, "band --");
 
-    _s_peak = sdr_label(parent, &lv_font_montserrat_18, COL_GOLD);
+    _s_peak = sdr_label(ip, &lv_font_montserrat_18, COL_GOLD);
     lv_obj_set_width(_s_peak, lv_pct(100));
     lv_label_set_text(_s_peak, "PEAK --");
 
-    lv_obj_t *cl = sdr_label(parent, &lv_font_montserrat_12, COL_LABEL);
-    lv_label_set_text(cl, "BAND ENERGY (per channel)");
-    _s_chart = lv_chart_create(parent);
-    lv_obj_set_width(_s_chart, lv_pct(100));
-    lv_obj_set_flex_grow(_s_chart, 1);
-    lv_chart_set_type(_s_chart, LV_CHART_TYPE_BAR);
-    lv_obj_set_style_bg_color(_s_chart, COL_PANEL, 0);
-    lv_obj_set_style_border_width(_s_chart, 0, 0);
-    lv_obj_set_style_pad_all(_s_chart, 4, 0);
-    lv_chart_set_point_count(_s_chart, 1);
-    _s_chart_pts = 1;
-    _s_ser = lv_chart_add_series(_s_chart, COL_GREEN, LV_CHART_AXIS_PRIMARY_Y);
+    lv_obj_update_layout(parent);
+    int width = lv_obj_get_content_width(parent);
+    int height = lv_disp_get_ver_res(lv_obj_get_disp(parent)) / 3;
+    if (height > LS_SPECTRUM_CANVAS_MAX_HEIGHT)
+        height = LS_SPECTRUM_CANVAS_MAX_HEIGHT;
+    (void)ls_spectrum_waterfall_build(
+        &_s_spectrum, parent, "SPECTRUM / WATERFALL  (newest sweep at top)",
+        width, height, FM_SCAN_BINS_MAX, 50, 100, false, nullptr, nullptr);
+    ls_spectrum_waterfall_add_controls(
+        &_s_spectrum,
+        LS_SPECTRUM_CTL_SPLIT | LS_SPECTRUM_CTL_CONTRAST |
+            LS_SPECTRUM_CTL_FULL | LS_SPECTRUM_CTL_GAIN,
+        gainDownCb, gainUpCb, this, nullptr, nullptr);
 
-    lv_obj_t *br = btn_row(parent);
-    make_btn(br, "BAND",   bandCb,        this, 96, 46);
-    make_btn(br, "RESTART",scanRestartCb, this, 110, 46);
-    make_btn(br, "->PEAK", tunePeakCb,    this, 110, 46);
+    lv_obj_t *actions = ls_ui_controls(parent);
+    lv_obj_t *br = ls_ui_button_group(actions);
+    ls_ui_group_button(br, "BAND", LS_BTN_DEFAULT, bandCb, this, nullptr);
+    ls_ui_group_button(br, "RESTART", LS_BTN_DEFAULT, scanRestartCb, this, nullptr);
+    ls_ui_group_button(br, "FREQ PEAK", LS_BTN_PRIMARY, tunePeakCb, this, nullptr);
+    _wf_sweep = FM.scan_sweeps;
 }
 
 void AppFM::updateScan(void)
@@ -494,28 +691,23 @@ void AppFM::updateScan(void)
             lv_label_set_text(_s_peak, "PEAK  --");
         }
     }
-    if (_s_chart && _s_ser) {
+    if (FM.scan_sweeps != _wf_sweep) {
+        _wf_sweep = FM.scan_sweeps;
         int bins = FM.scan_bins;
-        if (bins < 1) bins = 1;
         if (bins > FM_SCAN_BINS_MAX) bins = FM_SCAN_BINS_MAX;
-        if (bins != _s_chart_pts) {
-            lv_chart_set_point_count(_s_chart, bins);
-            _s_chart_pts = bins;
-        }
-        float mx = 0.01f;
-        for (int i = 0; i < bins; i++) if (FM.scan_db[i] > mx) mx = FM.scan_db[i];
-        lv_chart_set_range(_s_chart, LV_CHART_AXIS_PRIMARY_Y, 0, (int)(mx * 100.0f) + 1);
-        for (int i = 0; i < bins; i++)
-            lv_chart_set_value_by_id(_s_chart, _s_ser, i, (int)(FM.scan_db[i] * 100.0f));
-        lv_chart_refresh(_s_chart);
+        ls_spectrum_waterfall_push(&_s_spectrum,
+                                   bins > 0 ? FM.scan_db : nullptr, bins);
     }
+    char gain[24];
+    if (FM.gain_tenths == 0) snprintf(gain, sizeof(gain), "GAIN AGC");
+    else snprintf(gain, sizeof(gain), "GAIN %d.%d", FM.gain_tenths / 10,
+                  FM.gain_tenths % 10);
+    ls_spectrum_waterfall_set_gain_text(&_s_spectrum, gain);
 }
 
 void AppFM::buildConfigTab(lv_obj_t *parent)
 {
-    lv_obj_set_style_pad_all(parent, 8, 0);
-    lv_obj_set_style_pad_row(parent, 6, 0);
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
+    ls_ui_style_content(parent);
 
     sdr_setrow_t r;
 
@@ -523,40 +715,40 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
 
     sdr_setting_row(parent, "FREQUENCY", &r);
     _c_freq = r.value;
-    sdr_btn(r.controls, "-1M",  tuneDeltaCb, (void *)(intptr_t)(-1000000), nullptr);
-    sdr_btn(r.controls, "-25k", tuneDeltaCb, (void *)(intptr_t)(-25000),  nullptr);
-    sdr_btn(r.controls, "+25k", tuneDeltaCb, (void *)(intptr_t)(25000),   nullptr);
-    sdr_btn(r.controls, "+1M",  tuneDeltaCb, (void *)(intptr_t)(1000000), nullptr);
+    ls_ui_button(r.controls, "-1M", LS_BTN_DEFAULT, tuneDeltaCb, (void *)(intptr_t)(-1000000), nullptr);
+    ls_ui_button(r.controls, "-25k", LS_BTN_DEFAULT, tuneDeltaCb, (void *)(intptr_t)(-25000), nullptr);
+    ls_ui_button(r.controls, "+25k", LS_BTN_DEFAULT, tuneDeltaCb, (void *)(intptr_t)(25000), nullptr);
+    ls_ui_button(r.controls, "+1M", LS_BTN_DEFAULT, tuneDeltaCb, (void *)(intptr_t)(1000000), nullptr);
 
     sdr_setting_row(parent, "GAIN", &r);
     _c_gain = r.value;
-    sdr_btn(r.controls, "-",    gainDownCb, this, nullptr);
-    sdr_btn(r.controls, "+",    gainUpCb,   this, nullptr);
-    sdr_btn(r.controls, "STEP", gainCb,     this, nullptr);
-    sdr_btn(r.controls, "AGC",  agcCb,      this, nullptr);
+    ls_ui_button(r.controls, "-", LS_BTN_DEFAULT, gainDownCb, this, nullptr);
+    ls_ui_button(r.controls, "+", LS_BTN_DEFAULT, gainUpCb, this, nullptr);
+    ls_ui_button(r.controls, "STEP", LS_BTN_DEFAULT, gainCb, this, nullptr);
+    ls_ui_button(r.controls, "AGC", LS_BTN_TOGGLE_OFF, agcCb, this, nullptr);
 
     lv_obj_t *gl = nullptr;
-    _c_gain_slider = sdr_seg_slider(parent, SDR_PAS_AMBER, 496, FM.gain_tenths,
+    _c_gain_slider = sdr_seg_slider(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL), 496, FM.gain_tenths,
                                     fm_seg_gain_live, this, &gl);
     sdr_seg_on_release(_c_gain_slider, fm_seg_gain_commit);
     if (gl) lv_label_set_text(gl, "MANUAL GAIN  (drag; left = AGC)");
 
     sdr_setting_row(parent, "SQUELCH", &r);
     _c_sql = r.value;
-    sdr_btn(r.controls, "-", sqDownCb, this, nullptr);
-    sdr_btn(r.controls, "+", sqUpCb,   this, nullptr);
+    ls_ui_button(r.controls, "-", LS_BTN_DEFAULT, sqDownCb, this, nullptr);
+    ls_ui_button(r.controls, "+", LS_BTN_DEFAULT, sqUpCb, this, nullptr);
 
     sdr_section(parent, "POCSAG");
 
     sdr_setting_row(parent, "BAUD", &r);
     _c_baud = r.value;
-    sdr_btn(r.controls, "CYCLE", baudCb, this, nullptr);
+    ls_ui_button(r.controls, "CYCLE", LS_BTN_DEFAULT, baudCb, this, nullptr);
 
     sdr_section(parent, "SCAN");
 
     sdr_setting_row(parent, "BAND", &r);
     _c_band = r.value;
-    sdr_btn(r.controls, "NEXT", bandCb, this, nullptr);
+    ls_ui_button(r.controls, "NEXT", LS_BTN_DEFAULT, bandCb, this, nullptr);
 
     sdr_section(parent, "AUDIO");
 
@@ -565,7 +757,7 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
 
     sdr_setting_row(parent, "MUTE", &r);
     _c_mute = r.value;
-    sdr_btn(r.controls, "TOGGLE", muteCb, this, nullptr);
+    ls_ui_button(r.controls, "TOGGLE", LS_BTN_TOGGLE_OFF, muteCb, this, nullptr);
 
     sdr_section(parent, "DIAGNOSTICS");
 
@@ -575,21 +767,31 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
     lv_label_set_text(_c_diag, "");
 
     updateConfig();
+
+    /*LS-608*/
+    sdr_section(parent, "DEFAULTS");
+    sdr_setting_row(parent, "RESET THIS APP", &r);
+    _reset_val = r.value;
+    lv_label_set_text(_reset_val, "");
+    sdr_hold_btn(r.controls, "HOLD 2", 2000, resetCb, this);
 }
 
 void AppFM::updateConfig(void)
 {
-    char b[40];
+    char b[96];
+    ls_iq_control_status_t radio;
+    ls_receiver_presentation_t receiver;
+    fm_get_receiver_status(&radio);
+    ls_receiver_present(&radio, &receiver);
     if (_c_freq) {
-        uint32_t f = FM.freq_hz;
-        snprintf(b, sizeof(b), "%lu.%04lu MHz",
-                 (unsigned long)(f / 1000000UL), (unsigned long)((f / 100UL) % 10000UL));
-        lv_label_set_text(_c_freq, b);
+        lv_label_set_text(_c_freq, receiver.frequency);
+        lv_obj_set_style_text_color(_c_freq,
+            receiver.tune_attention ? COL_RED : COL_TEXT, 0);
     }
     if (_c_gain) {
-        if (FM.gain_tenths == 0) lv_label_set_text(_c_gain, "AGC");
-        else { snprintf(b, sizeof(b), "%d.%d dB", FM.gain_tenths / 10, FM.gain_tenths % 10);
-               lv_label_set_text(_c_gain, b); }
+        lv_label_set_text(_c_gain, receiver.gain);
+        lv_obj_set_style_text_color(_c_gain,
+            receiver.gain_attention ? COL_RED : COL_TEXT, 0);
     }
     sdr_seg_set(_c_gain_slider, FM.gain_tenths);
     if (_c_sql)  lv_label_set_text_fmt(_c_sql, "%d", FM.squelch_tenths);
@@ -600,16 +802,15 @@ void AppFM::updateConfig(void)
     if (_c_mute) lv_label_set_text(_c_mute, audio_is_muted() ? "MUTED" : "ON");
 
     if (_c_diag) {
-        bool dev = (FM.iq_bytes_sec > 0);
         lv_label_set_text_fmt(_c_diag,
             "DEVICE   %s\nIQ RATE  %lu KB/s\nIQ PEAK  %d%%   ACT %d%%\nREAD ERR %lu\nDEMOD    %d Hz   AUDIO %d Hz",
-            dev ? "streaming" : "NO RTL-SDR",
+            receiver.connection,
             (unsigned long)(FM.iq_bytes_sec / 1024),
             clampi((int)(FM.iq_level * 100.0f), 0, 100),
             clampi((int)(FM.audio_level / 0.65f * 100.0f), 0, 100),
             (unsigned long)FM.read_errors,
             FM_DEMOD_RATE, FM_AUDIO_RATE);
-        lv_obj_set_style_text_color(_c_diag, (FM.iq_bytes_sec > 0) ? COL_GREEN : COL_RED, 0);
+        lv_obj_set_style_text_color(_c_diag, receiver.available ? COL_GREEN : COL_RED, 0);
     }
 }
 
@@ -617,11 +818,31 @@ void AppFM::timerCb(lv_timer_t *t)
 {
     AppFM *self = static_cast<AppFM *>(t->user_data);
     if (!self || !self->_tabview) return;
+    /*LS-749*/
+    /* STARTING THE SWEEP SHOWS YOU THE SWEEP. Selecting FM_MODE_SCAN - from
+       the MODE button, the console, or the Flipper head - used to leave you
+       looking at the VFO tab while the radio silently swept somewhere else,
+       which is a large part of "I'm not sure how to trigger it, when I switch
+       to this mode it doesn't start". It was starting; it just never showed
+       you. Only fires on the TRANSITION, so it cannot fight you if you
+       deliberately tab away while a sweep runs. */
+    if (self->_last_mode != (int)FM.mode) {
+        self->_last_mode = (int)FM.mode;
+        if (FM.mode == FM_MODE_SCAN)
+            lv_tabview_set_act(self->_tabview, TAB_SWEEP, LV_ANIM_OFF);
+    }
+
+    /*LS-746*/
+    /* These cases are TAB INDICES and they shifted when SCAN was inserted at
+       1. If a tab is ever added or reordered again, this switch and the N in
+       switchTab() both have to move with it - there is no compile-time link
+       between them and the tab order in run(). */
     switch (lv_tabview_get_tab_act(self->_tabview)) {
-        case 0:  self->updateVfo();    break;
-        case 1:  self->updatePocsag(); break;
-        case 2:  self->updateScan();   break;
-        case 3:  self->updateConfig(); break;
+        case TAB_VFO:    self->updateVfo();           break;
+        case TAB_SCAN:   self->_scan_panel.refresh(); break;
+        case TAB_PAGES:  self->updatePages();         break;
+        case TAB_SWEEP:  self->updateScan();          break;
+        case TAB_CONFIG: self->updateConfig();        break;
         default: break;
     }
 }
@@ -629,14 +850,57 @@ void AppFM::timerCb(lv_timer_t *t)
 void AppFM::switchTab(int delta)
 {
     if (!_tabview) return;
-    const int N = 4;
+    /*LS-746*/
+    const int N = TAB_COUNT;
     int cur = (int)lv_tabview_get_tab_act(_tabview);
     lv_tabview_set_act(_tabview, (cur + delta + N) % N, LV_ANIM_OFF);
 }
 
+/*LS-731*/
 void AppFM::modeCb(lv_event_t *)
 {
-    lakeshark_fm_set_mode((lakeshark_fm_get_mode() + 1) % FM_MODE_COUNT);
+    int cur = lakeshark_fm_get_mode();
+    int at  = -1;
+    for (int i = 0; i < MODE_CYCLE_N; i++) if ((int)MODE_CYCLE[i] == cur) { at = i; break; }
+    /* Cycling out of SWEEP (or anything not in the list) lands on NFM. */
+    int next = (at < 0) ? 0 : (at + 1) % MODE_CYCLE_N;
+    lakeshark_fm_set_mode((int)MODE_CYCLE[next]);
+}
+
+/*LS-731*/
+/* The stored-channel scanner, which is the one that matters in the field and
+   had no button in this app at all - it could only be reached from the P25
+   app's tab or the console. It is a toggle, not a mode: it runs the channel
+   list through whatever demodulator is up (LS-713), so it composes with NFM
+   rather than replacing it. */
+void AppFM::scanToggleCb(lv_event_t *)
+{
+    if (scan_engine_active()) {
+        scan_engine_stop();
+    } else {
+        /* A band sweep and a channel sweep both own the tuner; running both
+           means neither works. Starting one stops the other, visibly. */
+        if (FM.mode == FM_MODE_SCAN) lakeshark_fm_set_mode(FM_MODE_LISTEN);
+        scan_engine_start();
+    }
+}
+
+/*LS-731*/
+/* SKIP - step off a channel the scanner is sitting on. The engine has had
+   scan_engine_skip() since LS-700 and it was only ever reachable from the
+   console. */
+void AppFM::scanSkipCb(lv_event_t *)
+{
+    if (scan_engine_active()) scan_engine_skip();
+}
+
+/*LS-736*/
+/* Measure the floor and set squelch above it. Asynchronous - the calibration
+   sweep runs on the scan task, so this returns instantly and the result turns
+   up in the scanner status line a second or so later. */
+void AppFM::autoSqCb(lv_event_t *)
+{
+    scan_engine_autosquelch(-1);
 }
 
 void AppFM::stepDownCb(lv_event_t *e)
@@ -676,10 +940,17 @@ void AppFM::sqSliderCb(lv_event_t *e)
 void AppFM::agcCb(lv_event_t *)    { lakeshark_fm_agc(); }
 void AppFM::sqDownCb(lv_event_t *) { lakeshark_fm_squelch_delta(-1); }
 void AppFM::sqUpCb(lv_event_t *)   { lakeshark_fm_squelch_delta(+1); }
+/*LS-731*/
+/*LS-767*/
+/* This is one of two ways into the band sweep now that MODE cycles demodulators
+   only. It must stop the CHANNEL scanner first: since LS-728 that scanner
+   forces the FM app into LISTEN on every pass, so leaving it running here
+   would drag the app straight back out of SWEEP and the button would look
+   dead. The stop / set-mode / restart order lives in fm_sweep_arbitration.c
+   so BAND (below) cannot drift out of sync with RESTART again. */
 void AppFM::scanRestartCb(lv_event_t *)
 {
-    lakeshark_fm_set_mode(FM_MODE_SCAN);
-    lakeshark_fm_scan_restart();
+    fm_sweep_start_arbitrated();
 }
 void AppFM::tunePeakCb(lv_event_t *)  { lakeshark_fm_tune_to_peak(); }
 
@@ -693,14 +964,19 @@ void AppFM::baudCb(lv_event_t *)
     lakeshark_fm_set_baud(nb);
 }
 
+/*LS-767*/
+/* Cycle to the next band, then hand off to the shared sweep arbitration so the
+   channel scanner is stopped before FM enters SWEEP. Before LS-767 this path
+   skipped the stop and BAND looked dead while the channel scanner was on -
+   scan_engine forces FM_MODE_LISTEN on every pass and the sweep was replaced
+   before the first bin ever rendered. */
 void AppFM::bandCb(lv_event_t *)
 {
     s_band_idx = (s_band_idx + 1) % BAND_N;
     FM.scan_start_hz = BANDS[s_band_idx].a;
     FM.scan_stop_hz  = BANDS[s_band_idx].b;
     FM.scan_step_hz  = BANDS[s_band_idx].step;
-    lakeshark_fm_set_mode(FM_MODE_SCAN);
-    lakeshark_fm_scan_restart();
+    fm_sweep_start_arbitrated();
 }
 
 void AppFM::volSliderCb(lv_event_t *e)
@@ -717,56 +993,56 @@ void AppFM::freqEntryCb(lv_event_t *e)
 
 void AppFM::openFreqEntry(void)
 {
-    if (_freq_modal) return;
-
-    lv_obj_t *bg = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(bg, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(bg, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(bg, LV_OPA_80, 0);
-    lv_obj_set_style_border_width(bg, 0, 0);
-    lv_obj_set_style_radius(bg, 0, 0);
-    lv_obj_set_style_pad_all(bg, 10, 0);
-    lv_obj_set_style_pad_row(bg, 8, 0);
-    lv_obj_clear_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(bg, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(bg, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    _freq_modal = bg;
-
-    lv_obj_t *title = sdr_label(bg, &lv_font_montserrat_16, SDR_CYAN);
-    lv_label_set_text(title, "ENTER FREQUENCY (MHz)  -  e.g. 152.600");
-
-    lv_obj_t *ta = lv_textarea_create(bg);
-    lv_textarea_set_one_line(ta, true);
-    lv_textarea_set_accepted_chars(ta, "0123456789.");
-    lv_textarea_set_max_length(ta, 10);
-    lv_textarea_set_placeholder_text(ta, "152.600");
-    lv_textarea_set_text(ta, "");
-    lv_obj_set_width(ta, lv_pct(80));
-    lv_obj_set_style_text_font(ta, sdr_font_mono(), 0);
-    _freq_ta = ta;
-
-    lv_obj_t *kb = lv_keyboard_create(bg);
-    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_NUMBER);
-    lv_keyboard_set_textarea(kb, ta);
-    lv_obj_set_width(kb, lv_pct(100));
-    lv_obj_set_flex_grow(kb, 1);
-    lv_obj_add_event_cb(kb, freqKbCb, LV_EVENT_READY,  this);
-    lv_obj_add_event_cb(kb, freqKbCb, LV_EVENT_CANCEL, this);
+    /*LS-732*/
+    /* The entry field and the keypad were the only things in this firmware
+       still wearing LVGL's stock theme, which is light - so punching in a
+       frequency at night blew out night vision on an otherwise dark radio.
+       Styled from the same SDR_* palette as every other panel, and sized up:
+       montserrat_32 for the readout, _24 for the keys. This is a 480 px wide
+       screen and the stock key font is tiny for a thumb. */
+    const ls_text_entry_config_t config = {
+        .title = "ENTER FREQUENCY (MHz)  -  e.g. 152.600",
+        .text = "",
+        .placeholder = "152.600",
+        .accepted_chars = "0123456789.",
+        .max_length = 10,
+        .width = lv_pct(90),
+        .mode = LS_TEXT_ENTRY_NUMBER,
+        .large = true,
+    };
+    _freq_entry = ls_text_entry_open(&config, freqEntryDone, this);
 }
 
-void AppFM::freqKbCb(lv_event_t *e)
+void AppFM::freqEntryDone(bool accepted, const char *text, void *user_data)
 {
-    AppFM *self = static_cast<AppFM *>(lv_event_get_user_data(e));
+    AppFM *self = static_cast<AppFM *>(user_data);
     if (!self) return;
-    if (lv_event_get_code(e) == LV_EVENT_READY && self->_freq_ta) {
-        double mhz = atof(lv_textarea_get_text(self->_freq_ta));
+    self->_freq_entry = nullptr;
+    if (accepted) {
+        double mhz = atof(text);
         if (mhz >= 1.0 && mhz <= 2000.0)
             lakeshark_fm_set_freq((uint32_t)(mhz * 1e6 + 0.5));
     }
-    self->closeFreqEntry();
 }
 
 void AppFM::closeFreqEntry(void)
 {
-    if (_freq_modal) { lv_obj_del(_freq_modal); _freq_modal = nullptr; _freq_ta = nullptr; }
+    if (_freq_entry) {
+        ls_text_entry_t *entry = _freq_entry;
+        _freq_entry = nullptr;
+        ls_text_entry_close(entry);
+    }
+}
+
+/*LS-608*/
+void AppFM::resetCb(lv_event_t *e)
+{
+    AppFM *self = static_cast<AppFM *>(lv_event_get_user_data(e));
+    settings_reset_app(app_current());
+    lakeshark_radio_park();
+    lakeshark_select_fm();
+    if (self && self->_reset_val) {
+        lv_label_set_text(self->_reset_val, "RESTORED");
+        lv_obj_set_style_text_color(self->_reset_val, SDR_OK, 0);
+    }
 }

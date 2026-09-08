@@ -1,6 +1,10 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   LakeShark original. Not librtlsdr - see UPSTREAM.md in this
+   directory for which files here are third-party and which are ours. */
 
 #include "usb_host.h"
-#include "rtlsdr_dev.h"
+#include "rtl_adapter_private.h"
+#include "hackrf_adapter_private.h"
 #include "event_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,11 +53,6 @@ typedef struct {
 
 static class_driver_t *s_driver_obj;
 
-usb_host_client_handle_t class_driver_client_handle(void)
-{
-    return s_driver_obj ? s_driver_obj->constant.client_hdl : NULL;
-}
-
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
 {
     class_driver_t *driver_obj = (class_driver_t *)arg;
@@ -63,11 +62,16 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         driver_obj->mux_protected.device[event_msg->new_dev.address].dev_addr =
             event_msg->new_dev.address;
         event_bus_publish_simple(EVT_DEVICE_ATTACHED, "usb");
-        rtlsdr_dev_setup_async(event_msg->new_dev.address,
-                               driver_obj->constant.client_hdl);
+        rtl_adapter_probe_async(event_msg->new_dev.address,
+                                driver_obj->constant.client_hdl);
+        hackrf_adapter_probe_async(event_msg->new_dev.address,
+                                   driver_obj->constant.client_hdl);
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
+        /*LS-407*/
+        (void)rtl_adapter_note_removed(event_msg->dev_gone.dev_hdl);
+        (void)hackrf_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);
         for (uint8_t i = 0; i < DEV_MAX_COUNT; i++) {
             if (driver_obj->mux_protected.device[i].dev_hdl ==
@@ -79,50 +83,62 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         event_bus_publish_simple(EVT_DEVICE_DETACHED, "usb");
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
-    default: abort();
+    /*LS-404*/
+    default:
+        ESP_LOGW(TAG, "unhandled USB client event %d", (int)event_msg->event);
+        break;
     }
 }
 
+/*LS-404*/
 static void action_open_dev(usb_device_t *d)
 {
-    assert(d->dev_addr != 0);
-    ESP_ERROR_CHECK(usb_host_device_open(d->client_hdl, d->dev_addr, &d->dev_hdl));
+    if (d->dev_addr == 0) return;
+    esp_err_t e = usb_host_device_open(d->client_hdl, d->dev_addr, &d->dev_hdl);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "device_open(addr=%u) failed: %s - dropping it",
+                 d->dev_addr, esp_err_to_name(e));
+        d->dev_hdl = NULL; d->dev_addr = 0;
+        return;
+    }
     d->actions |= ACTION_GET_DEV_INFO;
 }
 static void action_get_info(usb_device_t *d)
 {
     usb_device_info_t i;
-    ESP_ERROR_CHECK(usb_host_device_info(d->dev_hdl, &i));
+    if (!d->dev_hdl || usb_host_device_info(d->dev_hdl, &i) != ESP_OK) return;
     const char *sp = (i.speed == USB_SPEED_HIGH) ? "HIGH(480M)"
                    : (i.speed == USB_SPEED_FULL) ? "FULL(12M)"
                    : (i.speed == USB_SPEED_LOW)  ? "LOW(1.5M)" : "?";
     ESP_LOGW(TAG, "*** USB negotiated speed: %s (enum=%d) ***", sp, (int)i.speed);
-    if (i.parent.dev_hdl) {
-        usb_device_info_t p;
-        ESP_ERROR_CHECK(usb_host_device_info(i.parent.dev_hdl, &p));
-    }
     d->actions |= ACTION_GET_DEV_DESC;
 }
 static void action_get_dev_desc(usb_device_t *d)
 {
     const usb_device_desc_t *dd;
-    ESP_ERROR_CHECK(usb_host_get_device_descriptor(d->dev_hdl, &dd));
+    if (!d->dev_hdl || usb_host_get_device_descriptor(d->dev_hdl, &dd) != ESP_OK) return;
     d->actions |= ACTION_GET_CONFIG_DESC;
 }
 static void action_get_config_desc(usb_device_t *d)
 {
     const usb_config_desc_t *cd;
-    ESP_ERROR_CHECK(usb_host_get_active_config_descriptor(d->dev_hdl, &cd));
+    if (!d->dev_hdl ||
+        usb_host_get_active_config_descriptor(d->dev_hdl, &cd) != ESP_OK) return;
     d->actions |= ACTION_GET_STR_DESC;
 }
 static void action_get_str_desc(usb_device_t *d)
 {
     usb_device_info_t i;
-    ESP_ERROR_CHECK(usb_host_device_info(d->dev_hdl, &i));
+    if (d->dev_hdl) usb_host_device_info(d->dev_hdl, &i);
 }
 static void action_close_dev(usb_device_t *d)
 {
-    ESP_ERROR_CHECK(usb_host_device_close(d->client_hdl, d->dev_hdl));
+    if (d->dev_hdl) {
+        esp_err_t e = usb_host_device_close(d->client_hdl, d->dev_hdl);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "device_close failed: %s", esp_err_to_name(e));
+        }
+    }
     d->dev_hdl = NULL; d->dev_addr = 0;
 }
 

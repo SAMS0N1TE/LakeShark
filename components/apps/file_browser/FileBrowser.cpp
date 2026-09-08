@@ -1,4 +1,17 @@
 #include "FileBrowser.hpp"
+/*LS-742*/
+#include "shell/ls_shell.hpp"
+/*LS-761*/
+#include "shell/ls_shell_nav.h"
+/*LS-743*/
+#include "media_gui/AppMedia.hpp"
+/*LS-757*/
+#include "file_browser/file_browser_path.h"
+/*LS-758*/
+#include "media_gui/media_playlist.h"
+/*LS-759*/
+#include "file_browser/ls_dialog_slot.h"
+#include <strings.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -11,6 +24,7 @@
 #include "esp_err.h"
 #include "bsp/esp-bsp.h"
 #include "sdr_ui/sdr_ui.h"
+#include "ui/ls_ui.h"
 
 LV_IMG_DECLARE(img_app_file_browser);
 
@@ -23,37 +37,81 @@ static const char *kRoots[] = {
 #endif
 };
 
+/*LS-759*/
+/* LVGL adapters for ls_dialog_slot.  Kept as free functions with C linkage so
+   their addresses fit the void*-based hook signature the module uses to stay
+   LVGL-free for the bench. */
+extern "C" {
+static void ls_fb_dlg_del(void *obj)
+{
+    lv_obj_del(static_cast<lv_obj_t *>(obj));
+}
+static bool ls_fb_dlg_is_valid(const void *obj)
+{
+    return lv_obj_is_valid(static_cast<const lv_obj_t *>(obj));
+}
+}
+
 AppFileBrowser::AppFileBrowser()
     : LsApp("Files", "files"),
-      _path_label(nullptr), _list(nullptr), _cwd(""), _dialog(nullptr)
+      _container(nullptr),
+      _path_label(nullptr), _list(nullptr), _cwd(""), _dialog{nullptr}
 {
+    /*LS-759*/
+    /* Configure the slot hooks once - the module carries a single set globally
+       because there is a single Files instance and this is the only user. */
+    const ls_dialog_slot_hooks_t h = { ls_fb_dlg_del, ls_fb_dlg_is_valid };
+    ls_dialog_slot_configure(&h);
 }
 
 AppFileBrowser::~AppFileBrowser() = default;
 
 bool AppFileBrowser::init(void)    { return true; }
-bool AppFileBrowser::pause(void)   { return true; }
+
+/*LS-759*/
+/* pause() runs when the shell backgrounds Files for another app.  The old
+   version left the modal dialog parented to lv_scr_act(), so switching apps
+   via the status bar left it visible - and its callbacks live - over
+   whatever the shell launched next.  Sweep the slot before we go. */
+bool AppFileBrowser::pause(void)
+{
+    ls_dialog_slot_close(&_dialog);
+    return true;
+}
+
 bool AppFileBrowser::resume(void)  { return true; }
 
 bool AppFileBrowser::run(lv_obj_t *parent)
 {
     _cwd = "";
-    _dialog = nullptr;
-    buildUi(parent);
+    /*LS-759*/
+    /* Record the container the shell handed us and clear any prior slot in
+       case run() is called again after a close(). */
+    _container = parent;
+    ls_dialog_slot_forget(&_dialog);
+    ls_ui_screen_t screen;
+    ls_ui_screen_create(parent, "FILES", false, LS_UI_COLOR_ID_STEEL, &screen);
+    _screen_readout = screen.readout;
+    _screen_lamp = screen.lamp;
+    ls_ui_screen_set_readout(&screen, "STORAGE");
+    buildUi(screen.content);
     loadDirectory(_cwd);
     return true;
 }
 
 bool AppFileBrowser::back(void)
 {
-
-    if (_dialog && lv_obj_is_valid(_dialog)) {
-        lv_obj_del(_dialog);
-        _dialog = nullptr;
+    /*LS-759*/
+    /* If a dialog is up, back closes it rather than navigating the tree. */
+    if (ls_dialog_slot_is_open(&_dialog)) {
+        ls_dialog_slot_close(&_dialog);
         return true;
     }
 
-    if (_cwd.empty()) {
+    /*LS-761*/
+    /* Same predicate the visible Up button uses in onBackButtonClicked, so
+       the two entry points can never disagree about "am I at the roots". */
+    if (ls_shell_nav_fb_up_is_home(_cwd.c_str())) {
         return exitToLauncher();
     }
     auto slash = _cwd.find_last_of('/');
@@ -67,52 +125,46 @@ bool AppFileBrowser::back(void)
     return true;
 }
 
+/*LS-759*/
+/* close() previously just nulled the pointer and left the dialog object
+   dangling under lv_scr_act().  Delete anything live in the slot first, then
+   drop the other UI handles.  The container itself is torn down by the shell
+   after close() returns. */
 bool AppFileBrowser::close(void)
 {
-    _path_label = _list = _dialog = nullptr;
-    _entries.clear();
+    ls_dialog_slot_close(&_dialog);
+    _path_label = _list = nullptr;
+    _container = nullptr;
+    /* LS-746: clear() retained the directory's backing array while another
+     * app was foregrounded. Directory state is rebuilt by run(), not settings. */
+    std::vector<Entry>().swap(_entries);
+    std::string().swap(_cwd);
+    std::string().swap(_dialog_path);
     return true;
 }
 
 void AppFileBrowser::buildUi(lv_obj_t *parent)
 {
-    lv_obj_set_style_bg_color(parent, SDR_BG, 0);
-    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *bar = ls_ui_panel(parent, nullptr);
+    _path_label = ls_ui_readout(bar, "/");
 
-    lv_obj_t *bar = lv_obj_create(parent);
-    lv_obj_set_size(bar, lv_pct(100), 64);
-    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, SDR_LCD_BG, 0);
-    lv_obj_set_style_border_color(bar, SDR_PAS_GOLD, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 8, 0);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *up_btn = lv_btn_create(bar);
-    lv_obj_set_size(up_btn, 80, 44);
-    lv_obj_set_style_min_height(up_btn, 44, 0);
-    lv_obj_set_style_max_height(up_btn, 44, 0);
-    lv_obj_align(up_btn, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_t *up_lbl = lv_label_create(up_btn);
-    lv_label_set_text(up_lbl, LV_SYMBOL_UP);
-    lv_obj_center(up_lbl);
-    lv_obj_add_event_cb(up_btn, onBackButtonClicked, LV_EVENT_CLICKED, this);
-
-    _path_label = lv_label_create(bar);
-    lv_obj_align(_path_label, LV_ALIGN_LEFT_MID, 96, 0);
-    lv_obj_set_style_text_color(_path_label, SDR_PAS_GOLD, 0);
-    lv_obj_set_style_text_font(_path_label, &lv_font_montserrat_22, 0);
-    lv_label_set_text(_path_label, "/");
-
+    /*LS-742*/
+    /* Entry point for the music player. LS-741 registered AppMedia hidden from
+       the rail, which is what was asked for, but nothing was ever wired to
+       launch it - so the app was on the board and unreachable. Hidden means
+       "not in the rail", not "no way in". */
     _list = lv_list_create(parent);
-    lv_obj_set_size(_list, lv_pct(100), lv_pct(100) - 64);
-    lv_obj_align(_list, LV_ALIGN_TOP_MID, 0, 64);
+    lv_obj_set_width(_list, lv_pct(100));
+    lv_obj_set_height(_list, 0);
+    lv_obj_set_flex_grow(_list, 1);
     lv_obj_set_style_bg_color(_list, SDR_BG, 0);
-    lv_obj_set_style_border_width(_list, 0, 0);
-    lv_obj_set_style_pad_all(_list, 4, 0);
+    ls_ui_style_table(_list);
+
+    lv_obj_t *controls = ls_ui_controls(parent);
+    ls_ui_button(controls, LV_SYMBOL_UP, LS_BTN_DEFAULT,
+                 onBackButtonClicked, this, nullptr);
+    ls_ui_button(controls, LV_SYMBOL_AUDIO " MUSIC", LS_BTN_PRIMARY,
+                 onMusicClicked, this, nullptr);
 }
 
 void AppFileBrowser::loadDirectory(const std::string &path)
@@ -120,6 +172,8 @@ void AppFileBrowser::loadDirectory(const std::string &path)
     _entries.clear();
     if (_list) lv_obj_clean(_list);
     if (_path_label) lv_label_set_text(_path_label, path.empty() ? "/ (roots)" : path.c_str());
+    ls_ui_readout_set(_screen_readout, path.empty() ? "ROOTS" : path.c_str());
+    ls_ui_lamp_set(_screen_lamp, true, LS_UI_COLOR_ACCENT);
 
     if (path.empty()) {
 
@@ -178,35 +232,83 @@ void AppFileBrowser::loadDirectory(const std::string &path)
 
 void AppFileBrowser::openEntry(const Entry &e)
 {
-    std::string full = _cwd.empty() ? e.name : _cwd + "/" + e.name;
+    /*LS-757*/
+    /* _cwd is already an absolute path once we are past the roots view
+       (either "/sdcard/..." or "/spiffs/...").  file_browser_join_path
+       therefore does not - and must not - prepend a root of its own.  The
+       old code built `full` correctly here and then, one branch below,
+       re-prefixed it with "/sdcard/" for the music handoff.  That doubled
+       the SD root on real songs and silently redirected every /spiffs
+       selection to a path that did not exist. */
+    char joined[192];
+    if (file_browser_join_path(_cwd.c_str(), e.name.c_str(),
+                               joined, sizeof(joined)) < 0) {
+        ESP_LOGW(TAG, "path too long for %s", e.name.c_str());
+        return;
+    }
+    std::string full(joined);
+
     if (e.is_dir) {
         _cwd = full;
         loadDirectory(_cwd);
-    } else {
-        showFileDialog(full, e.size);
+        return;
     }
+
+    /*LS-743*/
+    /* Open a file with the app that handles its type, rather than always
+       showing the properties dialog. The dialog stays as the fallback for
+       everything we cannot open, which is most things. */
+    /*LS-758*/
+    /* The old list here advertised .m4a and .flac too, but the bundled
+       chmorgan__esp-audio-player is only compiled with MP3 and WAV
+       decoders.  Launching Music on an M4A or FLAC put the user on a
+       list where their file could not be played and produced an
+       unhelpful "unknown file type" from the audio_player thread.
+       Route only what the current build can actually decode, and keep
+       the rest on the properties dialog with a note that says so. */
+    const char *dot = strrchr(e.name.c_str(), '.');
+    if (dot) {
+        bool audio_ext = !strcasecmp(dot, ".mp3") || !strcasecmp(dot, ".wav") ||
+                         !strcasecmp(dot, ".m4a") || !strcasecmp(dot, ".flac");
+        if (audio_ext) {
+            if (ls_media_supported_extension(e.name.c_str())) {
+                ls_media_play_path(full.c_str());
+                LsShell::instance().launchByName("MUSIC");
+                return;
+            }
+            showFileDialog(full, e.size,
+                           "Unsupported audio format: this build only decodes MP3 and WAV.");
+            return;
+        }
+    }
+    showFileDialog(full, e.size, nullptr);
 }
 
-void AppFileBrowser::showFileDialog(const std::string &full_path, size_t size)
+void AppFileBrowser::showFileDialog(const std::string &full_path, size_t size,
+                                    const char *note)
 {
-    if (_dialog && lv_obj_is_valid(_dialog)) {
-        lv_obj_del(_dialog);
-    }
+    /*LS-759*/
+    /* Sweep any previous dialog through the slot so a re-entrant open leaves
+       exactly one live object behind. */
+    ls_dialog_slot_close(&_dialog);
     _dialog_path = full_path;
 
-    _dialog = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(_dialog, lv_pct(92), lv_pct(75));
-    lv_obj_center(_dialog);
-    lv_obj_set_style_bg_color(_dialog, lv_color_hex(0x202830), 0);
-    lv_obj_set_style_border_color(_dialog, lv_color_hex(0x60A0E0), 0);
-    lv_obj_set_style_border_width(_dialog, 2, 0);
-    lv_obj_set_style_radius(_dialog, 12, 0);
-    lv_obj_set_style_pad_all(_dialog, 16, 0);
-    lv_obj_set_flex_flow(_dialog, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(_dialog, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    /*LS-759*/
+    /* Parent to the app container, not lv_scr_act().  The old parent was the
+       screen root, which meant the shell hiding or replacing our container
+       had no effect on the dialog - it survived as an overlay on top of the
+       next app with click handlers that still pointed back into Files. */
+    lv_obj_t *host = _container ? _container : lv_scr_act();
+    lv_obj_t *dlg  = ls_ui_panel(host, nullptr);
+    ls_dialog_slot_set(&_dialog, dlg);
+    lv_obj_set_size(dlg, lv_pct(92), lv_pct(75));
+    lv_obj_center(dlg);
+    lv_obj_set_style_bg_color(dlg, LS_UI_PANEL, 0);
+    lv_obj_set_flex_flow(dlg, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(dlg, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     auto add_label = [&](const char *text, const lv_font_t *font) {
-        lv_obj_t *l = lv_label_create(_dialog);
+        lv_obj_t *l = lv_label_create(dlg);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(l, lv_pct(100));
         lv_label_set_text(l, text);
@@ -219,6 +321,16 @@ void AppFileBrowser::showFileDialog(const std::string &full_path, size_t size)
     char meta[80];
     snprintf(meta, sizeof(meta), "Size: %u bytes", (unsigned)size);
     add_label(meta, &lv_font_montserrat_20);
+
+    /*LS-758*/
+    /* A note appears when the browser refused to launch a companion app for
+       a file it recognises but the current build cannot handle - so the
+       user sees why they landed on the properties dialog rather than the
+       player. */
+    if (note && note[0]) {
+        lv_obj_t *n = add_label(note, &lv_font_montserrat_20);
+        lv_obj_set_style_text_color(n, LS_UI_WARN, 0);
+    }
 
     FILE *f = fopen(full_path.c_str(), "rb");
     if (f) {
@@ -236,41 +348,17 @@ void AppFileBrowser::showFileDialog(const std::string &full_path, size_t size)
         }
         lv_obj_t *prev = add_label(printable ? buf : "(binary file, preview hidden)",
                                    &lv_font_montserrat_16);
-        lv_obj_set_style_text_color(prev, lv_color_hex(0x80E080), 0);
-        lv_obj_set_style_bg_color(prev, lv_color_hex(0x101418), 0);
-        lv_obj_set_style_bg_opa(prev, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_all(prev, 8, 0);
-        lv_obj_set_style_radius(prev, 6, 0);
+        lv_obj_set_style_text_color(prev, LS_UI_ACCENT, 0);
+        ls_ui_style_overlay(prev);
         lv_obj_set_height(prev, lv_pct(45));
         lv_obj_set_flex_grow(prev, 1);
     }
 
-    lv_obj_t *row = lv_obj_create(_dialog);
-    lv_obj_set_size(row, lv_pct(100), 70);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_AROUND, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t *close_btn = lv_btn_create(row);
-    lv_obj_set_size(close_btn, 180, 56);
-    lv_obj_set_style_min_height(close_btn, 56, 0);
-    lv_obj_set_style_max_height(close_btn, 56, 0);
-    lv_obj_t *cl = lv_label_create(close_btn);
-    lv_label_set_text(cl, "Close");
-    lv_obj_center(cl);
-    lv_obj_add_event_cb(close_btn, onDialogCloseClicked, LV_EVENT_CLICKED, this);
-
-    lv_obj_t *del_btn = lv_btn_create(row);
-    lv_obj_set_size(del_btn, 180, 56);
-    lv_obj_set_style_min_height(del_btn, 56, 0);
-    lv_obj_set_style_max_height(del_btn, 56, 0);
-    lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xCC2222), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(del_btn, lv_color_hex(0x881111), LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_t *dl = lv_label_create(del_btn);
-    lv_label_set_text(dl, "Delete");
-    lv_obj_center(dl);
-    lv_obj_add_event_cb(del_btn, onDialogDeleteClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *row = ls_ui_controls(dlg);
+    ls_ui_button(row, "Close", LS_BTN_DEFAULT,
+                 onDialogCloseClicked, this, nullptr);
+    ls_ui_button(row, "Delete", LS_BTN_DANGER,
+                 onDialogDeleteClicked, this, nullptr);
 }
 
 void AppFileBrowser::onListRowClicked(lv_event_t *e)
@@ -287,8 +375,8 @@ void AppFileBrowser::onBackButtonClicked(lv_event_t *e)
 {
     AppFileBrowser *app = static_cast<AppFileBrowser *>(lv_event_get_user_data(e));
     if (!app) return;
-    if (app->_cwd.empty()) {
-
+    /*LS-761*/
+    if (ls_shell_nav_fb_up_is_home(app->_cwd.c_str())) {
         app->exitToLauncher();
         return;
     }
@@ -300,21 +388,28 @@ void AppFileBrowser::onBackButtonClicked(lv_event_t *e)
 void AppFileBrowser::onDialogCloseClicked(lv_event_t *e)
 {
     AppFileBrowser *app = static_cast<AppFileBrowser *>(lv_event_get_user_data(e));
-    if (!app || !app->_dialog) return;
-    lv_obj_del(app->_dialog);
-    app->_dialog = nullptr;
+    if (!app) return;
+    /*LS-759*/
+    ls_dialog_slot_close(&app->_dialog);
 }
 
 void AppFileBrowser::onDialogDeleteClicked(lv_event_t *e)
 {
     AppFileBrowser *app = static_cast<AppFileBrowser *>(lv_event_get_user_data(e));
-    if (!app || !app->_dialog) return;
+    if (!app || !ls_dialog_slot_is_open(&app->_dialog)) return;
     if (remove(app->_dialog_path.c_str()) == 0) {
         ESP_LOGI(TAG, "deleted %s", app->_dialog_path.c_str());
     } else {
         ESP_LOGW(TAG, "delete %s failed", app->_dialog_path.c_str());
     }
-    lv_obj_del(app->_dialog);
-    app->_dialog = nullptr;
+    /*LS-759*/
+    ls_dialog_slot_close(&app->_dialog);
     app->loadDirectory(app->_cwd);
+}
+
+/*LS-742*/
+void AppFileBrowser::onMusicClicked(lv_event_t *e)
+{
+    (void)e;
+    LsShell::instance().launchByName("MUSIC");
 }

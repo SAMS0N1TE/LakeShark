@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LakeShark Setup</title>
+<script>
+/* Opened on its own rather than inside the site shell, so send the visitor to
+   the shell with this module already selected. Inside the iframe window.top is
+   the shell, so this does nothing and cannot loop. In head, so the bare page
+   never paints first. */
+(function () {
+    if (window.self === window.top) {
+        window.location.replace("/?m=lakeshark");
+    }
+}());
+</script>
+<style>
+:root {
+    --sys-bg: #ece9d8;
+    --border-light: #ffffff;
+    --border-shadow: #aca899;
+    --num-badge-bg-1: #e8a2a2; --num-badge-text-1: #8b0000;
+    --num-badge-bg-2: #a2a2e8; --num-badge-text-2: #00008b;
+    --num-badge-bg-3: #e8d8a2; --num-badge-text-3: #8b6508;
+    --font-ui: "Segoe UI", "Tahoma", sans-serif;
+    --font-data: "Consolas", "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+    margin: 0; padding: 0;
+    background: var(--sys-bg); color: #000;
+    font-family: var(--font-ui); font-size: 12px;
+}
+.wrap { padding: 6px; max-width: 880px; }
+
+.masthead {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 4px 6px 6px 6px;
+    border-bottom: 1px solid var(--border-shadow); margin-bottom: 8px;
+}
+.home-link { margin-left: auto; font-family: var(--font-data); font-size: 10px; }
+.masthead h1 {
+    margin: 0; font-size: 15px; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #333;
+}
+.masthead .sub {
+    font-family: var(--font-data); color: #666;
+    padding-left: 10px; border-left: 1px solid #999;
+}
+
+.panel {
+    background: var(--sys-bg); border: 2px solid; margin-bottom: 8px;
+    border-color: var(--border-light) var(--border-shadow) var(--border-shadow) var(--border-light);
+}
+.panel-header {
+    background: linear-gradient(to right, #e0e0e0, #d0d0c0);
+    padding: 2px 4px; border-bottom: 1px solid var(--border-shadow);
+    font-weight: bold; color: #333;
+    display: flex; align-items: center; height: 24px;
+}
+.panel-num {
+    display: inline-block; width: 18px; text-align: center;
+    margin-right: 6px; font-family: var(--font-data);
+    border: 2px outset var(--border-light);
+    font-weight: bold; font-size: 10px; line-height: 14px;
+}
+#p1 .panel-num { background: var(--num-badge-bg-1); color: var(--num-badge-text-1); }
+#p2 .panel-num { background: var(--num-badge-bg-2); color: var(--num-badge-text-2); }
+#p3 .panel-num { background: var(--num-badge-bg-3); color: var(--num-badge-text-3); }
+.panel-content { padding: 8px; }
+
+p { margin: 0 0 6px 0; line-height: 1.45; }
+a { color: #000080; }
+.muted { color: #666; }
+
+fieldset { border: 1px solid var(--border-shadow); padding: 6px; margin: 0 0 8px 0; }
+legend { color: #000080; padding: 0 4px; }
+
+button {
+    background: var(--sys-bg); border: 2px outset var(--sys-bg);
+    color: #000; padding: 3px 10px; font-family: var(--font-ui);
+    font-size: 11px; cursor: pointer;
+}
+button:active { border-style: inset; }
+
+pre.cmd {
+    font-family: var(--font-data); font-size: 11px;
+    background: #fff; border: 2px inset var(--sys-bg);
+    padding: 6px; margin: 0 0 6px 0;
+    white-space: pre-wrap; word-break: break-all; line-height: 1.5;
+}
+.flash-box {
+    border: 1px solid var(--border-shadow);
+    background: #f4f2e6;
+    padding: 8px;
+    margin: 6px 0;
+}
+esp-web-install-button { --esp-tools-button-color: #000080; }
+.bigbtn {
+    font-family: var(--font-ui); font-size: 14px; font-weight: bold;
+    padding: 10px 22px; min-height: 44px;
+    background: var(--sys-bg); border: 2px outset var(--border-light);
+    cursor: pointer;
+}
+.bigbtn:active { border-style: inset; }
+
+table.kit { border-collapse: collapse; width: 100%; font-family: var(--font-data); font-size: 11px; }
+table.kit th, table.kit td { border: 1px solid var(--border-shadow); padding: 2px 6px; text-align: left; }
+table.kit th { background: #d4d0c8; font-weight: bold; }
+table.kit td.n { text-align: right; white-space: nowrap; }
+
+.info-block {
+    background: #ffffcc; border: 1px solid #999; padding: 6px;
+    margin-top: 8px; box-shadow: 2px 2px 2px rgba(0,0,0,0.1);
+}
+.warn { background: #ffe0e0; border-color: #a06060; }
+.warn strong { color: #8b0000; }
+.good { background: #e4f2e0; border-color: #6a9060; }
+ol, ul { margin: 0 0 6px 0; padding-left: 20px; line-height: 1.5; }
+li { margin-bottom: 2px; }
+code {
+    font-family: var(--font-data); background: #fff;
+    border: 1px solid var(--border-shadow); padding: 0 3px;
+}
+details { margin-top: 6px; }
+summary { cursor: pointer; color: #000080; }
+dl.tsh { margin: 0; }
+dl.tsh dt { font-family: var(--font-data); font-weight: bold; margin-top: 6px; }
+dl.tsh dd { margin: 2px 0 0 0; padding-left: 12px; border-left: 2px solid var(--border-shadow); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+    <div class="masthead">
+        <h1>LakeShark</h1>
+        <span class="sub">FIELD SETUP</span>
+        <noscript><a class="home-link" href="/">terminalbay.com</a></noscript>
+    </div>
+
+    <p>A handheld scanner built on an ESP32-P4 and an RTL-SDR dongle. It decodes
+    P25 Phase 1, ADS-B, POCSAG and FM, and a Flipper Zero can drive it over
+    Bluetooth as a second screen.</p>
+
+    <section class="panel" id="p1">
+        <div class="panel-header"><span class="panel-num">A</span><span>RADIO</span></div>
+        <div class="panel-content">
+
+            <fieldset>
+                <legend>What you need</legend>
+                <table class="kit">
+                    <tr><th>Board</th><td>Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3
+                        <span class="muted">(480&times;800 panel, 32&nbsp;MB flash)</span></td></tr>
+                    <tr><th>Receiver</th><td>Any RTL-SDR (RTL2832U) dongle. R820T2 or R828D tuner.</td></tr>
+                    <tr><th>Antenna</th><td>Whatever suits the band. The stock whip is enough to see aircraft.</td></tr>
+                    <tr><th>Cables</th><td>USB-C to the board's <em>UART</em> port for flashing. The dongle
+                        goes in the <em>USB-A host</em> port.</td></tr>
+                </table>
+                <div class="info-block">
+                    Only this board is covered here. The Nano, the LCD-4B and the
+                    T-Display-P4 build from source but are not packaged.
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Install</legend>
+
+                <div class="info-block warn" id="browserwarn">
+                    <strong>Needs Chrome, Edge, Brave or Opera on a desktop.</strong>
+                    Firefox, Safari and phones cannot flash.
+                </div>
+
+                <div class="flash-box">
+                    <p class="muted" style="margin:0 0 6px 0;">Plug the board into your
+                    computer by its <strong>UART</strong> USB-C port, then:</p>
+
+                    <esp-web-install-button id="installer" manifest="/fw/lakeshark-lcd43/manifest.json">
+                        <button slot="activate" class="bigbtn">Connect and install</button>
+                        <span slot="unsupported" class="muted">Your browser cannot flash.
+                            Use Chrome or Edge on a desktop.</span>
+                        <span slot="not-allowed" class="muted">Flashing needs a secure
+                            connection.</span>
+                    </esp-web-install-button>
+
+                    <p class="muted" style="margin:8px 0 0 0;">The board appears as a
+                    CH343 serial port. If nothing is listed, you are probably in the
+                    USB-C port that is wired for USB host rather than UART.</p>
+                </div>
+
+                <div class="info-block warn">
+                    <strong>First install writes all four images</strong> &mdash; bootloader,
+                    partition table, application and storage. Do not flash the application
+                    alone onto a blank board: the storage partition is mounted without a
+                    format-on-failure fallback, so an unwritten one halts the boot.
+                </div>
+
+                <details>
+                    <summary>Do it from a terminal instead</summary>
+                    <p class="muted" style="margin:6px 0;">With
+                    <a href="https://pypi.org/project/esptool/" target="_blank" rel="noopener">esptool</a>
+                    installed, from the unpacked
+                    <a href="/fw/lakeshark-lcd43/lakeshark-lcd43.zip">firmware bundle</a>:</p>
+<pre class="cmd">esptool --chip esp32p4 --baud 921600 write_flash \
+  --flash_mode dio --flash_freq 80m --flash_size 32MB \
+  0x2000    bootloader.bin \
+  0x8000    partition-table.bin \
+  0x10000   lakeshark.bin \
+  0xe10000  storage.bin</pre>
+                    <p class="muted">Checksums are in <code>SHA256SUMS</code>. Later
+                    application-only updates are just the <code>0x10000</code> line.</p>
+                </details>
+            </fieldset>
+        </div>
+    </section>
+
+    <section class="panel" id="p2">
+        <div class="panel-header"><span class="panel-num">B</span><span>HEAD</span></div>
+        <div class="panel-content">
+            <p>Optional. A Flipper Zero works as a remote screen and keypad over
+            Bluetooth &mdash; useful when the radio is in a bag and you are not.
+            Everything below is skippable; the touchscreen does all of it too.</p>
+
+            <fieldset>
+                <legend>Install</legend>
+                <ol>
+                    <li>Copy <code>lakeshark_p25.fap</code> to <code>/ext/apps/GPIO/</code>
+                        on the Flipper's SD card.</li>
+                    <li>Turn Bluetooth <strong>on</strong> in the Flipper's own
+                        Settings &rarr; Bluetooth. The app cannot turn it on for you.</li>
+                    <li>Open <strong>GPIO &rarr; LakeShark SDR</strong>.</li>
+                    <li>Inside the app: <strong>Settings &rarr; Link &rarr; Transport</strong>,
+                        set it to <strong>Bluetooth</strong>.</li>
+                </ol>
+                <p>The radio finds the head on its own from there. It takes a few
+                seconds and the app's status line goes <em>advertising</em> &rarr;
+                <em>connected</em> &rarr; <em>linked</em>.</p>
+            </fieldset>
+
+            <div class="info-block warn">
+                <strong>The app has to stay open.</strong> It owns the Flipper's radio
+                only while it is running. Close it and the Flipper falls back to its
+                normal Bluetooth profile, which is not the one LakeShark looks for.
+            </div>
+
+            <div class="info-block">
+                Bluetooth is remembered only after it has worked once. If a session
+                fails the app returns to the wired UART transport and stays there, so
+                a head that used to connect and now says <strong>NO SDR</strong> is
+                usually just back on UART &mdash; check Settings &rarr; Link &rarr;
+                Transport before anything else.
+            </div>
+
+            <details>
+                <summary>Wired instead of Bluetooth</summary>
+                <p class="muted" style="margin:6px 0 0 0;">Set Transport to UART and wire
+                radio <strong>TX</strong> to Flipper <strong>RX</strong>, radio
+                <strong>RX</strong> to Flipper <strong>TX</strong>, common
+                <strong>GND</strong>. Do not feed the board from Flipper 5&nbsp;V while
+                it is also on USB.</p>
+            </details>
+        </div>
+    </section>
+
+    <section class="panel" id="p3">
+        <div class="panel-header"><span class="panel-num">C</span><span>USING IT</span></div>
+        <div class="panel-content">
+
+            <fieldset>
+                <legend>First run</legend>
+                <ol>
+                    <li>Dongle into the USB-A host port, antenna on, power up.</li>
+                    <li>HOME shows the app tiles. <strong>Start with ADS-B.</strong> It
+                        needs no licence, no frequency to guess and no local system to
+                        exist &mdash; if aircraft appear, the whole chain works.</li>
+                    <li>Then try FM on a broadcast station you know is there. Voice out
+                        of the speaker proves the audio path.</li>
+                    <li>P25 last. It only decodes if a P25 Phase 1 system is actually on
+                        the air near you, so it is the worst thing to test with first.</li>
+                </ol>
+                <div class="info-block good">
+                    Aircraft on ADS-B within a minute or two is the sign everything is
+                    healthy: USB host, dongle, tuning, DSP and display.
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Getting files off it</legend>
+                <p>Settings &rarr; Wi-Fi &rarr; SCAN, join your network, and the board
+                serves its SD card at <code>http://&lt;its-address&gt;/</code>. Screenshots
+                and recordings land there. Pulling the shade down from the top of the
+                screen shows the address and has a screenshot button.</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>When something is wrong</legend>
+                <dl class="tsh">
+                    <dt>Flipper says NO SDR</dt>
+                    <dd>Almost always the head, not the radio. Is the app still open? Is
+                    Bluetooth on? Is Transport set to Bluetooth? See panel B.</dd>
+
+                    <dt>No aircraft on ADS-B</dt>
+                    <dd>Give it two minutes &mdash; it needs an aircraft to transmit.
+                    Check the antenna is on the dongle and the dongle is in the USB-A
+                    host port, not the UART port.</dd>
+
+                    <dt>"Low memory. Tap an app to retry."</dt>
+                    <dd>Internal RAM ran out while loading. Go back to HOME and open the
+                    app again. If it repeats, power-cycle.</dd>
+
+                    <dt>An app opens but nothing is received</dt>
+                    <dd>Power-cycle. A receiver that draws its screen but never tunes has
+                    failed to claim the dongle, and a clean boot clears it.</dd>
+
+                    <dt>P25 shows activity but no speech</dt>
+                    <dd>Control-channel traffic is not voice. Valid NACs and TSBKs only
+                    mean you found the system; voice needs a talkgroup actually in use,
+                    and unencrypted.</dd>
+                </dl>
+            </fieldset>
+
+            <div class="info-block">
+                Source, issues and the other board targets:
+                <a href="https://github.com/SAMS0N1TE/LakeShark" target="_blank" rel="noopener">github.com/SAMS0N1TE/LakeShark</a>.
+                GPLv3. Receiving is not the same as being allowed to receive &mdash;
+                what you may listen to is local law, and yours to check.
+            </div>
+        </div>
+    </section>
+
+</div>
+
+<script type="module"
+        src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<script>
+/* The browser warning is only useful to people who cannot flash, so hide it
+   for the ones who can. Web Serial is the capability that actually matters. */
+(function () {
+    if ('serial' in navigator) {
+        var w = document.getElementById('browserwarn');
+        if (w) { w.style.display = 'none'; }
+    }
+}());
+</script>
+</body>
+</html>

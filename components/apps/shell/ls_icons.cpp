@@ -102,33 +102,137 @@ static const char *const FILES[ICON_H] = {
     "................",
 };
 
-#define BLK 6
+/*LS-605*/
+static const char *const HOME[ICON_H] = {
+    "................",
+    "..........X.....",
+    ".........XX.....",
+    "........XXX.....",
+    ".......XXXX.....",
+    "......XXXXX.....",
+    ".....XXXXXX.....",
+    "....XXXXXXX.....",
+    "...XXXXXXXX.....",
+    "..XXXXXXXXX.....",
+    ".XXXXXXXXXX.....",
+    "................",
+    "XX...XXX...XXX..",
+    "................",
+    "..XXX...XXX...XX",
+    "................",
+};
 
-static lv_img_dsc_t *build(const char *const *rows, int gw, int gh)
+/*LS-605*/
+static const char *const SETTINGS[ICON_H] = {
+    "................",
+    "......XXXX......",
+    "......XXXX......",
+    "..X...XXXX...X..",
+    "..XXXXXXXXXXXX..",
+    "..XXXX....XXXX..",
+    "....XX....XX....",
+    "XXXXX......XXXXX",
+    "XXXXX......XXXXX",
+    "....XX....XX....",
+    "..XXXX....XXXX..",
+    "..XXXXXXXXXXXX..",
+    "..X...XXXX...X..",
+    "......XXXX......",
+    "......XXXX......",
+    "................",
+};
+
+/*LS-716*/
+/* AppREC asks for "rec" and the table had no entry, so the rail drew an empty
+   button. Placeholder record dot - replace the grid, not the wiring. */
+static const char *const REC[ICON_H] = {
+    "................",
+    "................",
+    ".....XXXXXX.....",
+    "...XXXXXXXXXX...",
+    "..XXXXXXXXXXXX..",
+    "..XXXXXXXXXXXX..",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXXX.",
+    "..XXXXXXXXXXXX..",
+    "..XXXXXXXXXXXX..",
+    "...XXXXXXXXXX...",
+    ".....XXXXXX.....",
+    "................",
+    "................",
+};
+
+/* ACARS: an aircraft silhouette with a message ribbon underneath - the
+   panel it launches is a message log, not a positional picture, so the
+   icon says "text from an aircraft" rather than reusing the ADS-B glyph
+   and misleading a first-time user into thinking they landed there. */
+static const char *const ACARS[ICON_H] = {
+    "................",
+    ".......XX.......",
+    "......XXXX......",
+    "XX...XXXXXX...XX",
+    "XXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXX",
+    "......XXXX......",
+    "......XXXX......",
+    "................",
+    "..XXXXXXXXXXXX..",
+    "..X..........X..",
+    "..X.XX.XXXX.XX..",
+    "..X..........X..",
+    "..X.XXXXXXXX.X..",
+    "..XXXXXXXXXXXX..",
+    "................",
+};
+
+/*LS-737*/
+/* AppMap asks for "map". Folded-map outline; 1-bit, recoloured at runtime,
+   16x16 because that is the only size dividing cleanly into the 32 px rail
+   and the 48 px tiles (LS-716). */
+static const char *const MAP[ICON_H] = {
+    "................",
+    "................",
+    "..XXXXX..XXXXX..",
+    ".XX...XXXX...XX.",
+    ".X.....XX.....X.",
+    ".X..X..XX..X..X.",
+    ".X.XXX.XX.XXX.X.",
+    ".X..X..XX..X..X.",
+    ".X.....XX.....X.",
+    ".X..XX.XX.XX..X.",
+    ".X.X..XXXX..X.X.",
+    ".X.....XX.....X.",
+    ".XX...XXXX...XX.",
+    "..XXXXX..XXXXX..",
+    "................",
+    "................",
+};
+
+/*LS-605*/
+static lv_img_dsc_t *build(const char *const *rows, int gw, int gh, int blk)
 {
-    const int W = gw * BLK, H = gh * BLK;
-    const size_t sz = (size_t)W * H * 3;
+    const int W = gw * blk, H = gh * blk;
+    const size_t sz = (size_t)W * H;
     uint8_t *d = (uint8_t *)heap_caps_calloc(1, sz, MALLOC_CAP_SPIRAM);
     if (!d) return nullptr;
 
-    const lv_color_t gold = lv_color_hex(0xC9A24A);
-    const uint8_t lo = (uint8_t)(gold.full & 0xFF);
-    const uint8_t hi = (uint8_t)((gold.full >> 8) & 0xFF);
+    const int span = (blk >= 4) ? blk - 1 : blk;
 
     for (int gy = 0; gy < gh; gy++)
         for (int gx = 0; gx < gw; gx++) {
             char c = rows[gy][gx];
             if (c == '.' || c == ' ' || c == 0) continue;
-            for (int by = 0; by < BLK; by++)
-                for (int bx = 0; bx < BLK; bx++) {
-                    size_t i = ((size_t)(gy * BLK + by) * W + (gx * BLK + bx)) * 3;
-                    d[i] = lo; d[i + 1] = hi; d[i + 2] = 0xFF;
-                }
+            for (int by = 0; by < span; by++)
+                for (int bx = 0; bx < span; bx++)
+                    d[(size_t)(gy * blk + by) * W + (gx * blk + bx)] = 0xFF;
         }
 
-    lv_img_dsc_t *dsc = (lv_img_dsc_t *)heap_caps_calloc(1, sizeof(lv_img_dsc_t), MALLOC_CAP_SPIRAM);
+    lv_img_dsc_t *dsc = (lv_img_dsc_t *)heap_caps_calloc(1, sizeof(lv_img_dsc_t),
+                                                         MALLOC_CAP_SPIRAM);
     if (!dsc) { heap_caps_free(d); return nullptr; }
-    dsc->header.cf          = LV_IMG_CF_TRUE_COLOR_ALPHA;
+    dsc->header.cf          = LV_IMG_CF_ALPHA_8BIT;
     dsc->header.always_zero = 0;
     dsc->header.w           = W;
     dsc->header.h           = H;
@@ -137,21 +241,36 @@ static lv_img_dsc_t *build(const char *const *rows, int gw, int gh)
     return dsc;
 }
 
-const lv_img_dsc_t *ls_icon_for(const char *key)
+/*LS-605*/
+const lv_img_dsc_t *ls_icon_for(const char *key, int px)
 {
     if (!key) return nullptr;
-    static struct { const char *k; const char *const *rows; lv_img_dsc_t *dsc; } tbl[] = {
-        { "p25",   P25,   nullptr },
-        { "fm",    FM,    nullptr },
-        { "adsb",  ADSB,  nullptr },
-        { "mesh",  MESH,  nullptr },
-        { "files", FILES, nullptr },
+
+    int blk = px / ICON_W;
+    if (blk < 1) blk = 1;
+    if (blk > 8) blk = 8;
+
+    static const int SIZES = 8;
+    static struct { const char *k; const char *const *rows; lv_img_dsc_t *dsc[SIZES]; } tbl[] = {
+        { "p25",      P25,      {nullptr} },
+        { "fm",       FM,       {nullptr} },
+        { "adsb",     ADSB,     {nullptr} },
+        { "acars",    ACARS,    {nullptr} },
+        { "mesh",     MESH,     {nullptr} },
+        { "files",    FILES,    {nullptr} },
+        /*LS-716*/
+        { "rec",      REC,      {nullptr} },
+        /*LS-737*/
+        { "map",      MAP,      {nullptr} },
+        { "home",     HOME,     {nullptr} },
+        { "settings", SETTINGS, {nullptr} },
     };
+
     for (auto &e : tbl) {
-        if (strcmp(e.k, key) == 0) {
-            if (!e.dsc) e.dsc = build(e.rows, ICON_W, ICON_H);
-            return e.dsc;
-        }
+        if (strcmp(e.k, key) != 0) continue;
+        lv_img_dsc_t *&slot = e.dsc[blk - 1];
+        if (!slot) slot = build(e.rows, ICON_W, ICON_H, blk);
+        return slot;
     }
     return nullptr;
 }

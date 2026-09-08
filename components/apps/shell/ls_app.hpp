@@ -11,9 +11,19 @@ public:
     virtual bool init(void)              { return true; }
     virtual bool run(lv_obj_t *parent)   = 0;
     virtual bool back(void);
+    /* LS-746: close releases timers, external dialogs/subscriptions and
+     * non-LVGL buffers; the shell then destroys the container. run() must
+     * support reconstruction on this same lightweight app descriptor. */
     virtual bool close(void)             { return true; }
     virtual bool pause(void)             { return true; }
+    /* App-owned workers must retire before the replacement consumes their RAM. */
+    virtual bool stopped(void) const     { return true; }
     virtual bool resume(void)            { return true; }
+
+    /*LS-604*/
+    virtual bool background(void)        { return pause(); }
+    /*LS-604*/
+    virtual bool passive(void) const     { return false; }
 
     virtual void switchTab(int delta)    { (void)delta; }
 

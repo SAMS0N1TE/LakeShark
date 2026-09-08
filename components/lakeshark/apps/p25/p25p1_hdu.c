@@ -215,6 +215,8 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
 void
 processHDU(dsd_opts* opts, dsd_state* state)
 {
+  /* A new header must never inherit permission to play the prior call. */
+  p25_ess_clear(state);
   char mi[73], mfid[9], algid[9], kid[17], tgid[17], tmpstr[255];
   int i, j;
   long talkgroup;
@@ -297,6 +299,16 @@ processHDU(dsd_opts* opts, dsd_state* state)
       // correct. We also keep a record of the analog values from where each dibit is coming from.
       // This information is gold for the heuristics module.
       contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array, 20*(3+6)+16*(3+6));
+    }
+
+  /* Consume the HDU trailer even on failure, but never publish untrusted
+   * identity or encryption fields. */
+  skipDibit (opts, state, 5);
+  status = getDibit (opts, state);
+  if (irrecoverable_errors != 0)
+    {
+      state->pcm_out_write = 0;
+      return;
     }
 
   // Now put the corrected data on the DSD structures
@@ -448,10 +460,18 @@ processHDU(dsd_opts* opts, dsd_state* state)
   tgid[15] = hex_data[ 0][5] + '0';
 
   state->p25kid = strtol(kid, NULL, 2);
-
-  skipDibit (opts, state, 5);
-  status = getDibit (opts, state);
-  //TODO: Do something useful with the status bits...
+  state->p25_algid = (uint8_t)strtol(algid, NULL, 2);
+  state->p25_kid = (uint16_t)state->p25kid;
+  for (i = 0; i < 9; ++i)
+    {
+      uint8_t byte = 0;
+      for (j = 0; j < 8; ++j)
+        byte = (uint8_t)((byte << 1) | (mi[i * 8 + j] - '0'));
+      state->p25_mi[i] = byte;
+    }
+  /* RS-validated HDU ESS applies before the first LDU1, not only after
+   * the end of a later LDU2. The existing gate still rejects non-CLEAR. */
+  state->p25_ess_valid = 1;
 
   if (opts->p25enc == 1)
     {

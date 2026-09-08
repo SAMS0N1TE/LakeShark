@@ -16,25 +16,48 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
   SRC, BCH health, and display.
 - **FM Monitor** | wideband broadcast FM, narrowband FM voice (LISTEN), band
   SCAN, and POCSAG pager decode | sharing one integer `rtl_fm`-style front end.
-- **ADS-B** | 1090 MHz aircraft tracking.
+- **ADS-B** | 1090 MHz aircraft tracking, with a moving map on the Flipper head.
+- **Sub-GHz capture** | threshold-triggered pulse capture around 433 MHz, saved
+  to SD as `.sub` you can open in the Flipper's SubGHz app.
+- **ACARS** | receiver, decoder and message display. Not confirmed on air yet.
+- **DMR** | decoder is in the tree (sync, BPTC, LC framing) but there's no DMR
+  mode to select yet, and no AMBE. WIP.
 - **LoRa Mesh** | on-board SX1262 + LoRaMesher gateway with a live node/link view, VERY WIP.
 
 ## ><> Downloads
 
 | Board | Flash | Build | Firmware | Flipper App |
 |-------|-------|-------|----------|-------------|
-| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG), serial console + host control panel | [v0.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.1.1) | n/a |
-| [ESP32-P4-NANO Flipper Build](https://github.com/SAMS0N1TE/LakeShark-Flipper) | 16MB | Flipper controlled via BT/UART (P25 / ADS-B / FM / POCSAG) | [v0.4.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.4.0) | [v2.1](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.1) |
-| [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, touch LCD (P25 / ADS-B / FM / scanner) | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) | n/a |
-| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless P25, serial console/host control panel *and SubGHZ recording soon. | [v0.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.3.0-headless-wifi6) | n/a |
-| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | Delayed due to hardware issues* | n/a | n/a |
+| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG / REC), serial console + Flipper | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless, same as above | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | GUI on the 480x800 panel. Read the power note below before you buy one | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, 720x720. Builds from source, not in the current release | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) | n/a |
 | [LilyGo T-Display P4](https://lilygo.cc/en-us/products/t-display-p4) | 16MB | Coming Soon! | n/a | n/a |
+
+Each firmware download is a zip per board. Unzip it and run `flash.bat` on
+Windows or `./flash.sh` on Mac/Linux — it grabs esptool if you don't have it and
+finds the board itself. The offsets differ between the 16MB and 32MB boards so
+don't mix archives.
 
 Notes: Waveshare LCD 4.3 is a very misleading build. The schematics seem to point towards the ultimate configuration, however I must not be great at understanding them. The way power is routed is awful. If you power the board via the provided battery port, 5V is routed away from everything. This includes ALL GPIO, and the USB 2.0 HS port/UART. This seems to be the case for many of the LCD lines from Waveshare (86 Box was the same), but with that board you are able to remove/bridge a MOSFET to route the 5V out permanently through USB 2.0 HS. This then lets you power the 86 Box via GPIO with a boost convertor. (assets folder holds detailed screenshots of this method).
 
 This is not the case with the LCD 4.3 variant. Removing the same MOSFET does let you provide 5V out through USB HS 2.0, however, due to the insane design of the rest of the power path, powering via GPIO does NOT route 5V there. I have no idea why it's this complicated and unfortunately didn't check if 5V worked prior to the MOSFET removal/GPIO powering, but I am betting it wont. This basically leaves you with powering via the UART USB-C port and a power bank, which sucks. I have the furthest build with this board, full support with remote subghz recording and storage. Plus tons of new features. I will release it, but will no longer support it going forward as I will be moving on to the Lilygo T-Display P4. - 8/28/2026
 
 All builds are on the [releases page](https://github.com/SAMS0N1TE/LakeShark/releases).
+
+## ><)))°> The Flipper head
+
+The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) drives the
+radio over Bluetooth or the GPIO header, so the receiver can sit in a bag with
+the antenna and you keep the Flipper in your hand.
+
+| | |
+| --- | --- |
+| ![launcher](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/launcher.png) | ![p25](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/p25_vfo.png) |
+| ![traffic](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/adsb_traffic.png) | ![map](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/adsb_map.png) |
+| ![pocsag](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/pocsag.png) | ![alerts](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/set_alerts.png) |
+
+**Don't power the ESP32-P4 from the Flipper's 5V pin.**
 
 ## }<((((()°> Hardware notes
 
@@ -46,25 +69,37 @@ Pin mapping for the audio: I²S MCLK=13 BCK=12 WS=10 DOUT=9 DIN=11, codec PA ena
 
 ## ><)))O> Build & flash
 
-Requires **ESP-IDF v5.4.3** (configured with Python 3.12). From the project dir:
+Requires **ESP-IDF v5.5.4** and its managed Python environment. Each board needs
+its own build directory and sdkconfig:
 
 ```bash
-idf.py set-target esp32p4
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -B build_nano  -D SDKCONFIG=build_nano/sdkconfig  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_headless_ble.defaults" build
+idf.py -B build_wifi6 -D SDKCONFIG=build_wifi6/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/wifi6_headless_ble.defaults" build
+idf.py -B build_lcd43 -D SDKCONFIG=build_lcd43/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui.defaults" build
 ```
 
-A convenience wrapper (`idf12.sh` / `idf12.ps1`) that sources the IDF environment
-is included one level up in the original tree; plain `idf.py` works the same.
+Then flash the one you built:
+
+```bash
+idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -p /dev/ttyACM0 flash monitor
+```
+
+If you're coming from a release zip instead, just run the `flash.bat` /
+`flash.sh` inside it.
 
 > The `managed_components/` tree is committed because the Waveshare BSP is patched
 > in-place. After switching host OS, run `idf.py fullclean` once (the `build/`
 > cache stores absolute paths).
 
+Setup guides: [first flash](docs/LCD43_FIRST_FLASH.md) for a board that has
+never run this, [quickstart](docs/LCD43_QUICKSTART.md) for one that has, and
+[troubleshooting](docs/LCD43_TROUBLESHOOTING.md) when it goes wrong.
+
 ## Architecture & specs
 
-- **SoC/board** | ESP32-P4 (dual-core RISC-V) on the Waveshare ESP32-P4-NANO or
-  Smart 86 Box. 16 MB flash, PSRAM at 200 MHz, 720x720 MIPI-DSI capacitive touch LCD.
+- **SoC/board** | ESP32-P4 (dual-core RISC-V). PSRAM at 200 MHz. Panels are
+  720x720 MIPI-DSI on the 86 Box and 480x800 on the LCD-4.3; the NANO and
+  WIFI6 run headless.
 - **Sample rates** | RTL-SDR over USB host runs at 240 kSPS for P25, 256 kSPS for
   FM/POCSAG, and 2 MSPS for ADS-B. Audio out is 16 kHz mono.
 - **Integer DSP** | the FM front end is a fixed-point `rtl_fm`-derived pipeline and
@@ -72,7 +107,6 @@ is included one level up in the original tree; plain `idf.py` works the same.
 - **USB streaming** | self-resubmitting USB transfers fill a PSRAM IQ ring. 
 - **Audio** | 16 kHz output ring with a prebuffer sized above one decode burst.
 - **LCD shell** | a custom LVGL UI.
-
 
 ## 3D Print Sneak Peaks
 <img width="1920" height="1080" alt="P25_wide_lowfront_left" src="https://github.com/user-attachments/assets/d1166cca-6460-4524-8f1e-995bfe8ea90e" />
@@ -95,9 +129,11 @@ its GPL dependencies. It bundles and builds on:
 - [DSD / dsd-fme](https://github.com/lwvmobile/dsd-fme) | P25 framing (GPL)
 - [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) | mesh networking
 - [esp-brookesia](https://github.com/espressif/esp-brookesia) | UI launcher
-- Espressif ESP-IDF and the Waveshare ESP32-P4 BSP
+- LVGL, and the Espressif ESP-IDF and Waveshare ESP32-P4 BSP
 
 Original copyright/license headers in third-party sources are preserved verbatim.
+See [docs/THIRD_PARTY_REVIEW.md](docs/THIRD_PARTY_REVIEW.md) for the full
+inventory.
 
 > **Legal note:** the IMBE/AMBE voice codecs are covered by patents held by DVSI.
 > This firmware is provided for educational and experimental use; you are

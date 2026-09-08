@@ -214,6 +214,13 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
       // Hamming(10,6,3), which can correct 1 bits on each sequence of (6+4) bits. We could say that there
       // were 5 errors of 2 bits.
       update_error_stats(&state->p25_heuristics, 12*6+12*6, 5*2);
+      /* LS-776: failed ESS is not an ALGID. Corrupt hex_data was previously
+       * published as valid below, including accidental CLEAR 0x80. Discard
+       * buffered PCM and require fresh valid ESS before unmuting; this LDU
+       * has not reached the audio sink until processFrame returns. */
+      p25_ess_clear(state);
+      state->pcm_out_write = 0;
+      return;
     }
   else
     {
@@ -361,10 +368,28 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
   kid[15]  = hex_data[ 0][5] + '0';
 
 
+  algidhex = strtol (algid, NULL, 2);
+  kidhex = strtol (kid, NULL, 2);
+
+  /* LS-610: land ALGID/KID/MI in state on every LDU2, not behind
+   * opts->p25enc. process_IMBE consults state->p25_algid to decide whether
+   * to hand the frame to the vocoder; before this the field was decoded and
+   * dropped, and the vocoder ran on encrypted audio (robotic voice). */
+  state->p25_algid = (uint8_t)(algidhex & 0xFF);
+  state->p25_kid   = (uint16_t)(kidhex & 0xFFFF);
+  for (i = 0; i < 9; i++) {
+      uint8_t v = 0;
+      for (int b = 0; b < 8; b++) {
+          int idx = i * 8 + b;
+          if (idx >= 72) break;
+          v = (uint8_t)((v << 1) | (uint8_t)(mi[idx] - '0'));
+      }
+      state->p25_mi[i] = v;
+  }
+  state->p25_ess_valid = 1;
+
   if (opts->p25enc == 1)
     {
-      algidhex = strtol (algid, NULL, 2);
-      kidhex = strtol (kid, NULL, 2);
       printf ("mi: %s algid: $%x kid: $%x\n", mi, algidhex, kidhex);
     }
 }

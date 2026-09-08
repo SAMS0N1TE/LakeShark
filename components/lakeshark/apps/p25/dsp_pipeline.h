@@ -2,6 +2,9 @@
 #define DSP_PIPELINE_H
 
 #include <stdint.h>
+#include <stdbool.h>
+
+#include "p25_cqpsk_controls.h"
 
 #define DSP_SAMPLE_RATE     240000
 #define DSP_PRE_DECIM       1
@@ -47,10 +50,8 @@ typedef struct {
     int    g_sample_idx;
     int    g_half;
 
-    float  c_phase;
-    float  c_freq;
-    float  c_alpha;
-    float  c_beta;
+    float  cqpsk_afc_phase_err;
+    float  cqpsk_afc_alpha;
 
     float  diff_prev_i;
     float  diff_prev_q;
@@ -61,13 +62,8 @@ typedef struct {
     float  agc_alpha;
     float  agc_ref;
 
-#define RRC_SYM_TAPS 51
     float  rrc_buf[51];
     int    rrc_idx;
-
-    float  rrc_i_buf[RRC_SYM_TAPS];
-    float  rrc_q_buf[RRC_SYM_TAPS];
-    int    rrc_iq_idx;
 
 #define DIFF_DELAY DSP_SPS
     float  diff_ring_i[DIFF_DELAY];
@@ -100,10 +96,6 @@ typedef struct {
     double nco_step_rad;
     double nco_dc_avg;
 
-#define RRC_FSK4_TAPS 21
-    float  rrc_fsk4_buf[RRC_FSK4_TAPS];
-    int    rrc_fsk4_idx;
-
     float  c4fm_dc_avg;
 
 } dsp_state_t;
@@ -111,7 +103,13 @@ typedef struct {
 void dsp_init(dsp_state_t *s);
 void dsp_set_mode(dsp_state_t *s, demod_mode_t mode);
 void dsp_set_gain(dsp_state_t *s, float gain);
+/* Apply an operator/AUTO selection without resetting an unchanged winner.
+ * True means the decoder's sample epoch must change. */
+bool dsp_select_mode(dsp_state_t *s, demod_mode_t mode, float gain);
 void dsp_set_costas_alpha(dsp_state_t *s, float alpha);
+bool dsp_set_cqpsk_loops(dsp_state_t *s,
+                         const p25_cqpsk_config_t *config);
+void dsp_reset_cqpsk_loops(dsp_state_t *s);
 void dsp_flip_polarity(dsp_state_t *s);
 int  dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                     int16_t *audio_out, int audio_max);

@@ -1,0 +1,20 @@
+# Fictional placeholder data. Replace controls and talkgroups before use.
+version=1
+system=Example Regional Radio
+site=North Training Site
+
+# Control frequencies and talkgroup IDs below are invented test values.
+control=100000000
+control=100012500
+preferred=100000000
+
+# Profile format version 1 defaults.
+auto_follow=true
+encrypted_skip=true
+encrypted_skip_ms=30000
+demod=auto
+cqpsk_timing_gain=0.00015625
+cqpsk_carrier_gain=0.01
+
+tg=1|Example Operations|true|0
+tg=2|Example Training|false|0

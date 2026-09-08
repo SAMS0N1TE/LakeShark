@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   LakeShark original glue around the OP25 IMBE vocoder, which is
+   GPL-3.0-or-later. See COPYRIGHT and UPSTREAM.md in this directory. */
 /* imbe_shim.h - plain-C entry to OP25's fixed-point IMBE decoder.
  *
  * Lets the C DSD decoder (dsd_main.c) call the C++ imbe_vocoder without pulling
@@ -8,6 +11,7 @@
 #define IMBE_SHIM_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +19,9 @@ extern "C" {
 
 void imbe_shim_init(void);
 void imbe_shim_decode_88(const uint8_t *imbe88, int16_t *snd160);
+/* False on invalid input or unavailable PSRAM; output zeroed when non-NULL.
+ * Caller must not count/queue failed frames as decoded voice. Retry allowed. */
+bool imbe_shim_try_decode_88(const uint8_t *imbe88, int16_t *snd160);
 
 #ifdef __cplusplus
 }

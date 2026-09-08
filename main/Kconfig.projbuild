@@ -1,10 +1,93 @@
-menu "Example Configurations"
+menu "LakeShark"
+    choice LS_BOARD
+        prompt "LakeShark target board"
+        default LS_BOARD_P4_NANO
+        help
+            Selects the board profile in components/lakeshark/board/.
+            Everything the boards share (I2C, I2S, PA enable, uSD, the SDIO link
+            to the on-board ESP32-C6) is identical across the Waveshare ESP32-P4
+            family; this choice covers what actually differs - USB VBUS control,
+            the display, and which header pins the Flipper link can use.
+
+        config LS_BOARD_P4_NANO
+            bool "Waveshare ESP32-P4-NANO (16MB)"
+
+        config LS_BOARD_P4_WIFI6
+            bool "Waveshare ESP32-P4-WIFI6 (32MB, no LCD)"
+
+        config LS_BOARD_P4_TOUCH_LCD_4B
+            bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B / Smart 86 Box (32MB)"
+
+        config LS_BOARD_P4_TOUCH_LCD_43
+            bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (32MB)"
+
+    endchoice
+
+    config LS_VBUS_EN_GPIO
+        int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
+        default 46 if LS_BOARD_P4_NANO
+        default 46 if LS_BOARD_P4_WIFI6
+        default -1 if LS_BOARD_P4_TOUCH_LCD_4B
+        default -1 if LS_BOARD_P4_TOUCH_LCD_43
+        default -1
+        help
+            GPIO driving the load switch that feeds VBUS on the USB host port.
+            The firmware drops it to force an unresponsive RTL-SDR to
+            re-enumerate ('SDR power', and the automatic stall recovery).
+
+            Set to -1 if the host port is powered directly. On a board with no
+            switch the power cycle is skipped rather than driving an unrelated
+            pin, and the console says so.
+
+            GPIO46 is confirmed on the ESP32-P4-NANO. It is the assumed default
+            on the ESP32-P4-WIFI6 as well because the rest of that board's
+            peripheral wiring matches the NANO exactly, but it has not been
+            confirmed against hardware - note that GPIO46 is also broken out on
+            the pin header of both boards, so the header alone does not settle
+            it. See LS-002.
+
+    config LS_DEFAULT_VOLUME
+        int "Default audio volume (0-100)"
+        range 0 100
+        default 50
+        help
+            Volume used when NVS has no saved value yet - i.e. a fresh board, or
+            after an NVS erase. Applied before the boot chime plays.
+
+            Once you change the volume at runtime it is saved to NVS after ~1.5 s
+            and that saved value wins on every later boot, so this only governs
+            first boot.
+
+    config LS_BLE_HEAD
+        bool "BLE control head (Flipper / host over BLE)"
+        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        default y
+        help
+            Build the BLE control head: LakeShark scans for a Flipper running
+            the LakeShark app and connects out to it, carrying the same
+            command set as the UART head.
+
+            Turn this OFF if you only ever use the UART head or the serial
+            console. The BLE link and the whole NimBLE stack drop out of the
+            build, which is a large flash and RAM saving on a board that will
+            never use it.
+
+            The `ble` console commands still exist with this off - they report
+            that the build has no radio head rather than disappearing, so a
+            missing command never looks like a firmware fault. The UART head
+            is unaffected either way: flipper_link.c is the command parser for
+            both transports and is always built.
+
+            This depends on BT_ENABLED, so clearing CONFIG_BT_ENABLED turns it
+            off on its own. To drop BLE entirely, clear both - see
+            boards/nano_headless_nobt.defaults for a worked example.
+
     config LAKESHARK_HEADLESS
         bool "Headless build (UART console, no display/GUI)"
         default n
         help
             Build the headless variant: boot straight into the radio backend and
-            a UART console instead of the Brookesia touch GUI. Shares the same
+            a UART console instead of the LVGL touch GUI. Shares the same
             radio core (P25 / FM / ADS-B). Leave OFF for the GUI build.
 
     config EXAMPLE_ENABLE_SD_CARD

@@ -8,21 +8,25 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#if DIAG_UART_ENABLE
 #include "freertos/ringbuf.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 
-static const char *TAG = "DIAG";
+static const uint64_t __attribute__((used)) s_fw_rev = 0x375345078D9BDCEEULL;
 
+#if DIAG_UART_ENABLE
+
+static const char *TAG = "DIAG";
 static RingbufHandle_t s_diag_ring   = NULL;
 static SemaphoreHandle_t s_lock = NULL;
 static TaskHandle_t s_task      = NULL;
 static int64_t s_start_us       = 0;
 static int64_t s_last_periodic_us = 0;
 static uint32_t s_dropped       = 0;
-static const uint64_t __attribute__((used)) s_fw_rev = 0x375345078D9BDCEEULL;
 
 typedef struct {
     int sync_attempts;
@@ -306,3 +310,63 @@ void diag_emit_periodic(void)
         s_dropped = 0;
     }
 }
+
+#else
+
+/* LS-723: the LCD build had only 2,823 internal bytes free after P25 entry,
+ * but initialized a persistent 4,096-byte ring with no UART consumer.  Keep
+ * the disabled diagnostic API as compile-time no-ops so init cannot allocate
+ * the orphan ring/mutex and emitters do not format lines for a missing sink. */
+void diag_init(void) {}
+
+float diag_uptime_s(void)
+{
+    return 0.0f;
+}
+
+void diag_vline(const char *tag, const char *fmt, va_list ap)
+{
+    (void)tag;
+    (void)fmt;
+    (void)ap;
+}
+
+void diag_line(const char *tag, const char *fmt, ...)
+{
+    (void)tag;
+    (void)fmt;
+}
+
+void diag_count_sync_attempt(int matched_exact, int best_hd)
+{
+    (void)matched_exact;
+    (void)best_hd;
+}
+
+void diag_count_bch_result(int ok, int ec)
+{
+    (void)ok;
+    (void)ec;
+}
+
+void diag_count_frame(const char *duid2)
+{
+    (void)duid2;
+}
+
+void diag_dump_nid(const char *tag, const int *dibits33, int nac_raw,
+                   const char *duid_raw, int ec, int verdict_ok,
+                   const char *reason)
+{
+    (void)tag;
+    (void)dibits33;
+    (void)nac_raw;
+    (void)duid_raw;
+    (void)ec;
+    (void)verdict_ok;
+    (void)reason;
+}
+
+void diag_emit_periodic(void) {}
+
+#endif

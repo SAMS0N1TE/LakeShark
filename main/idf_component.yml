@@ -1,19 +1,23 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  # arduino-esp32 as a component: provides the Arduino core (SPIClass, GPIO,
-  # timing) that LoRaMesher + RadioLib build against. 3.2.x targets IDF 5.4.
-  espressif/arduino-esp32:
-    version: ">=3.2.0,<3.3.0"
-
   espressif/esp_wifi_remote:
     version: "0.*"
 
-  # Pinned to match the ESP-Hosted slave firmware already on the C6
-  # (network_adapter 2.12.3). The transport works across the skew, but HCI
-  # commands time out with the 2.12.12 host, so keep host and slave in step.
-  # If the C6 is ever reflashed, bump both together.
+  # LS-008
   espressif/esp_hosted:
-    version: "==2.12.3"
+    version: "==2.12.9"
 
-  espressif/esp-brookesia:
-    version: "^0.4.2"   # bumped from "0.4.*" to pin the minor 24h-clock + 720x1280 fixes
+  # LS-601  esp-brookesia was the only thing constraining LVGL to 8.x
+  # (it asked >=8.3,<9). esp_lvgl_port and the Waveshare BSP both ask
+  # >=8,<10, so dropping brookesia silently resolved LVGL 9.5.0 and broke
+  # the build. The whole sdr_ui shell is written against 8.4 - see LS-903.
+  lvgl/lvgl:
+    version: "==8.4.0"
+
+  # LS-160  The Waveshare BSP's optional dependency otherwise makes the
+  # component manager consult the registry when its lock entry is stale.
+  # Keep the override relative to this manifest so every checkout uses the
+  # vendored component instead of recording another worktree's path.
+  espressif/esp_lvgl_port:
+    version: "==2.5.0"
+    override_path: "../components/esp_lvgl_port"

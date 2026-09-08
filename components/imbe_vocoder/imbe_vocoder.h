@@ -1,8 +1,8 @@
 /*
- *  * Project 25 IMBE Encoder/Decoder Fixed-Point implementation
- *   * Developed by Pavel Yazev E-mail: pyazev@gmail.com
- *    * Version 1.0 (c) Copyright 2009
- *     */
+ * Project 25 IMBE Encoder/Decoder Fixed-Point implementation
+ * Developed by Pavel Yazev E-mail: pyazev@gmail.com
+ * Version 1.0 (c) Copyright 2009
+ */
 /* -*- c++ -*- */
 #ifndef INCLUDED_IMBE_VOCODER_H
 #define INCLUDED_IMBE_VOCODER_H

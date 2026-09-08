@@ -1,0 +1,49 @@
+# LS-004 / LS-901  ESP32-P4-WIFI6-Touch-LCD-4.3, GUI build.
+# Unverified: written from the product page, board not in hand. See LS-901.
+# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui.defaults"
+
+CONFIG_LS_BOARD_P4_TOUCH_LCD_43=y
+CONFIG_LAKESHARK_HEADLESS=n
+
+# LS-016  The uSD is on SDMMC slot 0 (D0-D3 39-42, CMD 44, CLK 43) and the C6
+# is on slot 1, so they do not collide. Power is LDO VO4, acquired inside
+# bsp_sdcard_mount. A missing card is not fatal - see LS-016 in main.cpp.
+CONFIG_EXAMPLE_ENABLE_SD_CARD=y
+
+# LS-904  SETTLED: this board has NO software VBUS control. Waveshare's own BSP
+# documents bsp_usb_host_start()'s power mode and current limit as "Not used on
+# this board", and its body only calls usb_host_install() - no GPIO anywhere.
+# Q3 is auto-enabled from VBUS presence, not driven by a pin. Do NOT guess 46
+# here: GPIO46 is the audio PA enable in Waveshare's own 06_I2SCodec example.
+CONFIG_LS_VBUS_EN_GPIO=-1
+
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_32m.csv"
+
+# LS-019  BLE control head on the GUI build. Copied verbatim from
+# boards/wifi6_headless_ble.defaults - the C6 on this board is already reflashed
+# to 2.12.9 (see PORTING STATUS) so the transport is ready; nothing but this
+# block and the sources in main/CMakeLists.txt was missing.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+
+# LS-112  keep every NimBLE role on, exactly as the working NANO build has them.
+# Do not "optimise" these off - see LS-112.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_NVS_PERSIST=y

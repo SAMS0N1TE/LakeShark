@@ -53,9 +53,24 @@ bool  scan_channel_remove(int idx);
 bool  scan_channel_set_lockout(int idx, bool on);
 bool  scan_channel_set_priority(int idx, bool on);
 bool  scan_channel_set_enabled(int idx, bool on);
+/*LS-706*/
+bool  scan_channel_set_name(int idx, const char *name);
+/*LS-706*/
+int   scan_channel_find_freq(uint32_t freq_hz);
+/*LS-723*/
+int   scan_channel_find_freq_zone(uint32_t freq_hz, uint8_t zone);
 void  scan_channels_clear(void);
 
 bool  scan_channels_save(void);
+
+/*LS-722*/
+/* Bulk edits: wrap them so the N individual saves coalesce into ONE commit.
+   Every mutator still calls save() internally; batching only defers it.
+   batch_end() MUST be reached - an unbalanced begin leaves the list unsaved
+   in RAM, which looks exactly like a working edit until the next boot. */
+void  scan_channels_batch_begin(void);
+bool  scan_channels_batch_end(void);
+bool  scan_channels_batching(void);
 
 const char *scan_mode_name(uint8_t mode);
 int         scan_mode_parse(const char *s);

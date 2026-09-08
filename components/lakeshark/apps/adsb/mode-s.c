@@ -489,6 +489,11 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
     uint32_t j;
     int use_correction = 0;
 
+    /*LS-751*/
+    /* maglen is unsigned: a buffer shorter than one full message would make
+       maglen - MODE_S_FULL_LEN*2 wrap to ~4e9 and scan far off the end. */
+    if (maglen < (uint32_t)(MODE_S_FULL_LEN * 2)) return;
+
     for (j = 0; j < maglen - MODE_S_FULL_LEN * 2; j++)
     {
         int low, high, delta, i, errors;
@@ -624,8 +629,13 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
             }
         }
 
-        if (!good_message && !use_correction)
+        if (!good_message && !use_correction && j > 0)
         {
+            /*LS-751*/
+            /* j is unsigned; at j == 0 this used to wrap to UINT32_MAX and
+               survive only because the loop's j++ wrapped it back. Skipping
+               the phase-corrected retry for the first sample of a buffer
+               costs nothing - the next buffer re-examines that region. */
             j--;
             use_correction = 1;
         }

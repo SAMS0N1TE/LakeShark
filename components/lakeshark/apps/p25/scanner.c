@@ -1,11 +1,11 @@
 
 #include "scanner.h"
 #include "p25_state.h"
-#include "usb/usb_host.h"
-#include "rtl-sdr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 void scanner_init(void)
@@ -22,43 +22,73 @@ void scanner_init(void)
             SCAN.waterfall[r][b] = -40.0f;
 }
 
-void scanner_run_sweep(void)
+static bool scanner_read_block(ls_radio_session_t *session, uint8_t *iq,
+                               size_t bytes,
+                               const volatile bool *keep_running)
 {
-    if (!rtldev) return;
+    size_t got = 0;
+    int timeouts = 0;
+    while (got < bytes && timeouts < 10 && *keep_running) {
+        size_t part = 0;
+        ls_radio_err_t error = ls_radio_iq_read(session, iq + got,
+                                                bytes - got, 20, &part);
+        if (error == LS_RADIO_OK) {
+            got += part;
+            continue;
+        }
+        if (error != LS_RADIO_ERR_TIMEOUT) return false;
+        ++timeouts;
+    }
+    return got == bytes;
+}
+
+uint32_t scanner_run_sweep(ls_radio_session_t *session,
+                           const volatile bool *keep_running)
+{
+    if (!session || !keep_running) return 0;
     SCAN.scanning = true;
     sys_log(2, "Sweep %.3f-%.3f MHz  %d bins",
             SCAN.start_freq / 1e6, SCAN.stop_freq / 1e6, SCAN.num_bins);
 
-    uint8_t *iq = malloc(SCAN_IQ_SAMPLES * 2);
-    if (!iq) { sys_log(4, "Sweep OOM"); SCAN.scanning = false; return; }
+    uint8_t *iq = heap_caps_malloc(SCAN_IQ_SAMPLES * 2, MALLOC_CAP_SPIRAM);
+    if (!iq) iq = malloc(SCAN_IQ_SAMPLES * 2);
+    if (!iq) {
+        sys_log(4, "Sweep OOM");
+        SCAN.scanning = false;
+        return s_tune_freq_hz;
+    }
 
     float peak_pwr = -999.0f;
     int peak_bin = 0;
     float sum_pwr = 0;
     int valid_bins = 0;
 
-    for (int b = 0; b < SCAN.num_bins; b++) {
+    for (int b = 0; b < SCAN.num_bins && *keep_running; b++) {
         uint32_t freq = SCAN.start_freq + (uint32_t)b * SCAN.step_hz + SCAN.step_hz / 2;
 
-        int sr = rtlsdr_set_center_freq(rtldev, freq);
-        if (sr < 0) {
-
+        uint64_t actual_hz = 0;
+        ls_radio_err_t tune_error = ls_radio_iq_retune(session, freq, true,
+                                                        &actual_hz);
+        if (tune_error != LS_RADIO_OK) {
             SCAN.power[b] = -99.0f;
             continue;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
 
-        int nr = 0;
-        rtlsdr_read_sync(rtldev, iq, SCAN_IQ_SAMPLES * 2, &nr);
-        nr = 0;
-        int r = rtlsdr_read_sync(rtldev, iq, SCAN_IQ_SAMPLES * 2, &nr);
-        if (r < 0 || nr < (int)(SCAN_IQ_SAMPLES * 2)) {
+        /* LS-180: Preserve the original settle/read-discard/read-measure
+         * policy, but keep the asynchronous session running. The adapter's
+         * fast-retune contract, rather than this scanner, owns stale transport
+         * data and FIFO handling. */
+        if (!scanner_read_block(session, iq, SCAN_IQ_SAMPLES * 2,
+                                keep_running) ||
+            !scanner_read_block(session, iq, SCAN_IQ_SAMPLES * 2,
+                                keep_running)) {
             SCAN.power[b] = -99.0f;
             continue;
         }
 
         double pwr = 0;
-        int ns = nr / 2;
+        int ns = SCAN_IQ_SAMPLES;
         for (int i = 0; i < ns; i++) {
             float fi = ((float)iq[i*2]   - 127.5f) / 127.5f;
             float fq = ((float)iq[i*2+1] - 127.5f) / 127.5f;
@@ -70,6 +100,12 @@ void scanner_run_sweep(void)
         valid_bins++;
         if (db > peak_pwr) { peak_pwr = db; peak_bin = b; }
         vTaskDelay(1);
+    }
+
+    if (!*keep_running) {
+        heap_caps_free(iq);
+        SCAN.scanning = false;
+        return 0;
     }
 
     SCAN.peak_bin   = peak_bin;
@@ -85,10 +121,14 @@ void scanner_run_sweep(void)
             SCAN.peak_freq / 1e6, SCAN.peak_power, SCAN.peak_power - SCAN.noise_floor,
             valid_bins, SCAN.num_bins);
 
-    rtlsdr_set_center_freq(rtldev, s_tune_freq_hz);
-    rtlsdr_reset_buffer(rtldev);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    uint32_t restored_hz = 0;
+    if (*keep_running) {
+        (void)ls_radio_iq_retune(session, s_tune_freq_hz, false,
+                                 &restored_hz);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 
-    free(iq);
+    heap_caps_free(iq);
     SCAN.scanning = false;
+    return restored_hz;
 }

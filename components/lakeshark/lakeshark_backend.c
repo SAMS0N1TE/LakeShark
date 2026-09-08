@@ -11,6 +11,8 @@
 
 #include "app_registry.h"
 #include "settings.h"
+/*LS-770*/
+#include "usb_autoreboot_pref.h"
 #include "scan_channels.h"
 #include "scan_engine.h"
 #include "perf.h"
@@ -18,10 +20,20 @@
 #include "usb_host.h"
 
 #include "p25_state.h"
+#include "p25_health.h"
+#include "p25_controls.h"
 #include "fm_state.h"
+#include "rec_state.h"
 #include "adsb_state.h"
+#include "adsb_app.h"
 #include "dsp_pipeline.h"
-#include "rtl-sdr.h"
+#include "p25_demod_mode.h"
+#include "p25_demod_control.h"
+#include "p25_program.h"
+#include "radio_endpoint.h"
+#include "radio_health.h"
+#include "receiver_diagnostics.h"
+#include "fm_mode_label.h"
 
 #include "audio_out.h"
 #include "audio_events.h"
@@ -29,21 +41,24 @@
 #include "tone.h"
 #include "event_stream.h"
 
-#include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
+/*LS-001*/
+#include "bsp/esp-bsp.h"
 
 static const char *TAG = "lakeshark";
 
 extern int adsb_app_register(void);
 extern int p25_app_register(void);
 extern int fm_app_register(void);
+/*LS-500*/
+extern int rec_app_register(void);
 
-extern volatile int rtl_gain_request;
 extern int          autoscan_bch_ok_flag;
 extern int          dsd_bch_fail_counter;
 
 static int s_adsb_idx = -1;
 static int s_p25_idx  = -1;
 static int s_fm_idx   = -1;
+static int s_rec_idx  = -1;
 static bool s_started = false;
 
 void lakeshark_backend_start(void)
@@ -59,6 +74,9 @@ void lakeshark_backend_start(void)
 
     event_bus_init();
     settings_init();
+    /*LS-770*/
+    usb_autoreboot_pref_init(settings_set_usb_autoreboot,
+                             settings_get_usb_autoreboot());
     scan_channels_init();
 
     event_stream_init();
@@ -66,6 +84,7 @@ void lakeshark_backend_start(void)
     s_adsb_idx = adsb_app_register();
     s_p25_idx  = p25_app_register();
     s_fm_idx   = fm_app_register();
+    s_rec_idx  = rec_app_register();
 
     app_switch_worker_start();
     scan_engine_init();
@@ -135,17 +154,273 @@ void lakeshark_boot_sound(void)
 void lakeshark_select_adsb(void) { if (s_adsb_idx >= 0) app_switch_to(s_adsb_idx); }
 void lakeshark_select_p25(void)  { if (s_p25_idx  >= 0) app_switch_to(s_p25_idx);  }
 void lakeshark_select_fm(void)   { if (s_fm_idx   >= 0) app_switch_to(s_fm_idx);   }
+/*LS-500*/
+void lakeshark_select_rec(void)  { if (s_rec_idx  >= 0) app_switch_to(s_rec_idx);  }
+
+void lakeshark_acars_start(void)
+{
+    if (s_fm_idx < 0) return;
+    app_switch_to(s_fm_idx);
+    lakeshark_fm_set_mode(FM_MODE_ACARS);
+    /* The FM rx task reads the saved per-mode freq for FM_MODE_ACARS when
+       it acts on the mode request, defaulting to FM_FREQ_ACARS the first
+       time.  Nothing to force here. */
+}
+void     lakeshark_acars_stop    (void)         { lakeshark_radio_park(); }
+uint32_t lakeshark_acars_get_freq(void)         { return lakeshark_fm_get_freq(); }
+void     lakeshark_acars_set_freq(uint32_t hz)  { lakeshark_fm_set_freq(hz); }
 
 void lakeshark_radio_park(void)    { app_park();   }
 void lakeshark_radio_unpark(void)  { app_unpark(); }
 bool lakeshark_radio_running(void) { return !app_parked(); }
 
-extern rtlsdr_dev_t *rtlsdr_dev_get(void);
-bool lakeshark_radio_device_ready(void) { return rtlsdr_dev_get() != NULL; }
+bool lakeshark_radio_ready(const ls_radio_requirements_t *requirements)
+{
+    return ls_radio_endpoint_available(requirements);
+}
+
+bool lakeshark_iq_receiver_ready(void)
+{
+    const ls_radio_requirements_t requirements = {
+        .required_caps = LS_RADIO_RX_IQ_U8,
+        .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+    };
+    return lakeshark_radio_ready(&requirements);
+}
+
+bool lakeshark_radio_endpoint_ready(const char *endpoint_id)
+{
+    ls_radio_endpoint_info_t info;
+    return endpoint_id &&
+           ls_radio_endpoint_get(endpoint_id, &info) == LS_RADIO_OK &&
+           info.present;
+}
 
 const char *lakeshark_recovery_take_app(void) { return app_recovery_take(); }
 
-void lakeshark_radio_recover(void)              { app_request_recover(); }
+static void diag_copy(char *out, size_t len, const char *value)
+{
+    if (!out || len == 0) return;
+    if (!value) value = "";
+    strlcpy(out, value, len);
+}
+
+typedef struct {
+    ls_receiver_diag_t diag;
+    ls_radio_endpoint_info_t endpoint;
+    ls_radio_endpoint_info_t scan_endpoint;
+    radio_health_snapshot_t health;
+    ls_iq_control_status_t radio;
+    union {
+        lakeshark_adsb_tel_t adsb;
+        rec_hub_status_t rec;
+    } app;
+} receiver_diag_workspace_t;
+
+static bool diag_selected_endpoint(ls_radio_endpoint_info_t *selected,
+                                   ls_radio_endpoint_info_t *scan)
+{
+    size_t iq_count = 0;
+    size_t count = ls_radio_endpoint_count();
+    for (size_t i = 0; i < count; ++i) {
+        if (ls_radio_endpoint_info(i, scan) != LS_RADIO_OK ||
+            (scan->capabilities & LS_RADIO_RX_IQ_U8) == 0)
+            continue;
+        *selected = *scan;
+        if (selected->leased) return true;
+        ++iq_count;
+    }
+    /* A parked/disconnected receiver has no lease.  One registered IQ slot
+       is still an unambiguous endpoint; with two, report unknown instead of
+       guessing which radio the app would acquire next. */
+    return iq_count == 1;
+}
+
+static void diag_from_control(ls_receiver_diag_t *diag,
+                              const ls_iq_control_status_t *radio)
+{
+    diag->requested_frequency_known = radio->requested_center_hz != 0;
+    diag->requested_frequency_hz = radio->requested_center_hz;
+    diag->effective_frequency_known = radio->effective_center_known;
+    diag->effective_frequency_hz = radio->effective_center_hz;
+    diag->requested_gain_known = true;
+    diag->requested_gain_tenths_db = radio->requested_gain_tenths_db;
+    diag->effective_gain_known = radio->effective_gain_known;
+    diag->effective_gain_tenths_db = radio->effective_gain_tenths_db;
+    diag->receiver_error_known = true;
+    diag_copy(diag->receiver_error, sizeof(diag->receiver_error),
+              ls_radio_err_name(radio->receiver_error));
+    if (radio->receiver_streaming)
+        diag->rx_state = LS_RECEIVER_RX_ACTIVE;
+    else if (radio->receiver_error == LS_RADIO_ERR_DISCONNECTED ||
+             radio->receiver_error == LS_RADIO_ERR_UNAVAILABLE)
+        diag->rx_state = LS_RECEIVER_RX_DISCONNECTED;
+    else
+        diag->rx_state = LS_RECEIVER_RX_IDLE;
+}
+
+int lakeshark_receiver_status(char *out, size_t len)
+{
+    if (!out || len == 0) return 0;
+
+    /* LS-1002: the first receiver snapshot compiled to a 1536-byte frame:
+     * a 320-byte diagnostic plus several mutually exclusive 392-byte endpoint
+     * copies were kept live above newlib's 1328-byte snprintf path.  The LCD
+     * console's 4096-byte stack crossed its guard on every STAT query.  This
+     * per-call PSRAM workspace keeps concurrent UART, BLE, and console queries
+     * independent without consuming the 19 bytes of measured DMA headroom. */
+    receiver_diag_workspace_t *work = heap_caps_calloc(
+        1, sizeof(*work), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!work) {
+        strlcpy(out, "app=? park=? rx=? err=nomem", len);
+        return (int)strnlen(out, len);
+    }
+
+    ls_receiver_diag_t *diag = &work->diag;
+    ls_radio_endpoint_info_t *endpoint = &work->endpoint;
+    ls_iq_control_status_t *radio = &work->radio;
+    const app_t *app = app_current();
+    if (app && app->name) {
+        diag->app_known = true;
+        diag_copy(diag->app, sizeof(diag->app), app->name);
+    }
+    diag->parked_known = true;
+    diag->parked = app_parked();
+
+    if (diag_selected_endpoint(endpoint, &work->scan_endpoint)) {
+        diag->endpoint_known = true;
+        diag_copy(diag->endpoint_id, sizeof(diag->endpoint_id),
+                  endpoint->endpoint_id);
+        diag_copy(diag->owner, sizeof(diag->owner), endpoint->owner);
+        diag->endpoint_present = endpoint->present;
+        diag->endpoint_streaming = endpoint->streaming;
+        diag->iq_total_known = true;
+        diag->iq_bytes_total = endpoint->bytes_read;
+        if (radio_health_get_for_endpoint(endpoint, &work->health)) {
+            diag->health_known = true;
+            diag_copy(diag->health, sizeof(diag->health),
+                      radio_health_state_name(work->health.state));
+            diag->health_rate_known = true;
+            diag->health_bytes_per_second = work->health.bytes_per_second;
+        }
+    }
+
+    if (app_current_index() == s_p25_idx) {
+        p25_get_receiver_status(radio);
+        diag_from_control(diag, radio);
+        diag_copy(diag->demod, sizeof(diag->demod), lakeshark_p25_mode_name());
+        diag_copy(diag->decoder, sizeof(diag->decoder),
+                  P25.dsd_voice_count &&
+                          esp_timer_get_time() < P25.voice_active_until_us
+                      ? "voice" : (P25.dsd_has_sync ? "sync" : "hunt"));
+        diag->iq_rate_known = true;
+        diag->iq_bytes_per_second = P25.iq_bytes_sec;
+        diag->frame_count_known = true;
+        diag->frame_count = (uint32_t)P25.dsd_sync_count;
+        diag->valid_count_known = true;
+        diag->valid_count = (uint32_t)P25.dsd_bch_ok_count;
+        diag->failed_count_known = true;
+        diag->failed_count = (uint32_t)P25.dsd_bch_fail_count;
+        diag->control_count_known = true;
+        diag->control_count = P25.p25_tsbk_ok_count;
+        diag->voice_count_known = true;
+        diag->voice_count = (uint32_t)P25.dsd_voice_count;
+        diag->audio_drop_count_known = true;
+        diag->audio_drop_count = P25.audio_drops;
+    } else if (app_current_index() == s_fm_idx) {
+        fm_get_receiver_status(radio);
+        diag_from_control(diag, radio);
+        diag_copy(diag->demod, sizeof(diag->demod),
+                  fm_mode_command_name(FM.mode));
+        bool sync = FM.mode == FM_MODE_POCSAG ? FM.pocsag_sync
+                  : FM.mode == FM_MODE_FLEX   ? FM.flex_sync
+                  : FM.squelch_open;
+        diag_copy(diag->decoder, sizeof(diag->decoder), sync ? "sync" : "hunt");
+        diag->iq_rate_known = true;
+        diag->iq_bytes_per_second = FM.iq_bytes_sec;
+        if (FM.mode == FM_MODE_POCSAG) {
+            diag->frame_count_known = true;
+            diag->frame_count = FM.pocsag_frames;
+            diag->valid_count_known = true;
+            diag->valid_count = FM.pocsag_frames;
+            diag->failed_count_known = true;
+            diag->failed_count = FM.pocsag_cw_errs;
+        } else if (FM.mode == FM_MODE_FLEX) {
+            diag->frame_count_known = true;
+            diag->frame_count = FM.flex_frames;
+            diag->valid_count_known = true;
+            diag->valid_count = FM.flex_frames;
+            diag->failed_count_known = true;
+            diag->failed_count = FM.flex_cw_errs;
+        }
+    } else if (app_current_index() == s_adsb_idx) {
+        lakeshark_adsb_tel_t *adsb = &work->app.adsb;
+        lakeshark_adsb_telemetry(adsb);
+        diag->requested_frequency_known = true;
+        diag->requested_frequency_hz = adsb->freq_hz;
+        diag->requested_gain_known = true;
+        diag->requested_gain_tenths_db = adsb->gain_tenths;
+        diag->iq_rate_known = true;
+        diag->iq_bytes_per_second = adsb->iq_bytes_sec;
+        diag->frame_count_known = true;
+        diag->frame_count = (uint32_t)adsb->msgs_total;
+        diag->valid_count_known = true;
+        diag->valid_count = (uint32_t)adsb->crc_good;
+        diag->failed_count_known = true;
+        diag->failed_count = (uint32_t)adsb->crc_err;
+        diag_copy(diag->decoder, sizeof(diag->decoder),
+                  adsb->last_msg_ms >= 0 ? "frames" : "hunt");
+        if (diag->endpoint_known) {
+            if (endpoint->configured) {
+                diag->effective_frequency_known = endpoint->actual_iq.center_hz != 0;
+                diag->effective_frequency_hz = endpoint->actual_iq.center_hz;
+                diag->effective_gain_known = true;
+                diag->effective_gain_tenths_db = endpoint->actual_iq.gain_tenths_db;
+            }
+            diag->receiver_error_known = true;
+            diag_copy(diag->receiver_error, sizeof(diag->receiver_error),
+                      ls_radio_err_name(endpoint->last_error));
+            diag->rx_state = endpoint->streaming ? LS_RECEIVER_RX_ACTIVE
+                          : !endpoint->present ? LS_RECEIVER_RX_DISCONNECTED
+                          : LS_RECEIVER_RX_IDLE;
+        }
+    } else if (app_current_index() == s_rec_idx) {
+        rec_hub_status_t *rec = &work->app.rec;
+        rec_get_hub_status(rec);
+        rec_get_receiver_status(radio);
+        diag_from_control(diag, radio);
+        diag_copy(diag->demod, sizeof(diag->demod), "raw");
+        static const char *const phase[] = {
+            "idle", "armed", "capture", "done"
+        };
+        unsigned p = (unsigned)rec->phase;
+        diag_copy(diag->decoder, sizeof(diag->decoder),
+                  p < sizeof(phase) / sizeof(phase[0]) ? phase[p] : "?");
+        diag->iq_rate_known = true;
+        diag->iq_bytes_per_second = rec->bytes_sec;
+        diag->frame_count_known = true;
+        diag->frame_count = rec->captures;
+        diag->valid_count_known = true;
+        diag->valid_count = rec->captures;
+    }
+
+    if (diag->parked) diag->rx_state = LS_RECEIVER_RX_PARKED;
+    diag->memory_known = true;
+    diag->internal_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    diag->internal_largest =
+        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    diag->dma_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA);
+    diag->dma_largest =
+        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    int result = ls_receiver_diag_format(diag, out, len);
+    heap_caps_free(work);
+    return result;
+}
+
+void lakeshark_radio_recover(const char *endpoint_id)
+{
+    app_request_recover(endpoint_id);
+}
 void lakeshark_set_usb_autoreboot(bool en)      { app_set_usb_autoreboot(en); }
 bool lakeshark_usb_autoreboot(void)             { return app_usb_autoreboot(); }
 
@@ -157,7 +432,7 @@ void lakeshark_radio_set_gain(int tenths)
     if (tenths > 496) tenths = 496;
     int idx = app_current_index();
     if (idx == s_p25_idx) {
-        rtl_gain_request = tenths;
+        p25_request_gain(tenths);
         const app_t *a = app_current();
         if (a) settings_set_gain(a, tenths);
     } else if (idx == s_fm_idx) {
@@ -181,64 +456,72 @@ void lakeshark_radio_set_gain_live(int tenths)
     if (tenths < 0)   tenths = 0;
     if (tenths > 496) tenths = 496;
     int idx = app_current_index();
-    if (idx == s_p25_idx)      rtl_gain_request = tenths;
+    if (idx == s_p25_idx)      p25_request_gain(tenths);
     else if (idx == s_fm_idx)  lakeshark_fm_set_gain_live(tenths);
 }
-
-static const char *MODE_NAMES[] = { "C4FM", "CQPSK", "DIFF_4FSK", "FSK4_TRACKING" };
 
 void lakeshark_p25_tune(int delta_hz)
 {
     const app_t *a = app_current();
     uint32_t f = a ? settings_get_freq(a) : s_tune_freq_hz;
-    if (delta_hz < 0) {
-        uint32_t d = (uint32_t)(-delta_hz);
-        f = (f > d) ? f - d : f;
-    } else {
-        f += (uint32_t)delta_hz;
-    }
+    int64_t next = (int64_t)f + (int64_t)delta_hz;
+    if (next < (int64_t)P25_CONTROL_TUNER_MIN_HZ)
+        next = P25_CONTROL_TUNER_MIN_HZ;
+    if (next > (int64_t)P25_CONTROL_TUNER_MAX_HZ)
+        next = P25_CONTROL_TUNER_MAX_HZ;
+    f = (uint32_t)next;
+    /* LS-702: the dial is a new tuner owner. Leaving carrier scan enabled
+       made its next step silently overwrite the operator's frequency. */
+    scan_engine_stop();
+    /* LS-691: a dial move is an ownership transfer.  End a profile survey
+     * and restore its prior valid control before the manual request replaces
+     * that tune in the single-slot radio latch. */
+    (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
     s_tune_freq_hz = f;
     if (a) settings_set_freq(a, f);
-    s_p25_freq_req = f;
+    p25_request_tune(f, false);
 }
 
 void lakeshark_p25_set_freq(uint32_t hz)
 {
-    if (hz < 1000000UL) return;
+    if (hz < P25_CONTROL_TUNER_MIN_HZ || hz > P25_CONTROL_TUNER_MAX_HZ) return;
+    scan_engine_stop();
+    (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
     const app_t *a = app_current();
     s_tune_freq_hz = hz;
     if (a) settings_set_freq(a, hz);
-    s_p25_freq_req = hz;
+    p25_request_tune(hz, false);
 }
 
 uint32_t lakeshark_p25_get_freq(void) { return s_tune_freq_hz; }
 
 const char *lakeshark_p25_cycle_mode(void)
 {
-    int next = (s_dsp.mode + 1) % 4;
-    dsp_set_mode(&s_dsp, (demod_mode_t)next);
-    return MODE_NAMES[next & 3];
+    int preference = p25_demod_get_preference();
+    int next = preference >= (int)DEMOD_FSK4_TRACKING
+                   ? P25_DEMOD_AUTO : preference + 1;
+    p25_demod_set_preference(next);
+    return p25_demod_get_name();
 }
 
-int lakeshark_p25_mode_index(void) { return (int)s_dsp.mode; }
+int lakeshark_p25_mode_index(void) { return (int)p25_demod_get_active(); }
 
 void lakeshark_p25_set_mode(int idx)
 {
-    if (idx < 0 || idx > 3) return;
-    dsp_set_mode(&s_dsp, (demod_mode_t)idx);
+    if (idx == P25_DEMOD_AUTO) p25_demod_set_preference(idx);
+    else p25_demod_set_preference((int)p25_demod_mode_clamp(
+                                      idx, p25_demod_get_active()));
 }
 
 const char *lakeshark_p25_mode_name(void)
 {
-    int m = s_dsp.mode;
-    if (m < 0 || m > 3) return "?";
-    return MODE_NAMES[m];
+    return p25_demod_get_name();
 }
 
 void lakeshark_p25_toggle_polarity(void)
 {
     P25.demod_invert = !P25.demod_invert;
-    P25.demod_gain   = P25.demod_invert ? 9000.0f : -9000.0f;
+    P25.demod_gain = p25_demod_output_gain(p25_demod_get_active(), P25.demod_invert);
     dsp_set_gain(&s_dsp, P25.demod_gain);
 }
 
@@ -246,6 +529,9 @@ bool lakeshark_p25_polarity_inverted(void) { return P25.demod_invert; }
 
 void lakeshark_p25_reset_stats(void)
 {
+    /* LS-693: reset every counter shown by the coherent health snapshot while
+     * retaining current identity, acquisition, RF, heap and buffer state. */
+    p25_health_reset_counters();
     P25.dsd_sync_count     = 0;
     P25.dsd_voice_count    = 0;
     P25.dsd_bch_ok_count   = 0;
@@ -268,7 +554,7 @@ void lakeshark_p25_gain_step(void)
     int cur = P25.rtl_gain_tenths;
     int next_idx = 0;
     for (int i = 0; i < n; i++) if (gains[i] == cur) { next_idx = (i + 1) % n; break; }
-    rtl_gain_request = gains[next_idx];
+    p25_request_gain(gains[next_idx]);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, gains[next_idx]);
 }
@@ -278,7 +564,7 @@ extern volatile bool p25_agc_on;
 void lakeshark_p25_agc(void)
 {
     p25_agc_on = false;
-    rtl_gain_request = 280;
+    p25_request_gain(280);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, 280);
 }
@@ -327,7 +613,7 @@ void lakeshark_p25_telemetry(lakeshark_p25_tel_t *out)
     out->polarity_inverted = P25.demod_invert ? 1 : 0;
     out->beep              = P25.sync_beep_enabled ? 1 : 0;
     out->voice_gate        = p25_voice_gate;
-    out->rtl_ready         = lakeshark_radio_device_ready() ? 1 : 0;
+    out->rtl_ready         = lakeshark_iq_receiver_ready() ? 1 : 0;
     out->ring_fill         = P25.ring_fill;
     out->ring_size         = P25.ring_size;
     out->read_errors       = P25.read_errors;
@@ -352,7 +638,7 @@ void lakeshark_adsb_telemetry(lakeshark_adsb_tel_t *out)
 
     out->freq_hz      = 1090000000UL;
     out->gain_tenths  = lakeshark_adsb_gain_tenths();
-    out->rtl_ready    = lakeshark_radio_device_ready() ? 1 : 0;
+    out->rtl_ready    = lakeshark_iq_receiver_ready() ? 1 : 0;
     out->iq_bytes_sec = perf_get_bytes_per_sec();
 
     out->tracked      = adsb_state_active_count();
@@ -411,11 +697,25 @@ void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out)
     out->submode        = (int)FM.mode;
     out->freq_hz        = FM.freq_hz;
     out->gain_tenths    = FM.gain_tenths;
-    out->iq_level       = (int)(FM.iq_level * 1000.0f);
-    out->audio_level    = (int)(FM.audio_level * 1000.0f);
+    ls_iq_control_status_t radio;
+    fm_get_receiver_status(&radio);
+    out->effective_freq_hz = radio.effective_center_hz;
+    out->effective_gain_tenths = radio.effective_gain_tenths_db;
+    out->effective_freq_known = radio.effective_center_known ? 1 : 0;
+    out->effective_gain_known = radio.effective_gain_known ? 1 : 0;
+    out->tune_state = (int)radio.tune_state;
+    out->gain_state = (int)radio.gain_state;
+    out->tune_error = (int)radio.tune_error;
+    out->gain_error = (int)radio.gain_error;
+    out->receiver_streaming = radio.receiver_streaming ? 1 : 0;
+    out->receiver_error = (int)radio.receiver_error;
+    out->iq_level       = radio.receiver_streaming
+                            ? (int)(FM.iq_level * 1000.0f) : 0;
+    out->audio_level    = radio.receiver_streaming
+                            ? (int)(FM.audio_level * 1000.0f) : 0;
     out->squelch_tenths = FM.squelch_tenths;
-    out->squelch_open   = FM.squelch_open ? 1 : 0;
-    out->iq_bytes_sec   = FM.iq_bytes_sec;
+    out->squelch_open   = radio.receiver_streaming && FM.squelch_open ? 1 : 0;
+    out->iq_bytes_sec   = radio.receiver_streaming ? FM.iq_bytes_sec : 0;
     out->read_errors    = (int)FM.read_errors;
 
     out->scan_start_hz  = FM.scan_start_hz;
@@ -430,17 +730,20 @@ void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out)
     out->pocsag_pages  = FM.pocsag_pages;
     out->pocsag_frames = FM.pocsag_frames;
 
-    if (FM.page_count > 0) {
-        int idx = (FM.page_head - 1 + FM_PAGE_LOG_MAX) % FM_PAGE_LOG_MAX;
+    /*LS-984  The page ring now contains FLEX too. POCSAG telemetry is an
+       established external contract, so find its newest entry rather than
+       relabelling the latest FLEX page as POCSAG. */
+    for (int k = 0; k < FM.page_count; k++) {
+        int idx = (FM.page_head - 1 - k + FM_PAGE_LOG_MAX * 2) % FM_PAGE_LOG_MAX;
         const fm_page_t *p = &FM.pages[idx];
+        if (p->protocol != FM_PAGE_PROTOCOL_POCSAG) continue;
         out->pocsag_last_addr = p->address;
         out->pocsag_last_baud = p->baud;
         out->pocsag_last_type = p->type;
         strlcpy(out->pocsag_last_text, p->text, sizeof(out->pocsag_last_text));
+        break;
     }
 }
-
-extern rtlsdr_dev_t *rtlsdr_dev_get(void);
 
 static const int ADSB_GAINS[] = { 0, 90, 200, 280, 340, 370, 400, 437, 463, 496 };
 
@@ -448,12 +751,7 @@ static void adsb_apply_gain(int g)
 {
     const app_t *a = (s_adsb_idx >= 0) ? app_at(s_adsb_idx) : NULL;
     if (a) settings_set_gain(a, g);
-    rtlsdr_dev_t *dev = rtlsdr_dev_get();
-    if (dev) {
-        rtlsdr_set_tuner_gain_mode(dev, g == 0 ? 0 : 1);
-        if (g > 0) rtlsdr_set_tuner_gain(dev, g);
-        rtlsdr_set_agc_mode(dev, g == 0 ? 1 : 0);
-    }
+    adsb_request_gain(g);
 }
 
 void lakeshark_adsb_gain_step(void)

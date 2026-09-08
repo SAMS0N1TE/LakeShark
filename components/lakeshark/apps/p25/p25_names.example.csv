@@ -1,0 +1,29 @@
+# LakeShark P25 talkgroup names.
+#
+# Copy to /sdcard/p25_names.csv on the radio's SD card, then load from the
+# P25 CONFIG tab. The file is re-read on demand, not held open.
+#
+# One TG per line. Format:
+#
+#     number,name[,category]
+#
+# * number   - decimal 1-65535
+# * name     - up to 23 chars; commas not allowed
+# * category - optional, up to 15 chars
+#
+# Blank lines and lines starting with '#' or ';' are ignored. A malformed
+# line does not throw the whole file away; the P25 CONFIG tab reports which
+# line was bad so you can fix that one row.
+#
+# Bounded at 256 entries and ~32 KB total. An oversized file is refused with
+# a message on the panel rather than silently truncated - "the last 200 TGs
+# are missing" reads exactly like "the file is fine but the radio is
+# broken" and costs a debugging session.
+
+100,PD Dispatch,Police
+101,PD Tac 1,Police
+102,PD Tac 2,Police
+200,FD Ch 1,Fire
+201,FD Ch 2,Fire
+300,EMS Dispatch,EMS
+400,Public Works,Muni

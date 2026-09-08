@@ -28,10 +28,16 @@
  * 9 frames take ~1.9 s (10x real-time) -> the decoder fell behind and "locked
  * up". A 1024-entry interpolated table is ~5-8x cheaper and far more accuracy
  * than an 8 kHz vocoder needs. Defined BEFORE the `#define cosf` below so the
- * table itself is built with the real libm cosf. mbe_fast_cos_init() is called
- * from mbe_initMbeParms() (runs once at decoder start, before any frame). */
+ * table itself is built with the real libm cosf.
+ *
+ * LS-676: Initializing this from mbe_initMbeParms() retained 4100 bytes of
+ * internal BSS after the unused synthesis path was linker-GC'd. Initialize at
+ * the synthesis entry points instead; the one-time branch stays out of the
+ * per-cosine hot path and the table returns automatically when synthesis is
+ * linked. */
 #define MBE_COS_N 1024
 static float s_mbe_cos[MBE_COS_N + 1];
+static int s_mbe_cos_ready;
 static inline float mbe_fast_cosf(float x)
 {
     float t  = x * 0.1591549431f;          /* x / 2pi */
@@ -44,8 +50,12 @@ static inline float mbe_fast_cosf(float x)
 }
 static void mbe_fast_cos_init(void)
 {
+    if (s_mbe_cos_ready)
+        return;
+
     for (int i = 0; i <= MBE_COS_N; i++)
         s_mbe_cos[i] = cosf((6.283185307f * (float)i) / (float)MBE_COS_N);
+    s_mbe_cos_ready = 1;
 }
 #define cosf(x) mbe_fast_cosf(x)
 
@@ -124,8 +134,6 @@ mbe_initMbeParms (mbe_parms * cur_mp, mbe_parms * prev_mp, mbe_parms * prev_mp_e
 
   int l;
 
-  mbe_fast_cos_init ();   /* build the fast-cosf table once before synthesis */
-
   prev_mp->w0 = 0.09378;
   prev_mp->L = 30;
   prev_mp->K = 10;
@@ -150,6 +158,8 @@ mbe_spectralAmpEnhance (mbe_parms * cur_mp)
   float Rm0, Rm1, R2m0, R2m1, Wl[57];
   int l;
   float sum, gamma, M;
+
+  mbe_fast_cos_init ();
 
   Rm0 = 0;
   Rm1 = 0;
@@ -258,9 +268,12 @@ mbe_synthesizeSpeechf (float *aout_buf, mbe_parms * cur_mp, mbe_parms * prev_mp,
   float uvsine, uvrand, uvthreshold, uvthresholdf;
   float uvstep, uvoffset;
   float qfactor;
+
   float rphase[64], rphase2[64];
 
   const int N = 160;
+
+  mbe_fast_cos_init ();
 
   uvthresholdf = (float) 2700;
   uvthreshold = ((uvthresholdf * M_PI) / (float) 4000);

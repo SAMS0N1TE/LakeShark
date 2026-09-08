@@ -1,6 +1,15 @@
 #include "dsd.h"
 #include "diag.h"
 
+static void publish_hunt(dsd_state *state, int low, int high,
+                         unsigned normal_hd, unsigned inverted_hd)
+{
+    state->acquisition_hunt.symbol_min = low;
+    state->acquisition_hunt.symbol_max = high;
+    state->acquisition_hunt.best_normal_hd = normal_hd;
+    state->acquisition_hunt.best_inverted_hd = inverted_hd;
+}
+
 void
 printFrameSync(dsd_opts *opts, dsd_state *state, char *frametype, int offset, char *modulation)
 {
@@ -15,6 +24,7 @@ printFrameSync(dsd_opts *opts, dsd_state *state, char *frametype, int offset, ch
 int
 getFrameSync(dsd_opts *opts, dsd_state *state)
 {
+    state->acquisition_hunt.attempts++;
     int i, t, o, dibit, sync, symbol, synctest_pos, lastt;
     char synctest[25];
     char modulation[8];
@@ -55,6 +65,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
 
         t++;
         symbol = getSymbol(opts, state, 0);
+        state->acquisition_hunt.symbols++;
 
         if (symbol < diag_symmin) diag_symmin = symbol;
         if (symbol > diag_symmax) diag_symmax = symbol;
@@ -155,10 +166,23 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
 
             if (opts->frame_p25p1 == 1) {
                 if (strcmp(synctest, P25P1_SYNC) == 0) {
+                    state->acquisition_hunt.raw_syncs++;
+                    publish_hunt(state, diag_symmin, diag_symmax,
+                                 diag_best_hd_norm, diag_best_hd_inv);
                     state->carrier = 1;
                     state->offset = synctest_pos;
-                    state->max = ((state->max) + lmax) / 2;
-                    state->min = ((state->min) + lmin) / 2;
+                    /* LS-760: streamed clean IQ found sync but sliced its
+                     * first NID as NAC 0x282 instead of 0x293. The 256-entry
+                     * history still held startup +/-15000, dwarfing this
+                     * burst's outer symbols. A complete P25 sync contains
+                     * only outer symbols: seed tracking from that evidence
+                     * so getDibit cannot restore the stale thresholds. */
+                    state->max = lmax;
+                    state->min = lmin;
+                    for (int k = 0; k < opts->msize; k++) {
+                        state->maxbuf[k] = lmax;
+                        state->minbuf[k] = lmin;
+                    }
 
                     state->center = ((state->max) + (state->min)) / 2;
                     state->umid = (((state->max) - state->center) / 2) + state->center;
@@ -176,6 +200,9 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
                     return 0;
                 }
                 if (strcmp(synctest, INV_P25P1_SYNC) == 0) {
+                    state->acquisition_hunt.inverted_matches++;
+                    publish_hunt(state, diag_symmin, diag_symmax,
+                                 diag_best_hd_norm, diag_best_hd_inv);
 
                 }
             }
@@ -222,6 +249,9 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
         }
 
         if (synctest_pos >= 1800) {
+            state->acquisition_hunt.timeouts++;
+            publish_hunt(state, diag_symmin, diag_symmax,
+                         diag_best_hd_norm, diag_best_hd_inv);
             static int hunt_log_counter = 0;
             hunt_log_counter++;
 

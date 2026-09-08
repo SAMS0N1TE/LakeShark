@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define FLIPPER_LINK_PROTO_VERSION 2
+#define FLIPPER_LINK_PROTO_VERSION 3
 
 typedef struct {
     int      uart_num;

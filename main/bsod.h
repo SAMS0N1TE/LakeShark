@@ -1,6 +1,6 @@
 
-#ifndef BSOD_H
-#define BSOD_H
+#ifndef LS_BSOD_H
+#define LS_BSOD_H
 
 #include "esp_lcd_types.h"
 

@@ -17,6 +17,15 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* Notice of change (GPL-2.0-or-later section 2a), LakeShark 2026.
+   Heavily modified for the ESP32-P4: the libusb calls are served by the
+   local esp_libusb shim over ESP-IDF USB host, logging goes through
+   ESP_LOG, and the async transfer path was rewritten for FreeRTOS. Device
+   enumeration, EEPROM handling and the desktop-only entry points were
+   dropped.
+   Upstream is osmocom/rtl-sdr; see COPYRIGHT.librtlsdr and UPSTREAM.md
+   in this directory. */
+
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -28,7 +37,7 @@
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #endif
 
-#include <esp_libusb.h>
+#include "esp_libusb_private.h"
 
 /* librtlsdr has hundreds of fprintf(stderr, ...) calls scattered through
  * its codebase. On desktop Linux these show up in the terminal; on our
@@ -47,7 +56,7 @@
 /* two raised to the power of n */
 #define TWO_POW(n) ((double)(1ULL << (n)))
 
-#include "rtl-sdr.h"
+#include "rtl_sdr_private.h"
 #include "tuner_e4k.h"
 #include "tuner_fc0012.h"
 #include "tuner_fc0013.h"
@@ -275,6 +284,27 @@ int r820t_set_bw(void *dev, int bw)
     r = rtlsdr_set_if_freq(devt, r);
     if (r)
         return r;
+
+    /*LS-826  Do not retune to a frequency nobody has set.
+
+       r82xx_set_bandwidth picks the IF from the requested bandwidth - one of
+       4570000 / 3570000 / 2300000, then minus half the real bandwidth - and
+       r82xx_set_freq computes lo_freq = freq + int_freq. During bring-up the
+       bandwidth is set before any tune, so devt->freq is still 0 and this line
+       asked the PLL for the IF on its own. With the IF landing on 1815000 that
+       is 1.815 MHz, where no mix_div up to 64 reaches the 1.77 GHz VCO minimum,
+       so the divider search finds nothing and the tuner reports:
+
+           [R82XX] Freq: 1815000
+           [R82XX] PLL not locked!
+
+       Harmless - the next real tune works - but it is a scary pair of lines at
+       every boot, it leaves the PLL unlocked through the rest of init, and it
+       cost a session to trace because 1815000 matches no frequency anybody
+       asked for. There is nothing to retune to before the first tune. */
+    if (devt->freq == 0)
+        return 0;
+
     return rtlsdr_set_center_freq(devt, devt->freq);
 }
 
@@ -822,9 +852,13 @@ int rtlsdr_get_xtal_freq(rtlsdr_dev_t *dev, uint32_t *rtl_freq, uint32_t *tuner_
 int rtlsdr_get_usb_strings(rtlsdr_dev_t *dev, char *manufact, char *product,
                            char *serial)
 {
-    assert(dev->driver_obj->dev_hdl != NULL);
+    /*LS-409*/
+    if (!dev || !dev->driver_obj || !dev->driver_obj->dev_hdl) return -1;
     usb_device_info_t dev_info;
-    ESP_ERROR_CHECK(usb_host_device_info(dev->driver_obj->dev_hdl, &dev_info));
+    if (usb_host_device_info(dev->driver_obj->dev_hdl, &dev_info) != ESP_OK) {
+        ESP_LOGW("RTLSDR", "device_info failed - dongle went away mid-enumeration");
+        return -1;
+    }
     const int buf_max = 256;
 
     {
@@ -1071,6 +1105,12 @@ int rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t *dev, uint32_t bw)
         dev->bw = bw;
     }
     return r;
+}
+
+uint32_t rtlsdr_get_tuner_bandwidth(rtlsdr_dev_t *dev)
+{
+    if (!dev) return 0;
+    return dev->bw != 0 ? dev->bw : dev->rate;
 }
 
 int rtlsdr_set_tuner_gain(rtlsdr_dev_t *dev, int gain)
@@ -1365,10 +1405,14 @@ static rtlsdr_dongle_t *find_known_device(uint16_t vid, uint16_t pid)
 
 void esp_action_get_dev_desc(rtlsdr_dev_t *dev)
 {
-    assert(dev->driver_obj->dev_hdl != NULL);
+    /*LS-409*/
+    if (!dev || !dev->driver_obj || !dev->driver_obj->dev_hdl) return;
     ESP_LOGI(TAG_ADSB, "Getting config descriptor");
     const usb_config_desc_t *config_desc;
-    ESP_ERROR_CHECK(usb_host_get_active_config_descriptor(dev->driver_obj->dev_hdl, &config_desc));
+    if (usb_host_get_active_config_descriptor(dev->driver_obj->dev_hdl, &config_desc) != ESP_OK) {
+        ESP_LOGW(TAG_ADSB, "config descriptor unavailable - dongle went away");
+        return;
+    }
     usb_print_config_descriptor(config_desc, NULL);
 }
 
@@ -1398,13 +1442,40 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
 
     dev->dev_lost = 1;
 
+    /*LS-409*/
+    if (NULL == driver_obj) { free(dev); return -1; }
+
     driver_obj->client_hdl = client_hdl;
-    ESP_ERROR_CHECK(usb_host_device_open(driver_obj->client_hdl, index, &driver_obj->dev_hdl));
+    esp_err_t oe = usb_host_device_open(driver_obj->client_hdl, index, &driver_obj->dev_hdl);
+    if (oe != ESP_OK) {
+        ESP_LOGE(TAG_ADSB, "device_open(addr=%u) failed: %s - not opening the RTL",
+                 index, esp_err_to_name(oe));
+        free(driver_obj); free(dev);
+        return -1;
+    }
+    const usb_device_desc_t *device_desc = NULL;
+    if (usb_host_get_device_descriptor(driver_obj->dev_hdl, &device_desc) != ESP_OK ||
+        !device_desc ||
+        !find_known_device(device_desc->idVendor, device_desc->idProduct)) {
+        ESP_LOGI(TAG_ADSB, "USB addr %u is not a supported RTL2832 device", index);
+        usb_host_device_close(driver_obj->client_hdl, driver_obj->dev_hdl);
+        free(driver_obj);
+        free(dev);
+        return -1;
+    }
     dev->driver_obj = driver_obj;
     init_adsb_dev();
-    
+
     // ---> CLAIM INTERFACE FIRST <---
-    ESP_ERROR_CHECK(usb_host_interface_claim(dev->driver_obj->client_hdl, dev->driver_obj->dev_hdl, 0, 0));
+    esp_err_t ce = usb_host_interface_claim(dev->driver_obj->client_hdl,
+                                            dev->driver_obj->dev_hdl, 0, 0);
+    if (ce != ESP_OK) {
+        ESP_LOGE(TAG_ADSB, "interface_claim failed: %s - not opening the RTL",
+                 esp_err_to_name(ce));
+        usb_host_device_close(driver_obj->client_hdl, driver_obj->dev_hdl);
+        free(driver_obj); free(dev);
+        return -1;
+    }
 
     /* perform a dummy write, if it fails, it's safe to ignore now */
     if (rtlsdr_write_reg(dev, USBB, USB_SYSCTL, 0x09, 1) < 0)
@@ -1538,40 +1609,27 @@ found:
     return 0;
 }
 
+/*LS-407*/
 int rtlsdr_close(rtlsdr_dev_t *dev)
 {
-    //     if (!dev)
-    //         return -1;
+    if (!dev) return -1;
 
-    //     if (!dev->dev_lost)
-    //     {
-    //         /* block until all async operations have been completed (if any) */
-    //         while (RTLSDR_INACTIVE != dev->async_status)
-    //         {
-    //             usleep(1000);
-    //         }
+    esp_libusb_note_device_gone(dev->driver_obj ? dev->driver_obj->dev_hdl : NULL);
+    esp_libusb_stream_stop_for(dev->driver_obj);
+    esp_libusb_bulk_teardown_for(dev->driver_obj);
 
-    //         rtlsdr_deinit_baseband(dev);
-    //     }
-
-    //     libusb_release_interface(dev->devh, 0);
-
-    // #ifdef DETACH_KERNEL_DRIVER
-    //     if (dev->driver_active)
-    //     {
-    //         if (!libusb_attach_kernel_driver(dev->devh, 0))
-    //             fprintf(stderr, "Reattached kernel driver\n");
-    //         else
-    //             fprintf(stderr, "Reattaching kernel driver failed!\n");
-    //     }
-    // #endif
-
-    //     libusb_close(dev->devh);
-
-    //     libusb_exit(dev->ctx);
-
-    //     free(dev);
-
+    if (dev->driver_obj) {
+        if (dev->driver_obj->dev_hdl) {
+            usb_host_interface_release(dev->driver_obj->client_hdl,
+                                       dev->driver_obj->dev_hdl, 0);
+            usb_host_device_close(dev->driver_obj->client_hdl,
+                                  dev->driver_obj->dev_hdl);
+            dev->driver_obj->dev_hdl = NULL;
+        }
+        free(dev->driver_obj);
+        dev->driver_obj = NULL;
+    }
+    free(dev);
     return 0;
 }
 
@@ -1581,8 +1639,8 @@ int rtlsdr_reset_interface(rtlsdr_dev_t *dev)
     class_driver_t *d = dev->driver_obj;
     if (!d->dev_hdl) return -1;
 
-    esp_libusb_stream_stop();
-    esp_libusb_bulk_teardown();
+    esp_libusb_stream_stop_for(d);
+    esp_libusb_bulk_teardown_for(d);
 
     usb_host_interface_release(d->client_hdl, d->dev_hdl, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -1622,9 +1680,25 @@ int rtlsdr_stream_start(rtlsdr_dev_t *dev)
     return esp_libusb_stream_start(dev->driver_obj, 0x81);
 }
 void rtlsdr_stream_stop(void)            { esp_libusb_stream_stop(); }
+void rtlsdr_stream_stop_for(rtlsdr_dev_t *dev)
+{
+    if (dev) esp_libusb_stream_stop_for(dev->driver_obj);
+}
 int  rtlsdr_stream_read(void *buf, int max) { return esp_libusb_stream_read((unsigned char *)buf, max); }
+int  rtlsdr_stream_read_timeout(void *buf, int max, uint32_t timeout_ms)
+{
+    return esp_libusb_stream_read_timeout((unsigned char *)buf, max,
+                                          timeout_ms);
+}
+
+usb_device_handle_t rtlsdr_usb_device_handle(rtlsdr_dev_t *dev)
+{
+    return dev && dev->driver_obj ? dev->driver_obj->dev_hdl : NULL;
+}
 void rtlsdr_stream_reset(void)           { esp_libusb_stream_reset(); }
 uint32_t rtlsdr_stream_avail(void)       { return esp_libusb_stream_avail(); }
+int      rtlsdr_stream_slots(void)       { return esp_libusb_stream_slots(); }
+uint64_t rtlsdr_stream_dropped(void)     { return esp_libusb_stream_dropped(); }
 
 int rtlsdr_cancel_async(rtlsdr_dev_t *dev)
 {
