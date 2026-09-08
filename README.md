@@ -107,8 +107,7 @@ the antenna and you keep the Flipper in your hand.
 <img src="https://cdn.shopify.com/s/files/1/0617/7190/7253/files/LILYGO-T-DISPLAY-P4-KEYBOARD_2.png?v=1783922435" width="480" />
 
 The [LilyGo T-Display P4](https://lilygo.cc/products/t-display-p4). A screen, a
-real keyboard and a battery in one shell — no soldering, no boost converter, no
-fighting the power path. This is where LakeShark is going next.
+real keyboard and a battery in one shell. This is where LakeShark is going next.
 
 ## }<((((()°> Hardware notes
 
