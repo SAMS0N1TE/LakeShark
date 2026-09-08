@@ -32,11 +32,11 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 | Board | Flash | Build | Firmware | Flipper App |
 |-------|-------|-------|----------|-------------|
-| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG / REC), serial console + Flipper | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
-| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless, same as above | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
-| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | GUI on the 480x800 panel. Read the power note below before you buy one | [v1.0.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.1) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG / REC), serial console + Flipper | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless, same as above | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | GUI on the 480x800 panel. Read the power note below before you buy one | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
 | [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, 720x720. Builds from source, not in the current release | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) | n/a |
-| [LilyGo T-Display P4](https://lilygo.cc/en-us/products/t-display-p4) | 16MB | Coming Soon! | n/a | n/a |
+| [LilyGo T-Display P4](https://lilygo.cc/products/t-display-p4) | 16MB | Coming Soon &mdash; see below | n/a | n/a |
 
 Each firmware download is a zip per board. Unzip it and run `flash.bat` on
 Windows or `./flash.sh` on Mac/Linux — it grabs esptool if you don't have it and
@@ -62,6 +62,14 @@ the antenna and you keep the Flipper in your hand.
 | ![pocsag](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/pocsag.png) | ![alerts](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/v2.4/docs/screenshots/set_alerts.png) |
 
 **Don't power the ESP32-P4 from the Flipper's 5V pin.**
+
+## ><)))°> Coming soon
+
+<img src="https://cdn.shopify.com/s/files/1/0617/7190/7253/files/LILYGO-T-DISPLAY-P4-KEYBOARD_2.png?v=1783922435" width="480" />
+
+The [LilyGo T-Display P4](https://lilygo.cc/products/t-display-p4). A screen, a
+real keyboard and a battery in one shell — no soldering, no boost converter, no
+fighting the power path. This is where LakeShark is going next.
 
 ## }<((((()°> Hardware notes
 
