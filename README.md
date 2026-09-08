@@ -13,6 +13,45 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 <img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
 
+## °<)))>< Standing on
+
+None of the hard parts are mine. A P25 receiver on a microcontroller only
+exists because people spent years getting these right and then gave them away.
+
+**Receiving and decoding**
+
+| | |
+|---|---|
+| [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) | Osmocom. The dongle driver everything starts from. GPL-2.0+ |
+| [xtrsdr](https://github.com/XTR1984/xtrsdr) | XTR1984. Cut librtlsdr down until it fit an ESP32. Without this there is no project |
+| [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder`. P25 voice on a chip with no FPU. GPL-3.0+ |
+| [DSD / dsd-fme](https://github.com/lwvmobile/dsd-fme) | lwvmobile. P25 framing and the DSD lineage the decoders follow. GPL |
+| [mbelib](https://github.com/szechyjs/mbelib) | szechyjs. Kept as a fallback vocoder. ISC |
+
+**Everything it runs on**
+
+| | |
+|---|---|
+| [ESP-IDF](https://github.com/espressif/esp-idf) | Espressif. The whole platform |
+| [LVGL](https://lvgl.io/) | The graphics toolkit the panel UI is built in |
+| [esp-brookesia](https://github.com/espressif/esp-brookesia) | Espressif. The GUI started here before it moved to its own shell |
+| [Waveshare ESP32-P4 BSP](https://www.waveshare.com/) | Board support for the carriers |
+| [LoRaMesher](https://github.com/LoRaMesher/LoRaMesher) | The mesh side, still WIP |
+
+**Maps, fonts and the rest**
+
+| | |
+|---|---|
+| [PMTiles](https://github.com/protomaps/PMTiles) | Protomaps. One file, no server, seekable. What makes offline maps possible here |
+| [VersaTiles](https://versatiles.org/) | Free OSM vector tiles, and fine with you fetching a region |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) | The map data itself, ODbL |
+| [DejaVu Sans Mono](https://dejavu-fonts.github.io/) | The readout face. Bitstream Vera licence |
+| [Flipper Zero](https://flipperzero.one/) | The head runs as a Flipper app |
+
+The IMBE and AMBE codecs are covered by DVSI patents. That is a separate
+matter from the licences above and it does not go away because the code is
+open. Educational and experimental use, and your local rules are yours.
+
 ## <°)))><
 
 - **P25** | Project 25 Phase 1 (C4FM) trunked/conventional digital voice.
@@ -32,9 +71,9 @@ Designed to work with my other project [CartoTUI - a terminal ascii map.](https:
 
 | Board | Flash | Build | Firmware | Flipper App |
 |-------|-------|-------|----------|-------------|
-| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG / REC), serial console + Flipper | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
-| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless, same as above | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
-| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | GUI on the 480x800 panel. Read the power note below before you buy one | [v1.0.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.2) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-NANO](https://www.waveshare.com/esp32-p4-nano.htm) | 16MB | Headless (P25 / ADS-B / FM / POCSAG / REC), serial console + Flipper | [v1.0.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.3) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6.htm) | 32MB | Headless, same as above | [v1.0.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.3) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
+| [ESP32-P4-WIFI6-Touch-LCD-4.3](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm) | 32MB | GUI on the 480x800 panel. Read the power note below before you buy one | [v1.0.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v1.0.3) | [v2.4](https://github.com/SAMS0N1TE/LakeShark-Flipper/releases/tag/v2.4) |
 | [ESP32-P4-WIFI6-Touch-LCD-4B](https://www.waveshare.com/product/arduino/boards-kits/esp32-p4/esp32-p4-wifi6-touch-lcd-4b.htm) (Smart 86 Box) | 32MB | GUI, 720x720. Builds from source, not in the current release | [v0.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v0.2.0) | n/a |
 | [LilyGo T-Display P4](https://lilygo.cc/products/t-display-p4) | 16MB | Coming Soon &mdash; see below | n/a | n/a |
 
