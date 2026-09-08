@@ -1,7 +1,7 @@
 ## IDF Component Manager Manifest File
 dependencies:
   espressif/esp_wifi_remote:
-    version: "0.*"
+    version: "==0.16.3"
 
   # LS-008
   espressif/esp_hosted:
@@ -18,6 +18,10 @@ dependencies:
   # component manager consult the registry when its lock entry is stale.
   # Keep the override relative to this manifest so every checkout uses the
   # vendored component instead of recording another worktree's path.
+  #
+  # LS-852: dependencies.lock is generated and ignored. IDF resolves this
+  # override to the current machine's absolute path in that local lock.
+  # Keep the portable source path here and review manifest version changes.
   espressif/esp_lvgl_port:
     version: "==2.5.0"
     override_path: "../components/esp_lvgl_port"

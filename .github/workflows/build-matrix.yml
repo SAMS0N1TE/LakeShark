@@ -34,10 +34,11 @@ jobs:
       - name: Build
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.4
+          esp_idf_version: v5.4.3
           target: esp32p4
           command: >-
             idf.py
+            -B build -D SDKCONFIG=build/sdkconfig
             -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}"
             build
 

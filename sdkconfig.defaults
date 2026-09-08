@@ -158,3 +158,17 @@ CONFIG_ESP_COREDUMP_STACK_SIZE=1792
 # needs its own build - not a reason to leave this unpinned today.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_1=y
+
+# LS-851  FATFS work buffers stay in internal RAM.
+#
+# With PREFER_EXTRAM the buffers land in PSRAM, and the SD controller cannot
+# DMA there, so every transfer has to allocate an internal bounce buffer
+# first. That allocation is made under whatever internal RAM is left, and it
+# fails exactly when the board is busy: "sdmmc_read_sectors: not enough mem,
+# err=0x101" is that failure, observed while ADS-B was streaming. Reading a
+# capture off the card and taking a panel screenshot both panic the same way.
+#
+# Holding the buffers internally costs a few KB permanently and removes a
+# per-transfer allocation that can fail. An SD read that works only when the
+# radio is idle is not a working SD read.
+CONFIG_FATFS_ALLOC_PREFER_EXTRAM=n

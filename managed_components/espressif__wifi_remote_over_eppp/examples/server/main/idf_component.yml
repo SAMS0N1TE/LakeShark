@@ -1,0 +1,5 @@
+dependencies:
+  esp_wifi_remote:
+    version: '*'
+  wifi_remote_over_eppp:
+    version: '*'

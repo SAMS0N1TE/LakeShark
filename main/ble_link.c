@@ -1309,10 +1309,12 @@ static bool workers_start(void)
        vTaskDeleteWithCaps. */
     if (!s_cmd_task &&
         /*LS-114*/ /*LS-821*/
-        /*LS-806  6144 with 5252 unused - about 892 B in use. These stacks have
-           to be internal (LS-380), so their headroom costs the scarcest pool
-           on the board. Trimmed to observed use plus ~2 KB. */
-        xTaskCreateWithCaps(cmd_task, "ble_cmd", 3072, NULL, 4, &s_cmd_task,
+        /*LS-806 follow-up: the 3 KB budget measured on short commands is insufficient for
+           REC LOAD's nested FATFS/stdio path. LCD-4.3 hardware reproduced a
+           stack protection fault in _svfprintf_r during a Flipper download
+           on 2026-09-08, corrupting this task's TCB. Restore the 6 KB budget;
+           retain INTERNAL caps because command handlers can write NVS. */
+        xTaskCreateWithCaps(cmd_task, "ble_cmd", 6144, NULL, 4, &s_cmd_task,
                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "command task create failed (internal RAM exhausted?)");
         return false;

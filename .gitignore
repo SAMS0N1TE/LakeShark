@@ -79,3 +79,10 @@ bench/upstream.ps1
 node_modules/
 package-lock.json
 package.json
+
+# Generated per-checkout configuration and dependency resolution
+/dependencies.lock
+/sdkconfig
+/sdkconfig.*
+!/sdkconfig.defaults
+/build_lcd_fix/

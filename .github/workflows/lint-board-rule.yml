@@ -17,10 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Match a real macro only. Comments refer to the family as
+      # CONFIG_LS_BOARD_* with an asterisk, and a bare substring search counts
+      # those as violations - which it did, on every commit, including ones
+      # that touched nothing but the README. A rule that always fails is a
+      # rule nobody reads.
       - name: No CONFIG_LS_BOARD_* outside components/lakeshark/board/
         run: |
           hits=$(grep -rn --include='*.c' --include='*.h' --include='*.cpp' --include='*.cc' \
-                   'CONFIG_LS_BOARD_' components main \
+                   -E 'CONFIG_LS_BOARD_[A-Z0-9_]+' components main \
                  | grep -v '^components/lakeshark/board/' || true)
           if [ -n "$hits" ]; then
             echo "::error::board identity leaked outside components/lakeshark/board/"

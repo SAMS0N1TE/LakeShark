@@ -246,6 +246,7 @@ typedef struct {
     wifi_scan_channel_bitmap_t channel_bitmap;         /**< Channel bitmap for setting specific channels to be scanned.
                                                             Please note that the 'channel' parameter above needs to be set to 0 to allow scanning by bitmap.
                                                             Also, note that only allowed channels configured by wifi_country_t can be scanned. */
+    bool coex_background_scan;                         /**< Enable it to scan return home channel under coexist */
 } wifi_scan_config_t;
 
 /**
@@ -526,13 +527,13 @@ typedef struct {
     uint8_t password[64];                     /**< Password of soft-AP. */
     uint8_t ssid_len;                         /**< Optional length of SSID field. */
     uint8_t channel;                          /**< Channel of soft-AP */
-    wifi_auth_mode_t authmode;                /**< Auth mode of soft-AP. Do not support AUTH_WEP, AUTH_WAPI_PSK and AUTH_OWE in soft-AP mode. When the auth mode is set to WPA2_PSK, WPA2_WPA3_PSK or WPA3_PSK, the pairwise cipher will be overwritten with WIFI_CIPHER_TYPE_CCMP.  */
+    wifi_auth_mode_t authmode;                /**< Auth mode of soft-AP. Do not support AUTH_WEP, AUTH_WAPI_PSK and AUTH_OWE in soft-AP mode. When the auth mode is set to WPA2_PSK, WPA2_WPA3_PSK or WPA3_PSK, the pairwise cipher will be overwritten with WIFI_CIPHER_TYPE_CCMP by default, unless explicitly set.  */
     uint8_t ssid_hidden;                      /**< Broadcast SSID or not, default 0, broadcast the SSID */
     uint8_t max_connection;                   /**< Max number of stations allowed to connect in */
     uint16_t beacon_interval;                 /**< Beacon interval which should be multiples of 100. Unit: TU(time unit, 1 TU = 1024 us). Range: 100 ~ 60000. Default value: 100 */
     uint8_t csa_count;                        /**< Channel Switch Announcement Count. Notify the station that the channel will switch after the csa_count beacon intervals. Default value: 3 */
     uint8_t dtim_period;                      /**< Dtim period of soft-AP. Range: 1 ~ 10. Default value: 1 */
-    wifi_cipher_type_t pairwise_cipher;       /**< Pairwise cipher of SoftAP, group cipher will be derived using this. Cipher values are valid starting from WIFI_CIPHER_TYPE_TKIP, enum values before that will be considered as invalid and default cipher suites(TKIP+CCMP) will be used. Valid cipher suites in softAP mode are WIFI_CIPHER_TYPE_TKIP, WIFI_CIPHER_TYPE_CCMP and WIFI_CIPHER_TYPE_TKIP_CCMP. */
+    wifi_cipher_type_t pairwise_cipher;       /**< Pairwise cipher of SoftAP, group cipher will be derived using this. Cipher values are valid starting from WIFI_CIPHER_TYPE_TKIP, enum values before that will be considered as invalid and default cipher suites(TKIP+CCMP) will be used. Valid cipher suites in softAP mode are WIFI_CIPHER_TYPE_TKIP, WIFI_CIPHER_TYPE_CCMP, WIFI_CIPHER_TYPE_TKIP_CCMP, WIFI_CIPHER_TYPE_GCMP and WIFI_CIPHER_TYPE_GCMP256. */
     bool ftm_responder;                       /**< Enable FTM Responder mode */
     wifi_pmf_config_t pmf_cfg;                /**< Configuration for Protected Management Frame */
     wifi_sae_pwe_method_t sae_pwe_h2e;        /**< Configuration for SAE PWE derivation method */
@@ -1116,6 +1117,9 @@ typedef enum {
     WIFI_EVENT_AP_WRONG_PASSWORD,        /**< a station tried to connect with wrong password */
 
     WIFI_EVENT_STA_BEACON_OFFSET_UNSTABLE,  /**< Station sampled beacon offset unstable */
+    WIFI_EVENT_DPP_URI_READY,            /**< DPP URI is ready through Bootstrapping */
+    WIFI_EVENT_DPP_CFG_RECVD,            /**< Config received via DPP Authentication */
+    WIFI_EVENT_DPP_FAILED,               /**< DPP failed */
     WIFI_EVENT_MAX,                      /**< Invalid Wi-Fi event ID */
 } wifi_event_t;
 
@@ -1463,7 +1467,7 @@ typedef struct {
     bool dcm;                                /**< Using dcm rate to send frame */
 } wifi_tx_rate_config_t;
 
-#define WIFI_MAX_SUPPORT_COUNTRY_NUM 175 /**< max number of supported countries */
+#define WIFI_MAX_SUPPORT_COUNTRY_NUM 176 /**< max number of supported countries */
 #ifdef CONFIG_SLAVE_SOC_WIFI_SUPPORT_5G
 #define WIFI_MAX_REGULATORY_RULE_NUM  7 /**< max number of regulatory rules */
 #else
@@ -1519,6 +1523,22 @@ typedef wifi_tx_info_t esp_80211_tx_info_t;
 typedef struct {
     float beacon_success_rate;                  /**< Received beacon success rate */
 } wifi_event_sta_beacon_offset_unstable_t;
+
+/** Argument structure for WIFI_EVENT_DPP_URI_READY event */
+typedef struct {
+    uint32_t uri_data_len;       /**< URI data length including null termination */
+    char uri[];                  /**< URI data */
+} wifi_event_dpp_uri_ready_t;
+
+/** Argument structure for WIFI_EVENT_DPP_CFG_RECVD event */
+typedef struct {
+    wifi_config_t wifi_cfg;                  /**< Received WIFI config in DPP */
+} wifi_event_dpp_config_received_t;
+
+/** Argument structure for WIFI_EVENT_DPP_FAIL event */
+typedef struct {
+    int failure_reason;                      /**< Failure reason */
+} wifi_event_dpp_failed_t;
 
 #ifdef __cplusplus
 }
