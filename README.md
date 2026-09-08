@@ -25,6 +25,7 @@ the antenna and you keep the Flipper in your hand.
 
 ## Radio display
 
+# [LCD 4.3 board](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm)
 | | |
 | --- | --- |
 | <img src="docs/screenshots/p4_home.png" width="380" /> | <img src="docs/screenshots/p4_p25.png" width="380" /> |
