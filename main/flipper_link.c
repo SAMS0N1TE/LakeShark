@@ -261,18 +261,27 @@ static void receiver_reply(char *reply, size_t reply_len)
 /*LS-511*/
 #define REC_CHUNK_EDGES 32
 
-static void rec_reply_status(char *reply, size_t reply_len)
+static void rec_reply_load_status(char *reply, size_t reply_len, int load_index)
 {
     rec_status_t s;
     rec_get_status(&s);
-    snprintf(reply, reply_len,
-             "+OK ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
+    int prefix = load_index >= 0
+        ? snprintf(reply, reply_len, "+OK load=%d ", load_index)
+        : snprintf(reply, reply_len, "+OK ");
+    if (prefix < 0 || (size_t)prefix >= reply_len) return;
+    snprintf(reply + prefix, reply_len - (size_t)prefix,
+             "ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
              /*LS-516*/
              " bw=%lu mp=%lu ms=%lu me=%d\n",
              (int)s.phase, s.edges, (unsigned long)s.span_us,
              (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms,
              (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
              (unsigned long)(s.max_span_us / 1000u), s.min_edges);
+}
+
+static void rec_reply_status(char *reply, size_t reply_len)
+{
+    rec_reply_load_status(reply, reply_len, -1);
 }
 
 static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
@@ -430,7 +439,9 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         else if (n < 0)   snprintf(reply, reply_len, "-ERR load %d\n", n);
         else {
             s_stat_now = true;
-            rec_reply_status(reply, reply_len);
+            /* Correlate the completed load with the head's selected file.
+               Cached DONE telemetry may still describe a previous capture. */
+            rec_reply_load_status(reply, reply_len, (int)idx);
         }
 
     } else if (!strcmp(up, "DEL")) {
