@@ -7,6 +7,10 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI)
 
+| | |
+| --- | --- |
+| <img src="docs/screenshots/p4_home.png" width="380" /> | <img src="docs/screenshots/p4_p25.png" width="380" /> |
+
 <img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
 
 ## <°)))><
