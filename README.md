@@ -7,11 +7,11 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI)
 
-## ><)))°> The Flipper head
+## ><)))°> The Flipper head (Optional)
 
-The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) drives the
+The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) can control the
 radio over Bluetooth or the GPIO header, so the receiver can sit in a bag with
-the antenna and you keep the Flipper in your hand.
+the antenna and you keep the Flipper in your hand. 
 
 | | |
 | --- | --- |
