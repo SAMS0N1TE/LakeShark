@@ -185,6 +185,11 @@ private:
     lv_obj_t *_s_gui    = nullptr;
     ls_spectrum_waterfall_t _s_spectrum = {};
     uint32_t _s_spectrum_seq = 0;
+    /* Last tuning the waterfall was drawn at. A retune makes the rows above
+       the change mean a different frequency, which is the one case where
+       history has to go. */
+    uint32_t _s_spectrum_center_hz = 0;
+    uint32_t _s_spectrum_span_hz = 0;
 
     static const int RATE_N = 60;
     int     _rate_voice[RATE_N] = {0};

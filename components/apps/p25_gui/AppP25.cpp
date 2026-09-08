@@ -846,6 +846,17 @@ void AppP25::updateSignal(void)
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
         if (p25_spectrum_read(spectrum_bins, points, now_ms,
                               P25_SPECTRUM_STALE_MS, &snapshot)) {
+            /* A waterfall is history, and history only becomes wrong when
+               the radio moves. Drop it on a retune or a span change, because
+               the rows above would be a picture of somewhere else. */
+            if (snapshot.center_hz != _s_spectrum_center_hz ||
+                snapshot.span_hz != _s_spectrum_span_hz) {
+                _s_spectrum_center_hz = snapshot.center_hz;
+                _s_spectrum_span_hz = snapshot.span_hz;
+                if (_s_spectrum.has_data)
+                    ls_spectrum_waterfall_clear(&_s_spectrum);
+            }
+
             if (snapshot.sequence != _s_spectrum_seq) {
                 _s_spectrum_seq = snapshot.sequence;
                 ls_spectrum_waterfall_push(&_s_spectrum, spectrum_bins, points);
@@ -887,10 +898,14 @@ void AppP25::updateSignal(void)
                 set_text_if_changed(_s_peak, buf);
             }
         } else if (_s_rf) {
+            /* Stale is the normal state between snapshots - the FFT is bounded
+               to one per eight RX blocks on purpose - so it means "no new row"
+               and nothing more. Wiping here erased the whole waterfall every
+               time a frame was late, which is most of them: it never built up
+               enough to read, or to photograph. Say so in the status line and
+               leave the picture alone. */
             set_text_if_changed(_s_rf,
                 "IQ snapshot waiting/stale   bounded 1 FFT per 8 RX blocks");
-            if (_s_spectrum.has_data)
-                ls_spectrum_waterfall_clear(&_s_spectrum);
         }
     }
 
