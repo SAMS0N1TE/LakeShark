@@ -7,6 +7,13 @@ It's currently in a very early devlopment stage and will be broken up into a few
 
 Designed to work with my other project [CartoTUI - a terminal ascii map.](https://github.com/SAMS0N1TE/CartoTUI)
 
+## Headless or GUI
+
+# [LCD 4.3 board](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm)
+| | |
+| --- | --- |
+| <img src="docs/screenshots/p4_home.png" width="380" /> | <img src="docs/screenshots/p4_p25.png" width="380" /> |
+
 ## ><)))°> The Flipper head (Optional)
 
 The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) can control the
@@ -22,15 +29,6 @@ the antenna and you keep the Flipper in your hand.
 **[Flipper user guide](https://github.com/SAMS0N1TE/LakeShark-Flipper/blob/main/docs/wiki/Home.md)** — setup, controls, and all 44 screenshots.
 
 **Don't power the ESP32-P4 from the Flipper's 5V pin.**
-
-## Headless or GUI
-
-# [LCD 4.3 board](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm)
-| | |
-| --- | --- |
-| <img src="docs/screenshots/p4_home.png" width="380" /> | <img src="docs/screenshots/p4_p25.png" width="380" /> |
-
-<img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
 
 ## °<)))>< Standing on
 
@@ -165,6 +163,7 @@ never run this, [quickstart](docs/LCD43_QUICKSTART.md) for one that has, and
 - **LCD shell** | a custom LVGL UI.
 
 ## 3D Print Sneak Peaks
+<img width="1920" height="1080" alt="P25_medium_high3q_right" src="https://github.com/user-attachments/assets/44ca065e-67c5-4ae6-a53f-c1c7022cc1e9" />
 <img width="1920" height="1080" alt="P25_wide_lowfront_left" src="https://github.com/user-attachments/assets/d1166cca-6460-4524-8f1e-995bfe8ea90e" />
 <img width="1920" height="1080" alt="P25_view01" src="https://github.com/user-attachments/assets/969d1022-49da-4c47-bc8f-cdc49c12cf5a" />
 <img width="1920" height="1080" alt="P25_hero_frontleft" src="https://github.com/user-attachments/assets/ba981369-dc47-4faa-b557-26ab81a61523" />
