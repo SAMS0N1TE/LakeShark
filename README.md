@@ -23,7 +23,7 @@ the antenna and you keep the Flipper in your hand.
 
 **Don't power the ESP32-P4 from the Flipper's 5V pin.**
 
-## Radio display
+## Headless or GUI
 
 # [LCD 4.3 board](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-4.3.htm)
 | | |
