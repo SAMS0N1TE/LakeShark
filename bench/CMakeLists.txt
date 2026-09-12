@@ -710,6 +710,15 @@ target_include_directories(test_adsb_phantom PRIVATE
     ${FW}/components/lakeshark/audio
     ${FW}/bench/shims)
 
+ls_add_test(test_adsb_cpr
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_adsb_cpr PRIVATE
+    ${APP}/adsb
+    ${FW}/components/lakeshark/audio
+    ${FW}/bench/shims)
+
 ls_add_test(test_tui_render_dump
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/ls_tui.c

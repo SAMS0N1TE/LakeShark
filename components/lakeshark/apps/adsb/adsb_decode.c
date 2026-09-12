@@ -90,6 +90,16 @@ static int cpr_nl(double lat)
     return 1;
 }
 
+/* The remainder the CPR algorithm means, which is never negative. C's own
+   operators keep the sign of the dividend, and the zone index is negative for
+   a great many real positions. */
+static int cpr_mod(int a, int b)
+{
+    if (b <= 0) return 0;
+    const int r = a % b;
+    return r < 0 ? r + b : r;
+}
+
 static bool cpr_decode(adsb_aircraft_t *a)
 {
     if (!a->cpr_even.valid || !a->cpr_odd.valid) return false;
@@ -104,26 +114,32 @@ static bool cpr_decode(adsb_aircraft_t *a)
 
     double dlat0 = 360.0 / 60.0;
     double dlat1 = 360.0 / 59.0;
-    double j     = floor(59.0 * rlat0 - 60.0 * rlat1 + 0.5);
+    int    j     = (int)floor(59.0 * rlat0 - 60.0 * rlat1 + 0.5);
 
-    double lat0 = dlat0 * (fmod(j, 60.0) + rlat0);
-    double lat1 = dlat1 * (fmod(j, 59.0) + rlat1);
+    double lat0 = dlat0 * (cpr_mod(j, 60) + rlat0);
+    double lat1 = dlat1 * (cpr_mod(j, 59) + rlat1);
     if (lat0 >= 270.0) lat0 -= 360.0;
     if (lat1 >= 270.0) lat1 -= 360.0;
     if (cpr_nl(lat0) != cpr_nl(lat1)) return false;
 
-    double lat, rlon, dlon;
-    int nl;
-    if (a->cpr_even.ts_us >= a->cpr_odd.ts_us) {
-        lat = lat0; nl = cpr_nl(lat0); rlon = rlon0;
-    } else {
-        lat = lat1; nl = cpr_nl(lat1); if (nl > 0) nl--; rlon = rlon1;
-    }
-    dlon = 360.0 / (nl > 0 ? nl : 1);
+    /* The longitude zone count belongs to the frame being positioned, and the
+       odd frame sits in one zone fewer than the even one. */
+    bool even_newer = a->cpr_even.ts_us >= a->cpr_odd.ts_us;
+    double lat  = even_newer ? lat0 : lat1;
+    double rlon = even_newer ? rlon0 : rlon1;
+    int    nl   = cpr_nl(lat);
+    int    ni   = even_newer ? nl : nl - 1;
+    if (ni < 1) ni = 1;
 
-    double m   = floor(rlon0 * (cpr_nl(lat) - 1) - rlon1 * cpr_nl(lat) + 0.5);
-    double lon = dlon * (fmod(m, (nl > 0 ? nl : 1)) + rlon);
-    if (lon >= 180.0) lon -= 360.0;
+    int    m   = (int)floor(rlon0 * (nl - 1) - rlon1 * nl + 0.5);
+    double lon = (360.0 / ni) * (cpr_mod(m, ni) + rlon);
+    if (lon >= 180.0)  lon -= 360.0;
+    if (lon < -180.0)  lon += 360.0;
+
+    /* Whatever the arithmetic produced, a point off the planet is not a
+       position, and publishing one puts an aircraft in the wrong ocean. */
+    if (!(lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0))
+        return false;
 
     a->lat = (float)lat;
     a->lon = (float)lon;
@@ -166,9 +182,16 @@ static void on_late_announce(adsb_aircraft_t *a)
     emit_contact_event(EVT_CONTACT_CONFIRMED, a, true);
 }
 
+/* The shape mode_s_detect wants. The work is below, where a test can reach it
+   with a frame it built rather than a signal it had to fake. */
 static void on_msg(mode_s_t *self, struct mode_s_msg *mm)
 {
     (void)self;
+    adsb_decode_on_message(mm);
+}
+
+void adsb_decode_on_message(struct mode_s_msg *mm)
+{
 
     uint32_t icao = ((uint32_t)mm->aa1 << 16) |
                     ((uint32_t)mm->aa2 <<  8) |
@@ -354,8 +377,11 @@ static void on_msg(mode_s_t *self, struct mode_s_msg *mm)
             audio_events_publish(AUDIO_EVT_NEW_CONTACT, icao, a->callsign, false);
     }
 
-    if (mm->msgtype == 17 && mm->metype >= 9 && mm->metype <= 18 &&
-        mm->raw_latitude != 0) {
+    /* A CPR latitude of zero is a position, not a missing one: it is what an
+       aircraft sitting on a zone boundary encodes to, every six degrees for
+       an even frame. The message type already excludes frames that carry no
+       position. */
+    if (mm->msgtype == 17 && mm->metype >= 9 && mm->metype <= 18) {
         int64_t ts = esp_timer_get_time();
         if (mm->fflag == 0)
             a->cpr_even = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };

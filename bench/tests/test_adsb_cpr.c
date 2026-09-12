@@ -1,0 +1,245 @@
+/* LS_TEST_SOURCES: ${APP}/adsb/mode-s.c ${APP}/adsb/adsb_decode.c ${APP}/adsb/adsb_state.c */
+/* Positions the receiver actually sees, encoded to CPR and fed back in.
+   The encoder here is the one in the standard: if it and the decoder disagree,
+   one of them is wrong, and only one of them flies. */
+
+#include "ls_test.h"
+
+#include "adsb_decode.h"
+#include "adsb_state.h"
+#include "mode-s.h"
+
+#include "audio_events.h"
+#include "event_bus.h"
+#include "perf.h"
+#include "plane_audio.h"
+
+#include <math.h>
+#include <string.h>
+
+uint32_t mode_s_checksum(unsigned char *msg, int bits);
+
+/* --------------------------------------------- what adsb_decode.c reaches -- */
+
+void event_bus_publish_contact(evt_kind_t kind, const char *app,
+                               const evt_contact_t *c)
+{
+    (void)kind; (void)app; (void)c;
+}
+
+void audio_events_publish(audio_evt_kind_t kind, uint32_t icao,
+                          const char *callsign, bool crc_shaky)
+{
+    (void)kind; (void)icao; (void)callsign; (void)crc_shaky;
+}
+
+plane_category_t plane_classify(uint32_t icao, const char *callsign)
+{
+    (void)icao; (void)callsign;
+    return PLANE_UNKNOWN;
+}
+
+void perf_count_msg_good(void) { }
+void perf_count_msg_bad(void) { }
+void perf_count_burst(void) { }
+void perf_mark_good_msg(int64_t now_us) { (void)now_us; }
+void perf_mark_position(int64_t now_us) { (void)now_us; }
+void perf_set_mag(int avg, int peak) { (void)avg; (void)peak; }
+void perf_set_active_count(int n) { (void)n; }
+int  perf_get_crc_good(void) { return 0; }
+int  perf_get_crc_err(void) { return 0; }
+
+/* ------------------------------------------------------------- CPR encode -- */
+
+/* Positive remainder. The whole point of this file is that C's own operators
+   do not do this, and the decoder forgot. */
+static double pmod(double a, double b)
+{
+    const double r = fmod(a, b);
+    return r < 0.0 ? r + b : r;
+}
+
+/* Longitude zones at a latitude, from the formula rather than a table. */
+static int nl(double lat)
+{
+    if (lat == 0.0) return 59;
+    if (fabs(lat) == 87.0) return 2;
+    if (fabs(lat) > 87.0) return 1;
+    const double a = 1.0 - cos(M_PI / 30.0);
+    const double b = cos(M_PI / 180.0 * fabs(lat));
+    return (int)(2.0 * M_PI / acos(1.0 - a / (b * b)));
+}
+
+static void cpr_encode(double lat, double lon, int odd,
+                       uint32_t *yz, uint32_t *xz)
+{
+    const int i = odd ? 1 : 0;
+    const double dlat = 360.0 / (60 - i);
+    const double y = floor(131072.0 * pmod(lat, dlat) / dlat + 0.5);
+    const double rlat = dlat * (y / 131072.0 + floor(lat / dlat));
+
+    int n = nl(rlat) - i;
+    if (n < 1) n = 1;
+    const double dlon = 360.0 / n;
+    const double x = floor(131072.0 * pmod(lon, dlon) / dlon + 0.5);
+
+    *yz = (uint32_t)y & 0x1FFFFu;
+    *xz = (uint32_t)x & 0x1FFFFu;
+}
+
+/* ----------------------------------------------------------------- frames -- */
+
+#define SENDER 0x4CA2D3u   /* an Irish-registered airliner, as one overhead is */
+
+static void seal(uint8_t *m, int bits, uint32_t overlay)
+{
+    const int n = bits / 8;
+    m[n - 3] = m[n - 2] = m[n - 1] = 0;
+    const uint32_t crc = mode_s_checksum(m, bits) ^ overlay;
+    m[n - 3] = (uint8_t)(crc >> 16);
+    m[n - 2] = (uint8_t)(crc >> 8);
+    m[n - 1] = (uint8_t)crc;
+}
+
+/* DF17 type code 11: airborne position, barometric altitude. The CPR fields
+   straddle bytes exactly the way mode-s.c unpacks them. */
+static void df17_position(uint8_t m[14], uint32_t aa, int odd,
+                          uint32_t lat17, uint32_t lon17)
+{
+    memset(m, 0, 14);
+    m[0] = (17 << 3) | 5;
+    m[1] = (uint8_t)(aa >> 16);
+    m[2] = (uint8_t)(aa >> 8);
+    m[3] = (uint8_t)aa;
+    m[4] = (11 << 3);                                  /* TC 11, SS 0, NICsb 0 */
+    m[5] = 0x30;                                       /* altitude, not read here */
+    m[6] = (uint8_t)(((odd ? 1u : 0u) << 2) | ((lat17 >> 15) & 3u));
+    m[7] = (uint8_t)((lat17 >> 7) & 0xFFu);
+    m[8] = (uint8_t)(((lat17 & 0x7Fu) << 1) | ((lon17 >> 16) & 1u));
+    m[9] = (uint8_t)((lon17 >> 8) & 0xFFu);
+    m[10] = (uint8_t)(lon17 & 0xFFu);
+    seal(m, 112, 0);
+}
+
+static mode_s_t s_ms;
+
+/* Demodulation is not what this file is about, so the frame goes in already
+   whole, the way the detector would hand it over. */
+static void feed(const uint8_t *frame)
+{
+    struct mode_s_msg mm;
+    uint8_t buf[MODE_S_LONG_MSG_BYTES];
+    memcpy(buf, frame, sizeof(buf));
+    mode_s_decode(&s_ms, &mm, buf);
+    LS_CHECK_MSG(mm.crcok, "the test built a frame that fails its own CRC");
+    adsb_decode_on_message(&mm);
+}
+
+static void send_pair(double lat, double lon)
+{
+    uint8_t even[14], odd[14];
+    uint32_t ey, ex, oy, ox;
+
+    cpr_encode(lat, lon, 0, &ey, &ex);
+    cpr_encode(lat, lon, 1, &oy, &ox);
+    df17_position(even, SENDER, 0, ey, ex);
+    df17_position(odd, SENDER, 1, oy, ox);
+
+    feed(even);
+    feed(odd);
+}
+
+static double nm_apart(double lat1, double lon1, double lat2, double lon2)
+{
+    const double dlat = lat1 - lat2;
+    const double dlon = (lon1 - lon2) * cos(lat2 * M_PI / 180.0);
+    return sqrt(dlat * dlat + dlon * dlon) * 60.0;
+}
+
+static void reset(void)
+{
+    mode_s_init(&s_ms);
+    adsb_state_init();
+    adsb_decode_init();
+}
+
+/* ------------------------------------------------------------------ cases -- */
+
+LS_CASE(an_even_odd_pair_decodes_to_where_the_aircraft_is)
+{
+    /* Aircraft over the receiver's own airspace. Every one of these is a
+       position a New England receiver sees on an ordinary afternoon. */
+    static const struct { double lat, lon; } sky[] = {
+        { 42.36, -71.06 },   /* Boston */
+        { 43.20, -71.50 },   /* Concord */
+        { 42.00, -73.00 },
+        { 43.64, -70.30 },   /* Portland */
+        { 44.47, -73.15 },   /* Burlington */
+        { 41.72, -72.65 },   /* Hartford */
+    };
+
+    int wrong = 0;
+    for (unsigned i = 0; i < sizeof(sky) / sizeof(sky[0]); i++) {
+        reset();
+        send_pair(sky[i].lat, sky[i].lon);
+
+        adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+        const double off = a->pos_valid
+            ? nm_apart(a->lat, a->lon, sky[i].lat, sky[i].lon) : -1.0;
+
+        if (!a->pos_valid || off > 1.0) {
+            wrong++;
+            ls_note("  %.2f, %.2f decoded as %.2f, %.2f%s",
+                    sky[i].lat, sky[i].lon, a->lat, a->lon,
+                    a->pos_valid ? "" : " (no position)");
+        }
+    }
+    LS_CHECK_MSG(wrong == 0, "%d of %u positions over the receiver decoded wrong",
+                 wrong, (unsigned)(sizeof(sky) / sizeof(sky[0])));
+}
+
+LS_CASE(a_decoded_position_is_on_the_planet)
+{
+    /* Whatever the maths does, a latitude outside the poles is not a position
+       and must never be published as one. */
+    reset();
+    send_pair(42.36, -71.06);
+
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    if (a->pos_valid) {
+        LS_CHECK_MSG(a->lat >= -90.0 && a->lat <= 90.0,
+                     "latitude %.2f is not on the planet", a->lat);
+        LS_CHECK_MSG(a->lon >= -180.0 && a->lon <= 180.0,
+                     "longitude %.2f is not on the planet", a->lon);
+    }
+}
+
+LS_CASE(the_far_side_of_the_world_decodes_too)
+{
+    /* Eastern longitudes are where a missing wrap shows up: 151 E comes back
+       as -209, which is not a longitude. */
+    static const struct { double lat, lon; } sky[] = {
+        { -33.87, 151.21 },  /* Sydney */
+        {  35.68, 139.69 },  /* Tokyo */
+        {  55.75,  37.62 },  /* Moscow */
+        { -22.91, -43.17 },  /* Rio */
+    };
+
+    int wrong = 0;
+    for (unsigned i = 0; i < sizeof(sky) / sizeof(sky[0]); i++) {
+        reset();
+        send_pair(sky[i].lat, sky[i].lon);
+
+        adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+        const double off = a->pos_valid
+            ? nm_apart(a->lat, a->lon, sky[i].lat, sky[i].lon) : -1.0;
+        if (!a->pos_valid || off > 1.0) {
+            wrong++;
+            ls_note("  %.2f, %.2f decoded as %.2f, %.2f%s",
+                    sky[i].lat, sky[i].lon, a->lat, a->lon,
+                    a->pos_valid ? "" : " (no position)");
+        }
+    }
+    LS_CHECK_MSG(wrong == 0, "%d of %u positions decoded wrong",
+                 wrong, (unsigned)(sizeof(sky) / sizeof(sky[0])));
+}
