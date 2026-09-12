@@ -145,9 +145,14 @@ static bool cpr_decode_local(double ref_lat, double ref_lon,
     if (lon < -180.0)  lon += 360.0;
     if (!(lon >= -180.0 && lon <= 180.0)) return false;
 
-    const double dy = lat - ref_lat;
-    const double dx = (lon - ref_lon) * cos(ref_lat * M_PI / 180.0);
-    if (sqrt(dy * dy + dx * dx) * 60.0 > CPR_LOCAL_MAX_NM) return false;
+    const double rad = M_PI / 180.0;
+    const double dy = (lat - ref_lat) * rad;
+    const double dx = (lon - ref_lon) * rad;
+    double h = sin(dy / 2.0) * sin(dy / 2.0) +
+               cos(lat * rad) * cos(ref_lat * rad) *
+               sin(dx / 2.0) * sin(dx / 2.0);
+    if (h > 1.0) h = 1.0;
+    if (2.0 * 3440.065 * asin(sqrt(h)) > CPR_LOCAL_MAX_NM) return false;
 
     *out_lat = lat;
     *out_lon = lon;

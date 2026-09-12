@@ -303,3 +303,15 @@ LS_CASE(a_fresh_pair_corrects_a_wrong_local_anchor)
     LS_CHECK_MSG(nm_apart(a->lat, a->lon, 43.20, -71.50) < 0.1,
                  "valid pair retained alias %.5f, %.5f", a->lat, a->lon);
 }
+
+LS_CASE(local_tracking_crosses_the_dateline)
+{
+    reset();
+    ls_shim_time_set(1000000);
+    send_pair(43.20, 179.95);
+    ls_shim_time_advance(11000000);
+    send_one(43.20, -179.95, 1);
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    LS_CHECK_MSG(fabs(a->lon + 179.95) < 0.001,
+                 "dateline crossing stuck at %.5f", a->lon);
+}
