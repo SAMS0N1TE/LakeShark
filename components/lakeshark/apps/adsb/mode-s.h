@@ -1,12 +1,6 @@
-/* Mode S message decoder, from dump1090.
- *
- * Derived from dump1090 by Salvatore Sanfilippo. The API was renamed to a
- * mode_s_ prefix and given a state pointer so several receivers can share the
- * decoder, the magnitude table was moved to PSRAM, and the detector feeds a
- * callback rather than a global. mode-s.c carries the checksum table that
- * establishes the lineage, byte-identical to the upstream one.
- *
- * The notice below is upstream's, retained as its licence requires.
+/* Derived from watson/libmodes (dump1090); see LICENSE.libmodes.
+ * Local changes: PSRAM magnitude storage, preamble callback, short-buffer
+ * guard, and known-address gating for corrected messages.
  *
  * Mode1090, a Mode S messages decoder for RTLSDR devices.
  *
