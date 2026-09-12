@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-/* LS-735: resource failures are part of the screenshot API, not an implied
+/* resource failures are part of the screenshot API, not an implied
    "out of memory?" in a log.  The console can name the resource that refused
    the shot without attempting a render to discover it. */
 typedef enum {

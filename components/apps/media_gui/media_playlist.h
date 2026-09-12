@@ -12,7 +12,7 @@ extern "C" {
 file_iterator_instance_t *ls_media_playlist_open(const char *directory_path);
 void ls_media_playlist_close(file_iterator_instance_t *playlist);
 
-/*LS-758*/
+/**/
 /* True when `name` ends in an extension that the current audio_player build
    was compiled with a decoder for (MP3 and/or WAV via
    CONFIG_AUDIO_PLAYER_ENABLE_*).  Case-insensitive on the ASCII suffix.  The

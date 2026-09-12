@@ -19,7 +19,7 @@ char pending_password[64];
 
 void wipe(char *p, size_t n) { volatile char *v = p; while (n--) *v++ = 0; }
 
-/* LS-761: scans block in esp_wifi_scan_start and credentials touch NVS.
+/* scans block in esp_wifi_scan_start and credentials touch NVS.
  * Keep both off LVGL. The worker owns no screen pointers, so closing Settings
  * during a scan cannot deliver a result into a deleted widget. Its internal
  * task stack remains valid during flash/NVS cache-disabled operations.

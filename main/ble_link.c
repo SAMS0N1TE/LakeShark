@@ -1,5 +1,5 @@
 #include "ble_link.h"
-#include "ls_board.h"   /*LS-981*/
+#include "ls_board.h"   /**/
 
 #include <stdio.h>
 #include <ctype.h>
@@ -26,12 +26,13 @@
 
 #include "esp_hosted_misc.h"
 #include "flipper_link.h"
-/*LS-220*/
+/**/
 #include "ls_version.h"
-/*LS-825*/
+/**/
 #include "ble_link_core.h"
 #include "ble_link_host_task.h"
-/*LS-993*/
+#include "ble_hci_rx_guard.h"
+/**/
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "ls_nvs_safe.h"
@@ -44,15 +45,8 @@ static const char *TAG = "ble_link";
 
 #define BLE_TX_ALIGN_SLACK 64
 
-/*LS-809  Was 512, which made this guard - not the heap - the thing that
-   stopped telemetry. The floor for any write is MARGIN + header + slack +
-   BLE_LINK_MIN_PAYLOAD, so 512 demanded 612 contiguous DMA bytes before a
-   20-byte write was allowed. Measured on the LCD with the head connected:
-   largest free block 512 B, so every frame was refused and the Flipper sat
-   there printing NO SDR while the link reported itself ready and healthy.
-   The real protection against NimBLE's tx assert is the mbuf check above
-   (os_msys_num_free); this is only slack for the allocation itself, and
-   128 B of it is ample for a write that is at most one MTU. */
+/* Was 512, which made this guard - not the heap - the thing that stopped telemetry. */
+
 #define BLE_TX_DMA_MARGIN 128
 
 void ble_store_config_init(void);
@@ -69,7 +63,7 @@ static const ble_uuid128_t CHR_TX = BLE_UUID128_INIT(
     0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4b,
     0x52, 0x41, 0x48, 0x53, 0x45, 0x4b, 0x41, 0x4c);
 
-/*LS-813  The 16-bit id the head puts in its ADVERTISEMENT.
+/* The 16-bit id the head puts in its ADVERTISEMENT.
 
    SVC_SERIAL above is the 128-bit UUID of the GATT service, which is what
    the head SERVES - it is not what it advertises. A 128-bit UUID costs 18
@@ -78,25 +72,25 @@ static const ble_uuid128_t CHR_TX = BLE_UUID128_INIT(
    ZeroMesh does. Change one and this must change with it. */
 #define LS_HEAD_ADV_UUID16 0x18FF
 
-/*LS-813  What the Flipper advertises when our app is NOT holding the radio:
+/* What the Flipper advertises when our app is NOT holding the radio:
    ble_profile_serial's 0x3080 | hw_colour, so 0x3080..0x3083. Recognised
    only so the log can name it. */
 #define FLIPPER_STOCK_ADV_UUID16_BASE 0x3080
 #define FLIPPER_STOCK_ADV_UUID16_MASK 0xfffc
 
-/*LS-825  BLE_LINE_MAX, RECONNECT_BACKOFF_*, BLE_MIN_PAYLOAD and the
+/* BLE_LINE_MAX, RECONNECT_BACKOFF_*, BLE_MIN_PAYLOAD and the
    CONN_ITVL/TIMEOUT figures moved to ble_link_core.h so the bench sees the
    same numbers this code does. */
 #define BLE_LINE_MAX BLE_LINK_LINE_MAX
 
-/*LS-511*/
+/**/
 #define REPLY_MAX 384
-/*LS-518*/
+/**/
 #define TEL_MAX   576
 
 #define NO_SVC_BACKOFF_S 8
 
-/*LS-101*/
+/**/
 #define CMD_Q_DEPTH 8
 
 typedef struct {
@@ -114,22 +108,15 @@ static uint16_t s_tx_cccd = 0;
  static bool     s_rx_no_rsp = true;
 static bool     s_tx_indicate = false;
 
-/*LS-813  Empty by default, and an empty filter matches every head.
-
-   This used to ship as "Lr1cher" - one developer's Flipper name compiled
-   into the firmware, so nobody else's head could ever be found without an
-   `ble name` first. The name is not what identifies a head anyway: the
-   advertised service UUID is (see adv_has_our_service). The filter is only
-   here to pick BETWEEN heads when more than one is on the air. */
 static char s_name_filter[24] = "";
-/*LS-813  When a Flipper on its stock profile was last heard, so `ble`
+/* When a Flipper on its stock profile was last heard, so `ble`
    can say why nothing is connected. 0 = never. */
 static int64_t s_stock_head_seen_us = 0;
 static char s_peer_name[32]   = "";
 static char s_peer_addr[20]   = "";
 static ble_addr_t s_peer_id;
 
-/*LS-993  Pinned peer, so two boards do not race for one Flipper.  Loaded
+/* Pinned peer, so two boards do not race for one Flipper.  Loaded
    from NVS at ble_link_start(), rewritten only by ble_link_pin_peer() and
    ble_link_unpin_peer().  Passed to ble_link_scan_decide() on every adv. */
 #define NVS_BLE_NS   "lakeshark"
@@ -148,7 +135,7 @@ static volatile bool     s_pk_early_valid = false;
 static volatile uint32_t s_pk_early = 0;
 
 static bool     s_pair_failed  = false;
-/*LS-714*/
+/**/
 static int      s_last_enc_status = 0;
 static volatile int64_t s_rescan_at_us = 0;
 
@@ -156,33 +143,33 @@ static bool     s_disc_started = false;
 
 static bool     s_stack_up     = false;
 
-/*LS-825  Frame reassembly lives in ble_link_core so the bench can drive it. */
+/* Frame reassembly lives in ble_link_core so the bench can drive it. */
 static ble_link_rx_t s_rx = { .pos = 0, .lines = 0, .drops = 0 };
 static uint32_t      s_rx_drops_last = 0;
 
 static TaskHandle_t s_tel_task = NULL;
 
-/*LS-101*/
+/**/
 static QueueHandle_t s_cmd_q    = NULL;
 static TaskHandle_t  s_cmd_task = NULL;
 
-/*LS-103*/
+/**/
 static volatile uint16_t s_mtu = 0;
 
-/*LS-106*/
+/**/
 static uint32_t s_backoff_ms = BLE_LINK_RECONNECT_BACKOFF_MS;
 
-/*LS-111*/
+/**/
 static uint16_t s_svc_start = 0, s_svc_end = 0;
 static uint32_t s_notify_foreign = 0;
 
-/*LS-113*/
+/**/
 static uint32_t s_notify_rx = 0;
 static uint32_t s_notify_bytes = 0;
 
 static int  gap_event(struct ble_gap_event *event, void *arg);
 static void start_scan(void);
-/*LS-980  LS-993 introduced pinned_load_nvs after ble_link_start(), and
+/* introduced pinned_load_nvs after ble_link_start(), and
    -Wimplicit-function-declaration is a hard error under IDF, so the p4-nano
    build refused it as soon as anything else in this file changed.  Forward
    declare here; the definition still lives with pinned_save_nvs. */
@@ -200,7 +187,7 @@ void ble_link_set_name_filter(const char *s)
     if (s && *s) strlcpy(s_name_filter, s, sizeof(s_name_filter));
 }
 
-/*LS-813*/
+/**/
 bool ble_link_stock_head_seen(void)
 {
     if (s_stock_head_seen_us == 0) return false;
@@ -225,7 +212,7 @@ void ble_link_stats(uint32_t *rx, uint32_t *tx, uint32_t *drops)
     if (drops) *drops = s_drops;
 }
 
-/*LS-111*/
+/**/
 void ble_link_rx_debug(uint16_t *tx_hnd, uint16_t *svc_start, uint16_t *svc_end,
                        uint32_t *foreign)
 {
@@ -235,7 +222,7 @@ void ble_link_rx_debug(uint16_t *tx_hnd, uint16_t *svc_start, uint16_t *svc_end,
     if (foreign)   *foreign   = s_notify_foreign;
 }
 
-/*LS-113*/
+/**/
 void ble_link_notify_stats(uint32_t *notifies, uint32_t *bytes)
 {
     if (notifies) *notifies = s_notify_rx;
@@ -259,7 +246,7 @@ void ble_link_allow_telemetry(bool allow)
     s_tel_allowed = allow;
 }
 
-/*LS-102*/
+/**/
 static int ble_payload_cap(uint16_t conn)
 {
     uint16_t mtu = s_mtu;
@@ -267,7 +254,7 @@ static int ble_payload_cap(uint16_t conn)
     return ble_link_payload_cap(mtu);
 }
 
-/*LS-105*/
+/**/
 static bool ble_write(const char *data, int len)
 {
     uint16_t conn = s_conn;
@@ -289,22 +276,15 @@ static bool ble_write(const char *data, int len)
 
     int cap = ble_payload_cap(conn);
 
-    /*LS-793  Fit the write to the heap instead of dropping the frame. The
+    /* Fit the write to the heap instead of dropping the frame. The
        old guard compared one full-size write against the largest free block
        and gave up on the whole frame if it did not fit; with P25, the panel
        and USB all running that block sat near 768 B against an 845 B ask, so
        telemetry stopped dead while the link stayed up and the head showed
        nothing at all. A short write still carries the line - the loop below
        already chunks - so only give up when not even the minimum fits. */
-    /*LS-810  A frame is all or nothing. Telemetry lines run past one MTU once
-       append_sys() adds the uptime/heap suffix, so they always take several
-       writes, and the head reassembles them by newline. Shortening a write to
-       fit the heap (LS-793) meant a frame could start and then be refused part
-       way through, and the head then saw a line beginning mid-field: it logged
-       "rx junk", never parsed rtl=, and displayed NO SDR while this end
-       reported the link ready and healthy. Decide once, for the whole frame,
-       before sending any of it - the way it worked before LS-793 - and keep
-       the smaller margin so frames actually fit. */
+    /* A frame is all or nothing. */
+
     size_t largest  = heap_caps_get_largest_free_block(BLE_TX_ALLOC_CAPS);
     size_t overhead = BLE_TX_HDR_BYTES + BLE_TX_ALIGN_SLACK + BLE_TX_DMA_MARGIN;
     int    fit      = ble_link_tx_chunk(largest, overhead,
@@ -320,7 +300,7 @@ static bool ble_write(const char *data, int len)
         }
         return false;
     }
-    /*LS-810  Only shrink the write when the whole frame still gets out in
+    /* Only shrink the write when the whole frame still gets out in
        chunks of that size; never emit a partial line. */
     if (fit < cap) {
         if (s_verbose) {
@@ -344,7 +324,7 @@ static bool ble_write(const char *data, int len)
             if (s_verbose || s_drops < 5) {
                 ESP_LOGW(TAG, "write failed rc=%d (%d of %d B out)", rc, sent, len);
             }
-            /*LS-109*/
+            /**/
             if (sent > 0 && data[len - 1] == '\n') {
                 ble_gattc_write_no_rsp_flat(conn, hnd, "\n", 1);
             }
@@ -360,7 +340,7 @@ static bool ble_write(const char *data, int len)
     return true;
 }
 
-/*LS-101*/
+/**/
 static void cmd_task(void *arg)
 {
     (void)arg;
@@ -390,7 +370,7 @@ static void tel_task(void *arg)
             if (s_state != BLE_LINK_READY) start_scan();
         }
 
-        /*LS-107*/
+        /**/
         int hz = s_tel_hz;
         if (hz <= 0 || s_state != BLE_LINK_READY || !s_tel_allowed) {
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -408,7 +388,7 @@ static void tel_task(void *arg)
     }
 }
 
-/*LS-101*/ /*LS-825*/
+/**/ /**/
 static void on_rx_line(const char *line, void *user)
 {
     (void)user;
@@ -448,31 +428,15 @@ static int on_cccd_written(uint16_t conn, const struct ble_gatt_error *err,
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
         return 0;
     }
-    /*LS-825*/
+    /**/
     s_state = ble_link_state_step(s_state, BLE_LINK_EV_SUBSCRIBED);
     s_backoff_ms = BLE_LINK_RECONNECT_BACKOFF_MS;
     ESP_LOGI(TAG, "link ready: %s [%s] - subscribed, telemetry at %d Hz",
              s_peer_name, s_peer_addr, s_tel_hz);
 
-    /*LS-104*/ /*LS-824  The update is gone: it KILLED the link at 40 s.
+    /**/ /* The update is gone: it KILLED the link at 40 s. */
 
-       Once the link came up it lasted exactly 40 seconds, every time, and
-       then:
-           conn param update rejected status=546
-           disconnected (reason=546)        (0x222 = LL response timeout)
-
-       40 s is the Bluetooth link-layer response timeout. The head - a Flipper
-       - never answers a connection-parameter update request, so the
-       controller sat waiting the full timeout and then dropped the link. The
-       "rejected" log is misleading: nothing rejected anything, the peer just
-       never replied.
-
-       It is also redundant now. LS-822 sets these same parameters in the
-       ble_gap_connect() call, so the connection starts on our terms and there
-       is nothing left to renegotiate. Asking again after the fact only gives
-       a peer that cannot answer a chance to time the link out. */
-
-    /*LS-220*/ /*LS-825*/
+    /**/ /**/
     /* HELLO on the BLE side too, so a Flipper reconnecting over BLE gets
        the firmware string without waiting for the first SYS reply. */
     char v[LS_VERSION_LINE_MAX];
@@ -569,7 +533,7 @@ static int on_svc(uint16_t conn, const struct ble_gatt_error *err,
     (void)arg;
 
     if (err->status == 0 && svc) {
-        /*LS-111*/
+        /**/
         s_svc_start = svc->start_handle;
         s_svc_end   = svc->end_handle;
         ESP_LOGI(TAG, "serial service at handles %u..%u",
@@ -650,10 +614,6 @@ static bool adv_has_our_service(const struct ble_hs_adv_fields *f)
     return false;
 }
 
-/*LS-813  True when the advertiser is a Flipper running its STOCK BLE
-   profile rather than ours. Purely for the log: "found nothing" and "found
-   your Flipper with the app closed" are different problems for the
-   operator, and telling them apart on sight saves a bench session. */
 static bool adv_is_flipper_stock(const struct ble_hs_adv_fields *f)
 {
     for (int i = 0; i < f->num_uuids16; i++) {
@@ -680,7 +640,7 @@ static bool adv_name_filter_hit(const struct ble_hs_adv_fields *f)
 {
     const uint8_t *n = f->name;
     int nl = f->name_len;
-    /*LS-813  No filter set means "any head", not "no head". The service
+    /* No filter set means "any head", not "no head". The service
        UUID has already established that this IS one of ours by the time
        the name is consulted. */
     if (s_name_filter[0] == 0) return true;
@@ -694,7 +654,7 @@ static bool adv_name_filter_hit(const struct ble_hs_adv_fields *f)
     return strcasestr_ci(tmp, s_name_filter) != NULL;
 }
 
-/*LS-993  Look up the advertiser as a ble_link_peer_addr_t so the pure
+/* Look up the advertiser as a ble_link_peer_addr_t so the pure
    scan-decision helper (bench-tested) can be handed the raw bytes. */
 static void adv_to_core_addr(const ble_addr_t *in, ble_link_peer_addr_t *out)
 {
@@ -718,7 +678,7 @@ static bool adv_name_matches(const struct ble_hs_adv_fields *f,
         return false;
     }
 
-    /* Copy the name for logging / display, matching pre-LS-993 behaviour. */
+    /* Copy the name for logging / display, matching pre-behaviour. */
     if (has_svc) {
         adv_name_copy(f, out, len);
     } else {
@@ -748,28 +708,8 @@ static void start_scan(void)
     p.limited       = 0;
     p.passive       = 0;
 
-    /*LS-827  Report every advertisement, not the first one per address.
+    /* Report every advertisement, not the first one per address. */
 
-       Duplicate filtering makes the controller report each unique advertiser
-       ONCE for the life of a scan, and this scan runs BLE_HS_FOREVER. That was
-       harmless while we connected to the first head we saw on a name match:
-       being told twice added nothing.
-
-       LS-813 changed that. We now SKIP an advertiser that is not carrying our
-       0x18FF service - a Flipper sitting on its stock BLE profile with the app
-       closed - and a skipped address is then suppressed for the rest of the
-       scan. The head can start advertising our service a second later and the
-       controller will never mention it again.
-
-       That is the "it stops working until I reopen the app" the operator saw.
-       Reopening it is what makes it visible: ls_ble_profile does
-       mac_address[2]++, so the app's advertisement carries a DIFFERENT address
-       to the stock profile's, and a different address is a new advertiser the
-       filter has not suppressed yet. The link came back for a reason that had
-       nothing to do with the app restarting.
-
-       The scan callback already rate-limits its own logging to one line a
-       second, so the only thing filtering bought was hiding the head. */
     p.filter_duplicates = 0;
 
     s_state = BLE_LINK_SCANNING;
@@ -808,7 +748,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             }
             char a[20];
             addr_str(&event->disc.addr, a, sizeof(a));
-            /*LS-813  Print the advertised 16-bit service id. It is the one
+            /* Print the advertised 16-bit service id. It is the one
                field that says which profile owns the head's radio, and not
                having it in the log is why the stock-profile connect went
                unnoticed for so long. */
@@ -823,13 +763,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             s_adv_since = 0;
         }
 
-        /*LS-813  Name the one failure an operator can actually fix.
-
-           A Flipper on its stock BLE profile is not a head, and connecting
-           to it is what produced the endless pairing loop. Say so, once a
-           minute, instead of either dialling it or going silent - "no head
-           found" and "your head is right there with the app closed" want
-           very different things done about them. */
         if (!matched && adv_is_flipper_stock(&f)) {
             static int64_t s_last_stock_log_us = 0;
             s_stock_head_seen_us = now_us;
@@ -851,26 +784,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                  s_peer_name, s_peer_addr, event->disc.rssi);
 
         ble_gap_disc_cancel();
-        /*LS-822  Connect with OUR parameters, not NimBLE's defaults.
+        /* Connect with OUR parameters, not NimBLE's defaults. */
 
-           Passing NULL here takes the stack defaults, which carry
-           supervision_timeout = 0x0100 = 256 units = 2.56 s. Every failed
-           attempt against the Flipper died at exactly that mark:
-
-             connected, pairing...
-             MTU now 256 (payload cap 253 B)
-             ...2.6 s later...
-             pairing failed status=7   (BLE_HS_ENOTCONN)
-             disconnected (reason=520) (0x208 = HCI supervision timeout)
-
-           status=7 is the giveaway: pairing did not fail on its merits, the
-           link was already gone when it was answered. CONN_TIMEOUT_UNITS
-           (400 = 4 s) already existed for this link but was only applied in
-           the connection-parameter UPDATE at BLE_GAP_EVENT_CONNECT - which
-           never got the chance to run. Set it at connect time instead.
-
-           scan_itvl/scan_window keep NimBLE's defaults; only the link
-           timing is ours. */
         ble_link_conn_params_t cpc;
         ble_link_default_conn_params(&cpc);
         struct ble_gap_conn_params cp = {
@@ -883,7 +798,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             .min_ce_len          = 0,
             .max_ce_len          = 0,
         };
-        /*LS-825*/
+        /**/
         s_state = ble_link_state_step(s_state, BLE_LINK_EV_SCAN_MATCH);
         int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr,
                                  10000, &cp, gap_event, NULL);
@@ -896,11 +811,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
-            /*LS-106*/
+            /**/
             ESP_LOGW(TAG, "connect failed status=%d - retrying in %lu ms",
                      event->connect.status, (unsigned long)s_backoff_ms);
             s_rescan_at_us = esp_timer_get_time() + (int64_t)s_backoff_ms * 1000;
-            /*LS-825*/
+            /**/
             s_state       = ble_link_state_step(s_state, BLE_LINK_EV_CONNECT_FAIL);
             s_backoff_ms  = ble_link_backoff_next(s_backoff_ms);
             return 0;
@@ -914,10 +829,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_disc_started = false;
         s_mtu          = 0;
         s_svc_start = s_svc_end = 0;
-        /*LS-825*/
+        /**/
         s_state = ble_link_state_step(s_state, BLE_LINK_EV_CONNECT_OK);
 
-        /*LS-103*/
+        /**/
         {
             int mrc = ble_gattc_exchange_mtu(s_conn, NULL, NULL);
             if (mrc != 0 && mrc != BLE_HS_EALREADY) {
@@ -925,43 +840,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             }
         }
 
-        /*LS-823  Discover FIRST. Do not make the link wait on pairing.
+        /* Discover FIRST. */
 
-           The head is a Flipper, and a Flipper radio can only be a peripheral:
-           it advertises a GATT service and waits to be dialled. That is the
-           same shape ZeroMesh uses against a Meshtastic node, and its README
-           is explicit about the security model - "No pairing or PIN."
-
-           This code used to call ble_gap_security_initiate() and then sit in
-           "connected, pairing..." until BLE_GAP_EVENT_ENC_CHANGE arrived. The
-           old unpaired fallback only ran when security failed to START; when
-           it started and the peer simply never answered, nothing moved and the
-           link died on the supervision timer:
-
-             connected, pairing...
-             MTU now 256 (payload cap 253 B)
-             pairing failed status=7      (BLE_HS_ENOTCONN - link already gone)
-             disconnected (reason=520)    (0x208 = HCI supervision timeout)
-
-           status=7 is the tell: pairing did not fail on its merits, it was
-           answered after the connection had already dropped. Against a head
-           that does not pair, initiating security is the bug.
-
-           So: go straight to service discovery. Encryption is not required to
-           read or subscribe on an unauthenticated characteristic, and
-           BLE_GAP_EVENT_ENC_CHANGE is still handled if a head ever does bring
-           security up on its own. A head that genuinely requires encryption
-           will fail its first GATT op with an insufficient-authentication
-           error, which is the point to escalate - not before. */
         s_disc_started = true;
         ESP_LOGI(TAG, "connected - discovering service (no pairing required)");
         {
             int drc = ble_gattc_disc_svc_by_uuid(s_conn, &SVC_SERIAL.u, on_svc, NULL);
             if (drc != 0) ESP_LOGW(TAG, "disc_svc_by_uuid rc=%d", drc);
         }
-        /*LS-993  With no pin the scanner still accepts any matching device,
-           so surface the address the operator would use to pin it - saves them
-           reading it out of an earlier log line by hand. */
+
         if (!s_pinned.valid) {
             ESP_LOGI(TAG, "peer not pinned - `ble pin %s` locks this board to it",
                      s_peer_addr);
@@ -979,7 +866,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_pk_early_valid = false;
         s_disc_started = false;
 
-        /*LS-714*/ /*LS-825*/
+        /**/ /**/
         /* AUTH_FAIL covers two different failures. The head can reject the
            KEYS we stored, which is worth forgetting the bond over. Or it can
            refuse our security level outright (SM_ERR_AUTHREQ) - which is what
@@ -1009,7 +896,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                  event->disconnect.reason == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING));
             switch (ble_link_classify_disc(auth_or_pinkey, last_kind)) {
             case BLE_LINK_DISC_AUTHREQ_REFUSAL:
-                /*LS-811  Delete it, do not keep it. A head that answers with
+                /* Delete it, do not keep it. A head that answers with
                    AUTHREQ has no pairing method at all, so a bond for it can
                    never be used - but while one is stored NimBLE re-encrypts
                    at connection setup, the head refuses again and drops the
@@ -1035,23 +922,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
 
         if (!s_run) {
-            /*LS-825*/
+            /**/
             s_state = ble_link_state_step(s_state, BLE_LINK_EV_DISCONNECT_STOPPING);
         } else if (s_pair_failed) {
 
-            /*LS-992  Back off, and stop narrating every attempt.
+            /* Back off, and stop narrating every attempt. */
 
-               A head that refuses our security refuses it every time, so a
-               fixed 5 s retry is an infinite loop that emits about a dozen log
-               lines per cycle. On a shared console that starves the REPL - a
-               `wifi` command typed during it never echoed, let alone replied,
-               and the board looked wedged when it was merely talking.
-
-               So: the same backoff ladder every other failure uses, and the
-               reason logged once per ladder rather than once per attempt. */
             s_pair_failed  = false;
             s_rescan_at_us = esp_timer_get_time() + (int64_t)s_backoff_ms * 1000;
-            /*LS-825*/
+            /**/
             s_state        = ble_link_state_step(s_state, BLE_LINK_EV_DISCONNECT_RUNNING);
             if (s_backoff_ms == BLE_LINK_RECONNECT_BACKOFF_MS) {
                 ESP_LOGW(TAG, "head refuses our security level - backing off "
@@ -1060,19 +939,19 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             s_backoff_ms = ble_link_backoff_next(s_backoff_ms);
         } else if (s_rescan_at_us) {
 
-            /*LS-825*/
+            /**/
             s_state = ble_link_state_step(s_state, BLE_LINK_EV_DISCONNECT_RUNNING);
         } else {
-            /*LS-106*/
+            /**/
             s_rescan_at_us = esp_timer_get_time() + (int64_t)s_backoff_ms * 1000;
-            /*LS-825*/
+            /**/
             s_state        = ble_link_state_step(s_state, BLE_LINK_EV_DISCONNECT_RUNNING);
             ESP_LOGI(TAG, "rescanning in %lu ms", (unsigned long)s_backoff_ms);
             s_backoff_ms = ble_link_backoff_next(s_backoff_ms);
         }
         return 0;
 
-    /*LS-111*/
+    /**/
     case BLE_GAP_EVENT_NOTIFY_RX: {
         uint16_t h = event->notify_rx.attr_handle;
         if (h != s_tx_hnd) {
@@ -1088,7 +967,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             }
             return 0;
         }
-        /*LS-113*/
+        /**/
         s_notify_rx++;
         {
             int total = 0, segs = 0;
@@ -1117,7 +996,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (s_pair_failed) return 0;
             s_pair_failed = true;
             s_pk_wait     = false;
-            /*LS-714*/
+            /**/
             s_last_enc_status = event->enc_change.status;
             ESP_LOGE(TAG, "pairing failed status=%d%s", event->enc_change.status,
                      event->enc_change.status == BLE_HS_SM_PEER_ERR(BLE_SM_ERR_AUTHREQ)
@@ -1126,14 +1005,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                                ? " (nobody entered the passkey - see \"ble passkey\")"
                                : "");
 
-            /*LS-825*/
+            /**/
             ble_link_enc_kind_t k = BLE_LINK_ENC_OTHER_FAIL;
             if (event->enc_change.status == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING) ||
                 event->enc_change.status == BLE_HS_SM_PEER_ERR(BLE_SM_ERR_ENC_KEY_SZ) ||
                 event->enc_change.status == BLE_HS_SM_US_ERR(BLE_SM_ERR_ENC_KEY_SZ)) {
                 k = BLE_LINK_ENC_KEY_REJECTED;
             } else if (event->enc_change.status == BLE_HS_SM_PEER_ERR(BLE_SM_ERR_AUTHREQ)) {
-                /*LS-980*/
+                /**/
                 k = BLE_LINK_ENC_AUTHREQ_REFUSED;
             } else if (event->enc_change.status == BLE_HS_ETIMEOUT) {
                 k = BLE_LINK_ENC_TIMEOUT;
@@ -1143,11 +1022,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ble_store_util_delete_peer(&s_peer_id);
             }
 
-            /*LS-980  Keep the connection. Discovery has already finished (LS-823)
-               and the characteristics need no encryption, so a link that failed
-               to encrypt still carries telemetry and commands perfectly well.
-               Terminating here is what made this a reconnect loop rather than a
-               one-line warning. */
             if (!ble_link_enc_kind_needs_teardown(k)) {
                 ESP_LOGW(TAG, "continuing unencrypted - this head does not pair");
                 return 0;
@@ -1225,14 +1099,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
 
-    /*LS-103*/
+    /**/
     case BLE_GAP_EVENT_MTU:
         s_mtu = event->mtu.value;
         ESP_LOGI(TAG, "MTU now %d (payload cap %d B)", event->mtu.value,
                  ble_payload_cap(event->mtu.conn_handle));
         return 0;
 
-    /*LS-104*/
+    /**/
     case BLE_GAP_EVENT_CONN_UPDATE: {
         struct ble_gap_conn_desc d;
         if (event->conn_update.status == 0 &&
@@ -1271,7 +1145,7 @@ static void host_task(void *param)
     ble_link_host_task_exit();
 }
 
-/*LS-101*/
+/**/
 static bool workers_start(void)
 {
     if (!s_cmd_q) {
@@ -1281,45 +1155,23 @@ static bool workers_start(void)
             return false;
         }
     }
-    /*LS-821  These two stacks MUST be in internal RAM.
+    /* These two stacks MUST be in internal RAM. */
 
-       Reported as "connected my Flipper and it crashed", and the coredump
-       named it exactly:
-
-         Crashed task: 'ble_tel'
-         assert failed: spi_flash_disable_interrupts_caches_and_other_cpu
-           cache_utils.c:127 (esp_task_stack_is_sane_cache_disabled())
-
-       That assert fires when a task whose stack lives in PSRAM is on-CPU
-       while the flash cache is disabled for a write. Pairing a head makes
-       NimBLE persist the bond to NVS (BT_NIMBLE_NVS_PERSIST=y), which is a
-       flash write, and these two tasks are the ones awake across it.
-
-       Plain xTaskCreate() only lands the stack in PSRAM when internal RAM is
-       short - which is precisely the GUI build on this board:
-         heap after C6/BLE: internal=34023 DMA=679 largest-DMA=640
-       so it is memory pressure that decides, and it will come and go with
-       unrelated changes. SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y permits the
-       spill; asking for MALLOC_CAP_INTERNAL here refuses it.
-
-       Fixed at the two call sites rather than by clearing that sdkconfig
-       option globally: on a build this tight, forcing every stack internal
-       risks turning one crash into several task-create failures. Neither
-       task is ever deleted, so plain WithCaps is safe without the matching
-       vTaskDeleteWithCaps. */
     if (!s_cmd_task &&
-        /*LS-114*/ /*LS-821*/
-        /*LS-806  6144 with 5252 unused - about 892 B in use. These stacks have
-           to be internal (LS-380), so their headroom costs the scarcest pool
-           on the board. Trimmed to observed use plus ~2 KB. */
-        xTaskCreateWithCaps(cmd_task, "ble_cmd", 3072, NULL, 4, &s_cmd_task,
+        /**/ /**/
+        /* follow-up: the 3 KB budget measured on short commands is insufficient for
+           REC LOAD's nested FATFS/stdio path. LCD-4.3 hardware reproduced a
+           stack protection fault in _svfprintf_r during a Flipper download
+           on 2026-09-08, corrupting this task's TCB. Restore the 6 KB budget;
+           retain INTERNAL caps because command handlers can write NVS. */
+        xTaskCreateWithCaps(cmd_task, "ble_cmd", 6144, NULL, 4, &s_cmd_task,
                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "command task create failed (internal RAM exhausted?)");
         return false;
     }
     if (!s_tel_task &&
-        /*LS-821*/
-        /*LS-806  6144 with 3680 unused - about 2464 B in use, so this one keeps
+        /**/
+        /* 6144 with 3680 unused - about 2464 B in use, so this one keeps
            more of its margin than ble_cmd. */
         xTaskCreateWithCaps(tel_task, "ble_tel", 4608, NULL, 4, &s_tel_task,
                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
@@ -1335,7 +1187,7 @@ esp_err_t ble_link_start(void)
 
     if (s_stack_up) {
         s_run   = true;
-        /*LS-825*/
+        /**/
         s_state = ble_link_state_step(s_state, BLE_LINK_EV_START_UP);
         s_rescan_at_us = 0;
         s_backoff_ms   = BLE_LINK_RECONNECT_BACKOFF_MS;
@@ -1348,31 +1200,24 @@ esp_err_t ble_link_start(void)
         return ESP_OK;
     }
 
-    /*LS-110*/
-    esp_err_t rc = esp_hosted_bt_controller_init();
-    ESP_LOGI(TAG, "co-processor bt_controller_init: %s", esp_err_to_name(rc));
-    if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "co-processor refused to arm its BT controller. Its "
-                      "ESP-Hosted slave firmware is too old to answer the "
-                      "FeatureControl RPC - reflash the C6 (see c6_firmware/). "
-                      "Leaving BLE off; the rest of the radio runs normally.");
-        return rc;
-    }
-
-    rc = esp_hosted_bt_controller_enable();
-    ESP_LOGI(TAG, "co-processor bt_controller_enable: %s", esp_err_to_name(rc));
+    /*, accept an initialized controller, then enable HCI. */
+    esp_err_t rc = ble_hci_controller_prepare(esp_hosted_bt_controller_init,
+        esp_hosted_bt_controller_disable, esp_hosted_bt_controller_enable);
+    ESP_LOGI(TAG, "co-processor BT preparation: %s", esp_err_to_name(rc));
     if (rc != ESP_OK) {
         ESP_LOGE(TAG, "co-processor BT controller would not enable - leaving BLE off");
         return rc;
     }
 
-    esp_err_t err = nimble_port_init();
+    esp_err_t err = ble_hci_rx_prepare(nimble_port_init);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
         return err;
     }
 
     ble_store_config_init();
+    ESP_LOGI(TAG, "NimBLE ready; discarded %lu pre-init HCI packets",
+             (unsigned long)ble_hci_rx_early_packets());
 
     ESP_LOGW(TAG, "NIMBLE_BLE_SM=%d BLE_SM_LEGACY=%d BLE_SM_SC=%d",
              (int)NIMBLE_BLE_SM, (int)MYNEWT_VAL(BLE_SM_LEGACY),
@@ -1421,19 +1266,17 @@ esp_err_t ble_link_start(void)
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb  = ble_store_util_status_rr;
 
-    /*LS-112*/
+    /**/
     ble_svc_gap_init();
-    /*LS-981  Say which board this is. Two boards both advertising "LakeShark"
+    /* Say which board this is. Two boards both advertising "LakeShark"
        are indistinguishable in a scanner, on the head, and in a bug report -
        which is exactly the confusion that made a pairing failure look like two
        boards fighting over one Flipper. */
     ble_svc_gap_device_name_set("LakeShark " LS_BOARD_NAME);
 
-    /*LS-993  Read the pinned peer BEFORE the first scan starts so an operator
-       who did `ble pin` in an earlier session is not racing again on this boot. */
     pinned_load_nvs();
 
-    /*LS-103*/
+    /**/
     {
         int prc = ble_att_set_preferred_mtu(MYNEWT_VAL(BLE_ATT_PREFERRED_MTU));
         if (prc != 0) ESP_LOGW(TAG, "preferred MTU rc=%d", prc);
@@ -1444,10 +1287,10 @@ esp_err_t ble_link_start(void)
 
     s_stack_up   = true;
     s_run        = true;
-    /*LS-825*/
+    /**/
     s_state      = ble_link_state_step(s_state, BLE_LINK_EV_START_COLD);
     s_backoff_ms = BLE_LINK_RECONNECT_BACKOFF_MS;
-    /* LS-684: ble_hs_startup_go restores the NimBLE security database on this
+    /* ble_hs_startup_go restores the NimBLE security database on this
        task. The matching e176126 coredump names nimble_host and shows the
        restore -> nvs_get -> esp_flash_read chain with SP=0x30101050 in P4 TCM.
        A fixed 5120-byte DRAM_ATTR stack is reserved by ble_link_host_task. */
@@ -1474,7 +1317,7 @@ void ble_link_stop(void)
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
     }
     ble_gap_disc_cancel();
-    /*LS-825*/
+    /**/
     s_state = ble_link_state_step(s_state, BLE_LINK_EV_STOP);
 }
 
@@ -1518,11 +1361,8 @@ void ble_link_rescan(void)
     }
 }
 
-/*LS-993  Pinned-peer persistence and API. */
+/* Pinned-peer persistence and API. */
 
-/*LS-671  Same reason as pinned_load_nvs below: this can be reached from a
-   task with an external stack (the console runs on one), and an NVS write
-   disables the cache. */
 static esp_err_t pinned_write_blob(void *ctx)
 {
     (void)ctx;
@@ -1547,18 +1387,8 @@ static void pinned_save_nvs(void)
         ESP_LOGW(TAG, "pinned peer not saved: %s", esp_err_to_name(err));
 }
 
-/*LS-671  The flash access runs on an internal-stack worker.
+/* The flash access runs on an internal-stack worker. */
 
-   ble_link_start() is called from a task whose stack is in PSRAM, and
-   CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY is enabled in this build, so
-   reading NVS here disabled the cache under an unreachable stack and
-   asserted at boot:
-
-     assert failed: spi_flash_disable_interrupts_caches_and_other_cpu
-     cache_utils.c:127 (esp_task_stack_is_sane_cache_disabled())
-
-   Only the NVS read moves. Deciding what to do with the result, and the
-   log line, stay here on the caller. */
 static esp_err_t pinned_read_blob(void *ctx)
 {
     ble_link_peer_addr_t *out = (ble_link_peer_addr_t *)ctx;
@@ -1644,11 +1474,6 @@ void ble_link_unpin_peer(void)
     ESP_LOGW(TAG, "peer unpinned - the scanner will accept any matching device");
 }
 
-/*LS-980  Wipe every bond the store knows about and drop whatever link is up,
-   so a stale bond from an earlier firmware cannot survive the upgrade.  The
-   new config never initiates pairing (sm_bonding=0, sm_sc=0), so the
-   ENC_CHANGE-driven wipe in gap_event() never runs on a fresh boot; without
-   this hatch an operator would have to reflash to clear the store. */
 esp_err_t ble_link_forget_bonds(void)
 {
     int rc = ble_store_clear();
@@ -1661,6 +1486,17 @@ esp_err_t ble_link_forget_bonds(void)
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
     }
+    return ESP_OK;
+}
+
+esp_err_t ble_link_rssi(int *rssi)
+{
+    int8_t value;
+    uint16_t conn = s_conn;
+    if (!rssi) return ESP_ERR_INVALID_ARG;
+    if (conn == BLE_HS_CONN_HANDLE_NONE) return ESP_ERR_INVALID_STATE;
+    if (ble_gap_conn_rssi(conn, &value) != 0) return ESP_FAIL;
+    *rssi = value;
     return ESP_OK;
 }
 

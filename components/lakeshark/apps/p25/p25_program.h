@@ -1,32 +1,5 @@
-/* LS-689: the PROGRAM session - staged reload and transactional apply.
- *
- * LS-688 gave us a parser that validates a whole profile before it writes the
- * caller's destination.  That is only half of what an operator needs.  The
- * other half is this: a profile that fails to load must leave the radio doing
- * exactly what it was doing, and a profile that loads must reach the decoder
- * in one step rather than as a sequence of half-applied settings.
- *
- * The failure that motivates it: apply control channel, then discover the
- * roster is malformed.  The radio is now parked on a new system with the old
- * system's talkgroups, and the panel says "load failed", which is true and
- * useless.  So the order here is fixed and total:
- *
- *   claim -> read -> parse -> (all of it valid?) -> apply -> commit
- *
- * Nothing before the last two steps touches decoder state, and the active
- * profile is only replaced after every op has run.  A reload that fails calls
- * no op at all: not one frequency, not one policy bit.
- *
- * Memory: this module allocates nothing.  The caller owns the session and the
- * staging area, and on the device both belong in PSRAM - p25_program_staging_t
- * is about 16 KiB, which is a large fraction of what internal RAM has left
- * after the P25 decoder and BLE are up, and it must never be a local on the
- * LVGL task's stack.  See p25_program_sd.c for where the device puts them.
- *
- * This file knows nothing about SD, FreeRTOS or LVGL.  Reading is a callback
- * and applying is a vtable, so the bench drives the whole state machine with
- * no radio and no filesystem.
- */
+/* the PROGRAM session - staged reload and transactional apply. */
+
 #ifndef P25_PROGRAM_H
 #define P25_PROGRAM_H
 
@@ -48,7 +21,7 @@ extern "C" {
 /* One line per control channel: "> 16  1766.000000 MHz\n". */
 #define P25_PROGRAM_CONTROL_TEXT_MAX (P25_PROFILE_CONTROL_MAX * 24U + 1U)
 
-/* LS-691: control-channel survey timing is deliberately visible and fixed.
+/* control-channel survey timing is deliberately visible and fixed.
  * A retune gets a settle window so buffered dibits from the outgoing channel
  * cannot vote for the incoming one; only evidence acquired during the dwell
  * window is scored.  Sixteen profile controls therefore put a hard upper
@@ -57,8 +30,7 @@ extern "C" {
 #define P25_SURVEY_DWELL_MS  1500U
 
 typedef enum {
-    /* First run: no profile has ever been loaded.  The panel says where to
-     * put one rather than showing an empty system name. */
+
     P25_PROGRAM_IDLE = 0,
     P25_PROGRAM_BUSY,     /* claimed; the worker is reading/parsing/applying */
     P25_PROGRAM_LOADED,   /* the active profile is the one named in source   */
@@ -115,10 +87,6 @@ typedef struct {
     bool     counter_loss;
 } p25_control_survey_t;
 
-/* Read the whole profile at path into dst[0..cap).  The device implementation
- * stats the file first and answers TOO_LARGE rather than truncating: a profile
- * silently missing its last ten talkgroups reads exactly like a broken radio.
- * Return OK only when *out_len bytes were placed in dst. */
 typedef p25_program_result_t (*p25_program_read_fn)(void *ctx, const char *path,
                                                     char *dst, size_t cap,
                                                     size_t *out_len);
@@ -140,7 +108,7 @@ typedef struct {
     void (*set_demod_preference)(void *user, int preference);
     void (*set_roster)(void *user, const p25_profile_talkgroup_t *talkgroups,
                        size_t count);
-    /* LS-690: app handoff reloads the profile's runtime priority ranks but
+    /* app handoff reloads the profile's runtime priority ranks but
      * must not replace allow/hold policy just restored from NVS.  Keeping a
      * distinct op makes that difference explicit at the decoder boundary. */
     void (*restore_roster)(void *user,
@@ -190,10 +158,6 @@ typedef struct {
 
 void p25_program_init(p25_program_t *program);
 
-/* Take the reload slot.  Called on the requesting side (the UI) so the panel
- * can show BUSY from the moment the button is pressed rather than claiming
- * success before the worker has done anything.  Returns false when a reload is
- * already in flight or the path does not fit. */
 bool p25_program_claim(p25_program_t *program, const char *path);
 
 /* Perform the claimed reload.  Runs on the worker.  On any failure the active
@@ -247,8 +211,6 @@ uint64_t p25_program_selected_control_hz(const p25_program_t *program);
 const char *p25_program_result_reason(p25_program_result_t result);
 const char *p25_program_state_name(const p25_program_t *program);
 
-/* Panel text.  Each writes a NUL-terminated string and truncates rather than
- * overrunning; out_size of zero is tolerated. */
 void p25_program_format_status(const p25_program_t *program,
                                char *out, size_t out_size);
 void p25_program_format_source(const p25_program_t *program,
@@ -262,12 +224,6 @@ void p25_program_format_roster(const p25_program_t *program,
 void p25_program_format_survey(const p25_program_t *program,
                                char *out, size_t out_size);
 
-/* The bridge from a profile roster to the scan controller, called by the
- * set_roster op.  It replaces allow-list membership and priority ranks and
- * clears the hold, because a hold names a talkgroup on the system that was
- * programmed before this one.  It deliberately does NOT touch lockouts - an
- * operator's "never again" outlives a profile swap - and does not touch the
- * names table, which the SD names file still owns. */
 void p25_program_apply_roster(p25_scan_ctrl_t *scan,
                               const p25_profile_talkgroup_t *talkgroups,
                               size_t count);
@@ -287,8 +243,6 @@ void p25_program_restore_roster(p25_scan_ctrl_t *scan,
  * NULL until then, and every format_ function above renders NULL as the
  * first-run empty state. */
 
-/* Where an operator puts a profile.  tools/p25_profile.example is a working
- * one; components/lakeshark/apps/p25/P25_PROFILE_FORMAT.md is the format. */
 #define P25_PROGRAM_DEFAULT_PATH "/sdcard/p25_profile.txt"
 
 const p25_program_t *p25_program_session(void);

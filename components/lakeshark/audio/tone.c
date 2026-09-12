@@ -1,5 +1,6 @@
 #include "tone.h"
 #include "audio_out.h"
+#include "sam_tts.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -52,13 +53,60 @@ void snd_p25_chirp(void)
     audio_write_mono(buf, total);
 }
 
+/* The power-on chime. */
+
+/* Write a long sound at the speed it plays. */
+
+static void tone_write_paced(const int16_t *buf, int n)
+{
+    const uint32_t half = (uint32_t)(AUDIO_RATE_HZ * 300 / 1000) *
+                          (uint32_t)sizeof(int16_t);
+    for (int i = 0; i < 200 && audio_out_ring_avail() > half; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    audio_write_mono(buf, n);
+}
+
 void snd_boot(void)
 {
-    audio_tone(440.0f, 0.06f, 7000.0f);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    audio_tone(660.0f, 0.06f, 7000.0f);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    audio_tone(880.0f, 0.10f, 7000.0f);
+    static const struct { float hz; float in_s; float amp; } VOICE[] = {
+        { 220.00f, 0.00f, 2400.0f },   /* A3  the root              */
+        { 329.63f, 0.09f, 2000.0f },   /* E4  the fifth             */
+        { 440.00f, 0.18f, 2200.0f },   /* A4  the octave            */
+        { 554.37f, 0.30f, 1500.0f },   /* C#5 the major third       */
+        { 880.00f, 0.44f,  700.0f },   /* A5  a shimmer over it     */
+    };
+    const int VOICES = (int)(sizeof(VOICE) / sizeof(VOICE[0]));
+
+    const int total   = AUDIO_RATE_HZ * 1150 / 1000;
+    const int release = AUDIO_RATE_HZ *  380 / 1000;
+    const int attack  = AUDIO_RATE_HZ *   70 / 1000;
+
+    static int16_t buf[256];
+    float ph[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+
+    audio_out_play_now();
+    for (int i = 0; i < total; i += 256) {
+        int chunk = total - i;
+        if (chunk > 256) chunk = 256;
+        for (int j = 0; j < chunk; j++) {
+            const int n = i + j;
+            float acc = 0.0f;
+            for (int v = 0; v < VOICES; v++) {
+                ph[v] += 2.0f * (float)M_PI * VOICE[v].hz / AUDIO_RATE_HZ;
+                if (ph[v] > 2.0f * (float)M_PI) ph[v] -= 2.0f * (float)M_PI;
+                const int start = (int)(VOICE[v].in_s * AUDIO_RATE_HZ);
+                if (n < start) continue;
+                const int age = n - start;
+                const float env = age < attack ? (float)age / (float)attack
+                                               : 1.0f;
+                acc += sinf(ph[v]) * VOICE[v].amp * env;
+            }
+            if (n >= total - release)
+                acc *= (float)(total - n) / (float)release;
+            buf[j] = (int16_t)acc;
+        }
+        tone_write_paced(buf, chunk);
+    }
 }
 
 void snd_new_contact(void)
@@ -148,8 +196,11 @@ void snd_moto_full(void)
 #define TEST_AMP        8000.0f
 #define TEST_CHUNK      160
 #define TEST_PACE_MS    8
-/*LS-806  3072 with 2488 unused - about 584 B in use. */
-#define TEST_STACK_WORDS (2048 / sizeof(StackType_t))
+/* 3072 with 2488 unused - about 584 B in use.
+   And back to 3072: that measurement was test tones only, and this
+   worker has since taken the boot sound, the greeting and the alert. See
+   SND_WORKER_STACK_BYTES in tone.h. */
+#define TEST_STACK_WORDS (SND_WORKER_STACK_BYTES / sizeof(StackType_t))
 
 static const char *TEST_NAMES[SND_TEST_COUNT] = {
     "sweep", "bass", "noise", "tone", "chirp", "moto"
@@ -160,6 +211,7 @@ static StaticQueue_t s_test_q_ctrl;
 static uint8_t       s_test_q_store[2 * sizeof(uint8_t)];
 static StackType_t   s_test_stack[TEST_STACK_WORDS];
 static StaticTask_t  s_test_tcb;
+static TaskHandle_t  s_test_task;
 static volatile bool s_test_busy = false;
 
 static int16_t s_test_buf[TEST_CHUNK];
@@ -246,6 +298,35 @@ static void test_noise(void)
     }
 }
 
+/* A tone longer than the ring, written at the speed it plays. */
+static void test_tone_long(float freq, float dur_s)
+{
+    const int total = (int)(AUDIO_RATE_HZ * dur_s);
+    static int16_t buf[256];
+    float ph = 0.0f;
+    audio_out_play_now();
+    for (int i = 0; i < total; i += 256) {
+        int chunk = total - i;
+        if (chunk > 256) chunk = 256;
+        for (int j = 0; j < chunk; j++) {
+            ph += 2.0f * (float)M_PI * freq / AUDIO_RATE_HZ;
+            if (ph > 2.0f * (float)M_PI) ph -= 2.0f * (float)M_PI;
+            buf[j] = (int16_t)(sinf(ph) * TEST_AMP);
+        }
+        tone_write_paced(buf, chunk);
+    }
+}
+
+static void play_boot_chime(void)
+{
+    audio_out_ensure_unmuted();
+    snd_boot();
+    static const int16_t sil[1600] = { 0 };
+    audio_write_mono(sil, 1600);
+    for (int i = 0; i < 250 && audio_out_ring_avail() > 320; i++)
+        vTaskDelay(pdMS_TO_TICKS(20));
+}
+
 static void test_worker(void *arg)
 {
     (void)arg;
@@ -257,9 +338,23 @@ static void test_worker(void *arg)
         case SND_TEST_SWEEP: test_sweep(); break;
         case SND_TEST_BASS:  test_bass();  break;
         case SND_TEST_NOISE: test_noise(); break;
-        case SND_TEST_TONE:  audio_tone(1000.0f, 1.2f, TEST_AMP); break;
+        /* Paced, for the same reason snd_boot is: 1.2 s against a
+           600 ms ring meant this test tone had been playing for half a
+           second and reporting itself as 1.2 for as long as it existed. */
+        case SND_TEST_TONE:  test_tone_long(1000.0f, 1.2f); break;
         case SND_TEST_CHIRP: snd_p25_chirp(); break;
         case SND_TEST_MOTO:  snd_moto_full(); break;
+        case SND_JOB_ALERT:  snd_moto_alert(); break;
+        case SND_JOB_BOOT:   play_boot_chime(); break;
+        /* Never speech on this stack while there is no engine: the
+           no-engine stub's one log line is what overflowed it. snd_boot_start
+           already turns mode 2 into the chime, and this is the same rule for
+           anything that queues the job directly. */
+        case SND_JOB_WELCOME:
+            if (!sam_tts_available()) { play_boot_chime(); break; }
+            audio_out_ensure_unmuted();
+            sam_tts_speak("WELCOME.");
+            break;
         default: break;
         }
         s_test_busy = false;
@@ -271,8 +366,8 @@ void snd_test_init(void)
     if (s_test_q) return;
     s_test_q = xQueueCreateStatic(2, sizeof(uint8_t), s_test_q_store, &s_test_q_ctrl);
     if (!s_test_q) return;
-    xTaskCreateStatic(test_worker, "snd_test", TEST_STACK_WORDS, NULL, 4,
-                      s_test_stack, &s_test_tcb);
+    s_test_task = xTaskCreateStatic(test_worker, "snd_test", TEST_STACK_WORDS,
+                                    NULL, 4, s_test_stack, &s_test_tcb);
 }
 
 bool snd_test_start(int which)
@@ -282,6 +377,33 @@ bool snd_test_start(int which)
 
     uint8_t w = (uint8_t)which;
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
+}
+
+/* The audible half of a notification, and why it is here. */
+
+bool snd_alert_start(void)
+{
+    if (!s_test_q || s_test_busy) return false;
+    uint8_t w = SND_JOB_ALERT;
+    return xQueueSend(s_test_q, &w, 0) == pdTRUE;
+}
+
+bool snd_boot_start(int mode)
+{
+    if (mode != 1 && mode != 2) return false;
+    if (!s_test_q || s_test_busy) return false;
+    /* Spoken only when something can speak. With no engine the
+       greeting is the chime, which is also what SETTINGS now says it is. */
+    if (mode == 2 && !sam_tts_available()) mode = 1;
+    uint8_t w = (uint8_t)(mode == 2 ? SND_JOB_WELCOME : SND_JOB_BOOT);
+    return xQueueSend(s_test_q, &w, 0) == pdTRUE;
+}
+
+unsigned snd_test_stack_unused(void)
+{
+    if (!s_test_task) return 0;
+    return (unsigned)uxTaskGetStackHighWaterMark(s_test_task) *
+           (unsigned)sizeof(StackType_t);
 }
 
 bool snd_test_busy(void) { return s_test_busy; }

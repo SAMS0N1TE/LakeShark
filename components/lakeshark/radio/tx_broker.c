@@ -441,9 +441,7 @@ ls_radio_tx_err_t ls_radio_tx_authorize_physical(
             slot = &s_plans[i];
             break;
         }
-    /*LS-190  A token previously represented only an app's intent. Bind random
-      one-shot material to the exact displayed plan and endpoint so restored
-      state, edits, retries, and a different endpoint cannot key the radio. */
+
     if (!slot || local_gesture_sequence <= s_last_gesture_sequence ||
         memcmp(displayed_digest, slot->plan.digest, 32) != 0 ||
         memcmp(displayed_plan->digest, slot->plan.digest, 32) != 0 ||

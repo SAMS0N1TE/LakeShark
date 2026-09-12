@@ -1,11 +1,10 @@
-# The following lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
-# The configuration is to prevent compilation errors on the Windows system.
 set(CMAKE_OBJECT_PATH_MAX 512)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+set(EXCLUDE_COMPONENTS chmorgan__esp-libhelix-mp3)
 
 set(CXX_COMPILE_OPTIONS
     -Wno-deprecated-enum-enum-conversion
@@ -23,14 +22,19 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "1.0.3")
+set(LS_PRODUCT_VERSION "2.0.0")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 ls_identity_query(PROJECT_VER "${CMAKE_CURRENT_LIST_DIR}" "${LS_PRODUCT_VERSION}")
 project(lakeshark VERSION ${LS_PRODUCT_VERSION})
 
-# LS-220: project(VERSION) takes precedence over IDF's Git fallback. A plain
-# 1.0.1 therefore hid every revision and dirty build. Keep app_desc current
-# even when an ordinary source edit does not trigger CMake reconfiguration.
+if(CONFIG_IDF_TARGET_ESP32P4 AND CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM)
+    idf_component_get_property(ls_usb_dir usb COMPONENT_DIR)
+    idf_component_get_property(ls_usb_lib usb COMPONENT_LIB)
+    set_property(SOURCE "${ls_usb_dir}/hcd_dwc.c"
+        TARGET_DIRECTORY ${ls_usb_lib} APPEND PROPERTY COMPILE_OPTIONS
+        "-include${CMAKE_CURRENT_LIST_DIR}/components/lakeshark/board/ls_usb_descriptors.h")
+endif()
+
 if(CONFIG_APP_PROJECT_VER_FROM_CONFIG OR CONFIG_APP_EXCLUDE_PROJECT_VER_VAR)
     message(FATAL_ERROR "LakeShark build identity requires project version override/exclusion disabled")
 endif()

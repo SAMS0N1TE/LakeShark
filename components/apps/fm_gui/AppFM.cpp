@@ -12,11 +12,11 @@ extern "C" {
 #include "fm_mode_label.h"
 #include "lakeshark_backend.h"
 #include "audio_out.h"
-/*LS-731*/
+/**/
 #include "scan_engine.h"
-/*LS-767*/
+/**/
 #include "fm_sweep_arbitration.h"
-/*LS-200*/
+/**/
 #include "ls_time.h"
 }
 
@@ -35,7 +35,7 @@ extern "C" {
 #define COL_RED     SDR_RED
 #define COL_PANEL   SDR_PANEL
 
-/*LS-746*/ /*LS-749*/
+/**/ /**/
 /* TAB ORDER, NAMED ONCE. run() adds the tabs, timerCb dispatches on the active
    index and switchTab wraps on the count - three places that must agree with
    an order expressed nowhere. Inserting SCAN at 1 already shifted all of them
@@ -50,7 +50,7 @@ enum {
     TAB_COUNT
 };
 
-/*LS-731*/
+/**/
 /* The MODE button cycles DEMODULATORS only. SWEEP is a job, not a
    demodulator: it drives the tuner across a band and parks nowhere, so
    landing on it while cycling looking for WFM stops audio dead with no
@@ -131,7 +131,7 @@ static lv_obj_t *btn_row(lv_obj_t *parent)
     return ls_ui_controls(parent);
 }
 
-/*LS-767*/
+/**/
 /* Hook trampolines for fm_sweep_start_arbitrated(). Kept at file scope so
    fm_sweep_hooks_t can hold their C-language addresses without a std::function
    or a capturing lambda. The ctx is unused - the hooks all resolve to
@@ -149,7 +149,7 @@ AppFM::AppFM()
 AppFM::~AppFM() = default;
 
 bool AppFM::init(void)   { return true; }
-/*LS-600*/
+/**/
 bool AppFM::pause(void)
 {
     if (_timer) lv_timer_pause(_timer);
@@ -157,14 +157,14 @@ bool AppFM::pause(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 bool AppFM::background(void)
 {
     if (_timer) lv_timer_pause(_timer);
     return true;
 }
 
-/*LS-600*/
+/**/
 bool AppFM::resume(void)
 {
     lakeshark_select_fm();
@@ -185,10 +185,10 @@ bool AppFM::close(void)
     closeFreqEntry();
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _tabview = nullptr;
-    /*LS-746*/
+    /**/
     _scan_panel.forget();
     ls_spectrum_waterfall_forget(&_s_spectrum);
-    /*LS-767*/
+    /**/
     fm_sweep_configure(nullptr);
     lakeshark_radio_park();
     return true;
@@ -198,7 +198,7 @@ bool AppFM::run(lv_obj_t *parent)
 {
     lakeshark_select_fm();
 
-    /*LS-767*/
+    /**/
     /* Wire the sweep-arbitration gateway to this app's tuner. Cleared in
        close() so a stale hook cannot fire after the app is gone. */
     const fm_sweep_hooks_t sweep_hooks = {
@@ -218,15 +218,10 @@ bool AppFM::run(lv_obj_t *parent)
     _tabview = screen.tabs;
 
     buildVfoTab(ls_ui_screen_add_tab(&screen, "VFO"));
-    /*LS-746*/
-    /* SCAN sits next to VFO because the channel/band scanner is an NFM job -
-       this is where someone reaches for it. It was previously only fully
-       controllable from the P25 app, which is the wrong app for a 12.5 kHz
-       NFM grid scan. SWEEP stays separate and further right: it measures a
-       band and plots it, it does not stop and listen. Three things could be
-       called scanning and the tab order is now the distinction (LS-733). */
+    /**/
+
     buildScanCtlTab(ls_ui_screen_add_tab(&screen, "SCAN"));
-    /*LS-984  FLEX pages share the pager list; the protocol is printed on
+    /* FLEX pages share the pager list; the protocol is printed on
        every row below. */
     buildPageTab(ls_ui_screen_add_tab(&screen, "PAGES"));
     buildScanTab(ls_ui_screen_add_tab(&screen, "SWEEP"));
@@ -321,11 +316,13 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
 
     _v_gain_slider = sdr_seg_slider(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL), 496, FM.gain_tenths,
                                     fm_seg_gain_live, this, &_v_gain_lbl);
+    sdr_seg_use_steps(_v_gain_slider,10);
     sdr_seg_on_release(_v_gain_slider, fm_seg_gain_commit);
     _v_sq_slider   = sdr_seg_slider(parent, SDR_PAS_CYAN, 100, FM.squelch_tenths,
                                     fm_seg_sq, this, &_v_sq_lbl);
     _v_vol_slider  = sdr_seg_slider(parent, SDR_PAS_GREEN, 100, audio_volume_get(),
                                     fm_seg_vol, this, &_v_vol_lbl);
+    sdr_seg_use_steps(_v_vol_slider,5);
 
     lv_obj_t *ar = btn_row(parent);
     make_btn(ar, "FREQ", freqEntryCb, this, 84, 44);
@@ -334,16 +331,14 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
     make_btn(ar, "-1M",  tuneDeltaCb, (void *)(intptr_t)(-1000000), 66, 44);
     make_btn(ar, "+1M",  tuneDeltaCb, (void *)(intptr_t)(1000000),  66, 44);
 
-    /*LS-731*/
-    /* Second row: the channel scanner. Its own row rather than squeezed in
-       above, because it is a different kind of control - the row above tunes
-       one radio, this one runs a list - and the row wraps anyway at 480 px. */
+    /**/
+
     lv_obj_t *sr = btn_row(parent);
     { lv_obj_t *l = nullptr;
       ls_ui_button(sr, "SCAN", LS_BTN_TOGGLE_OFF, scanToggleCb, this, &l);
       _v_scan_lbl = l; }
     make_btn(sr, "SKIP", scanSkipCb, this, 90, 44);
-    /*LS-746*/
+    /**/
     /* AUTO SQ moved to the SCAN tab with the rest of the scanner settings.
        What stays here is deliberately only START/STOP and SKIP - the two
        things you reach for with the radio already in your hand. The SCAN tab
@@ -353,7 +348,7 @@ void AppFM::buildVfoTab(lv_obj_t *parent)
     lv_label_set_text(_v_scan_state, "scanner off");
 }
 
-/*LS-746*/
+/**/
 void AppFM::buildScanCtlTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
@@ -370,7 +365,7 @@ void AppFM::updateVfo(void)
 
     if (_v_mode) lv_label_set_text(_v_mode, fm_mode_label(FM.mode));
 
-    /*LS-731*/
+    /**/
     /* Show what the scanner is actually doing, on the panel that has the
        button. scan_engine_status() is the same string the console prints -
        one source of truth, so the screen and `scan status` can never
@@ -507,7 +502,7 @@ void AppFM::buildPageTab(lv_obj_t *parent)
     lv_obj_clear_flag(strap, LV_OBJ_FLAG_SCROLLABLE);
 
     _p_lamp = ls_ui_lamp(strap, LS_UI_COLOR_ACCENT);
-    /*LS-827  Kill the glow. lv_led draws its halo as a SHADOW, and the
+    /* Kill the glow. lv_led draws its halo as a SHADOW, and the
        default shadow width is far wider than the 16x16 widget - it spilled
        out of the strap and printed over the text beside it. A sync lamp only
        has to be on or off; it does not need to bleed. */
@@ -531,7 +526,7 @@ void AppFM::buildPageTab(lv_obj_t *parent)
     lv_obj_set_flex_grow(logbox, 1);
     ls_ui_style_scroll_panel(logbox);
     lv_obj_set_scroll_dir(logbox, LV_DIR_VER);
-    /*LS-827  The box scrolled but never showed a bar, so there was no way to
+    /* The box scrolled but never showed a bar, so there was no way to
        tell there was more above or below. Force it visible and give it enough
        width and contrast to be usable with a finger. */
     lv_obj_set_scrollbar_mode(logbox, LV_SCROLLBAR_MODE_ON);
@@ -558,7 +553,7 @@ void AppFM::updatePages(void)
     }
     if (_p_strap) {
         if (!receiver.available) {
-            /*LS-789*/
+            /**/
             lv_label_set_text_fmt(_p_strap, "%s\n%s",
                                   receiver.connection, receiver.frequency);
         } else if (flex) {
@@ -567,7 +562,7 @@ void AppFM::updatePages(void)
                 sync ? "SYNC" : "HUNT", FLEX_RATE_LEVEL[mode], receiver.frequency);
         } else {
             char bs[24]; fm_baud_str(bs, sizeof(bs));
-            /*LS-789  One line could not hold status, baud and frequency beside
+            /* One line could not hold status, baud and frequency beside
                the BAUD button, so LVGL broke it wherever it ran out - mid
                number, "152." on one line and "6000 MHz" on the next. Break it
                deliberately instead, the way the FLEX branch above already
@@ -594,14 +589,14 @@ void AppFM::updatePages(void)
         }
     }
     if (_p_log) {
-        /*LS-827  700 B held barely two pages once messages got long, so the
+        /* 700 B held barely two pages once messages got long, so the
            log looked empty even when the ring was full. */
         char buf[1600]; int off = 0;
         int n = FM.page_count;
         for (int k = 0; k < n && off < (int)sizeof(buf) - 180; k++) {
             int idx = (FM.page_head - 1 - k + FM_PAGE_LOG_MAX * 2) % FM_PAGE_LOG_MAX;
             const fm_page_t *p = &FM.pages[idx];
-            /*LS-826  '?' is a real outcome, not a tone: the page decoded but
+            /*'?' is a real outcome, not a tone: the page decoded but
                neither the alphanumeric nor the numeric reading was convincing.
                Showing it as TONE hid the difference between "this pager sent
                no message" and "we could not read the message". */
@@ -609,7 +604,7 @@ void AppFM::updatePages(void)
                            : (p->type == 'N') ? "NUM"
                            : (p->type == '?') ? "RAW?"
                                               : "TONE";
-            /*LS-200  Real time if it was known when the page landed, else
+            /* Real time if it was known when the page landed, else
                the uptime marker. Rendered through ls_time_render_stamp_at
                so the same "no plausible-looking wrong date" property the
                bench pins is what the panel shows. */
@@ -665,6 +660,14 @@ void AppFM::buildScanTab(lv_obj_t *parent)
     ls_ui_group_button(br, "BAND", LS_BTN_DEFAULT, bandCb, this, nullptr);
     ls_ui_group_button(br, "RESTART", LS_BTN_DEFAULT, scanRestartCb, this, nullptr);
     ls_ui_group_button(br, "FREQ PEAK", LS_BTN_PRIMARY, tunePeakCb, this, nullptr);
+
+    /* The seed height above is a third of the panel and nothing ever
+       revisited it, so the sweep panel stood 406 px tall in a 486 px page and
+       the GAIN row sat past the bottom edge. This has to run after the action
+       row exists or the first measurement hands the canvas the row's height
+       as well and the page overflows again on the way in. */
+    ls_spectrum_waterfall_fit_height(&_s_spectrum);
+
     _wf_sweep = FM.scan_sweeps;
 }
 
@@ -730,6 +733,7 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
     lv_obj_t *gl = nullptr;
     _c_gain_slider = sdr_seg_slider(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_TEAL), 496, FM.gain_tenths,
                                     fm_seg_gain_live, this, &gl);
+    sdr_seg_use_steps(_c_gain_slider,10);
     sdr_seg_on_release(_c_gain_slider, fm_seg_gain_commit);
     if (gl) lv_label_set_text(gl, "MANUAL GAIN  (drag; left = AGC)");
 
@@ -754,6 +758,7 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
 
     _c_vol_slider = sdr_seg_slider(parent, SDR_PAS_GREEN, 100, audio_volume_get(),
                                    fm_seg_vol, this, &_c_vol_lbl);
+    sdr_seg_use_steps(_c_vol_slider,5);
 
     sdr_setting_row(parent, "MUTE", &r);
     _c_mute = r.value;
@@ -768,7 +773,7 @@ void AppFM::buildConfigTab(lv_obj_t *parent)
 
     updateConfig();
 
-    /*LS-608*/
+    /**/
     sdr_section(parent, "DEFAULTS");
     sdr_setting_row(parent, "RESET THIS APP", &r);
     _reset_val = r.value;
@@ -818,21 +823,15 @@ void AppFM::timerCb(lv_timer_t *t)
 {
     AppFM *self = static_cast<AppFM *>(t->user_data);
     if (!self || !self->_tabview) return;
-    /*LS-749*/
-    /* STARTING THE SWEEP SHOWS YOU THE SWEEP. Selecting FM_MODE_SCAN - from
-       the MODE button, the console, or the Flipper head - used to leave you
-       looking at the VFO tab while the radio silently swept somewhere else,
-       which is a large part of "I'm not sure how to trigger it, when I switch
-       to this mode it doesn't start". It was starting; it just never showed
-       you. Only fires on the TRANSITION, so it cannot fight you if you
-       deliberately tab away while a sweep runs. */
+    /**/
+
     if (self->_last_mode != (int)FM.mode) {
         self->_last_mode = (int)FM.mode;
         if (FM.mode == FM_MODE_SCAN)
             lv_tabview_set_act(self->_tabview, TAB_SWEEP, LV_ANIM_OFF);
     }
 
-    /*LS-746*/
+    /**/
     /* These cases are TAB INDICES and they shifted when SCAN was inserted at
        1. If a tab is ever added or reordered again, this switch and the N in
        switchTab() both have to move with it - there is no compile-time link
@@ -850,13 +849,13 @@ void AppFM::timerCb(lv_timer_t *t)
 void AppFM::switchTab(int delta)
 {
     if (!_tabview) return;
-    /*LS-746*/
+    /**/
     const int N = TAB_COUNT;
     int cur = (int)lv_tabview_get_tab_act(_tabview);
     lv_tabview_set_act(_tabview, (cur + delta + N) % N, LV_ANIM_OFF);
 }
 
-/*LS-731*/
+/**/
 void AppFM::modeCb(lv_event_t *)
 {
     int cur = lakeshark_fm_get_mode();
@@ -867,12 +866,8 @@ void AppFM::modeCb(lv_event_t *)
     lakeshark_fm_set_mode((int)MODE_CYCLE[next]);
 }
 
-/*LS-731*/
-/* The stored-channel scanner, which is the one that matters in the field and
-   had no button in this app at all - it could only be reached from the P25
-   app's tab or the console. It is a toggle, not a mode: it runs the channel
-   list through whatever demodulator is up (LS-713), so it composes with NFM
-   rather than replacing it. */
+/**/
+
 void AppFM::scanToggleCb(lv_event_t *)
 {
     if (scan_engine_active()) {
@@ -885,16 +880,16 @@ void AppFM::scanToggleCb(lv_event_t *)
     }
 }
 
-/*LS-731*/
+/**/
 /* SKIP - step off a channel the scanner is sitting on. The engine has had
-   scan_engine_skip() since LS-700 and it was only ever reachable from the
+   scan_engine_skip() since and it was only ever reachable from the
    console. */
 void AppFM::scanSkipCb(lv_event_t *)
 {
     if (scan_engine_active()) scan_engine_skip();
 }
 
-/*LS-736*/
+/**/
 /* Measure the floor and set squelch above it. Asynchronous - the calibration
    sweep runs on the scan task, so this returns instantly and the result turns
    up in the scanner status line a second or so later. */
@@ -940,10 +935,10 @@ void AppFM::sqSliderCb(lv_event_t *e)
 void AppFM::agcCb(lv_event_t *)    { lakeshark_fm_agc(); }
 void AppFM::sqDownCb(lv_event_t *) { lakeshark_fm_squelch_delta(-1); }
 void AppFM::sqUpCb(lv_event_t *)   { lakeshark_fm_squelch_delta(+1); }
-/*LS-731*/
-/*LS-767*/
+/**/
+/**/
 /* This is one of two ways into the band sweep now that MODE cycles demodulators
-   only. It must stop the CHANNEL scanner first: since LS-728 that scanner
+   only. It must stop the CHANNEL scanner first: since that scanner
    forces the FM app into LISTEN on every pass, so leaving it running here
    would drag the app straight back out of SWEEP and the button would look
    dead. The stop / set-mode / restart order lives in fm_sweep_arbitration.c
@@ -964,9 +959,9 @@ void AppFM::baudCb(lv_event_t *)
     lakeshark_fm_set_baud(nb);
 }
 
-/*LS-767*/
+/**/
 /* Cycle to the next band, then hand off to the shared sweep arbitration so the
-   channel scanner is stopped before FM enters SWEEP. Before LS-767 this path
+   channel scanner is stopped before FM enters SWEEP. Before this path
    skipped the stop and BAND looked dead while the channel scanner was on -
    scan_engine forces FM_MODE_LISTEN on every pass and the sweep was replaced
    before the first bin ever rendered. */
@@ -993,7 +988,7 @@ void AppFM::freqEntryCb(lv_event_t *e)
 
 void AppFM::openFreqEntry(void)
 {
-    /*LS-732*/
+    /**/
     /* The entry field and the keypad were the only things in this firmware
        still wearing LVGL's stock theme, which is light - so punching in a
        frequency at night blew out night vision on an otherwise dark radio.
@@ -1034,7 +1029,7 @@ void AppFM::closeFreqEntry(void)
     }
 }
 
-/*LS-608*/
+/**/
 void AppFM::resetCb(lv_event_t *e)
 {
     AppFM *self = static_cast<AppFM *>(lv_event_get_user_data(e));

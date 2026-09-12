@@ -8,22 +8,7 @@
 extern "C" {
 #endif
 
-/*LS-820  Plan and stitch a wideband sweep. No radio, no ESP-IDF.
-
-   A sweep is: tune, take a spectrum, tune again, and glue the pieces into one
-   power-versus-frequency vector. The radio part is three calls. The part that
-   is actually easy to get wrong - and impossible to debug on hardware, because
-   a wrong answer still looks like a plausible spectrum - is the arithmetic:
-   which centre frequencies to visit, which FFT bins from each visit are
-   trustworthy, and where each one lands in the output.
-
-   So that arithmetic lives here, where bench/tests/test_ls_sweep.c can check
-   it against known answers in a millisecond. ls_sweep.c owns the radio and
-   calls into this. Same split as ble_link_core.c.
-
-   Everything downstream - RF diff, the sound trigger, direction finding -
-   reads the vector this produces, so an error here is an error in all of
-   them. */
+/* Plan and stitch a wideband sweep. */
 
 /* 300 MHz .. 1 GHz at 25 kHz bins is 28 000. Cap generously; the caller's
    allocation is what actually bounds this. */
@@ -33,25 +18,10 @@ extern "C" {
    reading: -128 dBFS is below any noise floor an RTL can report. */
 #define LS_SWEEP_NO_DATA  ((int8_t)-128)
 
-/* How much of each tune's sample rate to trust.
-
-   An RTL-SDR does not deliver a flat passband across the full sample rate:
-   the analogue filter rolls off towards the edges, so bins out there read low
-   and a signal parked at a tile boundary would be reported quieter than the
-   same signal well inside the next one. Keep the central 75% - so the trusted
-   region reaches 37.5% of the rate either side of centre - and take the strip
-   from that. A finder must not lie about level. */
 #define LS_SWEEP_USABLE_PCT 75
 
-/* How much spectrum around the tune centre to abandon, in Hz.
+/* How much spectrum around the tune centre to abandon, in Hz. */
 
-   The RTL puts a large DC offset spike at the tune centre. It is an artefact
-   of the receiver, not a signal, and folding it in would deposit a fake
-   carrier at every tune centre - an evenly spaced comb that reads as real
-   signals and would have RF diff reporting the receiver to itself.
-
-   Expressed in Hz rather than FFT bins so the plan does not need to know the
-   transform size. */
 #define LS_SWEEP_DC_GUARD_HZ 40000u
 
 /* SINGLE SIDEBAND, and this is the whole reason the tiling looks odd.

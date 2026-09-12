@@ -13,7 +13,7 @@ typedef enum {
     LS_SETTINGS_ACTION_BOOT_SOUND,
     LS_SETTINGS_ACTION_THEME,
     LS_SETTINGS_ACTION_USB_AUTOREBOOT,
-    /*LS-785*/
+    /**/
     LS_SETTINGS_ACTION_BLUETOOTH
 } ls_settings_action_t;
 

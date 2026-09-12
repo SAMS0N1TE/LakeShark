@@ -1,7 +1,7 @@
 #include "app_registry.h"
 #include "radio_endpoint.h"
 #include "event_bus.h"
-/*LS-770*/
+/**/
 #include "usb_autoreboot_pref.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,10 +26,10 @@ static QueueHandle_t s_switch_q          = NULL;
 static volatile bool s_switch_in_flight  = false;
 
 static volatile bool s_parked = true;
-/*LS-408*/
+/**/
 static volatile bool s_parked_by_fault = false;
 
-/*LS-770*/
+/**/
 void app_set_usb_autoreboot(bool en) { usb_autoreboot_pref_set(en); }
 bool app_usb_autoreboot(void)        { return usb_autoreboot_pref_get(); }
 
@@ -111,17 +111,17 @@ static void do_park(void)
     const app_t *cur = s_apps[s_current_app];
     ESP_LOGI(TAG, "parking radio app '%s'", cur ? cur->name : "?");
     if (!stop_app(cur)) {
-        /* LS-706: a timed-out backend still owns its task/session.  Parking
+        /* a timed-out backend still owns its task/session.  Parking
          * it optimistically allowed a later unpark/switch to start a second
          * radio owner while the first one was live. */
         ESP_LOGE(TAG, "park aborted: '%s' did not stop", cur ? cur->name : "?");
         s_switch_in_flight = false;
         return;
     }
-    /* LS-190: the app stop callback owns joining its task and releasing its
+    /* the app stop callback owns joining its task and releasing its
      * radio session. Parking an app is not a USB-pipe teardown operation. */
     s_parked = true;
-    /*LS-408*/
+    /**/
     s_parked_by_fault = false;
     s_switch_in_flight = false;
 }
@@ -133,7 +133,7 @@ static void do_unpark(void)
     const app_t *cur = s_apps[s_current_app];
     ESP_LOGI(TAG, "unparking radio app '%s'", cur ? cur->name : "?");
     s_parked = false;
-    /*LS-408*/
+    /**/
     s_parked_by_fault = false;
     s_page   = PAGE_MAIN;
     if (cur && cur->on_enter) cur->on_enter();
@@ -218,7 +218,7 @@ static void do_recover(const char *endpoint_id)
     ls_radio_err_t error = ls_radio_endpoint_recover(endpoint_id);
     if (error == LS_RADIO_OK) {
         if (restart_app && cur && cur->on_enter) cur->on_enter();
-        /*LS-408*/
+        /**/
         s_parked_by_fault = false;
         s_switch_in_flight = false;
         ESP_LOGW(TAG, "endpoint recovery complete for '%s'", endpoint_id);
@@ -239,16 +239,16 @@ static void do_recover(const char *endpoint_id)
              app_usb_autoreboot() ? "loop-broken" : "off");
     if (restart_app) {
         s_parked = true;
-        /*LS-408*/
+        /**/
         s_parked_by_fault = true;
     }
     s_switch_in_flight = false;
 }
 
-/*LS-408*/
+/**/
 bool app_parked_by_fault(void) { return s_parked && s_parked_by_fault; }
 
-/*LS-416*/
+/**/
 bool app_switch_in_flight(void) { return s_switch_in_flight; }
 
 bool app_switch_service(uint32_t wait_ticks)
@@ -258,7 +258,7 @@ bool app_switch_service(uint32_t wait_ticks)
     if (xQueueReceive(s_switch_q, &request, wait_ticks) != pdTRUE) return false;
     app_request_t latest;
     while (xQueueReceive(s_switch_q, &latest, 0) == pdTRUE) {
-        /* LS-746: the unload fence must never be coalesced away by
+        /* the unload fence must never be coalesced away by
          * a stale radio request from the screen being destroyed. */
         if (latest.kind == APP_REQ_UI_PARK || request.kind != APP_REQ_UI_PARK)
             request = latest;
@@ -297,15 +297,15 @@ void app_switch_worker_start(void)
         return;
     }
     BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
-        /*LS-806  Left at 4096 deliberately. The idle high-water mark says
+        /* Left at 4096 deliberately. The idle high-water mark says
            3632 bytes are never touched, but this worker runs the apps'
            enter/exit callbacks, so a quiet moment is not its worst case, and
            test_app_registry_lifecycle pins name, depth and caps together as
-           the contract from LS-705/LS-730. Not worth 1.5 KB. */
+           the contract from /. Not worth 1.5 KB. */
         switch_worker, "appsw", 4096, NULL, 3, NULL, 0,
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
-        /* LS-705: leaving a successfully allocated queue behind when the
+        /* leaving a successfully allocated queue behind when the
          * internal-stack worker could not be created made every later radio
          * transition look accepted while no task existed to stop/join/start
          * either backend.  Delete the orphan queue so the existing direct

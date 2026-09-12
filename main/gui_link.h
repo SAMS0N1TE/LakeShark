@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-/*LS-019*/
+/**/
 void gui_link_start(void);
 
 const char *gui_link_mode_name(void);

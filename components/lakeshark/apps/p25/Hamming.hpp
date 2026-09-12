@@ -1,3 +1,27 @@
+/*
+ * DSD-derived helper; attribution restored in LakeShark on 2026-09-08.
+ * Verified comparison source (not a claim of the original import revision):
+ * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/include/Hamming.hpp
+ * Local code matches that source after removing comments and whitespace.
+ * The following DSD notice is preserved from that revision's COPYRIGHT;
+ * any additional original-author notice below is preserved separately.
+ *
+ * Copyright (C) 2010 DSD Author
+ * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ */
+
 
 #ifndef HAMMING_HPP_e7123c3795b94d14b5774d5d8f016a04
 #define HAMMING_HPP_e7123c3795b94d14b5774d5d8f016a04

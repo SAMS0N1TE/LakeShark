@@ -1,15 +1,7 @@
-/* LS-994  ESP-IDF adapter for ls_safe_mode.c.
-
-   The retained record lives in RTC_NOINIT memory. That is the only store that
-   is legitimate here: it survives a panic reset, writing it is a plain memory
-   store (valid with the cache disabled and from a panic context) and it costs
-   no flash wear on a board that is rebooting every few seconds. NVS is none of
-   those things, which is why nothing in this path touches it.
-
-   Compiled only in the firmware build; the bench drives ls_safe_mode.c
-   directly against its own ls_safe_state_t. */
+/* ESP-IDF adapter for ls_safe_mode.c. */
 
 #include "ls_safe_mode.h"
+#include "ls_vitals.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,7 +20,7 @@ RTC_NOINIT_ATTR static ls_safe_state_t s_state;
 static ls_safe_boot_t s_boot;
 static bool           s_begun;
 static int            s_dump_state = LS_SAFE_DUMP_UNKNOWN;
-/* LS-707: the healthy timer, LVGL callbacks and recovery console all rewrite
+/* the healthy timer, LVGL callbacks and recovery console all rewrite
    the same CRC-sealed RTC record from different tasks. Serialize the whole
    validate/mutate/seal transaction so one writer cannot make another treat a
    temporarily stale CRC as corruption and discard recovery state. */
@@ -88,6 +80,12 @@ bool ls_safe_active(void) { return s_begun && s_boot.safe; }
 void ls_safe_stage(ls_safe_stage_t stage)
 {
     if (!s_begun) return;
+    /* A memory reading per stage, BEFORE the critical section - the
+       heap has its own lock and taking it inside this one is how two locks
+       become an ordering problem. The stage names are already the vocabulary
+       a failed boot reports in, so a profile keyed on them reads against the
+       report without translation. */
+    ls_vitals_mark(ls_safe_stage_name(stage));
     portENTER_CRITICAL(&s_state_mux);
     ls_safe_note_stage(&s_state, stage);
     portEXIT_CRITICAL(&s_state_mux);

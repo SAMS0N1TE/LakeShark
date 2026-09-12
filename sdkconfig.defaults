@@ -1,6 +1,3 @@
-# This file was generated using idf.py save-defconfig. It can be edited manually.
-# Espressif IoT Development Framework (ESP-IDF) 5.5.0 Project Minimal Configuration
-#
 CONFIG_IDF_TARGET="esp32p4"
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -9,28 +6,15 @@ CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_VFLIP=n
 CONFIG_EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP=n
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_COMPILER_ORPHAN_SECTIONS_PLACE=y
-# Monospace bitmap font for the terminal-style ADS-B/P25 GUIs (see sdr_ui).
 CONFIG_LV_FONT_UNSCII_16=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
-# code/rodata run from FLASH, not PSRAM, so instruction fetches don't contend
-# with the DSI framebuffer DMA on the PSRAM bus (the choppy-audio root cause).
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=n
 CONFIG_SPIRAM_RODATA=n
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
-# LakeShark needs internal RAM headroom this board doesn't have under the
-# stock CAPS_ALLOC model (only ~222 KiB internal total, shared with mesh +
-# esp_hosted + LVGL + the new USB host). Switch to USE_MALLOC so large
-# dynamic allocations (P25 DSD buffers, USB transfer buffers) spill to the
-# 27 MB of PSRAM; allocations < ALWAYSINTERNAL and DMA-tagged ones still go
-# internal. Without this, USB host fails "HCD Pipe alloc NO_MEM" at boot and
-# opening P25 crashes when its DSD buffers can't allocate.
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
-# Also place LakeShark's three large static buffers (Mode-S maglut ~65 KB,
-# ADS-B mode_s_t state ~32 KB, P25 dsd sample ring ~32 KB) in PSRAM via
-# EXT_RAM_BSS_ATTR (those are .bss, not malloc, so USE_MALLOC alone misses them).
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_CACHE_L2_CACHE_256KB=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
@@ -44,31 +28,12 @@ CONFIG_VFS_MAX_COUNT=15
 CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
 CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
 CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
-CONFIG_CAMERA_OV5647=y
-CONFIG_CAMERA_OV5647_AUTO_DETECT=y
-CONFIG_CAMERA_OV5647_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
-CONFIG_CAMERA_OV5647_MIPI_RAW8_800x800_50FPS=y
-CONFIG_CAMERA_OV5647_MIPI_IF_FORMAT_INDEX_DAFAULT=2
-CONFIG_CAMERA_OV5647_CSI_LINESYNC_ENABLE=y
-CONFIG_CAMERA_OV5647_ISP_AF_ENABLE=y
-CONFIG_CAMERA_OV5647_DEFAULT_IPA_JSON_CONFIGURATION_FILE=y
-CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=n
-CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
 CONFIG_LV_COLOR_SCREEN_TRANSP=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEM_CUSTOM_INCLUDE="esp_heap_caps.h"
 CONFIG_LV_MEMCPY_MEMSET_STD=y
-# LS-782: the shared palette is dark but the LVGL default theme is light, so
-# any object that never paints a background came out white on a dark screen
-# (the REC/SCOUT readout panels, FREQ SET/PEAK). Painting each site by hand
-# is what LS-774 did; this makes the fallback degrade to the right colour.
 CONFIG_LV_THEME_DEFAULT_DARK=y
 
-# LS-797: do NOT enable CONFIG_LCD_DSI_ISR_CACHE_SAFE for the blue frame. It
-# was tried on 2026-09-07 and measured: late frames stayed at the same rate
-# (10 in 77 s, against 10 in 89 s before), so a flash write holding the cache
-# disabled is not the cause. It only costs IRAM. The real cause is PSRAM
-# bandwidth - see LS-798.
 CONFIG_LV_CIRCLE_CACHE_SIZE=10
 CONFIG_LV_LAYER_SIMPLE_BUF_SIZE=102400
 CONFIG_LV_IMG_CACHE_DEF_SIZE=20
@@ -103,58 +68,25 @@ CONFIG_SPI_FLASH_SUPPORT_GD_CHIP=y
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
-# LS-006
 CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
-# Don't force-restart the whole chip when SDIO to the C6 has a hiccup. Without
-# this, a single failed webhook to an unreachable host (e.g. ARP retry storm)
-# can cascade into a full system reboot. With it off, esp_hosted logs the
-# failure and tries to recover the SDIO link in place; LCD/touch/HTTP/telnet
-# all stay running. Matches the upstream host_hosted_events example default.
 CONFIG_ESP_HOSTED_TRANSPORT_RESTART_ON_FAILURE=n
-# LS-421  Exceptions and RTTI were turned on for LoRaMesher and RadioLib, both
-# of which left in d84f487. Nothing in the tree is known to need them now;
-# they are kept on only until someone measures a build with them off.
 CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_COMPILER_CXX_RTTI=y
-# Enabling exceptions makes GCC14 stricter and trips false-positive
-# warnings-as-errors in third-party C++. This is IDF's
-# official switch to drop the new GCC14 warning classes project-wide.
 CONFIG_COMPILER_DISABLE_GCC14_WARNINGS=y
-# UI responsiveness: poll touch at 100 Hz and redraw at ~60 FPS (defaults are
-# 30 ms / ~33 Hz, which felt sluggish). See main.cpp for LVGL task core pinning.
 CONFIG_LV_DISP_DEF_REFR_PERIOD=16
 CONFIG_LV_INDEV_DEF_READ_PERIOD=10
 
-# Allow the P25 decode task's static stack to live in PSRAM (internal RAM is
-# exhausted on the LCD build; the decode stack is never used with cache disabled).
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 
-# USB host: allow bulk transfer DMA buffers in PSRAM so the RTL-SDR streaming
-# pool can keep enough transfers in flight (internal DMA RAM is starved by
-# LVGL/DSI/audio). Without this only ~32KB posts -> HS endpoint idles between
-# reposts -> RTL FIFO overflow -> choppy audio.
 CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y
 
-# LS-734  Save panic backtraces to the coredump partition instead of discarding
-# them. LS-020 (the REC crash) has gone undiagnosed for multiple sessions
-# specifically because "no panic backtrace has been captured" - the firmware was
-# built with ESP_COREDUMP_ENABLE_TO_NONE, so a crash printed to a console nobody
-# was attached to and was then gone. Reading one back:
-#   idf.py -p <port> coredump-info      (needs build/lakeshark.elf to match)
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
 CONFIG_ESP_COREDUMP_STACK_SIZE=1792
 
-# LS-815  ESP32-P4 silicon revision. Pinned, because leaving it unset means
-# the toolchain picks it: IDF 5.5.4 defaults to REV_MIN_301, and that image
-# will not even flash onto the boards this project runs on -
-#   "bootloader.bin requires chip revision in range [v3.1 - v3.99]
-#    (this chip is revision v1.3)"
-# Every board in use is early silicon (the bench NANO reports v1.3), and the
-# committed sdkconfig from the last working build has REV_MIN_1. IDF makes
-# pre-v3.0 and >=v3.0 mutually exclusive, so if a v3.x board ever turns up it
-# needs its own build - not a reason to leave this unpinned today.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_1=y
+
+CONFIG_FATFS_ALLOC_PREFER_EXTRAM=n

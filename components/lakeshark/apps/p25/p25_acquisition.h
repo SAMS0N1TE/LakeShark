@@ -52,7 +52,7 @@ typedef struct {
 struct dsd_opts;
 struct dsd_state;
 
-/* LS-760: this is the live decoder fence, also used by IQ replay. A transport
+/* this is the live decoder fence, also used by IQ replay. A transport
  * byte counter cannot distinguish an active hunt from a tune-blocked decoder. */
 bool p25_acquisition_prepare(p25_acquisition_gate_t *gate,
     struct dsd_opts *opts, struct dsd_state *state, uint32_t generation,

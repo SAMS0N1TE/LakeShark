@@ -3,12 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/*LS-768*/
-/* Prefix match against the mount-point roots rather than the exact strings
-   rec_dir() returns: the SD path has "/lakeshark" appended and SPIFFS does
-   not, so comparing the whole path would need to know that quirk in two
-   places.  Prefix keeps the classifier agnostic to what rec_dir() picks
-   under the root. */
+/**/
+
 const char *rec_storage_label(const char *dir)
 {
     if (!dir || !*dir) return "?";

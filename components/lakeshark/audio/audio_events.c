@@ -114,7 +114,7 @@ void audio_events_init(void)
 {
     if (s_audio_q) return;
     s_audio_q = xQueueCreate(8, sizeof(audio_msg_t));
-    /*LS-806  6144 with 5684 never touched - about 460 B in use. Internal RAM
+    /* 6144 with 5684 never touched - about 460 B in use. Internal RAM
        is the scarce resource here (23 KB free, DMA pool at 651 B), and unused
        stack is internal RAM held for nothing. Sized to observed use plus a
        ~2.5 KB margin; check `mem` before trimming further. */

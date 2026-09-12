@@ -1,4 +1,4 @@
-# components/imbe_vocoder — provenance
+# components/imbe_vocoder - provenance
 
 Fixed-point P25 IMBE encoder/decoder by Pavel Yazev, as carried in OP25.
 
@@ -19,9 +19,9 @@ licence, and their attribution block must still be preserved.
 
 Repaired 2026-09-07, verified character for character against `vendor/op25`:
 
-- `imbe_vocoder.cc` — the attribution block had been **lost entirely**.
+- `imbe_vocoder.cc` - the attribution block had been **lost entirely**.
   Restored.
-- `imbe_vocoder.h` — the block was present but corrupted into
+- `imbe_vocoder.h` - the block was present but corrupted into
   `* * Project 25...` / `*  * Developed by...` with stray asterisks and
   indentation. Replaced with the upstream text.
 

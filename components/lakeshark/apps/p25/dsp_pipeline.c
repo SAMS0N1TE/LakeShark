@@ -1,5 +1,5 @@
 /*
- * dsp_pipeline.c — Quad-mode P25 demodulator
+ * dsp_pipeline.c - Quad-mode P25 demodulator
  *
  * C4FM:          IQ -> LPF+decim x5 -> FM discriminator -> 48kHz continuous
  * CQPSK:         IQ -> LPF+decim x5 -> Gardner -> diff_phasor -> residual AFC
@@ -47,7 +47,7 @@
  * 31-tap Hamming, fc=9 kHz, unity DC gain.
  *
  * Session 9b: shortened from 61 taps back to 31. The longer filter with
- * fc=6 kHz had 125 µs group delay — 60% of a P25 symbol (208 µs) — which
+ * fc=6 kHz had 125 µs group delay - 60% of a P25 symbol (208 µs) - which
  * smeared every transition across the next symbol's window. At the retired
  * five-sample boundary this meant no plateaus to median-filter, only ramps.
  *
@@ -101,29 +101,8 @@ void dsp_init(dsp_state_t *s)
     s->dc_avg_q = 0.0f;
     s->dc_alpha = 0.001f;   /* ~21 ms TC at 48 kHz */
 
-    /* RMS AGC — feedforward, OP25-style.
-     *
-     * Previous default was alpha=0 (frozen gain=1.0), which meant weak
-     * signals went into atan2 with their full original amplitude. When
-     * |IQ| is small, the phase increment per sample is dominated by IQ
-     * quantization + LO leakage rather than actual modulation, so the
-     * discriminator output is mostly noise and the sync correlator
-     * never sees a clean dibit pattern. That matched the README's
-     * "sync isn't reliably hitting on real P25 signals at low input
-     * levels" symptom exactly.
-     *
-     * alpha = 0.01 at 48 kHz post-LPF rate → time constant ~2 ms ≈
-     * 10 P25 symbols. Fast enough that the AGC has converged within
-     * the ~3-symbol head of an HDU before sync correlation matters.
-     * Slow enough that per-symbol envelope variation (which carries
-     * no information in C4FM/FM mode) doesn't get cancelled.
-     *
-     * Reference 0.85 puts post-AGC |IQ| close to but inside the
-     * float [-1, 1] range — gives the discriminator a strong vector
-     * to compute phase from, without risking saturation in the
-     * subsequent RRC / discriminator math.
-     *
-     * Disable by zeroing alpha at runtime if needed. */
+    /* RMS AGC - feedforward, OP25-style. */
+
     s->agc_gain  = 1.0f;
     s->agc_alpha = 0.01f;
     s->agc_ref   = 0.85f;
@@ -146,28 +125,8 @@ void dsp_init(dsp_state_t *s)
     s->diff_ring_idx = 0;
     s->diff_ring_filled = 0;
 
-    /* FSK4_TRACKING: initialize 3-loop tracker state.
-     *
-     * LS-732: the live discriminator boundary is 48 kHz, not the retired
-     * 24 kHz path. ft_symbol_time = 4800/48000 = 0.1, so the clock emits
-     * one symbol for every ten discriminator samples. The MMSE table still
-     * provides the fractional-sample position within that interval.
-     *
-     * Nominal spread = 2.0 means ideal symbols sit at ±1.0 (inner) and
-     * ±3.0 (outer) after the `output = 2.0 * interp / spread` scaling.
-     *
-     * Session 10 raised the retired 24 kHz path from 3.0 to 7.0 based on
-     * physics; LS-732 doubles that gain for the live rate.
-     *
-     * P25 C4FM deviation is ±600 Hz (inner) and ±1800 Hz (outer). At
-     * 48 kHz, post-discriminator phase-per-sample is 2π*f/fs, so ±1
-     * symbol → ±0.079 rad and ±3 symbol → ±0.236 rad.
-     *
-     * For outer symbols to present to the tracker at the expected ±3
-     * (so the spread loop can converge to 2.0 instead of collapsing to
-     * SPREAD_MIN), the 48 kHz path needs twice the old 24 kHz gain because
-     * phase-per-sample halves when the sample rate doubles.
-     */
+    /* FSK4_TRACKING: initialize 3-loop tracker state. */
+
     s->fsk4_input_scale = 14.0f;
     s->ft_symbol_clock  = 0.0;
     s->ft_symbol_time   = (double)DSP_BAUD / (double)DSP_AUDIO_RATE;  /* 0.1 */
@@ -179,7 +138,7 @@ void dsp_init(dsp_state_t *s)
     s->ft_prev_i        = 1.0f;
     s->ft_prev_q        = 0.0f;
 
-    /* Pre-demod NCO — zero-init. DC-tracking AFC starts from "no shift". */
+    /* Pre-demod NCO - zero-init. DC-tracking AFC starts from "no shift". */
     s->nco_phase    = 0.0;
     s->nco_step_rad = 0.0;
     s->nco_dc_avg   = 0.0;
@@ -213,7 +172,7 @@ void dsp_set_mode(dsp_state_t *s, demod_mode_t mode)
         s->nco_phase    = 0.0;
         s->nco_step_rad = 0.0;
         s->nco_dc_avg   = 0.0;
-        /* Reset diagnostic counter via flag — see diag block in fsk4_track_sample */
+        /* Reset diagnostic counter via flag - see diag block in fsk4_track_sample */
         extern int fsk4_diag_reset_flag;
         fsk4_diag_reset_flag = 1;
     }
@@ -258,7 +217,7 @@ bool dsp_set_cqpsk_loops(dsp_state_t *s,
     if (!s || !p25_cqpsk_config_valid(config)) return false;
     s->g_gain_omega = config->timing_gain;
     s->cqpsk_afc_alpha = config->carrier_gain;
-    /* LS-694: applying gain changes without clearing the old period and AFC
+    /* applying gain changes without clearing the old period and AFC
      * estimates made a profile transition inherit the previous channel's
      * timing/CFO.  Commands are drained between IQ blocks, then both loops
      * restart together so no block is processed with a half-new pair. */
@@ -312,7 +271,7 @@ static void agc_apply(dsp_state_t *s, float *si, float *sq)
 }
 
 /* ── C4FM RRC symbol filter (matches OP25 symbol_filter) ── */
-/* RRC, excess_bw=0.2, 10 sps, 51 taps — for 48kHz/4800 baud symbol shaping */
+/* RRC, excess_bw=0.2, 10 sps, 51 taps - for 48kHz/4800 baud symbol shaping */
 static const float rrc_sym_taps[51] = {
      0.008296182f,  0.009814062f,  0.010336751f,  0.009666932f,  0.007721221f,  0.004553221f,
      0.000364146f, -0.004501144f, -0.009573439f, -0.014292968f, -0.018055279f, -0.020265396f,
@@ -348,7 +307,7 @@ static float rrc_filter(dsp_state_t *s, float sample)
  * reasonable, but blows up to ±28000+ in envelope nulls because dividing
  * phase noise by a near-zero |s|² amplifies it into π-rad range.
  *
- * New formula: atan2(-Im{conj(prev)*cur}, Re{conj(prev)*cur}) — exact per-
+ * New formula: atan2(-Im{conj(prev)*cur}, Re{conj(prev)*cur}) - exact per-
  * sample phase step in radians, negated to preserve old sign convention so
  * demod_gain=-9000 still gives correct output polarity.
  */
@@ -372,7 +331,7 @@ static int16_t fm_demod(dsp_state_t *s, float si, float sq)
 static int cqpsk_sample(dsp_state_t *s, float si, float sq,
                          int16_t *out, int maxn)
 {
-    /* LS-679: the QPSK Costas detector drove alternating pi/4-DQPSK grids
+    /* the QPSK Costas detector drove alternating pi/4-DQPSK grids
      * toward incompatible stable points, yielding 0/20 valid frames at
      * +/-200 Hz. Differential phase needs no absolute carrier phase; with
      * the Gardner sign corrected and residual phase-step AFC below, the
@@ -453,7 +412,7 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
 
 /*
  * ══════════════════════════════════════════════════════════════════════
- *  DEMOD_DIFF_4FSK — SDRTrunk-inspired differential demodulation
+ *  DEMOD_DIFF_4FSK - SDRTrunk-inspired differential demodulation
  * ══════════════════════════════════════════════════════════════════════
  *
  * Architecture (matches SDRTrunk's P25P1DecoderC4FM):
@@ -480,7 +439,7 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
  */
 static int16_t diff_4fsk_sample(dsp_state_t *s, float si, float sq)
 {
-    /* LS-670: the dormant pre-demod I/Q RRC cost 412 bytes per state. Enabling
+    /* the dormant pre-demod I/Q RRC cost 412 bytes per state. Enabling
      * it reduced the deterministic mode test's outer/inner gaps on both sides
      * (10833 -> 7924 and 15319 -> 14588), so keep the measured raw path. */
     float fi = si, fq = sq;
@@ -539,48 +498,6 @@ static int16_t diff_4fsk_sample(dsp_state_t *s, float si, float sq)
 
     return (int16_t)v;
 }
-
-/*
- * ══════════════════════════════════════════════════════════════════════
- *  DEMOD_FSK4_TRACKING — OP25 Frank/Radio-Rausch 3-loop tracker
- * ══════════════════════════════════════════════════════════════════════
- *
- * Port of op25/gr-op25/lib/fsk4_demod_ff_impl.cc (GPL-3, Frank/Radio Rausch
- * 2006, Steve Glass 2011). Algorithm from U.S. Patent 5,553,101 (1996).
- *
- * Architecture:
- *
- *   IQ at 48 kHz -> linear atan2 FM discriminator -> phase sample
- *        |
- *        v
- *   ft_history[8] sample ring
- *        |
- *        v
- *   ft_symbol_clock advances by ft_symbol_time (= 0.1) per input sample
- *        |
- *        v  when clock crosses 1.0:
- *   MMSE fractional-sample interpolator at mu = ft_symbol_clock / ft_symbol_time
- *        |
- *        v
- *   subtract ft_fine_freq (DC offset correction)
- *        |
- *        v
- *   scale: output = 2.0 * interp / ft_symbol_spread
- *        |                                       (nominal output at ±1, ±3)
- *        v
- *   hard symbol decision + error computation vs expected ±0.5*spread or ±1.5*spread
- *        |
- *        v
- *   update 3 tracking loops:
- *     - ft_symbol_spread += err * K_SPREAD  (with direction per symbol region)
- *     - ft_symbol_clock  ± err * K_TIMING   (sign from interp_p1 vs interp slope)
- *     - ft_fine_freq     += err * K_FINE_FREQ
- *
- * Table: 128 fractional sample positions × 8 taps each. Index 0 means
- * "sample exactly at history[4]"; index 128 means "sample exactly at
- * history[3]". Used to interpolate the correct symbol sample given the
- * fractional clock position. Copied verbatim from the OP25 source.
- */
 
 #define FSK4_NSTEPS  128
 #define FSK4_NTAPS   8
@@ -736,7 +653,7 @@ static const float FSK4_TAPS[FSK4_NSTEPS + 1][FSK4_NTAPS] = {
  * Linear FM discriminator for FSK4_TRACKING mode.
  *
  * Unlike fm_demod() which computes (prev_q*di - prev_i*dq) / |cur|², this
- * uses atan2(Im(conj(prev)*cur), Re(conj(prev)*cur)) — the actual phase
+ * uses atan2(Im(conj(prev)*cur), Re(conj(prev)*cur)) - the actual phase
  * difference in radians. No magnitude normalization, so outer symbols stay
  * proportionally larger than inner symbols (the compression bug in fm_demod
  * is what caused our inner/outer ratio to collapse to 0.8 instead of 0.33).
@@ -807,11 +724,11 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
      * sits), both inner branches push spread DOWN by ~0.5×spread×K_SPREAD
      * per sample. With K_SPREAD=0.01 and spread=2.0, that's a constant
      * -0.01/symbol drift on noise. The spring at 5e-3 pulls back at
-     * ~+0.002/symbol when spread=1.6 — the loop loses 5:1 against noise.
+     * ~+0.002/symbol when spread=1.6 - the loop loses 5:1 against noise.
      *
      * Fix: only let inner-region updates affect spread when the sample
      * is at least somewhere meaningful (|interp| > 0.25*spread). Outer
-     * regions always update — they require enough energy that noise
+     * regions always update - they require enough energy that noise
      * almost never reaches them, so they're inherently self-gated.
      *
      * The error term `err` is still computed in all four branches so
@@ -839,7 +756,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
 
     /* Symbol timing: compare current interp to the sample one tap ahead.
      * If interp_p1 < interp, the signal is decreasing through our sample
-     * point — we're sampling on the down-slope. Push the clock forward. */
+     * point - we're sampling on the down-slope. Push the clock forward. */
     if (interp_p1 < interp) {
         s->ft_symbol_clock += err * K_TIMING;
     } else {
@@ -859,7 +776,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
      * For any zero-mean distribution where most mass is within |interp| <
      * 0.5*spread (which is true for band-limited noise and also for
      * RRC-filtered signal between symbols), the net update is negative
-     * — spread drifts down until it hits SPREAD_MIN and sticks.
+     * - spread drifts down until it hits SPREAD_MIN and sticks.
      *
      * The old gate `if (!dsp_has_signal_lock)` meant the spring only
      * pushed back during confirmed-no-signal periods. But the spread
@@ -871,7 +788,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
      * Session 10-b: coefficient bumped 2e-4 → 5e-4 after measuring
      * real signal dynamics. On actual P25 traffic, the spread loop
      * has an inherent UPWARD drift of ~3.2/sec when the NID section
-     * has more inner than outer symbols (common — NACs 0x527 etc. are
+     * has more inner than outer symbols (common - NACs 0x527 etc. are
      * inner-heavy). The old spring pulled at 1.9/sec when spread=2.4,
      * so net growth was +1.3/sec and spread slammed against SPREAD_MAX.
      *
@@ -890,7 +807,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
         /* Spring coefficient is signal-lock dependent.
          *
          * 5e-4 (the prior value) was tuned to balance the upward drift
-         * during NID-heavy real signal — see Session 10-b notes above —
+         * during NID-heavy real signal - see Session 10-b notes above -
          * but is too weak to fight pure-noise dead-air drift. With
          * intermittent traffic, the tracker spends most of its time
          * in NOI, where the noise distribution drives the four-region
@@ -909,7 +826,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
         s->ft_symbol_spread += (target - s->ft_symbol_spread) * k_spring;
     }
 
-    /* Fine frequency loop — RE-ENABLED at slow rate (session 10).
+    /* Fine frequency loop - RE-ENABLED at slow rate (session 10).
      *
      * Role separation with the pre-demod NCO:
      *
@@ -957,7 +874,7 @@ static int fsk4_track_sample(dsp_state_t *s, float phase, float *sym_out)
         }
     }
 
-    /* Coarse frequency loop — diagnostic only (we don't retune the front end). */
+    /* Coarse frequency loop - diagnostic only (we don't retune the front end). */
     s->ft_coarse_freq += (s->ft_fine_freq - s->ft_coarse_freq) * K_COARSE_FREQ;
 
     *sym_out = (float)output;
@@ -1084,7 +1001,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
          * rad for outer symbols), so the symbols all appear one-sided and
          * the FSK4 tracker can't find its constellation.
          *
-         * Uses a 256-entry sin LUT for speed — runtime cos/sin at 240 kHz
+         * Uses a 256-entry sin LUT for speed - runtime cos/sin at 240 kHz
          * rate would cost 5-10% CPU; LUT is near-free.
          *
          * NCO feedback is updated in the FSK4_TRACKING branch below based
@@ -1150,7 +1067,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                  * pre-RRC, with better noise immunity. */
                 int16_t raw = fm_demod(s, si, sq);
                 /* 51-tap RRC matched filter (rrc_sym_taps, excess_bw=0.2,
-                 * 10 sps / 48 kHz) — the correct matched-filter pair for the
+                 * 10 sps / 48 kHz) - the correct matched-filter pair for the
                  * 10-sps path. Was rrc_fsk4_filter (21-tap, designed for 5 sps);
                  * that became mismatched when we moved 24kHz/5sps -> 48kHz/10sps,
                  * smearing symbol plateaus and leaving sync stuck at HD~4. */
@@ -1193,7 +1110,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
              *
              * During signal lock: 0.000025 (TC ~800ms) → near-frozen. A
              * real P25 transmission has short-term DC asymmetry that's
-             * NOT residual carrier — it's just the symbol stream happening
+             * NOT residual carrier - it's just the symbol stream happening
              * to have more +3s than -1s over 100ms. If the fast NCO chases
              * that, it rotates the IQ during the call, which causes the
              * tracker output to drift, which shifts state->min/state->max
@@ -1211,7 +1128,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
              * learned beforehand.
              *
              * The initial 80ms convergence only costs us the first call
-             * after boot — after that, nco_step_rad persists across
+             * after boot - after that, nco_step_rad persists across
              * tracker resets (see dsp_fsk4_reset_tracker notes) so every
              * subsequent call starts pre-compensated. */
             {
@@ -1223,7 +1140,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
             /* Preserve the retired path's ~2 ms smoothing time at twice
              * its discriminator sample rate. */
             s->nco_step_rad += 0.01 * (target_step - s->nco_step_rad);
-            /* LS-732: use the 51-tap, beta=0.2 RRC designed for the live
+            /* use the 51-tap, beta=0.2 RRC designed for the live
              * 48 kHz / 10-sps boundary. The retired 21-tap table covered
              * only the old 24 kHz / 5-sps stream and distorted the timing
              * detector's view of generated C4FM. */
@@ -1249,7 +1166,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                  * fails uncorrectable.
                  *
                  * At scale 4000, peak tracker excursion of ±4.5 produces
-                 * ±18000 — still inside the ±20000 soft-clip warning
+                 * ±18000 - still inside the ±20000 soft-clip warning
                  * threshold, and far from the ±32767 hard clip. DSD's
                  * slicer also stays far from clipping on min/max, so
                  * center stays near zero and BCH has a real chance.
@@ -1273,7 +1190,7 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Auto-retune helpers — called from p25_rx_task.
+ * Auto-retune helpers - called from p25_rx_task.
  *
  * The tracker runs on the RF task (core 1), the retune decision happens on
  * the same task between IQ reads. Since there's no cross-core access here,
@@ -1308,7 +1225,7 @@ void dsp_fsk4_clear_fine_freq(dsp_state_t *s)
  * (changes on thermal timescales, minutes), not a per-call property. If
  * we reset it every time a call ends, each new call starts from a full-
  * bias discriminator output and has to re-learn the carrier offset from
- * scratch — costing us the first ~80ms of every call to convergence.
+ * scratch - costing us the first ~80ms of every call to convergence.
  * Keeping nco_step_rad across calls means we're pre-compensated.
  */
 void dsp_fsk4_reset_tracker(dsp_state_t *s)
@@ -1319,5 +1236,5 @@ void dsp_fsk4_reset_tracker(dsp_state_t *s)
     s->ft_symbol_clock  = 0.0;
     for (int k = 0; k < 8; k++) s->ft_history[k] = 0.0f;
     s->ft_history_idx   = 0;
-    /* NCO state deliberately preserved across calls — see note above. */
+    /* NCO state deliberately preserved across calls - see note above. */
 }

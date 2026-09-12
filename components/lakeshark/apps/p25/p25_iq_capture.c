@@ -9,7 +9,7 @@ typedef struct {
     uint8_t iq[];
 } capture_t;
 
-/* LS-766: the LCD has only a few KiB of internal RAM while P25 runs.
+/* the LCD has only a few KiB of internal RAM while P25 runs.
  * Payload and metadata share ONE PSRAM allocation. These control words
  * introduce no worker/stack; neither RX nor console spins on ownership. */
 static capture_t *s_capture;

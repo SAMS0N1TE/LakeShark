@@ -21,9 +21,6 @@ typedef struct {
     void *user;
 } fm_lifecycle_hooks_t;
 
-/* Start reserves the worker slot before task creation.  This closes the
- * create-to-task-entry window in which an exit could previously see no live
- * task and tear resources down under the newly scheduled worker. */
 bool fm_lifecycle_start(void);
 void fm_lifecycle_task_failed(void);
 bool fm_lifecycle_start_failed(const fm_lifecycle_hooks_t *hooks);

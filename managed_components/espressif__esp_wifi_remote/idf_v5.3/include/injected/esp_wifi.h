@@ -564,6 +564,7 @@ esp_err_t esp_wifi_get_scan_parameters(wifi_scan_default_params_t *config);
   *    - ESP_OK: succeed
   *    - ESP_ERR_WIFI_NOT_INIT: WiFi is not initialized by esp_wifi_init
   *    - ESP_ERR_WIFI_NOT_STARTED: WiFi is not started by esp_wifi_start
+  *    - ESP_ERR_WIFI_STATE: WiFi is still connecting when esp_wifi_scan_stop() is invoked.
   */
 esp_err_t esp_wifi_scan_stop(void);
 
@@ -973,6 +974,7 @@ esp_err_t esp_wifi_get_promiscuous_ctrl_filter(wifi_promiscuous_filter_t *filter
   *    - ESP_ERR_WIFI_MODE: invalid mode
   *    - ESP_ERR_WIFI_PASSWORD: invalid password
   *    - ESP_ERR_WIFI_NVS: WiFi internal NVS error
+  *    - ESP_ERR_WIFI_STATE: WiFi still connecting when invoke esp_wifi_set_config
   *    - others: refer to the error code in esp_err.h
   */
 esp_err_t esp_wifi_set_config(wifi_interface_t interface, wifi_config_t *conf);
@@ -1482,7 +1484,7 @@ esp_err_t esp_wifi_force_wakeup_release(void);
 /**
   * @brief     configure country
   *
-  * @attention 1. When ieee80211d_enabled, the country info of the AP to which
+  * @attention 1. When ieee80211d_enabled is enabled, the country info of the AP to which
   *               the station is connected is used. E.g. if the configured country is US
   *               and the country info of the AP to which the station is connected is JP
   *               then the country info that will be used is JP. If the station disconnected

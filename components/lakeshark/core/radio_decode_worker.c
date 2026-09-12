@@ -2,15 +2,8 @@
 
 #include "esp_attr.h"
 
-/* LS-726: a permanent 16 KiB FM stack remained reserved while P25 allocated
- * another 16 KiB cache-safe DSD stack.  LCD validation reached 19 DMA bytes,
- * so the successful FM-start reservation made the mutually exclusive P25
- * worker unsafe to start.
- *
- * Keep one fixed cache-safe stack and recreate only its small static TCB to
- * preserve FM/core-1 and DSD/core-0 placement.  Reuse is permitted only after
- * eTaskGetState reports eSuspended; deleting a non-running static task removes
- * its TCB synchronously, so the next create cannot overlap the old stack. */
+/* a permanent 16 KiB FM stack remained reserved while P25 allocated another 16 KiB cache-safe DSD stack. */
+
 static DRAM_ATTR StackType_t s_decode_stack[LS_RADIO_DECODE_STACK_BYTES]
     __attribute__((aligned(16)));
 static DRAM_ATTR StaticTask_t s_decode_tcb;

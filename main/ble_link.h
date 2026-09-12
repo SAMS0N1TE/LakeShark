@@ -43,7 +43,7 @@ void ble_link_rescan(void);
 bool      ble_link_passkey_pending(void);
 esp_err_t ble_link_submit_passkey(uint32_t code);
 
-/*LS-993  Peer pin management.  A pinned peer wins over an unknown one
+/* Peer pin management.  A pinned peer wins over an unknown one
    advertising the same service, so two boards no longer race for one
    Flipper.  The pinned address survives a reboot (NVS-backed). */
 
@@ -52,7 +52,7 @@ esp_err_t ble_link_submit_passkey(uint32_t code);
    true when out_addr was filled with a real address, false otherwise. */
 bool ble_link_get_pinned(char *out_addr, size_t out_len);
 
-/*LS-813  True when a Flipper advertising its OWN BLE profile - not
+/* True when a Flipper advertising its OWN BLE profile - not
    ours - was heard in the last two minutes. That is a head sitting
    right there with the LakeShark app closed, which looks identical to
    "no head on the air" unless the status line says otherwise. */
@@ -67,21 +67,13 @@ esp_err_t ble_link_pin_peer(const char *addr);
 /* Forget the pinned peer.  The scanner falls back to matching by service. */
 void ble_link_unpin_peer(void);
 
-/*LS-980  Forget every stored bond and unpin the peer, dropping the current
-   connection so the next attempt starts from a clean slate.
+/* Forget every stored bond and unpin the peer, dropping the current connection so the next attempt starts from a clean slate. */
 
-   Old firmware asked for bonding + Secure Connections against a Flipper that
-   offers GapPairingNone; the head refused with SM_ERR_AUTHREQ and the retry
-   path reconnected into the same wall (LS-714 kept the "unusable" bond because
-   it could not tell an AUTHREQ from the more benign passkey timeout).  New
-   firmware never initiates pairing at all, so the automatic ENC_CHANGE-driven
-   wipe never fires - a bond written by older firmware would otherwise sit in
-   NVS forever.  This is the manual escape hatch: run once after upgrading, or
-   any time the head's security posture changed. */
 esp_err_t ble_link_forget_bonds(void);
 
 /* True when a GATT connection is currently up (used by `ble show`). */
 bool ble_link_is_connected(void);
+esp_err_t ble_link_rssi(int *rssi);
 
 #ifdef __cplusplus
 }

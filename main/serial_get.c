@@ -1,23 +1,4 @@
-/*LS-990  Pull a file off the device over the console.
-
-   The device writes captures and screenshots to the SD card and the only way
-   to retrieve one is WiFi - which needs either the operator's network
-   credentials or their machine moved onto the board's access point. Neither is
-   always available, and neither is quick.
-
-   A previous attempt at this streamed base64 over the console and produced
-   corrupt files, for a reason worth remembering: the console is shared. P25TEL
-   and ADSB log lines interleave into the stream between data lines, and at
-   115200 the UART also drops bytes under load - about 16% of one image.
-
-   So every data line carries a marker the receiver filters on, the payload is
-   fixed-width, and the whole transfer is covered by a CRC-32 that is checked
-   at the far end. A log line landing in the middle is now harmless: it does
-   not start with the marker, so it is discarded, and if bytes are lost the CRC
-   says so rather than handing back a plausible-looking broken file.
-
-   Slow by nature - 1.1 MB of BMP is about four minutes at 115200 - so this is
-   a fallback, not the normal route. `wifi on` remains the fast path. */
+/* Pull a file off the device over the console. */
 
 #include <stdio.h>
 #include <string.h>
@@ -50,9 +31,6 @@ static void b64_line(const uint8_t *in, size_t n, char *out)
     out[o] = '\0';
 }
 
-/* Resolve a bare name against the captures directory, so `get rec1.sub` works
-   without the operator knowing where captures live. An absolute path is taken
-   as given. */
 static FILE *open_named(const char *name, char *shown, size_t shown_len, long *size)
 {
     char path[192];

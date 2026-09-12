@@ -2,13 +2,13 @@
 #include "ui/ls_ui.h"
 #include "sdr_ui/sdr_ui.h"
 #include "ls_board.h"
-#include "link_ctl.h"  /*LS-785*/
-#include "esp_heap_caps.h"  /*LS-800*/
+#include "link_ctl.h"  /**/
+#include "esp_heap_caps.h"  /**/
 
 #include <cstdio>
 #include <cstring>
 
-/*LS-990  See ls_shade.h. The shade sits above content but below the toast so
+/* See ls_shade.h. The shade sits above content but below the toast so
    the capture confirmation, which lands after the shade has hidden itself,
    still appears on top. */
 
@@ -19,9 +19,9 @@ static lv_obj_t *s_shade         = nullptr;
 static lv_obj_t *s_toast         = nullptr;
 static lv_obj_t *s_toast_label   = nullptr;
 static lv_obj_t *s_wifi_label    = nullptr;
-/*LS-785*/
+/**/
 static lv_obj_t *s_bt_label      = nullptr;
-/*LS-800*/
+/**/
 static lv_obj_t *s_mem_label     = nullptr;
 static void toast_show(const char *text);
 static lv_timer_t *s_toast_timer = nullptr;
@@ -34,7 +34,7 @@ static void refresh_wifi_button(void)
                                        : "WIFI: OFF  (tap to start)");
 }
 
-/*LS-785  The head link retries forever when the head refuses it, and there is
+/* The head link retries forever when the head refuses it, and there is
    no console on a handheld. OFF has to be one swipe away, beside WIFI. */
 static void refresh_bt_button(void)
 {
@@ -58,10 +58,6 @@ static void on_bt(lv_event_t *e)
     refresh_bt_button();
 }
 
-/*LS-800  The shade is what an operator reaches for when something is wrong, so
-   it should say what is wrong. An app refusing to load prints "Low memory" and
-   nothing else; these are the numbers the shell's admission check actually
-   tests - it refuses below 1 KB free or a 256 B largest block. */
 static void refresh_memory(void)
 {
     if (!s_mem_label) return;
@@ -80,8 +76,8 @@ static void on_usb_reset(lv_event_t *e)
     toast_show("USB receiver reset requested");
 }
 
-/*LS-800  Hold, not tap: this drops the receiver and any capture in progress.
-   Same affordance as the recovery screen (LS-1010/LS-1012). */
+/* Hold, not tap: this drops the receiver and any capture in progress.
+   Same affordance as the recovery screen (/). */
 static void on_reboot(lv_event_t *e)
 {
     (void)e;
@@ -180,6 +176,44 @@ static lv_obj_t *shade_button(lv_obj_t *parent, const char *text,
     return b;
 }
 
+static int s_safe_x, s_safe_y;
+void ls_shade_set_safe_insets(int horizontal,int vertical)
+{
+    s_safe_x=horizontal; s_safe_y=vertical;
+    ls_shade_resize();
+}
+static void on_rotate(lv_event_t *)
+{
+    ls_shade_close();
+    if (s_hooks.rotate) s_hooks.rotate();
+}
+static void on_orientation(lv_event_t *event)
+{
+    const unsigned *degrees=static_cast<const unsigned *>(lv_event_get_user_data(event));
+    ls_shade_close();
+    if (degrees && s_hooks.set_orientation) s_hooks.set_orientation(*degrees);
+}
+
+void ls_shade_resize(void)
+{
+    int hor=lv_disp_get_hor_res(nullptr), ver=lv_disp_get_ver_res(nullptr);
+    if (s_scrim) {
+        lv_obj_t *parent=lv_obj_get_parent(s_scrim);
+        hor=lv_obj_get_content_width(parent); ver=lv_obj_get_content_height(parent);
+    }
+    if (s_scrim) lv_obj_set_size(s_scrim,hor,ver);
+    if (s_shade) {
+        lv_obj_set_pos(s_shade,s_safe_x,s_safe_y);
+        lv_obj_set_width(s_shade,hor-2*s_safe_x);
+        lv_obj_set_style_max_height(s_shade,ver-2*s_safe_y-SDR_STATUS_H,0);
+        lv_obj_add_flag(s_shade,LV_OBJ_FLAG_SCROLLABLE);
+    }
+    if (s_toast) {
+        lv_obj_set_width(s_toast,hor-2*s_safe_x-24);
+        lv_obj_align(s_toast,LV_ALIGN_BOTTOM_MID,0,-(SDR_RAIL_H+12+s_safe_y));
+    }
+}
+
 void ls_shade_build(lv_obj_t *parent)
 {
     if (!parent || s_shade) return;
@@ -187,8 +221,6 @@ void ls_shade_build(lv_obj_t *parent)
     const int hor = lv_disp_get_hor_res(NULL);
     const int ver = lv_disp_get_ver_res(NULL);
 
-    /* Scrim behind the shade. Clicking anywhere off the shade dismisses it -
-       tap-away close, which is what an operator reaches for after a swipe. */
     s_scrim = lv_obj_create(parent);
     lv_obj_set_size(s_scrim, hor, ver);
     lv_obj_set_pos(s_scrim, 0, 0);
@@ -202,7 +234,7 @@ void ls_shade_build(lv_obj_t *parent)
     lv_obj_add_event_cb(s_scrim, on_scrim_click, LV_EVENT_CLICKED, nullptr);
 
     /* The shade itself is a panel from the kit, docked to the top and sized
-       to the display. Screen dimensions never a literal - LS-905. */
+       to the display. Screen dimensions never a literal - . */
     s_shade = ls_ui_panel(parent, "QUICK");
     lv_obj_set_width(s_shade, hor);
     lv_obj_set_pos(s_shade, 0, 0);
@@ -217,31 +249,58 @@ void ls_shade_build(lv_obj_t *parent)
     ls_ui_value(s_shade, "BOARD", &bd);
     if (bd.value) lv_label_set_text(bd.value, LS_BOARD_NAME);
 
-    shade_button(s_shade, "SCREENSHOT", on_screenshot, nullptr);
-    shade_button(s_shade, "WIFI",       on_wifi,       &s_wifi_label);
-    /*LS-785*/
-    shade_button(s_shade, "BT",         on_bt,         &s_bt_label);
-    /*LS-800*/
-    shade_button(s_shade, "USB RESET",  on_usb_reset,  nullptr);
-    shade_button(s_shade, "HOME",       on_home,       nullptr);
+    if (s_hooks.set_orientation) {
+        /* Select any orientation in one opening; fixed group avoids wrapping
+         * into four full-width rows on the narrow portrait panel. */
+        ls_ui_section(s_shade,"ORIENTATION");
+        lv_obj_t *row=ls_ui_button_group(s_shade);
+        static unsigned degrees[]={0,90,180,270};
+        static const char *labels[]={"0","90","180","270"};
+        for(unsigned i=0;i<4;i++) {
+            lv_obj_t *button=ls_ui_group_button(row,labels[i],LS_BTN_DEFAULT,
+                                               on_orientation,&degrees[i],nullptr);
+            if(button) lv_obj_set_height(button,56);
+        }
+    }
 
-    /*LS-800  Reboot is destructive enough to need a hold, and the hint line
+    /* Two columns, and the shade does not scroll. */
+
+    lv_obj_clear_flag(s_shade, LV_OBJ_FLAG_SCROLLABLE);
+    struct { const char *text; lv_event_cb_t cb; lv_obj_t **label; } actions[] = {
+        { "HOME",       on_home,       nullptr },
+        { "SCREENSHOT", on_screenshot, nullptr },
+        { "WIFI",       on_wifi,       &s_wifi_label },
+        /**/
+        { "BT",         on_bt,         &s_bt_label },
+        /**/
+        { "USB RESET",  on_usb_reset,  nullptr },
+        { (!s_hooks.set_orientation && s_hooks.rotate) ? "ROTATE" : nullptr,
+          on_rotate, nullptr },
+    };
+    lv_obj_t *pair = nullptr;
+    for (unsigned i = 0, placed = 0; i < sizeof(actions)/sizeof(actions[0]); i++) {
+        if (!actions[i].text) continue;
+        if (placed % 2 == 0) pair = ls_ui_button_group(s_shade);
+        lv_obj_t *b = ls_ui_group_button(pair, actions[i].text, LS_BTN_DEFAULT,
+                                         actions[i].cb, nullptr, actions[i].label);
+        if (b) lv_obj_set_height(b, 56);
+        placed++;
+    }
+
+    /* Reboot is destructive enough to need a hold, and the hint line
        states the rule before anything is pressed. */
     ls_ui_hold_hint(s_shade, 1200);
     lv_obj_t *rb = ls_ui_hold_button(s_shade, "REBOOT", 1200, LS_BTN_DANGER,
                                      on_reboot, nullptr);
     if (rb) lv_obj_set_width(rb, lv_pct(100));
 
-    /*LS-800  Live memory, because "Low memory" on its own is not actionable. */
+    /* Live memory, because "Low memory" on its own is not actionable. */
     s_mem_label = ls_ui_note(s_shade, "FREE --");
 
     refresh_wifi_button();
-    /*LS-785*/
+    /**/
     refresh_bt_button();
 
-    /* Confirmation toast. Same panel kit as everything else. Lives at the
-       bottom above the rail so it does not obscure whatever the operator
-       was doing when they took the shot. Kept hidden until show. */
     s_toast = ls_ui_panel(parent, nullptr);
     lv_obj_set_width(s_toast, hor - 24);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -(SDR_RAIL_H + 12));
@@ -255,14 +314,15 @@ void ls_shade_build(lv_obj_t *parent)
 void ls_shade_open(void)
 {
     if (!s_shade || !s_scrim) return;
+    ls_shade_resize();
     lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_scrim);
     lv_obj_clear_flag(s_shade, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_shade);
     refresh_wifi_button();
-    /*LS-785*/
+    /**/
     refresh_bt_button();
-    /*LS-800*/
+    /**/
     refresh_memory();
 }
 

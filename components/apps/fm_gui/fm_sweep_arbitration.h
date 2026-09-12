@@ -7,16 +7,8 @@ extern "C" {
 
 #include <stdbool.h>
 
-/*LS-767*/
-/* The FM app has TWO owners of the tuner in a sweep context: the band-power
-   SWEEP mode (FM_MODE_SCAN) and scan_engine's stored/band channel scanner.
-   scan_engine forces the FM app into FM_MODE_LISTEN on every pass (LS-728), so
-   starting SWEEP while the scanner is still running looks dead from the outside
-   - the app leaves SWEEP the moment the next scanner pass fires.
-   AppFM::scanRestartCb worked around this by stopping the scanner first, but
-   AppFM::bandCb did not, so cycling BAND while channel scanning appeared to do
-   nothing. Both paths now go through this one function; the ordering lives here
-   once. */
+/**/
+/* The FM app has TWO owners of the tuner in a sweep context: the band-power SWEEP mode (FM_MODE_SCAN) and scan_engine's stored/band channel scanner. */
 
 typedef struct {
     /* True when the stored/band channel scanner is running. */

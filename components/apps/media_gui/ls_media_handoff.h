@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/*LS-753*/
+/**/
 /* Files-to-Music handoff.  The file browser stashes a path here before it
    launches MUSIC, and AppMedia consumes it in run() AND resume() - the old
    code only consumed on run(), so after the shell had built Music once, every

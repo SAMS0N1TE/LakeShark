@@ -39,17 +39,6 @@
 
 #include "esp_libusb_private.h"
 
-/* librtlsdr has hundreds of fprintf(stderr, ...) calls scattered through
- * its codebase. On desktop Linux these show up in the terminal; on our
- * ESP32 they bypass ESP_LOG (which the TUI hooks) AND they bypass the
- * UART driver's TX buffer — going straight through stderr which lands
- * on a different VFS path. Result: raw text leaks past the TUI border
- * and shreds the screen.
- *
- * Redefine fprintf(stderr, ...) to funnel through ESP_LOGW so the TUI
- * log hook captures it. Uses a comma operator trick because fprintf
- * has a different signature than ESP_LOGW — we discard the stream
- * argument and just format the rest. */
 #undef fprintf
 #define fprintf(stream, ...)  ESP_LOGW("RTLSDR", __VA_ARGS__)
 
@@ -285,23 +274,8 @@ int r820t_set_bw(void *dev, int bw)
     if (r)
         return r;
 
-    /*LS-826  Do not retune to a frequency nobody has set.
+    /* Do not retune to a frequency nobody has set. */
 
-       r82xx_set_bandwidth picks the IF from the requested bandwidth - one of
-       4570000 / 3570000 / 2300000, then minus half the real bandwidth - and
-       r82xx_set_freq computes lo_freq = freq + int_freq. During bring-up the
-       bandwidth is set before any tune, so devt->freq is still 0 and this line
-       asked the PLL for the IF on its own. With the IF landing on 1815000 that
-       is 1.815 MHz, where no mix_div up to 64 reaches the 1.77 GHz VCO minimum,
-       so the divider search finds nothing and the tuner reports:
-
-           [R82XX] Freq: 1815000
-           [R82XX] PLL not locked!
-
-       Harmless - the next real tune works - but it is a scary pair of lines at
-       every boot, it leaves the PLL unlocked through the rest of init, and it
-       cost a session to trace because 1815000 matches no frequency anybody
-       asked for. There is nothing to retune to before the first tune. */
     if (devt->freq == 0)
         return 0;
 
@@ -482,17 +456,17 @@ int rtlsdr_i2c_write_reg(rtlsdr_dev_t *dev, uint8_t i2c_addr, uint8_t reg, uint8
     data[0] = reg;
     data[1] = val;
 
-    return rtlsdr_write_array(dev, IICB, i2c_addr, data, 2); 
+    return rtlsdr_write_array(dev, IICB, i2c_addr, data, 2);
 }
 
 uint8_t rtlsdr_i2c_read_reg(rtlsdr_dev_t *dev, uint8_t i2c_addr, uint8_t reg)
 {
     uint8_t data = 0;
-    
-    rtlsdr_write_array(dev, IICB, i2c_addr, &reg, 1); 
-    rtlsdr_read_array(dev, IICB, i2c_addr, &data, 1);          
-    
-    return data; 
+
+    rtlsdr_write_array(dev, IICB, i2c_addr, &reg, 1);
+    rtlsdr_read_array(dev, IICB, i2c_addr, &data, 1);
+
+    return data;
 }
 
 int rtlsdr_i2c_write(rtlsdr_dev_t *dev, uint8_t i2c_addr, uint8_t *buffer, int len)
@@ -611,6 +585,7 @@ void rtlsdr_set_gpio_output(rtlsdr_dev_t *dev, uint8_t gpio)
 
 void rtlsdr_set_i2c_repeater(rtlsdr_dev_t *dev, int on)
 {
+    if (!dev) return;
     if (on == dev->i2c_repeater_on)
         return;
     on = !!on; /* values +2 to force on */
@@ -852,7 +827,7 @@ int rtlsdr_get_xtal_freq(rtlsdr_dev_t *dev, uint32_t *rtl_freq, uint32_t *tuner_
 int rtlsdr_get_usb_strings(rtlsdr_dev_t *dev, char *manufact, char *product,
                            char *serial)
 {
-    /*LS-409*/
+    /**/
     if (!dev || !dev->driver_obj || !dev->driver_obj->dev_hdl) return -1;
     usb_device_info_t dev_info;
     if (usb_host_device_info(dev->driver_obj->dev_hdl, &dev_info) != ESP_OK) {
@@ -1405,7 +1380,7 @@ static rtlsdr_dongle_t *find_known_device(uint16_t vid, uint16_t pid)
 
 void esp_action_get_dev_desc(rtlsdr_dev_t *dev)
 {
-    /*LS-409*/
+    /**/
     if (!dev || !dev->driver_obj || !dev->driver_obj->dev_hdl) return;
     ESP_LOGI(TAG_ADSB, "Getting config descriptor");
     const usb_config_desc_t *config_desc;
@@ -1433,16 +1408,17 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
     uint8_t reg;
 
     dev = malloc(sizeof(rtlsdr_dev_t));
-    class_driver_t *driver_obj = calloc(1, sizeof(class_driver_t));
     if (NULL == dev)
         return -1; // Usually -ENOMEM
+
+    class_driver_t *driver_obj = calloc(1, sizeof(class_driver_t));
 
     memset(dev, 0, sizeof(rtlsdr_dev_t));
     memcpy(dev->fir, fir_default, sizeof(fir_default));
 
     dev->dev_lost = 1;
 
-    /*LS-409*/
+    /**/
     if (NULL == driver_obj) { free(dev); return -1; }
 
     driver_obj->client_hdl = client_hdl;
@@ -1482,7 +1458,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
     {
         printf("Dummy write failed. Device might need reset, continuing anyway...\n");
     }
-    
+
     dev->rtl_xtal = 28800000; // DEF_RTL_XTAL_FREQ
 
     rtlsdr_init_baseband(dev);
@@ -1490,7 +1466,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
 
     /* Probe tuners */
     rtlsdr_set_i2c_repeater(dev, 1);
-    
+
     // reg = rtlsdr_i2c_read_reg(dev, E4K_I2C_ADDR, E4K_CHECK_ADDR);
     // fprintf(stderr, "rtlsdr_i2c_read_reg E4K_I2C_ADDR setting done\n");
     // if (reg == E4K_CHECK_VAL)
@@ -1609,7 +1585,7 @@ found:
     return 0;
 }
 
-/*LS-407*/
+/**/
 int rtlsdr_close(rtlsdr_dev_t *dev)
 {
     if (!dev) return -1;

@@ -1,7 +1,7 @@
 #ifndef REC_STATE_H
 #define REC_STATE_H
 
-/*LS-500*/
+/**/
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -30,7 +30,7 @@ typedef enum {
     REC_DONE,
 } rec_phase_t;
 
-/*LS-517*/
+/**/
 typedef enum {
     REC_END_NONE = 0,
     REC_END_GAP,
@@ -62,24 +62,21 @@ typedef struct {
     uint32_t    captures;
     uint32_t    bytes_sec;
     char        last_file[64];
-    /*LS-516*/
+    /**/
     uint32_t    bw_hz;
     uint32_t    min_pulse_us;
     uint32_t    max_span_us;
     int         min_edges;
-    /*LS-517*/
+    /**/
     int         end_reason;
     uint32_t    min_mark_us;
     uint32_t    max_mark_us;
     uint32_t    baud_est;
-    /*LS-960*/
+    /**/
     int         mag_peak;             /* peak seen across the last capture */
     int         mag_floor_at_start;   /* floor when the capture started */
-    /*LS-961*/
-    /* Free bytes on the capture volume at the moment rec_get_status()
-       was called.  UINT64_MAX means "probe failed" - the REC screen and
-       the console command render that as "?" so the operator knows the
-       filesystem could not be queried rather than that it is at zero. */
+    /**/
+
     uint64_t    bytes_free;
 } rec_status_t;
 
@@ -104,14 +101,14 @@ void rec_get_receiver_status(ls_iq_control_status_t *out);
 void rec_set_freq(uint32_t hz);
 uint32_t rec_get_freq(void);
 void rec_set_gain(int tenths);
-/*LS-503*/
+/**/
 void rec_set_thresh(int absolute);
 int  rec_get_thresh(void);
-/*LS-504*/
+/**/
 void rec_set_gap_ms(int ms);
 int  rec_get_gap_ms(void);
 
-/*LS-516*/
+/**/
 void     rec_set_bw(uint32_t hz);
 uint32_t rec_get_bw(void);
 void     rec_set_min_pulse(uint32_t us);
@@ -121,10 +118,10 @@ uint32_t rec_get_max_span(void);
 void     rec_set_min_edges(int n);
 int      rec_get_min_edges(void);
 
-/*LS-517*/
+/**/
 const char *rec_end_reason_name(int reason);
 
-/*LS-963*/
+/**/
 /* The SCOUT view. When enabled, the rx task folds IQ into an FFT and
    publishes a normalised 0..1 spectrum resampled to `n` bins across the
    REC_SCOUT_SPAN_HZ window centred on rec_get_freq().  The bins are the
@@ -150,18 +147,18 @@ uint32_t rec_scout_sweeps(void);
 
 bool rec_active(void);
 void rec_arm(void);
-/*LS-506*/
+/**/
 void rec_arm_request(void);
 void rec_disarm(void);
 
-/*LS-507*/
+/**/
 uint32_t rec_bytes_sec(void);
 
-/*LS-508*/
+/**/
 int rec_edge_count(void);
 int rec_edges_copy(int from, int32_t *out, int max);
 
-/*LS-961*/
+/**/
 /* Return the free-byte count of the volume rec_dir() points at, or
    UINT64_MAX if the probe (statvfs) failed - which the caller must treat
    as "do not write".  Cheap enough to call from the REC timer tick and
@@ -172,18 +169,12 @@ uint64_t rec_dir_free_bytes(void);
    sync. A numeric collision suffix is added without modifying old files. */
 int  rec_save(const char *name, char *path_out, size_t path_len);
 
-/*LS-907*/
-/* Returns the total number of .sub captures in rec_dir(), independent of
-   whether they all fit in `out`.  Writes as many "<name> (<size> B)"
-   chunks as the buffer holds, separated by ", ", and sets *out_truncated
-   (when non-null) to true when the buffer filled before every entry was
-   written.  The caller compares the returned total against its own row
-   cap to detect row-capacity truncation, so both limits can be reported
-   honestly. */
+/**/
+
 int  rec_list(char *out, size_t len, bool *out_truncated);
-/*LS-031*/
+/**/
 const char *rec_dir(void);
-/*LS-032*/
+/**/
 int  rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size);
 int  rec_load(int index);
 int  rec_dump(const char *name, void (*emit)(const char *line, void *ctx), void *ctx);

@@ -42,9 +42,7 @@ struct flex_ctx {
     float inc, acc;
     float sum;
     float thr;
-    /* Peak-tracked amplitude estimate on the per-symbol integrator scale;
-       used to place the 4-FSK mid threshold between the +/-1 and +/-1/3
-       classes.  Only read by handle_symbol_4fsk. */
+
     float lvl_est;
     int   prev_slice;
     int   idle_run;
@@ -134,8 +132,7 @@ static void reset_hunt(flex_ctx_t *c)
     c->idle_run = 0;
 }
 
-/* Text quality score.  Same shape as pocsag.c::pocsag_text_score - see LS-826
-   for why character-class ratios alone are not enough.  A block whose
+/* Text quality score.  Same shape as pocsag.c::pocsag_text_score - see for why character-class ratios alone are not enough.  A block whose
    codewords BCH-fixed to random-looking payloads must not render as alpha. */
 static int flex_text_score(const char *s, int n)
 {
@@ -276,7 +273,7 @@ static void process_block(flex_ctx_t *c)
             }
         } else {
             /* BIW said this was a message but the payload does not read
-               as one - LS-826 precedent from POCSAG: showing rubbish is
+               as one - precedent from POCSAG: showing rubbish is
                worse than showing nothing. */
             reset_hunt(c);
             return;
@@ -485,7 +482,7 @@ void flex_process(flex_ctx_t *c, const float *demod, int n)
 
         /* Sample at the transition-aligned phase (acc crosses 0.5) - the
            timing loop above pulls transitions to that phase, so the integrator
-           window ends up spanning exactly one symbol.  See LS-818 in
+           window ends up spanning exactly one symbol.  See in
            pocsag.c for why the OTHER phase (acc crosses 1.0) is not the
            right one to sample. */
         if (old < 0.5f && c->acc >= 0.5f) {

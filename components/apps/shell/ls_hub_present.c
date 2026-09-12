@@ -28,10 +28,6 @@ static const char *rec_phase_name(int phase)
     }
 }
 
-/*LS-697  app_current() exposes the backend owner, which is not always the
-  operator-facing app: ACARS deliberately runs inside FM, while REC used to
-  fall through to an IDLE/zero-frequency summary. Keep that translation here
-  so every hub consumer sees the same label and navigation target. */
 void ls_hub_present(const ls_hub_observation_t *in,
                     ls_hub_presentation_t *out)
 {
@@ -98,9 +94,6 @@ void ls_hub_present(const ls_hub_observation_t *in,
     if (out->signal_pct < 0) out->signal_pct = 0;
     if (out->signal_pct > 100) out->signal_pct = 100;
 
-    /* A stopped or missing receiver cannot truthfully carry live signal
-       state. Preserve identity, navigation, and the requested frequency so
-       Home does not rewrite or conceal the station the operator selected. */
     if (in->parked) {
         out->signal_pct = 0;
         out->active = false;

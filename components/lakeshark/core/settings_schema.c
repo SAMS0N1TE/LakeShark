@@ -1,4 +1,4 @@
-/* LS-800 - see settings_schema.h for what this exists to catch. */
+/* - see settings_schema.h for what this exists to catch. */
 
 #include "settings_schema.h"
 

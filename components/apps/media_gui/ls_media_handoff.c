@@ -7,10 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/*LS-753*/
-/* Sized to hold /sdcard/<subdir>/<name.ext> for anything the file browser can
-   reach.  A path longer than this is truncated by snprintf rather than
-   overrun. */
+/**/
+
 static char s_pending[192] = {0};
 
 void ls_media_handoff_set(const char *path)

@@ -18,25 +18,12 @@ extern "C" {
 #include "ls_time.h"
 }
 
-/* Preset air-band channels the CHAN button walks through.  ACARS in North
-   America uses 131.550 as the primary and 130.025 / 129.125 as secondaries;
-   131.725 is the primary elsewhere.  The panel exists so the operator does
-   not have to open the shell and type a frequency in hex - one button that
-   cycles four known channels covers the common case. */
 namespace {
 constexpr uint32_t ACARS_CHANS[] = {
     131550000UL, 130025000UL, 129125000UL, 131725000UL,
 };
 constexpr int ACARS_CHAN_N = (int)(sizeof(ACARS_CHANS) / sizeof(ACARS_CHANS[0]));
 }
-
-/* ACARS lives in its own app rather than as an ADS-B tab.  ACARS is a
-   message log; ADS-B is a live positional picture.  The two do not share
-   an update cadence, an interaction model, or a reason to be seen at the
-   same time - the ADS-B tab strip is already five tabs deep, and slotting
-   a scrolling message log next to the radar makes both worse.  Keeping
-   ACARS standalone also keeps the "works with no ADS-B data present"
-   promise trivial: no cross-reference exists to accidentally require. */
 
 static void inject_seq(void)
 {
@@ -82,7 +69,7 @@ bool AppACARS::resume(void)
 bool AppACARS::close(void)
 {
     closeEntry();
-    /* LS-746: the new log tree is empty on reconstruction, even if the
+    /* the new log tree is empty on reconstruction, even if the
      * decoder counters have not changed while ACARS was closed. */
     _last_head = -1;
     _last_delivered = _last_bad_crc = 0;
@@ -110,10 +97,6 @@ bool AppACARS::run(lv_obj_t *parent)
     lv_obj_clear_flag(screen.controls, LV_OBJ_FLAG_HIDDEN);
     buildFooter(screen.controls);
 
-    /* Kick the radio into ACARS mode on the FM shared session.  The
-       operator's contract is "open the panel and it hears the band";
-       done_when in the task file forbids leaving them to type into the
-       shell. */
     lakeshark_acars_start();
 
     refresh();
@@ -157,8 +140,7 @@ void AppACARS::buildLog(lv_obj_t *parent)
     ls_ui_style_scroll_panel(box);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(box, LV_DIR_VER);
-    /* LS-827 pattern: keep the scrollbar drawn so an operator can see there
-       is more content above or below, not just guess. */
+
     lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_ON);
 
     _log_col = box;
@@ -170,7 +152,7 @@ void AppACARS::buildLog(lv_obj_t *parent)
 
 void AppACARS::buildTuning(lv_obj_t *parent)
 {
-    /* LS-762: two explicit equal-width groups keep manual tuning reachable
+    /* two explicit equal-width groups keep manual tuning reachable
      * without a natural-width row escaping the 480 px receiver panel. */
     lv_obj_t *panel = ls_ui_panel(parent, nullptr);
     lv_obj_t *row = ls_ui_button_group(panel);
@@ -197,9 +179,7 @@ void AppACARS::updateTuningLabel(void)
     fm_get_receiver_status(&radio);
     ls_receiver_presentation_t receiver;
     ls_receiver_present(&radio, &receiver);
-    /* LS-762: gain zero is the backend's requested AGC mode. Keep that
-     * selection visible while pending/offline; the gain readout separately
-     * reports effective gain and errors rather than implying an applied mode. */
+
     ls_ui_button_set_role(_agc_btn, radio.requested_gain_tenths_db == 0
         ? LS_BTN_TOGGLE_ON : LS_BTN_TOGGLE_OFF);
     char s[128];
@@ -264,7 +244,7 @@ void AppACARS::refresh(void)
                  (unsigned long)s->n_bad_crc,
                  (unsigned long)s->n_synced);
     } else {
-        /* LS-725: a selected ACARS submode is only intent.  Task creation can
+        /* a selected ACARS submode is only intent.  Task creation can
            fail before one IQ byte is received, so the dedicated panel must
            not keep its green lamp and "listening" claim in that state. */
         snprintf(h, sizeof(h), "NO RX (%s)    MSGS %lu",
@@ -336,18 +316,12 @@ void AppACARS::refresh(void)
         lv_label_set_long_mode(strip, LV_LABEL_LONG_WRAP);
         lv_label_set_text(strip, top);
 
-        /* Row 2 - the text body.  Wraps rather than clips because ACARS
-           messages carry newlines and long weather strings that would
-           otherwise fall off the right of the panel. */
         lv_obj_t *body = sdr_label(card, sdr_font_mono(),
                                    k == 0 ? SDR_BRIGHT : SDR_TEXT);
         lv_obj_set_width(body, lv_pct(100));
         lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
         lv_label_set_text(body, m->text[0] ? m->text : "(no text)");
 
-        /* A parity-errors line is only drawn when the count is non-zero -
-           an operator does not need to see "0 errors" on every clean
-           message, but a decode with hits must not silently look clean. */
         if (m->parity_errors > 0) {
             char pe[48];
             snprintf(pe, sizeof(pe), "parity errors: %d", m->parity_errors);
@@ -356,9 +330,6 @@ void AppACARS::refresh(void)
         }
     }
 
-    /* Newest at top means the operator's eye lands there on refresh; scroll
-       the column back to the top so a burst of arrivals does not leave the
-       reader stuck halfway down looking at the old ones. */
     lv_obj_scroll_to_y(_log_col, 0, LV_ANIM_OFF);
 }
 

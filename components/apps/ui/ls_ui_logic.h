@@ -39,7 +39,7 @@ typedef struct {
     bool fired;
 } ls_ui_confirm_state_t;
 
-/* LS-698: the old hold control kept its transition state inside an LVGL
+/* the old hold control kept its transition state inside an LVGL
  * callback, where a short press and duplicate completion could not be tested.
  * This state machine is UI-independent; the shared button below only renders
  * its effects.  Unsigned subtraction intentionally preserves tick wrap. */
@@ -49,18 +49,6 @@ ls_ui_confirm_effect_t ls_ui_confirm_step(ls_ui_confirm_state_t *state,
                                           uint32_t now_ms);
 uint32_t ls_ui_confirm_remaining_ms(const ls_ui_confirm_state_t *state,
                                     uint32_t now_ms);
-
-/* LS-1011: the hold caption used to be whole seconds, rounded UP.  For the
- * 1500 ms recovery hold that is "HOLD 2" from the instant of the press - the
- * control asks for two seconds and completes after one and a half, so an
- * operator who counts the caption down releases early and the button looks
- * like it lied.  The caption is now tenths, TRUNCATED: it may understate the
- * time left by up to 99 ms, never overstate it, and it moves fifteen times
- * across a 1.5 s hold instead of once.
- *
- * Split in two so the LVGL button can compare the quantised value it is
- * already showing and repaint on a tenth boundary rather than on every
- * LV_EVENT_PRESSING. */
 
 /* Longest caption ls_ui_confirm_caption() writes, NUL included: "HOLD 99.9". */
 #define LS_UI_CONFIRM_CAPTION_MAX 12u

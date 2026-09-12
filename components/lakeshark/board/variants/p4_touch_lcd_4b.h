@@ -5,8 +5,11 @@
 
 #define LS_BOARD_NAME            "ESP32-P4-WIFI6-Touch-LCD-4B"
 #define LS_BOARD_FLASH_MB        32
+/* existing Waveshare battery-divider measurement, GPIO20. */
+#define LS_BOARD_BATTERY_ADC_CHANNEL 4
+#define LS_BOARD_BATTERY_DIVIDER 3
 
-/*LS-002  No software VBUS control; the port is hard-powered. */
+/* No software VBUS control; the port is hard-powered. */
 #define LS_BOARD_VBUS_EN_GPIO    (-1)
 
 #define LS_BOARD_LCD_H_RES       720
@@ -16,7 +19,7 @@
 #define LS_BOARD_TOUCH_RST_GPIO  23
 #define LS_BOARD_TOUCH_INT_GPIO  (-1)
 
-/*LS-003*/
+/**/
 #define LS_BOARD_LINK_RX_GPIO    33
 #define LS_BOARD_LINK_TX_GPIO    32
 #define LS_BOARD_LINK_SCAN_PINS \

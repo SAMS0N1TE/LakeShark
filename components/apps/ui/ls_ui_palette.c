@@ -9,22 +9,15 @@ static const ls_ui_palette_entry_t PALETTE[LS_UI_COLOR_COUNT] = {
     [LS_UI_COLOR_BACKGROUND]   = { "background",   0x0A0C0D },
     [LS_UI_COLOR_PANEL]        = { "panel",        0x171A1C },
     [LS_UI_COLOR_PANEL_BORDER] = { "panel border", 0x2C3237 },
-    /* LS-788: both were raised for daylight. This is a transmissive panel
-     * and the operator uses it outdoors, where anything under about 4.5:1
-     * against the panel fill stops being readable. Measured against PANEL
-     * (0x171A1C, relative luminance 0.0092):
-     *   dim text 0x515A61 -> 2.5:1  FAILED - this is every row label, the
-     *                               single most common text in the shell
-     *   dim text 0x9AA4AC -> 7.1:1  passes, still clearly below TEXT
-     *   text     0xC8D0D6 -> 10.9:1 passed already; 0xDCE3E8 -> 13.4:1
-     * The hierarchy is preserved: dim is still visibly dimmer than text. */
+    /* both were raised for daylight. */
+
     [LS_UI_COLOR_TEXT]         = { "text",         0xDCE3E8 },
     [LS_UI_COLOR_DIM_TEXT]     = { "dim text",     0x9AA4AC },
     [LS_UI_COLOR_ACCENT]       = { "accent",       0x84D2CE },
     [LS_UI_COLOR_WARN]         = { "warn",         0xE3A83F },
     [LS_UI_COLOR_ALARM]        = { "alarm",        0xE45B50 },
 
-    /* LS-660: app identity.  Chosen for separation from each other at a
+    /* app identity.  Chosen for separation from each other at a
      * glance and for contrast against the 0x0A0C0D background, and kept
      * clear of ALARM's 0xE45B50 so a red header is never mistaken for a
      * red warning.  ID_RED is deliberately deeper and less orange than

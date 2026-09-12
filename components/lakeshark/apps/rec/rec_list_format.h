@@ -1,17 +1,7 @@
 #ifndef REC_LIST_FORMAT_H
 #define REC_LIST_FORMAT_H
 
-/*LS-907*/
-/* rec_list() used to return the number of entries whose formatted
-   "<name> (<size> B)" chunk fit into the caller's output buffer, so a
-   directory full of maximum-length names ran the byte buffer dry before
-   the FILES tab's row cap kicked in and the tab quietly reported a
-   smaller complete total.  The helpers here separate the two limits:
-   rec_files_append is atomic (an entry either lands in full and advances
-   the write cursor, or nothing is written and the buffer is left
-   nul-terminated at the last complete entry), and rec_files_format runs
-   an in-memory list through it so the bench can pin the byte-capacity
-   behaviour with maximum-length names, without a directory or a stat. */
+/**/
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -39,7 +29,7 @@ int rec_files_format(char *out, size_t len,
                      const char *const *names, const long *sizes, int n,
                      bool *out_truncated);
 
-/*LS-960*/
+/**/
 /* Append "<name>  <MHz> MHz  <time>" (two spaces between fields) to `out`
    starting at *used, prefixed with ", " when *used is non-zero.  `time` may
    be NULL or empty - in that case "-" is emitted so a directory of mixed

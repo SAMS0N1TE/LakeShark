@@ -3,7 +3,7 @@
 
 #include "scan_ctrl.h"
 
-/* LS-739: used by the real decode loop and deterministic backend replay.
+/* used by the real decode loop and deterministic backend replay.
  * Reset at every call/tune boundary, including same-TG rejoin without HDU.
  * IDEN/system state deliberately survives a traffic excursion. */
 static inline void p25_receive_call_reset(dsd_state *s)
@@ -40,7 +40,7 @@ static inline bool p25_receive_frame(p25_scan_ctrl_t *sc,
     if (f->state == P25_GRANT_ON_TRAFFIC && s->p25_frame_valid && s->p25_lcw_valid &&
         !s->p25_lcw_is_unit_to_unit && s->p25_lcw_talkgroup &&
         s->p25_lcw_talkgroup != f->talkgroup) {
-        /* LS-739: validated LCW contradicts the grant. Do not attribute its
+        /* validated LCW contradicts the grant. Do not attribute its
          * PCM/ESS to the requested TG or poison that TG's encrypted skip. */
         (void)p25_grant_force_return_to_control(f);
         p25_receive_call_reset(s);

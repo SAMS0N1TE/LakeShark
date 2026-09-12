@@ -1,4 +1,4 @@
-/* LS-694: bounded CQPSK loop controls in the units used by recovered679.
+/* bounded CQPSK loop controls in the units used by recovered679.
  * timing_gain multiplies the Gardner error before changing the estimated
  * samples/symbol; carrier_gain multiplies residual differential phase before
  * changing the phase-step estimate.  These are not Costas-loop bandwidths. */
@@ -20,9 +20,6 @@ extern "C" {
 #define P25_CQPSK_CARRIER_GAIN_MIN     0.0025f
 #define P25_CQPSK_CARRIER_GAIN_MAX     0.04f
 
-/* NVS stores exact, architecture-independent units rather than float object
- * bytes.  2.56e9 exactly represents the recovered 1/6400 timing default and
- * every x2 step in the bounded UI ladder. */
 #define P25_CQPSK_GAIN_SCALE 2560000000U
 
 typedef struct {

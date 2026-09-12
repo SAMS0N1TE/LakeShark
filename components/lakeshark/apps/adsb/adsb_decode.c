@@ -195,7 +195,14 @@ static void on_msg(mode_s_t *self, struct mode_s_msg *mm)
     if (mm->msgtype == 11) {
         a->mt_df11++;
     } else if (mm->msgtype == 17) {
-        if (mm->metype >= 1 && mm->metype <= 4)        a->mt_df17_id++;
+        if (mm->metype >= 1 && mm->metype <= 4) {
+            a->mt_df17_id++;
+            /* Kept for the detail page: what kind of aircraft the
+               transponder says it is. The low three bits of the first ME
+               byte are the category within the set the type code names. */
+            a->emitter_tc = (uint8_t)mm->metype;
+            a->emitter_ca = (uint8_t)mm->mesub;
+        }
         else if (mm->metype >= 9 && mm->metype <= 18)  a->mt_df17_pos++;
         else if (mm->metype >= 19 && mm->metype <= 22) a->mt_df17_vel++;
         else                                            a->mt_other++;

@@ -9,10 +9,6 @@
 #include <string.h>
 #include <time.h>
 
-/* LS-725: the eight-message display ring is ordinary UI/decoder data, never
-   DMA, ISR or cache-off state.  Its fixed sizeof(acars_state_t) payload
-   belongs in PSRAM rather than consuming scarce internal DRAM for the whole
-   boot. */
 static EXT_RAM_BSS_ATTR acars_state_t s_state;
 
 const acars_state_t *acars_app_state(void)     { return &s_state; }

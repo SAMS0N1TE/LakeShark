@@ -1,0 +1,610 @@
+{
+  "_comment": "The shared console definition. The GUI and the CLI both read this file, so a button the operator presses and a command an agent sends are the same string from the same place. Edit this, not either client.",
+  "_verified": "Every command below was read out of the board's own 'help' on 2026-09-09, firmware 1.0.3-ge423d9845154-dirty on T-Display-P4 5C84301528. An earlier version of this file was written from guesses and about a third of it was wrong. If you add one, run 'help' and copy the real syntax rather than assuming. The RADIO LINK, TIME and ACTIONS groups were added 2026-09-09 and every command in them was exercised on hardware - see bench/HARDWARE_2026-09-09.md for what each one printed.",
+  "version": 1,
+  "default_board": "t-display-p4",
+  "default_wait": 3,
+  "groups": [
+    {
+      "name": "IDENTITY",
+      "buttons": [
+        {
+          "label": "HELP",
+          "cmd": "help",
+          "wait": 6,
+          "help": "Every registered command. The only authority on what this build has."
+        },
+        {
+          "label": "VERSION",
+          "cmd": "version",
+          "wait": 3,
+          "help": "Firmware, board, IDF. Its timestamp is the version TU's compile time, NOT the image's - identify an image by app SHA256."
+        },
+        {
+          "label": "STATUS",
+          "cmd": "status",
+          "wait": 3,
+          "help": "Mode, freq, volume, gain, mute, heap - the one-line answer to 'what is it doing'."
+        },
+        {
+          "label": "SAFEMODE",
+          "cmd": "safemode",
+          "wait": 3,
+          "help": "Boot health, failed-start count, whether a coredump is stored."
+        },
+        {
+          "label": "HEAP",
+          "cmd": "heap",
+          "wait": 4,
+          "help": "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats."
+        },
+        {
+          "label": "DATE",
+          "cmd": "date",
+          "wait": 3,
+          "help": "Wall clock, or an uptime marker when time has never been synced."
+        },
+        {
+          "label": "STATS",
+          "cmd": "stats",
+          "wait": 3,
+          "help": "NVS write counters. dropped>0 means settings changes are being shed."
+        }
+      ]
+    },
+    {
+      "name": "SCREEN",
+      "buttons": [
+        {
+          "label": "TUI ON",
+          "cmd": "tui",
+          "wait": 8,
+          "help": "Take the screen. Holds it and the LVGL lock until 'tui off'."
+        },
+        {
+          "label": "TUI OFF",
+          "cmd": "tui off",
+          "wait": 4,
+          "help": "Give the screen back to LVGL."
+        },
+        {
+          "label": "ROTATE",
+          "cmd": "tui rotate",
+          "wait": 4,
+          "help": "Turn the TUI 90 degrees. The session restarts to pick up the new grid."
+        },
+        {
+          "label": "PORTRAIT",
+          "cmd": "tui 0",
+          "wait": 4
+        },
+        {
+          "label": "LANDSCAPE",
+          "cmd": "tui 90",
+          "wait": 4
+        },
+        {
+          "label": "BRIGHT",
+          "cmd": "display brightness 100",
+          "wait": 3
+        },
+        {
+          "label": "DIM",
+          "cmd": "display brightness 30",
+          "wait": 3
+        }
+      ]
+    },
+    {
+      "name": "KEYS",
+      "_comment": "Injected keys. This is how the interface is driven with no keyboard attached, which is the normal state of this board.",
+      "buttons": [
+        {
+          "label": "F1 HOME",
+          "cmd": "tui key f1",
+          "wait": 2
+        },
+        {
+          "label": "F2",
+          "cmd": "tui key f2",
+          "wait": 2
+        },
+        {
+          "label": "F3",
+          "cmd": "tui key f3",
+          "wait": 2
+        },
+        {
+          "label": "F4",
+          "cmd": "tui key f4",
+          "wait": 2
+        },
+        {
+          "label": "F5",
+          "cmd": "tui key f5",
+          "wait": 2
+        },
+        {
+          "label": "UP",
+          "cmd": "tui key up",
+          "wait": 2
+        },
+        {
+          "label": "DOWN",
+          "cmd": "tui key down",
+          "wait": 2
+        },
+        {
+          "label": "LEFT",
+          "cmd": "tui key left",
+          "wait": 2
+        },
+        {
+          "label": "RIGHT",
+          "cmd": "tui key right",
+          "wait": 2
+        },
+        {
+          "label": "ENTER",
+          "cmd": "tui key enter",
+          "wait": 2
+        },
+        {
+          "label": "ESC",
+          "cmd": "tui key esc",
+          "wait": 2
+        },
+        {
+          "label": "TAB",
+          "cmd": "tui key tab",
+          "wait": 2
+        },
+        {
+          "label": "F10 KEYS",
+          "cmd": "tui key f10",
+          "wait": 2
+        },
+        {
+          "label": "F11 TURN",
+          "cmd": "tui key f11",
+          "wait": 4
+        }
+      ]
+    },
+    {
+      "name": "RADIO",
+      "buttons": [
+        {
+          "label": "P25",
+          "cmd": "mode p25",
+          "wait": 5,
+          "help": "Switch the radio to P25."
+        },
+        {
+          "label": "FM",
+          "cmd": "mode fm",
+          "wait": 5
+        },
+        {
+          "label": "ADS-B",
+          "cmd": "mode adsb",
+          "wait": 5
+        },
+        {
+          "label": "REC",
+          "cmd": "mode rec",
+          "wait": 5
+        },
+        {
+          "label": "GAIN AUTO",
+          "cmd": "gain auto",
+          "wait": 3
+        },
+        {
+          "label": "RTL",
+          "cmd": "rtl",
+          "wait": 3,
+          "help": "Dongle health. 'rtl detach' simulates an unplug."
+        },
+        {
+          "label": "SPEC",
+          "cmd": "spec",
+          "wait": 4,
+          "help": "Strongest bins of the FM SWEEP spectrum."
+        },
+        {
+          "label": "SCAN",
+          "cmd": "scan status",
+          "wait": 3
+        },
+        {
+          "label": "TEL",
+          "cmd": "tel 1",
+          "wait": 4,
+          "help": "One telemetry frame - the same fields the Flipper head reads."
+        }
+      ]
+    },
+    {
+      "name": "FM MODE",
+      "buttons": [
+        {
+          "label": "LISTEN",
+          "cmd": "fm listen",
+          "wait": 4
+        },
+        {
+          "label": "POCSAG",
+          "cmd": "fm pocsag",
+          "wait": 4
+        },
+        {
+          "label": "ACARS",
+          "cmd": "fm acars",
+          "wait": 4,
+          "help": "ACARS is an FM submode, not a top-level mode. 'fl MODE ACARS' is invalid."
+        },
+        {
+          "label": "FLEX",
+          "cmd": "fm flex",
+          "wait": 4
+        },
+        {
+          "label": "WFM",
+          "cmd": "fm wfm",
+          "wait": 4
+        },
+        {
+          "label": "SWEEP",
+          "cmd": "fm scan",
+          "wait": 4,
+          "help": "Band power sweep - this is what feeds the shared waterfall's FM source."
+        }
+      ]
+    },
+    {
+      "name": "AUDIO",
+      "buttons": [
+        {
+          "label": "BEEP",
+          "cmd": "beep",
+          "wait": 3,
+          "help": "Boot chime. Proves I2C, I2S and the codec path in one command."
+        },
+        {
+          "label": "MUTE",
+          "cmd": "mute",
+          "wait": 2,
+          "help": "Toggles - it is not a query."
+        },
+        {
+          "label": "VOL",
+          "cmd": "vol",
+          "wait": 2,
+          "help": "Prints volume AND mute state."
+        },
+        {
+          "label": "VOL 30",
+          "cmd": "vol 30",
+          "wait": 2
+        },
+        {
+          "label": "VOL +10",
+          "cmd": "vol +10",
+          "wait": 2
+        },
+        {
+          "label": "VOL -10",
+          "cmd": "vol -10",
+          "wait": 2
+        },
+        {
+          "label": "ALERT",
+          "cmd": "moto alert",
+          "wait": 3
+        }
+      ]
+    },
+    {
+      "name": "HARDWARE",
+      "buttons": [
+        {
+          "label": "I2C",
+          "cmd": "i2c",
+          "wait": 5,
+          "help": "Scan both buses. This is how the absent touch controller was found."
+        },
+        {
+          "label": "KEYS",
+          "cmd": "keys",
+          "wait": 4,
+          "help": "Keypad probe. 'keys watch' prints events for ten seconds."
+        },
+        {
+          "label": "KEYWATCH",
+          "cmd": "keys watch",
+          "wait": 12
+        },
+        {
+          "label": "GPS",
+          "cmd": "gps",
+          "wait": 5
+        },
+        {
+          "label": "LORA",
+          "cmd": "lora",
+          "wait": 5,
+          "help": "Bring the SX1262 up and report what answered. The packet path is under RADIO LINK."
+        },
+        {
+          "label": "SPI",
+          "cmd": "spi",
+          "wait": 3
+        },
+        {
+          "label": "C6",
+          "cmd": "c6 ver",
+          "wait": 5
+        },
+        {
+          "label": "CRASH",
+          "cmd": "crash",
+          "wait": 5,
+          "help": "Bounded stored-dump metadata. Does not decode on device and does not erase."
+        }
+      ]
+    },
+    {
+      "name": "RADIO LINK",
+      "_comment": "SX1262 LoRa packet path (LS-967) and MeshCore (LS-969). Defaults are US915 910.525 MHz SF8 BW62.5k CR4/5 sync 0x12 - MeshCore's own settings. NOTE: MeshCore takes exclusive ownership of the radio once started, so 'lora rx' is refused while it runs; that is LS-970 and it is deliberate.",
+      "buttons": [
+        {
+          "label": "LORA CFG",
+          "cmd": "lora config",
+          "wait": 10,
+          "help": "Configure at the US915 defaults and report airtime for 16 bytes."
+        },
+        {
+          "label": "LORA RX 10",
+          "cmd": "lora rx 10",
+          "wait": 25,
+          "help": "Listen for 10 s and report packets, errors and the measured noise floor. A healthy floor here is around -115 dBm."
+        },
+        {
+          "label": "LORA TX",
+          "cmd": "lora tx LakeShark",
+          "wait": 20,
+          "help": "TRANSMITS. Sends one plain LoRa frame so the path can be proved against a second radio."
+        },
+        {
+          "label": "MESH START",
+          "cmd": "mesh start",
+          "wait": 15,
+          "help": "Bring MeshCore up in the background. Receive only - transmit is disarmed at every boot."
+        },
+        {
+          "label": "MESH",
+          "cmd": "mesh",
+          "wait": 6,
+          "help": "Node id, whether transmit is armed, dispatcher loop count, packet and airtime counters."
+        },
+        {
+          "label": "MESH TX ON",
+          "cmd": "mesh tx on",
+          "wait": 6,
+          "help": "ARMS TRANSMIT. Not persisted - it is off again after any reboot."
+        },
+        {
+          "label": "MESH TX OFF",
+          "cmd": "mesh tx off",
+          "wait": 6,
+          "help": "Disarm transmit."
+        },
+        {
+          "label": "ADVERT",
+          "cmd": "mesh advert",
+          "wait": 12,
+          "help": "TRANSMITS. Floods a signed self-advert. Refused unless transmit is armed."
+        },
+        {
+          "label": "MESH STOP",
+          "cmd": "mesh stop",
+          "wait": 8,
+          "help": "Stop the background task and give the radio back."
+        }
+      ]
+    },
+    {
+      "name": "TIME",
+      "_comment": "PCF8563 RTC (LS-968). The board boots with a real wall clock from this part, with no network.",
+      "buttons": [
+        {
+          "label": "RTC",
+          "cmd": "rtc",
+          "wait": 6,
+          "help": "Read the RTC. Says explicitly when the oscillator has stopped, rather than reporting a stale count as a date."
+        },
+        {
+          "label": "RTC SYNC",
+          "cmd": "rtc sync",
+          "wait": 6,
+          "help": "Store the current system clock into the RTC so it survives the next power cycle."
+        },
+        {
+          "label": "DATE",
+          "cmd": "date",
+          "wait": 4,
+          "help": "Wall clock, or an uptime marker when time has never been set."
+        }
+      ]
+    },
+    {
+      "name": "ACTIONS",
+      "_comment": "The named action registry (LS-966). This is the same dispatch a user app on the SD card uses, so a button here and a .lsapp binding cannot disagree. Bare 'call' lists everything the running firmware offers, which is the only listing that cannot go stale.",
+      "buttons": [
+        {
+          "label": "LIST",
+          "cmd": "call",
+          "wait": 6,
+          "help": "Every registered action with its signature and the capability it needs."
+        },
+        {
+          "label": "HOME",
+          "cmd": "call ui.screen 0",
+          "wait": 4
+        },
+        {
+          "label": "FALLS",
+          "cmd": "call ui.screen 4",
+          "wait": 4
+        },
+        {
+          "label": "NEXT SCR",
+          "cmd": "call ui.next",
+          "wait": 4
+        },
+        {
+          "label": "PAL HEAT",
+          "cmd": "call wf.palette 0",
+          "wait": 4
+        },
+        {
+          "label": "PAL NEON",
+          "cmd": "call wf.palette 3",
+          "wait": 4
+        },
+        {
+          "label": "SPLIT 25",
+          "cmd": "call wf.split 25",
+          "wait": 4
+        },
+        {
+          "label": "SPLIT 50",
+          "cmd": "call wf.split 50",
+          "wait": 4
+        },
+        {
+          "label": "WF PAUSE",
+          "cmd": "call wf.pause true",
+          "wait": 4
+        },
+        {
+          "label": "WF RUN",
+          "cmd": "call wf.pause false",
+          "wait": 4
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "label": "Boot health",
+      "help": "What state did it come up in, and is anything stored from last time.",
+      "steps": [
+        "version",
+        "safemode",
+        "heap"
+      ]
+    },
+    {
+      "label": "Start the TUI",
+      "help": "Take the screen and land on the directory.",
+      "steps": [
+        "tui",
+        "tui key f1"
+      ]
+    },
+    {
+      "label": "Walk the directory",
+      "help": "Drive the launcher with no keyboard: move, then open.",
+      "steps": [
+        "tui key f1",
+        "tui key right",
+        "tui key down",
+        "tui key enter"
+      ]
+    },
+    {
+      "label": "Landscape touch test",
+      "help": "Turn to landscape and open the waterfall, which is the screen with the most buttons to tap.",
+      "steps": [
+        "tui 90",
+        "tui key f5"
+      ]
+    },
+    {
+      "label": "Portrait touch test",
+      "help": "Back to portrait and onto the directory, where the tiles are the biggest targets.",
+      "steps": [
+        "tui 0",
+        "tui key f1"
+      ]
+    },
+    {
+      "label": "Waterfall on FM sweep",
+      "help": "Give the shared waterfall a real source, then open it.",
+      "steps": [
+        "mode fm",
+        "fm scan",
+        "tui key f5"
+      ]
+    },
+    {
+      "label": "Receiver snapshot",
+      "help": "Everything read-only about what the radio is doing now.",
+      "steps": [
+        "status",
+        "rtl",
+        "p25 acquisition",
+        "heap"
+      ]
+    },
+    {
+      "label": "Speaker and screen alive",
+      "help": "Two commands that prove the codec path and the panel independently.",
+      "steps": [
+        "beep",
+        "display brightness 100"
+      ]
+    },
+    {
+      "label": "Hardware roll call",
+      "help": "What actually answered on this board.",
+      "steps": [
+        "i2c",
+        "keys",
+        "gps",
+        "lora",
+        "c6 ver"
+      ]
+    },
+    {
+      "label": "MeshCore up (receive only)",
+      "help": "Start the stack and show what it is. Transmit stays disarmed.",
+      "steps": [
+        "mesh start",
+        "mesh",
+        "heap"
+      ]
+    },
+    {
+      "label": "LoRa receiver check",
+      "help": "Configure and listen. A floor near -115 dBm means the receive chain is alive; 0 packets is expected with nothing transmitting.",
+      "steps": [
+        "lora config",
+        "lora rx 10"
+      ]
+    },
+    {
+      "label": "Clock and radio roll call",
+      "help": "The parts brought up on 2026-09-09, in one pass.",
+      "steps": [
+        "date",
+        "rtc",
+        "lora",
+        "gps",
+        "i2c"
+      ]
+    }
+  ]
+}

@@ -37,11 +37,14 @@ typedef enum {
     FM_MODE_COUNT = 6
 } fm_mode_t;
 
-/*LS-748*/
-/* Was 128, one entry per RETUNE. It is now one entry per DISPLAY column and
-   a single tune fills a few hundred of them from one FFT, so the limit is the
-   panel width rather than how long a sweep can be tolerated. 256 x 4 bytes. */
+/**/
+
 #define FM_SCAN_BINS_MAX  256
+
+/* The scale scan_db[] is written on, published. */
+
+#define FM_SCAN_FLOOR_DB  (-90.0f)
+#define FM_SCAN_TOP_DB    (0.0f)
 
 #define FM_PAGE_TEXT_MAX  80
 #define FM_PAGE_LOG_MAX   16
@@ -53,7 +56,7 @@ typedef enum {
 
 typedef struct {
     int64_t  ts_us;
-    /*LS-200  Wall-clock UNIX epoch at the moment the page was decoded, or 0
+    /* Wall-clock UNIX epoch at the moment the page was decoded, or 0
        if no wall clock had been set yet. Uptime in ts_us is always present
        for ordering within one boot; ts_epoch is what lets a page be tied
        to real calendar time when SNTP/RTC has landed. */
@@ -82,7 +85,7 @@ typedef struct {
     uint32_t  scan_stop_hz;
     uint32_t  scan_step_hz;
     int       scan_bins;
-    /*LS-748*/
+    /**/
     /* scan_idx is now a TUNE POSITION, not a display bin - one tune paints
        FM_SPEC_USABLE_HZ worth of bins at once. scan_tunes is how many tune
        positions cover the range. */
@@ -92,6 +95,10 @@ typedef struct {
     uint32_t  scan_peak_hz;
     float     scan_peak_db;
     uint32_t  scan_sweeps;
+    /* How long one sweep takes, in ms: estimated from the tune count
+       when a sweep begins, measured once a whole one has run. The waterfall
+       needs it to tell a slow sweep from a stalled one. */
+    uint32_t  scan_sweep_ms;
 
     int       pocsag_baud;
     int       pocsag_lock_baud;

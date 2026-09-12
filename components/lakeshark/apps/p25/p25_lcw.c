@@ -1,54 +1,4 @@
-/* LS-650: P25 Phase 1 Link Control Word parser.
- *
- * Every LDU1 and TDULC carries a 72-bit LCW after the Reed-Solomon(24,12,13)
- * FEC upstream in processLDU1 / processTDULC. Before this file, the whole
- * dispatcher was one function that recognised LCO 0x00 (Group Voice Channel
- * User) and a mis-attributed LCO 0x04 branch, wrote raw talkgroup/source
- * into state->lasttg / lastsrc without reading any service-option flag, and
- * ran even when Reed-Solomon reported an irrecoverable error - so a corrupt
- * LCW could relabel the call and, if a stale-TG check downstream had
- * triggered, could evict the ESS from a legitimate encrypted call.
- *
- * The LCW is the late-entry path. On a followed grant the traffic channel is
- * decoded with no preceding HDU or grant - the follower simply retuned - so
- * until an LDU1 arrives the call has no identity. On a brief control-channel
- * loss the LCW is what keeps the call labelled.
- *
- * Layout of the 72-bit LCW as it lands here (bit strings are MSB-first ASCII
- * '0'/'1' out of the LDU1/TDULC hex-word extraction; the byte form is what
- * bench tests drive):
- *   lcformat  8 bits   LCO  (protection + standard-MFID flag in top 2 bits,
- *                            opcode in low 6 bits per TIA-102.AABF)
- *   mfid      8 bits   Manufacturer ID (0x00 or 0x01 for standard messages;
- *                      vendor blocks re-purpose the payload and are counted
- *                      rather than parsed)
- *   lcinfo   56 bits   Payload, layout is LCO-specific.
- *
- * LCO 0x00  Group Voice Channel User:
- *   svcopt  8   Service Options: E, P, D, M, R, priority(3)
- *   rsvd    8
- *   group  16   Talkgroup
- *   src    24   Source radio ID
- *
- * LCO 0x03  Unit-to-Unit Voice Channel User:
- *   svcopt  8   Service Options
- *   target 24   Target radio ID
- *   src    24   Source radio ID
- *
- * LCO 0x0A  Group Regroup Voice Channel User (patch / super-group):
- *   svcopt  8   Service Options
- *   rsvd    8
- *   sg     16   Super Group ID (regrouped talkgroup)
- *   src    24   Source radio ID
- *
- * Talker Alias (LCO 0x15/0x16/0x17/0x18):
- *   0x15  Header: format(8), length(8), reserved(40)
- *   0x16  Block 1: 7 chars (ASCII 8-bit)
- *   0x17  Block 2: 7 chars
- *   0x18  Block 3: 7 chars
- *   Max alias 21 characters; truncated sequence drops on
- *   P25_LCW_ALIAS_TIMEOUT_US (2 s) from the header.
- */
+/* P25 Phase 1 Link Control Word parser. */
 
 #include <string.h>
 
@@ -109,10 +59,7 @@ static void alias_reset(dsd_state *state)
 
 static void alias_check_timeout(dsd_state *state, int64_t now_us)
 {
-    /* "Active but not yet ready" is what we time out. Anchoring on
-     * alias_expected rather than alias_start_us lets now_us == 0 be a legal
-     * bench timestamp; using a zero start time as the sentinel would leave
-     * the state machine unable to time out any sequence that started at 0. */
+
     if (state->p25_lcw_alias_expected == 0) return;
     if (state->p25_lcw_alias_ready) return;
     if (now_us - state->p25_lcw_alias_start_us > P25_LCW_ALIAS_TIMEOUT_US)
@@ -221,9 +168,6 @@ int p25_lcw_dispatch(dsd_state *state, uint8_t lco, uint8_t mfid,
 
     uint8_t opcode = (uint8_t)(lco & 0x3fu);
 
-    /* LS-739: preserve the newly decoded identity while retiring an alias
-     * belonging to the previous group/talker. The frame dispatcher used to
-     * clear the entire new LCW after a TG change instead. */
     if (opcode == P25_LCO_GROUP_VOICE_USER || opcode == P25_LCO_GROUP_REGROUP) {
         uint16_t next_tg = lcw_u16(&lcinfo[2]);
         uint32_t next_src = lcw_u24(&lcinfo[4]);

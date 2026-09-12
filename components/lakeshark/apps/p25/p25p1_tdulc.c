@@ -135,7 +135,6 @@ correct_golay_dibits_12(char* data, int count, AnalogSignal* analog_signal_array
   int dibit;
   char parity[12];
 
-
   analog_signal_index = 0;
 
   for (i=count-1; i>=0; i--)
@@ -226,7 +225,6 @@ processTDULC (dsd_opts* opts, dsd_state* state)
   AnalogSignal analog_signal_array[6*(6+6)+6*(6+6)+10];
   int analog_signal_index;
 
-
   analog_signal_index = 0;
 
   // we skip the status dibits that occur every 36 symbols
@@ -285,7 +283,6 @@ processTDULC (dsd_opts* opts, dsd_state* state)
       analog_signal_array[0].sequence_broken = 1;
       contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array, 6*(6+6)+6*(6+6));
   }
-
 
   // Next 10 dibits should be zeros
   // If an irrecoverable error happens, you should start a new sequence since the previous dibit was not set
@@ -387,8 +384,5 @@ processTDULC (dsd_opts* opts, dsd_state* state)
   lcinfo[54]  = dodeca_data[0][10] + '0';
   lcinfo[55]  = dodeca_data[0][11] + '0';
 
-  /* LS-650: TDULC is Reed-Solomon(24,12,13)-protected on the same 12+12 hex
-   * words as LDU1. Reject on irrecoverable error rather than acting on the
-   * possibly wrong TG that terminated the call. */
   processP25lcw (opts, state, lcformat, mfid, lcinfo, irrecoverable_errors == 0);
 }

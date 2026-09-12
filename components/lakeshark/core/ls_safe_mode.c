@@ -1,4 +1,4 @@
-/* LS-994  The pure half of early safe mode: validation of the retained
+/* The pure half of early safe mode: validation of the retained
    record, reset classification, the failed-start accounting, the healthy
    interval, the boot plan and the report. No SDK calls - see ls_safe_mode.h
    for why the state is caller-owned. */
@@ -45,9 +45,7 @@ bool ls_safe_state_valid(const ls_safe_state_t *st)
     if (st->version != LS_SAFE_VERSION)        return false;
     if (st->size    != sizeof(ls_safe_state_t)) return false;
     if (st->crc     != ls_safe_state_crc(st))  return false;
-    /* A valid CRC over an out-of-range stage still means the record is not
-       one this build wrote; treat it as corrupt rather than indexing a name
-       table with it. */
+
     if (st->stage      >= LS_SAFE_STAGE__COUNT) return false;
     if (st->prev_stage >= LS_SAFE_STAGE__COUNT) return false;
     if (st->safe_display_failed > 1)             return false;
@@ -190,7 +188,7 @@ void ls_safe_decide(ls_safe_state_t *st, ls_safe_reset_t reset,
     /* Only a start that was in flight and did not survive counts. A reflash,
        the reset button, `esp_restart()` from the USB-dongle recovery path or
        a clean power cycle all land here too, and counting those was what made
-       the LS-715 guard cry wolf. */
+       the guard cry wolf. */
     bool counted_fault = false;
     if (cls == LS_SAFE_CLASS_POWER) {
         power++;
@@ -205,9 +203,7 @@ void ls_safe_decide(ls_safe_state_t *st, ls_safe_reset_t reset,
         entry = (was_retry && counted_fault) ? LS_SAFE_ENTRY_RETRY_FAILED
                                              : LS_SAFE_ENTRY_REPEATED_FAULT;
     }
-    /* An explicit request outranks the counter, and says so in the report -
-       an operator who typed `safemode on` must not be told the board is
-       crashing. */
+
     if (st->forced) entry = LS_SAFE_ENTRY_FORCED;
 
     const bool safe = (entry != LS_SAFE_ENTRY_NONE);
@@ -253,12 +249,9 @@ void ls_safe_mark_healthy(ls_safe_state_t *st)
     st->retry        = 0;
     st->faults       = 0;
     st->power_events = 0;
-    /* forced is deliberate and survives: an operator who asked for safe mode
-       does not get taken out of it by a boot that happened to go well. */
+
     ls_safe_state_seal(st);
 }
-
-/* -------------------------------------------------- operator actions ---- */
 
 void ls_safe_request_retry(ls_safe_state_t *st)
 {
@@ -268,7 +261,7 @@ void ls_safe_request_retry(ls_safe_state_t *st)
     st->retry  = 1;
     st->armed  = 0;
     st->faults = LS_SAFE_FAULT_LIMIT - 1;
-    /* LS-707: this is the only automatic re-enable after a failed safe-mode
+    /* this is the only automatic re-enable after a failed safe-mode
        panel attempt. A normal retry remains explicit, and if it faults the
        following safe boot gets one fresh display attempt before falling back
        to retained serial-only mode again. */
@@ -326,7 +319,7 @@ void ls_safe_display_begin(ls_safe_state_t *st)
 {
     if (!st) return;
     if (!ls_safe_state_valid(st)) ls_safe_state_reset(st);
-    /* LS-707: seal the failure latch before entering the configured Waveshare
+    /* seal the failure latch before entering the configured Waveshare
        BSP. CONFIG_BSP_ERROR_CHECK turns its nominal NULL returns into aborts,
        and lower LCD calls can block; after either kind of reset the next safe
        boot must skip the panel path and leave the recovery CLI usable. */
@@ -349,7 +342,7 @@ void ls_safe_boot_plan(bool safe, ls_safe_boot_plan_t *out)
     if (!out) return;
     memset(out, 0, sizeof(*out));
 
-    /* Never automatic, in either mode. LS-982: a checksum-valid stored image
+    /* Never automatic, in either mode. a checksum-valid stored image
        is not necessarily a parseable one, and the parser faulted on one -
        panic, write a dump, reboot, parse it, panic. Reading a summary stays
        an explicit `crash`. */

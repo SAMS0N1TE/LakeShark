@@ -1,4 +1,4 @@
-/*LS-835  See adsb_demo.h. */
+/* See adsb_demo.h. */
 
 #include "adsb_demo.h"
 #include "adsb_state.h"
@@ -49,9 +49,6 @@ void adsb_demo_tick(void)
 {
     if (s_n <= 0) return;
 
-    /* One slow orbit each, at different radii and speeds, so the map has
-       something that actually moves between frames rather than a static
-       constellation that could hide a stuck update path. */
     double t = (double)esp_timer_get_time() / 1000000.0;
 
     for (int i = 0; i < s_n; i++) {

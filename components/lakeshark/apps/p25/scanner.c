@@ -75,10 +75,6 @@ uint32_t scanner_run_sweep(ls_radio_session_t *session,
         }
         vTaskDelay(pdMS_TO_TICKS(5));
 
-        /* LS-180: Preserve the original settle/read-discard/read-measure
-         * policy, but keep the asynchronous session running. The adapter's
-         * fast-retune contract, rather than this scanner, owns stale transport
-         * data and FIFO handling. */
         if (!scanner_read_block(session, iq, SCAN_IQ_SAMPLES * 2,
                                 keep_running) ||
             !scanner_read_block(session, iq, SCAN_IQ_SAMPLES * 2,

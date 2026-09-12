@@ -120,7 +120,7 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
 
   if (p25_ldu_should_mute_encrypted(state, opts))
     {
-      /* LS-611: count every muted frame so the UI can say "42 frames muted
+      /* count every muted frame so the UI can say "42 frames muted
        * on TG X, ADP" instead of just presenting silence. The count is
        * cumulative for the P25 session; app_p25 samples it into p25_state_t
        * on each frame. */

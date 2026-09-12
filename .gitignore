@@ -1,36 +1,47 @@
-# ESP-IDF build output
 /build/
+/work/
 
-# IDF config backups / generated
 sdkconfig.old
+/sdkconfig
+/sdkconfig.headless
+/dependencies.lock
+/coredump.bin
+/debug/*.elf.zip
 *.bin
 *.elf
 *.map
 
-# Serial captures / debug logs
 *.log
 serial*.txt
 
-# Editor / OS
 .vscode/
 .idea/
 .cache/
 *.swp
 .DS_Store
 
-# Excluded from public repo
 /docs/*
 !/docs/LCD43_RELEASE_NOTES.md
 !/docs/LCD43_QUICKSTART.md
 !/docs/LCD43_FIRST_FLASH.md
 !/docs/LCD43_TROUBLESHOOTING.md
 !/docs/THIRD_PARTY_REVIEW.md
+!/docs/TDP4_RELEASE_NOTES.md
+!/docs/TDP4_FIRST_FLASH.md
+!/docs/TDP4_SCREENS.md
+!/docs/screenshots/
 /tools/*
 !/tools/p25_profile.example
 !/tools/package_lcd43_app.py
 !/tools/PACKAGE_LCD43_APP.md
 !/tools/lakeshark_upgrade.py
 !/tools/LAKESHARK_UPGRADE.md
+!/tools/check_board_identity.py
+!/tools/test_check_board_identity.py
+!/tools/check_private_paths.py
+!/tools/check_public_source.py
+!/tools/check_module_shadow.py
+!/tools/test_check_public_source.py
 !/tools/lcd43-local-license-paths.json
 !/tools/lcd43-release-docs.json
 /build_headless/
@@ -42,7 +53,6 @@ serial*.txt
 /passive.py
 /LCD_4_3_Docs/
 /URH_Files/
-/flipper-app/
 
 __pycache__/
 *.pyc
@@ -51,16 +61,18 @@ bench/build-asan/
 bench/logs/
 bench/claims/
 
-# Working notes and agent wiring stay local - they are not documentation.
 bench/NOTES.md
 bench/HANDOFF.md
+bench/HANDOFF_*.md
+bench/queue/
+bench/done/
+bench/parked/
+CLAUDE.md
 AGENTS.md
 bench/agents.local.json
 bench/upstream.json
 bench/upstream.ps1
 
-# Secrets. This repo is pushed to a remote, and the point of that remote is to
-# check that nothing leaks - so the patterns are here rather than relied on.
 .env
 .env.*
 !.env.example
@@ -71,11 +83,12 @@ bench/upstream.ps1
 *secrets*.json
 *.local.json
 
-# Built firmware bundles for the web installer. Regenerate with the offsets in
-# docs/LCD43_FIRST_FLASH.md; binaries do not belong in the source tree, and
-# these carry the same distribution questions as any other released image.
 /dist/lakeshark-lcd43/
 /dist/site/fw/
 node_modules/
 package-lock.json
 package.json
+
+/dependencies.lock
+
+sim.bmp

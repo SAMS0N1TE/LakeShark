@@ -5,8 +5,6 @@
 
 #define LS_UI_CONFIRM_DEFAULT_MS 2000U
 
-/* LS-1011: 99.9 s.  hold_ms is caller-supplied and an absurd one must clamp
- * rather than render a caption wider than the button that carries it. */
 #define LS_UI_CONFIRM_TENTHS_MAX 999U
 
 static void confirm_clear(ls_ui_confirm_state_t *state)
@@ -73,7 +71,7 @@ uint32_t ls_ui_confirm_remaining_ms(const ls_ui_confirm_state_t *state,
 uint32_t ls_ui_confirm_remaining_tenths(const ls_ui_confirm_state_t *state,
                                         uint32_t now_ms)
 {
-    /* LS-1011: truncating division, not (ms + 99) / 100.  Rounding up is what
+    /* truncating division, not (ms + 99) / 100.  Rounding up is what
      * made a 1500 ms hold read "HOLD 2" at the press; the caption must never
      * claim more time is left than really is. */
     const uint32_t tenths = ls_ui_confirm_remaining_ms(state, now_ms) / 100U;

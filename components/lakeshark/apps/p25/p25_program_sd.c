@@ -1,24 +1,4 @@
-/* LS-689: the device half of the PROGRAM session - SD, PSRAM and the worker.
- *
- * Everything that decides anything lives in p25_program.c and is host-tested.
- * This file supplies the three things the host cannot: a real file, a place to
- * put 16 KiB of staging, and a task to do it on.
- *
- * Not the LVGL task.  Reading a profile off a FAT volume is tens of
- * milliseconds on a good day and a stalled card on a bad one, and the staging
- * area is far too large to be a local anywhere.  So RELOAD hands the work to a
- * short-lived worker and returns; the panel polls p25_program_session() and
- * shows LOADING until the worker publishes a result.  Nothing on the panel
- * claims success before the apply has actually run.
- *
- * Not internal RAM either.  p25_program_staging_t is about 16 KiB - the file
- * text, the parser's line buffer and two profile structures - and internal RAM
- * after the P25 decoder and BLE are up is measured in single-digit kilobytes.
- * It is one MALLOC_CAP_SPIRAM allocation held only while a reload runs, and
- * the session itself (about 2.5 KiB) is a second PSRAM allocation made once.
- * If PSRAM cannot supply either, the reload is refused with a reason rather
- * than falling back onto the internal heap.
- */
+/* the device half of the PROGRAM session - SD, PSRAM and the worker. */
 
 #include "p25_program.h"
 
@@ -38,7 +18,7 @@
 static const char *TAG = "p25prog";
 
 /* The worker only reads a FAT volume and copies memory.  It never touches
- * flash, so its stack has no cache-disabled requirement (LS-671) and the
+ * flash, so its stack has no cache-disabled requirement () and the
  * profile path is fixed to the SD mount so it cannot be pointed at SPIFFS,
  * where a read would.  4 KiB covers fopen/fread on esp_vfs_fat. */
 #define P25_PROGRAM_WORKER_STACK_BYTES 4096
@@ -48,9 +28,6 @@ static p25_program_t *s_program;
 static portMUX_TYPE   s_program_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool  s_worker_live;
 
-/* The endpoint's advertised range.  The P25 session acquires the radio with
- * exactly these limits (see p25_radio_open), so a profile frequency the tuner
- * cannot reach is rejected by the parser rather than by a failed retune. */
 static const ls_radio_range_t s_tune_ranges[] = {
     { P25_CONTROL_TUNER_MIN_HZ, P25_CONTROL_TUNER_MAX_HZ },
 };
@@ -98,8 +75,7 @@ static p25_program_result_t sd_read(void *ctx, const char *path, char *dst,
     if (stat(path, &st) != 0) return P25_PROGRAM_ERR_NOT_FOUND;
     if (!S_ISREG(st.st_mode)) return P25_PROGRAM_ERR_NOT_FOUND;
     if (st.st_size < 0) return P25_PROGRAM_ERR_READ;
-    /* Refuse rather than truncate: a profile silently missing its last
-     * talkgroups reads exactly like a working file and a broken radio. */
+
     if ((size_t)st.st_size > cap) return P25_PROGRAM_ERR_TOO_LARGE;
 
     FILE *fp = fopen(path, "rb");
@@ -121,7 +97,7 @@ static p25_program_result_t sd_read(void *ctx, const char *path, char *dst,
  * profile apply must not become a second place that tunes.
  *
  * These run on the worker while the DSD task reads the same follower.  That is
- * the arrangement LS-611 already documents for the console and panel setters:
+ * the arrangement already documents for the console and panel setters:
  * each is a scalar or a small table write, and the worst case is one grant
  * decided under the outgoing policy. */
 

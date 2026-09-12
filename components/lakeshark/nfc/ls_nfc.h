@@ -1,15 +1,4 @@
-/* Public LakeShark NFC API.
-
-   Scope is the read-only slice described in bench/NFC.md:
-
-     - NFC-A discovery, anticollision and Type 2 NDEF reads;
-     - other tag technologies are reported as explicitly unsupported;
-     - one tag is reported at a time and the RF field is on only while a
-       scan is active.
-
-   No ST25R3916 or vendor NFC struct is exposed here.  The header must
-   compile as both C and C++ - the bench builds C, but components/apps is
-   C++ and will include this. */
+/* Public LakeShark NFC API. */
 
 #ifndef LS_NFC_H
 #define LS_NFC_H

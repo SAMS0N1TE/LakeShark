@@ -1,7 +1,7 @@
 #ifndef MAP_TILE_STATUS_H
 #define MAP_TILE_STATUS_H
 
-/*LS-764*/
+/**/
 /* Why the map is blank right now, in one word for the overlay.  Before this,
    AppMap::updateTiles noticed `drawn == 0` and toggled a static bool nobody
    read, so a card that was never inserted looked identical to a decoder that

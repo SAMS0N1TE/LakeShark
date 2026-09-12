@@ -9,7 +9,7 @@
 #include "esp_heap_caps.h"
 #include "sdkconfig.h"
 
-/*LS-906*/
+/**/
 /* The bundled player only builds the decoders selected by these Kconfig
    options. The old unfiltered file_iterator made '.', directories, and files
    for absent decoders selectable, so PLAY usually attempted to fopen a

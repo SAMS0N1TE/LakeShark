@@ -36,7 +36,7 @@ Check these in order:
    mode is appropriate. Try modest gain changes or AGC; excessive gain can
    worsen decoding. A failed/pending request is not an effective retune.
 3. **Audio:** inspect volume and MUTE. Console `vol` reports both without
-   changing them. `mute` toggles state—it is not a query. Start at a comfortable
+   changing them. `mute` toggles state-it is not a query. Start at a comfortable
    volume, not maximum.
 4. **Metadata and encryption:** `p25 acquisition` reports acquisition/tuning/IQ
    state; `p25tsbk` reports accumulated control metadata; `p25enc` reports the
@@ -66,7 +66,7 @@ decode the ELF on-device or certify that a checksum/header is valid.
 
 Export the **full coredump partition** with a host flash reader, using its
 reported address/size and a verified board connection. Keep that raw backup
-and the ELF matching the firmware that crashed—not merely the newest ELF—for
+and the ELF matching the firmware that crashed-not merely the newest ELF-for
 offline decoding. A later unrelated panic can replace the on-device dump.
 
 `crash clear` is destructive. Use it only after a verified backup and a deliberate

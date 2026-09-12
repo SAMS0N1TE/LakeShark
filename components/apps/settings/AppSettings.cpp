@@ -17,10 +17,10 @@ extern "C" {
 #include "settings.h"
 #include "location_pref.h"
 #include "app_registry.h"
-#include "link_ctl.h"  /*LS-785*/
+#include "link_ctl.h"  /**/
 #include "audio_out.h"
 #include "display_ctl.h"
-/*LS-220*/
+/**/
 #include "ls_version.h"
 }
 
@@ -46,7 +46,7 @@ LsSettings::LsSettings() : LsApp("Settings", "settings") {}
 
 bool LsSettings::run(lv_obj_t *parent)
 {
-    /* LS-698: Settings was the one screen left building directly on the app
+    /* Settings was the one screen left building directly on the app
      * parent.  That bypassed the composed header, scrollable framed content,
      * shared value rows and role-based controls. */
     ls_ui_screen_t screen;
@@ -63,7 +63,16 @@ bool LsSettings::run(lv_obj_t *parent)
     sdr_seg_slider(display, LS_UI_ACCENT, 100, display_ctl_get_user(),
                    brightnessCb, this, &_bright_lbl);
 
-    /*LS-606*/
+    if(LS_HAS_COMPACT_UI){
+        ls_ui_value(display,"NAV AUTO-HIDE",&r);
+        lv_label_set_text(r.value,LsShell::instance().navigationAutoHide()?"ON":"OFF");
+        ls_ui_button(r.controls,"TOGGLE",LS_BTN_DEFAULT,[](lv_event_t *e){
+            auto &shell=LsShell::instance();shell.setNavigationAutoHide(!shell.navigationAutoHide());
+            lv_label_set_text(static_cast<lv_obj_t *>(lv_event_get_user_data(e)),shell.navigationAutoHide()?"ON":"OFF");
+        },r.value,nullptr);
+    }
+
+    /**/
     ls_ui_value(display, "ACCENT", &r);
     _theme_val = r.value;
     _theme_btn = ls_ui_button(r.controls, "CHANGE", LS_BTN_PRIMARY,
@@ -104,11 +113,6 @@ bool LsSettings::run(lv_obj_t *parent)
     _usb_btn = ls_ui_button(r.controls, "TOGGLE", LS_BTN_DEFAULT,
                             usbRebootCb, this, nullptr);
 
-    /* LS-1012: the same affordance the recovery screen got (LS-1010), for the
-     * same reason.  These two controls are hold-to-confirm and said so
-     * nowhere: a tap silently restores the caption, which is what "clicking
-     * appears to do nothing" was reported about.  One line above both, since
-     * both take the same hold; the shared hold button narrates into it. */
     lv_obj_t *destructive_hint = ls_ui_hold_hint(system, SETTINGS_SAFETY_HOLD_MS);
 
     ls_ui_value(system, "RESTART", &r);
@@ -132,7 +136,7 @@ bool LsSettings::run(lv_obj_t *parent)
     ls_ui_value(about, "LAST RESET", &rr);
     lv_label_set_text(rr.value, reset_reason_str());
 
-    /*LS-220*/
+    /**/
     /* Which build is on this device.  Reads the same string the `version`
        console command prints, so a screenshot of this row is enough to
        identify a firmware.  The label wraps because the git-describe
@@ -193,7 +197,7 @@ void LsSettings::refreshValues(void)
         lv_label_set_text_fmt(_bright_lbl, "BRIGHTNESS  %d", display_ctl_get_user());
     if (_vol_lbl)
         lv_label_set_text_fmt(_vol_lbl, "VOLUME  %d", audio_volume_get());
-    /*LS-606*/
+    /**/
     if (_theme_val) {
         lv_label_set_text(_theme_val, sdr_theme_name(sdr_theme_get()));
         lv_obj_set_style_text_color(_theme_val, sdr_accent(), 0);
@@ -253,7 +257,7 @@ void LsSettings::bootSndCb(lv_event_t *event)
     if (self) self->refreshValues();
 }
 
-/*LS-606*/
+/**/
 void LsSettings::themeCb(lv_event_t *event)
 {
     LsSettings *self = static_cast<LsSettings *>(lv_event_get_user_data(event));
@@ -285,7 +289,7 @@ void LsSettings::dlModeCb(lv_event_t *)
 
 bool LsSettings::back(void) { closeLocationEntry(); return exitToLauncher(); }
 
-/*LS-604*/
+/**/
 bool LsSettings::pause(void)
 {
     closeLocationEntry();
@@ -295,7 +299,7 @@ bool LsSettings::pause(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 bool LsSettings::resume(void)
 {
     settings_wifi_active(true);
@@ -319,7 +323,7 @@ bool LsSettings::close(void)
     for (auto &button : _wifi_buttons) button = nullptr;
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _heap_val = _bright_lbl = _vol_lbl = _usb_val = _mute_val = nullptr;
-    /*LS-606*/
+    /**/
     _theme_val = nullptr;
     _autodim_val = _dimto_val = nullptr;
     _boot_val = nullptr;
@@ -343,7 +347,7 @@ void LsSettings::buildLocation(lv_obj_t *parent)
     ls_ui_value(panel, "REFERENCE", &row);
     _location_buttons[2] = ls_ui_button(row.controls, "SAVE", LS_BTN_PRIMARY, locationCb, this, nullptr);
     _location_buttons[3] = ls_ui_button(row.controls, "UNSET", LS_BTN_DEFAULT, locationCb, this, nullptr);
-    /*LS-786*/
+    /**/
     _location_note = ls_ui_note(panel, known ? "Stored manual reference" : "Unset: enter both coordinates");
     refreshLocation();
 }
@@ -415,11 +419,11 @@ void LsSettings::closeLocationEntry()
 void LsSettings::buildWifi(lv_obj_t *parent)
 {
     lv_obj_t *panel = ls_ui_panel(parent, "WI-FI");
-    /*LS-786*/
+    /**/
     _wifi_status = ls_ui_note(panel, "Reading station status...");
     lv_label_set_long_mode(_wifi_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(_wifi_status, lv_pct(100));
-    /*LS-786*/
+    /**/
     _wifi_result = ls_ui_note(panel, "");
     lv_label_set_long_mode(_wifi_result, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(_wifi_result, lv_pct(100));

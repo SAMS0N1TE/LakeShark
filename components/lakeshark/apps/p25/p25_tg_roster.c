@@ -1,4 +1,4 @@
-/* LS-690: see p25_tg_roster.h.  Pure C, allocation-free and IDF-free. */
+/* see p25_tg_roster.h.  Pure C, allocation-free and IDF-free. */
 
 #include "p25_tg_roster.h"
 

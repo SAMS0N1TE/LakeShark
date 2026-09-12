@@ -313,7 +313,7 @@ void diag_emit_periodic(void)
 
 #else
 
-/* LS-723: the LCD build had only 2,823 internal bytes free after P25 entry,
+/* the LCD build had only 2,823 internal bytes free after P25 entry,
  * but initialized a persistent 4,096-byte ring with no UART consumer.  Keep
  * the disabled diagnostic API as compile-time no-ops so init cannot allocate
  * the orphan ring/mutex and emitters do not format lines for a missing sink. */

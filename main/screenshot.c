@@ -1,19 +1,4 @@
-/*LS-831  Screenshot to a file, not down the console.
-
-   The first attempt streamed the frame as base64 over the console and it did
-   not survive contact with the board: a 480x800 frame is ~750 KB raw, the
-   console runs at 115200, and P25TEL and the USB throughput line print into
-   the same stdout every second. The result was log text spliced into the
-   payload and, once that was tagged around, 16% of the pixels simply dropped
-   because the UART TX buffer overflows long before a frame fits through it.
-
-   So the obvious approach is the right one: freeze the frame, write a .bmp to
-   the SD card, and report the size and a hash. The file goes next to the REC
-   captures using the same SD-then-SPIFFS fallback that already works, and
-   comes off the board over the existing WiFi file transfer.
-
-   A console dump is still available for a board with no SD and no WiFi, but
-   it is the fallback now, not the mechanism. */
+/* Screenshot to a file, not down the console. */
 
 #include "screenshot.h"
 
@@ -33,9 +18,9 @@
 #include "lvgl.h"
 #include "rec_state.h"      /* rec_dir() - same storage fallback as captures */
 #include "rec_unique_name.h"
-/*LS-961*/
+/**/
 #include "rec_space.h"
-/*LS-200*/
+/**/
 #include "ls_time.h"
 
 static const char *TAG = "shot";
@@ -44,7 +29,7 @@ static const char *TAG = "shot";
 #error "screenshot BMP conversion requires LVGL RGB565"
 #endif
 
-/* LS-735: the console task has a measured ~4 KiB stack; asking it to recurse
+/* the console task has a measured ~4 KiB stack; asking it to recurse
    through a full P25 object tree reached lv_font_get_glyph_dsc_fmt_txt with SP
    already below that task's bounds.  The handoff below puts only the render
    on taskLVGL, whose existing 7168-byte stack is already sized for LVGL.  Both
@@ -100,7 +85,7 @@ static bool write_bmp(const char *path, const uint16_t *px, int w, int h,
     memcpy(hdr + 34, &img_bytes, 4);
     if (fwrite(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) { fclose(f); return false; }
 
-    /* LS-735: at 480 pixels this is already 1440 bytes.  Plain malloc keeps
+    /* at 480 pixels this is already 1440 bytes.  Plain malloc keeps
        allocations below SPIRAM_MALLOC_ALWAYSINTERNAL in scarce internal RAM,
        exactly where the SD/RTL DMA paths need headroom.  BMP conversion is
        ordinary task code with caches enabled, so external RAM is valid. */
@@ -193,7 +178,7 @@ static screenshot_result_t screenshot_prepare(const char *name,
     for (char *p = clean; *p; p++)
         if (*p == '/' || *p == 92 || *p == ' ') *p = '_';   /* 92 = backslash */
 
-    /*LS-440  Use the same filename-safe time component as recordings so a
+    /* Use the same filename-safe time component as recordings so a
        file browser sorts both from the time they were made. Before SNTP the
        up- prefix remains an unmistakable uptime marker. */
     char base[80];
@@ -252,12 +237,8 @@ static screenshot_result_t screenshot_write(void)
         return s_work.render_result;
     }
 
-    /*LS-961*/
-    /* Two-step write like the .sub path: land as .bmp.part, rename to
-       .bmp only when write_bmp returns clean.  A crash or ENOSPC
-       mid-write leaves a .part file on disk that browsing tools show
-       as obviously incomplete rather than as a valid screenshot with
-       corrupt rows. */
+    /**/
+
     uint32_t bytes = 0, sum = 0;
     bool ok = write_bmp(s_work.part_path,
                         (const uint16_t *)(const void *)s_work.image.data,

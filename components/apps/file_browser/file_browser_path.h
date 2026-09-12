@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-/*LS-757*/
+/**/
 /* Join the browser's current working directory with an entry name to form the
    absolute path the user actually browsed.  `cwd` is either "" (the roots
    view) or already carries its mount point ("/sdcard/..." or "/spiffs/...").

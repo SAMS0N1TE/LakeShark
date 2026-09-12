@@ -28,7 +28,7 @@ void home_widget_present(home_widget_id_t id, const ls_hub_state_t *hub,
             hub && hub->sd_present ? "mounted" : "absent");
     } else {
         /* HOME unloads the receiver. Even retained active/signal fields are
-         * historical here and must never imply live reception (LS-763). */
+         * historical here and must never imply live reception (). */
         snprintf(out->title, sizeof(out->title), "LAST USED: %s",
             hub && hub->target_app[0] ? hub->target_app : "RECEIVER");
         if (hub && hub->freq_hz)

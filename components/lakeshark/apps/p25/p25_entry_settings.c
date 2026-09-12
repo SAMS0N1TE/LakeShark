@@ -43,12 +43,6 @@ esp_err_t p25_entry_settings_load(const app_t *app, uint32_t fallback_hz,
 {
     if (!out) return ESP_ERR_INVALID_ARG;
 
-    /* LS-720: app-switch queue/task allocation failure runs on_enter on its
-     * caller, which can be LVGL's PSRAM stack.  P25 entry used to issue six
-     * direct NVS reads there and could reproduce the measured cache-off stack
-     * assertion.  Keep the lifecycle fallback, but move its complete settings
-     * snapshot onto ls_nvs_call's statically reserved, DRAM-checked stack.
-     * If that worker is unavailable, entry uses defaults without touching NVS. */
     entry_defaults(app, fallback_hz, out);
     p25_entry_settings_job_t job = { .app = app, .loaded = *out };
     esp_err_t err = ls_nvs_call(read_entry_settings, &job, 0);

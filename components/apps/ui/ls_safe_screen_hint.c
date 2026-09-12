@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* LS-1010  See the header for the report this came from. Text only; the LVGL
+/* See the header for the report this came from. Text only; the LVGL
    wrapper in ls_safe_screen.cpp renders whatever this decides. */
 
 /* A duration is shown to one decimal, always - "1.5 s", "2.0 s" - so the
@@ -19,8 +19,6 @@ static void duration_text(uint32_t ms, char *out, size_t cap)
              (unsigned)((ms % 1000u) / 100u));
 }
 
-/* Round up to the next tenth. The countdown must never read "0.0 s" while the
-   operator is still being asked to hold. */
 static uint32_t to_tenths(uint32_t ms)
 {
     uint32_t t;
@@ -69,12 +67,7 @@ bool ls_safe_hint_update(ls_safe_hint_t *hint, ls_ui_confirm_effect_t effect,
         break;
 
     case LS_UI_CONFIRM_EFFECT_RESET:
-        /* The release that ENDS a completed hold arrives here as the same
-           effect as one that abandons it - ls_ui_confirm_step() clears the
-           state either way. Treating both as a cancellation would repaint
-           "CONFIRMED" as "CANCELLED" in the instant before the restart, and
-           tell the operator their successful reboot had been refused. Only a
-           hold that was still counting can be cancelled. */
+
         if (hint->phase == LS_SAFE_HINT_COUNTDOWN) {
             hint->phase = LS_SAFE_HINT_CANCELLED;
             hint->remaining_ms = 0;
@@ -116,8 +109,7 @@ size_t ls_safe_hint_format(const ls_safe_hint_t *hint, char *out, size_t cap)
 
     case LS_SAFE_HINT_READY:
     default:
-        /* Said before anything is pressed, and this is the whole fix: the
-           operator's report was "clicking appears to do nothing". */
+
         duration_text(hint->hold_ms, dur, sizeof(dur));
         snprintf(out, cap, "HOLD %s TO CONFIRM - A TAP IS IGNORED", dur);
         break;

@@ -80,7 +80,7 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t 
 {
     (void)font;
     lv_obj_t *label = sdr_label(parent, sdr_font_mono(), color);
-    /*LS-790  Default to the parent's width so text wraps inside the panel.
+    /* Default to the parent's width so text wraps inside the panel.
        Without it a label sizes to its own text and simply runs off the right
        edge of the screen, which is what the DEMOD ACTIVITY legend and the RF
        DIAG line did. Every call site here wants that; making it the default
@@ -105,7 +105,7 @@ AppADSB::~AppADSB() = default;
 
 bool AppADSB::init(void)   { return true; }
 
-/*LS-600*/
+/**/
 bool AppADSB::pause(void)
 {
     if (_timer) lv_timer_pause(_timer);
@@ -113,14 +113,14 @@ bool AppADSB::pause(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 bool AppADSB::background(void)
 {
     if (_timer) lv_timer_pause(_timer);
     return true;
 }
 
-/*LS-600*/
+/**/
 bool AppADSB::resume(void)
 {
     lakeshark_select_adsb();
@@ -253,7 +253,7 @@ void AppADSB::buildTrackTab(lv_obj_t *parent)
     ls_ui_style_content(parent);
 
     _trk_hdr = make_label(parent, &lv_font_montserrat_16, COL_BRIGHT);
-    lv_obj_set_width(_trk_hdr, lv_pct(100));      /*LS-790*/
+    lv_obj_set_width(_trk_hdr, lv_pct(100));      /**/
     lv_label_set_text(_trk_hdr, "No aircraft selected");
 
     lv_obj_t *p1 = make_panel(parent);
@@ -369,7 +369,7 @@ void AppADSB::buildDiagTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
 
-    /*LS-790  Every label on this tab sized itself to its own text and so ran
+    /* Every label on this tab sized itself to its own text and so ran
        off the right edge of the screen - the DEMOD ACTIVITY legend was cut at
        "cyan=mag", and the RF DIAG line lost its uptime. _diag_cum was already
        given a width and was the only one that wrapped; give the rest the same
@@ -381,14 +381,14 @@ void AppADSB::buildDiagTab(lv_obj_t *parent)
     lv_obj_t *p1 = make_panel(parent);
     lv_obj_set_flex_flow(p1, LV_FLEX_FLOW_COLUMN);
     _diag_inlbl = make_label(p1, &lv_font_montserrat_14, COL_TEXT);
-    lv_obj_set_width(_diag_inlbl, lv_pct(100));   /*LS-790*/
+    lv_obj_set_width(_diag_inlbl, lv_pct(100));   /**/
     lv_label_set_text(_diag_inlbl, "INPUT LEVEL");
     _diag_inbar = lv_bar_create(p1);
     lv_obj_set_size(_diag_inbar, lv_pct(100), 16);
     lv_bar_set_range(_diag_inbar, 0, 255);
 
     lv_obj_t *clbl = make_label(parent, &lv_font_montserrat_12, COL_LABEL);
-    lv_obj_set_width(clbl, lv_pct(100));          /*LS-790*/
+    lv_obj_set_width(clbl, lv_pct(100));          /**/
     lv_label_set_text(clbl, "DEMOD ACTIVITY (60s)\ngreen=bursts  amber=crc  cyan=magnitude");
     _diag_chart = lv_chart_create(parent);
     lv_obj_set_size(_diag_chart, lv_pct(100), 96);
@@ -410,7 +410,7 @@ void AppADSB::buildDiagTab(lv_obj_t *parent)
     lv_obj_t *p3 = make_panel(parent);
     lv_obj_set_flex_flow(p3, LV_FLEX_FLOW_COLUMN);
     _diag_usblbl = make_label(p3, &lv_font_montserrat_14, COL_TEXT);
-    lv_obj_set_width(_diag_usblbl, lv_pct(100));  /*LS-790*/
+    lv_obj_set_width(_diag_usblbl, lv_pct(100));  /**/
     lv_label_set_text(_diag_usblbl, "USB DATA PATH");
     _diag_usbbar = lv_bar_create(p3);
     lv_obj_set_size(_diag_usbbar, lv_pct(100), 16);
@@ -563,10 +563,8 @@ void AppADSB::updateRadar(void)
     double clat = cos((double)home_lat * 0.017453292519943295);
 
     double xs[RADAR_MAX], ys[RADAR_MAX], rr[RADAR_MAX];
-    /*LS-752*/
-    /* Copy the callsign rather than holding a pointer into the live aircraft
-       table: adsb_rx writes it with strcpy() while this runs on the LVGL
-       thread, so a borrowed pointer can be read mid-write. */
+    /**/
+
     char cs[RADAR_MAX][10];
     uint32_t ic[RADAR_MAX];
     int n = 0;
@@ -696,7 +694,7 @@ void AppADSB::buildSettingsTab(lv_obj_t *parent)
 
     updateSettings();
 
-    /*LS-608*/
+    /**/
     sdr_section(parent, "DEFAULTS");
     sdr_setting_row(parent, "RESET THIS APP", &r);
     _reset_val = r.value;
@@ -845,7 +843,7 @@ void AppADSB::agcBtnCb(lv_event_t *e)
     lakeshark_adsb_agc();
 }
 
-/*LS-608*/
+/**/
 void AppADSB::resetCb(lv_event_t *e)
 {
     AppADSB *self = static_cast<AppADSB *>(lv_event_get_user_data(e));

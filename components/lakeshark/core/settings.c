@@ -16,6 +16,9 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
+/* For the auto-dim default below, which is a board capability. */
+#include "ls_board.h"
+
 static const char  *TAG      = "settings";
 static const char  *NS       = "sdr-tool";
 static nvs_handle_t s_nvs    = 0;
@@ -27,7 +30,7 @@ static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
 #define SET_Q_DEPTH     16
 #define SET_PENDING_MAX 16
 #define SET_QUIET_MS    300
-/*LS-806  4096 with 3172 unused - about 924 B in use. */
+/* 4096 with 3172 unused - about 924 B in use. */
 #define SET_STACK_WORDS (2560 / sizeof(StackType_t))
 
 typedef enum { SV_U8, SV_I8, SV_U32, SV_I32, SV_U64 } sv_type_t;
@@ -151,7 +154,7 @@ void settings_write_stats(uint32_t *done, uint32_t *dropped, uint32_t *commits)
     if (commits)  *commits  = s_commits;
 }
 
-/*LS-800*/
+/**/
 /* Erase every key under NS.  Shares its shape with settings_reset_app() but
    applies to the whole namespace, and unlike an nvs_erase_all() the caller
    controls the commit so the version stamp goes down in the same commit as
@@ -177,7 +180,7 @@ static int erase_all_in_ns(void)
     return n;
 }
 
-/*LS-800*/
+/**/
 /* Read the schema version key, classify what it says, ask the pure decider
    what to do, and act - either keep the keys, wipe them, or just stamp the
    current version onto a legacy/fresh flash.  The version stamp always goes
@@ -244,9 +247,9 @@ bool settings_init(void)
     }
     s_nvs_ok = true;
 
-    /*LS-800*/  settings_apply_schema();
+    /**/  settings_apply_schema();
 
-    /* LS-719: settings_init runs on the cache-safe boot task in both LCD and
+    /* settings_init runs on the cache-safe boot task in both LCD and
      * headless builds.  Load this one byte here, before p25_rx_task starts on
      * its explicit PSRAM stack; all later demod preference reads are RAM-only.
      * Schema handling stays first so a reset cannot seed the cache from a key
@@ -255,7 +258,7 @@ bool settings_init(void)
     esp_err_t p25_demod_err = nvs_get_u8(s_nvs, "p25_demod", &p25_demod);
     p25_demod_pref_cache_init(p25_demod_err == ESP_OK, p25_demod);
 
-    /* LS-763: HOME runs on LVGL's potentially external stack. Load its one
+    /* HOME runs on LVGL's potentially external stack. Load its one
      * byte on the cache-safe boot task; subsequent UI reads stay in RAM. */
     uint8_t home_widget = 0;
     esp_err_t home_widget_err = nvs_get_u8(s_nvs, "home_widget", &home_widget);
@@ -323,13 +326,6 @@ void settings_set_freq_mode(const app_t *a, int mode, uint32_t hz)
     sput_u32(k, hz);
 }
 
-/*
- * Task 655: P25 demodulator mode selection. Global, not per-app, because
- * there is only one P25 app and the mode is a property of the receive
- * chain rather than of any particular frequency preset. Returns -1 when
- * the key is absent so the caller can distinguish "user has never picked"
- * from "user picked mode 0".
- */
 int settings_get_p25_demod(void)
 {
     return p25_demod_pref_cache_get();
@@ -479,11 +475,17 @@ void settings_set_brightness(int pct)
     sput_u8("brightness", (uint8_t)pct);
 }
 
+#if LS_HAS_COMPACT_UI
+#define AUTODIM_DEFAULT false
+#else
+#define AUTODIM_DEFAULT true
+#endif
+
 bool settings_get_autodim(void)
 {
-    if (!s_nvs_ok) return true;
-    uint8_t v = 1;
-    if (nvs_get_u8(s_nvs, "autodim", &v) != ESP_OK) return true;
+    if (!s_nvs_ok) return AUTODIM_DEFAULT;
+    uint8_t v = AUTODIM_DEFAULT ? 1 : 0;
+    if (nvs_get_u8(s_nvs, "autodim", &v) != ESP_OK) return AUTODIM_DEFAULT;
     return v != 0;
 }
 void settings_set_autodim(bool en)
@@ -493,9 +495,9 @@ void settings_set_autodim(bool en)
 }
 int settings_get_autodim_timeout(void)
 {
-    if (!s_nvs_ok) return 30;
+    if (!s_nvs_ok) return 120;
     uint8_t v = 0;
-    if (nvs_get_u8(s_nvs, "autodim_to", &v) != ESP_OK || v < 5) return 30;
+    if (nvs_get_u8(s_nvs, "autodim_to", &v) != ESP_OK || v < 5) return 120;
     return (int)v;
 }
 void settings_set_autodim_timeout(int seconds)
@@ -536,7 +538,7 @@ void settings_set_boot_sound(int mode)
     sput_u8("boot_snd", (uint8_t)mode);
 }
 
-/*LS-770*/
+/**/
 bool settings_get_usb_autoreboot(void)
 {
     if (!s_nvs_ok) return false;
@@ -550,7 +552,47 @@ void settings_set_usb_autoreboot(bool en)
     sput_u8("usb_autoreb", en ? 1 : 0);
 }
 
-/*LS-608*/
+/* Internal until told otherwise. See the header for why that is the
+   default and not merely the first option. */
+bool settings_get_antenna_external(void)
+{
+    if (!s_nvs_ok) return false;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "ant_ext", &v) != ESP_OK) return false;
+    return v != 0;
+}
+void settings_set_antenna_external(bool external)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("ant_ext", external ? 1 : 0);
+}
+
+bool settings_get_alert_ring(void)
+{
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "alert_ring", &v) != ESP_OK) return true;
+    return v != 0;
+}
+void settings_set_alert_ring(bool en)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("alert_ring", en ? 1 : 0);
+}
+bool settings_get_alert_vibe(void)
+{
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "alert_vibe", &v) != ESP_OK) return true;
+    return v != 0;
+}
+void settings_set_alert_vibe(bool en)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("alert_vibe", en ? 1 : 0);
+}
+
+/**/
 void settings_reset_app(const app_t *a)
 {
     if (!s_nvs_ok || !a || !a->name) return;
@@ -583,7 +625,29 @@ void settings_reset_app(const app_t *a)
     ESP_LOGW(TAG, "reset '%s' to defaults (%d keys erased)", a->name, n);
 }
 
-/*LS-606*/
+/**/
+bool settings_get_auto_rotate(void)
+{
+    uint8_t value = 1;
+    if (s_nvs_ok) nvs_get_u8(s_nvs, "autorot", &value);
+    return value != 0;
+}
+void settings_set_auto_rotate(bool enabled)
+{
+    if (s_nvs_ok) sput_u8("autorot", enabled ? 1 : 0);
+}
+
+/**/
+bool settings_get_nav_autohide(void)
+{
+    uint8_t value=1;
+    if(s_nvs_ok)nvs_get_u8(s_nvs,"nav_auto",&value);
+    return value!=0;
+}
+void settings_set_nav_autohide(bool enabled)
+{
+    if(s_nvs_ok)sput_u8("nav_auto",enabled?1:0);
+}
 int settings_get_theme(void)
 {
     if (!s_nvs_ok) return 0;
@@ -605,7 +669,7 @@ bool settings_set_home_widget(int widget)
     return home_widget_pref_set(widget, save_home_widget);
 }
 
-/*LS-606*/
+/**/
 void settings_set_theme(int theme)
 {
     if (!s_nvs_ok) return;
@@ -613,7 +677,22 @@ void settings_set_theme(int theme)
     sput_u8("ui_theme", (uint8_t)theme);
 }
 
-/*LS-703*/
+/* See the header. An absent key reads as off, so a board that has
+   never been told comes up on the black it always has. */
+bool settings_get_daylight(void)
+{
+    if (!s_nvs_ok) return false;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "ui_daylight", &v) != ESP_OK) return false;
+    return v != 0;
+}
+void settings_set_daylight(bool on)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("ui_daylight", on ? 1 : 0);
+}
+
+/**/
 int settings_get_scan_zone(void)
 {
     if (!s_nvs_ok) return 0;
@@ -622,7 +701,7 @@ int settings_get_scan_zone(void)
     return (int)v;
 }
 
-/*LS-703*/
+/**/
 void settings_set_scan_zone(int zone)
 {
     if (!s_nvs_ok) return;

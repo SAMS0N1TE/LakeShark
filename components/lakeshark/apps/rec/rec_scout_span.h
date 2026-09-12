@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/*LS-560  SCOUT's span ladder is shared by the LVGL controls and the host
+/* SCOUT's span ladder is shared by the LVGL controls and the host
    bench.  Keeping the boundary arithmetic here prevents ZOOM + from wrapping
    from the narrowest view back to the widest, which is useful for the SPAN
    cycle but wrong for a directional zoom control. */

@@ -40,8 +40,7 @@ int ls_ndef_parse(const uint8_t *buf, size_t len,
     while (i < len) {
         if (n >= out_cap) return LS_NFC_ERR_TOO_LARGE;
         if (saw_end) {
-            /* Bytes after ME=1 are trailing garbage - not part of the
-               message.  Refuse rather than pretend they parse. */
+
             return LS_NFC_ERR_MALFORMED;
         }
 

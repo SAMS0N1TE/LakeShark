@@ -1,52 +1,4 @@
-/* LS-670: one component owns tuning.
- *
- * Before this, the grant follower alone decided whether to retune and the
- * encrypted-skip helper laid on top of it. Adding hold, lockout, priority and
- * an allow list makes that untenable: several preferences now want to steer
- * the radio, and if they disagree the resolution has to be in one place a
- * reader can find. This module is that place.
- *
- * The follower still runs, but it stops making the retune call itself. Every
- * candidate grant is routed through p25_scan_decide(), which folds the
- * follower's own state (already-following, foreign grant, duplicate) together
- * with hold/lockout/allow/priority/encrypted-skip into one decision:
- *
- *   TUNE_TO_TRAFFIC          take this grant, go to the traffic channel
- *   RETURN_TO_CONTROL        drop the current call, go back to control
- *   STAY                     ignore, keep doing what we're doing
- *
- * Precedence, in order (highest wins):
- *
- *   1. LOCKOUT             - blocks everything, always. An operator who put
- *                            this here has said "never again". Reason at the
- *                            top because getting it wrong is the loudest bug.
- *   2. HOLD                - beats priority. When the operator holds a TG the
- *                            radio is not allowed to leave it, not even for
- *                            an emergency: an emergency TG that keeps taking
- *                            precedence is the same as no hold at all, and
- *                            hold is the button people press when they want
- *                            to be sure they are hearing the thing.
- *   3. LIST MODE           - ALLOW follows only listed TGs; NONE follows no
- *                            TGs. Encrypted-skip is still respected on an
- *                            allowed TG so it does not lock the radio out of
- *                            the rest of the list.
- *   4. PRIORITY            - a priority TG interrupts a call in progress by
- *                            RETURN_TO_CONTROL, and the next grant on that TG
- *                            then wins normally. It does NOT preempt a
- *                            currently-followed priority call of equal or
- *                            higher rank - preempting your own priority TG
- *                            would just thrash between two of them. Two TGs
- *                            of the same rank do NOT preempt each other; a
- *                            higher rank does.
- *   5. ENCRYPTED SKIP      - explicit and inverted: an operator hold pins the
- *                            radio on an encrypted TG so the encryption
- *                            indicator is visible. Otherwise, a stamped skip
- *                            refuses the grant. The follower still stamps
- *                            skips inside p25_scan_on_ess().
- *
- * State that survives a reboot: lockouts, allow list membership, and the hold
- * TG. Priority list and names load from SD at start.
- */
+/* one component owns tuning. */
 
 #ifndef P25_SCAN_CTRL_H
 #define P25_SCAN_CTRL_H
@@ -115,8 +67,7 @@ typedef struct {
 } p25_scan_name_t;
 
 typedef struct {
-    /* Persisted through settings.c rather than the scan-list blob. This is a
-     * receiver preference, while that blob owns roster/hold state. */
+
     bool auto_follow;
 
     /* Persisted --------------------------------------------------------- */
@@ -130,10 +81,7 @@ typedef struct {
     uint16_t hold_tg;         /* 0 = no hold                                  */
 
     /* Runtime only ------------------------------------------------------ */
-    /* Priority: higher rank wins. rank==0 disables the slot. Not persisted:
-     * priority lists are per-user and per-shift and change too often for the
-     * radio to guess right on cold boot. The operator sets them from the
-     * console or SD at start. */
+
     struct {
         uint16_t talkgroup;
         uint8_t  rank;
@@ -145,8 +93,6 @@ typedef struct {
     p25_scan_name_t names[P25_SCAN_NAMES_MAX];
     uint16_t names_count;
 
-    /* Counters for the readout, so the operator can see why they missed a
-     * call. Reset only by p25_scan_init(). */
     uint32_t lockout_hits;
     uint32_t hold_stays;
     uint32_t allow_rejects;
@@ -169,11 +115,6 @@ extern p25_scan_ctrl_t g_p25_scan;
 
 void p25_scan_init(p25_scan_ctrl_t *sc);
 
-/* LS-687: global operator gate for traffic following. Turning it off also
- * releases an active traffic session through the follower's queued retune
- * callback; turning it on only re-enables normal decisions and never tunes by
- * itself. The restore helper applies all persisted control values without
- * resetting hold/allow/lockout state. */
 bool p25_scan_set_auto_follow(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
                               bool enabled);
 bool p25_scan_get_auto_follow(const p25_scan_ctrl_t *sc);
@@ -197,9 +138,9 @@ void     p25_scan_list_set_mode(p25_scan_ctrl_t *sc, p25_scan_list_mode_t m);
 p25_scan_list_mode_t p25_scan_list_get_mode(const p25_scan_ctrl_t *sc);
 bool     p25_scan_allow_add(p25_scan_ctrl_t *sc, uint16_t tg);
 bool     p25_scan_allow_remove(p25_scan_ctrl_t *sc, uint16_t tg);
-/* LS-689: drop every allow-list entry without touching lockouts or mode. */
+/* drop every allow-list entry without touching lockouts or mode. */
 void     p25_scan_allow_clear(p25_scan_ctrl_t *sc);
-/* LS-690: expose membership/count to roster views without making them walk
+/* expose membership/count to roster views without making them walk
  * the controller's bounded storage and thereby creating a second policy. */
 bool     p25_scan_allow_contains(const p25_scan_ctrl_t *sc, uint16_t tg);
 size_t   p25_scan_allow_count(const p25_scan_ctrl_t *sc);
@@ -227,15 +168,8 @@ const p25_scan_name_t *p25_scan_name_lookup(const p25_scan_ctrl_t *sc,
  * file should not throw the whole file away. */
 bool p25_scan_name_parse_line(const char *line, p25_scan_name_t *out);
 
-/* Feed a whole file. The caller supplies a fgets-shaped reader so the bench
- * can drive this without touching stdio and the firmware can drive it against
- * a real fatfs handle. read_line returns the number of bytes placed in buf
- * (excluding the terminator), or <=0 for EOF/error.
- *
- * P25_SCAN_MAX_FILE_BYTES caps the file size at parse time - a runaway file
- * on SD is refused with a message rather than silently truncated, because
- * "the last 200 TGs on the list are missing" reads exactly like "the file is
- * fine but the radio is broken" and costs a debugging session. */
+/* Feed a whole file. */
+
 #define P25_SCAN_NAMES_MAX_LINE_LEN  128
 #define P25_SCAN_NAMES_MAX_FILE_BYTES (P25_SCAN_NAMES_MAX_LINE_LEN * \
                                        (P25_SCAN_NAMES_MAX + 32))
@@ -302,10 +236,6 @@ bool   p25_scan_persist_load(p25_scan_ctrl_t *sc, const uint8_t *buf,
 void p25_scan_persist_reload(void);
 void p25_scan_persist_save_now(void);
 
-/* Firmware-only: read /sdcard/p25_names.csv into g_p25_scan.names. Called on
- * demand from CONFIG rather than on every boot - the SD may not be mounted
- * that early and a slow probe would delay a headless boot for no reason.
- * See tools/p25_names.example.csv for the format. */
 bool p25_scan_names_reload_from_sd(void);
 
 #endif  /* P25_SCAN_CTRL_H */

@@ -1,4 +1,4 @@
-/*LS-740*/
+/**/
 /* Offline raster tile renderer.
  *
  * Reads the z/x/y JPEG tree written by host/tilepack.py off the SD card and
@@ -47,12 +47,12 @@ static slot_t s_slot[MAP_TILE_SLOTS];
 static bool   s_ready = false;
 static char   s_root[64] = BSP_SD_MOUNT_POINT "/tiles";
 
-/*LS-763*/
+/**/
 /* Release everything map_tiles_init acquired and put the module back into the
    uninitialised state. Called on every failure path in init - the previous
    version returned early after each failed allocation, leaking the JPEG
    engine and any earlier slot buffers, and left s_ready false so the next
-   caller happily allocated another partial set on top. LS-746 also releases
+   caller happily allocated another partial set on top. also releases
    these resources when the foreground MAP app closes. */
 static void map_tiles_release_all(void)
 {
@@ -113,11 +113,8 @@ bool map_tiles_init(void)
 
 bool map_tiles_ready(void) { return s_ready; }
 
-/*LS-740*/
-/* Slippy-map tile maths, the same convention tilepack.py writes. Kept here
-   rather than shared with AppMap's flat-earth projection on purpose: that one
-   is a local approximation for range/bearing, this one must match the tile
-   grid exactly or the map slides against its own overlay. */
+/**/
+
 double map_lon2tilex(double lon, int z)
 {
     return (lon + 180.0) / 360.0 * (double)(1 << z);
@@ -144,21 +141,21 @@ bool map_tiles_have_zoom(int z)
     return stat(p, &st) == 0;
 }
 
-/*LS-764*/
+/**/
 bool map_tiles_have_sd(void)
 {
     struct stat st;
     return stat(BSP_SD_MOUNT_POINT, &st) == 0;
 }
 
-/*LS-764*/
+/**/
 bool map_tiles_have_pack(void)
 {
     struct stat st;
     return stat(s_root, &st) == 0;
 }
 
-/*LS-764*/
+/**/
 bool map_tiles_have(int z, int x, int y)
 {
     char p[160];

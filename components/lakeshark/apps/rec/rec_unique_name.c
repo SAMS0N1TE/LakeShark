@@ -1,4 +1,4 @@
-/*LS-770*/
+/**/
 
 #include "rec_unique_name.h"
 
@@ -10,9 +10,7 @@ static int path_exists(const char *dir, const char *name, const char *ext)
 {
     char path[192];
     int w = snprintf(path, sizeof(path), "%s/%s%s", dir, name, ext);
-    /* A path that will not fit is treated as if the file were already there,
-       so the picker walks to the next suffix rather than handing the caller a
-       truncated path that might collide with something else on disk. */
+
     if (w < 0 || (size_t)w >= sizeof(path)) return 1;
     struct stat st;
     return stat(path, &st) == 0;

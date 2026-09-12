@@ -1,7 +1,4 @@
-/*LS-767*/
-/* See fm_sweep_arbitration.h for the why. AppFM installs the four hooks in
-   run(); the bench drives them with a counting harness so the ORDER (scanner
-   stop -> enter sweep -> restart sweep) is proved rather than argued about. */
+/**/
 
 #include "fm_sweep_arbitration.h"
 

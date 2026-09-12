@@ -58,12 +58,12 @@ int ble_link_payload_cap(uint16_t mtu)
 {
     int cap = (int)mtu - 3;
     if (mtu == 0 || cap < BLE_LINK_MIN_PAYLOAD) cap = BLE_LINK_MIN_PAYLOAD;
-    /*LS-814  Never offer the head more than its characteristic will hold. */
+    /* Never offer the head more than its characteristic will hold. */
     if (cap > BLE_LINK_HEAD_ATT_MAX) cap = BLE_LINK_HEAD_ATT_MAX;
     return cap;
 }
 
-/*LS-793*/
+/**/
 int ble_link_tx_chunk(size_t largest, size_t overhead, int want)
 {
     if (want <= 0) return 0;
@@ -95,7 +95,7 @@ ble_link_disc_class_t ble_link_classify_disc(bool disc_is_auth_fail_or_pinkey,
                                              ble_link_enc_kind_t last_enc)
 {
     /* An AUTHREQ refusal at ENC_CHANGE takes precedence over the raw HCI
-       reason: the point of LS-714 is that AUTH_FAIL covers BOTH cases and the
+       reason: the point of is that AUTH_FAIL covers BOTH cases and the
        enc status is the only way to tell them apart. */
     if (last_enc == BLE_LINK_ENC_AUTHREQ_REFUSED) {
         return BLE_LINK_DISC_AUTHREQ_REFUSAL;
@@ -108,7 +108,7 @@ ble_link_disc_class_t ble_link_classify_disc(bool disc_is_auth_fail_or_pinkey,
 
 bool ble_link_enc_kind_wipes_bond(ble_link_enc_kind_t k)
 {
-    /*LS-980  AUTHREQ joins the list. If the peer rejects our requirements
+    /* AUTHREQ joins the list. If the peer rejects our requirements
        there is nothing usable in whatever we stored for it, and keeping it
        only guarantees the same rejection next time. */
     return k == BLE_LINK_ENC_KEY_REJECTED || k == BLE_LINK_ENC_AUTHREQ_REFUSED;
@@ -116,7 +116,7 @@ bool ble_link_enc_kind_wipes_bond(ble_link_enc_kind_t k)
 
 bool ble_link_enc_kind_needs_teardown(ble_link_enc_kind_t k)
 {
-    /*LS-980  The link does not need encryption to be useful, so a failure to
+    /* The link does not need encryption to be useful, so a failure to
        encrypt is not a reason to throw the connection away. Only a timeout is
        - that one means the head is waiting for a human who is not coming. */
     return k == BLE_LINK_ENC_TIMEOUT;
@@ -143,12 +143,12 @@ ble_link_state_t ble_link_state_step(ble_link_state_t prev,
     return prev;
 }
 
-/* --------------------------------------------------- LS-82x invariants */
+/* --------------------------------------------------- x invariants */
 
 void ble_link_default_conn_params(ble_link_conn_params_t *out)
 {
     if (!out) return;
-    /* LS-822: scan_itvl/window keep NimBLE-like defaults; only the link
+    /* scan_itvl/window keep NimBLE-like defaults; only the link
        timing is ours. supervision_timeout in NimBLE's default is
        0x0100 = 256 units = 2.56 s, which killed every pairing attempt
        against the Flipper on the timeout. 400 units = 4 s is the ours. */
@@ -162,14 +162,14 @@ void ble_link_default_conn_params(ble_link_conn_params_t *out)
 
 bool ble_link_ls823_should_pair_on_connect(void)
 {
-    /* LS-823: a Flipper-shaped head does not pair. Initiating security stalls
+    /* a Flipper-shaped head does not pair. Initiating security stalls
        the link on the supervision timer. This must stay false. */
     return false;
 }
 
 bool ble_link_ls824_should_request_conn_update(void)
 {
-    /* LS-824: the head never answers a CONN_UPDATE and the LL response timer
+    /* the head never answers a CONN_UPDATE and the LL response timer
        drops the link at 40 s. This must stay false. */
     return false;
 }
@@ -258,18 +258,8 @@ ble_link_scan_decision_t ble_link_scan_decide(
     const ble_link_peer_addr_t *adv_addr,
     const ble_link_peer_addr_t *pinned)
 {
-    /*LS-813  The service UUID is the hard gate, pin or no pin.
+    /* The service UUID is the hard gate, pin or no pin. */
 
-       This was `has_our_service || name_matches_filter` when unpinned, and
-       a Flipper advertises the same device name whichever BLE profile owns
-       its radio - so with the LakeShark app closed the OR still said
-       CONNECT, on the strength of the name alone. What answered was the
-       stock serial profile: MITM required, IO_CAP_DISPLAY_ONLY, bonding on.
-       It refuses our Just Works pairing with SM error 3 and drops the link,
-       and the P4 retried that forever while the head printed NO SDR.
-
-       A name is not identity. Only an advertiser carrying our service is a
-       head running our app; the name filter picks between several of them. */
     if (!has_our_service) return BLE_LINK_SCAN_SKIP;
 
     if (pinned && pinned->valid) {

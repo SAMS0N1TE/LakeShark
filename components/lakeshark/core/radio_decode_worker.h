@@ -13,7 +13,7 @@ extern "C" {
 
 #define LS_RADIO_DECODE_STACK_BYTES 16384u
 
-/* FM and P25 are mutually exclusive radio owners.  Their cache-safe decode
+/* FM, P25 and ADS-B are mutually exclusive radio owners. Their cache-safe decode
  * work shares this one fixed internal stack, while each run retains its
  * original priority and core affinity. */
 bool ls_radio_decode_worker_start(TaskFunction_t run, const char *name,

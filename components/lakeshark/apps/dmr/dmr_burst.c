@@ -37,43 +37,20 @@ void dmr_burst_extract_bptc(const uint8_t burst_bits[DMR_BURST_BITS / 8],
         wr_bit(out_bits, 98u + i, rd_bit(burst_bits, 166u + i));
 }
 
-/* ------------------------------------------------------------------------
- * Golay(20,8,7) - ETSI TS 102 361-1 §B.3.4
- *
- * Generator polynomial g(x) = x^12 + x^11 + x^10 + x^7 + x^4 + x^3 + 1
- * (binary 1 1100 1001 1001 = 0x1C99, degree 12).  A brute-force sweep over
- * every degree-12 polynomial with bit 12 set turned up eight candidates
- * whose 256 systematic codewords all sit at Hamming distance >= 7 from
- * every other codeword; this is one of the four with minimum distance
- * exactly 7 (the (20,8,7) family), which is what the ETSI spec calls out.
- * The wire-vs-spec cross-check needs a real DMR burst on hardware and is
- * filed as a follow-up in bench/queue/.
- *
- * Codewords are systematic and 20 bits wide, MSB-first:
- *     bits 19..12   the 8 data bits (colour code | data type)
- *     bits 11..0    the 12 parity bits, = (data << 12) mod g(x)
- *
- * Minimum distance is 7, so the code corrects up to (7-1)/2 = 3 bit errors.
- * The decoder is a minimum-distance search over the 256 legal codewords,
- * which for k=8 is trivial (256 * 20 XORs per burst).  Anything further
- * than 3 from a legal codeword is rejected instead of silently returning
- * a wrong colour code.
- * ---------------------------------------------------------------------- */
-
-#define DMR_GOLAY_2087_POLY 0x1C99u   /* x^12 + x^11 + x^10 + x^7 + x^4 + x^3 + 1 */
-
+/* follow-up. Wire anchor: MMDVM-Host Golay2087.cpp, Jonathan Naylor G4KLX,
+ * GPL-2.0-or-later, commit 590c531391dfd3146073afbc3956f70d42c62a46.
+ * See bench/fixtures/dmr_reference_vectors.md for all 256 independent words.
+ * The former degree-12 polynomial 0x1C99 had distance seven but encoded a
+ * different code: 254/256 clean wire words differed. DMR uses the shortened
+ * degree-11 Golay code (0xC75), extended with an even-parity bit. */
 uint32_t dmr_slot_type_encode(uint8_t data8)
 {
-    uint32_t codeword = ((uint32_t)data8) << 12;
-    uint32_t reg = codeword;
-    /* Long division: for each information bit from position 19 down to 12,
-     * subtract (XOR) the generator aligned to that bit if it is set.  What
-     * remains in bits 11..0 is the parity. */
-    for (int i = 19; i >= 12; i--) {
-        if (reg & (1u << i))
-            reg ^= (DMR_GOLAY_2087_POLY << (i - 12));
-    }
-    return (codeword | (reg & 0xFFFu)) & 0xFFFFFu;
+    uint32_t codeword = (uint32_t)data8 << 11;
+    uint32_t remainder = codeword;
+    for (int bit = 18; bit >= 11; bit--)
+        if (remainder & (1u << bit)) remainder ^= 0xC75u << (bit - 11);
+    codeword |= remainder;
+    return (codeword << 1) | ((unsigned)__builtin_popcount(codeword) & 1u);
 }
 
 static int popcount20(uint32_t v)

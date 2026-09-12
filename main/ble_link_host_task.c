@@ -1,4 +1,4 @@
-/* LS-684: NimBLE restores its NVS security database from its host task.  On
+/* NimBLE restores its NVS security database from its host task.  On
  * ESP32-P4 the ordinary allocator put this 5120-byte stack in TCM at
  * 0x30100000, which is internal but inaccessible to IDF's cache-off path. */
 

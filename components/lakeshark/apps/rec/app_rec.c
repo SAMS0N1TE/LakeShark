@@ -1,4 +1,4 @@
-/*LS-500*/
+/**/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,19 +20,20 @@
 #include "radio_endpoint.h"
 #include "rec_state.h"
 #include "rec_unique_name.h"
+#include "rec_file_open.h"
 #include "rec_list_format.h"
 #include "rec_sidecar.h"
-/*LS-961*/
+/**/
 #include "rec_space.h"
-/*LS-963*/
+/**/
 #include "spectrum.h"
-/*LS-200*/
+/**/
 #include "ls_time.h"
-/*LS-220*/
+/**/
 #include "ls_version.h"
 
 #include "bsp/esp-bsp.h"
-/* LS-961/271 statvfs() is not available in ESP-IDF v5.5.4's picolibc, so
+/* statvfs() is not available in ESP-IDF v5.5.4's picolibc, so
    the "free bytes" probe reads through the FATFS and SPIFFS VFS info calls
    directly.  esp_vfs_fat_info takes a mount base_path, not a path inside
    the partition; esp_spiffs_info reports total/used and NULL asks the
@@ -43,16 +44,9 @@
 
 static const char *TAG = "rec";
 
-/*LS-031*/
-/* Captures land on the SD card when one is mounted and fall back to SPIFFS when
-   it is not. SPIFFS is 8 MB, flat and soldered down; the SD is bigger and can be
-   pulled and read on a PC, which is the whole point of leaving the board
-   somewhere recording. THE FALLBACK IS NOT OPTIONAL - the board runs without a
-   card (main.cpp logs "no SD card - running without it") and REC worked on
-   SPIFFS for its entire life, so losing that path would be a regression for
-   anyone without a card in the slot.
-   Resolved ONCE and cached: bsp_sdcard_mount() runs in app_main long before REC
-   is ever entered, and the answer cannot change without a reboot. */
+/**/
+/* Captures land on the SD card when one is mounted and fall back to SPIFFS when it is not. */
+
 #define REC_SD_DIR      BSP_SD_MOUNT_POINT "/lakeshark"
 #define REC_SPIFFS_DIR  BSP_SPIFFS_MOUNT_POINT
 #define REC_IQ_READ_BYTES 8192
@@ -75,32 +69,32 @@ static uint32_t s_captures = 0;
 static char     s_last_file[64] = "";
 
 static int s_mag_now = 0, s_mag_floor = 0, s_mag_thresh = 0;
-/*LS-960  Peak magnitude across the whole capture, snapshotted into the
+/* Peak magnitude across the whole capture, snapshotted into the
    sidecar at SAVE time.  s_mag_now is only the last block's peak - a strong
    burst that ended a few blocks before SAVE would have already decayed
    there, so a capture-scoped max is the honest thing to record. */
 static int s_capture_peak = 0;
-/*LS-960  Floor level at the moment the capture actually landed - so the
+/* Floor level at the moment the capture actually landed - so the
    sidecar records the noise the detector was looking at, not whatever the
    floor drifted to after the burst.  s_mag_floor keeps drifting after the
    capture ends. */
 static int s_capture_floor_at_start = 0;
 
-/*LS-502*/
+/**/
 #define REC_FLOOR_SHIFT 12
 #define REC_MIN_SNR     10
 static int32_t s_floor_acc = 0;
 static int      s_thresh_fixed = 0;
-/*LS-504*/
+/**/
 static uint32_t s_gap_end_us = REC_GAP_END_US;
 
-/*LS-516*/
+/**/
 static uint32_t s_bw_hz        = 0;
 static uint32_t s_min_pulse_us = REC_MIN_PULSE_US;
 static uint32_t s_max_span_us  = REC_MAX_SPAN_US;
 static int      s_min_edges    = REC_MIN_EDGES;
 
-/*LS-517*/
+/**/
 static int      s_end_reason = REC_END_NONE;
 static uint32_t s_min_mark_us = 0, s_max_mark_us = 0, s_baud_est = 0;
 
@@ -108,13 +102,13 @@ static bool     s_level  = false;
 static uint32_t s_run_samples = 0;
 static uint32_t s_span_us = 0;
 
-/*LS-506*/
+/**/
 static volatile bool s_arm_pending = false;
 
-/*LS-507*/
+/**/
 static volatile uint32_t s_bytes_sec = 0;
 
-/*LS-963*/
+/**/
 /* SCOUT.  The rx task owns spectrum_accum/read; the LVGL side only reads
    the published copy.  The two levels of buffering here are intentional:
    s_scout_pub is what the GUI copies out, and only the rx task touches
@@ -149,17 +143,17 @@ static void rec_reset_capture(void)
     s_level = false;
     s_run_samples = 0;
     s_span_us = 0;
-    /*LS-517*/
+    /**/
     s_end_reason  = REC_END_NONE;
     s_min_mark_us = 0;
     s_max_mark_us = 0;
     s_baud_est    = 0;
-    /*LS-960*/
+    /**/
     s_capture_peak = 0;
     s_capture_floor_at_start = 0;
 }
 
-/*LS-517*/
+/**/
 static void rec_finish(int reason)
 {
     s_end_reason = reason;
@@ -216,7 +210,7 @@ static void edge_push(bool level, uint32_t samples)
 
 static void slice_block(const uint8_t *iq, int len)
 {
-    /*LS-514*/
+    /**/
     int blk_peak = 0;
 
     for (int i = 0; i + 1 < len; i += 2) {
@@ -226,24 +220,13 @@ static void slice_block(const uint8_t *iq, int len)
         if (dq < 0) dq = -dq;
         int mag = di + dq;
 
-        /*LS-514*/
+        /**/
         if (mag > blk_peak) blk_peak = mag;
 
-        /*LS-502*/
-        /*LS-529*/
-        /* THE FLOOR IS TRACKED ONLY WHILE THE CARRIER IS ABSENT. It used to be
-           updated on every sample, including throughout a burst, and at
-           REC_FLOOR_SHIFT 12 that is a 4096-sample (16 ms) time constant at
-           256 kSPS - so any transmission longer than that dragged the floor up
-           into its own signal. on_thresh is floor*4, so the threshold climbed
-           FASTER than the floor and overtook the carrier: mag never cleared
-           on_thresh, s_level never went high, no falling edge was ever seen,
-           and the app sat ARMED through a signal that was plainly lifting the
-           magnitude meter. A strong, high-duty-cycle transmitter is the worst
-           case, not the easiest one, which is why this looked like "it only
-           fails when the signal is good".
-           This is item 2 of the LS-520 detector sketch, applied to the detector
-           that is actually shipping. */
+        /**/
+        /**/
+        /* THE FLOOR IS TRACKED ONLY WHILE THE CARRIER IS ABSENT. */
+
         if (!s_level) {
             s_floor_acc += mag - (s_floor_acc >> REC_FLOOR_SHIFT);
             s_mag_floor = s_floor_acc >> REC_FLOOR_SHIFT;
@@ -251,7 +234,7 @@ static void slice_block(const uint8_t *iq, int len)
         }
 
         int on_thresh, off_thresh;
-        /*LS-503*/
+        /**/
         if (s_thresh_fixed > 0) {
             on_thresh  = s_thresh_fixed;
             off_thresh = s_thresh_fixed - (s_thresh_fixed >> 2);
@@ -273,7 +256,7 @@ static void slice_block(const uint8_t *iq, int len)
         uint32_t run_us = samples_to_us(s_run_samples);
 
         if (s_phase == REC_ARMED) {
-            /*LS-502*/
+            /**/
             if (!hi && s_level && run_us >= s_min_pulse_us) {
                 s_phase = REC_CAPTURING;
                 rec_reset_capture();
@@ -281,7 +264,7 @@ static void slice_block(const uint8_t *iq, int len)
                 s_span_us = run_us;
                 s_level = false;
                 s_run_samples = 1;
-                /*LS-960  Freeze the floor as it looked when the capture
+                /* Freeze the floor as it looked when the capture
                    started - the sidecar wants the noise the detector was
                    looking AT, not whatever the floor drifted to later. */
                 s_capture_floor_at_start = s_mag_floor;
@@ -308,18 +291,15 @@ static void slice_block(const uint8_t *iq, int len)
         s_run_samples = 1;
     }
 
-    /*LS-514*/
+    /**/
     s_mag_now = blk_peak;
 
-    /*LS-960  Widest deflection any block saw across the capture; snapshotted
-       into the sidecar at SAVE time so the file has "how strong was it"
-       rather than only "how strong is it now". */
     if (s_phase == REC_CAPTURING && blk_peak > s_capture_peak) {
         s_capture_peak = blk_peak;
     }
 
     if (s_phase == REC_CAPTURING) {
-        /*LS-505*/
+        /**/
         uint32_t idle_us = 0;
         if (!s_level) {
             idle_us = samples_to_us(s_run_samples);
@@ -327,23 +307,18 @@ static void slice_block(const uint8_t *iq, int len)
                 idle_us += (uint32_t)(-s_edge[s_edges - 1]);
             }
         }
-        /*LS-504*/
+        /**/
         bool quiet_end = (!s_level && idle_us >= s_gap_end_us);
         if (quiet_end && s_edges < s_min_edges) {
-            /*LS-529*/
-            /* Was LOGD, i.e. invisible at the default log level. This is the
-               one path that throws a capture away and silently re-arms, so
-               from the outside it is indistinguishable from the detector never
-               having triggered at all. If REC "does nothing" on a signal you
-               can see, this line is the first thing that should tell you
-               whether it triggered and was discarded, or never triggered. */
+            /**/
+
             ESP_LOGI(TAG, "discarding %d-edge blip (min %d), still armed",
                      s_edges, s_min_edges);
             rec_reset_capture();
             s_phase = REC_ARMED;
         } else if (quiet_end || s_span_us >= s_max_span_us ||
                    s_edges >= REC_MAX_EDGES) {
-            /*LS-517*/
+            /**/
             int reason = quiet_end            ? REC_END_GAP
                        : s_edges >= REC_MAX_EDGES ? REC_END_EDGES
                                                   : REC_END_SPAN;
@@ -429,11 +404,11 @@ static void rec_rx_task(void *arg)
     ESP_LOGI(TAG, "rx task up: %.4f MHz %u kSPS gain=%d",
              s_freq_hz / 1e6, (unsigned)(REC_RTL_RATE / 1000), s_gain);
 
-    /*LS-507*/
+    /**/
     int64_t  win_us = esp_timer_get_time();
     uint32_t win_bytes = 0;
 
-    /*LS-963*/
+    /**/
     int scout_folds = 0;
     s_scout_reset = true;
 
@@ -467,12 +442,7 @@ static void rec_rx_task(void *arg)
                     if (error != LS_RADIO_OK)
                         ESP_LOGW(TAG, "retune failed: %s",
                                  ls_radio_err_name(error));
-                    /*LS-963  A retune invalidates the FFT accumulator;
-                       bins from the old centre would bleed across and
-                       print a phantom shoulder the operator would then
-                       chase.  Reset here rather than in rec_set_freq
-                       so only the task that owns the accumulator ever
-                       touches it. */
+
                     s_scout_reset = true;
                 }
                 if (radio_request.flags & LS_IQ_CONTROL_GAIN) {
@@ -489,7 +459,7 @@ static void rec_rx_task(void *arg)
         ls_radio_err_t read_error = ls_radio_iq_read(
             s_session, iq, REC_IQ_READ_BYTES, REC_READ_TIMEOUT_MS, &got);
 
-        /*LS-507*/
+        /**/
         if (read_error == LS_RADIO_OK && got > 0) win_bytes += (uint32_t)got;
         int64_t now_us = esp_timer_get_time();
         if (now_us - win_us >= 1000000) {
@@ -501,9 +471,7 @@ static void rec_rx_task(void *arg)
 
         if (read_error != LS_RADIO_OK || got == 0) {
             if (read_error == LS_RADIO_ERR_DISCONNECTED) {
-                /*LS-1001  No later full read exists to age these windows
-                   after detach. Clear activity before releasing so ARMED is
-                   still operator intent, never a claim that samples arrive. */
+
                 rec_receiver_lost(LS_RADIO_ERR_DISCONNECTED);
                 win_bytes = 0;
                 win_us = now_us;
@@ -513,10 +481,10 @@ static void rec_rx_task(void *arg)
             continue;
         }
 
-        /*LS-514*/
+        /**/
         slice_block(iq, (int)got);
 
-        /*LS-963*/
+        /**/
         /* Fold the same IQ block into the scout FFT and publish a
            frame every REC_SCOUT_ACCUM accumulations.  Only runs when
            scout is enabled, so a headless capture is not paying for
@@ -598,7 +566,7 @@ static void rec_on_enter(void)
     s_floor_acc = 8 << REC_FLOOR_SHIFT;
     s_mag_floor = 8;
 
-    /*LS-963*/
+    /**/
     spectrum_init();
     spectrum_reset();
     s_scout_ready  = false;
@@ -613,7 +581,7 @@ static void rec_on_enter(void)
     s_active = true;
     xTaskCreatePinnedToCore(rec_rx_task, "rec_rx", 4096, NULL, 6, NULL, 1);
 
-    /*LS-506*/
+    /**/
     if (s_arm_pending) {
         s_arm_pending = false;
         rec_arm();
@@ -698,28 +666,28 @@ void rec_get_status(rec_status_t *out)
     out->gap_ms       = rec_get_gap_ms();
     out->captures    = s_captures;
     out->bytes_sec   = s_bytes_sec;
-    /*LS-516*/
+    /**/
     out->bw_hz        = s_bw_hz;
     out->min_pulse_us = s_min_pulse_us;
     out->max_span_us  = s_max_span_us;
     out->min_edges    = s_min_edges;
-    /*LS-517*/
+    /**/
     out->end_reason  = s_end_reason;
     out->min_mark_us = s_min_mark_us;
     out->max_mark_us = s_max_mark_us;
     out->baud_est    = s_baud_est;
-    /*LS-960*/
+    /**/
     out->mag_peak           = s_capture_peak;
     out->mag_floor_at_start = s_capture_floor_at_start;
-    /*LS-961*/
+    /**/
     out->bytes_free         = rec_dir_free_bytes();
     strlcpy(out->last_file, s_last_file, sizeof(out->last_file));
 }
 
-/*LS-507*/
+/**/
 uint32_t rec_bytes_sec(void) { return s_bytes_sec; }
 
-/*LS-508*/
+/**/
 int rec_edge_count(void) { return s_edges; }
 
 int rec_edges_copy(int from, int32_t *out, int max)
@@ -738,7 +706,7 @@ void rec_set_freq(uint32_t hz)
 {
     if (hz < 1000000UL || hz > 2000000000UL) return;
     s_freq_hz = hz;
-    /*LS-963  The accumulator reset lives in the rx task (see
+    /* The accumulator reset lives in the rx task (see
        LS_IQ_CONTROL_TUNE) so only the task that owns the FFT ever
        writes to it.  Snap the peak here so the GUI does not display
        yesterday's peak on the new centre for the second until the
@@ -767,7 +735,7 @@ void rec_arm(void)
     ESP_LOGI(TAG, "armed at %.4f MHz - waiting for carrier", s_freq_hz / 1e6);
 }
 
-/*LS-506*/
+/**/
 void rec_arm_request(void)
 {
     if (s_active) {
@@ -783,7 +751,7 @@ void rec_disarm(void)
     s_phase = REC_IDLE;
 }
 
-/*LS-503*/
+/**/
 void rec_set_thresh(int absolute)
 {
     if (absolute < 0)   absolute = 0;
@@ -793,7 +761,7 @@ void rec_set_thresh(int absolute)
 
 int rec_get_thresh(void) { return s_thresh_fixed; }
 
-/*LS-504*/
+/**/
 void rec_set_gap_ms(int ms)
 {
     if (ms < 2)    ms = 2;
@@ -803,13 +771,13 @@ void rec_set_gap_ms(int ms)
 
 int rec_get_gap_ms(void) { return (int)(s_gap_end_us / 1000u); }
 
-/*LS-516*/
+/**/
 void rec_set_bw(uint32_t hz)
 {
     if (hz && hz < 50000u)   hz = 50000u;
     if (hz > 8000000u)       hz = 8000000u;
     s_bw_hz = hz;
-    /* LS-180: setters may run on GUI, link, or console tasks. Reconfiguration
+    /* setters may run on GUI, link, or console tasks. Reconfiguration
        is posted to rec_rx so only the session-owning task touches the radio. */
     ls_iq_control_request_bandwidth(&s_radio_control, s_bw_hz);
 }
@@ -843,7 +811,7 @@ void rec_set_min_edges(int n)
 
 int rec_get_min_edges(void) { return s_min_edges; }
 
-/*LS-963*/
+/**/
 void rec_scout_enable(bool on)
 {
     if (s_scout_active == on) return;
@@ -898,14 +866,14 @@ static void sanitize_name(const char *in, char *out, size_t len)
 
 int rec_save(const char *name, char *path_out, size_t path_len)
 {
-    /*LS-513*/
+    /**/
     if (s_phase == REC_CAPTURING) return -3;
     if (s_edges <= 0) return -1;
 
     char clean[24];
     sanitize_name(name && *name ? name : "capture", clean, sizeof(clean));
 
-    /*LS-440  A process-local recNNN counter restarted at every boot, so a
+    /* A process-local recNNN counter restarted at every boot, so a
        directory sorted by name did not reflect when captures happened. Keep
        the caller's label as a prefix, but make the timestamp the identity:
        wall clock after sync and the visibly different up-<seconds>s before
@@ -914,7 +882,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     char timed_name[64];
     ls_time_render_filename(timed_name, sizeof(timed_name), clean);
 
-    /*LS-961*/
+    /**/
     /* Refuse before opening anything if the volume cannot hold the
        capture at its worst case.  The pessimistic estimate covers the
        .sub header, per-edge textual width and the sidecar.  UINT64_MAX
@@ -935,7 +903,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
         return -4;
     }
 
-    /*LS-770*/
+    /**/
     /* The GUI feeds this "rec%03lu" off a process-local counter, so after a
        reboot, a wrap or a NEWER file being deleted the same base could name
        an OLDER capture that is still on disk.  fopen("w") would silently
@@ -950,7 +918,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
 
     char path[96];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), unique);
-    /*LS-961*/
+    /**/
     /* Two-step write: land the .sub as `<name>.sub.part`, then rename to
        `<name>.sub` after the writer closes cleanly.  A crash, an unplug,
        or an ENOSPC that slipped past the estimate leaves the `.part`
@@ -960,10 +928,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     char part_path[128];
     snprintf(part_path, sizeof(part_path), "%s%s", path, REC_CAPTURE_PART_EXT);
 
-    /* "wx" refuses to open an existing file, so a stale .part from a
-       previous crashed session cannot be silently truncated - the
-       operator sees it and can delete it deliberately. */
-    FILE *f = fopen(part_path, "wx");
+    FILE *f = rec_file_open_new(part_path);
     if (!f) {
         ESP_LOGE(TAG, "cannot open %s for write", part_path);
         return -2;
@@ -974,16 +939,9 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     fprintf(f, "Frequency: %lu\n", (unsigned long)s_freq_hz);
     fprintf(f, "Preset: FuriHalSubGhzPresetOok650Async\n");
     fprintf(f, "Protocol: RAW\n");
-    /*LS-200*/
-    /* When we know the wall clock (SNTP or an RTC has landed), stamp the
-       capture with it so the file has more provenance than "the counter
-       said 003". The line goes under `# Recorded:`: Flipper's key/value
-       parser (flipper_format_read_string) matches on exact keys - it uses
-       Frequency, Preset, Protocol and RAW_Data - and skips lines whose
-       key it does not know. A `#`-prefixed key is not a Flipper key by
-       any spelling, so a capture off this device still loads on a stock
-       Flipper. Before sync, this line is "# Recorded: up <secs>s", which
-       records the boot-relative uptime honestly rather than a wrong date. */
+    /**/
+    /* When we know the wall clock (SNTP or an RTC has landed), stamp the capture with it so the file has more provenance than "the counter said 003". */
+
     {
         char stamp[LS_TIME_STAMP_MAX];
         ls_time_render_stamp(stamp, sizeof(stamp));
@@ -1001,13 +959,8 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     }
     if (per_line) fprintf(f, "\n");
 
-    /*LS-961*/
-    /* fflush + ferror before closing catches the ENOSPC the estimate
-       missed - a partition that reports "12 KB free" and then runs out
-       during the write, whether from concurrent activity or from the
-       estimate being wrong.  Rename to the final path only if every
-       byte landed; on failure, unlink the .part so the operator has
-       one file to notice, not two files with the same name. */
+    /**/
+
     int write_ok = (fflush(f) == 0) && !ferror(f);
     if (fclose(f) != 0) write_ok = 0;
 
@@ -1017,7 +970,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
         return -2;
     }
 
-    /*LS-960*/
+    /**/
     /* Sidecar with every scrap of provenance the .sub cannot carry:
        time, gain, bandwidth, sample rate, edge count, span, peak/floor
        magnitude, board, firmware.  The .sub itself is byte-for-byte
@@ -1063,7 +1016,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     return s_edges;
 }
 
-/*LS-031*/
+/**/
 const char *rec_dir(void)
 {
     static const char *s_dir = NULL;
@@ -1085,19 +1038,9 @@ const char *rec_dir(void)
     return s_dir;
 }
 
-/*LS-961*/
-/* Free-byte count of the volume rec_dir() points at, or UINT64_MAX when
-   the probe fails.  Callers treat UINT64_MAX as "unknown" and refuse to
-   write - the whole point of the check is not to write into a volume
-   whose free space is not knowable.
+/**/
+/* Free-byte count of the volume rec_dir() points at, or UINT64_MAX when the probe fails. */
 
-   LS-271: the original version reached for POSIX statvfs, but ESP-IDF
-   v5.5.4's picolibc does not ship sys/statvfs.h and never resolves the
-   symbol - the file failed to compile at the smoke gate.  Route through
-   esp_vfs_fat_info for the SD mount (keyed on BSP_SD_MOUNT_POINT, since
-   rec_dir may return a subdirectory of it) and esp_spiffs_info for
-   SPIFFS instead; both are the ESP-IDF-supported way to ask a mounted
-   partition how full it is. */
 uint64_t rec_dir_free_bytes(void)
 {
     const char *dir = rec_dir();
@@ -1128,7 +1071,7 @@ uint64_t rec_dir_free_bytes(void)
     return UINT64_MAX;
 }
 
-/*LS-907*/
+/**/
 /* Reports the total number of .sub captures on disk, not the count that
    happened to fit in `out`.  The previous version returned only what
    fit, and the FILES tab's row cap was compared against that - so a
@@ -1158,7 +1101,7 @@ int rec_list(char *out, size_t len, bool *out_truncated)
            the ground truth for the FILES tab to compare against. */
         if (byte_full || !out || len < 2) continue;
 
-        /*LS-960*/
+        /**/
         /* Trim the ".sub" so the row shows just the base name; the walker
            in AppREC::refreshFiles takes the first space-delimited token as
            the row key when it wants to DELETE. */
@@ -1168,12 +1111,8 @@ int rec_list(char *out, size_t len, bool *out_truncated)
         memcpy(base, e->d_name, bl);
         base[bl] = '\0';
 
-        /*LS-960*/
-        /* Frequency comes from the .sub header - it is authoritative and
-           present on every capture, including old ones written before the
-           sidecar existed.  A missing header (corrupt file) yields 0,
-           which the row helper renders as "0.0000 MHz" rather than
-           refusing the row. */
+        /**/
+
         uint32_t freq = 0;
         {
             char full[96];
@@ -1192,9 +1131,9 @@ int rec_list(char *out, size_t len, bool *out_truncated)
             }
         }
 
-        /*LS-960*/
+        /**/
         /* Time comes from the sidecar.  Older captures written before
-           LS-960 have no sidecar and rec_sidecar_read returns false with
+           have no sidecar and rec_sidecar_read returns false with
            an empty struct; the row helper then emits "-" so the column
            lines up either way. */
         const char *tm = NULL;
@@ -1213,11 +1152,11 @@ int rec_list(char *out, size_t len, bool *out_truncated)
     return total;
 }
 
-/*LS-032*/
+/**/
 /* Indexed access to the saved set, so the head can browse without the board
    ever building a list that has to fit in one reply. rec_list() formats every
    name into one string for the GUI's FILES tab; that is fine at 768 B on the
-   LVGL side and useless over a 384 B link reply (LS-511). One entry per round
+   LVGL side and useless over a 384 B link reply (). One entry per round
    trip is the same shape %D already uses, and for the same reason. */
 int rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size)
 {
@@ -1269,14 +1208,14 @@ int rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *s
     return n;
 }
 
-/*LS-032*/
+/**/
 /* Recall a saved capture into the live edge buffer, so the EXISTING %D transfer
-   (LS-511) can ship it. This is the whole trick: no second transfer path, no
+   () can ship it. This is the whole trick: no second transfer path, no
    new chunk format, no change to either transport's REPLY_MAX - which is
-   exactly the kind of new plumbing LS-519 shows this tree punishes.
+   exactly the kind of new plumbing shows this tree punishes.
    IT CLOBBERS THE CURRENT CAPTURE, deliberately and visibly: phase goes DONE
    and the RECORD tab redraws with the recalled edges. Refused outright while a
-   capture is running, for the LS-513 reason - edge_push() mutates
+   capture is running, for the reason - edge_push() mutates
    s_edge[s_edges-1] in place from the rx task on core 1. */
 int rec_load(int index)
 {
@@ -1294,7 +1233,7 @@ int rec_load(int index)
     if (!f) return -2;
 
     /* Heap, not stack. A RAW_Data line is up to 512 values and this runs on the
-       link task - LS-519 is the standing warning about what a few hundred bytes
+       link task - is the standing warning about what a few hundred bytes
        of new stack in that path can do. */
     const size_t LINE = 6144;
     char *line = heap_caps_malloc(LINE, MALLOC_CAP_SPIRAM);
@@ -1337,10 +1276,6 @@ int rec_load(int index)
     if (freq) s_freq_hz = freq;
     strlcpy(s_last_file, name, sizeof(s_last_file));
 
-    /* rec_finish() recomputes mark/baud from the loaded edges and sets DONE, so
-       the RECORD tab and the telemetry frame describe the recalled capture
-       rather than the one it replaced. It also bumps s_captures, which is
-       wrong for a recall - undo that. */
     uint32_t saved = s_captures;
     rec_finish(REC_END_GAP);
     s_captures = saved;
@@ -1383,7 +1318,7 @@ int rec_remove(const char *name)
     char path[96];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), clean);
     int rc = unlink(path) == 0 ? 0 : -2;
-    /*LS-960  Best-effort remove of the sidecar too.  A missing sidecar is
+    /* Best-effort remove of the sidecar too.  A missing sidecar is
        normal for older captures and unlink returning -1 is not a failure of
        the delete; the .sub is what the caller wanted gone. */
     char sidecar[96];

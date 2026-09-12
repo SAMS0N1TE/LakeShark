@@ -3,6 +3,8 @@
 #include "sdr_ui/sdr_ui.h"
 #include "ui/ls_ui.h"
 #include "home/home_widget_view.h"
+#include "ui/ls_instrument.h"
+#include "ls_board.h"
 
 #include <cstdio>
 #include <cstring>
@@ -13,19 +15,19 @@ extern "C" {
 #include "ls_time.h"
 }
 
-/*LS-604*/
+/**/
 static const struct { const char *app; const char *icon; const char *title;
                       const char *sub; ls_ui_color_role_t accent; } TILES[] = {
     { "P25",      "p25",      "P25",   "DIGITAL VOICE", LS_UI_COLOR_ID_RED },
     { "FM",       "fm",       "FM",    "ANALOG / PAGE", LS_UI_COLOR_ID_TEAL },
     { "ADS-B",    "adsb",     "ADS-B", "AIR TRAFFIC",   LS_UI_COLOR_ID_BLUE },
-    /*LS-794  REC was reachable from the rail but had no tile here, so HOME
+    /* REC was reachable from the rail but had no tile here, so HOME
        did not show the one app that writes to the SD card. The "rec" icon
        already existed in the icon table. */
     { "REC",      "rec",      "REC",   "CAPTURE / SCOUT", LS_UI_COLOR_ID_ORANGE },
     { "ACARS",    "acars",    "ACARS", "AIRCRAFT TEXT", LS_UI_COLOR_ID_VIOLET },
     { "Files",    "files",    "FILES", "SD BROWSER",    LS_UI_COLOR_ID_STEEL },
-    /*LS-743*/
+    /**/
     { "MUSIC",    "files",    "MUSIC", "PLAYER",        LS_UI_COLOR_ID_ROSE },
     { "MAP",      "map",      "MAP",   "NAV / ADS-B",   LS_UI_COLOR_ID_GREEN },
     { "Settings", "settings", "CONFIG","DEVICE",        LS_UI_COLOR_DIM_TEXT },
@@ -33,14 +35,14 @@ static const struct { const char *app; const char *icon; const char *title;
 
 AppHome::AppHome() : LsApp("HOME", "home") {}
 
-/*LS-604*/
+/**/
 void AppHome::tileCb(lv_event_t *e)
 {
     const char *app = static_cast<const char *>(lv_event_get_user_data(e));
     if (app) LsShell::instance().launchByName(app);
 }
 
-/*LS-604*/
+/**/
 void AppHome::faceCb(lv_event_t *e)
 {
     auto *self = static_cast<AppHome *>(lv_event_get_user_data(e));
@@ -51,35 +53,82 @@ void AppHome::faceCb(lv_event_t *e)
 
 bool AppHome::run(lv_obj_t *parent)
 {
-    /* LS-746: pause hides the hub subscription; reconstruction must restore
+    /* pause hides the hub subscription; reconstruction must restore
      * visibility even though the lightweight app descriptor is reused. */
     _visible = true;
     _widget = (home_widget_id_t)settings_get_home_widget();
+#if LS_HAS_COMPACT_UI
+    buildInstrument(parent);
+#else
     ls_ui_screen_t screen;
     ls_ui_screen_create(parent, nullptr, false, LS_UI_COLOR_ACCENT, &screen);
     _screen_readout = screen.readout;
     _screen_lamp = screen.lamp;
     ls_ui_screen_set_readout(&screen, "OVERVIEW");
     parent = screen.content;
+    /* measured square-panel overflow was 5 px. Recover 6 px of
+     * vertical padding while preserving every font and control dimension. */
+    lv_obj_set_style_pad_ver(parent,5,0);
 
     buildFace(parent);
     buildTiles(parent);
+#endif
 
-    /*LS-697  HOME is passive. Entering it must not choose a backend, unpark
+    /* HOME is passive. Entering it must not choose a backend, unpark
       a receiver, or retune merely to make the face non-empty. */
 
-    /*LS-606*/
+    /**/
     lv_obj_update_layout(parent);
 
     _sub = ls_hub_subscribe(hubCb, this);
-    /*LS-606*/
+    /**/
     _theme_sub = sdr_theme_on_change(themeCb, this);
     apply(ls_hub_state(), LS_HUB_ALL);
     _clock_timer = lv_timer_create(clockCb, 1000, this);
     return true;
 }
 
-/*LS-606*/
+#if LS_HAS_COMPACT_UI
+void AppHome::buildInstrument(lv_obj_t *parent)
+{
+    auto *v=ls_instrument_create(parent,"LAKESHARK","01 / FIELD DESK",192,52,52);
+    if(!v)return;
+    _mode=ls_instrument_text(v->left,"LAST RECEIVER");
+    lv_obj_set_pos(_mode,0,8);lv_obj_set_size(_mode,lv_pct(100),32);
+    _face=ls_instrument_button(v->left,"---.----",faceCb,this,&_freq);
+    lv_obj_set_pos(_face,0,44);lv_obj_set_size(_face,lv_pct(100),64);
+    lv_obj_set_style_text_font(_freq,&lv_font_montserrat_32,0);
+    _detail=ls_instrument_text(v->left,"Select a receiver from the directory.");
+    lv_obj_set_pos(_detail,0,124);lv_obj_set_size(_detail,lv_pct(100),56);
+    lv_label_set_long_mode(_detail,LV_LABEL_LONG_WRAP);
+    _save_status=ls_instrument_text(v->left,"");
+    lv_obj_set_pos(_save_status,0,184);lv_obj_set_size(_save_status,lv_pct(100),32);
+    lv_obj_add_flag(_save_status,LV_OBJ_FLAG_HIDDEN);
+    static const char *choices[]={"RECEIVER","SYSTEM","CLOCK"};
+    for(int i=0;i<HOME_WIDGET_COUNT;i++)
+        _widget_buttons[i]=ls_instrument_button(v->footer,choices[i],widgetCb,this);
+    ls_instrument_list(v->footer,3,52);
+    for(unsigned i=0;i<sizeof(TILES)/sizeof(TILES[0]);i++) {
+        char text[64];snprintf(text,sizeof(text),"%02u / %-6s  %s",i+1,TILES[i].title,TILES[i].sub);
+        ls_instrument_button(v->right,text,tileCb,(void *)TILES[i].app);
+    }
+    lv_obj_add_event_cb(v->right,[](lv_event_t *e){
+        auto *p=lv_event_get_target(e);
+        int columns=lv_obj_get_width(lv_obj_get_parent(p))>=800?2:1;
+        int rows=(9+columns-1)/columns;
+        int row=lv_obj_get_content_height(p)/rows;
+        int width=lv_obj_get_content_width(p)/columns;
+        for(unsigned i=0;i<lv_obj_get_child_cnt(p);i++){
+            auto *b=lv_obj_get_child(p,i);
+            lv_obj_set_pos(b,(i%columns)*width,(i/columns)*row);
+            lv_obj_set_size(b,width-(columns>1?8:0),row-6);
+        }
+    },LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_event_send(v->right,LV_EVENT_SIZE_CHANGED,nullptr);
+}
+#endif
+
+/**/
 void AppHome::themeCb(void *ud)
 {
     AppHome *self = static_cast<AppHome *>(ud);
@@ -87,7 +136,7 @@ void AppHome::themeCb(void *ud)
     self->apply(ls_hub_state(), LS_HUB_ALL);
 }
 
-/*LS-604*/
+/**/
 void AppHome::buildFace(lv_obj_t *parent)
 {
     /* Stable IDs and a single picker table are the extension point for future
@@ -170,18 +219,24 @@ void AppHome::refreshWidget(const ls_hub_state_t *s)
     sdr_text_if_changed(_mode, view.title);
     sdr_text_if_changed(_freq, view.value);
     sdr_text_if_changed(_detail, view.detail);
+#if LS_HAS_COMPACT_UI
+    sdr_color_if_changed(_mode,ls_instrument_accent());
+    sdr_color_if_changed(_freq,ls_instrument_ink());
+    for(int i=0;i<HOME_WIDGET_COUNT;i++)ls_instrument_select(_widget_buttons[i],i==_widget);
+#else
     sdr_color_if_changed(_mode, sdr_accent());
     sdr_color_if_changed(_freq, SDR_TEXT);
-    sdr_color_if_changed(_detail, SDR_LABEL);
     for (int i = 0; i < HOME_WIDGET_COUNT; ++i)
         ls_ui_button_set_role(_widget_buttons[i], i == _widget
             ? LS_BTN_TOGGLE_ON : LS_BTN_TOGGLE_OFF);
+#endif
+    sdr_color_if_changed(_detail, SDR_LABEL);
     if (_widget == HOME_WIDGET_RECEIVER && _last_receiver_app[0])
         lv_obj_add_flag(_face, LV_OBJ_FLAG_CLICKABLE);
     else lv_obj_clear_flag(_face, LV_OBJ_FLAG_CLICKABLE);
 }
 
-/*LS-604*/
+/**/
 void AppHome::buildTiles(lv_obj_t *parent)
 {
     sdr_section(parent, "LAUNCH");
@@ -213,14 +268,14 @@ void AppHome::hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud)
     static_cast<AppHome *>(ud)->apply(s, dirty);
 }
 
-/*LS-604*/
+/**/
 void AppHome::apply(const ls_hub_state_t *s, uint32_t dirty)
 {
     if (!_visible || !s) return;
     refreshWidget(s);
 }
 
-/*LS-604*/
+/**/
 bool AppHome::pause(void)
 {
     _visible = false;
@@ -228,7 +283,7 @@ bool AppHome::pause(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 bool AppHome::resume(void)
 {
     _visible = true;
@@ -242,7 +297,7 @@ bool AppHome::close(void)
     _visible = false;
     if (_clock_timer) { lv_timer_del(_clock_timer); _clock_timer = nullptr; }
     if (_sub >= 0) { ls_hub_unsubscribe(_sub); _sub = -1; }
-    /*LS-606*/
+    /**/
     if (_theme_sub >= 0) { sdr_theme_off_change(_theme_sub); _theme_sub = -1; }
     _face = _mode = _freq = _detail = nullptr;
     _save_status = nullptr;
@@ -250,5 +305,5 @@ bool AppHome::close(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 void AppHome::switchTab(int delta) { LsShell::instance().cycleApp(delta); }

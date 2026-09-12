@@ -1,4 +1,4 @@
-/* LS-671: see ls_nvs_safe.h for why this exists. */
+/* see ls_nvs_safe.h for why this exists. */
 
 #include "ls_nvs_safe.h"
 
@@ -18,7 +18,7 @@ typedef struct {
     SemaphoreHandle_t done;
 } ls_nvs_job_t;
 
-/* LS-686: the LCD startup trace had only 19 DMA-capable bytes left after P25
+/* the LCD startup trace had only 19 DMA-capable bytes left after P25
    decoder and BLE/NimBLE setup. A transient 3072-byte allocation therefore
    skipped the BLE pinned-peer read. Reserve one cache-safe stack at link time
    and serialize its short-lived users. The task itself exists only while a
@@ -78,7 +78,7 @@ esp_err_t ls_nvs_call(ls_nvs_fn_t fn, void *ctx, unsigned stack_bytes)
         return ESP_ERR_NO_MEM;
     }
 
-    /* LS-684: INTERNAL alone includes P4 TCM (0x30100000-0x30102000), but
+    /* INTERNAL alone includes P4 TCM (0x30100000-0x30102000), but
        IDF 5.5.4's cache-off assertion accepts DRAM (0x4ff00000-0x4ffc0000),
        not TCM. The complete statically reserved stack range is checked by
        ls_flash_task_create_static before every dispatch. */

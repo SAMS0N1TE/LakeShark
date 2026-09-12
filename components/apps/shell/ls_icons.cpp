@@ -3,7 +3,6 @@
 #include <cstring>
 #include "esp_heap_caps.h"
 
-
 #define ICON_W 16
 #define ICON_H 16
 
@@ -102,7 +101,7 @@ static const char *const FILES[ICON_H] = {
     "................",
 };
 
-/*LS-605*/
+/**/
 static const char *const HOME[ICON_H] = {
     "................",
     "..........X.....",
@@ -122,7 +121,7 @@ static const char *const HOME[ICON_H] = {
     "................",
 };
 
-/*LS-605*/
+/**/
 static const char *const SETTINGS[ICON_H] = {
     "................",
     "......XXXX......",
@@ -142,7 +141,7 @@ static const char *const SETTINGS[ICON_H] = {
     "................",
 };
 
-/*LS-716*/
+/**/
 /* AppREC asks for "rec" and the table had no entry, so the rail drew an empty
    button. Placeholder record dot - replace the grid, not the wiring. */
 static const char *const REC[ICON_H] = {
@@ -164,10 +163,6 @@ static const char *const REC[ICON_H] = {
     "................",
 };
 
-/* ACARS: an aircraft silhouette with a message ribbon underneath - the
-   panel it launches is a message log, not a positional picture, so the
-   icon says "text from an aircraft" rather than reusing the ADS-B glyph
-   and misleading a first-time user into thinking they landed there. */
 static const char *const ACARS[ICON_H] = {
     "................",
     ".......XX.......",
@@ -187,10 +182,10 @@ static const char *const ACARS[ICON_H] = {
     "................",
 };
 
-/*LS-737*/
+/**/
 /* AppMap asks for "map". Folded-map outline; 1-bit, recoloured at runtime,
    16x16 because that is the only size dividing cleanly into the 32 px rail
-   and the 48 px tiles (LS-716). */
+   and the 48 px tiles (). */
 static const char *const MAP[ICON_H] = {
     "................",
     "................",
@@ -210,7 +205,7 @@ static const char *const MAP[ICON_H] = {
     "................",
 };
 
-/*LS-605*/
+/**/
 static lv_img_dsc_t *build(const char *const *rows, int gw, int gh, int blk)
 {
     const int W = gw * blk, H = gh * blk;
@@ -241,7 +236,7 @@ static lv_img_dsc_t *build(const char *const *rows, int gw, int gh, int blk)
     return dsc;
 }
 
-/*LS-605*/
+/**/
 const lv_img_dsc_t *ls_icon_for(const char *key, int px)
 {
     if (!key) return nullptr;
@@ -258,9 +253,9 @@ const lv_img_dsc_t *ls_icon_for(const char *key, int px)
         { "acars",    ACARS,    {nullptr} },
         { "mesh",     MESH,     {nullptr} },
         { "files",    FILES,    {nullptr} },
-        /*LS-716*/
+        /**/
         { "rec",      REC,      {nullptr} },
-        /*LS-737*/
+        /**/
         { "map",      MAP,      {nullptr} },
         { "home",     HOME,     {nullptr} },
         { "settings", SETTINGS, {nullptr} },

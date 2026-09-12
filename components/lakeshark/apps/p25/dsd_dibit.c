@@ -136,7 +136,7 @@ use_symbol (dsd_opts* opts, dsd_state* state, int symbol)
    * (QPSK only), which meant C4FM mode used stale min/max values
    * captured at frame sync time. With any slight amplitude drift during
    * the frame, the umid/lmid slicer boundaries ended up wrong and
-   * outer symbols misclassified as inner — exactly the BCH failure
+   * outer symbols misclassified as inner - exactly the BCH failure
    * pattern we've been seeing (NAC dibits 0-5 decode but BCH parity
    * dibits 6-31 corrupt).
    *
@@ -329,7 +329,7 @@ static int digitize (dsd_opts* opts, dsd_state* state, int symbol)
 
       /* A/B test: heuristics temporarily disabled. DSD's heuristics use
        * learned symbol distributions from recent data to make smarter
-       * slicer decisions — but if early frames have bad data, the learned
+       * slicer decisions - but if early frames have bad data, the learned
        * distributions get polluted and later decisions get worse. Skipping
        * heuristics forces pure threshold slicing.
        * TODO: re-enable once we confirm this is/isn't the issue. */
@@ -367,7 +367,7 @@ static int digitize (dsd_opts* opts, dsd_state* state, int symbol)
             }
         }
 
-      /* Diagnostic: SL trace disabled — replaced by RAW trace in dsd_symbol.c
+      /* Diagnostic: SL trace disabled - replaced by RAW trace in dsd_symbol.c
        * which shows the 10 underlying samples per symbol (more informative). */
       #if 0
       {

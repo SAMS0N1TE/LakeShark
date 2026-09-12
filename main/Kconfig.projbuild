@@ -21,6 +21,18 @@ menu "LakeShark"
         config LS_BOARD_P4_TOUCH_LCD_43
             bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (32MB)"
 
+        config LS_BOARD_T_DISPLAY_P4
+            bool "LilyGO T-Display-P4 (16MB, SCAFFOLD - pins unknown, see LS-905)"
+            help
+                Scaffold only. The vendor pin-map header
+                (t_display_p4_config.h) is referenced by every example in
+                Xinyuan-LilyGO/T-Display-P4 but is not in the repository -
+                it lives in a submodule that was not published at scaffold
+                time. Selecting this board today will build against the
+                shared P4 pin defaults from ls_board.h, which are the NANO's
+                numbers and are NOT guaranteed correct for the T-Display-P4.
+                Do not flash a build made this way. See LS-905 in
+                components/lakeshark/board/variants/t_display_p4.h.
     endchoice
 
     config LS_VBUS_EN_GPIO
@@ -89,6 +101,24 @@ menu "LakeShark"
             Build the headless variant: boot straight into the radio backend and
             a UART console instead of the LVGL touch GUI. Shares the same
             radio core (P25 / FM / ADS-B). Leave OFF for the GUI build.
+
+    config LS_C6_LINK
+        bool "Bring up the ESP32-C6 co-processor at boot"
+        default y
+        help
+            Attempt esp_hosted_connect_to_slave() during startup.
+
+            LS-910: turn this OFF for a board whose C6 is not running the
+            esp_hosted slave firmware from c6_firmware/. When the slave
+            speaks a different protocol the SDIO transport never completes,
+            and the driver retries forever - printing a CPU register dump per
+            failed command until the console is unusable and no other command
+            can be typed. That is not a soft degradation; it takes the board
+            with it.
+
+            This is a statement about what is flashed on the co-processor,
+            not about whether the board has one, which is why it is a build
+            option rather than a board capability.
 
     config EXAMPLE_ENABLE_SD_CARD
         bool "Enable SD Card"

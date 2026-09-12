@@ -137,15 +137,8 @@ static ls_radio_err_t rtl_iq_retune(void *ctx, uint64_t center_hz, bool fast,
         __atomic_store_n(&s_adapter_streaming, false, __ATOMIC_RELEASE);
     }
 
-    /*LS-824  Name a nonsense tune where it is requested, not three layers
-       down in the tuner.
+    /* Name a nonsense tune where it is requested, not three layers down in the tuner. */
 
-       lo_freq in r82xx_set_tv_freq is uint32_t and is computed as
-       upconvert_freq + int_freq, so a request that is negative - or simply
-       absurd - wraps and asks the PLL for a frequency it cannot reach. What
-       that looks like from the console is "[R82XX] Freq: 1815000 / PLL not
-       locked!", which names the wrapped value and gives no hint who asked
-       for it. 1815000 is exactly what a request of -1755000 Hz becomes. */
     if (center_hz < 1000000ull || center_hz > 2000000000ull) {
         ESP_LOGE(TAG, "refusing an out-of-range tune: %llu Hz",
                  (unsigned long long)center_hz);
@@ -224,7 +217,7 @@ static ls_radio_err_t rtl_register_endpoint(rtlsdr_dev_t *dev)
 static void rtl_unregister_endpoint(void)
 {
     if (!s_dev) return;
-    /* LS-170: present is cleared before cancellation, so a read that races a
+    /* present is cleared before cancellation, so a read that races a
      * USB detach can only complete as DISCONNECTED and teardown cannot free
      * the rtlsdr_dev_t until that read has left the adapter. */
     (void)ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_RTL_USB);
@@ -246,7 +239,7 @@ void rtl_adapter_note_transport_fault(void)
     radio_health_note_fault(LS_RADIO_ENDPOINT_RTL_USB);
 }
 
-/*LS-407*/
+/**/
 void rtlsdr_dev_teardown(void)
 {
     rtlsdr_dev_t *dev = s_dev;
@@ -293,7 +286,7 @@ static void rtlsdr_setup_task(void *arg)
     rtlsdr_set_freq_correction(s_dev, 0);
     rtlsdr_reset_buffer(s_dev);
     ls_radio_err_t register_error = LS_RADIO_ERR_BUSY;
-    /* LS-190: a replacement dongle can enumerate before the old app task has
+    /* a replacement dongle can enumerate before the old app task has
      * observed DISCONNECTED and released its invalid session. Reusing that
      * static session slot early would alias the stale handle; wait for the
      * bounded app read to release it, then publish the new attach. */

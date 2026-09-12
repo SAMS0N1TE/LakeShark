@@ -7,7 +7,7 @@
 #include "sdr_ui/sdr_ui.h"
 #include "ui/ls_spectrum_waterfall.h"
 
-/*LS-020*/
+/**/
 class AppREC : public LsApp {
 public:
     AppREC();
@@ -19,7 +19,7 @@ public:
     bool init(void) override;
     bool pause(void) override;
     bool resume(void) override;
-    /*LS-604*/
+    /**/
     bool background(void) override;
     void switchTab(int delta) override;
 
@@ -27,10 +27,10 @@ private:
     lv_obj_t *_screen_readout = nullptr;
     lv_obj_t *_screen_lamp = nullptr;
     void buildRecordTab(lv_obj_t *parent);
-    /*LS-963*/
+    /**/
     void buildScoutTab(lv_obj_t *parent);
     void updateScout(void);
-    /*LS-984*/
+    /**/
     void applyScoutSplit(void);
     void scoutRefreshRecBtn(void);
     void scoutLoadPrefs(void);
@@ -49,7 +49,7 @@ private:
     static void armCb(lv_event_t *e);
     static void stopCb(lv_event_t *e);
     static void saveCb(lv_event_t *e);
-    /*LS-963*/
+    /**/
     static void toScoutCb(lv_event_t *e);
 
     static void freqDownCb(lv_event_t *e);
@@ -58,7 +58,7 @@ private:
     static void freqCoarseUpCb(lv_event_t *e);
     static void presetCb(lv_event_t *e);
 
-    /*LS-028*/
+    /**/
     static void freqEntryCb(lv_event_t *e);
     static void freqEntryDone(bool accepted, const char *text, void *user_data);
     void openFreqEntry(void);
@@ -73,7 +73,7 @@ private:
     static void gapUpCb(lv_event_t *e);
     static void bwDownCb(lv_event_t *e);
     static void bwUpCb(lv_event_t *e);
-    /*LS-830*/
+    /**/
     static void bwAutoCb(lv_event_t *e);
     static void cfgResetCb(lv_event_t *e);
     static void minPulseDownCb(lv_event_t *e);
@@ -83,13 +83,13 @@ private:
     static void minEdgesDownCb(lv_event_t *e);
     static void minEdgesUpCb(lv_event_t *e);
 
-    /*LS-963*/
+    /**/
     static void scoutTunePeakCb(lv_event_t *e);
-    /*LS-560*/
+    /**/
     static void scoutSpanCb(lv_event_t *e);
     static void scoutZoomOutCb(lv_event_t *e);
     static void scoutZoomInCb(lv_event_t *e);
-    /*LS-984*/
+    /**/
     static void scoutGainDownCb(lv_event_t *e);
     static void scoutGainUpCb(lv_event_t *e);
     static void scoutArmCb(lv_event_t *e);
@@ -101,7 +101,7 @@ private:
     lv_obj_t   *_tabview = nullptr;
     lv_timer_t *_timer   = nullptr;
 
-    /*LS-963  RECORD tab, LCD-face layout in the same visual language as
+    /* RECORD tab, LCD-face layout in the same visual language as
        AppP25's DECODE face: phase strap + big freq + status subline +
        signal meter + grouped stats. */
     lv_obj_t *_rec_face      = nullptr;
@@ -125,15 +125,15 @@ private:
     lv_obj_t *_cfg_maxspan = nullptr;
     lv_obj_t *_cfg_minedg  = nullptr;
 
-    /*LS-028*/
+    /**/
     ls_text_entry_t *_freq_entry = nullptr;
 
-    /*LS-963  SCOUT tab.  See buildScoutTab for the layout and why. */
+    /* SCOUT tab.  See buildScoutTab for the layout and why. */
     lv_obj_t *_scout_hdr       = nullptr;
     lv_obj_t *_scout_freq      = nullptr;
     lv_obj_t *_scout_sub       = nullptr;
     lv_obj_t *_scout_peak_lbl  = nullptr;
-    /*LS-984  Chrome that hides in fullscreen so the waterfall gets the
+    /* Chrome that hides in fullscreen so the waterfall gets the
        whole panel; grouped in one container to make show/hide one call. */
     lv_obj_t *_scout_chrome    = nullptr;
     lv_obj_t *_scout_area      = nullptr;
@@ -148,17 +148,14 @@ private:
        ~200 kHz window, not a hardware sweep - the tuner does not move
        when this changes. */
     int       _scout_zoom = 0;
-    /*LS-984  SCOUT visible-buffer sizes.  Both derive from the panel at
+    /* SCOUT visible-buffer sizes.  Both derive from the panel at
        run() - never a literal.  A 240 hardcoded here shipped as a
-       waterfall filling half the LCD-4.3, and disagreed with the LS-748
-       comment that had assumed 460. The shared widget reports the PSRAM
+       waterfall filling half the LCD-4.3, and disagreed with the comment that had assumed 460. The shared widget reports the PSRAM
        footprint. */
     int       _wf_w             = 0;
     int       _scout_bins       = 0;
     int       _scout_area_cap_h = 0;
-    /* Percent of the spectrum+waterfall area given to the spectrum.
-       0 = waterfall only, 100 = spectrum only.  Persisted in NVS so
-       leaving and re-entering keeps the operator's choice. */
+
     int       _scout_split_pct  = 50;
     int       _scout_contrast_pct = 100;
     /* Fullscreen waterfall: chrome hides; responsive controls remain. */

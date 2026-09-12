@@ -1,10 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    LakeShark original. Not librtlsdr - see UPSTREAM.md in this
    directory for which files here are third-party and which are ours. */
-/* LS-1000: receiver troubleshooting previously combined a live decoder byte
- * rate with an uninitialised LCD health service and printed rhs=absent.  This
- * formatter preserves each source's validity, so an unavailable health or
- * effective tune is printed as '?' and cannot impersonate a measured zero. */
 
 #include "receiver_diagnostics.h"
 
@@ -96,7 +92,7 @@ int ls_receiver_diag_format(const ls_receiver_diag_t *s,
         return (int)w.used;
     }
 
-    /* LS-1002: newlib's snprintf path reserves 1328 bytes before formatting
+    /* newlib's snprintf path reserves 1328 bytes before formatting
      * a single field on ESP32-P4 (_svfprintf_r=1152, snprintf=176).  The LCD
      * console had only 832 bytes left at this point and faulted before the
      * first STAT reply.  This writer only copies bounded tokens and renders

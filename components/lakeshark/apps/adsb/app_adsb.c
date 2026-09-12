@@ -4,9 +4,10 @@
 #include "adsb_decode.h"
 #include "adsb_state.h"
 #include "adsb_app.h"
-#include "adsb_demo.h"   /*LS-835*/
+#include "adsb_demo.h"   /**/
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
+#include "radio_decode_worker.h"
 #include "perf.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,7 +42,7 @@ static void age_task(void *arg)
     s_age_running = true;
     while (s_age_should_run) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        /*LS-835  Before ageing, so demo aircraft refresh their last_seen and
+        /* Before ageing, so demo aircraft refresh their last_seen and
            are not immediately aged out by the very next call. */
         adsb_demo_tick();
         adsb_periodic_age(esp_timer_get_time());
@@ -96,11 +97,6 @@ static bool adsb_radio_open(void)
     return true;
 }
 
-/* LS-180: This reader used to live in radio/stream.c and reached through the
- * RTL singleton, so app switches could leave a generic USB task dispatching
- * ADS-B samples after ownership changed.  The reader now owns an exact-format
- * session and every blocking read is bounded, making app drain independent of
- * the transport. */
 static void adsb_rx_task(void *arg)
 {
     (void)arg;
@@ -110,7 +106,6 @@ static void adsb_rx_task(void *arg)
     if (!buffer) {
         ESP_LOGE(TAG, "OOM IQ buffer");
         s_rx_running = false;
-        vTaskDelete(NULL);
         return;
     }
 
@@ -188,7 +183,6 @@ static void adsb_rx_task(void *arg)
     }
     heap_caps_free(buffer);
     s_rx_running = false;
-    vTaskDelete(NULL);
 }
 
 static void adsb_cache_settings(const app_t *a)
@@ -231,44 +225,23 @@ static void adsb_on_enter(void)
     adsb_on_enter_tui();
 #endif
 
-    /*LS-816  Biggest stack first, and check that it was actually created.
+    /* Reuse the decoder stack reserved for the active radio app. */
 
-       adsb_age (3072) used to be created before adsb_rx (16384). On a board
-       that has been running a while there is exactly one internal block left
-       big enough for the reader, and putting the small task in first splits
-       it - measured on the LCD 4.3, switching FM -> ADS-B:
-
-           on FM      internal_largest=16384
-           -> ADS-B   internal_largest=12800   own=? stream=0
-
-       16384 - 3072 - allocator overhead is the 12800, so the reader's
-       xTaskCreatePinnedToCore then failed. Nothing checked its return, so it
-       failed in total silence: the app switched, drew its screen, and never
-       acquired the radio. `fl FREQ` showed app=ADS-B park=0 rx=idle own=?
-       stream=0 with no error logged anywhere, and the Flipper showed a live
-       ADS-B screen with no aircraft. From a cold boot it worked, which is
-       what made it look like an app-lifecycle bug rather than a memory one.
-
-       Allocating the large stack first leaves the small one to fit anywhere.
-       Neither ordering can conjure memory that is not there, so both creates
-       now report failure instead of hiding it. */
     s_rx_should_run = true;
-    if (xTaskCreatePinnedToCore(adsb_rx_task, "adsb_rx", 16384, NULL, 5,
-                                NULL, 1) != pdPASS) {
+    s_rx_running = true;
+    if (!ls_radio_decode_worker_start(adsb_rx_task, "adsb_rx", 5, 1)) {
         s_rx_should_run = false;
-        ESP_LOGE(TAG, "adsb_rx task create failed - internal RAM exhausted "
-                      "(largest free block %u B, need >%u). ADS-B will not "
-                      "receive; free memory or reboot.",
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
-                                                            MALLOC_CAP_8BIT),
-                 (unsigned)16384);
+        s_rx_running = false;
+        ESP_LOGE(TAG, "shared radio decoder is unavailable");
         return;
     }
 
     s_age_should_run = true;
+    s_age_running = true;
     if (xTaskCreatePinnedToCore(age_task, "adsb_age", 3072, NULL, 1,
                                 NULL, 1) != pdPASS) {
         s_age_should_run = false;
+        s_age_running = false;
         ESP_LOGE(TAG, "adsb_age task create failed - contacts will not time "
                       "out (largest free block %u B)",
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
@@ -276,7 +249,7 @@ static void adsb_on_enter(void)
     }
 }
 
-static void adsb_on_exit(void)
+static bool adsb_on_stop(void)
 {
     s_rx_should_run = false;
     s_age_should_run   = false;
@@ -285,11 +258,13 @@ static void adsb_on_exit(void)
     for (waited = 0; waited < 300 && (s_rx_running || s_age_running); waited++)
         vTaskDelay(pdMS_TO_TICKS(10));
 
-    if (s_rx_running || s_age_running) {
+    bool decoder_released = ls_radio_decode_worker_release(300, 10);
+    if (s_rx_running || s_age_running || !decoder_released) {
 
         ESP_LOGE(TAG, "*** ADS-B drain TIMEOUT after %dms (rx=%d age=%d) ***",
                  waited * 10, s_rx_running, s_age_running);
         ESP_LOGE(TAG, "*** Next app will see degraded throughput. Reboot ***");
+        return false;
     } else {
         if (s_session) {
             ls_radio_release(s_session);
@@ -297,6 +272,7 @@ static void adsb_on_exit(void)
         }
         ESP_LOGI(TAG, "ADS-B drained cleanly in %dms", waited * 10);
     }
+    return true;
 }
 
 static void adsb_on_key(tui_key_t k)
@@ -351,7 +327,7 @@ static const app_t ADSB_APP = {
     .signal_label = "TRACK",
     .diag_label   = "DIAG",
     .on_enter     = adsb_on_enter,
-    .on_exit      = adsb_on_exit,
+    .on_stop      = adsb_on_stop,
     .on_sample    = adsb_on_sample,
 #ifdef CONFIG_ENABLE_TUI
     .draw_main    = adsb_draw_main,

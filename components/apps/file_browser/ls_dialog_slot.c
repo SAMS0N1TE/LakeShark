@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-/*LS-759*/
+/**/
 /* Intentionally free of LVGL, IDF and audio_player headers so the bench can
    link this file straight in and exercise pause/close ordering under mocks.
    The comment in the header explains what this fixes. */
@@ -44,9 +44,7 @@ void ls_dialog_slot_close(ls_dialog_slot_t *slot)
 {
     if (!slot) return;
     void *obj = slot->obj;
-    /* Clear first, then call del.  If del's teardown fires a click callback
-       that re-enters this function (LVGL will happily do that), the second
-       call must see an empty slot rather than the same handle again. */
+
     slot->obj = NULL;
     if (obj && alive(obj) && s_hooks.del) {
         s_hooks.del(obj);

@@ -1,10 +1,3 @@
-# The one rule that keeps board support from turning back into a fork:
-# outside components/lakeshark/board/, no file may ask which board it is on.
-# It asks what the board CAN DO - an LS_HAS_* capability from ls_caps.h.
-#
-# Without this check the rule decays quietly: one #ifdef CONFIG_LS_BOARD_X in
-# the DSP is all it takes, and then board five needs edits in ten files
-# instead of one header. See docs/PORTING.md.
 name: board rule
 
 on:
@@ -17,20 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: No CONFIG_LS_BOARD_* outside components/lakeshark/board/
-        run: |
-          hits=$(grep -rn --include='*.c' --include='*.h' --include='*.cpp' --include='*.cc' \
-                   'CONFIG_LS_BOARD_' components main \
-                 | grep -v '^components/lakeshark/board/' || true)
-          if [ -n "$hits" ]; then
-            echo "::error::board identity leaked outside components/lakeshark/board/"
-            echo "$hits"
-            echo
-            echo "Test a capability from board/ls_caps.h (LS_HAS_*) instead of a board name."
-            echo "If no capability fits, add one to ls_caps.h derived from a fact in the variant header."
-            exit 1
-          fi
-          echo "OK: no board-identity tests outside the board layer"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test board identity checker
+        run: python -m unittest discover -s tools -p test_check_board_identity.py -v
+      - name: No board identity tokens outside board layer
+        run: python tools/check_board_identity.py
 
       - name: Capabilities are derived, never hand-set in a variant
         run: |

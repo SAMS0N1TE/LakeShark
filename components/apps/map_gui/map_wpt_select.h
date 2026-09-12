@@ -1,19 +1,8 @@
 #ifndef MAP_WPT_SELECT_H
 #define MAP_WPT_SELECT_H
 
-/*LS-762*/
-/* Row-to-slot classifier for the Map app's waypoint table.  The table has a
-   header at row 0 and one row per waypoint slot after it.  Prior to LS-762
-   AppMap::buildWptTab left _wpt_tbl without a click callback, so _wsel was
-   frozen at 0 unless MARK HERE happened to write into slot 0.  After a fresh
-   boot with waypoints already stored, GOTO and DEL could only ever act on
-   slot 0, which is a nav aid that lies about which point you have picked.
-
-   Extracting the decision here keeps the LVGL surface in AppMap.cpp thin and
-   lets the bench prove the invariants: header and empty rows are never
-   actionable, LV_TABLE_CELL_NONE (0xFFFF) is treated as "no selection", and
-   a populated row maps 1:1 to its slot.  The AppMap event callback calls
-   this and updates _wsel only when the answer is non-negative. */
+/**/
+/* Row-to-slot classifier for the Map app's waypoint table. */
 
 #include <stdint.h>
 

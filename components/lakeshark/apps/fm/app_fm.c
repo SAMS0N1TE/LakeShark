@@ -11,9 +11,9 @@
 #include "flex.h"
 #include "app_registry.h"
 #include "settings.h"
-/*LS-730*/
+/**/
 #include "scan_engine.h"
-/*LS-748*/
+/**/
 #include "spectrum.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
@@ -35,14 +35,14 @@ static const char *TAG = "fm";
 #define FM_READ_TIMEOUT_MS  20
 
 #define FM_SCAN_SETTLE      2
-/*LS-748*/ /* FM_SCAN_DWELL retired - see FM_SPEC_AVG. */
+/**/ /* FM_SCAN_DWELL retired - see FM_SPEC_AVG. */
 
 fm_state_t FM;
 
 static uint32_t s_mode_freq[FM_MODE_COUNT];
 
 static fm_mode_handoff_t s_mode_handoff = FM_MODE_HANDOFF_INITIALIZER;
-/*LS-828  Has anyone actually asked for a gain, or are we still on the
+/* Has anyone actually asked for a gain, or are we still on the
    built-in default? POCSAG entry only overrides the latter. */
 static volatile bool     s_gain_chosen  = false;
 static volatile int      s_baud_req      = -1;
@@ -52,18 +52,13 @@ static volatile bool     s_scan_restart  = false;
 
 static ls_radio_session_t *s_session;
 static ls_iq_control_t s_radio_control;
-/*LS-405*/
+/**/
 static EXT_RAM_BSS_ATTR fm_dsp_t s_dsp;
 
 static const int     POC_BAUDS[3] = { 512, 1200, 2400 };
 static pocsag_ctx_t *s_poc[3] = { NULL, NULL, NULL };
 static flex_ctx_t   *s_flex[4] = { NULL, NULL, NULL, NULL };
 
-/* ACARS wiring.  The FM app owns the RTL session and demodulates NFM at
-   32 kHz already, so an ACARS mode here is a mode switch and a resampler
-   rather than a second radio worker fighting for the tuner - which is
-   exactly the pattern the task file argued for.  s_acars is created on
-   first entry into FM_MODE_ACARS and torn down by checked FM stop. */
 static acars_ctx_t *s_acars = NULL;
 static acars_rs_t   s_acars_rs;
 
@@ -122,25 +117,15 @@ static void poc_dispatch(const float *demod, int nd)
 
 static int      s_scan_phase = 0;
 static int      s_scan_count = 0;
-/*LS-748*/ /* s_scan_accum/s_scan_naccum retired - the sweep averages in
+/**/ /* s_scan_accum/s_scan_naccum retired - the sweep averages in
    the frequency domain now, inside spectrum.c. */
 
 static int fm_requested_gain(int tenths)
 {
-    /*LS-828  POCSAG defaults to AGC, enforced HERE rather than at mode entry.
 
-       Doing it at mode entry did not hold: the saved per-app gain is restored
-       through this same function immediately afterwards and simply overwrote
-       it - the log said "using AGC" while the tuner went back to 20 dB and
-       iq stayed at 6-11%.
-
-       Coercing at the one place every gain change funnels through means the
-       restore path cannot undo it, and an explicit choice still wins because
-       that sets s_gain_chosen. */
     if ((FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_ACARS) &&
         !s_gain_chosen && tenths != 0) {
-        /* ACARS shares the "burst data with nothing to hear" property that
-           made a wrong fixed gain lethal for POCSAG - see LS-828. */
+
         tenths = 0;
     }
     return tenths;
@@ -153,7 +138,7 @@ static void fm_apply_gain(int tenths)
     ls_iq_control_request_gain(&s_radio_control, tenths);
 }
 
-/*LS-984  FLEX had a complete, host-tested decoder but the firmware
+/* FLEX had a complete, host-tested decoder but the firmware
    never constructed or fed it. Keep ownership beside POCSAG: mode
    entry resets only that protocol, and the RX loop dispatches the same 32 kHz
    discriminator blocks that the host fixtures exercise. */
@@ -213,27 +198,11 @@ static bool acars_prepare(void)
     return s_acars != NULL;
 }
 
-/*LS-730*/
-/* LS-708 ON THE FM SIDE. Fast hops used to reset a hardware FIFO while RX
-   transfers were in flight. At ~120 ms per hop the stream collapsed from
-   524288 to 32768 B/s and FM.iq_level pinned at zero. The app now supplies
-   only the fast-hop hint; the endpoint adapter owns stale-data discard and
-   any transport recovery. */
-/*LS-745*/
-/* THE THIRD FAST-HOPPING CALLER, and the one nobody had covered. LS-730 put
-   the guard here against the stored-channel scanner; LS-736(a) widened it to
-   scan_engine_sweeping() so the auto-squelch calibration sweep was covered
-   too. Both of those live in scan_engine. The FM app's OWN band sweep
-   (FM_MODE_SCAN) does not: scan_step() hops a bin with the scan engine
-   STOPPED, so scan_engine_sweeping() is false and every single bin took the
-   full USB FIFO reset. That is LS-708 for the third time, and it is the
-   "intermittent stuck RTL on FM" reported from the field - enter SWEEP and
-   the stream dies with a flood of "Enqueue URB error: ESP_ERR_INVALID_STATE",
-   throughput falls 524288 -> 32768 B/s and FM.iq_level pins at 0, which
-   presents as a receiver that has simply stopped hearing anything.
-   The predicate has to mean "is ANYTHING driving the tuner fast right now",
-   which is why the FM app's own sweep is part of it rather than a second
-   guard bolted on beside it. A manual tune still gets the full reset. */
+/**/
+
+/**/
+/* THE THIRD FAST-HOPPING CALLER, and the one nobody had covered. */
+
 static inline bool fm_fast_hopping(void)
 {
     return scan_engine_sweeping() || FM.mode == FM_MODE_SCAN;
@@ -269,17 +238,8 @@ static void fm_apply_freq(uint32_t hz)
     ls_iq_control_request_tune(&s_radio_control, hz, fm_fast_hopping());
 }
 
-/*LS-748*/
-/* THE SWEEP IS AN FFT NOW, NOT A POWER METER ON A LADDER.
-   It used to tune, dwell, reduce the whole passband to one fm_iq_rms() number,
-   store that in one display bin and step by scan_step_hz. At 256 kSPS the
-   receiver hands us +/-128 kHz on every buffer, so that discarded almost
-   everything it was given: 81 retunes to cover 151-152 MHz, each producing a
-   single 12.5 kHz-resolution sample.
-   Now each tune is transformed and paints a few hundred display bins at once,
-   so the same 1 MHz needs ~5 tunes at ~500 Hz resolution. Fewer retunes AND
-   finer - and fewer retunes matters for more than speed, because retuning is
-   the operation LS-708/730/745 keep having to defuse. */
+/**/
+/* THE SWEEP IS AN FFT NOW, NOT A POWER METER ON A LADDER. */
 
 /* Middle slice of the passband we are willing to believe. The RTL's IF filter
    rolls off toward the edges of 256 kSPS, and the tuner's own LO leakage puts
@@ -292,8 +252,8 @@ static void fm_apply_freq(uint32_t hz)
 #define FM_SPEC_AVG         4
 /* Bins either side of centre discarded as the DC/LO spike. */
 #define FM_SPEC_DC_GUARD    3
-/* Display normalises against this; below it everything reads as floor. */
-#define FM_SPEC_FLOOR_DB    (-90.0f)
+/* Display normalises against FM_SCAN_FLOOR_DB; below it everything reads as
+   floor. moved it to fm_state.h, where the readers can see it. */
 
 static float s_spec_db[SPEC_FFT_N];
 
@@ -312,6 +272,20 @@ static uint32_t scan_tune_center(int i)
          + (uint32_t)i * FM_SPEC_USABLE_HZ;
 }
 
+/* How long a sweep takes, published for the waterfall. */
+
+static int64_t s_sweep_t0;
+static bool    s_sweep_whole;
+
+static uint32_t scan_sweep_estimate_ms(void)
+{
+    /* A block is FM_IQ_BLOCK_BYTES of interleaved 8-bit I and Q. */
+    const uint64_t block_us =
+        (uint64_t)(FM_IQ_BLOCK_BYTES / 2) * 1000000u / FM_RTL_RATE;
+    return (uint32_t)((uint64_t)FM.scan_tunes *
+                      (FM_SCAN_SETTLE + FM_SPEC_AVG) * block_us / 1000u);
+}
+
 static void scan_begin(bool reset_pos)
 {
     uint32_t span = (FM.scan_stop_hz > FM.scan_start_hz)
@@ -319,10 +293,6 @@ static void scan_begin(bool reset_pos)
 
     FM.scan_tunes = scan_tune_count();
 
-    /* One display bin per column, but never claim resolution the FFT cannot
-       deliver: the transform resolves FM_RTL_RATE/SPEC_FFT_N (500 Hz), so a
-       narrow span gets proportionally fewer bins rather than interpolated
-       ones. Drawing bins finer than the data is how a display invents peaks. */
     int bins = FM_SCAN_BINS_MAX;
     if (span > 0) {
         uint32_t res = (uint32_t)FM_RTL_RATE / SPEC_FFT_N;
@@ -341,6 +311,10 @@ static void scan_begin(bool reset_pos)
     }
     if (FM.scan_idx >= FM.scan_tunes) FM.scan_idx = 0;
     s_scan_phase = 0; s_scan_count = 0;
+    /* The band may be new, so the estimate is too. */
+    FM.scan_sweep_ms = scan_sweep_estimate_ms();
+    s_sweep_t0 = esp_timer_get_time();
+    s_sweep_whole = (FM.scan_idx == 0);
     spectrum_reset();
     fm_tune_hw(scan_tune_center(FM.scan_idx));
 }
@@ -377,7 +351,8 @@ static void scan_paint(uint32_t center)
         int b = (int)(((f - (int64_t)FM.scan_start_hz) * FM.scan_bins) / span);
         if (b < 0 || b >= FM.scan_bins) continue;
 
-        float lin = (s_spec_db[j] - FM_SPEC_FLOOR_DB) / (0.0f - FM_SPEC_FLOOR_DB);
+        float lin = (s_spec_db[j] - FM_SCAN_FLOOR_DB)
+                  / (FM_SCAN_TOP_DB - FM_SCAN_FLOOR_DB);
         if (lin < 0.0f) lin = 0.0f;
         if (lin > 1.0f) lin = 1.0f;
 
@@ -411,6 +386,14 @@ static void scan_step(const uint8_t *iq, int len)
     spectrum_reset();
 
     if (FM.scan_idx >= FM.scan_tunes) {
+        /* A whole sweep timed replaces the estimate. Written before
+           the count moves, so a reader that sees the new sweep sees its
+           period with it. */
+        const int64_t now = esp_timer_get_time();
+        if (s_sweep_whole)
+            FM.scan_sweep_ms = (uint32_t)((now - s_sweep_t0) / 1000);
+        s_sweep_t0 = now;
+        s_sweep_whole = true;
         FM.scan_sweeps++;
         FM.scan_idx = 0;
         /* Peak is per-sweep. A peak latched forever is a record of something
@@ -480,29 +463,13 @@ static void fm_fail_receiver_start(void);
 
 static void fm_rx_run_once(void)
 {
-    /*LS-825  PSRAM, not internal. This is a 16 KB IQ assembly buffer and
-       plain malloc() takes it from internal RAM, where it competes with the
-       USB stream's DMA transfers on a GUI build that has almost nothing left.
+    /* PSRAM, not internal. */
 
-       Measured on the Touch-LCD-4.3, entering FM from P25:
-           P25   int_30319 dma_7595
-           FM    int_3323  dma_1975     <- 27 KB gone, 2 KB of DMA left
-       and the radio then reports rhs=absent bps=0, because the 16 x 16 KB
-       stream transfers cannot be allocated. POCSAG shows nothing - not
-       because the decoder is wrong, but because no samples ever arrive.
-
-       The buffer never needs to be internal or DMA-capable: it is only the
-       destination of a memcpy out of the PSRAM IQ ring in
-       esp_libusb_stream_read(). The other big FM buffers (demod, pcm, s_dsp)
-       are already EXT_RAM_BSS_ATTR for the same reason.
-
-       The 16 KB fm_rx stack stays in statically reserved DRAM deliberately -
-       a task stack in PSRAM is what crashed the BLE telemetry task (LS-821). */
     uint8_t *iq = heap_caps_malloc(FM_IQ_BLOCK_BYTES, MALLOC_CAP_SPIRAM);
     if (!iq) iq = heap_caps_malloc(FM_IQ_BLOCK_BYTES,
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    /*LS-405*/
+    /**/
     static EXT_RAM_BSS_ATTR float   demod[1100];
     static EXT_RAM_BSS_ATTR int16_t pcm[600];
     /* ACARS_SAMP_RATE / FM_DEMOD_RATE = 3/5, so 1100 * 3/5 = 660; a little
@@ -546,20 +513,8 @@ static void fm_rx_run_once(void)
             }
             if (FM.mode == FM_MODE_POCSAG) {
                 poc_ensure(); poc_reset_all();
-                /*LS-828  POCSAG defaults to AGC.
+                /* POCSAG defaults to AGC. */
 
-                   A fixed FM_DEFAULT_GAIN of 20 dB is the difference between
-                   working and dead here, and it fails silently: measured on a
-                   live 152.6000 pager site, 20 dB gave iq=3-12%, near_min=4
-                   (statistically indistinguishable from noise) and zero
-                   frames. `gain auto` on the same signal, same antenna, same
-                   second: iq=40-69%, near_min=0, 3 pages, err=0.
-
-                   Voice modes tolerate a wrong gain - you hear something and
-                   reach for the knob. A POCSAG burst is a second long and
-                   either slices or does not, so there is nothing to hear and
-                   nothing to tell you the gain is why. Default to AGC and let
-                   an explicit choice win. */
                 if (!s_gain_chosen && FM.gain_tenths != 0) {
                     ESP_LOGI(TAG, "POCSAG: no gain chosen - using AGC");
                     fm_apply_gain(0);   /* fm_apply_gain() also enforces it */
@@ -625,7 +580,7 @@ static void fm_rx_run_once(void)
                 full = false;
                 read_errors = 0;
                 if (error == LS_RADIO_ERR_DISCONNECTED) {
-                    /*LS-1001  The two-second rate window only advanced after
+                    /* The two-second rate window only advanced after
                        a full block, so detach left the previous DEV/rate and
                        decoder activity visible forever. Clear every live
                        derivative before releasing the dead session. */
@@ -757,7 +712,12 @@ static void fm_rx_run_once(void)
     }
     heap_caps_free(iq);
     if (allocation_failed) fm_fail_receiver_start();
-    else fm_lifecycle_task_finished();
+    else {
+        /* A receiver that has stopped says so. */
+
+        fm_receiver_lost(LS_RADIO_ERR_STOPPED);
+        fm_lifecycle_task_finished();
+    }
 }
 
 static void fm_rx_task(void *arg)
@@ -855,12 +815,12 @@ static void fm_on_enter(void)
         ESP_LOGE(TAG, "previous fm_rx_task still alive - refusing to start a second one");
         return;
     }
-    /* Complete a previously timed-out stop before re-entry. */
+
     (void)fm_lifecycle_stop(&FM_LIFECYCLE_HOOKS, 0, 0);
 
     fm_defaults_once();
 
-    /*LS-724  fl FM ACARS posts its submode before the GUI timer launches
+    /* fl FM ACARS posts its submode before the GUI timer launches
        AppFM.  Starting from retained/default FM.mode here made the receiver
        configure and announce POCSAG before the worker eventually noticed the
        request.  Atomically consume the single handoff at backend entry so an
@@ -870,7 +830,7 @@ static void fm_on_enter(void)
                                              FM_MODE_POCSAG);
 
     fm_dsp_init(&s_dsp);
-    /*LS-748*/
+    /**/
     spectrum_init();
     poc_ensure();
     poc_reset_all();
@@ -893,7 +853,7 @@ static void fm_on_enter(void)
         FM.freq_hz = settings_get_freq_mode(cur, FM.mode,
                                              fm_mode_default_freq(FM.mode));
     ls_iq_control_reset(&s_radio_control);
-    /* Preserve LS-828 before the session's initial configuration: POCSAG
+    /* Preserve before the session's initial configuration: POCSAG
        defaults to automatic gain until the user explicitly chooses one. */
     FM.gain_tenths = fm_requested_gain(FM.gain_tenths);
     ls_iq_control_set_initial(&s_radio_control, FM.freq_hz,
@@ -928,7 +888,7 @@ static bool fm_on_stop(void)
         return false;
     }
     if (!fm_rx_worker_release(300, 10)) {
-        /* LS-726: task_live becomes false just before the worker callback
+        /* task_live becomes false just before the worker callback
          * returns.  Do not hand its shared static stack to P25 until the
          * kernel confirms the wrapper is suspended and safe to delete. */
         ESP_LOGW(TAG, "worker quiesce timeout - retaining FM ownership");
@@ -961,7 +921,7 @@ int fm_app_register(void)
 void lakeshark_fm_set_mode(int mode)
 {
     if (mode < 0 || mode >= FM_MODE_COUNT) return;
-    /*LS-984  The stored-channel scanner owns the tuner and deliberately
+    /* The stored-channel scanner owns the tuner and deliberately
        forces LISTEN on every pass. Any requested non-listen mode must release
        that owner here so GUI, console and control-head selection all reach the
        same decoder. LISTEN remains composable with the scanner. */
@@ -991,7 +951,7 @@ void lakeshark_fm_set_freq(uint32_t hz)
 }
 uint32_t lakeshark_fm_get_freq(void) { return FM.freq_hz; }
 
-/*LS-717*/
+/**/
 /* Retune without persisting. The scanner hops every ~120 ms, and going
    through lakeshark_fm_set_freq() for that queued an NVS write per hop:
    flash wear, a settings queue that starts dropping the user's real
@@ -1011,14 +971,14 @@ void lakeshark_fm_gain_step(void)
     int cur = FM.gain_tenths, idx = 0;
     for (int i = 0; i < n; i++) if (ladder[i] == cur) { idx = i; break; }
     idx = (idx + 1) % n;
-    s_gain_chosen = true;   /*LS-828*/
+    s_gain_chosen = true;   /**/
     fm_apply_gain(ladder[idx]);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, ladder[idx]);
 }
 void lakeshark_fm_agc(void)
 {
-    s_gain_chosen = true;   /*LS-828  asking for AGC is still a choice */
+    s_gain_chosen = true;   /* asking for AGC is still a choice */
     fm_apply_gain(0);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, 0);
@@ -1028,7 +988,7 @@ void lakeshark_fm_set_gain(int tenths)
 {
     if (tenths < 0)   tenths = 0;
     if (tenths > 496) tenths = 496;
-    s_gain_chosen = true;   /*LS-828*/
+    s_gain_chosen = true;   /**/
     fm_apply_gain(tenths);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, tenths);
@@ -1038,7 +998,7 @@ void lakeshark_fm_set_gain_live(int tenths)
 {
     if (tenths < 0)   tenths = 0;
     if (tenths > 496) tenths = 496;
-    s_gain_chosen = true;   /*LS-828*/
+    s_gain_chosen = true;   /**/
     fm_apply_gain(tenths);
 }
 void lakeshark_fm_gain_delta(int dt) { lakeshark_fm_set_gain(FM.gain_tenths + dt); }

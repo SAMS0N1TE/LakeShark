@@ -1,4 +1,4 @@
-/* LS-785  See link_ctl.h. */
+/* See link_ctl.h. */
 #include "link_ctl.h"
 
 #include <stddef.h>
@@ -37,7 +37,7 @@ bool ls_link_ctl_ble_connected(void)
     return (s_have && s_ctl.ble_is_connected) ? s_ctl.ble_is_connected() : false;
 }
 
-/*LS-800*/
+/**/
 bool ls_link_ctl_can_reboot(void) { return s_have && s_ctl.reboot; }
 void ls_link_ctl_reboot(void)     { if (ls_link_ctl_can_reboot()) s_ctl.reboot(); }
 

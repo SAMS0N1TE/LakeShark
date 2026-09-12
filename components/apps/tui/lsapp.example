@@ -1,0 +1,20 @@
+# LakeShark user app. Copy to /sdcard/apps/scandesk.lsapp and edit.
+# See USER_APPS.md for every field and every value you can read.
+
+version=1
+name=SCAN DESK
+sub=my layout
+icon=tower
+color=green
+
+panel=RECEIVER
+value=FREQ|p25.freq
+value=NAC|p25.nac
+value=TALKGROUP|p25.tg
+value=SOURCE|p25.src
+value=SYNC|p25.sync
+bar=SIGNAL|p25.level
+
+panel=SPECTRUM
+waterfall=
+text=tap a bin to read its frequency

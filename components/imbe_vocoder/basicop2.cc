@@ -1,3 +1,4 @@
+#include <stdint.h>
 /*
  * Project 25 IMBE Encoder/Decoder Fixed-Point implementation
  * Developed by Pavel Yazev E-mail: pyazev@gmail.com
@@ -1692,7 +1693,25 @@ Word32 L_deposit_h (Word16 var1)
 {
     Word32 L_var_out;
 
-    L_var_out = (Word32) var1 << 16;
+    /*LS-1086  Shift the bits as unsigned, then read them back signed.
+
+       `(Word32) var1 << 16` on a negative var1 moves a set bit into the
+       sign bit of a signed 32-bit type, which is undefined behaviour. It
+       is the ETSI reference idiom and does the expected thing on every
+       compiler this has met, which is why it is still here - but
+       bench/verify.ps1 -Sanitize runs UBSan in trap mode and this line
+       killed the vocoder tests outright, on the first call from
+       v_synt_init, with var1 = -21287.
+
+       Shifting unsigned and converting back is bit for bit the same on
+       two's complement, which is every target this builds for, and is
+       defined. test_imbe_pcm still produces the same non-zero bounded
+       PCM afterwards.
+
+       Twenty-five shift sites in this vendored file share the shape;
+       this is the one that fires. The rest are filed rather than
+       changed blind - see bench/queue. */
+    L_var_out = (Word32)((uint32_t) (Word32) var1 << 16);
 #if (WMOPS)
     multiCounter[currCounter].L_deposit_h++;
 #endif

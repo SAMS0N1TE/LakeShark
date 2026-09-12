@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/*LS-757*/
+/**/
 /* Before this file existed, openEntry() built the browsed path once and then
    built it AGAIN with "/sdcard/" glued on the front for the music handoff.
    A file under /sdcard/music/song.mp3 turned into /sdcard//sdcard/music/song.mp3

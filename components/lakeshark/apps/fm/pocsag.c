@@ -2,7 +2,7 @@
 #include "pocsag.h"
 #include "esp_timer.h"
 #include "esp_log.h"
-/*LS-200*/
+/**/
 #include "ls_time.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,36 +93,12 @@ static const char NUM_MAP[16] = {
     '0','1','2','3','4','5','6','7','8','9','*','U',' ','-',')','('
 };
 
-/*LS-826  Does this look like a message a person would read?
+/* Does this look like a message a person would read? */
 
-   The old test was `printable * 10 >= an * 6` - any 60% printable ASCII - and
-   it let two kinds of rubbish onto the screen: symbol soup (a run of
-   {} ^ ~ $ < > % and stray letters) and letter soup ("oiawoiahdoihaw").
-   Both are ~100% "printable", so both were shown as ALPHA messages.
+/* HOW MANY DIGITS MAKE A NUMERIC PAGE, and why it is not half. */
 
-   Character classes alone cannot separate those - letter soup is all
-   letters. What separates real traffic is STRUCTURE: real pages carry spaces
-   at sane intervals and have no improbably long unbroken run. Checked
-   against this site's own traffic:
-     "CODE STROKE B HALLWAY 08"                 -> scores high
-     "From: <clinician> Subject: Order for ..." -> scores high
-     symbol soup                                -> symbol penalty
-     "oiawoiahdoihaw"                           -> no-space penalty
+#define NUM_CONFIDENT_PCT 85
 
-   Returns 0..100. Deliberately cheap: runs once per page, not per sample.
-
-   Extended for the short-string blind spot: the structural signals below
-   ("expects a space", "long runs are suspicious") cannot fire until there
-   are enough characters to see them, so anything under 12 chars scored 100
-   by default. A 7-digit numeric callback packs into 28 message bits, and
-   28 / 7 = 4 - so it renders as 4 printable ASCII bytes ("U*H!" for
-   RIC 1234568 carrying "5551234") and out-voted the correct numeric decode
-   every time. Measured on the host bench: numeric_page_decodes_as_numeric
-   in test_pocsag.c reproduced it in isolation. Fix: cap the score below the
-   accept threshold when n is short. Short means "no evidence", not
-   "confident yes" - if a plausible numeric reading exists, let it win. Real
-   short alpha pages ("OK", "CALL ME") still ride the cur_func == 3 branch
-   in the classifier below, which is what pagers actually send them on. */
 static int pocsag_text_score(const char *s, int n)
 {
     if (n <= 0) return 0;
@@ -138,7 +114,7 @@ static int pocsag_text_score(const char *s, int n)
         else if ((ch >= 'A' && ch <= 'Z') ||
                  (ch >= 'a' && ch <= 'z'))                  { letters++; run++;   }
         else if (ch >= '0' && ch <= '9')                    { digits++;  run++;   }
-        else if (strchr(".,:;'\"-/()!?@#&%+=*", (char)ch))  { punct++;   run++;   }
+        else if (strchr(".,:;'\"-/()!?@#&%+=*<>[]_", (char)ch)) { punct++;  run++;  }
         else                                                { weird++;   run++;   }
 
         if (run > maxrun) maxrun = run;
@@ -146,7 +122,8 @@ static int pocsag_text_score(const char *s, int n)
 
     int score = (letters + digits + spaces + punct) * 100 / n;
 
-    /* Brace/caret/tilde/dollar barely appear in real pager traffic. */
+    /* ANGLE BRACKETS, SQUARE BRACKETS AND THE UNDERSCORE ARE PUNCTUATION, not "weird". */
+
     if (weird * 10 > n)         score -= 40;
     /* Anything long enough to be worth reading contains a space. */
     if (n >= 12 && spaces == 0) score -= 40;
@@ -169,7 +146,7 @@ static void flush_message(pocsag_ctx_t *c)
     fm_page_t pg;
     memset(&pg, 0, sizeof(pg));
     pg.ts_us    = esp_timer_get_time();
-    /*LS-200  Real epoch only when the wall clock is known - otherwise 0,
+    /* Real epoch only when the wall clock is known - otherwise 0,
        which the page log formatter reads as "uptime only". A page written
        to the log before SNTP replied stays uptime-stamped forever; the
        renderer decides what to show, not this. */
@@ -202,11 +179,6 @@ static void flush_message(pocsag_ctx_t *c)
         }
         num[nn] = 0;
 
-        /*LS-826  Function code alone does not decide this. On the site used
-           for testing, F=0 carried "CODE STROKE B HALLWAY 08" and F=2 carried
-           a full text page, so anything keyed on "3 means alphanumeric" is
-           wrong here. Score the characters instead, and when neither reading
-           holds up say so ('?') rather than dressing mush up as a message. */
         int alpha_score = pocsag_text_score(alpha, an);
         int num_digits  = 0;
         for (int i = 0; i < nn; i++) if (num[i] >= '0' && num[i] <= '9') num_digits++;
@@ -215,14 +187,25 @@ static void flush_message(pocsag_ctx_t *c)
         if (c->cur_func == 3 || alpha_score >= 70) {
             pg.type = 'A';
             snprintf(pg.text, sizeof(pg.text), "%s", alpha);
-        } else if (nn > 0 && num_digits * 2 >= nn) {
+        } else if (nn > 0 && num_digits * 100 >= nn * NUM_CONFIDENT_PCT) {
             pg.type = 'N';
             snprintf(pg.text, sizeof(pg.text), "%s", num);
         } else {
-            /* A RIC that keyed up is still worth seeing, so keep the page -
-               just do not claim it is readable text. */
+            /* Unsure, so show whichever reading is LESS unlikely - not the numeric one always. */
+
+            /* LIKE FOR LIKE: letters against digits. */
+
+            int alpha_letters = 0;
+            for (int k = 0; k < an; k++) {
+                const char ch2 = alpha[k];
+                if ((ch2 >= 'A' && ch2 <= 'Z') || (ch2 >= 'a' && ch2 <= 'z'))
+                    alpha_letters++;
+            }
+            const int alpha_pct = an > 0 ? (alpha_letters * 100 / an) : 0;
+            const int num_pct   = nn > 0 ? (num_digits   * 100 / nn) : 0;
             pg.type = '?';
-            snprintf(pg.text, sizeof(pg.text), "%s", nn > 0 ? num : alpha);
+            snprintf(pg.text, sizeof(pg.text), "%s",
+                     (alpha_pct > num_pct) ? alpha : num);
         }
     }
 
@@ -379,33 +362,8 @@ void pocsag_process(pocsag_ctx_t *c, const float *demod, int n)
         float old = c->acc;
         c->acc += c->inc;
 
-        /*LS-818  ONE sampling phase, and it must be the aligned one.
+        /* ONE sampling phase, and it must be the aligned one. */
 
-           This used to run two integrate-and-dump samplers half a symbol
-           apart: sum_b dumped at the acc 0.5 crossing and hunted the frame
-           sync, sum_a dumped at the acc 1.0 crossing and fed handle_bit with
-           the codeword bits. They cannot both be right, and it was the DATA
-           one that was wrong.
-
-           The timing loop above pulls acc toward 0.5 on every transition, so
-           once locked a transition sits at acc = 0.5. sum_b therefore
-           integrates transition-to-transition - exactly one symbol, correctly
-           aligned. sum_a integrates from half a symbol AFTER a transition to
-           half a symbol after the next, so its window STRADDLES a transition
-           every time and its output is close to a coin toss.
-
-           Measured on 152.6000 before this change: frame sync matched
-           EXACTLY (near_min=0, the b phase is clean), then 147 of ~160
-           codewords failed BCH - about 92%. Every so often an address
-           codeword survived on its own, which produced a page with no message
-           bits behind it, which flush_message() correctly renders as
-           "(tone)". That is the long-standing "POCSAG only ever shows tones":
-           not a tone-only pager, a data sampler reading across transitions.
-
-           So: sample once, at the phase the timing loop aligns, and hand it to
-           handle_bit for both sync hunting and codeword assembly. handle_bit
-           already carries its own sync detector and the near_min/n_near
-           instrumentation, so nothing is lost by dropping the duplicate. */
         if (old < 0.5f && c->acc >= 0.5f) {
             int bit = (c->sum_b > 0.0f) ? 1 : 0;
             c->sum_b = 0.0f;

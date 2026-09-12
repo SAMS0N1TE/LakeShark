@@ -60,8 +60,6 @@ struct acars_msk {
        In the locked state, only that phase's accumulators run. */
     int      locked_phase;
 
-    /* Output bit ring (bits emitted from the locked phase, plus the 16
-       sync bits that were used to find the lock). */
     uint8_t  bits[BIT_RING];
     int      bh, bt;
     int      bcount;
@@ -104,7 +102,7 @@ static inline int phase_slice(const phase_t *p)
 acars_msk_t *acars_msk_create(void)
 {
     build_tables();
-    /* LS-725: the 512-bit ring and eight correlator phases are bulk decoder
+    /* the 512-bit ring and eight correlator phases are bulk decoder
        state, with no DMA, ISR or cache-off access.  Keep them out of the
        internal heap when PSRAM is available. */
     acars_msk_t *m = (acars_msk_t *)heap_caps_calloc(

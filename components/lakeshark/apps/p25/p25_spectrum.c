@@ -1,4 +1,4 @@
-/* LS-692: bounded P25 spectrum publication over the IQ stream the decoder
+/* bounded P25 spectrum publication over the IQ stream the decoder
  * already owns.  No function in this file can acquire, sweep or tune a radio. */
 
 #include "p25_spectrum.h"

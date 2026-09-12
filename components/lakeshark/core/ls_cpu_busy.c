@@ -14,7 +14,7 @@ bool ls_cpu_busy_from_samples(uint32_t previous_idle,
 {
     if (!busy_pct || elapsed_us == 0) return false;
 
-    /* LS-673: FreeRTOS's run-time counter is uint32_t. Unsigned subtraction
+    /* FreeRTOS's run-time counter is uint32_t. Unsigned subtraction
        deliberately gives the correct idle delta across one counter wrap. */
     uint32_t idle_delta = current_idle - previous_idle;
     uint64_t idle_pct = (uint64_t)idle_delta * 100u / elapsed_us;
@@ -34,8 +34,6 @@ bool ls_cpu_busy(int *core0_pct, int *core1_pct)
     UBaseType_t capacity = uxTaskGetNumberOfTasks();
     if (capacity == 0) return false;
 
-    /* uxTaskGetSystemState writes this snapshot while the scheduler is
-       suspended, so keep it in internal RAM rather than PSRAM. */
     TaskStatus_t *tasks = heap_caps_malloc(sizeof(*tasks) * capacity,
                                            MALLOC_CAP_INTERNAL);
     if (!tasks) return false;

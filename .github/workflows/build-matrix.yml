@@ -1,8 +1,3 @@
-# Every board, every push.
-#
-# This is the honest answer to "does this still build for the NANO?" - a
-# question that otherwise cannot be answered without plugging one in. The
-# board layer only stays cheap if breaking a board you do not own is loud.
 name: build matrix
 
 on:
@@ -26,6 +21,8 @@ jobs:
             defaults: boards/touch_lcd_4b_gui.defaults
           - name: p4-nano-nobt
             defaults: boards/nano_headless_nobt.defaults
+          - name: t-display-p4
+            defaults: boards/t_display_p4.defaults
 
     name: ${{ matrix.name }}
     steps:
@@ -34,10 +31,12 @@ jobs:
       - name: Build
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.4
+          esp_idf_version: v5.4.3
           target: esp32p4
           command: >-
             idf.py
+            -B build
+            -DSDKCONFIG=build/sdkconfig
             -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}"
             build
 

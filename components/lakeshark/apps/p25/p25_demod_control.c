@@ -9,10 +9,7 @@ static uint32_t counter_delta(uint32_t value, uint32_t baseline)
 
 float p25_demod_output_gain(demod_mode_t mode, bool inverted)
 {
-    /* LS-766: the real CQPSK->DSD fixture produced 0 normal sync/18 inverted
-     * matches at the shared -9000 default, versus 19 valid NIDs/TSBKs at
-     * +9000. The former fixture divided by gain and hid this sign mismatch.
-     * Preserve C4FM and make the operator's inversion relative to the mode. */
+
     float normal = mode == DEMOD_CQPSK ? 9000.0f : -9000.0f;
     return inverted ? -normal : normal;
 }
@@ -95,10 +92,6 @@ bool p25_demod_control_tick(p25_demod_control_t *c, uint32_t now_ms,
             (uint32_t)(now_ms - c->last_protocol_ms) < P25_DEMOD_LOCK_LOSS_MS)
             return false;
 
-        /* LS-655: protocol silence, rather than RF power, is lock loss. A
-         * strong wrong-mode signal can look excellent electrically while
-         * producing no valid NIDs or TSBKs. Re-enter the same acquisition
-         * sequence, but never cut an active LDU in half. */
         c->reacquire_count++;
         begin_hunt(c, now_ms, valid_nids, valid_tsbks);
         return true;
@@ -108,7 +101,7 @@ bool p25_demod_control_tick(p25_demod_control_t *c, uint32_t now_ms,
     uint32_t tsbks = counter_delta(valid_tsbks, c->base_tsbks);
     int score = p25_qual_protocol_score(nids, tsbks);
 
-    /* LS-776: eight valid NIDs and two TSBKs still caused a 1500 ms detour
+    /* eight valid NIDs and two TSBKs still caused a 1500 ms detour
      * through the other demodulator. Retain a protocol-confirmed receiver
      * immediately, including a call beginning during the no-lock retry.
      * This chooses a working mode, not the best score from two trials;

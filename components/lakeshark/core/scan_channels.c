@@ -58,7 +58,7 @@ const scan_channel_t *scan_channel_get(int idx)
     return &s_ch[idx];
 }
 
-/*LS-722*/
+/**/
 /* Every mutator below ends in scan_channels_save(), which is one nvs_set_blob
    plus one nvs_commit. That is right for hand editing - one edit, one commit,
    nothing lost if the board dies - and wrong for a bulk push, where an N
@@ -85,20 +85,20 @@ static bool save_now(void)
     return nvs_commit(s_nvs) == ESP_OK;
 }
 
-/*LS-722*/
+/**/
 bool scan_channels_save(void)
 {
     if (s_batch > 0) { s_dirty = true; return true; }
     return save_now();
 }
 
-/*LS-722*/
+/**/
 void scan_channels_batch_begin(void)
 {
     s_batch++;
 }
 
-/*LS-722*/
+/**/
 bool scan_channels_batch_end(void)
 {
     if (s_batch > 0) s_batch--;
@@ -108,7 +108,7 @@ bool scan_channels_batch_end(void)
     return save_now();
 }
 
-/*LS-722*/
+/**/
 bool scan_channels_batching(void) { return s_batch > 0; }
 
 int scan_channel_add(const char *name, uint32_t freq_hz, scan_mode_t mode, uint8_t zone)
@@ -159,7 +159,7 @@ bool scan_channel_set_lockout(int idx, bool on)  { return set_flag(idx, SCAN_FLA
 bool scan_channel_set_priority(int idx, bool on) { return set_flag(idx, SCAN_FLAG_PRIORITY, on); }
 bool scan_channel_set_enabled(int idx, bool on)  { return set_flag(idx, SCAN_FLAG_ENABLED,  on); }
 
-/*LS-706*/
+/**/
 bool scan_channel_set_name(int idx, const char *name)
 {
     if (idx < 0 || idx >= s_count) return false;
@@ -170,7 +170,7 @@ bool scan_channel_set_name(int idx, const char *name)
     return true;
 }
 
-/*LS-706*/
+/**/
 int scan_channel_find_freq(uint32_t freq_hz)
 {
     for (int i = 0; i < s_count; i++)
@@ -178,7 +178,7 @@ int scan_channel_find_freq(uint32_t freq_hz)
     return -1;
 }
 
-/*LS-723*/
+/**/
 /* Dedup is PER ZONE, not per frequency. Zones are separate banks - the same
    frequency legitimately appears in two of them (a travel channel carried in
    both the home and the trip zone), and a global match would silently refuse

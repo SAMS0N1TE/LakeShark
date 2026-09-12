@@ -1,0 +1,12 @@
+dist/
+build/
+.ufbt/
+.vscode/
+*.o
+*.d
+*.elf
+*.fap
+*.pyc
+__pycache__/
+.DS_Store
+Thumbs.db

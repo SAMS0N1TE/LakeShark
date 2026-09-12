@@ -118,7 +118,7 @@ static void reset_hunt(acars_ctx_t *c)
 
 acars_ctx_t *acars_create(acars_state_t *out)
 {
-    /* LS-725: this task-only frame state used plain calloc immediately
+    /* this task-only frame state used plain calloc immediately
        before FM allocated its internal 16 KiB receive stack.  Prefer PSRAM
        explicitly; boards without usable PSRAM retain an explicit 8-bit
        internal fallback.  Together with acars_msk this removes both decoder
@@ -373,7 +373,3 @@ void acars_process(acars_ctx_t *c, const float *audio, int n)
         for (int i = 0; i < got; i++) framer_bit(c, bits[i]);
     }
 }
-
-/* Bookkeeping updates for acars_state_t.n_synced live inside framer_bit's
-   sync-locked branch above rather than here; the ctx's counters mirror
-   the state's. */

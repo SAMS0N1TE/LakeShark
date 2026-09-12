@@ -1,22 +1,7 @@
 #ifndef LS_VERSION_H
 #define LS_VERSION_H
 
-/* LS-220  One place that says which build is running.
-
-   The root build generates a bounded product/revision identity, refreshed on
-   every build, and exposes it through esp_app_get_description(). That is the
-   source of truth here. Uncommitted tracked or untracked files add "-dirty";
-   archives and unavailable Git metadata are explicitly marked rather than
-   pretending to identify a clean revision.
-
-   The board name is pulled from LS_BOARD_NAME (each variants header
-   declares it), so no app-level code needs to test CONFIG_LS_BOARD_* to
-   say which board the firmware was compiled for.
-
-   The formatter takes a struct rather than reading globals so the bench can
-   drive every string it will produce.  ls_version_get() is the device-only
-   glue that fills the struct from esp_app_get_description() + LS_BOARD_NAME;
-   it lives in ls_version.c behind an #ifdef so the header stays host-safe. */
+/* One place that says which build is running. */
 
 #include <stdbool.h>
 #include <stddef.h>

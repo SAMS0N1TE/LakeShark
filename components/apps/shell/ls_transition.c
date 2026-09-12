@@ -9,7 +9,7 @@ int ls_transition_dependencies_stopped(int radio_status, bool app_stopped)
 bool ls_transition_memory_admit(size_t free_8bit, size_t largest_8bit,
                                 size_t largest_dma)
 {
-    /* LS-746: LCD failure evidence had 151 DMA bytes and an 84-byte largest
+    /* LCD failure evidence had 151 DMA bytes and an 84-byte largest
      * block. Keep a modest 256-byte contiguous control/render floor; this is
      * not a speculative whole-app reservation and does not hide later OOM. */
     return free_8bit >= 1024 && largest_8bit >= 256 && largest_dma >= 256;
@@ -28,7 +28,7 @@ void ls_transition_request(ls_transition_t *s, int target)
         s->phase = LS_TRANS_STOP;
 }
 
-/* LS-746: every destructive step occurs on a later GUI tick, never inside
+/* every destructive step occurs on a later GUI tick, never inside
  * the outgoing object's click callback. A stop acknowledgement is required
  * before releasing its object tree; failure retains it for diagnosis/retry. */
 void ls_transition_tick(ls_transition_t *s, const ls_transition_hooks_t *h,

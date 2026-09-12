@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-/*LS-764*/
+/**/
 map_tile_state_t map_tile_classify(const map_tile_probe_t *p)
 {
     if (!p)               return MAP_TILE_STATE_INIT_FAIL;

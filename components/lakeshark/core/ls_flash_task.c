@@ -1,4 +1,4 @@
-/* LS-684: ESP32-P4 TCM is MALLOC_CAP_INTERNAL but is not accepted by
+/* ESP32-P4 TCM is MALLOC_CAP_INTERNAL but is not accepted by
  * esp_task_stack_is_sane_cache_disabled().  Flash callers must select DRAM,
  * not merely internal memory. */
 

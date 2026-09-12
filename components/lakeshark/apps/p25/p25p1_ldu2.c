@@ -22,8 +22,6 @@
 #include "p25p1_check_ldu.h"
 #include "p25p1_hdu.h"
 
-
-
 void
 processLDU2 (dsd_opts * opts, dsd_state * state)
 {
@@ -214,10 +212,7 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
       // Hamming(10,6,3), which can correct 1 bits on each sequence of (6+4) bits. We could say that there
       // were 5 errors of 2 bits.
       update_error_stats(&state->p25_heuristics, 12*6+12*6, 5*2);
-      /* LS-776: failed ESS is not an ALGID. Corrupt hex_data was previously
-       * published as valid below, including accidental CLEAR 0x80. Discard
-       * buffered PCM and require fresh valid ESS before unmuting; this LDU
-       * has not reached the audio sink until processFrame returns. */
+
       p25_ess_clear(state);
       state->pcm_out_write = 0;
       return;
@@ -240,7 +235,6 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
       // Once corrected, contribute this information to the heuristics module
       contribute_to_heuristics(state->rf_mod, &(state->p25_heuristics), analog_signal_array, 16*(3+2)+8*(3+2));
     }
-
 
 #ifdef HEURISTICS_DEBUG
   printf("(audio errors, header errors, critical header errors) (%i,%i,%i)\n",
@@ -367,11 +361,10 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
   kid[14]  = hex_data[ 0][4] + '0';
   kid[15]  = hex_data[ 0][5] + '0';
 
-
   algidhex = strtol (algid, NULL, 2);
   kidhex = strtol (kid, NULL, 2);
 
-  /* LS-610: land ALGID/KID/MI in state on every LDU2, not behind
+  /* land ALGID/KID/MI in state on every LDU2, not behind
    * opts->p25enc. process_IMBE consults state->p25_algid to decide whether
    * to hand the frame to the vocoder; before this the field was decoded and
    * dropped, and the vocoder ran on encrypted audio (robotic voice). */

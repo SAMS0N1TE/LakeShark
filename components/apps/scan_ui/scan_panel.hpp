@@ -1,24 +1,7 @@
 #pragma once
 
-/*LS-746*/
-/* ONE scanner control surface, built once and embedded by every app that can
-   scan. It exists because the controls for a SINGLE engine had been scattered
-   across two apps as each was edited: scan_engine's SOURCE toggle lived only
-   on the P25 SCAN tab, while the SCAN/SKIP buttons and AUTO SQ lived only on
-   the FM VFO tab, and the band range could not be set from the UI at all -
-   only from the console `scan band`. The result was that the BAND (12.5 kHz
-   handheld-style) scan the FM app is the natural home for could only be
-   ENABLED from the P25 app, and could never be AIMED without a serial cable.
-   That is not a missing feature, it is one feature cut in half.
-
-   This is deliberately a shared WIDGET rather than a new app: the engine is
-   already a singleton and already app-agnostic, so what was missing was one
-   place to express it, not another owner. Both apps embed the same object, so
-   they cannot drift apart again the way they did.
-
-   The owning app must call refresh() from its own periodic timer - the panel
-   deliberately does not create an lv_timer of its own, so it cannot outlive
-   the app that built it or double up when two apps are resident. */
+/**/
+/* ONE scanner control surface, built once and embedded by every app that can scan. */
 
 #include "lvgl.h"
 
@@ -45,7 +28,7 @@ private:
     static void toggleCb(lv_event_t *e);
     static void skipCb(lv_event_t *e);
     static void srcCb(lv_event_t *e);
-    /*LS-736*/
+    /**/
     static void presetPrevCb(lv_event_t *e);
     static void presetNextCb(lv_event_t *e);
     static void stepPrevCb(lv_event_t *e);
@@ -69,12 +52,12 @@ private:
     lv_obj_t *_step_val = nullptr;
     lv_obj_t *_sq_val   = nullptr;
     lv_obj_t *_hang_val = nullptr;
-    /*LS-736*/
+    /**/
     lv_obj_t *_nudge_val = nullptr;
 
     int _preset = 0;
     int _step   = 0;   /* index into STEPS_HZ */
-    /*LS-736*/
+    /**/
     /* index into NUDGES_HZ. 100 kHz to start: it is the finer of the two
        amounts the four-button cluster this replaced offered, so the first
        press of an edge does what the old panel's first press did. */

@@ -50,7 +50,7 @@ scan_state_t      SCAN = {0};
 uint32_t          s_tune_freq_hz = 154785000UL;
 dsp_state_t       s_dsp;
 dsd_opts          s_dsd_opts;
-/*LS-405*/
+/**/
 EXT_RAM_BSS_ATTR dsd_state s_dsd_state;
 dsd_sample_ring_t s_ring;
 
@@ -350,21 +350,18 @@ const char *p25_demod_get_name(void)
     return p25_demod_control_name(&s_demod_control);
 }
 
-/* LS-303: grant follower. Retune requests go through the same iq_app_control
+/* grant follower. Retune requests go through the same iq_app_control
  * queue as a manual tune - the p25_rx_task drains it and calls
  * ls_radio_iq_retune. From the follower's side it is fire and forget. */
 static void p25_grant_retune_cb(void *user, uint64_t center_hz, bool to_traffic)
 {
     (void)user;
     if (center_hz == 0 || center_hz > UINT32_MAX) return;
-    /* LS-691: a following call takes tune ownership from SURVEY.  Cancel
-     * before placing the traffic request so the restored profile control is
-     * overwritten by this intentional, current grant rather than surviving
-     * as a stale request. */
+
     if (to_traffic)
         (void)p25_program_survey_cancel_now(
             P25_SURVEY_CANCEL_FOLLOWING_CALL);
-    p25_request_tune((uint32_t)center_hz, /*fast=*/to_traffic);
+    p25_request_tune((uint32_t)center_hz, /* fast=*/to_traffic);
     sys_log(1, "Grant %s %.4f MHz tg=%u",
             to_traffic ? "->traffic" : "->control",
             (double)center_hz / 1e6,
@@ -388,7 +385,7 @@ static void p25_grant_publish_ui(void)
     P25.grant_followed_count = s_grant_follower.followed_count;
     P25.grant_auto_follow    = p25_scan_get_auto_follow(&g_p25_scan);
 
-    /* LS-400: sample TSBK/IDEN telemetry off dsd_state. The IDEN table is
+    /* sample TSBK/IDEN telemetry off dsd_state. The IDEN table is
      * 16 slots so this loop is a handful of loads. */
     uint8_t iden = 0;
     for (int i = 0; i < P25_IDEN_TABLE_SIZE; i++)
@@ -406,7 +403,7 @@ static void p25_grant_publish_ui(void)
     P25.p25_phase2_last_slots_per_carrier =
         s_dsd_state.p25_phase2_last_slots_per_carrier;
 
-    /* LS-610: mirror the ESS. p25_enc_muted uses the same predicate as
+    /* mirror the ESS. p25_enc_muted uses the same predicate as
      * process_IMBE so the UI label matches what the audio path actually
      * does with the frame. */
     P25.p25_ess_valid = s_dsd_state.p25_ess_valid;
@@ -414,7 +411,7 @@ static void p25_grant_publish_ui(void)
     P25.p25_kid      = s_dsd_state.p25_kid;
     P25.p25_enc_muted = p25_ldu_should_mute_encrypted(&s_dsd_state, &s_dsd_opts) != 0;
 
-    /* LS-611: publish encryption counters and the per-TG history. The
+    /* publish encryption counters and the per-TG history. The
      * follower is authoritative for encrypted_returns / encrypted_skips and
      * the TG table; process_IMBE increments p25_enc_muted_frames on the
      * decoder state. */
@@ -443,7 +440,7 @@ static void p25_grant_publish_ui(void)
         P25.p25_enc_tg[i].skip_remaining_ms = rem;
     }
 
-    /* LS-650: mirror the LCW so the panel can label a late-entry call.
+    /* mirror the LCW so the panel can label a late-entry call.
      * Emergency in particular has to be impossible to miss - the decode
      * tab flips the readout lamp on this. */
     P25.p25_lcw_valid           = s_dsd_state.p25_lcw_valid;
@@ -478,6 +475,11 @@ void p25_request_tune(uint32_t center_hz, bool fast)
 
 void p25_request_gain(int gain_tenths_db)
 {
+    /* The setting moves when it is asked to, not when the receiver gets round to applying it. */
+
+    if (gain_tenths_db < 0)   gain_tenths_db = 0;
+    if (gain_tenths_db > 496) gain_tenths_db = 496;
+    P25.rtl_gain_tenths = gain_tenths_db;
     ls_iq_control_request_gain(&s_radio_control, gain_tenths_db);
 }
 
@@ -486,10 +488,6 @@ void p25_get_receiver_status(ls_iq_control_status_t *out)
     ls_iq_control_status(&s_radio_control, out);
 }
 
-/* LS-611: operator toggles for the encrypted-channel policy. The follower is
- * a static in this file; nothing else may write it. Values published back to
- * P25 on the next publish tick so a console change is immediately visible on
- * the panel. */
 bool p25_set_auto_follow(bool enabled)
 {
     bool returned = p25_scan_set_auto_follow(&g_p25_scan, &s_grant_follower,
@@ -532,7 +530,7 @@ unsigned int p25_get_encrypted_skip_ms(void)
     return (unsigned int)(s_grant_follower.encrypted_skip_us / 1000LL);
 }
 
-/* LS-689: the two operations a PROGRAM profile apply needs from the decoder
+/* the two operations a PROGRAM profile apply needs from the decoder
  * owner. Both go through the follower and the same tune latch every other
  * retune uses, so the profile does not become a second thing that tunes. */
 void p25_return_to_control(void)
@@ -543,20 +541,20 @@ void p25_return_to_control(void)
 void p25_set_control_channel(uint64_t control_hz)
 {
     if (control_hz == 0 || control_hz > UINT32_MAX) return;
-    /* LS-702: selecting/applying a profile control is distinct from carrier
+    /* selecting/applying a profile control is distinct from carrier
      * scan and takes the tuner from it explicitly. This also covers PROGRAM
      * next/previous and reload, not only the SURVEY button. */
     scan_engine_stop();
     /* Adopt first: if a grant lands between these two lines the follower has
      * to already know which frequency it is expected to come back to. */
     p25_grant_set_control(&s_grant_follower, control_hz);
-    p25_request_tune((uint32_t)control_hz, /*fast=*/false);
+    p25_request_tune((uint32_t)control_hz, /* fast=*/false);
     /* The latch holds one request, so this supersedes anything the outgoing
      * profile's follower had queued. */
     sys_log(1, "Control channel: %.4f MHz", (double)control_hz / 1e6);
 }
 
-/* LS-670: one-press UI actions. Each names its target explicitly - the
+/* one-press UI actions. Each names its target explicitly - the
  * currently-followed grant TG, else the last-seen TG on decode. Both
  * fall back to zero (nothing to act on) so a stray button press with no
  * signal does not corrupt state. */
@@ -591,8 +589,7 @@ bool p25_ui_lockout_current(void)
     if (tg == 0) return false;
     bool ok = p25_scan_lockout_add(&g_p25_scan, tg);
     if (ok) {
-        /* Get off the call immediately - the operator has just said "not
-         * this one, ever". The next tick returns the follower to control. */
+
         (void)p25_grant_force_return_to_control(&s_grant_follower);
         sys_log(1, "Lockout TG %u", (unsigned)tg);
         p25_scan_persist_save_now();
@@ -675,7 +672,7 @@ static void dsd_decoder_task(void *arg)
 
     s_dsd_opts.msize = 256;
     s_dsd_opts.use_cosine_filter = 1;
-    /* LS-610: do not force this - it kept the encryption gate wide open, so
+    /* do not force this - it kept the encryption gate wide open, so
      * ALGID from LDU2 could never mute a call. process_IMBE now consults
      * state->p25_algid; opts->unmute_encrypted_p25 remains as an escape
      * hatch, defaulted OFF in initOpts(). */
@@ -711,7 +708,7 @@ static void dsd_decoder_task(void *arg)
              esp_ptr_internal(s_dsd_state.audio_out_float_buf) ? 'I' : 'P',
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
-    /*LS-405*/
+    /**/
     static EXT_RAM_BSS_ATTR int16_t pcm_buf[2000];
     s_dsd_state.pcm_out_buf = pcm_buf;
     s_dsd_state.pcm_out_size = 2000;
@@ -723,7 +720,7 @@ static void dsd_decoder_task(void *arg)
                           memory_order_release);
     int64_t s_tel_us = 0;
 
-    /*LS-812  Per-call decode quality, ported from headless-p25-wifi6. A call
+    /* Per-call decode quality, ported from headless-p25-wifi6. A call
       opens on first sync and closes 1.5 s after the last one; the deltas over
       that window are what p25_qual stores. Locals, not statics: one decoder
       task, and they must reset when it restarts.*/
@@ -760,7 +757,7 @@ static void dsd_decoder_task(void *arg)
                 (unsigned)audio_out_ring_avail());
         }
 
-        /* LS-739: a retune can interrupt a frame on the other core. Only
+        /* a retune can interrupt a frame on the other core. Only
          * this task resets decoder state; generation checks discard crossed
          * frames before grants/ESS/PCM can affect the new call. */
         unsigned int tune_generation = atomic_load_explicit(
@@ -824,7 +821,7 @@ static void dsd_decoder_task(void *arg)
             s_dsd_state.pcm_out_write = 0;
 
             int64_t pf_t0 = esp_timer_get_time();
-            /* LS-780: sample the validated-LCW counter before decoding so the
+            /* sample the validated-LCW counter before decoding so the
                observer can tell a talkgroup this frame validated from one left
                over in state by an earlier frame. */
             uint32_t observed_lcw_before = s_dsd_state.p25_lcw_ok_count;
@@ -833,7 +830,7 @@ static void dsd_decoder_task(void *arg)
                 atomic_load_explicit(&s_decode_tune_generation, memory_order_acquire));
             p25_publish_acquisition(&acquisition, tune_status.tune_state);
             if (!same_tune) continue;
-            /* LS-780: only after the acquisition epoch accepts the frame, and
+            /* only after the acquisition epoch accepts the frame, and
                with tune_status captured BEFORE decoding - a retune that landed
                mid-frame must not relabel the previous channel's observations. */
             p25_tg_observed_frame(&s_dsd_state, observed_lcw_before,
@@ -942,7 +939,7 @@ static void dsd_decoder_task(void *arg)
                     .dec_ms = (int)(P25.dsd_decode_ms + 0.5f),
                 };
                 p25_qual_push(&qr);
-                /*LS-812  ESP_LOGW, not sys_log: sys_log publishes EVT_LOG to
+                /* ESP_LOGW, not sys_log: sys_log publishes EVT_LOG to
                    the event bus and NOTHING in the headless build prints that
                    to the console, so the line would be invisible on UART.
                    ESP_LOGW is what headless-p25-wifi6 used, and "P25QUAL" is
@@ -955,7 +952,7 @@ static void dsd_decoder_task(void *arg)
             }
         }
 
-        /* LS-303: silence timeout runs even when sync is lost - the call
+        /* silence timeout runs even when sync is lost - the call
          * ended by squelch or fade, not by a decoded TDU. */
         if (p25_grant_tick(&s_grant_follower, esp_timer_get_time()))
             p25_receive_call_reset(&s_dsd_state);
@@ -1029,11 +1026,7 @@ static void p25_rx_task(void *arg)
         P25.cqpsk_timing_gain = config.timing_gain;
         P25.cqpsk_carrier_gain = config.carrier_gain;
     }
-    /* LS-655: restore the operator's last manual choice, or start automatic
-     * C4FM/CQPSK acquisition when the saved preference is AUTO/-1.
-     * LS-719: this getter is a bounded RAM cache populated by settings_init;
-     * this PSRAM-stack task must never reach NVS or flash cache-off code. An
-     * audit found no other settings/NVS call reachable from p25_rx_task. */
+
     int stored = settings_get_p25_demod();
     p25_demod_control_init(&s_demod_control, stored,
                            (uint32_t)(esp_timer_get_time() / 1000LL),
@@ -1060,7 +1053,7 @@ static void p25_rx_task(void *arg)
     sys_log(1, "RX buf OK %d bytes heap=%lu",
             P25_IQ_BLOCK_BYTES, (unsigned long)esp_get_free_heap_size());
 
-    /*LS-405*/
+    /**/
     static EXT_RAM_BSS_ATTR int16_t audio_buf[8192];
 
     ESP_LOGW("P25DBG", "pre-decode-task: free_int=%u largest_int=%u "
@@ -1100,7 +1093,7 @@ static void p25_rx_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (atomic_load_explicit(&s_dsd_start, memory_order_acquire) !=
         P25_DSD_START_READY) {
-        /* LS-726: the old path logged a NULL decoder handle and then marked
+        /* the old path logged a NULL decoder handle and then marked
          * RX running anyway.  Make task/decoder allocation failure visible
          * through receiver status and leave no IQ-only zombie behind. */
         s_app_active = false;
@@ -1134,7 +1127,7 @@ static void p25_rx_task(void *arg)
                 if (open_error == LS_RADIO_ERR_NO_MEMORY &&
                     ++no_memory_open_attempts >=
                         P25_RADIO_OPEN_NO_MEMORY_ATTEMPTS) {
-                    /* LS-730: a permanent cold-entry allocation failure used
+                    /* a permanent cold-entry allocation failure used
                      * to retune/reconfigure/log every ~405 ms forever.  Bound
                      * this app entry; leaving and reentering creates a fresh
                      * attempt after other modes have released their owners. */
@@ -1182,7 +1175,7 @@ static void p25_rx_task(void *arg)
         if (ls_iq_control_take(&s_radio_control, &radio_request) &&
             (radio_request.flags & LS_IQ_CONTROL_TUNE)) {
             uint32_t f = radio_request.center_hz;
-            /*LS-710*/
+            /**/
             if (f != s_radio_freq_hz) {
                 p25_iq_capture_interrupt(P25_IQ_CAPTURE_TUNE_CHANGED);
                 s_tune_freq_hz = f;
@@ -1201,7 +1194,7 @@ static void p25_rx_task(void *arg)
                                           memory_order_release);
                 P25.dsd_has_sync = false;
                 P25.sync_active_until_us = 0;
-                /* LS-303: if the follower is on control, a retune request
+                /* if the follower is on control, a retune request
                  * either came from the user (adopt as new control) or came
                  * from the follower's own return-to-control (target is
                  * already control_hz, so this is a no-op). If the follower
@@ -1211,7 +1204,7 @@ static void p25_rx_task(void *arg)
                     p25_grant_set_control(&s_grant_follower, (uint64_t)f);
                 sys_log(1, "Tuned: %.4f MHz", f / 1e6);
             } else {
-                /* LS-702: suppressing a redundant hardware retune must still
+                /* suppressing a redundant hardware retune must still
                  * complete the request. Leaving it PENDING made the carrier
                  * scanner remain in STARTING even though the endpoint was
                  * already at the requested frequency. */
@@ -1274,9 +1267,7 @@ static void p25_rx_task(void *arg)
         if (full && got >= P25_IQ_BLOCK_BYTES) {
             read_errors = 0;
             iq_bucket += P25_IQ_BLOCK_BYTES;
-            /* LS-766: snapshot the actual RX block before DSP, without an
-             * extra reader, worker, retune or disk operation. Unknown gain
-             * is explicit rather than substituting a requested setting. */
+
             if (p25_iq_capture_collecting()) {
                 ls_iq_control_status_t actual;
                 ls_iq_control_status(&s_radio_control, &actual);
@@ -1295,7 +1286,7 @@ static void p25_rx_task(void *arg)
                 p25_iq_capture_feed(s_iq_buf, P25_IQ_BLOCK_BYTES, &meta);
             }
 
-            /*LS-709*/
+            /**/
             if (scan_engine_active()) {
                 uint32_t sum = 0;
                 uint32_t cnt = 0;
@@ -1378,7 +1369,7 @@ static void p25_rx_task(void *arg)
                 }
             }
 
-            /* LS-692: fold a bounded snapshot from this already-owned IQ
+            /* fold a bounded snapshot from this already-owned IQ
              * block.  The producer performs one FFT per eight blocks only
              * while SIGNAL is visible; it accepts traffic-channel samples
              * without starting the tuner sweep that would steal a call. */
@@ -1426,9 +1417,7 @@ static void p25_rx_task(void *arg)
                                    (uint32_t)P25.dsd_bch_ok_count,
                                    P25.p25_tsbk_ok_count,
                                    in_call)) {
-            /* Selecting the current winner is a status change, not a mode
-             * change. Resetting here discarded its acquired symbol timing
-             * and queued samples exactly when AUTO reported a lock. */
+
             p25_apply_demod_mode(s_demod_control.active);
             sys_log(1,
                     "AUTO %s C4FM NID=%lu TSBK=%lu score=%d; "
@@ -1594,10 +1583,6 @@ static void p25_on_enter(void)
     uint32_t freq = entry_settings.freq_hz;
     if (freq) s_tune_freq_hz = freq;
 
-    /* LS-689: app handoff. A loaded PROGRAM profile outranks the remembered
-     * dial position - the operator programmed a system, not a frequency - so
-     * the radio opens on its selected control channel rather than tuning
-     * somewhere else first and correcting a moment later. */
     {
         const p25_program_t *program = p25_program_session();
         uint64_t control = p25_program_selected_control_hz(program);
@@ -1609,18 +1594,18 @@ static void p25_on_enter(void)
     ls_iq_control_receiver_lost(&s_radio_control,
                                 LS_RADIO_ERR_UNAVAILABLE);
 
-    /* LS-303: init the grant follower against whatever the current tune is
+    /* init the grant follower against whatever the current tune is
      * treated as the control channel. If the user retunes, the follower's
      * control_hz is refreshed in p25_rx_task when it processes the request. */
     p25_grant_init(&s_grant_follower, (uint64_t)s_tune_freq_hz,
                    p25_grant_retune_cb, NULL);
-    /* LS-670: scan controller singleton is init once on app enter. The
+    /* scan controller singleton is init once on app enter. The
      * persisted lockouts/allow list/hold are then reloaded on top of the
      * empty state by p25_scan_persist_reload(); a failing load leaves the
      * defaults in place. */
     p25_scan_init(&g_p25_scan);
     p25_scan_persist_reload();
-    /* LS-687: restore receiver controls after the scan blob, because loading
+    /* restore receiver controls after the scan blob, because loading
      * that blob reinitialises the controller. This only mutates policy; an OFF
      * auto-follow preference cannot tune from app entry, and a later grant is
      * still routed through scan_ctrl's normal precedence. */
@@ -1628,7 +1613,7 @@ static void p25_on_enter(void)
                               entry_settings.auto_follow,
                               entry_settings.skip_encrypted,
                               entry_settings.encrypted_skip_ms);
-    /* LS-689: and the profile outranks those persisted preferences in turn,
+    /* and the profile outranks those persisted preferences in turn,
      * for the same reason. Reapply reads nothing from SD - what is on the card
      * may have changed, and re-entering an app is not a reload. */
     (void)p25_program_reapply_now();
@@ -1646,12 +1631,12 @@ static void p25_on_enter(void)
     P25.p25_iden_valid_count = 0;
     P25.p25_tsbk_ok_count    = 0;
     P25.p25_tsbk_err_count   = 0;
-    /* LS-610 */
+    /* */
     P25.p25_ess_valid = 0;
     P25.p25_algid    = 0;
     P25.p25_kid      = 0;
     P25.p25_enc_muted = false;
-    /* LS-611 */
+    /* */
     P25.p25_enc_muted_frames_total = 0;
     P25.p25_enc_returns            = 0;
     P25.p25_enc_skips              = 0;
@@ -1661,7 +1646,7 @@ static void p25_on_enter(void)
         (uint32_t)(s_grant_follower.encrypted_skip_us / 1000LL);
     P25.p25_enc_tg_count           = 0;
     memset(P25.p25_enc_tg, 0, sizeof(P25.p25_enc_tg));
-    /* LS-650 */
+    /* */
     P25.p25_lcw_valid           = 0;
     P25.p25_lcw_emergency       = 0;
     P25.p25_lcw_encrypted       = 0;
@@ -1685,10 +1670,7 @@ static void p25_on_enter(void)
         p25_rx_task, "p25_rx", P25RX_STACK_WORDS, NULL, 10,
         s_p25rx_stack, &s_p25rx_tcb, 1);
     if (!rx_task) {
-        /* LS-702: a failed task create used to leave s_app_active true and
-         * the UI eternally optimistic while no owner existed to consume tune
-         * requests. Surface the resource failure through the same receiver
-         * status used for acquire/retune errors. */
+
         s_app_active = false;
         s_rx_running = false;
         ls_iq_control_receiver_lost(&s_radio_control,

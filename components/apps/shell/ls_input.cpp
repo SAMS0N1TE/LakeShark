@@ -2,15 +2,13 @@
 #include "shell/ls_keymap.h"
 
 #include "ls_board.h"
+static void (*s_back_handler)(void);
+void ls_input_set_back_handler(void (*handler)(void)){s_back_handler=handler;}
 
 #if LS_HAS_KEYBOARD
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 
-/*LS-110  LVGL previously had only a pointer indev and no group, so a board
-  without touch could not focus or activate any widget.  Keep key translation
-  outside the board driver, queue task-context events here, and rebuild the
-  group from only the visible screen tree whenever the shell changes apps. */
 static_assert(int(LS_KEY_ACTION_HOME) == int(LV_KEY_HOME), "key map drift");
 static_assert(int(LS_KEY_ACTION_END) == int(LV_KEY_END), "key map drift");
 static_assert(int(LS_KEY_ACTION_BACKSPACE) == int(LV_KEY_BACKSPACE), "key map drift");
@@ -43,7 +41,16 @@ static lv_obj_t *s_focus_root;
 static void focus_tree(lv_obj_t *obj)
 {
     if (!obj || lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return;
-    if (lv_obj_is_group_def(obj)) lv_group_add_obj(s_group, obj);
+    /* Tab pages are moved outside the viewport, not marked HIDDEN. Only the
+     * active page belongs in keyboard traversal; vertical scrollers still
+     * retain their offscreen rows so focusing them can scroll them into view. */
+    if(lv_obj_check_type(obj,&lv_tabview_class)) {
+        auto *pages=lv_tabview_get_content(obj);
+        auto *page=lv_obj_get_child(pages,lv_tabview_get_tab_act(obj));
+        if(page)focus_tree(page);
+        return;
+    }
+    if (lv_obj_is_group_def(obj) || lv_obj_has_flag(obj,LS_INPUT_FOCUSABLE)) lv_group_add_obj(s_group, obj);
 
     const uint32_t count = lv_obj_get_child_cnt(obj);
     for (uint32_t i = 0; i < count; ++i) focus_tree(lv_obj_get_child(obj, i));
@@ -71,6 +78,14 @@ static void keypad_read(lv_indev_drv_t *, lv_indev_data_t *data)
     portEXIT_CRITICAL(&s_lock);
 
     if (have_event) {
+        if(event.key==LV_KEY_ESC && (s_focus_root || s_back_handler)) {
+            if(event.state==LV_INDEV_STATE_PRESSED) {
+                if(s_focus_root)lv_event_send(s_focus_root,LV_EVENT_CANCEL,nullptr);
+                else s_back_handler();
+            }
+            data->key=s_last_key;data->state=LV_INDEV_STATE_RELEASED;
+            return;
+        }
         s_last_key = event.key;
         s_last_state = event.state;
     }

@@ -1,4 +1,4 @@
-/*LS-820  Radio side of the sweep. See ls_sweep.h. */
+/* Radio side of the sweep. See ls_sweep.h. */
 
 #include "ls_sweep.h"
 #include "spectrum.h"
@@ -15,11 +15,9 @@ static const char *TAG = "ls_sweep";
 /* One transform's worth of interleaved u8 IQ. */
 #define IQ_BYTES_PER_FFT (SPEC_FFT_N * 2)
 
-/* Long enough that a stalled dongle is reported rather than hanging the
-   console, short enough that a whole sweep cannot sit here for minutes. */
 #define READ_TIMEOUT_MS 500
 
-/*LS-821  Post-retune settle. See the comment at the read loop: too little and
+/* Post-retune settle. See the comment at the read loop: too little and
    the sweep transforms the tuner's own slide between frequencies. */
 #define LS_SWEEP_SETTLE_MS        4
 #define LS_SWEEP_DISCARD_BUFFERS  2
@@ -44,9 +42,6 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
     ls_radio_err_t error = ls_radio_acquire("sweep", &requirements, &session);
     if (error != LS_RADIO_OK) return error;
 
-    /* Both buffers are touched linearly by this task alone - no DMA, no ISR -
-       so they belong in PSRAM rather than the internal heap this project
-       keeps running out of. */
     size_t   iq_bytes = (size_t)dwell_ffts * IQ_BYTES_PER_FFT;
     uint8_t *iq = heap_caps_malloc(iq_bytes, MALLOC_CAP_SPIRAM);
     float   *db = heap_caps_malloc(sizeof(float) * SPEC_FFT_N, MALLOC_CAP_SPIRAM);
@@ -72,11 +67,6 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
     ls_radio_iq_config_t actual;
     error = ls_radio_iq_configure(session, &requested, &actual);
 
-    /*LS-822  The plan's bin arithmetic is derived from the sample rate, so a
-       radio that quietly gave us a different one would place every peak at the
-       wrong frequency - by the ratio of the two rates, uniformly, which looks
-       exactly like a plausible spectrum of somewhere else. Refuse rather than
-       report a confident wrong answer. */
     if (error == LS_RADIO_OK && actual.sample_rate_hz != plan->sample_rate_hz) {
         ESP_LOGE(TAG, "planned for %u S/s but the radio gave %u - refusing to "
                       "map bins with the wrong rate",
@@ -101,19 +91,8 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
 
         spectrum_reset();
 
-        /*LS-821  Let the tuner actually land before believing anything.
+        /* Let the tuner actually land before believing anything. */
 
-           This discarded one 512-sample buffer - 213 microseconds - which is
-           nothing next to an R820T2 PLL lock. Transforming samples taken while
-           the tuner is still sliding between frequencies folds a chirp across
-           the whole band into every bin, and the result is a flat raised floor
-           with no sharp peaks. Measured on the LCD 4.3 sweeping 88-108 MHz:
-           a 12-18 dB spread at every gain setting, with the strongest bins
-           moving between runs - noise dressed as spectrum.
-
-           Sleep first, then throw away whole buffers. At 24 tunes the extra
-           cost is a fraction of a second against a sweep that was previously
-           measuring nothing. */
         vTaskDelay(pdMS_TO_TICKS(LS_SWEEP_SETTLE_MS));
 
         size_t got = 0;

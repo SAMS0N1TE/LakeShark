@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/* LS-687: one set of limits is shared by the P25 entry parser, backend and
+/* one set of limits is shared by the P25 entry parser, backend and
  * radio request. The previous dialog accepted 1..2000 MHz even though the
  * P25 RTL session advertises 24..1766 MHz, and atof() accepted partial input
  * such as "154.7.8". Keep the parser integer-only so every accepted value is

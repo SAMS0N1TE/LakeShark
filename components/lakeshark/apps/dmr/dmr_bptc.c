@@ -81,12 +81,15 @@ static int hamming_15_11_3_correct(uint8_t row[15])
 
 /* ---- Hamming(13,9,3) - matches MMDVMHost Hamming::decode1393 ----------- */
 
+/* Independent MMDVM-Host Hamming.cpp (G4KLX, GPL-2.0-or-later),
+ * commit 590c531391dfd3146073afbc3956f70d42c62a46, exposed an extra d[6]
+ * in p3 here. Self-encoded fixtures hid the wrong column code. */
 static void hamming_13_9_3_parity(const uint8_t d[9], uint8_t p_out[4])
 {
     p_out[0] = (uint8_t)(d[0] ^ d[1] ^ d[3] ^ d[5] ^ d[6]);
     p_out[1] = (uint8_t)(d[0] ^ d[1] ^ d[2] ^ d[4] ^ d[6] ^ d[7]);
     p_out[2] = (uint8_t)(d[0] ^ d[1] ^ d[2] ^ d[3] ^ d[5] ^ d[7] ^ d[8]);
-    p_out[3] = (uint8_t)(d[0] ^ d[2] ^ d[4] ^ d[5] ^ d[6] ^ d[8]);
+    p_out[3] = (uint8_t)(d[0] ^ d[2] ^ d[4] ^ d[5] ^ d[8]);
 }
 
 static int hamming_13_9_3_correct(uint8_t col[13])
@@ -106,7 +109,7 @@ static int hamming_13_9_3_correct(uint8_t col[13])
     case 0x5: col[3] ^= 1u; return 1;   /* d3 -> p0,p2 */
     case 0xA: col[4] ^= 1u; return 1;   /* d4 -> p1,p3 */
     case 0xD: col[5] ^= 1u; return 1;   /* d5 -> p0,p2,p3 */
-    case 0xB: col[6] ^= 1u; return 1;   /* d6 -> p0,p1,p3 */
+    case 0x3: col[6] ^= 1u; return 1;   /* d6 -> p0,p1 */
     case 0x6: col[7] ^= 1u; return 1;   /* d7 -> p1,p2 */
     case 0xC: col[8] ^= 1u; return 1;   /* d8 -> p2,p3 */
     case 0x1: col[ 9] ^= 1u; return 1;   /* p0 */

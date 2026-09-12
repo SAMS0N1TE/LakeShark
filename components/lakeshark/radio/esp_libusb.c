@@ -7,7 +7,7 @@
 #include "rtl_adapter_private.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
-/*LS-415*/
+/**/
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,18 +17,8 @@
 
 static class_adsb_dev *adsbdev;
 
-/*LS-813  One control transfer at a time.
+/* One control transfer at a time. */
 
-   esp_libusb_control_transfer drives a SINGLE shared usb_transfer_t and a
-   single done_sem, and clears that semaphore on entry. Two callers at once
-   and the second overwrites the first's setup packet in place, then the
-   first's completion satisfies the second's wait - a STALL, or a tuner
-   register written with someone else's value, which reads as flaky hardware.
-
-   LS-180 routes every IQ-app tune and gain through its session-owning RX task,
-   but lifecycle and adapter recovery can still issue control transfers. Keep
-   the endpoint guard as defense in depth rather than relying on every future
-   caller to preserve that routing. */
 static SemaphoreHandle_t s_ctl_mux;
 
 void init_adsb_dev(void)
@@ -165,6 +155,10 @@ static esp_err_t bulk_submit(usb_transfer_t *x, unsigned int timeout)
 static int s_recover_fails = 0;
 static int s_teardowns     = 0;
 
+#define CTRL_DEAD_AFTER 8
+static usb_device_handle_t s_ctrl_dead_hdl;
+static int                 s_ctrl_invalid_state;
+
 static void bulk_recover(class_driver_t *driver_obj, unsigned char endpoint)
 {
 
@@ -189,11 +183,11 @@ static void bulk_recover(class_driver_t *driver_obj, unsigned char endpoint)
     }
 }
 
-/*LS-406*/ /*LS-415*/
+/**/ /**/
 static volatile uint32_t s_total_rx;
 static volatile int64_t  s_bulk_last_us;
 
-/*LS-415*/
+/**/
 bool esp_libusb_bulk_active(void)
 {
     int64_t t = s_bulk_last_us;
@@ -241,7 +235,7 @@ int esp_libusb_bulk_transfer(class_driver_t *driver_obj, unsigned char endpoint,
     }
 
     int done_bytes = s_xfer_bytes[idx];
-    /*LS-415*/
+    /**/
     s_total_rx    += (uint32_t)done_bytes;
     s_bulk_last_us = esp_timer_get_time();
     *transferred = done_bytes;
@@ -284,16 +278,16 @@ static DRAM_ATTR StackType_t
         __attribute__((aligned(16)));
 static DRAM_ATTR StaticTask_t s_spump_tcb;
 
-/*LS-401*/
+/**/
 #define LS_STREAM_JOIN_MS 2000
 
 uint32_t esp_libusb_total_bytes(void) { return s_total_rx; }
 bool     esp_libusb_streaming(void)   { return s_streaming; }
 
-/*LS-407*/
+/**/
 void esp_libusb_note_device_gone(usb_device_handle_t device)
 {
-    /*LS-415*/
+    /**/
     bool bulk_gone = s_bulk_dev == device;
     bool stream_gone = s_sdev == device;
     if (bulk_gone) {
@@ -306,16 +300,23 @@ void esp_libusb_note_device_gone(usb_device_handle_t device)
         s_sdev = NULL;
         s_sep = 0;
     }
+    /* The control path latches a handle it has given up on. A real
+       removal of that same handle retires the latch with it, so nothing
+       carries over to whatever enumerates next. */
+    if (s_ctrl_dead_hdl == device) {
+        s_ctrl_dead_hdl = NULL;
+        s_ctrl_invalid_state = 0;
+    }
     /* Handles must be invalidated before cleanup so neither path calls an
      * endpoint API on a vanished device. Transfer objects are still ours. */
     if (stream_gone) esp_libusb_stream_stop();
     if (bulk_gone) esp_libusb_bulk_teardown();
 }
 
-/*LS-402*/
+/**/
 static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
 {
-    /*LS-406*/
+    /**/
     s_total_rx += len;
 
     uint32_t head  = s_shead;
@@ -382,7 +383,7 @@ static void stream_pump_task(void *arg)
         if (now - last_log >= 1000000) {
             uint32_t bytes = s_shead - last_head;
             if (s_streaming && bytes == 0) {
-                /*LS-410*/
+                /**/
                 stall_secs++;
                 ESP_LOGW(TAG_ADSB, "stream stalled %ds, re-priming pipe (dropped=%llu)",
                          stall_secs, (unsigned long long)s_sdropped);
@@ -395,7 +396,7 @@ static void stream_pump_task(void *arg)
             last_head = s_shead; last_log = now;
         }
     }
-    /* LS-730: this task owns a fixed internal stack.  Suspend at the terminal
+    /* this task owns a fixed internal stack.  Suspend at the terminal
      * point and let stop() observe that kernel state before deleting the TCB;
      * clearing a software handle before the last stack access made immediate
      * reentry capable of reusing a still-running static stack. */
@@ -420,7 +421,7 @@ static bool stream_pump_join(uint32_t timeout_ms)
 
 int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
 {
-    /* LS-340: RTL and HackRF endpoints may coexist, but the current USB
+    /* RTL and HackRF endpoints may coexist, but the current USB
      * transport has one transfer pool and one PSRAM ring. Refuse a second
      * producer instead of stopping the first radio or mixing its samples. */
     if ((s_streaming && s_sdev != driver_obj->dev_hdl) ||
@@ -439,7 +440,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
             return ESP_LIBUSB_ERR_NO_MEM;
         }
     }
-    /* LS-730: cold LCD entry had 27 bytes internal free and no sufficiently
+    /* cold LCD entry had 27 bytes internal free and no sufficiently
      * large contiguous block, so dynamic queue/TCB/stack allocation failed
      * every 405 ms.  These ISR/task-owned resources are fixed in internal
      * DRAM; FM teardown ordering can no longer decide whether P25 starts. */
@@ -451,7 +452,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
         return ESP_LIBUSB_ERR_NO_MEM;
     }
 
-    /*LS-401*/
+    /**/
     if (!stream_pump_join(200)) {
         ESP_LOGE(TAG_ADSB, "previous rtl_pump has not exited - refusing to start a "
                            "stream that would have no pump to repost transfers");
@@ -467,7 +468,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
         stream_pump_task, "rtl_pump", sizeof(s_spump_stack), NULL, 12,
         s_spump_stack, &s_spump_tcb, 1);
     if (!s_spump) {
-        /* LS-1003: reporting success here posted one finite USB window with no
+        /* reporting success here posted one finite USB window with no
          * consumer to repost it: 16 x 16384 = the hardware's exact 262144-byte
          * plateau.  Refuse the stream before submitting anything, so the app
          * sees a start failure instead of ACTIVE followed by watchdog churn. */
@@ -513,10 +514,10 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     return 0;
 }
 
-/*LS-401*/
+/**/
 void esp_libusb_stream_stop(void)
 {
-    /*LS-407*/
+    /**/
     if (!s_streaming && !s_spump && esp_libusb_stream_slots() == 0) return;
     s_streaming = false;
 
@@ -540,7 +541,7 @@ void esp_libusb_stream_stop(void)
         }
     }
 
-    /*LS-403*/
+    /**/
     s_sdev = NULL;
     s_sep  = 0;
 }
@@ -556,7 +557,7 @@ bool esp_libusb_stream_owned_by(const class_driver_t *driver_obj)
     return driver_obj && s_streaming && s_sdev == driver_obj->dev_hdl;
 }
 
-/*LS-402*/
+/**/
 int esp_libusb_stream_read(uint8_t *dst, int max)
 {
     uint32_t tail  = s_stail;
@@ -609,9 +610,12 @@ int esp_libusb_stream_slots(void)
     return n;
 }
 
+/* A control pipe that is gone has to stop asking. */
+
 static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_type, uint8_t b_request, uint16_t wValue, uint16_t wIndex, unsigned char *data, uint16_t wLength, unsigned int timeout)
 {
     if (!adsbdev || !adsbdev->transfer) return -1;
+    if (s_ctrl_dead_hdl && driver_obj->dev_hdl == s_ctrl_dead_hdl) return -1;
 
     size_t sizePacket = sizeof(usb_setup_packet_t) + wLength;
 
@@ -634,10 +638,19 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
 
     esp_err_t r = usb_host_transfer_submit_control(driver_obj->client_hdl, adsbdev->transfer);
     if (r != ESP_OK) {
-        ESP_LOGE(TAG_ADSB, "libusb_control_transfer failed to submit: %d", r);
+
+        if (r == ESP_ERR_INVALID_STATE && ++s_ctrl_invalid_state >= CTRL_DEAD_AFTER) {
+            s_ctrl_dead_hdl = driver_obj->dev_hdl;
+            ESP_LOGE(TAG_ADSB, "control pipe dead after %d submits - no further "
+                               "attempts on this device until it re-enumerates",
+                     s_ctrl_invalid_state);
+        } else {
+            ESP_LOGE(TAG_ADSB, "libusb_control_transfer failed to submit: %d", r);
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
         return -1;
     }
+    s_ctrl_invalid_state = 0;
 
     if (xSemaphoreTake(adsbdev->done_sem, pdMS_TO_TICKS(timeout + 500)) != pdTRUE) {
         ESP_LOGE(TAG_ADSB, "Control transfer timed out");
@@ -670,11 +683,6 @@ void esp_libusb_get_string_descriptor_ascii(const usb_str_desc_t *str_desc, char
     }
 }
 
-/*LS-813  Public entry: serialise, then run the transfer. The mutex is held
-   across submit AND the wait on done_sem - it is the pairing of the two that
-   must be atomic, because the shared transfer buffer is in use for that whole
-   window. Falls through unguarded if the mutex could not be created, which is
-   the old behaviour rather than a hard failure. */
 int esp_libusb_control_transfer(class_driver_t *driver_obj, uint8_t bm_req_type,
                                 uint8_t b_request, uint16_t wValue, uint16_t wIndex,
                                 unsigned char *data, uint16_t wLength, unsigned int timeout)

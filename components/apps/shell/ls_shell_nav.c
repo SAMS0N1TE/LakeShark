@@ -1,4 +1,4 @@
-/*LS-761*/
+/**/
 /* See ls_shell_nav.h for the why.  The bench drives these three functions
    directly with counting hooks; the shell wires the real LsShell::home into
    `go_home` at begin() time. */

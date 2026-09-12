@@ -1,29 +1,19 @@
 #include "flipper_link_telemetry.h"
 
-#include <math.h>   /*LS-832  lroundf */
+#include <math.h>   /* lroundf */
 
 #include <stdio.h>
 #include <string.h>
 
 #include "ls_board.h"
-/*LS-993  identity helper lives in ble_link_core so the bench test can drive
+/* identity helper lives in ble_link_core so the bench test can drive
    it without pulling in the IDF-facing telemetry frontend. */
 #include "ble_link_core.h"
 
 #define AC_PER_FRAME 4
 
-/*LS-832  A ceiling on the whole telemetry line, in bytes.
+/* A ceiling on the whole telemetry line, in bytes. */
 
-   Aircraft are appended to the SAME line as the rest of the frame, so the
-   line grows with however many are in the air. That matters because the
-   head's LS RX characteristic is 244 bytes wide (see BLE_LINK_HEAD_ATT_MAX):
-   a longer line is split across several ATT writes, and a frame that splits
-   is a frame that can arrive torn.
-
-   This is a budget rather than a smaller AC_PER_FRAME because no aircraft are
-   dropped by it - s_ac_cursor simply advances by however many actually fitted,
-   so the round robin covers the list in slightly more frames instead of
-   sending a wider one. */
 #define TEL_WIRE_MAX 320
 
 /* Room kept for append_sys - uptime, heap, stall, health, board - so the
@@ -63,7 +53,7 @@ static int append_sys(char *buf, size_t len, int n, const ls_telemetry_common_t 
     if (w < 0 || (size_t)(n + w) >= len - 1) return n;
     n += w;
 
-    /*LS-993  Board identity as its own field so two boards on the same head
+    /* Board identity as its own field so two boards on the same head
        are distinguishable in the app.  Central helper - the format cannot
        silently drift out from under the bench test that pins it. */
     int id = ble_link_format_identity(buf + n, len - (size_t)n, LS_BOARD_NAME);
@@ -75,7 +65,7 @@ int ls_telemetry_build_fm(char *buf, size_t len,
                           const lakeshark_fm_tel_t *t,
                           const ls_telemetry_common_t *common)
 {
-    /*LS-991  FLEX joined the FM submodes while this was being
+    /* FLEX joined the FM submodes while this was being
        extracted, and the extraction carried the older list. A short
        array indexed by mode silently reports the wrong name rather
        than failing, so it has to be kept in step with fm_state.h. */
@@ -159,18 +149,8 @@ int ls_telemetry_build_adsb(char *buf, size_t len,
         copy_text(call, sizeof(call), a.callsign[0] ? a.callsign : "-");
         sanitize(call);
 
-        /*LS-832  Position, only when the decoder actually has one.
+        /* Position, only when the decoder actually has one. */
 
-           CPR needs a matched even/odd frame pair, so a freshly seen aircraft
-           is tracked - callsign, altitude, velocity - for a while before it
-           has a position at all. Emitting placeholder coordinates for those
-           would put every silent aircraft on the map at 0,0 off West Africa.
-           Absent fields say "unknown"; the head keeps 8-field lines working
-           and treats 10-field ones as positioned.
-
-           1e-4 degrees is about 11 m, which is finer than a 128x64 screen can
-           show at any zoom this map offers, and costs eight characters rather
-           than the fourteen a full float would. */
         char pos[26];
         pos[0] = '\0';
         if (a.pos_valid) {
@@ -186,9 +166,6 @@ int ls_telemetry_build_adsb(char *buf, size_t len,
                          a.age_ms, a.msg_count, pos);
         if (w < 0) break;
 
-        /*LS-832  Stop before the line outgrows one ATT write's worth of frame
-           rather than after. The aircraft that did not fit is not lost - the
-           cursor only advances past the ones that did. */
         if (n + w + TEL_SUFFIX_RESERVE > TEL_WIRE_MAX) {
             buf[n] = '\0';
             break;

@@ -4,21 +4,26 @@
 #include "scan_channels.h"
 #include "scan_engine.h"
 #include "lakeshark_backend.h"
-/*LS-748*/
+/**/
 #include "fm_state.h"
-/*LS-652*/
+/**/
 #include "p25_state.h"
-/*LS-018*/
+/**/
 #include "audio_out.h"
-/*LS-200*/
+/**/
 #include "ls_time.h"
-/*LS-210*/
+#include "ls_board.h"
+/**/
 #include "ls_crash.h"
-/*LS-220*/
+
+#ifdef ESP_PLATFORM
+#include "esp_app_desc.h"
+#endif
+/**/
 #include "ls_version.h"
-/*LS-994*/
+/**/
 #include "ls_safe_mode.h"
-/*LS-611*/
+/**/
 #include "p25_state.h"
 #include "dsd.h"
 #include "p25_iq_capture.h"
@@ -85,7 +90,7 @@ static int cmd_ch(int argc, char **argv)
         const char *name = (argc > 4) ? argv[4] : NULL;
         int zone = (argc > 5) ? atoi(argv[5]) : 0;
         if (zone < 0 || zone >= SCAN_MAX_ZONES) { printf("bad zone (0-%d)\n", SCAN_MAX_ZONES - 1); return 0; }
-        /*LS-723*/
+        /**/
         int dup = scan_channel_find_freq_zone(hz, (uint8_t)zone);
         if (dup >= 0) { printf("already ch %d in zone %d - not added\n", dup, zone); return 0; }
         int idx = scan_channel_add(name, hz, (scan_mode_t)mode, (uint8_t)zone);
@@ -94,7 +99,7 @@ static int cmd_ch(int argc, char **argv)
         return 0;
     }
 
-    /*LS-722*/
+    /**/
     /* Bulk import: one commit for the whole list instead of one per channel.
        Frequencies are MHz, comma separated, and every channel in the push
        shares the mode and zone - which is what a band plan for one trip
@@ -157,7 +162,7 @@ static int cmd_ch(int argc, char **argv)
     }
     if (!strcmp(argv[1], "clear")) { scan_channels_clear(); printf("cleared\n"); return 0; }
 
-    /*LS-703*/
+    /**/
     if (!strcmp(argv[1], "zone")) {
         if (argc < 3) {
             int z = scan_engine_get_zone();
@@ -176,8 +181,8 @@ static int cmd_ch(int argc, char **argv)
     return 0;
 }
 
-/*LS-724*/
-/* LS-717 reasoned the scanner's NVS write rate from SETTLE_MS+MEASURE_MS and
+/**/
+/* reasoned the scanner's NVS write rate from SETTLE_MS+MEASURE_MS and
    said so; settings_write_stats() has always had the real counters and
    nothing surfaced them. This is that surface. dropped>0 means the settings
    queue filled and a write was thrown away - which is how a volume or gain
@@ -210,14 +215,14 @@ static int cmd_scan(int argc, char **argv)
         if (argc < 3) { printf("usage: scan hang <ms>\n"); return 0; }
         scan_engine_set_hang_ms(atoi(argv[2])); printf("hang=%d ms\n", atoi(argv[2])); return 0;
     }
-    /*LS-702*/
+    /**/
     if (!strcmp(argv[1], "thresh")) {
         if (argc < 3) { printf("usage: scan thresh <1-100 %% of full scale>\n"); return 0; }
         scan_engine_set_threshold_pct(atoi(argv[2]));
         printf("thresh=%d %% of full scale\n", scan_engine_get_threshold_pct());
         return 0;
     }
-    /*LS-704*/
+    /**/
     if (!strcmp(argv[1], "pri")) {
         if (argc < 3) {
             printf("pri=%d ms\n", scan_engine_get_priority_ms());
@@ -230,7 +235,7 @@ static int cmd_scan(int argc, char **argv)
         else     printf("pri=off\n");
         return 0;
     }
-    /*LS-736*/
+    /**/
     if (!strcmp(argv[1], "asql")) {
         int margin = (argc > 2) ? atoi(argv[2]) : -1;
         scan_engine_autosquelch(margin);
@@ -238,7 +243,7 @@ static int cmd_scan(int argc, char **argv)
                (margin >= 0) ? " (new margin)" : "");
         return 0;
     }
-    /*LS-733*/
+    /**/
     if (!strcmp(argv[1], "src")) {
         if (argc < 3) {
             printf("src=%s\n", scan_engine_get_source() == SCAN_SRC_BAND ? "band" : "preset");
@@ -251,7 +256,7 @@ static int cmd_scan(int argc, char **argv)
         printf("src=%s\n", scan_engine_get_source() == SCAN_SRC_BAND ? "band" : "preset");
         return 0;
     }
-    /*LS-733*/
+    /**/
     if (!strcmp(argv[1], "band")) {
         uint32_t a = 0, b = 0, st = 0;
         if (argc < 4) {
@@ -284,7 +289,7 @@ static int cmd_scan(int argc, char **argv)
     return 0;
 }
 
-/*LS-652*/
+/**/
 /* `p25tsbk` - print the P25 control-channel state the TSBK dispatch has
  * accumulated: IDEN table, neighbour list from ADJ_STS_BCST, RFSS/site
  * from RFSS_STS_BCST, TSBK counts, and per-opcode counters for the
@@ -339,15 +344,8 @@ static int cmd_p25(int argc, char **argv)
     return print_p25_acquisition();
 }
 
-/* LS-611: `p25enc` - status and settings for the P25 encryption gate.
- *
- *   p25enc                      show current mode / counters / TG history
- *   p25enc leave on|off         toggle "leave encrypted grants" (default on)
- *   p25enc skip <seconds>       change per-TG skip window (default 30)
- *   p25enc reset                zero the counters (does not clear TG history)
- *
- * The counter output is what turns "it went quiet" into "42 frames muted on
- * TG 20051, ADP" - the difference between a feature and a fault report. */
+/* `p25enc` - status and settings for the P25 encryption gate. */
+
 static int cmd_p25enc(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[1], "leave")) {
@@ -406,7 +404,7 @@ static int cmd_p25enc(int argc, char **argv)
     return 0;
 }
 
-/*LS-018*/
+/**/
 static int cmd_vol(int argc, char **argv)
 {
     if (argc < 2) { printf("vol=%d mute=%d\n", audio_volume_get(), audio_is_muted()); return 0; }
@@ -416,7 +414,7 @@ static int cmd_vol(int argc, char **argv)
     return 0;
 }
 
-/*LS-018*/
+/**/
 static int cmd_mute(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -425,7 +423,7 @@ static int cmd_mute(int argc, char **argv)
     return 0;
 }
 
-/*LS-748*/
+/**/
 /* `spec` - the spectrum as text. This exists because every debugging session
    on this project happens down a serial cable through cmd.py, and a signal
    finder you can only read by looking at the panel is unusable from the bench.
@@ -433,10 +431,10 @@ static int cmd_mute(int argc, char **argv)
    console cannot disagree - the same rule the scanner status line follows. */
 static int cmd_spec(int argc, char **argv)
 {
-    /*LS-748*/
+    /**/
     /* `spec band <a> <b>` - the SWEEP range was settable ONLY from the FM
        app's BAND button, cycling a fixed preset table, so it could not be
-       aimed from the console at all. Same split LS-746 fixed for the channel
+       aimed from the console at all. Same split fixed for the channel
        scanner; the sweep had it too. */
     if (argc >= 4 && strcmp(argv[1], "band") == 0) {
         double a = atof(argv[2]), b = atof(argv[3]);
@@ -509,7 +507,7 @@ static int cmd_spec(int argc, char **argv)
     return 0;
 }
 
-/*LS-200*/
+/**/
 /* `date` - the honest report of what this device thinks the time is. Prints
    the ISO-8601 UTC stamp once SNTP has landed, and an "up <secs>s" marker
    until then, which is the same string ls_time_render_stamp writes into any
@@ -521,11 +519,14 @@ static int cmd_date(int argc, char **argv)
     char stamp[LS_TIME_STAMP_MAX];
     ls_time_render_stamp(stamp, sizeof(stamp));
     printf("%s  (%s)\n", stamp,
-           ls_time_is_synced() ? "wall clock set" : "no wall clock yet - join a WiFi network");
+           ls_time_is_synced() ? "wall clock set"
+
+           : (LS_HAS_RTC ? "no wall clock yet - 'rtc set <unix>' or join a WiFi network"
+                         : "no wall clock yet - join a WiFi network"));
     return 0;
 }
 
-/*LS-220*/
+/**/
 /* `version` says which build is running - PROJECT_VER from
    esp_app_get_description() (which IDF derives from `git describe --dirty`),
    the board variant it was compiled for (from LS_BOARD_NAME, not a
@@ -545,8 +546,8 @@ static int cmd_version(int argc, char **argv)
     return 0;
 }
 
-/*LS-210*/
-/* LS-767: `crash` reports bounded metadata, never parses ELF on-device.
+/**/
+/* `crash` reports bounded metadata, never parses ELF on-device.
    Export and preserve the full partition before explicit crash clear. */
 static int cmd_crash(int argc, char **argv)
 {
@@ -560,13 +561,30 @@ static int cmd_crash(int argc, char **argv)
     char buf[768];
     ls_crash_format(buf, sizeof(buf));
     fputs(buf, stdout);
+
+    /* Say which build is running, because that is what decides whether the stored dump can be read at all. */
+
+#ifdef ESP_PLATFORM
+    {
+        const esp_app_desc_t *d = esp_app_get_description();
+        if (d) {
+            printf("crash: this firmware's ELF sha256 starts %02x%02x%02x%02x\n",
+                   d->app_elf_sha256[0], d->app_elf_sha256[1],
+                   d->app_elf_sha256[2], d->app_elf_sha256[3]);
+            printf("crash: esp-coredump refuses a dump whose sha differs. If "
+                   "it reports another one, the dump is from an older build "
+                   "and needs THAT build's ELF, which this repo does not "
+                   "keep.\n");
+        }
+    }
+#endif
     return 0;
 }
 
-/*LS-994*/
+/**/
 /* Manual entry to and exit from early safe mode, through the console that
    already exists. There is deliberately no button for it: the BOOT button is
-   wired to the boost module's K pin (LS-721), and inventing a GPIO would be a
+   wired to the boost module's K pin (), and inventing a GPIO would be a
    guess about hardware nobody has measured. */
 static int cmd_safemode(int argc, char **argv)
 {
@@ -603,7 +621,7 @@ static int cmd_safemode(int argc, char **argv)
     return 0;
 }
 
-/*LS-994*/
+/**/
 /* The recovery console. Deliberately not the full set: `scan`, `ch`, `vol`,
    `p25*` and `spec` all reach into a backend that safe mode never started, so
    offering them would turn a diagnostic session into the next panic. */
@@ -627,50 +645,50 @@ void ls_ctl_register_recovery_commands(void)
 void ls_ctl_register_commands(void)
 {
     const esp_console_cmd_t cmds[] = {
-        /*LS-018*/
+        /**/
         { .command = "vol",     .help = "Volume 0-100 (or +n / -n)",
           .hint = "<n|+n|-n>", .func = &cmd_vol },
         { .command = "mute",    .help = "Toggle audio mute",
           .func = &cmd_mute },
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
-        /*LS-652*/
+        /**/
         { .command = "p25tsbk",
           .help = "P25 control-channel state: IDEN, neighbours, unhandled opcodes",
           .func = &cmd_p25tsbk },
         { .command = "p25",
           .help = "Read-only P25 acquisition, tuning fence and IQ diagnostics",
           .hint = "acquisition", .func = &cmd_p25 },
-        /*LS-611*/
+        /**/
         { .command = "p25enc",
           .help = "P25 encryption gate: status, counters, and leave-on-encrypted",
           .hint = "[leave on|off | skip <sec> | reset]", .func = &cmd_p25enc },
         { .command = "home", .help = "Get/set home QTH for the radar",
           .hint = "<lat> <lon>", .func = &cmd_home },
-        /*LS-703*/
+        /**/
         { .command = "ch", .help = "Scanner channel list",
           .hint = "list|add|import|del|lock|pri|en|clear|zone <0-7|all>", .func = &cmd_ch },
-        /*LS-724*/
+        /**/
         { .command = "stats", .help = "NVS write counters (done/dropped/commits)",
           .func = &cmd_stats },
-        /*LS-702*/
+        /**/
         { .command = "scan", .help = "Channel scanner control",
           .hint = "on|off|status|skip|hang|thresh|pri|src <preset|band>|band <a> <b> [step]", .func = &cmd_scan },
-        /*LS-748*/
+        /**/
         { .command = "spec", .help = "Strongest bins of the FM SWEEP spectrum",
           .hint = "[count]", .func = &cmd_spec },
-        /*LS-200*/
+        /**/
         { .command = "date", .help = "Print the wall-clock time (or uptime marker if unsynced)",
           .func = &cmd_date },
-        /*LS-210*/
+        /**/
         { .command = "crash",
           .help = "Show safe dump metadata; back up before 'crash clear' erases it",
           .hint = "[clear]", .func = &cmd_crash },
-        /*LS-220*/
+        /**/
         { .command = "version",
           .help = "Firmware version (git describe), board variant, build date, IDF",
           .func = &cmd_version },
-        /*LS-994*/
+        /**/
         { .command = "safemode",
           .help = "Safe-mode state, and manual entry into early recovery",
           .hint = "[on|off|normal|reboot]", .func = &cmd_safemode },
@@ -708,7 +726,7 @@ static void cli_task(void *arg)
     }
 }
 
-/*LS-994*/
+/**/
 static void start_repl(bool full)
 {
     esp_console_config_t ccfg = ESP_CONSOLE_CONFIG_DEFAULT();
@@ -723,7 +741,7 @@ static void start_repl(bool full)
     if (!uart_is_driver_installed(CONFIG_ESP_CONSOLE_UART_NUM)) {
         uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 512, 0, 0, NULL, 0);
     }
-    /*LS-707*/
+    /**/
     static StackType_t cli_stack[4096 / sizeof(StackType_t)];
     static StaticTask_t cli_tcb;
     xTaskCreateStaticPinnedToCore(cli_task, "ls_cli", 4096 / sizeof(StackType_t),
@@ -734,5 +752,5 @@ static void start_repl(bool full)
 }
 
 void ls_ctl_start_repl(void)          { start_repl(true); }
-/*LS-994*/
+/**/
 void ls_ctl_start_recovery_repl(void) { start_repl(false); }

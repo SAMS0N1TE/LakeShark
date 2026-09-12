@@ -16,7 +16,7 @@ esp_err_t audio_out_init(void);
 void audio_write_mono(const int16_t *samples, int n);
 void audio_write_mono_blocking(const int16_t *samples, int n);
 
-/*LS-799  True while live radio audio (FM or P25 voice) is reaching the
+/* True while live radio audio (FM or P25 voice) is reaching the
    speaker. Speech yields to it instead of interleaving into the same ring. */
 bool audio_out_live_active(void);
 /* Utterances dropped or cut short because live audio held the speaker. */

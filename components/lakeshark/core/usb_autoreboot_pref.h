@@ -1,7 +1,7 @@
 #ifndef USB_AUTOREBOOT_PREF_H
 #define USB_AUTOREBOOT_PREF_H
 
-/*LS-770*/
+/**/
 /* USB AUTO-REBOOT lived as a process-static bool in app_registry with no
    read-back from NVS at boot, so the Settings and P25 CONFIG toggles
    presented ON among persistent device settings but silently reverted to

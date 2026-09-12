@@ -49,8 +49,6 @@ typedef struct {
     char     detail[LS_HUB_DETAIL_MAX];
 } ls_hub_presentation_t;
 
-/* Convert backend identity plus read-only telemetry into the operator-facing
-   snapshot shared by Home and the status bar. */
 void ls_hub_present(const ls_hub_observation_t *in,
                     ls_hub_presentation_t *out);
 

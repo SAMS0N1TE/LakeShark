@@ -1,12 +1,4 @@
-/* LS-670: NVS wrapper for scan_ctrl.
- *
- * scan_ctrl.c is pure logic and knows nothing about NVS - the bench compiles
- * it as-is. This file binds the serialised blob to the same "sdr-tool" NVS
- * namespace the rest of the persisted settings use, so a factory-reset of the
- * settings partition clears the scan lists at the same time.
- *
- * Kept in its own translation unit so scan_ctrl.c stays host-buildable and
- * the ESP-IDF include of nvs.h does not spread to the bench. */
+/* NVS wrapper for scan_ctrl. */
 
 #include "scan_ctrl.h"
 
@@ -28,10 +20,6 @@ static const char *BLOBK  = "p25scanv1";
 #define P25_SCAN_NVS_MAX (12 + 4 + 4 + \
                           P25_SCAN_LOCKOUT_MAX * 2 + \
                           P25_SCAN_ALLOW_MAX   * 2)
-
-/* LS-671: NVS must not run on a task whose stack is in PSRAM - see
- * components/lakeshark/core/ls_nvs_safe.h. Serialising stays here; only the
- * flash access moves. */
 
 typedef struct { uint8_t *buf; size_t len; size_t out_len; } scan_blob_t;
 
@@ -88,7 +76,7 @@ void p25_scan_persist_save_now(void)
     if (n == 0) return;
 
     /* Serialising is pure memory work and stays on the caller. Only the flash
-     * access moves - see LS-671 above. */
+     * access moves - see above. */
     scan_blob_t b = { .buf = buf, .len = n };
     esp_err_t err = ls_nvs_call(scan_write, &b, 0);
     if (err != ESP_OK)

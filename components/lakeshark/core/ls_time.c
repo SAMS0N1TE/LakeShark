@@ -1,16 +1,4 @@
-/* LS-200  Wall clock, and the honest fallback when there is not one yet.
-
-   Two entry points that matter:
-
-     - ls_time_render_stamp_at(): the pure-logic renderer. Given a wall time
-       and an uptime it produces one of two forms, and the bench pins that
-       "not synced" NEVER yields a plausible date. Lives here so the bench
-       can drive it with a fixed uptime instead of esp_timer_get_time().
-
-     - ls_time_sntp_start(): fires SNTP once station mode has an IP. The
-       synced flag flips when the callback comes back. Boot is NOT blocked
-       on this: the timeout the sync notification honours only bounds how
-       long the callback thread stays parked, not app_main. */
+/* Wall clock, and the honest fallback when there is not one yet. */
 
 #include "ls_time.h"
 
@@ -42,6 +30,8 @@ static const char *TAG = "ls_time";
 static volatile bool s_synced = false;
 
 bool ls_time_is_synced(void) { return s_synced; }
+
+void ls_time_note_set(void) { s_synced = true; }
 
 void ls_time_test_set_synced(bool synced) { s_synced = synced; }
 
@@ -144,7 +134,7 @@ size_t ls_time_render_filename(char *out, size_t cap, const char *label)
 
 #if !LS_TIME_HOST
 
-/*LS-200  SNTP sync callback. Called on the SNTP daemon's thread; keep it
+/* SNTP sync callback. Called on the SNTP daemon's thread; keep it
    short. All we do here is decide whether the reading is plausible and
    flip the synced flag. `now.tv_sec` is what the sntp module just wrote
    into the system clock, so `time(NULL)` and this must agree. */
@@ -164,7 +154,7 @@ static void sntp_sync_notif(struct timeval *now)
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-/*LS-200  Fired once per boot from the WiFi got-IP path. The IDF SNTP
+/* Fired once per boot from the WiFi got-IP path. The IDF SNTP
    helper is idempotent for the same server list, but we still gate on our
    own flag so we do not stack notification callbacks on a reconnect. */
 static volatile bool s_started = false;

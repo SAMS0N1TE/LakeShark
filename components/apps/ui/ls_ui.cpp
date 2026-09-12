@@ -2,10 +2,20 @@
 
 #include "sdr_ui/sdr_ui.h"
 #include "ui/ls_safe_screen_hint.h"
+#include "ls_board.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+static char s_page_title[64];
+const char *ls_ui_page_title(void){return s_page_title;}
+void ls_ui_clear_page_title(void){s_page_title[0]=0;}
+static int s_safe_x,s_safe_y;
+void ls_ui_set_safe_insets(int horizontal,int vertical)
+{ s_safe_x=horizontal>0?horizontal:0; s_safe_y=vertical>0?vertical:0; }
+void ls_ui_get_safe_insets(int *horizontal,int *vertical)
+{ if(horizontal)*horizontal=s_safe_x; if(vertical)*vertical=s_safe_y; }
 
 lv_color_t ls_ui_color(ls_ui_color_role_t role)
 {
@@ -25,13 +35,13 @@ void ls_ui_style_content(lv_obj_t *obj)
     lv_obj_set_style_pad_row(obj, 6, 0);
     lv_obj_set_style_pad_column(obj, 6, 0);
     lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_COLUMN);
-    /*LS-782  This styled geometry but never the background, so the container
+    /* This styled geometry but never the background, so the container
        kept the LVGL default theme's light fill and showed as a white box on a
        dark screen - the REC/SCOUT readout panels are the visible case. */
     lv_obj_set_style_bg_color(obj, LS_UI_BACKGROUND, 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(obj, 0, 0);
-    /*LS-783  AUTO, not OFF. OFF removed the clutter and the affordance with
+    /* AUTO, not OFF. OFF removed the clutter and the affordance with
      * it: on the REC tab the controls below the fold became unreachable
      * because nothing showed the panel could scroll at all. AUTO draws the
      * bar only while scrolling, which is what "no visible scrollbars" was
@@ -49,7 +59,7 @@ lv_obj_t *ls_ui_readout(lv_obj_t *parent, const char *text)
     return label;
 }
 
-/*LS-786  ls_ui_readout grows to fill the remaining space, which is correct
+/* ls_ui_readout grows to fill the remaining space, which is correct
    inside a value row and wrong on a column panel: on the Settings screen the
    location note and the two Wi-Fi lines each absorbed the leftover height and
    pushed the rows above them apart. */
@@ -78,7 +88,7 @@ lv_obj_t *ls_ui_controls(lv_obj_t *parent)
     lv_obj_set_style_pad_row(controls, 4, 0);
     lv_obj_set_style_pad_column(controls, 6, 0);
     lv_obj_set_flex_flow(controls, LV_FLEX_FLOW_ROW_WRAP);
-    /* LS-661: SPACE_EVENLY distributes each line independently, so a full
+    /* SPACE_EVENLY distributes each line independently, so a full
      * first row of four buttons and a second row holding one leaves that one
      * floating in the middle of an otherwise empty line with gaps unlike any
      * other row. CENTER keeps the gap between buttons constant everywhere and
@@ -98,22 +108,10 @@ lv_obj_t *ls_ui_button_group(lv_obj_t *parent)
     return group;
 }
 
-/* LS-736: lv_tabview owns a button matrix that divides the strip into N equal
- * cells and then draws each label at its full measured text width regardless
- * of the cell.  With seven P25 tabs on the 480 px panel a cell is 68 px and
- * "TALK GROUPS" measures 120, so every label from PROGRAM rightwards painted
- * across its neighbour and none of the three was readable or reliably
- * tappable.  A smaller font is the wrong answer twice over: it is unreadable,
- * and it overlaps again as soon as a longer tab name or a narrower board
- * turns up.
- *
- * The strip is therefore kit-owned: one content-sized button per tab in a
- * wrapping row, so a button is by construction at least as wide as its own
- * text, and a line that cannot hold the next button starts a new line.  The
- * lv_tabview is still the object apps drive with lv_tabview_set_act(); only
- * its button matrix is hidden.  Selection is mirrored back from the tabview
- * VALUE_CHANGED so a swipe or a programmatic switch moves the highlight. */
-#define LS_UI_TAB_HEIGHT 40
+/* lv_tabview owns a button matrix that divides the strip into N equal cells and then draws each label at its full measured text width regardless of the cell. */
+
+#define LS_UI_TAB_HEIGHT (LS_HAS_COMPACT_UI ? 60 : 40)
+#define LS_UI_APP_TAB LV_OBJ_FLAG_USER_2
 
 static void ls_ui_tab_bar_sync(lv_obj_t *bar, uint32_t active)
 {
@@ -125,6 +123,101 @@ static void ls_ui_tab_bar_sync(lv_obj_t *bar, uint32_t active)
                                           : LS_BTN_TOGGLE_OFF);
 }
 
+#if LS_HAS_COMPACT_UI
+static void ls_ui_pager_sync(lv_obj_t *pager)
+{
+    auto *bar=static_cast<lv_obj_t *>(lv_obj_get_user_data(pager));
+    auto *tabs=static_cast<lv_obj_t *>(lv_obj_get_user_data(bar));
+    unsigned count=lv_obj_get_child_cnt(bar),active=lv_tabview_get_tab_act(tabs);
+    const char *name="PAGES";
+    if(active<count)name=lv_label_get_text(lv_obj_get_child(lv_obj_get_child(bar,active),0));
+    snprintf(s_page_title,sizeof(s_page_title),"%s",name);
+    char caption[96];snprintf(caption,sizeof(caption),"%u / %u  %s",count?active+1:0,count,name);
+    auto *label=lv_obj_get_child(lv_obj_get_child(pager,1),0);
+    if(strcmp(lv_label_get_text(label),caption))lv_label_set_text(label,caption);
+    for(unsigned i=0;i<3;i+=2){
+        auto *button=lv_obj_get_child(pager,i);
+        if(count<2)lv_obj_add_state(button,LV_STATE_DISABLED);
+        else lv_obj_clear_state(button,LV_STATE_DISABLED);
+    }
+}
+static void ls_ui_pager_changed(lv_event_t *event)
+{
+    ls_ui_pager_sync(static_cast<lv_obj_t *>(lv_event_get_user_data(event)));
+}
+static void ls_ui_pager_layout(lv_event_t *event)
+{
+    auto *pager=static_cast<lv_obj_t *>(lv_event_get_user_data(event));
+    auto *root=lv_obj_get_parent(pager);
+    auto *bar=static_cast<lv_obj_t *>(lv_obj_get_user_data(pager));
+    auto *tabs=static_cast<lv_obj_t *>(lv_obj_get_user_data(bar));
+    int w=lv_obj_get_content_width(root),h=lv_obj_get_content_height(root);
+    bool wide=w>=800;
+
+    const int arrow_w=34;
+    lv_obj_set_layout(root,0);
+    lv_obj_set_flex_grow(tabs,0);
+    lv_obj_add_flag(tabs,LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_width(tabs,wide?w-2*arrow_w:lv_pct(100));
+    lv_obj_set_width(bar,wide?w-2*arrow_w:lv_pct(100));
+    if(wide){
+        lv_obj_add_flag(tabs,LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_flex_grow(tabs,0);
+        lv_obj_set_pos(tabs,arrow_w,0);
+        lv_obj_set_size(tabs,w-2*arrow_w,lv_pct(100));
+        lv_obj_add_flag(pager,LV_OBJ_FLAG_FLOATING);
+        lv_obj_add_flag(bar,LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_pos(bar,arrow_w,0);
+        lv_obj_set_layout(pager,0);
+        lv_obj_set_pos(pager,0,0);lv_obj_set_size(pager,w,h);
+        lv_obj_set_style_bg_opa(pager,LV_OPA_0,0);
+        lv_obj_clear_flag(pager,LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(lv_obj_get_child(pager,1),LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<3;i+=2){
+            auto *b=lv_obj_get_child(pager,i);
+            lv_obj_set_pos(b,i==0?0:w-arrow_w,0);
+            lv_obj_set_size(b,arrow_w,h);
+            lv_obj_set_style_pad_all(b,0,0);
+        }
+    }else{
+        lv_obj_set_pos(tabs,0,60);lv_obj_set_size(tabs,w,h>60?h-60:1);
+        lv_obj_set_pos(pager,0,0);lv_obj_set_pos(bar,0,60);
+        lv_obj_clear_flag(pager,LV_OBJ_FLAG_FLOATING);
+        lv_obj_clear_flag(bar,LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_size(pager,lv_pct(100),54);
+        lv_obj_set_flex_flow(pager,LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(lv_obj_get_child(pager,1),LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<3;i+=2)lv_obj_set_size(lv_obj_get_child(pager,i),72,54);
+    }
+    if(wide){lv_obj_move_foreground(pager);lv_obj_move_foreground(bar);}
+    else {lv_obj_move_to_index(pager,0);lv_obj_move_to_index(bar,1);}
+}
+static void ls_ui_pager_menu(lv_event_t *event)
+{
+    auto *pager=lv_obj_get_parent(lv_event_get_target(event));
+    auto *bar=static_cast<lv_obj_t *>(lv_obj_get_user_data(pager));
+    if(lv_obj_has_flag(bar,LV_OBJ_FLAG_HIDDEN))lv_obj_clear_flag(bar,LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(bar,LV_OBJ_FLAG_HIDDEN);
+}
+static void ls_ui_pager_click(lv_event_t *event)
+{
+    auto *button=lv_event_get_target(event),*pager=lv_obj_get_parent(button);
+    auto *bar=static_cast<lv_obj_t *>(lv_obj_get_user_data(pager));
+    auto *tabs=static_cast<lv_obj_t *>(lv_obj_get_user_data(bar));
+    int direction=lv_obj_get_index(button)-1;
+    if(!direction){
+        if(lv_obj_has_flag(bar,LV_OBJ_FLAG_HIDDEN))lv_obj_clear_flag(bar,LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(bar,LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    unsigned count=lv_obj_get_child_cnt(bar);
+    if(count<2)return;
+    unsigned next=(lv_tabview_get_tab_act(tabs)+count+direction)%count;
+    lv_obj_add_flag(bar,LV_OBJ_FLAG_HIDDEN);
+    lv_tabview_set_act(tabs,next,LV_ANIM_OFF);
+}
+#endif
+
 static void ls_ui_tab_button_cb(lv_event_t *event)
 {
     lv_obj_t *button = lv_event_get_target(event);
@@ -135,6 +228,10 @@ static void ls_ui_tab_button_cb(lv_event_t *event)
         reinterpret_cast<uintptr_t>(lv_obj_get_user_data(button)));
     lv_tabview_set_act(tabs, (uint16_t)index, LV_ANIM_OFF);
     ls_ui_tab_bar_sync(bar, index);
+#if LS_HAS_COMPACT_UI
+    lv_obj_add_flag(bar,LV_OBJ_FLAG_HIDDEN);
+    // The synchronous scroll in set_act emits the page-change event itself.
+#endif
 }
 
 static void ls_ui_tab_changed_cb(lv_event_t *event)
@@ -147,7 +244,7 @@ void ls_ui_screen_create(lv_obj_t *parent, const char *name,
                          bool with_tabs, ls_ui_color_role_t phase_tint,
                          ls_ui_screen_t *out)
 {
-    /* LS-759: opting out only in P25 left the duplicate strip in FM and all
+    /* opting out only in P25 left the duplicate strip in FM and all
      * other apps. Shell chrome is now the default contract, not a per-app fix. */
     (void)name;
     ls_ui_standalone_screen_create(parent, nullptr, with_tabs, phase_tint, out);
@@ -172,11 +269,6 @@ void ls_ui_standalone_screen_create(lv_obj_t *parent, const char *name,
     lv_obj_set_flex_flow(out->root, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(out->root, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* LS-736: the shell already draws battery, link and status across the top
-     * of every screen.  An app that repeats its own name and frequency under
-     * that spends a whole panel of height on chrome the operator already has,
-     * and on the 480 px panel that panel is what pushed the DECODE actions
-     * below the fold.  A NULL name means the app has nothing to add. */
     if (name && name[0]) {
         out->header = ls_ui_panel(out->root, nullptr);
         lv_obj_set_style_border_color(out->header, ls_ui_color(phase_tint), 0);
@@ -202,7 +294,8 @@ void ls_ui_standalone_screen_create(lv_obj_t *parent, const char *name,
 
         out->tabs = ls_ui_tab_strip(out->root, LV_DIR_TOP, 0);
         lv_obj_set_height(out->tabs, 0);
-        lv_obj_set_flex_grow(out->tabs, 1);
+        if(!LS_HAS_COMPACT_UI)lv_obj_set_flex_grow(out->tabs,1);
+        else lv_obj_add_flag(out->tabs,LV_OBJ_FLAG_FLOATING);
         lv_obj_t *btns = lv_tabview_get_tab_btns(out->tabs);
         if (btns) {
             lv_obj_add_flag(btns, LV_OBJ_FLAG_HIDDEN);
@@ -212,6 +305,43 @@ void ls_ui_standalone_screen_create(lv_obj_t *parent, const char *name,
         lv_obj_set_user_data(out->tabbar, out->tabs);
         lv_obj_add_event_cb(out->tabs, ls_ui_tab_changed_cb,
                             LV_EVENT_VALUE_CHANGED, out->tabbar);
+#if LS_HAS_COMPACT_UI
+        /* arrows provide large fixed targets without keeping seven
+         * wrapped tabs above a narrow portrait page. The caption reveals all
+         * direct choices, preserving access and keyboard-focusable buttons. */
+        out->pager=ls_ui_controls(out->root);
+        lv_obj_move_to_index(out->pager,lv_obj_get_index(out->tabbar));
+        lv_obj_set_height(out->pager,54);
+        lv_obj_set_flex_flow(out->pager,LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_border_width(out->pager,0,0);
+        lv_obj_set_style_pad_all(out->pager,0,0);
+        lv_obj_set_style_pad_column(out->pager,8,0);
+        lv_obj_set_user_data(out->pager,out->tabbar);
+        const char *captions[]={"<","PAGES",">"};
+        for(int i=0;i<3;i++){
+            auto *button=ls_ui_button(out->pager,captions[i],LS_BTN_TOGGLE_OFF,
+                                      ls_ui_pager_click,nullptr,nullptr);
+            lv_obj_add_event_cb(button,ls_ui_pager_menu,LV_EVENT_LONG_PRESSED,nullptr);
+            lv_obj_set_size(button,i==1?0:72,54);
+            lv_obj_set_style_min_width(button,0,0);
+            if(i==1){
+                lv_obj_set_flex_grow(button,1);
+                auto *label=lv_obj_get_child(button,0);
+                lv_obj_set_width(label,lv_pct(100));
+                lv_label_set_long_mode(label,LV_LABEL_LONG_DOT);
+            }
+        }
+        for(int i=0;i<3;i++){
+            auto *b=lv_obj_get_child(out->pager,i);
+            lv_obj_remove_event_cb(b,ls_ui_pager_click);
+            lv_obj_add_event_cb(b,ls_ui_pager_click,LV_EVENT_SHORT_CLICKED,nullptr);
+        }
+        lv_obj_add_flag(out->tabbar,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(out->root,ls_ui_pager_layout,LV_EVENT_SIZE_CHANGED,out->pager);
+        lv_obj_update_layout(out->root);
+        lv_event_send(out->root,LV_EVENT_SIZE_CHANGED,nullptr);
+        lv_obj_add_event_cb(out->tabs,ls_ui_pager_changed,LV_EVENT_VALUE_CHANGED,out->pager);
+#endif
     } else {
         out->content = ls_ui_panel(out->root, nullptr);
         lv_obj_set_height(out->content, 0);
@@ -237,6 +367,8 @@ lv_obj_t *ls_ui_screen_add_tab(ls_ui_screen_t *screen, const char *name)
                                                    : LS_BTN_TOGGLE_OFF,
                                         ls_ui_tab_button_cb, nullptr, nullptr);
         if (button) {
+            lv_obj_add_flag(button, LS_UI_APP_TAB);
+            ls_ui_button_set_role(button,index==0?LS_BTN_TOGGLE_ON:LS_BTN_TOGGLE_OFF);
             /* Content width with no floor beyond a touchable minimum: the
              * button is measured from its own label, so the label cannot be
              * wider than the button it sits in. */
@@ -249,6 +381,9 @@ lv_obj_t *ls_ui_screen_add_tab(ls_ui_screen_t *screen, const char *name)
                 reinterpret_cast<void *>(static_cast<uintptr_t>(index)));
         }
     }
+#if LS_HAS_COMPACT_UI
+    if(screen->pager)ls_ui_pager_sync(screen->pager);
+#endif
     return tab;
 }
 
@@ -258,9 +393,6 @@ void ls_ui_tab_split(lv_obj_t *tab, ls_ui_split_t *out)
     *out = {};
     if (!tab) return;
 
-    /* One scroller, and it is the body.  A scrollable tab page holding a
-     * scrollable panel means the actions can be pushed off by either of two
-     * scrollers and the operator cannot tell which one to drag (LS-736). */
     lv_obj_clear_flag(tab, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *body = lv_obj_create(tab);
@@ -277,7 +409,7 @@ void ls_ui_tab_split(lv_obj_t *tab, ls_ui_split_t *out)
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
     lv_obj_set_style_width(body, 6, LV_PART_SCROLLBAR);
     lv_obj_set_style_radius(body, 3, LV_PART_SCROLLBAR);
-    /*LS-783*/
+    /**/
     lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_bg_color(body, LS_UI_ACCENT, LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_opa(body, LV_OPA_60, LV_PART_SCROLLBAR);
@@ -305,18 +437,7 @@ lv_obj_t *ls_ui_stepper(ls_ui_value_t *row,
                         lv_event_cb_t next_cb, void *next_user)
 {
     if (!row || !row->controls) return nullptr;
-    /* LS-748: measured from the two buttons rather than asking for the whole
-     * row, so the pair rides on the value's own line.  At 100% it started a
-     * track of its own, and CONFIG and ScanPanel between them spend fourteen
-     * rows on a stepper - fourteen lines for two 64 px buttons each.
-     *
-     * START, not END: lv_flex.c forces the cross-axis placement to START when
-     * a container is content-sized, but not the main axis, so an END-placed
-     * content-width row lays its children out against a width it has not
-     * measured yet - place_content() returns a negative start and the buttons
-     * land outside their own group.  The group is exactly its content wide, so
-     * there is nothing for END to do anyway; the row's own END placement is
-     * what puts the group on the right. */
+
     lv_obj_t *group = ls_ui_row(row->controls, LV_FLEX_ALIGN_START);
     lv_obj_set_width(group, LV_SIZE_CONTENT);
     lv_obj_set_style_min_width(group, 0, 0);
@@ -354,6 +475,11 @@ lv_obj_t *ls_ui_tab_strip(lv_obj_t *parent, lv_dir_t side, lv_coord_t size)
     lv_obj_t *tabs = lv_tabview_create(parent, side, size);
     lv_obj_set_width(tabs, lv_pct(100));
     sdr_style_tabview(tabs);
+#if LS_HAS_COMPACT_UI
+    /* A horizontal drag belongs to the gain/volume control. Tabview's own
+     * scrolling can steal it even when gesture bubbling is disabled. */
+    lv_obj_clear_flag(lv_tabview_get_content(tabs), LV_OBJ_FLAG_SCROLLABLE);
+#endif
     return tabs;
 }
 
@@ -422,38 +548,6 @@ lv_obj_t *ls_ui_section(lv_obj_t *parent, const char *title)
     return row;
 }
 
-/* LS-734: a content-sized controls object with a percentage max-width,
- * followed by ScanPanel putting a percentage-width group inside it, made LVGL
- * solve the parent from the child and the child from the parent.  On the
- * 480 px panel the intermediate widths collapsed during layout: value text ran
- * through the buttons and four-button groups wrapped or shared one coordinate.
- * The fix was two unambiguous nested lines per row - a heading container and a
- * controls container - and it held.
- *
- * LS-748: it also cost two extra objects on every value row and a whole line
- * for a single small toggle, which is what the operator rejected.  Forty-one
- * of these rows are built eagerly across the P25 tabs; on f947755 the board
- * came up with 215 B of free internal RAM.
- *
- * The row is now the controls host itself: one wrapping flex line holding the
- * name, the value and whatever the caller adds, with no wrapper per row.
- * bench/tests/test_ls_ui_alloc.cpp measures both shapes on the same LVGL
- * engine and prints the per-row saving.
- *
- * The three properties LS-734 bought are kept, and they come from the item
- * widths rather than from a container:
- *
- *  - No percentage below an LV_SIZE_CONTENT parent.  The row is a percentage
- *    of its own parent, so a full-width group inside it still resolves.
- *  - A group that asks for 100% is wider than the space left beside the value,
- *    so lv_flex.c puts it on its own track: the LS-703/LS-661 one-line group
- *    behaviour is unchanged, and it is unchanged because of the group's width,
- *    not because a wrapper forced it.
- *  - The value label is the row's only grow item, and a grow item never
- *    triggers a wrap - find_track_end() counts only its gap.  It therefore
- *    absorbs exactly what the name and the controls leave, and no control can
- *    be pushed past the right edge by a long value.  That is the overflow
- *    LS-734 was fixing, now structural rather than arranged. */
 void ls_ui_value(lv_obj_t *parent, const char *name, ls_ui_value_t *out)
 {
     lv_obj_t *row = ls_ui_row(parent, LV_FLEX_ALIGN_END);
@@ -472,29 +566,9 @@ void ls_ui_value(lv_obj_t *parent, const char *name, ls_ui_value_t *out)
     /* Measured from its own text so it cannot be clipped by a share it was
      * given, and capped at half the row so a long name cannot take the line
      * the value and the controls have to share. */
-    /*LS-787  The name was LV_SIZE_CONTENT with min_width 0, so on any row
-     * whose value is long - BAUD carrying "AUTO last 1200", BAND carrying
-     * "VHF HI 150-162" - the grown value label took the width and flex shrank
-     * the name to about one character. The text then wrapped one letter per
-     * line: "B/A/U/D". It was never about the name's length; GAIN, the same
-     * four characters, was fine next to a short value.
-     *
-     * A percentage min_width did not hold - flex shrink ignores it for a
-     * SIZE_CONTENT child - so give the name a definite share of the row. That
-     * also lines the values up in a column, which reads better than the
-     * ragged edge it replaces. 40% fits the longest name in the tree
-     * ("PREFERENCE WRITE", 16 chars) at this font with room to spare; DOT is
-     * the backstop so an unexpected name can never wrap and change the row's
-     * height. */
-    /* No percentage width here, and in particular no percentage max_width.
-     * That cap is what actually broke: it resolves against the parent's
-     * width, and during layout that width is not yet settled, so the cap
-     * collapsed to a few pixels and the text wrapped inside it - "B/A/U/D",
-     * "FRE/QUE/NCY". It was never the name's length; GAIN, the same four
-     * characters, sat next to a short value and was fine. Sized from its own
-     * text with clipping instead, the label cannot wrap at all. A long name
-     * now pushes the controls onto the next line, which ROW_WRAP already
-     * handles, rather than shredding itself. */
+
+    /* No percentage width here, and in particular no percentage max_width. */
+
     lv_obj_set_width(name_label, LV_SIZE_CONTENT);
     lv_obj_set_style_text_letter_space(name_label, 1, 0);
     lv_label_set_long_mode(name_label, LV_LABEL_LONG_CLIP);
@@ -516,12 +590,6 @@ void ls_ui_value(lv_obj_t *parent, const char *name, ls_ui_value_t *out)
     }
 }
 
-/* LS-748: the reported form was a button captioned TOGGLE beside a value
- * column reading ON or OFF - the state said twice, once in a column a setting
- * with more than two choices needs, and the control itself distinguished only
- * by colour.  Here the caption never changes, the marker carries the state,
- * and the marker is the same two mono glyphs wide either way, so pressing it
- * cannot reflow the row.  ls_ui_button_set_role() adds the outline. */
 static void toggle_caption(const char *text, bool on, char *out, size_t size)
 {
     if (!out || size == 0) return;
@@ -602,10 +670,10 @@ lv_obj_t *ls_ui_button(lv_obj_t *parent, const char *text,
                        lv_event_cb_t callback, void *user_data,
                        lv_obj_t **out_label)
 {
-    /* Keep sdr_btn's established font and 50 px control height.  LS-460 is
+    /* Keep sdr_btn's established font and 50 px control height.  is
      * framing and colour vocabulary, not a control-size redesign. */
     lv_obj_t *button = sdr_btn(parent, text, callback, user_data, out_label);
-    /* LS-734: forcing every control to screen/6 made the button narrower than
+    /* forcing every control to screen/6 made the button narrower than
      * sdr_btn's content-sized label plus standard padding.  LVGL does not clip
      * an unbounded child label to that forced width, so labels painted across
      * neighbours.  Keep content sizing and only establish a common minimum;
@@ -625,12 +693,13 @@ lv_obj_t *ls_ui_group_button(lv_obj_t *group, const char *text,
     lv_obj_t *button = ls_ui_button(group, text, role, callback, user_data,
                                     out_label);
     if (!button) return nullptr;
-    /* LS-703: screen/6 widths inside a capped settings row caused the fourth
+    /* screen/6 widths inside a capped settings row caused the fourth
      * SCAN nudge to wrap by itself. A named group owns one line; flex divides
     * its measured content width equally and cannot create a surprise row. */
     lv_obj_set_width(button, 0);
     lv_obj_set_style_min_width(button, 0, 0);
     lv_obj_set_flex_grow(button, 1);
+    if(LS_HAS_COMPACT_UI)lv_obj_set_style_pad_hor(button,6,0);
     lv_obj_t *label = lv_obj_get_child(button, 0);
     if (label) {
         /* A flex item has a concrete width after its group is measured.  Bind
@@ -644,6 +713,20 @@ lv_obj_t *ls_ui_group_button(lv_obj_t *group, const char *text,
     return button;
 }
 
+/* Telemetry repeatedly reapplies roles. LVGL invalidates even when a style
+ * setter receives the same value, turning idle buttons into redraw traffic. */
+static void local_color_changed(lv_obj_t *obj,lv_style_prop_t prop,lv_color_t color)
+{
+    lv_style_value_t current,value={};
+    if(lv_obj_get_local_style_prop(obj,prop,&current,0)==LV_RES_OK && current.color.full==color.full)return;
+    value.color=color; lv_obj_set_local_style_prop(obj,prop,value,0);
+}
+static void local_number_changed(lv_obj_t *obj,lv_style_prop_t prop,int number)
+{
+    lv_style_value_t current,value={};
+    if(lv_obj_get_local_style_prop(obj,prop,&current,0)==LV_RES_OK && current.num==number)return;
+    value.num=number; lv_obj_set_local_style_prop(obj,prop,value,0);
+}
 void ls_ui_button_set_role(lv_obj_t *button, ls_ui_button_role_t role)
 {
     if (!button) return;
@@ -656,27 +739,23 @@ void ls_ui_button_set_role(lv_obj_t *button, ls_ui_button_role_t role)
         case LS_BTN_TOGGLE_OFF:bg = LS_UI_COLOR_PANEL;  fg = LS_UI_COLOR_DIM_TEXT; break;
         default: break;
     }
-    lv_obj_set_style_bg_color(button, ls_ui_color(bg), 0);
-    lv_obj_set_style_border_color(button,
-        ls_ui_color(role == LS_BTN_DANGER ? LS_UI_COLOR_ALARM : LS_UI_COLOR_PANEL_BORDER), 0);
+    const bool red_tab=LS_HAS_COMPACT_UI && lv_obj_has_flag(button,LS_UI_APP_TAB);
+    if(red_tab && role==LS_BTN_TOGGLE_ON){bg=LS_UI_COLOR_ALARM;fg=LS_UI_COLOR_TEXT;}
+    local_color_changed(button,LV_STYLE_BG_COLOR,ls_ui_color(bg));
+    local_color_changed(button,LV_STYLE_BORDER_COLOR,
+        ls_ui_color(role == LS_BTN_DANGER ? LS_UI_COLOR_ALARM : LS_UI_COLOR_PANEL_BORDER));
 
-    /* LS-748: selected state was accent fill against panel fill and nothing
-     * else, so on the flashed board the operator could not tell a selected tab
-     * or an engaged toggle from an ordinary one at a glance.  An outline is
-     * drawn outside the object's box and is not part of its size, so the cue
-     * costs no width: a content-sized tab button measures the same selected as
-     * unselected and the strip does not re-wrap when the tab changes. */
     const bool selected = (role == LS_BTN_TOGGLE_ON);
-    lv_obj_set_style_outline_color(button, ls_ui_color(LS_UI_COLOR_ACCENT), 0);
-    lv_obj_set_style_outline_pad(button, 0, 0);
-    lv_obj_set_style_outline_opa(button, selected ? LV_OPA_COVER : LV_OPA_0, 0);
-    lv_obj_set_style_outline_width(button, selected ? 2 : 0, 0);
+    local_color_changed(button,LV_STYLE_OUTLINE_COLOR,ls_ui_color(red_tab?LS_UI_COLOR_ALARM:LS_UI_COLOR_ACCENT));
+    local_number_changed(button,LV_STYLE_OUTLINE_PAD,0);
+    local_number_changed(button,LV_STYLE_OUTLINE_OPA,selected ? LV_OPA_COVER : LV_OPA_0);
+    local_number_changed(button,LV_STYLE_OUTLINE_WIDTH,selected ? 2 : 0);
 
     lv_obj_t *label = lv_obj_get_child(button, 0);
-    if (label) lv_obj_set_style_text_color(label, ls_ui_color(fg), 0);
+    if (label) local_color_changed(label,LV_STYLE_TEXT_COLOR,ls_ui_color(fg));
 }
 
-/* LS-1011: the caption the button is currently showing, as tenths of a
+/* the caption the button is currently showing, as tenths of a
  * second.  UINT32_MAX means the resting text is up, not a countdown - the old
  * -1 sentinel came with an int that also had to hold a rounded-up second. */
 static const uint32_t HOLD_CAPTION_IDLE = UINT32_MAX;
@@ -687,7 +766,7 @@ typedef struct {
     uint32_t shown_tenths;
     ls_ui_button_role_t role;
     ls_ui_confirm_state_t confirm;
-    /* LS-1012: the line this control narrates its hold into, or nullptr.
+    /* the line this control narrates its hold into, or nullptr.
      * Owned by the caller and outlives nothing: it is a sibling on the same
      * screen, torn down with it. */
     lv_obj_t *hint_label;
@@ -702,11 +781,6 @@ static void hold_button_reset(lv_obj_t *button, ls_ui_hold_button_state_t *state
     ls_ui_button_set_role(button, state->role);
 }
 
-/* LS-1012: repaints the shared hold line.  Only called when the rendered text
- * would actually change, so lv_obj_is_valid() - which walks the display's
- * object tree - runs on a tenth boundary rather than on every PRESSING.  The
- * check is there because the label belongs to the screen, not to this button,
- * and nothing forbids a caller from deleting it first. */
 static void hold_button_paint_hint(ls_ui_hold_button_state_t *state)
 {
     if (!state->hint_label || !lv_obj_is_valid(state->hint_label)) return;
@@ -746,9 +820,6 @@ static void hold_button_event(lv_event_t *event)
         return;
     }
 
-    /* LS-1011: ARMED repaints too.  The countdown used to start only at the
-     * first LV_EVENT_PRESSING, so the frame the operator sees on contact was
-     * still the resting caption. */
     if (effect == LS_UI_CONFIRM_EFFECT_ARMED ||
         effect == LS_UI_CONFIRM_EFFECT_PROGRESS) {
         const uint32_t tenths = ls_ui_confirm_remaining_tenths(&state->confirm, now);
@@ -771,12 +842,6 @@ static void hold_button_event(lv_event_t *event)
         hold_button_paint_hint(state);
 }
 
-/* LS-1012: the affordance line, in the shared kit rather than inside the
- * screen that needed it first.  Every hold-to-confirm control has the same
- * reported failure - a tap resets the caption and reads as a dead button -
- * so the sentence that prevents it is shared too.  ls_safe_screen_hint.c
- * decides the words; this creates the label they land on and paints the
- * before-anything-is-pressed phase. */
 lv_obj_t *ls_ui_hold_hint(lv_obj_t *parent, uint32_t hold_ms)
 {
     if (!parent) return nullptr;
@@ -794,9 +859,6 @@ lv_obj_t *ls_ui_hold_hint(lv_obj_t *parent, uint32_t hold_ms)
     return label;
 }
 
-/* LS-698: destructive actions previously used ordinary click callbacks.
- * The role-aware shared variant keeps the normal button sizing/palette while
- * firing READY only after the deterministic confirmation reaches its hold. */
 lv_obj_t *ls_ui_hold_button_hinted(lv_obj_t *parent, const char *text,
                                    uint32_t hold_ms, ls_ui_button_role_t role,
                                    lv_event_cb_t callback, void *user_data,
@@ -812,7 +874,7 @@ lv_obj_t *ls_ui_hold_button_hinted(lv_obj_t *parent, const char *text,
     state->text[sizeof(state->text) - 1] = '\0';
     ls_ui_confirm_init(&state->confirm, hold_ms);
 
-    /* LS-1012: the hint quotes the action back, so it wants the name of what
+    /* the hint quotes the action back, so it wants the name of what
      * the control does ("RESTART"), not the button's own "HOLD 3". */
     state->hint_label = hint;
     if (hint) {
@@ -864,7 +926,7 @@ void ls_ui_style_scroll_panel(lv_obj_t *obj)
     lv_obj_set_style_radius(obj, 2, 0);
     lv_obj_set_style_pad_all(obj, 6, 0);
     lv_obj_set_style_pad_row(obj, 6, 0);
-    /*LS-783  A scroll panel must advertise that it scrolls; AUTO shows the
+    /* A scroll panel must advertise that it scrolls; AUTO shows the
      * bar only while it is moving. */
     lv_obj_set_style_width(obj, 6, LV_PART_SCROLLBAR);
     lv_obj_set_style_radius(obj, 3, LV_PART_SCROLLBAR);

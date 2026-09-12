@@ -13,12 +13,12 @@ public:
     bool run(lv_obj_t *parent) override;
     bool back(void) override;
     bool close(void) override;
-    /*LS-604*/
+    /**/
     bool pause(void) override;
     bool stopped(void) const override { return settings_wifi_stopped(); }
-    /*LS-604*/
+    /**/
     bool resume(void) override;
-    /*LS-604*/
+    /**/
     bool passive(void) const override { return true; }
 
 private:
@@ -63,7 +63,7 @@ private:
     static void autodimCb(lv_event_t *e);
     static void dimToCb(lv_event_t *e);
     static void bootSndCb(lv_event_t *e);
-    /*LS-606*/
+    /**/
     static void themeCb(lv_event_t *e);
 
     void refreshValues(void);
@@ -78,7 +78,7 @@ private:
     lv_obj_t   *_autodim_val = nullptr;
     lv_obj_t   *_dimto_val   = nullptr;
     lv_obj_t   *_boot_val    = nullptr;
-    /*LS-606*/
+    /**/
     lv_obj_t   *_theme_val   = nullptr;
     lv_obj_t   *_usb_btn     = nullptr;
     lv_obj_t   *_mute_btn    = nullptr;

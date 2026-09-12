@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-/*LS-754*/
+/**/
 /* See the header for the why.  This translation unit is deliberately empty of
    IDF, LVGL and audio_player dependencies so the bench can link it as-is and
    verify the transition ordering with mocked hooks. */

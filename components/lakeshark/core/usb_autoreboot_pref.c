@@ -1,6 +1,6 @@
 #include "usb_autoreboot_pref.h"
 
-/*LS-770*/
+/**/
 /* The persist callback is only fired on an actual value change: the toggle
    callback would otherwise queue an NVS write on every timer redraw that
    re-labels the row (see AppSettings::timerCb / AppP25::updateSettings).

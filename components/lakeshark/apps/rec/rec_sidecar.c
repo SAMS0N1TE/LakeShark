@@ -1,10 +1,11 @@
-/*LS-960*/
+/**/
 /* The `.sub` file is what a Flipper reads and must not change; everything
    else worth knowing about a capture goes here.  Format and parse both live
    in this one source so the bench can round-trip a struct through a string
    and prove no field goes missing across a save/reload. */
 
 #include "rec_sidecar.h"
+#include "rec_file_open.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -12,12 +13,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-/* Copy `src` into a `dst` field, replacing anything that would need JSON
-   escaping ('"', '\\', or control characters) with '_'.  Sidecar strings
-   come from us - board names, firmware versions, timestamps - so this is
-   defensive rather than expressive; anything unprintable indicates the
-   source string is corrupt and truncating is preferable to shipping a
-   broken JSON object. */
 static void copy_safe(char *dst, size_t cap, const char *src)
 {
     if (!dst || cap == 0) return;
@@ -82,13 +77,6 @@ int rec_sidecar_format(char *out, size_t len, const rec_sidecar_t *s)
 }
 
 /* --------------------------------------------------------------- parser */
-
-/* The parser walks the input linearly, key by key, without building a
-   token stream.  JSON here is our own output rather than arbitrary user
-   input, so this is a compatible-subset reader: flat object, no nesting,
-   no arrays, integer and string values only.  Unknown keys and extra
-   whitespace are tolerated so a future field can be added without
-   invalidating older sidecars. */
 
 static const char *skip_ws(const char *p)
 {
@@ -198,7 +186,7 @@ int rec_sidecar_write(const char *dir, const char *base, const rec_sidecar_t *s)
     /* "wx" refuses to open an existing file - a stale sidecar from a
        previous capture must not be silently paved over, same rule
        rec_save enforces on the .sub. */
-    FILE *f = fopen(path, "wx");
+    FILE *f = rec_file_open_new(path);
     if (!f) return -1;
 
     size_t wrote = fwrite(body, 1, (size_t)n, f);

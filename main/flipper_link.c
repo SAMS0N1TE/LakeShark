@@ -10,6 +10,10 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+
+#include "ls_mesh.h"
+#include "ls_gps.h"
+#include "ls_track_log.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
@@ -25,15 +29,15 @@
 #include "flipper_link_telemetry.h"
 #include "ble_link.h"
 #include "rec_state.h"
-/*LS-411*/
+/**/
 #include "radio_health.h"
-/*LS-220*/
+/**/
 #include "ls_version.h"
 
 static const char *TAG = "fl_link";
 
 #define FL_LINE_MAX    192
-/*LS-511*/
+/**/
 #define REPLY_MAX   384
 #define TEL_MAX     576
 #define RX_BUF_SZ   1024
@@ -64,7 +68,7 @@ static host_mode_t host_mode(void)
     if (!strcasecmp(n, "FM"))    return HOST_MODE_FM;
     if (!strcasecmp(n, "ADS-B")) return HOST_MODE_ADSB;
     if (!strcasecmp(n, "ADSB"))  return HOST_MODE_ADSB;
-    /*LS-510*/
+    /**/
     if (!strcasecmp(n, "REC"))   return HOST_MODE_REC;
     return HOST_MODE_P25;
 }
@@ -119,7 +123,7 @@ static bool parse_freq_hz(const char *s, uint32_t *out)
     return true;
 }
 
-/*LS-411*/
+/**/
 static int sdr_stall_s(void)
 {
     radio_health_snapshot_t health;
@@ -199,7 +203,7 @@ static int build_telemetry_p25(char *buf, size_t len)
                                   &common);
 }
 
-/*LS-510*/
+/**/
 static int build_telemetry_rec(char *buf, size_t len)
 {
     rec_status_t s;
@@ -258,21 +262,30 @@ static void receiver_reply(char *reply, size_t reply_len)
     }
 }
 
-/*LS-511*/
+/**/
 #define REC_CHUNK_EDGES 32
 
-static void rec_reply_status(char *reply, size_t reply_len)
+static void rec_reply_load_status(char *reply, size_t reply_len, int load_index)
 {
     rec_status_t s;
     rec_get_status(&s);
-    snprintf(reply, reply_len,
-             "+OK ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
-             /*LS-516*/
+    int prefix = load_index >= 0
+        ? snprintf(reply, reply_len, "+OK load=%d ", load_index)
+        : snprintf(reply, reply_len, "+OK ");
+    if (prefix < 0 || (size_t)prefix >= reply_len) return;
+    snprintf(reply + prefix, reply_len - (size_t)prefix,
+             "ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
+             /**/
              " bw=%lu mp=%lu ms=%lu me=%d\n",
              (int)s.phase, s.edges, (unsigned long)s.span_us,
              (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms,
              (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
              (unsigned long)(s.max_span_us / 1000u), s.min_edges);
+}
+
+static void rec_reply_status(char *reply, size_t reply_len)
+{
+    rec_reply_load_status(reply, reply_len, -1);
 }
 
 static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
@@ -291,7 +304,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
     str_upper(up);
 
     if (!strcmp(up, "ARM")) {
-        /*LS-506*/
+        /**/
         if (host_mode() != HOST_MODE_REC && s_host.select_mode_by_name) {
             sdr_stall_reset();
             s_host.select_mode_by_name("rec");
@@ -325,7 +338,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "THRESH")) {
-        /*LS-503*/
+        /**/
         if (!arg || !parse_i32(arg, &n)) {
             snprintf(reply, reply_len, "-ERR rec thresh\n");
             return;
@@ -335,7 +348,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "GAP")) {
-        /*LS-504*/
+        /**/
         if (!arg || !parse_i32(arg, &n)) {
             snprintf(reply, reply_len, "-ERR rec gap\n");
             return;
@@ -345,7 +358,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "BW")) {
-        /*LS-516*/
+        /**/
         if (!arg || !parse_i32(arg, &n)) {
             snprintf(reply, reply_len, "-ERR rec bw\n");
             return;
@@ -355,7 +368,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "MINP")) {
-        /*LS-516*/
+        /**/
         if (!arg || !parse_i32(arg, &n) || n <= 0) {
             snprintf(reply, reply_len, "-ERR rec minp\n");
             return;
@@ -365,7 +378,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "MAXSPAN")) {
-        /*LS-516*/
+        /**/
         if (!arg || !parse_i32(arg, &n) || n <= 0) {
             snprintf(reply, reply_len, "-ERR rec maxspan\n");
             return;
@@ -375,7 +388,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_reply_status(reply, reply_len);
 
     } else if (!strcmp(up, "MINEDGES")) {
-        /*LS-516*/
+        /**/
         if (!arg || !parse_i32(arg, &n) || n <= 0) {
             snprintf(reply, reply_len, "-ERR rec minedges\n");
             return;
@@ -389,18 +402,18 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         int w = rec_save(arg && *arg ? arg : "capture", path, sizeof(path));
         if (w > 0)       snprintf(reply, reply_len, "+OK saved %s %d\n", path, w);
         else if (w == -1) snprintf(reply, reply_len, "-ERR nothing captured\n");
-        /*LS-513*/
+        /**/
         else if (w == -3) snprintf(reply, reply_len, "-ERR rec busy\n");
         else              snprintf(reply, reply_len, "-ERR write %d\n", w);
 
     } else if (!strcmp(up, "LS")) {
-        /*LS-032*/
+        /**/
         /* One saved capture per round trip:
                %S <index> <total> <freq_hz> <bytes> <name>
            A zero total means nothing is saved. The head walks index 0..total-1
            to build its list. Deliberately NOT one reply carrying every name -
            REPLY_MAX is 384 and a directory has no bound, so that reply would
-           truncate silently, which is the failure LS-515 was written about. */
+           truncate silently, which is the failure was written about. */
         int32_t idx = 0;
         if (arg && !parse_i32(arg, &idx)) {
             snprintf(reply, reply_len, "-ERR rec ls\n");
@@ -418,7 +431,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
                  (long)idx, total, (unsigned long)freq, size, name);
 
     } else if (!strcmp(up, "LOAD")) {
-        /*LS-032*/
+        /**/
         int32_t idx = 0;
         if (!arg || !parse_i32(arg, &idx)) {
             snprintf(reply, reply_len, "-ERR rec load\n");
@@ -430,11 +443,13 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         else if (n < 0)   snprintf(reply, reply_len, "-ERR load %d\n", n);
         else {
             s_stat_now = true;
-            rec_reply_status(reply, reply_len);
+            /* Correlate the completed load with the head's selected file.
+               Cached DONE telemetry may still describe a previous capture. */
+            rec_reply_load_status(reply, reply_len, (int)idx);
         }
 
     } else if (!strcmp(up, "DEL")) {
-        /*LS-032*/
+        /**/
         int32_t idx = 0;
         if (!arg || !parse_i32(arg, &idx)) {
             snprintf(reply, reply_len, "-ERR rec del\n");
@@ -450,7 +465,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
                  ? "+OK deleted %s\n" : "-ERR delete %s\n", name);
 
     } else if (!strcmp(up, "GET")) {
-        /*LS-511*/
+        /**/
         int32_t off = 0;
         if (arg && !parse_i32(arg, &off)) {
             snprintf(reply, reply_len, "-ERR rec get\n");
@@ -496,7 +511,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
     if (!strcmp(cmd, "PING")) {
         snprintf(reply, reply_len, "+PONG %d LakeShark\n", FLIPPER_LINK_PROTO_VERSION);
 
-    /*LS-220*/
+    /**/
     /* `VER` - one line describing the firmware, so the head can put "which
        LakeShark am I talking to" next to its own version.  The line is
        assembled by ls_version_format() and covered by test_ls_version, so
@@ -523,7 +538,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
 
-            /*LS-510*/ /*LS-416*/
+            /**/ /**/
             sdr_stall_reset();
             if      (host_mode() == HOST_MODE_FM)  lakeshark_fm_set_freq(hz);
             else if (host_mode() == HOST_MODE_REC) rec_set_freq(hz);
@@ -539,13 +554,13 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR adsb is fixed at 1090 MHz\n");
         } else {
             uint32_t now;
-            /*LS-416*/
+            /**/
             sdr_stall_reset();
             if (host_mode() == HOST_MODE_FM) {
                 lakeshark_fm_tune((int)n);
                 now = lakeshark_fm_get_freq();
             } else if (host_mode() == HOST_MODE_REC) {
-                /*LS-510*/
+                /**/
                 int64_t want = (int64_t)rec_get_freq() + n;
                 if (want < 1000000LL)    want = 1000000LL;
                 if (want > 2000000000LL) want = 2000000000LL;
@@ -576,10 +591,9 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             sdr_stall_reset();
             s_host.select_mode_by_name("fm");
         }
-        /* The LCD host switch is asynchronous. lakeshark_fm_set_mode() is a
-           persistent request latch consumed by fm_rx_task after AppFM enters,
-           so issue it after validation even while P25 is still reported. */
+
         lakeshark_fm_set_mode((int)mode);
+        if (s_host.show_fm_mode) s_host.show_fm_mode((int)mode);
         s_stat_now = true;
         snprintf(reply, reply_len, "+OK fm=%s\n", fm_mode_command_name(mode));
 
@@ -662,7 +676,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         strlcpy(up, a1, sizeof(up));
         str_upper(up);
         if (!strcmp(up, "AUTO")) {
-            /*LS-510*/
+            /**/
             if (host_mode() == HOST_MODE_REC) rec_set_gain(0);
             else                              lakeshark_p25_agc();
         } else if (!strcmp(up, "STEP")) {
@@ -670,7 +684,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         } else if (parse_i32(a1, &n)) {
             if (n < 0) n = 0;
             if (n > 496) n = 496;
-            /*LS-510*/
+            /**/
             if (host_mode() == HOST_MODE_REC) rec_set_gain((int)n);
             else                              lakeshark_radio_set_gain((int)n);
         } else {
@@ -747,7 +761,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         snprintf(reply, reply_len, "+OK\n");
 
     } else if (!strcmp(cmd, "REC")) {
-        /*LS-511*/
+        /**/
         handle_rec(argc, argv, reply, reply_len);
 
     } else if (!strcmp(cmd, "MODE")) {
@@ -840,11 +854,19 @@ static void handle_line(char *line, char *reply, size_t reply_len)
                 snprintf(reply, reply_len, "-ERR no sdr power hook\n");
                 return;
             }
-            snprintf(reply, reply_len, "+OK sdr power cycling\n");
-            s_host.sdr_power_cycle();
+            /* Ask first, then answer. This replied +OK before
+               calling, so the head was told the dongle had been power
+               cycled while the board logged that it cannot do that at all -
+               and a head that believes it will stop trying anything else. */
+            if (s_host.sdr_power_cycle()) {
+                snprintf(reply, reply_len, "+OK sdr power cycling\n");
+            } else {
+                snprintf(reply, reply_len,
+                         "-ERR no VBUS switch on this board - replug the "
+                         "dongle, or SDR recover\n");
+            }
         } else {
-            /* LS-1000: use the selected receiver snapshot rather than mapping
-               every running stream onto the RTL health slot. */
+
             receiver_reply(reply, reply_len);
         }
 
@@ -940,6 +962,60 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         }
         snprintf(reply, reply_len, "+OK test=%s\n", snd_test_name(w));
 
+    } else if (!strcmp(cmd, "MESH")) {
+        ls_mesh_stats_t ms;
+        memset(&ms, 0, sizeof(ms));
+        ls_mesh_get_stats(&ms);
+
+        snprintf(reply, reply_len,
+                 "+OK run=%d tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
+                 "air=%lu budget=%lu peers=%d id=%s\n",
+                 ms.running ? 1 : 0, ms.tx_enabled ? 1 : 0,
+                 (unsigned long)ms.rx_packets, (unsigned long)ms.rx_bad,
+                 (unsigned long)ms.tx_packets,
+                 (double)ms.last_rssi, (double)ms.last_snr,
+                 (unsigned long)ms.airtime_ms, (unsigned long)ms.tx_budget_ms,
+                 ls_mesh_peers(NULL, 0),
+                 ms.self_id[0] ? ms.self_id : "-");
+
+    } else if (!strcmp(cmd, "GPS")) {
+        ls_gps_state_t g;
+        ls_gps_get(&g);
+        /*'s own distinction, carried to the head: bytes climbing with
+           sentences flat is a baud rate, both climbing with no fix is the
+           antenna, and neither is "the GPS is broken". */
+        snprintf(reply, reply_len,
+                 "+OK on=%d fix=%d alive=%d used=%u seen=%u "
+                 "lat=%.5f lon=%.5f bytes=%lu ok=%lu bad=%lu\n",
+                 ls_gps_running() ? 1 : 0, g.fix ? 1 : 0, g.alive ? 1 : 0,
+                 (unsigned)g.sats_used, (unsigned)g.sats_visible,
+                 g.fix ? g.lat_deg : 0.0, g.fix ? g.lon_deg : 0.0,
+                 (unsigned long)g.bytes, (unsigned long)g.sentences,
+                 (unsigned long)g.checksum_errors);
+
+    } else if (!strcmp(cmd, "TRACK")) {
+        if (a1 && !strcasecmp(a1, "on")) {
+            /* Brings the receiver up with it, the same way the screen's
+               toggle does - a recorder running against a receiver nobody
+               started records a thousand seconds of nothing and reports
+               itself as working. */
+            const bool ok = ls_track_rec_start() == ESP_OK;
+            snprintf(reply, reply_len, ok ? "+OK track=on\n"
+                                          : "-ERR track would not start\n");
+        } else if (a1 && !strcasecmp(a1, "off")) {
+            ls_track_rec_stop();
+            snprintf(reply, reply_len, "+OK track=off\n");
+        } else if (a1) {
+            snprintf(reply, reply_len, "-ERR track [on|off]\n");
+        } else {
+            /* The count is what turns "recording" into evidence: a recorder
+               that is on and has kept nothing looks identical to one that is
+               working until the number is on the screen. */
+            snprintf(reply, reply_len, "+OK on=%d points=%d nodes=%d\n",
+                     ls_track_rec_running() ? 1 : 0,
+                     ls_track_points(), ls_mesh_sightings());
+        }
+
     } else {
         s_bad_lines++;
         snprintf(reply, reply_len, "-ERR unknown %s\n", cmd);
@@ -951,24 +1027,15 @@ int flipper_link_snapshot(char *buf, size_t len)
     return build_telemetry(buf, len);
 }
 
-/*LS-909  The wired head link needs pins this board may not have declared.
+/* The wired head link needs pins this board may not have declared. */
 
-   SCAN_PINS and IDLE_HIGH_PINS below expand LS_BOARD_LINK_SCAN_PINS and
-   LS_BOARD_LINK_TX_GPIO unconditionally, so any variant that has not had
-   its expansion header measured fails to compile here - which is what the
-   T-Display-P4 did, and why that target had never once been built. A board
-   whose UART pins are unknown should build with the wired link absent, not
-   fail; BLE is a separate transport and does not need these at all.
-
-   ls_caps.h already derives LS_HAS_LINK_UART from exactly that fact. It just
-   had no consumer. This is the consumer. */
 #if LS_HAS_LINK_UART
 
-/*LS-202*/
+/**/
 static const int SCAN_PINS[] = LS_BOARD_LINK_SCAN_PINS;
 #define N_SCAN_PINS ((int)(sizeof(SCAN_PINS) / sizeof(SCAN_PINS[0])))
 
-/*LS-203*/
+/**/
 #define VBUS_EN_GPIO LS_BOARD_VBUS_EN_GPIO
 #define C6_EN_GPIO   LS_BOARD_C6_EN_GPIO
 
@@ -1087,7 +1154,7 @@ int flipper_link_probe_rx(void)
     int best = -1, best_pct = 0, found = 0;
     for (int i = 0; i < N_SCAN_PINS; i++) {
         int pin = SCAN_PINS[i];
-        /*LS-203*/
+        /**/
         if (LS_HAS_VBUS_CTRL && pin == VBUS_EN_GPIO) continue;
         if (pin == C6_EN_GPIO) continue;
 
@@ -1135,8 +1202,6 @@ int flipper_link_probe_rx(void)
 
 #else  /* !LS_HAS_LINK_UART */
 
-/*LS-909  No wired link pins declared for this board. Say so, rather than
-   scanning a header that was never measured and reporting a false result. */
 int flipper_link_scan_rx(int dwell_ms)
 {
     (void)dwell_ms;
@@ -1153,6 +1218,14 @@ int flipper_link_probe_rx(void)
 
 #endif /* LS_HAS_LINK_UART */
 
+static bool link_has_scan_pins(void)
+{
+#if LS_HAS_LINK_UART
+    return N_SCAN_PINS > 0;
+#else
+    return false;
+#endif
+}
 
 void flipper_link_inject(const char *line, char *reply, size_t reply_len)
 {
@@ -1254,6 +1327,10 @@ static esp_err_t link_install(void)
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) goto fail;
 
+    /* HOLD THE RECEIVE PIN AT IDLE WHEN NOTHING IS DRIVING IT. */
+
+    gpio_set_pull_mode(s_cfg.rx_gpio, GPIO_PULLUP_ONLY);
+
     s_installed = true;
     return ESP_OK;
 
@@ -1281,7 +1358,7 @@ static void link_uninstall(void)
     gpio_set_level(s_cfg.tx_gpio, 1);
 }
 
-/*LS-201*/
+/**/
 #define LS_HEAL_MAX_SWEEPS 3
 
 static void heal_task(void *arg)
@@ -1299,6 +1376,19 @@ static void heal_task(void *arg)
                 ESP_LOGI(TAG, "head is on BLE - leaving the UART pins alone");
                 told_ble = true;
             }
+            continue;
+        }
+
+        /* A board with no pins to sweep has no search to announce, and announcing it three times a minute apart is worse than saying it once. */
+
+        if (!link_has_scan_pins()) {
+            if (!sweeps) {
+                ESP_LOGI(TAG, "no RX after %lu TX frames, and this board has "
+                              "no pins to sweep - a head is on GPIO%d or it "
+                              "is not attached",
+                         (unsigned long)s_tx_lines, s_cfg.rx_gpio);
+            }
+            sweeps = LS_HEAL_MAX_SWEEPS;
             continue;
         }
 
@@ -1321,12 +1411,18 @@ static void heal_task(void *arg)
     }
 }
 
+void flipper_link_set_host(const flipper_link_host_t *host)
+{
+    if (host) s_host = *host;
+}
+
 esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
                              const flipper_link_host_t *host)
 {
+    if (!LS_HAS_LINK_UART) return ESP_ERR_NOT_SUPPORTED;
     if (s_run) return ESP_ERR_INVALID_STATE;
     if (cfg)  s_cfg  = *cfg;
-    if (host) s_host = *host;
+    flipper_link_set_host(host);
 
     esp_err_t err = link_install();
     if (err != ESP_OK) {
@@ -1347,7 +1443,7 @@ esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
         healer_started = (xTaskCreate(heal_task, "fl_heal", 4096, NULL, 3, NULL) == pdPASS);
     }
 
-    /*LS-220*/
+    /**/
     /* Include the version in the HELLO so the head sees which firmware it
        just connected to without having to ask.  A stale head that only
        parses `+HELLO %d LakeShark` still matches (the version is appended
@@ -1394,4 +1490,3 @@ void flipper_link_stats(uint32_t *rx_lines, uint32_t *tx_lines, uint32_t *bad_li
     if (tx_lines)  *tx_lines  = s_tx_lines;
     if (bad_lines) *bad_lines = s_bad_lines;
 }
-

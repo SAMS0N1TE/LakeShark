@@ -339,11 +339,17 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
     }
     else
     {
+        uint32_t addr = (mm->aa1 << 16) | (mm->aa2 << 8) | mm->aa3;
 
         if (mm->crcok && mm->errorbit == -1)
         {
-            uint32_t addr = (mm->aa1 << 16) | (mm->aa2 << 8) | mm->aa3;
             add_recently_seen_icao_addr(self, addr);
+        }
+        /* A frame that needed a bit repaired is believed only for an address already heard clean. */
+
+        else if (mm->crcok && !icao_addr_was_recently_seen(self, addr))
+        {
+            mm->crcok = 0;
         }
     }
 
@@ -489,7 +495,7 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
     uint32_t j;
     int use_correction = 0;
 
-    /*LS-751*/
+    /**/
     /* maglen is unsigned: a buffer shorter than one full message would make
        maglen - MODE_S_FULL_LEN*2 wrap to ~4e9 and scan far off the end. */
     if (maglen < (uint32_t)(MODE_S_FULL_LEN * 2)) return;
@@ -631,11 +637,8 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
 
         if (!good_message && !use_correction && j > 0)
         {
-            /*LS-751*/
-            /* j is unsigned; at j == 0 this used to wrap to UINT32_MAX and
-               survive only because the loop's j++ wrapped it back. Skipping
-               the phase-corrected retry for the first sample of a buffer
-               costs nothing - the next buffer re-examines that region. */
+            /**/
+
             j--;
             use_correction = 1;
         }

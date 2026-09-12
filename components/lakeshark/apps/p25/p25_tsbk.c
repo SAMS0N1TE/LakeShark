@@ -83,7 +83,7 @@ uint16_t p25_tsbk_crc16(const uint8_t *data, size_t length)
 {
     uint32_t crc = 0;
 
-    /* LS-130: OP25's field decoder uses this augmented CRC-16/CCITT form for
+    /* OP25's field decoder uses this augmented CRC-16/CCITT form for
      * TSBKs: poly 0x1021, init 0, MSB-first, no reflection, xorout 0xffff.
      * It checks all 12 decoded bytes for a zero result; this intentionally is
      * not the byte-wise XMODEM or CCITT-FALSE recurrence. See boatbod/op25,
@@ -122,14 +122,7 @@ typedef struct {
 static p25_channel_resolution_t channel_resolve(const dsd_state *state,
                                                 uint16_t channel)
 {
-    /* LS-131: a channel number is a 4-bit identifier | 12-bit position.
-     * Returning 0 for an unpopulated identifier used to mean the whole
-     * follower silently declined to retune: until this LS-nnn only IDEN_UP
-     * (0x3d) populated the table, so every VHF or UHF system - whose band
-     * plan arrives in IDEN_UP_VU (0x34) - resolved every grant to 0 Hz and
-     * looked identical to "no traffic". Populating on 0x34 fixes the input;
-     * this function still returns 0 for a genuinely unknown identifier so
-     * the grant follower does not chase a made-up frequency. */
+
     p25_channel_resolution_t result = { 0 };
     const p25_iden_entry_t *entry = &state->p25_iden_table[channel >> 12];
     if (!entry->valid || !entry->base_hz || !entry->spacing_hz ||
@@ -155,8 +148,6 @@ static uint64_t channel_frequency(const dsd_state *state, uint16_t channel)
     return channel_resolve(state, channel).frequency_hz;
 }
 
-/* LS-131: VU bandwidth is categorical (4 => 6.25 kHz, 5 => 12.5 kHz); every
- * other value is reserved and reported as 0 rather than a fabricated width. */
 static uint32_t p25_iden_vu_bandwidth_hz(uint8_t bwvu_code)
 {
     switch (bwvu_code) {
@@ -187,7 +178,7 @@ static const p25_tdma_channel_type_t p25_tdma_channel_types[16] = {
     [5] = { 1, 1, 2, 12500u },
 };
 
-/* LS-652: single write path for voice grant fields. Every voice-grant
+/* single write path for voice grant fields. Every voice-grant
  * opcode (0x00 GRP_V_CH_GRANT, 0x02 GRP_V_CH_GRANT_UPDATE, 0x03
  * GRP_V_CH_GRANT_UPDT_EXP) funnels through here; data grants (0x10, 0x14),
  * telephone interconnect (0x08, 0x09), unit-to-unit (0x04, 0x06), and
@@ -201,12 +192,7 @@ static void set_voice_grant(dsd_state *state, uint16_t channel,
     state->p25_tsbk_channel      = channel;
     state->p25_tsbk_talkgroup    = talkgroup;
     state->p25_tsbk_source       = source;
-    /* LS-672: Phase 2 IDENs were absent, so every TDMA grant resolved to
-     * 0 Hz, the follower declined silently, and the operator saw a working
-     * control channel with no calls. Record the actual carrier and slot for
-     * the panel, but leave the follower-facing frequency at zero: retuning
-     * to traffic we cannot demodulate would lose the control channel until
-     * its terminator timeout. */
+
     if (resolved.slots_per_carrier > 1 && resolved.frequency_hz && talkgroup) {
         state->p25_phase2_grant_count++;
         state->p25_phase2_last_talkgroup = talkgroup;
@@ -252,7 +238,7 @@ static void queue_voice_grant(dsd_state *state, uint16_t channel,
             ? P25_CALL_UNSUPPORTED : P25_CALL_PHASE1;
 }
 
-/* LS-652: overwrite an ADJ_STS_BCST slot keyed by (rfss_id, site_id) so
+/* overwrite an ADJ_STS_BCST slot keyed by (rfss_id, site_id) so
  * the neighbour list does not grow every time a site re-announces itself.
  * A brand new site takes the first empty slot; the table is small (16)
  * because a scanner rarely sees more distinct sites than that. */
@@ -302,36 +288,19 @@ static int parse_block(dsd_state *state,
     opcode = block[0] & 0x3fu;
     mfid = block[1];
 
-    /* LS-132: MFID gates the standard TSBK decode. Standard MFIDs are 0x00
-     * (SBP - all standard messages) and 0x01 (also standard, reserved).
-     * Vendor MFIDs - Motorola 0x90, Harris 0xA4, etc. - use the same 6-bit
-     * opcode space but re-purpose the field layout below the opcode/mfid.
-     * A Motorola opcode 0x00 is not GRP_V_CH_GRANT; parsing it with the
-     * standard bit picks yields a plausible talkgroup and channel that both
-     * point somewhere real and wrong, retuning the follower to a frequency
-     * that has nothing on it. Count vendor blocks and stop; decoding vendor
-     * messages is a later task. */
+    /* MFID gates the standard TSBK decode. */
+
     if (mfid != 0x00 && mfid != 0x01) {
         state->p25_tsbk_vendor_count++;
         state->p25_tsbk_last_vendor_mfid = mfid;
         return 0;
     }
-    /* LS-739: protected payload cannot be interpreted as plaintext grants. */
+    /* protected payload cannot be interpreted as plaintext grants. */
     if (block[0] & 0x40u) return 0;
 
     switch (opcode) {
     case 0x33: {
-        /* LS-672: IDEN_UP_TDMA field layout, derived from boatbod/op25
-         * gr-op25_repeater/apps/trunking.py's opcode 0x33 shifts:
-         *   bits 16-19  Identifier       (4 bits)
-         *   bits 20-23  Channel type     (4 bits; indexes access/slot/BW data)
-         *   bit  24     TxOffset sign    (0 = negative, 1 = positive)
-         *   bits 25-37  TxOffset value   (13 bits, units of channel spacing)
-         *   bits 38-47  Channel spacing  (10 bits, units of 125 Hz)
-         *   bits 48-79  Base frequency   (32 bits, units of 5 Hz)
-         * OP25 supplies the per-type slot counts; TIA-102.AABC-D table
-         * 2.3.40-1 supplies access type and bandwidth. Type 3 is a 12.5 kHz,
-         * two-slot, half-rate-vocoder TDMA channel. */
+
         uint8_t identifier = (uint8_t)get_bits(block, 16, 4);
         uint8_t channel_type = (uint8_t)get_bits(block, 20, 4);
         uint32_t sign = get_bits(block, 24, 1);
@@ -358,16 +327,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x34: {
-        /* LS-131: IDEN_UP_VU, the VHF/UHF form. Field layout (verified
-         * against boatbod/op25 trunk.py):
-         *   bits 16-19  Identifier      (4 bits, indexes p25_iden_table)
-         *   bits 20-23  BW code         (4 bits: 4=>6.25kHz, 5=>12.5kHz)
-         *   bit  24     TxOffset sign   (0 = negative, 1 = positive)
-         *   bits 25-37  TxOffset value  (13 bits, units of 250 kHz)
-         *   bits 38-47  Channel spacing (10 bits, units of 125 Hz)
-         *   bits 48-79  Base frequency  (32 bits, units of 5 Hz)
-         * Identifier is 4 bits from get_bits(block, 16, 4) so it is bounded
-         * by 15, which is the last valid slot in the 16-entry iden table. */
+        /* IDEN_UP_VU, the VHF/UHF form. */
+
         uint8_t identifier = (uint8_t)get_bits(block, 16, 4);
         p25_iden_entry_t *entry = &state->p25_iden_table[identifier];
         uint8_t bwvu = (uint8_t)get_bits(block, 20, 4);
@@ -387,7 +348,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x3d: {
-        /* LS-131: IDEN_UP, the 700/800 MHz form. Field layout:
+        /* IDEN_UP, the 700/800 MHz form. Field layout:
          *   bits 16-19  Identifier      (4 bits)
          *   bits 20-28  BW              (9 bits, units of 125 Hz)
          *   bit  29     TxOffset sign   (0 = negative, 1 = positive)
@@ -442,16 +403,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x03: {
-        /* LS-652: GRP_V_CH_GRANT_UPDT_EXP - explicit form carrying separate
-         * transmit and receive channels. Also the shape a Phase 2 site uses,
-         * so getting the bit picks right here does double duty for 656.
-         *   bits 16-23  Service options
-         *   bits 24-39  Channel T (downlink from FNE - what the scanner tunes)
-         *   bits 40-55  Channel R (uplink to FNE - subscriber transmit)
-         *   bits 56-71  Talkgroup
-         * op25's trunk.py uses ch1 (== the T channel here) as the voice
-         * frequency, and so do we: the mobile receives the repeater
-         * output. Bits 72-79 are reserved by the standard. */
+        /* GRP_V_CH_GRANT_UPDT_EXP - explicit form carrying separate transmit and receive channels. */
+
         uint16_t channel_t = (uint16_t)get_bits(block, 24, 16);
         uint16_t tg        = (uint16_t)get_bits(block, 56, 16);
         set_voice_grant(state, channel_t, tg, 0);
@@ -459,7 +412,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x04: {
-        /* LS-652: UU_V_CH_GRANT - unit-to-unit voice grant. Private call;
+        /* UU_V_CH_GRANT - unit-to-unit voice grant. Private call;
          * no talkgroup, so this cannot feed the group-oriented follower.
          *   bits 16-31  Channel
          *   bits 32-55  Target address (24 bits)
@@ -477,7 +430,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x05: {
-        /* LS-652: UU_ANS_REQ - unit-to-unit answer request. Records the
+        /* UU_ANS_REQ - unit-to-unit answer request. Records the
          * two parties involved.
          *   bit  16     AIV / additional-info flag
          *   bits 17-23  Reserved
@@ -492,7 +445,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x06: {
-        /* LS-652: UU_V_CH_GRANT_UPDT - update for an in-progress unit-to-unit
+        /* UU_V_CH_GRANT_UPDT - update for an in-progress unit-to-unit
          * call. Same layout as 0x04. */
         uint16_t channel = (uint16_t)get_bits(block, 16, 16);
         uint32_t target  = get_bits(block, 32, 24);
@@ -504,13 +457,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x08: {
-        /* LS-652: TELE_INT_CH_GRANT - telephone interconnect. A radio patched
-         * to a phone line; still voice, but private and worth labelling as
-         * such rather than showing up as a talkgroup. Not followed today.
-         *   bits 16-23  Service options
-         *   bits 24-39  Channel
-         *   bits 40-55  Call timer (units of 100 ms)
-         *   bits 56-79  Address (24 bits) */
+
         uint16_t channel = (uint16_t)get_bits(block, 24, 16);
         uint32_t addr    = get_bits(block, 56, 24);
         state->p25_last_interconnect_channel = channel;
@@ -519,15 +466,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x09: {
-        /* LS-652: TELE_INT_CH_GRANT_UPDT - update carrying the current
-         * channel and call timer. TSBK payload is only 64 bits (16-79),
-         * so a 24-bit address plus two 16-bit channels does not fit;
-         * the wire form drops the R channel and packs one channel plus
-         * the address and a call timer.
-         *   bits 16-31  Channel
-         *   bits 32-55  Address (24 bits)
-         *   bits 56-71  Call timer
-         *   bits 72-79  Reserved */
+        /* TELE_INT_CH_GRANT_UPDT - update carrying the current channel and call timer. */
+
         uint16_t channel = (uint16_t)get_bits(block, 16, 16);
         uint32_t addr    = get_bits(block, 32, 24);
         state->p25_last_interconnect_channel = channel;
@@ -536,7 +476,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x10: {
-        /* LS-652: GRP_D_CH_GRANT - group data channel grant. Recognise so
+        /* GRP_D_CH_GRANT - group data channel grant. Recognise so
          * the counter records that data is happening on this site, do not
          * touch voice-grant fields so the follower cannot chase it.
          *   bits 16-23  Data service options
@@ -549,7 +489,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x14: {
-        /* LS-652: SNDCP_CH_GRANT - SNDCP (packet data) channel grant.
+        /* SNDCP_CH_GRANT - SNDCP (packet data) channel grant.
          *   bits 16-23  DSCC / service options
          *   bits 24-39  Channel T
          *   bits 40-55  Channel R
@@ -559,7 +499,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x20: {
-        /* LS-652: ACK_RSP_FNE - FNE acknowledgement to a subscriber request.
+        /* ACK_RSP_FNE - FNE acknowledgement to a subscriber request.
          *   bit  16     AIV additional-info flag
          *   bit  17     Extended addr flag
          *   bits 18-23  Reserved
@@ -574,15 +514,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x27: {
-        /* LS-652: DENY_RSP - the FNE denied a request. A grant that never
-         * produced audio is often because a DENY landed for the same TG,
-         * which currently looks exactly like a decoder failure.
-         *   bit  16     AIV
-         *   bits 17-23  Reserved
-         *   bits 24-31  Reason code
-         *   bits 32-39  Service type
-         *   bits 40-55  Target address (16 bits, group)
-         *   bits 56-79  Source address (24 bits) */
+        /* DENY_RSP - the FNE denied a request. */
+
         state->p25_last_reg_opcode = 0x27;
         state->p25_last_reg_reason = (uint8_t)get_bits(block, 24, 8);
         state->p25_last_reg_target = get_bits(block, 40, 16);
@@ -591,7 +524,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x28: {
-        /* LS-652: GRP_AFF_RSP - group affiliation response. Which unit just
+        /* GRP_AFF_RSP - group affiliation response. Which unit just
          * affiliated to which group, and the FNE's verdict.
          *   bit  16     Local/global affiliation
          *   bits 17-23  Response value (accept / deny / etc.)
@@ -606,7 +539,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x2c: {
-        /* LS-652: UNIT_REG_RSP - unit registration response.
+        /* UNIT_REG_RSP - unit registration response.
          *   bits 16-21  Reserved
          *   bits 22-23  Response value (accept / fail / deny / refused)
          *   bits 24-35  System ID (partial)
@@ -620,7 +553,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x2f: {
-        /* LS-652: U_DE_REG_ACK - unit de-registration acknowledge. Symmetric
+        /* U_DE_REG_ACK - unit de-registration acknowledge. Symmetric
          * to unit registration.
          *   bits 16-19  Reserved
          *   bits 20-23  Response value
@@ -635,18 +568,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x30: {
-        /* LS-652: SYNC_BCST - system clock and microslot count. No consumer
-         * uses this today, but Phase 2 slot alignment (656) will need it, so
-         * store it now.
-         *   bit  16     US - microslot valid
-         *   bit  17     IST - inhibit slot timing
-         *   bits 18-23  Reserved
-         *   bits 24-27  Year (offset from 2000)
-         *   bits 28-31  Month
-         *   bits 32-36  Day
-         *   bits 37-46  Reserved
-         *   bits 47-63  Microsecond of second (17 bits)
-         *   bits 64-79  Microslot count (16 bits) */
+        /* SYNC_BCST - system clock and microslot count. */
+
         state->p25_sync_valid = 1;
         state->p25_sync_year       = get_bits(block, 24, 4) + 2000u;
         state->p25_sync_month_day  = (get_bits(block, 28, 4) << 8)
@@ -656,7 +579,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x38: {
-        /* LS-652: SYS_SRV_BCST - the services this system offers, expressed
+        /* SYS_SRV_BCST - the services this system offers, expressed
          * as bit fields the standard defines. Kept as raw uint32s so a UI can
          * decode the bits it cares about without this parser making guesses.
          *   bits 16-23  Reserved
@@ -671,16 +594,8 @@ static int parse_block(dsd_state *state,
     }
     case 0x39:
     case 0x3e: {
-        /* LS-652: SCCB / SCCB_EXP - secondary control channel broadcast for
-         * a site that runs more than one control channel. Both opcodes carry
-         * roughly the same shape here:
-         *   bits 16-23  LRA
-         *   bits 24-31  RFSS ID
-         *   bits 32-39  Site ID
-         *   bits 40-47  Service class 1
-         *   bits 48-63  Channel 1
-         *   bits 64-71  Service class 2
-         *   bits 72-79  Channel 2 identifier (partial) */
+        /* SCCB / SCCB_EXP - secondary control channel broadcast for a site that runs more than one control channel. */
+
         state->p25_sccb_valid       = 1;
         state->p25_sccb_rfss_id     = (uint8_t)get_bits(block, 24, 8);
         state->p25_sccb_site_id     = (uint8_t)get_bits(block, 32, 8);
@@ -692,17 +607,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x3a: {
-        /* LS-652: RFSS_STS_BCST - which RFSS / site this control channel
-         * belongs to. Otherwise a guess: RFSS/site does not appear anywhere
-         * else on the CC. Populates the local site identity, which a
-         * roaming decision (a future 654) will compare against ADJ_STS.
-         *   bits 16-23  LRA (location registration area)
-         *   bits 24-35  System ID (12 bits)
-         *   bits 36-43  RFSS ID
-         *   bits 44-51  Site ID
-         *   bits 52-63  Channel T (control channel)
-         *   bits 64-75  Channel R (uplink)
-         *   bits 76-79  Service class */
+        /* RFSS_STS_BCST - which RFSS / site this control channel belongs to. */
+
         state->p25_rfss_valid   = 1;
         state->p25_rfss_lra     = (uint8_t)get_bits(block, 16, 8);
         state->p25_rfss_sysid   = (uint16_t)get_bits(block, 24, 12);
@@ -717,7 +623,7 @@ static int parse_block(dsd_state *state,
     case 0x3b: {
         uint32_t new_wacn = get_bits(block, 24, 20);
         uint16_t new_sysid = (uint16_t)get_bits(block, 44, 12);
-        /* LS-133: iden-table staleness. WACN/SYSID identifies the trunked
+        /* iden-table staleness. WACN/SYSID identifies the trunked
          * system. Moving between two systems on the same band would leave
          * the old band plan in place and produce confidently wrong
          * frequencies for the new one, so cross a WACN or SYSID boundary
@@ -728,10 +634,10 @@ static int parse_block(dsd_state *state,
             (state->p25_tsbk_wacn != new_wacn ||
              state->p25_tsbk_sysid != new_sysid)) {
             memset(state->p25_iden_table, 0, sizeof(state->p25_iden_table));
-            /* LS-652: neighbour list belongs to the old system too. */
+            /* neighbour list belongs to the old system too. */
             memset(state->p25_neighbors, 0, sizeof(state->p25_neighbors));
             state->p25_neighbor_count = 0;
-            /* LS-739: earlier grants in this TSDU belong to the old system. */
+            /* earlier grants in this TSDU belong to the old system. */
             state->p25_grant_count = 0;
             state->p25_tsbk_frequency_hz = 0;
             state->p25_phase2_last_talkgroup = 0;
@@ -750,17 +656,8 @@ static int parse_block(dsd_state *state,
         break;
     }
     case 0x3c: {
-        /* LS-652: ADJ_STS_BCST - adjacent site status. This is the roaming
-         * list. Store each neighbour so a future roaming decision (654) can
-         * try the strongest when the current site fades - without this,
-         * walking out of range means the radio goes deaf instead of moving.
-         *   bits 16-23  LRA
-         *   bits 24-27  Reserved
-         *   bits 28-39  System ID
-         *   bits 40-47  RFSS ID
-         *   bits 48-55  Site ID
-         *   bits 56-71  Channel
-         *   bits 72-79  Service class */
+        /* ADJ_STS_BCST - adjacent site status. */
+
         uint8_t  lra     = (uint8_t)get_bits(block, 16, 8);
         uint16_t sysid   = (uint16_t)get_bits(block, 28, 12);
         uint8_t  rfss_id = (uint8_t)get_bits(block, 40, 8);
@@ -771,11 +668,7 @@ static int parse_block(dsd_state *state,
         break;
     }
     default:
-        /* LS-652: replace the bare `return 0` with a per-opcode counter so
-         * "we do not support that" becomes a number the operator can read
-         * from the console. Recognising an opcode without acting on it must
-         * not disturb any voice-grant field, so this path returns 1 with
-         * only the counter and last_opcode changed. */
+
         state->p25_tsbk_unhandled[opcode]++;
         break;
     }
@@ -816,7 +709,7 @@ static void begin_grant_batch(dsd_state *state)
 int p25_tsbk_parse(dsd_state *state, const uint8_t block[P25_TSBK_BYTES])
 {
     if (!state) return 0;
-    /* LS-739: even a rejected block retires the preceding delivery. Legacy
+    /* even a rejected block retires the preceding delivery. Legacy
      * last-seen fields remain telemetry, never a fresh-grant notification. */
     begin_grant_batch(state);
     return parse_block(state, block);
@@ -830,10 +723,6 @@ static void pack_dibits(const uint8_t dibits[P25_TSBK_DECODED_DIBITS],
         block[i / 4] |= (uint8_t)(dibits[i] << (6 - (i % 4) * 2));
 }
 
-/* LS-652: formatted status line for the `p25tsbk` console command. Kept
- * here rather than in ls_ctl.c so a bench case can assert against the same
- * text that appears on the console - if the two ever disagree that is a
- * defect. Uses snprintf so a truncating buffer only loses tail, not head. */
 static size_t sfappend(char *buf, size_t buf_sz, size_t pos, const char *fmt,
                        ...) __attribute__((format(printf, 4, 5)));
 static size_t sfappend(char *buf, size_t buf_sz, size_t pos, const char *fmt,
@@ -993,8 +882,7 @@ unsigned int p25_tsbk_process_tsdu(dsd_state *state,
 
         p25_tsbk_deinterleave(interleaved, encoded);
         if (p25_tsbk_trellis_decode(encoded, decoded) < 0) {
-            /* LS-693: malformed trellis dibits used to disappear before the
-             * CRC counter, so "invalid TSBK" omitted an entire reject path. */
+
             state->p25_tsbk_trellis_errors++;
             continue;
         }

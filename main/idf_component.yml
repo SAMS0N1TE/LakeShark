@@ -1,23 +1,13 @@
-## IDF Component Manager Manifest File
 dependencies:
+  chmorgan/esp-audio-player:
+    version: "==1.0.7"
+    override_path: "../components/chmorgan__esp-audio-player"
   espressif/esp_wifi_remote:
-    version: "0.*"
-
-  # LS-008
+    version: "==0.16.3"
   espressif/esp_hosted:
     version: "==2.12.9"
-
-  # LS-601  esp-brookesia was the only thing constraining LVGL to 8.x
-  # (it asked >=8.3,<9). esp_lvgl_port and the Waveshare BSP both ask
-  # >=8,<10, so dropping brookesia silently resolved LVGL 9.5.0 and broke
-  # the build. The whole sdr_ui shell is written against 8.4 - see LS-903.
   lvgl/lvgl:
     version: "==8.4.0"
-
-  # LS-160  The Waveshare BSP's optional dependency otherwise makes the
-  # component manager consult the registry when its lock entry is stale.
-  # Keep the override relative to this manifest so every checkout uses the
-  # vendored component instead of recording another worktree's path.
   espressif/esp_lvgl_port:
     version: "==2.5.0"
     override_path: "../components/esp_lvgl_port"

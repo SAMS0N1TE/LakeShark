@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-/*LS-759*/
+/**/
 /* Lifetime slot for a single top-level LVGL object owned by an app.  The
    module deliberately does not include LVGL: it operates on opaque object
    handles through configurable hooks so the bench can drive the same

@@ -20,10 +20,7 @@ typedef struct {
     uint8_t count;
     p25_tg_observed_row_t rows[P25_TG_OBSERVED_MAX];
 } p25_tg_observed_snapshot_t;
-/* Volatile observations, never scan policy or aliases. Frequency + validated
- * NAC is a conservative channel scope: even equal TG IDs on different
- * channels remain distinct, rather than guessing a shared system identity.
- * Task-only APIs. Try-locks never spin or block the decoder/LVGL task. */
+
 bool p25_tg_observed_record(uint64_t channel_hz, uint16_t nac,
     uint16_t talkgroup, uint8_t source, uint32_t now_ms);
 bool p25_tg_observed_read(p25_tg_observed_snapshot_t *out);

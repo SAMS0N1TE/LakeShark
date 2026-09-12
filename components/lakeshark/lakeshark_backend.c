@@ -11,7 +11,7 @@
 
 #include "app_registry.h"
 #include "settings.h"
-/*LS-770*/
+/**/
 #include "usb_autoreboot_pref.h"
 #include "scan_channels.h"
 #include "scan_engine.h"
@@ -41,7 +41,7 @@
 #include "tone.h"
 #include "event_stream.h"
 
-/*LS-001*/
+/**/
 #include "bsp/esp-bsp.h"
 
 static const char *TAG = "lakeshark";
@@ -49,7 +49,7 @@ static const char *TAG = "lakeshark";
 extern int adsb_app_register(void);
 extern int p25_app_register(void);
 extern int fm_app_register(void);
-/*LS-500*/
+/**/
 extern int rec_app_register(void);
 
 extern int          autoscan_bch_ok_flag;
@@ -74,7 +74,7 @@ void lakeshark_backend_start(void)
 
     event_bus_init();
     settings_init();
-    /*LS-770*/
+    /**/
     usb_autoreboot_pref_init(settings_set_usb_autoreboot,
                              settings_get_usb_autoreboot());
     scan_channels_init();
@@ -136,6 +136,8 @@ void lakeshark_backend_start(void)
 void lakeshark_boot_sound(void)
 {
     int mode = settings_get_boot_sound();
+    /* The same fallback as snd_boot_start: no engine, no greeting. */
+    if (mode == 2 && !sam_tts_available()) mode = 1;
     if (mode == 1) {
         snd_boot();
         static const int16_t sil[1600] = {0};
@@ -154,7 +156,7 @@ void lakeshark_boot_sound(void)
 void lakeshark_select_adsb(void) { if (s_adsb_idx >= 0) app_switch_to(s_adsb_idx); }
 void lakeshark_select_p25(void)  { if (s_p25_idx  >= 0) app_switch_to(s_p25_idx);  }
 void lakeshark_select_fm(void)   { if (s_fm_idx   >= 0) app_switch_to(s_fm_idx);   }
-/*LS-500*/
+/**/
 void lakeshark_select_rec(void)  { if (s_rec_idx  >= 0) app_switch_to(s_rec_idx);  }
 
 void lakeshark_acars_start(void)
@@ -263,7 +265,7 @@ int lakeshark_receiver_status(char *out, size_t len)
 {
     if (!out || len == 0) return 0;
 
-    /* LS-1002: the first receiver snapshot compiled to a 1536-byte frame:
+    /* the first receiver snapshot compiled to a 1536-byte frame:
      * a 320-byte diagnostic plus several mutually exclusive 392-byte endpoint
      * copies were kept live above newlib's 1328-byte snprintf path.  The LCD
      * console's 4096-byte stack crossed its guard on every STAT query.  This
@@ -470,10 +472,9 @@ void lakeshark_p25_tune(int delta_hz)
     if (next > (int64_t)P25_CONTROL_TUNER_MAX_HZ)
         next = P25_CONTROL_TUNER_MAX_HZ;
     f = (uint32_t)next;
-    /* LS-702: the dial is a new tuner owner. Leaving carrier scan enabled
-       made its next step silently overwrite the operator's frequency. */
+
     scan_engine_stop();
-    /* LS-691: a dial move is an ownership transfer.  End a profile survey
+    /* a dial move is an ownership transfer.  End a profile survey
      * and restore its prior valid control before the manual request replaces
      * that tune in the single-slot radio latch. */
     (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
@@ -529,7 +530,7 @@ bool lakeshark_p25_polarity_inverted(void) { return P25.demod_invert; }
 
 void lakeshark_p25_reset_stats(void)
 {
-    /* LS-693: reset every counter shown by the coherent health snapshot while
+    /* reset every counter shown by the coherent health snapshot while
      * retaining current identity, acquisition, RF, heap and buffer state. */
     p25_health_reset_counters();
     P25.dsd_sync_count     = 0;
@@ -730,9 +731,6 @@ void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out)
     out->pocsag_pages  = FM.pocsag_pages;
     out->pocsag_frames = FM.pocsag_frames;
 
-    /*LS-984  The page ring now contains FLEX too. POCSAG telemetry is an
-       established external contract, so find its newest entry rather than
-       relabelling the latest FLEX page as POCSAG. */
     for (int k = 0; k < FM.page_count; k++) {
         int idx = (FM.page_head - 1 - k + FM_PAGE_LOG_MAX * 2) % FM_PAGE_LOG_MAX;
         const fm_page_t *p = &FM.pages[idx];

@@ -1,5 +1,6 @@
 #include "shell/ls_hub.h"
 #include "shell/ls_hub_present.h"
+#include "ls_board.h"
 
 #include "lvgl.h"
 
@@ -9,7 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "esp_timer.h"
-/*LS-719*/
+/**/
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -27,7 +28,7 @@ extern "C" {
 #define HUB_MAX_SUBS    8
 #define HUB_EVT_DEPTH   12
 
-/*LS-602*/
+/**/
 typedef struct {
     uint8_t kind;
     char    text[LS_HUB_LINE_MAX];
@@ -53,7 +54,7 @@ static void fanout(uint32_t dirty)
         if (s_fn[i]) s_fn[i](&s_state, dirty, s_ud[i]);
 }
 
-/*LS-602*/
+/**/
 static void bus_cb(const event_t *e, void *)
 {
     if (!e || !s_evtq) return;
@@ -218,15 +219,19 @@ static void poll_audio(uint32_t *dirty)
     if (muted != s_state.muted) { s_state.muted = muted; *dirty |= LS_HUB_AUDIO; }
 }
 
-/*LS-719*/
+/**/
 /* BAT_ADC is GPIO20 (ADC1 ch4), found empirically with `bat` - the net is in
    neither Waveshare's BSP header nor the vendor package, and appears exactly
    once in their schematic, at the divider. R12 200K / R15 100K off BAT, so the
    pin reads BAT/3. GPIO20 held to +/-2 raw counts across repeats while GPIO21
    and 22 drifted, which is a driven node against two floating ones.
    Do NOT widen this scan to GPIO16..19: those are the C6 SDIO bus. */
-#define BATT_ADC_CHAN    ADC_CHANNEL_4
-#define BATT_DIVIDER     3
+/* The T-Display uses a fuel gauge. Configuring Waveshare's ADC1 channel 4
+ * here disabled its codec SDA GPIO20: hardware dump showed InputEn=0 and
+ * OpenDrain=0, and every volume write timed out after shell initialization. */
+#if LS_HAS_BATTERY_ADC
+#define BATT_ADC_CHAN    ((adc_channel_t)LS_BOARD_BATTERY_ADC_CHANNEL)
+#define BATT_DIVIDER     LS_BOARD_BATTERY_DIVIDER
 #define BATT_ABSENT_MV   2500
 #define BATT_PERIOD_MS   5000
 
@@ -294,7 +299,12 @@ static void poll_battery(uint32_t *dirty)
     if (pct != s_state.batt_pct) { s_state.batt_pct = pct; *dirty |= LS_HUB_RADIO; }
 }
 
-/*LS-602*/
+#else
+static void batt_init(void) {}
+static void poll_battery(uint32_t *) {}
+#endif
+
+/**/
 static void hub_tick(lv_timer_t *)
 {
     uint32_t dirty = 0;
@@ -303,14 +313,14 @@ static void hub_tick(lv_timer_t *)
     poll_radio(&dirty);
     poll_mode(&dirty);
     poll_audio(&dirty);
-    /*LS-719*/
+    /**/
     poll_battery(&dirty);
 
     if (s_prime) { s_prime = false; dirty = LS_HUB_ALL; }
     fanout(dirty);
 }
 
-/*LS-602*/
+/**/
 void ls_hub_start(void)
 {
     if (s_started) return;
@@ -326,7 +336,7 @@ void ls_hub_start(void)
     s_state.volume   = audio_volume_get();
     s_state.muted    = audio_is_muted();
 
-    /*LS-719*/
+    /**/
     batt_init();
 
     s_evtq = xQueueCreate(HUB_EVT_DEPTH, sizeof(hub_evt_t));
@@ -337,7 +347,7 @@ void ls_hub_start(void)
     s_timer = lv_timer_create(hub_tick, HUB_PERIOD_MS, nullptr);
 }
 
-/*LS-602*/
+/**/
 int ls_hub_subscribe(ls_hub_fn fn, void *ud)
 {
     if (!fn) return -1;
@@ -351,7 +361,7 @@ int ls_hub_subscribe(ls_hub_fn fn, void *ud)
     return -1;
 }
 
-/*LS-602*/
+/**/
 void ls_hub_unsubscribe(int id)
 {
     if (id < 0 || id >= HUB_MAX_SUBS) return;
@@ -361,7 +371,7 @@ void ls_hub_unsubscribe(int id)
 
 const ls_hub_state_t *ls_hub_state(void) { return &s_state; }
 
-/*LS-602*/
+/**/
 bool ls_hub_last_line(char *dst, int cap)
 {
     if (!dst || cap <= 0 || !s_line[0]) return false;

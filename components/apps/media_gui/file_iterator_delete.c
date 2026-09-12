@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/*LS-755*/
+/**/
 /* The managed chmorgan__esp-file-iterator component declares
    file_iterator_delete in its public header but ships no implementation, so
    any caller that tried to release an iterator hit a link error and gave up

@@ -1,0 +1,14 @@
+App(
+    appid="lakeshark_p25",
+    name="LakeShark SDR",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="lakeshark_p25_app",
+    requires=["gui", "storage", "notification"],
+    stack_size=8 * 1024,
+    fap_version=(2, 5),
+    fap_category="GPIO",
+    fap_icon="lakeshark_10px.png",
+    fap_author="SAMS0N1TE",
+    fap_weburl="https://github.com/SAMS0N1TE/LakeShark-Flipper",
+    fap_description="Control head for the LakeShark ESP32-P4 SDR receiver over UART or Bluetooth",
+)

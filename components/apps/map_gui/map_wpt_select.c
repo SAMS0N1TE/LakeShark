@@ -1,6 +1,6 @@
 #include "map_wpt_select.h"
 
-/*LS-762*/
+/**/
 int map_wpt_row_to_slot(int row, const uint8_t *used, int n_slots)
 {
     if (!used || n_slots <= 0) return -1;

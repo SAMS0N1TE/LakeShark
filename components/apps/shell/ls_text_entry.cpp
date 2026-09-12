@@ -3,6 +3,7 @@
 
 #include "ls_board.h"
 #include "sdr_ui/sdr_ui.h"
+#include "ui/ls_ui.h"
 
 struct ls_text_entry {
     lv_obj_t *modal;
@@ -47,12 +48,17 @@ ls_text_entry_t *ls_text_entry_open(const ls_text_entry_config_t *config,
 
     lv_obj_t *bg = lv_obj_create(lv_layer_top());
     if (!bg) return nullptr;
+    lv_obj_add_event_cb(bg,entry_event,LV_EVENT_CANCEL,nullptr);
     lv_obj_set_size(bg, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(bg, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(bg, LV_OPA_80, 0);
     lv_obj_set_style_border_width(bg, 0, 0);
     lv_obj_set_style_radius(bg, 0, 0);
     lv_obj_set_style_pad_all(bg, 10, 0);
+    int safe_x=0,safe_y=0;
+    ls_ui_get_safe_insets(&safe_x,&safe_y);
+    lv_obj_set_style_pad_hor(bg,10+safe_x,0);
+    lv_obj_set_style_pad_ver(bg,10+safe_y,0);
     lv_obj_set_style_pad_row(bg, 8, 0);
     lv_obj_clear_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(bg, LV_FLEX_FLOW_COLUMN);
@@ -74,7 +80,7 @@ ls_text_entry_t *ls_text_entry_open(const ls_text_entry_config_t *config,
     lv_textarea_set_text(ta, config->text ? config->text : "");
     lv_obj_set_width(ta, config->width);
 
-    /* LS-774: small entries inherited the light default theme. Size selects
+    /* small entries inherited the light default theme. Size selects
        typography only; every shared text/password/numeric entry uses our palette. */
     {
         lv_obj_set_style_text_font(ta, config->large ? &lv_font_montserrat_32 : sdr_font_mono(), 0);
@@ -91,7 +97,7 @@ ls_text_entry_t *ls_text_entry_open(const ls_text_entry_config_t *config,
     lv_obj_add_event_cb(ta, entry_event, LV_EVENT_READY, nullptr);
     lv_obj_add_event_cb(ta, entry_event, LV_EVENT_CANCEL, nullptr);
 
-#if !LS_HAS_KEYBOARD
+#if !LS_HAS_KEYBOARD || LS_HAS_COMPACT_UI
     lv_obj_t *kb = lv_keyboard_create(bg);
     lv_keyboard_set_mode(kb, config->mode == LS_TEXT_ENTRY_NUMBER
                              ? LV_KEYBOARD_MODE_NUMBER
@@ -105,6 +111,7 @@ ls_text_entry_t *ls_text_entry_open(const ls_text_entry_config_t *config,
         lv_obj_set_style_border_width(kb, 0, 0);
         lv_obj_set_style_pad_all(kb, 6, 0);
         lv_obj_set_style_text_font(kb, config->large ? &lv_font_montserrat_24 : sdr_font_mono(), 0);
+        lv_obj_set_style_text_font(kb, config->large ? &lv_font_montserrat_24 : sdr_font_mono(), LV_PART_ITEMS);
         lv_obj_set_style_bg_color(kb, SDR_PANEL, LV_PART_ITEMS);
         lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
         lv_obj_set_style_text_color(kb, SDR_TEXT, LV_PART_ITEMS);

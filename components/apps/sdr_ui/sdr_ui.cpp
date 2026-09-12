@@ -1,4 +1,5 @@
 #include "sdr_ui.h"
+#include "shell/ls_input.h"
 #include "shell/ls_icons.h"
 
 #include <cstdio>
@@ -13,11 +14,24 @@ LV_FONT_DECLARE(lv_font_lsmono_14);
     digits change, which needs a fixed pitch; LVGL's only built-in monospace
     is unscii, whose fixed 8x16 cell renders far too large for these panels.
     DejaVu is under the Bitstream Vera licence, so it can ship. */
-const lv_font_t *sdr_font_mono(void)    { return &lv_font_lsmono_16; }
-const lv_font_t *sdr_font_mono_sm(void) { return &lv_font_lsmono_14; }
+/* follow-up: generated mono fonts cover ASCII32..126 only. LVGL
+ * keyboards use private-use backspace/enter/arrow/OK glyphs, so selecting
+ * mono made those keys blank. Retain fixed-pitch text and supply the same-
+ * size built-in symbol font for missing glyphs, including other app labels.
+ * Copy the descriptor; generated const font data may live in read-only flash. */
+const lv_font_t *sdr_font_mono(void)
+{
+    static const lv_font_t font=[] { auto f=lv_font_lsmono_16; f.fallback=&lv_font_montserrat_16; return f; }();
+    return &font;
+}
+const lv_font_t *sdr_font_mono_sm(void)
+{
+    static const lv_font_t font=[] { auto f=lv_font_lsmono_14; f.fallback=&lv_font_montserrat_14; return f; }();
+    return &font;
+}
 const lv_font_t *sdr_font_ui(void)      { return &lv_font_montserrat_14; }
 
-/*LS-606*/
+/**/
 typedef struct {
     const char *name;
 } sdr_pal_t;
@@ -49,7 +63,7 @@ const char *sdr_theme_name(sdr_theme_t t)
     return (t >= 0 && t < SDR_THEME_COUNT) ? THEMES[t].name : "?";
 }
 
-/*LS-606*/
+/**/
 static void style_sync(void)
 {
     lv_style_set_text_color(&s_tab_sel, sdr_accent());
@@ -62,7 +76,7 @@ static void style_sync(void)
     lv_style_set_bg_color(&s_fill, sdr_accent());
 }
 
-/*LS-606*/
+/**/
 void sdr_theme_init(void)
 {
     if (s_styles_ready) return;
@@ -82,7 +96,7 @@ void sdr_theme_init(void)
     style_sync();
 }
 
-/*LS-606*/
+/**/
 void sdr_theme_set(sdr_theme_t t)
 {
     if (t < 0 || t >= SDR_THEME_COUNT || t == s_theme) return;
@@ -98,7 +112,7 @@ void sdr_theme_set(sdr_theme_t t)
         if (s_cb[i]) s_cb[i](s_cb_ud[i]);
 }
 
-/*LS-606*/
+/**/
 int sdr_theme_on_change(sdr_theme_cb_t cb, void *ud)
 {
     if (!cb) return -1;
@@ -111,7 +125,7 @@ int sdr_theme_on_change(sdr_theme_cb_t cb, void *ud)
     return -1;
 }
 
-/*LS-606*/
+/**/
 void sdr_theme_off_change(int id)
 {
     if (id < 0 || id >= SDR_THEME_MAX_CB) return;
@@ -125,7 +139,7 @@ void sdr_style_screen(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 }
 
-/*LS-605*/
+/**/
 void sdr_style_tabview(lv_obj_t *tv)
 {
     lv_obj_set_style_bg_color(tv, SDR_BG, 0);
@@ -147,7 +161,7 @@ void sdr_style_tabview(lv_obj_t *tv)
         lv_obj_set_style_border_width(btns, 0, LV_PART_ITEMS);
         lv_obj_set_style_radius(btns, 0, LV_PART_ITEMS);
 
-        /*LS-606*/
+        /**/
         sdr_theme_init();
         lv_obj_add_style(btns, &s_tab_sel, LV_PART_ITEMS | LV_STATE_CHECKED);
 
@@ -169,7 +183,7 @@ lv_obj_t *sdr_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t color)
     return l;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_panel(lv_obj_t *parent)
 {
 
@@ -189,7 +203,7 @@ lv_obj_t *sdr_panel(lv_obj_t *parent)
     return p;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_section(lv_obj_t *parent, const char *title)
 {
     lv_obj_t *row = sdr_row(parent, LV_FLEX_ALIGN_START);
@@ -202,7 +216,7 @@ lv_obj_t *sdr_section(lv_obj_t *parent, const char *title)
 
     lv_obj_t *tick = lv_obj_create(row);
     lv_obj_set_size(tick, 3, 14);
-    /*LS-606*/
+    /**/
     sdr_theme_init();
     lv_obj_add_style(tick, &s_fill, 0);
     lv_obj_set_style_border_width(tick, 0, 0);
@@ -220,19 +234,53 @@ lv_obj_t *sdr_section(lv_obj_t *parent, const char *title)
     return row;
 }
 
-/*LS-605*/
+/**/
+static void button_swipe_guard(lv_event_t *e)
+{
+    static lv_obj_t *pressed=nullptr;
+    static lv_point_t origin={};
+    static bool moved=false;
+    auto *input=lv_indev_get_act();
+    if(!input || lv_indev_get_type(input)!=LV_INDEV_TYPE_POINTER)return;
+    auto *button=lv_event_get_target(e);auto code=lv_event_get_code(e);
+    lv_point_t point;lv_indev_get_point(input,&point);
+    if(code==LV_EVENT_PRESSED){
+        pressed=button;origin=point;moved=false;
+        // Gesture bubbling is separate from press-event bubbling in LVGL.
+        lv_event_send(lv_obj_get_screen(button),LV_EVENT_PRESSED,nullptr);
+    }
+    if(pressed!=button)return;
+    /* Distance alone missed the swipes people actually complained
+       about. A flick that clears LVGL's gesture limit is recognised as a
+       gesture but can still release inside a large button, and 14 px of
+       travel measured only at event time can be under-read on a fast drag
+       that LVGL samples coarsely. Asking the input device whether it called
+       this press a gesture catches exactly that case, and it costs nothing
+       on a clean tap, where the direction stays NONE. */
+    if(abs(point.x-origin.x)>14 || abs(point.y-origin.y)>14 ||
+       lv_indev_get_gesture_dir(input)!=LV_DIR_NONE ||
+       code==LV_EVENT_PRESS_LOST)moved=true;
+    if(moved && (code==LV_EVENT_CLICKED || code==LV_EVENT_SHORT_CLICKED || code==LV_EVENT_LONG_PRESSED || code==LV_EVENT_LONG_PRESSED_REPEAT))
+        lv_event_stop_processing(e);
+}
+void sdr_button_guard_swipe(lv_obj_t *button)
+{
+    if(LS_HAS_COMPACT_UI)lv_obj_add_event_cb(button,button_swipe_guard,LV_EVENT_ALL,nullptr);
+}
+
 lv_obj_t *sdr_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud,
                   lv_obj_t **out_lbl)
 {
 
     lv_obj_t *b = lv_btn_create(parent);
+    sdr_button_guard_swipe(b);
     lv_obj_set_height(b, 50);
     lv_obj_set_width(b, LV_SIZE_CONTENT);
     lv_obj_set_style_min_width(b, 56, 0);
     lv_obj_set_style_bg_color(b, SDR_BTN, 0);
     lv_obj_set_style_border_color(b, SDR_BORDER, 0);
     lv_obj_set_style_border_width(b, 1, 0);
-    /*LS-606*/
+    /**/
     sdr_theme_init();
     lv_obj_add_style(b, &s_press, LV_STATE_PRESSED);
     lv_obj_set_style_radius(b, 2, 0);
@@ -250,7 +298,7 @@ lv_obj_t *sdr_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud,
     return b;
 }
 
-/*LS-605*/
+/**/
 void sdr_setting_row(lv_obj_t *parent, const char *name, sdr_setrow_t *out)
 {
     lv_obj_t *row = lv_obj_create(parent);
@@ -298,8 +346,7 @@ void sdr_setting_row(lv_obj_t *parent, const char *name, sdr_setrow_t *out)
     }
 }
 
-
-/*LS-605*/
+/**/
 lv_obj_t *sdr_lcd_panel(lv_obj_t *parent, lv_color_t edge)
 {
     lv_obj_t *p = lv_obj_create(parent);
@@ -320,7 +367,7 @@ lv_obj_t *sdr_lcd_panel(lv_obj_t *parent, lv_color_t edge)
     return p;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_row(lv_obj_t *parent, lv_flex_align_t justify)
 {
     lv_obj_t *r = lv_obj_create(parent);
@@ -337,7 +384,7 @@ lv_obj_t *sdr_row(lv_obj_t *parent, lv_flex_align_t justify)
     return r;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_rule(lv_obj_t *parent)
 {
     lv_obj_t *r = lv_obj_create(parent);
@@ -352,7 +399,7 @@ lv_obj_t *sdr_rule(lv_obj_t *parent)
     return r;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_micro(lv_obj_t *parent, const char *txt)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -364,7 +411,7 @@ lv_obj_t *sdr_micro(lv_obj_t *parent, const char *txt)
     return l;
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_value(lv_obj_t *parent, const lv_font_t *font, lv_color_t color)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -375,7 +422,7 @@ lv_obj_t *sdr_value(lv_obj_t *parent, const lv_font_t *font, lv_color_t color)
     return l;
 }
 
-/*LS-605*/
+/**/
 static void tile_press_cb(lv_event_t *e)
 {
     lv_obj_t *t = lv_event_get_target(e);
@@ -386,7 +433,7 @@ static void tile_press_cb(lv_event_t *e)
                                           : lv_obj_get_style_bg_color(t, LV_PART_INDICATOR), 0);
 }
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
                    const char *sub, lv_event_cb_t cb, void *ud)
 {
@@ -396,7 +443,7 @@ lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
     lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(t, SDR_RULE, 0);
     lv_obj_set_style_border_width(t, 1, 0);
-    /*LS-606*/
+    /**/
     sdr_theme_init();
     lv_obj_add_style(t, &s_press, LV_STATE_PRESSED);
     lv_obj_set_style_radius(t, 2, 0);
@@ -431,7 +478,7 @@ lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
     return t;
 }
 
-/*LS-605*/
+/**/
 void sdr_tile_accent(lv_obj_t *tile, lv_color_t color)
 {
     if (!tile) return;
@@ -440,7 +487,7 @@ void sdr_tile_accent(lv_obj_t *tile, lv_color_t color)
     if (ic) lv_obj_set_style_img_recolor(ic, color, 0);
 }
 
-/*LS-605*/
+/**/
 void sdr_text_if_changed(lv_obj_t *label, const char *txt)
 {
     if (!label || !txt) return;
@@ -449,7 +496,7 @@ void sdr_text_if_changed(lv_obj_t *label, const char *txt)
     lv_label_set_text(label, txt);
 }
 
-/*LS-605*/
+/**/
 void sdr_color_if_changed(lv_obj_t *obj, lv_color_t color)
 {
     if (!obj) return;
@@ -457,7 +504,7 @@ void sdr_color_if_changed(lv_obj_t *obj, lv_color_t color)
     lv_obj_set_style_text_color(obj, color, 0);
 }
 
-/*LS-605*/
+/**/
 void sdr_ascii_bar(char *dst, int cap, int pct, int width)
 {
     if (!dst || cap < 3) return;
@@ -473,7 +520,6 @@ void sdr_ascii_bar(char *dst, int cap, int pct, int width)
     dst[i] = 0;
 }
 
-
 #define SEG_MAX 92
 
 struct sdr_seg {
@@ -482,6 +528,9 @@ struct sdr_seg {
     int         max;
     int         value;
     int         cw;
+    bool        editing;
+    bool        stepper;
+    int         step;
     lv_color_t  color;
     sdr_seg_cb_t cb;
     sdr_seg_cb_t rel_cb;
@@ -490,6 +539,7 @@ struct sdr_seg {
 
 static void seg_render(sdr_seg_t *s)
 {
+    if(s->stepper)return;
     if (s->cw <= 0) {
         lv_point_t sz;
         lv_txt_get_size(&sz, "||||||||||", sdr_font_mono(), 0, 0, LV_COORD_MAX, 0);
@@ -523,8 +573,9 @@ static void seg_render(sdr_seg_t *s)
 static void seg_press_cb(lv_event_t *e)
 {
     sdr_seg_t *s = (sdr_seg_t *)lv_event_get_user_data(e);
+    if (s && lv_event_get_code(e)==LV_EVENT_PRESSED) s->editing=true;
     lv_indev_t *iv = lv_indev_get_act();
-    if (!s || !iv) return;
+    if (!s || !iv || lv_indev_get_type(iv)==LV_INDEV_TYPE_KEYPAD) return;
     lv_point_t pt;
     lv_indev_get_point(iv, &pt);
     lv_area_t a;
@@ -542,10 +593,27 @@ static void seg_press_cb(lv_event_t *e)
     }
 }
 
+static void seg_key_cb(lv_event_t *e)
+{
+    auto *s=static_cast<sdr_seg_t *>(lv_event_get_user_data(e));
+    uint32_t key=lv_event_get_key(e);
+    if(!s || (key!=LV_KEY_LEFT && key!=LV_KEY_RIGHT))return;
+    int step=s->max>100?5:1;
+    int value=s->value+(key==LV_KEY_RIGHT?step:-step);
+    if(value<0)value=0;
+    if(value>s->max)value=s->max;
+    if(value==s->value)return;
+    s->value=value;seg_render(s);
+    if(s->cb)s->cb(s->ud,value);
+    if(s->rel_cb)s->rel_cb(s->ud,value);
+}
+
 static void seg_release_cb(lv_event_t *e)
 {
     sdr_seg_t *s = (sdr_seg_t *)lv_event_get_user_data(e);
-    if (s && s->rel_cb) s->rel_cb(s->ud, s->value);
+    if (!s || !s->editing) return;
+    s->editing=false;
+    if (s->rel_cb) s->rel_cb(s->ud, s->value);
 }
 
 static void seg_size_cb(lv_event_t *e)
@@ -568,6 +636,8 @@ sdr_seg_t *sdr_seg_slider(lv_obj_t *parent, lv_color_t color, int max, int value
     s->max = max > 0 ? max : 1;
     s->value = value;
     s->cw = 0;
+    s->editing = false;
+    s->stepper = false;s->step=1;
     s->color = color;
     s->cb = cb;
     s->rel_cb = nullptr;
@@ -587,11 +657,17 @@ sdr_seg_t *sdr_seg_slider(lv_obj_t *parent, lv_color_t color, int max, int value
     lv_label_set_long_mode(bar, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_pad_ver(bar, 7, 0);
     lv_obj_add_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_flag(bar,LS_INPUT_FOCUSABLE);
+    lv_obj_set_style_outline_color(bar,lv_color_hex(0xDFB56B),LV_STATE_FOCUSED);
+    lv_obj_set_style_outline_width(bar,2,LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(bar,seg_key_cb,LV_EVENT_KEY,s);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(bar, seg_press_cb, LV_EVENT_PRESSED, s);
     lv_obj_add_event_cb(bar, seg_press_cb, LV_EVENT_PRESSING, s);
     lv_obj_add_event_cb(bar, seg_release_cb, LV_EVENT_RELEASED, s);
+    lv_obj_add_event_cb(bar, seg_release_cb, LV_EVENT_PRESS_LOST, s);
     lv_obj_add_event_cb(bar, seg_size_cb, LV_EVENT_SIZE_CHANGED, s);
     lv_obj_add_event_cb(bar, seg_free_cb, LV_EVENT_DELETE, s);
 
@@ -599,12 +675,47 @@ sdr_seg_t *sdr_seg_slider(lv_obj_t *parent, lv_color_t color, int max, int value
     s->vlabel = l;
     seg_render(s);
     if (out_label) *out_label = l;
+    if(LS_HAS_COMPACT_UI)sdr_seg_use_steps(s,max>100?10:5);
     return s;
+}
+
+static void seg_step_click(lv_event_t *e)
+{
+    auto *s=static_cast<sdr_seg_t *>(lv_event_get_user_data(e));
+    int direction=lv_obj_get_index(lv_event_get_target(e))==0?-1:1;
+    int value=s->value+direction*s->step;
+    if(value<0)value=0;
+    if(value>s->max)value=s->max;
+    if(value==s->value)return;
+    s->value=value;
+    if(s->cb)s->cb(s->ud,value);
+    if(s->rel_cb)s->rel_cb(s->ud,value);
+}
+void sdr_seg_use_steps(sdr_seg_t *s,int step)
+{
+    if(!s || s->stepper || !LS_HAS_COMPACT_UI)return;
+    s->stepper=true;s->step=step>0?step:1;
+    auto *panel=lv_obj_get_parent(s->bar);
+    lv_obj_remove_event_cb(s->bar,seg_free_cb);
+    lv_obj_del(s->bar);
+    s->bar=sdr_row(panel,LV_FLEX_ALIGN_SPACE_BETWEEN);
+    lv_obj_set_height(s->bar,36);
+    lv_obj_add_event_cb(s->bar,seg_free_cb,LV_EVENT_DELETE,s);
+    for(int i=0;i<2;i++){
+        auto *b=sdr_btn(s->bar,i?">":"<",seg_step_click,s,nullptr);
+        lv_obj_set_width(b,0);lv_obj_set_flex_grow(b,1);lv_obj_set_height(b,lv_pct(100));
+        lv_obj_set_style_pad_all(b,0,0);
+        lv_obj_add_event_cb(b,seg_step_click,LV_EVENT_LONG_PRESSED_REPEAT,s);
+    }
 }
 
 void sdr_seg_set(sdr_seg_t *s, int value)
 {
     if (!s) return;
+    /* Receiver telemetry may still report the old committed gain while the
+     * finger previews a new one. It must not overwrite or commit that old
+     * value during the drag. The release callback owns the user's value. */
+    if (s->editing) return;
     if (value == s->value) return;
     s->value = value;
     seg_render(s);
@@ -624,7 +735,7 @@ void sdr_seg_on_release(sdr_seg_t *s, sdr_seg_cb_t cb)
 
 int sdr_seg_value(sdr_seg_t *s) { return s ? s->value : 0; }
 
-/*LS-606*/
+/**/
 int sdr_bar_width(lv_obj_t *label, int reserved)
 {
     if (!label) return 30;
@@ -645,7 +756,7 @@ int sdr_bar_width(lv_obj_t *label, int reserved)
     return n;
 }
 
-/*LS-606*/
+/**/
 #define METER_TAG_MAX 6
 
 typedef struct {
@@ -673,7 +784,7 @@ static void meter_free_cb(lv_event_t *e)
     free(lv_obj_get_user_data(lv_event_get_target(e)));
 }
 
-/*LS-606*/
+/**/
 lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag)
 {
     sdr_meter_t *s = (sdr_meter_t *)calloc(1, sizeof(sdr_meter_t));
@@ -692,7 +803,7 @@ lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag)
     return m;
 }
 
-/*LS-608*/
+/**/
 typedef struct {
     lv_obj_t *lbl;
     char      base[20];
@@ -758,7 +869,7 @@ static void hold_cb(lv_event_t *e)
     }
 }
 
-/*LS-608*/
+/**/
 lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
                        lv_event_cb_t cb, void *ud)
 {
@@ -780,7 +891,7 @@ lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
     return b;
 }
 
-/*LS-606*/
+/**/
 void sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color)
 {
     if (!meter) return;

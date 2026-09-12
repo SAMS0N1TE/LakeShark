@@ -1,13 +1,7 @@
 #ifndef REC_STORAGE_LABEL_H
 #define REC_STORAGE_LABEL_H
 
-/*LS-768*/
-/* The FILES tab used to hard-code "on SPIFFS" for every case, but rec_dir()
-   prefers /sdcard/lakeshark whenever an SD card is mounted at boot and only
-   falls back to /spiffs when it isn't - so a board with a card in the slot
-   was told its captures were on SPIFFS and any troubleshooting off that
-   label went to the wrong medium.  Kept as a pure classifier so the bench
-   can pin both backends and any future third one. */
+/**/
 
 #include <stddef.h>
 

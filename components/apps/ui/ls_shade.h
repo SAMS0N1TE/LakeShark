@@ -5,12 +5,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/*LS-990  Pull-down shade for actions the operator wants without a laptop and
-   without hunting for a hidden button. Opens from a swipe-down anywhere; the
-   status bar no longer navigates. Actions are supplied by the host as function
-   pointers so this file compiles clean in a headless build too - main/ owns
-   screenshot.c and ls_wifi.c and those symbols do not exist on the nano. */
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,6 +26,11 @@ typedef struct {
 
     /* Return to HOME. The shade closes first, then invokes this. */
     void (*go_home)(void);
+    /* Optional board orientation control. */
+    void (*rotate)(void);
+    /* Optional direct orientation, degrees 0/90/180/270. Takes precedence
+       over the legacy cycle action. The host queues the actual change. */
+    void (*set_orientation)(unsigned degrees);
 } ls_shade_hooks_t;
 
 /* Registers the callbacks the shade will call. NULL disables actions. */
@@ -39,6 +38,8 @@ void ls_shade_configure(const ls_shade_hooks_t *hooks);
 
 /* Builds the shade and confirmation widgets under parent. Idempotent. */
 void ls_shade_build(lv_obj_t *parent);
+void ls_shade_resize(void);
+void ls_shade_set_safe_insets(int horizontal, int vertical);
 
 /* Show/hide/query. Safe to call before build(). */
 void ls_shade_open(void);

@@ -1,21 +1,7 @@
 #ifndef LS_SAFE_MODE_H
 #define LS_SAFE_MODE_H
 
-/* LS-994  Early safe mode: decide whether this boot is allowed to start the
-   radio at all, BEFORE anything that can fault does.
-
-   The guard that existed (LS-715, in LsShell::start) only refuses to reopen
-   the app that crashed, and it runs after c6_probe, NVS, SPIFFS/SD, the codec
-   and the display are already up. A board that dies in any of those never
-   reaches it - it reboots, dies in the same place, and reboots again, which is
-   what the 4.3 LCD board was doing. This decides first, from retained state
-   that survives a reset, and hands the boot sequence a plan saying what it may
-   start.
-
-   Everything here is pure: the state lives in a caller-owned struct (the
-   device puts it in RTC_NOINIT memory, which is a plain memory write and so is
-   valid with the cache off and in panic context - unlike NVS). The ESP-IDF
-   glue is in ls_safe_mode_esp.c and the bench never sees it. */
+/* Early safe mode: decide whether this boot is allowed to start the radio at all, BEFORE anything that can fault does. */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,10 +15,6 @@ extern "C" {
 #define LS_SAFE_VERSION      UINT16_C(1)
 #define LS_SAFE_APP_MAX      24
 
-/* How many consecutive failed normal starts before the next boot is safe.
-   Two is too eager - a single genuine panic plus a watchdog on the way down
-   counts twice - and four leaves an operator watching a board reboot for
-   longer than they will tolerate. */
 #define LS_SAFE_FAULT_LIMIT  UINT32_C(3)
 
 /* How long a normal boot must survive before it is called healthy. This is
@@ -77,9 +59,7 @@ typedef enum {
     LS_SAFE_CLASS_CLEAN = 0,
     /* The firmware died: panic, watchdog, lockup. */
     LS_SAFE_CLASS_FAULT,
-    /* The supply gave out. Reported separately and never counted as a
-       firmware fault - blaming a sagging battery on the app hides the real
-       cause behind a wrong diagnosis (the same reasoning as LS-720). */
+
     LS_SAFE_CLASS_POWER,
     /* The chip will not say. Counted as a failed start when one was in
        flight, because escaping a reboot loop matters more than attribution -
@@ -108,13 +88,9 @@ typedef enum {
     LS_SAFE_ENTRY_NONE = 0,        /* normal boot */
     LS_SAFE_ENTRY_REPEATED_FAULT,  /* the limit of failed starts was reached */
     LS_SAFE_ENTRY_RETRY_FAILED,    /* a deliberate "try normal boot" faulted */
-    LS_SAFE_ENTRY_FORCED           /* operator asked for it (CLI / STAY SAFE) */
+    LS_SAFE_ENTRY_FORCED
 } ls_safe_entry_t;
 
-/* Retained across a reset. Bounded, fixed layout, magic + version + size +
-   CRC so a garbage RTC region after a cold power-on is recognised as garbage
-   rather than acted on. Keep the CRC field last; ls_safe_state_crc() covers
-   everything before it. */
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -148,10 +124,6 @@ typedef struct {
     char            app[LS_SAFE_APP_MAX];
 } ls_safe_boot_t;
 
-/* What a boot of this kind is allowed to start. The boot sequences consult
-   this rather than testing a bool at each call site, so "safe mode never
-   starts the radio" is a property of one tested function instead of a
-   promise spread over two app_main()s. */
 typedef struct {
     bool display;            /* panel + LVGL */
     bool touch;              /* the same init; named so the contract is explicit */
@@ -206,8 +178,6 @@ bool ls_safe_healthy_due(uint32_t uptime_ms);
 
 /* Clear the failure accounting. Only call when healthy_due() is satisfied. */
 void ls_safe_mark_healthy(ls_safe_state_t *st);
-
-/* ---- operator actions ------------------------------------------------- */
 
 /* TRY NORMAL BOOT. Clears the forced flag and leaves the counter one short of
    the limit, so the retry is protected: if it faults, the very next boot is

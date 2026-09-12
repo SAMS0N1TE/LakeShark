@@ -1,19 +1,7 @@
 #ifndef SETTINGS_SCHEMA_H
 #define SETTINGS_SCHEMA_H
 
-/* LS-800 - Every value in the `sdr-tool` NVS namespace is written key-per-
-   field, so a new key added by the firmware does not physically overwrite an
-   older key.  What can still bite is a key whose type or units changed between
-   releases: `nvs_get_u8` on a `u32`-typed key returns ESP_ERR_NVS_TYPE_MISMATCH
-   and the getter quietly returns its default, and a range/encoding change (a
-   volume that used to be 0..255 and is now 0..100, a gain in tenths that is
-   now dB) reads back a real number that means the wrong thing.  Six queued
-   tasks are about to add settings, so the flash needs an anchor point that
-   says which layout wrote it.
-
-   The module is a pure decision function so the bench can drive every branch
-   without NVS.  settings.c wraps it with a real nvs_get_u32 for the version
-   key and a namespace-wide erase for the RESET path. */
+/* - Every value in the `sdr-tool` NVS namespace is written key-per- field, so a new key added by the firmware does not physically overwrite an older key. */
 
 #include <stdint.h>
 
@@ -26,7 +14,7 @@ extern "C" {
    bumps it - the point is that the version stamp says "this build wrote
    this".  Bump SETTINGS_SCHEMA_MIN_ADDITIVE only when the oldest version this
    build can still read from without wiping crosses a breaking cutover. */
-#define SETTINGS_SCHEMA_VERSION       3U
+#define SETTINGS_SCHEMA_VERSION       4U
 #define SETTINGS_SCHEMA_MIN_ADDITIVE  1U
 
 typedef enum {

@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-/* LS-460: app screens used raw hues as their interface, so the same meaning
+/* app screens used raw hues as their interface, so the same meaning
  * changed colour from screen to screen.  These are semantic roles: callers
  * choose what a colour means and this module alone chooses its RGB value. */
 typedef enum {
@@ -19,15 +19,8 @@ typedef enum {
     LS_UI_COLOR_WARN,
     LS_UI_COLOR_ALARM,
 
-    /* LS-660: identity, not meaning.  The roles above say what something IS -
-     * a warning is amber wherever it appears.  These say only WHICH APP you
-     * are looking at, and an app must never use one to signal state.
-     *
-     * They exist because 590 converted nine screens using the two accent
-     * roles it had: P25, REC, ACARS and FILES all took WARN and everything
-     * else took ACCENT.  The result was a UI that is mostly amber and in
-     * which no screen is recognisable at a glance.  Amber is now what it
-     * always claimed to be - a warning - and appears on no header at all. */
+    /* identity, not meaning. */
+
     LS_UI_COLOR_ID_RED,
     LS_UI_COLOR_ID_ORANGE,
     LS_UI_COLOR_ID_TEAL,

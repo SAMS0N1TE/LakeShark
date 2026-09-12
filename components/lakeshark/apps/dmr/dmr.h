@@ -8,18 +8,6 @@
 extern "C" {
 #endif
 
-/* DMR Tier II (ETSI TS 102 361-1/2) primitives, in a sibling of apps/p25/.
- *
- * The pipeline mirrors the P25 lineage - a burst is 264 bits (see
- * ETSI TS 102 361-1 §6.2) built as 108 payload + 48 centre + 108 payload.
- * The centre carries a sync pattern or embedded signalling; the payload
- * outside the centre is BPTC(196,96)-coded when carrying data or LC.
- *
- * Voice deliberately stops before AMBE - see the task file. Slot Type FEC
- * (Golay 20,8,7) is not yet wire-locked to the ETSI generator polynomial;
- * this module extracts colour code from the raw slot-type nibble so the
- * end-to-end plumbing is testable. */
-
 #define DMR_BURST_BITS       264u
 #define DMR_SYNC_BITS         48u
 #define DMR_BPTC_BITS        196u
@@ -91,7 +79,8 @@ int  dmr_bptc_decode(const uint8_t coded[DMR_BPTC_BITS / 8 + 1],
 
 /* Voice LC Header parse (ETSI TS 102 361-2 §7.1.1) from the 72-bit LC content.
  * The 72 bits sit in the top of a BPTC 96-bit block; RS(12,9) parity in the
- * low 24 bits is not verified by this call - a follow-up task. */
+ * low 24 bits is not verified by the raw parse call. Receive paths must use
+ * dmr_lc_decode() to check the masked parity before publishing identity. */
 typedef struct {
     uint8_t  protect_flag;                /* PF: 1 bit */
     uint8_t  flco;                        /* Full Link Control Opcode: 6 bits */
@@ -103,6 +92,12 @@ typedef struct {
 
 /* Parse the first 72 bits of the 96-bit LC block into a dmr_lc_t. */
 void dmr_lc_parse(const uint8_t bits96[12], dmr_lc_t *out);
+
+/* Validate full LC RS(12,9) parity, including the wire mask for data type
+ * 1 (voice LC header) or 2 (terminator with LC), then parse. Returns 1 on
+ * success; unsupported type, invalid parity or NULL returns 0 without
+ * changing *out. Detects errors only; no RS correction or voice decoding. */
+int dmr_lc_decode(const uint8_t bits96[12], uint8_t data_type, dmr_lc_t *out);
 
 /* Extract the DMR colour code from the burst's Slot Type field. Every burst
  * carries 20 bits of Slot Type - 10 before sync and 10 after (see ETSI

@@ -31,7 +31,7 @@ typedef enum {
 
 #define P25_GRANT_FILTER_MAX 16
 
-/* LS-611: per-talkgroup state. On first LDU2 the follower records last-seen
+/* per-talkgroup state. On first LDU2 the follower records last-seen
  * ALGID / KID; if the ALGID is not CLEAR (0x80) the entry is stamped with an
  * expiry and the follower returns to the control channel. A subsequent grant
  * for the same TG within the expiry window is skipped without retune. Bounded
@@ -83,13 +83,10 @@ typedef struct {
     uint16_t filter[P25_GRANT_FILTER_MAX];
     uint8_t filter_count;
 
-    /* LS-611: leave the traffic channel when ALGID says encrypted. Default on
-     * so the radio does not sit deaf on a call it cannot use; an operator
-     * counting encrypted activity flips this off from the P25 CONFIG tab. */
     bool     leave_on_encrypted;
     int64_t  encrypted_skip_us;
 
-    /* LS-611: bounded per-TG history. Used for skip-window enforcement and for
+    /* bounded per-TG history. Used for skip-window enforcement and for
      * the "last ALGID/KID seen on this TG" readout. */
     p25_grant_tg_state_t tg_state[P25_GRANT_TG_STATE_MAX];
     uint8_t  tg_state_count;
@@ -100,7 +97,7 @@ typedef struct {
     unsigned int duplicate_grants;
     unsigned int foreign_grants;
     unsigned int filtered_grants;
-    /* LS-611 */
+    /* */
     unsigned int encrypted_returns;    /* returned to control on encrypted ESS */
     unsigned int encrypted_skips;      /* grants refused because skip is active */
 } p25_grant_follower_t;
@@ -115,7 +112,7 @@ void p25_grant_set_filter(p25_grant_follower_t *f,
                           p25_grant_filter_mode_t mode,
                           const uint16_t *talkgroups, size_t count);
 
-/* LS-611: encrypted-channel policy. Defaults: leave_on_encrypted=true,
+/* encrypted-channel policy. Defaults: leave_on_encrypted=true,
  * skip_ms=30000. Rationale for 30 s: a typical dispatch exchange is 10-20 s
  * and the next grant on the same TG is very likely part of the same
  * conversation - re-following just to leave again wastes control-channel
@@ -140,7 +137,7 @@ void p25_grant_on_voice(p25_grant_follower_t *f, int64_t now_us);
  * if a retune to control was issued. */
 bool p25_grant_on_terminator(p25_grant_follower_t *f, int64_t now_us);
 
-/* LS-670: force a return to control from outside the follower - used by the
+/* force a return to control from outside the follower - used by the
  * scan controller when a priority preempt or a lockout demands that the
  * radio drop the current call. Same code path as the TDU terminator; the
  * retune callback is the sole writer of the tune. */
@@ -163,14 +160,14 @@ void p25_grant_observe(p25_grant_follower_t *f, const p25_call_info_t *call);
 void p25_grant_on_frame(p25_grant_follower_t *f, const dsd_state *state,
                         int64_t now_us);
 
-/* LS-611: ESS from the just-decoded LDU2. Records the algorithm and KID
+/* ESS from the just-decoded LDU2. Records the algorithm and KID
  * against the currently-followed TG, and - if leave_on_encrypted is set and
  * the ALGID is not CLEAR - stamps a skip and hands control back to the CC
  * follower. Returns true if a return-to-control retune was issued. */
 bool p25_grant_on_ess(p25_grant_follower_t *f, uint16_t talkgroup,
                       uint8_t algid, uint16_t kid, int64_t now_us);
 
-/* LS-611: readout helpers used by the console command and the P25 screen. */
+/* readout helpers used by the console command and the P25 screen. */
 const p25_grant_tg_state_t *p25_grant_tg_state(const p25_grant_follower_t *f,
                                                size_t index);
 size_t p25_grant_tg_state_count(const p25_grant_follower_t *f);

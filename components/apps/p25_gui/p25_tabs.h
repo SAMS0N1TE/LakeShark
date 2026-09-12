@@ -1,16 +1,6 @@
 #ifndef P25_TABS_H
 #define P25_TABS_H
 
-/* LS-736: the P25 screen's fixed vocabulary - tab names and the DECODE action
- * row - lives here rather than as string literals inside run() and
- * buildDecodeTab(), because bench/tests/test_p25_screen_fit.cpp measures these
- * exact strings against the shared tab strip and the shared action row on both
- * panels.  A label renamed in the app and not in the test would prove nothing,
- * so there is one list and both sides read it.
- *
- * Deliberately no LVGL, no C++ and no other include: the bench compiles this
- * beside a host LVGL build with none of the firmware around it. */
-
 #define P25_TAB_DECODE  0
 #define P25_TAB_SIGNAL  1
 #define P25_TAB_HEALTH  2

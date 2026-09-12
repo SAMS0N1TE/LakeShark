@@ -2,17 +2,7 @@
 
 #include <string.h>
 
-/* LS-303: TSBK grants were parsed and the resolved frequency was written
- * into dsd_state and then never read. This is the reader: a small state
- * machine that follows a grant to its traffic channel and returns when the
- * call ends. Pure logic - the retune hook is a function pointer so the
- * bench can drive the whole thing without a radio.
- *
- * LS-611 layered onto the same state machine: an encrypted-ESS event is a
- * third reason to return to control (alongside the terminator and the
- * silence tick). Ownership of the retune stayed inside the follower - the
- * new path funnels through the same retune_to_control() helper - so
- * scanner.c and app_p25.c did not become a third writer of the tune. */
+/* TSBK grants were parsed and the resolved frequency was written into dsd_state and then never read. */
 
 /* Two seconds of silence on the traffic channel is treated as the end of
  * the call. Rationale: a P25 push-to-talk gap that leaves the traffic
@@ -40,7 +30,7 @@ static bool filter_allows(const p25_grant_follower_t *f, uint16_t tg)
     }
 }
 
-/* LS-611: linear scan is fine - the table caps at P25_GRANT_TG_STATE_MAX (32),
+/* linear scan is fine - the table caps at P25_GRANT_TG_STATE_MAX (32),
  * and grants land at most a few per second. If a future site pushes past that
  * we'd want a hash, but the memory bound matters more here than the speed. */
 static p25_grant_tg_state_t *tg_state_find(p25_grant_follower_t *f, uint16_t tg)
@@ -50,7 +40,7 @@ static p25_grant_tg_state_t *tg_state_find(p25_grant_follower_t *f, uint16_t tg)
     return NULL;
 }
 
-/* LS-611: evict the oldest entry (smallest last_seen_us) when the table is
+/* evict the oldest entry (smallest last_seen_us) when the table is
  * full. "Oldest by last_seen" beats "oldest by insertion" because a busy TG
  * that keeps landing grants deserves to stay in the table and a quiet TG
  * that skipped once weeks ago does not. If the evicted entry had an active
@@ -212,11 +202,6 @@ static bool on_grant(p25_grant_follower_t *f,
         return false;
     }
 
-    /* LS-611: honour the per-TG encrypted skip. A separate counter (not
-     * filtered_grants) so an operator can tell "you said no via the filter"
-     * apart from "the last call on this TG was ADP". A clear TG whose skip
-     * has not expired never lands here - the check is per-TG on purpose so
-     * one encrypted talkgroup does not deafen the radio to a clear one. */
     if (p25_grant_tg_is_skipped(f, talkgroup, now_us)) {
         f->encrypted_skips++;
         return false;
@@ -293,7 +278,7 @@ bool p25_grant_from_state(p25_grant_follower_t *f, const dsd_state *state,
     uint8_t op = state->p25_tsbk_last_opcode;
     /* Voice-grant whitelist, matching the set_voice_grant call sites in
      * p25_tsbk.c: 0x00 GRP_V_CH_GRANT, 0x02 GRP_V_CH_GRANT_UPDATE, 0x03
-     * GRP_V_CH_GRANT_UPDT_EXP (LS-652). Data grants, telephone interconnect,
+     * GRP_V_CH_GRANT_UPDT_EXP (). Data grants, telephone interconnect,
      * unit-to-unit, and every status/registration broadcast never write
      * the voice-grant fields, so this whitelist is the structural gate
      * that keeps the follower on the control channel for those opcodes. */
@@ -327,7 +312,7 @@ bool p25_grant_take_batch(p25_grant_follower_t *f, const dsd_state *s)
     if (s->p25_net_valid) {
         if (f->system_valid && (f->system_wacn != s->p25_tsbk_wacn ||
                                f->system_sysid != s->p25_tsbk_sysid)) {
-            /* LS-739: TG numbers and encryption skips are system-local. */
+            /* TG numbers and encryption skips are system-local. */
             (void)p25_grant_force_return_to_control(f);
             memset(f->tg_state, 0, sizeof(f->tg_state));
             f->tg_state_count = 0;
@@ -385,7 +370,7 @@ void p25_grant_on_frame(p25_grant_follower_t *f, const dsd_state *s,
         return;
     }
     f->receive_state = P25_RX_TRAFFIC_SYNC;
-    /* LS-739: lastp25type also becomes zero for an ignored LDU2 or unknown
+    /* lastp25type also becomes zero for an ignored LDU2 or unknown
      * DUID. Only a validated TDU/TDULC is a terminator. */
     if (s->p25_frame_duid == 3 || s->p25_frame_duid == 15) {
         (void)p25_grant_on_terminator(f, now_us);

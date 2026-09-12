@@ -15,24 +15,24 @@
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_console.h"
-#include "esp_lvgl_port_disp_stats.h"  /*LS-781*/
-#include "link_ctl.h"  /*LS-785*/
+#include "esp_lvgl_port_disp_stats.h"  /**/
+#include "link_ctl.h"  /**/
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "esp_hosted.h"
 
 #include "flipper_link.h"
 #include "ble_link.h"
-#include "ls_sweep.h"   /*LS-820*/
-#include "adsb_demo.h"    /*LS-835*/
-/*LS-738*/
+#include "ls_sweep.h"   /**/
+#include "adsb_demo.h"    /**/
+/**/
 #include "ls_wifi.h"
 #include "lakeshark_backend.h"
 #include "radio_health.h"
 #include "audio_out.h"
 #include "ls_board.h"
-#include "screenshot.h"   /*LS-831*/
-/*LS-220*/
+#include "screenshot.h"   /**/
+/**/
 extern "C" {
 #include "ls_version.h"
 }
@@ -40,8 +40,7 @@ extern "C" {
 #include "shell/ls_shell.hpp"
 #include "shell/ls_app.hpp"
 
-
-/*LS-835  Synthetic aircraft, so the whole chain below the decoder can be
+/* Synthetic aircraft, so the whole chain below the decoder can be
    exercised without waiting for a plane. See adsb_demo.h. */
 static int cmd_adsbdemo(int argc, char **argv)
 {
@@ -56,9 +55,9 @@ static int cmd_adsbdemo(int argc, char **argv)
     return 0;
 }
 
-/*LS-833  Print the telemetry line the head actually receives.
+/* Print the telemetry line the head actually receives.
 
-   headless_main.c has had this since LS-518; the LCD build never did, so the
+   headless_main.c has had this since ; the LCD build never did, so the
    only way to see a frame on the board people actually use was to read it out
    of the Flipper's log over a BLE link that might itself be the thing under
    suspicion. A whole day of wire-format debugging went that way. */
@@ -77,22 +76,8 @@ static int cmd_tel(int argc, char **argv)
     return 0;
 }
 
-/*LS-820  `sweep` - the Phase 0 primitive, as a console command.
+/* `sweep` - the Phase 0 primitive, as a console command. */
 
-   Tune across a range, take a spectrum at each stop, and print one
-   power-versus-frequency vector. RF diff, the sound trigger and direction
-   finding all read what this produces; the arithmetic behind it is host-tested
-   in bench/tests/test_ls_sweep.c.
-
-   Deliberately a console command rather than an app: it acquires the radio for
-   the length of the sweep and gives it back, so it cannot run while a decoder
-   owns the dongle and does not need an app lifecycle to exist. */
-/*LS-823  `bare_is_mhz` exists because the same parser cannot serve both
-   arguments. A bare "88" as a start frequency means 88 MHz - nobody sweeps
-   from 88 Hz. A bare "6250" as a BIN WIDTH means 6250 Hz, and applying the
-   same guess turned it into 6.25 GHz, which the planner then rejected as a
-   bin wider than a tune. The command reported "cannot plan that" for a
-   perfectly reasonable request and the guess was invisible. */
 static bool sweep_parse_hz(const char *s, uint64_t *out, bool bare_is_mhz)
 {
     if (!s || !*s) return false;
@@ -180,8 +165,6 @@ static int cmd_sweep(int argc, char **argv)
            ls_sweep_out_hz(&plan, (uint32_t)peak_i) / 1e6,
            (unsigned)ls_sweep_gaps(&plan, dbfs));
 
-    /* Anything well above the floor, merged into runs so one carrier is one
-       line rather than forty. */
     const int thresh = floor_db + 12;
     printf("  signals >= %d dBFS:\n", thresh);
     uint32_t i = 0, listed = 0;
@@ -203,7 +186,7 @@ static int cmd_sweep(int argc, char **argv)
     return 0;
 }
 
-/*LS-019*/
+/**/
 
 static const char *TAG = "gui_link";
 
@@ -214,7 +197,7 @@ enum { GM_P25 = 0, GM_ADSB, GM_FM, GM_REC };
 static const char *const MODE_NAME[] = { "P25", "ADS-B", "FM", "REC" };
 
 static volatile int  s_pending   = -1;
-/*LS-019*/
+/**/
 static volatile int  s_cur_mode  = GM_P25;
 static char          s_c6_fw[16] = "?";
 
@@ -229,7 +212,7 @@ static bool mode_index_by_name(const char *n, int *out)
     return false;
 }
 
-/*LS-020*/
+/**/
 static int radio_app_index(const char *n)
 {
     if (!n) return -1;
@@ -238,8 +221,8 @@ static int radio_app_index(const char *n)
     return -1;
 }
 
-/*LS-019*/
-/*LS-802  Announce each late display frame the moment it happens, so the
+/**/
+/* Announce each late display frame the moment it happens, so the
    console log shows what else was running at that timestamp. Four theories
    about the blue frame were wrong; this replaces the fifth guess with a
    timestamp that can be lined up against everything else in the log. */
@@ -247,7 +230,7 @@ static void disp_late_cb(lv_timer_t *)
 {
     uint32_t gap = lvgl_port_disp_stats_take_late();
     if (!gap) return;
-    const char *who = lvgl_port_disp_stats_late_task();   /*LS-803*/
+    const char *who = lvgl_port_disp_stats_late_task();   /**/
     ESP_LOGW(TAG, "display late frame: gap=%lu.%03lu ms interrupted=%s",
              (unsigned long)(gap / 1000), (unsigned long)(gap % 1000),
              who ? who : "?");
@@ -255,7 +238,7 @@ static void disp_late_cb(lv_timer_t *)
 
 static void gui_apply_cb(lv_timer_t *)
 {
-    /* LS-746: report only a completed visible mode, but keep accepting the
+    /* report only a completed visible mode, but keep accepting the
      * newest console request during loading or a failed-stop retry. */
     LsApp *cur = LsShell::instance().current();
     int shown = radio_app_index(cur ? cur->name() : NULL);
@@ -331,7 +314,7 @@ static int c6_read_en(void)
     return gpio_get_level(C6_EN_GPIO);
 }
 
-/*LS-301*/
+/**/
 typedef enum { DEFER_NONE = 0, DEFER_SDR_RESET, DEFER_C6_RESET } defer_job_t;
 
 #define DEFER_STACK_WORDS (3072 / sizeof(StackType_t))
@@ -344,7 +327,7 @@ static void defer_task(void *arg)
     (void)arg;
     defer_job_t job;
     for (;;) {
-        /* LS-734: radio_health_tick enumerates endpoints and takes the health
+        /* radio_health_tick enumerates endpoints and takes the health
            and endpoint locks. Running that inside the 200 ms LVGL timer made
            unrelated radio recovery/lock contention stall touch and display
            handling. This task and its internal static stack already exist for
@@ -404,12 +387,14 @@ static void gl_sdr_recover(void)
     lakeshark_radio_recover(LS_RADIO_ENDPOINT_RTL_USB);
 }
 
-/*LS-904*/
-static void gl_sdr_power_cycle(void)
+/**/
+
+static bool gl_sdr_power_cycle(void)
 {
     ESP_LOGW(TAG, "%s has no VBUS switch on the USB host port - cannot power "
                   "cycle the dongle in software. Replug it, or run "
                   "'SDR recover'.", LS_BOARD_NAME);
+    return false;
 }
 
 static void gl_ble_enable(bool on)
@@ -418,18 +403,17 @@ static void gl_ble_enable(bool on)
     else    ble_link_stop();
 }
 
-/*LS-785  The same two calls, reachable from the Settings screen. OFF is the
+/* The same two calls, reachable from the Settings screen. OFF is the
    only way to stop a head that refuses pairing from retrying forever, and a
    handheld has no serial console to type `ble off` into. */
 static bool gl_ble_is_on(void)        { return ble_link_state() != BLE_LINK_OFF; }
 static bool gl_ble_is_connected(void) { return ble_link_is_connected(); }
 
-
 static const ls_link_ctl_t GL_LINK_CTL = {
     .ble_enable       = gl_ble_enable,
     .ble_is_on        = gl_ble_is_on,
     .ble_is_connected = gl_ble_is_connected,
-    /*LS-800*/
+    /**/
     .reboot           = gl_reboot,
     .sdr_reset        = gl_sdr_reset,
 };
@@ -464,7 +448,7 @@ static const char *reset_reason_name(void)
 
 static void gl_sys_info(char *out, size_t len)
 {
-    /*LS-220*/
+    /**/
     ls_version_info_t vi;
     ls_version_get(&vi);
     snprintf(out, len,
@@ -526,7 +510,7 @@ static const flipper_link_host_t s_link_host = {
 
 const char *gui_link_mode_name(void) { return gl_current_mode_name(); }
 
-/*LS-019*/
+/**/
 static int cmd_ble(int argc, char **argv)
 {
     if (argc < 2) {
@@ -541,7 +525,7 @@ static int cmd_ble(int argc, char **argv)
         if (ble_link_passkey_pending())
             printf("*** PAIRING: the head is showing a 6-digit code - "
                    "enter it with:  ble pin <code>\n");
-        /*LS-813*/
+        /**/
         if (ble_link_stock_head_seen() && rx == 0)
             printf("*** a Flipper is on the air advertising its own BLE "
                    "profile, not ours - open the LakeShark app on it\n");
@@ -572,7 +556,7 @@ static int cmd_ble(int argc, char **argv)
     } else if (!strcmp(argv[1], "verbose") && argc >= 3) {
         ble_link_set_verbose(atoi(argv[2]) != 0);
         printf("ble verbose=%s\n", argv[2]);
-    /*LS-980*/
+    /**/
     } else if (!strcmp(argv[1], "forget")) {
         esp_err_t e = ble_link_forget_bonds();
         printf("ble forget: %s\n", esp_err_to_name(e));
@@ -583,7 +567,7 @@ static int cmd_ble(int argc, char **argv)
     return 0;
 }
 
-/*LS-019*/
+/**/
 static int cmd_link(int argc, char **argv)
 {
     if (argc < 2) {
@@ -620,7 +604,7 @@ static int cmd_link(int argc, char **argv)
     return 0;
 }
 
-/*LS-021*/
+/**/
 static int cmd_fl(int argc, char **argv)
 {
     if (argc < 2) {
@@ -641,17 +625,9 @@ static int cmd_fl(int argc, char **argv)
     return 0;
 }
 
-/*LS-738*/ /*LS-830*/
-/* WiFi console. Lives here, not in ls_ctl.c, because ls_ctl.c is in the
-   lakeshark component and ls_wifi.c is in main - a component must not include
-   from main. gui_link already registers console verbs, so this is its shelf.
+/**/ /**/
+/* WiFi console. */
 
-   `wifi on/off` toggles the SoftAP HTTP path from LS-738 - manual by design
-   because it takes the C6 off the BLE head. `wifi scan/join/leave/forget` is
-   station mode from LS-830: does NOT tear BLE down.
-
-   The passphrase is never echoed or logged. It arrives as an argv entry, is
-   passed straight into ls_wifi_sta_join(), and is zeroed here on exit. */
 static int cmd_wifi(int argc, char **argv)
 {
     char st[192];
@@ -692,7 +668,7 @@ static int cmd_wifi(int argc, char **argv)
         const char *ssid = argv[2];
         const char *pass = (argc >= 4) ? argv[3] : "";
         esp_err_t e = ls_wifi_sta_join(ssid, pass);
-        /*LS-830  Wipe the passphrase argv slot so nothing further in this
+        /* Wipe the passphrase argv slot so nothing further in this
            command's lifetime can leak it. Console lines already live in a
            parser buffer we do not own; this at least zeroes our copy. */
         if (argc >= 4) memset(argv[3], 0, strlen(argv[3]));
@@ -723,7 +699,7 @@ static int cmd_wifi(int argc, char **argv)
     return 0;
 }
 
-/*LS-831*/
+/**/
 static int cmd_shot(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "list")) {
@@ -743,9 +719,9 @@ static int cmd_shot(int argc, char **argv)
     return 0;
 }
 
-/*LS-781  The panel intermittently shows a whole-screen blue frame. That is a
+/* The panel intermittently shows a whole-screen blue frame. That is a
    MIPI-DSI DPI underrun - the framebuffer DMA is a continuous PSRAM read (the
-   pixel clock is already down at 20 MHz for that reason, LS-906) - and the
+   pixel clock is already down at 20 MHz for that reason, ) - and the
    driver reports no underrun event. `disp` prints the refresh cadence instead:
    a frame that underran shows up as an interval longer than one frame period.
    Compare late/max between builds; do not call the blue flash fixed on the
@@ -772,7 +748,7 @@ static int cmd_disp(int argc, char **argv)
     return 0;
 }
 
-/*LS-805  Where the internal RAM went.
+/* Where the internal RAM went.
    The DMA-capable pool runs at a few hundred bytes while PSRAM sits at 30 MB
    free, which is what refuses app loads ("Low memory. Tap an app to retry."),
    fails SD writes (sdmmc: not enough mem) and made the BLE transport drop
@@ -813,7 +789,7 @@ static void gui_link_register_commands(void)
 {
 
     const esp_console_cmd_t cmds[] = {
-        /*LS-738*/ /*LS-830*/
+        /**/ /**/
         { .command = "wifi",
           .help = "SoftAP+HTTP (stops BLE) plus station mode (does not)",
           .hint = "on|off|status|scan|join <ssid> [pass]|leave|forget",
@@ -826,22 +802,22 @@ static void gui_link_register_commands(void)
         { .command = "link", .help = "Flipper serial head control",
           .hint = "<on|off|verbose <0|1>|probe>",
           .func = &cmd_link, .argtable = NULL },
-        /*LS-831*/
+        /**/
         { .command = "shot", .help = "Screenshot the panel to a .bmp beside the REC captures",
           .hint = "[name|list]", .func = &cmd_shot, .argtable = NULL },
-        /*LS-781*/
+        /**/
         { .command = "disp", .help = "Panel refresh cadence; long gaps are DPI underruns (blue frames)",
           .hint = "[reset [threshold_us]]", .func = &cmd_disp, .argtable = NULL },
-        /*LS-805*/
+        /**/
         { .command = "mem", .help = "Heap by capability and per-task stack headroom",
           .hint = "", .func = &cmd_mem, .argtable = NULL },
-        /*LS-835*/
+        /**/
         { .command = "adsbdemo", .help = "Synthetic aircraft for testing the map and the link",
           .hint = "<0-8>", .func = &cmd_adsbdemo, .argtable = NULL },
-        /*LS-833*/
+        /**/
         { .command = "tel", .help = "Print raw telemetry frames exactly as the head receives them",
           .hint = "[count]", .func = &cmd_tel, .argtable = NULL },
-        /*LS-820*/
+        /**/
         { .command = "sweep", .help = "Wideband sweep: power vs frequency across a range",
           .hint = "<start> <stop> [bin_hz] [gain_tenths] [fast]", .func = &cmd_sweep, .argtable = NULL },
     };
@@ -849,7 +825,7 @@ static void gui_link_register_commands(void)
         esp_console_cmd_register(&cmds[i]);
 }
 
-/*LS-305*/
+/**/
 static void c6_version_probe(void)
 {
     esp_hosted_coprocessor_fwver_t v = {};
@@ -871,9 +847,7 @@ static void c6_version_probe(void)
 
 void gui_link_start(void)
 {
-    /* LS-1000: headless startup already ran the endpoint watchdog, but the
-       LCD path did not.  Its decoder could consume 491520 B/s while every
-       SDR query reported rhs=absent because no health slot existed. */
+
     radio_health_hooks_t health = {};
     health.request_recovery = lakeshark_radio_recover;
     radio_health_init(&health);
@@ -887,22 +861,22 @@ void gui_link_start(void)
 
     bsp_display_lock(0);
     lv_timer_create(gui_apply_cb, 200, NULL);
-    /*LS-802*/
+    /**/
     lv_timer_create(disp_late_cb, 100, NULL);
     bsp_display_unlock();
 
-    /*LS-110*/
+    /**/
     int e = esp_hosted_connect_to_slave();
     if (e != 0) {
         ESP_LOGE(TAG, "C6 co-processor link FAILED (%d) - not starting BLE. "
                       "Do NOT retry past this; it boot-loops (LS-110).", e);
     } else {
         c6_version_probe();
-        /*LS-785*/
+        /**/
         ls_link_ctl_register(&GL_LINK_CTL);
         esp_err_t be = ble_link_start();
         ESP_LOGW(TAG, "BLE control head link: %s", esp_err_to_name(be));
-        /*LS-830  Rejoin the last WiFi network if one is stored. Does not
+        /* Rejoin the last WiFi network if one is stored. Does not
            stop BLE. Silent when no credentials are saved. */
         esp_err_t we = ls_wifi_sta_autojoin();
         if (we == ESP_OK) {
@@ -917,7 +891,7 @@ void gui_link_start(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
-    /*LS-003*/
+    /**/
     flipper_link_cfg_t cfg = FLIPPER_LINK_CFG_DEFAULT();
     cfg.rx_gpio = LS_BOARD_LINK_RX_GPIO;
     cfg.tx_gpio = LS_BOARD_LINK_TX_GPIO;

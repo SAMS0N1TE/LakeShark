@@ -14,37 +14,37 @@ extern "C" {
 #include "lakeshark_backend.h"
 #include "rec_state.h"
 #include "rec_storage_label.h"
-/*LS-961*/
+/**/
 #include "rec_space.h"
-/*LS-560*/
+/**/
 #include "rec_scout_span.h"
-/*LS-963*/
+/**/
 #include "spectrum.h"
-/*LS-984*/
+/**/
 #include "nvs.h"
 #include "nvs_flash.h"
 }
 
-/*LS-963*/
+/**/
 #include "esp_timer.h"
 
-/*LS-020*/
+/**/
 
 #define COL_BG    SDR_BG
 #define COL_PANEL SDR_PANEL
 #define COL_TEXT  SDR_TEXT
 
-/*LS-020*/
+/**/
 #define MAG_FULL_SCALE 256
 
-/*LS-028*/
+/**/
 /* The R820T's tuning range. These were the two literals inside freq_nudge();
    the keypad has to clamp to exactly the same window or typing a number would
    accept what the < > buttons refuse to walk to. */
 #define REC_FREQ_MIN_HZ   24000000UL
 #define REC_FREQ_MAX_HZ 1766000000UL
 
-/*LS-963*/
+/**/
 /* Named indices for the tab strip.  updateRecord/updateScout/updateConfig
    dispatch on the active index and switchTab wraps on the count - three
    places that must agree with an order expressed nowhere else. */
@@ -56,7 +56,7 @@ enum {
     REC_TAB_COUNT
 };
 
-/*LS-963  The display span is a crop of the native ~200 kHz window.  The
+/* The display span is a crop of the native ~200 kHz window.  The
    tuner does not move when this changes: 200 kHz shows the passband and
    25 kHz resolves individual FSK deviation lobes.  The pure ladder and its
    edge arithmetic live in rec_scout_span.c so the host bench covers the
@@ -68,15 +68,8 @@ static void scout_span_label(lv_obj_t *label, int level)
                           (unsigned long)(rec_scout_span_hz(level) / 1000u));
 }
 
-/*LS-984*/
-/* SPLIT snap points: 0/25/50/75/100 percent of the chart+waterfall area
-   given to the spectrum.  A discrete set stops SPLIT+/SPLIT- becoming a
-   fine-adjust exercise on a thumb, and 0/100 give the two operators who
-   only ever want one of the two views a one-tap shortcut. */
-/*LS-984  NVS namespace for SCOUT operator preferences.  Split and
-   fullscreen mode are the only settings and they belong to the SCOUT
-   tab specifically - not global "settings", not per-app freq/gain,
-   which already live in the settings module. */
+/**/
+
 static const char *SCOUT_NVS_NS   = "rec-scout";
 static const char *SCOUT_KEY_SPLIT = "split";
 static const char *SCOUT_KEY_FULL  = "full";
@@ -84,13 +77,9 @@ static const char *SCOUT_KEY_CONTRAST = "contrast";
 
 struct rec_preset_t { const char *name; uint32_t hz; };
 
-/*LS-024*/
-/*LS-030*/
-/* 434.07 IS FIRST BECAUSE IT IS THE ONLY ONE IN THIS LIST CONFIRMED ON AIR BY
-   THIS RECEIVER - two captures, 350 and 500 edges, both ended on gap. Every
-   other entry is a plausible number off a datasheet or a retracted note.
-   868.35 is KEPT BUT DEMOTED: it is the 2nd harmonic of a ~434 fundamental,
-   not a transmitter, and tuning there records nothing. See LS-030. */
+/**/
+/**/
+
 static const rec_preset_t REC_PRESETS[] = {
     { "LIGHT 434.07",  434070000UL },
     { "TX rem 433.66", 433660000UL },
@@ -102,7 +91,7 @@ static const rec_preset_t REC_PRESETS[] = {
 };
 #define N_PRESETS ((int)(sizeof(REC_PRESETS) / sizeof(REC_PRESETS[0])))
 
-/*LS-023*/
+/**/
 static void rec_ascii_bar(char *out, size_t outsz, int pct, int width)
 {
     if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
@@ -163,30 +152,30 @@ AppREC::~AppREC() = default;
 
 bool AppREC::init(void)  { return true; }
 
-/*LS-600*/
+/**/
 bool AppREC::pause(void)
 {
-    /*LS-028*/
+    /**/
     closeFreqEntry();
     if (_timer) lv_timer_pause(_timer);
-    /*LS-963*/
+    /**/
     rec_scout_enable(false);
     lakeshark_radio_park();
     return true;
 }
 
-/*LS-604*/
+/**/
 bool AppREC::background(void)
 {
-    /*LS-028*/
+    /**/
     closeFreqEntry();
     if (_timer) lv_timer_pause(_timer);
-    /*LS-963*/
+    /**/
     rec_scout_enable(false);
     return true;
 }
 
-/*LS-600*/
+/**/
 bool AppREC::resume(void)
 {
     lakeshark_select_rec();
@@ -196,22 +185,22 @@ bool AppREC::resume(void)
 
 bool AppREC::back(void)
 {
-    /*LS-028*/
+    /**/
     if (_freq_entry) { closeFreqEntry(); return true; }
     return exitToLauncher();
 }
 
 bool AppREC::close(void)
 {
-    /*LS-028*/
+    /**/
     closeFreqEntry();
-    /*LS-963*/
+    /**/
     rec_scout_enable(false);
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _tabview     = nullptr;
     _files_table = nullptr;
     ls_spectrum_waterfall_forget(&_scout_spectrum);
-    /*LS-984*/
+    /**/
     _scout_chrome    = nullptr;
     _scout_area      = nullptr;
     _scout_rec_lbl   = nullptr;
@@ -239,7 +228,7 @@ bool AppREC::run(lv_obj_t *parent)
     _screen_lamp = screen.lamp;
     ls_ui_screen_set_readout(&screen, "433.9200 MHz");
 
-    /*LS-984*/
+    /**/
     /* Every span-a-column dimension in this tab derives from the
        display.  A literal 240 shipped as a waterfall on half the panel
        and disagreed with a neighbouring 460 assumption for the chart -
@@ -277,10 +266,7 @@ bool AppREC::run(lv_obj_t *parent)
     _tabview = screen.tabs;
 
     buildRecordTab(ls_ui_screen_add_tab(&screen, "RECORD"));
-    /*LS-963  SCOUT sits next to RECORD because it is the same job -
-       find something worth capturing, then capture it.  Placing it
-       further right would push the operator to type a frequency they
-       could have just seen a peak at. */
+
     buildScoutTab (ls_ui_screen_add_tab(&screen, "SCOUT"));
     buildConfigTab(ls_ui_screen_add_tab(&screen, "CONFIG"));
     buildFilesTab (ls_ui_screen_add_tab(&screen, "FILES"));
@@ -294,10 +280,6 @@ void AppREC::timerCb(lv_timer_t *t)
     AppREC *self = (AppREC *)t->user_data;
     if (!self->_tabview) return;
 
-    /*LS-963  Scout is a live view; enable it only while its tab is up.
-       When the operator moves to RECORD/CONFIG/FILES the rx task stops
-       paying for the FFT.  This edge trigger keeps the enable/disable
-       out of every tick. */
     int cur = (int)lv_tabview_get_tab_act(self->_tabview);
     bool want_scout = (cur == REC_TAB_SCOUT);
     if (want_scout != rec_scout_enabled()) rec_scout_enable(want_scout);
@@ -310,7 +292,7 @@ void AppREC::timerCb(lv_timer_t *t)
     }
 }
 
-/*LS-963  RECORD in the LCD-face style AppP25 uses on DECODE.  What was
+/* RECORD in the LCD-face style AppP25 uses on DECODE.  What was
    here before was controls stacked in the order they were added: an
    ALL-CAPS "IDLE" label, then a bar with no context, then five lines
    of stats, then three unlabelled buttons.  This is the app most used
@@ -344,7 +326,7 @@ void AppREC::buildRecordTab(lv_obj_t *parent)
     lv_obj_set_size(_rec_lamp, 14, 14);
     lv_led_set_color(_rec_lamp, SDR_PAS_GREEN);
     lv_led_off(_rec_lamp);
-    /* LS-827  Kill the shadow spread - the LVGL LED default is far
+    /* Kill the shadow spread - the LVGL LED default is far
        wider than a 14 px widget and bleeds across the strap. */
     lv_obj_set_style_shadow_width(_rec_lamp, 0, 0);
     lv_obj_set_style_shadow_spread(_rec_lamp, 0, 0);
@@ -364,7 +346,7 @@ void AppREC::buildRecordTab(lv_obj_t *parent)
     lv_obj_set_style_text_align(_rec_sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(_rec_sub, "MHz");
 
-    /*LS-023*/
+    /**/
     _rec_magbar = sdr_label(_rec_face, sdr_font_mono(), SDR_PAS_CYAN);
     lv_obj_set_width(_rec_magbar, lv_pct(100));
     lv_label_set_text(_rec_magbar, "");
@@ -387,7 +369,7 @@ void AppREC::buildRecordTab(lv_obj_t *parent)
     ls_ui_button(row, "ARM", LS_BTN_PRIMARY, armCb, this, nullptr);
     ls_ui_button(row, "STOP", LS_BTN_DANGER, stopCb, this, nullptr);
     ls_ui_button(row, "SAVE", LS_BTN_PRIMARY, saveCb, this, nullptr);
-    /*LS-963*/
+    /**/
     ls_ui_button(row, "SCOUT", LS_BTN_DEFAULT, toScoutCb, this, nullptr);
 
     updateRecord();
@@ -404,10 +386,6 @@ void AppREC::updateRecord(void)
 
     char b[192];
 
-    /* LCD-face strap: phase name in phase-tinted colour, RX lamp lit
-       when the detector believes a carrier is up.  A capture is a
-       hard-to-miss event; DONE glows green until the operator arms
-       again. */
     lv_label_set_text(_rec_phase_lbl,
                       receiver.available ? phase_name(st.phase)
                                          : receiver.connection);
@@ -452,7 +430,7 @@ void AppREC::updateRecord(void)
     }
     lv_label_set_text(_rec_sub, b);
 
-    /*LS-023*/
+    /**/
     int mag = st.mag_now;
     if (mag < 0)              mag = 0;
     if (mag > MAG_FULL_SCALE) mag = MAG_FULL_SCALE;
@@ -467,10 +445,8 @@ void AppREC::updateRecord(void)
             live ? SDR_PAS_GREEN : SDR_PAS_CYAN, 0);
     }
 
-    /*LS-961*/
-    /* Free-space column so the operator sees the card filling up as it
-       happens; the FILES tab has the same reading, but nobody actively
-       capturing is looking at FILES. */
+    /**/
+
     char free_s[16];
     if (st.bytes_free == UINT64_MAX) {
         snprintf(free_s, sizeof(free_s), "?");
@@ -509,7 +485,7 @@ void AppREC::updateRecord(void)
 void AppREC::armCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
-    /*LS-506*/
+    /**/
     rec_arm_request();
     self->updateRecord();
 }
@@ -521,7 +497,7 @@ void AppREC::stopCb(lv_event_t *e)
     self->updateRecord();
 }
 
-/*LS-963*/
+/**/
 void AppREC::toScoutCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
@@ -539,13 +515,11 @@ void AppREC::saveCb(lv_event_t *e)
     char name[24], path[80], msg[128];
     snprintf(name, sizeof(name), "rec%03lu", (unsigned long)(st.captures));
 
-    /*LS-513*/
+    /**/
     int r = rec_save(name, path, sizeof(path));
     if (r < 0) {
-        /*LS-961*/
-        /* -4 is the space check refusing before any file is opened.
-           Name both numbers so the operator sees whether to delete
-           one file or empty the card. */
+        /**/
+
         if (r == -4) {
             rec_status_t st2;
             rec_get_status(&st2);
@@ -570,22 +544,12 @@ void AppREC::saveCb(lv_event_t *e)
     self->refreshFiles();
 }
 
-/*LS-963  SCOUT tab.  A spectrum + waterfall over the ~200 kHz window
-   centred on rec_get_freq().  The tuner does NOT move here - a scout
-   view that retunes underneath the RECORD tab would be an argument the
-   two tabs would have quietly and the operator would see as "REC will
-   not trigger".  The zoom cycle crops the display, not the tuner.
+/* SCOUT tab. */
 
-   LS-984  Split spectrum/waterfall, fullscreen waterfall, and gain +
-   ARM on the main screen.  Chrome (header/freq/sub/peak/stats/spec
-   cap/wf cap) is grouped so hiding it for fullscreen is one flag flip.
-   Nothing here holds a literal pixel width - _wf_w is computed in run().
-*/
 void AppREC::buildScoutTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
-    /*LS-792  One scroller, and it is the tab - this app has no inner body, so
-       LS-736's "two scrollers confuse the operator" does not apply here. */
+
     lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
 
@@ -601,7 +565,7 @@ void AppREC::buildScoutTab(lv_obj_t *parent)
     lv_obj_t *hdrp = sdr_panel(_scout_chrome);
     _scout_hdr = sdr_label(hdrp, sdr_font_mono(), SDR_PAS_CYAN);
     lv_obj_set_width(_scout_hdr, lv_pct(100));
-    /*LS-784  This wrapped to a second line whenever the centre frequency or
+    /* This wrapped to a second line whenever the centre frequency or
        span grew a digit, which changed the header's height and pushed the
        whole tab - chart, waterfall, every button - down a row mid-tune. One
        clipped line keeps the layout fixed while values change. */
@@ -630,14 +594,7 @@ void AppREC::buildScoutTab(lv_obj_t *parent)
        flex-grown remainder of the tab, and applyScoutSplit divides that
        measured height between the two viewers.  Wrapping them in a
        sub-container makes SPLIT changes one place to touch. */
-    /*LS-792  SCOUT had no scroller at all. P25 puts its content in the
-       scrollable body from ls_ui_tab_split(); every other app, this one
-       included, builds straight onto the tab, and ls_ui_screen_add_tab leaves
-       that tab unscrollable. The spectrum widget adds its VIEW -/50-50/VIEW +,
-       CONTRAST and GAIN groups inside its own panel below the chart, so on a
-       fixed-height area they were simply clipped: the operator could not
-       change the split, and with the waterfall squeezed to a sliver there was
-       no way to get it back. Size to content and let the tab scroll. */
+
     _scout_area = lv_obj_create(parent);
     lv_obj_set_width(_scout_area, lv_pct(100));
     lv_obj_set_height(_scout_area, LV_SIZE_CONTENT);
@@ -663,8 +620,8 @@ void AppREC::buildScoutTab(lv_obj_t *parent)
     lv_obj_set_width(_scout_stats, lv_pct(100));
     lv_label_set_text(_scout_stats, "waiting for IQ");
 
-    /*LS-560  Control groups use content height plus ROW_WRAP.  The fixed
-       50 px rows from LS-984 accepted more children than their panel width,
+    /* Control groups use content height plus ROW_WRAP.  The fixed
+       50 px rows from accepted more children than their panel width,
        so LVGL placed the buttons on top of one another.  Flex now derives
        both the number of lines and their total height from the display. */
     _scout_row1 = ls_ui_controls(parent);
@@ -771,7 +728,7 @@ void AppREC::updateScout(void)
        zoom.  Reading the whole thing once and cropping the display
        means the FPS cost is constant across zoom levels.
 
-       LS-984  Bin count now derives from the panel width (see run()),
+       Bin count now derives from the panel width (see run()),
        so the caps on the stack array match _scout_bins.  240 was the
        old cap and is still enough for the widest supported panel. */
     static float bins_full[240];
@@ -831,7 +788,7 @@ void AppREC::updateScout(void)
     /* Stats: frame rate + PSRAM footprint of the waterfall so the
        cost of running this view is on the panel next to it, not
        assumed.  A graph that starves the decoder is worse than no
-       graph. LS-703 reports the shared widget's actual allocation, not the
+       graph. reports the shared widget's actual allocation, not the
        currently visible waterfall slice. */
     size_t wf_bytes = _scout_spectrum.allocation_bytes;
     size_t fft_bytes = (size_t)SPEC_FFT_N * sizeof(float) * 2;   /* pub + db */
@@ -848,28 +805,22 @@ void AppREC::updateScout(void)
          st_ui.freq_hz != st_ui.effective_freq_hz))
         snprintf(b, sizeof(b), "SCOUT  %s", receiver.frequency);
     else
-        /*LS-784  centre and span are already on the line below; repeating
+        /* centre and span are already on the line below; repeating
            them here is what made this the widest, wrap-prone label. Carry the
            receiver state, which is not shown anywhere else on this tab. */
         snprintf(b, sizeof(b), "SCOUT  %s", receiver.connection);
     lv_label_set_text(_scout_hdr, b);
 
-    /*LS-984  Live-update the on-screen GAIN readout and REC/STOP
-       button label so the operator does not need to leave the tab
-       to check either. */
     ls_spectrum_waterfall_set_gain_text(&_scout_spectrum, receiver.gain);
     scoutRefreshRecBtn();
 }
 
-/*LS-963*/
+/**/
 void AppREC::scoutTunePeakCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
     if (!self) return;
 
-    /* Prefer the DISPLAY peak (as the user sees it in the chart) over
-       the backend peak: at zoom levels below 200 kHz the two disagree,
-       and the operator is looking at the chart. */
     uint32_t centre = rec_get_freq();
     uint32_t span   = rec_scout_span_hz(self->_scout_zoom);
 
@@ -909,7 +860,7 @@ void AppREC::scoutTunePeakCb(lv_event_t *e)
     }
 }
 
-/*LS-560  SPAN remains as the quick cyclic preset shortcut from LS-963.
+/* SPAN remains as the quick cyclic preset shortcut from .
    ZOOM -/+ are directional and clamp at the wide/narrow ends, so repeated
    presses never jump across the ladder in the opposite direction. */
 void AppREC::scoutSpanCb(lv_event_t *e)
@@ -936,20 +887,8 @@ void AppREC::scoutZoomInCb(lv_event_t *e)
     scout_span_label(self->_scout_span_lbl, self->_scout_zoom);
 }
 
-/*LS-984  Divide the chart+waterfall area between the two viewers.
+/* Divide the chart+waterfall area between the two viewers. */
 
-   Split is a percentage of the vertical area given to the spectrum;
-   the waterfall gets the rest.  0 hides the spectrum, 100 hides the
-   waterfall, everything else splits proportionally.  Fullscreen mode
-   hides the chrome and gives the waterfall the entire tab except the
-   wrapping controls, so an operator watching a slow signal is not
-   staring at header labels that could have been more waterfall.
-
-   Buffer size does not change on split - only the visible slice via
-   lv_canvas_set_buffer.  Reallocating on every SPLIT+/SPLIT- press
-   would fragment PSRAM and stutter the display; the tradeoff is
-   bounded PSRAM buffer that is not currently painted. The shared widget owns
-   that allocation and the same split arithmetic used by FM and P25. */
 void AppREC::applyScoutSplit(void)
 {
     if (!_scout_area) return;
@@ -974,7 +913,7 @@ void AppREC::scoutViewChanged(ls_spectrum_waterfall_t *view, void *user_data)
     self->scoutSavePrefs();
 }
 
-/*LS-984  Persist SCOUT split + fullscreen so the choice survives
+/* Persist SCOUT split + fullscreen so the choice survives
    leaving the tab (or the whole app).  A named NVS namespace so
    another tab does not conflict on the same keys. */
 void AppREC::scoutLoadPrefs(void)
@@ -1010,10 +949,6 @@ void AppREC::scoutSavePrefs(void)
     nvs_close(h);
 }
 
-/*LS-984  REC button on the main SCOUT screen so the operator does not
-   walk back to the RECORD tab to start a capture on a signal they can
-   see right there in the chart.  Label doubles as state: REC arms,
-   STOP stops. */
 void AppREC::scoutRefreshRecBtn(void)
 {
     if (!_scout_rec_lbl) return;
@@ -1024,9 +959,6 @@ void AppREC::scoutRefreshRecBtn(void)
     lv_label_set_text(_scout_rec_lbl, txt);
 }
 
-/*LS-984  Gain on the main screen, same step and clamps as the CONFIG
-   tab so the two do not disagree.  Keeps GAIN in the operator's line
-   of sight while a peak is up in the chart. */
 void AppREC::scoutGainDownCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
@@ -1047,11 +979,6 @@ void AppREC::scoutGainUpCb(lv_event_t *e)
     (void)self;
 }
 
-/*LS-984  ARM/STOP as one button: the operator only ever wants
-   whichever action is not the current state.  Stopping mid-capture
-   from SCOUT is exactly the sequence "I saw it happen, that is
-   enough" - and having to leave the tab to hit STOP is why the
-   operator asked for this. */
 void AppREC::scoutArmCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
@@ -1075,7 +1002,7 @@ void AppREC::buildConfigTab(lv_obj_t *parent)
     _cfg_freq = r.value;
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, freqDownCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, freqUpCb, this, nullptr);
-    /*LS-028*/
+    /**/
     ls_ui_button(r.controls, "SET", LS_BTN_PRIMARY, freqEntryCb, this, nullptr);
 
     sdr_setting_row(parent, "COARSE  1 MHz", &r);
@@ -1092,12 +1019,12 @@ void AppREC::buildConfigTab(lv_obj_t *parent)
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, gainDownCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, gainUpCb, this, nullptr);
 
-    /*LS-516*/
+    /**/
     sdr_setting_row(parent, "BANDWIDTH", &r);
     _cfg_bw = r.value;
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, bwDownCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, bwUpCb, this, nullptr);
-    /*LS-830  AUTO, the same as THRESHOLD has. The down button does reach
+    /* AUTO, the same as THRESHOLD has. The down button does reach
        auto - it steps 50 kHz and 0 is the bottom - but from 1000 kHz that is
        twenty presses, so in practice there was no way back and the setting
        looked one-way. */
@@ -1105,14 +1032,14 @@ void AppREC::buildConfigTab(lv_obj_t *parent)
 
     sdr_section(parent, "DETECTOR");
 
-    /*LS-503*/
+    /**/
     sdr_setting_row(parent, "THRESHOLD", &r);
     _cfg_thresh = r.value;
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, threshDownCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, threshUpCb, this, nullptr);
     ls_ui_button(r.controls, "AUTO", LS_BTN_TOGGLE_OFF, threshAutoCb, this, nullptr);
 
-    /*LS-504*/
+    /**/
     sdr_setting_row(parent, "END GAP", &r);
     _cfg_gap = r.value;
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, gapDownCb, this, nullptr);
@@ -1133,7 +1060,7 @@ void AppREC::buildConfigTab(lv_obj_t *parent)
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, minEdgesDownCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, minEdgesUpCb, this, nullptr);
 
-    /*LS-830  A way back. Every detector setting here persists, and a bad
+    /* A way back. Every detector setting here persists, and a bad
        combination stops the recorder triggering with nothing on screen to say
        which one did it - so without this the only reliable escape was
        reflashing. */
@@ -1183,7 +1110,7 @@ void AppREC::updateConfig(void)
     snprintf(b, sizeof(b), "%lu us", (unsigned long)rec_get_min_pulse());
     lv_label_set_text(_cfg_minpul, b);
 
-    /*LS-514*/
+    /**/
     snprintf(b, sizeof(b), "%lu ms", (unsigned long)(rec_get_max_span() / 1000));
     lv_label_set_text(_cfg_maxspan, b);
 
@@ -1231,10 +1158,8 @@ void AppREC::presetCb(lv_event_t *e)
     self->updateConfig();
 }
 
-/*LS-028*/
-/* Direct frequency entry. Same keypad AppFM got in LS-732, and deliberately
-   the same code shape rather than a shared helper - see the marker entry for
-   why that call was made. */
+/**/
+
 void AppREC::freqEntryCb(lv_event_t *e)
 {
     AppREC *self = (AppREC *)lv_event_get_user_data(e);
@@ -1247,7 +1172,7 @@ void AppREC::openFreqEntry(void)
        readout and a small correction does not need the number memorised. */
     char cur[24];
     snprintf(cur, sizeof(cur), "%.4f", rec_get_freq() / 1e6);
-    /*LS-732*/
+    /**/
     const ls_text_entry_config_t config = {
         .title = "ENTER FREQUENCY (MHz)  -  24 to 1766",
         .text = "",
@@ -1275,9 +1200,7 @@ void AppREC::freqEntryDone(bool accepted, const char *text, void *user_data)
            frequency would be the last thing suspected. */
         if (hz >= (double)REC_FREQ_MIN_HZ && hz <= (double)REC_FREQ_MAX_HZ) {
             rec_set_freq((uint32_t)(hz + 0.5));
-            /* Entering a frequency by hand leaves PRESET showing "custom"
-               until it matches one; re-sync the cycle index so the next CYCLE
-               starts from the top rather than from wherever it last was. */
+
             self->_preset = -1;
         }
     }
@@ -1357,14 +1280,14 @@ void AppREC::bwDownCb(lv_event_t *e)
     ((AppREC *)lv_event_get_user_data(e))->updateConfig();
 }
 
-/*LS-830*/
+/**/
 void AppREC::bwAutoCb(lv_event_t *e)
 {
     rec_set_bw(0);
     ((AppREC *)lv_event_get_user_data(e))->updateConfig();
 }
 
-/*LS-830  Put every REC setting back to its built-in default.
+/* Put every REC setting back to its built-in default.
 
    There was no way to undo a session of experimenting short of reflashing:
    threshold, gap, bandwidth, min pulse, max span and min edges all persist,
@@ -1474,7 +1397,7 @@ void AppREC::refreshFiles(void)
     if (!_files_table) return;
 
     char list[768];
-    /*LS-907*/
+    /**/
     /* rec_list returns the true total on disk and reports byte-buffer
        truncation separately, so the note can name both limits honestly
        instead of only the row-cap one. */
@@ -1487,7 +1410,7 @@ void AppREC::refreshFiles(void)
     lv_table_set_row_cnt(_files_table, 1);
     lv_table_set_cell_value(_files_table, 0, 0, "FILE");
 
-    /*LS-020*/
+    /**/
     char *p = list;
     while (*p && _file_count < FILES_MAX) {
         char *comma = strstr(p, ", ");
@@ -1507,12 +1430,12 @@ void AppREC::refreshFiles(void)
         p = comma + 2;
     }
 
-    /*LS-768*/
+    /**/
     /* Was "on SPIFFS" for every case, but rec_dir() prefers /sdcard/lakeshark
-       when a card is mounted (see the LS-031 note on that function) - so this
+       when a card is mounted (see the note on that function) - so this
        label lied on any board with a card in the slot.  Route through the
        classifier so the two paths cannot drift. */
-    /*LS-907*/
+    /**/
     /* Anything the user cannot see is "truncated": either the byte
        buffer filled before rec_list finished walking the directory, or
        the total exceeds the row cap.  Was only n > FILES_MAX before,
@@ -1522,7 +1445,7 @@ void AppREC::refreshFiles(void)
                      (_file_count < total);
     char b[96];
     rec_files_note(b, sizeof(b), rec_dir(), total, truncated ? 1 : 0);
-    /*LS-961*/
+    /**/
     /* Free-space suffix so the user knows without opening a console
        whether a SAVE is going to be refused.  UINT64_MAX from the
        probe reads as "?" so a failed statvfs is not mistaken for a

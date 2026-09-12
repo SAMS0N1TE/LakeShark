@@ -1,3 +1,29 @@
+/*
+ * DSD-derived source. Attribution restored in LakeShark on 2026-09-11 from
+ * the DSD COPYRIGHT at revision
+ * 59423fa46be8b41ef0bd2f3d2b45590600be29f0:
+ * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/src/dsd_frame.c
+ *
+ * That revision is a verified comparison source, established by comparing
+ * identifiers and literals after comments and whitespace were removed. It is
+ * not a claim about which revision or intervening fork was originally
+ * imported. This file has been modified for LakeShark and the ESP32-P4.
+ *
+ * Copyright (C) 2010 DSD Author
+ * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ */
 
 #include "dsd.h"
 #include "diag.h"
@@ -21,7 +47,7 @@ static void
 captureTSDU(dsd_opts *opts, dsd_state *state)
 {
     if (state->p25_frame_valid) {
-        /* LS-739: two systems may reuse IDEN and TG values. A validated new
+        /* two systems may reuse IDEN and TG values. A validated new
          * control NAC retires the old plan before even the first grant. */
         if (state->p25_control_nac_valid && state->p25_control_nac != state->nac)
             p25_tsbk_reset_system(state);
@@ -179,9 +205,6 @@ processFrame(dsd_opts *opts, dsd_state *state)
         }
     }
 
-    /* LS-739: an uncorrectable NID used to dispatch plausible raw DUIDs or
-     * guess the next LDU. A corrupt candidate must not reach the vocoder or
-     * look like a terminator/relock. Verified with damaged BCH fixtures. */
     if (!check_result) {
         state->pcm_out_write = 0;
         return;
@@ -189,7 +212,7 @@ processFrame(dsd_opts *opts, dsd_state *state)
     state->p25_frame_valid = 1;
     state->p25_frame_duid = (uint8_t)((duid[0] - '0') * 4 + duid[1] - '0');
 
-    /* LS-610: a talkgroup change means we are on a new call, so the ALGID
+    /* a talkgroup change means we are on a new call, so the ALGID
      * from the previous LDU2 no longer applies. Snapshot before dispatch;
      * if the frame writes a new non-zero lasttg, clear the ESS. */
     int pre_tg = state->lasttg;
@@ -235,11 +258,11 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastsrc = 0;
         state->lastp25type = 0;
         state->err_str[0] = 0;
-        /* LS-610: TDULC ends a call. Clear ESS so the next call starts
+        /* TDULC ends a call. Clear ESS so the next call starts
          * unknown - anything else lets a mute leak from one call to the
          * next until reboot. */
         p25_ess_clear(state);
-        /* LS-650: same for the LCW identity, or the next call would inherit
+        /* same for the LCW identity, or the next call would inherit
          * the previous emergency flag, alias and TG label. */
         p25_lcw_call_clear(state);
         sprintf(state->fsubtype, " TDULC        ");
@@ -254,9 +277,9 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastsrc = 0;
         state->lastp25type = 0;
         state->err_str[0] = 0;
-        /* LS-610: same as TDULC - end of call, drop the ESS. */
+        /* same as TDULC - end of call, drop the ESS. */
         p25_ess_clear(state);
-        /* LS-650: and the LCW identity, for the same reason. */
+        /* and the LCW identity, for the same reason. */
         p25_lcw_call_clear(state);
         sprintf(state->fsubtype, " TDU          ");
         processTDU(opts, state);
@@ -274,7 +297,7 @@ processFrame(dsd_opts *opts, dsd_state *state)
         state->lastp25type = 4;
         sprintf(state->fsubtype, " PDU          ");
     } else if (state->lastp25type == 1) {
-        /* LS-739: a validated but unsupported DUID is not an inferred LDU. */
+        /* a validated but unsupported DUID is not an inferred LDU. */
         state->p25_frame_valid = 0;
         state->pcm_out_write = 0;
     } else if (state->lastp25type == 2) {
@@ -300,7 +323,7 @@ processFrame(dsd_opts *opts, dsd_state *state)
         }
     }
 
-    /* LS-610: if the frame we just dispatched landed a different talkgroup,
+    /* if the frame we just dispatched landed a different talkgroup,
      * the ESS from the prior call no longer applies. Comparing after the
      * dispatch catches HDU (talkgroup set in processHDU) and LDU1 (talkgroup
      * set inside the LC parser); TDU/TDULC already cleared above. */
@@ -308,7 +331,7 @@ processFrame(dsd_opts *opts, dsd_state *state)
         /* HDU already retired the prior ESS before publishing its own.
          * Do not erase that freshly validated header on a TG change. */
         if (strcmp(duid, "00") != 0) p25_ess_clear(state);
-        /* LS-739: LCW here is the NEW call, not the old one. Clearing it
+        /* LCW here is the NEW call, not the old one. Clearing it
          * erased validated identity and hid a mismatch from the follower.
          * Retire old PCM; the LCW parser retires aliases before replacing
          * identity, so the new group/source remains available to compare. */

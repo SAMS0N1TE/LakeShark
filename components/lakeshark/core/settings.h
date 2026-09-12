@@ -46,31 +46,50 @@ void settings_set_volume(int pct);
 int  settings_get_boot_sound(void);
 void settings_set_boot_sound(int mode);
 
-/*LS-770*/
+/**/
 bool settings_get_usb_autoreboot(void);
 void settings_set_usb_autoreboot(bool en);
 
-/*LS-606*/
-int  settings_get_theme(void);
+/* Which antenna the SKY13453 is pointing at, across reboots. */
+
+bool settings_get_antenna_external(void);
+void settings_set_antenna_external(bool external);
+
+bool settings_get_alert_ring(void);
+void settings_set_alert_ring(bool en);
+bool settings_get_alert_vibe(void);
+void settings_set_alert_vibe(bool en);
+
+/* Turn the screen to match the way the board is being held.
+
+   Defaults ON, because a handheld that has to be told which way up it is
+   through a key on a DETACHABLE keyboard is the thing this replaces. Off is
+   one tap for anybody reading in bed. */
+bool settings_get_auto_rotate(void);
+void settings_set_auto_rotate(bool enabled);
+
+/**/
+bool settings_get_nav_autohide(void);
+void settings_set_nav_autohide(bool enabled);
+int settings_get_theme(void);
 void settings_set_theme(int theme);
+
+bool settings_get_daylight(void);
+void settings_set_daylight(bool on);
 
 /* HOME widget IDs are defined in home_widget_pref.h. Getter is RAM-only;
  * false means selection was not accepted by the deferred persistence path. */
 int  settings_get_home_widget(void);
 bool settings_set_home_widget(int widget);
 
-/*LS-703*/
+/**/
 int  settings_get_scan_zone(void);
 void settings_set_scan_zone(int zone);
 
-/* Task 655: P25 demodulator mode. Persists across app entry so an operator
- * on a simulcast system does not have to re-select CQPSK every time they
- * open the P25 screen. -1 is the automatic C4FM/CQPSK acquisition mode and
- * is also the default when the key has never been written. */
 int  settings_get_p25_demod(void);
 void settings_set_p25_demod(int mode_idx);
 
-/* LS-687: P25 traffic/encryption controls. Setters report whether the value
+/* P25 traffic/encryption controls. Setters report whether the value
  * reached the safe settings path, allowing CONFIG to make a full/absent write
  * queue visible instead of silently claiming persistence. */
 bool     settings_get_p25_auto_follow(void);
@@ -82,7 +101,7 @@ bool     settings_set_p25_encrypted_skip_ms(uint32_t ms);
 void     settings_get_p25_cqpsk(p25_cqpsk_config_t *config);
 bool     settings_set_p25_cqpsk(const p25_cqpsk_config_t *config);
 
-/*LS-608*/
+/**/
 void settings_reset_app(const app_t *a);
 
 int  settings_voice_preset_get(void);

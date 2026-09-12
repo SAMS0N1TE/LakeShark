@@ -22,7 +22,6 @@
 #include "p25p1_check_ldu.h"
 #include "p25p1_hdu.h"
 
-
 void
 processLDU1 (dsd_opts* opts, dsd_state* state)
 {
@@ -40,7 +39,6 @@ processLDU1 (dsd_opts* opts, dsd_state* state)
 
   AnalogSignal analog_signal_array[12*(3+2)+12*(3+2)];
   int analog_signal_index;
-
 
   analog_signal_index = 0;
 
@@ -330,7 +328,7 @@ processLDU1 (dsd_opts* opts, dsd_state* state)
   lcinfo[54]  = hex_data[ 0][4] + '0';
   lcinfo[55]  = hex_data[ 0][5] + '0';
 
-  /* LS-650: propagate the Reed-Solomon(24,12,13) result. A corrupt LCW that
+  /* propagate the Reed-Solomon(24,12,13) result. A corrupt LCW that
    * is acted on relabels the call and can trip stale-TG-clears-ESS in
    * dsd_frame.c. processP25lcw drops on !fec_ok. */
   processP25lcw (opts, state, lcformat, mfid, lcinfo, irrecoverable_errors == 0);

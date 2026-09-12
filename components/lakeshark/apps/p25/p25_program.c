@@ -1,4 +1,4 @@
-/* LS-689: see p25_program.h.  No allocation, no globals, no IDF. */
+/* see p25_program.h.  No allocation, no globals, no IDF. */
 
 #include "p25_program.h"
 
@@ -234,9 +234,7 @@ bool p25_program_survey_poll(p25_program_t *program, uint32_t now_ms,
     uint32_t nids = 0, tsbks = 0;
     if (valid_nids < survey->nid_baseline ||
         valid_tsbks < survey->tsbk_baseline) {
-        /* LS-691: reset/wrap during a dwell used to look like billions of
-         * valid frames under unsigned subtraction and could fabricate a
-         * lock on noise.  Reject the whole window instead. */
+
         survey->counter_loss = true;
     } else {
         nids = valid_nids - survey->nid_baseline;
@@ -461,8 +459,7 @@ void p25_program_format_status(const p25_program_t *program,
         append(out, out_size, &used,
                p25_program_result_reason(program->last_result));
     }
-    /* The operator's next question is always "so what is the radio doing
-     * now" - answer it in the same line rather than making them infer it. */
+
     append(out, out_size, &used, program->active_valid
                                      ? "  (active profile kept)"
                                      : "  (no active profile)");
@@ -614,13 +611,6 @@ void p25_program_format_survey(const p25_program_t *program,
     }
 }
 
-/* The one place a profile roster meets the scan controller.  Replace, do not
- * merge: a talkgroup number carried over from the previous system means
- * something else on this one, or nothing at all.
- *
- * LS-695: Rows with none enabled mean control-channel-only, represented by
- * LIST_NONE rather than ALLOW's intentional empty-list fallback. A profile
- * with no rows still means there is no roster filter. */
 void p25_program_apply_roster(p25_scan_ctrl_t *scan,
                               const p25_profile_talkgroup_t *talkgroups,
                               size_t count)
@@ -655,10 +645,6 @@ void p25_program_restore_roster(p25_scan_ctrl_t *scan,
     if (!scan) return;
     if (!talkgroups) count = 0;
 
-    /* LS-690: p25_scan_persist_reload() ran immediately before app handoff.
-     * Clearing allow/hold here used to replace the operator's saved edits with
-     * the profile defaults on every return to P25.  Priority is runtime-only,
-     * so it is the sole roster property reconstructed from the profile. */
     p25_scan_priority_clear(scan);
     for (size_t i = 0; i < count; ++i) {
         if (talkgroups[i].enabled && talkgroups[i].priority > 0)

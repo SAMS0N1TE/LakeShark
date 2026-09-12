@@ -67,7 +67,7 @@ Nothing else should need to change. If it does, that is the bug.
 
 A wrong GPIO is worse than an absent feature: it can drive a pin that is
 something else entirely on that board and damage hardware. This is not
-hypothetical here - `LS-904` records that GPIO46 is the USB VBUS enable on the
+hypothetical here - `` records that GPIO46 is the USB VBUS enable on the
 NANO and the **audio PA enable** on the Touch-LCD-4.3. Guessing it there would
 have driven the amplifier every time the firmware tried to power-cycle a
 dongle.

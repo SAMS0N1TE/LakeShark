@@ -73,7 +73,7 @@ static void apply_layout(ls_spectrum_waterfall_t *view)
     view->waterfall_height = layout.waterfall_height;
     if (view->canvas) {
         if (layout.waterfall_visible) {
-            /*LS-801  Start the window at the newest row. */
+            /* Start the window at the newest row. */
             lv_canvas_set_buffer(view->canvas,
                                  &view->pixels[(size_t)view->wf_top * (size_t)view->width],
                                  layout.width, layout.waterfall_height,
@@ -105,7 +105,7 @@ bool ls_spectrum_waterfall_resize(ls_spectrum_waterfall_t *view,
         return true;
     }
 
-    /*LS-801  Two copies of the image, back to back. Scrolling then costs one
+    /* Two copies of the image, back to back. Scrolling then costs one
        row written twice instead of moving the whole canvas every update, and
        the visible window is always a contiguous run so LVGL needs no wrapping
        support. Costs a second buffer in PSRAM, which is plentiful; the traffic
@@ -124,7 +124,7 @@ bool ls_spectrum_waterfall_resize(ls_spectrum_waterfall_t *view,
     view->allocation_bytes = ring_bytes;
     view->buffer_state = next_state;
     view->has_data = false;
-    view->wf_top = 0;   /*LS-801*/
+    view->wf_top = 0;   /**/
 
     if (!view->canvas && view->plot) {
         view->canvas = lv_canvas_create(view->plot);
@@ -226,8 +226,14 @@ void ls_spectrum_waterfall_add_controls(
     if (!view || !view->panel) return;
     view->change_cb = change_cb;
     view->change_user = change_user;
+    view->controls=lv_obj_create(view->panel);
+    lv_obj_remove_style_all(view->controls);
+    lv_obj_set_size(view->controls,lv_pct(100),LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(view->controls,LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(view->controls,6,0);
+    lv_obj_clear_flag(view->controls,LV_OBJ_FLAG_SCROLLABLE);
     if (controls & LS_SPECTRUM_CTL_SPLIT) {
-        lv_obj_t *group = ls_ui_button_group(view->panel);
+        lv_obj_t *group = ls_ui_button_group(view->controls);
         control_button(group, "VIEW -", 1, view, nullptr);
         control_button(group, "50/50", 0, view, &view->split_label);
         control_button(group, "VIEW +", 2, view, nullptr);
@@ -235,18 +241,18 @@ void ls_spectrum_waterfall_add_controls(
             view->full_button = control_button(group, "FULL", 5, view,
                                                 &view->full_label);
     } else if (controls & LS_SPECTRUM_CTL_FULL) {
-        lv_obj_t *group = ls_ui_button_group(view->panel);
+        lv_obj_t *group = ls_ui_button_group(view->controls);
         view->full_button = control_button(group, "FULL", 5, view,
                                             &view->full_label);
     }
     if (controls & LS_SPECTRUM_CTL_CONTRAST) {
-        lv_obj_t *group = ls_ui_button_group(view->panel);
+        lv_obj_t *group = ls_ui_button_group(view->controls);
         control_button(group, "CONTRAST -", 3, view, nullptr);
         control_button(group, "100%", 0, view, &view->contrast_label);
         control_button(group, "CONTRAST +", 4, view, nullptr);
     }
     if ((controls & LS_SPECTRUM_CTL_GAIN) && gain_down_cb && gain_up_cb) {
-        lv_obj_t *group = ls_ui_button_group(view->panel);
+        lv_obj_t *group = ls_ui_button_group(view->controls);
         ls_ui_group_button(group, "GAIN -", LS_BTN_DEFAULT, gain_down_cb,
                            gain_user, nullptr);
         ls_ui_group_button(group, "GAIN", LS_BTN_DEFAULT, nullptr, gain_user,
@@ -255,6 +261,98 @@ void ls_spectrum_waterfall_add_controls(
                            gain_user, nullptr);
     }
     update_labels(view);
+}
+
+static void fit_page(ls_spectrum_waterfall_t *v)
+{
+    if (!v || !v->panel || !v->status_panel || v->fitting) return;
+    v->fitting=true;
+    lv_obj_t *page=lv_obj_get_parent(v->panel);
+    int w=lv_obj_get_content_width(page), h=lv_obj_get_content_height(page);
+    bool wide=w>=900 && w>h;
+    lv_obj_set_flex_flow(page,wide?LV_FLEX_FLOW_ROW:LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(v->status_panel,wide?lv_pct(35):lv_pct(100));
+    lv_obj_set_width(v->panel,wide?lv_pct(63):lv_pct(100));
+    if (v->controls) {
+        lv_obj_set_flex_flow(v->controls,wide?LV_FLEX_FLOW_ROW_WRAP:LV_FLEX_FLOW_COLUMN);
+        for (uint32_t i=0;i<lv_obj_get_child_cnt(v->controls);++i)
+            lv_obj_set_width(lv_obj_get_child(v->controls,i),wide?lv_pct(49):lv_pct(100));
+    }
+    lv_obj_update_layout(page);
+    int desired=h-lv_obj_get_height(v->panel)+v->height;
+    if (!wide) desired-=lv_obj_get_height(v->status_panel)+2*lv_obj_get_style_pad_row(page,0);
+    if (desired<64) desired=64;
+    if (desired>LS_SPECTRUM_CANVAS_MAX_HEIGHT) desired=LS_SPECTRUM_CANVAS_MAX_HEIGHT;
+    int width=lv_obj_get_content_width(v->panel);
+    if (width>=2) ls_spectrum_waterfall_resize(v,width,desired);
+    lv_obj_update_layout(page);
+    v->fitting=false;
+}
+static void fit_height(ls_spectrum_waterfall_t *v)
+{
+    if (!v || !v->panel || v->fitting) return;
+    lv_obj_t *page=lv_obj_get_parent(v->panel);
+    if (!page) return;
+    v->fitting=true;
+    lv_obj_update_layout(page);
+    int room=lv_obj_get_content_height(page);
+    int pad=lv_obj_get_style_pad_row(page,0);
+    uint32_t kids=lv_obj_get_child_cnt(page);
+    /* Everything the page draws beside this widget is already the size the
+       page wants. Take it off the top, and take off the widget's own chrome
+       - its title and control rows - by removing the canvas from the panel's
+       measured height. What survives is what the canvas may become. */
+    for (uint32_t i=0;i<kids;++i) {
+        lv_obj_t *kid=lv_obj_get_child(page,i);
+        if (kid==v->panel || lv_obj_has_flag(kid,LV_OBJ_FLAG_HIDDEN)) continue;
+        room-=lv_obj_get_height(kid)+pad;
+    }
+    room-=lv_obj_get_height(v->panel)-v->height;
+    if (room<64) room=64;
+    if (room>LS_SPECTRUM_CANVAS_MAX_HEIGHT) room=LS_SPECTRUM_CANVAS_MAX_HEIGHT;
+    int width=lv_obj_get_content_width(v->panel);
+    if (width>=2 && room!=v->height) ls_spectrum_waterfall_resize(v,width,room);
+    /* Predicting the total from the parts left FM's action row 11 px over the
+       fold: panels carry their own borders and padding, and guessing at those
+       is how the last round of constants got here. Measure what the layout
+       actually produced and take the difference off once. One correction, not
+       a loop, so a page that cannot fit settles instead of oscillating. */
+    lv_obj_update_layout(page);
+    int spill=0;
+    for (uint32_t i=0;i<kids;++i) {
+        lv_obj_t *kid=lv_obj_get_child(page,i);
+        if (lv_obj_has_flag(kid,LV_OBJ_FLAG_HIDDEN)) continue;
+        int bottom=lv_obj_get_y(kid)+lv_obj_get_height(kid)-
+                   lv_obj_get_content_height(page);
+        if (bottom>spill) spill=bottom;
+    }
+    if (spill>0 && width>=2 && v->height-spill>=64)
+        ls_spectrum_waterfall_resize(v,width,v->height-spill);
+    v->fitting=false;
+}
+static void fit_height_event(lv_event_t *e)
+{
+    fit_height(static_cast<ls_spectrum_waterfall_t *>(lv_event_get_user_data(e)));
+}
+void ls_spectrum_waterfall_fit_height(ls_spectrum_waterfall_t *view)
+{
+    if (!view || !view->panel) return;
+    lv_obj_t *page=lv_obj_get_parent(view->panel);
+    if (!page) return;
+    lv_obj_add_event_cb(page,fit_height_event,LV_EVENT_SIZE_CHANGED,view);
+    fit_height(view);
+}
+static void fit_page_event(lv_event_t *e)
+{
+    fit_page(static_cast<ls_spectrum_waterfall_t *>(lv_event_get_user_data(e)));
+}
+void ls_spectrum_waterfall_fit_page(ls_spectrum_waterfall_t *view,lv_obj_t *status)
+{
+    if (!view || !view->panel || !status) return;
+    view->status_panel=status;
+    lv_obj_t *page=lv_obj_get_parent(view->panel);
+    lv_obj_add_event_cb(page,fit_page_event,LV_EVENT_SIZE_CHANGED,view);
+    fit_page(view);
 }
 
 void ls_spectrum_waterfall_set_gain_text(ls_spectrum_waterfall_t *view,
@@ -335,18 +433,6 @@ void ls_spectrum_waterfall_push(ls_spectrum_waterfall_t *view,
         return;
     }
 
-    /*LS-801  The waterfall used to scroll by memmoving the whole canvas down
-       one row on every update - 438x199 pixels here, about 350 KB read and
-       written, roughly 9 ms of unbroken PSRAM traffic inside a 31 ms frame.
-       The DSI framebuffer DMA reads continuously from the same PSRAM, so a
-       burst that long starved its FIFO and the panel emitted one blank frame:
-       the blue flash, on P25 and not on screens without a waterfall. Measured
-       with `disp`: 4 late frames in 45 s on P25, 0 on ADS-B.
-
-       Nothing needs to move. The buffer holds two copies of the image, so
-       stepping the window back one row and writing the new row into both
-       copies shows the same result for one row of writes instead of a whole
-       canvas of copies - about 1.7 KB against 350 KB. */
     const int wf_h = view->height;
     view->wf_top = (view->wf_top == 0) ? (wf_h - 1) : (view->wf_top - 1);
     lv_color_t *row_a = &view->pixels[(size_t)view->wf_top * (size_t)view->width];
@@ -376,6 +462,8 @@ void ls_spectrum_waterfall_push(ls_spectrum_waterfall_t *view,
 void ls_spectrum_waterfall_forget(ls_spectrum_waterfall_t *view)
 {
     if (!view) return;
+    if (view->panel && view->status_panel)
+        lv_obj_remove_event_cb_with_user_data(lv_obj_get_parent(view->panel),fit_page_event,view);
     if (view->pixels) heap_caps_free(view->pixels);
     ls_spectrum_buffer_forget(&view->buffer_state);
     std::memset(view, 0, sizeof(*view));

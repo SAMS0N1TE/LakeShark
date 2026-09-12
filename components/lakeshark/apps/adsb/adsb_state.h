@@ -39,6 +39,14 @@ typedef struct {
     int              crc_err_count;
     bool             announced;
 
+    /* The emitter category an identification message carries: its
+       type code (4 is set A, 3 is B, 2 is C, 1 is D) and the category within
+       that set - A7 is a rotorcraft. Zero until an identification is heard.
+       Two bytes in the padding after `announced`, so the table does not
+       grow. */
+    uint8_t          emitter_tc;
+    uint8_t          emitter_ca;
+
     int              pending_alt;
     int              pending_vel;
     int              pending_hdg;

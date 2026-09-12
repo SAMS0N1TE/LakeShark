@@ -28,7 +28,7 @@ static void put_le32(uint8_t *out, uint32_t value)
 void ls_hackrf_iq_s8_to_u8(uint8_t *samples, size_t bytes)
 {
     if (!samples) return;
-    /* LS-340: HackRF bulk samples are signed int8_t while every LakeShark DSP
+    /* HackRF bulk samples are signed int8_t while every LakeShark DSP
      * path consumes RTL-style offset binary. Toggling the sign bit maps
      * -128/0/127 exactly to 0/128/255 without widening the hot stream. */
     for (size_t i = 0; i < bytes; ++i)

@@ -1,6 +1,6 @@
 #pragma once
 
-/*LS-737*/
+/**/
 /* Map / navigator. Phase 1+2: ADS-B plotted in real range and bearing around a
    stored home position, plus waypoints. Deliberately NOT included yet: offline
    tiles (needs a tile format decision and is its own project) and any claim to
@@ -55,14 +55,14 @@ private:
     lv_timer_t *_timer   = nullptr;
     lv_obj_t   *_tabview = nullptr;
 
-    /*LS-740*/
+    /**/
     lv_obj_t     *_tile_img[9] = {nullptr};
     lv_img_dsc_t  _tile_dsc[9] = {};
     int           _zoom = 13;
     bool          _tiles_ok = false;
     void          updateTiles(void);
 
-    /*LS-764*/
+    /**/
     /* Overlay label parented to _plot, positioned in the top-left so it stays
        clear of the centre home dot and the aircraft rings.  Hidden when tiles
        are drawing normally; shown with a short reason otherwise so a blank

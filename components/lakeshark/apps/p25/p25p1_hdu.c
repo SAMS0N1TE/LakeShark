@@ -162,7 +162,6 @@ correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* an
   int dibit;
   char parity[12];
 
-
   analog_signal_index = 0;
 
   for (i=hex_count-1; i>=0; i--)
@@ -251,7 +250,6 @@ processHDU(dsd_opts* opts, dsd_state* state)
         }
     }
 
-  // Read the 16 parity hex word. These are used to FEC the 20 hex words using Reed-Solomon.
   for (i=15; i>=0; i--)
     {
       read_and_correct_hex_word (opts, state, hex, &status_count, analog_signal_array, &analog_signal_index);

@@ -1,4 +1,4 @@
-/* LS-210  Formatter for a stored coredump summary, and the boot-notice /
+/* Formatter for a stored coredump summary, and the boot-notice /
    erase glue that goes with it. No SDK calls here: the source struct is
    the seam so the bench can drive every branch without an ESP chip. */
 
@@ -55,11 +55,6 @@ void ls_crash_init(const ls_crash_source_t *src, const char *running_id)
         s_running[0] = '\0';
     }
 
-    /*LS-683  Init used to prime this cache through source_read(), which made
-       every boot enter esp_core_dump_get_summary(). A checksum-valid dump
-       faulted that parser on LCD4.3 before app_main could finish. Presence is
-       now a separate non-parsing operation; only the explicit `crash` command
-       is allowed to request a summary. */
     s_present_cache = s_src && s_src->present && s_src->present();
 }
 
@@ -139,8 +134,7 @@ size_t ls_crash_format(char *buf, size_t buflen)
     }
 
     size_t n = 0;
-    /* Print the task name in quotes so an empty one is visible rather than
-       looking like a formatting glitch. */
+
     n = append(buf, buflen, n,
                "crash: task \"%s\" pc=0x%08lx ra=0x%08lx\n",
                s.task[0] ? s.task : "", (unsigned long)s.pc, (unsigned long)s.ra);

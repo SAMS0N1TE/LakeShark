@@ -4,7 +4,7 @@ For a board that has never run LakeShark. [LCD43_QUICKSTART.md](LCD43_QUICKSTART
 covers application-only upgrades and says so; this is the other half, and the
 two are not interchangeable.
 
-Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 only — 480×800 panel, 32 MB flash.
+Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 only - 480×800 panel, 32 MB flash.
 
 ## Write all four images, not just the application
 
@@ -43,7 +43,7 @@ idf.py -B build_lcd43 -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui
 
 ## Relationship to the upgrade package
 
-`tools/package_lcd43_app.py` packages an **application-only upgrade** — one
+`tools/package_lcd43_app.py` packages an **application-only upgrade** - one
 image, with its ELF, a notice list and checksums, for a board already running
 LakeShark. That is the careful path and it stays the careful path; it never
 builds, flashes or touches a port.
@@ -57,7 +57,7 @@ needs. Neither replaces the other, and the offsets in both come from
 `dist/site/lakeshark.html` is a setup page with an
 [ESP Web Tools](https://esphome.github.io/esp-web-tools/) installer, for people
 who should not have to install a toolchain to try a receiver. ESP32-P4 is a
-supported chip family there. It is not deployed — `dist/site/DEPLOY.md` has the
+supported chip family there. It is not deployed - `dist/site/DEPLOY.md` has the
 upload steps and the reason the firmware directory is still held back.
 
 ## The storage image
@@ -82,5 +82,5 @@ Change the build's SPIFFS settings and this command changes with them.
 The dongle goes in the **USB-A host** port. Start with ADS-B: it needs no
 licence, no frequency to guess and no local system to exist, so aircraft
 appearing is a single check that the USB host, dongle, tuning, DSP and display
-are all working. Then FM for the audio path. P25 last — it only decodes if a
+are all working. Then FM for the audio path. P25 last - it only decodes if a
 Phase 1 system is actually on the air near you.

@@ -29,10 +29,6 @@ typedef struct {
     p25_health_snapshot_t snapshot;
 } p25_health_store_t;
 
-/* LS-693: the LCD used to read dozens of fields while the RX and decoder
- * tasks were changing them. A short seqlock publishes one bounded copy. The
- * roughly one-KiB store lives in PSRAM on target; neither ISR nor DMA touches
- * it, and publication performs no allocation. */
 static P25_HEALTH_EXT_BSS p25_health_store_t s_store;
 
 static void writer_lock(void)

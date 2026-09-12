@@ -1,16 +1,7 @@
 #ifndef LS_BOARD_H
 #define LS_BOARD_H
 
-/*LS-001  The board layer.  Three things live here and nowhere else:
-
-     variants/<board>.h   physical facts - pins, panel, flash size
-     this file            which variant is selected, plus shared P4 pins
-     ls_caps.h            LS_HAS_* capabilities, all derived
-
-   The rule the rest of the tree lives by: no file outside this directory may
-   test CONFIG_LS_BOARD_*.  Test an LS_HAS_* capability instead.  Adding a
-   board is then one header and one Kconfig entry - never a branch.
-   See docs/PORTING.md and board/TEMPLATE.h. */
+/* The board layer. */
 
 #include "sdkconfig.h"
 
@@ -30,16 +21,22 @@
 #elif defined(CONFIG_LS_BOARD_P4_NANO)
 #include "variants/p4_nano.h"
 #define LS_BOARD_SELECTED 1
+#elif defined(CONFIG_LS_BOARD_T_DISPLAY_P4)
+/* Scaffold only.  variants/t_display_p4.h names each part but does
+   NOT declare the pins - the vendor's t_display_p4_config.h /
+   t_display_p4_keyboard_config.h were not in the repo at scaffold time.
+   A build that selects this board will therefore use the shared P4 pin
+   defaults from below unmodified, which are the NANO's numbers and are
+   NOT guaranteed correct for the T-Display-P4.  See variants/t_display_p4.h
+   and boards/t_display_p4.defaults - both are loudly incomplete. */
+#include "variants/t_display_p4.h"
+#define LS_BOARD_SELECTED 1
 #else
-/*LS-727  No board chosen.  Fall back to the NANO so a stray build still
+/* No board chosen.  Fall back to the NANO so a stray build still
    links, but mark it so the boot log can say so in the loudest terms. */
 #include "variants/p4_nano.h"
 #define LS_BOARD_SELECTED 0
 #endif
-
-/* ---- Shared ESP32-P4 wiring.  Identical on every board carried so far, so
-   it lives here rather than being copied into each variant.  A variant that
-   differs simply defines the pin itself - these only fill in the gaps. */
 
 #ifndef LS_BOARD_I2C_SDA_GPIO
 #define LS_BOARD_I2C_SDA_GPIO    7
@@ -94,7 +91,7 @@
 #define LS_BOARD_BOOT_BTN_GPIO   35
 #endif
 
-/*LS-002  A build may override the variant's VBUS pin from sdkconfig - that
+/* A build may override the variant's VBUS pin from sdkconfig - that
    is how lcd43_gui.defaults asserts -1.  Applied after the variant so the
    explicit build-time choice wins. */
 #ifdef CONFIG_LS_VBUS_EN_GPIO

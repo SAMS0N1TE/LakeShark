@@ -1,4 +1,4 @@
-/*LS-820  See ls_sweep_core.h. Pure arithmetic; no radio, no ESP-IDF. */
+/* See ls_sweep_core.h. Pure arithmetic; no radio, no ESP-IDF. */
 
 #include "ls_sweep_core.h"
 

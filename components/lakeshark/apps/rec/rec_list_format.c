@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/*LS-907*/
+/**/
 bool rec_files_append(char *out, size_t len, size_t *used,
                       const char *name, long size)
 {
@@ -44,7 +44,7 @@ int rec_files_format(char *out, size_t len,
     return written;
 }
 
-/*LS-960*/
+/**/
 bool rec_files_append_row(char *out, size_t len, size_t *used,
                           const char *name, uint32_t freq_hz,
                           const char *time_iso)

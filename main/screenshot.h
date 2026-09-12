@@ -1,7 +1,7 @@
 #ifndef SCREENSHOT_H
 #define SCREENSHOT_H
 
-/*LS-831  Capture the panel to a .bmp next to the REC captures.
+/* Capture the panel to a .bmp next to the REC captures.
 
    Same SD-then-SPIFFS fallback rec_dir() already uses, so the file comes off
    the board over the existing WiFi file transfer. See screenshot.c for why

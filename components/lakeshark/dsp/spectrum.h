@@ -8,26 +8,8 @@
 extern "C" {
 #endif
 
-/*LS-748*/
-/* A POWER SPECTRUM OF THE IQ WE ALREADY HAVE.
-   The band sweep tuned, dwelled, and reduced the ENTIRE passband to one RMS
-   number - FM.iq_level - then stepped by scan_step_hz and did it again. At
-   FM_RTL_RATE (256 kSPS) the receiver is showing +/-128 kHz on every buffer,
-   so that threw away essentially all of it. LS-710 already noted the width of
-   this passband as the reason nearby channels "read identically"; the same
-   fact is what makes one tune worth hundreds of bins.
-
-   512 bins across 256 kHz is 500 Hz resolution, from a SINGLE dwell. Sweeping
-   151-152 MHz went from 81 tunes at 12.5 kHz resolution to about 5 tunes at
-   500 Hz - fewer retunes AND finer, which is the opposite of the usual trade.
-
-   DELIBERATELY NOT esp-dsp. That component is vendored in managed_components
-   but nothing REQUIRES it, so the component manager deletes it on every build
-   and the session close already tells people to `git checkout --
-   managed_components` afterwards. Depending on it would make the spectrum
-   vanish on a clean build. This is a plain radix-2 FFT we own; it is not the
-   fastest possible, and it does not need to be - one 512-point transform per
-   buffer is far cheaper than the FM demodulator already running beside it. */
+/**/
+/* A POWER SPECTRUM OF THE IQ WE ALREADY HAVE. */
 
 #define SPEC_FFT_N   512
 

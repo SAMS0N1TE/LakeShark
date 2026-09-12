@@ -8,12 +8,10 @@
 extern "C" {
 #endif
 
-/* LS-692: SIGNAL is a view of IQ already owned by the P25 receive task.  It is
- * never a scan request and never acquires or retunes a radio.  One 512-point
- * FFT per eight 16 KiB receive blocks bounds the added work to about 3.7 FFT/s
- * at 240 kSPS.  The publication arrays live in PSRAM in p25_spectrum.c. */
+/* SIGNAL is a view of IQ already owned by the P25 receive task. */
+
 #define P25_SPECTRUM_BINS             512
-#define P25_SPECTRUM_BLOCK_STRIDE       8
+#define P25_SPECTRUM_BLOCK_STRIDE       1
 #define P25_SPECTRUM_FLOOR_DB         (-85.0f)
 #define P25_SPECTRUM_TOP_DB           (-20.0f)
 #define P25_SPECTRUM_STALE_MS          1200u

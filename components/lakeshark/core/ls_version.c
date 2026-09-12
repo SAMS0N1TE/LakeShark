@@ -1,4 +1,4 @@
-/* LS-220  Version string assembly - see ls_version.h.
+/* Version string assembly - see ls_version.h.
 
    The formatter has no SDK dependency so the bench can drive it against
    fabricated inputs (including the dirty-tree case, which is hard to
@@ -15,10 +15,6 @@ bool ls_version_is_dirty(const char *version)
 {
     if (!version || !*version) return false;
 
-    /* `git describe --dirty` appends "-dirty" - but somebody might swap it
-       for "-modified" or capitalise it (git config dirty), so scan the
-       whole string for "dirty" case-insensitively rather than pinning to
-       the suffix. */
     for (const char *p = version; *p; p++) {
         if ((p[0] == 'd' || p[0] == 'D') &&
             (p[1] == 'i' || p[1] == 'I') &&

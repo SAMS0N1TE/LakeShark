@@ -75,7 +75,7 @@ typedef struct {
     bool     demod_invert;
     int      rtl_gain_tenths;
 
-    /* LS-655: automatic demod acquisition diagnostics. The panel exposes
+    /* automatic demod acquisition diagnostics. The panel exposes
      * the protocol evidence so a wrong choice is distinguishable from weak
      * RF. Timing/carrier are snapshots of the active pipeline loops. */
     bool     demod_auto;
@@ -106,17 +106,13 @@ typedef struct {
 
     bool     sync_beep_enabled;
 
-    /* LS-303: what the grant follower is currently doing. Sampled by the
-     * UI so a scanner that jumps between control and traffic is visible
-     * rather than silent. Populated by the DSD decoder task after each
-     * processFrame cycle. */
     bool     grant_on_traffic;
     uint16_t grant_talkgroup;
     uint32_t grant_source;
     uint64_t grant_freq_hz;
     uint32_t grant_followed_count;
     bool     grant_auto_follow;
-    /* LS-739: observed grant != active call != decoded PCM. GUI may show
+    /* observed grant != active call != decoded PCM. GUI may show
      * unsupported observations on control, but only RX_AUDIO claims audio. */
     p25_call_info_t grant_observed;
     p25_call_info_t grant_active;
@@ -124,38 +120,24 @@ typedef struct {
     uint32_t grant_unsupported_count;
     uint32_t grant_unresolved_count;
     uint32_t control_relock_count;
-    /* LS-400: TSBK/IDEN telemetry. iden_valid_count separates "we haven't
+    /* TSBK/IDEN telemetry. iden_valid_count separates "we haven't
      * seen a control channel yet" from "we have the tables and are waiting
      * for a grant"; tsbk_ok/err lives next to the BCH counts. */
     uint8_t  p25_iden_valid_count;
     uint32_t p25_tsbk_ok_count;
     uint32_t p25_tsbk_err_count;
-    /* LS-672: a TDMA grant is intentionally kept on the control channel,
-     * but the operator still needs proof that the site is active Phase 2.
-     * These mirror the parser's last carrier/slot instead of overloading the
-     * follower fields, whose frequency remains the control channel. */
+
     uint32_t p25_phase2_grant_count;
     uint16_t p25_phase2_last_talkgroup;
     uint64_t p25_phase2_last_frequency_hz;
     uint8_t  p25_phase2_last_slot;
     uint8_t  p25_phase2_last_slots_per_carrier;
-    /* LS-610: encryption status from the last LDU2 seen on this call. The
-     * decoder mutes when ess_valid && algid != 0x80; the UI must be able
-     * to say "ENC ADP" so the operator can tell muted-because-encrypted
-     * from muted-because-broken. Cleared alongside the decoder ESS on
-     * TDU/TDULC/talkgroup change. */
+
     uint8_t  p25_ess_valid;
     uint8_t  p25_algid;
     uint16_t p25_kid;
     bool     p25_enc_muted;
-    /* LS-611: cumulative encryption counters and the operator-visible skip
-     * table. p25_enc_muted_frames_total mirrors dsd_state.p25_enc_muted_frames;
-     * p25_enc_returns / p25_enc_skips mirror the grant-follower fields with the
-     * same names. p25_leave_on_encrypted / p25_encrypted_skip_ms are the
-     * operator settings (default: leave=on, skip=30 s). The tg_state array is
-     * a copy of the follower's per-TG history at UI publish time - a small
-     * table (P25_STATE_ENC_TG_MAX) so the P25 CONFIG tab can render it
-     * without a laptop. */
+
     uint32_t p25_enc_muted_frames_total;
     uint32_t p25_enc_returns;
     uint32_t p25_enc_skips;
@@ -170,7 +152,7 @@ typedef struct {
         uint16_t kid;
         int32_t  skip_remaining_ms; /* negative or zero = no active skip */
     }        p25_enc_tg[P25_STATE_ENC_TG_MAX];
-    /* LS-650: LDU1/TDULC LCW mirror. On a call joined mid-stream the LCW
+    /* LDU1/TDULC LCW mirror. On a call joined mid-stream the LCW
      * is the only path to a talkgroup / source / emergency flag - the
      * TSBK grant was missed. p25_lcw_emergency in particular must be
      * loud on the panel, so the AppP25 decode tab flips the readout lamp
@@ -203,23 +185,20 @@ void sys_log(uint8_t color, const char *fmt, ...);
 void p25_request_tune(uint32_t center_hz, bool fast);
 void p25_request_gain(int gain_tenths_db);
 void p25_get_receiver_status(ls_iq_control_status_t *out);
-/* LS-611: operator settings for the encrypted-channel policy. Applied to
- * the running grant follower. Safe to call from another task; both are
- * scalar writes on a struct the DSD task also reads, and both settings tolerate
- * a torn update (worst case: one grant treated with the old policy). */
+
 bool p25_set_auto_follow(bool enabled);
 bool p25_get_auto_follow(void);
 bool p25_set_leave_on_encrypted(bool enabled);
 bool p25_set_encrypted_skip_ms(unsigned int ms);
 bool p25_get_leave_on_encrypted(void);
 unsigned int p25_get_encrypted_skip_ms(void);
-/* LS-670: one-press hold/lockout actions the P25 main screen calls. Both
+/* one-press hold/lockout actions the P25 main screen calls. Both
  * key on the currently-followed grant TG, falling back to the last-decoded
  * dsd_tg when the follower is on control. Return true on success. */
 bool p25_ui_hold_toggle(void);
 bool p25_ui_lockout_current(void);
 bool p25_ui_lockout_remove(uint16_t tg);
-/* LS-689: what a PROGRAM profile apply is allowed to do to the radio, and the
+/* what a PROGRAM profile apply is allowed to do to the radio, and the
  * only two things it needs that were not already exposed. Both keep the tune
  * in this file's single owner: p25_return_to_control drops any call in
  * progress through the follower's own retune hook, and p25_set_control_channel

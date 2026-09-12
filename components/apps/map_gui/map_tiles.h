@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/*LS-740*/
+/**/
 /* 3x3 around the view centre. A pan of one tile only ever needs three new
    decodes, which is what keeps this off the audio path. */
 #define MAP_TILE_SLOTS 9
@@ -26,7 +26,7 @@ const uint8_t *map_tiles_get(int z, int x, int y);
 bool map_tiles_have_zoom(int z);
 void map_tiles_invalidate(void);
 
-/*LS-764*/
+/**/
 /* Cheap file-system probes for the status overlay.  They stat only, they do
    not decode, they do not touch the JPEG engine - so it is safe to call them
    every frame from updateTiles without pushing anything onto the audio path.

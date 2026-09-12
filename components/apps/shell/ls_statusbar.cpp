@@ -6,17 +6,17 @@
 
 #define BAR_SEGS 6
 
-/*LS-603*/
+/**/
 static lv_obj_t *glyph(lv_obj_t *parent, const char *sym)
 {
     lv_obj_t *l = lv_label_create(parent);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l, sdr_font_mono_sm(), 0);
     lv_obj_set_style_text_color(l, SDR_DIM, 0);
     lv_label_set_text(l, sym);
     return l;
 }
 
-/*LS-603*/
+/**/
 lv_obj_t *LsStatusBar::build(lv_obj_t *parent, int w, lv_event_cb_t tap, void *ud)
 {
     _bar = lv_obj_create(parent);
@@ -45,6 +45,12 @@ lv_obj_t *LsStatusBar::build(lv_obj_t *parent, int w, lv_event_cb_t tap, void *u
     lv_obj_set_style_pad_all(_dot, 0, 0);
     lv_obj_clear_flag(_dot, LV_OBJ_FLAG_SCROLLABLE);
 
+    if(LS_HAS_COMPACT_UI){
+        _title=sdr_value(_bar,sdr_font_mono_sm(),SDR_TEXT);
+        lv_obj_set_width(_title,0);lv_obj_set_flex_grow(_title,1);
+        lv_label_set_long_mode(_title,LV_LABEL_LONG_DOT);
+        lv_label_set_text(_title,"LAKESHARK");
+    }
     _mode = sdr_value(_bar, sdr_font_mono_sm(), SDR_TEXT);
     lv_obj_set_style_text_letter_space(_mode, 1, 0);
     lv_label_set_text(_mode, "--");
@@ -53,9 +59,11 @@ lv_obj_t *LsStatusBar::build(lv_obj_t *parent, int w, lv_event_cb_t tap, void *u
     lv_label_set_text(_bars, "------");
 
     _freq = sdr_value(_bar, sdr_font_mono(), SDR_BRIGHT);
-    lv_obj_set_flex_grow(_freq, 1);
+    lv_obj_set_flex_grow(_freq, LS_HAS_COMPACT_UI?0:1);
     lv_obj_set_style_text_align(_freq, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(_freq, "---.----");
+
+    if(LS_HAS_COMPACT_UI){lv_obj_add_flag(_mode,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(_bars,LV_OBJ_FLAG_HIDDEN);}
 
     _bat = sdr_value(_bar, sdr_font_mono_sm(), SDR_DIM);
     lv_label_set_text(_bat, "");
@@ -72,8 +80,8 @@ lv_obj_t *LsStatusBar::build(lv_obj_t *parent, int w, lv_event_cb_t tap, void *u
     }
 
     _sub = ls_hub_subscribe(hubCb, this);
-    /*LS-606*/
-    sdr_theme_on_change(themeCb, this);
+    /**/
+    _theme_sub=sdr_theme_on_change(themeCb,this);
     return _bar;
 }
 
@@ -82,16 +90,16 @@ void LsStatusBar::hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud)
     static_cast<LsStatusBar *>(ud)->apply(s, dirty);
 }
 
-/*LS-606*/
+/**/
 void LsStatusBar::themeCb(void *ud)
 {
     static_cast<LsStatusBar *>(ud)->apply(ls_hub_state(), LS_HUB_ALL);
 }
 
-/*LS-603*/
+/**/
 void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
 {
-    /*LS-606*/
+    /**/
     if (dirty & (LS_HUB_RADIO | LS_HUB_SIGNAL)) {
         lv_color_t dc = !s->rtl_ready ? SDR_ERR
                       : s->parked     ? SDR_WARN
@@ -140,7 +148,7 @@ void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
         else
             snprintf(f, sizeof(f), "---.----");
         sdr_text_if_changed(_freq, f);
-        /*LS-606*/
+        /**/
         sdr_color_if_changed(_freq, s->rtl_ready ? SDR_BRIGHT : SDR_OFF);
     }
 
@@ -150,4 +158,27 @@ void LsStatusBar::apply(const ls_hub_state_t *s, uint32_t dirty)
                                                    : LV_SYMBOL_VOLUME_MID);
         sdr_color_if_changed(_vol, s->muted ? SDR_ERR : SDR_TEXT);
     }
+}
+
+void LsStatusBar::resize(int width,int x,int y)
+{
+    if(!_bar)return;
+    lv_obj_set_width(_bar,width);lv_obj_set_pos(_bar,x,y);
+    if(LS_HAS_COMPACT_UI && _freq){
+        if(width<800)lv_obj_add_flag(_freq,LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(_freq,LV_OBJ_FLAG_HIDDEN);
+    }
+}
+void LsStatusBar::setTitle(const char *app,const char *page)
+{
+    if(!_title)return;
+    char text[96];snprintf(text,sizeof(text),"%s%s%s",app?app:"LAKESHARK",page && *page?" / ":"",page?page:"");
+    sdr_text_if_changed(_title,text);
+}
+
+void LsStatusBar::detach()
+{
+    if(_sub>=0)ls_hub_unsubscribe(_sub);
+    if(_theme_sub>=0)sdr_theme_off_change(_theme_sub);
+    _sub=_theme_sub=-1;
 }

@@ -8,7 +8,8 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
-#include "bsp_board_extra.h"
+#include "ls_audio_hw.h"
+#include "ls_board.h"
 #include "settings.h"
 #include <math.h>
 
@@ -24,6 +25,9 @@ static const char *TAG = "audio_out";
 static volatile int      s_volume = 35;
 static volatile bool     s_muted  = false;
 static bool              s_ready  = false;
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+static bool              s_volume_applied = false;
+#endif
 
 #define AUDIO_TASK_STACK  4096
 
@@ -41,7 +45,7 @@ static volatile uint32_t s_audio_drops = 0;
 static volatile uint32_t s_underruns   = 0;
 static volatile bool     s_reprime     = false;
 static volatile bool     s_play_now    = false;
-/*LS-799  When live radio audio last reached the ring. FM and P25 voice both
+/* When live radio audio last reached the ring. FM and P25 voice both
    arrive through audio_write_mono; speech arrives through the blocking
    variant. All three push into the same stream buffer, so before this they
    interleaved chunk by chunk and came out as two voices over each other with
@@ -62,7 +66,7 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 {
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
-    /*LS-799  Live radio audio claims the speaker. */
+    /* Live radio audio claims the speaker. */
     s_live_us = esp_timer_get_time();
 
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
@@ -73,7 +77,7 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
     if (sent < want) s_audio_drops++;
 }
 
-/*LS-799*/
+/**/
 bool audio_out_live_active(void)
 {
     int64_t last = s_live_us;
@@ -87,7 +91,7 @@ void audio_write_mono_blocking(const int16_t *samples, int n)
 {
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
-    /*LS-799  Do not start speaking over a live transmission. */
+    /* Do not start speaking over a live transmission. */
     if (audio_out_live_active()) { s_tts_yielded++; return; }
 
     const uint8_t *p = (const uint8_t *)samples;
@@ -96,7 +100,7 @@ void audio_write_mono_blocking(const int16_t *samples, int n)
 
     while (remaining > 0) {
         if (s_muted) break;
-        /*LS-799  A transmission that starts mid-utterance stops it, rather
+        /* A transmission that starts mid-utterance stops it, rather
            than letting the two share the ring. */
         if (audio_out_live_active()) { s_tts_yielded++; break; }
         if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(100)) != pdTRUE) break;
@@ -159,7 +163,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
 
 #if AUDIO_DIAG_TONE == 1
     {
-        bsp_extra_codec_mute_set(false);
+        ls_audio_hw_mute(false);
         float ph = 0.0f;
         const float dph = 2.0f * 3.14159265f * 1000.0f / (float)AUDIO_RATE_HZ;
         for (;;) {
@@ -169,7 +173,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;
             }
             size_t wr = 0;
-            bsp_extra_i2s_write(stereo, CHUNK_FRAMES * 4, &wr, portMAX_DELAY);
+            ls_audio_hw_write(stereo, CHUNK_FRAMES * 4, &wr, portMAX_DELAY);
         }
     }
 #endif
@@ -192,7 +196,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
                 last_data = esp_timer_get_time();
             } else {
                 size_t wr = 0;
-                bsp_extra_i2s_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
+                ls_audio_hw_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
                                     &wr, portMAX_DELAY);
                 continue;
             }
@@ -210,7 +214,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;
             }
             size_t wr = 0;
-            bsp_extra_i2s_write(stereo, frames * 4, &wr, portMAX_DELAY);
+            ls_audio_hw_write(stereo, frames * 4, &wr, portMAX_DELAY);
         } else {
 
             if (esp_timer_get_time() - last_data > IDLE_DROP_US) {
@@ -218,7 +222,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
             } else {
                 s_underruns++;
                 size_t wr = 0;
-                bsp_extra_i2s_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
+                ls_audio_hw_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
                                     &wr, portMAX_DELAY);
             }
         }
@@ -229,16 +233,28 @@ esp_err_t audio_out_init(void)
 {
     if (s_ready) return ESP_OK;
 
-    bsp_extra_codec_init();
+    /* Gate here, not at the call sites. */
 
-    esp_err_t err = bsp_extra_codec_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
+#if !LS_HAS_AUDIO
+    ESP_LOGW(TAG, "no codec driver for this board - audio output disabled");
+    return ESP_OK;
+#else
+    esp_err_t init_err = ls_audio_hw_init(false);
+    if (init_err != ESP_OK) return init_err;
+
+    esp_err_t err = ls_audio_hw_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "codec set_fs failed: %s (continuing)", esp_err_to_name(err));
     }
 
     s_volume = settings_get_volume();
     int set = 0;
-    bsp_extra_codec_volume_set(s_volume, &set);
+    esp_err_t volume_err = ls_audio_hw_volume(s_volume, &set);
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+    s_volume_applied = volume_err == ESP_OK;
+#endif
+    if (volume_err != ESP_OK)
+        ESP_LOGW(TAG, "codec volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
 
     audio_eq_init(AUDIO_RATE_HZ);
 
@@ -266,32 +282,42 @@ esp_err_t audio_out_init(void)
     ESP_LOGI(TAG, "audio_out ready: ring=%dms prebuf=%dms vol=%d",
              RING_MS, PREBUF_MS, s_volume);
 #if AUDIO_DIAG_TONE == 2
-    bsp_extra_codec_mute_set(false);
+    ls_audio_hw_mute(false);
     xTaskCreatePinnedToCore(diag_ringtone_task, "diag_tone", 3072, NULL, 5, NULL, 1);
 #endif
     return ESP_OK;
+#endif /* LS_HAS_AUDIO */
 }
 
 void audio_toggle_mute(void)
 {
     s_muted = !s_muted;
     if (s_muted && s_ring) xStreamBufferReset(s_ring);
-    bsp_extra_codec_mute_set(s_muted);
+    /* s_ready is false on a board whose codec was never initialised,
+       and the handle behind this call is NULL there.  audio_out_ensure_unmuted
+       already checked; this one did not, so the console's `mute` command was
+       a reachable path into an uninitialised codec. */
+    if (s_ready) ls_audio_hw_mute(s_muted);
 }
 
 void audio_out_ensure_unmuted(void)
 {
-    if (s_ready && !s_muted) bsp_extra_codec_mute_set(false);
+    if (s_ready && !s_muted) ls_audio_hw_mute(false);
 }
 
 void audio_out_reset(void)
 {
     if (!s_ready) return;
 
-    esp_err_t err = bsp_extra_codec_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
+    esp_err_t err = ls_audio_hw_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
     int set = 0;
-    bsp_extra_codec_volume_set(s_volume, &set);
+    esp_err_t volume_err = ls_audio_hw_volume(s_volume, &set);
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+    s_volume_applied = volume_err == ESP_OK;
+#endif
+    if (volume_err != ESP_OK)
+        ESP_LOGW(TAG, "reset volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
     s_reprime = true;
     ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
              esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
@@ -309,9 +335,23 @@ void audio_volume_set(int v)
 {
     if (v < 0)   v = 0;
     if (v > 100) v = 100;
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+    /* Do not cache a failed codec write as an applied volume, or the
+       equal-value shortcut prevents a later retry after the bus recovers. */
+    if (v == s_volume && s_volume_applied) return;
+    int set = 0;
+    esp_err_t err = ls_audio_hw_volume(v, &set);
+    s_volume_applied = err == ESP_OK;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "codec volume %d not confirmed: %s", v, esp_err_to_name(err));
+        return;
+    }
+    s_volume = v;
+#else
     if (v == s_volume) return;
     s_volume = v;
     int set = 0;
-    bsp_extra_codec_volume_set(s_volume, &set);
+    ls_audio_hw_volume(s_volume, &set);
+#endif
     settings_set_volume(s_volume);
 }

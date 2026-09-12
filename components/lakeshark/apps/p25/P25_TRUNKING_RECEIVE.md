@@ -1,4 +1,4 @@
-# LS-739 P25 trunking receive contract
+# P25 trunking receive contract
 
 Evidence: **Build-verified**, not Hardware-verified. No Phase II voice decoder
 or Phase II audio is implemented. Workstream 736 owns the GUI; no GUI file was
@@ -6,7 +6,7 @@ changed here.
 
 ## Protocol references and compatibility
 
-The existing 0x33 implementation was already present (LS-672), despite task
+The existing 0x33 implementation was already present (), despite task
 661 saying it was absent. Its bit extraction and signed offset were checked
 on 2026-09-07 against these primary implementation sources:
 

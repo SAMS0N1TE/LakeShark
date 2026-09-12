@@ -42,7 +42,14 @@ typedef struct {
 
     void        (*sdr_recover)(void);
 
-    void        (*sdr_power_cycle)(void);
+    /* Returns whether the cycle actually STARTED.
+
+       It was void, so the protocol answered "+OK sdr power cycling" and then
+       the board logged that it cannot power cycle the dongle in software -
+       two contradictory statements about the same press, one of them to the
+       head that acts on it. This board has no VBUS switch on the USB host
+       port, so on this board the answer is always no. */
+    bool        (*sdr_power_cycle)(void);
     void        (*ble_enable)(bool on);
 
     void        (*sys_info)(char *out, size_t len);
@@ -51,7 +58,10 @@ typedef struct {
     uint32_t    (*uptime_s)(void);
 
     bool        (*set_log_level)(const char *tag, const char *level);
+    void        (*show_fm_mode)(int mode);
 } flipper_link_host_t;
+
+void flipper_link_set_host(const flipper_link_host_t *host);
 
 esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
                              const flipper_link_host_t *host);

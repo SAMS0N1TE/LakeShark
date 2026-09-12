@@ -1,16 +1,7 @@
 #ifndef REC_UNIQUE_NAME_H
 #define REC_UNIQUE_NAME_H
 
-/*LS-770*/
-/* rec_save() used to build its path as "<rec_dir()>/<base>.sub" and open it
-   with fopen("w"), where <base> came from the process-local s_captures
-   counter as "rec%03lu".  After a reboot, a counter wrap, or the deletion of
-   a newer file the same base could point at a capture that was already on
-   disk, and "w" truncated it silently.  This helper picks a base whose
-   ".sub" file is not present, so an automatic SAVE cannot overwrite an old
-   capture without the caller opting in.  Kept as a pure classifier so the
-   bench can pre-create rec000.sub and prove a subsequent save lands on a
-   different name. */
+/**/
 
 #include <stddef.h>
 

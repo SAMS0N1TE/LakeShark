@@ -14,7 +14,8 @@
  *   [48..71] Source address (radio ID)             24 bits
  *
  * The 96-bit BPTC block wraps these 72 bits followed by 24 bits of RS(12,9)
- * parity; RS decoding of that trailer is left as a follow-up. */
+ * parity. The raw parser is retained for fixtures; the checked entry below
+ * validates the masked parity before allowing a receive path to use it. */
 
 static uint32_t get_bits_msb(const uint8_t *buf, unsigned first, unsigned count)
 {
@@ -38,4 +39,37 @@ void dmr_lc_parse(const uint8_t bits96[12], dmr_lc_t *out)
     out->service_options = (uint8_t)get_bits_msb(bits96, 16, 8);
     out->destination     = get_bits_msb(bits96, 24, 24);
     out->source          = get_bits_msb(bits96, 48, 24);
+}
+
+/* Parity ordering, generator coefficients and burst masks independently
+ * checked against MMDVM-Host RS129.cpp/DMRFullLC.cpp/DMRDefines.h, commit
+ * 590c531391dfd3146073afbc3956f70d42c62a46 (Jonathan Naylor G4KLX and
+ * upstream contributors, GPL-2.0-or-later). This implementation uses direct
+ * GF(256) multiplication instead of upstream's logarithm lookup tables. */
+static uint8_t gf_multiply(uint8_t a, uint8_t b)
+{
+    uint8_t result=0;
+    while(b) {
+        if(b&1u) result^=a;
+        a=(uint8_t)((a<<1)^((a&0x80u)?0x1Du:0u));
+        b>>=1;
+    }
+    return result;
+}
+
+int dmr_lc_decode(const uint8_t bits96[12], uint8_t data_type, dmr_lc_t *out)
+{
+    if(!bits96 || !out || (data_type!=1 && data_type!=2)) return 0;
+    uint8_t parity[3]={0};
+    for(unsigned i=0;i<9;i++) {
+        uint8_t feedback=bits96[i]^parity[2];
+        parity[2]=parity[1]^gf_multiply(14,feedback);
+        parity[1]=parity[0]^gf_multiply(56,feedback);
+        parity[0]=gf_multiply(64,feedback);
+    }
+    uint8_t mask=data_type==1?0x96u:0x99u;
+    for(unsigned i=0;i<3;i++)
+        if(bits96[9+i]!=(uint8_t)(parity[2-i]^mask)) return 0;
+    dmr_lc_parse(bits96,out);
+    return 1;
 }

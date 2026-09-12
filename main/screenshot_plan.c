@@ -1,4 +1,4 @@
-/* LS-735: pure screenshot resource admission.  Keeping the overflow and
+/* pure screenshot resource admission.  Keeping the overflow and
    low-resource decisions outside LVGL lets the host bench prove that a shot
    is refused before the recursive object-tree renderer is entered. */
 

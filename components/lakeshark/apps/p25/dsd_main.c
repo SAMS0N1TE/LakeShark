@@ -1,3 +1,30 @@
+/*
+ * DSD-derived source. Attribution restored in LakeShark on 2026-09-11 from
+ * the DSD COPYRIGHT at revision
+ * 59423fa46be8b41ef0bd2f3d2b45590600be29f0:
+ * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/src/dsd_main.c
+ *
+ * That revision is a verified comparison source, established by comparing
+ * identifiers and literals after comments and whitespace were removed. It is
+ * not a claim about which revision or intervening fork was originally
+ * imported. This file has been modified for LakeShark and the ESP32-P4.
+ *
+ * Copyright (C) 2010 DSD Author
+ * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #include "dsd.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -12,7 +39,11 @@ volatile int p25_voice_gate = 99;
 static inline void *dsd_malloc_fast(size_t sz)
 {
 
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > sz + 24576) {
+    /* Leave DMA-capable memory available for Bluetooth and USB app switches. */
+    const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > sz + 24576 &&
+        heap_caps_get_free_size(dma_caps) > sz + 8192 &&
+        heap_caps_get_largest_free_block(dma_caps) > sz + 4096) {
         void *p = heap_caps_malloc(sz, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (p) return p;
     }
@@ -193,7 +224,7 @@ void initState(dsd_state *state)
     state->p25_tsbk_trellis_errors = 0;
     state->p25_tsbk_vendor_count = 0;
     state->p25_tsbk_last_vendor_mfid = 0;
-    /* LS-652: unhandled-opcode counters and per-broadcast state added by
+    /* unhandled-opcode counters and per-broadcast state added by
      * the wider TSBK dispatch. All zero on entry: neither RFSS nor SCCB
      * nor SYS_SRV nor SYNC nor any neighbour has been seen yet. */
     memset(state->p25_tsbk_unhandled, 0, sizeof(state->p25_tsbk_unhandled));
@@ -238,7 +269,7 @@ void initState(dsd_state *state)
     state->p25_last_reg_reason = 0;
     state->p25_last_reg_source = 0;
     state->p25_last_reg_target = 0;
-    /* LS-650: zero the LCW state alongside TSBK state. p25_lcw_call_clear
+    /* zero the LCW state alongside TSBK state. p25_lcw_call_clear
      * does the same reset used on TDU/TDULC/talkgroup change. */
     state->p25_lcw_ok_count = 0;
     state->p25_lcw_fec_reject_count = 0;
@@ -290,8 +321,7 @@ void noCarrier(dsd_opts *opts, dsd_state *state)
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
     p25_ess_clear(state);
-    /* LS-650: no-carrier is end-of-call; drop the LCW identity too so the
-     * next sync starts unlabelled rather than showing the last TG. */
+
     p25_lcw_call_clear(state);
 }
 

@@ -8,7 +8,7 @@ extern "C" {
 void ls_ctl_register_commands(void);
 void ls_ctl_start_repl(void);
 
-/* LS-994  The safe-mode console: help, version, crash and safemode only.
+/* The safe-mode console: help, version, crash and safemode only.
    Everything the normal set offers dereferences a backend that safe mode
    deliberately never started. */
 void ls_ctl_start_recovery_repl(void);

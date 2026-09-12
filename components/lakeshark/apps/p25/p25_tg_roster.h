@@ -1,12 +1,5 @@
-/* LS-690: bounded talkgroup roster selection and policy editing.
- *
- * This is deliberately a view over p25_profile_t and p25_scan_ctrl_t, not a
- * second policy store.  Profile rows supply the bounded roster and their
- * configured defaults; scan_ctrl remains the sole source of effective allow,
- * hold, lockout and priority state.  The GUI and the host bench use the same
- * operations, so a button cannot become a decorative flag disconnected from
- * grant policy.
- */
+/* bounded talkgroup roster selection and policy editing. */
+
 #ifndef P25_TG_ROSTER_H
 #define P25_TG_ROSTER_H
 

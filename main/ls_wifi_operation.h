@@ -6,7 +6,7 @@
 
 typedef struct { uint32_t owned; } ls_wifi_operation_t;
 
-/* LS-761: Settings scans and console/AP commands share one radio. Never
+/* Settings scans and console/AP commands share one radio. Never
  * wait on LVGL, and never let scan cleanup stop a newer operation's STA. */
 static inline bool ls_wifi_operation_try(ls_wifi_operation_t *operation)
 {

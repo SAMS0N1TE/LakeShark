@@ -103,8 +103,7 @@ typedef struct {
 void dsp_init(dsp_state_t *s);
 void dsp_set_mode(dsp_state_t *s, demod_mode_t mode);
 void dsp_set_gain(dsp_state_t *s, float gain);
-/* Apply an operator/AUTO selection without resetting an unchanged winner.
- * True means the decoder's sample epoch must change. */
+
 bool dsp_select_mode(dsp_state_t *s, demod_mode_t mode, float gain);
 void dsp_set_costas_alpha(dsp_state_t *s, float alpha);
 bool dsp_set_cqpsk_loops(dsp_state_t *s,

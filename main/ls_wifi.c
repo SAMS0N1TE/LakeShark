@@ -1,7 +1,8 @@
 #include "ls_wifi.h"
-#include "rec_state.h"   /*LS-983  rec_dir() */
+#include "rec_state.h"   /* rec_dir() */
 #include "ls_wifi_sta_core.h"
 #include "ls_wifi_operation.h"
+#include "ls_wifi_file_stream.h"
 #include "ble_link.h"
 #include "ls_time.h"
 
@@ -26,6 +27,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 static const char *TAG = "ls_wifi";
 
@@ -34,7 +36,7 @@ static const char *TAG = "ls_wifi";
 #define LS_AP_CHAN  6
 #define LS_AP_MAXC  2
 
-/*LS-738*/
+/**/
 /* Files come off the SD card. If it is not mounted there is nothing useful to
    serve, and saying so beats an empty listing that looks like a broken
    server. */
@@ -43,13 +45,8 @@ static const char *TAG = "ls_wifi";
 #endif
 static const char *ROOT = BSP_SD_MOUNT_POINT;
 
-/*LS-830*/
-/* Station mode lives alongside the AP now. The AP path still tears BLE down
-   because it hands the C6 an HTTP server and needs the whole link for it (see
-   LS-110 / LS-738); station mode does not - it is a client, one association,
-   no listener - so it must not kick the Flipper head off. Credentials come
-   from `wifi join <ssid> [pass]` and are stored under the `ls_wifi` NVS
-   namespace so the next boot rejoins on its own. */
+/**/
+
 #define LS_WIFI_NVS_NAMESPACE "ls_wifi"
 #define LS_WIFI_NVS_KEY_SSID  "ssid"
 #define LS_WIFI_NVS_KEY_PASS  "pass"
@@ -65,7 +62,7 @@ static bool           s_events_bound = false;
 static bool           s_nvs_flash_ready = false;
 
 static httpd_handle_t s_httpd    = NULL;
-/*LS-795  Defined below; started by either the SoftAP or the station. */
+/* Defined below; started by either the SoftAP or the station. */
 static esp_err_t httpd_ensure_started(void);
 static esp_netif_t   *s_netif_ap  = NULL;
 static esp_netif_t   *s_netif_sta = NULL;
@@ -129,7 +126,7 @@ static esp_err_t h_index(httpd_req_t *r)
         }
         if (d) closedir(d);
 
-        /*LS-983  and the captures directory, which is where anything the
+        /* and the captures directory, which is where anything the
            device produces itself actually lands. */
         const char *cap = rec_dir();
         if (cap && strcmp(cap, ROOT) != 0) {
@@ -168,6 +165,11 @@ static bool name_ok(const char *n)
     return true;
 }
 
+static int dl_send(void *context, const char *data, size_t size)
+{
+    return httpd_resp_send_chunk((httpd_req_t *)context, data, size);
+}
+
 static esp_err_t h_dl(httpd_req_t *r)
 {
     char q[160], name[128];
@@ -177,7 +179,7 @@ static esp_err_t h_dl(httpd_req_t *r)
         httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "bad name");
         return ESP_FAIL;
     }
-    /*LS-983  Captures and screenshots live in rec_dir(), a subdirectory of the
+    /* Captures and screenshots live in rec_dir(), a subdirectory of the
        SD root, and this only ever looked at the root. So `shot` printed "fetch
        it with 'wifi on'" and the file it had just written was not on the page.
        Try both. */
@@ -190,9 +192,16 @@ static esp_err_t h_dl(httpd_req_t *r)
     }
     if (!f) { httpd_resp_send_err(r, HTTPD_404_NOT_FOUND, "no such file"); return ESP_FAIL; }
 
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+        fclose(f);
+        httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "cannot size file");
+        return ESP_FAIL;
+    }
+
     httpd_resp_set_type(r, "application/octet-stream");
 
-    /*LS-796  2 KB chunks meant 562 separate chunked writes for a 1.15 MB
+    /* 2 KB chunks meant 562 separate chunked writes for a 1.15 MB
        screenshot, and the per-chunk cost dominates over the co-processor's
        Wi-Fi link: a 34 KB file moved at 53 KB/s while a screenshot managed
        108 KB in 60 s and stalled. Pull bigger blocks. The buffer is only
@@ -205,18 +214,30 @@ static esp_err_t h_dl(httpd_req_t *r)
     size_t cap = buf ? (size_t)DL_CHUNK : sizeof(small);
     if (!buf) buf = small;
 
-    size_t got;
-    esp_err_t sent = ESP_OK;
-    while ((got = fread(buf, 1, cap, f)) > 0) {
-        if (httpd_resp_send_chunk(r, buf, got) != ESP_OK) { sent = ESP_FAIL; break; }
-    }
+    uint64_t sent = 0;
+    int64_t started = esp_timer_get_time();
+    errno = 0;
+    ls_wifi_file_result_t result = ls_wifi_file_stream(
+        f, buf, cap, (uint64_t)st.st_size, dl_send, r, &sent);
+    int transfer_errno = errno;
     if (buf != small) heap_caps_free(buf);
     fclose(f);
-    if (sent != ESP_OK) return ESP_FAIL;
-    return httpd_resp_send_chunk(r, NULL, 0);
+    if (result != LS_WIFI_FILE_OK) {
+        ESP_LOGE(TAG, "download %s: result=%d sent=%llu/%llu errno=%d elapsed_ms=%lld",
+                 name, (int)result, (unsigned long long)sent,
+                 (unsigned long long)st.st_size, transfer_errno,
+                 (long long)((esp_timer_get_time() - started) / 1000));
+        /* Returning failure closes the incomplete chunked response. Do not
+         * append an HTTP error or retry a chunk that may be partly on wire. */
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "download %s: complete bytes=%llu elapsed_ms=%lld",
+             name, (unsigned long long)sent,
+             (long long)((esp_timer_get_time() - started) / 1000));
+    return ESP_OK;
 }
 
-/*LS-738*/
+/**/
 /* Minimal multipart parse: find the filename, skip to the blank line after the
    part headers, then stream the body to disk until the trailing boundary. This
    is deliberately not a general multipart parser - it handles one file per
@@ -295,7 +316,7 @@ static esp_err_t h_ul(httpd_req_t *r)
 
 /* ---------------------------------------------------------------- nvs ---- */
 
-/*LS-830*/
+/**/
 /* Credentials go into their own NVS namespace, not sdr-tool. Two reasons:
      - the settings component owns sdr-tool and its worker task is not aware
        of WiFi;
@@ -395,7 +416,7 @@ static void schedule_reconnect(void)
         }
     }
     esp_timer_stop(s_reconnect_timer);
-    /*LS-830  Backoff formula lives in ls_wifi_sta_core.c so the bench can pin
+    /* Backoff formula lives in ls_wifi_sta_core.c so the bench can pin
        it. See test_wifi_sta.c. */
     s_reconnect_ms = ls_wifi_backoff_next(s_reconnect_ms,
                                           LS_WIFI_BACKOFF_MIN_MS,
@@ -410,19 +431,19 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
     if (base == WIFI_EVENT) {
         switch (id) {
         case WIFI_EVENT_STA_START:
-            /*LS-830  Do not connect from here. ls_wifi_sta_join() owns the
+            /* Do not connect from here. ls_wifi_sta_join() owns the
                initial connect once it has set the config; connecting on
                STA_START would race a caller that has not yet written a valid
                SSID. */
             break;
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *)data;
-            /*LS-830  Log the reason code, not the SSID or password. */
+            /* Log the reason code, not the SSID or password. */
             ESP_LOGW(TAG, "wifi: disconnected (reason=%d)", ev ? ev->reason : -1);
             s_sta_connected = false;
             s_sta_reason = ev ? ev->reason : -1;
             strncpy(s_ip_sta, "0.0.0.0", sizeof(s_ip_sta));
-            /*LS-795  Give the server's memory back when no interface is left
+            /* Give the server's memory back when no interface is left
                to serve; internal RAM is the scarce resource on this board. */
             if (s_httpd && !s_ap_running) {
                 if (httpd_stop(s_httpd) == ESP_OK) s_httpd = NULL;
@@ -439,17 +460,14 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
         s_sta_connected = true;
         s_sta_reason = 0;
         s_reconnect_ms  = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
-        /*LS-795  Serve the file browser over the station too, so captures can
+        /* Serve the file browser over the station too, so captures can
            be pulled without dropping the BLE head to raise the SoftAP. */
         if (httpd_ensure_started() == ESP_OK)
             ESP_LOGW(TAG, "wifi: joined \"%s\" - http://%s/", s_sta_ssid, s_ip_sta);
         else
             ESP_LOGW(TAG, "wifi: joined \"%s\" - %s (file server unavailable)",
                      s_sta_ssid, s_ip_sta);
-        /*LS-200  Kick SNTP now that the netif has an IP. This does not
-           block: the sync callback flips the ls_time synced flag when a
-           server answers, and until then every timestamp renderer falls
-           back to an obvious uptime marker rather than a wrong date. */
+
         ls_time_sntp_start();
     }
 }
@@ -458,6 +476,11 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static esp_err_t ensure_stack(void)
 {
+#if defined(CONFIG_LS_C6_LINK) && !CONFIG_LS_C6_LINK
+    return ESP_ERR_NOT_SUPPORTED;
+#elif !defined(CONFIG_LS_C6_LINK)
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (s_stack_up) return ESP_OK;
 
     esp_err_t e = esp_netif_init();
@@ -497,9 +520,9 @@ static esp_err_t ap_start_locked(void)
 {
     if (s_ap_running) return ESP_OK;
 
-    /*LS-738*/
+    /**/
     /* Take the C6 off BLE first. Both go through the same SDIO link and
-       LS-110 documents a boot-loop when that link is unhappy; one user at a
+       documents a boot-loop when that link is unhappy; one user at a
        time is the cheap way to stay out of it. The AP path serves HTTP, which
        is heavy enough that keeping BLE running alongside it has never been
        tested and is not being introduced here. */
@@ -543,17 +566,12 @@ static esp_err_t ap_start_locked(void)
     return ESP_OK;
 }
 
-/*LS-795  The file server used to live and die with the SoftAP, and the SoftAP
-   cannot run while the BLE head link is up. That meant screenshots were only
-   reachable by dropping the Flipper connection, even though the station
-   interface was associated and had an address the whole time. esp_http_server
-   binds every interface, so starting it once serves AP and station alike. */
 static esp_err_t httpd_ensure_started(void)
 {
     if (s_httpd) return ESP_OK;
 
     httpd_config_t hc   = HTTPD_DEFAULT_CONFIG();
-    /*LS-806  8192 asked, 7312 never touched - under 900 B in use. */
+    /* 8192 asked, 7312 never touched - under 900 B in use. */
     hc.stack_size       = 3584;
     hc.max_uri_handlers = 8;
     hc.lru_purge_enable = true;
@@ -577,7 +595,7 @@ static esp_err_t ap_stop_locked(void)
 {
     if (!s_ap_running) return ESP_OK;
     esp_err_t error;
-    /*LS-795  Only tear the server down if nothing else is serving it. The
+    /* Only tear the server down if nothing else is serving it. The
        station keeps it alive, so stopping the SoftAP (to bring BLE back) no
        longer takes the file browser with it. */
     if (s_httpd && !s_sta_connected) {
@@ -586,7 +604,7 @@ static esp_err_t ap_stop_locked(void)
         s_httpd = NULL;
     }
 
-    /*LS-830  Only stop the radio if STA is not still using it. */
+    /* Only stop the radio if STA is not still using it. */
     if (!s_sta_running) {
         error = esp_wifi_stop();
     } else {
@@ -602,13 +620,13 @@ bool ls_wifi_running(void) { return s_ap_running; }
 
 /* ------------------------------------------------------------- STA API ---- */
 
-/*LS-830  Everything below is new. AP path above must remain byte-compatible
-   with LS-738: it still stops BLE and it still serves the same three URIs. */
+/* Everything below is new. AP path above must remain byte-compatible
+   with it still stops BLE and it still serves the same three URIs. */
 
 static bool sta_apply_config(const char *ssid, const char *pass)
 {
     wifi_config_t sta = {0};
-    /* LS-761: IDF's SSID field is 32 bytes, not a 31-character C string. */
+    /* IDF's SSID field is 32 bytes, not a 31-character C string. */
     ls_wifi_copy_ssid(sta.sta.ssid, ssid);
     if (pass && *pass) {
         strncpy((char *)sta.sta.password, pass, sizeof(sta.sta.password) - 1);
@@ -660,7 +678,7 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
     if (!ls_wifi_ssid_valid(ssid)) return ESP_ERR_INVALID_ARG;
     if (!ls_wifi_pass_valid(pass ? pass : "")) return ESP_ERR_INVALID_ARG;
 
-    /* LS-761: changing networks while associated otherwise fails set_config
+    /* changing networks while associated otherwise fails set_config
      * or leaves the previous IP on screen. Cancel the old association first. */
     if (s_sta_running) {
         esp_err_t leave = sta_leave_locked();
@@ -689,7 +707,7 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
     }
 
     s_reconnect_ms = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
-    /*LS-830  No SSID in this log line; only note that we are trying. The
+    /* No SSID in this log line; only note that we are trying. The
        peripheral log path is common enough that dropping credentials into it
        is a serial-console credential leak. */
     ESP_LOGW(TAG, "wifi: joining stored network");
@@ -712,7 +730,7 @@ static esp_err_t sta_leave_locked(void)
     s_sta_connected = false;
     strncpy(s_ip_sta, "0.0.0.0", sizeof(s_ip_sta));
 
-    /*LS-200  Stop SNTP too. The synced flag stays set - a lost network
+    /* Stop SNTP too. The synced flag stays set - a lost network
        does not un-know what the time was. */
     ls_time_sntp_stop();
 
@@ -748,7 +766,7 @@ static esp_err_t sta_autojoin_locked(void)
     } else if (rc == ESP_OK) {
         rc = sta_join_locked(ssid, pass);
     }
-    /*LS-830  Zero the on-stack passphrase before returning. */
+    /* Zero the on-stack passphrase before returning. */
     memset(pass, 0, sizeof(pass));
     return rc;
 }
@@ -772,7 +790,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
     }
 
     wifi_scan_config_t sc = {0};
-    esp_err_t e = esp_wifi_scan_start(&sc, /*block=*/true);
+    esp_err_t e = esp_wifi_scan_start(&sc, /* block=*/true);
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(e));
         if (started_for_scan) esp_wifi_stop();
@@ -781,7 +799,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
     }
 
     uint16_t n = (uint16_t)(cap < 64 ? cap : 64);
-    /* LS-761: the console scan overflowed its 4 KiB stack in esp_log's
+    /* the console scan overflowed its 4 KiB stack in esp_log's
      * formatter with the AP record array live. Keep scan records off stacks. */
     wifi_ap_record_t *recs = heap_caps_malloc(
         sizeof(*recs) * LS_WIFI_SCAN_LIST_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -809,6 +827,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
         if (!ls_wifi_ssid_valid(out[written].ssid)) continue;
         out[written].rssi   = recs[i].rssi;
         out[written].secure = (recs[i].authmode != WIFI_AUTH_OPEN);
+        out[written].channel = recs[i].primary;
         written++;
     }
 
@@ -822,7 +841,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
 bool ls_wifi_sta_running(void)   { return s_sta_running; }
 bool ls_wifi_sta_connected(void) { return s_sta_connected; }
 
-/*LS-815*/
+/**/
 void ls_wifi_sta_ip(char *out, int cap)
 {
     if (!out || cap <= 0) return;
@@ -837,7 +856,7 @@ static void sta_status_locked(char *buf, int cap)
         char ssid[LS_WIFI_SSID_MAX_LEN + 1] = "";
         esp_err_t error = nvs_load_creds(ssid, sizeof(ssid), NULL, 0);
         if (error == ESP_OK && ssid[0]) {
-            /*LS-830  Show the SSID here - it is not a secret and helps the
+            /* Show the SSID here - it is not a secret and helps the
                user know which network the device would join. Never print the
                passphrase. */
             snprintf(buf, cap, "Disconnected; saved \"%s\"", ssid);
@@ -872,7 +891,7 @@ static void status_locked(char *buf, int cap)
 typedef enum {
     WIFI_OP_AP_START, WIFI_OP_AP_STOP, WIFI_OP_JOIN, WIFI_OP_LEAVE,
     WIFI_OP_FORGET, WIFI_OP_AUTOJOIN, WIFI_OP_SCAN, WIFI_OP_STA_STATUS,
-    WIFI_OP_STATUS,
+    WIFI_OP_STATUS, WIFI_OP_STA_INFO,
 } wifi_operation_kind_t;
 
 typedef struct {
@@ -896,6 +915,18 @@ static int dispatch_operation(void *context)
     case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity);
     case WIFI_OP_STA_STATUS: sta_status_locked(r->out, r->capacity); return ESP_OK;
     case WIFI_OP_STATUS: status_locked(r->out, r->capacity); return ESP_OK;
+    case WIFI_OP_STA_INFO: {
+        if (!r->out || !s_sta_connected) return ESP_ERR_INVALID_STATE;
+        wifi_ap_record_t ap;
+        esp_err_t rc = esp_wifi_sta_get_ap_info(&ap);
+        if (rc != ESP_OK) return rc;
+        ls_wifi_scan_ap_t *out = r->out;
+        snprintf(out->ssid, sizeof(out->ssid), "%.32s", ap.ssid);
+        out->rssi = ap.rssi;
+        out->secure = ap.authmode != WIFI_AUTH_OPEN;
+        out->channel = ap.primary;
+        return ESP_OK;
+    }
     }
     return ESP_ERR_INVALID_ARG;
 }
@@ -942,6 +973,11 @@ int ls_wifi_sta_scan(ls_wifi_scan_ap_t *out, int cap)
 {
     int result = perform(WIFI_OP_SCAN, NULL, NULL, out, cap);
     return result == ESP_ERR_INVALID_STATE ? -1 : result;
+}
+
+esp_err_t ls_wifi_sta_info(ls_wifi_scan_ap_t *out)
+{
+    return perform(WIFI_OP_STA_INFO, NULL, NULL, out, 0);
 }
 
 void ls_wifi_sta_status(char *buf, int cap)

@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
-/*LS-741*/
+/**/
 /* The BSP and player headers carry their own extern "C" guards and include
    C++-aware IDF headers; wrapping them in another extern "C" makes
    esp_lcd_io_i2c.h redeclare with C linkage and the build dies on a
@@ -13,7 +13,7 @@
 #include "audio_player.h"
 #include "media_playlist.h"
 #include "ls_media_handoff.h"
-/*LS-754*/
+/**/
 #include "ls_media_lifecycle.h"
 
 extern "C" {
@@ -37,7 +37,7 @@ static const char *TAG = "media";
 #define BSP_SD_MOUNT_POINT "/sdcard"
 #endif
 
-/*LS-741*/
+/**/
 /* Two sources, because the two behave differently and hiding that is unkind:
    the SD card is where the user's own music goes and may be absent entirely,
    while /spiffs/music is baked into the firmware image and is always there.
@@ -47,8 +47,8 @@ static const char *TAG = "media";
 static const char *SRC_PATH[2] = { BSP_SD_MOUNT_POINT "/music", "/spiffs/music" };
 static const char *SRC_NAME[2] = { "SD /music", "internal" };
 
-/*LS-741*/
-/*LS-755*/
+/**/
+/**/
 /* One iterator per source, built lazily by rescan() and released by close().
    Older revisions kept these forever because file_iterator_delete() was only
    DECLARED in the vendored header and NEVER IMPLEMENTED, so calling it was a
@@ -58,19 +58,15 @@ static const char *SRC_NAME[2] = { "SD /music", "internal" };
 static file_iterator_instance_t *s_iter_src[2] = { NULL, NULL };
 static file_iterator_instance_t *s_iter = NULL;
 
-/*LS-743*/
-/* Set by the file browser before it launches this app, so opening an .mp3
-   from FILES plays that file rather than dumping you on a list. Consumed on
-   run() AND resume() and cleared, so a later manual launch is not hijacked
-   by it - the storage now lives in ls_media_handoff so both call sites go
-   through the same one-shot take(). */
+/**/
+
 void ls_media_play_path(const char *path)
 {
     ls_media_handoff_set(path);
 }
 static bool s_player_up = false;
 
-/*LS-754*/
+/**/
 /* Codec transition hooks.  Firmware wires enter -> park the radio, leave ->
    stop the audio player (gated on s_player_up because audio_player_stop must
    not run before audio_player_init).  See ls_media_lifecycle.h. */
@@ -91,10 +87,10 @@ static void music_wire_hooks_once(void)
     s_hooks_wired = true;
 }
 
-/*LS-743*/
+/**/
 static void audio_player_play_file_path(const char *p);
 
-/*LS-753*/
+/**/
 /* Consume a pending Files-to-Music handoff, if any.  Called from both run()
    and resume(): the old code only fired on run(), so after the shell had
    built Music once every later file pick landed on resume() with the path
@@ -114,7 +110,7 @@ static lv_obj_t *mono(lv_obj_t *parent, lv_color_t col)
 AppMedia::AppMedia() : LsApp("MUSIC", "files") {}
 AppMedia::~AppMedia() = default;
 
-/*LS-754*/
+/**/
 /* pause() and background() both mean "another app is coming up".  Stop the
    audio player before the shell hands off, so the next app - radio or
    otherwise - never has to fight audio_player for the codec.  The old code
@@ -132,10 +128,10 @@ bool AppMedia::background(void)
     ls_media_lifecycle_leave();
     return true;
 }
-/*LS-753*/
+/**/
 bool AppMedia::resume(void)
 {
-    /*LS-754*/
+    /**/
     /* Re-take ownership BEFORE consuming a pending handoff.  Coming back from
        Files does not mean the radio is running, but a manual jump from a
        radio app back into Music must park the radio before the player starts
@@ -153,22 +149,19 @@ bool AppMedia::back(void)       { return exitToLauncher(); }
 
 bool AppMedia::close(void)
 {
-    /*LS-741*/
+    /**/
     /* Stop on close. Leaving audio running into another app would fight the
        radio for the codec, and the P25/FM apps assume they own it. */
-    /*LS-744*/
-    /*LS-753*/
-    /*LS-754*/
-    /* Direct-file playback leaves _playing at -1 - the old check refused to
-       stop it, so closing Music with a file playing let audio bleed into the
-       next app.  Route through the lifecycle module so pause/background/close
-       take the same ordered path and the transition is host-testable. */
+    /**/
+    /**/
+    /**/
+
     ls_media_lifecycle_leave();
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
     _list = nullptr; _now = nullptr; _srclbl = nullptr; _playlbl = nullptr;
     _playing = -1;
 
-    /*LS-755*/
+    /**/
     /* Give back everything run() and rescan() acquired.  Each source iterator
        owns its path string, its pointer array and one allocation per entry;
        the player owns audio_player's decode task, its queue and its buffers.
@@ -191,11 +184,8 @@ bool AppMedia::close(void)
 
 void AppMedia::rescan(void)
 {
-    /*LS-743*/
-    /* The managed file_iterator dereferences the result of opendir() without
-       testing it, so a missing path used to fault taskLVGL in file_iterator_new
-       (captured in the LS-734 coredump). The playlist builder owns the guarded
-       scan now and returns NULL for an absent source. */
+    /**/
+
     if (!s_iter_src[_src]) {
         s_iter_src[_src] = ls_media_playlist_open(SRC_PATH[_src]);
         if (!s_iter_src[_src]) {
@@ -209,9 +199,9 @@ void AppMedia::rescan(void)
 
 bool AppMedia::run(lv_obj_t *parent)
 {
-    /*LS-754*/
+    /**/
     /* Take ownership FIRST.  The normal route in is P25/FM -> Files -> Music,
-       and Files is passive (LS-604) so the radio decoder was only
+       and Files is passive () so the radio decoder was only
        backgrounded - its on_exit was never called and the pipe is still
        running.  Parking now guarantees the radio has released the codec by
        the time audio_out_ensure_unmuted and bsp_extra_player_init touch it,
@@ -219,7 +209,7 @@ bool AppMedia::run(lv_obj_t *parent)
     music_wire_hooks_once();
     ls_media_lifecycle_enter();
 
-    /*LS-744*/
+    /**/
     /* Open the codec before touching the player. bsp_extra_i2s_write() calls
        esp_codec_dev_write(play_dev_handle, ...) with NO NULL CHECK, so if the
        radio has parked the codec, any player call - including a stop that
@@ -262,13 +252,13 @@ bool AppMedia::run(lv_obj_t *parent)
     ls_ui_button(row, "SOURCE", LS_BTN_DEFAULT, srcCb, this, nullptr);
 
     refreshList();
-    /*LS-743*/
+    /**/
     consume_pending_handoff();
     _timer = lv_timer_create(timerCb, 500, this);
     return true;
 }
 
-/*LS-743*/
+/**/
 static void audio_player_play_file_path(const char *p)
 {
     if (bsp_extra_player_play_file(p) != ESP_OK)
@@ -305,19 +295,14 @@ void AppMedia::updateNow(void)
 {
     if (!_now) return;
     char buf[96];
-    /*LS-753*/
-    /* Two questions, not one.  "Active" says the player still points at this
-       track (playing OR paused) - if so, PLAY must resume rather than start
-       over, so _playing stays set.  "Playing" is strictly PLAYING and drives
-       the button label.  The old single query treated PAUSE like IDLE and
-       forced a restart on every resume, and it lied about track zero because
-       the underlying comparison was against a stale iterator index. */
+    /**/
+
     bool active_idx = s_iter && s_player_up && (_playing >= 0) &&
                       bsp_extra_player_is_active_by_index(s_iter, _playing);
     bool playing_idx = active_idx &&
                       bsp_extra_player_is_playing_by_index(s_iter, _playing);
 
-    /*LS-753*/
+    /**/
     /* Direct-file (Files-to-Music) playback has no row in the playlist but
        still owns the codec; show the basename so the user can see what is
        playing and so STOP/PAUSE labels reflect the real state. */
@@ -334,9 +319,8 @@ void AppMedia::updateNow(void)
         const char *nm    = slash ? slash + 1 : dpath;
         snprintf(buf, sizeof(buf), "%s %s", playing_direct ? ">" : "||", nm);
     } else {
-        /*LS-741*/
-        /* A track that finished on its own leaves _playing set; clearing it
-           here is what makes PLAY restart rather than look dead. */
+        /**/
+
         if (_playing >= 0) _playing = -1;
         snprintf(buf, sizeof(buf), "stopped");
     }
@@ -361,7 +345,7 @@ void AppMedia::listCb(lv_event_t *e)
     if (!self) return;
     lv_obj_t *b = lv_event_get_target(e);
     self->_sel = (int)(intptr_t)lv_obj_get_user_data(b);
-    /*LS-756*/
+    /**/
     /* Only claim the track is playing once audio_player agreed to take it.
        Otherwise a full player queue set _playing to a row nothing was
        decoding, and updateNow leaked the "||" / ">" indicator for a file
@@ -380,10 +364,10 @@ void AppMedia::playCb(lv_event_t *e)
 {
     AppMedia *self = static_cast<AppMedia *>(lv_event_get_user_data(e));
     if (!self) return;
-    /*LS-744*/
+    /**/
     if (!s_player_up) return;
 
-    /*LS-753*/
+    /**/
     /* Direct-file playback owns the codec but has no row in the playlist -
        PLAY must toggle the audio_player state directly. */
     if (bsp_extra_player_is_active_path()) {
@@ -400,7 +384,7 @@ void AppMedia::playCb(lv_event_t *e)
     } else if (self->_playing >= 0) {
         audio_player_resume();
     } else {
-        /*LS-756*/
+        /**/
         if (bsp_extra_player_play_index(s_iter, self->_sel) == ESP_OK) {
             self->_playing = self->_sel;
         } else {
@@ -414,10 +398,9 @@ void AppMedia::playCb(lv_event_t *e)
 void AppMedia::stopCb(lv_event_t *e)
 {
     AppMedia *self = static_cast<AppMedia *>(lv_event_get_user_data(e));
-    /*LS-744*/
-    /*LS-753*/
-    /* Direct-file playback leaves _playing at -1; the old check refused to
-       stop it, so STOP looked broken for anything opened from Files. */
+    /**/
+    /**/
+
     if (s_player_up && self &&
         (self->_playing >= 0 || bsp_extra_player_is_active_path()))
         audio_player_stop();
@@ -431,7 +414,7 @@ void AppMedia::prevCb(lv_event_t *e)
     int n = file_iterator_get_count(s_iter);
     if (n <= 0) return;
     self->_sel = (self->_sel - 1 + n) % n;
-    /*LS-756*/
+    /**/
     if (bsp_extra_player_play_index(s_iter, self->_sel) == ESP_OK) {
         self->_playing = self->_sel;
     } else {
@@ -448,7 +431,7 @@ void AppMedia::nextCb(lv_event_t *e)
     int n = file_iterator_get_count(s_iter);
     if (n <= 0) return;
     self->_sel = (self->_sel + 1) % n;
-    /*LS-756*/
+    /**/
     if (bsp_extra_player_play_index(s_iter, self->_sel) == ESP_OK) {
         self->_playing = self->_sel;
     } else {
@@ -462,8 +445,8 @@ void AppMedia::srcCb(lv_event_t *e)
 {
     AppMedia *self = static_cast<AppMedia *>(lv_event_get_user_data(e));
     if (!self) return;
-    /*LS-744*/
-    /*LS-753*/
+    /**/
+    /**/
     /* Also stops a direct-file track: switching source is a clear "give me a
        different list" gesture and letting the old file keep playing behind a
        stale label is worse than starting silent. */

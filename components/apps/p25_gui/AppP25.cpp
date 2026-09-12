@@ -1,4 +1,7 @@
 #include "AppP25.hpp"
+#include "ui/ls_instrument.h"
+#include "shell/ls_input.h"
+#include "ls_board.h"
 
 #include <cstdio>
 #include <cstring>
@@ -24,8 +27,7 @@ extern "C" {
 #include "p25_health.h"
 #include "p25_tg_observed.h"
 }
-
-/* LS-780: the GUI owns this bounded snapshot.  It is read once a second
+/* the GUI owns this bounded snapshot.  It is read once a second
    and is deliberately not on the LVGL task stack and not reallocated on
    every tick - both are how earlier roster views ran internal heap down. */
 static EXT_RAM_BSS_ATTR p25_tg_observed_snapshot_t s_observed_view;
@@ -123,7 +125,7 @@ static void ascii_spark(char *out, size_t outsz, const int *vals, int head,
     out[w] = 0;
 }
 
-/*LS-736*/
+/**/
 static void set_toggle(lv_obj_t *button, bool on)
 {
     if (button)
@@ -135,8 +137,8 @@ static void p25_seg_vol(void *, int v)         { audio_volume_set(v); }
 static void p25_seg_gain_live(void *, int v)   { lakeshark_radio_set_gain_live(v); }
 static void p25_seg_gain_commit(void *, int v) { lakeshark_radio_set_gain(v); }
 static void p25_seg_gate(void *, int v)        { lakeshark_p25_set_voice_gate(v); }
-/*LS-746*/ /* hang moved into ScanPanel - it is not a P25 setting. */
-/*LS-702*/
+/**/ /* hang moved into ScanPanel - it is not a P25 setting. */
+/**/
 static void p25_seg_thresh(void *, int v)      { scan_engine_set_threshold_pct(v); }
 
 /* Text meter (mono ASCII bar) -- intentionally NOT an lv_bar: live lv_bar
@@ -158,7 +160,7 @@ AppP25::~AppP25() = default;
 
 bool AppP25::init(void)   { return true; }
 
-/*LS-600*/
+/**/
 bool AppP25::pause(void)
 {
     if (_timer) lv_timer_pause(_timer);
@@ -167,7 +169,7 @@ bool AppP25::pause(void)
     return true;
 }
 
-/*LS-604*/
+/**/
 bool AppP25::background(void)
 {
     if (_timer) lv_timer_pause(_timer);
@@ -175,7 +177,7 @@ bool AppP25::background(void)
     return true;
 }
 
-/*LS-600*/
+/**/
 bool AppP25::resume(void)
 {
     lakeshark_select_p25();
@@ -186,18 +188,19 @@ bool AppP25::resume(void)
 bool AppP25::back(void)
 {
     if (_freq_entry) { closeFreqEntry(); return true; }
-    /*LS-706*/
+    /**/
     if (_name_entry) { closeNameEntry(); return true; }
     return exitToLauncher();
 }
 
 bool AppP25::close(void)
 {
+    _built_tabs=0;memset(_lazy_pages,0,sizeof(_lazy_pages));
     _tg_observed = nullptr;
     _tg_observed_second = UINT32_MAX;
     p25_spectrum_enable(false);
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
-    /*LS-706*/
+    /**/
     closeFreqEntry();
     closeNameEntry();
     _tabview = nullptr;
@@ -205,7 +208,7 @@ bool AppP25::close(void)
     _scan_render_sig = 0;
     _scan_rendered = false;
     _scan_render_cur = -1;
-    /*LS-689*/
+    /**/
     _pg_state = nullptr;
     _pg_system = nullptr;
     _pg_site = nullptr;
@@ -214,17 +217,18 @@ bool AppP25::close(void)
     _pg_control = nullptr;
     _pg_list = nullptr;
     _pg_status = nullptr;
-    /*LS-690*/
+    /**/
     _tg_summary = nullptr;
     _tg_table = nullptr;
     _tg_status = nullptr;
     _tg_render_sig = 0;
     _tg_rendered = false;
     _s_gui = nullptr;
+    _s_call_details = nullptr;
     p25_tg_roster_init(&_tg_roster);
     _zone_val = nullptr;
     _ch_val = nullptr;
-    /*LS-746*/
+    /**/
     _scan_panel.forget();
     ls_spectrum_waterfall_forget(&_s_spectrum);
     _s_spectrum_seq = 0;
@@ -246,7 +250,7 @@ bool AppP25::run(lv_obj_t *parent)
     _gui_last_warn_us = 0;
 
     ls_ui_screen_t screen;
-    /* LS-736: no app header.  The shell already draws one status bar and the
+    /* no app header.  The shell already draws one status bar and the
      * frequency is the 48 px number on DECODE; a second "P25 / 154.7850" strip
      * under the shell bar was duplicate chrome, and on the 480 px panel it was
      * a whole panel of the height the DECODE actions needed. */
@@ -254,31 +258,143 @@ bool AppP25::run(lv_obj_t *parent)
     _tabview = screen.tabs;
 
     static const char *const tab_names[P25_TAB_COUNT] = P25_TAB_NAMES;
+#if LS_HAS_COMPACT_UI
+    for(unsigned i=0;i<P25_TAB_COUNT;i++)_lazy_pages[i]=ls_ui_screen_add_tab(&screen,tab_names[i]);
+    ensureTab(0);
+    lv_obj_add_event_cb(_tabview,[](lv_event_t *e){
+        auto *self=static_cast<AppP25 *>(lv_event_get_user_data(e));
+        self->ensureTab(lv_tabview_get_tab_act(self->_tabview));
+        ls_input_refresh_focus();
+    },LV_EVENT_VALUE_CHANGED,this);
+#else
     buildDecodeTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_DECODE]));
     buildSignalTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_SIGNAL]));
     buildHealthTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_HEALTH]));
     buildScanTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_SCAN]));
     buildSettingsTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_CONFIG]));
-    /*LS-689*/
+    /**/
     buildProgramTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_PROGRAM]));
-    /*LS-690*/
+    /**/
     buildTalkgroupsTab(ls_ui_screen_add_tab(&screen, tab_names[P25_TAB_GROUPS]));
+#endif
 
     _timer = lv_timer_create(timerCb, 250, this);
     return true;
 }
 
+void AppP25::ensureTab(unsigned tab)
+{
+    if(tab>=P25_TAB_COUNT || !_lazy_pages[tab] || (_built_tabs&(1U<<tab)))return;
+    _built_tabs|=1U<<tab;
+    switch(tab){
+        case 0:buildDecodeTab(_lazy_pages[tab]);break;
+        case 1:buildSignalTab(_lazy_pages[tab]);break;
+        case 2:buildHealthTab(_lazy_pages[tab]);break;
+        case 3:buildScanTab(_lazy_pages[tab]);break;
+        case 4:buildSettingsTab(_lazy_pages[tab]);break;
+        case 5:buildProgramTab(_lazy_pages[tab]);break;
+        case 6:buildTalkgroupsTab(_lazy_pages[tab]);break;
+    }
+}
+
+void AppP25::buildInstrumentDecode(lv_obj_t *parent)
+{
+    /* follow-up: portrait's half-width gain/volume and four-column
+     * action rows were difficult to touch. Reserve separate full-width 80 px
+     * controls with a 16 px gap, and three columns of 72 px action targets.
+     * The portrait layout also fits an 840 px app viewport below wrapped tabs. */
+    lv_obj_clear_flag(parent,LV_OBJ_FLAG_SCROLLABLE);
+    auto *v=ls_instrument_create(parent,"P25 / LIVE","02 / VOICE",200,240,68);
+    if(!v)return;
+    _d_face_mode=ls_instrument_text(v->left,"C4FM");
+    _d_rx=ls_instrument_text(v->left,"RX");
+    auto *tune=ls_instrument_button(v->left,"--.------",freqEntryCb,this,&_d_freq);
+    lv_obj_set_style_text_font(_d_freq,&lv_font_montserrat_32,0);
+    _d_status=ls_instrument_text(v->left,"Waiting for receiver");
+    lv_label_set_long_mode(_d_status,LV_LABEL_LONG_DOT);
+    _d_smeter=ls_instrument_text(v->left,"S [................] ---");
+    _d_bmeter=ls_instrument_text(v->left,"B [................] ---");
+    _d_decode=ls_instrument_text(v->right,"NAC -----   TG --   SRC --");
+    lv_label_set_long_mode(_d_decode,LV_LABEL_LONG_WRAP);
+    _d_identity=ls_instrument_text(v->right,"SYSTEM identity waiting");
+    lv_label_set_long_mode(_d_identity,LV_LABEL_LONG_WRAP);
+    _d_gain_slider=sdr_seg_slider(v->right,ls_instrument_accent(),496,lakeshark_p25_gain_tenths(),p25_seg_gain_live,this,&_d_gain_lbl);
+    sdr_seg_use_steps(_d_gain_slider,10);
+    sdr_seg_on_release(_d_gain_slider,p25_seg_gain_commit);
+    _d_vol_slider=sdr_seg_slider(v->right,ls_instrument_accent(),100,audio_volume_get(),p25_seg_vol,this,&_d_vol_lbl);
+    sdr_seg_use_steps(_d_vol_slider,5);
+    (void)tune;
+    lv_obj_set_style_text_font(_d_decode,&lv_font_montserrat_20,0);
+    lv_obj_set_style_text_font(_d_identity,&lv_font_montserrat_20,0);
+    lv_obj_set_style_text_font(_d_gain_lbl,&lv_font_montserrat_20,0);
+    lv_obj_set_style_text_font(_d_vol_lbl,&lv_font_montserrat_20,0);
+    lv_obj_add_event_cb(v->left,[](lv_event_t *e){
+        auto *p=lv_event_get_target(e);int w=lv_obj_get_content_width(p),h=lv_obj_get_content_height(p);
+        bool portrait=lv_obj_get_content_width(lv_obj_get_parent(p))<800;
+        if(!portrait){
+            int split=w*55/100;
+            const int x[]={0,split-72,0,split+16,split+16,split+16};
+            const int y[]={0,0,32,0,72,106};
+            const int widths[]={split-80,72,split,w-split-16,w-split-16,w-split-16};
+            const int heights[]={28,28,100,64,28,28};
+            for(int i=0;i<6;i++){auto *o=lv_obj_get_child(p,i);lv_obj_set_pos(o,x[i],y[i]);lv_obj_set_size(o,widths[i],heights[i]);}
+        }else{
+            const int x[]={0,w-72,0,0,0,0};
+            const int y[]={0,0,28,108,h-48,h-24};
+            const int heights[]={24,24,72,24,22,22};
+            for(int i=0;i<6;i++){auto *o=lv_obj_get_child(p,i);lv_obj_set_pos(o,x[i],y[i]);lv_obj_set_size(o,i==1?72:w,heights[i]);}
+        }
+    },LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_obj_add_event_cb(v->right,[](lv_event_t *e){
+        auto *p=lv_event_get_target(e);int w=lv_obj_get_content_width(p),h=lv_obj_get_content_height(p);
+        bool portrait=lv_obj_get_content_width(lv_obj_get_parent(p))<800;
+        for(int i=0;i<4;i++){
+            auto *o=lv_obj_get_child(p,i);
+            if(portrait){
+                const int y[]={0,70,h-184,h-88};
+                const int heights[]={64,h-266,80,80};
+                lv_obj_set_pos(o,0,y[i]);lv_obj_set_size(o,w,heights[i]>0?heights[i]:1);
+            }else{
+                int split=w*45/100,level_h=(h-12)/2;
+                lv_obj_set_pos(o,i<2?0:split+12,i==0||i==2?0:i==1?90:level_h+12);
+                lv_obj_set_size(o,i<2?split-12:w-split-12,i==0?84:i==1?h-90:level_h);
+            }
+            if(i>=2){
+                auto *row=lv_obj_get_child(o,1);
+                lv_obj_set_height(row,portrait?44:(h-12)/2-40);
+                lv_obj_set_style_min_height(row,36,0);
+            }
+        }
+    },LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_obj_add_event_cb(v->root,[](lv_event_t *e){
+        auto *v=static_cast<ls_instrument_t *>(lv_event_get_user_data(e));
+        int w=lv_obj_get_content_width(v->root),h=lv_obj_get_content_height(v->root);
+        if(w<800)return;
+        lv_obj_set_pos(v->left,12,4);lv_obj_set_size(v->left,w-24,140);
+        lv_obj_set_pos(v->right,12,152);lv_obj_set_size(v->right,w-24,h-v->landscape_footer-160);
+    },LV_EVENT_SIZE_CHANGED,v);
+    lv_event_send(v->root,LV_EVENT_SIZE_CHANGED,nullptr);
+    static const char *const actions[P25_DECODE_ACTION_COUNT]=P25_DECODE_ACTIONS;
+    lv_event_cb_t callbacks[]={scanToggleCb,holdCb,lockCb,modeCb,agcCb,resetCb,beepCb};
+    for(int i=0;i<P25_DECODE_ACTION_COUNT;i++){
+        lv_obj_t *label=nullptr;ls_instrument_button(v->footer,actions[i],callbacks[i],this,&label);
+        if(i==0)_d_scan_btn_lbl=label;
+        if(i==1)_d_hold_btn_lbl=label;
+        if(i==6)_d_beepbtn_lbl=label;
+    }
+    lv_obj_add_event_cb(v->footer,[](lv_event_t *e){auto *p=lv_event_get_target(e);ls_instrument_list(p,lv_obj_get_width(p)>=800?7:3,lv_obj_get_width(p)>=800?68:80);},LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_event_send(v->left,LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_event_send(v->right,LV_EVENT_SIZE_CHANGED,nullptr);
+    lv_event_send(v->footer,LV_EVENT_SIZE_CHANGED,nullptr);
+}
+
 void AppP25::buildDecodeTab(lv_obj_t *parent)
 {
+#if LS_HAS_COMPACT_UI
+    buildInstrumentDecode(parent);return;
+#endif
     ls_ui_style_content(parent);
 
-    /* LS-736: C-SCAN, HOLD and LOCK are what an operator reaches for while a
-     * call is running, and on the 480 px panel they were below the fold: the
-     * whole tab was one scroller, so the readouts pushed the actions off the
-     * bottom and finding them meant dragging first.  The actions now own a
-     * row the tab cannot scroll; only the readouts above them move.  This is
-     * a property of the layout, not of a pixel budget, so it holds on 720x720
-     * and on whatever the third panel turns out to be. */
     ls_ui_split_t split;
     ls_ui_tab_split(parent, &split);
     parent = split.body;
@@ -317,7 +433,7 @@ void AppP25::buildDecodeTab(lv_obj_t *parent)
     _d_status = sdr_label(face, &lv_font_montserrat_16, SDR_PAS_CYAN);
     lv_obj_set_width(_d_status, lv_pct(100));
     lv_obj_set_style_text_align(_d_status, LV_TEXT_ALIGN_CENTER, 0);
-    /*LS-807  This wraps, so a longer status became a second line, grew the
+    /* This wraps, so a longer status became a second line, grew the
        face panel and shoved the gain and volume controls down the screen
        mid-use. One clipped line keeps everything below it still. */
     lv_label_set_long_mode(_d_status, LV_LABEL_LONG_DOT);
@@ -335,35 +451,24 @@ void AppP25::buildDecodeTab(lv_obj_t *parent)
     lv_obj_set_width(_d_identity, lv_pct(100));
     lv_label_set_text(_d_identity, "SYSTEM identity waiting");
 
-    /* LS-736: the four-line RTL/IQ/decode diagnostics block that used to sit
-     * here is on HEALTH now.  It is a health question, it is the tallest
-     * thing on the tab after the LCD face, and nobody watching a call reads
-     * it - see buildHealthTab. */
-
     _d_gain_slider = sdr_seg_slider(parent, SDR_ROLE_COLOR(LS_UI_COLOR_ID_RED), 496, lakeshark_p25_gain_tenths(),
                                     p25_seg_gain_live, this, &_d_gain_lbl);
+    sdr_seg_use_steps(_d_gain_slider,10);
     sdr_seg_on_release(_d_gain_slider, p25_seg_gain_commit);
     _d_vol_slider  = sdr_seg_slider(parent, SDR_PAS_GREEN, 100, audio_volume_get(),
                                     p25_seg_vol, this, &_d_vol_lbl);
+    sdr_seg_use_steps(_d_vol_slider,5);
 
     lv_obj_t *btns = split.actions;
 
-    /*LS-736: the labels come from p25_tabs.h so the host fit case measures
+    /* the labels come from p25_tabs.h so the host fit case measures
       the row this screen actually builds. */
     static const char *const action[P25_DECODE_ACTION_COUNT] =
         P25_DECODE_ACTIONS;
 
-    /* LS-702: this is the shared carrier scanner, not PROGRAM's
-       protocol-evidence control-channel survey. Keep that distinction on the
-       button an operator presses, not only in documentation. */
     make_btn(btns, action[0], scanToggleCb, this, &_d_scan_btn_lbl,
              LS_BTN_PRIMARY);
-    /* LS-670: one-press hold and lockout, on the DECODE tab so an operator
-     * doing anything else does not have to navigate to reach them. HOLD is
-     * a toggle: press it again on a held call and hold clears. LOCK is a
-     * one-shot: it locks out the current TG and kicks the follower back to
-     * the control channel, and the LOCK row on the SCAN tab is where it
-     * gets removed. */
+
     make_btn(btns, action[1], holdCb, this, &_d_hold_btn_lbl, LS_BTN_TOGGLE_OFF);
     make_btn(btns, action[2], lockCb, this, nullptr, LS_BTN_DANGER);
     make_btn(btns, action[3], modeCb, this);
@@ -381,19 +486,11 @@ void AppP25::updateDecode(void)
     bool voice  = P25.voice_active_until_us > esp_timer_get_time();
     ls_iq_control_status_t radio;
     p25_get_receiver_status(&radio);
-    /* LS-662: this showed P25.dsd_modulation - the modulation DSD detected
-     * on a synced signal - while the MODE button beside it changes
-     * lakeshark_p25_set_mode(). Two different things. With no sync
-     * dsd_modulation is empty and the label sat on its "C4FM" fallback
-     * forever, so cycling the demod appeared to do nothing at all.
-     *
-     * Show the selected mode: that is what the button controls, so the
-     * button now visibly moves it. The detected modulation is still
-     * reported on the signal tab (MOD, in updateSignal), so nothing is
-     * lost - and when the two disagree that is worth seeing, not hiding. */
+    /* this showed P25.dsd_modulation - the modulation DSD detected on a synced signal - while the MODE button beside it changes lakeshark_p25_set_mode(). */
+
     set_text_if_changed(_d_face_mode, lakeshark_p25_mode_name());
 
-    /* LS-702: s_tune_freq_hz is request/saved state. During a scan it can be
+    /* s_tune_freq_hz is request/saved state. During a scan it can be
        ahead of the tuner, and on an acquire/retune failure it can name a
        frequency the receiver never reached. The primary preview is actual
        endpoint state only; requested versus actual remains visible below. */
@@ -426,7 +523,7 @@ void AppP25::updateDecode(void)
     else if (P25.dsd_nac)         snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
     else                          snprintf(nac, sizeof(nac), "-----");
 
-    /* LS-303/LS-400: trunk follower line. Talkgroup, source, frequency, and
+    /* /trunk follower line. Talkgroup, source, frequency, and
      * whether the radio is on the control or a traffic channel - a scanner
      * that hops silently is indistinguishable from a broken one. The line
      * only appears when TSBK activity or the IDEN table say the site is
@@ -468,15 +565,8 @@ void AppP25::updateDecode(void)
         }
     }
 
-    /* LS-610: ENC line. Only show it once an LDU2 has been decoded so the
-     * operator can distinguish "muted because encrypted (ENC ADP)" from
-     * "silent because broken". Prints the algorithm name for the six common
-     * ALGIDs and falls back to hex for anything else.
-     *
-     * LS-611: append cumulative counters so an operator watching the panel
-     * can answer "why did it just go quiet?" without a laptop:
-     *   ENC ADP  KID $0000  (MUTED)  x42f 3ret 1skp
-     * frames muted / returns to CC on encrypted grant / grants skipped. */
+    /* ENC line. */
+
     char enc[128];
     enc[0] = 0;
     bool have_counters = (P25.p25_enc_muted_frames_total ||
@@ -504,12 +594,6 @@ void AppP25::updateDecode(void)
                  (unsigned)(P25.p25_encrypted_skip_ms / 1000u));
     }
 
-    /* LS-650: LCW identity from LDU1/TDULC. On a call joined mid-stream
-     * (missed grant, brief control-channel loss) this is the only path to
-     * a talkgroup / source / emergency label. Emergency is the one that
-     * must be impossible to miss - the operator is holding the radio for
-     * exactly this. When set, prefix the line with "*EMERGENCY*" and let
-     * the readout lamp swing red just below. */
     char lcw[128];
     lcw[0] = 0;
     if (P25.p25_lcw_valid) {
@@ -540,37 +624,54 @@ void AppP25::updateDecode(void)
         }
     }
 
-    /* Flip a lamp red when LCW-emergency is set. This is the "impossible to
-     * miss" bit.
-     *
-     * LS-736: it used to be the app header's lamp, which no longer exists.
-     * The lamp on the LCD face is the better home for it anyway - it is
-     * larger, it sits beside the RX/SYNC/VOX word an operator is already
-     * watching, and it is in the part of DECODE that never scrolls. */
     if (P25.p25_lcw_valid && P25.p25_lcw_emergency)
         ls_ui_lamp_set(_d_led, true, LS_UI_COLOR_ALARM);
 
-    /*LS-846  Two lines, and they never become three.
+    /* Two lines, and they never become three. */
 
-       The counters that used to live here - BCH ok/fail, the TSBK tallies,
-       the frame type and DUID - are how well the decoder is doing, not who is
-       talking, and they are a HEALTH question. Keeping them here cost four
-       lines of the tab and, worse, three of the lines only appeared once
-       voice came up, so the block grew at the exact moment a call started and
-       shoved the gain and volume sliders down the screen.
-
-       What is left is the call: who, and one line of status. Encryption first
-       because it decides whether there is any point listening, then trunking,
-       then the link control word. One of them at a time, so the height is
-       fixed and nothing below it can move. */
     const char *status = enc[0]   ? enc :
                          trunk[0] ? trunk :
                          lcw[0]   ? lcw : "";
 
+#if LS_HAS_COMPACT_UI
+    /* The full evidence remains on HEALTH. LIVE reserves two fixed rows
+     * for call identity and the reason audio may be absent; long cumulative
+     * counter strings must not push the touch controls out of the viewport. */
+    char brief[96];
+    if (P25.p25_lcw_valid && P25.p25_lcw_emergency)
+        snprintf(brief,sizeof(brief),"EMERGENCY%s",P25.p25_lcw_encrypted?" / ENCRYPTED":"");
+    else if (P25.p25_ess_valid) {
+        char algorithm[16];
+        const char *known=p25_algid_name(P25.p25_algid);
+        if(known)snprintf(algorithm,sizeof(algorithm),"%s",known);
+        else snprintf(algorithm,sizeof(algorithm),"$%02X",(unsigned)P25.p25_algid);
+        snprintf(brief,sizeof(brief),"ENC %s%s",
+                 algorithm,
+                 P25.p25_enc_muted?" / MUTED":"");
+    }
+    else if (P25.grant_on_traffic)
+        snprintf(brief,sizeof(brief),"TRAFFIC / TG %u / SRC %lu",
+                 (unsigned)P25.grant_talkgroup,(unsigned long)P25.grant_source);
+    else if (trunked && P25.p25_phase2_grant_count)
+        snprintf(brief,sizeof(brief),"CONTROL / PHASE 2: NO VOICE");
+    else if (trunked)
+        snprintf(brief,sizeof(brief),"CONTROL");
+    else if (have_counters)
+        snprintf(brief,sizeof(brief),"ENC HISTORY / SEE HEALTH");
+    else if (P25.p25_lcw_valid)
+        snprintf(brief,sizeof(brief),"LC %s %lu SRC %lu%s",
+                 P25.p25_lcw_is_unit_to_unit?"DST":"TG",
+                 (unsigned long)(P25.p25_lcw_is_unit_to_unit?P25.p25_lcw_target:P25.p25_lcw_talkgroup),
+                 (unsigned long)P25.p25_lcw_source,P25.p25_lcw_encrypted?" ENC":"");
+    else
+        snprintf(brief,sizeof(brief),"CONVENTIONAL");
+    snprintf(buf,sizeof(buf),"NAC %s TG %d SRC %d\n%s",nac,P25.dsd_tg,P25.dsd_src,brief);
+#else
     snprintf(buf, sizeof(buf),
              "NAC %s    TG %d    SRC %d\n"
              "%s",
              nac, P25.dsd_tg, P25.dsd_src, status);
+#endif
     set_text_if_changed(_d_decode, buf);
     if (_d_identity) {
         static char identity[320];
@@ -580,6 +681,20 @@ void AppP25::updateDecode(void)
                 identity, sizeof(identity));
         else
             snprintf(identity, sizeof(identity), "SYSTEM identity waiting");
+#if LS_HAS_COMPACT_UI
+        if (have_health) {
+            auto state=p25_health_identity_state(&health,(uint32_t)(esp_timer_get_time()/1000LL));
+            const char *tag=state==P25_HEALTH_ID_CURRENT?"VALID":
+                            state==P25_HEALTH_ID_STALE?"STALE":
+                            state==P25_HEALTH_ID_INVALID?"INVALID":"UNKNOWN";
+            char network[40],site[40];
+            if(health.net_valid)snprintf(network,sizeof(network),"W%05lX S%03X",(unsigned long)health.wacn,(unsigned)health.sysid);
+            else snprintf(network,sizeof(network),"WACN/SYS --");
+            if(health.rfss_valid)snprintf(site,sizeof(site),"RFSS %u SITE %u",(unsigned)health.rfss,(unsigned)health.site);
+            else snprintf(site,sizeof(site),"RFSS/SITE --");
+            snprintf(identity,sizeof(identity),"%s / %s\n%s",tag,network,site);
+        }
+#endif
         set_text_if_changed(_d_identity, identity);
         if (have_health) {
             p25_health_identity_state_t state = p25_health_identity_state(
@@ -626,9 +741,7 @@ void AppP25::updateDecode(void)
     if (_d_scan_btn_lbl)
         set_text_if_changed(_d_scan_btn_lbl,
                             scan_engine_active() ? "C-STOP" : "C-SCAN");
-    /*LS-670: the HOLD label shows which TG is held, so an operator does not
-     * have to remember what they pressed. Fits in the same 5-char slot as
-     * BEEP*/
+
     if (_d_hold_btn_lbl) {
         uint16_t held = p25_scan_hold_get(&g_p25_scan);
         if (held) {
@@ -640,25 +753,26 @@ void AppP25::updateDecode(void)
         }
     }
 
+    sdr_seg_set(_d_gain_slider, P25.rtl_gain_tenths);
+    const int displayed_gain=sdr_seg_value(_d_gain_slider);
     if (_d_gain_lbl) {
         char text[40];
         if (lakeshark_p25_agc_enabled())
             snprintf(text, sizeof(text), "GAIN  AGC %d.%d",
-                     P25.rtl_gain_tenths / 10, P25.rtl_gain_tenths % 10);
-        else if (P25.rtl_gain_tenths <= 0)
+                     displayed_gain / 10, displayed_gain % 10);
+        else if (displayed_gain <= 0)
             snprintf(text, sizeof(text), "GAIN  AGC");
         else
             snprintf(text, sizeof(text), "GAIN  %d.%d dB",
-                     P25.rtl_gain_tenths / 10, P25.rtl_gain_tenths % 10);
+                     displayed_gain / 10, displayed_gain % 10);
         set_text_if_changed(_d_gain_lbl, text);
     }
-    sdr_seg_set(_d_gain_slider, P25.rtl_gain_tenths);
+    sdr_seg_set(_d_vol_slider, audio_volume_get());
     if (_d_vol_lbl) {
         char text[32];
-        snprintf(text, sizeof(text), "VOLUME  %d", audio_volume_get());
+        snprintf(text, sizeof(text), "VOLUME  %d", sdr_seg_value(_d_vol_slider));
         set_text_if_changed(_d_vol_lbl, text);
     }
-    sdr_seg_set(_d_vol_slider, audio_volume_get());
 
     lv_color_t scol = COL_AMBER;
     scan_phase_t scan_phase = scan_engine_phase();
@@ -715,17 +829,8 @@ void AppP25::buildSignalTab(lv_obj_t *parent)
     _s_iqbar = make_label(status, &lv_font_montserrat_14, COL_TEXT);
     lv_obj_set_width(_s_iqbar, lv_pct(100));
 
-    /* LS-692: width and both view heights come from the active display.  The
-     * shared widget allocates only its canvas in PSRAM; the P25 producer owns
-     * no framebuffer and folds the already-owned decoder IQ.
-     *
-     * LS-736: two fifths of the DISPLAY is 320 rows on the 800 px panel, and
-     * the tab does not have 320 rows to give once RECEPTION and the widget's
-     * own VIEW/CONTRAST/FULL/GAIN rows are laid out - those rows fell off the
-     * bottom and only appeared if you dragged.  Build the canvas at the seed
-     * height, lay the real controls out, then grow the plot into exactly what
-     * the measurement says is left.  The seed allocation is a few KB, so the
-     * large PSRAM buffer is still allocated once, at a size that fits. */
+    /* width and both view heights come from the active display. */
+
     const int PLOT_SEED_H = 64;
     lv_obj_update_layout(parent);
     int plot_w = lv_obj_get_content_width(parent);
@@ -743,19 +848,23 @@ void AppP25::buildSignalTab(lv_obj_t *parent)
                 LS_SPECTRUM_CTL_FULL | LS_SPECTRUM_CTL_GAIN,
             spectrumGainDownCb, spectrumGainUpCb, this, nullptr, nullptr);
 
-        int plot_h = PLOT_SEED_H + (int)ls_ui_free_height(parent);
-        if (plot_h > LS_SPECTRUM_CANVAS_MAX_HEIGHT)
-            plot_h = LS_SPECTRUM_CANVAS_MAX_HEIGHT;
-        if (plot_h > PLOT_SEED_H)
-            (void)ls_spectrum_waterfall_resize(&_s_spectrum, _s_spectrum.width,
-                                               plot_h);
+        ls_spectrum_waterfall_fit_page(&_s_spectrum,status);
+#if LS_HAS_COMPACT_UI
+        /* spread the leftover rows between RECEPTION and the
+         * spectrum because the canvas ceiling stopped the plot growing into
+         * them. That put 281 px of black in the middle of the portrait page.
+         * The ceiling is the real fault and is fixed in the logic header, so
+         * the panels pack from the top and the spectrum takes what is left. */
+        lv_obj_set_flex_align(parent,LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START,LV_FLEX_ALIGN_START);
+#endif
     }
 }
 
 void AppP25::buildHealthTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
-    /* LS-736: one scroller per tab, and it is the page.  A scrollable panel
+    /* one scroller per tab, and it is the page.  A scrollable panel
      * inside a scrollable page meant a row could be pushed out of view by
      * either of them, and the lower CONFIG rows behaved exactly that way -
      * see buildSettingsTab. */
@@ -773,6 +882,11 @@ void AppP25::buildHealthTab(lv_obj_t *parent)
     lv_obj_t *p2 = make_panel(parent);
     _s_totals = make_label(p2, &lv_font_montserrat_14, COL_TEXT);
     lv_obj_set_width(_s_totals, lv_pct(100));
+#if LS_HAS_COMPACT_UI
+    auto *details=ls_ui_panel(parent,"SYSTEM / ENCRYPTION");
+    _s_call_details=make_label(details,sdr_font_mono(),COL_TEXT);
+    lv_obj_set_width(_s_call_details,lv_pct(100));
+#endif
 
     lv_obj_t *p3 = make_panel(parent);
     _s_err = make_label(p3, &lv_font_montserrat_14, COL_AMBER);
@@ -783,7 +897,7 @@ void AppP25::buildHealthTab(lv_obj_t *parent)
     lv_obj_set_width(_s_gui, lv_pct(100));
     lv_label_set_text(_s_gui, "GUI CALLBACK last --  max --  budget 20 ms");
 
-    /* LS-736: the RTL front-end block moved off DECODE.  Gain, IQ throughput,
+    /* the RTL front-end block moved off DECODE.  Gain, IQ throughput,
      * read errors, per-LDU decode cost and the endpoint's own streaming state
      * are all answers to "is the receiver well", which is this tab; on DECODE
      * they were four lines nobody reads during a call, sitting on top of the
@@ -820,7 +934,7 @@ void AppP25::updateSignal(void)
     if (P25.dsd_last_ok_nac)      snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_last_ok_nac);
     else if (P25.dsd_nac)         snprintf(nac, sizeof(nac), "0x%03X", P25.dsd_nac);
     else                          snprintf(nac, sizeof(nac), "-----");
-    /* LS-655: selected/hunting mode and DSD's observed modulation are both
+    /* selected/hunting mode and DSD's observed modulation are both
      * shown. The former is the control decision; the latter is deliberately
      * only a slicer label. Collapsing them hid wrong-mode acquisition as a
      * weak signal. */
@@ -931,11 +1045,29 @@ void AppP25::updateHealth(void)
 
     p25_health_snapshot_t health;
     static char health_text[768];
-    if (p25_health_read(&health))
+    bool have_health=p25_health_read(&health);
+    if (have_health)
         p25_health_format_signal(&health, health_text, sizeof(health_text));
     else
         snprintf(health_text, sizeof(health_text), "HEALTH snapshot waiting");
     set_text_if_changed(_s_totals, health_text);
+#if LS_HAS_COMPACT_UI
+    if (_s_call_details) {
+        /* Keep the full identity evidence and cumulative encryption
+         * history accessible when the compact LIVE face shows two rows. */
+        static EXT_RAM_BSS_ATTR char details[640];
+        p25_health_format_identity(have_health?&health:nullptr,(uint32_t)(esp_timer_get_time()/1000LL),details,sizeof(details));
+        size_t used=strlen(details);
+        snprintf(details+used,sizeof(details)-used,
+                 "\nENC %s ALG $%02X KID $%04X%s\nMUTED %u RETURN %u SKIP %u\nLEAVE %s SKIP %us",
+                 P25.p25_ess_valid?"VALID":"IDLE",(unsigned)P25.p25_algid,
+                 (unsigned)P25.p25_kid,P25.p25_enc_muted?" / MUTED":"",
+                 (unsigned)P25.p25_enc_muted_frames_total,(unsigned)P25.p25_enc_returns,
+                 (unsigned)P25.p25_enc_skips,P25.p25_leave_on_encrypted?"ON":"OFF",
+                 (unsigned)(P25.p25_encrypted_skip_ms/1000u));
+        set_text_if_changed(_s_call_details,details);
+    }
+#endif
 
     snprintf(buf, sizeof(buf), "LAST ERR: %s", P25.dsd_err_str[0] ? P25.dsd_err_str : "(none)");
     set_text_if_changed(_s_err, buf);
@@ -954,7 +1086,7 @@ void AppP25::updateHealth(void)
             _gui_over_budget ? COL_AMBER : COL_DIM);
     }
 
-    /*LS-736*/
+    /**/
     if (_d_radio) {
         ls_iq_control_status_t radio;
         ls_receiver_presentation_t receiver;
@@ -984,7 +1116,7 @@ void AppP25::updateHealth(void)
     }
 }
 
-/*LS-607*/
+/**/
 void AppP25::scanFit(lv_obj_t *t)
 {
     if (!t) return;
@@ -1001,7 +1133,7 @@ void AppP25::scanFit(lv_obj_t *t)
     lv_table_set_col_width(t, 4, w - used);
 }
 
-/*LS-607*/
+/**/
 void AppP25::scanFitCb(lv_event_t *e)
 {
     scanFit(lv_event_get_target(e));
@@ -1011,37 +1143,31 @@ void AppP25::buildScanTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
 
-    /*LS-736*/
+    /**/
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     parent = ls_ui_panel(parent, nullptr);
 
-    /*LS-746*/
-    /* The status line, SCAN/SKIP, SOURCE, the band range/step and HANG all
-       used to be built here by hand - and the FM app built its own half of
-       the same set, differently. They are one engine's controls, so they are
-       now one shared widget. Anything added to the scanner belongs in
-       ScanPanel, NOT here, or the two apps drift apart again. */
+    /**/
+
     _scan_panel.build(parent);
 
     ls_ui_value_t r;
 
-    /*LS-702*/
+    /**/
     ls_ui_section(parent, "CARRIER SQUELCH  %");
     lv_obj_t *dt = nullptr;
     sdr_seg_slider(parent, SDR_PAS_LAV, 30, scan_engine_get_threshold_pct(),
                    p25_seg_thresh, this, &dt);
 
-    /*LS-703*/
-    /* LS-736: a zone is a position in a list, so it gets the shared
-     * previous/next selector rather than a button per direction sized like a
-     * labelled action. */
+    /**/
+
     ls_ui_value(parent, "ZONE", &r);
     _zone_val = r.value;
     ls_ui_stepper(&r, zonePrevCb, this, zoneNextCb, this);
     updateZone();
 
-    /*LS-706*/
-    /* LS-736: four labelled actions on one explicit line.  In the wrapping
+    /**/
+    /* four labelled actions on one explicit line.  In the wrapping
      * controls row they were four screen/6 buttons plus gaps against a row
      * that is narrower than the display, which is how DEL ended up past the
      * right edge on the 480 px panel. */
@@ -1050,12 +1176,12 @@ void AppP25::buildScanTab(lv_obj_t *parent)
     lv_obj_t *ch_group = ls_ui_button_group(r.controls);
     ls_ui_group_button(ch_group, "ADD",  LS_BTN_PRIMARY, chAddCb,  this, nullptr);
     ls_ui_group_button(ch_group, "NAME", LS_BTN_DEFAULT, chNameCb, this, nullptr);
-    /*LS-711*/
+    /**/
     ls_ui_group_button(ch_group, "LOCK", LS_BTN_DEFAULT, chLockCb, this, nullptr);
     ls_ui_group_button(ch_group, "DEL",  LS_BTN_DANGER, chDelCb,  this, nullptr);
     updateChSel();
 
-    /*LS-711*/
+    /**/
     ls_ui_section(parent, "CHANNELS");
 
     _scan_table = lv_table_create(parent);
@@ -1072,11 +1198,11 @@ void AppP25::buildScanTab(lv_obj_t *parent)
     static const char *hdr[5] = {"#", "NAME", "FREQ", "MODE", "FLAG"};
     for (int c = 0; c < 5; c++) {
         lv_table_set_cell_value(_scan_table, 0, c, hdr[c]);
-        /*LS-607*/
+        /**/
         lv_table_add_cell_ctrl(_scan_table, 0, c, LV_TABLE_CELL_CTRL_TEXT_CROP);
     }
     lv_obj_add_event_cb(_scan_table, scanTableCb, LV_EVENT_VALUE_CHANGED, this);
-    /*LS-607*/
+    /**/
     lv_obj_add_event_cb(_scan_table, scanFitCb, LV_EVENT_SIZE_CHANGED, this);
     scanFit(_scan_table);
 
@@ -1085,19 +1211,19 @@ void AppP25::buildScanTab(lv_obj_t *parent)
 
 void AppP25::updateScan(void)
 {
-    /*LS-746*/
+    /**/
     _scan_panel.refresh();
 
     if (!_scan_table) return;
     int n   = scan_channels_count();
-    /*LS-733*/
+    /**/
     /* s_cur is a GRID position in band mode, not a channel index, so it would
        put the ">" marker on an unrelated stored row. Only track it when the
        scanner is actually running the stored list. */
     int cur = (scan_engine_get_source() == SCAN_SRC_CHANNELS)
             ? scan_engine_current() : -1;
 
-    /* LS-734: the visible SCAN tab rebuilt as many as 64 x 5 LVGL table
+    /* the visible SCAN tab rebuilt as many as 64 x 5 LVGL table
      * strings every 250 ms even when the stored list was unchanged.  Hash the
      * bounded channel model, as TALK GROUPS already does, and make the moving
      * scan cursor a one-cell update. */
@@ -1147,11 +1273,11 @@ void AppP25::updateScan(void)
         lv_table_set_cell_value(_scan_table, row, 2, freq);
         lv_table_set_cell_value(_scan_table, row, 3, scan_mode_name(c->mode));
         lv_table_set_cell_value(_scan_table, row, 4, flag);
-        /*LS-607*/
+        /**/
         for (int col = 0; col < 5; col++)
             lv_table_add_cell_ctrl(_scan_table, row, col, LV_TABLE_CELL_CTRL_TEXT_CROP);
     }
-    /*LS-607*/
+    /**/
     if (n == 0) {
         lv_table_set_cell_value(_scan_table, 1, 0, "-");
         lv_table_set_cell_value(_scan_table, 1, 1, "NO CHANNELS");
@@ -1164,7 +1290,7 @@ void AppP25::scanToggleCb(lv_event_t *)
 {
     if (scan_engine_active()) scan_engine_stop();
     else {
-        /* LS-691: starting the shared carrier scanner is a manual tuning
+        /* starting the shared carrier scanner is a manual tuning
            action and therefore cancels any profile survey first. */
         (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
         scan_engine_start();
@@ -1173,7 +1299,7 @@ void AppP25::scanToggleCb(lv_event_t *)
 
 void AppP25::scanSkipCb(lv_event_t *) { scan_engine_skip(); }
 
-/*LS-670*/
+/**/
 void AppP25::holdCb(lv_event_t *)
 {
     (void)p25_ui_hold_toggle();
@@ -1184,7 +1310,7 @@ void AppP25::lockCb(lv_event_t *)
     (void)p25_ui_lockout_current();
 }
 
-/*LS-746*/
+/**/
 /* scanSrcCb/updateSrc moved into ScanPanel - they were half of a control set
    whose other half lived in the FM app. */
 
@@ -1197,12 +1323,12 @@ void AppP25::scanTableCb(lv_event_t *e)
     int idx = (int)row - 1;
     const scan_channel_t *c = scan_channel_get(idx);
     if (!c) return;
-    /*LS-711*/
+    /**/
     self->_sel_idx = idx;
     self->updateChSel();
 }
 
-/*LS-711*/
+/**/
 void AppP25::chLockCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1213,7 +1339,7 @@ void AppP25::chLockCb(lv_event_t *e)
     self->updateChSel();
 }
 
-/*LS-703*/
+/**/
 void AppP25::updateZone(void)
 {
     if (!_zone_val) return;
@@ -1222,7 +1348,7 @@ void AppP25::updateZone(void)
     else       lv_label_set_text_fmt(_zone_val, "%d", z);
 }
 
-/*LS-703*/
+/**/
 void AppP25::zonePrevCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1232,7 +1358,7 @@ void AppP25::zonePrevCb(lv_event_t *e)
     if (self) self->updateZone();
 }
 
-/*LS-703*/
+/**/
 void AppP25::zoneNextCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1242,18 +1368,18 @@ void AppP25::zoneNextCb(lv_event_t *e)
     if (self) self->updateZone();
 }
 
-/*LS-706*/
+/**/
 void AppP25::updateChSel(void)
 {
     if (!_ch_val) return;
     const scan_channel_t *c = (_sel_idx >= 0) ? scan_channel_get(_sel_idx) : nullptr;
     if (!c) { lv_label_set_text(_ch_val, "none"); _sel_idx = -1; return; }
-    /*LS-711*/
+    /**/
     lv_label_set_text_fmt(_ch_val, "%d %s%s", _sel_idx, c->name,
                           (c->flags & SCAN_FLAG_LOCKOUT) ? " LOCK" : "");
 }
 
-/*LS-706*/
+/**/
 void AppP25::chAddCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1263,11 +1389,11 @@ void AppP25::chAddCb(lv_event_t *e)
     int zone = scan_engine_get_zone();
     if (zone < 0) zone = 0;
 
-    /*LS-706*/
-    /*LS-723*/
+    /**/
+    /**/
     /* Dedup against the zone this is about to land in, not the whole store,
        and resolve the zone FIRST so the two agree. The console `ch add` now
-       applies the same rule - that inconsistency was LS-711's open item. */
+       applies the same rule - that inconsistency was 's open item. */
     int dup = scan_channel_find_freq_zone(hz, (uint8_t)zone);
     if (dup >= 0) {
         if (self) { self->_sel_idx = dup; self->updateChSel(); }
@@ -1282,7 +1408,7 @@ void AppP25::chAddCb(lv_event_t *e)
     if (self) { self->_sel_idx = idx; self->updateChSel(); }
 }
 
-/*LS-706*/
+/**/
 void AppP25::chDelCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1292,7 +1418,7 @@ void AppP25::chDelCb(lv_event_t *e)
     self->updateChSel();
 }
 
-/*LS-706*/
+/**/
 void AppP25::chNameCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
@@ -1300,13 +1426,13 @@ void AppP25::chNameCb(lv_event_t *e)
     self->openNameEntry();
 }
 
-/*LS-706*/
+/**/
 void AppP25::openNameEntry(void)
 {
     if (_name_entry) return;
     const scan_channel_t *c = scan_channel_get(_sel_idx);
     if (!c) return;
-    /*LS-735*/
+    /**/
     /* Predates this session and is the same defect: %f through LVGL's own
        formatter. It would have taken the NAME modal down the same way. */
     char tbuf[48];
@@ -1325,7 +1451,7 @@ void AppP25::openNameEntry(void)
     _name_entry = ls_text_entry_open(&config, nameEntryDone, this);
 }
 
-/*LS-706*/
+/**/
 void AppP25::nameEntryDone(bool accepted, const char *text, void *user_data)
 {
     AppP25 *self = static_cast<AppP25 *>(user_data);
@@ -1335,7 +1461,7 @@ void AppP25::nameEntryDone(bool accepted, const char *text, void *user_data)
     self->updateChSel();
 }
 
-/*LS-706*/
+/**/
 void AppP25::closeNameEntry(void)
 {
     if (_name_entry) {
@@ -1349,18 +1475,8 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
 
-    /* LS-736: the page is the only scroller.  A scrollable panel inside a
-     * scrollable page gives every row below the fold two ways to be out of
-     * view and no way to tell which drag brings it back; the operator
-     * reported the lower rows - USB auto-reboot among them - as having no
-     * control on them at all.  The panel is content-sized and the page moves
-     * it, so every row is reachable by one drag.
-     *
-     * The instructional prose that used to sit in the value column and in two
-     * section titles is gone with it.  "Higher acquires faster; lower rejects
-     * more noise" is manual text: on the panel it was a wrapped paragraph
-     * where a value belongs, and it cost more rows than the setting it
-     * described. */
+    /* the page is the only scroller. */
+
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     parent = ls_ui_panel(parent, nullptr);
 
@@ -1468,6 +1584,7 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
 
     _set_vol_slider = sdr_seg_slider(parent, SDR_PAS_CYAN, 100, audio_volume_get(),
                                      p25_seg_vol, this, &_set_vol_val);
+    sdr_seg_use_steps(_set_vol_slider,5);
 
     ls_ui_section(parent, "VOICE GATE");
     _set_gate_slider = sdr_seg_slider(parent, SDR_PAS_LAV, 99, lakeshark_p25_voice_gate(),
@@ -1485,7 +1602,7 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
     _set_reboot_btn = ls_ui_button(r.controls, "TOGGLE", LS_BTN_TOGGLE_OFF,
                                    rebootToggleCb, this, nullptr);
 
-    /*LS-608*/
+    /**/
     ls_ui_section(parent, "DEFAULTS");
     ls_ui_value(parent, "RESET THIS APP", &r);
     _reset_val = r.value;
@@ -1495,20 +1612,8 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
     updateSettings();
 }
 
-/* LS-689: the PROGRAM page.
- *
- * Everything here reads the session and reports what it says. RELOAD does not
- * write a success label of its own: it asks for a reload and the next refresh
- * shows LOADING, then either the loaded system or the reason it was refused.
- * A panel that says "loaded" before the apply has run is worse than one that
- * says nothing, because the operator then trusts a frequency the radio is not
- * on.
- *
- * There is nothing to share with the other screens here. The value rows,
- * sections and buttons are already the shared kit; what is left is the P25
- * trunking profile itself, which no other app has. If a second protocol ever
- * grows a programmable system - DMR has the same shape - the session model in
- * p25_program.c is what would move, not this page. */
+/* the PROGRAM page. */
+
 void AppP25::buildProgramTab(lv_obj_t *parent)
 {
     ls_ui_style_content(parent);
@@ -1538,9 +1643,6 @@ void AppP25::buildProgramTab(lv_obj_t *parent)
     ls_ui_value(parent, "SOURCE", &r);
     _pg_source = r.value;
 
-    /* The first-run answer to "so where do I put one". Always shown, not only
-       when empty - an operator with a profile that will not load needs the
-       path just as much as one who has never had a profile at all. */
     ls_ui_value(parent, "EXPECTED AT", &r);
     lv_label_set_text(r.value, P25_PROGRAM_DEFAULT_PATH);
 
@@ -1551,7 +1653,7 @@ void AppP25::buildProgramTab(lv_obj_t *parent)
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, programPrevCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, programNextCb, this, nullptr);
 
-    /* LS-691: this is a PROGRAM/profile operation, so its UI is framed with
+    /* this is a PROGRAM/profile operation, so its UI is framed with
        the shared value/button kit and stays beside the profile control list.
        The legacy SCAN page is a carrier scanner shared with FM and cannot
        express protocol-valid P25 evidence. */
@@ -1648,9 +1750,7 @@ void AppP25::programNextCb(lv_event_t *e)
 void AppP25::programSurveyCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));
-    /* There can only be one tuner owner.  The carrier scan engine is stopped
-       before the profile survey takes the latch; it remains stopped after
-       survey completion rather than silently resuming stale scan work. */
+
     scan_engine_stop();
     (void)p25_program_survey_start_now();
     if (self) self->updateProgram();
@@ -1663,7 +1763,7 @@ void AppP25::programSurveyCancelCb(lv_event_t *e)
     if (self) self->updateProgram();
 }
 
-/* LS-690: TALK GROUPS is P25-specific policy, while all of its visual
+/* TALK GROUPS is P25-specific policy, while all of its visual
  * structure comes from the shared kit.  The table is only a projection of
  * p25_program's active profile and scan_ctrl's effective state; it owns one
  * selected TG ID and no policy flags. */
@@ -1680,20 +1780,12 @@ void AppP25::buildTalkgroupsTab(lv_obj_t *parent)
     ls_ui_button(r.controls, "OPEN / ALLOW", LS_BTN_PRIMARY, tgModeCb, this,
                  nullptr);
 
-    /* LS-780: observations are RAM only and change no scan rule, so they get
-       their own fixed-height list rather than being mixed into the programmed
-       table, where an operator would read them as configured aliases. */
-    /*LS-804  A heading names the section. It is not the place for a caveat
-       about where the data lives - that was both wider than the panel, so it
-       clipped mid-sentence, and an implementation detail the operator has no
-       use for. Same for the "tap row = select" hints on the two headings
-       below: the rows are obviously tappable. */
     ls_ui_section(parent, "OBSERVED IDS");
     _tg_observed = lv_table_create(parent);
     ls_ui_style_table(_tg_observed);
     lv_obj_set_width(_tg_observed, lv_pct(100));
     lv_obj_set_height(_tg_observed, 160);
-    /*LS-804  ACTIVE made the bar appear and vanish as rows arrived. AUTO
+    /* ACTIVE made the bar appear and vanish as rows arrived. AUTO
        draws it only while the table is actually being scrolled. */
     lv_obj_set_scrollbar_mode(_tg_observed, LV_SCROLLBAR_MODE_AUTO);
     lv_table_set_col_cnt(_tg_observed, 3);
@@ -2013,7 +2105,7 @@ void AppP25::updateSettings(void)
     if (_set_skip_val)
         set_text_if_changed(_set_skip_val, p25_get_leave_on_encrypted() ? "ON" : "OFF");
 
-    /* LS-736: the button carries the state as well as the value column, so a
+    /* the button carries the state as well as the value column, so a
      * row that is switched on is identifiable as a control that is on rather
      * than as a line of text that happens to read ON. */
     set_toggle(_set_agc_btn, lakeshark_p25_agc_enabled());
@@ -2222,6 +2314,7 @@ void AppP25::timerCb(lv_timer_t *t)
     const int64_t started_us = esp_timer_get_time();
     self->rateSample();
     uint16_t active_tab = lv_tabview_get_tab_act(self->_tabview);
+    self->ensureTab(active_tab);
     p25_spectrum_enable(active_tab == 1);
     switch (active_tab) {
         case 0:  self->updateDecode();   break;
@@ -2229,14 +2322,14 @@ void AppP25::timerCb(lv_timer_t *t)
         case 2:  self->updateHealth();   break;
         case 3:  self->updateScan();     break;
         case 4:  self->updateSettings(); break;
-        /*LS-689*/
+        /**/
         case 5:  self->updateProgram();  break;
-        /*LS-690*/
+        /**/
         case 6:  self->updateTalkgroups(); break;
         default: break;
     }
 
-    /* LS-734: RF counters proved the receiver was moving, but there was no
+    /* RF counters proved the receiver was moving, but there was no
      * evidence for time spent inside the visible-tab GUI callback.  Retain the
      * last/max duration and budget misses for the HEALTH tab, and rate-limit a
      * serial warning so a slow panel can be diagnosed without log-driven lag.
@@ -2263,16 +2356,18 @@ void AppP25::timerCb(lv_timer_t *t)
 void AppP25::switchTab(int delta)
 {
     if (!_tabview) return;
-    /*LS-689*/
+    /**/
     const int N = P25_TAB_COUNT;
     int cur = (int)lv_tabview_get_tab_act(_tabview);
     lv_tabview_set_act(_tabview, (cur + delta + N) % N, LV_ANIM_OFF);
+    ensureTab(lv_tabview_get_tab_act(_tabview));
+    ls_input_refresh_focus();
 }
 
 void AppP25::freqDownCb(lv_event_t *) { lakeshark_p25_tune(-25000); }
 void AppP25::freqUpCb(lv_event_t *)   { lakeshark_p25_tune(+25000); }
 
-/* LS-692: a tap is only coordinate selection.  The callback never touches a
+/* a tap is only coordinate selection.  The callback never touches a
  * radio session; lakeshark_p25_set_freq() places the request in the P25 RX
  * owner's existing tune latch, alongside every other manual tune. */
 void AppP25::spectrumTapCb(lv_event_t *e)
@@ -2384,7 +2479,7 @@ void AppP25::spectrumGainUpCb(lv_event_t *)
 void AppP25::agcCb(lv_event_t *)      { lakeshark_p25_agc(); }
 void AppP25::beepCb(lv_event_t *)     { lakeshark_p25_beep_toggle(); }
 
-/*LS-608*/
+/**/
 void AppP25::defaultsCb(lv_event_t *e)
 {
     AppP25 *self = static_cast<AppP25 *>(lv_event_get_user_data(e));

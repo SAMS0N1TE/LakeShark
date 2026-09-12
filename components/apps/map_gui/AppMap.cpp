@@ -34,7 +34,7 @@ extern "C" {
 static const char *TAG_NS  = "sdr-tool";
 static const char *WPT_KEY = "waypoints";
 
-/*LS-737*/
+/**/
 /* Range in nautical miles. NM because everything ADS-B reports is in NM and
    feet, and converting for display invites the kind of unit slip that is very
    hard to spot on a map. */
@@ -44,11 +44,11 @@ static const int RANGE_N    = (int)(sizeof(RANGE_NM) / sizeof(RANGE_NM[0]));
 static map_wpt_t s_wpt[MAP_MAX_WPT];
 static bool      s_wpt_loaded = false;
 
-/*LS-737*/
+/**/
 /* Waypoints live in NVS, NOT on the SD card, and that is deliberate even
    though the card is under-used. A waypoint is the thing you need when
    everything else has gone wrong; the card is removable, is legitimately
-   absent on this board much of the time (LS-016 treats a missing card as
+   absent on this board much of the time (treats a missing card as
    non-fatal), and a nav aid that disappears with the card is worse than no
    nav aid. The whole table is 16 * 24 bytes. The SD card is the right home
    for tiles and photos, which are large and non-critical. */
@@ -73,7 +73,7 @@ static void wpt_save(void)
     nvs_close(h);
 }
 
-/*LS-737*/
+/**/
 /* Flat-earth projection, which is correct to well under a pixel at these
    ranges and avoids great-circle trig on every frame. 1 degree of latitude is
    60 NM; longitude shrinks by cos(lat), and NOT applying that would overstate
@@ -124,7 +124,7 @@ bool AppMap::back(void)       { return exitToLauncher(); }
 bool AppMap::close(void)
 {
     if (_timer) { lv_timer_del(_timer); _timer = nullptr; }
-    /* LS-746: stop image reads before releasing their backing tile cache.
+    /* stop image reads before releasing their backing tile cache.
      * The shell deletes this now-hidden tree in the same GUI callback. */
     for (int i = 0; i < MAP_TILE_SLOTS; ++i) {
         if (_tile_img[i]) lv_obj_add_flag(_tile_img[i], LV_OBJ_FLAG_HIDDEN);
@@ -178,7 +178,7 @@ void AppMap::buildMapTab(lv_obj_t *parent)
     ls_ui_style_plot(_plot);
     lv_obj_clear_flag(_plot, LV_OBJ_FLAG_SCROLLABLE);
 
-    /*LS-740*/
+    /**/
     /* Tile images are created FIRST so every overlay object below is later in
        the child list and therefore drawn on top. LVGL has no z-index; order is
        the z-order. */
@@ -208,7 +208,7 @@ void AppMap::buildMapTab(lv_obj_t *parent)
     for (int i = 0; i < LAKESHARK_ADSB_MAX; i++) _dot[i] = mk_dot(_plot, COL_GREEN, 9);
     _home_dot = mk_dot(_plot, COL_CYAN, 11);
 
-    /*LS-764*/
+    /**/
     /* Status overlay: top-left of the plot so it sits clear of the centre
        home dot and the aircraft rings.  Semi-opaque background so the text
        stays legible over a rendered tile.  Created after all data objects
@@ -247,7 +247,7 @@ void AppMap::buildWptTab(lv_obj_t *parent)
     lv_table_set_cell_value(_wpt_tbl, 0, 0, "NAME");
     lv_table_set_cell_value(_wpt_tbl, 0, 1, "BRG / DIST");
     lv_table_set_cell_value(_wpt_tbl, 0, 2, "POSITION");
-    /*LS-762*/
+    /**/
     /* Without this the table swallowed taps: _wsel only ever changed when
        MARK HERE wrote into a fresh slot, so after a reboot GOTO and DEL
        could target nothing but slot 0.  See map_wpt_select.c for why the
@@ -309,7 +309,7 @@ void AppMap::updateMap(void)
     ls_ui_readout_set(_screen_readout, buf);
     ls_ui_lamp_set(_screen_lamp, _home_set, LS_UI_COLOR_ACCENT);
 
-    /*LS-740*/
+    /**/
     updateTiles();
 
     /* Waypoints first, so aircraft draw over them. */
@@ -391,18 +391,9 @@ void AppMap::updateMap(void)
     }
 }
 
-/*LS-740*/
-/* Draw the tile grid so that HOME sits exactly at the centre of the plot. The
-   overlay uses a flat-earth approximation around home and the tiles use true
-   Web Mercator; pinning them together at home is what stops the two drifting
-   apart across the view. At these ranges the residual is sub-pixel.
+/**/
+/* Draw the tile grid so that HOME sits exactly at the centre of the plot. */
 
-   LS-764: also reports why the grid is blank when it is.  The prior version
-   set a static bool nobody read; the user saw a black rectangle whether the
-   card was missing, the pack was absent, the zoom was out of range, or the
-   JPEG engine had wedged.  Now every non-OK path picks a specific reason and
-   raises it in the overlay label, and OK hides the label rather than
-   overwriting home/aircraft info in _hdr or _sel_lbl. */
 void AppMap::updateTiles(void)
 {
     /* Pick the zoom whose scale best fits the selected range. A tile at zoom z
@@ -558,7 +549,7 @@ void AppMap::selNextCb(lv_event_t *e)
     }
 }
 
-/*LS-737*/
+/**/
 /* Edit the user's reference explicitly; an aircraft is not their location. */
 void AppMap::centreCb(lv_event_t *e)
 {
@@ -609,7 +600,7 @@ void AppMap::wptGotoCb(lv_event_t *e)
     self->updateMap();
 }
 
-/*LS-762*/
+/**/
 /* LVGL fires VALUE_CHANGED on the table when the tap lands on a new cell.
    The classifier in map_wpt_select.c rejects the header row and any empty
    slot, so a tap on those leaves _wsel where it was; only a populated row

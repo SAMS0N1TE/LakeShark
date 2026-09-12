@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/*LS-407*/
+/**/
 void rtlsdr_dev_teardown(void);
 
 #ifdef __cplusplus

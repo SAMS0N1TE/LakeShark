@@ -1,11 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    LakeShark original. Not librtlsdr - see UPSTREAM.md in this
    directory for which files here are third-party and which are ours. */
-/* LS-190: health used to be one global RTL/USB byte watchdog. That made an
- * unrelated SPI packet endpoint look like an IQ receiver and eligible for
- * USB-pipe/VBUS recovery. Health is now keyed by stable endpoint ID and uses
- * transport-neutral service counters; only an explicitly named endpoint may
- * have a platform power-cycle hook. */
 
 #include "radio_health.h"
 
@@ -414,7 +409,7 @@ void radio_health_init(const radio_health_hooks_t *hooks)
         endpoint_event(&event, NULL);
     }
 
-    /* LS-1003: the LCD first enabled health by allocating a 3072-byte
+    /* the LCD first enabled health by allocating a 3072-byte
      * internal-stack task before an IQ app started.  On the measured P4 this
      * left no 4096-byte block for rtl_pump; all 16 posted transfers completed
      * once (262144 bytes) and then had no task to repost them.  Health is a

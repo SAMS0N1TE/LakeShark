@@ -1,10 +1,10 @@
 #ifndef LS_CRASH_H
 #define LS_CRASH_H
 
-/* LS-210: read the coredump summary back on the device it crashed on.
+/* read the coredump summary back on the device it crashed on.
    partitions_16m.csv / partitions_32m.csv both carry a coredump slot and
    sdkconfig.defaults enables ESP_COREDUMP_ENABLE_TO_FLASH, so every board
-   in bench/configs.json has been *writing* a dump on panic since LS-734 -
+   in bench/configs.json has been *writing* a dump on panic since -
    but nothing in the firmware ever read one back. In the field a crash was
    "it rebooted" until a laptop with esptool and the matching ELF got
    involved. The SDK call lives behind ls_crash_source_t so the bench can

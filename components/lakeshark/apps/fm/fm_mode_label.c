@@ -4,11 +4,11 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-/*LS-700  AppFM's positional table omitted ACARS, shifting two labels and
+/* AppFM's positional table omitted ACARS, shifting two labels and
   leaving the last mode without an initializer. Designated entries keep enum values
   attached to their names; the physical-length check makes stale tables safe.
 
-  LS-731 named LISTEN as NFM because that is the actual modulation, and named
+  named LISTEN as NFM because that is the actual modulation, and named
   SCAN as SWEEP to distinguish this band-power job from the channel scanner. */
 static const char *const s_mode_labels[] = {
     [FM_MODE_LISTEN] = "NFM",
@@ -19,7 +19,7 @@ static const char *const s_mode_labels[] = {
     [FM_MODE_FLEX]   = "FLEX",
 };
 
-/* LS-721: both console implementations carried a six-element positional
+/* both console implementations carried a six-element positional
    token table after ACARS was inserted into fm_mode_t. Their FM_MODE_COUNT
    loops read past it, and later modes selected the wrong enum values. Keep the
    protocol spelling attached to designated enum entries and count it here. */

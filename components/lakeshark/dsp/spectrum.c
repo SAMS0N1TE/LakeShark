@@ -1,4 +1,4 @@
-/*LS-748*/
+/**/
 /* Power spectrum over the IQ the receiver is already delivering.
    See spectrum.h for why this exists and why it does not use esp-dsp. */
 
@@ -49,9 +49,6 @@ void spectrum_init(void)
     s_ready = true;
 }
 
-/* Iterative radix-2 decimation-in-time, twiddles from the table rather than a
-   running rotation - the recurrence drifts measurably by 512 points and the
-   whole value of this module is that a peak sits where it claims to. */
 static void fft512(float *re, float *im)
 {
     const int n = SPEC_FFT_N;

@@ -1,13 +1,4 @@
-/* LS-670: scan controller.  See scan_ctrl.h for the precedence order and why
- * it looks the way it does. This file has no LVGL and no ESP-IDF include, so
- * the bench builds it as-is.
- *
- * A note on locking: the controller is read from the DSD decoder task and
- * written from the UI task and the console. Every mutator here is a scalar
- * or a bounded-length memcpy on a struct that a single reader consumes; a
- * torn write costs at most one wrong decision on the next grant. This
- * matches the same-shape lock policy the grant follower documents, and
- * keeps the DSD task off any mutex. */
+/* scan controller. */
 
 #include "scan_ctrl.h"
 
@@ -122,9 +113,7 @@ bool p25_scan_allow_add(p25_scan_ctrl_t *sc, uint16_t tg)
     sc->allow[sc->allow_count++] = tg;
     return true;
 }
-/* LS-689: a PROGRAM profile replaces the roster wholesale rather than merging
- * into it - a leftover talkgroup from the previous system is a number that
- * means something else here. */
+
 void p25_scan_allow_clear(p25_scan_ctrl_t *sc)
 {
     if (!sc) return;
@@ -150,13 +139,10 @@ size_t p25_scan_allow_count(const p25_scan_ctrl_t *sc)
 bool p25_scan_is_allowed(const p25_scan_ctrl_t *sc, uint16_t tg)
 {
     if (!sc || tg == 0) return false;
-    /* LS-695: NONE is explicit control-channel-only operation. It must not
+    /* NONE is explicit control-channel-only operation. It must not
      * inherit ALLOW's empty-list fallback or consult stale list members. */
     if (sc->list_mode == P25_SCAN_LIST_NONE) return false;
-    /* An empty allow list means "follow everything" - this is the operator
-     * flipping the mode on before adding a member yet, and refusing every
-     * grant in that state is the "empty list means follow nothing" trap the
-     * task warns about. */
+
     if (sc->list_mode != P25_SCAN_LIST_ALLOW) return true;
     if (sc->allow_count == 0) return true;
     return find_u16(sc->allow, sc->allow_count, tg) >= 0;
@@ -363,14 +349,14 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
     if (talkgroup == 0 || freq_hz == 0 || freq_hz > UINT32_MAX) {
         d.reason = P25_SCAN_REASON_NONE; return d;
     }
-    /* LS-739: matching TG alone is not proof this is our current call. */
+    /* matching TG alone is not proof this is our current call. */
     if (f->state == P25_GRANT_ON_TRAFFIC && f->talkgroup == talkgroup &&
         f->traffic_hz != freq_hz) {
         d.reason = P25_SCAN_REASON_FOREIGN_GRANT;
         return d;
     }
 
-    /* LS-687: AUTO FOLLOW is a global gate, not an alternate path around the
+    /* AUTO FOLLOW is a global gate, not an alternate path around the
      * controller. Re-enabling it merely reaches the existing precedence
      * checks below; disabling it can never cause a traffic retune. */
     if (!sc->auto_follow) {
@@ -391,9 +377,7 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
             d.reason = P25_SCAN_REASON_HOLD_MISMATCH;
             return d;
         }
-        /* Grant matches the hold. Fall through to duplicate / follow but
-         * override the encrypted-skip check below - the operator asked for
-         * this TG and pinning the display is worth the deaf audio. */
+
         if (grant_is_duplicate(f, talkgroup)) {
             d.reason = P25_SCAN_REASON_ALREADY_FOLLOWING;
             return d;
@@ -420,12 +404,6 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
         return d;
     }
 
-    /* 4. PRIORITY. A priority TG can preempt a call in progress, but only
-     *    when its rank is strictly higher than the current call's rank.
-     *    Same rank does not preempt (would thrash between two peers). If
-     *    we are not on traffic, priority still fires as a plain TUNE with
-     *    reason=PRIORITY so a caller can log which grants were driven by
-     *    priority membership rather than default follow. */
     uint8_t new_rank = p25_scan_priority_rank(sc, talkgroup);
     if (grant_is_foreign(f, talkgroup)) {
         uint8_t cur_rank = p25_scan_priority_rank(sc, f->talkgroup);
@@ -439,11 +417,6 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
         }
     }
 
-    /* 5. ENCRYPTED SKIP - a per-TG skip window still open. Honour it
-     *    unless the operator explicitly holds this TG (handled at step 2).
-     *    A priority preempt is subject to the same rule: a stamped ADP TG
-     *    that just moved to priority does not get a special pass, because
-     *    it will only leave the traffic channel again on the next LDU2. */
     if (p25_grant_tg_is_skipped(f, talkgroup, now_us)) {
         d.reason = P25_SCAN_REASON_ENCRYPTED_SKIP;
         return d;
@@ -575,15 +548,18 @@ static uint8_t  rd_u8 (const uint8_t **p)
 {
     uint8_t v = **p; (*p)++; return v;
 }
+/* Shift on uint32_t, not on the promoted int. */
+
 static uint16_t rd_u16(const uint8_t **p)
 {
-    uint16_t v = (uint16_t)((*p)[0] | ((*p)[1] << 8));
+    uint16_t v = (uint16_t)((uint32_t)(*p)[0] |
+                            ((uint32_t)(*p)[1] << 8));
     *p += 2; return v;
 }
 static uint32_t rd_u32(const uint8_t **p)
 {
-    uint32_t v = (uint32_t)((*p)[0] | ((*p)[1] << 8) |
-                            ((*p)[2] << 16) | ((*p)[3] << 24));
+    uint32_t v = (uint32_t)(*p)[0]        | ((uint32_t)(*p)[1] << 8) |
+                 ((uint32_t)(*p)[2] << 16) | ((uint32_t)(*p)[3] << 24);
     *p += 4; return v;
 }
 

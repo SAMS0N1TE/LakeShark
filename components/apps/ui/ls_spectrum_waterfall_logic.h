@@ -8,12 +8,16 @@
 extern "C" {
 #endif
 
-/* LS-703: all supported panels fit inside this canvas ceiling (720 x 400).
- * Refuse larger requests instead of letting a corrupt measurement consume an
- * unbounded part of PSRAM.  The renderer allocates exactly width * height and
+/* The ceiling refuses a corrupt measurement; it is not a height budget.
+ * 400 was under the height a portrait page actually offers, so fit_page
+ * clamped, and the rows it could not use became dead space on the page.
+ * The bound is now the largest panel dimension, which still rejects a
+ * nonsense measurement while letting portrait use the height it has.
+ * Worst case is 1232 x 1232 x 2 bytes, about 3 MB of the 30 MB PSRAM the
+ * shell reports free.  The renderer allocates exactly width * height and
  * never places this storage in internal RAM. */
-#define LS_SPECTRUM_CANVAS_MAX_WIDTH   720
-#define LS_SPECTRUM_CANVAS_MAX_HEIGHT  400
+#define LS_SPECTRUM_CANVAS_MAX_WIDTH   1232
+#define LS_SPECTRUM_CANVAS_MAX_HEIGHT  1232
 
 typedef struct {
     int width;

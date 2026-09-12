@@ -5,7 +5,7 @@
 #include <vector>
 #include "lvgl.h"
 #include "shell/ls_app.hpp"
-/*LS-759*/
+/**/
 #include "file_browser/ls_dialog_slot.h"
 
 class AppFileBrowser : public LsApp {
@@ -19,7 +19,7 @@ public:
     bool init(void) override;
     bool pause(void) override;
     bool resume(void) override;
-    /*LS-604*/
+    /**/
     bool passive(void) const override { return true; }
 
 private:
@@ -38,24 +38,21 @@ private:
                         const char *note = nullptr);
 
     static void onListRowClicked(lv_event_t *e);
-    /*LS-742*/
+    /**/
     static void onMusicClicked(lv_event_t *e);
     static void onBackButtonClicked(lv_event_t *e);
     static void onDialogCloseClicked(lv_event_t *e);
     static void onDialogDeleteClicked(lv_event_t *e);
 
-    /*LS-759*/
-    /* _container is the parent handed to run() - the app's container in the
-       shell.  Dialogs must be parented here rather than lv_scr_act() so that
-       when the shell hides or deletes the container the dialog goes with it
-       instead of surviving on top of the next app. */
+    /**/
+
     lv_obj_t *_container;
 
     lv_obj_t *_path_label;
     lv_obj_t *_list;
     std::string _cwd;
     std::vector<Entry> _entries;
-    /*LS-759*/
+    /**/
     ls_dialog_slot_t _dialog;
     std::string _dialog_path;
 };

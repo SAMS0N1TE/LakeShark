@@ -9,7 +9,6 @@
 extern "C" {
 #endif
 
-/* Short operator-facing name for an FM receiver mode. */
 const char *fm_mode_label(fm_mode_t mode);
 
 /* Stable lower-case token used by the console and control-head protocol. */

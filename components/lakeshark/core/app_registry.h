@@ -78,9 +78,9 @@ bool         app_switch_service(uint32_t wait_ticks);
 void         app_park(void);
 void         app_unpark(void);
 bool         app_parked(void);
-/*LS-408*/
+/**/
 bool         app_parked_by_fault(void);
-/*LS-416*/
+/**/
 bool         app_switch_in_flight(void);
 void         app_request_recover(const char *endpoint_id);
 void         app_set_usb_autoreboot(bool en);

@@ -300,9 +300,7 @@ static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
     memcpy(subscribers, s_subscribers, sizeof(subscribers));
     xSemaphoreGive(s_registry_lock);
-    /* LS-190: endpoint callbacks run after the registry lock is released so a
-     * subscriber can query readiness without deadlocking registration. The
-     * service, rather than a USB/SPI driver, is the lifecycle publisher. */
+
     for (size_t i = 0; i < LS_RADIO_MAX_SUBSCRIBERS; ++i)
         if (subscribers[i].callback)
             subscribers[i].callback(&event, subscribers[i].user);
@@ -426,7 +424,7 @@ ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
         xSemaphoreGive(s_registry_lock);
         return LS_RADIO_ERR_BUSY;
     }
-    /* LS-170: invalidate before calling cancel_read, then retain the slot and
+    /* invalidate before calling cancel_read, then retain the slot and
      * driver context until every operation that passed the presence check has
      * left. This prevents detach from turning a blocked read into a UAF. */
     slot->present = false;

@@ -3,7 +3,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 
-/* LS-706: FM used s_active/s_running as an informal cross-core join.  The
+/* FM used s_active/s_running as an informal cross-core join.  The
  * worker set s_running only after allocating its IQ buffer, so exit could run
  * in the task-start window, conclude that nothing was live, and free ACARS;
  * a delayed worker could also cross `if (s_acars)` while exit timed out and
@@ -38,7 +38,7 @@ void fm_lifecycle_task_failed(void)
 
 bool fm_lifecycle_start_failed(const fm_lifecycle_hooks_t *hooks)
 {
-    /* LS-725: publishing the selected submode is not evidence that its worker
+    /* publishing the selected submode is not evidence that its worker
      * exists.  Report the receiver failure before releasing the reserved task
      * slot and decoder ownership, so every concurrent snapshot says NO RX. */
     if (hooks && hooks->report_not_receiving)

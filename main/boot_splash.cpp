@@ -4,7 +4,7 @@
 #include "bsp/display.h"
 #include "ls_board.h"
 
-/*LS-605*/
+/**/
 #define BOOT_BG     lv_color_hex(0x0A0C0D)
 #define BOOT_RULE   lv_color_hex(0x23282C)
 #define BOOT_ACCENT lv_color_hex(0xF2A233)
@@ -26,7 +26,7 @@ static lv_obj_t *mk_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t co
     return l;
 }
 
-/*LS-605*/
+/**/
 static void rule(lv_obj_t *parent, int w, int y, lv_color_t c)
 {
     lv_obj_t *r = lv_obj_create(parent);
@@ -40,7 +40,7 @@ static void rule(lv_obj_t *parent, int w, int y, lv_color_t c)
     lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/*LS-605*/
+/**/
 static void corner(lv_obj_t *parent, lv_align_t align, int dx, int dy,
                    lv_border_side_t sides)
 {

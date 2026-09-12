@@ -69,7 +69,7 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
-        /*LS-407*/
+        /**/
         (void)rtl_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         (void)hackrf_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);
@@ -83,14 +83,14 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         event_bus_publish_simple(EVT_DEVICE_DETACHED, "usb");
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
-    /*LS-404*/
+    /**/
     default:
         ESP_LOGW(TAG, "unhandled USB client event %d", (int)event_msg->event);
         break;
     }
 }
 
-/*LS-404*/
+/**/
 static void action_open_dev(usb_device_t *d)
 {
     if (d->dev_addr == 0) return;

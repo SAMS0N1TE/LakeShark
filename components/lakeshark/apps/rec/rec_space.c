@@ -1,7 +1,4 @@
-/*LS-961*/
-/* Pure arithmetic for the "will this capture fit" check and the
-   partial-file classifier.  See rec_space.h for what each function is for
-   and why it lives here rather than inside app_rec.c. */
+/**/
 
 #include "rec_space.h"
 
@@ -47,11 +44,6 @@ int rec_space_format_free(char *out, size_t len, uint64_t bytes_free)
 {
     if (!out || len == 0) return 0;
 
-    /* Base-1024 units with the short "KB/MB/GB" labels the user sees on
-       every OS - technically KiB/MiB, but calling them that on a 480-px
-       label loses a column and gains nothing.  Truncate rather than
-       round so the printed number never overstates the free space the
-       caller just queried. */
     int n;
     if (bytes_free < 1024ull) {
         n = snprintf(out, len, "%llu B", (unsigned long long)bytes_free);

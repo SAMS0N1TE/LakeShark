@@ -3,11 +3,17 @@
 #define SAM_TTS_H
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Whether this build can speak at all. */
+
+#define SAM_TTS_HAVE_ENGINE 0
+static inline bool sam_tts_available(void) { return SAM_TTS_HAVE_ENGINE != 0; }
 
 esp_err_t sam_tts_init(int out_rate_hz,
                        void (*write_mono_fn)(const int16_t *samples, int n));

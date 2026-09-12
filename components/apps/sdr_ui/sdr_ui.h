@@ -4,7 +4,7 @@
 #include "lvgl.h"
 #include "ui/ls_ui_palette.h"
 
-/* LS-460: compatibility names keep older screens source-compatible while all
+/* compatibility names keep older screens source-compatible while all
  * shared primitives draw from the role palette. New app code uses LS_UI_*.
  * The hue aliases intentionally collapse onto meaning instead of preserving
  * the 33-colour vocabulary this kit replaces. */
@@ -46,18 +46,19 @@
 #define SDR_WARN       SDR_PAS_AMBER
 #define SDR_ERR        SDR_PAS_ROSE
 
-/*LS-606*/
+/**/
 #define SDR_OFF        SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
 #define SDR_IDLE       SDR_ROLE_COLOR(LS_UI_COLOR_DIM_TEXT)
 
-#define SDR_STATUS_H   30
-#define SDR_RAIL_H     76
+#include "ls_board.h"
+#define SDR_STATUS_H   (LS_HAS_COMPACT_UI ? 38 : 30)
+#define SDR_RAIL_H     (LS_HAS_COMPACT_UI ? 52 : 76)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*LS-606*/
+/**/
 typedef enum {
     SDR_THEME_RED = 0,
     SDR_THEME_WHITE,
@@ -65,18 +66,18 @@ typedef enum {
     SDR_THEME_COUNT
 } sdr_theme_t;
 
-/*LS-606*/
+/**/
 void        sdr_theme_init(void);
 void        sdr_theme_set(sdr_theme_t t);
 sdr_theme_t sdr_theme_get(void);
 const char *sdr_theme_name(sdr_theme_t t);
 
-/*LS-606*/
+/**/
 lv_color_t sdr_accent(void);
 lv_color_t sdr_accent_dim(void);
 lv_color_t sdr_accent_bg(void);
 
-/*LS-606*/
+/**/
 typedef void (*sdr_theme_cb_t)(void *ud);
 int  sdr_theme_on_change(sdr_theme_cb_t cb, void *ud);
 void sdr_theme_off_change(int id);
@@ -95,6 +96,7 @@ lv_obj_t *sdr_panel(lv_obj_t *parent);
 
 lv_obj_t *sdr_section(lv_obj_t *parent, const char *title);
 
+void sdr_button_guard_swipe(lv_obj_t *button);
 lv_obj_t *sdr_btn(lv_obj_t *parent, const char *txt, lv_event_cb_t cb, void *ud,
                   lv_obj_t **out_lbl);
 
@@ -109,35 +111,35 @@ void sdr_setting_row(lv_obj_t *parent, const char *name, sdr_setrow_t *out);
 
 lv_obj_t *sdr_lcd_panel(lv_obj_t *parent, lv_color_t edge);
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_row(lv_obj_t *parent, lv_flex_align_t justify);
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_rule(lv_obj_t *parent);
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_micro(lv_obj_t *parent, const char *txt);
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_value(lv_obj_t *parent, const lv_font_t *font, lv_color_t color);
 
-/*LS-605*/
+/**/
 lv_obj_t *sdr_tile(lv_obj_t *parent, const char *icon_key, const char *title,
                    const char *sub, lv_event_cb_t cb, void *ud);
 void      sdr_tile_accent(lv_obj_t *tile, lv_color_t color);
 
-/*LS-605*/
+/**/
 void sdr_text_if_changed(lv_obj_t *label, const char *txt);
 void sdr_color_if_changed(lv_obj_t *obj, lv_color_t color);
 
-/*LS-605*/
+/**/
 void sdr_ascii_bar(char *dst, int cap, int pct, int width);
 
-/*LS-606*/
+/**/
 lv_obj_t *sdr_meter(lv_obj_t *parent, const char *tag);
 void      sdr_meter_set(lv_obj_t *meter, int pct, lv_color_t color);
 
-/*LS-608*/
+/**/
 lv_obj_t *sdr_hold_btn(lv_obj_t *parent, const char *txt, int hold_ms,
                        lv_event_cb_t cb, void *ud);
 
@@ -146,6 +148,7 @@ typedef void (*sdr_seg_cb_t)(void *ud, int value);
 
 sdr_seg_t *sdr_seg_slider(lv_obj_t *parent, lv_color_t color, int max, int value,
                           sdr_seg_cb_t cb, void *ud, lv_obj_t **out_label);
+void sdr_seg_use_steps(sdr_seg_t *s, int step);
 void sdr_seg_set(sdr_seg_t *s, int value);
 void sdr_seg_color(sdr_seg_t *s, lv_color_t color);
 void sdr_seg_on_release(sdr_seg_t *s, sdr_seg_cb_t cb);

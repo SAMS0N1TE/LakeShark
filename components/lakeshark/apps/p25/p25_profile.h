@@ -1,12 +1,5 @@
-/* LS-688: bounded, transactional P25 PROGRAM profile model.
- *
- * Parsing never allocates and never keeps process-global state.  The caller
- * owns the destination and a separate p25_profile_parse_scratch_t.  On the
- * device the SD adapter should place both the input file and scratch in PSRAM;
- * none of this belongs on a decoder-task stack or in an internal-RAM
- * singleton.  The destination is copied only after the complete input has
- * validated, so every error leaves the caller's last-good profile untouched.
- */
+/* bounded, transactional P25 PROGRAM profile model. */
+
 #ifndef P25_PROFILE_H
 #define P25_PROFILE_H
 

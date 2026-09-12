@@ -1,4 +1,3 @@
-# Keep app_desc identity independent of tags, branch names and shell quoting.
 function(ls_identity_format output product revision state)
     string(LENGTH "${product}" product_length)
     if(NOT "${product}" MATCHES "^[0-9]+(\\.[0-9]+)*$" OR product_length GREATER 10)
@@ -49,8 +48,6 @@ endfunction()
 function(ls_identity_query output source product)
     set(state "archive")
     set(revision "")
-    # A source archive nested inside another checkout must not borrow its HEAD.
-    # Both regular repositories and linked worktrees have this explicit entry.
     if(EXISTS "${source}/.git")
         set(state "unknown")
         if(NOT GIT_EXECUTABLE)
@@ -80,7 +77,6 @@ function(ls_identity_query output source product)
 endfunction()
 
 function(ls_identity_write_header destination identity)
-    # Only the formatter's restricted alphabet is admitted into a C definition.
     if(NOT "${identity}" MATCHES "^[0-9a-z.-]+$")
         message(FATAL_ERROR "Invalid build identity characters")
     endif()

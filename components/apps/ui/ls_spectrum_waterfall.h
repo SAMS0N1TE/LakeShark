@@ -19,7 +19,7 @@ enum {
     LS_SPECTRUM_CTL_GAIN     = 1u << 3,
 };
 
-/* LS-703: one display-derived renderer used by REC, FM and P25. RF sample
+/* one display-derived renderer used by REC, FM and P25. RF sample
  * production, frequency mapping and tuner ownership remain in each app. */
 struct ls_spectrum_waterfall {
     lv_obj_t          *panel;
@@ -28,7 +28,7 @@ struct ls_spectrum_waterfall {
     lv_chart_series_t *series;
     lv_obj_t          *canvas;
     lv_color_t        *pixels;
-    /*LS-801  Index of the newest row. The buffer holds two copies of the
+    /* Index of the newest row. The buffer holds two copies of the
        image back to back, so any window of height rows starting here is
        contiguous and the view can be moved without copying pixels. */
     int                wf_top;
@@ -37,6 +37,9 @@ struct ls_spectrum_waterfall {
     lv_obj_t          *full_button;
     lv_obj_t          *full_label;
     lv_obj_t          *gain_label;
+    lv_obj_t          *controls;
+    lv_obj_t          *status_panel;
+    bool               fitting;
     int                width;
     int                height;
     int                waterfall_height;
@@ -69,6 +72,18 @@ void ls_spectrum_waterfall_add_controls(
     ls_spectrum_change_cb_t change_cb, void *change_user);
 void ls_spectrum_waterfall_set_gain_text(ls_spectrum_waterfall_t *view,
                                          const char *text);
+/* Stack reception above the plot in portrait; place it alongside in landscape.
+ * Resize on orientation changes without stopping capture or the decoder. */
+void ls_spectrum_waterfall_fit_page(ls_spectrum_waterfall_t *view, lv_obj_t *status);
+
+/* Keep the canvas inside the page without taking the page over.
+ * fit_page also decides flow and column widths, which suits a page whose
+ * only two children are the status panel and this widget. A page that has
+ * its own rows below the widget - FM/SWEEP has an actions row - gets those
+ * rows dragged into the landscape flex row. This fits the height only:
+ * every sibling keeps the size its own page gave it, and the canvas takes
+ * what is genuinely left. Safe to call more than once. */
+void ls_spectrum_waterfall_fit_height(ls_spectrum_waterfall_t *view);
 
 bool ls_spectrum_waterfall_resize(ls_spectrum_waterfall_t *view,
                                   int width, int height);
@@ -79,8 +94,6 @@ void ls_spectrum_waterfall_set_contrast(ls_spectrum_waterfall_t *view,
 void ls_spectrum_waterfall_set_fullscreen(ls_spectrum_waterfall_t *view,
                                           bool fullscreen);
 
-/* Replace the trace and add one newest-at-top row. NULL/empty means no data
- * and clears stale pixels rather than presenting old RF as current. */
 void ls_spectrum_waterfall_push(ls_spectrum_waterfall_t *view,
                                 const float *bins, int n);
 void ls_spectrum_waterfall_clear(ls_spectrum_waterfall_t *view);

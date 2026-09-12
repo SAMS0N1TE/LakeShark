@@ -264,7 +264,7 @@ static void rf_field_off_quiet(void)
 /* -- Reader task.  Kept small: bring the RF field up, look for a tag,
    report it, wait for it to leave, drop the field.  The hardware
    bring-up sequence that would live here is stubbed to a periodic
-   "no-tag" until pins are measured on the T-Display-P4 (LS-905) and the
+   "no-tag" until pins are measured on the T-Display-P4 () and the
    IRQ polarity is confirmed.  bench/NFC.md marks this as a separate
    bring-up step; the driver framework is what lands in this task. */
 
@@ -295,11 +295,6 @@ static void reader_task(void *arg)
         (void)xQueueReceive(s.irq_q, &marker, pdMS_TO_TICKS(poll_ms()));
         if (s.stop_req) break;
 
-        /* Hardware-side anticollision, Type 2 read and NDEF assembly
-           slot in here on a real board.  Until the T-Display-P4 pin map
-           is measured, the poller sits idle and emits nothing - this
-           keeps the driver honest rather than fabricating "no tag"
-           events. */
     }
 
     /* Notify any observer that whatever last tag we had is gone. */

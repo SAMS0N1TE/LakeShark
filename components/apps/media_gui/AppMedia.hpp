@@ -1,6 +1,6 @@
 #pragma once
 
-/*LS-741*/
+/**/
 /* Music player. Registered HIDDEN - it is reached from FILES, not the rail,
    because the rail is already tight and a media player is not a radio
    function. See main.cpp: registerApp(app, false). */
@@ -8,7 +8,7 @@
 #include "lvgl.h"
 #include "shell/ls_app.hpp"
 
-/*LS-743*/
+/**/
 /* Ask the player to open a specific file on its next launch. */
 extern "C" void ls_media_play_path(const char *path);
 

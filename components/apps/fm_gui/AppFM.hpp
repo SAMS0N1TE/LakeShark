@@ -6,7 +6,7 @@
 #include "shell/ls_text_entry.h"
 #include "sdr_ui/sdr_ui.h"
 #include "ui/ls_spectrum_waterfall.h"
-/*LS-746*/
+/**/
 #include "scan_ui/scan_panel.hpp"
 
 class AppFM : public LsApp {
@@ -20,25 +20,25 @@ public:
     bool init(void) override;
     bool pause(void) override;
     bool resume(void) override;
-    /*LS-604*/
+    /**/
     bool background(void) override;
     void switchTab(int delta) override;
 
 private:
     lv_obj_t *_screen_readout = nullptr;
     lv_obj_t *_screen_lamp = nullptr;
-    /*LS-608*/
+    /**/
     lv_obj_t *_reset_val = nullptr;
 
     void buildVfoTab(lv_obj_t *parent);
-    /*LS-746*/
+    /**/
     void buildScanCtlTab(lv_obj_t *parent);
     ScanPanel _scan_panel;
 
-    /*LS-703  Shared with REC and P25; this app still owns the sweep producer. */
+    /* Shared with REC and P25; this app still owns the sweep producer. */
     ls_spectrum_waterfall_t _s_spectrum = {};
     uint32_t    _wf_sweep  = 0;
-    /* -1 so the first tick only records the mode rather than acting on it. */
+
     int         _last_mode = -1;
     void buildPageTab(lv_obj_t *parent);
     void buildScanTab(lv_obj_t *parent);
@@ -49,14 +49,14 @@ private:
     void updateConfig(void);
 
     static void timerCb(lv_timer_t *t);
-    /*LS-608*/
+    /**/
     static void resetCb(lv_event_t *e);
 
     static void modeCb(lv_event_t *e);
-    /*LS-731*/
+    /**/
     static void scanToggleCb(lv_event_t *e);
     static void scanSkipCb(lv_event_t *e);
-    /*LS-736*/
+    /**/
     static void autoSqCb(lv_event_t *e);
     static void stepDownCb(lv_event_t *e);
     static void stepUpCb(lv_event_t *e);
@@ -98,7 +98,7 @@ private:
     lv_obj_t *_v_dn_lbl = nullptr;
     lv_obj_t *_v_up_lbl = nullptr;
     lv_obj_t *_v_step_lbl = nullptr;
-    /*LS-731*/
+    /**/
     lv_obj_t *_v_scan_lbl   = nullptr;
     lv_obj_t *_v_scan_state = nullptr;
 

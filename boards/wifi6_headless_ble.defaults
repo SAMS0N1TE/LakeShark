@@ -1,5 +1,3 @@
-# LS-004  ESP32-P4-WIFI6, headless radio core, Flipper head over BLE (and UART).
-# Use with:  idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/wifi6_headless_ble.defaults"
 
 CONFIG_LS_BOARD_P4_WIFI6=y
 CONFIG_LAKESHARK_HEADLESS=y
@@ -17,16 +15,11 @@ CONFIG_BT_NIMBLE_TRANSPORT_UART=n
 CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
 CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
 
-# LS-112  keep every NimBLE role on, exactly as the working NANO build has them.
-# Do not "optimise" these off - see LS-112.
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-# LS-112  stock 256, deliberately NOT the NANO's 498. Set explicitly so this
-# reads as a decision rather than an omission - the chunking in LS-102 carries
-# any MTU, and 498 was a gratuitous deviation. LS-405 says 498; it is wrong.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
 CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
 CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12

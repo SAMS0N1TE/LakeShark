@@ -5,7 +5,7 @@
 #include "shell/ls_hub.h"
 #include "home_widget_pref.h"
 
-/*LS-604*/
+/**/
 class AppHome : public LsApp {
 public:
     AppHome();
@@ -22,6 +22,7 @@ private:
     lv_obj_t *_screen_lamp = nullptr;
     void buildFace(lv_obj_t *parent);
     void buildTiles(lv_obj_t *parent);
+    void buildInstrument(lv_obj_t *parent);
 
     static void hubCb(const ls_hub_state_t *s, uint32_t dirty, void *ud);
     void apply(const ls_hub_state_t *s, uint32_t dirty);
@@ -37,7 +38,7 @@ private:
     lv_timer_t *_clock_timer = nullptr;
     uint32_t _last_freq_hz = 0;
     char _last_receiver_app[8] = {};
-    /*LS-606*/
+    /**/
     static void themeCb(void *ud);
 
     lv_obj_t *_face   = nullptr;
@@ -47,6 +48,6 @@ private:
 
     bool _visible = true;
     int  _sub     = -1;
-    /*LS-606*/
+    /**/
     int  _theme_sub = -1;
 };
