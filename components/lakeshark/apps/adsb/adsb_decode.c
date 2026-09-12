@@ -90,9 +90,7 @@ static int cpr_nl(double lat)
     return 1;
 }
 
-/* The remainder the CPR algorithm means, which is never negative. C's own
-   operators keep the sign of the dividend, and the zone index is negative for
-   a great many real positions. */
+
 static int cpr_mod(int a, int b)
 {
     if (b <= 0) return 0;
@@ -107,19 +105,11 @@ static double cpr_fmod_pos(double a, double b)
     return r < 0.0 ? r + b : r;
 }
 
-/* How stale a fix may be and still anchor a single frame, and how far a local
-   decode may land from it. Positions arrive every second or so, so a minute is
-   generous and 60 nm is far more than an airliner covers in it. */
+
 #define CPR_LOCAL_MAX_AGE_US 60000000LL
 #define CPR_LOCAL_MAX_NM     60.0
 
-/* One frame, against a position this aircraft already has.
 
-   The pair decode is unambiguous worldwide because the two parities disagree
-   everywhere except the true position. A single frame repeats every zone, so
-   it needs a reference to pick the right one, and the last fix is the
-   reference. Good to about 180 nm; anything past a fraction of that is not
-   the aircraft we were tracking. */
 static bool cpr_decode_local(double ref_lat, double ref_lon,
                              int raw_lat, int raw_lon, bool odd,
                              double *out_lat, double *out_lon)
@@ -181,8 +171,7 @@ static bool cpr_decode(adsb_aircraft_t *a)
     if (lat1 >= 270.0) lat1 -= 360.0;
     if (cpr_nl(lat0) != cpr_nl(lat1)) return false;
 
-    /* The longitude zone count belongs to the frame being positioned, and the
-       odd frame sits in one zone fewer than the even one. */
+    
     bool even_newer = a->cpr_even.ts_us >= a->cpr_odd.ts_us;
     double lat  = even_newer ? lat0 : lat1;
     double rlon = even_newer ? rlon0 : rlon1;
@@ -195,8 +184,7 @@ static bool cpr_decode(adsb_aircraft_t *a)
     if (lon >= 180.0)  lon -= 360.0;
     if (lon < -180.0)  lon += 360.0;
 
-    /* Whatever the arithmetic produced, a point off the planet is not a
-       position, and publishing one puts an aircraft in the wrong ocean. */
+    
     if (!(lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0))
         return false;
 
@@ -243,8 +231,7 @@ static void on_late_announce(adsb_aircraft_t *a)
     emit_contact_event(EVT_CONTACT_CONFIRMED, a, true);
 }
 
-/* The shape mode_s_detect wants. The work is below, where a test can reach it
-   with a frame it built rather than a signal it had to fake. */
+
 static void on_msg(mode_s_t *self, struct mode_s_msg *mm)
 {
     (void)self;
@@ -438,10 +425,7 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             audio_events_publish(AUDIO_EVT_NEW_CONTACT, icao, a->callsign, false);
     }
 
-    /* A CPR latitude of zero is a position, not a missing one: it is what an
-       aircraft sitting on a zone boundary encodes to, every six degrees for
-       an even frame. The message type already excludes frames that carry no
-       position. */
+    
     if (mm->msgtype == 17 && mm->metype >= 9 && mm->metype <= 18) {
         int64_t ts = esp_timer_get_time();
         if (mm->fflag == 0)
@@ -557,8 +541,7 @@ void adsb_inject_fake_aircraft(void)
     a->lat = 43.5286f + 0.005f * ((float)((s_test_seq * 7) % 21) - 10.0f);
     a->lon = -71.4703f + 0.005f * ((float)((s_test_seq * 11) % 21) - 10.0f);
     a->pos_valid = true;
-    /* pos_valid always carries a time with it, so the single-frame decode
-       never anchors to a fix of unknown age. */
+    
     a->pos_ts_us = esp_timer_get_time();
 
     a->altitude  = 5000 + ((s_test_seq * 250) % 30000);

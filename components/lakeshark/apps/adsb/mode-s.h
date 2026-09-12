@@ -1,6 +1,6 @@
 /* Derived from watson/libmodes (dump1090); see LICENSE.libmodes.
- * Local changes: PSRAM magnitude storage, preamble callback, short-buffer
- * guard, and known-address gating for corrected messages.
+ * Local changes: PSRAM magnitude storage, preamble callback, buffer and retry
+ * guards, and known-address gating for corrected messages.
  *
  * Mode1090, a Mode S messages decoder for RTLSDR devices.
  *

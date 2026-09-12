@@ -1,7 +1,5 @@
 /* LS_TEST_SOURCES: ${APP}/adsb/mode-s.c ${APP}/adsb/adsb_decode.c ${APP}/adsb/adsb_state.c */
-/* Positions the receiver actually sees, encoded to CPR and fed back in.
-   The encoder here is the one in the standard: if it and the decoder disagree,
-   one of them is wrong, and only one of them flies. */
+
 
 #include "ls_test.h"
 
@@ -21,7 +19,7 @@
 
 uint32_t mode_s_checksum(unsigned char *msg, int bits);
 
-/* --------------------------------------------- what adsb_decode.c reaches -- */
+
 
 void event_bus_publish_contact(evt_kind_t kind, const char *app,
                                const evt_contact_t *c)
@@ -51,17 +49,16 @@ void perf_set_active_count(int n) { (void)n; }
 int  perf_get_crc_good(void) { return 0; }
 int  perf_get_crc_err(void) { return 0; }
 
-/* ------------------------------------------------------------- CPR encode -- */
 
-/* Positive remainder. The whole point of this file is that C's own operators
-   do not do this, and the decoder forgot. */
+
+
 static double pmod(double a, double b)
 {
     const double r = fmod(a, b);
     return r < 0.0 ? r + b : r;
 }
 
-/* Longitude zones at a latitude, from the formula rather than a table. */
+
 static int nl(double lat)
 {
     if (lat == 0.0) return 59;
@@ -89,9 +86,9 @@ static void cpr_encode(double lat, double lon, int odd,
     *xz = (uint32_t)x & 0x1FFFFu;
 }
 
-/* ----------------------------------------------------------------- frames -- */
 
-#define SENDER 0x4CA2D3u   /* an Irish-registered airliner, as one overhead is */
+
+#define SENDER 0x4CA2D3u   
 
 static void seal(uint8_t *m, int bits, uint32_t overlay)
 {
@@ -103,8 +100,7 @@ static void seal(uint8_t *m, int bits, uint32_t overlay)
     m[n - 1] = (uint8_t)crc;
 }
 
-/* DF17 type code 11: airborne position, barometric altitude. The CPR fields
-   straddle bytes exactly the way mode-s.c unpacks them. */
+
 static void df17_position(uint8_t m[14], uint32_t aa, int odd,
                           uint32_t lat17, uint32_t lon17)
 {
@@ -125,8 +121,7 @@ static void df17_position(uint8_t m[14], uint32_t aa, int odd,
 
 static mode_s_t s_ms;
 
-/* Demodulation is not what this file is about, so the frame goes in already
-   whole, the way the detector would hand it over. */
+
 static void feed(const uint8_t *frame)
 {
     struct mode_s_msg mm = {0};
@@ -174,12 +169,11 @@ static void reset(void)
     adsb_decode_init();
 }
 
-/* ------------------------------------------------------------------ cases -- */
+
 
 LS_CASE(an_even_odd_pair_decodes_to_where_the_aircraft_is)
 {
-    /* Aircraft over the receiver's own airspace. Every one of these is a
-       position a New England receiver sees on an ordinary afternoon. */
+    
     static const struct { double lat, lon; } sky[] = {
         { 42.36, -71.06 },   /* Boston */
         { 43.20, -71.50 },   /* Concord */
@@ -211,8 +205,7 @@ LS_CASE(an_even_odd_pair_decodes_to_where_the_aircraft_is)
 
 LS_CASE(a_decoded_position_is_on_the_planet)
 {
-    /* Whatever the maths does, a latitude outside the poles is not a position
-       and must never be published as one. */
+    
     reset();
     send_pair(42.36, -71.06);
 
@@ -227,8 +220,7 @@ LS_CASE(a_decoded_position_is_on_the_planet)
 
 LS_CASE(the_far_side_of_the_world_decodes_too)
 {
-    /* Eastern longitudes are where a missing wrap shows up: 151 E comes back
-       as -209, which is not a longitude. */
+    
     static const struct { double lat, lon; } sky[] = {
         { -33.87, 151.21 },  /* Sydney */
         {  35.68, 139.69 },  /* Tokyo */
@@ -257,10 +249,7 @@ LS_CASE(the_far_side_of_the_world_decodes_too)
 
 LS_CASE(one_frame_carries_a_track_when_the_pair_has_gone_stale)
 {
-    /* A run of same-parity frames is ordinary at the edge of reception. The
-       opposite parity ages out, the pair decode has nothing valid to work
-       with, and without a single-frame decode the aircraft freezes on the
-       radar while it keeps flying. */
+    
     reset();
     ls_shim_time_set(1000000);
     send_pair(43.20, -71.50);
@@ -268,7 +257,7 @@ LS_CASE(one_frame_carries_a_track_when_the_pair_has_gone_stale)
     adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
     LS_CHECK_MSG(a->pos_valid, "the pair did not give a position to start from");
 
-    /* Eleven seconds on, past the ten second window the pair decode allows. */
+    
     ls_shim_time_advance(11000000);
     send_one(43.35, -71.25, 1);
 
@@ -280,8 +269,7 @@ LS_CASE(one_frame_carries_a_track_when_the_pair_has_gone_stale)
 
 LS_CASE(one_frame_alone_is_not_a_position)
 {
-    /* With nothing to anchor against, a single frame repeats every zone and
-       guessing which one is how aircraft end up in the wrong county. */
+    
     reset();
     send_one(43.20, -71.50, 0);
 
