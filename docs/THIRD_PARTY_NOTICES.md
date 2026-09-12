@@ -8,6 +8,7 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | IMBE vocoder | `components/imbe_vocoder/COPYRIGHT` and per-file headers | GPL-3.0-or-later |
 | mbelib | `components/mbelib/COPYRIGHT` | ISC-style permission notice |
 | DSD core and helpers | P25 source headers and `components/lakeshark/apps/p25/UPSTREAM.md` | ISC-style DSD permission notice and additional per-file helper notices |
+| Mode S decoder | `components/lakeshark/apps/adsb/mode-s.c` and `mode-s.h` headers | BSD-3-Clause, dump1090 by Salvatore Sanfilippo |
 | MeshCore and ed25519 | `components/meshcore/` notices and upstream notices | Preserve each component's license |
 | libcarto, PMTiles and TUI library | Notices within their component directories | Preserve each component's license |
 | DejaVu fonts | `components/apps/tui/DEJAVU-LICENSE.txt` | Bitstream Vera and DejaVu terms |
