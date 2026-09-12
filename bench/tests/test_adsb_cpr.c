@@ -327,3 +327,17 @@ LS_CASE(demo_positions_have_timestamps)
     LS_EQ_INT(a->pos_ts_us, 123456789);
     adsb_demo_set(0);
 }
+
+LS_CASE(local_even_position_at_87_degrees)
+{
+    reset();
+    ls_shim_time_set(1000000);
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    a->pos_valid = true;
+    a->pos_ts_us = esp_timer_get_time();
+    a->lat = 86.99f;
+    a->lon = 1.0f;
+    send_one(87.0, 1.0, 0);
+    LS_NEAR(a->lat, 87.0, 0.0001);
+    LS_NEAR(a->lon, 1.0, 0.001);
+}

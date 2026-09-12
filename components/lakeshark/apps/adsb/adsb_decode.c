@@ -86,7 +86,7 @@ static int cpr_nl(double lat)
     if (lat < 84.89166191) return 5;
     if (lat < 85.75541621) return 4;
     if (lat < 86.53536998) return 3;
-    if (lat < 87.00000000) return 2;
+    if (lat <= 87.00000000) return 2;
     return 1;
 }
 
