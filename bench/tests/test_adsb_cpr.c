@@ -128,7 +128,7 @@ static mode_s_t s_ms;
    whole, the way the detector would hand it over. */
 static void feed(const uint8_t *frame)
 {
-    struct mode_s_msg mm;
+    struct mode_s_msg mm = {0};
     uint8_t buf[MODE_S_LONG_MSG_BYTES];
     memcpy(buf, frame, sizeof(buf));
     mode_s_decode(&s_ms, &mm, buf);
@@ -288,4 +288,18 @@ LS_CASE(one_frame_alone_is_not_a_position)
     LS_CHECK_MSG(!a->pos_valid,
                  "a lone frame produced %.4f, %.4f out of nowhere",
                  a->lat, a->lon);
+}
+
+LS_CASE(a_fresh_pair_corrects_a_wrong_local_anchor)
+{
+    reset();
+    ls_shim_time_set(1000000);
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    a->pos_valid = true;
+    a->pos_ts_us = esp_timer_get_time();
+    a->lat = 43.20f;
+    a->lon = -71.50f + 360.0f / 43.0f;
+    send_pair(43.20, -71.50);
+    LS_CHECK_MSG(nm_apart(a->lat, a->lon, 43.20, -71.50) < 0.1,
+                 "valid pair retained alias %.5f, %.5f", a->lat, a->lon);
 }

@@ -443,11 +443,11 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             a->cpr_even = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
         else
             a->cpr_odd  = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
-        /* A fresh fix anchors this one frame. Only fall back to the pair when
-           there is nothing to anchor against, which is how a track starts. */
+        /* Prefer a valid pair to correct an ambiguous local reference. */
         bool was_valid = a->pos_valid;
-        bool got = false;
-        if (was_valid && ts - a->pos_ts_us <= CPR_LOCAL_MAX_AGE_US) {
+        bool got = cpr_decode(a);
+        if (!got && was_valid && ts >= a->pos_ts_us &&
+            ts - a->pos_ts_us <= CPR_LOCAL_MAX_AGE_US) {
             double llat, llon;
             if (cpr_decode_local(a->lat, a->lon,
                                  mm->raw_latitude, mm->raw_longitude,
@@ -459,7 +459,6 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
                 got = true;
             }
         }
-        if (!got) got = cpr_decode(a);
         if (got && !was_valid) {
             if (a->announced) {
                 audio_events_publish(AUDIO_EVT_POSITION, icao, a->callsign, false);
