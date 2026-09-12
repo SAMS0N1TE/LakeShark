@@ -111,7 +111,7 @@ static void open_preset_picker(void)
     const int n = ls_wf_preset_count(src);
 
     char title[24];
-    snprintf(title, sizeof(title), "%s BAND", ls_wf_source_label(src));
+    snprintf(title, sizeof(title), "%s BAND", src == LS_WF_SRC_FM ? "RECEIVER" : ls_wf_source_label(src));
     ls_picker_open(title, preset_picked);
     for (int i = 0; i < n; i++)
         ls_picker_add(ls_wf_preset_label(src, i), ls_wf_preset_detail(src, i));

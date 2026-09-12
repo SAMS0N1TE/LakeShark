@@ -19,7 +19,7 @@ extern "C" {
    for. The caller's own limit is usually smaller. */
 #define LS_PICKER_MAX     48
 #define LS_PICKER_TEXT    32
-#define LS_PICKER_DETAIL  12
+#define LS_PICKER_DETAIL  16
 
 /* The index the item was ADDED at, not its position in the list as filtered
    or sorted for display. The caller's array is the thing it wants back, and
