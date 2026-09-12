@@ -113,7 +113,12 @@ static tui_rect s_tune_hit[3];
 static uint32_t tune_step_hz(void)
 {
     if (FM.mode == FM_MODE_WFM) return 100000;
-    if (FM.mode == FM_MODE_ACARS || FM.mode == FM_MODE_AM) return 25000;
+    if (FM.mode == FM_MODE_AM) {
+        if (FM.freq_hz >= 26965000 && FM.freq_hz <= 27405000) return 10000;
+        if (FM.freq_hz >= 29000000 && FM.freq_hz <= 29200000) return 5000;
+        return 25000;
+    }
+    if (FM.mode == FM_MODE_ACARS) return 25000;
     return 12500;
 }
 

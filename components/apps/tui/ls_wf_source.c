@@ -118,12 +118,15 @@ static const wf_band_t LORA_BANDS[] = {
 static const wf_band_t FM_BANDS[] = {
     { "VHF land",    150000000u, 162000000u },
     { "FM bcast",     88000000u, 108000000u },
-    { "airband",     118000000u, 137000000u },
+    { "Air AM",      118000000u, 137000000u },
     { "2 m ham",     144000000u, 148000000u },
     { "marine",      156000000u, 162000000u },
     { "UHF land",    450000000u, 470000000u },
     { "70 cm ham",   420000000u, 450000000u },
     { "pagers",      929000000u, 932000000u },
+    { "Mil air AM",  225000000u, 400000000u },
+    { "CB AM",        26965000u,  27405000u },
+    { "10m AM",       29000000u,  29200000u },
 };
 #define FM_BAND_N ((int)(sizeof(FM_BANDS) / sizeof(FM_BANDS[0])))
 
@@ -189,7 +192,8 @@ const char *ls_wf_preset_detail(ls_wf_src_t src, int i)
         if (i < 0 || i >= n) return "";
         /* The span, not the endpoints: the endpoints are most of the label's
            information already and twelve columns will not hold both. */
-        snprintf(s_pre_detail, sizeof(s_pre_detail), "%.0f-%.0f",
+        const bool fractional = t[i].lo_hz % 1000000u || t[i].hi_hz % 1000000u;
+        snprintf(s_pre_detail, sizeof(s_pre_detail), fractional ? "%.3f-%.3f" : "%.0f-%.0f",
                  t[i].lo_hz / 1e6, t[i].hi_hz / 1e6);
         return s_pre_detail;
     }

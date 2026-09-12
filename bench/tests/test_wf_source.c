@@ -443,3 +443,21 @@ LS_CASE(fm_sweep_is_separate_from_band_selection)
     LS_EQ_INT(FM_MODE_AM, FM.mode);
     LS_EQ_INT(1, g_scan_restarts);
 }
+
+LS_CASE(am_presets_keep_live_mode_and_publish_the_selected_range)
+{
+    fresh();
+    FM.mode = FM_MODE_AM;
+    const uint32_t low[] = {225000000, 26965000, 29000000};
+    const uint32_t high[] = {400000000, 27405000, 29200000};
+    for (int i = 0; i < 3; ++i) {
+        FM.freq_hz = 127500000;
+        LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM, 8 + i));
+        LS_EQ_INT(FM_MODE_AM, FM.mode);
+        LS_EQ_UINT(low[i], FM.scan_start_hz);
+        LS_EQ_UINT(high[i], FM.scan_stop_hz);
+        LS_EQ_UINT(low[i] + (high[i] - low[i]) / 2, FM.freq_hz);
+        LS_EQ_INT(0, g_scan_restarts);
+    }
+    LS_EQ_STR("26.965-27.405", ls_wf_preset_detail(LS_WF_SRC_FM, 9));
+}
