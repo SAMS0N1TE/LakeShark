@@ -341,3 +341,73 @@ LS_CASE(local_even_position_at_87_degrees)
     LS_NEAR(a->lat, 87.0, 0.0001);
     LS_NEAR(a->lon, 1.0, 0.001);
 }
+
+LS_CASE(published_cpr_vector_matches_encoder_and_decoder)
+{
+    /* The 1090 MHz Riddle, airborne position example. */
+    reset();
+    ls_shim_time_set(1000000);
+    uint8_t even[] = {0x8d,0x40,0x62,0x1d,0x58,0xc3,0x82,0xd6,0x90,0xc8,0xac,0x28,0x63,0xa7};
+    uint8_t odd[] = {0x8d,0x40,0x62,0x1d,0x58,0xc3,0x86,0x43,0x5c,0xc4,0x12,0x69,0x2a,0xd6};
+    feed(odd);
+    ls_shim_time_advance(1000000);
+    feed(even);
+    adsb_aircraft_t *a = adsb_state_find_or_create(0x40621d);
+    LS_CHECK(a->pos_valid);
+    LS_NEAR(a->lat, 52.2572021484375, 0.00001);
+    LS_NEAR(a->lon, 3.91937255859375, 0.00001);
+    uint32_t y, x;
+    cpr_encode(52.2572021484375, 3.91937255859375, 0, &y, &x);
+    LS_EQ_UINT(y, 93000); LS_EQ_UINT(x, 51372);
+    cpr_encode(52.26578017412606, 360.0 / 35 * (50194.0 / 131072), 1, &y, &x);
+    LS_EQ_UINT(y, 74158); LS_EQ_UINT(x, 50194);
+}
+
+LS_CASE(invalid_global_latitude_is_rejected)
+{
+    reset();
+    uint8_t frame[14];
+    df17_position(frame, SENDER, 0, 0, 0); feed(frame);
+    df17_position(frame, SENDER, 1, 65536, 0); feed(frame);
+    LS_CHECK(!adsb_state_find_or_create(SENDER)->pos_valid);
+}
+
+LS_CASE(local_anchor_age_is_bounded)
+{
+    reset(); ls_shim_time_set(1000000);
+    send_pair(43.20, -71.50);
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    int64_t ts = a->pos_ts_us;
+    ls_shim_time_advance(60000001);
+    send_one(43.35, -71.25, 1);
+    LS_EQ_INT(a->pos_ts_us, ts);
+}
+
+LS_CASE(local_displacement_is_bounded)
+{
+    reset(); ls_shim_time_set(1000000);
+    send_pair(43.20, -71.50);
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    int64_t ts = a->pos_ts_us;
+    ls_shim_time_advance(11000000);
+    send_one(44.30, -71.50, 1);
+    LS_EQ_INT(a->pos_ts_us, ts);
+}
+
+LS_CASE(global_positions_cover_both_parities_and_hemispheres)
+{
+    for (int parity = 0; parity < 2; parity++) {
+        for (int lat = -85; lat <= 85; lat += 5) {
+            for (int lon = -175; lon <= 175; lon += 5) {
+                reset(); ls_shim_time_set(1000000);
+                send_one(lat + 0.13, lon + 0.27, !parity);
+                ls_shim_time_advance(1000000);
+                send_one(lat + 0.13, lon + 0.27, parity);
+                adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+                LS_CHECK(a->pos_valid);
+                LS_NEAR(a->lat, lat + 0.13, 0.0001);
+                LS_NEAR(a->lon, lon + 0.27, 0.003);
+            }
+        }
+    }
+}
