@@ -1,20 +1,5 @@
 /* LS_TEST_SOURCES: ${APP}/rec/rec_unique_name.c */
 /**/
-/* Before this fix, AppREC::saveCb built a base name from the process-local
-   capture counter ("rec%03lu") and rec_save opened "<dir>/<name>.sub" with
-   fopen("w").  After a reboot, a counter wrap, or the deletion of a NEWER
-   capture the same base could name an OLDER file that was still on disk,
-   and "w" truncated it silently - no dialog, no confirmation, and the only
-   trace left in the FILES tab was that the byte size changed.
-
-   The picker is a pure classifier that walks candidate suffixes until it
-   finds a name whose ".sub" is absent, so the caller cannot pave over an
-   existing capture without renaming it.  The bench pre-creates rec000.sub
-   in a temp directory and asserts every collision case the recorder can
-   present at runtime: fresh name goes through untouched, a taken name
-   walks to "rec000-1", a run of taken names walks to the next free one,
-   and - critically - the existing capture's bytes are still on disk after
-   the picker has run. */
 
 #include "ls_test.h"
 #include "rec_unique_name.h"
@@ -115,9 +100,6 @@ LS_CASE(collision_walks_to_next_suffix)
                                    out, sizeof(out)), 0);
     LS_EQ_STR(out, "rec000-1");
 
-    /* The whole point: the pre-existing file is still on disk and its
-       bytes are untouched.  If this ever fails the picker is silently
-       destroying old captures. */
     LS_EQ_INT((int)fx_size("rec000"), 18);
     char buf[64];
     LS_CHECK(fx_read("rec000", buf, sizeof(buf)) > 0);

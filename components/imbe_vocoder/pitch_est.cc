@@ -19,7 +19,6 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "globals.h"
 #include "imbe.h"
@@ -31,8 +30,6 @@
 #include "encode.h"
 #include "dsp_sub.h"
 #include "imbe_vocoder_impl.h"
-
-
 
 static const UWord16 min_max_tbl[203] = 
 {
@@ -59,17 +56,11 @@ static const UWord16 min_max_tbl[203] =
 	0x98ca, 0x99ca, 0x9aca
 };
 
-
-
-
-
 void imbe_vocoder_impl::pitch_est_init(void)
 {
 	prev_pitch = prev_prev_pitch = 158; // 100
 	prev_e_p = prev_prev_e_p = 0;
 }
-
-
 
 Word32 imbe_vocoder_impl::autocorr(Word16 *sigin, Word16 shift, Word16 scale_shift)
 {
@@ -83,8 +74,6 @@ Word32 imbe_vocoder_impl::autocorr(Word16 *sigin, Word16 shift, Word16 scale_shi
 	return L_sum;
 }
 
-
-
 void imbe_vocoder_impl::e_p(Word16 *sigin, Word16 *res_buf)
 {
 	Word16 i, j, den_part_acc, tmp;
@@ -93,7 +82,6 @@ void imbe_vocoder_impl::e_p(Word16 *sigin, Word16 *res_buf)
 	Word32 corr[259];
 	Word16 index_beg, index_step;
 	Word16 scale_shift;
-
 
 	// Windowing input signal s * wi^2
 	for(i = 0 ; i < PITCH_EST_FRAME; i++)
@@ -126,7 +114,6 @@ void imbe_vocoder_impl::e_p(Word16 *sigin, Word16 *res_buf)
 	// For intermediate shifts
 	for(i = 1; i < 258; i += 2)
 		corr[i] = L_shr( L_add(corr[i - 1], corr[i + 1]), 1);
-
 
 	// variable to calculate 1 - P * sum(wi ^4) in denominator
 	den_part_acc = CNST_0_8717_Q1_15;
@@ -182,9 +169,6 @@ void imbe_vocoder_impl::e_p(Word16 *sigin, Word16 *res_buf)
 	}
 }
 
-
-
-
 void imbe_vocoder_impl::pitch_est(IMBE_PARAM *imbe_param, Word16 *frames_buf)
 {
 	Word16 e_p_arr0[203], e_p_arr1[203], e_p_arr2[203], e1p1_e2p2_est_save[203];
@@ -212,7 +196,6 @@ void imbe_vocoder_impl::pitch_est(IMBE_PARAM *imbe_param, Word16 *frames_buf)
 		}
 	ceb = add(e_p_cur, add(prev_e_p, prev_prev_e_p));
 
-
 	if(ceb <= CNST_0_48_Q4_12)
 	{
 		prev_prev_pitch = prev_pitch;
@@ -224,7 +207,6 @@ void imbe_vocoder_impl::pitch_est(IMBE_PARAM *imbe_param, Word16 *frames_buf)
 		imbe_param->e_p = prev_e_p;
 		return;
 	}
-
 
 	// Look-Ahead Pitch Tracking
 	e_p(&frames_buf[FRAME],     e_p_arr1);
@@ -343,7 +325,6 @@ void imbe_vocoder_impl::pitch_est(IMBE_PARAM *imbe_param, Word16 *frames_buf)
 	prev_pitch      = p;
 	prev_prev_e_p   = prev_e_p;
 	prev_e_p        = e_p_arr0[p];
-
 
 	imbe_param->pitch = p + 42;  // Result in Q15.1 format
 	imbe_param->e_p = prev_e_p; 

@@ -377,7 +377,6 @@ LS_CASE(an_unread_count_is_cleared_by_looking_at_what_it_counts)
     post_on(1, "A MESSAGE");
     LS_EQ_INT(1, ls_notify_unread());
 
-    /* Somewhere else: the count stands, which is the whole point of it. */
     notices_expire(0);
     LS_CHECK_MSG(ls_notify_unread() == 1,
                  "the count cleared itself while the operator was on another "

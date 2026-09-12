@@ -9,7 +9,6 @@
 
 #include "audio_player.h"
 
-/*LS-753*/
 /* Store the iterator pointer as well as the index.  The pointer is stable
    while the iterator is live, and comparing both keeps a match on iterator A
    from claiming the same slot on iterator B after a source switch.
@@ -75,7 +74,6 @@ bool bsp_extra_player_state_is_active_by_index(file_iterator_instance_t *iter,
     return st == AUDIO_PLAYER_STATE_PLAYING || st == AUDIO_PLAYER_STATE_PAUSE;
 }
 
-/*LS-753*/
 const char *bsp_extra_player_state_active_path(void)
 {
     if (s_mode != LS_PS_PATH || !s_path[0]) return NULL;

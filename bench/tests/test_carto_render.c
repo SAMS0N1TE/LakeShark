@@ -1,24 +1,5 @@
 /* LS_TEST_SOURCES: libcarto's renderer against a real vector tile */
-/* libcarto, running the way the board will run it.
 
-   LS-935  The renderer is vendored from CartoTUI, which is the same author's
-   and the same licence, and it already ran on an ESP32-P4. What it had not
-   done is run under this project's constraints, and three of those are the
-   reason the vendored copy differs from upstream at all:
-
-     the scanline crossing table was an 8 KB automatic array, which is larger
-     than the FreeRTOS task stacks here;
-
-     everything comes out of one arena, so the peak has to be bounded and
-     knowable rather than discovered on the board;
-
-     the polygon fill wrote through a per-pixel format switch, and the fill is
-     the hot loop.
-
-   See components/libcarto/DEVIATIONS.md. This drives the real tile from
-   CartoTUI's own fixtures rather than a synthetic one, because the thing
-   being tested is a protobuf decoder and a synthetic tile would only prove
-   the parts I thought to build. */
 #include "ls_test.h"
 
 #include "carto/carto.h"

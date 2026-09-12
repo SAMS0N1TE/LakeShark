@@ -76,13 +76,6 @@ void ls_spectrum_waterfall_set_gain_text(ls_spectrum_waterfall_t *view,
  * Resize on orientation changes without stopping capture or the decoder. */
 void ls_spectrum_waterfall_fit_page(ls_spectrum_waterfall_t *view, lv_obj_t *status);
 
-/* Keep the canvas inside the page without taking the page over.
- * fit_page also decides flow and column widths, which suits a page whose
- * only two children are the status panel and this widget. A page that has
- * its own rows below the widget - FM/SWEEP has an actions row - gets those
- * rows dragged into the landscape flex row. This fits the height only:
- * every sibling keeps the size its own page gave it, and the canvas takes
- * what is genuinely left. Safe to call more than once. */
 void ls_spectrum_waterfall_fit_height(ls_spectrum_waterfall_t *view);
 
 bool ls_spectrum_waterfall_resize(ls_spectrum_waterfall_t *view,

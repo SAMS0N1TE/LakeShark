@@ -1,13 +1,7 @@
 /*
- * DSD-derived source. Attribution restored in LakeShark on 2026-09-11 from
- * the DSD COPYRIGHT at revision
- * 59423fa46be8b41ef0bd2f3d2b45590600be29f0:
- * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/src/dsd_frame_sync.c
- *
- * That revision is a verified comparison source, established by comparing
- * identifiers and literals after comments and whitespace were removed. It is
- * not a claim about which revision or intervening fork was originally
- * imported. This file has been modified for LakeShark and the ESP32-P4.
+ * DSD-derived source, modified for LakeShark.
+ * Comparison source: https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/src/dsd_frame_sync.c
+ * Original import revision is unrecorded.
  *
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)

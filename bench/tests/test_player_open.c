@@ -185,9 +185,6 @@ static void reset_state(void)
 
 /* -------- cases -------------------------------------------------------- */
 
-/* The whole point of the queue task.  Force audio_player_play to reject
-   the enqueue and check that bsp_extra_player_play_index closed the fp
-   itself - the wrap counter must return to zero. */
 LS_CASE(play_index_enqueue_failure_closes_the_file)
 {
     if (!make_fixture()) return;
@@ -200,8 +197,6 @@ LS_CASE(play_index_enqueue_failure_closes_the_file)
     LS_EQ_INT(rc, ESP_FAIL);
     LS_EQ_INT(s_play_calls, 1);
 
-    /* The whole point: the fp handed to audio_player must be closed on
-       failure or every rejected tap leaks a fatfs handle. */
     LS_EQ_INT(g_files_open, 0);
 
     /* And the state module must not be claiming playback started. */

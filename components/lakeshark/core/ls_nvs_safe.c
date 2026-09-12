@@ -18,14 +18,6 @@ typedef struct {
     SemaphoreHandle_t done;
 } ls_nvs_job_t;
 
-/* the LCD startup trace had only 19 DMA-capable bytes left after P25
-   decoder and BLE/NimBLE setup. A transient 3072-byte allocation therefore
-   skipped the BLE pinned-peer read. Reserve one cache-safe stack at link time
-   and serialize its short-lived users. The task itself exists only while a
-   callback runs; the LCD smoke map accounts 3072 bytes for the stack, 352 for
-   its TCB and 92 for the mutex in .dram1, plus one 4-byte handle in BSS. The
-   per-call job and 92-byte completion semaphore live on the blocked caller's
-   stack and are released on both create failure and callback completion. */
 static DRAM_ATTR StackType_t s_worker_stack[LS_NVS_WORKER_STACK_BYTES]
     __attribute__((aligned(16)));
 static DRAM_ATTR StaticTask_t s_worker_tcb;

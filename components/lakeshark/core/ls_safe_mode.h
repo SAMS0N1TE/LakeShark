@@ -161,15 +161,6 @@ const char *ls_safe_entry_name(ls_safe_entry_t entry);
 
 /* ---- the decision ----------------------------------------------------- */
 
-/* Read the retained record, account for the reset that just happened, decide
-   whether this boot is safe, and rewrite the record for the boot that is
-   about to run. Call exactly once, first thing in app_main.
-
-   A record that fails validation is reset to the zeroed state and the boot
-   proceeds normally: an RTC region that has never been written is garbage on
-   every cold power-on, and entering safe mode on a first power-up would be a
-   worse defect than the one this exists to catch. out->marker_corrupt records
-   that it happened so the report can say so. */
 void ls_safe_decide(ls_safe_state_t *st, ls_safe_reset_t reset,
                     ls_safe_boot_t *out);
 

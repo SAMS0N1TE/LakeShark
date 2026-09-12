@@ -14,9 +14,7 @@
 #include "usb/usb_host.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "esp_lcd_st7703.h"
-/* PATCH (lakeshark) LS-903: the 4.3 board carries an ST7701 instead.
- * Panel driver and the vendor init sequence below are taken verbatim from
- * Waveshare's esp32_p4_wifi6_touch_lcd_4_3 BSP v1.0.1 (Apache-2.0). */
+
 #if defined(CONFIG_LS_BOARD_P4_TOUCH_LCD_43)
 #include "esp_lcd_st7701.h"
 #endif
@@ -130,7 +128,6 @@ esp_err_t bsp_sdcard_mount(void)
     host.slot = SDMMC_HOST_SLOT_0;
     host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
 
-
     ESP_RETURN_ON_ERROR(bsp_enable_ldo_vo4(), TAG, "DSI PHY power failed");
 
     const sdmmc_slot_config_t slot_config = {
@@ -140,8 +137,6 @@ esp_err_t bsp_sdcard_mount(void)
         .width = 4,
         .flags = 0,
     };
-
-
 
     return esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
 }
@@ -473,8 +468,7 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
     ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Brightness init failed");
     ESP_RETURN_ON_ERROR(bsp_enable_dsi_phy_power(), TAG, "DSI PHY power failed");
 #if !defined(CONFIG_LS_BOARD_P4_TOUCH_LCD_43)
-    /* PATCH (lakeshark) LS-903: VO4 (3v3) is a 4B rail. Waveshare's own 4.3 BSP
-     * never acquires it, so do not energise it on a board we have not traced. */
+
     ESP_RETURN_ON_ERROR(bsp_enable_ldo_vo4(), TAG, "DSI PHY power failed");
 #endif
 
@@ -500,24 +494,11 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
 
     esp_lcd_panel_handle_t disp_panel = NULL;
 #if defined(CONFIG_LS_BOARD_P4_TOUCH_LCD_43)
-    /* PATCH (lakeshark) LS-903: ST7701 branch for the 4.3 board. Timings and the
-     * init sequence are Waveshare's own for this panel; do not reuse the 4B's. */
+
     ESP_LOGI(TAG, "Install Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 LCD control panel");
     esp_lcd_dpi_panel_config_t dpi_config = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        /* PATCH (lakeshark) LS-906: 20 MHz, not Waveshare's 30. Same reason the
-         * 4B runs at 24 (see the patch below): the framebuffer DMA is a
-         * continuous PSRAM read that starves the radio's audio/demod, which
-         * executes from PSRAM via XIP -> choppy audio. 30 MHz here is 60 MB/s,
-         * MORE than the 4B's proven-good 48 MB/s, and it was audibly choppy.
-         * 20 MHz is 40 MB/s and still ~40 fps at 480x800 (576x870 with
-         * blanking), because this panel has fewer pixels than the 4B. */
-        /* LS-798: 16 MHz was tried here and reverted. The theory was PSRAM
-         * bandwidth - the waterfall's full-canvas copy contending with this
-         * framebuffer read - but removing that copy entirely (LS-801) did not
-         * change the late-frame rate either, so bandwidth is not the cause and
-         * 20% of the frame rate is not worth buying nothing. Whatever delays
-         * the refresh on P25 is not the DSI's share of the bus. */
+
         .dpi_clock_freq_mhz = 20,
         .virtual_channel = 0,
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888

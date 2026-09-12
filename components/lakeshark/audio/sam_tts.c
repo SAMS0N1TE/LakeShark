@@ -1,19 +1,4 @@
-/*  Speech synthesis, with the engine removed.
-
-    The SAM sources this wrapped carried a notice that expressly said their
-    redistribution permission was unresolved - age and the existence of public
-    forks are not permission - so they are not in this tree. See
-    docs/THIRD_PARTY_REVIEW.md.
-
-    The API stays, and every caller still compiles and runs, because the voice
-    was always an optional flourish on top of the receivers: announcing a
-    talkgroup or an aircraft, never anything the radio depends on. Removing the
-    header instead would have meant touching four call sites to delete a
-    feature that may come back the moment a licensed engine is dropped in
-    behind this same interface.
-
-    So: the voice settings still hold and report their values, and speaking is
-    a no-op. Nothing pretends to have spoken. */
+/* Speech synthesis is disabled; the settings API remains available. */
 
 #include "sam_tts.h"
 

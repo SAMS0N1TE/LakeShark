@@ -73,9 +73,7 @@ LS_CASE(older_than_additive_resets)
 
 LS_CASE(newer_resets)
 {
-    /* Downgrade: the version stamp says this flash was written by a build
-       newer than we are.  We do not know what keys that build added, what
-       types it changed, or what a given key now means.  Wipe. */
+
     LS_EQ_INT(settings_schema_decide(OK, 2, 1, 1), RESET);
     LS_EQ_INT(settings_schema_decide(OK, 99, 5, 1), RESET);
     /* Newer-and-current-min-additive still resets - stored > current wins. */

@@ -45,13 +45,7 @@ static map_wpt_t s_wpt[MAP_MAX_WPT];
 static bool      s_wpt_loaded = false;
 
 /**/
-/* Waypoints live in NVS, NOT on the SD card, and that is deliberate even
-   though the card is under-used. A waypoint is the thing you need when
-   everything else has gone wrong; the card is removable, is legitimately
-   absent on this board much of the time (treats a missing card as
-   non-fatal), and a nav aid that disappears with the card is worse than no
-   nav aid. The whole table is 16 * 24 bytes. The SD card is the right home
-   for tiles and photos, which are large and non-critical. */
+
 static void wpt_load(void)
 {
     if (s_wpt_loaded) return;

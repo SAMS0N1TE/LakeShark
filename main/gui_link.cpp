@@ -748,14 +748,6 @@ static int cmd_disp(int argc, char **argv)
     return 0;
 }
 
-/* Where the internal RAM went.
-   The DMA-capable pool runs at a few hundred bytes while PSRAM sits at 30 MB
-   free, which is what refuses app loads ("Low memory. Tap an app to retry."),
-   fails SD writes (sdmmc: not enough mem) and made the BLE transport drop
-   telemetry. Internal RAM is the scarce resource on this board and nothing on
-   the device could say who was holding it. Task stacks are the usual answer,
-   so list them with their unused headroom: a task with kilobytes never touched
-   is reclaimable, and one near zero must not be shrunk. */
 static int cmd_mem(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -869,7 +861,7 @@ void gui_link_start(void)
     int e = esp_hosted_connect_to_slave();
     if (e != 0) {
         ESP_LOGE(TAG, "C6 co-processor link FAILED (%d) - not starting BLE. "
-                      "Do NOT retry past this; it boot-loops (LS-110).", e);
+                      "Do NOT retry past this; it boot-loops.", e);
     } else {
         c6_version_probe();
         /**/

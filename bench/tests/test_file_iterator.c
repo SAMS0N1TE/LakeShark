@@ -3,16 +3,6 @@
 /* LS_TEST_SOURCES: ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c ${FW}/components/apps/media_gui/file_iterator_delete.c ${FW}/components/apps/media_gui/media_playlist.c */
 /* LS_TEST_DEFINE: CONFIG_AUDIO_PLAYER_ENABLE_MP3=1 CONFIG_AUDIO_PLAYER_ENABLE_WAV=1 */
 /**/
-/* file_iterator_new allocates a struct, a path string, a pointer array and
-   one string per entry.  file_iterator_delete is the missing counterpart -
-   before the fix it was declared but never defined, so callers gave up on
-   freeing entirely and every iterator lived forever.  This test wraps the
-   libc allocator so we can count bytes-in vs bytes-out across a full create
-   / destroy cycle and fail if the balance does not return to baseline.
-
-   media_playlist_open / _close is exercised alongside because AppMedia is
-   the only real consumer and it uses the playlist wrapper, not
-   file_iterator_new directly. */
 
 #include "ls_test.h"
 #include "file_iterator.h"

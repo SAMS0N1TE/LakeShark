@@ -68,11 +68,6 @@ static void vol_next(void)
     settings_set_volume(v);
 }
 
-/* ---- theme -------------------------------------------------------------
-   Applied live as well as stored: the whole point of a theme list is looking
-   at the result, and a setting that needs a restart to see is a setting
-   nobody tunes. */
-
 static void theme_show(char *b, size_t n)
 {
     const ls_tui_theme_t *t = ls_tui_get_theme();

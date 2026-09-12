@@ -19,7 +19,6 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "basic_op.h"
 #include "imbe.h"
@@ -32,14 +31,7 @@
 #include "encode.h"
 #include "imbe_vocoder_impl.h"
 
-
-
-
-
-
 #define CNST_0_1_Q1_15 0x0CCD
-
-
 
 void imbe_vocoder_impl::v_synt_init(void)
 {
@@ -55,7 +47,6 @@ void imbe_vocoder_impl::v_synt_init(void)
 	fund_freq_prev = 0;
 }
 
-
 void imbe_vocoder_impl::v_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 {
 	Word32 L_tmp, L_tmp1, fund_freq, L_snd[FRAME], L_ph_acc, L_ph_step;
@@ -64,7 +55,6 @@ void imbe_vocoder_impl::v_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 	UWord32 ph_mem_prev[NUM_HARMS_MAX], dph[NUM_HARMS_MAX];
 	Word16 num_harms_inv, num_harms_sh, num_uv;
 	Word16 freq_flag;
-
 
 	fund_freq = imbe_param->fund_freq;
 	num_harms = imbe_param->num_harms;
@@ -102,7 +92,6 @@ void imbe_vocoder_impl::v_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 	{
 		L_ph_step      += fund_freq;
 		L_ph_step_prev += fund_freq_prev;
-
 
 		if(i > num_harms_max_4)
 		{
@@ -143,7 +132,6 @@ void imbe_vocoder_impl::v_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 			}
 			continue;
 		}
-
  
 		if(vu_dsn[i] == 0 && vu_dsn_prev[i] == 1)  // voiced => unvoiced
 		{
@@ -214,7 +202,6 @@ void imbe_vocoder_impl::v_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 		L_amp_step = L_mpy_ls(L_shr(L_deposit_h(sub(sa[i], sa_prev3[i])), 4 + 1), CNST_0_1_Q1_15); // (sa[i] - sa_prev3[i]) / 160, 1/160 = 0.1/16 
 		L_amp_acc  = L_shr(L_deposit_h(sa_prev3[i]), 1);
 
-		
 		L_ph_step_aux = L_mpy_ls(L_shr(fund_freq - fund_freq_prev, 4 + 1), CNST_0_1_Q1_15);       // (fund_freq - fund_freq_prev)/(2*160)
 		L_ph_step_aux = ((L_ph_step_aux >> 7) * (i + 1)) << 7;
 

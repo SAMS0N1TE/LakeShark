@@ -98,15 +98,6 @@ static p25_program_result_t fail(p25_program_t *program,
     return result;
 }
 
-/* Fixed order, and the only place decoder state is touched.  release() first
- * so the radio is off any traffic channel belonging to the outgoing system;
- * set_control() last so exactly one tune survives in the single-slot tune
- * latch and it is the one for the incoming system.
- *
- * Nothing here touches the vocoder's encryption mute.  encrypted_skip steers
- * the grant follower only - a profile cannot ask the radio to play encrypted
- * or unknown-ESS audio, and p25_ldu_should_mute_encrypted keeps deciding
- * that on its own. */
 static void apply_profile(const p25_profile_t *profile, uint64_t control_hz,
                           const p25_program_ops_t *ops, bool restore)
 {

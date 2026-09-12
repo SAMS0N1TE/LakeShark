@@ -17,10 +17,6 @@ typedef struct {
     bool    pressed;  /* false is the release of the same key */
 } ls_keypad_event_t;
 
-/* Bring the controller up: configure the matrix, drain anything the part
-   latched before we were listening, and enable key-event interrupts.
-   ESP_ERR_NOT_FOUND when nothing acknowledges 0x34, which is the normal
-   answer when the keyboard is not attached. */
 esp_err_t ls_keypad_start(void);
 
 /* True once start() has found the part. */

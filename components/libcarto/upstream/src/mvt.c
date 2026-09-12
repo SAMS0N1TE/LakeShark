@@ -4,35 +4,10 @@
 
 #define MVT_MAX_VALUES 4096
 
-/*LS-1050  The value tables are the caller's, not this frame's.
-
-   They were two 4096 entry arrays inside mvt_ctx, and mvt_ctx is a local of
-   carto_mvt_render_category - a thirty-two kilobyte stack frame, built once
-   per layer category and five times per tile. On a host that is invisible.
-   On a 6 KB embedded task stack it is a stack protection fault in the
-   function prologue, every time, which is exactly what the board did.
-
-   The caller allocates them from its arena, which is PSRAM and already sized
-   for a frame, and passes them in. The frame is about a hundred bytes now. */
 typedef struct {
     carto_framebuffer *fb;
     const carto_style *style;
-    /*LS-1073  Single precision, because this board's FPU is single precision.
 
-       These four are the per-POINT transform: every coordinate of every
-       geometry in every tile goes through `ox + cx * per_ext`. As doubles
-       that is a software-emulated multiply and add per point on an ESP32-P4,
-       whose FPU does float in hardware and double not at all. Thousands of
-       points a tile, twelve tiles a pan.
-
-       Precision is not the constraint here and it is worth saying why. `ox`
-       is the tile's top left in FRAME coordinates - a few hundred pixels -
-       not the world origin, which is hundreds of thousands. The large
-       subtraction that produces it stays in double in carto_render_tile,
-       where cancellation would matter; what arrives here is small. A float
-       holds about seven significant digits, so a coordinate in the hundreds
-       carries roughly a thousandth of a pixel, and the result is cast to int
-       anyway. */
     float ox, oy, tile_px, per_ext;
     carto_layer_kind category;
     carto_ipt *scratch;
@@ -45,7 +20,7 @@ typedef struct {
     int            *val_num;      /* the numeric form, 0 when it was a string */
     int             val_cap;
     int             nvals;
-    /*LS-1055  Place names are handed out, not drawn. See mvt.h. */
+
     carto_label_sink *labels;
     int               name_key_idx;
     int               minzoom_key_idx;
@@ -102,19 +77,6 @@ static int is_park_kind(const char *k) {
     return 0;
 }
 
-/*LS-1056  A tag value is a string OR a number, and both were needed.
-
-   This kept only the string and dropped every numeric field on the floor,
-   which was invisible while the only tag anybody read was the class - that
-   is always a string. min_zoom and population_rank are numbers, so the
-   de-clutter that decides which place names a view is big enough for was
-   reading zero for all of them and drawing every name at every zoom. A view
-   of one county had "United States" written across it.
-
-   The MVT Value message is a union: field 1 string, 2 float, 3 double,
-   4 int, 5 uint, 6 sint, 7 bool. Numbers come back as an int because that is
-   what these tags are; a float that is really 2.5 rounds, which is fine for
-   a zoom threshold and would not be for a coordinate. */
 static void parse_value(const uint8_t *b, size_t len,
                         const uint8_t **sptr, int *slen, int *num) {
     *sptr = NULL;
@@ -215,14 +177,7 @@ static void render_feature(mvt_ctx *m, const uint8_t *g, size_t glen,
     size_t p = 0;
     int cx = 0, cy = 0, n = 0;
     carto_ipt *pts = m->scratch;
-    /*LS-1067  The largest ring this scratch has ever had to hold.
 
-       LS DEVIATION 3 sizes the scratch at 65536 points - 512 KB - and says
-       so rather than justifying it, with the honest note that trimming it
-       blind would show up as missing roads rather than as an error. This is
-       what turns the guess into a measurement: recorded where a ring is
-       finished, which is the only moment n is final, so it costs one compare
-       per ring rather than one per point. */
     #define SCRATCH_MARK() do { if (n > g_mvt_scratch_peak) \
                                     g_mvt_scratch_peak = n; } while (0)
 
@@ -287,11 +242,6 @@ static void feature_class(mvt_ctx *m, const uint8_t *tags, size_t taglen,
     }
 }
 
-/*LS-1055  A tag's value by key index: text into `out`, or a number.
-
-   feature_class already did this for one key. Places need three more - the
-   name, the zoom it becomes worth showing at, and how big the place is - and
-   walking the tag list once for all of them beats walking it four times. */
 static void feature_tags(mvt_ctx *m, const uint8_t *tags, size_t taglen,
                          char *name, int namecap, int *minzoom, int *rank)
 {
@@ -359,30 +309,6 @@ static void collect_label(mvt_ctx *m, const uint8_t *tags, size_t taglen,
        them and a name nobody can see would take one from a name they can. */
     if (x < 0 || y < 0 || x >= m->fb->width || y >= m->fb->height) return;
 
-    /*LS-1056  If it did not fit, end it at a word.
-
-       feature_tags fills the buffer and stops, so a long name arrives with
-       its last word cut in half - "Franklin Falls Historic Distric", which
-       reads as a fault rather than as an abbreviation. Backing up to the
-       last space costs a word and buys a name that looks deliberate.
-
-       LS-1060  This runs BEFORE the de-duplication below, and the order is
-       the whole point.
-
-       It used to run after, on the copy already committed to the sink, so
-       the de-duplication compared names that had NOT been trimmed. Around
-       Franklin there are four places whose names differ only past the
-       thirty-second character - "Franklin Falls Historic District" and its
-       neighbours - so four entries that trim to the identical string
-       "Franklin Falls Historic" each compared unequal, each took a slot, and
-       the list showed the same name four times.
-
-       On the map this was invisible: the label collision test drops names
-       whose boxes touch, so three of the four were quietly discarded and
-       only one was ever drawn. It surfaced the moment a list showed all of
-       them. De-duplicating on the text that will actually be SHOWN is the
-       invariant worth holding, because that is the one an operator can
-       check. */
     if ((int)strlen(name) >= (int)sizeof name - 1) {
         int t = (int)strlen(name);
         while (t > 4 && name[t - 1] != ' ') t--;
@@ -390,13 +316,6 @@ static void collect_label(mvt_ctx *m, const uint8_t *tags, size_t taglen,
         if (t > 4) name[t] = 0;
     }
 
-    /*LS-1056  One entry per place, not one per tile that mentions it.
-
-       A place near a tile boundary is in both tiles, and both are rendered,
-       so the same name arrived twice a few cells apart - which reads as two
-       towns with the same name. Comparing the text is enough: two genuinely
-       different places with identical names close enough to collide on one
-       screen is not a case worth carrying code for. */
     for (int i = 0; i < sk->n; i++)
         if (strcmp(sk->at[i].text, name) == 0) return;
 
@@ -408,7 +327,6 @@ static void collect_label(mvt_ctx *m, const uint8_t *tags, size_t taglen,
     L->min_zoom = (uint8_t)(mz < 0 ? 0 : (mz > 255 ? 255 : mz));
     L->rank = (uint8_t)(rank < 0 ? 0 : (rank > 255 ? 255 : rank));
 }
-
 
 int  mvt_scratch_peak(void)       { return g_mvt_scratch_peak; }
 void mvt_scratch_peak_reset(void) { g_mvt_scratch_peak = 0; }
@@ -446,9 +364,7 @@ static void render_feature_msg(mvt_ctx *m, const uint8_t *b, size_t len) {
             return;
         }
     }
-    /*LS-1055  A place is a name first and a dot second. The dot is still
-       drawn - it is what says exactly where - and the name goes to the
-       caller to put in cells. */
+
     if (m->category == CARTO_LAYER_PLACE)
         collect_label(m, tags, taglen, geom, geomlen);
 
@@ -545,7 +461,7 @@ void carto_mvt_render_category(carto_framebuffer *fb, const carto_style *style,
     m.labels = labels;
     m.fb = fb;
     m.style = style;
-    /*LS-1073  Narrowed once, here, rather than on every point. */
+
     m.ox = (float)ox;
     m.oy = (float)oy;
     m.tile_px = tile_px;
@@ -554,23 +470,6 @@ void carto_mvt_render_category(carto_framebuffer *fb, const carto_style *style,
     m.scratch = scratch;
     m.scratch_cap = scratch_cap;
 
-    /*LS-1053  Thin by how big the tile is DRAWN, not by its zoom number.
-
-       Both of these were tuned against a tile drawn at its natural 256
-       pixels, and they read the zoom to decide how much road to keep. That
-       held while the map rendered at the panel's own resolution. It stopped
-       holding the moment the map started rendering into a few pixels per
-       character cell: a tile is drawn at about 77 pixels now, so everything
-       is three and a third times more crowded than the number says, and
-       every residential street in a town arrived on top of every other one.
-       Reported from the board as roads being a mess when zoomed out.
-
-       A tile at half its natural size is worth one zoom level of thinning,
-       which is exactly what log2 of the ratio says. Expressed that way the
-       tuning is about what the eye gets rather than about a coordinate, so
-       it stays right if the sub-cell resolution changes again - and it is
-       still the old numbers at tile_px 256, so nothing that was tuned
-       against a full-resolution render moves. */
     const double zeff = (double)zoom + log2(tile_px / 256.0);
 
     double rs = 0.125 + (zeff - 9.0) * 0.0625;

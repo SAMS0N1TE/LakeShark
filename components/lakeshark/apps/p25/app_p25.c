@@ -651,18 +651,7 @@ static void dsd_decoder_task(void *arg)
     s_dsd_opts.verbose = 0;
     s_dsd_opts.errorbars = 1;
     s_dsd_opts.frame_p25p1 = 1;
-    /* Task 655: the DSD mod_* booleans are NOT a mirror of dsp_pipeline's
-     * demod_mode_t. They only pick between three internal slicer variants
-     * inside dsd_frame_sync.c (rf_mod == 0 adaptive min/max, rf_mod == 1
-     * same slicer with a QPSK sync-pattern label, rf_mod == 2 fixed
-     * maxref/minref for GFSK). Every mode in dsp_pipeline hands DSD a
-     * 4-level signed audio stream shaped like C4FM to a slicer - the
-     * differential-atan2 paths all rescale to the same ±(3,1,-1,-3)
-     * cluster geometry. So the correct slicer for all four DSP modes is
-     * rf_mod == 0 (C4FM), and pinning the mod_* booleans to enable only
-     * that is deliberate, not an oversight. If a future DSP mode emits
-     * something that a fixed-slice GFSK path would decode better, that
-     * mapping goes here. */
+
     p25_demod_dsd_flags(s_demod_control.active,
                         &s_dsd_opts.mod_c4fm,
                         &s_dsd_opts.mod_qpsk,
@@ -1404,9 +1393,7 @@ static void p25_rx_task(void *arg)
         P25.ring_fill = dsd_ring_available(&s_ring);
 
         int64_t now = esp_timer_get_time();
-        /* TSDU (3) is the control channel we are comparing, not a call.
-         * Treating every nonzero lastp25type as a call holds C4FM forever as
-         * soon as its first valid control frame lands. */
+
         bool in_call = p25_demod_call_active(
                            s_dsd_state.lastp25type,
                            now < P25.voice_active_until_us);

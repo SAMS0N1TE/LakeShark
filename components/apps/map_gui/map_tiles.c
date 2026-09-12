@@ -1,16 +1,4 @@
 /**/
-/* Offline raster tile renderer.
- *
- * Reads the z/x/y JPEG tree written by host/tilepack.py off the SD card and
- * decodes it with the P4's HARDWARE JPEG engine, not a software decoder. That
- * is the whole reason tilepack.py emits JPEG: this runs on the same CPU that
- * is demodulating P25, and inflating a PNG per tile in software would show up
- * as audio dropouts. Decode is a peripheral operation here.
- *
- * The working set is bounded at 9 tiles (3x3). At 256x256 RGB565 that is
- * 128 KB each, 1.15 MB total, in PSRAM - trivial against 32 MB, and it means
- * a pan never has to read more than three new tiles.
- */
 
 #include "map_tiles.h"
 

@@ -12,6 +12,8 @@
 #include "apps/p25/p25_health.h"
 #include "radio/radio_health.h"
 #include "apps/fm/fm_state.h"
+#include "apps/fm/fm_mode_label.h"
+#include "ls_action.h"
 #include "apps/adsb/adsb_state.h"
 #include "esp_timer.h"
 #include "ls_gps.h"
@@ -331,6 +333,132 @@ static const tui_rect PANES[] = {
     {  1,  2,  10,  3 },   /* absurd                    */
     {  1,  2,   4,  2 },   /* degenerate but positive   */
 };
+
+extern void ls_scr_fm_show_page(int page);
+
+static ls_act_status_t fm_test_select(const ls_args_t *args, ls_val_t *out)
+{
+    (void)out;
+    fm_mode_t mode;
+    if (!args || args->n != 1 || !fm_mode_parse(args->v[0].s, &mode))
+        return LS_ACT_BADARG;
+    FM.mode = mode;
+    return LS_ACT_OK;
+}
+
+LS_CASE(fm_mode_buttons_and_keyboard_reach_every_receiver)
+{
+    fresh();
+    const tui_rect pane = {1, 2, 46, 63};
+    grid_for(pane);
+    ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
+    const fm_mode_t modes[] = {FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG,
+                              FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN};
+    FM.mode = FM_MODE_LISTEN;
+    ls_scr_fm.enter();
+    for (int i = 0; i < 6; ++i) {
+        ls_scr_fm.draw(&g_sf, pane);
+        int col = pane.x + pane.w * (i % 3) / 3 + pane.w / 6;
+        int row = pane.y + (i / 3) * 5 + 2;
+        LS_CHECK(ls_scr_fm.touch(col, row));
+        LS_EQ_INT(FM.mode, modes[i]);
+        ls_scr_fm.draw(&g_sf, pane);
+        int x0 = pane.x + pane.w * (i % 3) / 3;
+        int x1 = pane.x + pane.w * (i % 3 + 1) / 3;
+        int y0 = pane.y + (i / 3) * 5;
+        for (int y = y0; y < y0 + 5; ++y)
+            for (int x = x0; x < x1; ++x)
+                if (y == y0 || y == y0 + 4 || x == x0 || x == x1 - 1)
+                    LS_EQ_INT(g_back[y * W + x].attr,
+                              TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    }
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
+    LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
+    LS_EQ_INT(FM.mode, FM_MODE_WFM);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'n'));
+    LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
+}
+
+LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
+{
+    fresh();
+    const tui_rect pane = {1, 2, 46, 63};
+    grid_for(pane);
+    ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
+    FM.mode = FM_MODE_SCAN;
+    ls_scr_fm.enter();
+    ls_scr_fm.draw(&g_sf, pane);
+    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 6, pane.y + pane.h - 4));
+    LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
+    ls_scr_fm_show_page(2);
+    LS_EQ_INT(FM.mode, FM_MODE_SCAN);
+    ls_scr_fm_show_page(1);
+    LS_EQ_INT(FM.mode, FM_MODE_POCSAG);
+    ls_scr_fm.draw(&g_sf, pane);
+    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 2, pane.y + 1));
+    LS_EQ_INT(FM.mode, FM_MODE_WFM);
+}
+
+static float s_fm_tuned_mhz;
+static int32_t s_fm_tuned_hz;
+static int s_fm_keypad_opens;
+
+static ls_act_status_t fm_test_freq(const ls_args_t *args, ls_val_t *out)
+{
+    (void)out;
+    s_fm_tuned_hz = args->v[0].i;
+    s_fm_tuned_mhz = (float)s_fm_tuned_hz / 1000000.0f;
+    return LS_ACT_OK;
+}
+
+static ls_act_status_t fm_test_keypad(const ls_args_t *args, ls_val_t *out)
+{
+    (void)args;
+    (void)out;
+    ++s_fm_keypad_opens;
+    return LS_ACT_OK;
+}
+
+LS_CASE(fm_tune_split_steps_frequency_and_opens_keypad)
+{
+    fresh();
+    const tui_rect pane = {1, 2, 46, 63};
+    grid_for(pane);
+    ls_action_register("fm.freq_hz", "i", LS_CAP_TUNE, fm_test_freq, "Frequency");
+    ls_action_register("fm.tune", "", LS_CAP_TUNE, fm_test_keypad, "Tune");
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 100000000;
+    s_fm_keypad_opens = 0;
+    ls_scr_fm.enter();
+    ls_scr_fm.draw(&g_sf, pane);
+    const int row = pane.y + 11 + 19 + 3;
+    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 6, row));
+    LS_CHECK(fabsf(s_fm_tuned_mhz - 99.9875f) < 0.0001f);
+    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 2, row));
+    LS_EQ_INT(s_fm_keypad_opens, 1);
+    LS_CHECK(ls_scr_fm.touch(pane.x + 5 * pane.w / 6, row));
+    LS_CHECK(fabsf(s_fm_tuned_mhz - 100.0125f) < 0.0001f);
+    FM.mode = FM_MODE_WFM;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
+    LS_CHECK(fabsf(s_fm_tuned_mhz - 100.1f) < 0.0001f);
+    FM.mode = FM_MODE_ACARS;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
+    LS_CHECK(fabsf(s_fm_tuned_mhz - 99.975f) < 0.0001f);
+    FM.freq_hz = 24000000;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
+    LS_CHECK(s_fm_tuned_mhz == 24.0f);
+    FM.freq_hz = 1766000000;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
+    LS_CHECK(s_fm_tuned_mhz == 1766.0f);
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 154785000;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
+    LS_EQ_INT(s_fm_tuned_hz, 154772500);
+    FM.freq_hz = (uint32_t)s_fm_tuned_hz;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
+    LS_EQ_INT(s_fm_tuned_hz, 154785000);
+}
 #define N_PANES ((int)(sizeof(PANES) / sizeof(PANES[0])))
 
 /* HOME is the app directory, so it draws the app table and nothing else.
@@ -426,18 +554,7 @@ static int painted(tui_rect r)
 
 LS_CASE(each_screen_actually_paints_its_pane)
 {
-    /* Without this, the out-of-rect check passes trivially for a screen that
-       early-returns or whose data source is empty: drawing nothing never
-       escapes anything. The two real geometries must produce a substantial
-       pane, so a screen that quietly renders blank is a failure here rather
-       than a mystery on the panel.
 
-       The floor is the perimeter of an empty box, 2*(w+h). These screens are
-       mostly whitespace by design - a form paints under a fifth of its pane -
-       so any density-based bound would be arbitrary and would move every time
-       a row was added. "More than an empty frame" is the thing actually worth
-       asserting: it separates a screen that rendered content from one that
-       drew a border and gave up. */
     seed_health();
     static const int REAL[] = { 0, 1 };   /* landscape body, portrait body */
 
@@ -1001,6 +1118,48 @@ static bool find_text(const char *text, int *col, int *row)
     return false;
 }
 
+LS_CASE(pager_touch_and_arrow_navigation_work_in_list_and_detail)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        seed_fm();
+        FM.mode = FM_MODE_POCSAG;
+        FM.page_count = 3;
+        FM.page_head = 3;
+        ls_scr_fm.enter();
+        for (int i = 0; i < FM_PAGE_LOG_MAX; ++i)
+            ls_scr_fm.key(LS_TK_UP, 0);
+        int x, y;
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 1/3", &x, &y));
+        LS_CHECK(find_text("DOWN", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 2/3", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("LIST 2/3", &x, &y));
+        LS_CHECK(find_text("DOWN", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_DOWN, 0));
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("LIST 3/3", &x, &y));
+        LS_CHECK(find_text("UP", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_UP, 0));
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("LIST 1/3", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh();
+        draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 1/3", &x, &y));
+    }
+}
+
 LS_CASE(every_setting_has_a_box_in_both_postures)
 {
     /* Daylight made eleven, and six boxes deep at the three-row
@@ -1229,10 +1388,7 @@ static void diag_fresh(void)
 
 LS_CASE(diag_opens_the_detail_behind_a_block_and_esc_closes_it)
 {
-    /* The whole point of the item: "tap a row, get the detail behind
-       it - the IMU's three axes, the endpoint's history, the mesh's
-       counters". All three are numbers this screen already reads and then
-       throws away to fit one line. */
+
     seed_health();
     imu_fitted(true);
     diag_fresh();

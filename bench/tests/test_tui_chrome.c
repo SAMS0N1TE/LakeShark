@@ -156,14 +156,6 @@ LS_CASE(a_row_too_narrow_for_a_tail_gives_the_hint_the_whole_row)
 
 /* ------------------------------------------------------------------ split */
 
-/* ls_tui_split hands every two-pane screen its rects, and a rect error there
-   is the same class of defect as the one that put ADSB's footer above its own
-   pane. The properties are cheap to state and worth pinning exactly: the two
-   halves must cover the area, must not overlap, and must stay inside it.
-
-   A gap is a column the diff renderer never repaints, so it keeps whatever
-   was on it. An overlap is two screens writing the same cell, where the one
-   that draws last wins and the result changes with content. */
 static void split_at(int w, int h, tui_rect *a, tui_rect *b)
 {
     ls_tui_split(tui_rect_make(3, 5, w, h), a, b);
@@ -358,14 +350,6 @@ LS_CASE(no_real_hint_is_cut_mid_word_in_portrait)
     }
 }
 
-/* The format itself, because the row's two colours depend on it.
-
-   ls_tui_screen.c reads a hint as "KEY label" pairs: two spaces mean the next
-   token is a key, one space inside a pair means the rest is its label. Six of
-   the nine screens had it the other way round and wrote two spaces between a
-   key and its own label, so "mark", "pick", "move" and "select aircraft" were
-   all painted in the key colour. A legend where everything is a key is a wall
-   of text, which is exactly what the two colours exist to prevent. */
 LS_CASE(every_hint_separates_its_pairs_the_way_the_row_reads_them)
 {
     for (int i = 0; i < N_HINTS; i++) {
@@ -511,13 +495,6 @@ LS_CASE(no_hint_names_a_key_the_tail_already_names)
 
 /* ---------------------------------------------- padded status -- */
 
-/* On a panel with rounded corners the status row's words start past
-   one corner and stop short of the other, while the bar runs the full width.
-   What fits is still decided by the width alone - which the cases above
-   cover at every width - so the padded row must be exactly the unpadded one
-   moved in, and nothing may land outside its span. The router draws and
-   hit-tests from this one function; a copy of the shift in either place is
-   how [R] and its tap would part company. */
 LS_CASE(a_padded_status_row_is_the_same_row_moved_in)
 {
     const int brand = 9, name = 4, left = 12, right = 16;

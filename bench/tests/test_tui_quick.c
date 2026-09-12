@@ -498,9 +498,6 @@ LS_CASE(a_name_too_long_for_the_key_stays_in_the_border)
         if (row_has(48, y, "GO")) go = true;
     LS_CHECK_MSG(go, "a label that cannot fit its key did not fall back to GO");
 
-    /* And nothing ran into the neighbour: the whole point of the fallback.
-       If a label had been centred on a key too small for it, the letters
-       would be somewhere on these rows. */
     for (int y = 1; y < used - 1; y++)
         LS_CHECK_MSG(!row_has(48, y, "RECALIBRATE"),
                      "a label wider than its key was drawn anyway, on row %d",

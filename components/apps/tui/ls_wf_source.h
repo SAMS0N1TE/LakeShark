@@ -59,6 +59,7 @@ void ls_wf_source_lora_band_get(uint32_t *min_hz, uint32_t *max_hz);
 /* Name of the source actually feeding right now, which under AUTO is not
    necessarily the one that was selected. "none" when nothing is. */
 const char *ls_wf_source_name(void);
+const char *ls_wf_source_progress(void);
 
 /* Enable the feed if needed, read one frame, push it. Call once per frame
    from a screen that is drawing a waterfall. */

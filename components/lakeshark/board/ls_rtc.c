@@ -112,10 +112,6 @@ esp_err_t ls_rtc_get(time_t *out)
     esp_err_t err = rd(REG_SECONDS, r, sizeof(r));
     if (err != ESP_OK) return err;
 
-    /* The whole point. VL set means the oscillator stopped at some moment
-       since the last write, so what follows is a count from an unknown
-       start, not a time. Reporting it as a date is the failure mode
-       ls_time.h was written to prevent. */
     if (r[0] & VL_BIT) return ESP_ERR_INVALID_STATE;
 
     struct tm tm = {0};

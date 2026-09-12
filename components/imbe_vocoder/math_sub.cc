@@ -234,7 +234,6 @@ Word16 sin_fxp(Word16 x)
 		return ty;
 }
 
-
 //-----------------------------------------------------------------------------
 // Table for routine sqrt_l_exp()     
 // table[] = sqrt((i+16)*2^-6) * 2^15, i.e. sqrt(x) scaled Q15 
@@ -344,12 +343,4 @@ Word32 Log2(Word16 x)
 	
 	return L_y;
 }
-
-
-
-
-
-
-
-
 

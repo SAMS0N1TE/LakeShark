@@ -39,9 +39,7 @@ static void wire_mocks(void)
 
 LS_CASE(enter_parks_the_radio)
 {
-    /* The whole point of enter(): before Music touches the player, the radio
-       has to be parked.  If this fires nothing, the two writers can overlap
-       and the coredump in comes back. */
+
     wire_mocks();
     ls_media_lifecycle_enter();
     LS_EQ_STR(s_trace, "P");
@@ -61,15 +59,7 @@ LS_CASE(leave_stops_the_player)
 
 LS_CASE(files_to_music_to_fm_transition_order)
 {
-    /* State-machine walk of the queue-task defect.
-       - Radio was running before Music was opened.  Files is passive so the
-         radio decoder was only backgrounded.
-       - Music.run() -> enter() -> park the radio BEFORE the player init.
-       - User taps FM.  Music.pause() -> leave() -> stop the player BEFORE
-         FM.run() re-opens the pipe.
-       The trace must be exactly PSP-style: park, stop.  Any other sequence
-       leaves audio bleeding into the next app or lets the radio keep writing
-       into the codec Music is about to open. */
+
     wire_mocks();
 
     /* Files -> Music (radio still running from earlier). */

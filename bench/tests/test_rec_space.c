@@ -1,14 +1,5 @@
 /* LS_TEST_SOURCES: ${APP}/rec/rec_space.c */
 /**/
-/* Free-space check for the capture writer.  Before this fix rec_save()
-   opened the .sub straight away and streamed edges at it, so a full SD
-   or SPIFFS landed as a truncated file that still parsed the header and
-   listed as a normal capture - the recorder had stopped recording without
-   saying so.  The estimate, the check, the shortage message and the
-   partial-file classifier live in their own C file so the bench can pin
-   the arithmetic and the truncation contract without a filesystem, a
-   screen or a radio; the wiring in app_rec.c is only a statvfs call, a
-   `.part` rename and a listing filter. */
 
 #include "ls_test.h"
 #include "rec_space.h"
@@ -95,8 +86,7 @@ LS_CASE(space_not_ok_when_available_is_short)
 
 LS_CASE(space_not_ok_when_available_is_zero)
 {
-    /* The full-disk case.  rec_save must refuse before opening the
-       file - the whole point of the fix. */
+
     LS_CHECK(!rec_space_ok(rec_space_estimate_bytes(350), 0));
 }
 

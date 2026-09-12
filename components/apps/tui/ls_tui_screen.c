@@ -16,14 +16,6 @@
 
 #define MAX_SCREENS LS_TUI_MAX_SCREENS
 
-/* Chrome height is a function of how the thing is being held.
-
-   Landscape has a keyboard attached, so the tab strip is a legend for the
-   function keys and one row is plenty. Portrait is thumbs, and a one-row tab
-   is a 10x17 pixel target - about 0.8 mm, which is not a target at all. So
-   portrait gets two rows and the strip becomes something you can actually
-   hit. Nothing else in the router changes; the body rect is computed from
-   this and every screen already takes its area as a rect. */
 static int tab_rows(void)
 {
     /* Four rows in portrait, not two. */
@@ -423,14 +415,7 @@ static void draw_hints(tui_surface *sf, int cols, int row)
        hardcoded `cols - 11` stopped the hint eight columns past the start of
        an eighteen character tail, and the renderer only pushes changed cells,
        so whichever wrote last stayed on the panel. */
-    /* In landscape this row runs along the bottom edge into the same
-       two corners as the status row. It already kept one column clear at
-       each end - the hint starts at 1 and the tail stops one short of the
-       edge - so where the corner wants more than that, the whole row is laid
-       out narrower and moved in by the difference. The hint and its tail
-       keep the arithmetic between them that pinned; only where the
-       pair sits changes. The row is one target for the key list, so there is
-       no tap to move with it. */
+
     const int pad = ls_tui_corner_pad(row);
     const int in = pad > 1 ? pad - 1 : 0;
     ls_tui_hint_layout_t hl = ls_tui_hint_layout(cols - 2 * in);

@@ -124,8 +124,7 @@ static bool tap_label(const char *word)
 
 LS_CASE(a_tapped_letter_lands_in_the_buffer)
 {
-    /* The whole point. Tap three keys, read the box, and the box has to say
-       what was tapped - not what a key handler would have produced. */
+
     open_with("");
     tap_key('h');
     tap_key('i');

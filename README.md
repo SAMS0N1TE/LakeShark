@@ -101,6 +101,6 @@ None of the hard parts are mine. A P25 receiver on a microcontroller only exists
 | [OpenStreetMap](https://www.openstreetmap.org/copyright) | The map data itself, ODbL |
 | [Flipper Zero](https://flipperzero.one/) | The head runs as a Flipper app |
 
-LakeShark itself is [GPL-3.0](LICENSE). Third-party code keeps its own notices; the [inventory](docs/THIRD_PARTY_REVIEW.md) lists what is bundled and under what terms.
+LakeShark itself is [GPL-3.0](LICENSE). Third-party code keeps its own notices; the [inventory](docs/THIRD_PARTY_NOTICES.md) lists what is bundled and under what terms.
 
 What you are allowed to listen to is local law and yours to check.

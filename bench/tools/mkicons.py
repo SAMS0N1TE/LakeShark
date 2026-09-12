@@ -1,24 +1,4 @@
-"""Cut the home-screen icon art, and emit the C table for ls_icons.c.
-
-LS-1051  Two problems, one cause.
-
-The art was twelve by twelve, packed two-by-two into quadrant glyphs, so an
-icon was six cells by six. A cell on this panel is 10 by 17 pixels, so a
-"square" icon rendered 60 by 102 - stretched to one and seven tenths its
-width. Every one of them was drawn on graph paper and displayed on a rack,
-which is most of why several of them stopped reading as the thing they were
-meant to be.
-
-Twenty by twelve fixes it: ten cells by six is 100 by 102 pixels, square to
-within a pixel. That is a different canvas than the old art was drawn for,
-so the art is redrawn rather than stretched - and redrawn from shapes in a
-square space rather than by hand, so the next time the cell size changes this
-is one number rather than thirteen re-drawings.
-
-Run it and paste, or use --write to replace the table in place:
-
-    python bench/tools/mkicons.py --write
-"""
+"""Generate the home-screen icon table. Use --write to update ls_icons.c."""
 
 import argparse
 import math

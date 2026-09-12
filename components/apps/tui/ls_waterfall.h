@@ -112,6 +112,9 @@ ls_wf_owner_t ls_wf_owner(void);
    current owner - so a background task cannot corrupt the visible picture. */
 void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
                 const ls_wf_feed_t *feed);
+/* Update the spectrum while a sweep is incomplete, without adding history. */
+void ls_wf_preview(ls_wf_owner_t owner, const float *bins, int n,
+                   const ls_wf_feed_t *feed);
 
 /* The whole instrument: spectrum, waterfall, frequency scale, marker readout
    and the control bar. `area` is everything it may use. */

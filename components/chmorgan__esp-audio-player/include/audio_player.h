@@ -18,33 +18,6 @@
  *      limitations under the License.
  */
 
-/**
- * Design notes
- *
- * - There is a distinct event for playing -> playing state transitions.
- * COMPLETED_PLAYING_NEXT is helpful for users of the audio player to know
- * the difference between playing and transitioning to another audio file
- * vs. detecting that the audio file transitioned by looking at
- * events indicating IDLE and then PLAYING within a short period of time.
- *
- * State machine diagram
- *
- * cb is the callback function registered with audio_player_callback_register()
- *
- *             cb(PLAYING)                     cb(PLAYING)
- *   _______________________________     ____________________________________
- *   |                             |     |                                  |
- *   |                             |     |                                  |
- *   |         cb(IDLE)            V     V             cb(PAUSE)            |
- * Idle <------------------------  Playing  ----------------------------> Pause
- *   ^                             |_____^                                  |
- *   |                      cb(COMPLETED_PLAYING_NEXT)                      |
- *   |                                                                      |
- *   |______________________________________________________________________|
- *                                cb(IDLE)
- *
- */
-
 #pragma once
 
 #include <stddef.h>

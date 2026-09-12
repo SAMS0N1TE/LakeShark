@@ -1,15 +1,4 @@
-/* NFC-A cascade assembly.  Split out of the ST25R3916 transport so the
-   bench can drive the state machine without hardware.
 
-   Cascade shape (ISO/IEC 14443-3 §6.5.4):
-
-     4-byte UID:   level 1 -> [uid0 uid1 uid2 uid3 BCC], SAK bit2 = 0
-     7-byte UID:   level 1 -> [0x88 uid0 uid1 uid2 BCC], SAK bit2 = 1
-                   level 2 -> [uid3 uid4 uid5 uid6 BCC], SAK bit2 = 0
-     10-byte UID:  level 1 -> [0x88 uid0 uid1 uid2 BCC], SAK bit2 = 1
-                   level 2 -> [0x88 uid3 uid4 uid5 BCC], SAK bit2 = 1
-                   level 3 -> [uid6 uid7 uid8 uid9 BCC], SAK bit2 = 0
-*/
 
 #include "nfc_a.h"
 

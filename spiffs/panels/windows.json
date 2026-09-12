@@ -24,7 +24,7 @@
 
         { "id": "cpu",       "type": "label",  "title": "CPU",       "col": 0, "row": 4, "w": 2, "h": 1, "value": "--%" },
         { "id": "ram",       "type": "label",  "title": "RAM",       "col": 2, "row": 4, "w": 2, "h": 1, "value": "--%" },
-        { "id": "last_seen", "type": "label",  "title": "Last seen", "col": 0, "row": 5, "w": 4, "h": 1, "value": "never (agent not running?)" }
+        { "id": "last_seen", "type": "label",  "title": "Last seen", "col": 0, "row": 5, "w": 4, "h": 1, "value": "No update received" }
     ]
 }
 

@@ -527,16 +527,7 @@ static int cmd_date(int argc, char **argv)
 }
 
 /**/
-/* `version` says which build is running - PROJECT_VER from
-   esp_app_get_description() (which IDF derives from `git describe --dirty`),
-   the board variant it was compiled for (from LS_BOARD_NAME, not a
-   CONFIG_LS_BOARD_* test), the build date/time and the IDF revision.
 
-   Before this the firmware could not identify itself: a screenshot, a bug
-   report or a .sub file all landed without any way to tie them back to a
-   particular commit, and with two agents committing through
-   bench/agent-loop.ps1 "which build is on this device" had stopped being
-   answerable from memory. */
 static int cmd_version(int argc, char **argv)
 {
     (void)argc; (void)argv;

@@ -22,17 +22,10 @@ menu "LakeShark"
             bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-4.3 (32MB)"
 
         config LS_BOARD_T_DISPLAY_P4
-            bool "LilyGO T-Display-P4 (16MB, SCAFFOLD - pins unknown, see LS-905)"
+            bool "LilyGO T-Display-P4 (16MB)"
             help
-                Scaffold only. The vendor pin-map header
-                (t_display_p4_config.h) is referenced by every example in
-                Xinyuan-LilyGO/T-Display-P4 but is not in the repository -
-                it lives in a submodule that was not published at scaffold
-                time. Selecting this board today will build against the
-                shared P4 pin defaults from ls_board.h, which are the NANO's
-                numbers and are NOT guaranteed correct for the T-Display-P4.
-                Do not flash a build made this way. See LS-905 in
-                components/lakeshark/board/variants/t_display_p4.h.
+                AMOLED display and peripherals defined by the T-Display-P4
+                board profile in components/lakeshark/board/variants/.
     endchoice
 
     config LS_VBUS_EN_GPIO
@@ -56,7 +49,7 @@ menu "LakeShark"
             peripheral wiring matches the NANO exactly, but it has not been
             confirmed against hardware - note that GPIO46 is also broken out on
             the pin header of both boards, so the header alone does not settle
-            it. See LS-002.
+            it.
 
     config LS_DEFAULT_VOLUME
         int "Default audio volume (0-100)"
@@ -108,17 +101,8 @@ menu "LakeShark"
         help
             Attempt esp_hosted_connect_to_slave() during startup.
 
-            LS-910: turn this OFF for a board whose C6 is not running the
-            esp_hosted slave firmware from c6_firmware/. When the slave
-            speaks a different protocol the SDIO transport never completes,
-            and the driver retries forever - printing a CPU register dump per
-            failed command until the console is unusable and no other command
-            can be typed. That is not a soft degradation; it takes the board
-            with it.
-
-            This is a statement about what is flashed on the co-processor,
-            not about whether the board has one, which is why it is a build
-            option rather than a board capability.
+            Requires compatible ESP-Hosted firmware on the ESP32-C6.
+            Disable when the co-processor uses a different protocol.
 
     config EXAMPLE_ENABLE_SD_CARD
         bool "Enable SD Card"

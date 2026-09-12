@@ -225,14 +225,6 @@ bool ls_imu_present(void) { return s_present; }
 
 /* ------------------------------------------------------------------ read -- */
 
-/* Sensor axes to screen axes: one quarter-turn rotation.
-
-   LS_BOARD_IMU_MOUNT_DEG says how far the part is rotated from the display.
-   This is the standard rotation about Z and nothing more - which matters,
-   because a rotation is the only transform a physical placement can produce.
-   A mapping that negated exactly one axis would be a MIRROR, and no way of
-   gluing a chip to a board produces one; if a fix here ever seems to need
-   that, the fault is somewhere else and this is not the place to hide it. */
 static void mount_xy(float x, float y, float *sx, float *sy)
 {
 #if LS_BOARD_IMU_MOUNT_DEG == 90

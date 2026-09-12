@@ -19,7 +19,6 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "globals.h"
 #include "imbe.h"
@@ -34,12 +33,8 @@
 #include <cstdlib>
 #include <cmath>
 
-
 #define PITCH_REF_FRAME  221
 #define MIN_INDEX         50 
-
-
-
 
 void pitch_ref(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 {
@@ -48,7 +43,6 @@ void pitch_ref(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 	Word32 fund_freq, fund_freq_2, fund_freq_acc_a, fund_freq_acc_b, fund_freq_acc, L_tmp, amp_re_acc, amp_im_acc, L_sum, L_diff_min;
 	Word16 ha, hb, index_a, index_b, index_tbl[20], it_ind, re_tmp, im_tmp, pitch_cand=0;
 	Word32 fund_freq_cand=0;
-
 	
 	pitch_est = shl(imbe_param->pitch, 7);                      // Convert to Q8.8
 	pitch_est = sub(pitch_est, CNST_1_125_Q8_8);                // Sub 1.125 = 9/8
@@ -155,13 +149,4 @@ void pitch_ref(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 	imbe_param->ref_pitch = pitch_cand;		
 	imbe_param->fund_freq = fund_freq_cand;
 }
-
-
-
-
-
-
-
-
-
 

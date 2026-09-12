@@ -72,25 +72,10 @@ static const ls_wf_feed_t FEED = {
     .floor_db = -85.0f, .top_db = -20.0f, .live = true, .note = NULL,
 };
 
-/* A band shaped like a real one: a low floor with a little spread in it, and
-   one carrier well above. The floor is at about a twelfth of full scale
-   because that is where P25_SPECTRUM_FLOOR_DB and TOP_DB put a receiver
-   sitting on -80 dBm, and the whole point of the fix is that a floor down
-   there still has to be visible. */
 static void band(float *out, int n, int carrier_bin)
 {
     for (int i = 0; i < n; i++) {
-        /* The floor varies with a period of 32 bins.
 
-           It varied every 23 bins at first and that made this fixture
-           useless: the instrument resamples to the display by MAX, so four
-           bins collapse into one column, and a ripple that turns over inside
-           four bins reads as a flat line at its own maximum. The floor came
-           out one flat colour and the assertion below fired against a build
-           that was working. Thirty-two bins is eight columns at the width
-           this test draws, which survives the resample. A real receiver's
-           floor tilts and undulates at that sort of scale; one that changed
-           every other bin would be a signal, not a floor. */
         const int p = i % 32;
         const float ripple = (p < 16) ? (float)p / 16.0f
                                       : (float)(32 - p) / 16.0f;
@@ -108,6 +93,39 @@ static void feed(int n, int rows, int carrier_bin)
 }
 
 static tui_cell g_back[64 * 24], g_front[64 * 24];
+
+LS_CASE(slow_sweep_uses_unfilled_history_space_for_the_graph)
+{
+    tui_surface sf;
+    tui_surface_setup(&sf, g_back, g_front, 64, 24);
+    ls_wf_cfg_t saved = *ls_wf_cfg();
+    ls_wf_cfg_t cfg = saved;
+    cfg.split_pct = 50;
+    cfg.grain = LS_WF_GRAIN_SHADE;
+    cfg.paused = false;
+    cfg.decim = 1;
+    ls_wf_cfg_set(&cfg);
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_FM, "FM");
+    float bins[64];
+    band(bins, 64, 32);
+    ls_wf_feed_t f = FEED;
+    f.period_ms = 18000;
+    ls_wf_preview(LS_WF_OWNER_FM, bins, 64, &f);
+    tui_frame_begin(&sf);
+    ls_wf_draw_mini(&sf, tui_rect_make(0, 0, 64, 24));
+    ls_wf_stats_t stats;
+    ls_wf_stats(&stats);
+    LS_EQ_INT(0, stats.rows);
+    ls_wf_push(LS_WF_OWNER_FM, bins, 64, &f);
+    tui_frame_begin(&sf);
+    ls_wf_draw_mini(&sf, tui_rect_make(0, 0, 64, 24));
+    ls_wf_stats(&stats);
+    LS_EQ_INT(1, stats.rows);
+    LS_EQ_INT(62, stats.bins);
+    ls_wf_cfg_set(&saved);
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+}
 
 /* Draw the history alone into a 64x24 pane and report how many distinct
    colours a carrier-free stretch of it came out in. One colour is the fault:

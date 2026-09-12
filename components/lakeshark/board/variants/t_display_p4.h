@@ -14,14 +14,6 @@
 #define LS_BOARD_I2S_WS_GPIO     9
 #define LS_BOARD_I2S_DOUT_GPIO   10
 
-/* The microphone's data line, which nothing has ever read.
-
-   The vendor header has carried kAdcData = 11 since the board was first
-   described here, and the comment above has named it for just as long. It was
-   never turned into a #define because ls_audio_hw.c opened the I2S channel
-   with a NULL receive handle - output only - so the pin had nowhere to go.
-   An electret microphone into the ES8311's ADC has been sitting on this
-   board, powered, for the whole project. */
 #define LS_BOARD_I2S_DIN_GPIO    11
 
 /* The ES8311's CONTROL interface is on I2C port 2 (SDA 20 / SCL 21),
@@ -174,22 +166,6 @@
      vendor keyboard_expansion gpio::sy7200a::kEn = ext 1x4P1 IO47 */
 #define LS_BOARD_KEYPAD_BL_GPIO      47
 
-/* T-MixRF radios share SPI port 1 with the base board's SX1262.  Every chip
-   select below is a direct GPIO off the 2x8P header, so these are usable -
-   but note the shared bus: the SX1262's CS is 24 and lives on the same three
-   wires.  Anything that talks to one of these must own the bus for the
-   duration, and LS_HAS_SUBGHZ_TX means a TX-capable part is sitting on a bus
-   the LoRa radio is also on.
-     vendor keyboard_expansion gpio::t_mix_rf::
-       cc1101   kCs = IO36, kGdo0 = IO25, kGdo2 = IO33
-       nrf24l01 kCs = IO54, kCe  = IO53, kInt  = IO32
-       st25r3916 kCs = IO27
-     SPI: kSclk = 2, kMosi = 3, kMiso = 4 (spi::kPort1*)
-
-   Left commented out deliberately.  Defining CC1101_CS flips LS_HAS_SUBGHZ_TX
-   on, and that capability changes what the REC app is allowed to do - it must
-   not turn on because a header was filled in.  Enable it when there is a
-   driver and a decision about transmitting, not before. */
 /* #define LS_BOARD_CC1101_CS_GPIO   36 */
 /* #define LS_BOARD_CC1101_GDO0_GPIO 25 */
 /* #define LS_BOARD_CC1101_GDO2_GPIO 33 */

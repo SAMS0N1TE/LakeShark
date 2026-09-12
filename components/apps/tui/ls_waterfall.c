@@ -24,6 +24,8 @@ static char          s_label[16];
 
 static ls_wf_feed_t  s_feed;
 static bool          s_have_feed;
+static uint8_t s_preview[LS_WF_BINS_MAX];
+static bool s_have_preview;
 
 /* Averaging is a RUNNING average, and it does not slow the scroll. */
 
@@ -38,7 +40,7 @@ static int      s_marker = -1;           /* display column, -1 for none     */
 static ls_wf_cfg_t s_cfg = {
     .split_pct = 50, .ref = 0, .range = 16, .palette = LS_WF_PAL_HEAT,
 
-    .avg = 1, .decim = 1, .grain = LS_WF_GRAIN_ASCII, .paused = false,
+    .avg = 1, .decim = 1, .grain = LS_WF_GRAIN_SHADE, .paused = false,
 };
 
 static ls_wf_stats_t s_st;
@@ -271,6 +273,7 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
     s_acc_primed = false;
     s_decim_n = 0;
     s_have_feed = false;
+    s_have_preview = false;
     s_marker = -1;
     memset(s_peak, 0, sizeof(s_peak));
     memset(&s_st, 0, sizeof(s_st));
@@ -301,6 +304,7 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
     if (owner != s_owner || !bins || n <= 0) { s_st.dropped++; return; }
     if (s_cfg.paused)                        { s_st.dropped++; return; }
     if (!ensure_hist())                      { s_st.dropped++; return; }
+    s_have_preview = false;
 
     if (feed) { s_feed = *feed; s_have_feed = true; }
 
@@ -377,14 +381,7 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 
     const int64_t now = esp_timer_get_time();
     if (s_last_push_us) {
-        /* From the second row, not the seventeenth. This published
-           nothing until sixteen intervals had been averaged, and on an FM
-           band sweep - one row a pass, measured on the board at about 18 s
-           over VHF land - that is five minutes of "a row every 0 ms" on the
-           console and "row 0 ms" on the readout, for a feed that was working.
-           A plain average over the first sixteen intervals and a one-in-
-           sixteen running average after that says the same thing about a
-           fast source as before and something true about a slow one. */
+
         const int32_t dt = (int32_t)((now - s_last_push_us) / 1000);
         if (s_row_ms_n < 16) s_row_ms_n++;
         int32_t avg = (int32_t)s_st.row_ms;
@@ -421,11 +418,53 @@ static uint8_t sample(int row_back, int col, int w)
     return v;
 }
 
+void ls_wf_preview(ls_wf_owner_t owner, const float *bins, int n,
+                   const ls_wf_feed_t *feed)
+{
+    if (owner != s_owner || !bins || n < 1 || n > LS_WF_BINS_MAX ||
+        s_cfg.paused || !ensure_hist()) return;
+    for (int i = 0; i < n; ++i) {
+        float value = bins[i] < 0 ? 0 : bins[i] > 1 ? 1 : bins[i];
+        s_preview[i] = (uint8_t)(value * 255);
+    }
+    s_nbins = n;
+    s_have_preview = true;
+    if (feed) { s_feed = *feed; s_have_feed = true; }
+    track_scale(s_preview, n);
+}
+
+static void draw_power_axis(tui_surface *sf, tui_rect r)
+{
+    if (r.w >= 30 && r.h >= 5 && s_have_feed) {
+        tui_rect axis = tui_rect_make(r.x, r.y, 7, r.h);
+        const uint8_t attr = TUI_ATTR(TUI_CYAN, TUI_BLACK);
+        const int lo = s_auto_lo;
+        const int hi = s_auto_top > lo + 16 ? s_auto_top : lo + 16;
+        for (int tick = 0; tick < 3; ++tick) {
+            int y = tick * (r.h - 1) / 2;
+            float raw = hi - (hi - lo) * (float)y / (r.h - 1);
+            float db = s_feed.floor_db + raw / 255.0f *
+                       (s_feed.top_db - s_feed.floor_db);
+            char label[8];
+            snprintf(label, sizeof(label), "%5.0f-", (double)db);
+            tui_put_str(sf, axis, axis.x, axis.y + y, label, attr);
+        }
+        tui_put_str(sf, axis, axis.x, axis.y + 1,
+                    s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS", attr);
+    }
+}
+
 static void draw_spectrum(tui_surface *sf, tui_rect r)
 {
     if (r.h < 1 || r.w < 4) return;
     for (int x = 0; x < r.w; x++) {
-        const uint8_t raw = sample(0, x, r.w);
+        uint8_t raw = sample(0, x, r.w);
+        if (s_have_preview) {
+            raw = 0;
+            for (int i = bin_for_col(x, r.w);
+                 i <= bin_for_col(x + 1, r.w) && i < s_nbins; ++i)
+                if (s_preview[i] > raw) raw = s_preview[i];
+        }
         const int hgt = height_of(raw);
         const int eighths = hgt * (r.h * 8) / 15;
         const int whole = eighths / 8, rem = eighths % 8;
@@ -449,6 +488,7 @@ static void draw_spectrum(tui_surface *sf, tui_rect r)
                              TUI_ATTR(TUI_WHITE, TUI_BLACK));
         }
     }
+    draw_power_axis(sf, r);
     /* The marker is drawn last so it is never hidden by a strong bin. */
     if (s_marker >= 0 && s_marker < r.w)
         for (int y = 0; y < r.h; y++)
@@ -589,6 +629,12 @@ uint32_t ls_wf_marker_hz(void)
 
 static uint8_t peak_now(void)
 {
+    if (s_have_preview) {
+        uint8_t top = 0;
+        for (int i = 0; i < s_nbins; ++i)
+            if (s_preview[i] > top) top = s_preview[i];
+        return top;
+    }
     if (!s_hist || s_filled <= 0 || s_plot_rect.w <= 0) return 0;
     uint8_t top = 0;
     for (int x = 0; x < s_plot_rect.w; x++) {
@@ -850,7 +896,7 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     /* Once per draw; every level below is coloured against it. */
     s_light = ls_tui_daylight();
 
-    if (!s_hist || s_filled == 0) {
+    if (!s_hist || (s_filled == 0 && !s_have_preview)) {
         const uint8_t dim = LS_ATTR_DIM;
         tui_put_str(sf, area, area.x + 2, area.y + 1,
                     s_cfg.paused ? "HELD - press HOLD to run" :
@@ -907,6 +953,11 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     int spec_h = body.h * s_cfg.split_pct / 100;
     if (s_cfg.split_pct > 0 && spec_h < 2) spec_h = 2;
     if (spec_h > body.h) spec_h = body.h;
+    if (spec_h > 0 && s_have_feed && s_feed.period_ms >= 1000) {
+        int history_rows = s_filled;
+        if (s_cfg.grain == LS_WF_GRAIN_DENSE) history_rows = (history_rows + 1) / 2;
+        if (history_rows < body.h - spec_h) spec_h = body.h - history_rows;
+    }
     const int fall_h = body.h - spec_h;
 
     s_plot_rect = tui_rect_make(body.x + 1, body.y, body.w - 2, body.h);
@@ -953,7 +1004,7 @@ const char *ls_wf_idle_reason(void)
 
     if (s_cfg.paused)
         return "HELD - press HOLD to run";
-    if (s_st.hist_rows == 0)
+    if (s_st.hist_rows == 0 && !s_have_preview)
         return "waiting for the receiver";
     return NULL;
 }

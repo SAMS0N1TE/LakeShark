@@ -16,6 +16,7 @@
 #include "iq_app_control.h"
 #include "apps/p25/p25_spectrum.h"
 #include "apps/fm/fm_state.h"
+#include "apps/fm/fm_spectrum.h"
 #include "apps/p25/p25_program.h"
 #include "apps/p25/p25_profile.h"
 
@@ -28,6 +29,10 @@ static uint32_t s_p25_seq;
 static bool     s_p25_seq_have;
 static uint32_t s_fm_sweeps;
 static bool     s_fm_seq_have;
+static uint32_t s_fm_live_seq;
+static uint32_t s_fm_live_center, s_fm_live_span;
+static bool s_fm_was_live;
+static int s_fm_preview_idx = -1;
 
 /* One scratch frame, reused. 256 floats is a kilobyte and it is the widest
    the widget will take, so nothing here has to know the panel width. */
@@ -38,14 +43,7 @@ void ls_wf_source_select(ls_wf_src_t src)
     if (src >= LS_WF_SRC__COUNT) src = LS_WF_SRC_AUTO;
     if (src == s_want) return;
     s_want = src;
-    /* The old picture goes with the old radio.
 
-       Leaving it up produced the report "uh it froze": switching away from a
-       26 MHz LoRa sweep to a source that was not running left the sweep's
-       history on the screen with nothing moving in it, and a stopped picture
-       of a band you are no longer listening to is indistinguishable from a
-       crash. Claiming NONE is how this widget forgets - see ls_wf_claim -
-       and the next source claims it back on its first row. */
     ls_wf_claim(LS_WF_OWNER_NONE, NULL);
     /* And FM's place in its sweep count goes with it, so the first
        FM row after a selection is a sweep that finished while this was
@@ -77,9 +75,6 @@ const char *ls_wf_source_label(ls_wf_src_t src)
     }
 }
 
-/*LS-1164  The band a sweep covers. US915, because that is the band this
-   board's mesh is configured for and the one an operator here is licensed
-   to be listening in; 26 MHz at 500 kHz a bin is 52 bins. */
 static uint32_t s_lora_min_hz = 902000000u;
 static uint32_t s_lora_max_hz = 928000000u;
 /* When the LoRa row being built began, or 0 when none is. Up here
@@ -288,11 +283,8 @@ bool ls_wf_source_start(ls_wf_src_t src)
         ls_tui_radio_want("P25");
         break;
     case LS_WF_SRC_FM:
-        /* The receiver AND the sweep: FM streaming with the VFO parked on
-           one channel produces no bins, so selecting FM here and getting a
-           blank waterfall would be the refusal again in a different coat. */
         ls_tui_radio_want("FM");
-        lakeshark_fm_set_mode(FM_MODE_SCAN);
+        if (FM.mode == FM_MODE_SCAN) lakeshark_fm_set_mode(FM_MODE_LISTEN);
         break;
     case LS_WF_SRC_LORA:
         /* Nothing to start: the sweep IS this module, and it begins on the
@@ -362,8 +354,48 @@ static bool fm_sweeping(void)
     return st.receiver_streaming;
 }
 
+static bool fm_running(void)
+{
+    ls_iq_control_status_t st;
+    fm_get_receiver_status(&st);
+    return st.receiver_streaming;
+}
+
+static bool pump_fm_live(void)
+{
+    fm_spectrum_enable(true);
+    fm_spectrum_snapshot_t snap;
+    if (!fm_spectrum_read(s_bins, LS_WF_BINS_MAX,
+                          (uint32_t)(esp_timer_get_time() / 1000), &snap))
+        return false;
+    if (snap.sequence == s_fm_live_seq) return true;
+    s_fm_live_seq = snap.sequence;
+    if (snap.center_hz != s_fm_live_center || snap.span_hz != s_fm_live_span) {
+        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+        s_fm_live_center = snap.center_hz;
+        s_fm_live_span = snap.span_hz;
+    }
+    ls_wf_claim(LS_WF_OWNER_FM, "FM");
+    ls_wf_feed_t feed = {
+        .center_hz = snap.center_hz, .span_hz = snap.span_hz,
+        .floor_db = FM_SPECTRUM_FLOOR_DB, .top_db = FM_SPECTRUM_TOP_DB,
+        .live = true, .note = "live IQ", .period_ms = FM_SPECTRUM_PERIOD_MS,
+    };
+    ls_wf_push(LS_WF_OWNER_FM, s_bins, LS_WF_BINS_MAX, &feed);
+    return true;
+}
+
 static bool pump_fm(void)
 {
+    const bool live = FM.mode != FM_MODE_SCAN;
+    if (live != s_fm_was_live) {
+        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+        s_fm_live_seq = 0;
+        s_fm_seq_have = false;
+        s_fm_was_live = live;
+    }
+    if (live) return fm_running() && pump_fm_live();
+    fm_spectrum_enable(false);
     if (!fm_sweeping()) return false;
     int bins = FM.scan_bins;
     if (bins > FM_SCAN_BINS_MAX) bins = FM_SCAN_BINS_MAX;
@@ -378,12 +410,16 @@ static bool pump_fm(void)
        in scan_db at that moment is a sweep from before anyone was watching -
        or from before FM was switched away and back - and a waterfall is a
        record of what was measured while it ran. */
+    bool completed = false;
     if (!s_fm_seq_have) {
         s_fm_sweeps   = FM.scan_sweeps;
         s_fm_seq_have = true;
-        return true;
+        s_fm_preview_idx = -1;
+    } else if (FM.scan_sweeps != s_fm_sweeps) {
+        completed = true;
     }
-    if (FM.scan_sweeps == s_fm_sweeps) return true;
+    if (!completed && FM.scan_idx == s_fm_preview_idx) return true;
+    s_fm_preview_idx = FM.scan_idx;
     s_fm_sweeps = FM.scan_sweeps;
 
     /* scan_db is already the 0..1 the widget takes, on
@@ -412,8 +448,22 @@ static bool pump_fm(void)
         .note      = "sweep",
         .period_ms = FM.scan_sweep_ms,   /**/
     };
-    ls_wf_push(LS_WF_OWNER_FM, s_bins, n, &f);
+    if (completed) ls_wf_push(LS_WF_OWNER_FM, s_bins, n, &f);
+    else if (FM.scan_idx > 0) ls_wf_preview(LS_WF_OWNER_FM, s_bins, n, &f);
     return true;
+}
+
+const char *ls_wf_source_progress(void)
+{
+    static char progress[48];
+    if (s_active != LS_WF_SRC_FM || !fm_sweeping() || FM.scan_tunes <= 0)
+        return NULL;
+    int completed = FM.scan_idx;
+    if (completed < 0) completed = 0;
+    if (completed > FM.scan_tunes) completed = FM.scan_tunes;
+    snprintf(progress, sizeof(progress), "FM sweeping: %d%% (%d/%d)",
+             completed * 100 / FM.scan_tunes, completed, FM.scan_tunes);
+    return progress;
 }
 
 /* One pass of the sweep per call, which is one row per frame. */
@@ -498,9 +548,10 @@ void ls_wf_source_pump(void)
        not at all. */
     if (use == LS_WF_SRC_AUTO)
         use = p25_running() ? LS_WF_SRC_P25
-            : (fm_sweeping() ? LS_WF_SRC_FM : LS_WF_SRC_AUTO);  /**/
+            : (fm_running() ? LS_WF_SRC_FM : LS_WF_SRC_AUTO);
 
     if (use != LS_WF_SRC_P25)  p25_feed(false);
+    if (use != LS_WF_SRC_FM) fm_spectrum_enable(false);
     /* And gives the radio back, which matters more than turning a
        feed off: a mesh left parked is a node that has stopped answering. */
     if (use != LS_WF_SRC_LORA) lora_stop();
@@ -517,6 +568,8 @@ void ls_wf_source_pump(void)
 
 void ls_wf_source_release(void)
 {
+    fm_spectrum_enable(false);
+    s_fm_live_seq = 0;
     p25_feed(false);
     lora_stop();
     s_fm_seq_have = false;

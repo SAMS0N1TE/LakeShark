@@ -1,14 +1,5 @@
-/* Enough of the Flipper's storage API for ZeroMesh's PMTiles reader.
 
-   Six calls, all of them stdio underneath. The reader opens one file, seeks
-   and reads; it never writes, never lists a directory and never asks how big
-   the file is.
 
-   One difference worth knowing about rather than discovering: the Flipper's
-   storage_file_read returns a uint16_t, so its caller already chunks reads at
-   0x8000 bytes. That chunking is harmless here and is left alone, because the
-   point of this shim is that the .c file stays byte-identical to ZeroMesh's
-   and can be re-synced with a copy. */
 #ifndef LS_PMTILES_COMPAT_STORAGE_H
 #define LS_PMTILES_COMPAT_STORAGE_H
 

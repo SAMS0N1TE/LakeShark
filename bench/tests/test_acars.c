@@ -1,24 +1,4 @@
 /* LS_TEST_SOURCES: ${APP}/acars/acars.c ${APP}/acars/acars_msk.c */
-/* ACARS decoder, on the host.
-
-   ACARS on VHF: 2400 baud MSK, 7-bit ASCII with odd parity per character,
-   framed by SOH/STX/ETX and closed by a 16-bit CRC-CCITT block-check.  The
-   fixture (bench/fixtures/acars_gen) synthesises a full message end-to-end;
-   this file drives it through the decoder and locks down:
-
-     - the MSK slicer produces the transmitted bit stream, without any
-       framing state in the way
-     - encoder self-consistency: every parity/CRC helper agrees with itself
-     - clean messages decode as transmitted
-     - per-character odd parity is checked; a corrupted parity is not
-       silently accepted
-     - CRC rejects a payload-corrupted block outright (the "false accept
-       puts fiction on screen" concern)
-     - noise, +/-500 ppm clock error, and inverted audio polarity are all
-       absorbed - the same shape as POCSAG/FLEX abuse coverage
-     - two messages back-to-back do not merge
-     - no dependency on ADS-B - the whole file compiles and links without
-       any adsb.* symbol.  The seam between them lives above this module. */
 
 #include "ls_test.h"
 #include "acars_gen.h"
@@ -427,15 +407,7 @@ LS_CASE(clock_error_500ppm_is_absorbed)
 
 LS_CASE(survives_moderate_noise)
 {
-    /* One case at a modest SNR, matching the POCSAG/FLEX shape.  The
-       noise level here is lower than POCSAG's 0.25 because ACARS at
-       2400 baud MSK is inherently less robust than POCSAG at 1200 baud
-       2-FSK: twice the bit rate means half the energy per bit, and the
-       two MSK tones overlap in spectrum in a way plain FSK does not.
-       The framer already rejects fictional messages via CRC, so what
-       we're guarding against here is a *missed* message, not a fake
-       one - which is why more trials are allowed to fail than in the
-       POCSAG case. */
+
     acars_msg_t m;
     make_msg(&m, ".N12345", "H1", "NOISY");
 

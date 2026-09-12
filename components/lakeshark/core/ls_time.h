@@ -1,21 +1,6 @@
 #ifndef LS_TIME_H
 #define LS_TIME_H
 
-/* Wall-clock time, and the honest fallback when there is not one yet.
-
-   The device boots without any notion of when it is. Nothing on any of the
-   boards presently supported carries a battery-backed RTC that the firmware
-   knows how to read - the T-Display-P4 has a PCF8563 on I2C, and once a
-   driver for it lands (see LS_HAS_RTC in ls_caps.h) it would seed this
-   module across a reboot, but until then the only source of real time is
-   SNTP once station-mode WiFi is connected.
-
-   The rule this module exists to enforce is: a wall-clock stamp on a page,
-   a screenshot, or a `.sub` capture is only ever rendered when time has
-   actually been set. Rendering a confident 1970-01-01 or a random 2016 date
-   is worse than an obvious uptime marker, because the file lands on disk
-   looking like it belongs somewhere in a real calendar. */
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -47,17 +32,6 @@ void ls_time_sntp_start(void);
    synced" state alone - a lost network does not un-know what the time was. */
 void ls_time_sntp_stop(void);
 
-/* Render the current time into `out`, always producing something that a
-   grep or a filename can safely include:
-
-     - if synced:   ISO-8601 UTC, e.g. "2026-03-05T14:22:07Z"
-     - if not:      "up 12345s"          (uptime seconds, prefixed "up ")
-
-   The "up " prefix is the visible marker required by the task: no format
-   the sync branch produces can start with "up ", so the two forms cannot
-   be confused, and neither can be mistaken for a real date. Never writes
-   past `cap`, always NUL-terminates when cap > 0. Returns the number of
-   bytes written excluding the NUL, or 0 if cap == 0. */
 size_t ls_time_render_stamp(char *out, size_t cap);
 
 /* Same, but taking an explicit time source and uptime value. Extracted for

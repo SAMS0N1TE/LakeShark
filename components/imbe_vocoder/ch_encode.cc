@@ -19,14 +19,12 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "globals.h"
 #include "imbe.h"
 #include "basic_op.h"
 #include "ch_encode.h"
 #include "aux_sub.h"
-
 
 void encode_frame_vector(IMBE_PARAM *imbe_param, Word16 *frame_vector)
 {

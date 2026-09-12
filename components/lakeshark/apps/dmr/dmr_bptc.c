@@ -2,21 +2,6 @@
 
 #include <string.h>
 
-/* BPTC(196,96) - ETSI TS 102 361-1 Annex B.1.
- *
- * Layout after deinterleave:
- *   bit 0 = R(3) spare (always 0)
- *   bits 1..195 = 13 rows x 15 columns matrix M[r][c] at index (1 + r*15 + c)
- *
- * Rows 0..8 are Hamming(15,11,3) codewords (11 data + 4 parity)
- * Columns 0..14 are Hamming(13,9,3) codewords (9 data + 4 parity)
- *
- * The 96 information bits I(0)..I(95) are laid into cells row-major starting
- * at row 0, column 3 (the first three cells of row 0 are the R(0..2) spares).
- *
- * Interleave permutation: index_out = (index_in * 181) mod 196.  Its inverse
- * is *13 mod 196 (Bezout: 13*181 - 12*196 = 1). */
-
 /* ---- bit helpers ------------------------------------------------------- */
 
 static int rd_bit(const uint8_t *buf, unsigned int idx)

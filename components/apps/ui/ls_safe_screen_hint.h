@@ -17,13 +17,6 @@ extern "C" {
 /* Buffer a caller must provide to ls_safe_hint_format(). */
 #define LS_SAFE_HINT_TEXT_MAX 64u
 
-/* What fits on one line of the narrowest panel we build for.
-   480 px wide, less 8 px of screen padding each side and ~5 px of panel
-   border plus padding each side, leaves 454 px. sdr_font_mono_sm() is
-   Consolas 14, monospace, adv_w 123/16 = 7.69 px, so 59 characters fit.
-   48 is that with room for letter spacing and a longer action caption; the
-   720 px board is wider still. A hint that exceeds this wraps onto a second
-   line and pushes the buttons down, which is the opposite of the point. */
 #define LS_SAFE_HINT_MAX_CHARS 48u
 
 typedef enum {

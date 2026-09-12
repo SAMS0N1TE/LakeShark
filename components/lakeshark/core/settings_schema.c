@@ -35,9 +35,6 @@ settings_schema_action_t settings_schema_decide(
         return SETTINGS_SCHEMA_ACTION_RESET;
     }
 
-    /* stored > current: written by a newer build than we are.  A downgrade
-       has no defined behaviour, and quietly reading whatever keys the newer
-       build wrote is the exact silent-nonsense trap.  Wipe. */
     return SETTINGS_SCHEMA_ACTION_RESET;
 }
 

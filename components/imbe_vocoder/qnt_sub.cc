@@ -19,11 +19,9 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "basic_op.h"
 #include "qnt_sub.h"
-
 
 //-----------------------------------------------------------------------------
 //	PURPOSE:
@@ -54,8 +52,6 @@ Word32 deqnt_by_step(Word16 qval, UWord16 step_size, Word16 bit_num)
 
 	return res;
 }
-
-
 
 //-----------------------------------------------------------------------------
 //	PURPOSE:

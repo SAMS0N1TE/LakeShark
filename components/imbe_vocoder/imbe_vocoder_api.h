@@ -18,9 +18,7 @@
 #define PE_LPF_ORD         21   // Order of Pitch estimation LPF 
 #define PITCH_EST_FRAME   301   // Pitch estimation frame size
 
-
 #define B_NUM           (NUM_HARMS_MAX - 1)
-
 
 typedef struct 
 {

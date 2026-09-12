@@ -79,14 +79,6 @@ int  ls_map_tile_px(void);
 
 int ls_map_labels(const carto_label **out);
 
-/* A number that changes when, and only when, the pixels did.
-
-   A caller that turns the frame into something else - cells, a thumbnail,
-   an overlay - has the same problem ls_map_render had: the expensive part
-   is a pure function of a picture that mostly does not change, and there is
-   no cheap way to ask whether it did. Comparing centre, zoom and size means
-   every such caller keeps its own copy of the view and gets it wrong when a
-   new key is added here. One counter answers it for all of them. */
 uint32_t ls_map_render_serial(void);
 
 void ls_map_zoom_range(int *lo, int *hi);

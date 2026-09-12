@@ -6,21 +6,6 @@
 #include <string.h>
 
 /**/
-/* Before this fix, LsApp::exitToLauncher was `return true;` and LsShell::goBack
-   was `if (_current) _current->back();` - throwing away the app's return value.
-   Between them the back contract and Files' visible root-up button both failed
-   to return the user to HOME:
-
-     - back on a plain app went through exitToLauncher, which returned true and
-       did nothing, so the app stayed up;
-     - the shell dropped the false a well-behaved back would use to hand the
-       navigation back to the shell;
-     - Files' Up button at the roots view called exitToLauncher directly, with
-       the same no-op result.
-
-   The shell now goes through ls_shell_nav.  The tests here drive the gateway
-   with a counting hook and prove every one of those paths reaches HOME once,
-   and only once, in the situations that warrant it. */
 
 static int s_home_count;
 

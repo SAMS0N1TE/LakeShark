@@ -20,8 +20,6 @@
 /* LCD display color space */
 #define BSP_LCD_COLOR_SPACE         (ESP_LCD_COLOR_SPACE_RGB)
 
-/* PATCH (lakeshark) LS-903: the 4.3 panel is 480x800 on a 500 Mbps lane pair.
- * Everything else in this BSP is identical between the two boards. */
 #if defined(CONFIG_LS_BOARD_P4_TOUCH_LCD_43)
 #define BSP_LCD_H_RES              (480)
 #define BSP_LCD_V_RES              (800)

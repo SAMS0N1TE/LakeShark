@@ -91,15 +91,6 @@ typedef p25_program_result_t (*p25_program_read_fn)(void *ctx, const char *path,
                                                     char *dst, size_t cap,
                                                     size_t *out_len);
 
-/* Everything the apply step is allowed to touch, in the order it is touched.
- * Each op is owned by the decoder side; this module never reaches into the
- * follower, the scan controller or the radio itself.
- *
- * release() runs first and must both return the follower to the control
- * channel and make any retune already queued for the old system irrelevant -
- * on the device the tune latch is single-slot, so the set_control() below
- * supersedes it.  set_control() runs last and issues exactly one tune, so the
- * radio never briefly sits on the new control channel with the old policy. */
 typedef struct {
     void (*release)(void *user);
     void (*set_auto_follow)(void *user, bool enabled);

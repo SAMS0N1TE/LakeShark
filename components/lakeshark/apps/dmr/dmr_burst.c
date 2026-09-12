@@ -2,19 +2,6 @@
 
 #include <string.h>
 
-/* DMR burst layout (ETSI TS 102 361-1 §6.2 Fig. 6.2), 264 bits total:
- *
- *   info1 (98)  |  slot-type1 (10)  |  sync (48)  |  slot-type2 (10)  |  info2 (98)
- *
- * bit offsets:  0..97           98..107      108..155      156..165    166..263
- *
- * The 196-bit BPTC block is info1 || info2 (98 + 98).
- *
- * Slot Type (20 bits total, split around sync) is a Golay(20,8,7) codeword
- * carrying colour code in the high nibble and data type in the low nibble.
- * Both halves of the codeword are pulled out and joined back into a single
- * 20-bit word before being handed to the Golay decoder below. */
-
 static int rd_bit(const uint8_t *buf, unsigned int idx)
 {
     return (buf[idx >> 3] >> (7u - (idx & 7u))) & 1u;

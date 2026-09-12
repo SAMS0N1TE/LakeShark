@@ -55,6 +55,10 @@ LS_CASE(the_waterfall_reports_each_reason_it_has_nothing_to_draw)
         .center_hz = 851000000u, .span_hz = 240000u,
         .floor_db = -110.0f, .top_db = -20.0f, .live = true, .note = NULL,
     };
+    ls_wf_preview(LS_WF_OWNER_P25, bins, 64, &f);
+    ls_wf_stats(&st);
+    LS_EQ_INT(0, st.hist_rows);
+    LS_CHECK(ls_wf_idle_reason() == NULL);
     ls_wf_push(LS_WF_OWNER_P25, bins, 64, &f);
 
     ls_wf_stats(&st);

@@ -2,18 +2,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/*LS-756*/
-/* File-ownership handoff to esp-audio-player.  audio_player_play(fp) is
-   documented as taking ownership of the FILE* only when it returns ESP_OK -
-   on any error the caller must fclose it.  The old play_index / play_file
-   went through ESP_RETURN_ON_ERROR, which dropped fp on the floor whenever
-   the player's queue was full or unavailable.  Music then ignored the
-   return value and handed out another one on the next tap, so repeated
-   presses leaked a fatfs slot each and eventually every open failed silently
-   because the VFS handle table was full.  Every failure path after fopen
-   now closes the file, so audio_player is the only owner and only when it
-   agreed to take it. */
-
 #include <stdio.h>
 #include <string.h>
 
@@ -25,7 +13,6 @@
 #include "file_iterator.h"
 #include "bsp_extra_player_state.h"
 
-/*LS-756*/
 /* The prototypes live in bsp_board_extra.h, but that header pulls in
    esp_codec_dev.h and the i2s/gpio drivers, which the bench does not shim.
    Redeclaring here keeps this translation unit compilable on the host
@@ -73,7 +60,7 @@ esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int in
     ESP_LOGI(TAG, "Playing '%s'", filename);
     esp_err_t err = audio_player_play(fp);
     if (err != ESP_OK) {
-        /*LS-756*/
+
         /* Enqueue failed - audio_player did not take the fp, so close it
            here or every failed tap leaks a fatfs handle. */
         ESP_LOGE(TAG, "audio_player_play failed (0x%x) - closing '%s'",
@@ -83,7 +70,7 @@ esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int in
     }
 
     memcpy(audio_file_path, filename, sizeof(audio_file_path));
-    /*LS-753*/
+
     bsp_extra_player_state_note_play_index(instance, index);
     return ESP_OK;
 }
@@ -99,7 +86,7 @@ esp_err_t bsp_extra_player_play_file(const char *file_path)
     ESP_LOGI(TAG, "Playing '%s'", file_path);
     esp_err_t err = audio_player_play(fp);
     if (err != ESP_OK) {
-        /*LS-756*/
+
         ESP_LOGE(TAG, "audio_player_play failed (0x%x) - closing '%s'",
                  (unsigned)err, file_path);
         fclose(fp);
@@ -107,7 +94,7 @@ esp_err_t bsp_extra_player_play_file(const char *file_path)
     }
 
     memcpy(audio_file_path, file_path, sizeof(audio_file_path));
-    /*LS-753*/
+
     bsp_extra_player_state_note_play_path(file_path);
     return ESP_OK;
 }

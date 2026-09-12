@@ -141,8 +141,6 @@ uint32_t ls_mesh_event_seq(void) { return 1174; }
 
 /* ------------------------------------------------------------- messages -- */
 
-/* One of ours in each delivery state, because the states are the whole point
-   of the column and three of the four are invisible on an idle screen. */
 static const ls_mesh_msg_t MSGS[] = {
     { 44120, false, false, "", LS_MSG_IN,      0, "NORTHFIELD: repeater is up on the hill again" },
     { 44166, true,  false, "", LS_MSG_HEARD,   3, "SHARK: copy, hearing you at -74" },

@@ -31,13 +31,6 @@ typedef enum {
 
 #define P25_GRANT_FILTER_MAX 16
 
-/* per-talkgroup state. On first LDU2 the follower records last-seen
- * ALGID / KID; if the ALGID is not CLEAR (0x80) the entry is stamped with an
- * expiry and the follower returns to the control channel. A subsequent grant
- * for the same TG within the expiry window is skipped without retune. Bounded
- * table: when full, the oldest-expiring entry is evicted so a busy system
- * cannot make it grow. Each entry is 16 bytes, so P25_GRANT_TG_STATE_MAX=32
- * costs 512 B of state - internal RAM, sits inside p25_grant_follower_t. */
 #define P25_GRANT_TG_STATE_MAX 32
 
 typedef struct {

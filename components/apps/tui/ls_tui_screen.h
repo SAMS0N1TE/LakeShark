@@ -87,13 +87,6 @@ void ls_tui_router_draw(tui_surface *sf);
    left over. Returns true when anything consumed it. */
 bool ls_tui_router_key(ls_tk_t key, char ch);
 
-/* A tap, resolved to a cell. Returns true when anything consumed it.
-
-   The router owns what a cell means before a screen does, because the chrome
-   is the router's: row 1 is the tab strip, so a tap there switches app, and
-   the last row is the hint bar, so a tap there opens the key list. That is
-   what makes touch and the keyboard teach each other - the tab strip shows
-   the number that is also the function key, and both do the same thing. */
 bool ls_tui_router_touch(int col, int row);
 
 /* How many of the registered screens are on the tab strip. */

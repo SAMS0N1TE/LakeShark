@@ -415,7 +415,7 @@ static void audio_task(void *pvParam)
     while (true) {
         // pull items off of the queue until we run into a PLAY request
         while(true) {
-            // zero delay in the case where we are playing as we want to
+
             // send an event indicating either
             // PLAYING -> IDLE (IDLE) or PLAYING -> PLAYING (COMPLETED PLAYING NEXT)
             // and thus don't want to block until the next request comes in
@@ -446,7 +446,7 @@ static void audio_task(void *pvParam)
                     // ignore other events when not playing
                 }
             } else { // no items on the queue
-                // if we are playing transition to idle and indicate the transition via callback
+
                 if(i->state == AUDIO_PLAYER_STATE_PLAYING) {
                     set_state(i, AUDIO_PLAYER_STATE_IDLE);
                 }

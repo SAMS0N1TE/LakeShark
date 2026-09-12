@@ -357,9 +357,7 @@ LS_CASE(encrypted_ess_returns_to_control_and_stamps_a_skip)
 
 LS_CASE(clear_grant_is_still_followed_during_a_skip_on_a_different_tg)
 {
-    /* The whole point of a per-TG skip: one encrypted talkgroup must not
-     * deafen the radio to a clear one. Encrypted TG 100 lands, we bail; a
-     * grant for clear TG 200 must still be followed. */
+
     p25_grant_follower_t f;
     reset_log();
     p25_grant_init(&f, 851012500ull, retune_cb, &g_log);

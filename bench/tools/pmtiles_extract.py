@@ -1,31 +1,8 @@
-"""Cut a region out of a remote PMTiles archive, in the shape this board reads.
+"""Extract a bounding box from a remote PMTiles archive.
 
-LS-1047  The board's reader is components/pmtiles/upstream/zeromesh_pmtiles.c,
-written for a Flipper Zero, and it is strict for reasons that are about the
-hardware rather than the format:
-
-    internal_compression and tile_compression must both be NONE
-        There is no zlib on that device. Protomaps ships everything gzipped.
-
-    root directory at most 48 KB
-        It is read whole and held for the life of the archive.
-
-    leaf directories at most 4 KB and 256 entries
-        Only one leaf is resident at a time, which is what stops the memory
-        cost scaling with the tile count. A statewide archive opens in the
-        same heap as a city one.
-
-So this is not a download - it is a repack. Fetch the remote header and walk
-its directories over HTTP range requests, pick the tiles inside a bounding
-box, pull those byte ranges, gunzip each one, and write a fresh archive with
-uncompressed directories sized to the reader's limits.
-
-Usage:
-
-    python pmtiles_extract.py --url https://build.protomaps.com/20260909.pmtiles \\
-        --bbox -72.6 42.7 -70.6 44.4 --maxzoom 13 --out H:/maps/nh.pmtiles
-
-The bbox is min_lon min_lat max_lon max_lat, in degrees.
+Writes uncompressed tiles and directories within the board reader limits:
+48 KiB root directory, 4 KiB leaf directories and 256 entries per leaf.
+Use --help for archive URL, bounding box and zoom options.
 """
 
 import argparse

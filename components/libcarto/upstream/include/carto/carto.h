@@ -46,28 +46,12 @@ typedef struct {
 
 typedef struct carto_ctx carto_ctx;
 
-/*LS-1067  The largest single geometry ring the scratch has had to hold.
-
-   LS DEVIATION 3 sizes that scratch at 65536 points - half a megabyte, out
-   of an arena that lives in PSRAM - and states the number rather than
-   justifying it, with the honest note that trimming it blind would show up
-   as missing roads rather than as an error. This is how the statement gets
-   checked against real archives: measured on the way past, at the only
-   moment a ring's point count is final.
-
-   Here rather than in mvt.h because mvt.h is private to the library's own
-   sources and the firmware only has include/ on its path. */
 int  carto_scratch_peak(void);
 void carto_scratch_peak_reset(void);
 
 carto_ctx *carto_begin(carto_arena *arena, carto_framebuffer *fb,
                        carto_viewport *vp, const carto_style *style);
-/*LS-1055  Collect place names while rendering, instead of drawing them.
 
-   A label at map resolution needs a bitmap font; on a character grid the
-   name is text in cells, which is what the grid is for. So the renderer
-   hands names out and the caller places them. NULL collects none, which is
-   what a caller that only wants a picture gets. */
 void carto_set_label_sink(carto_ctx *ctx, carto_label_sink *sink);
 
 int carto_render_tile(carto_ctx *ctx, const uint8_t *mvt, size_t len,

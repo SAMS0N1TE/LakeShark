@@ -176,14 +176,6 @@ static void process_block(flex_ctx_t *c)
         else c->n_cwerr++;
     }
 
-    /* Two-stage integrity gate.  Stage 1: BIW and address MUST decode - they
-       name the page.  Stage 2 (further down, once BIW parsed): every message
-       CW the BIW claims must decode.  Stray IDLE codewords beyond msg_len are
-       not checked, so a lone noise-corrupted IDLE at the end does not sink an
-       otherwise valid short page.  For pure noise, the probability that BIW
-       and address both BCH-pass is (33/4096)^2 ~= 6.5e-5 - and it still has
-       to happen behind a false sync hit, which multiplies through to
-       vanishing. */
     (void)ok_count;    /* counted into c->n_cwerr for diagnostics */
     if (!cw_ok[0] || !cw_ok[1]) {
         reset_hunt(c);
@@ -252,18 +244,7 @@ static void process_block(flex_ctx_t *c)
             pg.type = 'N';
             snprintf(pg.text, sizeof(pg.text), "%s", num);
         } else if (msg_type == 0 && an > 0) {
-            /* BIW says alpha; trust it when every character is printable -
-               a block whose BCH-decoded payload is all 0x20..0x7e is
-               overwhelmingly more likely to be a real page than random
-               bytes (each 7-bit char has 95/128 = 74% odds of being
-               printable, so 5 random chars all-printable is only 22%,
-               10 chars only 5%).  flex_text_score() returns 0 the moment
-               it sees a byte outside 0x20..0x7e; anything above that
-               floor is trusted.  Short pages like "CALL ME" cap the score
-               at 60 by design (the structural checks in the scorer only
-               have signal to work with when n>=12) - the BIW metadata is
-               the escape hatch for short strings, same pattern POCSAG
-               uses with function code 3. */
+
             if (flex_text_score(alpha, an) > 0) {
                 pg.type = 'A';
                 snprintf(pg.text, sizeof(pg.text), "%s", alpha);
@@ -411,16 +392,6 @@ static void handle_bit(flex_ctx_t *c, int raw_bit)
     feed_data_bit(c, b);
 }
 
-/* 4-FSK symbol -> 2 bits.  `win` is the integrator sum over one symbol -
-   NOT one sample - so it lives on the scale of samples_per_symbol times the
-   deviation amplitude.  For a symbol at level +/-1 with 20 samples/symbol
-   that is ~+/-20; for a symbol at level +/-1/3 it is ~+/-6.67.
-
-   Gray-coded slice: adjacent level slip corrupts only one of the two bits.
-      00 -> +lvl        01 -> +lvl/3
-      10 -> -lvl        11 -> -lvl/3
-   Threshold mid sits between |1/3*lvl| and |lvl| - anywhere in there works,
-   so half of the tracked amplitude is the natural pick. */
 static void handle_symbol_4fsk(flex_ctx_t *c, float win)
 {
     float aw = win < 0.0f ? -win : win;
@@ -449,17 +420,7 @@ void flex_process(flex_ctx_t *c, const float *demod, int n)
 {
     for (int i = 0; i < n; i++) {
         float x = demod[i];
-        /* DC tracker only runs during hunt.  Once sync locks, thr is frozen
-           at whatever it converged to during the balanced +/-level preamble
-           - usually the mistune offset the transmitter had.  Freezing is
-           important for 4-FSK: the payload block is biased (an IDLE row of
-           all-zero bits maps to +1 symbols every time, so signal mean is
-           well above 0), and a live tracker would drag thr up with it and
-           start bucketing +1 symbols as +1/3.  It also matters for 2-FSK
-           frames where the payload has more of one value than the other.
-           POCSAG got away with a live tracker because its batches are
-           long enough that per-batch drift averages out; a single FLEX
-           frame does not have that luxury. */
+
         if (c->st == ST_HUNT) c->thr += 0.0015f * (x - c->thr);
         int slice = (x > c->thr) ? 1 : 0;
         float dev = x - c->thr;

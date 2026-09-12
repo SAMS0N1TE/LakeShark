@@ -506,14 +506,6 @@ LS_CASE(a_full_width_group_still_owns_its_own_line_after_flattening)
     render_and_check();
 }
 
-/* A toggle says its state on the control, once.
-
-   The rejected form was a button captioned TOGGLE beside a value column
-   reading ON or OFF: the state twice, the caption naming nothing, and the
-   control itself distinguished only by fill colour.  Here the caption names
-   the setting and never changes, the marker carries the state, the frame gains
-   an outline as a second non-colour cue, and the value column is left empty
-   for a setting that has more than two choices to put its choice in. */
 LS_CASE(a_toggle_states_itself_without_spending_the_value_column)
 {
     lv_obj_t *root = fresh_root();

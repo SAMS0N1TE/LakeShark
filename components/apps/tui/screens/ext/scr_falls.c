@@ -9,6 +9,8 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 #include "../../ls_picker.h"
+#include "../../ls_quick.h"
+#include "apps/fm/fm_state.h"
 
 static void enter(void) { ls_wf_source_select(LS_WF_SRC_AUTO); }
 static void leave(void) { ls_wf_source_release(); }
@@ -22,6 +24,16 @@ static void leave(void) { ls_wf_source_release(); }
 
 static tui_rect s_button;
 static tui_rect s_preset_button;
+static tui_rect s_tune_button;
+
+static void tune_fm(void)
+{
+    if (FM.mode == FM_MODE_SCAN) {
+        ls_wf_source_start(LS_WF_SRC_FM);
+    }
+    const ls_quick_t tune = {.kind = LS_QUICK_ACTION, .action = "fm.tune"};
+    ls_quick_fire(&tune, ls_quick_grant_builtin());
+}
 static char     s_flash[64];
 /* Frames, not milliseconds - the same shape scr_mesh uses, and a screen that
    only exists while it is being drawn has no business reading a clock. */
@@ -116,12 +128,24 @@ static void draw_one(tui_surface *sf, tui_rect r, const char *text,
 
 static void draw_buttons(tui_surface *sf, tui_rect r)
 {
+    s_tune_button = tui_rect_make(0, 0, 0, 0);
     const int half = r.w / 2;
     s_button        = tui_rect_make(r.x, r.y, half - 1, r.h);
     s_preset_button = tui_rect_make(r.x + half, r.y, r.w - half, r.h);
 
     char text[40];
     const ls_wf_src_t src = ls_wf_source_get();
+    if (src == LS_WF_SRC_FM) {
+        const int third = r.w / 3;
+        s_button = tui_rect_make(r.x, r.y, third - 1, r.h);
+        s_tune_button = tui_rect_make(r.x + third, r.y, third - 1, r.h);
+        s_preset_button = tui_rect_make(r.x + third * 2, r.y,
+                                        r.w - third * 2, r.h);
+        draw_one(sf, s_button, "FM", TUI_CYAN, true);
+        draw_one(sf, s_tune_button, "TUNE", TUI_GREEN, true);
+        draw_one(sf, s_preset_button, "BAND SWEEP", TUI_YELLOW, true);
+        return;
+    }
     const char *want = ls_wf_source_label(src);
     const char *now  = ls_wf_source_name();
     if (strcmp(want, now) == 0) snprintf(text, sizeof(text), "%s", want);
@@ -161,8 +185,12 @@ static void draw(tui_surface *sf, tui_rect area)
     const char *why = ls_wf_idle_reason();
     /* Keep HOLD reachable while the shared display is paused. */
     if (why && !ls_wf_cfg()->paused) {
-        ls_panel_notice(sf, body, "WATERFALL", why,
-                        "tap RADIO above to pick one and start it");
+        ls_wf_stats_t stats;
+        ls_wf_stats(&stats);
+        const char *progress = stats.ready ? ls_wf_source_progress() : NULL;
+        ls_panel_notice(sf, body, "WATERFALL", progress ? progress : why,
+                        progress ? "First row appears after this sweep"
+                                 : "tap RADIO above to pick one and start it");
         return;
     }
 
@@ -171,6 +199,11 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') &&
+        ls_wf_source_get() == LS_WF_SRC_FM) {
+        tune_fm();
+        return true;
+    }
     /* The source selector is this screen's, not the widget's: the widget
        draws whatever it is given and has no opinion about radios. */
     if (k == LS_TK_CHAR && (ch == 'v' || ch == 'V')) {
@@ -188,6 +221,10 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (tui_rect_contains(s_tune_button, col, row)) {
+        tune_fm();
+        return true;
+    }
     if (s_button.h > 0 && row >= s_button.y &&
         row < s_button.y + s_button.h) {
         if (col < s_button.x + s_button.w) open_radio_picker();

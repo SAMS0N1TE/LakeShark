@@ -58,8 +58,6 @@ LS_CASE(tune_centers_tile_the_span_without_overlap_or_hole)
     for (uint32_t i = 0; i < p.n_tunes; i++) {
         uint64_t c = ls_sweep_tune_center(&p, i);
 
-        /* The strip begins one DC guard above the tune centre - the tune sits
-           BELOW the spectrum it contributes, which is the whole point. */
         uint64_t bot = c + LS_SWEEP_DC_GUARD_HZ;
         uint64_t top = bot + p.strip_hz;
 

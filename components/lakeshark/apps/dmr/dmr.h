@@ -110,20 +110,6 @@ uint8_t dmr_burst_colour_code(const uint8_t burst_bits[DMR_BURST_BITS / 8]);
 void dmr_burst_extract_bptc(const uint8_t burst_bits[DMR_BURST_BITS / 8],
                             uint8_t out_bits[DMR_BPTC_BITS / 8 + 1]);
 
-/* Slot Type FEC per ETSI TS 102 361-1 §B.3.4 - Golay(20,8,7).
- *
- * The 20-bit codeword carries 8 data bits (colour code in the high nibble,
- * data type in the low nibble) with 12 parity bits and minimum distance 7,
- * so up to (7-1)/2 = 3 bit errors are correctable.
- *
- * `in` is 3 bytes packed MSB-first: byte 0 holds codeword bits 19..12,
- * byte 1 holds bits 11..4, byte 2's top nibble holds bits 3..0 (the low
- * nibble of in[2] is padding and ignored). Callers assemble this from the
- * two 10-bit Slot Type halves that straddle the burst sync.
- *
- * On success returns the number of bit errors corrected (0..3); on failure
- * (distance to nearest legal codeword > 3) returns -1 and leaves *cc_out /
- * *dt_out untouched. */
 int dmr_slot_type_decode(const uint8_t in[3],
                          uint8_t *cc_out,
                          uint8_t *dt_out);

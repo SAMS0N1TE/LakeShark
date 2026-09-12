@@ -27,9 +27,6 @@
 #include "math_sub.h"
 #include "sa_enh.h"
 
-
-
-
 //-----------------------------------------------------------------------------
 //	PURPOSE:
 //		Perform Spectral Amplitude Enhancement
@@ -55,7 +52,6 @@ void sa_enh(IMBE_PARAM *imbe_param)
 	Word32 L_den, L_num, L_Rm0_2, L_Rm1_2, L_sum_Rm02_Rm12, L_sum_mod;
 	Word16 Rm0Rm1, nm1, nm2, tot_nm;
 	Word16 Rm0_s, Rm1_s;
-
 	
 	sa       = imbe_param->sa;
 	num_harm = imbe_param->num_harms;
@@ -197,6 +193,4 @@ void sa_enh(IMBE_PARAM *imbe_param)
 			sa[i] = mult_r(sa[i], tmp); 
 	}	
 }
-
-
 

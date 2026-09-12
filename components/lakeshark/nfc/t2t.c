@@ -1,34 +1,4 @@
-/* NFC Forum Type 2 Tag - capability container and TLV walk.  Pure logic:
-   given a flat page-oriented memory image, decode CC and return the NDEF
-   message TLV value.
 
-   Type 2 memory layout (Type 2 Tag Operation Specification 1.2, section
-   6.1):
-
-     page 0        UID/serial number (part 1) - not parsed here
-     page 1        UID/serial (part 2), BCC1, internal
-     page 2        lock bytes (2), internal
-     page 3        Capability Container (CC), 4 bytes:
-                     [0] magic:  0xE1 = NDEF-formatted
-                     [1] version: high nibble major, low nibble minor
-                     [2] memory size in units of 8 bytes
-                     [3] read-access nibble | write-access nibble
-                          write nibble 0x0 = read/write, 0xF = read-only
-     page 4..N     data area, TLVs
-
-   TLV encoding (T2T Op Spec 2.3.2):
-     Tag  = 1 byte
-     Len  = 1 byte, OR 0xFF + two-byte big-endian length (>=255)
-     Val  = Len bytes
-   Special one-byte TLVs (no length, no value):
-     0x00  NULL           (skip)
-     0xFE  TERMINATOR     (stop)
-   Interesting multi-byte TLVs:
-     0x01  Lock control
-     0x02  Memory control
-     0x03  NDEF message
-     0xFD  Proprietary
-*/
 
 #include "ls_nfc.h"
 

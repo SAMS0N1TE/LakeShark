@@ -71,15 +71,6 @@ extern "C" esp_lcd_panel_handle_t bsp_get_dsi_panel(void);
 static const char *TAG = "main";
 
 /**/
-/* The BOOT button is no longer read. It duplicated a gesture that already
-   exists - horizontal swipe on HOME cycles apps - and the button is worth
-   more as hardware: it is now wired to the K (on/off) pin of the external
-   boost module, because the housing has no room for a switch of its own.
-   The pin is left COMPLETELY UNCONFIGURED on purpose. The old init enabled
-   the P4 internal pull-up on GPIO35, which would fight the module's K line
-   (measured idling at ~1.3 V) and could hold it where the module misreads
-   it. Nothing here may drive, pull or poll GPIO35 again while it is wired
-   to K. */
 
 /**/
 static void c6_probe(void)
@@ -114,7 +105,7 @@ static void c6_probe(void)
     if ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
         (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1) {
         ESP_LOGE(TAG, "C6 MAJOR.MINOR MISMATCH - RPC will time out and BLE will "
-                      "not start. Reflash the C6 from c6_firmware/ (LS-013).");
+                      "not start. Reflash the C6 from c6_firmware/.");
     }
 }
 

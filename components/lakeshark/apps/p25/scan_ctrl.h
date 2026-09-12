@@ -156,16 +156,6 @@ size_t   p25_scan_priority_count(const p25_scan_ctrl_t *sc);
 const p25_scan_name_t *p25_scan_name_lookup(const p25_scan_ctrl_t *sc,
                                             uint16_t tg);
 
-/* Parse one names-file line. Returns true if it consumed a real entry (added
- * to sc->names or filled *out if out != NULL), false if the line was blank,
- * a comment, or malformed. Format:
- *
- *     number,name[,category]
- *
- * Whitespace either side is stripped; a leading '#' or ';' or an empty line
- * is skipped without complaint. A malformed line is a defect the caller
- * counts and reports, not a hard error - one bad row in a thousand-entry
- * file should not throw the whole file away. */
 bool p25_scan_name_parse_line(const char *line, p25_scan_name_t *out);
 
 /* Feed a whole file. */

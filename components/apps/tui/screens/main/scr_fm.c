@@ -30,9 +30,65 @@ static uint32_t s_blink;
 
 /* What a thumb can reach without leaving the screen. */
 
-static const char *const FM_MODES[] = {
-    "listen", "scan", "pocsag", "acars", "flex", "wfm",
+static const fm_mode_t FM_MODES[] = {
+    FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG,
+    FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN,
 };
+#define N_MODES ((int)(sizeof(FM_MODES) / sizeof(FM_MODES[0])))
+static tui_rect s_mode_hit[N_MODES];
+static int s_last_mode = -1;
+
+static int mode_page(fm_mode_t mode)
+{
+    if (mode == FM_MODE_SCAN) return 2;
+    if (mode == FM_MODE_POCSAG || mode == FM_MODE_FLEX) return 1;
+    return 0;
+}
+
+static bool choose_mode(fm_mode_t mode)
+{
+    ls_args_t args = {0};
+    args.n = 1;
+    args.v[0].kind = LS_VAL_TEXT;
+    args.v[0].s = fm_mode_command_name(mode);
+    ls_val_t result;
+    if (ls_action_call("fm.submode", &args, &result,
+                       ls_quick_grant_builtin()) != LS_ACT_OK) return false;
+    s_last_mode = (int)FM.mode;
+    s_page = mode_page(mode);
+    if (mode != FM_MODE_SCAN) ls_wf_source_release();
+    return true;
+}
+
+static int draw_modes(tui_surface *sf, tui_rect area)
+{
+    memset(s_mode_hit, 0, sizeof(s_mode_hit));
+    const int columns = area.w >= 72 ? 6 : 3;
+    const int rows = (N_MODES + columns - 1) / columns;
+    const int button_h = ls_tui_is_wide() ? 3 : 5;
+    const int height = rows * button_h;
+    if (area.w < 24 || area.h < height + 3) return 0;
+    for (int i = 0; i < N_MODES; ++i) {
+        const int col = i % columns;
+        const int x0 = area.x + area.w * col / columns;
+        const int x1 = area.x + area.w * (col + 1) / columns;
+        tui_rect box = tui_rect_make(x0, area.y + (i / columns) * button_h,
+                                     x1 - x0, button_h);
+        s_mode_hit[i] = box;
+        const bool active = FM.mode == FM_MODES[i];
+        const uint8_t attr = active ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT)
+                                    : TUI_ATTR(TUI_CYAN, TUI_BLACK);
+        tui_box(sf, box, NULL, TUI_ATTR(TUI_CYAN, TUI_BLACK));
+        const char *label = fm_mode_label(FM_MODES[i]);
+        const int width = (int)strlen(label);
+        for (int y = box.y + 1; y < box.y + box.h - 1; ++y)
+            for (int x = box.x + 1; x < box.x + box.w - 1; ++x)
+                tui_put_char(sf, box, x, y, ' ', attr);
+        tui_put_str(sf, box, box.x + (box.w - width) / 2,
+                    box.y + box.h / 2, label, attr);
+    }
+    return height + 1;
+}
 
 static const ls_quick_t QUICK[] = {
     /* See scr_p25.c: typing a frequency is the common case. */
@@ -47,15 +103,54 @@ static const ls_quick_t QUICK[] = {
     { .label = "SQUELCH", .kind = LS_QUICK_STEP, .action = "fm.sql",
       .value = "fm.sql", .delta = 0.5f, .lo = 0, .hi = 100,
       .key = 'q', .key_down = 'w' },
-    { .label = "MODE", .kind = LS_QUICK_CYCLE, .action = "fm.submode",
-      .value = "fm.mode", .choices = FM_MODES,
-      .nchoices = (int)(sizeof(FM_MODES) / sizeof(FM_MODES[0])),
-      .key = 'm', .key_down = 'n' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
 /* Where the panel was drawn, so the hit test asks the same geometry. */
 static tui_rect s_quick_rect;
+static tui_rect s_tune_hit[3];
+
+static uint32_t tune_step_hz(void)
+{
+    if (FM.mode == FM_MODE_WFM) return 100000;
+    if (FM.mode == FM_MODE_ACARS) return 25000;
+    return 12500;
+}
+
+static bool tune_step(int direction)
+{
+    int64_t hz = (int64_t)FM.freq_hz + direction * (int64_t)tune_step_hz();
+    if (hz < 24000000) hz = 24000000;
+    if (hz > 1766000000) hz = 1766000000;
+    ls_args_t args = {0};
+    args.n = 1;
+    args.v[0].kind = LS_VAL_INT;
+    args.v[0].i = (int32_t)hz;
+    ls_val_t result;
+    return ls_action_call("fm.freq_hz", &args, &result,
+                          ls_quick_grant_builtin()) == LS_ACT_OK;
+}
+
+static void draw_tune(tui_surface *sf, tui_rect area)
+{
+    const char *labels[] = {"-", "TUNE", "+"};
+    const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK);
+    const uint8_t face = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    for (int i = 0; i < 3; ++i) {
+        int x0 = area.x + area.w * i / 3;
+        int x1 = area.x + area.w * (i + 1) / 3;
+        tui_rect box = tui_rect_make(x0, area.y, x1 - x0, area.h);
+        s_tune_hit[i] = box;
+        tui_box(sf, box, NULL, edge);
+        tui_put_str(sf, box, box.x + (box.w - (int)strlen(labels[i])) / 2,
+                    box.y + box.h / 2, labels[i], face);
+    }
+    char step[20];
+    snprintf(step, sizeof(step), "%.1f kHz", (double)tune_step_hz() / 1000.0);
+    tui_rect center = s_tune_hit[1];
+    tui_put_str(sf, center, center.x + (center.w - (int)strlen(step)) / 2,
+                center.y + center.h - 2, step, edge);
+}
 
 /* draw_vfo splits its rect in two, so in portrait it draws a VFO box above a
    SIGNAL box and needs room for both: six fields and a border, then a bar and
@@ -89,13 +184,13 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     tui_rect left, right;
     ls_tui_split(area, &left, &right);
 
-    tui_box(sf, left, "VFO", frame);
-    snprintf(buf, sizeof(buf), "%u.%04u", (unsigned)(hz / 1000000u),
+    tui_box(sf, left, "RECEIVER", frame);
+    snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(hz / 1000000u),
              (unsigned)((hz % 1000000u) / 100u));
-    field(sf, left, 1, "FREQ MHz", buf, lab, val);
-    field(sf, left, 2, "MODE", fm_mode_label((fm_mode_t)mode), lab, val);
+    tui_put_str(sf, left, left.x + (left.w - (int)strlen(buf)) / 2,
+                left.y + 2, buf, val);
     snprintf(buf, sizeof(buf), "%d.%d", sq / 10, sq % 10);
-    field(sf, left, 3, "SQUELCH", buf, lab, val);
+    field(sf, left, 5, "SQUELCH", buf, lab, val);
     field(sf, left, 4, "CARRIER", open ? "OPEN" : "closed", lab,
           open ? good : dim);
 
@@ -103,10 +198,10 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
         tui_put_char(sf, left, left.x + 17, left.y + 4, LS_TUI_SHADE_FULL,
                     good);
     snprintf(buf, sizeof(buf), "%d %%", audio_volume_get());
-    field(sf, left, 5, "VOLUME", buf, lab, val);
+    field(sf, left, 6, "VOLUME", buf, lab, val);
     snprintf(buf, sizeof(buf), "%d.%d dB", FM.gain_tenths / 10,
              FM.gain_tenths % 10);
-    field(sf, left, 6, "GAIN", buf, lab, val);
+    field(sf, left, 7, "GAIN", buf, lab, val);
 
     tui_box(sf, right, "SIGNAL", frame);
     int bw = right.w - 4;
@@ -267,6 +362,7 @@ static int  s_page_top;          /* first list row shown                  */
 static bool s_page_open;         /* the full view of the selected page    */
 static tui_rect s_page_rect;     /* where the list landed, for taps       */
 static tui_rect s_page_back;     /* the BACK target on the detail view    */
+static tui_rect s_pager_hit[3];
 
 /* Newest first, which is the order the list shows and the order a selection
    index means. */
@@ -282,6 +378,43 @@ static int page_count(void)
     int n = (int)FM.page_count;
     if (n > FM_PAGE_LOG_MAX) n = FM_PAGE_LOG_MAX;
     return n;
+}
+
+static void pager_move(int delta)
+{
+    const int count = page_count();
+    s_page_sel += delta;
+    if (s_page_sel >= count) s_page_sel = count - 1;
+    if (s_page_sel < 0) s_page_sel = 0;
+}
+
+static int draw_pager_controls(tui_surface *sf, tui_rect area)
+{
+    memset(s_pager_hit, 0, sizeof(s_pager_hit));
+    const int height = ls_tui_is_wide() ? 3 : 5;
+    if (area.w < 24 || area.h < height + 4) return 0;
+    pager_move(0);
+    const int count = page_count();
+    char center[24];
+    snprintf(center, sizeof(center), "%s %d/%d", s_page_open ? "LIST" : "OPEN",
+             count ? s_page_sel + 1 : 0, count);
+    const char *labels[] = {"UP", center, "DOWN"};
+    const bool enabled[] = {s_page_sel > 0, count > 0, s_page_sel + 1 < count};
+    for (int i = 0; i < 3; ++i) {
+        int x0 = area.x + area.w * i / 3;
+        int x1 = area.x + area.w * (i + 1) / 3;
+        tui_rect box = tui_rect_make(x0, area.y + area.h - height, x1 - x0, height);
+        s_pager_hit[i] = box;
+        uint8_t attr = enabled[i] ? TUI_ATTR(TUI_BLACK, TUI_CYAN)
+                                  : TUI_ATTR(TUI_WHITE, TUI_BLACK);
+        tui_box(sf, box, NULL, TUI_ATTR(enabled[i] ? TUI_CYAN : TUI_WHITE, TUI_BLACK));
+        for (int y = box.y + 1; y < box.y + box.h - 1; ++y)
+            for (int x = box.x + 1; x < box.x + box.w - 1; ++x)
+                tui_put_char(sf, box, x, y, ' ', attr);
+        tui_put_str(sf, box, box.x + (box.w - (int)strlen(labels[i])) / 2,
+                    box.y + box.h / 2, labels[i], attr);
+    }
+    return height + 1;
 }
 
 /* One row per page in landscape, three in portrait: the same measurement the
@@ -418,6 +551,7 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
 
     s_page_rect = tui_rect_make(0, -1, 0, 0);
     s_page_back = tui_rect_make(0, -1, 0, 0);
+    whole.h -= draw_pager_controls(sf, whole);
 
     /* The full view takes the whole pane. It is one message and it
        wants the width and the height; the tape above it answers a different
@@ -535,7 +669,7 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
 
 static const ls_btn_t PAGES[] = {
     { "VFO",   NULL, '1', false, false },
-    { "PAGES", NULL, '2', false, false },
+    { "PAGER", NULL, '2', false, false },
     { "SWEEP", NULL, '3', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
@@ -547,7 +681,15 @@ static tui_rect s_bar;
 static void show_page(int i)
 {
     s_page = i;
-    if (i == 2 && FM.mode != FM_MODE_SCAN) ls_wf_source_start(LS_WF_SRC_FM);
+    s_last_mode = (int)FM.mode;
+    if (i == 2) {
+        if (FM.mode != FM_MODE_SCAN) choose_mode(FM_MODE_SCAN);
+    } else {
+        ls_wf_source_release();
+        if (i == 0 && FM.mode == FM_MODE_SCAN) choose_mode(FM_MODE_LISTEN);
+        if (i == 1 && FM.mode != FM_MODE_POCSAG && FM.mode != FM_MODE_FLEX)
+            choose_mode(FM_MODE_POCSAG);
+    }
 }
 
 /* Called by the UI task when the control head chooses FM or POCSAG. */
@@ -559,6 +701,10 @@ void ls_scr_fm_show_page(int page)
 static void draw(tui_surface *sf, tui_rect area)
 {
     s_blink++;
+    if (s_last_mode != (int)FM.mode) {
+        s_last_mode = (int)FM.mode;
+        s_page = mode_page(FM.mode);
+    }
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait: a two row bar with one line of text has no middle row to put it on. */
 
@@ -587,8 +733,12 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_btn_bar(sf, s_bar, b, N_PAGES, -1);
 
     s_quick_rect = tui_rect_make(0, -1, 0, 0);
+    memset(s_tune_hit, 0, sizeof(s_tune_hit));
 
     if (body.h <= 0) return;
+    const int mode_rows = draw_modes(sf, body);
+    body.y += mode_rows;
+    body.h -= mode_rows;
     if (s_page == 1)      { draw_pages(sf, body); return; }
     if (s_page == 2)      { draw_sweep(sf, body); return; }
 
@@ -600,7 +750,13 @@ static void draw(tui_surface *sf, tui_rect area)
 
         s_quick_rect = tui_rect_make(body.x, body.y + VFO_ROWS + 1, body.w,
                                      body.h - VFO_ROWS - 1);
-        ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), QUICK, N_QUICK);
+        if (s_quick_rect.h >= 7) {
+            draw_tune(sf, tui_rect_make(s_quick_rect.x, s_quick_rect.y,
+                                       s_quick_rect.w, 7));
+            s_quick_rect.y += 7;
+            s_quick_rect.h -= 7;
+        }
+        ls_quick_draw_posture(sf, s_quick_rect, false, QUICK + 1, N_QUICK - 1);
         return;
     }
     draw_vfo(sf, body);
@@ -608,9 +764,25 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static void leave(void) { ls_wf_source_release(); }
 
+static void enter(void)
+{
+    s_last_mode = (int)FM.mode;
+    s_page = mode_page(FM.mode);
+    s_page_open = false;
+}
+
 static bool key(ls_tk_t k, char ch)
 {
     if (k == LS_TK_CHAR) {
+        if (ch == '[') return tune_step(-1);
+        if (ch == ']') return tune_step(1);
+        if (ch == 'm' || ch == 'M' || ch == 'n' || ch == 'N') {
+            int current = 0;
+            for (int j = 0; j < N_MODES; ++j)
+                if (FM_MODES[j] == FM.mode) current = j;
+            return choose_mode(FM_MODES[(current +
+                ((ch == 'n' || ch == 'N') ? N_MODES - 1 : 1)) % N_MODES]);
+        }
         const int i = ls_btn_key(ch, PAGES, N_PAGES);
         if (i >= 0) { show_page(i); return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
@@ -627,8 +799,8 @@ static bool key(ls_tk_t k, char ch)
     if (s_page == 1 && s_page_open) {
         switch (k) {
         case LS_TK_ESC:   s_page_open = false; return true;
-        case LS_TK_UP:    if (s_page_sel > 0) s_page_sel--; return true;
-        case LS_TK_DOWN:  if (s_page_sel < page_count() - 1) s_page_sel++; return true;
+        case LS_TK_UP:    pager_move(-1); return true;
+        case LS_TK_DOWN:  pager_move(1); return true;
         default: return true;
         }
     }
@@ -636,9 +808,9 @@ static bool key(ls_tk_t k, char ch)
     switch (k) {
     case LS_TK_LEFT:  if (s_page > 0) show_page(s_page - 1); return true;
     case LS_TK_RIGHT: if (s_page < N_PAGES - 1) show_page(s_page + 1); return true;
-    case LS_TK_UP:    if (s_page == 1 && s_page_sel > 0) s_page_sel--; return true;
+    case LS_TK_UP:    if (s_page == 1) pager_move(-1); return true;
     case LS_TK_DOWN:
-        if (s_page == 1 && s_page_sel < page_count() - 1) s_page_sel++;
+        if (s_page == 1) pager_move(1);
         return true;
     case LS_TK_ENTER:
         if (s_page == 1 && page_count() > 0) { s_page_open = true; return true; }
@@ -649,17 +821,36 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    for (int j = 0; j < N_MODES; ++j)
+        if (tui_rect_contains(s_mode_hit[j], col, row))
+            return choose_mode(FM_MODES[j]);
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int i = ls_btn_hit(col, row);
         if (i >= 0) { show_page(i); return true; }
         return true;
     }
+    for (int i = 0; i < 3; ++i) {
+        if (!tui_rect_contains(s_tune_hit[i], col, row)) continue;
+        if (i == 1) ls_quick_fire(&QUICK[0], ls_quick_grant_builtin());
+        else tune_step(i == 0 ? -1 : 1);
+        return true;
+    }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h &&
-        ls_quick_touch(col, row, QUICK, N_QUICK,
+        ls_quick_touch(col, row, QUICK + 1, N_QUICK - 1,
                        ls_quick_grant_builtin(), NULL))
         return true;
     if (s_page == 2) return ls_wf_touch(col, row);
+
+    if (s_page == 1) {
+        for (int i = 0; i < 3; ++i) {
+            if (!tui_rect_contains(s_pager_hit[i], col, row)) continue;
+            if (i == 0) pager_move(-1);
+            else if (i == 2) pager_move(1);
+            else if (page_count() > 0) s_page_open = !s_page_open;
+            return true;
+        }
+    }
 
     /* The open page: its BACK target, and nothing else - a stray tap
        must not lose the message you opened. */
@@ -692,8 +883,8 @@ const ls_tui_screen_t ls_scr_fm = {
     /* the VFO, the sweep and the pager pages are all this receiver. */
     .radio = "FM",
     .name = "FM",
-    .hint = "1 VFO  2 PAGES  3 SWEEP  UP/DOWN select",
-    .enter = NULL,
+    .hint = "UP/DOWN messages  1 VFO  2 PAGER  3 SWEEP",
+    .enter = enter,
     .leave = leave,
     .draw = draw,
     .key = key,

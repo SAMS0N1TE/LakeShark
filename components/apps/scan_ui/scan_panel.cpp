@@ -14,15 +14,7 @@
 #include "ui/ls_ui.h"
 
 /**/
-/* Band presets. These are the ranges someone actually points a handheld at,
-   and the STEP that band is channelised on - 12.5 kHz through the land mobile
-   ranges, 25 kHz for air and the wide ham allocations. The step travels WITH
-   the preset because picking "GMRS" and then being left on a 100 kHz grid
-   walks straight past every channel in it, which is the kind of quiet wrong
-   answer this project keeps having to unpick.
-   151-152 is carved out separately from VHF HI on purpose: it is narrow
-   enough to sweep in seconds when you are chasing one known signal, which is
-   how this surface actually gets used in the field. */
+
 static const struct {
     uint32_t a, b, step;
     const char *name;

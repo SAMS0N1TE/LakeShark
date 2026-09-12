@@ -32,7 +32,6 @@ LS_CASE(nonzero_track_reports_playing_only_for_that_index)
     bsp_extra_player_state_note_play_index(&iter, 3);
     ls_shim_audio_state_set(AUDIO_PLAYER_STATE_PLAYING);
 
-    /* The whole point: the answer must be right for a nonzero track. */
     LS_CHECK(bsp_extra_player_state_is_playing_by_index(&iter, 3));
 
     /* And the other slots must not claim the same playback. */

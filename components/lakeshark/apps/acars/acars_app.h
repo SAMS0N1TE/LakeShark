@@ -34,15 +34,6 @@ void acars_app_clear(void);
    be NULL; missing fields are left blank. */
 void acars_app_inject(const char *reg, const char *label, const char *text);
 
-/* Extract a flight-number-like token from a decoded ACARS text body.
-   Returns the number of bytes written (not counting the terminator).  ACARS
-   itself does not carry a "flight number" field - registration and label
-   are what the wire delivers - but airlines conventionally embed the
-   flight ID in the first bytes of the text body as [A-Z]{2,3}[0-9]{2,4}
-   with an optional trailing letter.  Callers that want to display a flight
-   next to the registration use this helper; the bench pins the extraction
-   rules so the panel and the tests agree.  Writes an empty string when no
-   plausible token is found. */
 size_t acars_flight_from_text(const char *text, char *out, size_t cap);
 
 #ifdef __cplusplus

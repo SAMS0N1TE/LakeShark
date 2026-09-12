@@ -44,14 +44,7 @@ static bool s_present;
 static bool    s_pins_ready;
 static int64_t s_probe_at;
 #define PROBE_PERIOD_US 500000
-/* The TCA8418 reports a press and a release and nothing in between, so
-   holding a key produced exactly one character. Repeat is a policy the part
-   does not implement, so synthesise it here: every consumer wants the same
-   behaviour and none of them should have to keep this state.
 
-   400 ms before the first repeat is long enough not to fire on a deliberate
-   single press; 45 ms after that is about 22 a second, which matches what a
-   desktop feels like. A release, or a different key going down, cancels. */
 #define REPEAT_DELAY_US   400000
 #define REPEAT_RATE_US     45000
 static bool     s_held;
@@ -180,9 +173,6 @@ esp_err_t ls_keypad_start(void)
               (uint8_t)(LS_BOARD_KEYPAD_COLS > 8
                             ? (1u << (LS_BOARD_KEYPAD_COLS - 8)) - 1u : 0u));
 
-    /* Anything pressed before we were listening is still queued, and the
-       first read would report a keypress nobody made. Drain, then clear the
-       latched interrupt flags. */
     uint8_t count = 0;
     if (reg_read(REG_KEY_LCK_EC, &count)) {
         for (int i = 0; i < (count & 0x0F); i++) {
@@ -284,9 +274,6 @@ bool ls_keypad_read(ls_keypad_event_t *out)
     return true;
 }
 
-/* What the backlight is currently being driven at. Kept here rather
-   than recomputed, because the whole point is to compare what was asked for
-   against what the part settled on. */
 static bool     s_bl_on;
 static uint32_t s_bl_freq = 20000;
 /* The duty resolution is not a constant, because the frequency and the resolution trade against each other. */

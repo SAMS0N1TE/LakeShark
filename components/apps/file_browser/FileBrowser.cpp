@@ -230,13 +230,7 @@ void AppFileBrowser::loadDirectory(const std::string &path)
 void AppFileBrowser::openEntry(const Entry &e)
 {
     /**/
-    /* _cwd is already an absolute path once we are past the roots view
-       (either "/sdcard/..." or "/spiffs/...").  file_browser_join_path
-       therefore does not - and must not - prepend a root of its own.  The
-       old code built `full` correctly here and then, one branch below,
-       re-prefixed it with "/sdcard/" for the music handoff.  That doubled
-       the SD root on real songs and silently redirected every /spiffs
-       selection to a path that did not exist. */
+
     char joined[192];
     if (file_browser_join_path(_cwd.c_str(), e.name.c_str(),
                                joined, sizeof(joined)) < 0) {

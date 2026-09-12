@@ -47,11 +47,7 @@ LS_CASE(rx_whole_frame_in_one_call)
 
 LS_CASE(rx_split_across_two_notifications)
 {
-    /* counts BOTH the notify and the bytes it carries, and the head
-       coalesces small replies into short GATT notifications. A payload
-       split across two of them ("PIN" then "G\n") must reassemble to one
-       line. That is the whole point of a byte-stream reader on top of a
-       notify-oriented transport. */
+
     ble_link_rx_t rx;
     ble_link_rx_reset(&rx);
     captured_t cap = { 0 };
@@ -198,13 +194,7 @@ LS_CASE(payload_cap_uses_min_when_mtu_unknown)
 
 LS_CASE(payload_cap_pays_att_header)
 {
-    /* MTU-3 is the transport's limit; the head's RX characteristic is
-       244 bytes wide and is the tighter of the two, so it wins.  A write past
-       it is discarded by the head's GATT server without a reply - and these
-       are writes WITHOUT response, so nothing comes back and this end counts
-       a success.  A telemetry frame then arrived at the head as a 253-byte
-       chunk that never landed plus a short remainder that did, which the app
-       logged as "rx junk" and rendered as NO SDR. */
+
     LS_EQ_INT(ble_link_payload_cap(256), BLE_LINK_HEAD_ATT_MAX);
     LS_EQ_INT(ble_link_payload_cap(517), BLE_LINK_HEAD_ATT_MAX);
     LS_EQ_INT(BLE_LINK_HEAD_ATT_MAX, 244);
@@ -286,19 +276,7 @@ LS_CASE(disc_normal_reason_is_unrelated)
 
 LS_CASE(enc_kind_key_rejected_wipes_bond)
 {
-    /* At ENC_CHANGE time - before any disconnect - KEY_REJECTED means the
-       stored keys are the problem.
 
-       LS-980  AUTHREQ_REFUSED now wipes too, and this case used to assert the
-       opposite. That was not a weakened test, it was a changed contract, so the
-       reason is here rather than in a commit nobody will read:
-
-       The head sets pairing_method = GapPairingNone and both characteristics
-       are ATTR_PERMISSION_NONE. It will never complete pairing. Any security
-       state we hold for it - written by older firmware that asked for bonding -
-       is therefore unusable by construction, and keeping it only guarantees the
-       same rejection on the next connection. Observed as an endless reconnect
-       loop on two boards. */
     LS_CHECK(ble_link_enc_kind_wipes_bond(BLE_LINK_ENC_KEY_REJECTED));
     LS_CHECK(ble_link_enc_kind_wipes_bond(BLE_LINK_ENC_AUTHREQ_REFUSED));
     LS_CHECK(!ble_link_enc_kind_wipes_bond(BLE_LINK_ENC_TIMEOUT));
@@ -558,13 +536,7 @@ LS_CASE(scan_decide_name_alone_is_never_enough)
 
 LS_CASE(scan_decide_pin_wins_over_unknown_same_service)
 {
-    /* The whole point.  Both a pinned peer and an unknown peer are
-       advertising our service - only the pinned one gets a connect.
 
-       Before this, adv_name_matches() returned true for the first candidate
-       carrying the service UUID, so with a nano and an LCD board both
-       powered up they raced to ble_gap_connect() and one always lost.
-       The pin is what breaks the tie by address. */
     ble_link_peer_addr_t pinned  = make_addr(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01, 0);
     ble_link_peer_addr_t unknown = make_addr(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02, 0);
 
@@ -631,13 +603,6 @@ LS_CASE(scan_decide_pin_absent_peer_keeps_scanning_forever)
               BLE_LINK_SCAN_SKIP);
 }
 
-/* a tight DMA heap must shorten the write, not kill the frame.
- *
- * Measured on the LCD with P25, the panel and USB all running: the largest
- * free DMA-capable block sat at 768 B while one full-size write asked for
- * 845 B (253 payload + 16 header + 64 alignment slack + 512 margin). Short by
- * 77 B, nearly all of it margin - and the old guard threw the whole frame
- * away, so the head sat there connected and showing nothing. */
 LS_CASE(tx_chunk_shortens_the_write_before_it_drops_the_frame)
 {
     const size_t overhead = 16 + 64 + 512;   /* header + slack + margin */

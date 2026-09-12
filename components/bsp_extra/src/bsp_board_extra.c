@@ -210,13 +210,11 @@ esp_err_t bsp_extra_player_del(void)
 
     ESP_RETURN_ON_ERROR(audio_player_delete(), TAG, "audio_player_delete failed");
 
-    /*LS-753*/
     bsp_extra_player_state_reset();
 
     return ESP_OK;
 }
 
-/*LS-756*/
 /* bsp_extra_file_instance_init, bsp_extra_player_play_index,
    bsp_extra_player_play_file and bsp_extra_player_is_playing_by_path live
    in bsp_extra_player_open.c so the fopen -> audio_player_play handoff can
@@ -229,31 +227,26 @@ void bsp_extra_player_register_callback(audio_player_cb_t cb, void *user_data)
     audio_idle_cb_user_data = user_data;
 }
 
-/*LS-753*/
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index)
 {
     return bsp_extra_player_state_is_playing_by_index(instance, index);
 }
 
-/*LS-753*/
 bool bsp_extra_player_is_active_by_index(file_iterator_instance_t *instance, int index)
 {
     return bsp_extra_player_state_is_active_by_index(instance, index);
 }
 
-/*LS-753*/
 const char *bsp_extra_player_active_path(void)
 {
     return bsp_extra_player_state_active_path();
 }
 
-/*LS-753*/
 bool bsp_extra_player_is_playing_path(void)
 {
     return bsp_extra_player_state_is_playing_path();
 }
 
-/*LS-753*/
 bool bsp_extra_player_is_active_path(void)
 {
     return bsp_extra_player_state_is_active_path();

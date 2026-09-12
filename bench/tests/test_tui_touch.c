@@ -19,16 +19,6 @@ static bool     s_pressed;
 static bool     s_read_ok = true;
 static int      s_reads;
 
-/* Modelled on the real driver, including the part that matters: the
-   controller's report carries no coordinates once the finger is up, so the
-   driver holds the last ones and reports those.
-
-   An earlier version of this fake wrote the current coordinates on every
-   read, press or release. That is more generous than the hardware and it hid
-   a real defect: the driver left the caller's locals untouched on release,
-   the caller zeroes them before every read, and every release therefore
-   resolved to pixel 0,0 - inside the inset margin, so no cell, so no tap ever
-   completed. Touch did not work at all and these tests passed. */
 static uint16_t s_held_x, s_held_y;
 
 bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
@@ -177,15 +167,7 @@ LS_CASE(a_failed_read_reports_nothing)
 
 LS_CASE(a_read_that_fails_across_a_release_still_fires_the_pressed_cell)
 {
-    /* The touch controller shares an I2C bus that has NACKed before, so
-       ls_touch_read can fail. A failure that swallows the release does not
-       lose the tap: the driver holds the last position it was given, which is
-       where the press was, so when the bus recovers the release is attributed
-       to the cell the finger was actually on.
 
-       The important half is which cell. Moving the finger while the bus is
-       down reports nothing, so it cannot drag the tap somewhere the user
-       never pressed. */
     settle();
     finger_at(10, 5, true);
     poll(NULL);

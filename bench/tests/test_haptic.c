@@ -344,8 +344,6 @@ LS_CASE(a_buzz_starts_the_drive_and_then_stops_it)
     LS_EQ_INT(0x02, p3 & 0x03);
     LS_CHECK((p3 & 0x04) != 0);
 
-    /* Full strength keeps tracking on, which is the whole point of the
-       level-code case above expressed against the real write. */
     const int c6 = last_write(R_CONTCFG6);
     LS_CHECK(c6 >= 0);
     LS_CHECK((c6 & 0x80) != 0);

@@ -1,21 +1,5 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/nfc/ndef.c */
 /* LS_TEST_INCLUDE: ${FW}/components/lakeshark/nfc */
-/* NFC NDEF parser tests.  Covers:
-
-     - single-record short record with MB=ME=1
-     - multi-record chain (Text + URI) with the message-begin/end flags
-       placed on the right ends
-     - long-form (32-bit) payload length
-     - id-length field
-     - malformed: bad flag layout, chunk flag set, trailing bytes
-     - truncation: header, payload-length, payload
-     - too-many-records via out_cap
-
-   Each malformed/truncated case is written so the parser must reject
-   it - a permissive parser that accepted the case would pass, and this
-   suite would go red.
-
-   NFC Forum NDEF spec 1.0, section 3.2. */
 
 #include "ls_test.h"
 #include "ls_nfc.h"

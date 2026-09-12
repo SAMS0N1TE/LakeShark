@@ -25,14 +25,6 @@ typedef enum {
     OPERATION_FILL_WITH_OPA,
 } blend_operation_t;
 
-/**
- * @brief Canary pixels amount depending on data type
- * @note
- *    - We should use at least 16 bytes of memory for canary pixels because of esp32s3 TIE 16-bytes wide Q registers
- *    - Canary pixels are multiplied by sizeof(used_data_type) to get the memory length occupied by the canary pixels
- *    - The memory occupied by canary pixels should be in 16-byte multiples, to achieve 16-byte memory alignment in functionality test
- *    - For example, ideally, for RGB565 we would need 8 canary pixels -> 8 * sizeof(uint16_t) = 16
- */
 typedef enum {
     CANARY_PIXELS_ARGB8888 = 4,                                /*!< Canary pixels: 4 * sizeof(uint32_t) = 16 */
     CANARY_PIXELS_RGB565 = 8,                                  /*!< Canary pixels: 8 * sizeof(uint16_t) = 16 */
@@ -56,7 +48,6 @@ typedef struct {
     unsigned int dest_stride_step;                            /*!< Increment step in destination stride of the destination test array */
     unsigned int test_combinations_count;                     /*!< Count of fest combinations */
 } test_matrix_lv_image_params_t;
-
 
 /**
  * @brief Functionality test case parameters for LV Image
@@ -86,7 +77,6 @@ typedef struct {
     unsigned int dest_unalign_byte;                           /*!< Destination buffer memory unalignment */
     blend_operation_t operation_type;                         /*!< Type of fundamental blend operation */
 } func_test_case_lv_image_params_t;
-
 
 /**
  * @brief Benchmark test case parameters for LV Image

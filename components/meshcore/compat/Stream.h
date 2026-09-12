@@ -1,15 +1,5 @@
-/* The four methods of Arduino's Stream that MeshCore actually uses.
 
-   LS-969  MeshCore's core is portable C++ - the only Arduino dependency in
-   it is this class, and only in Identity::readFrom/writeTo/printTo and
-   Utils::printHex. Rather than drag in an Arduino compatibility layer for
-   four methods, this is the four methods.
 
-   Verified against the vendored source on 2026-09-09: `readBytes`, `write`,
-   `print` and `println` are the entire surface. If a future MeshCore version
-   reaches for more, the build breaks here rather than silently linking
-   against something that behaves differently, which is the point of keeping
-   it this small. */
 #ifndef LS_COMPAT_STREAM_H
 #define LS_COMPAT_STREAM_H
 

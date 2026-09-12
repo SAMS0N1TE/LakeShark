@@ -1,16 +1,5 @@
-/* rweather/Crypto's SHA256, reduced to what MeshCore calls, over mbedtls.
 
-   LS-969  MeshCore's PlatformIO build pulls rweather/Crypto for SHA256 and
-   AES. ESP-IDF already links mbedtls, which has hardware acceleration on the
-   P4 for both, so vendoring a second software implementation would cost
-   flash, cost RAM, and be slower. This maps the four methods MeshCore uses
-   onto mbedtls and nothing else.
 
-   The surface was read out of the vendored Utils.cpp on 2026-09-09:
-   update(), finalize(out,len), resetHMAC(key,len), finalizeHMAC(key,len,
-   out,len). Note that finalize TRUNCATES - MeshCore asks for 2-byte MACs and
-   8-byte hashes - so the digest is always computed in full into a local and
-   then copied, never asked of mbedtls at a short length. */
 #ifndef LS_COMPAT_SHA256_H
 #define LS_COMPAT_SHA256_H
 

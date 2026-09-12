@@ -25,14 +25,6 @@ typedef struct {
 /* Install hooks. Pass NULL to clear them (used by the bench). */
 void fm_sweep_configure(const fm_sweep_hooks_t *hooks);
 
-/* The one entry point every UI path that starts a band sweep must use.
-   Order is fixed and single-sourced:
-     1. stop the channel scanner if it is running (otherwise it drags the app
-        back to FM_MODE_LISTEN on its next pass and the sweep looks dead);
-     2. set FM_MODE_SCAN so the sweep loop and its UI wake up;
-     3. restart the sweep so bins are reset and the trace redraws.
-   Returns nothing - a hook that is not installed makes its step a no-op, which
-   is what the bench relies on. */
 void fm_sweep_start_arbitrated(void);
 
 #ifdef __cplusplus

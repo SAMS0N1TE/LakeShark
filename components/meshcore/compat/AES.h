@@ -1,11 +1,5 @@
-/* rweather/Crypto's AES128, reduced to what MeshCore calls, over mbedtls.
 
-   LS-969  See SHA256.h for why mbedtls rather than a vendored software AES.
 
-   MeshCore uses exactly three methods, read out of the vendored Utils.cpp on
-   2026-09-09: setKey(key, len), encryptBlock(out, in), decryptBlock(out, in).
-   Single-block ECB, with MeshCore doing its own CBC-style chaining above
-   this - which is why ECB here is correct and not the usual mistake. */
 #ifndef LS_COMPAT_AES_H
 #define LS_COMPAT_AES_H
 

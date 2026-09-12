@@ -5,13 +5,6 @@
 #include <stdint.h>
 
 /**/
-/* Before this fix, AppMap::buildWptTab created _wpt_tbl but never called
-   lv_obj_add_event_cb on it, so LVGL taps on the table were dropped on the
-   floor.  _wsel started at zero and only moved when MARK HERE wrote into a
-   fresh slot, which meant that on a fresh app start with waypoints already
-   in NVS, GOTO and DEL could only ever act on slot 0.  The row-to-slot
-   classifier lives in its own C file so the bench can drive it directly;
-   the LVGL callback in AppMap.cpp is thin and only calls this. */
 
 /* Match MAP_MAX_WPT in AppMap.hpp; changing that requires updating the
    AppMap.cpp callback's stack buffer too, so pin the value here. */

@@ -19,8 +19,6 @@
  * 02110-1301, USA.
  */
 
-
-
 #include "typedef.h"
 #include "globals.h"
 #include "basic_op.h"
@@ -33,8 +31,6 @@
 #include "math_sub.h"
 #include "encode.h"
 #include "imbe_vocoder_impl.h"
-
-
 
 //-----------------------------------------------------------------------------
 //	PURPOSE:
@@ -56,7 +52,6 @@ void imbe_vocoder_impl::sa_decode_init(void)
 	num_harms_prev1 = 30;
 	v_zap((Word16 *)sa_prev1, 2 * (NUM_HARMS_MAX + 2));
 }
-
 
 //-----------------------------------------------------------------------------
 //	PURPOSE:

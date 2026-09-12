@@ -18,49 +18,7 @@
  * Software Foundation, Inc., 51 Franklin Street, Boston, MA
  * 02110-1301, USA.
  */
-/*
-********************************************************************************
-*
-*      GSM AMR speech codec   Version 7.4.0   January 31, 2000
-*
-********************************************************************************
-*
-*      File             : typedefs.h
-*      Description      : Definition of platform independent data
-*                         types and constants
-*
-*
-*      The following platform independent data types and corresponding
-*      preprocessor (#define) constants are defined:
-*
-*        defined type  meaning           corresponding constants
-*        ----------------------------------------------------------
-*        Char          character         (none)
-*        Bool          boolean           true, false
-*        Word8         8-bit signed      minWord8,   maxWord8
-*        UWord8        8-bit unsigned    minUWord8,  maxUWord8
-*        Word16        16-bit signed     minWord16,  maxWord16
-*        UWord16       16-bit unsigned   minUWord16, maxUWord16
-*        Word32        32-bit signed     minWord32,  maxWord32
-*        UWord32       32-bit unsigned   minUWord32, maxUWord32
-*        Float         floating point    minFloat,   maxFloat
-*
-*
-*      The following compile switches are #defined:
-*
-*        PLATFORM      string indicating platform progam is compiled on
-*                      possible values: "OSF", "PC", "SUN"
-*
-*        OSF           only defined if the current platform is an Alpha
-*        PC            only defined if the current platform is a PC
-*        SUN           only defined if the current platform is a Sun
-*        
-*        LSBFIRST      is defined if the byte order on this platform is
-*                      "least significant byte first" -> defined on DEC Alpha
-*                      and PC, undefined on Sun
-*
-********************************************************************************
-*/
+
 #ifndef typedefs_h
 #define typedefs_h "$Id $"
 
@@ -99,7 +57,6 @@ typedef unsigned char UWord8;
 #error cannot find 8-bit type
 #endif
 
-
 /*
  ********* define 16 bit signed/unsigned types & constants
  */
@@ -120,7 +77,6 @@ typedef unsigned short UWord16;
 #else
 #error cannot find 16-bit type
 #endif
-
 
 /*
  ********* define 32 bit signed/unsigned types & constants

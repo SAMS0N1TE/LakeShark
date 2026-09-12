@@ -76,19 +76,6 @@ bool ls_gps_running(void);
 esp_err_t ls_gps_start(void);
 void      ls_gps_stop(void);
 
-/* Fold one NMEA sentence into a state.
-
-   Separated from the reader because it is arithmetic and the reader is a
-   UART, a task and a ring buffer. It is also the half that has never run on
-   the board: the receiver has been indoors, so it produced well-formed
-   sentences with empty position fields for hours and the coordinate
-   conversion was never reached. That conversion is where the mistakes live -
-   ddmm.mmmm is not degrees, latitude has two degree digits and longitude
-   three, and south and west are negative.
-
-   `line` is one sentence without its terminator. Returns false when the
-   checksum does not match, in which case `st` is untouched: a corrupted
-   sentence must not move a position. */
 bool ls_gps_parse_line(const char *line, int len, ls_gps_state_t *st);
 
 /* Snapshot of the current state.  Cheap; safe from any task. */

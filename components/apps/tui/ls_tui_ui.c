@@ -336,14 +336,6 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         /* A live app says so in words, in its top border. */
 
-        /* Green on the selected tile's own hue was a colour on a
-           colour, and the one inverse in the chrome nothing measured: 1.3 to
-           2.1:1 in Daylight, where every hue is a dark ink, and short in the
-           dark themes as well. On a selected tile the word is drawn the way
-           every other inverse is, the ground's colour on bright green - the
-           pair the landscape tab strip already uses for "this is the live
-           one". The one-cell mark below is a solid block, which is green
-           whatever it sits on, so it keeps its colours. */
         if (tile[i].live && box.w >= 10)
             tui_put_str(sf, box, box.x + box.w - 6, box.y, "LIVE",
                         sel_now ? TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT)

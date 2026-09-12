@@ -359,14 +359,7 @@ static bool tui_live_from(const char *path)
     default:           return false;
     }
 }
-/* A receiver app is live when it HOLDS the receiver, not when it
-   happens to be hearing something.
 
-   p25.sync, fm.squelch and adsb.aircraft are all false on a receiver that is
-   running and hearing nothing, so the lamp went out the moment the thing it
-   was watching went quiet - which is the moment it was worth having. The
-   claim survives leaving the screen, so this is also the only one of the two
-   that answers "is it still going while I am over here". */
 static bool tui_live_claim(const char *mode)
 {
     const char *now = ls_tui_radio_claimed();
@@ -492,7 +485,7 @@ static int s_tui_screen_req = -1;
 static int s_tui_mode_req = -1;
 static const struct { const char *mode; const char *app; int page; } TUI_MODES[] = {
     { "P25", "p25", -1 }, { "ADS-B", "adsb", -1 },
-    { "FM", "fm", 0 }, { "REC", "rec", -1 }, { "POCSAG", "fm", 1 },
+    { "FM", "fm", -1 }, { "REC", "rec", -1 }, { "POCSAG", "fm", 1 },
 };
 static bool tui_defer_screen(int index)
 {
@@ -1189,14 +1182,7 @@ static int tui_cmd(int argc, char **argv)
         printf("  daylight is laid over any of these: 'tui daylight on|off'\n");
         return 0;
     }
-    /* Daylight from the bench, above the running guard like the
-       theme and for the same reason. It makes the same two calls the SET row
-       makes - apply, then store - so the console and the box cannot disagree
-       about what the switch does, and a reboot keeps what was set here.
 
-       It reports everything whether or not it changed anything: what the
-       glass is drawing, which theme is underneath and comes back, and
-       whether there is a session for any of it to show on. */
     if (argc >= 2 && !strcmp(argv[1], "daylight")) {
         int rc = 0;
         if (argc >= 3 && !strcmp(argv[2], "on")) {
@@ -1248,9 +1234,7 @@ static int tui_cmd(int argc, char **argv)
         else if (!strcmp(argv[2], "down"))    k = LS_TK_DOWN;
         else if (!strcmp(argv[2], "left"))    k = LS_TK_LEFT;
         else if (!strcmp(argv[2], "right"))   k = LS_TK_RIGHT;
-        /* Named because the shell eats a bare space and a bare
-           backspace cannot be typed into a command line at all. The
-           on-screen keyboard in lsconsole sends both by name. */
+
         else if (!strcmp(argv[2], "backspace")) k = LS_TK_BACKSPACE;
         /* The five that were only ever on the hardware. Naming them
            here is what lets the GUI keyboard drive them too - and the GUI is
@@ -1291,17 +1275,7 @@ static int tui_cmd(int argc, char **argv)
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "cost")) {
-        /* What the last frame cost, on whatever screen is up.
 
-           The boot line reports one full paint of the directory and nothing
-           after it, so every later question - what does the waterfall cost,
-           what does a settled screen cost - needed a screen that happened to
-           print it. DIAG did; the others did not, which meant measuring the
-           waterfall meant leaving the waterfall.
-
-           Cells are the transferable half: the renderer is linear in them and
-           the number is the same on any machine. The microseconds are this
-           board's, which is the half that needed the board. */
         uint32_t us = 0;
         int cells = 0;
         int cols = 0, rows = 0;
@@ -1526,10 +1500,7 @@ static int lora_cmd(int argc, char **argv)
         (!strcmp(argv[1], "rx") || !strcmp(argv[1], "tx") || !strcmp(argv[1], "config"))) {
         printf("lora: MeshCore owns the radio - 'mesh stop' first, "
                "or use 'mesh' to see what it is hearing\n");
-        /*'lora scan' is deliberately NOT in that list. It borrows
-           the radio through ls_mesh_radio_hold and puts it back, which is
-           the whole point of there being a lease - a survey of the band you
-           are meshing in is most useful while you are meshing in it. */
+
         return 1;
     }
 

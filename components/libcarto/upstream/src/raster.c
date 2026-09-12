@@ -56,21 +56,7 @@ void carto_draw_line(carto_framebuffer *fb, int x0, int y0, int x1, int y1,
         if (width == 1) carto_put_px(fb, x0, y0, c);
         else            carto_fill_rect(fb, x0 - half, y0 - half, width, width, c);
         if (x0 == x1 && y0 == y1) break;
-        /*LS-1085  Multiply, do not shift. `err` starts at dx - dy and is
-           negative for any line steeper than 45 degrees, which is half of
-           them - and left-shifting a negative int is undefined behaviour in
-           C, not merely implementation-defined.
 
-           It has always produced the right answer on the compilers this has
-           been built with, which is exactly why it survived: nothing fails
-           until an optimiser decides a negative shift cannot happen and
-           reasons from there. Found by `bench/verify.ps1 -Sanitize`, which
-           runs UBSan in trap mode on this toolchain - the whole test binary
-           died with an illegal instruction on this line, in the middle of
-           drawing a water line.
-
-           `* 2` is the same arithmetic with defined behaviour and the same
-           code generated. */
         int e2 = err * 2;
         if (e2 > -dy) { err -= dy; x0 += sx; }
         if (e2 <  dx) { err += dx; y0 += sy; }
@@ -125,17 +111,7 @@ void carto_fill_polygon(carto_framebuffer *fb, const carto_ipt *pts, int n, cart
        one would change a public signature; the renderer runs on one task, and
        that is written down in the component's DEVIATIONS.md. */
     static int xints[CARTO_MAX_CROSSINGS];
-    /*LS-1073  Float, not double: a divide per crossing, in software.
 
-       This is the inner loop of every filled polygon - once per edge per
-       scanline - and the divide in it was double precision on a chip whose
-       FPU only does single. Water and landuse are most of what a map of New
-       Hampshire draws, so this ran millions of times a pan.
-
-       The inputs are integer pixel coordinates, exact in a float well past
-       any value a frame can hold, and `t` is a ratio in nought to one. The
-       result is truncated to an int. There is nothing here that needed
-       fifteen significant digits. */
     for (int y = miny; y <= maxy; ++y) {
         float yc = (float)y + 0.5f;
         int cnt = 0;

@@ -13,15 +13,12 @@ struct carto_ctx {
     double origin_x, origin_y;
     carto_ipt *scratch;
     int scratch_cap;
-    /*LS-1050  The MVT value table, held here so it is allocated once per
-       frame instead of once per layer category on the drawing task's stack.
-       See mvt.h. */
+
     const uint8_t **val_ptr;
     int            *val_len;
     int            *val_num;
     int             val_cap;
-    /*LS-1055  Where place names go. NULL and none are collected, which is
-       what every caller that only wants a picture gets. */
+
     carto_label_sink *labels;
 };
 
@@ -30,7 +27,6 @@ struct carto_ctx {
    bound stay in the same place. */
 #define CARTO_MVT_VALUES 4096
 
-/*LS-1067  Straight through to the parser, which is where the rings are. */
 int  carto_scratch_peak(void)       { return mvt_scratch_peak(); }
 void carto_scratch_peak_reset(void) { mvt_scratch_peak_reset(); }
 
@@ -62,9 +58,6 @@ carto_ctx *carto_begin(carto_arena *arena, carto_framebuffer *fb,
         (size_t)c->scratch_cap * sizeof(carto_ipt), 4);
     if (!c->scratch) return NULL;
 
-    /*LS-1050  The MVT value table, from the arena rather than from whichever
-       task happens to be drawing. Two pages here against a 6 KB task stack
-       there; see mvt.h. */
     c->val_cap = CARTO_MVT_VALUES;
     c->val_ptr = (const uint8_t **)carto_arena_alloc(arena,
         (size_t)c->val_cap * sizeof(const uint8_t *), 4);
@@ -83,11 +76,6 @@ carto_ctx *carto_begin(carto_arena *arena, carto_framebuffer *fb,
     return c;
 }
 
-/*LS-1055  Where place names are put while tiles are rendered.
-
-   Set it before the first carto_render_tile of a frame and clear the sink's
-   count yourself; it fills across every tile in the frame, because a name
-   belongs to the view and not to whichever tile happened to carry it. */
 void carto_set_label_sink(carto_ctx *ctx, carto_label_sink *sink)
 {
     if (ctx) ctx->labels = sink;

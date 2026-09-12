@@ -138,9 +138,7 @@ bool AppMedia::resume(void)
        decoding into the same codec. */
     ls_media_lifecycle_enter();
     if (_timer) lv_timer_resume(_timer);
-    /* Files may have stashed a new path while we were paused - play it now,
-       otherwise the shell will drop the user on a resumed Music showing the
-       old list instead of the file they just picked. */
+
     consume_pending_handoff();
     if (_now) updateNow();
     return true;

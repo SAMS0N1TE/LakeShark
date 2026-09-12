@@ -1,5 +1,12 @@
 # LakeShark release notes
 
+## 2.0.1
+
+- Direct FM mode selection and frequency step controls.
+- POCSAG message navigation in list and detail views.
+- Live FM waterfall with a signal-level graph and optional band sweeps.
+- Full-width waterfall, thin traces and faster live updates.
+
 ## T-Display-P4
 
 The primary target is the LilyGO T-Display-P4 with the 4.1-inch, 568 x 1232 RM69A10 AMOLED and 16 MB flash.

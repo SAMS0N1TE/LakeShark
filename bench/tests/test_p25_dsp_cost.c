@@ -51,16 +51,6 @@ static void make_c4fm_iq(uint8_t *iq, int pairs, unsigned long long seed)
     }
 }
 
-/*
- * Push the signal through one mode in device-sized blocks, REPS times over
- * the same dsp_state so the stream stays continuous. REPS exists only to
- * beat clock()'s granularity: one second of signal takes single-digit
- * milliseconds here, and CLOCKS_PER_SEC on Windows quantises to about that,
- * so a single pass reports 4 ms or 7 ms depending on where the tick fell.
- *
- * Returns the samples produced by the LAST pass (so the caller can check
- * the rate against one second of input); *ms_out is the per-pass host time.
- */
 #define REPS 16
 
 static int run_mode(demod_mode_t mode, const uint8_t *iq, int pairs,

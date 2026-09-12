@@ -219,18 +219,7 @@ LS_CASE(reentry_from_del_hook_does_not_double_delete)
 
 LS_CASE(full_files_teardown_sequence_leaves_no_live_dialog)
 {
-    /* End-to-end walk of the sequence the shell puts Files through when the
-       user opens a properties dialog and then taps a different app in the
-       status bar:
 
-         run()             -> establishes the container
-         showFileDialog()  -> slot_close (no-op), then slot_set on a new obj
-         pause()           -> slot_close on the live obj
-         close()           -> slot_close on an already-empty slot
-
-       At the end: exactly one del call, the object is gone, the slot is
-       empty.  This case pins the entire done-when: "switching away from
-       Files cannot leave its dialog visible or callable". */
     wire_mocks();
     ls_dialog_slot_t slot = {0};
     fake_obj_t o;

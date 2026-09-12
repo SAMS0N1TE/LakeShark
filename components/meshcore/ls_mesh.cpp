@@ -894,9 +894,6 @@ static esp_err_t save_setting_blob(const char *key, const void *val, size_t n)
     return err;
 }
 
-/* Where we are, if we know. Returns false with no fix, and a
-   sighting with no position is not recorded at all - a coverage map whose
-   points are all 0,0 is worse than an empty one. */
 static bool our_position(int32_t *lat_e7, int32_t *lon_e7,
                          uint32_t *t, uint8_t *flags)
 {
@@ -1667,8 +1664,6 @@ static esp_err_t send_dm_to(int pi, const char *text)
     memcpy(&temp[5], text, (size_t)tlen);
     temp[5 + tlen] = 0;
 
-    /* The acknowledgement we are waiting for, computed the way the recipient
-       will compute it - over the payload and OUR public key. */
     uint32_t expect = 0;
     mesh::Utils::sha256((uint8_t *)&expect, 4, temp, 5 + tlen,
                         s_mesh->self_id.pub_key, PUB_KEY_SIZE);

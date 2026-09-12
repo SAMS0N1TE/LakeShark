@@ -35,7 +35,6 @@
 #include "encode.h"
 #include "imbe_vocoder_impl.h"
 
-
 void imbe_vocoder_impl::sa_encode_init(void)
 {
 	Word16 i;
@@ -94,7 +93,6 @@ void imbe_vocoder_impl::sa_encode(IMBE_PARAM *imbe_param)
 	{
 		index   = (UWord16)(k_acc >> 24);                    // Get integer part
 		si_coef = (Word16)((k_acc - ((UWord32)index << 24)) >> 9); // Get fractional part 
-
 
 		if(si_coef == 0)
 		{
@@ -191,8 +189,6 @@ void imbe_vocoder_impl::sa_encode(IMBE_PARAM *imbe_param)
 	printf("\n");
 	printf("\n");
 */
-
-
 
 	//////////////////////////////////////////////
 	//

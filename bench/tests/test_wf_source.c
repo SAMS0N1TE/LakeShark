@@ -16,6 +16,7 @@
 #include "apps/p25/p25_spectrum.h"
 #include "apps/p25/p25_program.h"
 #include "apps/fm/fm_state.h"
+#include "apps/fm/fm_spectrum.h"
 
 /* ---- the widget ------------------------------------------------------- */
 
@@ -25,6 +26,13 @@ static int           g_pushes;
 static float         g_row[LS_WF_BINS_MAX];
 static int           g_row_n;
 static ls_wf_feed_t  g_feed;
+static int g_previews;
+void ls_wf_preview(ls_wf_owner_t owner, const float *bins, int n,
+                   const ls_wf_feed_t *feed)
+{
+    (void)owner; (void)bins; (void)n; (void)feed;
+    ++g_previews;
+}
 
 void ls_wf_claim(ls_wf_owner_t owner, const char *label)
 {
@@ -106,6 +114,17 @@ fm_state_t FM;
 static bool        g_fm_streaming;
 static int         g_fm_mode_asked = -1;
 static const char *g_radio_asked;
+static bool g_fm_spectrum_enabled;
+static bool g_fm_spectrum_ready;
+void fm_spectrum_enable(bool on) { g_fm_spectrum_enabled = on; }
+bool fm_spectrum_read(float *bins, int n, uint32_t now,
+                       fm_spectrum_snapshot_t *snapshot)
+{
+    if (!g_fm_spectrum_enabled || !g_fm_spectrum_ready) return false;
+    for (int i = 0; i < n; ++i) bins[i] = i == n / 2 ? 0.8f : 0.1f;
+    *snapshot = (fm_spectrum_snapshot_t){100000000, 256000, now, 99};
+    return true;
+}
 
 void fm_get_receiver_status(ls_iq_control_status_t *out)
 {
@@ -250,15 +269,47 @@ LS_CASE(an_fm_receiver_that_has_stopped_is_not_a_spectrum)
     LS_EQ_STR("none", ls_wf_source_name());
 }
 
-LS_CASE(picking_fm_asks_for_the_receiver_and_for_the_sweep)
+LS_CASE(picking_fm_asks_for_the_receiver_without_forcing_sweep)
 {
-    /* The one route FALLS and FM's SWEEP page both take now: the receiver by
-       name, and the sweep, because FM streaming on one channel has no bins. */
     fresh();
     LS_CHECK(ls_wf_source_start(LS_WF_SRC_FM));
     LS_EQ_STR("FM", g_radio_asked);
-    LS_EQ_INT(FM_MODE_SCAN, g_fm_mode_asked);
+    LS_CHECK(g_fm_mode_asked != FM_MODE_SCAN);
     LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+}
+
+LS_CASE(fm_live_waterfall_does_not_start_a_sweep)
+{
+    fresh();
+    FM.mode = FM_MODE_WFM;
+    g_fm_streaming = true;
+    g_fm_spectrum_ready = true;
+    LS_CHECK(ls_wf_source_start(LS_WF_SRC_FM));
+    LS_EQ_INT(-1, g_fm_mode_asked);
+    ls_wf_source_pump();
+    LS_EQ_INT(1, g_pushes);
+    LS_EQ_STR("live IQ", g_feed.note);
+    LS_EQ_UINT(256000, g_feed.span_hz);
+    LS_EQ_UINT(100000000, g_feed.center_hz);
+    ls_wf_source_pump();
+    LS_EQ_INT(1, g_pushes);
+    g_fm_spectrum_ready = false;
+}
+
+LS_CASE(fm_first_sweep_reports_progress_only_while_receiving)
+{
+    fresh();
+    fm_sweeping_with_one_carrier();
+    FM.scan_tunes = 20;
+    FM.scan_idx = 5;
+    const int previews = g_previews;
+    ls_wf_source_select(LS_WF_SRC_FM);
+    ls_wf_source_pump();
+    LS_EQ_STR("FM sweeping: 25% (5/20)", ls_wf_source_progress());
+    LS_EQ_INT(0, g_pushes);
+    LS_EQ_INT(previews + 1, g_previews);
+    g_fm_streaming = false;
+    LS_CHECK(ls_wf_source_progress() == NULL);
 }
 
 /* ---- the mesh's lease -------------------------------------------- */

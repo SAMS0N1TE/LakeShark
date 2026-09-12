@@ -318,7 +318,7 @@ LS_CASE(production_auto_switch_and_inversion_use_mode_specific_polarity)
  * the generator's filter tail. Those19 NIDs decode, but5 TSBKs do not.
  * Keep that startup defect visible without inventing a DSP reset policy. */
 LS_CASE_KNOWN_FAIL(warm_c4fm_to_cqpsk_loses_tsdu_crc_despite_valid_nids,
-                   "LS-766 warm-start phase/history investigation")
+                   "warm-start phase/history")
 {
     uint8_t *iq = protocol_cqpsk_iq();
     replay_init(iq, IQ_BYTES, 16384);

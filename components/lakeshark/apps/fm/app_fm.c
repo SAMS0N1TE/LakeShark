@@ -6,6 +6,7 @@
 #include "fm_rx_worker.h"
 #include "pocsag.h"
 #include "acars.h"
+#include "fm_spectrum.h"
 #include "acars_app.h"
 #include "acars_resample.h"
 #include "flex.h"
@@ -211,6 +212,7 @@ static inline bool fm_fast_hopping(void)
 static void fm_tune_hw(uint32_t hz)
 {
     if (!s_session || hz < 1000000UL) return;
+    fm_spectrum_invalidate();
     uint64_t actual_hz = 0;
     ls_radio_err_t error = ls_radio_iq_retune(s_session, hz,
                                                fm_fast_hopping(), &actual_hz);
@@ -241,12 +243,6 @@ static void fm_apply_freq(uint32_t hz)
 /**/
 /* THE SWEEP IS AN FFT NOW, NOT A POWER METER ON A LADDER. */
 
-/* Middle slice of the passband we are willing to believe. The RTL's IF filter
-   rolls off toward the edges of 256 kSPS, and the tuner's own LO leakage puts
-   a DC spike dead centre. Using the full width would draw the filter's shape
-   and a permanent fake carrier down the middle of every tune - which on a
-   signal finder is exactly the quiet wrong answer this file keeps collecting.
-   200 kHz of 256 kHz keeps the flat part; the DC bins are skipped below. */
 #define FM_SPEC_USABLE_HZ   200000u
 /* Buffers folded into each tune position before the spectrum is read. */
 #define FM_SPEC_AVG         4
@@ -406,6 +402,7 @@ static void scan_step(const uint8_t *iq, int len)
 
 static void fm_receiver_lost(ls_radio_err_t error)
 {
+    fm_spectrum_invalidate();
     FM.iq_bytes_sec = 0;
     FM.iq_level = 0.0f;
     FM.audio_level = 0.0f;
@@ -505,7 +502,7 @@ static void fm_rx_run_once(void)
             FM.mode = (fm_mode_t)m;
             fm_dsp_init(&s_dsp);
             if (FM.mode == FM_MODE_SCAN) {
-                scan_begin(false);
+                scan_begin(true);
             } else {
                 uint32_t f = s_mode_freq[FM.mode];
                 FM.freq_hz = (f >= 1000000UL) ? f : fm_mode_default_freq(FM.mode);
@@ -539,6 +536,7 @@ static void fm_rx_run_once(void)
         ls_iq_control_request_t radio_request;
         if (ls_iq_control_take(&s_radio_control, &radio_request)) {
             if (radio_request.flags & LS_IQ_CONTROL_TUNE) {
+                fm_spectrum_invalidate();
                 ls_radio_err_t error = ls_iq_control_apply_tune(
                     &s_radio_control, s_session, &radio_request);
                 if (error != LS_RADIO_OK)
@@ -596,6 +594,11 @@ static void fm_rx_run_once(void)
         if (!full || got < FM_IQ_BLOCK_BYTES) { continue; }
         read_errors = 0;
         iq_bucket += FM_IQ_BLOCK_BYTES;
+
+        if (FM.mode != FM_MODE_SCAN && s_radio_control.effective_center_known)
+            fm_spectrum_feed(iq, FM_IQ_BLOCK_BYTES,
+                (uint32_t)s_radio_control.effective_center_hz, FM_RTL_RATE,
+                (uint32_t)(esp_timer_get_time() / 1000));
 
         if (FM.mode == FM_MODE_SCAN) {
             scan_step(iq, FM_IQ_BLOCK_BYTES);

@@ -41,40 +41,6 @@ static float lv_image_benchmark_run(bench_test_case_lv_image_params_t *test_para
 
 // ------------------------------------------------ Test cases ---------------------------------------------------------
 
-/*
-Benchmark tests
-
-Requires:
-    - To pass functionality tests first
-
-Purpose:
-    - Test that an acceleration is achieved by an assembly implementation of LVGL blending API
-
-Procedure:
-    - Initialize input parameters (test array length, width, allocate array...) of the benchmark test
-    - Run assembly version of LVGL blending API multiple times (1000-times or so)
-    - Firstly use an input test parameters for the most ideal case (16-byte aligned arrays, arrays widths divisible by 2 for RGB565 color format)
-    - Then use worst-case input test parameters (1-byte aligned arrays, arrays width NOT divisible by 2 for RGB565 color format)
-    - Count how many CPU cycles does it take to run a function from the LVGL blending API for each case (ideal and worst case)
-    - Run ansi version of LVGL blending API multiple times (1000-times or so) and repeat the 2 above steps for the ansi version
-    - Compare the results
-    - Free test arrays and structures needed for LVGL blending API
-
-Inducing Most ideal and worst case scenarios:
-    - Most ideal:
-        - Both, the source and the destination buffers should be aligned by 16-byte (Xtensa PIE), or 4-byte (Xtensa base) boundaries
-        - Matrix width (in pixels) should be equal to the main loop length in the assembly src code
-          typically multiples of 16 bytes (for RGB565 it's either 32 bytes - 16 pixels or 48 bytes - 24 pixels)
-        - Matrix height does not have any effect on benchmark unit tests, unit the matrix is too large that cache limitations start to affect the performance
-        - Matrix strides, should be equal to the matrix widths (0 matrix padding), or their multiples (matrix width = matrix padding)
-    - Worst case:
-        - Both, hte source and the destination buffers should NOT be aligned by 16-byte (Xtensa PIE), or 4-byte (Xtensa base) boundaries,
-          Source buffer unalignment should be different from the destination unalignment, with one unalignment being even, the other being odd
-          The unalignments shall be small numbers (preferably 1 or 2 bytes)
-        - Matrix width should be one pixels smaller, than the matrix width for the most ideal case
-        - Matrix height does not have any effect on benchmark unit tests, unit the matrix is too large that cache limitations start to affect the performance
-        - Matrix strides, should NOT be equal to the matrix widths (non 0 matrix padding)
-*/
 // ------------------------------------------------ Test cases stages --------------------------------------------------
 
 TEST_CASE("LV Image benchmark RGB565 blend to RGB565", "[image][benchmark][RGB565]")

@@ -181,7 +181,7 @@ static void nfm_ensure_listen(void)
 {
     if (FM.mode == FM_MODE_LISTEN) return;
     ESP_LOGW(TAG, "scanner: FM submode was %d - forcing LISTEN, squelch is "
-                  "only maintained there (LS-728)", (int)FM.mode);
+                  "only maintained there", (int)FM.mode);
     lakeshark_fm_set_mode(FM_MODE_LISTEN);
 }
 
@@ -360,7 +360,7 @@ static void do_autosquelch(void)
         snprintf(s_status, sizeof(s_status),
                  "autosql: all %d samples read 0 - no signal path, squelch unchanged", n);
         ESP_LOGW(TAG, "autosql: %d samples all zero - refusing to set squelch "
-                      "from a measurement that did not happen (LS-747)", n);
+                      "from a measurement that did not happen", n);
         return;
     }
 

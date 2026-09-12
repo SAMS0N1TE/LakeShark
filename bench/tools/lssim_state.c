@@ -349,6 +349,17 @@ void lssim_set_empty(bool on)
 bool lssim_is_empty(void) { return s_no_radio != 0; }
 
 void p25_spectrum_enable(bool on) { s_spec_on = on; }
+#include "apps/fm/fm_spectrum.h"
+static bool s_fm_spec_on;
+void fm_spectrum_enable(bool on) { s_fm_spec_on = on; }
+bool fm_spectrum_read(float *out, int n, uint32_t now,
+                       fm_spectrum_snapshot_t *snap)
+{
+    if (!s_fm_spec_on || s_no_radio || !out || n < 1) return false;
+    for (int i = 0; i < n; ++i) out[i] = i == n / 2 ? 0.8f : 0.15f;
+    *snap = (fm_spectrum_snapshot_t){FM.freq_hz, FM_RTL_RATE, now, now / 100 + 1};
+    return true;
+}
 bool p25_spectrum_enabled(void) { return s_spec_on; }
 void p25_spectrum_invalidate(void) { s_spec_seq = 0; }
 void p25_spectrum_init(void) { s_spec_seq = 0; }
@@ -373,15 +384,7 @@ bool p25_spectrum_read(float *out, int n, uint32_t now_ms, uint32_t max_age_ms,
     const int mid = n / 2;
 
     for (int i = 0; i < n; i++) {
-        /* Floor. Low, because a real one is: P25_SPECTRUM_FLOOR_DB is -85
-           and TOP is -20, so a receiver sitting at -80 dBm normalises to
-           about 0.08. The first version of this sat at 0.13 to 0.22 and the
-           waterfall came out a flat sheet of mid blue - which reads as a
-           broken palette and was a wrong fixture.
 
-           The texture varies with the bin and NOT with the row: a term that
-           moves with both draws diagonal moire across the history and the
-           eye reads moire as drifting signals. */
         const float a = (float)((i * 7) % 23) / 23.0f;
         const float b = (float)((i * 3 + s_spec_seq / 7) % 11) / 11.0f;
         float v = 0.05f + 0.035f * a + 0.02f * b;

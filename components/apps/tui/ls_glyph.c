@@ -17,14 +17,6 @@ static const char *const DIGIT[10][LS_GLYPH_ROWS] = {
     { "XXX", "X X", "XXX", "  X", "XXX" },   /* 9 */
 };
 
-/* The letters. Upper case forms in a three by five box, which is
-   the smallest grid on which the whole alphabet stays distinct.
-
-   The two that fought it are M and W - both want five columns - and the
-   answer is the one every small stroke font reaches for: the diagonal
-   collapses to a filled top row for M and a filled bottom row for W, so
-   they differ from each other and from N and from U. Q is O with a tail in
-   the bottom right cell, which is the only place a tail fits. */
 static const char *const ALPHA[26][LS_GLYPH_ROWS] = {
     { " X ", "X X", "XXX", "X X", "X X" },   /* A */
     { "XX ", "X X", "XX ", "X X", "XX " },   /* B */

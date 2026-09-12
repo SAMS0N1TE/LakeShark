@@ -31,19 +31,11 @@
 #include "encode.h"
 #include "imbe_vocoder_impl.h"
 
-
-
-
 void imbe_vocoder_impl::uv_synt_init(void)
 {
 	fft_init();
 	v_zap(uv_mem, 105);
 }
-
-
-
-
-
 
 void imbe_vocoder_impl::uv_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 {
@@ -116,7 +108,6 @@ void imbe_vocoder_impl::uv_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 		Uw[i] = Uw_tmp[i];
 */
 
-
 	fft((Word16 *)&Uw, FFTLENGTH, -1);
 
 	for(i = 0; i < 105; i++)
@@ -125,7 +116,6 @@ void imbe_vocoder_impl::uv_synt(IMBE_PARAM *imbe_param, Word16 *snd)
 	index_aux = 73;
 	for(i = 105; i < FRAME; i++)
 		snd[i] = shl(Uw[index_aux++].re, 3);
-
 
 	// Weighted Overlap Add Algorithm
 	index_aux = 24;

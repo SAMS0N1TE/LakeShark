@@ -22,19 +22,7 @@
 #include "mbelib.h"
 #include "mbelib_const.h"
 
-/* ---- fast cosf for the IMBE synthesizer ----------------------------------
- * mbe_synthesizeSpeechf's inner loops call cosf hundreds of thousands of times
- * per 20 ms IMBE frame. Software libm cosf on the ESP32-P4 made one P25 LDU's
- * 9 frames take ~1.9 s (10x real-time) -> the decoder fell behind and "locked
- * up". A 1024-entry interpolated table is ~5-8x cheaper and far more accuracy
- * than an 8 kHz vocoder needs. Defined BEFORE the `#define cosf` below so the
- * table itself is built with the real libm cosf.
- *
- * LS-676: Initializing this from mbe_initMbeParms() retained 4100 bytes of
- * internal BSS after the unused synthesis path was linker-GC'd. Initialize at
- * the synthesis entry points instead; the one-time branch stays out of the
- * per-cosine hot path and the table returns automatically when synthesis is
- * linked. */
+/* Initialize the cosine table only when speech synthesis is used. */
 #define MBE_COS_N 1024
 static float s_mbe_cos[MBE_COS_N + 1];
 static int s_mbe_cos_ready;

@@ -1,16 +1,5 @@
-/* FLEX transmitter, for tests.
 
-   FLEX (Motorola, ITU-R M.584-2) is what most of the surviving paging network
-   actually runs.  The point of having this fixture is the same as pocsag_gen -
-   "does FLEX work" stops being a question you answer by standing next to a
-   transmitter.
 
-   The wire format modelled here is deliberately narrow: one frame, one page,
-   sync + mode word + one BCH-encoded FIW + a single 8x32-interleaved payload
-   block.  Real FLEX runs 11 blocks per 1.875 s frame, 128 frames per cycle,
-   15 cycles per hour, and the frame index carries meaning.  None of that
-   changes the demodulator, which is what the decoder has to get right - so
-   the fixture stops where the demodulator stops caring. */
 #ifndef LS_FLEX_GEN_H
 #define LS_FLEX_GEN_H
 

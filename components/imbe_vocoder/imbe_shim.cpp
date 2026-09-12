@@ -10,11 +10,7 @@
 #include <cstring>
 
 /* One decoder instance reused across frames (keeps inter-frame state). */
-/* LS-776: target sizeof is wrapper4 + Impl5736. Default new preferred scarce internal
- * RAM for both (<16384 threshold), and failure escaped the decode API.
- * The decoder runs in normal task context: its state needs neither DMA nor
- * cache-disabled access. Construct the unchanged implementation in PSRAM.
- * Single DSD producer owns initialization/decoding, as before. */
+
 static imbe_vocoder_impl *g_voc = nullptr;
 static bool allocation_reported = false;
 

@@ -1,13 +1,4 @@
-/* LakeShark NFC reader - top-level lifecycle, ST25R3916 SPI transport and
-   NFC-A poller.  Written from the ST25R3916 data sheet (DS12484 r4),
-   ISO/IEC 14443-3 and the NFC Forum Type 2 Tag Operation spec 1.2.  No
-   RFAL source was consulted; RFAL cannot be vendored into this GPL-3.0
-   tree (see bench/NFC.md).
 
-   The NFC-A cascade, the NDEF parser and the Type 2 TLV walk live in
-   nfc_a.c / ndef.c / t2t.c and are pure logic - the bench drives them
-   without any hardware.  This file is the driver glue that sits above
-   them and is gated on LS_HAS_NFC. */
 
 #include "ls_nfc.h"
 #include "ls_board.h"
@@ -31,16 +22,6 @@
 #include "st25r3916_regs.h"
 
 static const char *TAG = "ls_nfc";
-
-/* --- Driver state.
-
-   Memory placement follows the rule in AGENT.md:
-
-     - the NDEF message buffer is bounded and lives in PSRAM;
-     - the FIFO staging buffer is small and lives in internal RAM (it is
-       used by SPI DMA and by the ISR path);
-     - the reader-task stack is TaskCreate-allocated in internal RAM
-       because it runs while cache-disabled paths can fire around it. */
 
 /* NFC-A transmit/receive FIFO staging.  ST25R3916 FIFO is 512 bytes;
    this driver never queues more than a Type 2 read/response pair. */
@@ -158,8 +139,6 @@ int ls_nfc_start(const ls_nfc_config_t *cfg,
     }
     s.spi_owned = true;
 
-    /* Reader task stack in internal RAM (AGENT.md rule: a task stack
-       must not sit in PSRAM). */
     if (xTaskCreate(reader_task, "ls_nfc", LS_NFC_READER_TASK_STK,
                     NULL, 6, &s.reader) != pdPASS) {
         gpio_isr_handler_remove((gpio_num_t)cfg->irq_gpio);
@@ -297,7 +276,6 @@ static void reader_task(void *arg)
 
     }
 
-    /* Notify any observer that whatever last tag we had is gone. */
     emit_removed();
     s.reader = NULL;
     vTaskDelete(NULL);

@@ -19,7 +19,6 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "globals.h"
 #include "imbe.h"
@@ -40,7 +39,6 @@
 const uint8_t  BIT_MASK_TABLE8[]  = { 0x80U, 0x40U, 0x20U, 0x10U, 0x08U, 0x04U, 0x02U, 0x01U };
 #define WRITE_BIT(p,i,b)   p[(i)>>3] = (b) ? (p[(i)>>3] | BIT_MASK_TABLE8[(i)&7]) : (p[(i)>>3] & ~BIT_MASK_TABLE8[(i)&7])
 
-
 void imbe_vocoder_impl::encode_init(void)
 {
 	v_zap(pitch_est_buf, PITCH_EST_BUF_SIZE);
@@ -52,7 +50,6 @@ void imbe_vocoder_impl::encode_init(void)
 	sa_encode_init();
 	pitch_ref_init();
 }
-
 
 void imbe_vocoder_impl::encode(IMBE_PARAM *imbe_param, Word16 *frame_vector, Word16 *snd)
 {

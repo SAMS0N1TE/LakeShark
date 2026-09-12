@@ -319,15 +319,6 @@ LS_CASE(out_of_contract_bin_values_do_not_escape_the_pane)
     }
 }
 
-/* Rows of the pane that nothing touched at all.
-
-   The right measure for "is that box the size of its contents or the size of
-   the pane": a box stretched over the whole pane leaves NO untouched row,
-   because every row of it carries a left and a right border. A box sized to
-   two lines of text leaves every row above and below it. Counting rows also
-   sidesteps the page bar, which paints a row at the top of the pane whatever
-   the body does - measuring a bounding box over the whole pane measured that
-   instead, and said the notice reached the top edge when it did not. */
 static int untouched_rows(tui_rect r)
 {
     int n = 0;

@@ -1,25 +1,5 @@
-/* LakeShark TUI: a character grid painted straight onto the panel.
 
-   LS-917  Why this exists. Measured on the device, LVGL spent 23 ms per
-   refresh rasterising in portrait and 41 ms in landscape, against 6 ms to
-   present. Drawing was four times the cost of showing, and no layout change
-   touches that. A character grid attacks it directly: a changed cell is one
-   glyph, a few hundred pixels, instead of a screen-sized repaint, and there
-   is no anti-aliased geometry, no blending and no gradients to rasterise.
 
-   The cell model, clipping and drawing primitives are tuilib by Valentyn
-   Danylchuk, MIT, vendored under tuilib/ with its licence. Its own present
-   emits ANSI for a terminal, which is no use here, so this file provides the
-   present instead: diff the two grids and blit the cells that changed.
-
-   Blitting also removes the rotation pass. LVGL's software rotation cost
-   19 ms a frame turning landscape output into the panel's native portrait.
-   A blitter that knows both coordinate systems writes the glyph transposed
-   and pays nothing.
-
-   This does not go through LVGL, so the two must not paint at once. Take the
-   LVGL port lock around a session, or drive it from a screen that owns the
-   display. */
 #ifndef LS_TUI_H
 #define LS_TUI_H
 
@@ -30,10 +10,6 @@
 extern "C" {
 #endif
 
-/*LS-917  tuilib is C with no linkage guard of its own. Pulling it in from
-   inside this block keeps the vendored files untouched, which matters because
-   they are somebody else's under a different licence and the next update
-   should be a straight copy. */
 #include "tuilib/tui_core.h"
 #include "ls_font.h"
 
@@ -110,18 +86,6 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row);
 /* Microseconds spent inside the last present, and cells drawn. */
 void ls_tui_last_cost(uint32_t *us, int *cells);
 
-/* Print the grid as text.
-
-   The screenshot path snapshots LVGL, which stopped drawing this UI when the
-   TUI took the panel, so it captures a screen nobody is looking at. It also
-   waits two seconds for the LVGL port lock that a TUI session holds for its
-   whole life, so it fails before getting that far.
-
-   A character grid does not need a bitmap to be looked at. This is the whole
-   screen in a form that fits down a console, pastes into a report, and can be
-   read with no panel attached - which has been the case that mattered while
-   the board sat on another desk. Sub-cell glyphs become the nearest printable
-   stand-in, so a waterfall still reads as a waterfall. */
 void ls_tui_dump(void);
 
 /* ---------------------------------------------------- borrowed pixels -- */

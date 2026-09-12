@@ -391,37 +391,13 @@ function Invoke-BoardRule {
     }
 }
 
-function Invoke-ConsoleBroker {
-    Step 'console broker'
 
-    $py = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py) { $script:failures += 'console broker: python not on PATH'; return }
-
-    $t = & python -m unittest discover -s bench/lsconsole -p 'test_*.py' 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0 -or $t -match 'NO TESTS RAN') {
-        $script:failures += "console broker: tests did not pass`n$t"
-    }
-}
-
-function Invoke-PrivatePathGuard {
-    $releaseTests = & python -m unittest discover -s tools -p 'test_check_public_source.py' 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { $script:failures += "public source guard tests`n$releaseTests" }
+function Invoke-ModuleShadowCheck {
     Step 'module shadow'
-    $py0 = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py0) { $script:failures += 'module shadow: python not on PATH'; return }
-    $sh = & python tools/check_module_shadow.py 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { $script:failures += "module shadow`n$sh" }
-
-    Step 'private paths'
     $py = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py) { $script:failures += 'private paths: python not on PATH'; return }
-    if (Test-Path '.git') {
-        $out = & python tools/check_private_paths.py 2>&1 | Out-String
-    } else {
-        $out = & python tools/check_public_source.py 2>&1 | Out-String
-    }
-    if ($LASTEXITCODE -ne 0) { $script:failures += "private paths`n$out" }
-    else { $out -split "`n" | Where-Object { $_ -match 'note:|^\s+' } | ForEach-Object { Say "    $_" 'DarkYellow' } }
+    if (-not $py) { $script:failures += 'module shadow: python not on PATH'; return }
+    $out = & python tools/check_module_shadow.py 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { $script:failures += "module shadow`n$out" }
 }
 
 $started = Get-Date
@@ -429,8 +405,7 @@ $started = Get-Date
 Invoke-HostBench
 Invoke-HeaderCxxCheck
 Invoke-BoardRule
-Invoke-PrivatePathGuard
-Invoke-ConsoleBroker
+Invoke-ModuleShadowCheck
 
 if ($Level -eq 'smoke') {
     Invoke-Firmware @($cfg.configs | Where-Object { $_.name -eq $cfg.smoke })

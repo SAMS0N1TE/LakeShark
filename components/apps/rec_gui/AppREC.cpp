@@ -742,9 +742,6 @@ void AppREC::updateScout(void)
         return;
     }
 
-    /* Crop to the current zoom.  A span smaller than the native 200 kHz
-       maps to a centre slice of the full array; the tuner is still
-       showing 200 kHz around centre, we are only displaying a portion. */
     float frac = (float)span / (float)REC_SCOUT_SPAN_HZ;
     if (frac > 1.0f) frac = 1.0f;
     int keep  = (int)(nbins * frac + 0.5f);

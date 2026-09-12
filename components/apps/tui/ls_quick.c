@@ -319,31 +319,12 @@ static void draw_figure(tui_surface *sf, tui_rect area, int x, int y,
     const int fw = FIG_W * sx, fh = FIG_H * sy;
     const int ox = x + (w - fw) / 2, oy = y + (h - fh) / 2;
 
-    /* Ink only, straight onto the field.
-
-       The first version cleared the figure's bounding box first, on the
-       theory that a stroke needs air around it. The box is fourteen by five
-       inside a half that is twenty-one by seven, so clearing it wiped the
-       field everywhere except two columns at the edges - the field ended up
-       framing the figure instead of sitting under it, which is the opposite
-       of the intent. A full block on a quarter-block dither has all the
-       contrast it needs. */
     for (int r = 0; r < fh; r++)
         for (int c = 0; c < fw; c++)
             if (fig[r / sy][c / sx] == 'X')
                 tui_put_char(sf, area, ox + c, oy + r, LS_TUI_SHADE_FULL, at);
 }
 
-/* A word sign - GO for an action, the live state for a toggle - on a field
-   of its own.
-
-   A frame inside a frame was the first try and it looked like a rendering
-   fault: two rectangles a column apart, with the word small in the middle of
-   both. The field is the whole interior instead, in the quarter-block shade
-   the rest of this interface uses for a filled area. It reads as a surface
-   you press without being a solid rectangle, which is the line this design
-   keeps having to walk - the pixel toolkit draws a slab because a slab is
-   all it has, and a character grid has texture. */
 static void draw_cap(tui_surface *sf, tui_rect area, int x, int y,
                      int w, int h, const char *word, uint8_t field,
                      uint8_t text)

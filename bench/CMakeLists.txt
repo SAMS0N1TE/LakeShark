@@ -855,6 +855,9 @@ ls_add_test(test_p25_controls ${APP}/p25/p25_controls.c
 ls_add_test(test_p25_spectrum
     ${APP}/p25/p25_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
+ls_add_test(test_fm_spectrum
+    ${APP}/fm/fm_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
 ls_add_test(test_p25_health ${APP}/p25/p25_health.c)
 ls_add_test(test_p25_diag_disabled ${APP}/p25/diag.c)
 target_compile_definitions(test_p25_diag_disabled PRIVATE

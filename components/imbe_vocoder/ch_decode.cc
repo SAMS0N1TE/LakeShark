@@ -26,7 +26,6 @@
 #include "ch_decode.h"
 #include "aux_sub.h"
 
-
 void decode_frame_vector(IMBE_PARAM *imbe_param, Word16 *frame_vector)
 {
 	Word16 bit_stream[BIT_STREAM_LEN];
@@ -73,7 +72,6 @@ void decode_frame_vector(IMBE_PARAM *imbe_param, Word16 *frame_vector)
 	bit_stream[BIT_STREAM_LEN - 3] = (frame_vector[7] & 0x40)?1:0;
 	bit_stream[BIT_STREAM_LEN - 2] = (frame_vector[7] & 0x20)?1:0;
 	bit_stream[BIT_STREAM_LEN - 1] = (frame_vector[7] & 0x10)?1:0;
-
 
 	index0 = 3 + 3 * 12 - 1;
 	for(vec_num = 3; vec_num >= 1;  vec_num--)
@@ -124,7 +122,6 @@ void decode_frame_vector(IMBE_PARAM *imbe_param, Word16 *frame_vector)
 	for(i = 0; i < B_NUM; i++)
 		ba_ptr[i] = b_ptr[i] = 0;
 
-
 	// Unpack bit allocation table's item
 	get_bit_allocation(imbe_param->num_harms, imbe_param->bit_alloc);
 
@@ -142,7 +139,6 @@ void decode_frame_vector(IMBE_PARAM *imbe_param, Word16 *frame_vector)
 	// Synchronization Bit Decoding
 	imbe_param->b_vec[imbe_param->num_harms + 2] = frame_vector[7] & 1;
 }
-
 
 void v_uv_decode(IMBE_PARAM *imbe_param)
 {

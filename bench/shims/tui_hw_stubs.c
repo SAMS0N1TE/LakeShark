@@ -1,18 +1,5 @@
-/* The hardware a screen touches, stood down for the host.
 
-   Everything here is a leaf the layout tests do not exercise and cannot have:
-   a fuel gauge on I2C, and the receiver plumbing that decides which radio is
-   feeding the spectrum. The drawing code above them is linked for real, which
-   is the point - a faked ls_tui_split once disagreed with the real one and
-   hid a portrait layout bug for a week, so the rule here is that only the
-   parts with a wire attached get replaced.
 
-   These are not lies about behaviour, either. A board with no gauge and no
-   receiver running is a state the firmware genuinely has, and it is the state
-   these answers describe: the chrome draws no battery and gets the full width
-   back, and a waterfall with nothing pushed into it reports itself empty and
-   the screens draw their "waiting for the receiver" message. A test that
-   wants a drawn waterfall pushes rows itself through ls_wf_push. */
 #include <stdbool.h>
 #include <stddef.h>
 

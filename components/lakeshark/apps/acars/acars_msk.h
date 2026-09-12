@@ -9,24 +9,6 @@
 extern "C" {
 #endif
 
-/* MSK bit slicer split out from acars.c so it can be tested on its own.
-
-   Feed the slicer audio-band samples at ACARS_SAMP_RATE via
-   acars_msk_process().  It produces one soft-sliced bit per bit period
-   (8 samples nominal) into an internal ring, which the framer reads with
-   acars_msk_read_bits().
-
-   The slicer runs a matched filter for each tone (mark = 1200 Hz, space =
-   2400 Hz) over the last 8 samples.  Bit value = which tone has more energy.
-   Bit timing is a bang-bang loop on the sliced output - transitions pull the
-   sample point toward the bit centre, so a real transmitter's clock error is
-   absorbed by the same loop the FLEX/POCSAG paths use.
-
-   The MSK slicer knows nothing about ACARS framing - that lives in acars.c.
-   This separation is what lets a bench case drive audio through the slicer,
-   read bits back, and compare to what was transmitted, without any framing
-   state in the way. */
-
 typedef struct acars_msk acars_msk_t;
 
 acars_msk_t *acars_msk_create (void);

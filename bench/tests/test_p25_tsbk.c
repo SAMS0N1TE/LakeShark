@@ -105,16 +105,6 @@ LS_CASE(iden_up_tdma_populates_the_table_with_a_slot_count)
     dsd_state state = { 0 };
     uint8_t iden[12];
 
-    /* IDEN_UP_TDMA (opcode 0x33), derived from boatbod/op25
-     * gr-op25_repeater/apps/trunking.py's opcode 0x33 field shifts:
-     *   bits 16-19  Identifier       (4 bits)
-     *   bits 20-23  Channel type     (4 bits; type 3 is 2-slot TDMA,
-     *                                 12.5 kHz, half-rate voice)
-     *   bit  24     TxOffset sign    (0 = negative, 1 = positive)
-     *   bits 25-37  TxOffset value   (13 bits, units of channel spacing)
-     *   bits 38-47  Channel spacing  (10 bits, units of 125 Hz)
-     *   bits 48-79  Base frequency   (32 bits, units of 5 Hz)
-     * OP25's slots_per_carrier table maps channel type 3 to two slots. */
     make_tdma_iden(iden, 2);
     LS_EQ_INT(p25_tsbk_parse(&state, iden), 1);
     LS_CHECK(state.p25_iden_table[2].valid);

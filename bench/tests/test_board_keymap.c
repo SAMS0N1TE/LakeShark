@@ -220,9 +220,7 @@ LS_CASE(typing_and_moving_keys_repeat)
 
 LS_CASE(nothing_that_toggles_or_transitions_repeats)
 {
-    /* The whole point. Every key on the matrix that is not a character or a
-       mover must refuse to repeat, so a new key added to the table cannot
-       quietly inherit the behaviour. */
+
     for (int r = 0; r < ROWS; r++)
         for (int c = 0; c < COLS; c++) {
             const ls_keymap_entry_t *e = ls_keymap_lookup((uint8_t)r, (uint8_t)c);

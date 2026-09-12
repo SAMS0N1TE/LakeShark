@@ -1,19 +1,6 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/core/usb_autoreboot_pref.c */
 /* LS_TEST_INCLUDE: ${FW}/components/lakeshark/core */
 /**/
-/* Before this fix, app_set_usb_autoreboot only wrote to a process-static
-   bool in app_registry initialized to false, so USB AUTO-REBOOT sat in the
-   Settings and P25 CONFIG rows as if it were a persistent device setting
-   but flipped back to OFF on every power cycle.  The state was extracted
-   into usb_autoreboot_pref so that:
-
-     - a persist hook fires on real transitions (Settings and P25 both
-       route through app_set_usb_autoreboot, so they can no longer drift),
-     - init takes the value that was loaded from NVS at boot without
-       firing that hook, so a first boot after factory-erase does not
-       commit its own default,
-     - a reboot is simulated here by calling init again with whatever the
-       spy recorded, and the value has to come back the same. */
 
 #include "ls_test.h"
 #include "usb_autoreboot_pref.h"
@@ -62,9 +49,7 @@ LS_CASE(init_takes_initial_value_without_persisting)
 
 LS_CASE(set_updates_value_and_fires_persist)
 {
-    /* The whole point of the fix: a toggle from Settings or P25 CONFIG
-       must reach the persistence layer.  Before the fix this call only
-       touched a static bool and returned. */
+
     reset_spy();
     s_stored = false;
     usb_autoreboot_pref_init(spy_persist, false);

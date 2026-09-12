@@ -89,12 +89,7 @@ void      ls_ui_value(lv_obj_t *parent, const char *name, ls_ui_value_t *out);
 /* Longest toggle caption the kit renders: the four-character state marker plus
  * the caller's name. */
 #define LS_UI_TOGGLE_TEXT_MAX 24
-/* a two-state control that carries its own state.  The caption is
- * stable - it names the setting and never becomes the state - and the state
- * shows as a marker glyph and a selected outline, not as colour alone and not
- * as a second ON/OFF reading in the row's value column.  That column is left
- * for settings with more than two choices, which must keep showing which one
- * is selected.  `text` is the setting's name; NULL gives a bare marker. */
+
 lv_obj_t *ls_ui_toggle(ls_ui_value_t *row, const char *text, bool on,
                        lv_event_cb_t callback, void *user_data);
 void      ls_ui_toggle_set(lv_obj_t *toggle, bool on);

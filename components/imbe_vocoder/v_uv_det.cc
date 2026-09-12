@@ -19,7 +19,6 @@
  * 02110-1301, USA.
  */
 
-
 #include "typedef.h"
 #include "globals.h"
 #include "imbe.h"
@@ -36,7 +35,6 @@
 #include "encode.h"
 #include "imbe_vocoder_impl.h"
 
-
 #define CNST_0_5625_Q1_15   0x4800
 #define CNST_0_45_Q1_15     0x3999
 #define CNST_0_1741_Q1_15   0x164A
@@ -48,15 +46,8 @@
 #define CNST_PI_4_Q1_15     0x6488
 #define CNST_0_55_Q4_12     0x08CD
 
-
-
-
-
-
-
 extern FILE *fp_in, *fp_out;
 extern int frame_cnt;
-
 
 void imbe_vocoder_impl::pitch_ref_init(void)
 {	
@@ -110,7 +101,6 @@ void imbe_vocoder_impl::v_uv_det(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 	Word16 band_cnt, num_harms_cnt, uv_harms_cnt,  Dk;
 	Word16 num_harms, num_bands, dsn_thr=0;
 	Word16 thr[NUM_BANDS_MAX], M_den[NUM_HARMS_MAX], b1_vec;
-
 
 	fund_freq = imbe_param->fund_freq;
 
@@ -318,7 +308,6 @@ void imbe_vocoder_impl::v_uv_det(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 			band_cnt++;
 		}
 
-
 		fund_freq_acc_a = L_add(fund_freq_acc_a, fund_freq);
 		fund_freq_acc_b = L_add(fund_freq_acc_b, fund_freq);
 		fund_freq_acc   = L_add(fund_freq_acc,   fund_freq);
@@ -365,7 +354,6 @@ void imbe_vocoder_impl::v_uv_det(IMBE_PARAM *imbe_param, Cmplx16 *fft_buf)
 	}
 
 	imbe_param->l_uv = uv_harms_cnt;
-
 
 	imbe_param->b_vec[1] = b1_vec;                                       // Save encoded voiced/unvoiced decision
 	imbe_param->b_vec[0] = shr( sub(imbe_param->ref_pitch, 0x1380), 7);  // Pitch encode  fix(2*pitch - 39)

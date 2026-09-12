@@ -190,9 +190,6 @@ LS_CASE(the_archive_is_asked_whether_a_point_is_there_before_going_to_it)
        display a blank one. */
     LS_EQ_INT(-1, ls_map_zoom_covering(37.7749, -122.4194));
 
-    /* Asking must not move the map. The whole point is to decide BEFORE
-       committing, and a query with a side effect would have already done the
-       damage it exists to prevent. */
     double lat0 = 0, lon0 = 0, lat1 = 0, lon1 = 0;
     ls_map_get_center(&lat0, &lon0);
     const int z0 = ls_map_zoom();

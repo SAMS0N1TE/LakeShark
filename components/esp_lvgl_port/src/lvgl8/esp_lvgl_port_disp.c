@@ -14,23 +14,19 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_priv.h"
-#include "esp_lvgl_port_disp_stats.h"  /*LS-781*/
+#include "esp_lvgl_port_disp_stats.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 
-/*LS-781  Refresh cadence counters - see esp_lvgl_port_disp_stats.h. The 4.3
-   panel's blue frame is a DPI underrun and the driver reports no such event,
-   so measure the interval between completed refreshes instead. Internal DRAM:
-   this is written from the refresh ISR. */
 static DRAM_ATTR uint32_t s_disp_frames;
 static DRAM_ATTR uint32_t s_disp_late;
 static DRAM_ATTR uint32_t s_disp_max_gap_us;
 static DRAM_ATTR uint32_t s_disp_last_gap_us;
 static DRAM_ATTR uint32_t s_disp_threshold_us = 37000; /* ~1.5 frames at 40 fps */
 static DRAM_ATTR int64_t  s_disp_last_us;
-/*LS-802*/
+
 static DRAM_ATTR uint32_t s_disp_late_pending;
-/*LS-803*/
+
 static DRAM_ATTR TaskHandle_t s_disp_late_task;
 static portMUX_TYPE s_disp_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -48,8 +44,8 @@ static inline IRAM_ATTR void lvgl_port_disp_stats_tick(void)
     if (gap_us > s_disp_max_gap_us) s_disp_max_gap_us = gap_us;
     if (gap_us > s_disp_threshold_us) {
         s_disp_late++;
-        s_disp_late_pending = gap_us;   /*LS-802  reported by a task */
-        /*LS-803  Whoever was on this core when the refresh was missed. */
+        s_disp_late_pending = gap_us;
+
         s_disp_late_task = xTaskGetCurrentTaskHandle();
     }
 }
@@ -67,14 +63,12 @@ void lvgl_port_disp_stats_get(lvgl_port_disp_stats_t *out)
     out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/*LS-803*/
 const char *lvgl_port_disp_stats_late_task(void)
 {
     TaskHandle_t t = s_disp_late_task;
     return t ? pcTaskGetName(t) : NULL;
 }
 
-/*LS-802*/
 uint32_t lvgl_port_disp_stats_take_late(void)
 {
     portENTER_CRITICAL(&s_disp_stats_lock);
@@ -92,7 +86,7 @@ void lvgl_port_disp_stats_reset(uint32_t threshold_us)
     s_disp_max_gap_us = 0;
     s_disp_last_gap_us = 0;
     s_disp_last_us = 0;
-    s_disp_late_pending = 0;   /*LS-802*/
+    s_disp_late_pending = 0;
     if (threshold_us) s_disp_threshold_us = threshold_us;
     portEXIT_CRITICAL(&s_disp_stats_lock);
 }
@@ -478,21 +472,6 @@ static bool lvgl_port_flush_dpi_panel_ready_callback(esp_lcd_panel_handle_t pane
     return false;
 }
 
-/*LS-797  IRAM, and nothing in here may touch flash.
- *
- * Measured cause of the panel's blue frame: the DSI interrupt handler is in
- * IRAM (CONFIG_LCD_DSI_ISR_HANDLER_IN_IRAM) but was not cache-safe, so while a
- * flash write held the cache disabled the interrupt could not run, the
- * DW-GDMA was never rearmed for the next frame, and the panel put out one
- * blank frame. On the bench each NVS commit cost exactly one late frame, with
- * a gap of 47.7 ms against a 25.05 ms period - one frame, every time.
- *
- * With CONFIG_LCD_DSI_ISR_CACHE_SAFE the driver calls this with the cache off,
- * so the asserts are gone (__assert_func and its strings live in flash) and
- * everything called here is IRAM-resident: xSemaphoreGiveFromISR via
- * CONFIG_FREERTOS_IN_IRAM, esp_timer_get_time via CONFIG_ESP_TIMER_IN_IRAM,
- * and the stats counters are DRAM_ATTR. Adding a flash-resident call here
- * turns a blue frame into a crash during the next NVS write. */
 static IRAM_ATTR bool lvgl_port_flush_dpi_vsync_ready_callback(esp_lcd_panel_handle_t panel_io, esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
 {
     BaseType_t need_yield = pdFALSE;

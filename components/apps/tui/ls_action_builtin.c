@@ -220,6 +220,16 @@ static ls_act_status_t a_fm_freq(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+static ls_act_status_t a_fm_freq_hz(const ls_args_t *in, ls_val_t *out)
+{
+    const int32_t hz = in->v[0].i;
+    if (hz < 24000000 || hz > 1766000000) return LS_ACT_BADARG;
+    lakeshark_fm_set_freq((uint32_t)hz);
+    out->kind = LS_VAL_INT;
+    out->i = hz;
+    return LS_ACT_OK;
+}
+
 static ls_act_status_t a_p25_freq(const ls_args_t *in, ls_val_t *out)
 {
     float mhz = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i : in->v[0].f;
@@ -413,6 +423,8 @@ void ls_action_register_builtin(void)
 
     ls_action_register("fm.freq",        "f", LS_CAP_TUNE, a_fm_freq,
                        "tune FM, MHz");
+    ls_action_register("fm.freq_hz",     "i", LS_CAP_TUNE, a_fm_freq_hz,
+                       "tune FM, Hz");
     ls_action_register("fm.submode",     "s", LS_CAP_TUNE, a_fm_submode,
                        "listen|scan|pocsag|acars|flex|wfm");
     ls_action_register("p25.freq",       "f", LS_CAP_TUNE, a_p25_freq,

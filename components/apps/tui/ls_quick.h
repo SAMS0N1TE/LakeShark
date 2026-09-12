@@ -52,14 +52,6 @@ typedef struct {
 
 /* How many rows these controls need, in a panel this wide. */
 
-/*`wide` is the POSTURE, and the caller passes it.
-
-   A landscape control strip is three rows where a portrait one is seven, so
-   the panel has to know which it is drawing. It cannot work that out from
-   the rect it is handed - a portrait panel is 48 by 21 and a landscape one
-   115 by 3, and no ratio separates those two reliably - and asking the
-   display would make this module impossible to test on its own. Every screen
-   that draws this already knows its own posture, so it says. */
 int ls_quick_rows(const ls_quick_t *items, int n, int width, bool wide);
 
 int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,

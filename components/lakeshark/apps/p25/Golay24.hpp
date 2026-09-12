@@ -1,10 +1,7 @@
 /*
- * DSD-derived helper; attribution restored in LakeShark on 2026-09-08.
- * Verified comparison source (not a claim of the original import revision):
- * https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/include/Golay24.hpp
- * Local code matches that source after removing comments and whitespace.
- * The following DSD notice is preserved from that revision's COPYRIGHT;
- * any additional original-author notice below is preserved separately.
+ * DSD-derived source, modified for LakeShark.
+ * Comparison source: https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/include/Golay24.hpp
+ * Original import revision is unrecorded.
  *
  * Copyright (C) 2010 DSD Author
  * GPG Key ID: 0x3F1D7FD0 (74EF 430D F7F2 0A48 FCE6  F630 FAA2 635D 3F1D 7FD0)

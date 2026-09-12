@@ -50,15 +50,6 @@ char ls_keymap_char(const ls_keymap_entry_t *entry, bool shift, bool caps);
 /* Short human name for a key, for logs and the console. Never NULL. */
 const char *ls_keymap_name(const ls_keymap_entry_t *entry);
 
-/* Whether holding this key should keep producing it.
-
-   Auto-repeat is for keys whose effect accumulates: characters, backspace and
-   the arrows. It is wrong for anything that toggles or transitions, because a
-   repeat is indistinguishable from a fresh press to whatever consumes it.
-   CAPS is the clearest case - it flips a flag on every press, so repeating it
-   at 22 a second leaves the flag wherever the release happened to land. The
-   function keys are as bad in their own way: one cycles the theme and another
-   turns the screen, which tears the TUI session down and rebuilds it. */
 bool ls_keymap_repeats(const ls_keymap_entry_t *entry);
 
 #ifdef __cplusplus

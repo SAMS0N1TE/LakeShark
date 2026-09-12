@@ -276,13 +276,6 @@ static bool ble_write(const char *data, int len)
 
     int cap = ble_payload_cap(conn);
 
-    /* Fit the write to the heap instead of dropping the frame. The
-       old guard compared one full-size write against the largest free block
-       and gave up on the whole frame if it did not fit; with P25, the panel
-       and USB all running that block sat near 768 B against an 845 B ask, so
-       telemetry stopped dead while the link stayed up and the head showed
-       nothing at all. A short write still carries the line - the loop below
-       already chunks - so only give up when not even the minimum fits. */
     /* A frame is all or nothing. */
 
     size_t largest  = heap_caps_get_largest_free_block(BLE_TX_ALLOC_CAPS);
@@ -567,40 +560,6 @@ static const char *strcasestr_ci(const char *hay, const char *needle)
     return NULL;
 }
 
-/*LS-813  Look for the 16-bit id the head actually advertises.
-
-   This only ever checked uuids128 for SVC_SERIAL, which the head does not
-   advertise and cannot afford to - so has_our_service was false for every
-   advertisement ever seen. Two failures came out of that:
-
-     - Unpinned, ble_link_scan_decide fell through to the name filter alone.
-       A Flipper advertises the same device name whichever BLE profile holds
-       its radio, so when the LakeShark app was not running the P4 dialled
-       the stock serial profile instead. That profile is bonding_mode=true
-       with GapPairingPinCodeShow (MITM required, IO_CAP_DISPLAY_ONLY): it
-       sends a Security Request the moment we connect, refuses our Just Works
-       answer with SM error 3, and terminates. Forever, every 20 s:
-
-           found "Lr1cher1" [80:e1:26:1c:5e:47] - connecting
-           pairing failed status=1283 (head rejected our authentication
-           requirements)
-           connected - discovering service (no pairing required)
-           disconnected (reason=517)          [0x205 = HCI auth failure]
-
-       and the Flipper app - which never got a byte - sat there printing
-       NO SDR. Every attempt to fix this by changing what WE offer (LS-811,
-       LS-812) was aimed at the wrong peer: the stock profile will not do
-       Just Works at all, so there is nothing to negotiate. The fix is to
-       not dial it. Our own profile is ATTR_PERMISSION_NONE / GapPairingNone
-       / bonding off and never asks for security, so once the filter is right
-       the pairing path is simply never entered.
-
-     - Pinned, the first line of ble_link_scan_decide requires the service,
-       so `ble pin` bricked the link outright - nothing could ever match.
-
-   ZeroMesh's node side has always filtered on this 16-bit id and has never
-   had either problem. The 128-bit check is kept for a head that has room to
-   advertise it. */
 static bool adv_has_our_service(const struct ble_hs_adv_fields *f)
 {
     for (int i = 0; i < f->num_uuids16; i++) {
@@ -867,14 +826,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_disc_started = false;
 
         /**/ /**/
-        /* AUTH_FAIL covers two different failures. The head can reject the
-           KEYS we stored, which is worth forgetting the bond over. Or it can
-           refuse our security level outright (SM_ERR_AUTHREQ) - which is what
-           a head with the app closed looks like, and has nothing to do with
-           the keys. Deleting the bond on that second case destroyed a working
-           bond every retry, forcing a fresh passkey on the next real connect.
-           The classification itself lives in ble_link_core.c so the bench
-           exercises the same decision this code does. */
+
         {
             ble_link_enc_kind_t last_kind = BLE_LINK_ENC_NONE;
             if (s_last_enc_status == 0) {
@@ -1226,38 +1178,6 @@ esp_err_t ble_link_start(void)
     ble_hs_cfg.sync_cb  = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
 
-    /*LS-980  Do not ask the head for security it does not offer.
-
-       The Flipper profile sets pairing_method = GapPairingNone and marks both
-       characteristics ATTR_PERMISSION_NONE, so nothing on that server requires
-       encryption. Asking for bonding and Secure Connections against that is a
-       requirements mismatch, and the head answers with SM error 3:
-
-           pairing failed status=1283 (head rejected our authentication
-           requirements)
-           disconnected (reason=517)
-
-       Observed on a nano and an LCD board independently, so it was never the
-       two-board race it looked like.
-
-       This link carries telemetry and commands over unencrypted, unauthenticated
-       characteristics by the head's own design. Matching that is the honest
-       posture, not a weakening of one - there was never a bond protecting
-       anything here. */
-    /*LS-813  Offer nothing, because nothing is needed.
-
-       LS-812 tried the opposite - Secure Connections and bonding, on the
-       theory that SM error 3 meant the head wanted MORE than we offered.
-       It changed nothing, because the peer refusing us was never our head:
-       it was the Flipper's stock serial profile, which requires MITM and a
-       displayed PIN and will not do Just Works at any strength. See
-       adv_has_our_service; the filter now keeps us away from it.
-
-       Our head's own profile serves both characteristics at
-       ATTR_PERMISSION_NONE and configures GapPairingNone with bonding off,
-       so it never asks for security and there is nothing here to satisfy.
-       Keeping sm_bonding at 0 also keeps NimBLE from writing bond records
-       into NVS for a link that can never use them. */
     ble_hs_cfg.sm_io_cap        = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding       = 0;
     ble_hs_cfg.sm_mitm          = 0;

@@ -199,25 +199,7 @@ LS_CASE(a_page_with_nothing_moving_costs_almost_nothing)
 
 LS_CASE(the_landscape_signal_page_stays_within_its_measured_cost)
 {
-    /* The figure this page actually costs, kept as a regression bound rather
-       than a printout.
 
-       Landscape body is 113x24, which is 2712 cells. The screen's own
-       eight-row history settled at 798 cells a frame and a ten-row one at
-       920. The shared instrument settles at 1701, measured here.
-
-       The jump is not the history being taller. It is `fine`, which packs
-       two history rows into one cell using the upper-half block, so the
-       picture scrolls two rows per frame and every history cell differs from
-       what it held last frame. Half a 24-row body at the default split is
-       about 11 rows of 111, and all of it changes. The old eight-row ring
-       scrolled one row a frame and the diff renderer skipped most of it.
-
-       So this is the cost of double vertical resolution, paid in the one
-       unit that transfers off this machine. What it means in microseconds on
-       the P4 is still one measurement on the device. The ceiling below is
-       set to catch a change that starts repainting the whole pane, which is
-       the failure this case exists for, and not to argue with the trade. */
     LS_CHECK(ls_tui_begin(1232, 568));
     to_signal_page();
 

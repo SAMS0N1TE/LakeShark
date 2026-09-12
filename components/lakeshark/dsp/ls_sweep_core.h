@@ -24,26 +24,6 @@ extern "C" {
 
 #define LS_SWEEP_DC_GUARD_HZ 40000u
 
-/* SINGLE SIDEBAND, and this is the whole reason the tiling looks odd.
-
-   The obvious scheme centres each tile on its tune and uses both sidebands.
-   It does not work, and the host tests caught it: the DC guard blanks a strip
-   in the MIDDLE of every tile, where no neighbouring tune can reach it. A
-   sweep built that way has a hole at every tune centre - measured at 6 bins
-   per tune with 5 kHz bins, 66 holes across 88-108 MHz - and on hardware that
-   is invisible, because the plot stays continuous and the missing signal
-   simply never appears.
-
-   So each tune contributes only the spectrum ABOVE its own DC spike:
-
-       tune i centre ─┐
-                      ▼
-       ... ───────────╳────[═══ used ═══)──────── ...
-                    DC guard   the strip
-
-   No tile contains its own spike, and the strips abut. It costs about twice
-   the retunes of the naive scheme; the naive scheme was wrong. */
-
 typedef struct {
     uint64_t start_hz;
     uint64_t stop_hz;

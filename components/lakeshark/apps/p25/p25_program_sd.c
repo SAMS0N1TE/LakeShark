@@ -92,15 +92,6 @@ static p25_program_result_t sd_read(void *ctx, const char *path, char *dst,
 
 /* ------------------------------------------------------------------ ops --- */
 
-/* Every op forwards to the existing owner of that state.  Nothing here reaches
- * into the grant follower or the radio directly: app_p25.c owns both, and the
- * profile apply must not become a second place that tunes.
- *
- * These run on the worker while the DSD task reads the same follower.  That is
- * the arrangement already documents for the console and panel setters:
- * each is a scalar or a small table write, and the worst case is one grant
- * decided under the outgoing policy. */
-
 static void op_release(void *user)
 {
     (void)user;

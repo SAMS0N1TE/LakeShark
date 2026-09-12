@@ -55,14 +55,6 @@ bool ls_haptic_service(int wait_ms);
 
 #define LS_HAPTIC_MAX_MS 2000
 
-/* What the part can measure about the motor on the other side of it.
-
-   This is the difference between "the register writes were accepted" and
-   "there is a motor there". The chip drives a diagnostic current through the
-   coil and reports its resistance; an open circuit or a missing motor does
-   not read 10 to 30 ohms. The resonance is the part's own tracking loop
-   reporting what it locked onto during the last CONT playback, so it is
-   only meaningful after something has played. */
 typedef struct {
     float lra_ohms;   /* coil resistance, measured. 0 when the read failed  */
     float vdd_v;      /* the part's own supply, measured                    */

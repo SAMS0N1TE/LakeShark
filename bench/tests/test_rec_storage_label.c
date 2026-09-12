@@ -1,16 +1,5 @@
 /* LS_TEST_SOURCES: ${APP}/rec/rec_storage_label.c */
 /**/
-/* Before this fix, AppREC::refreshFiles printed "%d files on SPIFFS" every
-   time it redrew the FILES tab, but rec_dir() prefers /sdcard/lakeshark
-   whenever an SD card is mounted at boot.  The visible label therefore
-   contradicted where SAVE, list and DELETE were actually operating, and
-   any troubleshooting off that label went to the wrong medium.
-
-   The classifier and the note formatter live in their own file so this
-   test can pin every case the app can present without a display, a card
-   or a radio.  The AppREC side is only a one-line snprintf call now, so
-   nobody can drift the phrasing of one backend out of sync with the
-   other. */
 
 #include "ls_test.h"
 #include "rec_storage_label.h"

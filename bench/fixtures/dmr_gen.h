@@ -10,19 +10,6 @@
 extern "C" {
 #endif
 
-/* Assemble a synthetic DMR burst (264 bits, packed MSB-first, 33 bytes).
- *
- *   sync_pattern: 48-bit sync bytes (6 bytes) to place in the centre. Callers
- *                 in the test suite use the ETSI class patterns from
- *                 dmr_sync_detect() so the same test can round-trip through
- *                 both the sync detector and the burst extractor.
- *   colour_code:  0..15, placed in the top nibble of the slot-type field.
- *   data_type:    0..15, placed in the low nibble.
- *   lc:           Voice LC Header to encode into the BPTC(196,96) payload;
- *                 pass NULL for a zeroed payload.
- *
- * The generator emits a valid, error-free burst; tests inject errors
- * afterwards to exercise the correction paths. */
 void dmr_gen_burst(uint8_t out_burst[33],
                    const uint8_t sync_pattern[6],
                    uint8_t colour_code,

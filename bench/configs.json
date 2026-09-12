@@ -1,12 +1,12 @@
 {
-  "_comment": "Firmware configurations the gate builds. Adding a board here is what makes CI cover it. usb_serial is the CH343 serial of the physical board this config belongs to - bench/flash.ps1 refuses to flash a port whose serial does not match, because inferring the board from console behaviour got the LCD flashed with the nano's headless image. flash_mb is checked against the config so a 32 MB image cannot be sent to a 16 MB board.",
+  "_comment": "Board build profiles. Set usb_serial to the target device before using bench/flash.ps1.",
   "configs": [
     {
       "name": "p4-nano",
       "dir": "build_nano",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults",
       "enabled": true,
-      "usb_serial": "5ABA076912",
+      "usb_serial": "",
       "flash_mb": 16,
       "board": "ESP32-P4-NANO"
     },
@@ -21,7 +21,7 @@
       "dir": "build_lcd43",
       "defaults": "sdkconfig.defaults;boards/lcd43_gui.defaults",
       "enabled": true,
-      "usb_serial": "5B90159305",
+      "usb_serial": "",
       "flash_mb": 32,
       "board": "ESP32-P4-WIFI6-Touch-LCD-4.3"
     },
@@ -43,7 +43,7 @@
       "idf_export": "C:/esp/v5.4.3/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
       "enabled": true,
-      "usb_serial": "5C84301528",
+      "usb_serial": "",
       "flash_mb": 16,
       "board": "T-Display-P4"
     }

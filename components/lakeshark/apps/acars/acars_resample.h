@@ -8,18 +8,6 @@
 extern "C" {
 #endif
 
-/* Rational 5:3 resampler for the ACARS audio path.
-
-   The FM NBFM chain hands out demod audio at FM_RTL_RATE / 8 = 32000 Hz;
-   the ACARS MSK slicer only understands ACARS_SAMP_RATE = 19200 Hz, and
-   its bit-clock tables are baked at that rate.  32000 x 3 / 5 = 19200
-   exactly, so a rational-fraction phase tracked in integers converts
-   without float drift accumulating across the 32 ms blocks the FM task
-   feeds through.  Linear interpolation is enough: the fm_demod cascade
-   band-limits well below 16 kHz and the ACARS tones sit at 1.2 / 2.4 kHz,
-   nowhere near where a coarser downsampler would fold energy on top of
-   the signal. */
-
 typedef struct {
     float last;      /* in[-1] carried across blocks                     */
     int   pos_num;   /* current position in units of 1/3 input sample;

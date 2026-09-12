@@ -129,20 +129,6 @@ use_symbol (dsd_opts* opts, dsd_state* state, int symbol)
 
   qsort (sbuf2, opts->ssize, sizeof (int), comp);
 
-  /*
-   * Continuous min/max threshold tracking for ALL modulation types.
-   *
-   * The original DSD code gated this whole block behind `rf_mod == 1`
-   * (QPSK only), which meant C4FM mode used stale min/max values
-   * captured at frame sync time. With any slight amplitude drift during
-   * the frame, the umid/lmid slicer boundaries ended up wrong and
-   * outer symbols misclassified as inner - exactly the BCH failure
-   * pattern we've been seeing (NAC dibits 0-5 decode but BCH parity
-   * dibits 6-31 corrupt).
-   *
-   * Un-gating costs one qsort we're already doing plus some averaging
-   * over the min/max ring. Threshold slicing improves for all modes.
-   */
   lmin = (sbuf2[0] + sbuf2[1]) / 2;
   lmax = (sbuf2[(opts->ssize - 1)] + sbuf2[(opts->ssize - 2)]) / 2;
   state->minbuf[state->midx] = lmin;

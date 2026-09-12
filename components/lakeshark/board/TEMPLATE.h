@@ -1,17 +1,5 @@
-/* Copy this to variants/<your_board>.h to add a board, then:
-     1. add a CONFIG_LS_BOARD_<YOUR_BOARD> choice entry to main/Kconfig.projbuild
-     2. add the #elif arm to ls_board.h that includes your file
-     3. add boards/<your_board>.defaults
-     4. add the board to the CI matrix in .github/workflows/build-matrix.yml
-   Nothing else in the tree should need to change.  If you find yourself
-   wanting to test CONFIG_LS_BOARD_<YOUR_BOARD> outside this directory, add a
-   capability to ls_caps.h and test that instead - see docs/PORTING.md.
 
-   Declare PHYSICAL FACTS ONLY here: pins, panel size, flash size.  Never
-   declare an LS_HAS_* flag; ls_caps.h derives those from what you write.
-   Omit anything the board does not have - absence is how a capability is
-   switched off.  Never guess a pin number: a wrong GPIO is worse than an
-   absent feature, and can damage hardware.  Leave it out and say so. */
+
 #ifndef LS_VARIANT_TEMPLATE_H
 #define LS_VARIANT_TEMPLATE_H
 

@@ -5,18 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* .sub layout worst case:
-     header block (Filetype/Version/Frequency/Preset/Protocol/Recorded)
-       up to about 200 bytes across six lines - rounded up to 256 for slack.
-     per-edge cost: `" %ld"` where a signed 32-bit long prints in up to 11
-       characters plus the leading space - budget 12 bytes.
-     line wrap: one newline + "RAW_Data:" every 512 edges, ~11 bytes/512 =
-       trivial next to the per-edge budget, absorbed into that 12.
-     sidecar JSON: rec_sidecar_format never exceeds REC_SIDECAR_JSON_MAX
-       (512 bytes), which is what we budget here too.
-   Pessimistic on purpose - refusing a save that would have fit is at worst
-   a minor annoyance, whereas admitting a save that will not fit is exactly
-   the bug this module exists to prevent. */
 uint64_t rec_space_estimate_bytes(int edges)
 {
     if (edges < 0) edges = 0;

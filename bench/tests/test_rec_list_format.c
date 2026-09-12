@@ -120,7 +120,6 @@ LS_CASE(max_length_names_fill_byte_buffer_before_files_max)
                                  (const char *const *)name_ptrs, sizes,
                                  N_ENTRIES, &trunc);
 
-    /* Byte truncation fired - the whole point of the fix. */
     LS_CHECK(trunc);
 
     /* Fewer rows landed than the row cap; a total-vs-fit check that

@@ -129,9 +129,7 @@ LS_CASE(asking_for_fewer_than_there_are_gives_the_NEWEST_ones)
 
 LS_CASE(it_survives_being_closed_and_opened_again)
 {
-    /* The whole point. A reboot is a close and an open, and if the header
-       does not come back the history is gone - which is the defect this was
-       written for. */
+
     scrub();
     ls_rlog_t lg;
     LS_CHECK(ls_rlog_open(&lg, PATH, sizeof(rec_t), 8));
@@ -283,11 +281,7 @@ LS_CASE(replace_refuses_more_than_it_can_hold)
 
 LS_CASE(one_record_at_a_time_agrees_with_reading_the_lot)
 {
-    /* The whole point of read_at is that a caller with no buffer
-       gets the same records in the same order as one with a big one. If the
-       two ever disagree the wrong half is whichever the reader is not
-       using, which is the kind of fault that shows up as a peer list that is
-       subtly out of order. */
+
     scrub();
     ls_rlog_t lg;
     LS_CHECK(ls_rlog_open(&lg, PATH, sizeof(rec_t), 4));

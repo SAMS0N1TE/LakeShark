@@ -4,13 +4,6 @@
 
 /* TSBK grants were parsed and the resolved frequency was written into dsd_state and then never read. */
 
-/* Two seconds of silence on the traffic channel is treated as the end of
- * the call. Rationale: a P25 push-to-talk gap that leaves the traffic
- * channel silent for ~1.5-2s almost always means the exchange is over;
- * anything longer costs control-channel time and misses new grants. The
- * value is deliberately independent of the p25_qual close window (also
- * 1.5s) - the grant follower and the quality recorder answer different
- * questions and both have moved before. Change either without the other. */
 #define P25_GRANT_DEFAULT_HANG_US 2000000LL
 
 static bool talkgroup_in_list(const p25_grant_follower_t *f, uint16_t tg)
@@ -408,9 +401,7 @@ bool p25_grant_on_ess(p25_grant_follower_t *f, uint16_t talkgroup,
     }
     if (!f->leave_on_encrypted) return false;
     if (f->state != P25_GRANT_ON_TRAFFIC) return false;
-    /* Only stamp and leave if we are currently on the offending TG. An ESS
-     * for a different TG (e.g. the LCW parser fed the follower a stale value)
-     * still records the algid but does not cause a retune. */
+
     if (f->talkgroup != effective_tg) return false;
 
     e->skip_expires_us = now_us + f->encrypted_skip_us;

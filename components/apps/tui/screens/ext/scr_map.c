@@ -692,8 +692,7 @@ static int s_find_pw, s_find_ph;
 static void on_pick(int i)
 {
     if (i < 0 || i >= s_find_n) return;
-    /* The centre of the frame is where we are, so moving the place to the
-       centre is the difference between the two. */
+
     ls_map_pan(s_find_x[i] - s_find_pw / 2, s_find_y[i] - s_find_ph / 2);
 }
 

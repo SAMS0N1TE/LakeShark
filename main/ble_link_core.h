@@ -114,13 +114,6 @@ ble_link_disc_class_t ble_link_classify_disc(bool disc_is_auth_fail_or_pinkey,
    bond must be forgotten immediately, before any disconnect arrives. */
 bool ble_link_enc_kind_wipes_bond(ble_link_enc_kind_t k);
 
-/*LS-980  Does this failure justify dropping the connection?
-
-   Almost none of them do. The head advertises GapPairingNone and both
-   characteristics are ATTR_PERMISSION_NONE, so nothing on that server needs
-   encryption and a link that failed to encrypt is still a perfectly good link.
-   Terminating on BLE_SM_ERR_AUTHREQ is what turned "we asked for something the
-   head does not offer" into a reconnect loop that never ended. */
 bool ble_link_enc_kind_needs_teardown(ble_link_enc_kind_t k);
 
 /* -------------------------------------------------------- state machine */

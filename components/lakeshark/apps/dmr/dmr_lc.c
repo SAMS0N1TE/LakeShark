@@ -2,21 +2,6 @@
 
 #include <string.h>
 
-/* Full Link Control PDU - ETSI TS 102 361-2 §7.1.1 (Voice LC Header).
- *
- * 72-bit LC content packed MSB-first:
- *   [0]     PF (protect flag)                       1 bit
- *   [1]     Reserved                                1 bit
- *   [2..7]  FLCO (Full Link Control Opcode)         6 bits
- *   [8..15] FID (Feature set ID)                    8 bits
- *   [16..23] Service options                        8 bits
- *   [24..47] Destination address (TG or radio ID)  24 bits
- *   [48..71] Source address (radio ID)             24 bits
- *
- * The 96-bit BPTC block wraps these 72 bits followed by 24 bits of RS(12,9)
- * parity. The raw parser is retained for fixtures; the checked entry below
- * validates the masked parity before allowing a receive path to use it. */
-
 static uint32_t get_bits_msb(const uint8_t *buf, unsigned first, unsigned count)
 {
     uint32_t v = 0;

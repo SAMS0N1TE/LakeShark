@@ -144,16 +144,6 @@ read_and_correct_hex_word (dsd_opts* opts, dsd_state* state, char* hex, int* sta
   correct_hex_word (state, hex, parity);
 }
 
-/**
- * Uses the information from a corrected sequence of hex words to update the AnalogSignal data.
- * The proper Golay 24 parity is calculated from the corrected hex word so we can also fix the Golay parity
- * that we read originally from the signal.
- * \param corrected_hex_data Pointer to a sequence of hex words that has been error corrected and therefore
- * we trust it's correct. Typically this are hex words that has been decoded successfully using a
- * Reed-Solomon variant.
- * \param hex_count The number of hex words in the sequence.
- * \param analog_signal_array A pointer to the AnalogSignal information for the sequence of hex words.
- */
 static void
 correct_golay_dibits_6(char* corrected_hex_data, int hex_count, AnalogSignal* analog_signal_array)
 {
@@ -280,7 +270,7 @@ processHDU(dsd_opts* opts, dsd_state* state)
     {
       // The hex words passed the Reed-Solomon check. This means that very likely they are correct and we
       // can trust that the digitizer did a good job with them. In other words, each analog value was
-      // correctly assigned to a dibit. This is extremely useful information for the digitizer and we are
+
       // going to exploit it.
       char fixed_parity[16*6];
 

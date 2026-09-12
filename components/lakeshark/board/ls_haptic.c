@@ -186,14 +186,6 @@ float ls_haptic_f0_hz(uint8_t f0_h, uint8_t f0_l)
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
 
-/* Statically allocated, the way tone.c's sound worker is.
-
-   Internal RAM is this board's recurring failure and a driver that is up for
-   the life of the firmware has nothing to gain from taking its stack off the
-   heap - it only gains a way to fail at boot and a hole in the heap for
-   everything after it. PSRAM is not an option either: this task touches an
-   I2C driver, and PSRAM is not valid for a stack that may run with the cache
-   disabled. */
 #define STACK_WORDS  (2560 / sizeof(StackType_t))
 
 static QueueHandle_t     s_q;

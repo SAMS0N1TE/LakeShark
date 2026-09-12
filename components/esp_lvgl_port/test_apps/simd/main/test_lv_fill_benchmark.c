@@ -47,24 +47,6 @@ static float lv_fill_benchmark_run(bench_test_case_params_t *test_params, _lv_dr
 
 // ------------------------------------------------ Test cases ---------------------------------------------------------
 
-/*
-Benchmark tests
-
-Requires:
-    - To pass functionality tests first
-
-Purpose:
-    - Test that an acceleration is achieved by an assembly implementation of LVGL blending API
-
-Procedure:
-    - Initialize input parameters (test array length, width, allocate array...) of the benchmark test
-    - Run assembly version of LVGL blending API multiple times (1000-times or so)
-    - Firstly use an input test parameters for the most ideal case (16-byte aligned array, array width and height divisible by 4 for ARGB8888 color format)
-    - Then use worst-case input test parameters (1-byte aligned array, array width and height NOT divisible by 4 for ARGB8888 color format)
-    - Count how many CPU cycles does it take to run a function from the LVGL blending API for each case (ideal and worst case)
-    - Run ansi version of LVGL blending API multiple times (1000-times or so) and repeat the 2 above steps for the ansi version
-    - Free test arrays and structures needed for LVGL blending API
-*/
 // ------------------------------------------------ Test cases stages --------------------------------------------------
 
 TEST_CASE("LV Fill benchmark ARGB8888", "[fill][benchmark][ARGB8888]")

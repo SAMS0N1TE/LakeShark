@@ -198,13 +198,7 @@ unsigned int p25_get_encrypted_skip_ms(void);
 bool p25_ui_hold_toggle(void);
 bool p25_ui_lockout_current(void);
 bool p25_ui_lockout_remove(uint16_t tg);
-/* what a PROGRAM profile apply is allowed to do to the radio, and the
- * only two things it needs that were not already exposed. Both keep the tune
- * in this file's single owner: p25_return_to_control drops any call in
- * progress through the follower's own retune hook, and p25_set_control_channel
- * adopts the new control frequency and issues exactly one tune request. The
- * request latch holds one entry, so calling them in that order leaves no stale
- * retune for the outgoing system's traffic channel. */
+
 void p25_return_to_control(void);
 void p25_set_control_channel(uint64_t control_hz);
 void p25_demod_set_preference(int preference);

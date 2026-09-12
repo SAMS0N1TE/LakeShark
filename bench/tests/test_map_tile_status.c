@@ -1,16 +1,5 @@
 /* LS_TEST_SOURCES: ${FW}/components/apps/map_gui/map_tile_status.c */
 /**/
-/* Before this fix, AppMap::updateTiles noticed drawn==0 and only toggled an
-   unused static boolean, so with no /sdcard/tiles pack the map showed a
-   blank rectangle that could equally well have been a wedged renderer, a
-   missing card, or a bug in the projection.  The classifier lives in its
-   own file so the bench can drive it against every state the app can
-   report; the AppMap side is only a probe and a label update.
-
-   These cases pin the two states the task's done-when calls out - missing
-   pack and successful tiles - and cover the neighbouring states so nobody
-   later collapses two of them together and turns the overlay back into a
-   single "blank" reading. */
 
 #include "ls_test.h"
 #include "map_gui/map_tile_status.h"
@@ -165,10 +154,7 @@ LS_CASE(null_probe_falls_back_to_init_fail)
 
 LS_CASE(every_state_has_a_distinct_short_text)
 {
-    /* If two states share the same overlay text the user cannot tell
-       them apart, and the whole point of this fix is that they can.
-       Pin the invariant so nobody later trims a string and collides
-       two reasons into one. */
+
     const map_tile_state_t all[] = {
         MAP_TILE_STATE_OK,
         MAP_TILE_STATE_INIT_FAIL,

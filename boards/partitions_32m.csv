@@ -3,8 +3,5 @@ nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
 factory,  app,  factory, ,        14M,
 storage,  data, spiffs,  ,        8M,
-# LS-734  Panic backtraces were being thrown away (ESP_COREDUMP_ENABLE_TO_NONE),
-# which is exactly why LS-020 has gone undiagnosed. Appended LAST on purpose:
-# nvs/phy_init/factory/storage keep their offsets, so the app still flashes at
-# 0x10000 and the stored channels in nvs at 0x9000 survive this change.
+# Keep coredump last to preserve existing partition offsets.
 coredump, data, coredump, ,       64K,

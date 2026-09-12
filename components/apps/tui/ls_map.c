@@ -653,8 +653,6 @@ static void step_abandon(void)
     s_step_on = false;
 }
 
-/* True when the render in progress is for the view we are being asked
-   about. Anything else - a pan, a zoom, a resize - makes it stale. */
 static bool step_matches(void)
 {
     return s_step_on && s_step_lat == s_lat && s_step_lon == s_lon &&

@@ -31,9 +31,7 @@ LS_CASE(straight_up_is_the_middle)
 
 LS_CASE(north_is_up_and_east_is_right)
 {
-    /* The whole point. Rows increase downwards, so north is a NEGATIVE row
-       offset - the one minus sign that decides whether this plot is a sky
-       plot or its mirror image. */
+
     int r, c;
     const int cy = ROWS / 2, cx = COLS / 2;
 

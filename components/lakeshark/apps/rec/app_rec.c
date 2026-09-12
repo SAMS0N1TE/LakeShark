@@ -109,16 +109,7 @@ static volatile bool s_arm_pending = false;
 static volatile uint32_t s_bytes_sec = 0;
 
 /**/
-/* SCOUT.  The rx task owns spectrum_accum/read; the LVGL side only reads
-   the published copy.  The two levels of buffering here are intentional:
-   s_scout_pub is what the GUI copies out, and only the rx task touches
-   the accumulator.  A GUI reader that races a rx write can see one
-   frame that is half-old, which is invisible at the display's rate.
-   REC_SCOUT_FLOOR/TOP frame the dBFS range mapped to the 0..1 range the
-   spectrum reader reports and the waterfall colours; a broadband floor
-   near -70 dBFS is what the R820T typically shows with the antenna in,
-   and a full-scale tone is close to 0.  A wider mapping stretches the
-   floor across the whole display and reads as busy when it is not. */
+
 #define REC_SCOUT_ACCUM      4
 #define REC_SCOUT_FLOOR_DB   (-85.0f)
 #define REC_SCOUT_TOP_DB     (-20.0f)
@@ -971,14 +962,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     }
 
     /**/
-    /* Sidecar with every scrap of provenance the .sub cannot carry:
-       time, gain, bandwidth, sample rate, edge count, span, peak/floor
-       magnitude, board, firmware.  The .sub itself is byte-for-byte
-       unchanged so a Flipper still reads it; this file lives beside it
-       and is optional to any consumer that has not learned about it.
-       Written after the .sub because losing the sidecar to a full disk
-       still leaves a replayable capture, whereas the other way around
-       would leave a provenance record for a capture that never landed. */
+
     {
         rec_sidecar_t sc;
         memset(&sc, 0, sizeof(sc));
@@ -1209,14 +1193,7 @@ int rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *s
 }
 
 /**/
-/* Recall a saved capture into the live edge buffer, so the EXISTING %D transfer
-   () can ship it. This is the whole trick: no second transfer path, no
-   new chunk format, no change to either transport's REPLY_MAX - which is
-   exactly the kind of new plumbing shows this tree punishes.
-   IT CLOBBERS THE CURRENT CAPTURE, deliberately and visibly: phase goes DONE
-   and the RECORD tab redraws with the recalled edges. Refused outright while a
-   capture is running, for the reason - edge_push() mutates
-   s_edge[s_edges-1] in place from the rx task on core 1. */
+
 int rec_load(int index)
 {
     if (s_phase == REC_CAPTURING) return -3;

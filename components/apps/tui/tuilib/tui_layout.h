@@ -30,17 +30,6 @@ typedef struct {
 #define TUI_PCT(p) ((tui_constraint){TUI_CON_PCT, (uint16_t)(p)})
 #define TUI_FILL   ((tui_constraint){TUI_CON_FILL, 0})
 
-/* Split `parent` along `dir` into n adjacent rects written to out[0..n-1].
- *
- * Distribution rule (deterministic):
- *  1. Base sizes: LEN(n)→n, MIN(n)→n, PCT(p)→floor(p*extent/100), FILL→0.
- *  2. If the bases over-fill the parent, allocate left-to-right: each
- *     constraint gets min(base, space remaining); later ones get 0.
- *  3. Leftover space goes to the FILL constraints, split equally with the
- *     remainder handed out one cell each to the earliest FILLs. If there
- *     are no FILLs, MINs grow the same way. Otherwise the leftover stays
- *     unused (the last rect does NOT absorb it).
- * The other axis (y/h for HORIZ, x/w for VERT) is copied from parent. */
 void tui_layout_split(tui_rect parent, tui_dir dir,
                       const tui_constraint *cons, int n, tui_rect *out);
 

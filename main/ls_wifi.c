@@ -526,7 +526,7 @@ static esp_err_t ap_start_locked(void)
        time is the cheap way to stay out of it. The AP path serves HTTP, which
        is heavy enough that keeping BLE running alongside it has never been
        tested and is not being introduced here. */
-    ESP_LOGW(TAG, "stopping the BLE head - WiFi and BLE share the C6 (LS-738)");
+    ESP_LOGW(TAG, "stopping the BLE head - WiFi and BLE share the C6");
     ble_link_stop();
 
     esp_err_t e = ensure_stack();
@@ -707,9 +707,7 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
     }
 
     s_reconnect_ms = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
-    /* No SSID in this log line; only note that we are trying. The
-       peripheral log path is common enough that dropping credentials into it
-       is a serial-console credential leak. */
+
     ESP_LOGW(TAG, "wifi: joining stored network");
     e = esp_wifi_connect();
     if (e != ESP_OK) sta_leave_locked();
