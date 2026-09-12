@@ -7,6 +7,7 @@
 
 #include "adsb_decode.h"
 #include "adsb_state.h"
+#include "adsb_demo.h"
 #include "mode-s.h"
 
 #include "audio_events.h"
@@ -314,4 +315,15 @@ LS_CASE(local_tracking_crosses_the_dateline)
     adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
     LS_CHECK_MSG(fabs(a->lon + 179.95) < 0.001,
                  "dateline crossing stuck at %.5f", a->lon);
+}
+
+LS_CASE(demo_positions_have_timestamps)
+{
+    reset();
+    ls_shim_time_set(123456789);
+    adsb_demo_set(1);
+    adsb_aircraft_t *a = adsb_state_find_or_create(0xF00000u);
+    LS_CHECK(a->pos_valid);
+    LS_EQ_INT(a->pos_ts_us, 123456789);
+    adsb_demo_set(0);
 }

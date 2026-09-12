@@ -711,6 +711,7 @@ target_include_directories(test_adsb_phantom PRIVATE
     ${FW}/bench/shims)
 
 ls_add_test(test_adsb_cpr
+    ${APP}/adsb/adsb_demo.c
     ${APP}/adsb/mode-s.c
     ${APP}/adsb/adsb_decode.c
     ${APP}/adsb/adsb_state.c)

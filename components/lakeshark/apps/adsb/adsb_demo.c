@@ -67,6 +67,7 @@ void adsb_demo_tick(void)
         a->lon       = s_lon + (float)(radius_deg * cos(ang) /
                                        cos((double)s_lat * M_PI / 180.0));
         a->pos_valid = true;
+        a->pos_ts_us = esp_timer_get_time();
 
         a->altitude  = 3000 + i * 1500;
         a->velocity  = 220 + i * 15;
