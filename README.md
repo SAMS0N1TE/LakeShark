@@ -10,6 +10,7 @@ The setup page flashes a board from Chrome or Edge with one button, no toolchain
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
 ## <°)))>< LilyGO T-Display-P4
+<img width="600" alt="lakeshark-moved-to-the-lilygo-t-display-p4-esp32-p4-runs-v0-fuz84t0gnzoh1" src="https://github.com/user-attachments/assets/c7c23e15-bd68-4362-9244-6d0c7ede2e17" />
 
 The main board. 4.1 inch 568 x 1232 AMOLED, 16 MB flash, detachable keyboard.
 
