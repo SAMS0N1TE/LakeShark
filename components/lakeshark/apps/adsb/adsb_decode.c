@@ -100,6 +100,60 @@ static int cpr_mod(int a, int b)
     return r < 0 ? r + b : r;
 }
 
+/* The same, for the fractional reference terms in a local decode. */
+static double cpr_fmod_pos(double a, double b)
+{
+    const double r = fmod(a, b);
+    return r < 0.0 ? r + b : r;
+}
+
+/* How stale a fix may be and still anchor a single frame, and how far a local
+   decode may land from it. Positions arrive every second or so, so a minute is
+   generous and 60 nm is far more than an airliner covers in it. */
+#define CPR_LOCAL_MAX_AGE_US 60000000LL
+#define CPR_LOCAL_MAX_NM     60.0
+
+/* One frame, against a position this aircraft already has.
+
+   The pair decode is unambiguous worldwide because the two parities disagree
+   everywhere except the true position. A single frame repeats every zone, so
+   it needs a reference to pick the right one, and the last fix is the
+   reference. Good to about 180 nm; anything past a fraction of that is not
+   the aircraft we were tracking. */
+static bool cpr_decode_local(double ref_lat, double ref_lon,
+                             int raw_lat, int raw_lon, bool odd,
+                             double *out_lat, double *out_lon)
+{
+    const double dlat = odd ? (360.0 / 59.0) : (360.0 / 60.0);
+    const double clat = raw_lat / 131072.0;
+    const double clon = raw_lon / 131072.0;
+
+    const double j = floor(ref_lat / dlat) +
+                     floor(0.5 + cpr_fmod_pos(ref_lat, dlat) / dlat - clat);
+    const double lat = dlat * (j + clat);
+    if (!(lat >= -90.0 && lat <= 90.0)) return false;
+
+    int nl = cpr_nl(lat);
+    int ni = odd ? nl - 1 : nl;
+    if (ni < 1) ni = 1;
+
+    const double dlon = 360.0 / ni;
+    const double m = floor(ref_lon / dlon) +
+                     floor(0.5 + cpr_fmod_pos(ref_lon, dlon) / dlon - clon);
+    double lon = dlon * (m + clon);
+    if (lon >= 180.0)  lon -= 360.0;
+    if (lon < -180.0)  lon += 360.0;
+    if (!(lon >= -180.0 && lon <= 180.0)) return false;
+
+    const double dy = lat - ref_lat;
+    const double dx = (lon - ref_lon) * cos(ref_lat * M_PI / 180.0);
+    if (sqrt(dy * dy + dx * dx) * 60.0 > CPR_LOCAL_MAX_NM) return false;
+
+    *out_lat = lat;
+    *out_lon = lon;
+    return true;
+}
+
 static bool cpr_decode(adsb_aircraft_t *a)
 {
     if (!a->cpr_even.valid || !a->cpr_odd.valid) return false;
@@ -141,10 +195,12 @@ static bool cpr_decode(adsb_aircraft_t *a)
     if (!(lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0))
         return false;
 
+    const int64_t now = esp_timer_get_time();
     a->lat = (float)lat;
     a->lon = (float)lon;
     a->pos_valid = true;
-    perf_mark_position(esp_timer_get_time());
+    a->pos_ts_us = now;
+    perf_mark_position(now);
     return true;
 }
 
@@ -387,8 +443,24 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             a->cpr_even = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
         else
             a->cpr_odd  = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
+        /* A fresh fix anchors this one frame. Only fall back to the pair when
+           there is nothing to anchor against, which is how a track starts. */
         bool was_valid = a->pos_valid;
-        if (cpr_decode(a) && !was_valid) {
+        bool got = false;
+        if (was_valid && ts - a->pos_ts_us <= CPR_LOCAL_MAX_AGE_US) {
+            double llat, llon;
+            if (cpr_decode_local(a->lat, a->lon,
+                                 mm->raw_latitude, mm->raw_longitude,
+                                 mm->fflag != 0, &llat, &llon)) {
+                a->lat = (float)llat;
+                a->lon = (float)llon;
+                a->pos_ts_us = ts;
+                perf_mark_position(ts);
+                got = true;
+            }
+        }
+        if (!got) got = cpr_decode(a);
+        if (got && !was_valid) {
             if (a->announced) {
                 audio_events_publish(AUDIO_EVT_POSITION, icao, a->callsign, false);
                 emit_contact_event(EVT_CONTACT_POSITION, a, false);
@@ -481,6 +553,9 @@ void adsb_inject_fake_aircraft(void)
     a->lat = 43.5286f + 0.005f * ((float)((s_test_seq * 7) % 21) - 10.0f);
     a->lon = -71.4703f + 0.005f * ((float)((s_test_seq * 11) % 21) - 10.0f);
     a->pos_valid = true;
+    /* pos_valid always carries a time with it, so the single-frame decode
+       never anchors to a fix of unknown age. */
+    a->pos_ts_us = esp_timer_get_time();
 
     a->altitude  = 5000 + ((s_test_seq * 250) % 30000);
     a->velocity  = 200 + ((s_test_seq * 13) % 200);

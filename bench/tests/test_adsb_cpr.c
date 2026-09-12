@@ -11,6 +11,7 @@
 
 #include "audio_events.h"
 #include "event_bus.h"
+#include "esp_timer.h"
 #include "perf.h"
 #include "plane_audio.h"
 
@@ -149,6 +150,15 @@ static void send_pair(double lat, double lon)
     feed(odd);
 }
 
+static void send_one(double lat, double lon, int odd)
+{
+    uint8_t f[14];
+    uint32_t y, x;
+    cpr_encode(lat, lon, odd, &y, &x);
+    df17_position(f, SENDER, odd, y, x);
+    feed(f);
+}
+
 static double nm_apart(double lat1, double lon1, double lat2, double lon2)
 {
     const double dlat = lat1 - lat2;
@@ -242,4 +252,40 @@ LS_CASE(the_far_side_of_the_world_decodes_too)
     }
     LS_CHECK_MSG(wrong == 0, "%d of %u positions decoded wrong",
                  wrong, (unsigned)(sizeof(sky) / sizeof(sky[0])));
+}
+
+LS_CASE(one_frame_carries_a_track_when_the_pair_has_gone_stale)
+{
+    /* A run of same-parity frames is ordinary at the edge of reception. The
+       opposite parity ages out, the pair decode has nothing valid to work
+       with, and without a single-frame decode the aircraft freezes on the
+       radar while it keeps flying. */
+    reset();
+    ls_shim_time_set(1000000);
+    send_pair(43.20, -71.50);
+
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    LS_CHECK_MSG(a->pos_valid, "the pair did not give a position to start from");
+
+    /* Eleven seconds on, past the ten second window the pair decode allows. */
+    ls_shim_time_advance(11000000);
+    send_one(43.35, -71.25, 1);
+
+    const double off = nm_apart(a->lat, a->lon, 43.35, -71.25);
+    LS_CHECK_MSG(off < 1.0,
+                 "the track sat at %.4f, %.4f, %.1f nm behind the frame the "
+                 "aircraft just sent", a->lat, a->lon, off);
+}
+
+LS_CASE(one_frame_alone_is_not_a_position)
+{
+    /* With nothing to anchor against, a single frame repeats every zone and
+       guessing which one is how aircraft end up in the wrong county. */
+    reset();
+    send_one(43.20, -71.50, 0);
+
+    adsb_aircraft_t *a = adsb_state_find_or_create(SENDER);
+    LS_CHECK_MSG(!a->pos_valid,
+                 "a lone frame produced %.4f, %.4f out of nowhere",
+                 a->lat, a->lon);
 }

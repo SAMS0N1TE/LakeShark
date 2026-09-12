@@ -27,6 +27,9 @@ typedef struct {
     float            lat;
     float            lon;
     bool             pos_valid;
+    /* When the position was last derived. A single frame can only be decoded
+       against a fix that is still recent. */
+    int64_t          pos_ts_us;
     int              ew_velocity;
     int              ns_velocity;
     int              vert_rate;
