@@ -17,6 +17,7 @@ static const char *const s_mode_labels[] = {
     [FM_MODE_WFM]    = "WFM",
     [FM_MODE_ACARS]  = "ACARS",
     [FM_MODE_FLEX]   = "FLEX",
+    [FM_MODE_AM]     = "AM",
 };
 
 /* both console implementations carried a six-element positional
@@ -30,6 +31,7 @@ static const char *const s_mode_commands[] = {
     [FM_MODE_WFM]    = "wfm",
     [FM_MODE_ACARS]  = "acars",
     [FM_MODE_FLEX]   = "flex",
+    [FM_MODE_AM]     = "am",
 };
 
 #define MODE_LABEL_COUNT (sizeof(s_mode_labels) / sizeof(s_mode_labels[0]))
@@ -62,6 +64,7 @@ bool fm_mode_parse(const char *text, fm_mode_t *mode)
 
     for (size_t i = 0; i < MODE_COMMAND_COUNT; ++i) {
         const char *candidate = s_mode_commands[i];
+        if (!candidate) continue;
         const unsigned char *a = (const unsigned char *)text;
         const unsigned char *b = (const unsigned char *)candidate;
         while (*a && *b && tolower(*a) == tolower(*b)) { ++a; ++b; }
@@ -81,7 +84,7 @@ bool fm_mode_parse(const char *text, fm_mode_t *mode)
 
     char *end = NULL;
     long numeric = strtol(text, &end, 0);
-    if (end == text || *end != '\0' || numeric < 0 || numeric >= FM_MODE_COUNT)
+    if (end == text || *end != '\0' || numeric < 0 || numeric >= FM_MODE_COUNT || numeric == 6)
         return false;
     *mode = (fm_mode_t)numeric;
     return true;

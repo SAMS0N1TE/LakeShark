@@ -183,6 +183,40 @@ int fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
     return out;
 }
 
+int fm_demod_am(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                int16_t *pcm16k, int max)
+{
+    int out = 0;
+    for (int off = 0; off < iq_len && out < max; off += FM_DSP_CHUNK) {
+        int n = iq_len - off;
+        if (n > FM_DSP_CHUNK) n = FM_DSP_CHUNK;
+        n &= ~1;
+        if (n < 16) break;
+        load_iq(s, iq + off, n);
+        for (int p = 0; p < FM_NBFM_PASSES; ++p) {
+            fifth_order(s->lowpassed, s->lp_len >> p, s->lp_i_hist[p]);
+            fifth_order(s->lowpassed + 1, (s->lp_len >> p) - 1, s->lp_q_hist[p]);
+        }
+        const int len = s->lp_len >> FM_NBFM_PASSES;
+        for (int i = 0; i + 1 < len; i += 2) {
+            const float re = s->lowpassed[i], im = s->lowpassed[i + 1];
+            const float magnitude = sqrtf(re * re + im * im);
+            if (s->am_dc <= 0.0f) s->am_dc = magnitude;
+            s->am_dc += 0.002f * (magnitude - s->am_dc);
+            s->f_acc += (magnitude - s->am_dc) * (10000.0f / (s->am_dc + 1.0f));
+            if (++s->f_n < 2) continue;
+            float sample = s->f_acc * 0.5f;
+            s->f_acc = 0;
+            s->f_n = 0;
+            if (sample > 32767) sample = 32767;
+            if (sample < -32768) sample = -32768;
+            pcm16k[out++] = (int16_t)sample;
+            if (out >= max) break;
+        }
+    }
+    return out;
+}
+
 float fm_iq_rms(const uint8_t *iq, int iq_len)
 {
     if (iq_len < 2) return 0.0f;

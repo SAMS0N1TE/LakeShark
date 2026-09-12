@@ -214,8 +214,11 @@ bool ls_wf_preset_apply(ls_wf_src_t src, int i)
         }
         FM.scan_start_hz = t[i].lo_hz;
         FM.scan_stop_hz  = t[i].hi_hz;
-        lakeshark_fm_set_mode(FM_MODE_SCAN);
-        lakeshark_fm_scan_restart();
+        if (FM.mode == FM_MODE_SCAN) {
+            lakeshark_fm_scan_restart();
+        } else if (FM.freq_hz < t[i].lo_hz || FM.freq_hz > t[i].hi_hz) {
+            lakeshark_fm_set_freq(t[i].lo_hz + (t[i].hi_hz - t[i].lo_hz) / 2);
+        }
         ls_wf_claim(LS_WF_OWNER_NONE, NULL);
         s_fm_seq_have = false;   /* see ls_wf_source_select */
         return true;
@@ -229,6 +232,17 @@ bool ls_wf_preset_apply(ls_wf_src_t src, int i)
         return true;
     }
     return false;
+}
+
+static fm_mode_t s_fm_live_mode = FM_MODE_LISTEN;
+
+void ls_wf_fm_sweep(bool on)
+{
+    if (on && FM.mode != FM_MODE_SCAN) s_fm_live_mode = FM.mode;
+    lakeshark_fm_set_mode(on ? FM_MODE_SCAN : s_fm_live_mode);
+    if (on) lakeshark_fm_scan_restart();
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    s_fm_seq_have = false;
 }
 
 const char *ls_wf_preset_current(ls_wf_src_t src)

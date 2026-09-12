@@ -283,6 +283,7 @@ static ls_act_status_t a_fm_submode(const ls_args_t *in, ls_val_t *out)
         { "listen", FM_MODE_LISTEN }, { "scan", FM_MODE_SCAN },
         { "pocsag", FM_MODE_POCSAG }, { "acars", FM_MODE_ACARS },
         { "flex",   FM_MODE_FLEX   }, { "wfm",  FM_MODE_WFM   },
+        { "am",     FM_MODE_AM     },
     };
     const char *want = in->v[0].s;
     if (!want) return LS_ACT_BADARG;

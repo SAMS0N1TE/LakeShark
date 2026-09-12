@@ -1109,3 +1109,5 @@ ls_add_test(test_tui_contrast
     ${FW}/components/apps/tui/tuilib/tui_core.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)

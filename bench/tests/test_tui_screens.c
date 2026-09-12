@@ -353,19 +353,19 @@ LS_CASE(fm_mode_buttons_and_keyboard_reach_every_receiver)
     grid_for(pane);
     ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
     const fm_mode_t modes[] = {FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG,
-                              FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN};
+                              FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN, FM_MODE_AM};
     FM.mode = FM_MODE_LISTEN;
     ls_scr_fm.enter();
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         ls_scr_fm.draw(&g_sf, pane);
-        int col = pane.x + pane.w * (i % 3) / 3 + pane.w / 6;
-        int row = pane.y + (i / 3) * 5 + 2;
+        int col = pane.x + pane.w * (i % 4) / 4 + pane.w / 8;
+        int row = pane.y + (i / 4) * 5 + 2;
         LS_CHECK(ls_scr_fm.touch(col, row));
         LS_EQ_INT(FM.mode, modes[i]);
         ls_scr_fm.draw(&g_sf, pane);
-        int x0 = pane.x + pane.w * (i % 3) / 3;
-        int x1 = pane.x + pane.w * (i % 3 + 1) / 3;
-        int y0 = pane.y + (i / 3) * 5;
+        int x0 = pane.x + pane.w * (i % 4) / 4;
+        int x1 = pane.x + pane.w * (i % 4 + 1) / 4;
+        int y0 = pane.y + (i / 4) * 5;
         for (int y = y0; y < y0 + 5; ++y)
             for (int x = x0; x < x1; ++x)
                 if (y == y0 || y == y0 + 4 || x == x0 || x == x1 - 1)
@@ -396,7 +396,7 @@ LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
     ls_scr_fm_show_page(1);
     LS_EQ_INT(FM.mode, FM_MODE_POCSAG);
     ls_scr_fm.draw(&g_sf, pane);
-    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 2, pane.y + 1));
+    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w * 3 / 8, pane.y + 1));
     LS_EQ_INT(FM.mode, FM_MODE_WFM);
 }
 

@@ -525,13 +525,13 @@ static int cmd_feed(int argc, char **argv)
 static int cmd_fm(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("fm submode=%s (listen|scan|pocsag|wfm|acars|flex)\n",
+        printf("fm submode=%s (listen|scan|pocsag|wfm|am|acars|flex)\n",
                fm_mode_command_name((fm_mode_t)lakeshark_fm_get_mode()));
         return 0;
     }
     fm_mode_t mode;
     if (!fm_mode_parse(argv[1], &mode)) {
-        printf("usage: fm listen|scan|pocsag|wfm|acars|flex\n");
+        printf("usage: fm listen|scan|pocsag|wfm|am|acars|flex\n");
         return 0;
     }
     if (s_mode != FM_IDX) select_mode(FM_IDX);
@@ -2297,7 +2297,7 @@ static void console_start(bool full)
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",
-          .hint = "listen|scan|pocsag|wfm|acars|flex", .func = &cmd_fm },
+          .hint = "listen|scan|pocsag|wfm|am|acars|flex", .func = &cmd_fm },
         { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
           .func = &cmd_vol },
         { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",

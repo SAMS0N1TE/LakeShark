@@ -36,6 +36,7 @@ typedef struct {
     int     f_n;
 
     float   iq_peak;
+    float   am_dc;
 } fm_dsp_t;
 
 void fm_dsp_init(fm_dsp_t *s);
@@ -48,6 +49,9 @@ int  fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
 
 int  fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                    int16_t *pcm16k, int max);
+
+int fm_demod_am(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                int16_t *pcm16k, int max);
 
 float fm_iq_rms(const uint8_t *iq, int iq_len);
 

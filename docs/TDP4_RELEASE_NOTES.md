@@ -3,6 +3,7 @@
 ## 2.0.1
 
 - Direct FM mode selection and frequency step controls.
+- AM reception and separate band, mode and sweep controls.
 - POCSAG message navigation in list and detail views.
 - Live FM waterfall with a signal-level graph and optional band sweeps.
 - Full-width waterfall, thin traces and faster live updates.

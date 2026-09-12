@@ -11,6 +11,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_quick.h"
 #include "apps/fm/fm_state.h"
+#include "apps/fm/fm_mode_label.h"
 
 static void enter(void) { ls_wf_source_select(LS_WF_SRC_AUTO); }
 static void leave(void) { ls_wf_source_release(); }
@@ -20,16 +21,37 @@ static void leave(void) { ls_wf_source_release(); }
 #define STRIP_ROWS_PORTRAIT 3
 #define STRIP_ROWS_WIDE     1
 
-/* Two controls, because they answer two questions. */
-
 static tui_rect s_button;
 static tui_rect s_preset_button;
 static tui_rect s_tune_button;
+static tui_rect s_sweep_button;
+static tui_rect s_mode_button;
+
+static const fm_mode_t MODES[] = {
+    FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM, FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS,
+};
+
+static void mode_picked(int index)
+{
+    if (index < 0 || index >= (int)(sizeof(MODES) / sizeof(MODES[0]))) return;
+    ls_args_t args = {.n = 1};
+    args.v[0].kind = LS_VAL_TEXT;
+    args.v[0].s = fm_mode_command_name(MODES[index]);
+    ls_val_t result;
+    ls_action_call("fm.submode", &args, &result, ls_quick_grant_builtin());
+}
+
+static void open_mode_picker(void)
+{
+    ls_picker_open("RECEIVER MODE", mode_picked);
+    for (int i = 0; i < (int)(sizeof(MODES) / sizeof(MODES[0])); ++i)
+        ls_picker_add(fm_mode_label(MODES[i]), FM.mode == MODES[i] ? "selected" : "");
+}
 
 static void tune_fm(void)
 {
     if (FM.mode == FM_MODE_SCAN) {
-        ls_wf_source_start(LS_WF_SRC_FM);
+        ls_wf_fm_sweep(false);
     }
     const ls_quick_t tune = {.kind = LS_QUICK_ACTION, .action = "fm.tune"};
     ls_quick_fire(&tune, ls_quick_grant_builtin());
@@ -129,6 +151,8 @@ static void draw_one(tui_surface *sf, tui_rect r, const char *text,
 static void draw_buttons(tui_surface *sf, tui_rect r)
 {
     s_tune_button = tui_rect_make(0, 0, 0, 0);
+    s_sweep_button = tui_rect_make(0, 0, 0, 0);
+    s_mode_button = tui_rect_make(0, 0, 0, 0);
     const int half = r.w / 2;
     s_button        = tui_rect_make(r.x, r.y, half - 1, r.h);
     s_preset_button = tui_rect_make(r.x + half, r.y, r.w - half, r.h);
@@ -136,14 +160,21 @@ static void draw_buttons(tui_surface *sf, tui_rect r)
     char text[40];
     const ls_wf_src_t src = ls_wf_source_get();
     if (src == LS_WF_SRC_FM) {
-        const int third = r.w / 3;
-        s_button = tui_rect_make(r.x, r.y, third - 1, r.h);
-        s_tune_button = tui_rect_make(r.x + third, r.y, third - 1, r.h);
-        s_preset_button = tui_rect_make(r.x + third * 2, r.y,
-                                        r.w - third * 2, r.h);
+        const int radio_w = r.w / 6;
+        const int part = (r.w - radio_w) / 4;
+        s_button = tui_rect_make(r.x, r.y, radio_w - 1, r.h);
+        s_mode_button = tui_rect_make(r.x + radio_w, r.y, part - 1, r.h);
+        s_tune_button = tui_rect_make(r.x + radio_w + part, r.y, part - 1, r.h);
+        s_preset_button = tui_rect_make(r.x + radio_w + part * 2, r.y, part - 1, r.h);
+        s_sweep_button = tui_rect_make(r.x + radio_w + part * 3, r.y,
+                                      r.w - radio_w - part * 3, r.h);
         draw_one(sf, s_button, "FM", TUI_CYAN, true);
+        draw_one(sf, s_mode_button, FM.mode == FM_MODE_SCAN ? "MODE" : fm_mode_label(FM.mode),
+                 TUI_CYAN, true);
         draw_one(sf, s_tune_button, "TUNE", TUI_GREEN, true);
-        draw_one(sf, s_preset_button, "BAND SWEEP", TUI_YELLOW, true);
+        draw_one(sf, s_preset_button, "BAND", TUI_GREEN, true);
+        draw_one(sf, s_sweep_button, FM.mode == FM_MODE_SCAN ? "LIVE" : "SWEEP",
+                 TUI_YELLOW, true);
         return;
     }
     const char *want = ls_wf_source_label(src);
@@ -172,6 +203,7 @@ static void draw(tui_surface *sf, tui_rect area)
     } else {
         s_button = tui_rect_make(0, -1, 0, 0);
         s_preset_button = tui_rect_make(0, -1, 0, 0);
+        s_mode_button = s_tune_button = s_sweep_button = tui_rect_make(0, -1, 0, 0);
     }
 
     if (s_flash[0] && s_flash_ttl > 0) {
@@ -199,6 +231,13 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (k == LS_TK_CHAR && ls_wf_source_get() == LS_WF_SRC_FM) {
+        if (ch == 'e' || ch == 'E') { open_mode_picker(); return true; }
+        if (ch == 'w' || ch == 'W') {
+            ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
+            return true;
+        }
+    }
     if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') &&
         ls_wf_source_get() == LS_WF_SRC_FM) {
         tune_fm();
@@ -221,6 +260,14 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (tui_rect_contains(s_mode_button, col, row)) {
+        open_mode_picker();
+        return true;
+    }
+    if (tui_rect_contains(s_sweep_button, col, row)) {
+        ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
+        return true;
+    }
     if (tui_rect_contains(s_tune_button, col, row)) {
         tune_fm();
         return true;
@@ -242,7 +289,7 @@ const ls_tui_screen_t ls_scr_falls = {
        is a surprise worth avoiding. It says so instead, and says which
        screen to open. */
     .name = "FALLS",
-    .hint = "TAP a radio or its band  V radio  N band  B buttons",
+    .hint = "V radio  E mode  T tune  N band  W sweep",
     .enter = enter,
     .leave = leave,
     .draw = draw,

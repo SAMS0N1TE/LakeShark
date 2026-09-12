@@ -133,8 +133,10 @@ void fm_get_receiver_status(ls_iq_control_status_t *out)
     out->receiver_streaming = g_fm_streaming;
 }
 
-void lakeshark_fm_set_mode(int mode) { g_fm_mode_asked = mode; }
-void lakeshark_fm_scan_restart(void) { }
+static int g_scan_restarts;
+void lakeshark_fm_set_mode(int mode) { g_fm_mode_asked = mode; FM.mode = mode; }
+void lakeshark_fm_set_freq(uint32_t hz) { FM.freq_hz = hz; }
+void lakeshark_fm_scan_restart(void) { ++g_scan_restarts; }
 void ls_tui_radio_want(const char *mode_name) { g_radio_asked = mode_name; }
 
 /* ---- P25, which nothing here selects ------------------------------------ */
@@ -178,6 +180,7 @@ static void fresh(void)
     g_hold_asked = false;
     g_fm_streaming = false;
     g_fm_mode_asked = -1;
+    g_scan_restarts = 0;
     g_radio_asked = NULL;
     ls_shim_time_set(5000000);
 }
@@ -401,4 +404,42 @@ LS_CASE(an_fm_row_tells_the_waterfall_how_long_a_sweep_takes)
     ls_wf_source_pump();
     LS_EQ_INT(1, g_pushes);
     LS_EQ_UINT(11520u, g_feed.period_ms);
+}
+
+LS_CASE(fm_band_presets_tune_without_starting_a_sweep)
+{
+    fresh();
+    FM.mode = FM_MODE_WFM;
+    FM.freq_hz = 155000000;
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM, 1));
+    LS_EQ_UINT(98000000, FM.freq_hz);
+    LS_EQ_INT(FM_MODE_WFM, FM.mode);
+    LS_EQ_INT(0, g_scan_restarts);
+    LS_EQ_STR("FM bcast", ls_wf_preset_current(LS_WF_SRC_FM));
+}
+
+LS_CASE(fm_band_presets_keep_an_in_band_frequency)
+{
+    fresh();
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 155000000;
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM, 0));
+    LS_EQ_UINT(155000000, FM.freq_hz);
+    LS_EQ_INT(FM_MODE_LISTEN, FM.mode);
+    LS_EQ_INT(0, g_scan_restarts);
+}
+
+LS_CASE(fm_sweep_is_separate_from_band_selection)
+{
+    fresh();
+    FM.mode = FM_MODE_AM;
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM, 5));
+    ls_wf_fm_sweep(true);
+    LS_EQ_INT(FM_MODE_SCAN, FM.mode);
+    LS_EQ_INT(1, g_scan_restarts);
+    LS_EQ_UINT(450000000, FM.scan_start_hz);
+    LS_EQ_UINT(470000000, FM.scan_stop_hz);
+    ls_wf_fm_sweep(false);
+    LS_EQ_INT(FM_MODE_AM, FM.mode);
+    LS_EQ_INT(1, g_scan_restarts);
 }

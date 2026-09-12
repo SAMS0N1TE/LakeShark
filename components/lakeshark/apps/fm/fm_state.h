@@ -33,8 +33,9 @@ typedef enum {
     FM_MODE_WFM    = 3,
     FM_MODE_ACARS  = 4,
     FM_MODE_FLEX   = 5,
-    /* Value 6 was a removed decoder. Do not reuse persisted mode IDs. */
-    FM_MODE_COUNT = 6
+    /* Mode ID 6 is reserved. */
+    FM_MODE_AM = 7,
+    FM_MODE_COUNT = 8
 } fm_mode_t;
 
 /**/

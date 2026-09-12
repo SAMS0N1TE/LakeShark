@@ -225,6 +225,7 @@ static uint32_t fm_mode_default_freq(fm_mode_t m)
 {
     switch (m) {
         case FM_MODE_WFM:    return FM_FREQ_WFM;
+        case FM_MODE_AM:     return 127500000UL;
         case FM_MODE_POCSAG: return FM_FREQ_POCSAG;
         case FM_MODE_FLEX:   return FM_FREQ_FLEX;
         case FM_MODE_LISTEN: return FM_FREQ_LISTEN;
@@ -531,7 +532,7 @@ static void fm_rx_run_once(void)
                     fm_apply_gain(0);
                 }
             }
-            if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM) audio_out_ensure_unmuted();
+            if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM || FM.mode == FM_MODE_AM) audio_out_ensure_unmuted();
         }
         ls_iq_control_request_t radio_request;
         if (ls_iq_control_take(&s_radio_control, &radio_request)) {
@@ -603,6 +604,14 @@ static void fm_rx_run_once(void)
         if (FM.mode == FM_MODE_SCAN) {
             scan_step(iq, FM_IQ_BLOCK_BYTES);
             FM.iq_level = fm_iq_rms(iq, FM_IQ_BLOCK_BYTES);
+        } else if (FM.mode == FM_MODE_AM) {
+            int na = fm_demod_am(&s_dsp, iq, FM_IQ_BLOCK_BYTES, pcm, 600);
+            FM.iq_level = s_dsp.iq_peak;
+            FM.squelch_open = (int)(FM.iq_level * 100.0f) >= FM.squelch_tenths;
+            float ss = 0.0f;
+            for (int i = 0; i < na; ++i) ss += (float)pcm[i] * pcm[i];
+            FM.audio_level = na > 0 ? sqrtf(ss / na) / 8000.0f : 0.0f;
+            if (na > 0 && FM.squelch_open) audio_write_mono(pcm, na);
         } else if (FM.mode == FM_MODE_WFM) {
 
             int na = fm_demod_wide(&s_dsp, iq, FM_IQ_BLOCK_BYTES, pcm, 600);
@@ -863,7 +872,7 @@ static void fm_on_enter(void)
                               FM.gain_tenths, 0);
     fm_receiver_lost(LS_RADIO_ERR_UNAVAILABLE);
     if (FM.mode == FM_MODE_SCAN) scan_begin(false);
-    if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM)
+    if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM || FM.mode == FM_MODE_AM)
         audio_out_ensure_unmuted();
 
     if (!decoder_ready) {
@@ -923,7 +932,7 @@ int fm_app_register(void)
 
 void lakeshark_fm_set_mode(int mode)
 {
-    if (mode < 0 || mode >= FM_MODE_COUNT) return;
+    if (mode < 0 || mode >= FM_MODE_COUNT || mode == 6) return;
     /* The stored-channel scanner owns the tuner and deliberately
        forces LISTEN on every pass. Any requested non-listen mode must release
        that owner here so GUI, console and control-head selection all reach the

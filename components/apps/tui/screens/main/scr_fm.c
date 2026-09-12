@@ -32,7 +32,7 @@ static uint32_t s_blink;
 
 static const fm_mode_t FM_MODES[] = {
     FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG,
-    FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN,
+    FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN, FM_MODE_AM,
 };
 #define N_MODES ((int)(sizeof(FM_MODES) / sizeof(FM_MODES[0])))
 static tui_rect s_mode_hit[N_MODES];
@@ -63,7 +63,7 @@ static bool choose_mode(fm_mode_t mode)
 static int draw_modes(tui_surface *sf, tui_rect area)
 {
     memset(s_mode_hit, 0, sizeof(s_mode_hit));
-    const int columns = area.w >= 72 ? 6 : 3;
+    const int columns = area.w >= 72 ? 7 : 4;
     const int rows = (N_MODES + columns - 1) / columns;
     const int button_h = ls_tui_is_wide() ? 3 : 5;
     const int height = rows * button_h;
@@ -113,7 +113,7 @@ static tui_rect s_tune_hit[3];
 static uint32_t tune_step_hz(void)
 {
     if (FM.mode == FM_MODE_WFM) return 100000;
-    if (FM.mode == FM_MODE_ACARS) return 25000;
+    if (FM.mode == FM_MODE_ACARS || FM.mode == FM_MODE_AM) return 25000;
     return 12500;
 }
 

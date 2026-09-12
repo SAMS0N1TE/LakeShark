@@ -2,7 +2,7 @@
 
 static bool mode_valid(int mode)
 {
-    return mode >= 0 && mode < FM_MODE_COUNT;
+    return mode >= 0 && mode < FM_MODE_COUNT && mode != 6;
 }
 
 void fm_mode_handoff_request(fm_mode_handoff_t *handoff, fm_mode_t mode)

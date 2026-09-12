@@ -43,6 +43,7 @@ const char *ls_wf_preset_detail(ls_wf_src_t src, int i);
 
 /* Point the radio at preset `i`. False when there is no such preset. */
 bool        ls_wf_preset_apply(ls_wf_src_t src, int i);
+void        ls_wf_fm_sweep(bool on);
 
 /* What the radio is pointed at now, for a button face. Never NULL. */
 const char *ls_wf_preset_current(ls_wf_src_t src);

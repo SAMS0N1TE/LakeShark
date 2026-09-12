@@ -120,11 +120,12 @@ LS_CASE(actual_demod_command_restores_auto_without_changing_numeric_modes)
 LS_CASE(actual_fl_fm_path_selects_every_mode_and_reports_it)
 {
     static const char *const commands[] = {
-        "listen", "scan", "pocsag", "wfm", "acars", "flex"
+        "listen", "scan", "pocsag", "wfm", "acars", "flex", NULL, "am"
     };
     start_link();
 
     for (int mode = 0; mode < FM_MODE_COUNT; ++mode) {
+        if (mode == 6) continue;
         char line[32];
         char expected[32];
         char reply[64];
@@ -165,6 +166,7 @@ LS_CASE(actual_fl_fm_queries_alias_numeric_and_invalid_inputs_are_bounded)
     start_link();
     s_host_mode = "FM";
     for (int mode = 0; mode < FM_MODE_COUNT; ++mode) {
+        if (mode == 6) continue;
         char line[16];
         char expected[32];
         snprintf(line, sizeof(line), "FM %d", mode);
@@ -189,7 +191,7 @@ LS_CASE(actual_fl_fm_queries_alias_numeric_and_invalid_inputs_are_bounded)
 
     static const char *const invalid[] = {
         "FM bogus", "FM -1", "FM 6", "FM TRAP", "FM TargetTag",
-        "FM 7", "FM 999999999999999999999"
+        "FM 8", "FM 999999999999999999999"
     };
     s_fm_mode = FM_MODE_FLEX;
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {

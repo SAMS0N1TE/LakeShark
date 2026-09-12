@@ -7,7 +7,7 @@
 LS_CASE(every_fm_mode_has_the_correct_label)
 {
     static const char *const expected[] = {
-        "NFM", "SWEEP", "POCSAG", "WFM", "ACARS", "FLEX"
+        "NFM", "SWEEP", "POCSAG", "WFM", "ACARS", "FLEX", "UNKNOWN", "AM"
     };
     const int expected_count = (int)(sizeof(expected) / sizeof(expected[0]));
 
@@ -21,7 +21,7 @@ LS_CASE(every_fm_mode_has_the_correct_label)
 LS_CASE(every_fm_mode_has_a_round_trip_console_name)
 {
     static const char *const expected[] = {
-        "listen", "scan", "pocsag", "wfm", "acars", "flex"
+        "listen", "scan", "pocsag", "wfm", "acars", "flex", "unknown", "am"
     };
     const int expected_count = (int)(sizeof(expected) / sizeof(expected[0]));
 
@@ -29,6 +29,7 @@ LS_CASE(every_fm_mode_has_a_round_trip_console_name)
     for (int mode = 0; mode < FM_MODE_COUNT; ++mode) {
         fm_mode_t parsed = FM_MODE_COUNT;
         LS_EQ_STR(expected[mode], fm_mode_command_name((fm_mode_t)mode));
+        if (mode == 6) { LS_CHECK(!fm_mode_parse(expected[mode], &parsed)); continue; }
         LS_CHECK(fm_mode_parse(expected[mode], &parsed));
         LS_EQ_INT(mode, parsed);
     }
@@ -52,6 +53,7 @@ LS_CASE(console_alias_numeric_and_invalid_inputs_are_bounded)
         char numeric[4];
         snprintf(numeric, sizeof(numeric), "%d", mode);
         parsed = FM_MODE_COUNT;
+        if (mode == 6) { LS_CHECK(!fm_mode_parse(numeric, &parsed)); continue; }
         LS_CHECK(fm_mode_parse(numeric, &parsed));
         LS_EQ_INT(mode, parsed);
     }
@@ -61,7 +63,7 @@ LS_CASE(console_alias_numeric_and_invalid_inputs_are_bounded)
     LS_EQ_INT(FM_MODE_FLEX, parsed);
     LS_CHECK(!fm_mode_parse("-1", &parsed));
     LS_EQ_INT(FM_MODE_FLEX, parsed);
-    LS_CHECK(!fm_mode_parse("7", &parsed));
+    LS_CHECK(!fm_mode_parse("8", &parsed));
     LS_EQ_INT(FM_MODE_FLEX, parsed);
     LS_CHECK(!fm_mode_parse("999999999999999999999", &parsed));
     LS_EQ_INT(FM_MODE_FLEX, parsed);
