@@ -54,6 +54,7 @@
 #include "ls_sdcard.h"
 #include "ls_keypad.h"
 #include "ls_board_hw.h"
+#include "ls_lora.h"
 #include "ls_hosted_board.h"
 #include "ls_rtc.h"
 #include "ls_gps.h"
@@ -2625,6 +2626,12 @@ void app_main(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
     ls_safe_stage(LS_SAFE_STAGE_BACKEND);
+#if defined(LS_BOARD_LORA_CS_GPIO)
+    /* Reserve radio DMA buffers before USB enumeration consumes transient heap. */
+    esp_err_t lora_err = ls_lora_start();
+    if (lora_err != ESP_OK)
+        ESP_LOGW(TAG, "early LoRa initialization: %s", esp_err_to_name(lora_err));
+#endif
     lakeshark_backend_start();
 
 #if LS_HAS_RF_SWITCH

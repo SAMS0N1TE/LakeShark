@@ -96,6 +96,11 @@ idle frame intervals were 41.5–42.8 ms; the settled waterfall measured 43.3–
 Bottom button bars now respect rounded corners, including their touch regions.
 Normal P25 scan startup disables experimental Phase II mode.
 
+A fresh boot with RTL attached exposed a transient DMA allocation failure that
+left Mesh stopped. LoRa now reserves its SPI/device buffers before USB startup.
+The repeat boot brought up SX1262 and Mesh successfully, retained RTL streaming
+and showed no DMA-drop warnings in the captured startup window.
+
 No new card or CC1101 RF test is claimed with the keyboard absent. Long-running
 mixed radio/SD operation, live Phase II acquisition and audible quality remain
 field validation work before a stable release.

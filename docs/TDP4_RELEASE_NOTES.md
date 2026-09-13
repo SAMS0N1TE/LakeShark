@@ -9,6 +9,7 @@
 - Shared RTL/CC1101 recorder workspace and repeated OOK24 decoding.
 - Single-tap app opening without a blocking launch splash.
 - Buttons inset around the display's rounded corners.
+- Reliable LoRa/Mesh startup with a USB receiver attached.
 - USB Phase II capture replay and on-device performance diagnostics.
 - ADS-B single-frame approach credit: jstockdale / u/needmorejoules, ADS-B Scope.
 
