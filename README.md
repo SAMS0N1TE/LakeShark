@@ -133,7 +133,7 @@ LakeShark builds on these projects and contributors. Their code, hardware exampl
 | [xtrsdr](https://github.com/XTR1984/xtrsdr) | XTR1984. Cut librtlsdr down until it fit an ESP32. Without this there is no project |
 | [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder`; experimental Phase II decoding by Max H. Parke, Graham J. Norbury and contributors. GPL-3.0+ |
 | [libmodes](https://github.com/watson/libmodes) / [dump1090](https://github.com/antirez/dump1090) | Thomas Watson and Salvatore Sanfilippo. Mode S decoder lineage; the bundled libmodes notice is BSD-2-Clause |
-| [ADS-B Scope](https://github.com/jstockdale/T-Display-P4/tree/adsb) | jstockdale (u/needmorejoules). Inspiration for single-frame CPR decoding against the aircraft's previous fix |
+| [ADS-B Scope](https://github.com/jstockdale/T-Display-P4/tree/adsb) | John Stockdale (@jstockdale) and Off by One, Inc. Original ADS-B Scope implementation; reference for LakeShark's single-frame CPR decoding against the aircraft's previous fix |
 | [DSD](https://github.com/szechyjs/dsd) and [dsd-fme](https://github.com/lwvmobile/dsd-fme) | szechyjs and lwvmobile. The P25 framing and symbol lineage the decoders follow. The DSD files here carry its ISC-style notice |
 | [mbelib](https://github.com/szechyjs/mbelib) | szechyjs. Kept as a fallback vocoder. ISC |
 | [ESP-IDF](https://github.com/espressif/esp-idf) | Espressif. The whole platform |

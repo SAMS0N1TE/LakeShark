@@ -16,7 +16,7 @@
 - Buttons inset around the display's rounded corners.
 - Reliable LoRa/Mesh startup with a USB receiver attached.
 - USB Phase II capture replay and on-device performance diagnostics.
-- ADS-B single-frame approach credit: jstockdale / u/needmorejoules, ADS-B Scope.
+- ADS-B Scope original implementation credit: John Stockdale (@jstockdale) and Off by One, Inc.; reference for single-frame CPR decoding.
 
 P25 AUTO demodulation selects C4FM or CQPSK using valid protocol results.
 Phase II grant/slot recognition is present. Experimental voice reception requires

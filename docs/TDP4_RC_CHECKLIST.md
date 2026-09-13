@@ -27,7 +27,7 @@ Required preparation:
   when disabled. Public-symbol replay on the host and P4, plus synthetic-IQ tests,
   pass; live RF and automatic trunk following remain pending. Recheck the
   [Phase II validation notes](P25_PHASE2.md) before publishing.
-- Single-frame CPR inspiration from jstockdale / u/needmorejoules is credited
+- ADS-B Scope by John Stockdale (@jstockdale) and Off by One, Inc. is credited
   in the README and release notes, consistent with commit 4874ce04. This credit
   does not claim that the offered AMOLED/TFT detection code was imported.
 
