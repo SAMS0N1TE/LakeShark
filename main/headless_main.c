@@ -35,6 +35,9 @@
 #include "flipper_link.h"
 #include "esp_hosted.h"
 #include "ble_link.h"
+#if CONFIG_LS_BLE_HEAD
+#include "ble_hci_rx_guard.h"
+#endif
 #include "settings.h"
 /**/
 #include "radio_health.h"
@@ -1382,6 +1385,10 @@ static int cmd_ble(int argc, char **argv)
                pinned ? pin : "-", ble_link_is_connected() ? 1 : 0,
                ble_link_tel_hz(),
                (unsigned long)rx, (unsigned long)tx, (unsigned long)drops);
+#if CONFIG_LS_BLE_HEAD
+        printf("ble discovery: pressure_drops=%lu\n",
+               (unsigned long)ble_hci_rx_advertisement_drops());
+#endif
         /**/
         {
             uint16_t th = 0, ss = 0, se = 0;

@@ -667,9 +667,8 @@ static void start_scan(void)
     p.limited       = 0;
     p.passive       = 0;
 
-    /* Report every advertisement, not the first one per address. */
-
-    p.filter_duplicates = 0;
+    /* Rediscover peers on each scan without flooding the host with repeats. */
+    p.filter_duplicates = 1;
 
     s_state = BLE_LINK_SCANNING;
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, gap_event, NULL);

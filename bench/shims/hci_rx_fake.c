@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 unsigned ls_hci_test_calls;
+int ls_hci_test_result = 73;
 uint8_t *ls_hci_test_buf;
 size_t ls_hci_test_len;
 uint8_t ls_transport_test_ready;
@@ -19,5 +20,5 @@ int hci_rx_handler(uint8_t *buf, size_t len)
     ls_hci_test_calls++;
     ls_hci_test_buf = buf;
     ls_hci_test_len = len;
-    return 73;
+    return ls_hci_test_result;
 }

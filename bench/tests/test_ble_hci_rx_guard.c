@@ -1,9 +1,11 @@
 #include "ls_test.h"
 #include "ble_hci_rx_guard.h"
 #include <stddef.h>
+#include "esp_timer.h"
 
 extern int hci_rx_handler(uint8_t *buf, size_t len);
 extern unsigned ls_hci_test_calls;
+extern int ls_hci_test_result;
 extern uint8_t *ls_hci_test_buf;
 extern size_t ls_hci_test_len;
 static int init_calls;
@@ -88,4 +90,25 @@ LS_CASE(early_and_failed_init_packets_never_reach_nimble)
     LS_EQ_INT(ls_hci_test_len, sizeof(packet));
     LS_EQ_INT(ble_hci_rx_prepare(good_init), ESP_OK);
     LS_EQ_INT(init_calls, 2);
+
+    uint8_t adv[] = {4, 0x3e, 1, 2};
+    uint8_t extended[] = {4, 0x3e, 1, 0x0d};
+    ls_shim_time_set(1000000);
+    ls_hci_test_result = ESP_FAIL;
+    LS_EQ_INT(hci_rx_handler(adv, sizeof(adv)), ESP_FAIL);
+    unsigned calls = ls_hci_test_calls;
+    for (int i = 0; i < 1000; ++i)
+        LS_EQ_INT(hci_rx_handler(extended, sizeof(extended)), ESP_OK);
+    LS_EQ_INT(ls_hci_test_calls, calls);
+    LS_EQ_INT(ble_hci_rx_advertisement_drops(), 1001);
+    ls_hci_test_result = ESP_OK;
+    LS_EQ_INT(hci_rx_handler(packet, sizeof(packet)), ESP_OK);
+    LS_EQ_INT(ls_hci_test_calls, calls + 1);
+    LS_EQ_INT(hci_rx_handler(NULL, 0), ESP_ERR_INVALID_ARG);
+    adv[2] = 10;
+    LS_EQ_INT(hci_rx_handler(adv, sizeof(adv)), ESP_ERR_INVALID_ARG);
+    adv[2] = 1;
+    ls_shim_time_advance(100000);
+    LS_EQ_INT(hci_rx_handler(adv, sizeof(adv)), ESP_OK);
+    LS_EQ_INT(ls_hci_test_calls, calls + 2);
 }

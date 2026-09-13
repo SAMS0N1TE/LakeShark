@@ -123,3 +123,14 @@ Outdoor GPS movement, sustained mixed-mode audio and live RadioReference login
 remain untested. Automatic trunked-site roaming and tone/NAC filtering are not
 implemented. RadioReference is optional; local CSV/JSON imports need no account.
 See [GPS scanning and imports](LOCATION_SCAN.md).
+
+## Bluetooth startup recovery
+
+Discovery now filters duplicate reports. If the receive event pool fills, the
+transport drops advertisements for 100 ms while continuing to deliver connection
+and control packets. A host burst regression covers backoff, recovery and control
+delivery. The P4 reproduced buffer pressure and recovered with one warning and
+23 dropped discovery reports, then connected to the Flipper and completed startup.
+The `ble` console command reports these drops separately from application data.
+Three subsequent reset/connect checks passed; two exercised buffer-pressure
+recovery without stalling startup or flooding the log.

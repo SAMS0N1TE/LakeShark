@@ -6,6 +6,7 @@
 - Mixed conventional Phase I P25 and analog FM scan lists.
 - CSV/JSON list imports over USB or SD; optional RadioReference adapter.
 - Safer channel-list saving and transactional imports.
+- Bluetooth discovery duplicate filtering and burst recovery.
 - Expanded P25 settings, including AUTO/manual demodulation and CQPSK tuning.
 - Experimental manual P25 Phase II voice reception, off by default.
 - Separate channel-list and stepped-band scanning controls.

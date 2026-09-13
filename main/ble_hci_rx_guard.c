@@ -2,9 +2,12 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "esp_timer.h"
 
 static atomic_bool s_ready;
 static atomic_uint_least32_t s_early;
+static atomic_uint_least32_t s_adv_drops;
+static int64_t s_adv_retry_us;
 
 int __real_hci_rx_handler(uint8_t *buf, size_t len);
 uint8_t is_transport_tx_ready(void);
@@ -23,7 +26,28 @@ int __wrap_hci_rx_handler(uint8_t *buf, size_t len)
         atomic_fetch_add_explicit(&s_early, 1, memory_order_relaxed);
         return ESP_ERR_INVALID_STATE;
     }
-    return __real_hci_rx_handler(buf, len);
+    if (!buf || len < 3) return ESP_ERR_INVALID_ARG;
+    bool advertisement = len >= 4 && buf[0] == 4 && buf[1] == 0x3e &&
+                         (buf[3] == 2 || buf[3] == 0x0d);
+    if (advertisement) {
+        if (buf[2] < 1 || len < (size_t)buf[2] + 3) return ESP_ERR_INVALID_ARG;
+        /* Give the host time to drain its event pool after an RX burst. */
+        if (esp_timer_get_time() < s_adv_retry_us) {
+            atomic_fetch_add_explicit(&s_adv_drops, 1, memory_order_relaxed);
+            return ESP_OK;
+        }
+    }
+    int rc = __real_hci_rx_handler(buf, len);
+    if (advertisement && rc != ESP_OK) {
+        s_adv_retry_us = esp_timer_get_time() + 100000;
+        atomic_fetch_add_explicit(&s_adv_drops, 1, memory_order_relaxed);
+    }
+    return rc;
+}
+
+uint32_t ble_hci_rx_advertisement_drops(void)
+{
+    return atomic_load_explicit(&s_adv_drops, memory_order_relaxed);
 }
 
 esp_err_t ble_hci_rx_prepare(esp_err_t (*init)(void))

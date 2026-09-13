@@ -12,6 +12,7 @@ esp_err_t ble_hci_rx_prepare(esp_err_t (*init)(void));
 esp_err_t ble_hci_controller_prepare(esp_err_t (*init)(void),
     esp_err_t (*disable)(void), esp_err_t (*enable)(void));
 uint32_t ble_hci_rx_early_packets(void);
+uint32_t ble_hci_rx_advertisement_drops(void);
 
 #ifdef __cplusplus
 }
