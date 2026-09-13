@@ -84,6 +84,8 @@ bool settings_set_home_widget(int widget);
 
 /**/
 int  settings_get_scan_zone(void);
+uint8_t settings_get_scan_options(void);
+bool settings_set_scan_options(uint8_t options);
 void settings_set_scan_zone(int zone);
 
 int  settings_get_p25_demod(void);

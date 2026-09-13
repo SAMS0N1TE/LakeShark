@@ -104,6 +104,10 @@ Run the host checks from the repository directory:
 pwsh -File bench/verify.ps1 -Level host
 ```
 
+GPS-filtered mixed P25/analog scan lists and computer imports are documented in
+[Location scanning](docs/LOCATION_SCAN.md). RadioReference imports require an
+approved application key and the user's Premium account.
+
 ## °<)))>< Standing on
 
 None of the hard parts are mine. A P25 receiver on a microcontroller only exists because people spent years getting these right and then gave them away.

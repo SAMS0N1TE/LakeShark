@@ -35,6 +35,7 @@ serial*.txt
 !/docs/HACKRF_BRINGUP.md
 !/docs/TDP4_RC_CHECKLIST.md
 !/docs/P25_PHASE2.md
+!/docs/LOCATION_SCAN.md
 !/docs/screenshots/
 /tools/*
 !/tools/p25_profile.example

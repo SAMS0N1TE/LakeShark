@@ -42,6 +42,18 @@ static bool feed(ls_gps_state_t *st, const char *line)
 
 static void fresh(ls_gps_state_t *st) { memset(st, 0, sizeof(*st)); }
 
+LS_CASE(position_freshness_is_not_refreshed_by_satellites_or_void_rmc)
+{
+    ls_gps_state_t st = {0};
+    LS_CHECK(feed(&st,"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47"));
+    LS_EQ_INT(st.position_updates,1);
+    const char *payload="GPRMC,123520,V,,,,,,,230394,,,N";
+    unsigned checksum=0;
+    for(const char *p=payload;*p;++p) checksum^=(unsigned char)*p;
+    char line[90]; snprintf(line,sizeof(line),"$%s*%02X",payload,checksum);
+    LS_CHECK(feed(&st,line)); LS_CHECK(!st.fix); LS_EQ_INT(st.position_updates,1);
+}
+
 /* ---------------------------------------------------------------- cases -- */
 
 LS_CASE(a_bad_checksum_changes_nothing)

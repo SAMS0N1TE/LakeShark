@@ -31,10 +31,13 @@ typedef struct {
     uint8_t  flags;
     uint8_t  zone;
     uint8_t  rsv;
+    int32_t  lat_e7;
+    int32_t  lon_e7;
+    uint32_t radius_m;
 } scan_channel_t;
 
 #define SCANLIST_MAGIC 0x10058F51u
-#define SCANLIST_VER   0x0001u
+#define SCANLIST_VER   0x0002u
 #define SCANLIST_BUILD 0x499858AFu
 
 typedef struct {
@@ -62,6 +65,7 @@ int   scan_channel_find_freq_zone(uint32_t freq_hz, uint8_t zone);
 void  scan_channels_clear(void);
 
 bool  scan_channels_save(void);
+bool scan_channels_replace(const scan_channel_t *channels, int count);
 
 /**/
 /* Bulk edits: wrap them so the N individual saves coalesce into ONE commit.

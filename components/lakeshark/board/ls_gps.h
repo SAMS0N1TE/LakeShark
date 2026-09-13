@@ -66,6 +66,8 @@ typedef struct {
     uint32_t sentences;      /* passed checksum                              */
     uint32_t checksum_errors;
     int64_t  last_sentence_us;  /* esp_timer clock, 0 if never               */
+    int64_t  last_fix_us;
+    uint32_t position_updates;
 } ls_gps_state_t;
 
 /* Bring the UART up and start the reader task.  Idempotent. */

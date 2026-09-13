@@ -150,7 +150,8 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
             out->lat_deg = to_degrees(f[2], f[3], 2);
             out->lon_deg = to_degrees(f[4], f[5], 3);
             out->fix = true;
-        } else if (out->quality == 0) {
+            out->position_updates++;
+        } else {
             out->fix = false;
         }
     } else if (strcmp(type, "RMC") == 0 && n >= 10) {
@@ -160,7 +161,8 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
             out->lat_deg = to_degrees(f[3], f[4], 2);
             out->lon_deg = to_degrees(f[5], f[6], 3);
             out->fix = true;
-        }
+            out->position_updates++;
+        } else out->fix = false;
         if (*f[7]) out->speed_kts  = (float)atof(f[7]);
         if (*f[8]) out->course_deg = (float)atof(f[8]);
         parse_date(f[9], out);
@@ -233,9 +235,12 @@ static void gps_task(void *arg)
             if (c == '\r' || c == '\n') {
                 if (fill > 0 && !overrun) {
                     line[fill] = 0;
+                    uint32_t position_updates = s_st.position_updates;
                     if (ls_gps_parse_line(line, fill, &s_st)) {
                         s_st.sentences++;
                         s_st.last_sentence_us = esp_timer_get_time();
+                        if (s_st.position_updates != position_updates)
+                            s_st.last_fix_us = s_st.last_sentence_us;
                         s_st.alive = true;
                     } else {
                         s_st.checksum_errors++;

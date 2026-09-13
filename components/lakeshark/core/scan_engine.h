@@ -14,6 +14,13 @@ void scan_engine_init(void);
 void scan_engine_start(void);
 void scan_engine_stop(void);
 bool scan_engine_active(void);
+void scan_engine_set_mixed(bool enabled);
+bool scan_engine_mixed(void);
+bool scan_engine_decoder_handoff(void);
+void scan_engine_set_location(bool enabled);
+bool scan_engine_location(void);
+bool scan_engine_location_ready(void);
+void scan_engine_receiver_status(ls_iq_control_status_t *out);
 /**/
 /* True while the engine is driving the tuner fast - scanning OR calibrating.
    This, not scan_engine_active(), is what a retune fast-path should test. */

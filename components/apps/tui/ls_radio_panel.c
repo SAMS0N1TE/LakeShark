@@ -79,7 +79,8 @@ static void buttons(ls_radio_panel_t *p, const ls_radio_view_t *v)
         bool band = scan_engine_get_source() == SCAN_SRC_BAND;
         ls_btn_t choices[] = {
             {"CHANNEL LIST", NULL, 'C', !band, false}, {"BAND SCAN", NULL, 'B', band, false},
-            {"STEP", NULL, 'I', false, !band},         {"RANGE", NULL, 'R', false, !band},
+            {band ? "STEP" : "MIXED AUDIO", NULL, band ? 'I' : 'X', !band && scan_engine_mixed(), false},
+            {band ? "RANGE" : "GPS FILTER", NULL, band ? 'R' : 'G', !band && scan_engine_location(), false},
             {"START", NULL, 'S', false, false},        {"BACK", NULL, 'M', false, false}};
         memcpy(b, choices, sizeof(b));
     }
@@ -91,7 +92,8 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     p->count = 0;
     for (int i = 0; i < scan_channels_count(); i++) {
         const scan_channel_t *c = scan_channel_get(i);
-        if (c && c->mode == (v->fm ? SCAN_MODE_NFM : SCAN_MODE_P25))
+        if (c && (c->mode == (v->fm ? SCAN_MODE_NFM : SCAN_MODE_P25) ||
+                  (scan_engine_mixed() && c->mode <= SCAN_MODE_NFM)))
             p->visible[p->count++] = i;
     }
     if (!p->lists && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
@@ -135,7 +137,8 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
                  (unsigned long)((c->freq_hz % 1000000) / 100), c->zone,
                  c->flags & SCAN_FLAG_LOCKOUT ? "LOCK" : "");
         line(sf, a, 2 + n * 3, text, (p->lists ? pos == p->selected : current) ? amber : white);
-        line(sf, a, 3 + n * 3, c->name, LS_ATTR_DIM);
+        snprintf(text, sizeof(text), "%s %s", c->mode == SCAN_MODE_P25 ? "P25" : "FM", c->name);
+        line(sf, a, 3 + n * 3, text, LS_ATTR_DIM);
     }
 }
 
@@ -156,6 +159,7 @@ static void scan_choices(tui_surface *sf, tui_rect a, bool wide)
     line(sf, list, 2, "Visit saved frequencies only", white);
     line(sf, list, 4, "Uses your enabled channels and zone", LS_ATTR_DIM);
     line(sf, list, 6, "Manage frequencies with LISTS", LS_ATTR_DIM);
+    line(sf, list, 8, scan_engine_location() ? "GPS coverage filter ON" : "GPS coverage filter OFF", cyan);
     tui_box(sf, range, band ? "BAND SCAN / SELECTED" : "BAND SCAN", band ? amber : cyan);
     uint32_t lo, hi, step;
     scan_engine_get_band(&lo, &hi, &step);
@@ -170,6 +174,17 @@ static void scan_choices(tui_surface *sf, tui_rect a, bool wide)
 
 void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf, tui_rect a)
 {
+    ls_radio_view_t actual = *v;
+    if (scan_engine_active() && scan_engine_mixed()) {
+        const scan_channel_t *c = scan_channel_get(scan_engine_candidate());
+        if (c) {
+            actual.fm = c->mode == SCAN_MODE_NFM;
+            actual.mode = actual.fm ? "NFM / MIXED" : "P25 I / MIXED";
+            actual.frequency = c->freq_hz;
+            scan_engine_receiver_status(&actual.receiver);
+            v = &actual;
+        }
+    }
     bool wide = a.w > 72, active = scan_engine_active();
     if (a.w < 38 || a.h < (wide ? 20 : 34)) {
         ls_panel_notice(sf, a, "RADIO", "Open a larger radio view", "M: detailed controls");
@@ -289,6 +304,17 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
 
 static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
 {
+    ls_radio_view_t actual = *v;
+    if (scan_engine_active() && scan_engine_mixed()) {
+        const scan_channel_t *channel = scan_channel_get(scan_engine_candidate());
+        if (channel) {
+            actual.fm = channel->mode == SCAN_MODE_NFM;
+            scan_engine_receiver_status(&actual.receiver);
+            actual.frequency = actual.receiver.effective_center_known ?
+                (uint32_t)actual.receiver.effective_center_hz : channel->freq_hz;
+            v = &actual;
+        }
+    }
     if (c >= 'a' && c <= 'z')
         c -= 32;
     if (p->scan_choice) {
@@ -299,6 +325,10 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
         if (c == 'C' || c == 'B') {
             scan_engine_stop();
             scan_engine_set_source(c == 'C' ? SCAN_SRC_CHANNELS : SCAN_SRC_BAND);
+        } else if (c == 'X' && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
+            scan_engine_set_mixed(!scan_engine_mixed());
+        } else if (c == 'G' && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
+            scan_engine_set_location(!scan_engine_location());
         } else if (c == 'S') {
             p->scan_choice = p->lists = false;
             scan_engine_start();

@@ -5,6 +5,8 @@
 #include "p25_state.h"
 #include "p25_program.h"
 #include "p25_p2_runtime.h"
+#include "scan_geo.h"
+#include "ls_gps.h"
 /**/
 #include "fm_state.h"
 #include "lakeshark_backend.h"
@@ -41,6 +43,56 @@ static const char *TAG = "scaneng";
 #define PRI_MEASURE_MS   45
 
 static volatile bool s_enabled = false;
+static bool s_mixed, s_location, s_handoff;
+static scan_geo_t s_geo;
+static portMUX_TYPE s_geo_lock = portMUX_INITIALIZER_UNLOCKED;
+static scan_geo_t geo_snapshot(void) {
+    portENTER_CRITICAL(&s_geo_lock);
+    scan_geo_t copy = s_geo;
+    portEXIT_CRITICAL(&s_geo_lock);
+    return copy;
+}
+static EXT_RAM_BSS_ATTR scan_channel_t s_geo_channels[SCAN_MAX_CHANNELS];
+static EXT_RAM_BSS_ATTR ls_gps_state_t s_geo_gps;
+static int64_t s_geo_poll;
+
+void scan_engine_set_mixed(bool enabled) {
+    scan_engine_stop();
+    if (s_mixed == enabled) return;
+    if (settings_set_scan_options((enabled ? 1 : 0) | (s_location ? 2 : 0))) s_mixed = enabled;
+}
+bool scan_engine_mixed(void) { return s_mixed; }
+bool scan_engine_decoder_handoff(void) { return __atomic_load_n(&s_handoff, __ATOMIC_ACQUIRE); }
+void scan_engine_set_location(bool enabled) {
+    scan_engine_stop();
+    if (s_location == enabled) return;
+    if (settings_set_scan_options((s_mixed ? 1 : 0) | (enabled ? 2 : 0))) s_location = enabled;
+    portENTER_CRITICAL(&s_geo_lock);
+    memset(&s_geo, 0, sizeof(s_geo));
+    portEXIT_CRITICAL(&s_geo_lock);
+    s_geo_poll = 0;
+}
+bool scan_engine_location(void) { return s_location; }
+bool scan_engine_location_ready(void) { scan_geo_t copy = geo_snapshot(); return scan_geo_ready(&copy, esp_timer_get_time()); }
+static void update_location(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (!s_location || now < s_geo_poll) return;
+    s_geo_poll = now + 1000000;
+    if (!ls_gps_running()) (void)ls_gps_start();
+    ls_gps_get(&s_geo_gps);
+    int n = scan_channels_count();
+    for (int i = 0; i < n; ++i) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (c) s_geo_channels[i] = *c;
+    }
+    scan_geo_t next = geo_snapshot();
+    scan_geo_update(&next, s_geo_channels, n, s_geo_gps.fix, s_geo_gps.lat_deg, s_geo_gps.lon_deg,
+                    s_geo_gps.last_fix_us, now);
+    portENTER_CRITICAL(&s_geo_lock);
+    s_geo = next;
+    portEXIT_CRITICAL(&s_geo_lock);
+}
 static int           s_cur     = -1;
 static int           s_hang_ms = DEFAULT_HANG_MS;
 static int           s_thresh  = DEFAULT_THRESH;
@@ -102,6 +154,31 @@ static void receiver_status_for(int mode, ls_iq_control_status_t *out)
     out->receiver_error = LS_RADIO_ERR_UNAVAILABLE;
     if (mode == SCAN_MODE_P25) p25_get_receiver_status(out);
     else if (mode == SCAN_MODE_NFM) fm_get_receiver_status(out);
+}
+
+void scan_engine_receiver_status(ls_iq_control_status_t *out) { receiver_status_for(selected_mode(), out); }
+
+static bool select_decoder(int mode)
+{
+    if (mode == foreground_mode()) return true;
+    if (!s_mixed) return false;
+    const char *name = mode == SCAN_MODE_P25 ? "P25" : "FM";
+    int target = -1;
+    for (int i = 0; i < app_count(); ++i) {
+        const app_t *a = app_at(i);
+        if (a && !strcmp(a->name, name)) { target = i; break; }
+    }
+    if (target < 0) return false;
+    __atomic_store_n(&s_handoff, true, __ATOMIC_RELEASE);
+    app_switch_to(target);
+    bool ready = false;
+    for (int waited = 0; s_enabled && waited < 4000; waited += 20) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!app_switch_in_progress() && foreground_mode() == mode) { ready = true; break; }
+    }
+    __atomic_store_n(&s_handoff, false, __ATOMIC_RELEASE);
+    if (ready) s_fg_mode = mode;
+    return ready && s_enabled;
 }
 
 /* a scanner tune is asynchronous: tune_to() only writes the app
@@ -241,6 +318,7 @@ void scan_engine_set_source(scan_src_t src)
 {
     if (src != SCAN_SRC_CHANNELS && src != SCAN_SRC_BAND) return;
     s_src       = src;
+    if (src == SCAN_SRC_BAND && s_location) scan_engine_set_location(false);
     s_band_pos  = 0;
     s_order_n   = 0;      /* force a rebuild when going back to channels */
     s_order_pos = 0;
@@ -398,7 +476,14 @@ static bool channel_eligible(const scan_channel_t *c)
     if (!(c->flags & SCAN_FLAG_ENABLED)) return false;
     if (c->flags & SCAN_FLAG_LOCKOUT)    return false;
     /**/
-    if (c->mode != s_fg_mode)            return false;
+    if (c->mode != s_fg_mode && !(s_mixed && c->mode <= SCAN_MODE_NFM)) return false;
+    if (s_location) {
+        int index = -1;
+        for (int i = 0; i < scan_channels_count(); ++i)
+            if (scan_channel_get(i) == c) { index = i; break; }
+        scan_geo_t copy = geo_snapshot();
+        if (!scan_geo_admits(&copy, index, esp_timer_get_time())) return false;
+    }
     return zone_admits(c);
 }
 
@@ -417,6 +502,10 @@ static int candidate_count(void)
 /**/
 static void empty_reason(char *buf, size_t n)
 {
+    if (s_location && !scan_engine_location_ready()) {
+        snprintf(buf, n, "GPS fix required / scan paused"); return;
+    }
+    if (s_location) { snprintf(buf, n, "no enabled channels in GPS range/zone"); return; }
     int total = scan_channels_count();
     if (total <= 0) { snprintf(buf, n, "no channels - add one"); return; }
 
@@ -480,6 +569,7 @@ static int priority_sample(void)
         const scan_channel_t *c = scan_channel_get(i);
         if (!c) continue;
         if (!(c->flags & SCAN_FLAG_PRIORITY)) continue;
+        if (c->mode != s_fg_mode) continue;
         if (!channel_eligible(c)) continue;
         if (sess_skipped(i)) continue;
 
@@ -533,6 +623,7 @@ static void scan_task(void *arg)
             continue;
         }
         /**/
+        update_location();
         const int fg = foreground_mode();
         if (fg < 0) {
             s_cur     = -1;
@@ -626,13 +717,15 @@ static void scan_task(void *arg)
         }
         /**/
         /**/
-        if (!c || c->mode != s_fg_mode) {
+        if (!c || (s_src == SCAN_SRC_CHANNELS && !channel_eligible(c)) ||
+            (c->mode != s_fg_mode && !select_decoder(c->mode))) {
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
 
         scan_channel_t selected = *c;
         c = &selected;
+        if (c->mode == SCAN_MODE_NFM && !nfm_wait_listen(800)) continue;
         s_candidate = idx;
         s_scan_error = LS_RADIO_OK;
         tune_to(c);
@@ -744,6 +837,9 @@ void scan_engine_init(void)
 {
     /**/
     s_zone = settings_get_scan_zone();
+    uint8_t options = settings_get_scan_options();
+    s_mixed = (options & 1) != 0;
+    s_location = (options & 2) != 0;
     TaskHandle_t task = xTaskCreateStaticPinnedToCore(
         scan_task, "scan_eng", SCAN_STACK_WORDS, NULL, 4,
         s_scan_stack, &s_scan_tcb, 0);
@@ -757,7 +853,7 @@ void scan_engine_start(void)
     /* scan may be started from the panel or the console.  Cancel at
      * this common boundary so its direct P25 tune_to() calls cannot race a
      * profile control survey, regardless of who pressed start. */
-    if (selected_mode() == SCAN_MODE_P25)
+    if (selected_mode() == SCAN_MODE_P25 || s_mixed)
     {
         p25_p2_enable(false);
         (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
@@ -898,6 +994,9 @@ void scan_engine_status(char *buf, size_t n)
     if (!buf || n == 0) return;
     scan_feedback_input_t input;
     feedback_input(&input);
+    if (s_enabled && s_location && !scan_engine_location_ready() && s_cur < 0) {
+        snprintf(buf, n, "GPS fix required / paused"); return;
+    }
     scan_feedback_format(&input,
                          s_src == SCAN_SRC_BAND ? "BAND" : "PRESET",
                          s_status, buf, n);

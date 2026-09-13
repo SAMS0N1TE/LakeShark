@@ -3,6 +3,7 @@
 #include "location_pref.h"
 #include "scan_channels.h"
 #include "scan_engine.h"
+#include "scan_import.h"
 #include "lakeshark_backend.h"
 /**/
 #include "fm_state.h"
@@ -80,6 +81,31 @@ static void ch_list(void)
 
 static int cmd_ch(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "stage")) { scan_import_begin(); puts("CHSTAGE READY"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "abort")) { scan_import_abort(); puts("CHSTAGE ABORTED"); return 0; }
+    if (argc == 3 && !strcmp(argv[1], "row")) {
+        bool ok = scan_import_add(argv[2]); puts(ok ? "CHROW OK" : "CHROW REJECTED"); return ok ? 0 : 1;
+    }
+    if (argc == 2 && !strcmp(argv[1], "commit")) {
+        char message[96]; bool ok = scan_import_commit(message, sizeof(message));
+        printf("CHCOMMIT %s %s\n", ok ? "OK" : "FAILED", message); return ok ? 0 : 1;
+    }
+    if (argc == 2 && !strcmp(argv[1], "dump")) {
+        puts("LSCAN1");
+        for (int i = 0; i < scan_channels_count(); ++i) {
+            const scan_channel_t *c = scan_channel_get(i);
+            if (c) printf("%s|%lu|%s|%u|%.7f|%.7f|%.3f|%d\n", c->name,
+                (unsigned long)c->freq_hz, scan_mode_name(c->mode), c->zone,
+                c->lat_e7 * 1e-7, c->lon_e7 * 1e-7, c->radius_m * .001, !!(c->flags & SCAN_FLAG_PRIORITY));
+        }
+        puts("CHDUMP END"); return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "load")) {
+        char message[96] = "Import worker unavailable";
+        bool ok = scan_import_file(argv[2], message, sizeof(message));
+        printf("%s: %s\n", ok ? "OK" : "ERROR", message);
+        return ok ? 0 : 1;
+    }
     if (argc < 2 || !strcmp(argv[1], "list")) { ch_list(); return 0; }
 
     if (!strcmp(argv[1], "add")) {
@@ -203,9 +229,17 @@ static int cmd_stats(int argc, char **argv)
 
 static int cmd_scan(int argc, char **argv)
 {
+    if (argc == 3 && (!strcmp(argv[1], "mixed") || !strcmp(argv[1], "gps"))) {
+        if (strcmp(argv[2], "on") && strcmp(argv[2], "off")) return 1;
+        bool on = !strcmp(argv[2], "on");
+        if (!strcmp(argv[1], "mixed")) scan_engine_set_mixed(on);
+        else scan_engine_set_location(on);
+        printf("%s %s; scan stopped\n", argv[1], argv[2]); return 0;
+    }
     if (argc < 2 || !strcmp(argv[1], "status")) {
         char st[96]; scan_engine_status(st, sizeof(st));
-        printf("scan: %s\n", st);
+        printf("scan: %s / mixed=%s GPS=%s\n", st, scan_engine_mixed() ? "on" : "off",
+               !scan_engine_location() ? "off" : scan_engine_location_ready() ? "ready" : "waiting");
         return 0;
     }
     if (!strcmp(argv[1], "on")  || !strcmp(argv[1], "start")) { scan_engine_start(); printf("scan on\n");  return 0; }

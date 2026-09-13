@@ -701,12 +701,20 @@ int settings_get_scan_zone(void)
     return (int)v;
 }
 
+uint8_t settings_get_scan_options(void)
+{
+    uint8_t value = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "scan_options", &value) != ESP_OK) return 0;
+    return value & 3;
+}
+bool settings_set_scan_options(uint8_t options) { return sput_u8("scan_options", options & 3); }
+
 /**/
 void settings_set_scan_zone(int zone)
 {
     if (!s_nvs_ok) return;
     if (zone < -1) zone = -1;
-    if (nvs_set_i8(s_nvs, "scan_zone", (int8_t)zone) == ESP_OK) nvs_commit(s_nvs);
+    (void)set_put("scan_zone", SV_I8, (uint64_t)(int64_t)zone);
 }
 
 int settings_voice_preset_get(void)

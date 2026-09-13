@@ -1630,7 +1630,7 @@ static void p25_on_enter(void)
     /* and the profile outranks those persisted preferences in turn,
      * for the same reason. Reapply reads nothing from SD - what is on the card
      * may have changed, and re-entering an app is not a reload. */
-    (void)p25_program_reapply_now();
+    if (!scan_engine_decoder_handoff()) (void)p25_program_reapply_now();
     memset(&P25.grant_observed, 0, sizeof(P25.grant_observed));
     memset(&P25.grant_active, 0, sizeof(P25.grant_active));
     P25.receive_state = P25_RX_CONTROL_SEARCH;

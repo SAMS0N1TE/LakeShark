@@ -13,6 +13,15 @@ static int tune_count, scenario, phase;
 static uint32_t tuned[32];
 static int64_t deadline;
 static bool phase2_enabled;
+static int switched;
+uint8_t settings_get_scan_options(void) { return 0; }
+bool settings_set_scan_options(uint8_t options) { (void)options; return true; }
+int app_count(void) { return 2; }
+const app_t *app_at(int i) { static app_t apps[]={{.name="P25"},{.name="FM"}}; return i>=0 && i<2 ? &apps[i] : NULL; }
+void app_switch_to(int i) { foreground = *app_at(i); ++switched; }
+void ls_gps_get(ls_gps_state_t *gps) { memset(gps,0,sizeof(*gps)); }
+bool ls_gps_running(void) { return true; }
+esp_err_t ls_gps_start(void) { return ESP_OK; }
 void p25_p2_enable(bool on) { phase2_enabled = on; }
 
 const app_t *app_current(void)
@@ -121,6 +130,7 @@ void vTaskDelay(TickType_t ticks)
 }
 static void run(int which, int ms)
 {
+    s_mixed = s_location = false;
     scan_engine_stop();
     memset(&FM, 0, sizeof(FM));
     memset(&P25, 0, sizeof(P25));
@@ -149,6 +159,12 @@ static void run(int which, int ms)
     phase = tune_count = 0;
     scan_engine_init();
     scan_engine_set_source(SCAN_SRC_CHANNELS);
+    if (which == 9) {
+        s_mixed = true; switched = 0; foreground.name = "FM";
+        channels[0].mode = SCAN_MODE_NFM; channels[1].mode = SCAN_MODE_P25; channels[2].mode = SCAN_MODE_NFM;
+        p25_rx_power = 0.01f;
+    }
+    if (which == 10) s_location = true;
     scan_engine_start();
     ls_shim_time_set(0);
     deadline = (int64_t)ms * 1000;
@@ -228,4 +244,17 @@ LS_CASE(starting_p25_scan_disables_manual_phase2)
     scan_engine_start();
     LS_CHECK(!phase2_enabled);
     scan_engine_stop();
+}
+LS_CASE(mixed_scan_switches_decoder_and_keeps_list_progress)
+{
+    run(9,1000);
+    LS_CHECK(switched >= 2); LS_CHECK(tune_count >= 3);
+    LS_EQ_INT(tuned[0],150000000); LS_EQ_INT(tuned[1],150012500); LS_EQ_INT(tuned[2],150025000);
+}
+LS_CASE(location_scan_never_tunes_without_a_fix)
+{
+    run(10,1000);
+    LS_EQ_INT(tune_count,0);
+    char status[96]; scan_engine_status(status,sizeof(status));
+    LS_CHECK(strstr(status,"GPS") != NULL);
 }

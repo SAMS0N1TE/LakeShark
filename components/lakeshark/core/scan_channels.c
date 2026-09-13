@@ -2,6 +2,8 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_attr.h"
+#include "ls_nvs_safe.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -10,14 +12,14 @@ static const char  *TAG    = "scanch";
 static const char  *NS     = "sdr-tool";
 static const char  *BLOBK  = "scanlist";
 
-static scan_channel_t s_ch[SCAN_MAX_CHANNELS];
+static EXT_RAM_BSS_ATTR scan_channel_t s_ch[SCAN_MAX_CHANNELS];
 static int            s_count = 0;
 static nvs_handle_t   s_nvs   = 0;
 static bool           s_ok    = false;
 
 #define SCAN_STORE_BYTES (sizeof(scan_store_hdr_t) + \
                           SCAN_MAX_CHANNELS * sizeof(scan_channel_t))
-static uint8_t s_blob[SCAN_STORE_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t s_blob[SCAN_STORE_BYTES];
 
 void scan_channels_init(void)
 {
@@ -35,15 +37,19 @@ void scan_channels_init(void)
     scan_store_hdr_t hdr;
     bool ok = (err == ESP_OK && sz >= sizeof(hdr));
     if (ok) memcpy(&hdr, s_blob, sizeof(hdr));
-    if (ok && hdr.magic == SCANLIST_MAGIC && hdr.ver == SCANLIST_VER &&
+    if (ok && hdr.magic == SCANLIST_MAGIC && (hdr.ver == SCANLIST_VER || hdr.ver == 1) &&
         hdr.build == SCANLIST_BUILD) {
-        int navail = (int)((sz - sizeof(hdr)) / sizeof(scan_channel_t));
+        size_t stride = hdr.ver == 1 ? 24 : sizeof(scan_channel_t);
+        int navail = (int)((sz - sizeof(hdr)) / stride);
         int n = hdr.count;
         if (n > navail)           n = navail;
         if (n > SCAN_MAX_CHANNELS) n = SCAN_MAX_CHANNELS;
         if (n < 0)                n = 0;
         s_count = n;
-        memcpy(s_ch, s_blob + sizeof(hdr), (size_t)n * sizeof(scan_channel_t));
+        for (int i = 0; i < n; ++i) {
+            memcpy(&s_ch[i], s_blob + sizeof(hdr) + (size_t)i * stride, stride);
+            s_ch[i].name[SCAN_NAME_LEN - 1] = 0;
+        }
         ESP_LOGI(TAG, "loaded %d channels", s_count);
     } else {
         ESP_LOGI(TAG, "no stored channel list");
@@ -68,7 +74,7 @@ const scan_channel_t *scan_channel_get(int idx)
 static int  s_batch = 0;
 static bool s_dirty = false;
 
-static bool save_now(void)
+static bool save_on_worker(void)
 {
     if (!s_ok) return false;
     scan_store_hdr_t hdr = {
@@ -84,6 +90,13 @@ static bool save_now(void)
     if (err != ESP_OK) { ESP_LOGW(TAG, "save blob: %d", err); return false; }
     return nvs_commit(s_nvs) == ESP_OK;
 }
+
+static esp_err_t save_job(void *unused)
+{
+    (void)unused;
+    return save_on_worker() ? ESP_OK : ESP_FAIL;
+}
+static bool save_now(void) { return ls_nvs_call(save_job, NULL, 0) == ESP_OK; }
 
 /**/
 bool scan_channels_save(void)
@@ -110,6 +123,29 @@ bool scan_channels_batch_end(void)
 
 /**/
 bool scan_channels_batching(void) { return s_batch > 0; }
+
+bool scan_channels_replace(const scan_channel_t *channels, int count)
+{
+    if (!s_ok || s_batch || !channels || count < 1 || count > SCAN_MAX_CHANNELS) return false;
+    for (int i = 0; i < count; ++i) {
+        const scan_channel_t *c = &channels[i];
+        if (!memchr(c->name, 0, sizeof(c->name)) || !c->name[0] ||
+            c->freq_hz < 1000000 || c->freq_hz > 2000000000 ||
+            c->mode > SCAN_MODE_NFM || c->zone >= SCAN_MAX_ZONES ||
+            c->lat_e7 < -900000000 || c->lat_e7 > 900000000 ||
+            c->lon_e7 < -1800000000 || c->lon_e7 > 1800000000 || c->radius_m > 500000)
+            return false;
+    }
+    scan_store_hdr_t hdr = {SCANLIST_MAGIC, SCANLIST_VER, (uint16_t)count, SCANLIST_BUILD};
+    memcpy(s_blob, &hdr, sizeof(hdr));
+    memcpy(s_blob + sizeof(hdr), channels, (size_t)count * sizeof(*channels));
+    if (nvs_set_blob(s_nvs, BLOBK, s_blob, sizeof(hdr) + (size_t)count * sizeof(*channels)) != ESP_OK ||
+        nvs_commit(s_nvs) != ESP_OK) return false;
+    s_count = 0;
+    memcpy(s_ch, channels, (size_t)count * sizeof(*channels));
+    s_count = count;
+    return true;
+}
 
 int scan_channel_add(const char *name, uint32_t freq_hz, scan_mode_t mode, uint8_t zone)
 {

@@ -7,6 +7,14 @@ static scan_channel_t channels[SCAN_MAX_CHANNELS];
 static int count, zone = -1, candidate = -1;
 static int threshold=4,hang=3000;
 static bool active, hold;
+static bool mixed, location;
+void scan_engine_set_mixed(bool on) { scan_engine_stop(); mixed = on; }
+bool scan_engine_mixed(void) { return mixed; }
+bool scan_engine_decoder_handoff(void) { return false; }
+void scan_engine_set_location(bool on) { scan_engine_stop(); location = on; }
+bool scan_engine_location(void) { return location; }
+bool scan_engine_location_ready(void) { return false; }
+void scan_engine_receiver_status(ls_iq_control_status_t *out) { memset(out, 0, sizeof(*out)); }
 static scan_src_t source;
 static uint32_t lo = 150000000, hi = 162000000, step = 12500;
 int scan_channels_count(void)

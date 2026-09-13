@@ -1685,6 +1685,26 @@ LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
     scan_channels_clear();
 }
 
+LS_CASE(gps_and_mixed_scan_buttons_match_touch_and_keyboard)
+{
+    scan_engine_set_source(SCAN_SRC_CHANNELS);
+    scan_engine_set_mixed(false); scan_engine_set_location(false);
+    ls_radio_panel_t panel={.focus=-1,.scan_choice=true};
+    ls_radio_view_t view={.mode="P25"};
+    tui_rect pane={1,2,46,63}; fresh(); grid_for(pane);
+    ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    int x,y; LS_CHECK(find_text("MIXED AUDIO",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(scan_engine_mixed());
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'g');
+    LS_CHECK(scan_engine_location());
+    fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    LS_CHECK(find_text("GPS FILTER",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(!scan_engine_location());
+    scan_engine_set_mixed(false);
+}
+
 LS_CASE(saved_channel_list_blank_space_does_not_select_an_unseen_row)
 {
     scan_engine_stop();
