@@ -5,6 +5,8 @@ LakeShark is a handheld SDR scanner and radio workbench built around the **LilyG
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
+> **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
+
 **P4 release candidate: [2.1.0-rc2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.0-rc2).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
 **New in rc2:**
