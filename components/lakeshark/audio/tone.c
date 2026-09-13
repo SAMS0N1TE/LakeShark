@@ -195,7 +195,6 @@ void snd_moto_full(void)
 
 #define TEST_AMP        8000.0f
 #define TEST_CHUNK      160
-#define TEST_PACE_MS    8
 /* 3072 with 2488 unused - about 584 B in use.
    And back to 3072: that measurement was test tones only, and this
    worker has since taken the boot sound, the greeting and the alert. See
@@ -219,8 +218,7 @@ static int16_t s_test_buf[TEST_CHUNK];
 static void test_emit(int n)
 {
     audio_out_play_now();
-    audio_write_mono(s_test_buf, n);
-    vTaskDelay(pdMS_TO_TICKS(TEST_PACE_MS));
+    tone_write_paced(s_test_buf, n);
 }
 
 static void test_sweep(void)
