@@ -5,20 +5,34 @@ LakeShark is a handheld SDR scanner and radio workbench built around the **LilyG
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
-**New in [2.1.0-rc1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.0-rc1):**
+**P4 release candidate: [2.1.0-rc2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.0-rc2).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
-- **LoRa Labs:** direct radio controls, live plots and an expanded rotating compass.
-- **Journal:** notes with radio, GPS and nine-axis sensor attachments.
-- **NFC workbench:** Classic card reads, live block maps, hex inspection and manual saves.
-- **MIX-RF:** sub-GHz energy monitoring and 2.4 GHz activity scans.
-- **Sub-GHz watch:** passive capture, duplicate grouping and bounded storage.
-- **Field UI:** grouped apps, portrait touch controls, animated map markers and improved rotation.
+**New in rc2:**
 
-**[Download the P4 release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[LoRa Labs and Journal guide](https://github.com/SAMS0N1TE/LakeShark/blob/v2.1.0-rc1/docs/FIELD_LABS.md)** · **[Keyboard radio and NFC guide](https://github.com/SAMS0N1TE/LakeShark/blob/v2.1.0-rc1/docs/MIX_RF.md)**
+- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
+- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
+- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
+- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
+- **Waterfalls:** tap to mark a signal, then tune to it.
+- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
+- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
+- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
+
+**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
+
+**New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: the [field map](docs/map-field.md) adds pixel terrain, blue water, warm roads, a fresh-GPS marker, an SD map picker and clearer format errors. Cached views avoid repeated tile decoding; unchanged map cells skip redraws.
+
+**Experiments:**
+
+- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
+- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is unverified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
+- **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
+
+**[Download the P4 release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[LoRa Labs and Journal](docs/FIELD_LABS.md)** · **[Keyboard radios and NFC](docs/MIX_RF.md)** · **[Scanning and imports](docs/LOCATION_SCAN.md)**
 
 ### ><> Everything else is on [terminalbay.com](https://terminalbay.com/?m=lakeshark)
 
-The setup page flashes a board from Chrome or Edge with one button, no toolchain and no Python. It also builds P25 profiles, channel memories and offline map tiles for you. The [wiki](https://terminalbay.com/?m=wiki) has the guides and every screenshot.
+The setup page flashes a board from Chrome or Edge with one button, no toolchain and no Python. It also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you. The [wiki](https://terminalbay.com/?m=wiki) has the guides and every screenshot.
 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
@@ -34,22 +48,22 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 | <img src="https://terminalbay.com/wiki/tdp4/images/falls_lora_port.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/map_port.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/link_wifi.png" width="200" /> |
 | FALLS, LoRa sweep | MAP | LINK |
 
-The whole interface is a character grid painted straight onto the panel. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
+ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
 | App | What it does |
 |---|---|
-| P25 | Phase 1 trunking: control channel, grants, talkgroups, IMBE voice |
-| FM | Analogue listening, band scan, POCSAG pagers |
+| P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning; Phase II `[EXPERIMENTAL]` |
+| FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists and POCSAG pagers |
 | ADS-B | Aircraft at 1090 MHz: table, radar, traffic history |
-| FALLS | One waterfall, fed by P25, FM, or the board's own LoRa radio sweeping a band |
+| FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
 | MESH | MeshCore messaging and nodes on the onboard SX1262 |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
 | JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
-| NFC | Classic card reads, verified block maps, hex/ASCII views and manual saves |
-| REC | Sub-GHz OOK capture to Flipper `.sub` files |
-| SUB-GHZ | Passive watch, grouped captures and bounded storage |
-| MAP | Offline vector tiles with aircraft, Mesh nodes and animated markers |
+| NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
+| REC | RTL or CC1101 source, Flipper `.sub` export and shared capture controls; CC1101 capture `[EXPERIMENTAL]` |
+| SUB-GHZ | Passive watch, repeated OOK24 payload decoding, duplicate grouping, storage limits and Journal bookmarks |
+| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED] |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
@@ -104,26 +118,35 @@ Run the host checks from the repository directory:
 pwsh -File bench/verify.ps1 -Level host
 ```
 
-GPS-filtered mixed P25/analog scan lists and computer imports are documented in
-[Location scanning](docs/LOCATION_SCAN.md). RadioReference imports require an
-approved application key and the user's Premium account.
+[Location scanning](docs/LOCATION_SCAN.md) covers mixed P25/FM lists and GPS filtering.
+CSV/JSON imports work without RadioReference. The optional RadioReference adapter
+`[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
+live account authentication has not been validated.
 
 ## °<)))>< Standing on
 
-None of the hard parts are mine. A P25 receiver on a microcontroller only exists because people spent years getting these right and then gave them away.
+LakeShark builds on these projects and contributors. Their code, hardware examples and published work make the receivers and tools possible.
 
 | | |
 |---|---|
 | [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) | Osmocom. The dongle driver everything starts from. GPL-2.0+ |
 | [xtrsdr](https://github.com/XTR1984/xtrsdr) | XTR1984. Cut librtlsdr down until it fit an ESP32. Without this there is no project |
 | [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder`; experimental Phase II decoding by Max H. Parke, Graham J. Norbury and contributors. GPL-3.0+ |
+| [libmodes](https://github.com/watson/libmodes) / [dump1090](https://github.com/antirez/dump1090) | Thomas Watson and Salvatore Sanfilippo. Mode S decoder lineage; the bundled libmodes notice is BSD-2-Clause |
 | [ADS-B Scope](https://github.com/jstockdale/T-Display-P4/tree/adsb) | jstockdale (u/needmorejoules). Inspiration for single-frame CPR decoding against the aircraft's previous fix |
 | [DSD](https://github.com/szechyjs/dsd) and [dsd-fme](https://github.com/lwvmobile/dsd-fme) | szechyjs and lwvmobile. The P25 framing and symbol lineage the decoders follow. The DSD files here carry its ISC-style notice |
 | [mbelib](https://github.com/szechyjs/mbelib) | szechyjs. Kept as a fallback vocoder. ISC |
 | [ESP-IDF](https://github.com/espressif/esp-idf) | Espressif. The whole platform |
+| [LILYGO device drivers](https://github.com/Xinyuan-LilyGO/lilygo_device_driver) | T-Display P4 and MIX-RF wiring, power sequencing and hardware examples |
+| [MeshCore](https://github.com/meshcore-dev/MeshCore) | Scott Powell / Ripple Radios and contributors. Onboard LoRa mesh stack |
+| [CartoTUI](https://github.com/SAMS0N1TE/CartoTUI) / [ZeroMesh](https://github.com/SAMS0N1TE/ZeroMesh) | libcarto vector rendering and the embedded PMTiles reader |
 | [PMTiles](https://github.com/protomaps/PMTiles) | Protomaps. One file, no server, seekable. What makes offline maps possible here |
 | [OpenStreetMap](https://www.openstreetmap.org/copyright) | The map data itself, ODbL |
-| [Flipper Zero](https://flipperzero.one/) | The head runs as a Flipper app |
+| [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware) | Flipper Devices and contributors. Control-head platform and Crypto1 helpers adapted for Classic NFC reads |
+| [LVGL](https://github.com/lvgl/lvgl) / [DejaVu](https://dejavu-fonts.github.io/) | UI support and fonts; their notices remain bundled |
+| [Waveshare](https://github.com/waveshareteam) | Original P4 board support and hardware examples |
+
+**Field-map design references:** [Cardputer offgrid map](https://github.com/yuiseki/m5-cardputer-offgrid-tiny-map) by yuiseki for rendering reuse, and [HikePod](https://github.com/nongxl/HikePod) by nongxl for field navigation. These informed the design; no code was copied from either project.
 
 LakeShark itself is [GPL-3.0](LICENSE). Third-party code keeps its own notices; the [inventory](docs/THIRD_PARTY_NOTICES.md) lists what is bundled and under what terms.
 
