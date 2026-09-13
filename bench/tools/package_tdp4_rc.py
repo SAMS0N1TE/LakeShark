@@ -80,7 +80,9 @@ Nothing in this package has been pushed or published by the packaging tool.
                 'board':'T-Display-P4','flash_size':16777216,'app_offset':'0x10000',
                 'app_size':len(app),'app_sha256':hashlib.sha256(app).hexdigest(),
                 'partition_sha256':hashlib.sha256((build/'partition_table/partition-table.bin').read_bytes()).hexdigest(),
-                'idf_version':metadata.get('idf_ver'),'package_kind':'app-only'}
+                'idf_version':metadata.get('idf_ver',metadata.get('git_revision')),
+                'elf_sha256':hashlib.sha256((build/'lakeshark.elf').read_bytes()).hexdigest(),
+                'package_kind':'app-only'}
     payload = {'lakeshark.bin':app,'README.txt':readme.encode(),
                'manifest.json':(json.dumps(manifest,indent=2)+'\n').encode(),
                'build-sdkconfig':config.encode(),
