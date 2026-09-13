@@ -4,8 +4,12 @@
 #include "esp_timer.h"
 #include <string.h>
 static rec_watch_status_t state;
-static uint32_t frequency=433920000;
 static ls_mixrf_status_t mix;
+static rec_source_t source;
+rec_source_t rec_watch_source(void){return source;}
+bool rec_watch_select_source(rec_source_t next){if(state.enabled)return false;source=next;return true;}
+bool ls_mixrf_capture(bool on,uint32_t hz){mix.capturing=on;mix.frequency=hz;return true;}
+static uint32_t frequency=433920000;
 bool ls_mixrf_start(void){mix.ready=mix.keyboard=mix.power=mix.cc=mix.nfc=mix.nrf=true;mix.cc_version=0x14;mix.nfc_identity=0x2a;strcpy(mix.status,"SIMULATED keyboard radios");return true;}
 void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(mix.receiving)mix.samples=(uint32_t)(esp_timer_get_time()/100000);if(out)*out=mix;}
 bool ls_mixrf_receive(bool on,uint32_t hz){mix.receiving=mix.receive_requested=on;mix.frequency=hz;mix.rssi=-78;return true;}
@@ -34,6 +38,17 @@ bool rec_watch_start(void)
     state.count=3;
     for(int i=0;i<3;i++)state.event[i]=(rec_watch_event_t){.id=i+1,.frequency=433920000,.count=20+i,.edges=24,.span_us=8400};
     for(int i=0;i<3;i++)for(int j=0;j<24;j++)state.preview[i][j]=(j%2?-1:1)*(j%3?300:600);
+    int32_t pulse[100];
+    for(int frame=0;frame<2;frame++) {
+        int base=frame*50;pulse[base]=300;pulse[base+1]=-9300;
+        for(int bit=0;bit<24;bit++) {
+            bool one=(0xA53C19>>(23-bit))&1;
+            pulse[base+2+bit*2]=one?900:300;pulse[base+3+bit*2]=one?-300:-900;
+        }
+    }
+    state.event[0].edges=100;state.event[0].span_us=76800;
+    memcpy(state.preview[0],pulse,sizeof(state.preview[0]));
+    rec_decode_ook24(pulse,100,&state.decoded[0]);
     return true;
 }
 bool rec_watch_enable(bool on){state.enabled=on;return true;}

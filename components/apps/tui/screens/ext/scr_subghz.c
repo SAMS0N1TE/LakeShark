@@ -7,6 +7,7 @@
 #include "rec_state.h"
 #include "rec_watch.h"
 #include "ls_mesh.h"
+#include "ls_mixrf.h"
 #include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
@@ -20,9 +21,15 @@ static tui_rect list;
 static bool touch_nav;
 static ls_fresh_t arrivals;
 static int setup_item;
+static uint32_t source_frequency[2]={433920000,433920000};
+extern void ls_scr_rec_tools(void);
+static const char *source_name(void) { return rec_watch_source()==REC_SOURCE_CC1101?"CC1101":"RTL"; }
 static const double bands[]={152.600,154.785,315.000,433.920,868.350,915.000};
 static void tune(double mhz)
 {
+    if(rec_watch_source()==REC_SOURCE_CC1101 && !((mhz>=300 && mhz<=348)||(mhz>=387 && mhz<=464)||(mhz>=779 && mhz<=928))) {
+        snprintf(feedback,sizeof(feedback),"CC1101: 300-348 / 387-464 / 779-928 MHz");return;
+    }
     if(!isfinite(mhz) || mhz<24 || mhz>1766) {snprintf(feedback,sizeof(feedback),"Enter 24-1766 MHz; receiver must support it");return;}
     if(rec_watch_enabled()) {snprintf(feedback,sizeof(feedback),"Stop WATCH before changing frequency");return;}
     rec_disarm();rec_set_freq((uint32_t)(mhz*1e6+.5));
@@ -68,8 +75,8 @@ static void action(int i)
     feedback[0]=0;
     if(i==0) {
         bool on=!rec_watch_enabled();
-        if(rec_watch_enable(on)) {if(on)rec_arm_request();else rec_disarm();}
-        else snprintf(feedback,sizeof(feedback),"Archive loading; try WATCH again shortly");
+        if(rec_watch_enable(on)) {if(on && rec_watch_source()==REC_SOURCE_RTL)rec_arm_request();else if(!on)rec_disarm();}
+        else snprintf(feedback,sizeof(feedback),"Check source, PROBE and frequency; stop MIX-RF monitor");
     } else if(i==1) ls_numpad_open("WATCH FREQUENCY","MHz",rec_get_freq()/1e6,tune);
     else if(i==2 && selected<s.count) {
         if(!rec_watch_request_pin(s.event[selected].id,!s.event[selected].pinned))
@@ -89,14 +96,16 @@ static void action(int i)
         const rec_watch_event_t *e=&s.event[selected];
         char title[48],text[480];
         snprintf(title,sizeof(title),"SubGHz pattern #%lu",(unsigned long)e->id);
-        snprintf(text,sizeof(text),"RTL OOK timing pattern; not a decoded device identity. "
+        snprintf(text,sizeof(text),"OOK timing pattern; not a decoded device identity. "
             "%.4f MHz, %u edges, %.2f ms, %lu observations. "
             "First: boot %08lx uptime %llu ms. Last: boot %08lx uptime %llu ms. "
             "GPS and motion attachment describe this bookmark, not the original capture. "
             "Export the representative from SUB-GHZ for pulse data.",e->frequency/1e6,e->edges,e->span_us/1000.,
             (unsigned long)e->count,(unsigned long)e->first_boot,(unsigned long long)e->first_ms,
             (unsigned long)e->last_boot,(unsigned long long)e->last_ms);
-        bool ok=ls_field_mark_radio(title,text,LS_FIELD_RTL,e->frequency,e->count);
+        size_t used=strlen(text);
+        if(s.decoded[selected].repeats)snprintf(text+used,sizeof(text)-used," OOK24 payload %06lX, %u matching frames.",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats);
+        bool ok=ls_field_mark_radio(title,text,e->source==REC_SOURCE_CC1101?LS_FIELD_CC1101:LS_FIELD_RTL,e->frequency,e->count);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy; try again shortly");
     } else if(i==6) {
         ls_picker_open("RECEIVE FREQUENCY",band_done);
@@ -104,7 +113,18 @@ static void action(int i)
             char label[32];snprintf(label,sizeof(label),"%.4f MHz",bands[j]);
             ls_picker_add(label,j<2?"OOK only; no FSK":"Receive preset");
         }
+    } else if(i==8) {
+        if(rec_watch_enabled()){snprintf(feedback,sizeof(feedback),"Stop WATCH before changing source");return;}
+        source_frequency[rec_watch_source()]=rec_get_freq();
+        rec_disarm();
+        rec_source_t next=rec_watch_source()==REC_SOURCE_RTL?REC_SOURCE_CC1101:REC_SOURCE_RTL;
+        if(rec_watch_select_source(next)) {
+            rec_set_freq(source_frequency[next]);
+            snprintf(feedback,sizeof(feedback),"%s selected; WATCH starts capture",source_name());
+        }
+    } else if(i==9) {if(rec_watch_source()==REC_SOURCE_RTL && !rec_watch_enabled())ls_scr_rec_tools();
     } else if(i==7) {
+        if(rec_watch_source()==REC_SOURCE_CC1101){snprintf(feedback,sizeof(feedback),"CC: OOK 650kHz, 1us filter, 30ms gap, 1024 edges");return;}
         ls_picker_open("CAPTURE SETUP",setup_done);
         ls_picker_add("Threshold","0 = automatic");
         ls_picker_add("End gap","Silence to end");
@@ -135,7 +155,7 @@ static void waveform(tui_surface *sf,tui_rect a)
     }
     char text[90];snprintf(text,sizeof(text),"First %d/%u edges | %.2f ms shown",n,s.event[selected].edges,total/1000.);
     tui_put_str(sf,a,a.x+2,a.y+a.h-3,text,LS_ATTR_DIM);
-    tui_put_str(sf,a,a.x+2,a.y+a.h-2,"Timing only; OOK envelope, not decoded data",LS_ATTR_DIM);
+    tui_put_str(sf,a,a.x+2,a.y+a.h-2,"Measured pulses; decoded payload in list",LS_ATTR_DIM);
 }
 static void draw(tui_surface *sf,tui_rect a)
 {
@@ -150,6 +170,9 @@ static void draw(tui_surface *sf,tui_rect a)
     }
     if(selected>=s.count)selected=s.count?s.count-1:0;
     rec_hub_status_t rx;rec_get_hub_status(&rx);
+    ls_mixrf_status_t cc;ls_mixrf_snapshot(&cc);
+    bool cc_source=rec_watch_source()==REC_SOURCE_CC1101;
+    if(cc_source){rx.freq_hz=rec_get_freq();rx.receiver_streaming=cc.capturing && cc.receiving;}
     ls_btn_t btn[]={{"WATCH",s.enabled?"ON":"OFF",'w',s.enabled,!s.ready},
         {"TUNE","MHz",'f',false,s.enabled},
         {"PIN",selected<s.count && s.event[selected].pinned?"KEPT":"KEEP",'p',selected<s.count && s.event[selected].pinned,!s.count},
@@ -157,20 +180,26 @@ static void draw(tui_surface *sf,tui_rect a)
         {"EXPORT",".SUB",'e',false,!s.count || s.exporting},
         {"JOURNAL","MARK",'j',false,!s.count},
         {"BANDS","PRESET",'b',false,s.enabled},
-        {"SETUP","CAPTURE",'s',false,s.enabled}};
-    int h=ls_btn_raised_height(a,8);
-    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),btn,8,button_focus);
+        {"SETUP","CAPTURE",'s',false,s.enabled},
+        {"SOURCE",source_name(),'r',false,s.enabled},
+        {"TOOLS","RTL",'d',false,cc_source || s.enabled}};
+    int h=a.w>90?4:ls_btn_raised_height(a,10);
+    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),btn,10,button_focus);
     tui_rect body=tui_rect_make(a.x,a.y+h,a.w,a.h-h-3);
-    ls_panel_box(sf,body,"PATTERN WATCH / RTL OOK",TUI_CYAN);
+    ls_panel_box(sf,body,cc_source?"RECORDER / CC1101 OOK":"RECORDER / RTL OOK",TUI_CYAN);
     ls_motion_busy(sf,body,s.exporting || (s.enabled && rx.receiver_streaming));
     char line[110];
     snprintf(line,sizeof(line),"%c %.4f MHz | %s",ls_motion_pip(s.enabled && rx.receiver_streaming),
         rx.freq_hz/1e6,!s.enabled?"STOPPED":rx.receiver_streaming?"LISTENING":"RX UNAVAILABLE");
     tui_put_str(sf,body,body.x+2,body.y+1,line,LS_ATTR_DIM);
-    snprintf(line,sizeof(line),"%lu captures  %lu skipped  %d/16 patterns",(unsigned long)s.received,(unsigned long)s.dropped,s.count);
+    snprintf(line,sizeof(line),"%lu captures %lu skipped %d/16 patterns",(unsigned long)s.received,(unsigned long)s.dropped,s.count);
+    if(cc_source && cc.raw_overflows)snprintf(line,sizeof(line),"%lu captures | %lu CC overflows | %d/16",(unsigned long)s.received,(unsigned long)cc.raw_overflows,s.count);
     tui_put_str(sf,body,body.x+2,body.y+2,line,ls_fresh_attr(fresh,TUI_GREEN|TUI_BRIGHT,TUI_WHITE,TUI_BLACK));
     list=tui_rect_make(body.x+2,body.y+4,body.w-4,body.h-9);
-    if(body.h>24) {
+    if(body.w>90 && body.h>12) {
+        list.w=(body.w-6)/2;
+        waveform(sf,tui_rect_make(list.x+list.w+2,body.y+3,body.w-list.w-5,body.h-7));
+    } else if(body.h>24) {
         list.h=(body.h-18)/2*2;
         waveform(sf,tui_rect_make(body.x+1,list.y+list.h+1,body.w-2,body.h-list.h-10));
     }
@@ -182,7 +211,8 @@ static void draw(tui_surface *sf,tui_rect a)
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
         snprintf(line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->pinned?"[*]":"[ ]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
         tui_put_str(sf,list,list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        snprintf(line,sizeof(line),"%u edges  %.1fms  %s",e->edges,e->span_us/1000.,rec_end_reason_name(e->end_reason));
+        if(s.decoded[first+i].repeats)snprintf(line,sizeof(line),"%s OOK24 %06lX / %u repeats",e->source==REC_SOURCE_CC1101?"CC":"RTL",(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
+        else snprintf(line,sizeof(line),"%s RAW %u edges %.1fms",e->source==REC_SOURCE_CC1101?"CC":"RTL",e->edges,e->span_us/1000.);
         tui_put_str(sf,list,list.x,y+1,line,LS_ATTR_DIM);
     }
     if(body.h>12) {
@@ -192,7 +222,7 @@ static void draw(tui_surface *sf,tui_rect a)
         tui_put_str(sf,body,body.x+2,body.y+body.h-2,"E export pulses | J save to Journal",LS_ATTR_DIM);
     }
     ls_safe_line(sf,a,a.y+a.h-3,s.storage,LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-2,s.export_status[0]?s.export_status:"Other RTL modes stop WATCH; Mesh can stay on.",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-2,s.export_status[0]?s.export_status:cc_source?cc.status:"Other RTL modes stop RTL WATCH; Mesh stays on.",LS_ATTR_DIM);
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"W watch | E export | J journal",LS_ATTR_DIM);
 }
 static bool key(ls_tk_t k,char ch)
@@ -205,7 +235,8 @@ static bool key(ls_tk_t k,char ch)
     if(k==LS_TK_DOWN){if(selected+1<s.count)selected++;return true;}
     if(k!=LS_TK_CHAR || !ch)return false;
     if(ch==','){if(selected)selected--;return true;}if(ch=='.'){if(selected+1<s.count)selected++;return true;}
-    const char *p=strchr("wfpaejbs",ch);if(!p)return false;action((int)(p-"wfpaejbs"));return true;
+    const char *keys="wfpaejbsrd";
+    const char *p=strchr(keys,ch);if(!p)return false;action((int)(p-keys));return true;
 }
 static bool touch(int x,int y)
 {

@@ -64,6 +64,6 @@ void ls_app_open(int index)
 {
     if (index < 0 || index >= s_count) return;
 
-    ls_anim_start(s_app[index].icon, s_app[index].name, s_app[index].hue);
+    ls_anim_cancel();
     ls_tui_screen_show(s_screen_index[index]);
 }

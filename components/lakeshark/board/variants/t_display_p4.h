@@ -115,12 +115,8 @@
 
 /* SX1262 LoRa on the base board, SPI port 1 (SCLK 2 / MOSI 3 / MISO 4).
    CS and BUSY are direct GPIOs; RST and DIO1 are XL9535 IO16 and IO17, so
-   the part is NOT usable from a pin map alone and LS_HAS_LORA stays off
-   until the expander driver lands.  Recorded so the next person does not
-   have to re-derive it.
      vendor gpio::radio: kCs = 24, kBusy = 6
      vendor gpio::xl9535: kRadioRst = IO16, kRadioDio1 = IO17 */
-/* Enabled. */
 
 #define LS_BOARD_LORA_CS_GPIO    24
 #define LS_BOARD_LORA_BUSY_GPIO  6
@@ -147,6 +143,7 @@
 
 /* T-MixRF, vendor keyboard expansion configuration. Power is XL9555 IO0. */
 #define LS_BOARD_MIX_CC_CS 36
+#define LS_BOARD_MIX_CC_GDO0 25
 #define LS_BOARD_MIX_NRF_CS 54
 #define LS_BOARD_MIX_NRF_CE 53
 #define LS_BOARD_MIX_NFC_CS 27

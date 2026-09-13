@@ -11,11 +11,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(FW  ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(APP ${FW}/components/lakeshark/apps)
 
+set(P2 ${FW}/components/p25_phase2)
+file(GLOB P2_SOURCES ${P2}/upstream/*.c ${P2}/upstream/*.cc)
+add_library(p25_phase2_host STATIC ${P2}/p25_phase2.cpp ${P2_SOURCES})
+target_include_directories(p25_phase2_host PUBLIC ${P2} PRIVATE ${P2}/upstream)
+target_compile_options(p25_phase2_host PRIVATE -O2 $<$<COMPILE_LANGUAGE:C>:-fsingle-precision-constant>)
+add_executable(p25p2_replay tools/p25p2_replay.cpp)
+target_link_libraries(p25p2_replay p25_phase2_host m)
+
 set(CARTO ${FW}/components/libcarto/upstream)
 set(PMT   ${FW}/components/pmtiles)
 
 set(LS_TUI_APP_SRCS
+    ${FW}/bench/tools/lssim_p25_settings.c
+    ${FW}/components/apps/tui/ls_radio_panel.c
+    ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/tools/lssim_watch.c
+    ${APP}/rec/rec_ook24.c
     ${FW}/components/apps/tui/ls_compass.c
     ${FW}/components/apps/tui/ls_app.c
     ${FW}/components/apps/tui/ls_anim.c
@@ -40,6 +52,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/bench/shims/tui_hw_stubs.c)
 
 set(LS_TUI_APP_INCLUDES
+    ${FW}/components/lakeshark/core
+    ${FW}/components/lakeshark/radio
     ${FW}/components/lakeshark/nfc
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib
@@ -467,6 +481,7 @@ target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
 add_executable(lssim
     tools/lssim.c
+    tools/lssim_radio_preview.c
     tools/lssim_field.c
     ${FW}/components/apps/tui/screens/ext/scr_labs.c
     ${FW}/components/apps/tui/screens/ext/scr_subghz.c
@@ -543,9 +558,11 @@ target_include_directories(lssim PRIVATE
     ${FW}/bench/harness
     ${FW}/bench/shims)
 target_sources(lssim PRIVATE
+    tools/lssim_i2c.c
     harness/shim_impl.c
     shims/freertos_shim.c)
 target_compile_definitions(lssim PRIVATE
+    CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
     LSSIM_PMTILES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/carto/franklin_z12.pmtiles")
 target_link_libraries(lssim lvgl m)
@@ -755,6 +772,8 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ext/scr_subghz.c)
+target_sources(test_tui_render_dump PRIVATE tools/lssim_field.c)
 target_include_directories(test_tui_render_dump PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -799,7 +818,7 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
-ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c)
+ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c ${APP}/rec/rec_ook24.c)
 ls_add_test(test_screenshot_plan ${FW}/main/screenshot_plan.c)
 ls_add_test(test_p25_dsp_modes
     ${APP}/p25/dsp_pipeline.c
@@ -1158,4 +1177,23 @@ target_include_directories(test_map_motion PRIVATE ${LS_TUI_APP_INCLUDES})
 target_include_directories(test_tui_screens PRIVATE ${CARTO}/include)
 
 ls_add_test(test_nfc_classic ${FW}/components/lakeshark/nfc/nfc_classic.c)
+
+add_executable(test_p25_phase2 tests/test_p25_phase2.cpp)
+target_link_libraries(test_p25_phase2 p25_phase2_host ls_harness m)
+add_test(NAME test_p25_phase2 COMMAND test_p25_phase2)
+ls_add_test(test_p25_phase2_dsp ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c fixtures/lsm_gen.c)
+target_compile_definitions(test_p25_phase2_dsp PRIVATE LSM_GEN_BAUD=6000)
+
+foreach(target test_tui_picker test_tui_wireless test_tui_waterfall_claim
+               test_tui_waterfall_scale test_tui_quick test_tui_waterfall_stall
+               test_tui_keyboard)
+    target_compile_definitions(${target} PRIVATE LS_TUI_CORNER_STUB=1)
+endforeach()
 target_include_directories(test_nfc_classic PRIVATE ${FW}/components/lakeshark/nfc)
+
+ls_add_test(test_scan_engine
+    ${FW}/components/lakeshark/core/scan_feedback.c)
+target_include_directories(test_scan_engine PRIVATE
+    ${FW}/components/lakeshark
+    ${FW}/components/lakeshark/radio
+    ${APP}/p25 ${APP}/fm)

@@ -11,6 +11,55 @@
 #endif
 static rec_watch_catalog_t catalog, restored;
 static const int32_t pulses[]={300,-300,600,-300,300,-600};
+static int frame24(int32_t *p, uint32_t value, int unit)
+{
+    p[0]=unit;p[1]=-31*unit;
+    for(int bit=0;bit<24;bit++) {
+        bool one=(value>>(23-bit))&1;
+        p[2+bit*2]=(one?3:1)*unit;
+        p[3+bit*2]=-(one?1:3)*unit;
+    }
+    return 50;
+}
+LS_CASE(ook24_requires_matching_complete_frames_and_rejects_bad_timing)
+{
+    int32_t p[150];rec_ook24_t result;
+    frame24(p,0xA53C19,300);frame24(p+50,0xA53C19,310);
+    LS_CHECK(rec_decode_ook24(p,100,&result));
+    LS_EQ_INT(result.value,0xA53C19);LS_EQ_INT(result.repeats,2);
+    memset(&catalog,0,sizeof(catalog));
+    int first=rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,p,100,7,1,0,1,NULL);
+    frame24(p+100,0xA53C19,300);
+    LS_EQ_INT(rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,p,150,7,2,0,1,NULL),first);
+    LS_EQ_INT(catalog.record[first].event.count,2);
+    LS_CHECK(!rec_decode_ook24(p,99,&result));
+    frame24(p+50,0xA53C18,300);
+    LS_CHECK(!rec_decode_ook24(p,100,&result));
+    frame24(p+50,0xA53C19,300);p[54]=1500;
+    LS_CHECK(!rec_decode_ook24(p,100,&result));
+    p[1]=INT32_MIN;LS_CHECK(!rec_decode_ook24(p,100,&result));
+    for(int i=0;i<100;i++)p[i]=(i&1)?-300:300;
+    LS_CHECK(!rec_decode_ook24(p,100,&result));
+}
+LS_CASE(receiver_source_is_preserved_without_changing_legacy_record_layout)
+{
+    LS_EQ_INT(rec_watch_receiver_want_source(-1,3,true,REC_SOURCE_CC1101),-1);
+    LS_EQ_INT(rec_watch_receiver_want_source(3,3,true,REC_SOURCE_CC1101),-1);
+    LS_EQ_INT(rec_watch_receiver_want_source(1,3,true,REC_SOURCE_CC1101),1);
+    LS_EQ_INT(rec_watch_receiver_want_source(-1,3,true,REC_SOURCE_RTL),3);
+    LS_EQ_INT(sizeof(rec_watch_event_t),64);
+    LS_EQ_INT(offsetof(rec_watch_event_t,peak),56);
+    LS_EQ_INT(offsetof(rec_watch_event_t,source),60);
+    memset(&catalog,0,sizeof(catalog));
+    int rtl=rec_watch_observe(&catalog,433920000,pulses,6,7,1,100,1,NULL);
+    int cc=rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,pulses,6,7,2,0,1,NULL);
+    LS_CHECK(rtl>=0 && cc>=0 && rtl!=cc);
+    LS_EQ_INT(catalog.record[rtl].event.source,REC_SOURCE_RTL);
+    LS_EQ_INT(catalog.record[cc].event.source,REC_SOURCE_CC1101);
+    LS_EQ_INT(rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,pulses,6,7,3,0,1,NULL),cc);
+    LS_EQ_INT(catalog.record[cc].event.count,2);
+    LS_EQ_INT(catalog.record[rtl].event.count,1);
+}
 LS_CASE(manual_export_preserves_pulses_and_refuses_overwrite_or_low_space)
 {
     memset(&catalog,0,sizeof(catalog));
@@ -108,4 +157,31 @@ LS_CASE(two_generations_recover_after_a_torn_write_and_keep_a_fixed_footprint)
     LS_CHECK(!rec_watch_store(dir,&restored,64*1024*1024));
     LS_CHECK(rec_watch_restore(dir,&restored));LS_EQ_UINT(restored.archive_id,catalog.archive_id);
     unlink(a);unlink(b);rmdir(dir);
+}
+
+LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
+{
+    char dir[160],path[200],other[200];
+    snprintf(dir,sizeof(dir),"rec-legacy-%ld",(long)getpid());
+#ifdef _WIN32
+    _mkdir(dir);
+#else
+    mkdir(dir,0700);
+#endif
+    snprintf(path,sizeof(path),"%s/watch0.bin",dir);
+    snprintf(other,sizeof(other),"%s/watch1.bin",dir);unlink(path);unlink(other);
+    memset(&catalog,0,sizeof(catalog));
+    rec_watch_observe(&catalog,433920000,pulses,6,7,1,100,1,NULL);
+    catalog.record[0].event.source=0xa5;
+    struct {uint32_t magic,version,bytes,crc;uint64_t sequence,id;} header={
+        0x5752534c,2,sizeof(catalog),rec_watch_crc(&catalog,sizeof(catalog)),catalog.sequence,catalog.archive_id};
+    FILE *f=fopen(path,"wb");LS_CHECK(f!=NULL);
+    if(f){fwrite(&header,1,sizeof(header),f);fwrite(&catalog,1,sizeof(catalog),f);fclose(f);}
+    LS_CHECK(rec_watch_restore(dir,&restored));
+    LS_EQ_INT(restored.record[0].event.source,REC_SOURCE_RTL);
+    restored.record[0].event.source=REC_SOURCE_CC1101;restored.sequence++;
+    LS_CHECK(rec_watch_store(dir,&restored,64*1024*1024));
+    LS_CHECK(rec_watch_restore(dir,&catalog));
+    LS_EQ_INT(catalog.record[0].event.source,REC_SOURCE_CC1101);
+    unlink(path);unlink(other);rmdir(dir);
 }

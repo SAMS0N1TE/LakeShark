@@ -1,9 +1,11 @@
 /* LS_TEST_SOURCES: the three screens plus tui_core, with the state they read faked */
 
 #include "ls_test.h"
+#include "rec_watch.h"
 #include "tui_core.h"
 #include "ls_tui_screen.h"
 #include "ls_app.h"
+#include "ls_anim.h"
 #include "ls_icons.h"
 /* ls_tile_grid and ls_tile_shape: the layout under test. */
 #include "ls_tui_ui.h"
@@ -360,6 +362,7 @@ LS_CASE(fm_mode_buttons_and_keyboard_reach_every_receiver)
                               FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN, FM_MODE_AM};
     FM.mode = FM_MODE_LISTEN;
     ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
     for (int i = 0; i < 7; ++i) {
         ls_scr_fm.draw(&g_sf, pane);
         int col = pane.x + pane.w * (i % 4) / 4 + pane.w / 8;
@@ -435,6 +438,7 @@ LS_CASE(fm_tune_split_steps_frequency_and_opens_keypad)
     FM.freq_hz = 100000000;
     s_fm_keypad_opens = 0;
     ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
     ls_scr_fm.draw(&g_sf, pane);
     const int row = pane.y + 11 + 19 + 3;
     LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 6, row));
@@ -509,6 +513,26 @@ static void draw_pane(const ls_tui_screen_t *scr, tui_rect pane)
 }
 
 /* ---------------------------------------------------------------- cases -- */
+
+LS_CASE(home_touch_opens_an_unselected_app_without_a_splash)
+{
+    apps_once();
+    for (int p = 0; p < 2; p++) {
+        ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+        ls_scr_home.key(LS_TK_CHAR, 'r');
+        fresh();
+        draw_pane(&ls_scr_home, PANES[p]);
+        int xhit = -1, yhit = -1;
+        for (int y = PANES[p].y; y < PANES[p].y + PANES[p].h && xhit < 0; y++)
+            for (int x = PANES[p].x; x < PANES[p].x + PANES[p].w; x++)
+                if (ls_tile_hit(x, y) == 1) { xhit = x; yhit = y; break; }
+        LS_CHECK(xhit >= 0);
+        LS_CHECK(ls_scr_home.touch(xhit, yhit));
+        LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_adsb), ls_tui_screen_current());
+        LS_CHECK(!ls_anim_active());
+    }
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+}
 
 static void seed_health(void)
 {
@@ -937,6 +961,8 @@ LS_CASE(adsb_visible_touch_controls_open_step_and_return)
     ls_scr_adsb.leave();
 }
 
+extern void ls_scr_rec_tools(void);
+
 LS_CASE(rec_history_uses_elapsed_time_and_clears_missing_data)
 {
     const rec_hub_status_t saved = s_rec;
@@ -945,6 +971,7 @@ LS_CASE(rec_history_uses_elapsed_time_and_clears_missing_data)
     s_rec.bytes_sec = 0;
     ls_shim_time_set(1000000);
     ls_scr_rec.enter();
+    ls_scr_rec_tools();
     for (int i = 0; i < 11; i++) {
         fresh();
         draw_pane(&ls_scr_rec, PANES[1]);
@@ -963,6 +990,7 @@ LS_CASE(rec_history_uses_elapsed_time_and_clears_missing_data)
     LS_CHECK(find_row_text("RX stopped: no live samples") >= 0);
     s_rec = saved;
     ls_scr_rec.enter();
+    ls_scr_rec_tools();
 }
 
 LS_CASE(rec_level_does_not_repaint_between_samples)
@@ -976,6 +1004,7 @@ LS_CASE(rec_level_does_not_repaint_between_samples)
         s_rec.mag_thresh = 30;
         ls_shim_time_set(1000000);
         ls_scr_rec.enter();
+    ls_scr_rec_tools();
         fresh();
         draw_pane(&ls_scr_rec, PANES[pane]);
         memcpy(before, g_back, sizeof(before));
@@ -993,6 +1022,7 @@ LS_CASE(rec_level_does_not_repaint_between_samples)
     }
     s_rec = saved;
     ls_scr_rec.enter();
+    ls_scr_rec_tools();
 }
 
 LS_CASE(rec_level_preserves_colors_and_rescales_after_a_quiet_window)
@@ -1005,6 +1035,7 @@ LS_CASE(rec_level_preserves_colors_and_rescales_after_a_quiet_window)
     s_rec.mag_thresh = 30;
     ls_shim_time_set(1000000);
     ls_scr_rec.enter();
+    ls_scr_rec_tools();
     fresh();
     draw_pane(&ls_scr_rec, pane);
     const int x = pane.x + pane.w - 3;
@@ -1051,6 +1082,7 @@ LS_CASE(rec_level_preserves_colors_and_rescales_after_a_quiet_window)
     LS_CHECK(find_row_text("scale 0-64 raw") >= 0);
     s_rec = saved;
     ls_scr_rec.enter();
+    ls_scr_rec_tools();
 }
 
 LS_CASE(drawing_twice_from_the_same_state_gives_the_same_grid)
@@ -1613,4 +1645,138 @@ LS_CASE(button_shortcuts_and_disabled_touch_follow_displayed_controls)
     LS_EQ_INT(ls_btn_shortcut('r',0),-1);
     for(int y=bar.y;y<bar.y+bar.h;y++)for(int x=bar.x;x<bar.x+bar.w;x++)
         LS_EQ_INT(ls_btn_hit(x,y),-1);
+}
+
+void fm_get_receiver_status(ls_iq_control_status_t *out) { memset(out,0,sizeof(*out)); }
+
+#include "ls_radio_panel.h"
+#include "scan_engine.h"
+#include "scan_channels.h"
+#include "ls_numpad.h"
+
+LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
+{
+    scan_channels_clear();
+    scan_engine_set_source(SCAN_SRC_CHANNELS);
+    ls_radio_panel_t panel={.focus=-1};
+    ls_radio_view_t view={.fm=true,.frequency=154785000,.mode="NFM"};
+    tui_rect pane={1,2,46,63};
+    fresh();grid_for(pane);
+    ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'l');
+    LS_CHECK(panel.lists);
+    ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'f');
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'f');
+    LS_EQ_INT(scan_channels_count(),1);
+    LS_EQ_INT(scan_channel_get(0)->freq_hz,154785000);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'m');
+    fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    int x,y;LS_CHECK(find_text("SCAN",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(panel.scan_choice);
+    LS_CHECK(!scan_engine_active());
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
+    LS_CHECK(scan_engine_active());
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'h');
+    LS_CHECK(scan_engine_manual_hold());
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'x');
+    LS_CHECK(!scan_engine_active());
+    scan_channels_clear();
+}
+
+LS_CASE(saved_channel_list_blank_space_does_not_select_an_unseen_row)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    for (int i = 0; i < 20; i++)
+        scan_channel_add("Test", 150000000 + i * 12500, SCAN_MODE_NFM, 0);
+    ls_radio_panel_t panel = {.focus = -1, .lists = true};
+    ls_radio_view_t view = {.fm = true, .mode = "NFM"};
+    tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+    int rows = (panel.list_area.h - 7) / 3;
+    ls_radio_panel_touch(&panel, &view, panel.list_area.x + 3,
+                         panel.list_area.y + 2 + rows * 3);
+    LS_EQ_INT(panel.selected, 0);
+    ls_radio_panel_touch(&panel, &view, panel.list_area.x + 3, panel.list_area.y + 5);
+    LS_EQ_INT(panel.selected, 1);
+    scan_channels_clear();
+}
+
+LS_CASE(compact_waterfall_labels_leave_room_for_their_shortcuts)
+{
+    fresh();
+    ls_btn_t buttons[] = {{"DETAIL", "shade", 'f', false, false},
+                          {"CNTRST", "soft", 'c', false, false}};
+    tui_rect bar = {2, 3, 20, 2};
+    ls_btn_bar(&g_sf, bar, buttons, 2, -1);
+    LS_CHECK(diag_has(bar, "DETAIL f"));
+    LS_CHECK(diag_has(bar, "CNTRST c"));
+    LS_EQ_INT(ls_btn_shortcut('f', 0), 0);
+    LS_EQ_INT(ls_btn_shortcut('c', 0), 1);
+}
+
+LS_CASE(fm_dashboard_bank_swap_uses_hz_and_squelch_opens_an_editor)
+{
+    ls_action_register("fm.freq_hz","i",LS_CAP_TUNE,fm_test_freq,"Frequency");
+    FM.mode=FM_MODE_LISTEN;FM.freq_hz=154785000;
+    ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'a'));
+    LS_EQ_INT(s_fm_tuned_hz,152600000);
+    FM.freq_hz=152600000;
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'a'));
+    LS_EQ_INT(s_fm_tuned_hz,154785000);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'q'));
+    LS_CHECK(ls_numpad_active());
+    ls_numpad_close();
+}
+
+LS_CASE(scan_choice_separates_saved_channels_from_frequency_steps)
+{
+    scan_engine_stop();scan_engine_set_source(SCAN_SRC_CHANNELS);
+    scan_engine_set_band(150000000,162000000,12500);
+    ls_radio_panel_t panel={.focus=-1};
+    ls_radio_view_t view={.mode="P25"};
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
+    ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    int x,y;LS_CHECK(find_text("CHANNEL LIST",&x,&y));
+    LS_CHECK(find_text("BAND SCAN",&x,&y));
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'b');
+    LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_BAND);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'i');
+    uint32_t step;scan_engine_get_band(NULL,NULL,&step);LS_EQ_INT(step,15000);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'c');
+    LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_CHANNELS);
+    LS_CHECK(!scan_engine_active());
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
+    LS_CHECK(scan_engine_active());scan_engine_stop();
+}
+
+LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_set_freq(152600000);
+    ls_scr_rec.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_rec.draw(&g_sf,pane);
+    int x,y;LS_CHECK(find_text("SOURCE",&x,&y));
+    LS_CHECK(find_text("RTL OOK",&x,&y));
+    ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
+    LS_EQ_INT(rec_get_freq(),433920000);
+    fresh();ls_scr_rec.draw(&g_sf,pane);
+    LS_CHECK(find_text("CC1101 OOK",&x,&y));
+    ls_scr_rec.key(LS_TK_CHAR,'w');
+    LS_CHECK(rec_watch_enabled());
+    ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
+    ls_scr_rec.key(LS_TK_CHAR,'w');
+    ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);
+    LS_EQ_INT(rec_get_freq(),152600000);
+    ls_scr_rec.leave();
 }

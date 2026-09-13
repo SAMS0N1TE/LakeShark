@@ -11,6 +11,8 @@ typedef struct {
     bool ready,busy,keyboard,power,cc,nrf,nfc,receiving;
     uint8_t cc_version,nfc_identity,nrf_address_width;
     uint32_t frequency,samples;
+    bool capturing;
+    uint32_t raw_captures, raw_overflows;
     float rssi;
     bool scanning;
     bool scan_requested,receive_requested,nfc_requested,nfc_watching,nfc_field;
@@ -28,6 +30,7 @@ typedef struct {
 bool ls_mixrf_start(void);
 void ls_mixrf_snapshot(ls_mixrf_status_t *out);
 bool ls_mixrf_receive(bool on,uint32_t frequency);
+bool ls_mixrf_capture(bool on,uint32_t frequency);
 bool ls_mixrf_scan(bool on);
 bool ls_mixrf_nfc_watch(bool on);
 bool ls_mixrf_card_scan(bool on);

@@ -35,7 +35,7 @@ def validate(config, metadata, image, revision, version):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='2.1.0-rc1')
+    parser.add_argument('--version', default='2.1.0-rc2')
     parser.add_argument('--build', type=Path, default=ROOT/'build_tdp4')
     parser.add_argument('--output', type=Path, default=ROOT/'release-artifacts')
     args = parser.parse_args()
@@ -88,6 +88,7 @@ Nothing in this package has been pushed or published by the packaging tool.
                'build-sdkconfig':config.encode(),
                'RELEASE_NOTES.md':(ROOT/'docs/TDP4_RELEASE_NOTES.md').read_bytes(),
                'VALIDATION.md':(ROOT/'docs/TDP4_RC_CHECKLIST.md').read_bytes(),
+               'P25_PHASE2.md':(ROOT/'docs/P25_PHASE2.md').read_bytes(),
                'THIRD_PARTY_NOTICES.md':(ROOT/'docs/THIRD_PARTY_NOTICES.md').read_bytes(),
                'LICENSE':(ROOT/'LICENSE').read_bytes()}
     package = out/(prefix+'-app.zip')

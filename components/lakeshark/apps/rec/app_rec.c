@@ -165,7 +165,7 @@ static void rec_finish(int reason)
 
     s_phase = REC_DONE;
     s_captures++;
-    if (rec_watch_enabled()) {
+    if (rec_watch_enabled() && rec_watch_source() == REC_SOURCE_RTL) {
         ls_iq_control_status_t status;
         ls_iq_control_status(&s_radio_control, &status);
         if (status.receiver_streaming && status.effective_center_known &&
@@ -482,7 +482,7 @@ static void rec_rx_task(void *arg)
 
         /**/
         slice_block(iq, (int)got);
-        if (rec_watch_enabled() && (s_phase == REC_DONE || s_phase == REC_IDLE)) {
+        if (rec_watch_enabled() && rec_watch_source() == REC_SOURCE_RTL && (s_phase == REC_DONE || s_phase == REC_IDLE)) {
             rec_reset_capture();
             s_phase = REC_ARMED;
         }
@@ -593,7 +593,7 @@ static void rec_on_enter(void)
 
 static void rec_on_exit(void)
 {
-    rec_watch_enable(false);
+    if (rec_watch_source() == REC_SOURCE_RTL) rec_watch_enable(false);
     s_arm_pending = false;
     s_active = false;
     for (int i = 0; i < 300 && s_running; i++) vTaskDelay(pdMS_TO_TICKS(10));

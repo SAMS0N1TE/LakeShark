@@ -30,6 +30,7 @@ typedef struct {
     int   decim_count;
 
     demod_mode_t mode;
+    bool phase2;
     float demod_gain;
 
     float prev_i;
@@ -47,6 +48,7 @@ typedef struct {
     float  g_omega_rel;
     float  g_di[3];
     float  g_dq[3];
+    float  p2_prev_i, p2_prev_q;
     int    g_sample_idx;
     int    g_half;
 

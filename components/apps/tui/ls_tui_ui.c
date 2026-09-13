@@ -53,6 +53,17 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
        Portrait passes two or four rows and gets fat targets without this
        file knowing which orientation it is in. */
     int per_row = n;
+    int corner = ls_tui_corner_pad(bar.y);
+    int bottom_corner = ls_tui_corner_pad(bar.y + bar.h - 1);
+    if (bottom_corner > corner) corner = bottom_corner;
+    if (corner > 0) {
+        int right = bar.x + bar.w;
+        int cols = tui_surface_rect(sf).w;
+        if (bar.x < corner) bar.x = corner;
+        if (right > cols - corner) right = cols - corner;
+        bar.w = right - bar.x;
+        if (bar.w < 3) return;
+    }
     int rows = 1;
     while (bar.h >= rows * 2 && bar.w / per_row < (raised ? 10 : 8) && per_row > 1) {
         rows++;
@@ -193,7 +204,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         } else if (btn[i].key && h >= 3 && box.w >= 5) {
             char badge[] = {'[', btn[i].key, ']', 0};
             tui_put_str(sf, box, box.x + box.w - 4, box.y, badge, face);
-        } else if (btn[i].key && box.w >= lw + 4) {
+        } else if (btn[i].key && box.w >= lw + 2) {
             tui_put_char(sf, box, box.x + box.w - 1, ly, btn[i].key, face);
         }
 

@@ -112,7 +112,8 @@ None of the hard parts are mine. A P25 receiver on a microcontroller only exists
 |---|---|
 | [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) | Osmocom. The dongle driver everything starts from. GPL-2.0+ |
 | [xtrsdr](https://github.com/XTR1984/xtrsdr) | XTR1984. Cut librtlsdr down until it fit an ESP32. Without this there is no project |
-| [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder` for P25 voice. GPL-3.0+ |
+| [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder`; experimental Phase II decoding by Max H. Parke, Graham J. Norbury and contributors. GPL-3.0+ |
+| [ADS-B Scope](https://github.com/jstockdale/T-Display-P4/tree/adsb) | jstockdale (u/needmorejoules). Inspiration for single-frame CPR decoding against the aircraft's previous fix |
 | [DSD](https://github.com/szechyjs/dsd) and [dsd-fme](https://github.com/lwvmobile/dsd-fme) | szechyjs and lwvmobile. The P25 framing and symbol lineage the decoders follow. The DSD files here carry its ISC-style notice |
 | [mbelib](https://github.com/szechyjs/mbelib) | szechyjs. Kept as a fallback vocoder. ISC |
 | [ESP-IDF](https://github.com/espressif/esp-idf) | Espressif. The whole platform |

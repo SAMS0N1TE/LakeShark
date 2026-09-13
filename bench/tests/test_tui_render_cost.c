@@ -7,6 +7,7 @@
 #include "ls_panel.h"
 #include "p25_state.h"
 #include "ls_waterfall.h"
+#include "ls_tui_ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -94,8 +95,7 @@ static int cells_for_pane(int pane_h)
 
 static void to_signal_page(void)
 {
-    ls_scr_p25.key(LS_TK_RIGHT, 0);
-    ls_scr_p25.key(LS_TK_RIGHT, 0);
+    ls_scr_p25.key(LS_TK_CHAR, '2');
 }
 
 /* ---------------------------------------------------------------- cases -- */
@@ -197,6 +197,30 @@ LS_CASE(a_page_with_nothing_moving_costs_almost_nothing)
     ls_tui_end();
 }
 
+LS_CASE(settled_radio_and_settings_do_not_repaint_in_either_orientation)
+{
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        int cols, rows;
+        ls_tui_geometry(&cols, &rows, NULL, NULL);
+        tui_rect area = {1, 5, cols - 2, rows - 6};
+        tui_surface *sf = ls_tui_surface();
+        for (int settings = 0; settings < 2; settings++) {
+            ls_scr_p25.key(LS_TK_CHAR, settings ? '3' : '0');
+            tui_frame_begin(sf);
+            ls_scr_p25.draw(sf, area);
+            ls_tui_present();
+            tui_frame_begin(sf);
+            ls_scr_p25.draw(sf, area);
+            int cells = ls_tui_present();
+            LS_CHECK_MSG(cells == 0, "wide=%d settings=%d repainted %d cells",
+                         wide, settings, cells);
+            if (settings) ls_scr_p25.key(LS_TK_ESC, 0);
+        }
+        ls_tui_end();
+    }
+}
+
 LS_CASE(the_landscape_signal_page_stays_within_its_measured_cost)
 {
 
@@ -221,4 +245,32 @@ LS_CASE(the_landscape_signal_page_stays_within_its_measured_cost)
     LS_CHECK_MSG(last > 900,
                  "the signal page pushes only %d cells - has it stopped?", last);
     ls_tui_end();
+}
+
+LS_CASE(bottom_controls_do_not_accept_taps_in_rounded_corners)
+{
+    ls_tui_set_corner_radius(72);
+    LS_CHECK(ls_tui_begin(568, 1232));
+    int cols, rows;
+    ls_tui_geometry(&cols, &rows, NULL, NULL);
+    tui_surface *sf = ls_tui_surface();
+    tui_rect bar = {0, rows - 12, cols, 12};
+    const ls_btn_t buttons[] = {
+        {"ONE", NULL, 'a'}, {"TWO", NULL, 'b'}, {"THREE", NULL, 'c'},
+        {"FOUR", NULL, 'd'}, {"FIVE", NULL, 'e'}, {"SIX", NULL, 'f'},
+        {"SEVEN", NULL, 'g'}, {"EIGHT", NULL, 'h'}, {"NINE", NULL, 'i'},
+        {"TEN", NULL, 'j'}, {"TUNE MARK", NULL, 'y'}
+    };
+    tui_frame_begin(sf);
+    ls_btn_bar_raised(sf, bar, buttons, 11, -1);
+    for (int y = bar.y; y < rows; ++y) {
+        int pad = ls_tui_corner_pad(y);
+        for (int x = 0; x < pad; ++x) {
+            LS_EQ_INT(ls_btn_hit(x, y), -1);
+            LS_EQ_INT(ls_btn_hit(cols - x - 1, y), -1);
+        }
+    }
+    LS_EQ_INT(ls_btn_shortcut('y', LS_BTN_SLOT_SCREEN), 10);
+    ls_tui_end();
+    ls_tui_set_corner_radius(40);
 }

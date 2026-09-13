@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: ${FW}/components/apps/tui/ls_wf_source.c, against fakes */
 
 #include "ls_test.h"
+#include "ls_field.h"
 
 #include <string.h>
 
@@ -145,10 +146,14 @@ void ls_tui_radio_want(const char *mode_name) { g_radio_asked = mode_name; }
 /* ---- P25, which nothing here selects ------------------------------------ */
 
 static bool g_p25_feed;
+static bool g_p25_streaming;
+static uint32_t g_p25_tuned;
+static bool g_field_ready,g_field_direct;
+static uint32_t g_field_frequency;
 
 void p25_get_receiver_status(ls_iq_control_status_t *out)
 {
-    if (out) memset(out, 0, sizeof(*out));
+    if (out) {memset(out, 0, sizeof(*out));out->receiver_streaming=g_p25_streaming;}
 }
 bool p25_spectrum_enabled(void) { return g_p25_feed; }
 void p25_spectrum_enable(bool on) { g_p25_feed = on; }
@@ -182,6 +187,8 @@ static void fresh(void)
     g_mesh_parks = true;
     g_hold_asked = false;
     g_fm_streaming = false;
+    g_p25_streaming=false;
+    g_field_ready=false;
     g_fm_mode_asked = -1;
     g_scan_restarts = 0;
     g_radio_asked = NULL;
@@ -266,6 +273,8 @@ LS_CASE(an_fm_receiver_that_has_stopped_is_not_a_spectrum)
     fresh();
     fm_sweeping_with_one_carrier();
     g_fm_streaming = false;
+    g_p25_streaming=false;
+    g_field_ready=false;
     FM.scan_sweeps = 3;
 
     ls_wf_source_pump();
@@ -315,6 +324,8 @@ LS_CASE(fm_first_sweep_reports_progress_only_while_receiving)
     LS_EQ_INT(0, g_pushes);
     LS_EQ_INT(previews + 1, g_previews);
     g_fm_streaming = false;
+    g_p25_streaming=false;
+    g_field_ready=false;
     LS_CHECK(ls_wf_source_progress() == NULL);
 }
 
@@ -463,4 +474,39 @@ LS_CASE(am_presets_keep_live_mode_and_publish_the_selected_range)
         LS_EQ_INT(0, g_scan_restarts);
     }
     LS_EQ_STR("26.965-27.405", ls_wf_preset_detail(LS_WF_SRC_FM, 9));
+}
+
+static ls_wf_tune_fn test_tuner;
+void ls_wf_set_tuner(ls_wf_tune_fn fn){test_tuner=fn;}
+void scan_engine_stop(void){}
+void lakeshark_p25_set_freq(uint32_t hz){g_p25_tuned=hz;}
+void ls_field_snapshot(ls_field_state_t *out){memset(out,0,sizeof(*out));out->ready=g_field_ready;}
+bool ls_field_configure(const ls_lora_cfg_t *cfg){g_field_frequency=cfg->freq_hz;return true;}
+bool ls_field_mode(ls_lab_mode_t mode){return true;}
+bool ls_field_direct(bool on){g_field_direct=on;return true;}
+
+LS_CASE(marker_tune_stops_fm_sweep_and_uses_mark_frequency)
+{
+    fresh();g_fm_streaming=true;
+    FM.mode=FM_MODE_LISTEN;ls_wf_fm_sweep(true);
+    ls_wf_source_select(LS_WF_SRC_FM);ls_wf_source_pump();
+    LS_CHECK(test_tuner!=NULL);
+    LS_CHECK(test_tuner(LS_WF_OWNER_FM,154785000));
+    LS_EQ_INT(FM.mode,FM_MODE_LISTEN);
+    LS_EQ_INT(FM.freq_hz,154785000);
+    g_fm_streaming=false;
+    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,152600000));
+    LS_EQ_INT(FM.freq_hz,154785000);
+    LS_CHECK(!test_tuner(LS_WF_OWNER_USER,154785000));
+}
+
+LS_CASE(marker_tune_routes_p25_and_lora_to_their_receivers)
+{
+    fresh();ls_wf_source_pump();g_p25_streaming=true;
+    LS_CHECK(test_tuner(LS_WF_OWNER_P25,154785000));LS_EQ_INT(g_p25_tuned,154785000);
+    LS_CHECK(!test_tuner(LS_WF_OWNER_P25,1000000));LS_EQ_INT(g_p25_tuned,154785000);
+    g_field_ready=true;g_scanning=true;g_field_direct=false;
+    LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000));
+    LS_EQ_INT(g_field_frequency,915000000);LS_CHECK(g_field_direct);
+    LS_CHECK(!test_tuner(LS_WF_OWNER_LORA,1000000000));
 }

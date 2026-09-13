@@ -166,6 +166,7 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
    index here means what it means on the board. */
+extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview;
 static const ls_app_t APPS[] = {
     { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
       LS_APP_MAIN, &ls_scr_home, NULL },
@@ -197,6 +198,8 @@ static const ls_app_t APPS[] = {
     { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL },
     { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL },
+    { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL },
+    { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL },
 
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
@@ -534,8 +537,6 @@ int main(int argc, char **argv)
     ls_tui_invalidate();
     frame(settle);
 
-    if (timed > 0) time_frames(timed, moving);
-
     /* Keys after the screen has settled, so a control's before and after are
        both reachable by rendering twice with different -k. */
 
@@ -609,6 +610,8 @@ int main(int argc, char **argv)
         ls_notify_post(&n);
         frame(1);
     }
+
+    if (timed > 0) time_frames(timed, moving);
 
     if (write_bmp(out) != 0) {
         printf("lssim: cannot write %s\n", out);

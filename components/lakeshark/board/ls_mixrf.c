@@ -1,4 +1,5 @@
 #include "ls_mixrf.h"
+#include "ls_cc_capture.h"
 #include "ls_nfc_suite.h"
 #include "ls_board.h"
 #include "ls_keypad.h"
@@ -16,7 +17,7 @@
 #ifdef LS_BOARD_MIX_CC_CS
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static ls_mixrf_status_t state;
-static bool started,want,want_scan,want_nfc,want_card,reprobe;
+static bool started,want,want_scan,want_nfc,want_card,reprobe,want_capture;
 static uint32_t requested=433920000;
 static spi_device_handle_t cc_dev,nrf_dev,nfc_dev;
 static DRAM_ATTR spi_transaction_t transaction;
@@ -304,7 +305,7 @@ static bool probe_radios(void)
     } else status_text(cc?"Probed; CC1101 receive monitor is off":"Radio IDs unavailable; check power / connection");
     return true;
 }
-static bool tune(uint32_t hz)
+static bool tune(uint32_t hz, bool capture)
 {
     uint8_t route=hz<400000000?4:hz<500000000?6:2;
     if(!cc_strobe(0x36) || !ls_keypad_expander_update(2,6,route) ||
@@ -313,7 +314,9 @@ static bool tune(uint32_t hz)
     return cc_write(0x0d,word>>16) && cc_write(0x0e,word>>8) && cc_write(0x0f,word) &&
         /* Continuous asynchronous RX keeps packet completion and FIFO traffic
            from stopping or freezing this energy-only monitor. */
-        cc_write(0x02,0x2e) && cc_write(0x08,0x32) && cc_write(0x12,0) &&
+        cc_write(0x02,capture?0x0d:0x2e) && cc_write(0x08,0x32) &&
+        cc_write(0x10,0x17) && cc_write(0x11,0x32) && cc_write(0x12,capture?0x30:0) &&
+        cc_write(0x1b,capture?0x07:0x03) && cc_write(0x1c,0) && cc_write(0x1d,0x91) &&
         cc_write(0x17,0x3c) && cc_write(0x18,0x18) && cc_strobe(0x34);
 }
 static void worker(void *arg)
@@ -328,11 +331,14 @@ static void worker(void *arg)
     uint8_t channel=0;
     unsigned tick=0;
     uint32_t hz=0;
+    bool capturing=false;
+    uint32_t raw_captures=0, raw_overflows=0;
     for(;;) {
         portENTER_CRITICAL(&lock);bool retry=reprobe;reprobe=false;portEXIT_CRITICAL(&lock);
         if(retry) {probe_radios();portENTER_CRITICAL(&lock);state.busy=false;portEXIT_CRITICAL(&lock);}
-        portENTER_CRITICAL(&lock);bool on=want && state.cc,scan=want_scan && state.nrf,nfc_on=want_nfc && state.nfc,card_on=want_card && state.nfc;uint32_t next=requested;portEXIT_CRITICAL(&lock);
+        portENTER_CRITICAL(&lock);bool on=want && state.cc,scan=want_scan && state.nrf,nfc_on=want_nfc && state.nfc,card_on=want_card && state.nfc;uint32_t next=requested;bool capture=want_capture;portEXIT_CRITICAL(&lock);
         if(!ls_keypad_present()) {
+            ls_cc_capture_stop();capturing=false;
             on=scan=nfc_on=card_on=false;running=false;
             portENTER_CRITICAL(&lock);state.keyboard=state.power=false;state.cc=state.nrf=state.nfc=false;want=want_scan=want_nfc=want_card=false;portEXIT_CRITICAL(&lock);
             status_text("Keyboard absent; use PROBE after reconnecting");
@@ -399,18 +405,26 @@ static void worker(void *arg)
             } else {nfc_watch_stop();nfc_watching=false;portENTER_CRITICAL(&lock);want_nfc=false;portEXIT_CRITICAL(&lock);status_text("NFC field detector read failed");}
         }
         portENTER_CRITICAL(&lock);state.nfc_watching=nfc_watching;state.nfc_field=field;portEXIT_CRITICAL(&lock);
+        if (capturing && !ls_cc_capture_poll(hz,&raw_captures,&raw_overflows)) {
+            ls_cc_capture_stop();capturing=false;on=false;
+            portENTER_CRITICAL(&lock);want=want_capture=false;portEXIT_CRITICAL(&lock);
+            status_text("CC1101 pulse capture failed; stopped");
+        }
         if(++tick%10){vTaskDelay(pdMS_TO_TICKS(10));continue;}
-        if(on && (!running || hz!=next)) {
-            running=tune(next);hz=next;
-            if(running){vTaskDelay(pdMS_TO_TICKS(10));status_text("CC1101 channel energy; no packet decoding");}
-            else {status_text("CC1101 receive setup failed");portENTER_CRITICAL(&lock);want=false;portEXIT_CRITICAL(&lock);}
-        } else if(!on && running) {cc_strobe(0x36);running=false;status_text("CC1101 receive monitor stopped");}
+        if(on && (!running || hz!=next || capturing!=capture)) {
+            ls_cc_capture_stop();capturing=false;
+            running=tune(next,capture);hz=next;
+            if (running && capture) {capturing=ls_cc_capture_start();running=capturing;}
+            if(running){vTaskDelay(pdMS_TO_TICKS(10));status_text(capturing?"CC1101 OOK capture / 650 kHz / 30 ms gap":"CC1101 channel energy; no packet decoding");}
+            else {cc_strobe(0x36);status_text("CC1101 RX/RMT unavailable; check memory and wiring");portENTER_CRITICAL(&lock);want=want_capture=false;portEXIT_CRITICAL(&lock);}
+        } else if(!on && (running || capturing)) {ls_cc_capture_stop();capturing=false;cc_strobe(0x36);running=false;status_text("CC1101 receive monitor stopped");}
         uint8_t raw=0,marc=0;
         bool valid=running && cc_read(0x35,&marc) && (marc&31)==13 && cc_read(0x34,&raw);
         /* Clear a packet FIFO overflow; this monitor reads energy, not payloads. */
         if(running && (marc&31)==17){cc_strobe(0x36);cc_strobe(0x3a);cc_strobe(0x34);}
         portENTER_CRITICAL(&lock);
         state.receiving=valid;state.frequency=hz;
+        state.capturing=capturing;state.raw_captures=raw_captures;state.raw_overflows=raw_overflows;
         state.rssi=valid?(float)(int8_t)raw/2-74:NAN;
         if(valid)state.samples++;
         portEXIT_CRITICAL(&lock);
@@ -434,7 +448,15 @@ bool ls_mixrf_receive(bool on,uint32_t hz)
 {
     if(on && !((hz>=300000000 && hz<=348000000) || (hz>=387000000 && hz<=464000000) || (hz>=779000000 && hz<=928000000)))return false;
     portENTER_CRITICAL(&lock);bool ok=!on || state.cc;
-    if(ok){want=on;requested=hz;}portEXIT_CRITICAL(&lock);return ok;
+    if(ok && !want_capture){want=on;requested=hz;}else if(want_capture)ok=false;
+    portEXIT_CRITICAL(&lock);return ok;
+}
+bool ls_mixrf_capture(bool on,uint32_t hz)
+{
+    if(on && !((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||(hz>=779000000 && hz<=928000000)))return false;
+    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !state.busy && !want);
+    if(ok){want=want_capture=on;requested=hz;}
+    portEXIT_CRITICAL(&lock);return ok;
 }
 bool ls_mixrf_scan(bool on)
 {
@@ -458,6 +480,7 @@ bool ls_mixrf_card_scan(bool on)
 bool ls_mixrf_start(void){return false;}
 void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(out){memset(out,0,sizeof(*out));snprintf(out->status,sizeof(out->status),"No keyboard radio wiring for this board");}}
 bool ls_mixrf_receive(bool on,uint32_t hz){(void)on;(void)hz;return false;}
+bool ls_mixrf_capture(bool on,uint32_t hz){(void)hz;return !on;}
 bool ls_mixrf_scan(bool on){(void)on;return false;}
 bool ls_mixrf_nfc_watch(bool on){(void)on;return false;}
 bool ls_mixrf_card_scan(bool on){(void)on;return false;}
@@ -471,5 +494,6 @@ void ls_mixrf_diagnostics(void)
     printf("mixrf: scan=%d sweeps=%lu hits=%lu channel=%u; NFC watch=%d field=%d samples=%lu arrivals=%lu\n",
         s.scanning,(unsigned long)s.sweeps,(unsigned long)s.energy_hits,s.channel,
         s.nfc_watching,s.nfc_field,(unsigned long)s.nfc_samples,(unsigned long)s.nfc_events);
+    printf("mixrf: OOK capture=%d bursts=%lu overflow=%lu\n",s.capturing,(unsigned long)s.raw_captures,(unsigned long)s.raw_overflows);
     printf("mixrf: cards=%d present=%d ATQA=%04x polls=%lu tx=%lu hits=%lu errors=%lu\n",s.card_scanning,s.card_present,s.card_atqa,(unsigned long)s.card_polls,(unsigned long)s.card_tx,(unsigned long)s.card_hits,(unsigned long)s.card_errors);
 }

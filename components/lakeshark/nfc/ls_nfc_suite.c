@@ -3,7 +3,7 @@
 #include "ls_board.h"
 #include <string.h>
 #include <stdio.h>
-#ifdef LS_BOARD_MIX_CC_CS
+#if defined(LS_BOARD_MIX_CC_CS) && defined(ESP_PLATFORM)
 #include "esp_attr.h"
 #include "esp_random.h"
 #include "esp_timer.h"

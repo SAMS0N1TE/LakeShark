@@ -6,6 +6,8 @@
 #include "ls_tui_chrome.h"
 #include "ls_font.h"
 #include "ls_panel.h"
+#include "ls_mesh.h"
+bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; return false; }
 #include "ls_theme.h"
 #include "p25_state.h"
 #include "apps/p25/p25_spectrum.h"

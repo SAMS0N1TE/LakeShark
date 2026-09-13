@@ -12,7 +12,10 @@
 #endif
 
 #define SR_IN   (DSP_SAMPLE_RATE * DSP_PRE_DECIM)
-#define SPS_IN  (SR_IN / DSP_BAUD)
+#ifndef LSM_GEN_BAUD
+#define LSM_GEN_BAUD DSP_BAUD
+#endif
+#define SPS_IN  (SR_IN / LSM_GEN_BAUD)
 #define RRC_HALF_SYM 4
 #define RRC_LEN      (2 * RRC_HALF_SYM * SPS_IN + 1)
 

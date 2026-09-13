@@ -1,12 +1,29 @@
 # LakeShark release notes
 
+## 2.1.0-rc2 — T-Display P4
+
+- Expanded P25 settings, including AUTO/manual demodulation and CQPSK tuning.
+- Experimental manual P25 Phase II voice reception, off by default.
+- Separate channel-list and stepped-band scanning controls.
+- Tap-to-mark waterfall tuning.
+- Shared RTL/CC1101 recorder workspace and repeated OOK24 decoding.
+- Single-tap app opening without a blocking launch splash.
+- Buttons inset around the display's rounded corners.
+- USB Phase II capture replay and on-device performance diagnostics.
+- ADS-B single-frame approach credit: jstockdale / u/needmorejoules, ADS-B Scope.
+
+P25 AUTO demodulation selects C4FM or CQPSK using valid protocol results.
+Phase II grant/slot recognition is present. Experimental voice reception requires
+a manually selected traffic channel and slot; automatic Phase II call following
+and live RF validation remain pending. See [Phase II testing](P25_PHASE2.md).
+
 ## 2.1.0-rc1 — T-Display P4
 
 - LoRa Labs with direct radio controls and live plots.
 - Rotating compass with an expanded view and large heading display.
 - Received-signal history and heard Mesh peer lists.
 - Journal notes with radio, GPS and nine-axis attachments.
-- Keyboard CC1101, nRF24 and NFC integration.
+- Keyboard CC1101 energy monitor, nRF24 activity scan and NFC reader.
 - NFC Classic reader with block maps, hex views and manual saves.
 - Passive Sub-GHz watch with bounded storage and duplicate grouping.
 - Grouped launcher and improved portrait touch controls.

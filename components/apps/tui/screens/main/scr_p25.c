@@ -1,8 +1,11 @@
 /* P25 screen. */
 
 #include "../../ls_tui_screen.h"
+#include "../../ls_radio_panel.h"
+#include "scan_engine.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "p25_state.h"
@@ -16,6 +19,12 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 #include "../../ls_text.h"
+
+static bool s_details;
+static char s_hint[80] = "M MORE  arrows select  ENTER press";
+static ls_radio_panel_t s_radio = { .focus = -1 };
+static ls_radio_view_t s_view;
+#include "../../ls_p25_settings.h"
 
 static int s_page;   /* 0 decode, 1 signal */
 
@@ -326,6 +335,8 @@ static void draw_signal(tui_surface *sf, tui_rect area)
 static const ls_btn_t PAGES[] = {
     { "DECODE", NULL, '1', false, false },
     { "SIGNAL", NULL, '2', false, false },
+    { "SETTINGS", NULL, '3', false, false },
+    { "RADIO", NULL, '0', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
@@ -351,8 +362,40 @@ static const ls_quick_t QUICK[] = {
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
+static void radio_view(void)
+{
+    memset(&s_view,0,sizeof(s_view));
+    s_view.frequency=s_tune_freq_hz;
+    s_view.mode="P25";
+    s_view.power=P25.iq_level;
+    p25_get_receiver_status(&s_view.receiver);
+    bool sync=s_view.receiver.receiver_streaming && P25.dsd_has_sync;
+    if(sync) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
+    else snprintf(s_view.detail[0],64,"NAC ---   TG ---   UNIT ---");
+    snprintf(s_view.detail[1],64,"SYNC %s",sync?"LOCKED":"SEARCHING");
+    snprintf(s_view.detail[2],64,"GAIN %.1f dB",P25.rtl_gain_tenths/10.0);
+    snprintf(s_view.detail[3],64,"AUDIO %s",s_view.receiver.receiver_streaming?voice_status():"OFFLINE");
+    if(p25_p2_enabled()) {
+        s_view.mode="P25 II EXP";
+        p25_p2_describe(s_view.detail[0],64);
+        snprintf(s_view.detail[1],64,"MANUAL VOICE / 6000 baud");
+        snprintf(s_view.detail[3],64,"Experimental; RF path unverified");
+    }
+}
+static void radio_action(char c)
+{
+    if(c=='P') {ps_open=true;ls_wf_source_release();return;}
+    if(c=='W') {s_details=true;s_page=1;return;}
+    if(c=='M'||c=='D') {s_details=true;return;}
+    if(c=='T') scan_engine_stop();
+    if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
+    if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
+    snprintf(s_hint,sizeof(s_hint),"%s",s_details?"0 RADIO  1 DECODE  2 SIGNAL  +/- VOLUME":"M MORE  arrows select  ENTER press");
+    if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
@@ -413,9 +456,15 @@ static void leave(void) { ls_wf_source_release(); }
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k>=LS_TK_F1) return false;
+    if(ps_open)return ps_key(k,ch);
+    if(k==LS_TK_CHAR && (ch=='3'||(!s_details&&(ch=='p'||ch=='P')))) {ps_open=true;ls_wf_source_release();return true;}
+    if(k==LS_TK_CHAR && (ch=='1'||ch=='2')) {s_details=true;s_page=ch-'1';return true;}
+    if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
+    if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
     if (k == LS_TK_CHAR) {
         const int i = ls_btn_key(ch, PAGES, N_PAGES);
-        if (i >= 0) { s_page = i; return true; }
+        if (i >= 0) { if(i==3) {s_details=false;ls_wf_source_release();} else if(i==2) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
         if (ls_quick_key(ch, QUICK, N_QUICK,
@@ -427,15 +476,17 @@ static bool key(ls_tk_t k, char ch)
     if (s_page == 1 && ls_wf_key(k, ch)) return true;
 
     if (k == LS_TK_LEFT)  { if (s_page > 0) s_page--; return true; }
-    if (k == LS_TK_RIGHT) { if (s_page < N_PAGES - 1) s_page++; return true; }
+    if (k == LS_TK_RIGHT) { if (s_page < 1) s_page++; return true; }
     return false;
 }
 
 static bool touch(int col, int row)
 {
+    if(ps_open)return ps_touch(col,row);
+    if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int i = ls_btn_hit(col, row);
-        if (i >= 0) { s_page = i; return true; }
+        if (i >= 0) { if(i==3) {s_details=false;ls_wf_source_release();} else if(i==2) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         return true;
     }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
@@ -458,7 +509,7 @@ const ls_tui_screen_t ls_scr_p25 = {
        DECODE advertised a key that does nothing there. Said precisely rather
        than dropped: H is real and worth knowing about, it just lives on the
        other page. */
-    .hint = "1 DECODE  2 SIGNAL (H holds it)  TAP mark",
+    .hint = s_hint,
     .enter = NULL,
     .leave = leave,
     .draw = draw,

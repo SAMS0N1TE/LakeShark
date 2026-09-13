@@ -4,6 +4,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_motion.h"
 #include "ls_mixrf.h"
+#include "rec_watch.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -83,7 +84,7 @@ static void action(int i)
     } else if(i==4) {bool on=!scan_enabled;if(ls_mixrf_scan(on)){scan_enabled=on;view_24=true;view_nfc=false;}}
     else if(i==5){if(view_nfc)view_nfc=false;else if(view_24){view_24=false;view_nfc=true;}else view_24=true;}
     else if(i==6){bool on=!nfc_enabled;if(ls_mixrf_card_scan(on)){nfc_enabled=on;view_nfc=true;view_24=false;}}
-    else if(i==7){ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
+    else if(i==7){if(rec_watch_source()==REC_SOURCE_CC1101)rec_watch_enable(false);ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
 }
 static void enter(void)
 {

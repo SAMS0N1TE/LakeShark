@@ -1,5 +1,6 @@
 #include "rec_watch.h"
 #include "rec_state.h"
+#include "ls_mixrf.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_random.h"
@@ -13,6 +14,7 @@
 #include <sys/stat.h>
 
 typedef struct {
+    rec_source_t source;
     uint32_t hz; int edges, peak, reason; uint64_t ms;
     int32_t pulse[REC_WATCH_EDGES];
 } capture_t;
@@ -25,6 +27,7 @@ static uint32_t s_export_id;
 static bool s_pin_value, s_starting;
 static uint64_t s_last_submit;
 static uint32_t s_boot;
+static rec_source_t s_source;
 static const char *DIR="/sdcard/subghz";
 
 __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
@@ -32,12 +35,16 @@ __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
 
 static void publish(void)
 {
+    rec_ook24_t decoded[REC_WATCH_SLOTS] = {0};
+    for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id)
+        rec_decode_ook24(s_catalog->record[i].pulse, s_catalog->record[i].event.edges, &decoded[i]);
     portENTER_CRITICAL(&s_lock);
     s_status.count=0;
     for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id) {
         int n=s_status.count++;
         s_status.event[n]=s_catalog->record[i].event;
         memcpy(s_status.preview[n],s_catalog->record[i].pulse,sizeof(s_status.preview[n]));
+        s_status.decoded[n] = decoded[i];
     }
     s_status.ready=true;
     portEXIT_CRITICAL(&s_lock);
@@ -56,7 +63,7 @@ static void worker(void *arg)
         capture_t *cap=NULL;
         if(xQueueReceive(s_pending,&cap,pdMS_TO_TICKS(100))==pdTRUE) {
             bool novel=false;
-            int slot=rec_watch_observe(s_catalog,cap->hz,cap->pulse,cap->edges,
+            int slot=rec_watch_observe_from(s_catalog,cap->source,cap->hz,cap->pulse,cap->edges,
                 s_boot,cap->ms,cap->peak,cap->reason,&novel);
             uint64_t now=(uint64_t)esp_timer_get_time()/1000;
             char peer[17];
@@ -68,7 +75,12 @@ static void worker(void *arg)
             if(novel && enabled && peer[0]) {
                 if((!attempted_alert || now-last_alert>=60000) && now-cap->ms<5000) {
                     char text[80];
-                    snprintf(text,sizeof(text),"SubGHz pattern #%lu %.4fMHz %d edges",
+                    rec_ook24_t decoded;
+                    const char *source=cap->source==REC_SOURCE_CC1101?"CC1101":"RTL";
+                    if(rec_decode_ook24(cap->pulse,cap->edges,&decoded))
+                        snprintf(text,sizeof(text),"%s OOK24 %06lX %.4fMHz (%u matching frames)",
+                            source,(unsigned long)decoded.value,cap->hz/1e6,decoded.repeats);
+                    else snprintf(text,sizeof(text),"%s RAW #%lu %.4fMHz %d edges",source,
                         (unsigned long)s_catalog->record[slot].event.id,cap->hz/1e6,cap->edges);
                     last_alert=now;attempted_alert=true;
                     bool ok=rec_watch_notify(peer,text);
@@ -141,6 +153,10 @@ bool rec_watch_start(void)
 }
 bool rec_watch_enable(bool on)
 {
+    portENTER_CRITICAL(&s_lock);bool ready=s_status.ready;portEXIT_CRITICAL(&s_lock);
+    if(on && !ready)return false;
+    if (rec_watch_source() == REC_SOURCE_CC1101 && !ls_mixrf_capture(on, rec_get_freq()))
+        return false;
     portENTER_CRITICAL(&s_lock);
     bool ok=!on || s_status.ready;
     if(ok)s_status.enabled=on;
@@ -158,16 +174,39 @@ void rec_watch_snapshot(rec_watch_status_t *out)
 }
 void rec_watch_submit(uint32_t hz,const int32_t *pulse,int edges,int peak,int reason)
 {
-    if(!rec_watch_enabled() || !pulse || edges<6 || edges>REC_WATCH_EDGES)return;
+    rec_watch_submit_from(REC_SOURCE_RTL, hz, pulse, edges, peak, reason);
+}
+void rec_watch_submit_from(rec_source_t source,uint32_t hz,const int32_t *pulse,int edges,int peak,int reason)
+{
+    if(!pulse || edges<6 || edges>REC_WATCH_EDGES)return;
     uint64_t now=(uint64_t)esp_timer_get_time()/1000;
     capture_t *cap=NULL;
-    if(now-s_last_submit<250 || xQueueReceive(s_free,&cap,0)!=pdTRUE) {
+    portENTER_CRITICAL(&s_lock);
+    if(source!=s_source || !s_status.enabled) {portEXIT_CRITICAL(&s_lock);return;}
+    if(now-s_last_submit<250) {s_status.dropped++;portEXIT_CRITICAL(&s_lock);return;}
+    s_last_submit=now;
+    portEXIT_CRITICAL(&s_lock);
+    if(xQueueReceive(s_free,&cap,0)!=pdTRUE) {
         portENTER_CRITICAL(&s_lock);s_status.dropped++;portEXIT_CRITICAL(&s_lock);return;
     }
-    s_last_submit=now;
-    cap->hz=hz;cap->edges=edges;cap->peak=peak;cap->reason=reason;cap->ms=now;
+    cap->source=source;cap->hz=hz;cap->edges=edges;cap->peak=peak;cap->reason=reason;cap->ms=now;
     memcpy(cap->pulse,pulse,(size_t)edges*sizeof(*pulse));
     xQueueSend(s_pending,&cap,0);
+}
+rec_source_t rec_watch_source(void)
+{
+    portENTER_CRITICAL(&s_lock);rec_source_t source=s_source;portEXIT_CRITICAL(&s_lock);
+    return source;
+}
+bool rec_watch_select_source(rec_source_t source)
+{
+    if (source != REC_SOURCE_RTL && source != REC_SOURCE_CC1101) return false;
+    portENTER_CRITICAL(&s_lock);
+    bool ok = !s_status.enabled;
+    if (ok) s_source = source;
+    portEXIT_CRITICAL(&s_lock);
+    if (ok && source == REC_SOURCE_CC1101) ls_mixrf_start();
+    return ok;
 }
 bool rec_watch_request_pin(uint32_t id,bool pin)
 {

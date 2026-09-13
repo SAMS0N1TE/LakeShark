@@ -43,6 +43,7 @@
 #include "p25_health.h"
 #include "p25_tune_policy.h"
 #include "p25_entry_settings.h"
+#include "p25_p2_runtime.h"
 #include "rtl-sdr.h"
 
 p25_state_t       P25 = {0};
@@ -333,6 +334,7 @@ static void p25_apply_demod_mode(demod_mode_t mode)
 
 void p25_demod_set_preference(int preference)
 {
+    p25_p2_enable(false);
     int normalized = p25_demod_preference_normalize(preference);
     p25_demod_control_init(&s_demod_control, normalized,
                            (uint32_t)(esp_timer_get_time() / 1000LL),
@@ -724,6 +726,7 @@ static void dsd_decoder_task(void *arg)
     uint64_t decode_control_hz = s_grant_follower.control_hz;
     while (s_app_active) {
         esp_task_wdt_reset();
+        if (p25_p2_enabled()) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
         diag_emit_periodic();
 
         P25.dsd_bch_ok_count   = autoscan_bch_ok_flag;
@@ -870,7 +873,7 @@ static void dsd_decoder_task(void *arg)
                 int n = s_dsd_state.pcm_out_write;
                 if (n > s_dsd_state.pcm_out_size) n = s_dsd_state.pcm_out_size;
                 if (!audio_is_muted()) {
-                    audio_write_p25_voice(pcm_buf, n);
+                    if (!p25_p2_enabled()) audio_write_p25_voice(pcm_buf, n);
                     P25.audio_drops = audio_drops_get();
 
                     esp_task_wdt_reset();
@@ -1005,6 +1008,7 @@ static ls_radio_err_t p25_radio_open(void)
 static void p25_rx_task(void *arg)
 {
     (void)arg;
+    bool p2_was_enabled=false;
 
     dsp_init(&s_dsp);
     {
@@ -1237,7 +1241,11 @@ static void p25_rx_task(void *arg)
                 s_session, &s_iq_buf[got], P25_IQ_BLOCK_BYTES - got,
                 P25_READ_TIMEOUT_MS, &part);
             if (error == LS_RADIO_OK) { got += (int)part; continue; }
-            if (error == LS_RADIO_ERR_TIMEOUT) continue;
+            if (error == LS_RADIO_ERR_TIMEOUT) {
+                if (p25_p2_enabled()) p25_p2_stop();
+                continue;
+            }
+            if (p25_p2_enabled()) p25_p2_stop();
             p25_iq_capture_interrupt(P25_IQ_CAPTURE_GAP);
             P25.read_errors_total++;
             if (++read_errors > 50 || error == LS_RADIO_ERR_DISCONNECTED) {
@@ -1371,7 +1379,24 @@ static void p25_rx_task(void *arg)
                 s_grant_follower.state == P25_GRANT_ON_TRAFFIC,
                 (uint32_t)(esp_timer_get_time() / 1000LL));
 
-            int na = dsp_process_iq(&s_dsp, s_iq_buf, P25_IQ_BLOCK_BYTES, audio_buf, 8192);
+            bool p2_now=p25_p2_enabled();
+            if(p2_now!=p2_was_enabled) {
+                s_ring.read_idx=s_ring.write_idx;
+                atomic_fetch_add_explicit(&s_decode_tune_generation,1,memory_order_release);
+                p2_was_enabled=p2_now;
+            }
+            if (!p2_now && s_dsp.phase2) {
+                s_dsp.phase2=false;
+                dsp_set_mode(&s_dsp,s_demod_control.active);
+                p25_apply_demod_mode(s_demod_control.active);
+                atomic_fetch_add_explicit(&s_decode_tune_generation,1,memory_order_release);
+                p25_p2_stop();
+            }
+            int na = 0;
+            if (!p25_p2_rx(&s_dsp,s_iq_buf,P25_IQ_BLOCK_BYTES,s_radio_freq_hz,
+                           s_dsd_state.p25_tsbk_wacn,s_dsd_state.p25_tsbk_sysid,
+                           (uint16_t)s_dsd_state.nac))
+                na = dsp_process_iq(&s_dsp, s_iq_buf, P25_IQ_BLOCK_BYTES, audio_buf, 8192);
             audio_bucket += na;
 
             uint32_t ring_drops = 0;
@@ -1397,7 +1422,7 @@ static void p25_rx_task(void *arg)
         bool in_call = p25_demod_call_active(
                            s_dsd_state.lastp25type,
                            now < P25.voice_active_until_us);
-        if (p25_demod_control_feed(&s_demod_control,
+        if (!p25_p2_enabled() && p25_demod_control_feed(&s_demod_control,
                                    full && got >= P25_IQ_BLOCK_BYTES
                                        ? P25_IQ_BLOCK_BYTES / 2 : 0,
                                    s_radio_sample_rate_hz,
@@ -1470,6 +1495,8 @@ static void p25_rx_task(void *arg)
     for (int i = 0; i < 300 && s_dsd_running; i++) vTaskDelay(pdMS_TO_TICKS(10));
     heap_caps_free(s_iq_buf);
     s_iq_buf = NULL;
+    p25_p2_stop();
+    p25_p2_enable(false);
     s_rx_running = false;
     vTaskDelete(NULL);
 }

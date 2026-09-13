@@ -19,12 +19,7 @@ extern "C" {
 /* How many controls the instrument's own bar carries. Named because three
    places size arrays from it and a mismatch between them is a stack write
    past the end, not a layout bug. */
-/* Ten, not nine. Portrait wraps the bar at five to a row, so nine
-   left a hole in the bottom right and the tenth slot was free for the asking.
-   CONTRAST is what went in it: REF and RANGE are the two halves of the same
-   knob and neither name says so, which is why the screen read as having no
-   contrast control at all. */
-#define LS_WF_BTNS      10
+#define LS_WF_BTNS      11
 
 #define LS_WF_BINS_MAX  256
 #define LS_WF_ROWS_MAX  128
@@ -106,6 +101,8 @@ typedef struct {
    enough to call every frame; it only does work when the owner changes. */
 void ls_wf_claim(ls_wf_owner_t owner, const char *label);
 ls_wf_owner_t ls_wf_owner(void);
+typedef bool (*ls_wf_tune_fn)(ls_wf_owner_t owner, uint32_t hz);
+void ls_wf_set_tuner(ls_wf_tune_fn tuner);
 
 /* Push one spectrum row, values normalised 0..1 against feed->floor_db and
    feed->top_db. Refused, and counted as dropped, when the caller is not the

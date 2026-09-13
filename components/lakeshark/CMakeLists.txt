@@ -46,6 +46,7 @@ idf_component_register(
         fatfs
         spiffs
         mbelib
+        p25_phase2
         imbe_vocoder
         esp32_p4_wifi6_touch_lcd_4b
         bsp_extra

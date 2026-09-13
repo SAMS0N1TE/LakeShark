@@ -44,6 +44,9 @@
 /**/
 #include "rec_state.h"
 #include "rec_watch.h"
+#include "p25_p2_runtime.h"
+#include "p25_p2_bench.h"
+#include "scan_engine.h"
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
@@ -376,8 +379,19 @@ static uint32_t cur_freq_hz(void)
     switch (s_mode) {
     case 0:  return lakeshark_p25_get_freq();
     case 2:  return lakeshark_fm_get_freq();
+    case 3:  return rec_get_freq();
     default: return 1090000000UL;
     }
+}
+
+static int cur_gain_tenths(void)
+{
+    if (s_mode == 3) {
+        rec_status_t rec;
+        rec_get_status(&rec);
+        return rec.gain_tenths;
+    }
+    return lakeshark_radio_get_gain_tenths();
 }
 
 static void select_mode(int idx)
@@ -477,13 +491,30 @@ static void gpio_init(void)
     gpio_config(&btn);
 }
 
+static int cmd_p2(int argc,char **argv)
+{
+    if(argc > 1 && !strcmp(argv[1],"test")) return p25_p2_bench_command(argc,argv);
+    if(argc==2 && !strcmp(argv[1],"off"))p25_p2_enable(false);
+    else if(argc==2 && !strcmp(argv[1],"on")){scan_engine_stop();p25_p2_enable(true);}
+    else if(argc==6 && !strcmp(argv[1],"config")) {
+        char *end[4];
+        unsigned long w=strtoul(argv[2],&end[0],16),s=strtoul(argv[3],&end[1],16),n=strtoul(argv[4],&end[2],16),slot=strtoul(argv[5],&end[3],10);
+        if(*end[0]||*end[1]||*end[2]||*end[3]||w>0xfffff||s>0xfff||n>0xfff||slot<1||slot>2||!p25_p2_config(w,s,n,slot-1)) {
+            printf("Invalid WACN/SYS/NAC or slot (1-2)\n");return 1;
+        }
+    } else if(argc>1 && strcmp(argv[1],"status")) {
+        printf("p2 on|off|status|config <WACN hex> <SYS hex> <NAC hex> <slot 1-2>\n");return 1;
+    }
+    char text[128];p25_p2_describe(text,sizeof(text));printf("p2: %s\n",text);return 0;
+}
+
 static int cmd_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
     printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
            "feed=%s  free_int=%u  free_psram=%u\n",
            s_modes[s_mode].name, cur_freq_hz() / 1e6,
-           audio_volume_get(), lakeshark_radio_get_gain_tenths() / 10.0,
+           audio_volume_get(), cur_gain_tenths() / 10.0,
                audio_is_muted(), fm_mode_label(lakeshark_fm_get_mode()),
            lakeshark_cartotui_enabled() ? "on" : "off",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -570,6 +601,17 @@ static int cmd_vol(int argc, char **argv)
 static int cmd_freq(int argc, char **argv)
 {
     if (argc < 2) { printf("freq=%.4f MHz\n", cur_freq_hz() / 1e6); return 0; }
+    if (s_mode == 3) {
+        double mhz = atof(argv[1]);
+        if (rec_watch_enabled()) { printf("Stop WATCH before changing frequency\n"); return 0; }
+        bool valid = mhz >= 1 && mhz <= 2000;
+        if (rec_watch_source() == REC_SOURCE_CC1101)
+            valid = (mhz >= 300 && mhz <= 348) || (mhz >= 387 && mhz <= 464) || (mhz >= 779 && mhz <= 928);
+        if (!valid) { printf("Frequency outside recorder source range\n"); return 0; }
+        rec_set_freq((uint32_t)(mhz * 1e6 + 0.5));
+        printf("freq=%.4f MHz\n", rec_get_freq() / 1e6);
+        return 0;
+    }
     uint32_t hz = (uint32_t)(atof(argv[1]) * 1e6 + 0.5);
     if      (s_mode == 0) lakeshark_p25_set_freq(hz);
     else if (s_mode == 2) lakeshark_fm_set_freq(hz);
@@ -581,7 +623,16 @@ static int cmd_freq(int argc, char **argv)
 static int cmd_gain(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("gain=%.1f dB\n", lakeshark_radio_get_gain_tenths() / 10.0);
+        printf("gain=%.1f dB\n", cur_gain_tenths() / 10.0);
+        return 0;
+    }
+    if (s_mode == 3) {
+        if (rec_watch_source() == REC_SOURCE_CC1101) printf("CC1101 uses its OOK AGC profile\n");
+        else if (!strcmp(argv[1], "auto")) printf("RTL recorder uses manual gain\n");
+        else {
+            rec_set_gain((int)(atof(argv[1]) * 10 + 0.5));
+            printf("gain=%.1f dB\n", cur_gain_tenths() / 10.0);
+        }
         return 0;
     }
     if (!strcmp(argv[1], "auto")) {
@@ -678,7 +729,7 @@ static int radio_effective_want(void)
 {
     int rec=-1;
     (void)hl_mode_index_by_name("REC",&rec);
-    return rec_watch_receiver_want(s_radio_want,rec,rec_watch_enabled());
+    return rec_watch_receiver_want_source(s_radio_want,rec,rec_watch_enabled(),rec_watch_source());
 }
 
 static void radio_reconcile(void)
@@ -2314,6 +2365,7 @@ static void console_start(bool full)
     const esp_console_cmd_t cmds[] = {
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
+        { .command = "p2", .help = "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot", .func = &cmd_p2 },
         /**/
         { .command = "rtl", .help = "RTL health; 'rtl detach' simulates an unplug",
           .func = &cmd_rtl },

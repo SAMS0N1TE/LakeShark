@@ -54,7 +54,7 @@ static bool read_header(const char *dir, int slot, header_t *h)
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
     FILE *f=fopen(path,"rb"); if (!f) return false;
     bool ok=fread(h,1,sizeof(*h),f)==sizeof(*h) && h->magic==MAGIC &&
-        h->version==2 && h->bytes==sizeof(rec_watch_catalog_t);
+        (h->version==2 || h->version==3) && h->bytes==sizeof(rec_watch_catalog_t);
     uint32_t crc=UINT32_MAX;
     uint8_t buf[512]; size_t remaining=sizeof(rec_watch_catalog_t);
     while (ok && remaining) {
@@ -89,7 +89,7 @@ bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t fre
     char path[256];
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
     FILE *f=fopen(path,"wb"); if(!f)return false;
-    header_t h={.magic=MAGIC,.version=2,.bytes=sizeof(*c),
+    header_t h={.magic=MAGIC,.version=3,.bytes=sizeof(*c),
         .crc=rec_watch_crc(c,sizeof(*c)),.sequence=c->sequence,.archive_id=c->archive_id};
     bool ok=fwrite(&h,1,sizeof(h),f)==sizeof(h) && fwrite(c,1,sizeof(*c),f)==sizeof(*c);
     if (fflush(f)!=0) ok=false;
@@ -112,8 +112,9 @@ bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
     ok=ok && c->sequence==h.sequence && rec_watch_crc(c,sizeof(*c))==h.crc;
     for(int i=0;ok && i<REC_WATCH_SLOTS;i++) {
         rec_watch_event_t *e=&c->record[i].event;
+        if(h.version==2) {e->source=REC_SOURCE_RTL;e->reserved=0;}
         if(e->id && (!e->count || e->edges<6 || e->edges>REC_WATCH_EDGES ||
-            e->order>c->sequence || e->id>c->next_id)) ok=false;
+            e->order>c->sequence || e->id>c->next_id || e->source>REC_SOURCE_CC1101)) ok=false;
     }
     if(!ok)memset(c,0,sizeof(*c));
     return ok;

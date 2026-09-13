@@ -7,6 +7,10 @@
 #include "ls_wf_source.h"
 #include "ls_userapp.h"
 
+#ifdef LS_TUI_CORNER_STUB
+int ls_tui_corner_pad(int row) { (void)row; return 0; }
+#endif
+
 /* ---- fuel gauge ---------------------------------------------------- */
 
 bool ls_gauge_present(void) { return false; }

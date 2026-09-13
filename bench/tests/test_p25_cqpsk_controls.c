@@ -29,6 +29,22 @@ LS_CASE(tested_defaults_are_the_recovered679_coefficients)
     LS_NEAR(dsp.cqpsk_afc_alpha, config.carrier_gain, 0.0f);
 }
 
+LS_CASE(phase2_clock_is_opt_in_and_phase1_clock_is_restored)
+{
+    dsp_state_t dsp;
+    dsp_init(&dsp);
+    LS_CHECK(!dsp.phase2);
+    LS_NEAR(dsp.g_period, 10.0f, 0.0f);
+    dsp.phase2 = true;
+    dsp_reset_cqpsk_loops(&dsp);
+    LS_NEAR(dsp.g_period, 8.0f, 0.0f);
+    LS_NEAR(dsp.g_half, 4.0f, 0.0f);
+    dsp.phase2 = false;
+    dsp_reset_cqpsk_loops(&dsp);
+    LS_NEAR(dsp.g_period, 10.0f, 0.0f);
+    LS_NEAR(dsp.g_half, 5.0f, 0.0f);
+}
+
 LS_CASE(non_finite_overflowing_and_unsafe_values_are_rejected)
 {
     p25_cqpsk_config_t config;

@@ -85,7 +85,7 @@ RD_FLT (v_fm_gain,    FM.gain_tenths / 10.0f)
    fm.squelch - that one is whether the squelch is currently open. A control
    that steps a setting has to read the setting, and reading the bool would
    have stepped from 0 or 1 dB every time. */
-RD_FLT (v_fm_sql,     FM.squelch_tenths / 10.0f)
+RD_FLT (v_fm_sql,     (float)FM.squelch_tenths)
 RD_FLT (v_p25_gain,   P25.rtl_gain_tenths / 10.0f)
 
 /* Whether the track recorder is running, and how much it has. */
@@ -232,7 +232,7 @@ void ls_value_publish_builtin(void)
     ls_value_publish("fm.level",     NULL,   v_fm_level);
     ls_value_publish("fm.gain",      "dB",   v_fm_gain);
     ls_value_publish("fm.squelch",   NULL,   v_fm_squelch);
-    ls_value_publish("fm.sql",       "dB",   v_fm_sql);
+    ls_value_publish("fm.sql",       "%",   v_fm_sql);
     ls_value_publish("fm.pages",     NULL,   v_fm_pages);
     ls_value_publish("fm.pocsag",    NULL,   v_fm_psync);
 

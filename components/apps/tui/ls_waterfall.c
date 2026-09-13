@@ -20,6 +20,10 @@ static int      s_filled;                /* rows written since the claim    */
 static int      s_nbins;                 /* bins the source actually gives  */
 
 static ls_wf_owner_t s_owner;
+static ls_wf_tune_fn s_tuner;
+static char s_tune_note[64];
+static int64_t s_tune_note_until;
+void ls_wf_set_tuner(ls_wf_tune_fn tuner) {s_tuner=tuner;}
 static char          s_label[16];
 
 static ls_wf_feed_t  s_feed;
@@ -618,11 +622,11 @@ static void draw_scale(tui_surface *sf, tui_rect r)
 
 uint32_t ls_wf_marker_hz(void)
 {
-    if (s_marker < 0 || !s_have_feed || !s_feed.span_hz) return 0;
+    if (s_marker < 0 || s_marker >= s_plot_rect.w || !s_have_feed || !s_feed.span_hz) return 0;
     const int w = s_plot_rect.w > 0 ? s_plot_rect.w : 1;
     const int64_t off = (int64_t)s_feed.span_hz * (s_marker * 2 + 1) / (2 * w);
     const int64_t hz = (int64_t)s_feed.center_hz - s_feed.span_hz / 2 + off;
-    return hz > 0 ? (uint32_t)hz : 0;
+    return hz > 0 && hz <= UINT32_MAX ? (uint32_t)hz : 0;
 }
 
 /* How strong the strongest thing on the band is, as a number. */
@@ -684,6 +688,9 @@ static void draw_readout(tui_surface *sf, tui_rect r)
     const uint8_t dim = LS_ATTR_DIM;
     const uint8_t hot = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
 
+    if(esp_timer_get_time()<s_tune_note_until) {
+        tui_put_str(sf,r,r.x,r.y,s_tune_note,hot);return;
+    }
     if (s_marker >= 0) {
         const uint32_t hz = ls_wf_marker_hz();
         const uint8_t raw = sample(0, s_marker, s_plot_rect.w);
@@ -806,6 +813,9 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
     b[8] = (ls_btn_t){ "DETAIL", v[8], 'f', false, false };
 
     b[9] = (ls_btn_t){ "CNTRST", v[9], 'c', false, false };
+    uint32_t hz=ls_wf_marker_hz();
+    snprintf(v[10],12,hz?"%.4f":"tap mark",hz/1e6);
+    b[10]=(ls_btn_t){ls_tui_is_wide()?"TUNE":"TUNE MARK",v[10],'y',false,!hz||!s_tuner};
 }
 
 static void act(int i)
@@ -822,6 +832,15 @@ static void act(int i)
     case 8: s_cfg.grain = (uint8_t)((s_cfg.grain + 1) % LS_WF_GRAIN__COUNT);
             break;
     case 9: contrast_step(); break;
+    case 10: {
+        uint32_t hz=ls_wf_marker_hz();
+        if(!hz||!s_tuner)break;
+        bool ok=s_tuner(s_owner,hz);
+        snprintf(s_tune_note,sizeof(s_tune_note),ok?"Tune requested: %.4f MHz":"Tune unavailable: %.4f MHz",hz/1e6);
+        s_tune_note_until=esp_timer_get_time()+2500000;
+        if(ok){s_cfg.paused=false;s_marker=-1;}
+        break;
+    }
     default: break;
     }
 }
@@ -883,6 +902,7 @@ bool ls_wf_touch(int col, int row)
         col >= s_plot_rect.x && col < s_plot_rect.x + s_plot_rect.w) {
         const int c = col - s_plot_rect.x;
         s_marker = (s_marker == c) ? -1 : c;
+        if(s_marker>=0)s_bar_hidden=false;
         return true;
     }
     return false;
@@ -918,15 +938,8 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     }
     if (chrome) {
         const bool wide = ls_tui_is_wide();
-        /* Portrait gets an eight-row bar and landscape two.
-
-           Same eight buttons; in portrait they wrap onto two rows of four,
-           which is what makes each one wide enough to hit. Four rows made
-           each one two rows tall - 2.6 mm on a 334 dpi panel, against the
-           seven a thumb wants - so the width was fixed and the height was
-           left at the number that was already wrong. Eight rows makes them
-           four each, and portrait has sixty-six. */
-        int bar_h = wide ? 2 : 8;
+        /* Three portrait rows keep the marker control touchable. */
+        int bar_h = wide ? 2 : 12;
         if (bar_h > area.h / 3) bar_h = area.h / 3;
         if (bar_h < 1) bar_h = 1;
 
@@ -937,8 +950,8 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
         ls_btn_t b[LS_WF_BTNS];
         char v[LS_WF_BTNS][12];
         build_buttons(b, v);
-        ls_btn_bar_slot(sf, s_bar_rect, b, LS_WF_BTNS, s_focus,
-                        LS_BTN_SLOT_WATERFALL);
+        if(wide) ls_btn_bar_slot(sf,s_bar_rect,b,LS_WF_BTNS,s_focus,LS_BTN_SLOT_WATERFALL);
+        else ls_btn_bar_raised_slot(sf,s_bar_rect,b,LS_WF_BTNS,s_focus,LS_BTN_SLOT_WATERFALL);
 
         draw_scale(sf, tui_rect_make(area.x + 1, s_bar_rect.y - 2,
                                      area.w - 2, 1));

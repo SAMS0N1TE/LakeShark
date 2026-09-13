@@ -195,11 +195,7 @@ static bool touch(int col, int row)
     const int n = build_tiles(tiles, apps, MAX_TILES);
     if (i >= n) return true;
 
-    /* First tap selects, second tap opens - but only when the first
-       tap moved the selection. Tapping the tile you are already on opens it,
-       which is what a finger expects; tapping a different one shows you what
-       you are about to open first. */
-    if (s_sel != i) { s_sel = i; return true; }
+    s_sel = i;
     for (int a = 0; a < ls_app_count(); a++)
         if (ls_app_at(a) == apps[i]) { ls_app_open(a); break; }
     return true;

@@ -12,6 +12,11 @@
 #include "../../ls_tui_ui.h"
 #include "apps/rec/rec_state.h"
 
+extern const ls_tui_screen_t ls_scr_subghz;
+extern const ls_tui_screen_t ls_scr_rec;
+static bool tools_view;
+static char recorder_hint[80];
+
 static uint64_t s_free_bytes;
 static bool     s_free_known;
 
@@ -443,14 +448,40 @@ static bool touch(int col, int row)
     return true;
 }
 
+static void recorder_enter(void) { tools_view=false; ls_scr_subghz.enter(); }
+static void recorder_leave(void) { ls_scr_subghz.leave(); }
+static void recorder_draw(tui_surface *sf,tui_rect a) {
+    snprintf(recorder_hint,sizeof(recorder_hint),"%s",tools_view?"B recorder  ENTER arm/stop":"R source  W watch  E export  D RTL tools");
+    if(!tools_view){ls_scr_subghz.draw(sf,a);return;}
+    ls_btn_t back={"RECORDER","BACK",'b',false,false};
+    int h=ls_tui_is_wide()?3:5;
+    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),&back,1,-1);
+    a.y+=h;a.h-=h;draw(sf,a);
+}
+static bool recorder_key(ls_tk_t k,char c) {
+    if(!tools_view)return ls_scr_subghz.key(k,c);
+    if(k==LS_TK_ESC || c=='b'||c=='B'){tools_view=false;return true;}
+    return key(k,c);
+}
+static bool recorder_touch(int x,int y) {
+    if(!tools_view)return ls_scr_subghz.touch(x,y);
+    if(ls_btn_hit(x,y)==0){tools_view=false;return true;}
+    return touch(x,y);
+}
+void ls_scr_rec_tools(void) {
+    int index=ls_tui_screen_index_of(&ls_scr_rec);
+    if(index>=0)ls_tui_screen_show(index);
+    tools_view=true;on_enter();
+}
+
 const ls_tui_screen_t ls_scr_rec = {
     /* the capture engine IS the receiver here. */
     .radio = "REC",
     .name = "REC",
-    .hint = "TAP the button  ENTER arms and disarms",
-    .enter = on_enter,
-    .leave = NULL,
-    .draw = draw,
-    .key = key,
-    .touch = touch,
+    .hint = recorder_hint,
+    .enter = recorder_enter,
+    .leave = recorder_leave,
+    .draw = recorder_draw,
+    .key = recorder_key,
+    .touch = recorder_touch,
 };

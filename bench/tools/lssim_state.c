@@ -131,7 +131,10 @@ void p25_get_receiver_status(ls_iq_control_status_t *out)
 {
     if (out) {
         memset(out, 0, sizeof(*out));
-        out->receiver_streaming = true;
+        out->receiver_streaming = P25.iq_bytes_sec > 0;
+        out->effective_center_known = true;
+        out->tune_state = LS_IQ_RESULT_EFFECTIVE;
+        out->effective_center_hz = s_tune_freq_hz;
     }
 }
 /* ls_wf_source asks FM's receiver whether it is streaming before it
@@ -142,7 +145,10 @@ void fm_get_receiver_status(ls_iq_control_status_t *out)
 {
     if (out) {
         memset(out, 0, sizeof(*out));
-        out->receiver_streaming = true;
+        out->receiver_streaming = FM.iq_bytes_sec > 0;
+        out->effective_center_known = true;
+        out->tune_state = LS_IQ_RESULT_EFFECTIVE;
+        out->effective_center_hz = FM.freq_hz;
     }
 }
 void p25_request_gain(int tenths) { P25.rtl_gain_tenths = tenths; }
@@ -273,7 +279,7 @@ void lssim_seed_state(void)
     memset(&FM, 0, sizeof(FM));
     FM.freq_hz = 162550000u;
     FM.gain_tenths = 280;
-    FM.squelch_tenths = 120;
+    FM.squelch_tenths = 12;
     FM.squelch_open = true;
     FM.iq_level = 0.42f;
     FM.iq_bytes_sec = 240000;
@@ -290,11 +296,9 @@ void lssim_seed_state(void)
     P25.dsd_src = 220158;
     P25.dsd_has_sync = true;
     P25.iq_level = 0.61f;
+    P25.iq_bytes_sec = 480000;
     P25.rtl_gain_tenths = 280;
-    /* Well past any clock this tool runs with - frozen at 1.5s (the
-       default) or live from esp_timer's own zero (-T) - so the busiest
-       branch ('s own reasoning) is the one a static render shows:
-       a call in progress, not one that just ended. */
+    /* Keep the static fixture inside a decoded call. */
     P25.voice_active_until_us = esp_timer_get_time() + 5000000;
     snprintf(P25.dsd_modulation, sizeof(P25.dsd_modulation), "C4FM");
 }

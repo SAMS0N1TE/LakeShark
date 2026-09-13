@@ -6,6 +6,7 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | --- | --- | --- |
 | RTL-SDR and tuner drivers | `components/lakeshark/radio/COPYRIGHT.librtlsdr` and per-file headers | GPL-2.0-or-later |
 | IMBE vocoder | `components/imbe_vocoder/COPYRIGHT` and per-file headers | GPL-3.0-or-later |
+| Experimental Phase II decoder | `components/p25_phase2/README.md`, `COPYING` and per-file headers; OP25 by Max H. Parke, Graham J. Norbury and contributors | GPL-3.0-or-later, with retained mbelib ISC notices |
 | mbelib | `components/mbelib/COPYRIGHT` | ISC-style permission notice |
 | DSD core and helpers | P25 source headers and `components/lakeshark/apps/p25/UPSTREAM.md` | ISC-style DSD permission notice and additional per-file helper notices |
 | Mode S decoder | `components/lakeshark/apps/adsb/LICENSE.libmodes` and source headers | BSD-2-Clause, libmodes by Thomas Watson, derived from dump1090 by Salvatore Sanfilippo |

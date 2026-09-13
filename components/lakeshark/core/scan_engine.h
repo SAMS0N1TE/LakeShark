@@ -20,6 +20,10 @@ bool scan_engine_active(void);
 bool scan_engine_sweeping(void);
 
 void scan_engine_skip(void);
+void scan_engine_next(void);
+void scan_engine_hold(bool hold);
+bool scan_engine_manual_hold(void);
+int scan_engine_candidate(void);
 void scan_engine_set_hang_ms(int ms);
 /**/
 void scan_engine_set_threshold_pct(int pct);

@@ -148,12 +148,13 @@ void dsp_reset_cqpsk_loops(dsp_state_t *s)
 {
     if (!s) return;
     s->g_clock = 0.0f;
-    s->g_period = (float)DSP_SPS;
+    s->g_period = (float)(s->phase2 ? 8 : DSP_SPS);
     s->g_mu = 0.5f;
     memset(s->g_di, 0, sizeof(s->g_di));
     memset(s->g_dq, 0, sizeof(s->g_dq));
     s->g_sample_idx = 0;
-    s->g_half = DSP_SPS / 2;
+    s->g_half = (s->phase2 ? 8 : DSP_SPS) / 2;
+    s->p2_prev_i = s->p2_prev_q = 0.0f;
     s->cqpsk_afc_phase_err = 0.0f;
     s->diff_prev_i = 1.0f;
     s->diff_prev_q = 0.0f;
@@ -275,6 +276,31 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
     float mi = si;
     float mq = sq;
 
+    /* Phase II uses fractional strobes at 8 samples/symbol. */
+    if (s->phase2) {
+        float before = s->g_clock;
+        s->g_clock += 1.0f;
+        float half = s->g_period * 0.5f;
+        if (before < half && s->g_clock >= half) {
+            float f = half - before;
+            s->g_di[1] = s->p2_prev_i + f * (mi - s->p2_prev_i);
+            s->g_dq[1] = s->p2_prev_q + f * (mq - s->p2_prev_q);
+        }
+        float f = s->g_period - before;
+        float pi = s->p2_prev_i, pq = s->p2_prev_q;
+        s->p2_prev_i = mi; s->p2_prev_q = mq;
+        if (s->g_clock < s->g_period) return 0;
+        mi = pi + f * (mi - pi); mq = pq + f * (mq - pq);
+        s->g_clock -= s->g_period;
+        float te = (mi - s->g_di[0]) * s->g_di[1]
+                 + (mq - s->g_dq[0]) * s->g_dq[1];
+        if (te > 1.0f) te = 1.0f;
+        if (te < -1.0f) te = -1.0f;
+        s->g_period -= s->g_gain_omega * te;
+        s->g_period = fmaxf(7.96f, fminf(8.04f, s->g_period));
+        s->g_clock += s->g_gain_mu * te;
+        s->g_di[0] = mi; s->g_dq[0] = mq;
+    } else {
     /* Gardner timing */
     s->g_sample_idx++;
     if (s->g_sample_idx == s->g_half) {
@@ -293,12 +319,13 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
     /* Positive Gardner error means the strobe is late. This loop moves the
      * strobe through its period estimate, so late must shorten the period. */
     s->g_period -= s->g_gain_omega * te;
-    float omin = (float)DSP_SPS * (1.0f - s->g_omega_rel);
-    float omax = (float)DSP_SPS * (1.0f + s->g_omega_rel);
+    float omin = (float)(s->phase2 ? 8 : DSP_SPS) * (1.0f - s->g_omega_rel);
+    float omax = (float)(s->phase2 ? 8 : DSP_SPS) * (1.0f + s->g_omega_rel);
     if (s->g_period < omin) s->g_period = omin;
     if (s->g_period > omax) s->g_period = omax;
     s->g_half = (int)(s->g_period * 0.5f);
     s->g_di[0] = s->g_di[2]; s->g_dq[0] = s->g_dq[2];
+    }
 
     /* Differential phasor */
     float di2 = mi * s->diff_prev_i + mq * s->diff_prev_q;
@@ -340,7 +367,7 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
 
     /* Output repeated for DSD's 10 sps */
     int n = 0;
-    for (int r = 0; r < DSP_SPS && n < maxn; r++)
+    for (int r = 0; r < (s->phase2 ? 8 : DSP_SPS) && n < maxn; r++)
         out[n++] = sym;
     return n;
 }

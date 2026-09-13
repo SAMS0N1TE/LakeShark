@@ -1,6 +1,7 @@
 /* See ls_wf_source.h. The glue between a receiver and the widget. */
 #include "ls_wf_source.h"
 #include "ls_field.h"
+#include "scan_engine.h"
 
 #include <string.h>
 
@@ -563,8 +564,35 @@ static void lora_stop(void)
     s_lora_row_t0 = 0;
 }
 
+static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
+{
+    if(owner==LS_WF_OWNER_P25) {
+        ls_iq_control_status_t status;p25_get_receiver_status(&status);
+        if(!p25_running()||!status.receiver_streaming||hz<24000000||hz>1766000000)return false;
+        scan_engine_stop();lakeshark_p25_set_freq(hz);return true;
+    }
+    if(owner==LS_WF_OWNER_FM) {
+        ls_iq_control_status_t status;fm_get_receiver_status(&status);
+        if(!fm_running()||!status.receiver_streaming||hz<24000000||hz>1766000000)return false;
+        scan_engine_stop();
+        if(FM.mode==FM_MODE_SCAN)ls_wf_fm_sweep(false);
+        lakeshark_fm_set_freq(hz);return true;
+    }
+    if(owner==LS_WF_OWNER_LORA) {
+        if(!ls_lora_present()||hz<150000000||hz>959000000)return false;
+        ls_field_state_t state;ls_field_snapshot(&state);
+        if(!state.ready)return false;
+        ls_lora_cfg_t cfg=state.config;cfg.freq_hz=hz;
+        lora_stop();
+        if(!ls_field_configure(&cfg)||!ls_field_mode(LS_LAB_PACKETS))return false;
+        return ls_field_direct(true);
+    }
+    return false;
+}
+
 void ls_wf_source_pump(void)
 {
+    ls_wf_set_tuner(tune_marker);
     ls_wf_src_t use = s_want;
     /* AUTO deliberately never picks LORA. The other two are views of
        a receiver that is already running; a sweep STOPS the mesh to take the

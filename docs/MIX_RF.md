@@ -1,5 +1,31 @@
 # Keyboard radio monitor
 
+REC and SUB-GHZ now share a capture workspace. SOURCE/R selects RTL or CC1101;
+stop WATCH before changing source. RTL retains its broad tuning range and
+TOOLS/D opens its original level/rate and single-capture controls. Each source
+keeps its own frequency for the session.
+
+CC1101 WATCH uses the keyboard GDO0 pin and the P4 RMT receiver for asynchronous
+OOK pulse timing. The initial profile is 650 kHz bandwidth, a 1 us hardware
+glitch filter and 30 ms end gap, with a fixed 1,024-edge buffer. A full buffer
+is counted as overflow and discarded; long continuous signals can exceed it.
+The RMT buffer uses 2 KiB of internal RAM without DMA; conversion and archive
+buffers use PSRAM. Allocation/setup failures report RX unavailable. This path
+is built and host-tested, but real CC1101 RF capture still needs validation
+with the attached keyboard and a known transmitter.
+
+Both receivers feed the bounded Sub-GHz archive, manual .sub export and Journal
+bookmarks. Source labels persist with captures; older archives migrate as RTL.
+OOK24 means a repeated 24-bit pulse-width payload with approximately 1:3 timing
+and a 1:31 sync gap. It requires two consecutive complete matching frames.
+It is a timing-family decode, not a verified manufacturer, unique device ID or
+general sensor decoder. Unknown, FSK and unsupported protocols are not labeled
+as decoded. Matching decoded payloads group across different repeat counts.
+
+MIX-RF MONITOR remains an energy monitor. Stop it before starting CC1101 WATCH.
+STOP ALL also stops CC1101 WATCH. CC1101 capture may continue while using RTL
+in another app. No CC1101 transmit operation is added.
+
 Radio → MIX-RF probes the powered keyboard expansion. PROBE can retry after
 reconnecting. It preserves the keyboard expander's unrelated outputs. Keypad
 and expander register transactions share a mutex. A wired Flipper connection
@@ -7,8 +33,8 @@ must be stopped before the probe because it can own the same header pins.
 
 CC1101 MONITOR is a receive-only channel-energy monitor. BAND selects the
 matching 315, 434 or 868/915 MHz RF path. RSSI uses the receiver's nominal
-conversion and is not a calibrated power measurement. The reset modem's
-receive bandwidth applies. Continuous asynchronous reception disables packet
+conversion and is not a calibrated power measurement. The monitor uses a
+650 kHz receive bandwidth. Continuous asynchronous reception disables packet
 completion and FIFO handling for this energy monitor. This is neither a
 spectrum analyzer nor a packet decoder. No transmit strobe is implemented.
 

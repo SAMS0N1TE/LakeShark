@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "p25_state.h"
 #include "p25_program.h"
+#include "p25_p2_runtime.h"
 /**/
 #include "fm_state.h"
 #include "lakeshark_backend.h"
@@ -43,7 +44,9 @@ static volatile bool s_enabled = false;
 static int           s_cur     = -1;
 static int           s_hang_ms = DEFAULT_HANG_MS;
 static int           s_thresh  = DEFAULT_THRESH;
-static volatile bool s_skip_req = false;
+static volatile int s_advance = 0; /* Channel index plus operation: 1 next, 2 session skip. */
+static volatile int s_hold_candidate = -1;
+static volatile int s_candidate = -1;
 static uint64_t      s_session_skip = 0;
 static int           s_order[SCAN_MAX_CHANNELS];
 static int           s_order_n = 0;
@@ -494,6 +497,17 @@ static int priority_sample(void)
     return -1;
 }
 
+static bool advance_requested(int idx)
+{
+    int request = __atomic_exchange_n(&s_advance, 0, __ATOMIC_ACQ_REL);
+    if (!request || (request >> 2) != idx + 1) return false;
+    if ((request & 3) == 2 && s_src == SCAN_SRC_CHANNELS) {
+        sess_skip(idx);
+        s_order_pos = 0;
+    }
+    return true;
+}
+
 static void scan_task(void *arg)
 {
     (void)arg;
@@ -523,6 +537,8 @@ static void scan_task(void *arg)
         if (fg < 0) {
             s_cur     = -1;
             s_fg_mode = -1;
+            s_hold_candidate = -1;
+            s_candidate = -1;
             strncpy(s_status, "open P25 or FM to scan", sizeof(s_status) - 1);
             vTaskDelay(pdMS_TO_TICKS(150));
             continue;
@@ -530,6 +546,8 @@ static void scan_task(void *arg)
         if (fg != s_fg_mode) {
             /* The built order belongs to the old mode - throw it away. */
             s_fg_mode   = fg;
+            s_hold_candidate = -1;
+            s_candidate = -1;
             s_order_n   = 0;
             s_order_pos = 0;
             s_cur       = -1;
@@ -543,6 +561,8 @@ static void scan_task(void *arg)
            is not hidden by an unrelated receiver condition. */
         if (candidate_count() == 0) {
             s_cur = -1;
+            s_candidate = -1;
+            s_hold_candidate = -1;
             if (s_src == SCAN_SRC_BAND)
                 snprintf(s_status, sizeof(s_status), "empty band range");
             else
@@ -553,6 +573,8 @@ static void scan_task(void *arg)
         ls_iq_control_status_t receiver;
         receiver_status_for(fg, &receiver);
         if (!receiver.receiver_streaming) {
+            s_cur = s_candidate = -1;
+            s_hold_candidate = -1;
             vTaskDelay(pdMS_TO_TICKS(150));
             continue;
         }
@@ -609,6 +631,9 @@ static void scan_task(void *arg)
             continue;
         }
 
+        scan_channel_t selected = *c;
+        c = &selected;
+        s_candidate = idx;
         s_scan_error = LS_RADIO_OK;
         tune_to(c);
         ls_radio_err_t tune_error = LS_RADIO_OK;
@@ -629,7 +654,8 @@ static void scan_task(void *arg)
         if (!s_enabled || !scan_foreground()) continue;
 
         /**/
-        if (pwi < stop_threshold(c->mode)) {
+        if (advance_requested(idx)) continue;
+        if (!scan_engine_manual_hold() && pwi < stop_threshold(c->mode)) {
             snprintf(s_status, sizeof(s_status), "SCAN %-9s p=%02d", c->name, pwi);
             continue;
         }
@@ -639,15 +665,17 @@ static void scan_task(void *arg)
         /* P25 has to re-converge on the sync word after every retune, which is
            what SYNC_DWELL_MS buys. NFM has no sync - a carrier over threshold
            already IS the hit, so waiting 900 ms would just miss the call. */
-        bool sync = (c->mode != SCAN_MODE_P25);
+        bool sync = scan_engine_manual_hold() || (c->mode != SCAN_MODE_P25);
         if (!sync) {
             int64_t t0 = esp_timer_get_time();
             while (esp_timer_get_time() - t0 < (int64_t)SYNC_DWELL_MS * 1000) {
                 if (!s_enabled || !scan_foreground()) break;
-                if (P25.dsd_has_sync) { sync = true; break; }
+                if (s_advance) break;
+                if (scan_engine_manual_hold() || P25.dsd_has_sync) { sync = true; break; }
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
         }
+        if (advance_requested(idx) || !s_enabled || !scan_foreground()) continue;
         if (!sync) continue;
 
         s_cur = idx;
@@ -661,7 +689,15 @@ static void scan_task(void *arg)
         int64_t pri_next = esp_timer_get_time() + (int64_t)s_pri_ms * 1000;
         for (;;) {
             if (!s_enabled || !scan_foreground()) break;
-            if (s_skip_req) { s_skip_req = false; sess_skip(idx); break; }
+            if (advance_requested(idx)) break;
+            ls_iq_control_status_t held_receiver;
+            receiver_status_for(c->mode, &held_receiver);
+            if (!held_receiver.receiver_streaming) break;
+            if (scan_engine_manual_hold()) {
+                last = esp_timer_get_time();
+                vTaskDelay(pdMS_TO_TICKS(30));
+                continue;
+            }
             /**/
             if (carrier_held(c->mode)) last = esp_timer_get_time();
             else if (esp_timer_get_time() - last > (int64_t)s_hang_ms * 1000) break;
@@ -723,6 +759,7 @@ void scan_engine_start(void)
      * profile control survey, regardless of who pressed start. */
     if (selected_mode() == SCAN_MODE_P25)
     {
+        p25_p2_enable(false);
         (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
         /* If start lands during a followed call, transition the follower to
            control before the carrier scanner begins. Otherwise a later call
@@ -733,7 +770,9 @@ void scan_engine_start(void)
     }
     s_session_skip = 0;
     s_order_pos    = 0;
-    s_skip_req     = false;
+    s_advance      = 0;
+    s_hold_candidate = -1;
+    s_candidate    = -1;
     s_pk_max       = 0;
     s_pk_acc       = 0;
     s_force_idx    = -1;
@@ -746,6 +785,10 @@ void scan_engine_start(void)
 void scan_engine_stop(void)
 {
     s_enabled = false;
+    s_hold_candidate = -1;
+    s_advance = 0;
+    s_candidate = -1;
+    s_cur = -1;
     s_started = false;
     s_scan_error = LS_RADIO_OK;
 }
@@ -758,7 +801,32 @@ bool scan_engine_active(void) { return s_enabled; }
    hops just as fast while that is false. Keep the FM and P25 retune guards on
    THIS, and keep them identical to each other. */
 bool scan_engine_sweeping(void) { return s_enabled || s_autosq_busy; }
-void scan_engine_skip(void) { s_skip_req = true; }
+void scan_engine_skip(void)
+{
+    int candidate = s_candidate;
+    if (s_enabled && candidate >= 0) {
+        s_hold_candidate = -1;
+        __atomic_store_n(&s_advance, ((candidate + 1) << 2) | 2, __ATOMIC_RELEASE);
+    }
+}
+void scan_engine_next(void)
+{
+    int candidate = s_candidate;
+    if (s_enabled && candidate >= 0) {
+        s_hold_candidate = -1;
+        __atomic_store_n(&s_advance, ((candidate + 1) << 2) | 1, __ATOMIC_RELEASE);
+    }
+}
+void scan_engine_hold(bool hold)
+{
+    s_hold_candidate = s_enabled && hold ? s_candidate : -1;
+}
+bool scan_engine_manual_hold(void)
+{
+    return s_enabled && s_hold_candidate >= 0 && s_hold_candidate == s_candidate;
+}
+int scan_engine_candidate(void) { return s_candidate; }
+
 
 void scan_engine_set_hang_ms(int ms)
 {

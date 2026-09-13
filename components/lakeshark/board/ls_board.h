@@ -22,13 +22,6 @@
 #include "variants/p4_nano.h"
 #define LS_BOARD_SELECTED 1
 #elif defined(CONFIG_LS_BOARD_T_DISPLAY_P4)
-/* Scaffold only.  variants/t_display_p4.h names each part but does
-   NOT declare the pins - the vendor's t_display_p4_config.h /
-   t_display_p4_keyboard_config.h were not in the repo at scaffold time.
-   A build that selects this board will therefore use the shared P4 pin
-   defaults from below unmodified, which are the NANO's numbers and are
-   NOT guaranteed correct for the T-Display-P4.  See variants/t_display_p4.h
-   and boards/t_display_p4.defaults - both are loudly incomplete. */
 #include "variants/t_display_p4.h"
 #define LS_BOARD_SELECTED 1
 #else

@@ -5,9 +5,18 @@
 static uint32_t magnitude(int32_t v) { return v < 0 ? (uint32_t)(-(int64_t)v) : (uint32_t)v; }
 int rec_watch_receiver_want(int visible_mode, int rec_mode, bool enabled)
 { return visible_mode < 0 && enabled ? rec_mode : visible_mode; }
+int rec_watch_receiver_want_source(int visible_mode, int rec_mode, bool enabled, rec_source_t source)
+{
+    if(source==REC_SOURCE_CC1101)return visible_mode==rec_mode?-1:visible_mode;
+    return rec_watch_receiver_want(visible_mode,rec_mode,enabled);
+}
 static bool matches(const rec_watch_record_t *r, uint32_t hz, const int32_t *p, int n)
 {
-    if (!r->event.id || r->event.frequency != hz || r->event.edges != n) return false;
+    if (!r->event.id || r->event.frequency != hz) return false;
+    rec_ook24_t previous, incoming;
+    if (rec_decode_ook24(p,n,&incoming) && rec_decode_ook24(r->pulse,r->event.edges,&previous))
+        return incoming.value == previous.value;
+    if (r->event.edges != n) return false;
     for (int i = 0; i < n; i++) {
         if ((p[i] < 0) != (r->pulse[i] < 0)) return false;
         uint32_t a = magnitude(p[i]), b = magnitude(r->pulse[i]);
@@ -21,8 +30,14 @@ int rec_watch_observe(rec_watch_catalog_t *c, uint32_t hz,
     const int32_t *p, int n, uint32_t boot, uint64_t ms,
     int peak, int reason, bool *novel)
 {
+    return rec_watch_observe_from(c, REC_SOURCE_RTL, hz, p, n, boot, ms, peak, reason, novel);
+}
+int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t hz,
+    const int32_t *p, int n, uint32_t boot, uint64_t ms,
+    int peak, int reason, bool *novel)
+{
     if (novel) *novel = false;
-    if (!c || !p || n < 6 || n > REC_WATCH_EDGES || !hz ||
+    if ((source != REC_SOURCE_RTL && source != REC_SOURCE_CC1101) || !c || !p || n < 6 || n > REC_WATCH_EDGES || !hz ||
         c->sequence == UINT64_MAX) return -1;
     uint64_t span = 0;
     for (int i = 0; i < n; i++) {
@@ -33,7 +48,7 @@ int rec_watch_observe(rec_watch_catalog_t *c, uint32_t hz,
     if (!c->archive_id) c->archive_id=((uint64_t)boot<<32)|hz;
     int slot = -1;
     for (int i = 0; i < REC_WATCH_SLOTS; i++) {
-        if (matches(&c->record[i], hz, p, n)) {
+        if (c->record[i].event.source == source && matches(&c->record[i], hz, p, n)) {
             rec_watch_event_t *e = &c->record[i].event;
             if (e->count < UINT32_MAX) e->count++;
             e->last_ms = ms; e->last_boot = boot; e->order = ++c->sequence;
@@ -52,7 +67,7 @@ int rec_watch_observe(rec_watch_catalog_t *c, uint32_t hz,
     r->event = (rec_watch_event_t){.id=++c->next_id, .frequency=hz, .count=1,
         .first_boot=boot, .last_boot=boot, .first_ms=ms, .last_ms=ms,
         .order=++c->sequence, .span_us=(uint32_t)span, .edges=(uint16_t)n,
-        .peak=peak, .end_reason=(uint8_t)reason};
+        .peak=peak, .end_reason=(uint8_t)reason, .source=(uint8_t)source};
     memcpy(r->pulse, p, (size_t)n * sizeof(*p));
     if (novel) *novel = true;
     return slot;

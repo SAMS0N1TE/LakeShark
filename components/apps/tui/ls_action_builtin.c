@@ -1,6 +1,7 @@
 /* The built-in action set. */
 
 #include "ls_action.h"
+#include "scan_engine.h"
 #include "ls_tui_screen.h"
 #include "ls_waterfall.h"
 #include "ls_map.h"
@@ -215,6 +216,7 @@ static ls_act_status_t a_fm_freq(const ls_args_t *in, ls_val_t *out)
     float mhz = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i : in->v[0].f;
 
     if (mhz < 24.0f || mhz > 1766.0f) return LS_ACT_BADARG;
+    scan_engine_stop();
     lakeshark_fm_set_freq((uint32_t)(mhz * 1e6f + 0.5f));
     out->kind = LS_VAL_FLOAT; out->f = mhz;
     return LS_ACT_OK;
@@ -224,6 +226,7 @@ static ls_act_status_t a_fm_freq_hz(const ls_args_t *in, ls_val_t *out)
 {
     const int32_t hz = in->v[0].i;
     if (hz < 24000000 || hz > 1766000000) return LS_ACT_BADARG;
+    scan_engine_stop();
     lakeshark_fm_set_freq((uint32_t)hz);
     out->kind = LS_VAL_INT;
     out->i = hz;
@@ -234,6 +237,7 @@ static ls_act_status_t a_p25_freq(const ls_args_t *in, ls_val_t *out)
 {
     float mhz = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i : in->v[0].f;
     if (mhz < 24.0f || mhz > 1766.0f) return LS_ACT_BADARG;
+    scan_engine_stop();
     lakeshark_p25_set_freq((uint32_t)(mhz * 1e6f + 0.5f));
     out->kind = LS_VAL_FLOAT; out->f = mhz;
     return LS_ACT_OK;
@@ -289,7 +293,8 @@ static ls_act_status_t a_fm_submode(const ls_args_t *in, ls_val_t *out)
     if (!want) return LS_ACT_BADARG;
     for (unsigned i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
         if (strcasecmp(want, modes[i].name)) continue;
-        lakeshark_fm_set_mode(modes[i].mode);
+        scan_engine_stop();
+    lakeshark_fm_set_mode(modes[i].mode);
         out->kind = LS_VAL_TEXT; out->s = modes[i].name;
         return LS_ACT_OK;
     }
@@ -312,9 +317,9 @@ static ls_act_status_t a_fm_sql(const ls_args_t *in, ls_val_t *out)
     const float v = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i
                                                 : in->v[0].f;
     if (v < 0.0f || v > 100.0f) return LS_ACT_BADARG;
-    lakeshark_fm_set_squelch((int)(v * 10.0f + 0.5f));
+    lakeshark_fm_set_squelch((int)(v + 0.5f));
     out->kind = LS_VAL_FLOAT;
-    out->f = lakeshark_fm_squelch_get() / 10.0f;
+    out->f = (float)lakeshark_fm_squelch_get();
     return LS_ACT_OK;
 }
 
@@ -439,7 +444,7 @@ void ls_action_register_builtin(void)
     ls_action_register("fm.gain",        "f", LS_CAP_TUNE, a_fm_gain,
                        "front end gain, dB");
     ls_action_register("fm.sql",         "f", LS_CAP_TUNE, a_fm_sql,
-                       "squelch threshold");
+                       "squelch threshold, 0..100 percent of IQ level");
     ls_action_register("audio.volume",   "i", LS_CAP_TUNE, a_audio_volume,
                        "volume 0..100");
 

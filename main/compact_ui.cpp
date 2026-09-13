@@ -699,6 +699,7 @@ static bool tui_session(void)
     while (!s_tui_stop) {
         /* The frame's start, for the phase split. */
         const int64_t ph_start = esp_timer_get_time();
+        const int previous_screen = ls_tui_screen_current();
         {
             const int64_t now = ph_start;
             if (s_loop_last_us) {
@@ -882,6 +883,11 @@ static bool tui_session(void)
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         ls_tui_present();
         const int64_t ph_sleep = esp_timer_get_time();
+        if (previous_screen != ls_tui_screen_current())
+            printf("tui switch: %s -> %s input=%lld draw=%lld present=%lld total=%lld us\n",
+                   ls_tui_screen_name(previous_screen), ls_tui_screen_name(ls_tui_screen_current()),
+                   (long long)(ph_draw - ph_start), (long long)(ph_present - ph_draw),
+                   (long long)(ph_sleep - ph_present), (long long)(ph_sleep - ph_start));
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
         s_ph_core_frames[esp_cpu_get_core_id() ? 1 : 0]++;
 
@@ -1857,9 +1863,10 @@ static int gauge_cmd(int argc, char **argv)
 }
 static int mixrf_cmd(int argc,char **argv)
 {
-    if(argc==1){ls_mixrf_diagnostics();return 0;}
+    if(argc==1 || (argc==2 && !strcmp(argv[1],"status"))){ls_mixrf_diagnostics();return 0;}
     if(argc==2 && !strcmp(argv[1],"probe"))return ls_mixrf_start()?0:1;
     if(argc==2 && !strcmp(argv[1],"stop")) {
+        if(rec_watch_source()==REC_SOURCE_CC1101)rec_watch_enable(false);
         ls_mixrf_receive(false,433920000);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);return 0;
     }
     if(argc==3 && (!strcmp(argv[2],"on") || !strcmp(argv[2],"off"))) {
@@ -1871,7 +1878,7 @@ static int mixrf_cmd(int argc,char **argv)
         if(ok)return 0;
         printf("mixrf: request unavailable; use probe and check status\n");return 1;
     }
-    printf("mixrf [probe|stop|cc on/off|scan on/off|nfc on/off]\n");return 1;
+    printf("mixrf [status|probe|stop|cc on/off|scan on/off|nfc on/off|cards on/off]\n");return 1;
 }
 static int gps_cmd(int argc, char **argv)
 {

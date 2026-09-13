@@ -4,6 +4,9 @@
    float array the sweep writes into - so the spectrum needs no widget, no
    canvas and no allocation, only a loop that maps bins to columns. */
 #include "../../ls_tui_screen.h"
+#include "../../ls_radio_panel.h"
+#include "../../ls_numpad.h"
+#include "scan_engine.h"
 #include "../../ls_text.h"
 
 #include <stdio.h>
@@ -18,6 +21,11 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 
+static bool s_details;
+static char s_hint[80] = "M MORE  arrows select  ENTER press";
+static ls_radio_panel_t s_radio = { .focus = -1 };
+static ls_radio_view_t s_view;
+static uint32_t s_standby = 152600000;
 static int s_page;          /* 0 vfo, 1 pages, 2 sweep */
 
 /* The same free-running blink MESH and REC already use (scr_mesh.c
@@ -101,7 +109,7 @@ static const ls_quick_t QUICK[] = {
       .value = "fm.gain", .delta = 2.0f, .lo = 0, .hi = 50,
       .key = 'u', .key_down = 'j' },
     { .label = "SQUELCH", .kind = LS_QUICK_STEP, .action = "fm.sql",
-      .value = "fm.sql", .delta = 0.5f, .lo = 0, .hi = 100,
+      .value = "fm.sql", .delta = 1.0f, .lo = 0, .hi = 100,
       .key = 'q', .key_down = 'w' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
@@ -194,7 +202,7 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
              (unsigned)((hz % 1000000u) / 100u));
     tui_put_str(sf, left, left.x + (left.w - (int)strlen(buf)) / 2,
                 left.y + 2, buf, val);
-    snprintf(buf, sizeof(buf), "%d.%d", sq / 10, sq % 10);
+    snprintf(buf, sizeof(buf), "%d%%", sq);
     field(sf, left, 5, "SQUELCH", buf, lab, val);
     field(sf, left, 4, "CARRIER", open ? "OPEN" : "closed", lab,
           open ? good : dim);
@@ -676,6 +684,7 @@ static const ls_btn_t PAGES[] = {
     { "VFO",   NULL, '1', false, false },
     { "PAGER", NULL, '2', false, false },
     { "SWEEP", NULL, '3', false, false },
+    { "RADIO", NULL, '0', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
@@ -685,6 +694,8 @@ static tui_rect s_bar;
 
 static void show_page(int i)
 {
+    if (i==3) {s_details=false;ls_wf_source_release();return;}
+    scan_engine_stop();
     s_page = i;
     s_last_mode = (int)FM.mode;
     if (i == 2) {
@@ -700,11 +711,51 @@ static void show_page(int i)
 /* Called by the UI task when the control head chooses FM or POCSAG. */
 void ls_scr_fm_show_page(int page)
 {
-    if (page >= 0 && page < N_PAGES) show_page(page);
+    if (page >= 0 && page < N_PAGES) {s_details=page!=0;show_page(page);}
+}
+
+static void radio_view(void)
+{
+    memset(&s_view,0,sizeof(s_view));
+    s_view.fm=true;
+    s_view.frequency=FM.freq_hz;
+    s_view.standby=s_standby;
+    s_view.mode=FM.mode==FM_MODE_LISTEN?"NFM":fm_mode_label(FM.mode);
+    s_view.power=FM.iq_level;
+    fm_get_receiver_status(&s_view.receiver);
+    snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
+    snprintf(s_view.detail[1],64,"SQL %d%%  GAIN %.1f dB",FM.squelch_tenths,FM.gain_tenths/10.0);
+    snprintf(s_view.detail[2],64,"VOL %d  STEP %.1fk",audio_volume_get(),tune_step_hz()/1000.0);
+    snprintf(s_view.detail[3],64,"MORE: mode, pager, sweep and controls");
+}
+static void set_squelch(double value)
+{
+    if(!(value>=0 && value<=100)) return;
+    ls_args_t args={.n=1}; ls_val_t out;
+    args.v[0].kind=LS_VAL_FLOAT; args.v[0].f=(float)value;
+    ls_action_call("fm.sql",&args,&out,ls_quick_grant_builtin());
+}
+static void radio_action(char c)
+{
+    if(c=='M') {s_details=true;return;}
+    if(c=='Q') {ls_numpad_open("SQUELCH","% IQ level",FM.squelch_tenths,set_squelch);return;}
+    if(c=='A') {
+        scan_engine_stop();
+        uint32_t previous=FM.freq_hz;
+        ls_args_t args={0}; ls_val_t out;
+        args.n=1; args.v[0].kind=LS_VAL_INT; args.v[0].i=s_standby;
+        if(ls_action_call("fm.freq_hz",&args,&out,ls_quick_grant_builtin())==LS_ACT_OK) s_standby=previous;
+        return;
+    }
+    if(c=='['||c==']') {scan_engine_stop();tune_step(c=='['?-1:1);return;}
+    if(c=='T') scan_engine_stop();
+    if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
 }
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    snprintf(s_hint,sizeof(s_hint),"%s",s_details?(s_page==2?"0 RADIO  1 VFO  2 PAGER  3 SWEEP  M MARKER":"0 RADIO  1 VFO  2 PAGER  3 SWEEP  M MODE"):"M MORE  arrows select  ENTER press");
+    if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
         s_last_mode = (int)FM.mode;
@@ -771,6 +822,7 @@ static void leave(void) { ls_wf_source_release(); }
 
 static void enter(void)
 {
+    s_details=mode_page(FM.mode)!=0;
     s_last_mode = (int)FM.mode;
     s_page = mode_page(FM.mode);
     s_page_open = false;
@@ -778,6 +830,10 @@ static void enter(void)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k>=LS_TK_F1) return false;
+    if(k==LS_TK_CHAR && ch>='1' && ch<='3') {s_details=true;show_page(ch-'1');return true;}
+    if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
+    if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
     if (s_page == 2 && k == LS_TK_CHAR && (ch == 'm' || ch == 'M'))
         return ls_wf_key(k, ch);
     if (k == LS_TK_CHAR) {
@@ -828,6 +884,7 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     for (int j = 0; j < N_MODES; ++j)
         if (tui_rect_contains(s_mode_hit[j], col, row))
             return choose_mode(FM_MODES[j]);
@@ -890,7 +947,7 @@ const ls_tui_screen_t ls_scr_fm = {
     /* the VFO, the sweep and the pager pages are all this receiver. */
     .radio = "FM",
     .name = "FM",
-    .hint = "UP/DOWN messages  1 VFO  2 PAGER  3 SWEEP",
+    .hint = s_hint,
     .enter = enter,
     .leave = leave,
     .draw = draw,

@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "ls_waterfall.h"
 #include "ls_tui.h"
+#include "p25_p2_runtime.h"
 
 #include <string.h>
 
@@ -666,4 +667,54 @@ LS_CASE(held_p25_keeps_a_working_hold_button_in_both_postures)
     }
     ls_wf_cfg_set(&saved);
     s_have_spectrum = saved_spectrum;
+}
+
+LS_CASE(p25_settings_scroll_and_change_backend_controls)
+{
+    ls_scr_p25.key(LS_TK_CHAR,'0');
+    ls_scr_p25.key(LS_TK_CHAR,'p');
+    for(int i=0;i<7;i++)ls_scr_p25.key(LS_TK_DOWN,0);
+    bool before=p25_get_auto_follow();
+    ls_scr_p25.key(LS_TK_ENTER,0);
+    LS_CHECK(p25_get_auto_follow()!=before);
+    for(int i=0;i<20;i++) {
+        fresh();draw_pane(&ls_scr_p25,PANES[0]);
+        LS_EQ_INT(escaped(PANES[0]),0);
+        fresh();draw_pane(&ls_scr_p25,PANES[1]);
+        LS_EQ_INT(escaped(PANES[1]),0);
+        ls_scr_p25.key(LS_TK_DOWN,0);
+    }
+    ls_scr_p25.key(LS_TK_ESC,0);
+    ls_scr_p25.key(LS_TK_CHAR,'1');
+}
+
+LS_CASE(waterfall_palette_shortcut_does_not_open_p25_settings)
+{
+    ls_scr_p25.key(LS_TK_CHAR,'2');
+    int before=ls_wf_cfg()->palette;
+    ls_scr_p25.key(LS_TK_CHAR,'p');
+    LS_EQ_INT(ls_wf_cfg()->palette,(before+1)%LS_WF_PAL__COUNT);
+}
+
+LS_CASE(experimental_phase2_setting_is_reachable_in_both_postures)
+{
+    p25_p2_enable(false);
+    ls_scr_p25.key(LS_TK_CHAR, '0');
+    ls_scr_p25.key(LS_TK_CHAR, '3');
+    bool reached = false;
+    for (int i = 0; i < 16; ++i) {
+        fresh(); draw_pane(&ls_scr_p25, PANES[0]);
+        LS_EQ_INT(escaped(PANES[0]), 0);
+        fresh(); draw_pane(&ls_scr_p25, PANES[1]);
+        LS_EQ_INT(escaped(PANES[1]), 0);
+        /* Only the Phase II row can change this flag. */
+        ls_scr_p25.key(LS_TK_CHAR, ']');
+        if (p25_p2_enabled()) { reached = true; break; }
+        ls_scr_p25.key(LS_TK_DOWN, 0);
+    }
+    LS_CHECK(reached);
+    ls_scr_p25.key(LS_TK_CHAR, '[');
+    LS_CHECK(!p25_p2_enabled());
+    ls_scr_p25.key(LS_TK_DOWN, 0);
+    ls_scr_p25.key(LS_TK_ESC, 0);
 }
