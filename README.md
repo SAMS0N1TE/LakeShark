@@ -1,7 +1,20 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
-A handheld SDR scanner running on the ESP32-P4 with an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) plugged into its USB host port. P25 Phase 1 trunking, FM and POCSAG, ADS-B aircraft, sub-GHz capture to Flipper `.sub` files, and a MeshCore node on LoRa.
+LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and save observations in a field journal.
+
+Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
+
+**New in [2.1.0-rc1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.0-rc1):**
+
+- **LoRa Labs:** direct radio controls, live plots and an expanded rotating compass.
+- **Journal:** notes with radio, GPS and nine-axis sensor attachments.
+- **NFC workbench:** Classic card reads, live block maps, hex inspection and manual saves.
+- **MIX-RF:** sub-GHz energy monitoring and 2.4 GHz activity scans.
+- **Sub-GHz watch:** passive capture, duplicate grouping and bounded storage.
+- **Field UI:** grouped apps, portrait touch controls, animated map markers and improved rotation.
+
+**[Download the P4 release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[LoRa Labs and Journal guide](https://github.com/SAMS0N1TE/LakeShark/blob/v2.1.0-rc1/docs/FIELD_LABS.md)** · **[Keyboard radio and NFC guide](https://github.com/SAMS0N1TE/LakeShark/blob/v2.1.0-rc1/docs/MIX_RF.md)**
 
 ### ><> Everything else is on [terminalbay.com](https://terminalbay.com/?m=lakeshark)
 
@@ -12,7 +25,7 @@ Designed to work with my other project [CartoTUI, a terminal ascii map](https://
 ## <°)))>< LilyGO T-Display-P4
 <img width="600" alt="lakeshark-moved-to-the-lilygo-t-display-p4-esp32-p4-runs-v0-fuz84t0gnzoh1" src="https://github.com/user-attachments/assets/c7c23e15-bd68-4362-9244-6d0c7ede2e17" />
 
-The main board. 4.1 inch 568 x 1232 AMOLED, 16 MB flash, detachable keyboard.
+The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
 | | | |
 | --- | --- | --- |
@@ -29,9 +42,14 @@ The whole interface is a character grid painted straight onto the panel. Every c
 | FM | Analogue listening, band scan, POCSAG pagers |
 | ADS-B | Aircraft at 1090 MHz: table, radar, traffic history |
 | FALLS | One waterfall, fed by P25, FM, or the board's own LoRa radio sweeping a band |
-| MESH | A MeshCore node on the SX1262. The transmitter stays disarmed until you arm it |
+| MESH | MeshCore messaging and nodes on the onboard SX1262 |
+| LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
+| JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
+| MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
+| NFC | Classic card reads, verified block maps, hex/ASCII views and manual saves |
 | REC | Sub-GHz OOK capture to Flipper `.sub` files |
-| MAP | Vector tiles from the SD card with mesh nodes on them |
+| SUB-GHZ | Passive watch, grouped captures and bounded storage |
+| MAP | Offline vector tiles with aircraft, Mesh nodes and animated markers |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
