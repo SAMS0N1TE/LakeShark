@@ -10,6 +10,7 @@
 
 #include "esp_libusb_private.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hackrf_radio.h"
@@ -55,11 +56,28 @@ typedef struct {
 
 static const char *TAG = "hackrf_dev";
 static hackrf_dev_t *s_dev;
+static volatile uint32_t s_alloc_fail_count;
+static volatile uint32_t s_alloc_fail_size;
+static volatile uint32_t s_alloc_fail_caps;
+
+static void IRAM_ATTR note_alloc_failure(size_t size, uint32_t caps,
+                                          const char *function)
+{
+    (void)function;
+    __atomic_store_n(&s_alloc_fail_size, (uint32_t)size, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_alloc_fail_caps, caps, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&s_alloc_fail_count, 1, __ATOMIC_RELEASE);
+}
 
 static bool supported_pid(uint16_t pid)
 {
     return pid == HACKRF_USB_PID_ONE || pid == HACKRF_USB_PID_JAWBREAKER ||
            pid == HACKRF_USB_PID_RAD1O;
+}
+
+bool hackrf_adapter_matches(uint16_t vid, uint16_t pid)
+{
+    return vid == HACKRF_USB_VID && supported_pid(pid);
 }
 
 static ls_radio_err_t control_out(hackrf_dev_t *dev, uint8_t request,
@@ -339,17 +357,27 @@ static void setup_task(void *arg)
 
     const usb_device_desc_t *descriptor = NULL;
     if (usb_host_get_device_descriptor(dev->usb.dev_hdl, &descriptor) != ESP_OK ||
-        !descriptor || descriptor->idVendor != HACKRF_USB_VID ||
-        !supported_pid(descriptor->idProduct))
+        !descriptor || !hackrf_adapter_matches(descriptor->idVendor,
+                                               descriptor->idProduct))
         goto reject;
     if (s_dev) {
         ESP_LOGI(TAG, "HackRF endpoint already present; ignoring USB addr %u",
                  setup->dev_addr);
         goto reject;
     }
-    if (usb_host_interface_claim(dev->usb.client_hdl, dev->usb.dev_hdl, 0, 0) !=
-        ESP_OK)
+    uint32_t failures = __atomic_load_n(&s_alloc_fail_count, __ATOMIC_ACQUIRE);
+    esp_err_t claim = usb_host_interface_claim(dev->usb.client_hdl,
+                                                dev->usb.dev_hdl, 0, 0);
+    if (claim != ESP_OK) {
+        ESP_LOGE(TAG, "interface claim: %s; internal=%u DMA=%u PSRAM=%u",
+                 esp_err_to_name(claim), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        if (__atomic_load_n(&s_alloc_fail_count, __ATOMIC_ACQUIRE) != failures)
+            ESP_LOGE(TAG, "allocation failed: bytes=%lu caps=0x%lx",
+                     (unsigned long)s_alloc_fail_size, (unsigned long)s_alloc_fail_caps);
         goto reject;
+    }
 
     init_adsb_dev();
     s_dev = dev;
@@ -382,6 +410,7 @@ done:
 void hackrf_adapter_probe_async(uint8_t dev_addr,
                                 usb_host_client_handle_t client)
 {
+    heap_caps_register_failed_alloc_callback(note_alloc_failure);
     hackrf_setup_arg_t *setup = pvPortMalloc(sizeof(*setup));
     if (!setup) {
         ESP_LOGE(TAG, "setup arg alloc failed");

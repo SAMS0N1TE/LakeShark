@@ -216,7 +216,7 @@ static void draw_text(tui_surface *sf, tui_rect box)
     for (int r = 0; r < rows; r++) {
         const int off = from + r * w;
         if (off >= s_len) break;
-        char line[LS_KEYBOARD_MAX + 1];
+        char line[192];
         snprintf(line, sizeof(line), "%.*s", w, s_buf + off);
         if (s_secret && !s_reveal) memset(line, '*', strlen(line));
         tui_put_str(sf, box, box.x + 2, box.y + 1 + r, line,

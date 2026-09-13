@@ -15,6 +15,8 @@ set(CARTO ${FW}/components/libcarto/upstream)
 set(PMT   ${FW}/components/pmtiles)
 
 set(LS_TUI_APP_SRCS
+    ${FW}/bench/tools/lssim_watch.c
+    ${FW}/components/apps/tui/ls_compass.c
     ${FW}/components/apps/tui/ls_app.c
     ${FW}/components/apps/tui/ls_anim.c
     ${FW}/components/apps/tui/ls_motion.c
@@ -38,6 +40,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/bench/shims/tui_hw_stubs.c)
 
 set(LS_TUI_APP_INCLUDES
+    ${FW}/components/lakeshark/nfc
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib
     ${FW}/components/lakeshark/board
@@ -309,6 +312,14 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/tuilib/tui_core.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
+    tools/lssim_field.c
+    ${FW}/components/apps/tui/screens/ext/scr_labs.c
+    ${FW}/components/apps/tui/screens/ext/scr_subghz.c
+    ${FW}/components/apps/tui/screens/ext/scr_mixrf.c
+    ${FW}/components/apps/tui/screens/ext/scr_nfc.c
+    ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
+    ${FW}/components/lakeshark/nfc/nfc_classic.c
+    ${FW}/components/apps/tui/screens/ext/scr_journal.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
     ${FW}/components/lakeshark/core/ls_vitals.c
@@ -456,6 +467,14 @@ target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
 add_executable(lssim
     tools/lssim.c
+    tools/lssim_field.c
+    ${FW}/components/apps/tui/screens/ext/scr_labs.c
+    ${FW}/components/apps/tui/screens/ext/scr_subghz.c
+    ${FW}/components/apps/tui/screens/ext/scr_mixrf.c
+    ${FW}/components/apps/tui/screens/ext/scr_nfc.c
+    ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
+    ${FW}/components/lakeshark/nfc/nfc_classic.c
+    ${FW}/components/apps/tui/screens/ext/scr_journal.c
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/ls_tui.c
     ${FW}/components/apps/tui/ls_tui_inset.c
@@ -479,6 +498,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/screens/ext/scr_gps.c
     ${FW}/components/apps/tui/ls_skyplot.c
+    ${FW}/components/apps/tui/ls_map_motion.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
     ${FW}/components/apps/tui/ls_map.c
     ${FW}/components/apps/tui/ls_stroke.c
@@ -779,6 +799,7 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
+ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c)
 ls_add_test(test_screenshot_plan ${FW}/main/screenshot_plan.c)
 ls_add_test(test_p25_dsp_modes
     ${APP}/p25/dsp_pipeline.c
@@ -950,6 +971,10 @@ ls_add_test(test_radio_endpoint
     ${FW}/components/lakeshark/radio/radio_endpoint.c)
 ls_add_test(test_hackrf_radio
     ${FW}/components/lakeshark/radio/hackrf_radio.c)
+ls_add_test(test_usb_descriptors)
+target_include_directories(test_usb_descriptors PRIVATE ${FW}/components/lakeshark/board)
+ls_add_test(test_imu_pose_policy)
+target_include_directories(test_imu_pose_policy PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_radio_health
     ${FW}/components/lakeshark/radio/radio_endpoint.c
     ${FW}/components/lakeshark/radio/radio_health.c)
@@ -1121,3 +1146,16 @@ ls_add_test(test_tui_contrast
 target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
+
+ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c)
+target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+ls_add_test(test_compass ${FW}/components/apps/tui/ls_compass.c)
+target_include_directories(test_compass PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_field PRIVATE LS_FIELD_TEST=1)
+
+ls_add_test(test_map_motion ${FW}/components/apps/tui/ls_map_motion.c)
+target_include_directories(test_map_motion PRIVATE ${LS_TUI_APP_INCLUDES})
+target_include_directories(test_tui_screens PRIVATE ${CARTO}/include)
+
+ls_add_test(test_nfc_classic ${FW}/components/lakeshark/nfc/nfc_classic.c)
+target_include_directories(test_nfc_classic PRIVATE ${FW}/components/lakeshark/nfc)

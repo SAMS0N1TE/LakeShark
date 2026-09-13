@@ -9,6 +9,7 @@
 
 #include "usb/usb_host.h"
 
+bool hackrf_adapter_matches(uint16_t vid, uint16_t pid);
 void hackrf_adapter_probe_async(uint8_t dev_addr,
                                 usb_host_client_handle_t client);
 bool hackrf_adapter_note_removed(usb_device_handle_t device);

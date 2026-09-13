@@ -21,11 +21,15 @@
 #include "ls_lora.h"
 #include "ls_gauge.h"
 #include "ls_imu.h"
+#include "ls_field.h"
+#include "ls_waterfall.h"
 
 #include <string.h>
 #include <stdio.h>
 
 /* ---------------------------------------------------------------- fakes -- */
+bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
+{ (void)rank; (void)out; return false; }
 
 /* Values chosen so every conditional branch in the screens is on: counters
    non-zero so they take the red path, a fix present, a ring nearly full. */
@@ -292,11 +296,11 @@ static int escaped(tui_rect r)
 }
 
 extern const ls_tui_screen_t ls_scr_settings, ls_scr_diag, ls_scr_rec,
-                             ls_scr_home, ls_scr_fm, ls_scr_adsb;
+                             ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
 
 static const ls_tui_screen_t *const SCREENS[] = {
     &ls_scr_settings, &ls_scr_diag, &ls_scr_rec, &ls_scr_home,
-    &ls_scr_fm, &ls_scr_adsb,
+    &ls_scr_fm, &ls_scr_adsb, &ls_scr_labs, &ls_scr_journal, &ls_scr_subghz, &ls_scr_mixrf,
 };
 #define N_SCREENS ((int)(sizeof(SCREENS) / sizeof(SCREENS[0])))
 
@@ -487,6 +491,12 @@ static void apps_once(void)
           LS_APP_MAIN, &ls_scr_fm, NULL },
         { "adsb", "ADSB", "aircraft", LS_ICON_PLANE,  TUI_MAGENTA,
           LS_APP_MAIN, &ls_scr_adsb, NULL },
+        { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
+          LS_APP_EXTRA, &ls_scr_labs, NULL },
+        { "journal", "JOURNAL", "notes", LS_ICON_JOURNAL, TUI_GREEN,
+          LS_APP_EXTRA, &ls_scr_journal, NULL },
+        { "subghz", "SUB-GHZ", "watch", LS_ICON_RECORD, TUI_GREEN,
+          LS_APP_EXTRA, &ls_scr_subghz, NULL },
     };
     for (int i = 0; i < N_SCREENS; i++) ls_app_register(&APPS[i]);
 }
@@ -571,6 +581,19 @@ LS_CASE(each_screen_actually_paints_its_pane)
         }
 }
 
+LS_CASE(calibration_guide_stays_inside_portrait_landscape_and_split_panes)
+{
+    extern void lssim_field_calibration(int step,int hold,bool failed);
+    for(int step=0;step<=7;step++)for(int p=0;p<N_PANES;p++) {
+        ls_scr_labs.enter();
+        fresh();draw_pane(&ls_scr_labs,PANES[p]);ls_scr_labs.key(LS_TK_CHAR,'k');
+        lssim_field_calibration(step<6?step:6,11,step==7);
+        fresh();draw_pane(&ls_scr_labs,PANES[p]);
+        LS_CHECK_MSG(escaped(PANES[p])==0,"calibration step %d escaped %dx%d",step,PANES[p].w,PANES[p].h);
+        ls_scr_labs.leave();
+    }
+}
+
 /* One row of the grid as a string, so an assertion can name what should be on
    the glass instead of just counting painted cells. */
 static void row_text(int y, char *out, size_t n)
@@ -588,8 +611,12 @@ LS_CASE(home_landscape_tiles_keep_their_labels)
     fresh();
     draw_pane(&ls_scr_home, PANES[0]);   /* landscape body, 113x24 */
 
-    static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB" };
+    static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB", "LORA LABS", "JOURNAL" };
+    static const char GROUP[] = {'s','s','f','r','r','r','f'};
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        ls_scr_home.key(LS_TK_CHAR, GROUP[i]);
+        fresh();
+        draw_pane(&ls_scr_home, PANES[0]);
         bool found = false;
         char line[W + 1];
         for (int y = 0; y < H && !found; y++) {
@@ -1516,4 +1543,74 @@ LS_CASE(a_diag_detail_stays_inside_every_pane_it_is_offered)
         }
     }
     ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(journal_distinguishes_saved_entry_sensors_from_live_sensors)
+{
+    ls_scr_journal.enter();
+    ls_scr_journal.key(LS_TK_ENTER,0);
+    ls_scr_journal.key(LS_TK_CHAR,'v');
+    fresh();draw_pane(&ls_scr_journal,PANES[1]);
+    LS_CHECK(diag_has(PANES[1],"ENTRY ATTACHMENTS"));
+    LS_EQ_INT(escaped(PANES[1]),0);
+    ls_scr_journal.key(LS_TK_BACKSPACE,0);
+    ls_scr_journal.key(LS_TK_CHAR,'v');
+    fresh();draw_pane(&ls_scr_journal,PANES[1]);
+    LS_CHECK(diag_has(PANES[1],"LIVE ATTACHMENTS"));
+    ls_scr_journal.leave();
+}
+
+void ls_map_center(double lat, double lon) { (void)lat; (void)lon; }
+
+LS_CASE(compact_controls_keep_values_and_keyboard_focus)
+{
+    fresh();
+    tui_rect a=tui_rect_make(2,2,110,24);
+    LS_EQ_INT(ls_btn_raised_height(a,5),3);
+    ls_btn_t btn[]={{"FIRST","ON",'a',true,false},{"BLOCKED",NULL,'b',false,true},{"LAST","OFF",'c',false,false}};
+    ls_btn_bar_raised(&g_sf,tui_rect_make(a.x,a.y,a.w,3),btn,3,-1);
+    int slot=0,focus=-1;
+    LS_CHECK(ls_btn_navigate(LS_TK_RIGHT,&slot,&focus,false));
+    LS_EQ_INT(focus,0);
+    ls_btn_navigate(LS_TK_RIGHT,&slot,&focus,false);
+    LS_EQ_INT(focus,2);
+    ls_btn_navigate(LS_TK_LEFT,&slot,&focus,false);
+    LS_EQ_INT(focus,0);
+    LS_CHECK(!ls_btn_enabled(0,1));
+    LS_CHECK(diag_has(a,"FIRST ON"));
+    LS_CHECK(diag_has(a,"LAST OFF"));
+}
+
+LS_CASE(fm_waterfall_shortcuts_do_not_tune_or_change_receiver_gain)
+{
+    const ls_tui_screen_t *screens[] = {&ls_scr_fm};
+    for (int i=0;i<1;i++) {
+        if(screens[i]->enter)screens[i]->enter();
+        screens[i]->key(LS_TK_CHAR,'3');
+        ls_wf_cfg_t before=*ls_wf_cfg();
+        screens[i]->key(LS_TK_CHAR,'f');
+        LS_CHECK(ls_wf_cfg()->grain != before.grain);
+        screens[i]->key(LS_TK_CHAR,'g');
+        LS_CHECK(ls_wf_cfg()->range != before.range);
+        screens[i]->key(LS_TK_CHAR,'h');
+        LS_CHECK(ls_wf_cfg()->paused != before.paused);
+        ls_wf_cfg_set(&before);
+        if(screens[i]->leave)screens[i]->leave();
+    }
+}
+
+LS_CASE(button_shortcuts_and_disabled_touch_follow_displayed_controls)
+{
+    fresh();
+    ls_btn_t buttons[]={{"READ","CARD",'r',false,false},{"SEND","BUSY",'t',false,true}};
+    tui_rect bar={2,3,44,7};
+    ls_btn_bar_raised(&g_sf,bar,buttons,2,-1);
+    LS_EQ_INT(ls_btn_shortcut('R',0),0);
+    LS_EQ_INT(ls_btn_shortcut('t',0),-1);
+    for(int y=bar.y;y<bar.y+bar.h;y++)for(int x=bar.x;x<bar.x+bar.w;x++)
+        LS_CHECK(ls_btn_hit(x,y)!=1);
+    ls_btn_clear_hits();
+    LS_EQ_INT(ls_btn_shortcut('r',0),-1);
+    for(int y=bar.y;y<bar.y+bar.h;y++)for(int x=bar.x;x<bar.x+bar.w;x++)
+        LS_EQ_INT(ls_btn_hit(x,y),-1);
 }

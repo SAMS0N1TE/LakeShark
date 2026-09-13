@@ -38,7 +38,7 @@ static uint8_t  s_peak[LS_WF_BINS_MAX];
 static int      s_marker = -1;           /* display column, -1 for none     */
 
 static ls_wf_cfg_t s_cfg = {
-    .split_pct = 50, .ref = 0, .range = 16, .palette = LS_WF_PAL_HEAT,
+    .split_pct = 25, .ref = 0, .range = 16, .palette = LS_WF_PAL_HEAT,
 
     .avg = 1, .decim = 1, .grain = LS_WF_GRAIN_SHADE, .paused = false,
 };

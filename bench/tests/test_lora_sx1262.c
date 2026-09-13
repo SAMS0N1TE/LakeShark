@@ -116,6 +116,71 @@ static void bring_up(uint8_t status, uint8_t r0, uint8_t r1)
     ls_lora_stop();
 }
 
+
+static uint8_t fsk_mod[9], fsk_packet[10], fsk_sync[4];
+static int fsk_rx_starts, fsk_txs;
+static bool fsk_ready;
+static void respond_fsk(const uint8_t *tx, uint8_t *rx, size_t n, void *ctx)
+{
+    uint8_t op = tx[0];
+    if (op == 0x8b && n == 9) memcpy(fsk_mod, tx, n);
+    if (op == 0x8c && n == 10) memcpy(fsk_packet, tx, n);
+    if (op == 0x0d && n == 4 && tx[1] == 6 && tx[2] >= 0xc0 && tx[2] < 0xc4)
+        fsk_sync[tx[2] - 0xc0] = tx[3];
+    if (op == 0x82) fsk_rx_starts++;
+    if (op == 0x83) fsk_txs++;
+    respond(tx, rx, n, ctx);
+    if (!rx) return;
+    if (op == 0x12 && n == 4) { rx[2] = 0; rx[3] = fsk_ready ? 2 : 0; }
+    if (op == 0x13 && n == 4) { rx[2] = 64; rx[3] = 192; }
+    if (op == 0x1e && n == 67) {
+        for (int i = 0; i < 64; i++) rx[i + 3] = (uint8_t)i;
+    }
+    if (op == 0x14 && n == 5) { rx[2] = 0; rx[3] = 180; rx[4] = 190; }
+}
+
+LS_CASE(fsk_receive_preserves_lora_and_has_no_packet_restart)
+{
+    bring_up(0x22, 0x14, 0x24);
+    ls_lora_cfg_t saved; ls_lora_cfg_default(&saved);
+    LS_EQ_INT(ls_lora_configure(&saved), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    ls_shim_spi_on_transfer(respond_fsk, &s_part);
+    fsk_ready = false; fsk_rx_starts = fsk_txs = 0;
+    ls_fsk_cfg_t cfg = {929000000, 1200, 4500, 19500, 0x7cd215d8, 64};
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
+    LS_CHECK(ls_lora_fsk_active());
+    LS_EQ_INT(fsk_mod[1], 0x0d); LS_EQ_INT(fsk_mod[2], 0x05); LS_EQ_INT(fsk_mod[3], 0x55);
+    LS_EQ_INT(fsk_mod[5], 0x1d);
+    LS_EQ_INT(fsk_packet[3], 0); LS_EQ_INT(fsk_packet[4], 32);
+    LS_EQ_INT(fsk_packet[7], 64); LS_EQ_INT(fsk_packet[8], 1); LS_EQ_INT(fsk_packet[9], 0);
+    LS_EQ_INT(fsk_sync[0], 0x7c); LS_EQ_INT(fsk_sync[3], 0xd8);
+    LS_EQ_INT(ls_lora_configure(&saved), ESP_ERR_INVALID_STATE);
+    LS_EQ_INT(ls_lora_scan_begin(902000000, 928000000), ESP_ERR_INVALID_STATE);
+    uint8_t packet[64]; float rssi;
+    LS_EQ_INT(ls_lora_send(packet, 64), ESP_ERR_INVALID_STATE);
+    LS_EQ_INT(ls_lora_fsk_poll(packet, 64, &rssi), 0);
+    fsk_ready = true;
+    LS_EQ_INT(ls_lora_fsk_poll(packet, 63, &rssi), -1);
+    LS_EQ_INT(ls_lora_fsk_poll(packet, 64, &rssi), 64);
+    LS_EQ_INT(packet[0], 0); LS_EQ_INT(packet[63], 63); LS_NEAR(rssi, -95, 0.01);
+    LS_EQ_INT(ls_lora_fsk_poll(packet, 64, &rssi), 64);
+    LS_EQ_INT(fsk_rx_starts, 1); LS_EQ_INT(fsk_txs, 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_CHECK(!ls_lora_fsk_active());
+    LS_CHECK(ls_lora_is_receiving());
+    LS_EQ_UINT(ls_lora_cfg()->freq_hz, saved.freq_hz);
+    LS_EQ_UINT(ls_lora_cfg()->sf, saved.sf);
+    cfg.bitrate = 512;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_ERR_INVALID_ARG);
+    cfg.bitrate = 2400; cfg.bandwidth_hz = 4800;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_ERR_INVALID_ARG);
+    cfg.bandwidth_hz = 19500;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
+    LS_EQ_INT(fsk_mod[1], 0x06); LS_EQ_INT(fsk_mod[2], 0x82); LS_EQ_INT(fsk_mod[3], 0xab);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+}
+
 /* ---------------------------------------------------------------- cases -- */
 
 LS_CASE(bringing_the_radio_up_takes_the_bus_and_releases_reset)
@@ -130,6 +195,20 @@ LS_CASE(bringing_the_radio_up_takes_the_bus_and_releases_reset)
     /* Reset is driven low then high; the driver owns that, not the board. */
     LS_CHECK_MSG(s_rst_writes >= 2,
                  "reset was written %d times, expected a pulse", s_rst_writes);
+}
+
+LS_CASE(probe_devices_can_be_removed_without_exhausting_the_shared_bus)
+{
+    LS_EQ_INT(ls_spi_bus(LS_SPI_RADIO),ESP_OK);
+    unsigned before=ls_shim_spi_devices();
+    for(int i=0;i<32;i++) {
+        spi_device_handle_t dev=NULL;
+        LS_EQ_INT(ls_spi_device(LS_SPI_RADIO,-1,0,1000000,1,&dev),ESP_OK);
+        LS_EQ_UINT(ls_shim_spi_devices(),before+1);
+        LS_EQ_INT(ls_spi_remove(LS_SPI_RADIO,dev),ESP_OK);
+        LS_EQ_UINT(ls_shim_spi_devices(),before);
+    }
+    LS_EQ_INT(ls_spi_remove(LS_SPI_RADIO,NULL),ESP_ERR_INVALID_ARG);
 }
 
 LS_CASE(a_bus_that_is_already_open_is_not_opened_twice)

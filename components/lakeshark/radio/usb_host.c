@@ -24,6 +24,7 @@ typedef enum {
     ACTION_GET_CONFIG_DESC = (1 << 3),
     ACTION_GET_STR_DESC    = (1 << 4),
     ACTION_CLOSE_DEV       = (1 << 5),
+    ACTION_PROBE_DEV       = (1 << 6),
 } action_t;
 
 typedef struct {
@@ -62,10 +63,9 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         driver_obj->mux_protected.device[event_msg->new_dev.address].dev_addr =
             event_msg->new_dev.address;
         event_bus_publish_simple(EVT_DEVICE_ATTACHED, "usb");
-        rtl_adapter_probe_async(event_msg->new_dev.address,
-                                driver_obj->constant.client_hdl);
-        hackrf_adapter_probe_async(event_msg->new_dev.address,
-                                   driver_obj->constant.client_hdl);
+        driver_obj->mux_protected.device[event_msg->new_dev.address].actions =
+            ACTION_PROBE_DEV;
+        driver_obj->mux_protected.flags.unhandled_devices = 1;
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
@@ -142,6 +142,30 @@ static void action_close_dev(usb_device_t *d)
     d->dev_hdl = NULL; d->dev_addr = 0;
 }
 
+static void action_probe_dev(usb_device_t *d)
+{
+    usb_device_handle_t device = NULL;
+    esp_err_t error = usb_host_device_open(d->client_hdl, d->dev_addr, &device);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "probe open(addr=%u): %s", d->dev_addr, esp_err_to_name(error));
+        return;
+    }
+    const usb_device_desc_t *descriptor = NULL;
+    error = usb_host_get_device_descriptor(device, &descriptor);
+    bool valid = error == ESP_OK && descriptor;
+    bool hackrf = valid && hackrf_adapter_matches(descriptor->idVendor,
+                                                   descriptor->idProduct);
+    /* Both adapters share this USB client. Release the descriptor probe before
+     * starting exactly one adapter; overlapping opens return INVALID_STATE. */
+    error = usb_host_device_close(d->client_hdl, device);
+    if (error != ESP_OK || !valid) {
+        ESP_LOGW(TAG, "USB descriptor probe could not hand off addr=%u", d->dev_addr);
+        return;
+    }
+    if (hackrf) hackrf_adapter_probe_async(d->dev_addr, d->client_hdl);
+    else rtl_adapter_probe_async(d->dev_addr, d->client_hdl);
+}
+
 static void device_handle(usb_device_t *d)
 {
     uint8_t actions = d->actions;
@@ -153,6 +177,7 @@ static void device_handle(usb_device_t *d)
         if (actions & ACTION_GET_CONFIG_DESC) action_get_config_desc(d);
         if (actions & ACTION_GET_STR_DESC)    action_get_str_desc(d);
         if (actions & ACTION_CLOSE_DEV)       action_close_dev(d);
+        if (actions & ACTION_PROBE_DEV)       action_probe_dev(d);
         actions = d->actions; d->actions = 0;
     }
 }

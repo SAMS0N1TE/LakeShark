@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "ls_icons.h"
+#include "esp_timer.h"
+#include "esp_attr.h"
 
 #define MAX_HITS 24
 
@@ -13,6 +15,10 @@ typedef struct { int16_t x0, y0, x1, y1; } hit_t;
 #define BTN_SLOTS 3
 static hit_t s_btn_hit[BTN_SLOTS][MAX_HITS];
 static int   s_btn_n[BTN_SLOTS];
+static bool s_btn_enabled[BTN_SLOTS][MAX_HITS];
+static char s_btn_keys[BTN_SLOTS][MAX_HITS];
+EXT_RAM_BSS_ATTR static uint32_t s_btn_value[BTN_SLOTS][MAX_HITS];
+EXT_RAM_BSS_ATTR static int64_t s_btn_change[BTN_SLOTS][MAX_HITS];
 
 static hit_t s_tile_hit[MAX_HITS];
 static int   s_tile_n, s_tile_cols, s_tile_rows;
@@ -36,8 +42,8 @@ static int hit_find(const hit_t *h, int n, int col, int row)
    the difference between hitting and missing is four millimetres that is not
    decoration, it is the whole affordance - and it costs the same number of
    cells either way, because the background was going to be painted regardless. */
-void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
-                     int focus, int slot)
+static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                        int focus, int slot, bool raised)
 {
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
@@ -48,7 +54,7 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
        file knowing which orientation it is in. */
     int per_row = n;
     int rows = 1;
-    while (bar.h >= rows * 2 && bar.w / per_row < 8 && per_row > 1) {
+    while (bar.h >= rows * 2 && bar.w / per_row < (raised ? 10 : 8) && per_row > 1) {
         rows++;
         per_row = (n + rows - 1) / rows;
     }
@@ -60,7 +66,8 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
     /* A button is as tall as it needs to be, not as tall as the rect. */
 
     int row_h = bar.h / rows;
-    if (row_h > 5) row_h = 5;
+    const int max_h = raised ? 7 : 5;
+    if (row_h > max_h) row_h = max_h;
     /* A button stops getting wider. */
 
 #define BTN_MAX_W 16
@@ -87,11 +94,20 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
         /* A dithered field and a border, not a slab of colour. */
 
         const bool sel = (i == focus);
+        uint32_t token = 2166136261u;
+        const char *parts[] = {btn[i].label, btn[i].value};
+        for (int p = 0; p < 2; p++) if (parts[p])
+            for (const char *c = parts[p]; *c; c++) token = (token ^ (unsigned char)*c) * 16777619u;
+        token ^= (btn[i].on ? 1u : 0u) | (btn[i].dim ? 2u : 0u);
+        int64_t now = esp_timer_get_time();
+        if (s_btn_value[slot][i] && s_btn_value[slot][i] != token) s_btn_change[slot][i] = now;
+        s_btn_value[slot][i] = token;
+        bool changed = s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
         uint8_t hue;
         int density;
         if (btn[i].dim)      { hue = TUI_BLACK | TUI_BRIGHT; density = LS_DITHER_LIGHT; }
+        else if (sel || changed) { hue = TUI_CYAN | TUI_BRIGHT; density = LS_DITHER_HEAVY; }
         else if (btn[i].on)  { hue = TUI_GREEN | TUI_BRIGHT; density = LS_DITHER_HEAVY; }
-        else if (sel)        { hue = TUI_CYAN | TUI_BRIGHT;  density = LS_DITHER_MEDIUM; }
         /* Cyan, not blue. Blue was the last of the old palette left
            on a control, and it put a navy field under every page button
            while the panel around it was cyan - which is the same "belongs to
@@ -108,14 +124,15 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 
         tui_rect box = tui_rect_make(x0, y0, w - 1, h);
         ls_fill_dither(sf, box, density, hue);
+        const bool tall = raised && h >= 5 && box.w >= 5;
 
         /* A border when there is height for one. Two rows is a strip and
            gets none; three or more is a key and looks like one. */
         if (h >= 3) {
             const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
             for (int c = 0; c < box.w; c++) {
-                tui_put_char(sf, box, box.x + c, box.y, '-', edge);
-                tui_put_char(sf, box, box.x + c, box.y + h - 1, '-', edge);
+                tui_put_char(sf, box, box.x + c, box.y, tall ? '=' : '-', edge);
+                tui_put_char(sf, box, box.x + c, box.y + h - 1, tall ? '=' : '-', edge);
             }
             for (int r = 1; r < h - 1; r++) {
                 tui_put_char(sf, box, box.x, box.y + r, '|', edge);
@@ -128,12 +145,16 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
         }
 
         const char *lab = btn[i].label ? btn[i].label : "";
+        char compact[48];
+        const bool compact_value = raised && h == 3 && btn[i].value;
+        if (compact_value) { snprintf(compact,sizeof(compact),"%s %s",lab,btn[i].value); lab=compact; }
         int lw = (int)strlen(lab);
-        if (lw > box.w) lw = box.w;
+        const int text_w = (tall || (raised && h == 3)) ? box.w - 2 : box.w;
+        if (lw > text_w) lw = text_w;
         char cut[24];
         snprintf(cut, sizeof(cut), "%.*s", lw, lab);
 
-        const int lines = (h > 1 && btn[i].value) ? 2 : 1;
+        const int lines = (h > 1 && btn[i].value && !compact_value) ? 2 : 1;
         const int ly = box.y + (h - lines) / 2;
         const int lx = box.x + (box.w - lw) / 2;
         /* A space either side: the field under the lettering is texture, and
@@ -145,9 +166,10 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 
         if (lines == 2) {
             int vw = (int)strlen(btn[i].value);
-            if (vw > box.w) vw = box.w;
+            if (vw > text_w) vw = text_w;
             char vc[24];
             snprintf(vc, sizeof(vc), "%.*s", vw, btn[i].value);
+            if (tall && (int)strlen(btn[i].value) > vw && vw > 0) vc[vw - 1] = '>';
             const uint8_t vattr = TUI_ATTR(btn[i].dim ? LS_DIM_FG
                                                       : (TUI_YELLOW | TUI_BRIGHT),
                                            TUI_BLACK);
@@ -158,10 +180,26 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
             tui_put_str(sf, box, vx, ly + 1, vc, vattr);
         }
 
-        if (btn[i].key && box.w >= lw + 3)
-            tui_put_char(sf, box, lx + lw + 1, ly, btn[i].key,
-                         TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (tall) {
+            const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
+            if (btn[i].key) {
+                char badge[] = {'[', btn[i].key, ']', 0};
+                tui_put_str(sf, box, box.x + (box.w - 3) / 2, box.y, badge, face);
+            }
+            if (!btn[i].dim && (btn[i].on || sel)) {
+                tui_put_str(sf, box, box.x + (box.w - 3) / 2, box.y + h - 1,
+                            btn[i].on ? "[*]" : "[+]", edge);
+            }
+        } else if (btn[i].key && h >= 3 && box.w >= 5) {
+            char badge[] = {'[', btn[i].key, ']', 0};
+            tui_put_str(sf, box, box.x + box.w - 4, box.y, badge, face);
+        } else if (btn[i].key && box.w >= lw + 4) {
+            tui_put_char(sf, box, box.x + box.w - 1, ly, btn[i].key, face);
+        }
 
+        if (sel) tui_put_char(sf,box,box.x,box.y+h/2,'>',face);
+        s_btn_enabled[slot][s_btn_n[slot]] = !btn[i].dim;
+        s_btn_keys[slot][s_btn_n[slot]] = btn[i].key;
         hit_t *hit = &s_btn_hit[slot][s_btn_n[slot]];
         hit->x0 = (int16_t)box.x;
         hit->y0 = (int16_t)box.y;
@@ -169,6 +207,36 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
         hit->y1 = (int16_t)(box.y + h - 1);
         s_btn_n[slot]++;
     }
+}
+
+void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                     int focus, int slot)
+{
+    button_bar(sf, bar, btn, n, focus, slot, false);
+}
+
+int ls_btn_raised_height(tui_rect area, int n)
+{
+    if (n < 1 || area.w < 1 || area.h < 1) return 0;
+    int columns = area.w / 10;
+    if (columns < 1) columns = 1;
+    const int rows = (n + columns - 1) / columns;
+    int height = area.w > area.h * 2 ? 3 : area.h >= 48 ? 7 : 5;
+    if (height * rows > area.h / 3) height = area.h / (3 * rows);
+    if (height < 1) height = 1;
+    return height * rows < area.h ? height * rows : area.h;
+}
+
+void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                       int focus)
+{
+    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true);
+}
+
+void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
+                            int n, int focus, int slot)
+{
+    button_bar(sf, bar, btn, n, focus, slot, true);
 }
 
 void ls_btn_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
@@ -180,12 +248,63 @@ void ls_btn_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 int ls_btn_hit_slot(int col, int row, int slot)
 {
     if (slot < 0 || slot >= BTN_SLOTS) return -1;
-    return hit_find(s_btn_hit[slot], s_btn_n[slot], col, row);
+    int i = hit_find(s_btn_hit[slot], s_btn_n[slot], col, row);
+    if (i < 0 || !s_btn_enabled[slot][i]) return -1;
+    s_btn_change[slot][i] = esp_timer_get_time();
+    return i;
+}
+
+int ls_btn_shortcut(char ch, int slot)
+{
+    if (!ch || slot < 0 || slot >= BTN_SLOTS) return -1;
+    if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+    for (int i = 0; i < s_btn_n[slot]; i++) {
+        char key = s_btn_keys[slot][i];
+        if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+        if (key == ch && s_btn_enabled[slot][i]) {
+            s_btn_change[slot][i] = esp_timer_get_time();
+            return i;
+        }
+    }
+    return -1;
+}
+
+void ls_btn_clear_hits(void)
+{
+    memset(s_btn_n,0,sizeof(s_btn_n));
 }
 
 int ls_btn_hit(int col, int row)
 {
     return ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN);
+}
+
+bool ls_btn_enabled(int slot, int focus)
+{ return slot>=0 && slot<BTN_SLOTS && focus>=0 && focus<s_btn_n[slot] && s_btn_enabled[slot][focus]; }
+
+bool ls_btn_navigate(ls_tk_t key, int *slot, int *focus, bool two_bars)
+{
+    if (!slot || !focus || (key!=LS_TK_LEFT && key!=LS_TK_RIGHT && key!=LS_TK_UP && key!=LS_TK_DOWN && key!=LS_TK_TAB)) return false;
+    int slots=two_bars?2:1, best_slot=-1,best=-1,best_score=0x7fffffff;
+    bool have=ls_btn_enabled(*slot,*focus);
+    hit_t origin=have?s_btn_hit[*slot][*focus]:(hit_t){0};
+    for(int s=0;s<slots;s++)for(int i=0;i<s_btn_n[s];i++) {
+        if(!ls_btn_enabled(s,i))continue;
+        if(!have){*slot=s;*focus=i;return true;}
+        if(s==*slot && i==*focus)continue;
+        hit_t h=s_btn_hit[s][i];
+        int dx=h.x0+h.x1-origin.x0-origin.x1,dy=h.y0+h.y1-origin.y0-origin.y1;
+        int along=(key==LS_TK_LEFT)?-dx:(key==LS_TK_UP)?-dy:(key==LS_TK_DOWN)?dy:dx;
+        int cross=(key==LS_TK_UP || key==LS_TK_DOWN)?dx:dy;
+        if(key==LS_TK_TAB) { along=(s-*slot)*MAX_HITS+i-*focus;cross=0; }
+        if(along<=0)continue;
+        if(cross<0)cross=-cross;
+        int score=cross*1000+along;
+        if(score<best_score){best_score=score;best_slot=s;best=i;}
+    }
+    if(best>=0){*slot=best_slot;*focus=best;}
+    else if(key==LS_TK_TAB) {*focus=-1;return ls_btn_navigate(key,slot,focus,two_bars);}
+    return true;
 }
 
 int ls_btn_key(char ch, const ls_btn_t *btn, int n)
@@ -336,10 +455,13 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         /* A live app says so in words, in its top border. */
 
-        if (tile[i].live && box.w >= 10)
+        if (tile[i].live && box.w >= 10) {
+            tui_put_char(sf, box, box.x + box.w - 8, box.y, "|/-\\"[(esp_timer_get_time()/200000)%4],
+                         TUI_ATTR(TUI_GREEN | TUI_BRIGHT,TUI_BLACK));
             tui_put_str(sf, box, box.x + box.w - 6, box.y, "LIVE",
                         sel_now ? TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT)
                                 : TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        }
         else if (tile[i].live)
             tui_put_char(sf, box, box.x + box.w - 2, box.y, LS_TUI_BLOCK_FULL,
                          TUI_ATTR(TUI_GREEN | TUI_BRIGHT,

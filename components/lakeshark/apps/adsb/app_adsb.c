@@ -54,11 +54,16 @@ static void age_task(void *arg)
 static uint32_t s_cfg_freq = 1090000000UL;
 static int      s_cfg_gain = 496;
 
+int adsb_requested_gain(void)
+{
+    return __atomic_load_n(&s_cfg_gain, __ATOMIC_RELAXED);
+}
+
 void adsb_request_gain(int gain_tenths_db)
 {
     if (gain_tenths_db < 0) gain_tenths_db = 0;
     if (gain_tenths_db > 496) gain_tenths_db = 496;
-    s_cfg_gain = gain_tenths_db;
+    __atomic_store_n(&s_cfg_gain, gain_tenths_db, __ATOMIC_RELAXED);
     ls_iq_control_request_gain(&s_radio_control, gain_tenths_db);
 }
 
@@ -200,7 +205,7 @@ static void adsb_cache_settings(const app_t *a)
         settings_set_gain(a, gain);
     }
     s_cfg_freq = freq;
-    s_cfg_gain = gain;
+    __atomic_store_n(&s_cfg_gain, gain, __ATOMIC_RELAXED);
 }
 
 static void adsb_on_enter(void)

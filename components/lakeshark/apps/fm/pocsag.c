@@ -335,6 +335,21 @@ static void handle_bit(pocsag_ctx_t *c, int raw_bit)
     }
 }
 
+bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
+                          bool inverted, bool contiguous)
+{
+    if (!c || !data || len != 64) return false;
+    if (!contiguous) { c->have_addr = 0; c->nbits = 0; }
+    c->synced = true;
+    c->n_frames++;
+    for (int i = 0; i < 16; i++) {
+        uint32_t cw = 0;
+        for (int j = 0; j < 4; j++) cw = (cw << 8) | data[i * 4 + j];
+        process_codeword(c, inverted ? ~cw : cw, i);
+    }
+    return true;
+}
+
 void pocsag_process(pocsag_ctx_t *c, const float *demod, int n)
 {
     for (int i = 0; i < n; i++) {

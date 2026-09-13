@@ -2,6 +2,12 @@
 #include "ls_board.h"
 #include "ls_board_hw.h"
 
+#if defined(ESP_PLATFORM) && LS_HAS_IO_EXPANDER && defined(LS_BOARD_XL_C6_EN) && CONFIG_LS_C6_LINK
+#if !defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6) || !defined(CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE) || !defined(CONFIG_ESP_HOSTED_SDIO_SLOT_1)
+#error "T-Display-P4 requires the C6 coprocessor on SDIO slot 1"
+#endif
+#endif
+
 #if LS_HAS_IO_EXPANDER && defined(LS_BOARD_XL_C6_EN)
 #include "driver/gpio.h"
 #include "port_esp_hosted_host_config.h"

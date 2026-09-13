@@ -8,7 +8,7 @@ endif()
 
 if(CONFIG_LAKESHARK_HEADLESS)
     idf_component_register(
-        SRCS headless_main.c compact_ui.cpp ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c
+        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c
         INCLUDE_DIRS .
         PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted ${LS_BLE_REQ})
 else()

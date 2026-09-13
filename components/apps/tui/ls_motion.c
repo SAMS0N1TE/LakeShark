@@ -25,6 +25,18 @@ char ls_motion_pip(bool live)
     return PIP[ls_motion_phase(4, 800)];
 }
 
+void ls_motion_busy(tui_surface *sf, tui_rect panel, bool active)
+{
+    if (!sf || !active || panel.w < 36 || panel.h < 1) return;
+    int phase = ls_motion_phase(12, 1200);
+    int head = phase < 6 ? phase : 11 - phase;
+    char rail[] = "[......]";
+    rail[head + 1] = '>';
+    if (phase >= 6) rail[head + 1] = '<';
+    tui_put_str(sf, panel, panel.x + panel.w - 10, panel.y, rail,
+                TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+}
+
 uint8_t ls_fresh(ls_fresh_t *f, uint32_t token, int fade_ms)
 {
     if (!f) return 0;

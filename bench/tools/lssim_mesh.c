@@ -80,11 +80,18 @@ static const ls_mesh_peer_t PEERS[] = {
 
 bool lssim_is_empty(void);
 
+static void copy_peer(int rank, ls_mesh_peer_t *out)
+{
+    *out = PEERS[rank];
+    out->first_heard += ls_mesh_now() - 44382u;
+    out->last_heard += ls_mesh_now() - 44382u;
+}
+
 int ls_mesh_peers(ls_mesh_peer_t *out, int max)
 {
     if (lssim_is_empty()) return 0;
     int n = (max < N_PEERS) ? max : N_PEERS;
-    for (int i = 0; i < n; i++) out[i] = PEERS[i];
+    for (int i = 0; i < n; i++) copy_peer(i, &out[i]);
     return n;
 }
 
@@ -93,7 +100,7 @@ uint32_t ls_mesh_now(void) { return 1757000000u; }
 bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 {
     if (rank < 0 || rank >= N_PEERS || !out) return false;
-    *out = PEERS[rank];
+    copy_peer(rank, out);
     return true;
 }
 
@@ -310,6 +317,7 @@ bool ls_mesh_radio_hold(bool on) { (void)on; return true; }
 bool ls_mesh_radio_held(void) { return true; }
 
 bool ls_lora_present(void) { return false; }
+bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return false; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)
 { (void)a; (void)b; return -1; }

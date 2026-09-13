@@ -161,7 +161,7 @@ static void dump_grid(FILE *f)
 extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_rec, ls_scr_diag, ls_scr_settings,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
-                             ls_scr_mesh, ls_scr_radios;
+                             ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -193,6 +193,11 @@ static const ls_app_t APPS[] = {
     /* what is powered, and how to stop it. */
     { "radios", "RADIOS", "power",  LS_ICON_POWER, TUI_RED,
       LS_APP_EXTRA, &ls_scr_radios, NULL },
+    { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN, LS_APP_EXTRA, &ls_scr_labs, NULL },
+    { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL },
+    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL },
+    { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL },
+
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
@@ -266,9 +271,9 @@ static void feed_adsb(void)
         bool pos_valid;
         int age_s;
     } SEED[] = {
-        { 0xA1B2C3u, "UAL442",  34000, 460,  270,   0,  43.60f, -71.30f, true,   0 },
-        { 0xA4C5D6u, "N914QT",   5500, 140,  185, -600,  43.55f, -71.42f, true,  12 },
-        { 0xAABBCCu, "DAL118",  28000, 480,   95, 1200,  43.70f, -71.10f, true,  40 },
+        { 0xA1B2C3u, "UAL442",  34000, 460,  270,   0,  43.49f, -71.67f, true,   0 },
+        { 0xA4C5D6u, "N914QT",   5500, 140,  185, -600,  43.41f, -71.69f, true,  12 },
+        { 0xAABBCCu, "DAL118",  28000, 480,   95, 1200,  43.40f, -71.60f, true,  40 },
         { 0xA00777u, "",        1800,  90,   30,    0,   0.0f,    0.0f, false,   3 },
     };
     adsb_state_init();
@@ -288,6 +293,7 @@ static void feed_adsb(void)
         a->good_msg_count = a->msg_count - (int)i;
         a->crc_err_count  = (int)i;
         a->last_seen_us   = now - (int64_t)SEED[i].age_s * 1000000LL;
+        a->pos_ts_us      = a->pos_valid ? a->last_seen_us : 0;
         a->first_seen_us  = a->last_seen_us - 120 * 1000000LL;
         for (int k = 0; k < 32; k++)
             a->alt_history[k] = (int16_t)(SEED[i].alt - 400 + k * 25);
@@ -465,11 +471,12 @@ int main(int argc, char **argv)
        breaks is here. */
 
     if (timed > 0) ls_shim_time_live(1);
-    else           ls_shim_time_set(1500000);
+    else           ls_shim_time_set(120000000);
 
     ls_tui_set_font_index(font);
 
     /* The grid the board has, either way round. */
+    ls_tui_set_corner_radius(CORNER_R);
     if (!ls_tui_begin(landscape ? NATIVE_H : NATIVE_W,
                       landscape ? NATIVE_W : NATIVE_H)) {
         printf("lssim: ls_tui_begin failed\n");

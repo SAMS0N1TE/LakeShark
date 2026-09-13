@@ -768,8 +768,9 @@ void lakeshark_adsb_agc(void)
 
 int lakeshark_adsb_gain_tenths(void)
 {
-    const app_t *a = (s_adsb_idx >= 0) ? app_at(s_adsb_idx) : NULL;
-    return a ? settings_get_gain(a) : 496;
+    /* Telemetry also runs on the console's TCM stack, where NVS reads can
+     * assert during cache-disabled flash access. Report the live request. */
+    return adsb_requested_gain();
 }
 
 void lakeshark_cartotui_set_enabled(bool en) { event_stream_set_enabled(en); }

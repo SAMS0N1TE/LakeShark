@@ -297,10 +297,11 @@ static void draw_signal(tui_surface *sf, tui_rect area)
     if (area.h > 10) {
         char status[48];
         snprintf(status, sizeof(status), "Audio: %s", voice_status());
-        tui_put_str(sf, area, area.x + 1, area.y, status,
-                    P25.p25_enc_muted ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
-                                      : LS_ATTR_DIM);
-        area.y++;
+        tui_rect status_row = tui_rect_make(area.x, area.y + area.h - 1, area.w, 1);
+        tui_put_str(sf, status_row, status_row.x + 1, status_row.y, status,
+                    P25.p25_enc_muted ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+        if (area.w >= 90)
+            draw_iq_gauge(sf, tui_rect_make(area.x + 48, status_row.y, area.w - 48, 1), P25.iq_level);
         area.h--;
     }
 
@@ -312,14 +313,6 @@ static void draw_signal(tui_surface *sf, tui_rect area)
         return;
     }
 
-    if (ls_tui_is_wide() && area.h > 6) {
-        const tui_rect gauge = tui_rect_make(area.x, area.y, area.w, 1);
-        const tui_rect plot = tui_rect_make(area.x, area.y + 1, area.w,
-                                            area.h - 1);
-        draw_iq_gauge(sf, gauge, P25.iq_level);
-        ls_wf_draw(sf, plot);
-        return;
-    }
     ls_wf_draw(sf, area);
 }
 
@@ -348,13 +341,13 @@ static tui_rect s_quick_rect;
 static const ls_quick_t QUICK[] = {
 
     { .label = "TUNE", .kind = LS_QUICK_ACTION, .action = "p25.tune",
-      .key = 'f' },
+      .key = 't' },
     { .label = "VOLUME", .kind = LS_QUICK_STEP, .action = "audio.volume",
       .value = "sys.volume", .delta = 5, .lo = 0, .hi = 100,
       .key = '+', .key_down = '-' },
     { .label = "GAIN", .kind = LS_QUICK_STEP, .action = "p25.gain",
       .value = "p25.gain", .delta = 2.0f, .lo = 0, .hi = 50,
-      .key = 'g', .key_down = 'j' },
+      .key = 'u', .key_down = 'j' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
@@ -364,7 +357,7 @@ static void draw(tui_surface *sf, tui_rect area)
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
 
-    const int bar_h = 3;
+    const int bar_h = wide ? 3 : 5;
 
     tui_rect body;
     if (wide) {

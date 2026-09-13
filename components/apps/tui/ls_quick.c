@@ -525,6 +525,8 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
                    nothing to collide with and nothing left over. */
                 hit_add(i * 2,     x, y, x + half - 1, y + bh - 1 + gap);
                 hit_add(i * 2 + 1, x + half, y, hx1, y + bh - 1 + gap);
+                if(items[i].key_down){char badge[]={'[',items[i].key_down,']',0};tui_put_str(sf,area,x+2,y+bh-1,badge,have?lab:dim);}
+                if(items[i].key){char badge[]={'[',items[i].key,']',0};tui_put_str(sf,area,x+half+2,y+bh-1,badge,have?lab:dim);}
                 continue;
             }
 
@@ -559,6 +561,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
                      field, k_lit ? lit : cap_at);
 
             hit_add(i * 2 + 1, x, y, hx1, y + bh - 1 + gap);
+            if(items[i].key){char badge[]={'[',items[i].key,']',0};tui_put_str(sf,area,x+w-5,y+bh-1,badge,have?lab:dim);}
         }
 
         y += bh + gap;

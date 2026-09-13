@@ -24,6 +24,8 @@ typedef struct {
        answer. Earth's field is roughly 25 to 65 uT depending where you are,
        so a magnitude far outside that means something ferrous is close - or
        the part needs calibrating. */
+    /* Magnetic calibration basis differs from acceleration on the P4:
+       -mx is toward the physical top, +my toward the left. */
     float mx, my, mz;
     bool  mag_valid;
     /* Die temperature in Celsius. The ICM's own, not the room's: it sits

@@ -7,7 +7,11 @@
 #include "tui/ls_map.h"
 #include "ls_keymap.h"
 #include "ls_spi.h"
+#include "ls_mixrf.h"
 #include "ls_lora.h"
+#include "tui/ls_field.h"
+#include "rec_watch.h"
+#include "sx1262_console.h"
 #include "ls_gps.h"
 #include "ls_rtc.h"
 #include "ls_gauge.h"
@@ -26,6 +30,8 @@
 #include "tui/ls_notify.h"
 
 extern "C" bool ls_scr_mesh_notice(ls_notice_t *out);
+extern "C" bool rec_watch_notify(const char *peer, const char *text)
+{ return ls_mesh_queue_dm(peer, text); }
 extern "C" void ls_scr_fm_show_page(int page);
 #include "tui/ls_tui_touch.h"
 #include "tui/ls_keyboard.h"
@@ -207,74 +213,6 @@ static const uint8_t SPLASH_LADDER[5] = {
     TUI_CYAN | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT,
 };
 #define SPLASH_FADE_PCT 55
-
-/* THE REBUILD GETS A WIPE, NOT THE WHOLE POWER-ON SEQUENCE. */
-
-/* FRAMES, NOT MILLISECONDS, because this animation pays for itself. */
-
-#define WIPE_FRAMES    6
-#define WIPE_STEP_MS   2
-#define WIPE_EDGE      4
-
-static const uint8_t WIPE_SHARK[5] = {
-    0x0C,  /* 0 0 0 0 1 1 0 0 */
-    0x1E,  /* 0 0 0 1 1 1 1 0 */
-    0x7F,  /* 0 1 1 1 1 1 1 1 */
-    0x1E,
-    0x0C,
-};
-
-static void tui_wipe(tui_surface *sf, int cols, int rows, int frame,
-                     int frames)
-{
-    tui_rect all = tui_surface_rect(sf);
-    tui_frame_begin(sf);
-
-    if (frames < 1) frames = 1;
-
-    /* The wave travels along x+y, so its span is the sum of the two sides
-       and every cell has a place on it. */
-    const int span = cols + rows;
-    const int head = span * frame / frames;
-
-    for (int y = 0; y < rows; y++) {
-        for (int x = 0; x < cols; x++) {
-            const int d = x + y;
-            const int behind = head - d;
-            if (behind < 0) continue;            /* the wave has not arrived */
-            if (behind >= WIPE_EDGE) {           /* and it has gone past */
-                tui_put_char(sf, all, x, y, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
-                continue;
-            }
-            /* On the face of it. Densest at the crest, thinning behind, so
-               the band has a direction. */
-            static const char RAMP[WIPE_EDGE] = {
-                LS_TUI_SHADE_FULL, LS_TUI_SHADE_75,
-                LS_TUI_SHADE_50,   LS_TUI_SHADE_25,
-            };
-            static const uint8_t HUE[WIPE_EDGE] = {
-                TUI_WHITE | TUI_BRIGHT, TUI_CYAN | TUI_BRIGHT,
-                TUI_CYAN, TUI_BLUE | TUI_BRIGHT,
-            };
-            tui_put_char(sf, all, x, y, RAMP[behind],
-                         TUI_ATTR(HUE[behind], TUI_BLACK));
-        }
-    }
-
-    const int sx = head - rows / 2 - 4;
-    const int sy = rows / 2 - 2;
-    if (frame < frames - 2) {
-        for (int r = 0; r < 5; r++) {
-            for (int b = 0; b < 7; b++) {
-                if (!(WIPE_SHARK[r] & (0x40 >> b))) continue;
-                const int x = sx + b, y = sy + r;
-                if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
-                tui_put_char(sf, all, x, y, LS_TUI_BLOCK_FULL,
-                             TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-            }
-        }
-    }
-}
 
 static void tui_splash(tui_surface *sf, int cols, int rows, int frame,
                        int frames)
@@ -461,6 +399,7 @@ static void tui_request_regrid(void)
 
 static ls_imu_pose_t s_manual_pose = LS_IMU_FLAT;
 static bool          s_manual_held = false;
+static bool s_keyboard_known, s_keyboard_present, s_keyboard_pose_pending;
 
 /* What a rotation actually costs, kept so the next report is a measurement. */
 
@@ -472,6 +411,7 @@ static volatile bool s_tui_rebuilding;
 
 static void tui_manual_rotation_taken(void)
 {
+    s_keyboard_pose_pending = false;
     s_manual_pose = s_imu_ok ? ls_imu_pose() : LS_IMU_FLAT;
     s_manual_held = true;
 }
@@ -597,7 +537,8 @@ static bool tui_session(void)
     extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm,
                                  ls_scr_adsb, ls_scr_falls, ls_scr_mesh,
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
-                                 ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless;
+                                 ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
+                                 ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -622,8 +563,17 @@ static bool tui_session(void)
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh },
 
+            { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_labs, nullptr },
+            { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_journal, nullptr },
+
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec },
+            { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled },
+            { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_mixrf, nullptr },
             { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
               LS_APP_EXTRA, &ls_scr_diag, nullptr },
             { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
@@ -694,13 +644,9 @@ static bool tui_session(void)
     const bool rebuilt = s_tui_rebuilding;
     s_tui_rebuilding = false;
     if (rebuilt) {
+        ls_tui_router_draw(sf);
+        ls_tui_present();
         display_ctl_reapply();
-
-        for (int frame = 0; frame <= WIPE_FRAMES; frame++) {
-            tui_wipe(sf, cols, rows, frame, WIPE_FRAMES);
-            ls_tui_present();
-            vTaskDelay(pdMS_TO_TICKS(WIPE_STEP_MS));
-        }
     }
 
     for (int frame = 0; !rebuilt && frame <= SPLASH_FRAMES; frame++) {
@@ -729,7 +675,7 @@ static bool tui_session(void)
         }
         vTaskDelay(pdMS_TO_TICKS(SPLASH_STEP_MS));
     }
-    vTaskDelay(pdMS_TO_TICKS(SPLASH_HOLD_MS));
+    if (!rebuilt) vTaskDelay(pdMS_TO_TICKS(SPLASH_HOLD_MS));
 
     ls_tui_invalidate();
     ls_tui_router_draw(sf);
@@ -743,7 +689,6 @@ static bool tui_session(void)
            s_imu_ok ? "turn it over or press F11" : "press F11");
 
     ls_keypad_backlight(true);
-    bool kbd_was = ls_keypad_present();
     /* A new session starts its own count: the gap since the last one
        is a rebuild, not a frame. */
     s_loop_last_us = 0;
@@ -769,26 +714,34 @@ static bool tui_session(void)
         /* The auto-dim clock; it gates itself to five ticks a second. */
         display_ctl_tick();
 
-        /* The keyboard decides the orientation, because attaching it is a
-           statement about how the thing is being held. A manual rotate stands
-           until the keyboard is attached or removed again.
-
-           ls_keypad_tick is what makes that sentence true. Without
-           it presence is whatever it was at boot and this compares a
-           constant against itself forever. */
+        /* Attachment selects landscape once, including a keyboard present at
+           boot. Keep this state across session rebuilds so turning the board
+           does not repeatedly reapply the attachment orientation. */
         ls_keypad_tick();
         bool kbd_now = ls_keypad_present();
-        if (kbd_now != kbd_was) {
-            kbd_was = kbd_now;
-            int want = kbd_now ? 1 : 0;
-            if (want != s_rotation) { s_tui_rotate_req = want; s_tui_stop = true; }
+        if (!s_keyboard_known || kbd_now != s_keyboard_present) {
+            bool detached = s_keyboard_known && !kbd_now;
+            s_keyboard_known = true;
+            s_keyboard_present = kbd_now;
+            if (kbd_now) {
+                tui_manual_rotation_taken();
+                s_keyboard_pose_pending = s_manual_pose == LS_IMU_FLAT;
+                if (s_rotation != 1) { s_tui_rotate_req = 1; s_tui_stop = true; }
+            } else if (detached) {
+                s_manual_held = s_keyboard_pose_pending = false;
+                if (s_rotation != 0) { s_tui_rotate_req = 0; s_tui_stop = true; }
+            }
         }
 
         /* TURN THE SCREEN TO MATCH THE HAND HOLDING IT. */
 
-        if (!kbd_now && s_imu_ok && settings_get_auto_rotate()) {
+        if (!s_tui_stop && s_imu_ok && settings_get_auto_rotate() && !ls_field_calibrating()) {
             const int64_t ph_imu = esp_timer_get_time();
             const ls_imu_pose_t pose = ls_imu_pose();
+            if (s_keyboard_pose_pending && pose != LS_IMU_FLAT) {
+                s_manual_pose = pose;
+                s_keyboard_pose_pending = false;
+            }
             s_ph_imu_us = ph_avg(s_ph_imu_us, esp_timer_get_time() - ph_imu);
 
             /* A manual rotate stands until the board is moved.
@@ -1029,6 +982,7 @@ static bool tui_rotate_to(int quarter)
 
     s_rebuild_started = esp_timer_get_time();
     if (!tui_apply_rotation(quarter)) { s_rebuild_started = 0; return false; }
+    if (was_running) s_tui_rebuilding = true;
     printf("tui: %d degrees, %s\n", s_rotation * 90,
            (s_rotation % 2) ? "landscape" : "portrait");
 
@@ -1494,6 +1448,9 @@ static int spi_cmd(int argc, char **argv)
    of a serial cable is most of the work. */
 static int lora_cmd(int argc, char **argv)
 {
+    if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
+    if (argc > 1 && (!strcmp(argv[1], "pocsag") || !strcmp(argv[1], "fsk")))
+        return sx1262_receive_command(argc, argv);
     /* One owner at a time. */
 
     if (argc >= 2 && ls_mesh_running() &&
@@ -1898,6 +1855,24 @@ static int gauge_cmd(int argc, char **argv)
     ls_gauge_diagnostics();
     return 0;
 }
+static int mixrf_cmd(int argc,char **argv)
+{
+    if(argc==1){ls_mixrf_diagnostics();return 0;}
+    if(argc==2 && !strcmp(argv[1],"probe"))return ls_mixrf_start()?0:1;
+    if(argc==2 && !strcmp(argv[1],"stop")) {
+        ls_mixrf_receive(false,433920000);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);return 0;
+    }
+    if(argc==3 && (!strcmp(argv[2],"on") || !strcmp(argv[2],"off"))) {
+        bool on=!strcmp(argv[2],"on"),ok=false;
+        if(!strcmp(argv[1],"scan"))ok=ls_mixrf_scan(on);
+        else if(!strcmp(argv[1],"nfc"))ok=ls_mixrf_nfc_watch(on);
+        else if(!strcmp(argv[1],"cards"))ok=ls_mixrf_card_scan(on);
+        else if(!strcmp(argv[1],"cc")){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);ok=ls_mixrf_receive(on,s.frequency?s.frequency:433920000);}
+        if(ok)return 0;
+        printf("mixrf: request unavailable; use probe and check status\n");return 1;
+    }
+    printf("mixrf [probe|stop|cc on/off|scan on/off|nfc on/off]\n");return 1;
+}
 static int gps_cmd(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "baud")) { ls_gps_scan_baud(); return 0; }
@@ -1948,11 +1923,10 @@ static int keys_bl_sweep(void)
         vTaskDelay(pdMS_TO_TICKS(step[i].hold_ms));
     }
 
-    /* Back to where it started, so a sweep that found nothing has changed
-       nothing. */
-    ls_keypad_backlight_tune(20000, 920);
+    /* Restore the normal backlight setting after the diagnostic sweep. */
+    ls_keypad_backlight_tune(32000, 911);
     ls_keypad_backlight(true);
-    printf("\nkeys: back to 90%% at 20 kHz. 'keys bl <pct> <hz>' sets one.\n");
+    printf("\nkeys: back to 89%% at 32 kHz. 'keys bl <pct> <hz>' sets one.\n");
     return 0;
 }
 
@@ -2136,6 +2110,10 @@ static int display_cmd(int argc,char **argv)
         else printf("timeout must be 5..240 seconds\n");
     } else if (argc == 3 && !strcmp(argv[1], "autodim")) {
         display_ctl_set_autodim(!strcmp(argv[2], "on"));
+    } else if (argc == 3 && !strcmp(argv[1], "autorotate")) {
+        if (strcmp(argv[2], "on") && strcmp(argv[2], "off")) return 1;
+        settings_set_auto_rotate(!strcmp(argv[2], "on"));
+        if (!strcmp(argv[2], "on")) s_manual_held = s_keyboard_pose_pending = false;
     } else if (argc == 2 && !strcmp(argv[1], "rotate")) {
         tui_manual_rotation_taken();
         tui_rotate_to((s_rotation + 1) % 4);
@@ -2154,6 +2132,9 @@ static int display_cmd(int argc,char **argv)
            (long long)((esp_timer_get_time() - touch_snapshot().received) / 1000));
     printf("autodim=%s%s\n", display_ctl_autodim_enabled() ? "on" : "off",
            display_ctl_dimmed() ? ", dimmed now" : "");
+    printf("autorotate=%s imu=%s keyboard=%s pose=%d held=%d\n",
+           settings_get_auto_rotate()?"on":"off",s_imu_ok?"ready":"unavailable",
+           ls_keypad_present()?"present":"absent",(int)ls_imu_pose(),s_manual_held);
     ls_panel_diagnostics();
     return 0;
 }
@@ -2228,6 +2209,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     esp_console_cmd_register(&cmd);
 
     ls_keypad_start();
+    if (ls_keypad_present()) s_rotation = 1;
     const esp_console_cmd_t tui={.command="tui",
         .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
@@ -2236,12 +2218,15 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .help="SD card: 'sd' says whether it mounted and why not, 'sd mount' retries, 'sd ls [dir]' lists",
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
+    const esp_console_cmd_t mixrf={.command="mixrf",.help="Keyboard radios: probe, status, cc/scan/nfc on/off, stop",
+        .hint=nullptr,.func=mixrf_cmd,.argtable=nullptr};
+    esp_console_cmd_register(&mixrf);
     const esp_console_cmd_t gps={.command="gps",
         .help="GPS: report fix and sentence health. 'gps baud' listens at each rate and dumps the wire",
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
     const esp_console_cmd_t lora={.command="lora",
-        .help="LoRa: bring the SX1262 up and report what answered. 'lora scan [loMHz hiMHz [bins]]' sweeps the band as a spectrum",
+        .help="SX1262: status, config, rx, tx, scan, pocsag, fsk",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
     const esp_console_cmd_t spi={.command="spi",

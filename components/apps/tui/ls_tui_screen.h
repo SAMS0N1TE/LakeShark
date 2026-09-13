@@ -12,7 +12,7 @@ extern "C" {
 #include "ls_tui.h"
 
 /* Shared by the app directory and router so every registered app fits. */
-#define LS_TUI_MAX_SCREENS 16
+#define LS_TUI_MAX_SCREENS 24
 
 /* Keys as the screens see them. Characters arrive as themselves; everything
    else is one of these. Deliberately the same vocabulary as tui_key_t in

@@ -55,6 +55,7 @@ typedef struct {
 
 /* only the worker talks to the radios; draw reads one snapshot. */
 void ls_wireless_set_active(bool active);
+void ls_wireless_observe(bool active);
 void ls_wireless_get(ls_wireless_snapshot_t *out);
 bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass);
 void ls_wireless_history_push(ls_wireless_history_t *h, uint32_t now_ms,

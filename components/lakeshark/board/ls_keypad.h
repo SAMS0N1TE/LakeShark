@@ -41,6 +41,9 @@ int       ls_keypad_backlight_duty(void);
 
 /* Console helper: probe the bus and describe what answered. */
 void ls_keypad_diagnostics(void);
+/* Shared keyboard bus; masked writes preserve LEDs and keypad reset. */
+bool ls_keypad_expander_read(uint8_t reg, uint8_t *value);
+bool ls_keypad_expander_update(uint8_t reg, uint8_t mask, uint8_t value);
 
 #ifdef __cplusplus
 }

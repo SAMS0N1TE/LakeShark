@@ -1,6 +1,8 @@
 /* See ls_imu.h. Register map from the InvenSense ICM-20948 datasheet
    (DS-000189 v1.3) and the AK09916 datasheet, not from memory. */
 #include "ls_imu.h"
+#include "ls_imu_pose_policy.h"
+#include "ls_imu_heading_math.h"
 
 #include <math.h>
 #include <string.h>
@@ -9,12 +11,16 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "ls_i2c.h"
 
 static const char *TAG = "ls_imu";
 
 #if LS_HAS_IMU
+
+static SemaphoreHandle_t s_sample_lock;
+static StaticSemaphore_t s_sample_lock_storage;
 
 /* THE ICM20948 HAS BANKED REGISTERS, and that is the one thing about
    this part that catches people out. Register 0x7F is the bank select and it
@@ -164,6 +170,7 @@ static void mag_start(void)
 
 esp_err_t ls_imu_start(void)
 {
+    if (!s_sample_lock) s_sample_lock = xSemaphoreCreateMutexStatic(&s_sample_lock_storage);
     if (s_present) return ESP_OK;
 
     esp_err_t err = ls_i2c_device(LS_I2C_SECONDARY, LS_BOARD_IMU_I2C_ADDR,
@@ -240,7 +247,7 @@ static void mount_xy(float x, float y, float *sx, float *sy)
 
 static int16_t be16(const uint8_t *p) { return (int16_t)((p[0] << 8) | p[1]); }
 
-bool ls_imu_read(ls_imu_sample_t *out)
+static bool sample_locked(ls_imu_sample_t *out)
 {
     if (!s_present) return false;
 
@@ -256,9 +263,8 @@ bool ls_imu_read(ls_imu_sample_t *out)
 
     /* Turned into SCREEN axes on the way out, once, here.
 
-       Everything downstream - pose, heading, anything added later - is then
-       already speaking the coordinates the screen is drawn in, and exactly
-       one place knows how the part is glued down. See mount_xy. */
+       This applies to acceleration and gyro. Magnetic samples retain their
+       existing calibration basis; see ls_imu_heading_math.h. */
     ls_imu_sample_t s;
     memset(&s, 0, sizeof(s));
     mount_xy((float)be16(b + 0) / ACCEL_LSB_PER_G,
@@ -316,9 +322,7 @@ bool ls_imu_read(ls_imu_sample_t *out)
 
 /* Hysteresis, and why the numbers are what they are. */
 
-#define POSE_ENTER  0.60f
-#define POSE_FLAT_Z 0.80f
-#define POSE_HOLD_US 500000
+#define POSE_HOLD_US 900000
 
 static ls_imu_pose_t s_pose = LS_IMU_FLAT;
 static ls_imu_pose_t s_pose_pending = LS_IMU_FLAT;
@@ -326,18 +330,25 @@ static int64_t       s_pose_since;
 
 static ls_imu_pose_t pose_of(const ls_imu_sample_t *s)
 {
-    if (fabsf(s->az) > POSE_FLAT_Z) return LS_IMU_FLAT;
-    if (s->ay >  POSE_ENTER) return LS_IMU_UP;
-    if (s->ay < -POSE_ENTER) return LS_IMU_DOWN;
-    if (s->ax >  POSE_ENTER) return LS_IMU_RIGHT;
-    if (s->ax < -POSE_ENTER) return LS_IMU_LEFT;
-    return LS_IMU_FLAT;
+    return ls_imu_classify_pose(s);
+}
+
+bool ls_imu_read(ls_imu_sample_t *out)
+{
+    if (!s_sample_lock || xSemaphoreTake(s_sample_lock, 0) != pdTRUE) return false;
+    bool ok = sample_locked(out);
+    xSemaphoreGive(s_sample_lock);
+    return ok;
 }
 
 ls_imu_pose_t ls_imu_pose(void)
 {
     ls_imu_sample_t s;
-    if (!ls_imu_read(&s)) return LS_IMU_FLAT;
+    if (!ls_imu_read(&s)) {
+        s_pose_pending = LS_IMU_FLAT;
+        s_pose_since = 0;
+        return LS_IMU_FLAT;
+    }
 
     const ls_imu_pose_t now_pose = pose_of(&s);
     const int64_t now = esp_timer_get_time();
@@ -369,9 +380,8 @@ float ls_imu_heading(void)
        vector folded in and is worth doing when something asks for a heading
        while the board is not level; saying so in the header is honest, and
        inventing the correction here would not be. */
-    float deg = atan2f(s.my, s.mx) * 180.0f / (float)M_PI;
-    if (deg < 0.0f) deg += 360.0f;
-    return deg;
+    float deg = ls_imu_magnetic_heading(s.mx, s.my);
+    return isfinite(deg) ? deg : -1.0f;
 }
 
 #else  /* !LS_HAS_IMU */

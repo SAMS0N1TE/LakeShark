@@ -29,6 +29,11 @@ serial*.txt
 !/docs/TDP4_RELEASE_NOTES.md
 !/docs/TDP4_FIRST_FLASH.md
 !/docs/TDP4_SCREENS.md
+!/docs/FIELD_LABS.md
+!/docs/MIX_RF.md
+!/docs/UI_CONTROLS.md
+!/docs/HACKRF_BRINGUP.md
+!/docs/TDP4_RC_CHECKLIST.md
 !/docs/screenshots/
 /tools/*
 !/tools/p25_profile.example
@@ -66,3 +71,6 @@ package.json
 /dependencies.lock
 
 sim.bmp
+/release-artifacts/
+/review-findings.md
+/sx1262-isolation.md

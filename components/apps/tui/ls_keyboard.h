@@ -16,7 +16,7 @@ extern "C" {
 
 /* The longest thing anyone types here: a mesh message is 64 and a channel
    PSK is base64 of 32 bytes, which is 44. */
-#define LS_KEYBOARD_MAX 96
+#define LS_KEYBOARD_MAX 768
 
 /* Called with the finished text when OK is pressed, and not at all when it
    is cancelled. The pointer is only valid for the duration of the call. */

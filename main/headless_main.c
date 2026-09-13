@@ -43,6 +43,7 @@
 #include "rtl-sdr.h"
 /**/
 #include "rec_state.h"
+#include "rec_watch.h"
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
@@ -299,8 +300,12 @@ static void settings_task(void *arg)
 
         /**/
         {
-            bool present = lakeshark_radio_endpoint_ready(
-                LS_RADIO_ENDPOINT_RTL_USB);
+            const char *usb_endpoint = LS_RADIO_ENDPOINT_RTL_USB;
+            bool present = lakeshark_radio_endpoint_ready(usb_endpoint);
+            if (!present && lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_HACKRF_USB)) {
+                usb_endpoint = LS_RADIO_ENDPOINT_HACKRF_USB;
+                present = true;
+            }
 
             if (!present) {
                 absent_ms += 250;
@@ -314,7 +319,7 @@ static void settings_task(void *arg)
                 absent_ms   = 0;
 
                 radio_health_snapshot_t health;
-                if (radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &health) &&
+                if (radio_health_get(usb_endpoint, &health) &&
                     health.state == RH_OK) {
                     healthy_ms += 250;
                     if (healthy_ms >= 10000) {
@@ -669,9 +674,16 @@ static QueueHandle_t s_defer_q = NULL;
 
 /* The receiver the visible TUI screen asked for. */
 
+static int radio_effective_want(void)
+{
+    int rec=-1;
+    (void)hl_mode_index_by_name("REC",&rec);
+    return rec_watch_receiver_want(s_radio_want,rec,rec_watch_enabled());
+}
+
 static void radio_reconcile(void)
 {
-    const int want = s_radio_want;
+    const int want = radio_effective_want();
     if (want == s_radio_applied) return;
     s_radio_applied = want;
     if (want < 0) {
@@ -795,7 +807,7 @@ void ls_tui_radio_want(const char *mode_name)
 
 const char *ls_tui_radio_claimed(void)
 {
-    const int want = s_radio_want;
+    const int want = radio_effective_want();
     if (want < 0 || want >= N_MODES) return NULL;
     return s_modes[want].name;
 }
@@ -967,6 +979,7 @@ static int cmd_link(int argc, char **argv)
 
     if (!strcmp(argv[1], "on")) {
         if (flipper_link_running()) { printf("already on\n"); return 0; }
+        if(ls_keypad_present()) {printf("link: keyboard radios own the expansion pins\n");return 1;}
         esp_err_t e = flipper_link_start(&cfg, &s_link_host);
         printf("link start: %s\n", esp_err_to_name(e));
     } else if (!strcmp(argv[1], "off")) {
@@ -1018,6 +1031,16 @@ static void rec_emit_console(const char *line, void *ctx)
 
 static int cmd_rec(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "watch")) {
+        rec_watch_status_t *watch=heap_caps_malloc(sizeof(*watch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if(!watch) {printf("watch: snapshot allocation failed\n");return 1;}
+        rec_watch_snapshot(watch);
+        printf("watch: ready=%d enabled=%d patterns=%d captures=%lu skipped=%lu\n",
+            watch->ready,watch->enabled,watch->count,(unsigned long)watch->received,(unsigned long)watch->dropped);
+        printf("watch: %s; alerts=%d queued=%lu refused=%lu limited=%lu\n",watch->storage,
+            watch->alerts,(unsigned long)watch->alert_sent,(unsigned long)watch->alert_failed,(unsigned long)watch->alert_suppressed);
+        heap_caps_free(watch);return 0;
+    }
     if (argc < 2 || !strcmp(argv[1], "status")) {
         rec_status_t s;
         rec_get_status(&s);

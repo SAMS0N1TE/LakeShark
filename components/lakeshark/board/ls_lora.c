@@ -323,6 +323,10 @@ void ls_lora_stop(void)
 
 static ls_lora_cfg_t s_cfg;
 static bool     s_cfg_valid;
+static bool     s_fsk_active;
+static ls_lora_cfg_t s_fsk_saved;
+static bool     s_fsk_saved_valid, s_fsk_saved_rx;
+static uint8_t  s_fsk_bytes;
 static bool     s_scanning;        /* a sweep owns the synthesiser */
 static bool     s_rx_mode;
 static bool     s_tx_busy;
@@ -403,7 +407,7 @@ static esp_err_t set_packet_params(uint8_t payload_len)
     return xfer(tx, NULL, sizeof(tx));
 }
 
-esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
+static esp_err_t configure_lora(const ls_lora_cfg_t *cfg)
 {
     if (!s_present) { esp_err_t e = ls_lora_start(); if (e != ESP_OK) return e; }
     if (!cfg) return ESP_ERR_INVALID_ARG;
@@ -541,6 +545,12 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
     return ESP_OK;
 }
 
+esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
+{
+    if (s_fsk_active) return ESP_ERR_INVALID_STATE;
+    return configure_lora(cfg);
+}
+
 static esp_err_t clear_irq(uint16_t mask)
 {
     uint8_t tx[3] = { OP_CLR_IRQ_STATUS, (uint8_t)(mask >> 8), (uint8_t)mask };
@@ -557,7 +567,7 @@ static esp_err_t get_irq(uint16_t *out)
 
 esp_err_t ls_lora_receive(void)
 {
-    if (!s_cfg_valid) return ESP_ERR_INVALID_STATE;
+    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
     esp_err_t err = clear_irq(0xFFFF);
     if (err != ESP_OK) return err;
 
@@ -571,7 +581,7 @@ bool ls_lora_is_receiving(void) { return s_rx_mode; }
 
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
 {
-    if (!s_cfg_valid) return ESP_ERR_INVALID_STATE;
+    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
     if (!data || len == 0) return ESP_ERR_INVALID_ARG;
     if (len > 255) return ESP_ERR_INVALID_SIZE;
     if (s_tx_busy)  return ESP_ERR_INVALID_STATE;
@@ -629,7 +639,7 @@ bool ls_lora_send_done(void)
 
 int ls_lora_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 {
-    if (!s_cfg_valid || !buf || !max || !s_pkt) return 0;
+    if (!s_cfg_valid || s_fsk_active || !buf || !max || !s_pkt) return 0;
 
     /* DIO1 first: one expander read is much cheaper than an SPI round trip
        and this runs in a loop. Low means there is nothing to collect. */
@@ -670,6 +680,118 @@ bool dio1 = false;
 
     ls_lora_receive();
     return len;
+}
+
+static uint8_t fsk_bw_code(uint32_t hz)
+{
+    static const struct { uint32_t hz; uint8_t code; } bw[] = {
+        {4800,0x1f},{5800,0x17},{7300,0x0f},{9700,0x1e},
+        {11700,0x16},{14600,0x0e},{19500,0x1d},{23400,0x15},
+        {29300,0x0d},{39000,0x1c},{46900,0x14},{58600,0x0c},
+        {78200,0x1b},{93800,0x13},{117300,0x0b},{156200,0x1a},
+        {187200,0x12},{234300,0x0a},{312000,0x19},{373600,0x11},
+        {467000,0x09}
+    };
+    for (size_t i = 0; i < sizeof(bw) / sizeof(bw[0]); i++)
+        if (bw[i].hz == hz) return bw[i].code;
+    return 0;
+}
+
+bool ls_lora_fsk_active(void) { return s_fsk_active; }
+
+esp_err_t ls_lora_fsk_end(void)
+{
+    if (!s_fsk_active) return ESP_OK;
+    uint8_t standby = STANDBY_RC;
+    esp_err_t err = cmd(OP_SET_STANDBY, &standby, 1, NULL, 0);
+    s_rx_mode = false;
+    if (s_fsk_saved_valid) {
+        esp_err_t restored = configure_lora(&s_fsk_saved);
+        if (restored == ESP_OK && s_fsk_saved_rx) {
+            uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
+            restored = clear_irq(0xffff);
+            if (restored == ESP_OK) restored = xfer(rx, NULL, sizeof(rx));
+            s_rx_mode = restored == ESP_OK;
+        }
+        if (restored != ESP_OK) err = restored;
+    } else {
+        s_cfg_valid = false;
+    }
+    s_fsk_active = false;
+    return err;
+}
+
+esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
+{
+    if (!cfg || cfg->freq_hz < 150000000u || cfg->freq_hz > 960000000u ||
+        cfg->bitrate < 600 || cfg->bitrate > 300000 ||
+        cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||
+        !cfg->payload_bytes || !fsk_bw_code(cfg->bandwidth_hz) ||
+        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz)
+        return ESP_ERR_INVALID_ARG;
+    if (s_fsk_active || s_scanning || s_tx_busy) return ESP_ERR_INVALID_STATE;
+
+    s_fsk_saved_valid = s_cfg_valid;
+    s_fsk_saved_rx = s_rx_mode;
+    s_fsk_saved = s_cfg;
+    ls_lora_cfg_t setup;
+    ls_lora_cfg_default(&setup);
+    setup.freq_hz = cfg->freq_hz;
+    setup.cal_min_mhz = (uint16_t)((cfg->freq_hz / 4000000u) * 4);
+    setup.cal_max_mhz = setup.cal_min_mhz + 4;
+    s_fsk_active = true;
+    esp_err_t err = configure_lora(&setup);
+    if (err != ESP_OK) goto fail;
+
+    uint8_t type = 0;
+    if ((err = cmd(OP_SET_PKT_TYPE, &type, 1, NULL, 0)) != ESP_OK) goto fail;
+    const uint32_t br = (1024000000u + cfg->bitrate / 2) / cfg->bitrate;
+    const uint32_t dev = (uint32_t)(((uint64_t)cfg->deviation_hz << 25) / 32000000u);
+    uint8_t mod[] = {OP_SET_MOD_PARAMS, (uint8_t)(br >> 16), (uint8_t)(br >> 8),
+        (uint8_t)br, 0, fsk_bw_code(cfg->bandwidth_hz),
+        (uint8_t)(dev >> 16), (uint8_t)(dev >> 8), (uint8_t)dev};
+    if ((err = xfer(mod, NULL, sizeof(mod))) != ESP_OK) goto fail;
+    /* Fixed payload, 32-bit sync, no preamble gate, CRC or whitening. */
+    uint8_t packet[] = {OP_SET_PKT_PARAMS, 0, 32, 0, 32, 0, 0,
+                       cfg->payload_bytes, 1, 0};
+    if ((err = xfer(packet, NULL, sizeof(packet))) != ESP_OK) goto fail;
+    for (int i = 0; i < 4; i++) {
+        err = write_reg((uint16_t)(0x06c0 + i),
+                        (uint8_t)(cfg->sync_word >> (24 - i * 8)));
+        if (err != ESP_OK) goto fail;
+    }
+    if ((err = clear_irq(0xffff)) != ESP_OK) goto fail;
+    uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
+    if ((err = xfer(rx, NULL, sizeof(rx))) != ESP_OK) goto fail;
+    s_fsk_bytes = cfg->payload_bytes;
+    s_rx_mode = true;
+    return ESP_OK;
+fail:
+    {
+        esp_err_t restored = ls_lora_fsk_end();
+        return restored == ESP_OK ? err : restored;
+    }
+}
+
+int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
+{
+    if (!s_fsk_active || !buf || size < s_fsk_bytes) return -1;
+    uint16_t irq;
+    if (get_irq(&irq) != ESP_OK) return -1;
+    if (!(irq & (IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_TIMEOUT))) return 0;
+    if (clear_irq(irq) != ESP_OK) return -1;
+    if (irq & (IRQ_CRC_ERR | IRQ_TIMEOUT)) return -1;
+    uint8_t st[] = {OP_GET_RX_BUF_STAT, 0, 0, 0};
+    if (xfer(st, st, sizeof(st)) != ESP_OK || st[2] != s_fsk_bytes) return -1;
+    uint8_t rx[258] = {OP_READ_BUFFER, st[3], 0};
+    if (xfer(rx, rx, (size_t)s_fsk_bytes + 3) != ESP_OK) return -1;
+    memcpy(buf, rx + 3, s_fsk_bytes);
+    uint8_t status[] = {OP_GET_PKT_STATUS, 0, 0, 0, 0};
+    if (rssi_dbm) *rssi_dbm = -200.0f;
+    if (xfer(status, status, sizeof(status)) == ESP_OK && rssi_dbm)
+        *rssi_dbm = -(float)status[4] / 2.0f;
+    /* Continuous RX searches for the next sync without restarting. */
+    return s_fsk_bytes;
 }
 
 /* See ls_lora.h. Both pure, both used once per bin. */
@@ -733,7 +855,7 @@ esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz)
        a frame. A different band while sweeping is retuned below, in place. */
     if (s_scanning && min_hz == s_scan_min_hz && max_hz == s_scan_max_hz)
         return ESP_OK;
-    if (!s_cfg_valid) return ESP_ERR_INVALID_STATE;
+    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
     /* Never on top of a transmission. The part would be retuned mid-burst
        and the burst would finish somewhere it was never meant to be. */
     if (s_tx_busy) return ESP_ERR_INVALID_STATE;
@@ -956,6 +1078,12 @@ uint32_t ls_lora_airtime_ms(int len) { (void)len; return 0; }
 /* The arithmetic is the same with or without a part on the board -
    it describes the SX1262 and not this assembly of one - so it stays out of
    the conditional. The sweep itself cannot exist without a radio. */
+esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *c)
+{ (void)c; return ESP_ERR_NOT_SUPPORTED; }
+int ls_lora_fsk_poll(uint8_t *b, size_t n, float *r)
+{ (void)b; (void)n; (void)r; return -1; }
+esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
+bool ls_lora_fsk_active(void) { return false; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)
 { (void)a; (void)b; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_scan_sweep(float *d, int n) { (void)d; (void)n; return 0; }

@@ -19,6 +19,7 @@
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
 #include "rec_state.h"
+#include "rec_watch.h"
 #include "rec_unique_name.h"
 #include "rec_file_open.h"
 #include "rec_list_format.h"
@@ -164,6 +165,13 @@ static void rec_finish(int reason)
 
     s_phase = REC_DONE;
     s_captures++;
+    if (rec_watch_enabled()) {
+        ls_iq_control_status_t status;
+        ls_iq_control_status(&s_radio_control, &status);
+        if (status.receiver_streaming && status.effective_center_known &&
+            status.effective_center_hz == s_freq_hz)
+            rec_watch_submit(s_freq_hz, s_edge, s_edges, s_capture_peak, reason);
+    }
 }
 
 const char *rec_end_reason_name(int reason)
@@ -474,6 +482,10 @@ static void rec_rx_task(void *arg)
 
         /**/
         slice_block(iq, (int)got);
+        if (rec_watch_enabled() && (s_phase == REC_DONE || s_phase == REC_IDLE)) {
+            rec_reset_capture();
+            s_phase = REC_ARMED;
+        }
 
         /**/
         /* Fold the same IQ block into the scout FFT and publish a
@@ -581,6 +593,7 @@ static void rec_on_enter(void)
 
 static void rec_on_exit(void)
 {
+    rec_watch_enable(false);
     s_arm_pending = false;
     s_active = false;
     for (int i = 0; i < 300 && s_running; i++) vTaskDelay(pdMS_TO_TICKS(10));
@@ -695,6 +708,7 @@ int rec_edges_copy(int from, int32_t *out, int max)
 
 void rec_set_freq(uint32_t hz)
 {
+    if (rec_watch_enabled()) return;
     if (hz < 1000000UL || hz > 2000000000UL) return;
     s_freq_hz = hz;
     /* The accumulator reset lives in the rx task (see
@@ -738,6 +752,7 @@ void rec_arm_request(void)
 
 void rec_disarm(void)
 {
+    rec_watch_enable(false);
     s_arm_pending = false;
     s_phase = REC_IDLE;
 }

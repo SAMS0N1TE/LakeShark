@@ -31,6 +31,21 @@ esp_err_t ls_lora_status(uint8_t *out);
 
 esp_err_t ls_lora_read_reg(uint16_t addr, uint8_t *buf, size_t len);
 
+/* Receive-only FSK session. The caller must hold the MeshCore radio. */
+typedef struct {
+    uint32_t freq_hz;
+    uint32_t bitrate;
+    uint32_t deviation_hz;
+    uint32_t bandwidth_hz;
+    uint32_t sync_word;
+    uint8_t payload_bytes;
+} ls_fsk_cfg_t;
+
+esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg);
+int       ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm);
+esp_err_t ls_lora_fsk_end(void);
+bool      ls_lora_fsk_active(void);
+
 /* ---- packet path ------------------------------------------------------- */
 
 typedef struct {

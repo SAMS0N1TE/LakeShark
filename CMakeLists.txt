@@ -22,10 +22,11 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.0.1")
+set(LS_PRODUCT_VERSION "2.1.0-rc1")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 ls_identity_query(PROJECT_VER "${CMAKE_CURRENT_LIST_DIR}" "${LS_PRODUCT_VERSION}")
-project(lakeshark VERSION ${LS_PRODUCT_VERSION})
+string(REGEX REPLACE "-rc[0-9]+$" "" LS_PROJECT_VERSION "${LS_PRODUCT_VERSION}")
+project(lakeshark VERSION ${LS_PROJECT_VERSION})
 
 if(CONFIG_IDF_TARGET_ESP32P4 AND CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM)
     idf_component_get_property(ls_usb_dir usb COMPONENT_DIR)

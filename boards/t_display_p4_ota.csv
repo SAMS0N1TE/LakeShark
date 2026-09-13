@@ -1,0 +1,10 @@
+# Optional migration proposal. Not selected by current board defaults.
+# Preserve NVS, PHY, SPIFFS and coredump offsets. Requires OTA/rollback firmware.
+# Name, Type, SubType, Offset, Size, Flags
+nvs, data, nvs, 0x9000, 0x6000,
+phy_init, data, phy, 0xf000, 0x1000,
+ota_0, app, ota_0, 0x10000, 0x480000,
+ota_1, app, ota_1, 0x490000, 0x480000,
+storage, data, spiffs, 0x910000, 0x400000,
+coredump, data, coredump, 0xd10000, 0x10000,
+otadata, data, ota, 0xd20000, 0x2000,

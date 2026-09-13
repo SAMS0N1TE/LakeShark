@@ -61,7 +61,10 @@ static uint32_t g_scan_lo, g_scan_hi;
 static int      g_begins, g_retunes, g_ends;
 static int      g_looks = 1, g_look;
 
+bool ls_field_owned(void) { return false; }
+
 bool ls_lora_present(void)  { return true; }
+bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return g_scanning; }
 
 esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi)

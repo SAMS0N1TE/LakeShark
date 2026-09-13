@@ -41,6 +41,7 @@ esp_err_t spi_bus_add_device(spi_host_device_t host,
                              const spi_device_interface_config_t *dev,
                              spi_device_handle_t *out);
 esp_err_t spi_device_transmit(spi_device_handle_t dev, spi_transaction_t *t);
+esp_err_t spi_bus_remove_device(spi_device_handle_t dev);
 esp_err_t spi_device_acquire_bus(spi_device_handle_t dev, uint32_t wait);
 void      spi_device_release_bus(spi_device_handle_t dev);
 

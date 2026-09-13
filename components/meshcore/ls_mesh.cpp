@@ -16,6 +16,8 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
+#include "ls_nvs_safe.h"
+#include "esp_memory_utils.h"
 #include "nvs.h"
 
 #include "MeshCore.h"
@@ -1107,6 +1109,25 @@ static void msglog_open(void)
     ESP_LOGI(TAG, "message history: %d restored", n);
 }
 
+static portMUX_TYPE s_outbox_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct { char id[17], text[80]; int64_t expires; } s_outbox;
+
+extern "C" bool ls_mesh_queue_dm(const char *id, const char *text)
+{
+    if (!id || strlen(id)!=16 || !text || !*text || strlen(text)>=80 ||
+        !ls_mesh_running() || !ls_mesh_tx_enabled() || ls_mesh_radio_held()) return false;
+    portENTER_CRITICAL(&s_outbox_lock);
+    const int64_t now=esp_timer_get_time();
+    bool ok=s_outbox.expires<=now;
+    if(ok) {
+        snprintf(s_outbox.id,sizeof(s_outbox.id),"%s",id);
+        snprintf(s_outbox.text,sizeof(s_outbox.text),"%s",text);
+        s_outbox.expires=now+5000000;
+    }
+    portEXIT_CRITICAL(&s_outbox_lock);
+    return ok;
+}
+
 static void mesh_task(void *arg)
 {
     (void)arg;
@@ -1116,7 +1137,7 @@ static void mesh_task(void *arg)
            touches it is skipped - the dispatcher, the advert timer and the
            RSSI sample - and nothing else is: the message log still settles
            and still writes, because that is a card and not a radio. */
-        if (s_radio_hold) {
+        if (s_radio_hold || ls_lora_fsk_active()) {
             s_radio_held = true;
             msglog_service();
             peerlog_service();
@@ -1126,6 +1147,12 @@ static void mesh_task(void *arg)
         s_radio_held = false;
 
         s_mesh->loop();
+        decltype(s_outbox) outgoing;
+        portENTER_CRITICAL(&s_outbox_lock);
+        outgoing=s_outbox;s_outbox.expires=0;
+        portEXIT_CRITICAL(&s_outbox_lock);
+        if(outgoing.expires>esp_timer_get_time())
+            (void)ls_mesh_send_dm_id(outgoing.id,outgoing.text);
         s_loops++;
 
         /* Periodic self-advert. This is how a mesh node stays visible:
@@ -1170,7 +1197,22 @@ static void mesh_task(void *arg)
 
 extern "C" esp_err_t ls_mesh_start(void)
 {
+    if (s_radio_hold) return ESP_ERR_INVALID_STATE;
     if (s_task) return ESP_OK;
+
+    /* Console tasks may have TCM stacks. Identity/settings access can disable
+       the flash cache, which requires a DRAM stack on ESP32-P4. */
+    uint8_t stack_marker;
+    if (!esp_ptr_in_dram(&stack_marker)) {
+        /* Reuse reserved DRAM: a late start cannot rely on a contiguous DMA
+           heap allocation after display and radio buffers have been created. */
+        return ls_nvs_call([](void *) -> esp_err_t {
+            esp_err_t result = ls_mesh_start();
+            ESP_LOGI(TAG, "start worker stack headroom %u bytes",
+                     (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+            return result;
+        }, nullptr, 0);
+    }
 
     /* The radio first: everything else is pointless without it, and this is
        the step that can actually fail. */
@@ -1264,6 +1306,7 @@ extern "C" esp_err_t ls_mesh_start(void)
 
 extern "C" void ls_mesh_stop(void)
 {
+    if (s_radio_hold) return;
     if (!s_task) return;
     s_stop = true;
     for (int i = 0; i < 100 && eTaskGetState(s_task) != eSuspended; i++)
@@ -1615,6 +1658,7 @@ extern "C" void ls_mesh_get_radio(ls_mesh_radio_t *out)
 
 extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *cfg)
 {
+    if (s_radio_hold) return ESP_ERR_INVALID_STATE;
     if (!cfg) return ESP_ERR_INVALID_ARG;
     ls_lora_cfg_t lc;
     ls_lora_cfg_default(&lc);
@@ -1962,6 +2006,8 @@ extern "C" esp_err_t ls_mesh_send_text(const char *t) { (void)t; return ESP_ERR_
 extern "C" esp_err_t ls_mesh_send_dm(int i, const char *t) { (void)i; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" esp_err_t ls_mesh_send_dm_id(const char *i, const char *t)
 { (void)i; (void)t; return ESP_ERR_NOT_SUPPORTED; }
+extern "C" bool ls_mesh_queue_dm(const char *i, const char *t)
+{ (void)i; (void)t; return false; }
 extern "C" bool ls_mesh_peer_known(const char *i) { (void)i; return false; }
 extern "C" int ls_mesh_forget_peer(const char *i) { (void)i; return 0; }
 extern "C" int ls_mesh_events(ls_mesh_event_t *o, int m) { (void)o; (void)m; return 0; }

@@ -93,13 +93,13 @@ static int draw_modes(tui_surface *sf, tui_rect area)
 static const ls_quick_t QUICK[] = {
     /* See scr_p25.c: typing a frequency is the common case. */
     { .label = "TUNE", .kind = LS_QUICK_ACTION, .action = "fm.tune",
-      .key = 'f' },
+      .key = 't' },
     { .label = "VOLUME", .kind = LS_QUICK_STEP, .action = "audio.volume",
       .value = "sys.volume", .delta = 5, .lo = 0, .hi = 100,
       .key = '+', .key_down = '-' },
     { .label = "GAIN", .kind = LS_QUICK_STEP, .action = "fm.gain",
       .value = "fm.gain", .delta = 2.0f, .lo = 0, .hi = 50,
-      .key = 'g', .key_down = 'h' },
+      .key = 'u', .key_down = 'j' },
     { .label = "SQUELCH", .kind = LS_QUICK_STEP, .action = "fm.sql",
       .value = "fm.sql", .delta = 0.5f, .lo = 0, .hi = 100,
       .key = 'q', .key_down = 'w' },
@@ -778,6 +778,8 @@ static void enter(void)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (s_page == 2 && k == LS_TK_CHAR && (ch == 'm' || ch == 'M'))
+        return ls_wf_key(k, ch);
     if (k == LS_TK_CHAR) {
         if (ch == '[') return tune_step(-1);
         if (ch == ']') return tune_step(1);

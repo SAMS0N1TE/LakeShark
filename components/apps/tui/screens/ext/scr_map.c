@@ -13,6 +13,7 @@
 
 #include "../../ls_map.h"
 #include "../../ls_motion.h"
+#include "../../ls_map_motion.h"
 #include "../../ls_picker.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui.h"
@@ -392,7 +393,7 @@ typedef struct { int x0, x1, y; } lbox;
    they take below the old limit comes out of the place names - live traffic
    before a hamlet, the order already gives the nodes. In PSRAM, like
    the node table beside it: only the draw path touches it. */
-#define OVERLAY_BOXES_MAX (LABELS_DRAWN_MAX + ADSB_MAX_TRACKED)
+#define OVERLAY_BOXES_MAX (LABELS_DRAWN_MAX + 4 * ADSB_MAX_TRACKED)
 EXT_RAM_BSS_ATTR static lbox s_taken[OVERLAY_BOXES_MAX];
 static int  s_ntaken;
 
@@ -575,15 +576,26 @@ static void draw_mesh_nodes(tui_surface *sf, tui_rect a, int pw, int ph,
            path between two radios and changes with a step sideways; how long
            ago a node was heard is a property of the node, and it is the one
            that answers "is that thing still there". */
-        const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000);
+        const uint32_t now = ls_mesh_now();
         const uint32_t age = (now > s_map_peers[i].last_heard)
                              ? now - s_map_peers[i].last_heard : 0;
         const uint8_t hue = age < 300  ? (TUI_MAGENTA | TUI_BRIGHT)
                           : age < 1800 ? TUI_MAGENTA
                                        : LS_DIM_FG;   /**/
 
-        tui_put_char(sf, a, a.x + cx, a.y + cy, LS_TUI_SHADE_FULL,
+        tui_put_char(sf, a, a.x + cx, a.y + cy, age < 3 && ls_motion_phase(2, 800) ? 'o' : LS_TUI_SHADE_FULL,
                      TUI_ATTR(hue, TUI_BLACK));
+        if (age < 3) {
+            const int radius = 1 + ls_motion_phase(2, 1000);
+            const int dx[4] = {-radius, radius, 0, 0};
+            const int dy[4] = {0, 0, -1, 1};
+            for (int k = 0; k < 4; k++) {
+                int x = cx + dx[k], y = cy + dy[k];
+                if (x < 0 || y < 0 || x >= a.w || y >= a.h || !box_free(x, x, y)) continue;
+                if (avoid.h > 0 && x >= avoid_x0 && x <= avoid_x1 && y >= avoid_y0 && y <= avoid_y1) continue;
+                tui_put_char(sf, a, a.x + x, a.y + y, '.', TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
+            }
+        }
 
         char who[LS_MESH_PEER_NAME > 9 ? LS_MESH_PEER_NAME : 9];
         if (s_map_peers[i].name[0])
@@ -618,14 +630,23 @@ static void draw_mesh_nodes(tui_surface *sf, tui_rect a, int pw, int ph,
 #define AIRCRAFT_SHOW_US   (120 * 1000000LL)
 #define AIRCRAFT_FRESH_US   (30 * 1000000LL)
 
-static char track_glyph(const adsb_aircraft_t *ac)
+EXT_RAM_BSS_ATTR static ls_map_motion_t s_air_motion[ADSB_MAX_TRACKED];
+
+static void plane(tui_surface *sf, tui_rect a, int cx, int cy, int heading, uint8_t attr)
 {
-    if (ac->velocity <= 0) return '+';
-    const int h = ((ac->heading % 360) + 360) % 360;
-    if (h < 45 || h >= 315) return '^';
-    if (h < 135) return '>';
-    if (h < 225) return 'v';
-    return '<';
+    static const uint8_t north[6] = {12, 12, 63, 63, 12, 30};
+    uint8_t pixels[6][6] = {{0}};
+    int turn = (((heading % 360) + 405) % 360) / 90;
+    for (int y = 0; y < 6; y++) for (int x = 0; x < 6; x++) {
+        int dx = x, dy = y;
+        for (int k = 0; k < turn; k++) { int next = 5 - dy; dy = dx; dx = next; }
+        pixels[dy][dx] = (north[y] >> (5 - x)) & 1;
+    }
+    for (int y = 0; y < 3; y++) for (int x = 0; x < 3; x++) {
+        int xx=x*2, yy=y*2;
+        char glyph = LS_TUI_QUAD(pixels[yy][xx], pixels[yy][xx+1], pixels[yy+1][xx], pixels[yy+1][xx+1]);
+        tui_put_char(sf, a, a.x + cx + x - 1, a.y + cy + y - 1, glyph, attr);
+    }
 }
 
 static void draw_aircraft(tui_surface *sf, tui_rect a, int pw, int ph,
@@ -640,11 +661,13 @@ static void draw_aircraft(tui_surface *sf, tui_rect a, int pw, int ph,
          slot++) {
         const adsb_aircraft_t *ac = adsb_state_get(slot);
         if (!ac || !ac->active || !ac->pos_valid) continue;
-        const int64_t age = now - ac->last_seen_us;
-        if (age > AIRCRAFT_SHOW_US) continue;
+        const int64_t age = now - ac->pos_ts_us;
+        if (ac->pos_ts_us <= 0 || age < 0 || age > AIRCRAFT_SHOW_US) continue;
 
         int cx, cy;
-        if (!map_cell_of(ac->lat, ac->lon, a, pw, ph, &cx, &cy)) continue;
+        double lat, lon;
+        ls_map_motion_position(&s_air_motion[slot], ac->icao, ac->pos_ts_us, ac->lat, ac->lon, now, &lat, &lon);
+        if (!map_cell_of(lat, lon, a, pw, ph, &cx, &cy)) continue;
         if (avoid.h > 0 && cx >= avoid_x0 && cx <= avoid_x1 &&
             cy >= avoid_y0 && cy <= avoid_y1) continue;
 
@@ -653,9 +676,17 @@ static void draw_aircraft(tui_surface *sf, tui_rect a, int pw, int ph,
                                                   : TUI_CYAN;
         const uint8_t hue = age <= AIRCRAFT_FRESH_US
                             ? (uint8_t)(band | TUI_BRIGHT) : band;
-        tui_put_char(sf, a, a.x + cx, a.y + cy, track_glyph(ac),
-                     ac->icao == sel_icao ? TUI_ATTR(TUI_BLACK, hue)
-                                          : TUI_ATTR(hue, TUI_BLACK));
+        /* Pulse on fresh position reports without rerasterising the tiles. */
+        const bool pulse = age < 1500000 && ls_motion_phase(2, 700) == 0;
+        if (cx < 1 || cy < 1 || cx + 1 >= a.w || cy + 1 >= a.h) continue;
+        if (avoid.h > 0 && cx + 1 >= avoid_x0 && cx - 1 <= avoid_x1 && cy + 1 >= avoid_y0 && cy - 1 <= avoid_y1) continue;
+        if (!box_free(cx - 1, cx + 1, cy - 1) || !box_free(cx - 1, cx + 1, cy) ||
+            !box_free(cx - 1, cx + 1, cy + 1)) continue;
+        plane(sf, a, cx, cy, ac->heading,
+              TUI_ATTR(pulse ? TUI_WHITE | TUI_BRIGHT : hue, TUI_BLACK));
+        box_take(cx - 1, cx + 1, cy - 1);
+        box_take(cx - 1, cx + 1, cy);
+        box_take(cx - 1, cx + 1, cy + 1);
 
         char who[10];
         if (ac->callsign[0])
@@ -665,13 +696,13 @@ static void draw_aircraft(tui_surface *sf, tui_rect a, int pw, int ph,
         int len = (int)strlen(who);
         const int room = a.w / 3;
         if (len > room) len = room;
-        int x0 = cx + 2;
-        if (x0 + len > a.w) x0 = cx - 1 - len;
+        int x0 = cx + 3;
+        if (x0 + len > a.w) x0 = cx - 2 - len;
 
         if (len > 0 && x0 >= 0 && box_free(x0, x0 + len - 1, cy)) {
             for (int k = 0; k < len; k++)
                 tui_put_char(sf, a, a.x + x0 + k, a.y + cy, who[k],
-                             TUI_ATTR(hue, TUI_BLACK));
+                             TUI_ATTR(ac->icao == sel_icao ? TUI_WHITE | TUI_BRIGHT : hue, TUI_BLACK));
             box_take(x0 < cx ? x0 : cx,
                      (x0 + len - 1) > cx ? x0 + len - 1 : cx, cy);
         } else {

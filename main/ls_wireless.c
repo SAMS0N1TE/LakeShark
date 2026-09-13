@@ -11,7 +11,7 @@
 #include <string.h>
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static bool s_active, s_worker;
+static bool s_active, s_worker, s_observer;
 /* LINK could not allocate a 6 KiB DRAM stack after the radio and
  * C6 started. Reserve it and keep one sleeping worker across app visits. */
 static DRAM_ATTR StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
@@ -114,7 +114,7 @@ static void worker(void *arg)
         memcpy(ssid, s_ssid, sizeof(ssid));
         memcpy(pass, s_pass, sizeof(pass));
         wipe(s_pass, sizeof(s_pass));
-        bool stop = !s_active && op == LS_WIRELESS_NONE;
+        bool stop = !s_active && !s_observer && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
         if (stop) {
             wipe(pass, sizeof(pass));
@@ -185,6 +185,14 @@ void ls_wireless_set_active(bool active)
 {
     portENTER_CRITICAL(&s_mux);
     s_active = active;
+    portEXIT_CRITICAL(&s_mux);
+    if (active) start_worker();
+}
+
+void ls_wireless_observe(bool active)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_observer = active;
     portEXIT_CRITICAL(&s_mux);
     if (active) start_worker();
 }

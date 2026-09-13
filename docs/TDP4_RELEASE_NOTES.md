@@ -1,5 +1,39 @@
 # LakeShark release notes
 
+## 2.1.0-rc1 — T-Display P4
+
+This release candidate targets the 4.1-inch LilyGO T-Display P4. It is an
+application-only update for an existing installation with the matching 16 MB
+partition layout and ESP-Hosted C6 firmware. No partition migration is included.
+
+- LoRa Labs with explicit Mesh/direct ownership, configurable radio controls,
+  live plots and a rotating compass. The expanded compass adds degree marks,
+  large heading digits, live sensor/GPS details and Journal bookmarks.
+- Journal notes with radio, GPS and nine-axis attachments, checksummed SD
+  recovery, bounded recent history and capped sample logs.
+- MIX-RF support for the keyboard's CC1101, nRF24 and ST25R3916. Energy monitors
+  and observations can continue in the background and attach to Journal.
+- NFC workbench with actual card identification, known-key Classic reads,
+  per-block status, hex/ASCII inspection and manual saves. Classic 4K full
+  reads were verified on hardware; Mini/1K geometry has host coverage.
+- Passive Sub-GHz watch with bounded capture storage, duplicate grouping and
+  explicit Journal integration.
+- Grouped app launcher, portrait touch controls, corrected shortcut badges,
+  NFC block paging, map motion and event-based feedback animations.
+- More stable automatic rotation with a clean layout switch. Keyboard
+  presence changes require repeated probes before changing orientation.
+- Mesh radio restoration and notification fixes; P25 voice status stays below
+  the waterfall instead of reserving a large blank panel.
+- ADS-B CPR position corrections and tests, including local decode and bounds.
+- HackRF USB startup and descriptor allocation fixes. Sustained 2 MSPS USB
+  input was measured; successful aircraft decoding was not established.
+
+Experimental limits: SX1262 FSK/POCSAG is not a validated replacement for RTL;
+HackRF FM/P25 needs rate conversion; keyboard-radio energy views do not identify
+protocols or locate transmitters. Compass headings are magnetic and require a
+flat board. See [release checks](TDP4_RC_CHECKLIST.md), [Labs and Journal](FIELD_LABS.md),
+[MIX-RF](MIX_RF.md), [controls](UI_CONTROLS.md) and [HackRF](HACKRF_BRINGUP.md).
+
 ## 2.0.1
 
 - Direct FM mode selection and frequency step controls.

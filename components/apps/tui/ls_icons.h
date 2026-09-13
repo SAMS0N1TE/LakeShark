@@ -37,6 +37,8 @@ typedef enum {
     LS_ICON_SAT,        /* GPS: a satellite over a horizon                */
     LS_ICON_POWER,      /* RADIOS: what is on, and how to switch it off   */
     LS_ICON_WIRELESS,
+    LS_ICON_LABS,
+    LS_ICON_JOURNAL,
     LS_ICON__COUNT
 } ls_icon_t;
 

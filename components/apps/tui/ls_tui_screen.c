@@ -135,6 +135,7 @@ void ls_tui_screen_show(int index)
     if (s_screens[s_current] && s_screens[s_current]->leave)
         s_screens[s_current]->leave();
     s_current = index;
+    ls_btn_clear_hits();
 
     /* The left status belongs to the screen, so it goes with it. */
 
@@ -477,6 +478,7 @@ void ls_tui_router_draw(tui_surface *sf)
     ls_notify_poll(s_current);
 
     tui_frame_begin(sf);
+    ls_btn_clear_hits();
     draw_status(sf, cols);
     draw_tabs(sf, cols, 1, th);
 

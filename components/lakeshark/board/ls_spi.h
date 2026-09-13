@@ -45,6 +45,7 @@ esp_err_t ls_spi_device(ls_spi_bus_id_t id, int cs_gpio, uint8_t mode,
    move until release. */
 esp_err_t ls_spi_hold(spi_device_handle_t dev);
 void      ls_spi_release(spi_device_handle_t dev);
+esp_err_t ls_spi_remove(ls_spi_bus_id_t id, spi_device_handle_t dev);
 
 /* Console helper: describe the bus and what is on it. */
 void ls_spi_diagnostics(void);

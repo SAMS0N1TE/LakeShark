@@ -1,10 +1,13 @@
 #include "ls_wifi.h"
 #include "rec_state.h"   /* rec_dir() */
+#include "rec_watch.h"
 #include "ls_wifi_sta_core.h"
 #include "ls_wifi_operation.h"
 #include "ls_wifi_file_stream.h"
 #include "ble_link.h"
 #include "ls_time.h"
+#include "tui/ls_field.h"
+#include "esp_attr.h"
 
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -566,6 +569,47 @@ static esp_err_t ap_start_locked(void)
     return ESP_OK;
 }
 
+/* Read-only diagnostics work with the keyboard attached and do not retune a radio. */
+static esp_err_t h_field_debug(httpd_req_t *req)
+{
+    EXT_RAM_BSS_ATTR static ls_field_state_t field;
+    ls_field_snapshot(&field);
+    char reply[512];
+    int n = snprintf(reply, sizeof(reply),
+        "{\"ready\":%s,\"direct\":%s,\"busy\":%s,\"mode\":%d,"
+        "\"hz\":%lu,\"rx\":%lu,\"bad\":%lu,\"tx\":%lu,"
+        "\"sequence\":%lu,\"queue_drops\":%lu,\"journal_entries\":%d,"
+        "\"recording\":%s,\"gps_valid\":%s,\"imu_valid\":%s}",
+        field.ready ? "true" : "false", field.direct ? "true" : "false", field.busy ? "true" : "false",
+        field.mode, (unsigned long)field.config.freq_hz, (unsigned long)field.rx,
+        (unsigned long)field.bad, (unsigned long)field.tx, (unsigned long)field.sequence,
+        (unsigned long)field.drops, field.journal_count, field.recording ? "true" : "false",
+        field.sample.gps_valid ? "true" : "false", field.sample.imu_valid ? "true" : "false");
+    if (n < 0 || n >= (int)sizeof(reply)) return ESP_FAIL;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, reply, n);
+}
+
+static esp_err_t h_watch_debug(httpd_req_t *req)
+{
+    EXT_RAM_BSS_ATTR static rec_watch_status_t watch;
+    rec_watch_snapshot(&watch);
+    rec_hub_status_t rx;rec_get_hub_status(&rx);
+    char reply[384];
+    int n=snprintf(reply,sizeof(reply),
+        "{\"ready\":%s,\"enabled\":%s,\"streaming\":%s,\"patterns\":%d,"
+        "\"captures\":%lu,\"skipped\":%lu,\"alerts_queued\":%lu,"
+        "\"alerts_refused\":%lu,\"alerts_limited\":%lu,\"archive_max_bytes\":532480}",
+        watch.ready?"true":"false",watch.enabled?"true":"false",rx.receiver_streaming?"true":"false",
+        watch.count,(unsigned long)watch.received,(unsigned long)watch.dropped,
+        (unsigned long)watch.alert_sent,(unsigned long)watch.alert_failed,(unsigned long)watch.alert_suppressed);
+    if(n<0 || n>=(int)sizeof(reply))return ESP_FAIL;
+    httpd_resp_set_type(req,"application/json");
+    httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    return httpd_resp_send(req,reply,n);
+}
+
 static esp_err_t httpd_ensure_started(void)
 {
     if (s_httpd) return ESP_OK;
@@ -588,6 +632,10 @@ static esp_err_t httpd_ensure_started(void)
     httpd_register_uri_handler(s_httpd, &u_index);
     httpd_register_uri_handler(s_httpd, &u_dl);
     httpd_register_uri_handler(s_httpd, &u_ul);
+    httpd_uri_t debug = {.uri="/debug/field", .method=HTTP_GET, .handler=h_field_debug};
+    httpd_register_uri_handler(s_httpd, &debug);
+    httpd_uri_t watch={.uri="/debug/rec",.method=HTTP_GET,.handler=h_watch_debug};
+    httpd_register_uri_handler(s_httpd,&watch);
     return ESP_OK;
 }
 

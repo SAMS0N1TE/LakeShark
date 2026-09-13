@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "ls_keypad";
 
@@ -40,6 +41,8 @@ static const char *TAG = "ls_keypad";
 #define HALF_US 5
 
 static bool s_present;
+static StaticSemaphore_t s_bus_memory;
+static SemaphoreHandle_t s_bus_lock;
 
 static bool    s_pins_ready;
 static int64_t s_probe_at;
@@ -60,6 +63,9 @@ static inline int  sda_get(void)  { return gpio_get_level(SDA_PIN); }
    lets the pull-up raise it, which is what makes a shared bus work at all. */
 static void bus_init_pins(void)
 {
+    if(!s_bus_lock) s_bus_lock=xSemaphoreCreateRecursiveMutexStatic(&s_bus_memory);
+    xSemaphoreTakeRecursive(s_bus_lock,portMAX_DELAY);
+    if(s_pins_ready) {xSemaphoreGiveRecursive(s_bus_lock);return;}
     s_pins_ready = true;
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << SDA_PIN) | (1ULL << SCL_PIN),
@@ -71,6 +77,7 @@ static void bus_init_pins(void)
     gpio_config(&io);
     gpio_set_level(SDA_PIN, 1);
     gpio_set_level(SCL_PIN, 1);
+    xSemaphoreGiveRecursive(s_bus_lock);
 }
 
 static void bus_start(void)
@@ -117,38 +124,57 @@ static uint8_t bus_read_byte(bool ack)
     return value;
 }
 
-static bool reg_write(uint8_t reg, uint8_t value)
+static bool reg_write_at(uint8_t addr,uint8_t reg, uint8_t value)
 {
+    if(!s_bus_lock || xSemaphoreTakeRecursive(s_bus_lock,pdMS_TO_TICKS(10))!=pdTRUE)return false;
     bus_start();
-    bool ok = bus_write_byte((uint8_t)(ADDR << 1)) &&
+    bool ok = bus_write_byte((uint8_t)(addr << 1)) &&
               bus_write_byte(reg) &&
               bus_write_byte(value);
     bus_stop();
+    xSemaphoreGiveRecursive(s_bus_lock);
     return ok;
 }
+static bool reg_write(uint8_t reg,uint8_t value) {return reg_write_at(ADDR,reg,value);}
 
-static bool reg_read(uint8_t reg, uint8_t *out)
+static bool reg_read_at(uint8_t addr,uint8_t reg, uint8_t *out)
 {
+    if(!out || !s_bus_lock || xSemaphoreTakeRecursive(s_bus_lock,pdMS_TO_TICKS(10))!=pdTRUE)return false;
     bus_start();
-    if (!bus_write_byte((uint8_t)(ADDR << 1)) || !bus_write_byte(reg)) {
+    if (!bus_write_byte((uint8_t)(addr << 1)) || !bus_write_byte(reg)) {
         bus_stop();
+        xSemaphoreGiveRecursive(s_bus_lock);
         return false;
     }
     bus_start();                                  /* repeated start */
-    if (!bus_write_byte((uint8_t)((ADDR << 1) | 1))) {
+    if (!bus_write_byte((uint8_t)((addr << 1) | 1))) {
         bus_stop();
+        xSemaphoreGiveRecursive(s_bus_lock);
         return false;
     }
     *out = bus_read_byte(false);                  /* NACK ends the read */
     bus_stop();
+    xSemaphoreGiveRecursive(s_bus_lock);
     return true;
+}
+static bool reg_read(uint8_t reg,uint8_t *out) {return reg_read_at(ADDR,reg,out);}
+bool ls_keypad_expander_read(uint8_t reg,uint8_t *value)
+{return s_present && reg<8 && reg_read_at(0x20,reg,value);}
+bool ls_keypad_expander_update(uint8_t reg,uint8_t mask,uint8_t value)
+{
+    if(!s_present || reg<2 || reg>7 || !s_bus_lock || xSemaphoreTakeRecursive(s_bus_lock,pdMS_TO_TICKS(10))!=pdTRUE)return false;
+    uint8_t old;
+    bool ok=reg_read_at(0x20,reg,&old) && reg_write_at(0x20,reg,(old&~mask)|(value&mask));
+    xSemaphoreGiveRecursive(s_bus_lock);return ok;
 }
 
 static bool probe(void)
 {
+    if(!s_bus_lock || xSemaphoreTakeRecursive(s_bus_lock,pdMS_TO_TICKS(10))!=pdTRUE)return false;
     bus_start();
     bool ack = bus_write_byte((uint8_t)(ADDR << 1));
     bus_stop();
+    xSemaphoreGiveRecursive(s_bus_lock);
     return ack;
 }
 
@@ -204,7 +230,10 @@ void ls_keypad_tick(void)
     /* One address byte and the ACK that follows it. On a 100 kHz bit-banged
        bus that is about ninety microseconds, twice a second. */
     const bool ack = probe();
-    if (ack == s_present) return;
+    static unsigned change_samples;
+    if (ack == s_present) { change_samples = 0; return; }
+    if (++change_samples < 3) return;
+    change_samples = 0;
 
     if (!ack) {
         s_present = false;
@@ -275,16 +304,16 @@ bool ls_keypad_read(ls_keypad_event_t *out)
 }
 
 static bool     s_bl_on;
-static uint32_t s_bl_freq = 20000;
+static uint32_t s_bl_freq = 32000;
 /* The duty resolution is not a constant, because the frequency and the resolution trade against each other. */
 
 static int      s_bl_res  = 10;       /* duty resolution bits in use */
-static int      s_bl_pct  = 90;
+static int      s_bl_pct  = 89;
 
 esp_err_t ls_keypad_backlight(bool on)
 {
 #if defined(LS_BOARD_KEYPAD_BL_GPIO) && (LS_BOARD_KEYPAD_BL_GPIO >= 0)
-    /* PWM at 20 kHz, not a static level. */
+    /* Keep the backlight PWM above the audible range. */
 
     static bool configured;
     if (!configured) {
@@ -409,9 +438,11 @@ void ls_keypad_diagnostics(void)
         printf("keypad: 0x34 silent, scanning bus...\n");
         int found = 0;
         for (uint8_t a = 0x08; a < 0x78; a++) {
+            xSemaphoreTakeRecursive(s_bus_lock,portMAX_DELAY);
             bus_start();
             bool hit = bus_write_byte((uint8_t)(a << 1));
             bus_stop();
+            xSemaphoreGiveRecursive(s_bus_lock);
             if (hit) { printf("  device at 0x%02x\n", a); found++; }
         }
         if (found)
@@ -432,6 +463,8 @@ void ls_keypad_diagnostics(void)
 }
 
 #else  /* board declares no keypad */
+bool ls_keypad_expander_read(uint8_t r,uint8_t *v) {(void)r;(void)v;return false;}
+bool ls_keypad_expander_update(uint8_t r,uint8_t m,uint8_t v) {(void)r;(void)m;(void)v;return false;}
 
 esp_err_t ls_keypad_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_keypad_present(void) { return false; }

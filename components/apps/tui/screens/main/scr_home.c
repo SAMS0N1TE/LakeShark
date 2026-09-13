@@ -19,10 +19,20 @@
 #include "radio/radio_health.h"
 #include "radio/radio_endpoint.h"
 
-#define MAX_TILES 16
+#define MAX_TILES LS_TUI_MAX_SCREENS
+#define PAGE_TILES 6
+static int s_group, s_tile_page;
+static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
+
+static int group_of(const ls_app_t *a)
+{
+    if (a->cat == LS_APP_USER) return 3;
+    if (!strcmp(a->id, "map") || !strcmp(a->id, "gps") || !strcmp(a->id, "journal") || !strcmp(a->id, "rec")) return 1;
+    if (!strcmp(a->id, "set") || !strcmp(a->id, "diag") || !strcmp(a->id, "radios") || !strcmp(a->id, "link")) return 2;
+    return 0;
+}
 
 static int  s_sel;
-static int  s_page;      /* 0 directory, 1 status - portrait only */
 
 static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
 {
@@ -31,7 +41,7 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
     for (unsigned c = 0; c < sizeof(ORDER) / sizeof(ORDER[0]); c++) {
         for (int i = 0; i < ls_app_count() && n < cap; i++) {
             const ls_app_t *a = ls_app_at(i);
-            if (!a || a->cat != ORDER[c]) continue;
+            if (!a || !a->id || a->cat != ORDER[c] || group_of(a) != s_group) continue;
             /* HOME is not in its own directory. */
             if (a->screen && a->id && strcmp(a->id, "home") == 0) continue;
             apps[n] = a;
@@ -102,27 +112,26 @@ static void draw(tui_surface *sf, tui_rect area)
     const int n = build_tiles(tiles, apps, MAX_TILES);
     if (s_sel >= n) s_sel = n ? n - 1 : 0;
 
-    const bool wide = ls_tui_is_wide();
-
-    if (wide) {
-        /* Landscape fits both, so it shows both. A page turn to read the
-           dongle state is a page turn nobody should have to make. */
-        /* The status panel takes what it needs, the tiles take the rest. */
-
-        int status_w = area.w / 3;
-        if (status_w > 34) status_w = 34;
-        tui_rect left = tui_rect_make(area.x, area.y, area.w - status_w,
-                                      area.h);
-        tui_rect right = tui_rect_make(area.x + left.w, area.y,
-                                       status_w, area.h);
-        ls_tile_grid(sf, left, tiles, n, s_sel);
+    ls_btn_t groups[5];
+    for (int i = 0; i < 4; i++) groups[i] = (ls_btn_t){GROUPS[i], NULL, "rfsu"[i], s_group == i, false};
+    groups[4] = (ls_btn_t){"MORE", NULL, ']', false, n <= PAGE_TILES};
+    const int bar_h = ls_btn_raised_height(area, 5);
+    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, 5, -1);
+    const int pages = (n + PAGE_TILES - 1) / PAGE_TILES;
+    if (s_tile_page >= pages) s_tile_page = 0;
+    int first = s_tile_page * PAGE_TILES;
+    int shown = n - first; if (shown > PAGE_TILES) shown = PAGE_TILES;
+    if (s_sel < first || s_sel >= first + shown) s_sel = first;
+    tui_rect body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
+    if (ls_tui_is_wide()) {
+        int status_w = body.w / 3; if (status_w > 34) status_w = 34;
+        tui_rect right = tui_rect_make(body.x + body.w - status_w, body.y, status_w, body.h);
+        body.w -= status_w;
         draw_status(sf, right);
-        return;
     }
+    ls_tile_grid(sf, body, tiles + first, shown, s_sel - first);
+    if (!shown) ls_panel_notice(sf, body, GROUPS[s_group], "No apps in this group", "User apps load from the SD card");
 
-    if (s_page == 1) { draw_status(sf, area); return; }
-
-    ls_tile_grid(sf, area, tiles, n, s_sel);
 }
 
 static bool key(ls_tk_t k, char ch)
@@ -134,20 +143,21 @@ static bool key(ls_tk_t k, char ch)
     ls_tile_shape(&cols, &rows);
     if (cols < 1) cols = 1;
 
+    char group_key=ch>='A' && ch<='Z'?ch+'a'-'A':ch;
+    if (k == LS_TK_CHAR && group_key && strchr("rfsu", group_key)) { s_group = (int)(strchr("rfsu", group_key) - "rfsu"); s_tile_page = s_sel = 0; return true; }
+    if (k == LS_TK_CHAR && ch == ']') { s_tile_page = (s_tile_page + 1) % ((n + PAGE_TILES - 1) / PAGE_TILES > 0 ? (n + PAGE_TILES - 1) / PAGE_TILES : 1); s_sel = s_tile_page * PAGE_TILES; return true; }
     switch (k) {
     case LS_TK_LEFT:
-        if (!ls_tui_is_wide() && s_page == 1) { s_page = 0; return true; }
-        if (s_sel > 0) s_sel--;
+        if (s_sel > 0) { s_sel--; s_tile_page = s_sel / PAGE_TILES; }
         return true;
     case LS_TK_RIGHT:
-        if (s_sel + 1 < n) { s_sel++; return true; }
-        if (!ls_tui_is_wide()) { s_page = 1; return true; }
+        if (s_sel + 1 < n) { s_sel++; s_tile_page = s_sel / PAGE_TILES; return true; }
         return true;
     case LS_TK_UP:
-        if (s_sel - cols >= 0) s_sel -= cols;
+        if (s_sel - cols >= 0) { s_sel -= cols; s_tile_page = s_sel / PAGE_TILES; }
         return true;
     case LS_TK_DOWN:
-        if (s_sel + cols < n) s_sel += cols;
+        if (s_sel + cols < n) { s_sel += cols; s_tile_page = s_sel / PAGE_TILES; }
         return true;
     case LS_TK_ENTER:
         if (s_sel < n) {
@@ -161,7 +171,7 @@ static bool key(ls_tk_t k, char ch)
         for (int i = 0; i < n; i++) {
             const char a = tiles[i].name ? tiles[i].name[0] : 0;
             const char b = (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : ch;
-            if (a == b) { s_sel = i; return true; }
+            if (a == b) { s_sel = i; s_tile_page = s_sel / PAGE_TILES; return true; }
         }
         return false;
     default:
@@ -173,8 +183,12 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
-    const int i = ls_tile_hit(col, row);
-    if (i < 0) return true;
+    const int group = ls_btn_hit(col, row);
+    if (group >= 0 && group < 4) { s_group = group; s_tile_page = s_sel = 0; return true; }
+    if (group == 4) return key(LS_TK_CHAR, ']');
+    const int hit = ls_tile_hit(col, row);
+    if (hit < 0) return true;
+    const int i = hit + s_tile_page * PAGE_TILES;
 
     ls_tile_t tiles[MAX_TILES];
     const ls_app_t *apps[MAX_TILES];
@@ -191,12 +205,10 @@ static bool touch(int col, int row)
     return true;
 }
 
-static void enter(void) { s_page = 0; }
-
 const ls_tui_screen_t ls_scr_home = {
     .name = "HOME",
-    .hint = "ARROWS pick  ENTER open  F1..F8 jump",
-    .enter = enter,
+    .hint = "R RADIO  F FIELD  S SYSTEM  U USER  ] more",
+    .enter = NULL,
     .leave = NULL,
     .draw = draw,
     .key = key,

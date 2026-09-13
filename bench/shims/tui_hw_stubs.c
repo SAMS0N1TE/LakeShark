@@ -111,3 +111,5 @@ const ls_safe_boot_t *ls_safe_boot_result(void)
     boot.safe = false;
     return &boot;
 }
+
+__attribute__((weak)) bool ls_field_owned(void) { return false; }

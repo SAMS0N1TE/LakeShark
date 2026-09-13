@@ -1,6 +1,6 @@
 function(ls_identity_format output product revision state)
     string(LENGTH "${product}" product_length)
-    if(NOT "${product}" MATCHES "^[0-9]+(\\.[0-9]+)*$" OR product_length GREATER 10)
+    if(NOT "${product}" MATCHES "^[0-9]+(\\.[0-9]+)*(-rc[1-9][0-9]*)?$" OR product_length GREATER 10)
         set(product "0")
     endif()
     string(LENGTH "${revision}" revision_length)

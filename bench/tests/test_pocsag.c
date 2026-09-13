@@ -502,3 +502,54 @@ LS_CASE(a_page_is_only_called_numeric_when_it_is_nearly_all_digits)
     pocsag_destroy(c);
     free(buf);
 }
+
+LS_CASE(hardware_batches_decode_both_polarities)
+{
+    uint8_t bits[2048], packet[64];
+    for (int inv = 0; inv < 2; inv++) {
+        memset(&FM, 0, sizeof(FM));
+        size_t n = pocsag_build_bits(123456, 3, "TEST MESSAGE", 0, bits, sizeof(bits));
+        LS_CHECK(n >= 544);
+        for (int i = 0; i < 64; i++) {
+            packet[i] = 0;
+            for (int j = 0; j < 8; j++)
+                packet[i] = (packet[i] << 1) | (bits[32 + i * 8 + j] ^ inv);
+        }
+        pocsag_ctx_t *c = pocsag_create(&FM, inv ? 2400 : 1200);
+        LS_CHECK(c != NULL);
+        if (!c) return;
+        LS_CHECK(pocsag_process_batch(c, packet, 64, inv, false));
+        LS_EQ_UINT(pocsag_n_pages(c), 1);
+        LS_EQ_UINT(FM.pages[0].address, 123456);
+        LS_CHECK(strncmp(FM.pages[0].text, "TEST MESSAGE", 12) == 0);
+        LS_CHECK(!pocsag_process_batch(c, packet, 63, inv, true));
+        pocsag_destroy(c);
+    }
+}
+
+static void put_cw(uint8_t *p, uint32_t cw)
+{
+    p[0] = cw >> 24; p[1] = cw >> 16; p[2] = cw >> 8; p[3] = cw;
+}
+
+LS_CASE(hardware_batch_gaps_drop_unfinished_messages)
+{
+    uint8_t first[64], next[64];
+    for (int continuous = 0; continuous < 2; continuous++) {
+        memset(&FM, 0, sizeof(FM));
+        for (int i = 0; i < 16; i++) {
+            put_cw(first + 4 * i, 0x7a89c197u);
+            put_cw(next + 4 * i, 0x7a89c197u);
+        }
+        put_cw(first + 60, pocsag_encode_address(123463, 3));
+        put_cw(next, pocsag_encode_message(0x83060));
+        pocsag_ctx_t *c = pocsag_create(&FM, 1200);
+        LS_CHECK(c != NULL);
+        if (!c) return;
+        pocsag_process_batch(c, first, 64, false, false);
+        LS_EQ_UINT(pocsag_n_pages(c), 0);
+        pocsag_process_batch(c, next, 64, false, continuous);
+        LS_EQ_UINT(pocsag_n_pages(c), continuous);
+        pocsag_destroy(c);
+    }
+}

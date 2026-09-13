@@ -9,6 +9,7 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | mbelib | `components/mbelib/COPYRIGHT` | ISC-style permission notice |
 | DSD core and helpers | P25 source headers and `components/lakeshark/apps/p25/UPSTREAM.md` | ISC-style DSD permission notice and additional per-file helper notices |
 | Mode S decoder | `components/lakeshark/apps/adsb/LICENSE.libmodes` and source headers | BSD-2-Clause, libmodes by Thomas Watson, derived from dump1090 by Salvatore Sanfilippo |
+| Classic NFC cipher helpers | `components/lakeshark/nfc/nfc_classic.c` header and `LICENSE` | GPL-3.0-or-later; adapted from Flipper Zero firmware Crypto1 helpers |
 | MeshCore and ed25519 | `components/meshcore/` notices and upstream notices | Preserve each component's license |
 | libcarto, PMTiles and TUI library | Notices within their component directories | Preserve each component's license |
 | DejaVu fonts | `components/apps/tui/DEJAVU-LICENSE.txt` | Bitstream Vera and DejaVu terms |

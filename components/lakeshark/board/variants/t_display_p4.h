@@ -90,12 +90,8 @@
 #define LS_BOARD_LCD_H_RES       568
 #define LS_BOARD_PANEL_RM69A10   1
 #define LS_BOARD_LCD_V_RES       1232
-/* The corner radius of the glass, in pixels. A physical fact, so it
-   lives here; the TUI needs it to know how far its corner cell has to stand
-   off, and NOT how far its edges do - that distinction was worth six columns
-   and four rows. 40 is what the LVGL chrome assumed and what the TUI
-   inherited; 'tui corner <px>' sweeps it against the actual panel. */
-#define LS_BOARD_LCD_CORNER_R    40
+/* Keep text inside the rounded glass; matches the renderer's panel mask. */
+#define LS_BOARD_LCD_CORNER_R    72
 #define LS_BOARD_LCD_DSI_LANES   2
 #define LS_BOARD_LCD_DSI_MBPS    1000
 #define LS_BOARD_LCD_DPI_CLK_MHZ 60
@@ -148,6 +144,12 @@
                                            kPort3Scl = ext 1x4P2 IO45 */
 #define LS_BOARD_KEYBOARD_I2C_SDA_GPIO  46
 #define LS_BOARD_KEYBOARD_I2C_SCL_GPIO  45
+
+/* T-MixRF, vendor keyboard expansion configuration. Power is XL9555 IO0. */
+#define LS_BOARD_MIX_CC_CS 36
+#define LS_BOARD_MIX_NRF_CS 54
+#define LS_BOARD_MIX_NRF_CE 53
+#define LS_BOARD_MIX_NFC_CS 27
 
 /* TCA8418 keypad matrix, 10 columns x 7 rows.  Address is fixed at 0x34 and
    the interrupt is a direct GPIO, so the keypad is the one part of this

@@ -109,7 +109,9 @@ esp_err_t ls_spi_device(ls_spi_bus_id_t id, int cs_gpio, uint8_t mode,
     };
     err = spi_bus_add_device(BUS[id].host, &dev, out);
     if (err == ESP_OK) {
+        xSemaphoreTake(s_lock,portMAX_DELAY);
         s_devices[id]++;
+        xSemaphoreGive(s_lock);
         ESP_LOGI(TAG, "device on bus %d: cs=%d mode=%u %d Hz",
                  (int)id, cs_gpio, (unsigned)mode, clock_hz);
     } else {
@@ -126,6 +128,17 @@ esp_err_t ls_spi_hold(spi_device_handle_t dev)
 void ls_spi_release(spi_device_handle_t dev)
 {
     if (dev) spi_device_release_bus(dev);
+}
+esp_err_t ls_spi_remove(ls_spi_bus_id_t id,spi_device_handle_t dev)
+{
+    if(!dev || id<0 || id>=LS_SPI_BUS_COUNT)return ESP_ERR_INVALID_ARG;
+    esp_err_t err=spi_bus_remove_device(dev);
+    if(err==ESP_OK) {
+        xSemaphoreTake(s_lock,portMAX_DELAY);
+        if(s_devices[id])s_devices[id]--;
+        xSemaphoreGive(s_lock);
+    }
+    return err;
 }
 
 void ls_spi_diagnostics(void)

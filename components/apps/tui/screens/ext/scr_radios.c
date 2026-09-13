@@ -16,6 +16,11 @@
    exactly that, which is the right way for a header to be private. */
 #include "ls_board.h"
 #include "ls_gps.h"
+#ifdef LS_BOARD_MIX_CC_CS
+#include "ls_mixrf.h"
+#include "ls_nfc_suite.h"
+#include "../../ls_app.h"
+#endif
 
 /* The receiver's own status, through the module that owns it. This screen
    asks the same question ls_wf_source asks and must get the same answer. */
@@ -99,7 +104,15 @@ static void mesh_set(bool on)
 }
 #endif
 
+#ifdef LS_BOARD_MIX_CC_CS
+static radio_state_t cc_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.cc?RS_ABSENT:s.receiving?RS_BUSY:RS_ON;}
+static radio_state_t nrf_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.nrf?RS_ABSENT:s.scanning?RS_BUSY:RS_ON;}
+static radio_state_t nfc_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.nfc?RS_ABSENT:(s.card_scanning||s.nfc_watching||ls_nfc_suite_busy())?RS_BUSY:RS_ON;}
+static void open_mix(bool on){(void)on;for(int i=0;i<ls_app_count();i++){const ls_app_t *a=ls_app_at(i);if(a && !strcmp(a->id,"mixrf")){ls_app_open(i);return;}}}
+static const char *mix_action(void){return "OPEN MIX-RF";}
+#else
 static radio_state_t absent_read(void) { return RS_ABSENT; }
+#endif
 
 static radio_state_t ant_read(void)
 {
@@ -130,10 +143,16 @@ static const radio_row_t ROWS[] = {
       gps_read, gps_set },
     { "ANTENNA", "internal, or external through MMCX1",
       ant_read, ant_set, ant_state, ant_action, true },
+#ifdef LS_BOARD_MIX_CC_CS
+    { "CC1101", "Keyboard sub-GHz receive monitor",cc_read,open_mix,NULL,mix_action },
+    { "NRF24", "Keyboard 2.4 GHz energy survey",nrf_read,open_mix,NULL,mix_action },
+    { "NFC", "Keyboard card reader / workbench",nfc_read,open_mix,NULL,mix_action },
+#else
     { "CC1101", "sub-GHz front end, no driver yet",
       absent_read, NULL },
     { "NFC",  "reader front end, no driver yet",
       absent_read, NULL },
+#endif
 };
 #define N_ROWS ((int)(sizeof(ROWS) / sizeof(ROWS[0])))
 

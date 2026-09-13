@@ -17,6 +17,8 @@ int ls_motion_phase(int steps, int period_ms);
 /* A one cell sign of life. */
 
 char ls_motion_pip(bool live);
+/* Small activity indicator in a panel border; never implies measured progress. */
+void ls_motion_busy(tui_surface *sf, tui_rect panel, bool active);
 
 /* How recently a value changed, 255 down to 0. */
 

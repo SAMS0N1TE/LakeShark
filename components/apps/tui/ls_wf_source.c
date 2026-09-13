@@ -1,5 +1,6 @@
 /* See ls_wf_source.h. The glue between a receiver and the widget. */
 #include "ls_wf_source.h"
+#include "ls_field.h"
 
 #include <string.h>
 
@@ -285,6 +286,7 @@ const char *ls_wf_preset_current(ls_wf_src_t src)
 
 const char *ls_wf_source_blocked(ls_wf_src_t src)
 {
+    if (src == LS_WF_SRC_LORA && ls_field_owned()) return "LoRa Labs is returning the radio";
     if (src == LS_WF_SRC_LORA && !ls_lora_present())
         return "no LoRa radio on this board";
     return NULL;
@@ -495,8 +497,10 @@ static bool s_lora_held;
 
 static bool pump_lora(void)
 {
+    if (ls_lora_fsk_active()) return false;
     if (!ls_lora_present()) return false;
 
+    if (ls_field_owned()) return false;
     if (!ls_lora_scanning()) {
 
         /* Recorded the moment it is asked for. */
@@ -551,8 +555,11 @@ static bool pump_lora(void)
 
 static void lora_stop(void)
 {
-    if (ls_lora_scanning()) ls_lora_scan_end();
-    if (s_lora_held) { ls_mesh_radio_hold(false); s_lora_held = false; }
+    if (s_lora_held && ls_lora_scanning()) ls_lora_scan_end();
+    if (s_lora_held) {
+        if (!ls_lora_fsk_active()) ls_mesh_radio_hold(false);
+        s_lora_held = false;
+    }
     s_lora_row_t0 = 0;
 }
 

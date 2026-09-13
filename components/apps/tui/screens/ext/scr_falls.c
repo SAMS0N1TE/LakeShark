@@ -18,15 +18,6 @@ static void leave(void) { ls_wf_source_release(); }
 
 /* WHICH RADIO, as one button that opens a list. */
 
-#define STRIP_ROWS_PORTRAIT 3
-#define STRIP_ROWS_WIDE     1
-
-static tui_rect s_button;
-static tui_rect s_preset_button;
-static tui_rect s_tune_button;
-static tui_rect s_sweep_button;
-static tui_rect s_mode_button;
-
 static const fm_mode_t MODES[] = {
     FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM, FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS,
 };
@@ -138,73 +129,26 @@ static void open_radio_picker(void)
     }
 }
 
-static void draw_one(tui_surface *sf, tui_rect r, const char *text,
-                     uint8_t hue, bool live)
-{
-    const uint8_t at = live ? TUI_ATTR(TUI_BLACK, hue) : LS_ATTR_DIM;
-    tui_fill(sf, r, ' ', at);
-    int len = (int)strlen(text);
-    if (len > r.w - 2) len = r.w - 2;
-    tui_put_str(sf, r, r.x + (r.w - len) / 2, r.y + r.h / 2, text, at);
-}
-
 static void draw_buttons(tui_surface *sf, tui_rect r)
 {
-    s_tune_button = tui_rect_make(0, 0, 0, 0);
-    s_sweep_button = tui_rect_make(0, 0, 0, 0);
-    s_mode_button = tui_rect_make(0, 0, 0, 0);
-    const int half = r.w / 2;
-    s_button        = tui_rect_make(r.x, r.y, half - 1, r.h);
-    s_preset_button = tui_rect_make(r.x + half, r.y, r.w - half, r.h);
-
-    char text[40];
     const ls_wf_src_t src = ls_wf_source_get();
-    if (src == LS_WF_SRC_FM) {
-        const int radio_w = r.w / 6;
-        const int part = (r.w - radio_w) / 4;
-        s_button = tui_rect_make(r.x, r.y, radio_w - 1, r.h);
-        s_mode_button = tui_rect_make(r.x + radio_w, r.y, part - 1, r.h);
-        s_tune_button = tui_rect_make(r.x + radio_w + part, r.y, part - 1, r.h);
-        s_preset_button = tui_rect_make(r.x + radio_w + part * 2, r.y, part - 1, r.h);
-        s_sweep_button = tui_rect_make(r.x + radio_w + part * 3, r.y,
-                                      r.w - radio_w - part * 3, r.h);
-        draw_one(sf, s_button, "FM", TUI_CYAN, true);
-        draw_one(sf, s_mode_button, FM.mode == FM_MODE_SCAN ? "MODE" : fm_mode_label(FM.mode),
-                 TUI_CYAN, true);
-        draw_one(sf, s_tune_button, "TUNE", TUI_GREEN, true);
-        draw_one(sf, s_preset_button, "BAND", TUI_GREEN, true);
-        draw_one(sf, s_sweep_button, FM.mode == FM_MODE_SCAN ? "LIVE" : "SWEEP",
-                 TUI_YELLOW, true);
-        return;
-    }
-    const char *want = ls_wf_source_label(src);
-    const char *now  = ls_wf_source_name();
-    if (strcmp(want, now) == 0) snprintf(text, sizeof(text), "%s", want);
-    else snprintf(text, sizeof(text), "%s (%s)", want, now);
-    draw_one(sf, s_button, text, TUI_CYAN, true);
-
-    /* Dim when there is nothing behind it. A lit control that does nothing
-       is the fault this project already has a rule about; this one is lit
-       exactly when tapping it will offer something. */
-    const bool any = ls_wf_preset_count(src) > 0;
-    draw_one(sf, s_preset_button, ls_wf_preset_current(src),
-             TUI_GREEN, any);
+    ls_btn_t buttons[] = {
+        {"RADIO", ls_wf_source_label(src), 'v', false, false},
+        {"BAND", ls_wf_preset_current(src), 'n', false, ls_wf_preset_count(src) == 0},
+        {"MODE", fm_mode_label(FM.mode), 'e', false, false},
+        {"TUNE", "MHz", 't', false, false},
+        {"SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
+    };
+    ls_btn_bar_raised(sf, r, buttons, src == LS_WF_SRC_FM ? 5 : 2, -1);
 }
 
 static void draw(tui_surface *sf, tui_rect area)
 {
     ls_wf_source_pump();
 
-    const int want = ls_tui_is_wide() ? STRIP_ROWS_WIDE : STRIP_ROWS_PORTRAIT;
-    tui_rect body = area;
-    if (area.h > want + 2) {
-        draw_buttons(sf, tui_rect_make(area.x, area.y, area.w, want));
-        body = tui_rect_make(area.x, area.y + want, area.w, area.h - want);
-    } else {
-        s_button = tui_rect_make(0, -1, 0, 0);
-        s_preset_button = tui_rect_make(0, -1, 0, 0);
-        s_mode_button = s_tune_button = s_sweep_button = tui_rect_make(0, -1, 0, 0);
-    }
+    int want = ls_btn_raised_height(area, ls_wf_source_get() == LS_WF_SRC_FM ? 5 : 2);
+    draw_buttons(sf, tui_rect_make(area.x, area.y, area.w, want));
+    tui_rect body = tui_rect_make(area.x, area.y + want, area.w, area.h - want);
 
     if (s_flash[0] && s_flash_ttl > 0) {
         s_flash_ttl--;
@@ -260,24 +204,8 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
-    if (tui_rect_contains(s_mode_button, col, row)) {
-        open_mode_picker();
-        return true;
-    }
-    if (tui_rect_contains(s_sweep_button, col, row)) {
-        ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
-        return true;
-    }
-    if (tui_rect_contains(s_tune_button, col, row)) {
-        tune_fm();
-        return true;
-    }
-    if (s_button.h > 0 && row >= s_button.y &&
-        row < s_button.y + s_button.h) {
-        if (col < s_button.x + s_button.w) open_radio_picker();
-        else                               open_preset_picker();
-        return true;
-    }
+    int i = ls_btn_hit(col, row);
+    if (i >= 0) return key(LS_TK_CHAR, "vnetw"[i]);
     return ls_wf_touch(col, row);
 }
 

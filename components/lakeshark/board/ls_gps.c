@@ -9,6 +9,7 @@
 #include "soc/soc_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -251,7 +252,11 @@ static void gps_task(void *arg)
     }
 
     s_task = NULL;
+#if defined(CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    vTaskDeleteWithCaps(NULL);
+#else
     vTaskDelete(NULL);
+#endif
 }
 
 /* ---- api -------------------------------------------------------------- */
@@ -299,7 +304,14 @@ esp_err_t ls_gps_start(void)
     if (err != ESP_OK) return err;
 
     s_run = true;
-    if (xTaskCreate(gps_task, "ls_gps", 3072, NULL, 5, &s_task) != pdPASS) {
+    /* This UART/parser task never writes flash. Keep its stack out of the
+       DMA heap needed by the shared radios and USB receiver. */
+#if defined(CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    BaseType_t created=xTaskCreateWithCaps(gps_task,"ls_gps",3072,NULL,5,&s_task,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+#else
+    BaseType_t created=xTaskCreate(gps_task,"ls_gps",3072,NULL,5,&s_task);
+#endif
+    if (created != pdPASS) {
         s_run = false;
         uart_driver_delete(GPS_UART);
         return ESP_ERR_NO_MEM;

@@ -17,6 +17,10 @@ void          pocsag_reset(pocsag_ctx_t *c);
 
 void          pocsag_process(pocsag_ctx_t *c, const float *demod, int n);
 
+/* A 64-byte batch after the hardware has removed its sync word. */
+bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
+                          bool inverted, bool contiguous);
+
 bool          pocsag_synced(const pocsag_ctx_t *c);
 int           pocsag_baud_of(const pocsag_ctx_t *c);
 uint32_t      pocsag_n_frames(const pocsag_ctx_t *c);

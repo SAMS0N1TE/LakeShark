@@ -18,11 +18,13 @@ static void *s_ctx;
 /* Handles are never dereferenced by the drivers, only passed back, so a
    distinct non-null pointer per device is all they need to be. */
 static struct spi_device_t { int slot; } s_pool[8];
+static bool s_used[8];
 
 void ls_shim_spi_reset(void)
 {
     memset(s_bus_up, 0, sizeof(s_bus_up));
     s_devices = 0;
+    memset(s_used,0,sizeof(s_used));
     s_transfers = 0;
     s_last_len = 0;
     s_fail_init = ESP_OK;
@@ -85,10 +87,19 @@ esp_err_t spi_bus_add_device(spi_host_device_t host,
     if (!out) return ESP_ERR_INVALID_ARG;
     if (host < 0 || host >= 3 || !s_bus_up[host]) return ESP_ERR_INVALID_STATE;
     if (s_devices >= 8) return ESP_ERR_NO_MEM;
-    s_pool[s_devices].slot = (int)s_devices;
-    *out = &s_pool[s_devices];
+    int slot=0;while(s_used[slot])slot++;
+    s_pool[slot].slot=slot;s_used[slot]=true;
+    *out=&s_pool[slot];
     s_devices++;
     return ESP_OK;
+}
+
+esp_err_t spi_bus_remove_device(spi_device_handle_t dev)
+{
+    for(int i=0;i<8;i++)if(dev==&s_pool[i] && s_used[i]) {
+        s_used[i]=false;s_devices--;return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
 }
 
 esp_err_t spi_device_transmit(spi_device_handle_t dev, spi_transaction_t *t)
