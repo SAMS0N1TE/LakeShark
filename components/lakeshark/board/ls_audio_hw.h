@@ -32,6 +32,7 @@ esp_err_t ls_audio_hw_in_gain(float db);
 bool      ls_audio_hw_has_mic(void);
 esp_err_t ls_audio_hw_volume(int volume, int *actual);
 esp_err_t ls_audio_hw_mute(bool mute);
+esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value);
 
 /* The audio diagnostic: what every link in the chain is set to, and
    a way to change the two that could be wrong without a rebuild. Reached

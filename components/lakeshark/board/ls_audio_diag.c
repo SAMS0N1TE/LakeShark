@@ -16,6 +16,8 @@
 #include "ls_xl9535.h"
 #include "audio_out.h"
 #include "tone.h"
+#include "settings.h"
+#include "ls_safe_mode.h"
 
 int ls_audio_ws_gpio   = LS_BOARD_I2S_WS_GPIO;
 int ls_audio_dout_gpio = LS_BOARD_I2S_DOUT_GPIO;
@@ -59,6 +61,25 @@ void ls_audio_diag_report(void)
     /* --- what the mixer thinks ------------------------------------------ */
     printf("  out      volume %d  mute %d\n",
            audio_volume_get(), audio_is_muted() ? 1 : 0);
+
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+    int gain = -1, mute = -1;
+    const esp_err_t gain_err = ls_audio_hw_reg_read(0x32, &gain);
+    const esp_err_t mute_err = ls_audio_hw_reg_read(0x31, &mute);
+    if (gain_err == ESP_OK && mute_err == ESP_OK) {
+        const int volume = audio_volume_get();
+        const int expected = volume ? 91 + volume : 0;
+        printf("  DAC      reg32=0x%02x expected=0x%02x %s; reg31=0x%02x mute=%s\n",
+               gain, expected, gain == expected ? "MATCH" : "MISMATCH",
+               mute, (mute & 0x60) ? "on" : "off");
+    } else {
+        printf("  DAC      readback failed: volume=%s mute=%s\n",
+               ok_str(gain_err), ok_str(mute_err));
+    }
+#endif
+    const ls_safe_boot_t *boot = ls_safe_boot_result();
+    printf("  startup  sound=%d prior_faults=%lu\n", settings_get_boot_sound(),
+           boot ? (unsigned long)boot->faults : 0UL);
 
     printf("  try:  audio swap   audio pa on|off   audio tone\n");
 }

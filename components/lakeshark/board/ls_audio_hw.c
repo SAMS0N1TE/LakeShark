@@ -203,6 +203,14 @@ esp_err_t ls_audio_hw_mute(bool mute)
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     return esp_codec_dev_set_out_mute(s_dev, mute) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
+
+esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value)
+{
+    if (!value) return ESP_ERR_INVALID_ARG;
+    if (!s_codec || !s_codec->get_reg) return ESP_ERR_INVALID_STATE;
+    return s_codec->get_reg(s_codec, reg, value) == ESP_CODEC_DEV_OK
+        ? ESP_OK : ESP_FAIL;
+}
 #else
 void ls_audio_hw_deinit(void) { /* the BSP owns its own lifetime */ }
 esp_err_t ls_audio_hw_init(bool speaker_only)
@@ -215,6 +223,8 @@ esp_err_t ls_audio_hw_volume(int volume, int *actual)
 { return bsp_extra_codec_volume_set(volume, actual); }
 esp_err_t ls_audio_hw_mute(bool mute)
 { return bsp_extra_codec_mute_set(mute); }
+esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value)
+{ (void)reg; (void)value; return ESP_ERR_NOT_SUPPORTED; }
 
 /* Capture, which this half of the file never had. */
 
