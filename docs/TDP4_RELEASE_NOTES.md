@@ -2,6 +2,10 @@
 
 ## 2.1.0-rc2 — T-Display P4
 
+- GPS coverage filtering for saved scan channels.
+- Mixed conventional Phase I P25 and analog FM scan lists.
+- CSV/JSON list imports over USB or SD; optional RadioReference adapter.
+- Safer channel-list saving and transactional imports.
 - Expanded P25 settings, including AUTO/manual demodulation and CQPSK tuning.
 - Experimental manual P25 Phase II voice reception, off by default.
 - Separate channel-list and stepped-band scanning controls.

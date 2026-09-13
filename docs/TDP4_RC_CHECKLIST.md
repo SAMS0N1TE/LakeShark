@@ -51,7 +51,7 @@ explicit in the release notes. Other board configurations are not RC binaries.
   with known RF transmissions. REC/Sub-GHz now select RTL or CC1101. MIX-RF
   MONITOR remains RSSI-only. General sensor/FSK decoding remains unfinished.
 - Scanner: validate channel-list and stepped-band scanning with known live
-  signals, including hold, skip, receiver removal and return. The engine's ten
+  signals, including hold, skip, receiver removal and return. The engine's twelve
   host cases pass; that does not establish field reception across a scan list.
 - Passive operation: run an unattended recorder/Journal soak alongside Mesh and
   radio reception. Duplicate grouping, pinned retention, interrupted writes and
@@ -109,3 +109,17 @@ The P4 packaging and release-surface Python checks pass (seven cases). Broader
 Python discovery also finds two pre-existing legacy test imports whose helper
 scripts are absent: `tools/lakeshark_upgrade.py` and `tools/package_lcd43_app.py`.
 Those legacy update/LCD-4.3 paths are not part of this P4 app-only package.
+
+## GPS and mixed scanning follow-up
+
+The host gate and P4 build pass with GPS coverage filtering, mixed conventional
+Phase I/FM scanning and transactional USB/SD imports. Device checks passed
+decoder handoffs, rejected-upload preservation and channel add/clear saves without
+a restart. The temporary test list was removed. Scanner stack headroom measured
+3,484 bytes after moving GPS working storage into PSRAM. Portrait and landscape
+simulator checks cover the new controls.
+
+Outdoor GPS movement, sustained mixed-mode audio and live RadioReference login
+remain untested. Automatic trunked-site roaming and tone/NAC filtering are not
+implemented. RadioReference is optional; local CSV/JSON imports need no account.
+See [GPS scanning and imports](LOCATION_SCAN.md).

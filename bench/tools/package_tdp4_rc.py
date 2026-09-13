@@ -89,6 +89,7 @@ Nothing in this package has been pushed or published by the packaging tool.
                'RELEASE_NOTES.md':(ROOT/'docs/TDP4_RELEASE_NOTES.md').read_bytes(),
                'VALIDATION.md':(ROOT/'docs/TDP4_RC_CHECKLIST.md').read_bytes(),
                'P25_PHASE2.md':(ROOT/'docs/P25_PHASE2.md').read_bytes(),
+               'LOCATION_SCAN.md':(ROOT/'docs/LOCATION_SCAN.md').read_bytes(),
                'THIRD_PARTY_NOTICES.md':(ROOT/'docs/THIRD_PARTY_NOTICES.md').read_bytes(),
                'LICENSE':(ROOT/'LICENSE').read_bytes()}
     package = out/(prefix+'-app.zip')
