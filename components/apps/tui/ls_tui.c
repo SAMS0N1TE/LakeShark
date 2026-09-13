@@ -223,12 +223,77 @@ static inline void ramp_for(uint8_t attr)
     if (!s_ramp_valid || attr != s_ramp_attr) ramp_build(attr);
 }
 
+static tui_rect s_image_rect;
+static const uint16_t *s_image;
+static int s_image_w, s_image_h;
+static uint32_t s_image_serial;
+static bool s_image_dirty;
+static uint16_t *s_image_previous;
+static bool s_image_previous_valid;
+
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
+{
+    if (!src || s_image_w != w || s_image_h != h ||
+        memcmp(&s_image_rect, &cells, sizeof(cells))) {
+        heap_caps_free(s_image_previous);
+        s_image_previous = NULL;
+        s_image_previous_valid = false;
+        if (src && w > 0 && h > 0 && (size_t)w * h <= 256u * 1024u)
+            s_image_previous = heap_caps_malloc((size_t)w * h * sizeof(uint16_t),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (s_image != src || s_image_w != w || s_image_h != h || s_image_serial != serial ||
+        memcmp(&s_image_rect, &cells, sizeof(cells))) s_image_dirty = true;
+    s_image_rect = cells;
+    s_image = src;
+    s_image_w = w; s_image_h = h;
+    s_image_serial = serial;
+}
+
+static bool image_cell(int col, int row)
+{
+    return s_image && s_image_w > 0 && s_image_h > 0 &&
+        col >= s_image_rect.x && row >= s_image_rect.y &&
+        col < s_image_rect.x + s_image_rect.w && row < s_image_rect.y + s_image_rect.h;
+}
+
+static bool image_changed(int col, int row)
+{
+    if (!s_image_previous_valid || !image_cell(col, row)) return true;
+    const int x = col - s_image_rect.x, y = row - s_image_rect.y;
+    const int x0 = x * s_image_w / s_image_rect.w;
+    const int x1 = ((x + 1) * s_image_w + s_image_rect.w - 1) / s_image_rect.w;
+    const int y0 = y * s_image_h / s_image_rect.h;
+    const int y1 = ((y + 1) * s_image_h + s_image_rect.h - 1) / s_image_rect.h;
+    for (int r = y0; r < y1; r++) {
+        const size_t off = (size_t)r * s_image_w + x0;
+        if (memcmp(s_image + off, s_image_previous + off, (size_t)(x1 - x0) * sizeof(uint16_t)))
+            return true;
+    }
+    return false;
+}
+
 static void blit_cell(uint16_t *fb, int native_w, int native_h,
                       int col, int row, const tui_cell *cell)
 {
     (void)native_h;
     const int x0 = s_ox + col * s_cw, y0 = s_oy + row * s_ch;
     const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
+
+    if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
+        const int iw = s_image_rect.w * s_cw, ih = s_image_rect.h * s_ch;
+        for (int y = 0; y < s_ch && y0 + y < s_screen_h; y++) {
+            const int sy = ((row - s_image_rect.y) * s_ch + y) * s_image_h / ih;
+            for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++) {
+                const int sx = ((col - s_image_rect.x) * s_cw + x) * s_image_w / iw;
+                const uint32_t dst = s_landscape ?
+                    (uint32_t)(s_screen_w - 1 - x0 - x) * native_w + y0 + y :
+                    (uint32_t)(y0 + y) * native_w + x0 + x;
+                fb[dst] = s_image[(size_t)sy * s_image_w + sx];
+            }
+        }
+        return;
+    }
 
     /* Blocks paint the whole cell themselves, background included. */
     if (blit_block(fb, native_w, x0, y0, (uint8_t)cell->ch, fg, bg)) return;
@@ -396,6 +461,7 @@ bool ls_tui_begin(int screen_w, int screen_h)
 
 void ls_tui_end(void)
 {
+    ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     free(s_back);  s_back = NULL;
     free(s_front); s_front = NULL;
     memset(&s_surface, 0, sizeof(s_surface));
@@ -589,12 +655,19 @@ int ls_tui_present(void)
             if (reserved_cell(col, row)) continue;
             size_t i = (size_t)row * s_cols + col;
             if (s_back[i].ch == s_front[i].ch &&
-                s_back[i].attr == s_front[i].attr) continue;
+                s_back[i].attr == s_front[i].attr &&
+                !(s_image_dirty && (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL &&
+                  image_changed(col, row))) continue;
             blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i]);
             s_front[i] = s_back[i];
             drawn++;
         }
     }
+    if (s_image_dirty && s_image_previous && s_image) {
+        memcpy(s_image_previous, s_image, (size_t)s_image_w * s_image_h * sizeof(uint16_t));
+        s_image_previous_valid = true;
+    }
+    s_image_dirty = false;
     if (drawn || margin) ls_panel_fb_present();
     s_last_us = (uint32_t)(esp_timer_get_time() - t0);
     s_last_cells = drawn;
@@ -639,6 +712,7 @@ static char printable(char ch)
     if (c == 0x92) return '+';                     /* 75%             */
     if (c == 0x93) return '#';                     /* full            */
     if (c >= 0xA0 && c <= 0xA7) return "_.,-=+*|"[c - 0xA0];  /* traces */
+    if (c == (uint8_t)LS_TUI_IMAGE_CELL) return '.';
     return '?';
 }
 

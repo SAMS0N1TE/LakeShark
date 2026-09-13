@@ -71,15 +71,15 @@ static ls_act_status_t a_map_zoom(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
-void ls_scr_map_reload(void);
+const char *ls_scr_map_reload(void);
 
 static ls_act_status_t a_map_reload(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
-    ls_scr_map_reload();
+    const char *why = ls_scr_map_reload();
     out->kind = LS_VAL_TEXT;
-    out->s = ls_map_status() ? ls_map_status() : "archive loaded";
-    return ls_map_status() ? LS_ACT_UNAVAILABLE : LS_ACT_OK;
+    out->s = why ? why : "archive loaded";
+    return why ? LS_ACT_UNAVAILABLE : LS_ACT_OK;
 }
 
 /* Open the map, and centre it if there is anything to centre on. */

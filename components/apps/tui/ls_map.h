@@ -16,10 +16,12 @@ extern "C" {
 bool ls_map_begin(int px_w, int px_h);
 void ls_map_end(void);
 
-/* Open an archive. The previous one is closed first. False when the file is
-   missing or is not a PMTiles v3 archive of MVT tiles; ls_map_status says
-   which. Safe to call with no card in, which is the usual case. */
+/* Failed opens preserve the current archive. */
 bool ls_map_open(const char *path);
+const char *ls_map_open_error(void);
+const char *ls_map_archive(void);
+/* Header compatibility only; opening also validates the directory. */
+const char *ls_map_check_archive(const char *path);
 
 const char *ls_map_status(void);
 

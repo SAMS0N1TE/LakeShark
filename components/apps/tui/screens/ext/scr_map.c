@@ -19,22 +19,23 @@
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_stroke.h"
+#include "carto/style.h"
+#include "carto/raster.h"
 /* The nodes drawn on the map are the mesh's own peers. */
 #include "esp_attr.h"
 #include "ls_mesh.h"
+#include "ls_gps.h"
 /* And the aircraft are ADS-B's own table - the one its list and radar
    read, not a copy of it. */
 #include "apps/adsb/adsb_state.h"
 
-/* Where a map archive lives. The loader takes the first one it finds rather
-   than a fixed name: somebody who has cut their own county has no reason to
-   have called it what this file expects. */
 #define MAP_DIR "/sdcard/maps"
 
 static bool     s_opened;
 static tui_rect s_map_cells;      /* the rectangle the grid lent us */
 static tui_rect s_quick_rect;
 static tui_rect s_pad_rect;
+static int s_header_h;
 static char     s_note[64];
 
 /* Pan by a third of the frame, which is far enough to be worth the tap and
@@ -48,12 +49,10 @@ static const ls_quick_t QUICK[] = {
       .choices = (const char *const[]){ "-1" }, .nchoices = 1, .key = '-' },
     { .label = "HERE", .kind = LS_QUICK_ACTION, .action = "map.here",
       .key = 'h' },
-    { .label = "VIEW", .kind = LS_QUICK_ACTION, .action = "map.view",
-      .key = 'v' },
-    /* FIND has RELOAD's slot, and RELOAD is not replaced by another row. */
-
     { .label = "FIND", .kind = LS_QUICK_ACTION, .action = "map.find",
       .key = 'f' },
+    { .label = "MAPS", .kind = LS_QUICK_ACTION, .action = "map.files",
+      .key = 'm' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
@@ -66,12 +65,18 @@ static bool find_archive(char *out, size_t cap)
 
     bool found = false;
     const struct dirent *e;
-    while (!found && (e = readdir(d)) != NULL) {
+    while ((e = readdir(d)) != NULL) {
         const size_t n = strlen(e->d_name);
         if (n < 9) continue;
         if (strcasecmp(e->d_name + n - 8, ".pmtiles") != 0) continue;
-        snprintf(out, cap, "%s/%s", MAP_DIR, e->d_name);
-        found = true;
+        char path[128];
+        if (n + sizeof(MAP_DIR) + 1 > sizeof(path)) continue;
+        snprintf(path, sizeof(path), "%s/%.*s", MAP_DIR, (int)n, e->d_name);
+        if (strlen(path) >= cap || ls_map_check_archive(path)) continue;
+        if (!found || strcasecmp(path, out) < 0) {
+            snprintf(out, cap, "%s", path);
+            found = true;
+        }
     }
     closedir(d);
     return found;
@@ -87,6 +92,71 @@ static void rescan(void);
 static void cells_free(void);
 
 static bool s_have_archive;
+EXT_RAM_BSS_ATTR static char s_archives[LS_PICKER_MAX][128];
+static int s_archive_n;
+static const char *s_file_error;
+
+static int archive_order(const void *a, const void *b)
+{
+    return strcasecmp((const char *)a, (const char *)b);
+}
+
+static void pick_archive(int i)
+{
+    if (i < 0 || i >= s_archive_n) return;
+    if (!ls_map_open(s_archives[i])) {
+        s_file_error = ls_map_open_error();
+        return;
+    }
+    s_file_error = NULL;
+    s_have_archive = true;
+    double lat, lon;
+    ls_map_get_center(&lat, &lon);
+    if (ls_map_zoom_covering(lat, lon) < 0) {
+        FILE *f = fopen(s_archives[i], "rb");
+        uint8_t h[127];
+        if (f) {
+            if (fread(h, 1, sizeof(h), f) == sizeof(h)) {
+                const uint32_t x = (uint32_t)h[119] | (uint32_t)h[120] << 8 |
+                    (uint32_t)h[121] << 16 | (uint32_t)h[122] << 24;
+                const uint32_t y = (uint32_t)h[123] | (uint32_t)h[124] << 8 |
+                    (uint32_t)h[125] << 16 | (uint32_t)h[126] << 24;
+                ls_map_center((int32_t)y / 1e7, (int32_t)x / 1e7);
+                ls_map_zoom_by((int)h[118] - ls_map_zoom());
+            }
+            fclose(f);
+        }
+    }
+}
+
+static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    s_archive_n = 0;
+    DIR *d = opendir(MAP_DIR);
+    const struct dirent *e;
+    if (d) {
+        while ((e = readdir(d)) != NULL && s_archive_n < LS_PICKER_MAX) {
+            const size_t n = strlen(e->d_name);
+            if (n < 9 || strcasecmp(e->d_name + n - 8, ".pmtiles")) continue;
+            if (n + sizeof(MAP_DIR) + 1 > sizeof(s_archives[0])) continue;
+            snprintf(s_archives[s_archive_n++], sizeof(s_archives[0]), "%s/%.*s", MAP_DIR, (int)n, e->d_name);
+        }
+        closedir(d);
+    }
+    qsort(s_archives, s_archive_n, sizeof(s_archives[0]), archive_order);
+    ls_picker_open("SD MAPS", pick_archive);
+    for (int i = 0; i < s_archive_n; i++) {
+        const char *error = ls_map_check_archive(s_archives[i]);
+        const char *current = ls_map_archive();
+        ls_picker_add(s_archives[i] + sizeof(MAP_DIR), error ? "unsupported" :
+            current && !strcmp(current, s_archives[i]) ? "current" : "open map");
+    }
+    if (!s_archive_n) ls_picker_empty_reason("put .pmtiles files in SD /maps");
+    out->kind = LS_VAL_TEXT;
+    out->s = "choose a map";
+    return LS_ACT_OK;
+}
 
 static void enter(void)
 {
@@ -116,11 +186,17 @@ static void enter(void)
 static void rescan(void)
 {
     char path[128];
-    if (find_archive(path, sizeof(path))) s_have_archive = ls_map_open(path);
+    if (!find_archive(path, sizeof(path))) {
+        s_file_error = "no compatible map found; choose MAPS";
+        return;
+    }
+    s_file_error = ls_map_open(path) ? NULL : ls_map_open_error();
+    s_have_archive = ls_map_archive() != NULL;
 }
 
 static void leave(void)
 {
+    ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     /* Hand the pixels back, or the map stays on the glass under the next
        screen: the cell renderer only pushes cells that changed, and none of
        the cells under a borrowed rectangle did. */
@@ -173,12 +249,10 @@ static uint8_t ink_attr(ls_map_ink_t k)
     }
 }
 
-/* Two ways to draw it, and mono is not just colour turned off. */
-
-typedef enum { MAP_VIEW_COLOUR = 0, MAP_VIEW_MONO, MAP_VIEW__COUNT } map_view_t;
+typedef enum { MAP_VIEW_FIELD = 0, MAP_VIEW_COLOUR, MAP_VIEW_MONO, MAP_VIEW__COUNT } map_view_t;
 static map_view_t s_view;
 
-static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "colour", "lines" };
+static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines" };
 
 static ls_act_status_t a_map_view(const ls_args_t *in, ls_val_t *out)
 {
@@ -190,13 +264,15 @@ static ls_act_status_t a_map_view(const ls_args_t *in, ls_val_t *out)
 }
 
 static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out);
+static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out);
 
 static void register_view_action(void)
 {
     static bool done;
     if (done) return;
     done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view,
-                              "filled colour, or one-bit line art");
+                              "field, blocks, or line art");
+    ls_action_register("map.files", "", LS_CAP_UI, a_map_files, "choose an SD map");
     ls_action_register("map.find", "", LS_CAP_UI, a_map_find,
                        "the named places in view, nearest first, to go to");
 }
@@ -212,6 +288,10 @@ static uint32_t s_cc_serial;
 static int      s_cc_view = -1;
 static bool     s_cc_valid;
 static uint32_t s_cells_us;        /* what the last rebuild cost */
+static uint16_t *s_field_pixels;
+static int s_field_w, s_field_h;
+static uint32_t s_field_serial;
+static bool s_field_valid;
 
 static uint8_t s_acc[CELL_COLS_MAX * 4];
 static uint8_t s_ink[CELL_COLS_MAX * 4];
@@ -249,6 +329,8 @@ static bool cells_fit(int w, int h)
 
 static void cells_free(void)
 {
+    heap_caps_free(s_field_pixels); s_field_pixels = NULL;
+    s_field_valid = false;
     heap_caps_free(s_cc_glyph);  s_cc_glyph = NULL;
     heap_caps_free(s_cc_attr);   s_cc_attr = NULL;
     s_cc_w = s_cc_h = 0;
@@ -264,8 +346,6 @@ static void flush_row(int cy, int w, bool mono)
 
     for (int cx = 0; cx < w; cx++) {
         if (mono) {
-            /* A STROKE, not a block, and this is the line the two previous attempts never reached. */
-
             const uint8_t *b = &s_ink[cx * 4];
             const char st = ls_stroke_glyph(b[0], b[1], b[2], b[3]);
             if (!st) { g[cx] = 0; continue; }
@@ -354,6 +434,37 @@ static void draw_cells(tui_surface *sf, tui_rect a,
                        const uint16_t *px, int pw, int ph)
 {
     if (a.w <= 0 || a.h <= 0 || !px) return;
+    if (s_view == MAP_VIEW_FIELD) {
+        const uint32_t serial = ls_map_render_serial();
+        if (!s_field_pixels || s_field_w != pw || s_field_h != ph) {
+            heap_caps_free(s_field_pixels);
+            s_field_pixels = heap_caps_malloc((size_t)pw * ph * sizeof(uint16_t),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            s_field_w = pw; s_field_h = ph; s_field_valid = false;
+        }
+        if (s_field_pixels && (!s_field_valid || s_field_serial != serial)) {
+            carto_style st;
+            carto_style_default(&st);
+            const uint16_t water = carto_rgb565(st.water), park = carto_rgb565(st.park);
+            const uint16_t bg = carto_rgb565(st.bg), road = carto_rgb565(st.road_color);
+            const uint16_t blue = carto_rgb565((carto_rgb){29, 81, 110});
+            const uint16_t green = carto_rgb565((carto_rgb){36, 65, 49});
+            const uint16_t ground = carto_rgb565((carto_rgb){8, 16, 21});
+            const uint16_t main_road = carto_rgb565((carto_rgb){220, 206, 159});
+            for (int i = 0; i < pw * ph; i++) {
+                const uint16_t v = px[i];
+                s_field_pixels[i] = v == water ? blue : v == park ? green :
+                                    v == bg ? ground : v == road ? main_road : v;
+            }
+            s_field_serial = serial; s_field_valid = true;
+        }
+        ls_tui_image(a, s_field_pixels ? s_field_pixels : px, pw, ph, serial);
+        for (int y = a.y; y < a.y + a.h; y++)
+            for (int x = a.x; x < a.x + a.w; x++)
+                tui_put_char(sf, a, x, y, LS_TUI_IMAGE_CELL, 0);
+        return;
+    }
+    ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     if (!cells_fit(a.w, a.h)) {
 
         ls_panel_notice(sf, a, "MAP", "no memory to lay the map out in cells",
@@ -546,6 +657,19 @@ static bool map_cell_of(double lat, double lon, tui_rect a, int pw, int ph,
     *cx = (int)(fx / SUB_X);
     *cy = (int)(fy / sub_y());
     return (*cx >= 0 && *cy >= 0 && *cx < a.w && *cy < a.h);
+}
+
+static void draw_receiver(tui_surface *sf, tui_rect a, int pw, int ph)
+{
+    EXT_RAM_BSS_ATTR static ls_gps_state_t gps;
+    ls_gps_get(&gps);
+    const int64_t age = esp_timer_get_time() - gps.last_fix_us;
+    if (!gps.fix || gps.last_fix_us <= 0 || age < 0 || age > 10000000) return;
+    int x, y;
+    if (!map_cell_of(gps.lat_deg, gps.lon_deg, a, pw, ph, &x, &y) ||
+        x < 1 || x + 4 >= a.w || !box_free(x - 1, x + 4, y)) return;
+    tui_put_str(sf, a, a.x + x - 1, a.y + y, "[+]GPS", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    box_take(x - 1, x + 4, y);
 }
 
 /* The peers, and they are NOT on the stack: twelve of them is 480 bytes and
@@ -837,11 +961,22 @@ static void draw(tui_surface *sf, tui_rect area)
        Three rows of buttons plus a row of air. */
     const int want = ls_quick_rows(QUICK, N_QUICK, area.w, ls_tui_is_wide());
     const int ctl_h = (area.h > want + 10) ? want : 0;
-    tui_rect body = tui_rect_make(area.x, area.y, area.w, area.h - ctl_h);
+    s_header_h = ls_tui_is_wide() ? 2 : 3;
+    tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
 
     s_quick_rect = ctl_h
-        ? tui_rect_make(area.x, area.y + body.h, area.w, ctl_h)
+        ? tui_rect_make(area.x, body.y + body.h, area.w, ctl_h)
         : tui_rect_make(0, -1, 0, 0);
+
+    const char *archive = ls_map_archive();
+    const char *name = archive ? strrchr(archive, '/') : NULL;
+    char title[80];
+    snprintf(title, sizeof(title), "[ %s / V ]  %.*s", VIEW_NAME[s_view],
+             area.w > 18 ? area.w - 18 : 0, name ? name + 1 : "SD MAPS");
+    tui_put_str(sf, area, area.x, area.y, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, area, area.x, area.y + 1, "^ NORTH", LS_ATTR_DIM);
+    tui_put_str(sf, area, area.x + 10, area.y + 1, "AIR", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    tui_put_str(sf, area, area.x + 16, area.y + 1, "MESH", TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
 
     /* Begin FIRST, then ask what is wrong. The other order asks a map that
        has not been started why it is not drawable, gets "it has no
@@ -884,6 +1019,7 @@ static void draw(tui_surface *sf, tui_rect area)
                a node is live data about the network you are standing in and
                a hamlet is not. See overlay_reset. */
             overlay_reset(body, s_pad_rect);
+            draw_receiver(sf, body, pw, ph);
             draw_mesh_nodes(sf, body, pw, ph, s_pad_rect);
             /* Aircraft after the nodes and before the names: live
                traffic steps around the mesh, and a town steps around both. */
@@ -908,24 +1044,13 @@ static void draw(tui_surface *sf, tui_rect area)
             const bool busy = ls_map_render_busy();
             const char pip = busy ? ls_motion_pip(true) : ' ';
 
-            /* Which view this is. */
-
-            const char view = (s_view == MAP_VIEW_MONO) ? 'L' : 'C';
-
-            if (ls_tui_is_wide())
-                snprintf(s_note, sizeof(s_note),
-                         "%c z%d%c %.4f %.4f %d/%dt r%lums c%lums",
-                         pip, ls_map_zoom(), view, lat, lon,
-                         st.tiles_drawn, st.tiles_wanted,
-                         (unsigned long)(st.render_us / 1000),
-                         (unsigned long)(s_cells_us / 1000));
-            else
-                snprintf(s_note, sizeof(s_note), "%c z%d%c %d/%dt r%lu c%lu",
-                         pip, ls_map_zoom(), view,
-                         st.tiles_drawn, st.tiles_wanted,
-                         (unsigned long)(st.render_us / 1000),
-                         (unsigned long)(s_cells_us / 1000));
-            ls_tui_status_set(s_note, NULL);
+            const double width_m = 40075016.686 * cos(lat * M_PI / 180.0) * pw /
+                (ldexp(1.0, ls_map_zoom()) * ls_map_tile_px());
+            snprintf(s_note, sizeof(s_note), "%c %s  z%d  %.1f mi across",
+                     pip, busy ? "LOADING" : "OFFLINE", ls_map_zoom(), width_m / 1609.344);
+            ls_tui_status_set(s_file_error ? s_file_error : s_note, NULL);
+            if (!ls_tui_is_wide())
+                tui_put_str(sf, area, area.x, area.y + 2, s_file_error ? s_file_error : s_note, LS_ATTR_DIM);
 
             /* Drawn last so the glyphs sit on top of the picture - the
                reservation that keeps them off any label already happened,
@@ -957,6 +1082,11 @@ static bool key(ls_tk_t k, char ch)
         return true;
     }
 
+    if (k == LS_TK_CHAR && (ch == 'v' || ch == 'V')) {
+        ls_val_t out;
+        a_map_view(NULL, &out);
+        return true;
+    }
     switch (k) {
     case LS_TK_LEFT:  ls_map_pan(-pan_step(), 0); return true;
     case LS_TK_RIGHT: ls_map_pan( pan_step(), 0); return true;
@@ -971,6 +1101,12 @@ static bool key(ls_tk_t k, char ch)
    debounce layer reports a completed tap and nothing between. */
 static bool touch(int col, int row)
 {
+    if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
+        col >= s_map_cells.x && col < s_map_cells.x + 14) {
+        ls_val_t out;
+        a_map_view(NULL, &out);
+        return true;
+    }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h &&
         ls_quick_touch(col, row, QUICK, N_QUICK,
@@ -1008,11 +1144,11 @@ static bool touch(int col, int row)
 
 /* Called by the map.reload action, which is how the console and a card app
    reach the same rescan the button does. */
-void ls_scr_map_reload(void) { rescan(); }
+const char *ls_scr_map_reload(void) { rescan(); return s_file_error; }
 
 const ls_tui_screen_t ls_scr_map = {
     .name = "MAP",
-    .hint = "TAP centre  ARROWS pan  F find  N nodes  = in  - out",
+    .hint = "TAP centre  ARROWS pan  F places  M maps  V style",
     .enter = enter,
     .leave = leave,
     .draw = draw,

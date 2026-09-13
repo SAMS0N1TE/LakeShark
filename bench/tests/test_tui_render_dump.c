@@ -521,3 +521,37 @@ LS_CASE(the_blitter_keeps_the_chosen_theme_under_daylight)
     ls_tui_set_daylight(false);
     ls_tui_set_theme(ls_tui_theme_at(0));
 }
+
+LS_CASE(pixel_map_updates_only_changed_cells_and_text_covers_it)
+{
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        tui_surface *sf = ls_tui_surface();
+        const tui_rect area = tui_rect_make(3, 10, 4, 2);
+        uint16_t pixels[8] = {0x1234, 0x2345, 0x3456, 0x4567, 0x5678, 0x6789, 0x789a, 0x89ab};
+        tui_fill(sf, tui_surface_rect(sf), ' ', 0);
+        tui_fill(sf, area, LS_TUI_IMAGE_CELL, 0);
+        ls_tui_image(area, pixels, 4, 2, 1);
+        ls_tui_present();
+        int checked = 0;
+        for (int y = 0; y < NATIVE_H; y++) for (int x = 0; x < NATIVE_W; x++) {
+            int c, r;
+            if (!ls_tui_pixel_to_cell(x, y, &c, &r) || c < 3 || c >= 7 || r < 10 || r >= 12) continue;
+            LS_EQ_UINT(pixels[(r - 10) * 4 + c - 3], g_fb[(size_t)y * NATIVE_W + x]);
+            checked++;
+        }
+        LS_CHECK(checked > 0);
+        LS_EQ_INT(0, ls_tui_present());
+        pixels[0] = 0xf800;
+        ls_tui_image(area, pixels, 4, 2, 2);
+        LS_EQ_INT(1, ls_tui_present());
+        tui_put_char(sf, area, 3, 10, 'A', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        LS_EQ_INT(1, ls_tui_present());
+        pixels[0] = 0x07e0;
+        ls_tui_image(area, pixels, 4, 2, 3);
+        LS_EQ_INT(0, ls_tui_present());
+        tui_put_char(sf, area, 3, 10, LS_TUI_IMAGE_CELL, 0);
+        LS_EQ_INT(1, ls_tui_present());
+        ls_tui_end();
+    }
+}

@@ -36,6 +36,7 @@ serial*.txt
 !/docs/TDP4_RC_CHECKLIST.md
 !/docs/P25_PHASE2.md
 !/docs/LOCATION_SCAN.md
+!/docs/map-field.md
 !/docs/screenshots/
 /tools/*
 !/tools/p25_profile.example

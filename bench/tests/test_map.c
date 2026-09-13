@@ -83,6 +83,7 @@ LS_CASE(an_archive_opens_and_the_status_line_goes_quiet)
 
 LS_CASE(a_missing_archive_says_which_thing_is_wrong)
 {
+    ls_map_end();
 
     LS_CHECK(ls_map_begin(W, H));
     LS_CHECK_MSG(!ls_map_open("fixtures/carto/there-is-no-such-file.pmtiles"),
@@ -94,6 +95,72 @@ LS_CASE(a_missing_archive_says_which_thing_is_wrong)
                  "a missing card was reported as memory: '%s'", why);
     LS_CHECK_MSG(render_all(NULL, NULL) == NULL,
                  "a map with no archive handed back a frame");
+}
+
+LS_CASE(a_failed_open_preserves_the_working_map)
+{
+    LS_CHECK(ready());
+    const uint16_t *before = render_all(NULL, NULL);
+    static uint16_t saved[W * H];
+    memcpy(saved, before, sizeof(saved));
+    const uint32_t serial = ls_map_render_serial();
+    LS_CHECK(!ls_map_open("missing-map.pmtiles"));
+    LS_CHECK(ls_map_open_error() != NULL);
+    LS_CHECK(ls_map_status() == NULL);
+    LS_CHECK(!strcmp(ls_map_archive(), PMTILES_FIXTURE));
+    LS_CHECK(!memcmp(saved, render_all(NULL, NULL), sizeof(saved)));
+    LS_EQ_UINT(serial, ls_map_render_serial());
+}
+
+LS_CASE(map_header_errors_explain_the_unsupported_format)
+{
+    uint8_t h[127];
+    FILE *f = fopen(PMTILES_FIXTURE, "rb");
+    LS_CHECK(f != NULL);
+    if (!f) return;
+    LS_EQ_UINT(sizeof(h), fread(h, 1, sizeof(h), f));
+    fclose(f);
+    const int offsets[] = {7, 97, 98, 99, 101};
+    const uint8_t values[] = {2, 2, 2, 2, 30};
+    const char *reasons[] = {"version", "compressed", "compressed", "vector", "zoom"};
+    for (int i = 0; i < 5; i++) {
+        const uint8_t saved = h[offsets[i]];
+        h[offsets[i]] = values[i];
+        f = fopen("map-header-test.pmtiles", "wb");
+        LS_CHECK(f != NULL);
+        if (!f) return;
+        fwrite(h, 1, sizeof(h), f);
+        fclose(f);
+        const char *why = ls_map_check_archive("map-header-test.pmtiles");
+        LS_CHECK(why && strstr(why, reasons[i]));
+        h[offsets[i]] = saved;
+    }
+    remove("map-header-test.pmtiles");
+}
+
+LS_CASE(returning_to_a_completed_view_restores_pixels_and_labels)
+{
+    LS_CHECK(ready());
+    static uint16_t saved[W * H];
+    static carto_label saved_labels[64];
+    memcpy(saved, render_all(NULL, NULL), sizeof(saved));
+    const carto_label *labels;
+    const int n = ls_map_labels(&labels);
+    memcpy(saved_labels, labels, n * sizeof(*labels));
+    ls_map_pan(50, 0);
+    render_all(NULL, NULL);
+    ls_map_pan(-50, 0);
+    ls_map_center(LAT + 4e-13, LON - 4e-13);
+    ls_map_set_step_limit(0, 1);
+    const uint16_t *px = ls_map_render(NULL, NULL);
+    LS_CHECK(!ls_map_render_busy());
+    LS_CHECK(!memcmp(saved, px, sizeof(saved)));
+    LS_EQ_INT(n, ls_map_labels(&labels));
+    LS_CHECK(!memcmp(saved_labels, labels, n * sizeof(*labels)));
+    ls_map_stats_t st;
+    ls_map_stats(&st);
+    LS_EQ_UINT(0, st.raster_us);
+    ls_map_set_step_limit(0, 0);
 }
 
 LS_CASE(a_frame_over_the_coverage_is_drawn_from_every_tile_it_touches)
@@ -215,9 +282,7 @@ LS_CASE(nonsense_coordinates_are_uncovered_rather_than_a_tile_somewhere)
 
 LS_CASE(coverage_is_false_before_an_archive_is_open)
 {
-    /* No archive is not "everywhere is covered" and not a crash. Opening a
-       file that is not there is how this file already gets to that state -
-       ls_map_open closes the previous archive before it fails. */
+    ls_map_end();
     LS_CHECK(!ls_map_open("fixtures/carto/there-is-no-such-file.pmtiles"));
     LS_EQ_INT(-1, ls_map_zoom_covering(LAT, LON));
 }
@@ -399,6 +464,7 @@ LS_CASE(a_render_taken_in_slices_matches_one_taken_whole)
     render_all(NULL, NULL);
     ls_map_center(LAT, LON);
 
+    LS_CHECK(ls_map_open(PMTILES_FIXTURE));
     ls_map_set_step_limit(0, 1);
     int calls = 0;
     px = ls_map_render(NULL, NULL);
@@ -657,16 +723,12 @@ LS_CASE(panning_between_two_views_stops_reading_the_card)
     uint32_t hits1 = 0, misses1 = 0, absent1 = 0;
     ls_map_tile_cache_stats(&tiles, &hits1, &misses1, &absent1);
 
-    LS_CHECK_MSG(hits1 > hits0,
-                 "four more pans asked the store for nothing at all");
+    LS_CHECK_MSG(hits1 == hits0, "completed views were rasterised again");
     LS_CHECK_MSG(misses1 == misses0,
                  "four pans over two views already seen read the card %lu "
                  "more times - the store cannot hold a pan's working set",
                  (unsigned long)(misses1 - misses0));
-    LS_CHECK_MSG(absent1 > absent0,
-                 "this frame overhangs the archive, so the absent probes "
-                 "should still be counting - if they are not, the two are "
-                 "being conflated again");
+    LS_CHECK_MSG(absent1 == absent0, "completed views probed missing tiles again");
 
     ls_map_set_cache_budget(BIG_BUDGET);
 }

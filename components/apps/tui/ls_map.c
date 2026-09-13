@@ -256,7 +256,8 @@ void ls_map_tile_cache_bytes(uint32_t *held, uint32_t *budget)
     if (budget) *budget = s_tc_budget;
 }
 
-static char        s_path[64];
+static char        s_path[128];
+static const char *s_open_error;
 static const char *s_why = "no map archive loaded";
 
 static double s_lat = 43.4445, s_lon = -71.6473;   /* until told otherwise */
@@ -270,6 +271,20 @@ static int    s_good_zoom = 12;
 static bool   s_have_good;
 
 static ls_map_stats_t s_st;
+static uint16_t *s_history_pixels;
+EXT_RAM_BSS_ATTR static carto_label s_history_labels[LABELS_MAX];
+static int s_history_n;
+static double s_history_lat, s_history_lon;
+static int s_history_zoom;
+static bool s_history_valid;
+static ls_map_stats_t s_history_stats;
+
+static void history_free(void)
+{
+    heap_caps_free(s_history_pixels);
+    s_history_pixels = NULL;
+    s_history_valid = false;
+}
 
 /* Set only by a begin that asked PSRAM for memory and was refused. */
 static bool s_alloc_failed;
@@ -278,8 +293,10 @@ static bool s_alloc_failed;
 
 void ls_map_end(void)
 {
-
+    history_free();
+    s_cache_valid = false;
     step_abandon();
+    tile_cache_free();
     if (s_pm) { pmtiles_close(s_pm); s_pm = NULL; }
     heap_caps_free(s_pixels);   s_pixels = NULL;
     heap_caps_free(s_arena_buf); s_arena_buf = NULL;
@@ -292,6 +309,8 @@ bool ls_map_begin(int px_w, int px_h)
 {
     if (px_w <= 0 || px_h <= 0) return false;
     if (s_pixels && px_w == s_w && px_h == s_h) return true;
+    history_free();
+    s_cache_valid = false;
 
     /* A resize frees the frame and the arena, and a render in progress holds a carto context inside that arena and a framebuffer descriptor pointing at those pixels. */
 
@@ -330,14 +349,55 @@ void ls_map_set_tile_px(int px)
     if (px < 16) px = 16;
     if (px > TILE_PX_NATURAL) px = TILE_PX_NATURAL;
     if (px == s_tile_px) return;
+    step_abandon();
+    history_free();
     s_tile_px = px;
     s_cache_valid = false;
 }
 
 int ls_map_tile_px(void) { return s_tile_px; }
 
+const char *ls_map_check_archive(const char *path)
+{
+    if (!path || !*path) return "choose a map from MAPS";
+    FILE *f = fopen(path, "rb");
+    if (!f) return "map file not found; check the SD card";
+    uint8_t h[127];
+    const size_t n = fread(h, 1, sizeof(h), f);
+    fclose(f);
+    if (n != sizeof(h) || memcmp(h, "PMTiles", 7)) return "not a PMTiles archive";
+    if (h[7] != 3) return "requires PMTiles version 3";
+    if (h[99] != 1) return "requires vector tiles (MVT), not images";
+    if (h[97] != 1 || h[98] != 1) return "compressed map; export uncompressed MVT";
+    if (h[100] > h[101] || h[101] > 22) return "unsupported map zoom range";
+    return NULL;
+}
+
+const char *ls_map_open_error(void) { return s_open_error; }
+const char *ls_map_archive(void) { return s_pm ? s_path : NULL; }
+
 bool ls_map_open(const char *path)
 {
+    s_open_error = ls_map_check_archive(path);
+    if (s_open_error) {
+        if (!s_pm) s_why = s_open_error;
+        return false;
+    }
+    PmTiles *next = pmtiles_open(path);
+    if (!next) {
+        s_open_error = "cannot open map; check file and free memory";
+        if (!s_pm) s_why = s_open_error;
+        return false;
+    }
+    const size_t cap = pmtiles_max_tile_len(next);
+    uint8_t *tile = cap ? heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    if (!tile) {
+        pmtiles_close(next);
+        s_open_error = cap ? "no memory for this map's tiles" : "map contains no readable tiles";
+        if (!s_pm) s_why = s_open_error;
+        return false;
+    }
+    history_free();
     /* A different archive means the tiles a render was part way
        through are the wrong tiles. */
     step_abandon();
@@ -349,30 +409,16 @@ bool ls_map_open(const char *path)
        that key misses, so it is dropped by hand here. */
     s_cache_valid = false;
 
-    if (!path || !*path) { s_why = "no map archive loaded"; return false; }
-
-    s_pm = pmtiles_open(path);
-    if (!s_pm) {
-
-        s_why = "cannot read that map archive";
-        return false;
-    }
+    s_pm = next;
+    s_have_good = false;
 
     snprintf(s_path, sizeof(s_path), "%s", path);
 
-    s_tile_cap = pmtiles_max_tile_len(s_pm);
-    if (s_tile_cap)
-        s_tile = heap_caps_malloc(s_tile_cap,
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_tile_cap = cap;
+    s_tile = tile;
     /* The store holds this archive's tiles, so it is emptied when
        another one is opened. It takes no memory until a tile arrives. */
     tile_cache_begin();
-    if (!s_tile) {
-        pmtiles_close(s_pm);
-        s_pm = NULL;
-        s_why = "no memory for a tile";
-        return false;
-    }
 
     const int zmin = pmtiles_min_zoom(s_pm), zmax = pmtiles_max_zoom(s_pm);
     if (s_zoom < zmin) s_zoom = zmin;
@@ -756,6 +802,59 @@ const uint16_t *ls_map_render(int *w, int *h)
 
     /* A render already under way for this exact view carries on. */
     if (s_step_on) return step_render();
+
+    /* Keep one completed view for returning from a pan or zoom. */
+    /* Allow inverse-Mercator roundoff after panning back. */
+    if (s_history_valid && fabs(s_history_lat - s_lat) < 1e-12 && fabs(s_history_lon - s_lon) < 1e-12 &&
+        s_history_zoom == s_zoom) {
+        const int64_t restored_at = esp_timer_get_time();
+        uint16_t *old = s_pixels;
+        s_pixels = s_history_pixels;
+        s_history_pixels = old;
+        for (int i = 0; i < LABELS_MAX; i++) {
+            carto_label label = s_labels[i];
+            s_labels[i] = s_history_labels[i];
+            s_history_labels[i] = label;
+        }
+        const int old_n = s_label_sink.n;
+        s_label_sink.n = s_history_n;
+        s_history_n = old_n;
+        const ls_map_stats_t old_stats = s_st;
+        s_st = s_history_stats;
+        s_history_stats = old_stats;
+        s_st.fetch_us = s_st.raster_us = s_st.render_us = 0;
+        s_history_valid = s_cache_valid;
+        s_history_lat = s_cache_lat;
+        s_history_lon = s_cache_lon;
+        s_history_zoom = s_cache_zoom;
+        s_cache_lat = s_lat; s_cache_lon = s_lon;
+        s_cache_zoom = s_zoom; s_cache_w = s_w; s_cache_h = s_h;
+        s_cache_valid = true;
+        s_tz_used = s_zoom;
+        s_why = s_st.tiles_drawn ? NULL : "no tiles here at this zoom";
+        if (s_st.tiles_drawn) {
+            s_good_lat = s_lat; s_good_lon = s_lon;
+            s_good_zoom = s_zoom; s_have_good = true;
+        }
+        s_serial++;
+        s_st.render_us = (uint32_t)(esp_timer_get_time() - restored_at);
+        return s_pixels;
+    }
+    if (s_cache_valid) {
+        const size_t bytes = (size_t)s_w * s_h * sizeof(uint16_t);
+        if (!s_history_pixels && bytes <= 512u * 1024u)
+            s_history_pixels = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_history_pixels) {
+            memcpy(s_history_pixels, s_pixels, bytes);
+            memcpy(s_history_labels, s_labels, sizeof(s_labels));
+            s_history_n = s_label_sink.n;
+            s_history_lat = s_cache_lat; s_history_lon = s_cache_lon;
+            s_history_zoom = s_cache_zoom;
+            s_history_stats = s_st;
+            s_history_valid = true;
+        }
+    }
+    s_cache_valid = false;
 
     /* ---- a new render starts here ---------------------------------- */
 

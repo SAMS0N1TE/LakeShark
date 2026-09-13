@@ -48,6 +48,9 @@ void ls_tui_invalidate(void);
 #define LS_TUI_SHADE_50     ((char)0x91)
 #define LS_TUI_SHADE_75     ((char)0x92)
 #define LS_TUI_SHADE_FULL   ((char)0x93)
+#define LS_TUI_IMAGE_CELL   ((char)0xB0)
+/* Caller-owned image behind IMAGE_CELL cells; normal text can cover it. */
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial);
 
 #define LS_TUI_TRACE(eighths) ((char)(0xA0 + (((eighths) < 1 ? 1 :                                               (eighths) > 8 ? 8 : (eighths)) - 1)))
 
