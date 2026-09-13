@@ -14,7 +14,7 @@
 #include <string.h>
 
 EXT_RAM_BSS_ATTR static int button_focus=-1, button_slot;
-static ls_field_state_t s;
+EXT_RAM_BSS_ATTR static ls_field_state_t s;
 static int s_setting;
 static char s_feedback[72];
 static bool s_hold;
