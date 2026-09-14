@@ -1,2 +1,3 @@
 # Unified patches contain context-only lines consisting of a single space.
 *.patch text eol=lf -whitespace
+*.cu8 binary

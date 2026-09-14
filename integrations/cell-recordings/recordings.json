@@ -1,0 +1,51 @@
+[
+  {
+    "file": "p4-739-8ms-30ms.cu8",
+    "format": "cu8",
+    "frequency_hz": 739000000,
+    "rate": 8000000,
+    "bytes": 480000,
+    "sha256": "1c7abba4a424bb03e08e39d275f17f4850bbec23bd496a4ca41e56c9c38e2cf3",
+    "crc32": "db1ef573",
+    "provenance": "P4 serial IQ dump; contiguous offsets, length and firmware CRC32 verified",
+    "expected": {
+      "sync": true,
+      "pci": 244,
+      "n_rb": 50,
+      "ports": 2,
+      "sfn": 280,
+      "frames": 3
+    }
+  },
+  {
+    "file": "p4-739-10ms-30ms-gaps.cu8",
+    "format": "cu8",
+    "frequency_hz": 739000000,
+    "rate": 10000000,
+    "bytes": 600000,
+    "sha256": "3d816fb1f15d7cae11b4e0839da386a8717d5b0f042c20f801d6f8c2f13e8e13",
+    "crc32": "7965cb72",
+    "provenance": "P4 serial IQ dump; contiguous offsets, length and firmware CRC32 verified",
+    "expected": {
+      "sync": false
+    }
+  },
+  {
+    "file": "pc-739-10ms-80ms.cu8",
+    "format": "cu8",
+    "frequency_hz": 739000000,
+    "rate": 10000000,
+    "bytes": 1600000,
+    "sha256": "51411dd9a1f239a0e20830944f94214b63467d4839594dd183ae29d1364f0ec7",
+    "crc32": "d1e663eb",
+    "provenance": "PC HackRF capture.cs8 bytes [2000000:3600000]; signed IQ converted to offset binary by XOR 0x80",
+    "expected": {
+      "sync": true,
+      "pci": 244,
+      "n_rb": 50,
+      "ports": 2,
+      "sfn": 241,
+      "frames": 8
+    }
+  }
+]

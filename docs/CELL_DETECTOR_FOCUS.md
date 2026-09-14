@@ -110,6 +110,37 @@ rules once SIBs are decoded. [Heuristics](https://efforg.github.io/rayhunter/heu
 
 ## Current boundary
 
+**Handoff checkpoint:** `integrations/CELL_HANDOFF.md` is the current resume guide
+for moving PCs. The final 8 MS/s live test recovered PCI 244, 16 observations,
+15 consistent pairs and eight CRC-valid MIB occasions (50 RB, two ports, SFN 446).
+Capture CRC32 `16d8f0ac`, sync 3,234 ms, MIB 2,287 ms. UI was 42.5 ms per frame,
+panel 40 Hz, no late frames. Host verification remains 171 programs / 62 headers.
+The earlier trials below are retained as evidence history.
+
+**10 MS/s investigation:** A downloaded P4 capture with strong PSS bursts has
+missing samples between bursts, despite complete length, zero host-ring drops
+and plausible acquisition time. `integrations/cell-recordings` preserves it,
+two successful recordings, provenance, hashes and a portable replay test.
+The USB client previously queued completed buffers to a lower-priority task.
+Immediate asynchronous reposting now removes that scheduling dependency; the
+existing recovery queue is retained for failed submissions. ESP-IDF clears the
+transfer's in-flight state before invoking the client callback, permitting this
+submission pattern. The change passed the stream regression tests, but a new
+10 MS/s capture (`bd263477`, 80 ms) still failed synchronization. It is not a
+demonstrated cure for radio-side sample loss. No decoder checks were weakened.
+
+**Next diagnostic research:** The official HackRF host uses four 262,144-byte
+transfers, while this P4 path uses sixteen 16,384-byte transfers. HackRF USB API
+0x0106 adds GET_M0_STATE (request 41, 40 bytes), including shortfall counters.
+Check the attached PortaPack's support and counter semantics before using these
+to qualify captures. This telemetry is not implemented yet. PSRAM DMA is already
+enabled on this P4 build; investigate transfer scheduling and bus contention
+with measurements. A recovered PCI alone does not prove capture continuity.
+[Official libhackrf](https://github.com/greatscottgadgets/hackrf/blob/master/host/libhackrf/src/hackrf.c),
+[HackRF API definitions](https://github.com/greatscottgadgets/hackrf/blob/master/host/libhackrf/src/hackrf.h),
+[ESP-IDF USB host](https://docs.espressif.com/projects/esp-idf/en/v5.4.3/esp32p4/api-reference/peripherals/usb_host.html),
+[EspUsbHost callback guidance](https://github.com/tanakamasayuki/EspUsbHost/blob/main/docs/usb-host-advanced.md).
+
 The P4 has continuous-IQ checks, a new filtered HackRF-to-LTE synchronization
 path, SD records and sensor context. The flashed firmware independently recovered
 PCI 244 from two fresh 739 MHz HackRF captures at 8 MS/s: 16 observations and

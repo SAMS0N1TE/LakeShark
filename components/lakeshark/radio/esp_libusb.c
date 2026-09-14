@@ -365,8 +365,15 @@ static void IRAM_ATTR stream_xfer_cb(usb_transfer_t *t)
             s_sdropped += STREAM_XFER_LEN;
     }
     __atomic_fetch_and(&s_stream_pending,~(1u<<slot),__ATOMIC_RELEASE);
-    if (s_streaming && !s_repriming && s_squeue)
-        xQueueSend(s_squeue, &slot, 0);
+    if (s_streaming && !s_repriming) {
+        /* The client task (priority 14) can stay runnable while completions
+         * arrive faster than the priority-12 recovery pump gets scheduled.
+         * Repost here while the IN buffer is already ours. ESP-IDF clears
+         * usb_host_inflight before invoking this callback; async submission
+         * is permitted here. A queued retry is only needed on failure. */
+        if(!stream_submit(slot) && s_squeue && xQueueSend(s_squeue,&slot,0)!=pdTRUE)
+            s_sdropped+=STREAM_XFER_LEN;
+    }
 }
 
 static bool stream_reprime(void)

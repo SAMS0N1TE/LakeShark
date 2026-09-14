@@ -108,6 +108,30 @@ LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
 
 void rtl_adapter_note_transport_fault(void) {}
 
+LS_CASE(completed_in_transfers_repost_without_scheduling_the_recovery_pump)
+{
+    ls_shim_task_fail_create(pdFALSE);s_fail_transfer_alloc=false;s_hold_completions=false;
+    class_driver_t driver={.dev_hdl=(usb_device_handle_t)0x1973};
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    unsigned submitted=s_submits;
+    /* The host shim never executes the pump. Each completion must preserve
+     * the posted window, even across repeated complete/refill cycles. */
+    for(unsigned n=0;n<64;n++) {
+        usb_transfer_t *t=NULL;
+        for(unsigned i=0;i<32;i++)if(s_inflight[i]) {t=s_inflight[i];s_inflight[i]=NULL;break;}
+        LS_CHECK(t!=NULL);if(!t)break;
+        memset(t->data_buffer,(int)n,16);t->actual_num_bytes=16;
+        t->status=USB_TRANSFER_STATUS_COMPLETED;t->callback(t);
+        LS_EQ_UINT(s_submits,submitted+n+1);
+        unsigned active=0;for(unsigned i=0;i<32;i++)if(s_inflight[i])active++;
+        LS_EQ_UINT(active,16);
+        uint8_t received[16];LS_EQ_INT(esp_libusb_stream_read(received,16),16);
+        for(unsigned i=0;i<16;i++)LS_EQ_UINT(received[i],n);
+    }
+    LS_EQ_UINT(esp_libusb_stream_dropped(),0);
+    ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
+}
+
 LS_CASE(cold_start_resources_survive_failure_and_reentry)
 {
     ls_shim_heap_reset();
