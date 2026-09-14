@@ -162,7 +162,24 @@ static void analyze(cell_iq_status_t *result)
     printf("LTESYNC execution=P4 source=%s found=%d pci=%d hits=%d pairs=%d cfo=%d pss=%.3f sss=%.3f elapsed_ms=%lu input_rate=%lu\n",
         replay?"REPLAY":capture_source,result->lte_found,result->lte.pci,result->lte.hits,result->lte.pairs,result->lte.cfo_hz,
         (double)result->lte.pss_score,(double)result->lte.sss_score,(unsigned long)result->analysis_ms,(unsigned long)rate);
-    free(ws);free(converted);
+    int frame=lte_sync_frame_start(ws);free(ws);
+    if(result->lte_found) {
+        __atomic_store_n(&ui_phase,CELL_IQ_DECODING_MIB,__ATOMIC_RELEASE);
+        ws=heap_caps_malloc(lte_mib_workspace_size(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if(ws) {
+            int64_t mib_start=esp_timer_get_time();
+            result->mib_checked=true;
+            result->mib_found=lte_mib_find(input,samples,result->lte.pci,frame,result->lte.cfo_hz,ws,&result->mib,sync_yield,&last);
+            result->mib_ms=(uint32_t)((esp_timer_get_time()-mib_start)/1000);
+            printf("LTEMIB execution=P4 source=%s found=%d n_rb=%d ports=%d sfn=%d frames=%d phich_duration=%d phich_resource=%d payload=%06lx elapsed_ms=%lu workspace=%u\n",
+                replay?"REPLAY":capture_source,result->mib_found,result->mib.n_rb,result->mib.antenna_ports,
+                result->mib.sfn,result->mib.frames,result->mib.phich_duration,result->mib.phich_resource,
+                (unsigned long)result->mib.payload,(unsigned long)result->mib_ms,(unsigned)lte_mib_workspace_size());
+            free(ws);
+        }
+    }
+    result->analysis_ms=(uint32_t)((esp_timer_get_time()-start)/1000);
+    free(converted);
 }
 static void capture_worker(void *unused)
 {
@@ -201,13 +218,16 @@ static void capture_worker(void *unused)
             strncat(path,".json",sizeof(path)-strlen(path)-1);f=fopen(path,"w");
             bool meta=false;
             if(f) {
-                meta=fprintf(f,"{\"source\":\"HackRF-P4\",\"format\":\"cu8\",\"frequency_hz\":%lu,\"rate\":%lu,\"bytes\":%u,\"crc32\":\"%08lx\",\"dropped\":%llu,\"imu_valid\":%s,\"accel_g\":[%.5f,%.5f,%.5f],\"gyro_dps\":[%.5f,%.5f,%.5f],\"mag_valid\":%s,\"mag_uT\":[%.5f,%.5f,%.5f],\"heading_deg\":%.3f,\"gps_valid\":%s,\"latitude\":%.7f,\"longitude\":%.7f,\"capture_elapsed_us\":%lu,\"lte\":{\"execution\":\"P4\",\"checked\":%s,\"found\":%s,\"pci\":%d,\"hits\":%d,\"pairs\":%d,\"cfo_hz\":%d,\"pss\":%.5f,\"sss\":%.5f,\"analysis_ms\":%lu,\"identity_decoded\":false}}\n",
+                meta=fprintf(f,"{\"source\":\"HackRF-P4\",\"format\":\"cu8\",\"frequency_hz\":%lu,\"rate\":%lu,\"bytes\":%u,\"crc32\":\"%08lx\",\"dropped\":%llu,\"imu_valid\":%s,\"accel_g\":[%.5f,%.5f,%.5f],\"gyro_dps\":[%.5f,%.5f,%.5f],\"mag_valid\":%s,\"mag_uT\":[%.5f,%.5f,%.5f],\"heading_deg\":%.3f,\"gps_valid\":%s,\"latitude\":%.7f,\"longitude\":%.7f,\"capture_elapsed_us\":%lu,\"lte\":{\"execution\":\"P4\",\"checked\":%s,\"found\":%s,\"pci\":%d,\"hits\":%d,\"pairs\":%d,\"cfo_hz\":%d,\"pss\":%.5f,\"sss\":%.5f,\"analysis_ms\":%lu,\"identity_decoded\":false,\"mib\":{\"checked\":%s,\"found\":%s,\"n_rb\":%d,\"antenna_ports\":%d,\"sfn\":%d,\"crc_frames\":%d,\"first_frame\":%d,\"phich_duration\":%d,\"phich_resource\":%d,\"payload\":%lu,\"elapsed_ms\":%lu}}}\n",
                     (unsigned long)frequency,(unsigned long)rate,(unsigned)captured,(unsigned long)crc,(unsigned long long)dropped,
                     result.imu_valid?"true":"false",result.imu.ax,result.imu.ay,result.imu.az,result.imu.gx,result.imu.gy,result.imu.gz,
                     result.imu.mag_valid?"true":"false",result.imu.mx,result.imu.my,result.imu.mz,result.heading,
                     result.gps_valid?"true":"false",result.latitude,result.longitude,(unsigned long)result.elapsed_us,
                     result.lte_checked?"true":"false",result.lte_found?"true":"false",result.lte.pci,result.lte.hits,result.lte.pairs,result.lte.cfo_hz,
-                    (double)result.lte.pss_score,(double)result.lte.sss_score,(unsigned long)result.analysis_ms)>0;
+                    (double)result.lte.pss_score,(double)result.lte.sss_score,(unsigned long)result.analysis_ms,
+                    result.mib_checked?"true":"false",result.mib_found?"true":"false",result.mib.n_rb,result.mib.antenna_ports,
+                    result.mib.sfn,result.mib.frames,result.mib.first_frame,result.mib.phich_duration,result.mib.phich_resource,
+                    (unsigned long)result.mib.payload,(unsigned long)result.mib_ms)>0;
                 if(fclose(f)!=0)meta=false;
             }
             snprintf(result.message,sizeof(result.message),meta?"IQ + GPS/9-axis context saved on SD":"IQ saved / metadata write failed");

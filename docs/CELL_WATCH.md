@@ -455,8 +455,29 @@ the IQ and result metadata were saved on SD. A 10 MS/s capture completed but
 did not synchronize, so the board is left at 8 MS/s. A slow 19.2 MS/s capture
 was rejected, and its result screen and console correctly withheld LTE evidence.
 UI frames measured 47.2 ms during filtering and 42.5 ms while idle. This moves
-LTE synchronization onto the device; MIB/SIB decoding and CSS classification
-remain subsequent work.
+LTE synchronization onto the device. The following build adds the next stage.
+
+The PBCH/MIB build (SHA-256
+`e5caf9725f065b2737d4ea0127bbaec0ed387fd521228b33ea270f559b0bdb6c`)
+decodes bandwidth, antenna ports, PHICH configuration and frame number on the
+P4. It requires separate CRC-valid occasions with matching configuration and
+progressing frame numbers. Two fresh 739 MHz, 8 MS/s captures each yielded
+eight such occasions: 10 MHz bandwidth and two ports. The MIB stage took
+2.298 and 2.294 seconds with 33,296 bytes of workspace; total analysis took
+about 6.6 and 6.1 seconds. A UI timing check during decoding measured 42.5 ms
+per frame. IQ and the nested `lte.mib` result are saved with GPS/9-axis context.
+A complete 10 MS/s capture again failed synchronization, so 8 MS/s remains the
+proven setting. No network identity or simulator verdict is inferred from MIB.
+
+Recorded-data validation recovered consistent MIBs from an earlier P4 capture,
+a separate local PC recording, and the independent public Belgian fixture.
+Host validation passed 171 test programs and 62 C++ header checks. Numerical
+vectors additionally exercise 1/2/4 antenna ports, frame-number rollover and
+nonzero MIB extension bits. Tests reject noise, DC, wrong-cell observations,
+a lone CRC, replayed unchanged frame numbers, damaged codewords and cancellation.
+See `docs/CELL_DETECTOR_FOCUS.md` for the primary research and implementation
+gates. SIB1/network identity and a validated passive CSS classifier remain work
+to do on the P4; wider-channel reception still needs its own validation.
 
 ## Antennas for this setup
 

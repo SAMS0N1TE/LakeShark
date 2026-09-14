@@ -5,16 +5,20 @@
 #include <stdint.h>
 #include "ls_imu.h"
 #include "lte_sync.h"
+#include "lte_mib.h"
 
 typedef enum { CELL_IQ_IDLE, CELL_IQ_RECEIVING, CELL_IQ_FILTERING,
-               CELL_IQ_SYNCHRONIZING, CELL_IQ_SAVING } cell_iq_phase_t;
+               CELL_IQ_SYNCHRONIZING, CELL_IQ_DECODING_MIB, CELL_IQ_SAVING } cell_iq_phase_t;
 typedef struct {
     bool busy,complete,imu_valid,gps_valid;
     bool lte_checked,lte_found;
+    bool mib_checked,mib_found;
     cell_iq_phase_t phase;
     uint32_t hz,rate,bytes,elapsed_us;
     uint32_t analysis_ms;
     lte_sync_result_t lte;
+    lte_mib_result_t mib;
+    uint32_t mib_ms;
     uint64_t dropped;
     ls_imu_sample_t imu;
     float heading;

@@ -23,6 +23,7 @@ LS_CASE(bounded_capture_and_cancellation_do_not_publish_partial_results)
     LS_CHECK(!lte_sync_find(iq,28800,ws,&r,stop,&calls));LS_EQ_INT(calls,1);LS_EQ_INT(r.pci,-1);
     LS_CHECK(!lte_sync_find(iq,100,ws,&r,NULL,NULL));LS_EQ_INT(r.pci,-1);
     LS_CHECK(!lte_sync_find(iq,200000,ws,&r,NULL,NULL));LS_EQ_INT(r.pci,-1);
+    LS_EQ_INT(lte_sync_frame_start(ws),-1);
     free(ws);free(iq);
 }
 
@@ -41,8 +42,10 @@ LS_CASE(independent_recorded_cell_requires_three_consistent_observations)
     int calls=0;
     LS_CHECK(lte_sync_find(iq,28800,ws,&r,counted,&calls));
     LS_EQ_INT(r.pci,301);LS_CHECK(r.hits>=3 && r.pairs>=2);
+    LS_CHECK(lte_sync_frame_start(ws)>7000 && lte_sync_frame_start(ws)<9000);
     LS_CHECK(r.cfo_hz>12000 && r.cfo_hz<16500);
     LS_CHECK(!lte_sync_find(iq,28800,ws,&r,stop_at,&calls));LS_EQ_INT(r.pci,-1);
+    LS_EQ_INT(lte_sync_frame_start(ws),-1);
     /* PSS alone and two surviving SSS observations must not publish a PCI. */
     memset(iq+2*(18194-137),127,2*128);
     LS_CHECK(!lte_sync_find(iq,28800,ws,&r,NULL,NULL));LS_EQ_INT(r.pci,-1);

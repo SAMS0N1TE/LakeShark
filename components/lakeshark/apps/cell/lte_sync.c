@@ -23,6 +23,7 @@ typedef struct {
     int8_t sss[3][336][62];
     peak_t peaks[PEAKS],seeds[PEAKS];int count;
     int counts[504],pairs[504],last[504],half_last[504];
+    int frame_start;
 } workspace_t;
 static cx mul(cx a,cx b){return (cx){a.r*b.r-a.i*b.i,a.r*b.i+a.i*b.r};}
 static cx conjx(cx a){return (cx){a.r,-a.i};}
@@ -96,13 +97,18 @@ static void extract(const uint8_t *iq,int pos,int fo,cx *out,const cx *tw)
     fft(out,128,false,tw);
 }
 size_t lte_sync_workspace_size(void){return sizeof(workspace_t);}
+int lte_sync_frame_start(const void *memory)
+{
+    return memory?((const workspace_t *)memory)->frame_start:-1;
+}
 bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
                    lte_sync_result_t *out,lte_sync_yield_fn yield,void *arg)
 {
+    if(memory)((workspace_t *)memory)->frame_start=-1;
     if(!out)return false;
     memset(out,0,sizeof(*out));out->pci=-1;
     if(!iq || !memory || samples<28800 || samples>153600)return false;
-    workspace_t *w=memory;memset(w,0,sizeof(*w));sequences(w);
+    workspace_t *w=memory;memset(w,0,sizeof(*w));w->frame_start=-1;sequences(w);
     /* Overlap-save matched filtering, 128-sample useful OFDM symbol.
      * Search +/-40 kHz oscillator error in 5 kHz steps around the carrier. */
     /* One full half-frame plus boundary margin locates timing candidates.
@@ -182,9 +188,11 @@ bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
             counts[pci]++;last[pci]=pos_best;half_last[pci]=half;
             if(pairs[pci]>=2 && pairs[pci]>=out->pairs) {
                 *out=(lte_sync_result_t){pci,counts[pci],pairs[pci],fo_best,p.score,best};
+                w->frame_start=(pos_best-832-half*9600)%19200;
+                if(w->frame_start<0)w->frame_start+=19200;
             }
         }
-        if(yield && yield(arg)){memset(out,0,sizeof(*out));out->pci=-1;return false;}
+        if(yield && yield(arg)){memset(out,0,sizeof(*out));out->pci=-1;w->frame_start=-1;return false;}
     }
     return out->pci>=0;
 }

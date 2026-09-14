@@ -115,14 +115,19 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     ls_safe_line(sf,body,y++,"GPS + 9 AXIS + LORA / WIFI + AUDIO PAUSED",white);
     if(body.w>=36 && body.h>=32){frequency_readout(sf,body,y+1,hrf_frequency,cyan);y+=7;}
     snprintf(text,sizeof(text),"%.1f MS/s  /  %lu ms  /  RX ONLY",hrf_rate/1e6,(unsigned long)hrf_ms);ls_safe_line(sf,body,y++,text,cyan);
-    const char *phase=iq.phase==CELL_IQ_FILTERING?"FILTERING LTE CHANNEL ON P4":iq.phase==CELL_IQ_SYNCHRONIZING?"CHECKING LTE SYNC ON P4":iq.phase==CELL_IQ_SAVING?"SAVING IQ + EVIDENCE TO SD":"CAPTURING HACKRF IQ";
+    const char *phase=iq.phase==CELL_IQ_FILTERING?"FILTERING LTE CHANNEL ON P4":iq.phase==CELL_IQ_SYNCHRONIZING?"CHECKING LTE SYNC ON P4":iq.phase==CELL_IQ_DECODING_MIB?"DECODING LTE BROADCAST ON P4":iq.phase==CELL_IQ_SAVING?"SAVING IQ + EVIDENCE TO SD":"CAPTURING HACKRF IQ";
     ls_safe_line(sf,body,y++,iq.busy?phase:iq.message[0]?iq.message:"Ready. Select frequency, then CHECK CELL.",yellow);
     snprintf(text,sizeof(text),"%lu bytes  /  %llu dropped  /  %s",(unsigned long)iq.bytes,(unsigned long long)iq.dropped,iq.complete?"COMPLETE":"NO COMPLETE CAPTURE");ls_safe_line(sf,body,y++,text,white);
     if(iq.lte_found)snprintf(text,sizeof(text),"LTE PCI %d / %d repeats / %d pairs",iq.lte.pci,iq.lte.hits,iq.lte.pairs);
     else snprintf(text,sizeof(text),iq.lte_checked?"No repeated LTE FDD sync in this capture":"LTE evidence: awaiting a valid capture");
     ls_safe_line(sf,body,y++,text,cyan);
     if(iq.lte_checked){snprintf(text,sizeof(text),"P4 analysis %.1fs / SSS %.2f",iq.analysis_ms/1000.,(double)iq.lte.sss_score);ls_safe_line(sf,body,y++,text,white);}
-    if(body.h>=39) {
+    if(iq.mib_found) {
+        snprintf(text,sizeof(text),"%.1f MHz channel / %d ports / CRC x%d",iq.mib.n_rb==6?1.4:iq.mib.n_rb/5.,iq.mib.antenna_ports,iq.mib.frames);
+        ls_safe_line(sf,body,y++,text,cyan);
+        snprintf(text,sizeof(text),"Frame %d / broadcast decode %.1fs",iq.mib.sfn,iq.mib_ms/1000.);ls_safe_line(sf,body,y++,text,white);
+    } else if(iq.mib_checked)ls_safe_line(sf,body,y++,"Broadcast CRC not confirmed / try again",yellow);
+    if(body.h>=41) {
         tui_rect chart=tui_rect_make(body.x+2,y+1,body.w-4,10);ls_panel_box(sf,chart,"IQ AMPLITUDE / CAPTURE TIME",TUI_CYAN);
         int width=chart.w-4;
         for(int x=0;x<width && iq.complete;x++) {
@@ -142,7 +147,7 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     if(iq.gps_valid)snprintf(text,sizeof(text),"GPS %.5f, %.5f",iq.latitude,iq.longitude);else snprintf(text,sizeof(text),"GPS: no fresh captured fix");
     ls_safe_line(sf,body,y++,text,white);
     cell_report_status(text,sizeof(text));ls_safe_line(sf,body,y++,text,cyan);
-    ls_safe_line(sf,body,body.y+body.h-3,"Cell identity/configuration not decoded yet.",yellow);
+    ls_safe_line(sf,body,body.y+body.h-3,"Network identity still needs SIB1 decoding.",yellow);
     ls_safe_line(sf,body,body.y+body.h-2,"NORMAL OS exits with a restart.",white);
     ls_btn_t buttons[]={
         {"CHECK CELL","LTE + SD",'S',iq.busy,iq.busy},{"FREQ","center",'B',false,iq.busy},

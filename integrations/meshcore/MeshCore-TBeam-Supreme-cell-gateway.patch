@@ -1,0 +1,58 @@
+diff --git a/examples/companion_radio/main.cpp b/examples/companion_radio/main.cpp
+index 89f0e6c..ef51ade 100644
+--- a/examples/companion_radio/main.cpp
++++ b/examples/companion_radio/main.cpp
+@@ -115,7 +115,10 @@ void halt() {
+ 
+ void setup() {
+   Serial.begin(115200);
++  delay(1500);
++  Serial.println("LS gateway: board init");
+   board.begin();
++  Serial.println("LS gateway: board ready");
+ 
+ #ifdef HAS_EXTERNAL_WATCHDOG
+   external_watchdog.begin();
+@@ -134,7 +137,8 @@ void setup() {
+   }
+ #endif
+ 
+-  if (!radio_init()) { halt(); }
++  if (!radio_init()) { while(1) {Serial.println("LS gateway: radio init failed");delay(1000);} }
++  Serial.println("LS gateway: radio ready");
+ 
+   fast_rng.begin(radio_driver.getRngSeed());
+ 
+@@ -231,6 +235,7 @@ void setup() {
+ #endif
+ 
+   the_mesh.startInterface(interface_manager);
++  Serial.println("LS gateway: USB protocol ready");
+   sensors.begin();
+ 
+ #if ENV_INCLUDE_GPS == 1
+diff --git a/platformio.local.ini b/platformio.local.ini
+new file mode 100644
+--- /dev/null
++++ b/platformio.local.ini
+@@ -0,0 +1,20 @@
++[env:LakeShark_TBeam_Supreme_receiver]
++extends = T_Beam_S3_Supreme_SX1262
++build_unflags = -D LORA_FREQ=869.618 -D ENABLE_ADVERT_ON_BOOT=1
++build_flags =
++  ${T_Beam_S3_Supreme_SX1262.build_flags}
++  -I examples/companion_radio/ui-new
++  -D MAX_CONTACTS=350
++  -D MAX_GROUP_CHANNELS=40
++  -D OFFLINE_QUEUE_SIZE=256
++  -D ENABLE_USB_INTERFACE=1
++  -D ENABLE_ADVERT_ON_BOOT=0
++  -D LORA_FREQ=910.525
++build_src_filter = ${T_Beam_S3_Supreme_SX1262.build_src_filter}
++  +<helpers/esp32/*.cpp>
++  +<helpers/ui/MomentaryButton.cpp>
++  +<../examples/companion_radio/*.cpp>
++  +<../examples/companion_radio/ui-new/*.cpp>
++lib_deps =
++  ${T_Beam_S3_Supreme_SX1262.lib_deps}
++  densaugeo/base64 @ ~1.4.0

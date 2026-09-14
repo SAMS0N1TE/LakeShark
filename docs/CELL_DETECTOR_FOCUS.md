@@ -53,6 +53,32 @@ bounded stage on the P4 and preserve the full capture for later stages.
 [srsRAN MIB receiver](https://github.com/srsran/srsRAN_4G/blob/master/lib/src/phy/ue/ue_mib.c),
 [FALCON](https://github.com/falkenber9/falcon).
 
+**PBCH implementation review:** TS 36.211 sections 6.6/6.10 define PBCH resource
+mapping, transmit diversity, scrambling and cell-specific reference signals.
+TS 36.212 sections 5.1/5.3.1 define convolutional interleaving, tail-biting coding
+and antenna-specific CRC masks. srsRAN's `pbch.c` attempts decoding at individual
+10 ms occasions and can combine occasions over 40 ms. Our original bounded C
+implementation starts with separate occasions and requires two CRC-valid results
+with matching configuration and progressing SFNs. It uses exact tail-biting
+maximum-likelihood decoding, retaining MIB extension bits rather than assuming
+all spare bits are zero. A zero-soft-input CRC is insufficient without signal
+evidence. This is a broadcast decoder, not an authentication check.
+[TS 36.211](https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/16.07.00_60/ts_136211v160700p.pdf),
+[TS 36.212](https://www.etsi.org/deliver/etsi_ts/136200_136299/136212/16.02.00_60/ts_136212v160200p.pdf),
+[srsRAN PBCH](https://github.com/srsran/srsRAN_4G/blob/master/lib/src/phy/phch/pbch.c).
+
+The host replay loop now decodes PBCH from the earlier 30 ms P4/HackRF recording
+and the independent 80 ms PC recording: PCI 244, 50 RB, two ports, with three and
+eight consistent CRC-valid occasions. The public Belgian recording yields
+PCI 301, 100 RB, two ports and eight occasions; this bandwidth/port configuration
+matches the independent LTE-Cell-Scanner decode. The committed test fixture
+contains four small PBCH/CRS excerpts, its source hash and provenance. Separate
+numerical transmit vectors exercise one/two/four ports, nonzero extension bits,
+SFN rollover and damaged codewords: `python bench/tools/lte_mib_vectors.py`
+(host GCC and NumPy required, no radio transmission). Host tests also reject
+noise, DC, the wrong PCI, a single valid occasion, stale repeated SFNs, invalid
+bounds and canceled work. These tests do not establish CSS detection accuracy.
+
 **Rayhunter:** Keep its existing optional report-review integration, and learn
 from stateful heuristics and explicit evidence coverage. Its identity-request,
 authentication, encryption and connection-release checks depend on modem
@@ -91,8 +117,21 @@ PCI 244 from two fresh 739 MHz HackRF captures at 8 MS/s: 16 observations and
 capture passed acquisition checks but did not synchronize. A slow 19.2 MS/s
 capture was rejected and could not enter analysis. These few trials demonstrate
 the data path, not a measured detection rate. The device is left at 8 MS/s.
-Host validation passed 170 test programs and 62 C++ header checks. The filter
+That synchronization checkpoint passed 170 test programs and 62 C++ header checks. The filter
 also recovered PCI 244 from an independent earlier local recording.
-P4 MIB/SIB1 decoding and a validated passive CSS classifier remain incomplete.
+The next firmware build adds on-P4 PBCH/MIB decoding. Two fresh 8 MS/s, 80 ms
+captures at 739 MHz each decoded eight consistent CRC-valid MIB occasions:
+50 RB (10 MHz), two antenna ports, normal PHICH duration and resource index 2.
+MIB processing took 2.298 and 2.294 seconds using 33,296 bytes of workspace;
+the UI measured 42.5 ms per frame during the second decode. Total filtering,
+synchronization and MIB processing took approximately 6.6 and 6.1 seconds.
+Capture CRC32 values were `8d93a99b` and `4838a8aa`. A subsequent complete
+10 MS/s capture (`f1a82949`) again failed synchronization; no MIB result was
+published for it. Keep 8 MS/s as the proven setting. Timing-based acquisition
+checks alone do not establish valid LTE reception at every requested rate.
+The updated host suite passed 171 test programs and 62 C++ header checks.
+SIB1/network identity decoding and a validated passive CSS classifier remain
+incomplete. MIB channel configuration is an input to the next full-bandwidth
+control/PDSCH stage, not sufficient information to classify a simulator.
 The detector can only evaluate broadcasts it receives; no universal detection
 guarantee or protection of the user's phone is implied.
