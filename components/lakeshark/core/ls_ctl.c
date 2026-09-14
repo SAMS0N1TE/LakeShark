@@ -29,6 +29,8 @@
 #include "p25_state.h"
 #include "dsd.h"
 #include "p25_iq_capture.h"
+#include "cell_iq.h"
+#include "cell_report.h"
 #include "esp_timer.h"
 #include "esp_console.h"
 #include "esp_system.h"
@@ -685,6 +687,10 @@ void ls_ctl_register_recovery_commands(void)
 void ls_ctl_register_commands(void)
 {
     const esp_console_cmd_t cmds[] = {
+        { .command = "celliq", .help = "Bounded passive cellular IQ capture and transport diagnostics",
+          .func = &cell_iq_command },
+        { .command = "cellreport", .help = "Addressed cellular observations over MeshCore",
+          .func = &cell_report_command },
         /**/
         { .command = "vol",     .help = "Volume 0-100 (or +n / -n)",
           .hint = "<n|+n|-n>", .func = &cmd_vol },

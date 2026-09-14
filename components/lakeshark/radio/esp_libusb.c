@@ -334,30 +334,58 @@ static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
     __atomic_store_n(&s_shead, head + len, __ATOMIC_RELEASE);
 }
 
+/* A flush queues completions asynchronously. A fixed delay does not prove
+ * that the host has returned ownership of every transfer buffer. */
+static uint32_t s_stream_pending;
+static volatile bool s_repriming;
+static bool stream_submit(int slot)
+{
+    uint32_t bit=1u<<slot;
+    if(__atomic_fetch_or(&s_stream_pending,bit,__ATOMIC_ACQ_REL)&bit)return false;
+    if(usb_host_transfer_submit(s_sxfer[slot])==ESP_OK)return true;
+    __atomic_fetch_and(&s_stream_pending,~bit,__ATOMIC_RELEASE);
+    return false;
+}
+static bool stream_completions_drained(uint32_t timeout_ms)
+{
+    for(uint32_t waited=0;__atomic_load_n(&s_stream_pending,__ATOMIC_ACQUIRE);waited+=5) {
+        if(waited>=timeout_ms)return false;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return true;
+}
 static void IRAM_ATTR stream_xfer_cb(usb_transfer_t *t)
 {
-    if (t->status == 0 && t->actual_num_bytes > 0)
-        stream_push(t->data_buffer, (uint32_t)t->actual_num_bytes);
     int slot = (int)(intptr_t)t->context;
-    if (s_streaming && s_squeue)
+    if (slot<0 || slot>=STREAM_XFER_NUM)return;
+    if (s_streaming && !s_repriming) {
+        if(t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes > 0)
+            stream_push(t->data_buffer, (uint32_t)t->actual_num_bytes);
+        else if(t->status != USB_TRANSFER_STATUS_COMPLETED)
+            s_sdropped += STREAM_XFER_LEN;
+    }
+    __atomic_fetch_and(&s_stream_pending,~(1u<<slot),__ATOMIC_RELEASE);
+    if (s_streaming && !s_repriming && s_squeue)
         xQueueSend(s_squeue, &slot, 0);
 }
 
 static bool stream_reprime(void)
 {
     if (!s_sdev) return false;
+    s_repriming=true;
     usb_host_endpoint_halt(s_sdev, s_sep);
     usb_host_endpoint_flush(s_sdev, s_sep);
-    usb_host_endpoint_clear(s_sdev, s_sep);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    if(!stream_completions_drained(250) || !s_streaming) {s_repriming=false;return false;}
     if (s_squeue) xQueueReset(s_squeue);
+    usb_host_endpoint_clear(s_sdev, s_sep);
+    s_repriming=false;
 
     int posted = 0;
     for (int i = 0; i < STREAM_XFER_NUM; i++) {
         if (!s_sxfer[i]) continue;
         s_sxfer[i]->device_handle    = s_sdev;
         s_sxfer[i]->bEndpointAddress = s_sep;
-        if (usb_host_transfer_submit(s_sxfer[i]) == ESP_OK) posted++;
+        if (stream_submit(i)) posted++;
     }
     return posted > 0;
 }
@@ -372,10 +400,10 @@ static void stream_pump_task(void *arg)
         int slot;
         if (xQueueReceive(s_squeue, &slot, pdMS_TO_TICKS(50)) == pdTRUE &&
             s_streaming && slot >= 0 && slot < STREAM_XFER_NUM && s_sxfer[slot]) {
-            esp_err_t r = usb_host_transfer_submit(s_sxfer[slot]);
-            if (r == 0x10C) {
+            if (!stream_submit(slot)) {
                 vTaskDelay(pdMS_TO_TICKS(2));
-                xQueueSend(s_squeue, &slot, 0);
+                if(!(__atomic_load_n(&s_stream_pending,__ATOMIC_ACQUIRE)&(1u<<slot)))
+                    xQueueSend(s_squeue, &slot, 0);
             }
         }
 
@@ -424,14 +452,18 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     /* RTL and HackRF endpoints may coexist, but the current USB
      * transport has one transfer pool and one PSRAM ring. Refuse a second
      * producer instead of stopping the first radio or mixing its samples. */
-    if ((s_streaming && s_sdev != driver_obj->dev_hdl) ||
+    if ((s_sdev && s_sdev != driver_obj->dev_hdl) ||
         (s_bulk_dev && s_bulk_dev != driver_obj->dev_hdl)) {
         ESP_LOGW(TAG_ADSB, "IQ transport busy on another USB radio");
         return ESP_LIBUSB_ERR_BUSY;
     }
 
     esp_libusb_bulk_teardown_for(driver_obj);
-    if (s_streaming) esp_libusb_stream_stop_for(driver_obj);
+    if (s_streaming || s_spump || esp_libusb_stream_slots())esp_libusb_stream_stop();
+    if(s_spump || esp_libusb_stream_slots() || __atomic_load_n(&s_stream_pending,__ATOMIC_ACQUIRE)) {
+        ESP_LOGE(TAG_ADSB,"stream start deferred: USB completions still pending");
+        return ESP_LIBUSB_ERR_BUSY;
+    }
 
     if (!s_sring) {
         s_sring = heap_caps_malloc(STREAM_RING_SIZE, MALLOC_CAP_SPIRAM);
@@ -461,6 +493,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
 
     xQueueReset(s_squeue);
     s_shead = s_stail = 0; s_sdropped = 0;
+    s_repriming=false;
     s_sdev = driver_obj->dev_hdl; s_sep = endpoint;
     s_streaming = true;
 
@@ -497,7 +530,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
         s_sxfer[i]->bEndpointAddress = endpoint;
         s_sxfer[i]->callback         = stream_xfer_cb;
         s_sxfer[i]->context          = (void *)(intptr_t)i;
-        if (usb_host_transfer_submit(s_sxfer[i]) != ESP_OK) {
+        if (!stream_submit(i)) {
             usb_host_transfer_free(s_sxfer[i]); s_sxfer[i] = NULL; break;
         }
         posted++;
@@ -526,16 +559,13 @@ void esp_libusb_stream_stop(void)
     if (s_sdev) {
         usb_host_endpoint_halt(s_sdev, s_sep);
         usb_host_endpoint_flush(s_sdev, s_sep);
-        usb_host_endpoint_clear(s_sdev, s_sep);
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    if (!joined) {
-        ESP_LOGE(TAG_ADSB, "rtl_pump did not exit within %d ms - leaking %d transfer "
-                           "slots rather than freeing buffers the USB stack may still "
-                           "be writing to", LS_STREAM_JOIN_MS, esp_libusb_stream_slots());
-        for (int i = 0; i < STREAM_XFER_NUM; i++) s_sxfer[i] = NULL;
-    } else {
+    if (!joined || !stream_completions_drained(250)) {
+        ESP_LOGE(TAG_ADSB,"USB stop pending: preserving %d transfer buffers until callbacks return",esp_libusb_stream_slots());
+        return;
+    }
+    if(s_sdev)usb_host_endpoint_clear(s_sdev,s_sep);
+    {
         for (int i = 0; i < STREAM_XFER_NUM; i++) {
             if (s_sxfer[i]) { usb_host_transfer_free(s_sxfer[i]); s_sxfer[i] = NULL; }
         }

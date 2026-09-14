@@ -22,9 +22,10 @@ static const char *TAG = "ls_sweep";
 #define LS_SWEEP_SETTLE_MS        4
 #define LS_SWEEP_DISCARD_BUFFERS  2
 
-ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
+ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_tenths,
                             uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
-                            ls_sweep_progress_fn progress, void *user)
+                            ls_sweep_progress_fn progress,
+                            ls_sweep_cancel_fn cancel, void *user)
 {
     if (!plan || !dbfs || plan->n_bins == 0) return LS_RADIO_ERR_INVALID;
     if (dwell_ffts == 0) dwell_ffts = LS_SWEEP_DEFAULT_DWELL_FFTS;
@@ -78,6 +79,7 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
     if (error == LS_RADIO_OK) error = ls_radio_iq_start(session);
 
     for (uint32_t t = 0; error == LS_RADIO_OK && t < plan->n_tunes; t++) {
+        if (cancel && cancel(user)) { error = LS_RADIO_ERR_STOPPED; break; }
         uint64_t center = ls_sweep_tune_center(plan, t);
         uint64_t tuned  = 0;
 
@@ -97,12 +99,14 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
 
         size_t got = 0;
         for (int d = 0; d < LS_SWEEP_DISCARD_BUFFERS; d++) {
+            if (cancel && cancel(user)) { error = LS_RADIO_ERR_STOPPED; break; }
             if (ls_radio_iq_read(session, iq, iq_bytes, READ_TIMEOUT_MS,
                                  &got) != LS_RADIO_OK) break;
         }
 
         uint32_t done = 0;
-        while (done < dwell_ffts) {
+        while (error == LS_RADIO_OK && done < dwell_ffts) {
+            if (cancel && cancel(user)) { error = LS_RADIO_ERR_STOPPED; break; }
             got = 0;
             error = ls_radio_iq_read(session, iq, iq_bytes, READ_TIMEOUT_MS,
                                      &got);
@@ -138,4 +142,12 @@ ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
     if (error != LS_RADIO_OK)
         ESP_LOGW(TAG, "sweep stopped: %s", ls_radio_err_name(error));
     return error;
+}
+
+ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,
+    uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+    ls_sweep_progress_fn progress, void *user)
+{
+    return ls_sweep_run_cancelable(plan, gain_tenths, dwell_ffts, fast_retune,
+                                   dbfs, progress, NULL, user);
 }

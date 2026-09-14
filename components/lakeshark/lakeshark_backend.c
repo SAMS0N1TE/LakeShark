@@ -11,6 +11,7 @@
 
 #include "app_registry.h"
 #include "settings.h"
+#include "cell_performance.h"
 /**/
 #include "usb_autoreboot_pref.h"
 #include "scan_channels.h"
@@ -114,7 +115,7 @@ void lakeshark_backend_start(void)
         ESP_LOGE(TAG, "failed to start class_driver_task");
     }
 
-    if (audio_out_init() == ESP_OK) {
+    if (!cell_performance_active() && audio_out_init() == ESP_OK) {
         audio_events_init();
 
     }

@@ -12,6 +12,15 @@ static unsigned s_allocs;
 static unsigned s_frees;
 static unsigned s_submits;
 static bool s_fail_transfer_alloc;
+static bool s_hold_completions;
+static usb_transfer_t *s_inflight[32];
+static void complete_usb(void)
+{
+    for(unsigned i=0;i<32;i++)if(s_inflight[i]) {
+        usb_transfer_t *t=s_inflight[i];s_inflight[i]=NULL;
+        t->status=USB_TRANSFER_STATUS_CANCELED;t->actual_num_bytes=0;t->callback(t);
+    }
+}
 
 esp_err_t usb_host_transfer_alloc(size_t size, int flags,
                                   usb_transfer_t **out)
@@ -38,6 +47,7 @@ esp_err_t usb_host_transfer_alloc(size_t size, int flags,
 esp_err_t usb_host_transfer_free(usb_transfer_t *transfer)
 {
     if (transfer) {
+        for(unsigned i=0;i<32;i++)LS_CHECK(s_inflight[i]!=transfer);
         free(transfer->data_buffer);
         free(transfer);
         ++s_frees;
@@ -47,7 +57,7 @@ esp_err_t usb_host_transfer_free(usb_transfer_t *transfer)
 
 esp_err_t usb_host_transfer_submit(usb_transfer_t *transfer)
 {
-    (void)transfer;
+    for(unsigned i=0;i<32;i++)if(!s_inflight[i]) {s_inflight[i]=transfer;break;}
     ++s_submits;
     return ESP_OK;
 }
@@ -68,6 +78,7 @@ esp_err_t usb_host_endpoint_halt(usb_device_handle_t device, uint8_t endpoint)
 esp_err_t usb_host_endpoint_flush(usb_device_handle_t device, uint8_t endpoint)
 {
     (void)device; (void)endpoint;
+    if(!s_hold_completions)complete_usb();
     return ESP_OK;
 }
 
@@ -75,6 +86,24 @@ esp_err_t usb_host_endpoint_clear(usb_device_handle_t device, uint8_t endpoint)
 {
     (void)device; (void)endpoint;
     return ESP_OK;
+}
+
+LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
+{
+    ls_shim_task_fail_create(pdFALSE);s_fail_transfer_alloc=false;s_hold_completions=false;
+    class_driver_t driver={.dev_hdl=(usb_device_handle_t)0x2468};
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    unsigned allocated=s_allocs,freed=s_frees,submitted=s_submits;
+    s_hold_completions=true;ls_shim_task_set_state(eSuspended);
+    esp_libusb_stream_stop();
+    LS_EQ_UINT(s_frees,freed);LS_EQ_INT(esp_libusb_stream_slots(),16);
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),ESP_LIBUSB_ERR_BUSY);
+    LS_EQ_UINT(s_submits,submitted);LS_EQ_UINT(s_allocs,allocated);
+    complete_usb();s_hold_completions=false;
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    LS_EQ_UINT(s_frees,freed+16);LS_EQ_INT(esp_libusb_stream_slots(),16);
+    ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
+    LS_EQ_UINT(s_frees,freed+32);
 }
 
 void rtl_adapter_note_transport_fault(void) {}

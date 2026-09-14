@@ -36,6 +36,8 @@ serial*.txt
 !/docs/TDP4_RC_CHECKLIST.md
 !/docs/P25_PHASE2.md
 !/docs/LOCATION_SCAN.md
+!/docs/CELL_WATCH.md
+!/docs/CELL_DETECTOR_FOCUS.md
 !/docs/map-field.md
 !/docs/screenshots/
 /tools/*

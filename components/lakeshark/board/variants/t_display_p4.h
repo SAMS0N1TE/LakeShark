@@ -94,7 +94,10 @@
 #define LS_BOARD_LCD_CORNER_R    72
 #define LS_BOARD_LCD_DSI_LANES   2
 #define LS_BOARD_LCD_DSI_MBPS    1000
-#define LS_BOARD_LCD_DPI_CLK_MHZ 60
+/* 60 MHz produced whole-screen flashes and 37 ms refresh gaps on the
+   20 ms frame schedule under normal load. 48 MHz gives scanout headroom
+   while retaining ~40 Hz; 40 MHz stopped flashes but felt slightly slower. */
+#define LS_BOARD_LCD_DPI_CLK_MHZ 48
 #define LS_BOARD_LCD_HSYNC       50
 #define LS_BOARD_LCD_HBP         150
 #define LS_BOARD_LCD_HFP         50

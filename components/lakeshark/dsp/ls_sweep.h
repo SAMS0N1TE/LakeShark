@@ -13,6 +13,13 @@ extern "C" {
 /* Called after each tune so a caller can show progress. Optional. */
 typedef void (*ls_sweep_progress_fn)(uint32_t tune, uint32_t n_tunes,
                                      void *user);
+typedef bool (*ls_sweep_cancel_fn)(void *user);
+
+/* Cancellation is checked between bounded reads and retunes. Partial output
+   is never a completed measurement (returns LS_RADIO_ERR_STOPPED). */
+ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan,
+    int gain_tenths, uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+    ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user);
 
 /* How many 512-point transforms to average per tune.
 

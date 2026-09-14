@@ -153,6 +153,8 @@ esp_err_t ls_mesh_send_dm_id(const char *id, const char *text);
 /* Bounded background outbox, serviced by the Mesh task; expires after 5 s.
    Acceptance is not proof of radio transmission or a recipient ACK. */
 bool ls_mesh_queue_dm(const char *id, const char *text);
+/* Find a sent DM by its complete payload within the display log. -1 if absent. */
+int ls_mesh_dm_state(const char *id,const char *text);
 
 /* Is this node in the table - that is, can it be addressed at all? */
 bool ls_mesh_peer_known(const char *id);

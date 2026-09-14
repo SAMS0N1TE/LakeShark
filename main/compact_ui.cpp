@@ -33,6 +33,13 @@ extern "C" bool ls_scr_mesh_notice(ls_notice_t *out);
 extern "C" bool rec_watch_notify(const char *peer, const char *text)
 { return ls_mesh_queue_dm(peer, text); }
 extern "C" void ls_scr_fm_show_page(int page);
+extern "C" void ls_cell_publish(void);
+extern "C" bool cell_report_transport_known(const char *peer)
+{return ls_mesh_peer_known(peer);}
+extern "C" bool cell_report_transport_send(const char *peer,const char *text)
+{return ls_mesh_queue_dm(peer,text);}
+extern "C" int cell_report_transport_state(const char *peer,const char *text)
+{return ls_mesh_dm_state(peer,text);}
 #include "tui/ls_tui_touch.h"
 #include "tui/ls_keyboard.h"
 #include "tui/ls_tui_png.h"
@@ -61,6 +68,7 @@ extern "C" void ls_scr_fm_show_page(int page);
 /* No LVGL shell headers: see compact_ui_start. */
 extern "C" {
 #include "ls_sdcard.h"
+#include "cell_performance.h"
 #include "settings.h"
 #include "display_ctl.h"
 #include "ls_nvs_safe.h"
@@ -539,7 +547,7 @@ static bool tui_session(void)
                                  ls_scr_adsb, ls_scr_falls, ls_scr_mesh,
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
-                                 ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
+                                 ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -549,6 +557,7 @@ static bool tui_session(void)
            knows, ls_action is what it can be asked to do. A user app binds
            to both by name and to neither by symbol. */
         ls_action_register_builtin();
+        ls_cell_publish();
 
         static const ls_app_t APPS[] = {
             { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
@@ -561,6 +570,8 @@ static bool tui_session(void)
               LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb },
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_falls, nullptr },
+            { "cell", "CELL WATCH", "cellular RF survey", LS_ICON_TOWER, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_cell, nullptr },
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh },
 
@@ -595,6 +606,7 @@ static bool tui_session(void)
         static_assert(sizeof(APPS) / sizeof(APPS[0]) <= LS_TUI_MAX_SCREENS,
                       "Built-in apps exceed the screen registry capacity");
         for (unsigned i = 0; i < sizeof(APPS) / sizeof(APPS[0]); i++) {
+            if(cell_performance_active() && strcmp(APPS[i].id,"cell"))continue;
             if (ls_app_register(&APPS[i]) < 0)
                 ESP_LOGE("tdp_ui", "could not register app %s", APPS[i].id);
         }
@@ -627,10 +639,13 @@ static bool tui_session(void)
 
         /* User apps last, so they land after the built-ins in the directory
            and can never displace one. A missing card is not an error. */
-        const int user = ls_userapp_load_dir("/sdcard/apps");
+        const int user = cell_performance_active()?0:ls_userapp_load_dir("/sdcard/apps");
         if (user) printf("tui: %d user app(s) from /sdcard/apps\n", user);
         if (ls_userapp_last_error())
             printf("tui: user app rejected - %s\n", ls_userapp_last_error());
+        /* The first registered screen is already current, so screen_show(0)
+         * intentionally skips its enter hook. A focused session starts it here. */
+        if(cell_performance_active() && ls_scr_cell.enter)ls_scr_cell.enter();
     }
 
     ls_tui_invalidate();
@@ -667,7 +682,7 @@ static bool tui_session(void)
                 printf("tui: last boot failed at '%s' - starting silent\n",
                        ls_safe_stage_name((ls_safe_stage_t)sb->prev_stage));
             } else {
-                snd_boot_start(settings_get_boot_sound());
+                if(!cell_performance_active())snd_boot_start(settings_get_boot_sound());
             }
             /* Vibration follows the vibrate preference, not the sound one -
                somebody who silences a device in a pocket has not asked for

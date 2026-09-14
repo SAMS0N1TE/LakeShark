@@ -199,17 +199,19 @@ static ls_radio_err_t hackrf_iq_start(void *ctx)
     int result = esp_libusb_stream_start(&dev->usb, HACKRF_RX_ENDPOINT);
     if (result == ESP_LIBUSB_ERR_BUSY) return LS_RADIO_ERR_BUSY;
     if (result != 0) return LS_RADIO_ERR_IO;
+    /* Console output can block longer than the IQ ring covers at high rates.
+     * Print before enabling RX so startup logging cannot overflow the ring. */
+    ESP_LOGI(TAG, "RX needs %" PRIu32 " B/s; 256 KiB ring covers %.3f ms",
+             dev->sample_rate_hz * 2,
+             262144000.0 / (dev->sample_rate_hz * 2));
+    dev->dropped_at_start = esp_libusb_stream_dropped();
     ls_radio_err_t error = control_out(dev, HACKRF_REQ_SET_TRANSCEIVER_MODE,
                                        HACKRF_MODE_RECEIVE, 0, NULL, 0);
     if (error != LS_RADIO_OK) {
         esp_libusb_stream_stop_for(&dev->usb);
         return error;
     }
-    dev->dropped_at_start = esp_libusb_stream_dropped();
     dev->streaming = true;
-    ESP_LOGI(TAG, "RX needs %" PRIu32 " B/s; 256 KiB ring covers %.3f ms",
-             dev->sample_rate_hz * 2,
-             262144000.0 / (dev->sample_rate_hz * 2));
     return LS_RADIO_OK;
 }
 

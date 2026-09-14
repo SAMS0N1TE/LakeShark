@@ -712,6 +712,26 @@ public:
         }
     }
 
+    /* Current companions return a flood DM's ACK inside an authenticated
+     * path-return packet. Ignoring this made delivered reports look unacked. */
+    bool onPeerPathRecv(mesh::Packet *packet,int sender_idx,const uint8_t *secret,
+                        uint8_t *path,uint8_t path_len,uint8_t extra_type,
+                        uint8_t *extra,uint8_t extra_len) override
+    {
+        (void)secret;(void)path;(void)path_len;
+        if(sender_idx<0 || sender_idx>=s_match_n || extra_type!=PAYLOAD_TYPE_ACK || extra_len<4)return false;
+        uint32_t ack;memcpy(&ack,extra,4);
+        const char *sender=s_peers[s_match[sender_idx]].id;
+        for(int i=0;i<ACK_TRACK;i++) {
+            const int slot=s_ack[i].slot;
+            if(s_ack[i].used && s_ack[i].expect==ack && slot>=0 && slot<LS_MESH_MAX_MSGS &&
+               s_msgs[slot].mine && !strcasecmp(s_msgs[slot].peer,sender)) {
+                onAckRecv(packet,ack);break;
+            }
+        }
+        return false; /* No route cache here; subsequent DMs still use flood. */
+    }
+
     /* Tell the stack we hold the public channel. Upstream's Mesh
        calls this with the channel hash off the wire; returning our channel
        when it matches is the whole of what "being on a channel" means. */
@@ -1771,6 +1791,17 @@ extern "C" bool ls_mesh_peer_known(const char *id)
     return peer_index(id) >= 0;
 }
 
+extern "C" int ls_mesh_dm_state(const char *id,const char *text)
+{
+    if(!id || !text || !*text)return -1;
+    for(int i=0;i<s_msg_count;i++) {
+        const int slot=(s_msg_head-1-i+LS_MESH_MAX_MSGS)%LS_MESH_MAX_MSGS;
+        const ls_mesh_msg_t &m=s_msgs[slot];
+        if(m.mine && m.direct && !strcasecmp(m.peer,id) && strstr(m.text,text))return m.state;
+    }
+    return -1;
+}
+
 extern "C" int ls_mesh_forget_peer(const char *id)
 {
     if (!id || !*id || !strcasecmp(id, "all")) {
@@ -2008,6 +2039,8 @@ extern "C" esp_err_t ls_mesh_send_dm_id(const char *i, const char *t)
 { (void)i; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" bool ls_mesh_queue_dm(const char *i, const char *t)
 { (void)i; (void)t; return false; }
+extern "C" int ls_mesh_dm_state(const char *i,const char *t)
+{ (void)i; (void)t; return -1; }
 extern "C" bool ls_mesh_peer_known(const char *i) { (void)i; return false; }
 extern "C" int ls_mesh_forget_peer(const char *i) { (void)i; return 0; }
 extern "C" int ls_mesh_events(ls_mesh_event_t *o, int m) { (void)o; (void)m; return 0; }

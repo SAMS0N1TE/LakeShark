@@ -16,6 +16,7 @@
 #include "esp_cpu.h"
 #include "esp_rom_sys.h"
 #include "ls_ctl.h"
+#include "cell_performance.h"
 /**/
 #include "ls_crash.h"
 #include "ls_nvs_safe.h"
@@ -401,6 +402,7 @@ static int cur_gain_tenths(void)
 
 static void select_mode(int idx)
 {
+    if(cell_performance_active())return;
     s_mode = idx;
 #if LS_HAS_COMPACT_UI
     if (compact_ui_select_mode(s_modes[idx].name)) return;
@@ -447,6 +449,7 @@ static void boot_btn_task(void *arg)
             stable = lvl;
             cnt = 0;
             if (prev == 1 && stable == 0) {
+                if(cell_performance_active())cell_performance_reboot(false);
                 cycle_next();
             }
             prev = stable;
@@ -788,6 +791,10 @@ static void defer_task(void *arg)
         /* Nothing to do here: the reconcile below is what answers it, and it
            runs whether or not this message ever arrived. */
         case DEFER_RADIO_WANT:
+            /* A console mode command can start RX while the UI's cached
+               request still says parked. An explicit stop must park the
+               actual receiver again, not be discarded as a duplicate. */
+            if (s_radio_want < 0) s_radio_applied = -2;
             break;
         case DEFER_C6_RESET:
             ESP_LOGW(TAG, "C6 reset requested by the head - the BLE link will "
@@ -866,7 +873,7 @@ void ls_tui_radio_want(const char *mode_name)
                           "mode this build has", mode_name);
         }
     }
-    if (want == s_radio_want) return;
+    if (want == s_radio_want && want >= 0) return;
     s_radio_want = want;
     defer_post(DEFER_RADIO_WANT);
 }
@@ -2384,6 +2391,7 @@ static void console_start(bool full)
     }
 
     const esp_console_cmd_t cmds[] = {
+        { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
         { .command = "p2", .help = "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot", .func = &cmd_p2 },
@@ -2489,6 +2497,7 @@ static void headless_safe_main(const ls_safe_boot_plan_t *plan)
 
 void app_main(void)
 {
+    cell_performance_boot();
     /* Bluetooth command dispatch does not require a wired UART worker. */
     flipper_link_set_host(&s_link_host);
     /* First, before anything that can fault. */
@@ -2577,7 +2586,7 @@ void app_main(void)
        up output-only whatever anybody passed. It means what it says now, and
        boot asks for both directions because the microphone costs one I2S
        channel that is idle until something reads it. */
-    ESP_ERROR_CHECK(ls_audio_hw_init(false));
+    if(!cell_performance_active())ESP_ERROR_CHECK(ls_audio_hw_init(false));
 #else
     ESP_LOGW(TAG, "audio: no codec driver for this board - speaker disabled");
 #endif
@@ -2614,7 +2623,7 @@ void app_main(void)
                   "co-processor needs the esp_hosted slave firmware");
 #else
     {
-        int e = esp_hosted_connect_to_slave();
+        int e = cell_performance_active() ? -1 : esp_hosted_connect_to_slave();
         ESP_LOGI(TAG, "ESP-Hosted co-processor link: %s (%d)",
                  e == 0 ? "up" : "FAILED", e);
 
@@ -2667,7 +2676,7 @@ void app_main(void)
 #endif
 
     ls_safe_stage(LS_SAFE_STAGE_APPS);
-    {
+    if(!cell_performance_active()) {
         /**/
         const char *resume = lakeshark_recovery_take_app();
         int m = settings_load_mode();
@@ -2685,12 +2694,14 @@ void app_main(void)
         }
         select_mode(m);
     }
-    lakeshark_radio_unpark();
-    audio_volume_set(settings_load_volume());
+    if(!cell_performance_active())lakeshark_radio_unpark();
+    if(!cell_performance_active())audio_volume_set(settings_load_volume());
 
     vTaskDelay(pdMS_TO_TICKS(700));
-    pa_on();
-    audio_out_ensure_unmuted();
+    if(!cell_performance_active()) {
+        pa_on();
+        audio_out_ensure_unmuted();
+    }
     /* The amplifier comes up here and the sound does NOT. The chime
        is the TUI splash's now - it plays on the first frame of the animation
        instead of a couple of seconds before the panel lights, which is what
@@ -2700,7 +2711,7 @@ void app_main(void)
     ls_mesh_boot();
 
     xTaskCreate(boot_btn_task, "boot_btn", 3072, NULL, 5, NULL);
-    xTaskCreateStatic(settings_task, "settings", SETTINGS_STACK_WORDS, NULL, 2,
+    if(!cell_performance_active())xTaskCreateStatic(settings_task, "settings", SETTINGS_STACK_WORDS, NULL, 2,
                       s_settings_stack, &s_settings_tcb);
 
     /**/
@@ -2747,7 +2758,7 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-    ble_link_allow_telemetry(true);
+    if(!cell_performance_active())ble_link_allow_telemetry(true);
 
     console_start(true);
 #if LS_HAS_COMPACT_UI

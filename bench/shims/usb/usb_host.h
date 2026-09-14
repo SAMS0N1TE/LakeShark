@@ -12,6 +12,7 @@ extern "C" {
 
 typedef void *usb_host_client_handle_t;
 typedef void *usb_device_handle_t;
+enum {USB_TRANSFER_STATUS_COMPLETED=0,USB_TRANSFER_STATUS_CANCELED=3};
 
 typedef struct usb_transfer usb_transfer_t;
 typedef void (*usb_transfer_cb_t)(usb_transfer_t *transfer);
