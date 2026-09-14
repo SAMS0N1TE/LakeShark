@@ -50,6 +50,7 @@
 #include "p25_p2_runtime.h"
 #include "p25_p2_bench.h"
 #include "scan_engine.h"
+#include "app_registry.h"
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
@@ -515,14 +516,26 @@ static int cmd_p2(int argc,char **argv)
 static int cmd_status(int argc, char **argv)
 {
     (void)argc; (void)argv;
+    const char *reported_mode = s_modes[s_mode].name;
+    uint64_t reported_hz = cur_freq_hz();
+    int reported_gain = cur_gain_tenths();
+    if (scan_engine_active() && scan_engine_mixed()) {
+        const app_t *active = app_current();
+        ls_iq_control_status_t rx;
+        scan_engine_receiver_status(&rx);
+        if (active && active->name) reported_mode = active->name;
+        reported_hz = rx.effective_center_known ? rx.effective_center_hz : 0;
+        if (rx.effective_gain_known) reported_gain = rx.effective_gain_tenths_db;
+    }
     printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
-           "feed=%s  free_int=%u  free_psram=%u\n",
-           s_modes[s_mode].name, cur_freq_hz() / 1e6,
-           audio_volume_get(), cur_gain_tenths() / 10.0,
+           "feed=%s  free_int=%u  free_psram=%u  screen_lock=%s  scan=%s  gps_filter=%s\n",
+           reported_mode, reported_hz / 1e6,
+           audio_volume_get(), reported_gain / 10.0,
                audio_is_muted(), fm_mode_label(lakeshark_fm_get_mode()),
            lakeshark_cartotui_enabled() ? "on" : "off",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), ls_tui_locked() ? "on" : "off",
+           scan_engine_active() ? "on" : "off", scan_engine_location() ? "on" : "off");
     /**/
     {
         char rh[128];

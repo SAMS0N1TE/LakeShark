@@ -4,6 +4,7 @@
 #include "scan_channels.h"
 #include "scan_engine.h"
 #include "scan_import.h"
+#include "scan_sd_store.h"
 #include "lakeshark_backend.h"
 /**/
 #include "fm_state.h"
@@ -81,6 +82,20 @@ static void ch_list(void)
 
 static int cmd_ch(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "caps")) {
+        printf("CHCAP max=%d sd=%d flash=%d\n", SCAN_MAX_CHANNELS, scan_sd_available(), SCAN_FLASH_CHANNELS); return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "profiles")) { scan_sd_list(); return 0; }
+    if (argc == 3 && !strcmp(argv[1], "save")) {
+        bool ok = scan_channels_save_profile(argv[2]);
+        printf("CHSAVE %s %s\n", ok ? "OK" : "FAILED", argv[2]); return ok ? 0 : 1;
+    }
+    if (argc == 3 && !strcmp(argv[1], "profile")) {
+        scan_engine_stop();
+        bool ok = scan_channels_load_profile(argv[2]);
+        printf("CHLOAD %s %s; scan stopped\n", ok ? "OK" : "FAILED", argv[2]); return ok ? 0 : 1;
+    }
+
     if (argc == 2 && !strcmp(argv[1], "stage")) { scan_import_begin(); puts("CHSTAGE READY"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "abort")) { scan_import_abort(); puts("CHSTAGE ABORTED"); return 0; }
     if (argc == 3 && !strcmp(argv[1], "row")) {

@@ -573,3 +573,23 @@ LS_CASE(the_thirteenth_app_is_reachable_and_capacity_is_bounded)
     ls_tui_screen_show(0);
     ls_tui_screen_set_tab_count(4);
 }
+
+LS_CASE(screen_lock_consumes_keys_and_taps_without_changing_app)
+{
+    setup(120, 32);
+    ls_tui_set_locked(true);
+    ls_tui_router_draw(&g_sf);
+    LS_CHECK(grid_has("SCREEN LOCKED"));
+    ls_tui_router_key(LS_TK_F2, 0);
+    ls_tui_router_touch(100, 10);
+    LS_CHECK(ls_tui_locked());
+    LS_CHECK(ls_tui_screen_current() == 0);
+    ls_tui_router_key(LS_TK_LEFT, 0);
+    ls_tui_router_key(LS_TK_ENTER, 0);
+    ls_tui_router_key(LS_TK_RIGHT, 0);
+    LS_CHECK(ls_tui_locked());
+    ls_tui_router_touch(10, 10);
+    ls_tui_router_touch(100, 10);
+    LS_CHECK(!ls_tui_locked());
+    LS_CHECK(ls_tui_screen_current() == 0);
+}

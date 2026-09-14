@@ -46,3 +46,16 @@ LS_CASE(import_line_validates_before_changing_destination)
         LS_CHECK(!scan_import_line(bad[i],&c)); LS_CHECK(!memcmp(&before,&c,sizeof(c)));
     }
 }
+
+LS_CASE(geographic_filter_handles_large_profile_and_clears_old_tail)
+{
+    static scan_channel_t c[SCAN_MAX_CHANNELS];
+    scan_geo_t s={0};
+    c[64].radius_m=10000; c[SCAN_MAX_CHANNELS-1].radius_m=10000;
+    scan_geo_update(&s,c,SCAN_MAX_CHANNELS,true,0,0,1000000,1000000);
+    LS_CHECK(scan_geo_admits(&s,64,1000000));
+    LS_CHECK(scan_geo_admits(&s,SCAN_MAX_CHANNELS-1,1000000));
+    LS_CHECK(!scan_geo_admits(&s,63,1000000));
+    scan_geo_update(&s,c,1,true,0,0,2000000,2000000);
+    LS_CHECK(!scan_geo_admits(&s,64,2000000));
+}

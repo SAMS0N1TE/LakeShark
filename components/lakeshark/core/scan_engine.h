@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 void scan_engine_init(void);
+bool scan_engine_audio_open(void);
 void scan_engine_start(void);
 void scan_engine_stop(void);
 bool scan_engine_active(void);

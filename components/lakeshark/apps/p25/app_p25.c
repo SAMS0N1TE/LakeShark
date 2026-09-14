@@ -1592,7 +1592,8 @@ static void p25_on_enter(void)
     scanner_init();
     p25_spectrum_init();
     ls_iq_control_reset(&s_radio_control);
-    audio_out_reset();
+    if (scan_engine_decoder_handoff()) audio_out_reprime();
+    else audio_out_reset();
 
     uint32_t freq = entry_settings.freq_hz;
     if (freq) s_tune_freq_hz = freq;

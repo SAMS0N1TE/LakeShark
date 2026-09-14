@@ -147,7 +147,11 @@ static void vibe_next(void)
     ls_notify_set_alerts(settings_get_alert_ring(), en);
 }
 
+static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
+static void lock_next(void) { ls_tui_set_locked(true); }
+
 static const item_t ITEMS[] = {
+    { "Screen lock", lock_show, lock_next },
     { "Brightness",     bri_show,   bri_next   },
     { "Auto dim",       dim_show,   dim_next   },
     { "Dim after",      dimt_show,  dimt_next  },

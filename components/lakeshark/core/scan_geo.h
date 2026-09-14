@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 typedef struct {
-    uint64_t eligible;
+    uint64_t eligible[(SCAN_MAX_CHANNELS + 63) / 64];
     int64_t fix_us;
     bool have_fix;
 } scan_geo_t;

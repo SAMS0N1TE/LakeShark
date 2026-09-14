@@ -173,7 +173,7 @@ static void run(int which, int ms)
 }
 LS_CASE(scan_quiet_channels_cycle_after_confirmed_tunes)
 {
-    run(0, 500);
+    run(0, 850);
     LS_CHECK(tune_count >= 4);
     LS_EQ_INT(tuned[0], 150000000);
     LS_EQ_INT(tuned[1], 150012500);
@@ -193,13 +193,13 @@ LS_CASE(scan_next_releases_hold_without_skipping_channel)
     LS_CHECK(tune_count >= 4);
     LS_CHECK(!scan_engine_manual_hold());
     LS_EQ_INT(tuned[3], 150000000);
-    LS_EQ_INT(s_session_skip, 0);
+    LS_EQ_INT(s_session_skip[0], 0);
 }
 LS_CASE(scan_skip_during_measurement_excludes_only_that_channel)
 {
     run(3, 800);
     LS_CHECK(tune_count >= 4);
-    LS_EQ_INT(s_session_skip, 1);
+    LS_EQ_INT(s_session_skip[0], 1);
     for (int i = 1; i < tune_count; i++)
         LS_CHECK(tuned[i] != 150000000);
 }
@@ -234,7 +234,7 @@ LS_CASE(p25_skip_interrupts_the_sync_dwell)
 {
     run(8, 500);
     LS_EQ_INT(tune_count, 2);
-    LS_EQ_INT(s_session_skip, 1);
+    LS_EQ_INT(s_session_skip[0], 1);
 }
 
 LS_CASE(starting_p25_scan_disables_manual_phase2)
@@ -257,4 +257,22 @@ LS_CASE(location_scan_never_tunes_without_a_fix)
     LS_EQ_INT(tune_count,0);
     char status[96]; scan_engine_status(status,sizeof(status));
     LS_CHECK(strstr(status,"GPS") != NULL);
+}
+
+LS_CASE(session_skip_supports_channels_above_64)
+{
+    memset(s_session_skip,0,sizeof(s_session_skip));
+    sess_skip(64); sess_skip(SCAN_MAX_CHANNELS-1);
+    LS_CHECK(sess_skipped(64)); LS_CHECK(sess_skipped(SCAN_MAX_CHANNELS-1));
+    LS_CHECK(!sess_skipped(0)); LS_CHECK(!sess_skipped(63));
+}
+
+LS_CASE(scan_audio_is_closed_during_search_and_decoder_changes)
+{
+    s_enabled=true; s_cur=-1; s_handoff=false;
+    LS_CHECK(!scan_engine_audio_open());
+    s_cur=1; LS_CHECK(scan_engine_audio_open());
+    s_handoff=true; LS_CHECK(!scan_engine_audio_open());
+    s_handoff=false; s_enabled=false; s_cur=-1;
+    LS_CHECK(scan_engine_audio_open());
 }

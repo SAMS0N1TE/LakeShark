@@ -106,6 +106,7 @@ static int IRAM_ATTR load_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len)
 
     float peak = s->iq_peak * 0.98f;
     float now  = (float)ipeak / 127.0f;
+    if (now > s->iq_block_peak) s->iq_block_peak = now;
     if (now > peak) peak = now;
     s->iq_peak = peak > 1.0f ? 1.0f : peak;
     return iq_len;
@@ -114,6 +115,7 @@ static int IRAM_ATTR load_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len)
 void fm_dsp_init(fm_dsp_t *s)
 {
     memset(s, 0, sizeof(*s));
+    s->squelch_settle_samples = FM_DEMOD_RATE * 64 / 1000;
     s->rate_out  = FM_RTL_RATE;
     s->rate_out2 = FM_AUDIO_RATE;
 
@@ -142,6 +144,7 @@ int IRAM_ATTR fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
 int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                           float *demod_out, int max)
 {
+    s->iq_block_peak = 0.0f;
 
     const float k = 3.14159265f / (float)(1 << 14);
     int out = 0;
@@ -163,6 +166,23 @@ int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
 }
 
 #define FM_NB_DEEMPH_A   0.30f
+int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples)
+{
+    const int qualify = FM_DEMOD_RATE * 64 / 1000;
+    if (samples <= 0) return 0;
+    if (s->squelch_settle_samples > 0) {
+        s->squelch_settle_samples -= samples;
+        s->squelch_samples = 0;
+        return 0;
+    }
+    if ((int)(s->iq_block_peak * 100.0f) < threshold_pct) {
+        s->squelch_samples = 0;
+        return 0;
+    }
+    if (s->squelch_samples < qualify) s->squelch_samples += samples;
+    return s->squelch_samples >= qualify;
+}
+
 #define FM_NB_SCALE      9000.0f
 int fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
                       int16_t *pcm16k, int max)

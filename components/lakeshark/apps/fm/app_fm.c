@@ -12,6 +12,7 @@
 #include "flex.h"
 #include "app_registry.h"
 #include "settings.h"
+#include "ls_nvs_safe.h"
 /**/
 #include "scan_engine.h"
 /**/
@@ -538,6 +539,9 @@ static void fm_rx_run_once(void)
         if (ls_iq_control_take(&s_radio_control, &radio_request)) {
             if (radio_request.flags & LS_IQ_CONTROL_TUNE) {
                 fm_spectrum_invalidate();
+                FM.squelch_open = false;
+                FM.iq_level = 0;
+                fm_dsp_init(&s_dsp);
                 ls_radio_err_t error = ls_iq_control_apply_tune(
                     &s_radio_control, s_session, &radio_request);
                 if (error != LS_RADIO_OK)
@@ -649,11 +653,12 @@ static void fm_rx_run_once(void)
             } else if (FM.mode == FM_MODE_FLEX) {
                 flex_dispatch(demod, nd);
             } else {
-                int sq_open = (int)(FM.iq_level * 100.0f) >= FM.squelch_tenths;
+                FM.iq_level = s_dsp.iq_block_peak;
+                int sq_open = fm_nfm_squelch(&s_dsp, FM.squelch_tenths, nd);
                 FM.squelch_open = sq_open;
                 if (sq_open) {
                     int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 600);
-                    if (na > 0) audio_write_mono(pcm, na);
+                    if (na > 0 && scan_engine_audio_open()) audio_write_mono(pcm, na);
                 }
             }
         }
@@ -766,7 +771,8 @@ static void fm_destroy_acars(void *user)
 static void fm_reset_audio(void *user)
 {
     (void)user;
-    audio_out_reset();
+    if (scan_engine_decoder_handoff()) audio_out_reprime();
+    else audio_out_reset();
 }
 
 static void fm_report_not_receiving(void *user)
@@ -800,6 +806,14 @@ static void fm_fail_receiver_start(void)
     (void)fm_lifecycle_start_failed(&FM_LIFECYCLE_HOOKS);
 }
 
+static const app_t FM_APP;
+
+static esp_err_t fm_read_saved_gain(void *ctx)
+{
+    *(int *)ctx = settings_get_gain(&FM_APP);
+    return ESP_OK;
+}
+
 static void fm_defaults_once(void)
 {
     static bool done = false;
@@ -831,6 +845,16 @@ static void fm_on_enter(void)
     (void)fm_lifecycle_stop(&FM_LIFECYCLE_HOOKS, 0, 0);
 
     fm_defaults_once();
+
+    static bool gain_loaded = false;
+    if (!gain_loaded) {
+        int saved_gain = FM_DEFAULT_GAIN;
+        if (ls_nvs_call(fm_read_saved_gain, &saved_gain, 0) == ESP_OK) {
+            FM.gain_tenths = saved_gain;
+            s_gain_chosen = saved_gain != 0;
+            gain_loaded = true;
+        }
+    }
 
     /* fl FM ACARS posts its submode before the GUI timer launches
        AppFM.  Starting from retained/default FM.mode here made the receiver

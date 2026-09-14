@@ -33,6 +33,7 @@ int  audio_volume_get(void);
 void audio_out_ensure_unmuted(void);
 
 void audio_out_reset(void);
+void audio_out_reprime(void);
 
 void audio_out_play_now(void);
 

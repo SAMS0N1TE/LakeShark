@@ -320,6 +320,7 @@ static bool tui_live_gps(void)   { return tui_live_from("gps.on"); }
 
 static TaskHandle_t     s_tui_task;
 static volatile bool    s_tui_stop;
+static volatile int     s_tui_lock_req = -1;
 /* A rotation the running session has been asked for. The session cannot turn
    the screen itself - it holds the LVGL port lock and takes its grid size at
    begin - so it retires and hands the request to its own exit path. */
@@ -771,6 +772,10 @@ static bool tui_session(void)
             }
         }
 
+        if (s_tui_lock_req >= 0) {
+            ls_tui_set_locked(s_tui_lock_req != 0);
+            s_tui_lock_req = -1;
+        }
         ls_keypad_event_t ev;
         while (ls_keypad_read(&ev)) {
             display_ctl_activity();
@@ -1162,6 +1167,20 @@ static int tui_cmd(int argc, char **argv)
                drawn ? drawn->name : "?", chosen ? chosen->name : "?",
                s_tui_task ? "" : " - no session running, it shows at the next");
         return rc;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "lock")) {
+        if (argc == 3) {
+            if (!strcmp(argv[2], "on")) s_tui_lock_req = 1;
+            else if (!strcmp(argv[2], "off")) s_tui_lock_req = 0;
+            else { printf("tui lock on|off\n"); return 1; }
+        }
+        if (!s_tui_task && s_tui_lock_req >= 0) {
+            ls_tui_set_locked(s_tui_lock_req != 0);
+            s_tui_lock_req = -1;
+        }
+        for (int i = 0; i < 25 && s_tui_lock_req >= 0; i++) vTaskDelay(pdMS_TO_TICKS(20));
+        printf("screen_lock=%s\n", ls_tui_locked() ? "on" : "off");
+        return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "remote")) {
         ls_tui_remote_geometry();
@@ -2089,7 +2108,11 @@ static int keys_cmd(int argc, char **argv)
         int64_t end = esp_timer_get_time() + 10LL * 1000 * 1000;
         unsigned seen = 0;
         while (esp_timer_get_time() < end) {
-            ls_keypad_event_t ev;
+            if (s_tui_lock_req >= 0) {
+            ls_tui_set_locked(s_tui_lock_req != 0);
+            s_tui_lock_req = -1;
+        }
+        ls_keypad_event_t ev;
             while (ls_keypad_read(&ev)) {
                 printf("key r%u c%u %s\n", ev.row, ev.col,
                        ev.pressed ? "down" : "up");

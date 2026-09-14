@@ -47,3 +47,17 @@ LS_CASE(channel_clear_and_edits_use_the_cache_safe_worker)
     LS_EQ_INT(safe_dispatches,1);
     scan_channels_clear(); LS_EQ_INT(safe_dispatches,2); LS_EQ_INT(scan_channels_count(),0);
 }
+
+bool scan_sd_available(void) { return false; }
+bool scan_sd_name(const char *name) { return true; }
+int scan_sd_read(const char *name, scan_channel_t *rows) { return -1; }
+bool scan_sd_write(const char *name, const scan_channel_t *rows, int count) { return false; }
+LS_CASE(large_lists_require_sd_and_keep_existing_list_without_it)
+{
+    static scan_channel_t many[65];
+    fail=false; saved_size=0; scan_channels_init();
+    for(int i=0;i<65;i++) { many[i]=(scan_channel_t){.name="Channel",.freq_hz=154785000,.flags=SCAN_FLAG_ENABLED}; }
+    LS_CHECK(scan_channels_replace(many,1));
+    LS_CHECK(!scan_channels_replace(many,65));
+    LS_EQ_INT(scan_channels_count(),1);
+}

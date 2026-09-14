@@ -1196,6 +1196,7 @@ ls_add_test(test_scan_engine
     ${FW}/components/lakeshark/core/scan_geo.c)
 ls_add_test(test_scan_geo ${FW}/components/lakeshark/core/scan_geo.c
     ${FW}/components/lakeshark/core/scan_import.c)
+ls_add_test(test_scan_sd_store)
 ls_add_test(test_scan_store)
 target_include_directories(test_scan_store BEFORE PRIVATE ${FW}/bench/shims/scan_store)
 ls_add_test(test_scan_upload ${FW}/components/lakeshark/core/scan_import.c)

@@ -93,14 +93,14 @@ static void update_location(void)
     s_geo = next;
     portEXIT_CRITICAL(&s_geo_lock);
 }
-static int           s_cur     = -1;
+static volatile int  s_cur     = -1;
 static int           s_hang_ms = DEFAULT_HANG_MS;
 static int           s_thresh  = DEFAULT_THRESH;
 static volatile int s_advance = 0; /* Channel index plus operation: 1 next, 2 session skip. */
 static volatile int s_hold_candidate = -1;
 static volatile int s_candidate = -1;
-static uint64_t      s_session_skip = 0;
-static int           s_order[SCAN_MAX_CHANNELS];
+static uint64_t s_session_skip[(SCAN_MAX_CHANNELS + 63) / 64];
+static EXT_RAM_BSS_ATTR int s_order[SCAN_MAX_CHANNELS];
 static int           s_order_n = 0;
 static int           s_order_pos = 0;
 static char          s_status[96] = "off";
@@ -117,8 +117,8 @@ static bool          s_task_ready = false;
 static bool          s_started = false;
 static volatile ls_radio_err_t s_scan_error = LS_RADIO_OK;
 
-static bool sess_skipped(int idx) { return idx >= 0 && idx < 64 && ((s_session_skip >> idx) & 1ULL); }
-static void sess_skip(int idx)    { if (idx >= 0 && idx < 64) s_session_skip |= (1ULL << idx); }
+static bool sess_skipped(int idx) { return idx >= 0 && idx < SCAN_MAX_CHANNELS && ((s_session_skip[idx / 64] >> (idx % 64)) & 1ULL); }
+static void sess_skip(int idx)    { if (idx >= 0 && idx < SCAN_MAX_CHANNELS) s_session_skip[idx / 64] |= (1ULL << (idx % 64)); }
 
 /**/
 /* The scanner scans the mode the foreground app can actually demodulate. It
@@ -169,6 +169,7 @@ static bool select_decoder(int mode)
         if (a && !strcmp(a->name, name)) { target = i; break; }
     }
     if (target < 0) return false;
+    if (mode == SCAN_MODE_NFM) lakeshark_fm_set_mode(FM_MODE_LISTEN);
     __atomic_store_n(&s_handoff, true, __ATOMIC_RELEASE);
     app_switch_to(target);
     bool ready = false;
@@ -323,7 +324,7 @@ void scan_engine_set_source(scan_src_t src)
     s_order_n   = 0;      /* force a rebuild when going back to channels */
     s_order_pos = 0;
     s_cur       = -1;
-    s_session_skip = 0;
+    memset(s_session_skip, 0, sizeof(s_session_skip));
 }
 scan_src_t scan_engine_get_source(void) { return s_src; }
 
@@ -478,11 +479,13 @@ static bool channel_eligible(const scan_channel_t *c)
     /**/
     if (c->mode != s_fg_mode && !(s_mixed && c->mode <= SCAN_MODE_NFM)) return false;
     if (s_location) {
-        int index = -1;
-        for (int i = 0; i < scan_channels_count(); ++i)
-            if (scan_channel_get(i) == c) { index = i; break; }
-        scan_geo_t copy = geo_snapshot();
-        if (!scan_geo_admits(&copy, index, esp_timer_get_time())) return false;
+        uintptr_t base = (uintptr_t)scan_channel_get(0), addr = (uintptr_t)c;
+        int index = addr >= base && (addr-base) % sizeof(*c) == 0 ? (int)((addr-base)/sizeof(*c)) : -1;
+        int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_geo_lock);
+        bool admits = index < scan_channels_count() && scan_geo_admits(&s_geo, index, now);
+        portEXIT_CRITICAL(&s_geo_lock);
+        if (!admits) return false;
     }
     return zone_admits(c);
 }
@@ -742,7 +745,9 @@ static void scan_task(void *arg)
         s_started = true;
 
         /**/
-        int pwi = measure_peak(SETTLE_MS, MEASURE_MS, c->mode);
+        int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? 100 : SETTLE_MS,
+                               c->mode == SCAN_MODE_NFM ? 100 : MEASURE_MS,
+                               c->mode);
         if (pwi > s_pk_acc) s_pk_acc = pwi;
         if (!s_enabled || !scan_foreground()) continue;
 
@@ -752,6 +757,7 @@ static void scan_task(void *arg)
             snprintf(s_status, sizeof(s_status), "SCAN %-9s p=%02d", c->name, pwi);
             continue;
         }
+        if (c->mode == SCAN_MODE_NFM && !FM.squelch_open && !scan_engine_manual_hold()) continue;
         snprintf(s_status, sizeof(s_status), "CHECK %-9s p=%02d", c->name, pwi);
 
         /**/
@@ -829,7 +835,7 @@ static void scan_task(void *arg)
     }
 }
 
-#define SCAN_STACK_WORDS (4096u / sizeof(StackType_t))
+#define SCAN_STACK_WORDS (12288u / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_scan_stack[SCAN_STACK_WORDS];
 static StaticTask_t s_scan_tcb;
 
@@ -864,7 +870,7 @@ void scan_engine_start(void)
            this request in the same owner latch. */
         p25_return_to_control();
     }
-    s_session_skip = 0;
+    memset(s_session_skip, 0, sizeof(s_session_skip));
     s_order_pos    = 0;
     s_advance      = 0;
     s_hold_candidate = -1;
@@ -889,6 +895,7 @@ void scan_engine_stop(void)
     s_scan_error = LS_RADIO_OK;
 }
 bool scan_engine_active(void) { return s_enabled; }
+bool scan_engine_audio_open(void) { return !s_enabled || (s_cur >= 0 && !scan_engine_decoder_handoff()); }
 
 /**/
 /* "Is the engine driving the tuner fast right now", which is the question the
@@ -947,7 +954,7 @@ void scan_engine_set_zone(int zone)
     s_zone = zone;
     settings_set_scan_zone(zone);
     s_order_pos = 0;
-    s_session_skip = 0;
+    memset(s_session_skip, 0, sizeof(s_session_skip));
 }
 
 /**/

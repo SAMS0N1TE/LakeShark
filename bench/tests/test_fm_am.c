@@ -7,6 +7,38 @@ static fm_dsp_t dsp;
 static uint8_t iq[4096];
 static int16_t audio[8192];
 
+LS_CASE(nfm_squelch_rejects_retune_and_short_spikes)
+{
+    fm_dsp_init(&dsp);
+    dsp.iq_block_peak = 1.0f;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    dsp.iq_block_peak = 0.08f;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    dsp.iq_block_peak = 0.30f;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    LS_CHECK(fm_nfm_squelch(&dsp, 15, 1024));
+    dsp.iq_block_peak = 0.08f;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    fm_dsp_init(&dsp);
+    dsp.iq_block_peak = 0.30f;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+}
+
+LS_CASE(nfm_current_level_does_not_retain_previous_peak)
+{
+    static float demod[1100];
+    fm_dsp_init(&dsp);
+    memset(iq, 250, sizeof(iq));
+    fm_demod_iq(&dsp, iq, sizeof(iq), demod, 1100);
+    LS_CHECK(dsp.iq_block_peak > 0.9f);
+    memset(iq, 128, sizeof(iq));
+    fm_demod_iq(&dsp, iq, sizeof(iq), demod, 1100);
+    LS_CHECK(dsp.iq_block_peak < 0.02f);
+    LS_CHECK(dsp.iq_peak > 0.9f);
+}
+
 static int receive(float depth)
 {
     fm_dsp_init(&dsp);

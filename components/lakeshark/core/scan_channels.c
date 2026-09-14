@@ -4,6 +4,7 @@
 #include "nvs.h"
 #include "esp_attr.h"
 #include "ls_nvs_safe.h"
+#include "scan_sd_store.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -32,6 +33,8 @@ void scan_channels_init(void)
     }
     s_ok = true;
 
+    int sd_count = scan_sd_read("active", s_ch);
+    if (sd_count >= 0) { s_count = sd_count; ESP_LOGI(TAG, "loaded %d channels from SD", s_count); return; }
     size_t sz = sizeof(s_blob);
     esp_err_t err = nvs_get_blob(s_nvs, BLOBK, s_blob, &sz);
     scan_store_hdr_t hdr;
@@ -76,7 +79,8 @@ static bool s_dirty = false;
 
 static bool save_on_worker(void)
 {
-    if (!s_ok) return false;
+    if (scan_sd_available()) return scan_sd_write("active", s_ch, s_count);
+    if (!s_ok || s_count > SCAN_FLASH_CHANNELS) return false;
     scan_store_hdr_t hdr = {
         .magic = SCANLIST_MAGIC,
         .ver   = SCANLIST_VER,
@@ -139,7 +143,10 @@ bool scan_channels_replace(const scan_channel_t *channels, int count)
     scan_store_hdr_t hdr = {SCANLIST_MAGIC, SCANLIST_VER, (uint16_t)count, SCANLIST_BUILD};
     memcpy(s_blob, &hdr, sizeof(hdr));
     memcpy(s_blob + sizeof(hdr), channels, (size_t)count * sizeof(*channels));
-    if (nvs_set_blob(s_nvs, BLOBK, s_blob, sizeof(hdr) + (size_t)count * sizeof(*channels)) != ESP_OK ||
+    if (scan_sd_available()) {
+        if (!scan_sd_write("active", channels, count)) return false;
+    } else if (count > SCAN_FLASH_CHANNELS ||
+        nvs_set_blob(s_nvs, BLOBK, s_blob, sizeof(hdr) + (size_t)count * sizeof(*channels)) != ESP_OK ||
         nvs_commit(s_nvs) != ESP_OK) return false;
     s_count = 0;
     memcpy(s_ch, channels, (size_t)count * sizeof(*channels));
@@ -250,4 +257,29 @@ int scan_mode_parse(const char *s)
     if (!strcasecmp(s, "nfm") || !strcasecmp(s, "fm")) return SCAN_MODE_NFM;
     if (!strcasecmp(s, "wfm")) return SCAN_MODE_WFM;
     return -1;
+}
+
+static esp_err_t save_profile_job(void *name)
+{
+    return scan_sd_write((const char *)name, s_ch, s_count) ? ESP_OK : ESP_FAIL;
+}
+bool scan_channels_save_profile(const char *name)
+{
+    return scan_sd_name(name) && strcasecmp(name, "active") &&
+           ls_nvs_call(save_profile_job, (void *)name, 0) == ESP_OK;
+}
+static esp_err_t load_profile_job(void *name)
+{
+    int count = scan_sd_read((const char *)name, (scan_channel_t *)s_blob);
+    if (count < 1) return ESP_FAIL;
+    /* s_blob is scratch storage; persist before publishing the replacement. */
+    if (!scan_sd_write("active", (scan_channel_t *)s_blob, count)) return ESP_FAIL;
+    s_count = 0;
+    memcpy(s_ch, s_blob, (size_t)count * sizeof(*s_ch));
+    s_count = count;
+    return ESP_OK;
+}
+bool scan_channels_load_profile(const char *name)
+{
+    return scan_sd_name(name) && ls_nvs_call(load_profile_job, (void *)name, 0) == ESP_OK;
 }

@@ -305,6 +305,8 @@ void audio_out_ensure_unmuted(void)
     if (s_ready && !s_muted) ls_audio_hw_mute(false);
 }
 
+void audio_out_reprime(void) { s_reprime = true; }
+
 void audio_out_reset(void)
 {
     if (!s_ready) return;

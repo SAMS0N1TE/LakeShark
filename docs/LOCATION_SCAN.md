@@ -55,7 +55,7 @@ The bounded format is `LSCAN1` followed by one line per channel:
 name|frequency_hz|P25-or-NFM|zone|latitude|longitude|radius_km|priority
 ```
 
-Limits: 64 channels, 15-character names, zones 0–7, radius 0–500 km. Existing
+Limits: 16,384 channels on SD (64 without SD), 15-character names, zones 0–7, radius 0–500 km. Existing
 version-1 channel lists migrate with their names, flags and zones intact. Zero
 radius is accepted on-device for old/unlocated entries, but the computer importer
 requires explicit coverage. The `.report.json` beside the output preserves the
@@ -92,3 +92,13 @@ those settings require `--allow-unfiltered`, rather than silently claiming filte
 are active. Encrypted, Phase II, DMR and other unsupported modes are rejected or
 listed as skipped. Live RR authentication requires an approved key and account;
 only schema/fixture tests can run without them.
+
+## SD collections
+
+`ch caps` reports the channel capacity and mounted-card state. Serial `ch stage`, acknowledged `ch row` commands, and `ch commit` replace the active list. The active collection is persisted to `/sdcard/channels/active.bin` and restored at boot. `ch save <name>` keeps a named copy; `ch profiles` lists stored names, and `ch profile <name>` activates one with scanning stopped. Names use up to 32 letters, digits, hyphens or underscores; `active` is reserved. `ch load /sdcard/...` accepts LSCAN1 text up to 4 MB.
+
+Files carry a format header and payload checksum. Writes use a temporary file and retain the previous save as `.bak`; a missing or corrupt current file falls back to that backup. Without a mounted card, only the legacy 64-channel NVS list can be saved. Selected profiles are read into PSRAM; scanning does not read SD for each hop. GPS and session-skip bitsets cover every channel. Large unfiltered sweeps are slow, so use local profiles or verified coverage radii.
+
+Ground Station includes a Franklin, NH two-channel preset: 154.785 MHz P25 police and 159.900 MHz analog NFM Lakes Region fire dispatch. Run `scan mixed on`, `scan gps off`, `ch zone all`, select P25, then `scan on`. The receiver alternates modes; it does not hear two frequencies simultaneously.
+
+During mixed scanning, analog samples reach the speaker only after the scanner accepts a channel. Decoder handoffs re-prime the audio queue without reconfiguring I2S. Status uses the running decoder and confirmed tuner frequency. Manual gain may be needed: automatic gain can raise a quiet-channel noise floor above analog squelch. These are conventional channels, not a trunked-system talkgroup configuration.

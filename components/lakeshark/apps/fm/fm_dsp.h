@@ -36,10 +36,14 @@ typedef struct {
     int     f_n;
 
     float   iq_peak;
+    float   iq_block_peak;
+    int     squelch_samples;
+    int     squelch_settle_samples;
     float   am_dc;
 } fm_dsp_t;
 
 void fm_dsp_init(fm_dsp_t *s);
+int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples);
 
 int  fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                  float *demod_out, int max);

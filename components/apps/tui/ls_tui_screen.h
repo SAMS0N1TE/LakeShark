@@ -81,6 +81,9 @@ void ls_tui_screen_prev(void);
 
 /* Draw one frame: chrome, then the active screen into what is left. Does not
    present; the caller decides when, because it owns the frame cadence. */
+void ls_tui_set_locked(bool locked);
+bool ls_tui_locked(void);
+
 void ls_tui_router_draw(tui_surface *sf);
 
 /* Feed a key. The active screen sees it first; the router handles what is

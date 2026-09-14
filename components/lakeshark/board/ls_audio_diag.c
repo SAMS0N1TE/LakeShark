@@ -17,7 +17,14 @@
 #include "audio_out.h"
 #include "tone.h"
 #include "settings.h"
+#include "ls_nvs_safe.h"
 #include "ls_safe_mode.h"
+
+static esp_err_t read_boot_sound(void *ctx)
+{
+    *(int *)ctx = settings_get_boot_sound();
+    return ESP_OK;
+}
 
 int ls_audio_ws_gpio   = LS_BOARD_I2S_WS_GPIO;
 int ls_audio_dout_gpio = LS_BOARD_I2S_DOUT_GPIO;
@@ -78,7 +85,9 @@ void ls_audio_diag_report(void)
     }
 #endif
     const ls_safe_boot_t *boot = ls_safe_boot_result();
-    printf("  startup  sound=%d prior_faults=%lu\n", settings_get_boot_sound(),
+    int boot_sound = -1;
+    (void)ls_nvs_call(read_boot_sound, &boot_sound, 0);
+    printf("  startup  sound=%d prior_faults=%lu\n", boot_sound,
            boot ? (unsigned long)boot->faults : 0UL);
 
     printf("  try:  audio swap   audio pa on|off   audio tone\n");

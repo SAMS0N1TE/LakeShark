@@ -41,8 +41,8 @@ static esp_err_t import_worker(void *arg)
     request_t *r = arg;
     FILE *f = fopen(r->path, "rb");
     if (!f) { snprintf(r->message, r->capacity, "Import file not found"); return ESP_FAIL; }
-    if (fseek(f, 0, SEEK_END) || ftell(f) > 16384 || ftell(f) <= 0 || fseek(f, 0, SEEK_SET)) {
-        fclose(f); snprintf(r->message, r->capacity, "Import must be 1..16384 bytes"); return ESP_FAIL;
+    if (fseek(f, 0, SEEK_END) || ftell(f) > 4 * 1024 * 1024 || ftell(f) <= 0 || fseek(f, 0, SEEK_SET)) {
+        fclose(f); snprintf(r->message, r->capacity, "Import must be 1 byte..4 MB"); return ESP_FAIL;
     }
     scan_channel_t *rows = heap_caps_calloc(SCAN_MAX_CHANNELS, sizeof(*rows), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!rows) { fclose(f); snprintf(r->message, r->capacity, "No import memory"); return ESP_ERR_NO_MEM; }

@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-#define SCAN_MAX_CHANNELS 64
+#define SCAN_MAX_CHANNELS 16384
+#define SCAN_FLASH_CHANNELS 64
 #define SCAN_NAME_LEN     16
 #define SCAN_MAX_ZONES    8
 
@@ -66,6 +67,8 @@ void  scan_channels_clear(void);
 
 bool  scan_channels_save(void);
 bool scan_channels_replace(const scan_channel_t *channels, int count);
+bool scan_channels_save_profile(const char *name);
+bool scan_channels_load_profile(const char *name);
 
 /**/
 /* Bulk edits: wrap them so the N individual saves coalesce into ONE commit.

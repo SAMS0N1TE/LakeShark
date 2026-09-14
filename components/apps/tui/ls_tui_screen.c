@@ -16,6 +16,18 @@
 
 #define MAX_SCREENS LS_TUI_MAX_SCREENS
 
+static bool s_locked;
+static int s_unlock_step;
+
+void ls_tui_set_locked(bool locked)
+{
+    s_locked = locked;
+    s_unlock_step = 0;
+    ls_tui_invalidate();
+}
+
+bool ls_tui_locked(void) { return s_locked; }
+
 static int tab_rows(void)
 {
     /* Four rows in portrait, not two. */
@@ -136,6 +148,7 @@ void ls_tui_screen_show(int index)
         s_screens[s_current]->leave();
     s_current = index;
     ls_btn_clear_hits();
+
 
     /* The left status belongs to the screen, so it goes with it. */
 
@@ -479,6 +492,19 @@ void ls_tui_router_draw(tui_surface *sf)
 
     tui_frame_begin(sf);
     ls_btn_clear_hits();
+    if (s_locked) {
+        const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+        tui_rect all = tui_surface_rect(sf);
+        tui_fill(sf, all, ' ', ink);
+        draw_status(sf, cols);
+        int x = cols > 38 ? (cols - 38) / 2 : 1;
+        tui_put_str(sf, all, x, rows / 2 - 3, "LAKESHARK / SCREEN LOCKED", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, all, x, rows / 2 - 1, "Receivers continue running", ink);
+        tui_put_str(sf, all, x, rows / 2 + 1,
+                    s_unlock_step ? "2. Tap RIGHT half to unlock" : "1. Tap LEFT half to begin", ink);
+        tui_put_str(sf, all, x, rows / 2 + 3, "Keyboard: LEFT then RIGHT", ink);
+        return;
+    }
     draw_status(sf, cols);
     draw_tabs(sf, cols, 1, th);
 
@@ -544,6 +570,15 @@ bool ls_tui_router_touch(int col, int row)
 
 static bool router_touch_dispatch(int col, int row)
 {
+    if (s_locked) {
+        int cols, rows;
+        ls_tui_geometry(&cols, &rows, NULL, NULL);
+        if (col < 0 || col >= cols || row < 1 || row >= rows) return true;
+        if (col < cols / 2) s_unlock_step = 1;
+        else if (s_unlock_step) ls_tui_set_locked(false);
+        return true;
+    }
+
 
     /* The banner first, because it is drawn over everything. Only
        taps that land ON it are taken; everything else falls through to what
@@ -613,6 +648,13 @@ static bool router_touch_dispatch(int col, int row)
 
 bool ls_tui_router_key(ls_tk_t key, char ch)
 {
+    if (s_locked) {
+        if (key == LS_TK_LEFT) s_unlock_step = 1;
+        else if (key == LS_TK_RIGHT && s_unlock_step) ls_tui_set_locked(false);
+        else s_unlock_step = 0;
+        return true;
+    }
+
     /* Help swallows everything while it is up, so there is always a way out
        of it and it can never trap a key the screen underneath wanted. */
     /* ESC clears a banner before anything else sees it, and no
