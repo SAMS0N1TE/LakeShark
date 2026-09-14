@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/SAMS0N1TE/LakeShark/security/advisories/new
+    about: Send vulnerability details privately to the maintainer.
+  - name: Setup and user guides
+    url: https://terminalbay.com/?m=wiki
+    about: Read the LakeShark hardware, flashing and app guides.
