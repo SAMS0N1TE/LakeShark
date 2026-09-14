@@ -1163,6 +1163,10 @@ static int tui_cmd(int argc, char **argv)
                s_tui_task ? "" : " - no session running, it shows at the next");
         return rc;
     }
+    if (argc == 2 && !strcmp(argv[1], "remote")) {
+        ls_tui_remote_geometry();
+        return 0;
+    }
     if (argc >= 4 && !strcmp(argv[1], "tap")) {
         if (!s_tui_task) { printf("tui: not running\n"); return 0; }
         int cols = 0, rows = 0;

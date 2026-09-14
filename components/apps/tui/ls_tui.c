@@ -469,6 +469,12 @@ void ls_tui_end(void)
 
 tui_surface *ls_tui_surface(void) { return s_back ? &s_surface : NULL; }
 
+void ls_tui_remote_geometry(void)
+{
+    printf("HUBSCREEN width=%d height=%d x=%d y=%d cols=%d rows=%d cw=%d ch=%d\n",
+           s_screen_w, s_screen_h, s_ox, s_oy, s_cols, s_rows, s_cw, s_ch);
+}
+
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = s_cols;

@@ -4,6 +4,7 @@
 #include "ls_wifi_sta_core.h"
 #include "ls_wifi_operation.h"
 #include "ls_wifi_file_stream.h"
+#include "ls_hub_transfer.h"
 #include "ble_link.h"
 #include "ls_time.h"
 #include "tui/ls_field.h"
@@ -610,6 +611,80 @@ static esp_err_t h_watch_debug(httpd_req_t *req)
     return httpd_resp_send(req,reply,n);
 }
 
+static esp_err_t h_hub_info(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "{\"protocol\":\"lakeshark-hub-v1\",\"map_upload\":true}");
+}
+
+static esp_err_t h_hub_map(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Connection", "close");
+    char query[128], name[65], expected_text[16];
+    if (req->content_len < 127 || req->content_len > 1024 * 1024 * 1024 ||
+        httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK ||
+        !ls_hub_map_name(name) ||
+        httpd_req_get_hdr_value_str(req, "X-LakeShark-CRC32", expected_text, sizeof(expected_text)) != ESP_OK ||
+        strlen(expected_text) != 8) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid map name, size or checksum");
+    }
+    char *end;
+    for (int i = 0; i < 8; ++i) {
+        char c = expected_text[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid checksum");
+    }
+    uint32_t expected = (uint32_t)strtoul(expected_text, &end, 16);
+    if (*end || !sd_present())
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No SD card or invalid checksum");
+    char folder[160], final[240], partial[250];
+    snprintf(folder, sizeof(folder), "%s/maps", ROOT);
+    if (mkdir(folder, 0775) && errno != EEXIST)
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot create maps directory");
+    snprintf(final, sizeof(final), "%s/%s", folder, name);
+    snprintf(partial, sizeof(partial), "%s.partial", final);
+    struct stat existing;
+    if (stat(final, &existing) == 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Map already exists; choose a new name");
+    }
+    uint8_t *buffer = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buffer) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No transfer buffer");
+    FILE *file = fopen(partial, "wb");
+    bool ok = file != NULL;
+    uint32_t crc = 0;
+    size_t received = 0;
+    uint8_t header[127] = {0};
+    while (ok && received < req->content_len) {
+        size_t want = req->content_len - received;
+        if (want > 4096) want = 4096;
+        int got = httpd_req_recv(req, (char *)buffer, want);
+        if (got <= 0) { ok = false; break; }
+        if (received < sizeof(header)) {
+            size_t n = sizeof(header) - received;
+            if (n > (size_t)got) n = (size_t)got;
+            memcpy(header + received, buffer, n);
+        }
+        crc = ls_hub_crc32(crc, buffer, (size_t)got);
+        ok = fwrite(buffer, 1, (size_t)got, file) == (size_t)got;
+        received += (size_t)got;
+    }
+    if (file && fclose(file) != 0) ok = false;
+    free(buffer);
+    ok = ok && received == req->content_len && crc == expected && ls_hub_map_header(header, received);
+    if (!ok || rename(partial, final) != 0) {
+        unlink(partial);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Map transfer failed; existing maps kept");
+    }
+    char reply[120];
+    snprintf(reply, sizeof(reply), "{\"bytes\":%lu,\"crc32\":\"%08lx\",\"saved\":true}",
+             (unsigned long)received, (unsigned long)crc);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, reply);
+}
+
 static esp_err_t httpd_ensure_started(void)
 {
     if (s_httpd) return ESP_OK;
@@ -636,6 +711,10 @@ static esp_err_t httpd_ensure_started(void)
     httpd_register_uri_handler(s_httpd, &debug);
     httpd_uri_t watch={.uri="/debug/rec",.method=HTTP_GET,.handler=h_watch_debug};
     httpd_register_uri_handler(s_httpd,&watch);
+    httpd_uri_t hub_info = {.uri="/hub/info", .method=HTTP_GET, .handler=h_hub_info};
+    httpd_uri_t hub_map = {.uri="/hub/map", .method=HTTP_POST, .handler=h_hub_map};
+    httpd_register_uri_handler(s_httpd, &hub_info);
+    httpd_register_uri_handler(s_httpd, &hub_map);
     return ESP_OK;
 }
 
