@@ -92,7 +92,18 @@ enum {
 
 #define HOSTED_MEM_ALIGNMENT_4      4
 #define HOSTED_MEM_ALIGNMENT_32     32
+/* ESP32-P4 external RAM sits behind the 128-byte L2 cache line selected by
+ * CONFIG_CACHE_L2_CACHE_LINE_128B.  SDMMC's DMA validator requires both the
+ * address and transfer size to meet that cache alignment.  Treating 64 bytes
+ * as sufficient lets every other 1600-byte transport-pool block fail CMD53
+ * with ESP_ERR_INVALID_ARG, taking the shared Wi-Fi/Bluetooth link down. */
+#if defined(CONFIG_IDF_TARGET_ESP32P4) && \
+    defined(CONFIG_CACHE_L2_CACHE_LINE_SIZE) && \
+    (CONFIG_CACHE_L2_CACHE_LINE_SIZE > 64)
+#define HOSTED_MEM_ALIGNMENT_64     CONFIG_CACHE_L2_CACHE_LINE_SIZE
+#else
 #define HOSTED_MEM_ALIGNMENT_64     64
+#endif
 
 /** Enumeration **/
 enum hardware_type_e {

@@ -54,6 +54,14 @@ hosted_mempool_t * hosted_mempool_create(hosted_mempool_config_t * config)
 	struct hosted_mempool_t *new = NULL;
 	struct os_mempool *pool = NULL;
 	uint8_t *heap = NULL;
+	size_t block_size = config->block_size;
+	if (config->alignment_in_bytes > OS_ALIGNMENT) {
+		/* The low-level pool only rounds blocks to OS_ALIGNMENT.  Preserve the
+		 * stronger DMA/cache alignment promised by this wrapper for every block,
+		 * not just the first address returned by malloc. */
+		block_size = (block_size + config->alignment_in_bytes - 1) &
+			~((size_t)config->alignment_in_bytes - 1);
+	}
 
 	new = (hosted_mempool_t *)config->calloc(1, sizeof(hosted_mempool_t), HOSTED_MEM_CAP_NONE);
 	if (!new) {
@@ -75,7 +83,7 @@ hosted_mempool_t * hosted_mempool_create(hosted_mempool_config_t * config)
 	if (!config->pre_allocated_mem) {
 		/* no pre-allocated mem, allocate new */
 		heap = (uint8_t *)config->malloc(MEMPOOL_ALIGNED(
-				OS_MEMPOOL_BYTES(config->num_blocks, config->block_size),
+				OS_MEMPOOL_BYTES(config->num_blocks, block_size),
 				config->alignment_in_bytes),
 				HOSTED_MEM_CAP_DMA);
 		if (!heap) {
@@ -85,7 +93,7 @@ hosted_mempool_t * hosted_mempool_create(hosted_mempool_config_t * config)
 	} else {
 		/* preallocated memory for mem pool */
 		if (config->pre_allocated_mem_size < OS_MEMPOOL_BYTES(config->num_blocks,
-				config->block_size)) {
+				block_size)) {
 			ESP_LOGE(TAG, "mempool create failed: insufficient memory");
 			goto free_buffs;
 		}
@@ -101,7 +109,7 @@ hosted_mempool_t * hosted_mempool_create(hosted_mempool_config_t * config)
 	char str[MEMPOOL_NAME_STR_SIZE] = {0};
 	snprintf(str, MEMPOOL_NAME_STR_SIZE, "hosted_%p", pool);
 
-	if (new->ops->mempool_init(pool, config->num_blocks, config->block_size, heap, str)) {
+	if (new->ops->mempool_init(pool, config->num_blocks, block_size, heap, str)) {
 		ESP_LOGE(TAG, "mempool_init failed");
 		goto free_buffs;
 	}
@@ -109,7 +117,7 @@ hosted_mempool_t * hosted_mempool_create(hosted_mempool_config_t * config)
 	new->heap = heap;
 	new->pool = pool;
 	new->num_blocks = config->num_blocks;
-	new->block_size = config->block_size;
+	new->block_size = block_size;
 
 	if (config->pre_allocated_mem)
 		new->static_heap = 1;
