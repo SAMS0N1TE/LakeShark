@@ -10,6 +10,9 @@
 #ifdef LS_TUI_CORNER_STUB
 int ls_tui_corner_pad(int row) { (void)row; return 0; }
 #endif
+#ifdef LS_TUI_WIDE_STUB
+bool ls_tui_is_wide(void) { return true; }
+#endif
 
 /* ---- fuel gauge ---------------------------------------------------- */
 

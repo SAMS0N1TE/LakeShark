@@ -34,6 +34,10 @@ if ($env:MSYSTEM -or $env:MSYS2_PATH_TYPE) {
 
 $dir = $c.dir
 $target = if ($c.target) { $c.target } else { $cfg.target }
+if ($target -eq 'esp32p4') {
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'patch-idf.ps1') -IdfPath (Split-Path -Parent $export)
+    if ($LASTEXITCODE) { throw 'P4 SDK restart checks failed' }
+}
 
 if ($Clean -and (Test-Path (Join-Path $root $dir))) {
     Write-Host "removing $dir" -ForegroundColor Yellow

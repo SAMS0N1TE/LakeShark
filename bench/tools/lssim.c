@@ -1,3 +1,5 @@
+#include "ls_splash.h"
+#include "ls_tui_density.h"
 /* The panel, on this machine. */
 
 #include <stdbool.h>
@@ -412,7 +414,7 @@ static void usage(void)
     printf("  -d        also print the cell grid as text\n");
     printf("  -e        empty: no radio, no map - the idle branches\n");
     printf("  -n TEXT   post a notification banner, to look at it\n");
-    printf("  -F N      font index: 0 is 10x17, 1 is 9x16\n");
+    printf("  -F N      font index: 0 is 10x17, 1 is 9x16, 2 is 15x26\n");
     printf("  -m FILE   a .pmtiles archive instead of the fixture\n");
     printf("  -T N      time N frames of this screen and print us/frame\n");
     printf("  -P N      the same, panning between frames\n");
@@ -462,7 +464,8 @@ int main(int argc, char **argv)
         else { usage(); return 1; }
     }
 
-    const int idx = app_by_id(want);
+    const bool splash = !strcmp(want, "splash");
+    const int idx = app_by_id(splash ? "home" : want);
     if (idx < 0) { printf("lssim: no app '%s'\n", want); usage(); return 1; }
 
     /* Before begin, which is where the cell size becomes the grid.
@@ -476,7 +479,7 @@ int main(int argc, char **argv)
     if (timed > 0) ls_shim_time_live(1);
     else           ls_shim_time_set(120000000);
 
-    ls_tui_set_font_index(font);
+    ls_tui_set_font_index(ls_tui_font_for_view(font, APPS[idx].screen->name, false));
 
     /* The grid the board has, either way round. */
     ls_tui_set_corner_radius(CORNER_R);
@@ -613,6 +616,12 @@ int main(int argc, char **argv)
 
     if (timed > 0) time_frames(timed, moving);
 
+    if (splash) {
+        int cols, rows;
+        ls_tui_geometry(&cols, &rows, NULL, NULL);
+        ls_splash_draw(ls_tui_surface(), cols, rows, 60, 60);
+        ls_tui_present();
+    }
     if (write_bmp(out) != 0) {
         printf("lssim: cannot write %s\n", out);
         return 1;

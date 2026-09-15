@@ -139,7 +139,13 @@ void fm_get_receiver_status(ls_iq_control_status_t *out)
 
 static int g_scan_restarts;
 void lakeshark_fm_set_mode(int mode) { g_fm_mode_asked = mode; FM.mode = mode; }
-void lakeshark_fm_set_freq(uint32_t hz) { FM.freq_hz = hz; }
+static bool g_fm_locked;
+static uint32_t g_fm_lock_hz;
+void lakeshark_fm_set_freq(uint32_t hz)
+{ FM.freq_hz = hz;if(g_fm_locked)g_fm_lock_hz=hz; }
+void lakeshark_fm_frequency_lock(bool on) { g_fm_locked=on;g_fm_lock_hz=on?FM.freq_hz:0; }
+bool lakeshark_fm_frequency_locked(void) { return g_fm_locked; }
+uint32_t lakeshark_fm_frequency_lock_hz(void) { return g_fm_lock_hz; }
 void lakeshark_fm_scan_restart(void) { ++g_scan_restarts; }
 void ls_tui_radio_want(const char *mode_name) { g_radio_asked = mode_name; }
 
@@ -177,6 +183,7 @@ static void fresh(void)
     ls_wf_source_select(LS_WF_SRC_AUTO);
     ls_wf_source_lora_band(902000000u, 928000000u);
     memset(&FM, 0, sizeof(FM));
+    lakeshark_fm_frequency_lock(false);
     g_owner = LS_WF_OWNER_NONE;
     g_claims_none = g_pushes = g_row_n = 0;
     memset(&g_feed, 0, sizeof(g_feed));
@@ -456,6 +463,21 @@ LS_CASE(fm_sweep_is_separate_from_band_selection)
     ls_wf_fm_sweep(false);
     LS_EQ_INT(FM_MODE_AM, FM.mode);
     LS_EQ_INT(1, g_scan_restarts);
+}
+
+LS_CASE(a_locked_custom_frequency_is_the_center_of_the_next_sweep)
+{
+    fresh();
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 433920000u;
+    FM.scan_start_hz = 150000000u;
+    FM.scan_stop_hz = 162000000u;
+    lakeshark_fm_frequency_lock(true);
+    ls_wf_fm_sweep(true);
+    LS_EQ_INT(FM_MODE_SCAN, FM.mode);
+    LS_EQ_UINT(427920000u, FM.scan_start_hz);
+    LS_EQ_UINT(439920000u, FM.scan_stop_hz);
+    LS_EQ_UINT(433920000u, lakeshark_fm_frequency_lock_hz());
 }
 
 LS_CASE(am_presets_keep_live_mode_and_publish_the_selected_range)

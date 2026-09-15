@@ -159,6 +159,30 @@ LS_CASE(two_generations_recover_after_a_torn_write_and_keep_a_fixed_footprint)
     unlink(a);unlink(b);rmdir(dir);
 }
 
+LS_CASE(two_invalid_generations_are_preserved_and_a_clean_archive_starts)
+{
+    char dir[160];snprintf(dir,sizeof(dir),"rec-watch-bad-%ld",(long)getpid());
+#ifdef _WIN32
+    _mkdir(dir);
+#else
+    mkdir(dir,0700);
+#endif
+    char a[200],b[200],qa[200],qb[200];
+    snprintf(a,sizeof(a),"%s/watch0.bin",dir);snprintf(b,sizeof(b),"%s/watch1.bin",dir);
+    snprintf(qa,sizeof(qa),"%s/watch0.invalid",dir);snprintf(qb,sizeof(qb),"%s/watch1.invalid",dir);
+    unlink(a);unlink(b);unlink(qa);unlink(qb);
+    FILE *f=fopen(a,"wb");LS_CHECK(f!=NULL);if(f){fputs("bad-a",f);fclose(f);}
+    f=fopen(b,"wb");LS_CHECK(f!=NULL);if(f){fputs("bad-b",f);fclose(f);}
+    memset(&catalog,0,sizeof(catalog));observe(433920000,1,NULL);
+    LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
+    struct stat st;
+    LS_EQ_INT(stat(qa,&st),0);LS_EQ_INT((int)st.st_size,5);
+    LS_EQ_INT(stat(qb,&st),0);LS_EQ_INT((int)st.st_size,5);
+    LS_CHECK(rec_watch_restore(dir,&restored));
+    LS_EQ_UINT(restored.record[0].event.count,1);
+    unlink(a);unlink(b);unlink(qa);unlink(qb);rmdir(dir);
+}
+
 LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
 {
     char dir[160],path[200],other[200];

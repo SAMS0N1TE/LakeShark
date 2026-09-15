@@ -3,6 +3,7 @@
 #include "location_pref.h"
 #include "scan_channels.h"
 #include "scan_engine.h"
+#include "scan_journal.h"
 #include "scan_import.h"
 #include "scan_sd_store.h"
 #include "lakeshark_backend.h"
@@ -257,6 +258,12 @@ static int cmd_scan(int argc, char **argv)
         char st[96]; scan_engine_status(st, sizeof(st));
         printf("scan: %s / mixed=%s GPS=%s\n", st, scan_engine_mixed() ? "on" : "off",
                !scan_engine_location() ? "off" : scan_engine_location_ready() ? "ready" : "waiting");
+        scan_journal_status_t log;
+        scan_journal_get_status(&log);
+        printf("scan log: %s records=%lu dropped=%lu errors=%lu bytes=%llu path=%s\n",
+               log.detail, (unsigned long)log.records_written,
+               (unsigned long)log.queue_dropped, (unsigned long)log.write_errors,
+               (unsigned long long)log.bytes_written, log.path[0] ? log.path : "none");
         return 0;
     }
     if (!strcmp(argv[1], "on")  || !strcmp(argv[1], "start")) { scan_engine_start(); printf("scan on\n");  return 0; }

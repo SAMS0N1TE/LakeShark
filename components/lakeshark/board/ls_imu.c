@@ -322,7 +322,10 @@ static bool sample_locked(ls_imu_sample_t *out)
 
 /* Hysteresis, and why the numbers are what they are. */
 
-#define POSE_HOLD_US 900000
+/* Half a second was the shipped response and is already long enough to
+   reject an accidental tilt.  The field-app integration raised this to
+   900 ms, which made every deliberate turn visibly lag. */
+#define POSE_HOLD_US 500000
 
 static ls_imu_pose_t s_pose = LS_IMU_FLAT;
 static ls_imu_pose_t s_pose_pending = LS_IMU_FLAT;
@@ -345,9 +348,10 @@ ls_imu_pose_t ls_imu_pose(void)
 {
     ls_imu_sample_t s;
     if (!ls_imu_read(&s)) {
-        s_pose_pending = LS_IMU_FLAT;
-        s_pose_since = 0;
-        return LS_IMU_FLAT;
+        /* The field logger and UI share this sensor.  Missing one nonblocking
+           lock attempt is not evidence that the device changed pose, so do
+           not restart an otherwise stable half-second decision. */
+        return s_pose;
     }
 
     const ls_imu_pose_t now_pose = pose_of(&s);

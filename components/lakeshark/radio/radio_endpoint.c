@@ -838,6 +838,28 @@ ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
     return error;
 }
 
+ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
+                                      ls_radio_iq_health_t *out)
+{
+    if (!out) return LS_RADIO_ERR_INVALID;
+    memset(out, 0, sizeof(*out));
+    endpoint_slot_t *slot;
+    ls_radio_err_t error = session_enter(session, LS_RADIO_RX_IQ_U8,
+                                         false, &slot);
+    if (error != LS_RADIO_OK) return error;
+    xSemaphoreTake(slot->control_lock, portMAX_DELAY);
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    if (!slot->present) error = LS_RADIO_ERR_DISCONNECTED;
+    else if (slot->streaming) error = LS_RADIO_ERR_BUSY;
+    else if (!slot->ops.iq_get_health) error = LS_RADIO_ERR_UNSUPPORTED;
+    xSemaphoreGive(s_registry_lock);
+    if (error == LS_RADIO_OK)
+        error = slot->ops.iq_get_health(slot->driver_ctx, out);
+    error = session_leave(slot, error, false, 0, 0);
+    xSemaphoreGive(slot->control_lock);
+    return error;
+}
+
 ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session)
 {
     endpoint_slot_t *slot;

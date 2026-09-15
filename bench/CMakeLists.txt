@@ -47,6 +47,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_action.c
     ${FW}/components/apps/tui/ls_value.c
     ${FW}/components/apps/tui/ls_font_list.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/bench/shims/tui_hw_stubs.c)
@@ -480,6 +481,8 @@ ls_add_test(test_tui_quick
 target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
 add_executable(lssim
+    ${FW}/components/apps/tui/ls_splash.c
+    ${FW}/components/apps/tui/ls_wordmark.c
     tools/lssim.c
     tools/lssim_radio_preview.c
     tools/lssim_field.c
@@ -496,6 +499,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
@@ -624,6 +628,7 @@ ls_add_test(test_tui_transform
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_font_list.c
     ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/tuilib/tui_core.c)
@@ -645,6 +650,7 @@ ls_add_test(test_tui_theme ${FW}/components/apps/tui/ls_theme.c)
 target_include_directories(test_tui_theme PRIVATE ${FW}/components/apps/tui)
 
 ls_add_test(test_tui_font
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c)
 target_include_directories(test_tui_font PRIVATE ${FW}/components/apps/tui)
@@ -660,6 +666,7 @@ ls_add_test(test_tui_render_cost
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
@@ -764,6 +771,7 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
@@ -1007,6 +1015,8 @@ ls_add_test(test_usb_descriptors)
 target_include_directories(test_usb_descriptors PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_imu_pose_policy)
 target_include_directories(test_imu_pose_policy PRIVATE ${FW}/components/lakeshark/board)
+ls_add_test(test_imu_status_policy)
+target_include_directories(test_imu_status_policy PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_radio_health
     ${FW}/components/lakeshark/radio/radio_endpoint.c
     ${FW}/components/lakeshark/radio/radio_health.c)
@@ -1202,6 +1212,9 @@ foreach(target test_tui_picker test_tui_wireless test_tui_waterfall_claim
                test_tui_keyboard)
     target_compile_definitions(${target} PRIVATE LS_TUI_CORNER_STUB=1)
 endforeach()
+foreach(target test_tui_picker test_tui_quick test_tui_keyboard)
+    target_compile_definitions(${target} PRIVATE LS_TUI_WIDE_STUB=1)
+endforeach()
 target_include_directories(test_nfc_classic PRIVATE ${FW}/components/lakeshark/nfc)
 
 ls_add_test(test_scan_engine
@@ -1210,6 +1223,8 @@ ls_add_test(test_scan_engine
 ls_add_test(test_scan_geo ${FW}/components/lakeshark/core/scan_geo.c
     ${FW}/components/lakeshark/core/scan_import.c)
 ls_add_test(test_scan_sd_store)
+ls_add_test(test_scan_journal ${FW}/components/lakeshark/core/scan_journal_codec.c)
+target_include_directories(test_scan_journal PRIVATE ${FW}/components/lakeshark/core)
 ls_add_test(test_scan_store)
 target_include_directories(test_scan_store BEFORE PRIVATE ${FW}/bench/shims/scan_store)
 ls_add_test(test_scan_upload ${FW}/components/lakeshark/core/scan_import.c)
@@ -1218,3 +1233,8 @@ target_include_directories(test_scan_engine PRIVATE
     ${FW}/components/lakeshark
     ${FW}/components/lakeshark/radio
     ${APP}/p25 ${APP}/fm)
+
+ls_add_test(test_cell_session ${APP}/cell/cell_session.c)
+target_include_directories(test_cell_session PRIVATE ${APP}/cell)
+ls_add_test(test_panel_id)
+target_include_directories(test_panel_id PRIVATE ${FW}/components/lakeshark/board)

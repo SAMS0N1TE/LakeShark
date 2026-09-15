@@ -78,22 +78,25 @@ void lakeshark_backend_start(void)
     /**/
     usb_autoreboot_pref_init(settings_set_usb_autoreboot,
                              settings_get_usb_autoreboot());
-    scan_channels_init();
-
-    event_stream_init();
-
-    s_adsb_idx = adsb_app_register();
-    s_p25_idx  = p25_app_register();
-    s_fm_idx   = fm_app_register();
-    s_rec_idx  = rec_app_register();
-
+    /* The focused CELL session leases HackRF directly. Starting the scanner,
+     * legacy decoder tasks and console event feed here wastes internal RAM
+     * and introduces unrelated startup work into the capture profile. */
+    if (!cell_performance_active()) {
+        scan_channels_init();
+        event_stream_init();
+        s_adsb_idx = adsb_app_register();
+        s_p25_idx  = p25_app_register();
+        s_fm_idx   = fm_app_register();
+        s_rec_idx  = rec_app_register();
+    }
+    /* The UI's stop/rotation fence still needs this worker with no legacy app. */
     app_switch_worker_start();
-    scan_engine_init();
+    if (!cell_performance_active()) scan_engine_init();
 
     esp_log_level_set("P25DIAG", ESP_LOG_ERROR);
     esp_log_level_set("P25DBG",  ESP_LOG_ERROR);
 
-    {
+    if (!cell_performance_active()) {
         int p  = settings_voice_preset_get();
         int lp = settings_voice_lowpass_get();
         int sh = settings_voice_lowshelf_get();

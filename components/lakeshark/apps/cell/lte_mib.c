@@ -189,8 +189,8 @@ static bool decode(workspace_t *w,int quarter,int ports,lte_mib_result_t *out)
     return true;
 }
 size_t lte_mib_workspace_size(void){return sizeof(workspace_t);}
-bool lte_mib_find(const uint8_t *iq,size_t samples,int pci,int frame_start,
-                  int cfo_hz,void *memory,lte_mib_result_t *out,lte_sync_yield_fn yield,void *arg)
+static bool find(const uint8_t *iq,size_t samples,int pci,int frame_start,
+                 int cfo_hz,void *memory,lte_mib_result_t *out,lte_sync_yield_fn yield,void *arg,bool confirm)
 {
     if(!out)return false;
     memset(out,0,sizeof(*out));
@@ -215,6 +215,7 @@ bool lte_mib_find(const uint8_t *iq,size_t samples,int pci,int frame_start,
                        ((r.sfn-prior->sfn+1024)%1024)!=frame-prior->first_frame)continue;
                     prior->frames++;matched=true;
                     if(prior->frames>out->frames)*out=*prior;
+                    if(confirm && out->frames>=2)return true;
                     break;
                 }
                 if(!matched && w->candidate_count<12) {
@@ -225,4 +226,14 @@ bool lte_mib_find(const uint8_t *iq,size_t samples,int pci,int frame_start,
     }
     if(out->frames>=2)return true;
     memset(out,0,sizeof(*out));return false;
+}
+bool lte_mib_find(const uint8_t *iq,size_t samples,int pci,int frame_start,
+                  int cfo_hz,void *memory,lte_mib_result_t *out,lte_sync_yield_fn yield,void *arg)
+{
+    return find(iq,samples,pci,frame_start,cfo_hz,memory,out,yield,arg,false);
+}
+bool lte_mib_confirm(const uint8_t *iq,size_t samples,int pci,int frame_start,
+                     int cfo_hz,void *memory,lte_mib_result_t *out,lte_sync_yield_fn yield,void *arg)
+{
+    return find(iq,samples,pci,frame_start,cfo_hz,memory,out,yield,arg,true);
 }

@@ -26,6 +26,16 @@ LS_CASE(independent_public_pbch_crc_and_sfn_progression)
     LS_EQ_INT(r.n_rb,100);LS_EQ_INT(r.antenna_ports,2);LS_EQ_INT(r.sfn,13);
     LS_EQ_INT(r.frames,4);LS_EQ_INT(r.first_frame,0);LS_EQ_INT(r.phich_resource,2);
     LS_EQ_INT(r.phich_duration,0);
+    int quick_calls=0;lte_mib_result_t quick;
+    LS_CHECK(lte_mib_confirm(iq,SAMPLES,301,7756,14000,ws,&quick,counted,&quick_calls));
+    LS_EQ_INT(quick.frames,2);LS_EQ_INT(quick.payload,r.payload);
+    LS_EQ_INT(quick.sfn,r.sfn);LS_EQ_INT(quick.first_frame,r.first_frame);
+    LS_EQ_INT(quick.antenna_ports,r.antenna_ports);LS_EQ_INT(quick.n_rb,r.n_rb);
+    LS_CHECK(quick_calls<calls);
+    /* Cancel immediately before the second confirming decode. One earlier
+     * valid occasion must not leak as a confirmed result. */
+    LS_CHECK(!lte_mib_confirm(iq,SAMPLES,301,7756,14000,ws,&quick,stop_at,&quick_calls));
+    LS_EQ_INT(quick.frames,0);LS_EQ_INT(quick.n_rb,0);
     /* Cancellation after earlier valid frames must clear the whole result. */
     LS_CHECK(!lte_mib_find(iq,SAMPLES,301,7756,14000,ws,&r,stop_at,&calls));
     LS_EQ_INT(r.frames,0);LS_EQ_INT(r.n_rb,0);
@@ -36,10 +46,12 @@ LS_CASE(one_crc_and_repeated_identical_frames_are_insufficient)
     uint8_t *iq=fixture(1);void *ws=malloc(lte_mib_workspace_size());lte_mib_result_t r;
     LS_CHECK(iq && ws);
     LS_CHECK(!lte_mib_find(iq,SAMPLES,301,7756,14000,ws,&r,NULL,NULL));
+    LS_CHECK(!lte_mib_confirm(iq,SAMPLES,301,7756,14000,ws,&r,NULL,NULL));
     LS_EQ_INT(r.frames,0);
     /* Identical symbols replayed 10 ms apart retain their old SFN. */
     for(unsigned n=1;n<4;n++)memcpy(iq+recorded_mib[n].offset,iq+recorded_mib[0].offset,1352);
     LS_CHECK(!lte_mib_find(iq,SAMPLES,301,7756,14000,ws,&r,NULL,NULL));
+    LS_CHECK(!lte_mib_confirm(iq,SAMPLES,301,7756,14000,ws,&r,NULL,NULL));
     LS_EQ_INT(r.frames,0);
     free(ws);free(iq);
 }
@@ -57,12 +69,14 @@ LS_CASE(noise_dc_wrong_cell_and_invalid_inputs_do_not_publish_mib)
     for(int value=0;value<256;value+=17) {
         memset(iq,value,SAMPLES*2);
         LS_CHECK(!lte_mib_find(iq,SAMPLES,301,7756,0,ws,&r,NULL,NULL));
+        LS_CHECK(!lte_mib_confirm(iq,SAMPLES,301,7756,0,ws,&r,NULL,NULL));
         LS_EQ_INT(r.frames,0);
     }
     uint32_t seed=936237;
     for(int trial=0;trial<24;trial++) {
         for(int n=0;n<SAMPLES*2;n++){seed=1664525u*seed+1013904223u;iq[n]=(uint8_t)(seed>>24);}
         LS_CHECK(!lte_mib_find(iq,SAMPLES,(trial*17)%504,7756,0,ws,&r,NULL,NULL));
+        LS_CHECK(!lte_mib_confirm(iq,SAMPLES,(trial*17)%504,7756,0,ws,&r,NULL,NULL));
         LS_EQ_INT(r.frames,0);LS_EQ_INT(r.n_rb,0);
     }
     free(ws);free(iq);

@@ -245,6 +245,21 @@ static fm_mode_t s_fm_live_mode = FM_MODE_LISTEN;
 void ls_wf_fm_sweep(bool on)
 {
     if (on && FM.mode != FM_MODE_SCAN) s_fm_live_mode = FM.mode;
+    if (on && lakeshark_fm_frequency_locked()) {
+        /* LOCK means centre, not "start again at the VHF default". Preserve
+           the selected span but centre it on the carrier the user typed. */
+        const uint32_t center = lakeshark_fm_frequency_lock_hz();
+        uint32_t span = FM.scan_stop_hz > FM.scan_start_hz
+                      ? FM.scan_stop_hz - FM.scan_start_hz : 12000000u;
+        if (span < 100000u || span > 100000000u) span = 12000000u;
+        const uint32_t floor_hz = 24000000u, ceiling_hz = 1766000000u;
+        uint64_t lo = center > span / 2 ? center - span / 2 : floor_hz;
+        uint64_t hi = lo + span;
+        if (lo < floor_hz) { lo = floor_hz; hi = lo + span; }
+        if (hi > ceiling_hz) { hi = ceiling_hz; lo = hi - span; }
+        FM.scan_start_hz = (uint32_t)lo;
+        FM.scan_stop_hz = (uint32_t)hi;
+    }
     lakeshark_fm_set_mode(on ? FM_MODE_SCAN : s_fm_live_mode);
     if (on) lakeshark_fm_scan_restart();
     ls_wf_claim(LS_WF_OWNER_NONE, NULL);
@@ -476,7 +491,7 @@ static bool pump_fm(void)
 
 const char *ls_wf_source_progress(void)
 {
-    static char progress[48];
+        static char progress[64];
     if (s_active != LS_WF_SRC_FM || !fm_sweeping() || FM.scan_tunes <= 0)
         return NULL;
     int completed = FM.scan_idx;

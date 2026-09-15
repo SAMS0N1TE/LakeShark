@@ -25,6 +25,9 @@
 #include "ls_imu.h"
 #include "ls_field.h"
 #include "ls_waterfall.h"
+#include "ls_wf_source.h"
+#include "ls_picker.h"
+#include "scan_engine.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -192,6 +195,25 @@ void rec_disarm(void) { s_rec_armed = false; }
    own creation path - a list screen tested against an empty list is a list
    screen tested against its early return. */
 fm_state_t FM;
+static bool s_fm_frequency_locked;
+static uint32_t s_fm_frequency_lock_hz;
+void lakeshark_fm_frequency_lock(bool on)
+{
+    s_fm_frequency_locked=on;
+    s_fm_frequency_lock_hz=on?FM.freq_hz:0;
+}
+bool lakeshark_fm_frequency_locked(void){return s_fm_frequency_locked;}
+uint32_t lakeshark_fm_frequency_lock_hz(void){return s_fm_frequency_lock_hz;}
+void ls_wf_fm_sweep(bool on){FM.mode=on?FM_MODE_SCAN:FM_MODE_LISTEN;}
+int ls_wf_preset_count(ls_wf_src_t src){return src==LS_WF_SRC_FM?1:0;}
+const char *ls_wf_preset_label(ls_wf_src_t src,int i)
+{return src==LS_WF_SRC_FM&&i==0?"VHF land":"";}
+const char *ls_wf_preset_detail(ls_wf_src_t src,int i)
+{return src==LS_WF_SRC_FM&&i==0?"150-162":"";}
+const char *ls_wf_preset_current(ls_wf_src_t src)
+{return src==LS_WF_SRC_FM?"VHF land":"-";}
+bool ls_wf_preset_apply(ls_wf_src_t src,int i)
+{return src==LS_WF_SRC_FM&&i==0;}
 
 int audio_volume_get(void) { return 60; }
 
@@ -352,39 +374,30 @@ static ls_act_status_t fm_test_select(const ls_args_t *args, ls_val_t *out)
     return LS_ACT_OK;
 }
 
-LS_CASE(fm_mode_buttons_and_keyboard_reach_every_receiver)
+LS_CASE(fm_mode_picker_reaches_every_fm_receiver_and_nfm_disables_p25_mixing)
 {
     fresh();
     const tui_rect pane = {1, 2, 46, 63};
     grid_for(pane);
     ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
-    const fm_mode_t modes[] = {FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_POCSAG,
-                              FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SCAN, FM_MODE_AM};
+    const fm_mode_t modes[] = {FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM,
+                              FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS};
     FM.mode = FM_MODE_LISTEN;
     ls_scr_fm.enter();
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
-    for (int i = 0; i < 7; ++i) {
-        ls_scr_fm.draw(&g_sf, pane);
-        int col = pane.x + pane.w * (i % 4) / 4 + pane.w / 8;
-        int row = pane.y + (i / 4) * 5 + 2;
-        LS_CHECK(ls_scr_fm.touch(col, row));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
+    for (int i = 0; i < 6; ++i) {
+        LS_CHECK(ls_picker_active());
+        for (int j = 0; j < i; ++j) LS_CHECK(ls_picker_key(LS_TK_DOWN, 0));
+        LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
         LS_EQ_INT(FM.mode, modes[i]);
-        ls_scr_fm.draw(&g_sf, pane);
-        int x0 = pane.x + pane.w * (i % 4) / 4;
-        int x1 = pane.x + pane.w * (i % 4 + 1) / 4;
-        int y0 = pane.y + (i / 4) * 5;
-        for (int y = y0; y < y0 + 5; ++y)
-            for (int x = x0; x < x1; ++x)
-                if (y == y0 || y == y0 + 4 || x == x0 || x == x1 - 1)
-                    LS_EQ_INT(g_back[y * W + x].attr,
-                              TUI_ATTR(TUI_CYAN, TUI_BLACK));
+        if (i + 1 < 6) LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
     }
-    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
+    scan_engine_set_mixed(true);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
     LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
-    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
-    LS_EQ_INT(FM.mode, FM_MODE_WFM);
-    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'n'));
-    LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
+    LS_CHECK(!scan_engine_mixed());
 }
 
 LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
@@ -402,8 +415,9 @@ LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
     LS_EQ_INT(FM.mode, FM_MODE_SCAN);
     ls_scr_fm_show_page(1);
     LS_EQ_INT(FM.mode, FM_MODE_POCSAG);
-    ls_scr_fm.draw(&g_sf, pane);
-    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w * 3 / 8, pane.y + 1));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
+    LS_CHECK(ls_picker_key(LS_TK_DOWN, 0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
     LS_EQ_INT(FM.mode, FM_MODE_WFM);
 }
 
@@ -439,13 +453,11 @@ LS_CASE(fm_tune_split_steps_frequency_and_opens_keypad)
     s_fm_keypad_opens = 0;
     ls_scr_fm.enter();
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
-    ls_scr_fm.draw(&g_sf, pane);
-    const int row = pane.y + 11 + 19 + 3;
-    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 6, row));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
     LS_CHECK(fabsf(s_fm_tuned_mhz - 99.9875f) < 0.0001f);
-    LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 2, row));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
     LS_EQ_INT(s_fm_keypad_opens, 1);
-    LS_CHECK(ls_scr_fm.touch(pane.x + 5 * pane.w / 6, row));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
     LS_CHECK(fabsf(s_fm_tuned_mhz - 100.0125f) < 0.0001f);
     FM.mode = FM_MODE_WFM;
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
@@ -1654,6 +1666,71 @@ void fm_get_receiver_status(ls_iq_control_status_t *out) { memset(out,0,sizeof(*
 #include "scan_channels.h"
 #include "ls_numpad.h"
 
+LS_CASE(large_text_radio_controls_survive_both_orientations_and_submenus)
+{
+    const tui_rect panes[] = {{0,5,34,41}, {0,2,79,17}};
+    scan_engine_stop();
+    for (unsigned size = 0; size < 2; size++) for (int fm = 0; fm < 2; fm++) {
+        ls_radio_view_t view = {.fm=fm, .frequency=851012500, .mode=fm?"NFM":"P25"};
+        for (int page = 0; page < 3; page++) {
+            ls_radio_panel_t panel = {.focus=-1, .lists=page==1, .scan_choice=page==2};
+            fresh(); grid_for(panes[size]);
+            ls_radio_panel_draw(&panel, &view, &g_sf, panes[size]);
+            LS_EQ_INT(escaped(panes[size]), 0);
+            int x,y;
+            LS_CHECK(!find_text("larger radio", &x, &y));
+            for (int i = 0; i < 6; i++) {
+                bool found = false;
+                const char *label = panel.buttons[i].label;
+                const int length = (int)strlen(label);
+                for (y=panes[size].y; y<panes[size].y+panes[size].h; y++)
+                    for (x=panes[size].x; x+length<=panes[size].x+panes[size].w; x++) {
+                        if (!panel.buttons[i].dim && ls_btn_hit(x,y) != i) continue;
+                        int n=0;
+                        while(n<length && g_back[y*W+x+n].ch==label[n]) n++;
+                        if(n==length) found=true;
+                    }
+                LS_CHECK_MSG(found, "missing readable/touchable %s at %dx%d",
+                             label, panes[size].w, panes[size].h);
+            }
+        }
+    }
+}
+
+LS_CASE(portrait_hides_letter_guides_but_keeps_the_same_actions)
+{
+    ls_btn_t button = {"SCAN", "OFF", 's', false, false};
+    const tui_rect portrait = {0,5,34,41}, landscape = {0,2,79,17};
+    fresh(); grid_for(portrait);
+    ls_btn_bar_raised(&g_sf, tui_rect_make(3,36,28,5), &button, 1, -1);
+    int x,y;
+    LS_CHECK(find_text("SCAN", &x, &y));
+    LS_EQ_INT(ls_btn_hit(x,y), 0);
+    LS_EQ_INT(ls_btn_shortcut('s',0), 0);
+    LS_CHECK(!find_text("[s]", &x, &y));
+    fresh(); grid_for(landscape);
+    ls_btn_bar_raised(&g_sf, tui_rect_make(3,10,28,5), &button, 1, -1);
+    LS_CHECK(find_text("[s]", &x, &y));
+}
+
+LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
+{
+    const tui_rect pane = {0,5,34,41};
+    fresh(); draw_pane(&ls_scr_settings, pane);
+    const char *labels[] = {"Screen lock", "Brightness", "Auto dim", "Dim after",
+        "Volume", "Theme", "Daylight", "Font", "Boot sound", "Alert sound",
+        "Vibrate", "USB autoreboot"};
+    int x,y;
+    for (unsigned i=0; i<sizeof(labels)/sizeof(labels[0]); i++)
+        LS_CHECK_MSG(find_text(labels[i], &x, &y), "missing setting %s", labels[i]);
+    bool before = settings_get_usb_autoreboot();
+    LS_CHECK(find_text("USB autoreboot", &x, &y));
+    LS_CHECK(ls_scr_settings.touch(x,y));
+    LS_CHECK(settings_get_usb_autoreboot() != before);
+    settings_set_usb_autoreboot(before);
+    LS_EQ_INT(escaped(pane),0);
+}
+
 LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
 {
     scan_channels_clear();
@@ -1729,6 +1806,7 @@ LS_CASE(saved_channel_list_blank_space_does_not_select_an_unseen_row)
 LS_CASE(compact_waterfall_labels_leave_room_for_their_shortcuts)
 {
     fresh();
+    grid_for((tui_rect){0,2,79,17});
     ls_btn_t buttons[] = {{"DETAIL", "shade", 'f', false, false},
                           {"CNTRST", "soft", 'c', false, false}};
     tui_rect bar = {2, 3, 20, 2};

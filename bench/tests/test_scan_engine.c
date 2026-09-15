@@ -1,5 +1,14 @@
 #include "ls_test.h"
 #include <setjmp.h>
+#include <string.h>
+#include "scan_journal.h"
+
+void scan_journal_init(void) {}
+bool scan_journal_session_start(const scan_journal_record_t *r) { (void)r; return true; }
+bool scan_journal_emit(const scan_journal_record_t *r) { (void)r; return true; }
+bool scan_journal_session_stop(const scan_journal_record_t *r) { (void)r; return true; }
+void scan_journal_get_status(scan_journal_status_t *out) { if (out) memset(out, 0, sizeof(*out)); }
+
 #include "../../components/lakeshark/core/scan_engine.c"
 
 p25_state_t P25;

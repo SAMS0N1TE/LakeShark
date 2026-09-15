@@ -998,7 +998,10 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     if (s_st.draw_us > s_st.worst_us) s_st.worst_us = s_st.draw_us;
 }
 
-void ls_wf_draw(tui_surface *sf, tui_rect area)      { layout_and_draw(sf, area, true); }
+static uint32_t s_full_draw_sequence;
+uint32_t ls_wf_full_draw_sequence(void) { return s_full_draw_sequence; }
+void ls_wf_note_full_view(void) { s_full_draw_sequence++; }
+void ls_wf_draw(tui_surface *sf, tui_rect area)      { ls_wf_note_full_view(); layout_and_draw(sf, area, true); }
 void ls_wf_draw_mini(tui_surface *sf, tui_rect area) { layout_and_draw(sf, area, false); }
 
 void ls_wf_stats(ls_wf_stats_t *out) { if (out) *out = s_st; }

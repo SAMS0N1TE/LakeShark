@@ -116,6 +116,11 @@ void ls_wf_preview(ls_wf_owner_t owner, const float *bins, int n,
 /* The whole instrument: spectrum, waterfall, frequency scale, marker readout
    and the control bar. `area` is everything it may use. */
 void ls_wf_draw(tui_surface *sf, tui_rect area);
+/* UI frame marker: a full instrument was drawn, rather than a mini preview. */
+uint32_t ls_wf_full_draw_sequence(void);
+/* Mark an embedded full instrument even when it is showing an idle notice.
+   Layout density must not fluctuate with the availability of RF samples. */
+void ls_wf_note_full_view(void);
 
 /* A spectrum and waterfall with no chrome and no controls, for a screen that
    wants one among other panels. Same history, same settings. */

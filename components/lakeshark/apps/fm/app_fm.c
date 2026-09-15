@@ -42,6 +42,8 @@ static const char *TAG = "fm";
 fm_state_t FM;
 
 static uint32_t s_mode_freq[FM_MODE_COUNT];
+static bool     s_frequency_locked;
+static uint32_t s_frequency_lock_hz;
 
 static fm_mode_handoff_t s_mode_handoff = FM_MODE_HANDOFF_INITIALIZER;
 /* Has anyone actually asked for a gain, or are we still on the
@@ -506,7 +508,8 @@ static void fm_rx_run_once(void)
             if (FM.mode == FM_MODE_SCAN) {
                 scan_begin(true);
             } else {
-                uint32_t f = s_mode_freq[FM.mode];
+                uint32_t f = s_frequency_locked ? s_frequency_lock_hz
+                                                : s_mode_freq[FM.mode];
                 FM.freq_hz = (f >= 1000000UL) ? f : fm_mode_default_freq(FM.mode);
                 fm_apply_freq(FM.freq_hz);
             }
@@ -980,12 +983,31 @@ void lakeshark_fm_set_freq(uint32_t hz)
 {
     if (hz < 1000000UL) return;
     FM.freq_hz = hz;
+    if (s_frequency_locked) s_frequency_lock_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, false);
     if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = hz;
     const app_t *a = app_current();
     if (a) settings_set_freq_mode(a, FM.mode, hz);
 }
 uint32_t lakeshark_fm_get_freq(void) { return FM.freq_hz; }
+
+void lakeshark_fm_frequency_lock(bool on)
+{
+    s_frequency_locked = on;
+    if (on) {
+        /* During a sweep FM.freq_hz is the transient tuner position.  The
+           scan range centre is the only stable carrier to capture there. */
+        s_frequency_lock_hz = FM.mode == FM_MODE_SCAN && FM.scan_stop_hz > FM.scan_start_hz
+            ? FM.scan_start_hz + (FM.scan_stop_hz - FM.scan_start_hz) / 2
+            : FM.freq_hz;
+    }
+}
+
+bool lakeshark_fm_frequency_locked(void) { return s_frequency_locked; }
+uint32_t lakeshark_fm_frequency_lock_hz(void)
+{
+    return s_frequency_locked ? s_frequency_lock_hz : 0;
+}
 
 /**/
 /* Retune without persisting. The scanner hops every ~120 ms, and going

@@ -36,6 +36,7 @@
 #include "flipper_link.h"
 #include "esp_hosted.h"
 #include "ble_link.h"
+#include "ls_wifi.h"
 #if CONFIG_LS_BLE_HEAD
 #include "ble_hci_rx_guard.h"
 #endif
@@ -207,8 +208,13 @@ static void settings_save_mode(int m)
 }
 
 #define SETTINGS_STACK_WORDS (3072 / sizeof(StackType_t))
-static StackType_t  s_settings_stack[SETTINGS_STACK_WORDS];
+static RTC_NOINIT_ATTR StackType_t s_settings_stack[SETTINGS_STACK_WORDS];
 static StaticTask_t s_settings_tcb;
+
+#define BOOT_BTN_STACK_BYTES 3072
+static RTC_NOINIT_ATTR StackType_t
+    s_boot_btn_stack[BOOT_BTN_STACK_BYTES / sizeof(StackType_t)];
+static StaticTask_t s_boot_btn_tcb;
 
 /**/ /**/
 #define SDR_ABSENT_POWER_S  30
@@ -591,6 +597,9 @@ static int cmd_fm(int argc, char **argv)
         return 0;
     }
     if (s_mode != FM_IDX) select_mode(FM_IDX);
+    /* Explicit NFM is analogue-only. Do not inherit mixed P25 demodulation
+       from a previous channel-scanner session. */
+    if (mode == FM_MODE_LISTEN) scan_engine_set_mixed(false);
     lakeshark_fm_set_mode((int)mode);
     pa_on();
     printf("mode=FM submode=%s\n", fm_mode_command_name(mode));
@@ -2390,7 +2399,11 @@ static void console_start(bool full)
         return;
     }
 
-    const esp_console_cmd_t cmds[] = {
+    /* This table used to consume roughly a kilobyte of the already-small
+       IDF main-task stack every time the console was installed.  Keep the
+       immutable descriptors in flash instead; normal boot subsequently has
+       to initialize the complete compact UI on this same task. */
+    static const esp_console_cmd_t cmds[] = {
         { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
@@ -2497,6 +2510,7 @@ static void headless_safe_main(const ls_safe_boot_plan_t *plan)
 
 void app_main(void)
 {
+    bool wifi_autojoin_ready = false;
     cell_performance_boot();
     /* Bluetooth command dispatch does not require a wired UART worker. */
     flipper_link_set_host(&s_link_host);
@@ -2646,6 +2660,7 @@ void app_main(void)
 
             esp_err_t be = ble_link_start();
             ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
+            wifi_autojoin_ready = be == ESP_OK;
         }
     }
 #endif /* CONFIG_LS_C6_LINK */
@@ -2654,6 +2669,18 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
+    /* ESP-Hosted Wi-Fi and the SX1262 mesh both need a contiguous internal
+       control block.  USB host enumeration fragments that heap down to
+       sub-kilobyte pieces, so reserve the always-on links first. */
+    if (wifi_autojoin_ready) {
+        esp_err_t we = ls_wifi_sta_autojoin();
+        if (we == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi station: rejoining saved network");
+        } else if (we != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "WiFi station autojoin: %s", esp_err_to_name(we));
+        }
+    }
+
     ls_safe_stage(LS_SAFE_STAGE_BACKEND);
 #if defined(LS_BOARD_LORA_CS_GPIO)
     /* Reserve radio DMA buffers before USB enumeration consumes transient heap. */
@@ -2661,6 +2688,7 @@ void app_main(void)
     if (lora_err != ESP_OK)
         ESP_LOGW(TAG, "early LoRa initialization: %s", esp_err_to_name(lora_err));
 #endif
+    ls_mesh_boot();
     lakeshark_backend_start();
 
 #if LS_HAS_RF_SWITCH
@@ -2677,24 +2705,28 @@ void app_main(void)
 
     ls_safe_stage(LS_SAFE_STAGE_APPS);
     if(!cell_performance_active()) {
-        /**/
+        /* Remember the receiver preference, but do not start its large USB
+           stream during boot.  The first visible TUI screen will request the
+           receiver it actually needs through ls_tui_radio_want().  Starting
+           a restored REC session here consumed the last DMA/internal blocks
+           before mesh and Wi-Fi could initialize, only for HOME to park it a
+           moment later. */
         const char *resume = lakeshark_recovery_take_app();
         int m = settings_load_mode();
-        /**/
         if (resume && *resume) {
             if (hl_mode_index_by_name(resume, &m)) {
-                ESP_LOGW(TAG, "rebooted to recover the USB dongle - resuming '%s'",
+                ESP_LOGW(TAG, "rebooted to recover the USB dongle - '%s' is armed",
                          resume);
             } else {
                 ESP_LOGW(TAG, "rebooted to recover the USB dongle but '%s' is not a "
                               "known mode - falling back to the saved mode", resume);
             }
         } else {
-            ESP_LOGI(TAG, "restoring last mode: %s", s_modes[m].name);
+            ESP_LOGI(TAG, "saved mode armed: %s", s_modes[m].name);
         }
-        select_mode(m);
+        s_mode = m;
+        lakeshark_radio_park();
     }
-    if(!cell_performance_active())lakeshark_radio_unpark();
     if(!cell_performance_active())audio_volume_set(settings_load_volume());
 
     vTaskDelay(pdMS_TO_TICKS(700));
@@ -2708,9 +2740,8 @@ void app_main(void)
        "give it a boot sound" actually meant. The splash also reads the
        boot-sound setting, which this call never did. */
 
-    ls_mesh_boot();
-
-    xTaskCreate(boot_btn_task, "boot_btn", 3072, NULL, 5, NULL);
+    xTaskCreateStatic(boot_btn_task, "boot_btn", sizeof(s_boot_btn_stack),
+                      NULL, 5, s_boot_btn_stack, &s_boot_btn_tcb);
     if(!cell_performance_active())xTaskCreateStatic(settings_task, "settings", SETTINGS_STACK_WORDS, NULL, 2,
                       s_settings_stack, &s_settings_tcb);
 
@@ -2760,6 +2791,10 @@ void app_main(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     if(!cell_performance_active())ble_link_allow_telemetry(true);
 
+    if(cell_performance_active()) {
+        ESP_LOGI(TAG,"CELL sensors: GPS=%s IMU=%s",
+                 esp_err_to_name(ls_gps_start()),esp_err_to_name(ls_imu_start()));
+    }
     console_start(true);
 #if LS_HAS_COMPACT_UI
     esp_err_t ui_err=compact_ui_start(compact_mode_changed);

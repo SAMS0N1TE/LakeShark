@@ -258,6 +258,9 @@ static void tuned_fm(double mhz)
     ls_args_t a = { .n = 1 };
     a.v[0].kind = LS_VAL_FLOAT;
     a.v[0].f = (float)mhz;
+    /* A typed carrier is an explicit user choice.  Keep it authoritative
+       across MODE and SWEEP until the user selects a band or unlocks it. */
+    lakeshark_fm_frequency_lock(true);
     (void)ls_action_call("fm.freq", &a, NULL, LS_CAP_TUNE);
 }
 
@@ -293,8 +296,9 @@ static ls_act_status_t a_fm_submode(const ls_args_t *in, ls_val_t *out)
     if (!want) return LS_ACT_BADARG;
     for (unsigned i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
         if (strcasecmp(want, modes[i].name)) continue;
-        scan_engine_stop();
-    lakeshark_fm_set_mode(modes[i].mode);
+        if (modes[i].mode == FM_MODE_LISTEN) scan_engine_set_mixed(false);
+        else                                 scan_engine_stop();
+        lakeshark_fm_set_mode(modes[i].mode);
         out->kind = LS_VAL_TEXT; out->s = modes[i].name;
         return LS_ACT_OK;
     }

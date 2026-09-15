@@ -159,7 +159,7 @@ static void waveform(tui_surface *sf,tui_rect a)
 }
 static void draw(tui_surface *sf,tui_rect a)
 {
-    if(a.w<24 || a.h<18) {ls_panel_notice(sf,a,"SUB-GHZ","Enlarge the pane","WATCH keeps its state");return;}
+    if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,"SUB-GHZ","Enlarge the pane","WATCH keeps its state");return;}
     rec_watch_snapshot(&s);
     uint8_t fresh=ls_fresh(&arrivals,s.received,600);
     touch_nav=a.w<90 && a.h>35;
@@ -184,18 +184,24 @@ static void draw(tui_surface *sf,tui_rect a)
         {"SOURCE",source_name(),'r',false,s.enabled},
         {"TOOLS","RTL",'d',false,cc_source || s.enabled}};
     int h=a.w>90?4:ls_btn_raised_height(a,10);
+    /* Four rows of buttons, each with separate label/value lines. The
+       three-row key format clips WATCH OFF to WATCH OF at the large font. */
+    if(a.w>=32 && a.w<38 && a.h>=36) h=16;
+    if(a.h<22 && a.w>=72) h=6;
     ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),btn,10,button_focus);
     tui_rect body=tui_rect_make(a.x,a.y+h,a.w,a.h-h-3);
+    tui_rect content=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
     ls_panel_box(sf,body,cc_source?"RECORDER / CC1101 OOK":"RECORDER / RTL OOK",TUI_CYAN);
     ls_motion_busy(sf,body,s.exporting || (s.enabled && rx.receiver_streaming));
     char line[110];
     snprintf(line,sizeof(line),"%c %.4f MHz | %s",ls_motion_pip(s.enabled && rx.receiver_streaming),
         rx.freq_hz/1e6,!s.enabled?"STOPPED":rx.receiver_streaming?"LISTENING":"RX UNAVAILABLE");
-    tui_put_str(sf,body,body.x+2,body.y+1,line,LS_ATTR_DIM);
+    tui_put_str(sf,content,body.x+2,body.y+1,line,LS_ATTR_DIM);
     snprintf(line,sizeof(line),"%lu captures %lu skipped %d/16 patterns",(unsigned long)s.received,(unsigned long)s.dropped,s.count);
     if(cc_source && cc.raw_overflows)snprintf(line,sizeof(line),"%lu captures | %lu CC overflows | %d/16",(unsigned long)s.received,(unsigned long)cc.raw_overflows,s.count);
-    tui_put_str(sf,body,body.x+2,body.y+2,line,ls_fresh_attr(fresh,TUI_GREEN|TUI_BRIGHT,TUI_WHITE,TUI_BLACK));
+    tui_put_str(sf,content,body.x+2,body.y+2,line,ls_fresh_attr(fresh,TUI_GREEN|TUI_BRIGHT,TUI_WHITE,TUI_BLACK));
     list=tui_rect_make(body.x+2,body.y+4,body.w-4,body.h-9);
+    if(body.h<12) list.h=body.h-6;
     if(body.w>90 && body.h>12) {
         list.w=(body.w-6)/2;
         waveform(sf,tui_rect_make(list.x+list.w+2,body.y+3,body.w-list.w-5,body.h-7));
@@ -205,7 +211,7 @@ static void draw(tui_surface *sf,tui_rect a)
     }
     int rows=list.h/2;if(rows<1)rows=1;
     int first=selected/rows*rows;
-    if(!s.count)tui_put_str(sf,body,list.x,list.y,"WATCH groups repeats; pin useful patterns.",LS_ATTR_DIM);
+    if(!s.count)tui_put_str(sf,content,list.x,list.y,"WATCH groups repeats; pin useful patterns.",LS_ATTR_DIM);
     for(int i=0;i<rows && first+i<s.count;i++) {
         const rec_watch_event_t *e=&s.event[first+i];int y=list.y+i*2;
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
@@ -217,13 +223,13 @@ static void draw(tui_surface *sf,tui_rect a)
     }
     if(body.h>12) {
         snprintf(line,sizeof(line),"DM queued %lu | refused %lu | limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
-        tui_put_str(sf,body,body.x+2,body.y+body.h-4,line,LS_ATTR_DIM);
-        tui_put_str(sf,body,body.x+2,body.y+body.h-3,"One channel. Pattern match != device ID.",LS_ATTR_DIM);
-        tui_put_str(sf,body,body.x+2,body.y+body.h-2,"E export pulses | J save to Journal",LS_ATTR_DIM);
+        tui_put_str(sf,content,body.x+2,body.y+body.h-4,line,LS_ATTR_DIM);
+        tui_put_str(sf,content,body.x+2,body.y+body.h-3,"One channel. Pattern match != device ID.",LS_ATTR_DIM);
+        tui_put_str(sf,content,body.x+2,body.y+body.h-2,ls_tui_is_wide()?"E export pulses | J save to Journal":"EXPORT pulses / JOURNAL saves",LS_ATTR_DIM);
     }
     ls_safe_line(sf,a,a.y+a.h-3,s.storage,LS_ATTR_DIM);
     ls_safe_line(sf,a,a.y+a.h-2,s.export_status[0]?s.export_status:cc_source?cc.status:"Other RTL modes stop RTL WATCH; Mesh stays on.",LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"W watch | E export | J journal",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_is_wide()?"W watch | E export | J journal":"",LS_ATTR_DIM);
 }
 static bool key(ls_tk_t k,char ch)
 {

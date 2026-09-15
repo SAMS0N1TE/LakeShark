@@ -20,13 +20,12 @@
 #include "../../ls_wf_source.h"
 #include "../../ls_text.h"
 
-static bool s_details;
-static char s_hint[80] = "M MORE  arrows select  ENTER press";
+static char s_hint[80] = "1 DECODE  2 SIGNAL  3 SCAN  +/- VOLUME";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 #include "../../ls_p25_settings.h"
 
-static int s_page;   /* 0 decode, 1 signal */
+static int s_page;   /* 0 decode, 1 signal, 2 scanner */
 
 /* The same free-running blink REC and FM now use (scr_rec.c,
    scr_fm.c) and MESH originated (scr_mesh.c s_blink): incremented once a
@@ -160,6 +159,8 @@ static const char *voice_status(void)
            ? "voice decoded" : "waiting for voice";
 }
 
+static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level);
+
 static void draw_decode(tui_surface *sf, tui_rect area)
 {
     /* One read, at the top. See the header note. */
@@ -179,88 +180,114 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t idle  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
-    /* Both panes hold a fixed list, so both take what they need. */
+    if (area.w < 20 || area.h < 3) return;
 
-    /* Both panels are nine rows tall in both postures, and the activity table goes below them - AS TALL AS ITS CONTENTS, not as tall as the space. */
-
-    const int want = 9;
-    tui_rect left, right;
-    tui_rect activity = tui_rect_make(0, 0, 0, 0);
-
-    /* Read before the layout, because the layout is sized from the count. */
     tg_refresh(esp_timer_get_time());
     const int held = (s_tg_have && s_tg.count) ? (int)s_tg.count : 0;
-    const int fits = held ? 3 + held : 3;   /* border, heading, rows, border */
-
-    if (area.w >= 60) {
-        tui_rect top = area;
-        if (area.h >= want + 3) {
-            int h = area.h - want;
-            if (h > fits) h = fits;
-            top = tui_rect_make(area.x, area.y, area.w, want);
-            activity = tui_rect_make(area.x, area.y + want, area.w, h);
-        }
-        ls_tui_split(top, &left, &right);
-    } else {
-        ls_tui_split_at(area, want, &left, &right);
-        if (right.h > want) {
-            int h = right.h - want;
-            if (h > fits) h = fits;
-            if (h >= 3)
-                activity = tui_rect_make(area.x, right.y + want, area.w, h);
-            right.h = want;
-        }
-    }
-
-    tui_box(sf, left, "DECODE", frame);
-    char buf[40];
-    snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(freq / 1000000u),
-             (unsigned)((freq % 1000000u) / 100u));
-    field(sf, left, 1, "FREQ", buf, label, value);
-
-    if (nac > 0) snprintf(buf, sizeof(buf), "%03X", nac); else snprintf(buf, sizeof(buf), "---");
-    field(sf, left, 2, "NAC", buf, label, nac > 0 ? value : idle);
-
-    if (tg > 0) snprintf(buf, sizeof(buf), "%d", tg); else snprintf(buf, sizeof(buf), "--");
-    field(sf, left, 3, "TG", buf, label, tg > 0 ? value : idle);
-
-    if (voice && ((s_blink / 12) & 1))
-        tui_put_char(sf, left, left.x + 10 + (int)strlen(buf) + 1, left.y + 3,
-                    LS_TUI_SHADE_FULL, good);
-
-    if (src > 0) snprintf(buf, sizeof(buf), "%d", src); else snprintf(buf, sizeof(buf), "--");
-    field(sf, left, 4, "SRC", buf, label, src > 0 ? value : idle);
-
-    field(sf, left, 5, "MOD", mod[0] ? mod : "----", label, value);
-    field(sf, left, 6, "SYNC", sync ? "LOCKED" : "searching", label,
-          sync ? good : idle);
-
-    tui_box(sf, right, "SIGNAL", frame);
-    int bw = right.w - 4;
-    int lit = (int)(level * (float)bw);
-    if (lit < 0) lit = 0;
-    if (lit > bw) lit = bw;
-    for (int i = 0; i < bw; i++) {
-        uint8_t c = i < lit ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
-                             : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
-                                              : TUI_GREEN | TUI_BRIGHT)
-                            : (TUI_BLACK | TUI_BRIGHT);
-        tui_put_char(sf, right, right.x + 2 + i, right.y + 2,
-                     i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
-                     TUI_ATTR(c, TUI_BLACK));
-    }
-    snprintf(buf, sizeof(buf), "%.3f", (double)level);
-    field(sf, right, 4, "IQ", buf, label, value);
+    const int fits = held ? 3 + held : 3;
+    const bool wide = area.w >= 60;
+    const int dial_want = wide && area.h >= 18 ? 10 : 8;
+    const int top_h = area.h < dial_want ? area.h : dial_want;
+    tui_rect dial = tui_rect_make(area.x, area.y,
+                                  wide ? area.w * 9 / 20 : area.w, top_h);
+    tui_rect detail = wide
+        ? tui_rect_make(dial.x + dial.w + 1, area.y,
+                        area.w - dial.w - 1, top_h)
+        : tui_rect_make(area.x, area.y + top_h, area.w,
+                        area.h > top_h ? area.h - top_h : 0);
+    tui_rect activity = tui_rect_make(0, 0, 0, 0);
 
     ls_iq_control_status_t st;
     p25_get_receiver_status(&st);
-    field(sf, right, 6, "RX", st.receiver_streaming ? "STREAMING" : "stopped",
-          label, st.receiver_streaming ? good : idle);
-    field(sf, right, 7, "AUDIO", voice_status(), label,
-          P25.p25_enc_muted ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : idle);
+    const uint32_t shown = st.effective_center_known
+                         ? (uint32_t)st.effective_center_hz : freq;
+    tui_box(sf, dial, p25_p2_enabled() ? "P25 II EXP / RECEIVER"
+                                       : "P25 / RECEIVER", frame);
+    char buf[64];
+    if (dial.h >= 8) {
+        ls_radio_frequency_draw(sf, dial, 2, shown, value);
+        if (dial.h >= 9)
+            tui_put_str(sf, dial, dial.x + 2, dial.y + 7, "MHz", label);
+    } else {
+        snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(shown / 1000000u),
+                 (unsigned)((shown % 1000000u) / 100u));
+        field(sf, dial, 1, "FREQ", buf, label, value);
+    }
+    if (dial.h >= 10) {
+        if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
+        else snprintf(buf, sizeof(buf), "%s", st.receiver_streaming
+                      ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER");
+        tui_put_str(sf, dial, dial.x + 2, dial.y + 8, buf,
+                    scan_engine_active() ? value : idle);
+    }
 
-    if (activity.h > 0)
-        draw_activity(sf, activity, sync, esp_timer_get_time());
+    if (wide) {
+        tui_box(sf, detail, "DECODE / SIGNAL", frame);
+        char line[80];
+        if (nac > 0 && tg > 0) snprintf(line, sizeof(line), "NAC %03X   TG %d", nac, tg);
+        else if (nac > 0) snprintf(line, sizeof(line), "NAC %03X   TG ---", nac);
+        else if (tg > 0) snprintf(line, sizeof(line), "NAC ---   TG %d", tg);
+        else snprintf(line, sizeof(line), "NAC ---   TG ---");
+        tui_put_str(sf, detail, detail.x + 2, detail.y + 1, line, value);
+        if (src > 0) snprintf(line, sizeof(line), "UNIT %d   MOD %s", src, mod[0] ? mod : "----");
+        else snprintf(line, sizeof(line), "UNIT ---   MOD %s", mod[0] ? mod : "----");
+        tui_put_str(sf, detail, detail.x + 2, detail.y + 2, line, value);
+        snprintf(line, sizeof(line), "SYNC %s", sync ? "LOCKED" : "SEARCHING");
+        tui_put_str(sf, detail, detail.x + 2, detail.y + 3, line, sync ? good : idle);
+        draw_iq_gauge(sf, tui_rect_make(detail.x + 2, detail.y + 5,
+                                        detail.w - 4, 1), level);
+        snprintf(line, sizeof(line), "RX %s   AUDIO %s",
+                 st.receiver_streaming ? "STREAMING" : "STOPPED", voice_status());
+        tui_put_str(sf, detail, detail.x + 2, detail.y + 7, line,
+                    st.receiver_streaming ? good : idle);
+        int ah = area.h - top_h;
+        if (ah > fits) ah = fits;
+        if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h, area.w, ah);
+    } else if (detail.h > 0) {
+        tui_rect decode = detail;
+        decode.h = detail.h < 8 ? detail.h : 8;
+        tui_box(sf, decode, "DECODE", frame);
+        if (nac > 0) snprintf(buf, sizeof(buf), "%03X", nac); else snprintf(buf, sizeof(buf), "---");
+        field(sf, decode, 1, "NAC", buf, label, nac > 0 ? value : idle);
+        if (tg > 0) snprintf(buf, sizeof(buf), "%d", tg); else snprintf(buf, sizeof(buf), "--");
+        field(sf, decode, 2, "TG", buf, label, tg > 0 ? value : idle);
+        if (voice && ((s_blink / 12) & 1))
+            tui_put_char(sf, decode, decode.x + 10 + (int)strlen(buf) + 1,
+                         decode.y + 2, LS_TUI_SHADE_FULL, good);
+        if (src > 0) snprintf(buf, sizeof(buf), "%d", src); else snprintf(buf, sizeof(buf), "--");
+        field(sf, decode, 3, "SRC", buf, label, src > 0 ? value : idle);
+        field(sf, decode, 4, "MOD", mod[0] ? mod : "----", label, value);
+        field(sf, decode, 5, "SYNC", sync ? "LOCKED" : "searching", label,
+              sync ? good : idle);
+
+        int remain = detail.h - decode.h;
+        tui_rect signal = tui_rect_make(area.x, decode.y + decode.h, area.w,
+                                        remain < 9 ? remain : 9);
+        if (signal.h > 0) {
+            tui_box(sf, signal, "SIGNAL", frame);
+            int bw = signal.w - 4;
+            int lit = (int)(level * (float)bw);
+            if (lit < 0) lit = 0;
+            if (lit > bw) lit = bw;
+            for (int i = 0; i < bw; i++)
+                tui_put_char(sf, signal, signal.x + 2 + i, signal.y + 2,
+                             i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
+                             TUI_ATTR(i < lit ? TUI_GREEN | TUI_BRIGHT
+                                              : TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
+            snprintf(buf, sizeof(buf), "%.3f", (double)level);
+            field(sf, signal, 4, "IQ", buf, label, value);
+            field(sf, signal, 6, "RX", st.receiver_streaming ? "STREAMING" : "stopped",
+                  label, st.receiver_streaming ? good : idle);
+            field(sf, signal, 7, "AUDIO", voice_status(), label,
+                  P25.p25_enc_muted ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : idle);
+        }
+        remain -= signal.h;
+        int ah = remain;
+        if (ah > fits) ah = fits;
+        if (ah >= 3) activity = tui_rect_make(area.x, signal.y + signal.h, area.w, ah);
+    }
+
+    if (activity.h > 0) draw_activity(sf, activity, sync, esp_timer_get_time());
 
 }
 
@@ -300,6 +327,7 @@ static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level)
 
 static void draw_signal(tui_surface *sf, tui_rect area)
 {
+    ls_wf_note_full_view();
     ls_wf_source_select(LS_WF_SRC_P25);
     ls_wf_source_pump();
 
@@ -335,13 +363,14 @@ static void draw_signal(tui_surface *sf, tui_rect area)
 static const ls_btn_t PAGES[] = {
     { "DECODE", NULL, '1', false, false },
     { "SIGNAL", NULL, '2', false, false },
-    { "SETTINGS", NULL, '3', false, false },
-    { "RADIO", NULL, '0', false, false },
+    { "SCAN", NULL, '3', false, false },
+    { "SETTINGS", NULL, '4', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
 static tui_rect s_bar;
 static tui_rect s_quick_rect;
+static bool s_quick_compact;
 
 /* The controls a thumb reaches for while watching a decode.
 
@@ -361,6 +390,18 @@ static const ls_quick_t QUICK[] = {
       .key = 'u', .key_down = 'j' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
+
+/* The large face has only 46 rows.  The full pictorial sliders use 21 of
+   them, hiding ACTIVITY on the very screen where the history matters.  Keep
+   every action as a compact decode-style button when rows are scarce. */
+static const ls_btn_t COMPACT_QUICK[] = {
+    { "TUNE",  NULL, 't', false, false },
+    { "VOL-",  NULL, '-', false, false },
+    { "VOL+",  NULL, '+', false, false },
+    { "GAIN-", NULL, 'j', false, false },
+    { "GAIN+", NULL, 'u', false, false },
+};
+#define N_COMPACT_QUICK ((int)(sizeof(COMPACT_QUICK) / sizeof(COMPACT_QUICK[0])))
 
 static void radio_view(void)
 {
@@ -385,8 +426,8 @@ static void radio_view(void)
 static void radio_action(char c)
 {
     if(c=='P') {ps_open=true;ls_wf_source_release();return;}
-    if(c=='W') {s_details=true;s_page=1;return;}
-    if(c=='M'||c=='D') {s_details=true;return;}
+    if(c=='W') {s_page=1;return;}
+    if(c=='M'||c=='D') {s_page=0;return;}
     if(c=='T') scan_engine_stop();
     if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
 }
@@ -394,8 +435,7 @@ static void radio_action(char c)
 static void draw(tui_surface *sf, tui_rect area)
 {
     if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
-    snprintf(s_hint,sizeof(s_hint),"%s",s_details?"0 RADIO  1 DECODE  2 SIGNAL  +/- VOLUME":"M MORE  arrows select  ENTER press");
-    if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
+    snprintf(s_hint,sizeof(s_hint),"1 DECODE  2 SIGNAL  3 SCAN  +/- VOLUME");
     s_blink++;
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
@@ -403,6 +443,7 @@ static void draw(tui_surface *sf, tui_rect area)
     const int bar_h = wide ? 3 : 5;
 
     tui_rect body;
+    s_quick_compact = !wide && area.h < 55 && s_page == 0;
     if (wide) {
         /* LANDSCAPE HAS THE CONTROLS TOO. */
 
@@ -418,7 +459,8 @@ static void draw(tui_surface *sf, tui_rect area)
         /* Page bar above the settings. Choosing a page and changing a
            setting are different kinds of thing, and the page bar was under
            the settings where it read as one more of them. */
-        const int want = ls_quick_rows(QUICK, N_QUICK, area.w, ls_tui_is_wide());
+        const int want = s_quick_compact ? 5
+            : (s_page == 0 ? ls_quick_rows(QUICK, N_QUICK, area.w, false) : 0);
         const int ctl_h = (area.h > want + 12) ? want : 0;
         s_quick_rect = ctl_h
             ? tui_rect_make(area.x, area.y + area.h - ctl_h, area.w, ctl_h)
@@ -439,15 +481,23 @@ static void draw(tui_surface *sf, tui_rect area)
         b[i] = PAGES[i];
         b[i].on = (i == s_page);
     }
-    ls_btn_bar(sf, s_bar, b, N_PAGES, -1);
+    if (area.w < 40) b[3].label = "SET";
+    ls_btn_bar_slot(sf, s_bar, b, N_PAGES, -1, LS_BTN_SLOT_QUICK);
 
     if (body.h > 0) {
         if (s_page == 1) draw_signal(sf, body);
-        else             draw_decode(sf, body);
+        else if (s_page == 2) {
+            radio_view();
+            ls_radio_panel_draw(&s_radio, &s_view, sf, body);
+        } else draw_decode(sf, body);
     }
 
-    if (s_quick_rect.h > 0)
-        ls_quick_draw_posture(sf, s_quick_rect, wide, QUICK, N_QUICK);
+    if (s_quick_rect.h > 0) {
+        if (s_quick_compact)
+            ls_btn_bar(sf, s_quick_rect, COMPACT_QUICK, N_COMPACT_QUICK, -1);
+        else
+            ls_quick_draw_posture(sf, s_quick_rect, wide, QUICK, N_QUICK);
+    }
 }
 
 /* The feed follows the page, and leaving the app releases it whichever page
@@ -458,13 +508,13 @@ static bool key(ls_tk_t k, char ch)
 {
     if(k>=LS_TK_F1) return false;
     if(ps_open)return ps_key(k,ch);
-    if(k==LS_TK_CHAR && (ch=='3'||(!s_details&&(ch=='p'||ch=='P')))) {ps_open=true;ls_wf_source_release();return true;}
-    if(k==LS_TK_CHAR && (ch=='1'||ch=='2')) {s_details=true;s_page=ch-'1';return true;}
-    if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
-    if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
+    if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {ps_open=true;ls_wf_source_release();return true;}
+    if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {s_page=ch-'1';return true;}
+    if (s_page==2) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
+    if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_page=0; ls_wf_source_release(); return true; }
     if (k == LS_TK_CHAR) {
         const int i = ls_btn_key(ch, PAGES, N_PAGES);
-        if (i >= 0) { if(i==3) {s_details=false;ls_wf_source_release();} else if(i==2) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
+        if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
         if (ls_quick_key(ch, QUICK, N_QUICK,
@@ -476,25 +526,32 @@ static bool key(ls_tk_t k, char ch)
     if (s_page == 1 && ls_wf_key(k, ch)) return true;
 
     if (k == LS_TK_LEFT)  { if (s_page > 0) s_page--; return true; }
-    if (k == LS_TK_RIGHT) { if (s_page < 1) s_page++; return true; }
+    if (k == LS_TK_RIGHT) { if (s_page < 2) s_page++; return true; }
     return false;
 }
 
 static bool touch(int col, int row)
 {
     if(ps_open)return ps_touch(col,row);
-    if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
-        const int i = ls_btn_hit(col, row);
-        if (i >= 0) { if(i==3) {s_details=false;ls_wf_source_release();} else if(i==2) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
+        const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
+        if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         return true;
     }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
-        row < s_quick_rect.y + s_quick_rect.h &&
-        ls_quick_touch(col, row, QUICK, N_QUICK,
-                       ls_quick_grant_builtin(), NULL))
-        return true;
+        row < s_quick_rect.y + s_quick_rect.h) {
+        if (s_quick_compact) {
+            const int i = ls_btn_hit(col, row);
+            if (i >= 0 && i < N_COMPACT_QUICK)
+                ls_quick_key(COMPACT_QUICK[i].key, QUICK, N_QUICK,
+                             ls_quick_grant_builtin(), NULL);
+            return true;
+        }
+        if (ls_quick_touch(col, row, QUICK, N_QUICK,
+                           ls_quick_grant_builtin(), NULL)) return true;
+    }
     if (s_page == 1) return ls_wf_touch(col, row);
+    if (s_page == 2) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     return false;
 }
 

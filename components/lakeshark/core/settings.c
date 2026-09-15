@@ -24,6 +24,9 @@ static const char  *NS       = "sdr-tool";
 static nvs_handle_t s_nvs    = 0;
 static bool         s_nvs_ok = false;
 static bool         s_home_write_ready = false;
+/* Read every UI frame and by the console (whose stack may be in TCM).
+ * Load on the cache-safe boot task; never issue flash reads in that path. */
+static bool         s_auto_rotate = true;
 static uint64_t s_location;
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -230,6 +233,7 @@ static void settings_apply_schema(void)
 bool settings_init(void)
 {
     s_location = 0;
+    __atomic_store_n(&s_auto_rotate,true,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
     esp_err_t err = nvs_flash_init();
@@ -248,6 +252,10 @@ bool settings_init(void)
     s_nvs_ok = true;
 
     /**/  settings_apply_schema();
+
+    uint8_t auto_rotate = 1;
+    if(nvs_get_u8(s_nvs,"autorot",&auto_rotate)==ESP_OK)
+        __atomic_store_n(&s_auto_rotate,auto_rotate!=0,__ATOMIC_RELEASE);
 
     /* settings_init runs on the cache-safe boot task in both LCD and
      * headless builds.  Load this one byte here, before p25_rx_task starts on
@@ -628,13 +636,12 @@ void settings_reset_app(const app_t *a)
 /**/
 bool settings_get_auto_rotate(void)
 {
-    uint8_t value = 1;
-    if (s_nvs_ok) nvs_get_u8(s_nvs, "autorot", &value);
-    return value != 0;
+    return __atomic_load_n(&s_auto_rotate,__ATOMIC_ACQUIRE);
 }
 void settings_set_auto_rotate(bool enabled)
 {
-    if (s_nvs_ok) sput_u8("autorot", enabled ? 1 : 0);
+    if (s_nvs_ok && sput_u8("autorot", enabled ? 1 : 0))
+        __atomic_store_n(&s_auto_rotate,enabled,__ATOMIC_RELEASE);
 }
 
 /**/

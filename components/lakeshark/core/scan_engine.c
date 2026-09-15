@@ -6,6 +6,7 @@
 #include "p25_program.h"
 #include "p25_p2_runtime.h"
 #include "scan_geo.h"
+#include "scan_journal.h"
 #include "ls_gps.h"
 /**/
 #include "fm_state.h"
@@ -18,6 +19,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 /**/
 #include <stdlib.h>
 
@@ -116,6 +118,10 @@ static int           s_force_idx = -1;
 static bool          s_task_ready = false;
 static bool          s_started = false;
 static volatile ls_radio_err_t s_scan_error = LS_RADIO_OK;
+static volatile uint32_t s_journal_tunes, s_journal_holds;
+static volatile uint32_t s_journal_releases, s_journal_receiver_errors;
+static int64_t s_journal_summary_due, s_journal_last_error;
+static bool s_journal_receiver_gap;
 
 static bool sess_skipped(int idx) { return idx >= 0 && idx < SCAN_MAX_CHANNELS && ((s_session_skip[idx / 64] >> (idx % 64)) & 1ULL); }
 static void sess_skip(int idx)    { if (idx >= 0 && idx < SCAN_MAX_CHANNELS) s_session_skip[idx / 64] |= (1ULL << (idx % 64)); }
@@ -288,6 +294,72 @@ static uint32_t   s_band_stop  = 162000000UL;
 static uint32_t   s_band_step  = 12500UL;
 static int        s_band_pos   = 0;
 static scan_channel_t s_band_ch;   /* scratch, refilled every step */
+
+static scan_journal_record_t journal_record(scan_journal_kind_t kind,
+                                            const scan_channel_t *channel,
+                                            const ls_iq_control_status_t *receiver,
+                                            int power_pct, const char *reason)
+{
+    scan_journal_record_t r;
+    memset(&r, 0, sizeof(r));
+    int64_t now = esp_timer_get_time();
+    r.kind = kind;
+    r.uptime_ms = now > 0 ? (uint64_t)now / 1000 : 0;
+    r.unix_time = (int64_t)time(NULL);
+    r.source = (uint8_t)s_src;
+    r.mode = channel ? (int8_t)channel->mode : (int8_t)s_fg_mode;
+    r.power_pct = (int16_t)power_pct;
+    r.manual_hold = scan_engine_manual_hold();
+    if (channel) {
+        r.requested_hz = channel->freq_hz;
+        snprintf(r.channel, sizeof(r.channel), "%s", channel->name);
+    }
+    if (receiver) {
+        r.radio_error = (int16_t)receiver->receiver_error;
+        r.effective_known = receiver->effective_center_known;
+        r.effective_hz = receiver->effective_center_hz;
+    }
+    snprintf(r.reason, sizeof(r.reason), "%s", reason ? reason : "");
+    ls_gps_state_t gps;
+    ls_gps_get(&gps);
+    if (gps.fix && gps.last_fix_us > 0 && now >= gps.last_fix_us &&
+        now - gps.last_fix_us <= 5000000) {
+        r.gps_valid = true;
+        r.gps_age_ms = (uint32_t)((now - gps.last_fix_us) / 1000);
+        r.latitude = gps.lat_deg;
+        r.longitude = gps.lon_deg;
+    }
+    r.tunes = s_journal_tunes;
+    r.holds = s_journal_holds;
+    r.releases = s_journal_releases;
+    r.receiver_errors = s_journal_receiver_errors;
+    return r;
+}
+
+static void journal_receiver_event(const scan_channel_t *channel,
+                                   const ls_iq_control_status_t *receiver,
+                                   const char *reason)
+{
+    int64_t now = esp_timer_get_time();
+    if (receiver && receiver->receiver_error != LS_RADIO_OK) {
+        s_journal_receiver_errors++;
+        if (s_journal_last_error && now - s_journal_last_error < 5000000) return;
+        s_journal_last_error = now;
+    }
+    scan_journal_record_t r = journal_record(SCAN_JOURNAL_RECEIVER, channel,
+                                             receiver, -1, reason);
+    (void)scan_journal_emit(&r);
+}
+
+static void journal_maybe_summary(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now < s_journal_summary_due) return;
+    s_journal_summary_due = now + 60000000;
+    scan_journal_record_t r = journal_record(SCAN_JOURNAL_SUMMARY, NULL, NULL,
+                                             s_pk_max, "periodic");
+    (void)scan_journal_emit(&r);
+}
 
 static int band_steps(void)
 {
@@ -625,6 +697,7 @@ static void scan_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(120));
             continue;
         }
+        journal_maybe_summary();
         /**/
         update_location();
         const int fg = foreground_mode();
@@ -667,10 +740,18 @@ static void scan_task(void *arg)
         ls_iq_control_status_t receiver;
         receiver_status_for(fg, &receiver);
         if (!receiver.receiver_streaming) {
+            if (!s_journal_receiver_gap) {
+                s_journal_receiver_gap = true;
+                journal_receiver_event(NULL, &receiver, "stream unavailable");
+            }
             s_cur = s_candidate = -1;
             s_hold_candidate = -1;
             vTaskDelay(pdMS_TO_TICKS(150));
             continue;
+        }
+        if (s_journal_receiver_gap) {
+            s_journal_receiver_gap = false;
+            journal_receiver_event(NULL, &receiver, "stream restored");
         }
 
         int idx;
@@ -736,6 +817,10 @@ static void scan_task(void *arg)
         if (!wait_for_tune(c->freq_hz, c->mode, &tune_error)) {
             if (s_enabled && scan_foreground()) {
                 s_scan_error = tune_error;
+                ls_iq_control_status_t failed;
+                receiver_status_for(c->mode, &failed);
+                failed.receiver_error = tune_error;
+                journal_receiver_event(c, &failed, "tune failed");
                 snprintf(s_status, sizeof(s_status),
                          "tune %.4f failed", c->freq_hz / 1e6);
                 vTaskDelay(pdMS_TO_TICKS(300));
@@ -743,6 +828,7 @@ static void scan_task(void *arg)
             continue;
         }
         s_started = true;
+        s_journal_tunes++;
 
         /**/
         int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? 100 : SETTLE_MS,
@@ -778,7 +864,15 @@ static void scan_task(void *arg)
         if (!sync) continue;
 
         s_cur = idx;
+        s_journal_holds++;
         snprintf(s_status, sizeof(s_status), "HOLD %-10s %.4f", c->name, c->freq_hz / 1e6);
+        ls_iq_control_status_t held_at_start;
+        receiver_status_for(c->mode, &held_at_start);
+        scan_journal_record_t hold_record = journal_record(
+            SCAN_JOURNAL_HOLD, c, &held_at_start, pwi,
+            scan_engine_manual_hold() ? "manual" :
+            c->mode == SCAN_MODE_P25 ? "sync" : "carrier");
+        (void)scan_journal_emit(&hold_record);
 
         /**/
         const bool cur_is_pri = (c->flags & SCAN_FLAG_PRIORITY) != 0;
@@ -786,12 +880,14 @@ static void scan_task(void *arg)
 
         int64_t last = esp_timer_get_time();
         int64_t pri_next = esp_timer_get_time() + (int64_t)s_pri_ms * 1000;
+        const char *release_reason = "hang expired";
         for (;;) {
-            if (!s_enabled || !scan_foreground()) break;
-            if (advance_requested(idx)) break;
+            if (!s_enabled) { release_reason = "scan stopped"; break; }
+            if (!scan_foreground()) { release_reason = "foreground changed"; break; }
+            if (advance_requested(idx)) { release_reason = "next or skip"; break; }
             ls_iq_control_status_t held_receiver;
             receiver_status_for(c->mode, &held_receiver);
-            if (!held_receiver.receiver_streaming) break;
+            if (!held_receiver.receiver_streaming) { release_reason = "stream unavailable"; break; }
             if (scan_engine_manual_hold()) {
                 last = esp_timer_get_time();
                 vTaskDelay(pdMS_TO_TICKS(30));
@@ -813,6 +909,7 @@ static void scan_task(void *arg)
                 int hit = priority_sample();
                 if (hit >= 0 && hit != idx) {
                     s_force_idx = hit;
+                    release_reason = "priority hit";
                     break;
                 }
                 /**/
@@ -822,6 +919,7 @@ static void scan_task(void *arg)
                 ls_radio_err_t restore_error = LS_RADIO_OK;
                 if (!wait_for_tune(hold_hz, c->mode, &restore_error)) {
                     s_scan_error = restore_error;
+                    release_reason = "priority restore failed";
                     break;
                 }
                 s_scan_error = LS_RADIO_OK;
@@ -832,6 +930,10 @@ static void scan_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(30));
         }
         s_cur = -1;
+        s_journal_releases++;
+        scan_journal_record_t release_record = journal_record(
+            SCAN_JOURNAL_RELEASE, c, NULL, pwi, release_reason);
+        (void)scan_journal_emit(&release_record);
     }
 }
 
@@ -846,6 +948,7 @@ void scan_engine_init(void)
     uint8_t options = settings_get_scan_options();
     s_mixed = (options & 1) != 0;
     s_location = (options & 2) != 0;
+    scan_journal_init();
     TaskHandle_t task = xTaskCreateStaticPinnedToCore(
         scan_task, "scan_eng", SCAN_STACK_WORDS, NULL, 4,
         s_scan_stack, &s_scan_tcb, 0);
@@ -880,12 +983,37 @@ void scan_engine_start(void)
     s_force_idx    = -1;
     s_started      = false;
     s_scan_error   = LS_RADIO_OK;
+    s_journal_tunes = s_journal_holds = 0;
+    s_journal_releases = s_journal_receiver_errors = 0;
+    s_journal_last_error = 0;
+    s_journal_receiver_gap = false;
+    s_journal_summary_due = esp_timer_get_time() + 60000000;
     snprintf(s_status, sizeof(s_status), "waiting for first actual tune");
     s_enabled      = s_task_ready;
+    if (s_enabled) {
+        scan_journal_record_t r = journal_record(SCAN_JOURNAL_SESSION_START,
+                                                 NULL, NULL, -1,
+                                                 "scanner enabled");
+        (void)scan_journal_session_start(&r);
+    }
 }
 
 void scan_engine_stop(void)
 {
+    if (s_enabled) {
+        if (s_cur >= 0) {
+            const scan_channel_t *c = s_src == SCAN_SRC_CHANNELS ?
+                                      scan_channel_get(s_cur) : band_channel(s_cur);
+            s_journal_releases++;
+            scan_journal_record_t release = journal_record(
+                SCAN_JOURNAL_RELEASE, c, NULL, -1, "scan stopped");
+            (void)scan_journal_emit(&release);
+        }
+        scan_journal_record_t stop = journal_record(SCAN_JOURNAL_SESSION_STOP,
+                                                    NULL, NULL, -1,
+                                                    "scanner disabled");
+        (void)scan_journal_session_stop(&stop);
+    }
     s_enabled = false;
     s_hold_candidate = -1;
     s_advance = 0;

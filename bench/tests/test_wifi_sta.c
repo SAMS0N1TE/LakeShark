@@ -30,7 +30,7 @@ LS_CASE(connection_failures_are_visible_and_bounded)
     char out[128];
     ls_wifi_connecting_status(out, sizeof(out), "home", 202, 4000);
     LS_CHECK(strstr(out, "home") != NULL);
-    LS_CHECK(strstr(out, "reason 202") != NULL);
+    LS_CHECK(strstr(out, "authentication failed (202)") != NULL);
     LS_CHECK(strstr(out, "4s") != NULL);
     ls_wifi_connecting_status(out, sizeof(out), "home", 0, 1000);
     LS_CHECK(strstr(out, "Connecting") != NULL);
@@ -39,6 +39,19 @@ LS_CASE(connection_failures_are_visible_and_bounded)
     ls_wifi_connecting_status(small, sizeof(small), "home", 202, 1000);
     LS_CHECK(small[3] == 0);
     ls_wifi_connecting_status(NULL, 0, NULL, 0, 0);
+}
+
+LS_CASE(reported_disconnect_codes_have_actionable_names)
+{
+    char out[128];
+    ls_wifi_connecting_status(out, sizeof(out), "home", 15, 1000);
+    LS_CHECK(strstr(out, "4-way handshake timeout (15)") != NULL);
+    ls_wifi_connecting_status(out, sizeof(out), "home", 205, 2000);
+    LS_CHECK(strstr(out, "connection failed (205)") != NULL);
+    ls_wifi_connecting_status(out, sizeof(out), "home", 8, 4000);
+    LS_CHECK(strstr(out, "association left (8)") != NULL);
+    ls_wifi_connecting_status(out, sizeof(out), "home", 77, 8000);
+    LS_CHECK(strstr(out, "disconnect reason 77") != NULL);
 }
 
 LS_CASE(ssid_length_bounds)

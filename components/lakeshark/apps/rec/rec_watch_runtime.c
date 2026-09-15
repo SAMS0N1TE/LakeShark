@@ -29,6 +29,9 @@ static uint64_t s_last_submit;
 static uint32_t s_boot;
 static rec_source_t s_source;
 static const char *DIR="/sdcard/subghz";
+#define REC_WATCH_STACK_WORDS (6144 / sizeof(StackType_t))
+static EXT_RAM_BSS_ATTR StackType_t s_worker_stack[REC_WATCH_STACK_WORDS];
+static DRAM_ATTR StaticTask_t s_worker_tcb;
 
 __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
 { (void)peer; (void)text; return false; }
@@ -137,8 +140,8 @@ bool rec_watch_start(void)
     if(ok) {
         for(int i=0;i<2;i++) {capture_t *p=&pool[i];xQueueSend(s_free,&p,0);}
         s_boot=esp_random();
-        ok=xTaskCreatePinnedToCoreWithCaps(worker,"subghz_io",6144,NULL,1,NULL,0,
-            MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS;
+        ok=xTaskCreateStaticPinnedToCore(worker,"subghz_io",
+            REC_WATCH_STACK_WORDS,NULL,1,s_worker_stack,&s_worker_tcb,0)!=NULL;
     }
     if(!ok) {
         if(s_free)vQueueDelete(s_free);

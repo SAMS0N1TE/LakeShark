@@ -45,7 +45,8 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_tui_png.h"
 #include "tui/ls_app.h"
 #include "tui/ls_icons.h"
-#include "tui/ls_wordmark.h"
+#include "tui/ls_splash.h"
+#include "tui/ls_tui_density.h"
 /* For the waterfall's own numbers in 'tui cost'. */
 #include "tui/ls_waterfall.h"
 #include "tui/ls_wf_source.h"
@@ -87,6 +88,15 @@ extern "C" {
 
 static int s_rotation;
 static bool s_touch_ok;
+#define TOUCH_TASK_STACK_BYTES 3072
+/* USB/Wi-Fi startup leaves enough internal RAM in aggregate but not always a
+   contiguous 3 KB heap block.  Touch is permanent and fixed-size, so reserve
+   its stack/TCB at link time instead of making input depend on boot-time heap
+   fragmentation. */
+static RTC_NOINIT_ATTR StackType_t
+    s_touch_stack[TOUCH_TASK_STACK_BYTES / sizeof(StackType_t)]
+    __attribute__((aligned(16)));
+static DRAM_ATTR StaticTask_t s_touch_tcb;
 struct TouchSample { uint16_t x,y; bool pressed; int64_t received; };
 static TouchSample s_touch={};
 static portMUX_TYPE s_touch_lock=portMUX_INITIALIZER_UNLOCKED;
@@ -216,83 +226,6 @@ static ls_tk_t tui_key_from_matrix(const ls_keymap_entry_t *k, char *out_ch)
    until it reaches its own final colour - so the mark blooms from the bottom
    up over the first half of the run and settles into the ramp. Costs
    nothing, because the attribute byte is already in every cell. */
-static const uint8_t SPLASH_LADDER[5] = {
-    TUI_BLUE, TUI_BLUE | TUI_BRIGHT, TUI_CYAN,
-    TUI_CYAN | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT,
-};
-#define SPLASH_FADE_PCT 55
-
-static void tui_splash(tui_surface *sf, int cols, int rows, int frame,
-                       int frames)
-{
-    tui_rect all = tui_surface_rect(sf);
-    tui_frame_begin(sf);
-
-    if (frames < 1) frames = 1;
-    const int pct = frame * 100 / frames;
-
-    /* Split before anything is positioned: the assembly's height depends on
-       whether the mark needed two lines, and its top on the height. */
-    char line_a[32], line_b[32];
-    const bool two = ls_wordmark_split("TERMINAL BAY", cols - 2,
-                                       line_a, sizeof(line_a),
-                                       line_b, sizeof(line_b));
-    const int mark_rows = two ? (LS_WORDMARK_ROWS * 2 + 1) : LS_WORDMARK_ROWS;
-    const int top = rows / 2 - (mark_rows + 7) / 2;
-
-    for (int r = 0; r < LS_WORDMARK_ROWS; r++) {
-        /* Row 0 is the brightest, so its target is the top of the ladder. */
-        const int target = LS_WORDMARK_ROWS - 1 - r;
-        int lit = (pct >= SPLASH_FADE_PCT)
-                ? LS_WORDMARK_ROWS - 1
-                : pct * LS_WORDMARK_ROWS / SPLASH_FADE_PCT;
-        if (lit > target) lit = target;
-        const uint8_t at = TUI_ATTR(SPLASH_LADDER[lit], TUI_BLACK);
-
-        ls_wordmark_row(sf, all, cols / 2 - ls_wordmark_width(line_a) / 2,
-                        top, r, line_a, at);
-        if (two)
-            ls_wordmark_row(sf, all,
-                            cols / 2 - ls_wordmark_width(line_b) / 2,
-                            top + LS_WORDMARK_ROWS + 1, r, line_b, at);
-    }
-
-    const char *sub = "L A K E S H A R K";
-    tui_put_str(sf, all, cols / 2 - (int)strlen(sub) / 2, top + mark_rows + 1,
-                sub, TUI_ATTR(TUI_WHITE, TUI_BLACK));
-
-    const int rw = cols / 2, rx = cols / 2 - rw / 2;
-    int rule = pct >= 20 ? rw : rw * pct / 20;
-    if (rule & 1) rule++;
-    for (int i = (rw - rule) / 2; i < (rw + rule) / 2; i++) {
-        if (i < 0 || i >= rw) continue;
-        tui_put_char(sf, all, rx + i, top - 2, LS_TUI_BLOCK_LOWER,
-                     TUI_ATTR(TUI_BLUE, TUI_BLACK));
-        tui_put_char(sf, all, rx + i, top + mark_rows + 3, LS_TUI_BLOCK_UPPER,
-                     TUI_ATTR(TUI_BLUE, TUI_BLACK));
-    }
-
-    const int filled = rw * frame / frames;
-    for (int i = 0; i < filled; i++) {
-        char glyph = (i >= filled - 2 && filled < rw) ? LS_TUI_SHADE_50
-                                                      : LS_TUI_SHADE_FULL;
-        uint8_t c = i * 3 < rw ? TUI_BLUE | TUI_BRIGHT
-                  : i * 3 < rw * 2 ? TUI_CYAN : TUI_CYAN | TUI_BRIGHT;
-        tui_put_char(sf, all, rx + i, top + mark_rows + 5, glyph,
-                     TUI_ATTR(c, TUI_BLACK));
-    }
-
-    static const char *const STAGE[] = { "PANEL", "RADIO", "USB HOST",
-                                         "KEYBOARD", "READY" };
-    int stage = filled * 5 / (rw ? rw : 1);
-    if (stage > 4) stage = 4;
-    const char *label = STAGE[stage];
-    tui_put_str(sf, all, cols / 2 - (int)strlen(label) / 2,
-                top + mark_rows + 7, label,
-                TUI_ATTR(stage == 4 ? (TUI_GREEN | TUI_BRIGHT) : TUI_WHITE,
-                         TUI_BLACK));
-}
-
 static bool tui_live_from(const char *path)
 {
     ls_val_t v;
@@ -397,6 +330,8 @@ static volatile uint8_t   s_tui_tap_r = 0;
    ls_tui_begin. So it is the rotation dance without the rotation: stop the
    session, and the exit path starts a fresh one that reads the new size. */
 static volatile bool s_tui_regrid_req = false;
+static bool s_context_regrid;
+static int s_preferred_font, s_session_font;
 
 static void tui_request_regrid(void)
 {
@@ -495,7 +430,14 @@ static bool tui_session(void)
 
     /* Before begin, because begin is where the cell size becomes the
        grid and nothing may change it afterwards. */
-    ls_tui_set_font_index(load_font_index());
+    if(!cell_performance_active() && !s_tui_rebuilding) {
+        ls_tui_set_font_index(load_font_index());
+        s_preferred_font = ls_tui_font_index();
+        ls_tui_set_font_index(ls_tui_font_for_view(s_preferred_font,
+                             ls_tui_screen_name(ls_tui_screen_current()), false));
+    }
+    else if(!s_tui_rebuilding){ls_tui_set_font_index(2);ls_tui_set_daylight(true);ls_tui_set_crisp_text(false);}
+    s_session_font = ls_tui_font_index();
     /* The TUI knows nothing about LVGL now, so hand it the logical size. */
     /* The glass's corner radius, before the grid is laid out against
        it. Board fact in, layout arithmetic inside. */
@@ -507,7 +449,7 @@ static bool tui_session(void)
     if (!s_look_restored) {
         s_look_restored = true;
         ls_tui_set_theme(ls_tui_theme_at(settings_get_theme()));
-        ls_tui_set_daylight(settings_get_daylight());
+        ls_tui_set_daylight(cell_performance_active()?true:settings_get_daylight());
     }
     int lw = 0, lh = 0;
     if (!tui_logical_size(&lw, &lh) || !ls_tui_begin(lw, lh)) {
@@ -666,7 +608,7 @@ static bool tui_session(void)
     }
 
     for (int frame = 0; !rebuilt && frame <= SPLASH_FRAMES; frame++) {
-        tui_splash(sf, cols, rows, frame, SPLASH_FRAMES);
+        ls_splash_draw(sf, cols, rows, frame, SPLASH_FRAMES);
         ls_tui_present();
         if (frame == 0) {
             /* First frame is on the glass; safe to light it now. */
@@ -896,9 +838,31 @@ static bool tui_session(void)
             ls_tui_status_set_clock(clk);
         }
 
+        /* Known dense instruments change grid before their first draw. Full
+           waterfalls embedded in FM/P25 are detected by the draw below. */
+        if (!cell_performance_active() && !s_tui_stop && ls_tui_font_index() != 0 &&
+            ls_tui_font_for_view(s_preferred_font,
+                ls_tui_screen_name(ls_tui_screen_current()), false) == 0) {
+            s_context_regrid = true;
+            ls_tui_set_font_index(0);
+            tui_request_regrid();
+            continue;
+        }
         const int64_t ph_draw = esp_timer_get_time();
         s_ph_input_us = ph_avg(s_ph_input_us, ph_draw - ph_start);
+        const uint32_t wf_before = ls_wf_full_draw_sequence();
         ls_tui_router_draw(sf);
+        if (!cell_performance_active() && !s_tui_stop) {
+            const int wanted = ls_tui_font_for_view(s_preferred_font,
+                ls_tui_screen_name(ls_tui_screen_current()),
+                wf_before != ls_wf_full_draw_sequence());
+            if (wanted != ls_tui_font_index()) {
+                s_context_regrid = true;
+                ls_tui_set_font_index(wanted);
+                tui_request_regrid();
+                continue;
+            }
+        }
         const int64_t ph_present = esp_timer_get_time();
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         ls_tui_present();
@@ -932,9 +896,15 @@ static bool tui_session(void)
         /* A rebuild, not a power-on. See s_tui_rebuilding. */
         s_tui_rebuilding = true;
         uint8_t idx = (uint8_t)ls_tui_font_index();
-        esp_err_t e = ls_nvs_call(save_font, &idx, 0);
-        printf("tui: font %s, saved=%s\n", ls_tui_font_label(idx),
-               esp_err_to_name(e));
+        if (s_context_regrid) {
+            s_context_regrid = false;
+            printf("tui: view font %s; preference %s retained\n",
+                   ls_tui_font_label(idx), ls_tui_font_label(s_preferred_font));
+        } else if (idx != s_session_font) {
+            s_preferred_font = idx;
+            esp_err_t e = cell_performance_active()?ESP_OK:ls_nvs_call(save_font, &idx, 0);
+            printf("tui: font %s, saved=%s\n", ls_tui_font_label(idx), esp_err_to_name(e));
+        }
         s_tui_stop = false;
         return true;
     } else if (s_tui_rotate_req >= 0) {
@@ -2222,8 +2192,8 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     s_touch_ok=e==ESP_OK;
     /* Poll on a small internal-RAM stack, and let input processing copy one
      * snapshot. */
-    if(s_touch_ok && xTaskCreatePinnedToCoreWithCaps(touch_task,"tdp_touch",3072,
-            nullptr,2,nullptr,1,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)!=pdPASS) {
+    if(s_touch_ok && !xTaskCreateStaticPinnedToCore(touch_task,"tdp_touch",
+            sizeof(s_touch_stack), nullptr, 2, s_touch_stack, &s_touch_tcb, 1)) {
         s_touch_ok=false; e=ESP_ERR_NO_MEM;
     }
     ESP_LOGI("tdp_ui","touch: %s",esp_err_to_name(e));
@@ -2236,63 +2206,66 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
        so the boot reads as deliberate. there is no longer an old
        interface behind it to hide - only an empty buffer. */
     ls_panel_set_brightness(0);
-    const esp_console_cmd_t mesh_c={.command="mesh",
+    /* Command descriptors are immutable.  Keeping them automatic made this
+       late boot function reserve all of them on the 3.5 KB IDF main stack,
+       on top of console_start's full command table. */
+    static const esp_console_cmd_t mesh_c={.command="mesh",
         .help="MeshCore in the background: 'mesh start', 'mesh' for status, "
               "'mesh tx on|off' (off at boot), 'mesh advert', 'mesh stop'.",
         .hint="[start|stop|tx on|off|advert|peers|dm <n> <text>|role|repeat|loc|auto|radio [default]]",.func=mesh_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mesh_c);
-    const esp_console_cmd_t gauge_c={.command="gauge",
+    static const esp_console_cmd_t gauge_c={.command="gauge",
         .help="Battery fuel gauge: voltage, current, learned charge, temperature.",
         .hint=nullptr,.func=gauge_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gauge_c);
-    const esp_console_cmd_t rtc_c={.command="rtc",
+    static const esp_console_cmd_t rtc_c={.command="rtc",
         .help="Real-time clock: bare 'rtc' reads it, 'rtc set <unix>' writes "
               "it, 'rtc sync' stores the system clock into it.",
         .hint="[set <unix>|sync]",.func=rtc_cmd,.argtable=nullptr};
     esp_console_cmd_register(&rtc_c);
-    const esp_console_cmd_t call_c={.command="call",
+    static const esp_console_cmd_t call_c={.command="call",
         .help="Invoke a named action. Bare 'call' lists them.",
         .hint="<action> [args...]",.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
-    const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
+    static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
-    const esp_console_cmd_t tui={.command="tui",
+    static const esp_console_cmd_t tui={.command="tui",
         .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
-    const esp_console_cmd_t sd={.command="sd",
+    static const esp_console_cmd_t sd={.command="sd",
         .help="SD card: 'sd' says whether it mounted and why not, 'sd mount' retries, 'sd ls [dir]' lists",
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
-    const esp_console_cmd_t mixrf={.command="mixrf",.help="Keyboard radios: probe, status, cc/scan/nfc on/off, stop",
+    static const esp_console_cmd_t mixrf={.command="mixrf",.help="Keyboard radios: probe, status, cc/scan/nfc on/off, stop",
         .hint=nullptr,.func=mixrf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mixrf);
-    const esp_console_cmd_t gps={.command="gps",
+    static const esp_console_cmd_t gps={.command="gps",
         .help="GPS: report fix and sentence health. 'gps baud' listens at each rate and dumps the wire",
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
-    const esp_console_cmd_t lora={.command="lora",
+    static const esp_console_cmd_t lora={.command="lora",
         .help="SX1262: status, config, rx, tx, scan, pocsag, fsk",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
-    const esp_console_cmd_t spi={.command="spi",
+    static const esp_console_cmd_t spi={.command="spi",
         .help="SPI: 'spi' reports the bus, 'spi up' creates it",
         .hint=nullptr,.func=spi_cmd,.argtable=nullptr};
     esp_console_cmd_register(&spi);
-    const esp_console_cmd_t audio={.command="audio",
+    static const esp_console_cmd_t audio={.command="audio",
         .help="Audio: report the codec, I2S pins and amplifier, and try each "
               "one - 'audio swap', 'audio pa on|off', 'audio tone'",
         .hint=nullptr,.func=audio_cmd,.argtable=nullptr};
     esp_console_cmd_register(&audio);
-    const esp_console_cmd_t mapc={.command="map",
+    static const esp_console_cmd_t mapc={.command="map",
         .help="Map: the last render's cost, split into fetching tiles and "
               "rasterising them",
         .hint=nullptr,.func=map_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mapc);
-    const esp_console_cmd_t keys={.command="keys",
+    static const esp_console_cmd_t keys={.command="keys",
         .help="Keypad: probe, 'keys watch' to print events for 10 seconds, "
               "'keys bl sweep' to chase the backlight whine",
         .hint=nullptr,.func=keys_cmd,.argtable=nullptr};

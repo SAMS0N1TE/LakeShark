@@ -19,6 +19,9 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hal/mipi_dsi_ll.h"
+#include "ls_panel_dsi_id.h"
+#include "cell_performance.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -36,15 +39,17 @@ static uint16_t *s_frames[2];
 static const unsigned s_back=1;
 static uint32_t s_refresh_count;
 static uint32_t s_last_refresh_us, s_max_gap_us, s_late_frames;
-static char s_gap_task[configMAX_TASK_NAME_LEN];
+static uint32_t s_max_gap_at_us;
 
 /* the Flipper can start P25 while HOME stays visible. Count scan
  * gaps here, where every TUI screen is covered, instead of in the retired
  * LVGL shell. A late callback is evidence of a gap, not proof of its cause. */
-#define PANEL_FRAME_US ((uint32_t)((uint64_t)(LS_BOARD_LCD_H_RES + \
+#define PANEL_FRAME_PIXELS ((uint32_t)((uint64_t)(LS_BOARD_LCD_H_RES + \
     LS_BOARD_LCD_HSYNC + LS_BOARD_LCD_HBP + LS_BOARD_LCD_HFP) * \
     (LS_BOARD_LCD_V_RES + LS_BOARD_LCD_VSYNC + LS_BOARD_LCD_VBP + \
-    LS_BOARD_LCD_VFP) / LS_BOARD_LCD_DPI_CLK_MHZ))
+    LS_BOARD_LCD_VFP)))
+static unsigned s_pixel_clock_mhz = LS_BOARD_LCD_DPI_CLK_MHZ;
+static uint32_t s_frame_us = PANEL_FRAME_PIXELS / LS_BOARD_LCD_DPI_CLK_MHZ;
 
 static bool IRAM_ATTR refresh_done(esp_lcd_panel_handle_t panel,
     esp_lcd_dpi_panel_event_data_t *event,void *ctx)
@@ -56,14 +61,12 @@ static bool IRAM_ATTR refresh_done(esp_lcd_panel_handle_t panel,
     if (previous) {
         uint32_t gap = now - previous;
         if (gap > __atomic_load_n(&s_max_gap_us, __ATOMIC_RELAXED)) {
-            const char *name = pcTaskGetName(NULL);
-            unsigned i = 0;
-            for (; i + 1 < sizeof(s_gap_task) && name[i]; ++i)
-                s_gap_task[i] = name[i];
-            s_gap_task[i] = 0;
+            /* This ISR also runs with flash/cache disabled. Do not inspect
+             * the interrupted task's name/TCB, which may live in PSRAM. */
+            __atomic_store_n(&s_max_gap_at_us, now, __ATOMIC_RELAXED);
             __atomic_store_n(&s_max_gap_us, gap, __ATOMIC_RELAXED);
         }
-        if (gap > PANEL_FRAME_US * 3 / 2)
+        if (gap > s_frame_us * 3 / 2)
             __atomic_add_fetch(&s_late_frames, 1, __ATOMIC_RELAXED);
     }
     __atomic_add_fetch(&s_refresh_count,1,__ATOMIC_RELEASE);
@@ -91,10 +94,11 @@ void ls_panel_fb_present(void)
     uint32_t late = __atomic_load_n(&s_late_frames, __ATOMIC_RELAXED);
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     if (late != reported && now_ms - last_report_ms >= 1000) {
-        ESP_LOGW("rm69a10", "refresh gaps: total=%lu max=%lu us expected=%lu us task=%s",
+        ESP_LOGW("rm69a10", "refresh gaps: total=%lu max=%lu us expected=%lu us at=%lu us",
                  (unsigned long)late,
                  (unsigned long)__atomic_load_n(&s_max_gap_us, __ATOMIC_RELAXED),
-                 (unsigned long)PANEL_FRAME_US, s_gap_task);
+                 (unsigned long)s_frame_us,
+                 (unsigned long)__atomic_load_n(&s_max_gap_at_us,__ATOMIC_RELAXED));
         reported = late;
         last_report_ms = now_ms;
     }
@@ -111,16 +115,22 @@ void ls_panel_diagnostics(void)
     printf("panel: %lu refreshes, %lu in the last second, framebuffer %s\n",
            (unsigned long)b, (unsigned long)(b - a),
            s_frames[s_back] ? "ready" : "missing");
-    printf("panel: late=%lu max_gap=%lu us expected=%lu us task=%s\n",
+    printf("panel: late=%lu max_gap=%lu us expected=%lu us at=%lu us\n",
            (unsigned long)__atomic_load_n(&s_late_frames, __ATOMIC_RELAXED),
            (unsigned long)__atomic_load_n(&s_max_gap_us, __ATOMIC_RELAXED),
-           (unsigned long)PANEL_FRAME_US, s_gap_task);
+           (unsigned long)s_frame_us,
+           (unsigned long)__atomic_load_n(&s_max_gap_at_us,__ATOMIC_RELAXED));
+    printf("panel: pixel_clock=%u MHz performance=%u\n",s_pixel_clock_mhz,cell_performance_active());
 }
 
 esp_err_t ls_panel_test_start(void)
 {
     if (s_panel) return ESP_OK;
     esp_err_t err;
+#ifdef LS_BOARD_LCD_DPI_PERF_CLK_MHZ
+    s_pixel_clock_mhz = cell_performance_active() ? LS_BOARD_LCD_DPI_PERF_CLK_MHZ : LS_BOARD_LCD_DPI_CLK_MHZ;
+    s_frame_us = PANEL_FRAME_PIXELS / s_pixel_clock_mhz;
+#endif
 #define TRY(call) do { err = (call); if (err != ESP_OK) goto fail; } while (0)
     esp_ldo_channel_config_t ldo = { .chan_id = 3, .voltage_mv = 2500 };
     TRY(esp_ldo_acquire_channel(&ldo, &s_ldo3));
@@ -142,7 +152,7 @@ esp_err_t ls_panel_test_start(void)
     esp_lcd_dbi_io_config_t io = { .lcd_cmd_bits = 8, .lcd_param_bits = 8 };
     TRY(esp_lcd_new_panel_io_dbi(s_bus, &io, &s_io));
     uint8_t id = 0;
-    TRY(esp_lcd_panel_io_rx_param(s_io, 0xA1, &id, 1));
+    if (!ls_panel_read_id(&id)) { err = ESP_ERR_TIMEOUT; goto fail; }
     if (id != 0x01) { err = ESP_ERR_NOT_FOUND; goto fail; }
 
     const uint8_t unlock[][2] = { {0xFE, 0xFD}, {0x80, 0xFC}, {0xFE, 0x00} };
@@ -166,7 +176,7 @@ esp_err_t ls_panel_test_start(void)
 
     esp_lcd_dpi_panel_config_t dpi = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = LS_BOARD_LCD_DPI_CLK_MHZ,
+        .dpi_clock_freq_mhz = s_pixel_clock_mhz,
         .in_color_format = LCD_COLOR_FMT_RGB565,
         .out_color_format = LCD_COLOR_FMT_RGB565,
         .num_fbs = 2,

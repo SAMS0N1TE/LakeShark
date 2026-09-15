@@ -158,6 +158,21 @@ static ls_radio_err_t fake_recover(void *ctx)
     return LS_RADIO_OK;
 }
 
+static ls_radio_err_t fake_get_health(void *ctx, ls_radio_iq_health_t *out)
+{
+    fake_radio_t *fake=ctx;
+    pthread_mutex_lock(&fake->lock);
+    fake->read_entered=true;
+    pthread_cond_broadcast(&fake->changed);
+    while(fake->blocking && !fake->cancelled)
+        pthread_cond_wait(&fake->changed,&fake->lock);
+    bool cancelled=fake->cancelled;
+    pthread_mutex_unlock(&fake->lock);
+    if(cancelled)return LS_RADIO_ERR_STOPPED;
+    out->usb_api=0x0106;out->m0_count=1280000;out->num_shortfalls=3;
+    return LS_RADIO_OK;
+}
+
 static const ls_radio_driver_ops_t s_fake_ops = {
     .iq_configure = fake_configure,
     .iq_set_gain = fake_gain,
@@ -171,6 +186,7 @@ static const ls_radio_driver_ops_t s_fake_ops = {
     .packet_rx_stop = fake_stop,
     .cancel_read = fake_cancel,
     .recover = fake_recover,
+    .iq_get_health = fake_get_health,
 };
 
 static ls_radio_err_t register_iq(const char *id, fake_radio_t *fake)
@@ -472,6 +488,41 @@ static void wait_for_read(fake_radio_t *fake)
     while (!fake->read_entered)
         pthread_cond_wait(&fake->changed, &fake->lock);
     pthread_mutex_unlock(&fake->lock);
+}
+
+static void *health_thread(void *arg_)
+{
+    read_thread_arg_t *arg=arg_;
+    ls_radio_iq_health_t health;
+    arg->result=ls_radio_iq_get_health(arg->session,&health);
+    return NULL;
+}
+
+LS_CASE(device_health_cannot_interrupt_stream_and_is_lifetime_guarded)
+{
+    fake_radio_t fake;fake_init(&fake);
+    LS_EQ_INT(register_iq("test.health",&fake),LS_RADIO_OK);
+    ls_radio_requirements_t req=iq_requirements(2000000);
+    ls_radio_session_t *session=NULL;
+    LS_EQ_INT(ls_radio_acquire("cell-health",&req,&session),LS_RADIO_OK);
+    configure_and_start(session);
+    ls_radio_iq_health_t h;
+    LS_EQ_INT(ls_radio_iq_get_health(session,&h),LS_RADIO_ERR_BUSY);
+    LS_CHECK(!fake.read_entered);
+    LS_EQ_INT(ls_radio_iq_stop(session),LS_RADIO_OK);
+    fake.cancelled=false;
+    LS_EQ_INT(ls_radio_iq_get_health(session,&h),LS_RADIO_OK);
+    LS_EQ_UINT(h.num_shortfalls,3);LS_EQ_UINT(h.m0_count,1280000);
+    fake.blocking=true;fake.read_entered=false;
+    read_thread_arg_t arg={.session=session};pthread_t thread;
+    pthread_create(&thread,NULL,health_thread,&arg);
+    wait_for_read(&fake);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.health"),LS_RADIO_OK);
+    pthread_join(thread,NULL);
+    LS_EQ_INT(arg.result,LS_RADIO_ERR_DISCONNECTED);
+    LS_EQ_INT(ls_radio_iq_get_health(session,&h),LS_RADIO_ERR_DISCONNECTED);
+    LS_EQ_UINT(h.num_shortfalls,0);
+    ls_radio_release(session);fake_destroy(&fake);
 }
 
 LS_CASE(removal_cancels_blocked_read_and_invalidates_session)

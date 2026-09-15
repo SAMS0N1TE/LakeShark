@@ -46,3 +46,13 @@ CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
 CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+
+# Full boot initializes Wi-Fi, USB and the compact console/UI in one call
+# chain.  The IDF default is too small for newlib's formatted log frames.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Scanout must be serviced across flash access and large framebuffer/SD
+# writebacks. No interrupt callback modifies these CPU-owned pixel/IQ buffers.
+CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000

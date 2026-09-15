@@ -255,7 +255,11 @@ int esp_libusb_bulk_transfer(class_driver_t *driver_obj, unsigned char endpoint,
 }
 
 #ifndef STREAM_XFER_NUM
-#define STREAM_XFER_NUM   16
+/* Fifteen slots still buffer almost a full second at REC's 256 kSPS and
+ * keep the high-rate pump continuously posted.  The sixteenth allocation
+ * consumed the last useful DMA block, however, leaving FAT/SDMMC unable to
+ * obtain even its 181-byte bounce buffer when a capture was saved. */
+#define STREAM_XFER_NUM   15
 #endif
 #define STREAM_XFER_LEN   16384
 #define STREAM_RING_SIZE  (256u * 1024u)
@@ -509,8 +513,8 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
         s_spump_stack, &s_spump_tcb, 1);
     if (!s_spump) {
         /* reporting success here posted one finite USB window with no
-         * consumer to repost it: 16 x 16384 = the hardware's exact 262144-byte
-         * plateau.  Refuse the stream before submitting anything, so the app
+         * consumer to repost it: one finite window of posted transfers. Refuse
+         * the stream before submitting anything, so the app
          * sees a start failure instead of ACTIVE followed by watchdog churn. */
         s_streaming = false;
         s_spump = NULL;

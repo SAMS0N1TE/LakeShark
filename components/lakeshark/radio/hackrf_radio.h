@@ -25,6 +25,8 @@ void ls_hackrf_encode_frequency(uint64_t frequency_hz, uint8_t out[8]);
 void ls_hackrf_encode_sample_rate(uint32_t sample_rate_hz, uint8_t out[8]);
 uint32_t ls_hackrf_filter_bandwidth(uint32_t requested_hz,
                                     uint32_t sample_rate_hz);
+bool ls_hackrf_decode_m0_state(const uint8_t *wire, size_t bytes,
+                               ls_radio_iq_health_t *out);
 
 #ifdef __cplusplus
 }

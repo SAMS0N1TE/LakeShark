@@ -236,15 +236,16 @@ static void draw(tui_surface *sf, tui_rect area)
             draw_one(sf, tui_rect_make(c.x, y, c.w - 1, bh), i, i == s_sel);
         }
     } else {
-        int bh = (body.h - (N_ITEMS - 1)) / N_ITEMS;
+        const int gap = body.h >= N_ITEMS * 4 - 1 ? 1 : 0;
+        int bh = (body.h - (N_ITEMS - 1) * gap) / N_ITEMS;
         if (bh > 7) bh = 7;
         if (bh < 3) bh = 3;
 
-        const int used = N_ITEMS * bh + (N_ITEMS - 1);
+        const int used = N_ITEMS * bh + (N_ITEMS - 1) * gap;
         const int top = body.y + (body.h > used ? (body.h - used) / 2 : 0);
 
         for (int i = 0; i < N_ITEMS; i++) {
-            const int y = top + i * (bh + 1);
+            const int y = top + i * (bh + gap);
             if (y + bh > body.y + body.h) break;
             draw_one(sf, tui_rect_make(body.x, y, body.w, bh), i, i == s_sel);
         }

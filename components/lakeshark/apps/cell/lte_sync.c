@@ -13,13 +13,17 @@
 #ifndef LTE_SYNC_SEARCH_SAMPLES
 #define LTE_SYNC_SEARCH_SAMPLES 10240
 #endif
+#define SEARCH_BLOCKS ((LTE_SYNC_SEARCH_SAMPLES+STEP-1)/STEP)
 #define TAU 6.2831853071795864769f
 typedef struct {float r,i;} cx;
 typedef struct {float score;int pos,nid2,fo;} peak_t;
 typedef struct {
-    cx tw[N/2],a[N],b[N],ref[N],pss[3][62],td[3][128];
+    cx tw[N/2],b[N],ref[N],pss[3][62],td[3][128];
     cx p[128],s[128],h[62],sm[62],eq[62];
-    float energy[STEP];
+    /* The same input blocks serve all 51 PSS/CFO templates. Keeping these
+     * transforms also preserves the original template/peak traversal order. */
+    cx input_fft[SEARCH_BLOCKS][N];
+    float input_energy[SEARCH_BLOCKS][STEP];
     int8_t sss[3][336][62];
     peak_t peaks[PEAKS],seeds[PEAKS];int count;
     int counts[504],pairs[504],last[504],half_last[504];
@@ -117,26 +121,35 @@ bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
     /* The PC build searches the full capture: USB recordings can contain
      * timing discontinuities before a later, usable continuous segment. */
     const size_t search_samples=samples<LTE_SYNC_SEARCH_SAMPLES?samples:LTE_SYNC_SEARCH_SAMPLES;
+    size_t block=0;
+    for(size_t off=0;off+128<=search_samples;off+=STEP,block++) {
+        cx *input=w->input_fft[block];
+        memset(input,0,sizeof(w->input_fft[block]));
+        int available=(int)(search_samples-off);if(available>N)available=N;
+        float energy=0;
+        for(int n=0;n<available;n++) {
+            input[n]=(cx){(float)iq[2*(off+n)]-127.5f,(float)iq[2*(off+n)+1]-127.5f};
+            if(n<128)energy+=power(input[n]);
+        }
+        int count=available-127;
+        for(int n=0;n<count;n++) {
+            w->input_energy[block][n]=energy;
+            if(n+128<available)energy+=power(input[n+128])-power(input[n]);
+        }
+        fft(input,N,false,w->tw);
+        if(yield && yield(arg))return false;
+    }
     for(int j=0;j<3;j++)for(int fo=-40000;fo<=40000;fo+=5000) {
         memset(w->ref,0,sizeof(w->ref));
         for(int n=0;n<128;n++)w->ref[127-n]=conjx(mul(w->td[j][n],cis(TAU*fo*n/1920000)));
         fft(w->ref,N,false,w->tw);
-        for(size_t off=0;off+128<=search_samples;off+=STEP) {
-            memset(w->a,0,sizeof(w->a));int available=(int)(search_samples-off);if(available>N)available=N;
-            float energy=0;
-            for(int n=0;n<available;n++) {
-                w->a[n]=(cx){(float)iq[2*(off+n)]-127.5f,(float)iq[2*(off+n)+1]-127.5f};
-                if(n<128)energy+=power(w->a[n]);
-            }
+        block=0;
+        for(size_t off=0;off+128<=search_samples;off+=STEP,block++) {
+            int available=(int)(search_samples-off);if(available>N)available=N;
             int count=available-127;
-            for(int n=0;n<count;n++) {
-                w->energy[n]=energy;
-                if(n+128<available)energy+=power(w->a[n+128])-power(w->a[n]);
-            }
-            fft(w->a,N,false,w->tw);
-            for(int n=0;n<N;n++)w->b[n]=mul(w->a[n],w->ref[n]);
+            for(int n=0;n<N;n++)w->b[n]=mul(w->input_fft[block][n],w->ref[n]);
             fft(w->b,N,true,w->tw);
-            for(int n=0;n<count;n++)peak(w,power(w->b[n+127])/(w->energy[n]*(62.f/128)+1e-9f),(int)off+n,j,fo);
+            for(int n=0;n<count;n++)peak(w,power(w->b[n+127])/(w->input_energy[block][n]*(62.f/128)+1e-9f),(int)off+n,j,fo);
             if(yield && yield(arg))return false;
         }
     }

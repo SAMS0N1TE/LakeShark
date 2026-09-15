@@ -32,6 +32,7 @@ bool ls_wifi_ssid_valid(const char *ssid);
 /* Passphrase must be either empty (open network) or 8..63 chars. */
 bool ls_wifi_pass_valid(const char *pass);
 void ls_wifi_copy_ssid(uint8_t out[32], const char *ssid);
+const char *ls_wifi_reason_text(int reason);
 void ls_wifi_connecting_status(char *out, size_t cap, const char *ssid,
                                int reason, uint32_t retry_ms);
 

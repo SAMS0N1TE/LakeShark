@@ -183,7 +183,7 @@ static const struct { int w, h, r; } PANELS[] = {
 #define N_PANELS ((int)(sizeof(PANELS) / sizeof(PANELS[0])))
 
 /* The two faces the firmware offers. */
-static const int FACES[][2] = { { 10, 17 }, { 8, 15 } };
+static const int FACES[][2] = { { 10, 17 }, { 9, 16 }, { 15, 26 }, { 8, 15 } };
 
 /* How far inside the glass a point is, in pixels, negative when it is off
    it: the signed distance to a rounded rectangle, in its textbook form.
@@ -219,7 +219,7 @@ LS_CASE(the_arc_covers_no_cell_of_the_grid_it_was_laid_out_against)
        than with the corner test the inset search used. So a rule stated in
        terms of coverage would move nothing, on this panel or any other. */
     for (int p = 0; p < N_PANELS; p++)
-        for (int f = 0; f < 2; f++)
+        for (int f = 0; f < (int)(sizeof(FACES) / sizeof(FACES[0])); f++)
             for (int r = 0; r <= 80; r += 2) {
                 const int w = PANELS[p].w, h = PANELS[p].h;
                 const int cw = FACES[f][0], ch = FACES[f][1];
@@ -249,7 +249,7 @@ LS_CASE(every_word_keeps_the_grids_own_standoff_from_the_glass)
        more than enough. Rows 0 and last are the ones the chrome puts words
        on; the others show it is zero where there is no corner. */
     for (int p = 0; p < N_PANELS; p++)
-        for (int f = 0; f < 2; f++)
+        for (int f = 0; f < (int)(sizeof(FACES) / sizeof(FACES[0])); f++)
             for (int r = 0; r <= 80; r += 2) {
                 const int w = PANELS[p].w, h = PANELS[p].h;
                 const int cw = FACES[f][0], ch = FACES[f][1];
@@ -322,7 +322,7 @@ LS_CASE(a_square_cornered_panel_pads_nothing_anywhere)
        any row, either posture, either face. */
     for (int p = 0; p < N_PANELS; p++) {
         if (PANELS[p].r) continue;
-        for (int f = 0; f < 2; f++) {
+        for (int f = 0; f < (int)(sizeof(FACES) / sizeof(FACES[0])); f++) {
             const int w = PANELS[p].w, h = PANELS[p].h;
             const int cw = FACES[f][0], ch = FACES[f][1];
             int ox = 0, oy = 0;

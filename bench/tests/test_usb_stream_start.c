@@ -8,6 +8,8 @@
 
 #include <stdlib.h>
 
+#define TEST_STREAM_SLOTS 15u
+
 static unsigned s_allocs;
 static unsigned s_frees;
 static unsigned s_submits;
@@ -96,14 +98,14 @@ LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
     unsigned allocated=s_allocs,freed=s_frees,submitted=s_submits;
     s_hold_completions=true;ls_shim_task_set_state(eSuspended);
     esp_libusb_stream_stop();
-    LS_EQ_UINT(s_frees,freed);LS_EQ_INT(esp_libusb_stream_slots(),16);
+    LS_EQ_UINT(s_frees,freed);LS_EQ_INT(esp_libusb_stream_slots(),TEST_STREAM_SLOTS);
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),ESP_LIBUSB_ERR_BUSY);
     LS_EQ_UINT(s_submits,submitted);LS_EQ_UINT(s_allocs,allocated);
     complete_usb();s_hold_completions=false;
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
-    LS_EQ_UINT(s_frees,freed+16);LS_EQ_INT(esp_libusb_stream_slots(),16);
+    LS_EQ_UINT(s_frees,freed+TEST_STREAM_SLOTS);LS_EQ_INT(esp_libusb_stream_slots(),TEST_STREAM_SLOTS);
     ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
-    LS_EQ_UINT(s_frees,freed+32);
+    LS_EQ_UINT(s_frees,freed+2*TEST_STREAM_SLOTS);
 }
 
 void rtl_adapter_note_transport_fault(void) {}
@@ -124,7 +126,7 @@ LS_CASE(completed_in_transfers_repost_without_scheduling_the_recovery_pump)
         t->status=USB_TRANSFER_STATUS_COMPLETED;t->callback(t);
         LS_EQ_UINT(s_submits,submitted+n+1);
         unsigned active=0;for(unsigned i=0;i<32;i++)if(s_inflight[i])active++;
-        LS_EQ_UINT(active,16);
+        LS_EQ_UINT(active,TEST_STREAM_SLOTS);
         uint8_t received[16];LS_EQ_INT(esp_libusb_stream_read(received,16),16);
         for(unsigned i=0;i<16;i++)LS_EQ_UINT(received[i],n);
     }
@@ -173,27 +175,27 @@ LS_CASE(cold_start_resources_survive_failure_and_reentry)
     s_fail_transfer_alloc = false;
     LS_EQ_INT(esp_libusb_stream_start(&driver, 0x81), 0);
     LS_CHECK(esp_libusb_streaming());
-    LS_EQ_INT(esp_libusb_stream_slots(), 16);
-    LS_EQ_UINT(s_allocs, 16);
-    LS_EQ_UINT(s_submits, 16);
+    LS_EQ_INT(esp_libusb_stream_slots(), TEST_STREAM_SLOTS);
+    LS_EQ_UINT(s_allocs, TEST_STREAM_SLOTS);
+    LS_EQ_UINT(s_submits, TEST_STREAM_SLOTS);
 
     ls_shim_task_set_state(eSuspended);
     esp_libusb_stream_stop();
     LS_CHECK(!esp_libusb_streaming());
     LS_EQ_INT(esp_libusb_stream_slots(), 0);
-    LS_EQ_UINT(s_frees, 16);
+    LS_EQ_UINT(s_frees, TEST_STREAM_SLOTS);
     LS_EQ_UINT(ls_shim_task_delete_count(), 2);
 
     LS_EQ_INT(esp_libusb_stream_start(&driver, 0x81), 0);
     LS_CHECK(esp_libusb_streaming());
-    LS_EQ_INT(esp_libusb_stream_slots(), 16);
-    LS_EQ_UINT(s_allocs, 32);
-    LS_EQ_UINT(s_submits, 32);
+    LS_EQ_INT(esp_libusb_stream_slots(), TEST_STREAM_SLOTS);
+    LS_EQ_UINT(s_allocs, 2 * TEST_STREAM_SLOTS);
+    LS_EQ_UINT(s_submits, 2 * TEST_STREAM_SLOTS);
     LS_EQ_UINT(ls_shim_queue_static_create_count(), 1);
     LS_EQ_UINT(ls_shim_task_static_create_count(), 4);
 
     ls_shim_task_set_state(eSuspended);
     esp_libusb_stream_stop();
-    LS_EQ_UINT(s_frees, 32);
+    LS_EQ_UINT(s_frees, 2 * TEST_STREAM_SLOTS);
     LS_EQ_UINT(ls_shim_task_delete_count(), 3);
 }

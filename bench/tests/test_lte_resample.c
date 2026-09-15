@@ -21,7 +21,7 @@ static double tone(uint32_t rate,double hz)
 }
 LS_CASE(center_lte_band_survives_and_aliasing_is_rejected)
 {
-    const uint32_t rates[]={2000000,8000000,10000000,19200000,20000000};
+    const uint32_t rates[]={2000000,8000000,8000123,10000000,19200000,20000000};
     for(unsigned i=0;i<sizeof(rates)/sizeof(rates[0]);i++) {
         double pass=tone(rates[i],450000);
         LS_CHECK(pass>55 && pass<85);

@@ -35,6 +35,10 @@ static SemaphoreHandle_t s_lock;
 static StaticSemaphore_t s_lock_memory;
 #ifndef LS_FIELD_TEST
 static TaskHandle_t s_task, s_io_task;
+#define FIELD_STACK_WORDS (8192 / sizeof(StackType_t))
+static EXT_RAM_BSS_ATTR StackType_t s_field_stack[FIELD_STACK_WORDS];
+static EXT_RAM_BSS_ATTR StackType_t s_io_stack[FIELD_STACK_WORDS];
+static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb;
 #endif
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
 static bool s_watch;
@@ -584,18 +588,21 @@ bool ls_field_start(void)
     s_live.ready = true;
     publish();
 #ifndef LS_FIELD_TEST
-    /* These workers use SD and peripherals, never SPI flash/NVS. Keep their
-       stacks out of the internal DMA heap needed by the radio and display. */
-#if CONFIG_SPIRAM
-    const unsigned stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-#else
-    const unsigned stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-#endif
-    if (xTaskCreatePinnedToCoreWithCaps(io_worker, "journal", 8192, NULL, 1, &s_io_task, 0, stack_caps) != pdPASS) {
+    /* Keep both large stacks in PSRAM and their TCBs statically reserved in
+       DRAM.  Dynamic WithCaps creation still allocates each TCB internally;
+       starting Journal beside the USB stream exhausted that heap before
+       newlib could create fopen's lock. */
+    s_io_task = xTaskCreateStaticPinnedToCore(
+        io_worker, "journal", FIELD_STACK_WORDS, NULL, 1,
+        s_io_stack, &s_io_tcb, 0);
+    if (!s_io_task) {
         s_live.ready = false; message("Journal worker could not start"); publish(); return false;
     }
-    if (xTaskCreatePinnedToCoreWithCaps(worker, "field", 8192, NULL, 2, &s_task, 0, stack_caps) != pdPASS) {
-        vTaskDeleteWithCaps(s_io_task); s_io_task = NULL;
+    s_task = xTaskCreateStaticPinnedToCore(
+        worker, "field", FIELD_STACK_WORDS, NULL, 2,
+        s_field_stack, &s_field_tcb, 0);
+    if (!s_task) {
+        vTaskDelete(s_io_task); s_io_task = NULL;
         s_live.ready = false; message("Field worker could not start"); publish(); return false;
     }
     xTaskNotifyGive(s_io_task);

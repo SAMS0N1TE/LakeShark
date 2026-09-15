@@ -419,7 +419,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec ls\n");
             return;
         }
-        char name[40];
+        char name[64];
         uint32_t freq = 0;
         long size = -1;
         int total = rec_file_info((int)idx, name, sizeof(name), &freq, &size);
@@ -455,7 +455,7 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec del\n");
             return;
         }
-        char name[40];
+        char name[64];
         int total = rec_file_info((int)idx, name, sizeof(name), NULL, NULL);
         if (total <= 0 || idx < 0 || idx >= total) {
             snprintf(reply, reply_len, "-ERR no such capture\n");

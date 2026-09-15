@@ -33,6 +33,12 @@ void     lakeshark_fm_set_mode(int mode);
 int      lakeshark_fm_get_mode(void);
 void     lakeshark_fm_tune(int delta_hz);
 void     lakeshark_fm_set_freq(uint32_t hz);
+/* A locked carrier remains authoritative across FM submodes and survives a
+   spectrum sweep.  The sweep may retune transiently, but returning to a live
+   demodulator restores this exact frequency. */
+void     lakeshark_fm_frequency_lock(bool on);
+bool     lakeshark_fm_frequency_locked(void);
+uint32_t lakeshark_fm_frequency_lock_hz(void);
 /**/
 void     lakeshark_fm_tune_transient(uint32_t hz);
 uint32_t lakeshark_fm_get_freq(void);

@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <stdlib.h>
 
+#include "esp_heap_caps.h"
 #include "esp_libusb_private.h"
 #include "esp_log.h"
 #include "event_bus.h"
@@ -322,6 +323,16 @@ void rtl_adapter_probe_async(uint8_t dev_addr,
     }
     setup->dev_addr = dev_addr;
     setup->client = client;
-    xTaskCreatePinnedToCore(rtlsdr_setup_task, "rtlsdr_setup", 8192,
-                            setup, 4, NULL, 0);
+    /* Opening an RTL device is deliberately asynchronous, but its temporary
+       8 KB setup stack used to come from scarce DMA-capable internal RAM.
+       When Wi-Fi and MeshCore were correctly initialized before USB, that
+       stack left no block for endpoint publication and enumeration ended in
+       LS_RADIO_ERR_NO_MEMORY.  The setup path does not retain stack-backed
+       USB buffers; put this short-lived worker in PSRAM like the other
+       bounded radio workers and keep internal RAM for the USB endpoint. */
+    if (xTaskCreatePinnedToCoreWithCaps(rtlsdr_setup_task, "rtlsdr_setup", 8192,
+            setup, 4, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGE(TAG, "setup task create failed");
+        vPortFree(setup);
+    }
 }

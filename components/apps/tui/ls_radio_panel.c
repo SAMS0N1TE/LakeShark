@@ -10,10 +10,12 @@ static const uint8_t white = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
 
 static void line(tui_surface *sf, tui_rect a, int row, const char *text, uint8_t attr)
 {
-    tui_put_str(sf, a, a.x + 2, a.y + row, text, attr);
+    tui_rect clip = tui_rect_make(a.x + 1, a.y, a.w - 2, a.h);
+    tui_put_str(sf, clip, a.x + 2, a.y + row, text, attr);
 }
 
-static void frequency(tui_surface *sf, tui_rect a, int row, uint32_t hz, uint8_t attr)
+void ls_radio_frequency_draw(tui_surface *sf, tui_rect a, int row, uint32_t hz,
+                             uint8_t attr)
 {
     static const uint8_t digits[10][5] = {
         {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
@@ -172,6 +174,114 @@ static void scan_choices(tui_surface *sf, tui_rect a, bool wide)
     line(sf, range, 8, "RANGE chooses band / STEP changes spacing", LS_ATTR_DIM);
 }
 
+/* Large text leaves 34x41 cells in portrait and 79x17 in landscape. Keep
+   the same actions and hit testing, but spend fewer rows on decoration. */
+static void compact_panel(ls_radio_panel_t *p, const ls_radio_view_t *v,
+                          tui_surface *sf, tui_rect a)
+{
+    bool wide = a.w > 72, active = scan_engine_active();
+    a.x++;
+    a.w -= 2;
+    int bh = wide ? 4 : 10;
+    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
+    if (!wide) {
+        /* Two columns fit SETTINGS and SCAN TYPE with padding. Letting a
+           32-column pane choose three silently truncates both labels. */
+        controls.x += (controls.w - 28) / 2;
+        controls.w = 28;
+    }
+    tui_rect body = tui_rect_make(a.x, a.y + 4, a.w, controls.y - a.y - 5);
+    tui_rect state = tui_rect_make(a.x, a.y, a.w, 3);
+    char text[96];
+    if (p->scan_choice) snprintf(text, sizeof(text), "CHOOSE SCAN / THEN START");
+    else if (p->lists) snprintf(text, sizeof(text), "SAVED CHANNELS / ZONE %d", scan_engine_get_zone());
+    else if (active) scan_engine_status(text, sizeof(text));
+    else snprintf(text, sizeof(text), "%s / %s", v->mode,
+                  v->receiver.receiver_streaming ? "MANUAL" : "NO USB RECEIVER");
+    tui_box(sf, state, NULL, cyan);
+    line(sf, state, 1, text, amber);
+    if (p->lists && !p->scan_choice) {
+        channel_list(p, v, sf, body);
+    } else {
+        tui_rect left = body, right = body;
+        if (wide) {
+            left.w = (body.w - 1) / 2;
+            right.x += left.w + 1;
+            right.w -= left.w + 1;
+        } else {
+            left.h = 10;
+            right.y += 11;
+            right.h -= 11;
+        }
+        if (p->scan_choice) {
+            bool band = scan_engine_get_source() == SCAN_SRC_BAND;
+            tui_box(sf, left, band ? "CHANNELS" : "CHANNELS / SELECTED", cyan);
+            line(sf, left, 2, "Visit saved frequencies", white);
+            line(sf, left, 4, "Manage with LISTS", LS_ATTR_DIM);
+            line(sf, left, 6, "Mixed audio: P25 I + NFM", LS_ATTR_DIM);
+            tui_box(sf, right, band ? "BAND / SELECTED" : "BAND", amber);
+            uint32_t lo, hi, step;
+            scan_engine_get_band(&lo, &hi, &step);
+            snprintf(text, sizeof(text), "%.3f - %.3f MHz", lo / 1e6, hi / 1e6);
+            line(sf, right, 2, text, white);
+            snprintf(text, sizeof(text), "Step %.2f kHz", step / 1000.0);
+            line(sf, right, 4, text, amber);
+            line(sf, right, 6, "Every step in this band", LS_ATTR_DIM);
+        } else {
+            uint32_t hz = v->receiver.effective_center_known ?
+                (uint32_t)v->receiver.effective_center_hz : v->frequency;
+            tui_box(sf, left, v->fm ? "A / RECEIVER" : "P25 / RECEIVER", cyan);
+            if (left.h >= 10) {
+                ls_radio_frequency_draw(sf, left, 2, hz, white);
+                snprintf(text, sizeof(text), "MHz  %s", v->mode);
+                line(sf, left, 8, text, cyan);
+            } else {
+                snprintf(text, sizeof(text), "%.4f MHz", hz / 1e6);
+                line(sf, left, 1, text, white);
+                line(sf, left, 3, v->mode, cyan);
+                line(sf, left, 5, !v->receiver.receiver_streaming ? "RECEIVER OFFLINE" :
+                    v->receiver.tune_state == LS_IQ_RESULT_PENDING ? "TUNE PENDING" :
+                    v->receiver.tune_state == LS_IQ_RESULT_FAILED ? "TUNE FAILED" :
+                    v->receiver.effective_center_known ? "EFFECTIVE FREQUENCY" : "REQUESTED FREQUENCY", LS_ATTR_DIM);
+            }
+            if (active && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
+                channel_list(p, v, sf, right);
+            } else {
+                tui_box(sf, right, active ? "BAND SCAN" : "DECODE / STATUS", cyan);
+                int row = 1, step_rows = wide ? 1 : 2;
+                if (v->fm && !active) {
+                    snprintf(text, sizeof(text), "B %.4f MHz", v->standby / 1e6);
+                    line(sf, right, row, text, cyan);
+                    row += step_rows;
+                }
+                if (active) {
+                    uint32_t lo, hi, step;
+                    scan_engine_get_band(&lo, &hi, &step);
+                    snprintf(text, sizeof(text), "From %.4f MHz", lo / 1e6);
+                    line(sf, right, row, text, white);
+                    snprintf(text, sizeof(text), "To   %.4f MHz", hi / 1e6);
+                    line(sf, right, row + step_rows, text, white);
+                    snprintf(text, sizeof(text), "Step %.2f kHz", step / 1000.0);
+                    line(sf, right, row + 2 * step_rows, text, amber);
+                } else {
+                    for (int i = 0; i < 4; i++, row += step_rows)
+                        line(sf, right, row, v->detail[i], white);
+                }
+            }
+        }
+    }
+    buttons(p, v);
+    if (p->scan_choice) {
+        p->buttons[0].label = "CHANNELS";
+        p->buttons[1].label = "BAND";
+        if (scan_engine_get_source() != SCAN_SRC_BAND) {
+            p->buttons[2].label = "MIXED";
+            p->buttons[3].label = "GPS";
+        }
+    }
+    ls_btn_bar_raised(sf, controls, p->buttons, 6, p->focus);
+}
+
 void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf, tui_rect a)
 {
     ls_radio_view_t actual = *v;
@@ -186,6 +296,10 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
         }
     }
     bool wide = a.w > 72, active = scan_engine_active();
+    if (a.w >= 32 && a.h >= (wide ? 14 : 30) && (a.w < 38 || a.h < 20)) {
+        compact_panel(p, v, sf, a);
+        return;
+    }
     if (a.w < 38 || a.h < (wide ? 20 : 34)) {
         ls_panel_notice(sf, a, "RADIO", "Open a larger radio view", "M: detailed controls");
         ls_btn_clear_hits();
@@ -242,10 +356,10 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
             details.y = primary.y + 13;
             details.h = body.h - 13;
         }
-        tui_box(sf, primary, v->fm ? "A / ACTIVE RECEIVER" : "P25 / PHASE 1", v->fm ? amber : cyan);
+        tui_box(sf, primary, v->fm ? "A / ACTIVE RECEIVER" : v->mode, v->fm ? amber : cyan);
         uint32_t hz = v->receiver.effective_center_known ? (uint32_t)v->receiver.effective_center_hz
                                                          : v->frequency;
-        frequency(sf, primary, 2, hz, v->fm ? amber : white);
+        ls_radio_frequency_draw(sf, primary, 2, hz, v->fm ? amber : white);
         snprintf(text, sizeof(text), "MHz  %s", v->mode);
         line(sf, primary, 8, text, cyan);
         line(sf, primary, 10,
@@ -269,7 +383,7 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
                 tui_rect standby = details;
                 standby.h = 12;
                 tui_box(sf, standby, "B / STANDBY - ONE RECEIVER", cyan);
-                frequency(sf, standby, 2, v->standby, cyan);
+                ls_radio_frequency_draw(sf, standby, 2, v->standby, cyan);
                 line(sf, standby, 8, "A / B SWAPS FREQUENCY", LS_ATTR_DIM);
                 line(sf, standby, 10, "NFM / WFM / AM / DATA: MORE", white);
                 details.y += 13;

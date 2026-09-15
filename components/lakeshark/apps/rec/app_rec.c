@@ -52,6 +52,7 @@ static const char *TAG = "rec";
 #define REC_SPIFFS_DIR  BSP_SPIFFS_MOUNT_POINT
 #define REC_IQ_READ_BYTES 8192
 #define REC_READ_TIMEOUT_MS 20
+#define REC_RX_STACK_WORDS (4096 / sizeof(StackType_t))
 
 #define REC_US_PER_SAMPLE_Q8  ((256u * 1000000u) / REC_RTL_RATE)
 
@@ -59,6 +60,8 @@ static ls_radio_session_t *s_session;
 static ls_iq_control_t s_radio_control;
 static volatile bool s_active  = false;
 static volatile bool s_running = false;
+static EXT_RAM_BSS_ATTR StackType_t s_rx_stack[REC_RX_STACK_WORDS];
+static DRAM_ATTR StaticTask_t s_rx_tcb;
 
 static int32_t *s_edge;
 static int      s_edges;
@@ -394,6 +397,8 @@ static void rec_rx_task(void *arg)
     if (!iq) iq = malloc(REC_IQ_READ_BYTES);
     if (!iq) {
         ESP_LOGE(TAG, "OOM iq buf");
+        rec_receiver_lost(LS_RADIO_ERR_NO_MEMORY);
+        s_active = false;
         s_running = false;
         vTaskDelete(NULL);
         return;
@@ -582,7 +587,14 @@ static void rec_on_enter(void)
     rec_receiver_lost(LS_RADIO_ERR_UNAVAILABLE);
 
     s_active = true;
-    xTaskCreatePinnedToCore(rec_rx_task, "rec_rx", 4096, NULL, 6, NULL, 1);
+    if (!xTaskCreateStaticPinnedToCore(rec_rx_task, "rec_rx",
+                                       REC_RX_STACK_WORDS, NULL, 6,
+                                       s_rx_stack, &s_rx_tcb, 1)) {
+        ESP_LOGE(TAG, "RX task allocation failed");
+        rec_receiver_lost(LS_RADIO_ERR_NO_MEMORY);
+        s_active = false;
+        return;
+    }
 
     /**/
     if (s_arm_pending) {
@@ -870,7 +882,7 @@ static void sanitize_name(const char *in, char *out, size_t len)
     if (!j) strlcpy(out, "capture", len);
 }
 
-int rec_save(const char *name, char *path_out, size_t path_len)
+static int rec_save_impl(const char *name, char *path_out, size_t path_len)
 {
     /**/
     if (s_phase == REC_CAPTURING) return -3;
@@ -1013,6 +1025,115 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     if (path_out) strlcpy(path_out, path, path_len);
     ESP_LOGI(TAG, "wrote %s (%d edges)", path, s_edges);
     return s_edges;
+}
+
+#ifdef ESP_PLATFORM
+/*
+ * FAT/VFS and newlib's formatted output need substantially more stack than
+ * the console and TUI callers can spare.  In particular, a full RAW_Data
+ * line used to leave the 4 KiB console task with no guard space and could
+ * trip its stack protector.  Keep one persistent writer on an external-RAM
+ * stack: the StaticTask_t stays in DMA-capable DRAM, so starting a save does
+ * not depend on the small runtime internal heap.
+ */
+#define REC_SAVE_STACK_WORDS (8192 / sizeof(StackType_t))
+
+typedef struct {
+    char          name[24];
+    char          path[128];
+    volatile bool done;
+    int           result;
+} rec_save_job_t;
+
+static EXT_RAM_BSS_ATTR StackType_t s_save_stack[REC_SAVE_STACK_WORDS];
+static DRAM_ATTR StaticTask_t s_save_tcb;
+static TaskHandle_t s_save_worker;
+static rec_save_job_t s_save_job;
+static portMUX_TYPE s_save_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_save_busy;
+
+static void rec_save_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        s_save_job.result = rec_save_impl(s_save_job.name,
+                                          s_save_job.path,
+                                          sizeof(s_save_job.path));
+        s_save_job.done = true;
+    }
+}
+#endif
+
+int rec_save(const char *name, char *path_out, size_t path_len)
+{
+#ifndef ESP_PLATFORM
+    return rec_save_impl(name, path_out, path_len);
+#else
+    /* Avoid parking a healthy receiver for requests that cannot write. */
+    if (s_phase == REC_CAPTURING) return -3;
+    if (s_edges <= 0) return -1;
+    const bool resume_rec = rec_active();
+    bool accepted = false;
+    portENTER_CRITICAL(&s_save_lock);
+    if (!s_save_busy) {
+        s_save_busy = true;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&s_save_lock);
+    if (!accepted) return -5;
+
+    if (!s_save_worker) {
+        s_save_worker = xTaskCreateStaticPinnedToCore(
+            rec_save_task, "rec_save", REC_SAVE_STACK_WORDS, NULL, 5,
+            s_save_stack, &s_save_tcb, 1);
+        if (!s_save_worker) {
+            portENTER_CRITICAL(&s_save_lock);
+            s_save_busy = false;
+            portEXIT_CRITICAL(&s_save_lock);
+            ESP_LOGE(TAG, "save task allocation failed");
+            return -2;
+        }
+    }
+
+    /* The USB host's IQ transfers are DMA allocations.  Leaving the REC
+       stream posted while FAT asks SDMMC for its small DMA descriptor made
+       every save fail even with tens of MiB of PSRAM free.  A SAVE is a
+       natural capture boundary: park REC, let its owner synchronously stop
+       and free the transfers, persist, then hand the receiver back. */
+    if (resume_rec) {
+        app_park();
+        for (int i = 0; i < 400 && (!app_parked() || s_running); i++)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if (!app_parked() || s_running) {
+            portENTER_CRITICAL(&s_save_lock);
+            s_save_busy = false;
+            portEXIT_CRITICAL(&s_save_lock);
+            ESP_LOGE(TAG, "receiver did not park for save");
+            return -2;
+        }
+    }
+
+    strlcpy(s_save_job.name, name && *name ? name : "capture",
+            sizeof(s_save_job.name));
+    s_save_job.path[0] = '\0';
+    s_save_job.result = -2;
+    s_save_job.done = false;
+    xTaskNotifyGive(s_save_worker);
+
+    while (!s_save_job.done) vTaskDelay(pdMS_TO_TICKS(1));
+    int result = s_save_job.result;
+    if (path_out && path_len) strlcpy(path_out, s_save_job.path, path_len);
+
+    portENTER_CRITICAL(&s_save_lock);
+    s_save_busy = false;
+    portEXIT_CRITICAL(&s_save_lock);
+    /* A failed write keeps the completed capture and the receiver parked so
+       the operator can retry; restarting REC would reset s_edges and lose
+       the only in-memory copy. */
+    if (resume_rec && result > 0) app_unpark();
+    return result;
+#endif
 }
 
 /**/
@@ -1214,7 +1335,7 @@ int rec_load(int index)
     if (s_phase == REC_CAPTURING) return -3;
     if (!s_edge) return -2;
 
-    char name[40];
+    char name[64];
     uint32_t freq = 0;
     int total = rec_file_info(index, name, sizeof(name), &freq, NULL);
     if (index < 0 || index >= total) return -1;
@@ -1281,10 +1402,10 @@ int rec_dump(const char *name, void (*emit)(const char *line, void *ctx), void *
 {
     if (!name || !emit) return -1;
 
-    char clean[24];
+    char clean[64];
     sanitize_name(name, clean, sizeof(clean));
 
-    char path[64];
+    char path[128];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), clean);
 
     FILE *f = fopen(path, "r");
@@ -1305,15 +1426,15 @@ int rec_dump(const char *name, void (*emit)(const char *line, void *ctx), void *
 int rec_remove(const char *name)
 {
     if (!name) return -1;
-    char clean[24];
+    char clean[64];
     sanitize_name(name, clean, sizeof(clean));
-    char path[96];
+    char path[128];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), clean);
     int rc = unlink(path) == 0 ? 0 : -2;
     /* Best-effort remove of the sidecar too.  A missing sidecar is
        normal for older captures and unlink returning -1 is not a failure of
        the delete; the .sub is what the caller wanted gone. */
-    char sidecar[96];
+    char sidecar[128];
     snprintf(sidecar, sizeof(sidecar), "%s/%s%s",
              rec_dir(), clean, REC_SIDECAR_EXT);
     (void)unlink(sidecar);

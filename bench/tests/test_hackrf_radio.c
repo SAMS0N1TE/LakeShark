@@ -4,6 +4,25 @@
 
 #include <string.h>
 
+LS_CASE(m0_state_wire_layout_uses_40_bytes_and_preserves_failure_evidence)
+{
+    const uint8_t wire[40] = {
+        2,0,1,0, 2,0,0,0, 0x78,0x56,0x34,0x12, 0xf0,0xde,0xbc,0x9a,
+        7,0,0,0, 0,0x20,0,0, 0,0,0x10,0, 0xff,0xff,0xff,0xff,
+        1,0,0,0, 3,0,0,0
+    };
+    ls_radio_iq_health_t h;
+    LS_CHECK(ls_hackrf_decode_m0_state(wire,sizeof(wire),&h));
+    LS_EQ_UINT(h.requested_mode,2);LS_EQ_UINT(h.request_flag,1);
+    LS_EQ_UINT(h.active_mode,2);LS_EQ_UINT(h.m0_count,0x12345678);
+    LS_EQ_UINT(h.m4_count,0x9abcdef0);LS_EQ_UINT(h.num_shortfalls,7);
+    LS_EQ_UINT(h.longest_shortfall,8192);LS_EQ_UINT(h.shortfall_limit,1048576);
+    LS_EQ_UINT(h.threshold,UINT32_MAX);LS_EQ_UINT(h.next_mode,1);LS_EQ_UINT(h.error,3);
+    LS_CHECK(!ls_hackrf_decode_m0_state(wire,39,&h));
+    LS_EQ_UINT(h.num_shortfalls,0);LS_EQ_UINT(h.m0_count,0);
+    LS_CHECK(!ls_hackrf_decode_m0_state(NULL,40,&h));
+}
+
 LS_CASE(signed_iq_is_converted_to_rtl_style_offset_binary)
 {
     uint8_t samples[] = {

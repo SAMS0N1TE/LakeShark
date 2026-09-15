@@ -25,7 +25,17 @@ size_t lte_resample_u8(const uint8_t *input,size_t n,uint32_t rate,
     if(!input || !output || !memory || !count || capacity<count)return 0;
     filter_t *f=memory;
     const float cutoff=650000.f/rate;
-    for(int p=0;p<PHASES;p++) {
+    /* Generate each needed fractional phase once. At 8 MS/s only six of
+     * the 96 phases are visited; arbitrary accepted rates remain supported. */
+    bool prepared[PHASES]={false};
+    size_t period=OUTPUT_RATE,a=rate,b=OUTPUT_RATE;
+    while(b){size_t remainder=a%b;a=b;b=remainder;}
+    period/=a;if(period>count)period=count;
+    for(size_t i=0;i<period;i++) {
+        uint64_t position=(uint64_t)i*rate;
+        unsigned p=(unsigned)(((position%OUTPUT_RATE)*PHASES+OUTPUT_RATE/2)/OUTPUT_RATE);
+        if(p==PHASES)p=0;
+        if(prepared[p])continue;
         float sum=0;
         for(int k=0;k<TAPS;k++) {
             float x=(float)(k-HALF)-(float)p/PHASES;
@@ -34,6 +44,7 @@ size_t lte_resample_u8(const uint8_t *input,size_t n,uint32_t rate,
             sum+=(f->h[p][k]=sinc*window);
         }
         for(int k=0;k<TAPS;k++)f->h[p][k]/=sum;
+        prepared[p]=true;
         if(yield && yield(arg))return 0;
     }
     /* Remove capture DC and use a conservative common I/Q gain. Never

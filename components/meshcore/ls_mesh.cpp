@@ -790,9 +790,10 @@ private:
 #define MESH_POOL 12
 
 #define MESH_TASK_STACK 8192
-/* C6 pressure placed this polling task in RTC RAM. The radio and
- * shared-bus work must keep the same DRAM stack regardless of boot order. */
-static DRAM_ATTR StackType_t s_mesh_stack[MESH_TASK_STACK / sizeof(StackType_t)]
+/* This permanent polling stack does not need DMA capability.  Keep it in
+ * internal RTC RAM so Wi-Fi, USB and their endpoint descriptors retain the
+ * contiguous ordinary DRAM they require during a full-feature boot. */
+static RTC_NOINIT_ATTR StackType_t s_mesh_stack[MESH_TASK_STACK / sizeof(StackType_t)]
     __attribute__((aligned(16)));
 static DRAM_ATTR StaticTask_t s_mesh_tcb;
 

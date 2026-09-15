@@ -536,6 +536,7 @@ void * hosted_create_semaphore(int maxCount)
 
 	if (!*sem_id) {
 		ESP_LOGE(TAG, "sem create failed\n");
+		hosted_free(sem_id);
 		return NULL;
 	}
 
@@ -584,7 +585,6 @@ int hosted_destroy_semaphore(void * semaphore_handle)
 
 	if (!semaphore_handle) {
 		ESP_LOGE(TAG, "Uninitialized sem id 4\n");
-		assert(semaphore_handle);
 		return RET_INVALID;
 	}
 

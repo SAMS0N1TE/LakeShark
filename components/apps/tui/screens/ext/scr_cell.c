@@ -10,6 +10,10 @@
 #include "cell_iq.h"
 #include "ls_mesh.h"
 #include "ls_gps.h"
+#include "ls_imu_status_policy.h"
+#include "../../ls_theme.h"
+#include "../../ls_tui.h"
+#include "ls_sdcard.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <math.h>
@@ -40,6 +44,9 @@ static bool opened;
 static bool manual_site;
 static char report_peers[LS_MESH_MAX_PEERS][17];
 static uint32_t hrf_frequency=739000000,hrf_rate=8000000,hrf_ms=80;
+static bool auto_multi;
+static char control_message[80];
+static ls_imu_status_policy_t imu_display;
 static const uint32_t hrf_centers[]={739000000,751000000,881500000,1981250000,1992500000,2150000000};
 static const uint32_t hrf_rates[]={8000000,10000000,19200000,20000000};
 static void hrf_choose_frequency(int i){if(i>=0 && i<6)hrf_frequency=hrf_centers[i];}
@@ -55,25 +62,41 @@ static void performance_picker(void)
 static void report_choose(int i)
 {if(i==0)cell_report_target("");else if(i>0 && i<=LS_MESH_MAX_PEERS)cell_report_target(report_peers[i-1]);}
 static void choose(int i) {if(i>=0 && (unsigned)i<cell_band_count) band=(unsigned)i;}
-static void enter(void) {opened=true;cell_monitor_init();cell_report_init();ls_tui_radio_want(NULL);ls_gps_start();}
-static void leave(void) {opened=false;cell_monitor_wait_stopped();}
+static void enter(void) {opened=true;memset(&imu_display,0,sizeof(imu_display));cell_monitor_init();cell_report_init();ls_tui_radio_want(NULL);ls_gps_start();ls_imu_start();}
+static void leave(void) {opened=false;cell_iq_stop();cell_monitor_wait_stopped();}
 static bool request(int cmd)
 {
     if(!opened) return false;
     if(cmd!=CELL_LOAD) ls_tui_radio_want(NULL);
     return cell_monitor_request(cmd,band,manual_site);
 }
+static void view_choose(int i)
+{
+    if(i==0)ls_tui_set_daylight(!ls_tui_daylight());
+    if(i==1){ls_tui_set_font_index(ls_tui_font_index()==2?0:2);ls_tui_screen_request_regrid();}
+    if(i==2)ls_tui_set_crisp_text(!ls_tui_crisp_text());
+}
+static void more_choose(int i)
+{
+    if(i==0)auto_multi=!auto_multi;
+    if(i==1){ls_picker_open("ONCE: SAMPLE RATE",hrf_choose_rate);for(int n=0;n<4;n++){char text[32];snprintf(text,sizeof(text),"%.1f MS/s",hrf_rates[n]/1e6);ls_picker_add(text,n==0?"Validated for MIB":"Experimental / may lose samples");}}
+    if(i==2){ls_picker_open("ONCE: CAPTURE LENGTH",hrf_choose_duration);ls_picker_add("30 ms","Short burst");ls_picker_add("80 ms","Recommended");ls_picker_add("100 ms","Longer burst");}
+    if(i==3){ls_picker_open("REPORT DESTINATION",report_choose);ls_picker_add("Reports OFF","Disable reports");for(int n=0;n<LS_MESH_MAX_PEERS;n++){ls_mesh_peer_t peer;if(!ls_mesh_peer_at(n,&peer))break;snprintf(report_peers[n],sizeof(report_peers[n]),"%s",peer.id);ls_picker_add(peer.name[0]?peer.name:peer.id,peer.id);}}
+}
 static void action(int i)
 {
     if(cell_performance_active()) {
-        cell_iq_status_t iq;cell_iq_get_status(&iq);if(iq.busy)return;
-        if(i==0)cell_iq_hackrf_begin(hrf_frequency,hrf_rate,hrf_ms);
-        else if(i==1){ls_picker_open("HACKRF CENTER FREQUENCY",hrf_choose_frequency);for(int n=0;n<6;n++){char text[32];snprintf(text,sizeof(text),"%.3f MHz",hrf_centers[n]/1e6);ls_picker_add(text,"Receive only");}}
-        else if(i==2){ls_picker_open("HACKRF SAMPLE RATE",hrf_choose_rate);for(int n=0;n<4;n++){char text[32];snprintf(text,sizeof(text),"%.1f MS/s",hrf_rates[n]/1e6);ls_picker_add(text,"Capture check");}}
-        else if(i==3){ls_picker_open("CAPTURE LENGTH",hrf_choose_duration);ls_picker_add("30 ms","Short burst");ls_picker_add("80 ms","LTE capture");ls_picker_add("100 ms","Longer burst");}
-        else if(i==4)performance_picker();
-        if(i!=5)return;
-        i=6;
+        cell_iq_status_t iq;cell_iq_get_status(&iq);
+        if(i==0 && iq.busy){cell_iq_stop();return;}
+        if(i==3){ls_picker_open("DISPLAY",view_choose);ls_picker_add(ls_tui_daylight()?"Dark theme":"Light theme","Change now");ls_picker_add(ls_tui_font_index()==2?"Compact text":"Large text","Change text + touch targets");ls_picker_add(ls_tui_crisp_text()?"Smooth text":"Crisp text","Change edge rendering");return;}
+        if(iq.busy)return;
+        control_message[0]=0;
+        if(i==0){if(!cell_iq_auto_begin(hrf_frequency,auto_multi))snprintf(control_message,sizeof(control_message),"Auto needs mounted SD + idle HackRF");}
+        if(i==1){if(!cell_iq_hackrf_begin(hrf_frequency,hrf_rate,hrf_ms))snprintf(control_message,sizeof(control_message),"Cannot start capture");}
+        if(i==2){ls_picker_open("RECEIVE CHANNEL",hrf_choose_frequency);for(int n=0;n<6;n++){char text[32];snprintf(text,sizeof(text),"%.3f MHz",hrf_centers[n]/1e6);ls_picker_add(text,"Preset / not full band coverage");}}
+        if(i==4){ls_picker_open("CAPTURE OPTIONS",more_choose);ls_picker_add(auto_multi?"Auto: six presets":"Auto: selected channel","Tap to switch plan");ls_picker_add("Once: sample rate","Auto always uses 8 MS/s");ls_picker_add("Once: capture length","Auto always uses 80 ms");ls_picker_add("LoRa reporting","High-rate results stay on SD");}
+        if(i==5)performance_picker();
+        return;
     }
     cell_monitor_get(&status);
     if(i==0) {if(status.busy)cell_monitor_stop();else request(CELL_WATCH);}
@@ -103,57 +126,76 @@ static void action(int i)
 static void draw_high_rate(tui_surface *sf,tui_rect area)
 {
     cell_iq_status_t iq;cell_iq_get_status(&iq);
-    if(!iq.busy && iq.complete && (iq.hz!=hrf_frequency || iq.rate!=hrf_rate)) {
-        memset(&iq,0,sizeof(iq));
-        snprintf(iq.message,sizeof(iq.message),"Settings changed / run CHECK CELL");
+    int64_t now=esp_timer_get_time();
+    if(ls_imu_status_poll_due(&imu_display,now)) {
+        ls_imu_sample_t imu;
+        bool ok=ls_imu_read(&imu);
+        ls_imu_status_record(&imu_display,now,ok,ok && imu.mag_valid);
     }
+    bool imu_ok=ls_imu_status_recent(&imu_display,now);
+    const char *imu_text=imu_ok?(imu_display.mag_valid?"READY":"6 axes / mag missing"):
+        imu_display.good?"STALE":"UNAVAILABLE";
     uint8_t cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),white=TUI_ATTR(TUI_WHITE,TUI_BLACK),yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
     int controls=ls_btn_raised_height(area,6);
+    /* Rounded portrait corners reduce the real bar width to two columns.
+     * Reserve three full-height rows so labels and hints remain separate. */
+    if(area.w<48 && area.h>=35)controls=15;
     tui_rect body=tui_rect_make(area.x,area.y,area.w,area.h-controls);
     int y=body.y;char text[120];
-    ls_safe_line(sf,body,y++,"HACKRF / HIGH RATE SESSION",cyan);
-    ls_safe_line(sf,body,y++,"GPS + 9 AXIS + LORA / WIFI + AUDIO PAUSED",white);
-    if(body.w>=36 && body.h>=32){frequency_readout(sf,body,y+1,hrf_frequency,cyan);y+=7;}
-    snprintf(text,sizeof(text),"%.1f MS/s  /  %lu ms  /  RX ONLY",hrf_rate/1e6,(unsigned long)hrf_ms);ls_safe_line(sf,body,y++,text,cyan);
-    const char *phase=iq.phase==CELL_IQ_FILTERING?"FILTERING LTE CHANNEL ON P4":iq.phase==CELL_IQ_SYNCHRONIZING?"CHECKING LTE SYNC ON P4":iq.phase==CELL_IQ_DECODING_MIB?"DECODING LTE BROADCAST ON P4":iq.phase==CELL_IQ_SAVING?"SAVING IQ + EVIDENCE TO SD":"CAPTURING HACKRF IQ";
-    ls_safe_line(sf,body,y++,iq.busy?phase:iq.message[0]?iq.message:"Ready. Select frequency, then CHECK CELL.",yellow);
-    snprintf(text,sizeof(text),"%lu bytes  /  %llu dropped  /  %s",(unsigned long)iq.bytes,(unsigned long long)iq.dropped,iq.complete?"COMPLETE":"NO COMPLETE CAPTURE");ls_safe_line(sf,body,y++,text,white);
-    if(iq.lte_found)snprintf(text,sizeof(text),"LTE PCI %d / %d repeats / %d pairs",iq.lte.pci,iq.lte.hits,iq.lte.pairs);
-    else snprintf(text,sizeof(text),iq.lte_checked?"No repeated LTE FDD sync in this capture":"LTE evidence: awaiting a valid capture");
-    ls_safe_line(sf,body,y++,text,cyan);
-    if(iq.lte_checked){snprintf(text,sizeof(text),"P4 analysis %.1fs / SSS %.2f",iq.analysis_ms/1000.,(double)iq.lte.sss_score);ls_safe_line(sf,body,y++,text,white);}
-    if(iq.mib_found) {
-        snprintf(text,sizeof(text),"%.1f MHz channel / %d ports / CRC x%d",iq.mib.n_rb==6?1.4:iq.mib.n_rb/5.,iq.mib.antenna_ports,iq.mib.frames);
-        ls_safe_line(sf,body,y++,text,cyan);
-        snprintf(text,sizeof(text),"Frame %d / broadcast decode %.1fs",iq.mib.sfn,iq.mib_ms/1000.);ls_safe_line(sf,body,y++,text,white);
-    } else if(iq.mib_checked)ls_safe_line(sf,body,y++,"Broadcast CRC not confirmed / try again",yellow);
-    if(body.h>=41) {
-        tui_rect chart=tui_rect_make(body.x+2,y+1,body.w-4,10);ls_panel_box(sf,chart,"IQ AMPLITUDE / CAPTURE TIME",TUI_CYAN);
-        int width=chart.w-4;
-        for(int x=0;x<width && iq.complete;x++) {
-            unsigned n=(unsigned)x*64/width;
-            int h=(int)iq.envelope[n]*6/128;if(h<1 && iq.envelope[n])h=1;
-            for(int row=0;row<h;row++)tui_put_char(sf,chart,chart.x+2+x,chart.y+8-row,LS_TUI_SHADE_75,cyan);
-        }
-        y=chart.y+chart.h+1;
+    if(body.h<24) {
+        ls_safe_line(sf,body,y++,"CELL WATCH / AUTO LTE OBSERVATIONS",cyan);
+        snprintf(text,sizeof(text),"%s / %.3f MHz / %lu attempts / %lu MIB",
+            iq.stopping?"STOPPING":iq.busy?"RUNNING":"READY",(iq.busy?iq.active_hz:hrf_frequency)/1e6,
+            (unsigned long)iq.attempts,(unsigned long)iq.decoded);
+        ls_safe_line(sf,body,y++,text,yellow);
+        snprintf(text,sizeof(text),"Auto: %s / 8 MS/s, 80 ms bursts / processing gaps",
+            (iq.busy?iq.multi:auto_multi)?"six presets":"selected channel");ls_safe_line(sf,body,y++,text,white);
+        snprintf(text,sizeof(text),"Last %.3f MHz / PCI %d / MIB %s / CRC x%d",iq.hz/1e6,
+            iq.lte_found?iq.lte.pci:-1,iq.mib_found?"decoded":"unconfirmed",iq.mib.frames);ls_safe_line(sf,body,y++,text,cyan);
+        ls_gps_state_t gps;ls_gps_get(&gps);
+        bool fix=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
+        snprintf(text,sizeof(text),"GPS %s (%u sats) / 9 AXIS %s / SD %s",fix?"FIX":"SEEKING",gps.sats_visible,
+            imu_text,ls_sdcard_mounted()?"READY":"MISSING");ls_safe_line(sf,body,y++,text,white);
+        if(y<body.y+body.h-2)ls_safe_line(sf,body,y++,control_message[0]?control_message:iq.message,white);
+        ls_safe_line(sf,body,body.y+body.h-1,"Detection unvalidated / identity and SIB1 still missing",yellow);
+        goto render_controls;
     }
-    ls_safe_line(sf,body,y++,"9-AXIS CONTEXT / AT CAPTURE START",cyan);
-    if(iq.imu_valid) {
-        snprintf(text,sizeof(text),"Accel g   %+.2f  %+.2f  %+.2f",(double)iq.imu.ax,(double)iq.imu.ay,(double)iq.imu.az);ls_safe_line(sf,body,y++,text,white);
-        snprintf(text,sizeof(text),"Gyro d/s  %+.1f  %+.1f  %+.1f",(double)iq.imu.gx,(double)iq.imu.gy,(double)iq.imu.gz);ls_safe_line(sf,body,y++,text,white);
-        if(iq.imu.mag_valid){snprintf(text,sizeof(text),"Mag uT %+.1f %+.1f %+.1f",(double)iq.imu.mx,(double)iq.imu.my,(double)iq.imu.mz);ls_safe_line(sf,body,y++,text,white);snprintf(text,sizeof(text),"Heading %.0f deg / level, uncalibrated",(double)iq.heading);ls_safe_line(sf,body,y++,text,white);}
-        else ls_safe_line(sf,body,y++,"Magnetometer unavailable",yellow);
-    } else ls_safe_line(sf,body,y++,"No captured IMU reading yet",white);
-    if(iq.gps_valid)snprintf(text,sizeof(text),"GPS %.5f, %.5f",iq.latitude,iq.longitude);else snprintf(text,sizeof(text),"GPS: no fresh captured fix");
+    ls_safe_line(sf,body,y++,"CELL WATCH / PASSIVE LTE",cyan);
+    const char *phase=iq.phase==CELL_IQ_FILTERING?"Filtering samples":iq.phase==CELL_IQ_SYNCHRONIZING?"Finding LTE cell":iq.phase==CELL_IQ_DECODING_MIB?"Checking broadcast CRC":iq.phase==CELL_IQ_SAVING?"Saving evidence":iq.phase==CELL_IQ_WAITING?"Waiting for next capture":"Receiving samples";
+    ls_safe_line(sf,body,y++,iq.stopping?"STOPPING / finishing this save":iq.busy?phase:"READY / start Auto or Once",yellow);
+    uint32_t shown=iq.busy?iq.active_hz:hrf_frequency;
+    if(body.w>=32 && body.h>=26){frequency_readout(sf,body,y+1,shown,cyan);y+=7;}
+    else {snprintf(text,sizeof(text),"%.3f MHz",shown/1e6);ls_safe_line(sf,body,y++,text,cyan);}
+    snprintf(text,sizeof(text),"Auto: %s",(iq.busy?iq.multi:auto_multi)?"6 preset channels":"selected channel");ls_safe_line(sf,body,y++,text,white);
+    ls_safe_line(sf,body,y++,"8 MS/s / 80 ms repeated bursts",white);
+    snprintf(text,sizeof(text),"%lu attempts / %lu MIB decodes",(unsigned long)iq.attempts,(unsigned long)iq.decoded);ls_safe_line(sf,body,y++,text,cyan);
+    if(iq.lte_found)snprintf(text,sizeof(text),"Last: %.3f MHz / PCI %d",iq.hz/1e6,iq.lte.pci);
+    else snprintf(text,sizeof(text),iq.lte_checked?"No LTE sync in last capture":"LTE evidence: waiting");
     ls_safe_line(sf,body,y++,text,white);
-    cell_report_status(text,sizeof(text));ls_safe_line(sf,body,y++,text,cyan);
-    ls_safe_line(sf,body,body.y+body.h-3,"Network identity still needs SIB1 decoding.",yellow);
-    ls_safe_line(sf,body,body.y+body.h-2,"NORMAL OS exits with a restart.",white);
+    if(iq.mib_found)snprintf(text,sizeof(text),"MIB: %.1f MHz / CRC x%d",iq.mib.n_rb==6?1.4:iq.mib.n_rb/5.,iq.mib.frames);
+    else snprintf(text,sizeof(text),"MIB: %s",iq.mib_checked?"CRC not confirmed":"not decoded");
+    ls_safe_line(sf,body,y++,text,cyan);
+    if(body.h>=25)y++;
+    ls_gps_state_t gps;ls_gps_get(&gps);
+    bool fix=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
+    snprintf(text,sizeof(text),"GPS %s / %u seen / %u used",fix?"FIX":ls_gps_running()?"SEEKING":"OFF",gps.sats_visible,gps.sats_used);ls_safe_line(sf,body,y++,text,fix?cyan:yellow);
+    if(fix){snprintf(text,sizeof(text),"%.5f, %.5f",gps.lat_deg,gps.lon_deg);ls_safe_line(sf,body,y++,text,white);}
+    snprintf(text,sizeof(text),"9 AXIS: %s",imu_text);ls_safe_line(sf,body,y++,text,imu_ok && imu_display.mag_valid?cyan:yellow);
+    snprintf(text,sizeof(text),"SD %s / IQ %llu of 256 MiB",ls_sdcard_mounted()?"READY":"MISSING",(unsigned long long)(iq.raw_bytes/(1024*1024)));ls_safe_line(sf,body,y++,text,white);
+    if(control_message[0])ls_safe_line(sf,body,y++,control_message,yellow);
+    else if(iq.message[0])ls_safe_line(sf,body,y++,iq.message,white);
+    if(y<body.y+body.h-3)ls_safe_line(sf,body,y++,"Start before travel; Stop to end.",white);
+    ls_safe_line(sf,body,body.y+body.h-2,"Detection: not yet validated",yellow);
+    ls_safe_line(sf,body,body.y+body.h-1,"Identity / SIB1 still missing",yellow);
+render_controls:;
     ls_btn_t buttons[]={
-        {"CHECK CELL","LTE + SD",'S',iq.busy,iq.busy},{"FREQ","center",'B',false,iq.busy},
-        {"RATE","MS/s",'L',false,iq.busy},{"LENGTH","ms",'R',false,iq.busy},
-        {"NORMAL OS","restart",'H',false,iq.busy},
-        {"REPORT","LoRa",'T',false,iq.busy}};
+        {iq.busy?"STOP":"AUTO",iq.busy?"save + end":"repeat",'S',iq.busy,false},
+        {"ONCE","single",'C',false,iq.busy},
+        {"CHANNEL","tune",'B',false,iq.busy},
+        {"VIEW","theme/size",'V',false,false},
+        {"OPTIONS","setup",'O',false,iq.busy},
+        {"EXIT","normal OS",'H',false,iq.busy}};
+    if(body.h<24)for(unsigned i=0;i<6;i++)buttons[i].value=NULL;
     ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,6,focus);
 }
 static void draw(tui_surface *sf,tui_rect area)
@@ -275,7 +317,7 @@ static void draw(tui_surface *sf,tui_rect area)
 }
 static bool key(ls_tk_t k,char ch)
 {
-    if(k==LS_TK_ESC) {action(cell_performance_active()?4:5);return true;}
+    if(k==LS_TK_ESC) {action(5);return true;}
     if(ls_btn_navigate(k,&slot,&focus,false)) return true;
     if(k==LS_TK_ENTER && focus>=0 && ls_btn_enabled(slot,focus)) {action(focus);return true;}
     if(k==LS_TK_CHAR) {

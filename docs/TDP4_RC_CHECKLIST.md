@@ -1,4 +1,4 @@
-# 2.1.0-rc2 release checks
+# 2.1.0 release checks
 
 Target: LilyGO T-Display P4, 16 MB flash, existing `boards/partitions_16m.csv`.
 The release package updates the application at `0x10000` only. It does not
@@ -44,6 +44,39 @@ Still not established: long unattended soak, all NFC card families, calibrated
 RF sensitivity, precise compass accuracy, HackRF aircraft decode, HackRF
 FM/P25 rate conversion, or SX1262 POCSAG equivalence to RTL. These limits remain
 explicit in the release notes. Other board configurations are not RC binaries.
+
+## 2026-09-15 final hardware pass
+
+- Full host verification passed, including 174 executables and 62 C++ header
+  checks. P25 acquisition remains 22 passing cases plus one declared
+  known-failing case, with no unexpected failure.
+- The supported T-Display-P4 booted with Wi-Fi, MeshCore, RTL-SDR, touch, TUI,
+  and the full 600 ms audio queue active. Permanent auxiliary stacks were moved
+  out of the fragmented general heap and the main task uses an 8 KiB stack.
+- Twenty consecutive web-console page requests completed after increasing the
+  HTTP task stack to 4 KiB. The task retained 956 bytes of measured headroom and
+  the board remained in normal mode with zero failed starts.
+- Explicit NFM selection was checked from a deliberately mixed-on state and
+  changed scanner status to `mixed=off`.
+- A custom 433.920 MHz carrier remained the center of a 427.920–439.920 MHz FM
+  sweep, the waterfall rendered, and stopping the sweep restored 433.920 MHz.
+- The attached Flipper transmitted an OOK frame at 433.920 MHz. REC captured
+  149 edges over 122.77 ms and saved a readable Flipper RAW `.sub` file without
+  deleting prior captures.
+- A P4 direct message reached the attached MeshCore gateway; the return packet
+  reached the P4 at -47 dBm and 11.5 dB SNR with no bad packets.
+- `/sdcard/maps/newhampshire.pmtiles` opened successfully: 5,745 tiles through
+  zoom 13, tile-cache activity, and 21 rendered place names were observed.
+- GPS transport produced 71 checksum-valid sentences with 11 satellites
+  visible, but no satellites were used indoors. Outdoor position lock remains
+  unverified.
+- The decoded HTTP-overflow coredump and its matching ELF were preserved. The
+  coredump partition was not cleared.
+
+Release limits still requiring field acceptance are an outdoor GPS fix, a
+long unattended mixed Wi-Fi/Mesh/USB/SD soak, live known-signal P25 voice and
+trunk-following acceptance, and the experimental Phase II/other-radio limits
+listed above. The Waveshare LCD-4.3 target is out of support for this release.
 
 ## Remaining integration work
 

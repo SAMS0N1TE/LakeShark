@@ -1,8 +1,10 @@
 # P25 trunking receive contract
 
-Evidence: **Build-verified**, not Hardware-verified. No Phase II voice decoder
-or Phase II audio is implemented. Workstream 736 owns the GUI; no GUI file was
-changed here.
+Evidence for this automatic trunking path: **Build-verified**, not
+Hardware-verified. The follower accepts Phase I calls. A separate experimental
+manual Phase II decoder now exists and has passed symbol replay on the P4;
+see [its current evidence and limitations](../../../../docs/P25_PHASE2.md).
+That does not qualify automatic Phase II call following.
 
 ## Protocol references and compatibility
 
@@ -146,6 +148,6 @@ NIDs and unsupported DUIDs. Existing 0x34/0x3d and encryption tests stay intact.
 Hardware checks still required: named-board control-to-traffic tuning and
 return latency, same-TG reacquisition under live RF, pending/failed tune
 recovery, cross-core ring timing, encryption transitions, intelligible Phase I
-audio, and 736's actual display/touch acceptance. There is no Phase II burst
-decoder or audio acceptance claim. The wider IQ replay gap described in
+audio, and display/touch acceptance. This automatic follower makes no Phase II
+live RF or audio acceptance claim. The wider IQ replay gap described in
 `bench/P25_ACCEPTANCE.md` remains.

@@ -49,6 +49,8 @@ static const ls_tui_theme_t *s_theme = &ls_theme_terminal_bay;
    task, and swapping the palette under a present half way through a frame
    would leave cells marked drawn in colours that are no longer the theme. */
 static bool                  s_daylight;
+static bool                  s_crisp_text;
+static bool                  s_draw_crisp;
 static const ls_tui_theme_t *s_draw = &ls_theme_terminal_bay;
 static volatile bool         s_look_dirty;
 #define PALETTE (s_draw->palette)
@@ -346,6 +348,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
             uint32_t bit = (uint32_t)y * dsc->box_w + x;
             /* 4 bpp, high nibble first, exactly as lv_font_conv emits it. */
             uint8_t cov = (bit & 1) ? (bmp[bit >> 1] & 0x0F) : (bmp[bit >> 1] >> 4);
+            if(s_draw_crisp)cov=cov>=8?15:0;
             if (!cov) continue;
             uint32_t idx = s_landscape
                 ? (uint32_t)(s_screen_w - 1 - px) * native_w + py
@@ -363,6 +366,7 @@ static void look_apply(void)
 {
     s_look_dirty = false;
     s_draw = ls_tui_theme_effective(s_theme, s_daylight);
+    s_draw_crisp = s_crisp_text;
     s_ramp_valid = false;
     ls_tui_invalidate();
 }
@@ -527,6 +531,8 @@ void ls_tui_set_rotation_cw(bool clockwise)
    is in ls_font_list.c: this file owns the framebuffer and cannot come to
    the host bench, and the SETTINGS screen that offers the choice can. */
 void ls_tui_set_font(const ls_font_t *font) { if (font) s_font = font; }
+void ls_tui_set_crisp_text(bool on) {if(s_crisp_text!=on){s_crisp_text=on;s_look_dirty=true;}}
+bool ls_tui_crisp_text(void) {return s_crisp_text;}
 
 /* The ramp cache is keyed on the attribute byte, which does not change
    when the colours behind it do, so a theme swap has to drop it explicitly or

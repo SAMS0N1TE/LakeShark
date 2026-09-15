@@ -22,6 +22,8 @@ typedef struct {
 } ls_radio_view_t;
 
 void ls_radio_panel_draw(ls_radio_panel_t *, const ls_radio_view_t *, tui_surface *, tui_rect);
+void ls_radio_frequency_draw(tui_surface *, tui_rect, int row, uint32_t hz,
+                             uint8_t attr);
 char ls_radio_panel_key(ls_radio_panel_t *, const ls_radio_view_t *, ls_tk_t, char);
 char ls_radio_panel_touch(ls_radio_panel_t *, const ls_radio_view_t *, int, int);
 #endif

@@ -260,7 +260,10 @@ esp_err_t audio_out_init(void)
 
     s_push_lock = xSemaphoreCreateMutex();
 
-    s_ring_buf = heap_caps_malloc(RING_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* The stream payload is only touched from normal task context; keeping its
+       600 ms queue in internal RAM needlessly competes with USB/I2S DMA and
+       makes audio startup depend on heap contiguity after enumeration. */
+    s_ring_buf = heap_caps_malloc(RING_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_ring_buf && s_push_lock) {
         s_ring = xStreamBufferCreateStatic(RING_BYTES, 1, s_ring_buf, &s_ring_ctrl);
     }
@@ -269,8 +272,10 @@ esp_err_t audio_out_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t ok = xTaskCreatePinnedToCore(audio_player_task, "audio_out",
-                                            AUDIO_TASK_STACK, NULL, 11, &s_task, 1);
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(audio_player_task, "audio_out",
+                                                    AUDIO_TASK_STACK, NULL, 11,
+                                                    &s_task, 1,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (ok != pdTRUE) {
         ESP_LOGE(TAG, "audio task create failed");
         return ESP_FAIL;

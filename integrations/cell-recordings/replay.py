@@ -28,6 +28,8 @@ dll.lte_sync_frame_start.argtypes = [c.c_void_p]
 dll.lte_sync_frame_start.restype = c.c_int
 dll.lte_mib_find.argtypes = [c.c_void_p, c.c_size_t, c.c_int, c.c_int, c.c_int, c.c_void_p, c.POINTER(Mib), c.c_void_p, c.c_void_p]
 dll.lte_mib_find.restype = c.c_bool
+dll.lte_mib_confirm.argtypes = dll.lte_mib_find.argtypes
+dll.lte_mib_confirm.restype = c.c_bool
 def decode(name, raw, rate):
     start = time.monotonic()
     size = dll.lte_resample_count(len(raw)//2, rate)
@@ -41,6 +43,14 @@ def decode(name, raw, rate):
     mws = c.create_string_buffer(dll.lte_mib_workspace_size())
     mib = Mib()
     decoded = dll.lte_mib_find(iq.ctypes.data, size, sync.pci, frame, sync.cfo, mws, c.byref(mib), None, None) if found else False
+    quick = Mib()
+    confirmed = dll.lte_mib_confirm(iq.ctypes.data, size, sync.pci, frame, sync.cfo, mws, c.byref(quick), None, None) if found else False
+    assert confirmed == decoded, 'Fast confirmation disagrees with exhaustive MIB result'
+    if confirmed:
+        assert quick.frames == 2
+        for key, _ in Mib._fields_:
+            if key != 'frames':
+                assert getattr(quick,key) == getattr(mib,key), ('MIB confirmation mismatch',key)
     result = dict(name=name, sync=found, timing=frame, **{k: getattr(sync, k) for k, _ in sync._fields_}, mib=decoded, result={k: getattr(mib,k) for k,_ in mib._fields_}, seconds=round(time.monotonic()-start, 3))
     print(json.dumps(result), flush=True)
     return result

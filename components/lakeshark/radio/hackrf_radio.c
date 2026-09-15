@@ -2,6 +2,30 @@
    LakeShark original. Not librtlsdr - see UPSTREAM.md in this
    directory for which files here are third-party and which are ours. */
 #include "hackrf_radio.h"
+#include <string.h>
+
+static uint32_t get_le32(const uint8_t *p)
+{ return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; }
+
+bool ls_hackrf_decode_m0_state(const uint8_t *wire, size_t bytes,
+                               ls_radio_iq_health_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!wire || bytes != 40) return false;
+    out->requested_mode = (uint16_t)get_le32(wire);
+    out->request_flag = (uint16_t)(get_le32(wire) >> 16);
+    out->active_mode = get_le32(wire+4);
+    out->m0_count = get_le32(wire+8);
+    out->m4_count = get_le32(wire+12);
+    out->num_shortfalls = get_le32(wire+16);
+    out->longest_shortfall = get_le32(wire+20);
+    out->shortfall_limit = get_le32(wire+24);
+    out->threshold = get_le32(wire+28);
+    out->next_mode = get_le32(wire+32);
+    out->error = get_le32(wire+36);
+    return true;
+}
 
 const ls_radio_range_t ls_hackrf_frequency_ranges[1] = {
     {UINT64_C(1000000), UINT64_C(6000000000)},

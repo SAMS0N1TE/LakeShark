@@ -88,7 +88,7 @@ static void ps_value(int i, char *out, size_t n)
                  i == 10 ? cfg.timing_gain : cfg.carrier_gain, pending ? " QUEUED" : "");
         break;
     case 12:
-        snprintf(out, n, "CHANGE restores tested values");
+        snprintf(out, n, "Restore tested values");
         break;
     case 13:
         snprintf(out, n, "%d", scan_engine_get_threshold_pct());
@@ -215,8 +215,9 @@ static void ps_draw(tui_surface *sf, tui_rect a)
     }
     a.x++;
     a.w -= 2;
-    int bh = wide ? 5 : 10;
-    tui_rect b = tui_rect_make(a.x, a.y + a.h - bh - 3, a.w, bh);
+    const bool short_view = wide && a.h < 22;
+    int bh = wide ? (short_view ? 4 : 5) : 10;
+    tui_rect b = tui_rect_make(a.x, a.y + a.h - bh - (short_view ? 0 : 3), a.w, bh);
     ps_area = tui_rect_make(a.x, a.y + 1, a.w, b.y - a.y - 2);
     ps_row_height = wide ? 2 : 5;
     ps_rows = (ps_area.h - 4) / ps_row_height;
@@ -228,6 +229,8 @@ static void ps_draw(tui_surface *sf, tui_rect a)
     if (last > PS_COUNT) last = PS_COUNT;
     snprintf(title, sizeof(title), "P25 SETTINGS / %d-%d OF %d", ps_first + 1, last, PS_COUNT);
     tui_box(sf, ps_area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_rect content = tui_rect_make(ps_area.x + 1, ps_area.y + 1,
+                                     ps_area.w - 2, ps_area.h - 2);
     for (int r = 0; r < ps_rows && ps_first + r < PS_COUNT; r++) {
         int i = ps_first + r;
         char value[48], text[100];
@@ -235,11 +238,11 @@ static void ps_draw(tui_surface *sf, tui_rect a)
         snprintf(text, sizeof(text), "%c %s", i == ps_selected ? '>' : ' ', ps_names[i]);
         int y = ps_area.y + 2 + r * ps_row_height;
         uint8_t attr = TUI_ATTR(i == ps_selected ? TUI_YELLOW | TUI_BRIGHT : TUI_WHITE, TUI_BLACK);
-        tui_put_str(sf, ps_area, ps_area.x + 2, y, text, attr);
-        tui_put_str(sf, ps_area, wide ? ps_area.x + ps_area.w / 2 : ps_area.x + 4, wide ? y : y + 2,
+        tui_put_str(sf, content, ps_area.x + 2, y, text, attr);
+        tui_put_str(sf, content, wide ? ps_area.x + ps_area.w / 2 : ps_area.x + 4, wide ? y : y + 2,
                     value, attr);
     }
-    tui_put_str(sf, ps_area, ps_area.x + 2, ps_area.y + ps_area.h - 2, ps_status, LS_ATTR_DIM);
+    tui_put_str(sf, content, ps_area.x + 2, ps_area.y + ps_area.h - 2, ps_status, LS_ATTR_DIM);
     ls_btn_t controls[6];memcpy(controls,ps_buttons,sizeof(controls));
     controls[2].dim = controls[3].dim = ps_selected == 12;
     if (ps_selected == 12) controls[4].label = "RESET";

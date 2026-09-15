@@ -18,6 +18,14 @@ extern "C" {
 
 int ls_wordmark_width(const char *text);
 
+/* The compact 3x5 alphabet keeps long words intact on a large-font portrait
+   grid. Width, splitting and drawing must all use the same alphabet. */
+int ls_wordmark_compact_width(const char *text);
+bool ls_wordmark_compact_split(const char *text, int cols,
+                              char *a, size_t a_cap, char *b, size_t b_cap);
+void ls_wordmark_compact_row(tui_surface *sf, tui_rect clip, int x, int y,
+                            int row, const char *text, uint8_t attr);
+
 /* Split a wordmark that will not fit into two lines at a space. */
 
 bool ls_wordmark_split(const char *text, int cols,

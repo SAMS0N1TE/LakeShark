@@ -798,6 +798,10 @@ static int set_sync_resp_sem(ctrl_cmd_t *app_req)
 	} else if (!app_req->rpc_rsp_cb) {
 		/* For sync, set sem */
 		app_req->rx_sem = g_h.funcs->_h_create_semaphore(1);
+		if (!app_req->rx_sem) {
+			ESP_LOGE(TAG, "Sync sem allocation failed for req[0x%x]", app_req->msg_id);
+			return CALLBACK_NOT_REGISTERED;
+		}
 		g_h.funcs->_h_get_semaphore(app_req->rx_sem, 0);
 
 		for (i = 0; i < MAX_SYNC_RPC_TRANSACTIONS; i++) {

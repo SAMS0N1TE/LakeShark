@@ -22,6 +22,12 @@ size_t lte_mib_workspace_size(void);
 bool lte_mib_find(const uint8_t *iq, size_t samples, int pci, int frame_start,
                   int cfo_hz, void *workspace, lte_mib_result_t *out,
                   lte_sync_yield_fn yield, void *arg);
+/* Same acceptance checks as find, returning after two consistent CRC-valid
+ * occasions. frames is the number actually checked, not an extrapolated total.
+ * Use find for exhaustive replay/reference measurement. */
+bool lte_mib_confirm(const uint8_t *iq, size_t samples, int pci, int frame_start,
+                     int cfo_hz, void *workspace, lte_mib_result_t *out,
+                     lte_sync_yield_fn yield, void *arg);
 #ifdef __cplusplus
 }
 #endif

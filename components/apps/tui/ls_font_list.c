@@ -6,9 +6,10 @@
 static const ls_font_t *const FONTS[] = {
     &ls_font_mono_16,
     &ls_font_mono_14,
+    &ls_font_mono_24,
 };
 
-static const char *const FONT_LABEL[] = { "10x17", "9x16" };
+static const char *const FONT_LABEL[] = { "10x17", "9x16", "15x26" };
 
 static int s_font_index;
 

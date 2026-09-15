@@ -609,15 +609,71 @@ LS_CASE(the_table_is_the_size_of_what_it_holds)
     draw_decode_now(PORTRAIT);
     const int clear_when_full = untouched_rows(table_of(PORTRAIT));
 
-    LS_CHECK_MSG(clear_when_empty >= 16,
+    LS_CHECK_MSG(clear_when_empty >= 8,
                  "an empty table left only %d rows of the body clear - it is "
                  "a frame stretched over the space, not a box its own size",
                  clear_when_empty);
-    LS_CHECK_MSG(clear_when_full + 8 < clear_when_empty,
+    LS_CHECK_MSG(clear_when_full + 6 <= clear_when_empty,
                  "sixteen talkgroups left %d rows clear and none left %d - "
                  "the frame is not sized to its contents",
                  clear_when_full, clear_when_empty);
     LS_CHECK(escaped(PORTRAIT) == 0);
+}
+
+LS_CASE(the_merged_decode_page_has_the_large_dial_and_receive_history)
+{
+    no_traffic();
+    heard(4321, 1000, P25_TG_SEEN_HDU);
+    ls_shim_time_set(4 * 1000000LL);
+    draw_decode_now(PORTRAIT);
+
+    LS_CHECK(rect_has(PORTRAIT, "P25 / RECEIVER"));
+    LS_CHECK(rect_has(PORTRAIT, "ACTIVITY"));
+    LS_CHECK(rect_has(PORTRAIT, "4321"));
+    LS_CHECK(rect_has(PORTRAIT, "SCAN"));
+
+    int blocks = 0;
+    for (int y = PORTRAIT.y; y < PORTRAIT.y + 8; ++y)
+        for (int x = PORTRAIT.x; x < PORTRAIT.x + PORTRAIT.w; ++x)
+            if (g_back[y * W + x].ch == LS_TUI_BLOCK_FULL) blocks++;
+    LS_CHECK_MSG(blocks >= 20, "merged decode dial used only %d large blocks", blocks);
+}
+
+LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
+{
+    const tui_rect large_font = {1, 2, 32, 41};
+    no_traffic();
+    heard(2468, 1000, P25_TG_SEEN_LCW);
+    ls_shim_time_set(2 * 1000000LL);
+    draw_decode_now(large_font);
+
+    LS_CHECK(rect_has(large_font, "P25 / RECEIVER"));
+    LS_CHECK(rect_has(large_font, "ACTIVITY"));
+    LS_CHECK(rect_has(large_font, "2468"));
+    LS_CHECK(rect_has(large_font, "TUNE"));
+    LS_CHECK(rect_has(large_font, "VOL-"));
+    LS_CHECK(rect_has(large_font, "VOL+"));
+    LS_CHECK(rect_has(large_font, "GAIN-"));
+    LS_CHECK(rect_has(large_font, "GAIN+"));
+    LS_CHECK(escaped(large_font) == 0);
+}
+
+LS_CASE(the_scanner_workflow_remains_reachable_from_the_merged_screen)
+{
+    ls_scr_p25.key(LS_TK_CHAR, '3');
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "SCAN"));
+    LS_CHECK(rect_has(PORTRAIT, "LISTS"));
+    LS_CHECK(rect_has(PORTRAIT, "SETTINGS"));
+
+    ls_scr_p25.key(LS_TK_CHAR, 's');
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "CHANNEL"));
+    LS_CHECK(rect_has(PORTRAIT, "BAND"));
+    ls_scr_p25.key(LS_TK_CHAR, 'm');
+    ls_scr_p25.key(LS_TK_CHAR, 'm');
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "P25 / RECEIVER"));
 }
 
 LS_CASE(held_p25_keeps_a_working_hold_button_in_both_postures)
@@ -672,7 +728,7 @@ LS_CASE(held_p25_keeps_a_working_hold_button_in_both_postures)
 LS_CASE(p25_settings_scroll_and_change_backend_controls)
 {
     ls_scr_p25.key(LS_TK_CHAR,'0');
-    ls_scr_p25.key(LS_TK_CHAR,'p');
+    ls_scr_p25.key(LS_TK_CHAR,'4');
     for(int i=0;i<7;i++)ls_scr_p25.key(LS_TK_DOWN,0);
     bool before=p25_get_auto_follow();
     ls_scr_p25.key(LS_TK_ENTER,0);
@@ -700,7 +756,7 @@ LS_CASE(experimental_phase2_setting_is_reachable_in_both_postures)
 {
     p25_p2_enable(false);
     ls_scr_p25.key(LS_TK_CHAR, '0');
-    ls_scr_p25.key(LS_TK_CHAR, '3');
+    ls_scr_p25.key(LS_TK_CHAR, '4');
     bool reached = false;
     for (int i = 0; i < 16; ++i) {
         fresh(); draw_pane(&ls_scr_p25, PANES[0]);

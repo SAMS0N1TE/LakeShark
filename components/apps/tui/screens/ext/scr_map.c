@@ -971,7 +971,8 @@ static void draw(tui_surface *sf, tui_rect area)
     const char *archive = ls_map_archive();
     const char *name = archive ? strrchr(archive, '/') : NULL;
     char title[80];
-    snprintf(title, sizeof(title), "[ %s / V ]  %.*s", VIEW_NAME[s_view],
+    snprintf(title, sizeof(title), "[ %s%s ]  %.*s", VIEW_NAME[s_view],
+             ls_tui_is_wide() ? " / V" : "",
              area.w > 18 ? area.w - 18 : 0, name ? name + 1 : "SD MAPS");
     tui_put_str(sf, area, area.x, area.y, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     tui_put_str(sf, area, area.x, area.y + 1, "^ NORTH", LS_ATTR_DIM);

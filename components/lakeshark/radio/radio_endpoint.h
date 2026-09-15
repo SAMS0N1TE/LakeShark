@@ -104,6 +104,16 @@ typedef struct {
     int gain_tenths_db;
 } ls_radio_iq_config_t;
 
+/* Optional device-side RX diagnostics. HackRF GET_M0_STATE v1.06 layout.
+ * Counters are bytes, not IQ pairs. A failed query means unknown, not zero.
+ * Read after stopping RX so the diagnostic cannot disturb sample collection. */
+typedef struct {
+    uint16_t usb_api, requested_mode, request_flag;
+    uint32_t active_mode, m0_count, m4_count;
+    uint32_t num_shortfalls, longest_shortfall, shortfall_limit;
+    uint32_t threshold, next_mode, error;
+} ls_radio_iq_health_t;
+
 #define LS_RADIO_PACKET_SYNC_MAX 8
 
 typedef struct {
@@ -155,6 +165,7 @@ typedef struct {
     /* Recover is transport-specific, but invocation and accounting are keyed
      * by the endpoint service. It is only called while the endpoint is idle. */
     ls_radio_err_t (*recover)(void *driver_ctx);
+    ls_radio_err_t (*iq_get_health)(void *driver_ctx, ls_radio_iq_health_t *out);
 } ls_radio_driver_ops_t;
 
 typedef struct {
@@ -229,6 +240,8 @@ ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
                                   uint64_t center_hz, bool fast,
                                   uint64_t *actual_hz);
 ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session);
+ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
+                                      ls_radio_iq_health_t *out);
 
 ls_radio_err_t ls_radio_packet_rx_configure(
     ls_radio_session_t *session,

@@ -1,12 +1,28 @@
 /* LS_TEST_SOURCES: the generated font tables */
 
 #include "ls_test.h"
+#include "ls_tui_density.h"
+
+LS_CASE(large_preference_is_limited_to_hubs_and_settings)
+{
+    const char *apps[] = {"P25", "FM", "MAP", "GPS", "LINK", "FALLS",
+                          "REC", "SUB-GHZ", "MIX-RF", "DIAG"};
+    for (unsigned i=0; i<sizeof(apps)/sizeof(apps[0]); i++) {
+        LS_EQ_INT(ls_tui_font_for_view(2,apps[i],false),0);
+        LS_EQ_INT(ls_tui_font_for_view(1,apps[i],false),1);
+    }
+    LS_EQ_INT(ls_tui_font_for_view(2,"HOME",false),2);
+    LS_EQ_INT(ls_tui_font_for_view(2,"RADIOS",false),2);
+    LS_EQ_INT(ls_tui_font_for_view(2,"SET",false),2);
+    LS_EQ_INT(ls_tui_font_for_view(2,"P25",true),0);
+    LS_EQ_INT(ls_tui_font_for_view(2,NULL,false),0);
+}
 #include "ls_font.h"
 
 #include <string.h>
 
 static const ls_font_t *const FACES[] = {
-    &ls_font_mono_16, &ls_font_mono_14,
+    &ls_font_mono_16, &ls_font_mono_14, &ls_font_mono_24,
 };
 #define N_FACES ((int)(sizeof(FACES) / sizeof(FACES[0])))
 

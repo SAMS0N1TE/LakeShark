@@ -29,6 +29,7 @@ typedef struct {
     const char *name;
 } ls_font_t;
 
+extern const ls_font_t ls_font_mono_24; /* 15x26 detector view */
 extern const ls_font_t ls_font_mono_14;   /*  9x16 - 131x33 landscape */
 extern const ls_font_t ls_font_mono_16;   /* 10x17 - 115x27 landscape */
 

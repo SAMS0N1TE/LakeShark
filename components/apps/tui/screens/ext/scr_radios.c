@@ -296,17 +296,19 @@ static void draw(tui_surface *sf, tui_rect area)
        be four rows each, which is the target size problem again. Beside each
        other they stay tall. */
     if (ls_tui_is_wide() && body.w >= 48) {
-        tui_rect left, right;
-        ls_tui_split(body, &left, &right);
-        const int half = (N_ROWS + 1) / 2;
-        const int bh_l = (left.h - (half - 1)) / (half ? half : 1);
+        const int ncols = body.w >= 72 && body.h < ((N_ROWS + 1) / 2) * 4 ? 3 : 2;
+        const int per = (N_ROWS + ncols - 1) / ncols;
+        const int gap = body.h >= per * 5 - 1 ? 1 : 0;
+        const int cw = body.w / ncols;
+        const int bh_l = (body.h - (per - 1) * gap) / per;
         int bh = bh_l;
         if (bh > 9) bh = 9;
         if (bh < 4) bh = 4;
         for (int i = 0; i < N_ROWS; i++) {
-            const tui_rect col = (i < half) ? left : right;
-            const int slot = (i < half) ? i : i - half;
-            const int y = col.y + slot * (bh + 1);
+            const tui_rect col = tui_rect_make(body.x + (i / per) * cw,
+                                               body.y, cw, body.h);
+            const int slot = i % per;
+            const int y = col.y + slot * (bh + gap);
             if (y + bh > col.y + col.h) break;
             draw_one(sf, tui_rect_make(col.x, y, col.w - 1, bh), i, bh);
         }

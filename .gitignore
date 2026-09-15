@@ -41,6 +41,12 @@ serial*.txt
 !/docs/map-field.md
 !/docs/screenshots/
 /tools/*
+!/tools/cell_console.py
+!/tools/cell_experiment.py
+!/tools/cell_archive.py
+!/tools/cell_lab.ps1
+!/tools/test_cell_archive.py
+!/tools/gen_cell_font.py
 !/tools/p25_profile.example
 !/tools/check_board_identity.py
 !/tools/test_check_board_identity.py

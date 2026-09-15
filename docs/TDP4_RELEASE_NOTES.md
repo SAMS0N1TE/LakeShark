@@ -1,6 +1,6 @@
 # LakeShark release notes
 
-## 2.1.0-rc2 — T-Display P4
+## 2.1.0 — T-Display P4
 
 - GPS coverage filtering for saved scan channels.
 - Mixed conventional Phase I P25 and analog FM scan lists.
@@ -11,6 +11,15 @@
 - Experimental manual P25 Phase II voice reception, off by default.
 - Separate channel-list and stepped-band scanning controls.
 - Tap-to-mark waterfall tuning.
+- Unified P25 radio/decoder page with the large frequency readout, scan
+  controls, and retained NAC/talkgroup receive history.
+- Reworked FM receiver controls with mode and band pickers, an integrated
+  waterfall, and a carrier lock that survives a sweep and restores the exact
+  custom frequency afterward.
+- Explicit NFM selection is analogue-only and clears inherited mixed P25
+  demodulation.
+- More reliable simultaneous Wi-Fi, MeshCore, USB receiver, touch, and audio
+  startup on T-Display P4; the web console has additional stack margin.
 - Shared RTL/CC1101 recorder workspace and repeated OOK24 decoding.
 - Single-tap app opening without a blocking launch splash.
 - Buttons inset around the display's rounded corners.
@@ -70,6 +79,8 @@ ESP32-P4-NANO and ESP32-P4-WIFI6 configurations provide serial and Flipper contr
 
 The LakeShark control app supports UART and Bluetooth connections, receiver selection, tuning, volume and recording transfer.
 
-## Optional LCD-4.3 build
+## LCD-4.3 status
 
-The Waveshare Touch-LCD-4.3 configuration is experimental and available for owners who want to try it. It uses its own 32 MB flash layout. See the [LCD guide](LCD43_QUICKSTART.md).
+The Waveshare Touch-LCD-4.3 target is not supported by this release and no RC
+binary is provided for it. Its files remain in the source tree for possible
+future work; do not flash the T-Display-P4 image to that board.

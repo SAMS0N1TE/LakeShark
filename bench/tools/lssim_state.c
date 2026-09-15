@@ -155,6 +155,15 @@ void p25_request_gain(int tenths) { P25.rtl_gain_tenths = tenths; }
 bool p25_running(void) { return true; }
 
 void lakeshark_fm_set_freq(uint32_t hz) { FM.freq_hz = hz; }
+static bool s_fm_frequency_locked;
+static uint32_t s_fm_frequency_lock_hz;
+void lakeshark_fm_frequency_lock(bool on)
+{
+    s_fm_frequency_locked = on;
+    s_fm_frequency_lock_hz = on ? FM.freq_hz : 0;
+}
+bool lakeshark_fm_frequency_locked(void) { return s_fm_frequency_locked; }
+uint32_t lakeshark_fm_frequency_lock_hz(void) { return s_fm_frequency_lock_hz; }
 /* what the keypad seeds itself from. */
 uint32_t lakeshark_fm_get_freq(void) { return FM.freq_hz; }
 uint32_t lakeshark_p25_get_freq(void) { return s_tune_freq_hz; }

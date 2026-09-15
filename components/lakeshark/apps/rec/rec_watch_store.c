@@ -4,10 +4,21 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define DRAM_ATTR
+#endif
 #ifdef _WIN32
 #include <io.h>
 #define fsync _commit
 #endif
+
+/* FAT/SDMMC cannot DMA directly to the catalog in PSRAM.  Keep every disk
+   transfer behind one sector-sized internal buffer instead of asking the
+   fragmented runtime heap for a large bounce allocation.  The watch runtime
+   serializes restore, checkpoint and export on its single I/O worker. */
+static DRAM_ATTR uint8_t s_watch_io[512];
 
 bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id,
                       uint64_t free_bytes, char *result, size_t result_size)
@@ -29,6 +40,7 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
     if(fd<0) {snprintf(result,result_size,"Export refused: file exists or SD unavailable");return false;}
     FILE *f=fdopen(fd,"w");
     if(!f) {close(fd);unlink(path);return false;}
+    setvbuf(f,(char *)s_watch_io,_IOFBF,sizeof(s_watch_io));
     bool ok=fprintf(f,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n"
         "Preset: FuriHalSubGhzPresetOok650Async\nProtocol: RAW\n",(unsigned long)r->event.frequency)>0;
     for(int i=0;ok && i<r->event.edges;i++) {
@@ -53,12 +65,15 @@ static bool read_header(const char *dir, int slot, header_t *h)
     char path[256];
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
     FILE *f=fopen(path,"rb"); if (!f) return false;
-    bool ok=fread(h,1,sizeof(*h),f)==sizeof(*h) && h->magic==MAGIC &&
+    setvbuf(f,NULL,_IONBF,0);
+    bool ok=fread(s_watch_io,1,sizeof(*h),f)==sizeof(*h);
+    if(ok)memcpy(h,s_watch_io,sizeof(*h));
+    ok=ok && h->magic==MAGIC &&
         (h->version==2 || h->version==3) && h->bytes==sizeof(rec_watch_catalog_t);
     uint32_t crc=UINT32_MAX;
-    uint8_t buf[512]; size_t remaining=sizeof(rec_watch_catalog_t);
+    uint8_t *buf=s_watch_io; size_t remaining=sizeof(rec_watch_catalog_t);
     while (ok && remaining) {
-        size_t n=remaining<sizeof(buf)?remaining:sizeof(buf);
+        size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
         if (fread(buf,1,n,f)!=n) {ok=false;break;}
         if (remaining==sizeof(rec_watch_catalog_t)) {
             uint64_t id,sequence;
@@ -71,6 +86,27 @@ static bool read_header(const char *dir, int slot, header_t *h)
     ok=ok && ~crc==h->crc && fgetc(f)==EOF && !ferror(f);
     fclose(f); return ok;
 }
+
+/* Keep damaged generations as evidence instead of overwriting them.  This is
+   also the recovery path after an older firmware attempted a direct PSRAM to
+   SD transfer: both files can exist while neither has a usable CRC. */
+static bool quarantine_invalid(const char *dir, int slot)
+{
+    char path[256], quarantine[256];
+    if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path))
+        return false;
+    if (access(path,F_OK)!=0) return true;
+    for (unsigned suffix=0;suffix<100;suffix++) {
+        int n=suffix
+            ? snprintf(quarantine,sizeof(quarantine),"%s/watch%d.invalid.%u",dir,slot,suffix)
+            : snprintf(quarantine,sizeof(quarantine),"%s/watch%d.invalid",dir,slot);
+        if(n<0 || n>=(int)sizeof(quarantine)) return false;
+        if(access(quarantine,F_OK)==0) continue;
+        return rename(path,quarantine)==0;
+    }
+    return false;
+}
+
 bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes)
 {
     if (!dir || !c || free_bytes==UINT64_MAX ||
@@ -79,19 +115,23 @@ bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t fre
     bool va=read_header(dir,0,&a), vb=read_header(dir,1,&b);
     if ((va && a.archive_id!=c->archive_id) || (vb && b.archive_id!=c->archive_id)) return false;
     if(!va && !vb) {
-        char existing[256];
-        for(int i=0;i<2;i++) {
-            if(snprintf(existing,sizeof(existing),"%s/watch%d.bin",dir,i)>=(int)sizeof(existing))return false;
-            if(access(existing,F_OK)==0)return false;
-        }
+        if(!quarantine_invalid(dir,0) || !quarantine_invalid(dir,1)) return false;
     }
     int slot=!va?0:!vb?1:a.sequence<=b.sequence?0:1;
     char path[256];
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
     FILE *f=fopen(path,"wb"); if(!f)return false;
+    setvbuf(f,NULL,_IONBF,0);
     header_t h={.magic=MAGIC,.version=3,.bytes=sizeof(*c),
         .crc=rec_watch_crc(c,sizeof(*c)),.sequence=c->sequence,.archive_id=c->archive_id};
-    bool ok=fwrite(&h,1,sizeof(h),f)==sizeof(h) && fwrite(c,1,sizeof(*c),f)==sizeof(*c);
+    memcpy(s_watch_io,&h,sizeof(h));
+    bool ok=fwrite(s_watch_io,1,sizeof(h),f)==sizeof(h);
+    const uint8_t *src=(const uint8_t *)c;size_t remaining=sizeof(*c);
+    while(ok && remaining) {
+        size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
+        memcpy(s_watch_io,src,n);
+        ok=fwrite(s_watch_io,1,n,f)==n;src+=n;remaining-=n;
+    }
     if (fflush(f)!=0) ok=false;
     if (ok && fsync(fileno(f))!=0) ok=false;
     if (fclose(f)!=0) ok=false;
@@ -107,7 +147,15 @@ bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
     header_t h=slot?b:a;
     char path[256];snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot);
     FILE *f=fopen(path,"rb");if(!f)return false;
-    bool ok=fseek(f,sizeof(header_t),SEEK_SET)==0 && fread(c,1,sizeof(*c),f)==sizeof(*c);
+    setvbuf(f,NULL,_IONBF,0);
+    bool ok=fseek(f,sizeof(header_t),SEEK_SET)==0;
+    uint8_t *dst=(uint8_t *)c;size_t remaining=sizeof(*c);
+    while(ok && remaining) {
+        size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
+        ok=fread(s_watch_io,1,n,f)==n;
+        if(ok)memcpy(dst,s_watch_io,n);
+        dst+=n;remaining-=n;
+    }
     fclose(f);
     ok=ok && c->sequence==h.sequence && rec_watch_crc(c,sizeof(*c))==h.crc;
     for(int i=0;ok && i<REC_WATCH_SLOTS;i++) {

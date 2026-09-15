@@ -423,5 +423,5 @@ if ($script:failures.Count -eq 0) {
 
 Say ""
 Say "VERIFY FAILED  (level=$Level, ${secs}s)" 'Red'
-foreach ($f in $script:failures) { Say "--- $f" 'Red' }
+foreach ($f in $script:failures) { Write-Host "--- $f" -ForegroundColor Red }
 exit 1

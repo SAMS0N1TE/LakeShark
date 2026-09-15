@@ -57,6 +57,9 @@ void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t se
 /* Pick the face. The grid size follows from it, so this takes effect
    at the next begin(); call it before. Screens never see the cell size. */
 void ls_tui_set_font(const ls_font_t *font);
+/* Threshold glyph coverage at native pixels; useful for small outdoor text. */
+void ls_tui_set_crisp_text(bool on);
+bool ls_tui_crisp_text(void);
 
 int ls_tui_font_count(void);
 

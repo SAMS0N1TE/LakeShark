@@ -48,6 +48,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
     if (!sf || n <= 0 || bar.w < 6 || bar.h < 1) return;
+    const bool key_hints = ls_tui_is_wide();
 
     /* Rows follow the height the caller gave us, columns follow from that.
        Portrait passes two or four rows and gets fat targets without this
@@ -160,7 +161,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         const bool compact_value = raised && h == 3 && btn[i].value;
         if (compact_value) { snprintf(compact,sizeof(compact),"%s %s",lab,btn[i].value); lab=compact; }
         int lw = (int)strlen(lab);
-        const int text_w = (tall || (raised && h == 3)) ? box.w - 2 : box.w;
+        const int text_w = h >= 3 ? box.w - 2 : box.w;
         if (lw > text_w) lw = text_w;
         char cut[24];
         snprintf(cut, sizeof(cut), "%.*s", lw, lab);
@@ -193,7 +194,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 
         if (tall) {
             const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
-            if (btn[i].key) {
+            if (key_hints && btn[i].key) {
                 char badge[] = {'[', btn[i].key, ']', 0};
                 tui_put_str(sf, box, box.x + (box.w - 3) / 2, box.y, badge, face);
             }
@@ -201,10 +202,10 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
                 tui_put_str(sf, box, box.x + (box.w - 3) / 2, box.y + h - 1,
                             btn[i].on ? "[*]" : "[+]", edge);
             }
-        } else if (btn[i].key && h >= 3 && box.w >= 5) {
+        } else if (key_hints && btn[i].key && h >= 3 && box.w >= 5) {
             char badge[] = {'[', btn[i].key, ']', 0};
             tui_put_str(sf, box, box.x + box.w - 4, box.y, badge, face);
-        } else if (btn[i].key && box.w >= lw + 2) {
+        } else if (key_hints && btn[i].key && box.w >= lw + 2) {
             tui_put_char(sf, box, box.x + box.w - 1, ly, btn[i].key, face);
         }
 

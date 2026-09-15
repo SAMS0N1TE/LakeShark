@@ -11,14 +11,39 @@ void ls_wifi_copy_ssid(uint8_t out[32], const char *ssid)
     memcpy(out, ssid, n > 32 ? 32 : n);
 }
 
+const char *ls_wifi_reason_text(int reason)
+{
+    switch (reason) {
+    case 8:   return "association left";
+    case 15:  return "4-way handshake timeout";
+    case 200: return "beacon timeout";
+    case 201: return "network not found";
+    case 202: return "authentication failed";
+    case 203: return "association failed";
+    case 204: return "handshake timeout";
+    case 205: return "connection failed";
+    case 210: return "incompatible security";
+    case 211: return "authentication mode rejected";
+    case 212: return "signal below threshold";
+    default:  return NULL;
+    }
+}
+
 void ls_wifi_connecting_status(char *out, size_t cap, const char *ssid,
                                int reason, uint32_t retry_ms)
 {
     if (!out || !cap) return;
-    if (reason)
-        snprintf(out, cap, "Retrying \"%s\"; disconnect reason %d; %lus",
-                 ssid ? ssid : "", reason, (unsigned long)(retry_ms / 1000));
-    else snprintf(out, cap, "Connecting to \"%s\"", ssid ? ssid : "");
+    if (reason) {
+        const char *why = ls_wifi_reason_text(reason);
+        if (why)
+            snprintf(out, cap, "Retrying \"%s\"; %s (%d); %lus",
+                     ssid ? ssid : "", why, reason,
+                     (unsigned long)(retry_ms / 1000));
+        else
+            snprintf(out, cap, "Retrying \"%s\"; disconnect reason %d; %lus",
+                     ssid ? ssid : "", reason,
+                     (unsigned long)(retry_ms / 1000));
+    } else snprintf(out, cap, "Connecting to \"%s\"", ssid ? ssid : "");
 }
 
 bool ls_wifi_ssid_valid(const char *ssid)

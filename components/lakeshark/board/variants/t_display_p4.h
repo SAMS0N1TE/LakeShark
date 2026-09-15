@@ -98,6 +98,9 @@
    20 ms frame schedule under normal load. 48 MHz gives scanout headroom
    while retaining ~40 Hz; 40 MHz stopped flashes but felt slightly slower. */
 #define LS_BOARD_LCD_DPI_CLK_MHZ 48
+/* High-rate capture + DSP + SD share PSRAM with scanout. The previously
+   exercised 40 MHz timing gives ~33 Hz and 17% less scanout demand. */
+#define LS_BOARD_LCD_DPI_PERF_CLK_MHZ 40
 #define LS_BOARD_LCD_HSYNC       50
 #define LS_BOARD_LCD_HBP         150
 #define LS_BOARD_LCD_HFP         50

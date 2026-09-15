@@ -31,6 +31,7 @@ enum {
     HACKRF_REQ_SET_AMP_ENABLE = 17,
     HACKRF_REQ_SET_LNA_GAIN = 19,
     HACKRF_REQ_SET_VGA_GAIN = 20,
+    HACKRF_REQ_GET_M0_STATE = 41,
 };
 
 enum {
@@ -47,6 +48,7 @@ typedef struct {
     uint64_t dropped_at_start;
     volatile bool read_cancelled;
     bool streaming;
+    uint16_t usb_api;
 } hackrf_dev_t;
 
 typedef struct {
@@ -272,6 +274,25 @@ static ls_radio_err_t hackrf_iq_stop(void *ctx)
     return error;
 }
 
+static ls_radio_err_t hackrf_iq_get_health(void *ctx, ls_radio_iq_health_t *out)
+{
+    hackrf_dev_t *dev = ctx;
+    if (!dev || !out) return LS_RADIO_ERR_INVALID;
+    memset(out, 0, sizeof(*out));
+    out->usb_api = dev->usb_api;
+    if (dev->usb_api < 0x0106) return LS_RADIO_ERR_UNSUPPORTED;
+    if (dev->streaming) return LS_RADIO_ERR_BUSY;
+    uint8_t wire[40];
+    int n = esp_libusb_control_transfer(&dev->usb, CTRL_IN,
+        HACKRF_REQ_GET_M0_STATE, 0, 0, wire, sizeof(wire), HACKRF_CONTROL_TIMEOUT_MS);
+    if (!ls_hackrf_decode_m0_state(wire, n > 0 ? (size_t)n : 0, out)) {
+        out->usb_api = dev->usb_api;
+        return LS_RADIO_ERR_IO;
+    }
+    out->usb_api = dev->usb_api;
+    return LS_RADIO_OK;
+}
+
 static void hackrf_cancel_read(void *ctx)
 {
     hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
@@ -303,6 +324,7 @@ static const ls_radio_driver_ops_t s_hackrf_ops = {
     .iq_stop = hackrf_iq_stop,
     .cancel_read = hackrf_cancel_read,
     .recover = hackrf_recover,
+    .iq_get_health = hackrf_iq_get_health,
 };
 
 static ls_radio_err_t register_endpoint(hackrf_dev_t *dev)
@@ -362,6 +384,7 @@ static void setup_task(void *arg)
         !descriptor || !hackrf_adapter_matches(descriptor->idVendor,
                                                descriptor->idProduct))
         goto reject;
+    dev->usb_api = descriptor->bcdDevice;
     if (s_dev) {
         ESP_LOGI(TAG, "HackRF endpoint already present; ignoring USB addr %u",
                  setup->dev_addr);

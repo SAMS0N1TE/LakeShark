@@ -1,5 +1,77 @@
 # CELL WATCH handoff — 14 September 2026
 
+## Current PC: continuous sessions, radio loss gates and restart fix
+
+Read `integrations/cell-lab/README.md` first for the repeatable doctor → replay /
+host verification → build → archive loop and current detector gaps. This update
+adds Auto repeated captures, a six-preset option, larger 15x26 text, a direct
+light/dark toggle, sensor startup and bounded SD session journals. Normal mode
+retains its font preference. Auto is a burst receiver with processing gaps;
+the shortlist is not a full-band search or a validated simulator classifier.
+
+The P4 is currently CH343 COM13, serial `5C84301528`; the MeshCore device is
+COM12. Identify afresh on another PC. `cellperf on` enters performance mode;
+AUTO starts the selected channel at 8 MS/s / 80 ms, STOP finishes the current
+save. OPTIONS switches to six presets. VIEW switches theme and text size.
+`celliq auto <Hz|list>` and `celliq stop` expose the same session engine.
+
+The new radio-health operation reads HackRF GET_M0_STATE only after stopping RX,
+under the session lifetime/control locks. The connected radio reports API
+`0x0111`. Any reported shortfall/error, unfinished stop or device counter shorter
+than the capture rejects the capture before decoding. Failed raw IQ is retained
+with `complete=false` for review. Missing/unsupported health is explicitly
+unknown. These counters cover the entire RX session, including startup/stop.
+`tools/cell_experiment.py` and `celliq once <Hz> <rate> <ms>` compare rates using
+the same worker as Auto and retrieve verified metadata.
+
+Four live 8 MS/s comparison captures reported no radio shortfalls. Four 10 MS/s
+captures reported 34, 44, 36 and 34 shortfalls, all with zero host drops; the
+new gate rejected all four without calling the decoder. Doubling USB transfers
+from 16 to 32 KiB did not remove the loss and was reverted. Auto remains at
+8 MS/s / 80 ms; full-bandwidth reception and SIB1 remain open work.
+
+Software-restart corruption was traced to a missing SDK DMA reset, matching
+Espressif commit `40dd5e3957fbc7183c6952b165a28beee1704d41`. Its P4-only backport
+is in `bench/patches/`; run `tools/cell_lab.ps1 prepare` on a new SDK. It modifies
+one shared SDK source file and is idempotent. P4 builds check for the reset fix.
+The patch passed three normal-to-performance transitions and two returns to
+normal, with heap poisoning disabled. Do not remove the patch when reproducing
+this build. Performance startup also avoids unrelated legacy radio engines;
+the common USB service and UI lifecycle worker remain active.
+
+A later restart exposed a separate indefinite wait in the SDK DSI panel-ID
+read. `ls_panel_dsi_id.h` bounds that boot-only operation to a 250 ms deadline
+and lets failed display initialization return to startup/console. It uses the
+same DCS ID command through IDF's low-level register API; it does not guess an
+ID or hide a missing response. Host tests inject five stalled/no-response cases.
+The cause of the panel's missed response remains unproven.
+
+The archived SD metadata includes six post-checkpoint field captures: two
+739 MHz / PCI 244 MIB successes at 20:40–20:41 UTC, followed by four no-sync
+captures roughly one kilometre farther from the previous checkpoint. All six
+have valid GPS and nine-axis flags. Their actual rates were 8 MS/s; the last
+used 100 ms. This PC's first Auto session at the new location recovered PCI 44,
+50 RB and seven CRC-valid MIB occasions. Its next capture synchronized to PCI
+475 without a valid MIB. GPS was receiving sentences but had no current fix.
+None of these observations establishes simulator activity.
+
+The first implementation passed 172 host executables / 62 C++ header checks,
+the existing recorded-IQ regressions and archive corruption/truncation tests.
+Hardware confirmed startup of GPS, ICM20948 and AK09916; an automatic session
+with two ordered SD records; clean Stop; 41.6 ms UI frames and 40 Hz panel with
+no late frames. The enlarged portrait controls received a further layout fix
+after inspecting the real device. Check the current task's output report for
+final firmware hashes and final hardware checks.
+
+The preceding application was read back before flashing and its SHA256 matches
+the historical checkpoint below. Local backup: the task's `work/p4-previous-app.bin`.
+SD files and the storage partition were preserved. Restart failures generated
+new core dumps; two dumps and matching ELFs were archived under the task's
+`work/crash-check*`. The firmware's crash handler overwrote the earlier on-device
+dump during these failures; it was not manually erased.
+
+## Previous checkpoint (historical)
+
 Resume the standalone P4 passive cell-site-simulator detector. The user declined
 a separate modem/hotspot. Research existing implementations and use the saved
 recordings before consuming more hardware-test time. This is an experimental LTE

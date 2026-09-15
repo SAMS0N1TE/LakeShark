@@ -690,8 +690,12 @@ static esp_err_t httpd_ensure_started(void)
     if (s_httpd) return ESP_OK;
 
     httpd_config_t hc   = HTTPD_DEFAULT_CONFIG();
-    /* 8192 asked, 7312 never touched - under 900 B in use. */
-    hc.stack_size       = 3584;
+    /* Chunked responses enter newlib's formatter before the handler body.
+       A 2560-byte stack reached within 160 bytes of its base while formatting
+       the response header and corrupted the task control block.  Audio's
+       queue/player stack now live in PSRAM, so reserve a real safety margin
+       here while this task is still created before USB fragments the heap. */
+    hc.stack_size       = 4096;
     hc.max_uri_handlers = 8;
     hc.lru_purge_enable = true;
 
@@ -701,18 +705,18 @@ static esp_err_t httpd_ensure_started(void)
         s_httpd = NULL;
         return e;
     }
-    httpd_uri_t u_index = { .uri = "/",    .method = HTTP_GET,  .handler = h_index };
-    httpd_uri_t u_dl    = { .uri = "/dl",  .method = HTTP_GET,  .handler = h_dl };
-    httpd_uri_t u_ul    = { .uri = "/ul",  .method = HTTP_POST, .handler = h_ul };
+    static const httpd_uri_t u_index = { .uri = "/",    .method = HTTP_GET,  .handler = h_index };
+    static const httpd_uri_t u_dl    = { .uri = "/dl",  .method = HTTP_GET,  .handler = h_dl };
+    static const httpd_uri_t u_ul    = { .uri = "/ul",  .method = HTTP_POST, .handler = h_ul };
     httpd_register_uri_handler(s_httpd, &u_index);
     httpd_register_uri_handler(s_httpd, &u_dl);
     httpd_register_uri_handler(s_httpd, &u_ul);
-    httpd_uri_t debug = {.uri="/debug/field", .method=HTTP_GET, .handler=h_field_debug};
+    static const httpd_uri_t debug = {.uri="/debug/field", .method=HTTP_GET, .handler=h_field_debug};
     httpd_register_uri_handler(s_httpd, &debug);
-    httpd_uri_t watch={.uri="/debug/rec",.method=HTTP_GET,.handler=h_watch_debug};
+    static const httpd_uri_t watch={.uri="/debug/rec",.method=HTTP_GET,.handler=h_watch_debug};
     httpd_register_uri_handler(s_httpd,&watch);
-    httpd_uri_t hub_info = {.uri="/hub/info", .method=HTTP_GET, .handler=h_hub_info};
-    httpd_uri_t hub_map = {.uri="/hub/map", .method=HTTP_POST, .handler=h_hub_map};
+    static const httpd_uri_t hub_info = {.uri="/hub/info", .method=HTTP_GET, .handler=h_hub_info};
+    static const httpd_uri_t hub_map = {.uri="/hub/map", .method=HTTP_POST, .handler=h_hub_map};
     httpd_register_uri_handler(s_httpd, &hub_info);
     httpd_register_uri_handler(s_httpd, &hub_map);
     return ESP_OK;
@@ -834,6 +838,16 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
     }
 
     s_reconnect_ms = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
+
+    /* Starting the server after GOT_IP raced USB enumeration, when the
+       internal heap was already fragmented below one task-stack-sized block.
+       The listener is valid before an address is assigned, so reserve its
+       measured-small worker while startup still has contiguous RAM.  A web
+       failure must not prevent the station itself from connecting. */
+    esp_err_t web = httpd_ensure_started();
+    if (web != ESP_OK)
+        ESP_LOGW(TAG, "wifi: file server reservation failed: %s",
+                 esp_err_to_name(web));
 
     ESP_LOGW(TAG, "wifi: joining stored network");
     e = esp_wifi_connect();

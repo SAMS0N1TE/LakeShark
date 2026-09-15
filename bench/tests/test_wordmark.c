@@ -10,6 +10,24 @@
 
 #define MARK "TERMINAL BAY"
 
+LS_CASE(large_font_portrait_keeps_both_complete_words_inside_the_margin)
+{
+    char a[32], b[32];
+    LS_CHECK(ls_wordmark_compact_split(MARK, 32, a, sizeof(a), b, sizeof(b)));
+    LS_CHECK(strcmp(a, "TERMINAL") == 0);
+    LS_CHECK(strcmp(b, "BAY") == 0);
+    LS_EQ_INT(ls_wordmark_compact_width(a), 31);
+    LS_EQ_INT(ls_wordmark_compact_width(b), 11);
+    for (int cols = 33; cols <= 40; cols++) {
+        LS_CHECK(ls_wordmark_compact_split(MARK, cols - 2, a, sizeof(a), b, sizeof(b)));
+        int aw = ls_wordmark_compact_width(a), bw = ls_wordmark_compact_width(b);
+        LS_CHECK(cols / 2 - aw / 2 >= 1);
+        LS_CHECK(cols / 2 - aw / 2 + aw <= cols - 1);
+        LS_CHECK(cols / 2 - bw / 2 >= 1);
+        LS_CHECK(cols / 2 - bw / 2 + bw <= cols - 1);
+    }
+}
+
 LS_CASE(the_wordmark_is_wider_than_the_portrait_grid)
 {
 
