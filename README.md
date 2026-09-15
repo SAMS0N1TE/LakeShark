@@ -7,7 +7,9 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 > **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
-**Current P4 release: [2.1.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.0).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
+**Current P4 release: [2.1.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.1.1).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
+
+**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
 
 **New in 2.1.0:**
 

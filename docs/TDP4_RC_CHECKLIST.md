@@ -1,4 +1,10 @@
-# 2.1.0 release checks
+# 2.1.1 release checks
+
+The 2.1.1 hotfix retains the complete 2.1.0 validation below. Its additional
+hardware gate kept Wi-Fi and the LakeShark Flipper BLE link active while an
+RTL-SDR streamed and the receiver switched repeatedly between FM and P25. Two
+separate post-fix runs crossed the earlier deterministic SDIO failure interval
+without `ESP_ERR_INVALID_ARG`, transport failure or display flashing.
 
 Target: LilyGO T-Display P4, 16 MB flash, existing `boards/partitions_16m.csv`.
 The release package updates the application at `0x10000` only. It does not

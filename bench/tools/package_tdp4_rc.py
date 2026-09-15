@@ -35,7 +35,7 @@ def validate(config, metadata, image, revision, version):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='2.1.0')
+    parser.add_argument('--version', default='2.1.1')
     parser.add_argument('--build', type=Path, default=ROOT/'build_tdp4')
     parser.add_argument('--output', type=Path, default=ROOT/'release-artifacts')
     args = parser.parse_args()

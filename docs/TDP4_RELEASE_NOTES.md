@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.1.1 — T-Display P4 hotfix
+
+- Corrects ESP-Hosted transport-pool alignment for the P4's 128-byte external-RAM cache line.
+- Prevents short Wi-Fi packets from failing SDMMC DMA validation and taking down the shared Wi-Fi/Bluetooth SDIO transport while the LakeShark Flipper app is connected.
+- Hardware-tested with Wi-Fi connected, continuous Flipper BLE telemetry, RTL-SDR streaming and repeated FM/P25 transitions beyond the previous deterministic failure interval.
+
 ## 2.1.0 — T-Display P4
 
 - GPS coverage filtering for saved scan channels.
