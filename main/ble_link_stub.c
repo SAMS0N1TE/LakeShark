@@ -28,6 +28,13 @@ void ble_link_stats(uint32_t *rx_lines, uint32_t *tx_frames, uint32_t *drops)
     if (drops)     *drops     = 0;
 }
 
+void ble_link_perf_stats(uint32_t *heap, uint32_t *snapshot, uint32_t *write)
+{
+    if (heap)     *heap     = 0;
+    if (snapshot) *snapshot = 0;
+    if (write)    *write    = 0;
+}
+
 void ble_link_rx_debug(uint16_t *tx_hnd, uint16_t *svc_start, uint16_t *svc_end,
                        uint32_t *foreign)
 {
