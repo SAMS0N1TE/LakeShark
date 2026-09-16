@@ -7,7 +7,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 > **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
-**New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: the [field map](docs/map-field.md) adds pixel terrain, blue water, warm roads, a fresh-GPS marker, an SD map picker and clearer format errors. Cached views avoid repeated tile decoding; unchanged map cells skip redraws.
+**New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: 
 
 **Experiments:**
 
