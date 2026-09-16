@@ -7,25 +7,6 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 > **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
-**Current P4 release: [2.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.0).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
-
-**New in 2.2.0:** visible FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, clearer FM/recording controls, recording timestamps, keyboard backlight control, and settings-save/Flipper shutdown fixes. The version screen still shows `2.2.0-rc1-g8565ac966a01`. If that build is already installed, no reflash is needed.
-
-**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
-
-**New in 2.1.0:**
-
-- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
-- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
-- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
-- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
-- **Waterfalls:** tap to mark a signal, then tune to it.
-- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
-- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
-- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
-
-**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
-
 **New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: the [field map](docs/map-field.md) adds pixel terrain, blue water, warm roads, a fresh-GPS marker, an SD map picker and clearer format errors. Cached views avoid repeated tile decoding; unchanged map cells skip redraws.
 
 **Experiments:**
@@ -132,6 +113,26 @@ pwsh -File bench/verify.ps1 -Level host
 CSV/JSON imports work without RadioReference. The optional RadioReference adapter
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
+
+**Current P4 release: [2.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.0).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
+
+**New in 2.2.0:** visible FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, clearer FM/recording controls, recording timestamps, keyboard backlight control, and settings-save/Flipper shutdown fixes. The version screen still shows `2.2.0-rc1-g8565ac966a01`. If that build is already installed, no reflash is needed.
+
+**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
+
+**New in 2.1.0:**
+
+- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
+- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
+- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
+- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
+- **Waterfalls:** tap to mark a signal, then tune to it.
+- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
+- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
+- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
+
+**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
+
 
 ## °<)))>< Standing on
 
