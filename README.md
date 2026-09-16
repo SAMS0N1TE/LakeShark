@@ -41,7 +41,7 @@ The setup page flashes a board from Chrome or Edge with one button, no toolchain
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
 ## <°)))>< LilyGO T-Display-P4
-<img width="600" alt="lakeshark-moved-to-the-lilygo-t-display-p4-esp32-p4-runs-v0-fuz84t0gnzoh1" src="https://github.com/user-attachments/assets/c7c23e15-bd68-4362-9244-6d0c7ede2e17" />
+<img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
 
 The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
@@ -74,6 +74,8 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | SET | Brightness, theme, font, sounds, Daylight mode for the sun |
 | LINK | Wi-Fi and Bluetooth: scan, join with a masked keyboard, signal and channel graphs |
 
+<img width="900" height="900" alt="keyboard-home" src="https://github.com/user-attachments/assets/dd1bd6fd-4d65-4800-b7c7-abdfebe80094" />
+
 **[Install it from your browser](https://terminalbay.com/?m=lakeshark&board=tdp4)** or read the [first flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH).
 
 This port is for the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. The other T-Display-P4 panel SKU needs different timings and a different touch driver. The LCD-4.3 image and its 32 MB layout belong to a different board.
@@ -97,6 +99,8 @@ The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) controls the r
 | Launcher | P25 |
 
 **[The full guide](https://terminalbay.com/?m=wiki#flipper/Home)** covers every page, its buttons and all 44 screenshots.
+
+<img width="700" alt="bench" src="https://github.com/user-attachments/assets/3bef1680-aa7d-4df0-a0ab-5b6280b804c1" />
 
 ## ><)))°> Waveshare Touch-LCD-4.3
 
