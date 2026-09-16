@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <string.h>
 
 static const char *TAG = "usb_host";
@@ -51,6 +52,37 @@ typedef struct {
         SemaphoreHandle_t        mux_lock;
     } constant;
 } class_driver_t;
+
+/* USB_BOOT_RETRY_BEGIN: also compiled by the consolidated host tests. */
+typedef struct {
+    int64_t next_us;
+    unsigned attempts;
+    bool off, done;
+} usb_boot_retry_t;
+
+static void usb_boot_retry_tick(usb_boot_retry_t *retry, int64_t now, int devices)
+{
+    if(retry->done) return;
+    /* A successful attach permanently ends boot recovery. Never disturb a
+       working receiver, hub or any other registered USB peripheral. */
+    if(devices > 0 && !retry->off) { retry->done=true; return; }
+    if(devices < 0 || now < retry->next_us) return;
+    if(retry->off) {
+        esp_err_t err=usb_host_lib_set_root_port_power(true);
+        retry->off=false;
+        retry->next_us=now+5000000;
+        if(err != ESP_OK) retry->done=true;
+        ESP_LOGW(TAG,"USB boot retry %u: host port on: %s",retry->attempts,esp_err_to_name(err));
+        return;
+    }
+    if(retry->attempts>=3) { retry->done=true; return; }
+    retry->attempts++;
+    esp_err_t err=usb_host_lib_set_root_port_power(false);
+    retry->off=err==ESP_OK;
+    retry->next_us=now+(retry->off?300000:5000000);
+    ESP_LOGW(TAG,"USB boot retry %u: no enumerated devices, host port off: %s",retry->attempts,esp_err_to_name(err));
+}
+/* USB_BOOT_RETRY_END */
 
 static class_driver_t *s_driver_obj;
 
@@ -203,8 +235,14 @@ void class_driver_task(void *arg)
     for (uint8_t i = 0; i < DEV_MAX_COUNT; i++)
         obj.mux_protected.device[i].client_hdl = hdl;
     s_driver_obj = &obj;
+    usb_boot_retry_t boot_retry={.next_us=esp_timer_get_time()+10000000};
 
     while (1) {
+        if(!boot_retry.done) {
+            usb_host_lib_info_t info;
+            int devices=usb_host_lib_info(&info)==ESP_OK?(int)info.num_devices:-1;
+            usb_boot_retry_tick(&boot_retry,esp_timer_get_time(),devices);
+        }
         if (obj.mux_protected.flags.unhandled_devices) {
             xSemaphoreTake(obj.constant.mux_lock, portMAX_DELAY);
             for (uint8_t i = 0; i < DEV_MAX_COUNT; i++)
@@ -214,7 +252,7 @@ void class_driver_task(void *arg)
             xSemaphoreGive(obj.constant.mux_lock);
         } else {
             if (!obj.mux_protected.flags.shutdown)
-                usb_host_client_handle_events(hdl, portMAX_DELAY);
+                usb_host_client_handle_events(hdl, boot_retry.done ? portMAX_DELAY : pdMS_TO_TICKS(250));
             else break;
         }
     }

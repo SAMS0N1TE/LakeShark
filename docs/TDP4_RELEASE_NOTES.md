@@ -1,5 +1,22 @@
 # LakeShark release notes
 
+## 2.2.0-rc1 — experimental T-Display P4 candidate
+
+- FM/P25 waterfalls show a cursor: left/right selects a frequency; Space tunes to it. Radio panels retain direct arrow tuning and lists retain navigation.
+- ADS-B map access and home selection from GPS or the map center.
+- Clearer FM mode/sweep controls and centered portrait button rows.
+- GPS landscape panels with borders, a larger sky plot and separate satellite details.
+- Map follow controls, animated markers, additional zoom, and recording timestamps.
+- Keyboard backlight control and more efficient HOME and recorder layouts.
+- PCM16 queue alignment correction to prevent partial-sample corruption on overflow.
+- Settings worker waits for suspension before deleting and reusing static task storage.
+- Companion shutdown detaches its GUI before freeing data that drawing callbacks use.
+
+Validation is in progress. An intermittent watchdog reboot, prior P25 audio
+reports, GPS drive recording and other tracked hardware checks remain unresolved.
+This candidate is experimental and is not cleared as a stable replacement for 2.1.1.
+
+
 ## 2.1.1 — T-Display P4 hotfix
 
 - Corrects ESP-Hosted transport-pool alignment for the P4's 128-byte external-RAM cache line.

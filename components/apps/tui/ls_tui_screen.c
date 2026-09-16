@@ -128,6 +128,7 @@ int ls_tui_screen_register(const ls_tui_screen_t *screen)
 
 int ls_tui_screen_count(void)   { return s_count; }
 int ls_tui_screen_current(void) { return s_current; }
+bool ls_tui_screen_holds_rotation(void) { return s_screens[s_current] && s_screens[s_current]->hold_auto_rotation; }
 const char *ls_tui_screen_name(int index)
 {
     if (index < 0 || index >= s_count || !s_screens[index]) return NULL;
@@ -219,7 +220,7 @@ static void draw_battery(tui_surface *sf, tui_rect all, int x, uint8_t bar)
     tui_put_str(sf, all, x + 4, 0, pct, bar);
 }
 
-/* The status row's words stop short of the corners; its bar does not. */
+/* Text and bar backgrounds share the rounded-corner safe span. */
 
 static void status_span(int cols, int *x0, int *x1)
 {
@@ -243,10 +244,11 @@ static void draw_status(tui_surface *sf, int cols)
 {
     const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
     tui_rect all = tui_surface_rect(sf);
-    tui_fill(sf, tui_rect_make(0, 0, cols, 1), ' ', bar);
+    tui_fill(sf, tui_rect_make(0, 0, cols, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
 
     int x0, x1;
     status_span(cols, &x0, &x1);
+    tui_fill(sf, tui_rect_make(x0, 0, x1-x0, 1), ' ', bar);
 
     const int batt_w = 9;
     int right_edge = x1 - 1;
@@ -365,7 +367,7 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
             const int scr = tab_screen(i);
 
             char label[8];
-            snprintf(label, sizeof(label), "%d", i + 1);
+            snprintf(label,sizeof(label),"%s",""); /* Portrait is touch-first, independent of attached keyboard. */
             char nm[10];
             snprintf(nm, sizeof(nm), "%.*s", (w > 3) ? w - 3 : 1,
                      s_screens[scr]->name);
@@ -397,7 +399,8 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
     for (int i = 0; i < ntab && x < cols - 4; i++) {
         const int scr = tab_screen(i);
         char label[24];
-        snprintf(label, sizeof(label), " %d %s ", i + 1, s_screens[scr]->name);
+        if(s_current==0) snprintf(label,sizeof(label)," %s ",s_screens[scr]->name);
+        else snprintf(label, sizeof(label), " F%d %s ", i + 1, s_screens[scr]->name);
         uint8_t a = (scr == s_current) ? here : plain;
         tui_put_str(sf, all, x, ly, label, a);
         s_tab_x0[i] = (int16_t)x;
@@ -415,7 +418,9 @@ static void draw_hints(tui_surface *sf, int cols, int row)
        as a bar. */
     const uint8_t bg  = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, (TUI_BLACK | TUI_BRIGHT));
     const uint8_t key = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, (TUI_BLACK | TUI_BRIGHT));
-    tui_fill(sf, tui_rect_make(0, row, cols, 1), ' ', bg);
+    const int pad = ls_tui_corner_pad(row);
+    tui_fill(sf, tui_rect_make(0, row, cols, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_fill(sf, tui_rect_make(pad, row, cols-2*pad, 1), ' ', bg);
 
     const ls_tui_screen_t *s = s_screens[s_current];
     const char *hint = (s && s->hint) ? s->hint : "";
@@ -430,7 +435,6 @@ static void draw_hints(tui_surface *sf, int cols, int row)
        an eighteen character tail, and the renderer only pushes changed cells,
        so whichever wrote last stayed on the panel. */
 
-    const int pad = ls_tui_corner_pad(row);
     const int in = pad > 1 ? pad - 1 : 0;
     ls_tui_hint_layout_t hl = ls_tui_hint_layout(cols - 2 * in);
 

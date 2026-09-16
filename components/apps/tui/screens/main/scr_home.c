@@ -20,8 +20,11 @@
 #include "radio/radio_endpoint.h"
 
 #define MAX_TILES LS_TUI_MAX_SCREENS
-#define PAGE_TILES 6
+/* Last rendered capacity also drives keyboard and touch page offsets. */
+static int s_page_tiles = 6;
+#define PAGE_TILES s_page_tiles
 static int s_group, s_tile_page;
+
 static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
 
 static int group_of(const ls_app_t *a)
@@ -107,26 +110,54 @@ static void draw_status(tui_surface *sf, tui_rect a)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    if(area.w<24 || area.h<12) {
+        ls_btn_bar_raised_slot(sf,tui_rect_make(0,0,0,0),NULL,0,-1,LS_BTN_SLOT_QUICK);
+        ls_panel_notice(sf,area,"HOME","Enlarge pane","");return;
+    }
     ls_tile_t tiles[MAX_TILES];
     const ls_app_t *apps[MAX_TILES];
     const int n = build_tiles(tiles, apps, MAX_TILES);
     if (s_sel >= n) s_sel = n ? n - 1 : 0;
 
-    ls_btn_t groups[5];
-    for (int i = 0; i < 4; i++) groups[i] = (ls_btn_t){GROUPS[i], NULL, "rfsu"[i], s_group == i, false};
-    groups[4] = (ls_btn_t){"MORE", NULL, ']', false, n <= PAGE_TILES};
-    const int bar_h = ls_btn_raised_height(area, 5);
-    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, 5, -1);
+    ls_btn_t groups[4];
+    for (int i = 0; i < 4; i++) groups[i] = (ls_btn_t){GROUPS[i], ls_tui_is_wide()?(const char *const[]){"F1","F2","F3","F4"}[i]:NULL, 0, s_group == i, false};
+    const int bar_h = ls_btn_raised_height(area, 4);
+    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, 4, -1);
+    tui_rect body=tui_rect_make(area.x,area.y+bar_h,area.w,area.h-bar_h-1);
+    int status_w = 0;
+    if (ls_tui_is_wide()) {
+        status_w = body.w / 3; if (status_w > 34) status_w = 34;
+        body.w -= status_w;
+    }
+    /* Preserve the icon, label and comfortable touch area on every tile. */
+    int fit_cols = body.w / (LS_ICON_COLS + 5);
+    int fit_rows = body.h / (LS_ICON_ROWS + 4);
+    if (fit_cols < 1) fit_cols = 1;
+    if (fit_rows < 1) fit_rows = 1;
+    const int page_h = ls_tui_is_wide()?4:6;
+    if (n > fit_cols * fit_rows || n > 24) {
+        body.h -= page_h;
+        fit_rows = body.h / (LS_ICON_ROWS + 4);
+        if (fit_rows < 1) fit_rows = 1;
+    }
+    const int previous_capacity=s_page_tiles;
+    s_page_tiles = fit_cols * fit_rows;
+    if (s_page_tiles > 24) s_page_tiles = 24;
+    if(previous_capacity!=s_page_tiles) s_tile_page=s_sel/s_page_tiles;
     const int pages = (n + PAGE_TILES - 1) / PAGE_TILES;
     if (s_tile_page >= pages) s_tile_page = 0;
     int first = s_tile_page * PAGE_TILES;
     int shown = n - first; if (shown > PAGE_TILES) shown = PAGE_TILES;
     if (s_sel < first || s_sel >= first + shown) s_sel = first;
-    tui_rect body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
-    if (ls_tui_is_wide()) {
-        int status_w = body.w / 3; if (status_w > 34) status_w = 34;
-        tui_rect right = tui_rect_make(body.x + body.w - status_w, body.y, status_w, body.h);
-        body.w -= status_w;
+    char paging[24];
+    snprintf(paging,sizeof(paging),"PAGE %d/%d",pages?s_tile_page+1:1,pages?pages:1);
+    ls_btn_t pager[]={
+        {"< PREV",ls_tui_is_wide()?"F5":NULL,0,false,pages<=1},
+        {paging,pages<=1?"SINGLE PAGE":"APP PAGES",0,true,true},
+        {"NEXT >",ls_tui_is_wide()?"F6":NULL,0,false,pages<=1}};
+    ls_btn_bar_raised_slot(sf,pages>1?tui_rect_make(area.x,area.y+area.h-page_h,area.w,page_h):tui_rect_make(0,0,0,0),pager,pages>1?3:0,-1,LS_BTN_SLOT_QUICK);
+    if (status_w) {
+        tui_rect right = tui_rect_make(body.x + body.w, body.y, status_w, body.h);
         draw_status(sf, right);
     }
     ls_tile_grid(sf, body, tiles + first, shown, s_sel - first);
@@ -143,9 +174,19 @@ static bool key(ls_tk_t k, char ch)
     ls_tile_shape(&cols, &rows);
     if (cols < 1) cols = 1;
 
-    char group_key=ch>='A' && ch<='Z'?ch+'a'-'A':ch;
-    if (k == LS_TK_CHAR && group_key && strchr("rfsu", group_key)) { s_group = (int)(strchr("rfsu", group_key) - "rfsu"); s_tile_page = s_sel = 0; return true; }
-    if (k == LS_TK_CHAR && ch == ']') { s_tile_page = (s_tile_page + 1) % ((n + PAGE_TILES - 1) / PAGE_TILES > 0 ? (n + PAGE_TILES - 1) / PAGE_TILES : 1); s_sel = s_tile_page * PAGE_TILES; return true; }
+    if (k>=LS_TK_F1 && k<=LS_TK_F4) {
+        s_group=k-LS_TK_F1; s_tile_page=s_sel=0; return true;
+    }
+    if (k==LS_TK_F5 || k==LS_TK_F6) {
+        int pages=(n+PAGE_TILES-1)/PAGE_TILES;
+        if(pages>1) s_tile_page=(s_tile_page+pages+(k==LS_TK_F5?-1:1))%pages;
+        s_sel=s_tile_page*PAGE_TILES; return true;
+    }
+    if (k==LS_TK_CHAR && ch>='1' && ch<='9') {
+        int target=s_tile_page*PAGE_TILES+ch-'1';
+        if(target<n && ch-'1'<PAGE_TILES) { s_sel=target; return key(LS_TK_ENTER,0); }
+        return true;
+    }
     switch (k) {
     case LS_TK_LEFT:
         if (s_sel > 0) { s_sel--; s_tile_page = s_sel / PAGE_TILES; }
@@ -185,7 +226,8 @@ static bool touch(int col, int row)
 {
     const int group = ls_btn_hit(col, row);
     if (group >= 0 && group < 4) { s_group = group; s_tile_page = s_sel = 0; return true; }
-    if (group == 4) return key(LS_TK_CHAR, ']');
+    const int page=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
+    if(page>=0) {if(page==0)return key(LS_TK_F5,0);if(page==2)return key(LS_TK_F6,0);return true;}
     const int hit = ls_tile_hit(col, row);
     if (hit < 0) return true;
     const int i = hit + s_tile_page * PAGE_TILES;
@@ -203,7 +245,7 @@ static bool touch(int col, int row)
 
 const ls_tui_screen_t ls_scr_home = {
     .name = "HOME",
-    .hint = "R RADIO  F FIELD  S SYSTEM  U USER  ] more",
+    .hint = "F1-F4 group  1-9 open  F5/F6 page",
     .enter = NULL,
     .leave = NULL,
     .draw = draw,

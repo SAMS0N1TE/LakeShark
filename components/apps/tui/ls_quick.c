@@ -372,7 +372,7 @@ int ls_quick_rows(const ls_quick_t *items, int n, int width, bool wide)
 
     int across = width / ONE_W;
     if (across < 1) across = 1;
-    if (across > ACROSS_MAX) across = ACROSS_MAX;
+    if (across > (wide?6:ACROSS_MAX)) across = wide?6:ACROSS_MAX;
 
     const int bmin = box_min(wide);
 
@@ -426,7 +426,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
 
     int across = area.w / ONE_W;
     if (across < 1) across = 1;
-    if (across > ACROSS_MAX) across = ACROSS_MAX;
+    if (across > (wide?6:ACROSS_MAX)) across = wide?6:ACROSS_MAX;
 
     const int groups = group_count(items, n, across, wide);
     const int bmin = box_min(wide), bmax = box_max(wide);

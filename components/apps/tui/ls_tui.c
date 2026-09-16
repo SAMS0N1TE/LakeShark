@@ -402,6 +402,31 @@ static void paint_margin(uint16_t *fb, int native_w)
     fill_logical(fb, native_w, gx1, s_oy, s_screen_w - gx1, gy1 - s_oy, g);
 }
 
+/* Bars reach the physical rounded edge; text remains inside corner_pad.
+   Only the empty end caps are painted here, never a word or touch target. */
+static void paint_bar_ends(uint16_t *fb,int native_w)
+{
+    if(!s_landscape) return;
+    for(int end=0;end<2;end++) {
+        const int row=end?s_rows-1:0;
+        const int pad=ls_tui_corner_pad(row);
+        const int left=s_ox+pad*s_cw;
+        const int right=s_ox+(s_cols-pad)*s_cw;
+        const uint8_t attr=s_back[(size_t)row*s_cols+pad].attr;
+        /* Arbitrary surfaces (including pixel/touch calibration) do not
+           have router bars. Never erase their edge cells. */
+        if(TUI_ATTR_BG(attr)!=(end?(TUI_BLACK|TUI_BRIGHT):TUI_CYAN)) continue;
+        const uint16_t color=attr_bg(attr);
+        for(int y=s_oy+row*s_ch;y<s_oy+(row+1)*s_ch;y++) {
+            int inset=0;
+            const int gap=y<s_screen_h-1-y?y:s_screen_h-1-y;
+            while(inset<s_corner_r && !ls_tui_corner_clear(inset,gap,s_corner_r)) inset++;
+            fill_logical(fb,native_w,inset,y,left-inset,1,color);
+            fill_logical(fb,native_w,right,y,s_screen_w-inset-right,1,color);
+        }
+    }
+}
+
 bool ls_tui_begin(int screen_w, int screen_h)
 {
     ls_panel_fb_t fb;
@@ -680,7 +705,10 @@ int ls_tui_present(void)
         s_image_previous_valid = true;
     }
     s_image_dirty = false;
-    if (drawn || margin) ls_panel_fb_present();
+    if (drawn || margin) {
+        paint_bar_ends(fb.pixels,fb.width);
+        ls_panel_fb_present();
+    }
     s_last_us = (uint32_t)(esp_timer_get_time() - t0);
     s_last_cells = drawn;
     return drawn;

@@ -646,7 +646,7 @@ static bool tui_session(void)
     printf("tui: holding the screen - %s to rotate, 'tui off' to exit\n",
            s_imu_ok ? "turn it over or press F11" : "press F11");
 
-    ls_keypad_backlight(true);
+    ls_keypad_backlight(settings_get_keyboard_light());
     /* A new session starts its own count: the gap since the last one
        is a rebuild, not a frame. */
     s_loop_last_us = 0;
@@ -678,7 +678,7 @@ static bool tui_session(void)
            does not repeatedly reapply the attachment orientation. */
         ls_keypad_tick();
         bool kbd_now = ls_keypad_present();
-        if (!s_keyboard_known || kbd_now != s_keyboard_present) {
+        if (!ls_tui_screen_holds_rotation() && (!s_keyboard_known || kbd_now != s_keyboard_present)) {
             bool detached = s_keyboard_known && !kbd_now;
             s_keyboard_known = true;
             s_keyboard_present = kbd_now;
@@ -694,7 +694,7 @@ static bool tui_session(void)
 
         /* TURN THE SCREEN TO MATCH THE HAND HOLDING IT. */
 
-        if (!s_tui_stop && s_imu_ok && settings_get_auto_rotate() && !ls_field_calibrating()) {
+        if (!s_tui_stop && s_imu_ok && settings_get_auto_rotate() && !ls_field_calibrating() && !ls_tui_screen_holds_rotation()) {
             const int64_t ph_imu = esp_timer_get_time();
             const ls_imu_pose_t pose = ls_imu_pose();
             if (s_keyboard_pose_pending && pose != LS_IMU_FLAT) {
@@ -1940,7 +1940,7 @@ static int keys_bl_sweep(void)
 
     /* Restore the normal backlight setting after the diagnostic sweep. */
     ls_keypad_backlight_tune(32000, 911);
-    ls_keypad_backlight(true);
+    ls_keypad_backlight(settings_get_keyboard_light());
     printf("\nkeys: back to 89%% at 32 kHz. 'keys bl <pct> <hz>' sets one.\n");
     return 0;
 }
@@ -1958,11 +1958,13 @@ static int keys_bl_cmd(int argc, char **argv)
     }
     if (!strcmp(argv[2], "off")) {
         ls_keypad_backlight(false);
+        settings_set_keyboard_light(false);
         printf("keys: backlight off\n");
         return 0;
     }
     if (!strcmp(argv[2], "on")) {
         ls_keypad_backlight(true);
+        settings_set_keyboard_light(true);
         printf("keys: backlight on, %lu Hz, duty %d%%\n",
                (unsigned long)ls_keypad_backlight_freq(),
                ls_keypad_backlight_duty());
@@ -2088,7 +2090,7 @@ static int keys_cmd(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "bl")) return keys_bl_cmd(argc, argv);
 
     if (argc >= 2 && !strcmp(argv[1], "watch")) {
-        ls_keypad_backlight(true);
+        ls_keypad_backlight(settings_get_keyboard_light());
         printf("watching for 10s, press keys...\n");
         int64_t end = esp_timer_get_time() + 10LL * 1000 * 1000;
         unsigned seen = 0;

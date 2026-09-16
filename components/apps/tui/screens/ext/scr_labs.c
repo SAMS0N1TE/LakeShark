@@ -264,7 +264,7 @@ static void graph(tui_surface *sf, tui_rect r, const float *values)
         if (v > 1) v = 1;
         int height = (int)(v * (r.h - 1));
         for (int y = 0; y < height; y++)
-            tui_put_char(sf, r, r.x + x, r.y + r.h - 1 - y, LS_TUI_SHADE_25,
+            tui_put_char(sf, r, r.x + x, r.y + r.h - 1 - y, '.',
                          TUI_ATTR(TUI_CYAN, TUI_BLACK));
         tui_put_char(sf, r, r.x + x, r.y + r.h - 1 - height, '_', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     }
@@ -320,11 +320,11 @@ static void polar(tui_surface *sf, tui_rect r)
     tui_put_char(sf, r, cx, marker_y, '^', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     tui_put_char(sf, r, cx, marker_y + 1, '|', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     tui_put_char(sf, r, cx, cy, '+', LS_ATTR_DIM);
-    if (!valid) tui_put_str(sf, r, cx - 4, cy + 1, "NO FIX", LS_ATTR_DIM);
+    if (!valid) tui_put_str(sf, r, cx - 4, cy + 1, "NO MAG", LS_ATTR_DIM);
 }
 static void full_compass_draw(tui_surface *sf, tui_rect a)
 {
-    ls_panel_box(sf,a,"COMPASS / LIVE",TUI_CYAN);
+    ls_panel_box(sf,a,"COMPASS / MAGNETIC",TUI_CYAN);
     const bool wide = a.w > a.h * 2;
     tui_rect dial = tui_rect_make(a.x+2,a.y+2,wide ? a.w/2-3 : a.w-4,
                                   wide ? a.h-10 : a.h-21);
@@ -344,18 +344,22 @@ static void full_compass_draw(tui_surface *sf, tui_rect a)
         int left=detail.x+(detail.w-22)/2;
         for(int digit=0;digit<3;digit++) for(int y=0;y<5;y++) for(int x=0;x<3;x++)
             if(digits[values[digit]][y] & (4>>x)) for(int px=0;px<2;px++)
-                tui_put_char(sf,a,left+digit*8+x*2+px,detail.y+y,LS_TUI_BLOCK_FULL,
+                tui_put_char(sf,a,left+digit*8+x*2+px,detail.y+y,'#',
                              TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
         detail.y+=6;
     }
     static const char *const dirs[]={"N","NE","E","SE","S","SW","W","NW"};
-    if (s.sample.imu_valid && isfinite(s.sample.heading))
+    if (s.sample.imu_valid && s.sample.imu.mag_valid && isfinite(s.sample.heading))
         snprintf(line,sizeof(line),"[ %03u  %s ]  MAGNETIC",
                  (unsigned)lroundf(s.sample.heading)%360,
                  dirs[(unsigned)((s.sample.heading+22.5f)/45)%8]);
     else snprintf(line,sizeof(line),"[ --- ]  WAITING FOR HEADING");
     cal_center(sf,detail,detail.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-    cal_center(sf,detail,detail.y+2,"Yellow: board top   Red N: north",LS_ATTR_DIM);
+    cal_center(sf,detail,detail.y+1,s.sample.imu_valid && s.sample.imu.mag_valid ? "IMU live <350ms / orientation held" : "IMU stale or magnetometer unavailable",TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    cal_center(sf,detail,detail.y+2,"Board top ^ / N magnetic / deg CW",LS_ATTR_DIM);
+    snprintf(line,sizeof(line),ls_tui_is_wide()?"%s: %s / K calibrate":"%s: %s",s.calibration_keyboard?"KEYBOARD":"STANDALONE",
+             s.calibrated?(s.calibration_saved?"saved":"RAM only"):"UNCALIBRATED");
+    cal_center(sf,detail,detail.y+3,line,TUI_ATTR((s.calibrated?TUI_GREEN:TUI_YELLOW)|TUI_BRIGHT,TUI_BLACK));
     if (s_show_signal) {
         cal_center(sf,detail,detail.y+4,"RECEIVED SIGNALS / latest 2",TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
         for(int i=0;i<2;i++) {
@@ -395,8 +399,8 @@ static void full_compass_draw(tui_surface *sf, tui_rect a)
     cal_center(sf,detail,detail.y+10,s.calibrated ? "Calibration retained" : "Calibration required",LS_ATTR_DIM);
     }
     cal_center(sf,detail,detail.y+11,s_show_signal ? "Cyan: board heading at RX, not location" : "Signal overlay hidden",LS_ATTR_DIM);
-    ls_btn_t buttons[]={{"BACK","LABS",'v',false,false},{"VIEW",s_show_signal?"SIGNALS":"SENSORS",'b',s_show_signal,false},{"MARK","JOURNAL",'j',false,false}};
-    ls_btn_bar_raised(sf,tui_rect_make(a.x+3,a.y+a.h-6,a.w-6,4),buttons,3,button_focus);
+    ls_btn_t buttons[]={{"BACK","LABS",'v',false,false},{"VIEW",s_show_signal?"SIGNALS":"SENSORS",'b',s_show_signal,false},{"MARK","JOURNAL",'j',false,false},{"CAL","SETUP",'k',false,false}};
+    ls_btn_bar_raised(sf,tui_rect_make(a.x+3,a.y+a.h-6,a.w-6,4),buttons,4,button_focus);
 }
 static void draw(tui_surface *sf, tui_rect a)
 {
@@ -409,8 +413,9 @@ static void draw(tui_surface *sf, tui_rect a)
     s_expand_hit = tui_rect_make(0,0,0,0);
     const int64_t now = esp_timer_get_time();
     if (s.calibrating || s_guide_visible) { calibration_draw(sf,a,now); return; }
+    if(now<s.sample.time_us || now-s.sample.time_us>350000) s.sample.imu_valid=false;
     float dt = s_heading_us ? (now - s_heading_us) / 1e6f : 1;
-    s_heading = ls_compass_ease(s_heading, s.sample.imu_valid ? s.sample.heading : NAN, 1 - expf(-dt / .12f));
+    s_heading = ls_compass_ease(s_heading, s.sample.imu_valid && s.sample.imu.mag_valid ? s.sample.heading : NAN, 1 - expf(-dt / .12f));
     s_heading_us = now;
     if (!s_hold) {
         memcpy(s_trace, s.trace, sizeof(s_trace)); memcpy(s_spectrum, s.spectrum, sizeof(s_spectrum));
@@ -448,9 +453,20 @@ static void draw(tui_surface *sf, tui_rect a)
     if (plot_h > 18) plot_h = 18;
     tui_rect plot = tui_rect_make(panel.x + 2, panel.y + 4, panel.w - 4, plot_h);
     if (s.mode == LS_LAB_BEARING) polar(sf, plot);
-    else graph(sf, plot, s.mode == LS_LAB_SPECTRUM ? s_spectrum : s_trace);
+    else if(s.mode==LS_LAB_SPECTRUM) {
+        bool fresh=s.direct && s.spectrum_us>0 && now>=s.spectrum_us && now-s.spectrum_us<3000000;
+        if(fresh) {
+            graph(sf,plot,s_spectrum);
+            int peak=0;for(int i=1;i<LS_FIELD_BINS;i++)if(s_spectrum[i]>s_spectrum[peak])peak=i;
+            snprintf(line,sizeof(line),"Peak %.1f dBm / bin %d of %d",s_spectrum[peak],peak+1,LS_FIELD_BINS);
+            tui_put_str(sf,plot,plot.x,plot.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        }
+        else tui_put_str(sf,plot,plot.x+1,plot.y+1,s.direct?"No complete fresh sweep":"Enable DIRECT to scan; Mesh will pause",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",(s.config.freq_hz-1000000)/1e6,(s.config.freq_hz+1000000)/1e6);
+        tui_put_str(sf,plot,plot.x,plot.y+plot.h-1,line,LS_ATTR_DIM);
+    } else graph(sf, plot, s_trace);
     const char *caption = s.mode == LS_LAB_BEARING ? "Yellow: board top | Red N: north" :
-        s.mode == LS_LAB_SPECTRUM ? "Centre +/- 1 MHz | RSSI scan" : s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
+        s.mode == LS_LAB_SPECTRUM ? "Swept energy: brief packets may fall between looks" : s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
     tui_put_str(sf, panel, panel.x + 2, plot.y + plot.h + 1, caption, LS_ATTR_DIM);
     if (s.mode == LS_LAB_BEARING) {
         static const char *const directions[] = {"N","NE","E","SE","S","SW","W","NW"};
@@ -459,6 +475,10 @@ static void draw(tui_surface *sf, tui_rect a)
             s.calibrated ? s.calibration_saved ? "calibration saved on SD" : "calibration in RAM" : "CALIBRATION REQUIRED");
         else snprintf(line, sizeof(line), "Waiting for a valid magnetic reading");
         tui_put_str(sf, panel, panel.x + 2, plot.y + plot.h + 2, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+    if(s.mode==LS_LAB_SPECTRUM) {
+        snprintf(line,sizeof(line),"SX1262 sweeps %lu / errors %lu / age %s",(unsigned long)s.spectrum_sweeps,(unsigned long)s.spectrum_errors,s.direct&&s.spectrum_us&&now>=s.spectrum_us&&now-s.spectrum_us<3000000?"<3s":"STALE");
+        tui_put_str(sf,panel,panel.x+2,plot.y+plot.h+2,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     if (panel.h > 36) {
         tui_rect info = tui_rect_make(panel.x + 1, plot.y + plot.h + 3, panel.w - 2, panel.h - plot.h - 11);
@@ -495,7 +515,7 @@ static void leave(void) { s_guide_visible = false; ls_field_direct(false); ls_fi
 static bool touch(int col, int row) {
     int i = ls_btn_hit(col,row);
     if (s.calibrating || s_guide_visible) { if(i>=0)calibration_action(i); return true; }
-    if (s_full_compass) { if(i==0)expand_compass(false);else if(i==1)s_show_signal=!s_show_signal;else if(i==2)action(4);return true; }
+    if (s_full_compass) { if(i==0)expand_compass(false);else if(i==1)s_show_signal=!s_show_signal;else if(i==2)action(4);else if(i==3){expand_compass(false);switch_action(5);}return true; }
     if (col>=s_expand_hit.x && col<s_expand_hit.x+s_expand_hit.w &&
         row>=s_expand_hit.y && row<s_expand_hit.y+s_expand_hit.h) { expand_compass(true);return true; }
     if(i>=0)action(i);else { i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)switch_action(i); }
@@ -509,11 +529,12 @@ static bool key(ls_tk_t k, char ch) {
         return k==LS_TK_CHAR || k==LS_TK_ESC || k==LS_TK_BACKSPACE;
     }
     if (s_full_compass) {
+        if (k==LS_TK_CHAR && ch=='k') { expand_compass(false);switch_action(5);return true; }
         if (k==LS_TK_ESC || k==LS_TK_BACKSPACE || (k==LS_TK_CHAR && (ch=='v' || ch=='q'))) { expand_compass(false);return true; }
         if (k==LS_TK_CHAR && ch=='j') { action(4);return true; }
         if (k==LS_TK_CHAR && ch=='b') { s_show_signal=!s_show_signal;return true; }
         if (ls_btn_navigate(k,&button_slot,&button_focus,false)) return true;
-        if (k==LS_TK_ENTER) { if(button_focus==0)expand_compass(false);else if(button_focus==1)s_show_signal=!s_show_signal;else if(button_focus==2)action(4);return true; }
+        if (k==LS_TK_ENTER) { if(button_focus==0)expand_compass(false);else if(button_focus==1)s_show_signal=!s_show_signal;else if(button_focus==2)action(4);else if(button_focus==3){expand_compass(false);switch_action(5);}return true; }
         return false;
     }
     if (k==LS_TK_CHAR && ch=='v') { expand_compass(true);return true; }
@@ -523,4 +544,4 @@ static bool key(ls_tk_t k, char ch) {
     const char *p = strchr("dmstj", ch); if (p) { action((int)(p - "dmstj")); return true; }
     p = strchr("ciphxk", ch); if (!p) return false; switch_action((int)(p - "ciphxk")); return true;
 }
-const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch};
+const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};

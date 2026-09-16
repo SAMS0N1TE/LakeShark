@@ -60,7 +60,8 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
    The private binary format is versioned and CRC checked, not a .sub file. */
 typedef struct { uint32_t magic, version, bytes, crc; uint64_t sequence, archive_id; } header_t;
 #define MAGIC 0x5752534cU
-static bool read_header(const char *dir, int slot, header_t *h)
+static bool read_header(const char *dir, int slot, header_t *h,
+    void (*pump)(void *), void *context)
 {
     char path[256];
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
@@ -82,6 +83,7 @@ static bool read_header(const char *dir, int slot, header_t *h)
         }
         for(size_t i=0;i<n;i++) {crc^=buf[i];for(int b=0;b<8;b++)crc=(crc>>1)^(0xedb88320u&(0u-(crc&1u)));}
         remaining-=n;
+        if(pump)pump(context);
     }
     ok=ok && ~crc==h->crc && fgetc(f)==EOF && !ferror(f);
     fclose(f); return ok;
@@ -107,12 +109,13 @@ static bool quarantine_invalid(const char *dir, int slot)
     return false;
 }
 
-bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes)
+bool rec_watch_store_pumped(const char *dir, const rec_watch_catalog_t *c,
+    uint64_t free_bytes, void (*pump)(void *), void *context)
 {
     if (!dir || !c || free_bytes==UINT64_MAX ||
         free_bytes < REC_WATCH_RESERVE + sizeof(*c) + sizeof(header_t)) return false;
     header_t a={0}, b={0};
-    bool va=read_header(dir,0,&a), vb=read_header(dir,1,&b);
+    bool va=read_header(dir,0,&a,pump,context), vb=read_header(dir,1,&b,pump,context);
     if ((va && a.archive_id!=c->archive_id) || (vb && b.archive_id!=c->archive_id)) return false;
     if(!va && !vb) {
         if(!quarantine_invalid(dir,0) || !quarantine_invalid(dir,1)) return false;
@@ -131,16 +134,20 @@ bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t fre
         size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
         memcpy(s_watch_io,src,n);
         ok=fwrite(s_watch_io,1,n,f)==n;src+=n;remaining-=n;
+        if(pump)pump(context);
     }
     if (fflush(f)!=0) ok=false;
     if (ok && fsync(fileno(f))!=0) ok=false;
     if (fclose(f)!=0) ok=false;
     return ok;
 }
+bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes)
+{ return rec_watch_store_pumped(dir,c,free_bytes,NULL,NULL); }
+
 bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
 {
     if(!dir || !c)return false;
-    header_t a={0},b={0};bool va=read_header(dir,0,&a),vb=read_header(dir,1,&b);
+    header_t a={0},b={0};bool va=read_header(dir,0,&a,NULL,NULL),vb=read_header(dir,1,&b,NULL,NULL);
     memset(c,0,sizeof(*c));
     if(!va&&!vb)return false;
     int slot=vb && (!va || b.sequence>a.sequence)?1:0;

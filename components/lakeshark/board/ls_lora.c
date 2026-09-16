@@ -35,17 +35,14 @@ static const struct { uint32_t hz; uint8_t code; } BW_LADDER[] = {
    stays the figure for. The plan below adds to it as the filter narrows. */
 #define SCAN_SETTLE_US   300
 #define SCAN_BW_WIDEST   500000u
-#define SCAN_SETTLE_TAUS 8
+#define SCAN_PASS_BUDGET_US 20000
 
-/* The filter follows the bins, and the wait follows the filter. */
-
+/* Preserve the measured wideband acquisition interval in filter samples.
+   The former additive 8/BW estimate read 41.67kHz before RSSI was ready. */
 static uint32_t scan_settle_us(uint32_t bw_hz)
 {
-    if (bw_hz == 0 || bw_hz > SCAN_BW_WIDEST) bw_hz = SCAN_BW_WIDEST;
-    const uint32_t taus = (SCAN_SETTLE_TAUS * 1000000u + bw_hz - 1) / bw_hz;
-    const uint32_t paid = (SCAN_SETTLE_TAUS * 1000000u + SCAN_BW_WIDEST - 1)
-                        / SCAN_BW_WIDEST;
-    return SCAN_SETTLE_US + (taus > paid ? taus - paid : 0);
+    if (!bw_hz || bw_hz>SCAN_BW_WIDEST)bw_hz=SCAN_BW_WIDEST;
+    return (SCAN_SETTLE_US*SCAN_BW_WIDEST+bw_hz-1)/bw_hz;
 }
 
 void ls_lora_scan_plan(uint32_t min_hz, uint32_t max_hz, int n,
@@ -821,7 +818,7 @@ static uint32_t      s_scan_min_hz, s_scan_max_hz;
    beside the plan, which is the only thing that reads it now. */
 static ls_lora_scan_plan_t s_scan_plan;
 static int           s_scan_plan_n;
-static int           s_scan_look;
+static int           s_scan_look, s_scan_bin;
 
 bool ls_lora_scanning(void) { return s_scanning; }
 
@@ -833,7 +830,7 @@ static esp_err_t scan_configure(int n)
 {
     ls_lora_scan_plan(s_scan_min_hz, s_scan_max_hz, n, &s_scan_plan);
     s_scan_plan_n = n;
-    s_scan_look = 0;
+    s_scan_look = 0; s_scan_bin=0;
 
     ls_lora_cfg_t sc = s_scan_saved;
     sc.freq_hz     = s_scan_min_hz;
@@ -900,6 +897,15 @@ void ls_lora_scan_profile(ls_lora_scan_prof_t *out)
     if (out) *out = s_prof;
 }
 
+/* Semtech status: chip mode 5 is RX; command statuses 3..5 are errors.
+   An absent SPI peer (FF/00) must never become a quiet RSSI measurement. */
+static bool rssi_status_valid(uint8_t status)
+{
+    unsigned mode=(status>>4)&7, command=(status>>1)&7;
+    /* 0/1 occur before a packet has completed (observed idle RX 0x52). */
+    return mode==5 && command!=7 && !(command>=3 && command<=5);
+}
+
 int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
 {
     if (row_done) *row_done = false;
@@ -914,23 +920,24 @@ int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
     uint32_t t_standby = 0, t_tune = 0, t_rx = 0, t_settle = 0, t_rssi = 0;
     int64_t mark;
 
-    int got = 0;
-    for (int i = 0; i < n; i++) {
+    int got = 0; bool failed=false;
+    const int64_t pass_start=esp_timer_get_time();
+    for (int i = s_scan_bin; i < n; i++) {
         const uint32_t hz = ls_lora_scan_look_hz(s_scan_min_hz, s_scan_max_hz,
                                                  n, i, looks, k);
 
         uint8_t b = STANDBY_XOSC;
         mark = esp_timer_get_time();
-        if (cmd(OP_SET_STANDBY, &b, 1, NULL, 0) != ESP_OK) break;
+        if (cmd(OP_SET_STANDBY, &b, 1, NULL, 0) != ESP_OK) {failed=true;break;}
         t_standby += (uint32_t)(esp_timer_get_time() - mark);
 
         mark = esp_timer_get_time();
-        if (scan_tune(hz) != ESP_OK) break;
+        if (scan_tune(hz) != ESP_OK) {failed=true;break;}
         t_tune += (uint32_t)(esp_timer_get_time() - mark);
 
         uint8_t rx_cmd[4] = { OP_SET_RX, 0xFF, 0xFF, 0xFF };
         mark = esp_timer_get_time();
-        if (xfer(rx_cmd, NULL, sizeof(rx_cmd)) != ESP_OK) break;
+        if (xfer(rx_cmd, NULL, sizeof(rx_cmd)) != ESP_OK) {failed=true;break;}
         t_rx += (uint32_t)(esp_timer_get_time() - mark);
 
         mark = esp_timer_get_time();
@@ -939,14 +946,15 @@ int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
 
         uint8_t r[3] = { OP_GET_RSSI_INST, 0, 0 };
         mark = esp_timer_get_time();
-        if (xfer(r, r, sizeof(r)) != ESP_OK) break;
+        if (xfer(r, r, sizeof(r)) != ESP_OK || !rssi_status_valid(r[1])) {failed=true;break;}
         t_rssi += (uint32_t)(esp_timer_get_time() - mark);
 
         /* The first look of a row writes; every later one keeps the
            peak, so a bin reports the strongest thing anywhere in its slice. */
         const float v = -((float)r[2]) / 2.0f;
         if (k == 0 || v > dbm[i]) dbm[i] = v;
-        got++;
+        got++;s_scan_bin=i+1;
+        if(esp_timer_get_time()-pass_start>=SCAN_PASS_BUDGET_US)break;
     }
 
     if (got) {
@@ -957,11 +965,13 @@ int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
         s_prof.rssi_us    = t_rssi    / (uint32_t)got;
     }
 
-    if (got == n) {
+    if(failed){s_scan_bin=0;s_scan_look=0;return 0;}
+    if (s_scan_bin == n) {
+        s_scan_bin=0;
         s_scan_look = (k + 1) % looks;
         if (row_done) *row_done = (k + 1 == looks);
     }
-    return got;
+    return n;
 }
 
 int ls_lora_scan_sweep(float *dbm, int n)
@@ -970,7 +980,7 @@ int ls_lora_scan_sweep(float *dbm, int n)
     /* Every look of one row, starting from the first. The console
        prints a single sweep and has no frame to spread the looks across, so
        it waits for all of them; the waterfall calls ls_lora_scan_pass. */
-    s_scan_look = 0;
+    s_scan_look = 0; s_scan_bin=0;
     bool done = false;
     int got = 0;
     while (!done) {
@@ -999,6 +1009,7 @@ esp_err_t ls_lora_rssi_inst(float *dbm)
     if (!s_cfg_valid || !s_rx_mode) return ESP_ERR_INVALID_STATE;
     uint8_t rx[3] = { OP_GET_RSSI_INST, 0, 0 };
     esp_err_t err = xfer(rx, rx, sizeof(rx));
+    if (err == ESP_OK && !rssi_status_valid(rx[1])) err=ESP_ERR_INVALID_RESPONSE;
     if (err == ESP_OK && dbm) *dbm = -((float)rx[2]) / 2.0f;
     return err;
 }

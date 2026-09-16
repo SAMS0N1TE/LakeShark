@@ -7,6 +7,7 @@
 #include "../../ls_app.h"
 #include "../../ls_map.h"
 #include "esp_attr.h"
+#include "core/ls_time.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +18,8 @@ EXT_RAM_BSS_ATTR static ls_journal_entry_t s_entry;
 static char s_title[48], s_feedback[80];
 static uint32_t s_edit_id;
 static int s_selected, s_scroll;
-static bool s_detail, s_sensors;
+static bool s_detail, s_sensors, s_rec_source;
+void ls_scr_journal_rec_view(void) { s_rec_source=true; s_sensors=true; }
 static tui_rect s_list;
 static bool s_touch_nav;
 static ls_fresh_t newest;
@@ -34,6 +36,7 @@ static void title_done(const char *title)
 static void source_done(int i) { feedback(ls_field_source((ls_field_source_t)i)); }
 static void pick_source(void)
 {
+    if(s_rec_source) { snprintf(s_feedback,sizeof(s_feedback),"Use REC SOURCE to change radio"); return; }
     ls_picker_open("ATTACH RADIO", source_done);
     for (int i = 0; i < LS_FIELD_SOURCES; i++)
         ls_picker_add(ls_field_source_name((ls_field_source_t)i), i == LS_FIELD_CC1101 ? "MIX-RF monitor" : i == LS_FIELD_NRF24 ? "2.4 GHz survey" : i == LS_FIELD_NFC ? "External field watch" : i == LS_FIELD_NONE ? "GPS + motion" : "Current tuning");
@@ -120,7 +123,7 @@ static void draw(tui_surface *sf, tui_rect a)
         {"EDIT", NULL, 'e', false, !s.journal_count}, {"MAP", "ENTRY", 'g', false, !s.journal_count}};
     const int bar_h = ls_btn_raised_height(a, 6);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 6, button_focus);
-    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 2);
+    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 3);
     ls_panel_box(sf, panel, s_sensors ? (s_detail ? "ENTRY ATTACHMENTS" : "LIVE ATTACHMENTS") : "JOURNAL", TUI_CYAN);
     ls_motion_busy(sf,panel,s.recording);
     if (s_sensors) {
@@ -129,6 +132,10 @@ static void draw(tui_surface *sf, tui_rect a)
     }
     else if (s_detail && ls_field_entry(s_selected, &s_entry)) {
         tui_put_str(sf, panel, panel.x + 2, panel.y + 1, s_entry.title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        char stamp[LS_TIME_STAMP_MAX];
+        if(s_entry.sample.utc[0]) snprintf(stamp,sizeof(stamp),"%s",s_entry.sample.utc);
+        else ls_time_render_stamp_at(stamp,sizeof(stamp),0,s_entry.sample.time_us);
+        tui_put_str(sf,panel,panel.x+2,panel.y+2,stamp,LS_ATTR_DIM);
         text_rows(sf, tui_rect_make(panel.x + 2, panel.y + 3, panel.w - 4, panel.h - 5), s_entry.text);
     } else {
         s_list = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 4, panel.h - 3);
@@ -150,6 +157,9 @@ static void draw(tui_surface *sf, tui_rect a)
             char sub[90]; snprintf(sub, sizeof(sub), "%s  %s%s%s", s_entry.saved ? "SD" : "RAM", ls_field_source_name(s_entry.sample.source),
                 s_entry.sample.gps_valid ? " + GPS" : "", s_entry.sample.imu_valid ? " + IMU" : "");
             tui_put_str(sf, panel, s_list.x + 1, y + 1, sub, LS_ATTR_DIM);
+            if(s_entry.sample.utc[0]) snprintf(sub,sizeof(sub),"%s",s_entry.sample.utc);
+            else ls_time_render_stamp_at(sub,sizeof(sub),0,s_entry.sample.time_us);
+            tui_put_str(sf,panel,s_list.x+1,y+2,sub,LS_ATTR_DIM);
         }
         if (panel.h > 38) {
             tui_rect live = tui_rect_make(panel.x + 1, panel.y + panel.h - 20, panel.w - 2, 19);
@@ -157,12 +167,20 @@ static void draw(tui_surface *sf, tui_rect a)
             sensors(sf, live, &s.sample);
         }
     }
-    char status[100]; snprintf(status, sizeof(status), "%c %s", ls_motion_pip(s.recording), s.storage);
-    ls_safe_line(sf, a, a.y + a.h - 2, status, LS_ATTR_DIM);
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : "ENTER read  ARROWS browse  BS back", LS_ATTR_DIM);
+    char stamp[LS_TIME_STAMP_MAX];
+    if(!s.record_rows) snprintf(stamp,sizeof(stamp),"--");
+    else if(s.record_saved_utc[0]) snprintf(stamp,sizeof(stamp),"%s",s.record_saved_utc);
+    else ls_time_render_stamp_at(stamp,sizeof(stamp),0,s.record_saved_us);
+    char status[100];snprintf(status,sizeof(status),"CSV %s | %lu rows / %lu errors",
+        s.record_errors?"WRITE FAILED":s.recording?(s.record_saved_us?"SAVING":"WAIT WRITE"):"STOPPED",
+        (unsigned long)s.record_rows,(unsigned long)s.record_errors);
+    ls_safe_line(sf, a, a.y + a.h - 3, status, LS_ATTR_DIM);
+    snprintf(status,sizeof(status),"LAST SAVED %s",stamp);
+    ls_safe_line(sf,a,a.y+a.h-2,status,LS_ATTR_DIM);
+    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_is_wide()?"ENTER read  ARROWS browse  BS back":s.storage, LS_ATTR_DIM);
 }
 static void enter(void) { button_focus=-1;button_slot=0; ls_field_start(); ls_field_watch(true); s_detail = s_sensors = false; s_scroll = 0; }
-static void leave(void) { ls_field_watch(false); }
+static void leave(void) { s_rec_source=false; ls_field_watch(false); }
 static bool key(ls_tk_t k, char ch)
 {
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';

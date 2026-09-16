@@ -2,6 +2,7 @@
 
 #include "ls_test.h"
 #include "ls_tui.h"
+#include "ls_tui_inset.h"
 #include "ls_tui_screen.h"
 #include "ls_tui_chrome.h"
 #include "ls_font.h"
@@ -143,6 +144,11 @@ bool settings_get_daylight(void) { return s_daylight_stored; }
 void settings_set_daylight(bool v) { s_daylight_stored = v; }
 
 /* ------------------------------------------------------------- helpers -- */
+
+/* GPS screen is outside this pane fixture; the simulator links the real screen. */
+void ls_scr_journal_rec_view(void) {}
+const ls_tui_screen_t ls_scr_journal = { .name = "JOURNAL" };
+const ls_tui_screen_t ls_scr_gps = { .name = "GPS" };
 
 extern const ls_tui_screen_t ls_scr_p25, ls_scr_home, ls_scr_diag,
                              ls_scr_settings, ls_scr_rec,
@@ -356,13 +362,44 @@ static bool grid_has(const char *needle)
     return false;
 }
 
+/* Landscape chrome owns only these rounded end-cap pixels. Ground tests
+   below still check all remaining margins, including the invisible corners. */
+static bool bar_end_pixel(int x,int y)
+{
+    if(!ls_tui_is_wide()) return false;
+    int cols,rows,cw,ch;ls_tui_geometry(&cols,&rows,&cw,&ch);
+    const int ox=(NATIVE_H-cols*cw)/2,oy=(NATIVE_W-rows*ch)/2;
+    const int lx=NATIVE_H-1-y,ly=x;
+    const int r=(ly-oy)/ch;
+    if(ly<oy || ly>=oy+rows*ch || (r!=0 && r!=rows-1)) return false;
+    const int pad=ls_tui_corner_pad(r);
+    if(lx>=ox+pad*cw && lx<ox+(cols-pad)*cw) return false;
+    return ls_tui_corner_clear(lx<NATIVE_H-1-lx?lx:NATIVE_H-1-lx,
+        ly<NATIVE_W-1-ly?ly:NATIVE_W-1-ly,ls_tui_corner_radius());
+}
+
+static void check_bar_ends(void)
+{
+    if(!ls_tui_is_wide()) return;
+    int checked=0,wrong=0;
+    const ls_tui_theme_t *theme=ls_tui_active_theme();
+    for(int y=0;y<NATIVE_H;y++) for(int x=0;x<NATIVE_W;x++) {
+        if(!bar_end_pixel(x,y)) continue;
+        const uint16_t want=theme->palette[x<NATIVE_W/2?TUI_CYAN:TUI_BLACK|TUI_BRIGHT];
+        checked++;
+        if(g_fb[(size_t)y*NATIVE_W+x]!=want) wrong++;
+    }
+    LS_CHECK(checked>500);
+    LS_EQ_INT(wrong,0);
+}
+
 /* Every native pixel not under a cell, and how many of them are not `want`. */
 static void margin_check(uint16_t want, int *margin, int *wrong)
 {
     *margin = *wrong = 0;
     for (int y = 0; y < NATIVE_H; y++)
         for (int x = 0; x < NATIVE_W; x++) {
-            if (ls_tui_pixel_to_cell(x, y, NULL, NULL)) continue;
+            if (ls_tui_pixel_to_cell(x, y, NULL, NULL) || bar_end_pixel(x,y)) continue;
             (*margin)++;
             if (g_fb[(size_t)y * NATIVE_W + x] != want) (*wrong)++;
         }
@@ -379,7 +416,7 @@ static void blank_check(uint16_t want, int *blank, int *wrong)
     for (int y = 0; y < NATIVE_H; y++)
         for (int x = 0; x < NATIVE_W; x++) {
             int c, r;
-            if (!ls_tui_pixel_to_cell(x, y, &c, &r)) continue;
+            if (!ls_tui_pixel_to_cell(x, y, &c, &r) || bar_end_pixel(x,y)) continue;
             const tui_cell *cell = &sf->back[(size_t)r * cols + c];
             if (cell->ch != ' ' || TUI_ATTR_BG(cell->attr) != TUI_BLACK) continue;
             (*blank)++;
@@ -410,12 +447,14 @@ LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
                          posture, LABELS[i]);
 
         int margin, wrong, blank, bwrong;
+        check_bar_ends();
         margin_check(0x0000, &margin, &wrong);
         LS_CHECK_MSG(margin > 0, "%s: no margin outside the grid to test", posture);
         LS_EQ_INT(0, wrong);
 
         ls_tui_set_daylight(true);
         frame(2);
+        check_bar_ends();
         margin_check(0xFFFF, &margin, &wrong);
         LS_CHECK_MSG(wrong == 0, "%s: %d of %d margin pixels are not white "
                      "in Daylight", posture, wrong, margin);
@@ -430,6 +469,7 @@ LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
 
         ls_tui_set_daylight(false);
         frame(2);
+        check_bar_ends();
         margin_check(0x0000, &margin, &wrong);
         LS_CHECK_MSG(wrong == 0, "%s: %d margin pixels stayed white after "
                      "Daylight went off", posture, wrong);
@@ -555,3 +595,10 @@ LS_CASE(pixel_map_updates_only_changed_cells_and_text_covers_it)
         ls_tui_end();
     }
 }
+
+static bool keyboard_light=true;
+bool settings_get_keyboard_light(void) { return keyboard_light; }
+void settings_set_keyboard_light(bool on) { keyboard_light=on; }
+int ls_keypad_backlight(bool on) { (void)on; return 0; }
+
+bool ls_track_rec_running(void) { return false; }

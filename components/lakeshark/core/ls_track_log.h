@@ -22,9 +22,14 @@ esp_err_t ls_track_rec_start(void);
 void ls_track_rec_stop(void);
 
 bool ls_track_rec_running(void);
+/* Sticky until the next start attempt; ESP_OK means no recorded writer error. */
+esp_err_t ls_track_rec_error(void);
 
 /* Points currently held. */
 int  ls_track_points(void);
+/* Last successfully stored point, including an attached saved track.
+   Returns false when no point is available. Does not read SD in the UI. */
+bool ls_track_last_time(uint32_t *seconds, bool *epoch);
 
 /* OPEN A TRACK THAT IS ALREADY ON THE CARD, without recording. */
 

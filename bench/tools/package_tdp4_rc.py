@@ -5,8 +5,11 @@ import json
 from pathlib import Path
 import subprocess
 import zipfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'bench'))
+import quality as regression
 
 
 def git(*args):
@@ -38,6 +41,8 @@ def main():
     parser.add_argument('--version', default='2.1.1')
     parser.add_argument('--build', type=Path, default=ROOT/'build_tdp4')
     parser.add_argument('--output', type=Path, default=ROOT/'release-artifacts')
+    parser.add_argument('--evidence', type=Path, required=True,
+                        help='Observed hardware run with matching artifact hashes')
     args = parser.parse_args()
     if git('status', '--porcelain'):
         raise SystemExit('Commit or resolve all source changes before packaging')
@@ -47,6 +52,9 @@ def main():
     metadata = json.loads((build/'project_description.json').read_text())
     app = (build/'lakeshark.bin').read_bytes()
     identity = validate(config, metadata, app, revision, args.version)
+    regression.require_release(
+        json.loads((ROOT/'bench/regressions.json').read_text()),
+        build/'lakeshark.bin', args.evidence)
     prefix = 'lakeshark-tdp4-' + args.version
     out = args.output.resolve()/prefix
     out.mkdir(parents=True, exist_ok=False)

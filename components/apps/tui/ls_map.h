@@ -26,6 +26,10 @@ const char *ls_map_check_archive(const char *path);
 const char *ls_map_status(void);
 
 void ls_map_center(double lat, double lon);
+void ls_map_follow_set(bool enabled);
+bool ls_map_following(void);
+/* Called from the UI with a receiver snapshot. Never interrupts a render. */
+void ls_map_follow_fix(bool valid, double lat, double lon, int64_t stamp, int64_t now);
 
 /* Where the map last actually WORKED, and how to get back to it. */
 

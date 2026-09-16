@@ -1,6 +1,7 @@
 /* GPS: where you are, and when it cannot tell you, why. */
 
 #include "../../ls_tui_screen.h"
+#include "core/ls_time.h"
 #include "../../ls_text.h"
 
 #include <stdio.h>
@@ -15,6 +16,10 @@
 #include "ls_track_log.h"
 #include "ls_mesh.h"
 #include "../../ls_skyplot.h"
+#include "../../ls_skyview.h"
+static int s_sky_selected, s_sky_count;
+static bool s_sky_mode=true;
+static tui_rect s_view_hit;
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -82,6 +87,7 @@ static void field(tui_surface *sf, tui_rect a, int row, const char *label,
 static void sats_bar(tui_surface *sf, tui_rect a, int row,
                      const ls_gps_state_t *g)
 {
+    tui_put_str(sf,a,a.x+2,a.y+row,"#used .seen",A(DIM_FG,TUI_BLACK));
     const int room = a.w - 15;
     int visible = g->sats_visible;
     int used = g->sats_used;
@@ -91,7 +97,7 @@ static void sats_bar(tui_surface *sf, tui_rect a, int row,
     for (int i = 0; i < visible; i++) {
         const bool on = i < used;
         tui_put_char(sf, a, a.x + 13 + i, a.y + row,
-                     on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
+                     on ? '#' : '.',
                      A(on ? (TUI_GREEN | TUI_BRIGHT) : DIM_FG, TUI_BLACK));
     }
     if (!visible)
@@ -162,86 +168,10 @@ static void draw_sky(tui_surface *sf, tui_rect sky, const ls_gps_state_t *g)
 
 /* The sky, as a picture of the sky. */
 
-static void draw_skyview(tui_surface *sf, tui_rect r, const ls_gps_state_t *g)
+static void draw_skyview(tui_surface *sf,tui_rect r,const ls_gps_state_t *g)
 {
-    ls_panel_box(sf, r, "SKY VIEW", TUI_CYAN);
-
-    const tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-    if (in.h < 5 || in.w < 9) return;
-
-    int cw = 10, ch = 17;
-    ls_tui_geometry(NULL, NULL, &cw, &ch);
-
-    const uint8_t faint = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const int cy = in.h / 2, cx = in.w / 2;
-
-    /* The horizon, and the two axes. Drawn from the same projection the
-       satellites use, so the ring cannot disagree with what is on it - a
-       circle drawn by its own arithmetic is how a plot ends up with dots
-       outside its own rim. */
-    for (int az = 0; az < 360; az += 4) {
-        int rr, cc;
-        if (ls_sky_project(az, 0, in.h, in.w, cw, ch, &rr, &cc))
-            tui_put_char(sf, in, in.x + cc, in.y + rr, '.', faint);
-    }
-
-    for (int az = 0; az < 360; az += 12) {
-        int rr, cc;
-        if (ls_sky_project(az, 45, in.h, in.w, cw, ch, &rr, &cc))
-            tui_put_char(sf, in, in.x + cc, in.y + rr, '.', faint);
-    }
-    tui_put_char(sf, in, in.x + cx, in.y + cy, '+', faint);
-
-    /* N/E/S/W on the rim, which is what stops somebody having to remember
-       which way up it is. */
-    {
-        int rr, cc;
-        static const struct { int az; char c; } MARK[] = {
-            { 0, 'N' }, { 90, 'E' }, { 180, 'S' }, { 270, 'W' },
-        };
-        for (int i = 0; i < 4; i++)
-            if (ls_sky_project(MARK[i].az, 0, in.h, in.w, cw, ch, &rr, &cc))
-                tui_put_char(sf, in, in.x + cc, in.y + rr, MARK[i].c,
-                             A(DIM_FG, TUI_BLACK));
-    }
-
-    int placed = 0, unlocated = 0;
-    for (int i = 0; i < g->sat_count && i < LS_GPS_MAX_SATS; i++) {
-        const ls_gps_sat_t *sv = &g->sats[i];
-        /* An empty slot is all zeros, which projects to due north on the
-           horizon - exactly where the N marker is. Skipped by prn, which is
-           the field ls_gps.h says is zero for an empty slot. */
-        if (!sv->prn) continue;
-        /* And one the receiver has not located yet, which before a
-           fix is most of them. See ls_sky_located - an unlocated satellite
-           arrives as azimuth 0 elevation 0 and would sit on the N marker. */
-        if (!ls_sky_located(sv->azimuth, sv->elevation)) { unlocated++; continue; }
-
-        int rr, cc;
-        if (!ls_sky_project(sv->azimuth, sv->elevation, in.h, in.w,
-                            cw, ch, &rr, &cc))
-            continue;
-
-        const uint8_t at = sv->used ? A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)
-                                    : A(TUI_CYAN, TUI_BLACK);
-        tui_put_char(sf, in, in.x + cc, in.y + rr,
-                     ls_sky_glyph(sv->snr), at);
-        placed++;
-    }
-
-    /* Say how many are NOT on the plot, because otherwise a receiver
-       that can see nine and has placed two draws two dots and looks like a
-       receiver that can see two. The difference between those is whether to
-       wait or to go outside. */
-    if (unlocated) {
-        char note[32];
-        snprintf(note, sizeof(note), "%d not located yet", unlocated);
-        tui_put_str(sf, r, r.x + 2, r.y + r.h - 1, note,
-                    A(DIM_FG, TUI_BLACK));
-    } else if (!placed) {
-        tui_put_str(sf, r, r.x + 2, r.y + r.h - 1, "no satellites placed",
-                    A(DIM_FG, TUI_BLACK));
-    }
+    s_sky_count=g->sat_count<LS_GPS_MAX_SATS?g->sat_count:LS_GPS_MAX_SATS;
+    ls_skyview_draw(sf,r,g,s_sky_selected);
 }
 
 static void draw_track(tui_surface *sf, tui_rect r)
@@ -307,6 +237,45 @@ static void draw(tui_surface *sf, tui_rect area)
     s_quick_rect = ctl_h
         ? tui_rect_make(area.x, area.y + body.h, area.w, ctl_h)
         : tui_rect_make(0, -1, 0, 0);
+    const bool framed=ls_tui_is_wide() && body.w>=85 && body.h>=22;
+    tui_rect summary=body;
+    if(framed) {
+        s_view_hit=tui_rect_make(body.x,body.y,body.w/2-1,4);
+        ls_panel_box(sf,s_view_hit,"GPS VIEW",TUI_CYAN);
+        summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,4);
+        ls_panel_box(sf,summary,"TRACK LOG",TUI_CYAN);
+    } else s_view_hit=tui_rect_make(body.x,body.y,body.w,2);
+    tui_put_str(sf,framed?s_view_hit:body,body.x+2,body.y+(framed?1:0),ls_tui_is_wide()?(s_sky_mode?"[V] SKY / switch to receiver details":"[V] DETAILS / switch to satellite sky"):(s_sky_mode?"[ SKY ]  Tap for receiver details":"[ DETAILS ]  Tap for satellite sky"),A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    char health[80];snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_error()!=ESP_OK?"FAILED":ls_track_rec_running()?(g.fix?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
+    tui_put_str(sf,summary,summary.x+2,summary.y+1,health,A(ls_track_rec_running()?TUI_GREEN:TUI_YELLOW,TUI_BLACK));
+    uint32_t seconds=0;bool epoch=false;
+    char stamp[LS_TIME_STAMP_MAX];
+    if(ls_track_last_time(&seconds,&epoch)) {
+        if(epoch) {
+            /* Stored track epochs also cover historical dates before 2024. */
+            const time_t t=(time_t)seconds;
+            struct tm utc;
+#ifdef _WIN32
+            gmtime_s(&utc,&t);
+#else
+            gmtime_r(&t,&utc);
+#endif
+            strftime(stamp,sizeof(stamp),"%Y-%m-%dT%H:%M:%SZ",&utc);
+        } else ls_time_render_stamp_at(stamp,sizeof(stamp),0,(int64_t)seconds*1000000);
+        snprintf(health,sizeof(health),"LAST POINT %s",stamp);
+    } else snprintf(health,sizeof(health),"LAST POINT -- / none saved");
+    tui_put_str(sf,summary,summary.x+2,summary.y+2,health,LS_ATTR_DIM);
+    if(framed) {
+        char state[60];snprintf(state,sizeof(state),"%s / %u used of %u seen",state_word(&g),g.sats_used,g.sats_visible);
+        tui_put_str(sf,s_view_hit,s_view_hit.x+2,s_view_hit.y+2,state,A(state_hue(&g),TUI_BLACK));
+    }
+    const int header_h=framed?4:3;
+    body.y+=header_h;body.h-=header_h;
+    if(s_sky_mode) {
+        draw_skyview(sf,body,&g);
+        if(ctl_h)ls_quick_draw_posture(sf,s_quick_rect,ls_tui_is_wide(),QUICK,N_QUICK);
+        return;
+    }
 
     /* State, as the biggest thing on the screen. */
     {
@@ -339,6 +308,8 @@ static void draw(tui_surface *sf, tui_rect area)
         tui_rect left, right;
         ls_tui_split(rest, &left, &right);
         draw_position(sf, tui_rect_make(left.x, left.y, left.w - 1, 9), &g);
+        if (left.h >= 16)
+            draw_track(sf, tui_rect_make(left.x, left.y + 10, left.w - 1, left.h - 10));
         draw_sky(sf, tui_rect_make(right.x, right.y, right.w, 6), &g);
         if (right.h > 8)
             draw_wire(sf, tui_rect_make(right.x, right.y + 7, right.w, 5), &g);
@@ -377,6 +348,11 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k==LS_TK_CHAR && (ch=='v'||ch=='V')) {s_sky_mode=!s_sky_mode;return true;}
+    if(k==LS_TK_CHAR && (ch=='j'||ch=='J'||ch=='k'||ch=='K')) {
+        if(s_sky_count) s_sky_selected=(s_sky_selected+(ch=='j'||ch=='J'?1:s_sky_count-1))%s_sky_count;
+        return true;
+    }
     if (k == LS_TK_CHAR)
         return ls_quick_key(ch, QUICK, N_QUICK, ls_quick_grant_builtin(), NULL);
     return false;
@@ -384,6 +360,7 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if(tui_rect_contains(s_view_hit,col,row)) {s_sky_mode=!s_sky_mode;return true;}
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h)
         return ls_quick_touch(col, row, QUICK, N_QUICK,
@@ -393,7 +370,7 @@ static bool touch(int col, int row)
 
 const ls_tui_screen_t ls_scr_gps = {
     .name = "GPS",
-    .hint = "G receiver  M to map",
+    .hint = "V sky/details  G receiver  M map  J/K satellite",
     .enter = NULL,
     .leave = NULL,
     .draw = draw,

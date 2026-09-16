@@ -139,6 +139,37 @@ static void respond_fsk(const uint8_t *tx, uint8_t *rx, size_t n, void *ctx)
     if (op == 0x14 && n == 5) { rx[2] = 0; rx[3] = 180; rx[4] = 190; }
 }
 
+/* Cases register in reverse order; keep the existing cold-start case first. */
+
+static uint8_t rssi_status;
+static void respond_rssi(const uint8_t *tx,uint8_t *rx,size_t n,void *ctx)
+{
+    uint8_t op=tx[0];respond(tx,rx,n,ctx);
+    if(op==0x15 && n==3 && rx){rx[1]=rssi_status;rx[2]=200;}
+}
+LS_CASE(rssi_and_spectrum_reject_absent_or_failed_radio_responses)
+{
+    bring_up(0x22,0x14,0x24);
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);LS_EQ_INT(ls_lora_receive(),ESP_OK);
+    ls_shim_spi_on_transfer(respond_rssi,&s_part);
+    float dbm=42;rssi_status=0xff;
+    LS_CHECK(ls_lora_rssi_inst(&dbm)!=ESP_OK);LS_NEAR(dbm,42,.01);
+    rssi_status=0;LS_CHECK(ls_lora_rssi_inst(&dbm)!=ESP_OK);
+    rssi_status=0x58;LS_CHECK(ls_lora_rssi_inst(&dbm)!=ESP_OK);
+    rssi_status=0x52;LS_EQ_INT(ls_lora_rssi_inst(&dbm),ESP_OK);
+    rssi_status=0x54;LS_EQ_INT(ls_lora_rssi_inst(&dbm),ESP_OK);LS_NEAR(dbm,-100,.01);
+    LS_EQ_INT(ls_lora_scan_begin(909525000,911525000),ESP_OK);
+    float bins[64];bool done=true;rssi_status=0xff;
+    LS_EQ_INT(ls_lora_scan_pass(bins,64,&done),0);LS_CHECK(!done);
+    rssi_status=0x54;LS_EQ_INT(ls_lora_scan_pass(bins,64,&done),64);
+    LS_CHECK(!done);int passes=1;
+    while(!done && passes<65){LS_EQ_INT(ls_lora_scan_pass(bins,64,&done),64);passes++;}
+    LS_CHECK(done && passes>1);
+    for(int i=0;i<64;i++)LS_NEAR(bins[i],-100,.01);
+    LS_EQ_INT(ls_lora_scan_end(),ESP_OK);ls_lora_stop();
+}
+
 LS_CASE(fsk_receive_preserves_lora_and_has_no_packet_restart)
 {
     bring_up(0x22, 0x14, 0x24);

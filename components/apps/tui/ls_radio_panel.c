@@ -327,7 +327,7 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
              : text,
          amber);
     int bh = wide ? 5 : 10;
-    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh - 3, a.w, bh);
+    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
     tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);
     if (p->scan_choice) {
         scan_choices(sf, body, wide);
@@ -567,6 +567,11 @@ char ls_radio_panel_key(ls_radio_panel_t *p, const ls_radio_view_t *v, ls_tk_t k
         if (p->count)
             p->selected = (p->selected + (k == LS_TK_UP ? p->count - 1 : 1)) % p->count;
         return 0;
+    }
+    /* Lists and scan setup retain navigation. The receiver owns left/right tuning. */
+    if (!p->lists && !p->scan_choice && (k == LS_TK_LEFT || k == LS_TK_RIGHT)) {
+        p->focus = -1;
+        return k == LS_TK_LEFT ? '[' : ']';
     }
     if (k == LS_TK_CHAR)
         return action(p, v, c);

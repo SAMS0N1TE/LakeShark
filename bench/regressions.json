@@ -1,0 +1,849 @@
+{
+  "schema": 1,
+  "contracts": [
+    {
+      "id": "display-flipper-p25",
+      "topics": [
+        "display",
+        "p25",
+        "flipper",
+        "bluetooth",
+        "wifi",
+        "memory",
+        "release"
+      ],
+      "expected": "Opening/closing the Flipper LakeShark app, receiving P25 and switching FM/P25 must preserve the P4 display, audio and touch response while Wi-Fi reconnects.",
+      "paths": [
+        "components/lakeshark/board/ls_panel.c",
+        "components/lakeshark/board/variants/t_display_p4.h",
+        "main/ble_link.c",
+        "managed_components/espressif__esp_hosted/common/mempool/mempool.c",
+        "components/lakeshark/audio/audio_out.c"
+      ],
+      "checks": [
+        "Host gate",
+        "Exact candidate build on T-Display-P4 with matching C6 firmware",
+        "At least 10 real Flipper app open/close and FM/P25 transitions, plus 5 minutes receiving with Wi-Fi retries",
+        "Compare display late-frame counters before/after; inspect transport errors and resets",
+        "User observes no blue flashes and confirms touch/audio remain usable",
+        "Short voice bursts below prebuffer threshold must start within280ms of first observed queued audio; no stale speech may wait for later calls. Review P25QUAL and P25TEL queue stalls even with zero LCD late counters. Underruns alone include tail drain and do not diagnose PSRAM."
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "p4-memory",
+      "topics": [
+        "memory",
+        "dma",
+        "bluetooth",
+        "wifi",
+        "p25",
+        "audio"
+      ],
+      "expected": "Preserve cache-line alignment of every ESP-Hosted pool block, not only its base. Internal stacks are required for cache-off/NVS paths. Do not move hot decoder buffers or stacks without measurements.",
+      "paths": [
+        "managed_components/espressif__esp_hosted/common/mempool/mempool.c",
+        "managed_components/espressif__esp_hosted/host/port/esp/freertos/include/port_esp_hosted_host_os.h",
+        "main/ble_link.c",
+        "components/lakeshark/audio/audio_out.c"
+      ],
+      "checks": [
+        "Retain efc9b73 semantics",
+        "Measure internal/DMA largest block and stack high-water marks with P25 and Flipper connected"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "shared-waterfall",
+      "topics": [
+        "waterfall",
+        "display",
+        "spectrum",
+        "ui"
+      ],
+      "expected": "All screens use the shared waterfall implementation and real source timing. Do not introduce a second history/palette engine or present stale source data as live. Daylight uses neutral weak-signal marks and restrained color families; every increase in signal level must be equally dark or darker on white, including ASCII and bars.",
+      "paths": [
+        "components/apps/tui/ls_waterfall.c",
+        "components/apps/tui/ls_wf_source.c",
+        "components/apps/tui/ls_theme.c",
+        "components/apps/tui/screens/ext/scr_falls.c",
+        "components/apps/tui/ls_field.c"
+      ],
+      "checks": [
+        "Host waterfall tests",
+        "Source changes, start/stop and stale-source indicators",
+        "FALLS source picker includes all radios; passive views disable spectrum feed/tuning controls, reject stale or mismatched snapshots, preserve recorder source lock, and show GPS satellite levels without a position fix."
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "home-navigation",
+      "topics": [
+        "home",
+        "navigation",
+        "ui"
+      ],
+      "expected": "HOME retains F1-F4 groups and numeric apps. Fill available space with all apps that fit while preserving readable icons and touch targets. Show dedicated PREV/PAGE/NEXT only for genuine overflow, with matched touch and keyboard paging. Preserve selection on resize and return; portrait omits keyboard badges.",
+      "paths": [
+        "components/apps/tui/screens/main/scr_home.c"
+      ],
+      "checks": [
+        "Touch and keyboard navigation in portrait and landscape",
+        "F1-F4 categories, numeric launch, F5/F6 paging and single-page no-op",
+        "Open a later-page tile and return"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "sx1262-ownership",
+      "topics": [
+        "lora",
+        "mesh",
+        "subghz",
+        "radio"
+      ],
+      "expected": "Temporary SX1262 consumers must acquire one coherent Mesh hold, restore saved receive configuration on exit/failure, and never configure the radio concurrently. LoRa Labs DIRECT was reported broken; onboard LoRa passive Sub-GHz support was requested, not completed.",
+      "paths": [
+        "components/apps/tui/ls_field.c",
+        "components/lakeshark/board/ls_lora.c",
+        "components/meshcore/ls_mesh.cpp"
+      ],
+      "checks": [
+        "Hold acknowledgement, timeout, setup failure and release",
+        "Mesh receives again after temporary owner exits"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "flipper-alerts",
+      "topics": [
+        "flipper",
+        "alerts",
+        "audio",
+        "release"
+      ],
+      "expected": "All-off must silence every LakeShark alert, including SDR loss/recovery and captures. App relaunch must preserve settings and must not crash. Standalone fix/rec-load-ack source differs from bundled companion; verify installed artifact identity.",
+      "paths": [
+        "flipper-app/lakeshark_p25.c"
+      ],
+      "checks": [
+        "Actual Flipper: all outputs off, independent outputs, SDR loss/recovery, capture, persisted settings, relaunch without crashes",
+        "Readback hash matches candidate; rollback and stop app on new crash"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "realtime-telemetry",
+      "topics": [
+        "p25",
+        "audio",
+        "display",
+        "telemetry",
+        "cpu",
+        "memory"
+      ],
+      "expected": "Periodic CPU telemetry reads only permanent idle-task runtime counters, with stack scanning disabled. Never enumerate every task or scan PSRAM stacks under the kernel lock in a live receiver loop.",
+      "paths": [
+        "components/lakeshark/core/ls_cpu_busy.c",
+        "bench/tests/test_ls_cpu_busy.c"
+      ],
+      "checks": [
+        "Execute CPU sampler regression: both idle counters, no system enumeration, no stack scan",
+        "Active P25 plus Flipper: observe screen and measure refresh counters"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "universal-radio-tools",
+      "topics": [
+        "recording",
+        "rec",
+        "waterfall",
+        "gps",
+        "radios",
+        "universal",
+        "release"
+      ],
+      "expected": "For EVERY implementation, change, fix or refactor, audit feature applicability across ALL radios and data sources, not just the reported example or the source used for testing. Inventory board capabilities, registered endpoints and radio modes; update the inventory when hardware/adapters change. For each source record applicable-and-covered, applicable-but-gap, or not-applicable with a specific capability reason and evidence. Audit receive/decode, record/export/replay where supported, spectrum/data views, tuning/gain, metadata, ownership, disconnect, alerts and memory/display/audio effects. Universal features must use shared capability-driven paths. Missing adapters are gaps, never hardware limitations. GPS was an example, not a scope boundary.",
+      "paths": [
+        "components/apps/tui/screens/ext/scr_rec.c",
+        "components/apps/tui/ls_wf_source.c",
+        "components/lakeshark/radio/radio_endpoint.h",
+        "components/lakeshark/board/ls_gps.c"
+      ],
+      "checks": [
+        "Before every implementation run quality.py audit --topic <feature>; complete every radio row and validate the audit. Repeat after changes and attach the source-bound audit to release evidence.",
+        "Exercise each source listed in universal_sources for REC and waterfall",
+        "GPS NMEA capture without a fix; IQ capture via capable SDR; readback and source metadata",
+        "Switch/release ownership, hot unplug, absent device, unsupported format, storage full, stop/relaunch",
+        "Measure UI, LCD, audio and memory while capture and P25/Flipper coexist"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "serial-port-isolation",
+      "topics": [
+        "serial",
+        "com",
+        "usb",
+        "lora",
+        "display",
+        "freeze",
+        "reset",
+        "all-radios"
+      ],
+      "expected": "Serial discovery must not open/probe unrelated radio devices. Filter by device identity before opening; set DTR/RTS before open for eligible ports, never rely on fixing them afterward. Explicit/cached COM selections must be identity-checked again. Capture connection-time boot output and uptime. External USB-serial reset lines can restart the P4 regardless of current app; do not attribute such restarts to PSRAM without evidence.",
+      "paths": [
+        "tools/cell_console.py",
+        "bench/quality.py"
+      ],
+      "checks": [
+        "TT NFC installed probe reproduced P4 reboot; protected serial opens preserve uptime",
+        "Renumbered COM identities and explicit protected selection refused before OS open",
+        "Reader still discovers intended NFC hardware; all-radio applicability audit",
+        "LoRa/P25/UI receive soak with reader scans and no uptime reset"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "rounded-panel-bars",
+      "topics": [
+        "corner",
+        "rounded",
+        "border",
+        "display",
+        "layout",
+        "theme",
+        "all-radios"
+      ],
+      "expected": "Text and touch targets remain inside rounded-corner padding. At user request, landscape bar end caps extend to the physical arc, clipped per pixel; backgrounds must not stop at the text inset or enter the invisible corners.",
+      "paths": [
+        "components/apps/tui/ls_tui_screen.c",
+        "components/apps/tui/ls_tui_inset.c",
+        "bench/tests/test_tui_router.c"
+      ],
+      "checks": [
+        "Host corner-background and text/touch assertions",
+        "Physical top and bottom bars in portrait and landscape, dark and Daylight"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "usb-boot-enumeration",
+      "topics": [
+        "usb",
+        "boot",
+        "sdr",
+        "reconnect",
+        "reset",
+        "all-radios"
+      ],
+      "expected": "A failed first USB descriptor request must have bounded boot recovery without requiring physical replug. Never reset a root port after any USB device has registered. Preserve RTL/HackRF and other USB peripherals; no recurring retry storm.",
+      "paths": [
+        "components/lakeshark/radio/usb_host.c",
+        "bench/quality.py"
+      ],
+      "checks": [
+        "First descriptor failure reproduced on hardware",
+        "At most3 boot retries, existing device guard, API failures tested",
+        "Warm reset with SDR left connected recovers to active streaming; LCD/UI/audio stay responsive"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "ascii-referenced-instruments",
+      "topics": [
+        "design",
+        "visual",
+        "gps",
+        "waterfall",
+        "ui"
+      ],
+      "expected": "ASCII/LED/VFO instrument styling is default. Solid graphics only as a purposeful optional representation. Every data visual has source, units, scale/orientation, legend, fresh/unavailable state and usable exact values or selection. No decorative or fabricated measurements.",
+      "paths": [
+        "AGENTS.md",
+        "components/apps/tui/ls_skyview.c",
+        "components/apps/tui/ls_skyview.h",
+        "components/apps/tui/screens/ext/scr_falls.c",
+        "components/apps/tui/screens/ext/scr_gps.c",
+        "bench/tests/test_tui_screens.c"
+      ],
+      "checks": [
+        "ASCII-only sky content with direction/elevation/unit references",
+        "J/K selected satellite reports raw ID, azimuth, elevation, C/N0 and used status",
+        "Stale/unlocated data never plotted as current positions",
+        "All-radio review; label actual RSSI scale, show unavailable instead of invented spectrum"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "compass-orientation",
+      "topics": [
+        "compass",
+        "keyboard",
+        "rotation",
+        "gps",
+        "ui"
+      ],
+      "expected": "LoRa Labs including expanded compass holds entry orientation against IMU autorotation and keyboard attach/detach. Manual rotation remains explicit. Magnetic compass follows fresh valid IMU heading; GPS sky is true-north-up, not a moving compass or orbit map. Show calibration/freshness and exact data; keyboard-attached accuracy needs physical calibration verification. Automatically choose separately saved standalone/keyboard calibration. Cancel in-progress fits on attachment changes. Never apply legacy records with unknown setup identity. Native GPS must expose SKY in both orientations, with V/touch to receiver details and J/K selection. Landscape GPS groups receiver view, timestamped track state, sky plot, selected satellite and satellite table in ASCII borders; fresh and stale layouts retain their labels and bounds.",
+      "paths": [
+        "components/apps/tui/screens/ext/scr_labs.c",
+        "components/apps/tui/ls_skyview.c",
+        "main/compact_ui.cpp",
+        "components/apps/tui/ls_field.c",
+        "components/apps/tui/screens/ext/scr_gps.c"
+      ],
+      "checks": [
+        "Portrait and landscape entry orientation retained during motion",
+        "Keyboard attach/detach while compass open",
+        "Magnetic heading changes, calibration status and stale data",
+        "GPS sky table references, selection and clipping",
+        "Independent profiles restored after reboot",
+        "Missing/corrupt profile remains uncalibrated; alternate slot recovery",
+        "Attach/detach cancels mixed-setup calibration"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "passive-watch-health",
+      "topics": [
+        "subghz",
+        "cc1101",
+        "recording",
+        "health"
+      ],
+      "expected": "Saved pulse history is filtered by receiver and identified by boot; counts are observations, not devices. CC40us glitch filter; invalid nonalternating edges rejected. RAW candidates remain unverified; alerts need repeat match or repeated decoded frames. Health distinguishes dropped/overflow captures, pending/saved/failed storage and truncation. Existing archive format/pins/export paths retained. One-off raw observations cannot evict repeated/decoded records. No unconditional time throttle before the bounded queue. An idle-to-WATCH transition resets the checkpoint interval; pending/lost data remains visible. Periodic saves must preserve an immutable snapshot and continue consuming live captures; newer captures stay PENDING after older snapshot saves. Do not accept any reset during WATCH.",
+      "paths": [
+        "components/lakeshark/apps/rec/rec_watch_runtime.c",
+        "components/lakeshark/apps/rec/rec_watch.c",
+        "components/lakeshark/board/ls_cc_capture.c",
+        "components/apps/tui/screens/ext/scr_subghz.c"
+      ],
+      "checks": [
+        "Malformed pulses, source-filtered archive",
+        "Raw versus repeated pattern labels",
+        "Large pulse inspector with time/high-low references",
+        "SD failure, pending save and loss reporting",
+        "Known Flipper payload repeat grouping and changed-payload separation",
+        "Checkpoint startup and ongoing SD backpressure capture loss"
+      ],
+      "history": "bench/regression-history.jsonl",
+      "latest_evidence": {
+        "date": "2026-09-15",
+        "contract": "passive-watch-health",
+        "kind": "hardware-failure",
+        "firmware_sha256": "4213f5cb05e37b02be4d1e9f38195f3ac13eb1da8caea6d1a7267e18f0225397",
+        "detail": "Checkpoint-pump candidate: hardware watchdog rst0x7 HP_SYS_HP_WDT_RESET immediately after starting CC1101 WATCH and first Flipper fixture, before a checkpoint was observed. Prior FM-to-RTL/REC run emitted USB URB invalid-state errors. Restored69d48002 with flash hash verification; later reinstalled4213f5cb for a clean-boot isolation run. That run aborted on HOME screen assertion during boot, before WATCH or any fixture. User stopped work and requested computer-transfer push. CURRENT INSTALLED4213f5cb remains uncleared; restore69d48002 before normal use. Core dump recovered from partition does NOT match candidate ELF (dump7af438354 vs app9ce768a32), so it is older evidence and cannot identify this reset. Source host126s passed, which does not clear hardware failure.",
+        "evidence": "work/recording-checkpoint-pumped-active.jsonl; work/rollback-recording-pump.log; work/retry-recording-pump.log; work/recording-checkpoint-cleanboot.jsonl; work/recording-pump-crash-analysis.log; work/recording-pump-host.log"
+      }
+    },
+    {
+      "id": "lora-spectrum-freshness",
+      "topics": [
+        "lora",
+        "labs",
+        "spectrum"
+      ],
+      "expected": "Spectrum requires DIRECT ownership and a complete sweep. Publish complete rows only, label stale/failed sweeps and exact MHz/dBm references. Swept energy is not packet RSSI or packet decoding; brief packets may occur between looks. Exit restores Mesh ownership. Reject absent/error/non-RX status responses; idle RX command status 0/1 is not itself an error. Display exact peak RSSI/bin. Narrow-band acquisition must settle adequately; bound each worker pass while retaining complete-row publication.",
+      "paths": [
+        "components/apps/tui/ls_field.c",
+        "components/apps/tui/screens/ext/scr_labs.c"
+      ],
+      "checks": [
+        "Incomplete and failed scan passes not published as fresh",
+        "Completed sweeps advance time/count",
+        "DIRECT off and stale view explicit",
+        "Mesh hold release"
+      ],
+      "history": "bench/regression-history.jsonl",
+      "hardware_pending": "Batched settling candidate restored energy response; steady synthetic910.525MHz on69d48002 peaked bin33/64, -73..-68dBm versus -117dBm baseline. Earlier short-burst peak bin1 was ambiguous. Loaded P25/display acceptance and CLI Mesh-hold handshake remain open."
+    },
+    {
+      "id": "modulation-identification-evidence",
+      "topics": [
+        "subghz",
+        "modulation",
+        "identification",
+        "flipper",
+        "nfc"
+      ],
+      "expected": "Separate receiver configuration, measured modulation hypothesis, protocol recognition and payload verification. A Flipper preset or filename is provenance, not measured identification. Unknown and ambiguous must remain visible. Require positive, altered-payload, malformed/truncated, noise and cross-protocol negative fixtures. Audit all radios and capture format/adapter gaps before adding a recognizer. Keep ASCII source/frequency/timing/units/confidence/repetition/checksum references. Passive recognition does not automatically transmit captured commands. Verify fixture encoder output: Momentum430a3d50 Princeton reuses original button state, so CLI requested59C6A2 produced59C6A9 in this run. Input argument equality is not waveform ground truth.",
+      "paths": [
+        "components/lakeshark/apps/rec/rec_ook24.c",
+        "bench/tests/test_rec_watch.c"
+      ],
+      "checks": [
+        "Repeated complete OOK24 frames and bad timing",
+        "Imported Flipper fixture metadata versus actual pulse decoder outcome",
+        "Other modulation/protocol adapters remain explicit gaps"
+      ],
+      "history": "bench/regression-history.jsonl",
+      "hardware_pending": "Flipper fixture inventory read: OOK650 and OOK270 RAW LakeShark files; five weather-station families available. Broad protocol recognition and FSK demodulation have not been implemented by this pass. NFC synthetic tag emulation detected ATQA0044; passive external-field watch did not detect Flipper field and remains unresolved."
+    },
+    {
+      "id": "nfc-passive-field",
+      "topics": [
+        "nfc",
+        "mixrf",
+        "field"
+      ],
+      "expected": "ST25R3916 ready-mode external field watch uses33mV activation/25mV release atRFI1, RX/TX off. First sample establishes presence baseline, not an arrival. Verify field-on/off cycles and no-field baseline independently of active card polling.",
+      "paths": [
+        "components/lakeshark/board/ls_mixrf.c",
+        "components/lakeshark/board/ls_mixrf.h",
+        "bench/tests/test_mixrf_field.c"
+      ],
+      "checks": [
+        "External field cycles with transmitter disabled",
+        "Arrival baseline/restart",
+        "Separate NFCA fixture detection and clear"
+      ],
+      "history": "bench/regression-history.jsonl",
+      "hardware_pending": "69d48002 detected/cleared Flipper field twice in two runs. Startup extra arrival occurred once; source baseline policy host-tested but not hardware-cleared. NFCA ATQA0044 passed first run; later rollback run had hits but did not confirm presence. Do not mark all NFC checks passed."
+    },
+    {
+      "id": "gps-track-map",
+      "topics": [
+        "gps",
+        "track",
+        "map",
+        "recording"
+      ],
+      "expected": "GPS track recording must survive a drive and ring wrap without resetting the P4. Live map follows only fresh receiver fixes, allows manual pan, and labels magnified archive tiles without implying new detail.",
+      "paths": [
+        "components/lakeshark/core/ls_track_log.c",
+        "components/lakeshark/core/ls_track.c",
+        "components/apps/tui/ls_map.c",
+        "components/apps/tui/screens/ext/scr_map.c"
+      ],
+      "checks": [
+        "Host invalid date/fix and 7200-point ring tests",
+        "Fresh/stale follow, manual pan, and bounded overzoom host tests",
+        "P4 with keyboard: prolonged moving GPS recording through 4096 points, saved/readback track, live map and zoom; no reboot, loaded UI/audio and memory headroom",
+        "Obtain reset reason and matching crash ELF before attributing reported drive reboot to a source defect"
+      ],
+      "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "map-rec-ui-release",
+      "topics": [
+        "map",
+        "recording",
+        "keyboard",
+        "ui",
+        "release"
+      ],
+      "expected": "MAP landscape uses one header and one control row; hide/show controls always has a restore target. Fresh GPS, mesh and aircraft have expanding dotted rings and distinct center glyphs; stale data does not animate and collocated peers cannot overwrite GPS. REC exposes source/format and real capture timestamps (UTC when known, explicit uptime otherwise), including saved GPS points and CSV rows. Keyboard light applies immediately and preference survives UI restart. FM/P25 left/right tune the receiver while lists retain navigation. ADS-B exposes MAP, SET HOME and a dedicated radar view; home uses a fresh GPS fix or selected map center with visible validation. Shared partial button rows center their faces and hit targets. FM clearly separates receiver details, pager and spectrum controls.",
+      "paths": [
+        "components/apps/tui/screens/ext/scr_map.c",
+        "components/apps/tui/screens/ext/scr_rec.c",
+        "components/apps/tui/screens/ext/scr_gps.c",
+        "components/apps/tui/screens/ext/scr_journal.c",
+        "components/apps/tui/screens/ext/scr_settings.c",
+        "components/lakeshark/core/ls_track_log.c",
+        "main/compact_ui.cpp",
+        "components/apps/tui/ls_radio_panel.c",
+        "components/apps/tui/ls_tui_ui.c",
+        "components/apps/tui/ls_action_builtin.c",
+        "components/apps/tui/screens/main/scr_adsb.c",
+        "components/apps/tui/screens/main/scr_fm.c",
+        "components/apps/tui/screens/main/scr_p25.c",
+        "bench/tests/test_tui_screens.c"
+      ],
+      "checks": [
+        "Full host suite and Python quality tests",
+        "Portrait/landscape simulator previews, hide/show controls and fresh/stale markers",
+        "Physical P4 touch, corner extent, light persistence and loaded recording/display/audio acceptance"
+      ],
+      "history": "bench/regression-history.jsonl"
+    }
+  ],
+  "incidents": [
+    {
+      "id": "P25-FLIPPER-BLUE-20260915",
+      "contract": "display-flipper-p25",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "User reproduced heavy static after a chime, then choppy P25 audio on installed 00d85d4e (full app readback verified). Chime/Flipper cycle scripts stopped; serial evidence preserved. Found static FreeRTOS PCM stream configured with even storage length, leaving odd usable capacity and permitting half-sample writes on overflow. Candidate correction pending; not proven to explain all choppiness. UI-off initially parked RX, so that was an invalid comparison; explicit mode p25 restored verified streaming without rendering. Installed PCM alignment candidate 634bcf27547036c3db1589a5191918473a6bb6d0108607bdde6ca650db328eeb with verified full app readback and backup of failed 00d85d4e. Host gate passed in 70s. User reports no audio yet, possibly no transmissions; current capture has streaming but no decoded voice. Prior heavy static/choppy reproduction remains valid and uncleared. Test chimes/cycling stopped. Audio queue keeps complete PCM16 samples and uses already-allocated reserved byte; no memory relocation. Follow-up on 634bcf27: user heard good audio, then apparent silence, then spontaneous playback resumption. Immediate status showed mute=0, volume 65 and RTL stream=1. Logs around the check include P25 TDU/TDULC call endings and subsequent voice frames; telemetry records 325 decoded voice frames, zero audio drops, 325 underruns (counter includes end-of-call drain). Exact user silence cannot yet be time-correlated or cleared as normal. No settings/reset applied to restore sound.",
+      "affected_build": "00d85d4ebff185a4ef617697089f0e2c44f20b7a402d49beedb5c30e07a55d87",
+      "clearance": null
+    },
+    {
+      "id": "FLIPPER-MUTE-CRASH-20260915",
+      "contract": "flipper-alerts",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "Baseline P4 backup287b9ba2 stayed responsive during nine completed Flipper close/open cycles. On tenth app open COM7 disappeared; after reconnect Flipper uptime reset from5h53m59s to2m45s and no app was running. This is new Flipper reboot evidence; prior ten-cycle pass does not clear the issue. P4 did not show a reset in this run. Root trigger unresolved. Previous evidence: New cancellation/lifecycle candidate 3c70dc66 installed and full readback SHA verified after backup3d383048. Saved outputs all off. Ten actual P25 open/exit cycles passed loader checks; 330sec P4 capture zero late samples, no detected errors, UI progresses. Worker now uses heap snapshot, atomic generation cancellation, output cleanup; bypass LED feedback removed. Physical observation, independent output tests and extended crash validation pending; prior failures retained.",
+      "affected_build": "standalone fix/rec-load-ack 2a9b3e6 plus rejected alert candidate",
+      "clearance": null
+    },
+    {
+      "id": "UNIVERSAL-RADIO-TOOLS-20260915",
+      "contract": "universal-radio-tools",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "All9 FALLS source choices remain available. Shared ASCII sky instrument replaces GPS bars in GPS/FALLS, with selected ID/AZ/EL/CN0/fix usage, true-north/elevation references and stale/unlocated handling. RSSI meters now ASCII. Host76sec/29Pythonchecks pass; f9dd157c installed with flash hash verified; startup keyboard/touch ready, LCD late0. Global older-screen visual audit, hardware sky acceptance and missing REC/spectrum adapters remain open.",
+      "affected_build": "2.1.1 and current candidates",
+      "clearance": null
+    },
+    {
+      "id": "COM-SCANNER-RESET-20260915",
+      "contract": "serial-port-isolation",
+      "state": "candidate",
+      "release_blocker": true,
+      "summary": "Guard-only TT NFC Reader hotfix installed after user closed app. Original executable backed up; installed SHA256 da62b1626b174cf461295da84a8d27aeb2e9aab84d5b23d2b0f21148581f127d verified. Installed selftest refuses COM9 and scans only COM11. P4 uptime972->1021s across reader restart, UI progresses and late0. Live reader/card operation and LoRa/P25 extended scan validation remain pending; original reproduction225->10s retained.",
+      "affected_build": "TT NFC Reader installed exe SHA256 0d1de5f4d88e11aa38847c972d7d5e7bcaa8306faa879ac121c2a8542ddab6ac",
+      "clearance": null
+    },
+    {
+      "id": "ROUNDED-BORDER-20260915",
+      "contract": "rounded-panel-bars",
+      "state": "candidate",
+      "release_blocker": true,
+      "summary": "Installed b0f35d1c candidate; esptool verified flash hash. Top/bottom bar backgrounds now use the same corner-safe span as text; host router checks passed. Physical portrait/landscape and theme verification pending.",
+      "affected_build": "8b6c9b6e310402230734ceba3a54febf278394fb026c05fa902a0105fd8b4cda",
+      "clearance": null
+    },
+    {
+      "id": "USB-BOOT-ENUM-20260915",
+      "contract": "usb-boot-enumeration",
+      "state": "candidate",
+      "release_blocker": true,
+      "summary": "Controlled restart on b0f35d1c failed CHECK_SHORT_DEV_DESC at4525ms, before RTL adapter. User replug restores streaming. New bounded host-port boot retry source built/tested; hardware validation pending. No physical VBUS power switch is needed to test logical host-port restart.",
+      "affected_build": "b0f35d1c",
+      "clearance": null
+    },
+    {
+      "id": "RECORDING-WATCHDOG-20260915",
+      "contract": "passive-watch-health",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "Checkpoint-pump candidate: hardware watchdog rst0x7 HP_SYS_HP_WDT_RESET immediately after starting CC1101 WATCH and first Flipper fixture, before a checkpoint was observed. Prior FM-to-RTL/REC run emitted USB URB invalid-state errors. Restored69d48002 with flash hash verification; later reinstalled4213f5cb for a clean-boot isolation run. That run aborted on HOME screen assertion during boot, before WATCH or any fixture. User stopped work and requested computer-transfer push. Historical 4213f5cb run remained uncleared at that handoff. Current prepared P4 candidate is 634bcf27 (backed up and readback-verified in this task); the old rollback instruction is historical, not the current installation state. Core dump recovered from partition does NOT match candidate ELF (dump7af438354 vs app9ce768a32), so it is older evidence and cannot identify this reset. Source host126s passed, which does not clear hardware failure.",
+      "affected_build": "4213f5cb05e37b02be4d1e9f38195f3ac13eb1da8caea6d1a7267e18f0225397",
+      "clearance": null
+    },
+    {
+      "id": "GPS-TRACK-REBOOT-20260915",
+      "contract": "gps-track-map",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "User reports full P4 reboot late in a drive while GPS tracking, keyboard attached. Duration, installed firmware hash, reset reason and matching trace unknown. Found unchecked month array indexing and stale/unrepresentable fixes in recorder; validation candidate is not proven root cause. Existing marker and zoom retained; follow and bounded magnification added for validation."
+    },
+    {
+      "id": "P25-GPS-IDLE-WATCHDOG-20260916",
+      "contract": "display-flipper-p25",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "New candidate315d4298 corrects an NVS static-task reuse race: after completion semaphore the caller now waits for eSuspended before vTaskDelete, avoiding deferred idle deletion of a still-running remote task. Verified IDF5.4.3 tasks.c semantics. Root cause of prior watchdog not proven. Host87s and build pass; installed readback verified; FM/P25 cursor and Space tune pass live, BLE-off loaded run underway. USB initial cursor-only run invalid (dongle failed enumeration); reconnected and new boot enumerated RTL. Prior evidence retained: Readback-verified 1142a887 candidate reset during active P25 streaming with GPS landscape visible. Capture stopped at 145.2 seconds on ESP-ROM and rst:0x7 (HP_SYS...). Prior status samples showed stream=1, ~49.5 ms UI frames and stable internal free 22967 bytes. GPS screen capture showed receiver OFF and TRACK stopped; no drive recording was being tested. Stored coredump partition SHA256 faf02a9f is byte-identical to the pre-session dump, so cannot explain this reset. App parked and backlight turned off; restored backed-up 287b9ba2 with full readback verification. Post-rollback HOME, SDR stream=0 and keyboard backlight duty=0% confirmed. Do not attribute reset to layout, GPS recording, keyboard PWM or battery without matching evidence. Follow-up20260916: normal-config full-height GPS candidate1c7f10c0 also reset during the third Flipper close/open cycle after two successful cycles, with active P25 and GPS displayed. Complete ROM log shows rst0x7 HP_SYS_HP_WDT_RESET, core0 PC0x4ff00000 (_vector_table), core1 PC0x40001bda. Matching-ELF disassembly maps core1 to the panic busy-wait entered specifically for PANIC_RSN_INTWDT_CPU0: core0 interrupt watchdog established, triggering code not established. Restored287b9ba2 had completed317.94seconds with P25/GPS displayed and no detected reset. Full-height candidate parked HOME and backup restored with full readback verification; final HOME/stream0/backlight0% confirmed; GPS edits retained. Separate IRAM-panic diagnostic build was rejected for startup memory/stack failure and removed.",
+      "affected_build": "1142a887ea2831c41d8d7ffe4370c311634fd31538486097c9ca19f545015786",
+      "clearance": null
+    }
+  ],
+  "memory_baseline": "454c97e0f21acca75c605198a23c3e9ac31d0b99",
+  "universal_sources": [
+    {
+      "source": "RTL-SDR",
+      "recording": "Pulse capture implemented; general IQ/audio workflow audit pending",
+      "waterfall": "P25/FM feeds implemented; general endpoint selection pending"
+    },
+    {
+      "source": "HackRF",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    },
+    {
+      "source": "CC1101",
+      "recording": "Pulse capture implemented; packet/other formats pending",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    },
+    {
+      "source": "SX1262/LoRa",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "Sweep implemented; DIRECT/ownership validation pending"
+    },
+    {
+      "source": "GPS/GNSS",
+      "recording": "GPS position-track recorder now accessible from REC SOURCE (source implemented, hardware validation pending). Existing GPS app also records tracks. Raw NMEA and GPS-band IQ workflows remain pending.",
+      "waterfall": "FALLS native satellite dB-Hz view without position fix, stale snapshot rejected. GPS-band SDR IQ workflow still pending; hardware validation pending."
+    },
+    {
+      "source": "nRF24",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    },
+    {
+      "source": "NFC",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    },
+    {
+      "source": "Wi-Fi",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    },
+    {
+      "source": "Bluetooth",
+      "recording": "REC exposes CSV receiver/survey/field metadata via existing journal writer; source code pending hardware validation. Raw IQ/packet/frame payload integration remains open.",
+      "waterfall": "FALLS passive receiver/survey/field/link metadata view implemented, no synthetic spectrum. Full spectrum/channel-history adapter where applicable still pending; hardware validation pending."
+    }
+  ],
+  "radio_inventory_bindings": {
+    "LS_FIELD_MESH": "SX1262/LoRa",
+    "LS_FIELD_LORA": "SX1262/LoRa",
+    "LS_FIELD_RTL": "RTL-SDR",
+    "LS_FIELD_CC1101": "CC1101",
+    "LS_FIELD_NRF24": "nRF24",
+    "LS_FIELD_NFC": "NFC",
+    "LS_FIELD_WIFI": "Wi-Fi",
+    "LS_FIELD_BLE": "Bluetooth",
+    "LS_RADIO_ENDPOINT_RTL_USB": "RTL-SDR",
+    "LS_RADIO_ENDPOINT_HACKRF_USB": "HackRF",
+    "LS_FIELD_HACKRF": "HackRF"
+  },
+  "design_references": [
+    {
+      "name": "PortaPack Mayhem Capture",
+      "url": "https://github.com/portapack-mayhem/mayhem-firmware/wiki/Capture",
+      "lesson": "Shared capture workflow with explicit sample format, source tuning metadata, dropped-sample reporting and storage time estimates. Adapt to every capable LakeShark source; do not inherit a single-HackRF source assumption."
+    },
+    {
+      "name": "Mayhem RecordView",
+      "url": "https://github.com/portapack-mayhem/mayhem-firmware/blob/next/firmware/application/ui_record_view.cpp",
+      "lesson": "Common recording UI with format-specific writers and separate capture worker; explicit stop/error lifecycle. Reuse equivalent LakeShark infrastructure before adding workers/buffers. Do not copy hardware sample-rate or memory budgets."
+    }
+  ],
+  "feature_audits": [
+    {
+      "feature": "Universal recording and signal/data views",
+      "source_digest": "48da29e7b14b514ac785ac03f106b8b6a852a06f296c75cb82f466fc27b86f10",
+      "inventory_review": "Reviewed field-source enum, RTL/HackRF endpoint identifiers and board GPS interface. Mesh and swept LoRa share SX1262 hardware but need separate ownership/lifecycle checks. Newly attached devices and added drivers must extend this inventory.",
+      "memory_display_audio_impact": "All adapters must audit buffer lifetime/size, internal vs PSRAM placement, DMA/cache alignment, producer/storage backpressure and concurrent UI/audio latency. Existing GPS-track path adds no capture task/buffer. Unresolved P25 freeze remains blocking.",
+      "radios": [
+        {
+          "source": "RTL-SDR",
+          "decision": "gap",
+          "reason": "Pulse capture implemented; general IQ/audio workflow audit pending; P25/FM feeds implemented; general endpoint selection pending",
+          "evidence": "components/lakeshark/apps/rec/rec_watch.h; components/apps/tui/ls_wf_source.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "HackRF",
+          "decision": "gap",
+          "reason": "General REC integration pending; separate cellular IQ capture exists; General integration pending",
+          "evidence": "components/lakeshark/radio/hackrf_dev.c; components/apps/tui/ls_wf_source.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "CC1101",
+          "decision": "gap",
+          "reason": "Pulse capture implemented; packet/other formats pending; Integration pending",
+          "evidence": "components/lakeshark/apps/rec/rec_watch.h; components/apps/tui/ls_wf_source.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "SX1262/LoRa",
+          "decision": "gap",
+          "reason": "REC packet/RSSI integration pending; Sweep implemented; DIRECT/ownership validation pending",
+          "evidence": "components/apps/tui/ls_wf_source.h; components/apps/tui/ls_field.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "GPS/GNSS",
+          "decision": "gap",
+          "reason": "GPS position-track recorder now accessible from REC SOURCE (source implemented, hardware validation pending). Existing GPS app also records tracks. Raw NMEA and GPS-band IQ workflows remain pending.; Native receiver has satellite/SNR data, not RF IQ; expose appropriate view. GPS-band SDR spectrum workflow pending",
+          "evidence": "components/apps/tui/screens/ext/scr_rec.c; components/lakeshark/board/ls_gps.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "nRF24",
+          "decision": "gap",
+          "reason": "Packet capture integration pending; Capability/data-view integration pending",
+          "evidence": "components/apps/tui/ls_field.h; components/lakeshark/apps/rec/rec_watch.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "NFC",
+          "decision": "gap",
+          "reason": "Capture integration pending; Capability/data-view integration pending",
+          "evidence": "components/apps/tui/ls_field.h; components/lakeshark/apps/rec/rec_watch.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "Wi-Fi",
+          "decision": "gap",
+          "reason": "Frame/event capture integration pending; Capability/data-view integration pending",
+          "evidence": "components/apps/tui/ls_field.h; components/lakeshark/apps/rec/rec_watch.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        },
+        {
+          "source": "Bluetooth",
+          "decision": "gap",
+          "reason": "Packet/event capture integration pending; Capability/data-view integration pending",
+          "evidence": "components/apps/tui/ls_field.h; components/lakeshark/apps/rec/rec_watch.h",
+          "checks": [
+            "source selection and metadata",
+            "capture/data-view lifecycle",
+            "loaded memory/UI/audio",
+            "disconnect and storage errors"
+          ],
+          "gap_id": "UNIVERSAL-RADIO-TOOLS-20260915"
+        }
+      ]
+    },
+    {
+      "feature": "Serial scanner isolation and connection-time evidence",
+      "source_digest": "48da29e7b14b514ac785ac03f106b8b6a852a06f296c75cb82f466fc27b86f10",
+      "inventory_review": "Checked all nine shared sources and attached COM4/9/11/18/26 identities. COM9 CH343 P4, COM18 Flipper, COM4/26 Espressif excluded by reader guard. COM11 FTDI remains eligible. Native non-serial radios are affected through P4 host reset; unrecognized future adapters require inventory review.",
+      "memory_display_audio_impact": "Fix is in PC serial discovery/open; no P4 memory placement or buffers changed. Console now retains initial boot response. Validate all P4 radio workflows survive reader scan; current measured reset reproduction and packaged port-denial test do not replace LoRa/P25 soak.",
+      "radios": [
+        {
+          "source": "RTL-SDR",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "HackRF",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "CC1101",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "SX1262/LoRa",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "GPS/GNSS",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "nRF24",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "NFC",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "Wi-Fi",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        },
+        {
+          "source": "Bluetooth",
+          "decision": "gap",
+          "reason": "P4 host reset interrupts this radio/data workflow; reader-side guard implemented but end-to-end validation remains pending.",
+          "evidence": "work/nfc-probe-reset-repro.jsonl; outputs/TT-NFC-port-fix/nfc_serial_guard.py; work/nfc-smoke-result.json",
+          "checks": [
+            "Reader scan must not open P4/Flipper/ESP ports",
+            "No reset while radio/data workflow and UI active"
+          ],
+          "gap_id": "COM-SCANNER-RESET-20260915"
+        }
+      ]
+    }
+  ]
+}

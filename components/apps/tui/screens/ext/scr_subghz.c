@@ -19,6 +19,10 @@ static int selected;
 static char feedback[80], peers[LS_MESH_MAX_PEERS][17];
 static tui_rect list;
 static bool touch_nav;
+static tui_rect pulse_hit;
+static int pulse_selected;
+static uint64_t pulse_total;
+static bool details;
 static ls_fresh_t arrivals;
 static int setup_item;
 static uint32_t source_frequency[2]={433920000,433920000};
@@ -75,8 +79,9 @@ static void action(int i)
     feedback[0]=0;
     if(i==0) {
         bool on=!rec_watch_enabled();
-        if(rec_watch_enable(on)) {if(on && rec_watch_source()==REC_SOURCE_RTL)rec_arm_request();else if(!on)rec_disarm();}
-        else snprintf(feedback,sizeof(feedback),"Check source, PROBE and frequency; stop MIX-RF monitor");
+        if(rec_watch_enable(on)) {if(on && rec_watch_source()==REC_SOURCE_RTL){ls_tui_radio_want("REC");rec_arm_request();}else if(!on)rec_disarm();}
+        else {rec_watch_snapshot(&s);snprintf(feedback,sizeof(feedback),"%s",!s.ready?"Loading SD history; try WATCH when it appears":"Check source, PROBE and frequency; stop MIX-RF monitor");}
+    } else if(i==10) {details=!details;
     } else if(i==1) ls_numpad_open("WATCH FREQUENCY","MHz",rec_get_freq()/1e6,tune);
     else if(i==2 && selected<s.count) {
         if(!rec_watch_request_pin(s.event[selected].id,!s.event[selected].pinned))
@@ -124,7 +129,7 @@ static void action(int i)
         }
     } else if(i==9) {if(rec_watch_source()==REC_SOURCE_RTL && !rec_watch_enabled())ls_scr_rec_tools();
     } else if(i==7) {
-        if(rec_watch_source()==REC_SOURCE_CC1101){snprintf(feedback,sizeof(feedback),"CC: OOK 650kHz, 1us filter, 30ms gap, 1024 edges");return;}
+        if(rec_watch_source()==REC_SOURCE_CC1101){snprintf(feedback,sizeof(feedback),"CC: OOK 650kHz, 40us filter, 30ms gap, 1024 edges");return;}
         ls_picker_open("CAPTURE SETUP",setup_done);
         ls_picker_add("Threshold","0 = automatic");
         ls_picker_add("End gap","Silence to end");
@@ -138,24 +143,54 @@ static void enter(void) { button_focus=-1;button_slot=0;rec_watch_start();ls_fie
 static void leave(void) {ls_field_watch(false);}
 static void waveform(tui_surface *sf,tui_rect a)
 {
-    ls_panel_box(sf,a,"SELECTED PULSE TIMING",TUI_CYAN);
-    if(selected>=s.count || a.h<8)return;
-    int n=s.event[selected].edges;if(n>48)n=48;
-    uint64_t total=0;
-    for(int i=0;i<n;i++)total+=s.preview[selected][i]<0?-(int64_t)s.preview[selected][i]:s.preview[selected][i];
-    if(!total)return;
-    uint64_t end=0;int edge=0;
-    for(int x=0;x<a.w-4;x++) {
-        uint64_t t=(uint64_t)x*total/(a.w-4);
+    ls_panel_box(sf,a,"PULSE INSPECTOR",TUI_CYAN);
+    pulse_hit=tui_rect_make(0,0,0,0);pulse_total=0;
+    if(selected>=s.count || a.h<9)return;
+    const rec_watch_event_t *e=&s.event[selected];
+    int n=e->edges;if(n>48)n=48;
+    uint32_t low=UINT32_MAX,high=0;
+    for(int i=0;i<n;i++) {
+        uint32_t d=s.preview[selected][i]<0?-(int64_t)s.preview[selected][i]:s.preview[selected][i];
+        pulse_total+=d;if(d<low)low=d;if(d>high)high=d;
+    }
+    if(!pulse_total)return;
+    if(pulse_selected>=n)pulse_selected=0;
+    char text[110];
+    snprintf(text,sizeof(text),"%s #%lu / %s",e->source==REC_SOURCE_CC1101?"CC1101":"RTL",(unsigned long)e->id,
+       e->end_reason==REC_END_SPAN || e->end_reason==REC_END_EDGES?"TRUNCATED":s.decoded[selected].repeats?"OOK24 VERIFIED":e->count>1?"REPEAT MATCH":"RAW CANDIDATE");
+    tui_put_str(sf,a,a.x+2,a.y+1,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    int w=a.w-10;if(w<2)return;
+    pulse_hit=tui_rect_make(a.x+7,a.y+2,w,4);
+    tui_put_str(sf,a,a.x+1,a.y+2,"HIGH",LS_ATTR_DIM);
+    tui_put_str(sf,a,a.x+1,a.y+4,"LOW",LS_ATTR_DIM);
+    uint64_t end=0;int edge=0,previous=-1,previous_edge=0;
+    for(int x=0;x<w;x++) {
+        uint64_t t=(uint64_t)x*pulse_total/w;
         while(edge<n-1 && end+(uint64_t)(s.preview[selected][edge]<0?-(int64_t)s.preview[selected][edge]:s.preview[selected][edge])<=t) {
             end+=s.preview[selected][edge]<0?-(int64_t)s.preview[selected][edge]:s.preview[selected][edge];edge++;
         }
         int y=a.y+(s.preview[selected][edge]>0?2:4);
-        tui_put_char(sf,a,a.x+2+x,y,'-',TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
+        uint8_t color=TUI_ATTR((edge==pulse_selected?TUI_YELLOW:TUI_GREEN)|TUI_BRIGHT,TUI_BLACK);
+        if(previous>=0 && (previous!=y || edge!=previous_edge)) {
+            tui_put_char(sf,a,pulse_hit.x+x,a.y+2,'+',color);
+            tui_put_char(sf,a,pulse_hit.x+x,a.y+3,'|',color);
+            tui_put_char(sf,a,pulse_hit.x+x,a.y+4,'+',color);
+        } else tui_put_char(sf,a,pulse_hit.x+x,y,'-',color);
+        previous=y;previous_edge=edge;
     }
-    char text[90];snprintf(text,sizeof(text),"First %d/%u edges | %.2f ms shown",n,s.event[selected].edges,total/1000.);
-    tui_put_str(sf,a,a.x+2,a.y+a.h-3,text,LS_ATTR_DIM);
-    tui_put_str(sf,a,a.x+2,a.y+a.h-2,"Measured pulses; decoded payload in list",LS_ATTR_DIM);
+    snprintf(text,sizeof(text),"0 -> %.2f ms | first %d/%u edges",pulse_total/1000.,n,e->edges);
+    tui_put_str(sf,a,a.x+2,a.y+6,text,LS_ATTR_DIM);
+    snprintf(text,sizeof(text),"Tap trace: #%d %s %lu us",pulse_selected+1,s.preview[selected][pulse_selected]>0?"HIGH":"LOW",(unsigned long)(s.preview[selected][pulse_selected]<0?-(int64_t)s.preview[selected][pulse_selected]:s.preview[selected][pulse_selected]));
+    tui_put_str(sf,a,a.x+2,a.y+7,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    if(a.h>10) {
+        snprintf(text,sizeof(text),"Range %lu..%lu us / %s",(unsigned long)low,(unsigned long)high,e->end_reason==REC_END_GAP?"GAP end":"LIMIT end");
+        tui_put_str(sf,a,a.x+2,a.y+8,text,LS_ATTR_DIM);
+    }
+    if(a.h>12)tui_put_str(sf,a,a.x+2,a.y+10,"| = transition(s) within one time cell",LS_ATTR_DIM);
+    if(a.h>11 && s.decoded[selected].repeats) {
+        snprintf(text,sizeof(text),"OOK24 %06lX / %u frames / %u us unit",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats,s.decoded[selected].unit_us);
+        tui_put_str(sf,a,a.x+2,a.y+9,text,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    }
 }
 static void draw(tui_surface *sf,tui_rect a)
 {
@@ -182,54 +217,68 @@ static void draw(tui_surface *sf,tui_rect a)
         {"BANDS","PRESET",'b',false,s.enabled},
         {"SETUP","CAPTURE",'s',false,s.enabled},
         {"SOURCE",source_name(),'r',false,s.enabled},
-        {"TOOLS","RTL",'d',false,cc_source || s.enabled}};
-    int h=a.w>90?4:ls_btn_raised_height(a,10);
+        {"TOOLS","RTL",'d',false,cc_source || s.enabled},{"DETAILS",details?"ON":"OFF",'i',details,false}};
+    int h=a.w>90?4:ls_btn_raised_height(a,11);
     /* Four rows of buttons, each with separate label/value lines. The
        three-row key format clips WATCH OFF to WATCH OF at the large font. */
     if(a.w>=32 && a.w<38 && a.h>=36) h=16;
     if(a.h<22 && a.w>=72) h=6;
-    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),btn,10,button_focus);
-    tui_rect body=tui_rect_make(a.x,a.y+h,a.w,a.h-h-3);
+    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),btn,11,button_focus);
+    tui_rect body=tui_rect_make(a.x,a.y+h,a.w,a.h-h-1);
     tui_rect content=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
-    ls_panel_box(sf,body,cc_source?"RECORDER / CC1101 OOK":"RECORDER / RTL OOK",TUI_CYAN);
+    ls_panel_box(sf,body,cc_source?"PASSIVE WATCH / CC1101 OOK":"PASSIVE WATCH / RTL OOK",TUI_CYAN);
     ls_motion_busy(sf,body,s.exporting || (s.enabled && rx.receiver_streaming));
     char line[110];
     snprintf(line,sizeof(line),"%c %.4f MHz | %s",ls_motion_pip(s.enabled && rx.receiver_streaming),
         rx.freq_hz/1e6,!s.enabled?"STOPPED":rx.receiver_streaming?"LISTENING":"RX UNAVAILABLE");
     tui_put_str(sf,content,body.x+2,body.y+1,line,LS_ATTR_DIM);
-    snprintf(line,sizeof(line),"%lu captures %lu skipped %d/16 patterns",(unsigned long)s.received,(unsigned long)s.dropped,s.count);
-    if(cc_source && cc.raw_overflows)snprintf(line,sizeof(line),"%lu captures | %lu CC overflows | %d/16",(unsigned long)s.received,(unsigned long)cc.raw_overflows,s.count);
-    tui_put_str(sf,content,body.x+2,body.y+2,line,ls_fresh_attr(fresh,TUI_GREEN|TUI_BRIGHT,TUI_WHITE,TUI_BLACK));
-    list=tui_rect_make(body.x+2,body.y+4,body.w-4,body.h-9);
+    snprintf(line,sizeof(line),"HEALTH %s | %s | RX %lu LOST %lu",
+        (s.dropped || (cc_source && cc.raw_overflows))?"LOSS":s.enabled&&!rx.receiver_streaming?"NO RX":"OK",
+        s.save_failed?"SD FAIL":s.pending_save?"PENDING":s.saved?"SAVED":"RAM",
+        (unsigned long)s.received,(unsigned long)(s.dropped+(cc_source?cc.raw_overflows:0)));
+    tui_put_str(sf,content,body.x+2,body.y+2,line,TUI_ATTR((s.dropped||s.save_failed||s.pending_save||!s.saved?TUI_YELLOW:TUI_GREEN)|TUI_BRIGHT,TUI_BLACK));
+    if(s.count) {
+        const rec_watch_event_t *e=&s.event[selected];
+        snprintf(line,sizeof(line),"LAST up %.3fs",e->last_ms/1000.0);
+    } else snprintf(line,sizeof(line),"LAST -- / no captures");
+    tui_put_str(sf,content,body.x+2,body.y+3,line,LS_ATTR_DIM);
+    list=tui_rect_make(body.x+2,body.y+4,body.w-4,body.h-6);
     if(body.h<12) list.h=body.h-6;
     if(body.w>90 && body.h>12) {
         list.w=(body.w-6)/2;
-        waveform(sf,tui_rect_make(list.x+list.w+2,body.y+3,body.w-list.w-5,body.h-7));
+        waveform(sf,tui_rect_make(list.x+list.w+2,body.y+3,body.w-list.w-5,body.h-4));
     } else if(body.h>24) {
         list.h=(body.h-18)/2*2;
         waveform(sf,tui_rect_make(body.x+1,list.y+list.h+1,body.w-2,body.h-list.h-10));
     }
     int rows=list.h/2;if(rows<1)rows=1;
     int first=selected/rows*rows;
-    if(!s.count)tui_put_str(sf,content,list.x,list.y,"WATCH groups repeats; pin useful patterns.",LS_ATTR_DIM);
+    if(!s.count)tui_put_str(sf,content,list.x,list.y,"No patterns for this receiver. Start WATCH.",LS_ATTR_DIM);
     for(int i=0;i<rows && first+i<s.count;i++) {
         const rec_watch_event_t *e=&s.event[first+i];int y=list.y+i*2;
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
-        snprintf(line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->pinned?"[*]":"[ ]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
+        snprintf(line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->last_boot==s.boot_id?"[RX]":"[SD]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
         tui_put_str(sf,list,list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
         if(s.decoded[first+i].repeats)snprintf(line,sizeof(line),"%s OOK24 %06lX / %u repeats",e->source==REC_SOURCE_CC1101?"CC":"RTL",(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
-        else snprintf(line,sizeof(line),"%s RAW %u edges %.1fms",e->source==REC_SOURCE_CC1101?"CC":"RTL",e->edges,e->span_us/1000.);
+        else snprintf(line,sizeof(line),"%s %u edges %.1fms",e->end_reason!=REC_END_GAP?"LIMIT":e->count>1?"REPEAT":"RAW?",e->edges,e->span_us/1000.);
         tui_put_str(sf,list,list.x,y+1,line,LS_ATTR_DIM);
     }
-    if(body.h>12) {
-        snprintf(line,sizeof(line),"DM queued %lu | refused %lu | limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
-        tui_put_str(sf,content,body.x+2,body.y+body.h-4,line,LS_ATTR_DIM);
-        tui_put_str(sf,content,body.x+2,body.y+body.h-3,"One channel. Pattern match != device ID.",LS_ATTR_DIM);
-        tui_put_str(sf,content,body.x+2,body.y+body.h-2,ls_tui_is_wide()?"E export pulses | J save to Journal":"EXPORT pulses / JOURNAL saves",LS_ATTR_DIM);
+    if(details) {
+        tui_rect info=tui_rect_make(body.x+1,body.y+3,body.w-2,body.h-4);
+        tui_fill(sf,info,' ',LS_ATTR_DIM);
+        ls_panel_box(sf,info,"CAPTURE DETAILS",TUI_CYAN);
+        tui_put_str(sf,info,info.x+2,info.y+1,s.storage,LS_ATTR_DIM);
+        snprintf(line,sizeof(line),"Loss: %lu skipped / CC buffer overflows %lu",(unsigned long)s.dropped,(unsigned long)cc.raw_overflows);
+        tui_put_str(sf,info,info.x+2,info.y+2,line,LS_ATTR_DIM);
+        tui_put_str(sf,info,info.x+2,info.y+3,"RAW? unverified / REPEAT timing match",LS_ATTR_DIM);
+        tui_put_str(sf,info,info.x+2,info.y+4,"[SD] earlier boot / [RX] this boot",LS_ATTR_DIM);
+        tui_put_str(sf,info,info.x+2,info.y+5,"Pattern match is not a device identity.",LS_ATTR_DIM);
+        tui_put_str(sf,info,info.x+2,info.y+6,cc_source?"CC: 650kHz OOK / 40us filter / 30ms gap":"RTL: configurable OOK pulse capture",LS_ATTR_DIM);
+        snprintf(line,sizeof(line),"DM queued %lu / refused %lu / limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
+        tui_put_str(sf,info,info.x+2,info.y+7,line,LS_ATTR_DIM);
     }
-    ls_safe_line(sf,a,a.y+a.h-3,s.storage,LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-2,s.export_status[0]?s.export_status:cc_source?cc.status:"Other RTL modes stop RTL WATCH; Mesh stays on.",LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_is_wide()?"W watch | E export | J journal":"",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:s.export_status,LS_ATTR_DIM);
+
 }
 static bool key(ls_tk_t k,char ch)
 {
@@ -241,13 +290,19 @@ static bool key(ls_tk_t k,char ch)
     if(k==LS_TK_DOWN){if(selected+1<s.count)selected++;return true;}
     if(k!=LS_TK_CHAR || !ch)return false;
     if(ch==','){if(selected)selected--;return true;}if(ch=='.'){if(selected+1<s.count)selected++;return true;}
-    const char *keys="wfpaejbsrd";
+    const char *keys="wfpaejbsrdi";
     const char *p=strchr(keys,ch);if(!p)return false;action((int)(p-keys));return true;
 }
 static bool touch(int x,int y)
 {
     if(touch_nav){int i=ls_btn_hit_slot(x,y,LS_BTN_SLOT_WATERFALL);if(i>=0)return key(LS_TK_CHAR,i?'.':',');}
     int i=ls_btn_hit(x,y);if(i>=0){action(i);return true;}
+    if(!details && pulse_total && tui_rect_contains(pulse_hit,x,y)) {
+        uint64_t t=(uint64_t)(x-pulse_hit.x)*pulse_total/pulse_hit.w,sum=0;
+        int n=s.event[selected].edges;if(n>48)n=48;
+        for(int j=0;j<n;j++) {sum+=s.preview[selected][j]<0?-(int64_t)s.preview[selected][j]:s.preview[selected][j];if(sum>t){pulse_selected=j;break;}}
+        return true;
+    }
     if(x>=list.x && x<list.x+list.w && y>=list.y && y<list.y+list.h) {
         int rows=list.h/2;if(rows<1)rows=1;
         int n=selected/rows*rows+(y-list.y)/2;if(n<s.count)selected=n;

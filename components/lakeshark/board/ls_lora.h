@@ -112,12 +112,10 @@ esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz);
    waterfall uses ls_lora_scan_pass. */
 int ls_lora_scan_sweep(float *dbm, int n);
 
-/* One pass: one reading per bin, at this pass's look.
-
-   The first look of a row overwrites `dbm`, every later one keeps the peak,
-   so the caller hands the same buffer back until *row_done comes back true.
-   With one look per row that is every pass. A pass costs the same whatever
-   the band, which is what lets it run once a frame on the draw path. */
+/* Advance a bounded batch (20ms budget, checked between bins).
+   Returns n while the plan is progressing, 0 on failure. Only row_done
+   declares all bins/looks complete. Keep the same buffer until then.
+   The first look replaces values; subsequent looks retain each bin's peak. */
 int ls_lora_scan_pass(float *dbm, int n, bool *row_done);
 
 /* Give it back, restoring what was configured before the sweep began. */

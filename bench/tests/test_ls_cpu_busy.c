@@ -4,6 +4,24 @@
 #include "ls_cpu_busy.h"
 
 #include <limits.h>
+#include "freertos/task.h"
+#include "esp_timer.h"
+
+LS_CASE(cpu_busy_reads_only_idle_counters_without_stack_scans)
+{
+    int core0 = -1, core1 = -1;
+    ls_shim_time_set(1000);
+    ls_shim_idle_runtime(100, 200);
+    LS_CHECK(!ls_cpu_busy(&core0, &core1));
+    ls_shim_time_advance(1000);
+    ls_shim_idle_runtime(350, 700);
+    LS_CHECK(ls_cpu_busy(&core0, &core1));
+    LS_EQ_INT(core0, 75);
+    LS_EQ_INT(core1, 50);
+    LS_EQ_INT(ls_shim_task_info_calls(), 4);
+    LS_EQ_INT(ls_shim_task_stack_scan_calls(), 0);
+    LS_EQ_INT(ls_shim_system_state_calls(), 0);
+}
 
 LS_CASE(cpu_busy_uses_wall_clock_elapsed)
 {

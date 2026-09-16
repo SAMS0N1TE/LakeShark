@@ -287,11 +287,10 @@ LS_CASE(coverage_is_false_before_an_archive_is_open)
     LS_EQ_INT(-1, ls_map_zoom_covering(LAT, LON));
 }
 
-LS_CASE(the_zoom_stops_at_what_the_archive_holds)
+LS_CASE(zoom_magnifies_finest_tiles_without_requesting_missing_levels)
 {
-    /* franklin_z12 is one zoom. Stepping past it in either direction has to
-       stay where the tiles are: an empty frame and a broken map look the
-       same, and only one of them is worth telling somebody about. */
+    /* Extra zoom must still render the z12 archive, not request absent z15
+       tiles. The requested feature changes the old native-only zoom limit. */
     if (!ready()) { LS_CHECK_MSG(false, "%s", ls_map_status()); return; }
 
     PmTiles *pm = pmtiles_open(PMTILES_FIXTURE);
@@ -305,12 +304,15 @@ LS_CASE(the_zoom_stops_at_what_the_archive_holds)
                  ls_map_zoom(), lo);
 
     for (int i = 0; i < 24; i++) ls_map_zoom_by(1);
-    LS_CHECK_MSG(ls_map_zoom() == hi, "zooming in landed on z%d, not z%d",
-                 ls_map_zoom(), hi);
+    LS_EQ_INT(hi + 3, ls_map_zoom());
 
     LS_CHECK_MSG(render_all(NULL, NULL) != NULL,
                  "at the archive's own zoom the map says '%s'",
                  ls_map_status());
+    LS_EQ_INT(hi, ls_map_source_zoom());
+    ls_map_stats_t st;
+    ls_map_stats(&st);
+    LS_CHECK(st.tiles_drawn > 0);
 }
 
 LS_CASE(a_pan_moves_the_picture_and_a_pan_back_restores_it)
@@ -755,4 +757,30 @@ LS_CASE(a_tile_bigger_than_the_whole_budget_is_not_kept)
     LS_EQ_UINT(0, held);
 
     ls_map_set_cache_budget(BIG_BUDGET);
+}
+
+LS_CASE(follow_waits_for_tiles_ignores_stale_fixes_and_pan_releases_it)
+{
+    LS_CHECK(ready());
+    render_all(NULL,NULL);
+    ls_map_follow_set(true);
+    ls_map_follow_fix(true,LAT+0.01,LON,1000000,12000000);
+    double lat,lon;ls_map_get_center(&lat,&lon);
+    LS_CHECK(lat == LAT);
+    ls_map_follow_fix(true,LAT+0.01,LON,12000000,12000000);
+    ls_map_get_center(&lat,&lon);LS_CHECK(lat == LAT+0.01);
+    ls_map_set_step_limit(0, 1);
+    ls_map_render(NULL,NULL);
+    LS_CHECK(ls_map_render_busy());
+    ls_map_follow_fix(true,LAT+0.1,LON,13000000,13000000);
+    ls_map_get_center(&lat,&lon);LS_CHECK(lat == LAT+0.01);
+    render_all(NULL,NULL);
+    ls_map_follow_fix(true,LAT+0.1,LON,13000000,13000000);
+    ls_map_get_center(&lat,&lon);LS_CHECK(lat == LAT+0.1);
+    ls_map_pan(10,0);LS_CHECK(!ls_map_following());
+    ls_map_get_center(&lat,&lon);
+    ls_map_follow_fix(true,LAT,LON,14000000,14000000);
+    double after_lat,after_lon;ls_map_get_center(&after_lat,&after_lon);
+    LS_CHECK(lat == after_lat && lon == after_lon);
+    ls_map_set_step_limit(0, 0);
 }

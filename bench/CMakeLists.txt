@@ -34,6 +34,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_skyplot.c
+    ${FW}/components/apps/tui/ls_skyview.c
     ${FW}/components/apps/tui/ls_text.c
     ${FW}/components/apps/tui/ls_waterfall.c
     ${FW}/components/apps/tui/ls_motion.c
@@ -310,6 +312,8 @@ target_include_directories(test_tui_surface PRIVATE
     ${FW}/components/apps/tui/tuilib)
 
 ls_add_test(test_display_dim)
+ls_add_test(test_audio_pcm_ring)
+target_include_directories(test_audio_pcm_ring PRIVATE ${FW}/components/lakeshark/audio)
 target_include_directories(test_display_dim PRIVATE
     ${FW}/components/lakeshark/core)
 
@@ -343,6 +347,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/lakeshark/core/ls_safe_mode.c
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
+    ${FW}/components/apps/tui/screens/ext/scr_falls.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
     ${FW}/components/apps/tui/screens/main/scr_adsb.c
@@ -516,7 +521,6 @@ add_executable(lssim
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/screens/ext/scr_gps.c
-    ${FW}/components/apps/tui/ls_skyplot.c
     ${FW}/components/apps/tui/ls_map_motion.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
     ${FW}/components/apps/tui/ls_map.c
@@ -569,6 +573,8 @@ target_compile_definitions(lssim PRIVATE
     CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
     LSSIM_PMTILES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/carto/franklin_z12.pmtiles")
+target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c)
+target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim lvgl m)
 
 ls_add_test(test_carto_render

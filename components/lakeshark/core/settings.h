@@ -75,6 +75,8 @@ int settings_get_theme(void);
 void settings_set_theme(int theme);
 
 bool settings_get_daylight(void);
+bool settings_get_keyboard_light(void);
+void settings_set_keyboard_light(bool on);
 void settings_set_daylight(bool on);
 
 /* HOME widget IDs are defined in home_widget_pref.h. Getter is RAM-only;

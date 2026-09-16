@@ -1404,6 +1404,11 @@ static int cmd_ble(int argc, char **argv)
         ble_link_peer(name, sizeof(name), addr, sizeof(addr));
         ble_link_get_name_filter(filt, sizeof(filt));
         ble_link_stats(&rx, &tx, &drops);
+        uint32_t heap_us, snapshot_us, write_us;
+        ble_link_perf_stats(&heap_us, &snapshot_us, &write_us);
+        printf("ble timing max: heap=%lu snapshot=%lu write=%lu us\n",
+               (unsigned long)heap_us, (unsigned long)snapshot_us,
+               (unsigned long)write_us);
         /* Show the pinned peer and whether this board currently holds
            a link, so `ble` alone answers "which board am I talking to". */
         bool pinned = ble_link_get_pinned(pin, sizeof(pin));
@@ -2250,6 +2255,24 @@ static int cmd_top(int argc, char **argv)
     return 0;
 }
 
+/* Bounded allocator summaries only: never enumerate tasks or scan stacks.
+ * Run between load measurements; allocator inspection itself is not free. */
+static int cmd_memory(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    multi_heap_info_t internal, dma, psram;
+    heap_caps_get_info(&internal, MALLOC_CAP_INTERNAL);
+    heap_caps_get_info(&dma, MALLOC_CAP_DMA);
+    heap_caps_get_info(&psram, MALLOC_CAP_SPIRAM);
+    printf("memory: internal_free=%u internal_largest=%u internal_min=%u "
+           "dma_free=%u dma_largest=%u dma_min=%u psram_free=%u\n",
+           (unsigned)internal.total_free_bytes, (unsigned)internal.largest_free_block,
+           (unsigned)internal.minimum_free_bytes, (unsigned)dma.total_free_bytes,
+           (unsigned)dma.largest_free_block, (unsigned)dma.minimum_free_bytes,
+           (unsigned)psram.total_free_bytes);
+    return 0;
+}
+
 static int cmd_heap(int argc, char **argv)
 {
     /* 'heap dma' dumps the DMA-capable regions one at a time. */
@@ -2455,6 +2478,7 @@ static void console_start(bool full)
           .func = &cmd_track },
         { .command = "imu",    .help = "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats",
           .func = &cmd_imu },
+        { .command = "memory", .help = "Allocator headroom without task/stack enumeration", .func = &cmd_memory },
         { .command = "heap",   .help = "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile",
           .func = &cmd_heap },
         /**/

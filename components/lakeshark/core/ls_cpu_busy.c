@@ -2,10 +2,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_heap_caps.h"
 #include "esp_timer.h"
-
-#include <string.h>
 
 bool ls_cpu_busy_from_samples(uint32_t previous_idle,
                               uint32_t current_idle,
@@ -31,29 +28,17 @@ bool ls_cpu_busy(int *core0_pct, int *core1_pct)
 
     if (!core0_pct || !core1_pct) return false;
 
-    UBaseType_t capacity = uxTaskGetNumberOfTasks();
-    if (capacity == 0) return false;
-
-    TaskStatus_t *tasks = heap_caps_malloc(sizeof(*tasks) * capacity,
-                                           MALLOC_CAP_INTERNAL);
-    if (!tasks) return false;
-
-    UBaseType_t count = uxTaskGetSystemState(tasks, capacity, NULL);
     uint32_t idle[2] = { 0, 0 };
-    bool found[2] = { false, false };
-    for (UBaseType_t i = 0; i < count; ++i) {
-        if (tasks[i].pcTaskName &&
-            strncmp(tasks[i].pcTaskName, "IDLE", 4) == 0) {
-            BaseType_t core = tasks[i].xCoreID;
-            if (core == 0 || core == 1) {
-                idle[core] += tasks[i].ulRunTimeCounter;
-                found[core] = true;
-            }
-        }
+    /* uxTaskGetSystemState scans every stack with the SMP kernel locked.
+     * PSRAM stack scans can delay LCD DMA restart. CPU telemetry needs only
+     * two permanent idle TCBs, never task enumeration or stack watermarks. */
+    for (BaseType_t core = 0; core < 2; ++core) {
+        TaskHandle_t handle = xTaskGetIdleTaskHandleForCore(core);
+        if (!handle) return false;
+        TaskStatus_t info;
+        vTaskGetInfo(handle, &info, pdFALSE, eRunning);
+        idle[core] = info.ulRunTimeCounter;
     }
-    heap_caps_free(tasks);
-
-    if (!found[0] || !found[1]) return false;
 
     int64_t now = esp_timer_get_time();
     bool valid = false;

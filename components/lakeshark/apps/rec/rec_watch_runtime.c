@@ -18,16 +18,16 @@ typedef struct {
     uint32_t hz; int edges, peak, reason; uint64_t ms;
     int32_t pulse[REC_WATCH_EDGES];
 } capture_t;
-static rec_watch_catalog_t *s_catalog;
+static rec_watch_catalog_t *s_catalog, *s_checkpoint;
 static QueueHandle_t s_free, s_pending;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static EXT_RAM_BSS_ATTR rec_watch_status_t s_status;
 static uint32_t s_pin_id;
 static uint32_t s_export_id;
 static bool s_pin_value, s_starting;
-static uint64_t s_last_submit;
 static uint32_t s_boot;
 static rec_source_t s_source;
+static uint32_t source_received[2],source_dropped[2];
 static const char *DIR="/sdcard/subghz";
 #define REC_WATCH_STACK_WORDS (6144 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_worker_stack[REC_WATCH_STACK_WORDS];
@@ -43,6 +43,7 @@ static void publish(void)
         rec_decode_ook24(s_catalog->record[i].pulse, s_catalog->record[i].event.edges, &decoded[i]);
     portENTER_CRITICAL(&s_lock);
     s_status.count=0;
+    s_status.boot_id=s_boot;
     for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id) {
         int n=s_status.count++;
         s_status.event[n]=s_catalog->record[i].event;
@@ -52,6 +53,51 @@ static void publish(void)
     s_status.ready=true;
     portEXIT_CRITICAL(&s_lock);
 }
+typedef struct { uint64_t last_alert; bool attempted_alert; } capture_flow_t;
+static void consume_capture(capture_t *cap, capture_flow_t *flow)
+{
+    bool novel=false;
+    int slot=rec_watch_observe_from(s_catalog,cap->source,cap->hz,cap->pulse,cap->edges,
+        s_boot,cap->ms,cap->peak,cap->reason,&novel);
+    uint64_t now=(uint64_t)esp_timer_get_time()/1000;
+    char peer[17];
+    portENTER_CRITICAL(&s_lock);
+    bool enabled=s_status.enabled;
+    memcpy(peer,s_status.peer,sizeof(peer));
+    if(slot<0){s_status.dropped++;source_dropped[cap->source]++;} else {s_status.received++;source_received[cap->source]++;s_status.pending_save=true;}
+    portEXIT_CRITICAL(&s_lock);
+    rec_ook24_t qualified;
+    bool confirmed=slot>=0 && ((novel && rec_decode_ook24(cap->pulse,cap->edges,&qualified)) || s_catalog->record[slot].event.count==2);
+    if(confirmed && enabled && peer[0]) {
+        if((!flow->attempted_alert || now-flow->last_alert>=60000) && now-cap->ms<5000) {
+            char text[80];
+            rec_ook24_t decoded;
+            const char *source=cap->source==REC_SOURCE_CC1101?"CC1101":"RTL";
+            if(rec_decode_ook24(cap->pulse,cap->edges,&decoded))
+                snprintf(text,sizeof(text),"%s OOK24 %06lX %.4fMHz (%u matching frames)",
+                    source,(unsigned long)decoded.value,cap->hz/1e6,decoded.repeats);
+            else snprintf(text,sizeof(text),"%s RAW #%lu %.4fMHz %d edges",source,
+                (unsigned long)s_catalog->record[slot].event.id,cap->hz/1e6,cap->edges);
+            flow->last_alert=now;flow->attempted_alert=true;
+            bool ok=rec_watch_notify(peer,text);
+            portENTER_CRITICAL(&s_lock);
+            if(ok)s_status.alert_sent++;else s_status.alert_failed++;
+            portEXIT_CRITICAL(&s_lock);
+        } else {
+            portENTER_CRITICAL(&s_lock);s_status.alert_suppressed++;portEXIT_CRITICAL(&s_lock);
+        }
+    }
+    xQueueSend(s_free,&cap,0);
+    publish();
+}
+/* Called between sector operations; bounded by the existing two-buffer pool.
+   The checkpoint image is frozen in PSRAM, so live observations stay writable. */
+static void pump_capture(void *context)
+{
+    capture_t *cap=NULL;
+    if(xQueueReceive(s_pending,&cap,0)==pdTRUE)
+        consume_capture(cap,(capture_flow_t *)context);
+}
 static void worker(void *arg)
 {
     (void)arg;
@@ -59,50 +105,22 @@ static void worker(void *arg)
     portENTER_CRITICAL(&s_lock);
     snprintf(s_status.storage,sizeof(s_status.storage),"%s",restored?"SD archive restored":"RAM; awaiting SD checkpoint");
     portEXIT_CRITICAL(&s_lock);
+    s_status.saved=restored;
     publish();
-    uint64_t saved=s_catalog->sequence, checkpoint=0, last_alert=0;
-    bool attempted_alert=false;
+    uint64_t saved=s_catalog->sequence, checkpoint=0;
+    capture_flow_t flow={0};
+    bool was_enabled=false;
     for(;;) {
         capture_t *cap=NULL;
         if(xQueueReceive(s_pending,&cap,pdMS_TO_TICKS(100))==pdTRUE) {
-            bool novel=false;
-            int slot=rec_watch_observe_from(s_catalog,cap->source,cap->hz,cap->pulse,cap->edges,
-                s_boot,cap->ms,cap->peak,cap->reason,&novel);
-            uint64_t now=(uint64_t)esp_timer_get_time()/1000;
-            char peer[17];
-            portENTER_CRITICAL(&s_lock);
-            bool enabled=s_status.enabled;
-            memcpy(peer,s_status.peer,sizeof(peer));
-            if(slot<0)s_status.dropped++; else s_status.received++;
-            portEXIT_CRITICAL(&s_lock);
-            if(novel && enabled && peer[0]) {
-                if((!attempted_alert || now-last_alert>=60000) && now-cap->ms<5000) {
-                    char text[80];
-                    rec_ook24_t decoded;
-                    const char *source=cap->source==REC_SOURCE_CC1101?"CC1101":"RTL";
-                    if(rec_decode_ook24(cap->pulse,cap->edges,&decoded))
-                        snprintf(text,sizeof(text),"%s OOK24 %06lX %.4fMHz (%u matching frames)",
-                            source,(unsigned long)decoded.value,cap->hz/1e6,decoded.repeats);
-                    else snprintf(text,sizeof(text),"%s RAW #%lu %.4fMHz %d edges",source,
-                        (unsigned long)s_catalog->record[slot].event.id,cap->hz/1e6,cap->edges);
-                    last_alert=now;attempted_alert=true;
-                    bool ok=rec_watch_notify(peer,text);
-                    portENTER_CRITICAL(&s_lock);
-                    if(ok)s_status.alert_sent++;else s_status.alert_failed++;
-                    portEXIT_CRITICAL(&s_lock);
-                } else {
-                    portENTER_CRITICAL(&s_lock);s_status.alert_suppressed++;portEXIT_CRITICAL(&s_lock);
-                }
-            }
-            xQueueSend(s_free,&cap,0);
-            publish();
+            consume_capture(cap,&flow);
         }
         portENTER_CRITICAL(&s_lock);
         uint32_t pin=s_pin_id;bool value=s_pin_value;s_pin_id=0;
         uint32_t export_id=s_export_id;s_export_id=0;
         bool enabled=s_status.enabled;
         portEXIT_CRITICAL(&s_lock);
-        if(pin) { rec_watch_pin(s_catalog,pin,value);publish(); }
+        if(pin) { rec_watch_pin(s_catalog,pin,value);portENTER_CRITICAL(&s_lock);s_status.pending_save=true;portEXIT_CRITICAL(&s_lock);publish(); }
         if(export_id) {
             uint64_t total=0,free_bytes=UINT64_MAX;
             char result[112];
@@ -114,13 +132,22 @@ static void worker(void *arg)
             portEXIT_CRITICAL(&s_lock);
         }
         uint64_t now=(uint64_t)esp_timer_get_time()/1000;
+        /* Starting after a long idle must not spend the first received burst
+           writing the previous archive while the two capture buffers fill. */
+        if(enabled && !was_enabled)checkpoint=now;
+        was_enabled=enabled;
         if(s_catalog->sequence!=saved && now-checkpoint >= (enabled?30000:3000)) {
             checkpoint=now;
             uint64_t total=0,free_bytes=UINT64_MAX;
             bool ok=esp_vfs_fat_info("/sdcard",&total,&free_bytes)==ESP_OK;
-            if(ok) { mkdir(DIR,0775);ok=rec_watch_store(DIR,s_catalog,free_bytes); }
-            if(ok)saved=s_catalog->sequence;
+            if(ok) {
+                memcpy(s_checkpoint,s_catalog,sizeof(*s_checkpoint));
+                mkdir(DIR,0775);
+                ok=rec_watch_store_pumped(DIR,s_checkpoint,free_bytes,pump_capture,&flow);
+            }
+            if(ok)saved=s_checkpoint->sequence;
             portENTER_CRITICAL(&s_lock);
+            s_status.saved=ok;s_status.pending_save=!ok || saved!=s_catalog->sequence;s_status.save_failed=!ok;
             snprintf(s_status.storage,sizeof(s_status.storage),"%s",ok?"SD saved; 2 files, < 520 KiB total":"RAM ONLY: SD missing/full/write failed");
             portEXIT_CRITICAL(&s_lock);
         }
@@ -134,9 +161,10 @@ bool rec_watch_start(void)
     s_starting=true;
     portEXIT_CRITICAL(&s_lock);
     s_catalog=heap_caps_calloc(1,sizeof(*s_catalog),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_checkpoint=heap_caps_malloc(sizeof(*s_checkpoint),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     capture_t *pool=heap_caps_calloc(2,sizeof(*pool),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     s_free=xQueueCreate(2,sizeof(capture_t*));s_pending=xQueueCreate(2,sizeof(capture_t*));
-    bool ok=s_catalog && pool && s_free && s_pending;
+    bool ok=s_catalog && s_checkpoint && pool && s_free && s_pending;
     if(ok) {
         for(int i=0;i<2;i++) {capture_t *p=&pool[i];xQueueSend(s_free,&p,0);}
         s_boot=esp_random();
@@ -147,6 +175,7 @@ bool rec_watch_start(void)
         if(s_free)vQueueDelete(s_free);
         if(s_pending)vQueueDelete(s_pending);
         s_free=s_pending=NULL;heap_caps_free(pool);heap_caps_free(s_catalog);s_catalog=NULL;
+        heap_caps_free(s_checkpoint);s_checkpoint=NULL;
         portENTER_CRITICAL(&s_lock);
         s_starting=false;
         snprintf(s_status.storage,sizeof(s_status.storage),"Monitor allocation failed");
@@ -173,7 +202,8 @@ bool rec_watch_enabled(void)
 void rec_watch_snapshot(rec_watch_status_t *out)
 {
     if(!out)return;
-    portENTER_CRITICAL(&s_lock);*out=s_status;portEXIT_CRITICAL(&s_lock);
+    portENTER_CRITICAL(&s_lock);*out=s_status;rec_source_t source=s_source;out->received=source_received[source];out->dropped=source_dropped[source];portEXIT_CRITICAL(&s_lock);
+    rec_watch_filter_status(out,source);
 }
 void rec_watch_submit(uint32_t hz,const int32_t *pulse,int edges,int peak,int reason)
 {
@@ -186,11 +216,11 @@ void rec_watch_submit_from(rec_source_t source,uint32_t hz,const int32_t *pulse,
     capture_t *cap=NULL;
     portENTER_CRITICAL(&s_lock);
     if(source!=s_source || !s_status.enabled) {portEXIT_CRITICAL(&s_lock);return;}
-    if(now-s_last_submit<250) {s_status.dropped++;portEXIT_CRITICAL(&s_lock);return;}
-    s_last_submit=now;
+    /* The fixed two-buffer queue bounds work; a time gate loses real bursts
+       when raw noise arrives immediately before a transmitter. */
     portEXIT_CRITICAL(&s_lock);
     if(xQueueReceive(s_free,&cap,0)!=pdTRUE) {
-        portENTER_CRITICAL(&s_lock);s_status.dropped++;portEXIT_CRITICAL(&s_lock);return;
+        portENTER_CRITICAL(&s_lock);s_status.dropped++;source_dropped[source]++;portEXIT_CRITICAL(&s_lock);return;
     }
     cap->source=source;cap->hz=hz;cap->edges=edges;cap->peak=peak;cap->reason=reason;cap->ms=now;
     memcpy(cap->pulse,pulse,(size_t)edges*sizeof(*pulse));

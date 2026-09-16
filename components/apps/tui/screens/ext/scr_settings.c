@@ -8,6 +8,7 @@
 #include "../../ls_theme.h"
 #include "../../ls_tui_ui.h"
 #include "core/settings.h"
+#include "ls_keypad.h"
 /* Brightness and auto-dim go through display_ctl, which applies as
    well as stores. */
 #include "core/display_ctl.h"
@@ -99,6 +100,12 @@ static void day_next(void)
 /* ---- misc booleans ----------------------------------------------------- */
 static void usb_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_usb_autoreboot() ? "on" : "off"); }
 static void usb_next(void) { settings_set_usb_autoreboot(!settings_get_usb_autoreboot()); }
+static void keylight_show(char *b,size_t n) { snprintf(b,n,"%s",settings_get_keyboard_light()?"on":"off"); }
+static void keylight_next(void)
+{
+    const bool on=!settings_get_keyboard_light();
+    if(ls_keypad_backlight(on)==ESP_OK) settings_set_keyboard_light(on);
+}
 
 /* The words have to be the firmware's words. */
 
@@ -153,6 +160,7 @@ static void lock_next(void) { ls_tui_set_locked(true); }
 static const item_t ITEMS[] = {
     { "Screen lock", lock_show, lock_next },
     { "Brightness",     bri_show,   bri_next   },
+    { "Keyboard light", keylight_show, keylight_next },
     { "Auto dim",       dim_show,   dim_next   },
     { "Dim after",      dimt_show,  dimt_next  },
     { "Volume",         vol_show,   vol_next   },
@@ -168,7 +176,7 @@ static const item_t ITEMS[] = {
 
 /* Each setting is a box you press, not a row you select. */
 
-static tui_rect s_hit[12];
+static tui_rect s_hit[N_ITEMS];
 static int      s_hit_n;
 
 static void draw_one(tui_surface *sf, tui_rect a, int i, bool sel)
@@ -206,7 +214,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (area.h < 6 || area.w < 18) return;
 
     tui_rect body = tui_rect_make(area.x + 1, area.y + 1,
-                                  area.w - 2, area.h - 3);
+                                  area.w - 2, area.h - 2);
     if (body.h < 4) return;
 
     /* Landscape is wide and short: two columns keep the boxes tall enough to
@@ -220,9 +228,7 @@ static void draw(tui_surface *sf, tui_rect area)
                           (body.h - (per2 - 1)) / per2) ? 3 : 2;
         const int per = ncol == 3 ? per3 : per2;
         const int gap = (per * 4 - 1 > body.h) ? 0 : 1;
-        int bh = (body.h - (per - 1) * gap) / per;
-        if (bh > 6) bh = 6;
-        if (bh < 3) bh = 3;
+        const int height = body.h - (per - 1) * gap;
 
         tui_rect col[3];
         const int cw = body.w / ncol;
@@ -231,28 +237,25 @@ static void draw(tui_surface *sf, tui_rect area)
                                    c == ncol - 1 ? body.w - c * cw : cw, body.h);
         for (int i = 0; i < N_ITEMS; i++) {
             const tui_rect c = col[i / per];
-            const int y = c.y + (i % per) * (bh + gap);
+            const int row = i % per;
+            const int y = c.y + row * height / per + row * gap;
+            const int bh = (row + 1) * height / per - row * height / per;
             if (y + bh > c.y + c.h) break;
             draw_one(sf, tui_rect_make(c.x, y, c.w - 1, bh), i, i == s_sel);
         }
     } else {
         const int gap = body.h >= N_ITEMS * 4 - 1 ? 1 : 0;
-        int bh = (body.h - (N_ITEMS - 1) * gap) / N_ITEMS;
-        if (bh > 7) bh = 7;
-        if (bh < 3) bh = 3;
-
-        const int used = N_ITEMS * bh + (N_ITEMS - 1) * gap;
-        const int top = body.y + (body.h > used ? (body.h - used) / 2 : 0);
+        const int height = body.h - (N_ITEMS - 1) * gap;
 
         for (int i = 0; i < N_ITEMS; i++) {
-            const int y = top + i * (bh + gap);
+            const int y = body.y + i * height / N_ITEMS + i * gap;
+            const int bh = (i + 1) * height / N_ITEMS - i * height / N_ITEMS;
             if (y + bh > body.y + body.h) break;
             draw_one(sf, tui_rect_make(body.x, y, body.w, bh), i, i == s_sel);
         }
     }
 
-    tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
-                "TAP a setting to change it", dim);
+    (void)dim;
 }
 
 static bool key(ls_tk_t k, char ch)

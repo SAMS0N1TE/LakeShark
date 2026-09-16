@@ -4,6 +4,39 @@
 #include "ls_track.h"
 
 #include <string.h>
+#include <math.h>
+
+LS_CASE(receiver_date_is_validated_before_month_lookup)
+{
+    uint8_t flags;
+    LS_EQ_UINT(1709164800, ls_track_time(2024,2,29,0,0,0,42,&flags));
+    LS_EQ_INT(LS_TRACK_F_EPOCH, flags);
+    for (unsigned m = 0; m < 256; ++m) {
+        if (m >= 1 && m <= 12) continue;
+        LS_EQ_UINT(42, ls_track_time(2026,m,15,12,0,0,42,&flags));
+        LS_EQ_INT(0, flags);
+    }
+    LS_EQ_UINT(42, ls_track_time(2025,2,29,0,0,0,42,&flags));
+    LS_EQ_UINT(42, ls_track_time(2026,4,31,0,0,0,42,&flags));
+    LS_EQ_UINT(42, ls_track_time(2026,9,15,24,0,0,42,&flags));
+    LS_EQ_UINT(42, ls_track_time(2026,9,15,0,60,0,42,&flags));
+    LS_EQ_UINT(42, ls_track_time(2026,9,0,0,0,0,42,&flags));
+    LS_EQ_UINT(42, ls_track_time(65535,1,1,0,0,0,42,&flags));
+}
+
+LS_CASE(track_rejects_stale_and_unrepresentable_positions)
+{
+    LS_CHECK(ls_track_fix_usable(true,43,-71,100,1000000,11000000));
+    LS_CHECK(!ls_track_fix_usable(true,43,-71,100,1000000,11000001));
+    LS_CHECK(!ls_track_fix_usable(true,43,-71,100,0,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,43,-71,100,2000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(false,43,-71,100,1000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,NAN,-71,100,1000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,43,INFINITY,100,1000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,91,-71,100,1000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,43,-181,100,1000000,1000000));
+    LS_CHECK(!ls_track_fix_usable(true,43,-71,40000,1000000,1000000));
+}
 
 #define LAT_E7  432000000
 #define LON_E7 (-714000000)

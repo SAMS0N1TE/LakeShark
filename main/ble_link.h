@@ -74,6 +74,7 @@ esp_err_t ble_link_forget_bonds(void);
 /* True when a GATT connection is currently up (used by `ble show`). */
 bool ble_link_is_connected(void);
 esp_err_t ble_link_rssi(int *rssi);
+void ble_link_perf_stats(uint32_t *heap, uint32_t *snapshot, uint32_t *write);
 
 #ifdef __cplusplus
 }

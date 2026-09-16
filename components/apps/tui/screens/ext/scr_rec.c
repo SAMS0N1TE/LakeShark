@@ -11,10 +11,34 @@
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
 #include "apps/rec/rec_state.h"
+#include "apps/rec/rec_watch.h"
+#include "../../ls_picker.h"
+#include "../../ls_field.h"
+#include "core/ls_time.h"
+#include "core/ls_track_log.h"
 
 extern const ls_tui_screen_t ls_scr_subghz;
 extern const ls_tui_screen_t ls_scr_rec;
-static bool tools_view;
+extern const ls_tui_screen_t ls_scr_gps;
+extern const ls_tui_screen_t ls_scr_journal;
+extern void ls_scr_journal_rec_view(void);
+static bool tools_view, gps_view;
+static int recorder_source;
+typedef struct { const char *name, *format; ls_field_source_t field; } recorder_source_t;
+/* One inventory for selection and labels. Metadata is not raw signal capture. */
+static const recorder_source_t recorder_sources_table[] = {
+    {"RTL-SDR", "OOK pulse captures", LS_FIELD_RTL},
+    {"CC1101", "OOK pulse captures", LS_FIELD_CC1101},
+    {"GPS TRACK", "Position track to SD", LS_FIELD_NONE},
+    {"HackRF", "CSV receiver metadata", LS_FIELD_HACKRF},
+    {"SX1262 / Mesh", "CSV radio metadata", LS_FIELD_MESH},
+    {"nRF24", "CSV survey metadata", LS_FIELD_NRF24},
+    {"NFC", "CSV field metadata", LS_FIELD_NFC},
+    {"Wi-Fi", "CSV link metadata", LS_FIELD_WIFI},
+    {"Bluetooth", "CSV link metadata", LS_FIELD_BLE},
+};
+#define RECORDER_SOURCE_COUNT ((int)(sizeof(recorder_sources_table)/sizeof(recorder_sources_table[0])))
+static tui_rect source_bar;
 static char recorder_hint[80];
 
 static uint64_t s_free_bytes;
@@ -366,6 +390,13 @@ static void draw(tui_surface *sf, tui_rect area)
     memset(&st, 0, sizeof(st));
     rec_get_hub_status(&st);
     const bool sampled = sample(&st);
+    char stamp[LS_TIME_STAMP_MAX];
+    if(st.captures || st.phase==REC_CAPTURING)
+        ls_time_render_stamp_at(stamp,sizeof(stamp),0,(int64_t)st.capture_uptime_s*1000000);
+    else snprintf(stamp,sizeof(stamp),"-- / no capture");
+    snprintf(buf,sizeof(buf),"CAPTURE START %s",stamp);
+    tui_put_str(sf,area,area.x,area.y,buf,dim);
+    area.y++;area.h--;
     s_blink++;
 
     tui_box(sf, area, "CAPTURE", frame);
@@ -448,35 +479,86 @@ static bool touch(int col, int row)
     return true;
 }
 
-static void recorder_enter(void) { tools_view=false; ls_scr_subghz.enter(); }
-static void recorder_leave(void) { ls_scr_subghz.leave(); }
+static const ls_tui_screen_t *recorder_child(void) { return recorder_source >= 3 ? &ls_scr_journal : gps_view ? &ls_scr_gps : &ls_scr_subghz; }
+static void recorder_source_done(int choice)
+{
+    if(choice < 0 || choice >= RECORDER_SOURCE_COUNT || rec_watch_enabled() || ls_field_recording() || ls_track_rec_running()) return;
+    if(choice >= 3 && (!ls_field_start() || !ls_field_source(recorder_sources_table[choice].field))) return;
+    const ls_tui_screen_t *old = recorder_child();
+    if(old->leave) old->leave();
+    recorder_source = choice;
+    gps_view = choice == 2;
+    tools_view = false;
+    if(choice < 2) rec_watch_select_source(choice == 1 ? REC_SOURCE_CC1101 : REC_SOURCE_RTL);
+    const ls_tui_screen_t *next = recorder_child();
+    if(next->enter) next->enter();
+    if(choice>=3) ls_scr_journal_rec_view();
+}
+static void recorder_sources(void)
+{
+    if(rec_watch_enabled() || ls_field_recording() || ls_track_rec_running()) return;
+    ls_picker_open("RECORDING SOURCE",recorder_source_done);
+    for(int i=0;i<RECORDER_SOURCE_COUNT;i++)
+        ls_picker_add(recorder_sources_table[i].name,
+                      i < 2 ? "OOK pulses" : i == 2 ? "GPS points" : "CSV metadata");
+}
+static void recorder_enter(void) { tools_view=false; const ls_tui_screen_t *c=recorder_child(); if(c->enter)c->enter(); if(recorder_source>=3)ls_scr_journal_rec_view(); }
+static void recorder_leave(void) { const ls_tui_screen_t *c=recorder_child(); if(c->leave)c->leave(); }
 static void recorder_draw(tui_surface *sf,tui_rect a) {
-    snprintf(recorder_hint,sizeof(recorder_hint),"%s",tools_view?"B recorder  ENTER arm/stop":"R source  W watch  E export  D RTL tools");
-    if(!tools_view){ls_scr_subghz.draw(sf,a);return;}
-    ls_btn_t back={"RECORDER","BACK",'b',false,false};
+    if(a.w<24 || a.h<12) { source_bar=tui_rect_make(0,0,0,0); ls_panel_notice(sf,a,"REC","Enlarge pane",""); return; }
+    snprintf(recorder_hint,sizeof(recorder_hint),"%s",tools_view?"B recorder  ENTER arm/stop":recorder_source>=3?"U source  C CSV metadata  V sensors":gps_view?"U source  R GPS track  M map":"U source  W watch  E export  D RTL tools");
     int h=ls_tui_is_wide()?3:5;
-    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),&back,1,-1);
-    a.y+=h;a.h-=h;draw(sf,a);
+    if(tools_view) {
+        source_bar=tui_rect_make(0,0,0,0);
+        ls_btn_t back={"RECORDER","BACK",'b',false,false};
+        ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),&back,1,-1);
+        a.y+=h;a.h-=h;draw(sf,a);return;
+    }
+    ls_btn_t source={"SOURCE",recorder_sources_table[recorder_source].name,'u',false,rec_watch_enabled() || ls_field_recording() || ls_track_rec_running()};
+    source_bar=tui_rect_make(a.x,a.y,a.w>56?24:a.w/2,h);
+    ls_panel_box(sf,source_bar,NULL,source.dim?TUI_WHITE:TUI_CYAN);
+    char source_label[40];
+    if(h==3) {
+        snprintf(source_label,sizeof(source_label),"SOURCE %s",source.value);
+        tui_put_str(sf,source_bar,source_bar.x+2,source_bar.y+1,source_label,LS_ATTR_DIM);
+    } else {
+        tui_put_str(sf,source_bar,source_bar.x+2,source_bar.y+1,"SOURCE",LS_ATTR_DIM);
+        tui_put_str(sf,source_bar,source_bar.x+2,source_bar.y+2,source.value,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    }
+    tui_rect info=tui_rect_make(a.x+source_bar.w+1,a.y,a.w-source_bar.w-1,h);
+    tui_put_str(sf,info,info.x,info.y,recorder_sources_table[recorder_source].format,LS_ATTR_DIM);
+    char stamp[LS_TIME_STAMP_MAX];
+    ls_time_render_stamp(stamp,sizeof(stamp));
+    if(info.w<20 && strlen(stamp)==20) {
+        stamp[10]=0;
+        tui_put_str(sf,info,info.x,info.y+1,stamp,LS_ATTR_DIM);
+        tui_put_str(sf,info,info.x,info.y+2,stamp+11,LS_ATTR_DIM);
+    } else tui_put_str(sf,info,info.x,info.y+1,stamp,LS_ATTR_DIM);
+    if(h>3) tui_put_str(sf,info,info.x,info.y+3,"CLOCK",LS_ATTR_DIM);
+    a.y+=h; a.h-=h;
+    recorder_child()->draw(sf,a);
 }
 static bool recorder_key(ls_tk_t k,char c) {
-    if(!tools_view)return ls_scr_subghz.key(k,c);
+    if(k==LS_TK_CHAR && (c=='u'||c=='U')){recorder_sources();return true;}
+    if(!tools_view)return recorder_child()->key(k,c);
     if(k==LS_TK_ESC || c=='b'||c=='B'){tools_view=false;return true;}
     return key(k,c);
 }
 static bool recorder_touch(int x,int y) {
-    if(!tools_view)return ls_scr_subghz.touch(x,y);
+    if(x>=source_bar.x && x<source_bar.x+source_bar.w && y>=source_bar.y && y<source_bar.y+source_bar.h){recorder_sources();return true;}
+    if(!tools_view)return recorder_child()->touch(x,y);
     if(ls_btn_hit(x,y)==0){tools_view=false;return true;}
     return touch(x,y);
 }
 void ls_scr_rec_tools(void) {
     int index=ls_tui_screen_index_of(&ls_scr_rec);
     if(index>=0)ls_tui_screen_show(index);
-    tools_view=true;on_enter();
+    recorder_source=0;gps_view=false;tools_view=true;ls_tui_radio_want("REC");on_enter();
 }
 
 const ls_tui_screen_t ls_scr_rec = {
-    /* the capture engine IS the receiver here. */
-    .radio = "REC",
+    /* Opening the universal hub must not seize the SDR from another app. */
+    .radio = NULL,
     .name = "REC",
     .hint = recorder_hint,
     .enter = recorder_enter,

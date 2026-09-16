@@ -38,6 +38,22 @@
 #include "ls_nvs_safe.h"
 
 static const char *TAG = "ble_link";
+static uint32_t s_heap_max_us, s_snapshot_max_us, s_write_max_us;
+
+static void perf_max(uint32_t *value, int64_t started)
+{
+    uint32_t elapsed = (uint32_t)(esp_timer_get_time() - started);
+    uint32_t old = __atomic_load_n(value, __ATOMIC_RELAXED);
+    while (elapsed > old && !__atomic_compare_exchange_n(value, &old, elapsed,
+            false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+void ble_link_perf_stats(uint32_t *heap, uint32_t *snapshot, uint32_t *write)
+{
+    *heap = __atomic_load_n(&s_heap_max_us, __ATOMIC_RELAXED);
+    *snapshot = __atomic_load_n(&s_snapshot_max_us, __ATOMIC_RELAXED);
+    *write = __atomic_load_n(&s_write_max_us, __ATOMIC_RELAXED);
+}
 
 #define BLE_TX_ALLOC_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT)
 
@@ -278,7 +294,9 @@ static bool ble_write(const char *data, int len)
 
     /* A frame is all or nothing. */
 
+    int64_t heap_started = esp_timer_get_time();
     size_t largest  = heap_caps_get_largest_free_block(BLE_TX_ALLOC_CAPS);
+    perf_max(&s_heap_max_us, heap_started);
     size_t overhead = BLE_TX_HDR_BYTES + BLE_TX_ALIGN_SLACK + BLE_TX_DMA_MARGIN;
     int    fit      = ble_link_tx_chunk(largest, overhead,
                                         len < cap ? len : cap);
@@ -308,10 +326,12 @@ static bool ble_write(const char *data, int len)
         int n = len - sent;
         if (n > cap) n = cap;
 
+        int64_t write_started = esp_timer_get_time();
         int rc = s_rx_no_rsp
                      ? ble_gattc_write_no_rsp_flat(conn, hnd, data + sent, (uint16_t)n)
                      : ble_gattc_write_flat(conn, hnd, data + sent, (uint16_t)n,
                                             NULL, NULL);
+        perf_max(&s_write_max_us, write_started);
         if (rc != 0) {
             s_drops++;
             if (s_verbose || s_drops < 5) {
@@ -369,7 +389,9 @@ static void tel_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
+        int64_t snapshot_started = esp_timer_get_time();
         int len = flipper_link_snapshot(tel, sizeof(tel));
+        perf_max(&s_snapshot_max_us, snapshot_started);
         if (len > 0) {
             if (len > (int)sizeof(tel) - 1) len = (int)sizeof(tel) - 1;
             ble_write(tel, len);

@@ -172,24 +172,24 @@ const ls_tui_theme_t ls_theme_vfd = {
 
 const ls_tui_theme_t ls_theme_daylight = {
     .name = "Daylight",
-    .desc = "black ink on a white ground, for reading in the sun",
+    .desc = "white ground, neutral ink and restrained instrument colors",
     .palette = {
-        0xFFFF,  /* BLACK      the ground: white, every pixel lit    */
-        0xB0C2,  /* RED         6.8:1                                */
-        0x13A5,  /* GREEN       5.8:1                                */
-        0x82C0,  /* YELLOW      6.2:1, ochre - yellow cannot be ink  */
-        0x2B3C,  /* BLUE        5.1:1                                */
-        0x9914,  /* MAGENTA     6.6:1                                */
-        0x03B1,  /* CYAN        5.3:1, the status row                */
-        0x4A6A,  /* WHITE       8.5:1, slate: the grey that reads    */
-        0xB5B7,  /* BR_BLACK    2.0:1, the grey that recedes         */
-        0x7061,  /* BR_RED     11.7:1                                */
-        0x0A43,  /* BR_GREEN   10.6:1                                */
-        0x51C0,  /* BR_YELLOW  10.8:1, values                        */
-        0x1A12,  /* BR_BLUE     9.5:1                                */
-        0x608D,  /* BR_MAGENTA 11.6:1                                */
-        0x024A,  /* BR_CYAN    10.1:1                                */
-        0x0000,  /* BR_WHITE   21:1, the ink: black                  */
+        0xFFFF,  /* BLACK / white ground */
+        0xB207,  /* RED / muted vermilion */
+        0x2B89,  /* GREEN / forest */
+        0x8B04,  /* YELLOW / ochre */
+        0x3B51,  /* BLUE / steel */
+        0x828E,  /* MAGENTA / plum */
+        0x236E,  /* CYAN / teal */
+        0x4A8B,  /* WHITE / secondary text */
+        0xAD97,  /* BR_BLACK / quiet furniture */
+        0x8945,  /* BR_RED / deep vermilion */
+        0x1A86,  /* BR_GREEN / deep forest */
+        0x59C2,  /* BR_YELLOW / deep ochre: readable on hint-row gray */
+        0x222B,  /* BR_BLUE / navy */
+        0x61CA,  /* BR_MAGENTA / deep plum */
+        0x1A4A,  /* BR_CYAN / deep teal */
+        0x0000,  /* BR_WHITE / primary ink */
     },
 };
 

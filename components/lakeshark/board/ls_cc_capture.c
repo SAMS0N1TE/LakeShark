@@ -88,6 +88,7 @@ bool ls_cc_capture_poll(uint32_t hz, uint32_t *captures, uint32_t *overflows) {
           pulses[n++] = value;
       }
     }
+    n=rec_watch_filter_pulses(pulses,n,REC_MIN_PULSE_US);
     if (n >= 6) {
       rec_watch_submit_from(REC_SOURCE_CC1101, hz, pulses, n, 0, REC_END_GAP);
       (*captures)++;

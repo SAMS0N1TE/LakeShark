@@ -1,6 +1,7 @@
 #include "ls_test.h"
 #include "ls_field.h"
 #include "ls_gps.h"
+#include "core/ls_time.h"
 #include "ls_mesh.h"
 #include "esp_timer.h"
 #include "radio/radio_health.h"
@@ -14,7 +15,9 @@ static bool held, held_ready, scan, receiving, tx_done, fail_config, absent;
 static unsigned configurations, sends, polls;
 static ls_gps_state_t gps;
 static ls_field_state_t state;
-static bool imu_busy;
+static bool imu_busy, keyboard_attached;
+static bool scan_complete=true;static int scan_bins=64;
+bool ls_keypad_present(void) { return keyboard_attached; }
 static ls_imu_sample_t imu_data;
 static uint32_t mesh_received=42;
 bool ls_lora_present(void) { return !absent; }
@@ -29,7 +32,7 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg) { configurations++; if (fa
 esp_err_t ls_lora_receive(void) { receiving = true; return ESP_OK; }
 esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi) { (void)lo; (void)hi; scan = true; return ESP_OK; }
 esp_err_t ls_lora_scan_end(void) { scan = false; return ESP_OK; }
-int ls_lora_scan_pass(float *dbm, int n, bool *done) { for (int i=0;i<n;i++) dbm[i] = -110; *done = true; return n; }
+int ls_lora_scan_pass(float *dbm, int n, bool *done) { for (int i=0;i<n;i++) dbm[i] = -110; *done = scan_complete; return scan_bins; }
 bool ls_lora_send_done(void) { return tx_done; }
 esp_err_t ls_lora_send(const uint8_t *data, size_t n) { (void)data; (void)n; sends++; tx_done = false; return ESP_OK; }
 uint32_t ls_lora_airtime_ms(int len) { return (uint32_t)len * 10; }
@@ -55,9 +58,10 @@ static void reset(void)
     mkdir("field-test", 0775);
 #endif
     remove("field-test/entries.bin"); remove("field-test/notes.md"); remove("field-test/samples.csv");
-    remove("field-test/compass0.cal"); remove("field-test/compass1.cal");
+    remove("field-test/compass-solo0.cal"); remove("field-test/compass-solo1.cal");
+    remove("field-test/compass-kbd0.cal");remove("field-test/compass-kbd1.cal");
     held=scan=fail_config=absent=false; held_ready=receiving=tx_done=true; configurations=sends=polls=0;
-    imu_busy = false;
+    scan_complete=true;scan_bins=64;imu_busy = keyboard_attached = false;
     mesh_received=42;
     imu_data = (ls_imu_sample_t){.az=1,.mx=25,.my=25,.mag_valid=true};
     ls_lora_cfg_default(&radio);
@@ -146,7 +150,7 @@ static void calibrate(float offset)
 LS_CASE(compass_calibration_survives_restart_and_an_interrupted_new_save)
 {
     reset(); calibrate(60); calibrate(70);
-    FILE *f = fopen("field-test/compass0.cal", "wb"); LS_CHECK(f != NULL);
+    FILE *f = fopen("field-test/compass-solo0.cal", "wb"); LS_CHECK(f != NULL);
     if (f) { fputs("interrupted", f); fclose(f); }
     ls_field_test_reset("field-test");
     imu_data = (ls_imu_sample_t){.az=1,.mx=85,.my=-80,.mz=100,.mag_valid=true};
@@ -296,4 +300,71 @@ LS_CASE(unknown_archive_versions_are_not_truncated)
     ls_field_test_reset("field-test"); ls_field_note(0,"New note","RAM"); ls_field_step();
     ls_journal_entry_t e; LS_CHECK(ls_field_entry(0,&e)); LS_CHECK(!e.saved);
     struct stat st; LS_EQ_INT(stat("field-test/entries.bin",&st),0); LS_EQ_INT(st.st_size,21);
+}
+
+LS_CASE(recording_source_stays_fixed_until_stop)
+{
+    reset();
+    LS_CHECK(ls_field_source(LS_FIELD_HACKRF));
+    LS_CHECK(ls_field_record(true));
+    LS_CHECK(ls_field_recording());
+    LS_CHECK(!ls_field_source(LS_FIELD_WIFI));
+    LS_CHECK(ls_field_source(LS_FIELD_HACKRF));
+    LS_CHECK(ls_field_record(false));
+    LS_CHECK(!ls_field_recording());
+    LS_CHECK(ls_field_source(LS_FIELD_WIFI));
+}
+
+LS_CASE(compass_selects_saved_attachment_profiles_and_cancels_mixed_setup_fit)
+{
+    reset();calibrate(60);
+    keyboard_attached=true;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(state.calibration_keyboard);LS_CHECK(!state.calibrated);
+    calibrate(120);
+    imu_data=(ls_imu_sample_t){.az=1,.mx=85,.my=-80,.mz=100,.mag_valid=true};
+    ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_NEAR(state.sample.heading,0,.01);
+    keyboard_attached=false;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(!state.calibration_keyboard);LS_CHECK(state.calibrated);LS_NEAR(state.sample.heading,180,.01);
+    keyboard_attached=true;ls_field_test_reset("field-test");
+    ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(state.calibration_keyboard);LS_CHECK(state.calibration_saved);LS_NEAR(state.sample.heading,0,.01);
+    ls_field_calibrate(0);ls_field_step();LS_CHECK(ls_field_calibrating());
+    keyboard_attached=false;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(!state.calibrating);LS_CHECK(state.calibrated);LS_NEAR(state.sample.heading,180,.01);
+}
+
+LS_CASE(spectrum_publishes_only_complete_sweeps_and_exposes_failures)
+{
+    reset();ls_field_mode(LS_LAB_SPECTRUM);ls_field_direct(true);
+    scan_complete=false;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(state.direct);LS_EQ_UINT(state.spectrum_sweeps,0);LS_CHECK(!state.spectrum_us);
+    scan_complete=true;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_EQ_UINT(state.spectrum_sweeps,1);LS_CHECK(state.spectrum_us>0);
+    scan_bins=32;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_EQ_UINT(state.spectrum_errors,1);LS_CHECK(!state.spectrum_us);
+    ls_field_direct(false);ls_field_step();LS_CHECK(!held);
+}
+
+LS_CASE(csv_health_counts_saved_rows_and_stops_after_failed_write)
+{
+    reset();ls_field_record(true);ls_shim_time_advance(1100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(state.record_rows>0);LS_EQ_UINT(state.record_errors,0);LS_CHECK(state.record_saved_us>0);
+    LS_CHECK(!strcmp(state.record_saved_utc,state.sample.utc));
+    LS_EQ_INT(state.record_saved_us,state.sample.time_us);
+    ls_field_test_reset("field-test/missing/deeper");ls_field_record(true);ls_shim_time_advance(1100000);ls_field_step();ls_field_snapshot(&state);
+    LS_EQ_UINT(state.record_rows,0);LS_EQ_UINT(state.record_errors,1);LS_CHECK(!ls_field_recording());
+}
+
+LS_CASE(recorded_timestamp_survives_live_updates_and_rejects_impossible_gps_date)
+{
+    reset();ls_time_test_set_synced(false);
+    gps=(ls_gps_state_t){.alive=true,.fix=true,.lat_deg=43,.lon_deg=-71,.last_sentence_us=1000000,
+        .year=2026,.month=9,.day=15,.hour=12,.minute=34,.second=56};
+    ls_field_record(true);ls_shim_time_advance(1100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(!strcmp(state.record_saved_utc,"2026-09-15T12:34:56Z"));
+    ls_field_record(false);gps.second=58;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(!strcmp(state.record_saved_utc,"2026-09-15T12:34:56Z"));
+    gps.month=2;gps.day=30;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
+    LS_CHECK(!state.sample.utc[0]);
 }

@@ -71,7 +71,7 @@ esp_err_t ls_nvs_call(ls_nvs_fn_t fn, void *ctx, unsigned stack_bytes)
     }
 
     /* INTERNAL alone includes P4 TCM (0x30100000-0x30102000), but
-       IDF 5.5.4's cache-off assertion accepts DRAM (0x4ff00000-0x4ffc0000),
+       IDF 5.4.3's cache-off assertion accepts DRAM (0x4ff00000-0x4ffc0000),
        not TCM. The complete statically reserved stack range is checked by
        ls_flash_task_create_static before every dispatch. */
     TaskHandle_t worker = ls_flash_task_create_static(
@@ -85,6 +85,12 @@ esp_err_t ls_nvs_call(ls_nvs_fn_t fn, void *ctx, unsigned stack_bytes)
     }
 
     xSemaphoreTake(j.done, portMAX_DELAY);
+    /* Completion can wake this caller on the other core before the worker
+       reaches vTaskSuspend. IDF defers deletion of a running task to idle;
+       reusing its static TCB/stack then corrupts the termination list. Wait
+       until it is no longer running, so deletion completes synchronously.
+       This private worker is never resumed by another task. */
+    while (eTaskGetState(worker) != eSuspended) vTaskDelay(1);
     ls_flash_task_delete_static(worker);
     vSemaphoreDelete(j.done);
     xSemaphoreGive(s_worker_lock);

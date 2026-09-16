@@ -11,6 +11,7 @@ extern "C" {
 #define REC_WATCH_RESERVE (16u * 1024u * 1024u)
 typedef enum { REC_SOURCE_RTL, REC_SOURCE_CC1101 } rec_source_t;
 typedef struct { uint32_t value; uint16_t repeats, unit_us; } rec_ook24_t;
+int rec_watch_filter_pulses(int32_t *pulse,int edges,uint32_t min_us);
 bool rec_decode_ook24(const int32_t *pulse, int edges, rec_ook24_t *out);
 rec_source_t rec_watch_source(void);
 bool rec_watch_select_source(rec_source_t source);
@@ -45,6 +46,11 @@ uint32_t rec_watch_crc(const void *data, size_t len);
 int rec_watch_receiver_want(int visible_mode, int rec_mode, bool enabled);
 int rec_watch_receiver_want_source(int visible_mode, int rec_mode, bool enabled, rec_source_t source);
 bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes);
+/* c must remain immutable throughout the call. pump may process live captures,
+   but must not call storage/export recursively (one shared SD sector buffer). */
+bool rec_watch_store_pumped(const char *dir, const rec_watch_catalog_t *c,
+    uint64_t free_bytes, void (*pump)(void *), void *context);
+
 bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c);
 /* Manual export only. Existing output is never overwritten. */
 bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id,
@@ -52,6 +58,8 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
 
 typedef struct {
     bool ready, enabled, alerts, exporting;
+    bool saved, pending_save, save_failed;
+    uint32_t boot_id;
     uint32_t received, dropped, alert_sent, alert_failed, alert_suppressed;
     int count;
     char storage[64], peer[17];
@@ -64,6 +72,7 @@ bool rec_watch_start(void);
 bool rec_watch_enable(bool on);
 bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);
+void rec_watch_filter_status(rec_watch_status_t *out,rec_source_t source);
 void rec_watch_submit(uint32_t frequency, const int32_t *pulse, int edges,
                       int peak, int reason);
 void rec_watch_submit_from(rec_source_t source, uint32_t frequency,

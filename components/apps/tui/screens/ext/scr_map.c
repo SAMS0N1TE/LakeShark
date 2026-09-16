@@ -36,7 +36,11 @@ static tui_rect s_map_cells;      /* the rectangle the grid lent us */
 static tui_rect s_quick_rect;
 static tui_rect s_pad_rect;
 static int s_header_h;
+static bool s_controls_hidden;
+static tui_rect s_controls_hit;
 static char     s_note[64];
+EXT_RAM_BSS_ATTR static ls_gps_state_t s_receiver;
+static bool s_receiver_fresh;
 
 /* Pan by a third of the frame, which is far enough to be worth the tap and
    short enough to keep your place. */
@@ -47,8 +51,10 @@ static const ls_quick_t QUICK[] = {
       .choices = (const char *const[]){ "1" }, .nchoices = 1, .key = '=' },
     { .label = "ZOOM-", .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "-1" }, .nchoices = 1, .key = '-' },
-    { .label = "HERE", .kind = LS_QUICK_ACTION, .action = "map.here",
+    { .label = "SET HOME", .kind = LS_QUICK_ACTION, .action = "map.home",
       .key = 'h' },
+    { .label = "FOLLOW", .kind = LS_QUICK_ACTION, .action = "map.follow",
+      .key = 'g' },
     { .label = "FIND", .kind = LS_QUICK_ACTION, .action = "map.find",
       .key = 'f' },
     { .label = "MAPS", .kind = LS_QUICK_ACTION, .action = "map.files",
@@ -591,6 +597,9 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         if (avoid.h > 0 && cx >= avoid_x0 && cx <= avoid_x1 &&
             cy >= avoid_y0 && cy <= avoid_y1) continue;
 
+        /* The place dot must respect tracked positions as well as its label. */
+        if (!box_free(cx,cx,cy)) continue;
+
         int len = (int)strlen(lb->text);
         const int room = a.w / 3;
         if (len > room) {
@@ -611,6 +620,7 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         if (!box_free(x0, x0 + len - 1, y)) continue;
 
         tui_put_char(sf, a, a.x + cx, a.y + cy, LS_TUI_SHADE_FULL, dot);
+        box_take(cx,cx,cy);
         for (int i = 0; i < len; i++)
             tui_put_char(sf, a, a.x + x0 + i, a.y + y, lb->text[i], attr);
 
@@ -659,15 +669,30 @@ static bool map_cell_of(double lat, double lon, tui_rect a, int pw, int ph,
     return (*cx >= 0 && *cy >= 0 && *cx < a.w && *cy < a.h);
 }
 
+/* Expanding dotted rings indicate a fresh tracked position, not accuracy
+   or radio range. Cell aspect is corrected so the ring reads as a circle. */
+static void tracking_ring(tui_surface *sf, tui_rect a, int cx, int cy, uint8_t hue)
+{
+    int cw=10,ch=20;
+    ls_tui_geometry(NULL,NULL,&cw,&ch);
+    const int radius=2+ls_motion_phase(4,2000);
+    const double aspect=(double)(cw>0?cw:10)/(ch>0?ch:20);
+    for(int k=0;k<16;k++) {
+        const double angle=k*M_PI/8;
+        const int x=cx+(int)lround(radius*cos(angle));
+        const int y=cy+(int)lround(radius*aspect*sin(angle));
+        if(x<0 || x>=a.w || y<0 || y>=a.h || !box_free(x,x,y)) continue;
+        tui_put_char(sf,a,a.x+x,a.y+y,'.',TUI_ATTR(hue,TUI_BLACK));
+    }
+}
+
 static void draw_receiver(tui_surface *sf, tui_rect a, int pw, int ph)
 {
-    EXT_RAM_BSS_ATTR static ls_gps_state_t gps;
-    ls_gps_get(&gps);
-    const int64_t age = esp_timer_get_time() - gps.last_fix_us;
-    if (!gps.fix || gps.last_fix_us <= 0 || age < 0 || age > 10000000) return;
+    if (!s_receiver_fresh) return;
     int x, y;
-    if (!map_cell_of(gps.lat_deg, gps.lon_deg, a, pw, ph, &x, &y) ||
+    if (!map_cell_of(s_receiver.lat_deg, s_receiver.lon_deg, a, pw, ph, &x, &y) ||
         x < 1 || x + 4 >= a.w || !box_free(x - 1, x + 4, y)) return;
+    tracking_ring(sf,a,x,y,TUI_CYAN);
     tui_put_str(sf, a, a.x + x - 1, a.y + y, "[+]GPS", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     box_take(x - 1, x + 4, y);
 }
@@ -707,19 +732,12 @@ static void draw_mesh_nodes(tui_surface *sf, tui_rect a, int pw, int ph,
                           : age < 1800 ? TUI_MAGENTA
                                        : LS_DIM_FG;   /**/
 
-        tui_put_char(sf, a, a.x + cx, a.y + cy, age < 3 && ls_motion_phase(2, 800) ? 'o' : LS_TUI_SHADE_FULL,
+        /* A collocated peer must not erase the receiver or an earlier peer. */
+        if(!box_free(cx,cx,cy)) continue;
+        if(age<300) tracking_ring(sf,a,cx,cy,TUI_MAGENTA);
+        tui_put_char(sf, a, a.x + cx, a.y + cy, '#',
                      TUI_ATTR(hue, TUI_BLACK));
-        if (age < 3) {
-            const int radius = 1 + ls_motion_phase(2, 1000);
-            const int dx[4] = {-radius, radius, 0, 0};
-            const int dy[4] = {0, 0, -1, 1};
-            for (int k = 0; k < 4; k++) {
-                int x = cx + dx[k], y = cy + dy[k];
-                if (x < 0 || y < 0 || x >= a.w || y >= a.h || !box_free(x, x, y)) continue;
-                if (avoid.h > 0 && x >= avoid_x0 && x <= avoid_x1 && y >= avoid_y0 && y <= avoid_y1) continue;
-                tui_put_char(sf, a, a.x + x, a.y + y, '.', TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
-            }
-        }
+
 
         char who[LS_MESH_PEER_NAME > 9 ? LS_MESH_PEER_NAME : 9];
         if (s_map_peers[i].name[0])
@@ -806,6 +824,7 @@ static void draw_aircraft(tui_surface *sf, tui_rect a, int pw, int ph,
         if (avoid.h > 0 && cx + 1 >= avoid_x0 && cx - 1 <= avoid_x1 && cy + 1 >= avoid_y0 && cy - 1 <= avoid_y1) continue;
         if (!box_free(cx - 1, cx + 1, cy - 1) || !box_free(cx - 1, cx + 1, cy) ||
             !box_free(cx - 1, cx + 1, cy + 1)) continue;
+        if(age<=AIRCRAFT_FRESH_US) tracking_ring(sf,a,cx,cy,band);
         plane(sf, a, cx, cy, ac->heading,
               TUI_ATTR(pulse ? TUI_WHITE | TUI_BRIGHT : hue, TUI_BLACK));
         box_take(cx - 1, cx + 1, cy - 1);
@@ -956,12 +975,20 @@ static void draw_pan_pad(tui_surface *sf, tui_rect r)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    ls_gps_get(&s_receiver);
+    const int64_t now = esp_timer_get_time();
+    s_receiver_fresh = s_receiver.fix && s_receiver.last_fix_us > 0 &&
+        now >= s_receiver.last_fix_us && now - s_receiver.last_fix_us <= 10000000 &&
+        isfinite(s_receiver.lat_deg) && fabs(s_receiver.lat_deg) <= 85 &&
+        isfinite(s_receiver.lon_deg) && fabs(s_receiver.lon_deg) <= 180;
+    ls_map_follow_fix(s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
+                      s_receiver.last_fix_us, now);
 
     /* The controls sit under the map in cells, so the map gets what is left.
        Three rows of buttons plus a row of air. */
     const int want = ls_quick_rows(QUICK, N_QUICK, area.w, ls_tui_is_wide());
-    const int ctl_h = (area.h > want + 10) ? want : 0;
-    s_header_h = ls_tui_is_wide() ? 2 : 3;
+    const int ctl_h = (!s_controls_hidden && area.h > want + 10) ? want : 0;
+    s_header_h = ls_tui_is_wide() ? 1 : 3;
     tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
 
     s_quick_rect = ctl_h
@@ -974,10 +1001,21 @@ static void draw(tui_surface *sf, tui_rect area)
     snprintf(title, sizeof(title), "[ %s%s ]  %.*s", VIEW_NAME[s_view],
              ls_tui_is_wide() ? " / V" : "",
              area.w > 18 ? area.w - 18 : 0, name ? name + 1 : "SD MAPS");
-    tui_put_str(sf, area, area.x, area.y, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    s_controls_hit=tui_rect_make(area.x+area.w-13,area.y,13,s_header_h);
+    tui_rect heading=area; heading.w-=14;
+    const char *gps=!s_receiver_fresh?"WAIT":ls_map_following()?"FOLLOW":"LIVE";
+    if(ls_tui_is_wide())
+        snprintf(title,sizeof(title),"[%s/V] ^N  +GPS %s  #MESH  AIR  rings=fresh",VIEW_NAME[s_view],gps);
+    tui_put_str(sf, heading, area.x, area.y, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf,area,s_controls_hit.x,area.y,s_controls_hidden?"[SHOW KEYS]":"[HIDE KEYS]",TUI_ATTR(TUI_BLACK,TUI_CYAN));
+    if(!ls_tui_is_wide()) {
     tui_put_str(sf, area, area.x, area.y + 1, "^ NORTH", LS_ATTR_DIM);
     tui_put_str(sf, area, area.x + 10, area.y + 1, "AIR", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
     tui_put_str(sf, area, area.x + 16, area.y + 1, "MESH", TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
+    tui_put_str(sf, area, area.x + 22, area.y + 1,
+                !s_receiver_fresh ? "GPS WAIT" : ls_map_following() ? "GPS FOLLOW" : "GPS LIVE",
+                TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    }
 
     /* Begin FIRST, then ask what is wrong. The other order asks a map that
        has not been started why it is not drawable, gets "it has no
@@ -1014,7 +1052,7 @@ static void draw(tui_surface *sf, tui_rect area)
                 if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), QUICK, N_QUICK);
                 return;
             }
-            s_pad_rect = pad_rect_for(body);
+            s_pad_rect = s_controls_hidden?tui_rect_make(0,-1,0,0):pad_rect_for(body);
             draw_cells(sf, body, px, pw, ph);
             /* Nodes before names, so the names step around them:
                a node is live data about the network you are standing in and
@@ -1047,8 +1085,9 @@ static void draw(tui_surface *sf, tui_rect area)
 
             const double width_m = 40075016.686 * cos(lat * M_PI / 180.0) * pw /
                 (ldexp(1.0, ls_map_zoom()) * ls_map_tile_px());
-            snprintf(s_note, sizeof(s_note), "%c %s  z%d  %.1f mi across",
-                     pip, busy ? "LOADING" : "OFFLINE", ls_map_zoom(), width_m / 1609.344);
+            snprintf(s_note, sizeof(s_note), "%c %s z%d%s %.2f mi across",
+                     pip, busy ? "LOADING" : "OFFLINE", ls_map_zoom(),
+                     ls_map_zoom() > ls_map_source_zoom() ? " MAG" : "", width_m / 1609.344);
             ls_tui_status_set(s_file_error ? s_file_error : s_note, NULL);
             if (!ls_tui_is_wide())
                 tui_put_str(sf, area, area.x, area.y + 2, s_file_error ? s_file_error : s_note, LS_ATTR_DIM);
@@ -1073,6 +1112,10 @@ static int pan_step(void)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k==LS_TK_CHAR && (ch=='x'||ch=='X')) {
+        s_controls_hidden=!s_controls_hidden;
+        ls_tui_invalidate(); return true;
+    }
     if (k == LS_TK_CHAR &&
         ls_quick_key(ch, QUICK, N_QUICK, ls_quick_grant_builtin(), NULL))
         return true;
@@ -1102,6 +1145,9 @@ static bool key(ls_tk_t k, char ch)
    debounce layer reports a completed tap and nothing between. */
 static bool touch(int col, int row)
 {
+    if(col>=s_controls_hit.x && col<s_controls_hit.x+s_controls_hit.w &&
+       row>=s_controls_hit.y && row<s_controls_hit.y+s_controls_hit.h)
+        return key(LS_TK_CHAR,'x');
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 14) {
         ls_val_t out;

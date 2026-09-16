@@ -468,25 +468,20 @@ static bool grid_has(const char *needle)
 
 LS_CASE(the_status_rows_words_start_where_the_corner_padding_ends)
 {
-    /*"the very top bar in portrait needs to have the text pushed
-       in a little to avoid the round corners". The bar still runs the full
-       width - it is furniture - and the words stop short of both ends by
-       whatever ls_tui_corner_pad says, which is three cells either way up on
-       the T-Display-P4. The count is set here; test_tui_inset owns the
-       arithmetic that produces it. */
+    /* Backgrounds and text both stay inside the physical corner margin. */
     setup(54, 71);
     s_corner_pad = 3;
     ls_tui_status_set_clock("14:32Z");
     ls_tui_router_draw(&g_sf);
 
-    const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
+    const uint8_t bar = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     for (int x = 0; x < 3; x++) {
         const tui_cell *l = &g_back[x], *r = &g_back[s_cols - 1 - x];
         LS_CHECK_MSG(l->ch == ' ' && r->ch == ' ',
                      "corner cell %d of the status row carries '%c' / '%c'",
                      x, l->ch, r->ch);
         LS_CHECK_MSG(l->attr == bar && r->attr == bar,
-                     "the bar stopped short of corner cell %d", x);
+                     "the bar extended into corner cell %d", x);
     }
     char row[160];
     status_row(row, sizeof(row));
@@ -547,6 +542,10 @@ LS_CASE(the_hint_row_keeps_its_words_off_the_bottom_corners)
         LS_CHECK_MSG(last[x].ch == ' ' && last[s_cols - 1 - x].ch == ' ',
                      "corner cell %d of the hint row carries '%c' / '%c'",
                      x, last[x].ch, last[s_cols - 1 - x].ch);
+    for(int x=0;x<3;x++) {
+        LS_EQ_INT(last[x].attr,TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        LS_EQ_INT(last[s_cols-1-x].attr,TUI_ATTR(TUI_WHITE,TUI_BLACK));
+    }
     LS_CHECK_MSG(last[3].ch == 'H',
                  "the hint does not start where the padding ends");
     LS_CHECK_MSG(last[s_cols - 4].ch == 'n',

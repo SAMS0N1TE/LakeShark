@@ -7,6 +7,15 @@ extern "C" {
 #endif
 #define LS_MIXRF_CHANNELS 84
 #define LS_MIXRF_CARD_HISTORY 32
+/* Arrivals require an observed absent -> present transition. The first
+   sample establishes a baseline; starting a detector is not an arrival. */
+typedef struct { bool known, present; } ls_mixrf_field_edge_t;
+static inline bool ls_mixrf_field_arrival(ls_mixrf_field_edge_t *edge, bool present)
+{
+    bool arrival=edge->known && !edge->present && present;
+    edge->known=true;edge->present=present;
+    return arrival;
+}
 typedef struct {
     bool ready,busy,keyboard,power,cc,nrf,nfc,receiving;
     uint8_t cc_version,nfc_identity,nrf_address_width;

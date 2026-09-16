@@ -128,3 +128,19 @@ LS_CASE(static_flash_task_rejects_non_dram_stack)
                                          NULL, 1, stack, &tcb, 0) == NULL);
     LS_EQ_UINT(ls_shim_task_last_stack_depth(), 0);
 }
+
+LS_CASE(nvs_waits_for_remote_worker_to_suspend_before_static_reuse)
+{
+    LS_EQ_INT(ls_nvs_init(), ESP_OK);
+    ls_shim_task_reset();
+    ls_shim_task_execute_on_create(pdTRUE);
+    ls_shim_task_suspend_lag(3);
+    esp_err_t result=73;
+    LS_EQ_INT(ls_nvs_call(nvs_callback,&result,0),result);
+    LS_CHECK(ls_shim_task_state_read_count()>=4);
+    LS_EQ_UINT(ls_shim_task_running_delete_count(),0);
+    LS_EQ_UINT(ls_shim_task_delete_count(),1);
+    LS_EQ_INT(ls_nvs_call(nvs_callback,&result,0),result);
+    LS_EQ_UINT(ls_shim_task_running_delete_count(),0);
+    LS_EQ_UINT(ls_shim_task_delete_count(),2);
+}

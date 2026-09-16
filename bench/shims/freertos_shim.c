@@ -168,8 +168,14 @@ void vQueueDelete(QueueHandle_t handle)
     ++s_queue_delete_count;
 }
 
+static unsigned s_suspend_lag, s_running_deletes, s_state_reads;
+void ls_shim_task_suspend_lag(unsigned reads) { s_suspend_lag=reads; }
+unsigned ls_shim_task_running_delete_count(void) { return s_running_deletes; }
+unsigned ls_shim_task_state_read_count(void) { return s_state_reads; }
+
 void ls_shim_task_reset(void)
 {
+    s_suspend_lag=s_running_deletes=s_state_reads=0;
     s_task_execute = pdFALSE;
     s_task_fail = pdFALSE;
     s_task_stack_depth = 0;
@@ -336,6 +342,28 @@ void vTaskDelay(TickType_t ticks)
     nanosleep(&delay, NULL);
 }
 
+static uint32_t s_idle_runtime[2];
+static unsigned s_info_calls, s_stack_scan_calls, s_system_state_calls;
+void ls_shim_idle_runtime(uint32_t core0, uint32_t core1)
+{ s_idle_runtime[0] = core0; s_idle_runtime[1] = core1; }
+unsigned ls_shim_task_info_calls(void) { return s_info_calls; }
+unsigned ls_shim_task_stack_scan_calls(void) { return s_stack_scan_calls; }
+unsigned ls_shim_system_state_calls(void) { return s_system_state_calls; }
+TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t core)
+{ return core >= 0 && core < 2 ? (TaskHandle_t)(uintptr_t)(core + 1) : NULL; }
+void vTaskGetInfo(TaskHandle_t task, TaskStatus_t *info, BaseType_t scan_stack, eTaskState state)
+{
+    (void)state;
+    ++s_info_calls;
+    if (scan_stack) ++s_stack_scan_calls;
+    unsigned core = (unsigned)(uintptr_t)task - 1;
+    memset(info, 0, sizeof(*info));
+    if (core < 2) {
+        info->ulRunTimeCounter = s_idle_runtime[core];
+        info->xCoreID = (BaseType_t)core;
+    }
+}
+
 UBaseType_t uxTaskGetNumberOfTasks(void)
 {
     return 0;
@@ -345,6 +373,7 @@ UBaseType_t uxTaskGetSystemState(TaskStatus_t *tasks,
                                  UBaseType_t capacity,
                                  uint32_t *total_runtime)
 {
+    ++s_system_state_calls;
     (void)tasks;
     (void)capacity;
     if (total_runtime) *total_runtime = 0;
@@ -429,6 +458,7 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t wait_ticks)
 void vTaskDelete(TaskHandle_t task)
 {
     (void)task;
+    if (s_task_state == eRunning || s_suspend_lag) ++s_running_deletes;
     s_task_state = eDeleted;
     ++s_task_delete_count;
 }
@@ -446,5 +476,7 @@ void vTaskSuspend(TaskHandle_t task)
 eTaskState eTaskGetState(TaskHandle_t task)
 {
     (void)task;
+    ++s_state_reads;
+    if (s_task_state==eSuspended && s_suspend_lag) { --s_suspend_lag; return eRunning; }
     return s_task_state;
 }

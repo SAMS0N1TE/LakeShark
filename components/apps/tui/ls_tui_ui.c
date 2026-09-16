@@ -84,23 +84,18 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 
 #define BTN_MAX_W 16
     int cell_w = bar.w / per_row;
-    int x_pad = 0;
-    if (cell_w > BTN_MAX_W) {
-        cell_w = BTN_MAX_W;
-        x_pad = (bar.w - cell_w * per_row) / 2;
-    }
+    if (cell_w > BTN_MAX_W) cell_w = BTN_MAX_W;
     if (cell_w < 3 || row_h < 1) return;
 
     for (int i = 0; i < n && i < MAX_HITS; i++) {
         const int r = i / per_row, c = i % per_row;
         if (r >= rows) break;
 
-        const int x0 = bar.x + x_pad + c * cell_w;
+        const int count = n - r * per_row < per_row ? n - r * per_row : per_row;
+        const int row_width = count * cell_w - 1;
+        const int x0 = bar.x + (bar.w - row_width) / 2 + c * cell_w;
         const int y0 = bar.y + r * row_h;
-        /* The last button on a row absorbs the rounding, so the bar always
-           reaches the right edge and there is no dead strip to mis-tap into. */
-        const int w = (c == per_row - 1 && !x_pad)
-                      ? (bar.x + bar.w - x0) : cell_w;
+        const int w = cell_w;
         const int h = row_h;
 
         /* A dithered field and a border, not a slab of colour. */
@@ -412,6 +407,7 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         tui_fill(sf, box, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
         tui_box(sf, box, NULL, frame);
+        if(ls_tui_is_wide() && i<9) tui_put_char(sf,box,box.x+2,box.y,'1'+i,frame);
 
         if (sel_now)
             tui_fill(sf, tui_rect_make(box.x + 1, box.y + 1, box.w - 2, box.h - 2),

@@ -4,17 +4,40 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "../../ls_tui_ui.h"
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 #include "../../ls_picker.h"
+#include "../../ls_field.h"
+#include "../../ls_skyview.h"
+#include "ls_gps.h"
+#include "esp_timer.h"
+#include "esp_attr.h"
 #include "../../ls_quick.h"
 #include "apps/fm/fm_state.h"
 #include "apps/fm/fm_mode_label.h"
 
-static void enter(void) { ls_wf_source_select(LS_WF_SRC_AUTO); }
-static void leave(void) { ls_wf_source_release(); }
+/* Spectrum sources retain their existing ordinal; other radios use honest
+ * passive data views until their spectrum adapters are available. */
+typedef struct { const char *label, *detail; ls_field_source_t field; } data_source_t;
+static const data_source_t data_sources[] = {
+    {"CC1101", "Receiver data; spectrum pending", LS_FIELD_CC1101},
+    {"GPS/GNSS", "Satellite signal levels", LS_FIELD_NONE},
+    {"HackRF", "Receiver data; spectrum pending", LS_FIELD_HACKRF},
+    {"nRF24", "Survey data; spectrum pending", LS_FIELD_NRF24},
+    {"NFC", "Field data", LS_FIELD_NFC},
+    {"Wi-Fi", "Link data", LS_FIELD_WIFI},
+    {"Bluetooth", "Link data", LS_FIELD_BLE},
+};
+#define DATA_COUNT ((int)(sizeof(data_sources)/sizeof(data_sources[0])))
+static int s_data = -1;
+static int s_satellite;
+static EXT_RAM_BSS_ATTR ls_gps_state_t s_gps;
+static void enter(void) { s_data=-1; ls_wf_source_select(LS_WF_SRC_AUTO); }
+static void leave(void) { if(s_data>=0) ls_field_watch(false); s_data=-1; ls_wf_source_release(); }
+
 
 /* WHICH RADIO, as one button that opens a list. */
 
@@ -76,7 +99,11 @@ static void pick(ls_wf_src_t src)
     }
     /* Choosing a radio starts it. The screen still starts nothing on
        its own - see the note on ls_wf_source_start. */
-    ls_wf_source_start(src);
+    if (!ls_wf_source_start(src)) {
+        snprintf(s_flash,sizeof(s_flash),"Source could not start"); s_flash_ttl=90; return;
+    }
+    if(s_data>=0) ls_field_watch(false);
+    s_data=-1;
     snprintf(s_flash, sizeof(s_flash), "%s - %s",
              ls_wf_source_label(src), source_detail(src));
     s_flash_ttl = 40;
@@ -84,7 +111,17 @@ static void pick(ls_wf_src_t src)
 
 static void picked(int index)
 {
-    if (index >= 0 && index < (int)LS_WF_SRC__COUNT) pick((ls_wf_src_t)index);
+    if (index >= 0 && index < (int)LS_WF_SRC__COUNT) { pick((ls_wf_src_t)index); return; }
+    int data=index-(int)LS_WF_SRC__COUNT;
+    if(data<0 || data>=DATA_COUNT) return;
+    if(!ls_field_start() || !ls_field_source(data_sources[data].field)) {
+        snprintf(s_flash,sizeof(s_flash),"Stop recording before changing its source");
+        s_flash_ttl=90; return;
+    }
+    ls_wf_source_release();
+    ls_field_watch(true);
+    s_data=data; s_satellite=0; s_flash[0]=0; s_flash_ttl=0;
+
 }
 
 static void preset_picked(int index)
@@ -124,8 +161,13 @@ static void open_radio_picker(void)
 
         snprintf(label, sizeof(label), "%s%s",
                  ls_wf_source_label(src),
-                 src == ls_wf_source_get() ? " *" : "");
+                 s_data<0 && src == ls_wf_source_get() ? " *" : "");
         ls_picker_add(label, no ? no : source_detail(src));
+    }
+    for(int i=0;i<DATA_COUNT;i++) {
+        char label[LS_PICKER_TEXT];
+        snprintf(label,sizeof(label),"%s%s",data_sources[i].label,s_data==i?" *":"");
+        ls_picker_add(label,data_sources[i].detail);
     }
 }
 
@@ -133,20 +175,66 @@ static void draw_buttons(tui_surface *sf, tui_rect r)
 {
     const ls_wf_src_t src = ls_wf_source_get();
     ls_btn_t buttons[] = {
-        {"RADIO", ls_wf_source_label(src), 'v', false, false},
+        {"RADIO", s_data>=0 ? data_sources[s_data].label : ls_wf_source_label(src), 'v', false, false},
         {"BAND", ls_wf_preset_current(src), 'n', false, ls_wf_preset_count(src) == 0},
         {"MODE", fm_mode_label(FM.mode), 'e', false, false},
         {"TUNE", "MHz", 't', false, false},
         {"SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
     };
-    ls_btn_bar_raised(sf, r, buttons, src == LS_WF_SRC_FM ? 5 : 2, -1);
+    ls_btn_bar_raised(sf, r, buttons, s_data>=0 ? 1 : src == LS_WF_SRC_FM ? 5 : 2, -1);
+}
+
+/* Current measurement only: no extra history or fabricated spectrum. */
+static void signal_meter(tui_surface *sf, tui_rect area, int row, int x, int width, float value)
+{
+    if(width<=0 || !isfinite(value)) return;
+    if(value<0) value=0;
+    if(value>1) value=1;
+    int filled=(int)(value*width);
+    for(int i=0;i<width;i++)
+        tui_put_char(sf,area,area.x+x+i,area.y+row,
+            i<filled?'#':'.',
+            i<filled?TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+}
+
+static void draw_data(tui_surface *sf, tui_rect area)
+{
+    char line[96];
+    const data_source_t *source=&data_sources[s_data];
+    ls_kv(sf,area,1,"VIEW",source->detail,LS_ATTR_DIM);
+    if(source->field==LS_FIELD_NONE) {
+        ls_gps_get(&s_gps);
+        ls_skyview_draw(sf,tui_rect_make(area.x,area.y+2,area.w,area.h-2),&s_gps,s_satellite);
+        return;
+    }
+    ls_field_sample_t sample;
+    ls_field_sample_snapshot(&sample);
+    const int64_t now=esp_timer_get_time();
+    bool fresh=sample.source==source->field && sample.time_us>0 && now>=sample.time_us && now-sample.time_us<1000000;
+    if(!fresh || !sample.radio_valid) {
+        ls_kv(sf,area,3,"SOURCE","No fresh data; receiver or adapter unavailable",LS_ATTR_DIM);
+        return;
+    }
+    ls_kv(sf,area,3,"SOURCE",source->label,LS_ATTR_DIM);
+    if(sample.frequency) snprintf(line,sizeof(line),"%.4f MHz",sample.frequency/1e6);
+    else snprintf(line,sizeof(line),"Not reported");
+    ls_kv(sf,area,5,"FREQ",line,LS_ATTR_DIM);
+    if(sample.signal_valid) snprintf(line,sizeof(line),"%.1f dBm",sample.rssi);
+    else snprintf(line,sizeof(line),"Not reported");
+    ls_kv(sf,area,6,"SIGNAL",line,LS_ATTR_DIM);
+    snprintf(line,sizeof(line),"%lu",(unsigned long)sample.packets);
+    ls_kv(sf,area,7,"COUNT",line,LS_ATTR_DIM);
+    if(sample.signal_valid && isfinite(sample.rssi)) {
+        signal_meter(sf,area,9,2,area.w-4,(sample.rssi+140.0f)/140.0f);
+        ls_kv(sf,area,10,"SCALE","-140 | -70 | 0 dBm",LS_ATTR_DIM);
+    }
 }
 
 static void draw(tui_surface *sf, tui_rect area)
 {
-    ls_wf_source_pump();
+    if(s_data<0) ls_wf_source_pump();
 
-    int want = ls_btn_raised_height(area, ls_wf_source_get() == LS_WF_SRC_FM ? 5 : 2);
+    int want = ls_btn_raised_height(area, s_data>=0 ? 1 : ls_wf_source_get() == LS_WF_SRC_FM ? 5 : 2);
     draw_buttons(sf, tui_rect_make(area.x, area.y, area.w, want));
     tui_rect body = tui_rect_make(area.x, area.y + want, area.w, area.h - want);
 
@@ -157,6 +245,8 @@ static void draw(tui_surface *sf, tui_rect area)
     } else {
         s_flash[0] = 0;
     }
+
+    if(s_data>=0) { draw_data(sf,body); return; }
 
     const char *why = ls_wf_idle_reason();
     /* Keep HOLD reachable while the shared display is paused. */
@@ -175,7 +265,14 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
-    if (k == LS_TK_CHAR && ls_wf_source_get() == LS_WF_SRC_FM) {
+    if(s_data>=0 && data_sources[s_data].field==LS_FIELD_NONE && k==LS_TK_CHAR &&
+       (ch=='j' || ch=='J' || ch=='k' || ch=='K')) {
+        int n=s_gps.sat_count;
+        if(n>LS_GPS_MAX_SATS)n=LS_GPS_MAX_SATS;
+        if(n) s_satellite=(s_satellite+(ch=='j'||ch=='J'?1:n-1))%n;
+        return true;
+    }
+    if (k == LS_TK_CHAR && s_data<0 && ls_wf_source_get() == LS_WF_SRC_FM) {
         if (ch == 'e' || ch == 'E') { open_mode_picker(); return true; }
         if (ch == 'w' || ch == 'W') {
             ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
@@ -183,7 +280,7 @@ static bool key(ls_tk_t k, char ch)
         }
     }
     if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') &&
-        ls_wf_source_get() == LS_WF_SRC_FM) {
+        s_data<0 && ls_wf_source_get() == LS_WF_SRC_FM) {
         tune_fm();
         return true;
     }
@@ -196,17 +293,18 @@ static bool key(ls_tk_t k, char ch)
     /* N for the band list. Not B, which the waterfall already uses
        to hide its own buttons, and not P, which is its palette. */
     if (k == LS_TK_CHAR && (ch == 'n' || ch == 'N')) {
+        if(s_data>=0) return false;
         open_preset_picker();
         return true;
     }
-    return ls_wf_key(k, ch);
+    return s_data<0 && ls_wf_key(k, ch);
 }
 
 static bool touch(int col, int row)
 {
     int i = ls_btn_hit(col, row);
     if (i >= 0) return key(LS_TK_CHAR, "vnetw"[i]);
-    return ls_wf_touch(col, row);
+    return s_data<0 && ls_wf_touch(col, row);
 }
 
 const ls_tui_screen_t ls_scr_falls = {

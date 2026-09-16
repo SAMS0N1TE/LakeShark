@@ -33,7 +33,8 @@ static void button(tui_surface *sf, tui_rect r, const char *label, char key,
     ls_fill_dither(sf, inset(r), on ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
     ls_panel_box(sf, r, "", hue);
     char text[48];
-    snprintf(text, sizeof(text), "[%c] %s", key, label);
+    if (ls_tui_is_wide()) snprintf(text, sizeof(text), "[%c] %s", key, label);
+    else snprintf(text, sizeof(text), "%s", label);
     ls_dither_label(sf, inset(r), (r.h - 3) / 2,
                     text, dim ? LS_ATTR_DIM : WHITE);
     if (s_hit_count < (int)(sizeof(s_hits) / sizeof(s_hits[0])))
@@ -249,7 +250,7 @@ static void draw(tui_surface *sf, tui_rect area)
         return;
     }
     bool wide = ls_tui_is_wide();
-    int tab_h = wide ? 3 : 4, action_h = wide ? 3 : 8, msg_h = wide ? 1 : 2;
+    int tab_h = wide ? 3 : 4, action_h = wide ? 3 : (s_tab ? 5 : 8), msg_h = wide ? 1 : 2;
     button(sf, tui_rect_make(area.x, area.y, area.w / 2, tab_h), "WI-FI", 'W', !s_tab, false, -1);
     button(sf, tui_rect_make(area.x + area.w / 2, area.y, area.w - area.w / 2, tab_h),
            "BLUETOOTH", 'B', s_tab, false, -1);

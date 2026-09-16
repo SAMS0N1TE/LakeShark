@@ -23,8 +23,29 @@ static const char *TAG = "ls_track";
 static ls_rlog_t       s_log;
 static TaskHandle_t    s_task;
 static volatile bool   s_stop;
+static volatile esp_err_t s_record_error;
 static ls_track_pt_t   s_last;        /* the last point KEPT, not the last fix */
 static bool            s_have_last;
+static portMUX_TYPE s_time_lock=portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_saved_time;
+static bool s_saved_epoch,s_saved_valid;
+static void save_time(const ls_track_pt_t *p)
+{
+    portENTER_CRITICAL(&s_time_lock);
+    s_saved_valid=p!=NULL;
+    s_saved_time=p?p->t:0;
+    s_saved_epoch=p && (p->flags & LS_TRACK_F_EPOCH);
+    portEXIT_CRITICAL(&s_time_lock);
+}
+bool ls_track_last_time(uint32_t *seconds,bool *epoch)
+{
+    portENTER_CRITICAL(&s_time_lock);
+    const bool valid=s_saved_valid;
+    if(seconds) *seconds=s_saved_time;
+    if(epoch) *epoch=s_saved_epoch;
+    portEXIT_CRITICAL(&s_time_lock);
+    return valid;
+}
 static uint32_t        s_last_us_s;   /* when it was kept, in uptime seconds  */
 
 static float    s_min_move_m = 10.0f;
@@ -47,6 +68,7 @@ static ls_track_wpt_fn s_sight_cb;
 void ls_track_set_waypoint_source(ls_track_wpt_fn fn) { s_sight_cb = fn; }
 
 bool ls_track_rec_running(void) { return s_task != NULL; }
+esp_err_t ls_track_rec_error(void) { return s_record_error; }
 int  ls_track_points(void)      { return ls_rlog_count(&s_log); }
 
 /* See ls_track_log.h. */
@@ -65,39 +87,21 @@ int ls_track_attach(void)
     if (!ls_rlog_open(&s_log, TRACK_PATH, sizeof(ls_track_pt_t),
                       LS_TRACK_CAPACITY))
         return 0;
-    return ls_rlog_count(&s_log);
+    const int count=ls_rlog_count(&s_log);
+    ls_track_pt_t last;
+    if(count>0 && ls_rlog_read_at(&s_log,count-1,&last)==1) save_time(&last);
+    return count;
 }
 
 /* The point's timestamp, and where it comes from. */
 
 static uint32_t point_time(const ls_gps_state_t *g, uint8_t *flags)
 {
-    if (g->year >= 2020) {
-        struct tm tmv;
-        memset(&tmv, 0, sizeof(tmv));
-        tmv.tm_year = (int)g->year - 1900;
-        tmv.tm_mon  = (int)g->month - 1;
-        tmv.tm_mday = (int)g->day;
-        tmv.tm_hour = (int)g->hour;
-        tmv.tm_min  = (int)g->minute;
-        tmv.tm_sec  = (int)g->second;
-
-        static const int DAYS[12] = { 0, 31, 59, 90, 120, 151,
-                                      181, 212, 243, 273, 304, 334 };
-        const int y = tmv.tm_year + 1900;
-        long days = (long)(y - 1970) * 365 + ((y - 1969) / 4)
-                  - ((y - 1901) / 100) + ((y - 1601) / 400);
-        days += DAYS[tmv.tm_mon];
-        /* The leap day only counts once it has happened. */
-        if (tmv.tm_mon > 1 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0))
-            days += 1;
-        days += tmv.tm_mday - 1;
-        *flags = LS_TRACK_F_EPOCH;
-        return (uint32_t)(days * 86400L + tmv.tm_hour * 3600L
-                          + tmv.tm_min * 60L + tmv.tm_sec);
-    }
-    *flags = 0;
-    return (uint32_t)(esp_timer_get_time() / 1000000);
+    /* LS-GPS-TRACK: a checksummed RMC can still contain month 00/13.
+       The former DAYS[month-1] read outside its array. Validate all fields
+       before conversion; a receiver date is data, not a trusted index. */
+    return ls_track_time(g->year, g->month, g->day, g->hour, g->minute,
+                         g->second, (uint32_t)(esp_timer_get_time() / 1000000), flags);
 }
 
 static void track_task(void *arg)
@@ -109,7 +113,8 @@ static void track_task(void *arg)
         ls_gps_state_t g;
         ls_gps_get(&g);
 
-        if (g.fix) {
+        if (ls_track_fix_usable(g.fix, g.lat_deg, g.lon_deg, g.alt_m,
+                                g.last_fix_us, esp_timer_get_time())) {
             ls_track_pt_t p;
             memset(&p, 0, sizeof(p));
             p.lat_e7 = (int32_t)(g.lat_deg * 1e7);
@@ -135,9 +140,10 @@ static void track_task(void *arg)
             if (ls_track_should_log(moved, since, s_min_move_m, s_max_gap_s)) {
                 if (ls_rlog_append(&s_log, &p)) {
                     s_last = p;
+                    save_time(&p);
                     s_have_last = true;
                     s_last_us_s = up;
-                }
+                } else {s_record_error=ESP_FAIL;s_stop=true;ESP_LOGE(TAG,"track write failed; recording stopped");}
             }
         }
 
@@ -152,25 +158,26 @@ static void track_task(void *arg)
 esp_err_t ls_track_rec_start(void)
 {
     if (s_task) return ESP_OK;
+    s_record_error=ESP_OK;
 
     mkdir(TRACK_DIR, 0777);
     if (!s_log.open &&
         !ls_rlog_open(&s_log, TRACK_PATH, sizeof(ls_track_pt_t),
                       LS_TRACK_CAPACITY))
-        return ESP_ERR_NOT_FOUND;
+        return s_record_error=ESP_ERR_NOT_FOUND;
 
     /* The receiver has to be on, or this records a thousand seconds of
        nothing and reports itself as working. */
     if (!ls_gps_running()) {
         const esp_err_t e = ls_gps_start();
-        if (e != ESP_OK) return e;
+        if (e != ESP_OK) return s_record_error=e;
     }
 
     s_have_last = false;
     s_stop = false;
     if (xTaskCreate(track_task, "ls_track", 3584, NULL, 3, &s_task) != pdPASS) {
         s_task = NULL;
-        return ESP_ERR_NO_MEM;
+        return s_record_error=ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }
@@ -187,7 +194,9 @@ bool ls_track_clear(void)
     if (s_task) return false;
     if (!s_log.open) return false;
     s_have_last = false;
-    return ls_rlog_clear(&s_log);
+    const bool cleared=ls_rlog_clear(&s_log);
+    if(cleared) save_time(NULL);
+    return cleared;
 }
 
 int ls_track_export(const char *path, char *out_path, size_t out_cap)

@@ -60,12 +60,15 @@ void settings_set_daylight(bool v) { s_daylight = v; }
    centre there, so the saved-home fallback agreeing is what makes -e (no
    fix) and the ordinary case draw the same picture instead of two
    unrelated ones. */
+static float s_home_lat=43.4445f, s_home_lon=-71.6473f;
 bool settings_get_home(float *lat, float *lon)
 {
-    if (lat) *lat = 43.4445f;
-    if (lon) *lon = -71.6473f;
+    if(lat)*lat=s_home_lat;
+    if(lon)*lon=s_home_lon;
     return true;
 }
+bool settings_set_home(float lat,float lon) {s_home_lat=lat;s_home_lon=lon;return true;}
+
 
 /* No theme accessors here: lssim links ls_tui.c for real, so the board's own
    ones are present. The tests fake them because they do not link the
@@ -179,6 +182,7 @@ void lakeshark_fm_scan_restart(void) { }
    be recording would mean the not-recording layout was the one nobody could
    look at. */
 bool ls_track_rec_running(void) { return false; }
+esp_err_t ls_track_rec_error(void) { return ESP_OK; }
 int  ls_track_points(void) { return 0; }
 esp_err_t ls_track_rec_start(void) { return -1; }
 void ls_track_rec_stop(void) { }
@@ -233,7 +237,13 @@ static ls_gps_state_t s_gps = {
     },
 };
 
-void ls_gps_get(ls_gps_state_t *out) { if (out) *out = s_gps; }
+void ls_gps_get(ls_gps_state_t *out) {
+    if(!out) return;
+    *out=s_gps;
+    /* The live simulator fixture emits a fresh fix; -e remains unavailable. */
+    if(out->alive) out->last_sentence_us=esp_timer_get_time();
+    if(out->fix) out->last_fix_us=esp_timer_get_time();
+}
 
 bool ls_imu_present(void) { return true; }
 ls_imu_pose_t ls_imu_pose(void) { return LS_IMU_LEFT; }
@@ -460,3 +470,10 @@ void event_bus_publish_heartbeat(const void *hb) { (void)hb; }
    simulator that printed every ESP_LOG the screens make would bury the one
    line saying where the image went. */
 int ls_shim_log_enabled = 0;
+
+static bool keyboard_light=true;
+bool settings_get_keyboard_light(void) { return keyboard_light; }
+void settings_set_keyboard_light(bool on) { keyboard_light=on; }
+int ls_keypad_backlight(bool on) { (void)on; return 0; }
+
+bool ls_track_last_time(uint32_t *seconds,bool *epoch) { (void)seconds;(void)epoch;return false; }

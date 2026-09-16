@@ -30,6 +30,14 @@ typedef struct {
 /* Points held on the card. 4096 x 16 bytes is 64 KB. */
 #define LS_TRACK_CAPACITY 4096
 
+/* Invalid/incomplete receiver dates use uptime, never an unchecked month
+   table index. UTC conversion is independent of the host timezone. */
+uint32_t ls_track_time(unsigned year, unsigned month, unsigned day,
+                       unsigned hour, unsigned minute, unsigned second,
+                       uint32_t uptime, uint8_t *flags);
+bool ls_track_fix_usable(bool fix, double lat, double lon, float altitude,
+                          int64_t stamp_us, int64_t now_us);
+
 /* Metres between two points, flat-earth. */
 
 float ls_track_distance_m(int32_t lat_a_e7, int32_t lon_a_e7,

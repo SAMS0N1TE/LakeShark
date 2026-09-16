@@ -91,6 +91,7 @@ typedef struct {
     uint32_t    bytes_sec;
     uint32_t    captures;
     bool        receiver_streaming;
+    uint32_t    capture_uptime_s; /* Start of current/last acquired pulse capture. */
 } rec_hub_status_t;
 
 int  rec_app_register(void);

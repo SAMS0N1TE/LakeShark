@@ -15,7 +15,7 @@ extern "C" {
 #define LS_JOURNAL_TEXT 768
 
 typedef enum { LS_FIELD_NONE, LS_FIELD_MESH, LS_FIELD_LORA, LS_FIELD_RTL,
-               LS_FIELD_CC1101, LS_FIELD_NRF24, LS_FIELD_NFC, LS_FIELD_WIFI, LS_FIELD_BLE, LS_FIELD_SOURCES } ls_field_source_t;
+               LS_FIELD_CC1101, LS_FIELD_NRF24, LS_FIELD_NFC, LS_FIELD_WIFI, LS_FIELD_BLE, LS_FIELD_HACKRF, LS_FIELD_SOURCES } ls_field_source_t;
 typedef enum { LS_LAB_PACKETS, LS_LAB_SPECTRUM, LS_LAB_BEARING } ls_lab_mode_t;
 
 typedef struct {
@@ -61,6 +61,12 @@ typedef struct {
     ls_field_peer_t peers[3];
     char status[80], storage[80];
     bool calibrating, calibrated, calibration_saved;
+    uint32_t record_rows, record_errors;
+    int64_t record_saved_us;
+    char record_saved_utc[24];
+    uint32_t spectrum_sweeps, spectrum_errors;
+    int64_t spectrum_us;
+    bool calibration_keyboard; /* Active automatic attachment profile. */
     uint8_t calibration_faces;
     uint16_t calibration_samples;
     uint8_t calibration_step, calibration_hold;
@@ -71,6 +77,8 @@ typedef struct {
 /* UI calls only enqueue work or copy bounded snapshots. */
 bool ls_field_start(void);
 void ls_field_snapshot(ls_field_state_t *out);
+/* Small passive view: no plot arrays copied onto the UI stack. */
+void ls_field_sample_snapshot(ls_field_sample_t *out);
 bool ls_field_direct(bool enabled);
 bool ls_field_owned(void);
 bool ls_field_configure(const ls_lora_cfg_t *cfg);
@@ -83,6 +91,7 @@ bool ls_field_transmit(const char *text);
 bool ls_field_source(ls_field_source_t source);
 const char *ls_field_source_name(ls_field_source_t source);
 bool ls_field_record(bool enabled);
+bool ls_field_recording(void);
 void ls_field_watch(bool enabled);
 bool ls_field_note(uint32_t id, const char *title, const char *text);
 bool ls_field_mark_lora(void);

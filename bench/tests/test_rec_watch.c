@@ -1,5 +1,6 @@
 #include "ls_test.h"
 #include "rec_watch.h"
+#include "rec_state.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,4 +209,77 @@ LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
     LS_CHECK(rec_watch_restore(dir,&catalog));
     LS_EQ_INT(catalog.record[0].event.source,REC_SOURCE_CC1101);
     unlink(path);unlink(other);rmdir(dir);
+}
+
+LS_CASE(watch_rejects_broken_edges_and_filters_history_by_receiver)
+{
+    memset(&catalog,0,sizeof(catalog));int32_t bad[]={100,100,-100,100,-100,100};
+    LS_EQ_INT(rec_watch_observe(&catalog,433920000,bad,6,1,1,0,1,NULL),-1);
+    static rec_watch_status_t status;memset(&status,0,sizeof(status));status.count=2;
+    status.event[0].source=REC_SOURCE_RTL;status.event[0].id=5;
+    status.event[1].source=REC_SOURCE_CC1101;status.event[1].id=9;status.preview[1][0]=321;status.decoded[1].value=42;
+    rec_watch_filter_status(&status,REC_SOURCE_CC1101);
+    LS_EQ_INT(status.count,1);LS_EQ_INT(status.event[0].id,9);LS_EQ_INT(status.preview[0][0],321);LS_EQ_INT(status.decoded[0].value,42);
+}
+
+LS_CASE(cc_software_filter_removes_glitches_preserving_elapsed_time)
+{
+    int32_t p[]={100,-10,100,-200,300,-300,400,-400};
+    LS_EQ_INT(rec_watch_filter_pulses(p,8,40),6);LS_EQ_INT(p[0],210);LS_EQ_INT(p[1],-200);
+    int32_t noise[]={1,-2,3,-4,5,-6};LS_EQ_INT(rec_watch_filter_pulses(noise,6,40),0);
+    int32_t overflow[]={INT32_MAX,-1,100};LS_EQ_INT(rec_watch_filter_pulses(overflow,3,40),0);
+}
+
+LS_CASE(one_off_noise_cannot_evict_decoded_or_repeated_observations)
+{
+    memset(&catalog,0,sizeof(catalog));
+    int32_t p[100];frame24(p,0xA53C19,300);frame24(p+50,0xA53C19,300);
+    int decoded=rec_watch_observe(&catalog,433920000,p,100,1,1,0,REC_END_GAP,NULL);
+    int repeated=rec_watch_observe(&catalog,433920000,pulses,6,1,2,0,REC_END_GAP,NULL);
+    LS_EQ_INT(rec_watch_observe(&catalog,433920000,pulses,6,1,3,0,REC_END_GAP,NULL),repeated);
+    uint32_t decoded_id=catalog.record[decoded].event.id, repeated_id=catalog.record[repeated].event.id;
+    for(int i=0;i<REC_WATCH_SLOTS*3;i++)
+        LS_CHECK(rec_watch_observe(&catalog,434000000+i,pulses,6,1,4+i,0,REC_END_GAP,NULL)>=0);
+    LS_EQ_UINT(catalog.record[decoded].event.id,decoded_id);
+    LS_EQ_UINT(catalog.record[repeated].event.id,repeated_id);
+    frame24(p,0xA53C18,300);frame24(p+50,0xA53C18,300);
+    int changed=rec_watch_observe(&catalog,433920000,p,100,1,100,0,REC_END_GAP,NULL);
+    LS_CHECK(changed>=0 && changed!=decoded);
+}
+
+static unsigned pump_calls;
+static void capture_during_checkpoint(void *context)
+{
+    rec_watch_catalog_t *live=context;
+    if((++pump_calls%64)==0)
+        rec_watch_observe(live,433920000,pulses,6,7,pump_calls,100,1,NULL);
+}
+LS_CASE(checkpoint_keeps_snapshot_consistent_while_live_captures_continue)
+{
+    char dir[160],a[200],b[200];
+    snprintf(dir,sizeof(dir),"rec-pump-%ld",(long)getpid());
+#ifdef _WIN32
+    _mkdir(dir);
+#else
+    mkdir(dir,0700);
+#endif
+    snprintf(a,sizeof(a),"%s/watch0.bin",dir);snprintf(b,sizeof(b),"%s/watch1.bin",dir);
+    unlink(a);unlink(b);
+    static rec_watch_catalog_t snapshot;
+    memset(&catalog,0,sizeof(catalog));observe(433920000,1,NULL);
+    LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
+    observe(433920000,2,NULL);
+    LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
+    observe(433920000,3,NULL);snapshot=catalog;pump_calls=0;
+    LS_CHECK(rec_watch_store_pumped(dir,&snapshot,64*1024*1024,capture_during_checkpoint,&catalog));
+    LS_CHECK(pump_calls>=3*sizeof(catalog)/512);
+    LS_CHECK(catalog.sequence>snapshot.sequence);
+    LS_CHECK(rec_watch_restore(dir,&restored));
+    LS_CHECK(memcmp(&restored,&snapshot,sizeof(snapshot))==0);
+    /* A successful older snapshot does not mean newer live captures are saved. */
+    LS_CHECK(restored.sequence!=catalog.sequence);
+    LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
+    LS_CHECK(rec_watch_restore(dir,&restored));
+    LS_EQ_UINT(restored.sequence,catalog.sequence);
+    unlink(a);unlink(b);rmdir(dir);
 }

@@ -41,12 +41,14 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
         c->sequence == UINT64_MAX) return -1;
     uint64_t span = 0;
     for (int i = 0; i < n; i++) {
-        if (!p[i] || p[i] == INT32_MIN) return -1;
+        if (!p[i] || p[i] == INT32_MIN || (i && (p[i]>0)==(p[i-1]>0))) return -1;
         span += magnitude(p[i]);
     }
     if (span > UINT32_MAX) return -1;
     if (!c->archive_id) c->archive_id=((uint64_t)boot<<32)|hz;
-    int slot = -1;
+    rec_ook24_t incoming;
+    int incoming_rank=rec_decode_ook24(p,n,&incoming)?3:1;
+    int slot = -1, slot_rank=99;
     for (int i = 0; i < REC_WATCH_SLOTS; i++) {
         if (c->record[i].event.source == source && matches(&c->record[i], hz, p, n)) {
             rec_watch_event_t *e = &c->record[i].event;
@@ -55,8 +57,15 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
             if (peak > e->peak) e->peak = peak;
             return i;
         }
-        if (!c->record[i].event.pinned && (slot < 0 ||
-            c->record[i].event.order < c->record[slot].event.order)) slot = i;
+        const rec_watch_record_t *candidate=&c->record[i];
+        rec_ook24_t decoded;
+        int rank=!candidate->event.id?0:
+            rec_decode_ook24(candidate->pulse,candidate->event.edges,&decoded)?3:
+            candidate->event.count>1?2:1;
+        /* One-off noise cannot evict a repeated or decoded observation. */
+        if (!candidate->event.pinned && rank<=incoming_rank &&
+            (slot<0 || rank<slot_rank || (rank==slot_rank &&
+             candidate->event.order<c->record[slot].event.order))) {slot=i;slot_rank=rank;}
     }
     if (slot < 0 || c->next_id == UINT32_MAX) {
         if (c->rejected < UINT32_MAX) c->rejected++;
@@ -91,4 +100,39 @@ uint32_t rec_watch_crc(const void *data, size_t len)
         for (int b=0; b<8; b++) crc = (crc >> 1) ^ (0xedb88320u & (0u-(crc&1u)));
     }
     return ~crc;
+}
+
+void rec_watch_filter_status(rec_watch_status_t *out,rec_source_t source)
+{
+    if(!out)return;
+    int count=0;
+    for(int i=0;i<out->count && i<REC_WATCH_SLOTS;i++) if(out->event[i].source==source) {
+        out->event[count]=out->event[i];out->decoded[count]=out->decoded[i];
+        if(count!=i)memcpy(out->preview[count],out->preview[i],sizeof(out->preview[count]));
+        count++;
+    }
+    out->count=count;
+}
+
+int rec_watch_filter_pulses(int32_t *pulse,int edges,uint32_t min_us)
+{
+    if(!pulse || edges<0 || edges>REC_WATCH_EDGES)return 0;
+    int out=0;
+    for(int i=0;i<edges;i++) {
+        if(!pulse[i] || pulse[i]==INT32_MIN)return 0;
+        uint32_t width=magnitude(pulse[i]);
+        if(width<min_us) {
+            if(out) {
+                int64_t joined=(int64_t)pulse[out-1]+(pulse[out-1]>0?(int64_t)width:-(int64_t)width);
+                if(joined>INT32_MAX || joined< -INT32_MAX)return 0;
+                pulse[out-1]=(int32_t)joined;
+            }
+        } else if(out && (pulse[out-1]>0)==(pulse[i]>0)) {
+            int64_t joined=(int64_t)pulse[out-1]+pulse[i];
+            if(joined>INT32_MAX || joined< -INT32_MAX)return 0;
+            pulse[out-1]=(int32_t)joined;
+        } else pulse[out++]=pulse[i];
+    }
+    if(out && pulse[0]<0){memmove(pulse,pulse+1,(--out)*sizeof(*pulse));}
+    return out;
 }

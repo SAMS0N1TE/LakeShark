@@ -1,3 +1,12 @@
+# Current development candidate — not cleared
+
+The historical 2.1.1 evidence below does not clear the current development
+firmware. Current state is tracked in `bench/regressions.json`. A watchdog reset
+was reproduced with P25 active and the GPS screen displayed; GPS recording was
+off. The stored crash dump predates that run. The GPS layout changes are retained
+while the normal-configuration candidate is tested. Required physical audio/display, GPS drive
+recording, source coverage and lifecycle checks remain open.
+
 # 2.1.1 release checks
 
 The 2.1.1 hotfix retains the complete 2.1.0 validation below. Its additional

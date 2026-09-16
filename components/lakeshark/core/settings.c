@@ -27,6 +27,7 @@ static bool         s_home_write_ready = false;
 /* Read every UI frame and by the console (whose stack may be in TCM).
  * Load on the cache-safe boot task; never issue flash reads in that path. */
 static bool         s_auto_rotate = true;
+static bool         s_keyboard_light = true;
 static uint64_t s_location;
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -250,6 +251,9 @@ bool settings_init(void)
         return false;
     }
     s_nvs_ok = true;
+    uint8_t key_light=1;
+    nvs_get_u8(s_nvs,"key_light",&key_light);
+    s_keyboard_light=key_light!=0;
 
     /**/  settings_apply_schema();
 
@@ -692,6 +696,12 @@ bool settings_get_daylight(void)
     uint8_t v = 0;
     if (nvs_get_u8(s_nvs, "ui_daylight", &v) != ESP_OK) return false;
     return v != 0;
+}
+bool settings_get_keyboard_light(void) { return s_keyboard_light; }
+void settings_set_keyboard_light(bool on)
+{
+    s_keyboard_light=on;
+    if(s_nvs_ok) sput_u8("key_light",on?1:0);
 }
 void settings_set_daylight(bool on)
 {

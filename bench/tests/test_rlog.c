@@ -21,6 +21,27 @@ static rec_t mk(uint32_t n)
     return r;
 }
 
+LS_CASE(two_hour_drive_wraps_real_track_capacity_and_survives_reopen)
+{
+    scrub();
+    ls_rlog_t lg;
+    LS_CHECK(ls_rlog_open(&lg, PATH, sizeof(rec_t), 4096));
+    for (uint32_t i = 0; i < 7200; ++i) {
+        rec_t r = mk(i);
+        LS_CHECK(ls_rlog_append(&lg, &r));
+    }
+    ls_rlog_close(&lg);
+    LS_CHECK(ls_rlog_open(&lg, PATH, sizeof(rec_t), 4096));
+    LS_EQ_INT(4096, ls_rlog_count(&lg));
+    for (int i = 0; i < 4096; ++i) {
+        rec_t r;
+        LS_EQ_INT(1, ls_rlog_read_at(&lg, i, &r));
+        LS_EQ_UINT(7200 - 4096 + i, r.n);
+    }
+    ls_rlog_close(&lg);
+    scrub();
+}
+
 /* ------------------------------------------------- the arithmetic alone -- */
 
 LS_CASE(the_oldest_slot_never_underflows)

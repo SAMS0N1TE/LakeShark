@@ -6,6 +6,7 @@
 #include "ls_waterfall.h"
 #include "ls_map.h"
 #include "ls_numpad.h"
+#include "ls_picker.h"
 #include "ls_app.h"
 #include "ls_gps.h"
 #include "ls_track_log.h"
@@ -13,6 +14,8 @@
 #include "core/settings.h"
 
 #include <string.h>
+#include <math.h>
+#include "esp_timer.h"
 
 #include "apps/fm/fm_state.h"
 #include "lakeshark_backend.h"
@@ -94,8 +97,12 @@ static ls_act_status_t a_map_here(const ls_args_t *in, ls_val_t *out)
 
     ls_gps_state_t g;
     ls_gps_get(&g);
-    if (g.fix) {
+    const int64_t now = esp_timer_get_time();
+    if (g.fix && g.last_fix_us > 0 && now >= g.last_fix_us &&
+        now - g.last_fix_us <= 10000000 && isfinite(g.lat_deg) && isfinite(g.lon_deg) &&
+        fabs(g.lat_deg) <= 85 && fabs(g.lon_deg) <= 180) {
         ls_map_center(g.lat_deg, g.lon_deg);
+        ls_map_follow_set(true);
         how = "centred on the fix";
     }
     if (!how) {
@@ -116,6 +123,61 @@ static ls_act_status_t a_map_here(const ls_args_t *in, ls_val_t *out)
 
     out->kind = LS_VAL_TEXT;
     out->s = idx < 0 ? "this build has no map screen" : how;
+    return LS_ACT_OK;
+}
+
+/* Saving home is explicit. Never turn an unavailable/stale fix into a location. */
+static void home_feedback(const char *title,const char *message)
+{
+    ls_picker_open(title,NULL);
+    ls_picker_add("OK",message);
+    ls_tui_status_set(message,NULL);
+}
+static void home_choice(int choice)
+{
+    double lat=0,lon=0;
+    if(choice==2) { ls_val_t out; a_map_here(NULL,&out); return; }
+    if(choice==0) {
+        ls_gps_state_t g; ls_gps_get(&g);
+        int64_t now=esp_timer_get_time();
+        if(!g.fix || !g.last_fix_us || now<g.last_fix_us || now-g.last_fix_us>10000000) {
+            home_feedback("NO GPS FIX","Use map instead"); return;
+        }
+        lat=g.lat_deg; lon=g.lon_deg;
+    } else if(choice==1) {
+        if(!ls_map_archive()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
+        ls_map_get_center(&lat,&lon);
+    } else return;
+    if(!isfinite(lat)||!isfinite(lon)||fabs(lat)>85||fabs(lon)>180) {
+        home_feedback("HOME UNCHANGED","Invalid position"); return;
+    }
+    bool saved=settings_set_home((float)lat,(float)lon);
+    home_feedback(saved?"HOME SAVED":"SAVE FAILED",saved?"GPS fallback":"Home unchanged");
+}
+static ls_act_status_t a_map_home(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    (void)ls_gps_start();
+    ls_picker_open("SET HOME",home_choice);
+    ls_picker_add("Use my GPS position","fresh fix only");
+    ls_picker_add("Save map center as home","pan map first");
+    ls_picker_add("Choose a place on the map","then SET HOME");
+    out->kind=LS_VAL_TEXT;out->s="Choose how to set home";
+    return LS_ACT_OK;
+}
+
+static ls_act_status_t a_map_follow(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    const bool enable = !ls_map_following();
+    if (enable && ls_gps_start() != ESP_OK) {
+        out->kind = LS_VAL_TEXT;
+        out->s = "GPS receiver unavailable";
+        return LS_ACT_UNAVAILABLE;
+    }
+    ls_map_follow_set(enable);
+    out->kind = LS_VAL_TEXT;
+    out->s = enable ? "GPS follow on; waiting for a fresh fix" : "GPS follow off";
     return LS_ACT_OK;
 }
 
@@ -404,8 +466,12 @@ void ls_action_register_builtin(void)
     ls_action_register("track.rec",      "b", LS_CAP_STORE, a_track_rec,
                        "record where this unit goes, onto the card");
 
+    ls_action_register("map.home", "", LS_CAP_TUNE | LS_CAP_POWER, a_map_home,
+                       "Set home from GPS or the map center");
     ls_action_register("map.zoom",       "i", LS_CAP_TUNE, a_map_zoom,
                        "zoom in or out by n steps");
+    ls_action_register("map.follow", "", LS_CAP_TUNE | LS_CAP_POWER, a_map_follow,
+                       "toggle live GPS following; manual pan cancels it");
     ls_action_register("map.here",       "",  LS_CAP_TUNE, a_map_here,
                        "centre on the GPS fix");
     ls_action_register("map.reload",     "",  LS_CAP_TUNE, a_map_reload,

@@ -20,7 +20,7 @@
 #include "../../ls_wf_source.h"
 #include "../../ls_text.h"
 
-static char s_hint[80] = "1 DECODE  2 SIGNAL  3 SCAN  +/- VOLUME";
+static char s_hint[80] = "LEFT/RIGHT tune  1/2/3 views  +/- volume";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 #include "../../ls_p25_settings.h"
@@ -161,6 +161,28 @@ static const char *voice_status(void)
 
 static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level);
 
+static void draw_receiver_health(tui_surface *sf, tui_rect r)
+{
+    tui_box(sf, r, "RECEIVER HEALTH / TOTALS", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    const int step = r.h >= 11 ? 2 : 1;
+    char line[80];
+    snprintf(line, sizeof(line), "IQ %lu B/s  AUDIO %lu samples/s",
+             (unsigned long)P25.iq_bytes_sec, (unsigned long)P25.audio_samples_sec);
+    tui_put_str(sf, r, r.x + 2, r.y + 1, line, ink);
+    snprintf(line, sizeof(line), "SYNC %d   VOICE %d", P25.dsd_sync_count, P25.dsd_voice_count);
+    tui_put_str(sf, r, r.x + 2, r.y + 1 + step, line, ink);
+    snprintf(line, sizeof(line), "BCH OK %d   FAIL %d", P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
+    tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 2, line, ink);
+    snprintf(line, sizeof(line), "USB errors %lu  AUDIO drops %lu",
+             (unsigned long)P25.read_errors_total, (unsigned long)P25.audio_drops);
+    tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 3, line, ink);
+    if (r.h >= 7) {
+        snprintf(line, sizeof(line), "DECODE %.1f ms / block", (double)P25.dsd_decode_ms);
+        tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 4, line, LS_ATTR_DIM);
+    }
+}
+
 static void draw_decode(tui_surface *sf, tui_rect area)
 {
     /* One read, at the top. See the header note. */
@@ -241,8 +263,12 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         tui_put_str(sf, detail, detail.x + 2, detail.y + 7, line,
                     st.receiver_streaming ? good : idle);
         int ah = area.h - top_h;
-        if (ah > fits) ah = fits;
         if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h, area.w, ah);
+        if (ah >= 7 && area.w >= 92) {
+            activity.w = area.w / 2;
+            draw_receiver_health(sf, tui_rect_make(activity.x + activity.w + 1,
+                activity.y, area.w - activity.w - 1, ah));
+        }
     } else if (detail.h > 0) {
         tui_rect decode = detail;
         decode.h = detail.h < 8 ? detail.h : 8;
@@ -283,8 +309,14 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         }
         remain -= signal.h;
         int ah = remain;
-        if (ah > fits) ah = fits;
-        if (ah >= 3) activity = tui_rect_make(area.x, signal.y + signal.h, area.w, ah);
+        if (ah >= 3) {
+            activity = tui_rect_make(area.x, signal.y + signal.h, area.w, ah);
+            if (ah >= fits + 7) {
+                activity.h = ah - 7;
+                draw_receiver_health(sf, tui_rect_make(area.x,
+                    activity.y + activity.h, area.w, 7));
+            }
+        }
     }
 
     if (activity.h > 0) draw_activity(sf, activity, sync, esp_timer_get_time());
@@ -428,6 +460,15 @@ static void radio_action(char c)
     if(c=='P') {ps_open=true;ls_wf_source_release();return;}
     if(c=='W') {s_page=1;return;}
     if(c=='M'||c=='D') {s_page=0;return;}
+    if(c=='[' || c==']') {
+        int64_t hz = (int64_t)s_tune_freq_hz + (c=='[' ? -12500 : 12500);
+        if(hz<24000000) hz=24000000;
+        if(hz>1766000000) hz=1766000000;
+        ls_args_t a={.n=1}; ls_val_t out;
+        a.v[0].kind=LS_VAL_FLOAT; a.v[0].f=(float)(hz/1e6);
+        ls_action_call("p25.freq",&a,&out,ls_quick_grant_builtin());
+        return;
+    }
     if(c=='T') scan_engine_stop();
     if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
 }
@@ -435,7 +476,7 @@ static void radio_action(char c)
 static void draw(tui_surface *sf, tui_rect area)
 {
     if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
-    snprintf(s_hint,sizeof(s_hint),"1 DECODE  2 SIGNAL  3 SCAN  +/- VOLUME");
+    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1/2/3 views" : "LEFT/RIGHT tune  1/2/3 views  +/- volume");
     s_blink++;
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
@@ -510,6 +551,11 @@ static bool key(ls_tk_t k, char ch)
     if(ps_open)return ps_key(k,ch);
     if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {ps_open=true;ls_wf_source_release();return true;}
     if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {s_page=ch-'1';return true;}
+    if (s_page==1 && (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
+        return ls_wf_key(k,ch);
+    if (s_page!=2 && (k==LS_TK_LEFT || k==LS_TK_RIGHT)) {
+        radio_action(k==LS_TK_LEFT ? '[' : ']'); return true;
+    }
     if (s_page==2) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_page=0; ls_wf_source_release(); return true; }
     if (k == LS_TK_CHAR) {

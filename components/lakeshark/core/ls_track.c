@@ -12,6 +12,35 @@
    out of round and this is used for a threshold comparison. */
 #define M_PER_DEG_LAT 111320.0
 
+uint32_t ls_track_time(unsigned year, unsigned month, unsigned day,
+                       unsigned hour, unsigned minute, unsigned second,
+                       uint32_t uptime, uint8_t *flags)
+{
+    static const unsigned days_in_month[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    *flags = 0;
+    if (year < 2020 || year > 2105 || month < 1 || month > 12 ||
+        day < 1 || hour > 23 || minute > 59 || second > 59) return uptime;
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    if (day > days_in_month[month - 1] + (month == 2 && leap)) return uptime;
+    uint64_t days = 0;
+    for (unsigned y = 1970; y < year; ++y)
+        days += 365 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+    for (unsigned m = 1; m < month; ++m)
+        days += days_in_month[m - 1] + (m == 2 && leap);
+    days += day - 1;
+    *flags = LS_TRACK_F_EPOCH;
+    return (uint32_t)(days * 86400 + hour * 3600 + minute * 60 + second);
+}
+
+bool ls_track_fix_usable(bool fix, double lat, double lon, float altitude,
+                          int64_t stamp_us, int64_t now_us)
+{
+    return fix && isfinite(lat) && lat >= -90 && lat <= 90 &&
+        isfinite(lon) && lon >= -180 && lon <= 180 && isfinite(altitude) &&
+        altitude >= INT16_MIN && altitude <= INT16_MAX &&
+        stamp_us > 0 && now_us >= stamp_us && now_us - stamp_us <= 10000000;
+}
+
 float ls_track_distance_m(int32_t lat_a_e7, int32_t lon_a_e7,
                           int32_t lat_b_e7, int32_t lon_b_e7)
 {

@@ -112,10 +112,14 @@ static bool nfc_watch_start(void)
 {
     if(!nfc_dev && ls_spi_device(LS_SPI_RADIO,-1,1,1000000,1,&nfc_dev)!=ESP_OK)return false;
     uint8_t ignored,control=0;
-    /* Peer-field detector only: oscillator, receiver and transmitter stay off. */
+    /* Ready-mode external field detector: 33mV activation, 25mV release
+       at RFI1 (DS12484 collision thresholds). RX/TX remain disabled.
+       The former low-power peer default needed 205mV and missed the fixture. */
     return transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0xc1,0,NULL,false) &&
-        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,2,2,&ignored,false) &&
-        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x42,0,&control,false) && control==2;
+        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x2a,0x09,&ignored,false) &&
+        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x2b,0x08,&ignored,false) &&
+        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,2,0x81,&ignored,false) &&
+        transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x42,0,&control,false) && control==0x81;
 }
 static void nfc_watch_stop(void)
 {
@@ -324,7 +328,8 @@ static void worker(void *arg)
     (void)arg;
     probe_radios();
     portENTER_CRITICAL(&lock);state.busy=false;portEXIT_CRITICAL(&lock);
-    bool running=false,scanning=false,nfc_watching=false,previous_field=false;
+    bool running=false,scanning=false,nfc_watching=false;
+    ls_mixrf_field_edge_t field_edge={0};
     bool card_scanning=false;
     int64_t last_card_poll=0,last_card_seen=0;
     uint16_t previous_atqa=0;
@@ -391,17 +396,18 @@ static void worker(void *arg)
         }
         portENTER_CRITICAL(&lock);state.card_scanning=card_scanning;state.card_present=card_scanning && last_card_seen && esp_timer_get_time()-last_card_seen<1200000;portEXIT_CRITICAL(&lock);
         if(nfc_on && !nfc_watching) {
-            nfc_watching=nfc_watch_start();previous_field=false;
+            nfc_watching=nfc_watch_start();field_edge=(ls_mixrf_field_edge_t){0};
+            if(nfc_watching)status_text("NFC field watch: 33mV RFI1 / TX off");
             if(!nfc_watching){nfc_watch_stop();portENTER_CRITICAL(&lock);want_nfc=false;portEXIT_CRITICAL(&lock);status_text("NFC field detector setup failed");}
         } else if(!nfc_on && nfc_watching){nfc_watch_stop();nfc_watching=false;}
         bool field=false;
         if(nfc_watching) {
             uint8_t aux=0;
-            bool valid=transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x71,0,&aux,false) && (aux&3)==2 && !(aux&0x20);
+            bool valid=transfer(nfc_dev,LS_BOARD_MIX_NFC_CS,0x71,0,&aux,false) && (aux&3)==1 && !(aux&0x20);
             if(valid) {
                 field=(aux&0x40)!=0;
-                portENTER_CRITICAL(&lock);state.nfc_samples++;if(field && !previous_field)state.nfc_events++;portEXIT_CRITICAL(&lock);
-                previous_field=field;
+                bool arrival=ls_mixrf_field_arrival(&field_edge,field);
+                portENTER_CRITICAL(&lock);state.nfc_samples++;if(arrival)state.nfc_events++;portEXIT_CRITICAL(&lock);
             } else {nfc_watch_stop();nfc_watching=false;portENTER_CRITICAL(&lock);want_nfc=false;portEXIT_CRITICAL(&lock);status_text("NFC field detector read failed");}
         }
         portENTER_CRITICAL(&lock);state.nfc_watching=nfc_watching;state.nfc_field=field;portEXIT_CRITICAL(&lock);

@@ -302,7 +302,7 @@ static uint32_t tuned_mark;
 static ls_wf_owner_t tuned_owner;
 static bool accept_mark(ls_wf_owner_t owner,uint32_t hz)
 {tuned_owner=owner;tuned_mark=hz;return true;}
-LS_CASE(tapped_waterfall_marker_tunes_exactly_once_and_clears_on_source_change)
+LS_CASE(waterfall_cursor_moves_without_tuning_and_space_commits)
 {
     tui_surface sf;tui_surface_setup(&sf,g_back,g_front,64,24);
     ls_wf_cfg_t saved=*ls_wf_cfg(),cfg=saved;
@@ -311,11 +311,14 @@ LS_CASE(tapped_waterfall_marker_tunes_exactly_once_and_clears_on_source_change)
     float bins[64];band(bins,64,32);ls_wf_push(LS_WF_OWNER_P25,bins,64,&FEED);
     tui_frame_begin(&sf);ls_wf_draw_mini(&sf,tui_rect_make(0,0,64,24));
     ls_wf_set_tuner(accept_mark);tuned_mark=0;
-    ls_wf_key(LS_TK_CHAR,'y');LS_EQ_INT(tuned_mark,0);
-    LS_CHECK(ls_wf_touch(32,10));
+    uint32_t center=ls_wf_marker_hz();LS_CHECK(center>0);
+    LS_CHECK(ls_wf_key(LS_TK_RIGHT,0));
+    LS_CHECK(ls_wf_marker_hz()>center);LS_EQ_INT(tuned_mark,0);
+    LS_CHECK(ls_wf_key(LS_TK_LEFT,0));LS_EQ_INT(ls_wf_marker_hz(),center);
+    LS_CHECK(ls_wf_touch(20,10));
     uint32_t expected=ls_wf_marker_hz();LS_CHECK(expected>0);
-    ls_wf_key(LS_TK_CHAR,'y');LS_EQ_INT(tuned_mark,expected);LS_EQ_INT(tuned_owner,LS_WF_OWNER_P25);
-    LS_EQ_INT(ls_wf_marker_hz(),0);
+    ls_wf_key(LS_TK_CHAR,' ');LS_EQ_INT(tuned_mark,expected);LS_EQ_INT(tuned_owner,LS_WF_OWNER_P25);
+    LS_CHECK(ls_wf_marker_hz()>0);
     ls_wf_touch(20,10);ls_wf_claim(LS_WF_OWNER_FM,"FM");tuned_mark=0;
     ls_wf_key(LS_TK_CHAR,'y');LS_EQ_INT(tuned_mark,0);
     ls_wf_set_tuner(NULL);ls_wf_cfg_set(&saved);

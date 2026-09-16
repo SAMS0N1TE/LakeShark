@@ -1,5 +1,6 @@
 #include "audio_out.h"
 #include "audio_eq.h"
+#include "audio_pcm_ring.h"
 #include "tone.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -71,7 +72,10 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
     size_t want = (size_t)n * sizeof(int16_t);
-    size_t sent = xStreamBufferSend(s_ring, samples, want, 0);
+    /* A partial PCM16 sample shifts every following sample by one byte,
+       turning otherwise valid decoded voice into sustained static. */
+    const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
+    size_t sent = whole ? xStreamBufferSend(s_ring, samples, whole, 0) : 0;
     xSemaphoreGive(s_push_lock);
 
     if (sent < want) s_audio_drops++;
@@ -152,6 +156,21 @@ static void diag_ringtone_task(void *arg)
 }
 #endif
 
+/* AUDIO_PREBUFFER_BEGIN: production policy exercised by bench/quality.py. */
+static bool audio_prebuffer_ready(size_t available, bool force, int64_t now,
+                                  int64_t *waiting_since)
+{
+    if (!available) { *waiting_since = -1; return false; }
+    if (*waiting_since < 0) *waiting_since = now;
+    if (force || available >= (size_t)PREBUF_BYTES ||
+        now - *waiting_since >= (int64_t)PREBUF_MS * 1000) {
+        *waiting_since = -1;
+        return true;
+    }
+    return false;
+}
+/* AUDIO_PREBUFFER_END */
+
 static void IRAM_ATTR audio_player_task(void *arg)
 {
     (void)arg;
@@ -160,6 +179,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
     int16_t *silence = s_silence;
     bool     playing   = false;
     int64_t  last_data = 0;
+    int64_t  waiting_since = -1;
 
 #if AUDIO_DIAG_TONE == 1
     {
@@ -184,6 +204,7 @@ static void IRAM_ATTR audio_player_task(void *arg)
             if (s_ring) xStreamBufferReset(s_ring);
             audio_eq_reset_state();
             playing = false;
+            waiting_since = -1;
         }
         if (!playing) {
             size_t avail = xStreamBufferBytesAvailable(s_ring);
@@ -191,7 +212,8 @@ static void IRAM_ATTR audio_player_task(void *arg)
             bool force = s_play_now && avail > 0;
             if (force) s_play_now = false;
 
-            if (force || avail >= (size_t)PREBUF_BYTES) {
+            if (audio_prebuffer_ready(avail, force, esp_timer_get_time(),
+                                      &waiting_since)) {
                 playing = true;
                 last_data = esp_timer_get_time();
             } else {
@@ -263,9 +285,10 @@ esp_err_t audio_out_init(void)
     /* The stream payload is only touched from normal task context; keeping its
        600 ms queue in internal RAM needlessly competes with USB/I2S DMA and
        makes audio startup depend on heap contiguity after enumeration. */
-    s_ring_buf = heap_caps_malloc(RING_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const size_t storage_bytes = audio_pcm_storage_bytes(RING_BYTES);
+    s_ring_buf = heap_caps_malloc(storage_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_ring_buf && s_push_lock) {
-        s_ring = xStreamBufferCreateStatic(RING_BYTES, 1, s_ring_buf, &s_ring_ctrl);
+        s_ring = xStreamBufferCreateStatic(storage_bytes, 1, s_ring_buf, &s_ring_ctrl);
     }
     if (!s_ring || !s_push_lock) {
         ESP_LOGE(TAG, "audio ring/lock alloc failed");

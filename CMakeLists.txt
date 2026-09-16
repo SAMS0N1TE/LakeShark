@@ -22,7 +22,7 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.1.1")
+set(LS_PRODUCT_VERSION "2.2.0-rc1")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 ls_identity_query(PROJECT_VER "${CMAKE_CURRENT_LIST_DIR}" "${LS_PRODUCT_VERSION}")
 string(REGEX REPLACE "-rc[0-9]+$" "" LS_PROJECT_VERSION "${LS_PRODUCT_VERSION}")

@@ -596,27 +596,20 @@ LS_CASE(landscape_gets_the_table_too)
     LS_CHECK(escaped(PANES[0]) == 0);
 }
 
-LS_CASE(the_table_is_the_size_of_what_it_holds)
+LS_CASE(decode_uses_spare_space_for_health_and_keeps_busy_history_visible)
 {
 
     no_traffic();
     draw_decode_now(PORTRAIT);
-    const int clear_when_empty = untouched_rows(table_of(PORTRAIT));
+    LS_CHECK(rect_has(PORTRAIT, "RECEIVER HEALTH"));
+    LS_CHECK(rect_has(PORTRAIT, "USB errors"));
 
     for (unsigned i = 1; i <= 16; ++i)
         heard((uint16_t)(2000 + i), i * 1000u, P25_TG_SEEN_LCW);
     ls_shim_time_set(60 * 1000000LL);
     draw_decode_now(PORTRAIT);
-    const int clear_when_full = untouched_rows(table_of(PORTRAIT));
-
-    LS_CHECK_MSG(clear_when_empty >= 8,
-                 "an empty table left only %d rows of the body clear - it is "
-                 "a frame stretched over the space, not a box its own size",
-                 clear_when_empty);
-    LS_CHECK_MSG(clear_when_full + 6 <= clear_when_empty,
-                 "sixteen talkgroups left %d rows clear and none left %d - "
-                 "the frame is not sized to its contents",
-                 clear_when_full, clear_when_empty);
+    LS_CHECK(rect_has(PORTRAIT, "2016"));
+    LS_CHECK(rect_has(PORTRAIT, "ACTIVITY"));
     LS_CHECK(escaped(PORTRAIT) == 0);
 }
 
@@ -773,4 +766,24 @@ LS_CASE(experimental_phase2_setting_is_reachable_in_both_postures)
     LS_CHECK(!p25_p2_enabled());
     ls_scr_p25.key(LS_TK_DOWN, 0);
     ls_scr_p25.key(LS_TK_ESC, 0);
+}
+
+static uint32_t cursor_committed;
+static bool cursor_tuner(ls_wf_owner_t owner,uint32_t hz)
+{ (void)owner;cursor_committed=hz;return true; }
+LS_CASE(p25_waterfall_arrows_select_space_commits)
+{
+    fresh();
+    ls_scr_p25.key(LS_TK_CHAR,'2');
+    ls_wf_claim(LS_WF_OWNER_NONE,NULL);
+    feed_row();
+    draw_pane(&ls_scr_p25,PANES[0]);
+    ls_wf_set_tuner(cursor_tuner);cursor_committed=0;
+    uint32_t start=ls_wf_marker_hz();LS_CHECK(start>0);
+    ls_scr_p25.key(LS_TK_RIGHT,0);
+    LS_CHECK(ls_wf_marker_hz()>start);LS_EQ_INT(cursor_committed,0);
+    uint32_t selected=ls_wf_marker_hz();
+    ls_scr_p25.key(LS_TK_CHAR,' ');
+    LS_EQ_INT(cursor_committed,selected);
+    ls_wf_set_tuner(NULL);
 }

@@ -52,6 +52,7 @@ typedef struct ls_tui_screen_s {
     /* Which receiver this screen needs running, by the name the firmware's mode table uses: "P25", "ADS-B", "FM", "REC". */
 
     const char *radio;
+    bool hold_auto_rotation; /* Sensor instruments keep their entry orientation. */
 } ls_tui_screen_t;
 
 /* Registration is by pointer and the descriptor must outlive the program -
@@ -59,6 +60,7 @@ typedef struct ls_tui_screen_s {
 int  ls_tui_screen_register(const ls_tui_screen_t *screen);
 int  ls_tui_screen_count(void);
 int  ls_tui_screen_current(void);
+bool ls_tui_screen_holds_rotation(void);
 /* Short name of a registered screen, or NULL when the index is out of
    range. Exists so the console can say which screen an injected key
    reached - driving this board blind over serial is the normal case. */

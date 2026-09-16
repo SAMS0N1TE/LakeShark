@@ -26,6 +26,7 @@
 #include "ls_field.h"
 #include "ls_waterfall.h"
 #include "ls_wf_source.h"
+#include "ls_skyview.h"
 #include "ls_picker.h"
 #include "scan_engine.h"
 
@@ -85,12 +86,14 @@ bool settings_get_home(float *lat, float *lon)
 }
 
 static bool s_gps_fix = false;
+static bool s_gps_sat_view;
 static double s_gps_lat = 43.60, s_gps_lon = -71.30;
 void ls_gps_get(ls_gps_state_t *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
     out->fix = s_gps_fix;
+    if(s_gps_sat_view) { out->last_sentence_us=esp_timer_get_time(); out->sat_count=2; out->sats_visible=2; out->sats[1].prn=9; out->sats[0].prn=7; out->sats[0].snr=38; out->sats[0].azimuth=90; out->sats[0].elevation=45; }
     out->lat_deg = s_gps_lat;
     out->lon_deg = s_gps_lon;
 }
@@ -204,6 +207,11 @@ void lakeshark_fm_frequency_lock(bool on)
 }
 bool lakeshark_fm_frequency_locked(void){return s_fm_frequency_locked;}
 uint32_t lakeshark_fm_frequency_lock_hz(void){return s_fm_frequency_lock_hz;}
+extern int ls_test_wf_pumps, ls_test_wf_releases;
+const char *ls_wf_source_label(ls_wf_src_t src) { static const char *names[]={"AUTO","P25","FM","LORA"}; return names[src]; }
+const char *ls_wf_source_blocked(ls_wf_src_t src) { (void)src; return NULL; }
+const char *ls_wf_source_progress(void) { return NULL; }
+const char *ls_wf_preset_none(ls_wf_src_t src) { (void)src; return NULL; }
 void ls_wf_fm_sweep(bool on){FM.mode=on?FM_MODE_SCAN:FM_MODE_LISTEN;}
 int ls_wf_preset_count(ls_wf_src_t src){return src==LS_WF_SRC_FM?1:0;}
 const char *ls_wf_preset_label(ls_wf_src_t src,int i)
@@ -319,7 +327,14 @@ static int escaped(tui_rect r)
     return n;
 }
 
-extern const ls_tui_screen_t ls_scr_settings, ls_scr_diag, ls_scr_rec,
+/* GPS screen is outside this pane fixture; the simulator links the real screen. */
+static int rec_gps_draws, rec_gps_keys;
+static void rec_gps_draw(tui_surface *sf,tui_rect a) {(void)sf;(void)a;rec_gps_draws++;}
+static bool rec_gps_key(ls_tk_t k,char c) {(void)k;if(c=='r')rec_gps_keys++;return true;}
+static bool rec_gps_touch(int x,int y) {(void)x;(void)y;return true;}
+const ls_tui_screen_t ls_scr_gps = { .name = "GPS", .draw=rec_gps_draw, .key=rec_gps_key, .touch=rec_gps_touch };
+
+extern const ls_tui_screen_t ls_scr_falls, ls_scr_settings, ls_scr_diag, ls_scr_rec,
                              ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
 
 static const ls_tui_screen_t *const SCREENS[] = {
@@ -531,7 +546,7 @@ LS_CASE(home_touch_opens_an_unselected_app_without_a_splash)
     apps_once();
     for (int p = 0; p < 2; p++) {
         ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
-        ls_scr_home.key(LS_TK_CHAR, 'r');
+        ls_scr_home.key(LS_TK_F1, 0);
         fresh();
         draw_pane(&ls_scr_home, PANES[p]);
         int xhit = -1, yhit = -1;
@@ -650,7 +665,7 @@ LS_CASE(home_landscape_tiles_keep_their_labels)
     static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB", "LORA LABS", "JOURNAL" };
     static const char GROUP[] = {'s','s','f','r','r','r','f'};
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
-        ls_scr_home.key(LS_TK_CHAR, GROUP[i]);
+        ls_scr_home.key((ls_tk_t)(LS_TK_F1+(GROUP[i]=='s'?2:GROUP[i]=='f'?1:0)), 0);
         fresh();
         draw_pane(&ls_scr_home, PANES[0]);
         bool found = false;
@@ -855,7 +870,7 @@ LS_CASE(adsb_portrait_has_a_radar_under_a_list_that_holds_all_sixteen)
     for (int y = 0; y < H; y++) {
         row_text(y, line, sizeof(line));
         if (list_y < 0 && strstr(line, "AIRCRAFT")) list_y = y;
-        if (radar_y < 0 && strstr(line, "RADAR")) radar_y = y;
+        if (radar_y < 0 && strstr(line, "- RADAR ")) radar_y = y;
         for (uint32_t i = 0; i < ADSB_MAX_TRACKED; i++) {
             char hex[8];
             snprintf(hex, sizeof(hex), "%06lX", (unsigned long)(0xB00000u + i));
@@ -873,6 +888,8 @@ LS_CASE(adsb_portrait_has_a_radar_under_a_list_that_holds_all_sixteen)
 
     if (ls_scr_adsb.leave) ls_scr_adsb.leave();
 }
+
+static bool find_text(const char *text, int *col, int *row);
 
 LS_CASE(adsb_radar_tap_picks_the_nearest_contact_and_a_second_opens_it)
 {
@@ -903,7 +920,7 @@ LS_CASE(adsb_radar_tap_picks_the_nearest_contact_and_a_second_opens_it)
     for (int y = 0; y < H; y++) {
         row_text(y, line, sizeof(line));
         if (radar_y < 0) {
-            if (strstr(line, "RADAR")) radar_y = y;
+            if (strstr(line, "- RADAR ")) radar_y = y;
             continue;
         }
         const char *p = strstr(line, "SOUTH2");
@@ -933,7 +950,9 @@ LS_CASE(adsb_radar_tap_picks_the_nearest_contact_and_a_second_opens_it)
     LS_CHECK(ls_scr_adsb.key(LS_TK_ESC, 0));
     fresh();
     draw_pane(&ls_scr_adsb, PANES[1]);
-    LS_CHECK(ls_scr_adsb.touch(PANES[1].x + 2, PANES[1].y + 2));
+    int list_x,list_y;
+    LS_CHECK(find_text("AIRCRAFT",&list_x,&list_y));
+    LS_CHECK(ls_scr_adsb.touch(PANES[1].x + 2, list_y + 2));
     LS_EQ_UINT(0xC00001u, adsb_select_get_icao());
 
     if (ls_scr_adsb.leave) ls_scr_adsb.leave();
@@ -955,7 +974,7 @@ LS_CASE(adsb_visible_touch_controls_open_step_and_return)
     ls_scr_adsb.leave();
     fresh();
     draw_pane(&ls_scr_adsb, PANES[1]);
-    const int controls = find_row_text("ENTER details");
+    const int controls = find_row_text("DETAILS");
     LS_CHECK(controls >= 0);
     if (controls < 0) return;
     const uint32_t first = adsb_select_get_icao();
@@ -965,7 +984,7 @@ LS_CASE(adsb_visible_touch_controls_open_step_and_return)
     fresh();
     draw_pane(&ls_scr_adsb, PANES[1]);
     LS_CHECK(find_row_text("CALLSIGN") >= 0);
-    LS_CHECK(find_row_text("ENTER back") >= 0);
+    LS_CHECK(find_row_text("BACK") >= 0);
     LS_CHECK(ls_scr_adsb.touch(PANES[1].x + PANES[1].w / 2, controls));
     fresh();
     draw_pane(&ls_scr_adsb, PANES[1]);
@@ -974,6 +993,23 @@ LS_CASE(adsb_visible_touch_controls_open_step_and_return)
 }
 
 extern void ls_scr_rec_tools(void);
+
+LS_CASE(rec_gps_source_delegates_without_claiming_an_sdr)
+{
+    LS_CHECK(ls_scr_rec.radio == NULL);
+    ls_scr_rec.enter();
+    LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'u'));
+    LS_CHECK(ls_picker_active());
+    ls_picker_key(LS_TK_DOWN,0);ls_picker_key(LS_TK_DOWN,0);
+    ls_picker_key(LS_TK_ENTER,0);
+    rec_gps_draws=rec_gps_keys=0;
+    fresh();draw_pane(&ls_scr_rec,PANES[1]);
+    LS_EQ_INT(1,rec_gps_draws);
+    ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_EQ_INT(1,rec_gps_keys);
+    ls_scr_rec.leave();
+    ls_scr_rec_tools(); /* restore the shared fixture */
+}
 
 LS_CASE(rec_history_uses_elapsed_time_and_clears_missing_data)
 {
@@ -1124,9 +1160,11 @@ LS_CASE(screens_pass_through_the_keys_they_do_not_own)
     };
     for (int s = 0; s < N_SCREENS; s++) {
         if (!SCREENS[s]->key) continue;
-        for (unsigned i = 0; i < sizeof(GLOBAL) / sizeof(GLOBAL[0]); i++)
+        for (unsigned i = 0; i < sizeof(GLOBAL) / sizeof(GLOBAL[0]); i++) {
+            if(SCREENS[s]==&ls_scr_home && GLOBAL[i]>=LS_TK_F1 && GLOBAL[i]<=LS_TK_F6) continue;
             LS_CHECK_MSG(!SCREENS[s]->key(GLOBAL[i], 0),
                          "%s consumed a global key", SCREENS[s]->name);
+        }
     }
 }
 
@@ -1239,7 +1277,7 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
        dropped was Daylight's. Every label must be on the glass in both
        postures and in half a landscape pane, which is the tightest case. */
     static const char *const LABELS[] = {
-        "Brightness", "Auto dim", "Dim after", "Volume", "Theme", "Daylight",
+        "Brightness", "Keyboard light", "Auto dim", "Dim after", "Volume", "Theme", "Daylight",
         "Font", "Boot sound", "Alert sound", "Vibrate", "USB autoreboot",
     };
     static const int PANE_IDX[] = { 0, 1, 3 };
@@ -1877,4 +1915,260 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);
     LS_EQ_INT(rec_get_freq(),152600000);
     ls_scr_rec.leave();
+}
+
+LS_CASE(rec_all_metadata_sources_select_and_record_without_sdr_claim)
+{
+    const ls_field_source_t sources[]={LS_FIELD_HACKRF,LS_FIELD_MESH,LS_FIELD_NRF24,LS_FIELD_NFC,LS_FIELD_WIFI,LS_FIELD_BLE};
+    LS_CHECK(ls_scr_rec.radio==NULL);
+    for(int i=0;i<6;i++) {
+        ls_field_record(false);
+        ls_scr_rec.enter(); ls_scr_rec.key(LS_TK_CHAR,'u');
+        LS_CHECK(ls_picker_active());
+        for(int j=0;j<i+3;j++)ls_picker_key(LS_TK_DOWN,0);
+        ls_picker_key(LS_TK_ENTER,0);
+        ls_field_state_t state; ls_field_snapshot(&state);
+        LS_EQ_INT(state.sample.source,sources[i]);
+        fresh();draw_pane(&ls_scr_rec,PANES[1]);
+        ls_scr_rec.key(LS_TK_CHAR,'c');
+        LS_CHECK(ls_field_recording());
+        ls_scr_rec.key(LS_TK_CHAR,'u'); LS_CHECK(!ls_picker_active());
+        LS_CHECK(!ls_field_source(LS_FIELD_RTL));
+        fresh();draw_pane(&ls_scr_rec,PANES[1]);
+        ls_scr_rec.key(LS_TK_CHAR,'c'); LS_CHECK(!ls_field_recording());
+        ls_scr_rec.leave();
+    }
+    ls_scr_rec_tools();
+}
+
+LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_source)
+{
+    int64_t old_time=esp_timer_get_time();
+    ls_shim_time_set(1000000);
+    const ls_field_source_t fields[]={LS_FIELD_CC1101,LS_FIELD_NONE,LS_FIELD_HACKRF,LS_FIELD_NRF24,LS_FIELD_NFC,LS_FIELD_WIFI,LS_FIELD_BLE};
+    ls_field_record(false);
+    LS_CHECK(ls_scr_falls.radio==NULL);
+    for(int i=0;i<7;i++) {
+        ls_scr_falls.enter();
+        LS_CHECK(ls_scr_falls.key(LS_TK_CHAR,'v'));
+        for(int j=0;j<LS_WF_SRC__COUNT+i;j++)ls_picker_key(LS_TK_DOWN,0);
+        ls_picker_key(LS_TK_ENTER,0);
+        ls_field_sample_t sample;ls_field_sample_snapshot(&sample);
+        LS_EQ_INT(sample.source,fields[i]);
+        int pumps=ls_test_wf_pumps;
+        fresh(); draw_pane(&ls_scr_falls,PANES[1]);
+        LS_EQ_INT(pumps,ls_test_wf_pumps);
+        LS_CHECK(!ls_scr_falls.key(LS_TK_CHAR,'w'));
+        LS_CHECK(!ls_scr_falls.key(LS_TK_CHAR,'t'));
+        LS_CHECK(!ls_scr_falls.key(LS_TK_CHAR,'n'));
+        LS_EQ_INT(0,escaped(PANES[1]));
+        if(i==1) {
+            int x,y;
+            LS_CHECK(find_text("No fresh receiver data",&x,&y));
+            s_gps_sat_view=true;
+            fresh();draw_pane(&ls_scr_falls,PANES[1]);
+            LS_CHECK(find_text("38 dB-Hz",&x,&y));
+            LS_CHECK(find_text("ID 7",&x,&y));
+            LS_CHECK(find_text("@ selected",&x,&y));
+            LS_CHECK(find_text("rim=0 mid=45",&x,&y));
+            LS_CHECK(ls_scr_falls.key(LS_TK_CHAR,'j'));
+            fresh();draw_pane(&ls_scr_falls,PANES[1]);
+            LS_CHECK(find_text("ID 9",&x,&y));
+            LS_CHECK(ls_scr_falls.key(LS_TK_CHAR,'k'));
+            fresh();draw_pane(&ls_scr_falls,PANES[1]);
+            LS_CHECK(find_text("ID 7",&x,&y));
+            for(int pane=0;pane<N_PANES;pane++) {
+                fresh();draw_pane(&ls_scr_falls,PANES[pane]);
+                LS_EQ_INT(0,escaped(PANES[pane]));
+            }
+            s_gps_sat_view=false;
+        }
+        ls_scr_falls.leave();
+    }
+    LS_CHECK(ls_test_wf_releases>=14);
+    ls_field_source(LS_FIELD_CC1101);ls_field_record(true);
+    ls_scr_falls.enter();ls_scr_falls.key(LS_TK_CHAR,'v');
+    for(int j=0;j<LS_WF_SRC__COUNT+2;j++)ls_picker_key(LS_TK_DOWN,0);
+    ls_picker_key(LS_TK_ENTER,0);
+    ls_field_sample_t sample;ls_field_sample_snapshot(&sample);
+    LS_EQ_INT(sample.source,LS_FIELD_CC1101);
+    LS_CHECK(ls_field_recording());
+    ls_field_record(false);ls_scr_falls.leave();
+    ls_shim_time_set(old_time);
+}
+
+LS_CASE(sky_instrument_has_ascii_references_selection_and_stale_guard)
+{
+    int64_t old=esp_timer_get_time();ls_shim_time_set(1000000);
+    ls_gps_state_t g={0};g.last_sentence_us=1000000;g.sat_count=2;
+    g.sats[0]=(ls_gps_sat_t){.prn=7,.azimuth=90,.elevation=45,.snr=38,.used=true};
+    g.sats[1]=(ls_gps_sat_t){.prn=9};
+    fresh();ls_skyview_draw(&g_sf,PANES[1],&g,0);
+    int x,y;
+    LS_CHECK(find_text("ID 7",&x,&y));LS_CHECK(find_text("USED in fix",&x,&y));
+    LS_CHECK(find_text("AZ 090 deg true  EL 45 deg",&x,&y));
+    LS_CHECK(find_text("C/N0 38 dB-Hz",&x,&y));
+    LS_CHECK(find_text("MARK ID  AZdeg ELdeg CN0dBHz FIX",&x,&y));
+    LS_CHECK(y > PANES[1].y + 25);
+    for(int row=PANES[1].y;row<PANES[1].y+PANES[1].h;row++)
+        for(int col=PANES[1].x;col<PANES[1].x+PANES[1].w;col++)
+            LS_CHECK((unsigned char)g_back[row*W+col].ch<=127);
+    fresh();ls_skyview_draw(&g_sf,PANES[1],&g,1);
+    LS_CHECK(find_text("ID 9",&x,&y));LS_CHECK(find_text("AZ/EL unreported",&x,&y));
+    LS_CHECK(find_text("not tracked",&x,&y));
+    LS_CHECK(find_text("---    --     --",&x,&y));
+    ls_shim_time_set(4000001);fresh();ls_skyview_draw(&g_sf,PANES[1],&g,0);
+    LS_CHECK(find_text("STALE",&x,&y));LS_CHECK(!find_text("ID 7",&x,&y));
+    ls_shim_time_set(old);
+}
+
+LS_CASE(home_function_groups_numeric_launch_and_compass_rotation_policy)
+{
+    apps_once();
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    ls_anim_cancel();
+    LS_CHECK(ls_tui_router_key(LS_TK_F3,0));
+    fresh();draw_pane(&ls_scr_home,PANES[0]);
+    int x,y;LS_CHECK(!find_text("PAGE",&x,&y));
+    LS_EQ_INT(ls_btn_hit_slot(PANES[0].x+5,PANES[0].y+PANES[0].h-2,LS_BTN_SLOT_QUICK),-1);
+    LS_CHECK(ls_tui_router_key(LS_TK_CHAR,'2'));
+    LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_diag),ls_tui_screen_current());
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_labs));
+    LS_CHECK(ls_tui_screen_holds_rotation());
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    LS_CHECK(!ls_tui_screen_holds_rotation());
+    LS_CHECK(!ls_scr_home.key(LS_TK_CHAR,']'));
+}
+
+LS_CASE(home_later_page_returns_and_sky_landscape_has_referenced_table)
+{
+    apps_once();
+    static const ls_app_t extra[]={
+        {.id="page-a",.name="TEST A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
+        {.id="page-b",.name="TEST B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
+        {.id="page-c",.name="TEST C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm}};
+    for(int i=0;i<3;i++)ls_app_register(&extra[i]);
+    ls_scr_home.key(LS_TK_F1,0);
+    const tui_rect small={1,2,46,33};
+    fresh();draw_pane(&ls_scr_home,small);
+    ls_scr_home.key(LS_TK_F6,0);
+    fresh();draw_pane(&ls_scr_home,small);
+    int x,y;LS_CHECK(find_text("PAGE 2/",&x,&y));
+    ls_scr_home.key(LS_TK_CHAR,'1');
+    LS_CHECK(!strcmp(ls_tui_screen_name(ls_tui_screen_current()),"FM"));
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    fresh();draw_pane(&ls_scr_home,small);
+    LS_CHECK(find_text("PAGE 2/",&x,&y));
+    ls_scr_home.key(LS_TK_F5,0);
+    fresh();draw_pane(&ls_scr_home,small);
+    LS_CHECK(find_text("PAGE 1/",&x,&y));
+    int64_t old=esp_timer_get_time();ls_shim_time_set(1000000);
+    ls_gps_state_t g={0};g.last_sentence_us=1000000;g.sat_count=1;
+    g.sats[0]=(ls_gps_sat_t){.prn=7,.azimuth=90,.elevation=45,.snr=38,.used=true};
+    fresh();ls_skyview_draw(&g_sf,PANES[0],&g,0);
+    LS_CHECK(find_text("NORTH-UP",&x,&y));
+    LS_CHECK(find_text("AZdeg ELdeg CN0dBHz FIX",&x,&y));
+    LS_CHECK(find_text("Green USED",&x,&y));
+    ls_shim_time_set(old);
+}
+
+LS_CASE(home_portrait_pager_has_large_touch_targets_and_no_function_labels)
+{
+    apps_once();
+    const tui_rect small={1,2,34,41};
+    static const ls_app_t extra[]={
+        {.id="touch-a",.name="TOUCH A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
+        {.id="touch-b",.name="TOUCH B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
+        {.id="touch-c",.name="TOUCH C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm}};
+    for(int i=0;i<3;i++)ls_app_register(&extra[i]);
+    ls_scr_home.key(LS_TK_F1,0);fresh();draw_pane(&ls_scr_home,small);
+    int x,y;LS_CHECK(!find_text("F1",&x,&y));LS_CHECK(!find_text("F5",&x,&y));
+    int hits=0,hitx=-1,hity=-1;
+    for(int row=small.y;row<small.y+small.h;row++)for(int col=small.x;col<small.x+small.w;col++)
+        if(ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK)==2){hits++;hitx=col;hity=row;}
+    LS_CHECK(hits>=40);LS_CHECK(ls_scr_home.touch(hitx,hity));
+    fresh();draw_pane(&ls_scr_home,small);LS_CHECK(find_text("PAGE 2/",&x,&y));
+}
+
+static bool keyboard_light=true;
+bool settings_get_keyboard_light(void) { return keyboard_light; }
+void settings_set_keyboard_light(bool on) { keyboard_light=on; }
+int ls_keypad_backlight(bool on) { (void)on; return 0; }
+
+bool ls_track_rec_running(void) { return false; }
+
+LS_CASE(keyboard_light_toggle_is_applied_and_stored)
+{
+    for(int orientation=0;orientation<2;orientation++) {
+        fresh();draw_pane(&ls_scr_settings,PANES[orientation]);
+        int x,y;LS_CHECK(find_text("Keyboard light",&x,&y));
+        bool before=settings_get_keyboard_light();
+        LS_CHECK(ls_scr_settings.touch(x,y));
+        LS_CHECK(settings_get_keyboard_light()!=before);
+    }
+}
+
+LS_CASE(receiver_arrows_tune_but_lists_keep_navigation)
+{
+    ls_radio_panel_t panel={.focus=-1};
+    ls_radio_view_t view={.fm=true,.frequency=100000000,.mode="NFM"};
+    LS_EQ_INT(ls_radio_panel_key(&panel,&view,LS_TK_LEFT,0),'[');
+    LS_EQ_INT(ls_radio_panel_key(&panel,&view,LS_TK_RIGHT,0),']');
+    panel.lists=true; panel.count=3;panel.selected=1;
+    LS_EQ_INT(ls_radio_panel_key(&panel,&view,LS_TK_DOWN,0),0);
+    LS_EQ_INT(panel.selected,2);
+    LS_EQ_INT(ls_radio_panel_key(&panel,&view,LS_TK_RIGHT,0),0);
+}
+LS_CASE(partial_button_rows_are_centered_with_matching_hits)
+{
+    fresh();grid_for(tui_rect_make(0,5,34,41));
+    ls_btn_t b[]={{"ONE",NULL,0,false,false},{"TWO",NULL,0,false,false},
+        {"THREE",NULL,0,false,false},{"FOUR",NULL,0,false,false},{"FIVE",NULL,0,false,false}};
+    tui_rect bar=tui_rect_make(0,15,34,10);
+    ls_btn_bar_raised(&g_sf,bar,b,5,-1);
+    for(int row=17;row<=22;row+=5) {
+        int left=-1,right=-1;
+        for(int x=0;x<34;x++)if(ls_btn_hit(x,row)>=0){if(left<0)left=x;right=x;}
+        LS_CHECK(left>=0);
+        LS_CHECK(abs(left-(33-right))<=1);
+    }
+}
+LS_CASE(adsb_portrait_always_offers_map_home_and_radar_view)
+{
+    const tui_rect pane={0,5,34,41};fresh();grid_for(pane);
+    ls_scr_adsb.draw(&g_sf,pane);
+    int x,y;
+    LS_CHECK(find_text("MAP",&x,&y));
+    LS_CHECK(find_text("SET HOME",&x,&y));
+    LS_CHECK(ls_scr_adsb.key(LS_TK_CHAR,'r'));
+    fresh();grid_for(pane);ls_scr_adsb.draw(&g_sf,pane);
+    LS_CHECK(find_text("RADAR",&x,&y));
+    LS_CHECK(find_text("LIST",&x,&y));
+    LS_EQ_INT(escaped(pane),0);
+    ls_scr_adsb.key(LS_TK_CHAR,'r');
+}
+
+static uint32_t cursor_committed;
+static bool cursor_tuner(ls_wf_owner_t owner,uint32_t hz)
+{ (void)owner;cursor_committed=hz;return true; }
+LS_CASE(fm_waterfall_arrows_select_space_commits)
+{
+    const ls_tui_screen_t *screens[]={&ls_scr_fm};
+    for(int i=0;i<1;i++) {
+        fresh();FM.mode=FM_MODE_LISTEN;
+        if(screens[i]->enter)screens[i]->enter();
+        screens[i]->key(LS_TK_CHAR,i?'2':'1');
+        ls_wf_owner_t owner=i?LS_WF_OWNER_P25:LS_WF_OWNER_FM;
+        ls_wf_claim(LS_WF_OWNER_NONE,NULL);ls_wf_claim(owner,"test");
+        ls_wf_feed_t feed={.center_hz=100000000,.span_hz=240000,.live=true};
+        float bins[64]={0};ls_wf_preview(owner,bins,64,&feed);
+        ls_wf_draw(&g_sf,tui_rect_make(1,2,46,24));
+        ls_wf_set_tuner(cursor_tuner);cursor_committed=0;
+        uint32_t start=ls_wf_marker_hz();LS_CHECK(start>0);
+        screens[i]->key(LS_TK_RIGHT,0);
+        LS_CHECK(ls_wf_marker_hz()>start);LS_EQ_INT(cursor_committed,0);
+        uint32_t selected=ls_wf_marker_hz();screens[i]->key(LS_TK_CHAR,' ');
+        LS_EQ_INT(cursor_committed,selected);
+        ls_wf_set_tuner(NULL);if(screens[i]->leave)screens[i]->leave();
+    }
 }

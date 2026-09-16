@@ -42,7 +42,11 @@ static void draw(void)
 }
 static bool tap(const char *text)
 {
-    for (int y = 0; y < height; y++) {
+    /* Portrait buttons use their words; keyboard badges belong to landscape. */
+    const bool bottom_button = text[0] == '[' && text[1] != 'B' && text[1] != 'W';
+    if (!wide && text[0] == '[' && strlen(text) > 4 && text[2] == ']') text += 4;
+    for (int row_index = 0; row_index < height; row_index++) {
+        int y = bottom_button ? height - 1 - row_index : row_index;
         char row[129];
         for (int x = 0; x < width; x++) row[x] = back[y * width + x].ch;
         row[width] = 0;

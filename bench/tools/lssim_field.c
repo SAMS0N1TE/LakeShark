@@ -29,6 +29,7 @@ bool ls_field_start(void)
     for (int i = 0; i < 36; i++) { s.bearing[i] = -85 + 20 * cosf(i * .17453f); s.bearing_count[i] = 3; }
     return true;
 }
+void ls_field_sample_snapshot(ls_field_sample_t *out) { ls_field_start(); if(out) { *out=s.sample; out->time_us=esp_timer_get_time(); } }
 void ls_field_snapshot(ls_field_state_t *out) { ls_field_start(); s.sequence = (uint32_t)(esp_timer_get_time() / 100000); if (out) *out = s; }
 bool ls_field_direct(bool on) { s.requested = s.direct = on; snprintf(s.status, sizeof(s.status), "%s", on ? "Direct control; mesh paused" : "Mesh control restored"); return true; }
 bool ls_field_owned(void) { return s.direct; }
@@ -54,8 +55,9 @@ bool ls_field_calibrate(int action)
 bool ls_field_calibrating(void) { return s.calibrating; }
 bool ls_field_clear_plot(void) { memset(s.bearing_count, 0, sizeof(s.bearing_count)); for (int i = 0; i < LS_FIELD_BINS; i++) s.trace[i] = s.spectrum[i] = -140; return true; }
 bool ls_field_transmit(const char *text) { (void)text; s.tx++; return s.direct; }
-bool ls_field_source(ls_field_source_t source) { s.sample.source = source; s.sample.radio_valid = source > LS_FIELD_NONE && source < LS_FIELD_CC1101; return true; }
-const char *ls_field_source_name(ls_field_source_t source) { static const char *const names[] = {"NOTES ONLY","MESH","LORA LABS","RTL","CC1101","NRF24","NFC","WI-FI","BLUETOOTH"}; return source >= 0 && source < LS_FIELD_SOURCES ? names[source] : "UNKNOWN"; }
+bool ls_field_source(ls_field_source_t source) { if(s.recording && source != s.sample.source) return false; s.sample.source = source; s.sample.radio_valid = source > LS_FIELD_NONE && source < LS_FIELD_CC1101; return true; }
+const char *ls_field_source_name(ls_field_source_t source) { static const char *const names[] = {"NOTES ONLY","MESH","LORA LABS","RTL","CC1101","NRF24","NFC","WI-FI","BLUETOOTH","HACKRF"}; return source >= 0 && source < LS_FIELD_SOURCES ? names[source] : "UNKNOWN"; }
+bool ls_field_recording(void) { return s.recording; }
 bool ls_field_record(bool on) { s.recording = on; return true; }
 void ls_field_watch(bool on) { (void)on; }
 bool ls_field_mark_lora(void) { return true; }

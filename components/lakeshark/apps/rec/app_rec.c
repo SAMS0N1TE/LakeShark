@@ -71,6 +71,7 @@ static uint32_t s_freq_hz = REC_DEFAULT_FREQ;
 static int      s_gain    = REC_DEFAULT_GAIN;
 static uint32_t s_captures = 0;
 static char     s_last_file[64] = "";
+static uint32_t s_capture_uptime_s;
 
 static int s_mag_now = 0, s_mag_floor = 0, s_mag_thresh = 0;
 /* Peak magnitude across the whole capture, snapshotted into the
@@ -260,6 +261,7 @@ static void slice_block(const uint8_t *iq, int len)
         if (s_phase == REC_ARMED) {
             /**/
             if (!hi && s_level && run_us >= s_min_pulse_us) {
+                __atomic_store_n(&s_capture_uptime_s,(uint32_t)(esp_timer_get_time()/1000000),__ATOMIC_RELEASE);
                 s_phase = REC_CAPTURING;
                 rec_reset_capture();
                 s_edge[s_edges++] = (int32_t)run_us;
@@ -644,6 +646,7 @@ void rec_get_hub_status(rec_hub_status_t *out)
     out->mag_thresh = s_mag_thresh;
     out->bytes_sec  = s_bytes_sec;
     out->captures   = s_captures;
+    out->capture_uptime_s=__atomic_load_n(&s_capture_uptime_s,__ATOMIC_ACQUIRE);
     ls_iq_control_status_t radio;
     ls_iq_control_status(&s_radio_control, &radio);
     out->receiver_streaming = radio.receiver_streaming;

@@ -225,9 +225,15 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
                         s_why[0] ? s_why : "nothing here",
                         s_flen > 0 ? "BKSP clears the filter" : NULL);
     } else {
+        int step = ROW_STEP;
+        if (s_shown < nvis) {
+            step = (body.h - 1) / s_shown;
+            if (step > 8) step = 8;
+            if (step < ROW_STEP) step = ROW_STEP;
+        }
         for (int i = 0; i < nvis && s_top + i < s_shown; i++)
-            draw_row(sf, tui_rect_make(body.x, body.y + i * ROW_STEP,
-                                       body.w, ROW_H),
+            draw_row(sf, tui_rect_make(body.x, body.y + i * step,
+                                       body.w, step + 1),
                      i, s_top + i, (s_top + i) == s_cur);
     }
 

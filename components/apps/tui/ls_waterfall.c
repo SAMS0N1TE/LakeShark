@@ -39,6 +39,7 @@ static uint8_t  s_decim_n;
 
 static uint8_t  s_peak[LS_WF_BINS_MAX];
 
+static bool     s_marker_initial;
 static int      s_marker = -1;           /* display column, -1 for none     */
 
 static ls_wf_cfg_t s_cfg = {
@@ -93,34 +94,30 @@ static const char *const PAL_NAME[LS_WF_PAL__COUNT] = {
     "HEAT", "ICE", "PHOS", "NEON"
 };
 
-/* The same four scales for a white ground. */
-
+/* Daylight uses neutral low-level ink and one color family per scale.
+ * Increasing power always darkens the mark; ASCII density and bar height
+ * carry detail without cycling weak signals through unrelated hues. */
 static const uint8_t PAL_DAY[LS_WF_PAL__COUNT][16] = {
     [LS_WF_PAL_HEAT] = {
-        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLUE,
-        TUI_BLUE, TUI_CYAN, TUI_CYAN, TUI_GREEN,
-        TUI_GREEN, TUI_YELLOW, TUI_YELLOW, TUI_RED,
-        TUI_YELLOW | TUI_BRIGHT, TUI_RED | TUI_BRIGHT, TUI_RED | TUI_BRIGHT,
-        TUI_WHITE | TUI_BRIGHT },
+        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
+        TUI_BLACK | TUI_BRIGHT, TUI_BLUE, TUI_BLUE, TUI_BLUE,
+        TUI_CYAN, TUI_CYAN, TUI_RED | TUI_BRIGHT, TUI_RED | TUI_BRIGHT,
+        TUI_RED | TUI_BRIGHT, TUI_RED | TUI_BRIGHT, TUI_RED | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
     [LS_WF_PAL_ICE] = {
-        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
-        TUI_BLACK | TUI_BRIGHT, TUI_BLUE, TUI_BLUE, TUI_CYAN, TUI_CYAN,
-        TUI_WHITE, TUI_WHITE, TUI_BLUE | TUI_BRIGHT, TUI_BLUE | TUI_BRIGHT,
-        TUI_CYAN | TUI_BRIGHT, TUI_CYAN | TUI_BRIGHT,
-        TUI_WHITE | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
+        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
+        TUI_BLACK | TUI_BRIGHT, TUI_BLUE, TUI_BLUE, TUI_BLUE,
+        TUI_BLUE, TUI_BLUE, TUI_BLUE | TUI_BRIGHT, TUI_BLUE | TUI_BRIGHT,
+        TUI_BLUE | TUI_BRIGHT, TUI_BLUE | TUI_BRIGHT, TUI_BLUE | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
     [LS_WF_PAL_PHOSPHOR] = {
-        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
-        TUI_GREEN, TUI_GREEN, TUI_GREEN, TUI_GREEN, TUI_GREEN,
-        TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT,
-        TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT,
-        TUI_WHITE | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
+        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
+        TUI_BLACK | TUI_BRIGHT, TUI_GREEN, TUI_GREEN, TUI_GREEN,
+        TUI_GREEN, TUI_GREEN, TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT,
+        TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT, TUI_GREEN | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
     [LS_WF_PAL_NEON] = {
-        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLUE,
-        TUI_CYAN, TUI_GREEN, TUI_YELLOW, TUI_MAGENTA,
-        TUI_MAGENTA, TUI_BLUE | TUI_BRIGHT, TUI_CYAN | TUI_BRIGHT,
-        TUI_GREEN | TUI_BRIGHT, TUI_YELLOW | TUI_BRIGHT,
-        TUI_MAGENTA | TUI_BRIGHT, TUI_MAGENTA | TUI_BRIGHT,
-        TUI_WHITE | TUI_BRIGHT },
+        TUI_BLACK, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT,
+        TUI_BLACK | TUI_BRIGHT, TUI_MAGENTA, TUI_MAGENTA, TUI_MAGENTA,
+        TUI_MAGENTA, TUI_MAGENTA, TUI_MAGENTA | TUI_BRIGHT, TUI_MAGENTA | TUI_BRIGHT,
+        TUI_MAGENTA | TUI_BRIGHT, TUI_MAGENTA | TUI_BRIGHT, TUI_MAGENTA | TUI_BRIGHT, TUI_WHITE | TUI_BRIGHT },
 };
 
 static bool s_light;
@@ -279,6 +276,7 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
     s_have_feed = false;
     s_have_preview = false;
     s_marker = -1;
+    s_marker_initial = owner == LS_WF_OWNER_FM || owner == LS_WF_OWNER_P25;
     memset(s_peak, 0, sizeof(s_peak));
     memset(&s_st, 0, sizeof(s_st));
     s_row_ms_n = 0;
@@ -707,7 +705,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         }
         char mhz[16];
         fmt_mhz(mhz, sizeof(mhz), hz);
-        snprintf(buf, sizeof(buf), "MARK %s MHz  %s", mhz, lvl);
+        snprintf(buf, sizeof(buf), "MARK %s MHz  %s  SPACE tune", mhz, lvl);
         tui_put_str(sf, r, r.x, r.y, buf, hot);
     } else if (s_have_feed && s_feed.note) {
         tui_put_str(sf, r, r.x, r.y, s_feed.note, dim);
@@ -838,7 +836,7 @@ static void act(int i)
         bool ok=s_tuner(s_owner,hz);
         snprintf(s_tune_note,sizeof(s_tune_note),ok?"Tune requested: %.4f MHz":"Tune unavailable: %.4f MHz",hz/1e6);
         s_tune_note_until=esp_timer_get_time()+2500000;
-        if(ok){s_cfg.paused=false;s_marker=-1;}
+        if(ok){s_cfg.paused=false;s_marker=s_plot_rect.w/2;}
         break;
     }
     default: break;
@@ -847,6 +845,7 @@ static void act(int i)
 
 bool ls_wf_key(ls_tk_t key, char ch)
 {
+    if (key == LS_TK_CHAR && ch == ' ') { act(10); return true; }
     ls_btn_t b[LS_WF_BTNS];
     char v[LS_WF_BTNS][12];
     build_buttons(b, v);
@@ -974,6 +973,8 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     const int fall_h = body.h - spec_h;
 
     s_plot_rect = tui_rect_make(body.x + 1, body.y, body.w - 2, body.h);
+    if (s_marker_initial) { s_marker=s_plot_rect.w/2; s_marker_initial=false; }
+    if (s_marker >= s_plot_rect.w) s_marker=s_plot_rect.w-1;
 
     if (spec_h > 0)
         draw_spectrum(sf, tui_rect_make(s_plot_rect.x, body.y,

@@ -34,12 +34,13 @@ bool ls_gauge_get(ls_gauge_t *out)
 #ifndef LS_WF_SOURCE_REAL
 
 static ls_wf_src_t s_src;
+int ls_test_wf_pumps, ls_test_wf_releases;
 
 void        ls_wf_source_select(ls_wf_src_t src) { s_src = src; }
 ls_wf_src_t ls_wf_source_get(void)               { return s_src; }
 const char *ls_wf_source_name(void)              { return "none"; }
-void        ls_wf_source_pump(void)              { }
-void        ls_wf_source_release(void)           { }
+void        ls_wf_source_pump(void)              { ls_test_wf_pumps++; }
+void        ls_wf_source_release(void)           { ls_test_wf_releases++; }
 /* FM's SWEEP page starts the sweep through this, so the screen tests
    need it. Selecting is all a stub can honestly do: there is no receiver. */
 bool        ls_wf_source_start(ls_wf_src_t src)  { s_src = src; return true; }

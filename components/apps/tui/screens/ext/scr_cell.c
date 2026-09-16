@@ -137,6 +137,7 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
         imu_display.good?"STALE":"UNAVAILABLE";
     uint8_t cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),white=TUI_ATTR(TUI_WHITE,TUI_BLACK),yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
     int controls=ls_btn_raised_height(area,6);
+    if(ls_tui_is_wide() && area.h>=24 && controls<5)controls=5;
     /* Rounded portrait corners reduce the real bar width to two columns.
      * Reserve three full-height rows so labels and hints remain separate. */
     if(area.w<48 && area.h>=35)controls=15;
@@ -206,6 +207,7 @@ static void draw(tui_surface *sf,tui_rect area)
     uint8_t white=TUI_ATTR(TUI_WHITE,TUI_BLACK), cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
     uint8_t yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK), faint=LS_ATTR_FAINT;
     int controls=ls_btn_raised_height(area,9);
+    if(ls_tui_is_wide() && area.h>=24 && controls<5)controls=5;
     tui_rect body=tui_rect_make(area.x,area.y,area.w,area.h-controls);
     char text[100];int y=body.y;
     ls_safe_line(sf,body,y++,status.lte?"CELL WATCH / PHYSICAL CELL SEARCH":"CELL WATCH / SPECTRUM OBSERVATORY",cyan);

@@ -407,6 +407,12 @@ Invoke-HeaderCxxCheck
 Invoke-BoardRule
 Invoke-ModuleShadowCheck
 
+Step 'regression history'
+& python bench/quality.py check
+if ($LASTEXITCODE -ne 0) { $script:failures += 'regression index validation failed' }
+& python bench/quality.py test
+if ($LASTEXITCODE -ne 0) { $script:failures += 'regression tooling tests failed' }
+
 if ($Level -eq 'smoke') {
     Invoke-Firmware @($cfg.configs | Where-Object { $_.name -eq $cfg.smoke })
 } elseif ($Level -eq 'full') {
@@ -417,7 +423,7 @@ $secs = [int]((Get-Date) - $started).TotalSeconds
 
 if ($script:failures.Count -eq 0) {
     Say ""
-    Say "VERIFY OK  (level=$Level, ${secs}s)" 'Green'
+    Say "VERIFY OK  (level=$Level, ${secs}s); hardware release clearance NOT established" 'Green'
     exit 0
 }
 

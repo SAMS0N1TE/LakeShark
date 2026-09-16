@@ -523,8 +523,41 @@ void ls_map_classify_row(const uint16_t *px, uint8_t *out, int n)
     }
 }
 
+static bool s_follow;
+static bool s_follow_first;
+static int64_t s_follow_stamp;
+
+void ls_map_follow_set(bool enabled)
+{
+    s_follow = enabled;
+    s_follow_first = enabled;
+    s_follow_stamp = 0;
+}
+bool ls_map_following(void) { return s_follow; }
+
+void ls_map_follow_fix(bool valid, double lat, double lon, int64_t stamp, int64_t now)
+{
+    if (!s_follow || !valid || !isfinite(lat) || !isfinite(lon) ||
+        lat < -85 || lat > 85 || lon < -180 || lon > 180 ||
+        stamp <= 0 || now < stamp || now - stamp > 10000000 ||
+        stamp == s_follow_stamp || ls_map_render_busy()) return;
+    s_follow_stamp = stamp;
+    const double world = ldexp(1.0, s_zoom) * s_tile_px;
+    double dx = carto_lon_to_norm(lon) - carto_lon_to_norm(s_lon);
+    if (dx > 0.5) dx -= 1;
+    if (dx < -0.5) dx += 1;
+    const double dy = carto_lat_to_norm(lat) - carto_lat_to_norm(s_lat);
+    /* Let the marker move within the central third. Recentring every frame
+       would repeatedly discard unfinished tile work during a drive. */
+    if (s_follow_first || fabs(dx * world) > s_w / 6.0 || fabs(dy * world) > s_h / 6.0) {
+        ls_map_center(lat, lon);
+        s_follow_first = false;
+    }
+}
+
 void ls_map_center(double lat, double lon)
 {
+    if (!isfinite(lat) || !isfinite(lon)) return;
     /* AN EXACT 0,0 IS NOT A PLACE, IT IS A ZEROED STRUCT. */
 
     if (lat == 0.0 && lon == 0.0) {
@@ -570,7 +603,8 @@ void ls_map_zoom_by(int dz)
     int z = s_zoom + dz;
 
     const int lo = s_pm ? pmtiles_min_zoom(s_pm) : 0;
-    const int hi = s_pm ? pmtiles_max_zoom(s_pm) : 22;
+    const int max_source = s_pm ? pmtiles_max_zoom(s_pm) : 22;
+    const int hi = max_source < 19 ? max_source + 3 : 22;
     if (z < lo) z = lo;
     if (z > hi) z = hi;
     s_zoom = z;
@@ -637,6 +671,7 @@ int ls_map_zoom_covering(double lat, double lon)
 void ls_map_pan(int dx_px, int dy_px)
 {
     if (!dx_px && !dy_px) return;
+    ls_map_follow_set(false);
 
     const double world = ldexp(1.0, s_zoom) * (double)s_tile_px;
     double nx = carto_lon_to_norm(s_lon) * world + (double)dx_px;
@@ -830,7 +865,7 @@ const uint16_t *ls_map_render(int *w, int *h)
         s_cache_lat = s_lat; s_cache_lon = s_lon;
         s_cache_zoom = s_zoom; s_cache_w = s_w; s_cache_h = s_h;
         s_cache_valid = true;
-        s_tz_used = s_zoom;
+        s_tz_used = s_zoom > pmtiles_max_zoom(s_pm) ? pmtiles_max_zoom(s_pm) : s_zoom;
         s_why = s_st.tiles_drawn ? NULL : "no tiles here at this zoom";
         if (s_st.tiles_drawn) {
             s_good_lat = s_lat; s_good_lon = s_lon;
@@ -866,9 +901,9 @@ const uint16_t *ls_map_render(int *w, int *h)
     carto_arena_init(&s_step_arena, s_arena_buf, ARENA_BYTES);
     carto_style_default(&s_step_style);
 
-    /* Sourcing tiles from a coarser zoom was tried and is WORSE. */
-
-    s_step_tz = s_zoom;
+    /* Keep native tiles at every available level. Beyond the archive maximum,
+       magnify its finest vectors, bounded to 8x. This adds no map detail. */
+    s_step_tz = s_zoom > pmtiles_max_zoom(s_pm) ? pmtiles_max_zoom(s_pm) : s_zoom;
     s_tz_used = s_step_tz;
 
     carto_viewport vp;
@@ -878,7 +913,7 @@ const uint16_t *ls_map_render(int *w, int *h)
     vp.zoom = s_step_tz;
     vp.fb_w = s_w;
     vp.fb_h = s_h;
-    vp.tile_px = s_tile_px;
+    vp.tile_px = s_tile_px * (1 << (s_zoom - s_step_tz));
 
     /* carto_begin clears the frame to the background and computes the world
        origin; every tile below is placed against that same origin, which is

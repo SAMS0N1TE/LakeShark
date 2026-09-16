@@ -22,6 +22,12 @@ typedef enum {
 } eTaskState;
 
 void vTaskDelay(TickType_t ticks);
+TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t core);
+void vTaskGetInfo(TaskHandle_t task, TaskStatus_t *info, BaseType_t scan_stack, eTaskState state);
+void ls_shim_idle_runtime(uint32_t core0, uint32_t core1);
+unsigned ls_shim_task_info_calls(void);
+unsigned ls_shim_task_stack_scan_calls(void);
+unsigned ls_shim_system_state_calls(void);
 UBaseType_t uxTaskGetNumberOfTasks(void);
 UBaseType_t uxTaskGetSystemState(TaskStatus_t *tasks,
                                  UBaseType_t capacity,
@@ -68,6 +74,9 @@ unsigned ls_shim_task_delete_count(void);
 unsigned ls_shim_task_static_create_count(void);
 unsigned ls_shim_task_notify_count(void);
 void ls_shim_task_set_state(eTaskState state);
+void ls_shim_task_suspend_lag(unsigned reads);
+unsigned ls_shim_task_running_delete_count(void);
+unsigned ls_shim_task_state_read_count(void);
 BaseType_t ls_shim_task_last_core_id(void);
 UBaseType_t ls_shim_task_last_priority(void);
 

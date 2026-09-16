@@ -24,7 +24,7 @@
 #include "../../ls_wf_source.h"
 
 static bool s_details;
-static char s_hint[80] = "M MORE  arrows select  ENTER press";
+static char s_hint[80] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 static uint32_t s_standby = 152600000;
@@ -79,10 +79,10 @@ static void mode_picked(int index)
 
 static void open_mode_picker(void)
 {
-    ls_picker_open("RECEIVER MODE", mode_picked);
+    ls_picker_open(FM.mode==FM_MODE_SCAN ? "STOP SWEEP / MODE" : "RECEIVER MODE", mode_picked);
     for (int i = 0; i < N_MODES; ++i)
         ls_picker_add(fm_mode_label(FM_MODES[i]),
-                      FM.mode == FM_MODES[i] ? "selected" : "FM demod");
+                      FM.mode == FM_MODES[i] ? "selected" : FM.mode==FM_MODE_SCAN ? "stops sweep" : "select mode");
 }
 
 static const ls_quick_t QUICK[] = {
@@ -637,7 +637,7 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
             snprintf(line, sizeof(line), "sweeping: tune %d of %d",
                      FM.scan_idx + 1, FM.scan_tunes);
         else
-            snprintf(line, sizeof(line), "3 SWEEP starts a band sweep");
+            snprintf(line, sizeof(line), "%s", ls_tui_is_wide() ? "W starts the band sweep" : "Tap RUN SWEEP to start");
         tui_put_str(sf, area, area.x + 2, area.y + 4, line, LS_ATTR_DIM);
         return;
     }
@@ -647,7 +647,7 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
 static const ls_btn_t PAGES[] = {
     { "VFO",   NULL, '1', false, false },
     { "PAGER", NULL, '2', false, false },
-    { "SWEEP", NULL, '3', false, false },
+    { "SPECTRUM", NULL, '3', false, false },
     { "RADIO", NULL, '0', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
@@ -695,7 +695,7 @@ static int draw_controls(tui_surface *sf, tui_rect area)
         {"TUNE", "MHz", 't', false, false},
         {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
         {"BAND", ls_wf_preset_current(LS_WF_SRC_FM), 'n', false, false},
-        {"SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
+        {"RUN SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
     };
     const int h = area.h;
     s_controls = area;
@@ -719,6 +719,7 @@ static bool control_action(int index)
 
 static void show_page(int i)
 {
+    s_page_open=false;
     if (i==3) {s_details=false;ls_wf_source_release();return;}
     scan_engine_stop();
     s_page = i;
@@ -794,8 +795,10 @@ static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
 static void draw(tui_surface *sf, tui_rect area)
 {
     snprintf(s_hint,sizeof(s_hint),"%s",s_details?
-             "E mode  T tune  K lock  N band  W sweep  0 radio":
-             "M MORE  arrows select  ENTER press");
+             (ls_tui_is_wide() && (s_page==0 || s_page==2) ?
+              "LEFT/RIGHT select  SPACE tune  E mode  T freq  K lock  0 radio" :
+              "E mode  T tune  K lock  N band  W sweep  0 radio"):
+             "LEFT/RIGHT tune  UP/DOWN controls  M details");
     if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
@@ -859,6 +862,9 @@ static bool key(ls_tk_t k, char ch)
     if(k==LS_TK_CHAR && ch>='1' && ch<='3') {s_details=true;show_page(ch-'1');return true;}
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
+    if ((s_page==0 || s_page==2) &&
+        (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
+        return ls_wf_key(k,ch);
     if (s_page == 2 && k == LS_TK_CHAR && (ch == 'm' || ch == 'M'))
         return ls_wf_key(k, ch);
     if (k == LS_TK_CHAR) {
@@ -934,8 +940,7 @@ static bool touch(int col, int row)
     /* The open page: its BACK target, and nothing else - a stray tap
        must not lose the message you opened. */
     if (s_page == 1 && s_page_open) {
-        if (s_page_back.h > 0 && row >= s_page_back.y &&
-            row < s_page_back.y + s_page_back.h)
+        if (tui_rect_contains(s_page_back,col,row))
             s_page_open = false;
         return true;
     }

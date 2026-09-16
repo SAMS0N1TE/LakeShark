@@ -14,12 +14,15 @@
 #include "esp_timer.h"
 
 #include "../../ls_geo.h"
+#include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
 #include "apps/adsb/adsb_state.h"
 #include "core/perf.h"
 #include "core/settings.h"
 #include "ls_gps.h"
 
+static bool s_radar_only;
+static tui_rect s_tools;
 static int  s_top;      /* first visible row of the list                  */
 static bool s_detail;   /* the list, or the selected aircraft's own page   */
 
@@ -207,7 +210,9 @@ static bool radar_center(double *lat, double *lon, bool *live)
 {
     ls_gps_state_t g;
     ls_gps_get(&g);
-    if (g.fix) {
+    const int64_t now=esp_timer_get_time();
+    if (g.fix && g.last_fix_us && now>=g.last_fix_us && now-g.last_fix_us<=10000000 &&
+        isfinite(g.lat_deg) && isfinite(g.lon_deg) && fabs(g.lat_deg)<=85 && fabs(g.lon_deg)<=180) {
         *lat = g.lat_deg; *lon = g.lon_deg;
         if (live) *live = true;
         return true;
@@ -240,7 +245,7 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     if (!radar_center(&clat, &clon, &live)) {
 
         ls_panel_notice(sf, area, "RADAR", "no position to centre on",
-                        "wait for a GPS fix, or 'home <lat> <lon>'");
+                        "SET HOME: GPS or map");
         return;
     }
 
@@ -583,10 +588,21 @@ static void draw(tui_surface *sf, tui_rect area)
     s_nplot = 0;
     s_rows = 0;
     memset(s_nav, 0, sizeof(s_nav));
+    s_tools=tui_rect_make(0,-1,0,0);
+    if(area.h>=18 && area.w>=24) {
+    const ls_btn_t tools[]={{"MAP",NULL,'m',false,false},
+        {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"RADAR",NULL,'r',s_radar_only,false}};
+    int th=ls_tui_is_wide()?3:5;
+    s_tools=tui_rect_make(area.x,area.y,area.w,th);
+    ls_btn_bar_raised_slot(sf,s_tools,tools,3,-1,LS_BTN_SLOT_QUICK);
+    area.y+=th;area.h-=th;
+    }
+
     if (area.h >= 18 && area.w >= 42) {
         const int nav_h = ls_tui_is_wide() ? 3 : 5;
-        const char *labels[] = {"UP prev", s_detail ? "ENTER back" :
-                               area.w >= 45 ? "ENTER details" : "ENTER info", "DOWN next"};
+        const bool wide=ls_tui_is_wide();
+        const char *labels[] = {wide ? "UP prev" : "PREVIOUS", s_detail ? "BACK" :
+                               wide ? "ENTER info" : "DETAILS", wide ? "DOWN next" : "NEXT"};
         const int step = (area.w - 1) / 3;
         for (int i = 0; i < 3; i++) {
             const int x = area.x + i * step;
@@ -604,6 +620,8 @@ static void draw(tui_surface *sf, tui_rect area)
     }
 
     if (s_detail && sel) { draw_detail(sf, area, sel, now); return; }
+
+    if (s_radar_only) {draw_radar(sf,area);s_radar_rect=area;return;}
 
     /* Landscape places the aircraft list beside the radar. */
     if (ls_tui_is_wide() && area.w >= 80) {
@@ -629,8 +647,9 @@ static void draw(tui_surface *sf, tui_rect area)
 
     /* Stack all sixteen contacts above the radar in portrait.
    Keep the list height fixed so arriving contacts cannot move the scope. */
-    const int list_rows = ADSB_MAX_TRACKED + LIST_CHROME_ROWS;
-    if (area.h >= list_rows + RADAR_MIN_ROWS) {
+    int list_rows = ADSB_MAX_TRACKED + LIST_CHROME_ROWS;
+    if(list_rows>area.h-RADAR_MIN_ROWS) list_rows=area.h-RADAR_MIN_ROWS;
+    if (list_rows >= LIST_CHROME_ROWS + 2) {
         const tui_rect list  = tui_rect_make(area.x, area.y, area.w, list_rows);
         const tui_rect radar = tui_rect_make(area.x, area.y + list_rows,
                                              area.w, area.h - list_rows);
@@ -646,7 +665,12 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
-    (void)ch;
+    if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {s_radar_only=!s_radar_only;s_detail=false;return true;}
+    if(k==LS_TK_CHAR && (ch=='m'||ch=='M'||ch=='h'||ch=='H')) {
+        ls_args_t a={0};ls_val_t out;
+        ls_action_call(ch=='m'||ch=='M'?"map.here":"map.home",&a,&out,ls_quick_grant_builtin());
+        return true;
+    }
     /* UP/DOWN keep working in DETAIL - moving through contacts is the more
        useful reading of "next" while looking at one, and it is one selection
        state either way (), so nothing about switching pages needs to
@@ -672,6 +696,12 @@ static bool hit(tui_rect r, int col, int row)
 
 static bool touch(int col, int row)
 {
+    if(hit(s_tools,col,row)) {
+        int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
+        if(i>=0 && i<3) return key(LS_TK_CHAR,"mhr"[i]);
+        return true;
+    }
+
     for (int i = 0; i < 3; i++)
         if (hit(s_nav[i], col, row))
             return key(i == 0 ? LS_TK_UP : i == 1 ? LS_TK_ENTER : LS_TK_DOWN, 0);

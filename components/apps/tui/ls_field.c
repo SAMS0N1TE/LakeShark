@@ -1,5 +1,6 @@
 #include "ls_field.h"
 #include "ls_compass.h"
+#include "ls_keypad.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include "radio/radio_health.h"
 #include "radio/radio_endpoint.h"
 #include "core/perf.h"
+#include "core/ls_time.h"
 
 #define LOG_LIMIT (16u * 1024u * 1024u)
 #define QUEUE_CAP 4
@@ -43,6 +45,8 @@ static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb;
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
 static bool s_watch;
 static bool s_wireless_watch;
+static uint32_t record_rows,record_errors;
+static int64_t record_saved_us;
 EXT_RAM_BSS_ATTR static ls_wireless_snapshot_t s_wireless;
 static ls_field_source_t s_source = LS_FIELD_MESH;
 static ls_field_provider_t s_providers[LS_FIELD_SOURCES];
@@ -64,9 +68,14 @@ static bool s_mesh_baseline;
 static int64_t s_next_peers;
 EXT_RAM_BSS_ATTR static ls_compass_fit_t s_fit;
 static ls_compass_guide_t s_guide;
-static ls_compass_cal_t s_calibration;
-static bool s_calibration_valid, s_calibration_saved;
-static uint32_t s_calibration_version, s_calibration_written;
+static EXT_RAM_BSS_ATTR float s_scan_work[LS_FIELD_BINS];
+typedef struct {
+    ls_compass_cal_t cal;
+    bool valid, saved;
+    uint32_t version, written;
+} compass_profile;
+static compass_profile s_profiles[2]; /* standalone, keyboard attached */
+static int s_profile; /* field worker owns selection; I/O addresses both by index */
 typedef struct { uint32_t magic, generation; ls_compass_cal_t cal; uint32_t sum; } compass_record;
 static long s_valid_bytes;
 static bool s_damaged, s_incompatible;
@@ -76,7 +85,7 @@ static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
-static void publish(void) { lock(); s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
+static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
 
 static void detected(int64_t now, uint32_t frequency, float rssi, float snr, bool mesh)
 {
@@ -95,7 +104,7 @@ static void detected(int64_t now, uint32_t frequency, float rssi, float snr, boo
 
 const char *ls_field_source_name(ls_field_source_t source)
 {
-    static const char *const names[] = {"NOTES ONLY", "MESH", "LORA LABS", "RTL", "CC1101", "NRF24", "NFC", "WI-FI", "BLUETOOTH"};
+    static const char *const names[] = {"NOTES ONLY", "MESH", "LORA LABS", "RTL", "CC1101", "NRF24", "NFC", "WI-FI", "BLUETOOTH", "HACKRF"};
     return source >= 0 && source < LS_FIELD_SOURCES ? names[source] : "UNKNOWN";
 }
 
@@ -255,6 +264,7 @@ static bool restore(void)
 static bool configure(void)
 {
     if (ls_lora_scanning() && ls_lora_scan_end() != ESP_OK) return false;
+    s_live.spectrum_us=0;
     if (ls_lora_configure(&s_live.config) != ESP_OK) return false;
     if (s_live.mode == LS_LAB_SPECTRUM) {
         uint32_t hz = s_live.config.freq_hz;
@@ -267,8 +277,8 @@ static void finish_calibration(void)
 {
     ls_compass_cal_t cal;
     if (s_guide.step == 6 && ls_compass_finish(&s_fit, &cal)) {
-        lock(); s_calibration = cal; s_calibration_valid = true;
-        s_calibration_saved = false; s_calibration_version++; unlock();
+        lock(); s_profiles[s_profile].cal = cal; s_profiles[s_profile].valid = true;
+        s_profiles[s_profile].saved = false; s_profiles[s_profile].version++; unlock();
         s_live.calibrating = false;
         s_live.calibration_failed = false;
         memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
@@ -294,10 +304,15 @@ static void sample(int64_t now)
                    fabs(gps.lat_deg) <= 90 && fabs(gps.lon_deg) <= 180;
     if (p->gps_valid) {
         p->lat = gps.lat_deg; p->lon = gps.lon_deg; p->alt_m = gps.alt_m;
-        if (gps.year >= 2024 && gps.year <= 9999 && gps.month >= 1 && gps.month <= 12 && gps.day >= 1 && gps.day <= 31 && gps.hour <= 23 && gps.minute <= 59 && gps.second <= 60)
-            snprintf(p->utc, sizeof(p->utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gps.year,
-                     gps.month, gps.day, gps.hour, gps.minute, gps.second);
+        if (gps.year >= 2024 && gps.year <= 2099 && gps.month >= 1 && gps.month <= 12 && gps.day >= 1 && gps.hour <= 23 && gps.minute <= 59 && gps.second <= 59) {
+            static const uint8_t days[]={31,28,31,30,31,30,31,31,30,31,30,31};
+            const bool leap=gps.year%4==0 && (gps.year%100!=0 || gps.year%400==0);
+            if(gps.day<=days[gps.month-1]+(gps.month==2 && leap))
+                snprintf(p->utc, sizeof(p->utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gps.year,
+                         gps.month, gps.day, gps.hour, gps.minute, gps.second);
+        }
     }
+    if(!p->utc[0] && ls_time_is_synced()) ls_time_render_stamp(p->utc,sizeof(p->utc));
     if (ls_imu_read(&p->imu)) {
         s_last_imu = p->imu;
         s_last_imu_us = now;
@@ -313,9 +328,9 @@ static void sample(int64_t now)
         ls_compass_guide_sample(&s_guide, fresh);
         if (s_guide.step == 6) finish_calibration();
     }
-    lock(); ls_compass_cal_t calibration = s_calibration;
-    s_live.calibrated = s_calibration_valid;
-    s_live.calibration_saved = s_calibration_saved; unlock();
+    lock(); ls_compass_cal_t calibration = s_profiles[s_profile].cal;
+    s_live.calibrated = s_profiles[s_profile].valid;
+    s_live.calibration_saved = s_profiles[s_profile].saved; unlock();
     if (p->imu_valid) {
         p->heading = ls_compass_heading(&p->imu, s_live.calibrated ? &calibration : NULL);
     }
@@ -337,12 +352,13 @@ static void sample(int64_t now)
         p->signal_valid = p->radio_valid && !s_live.transmitting && s_live.mode != LS_LAB_SPECTRUM;
         p->frequency = s_live.config.freq_hz; p->packets = s_live.rx;
         p->rssi = s_live.trace[LS_FIELD_BINS - 1];
-    } else if (p->source == LS_FIELD_RTL) {
+    } else if (p->source == LS_FIELD_RTL || p->source == LS_FIELD_HACKRF) {
+        const char *id = p->source == LS_FIELD_RTL ? LS_RADIO_ENDPOINT_RTL_USB : LS_RADIO_ENDPOINT_HACKRF_USB;
         radio_health_snapshot_t health;
-        p->radio_valid = radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &health) && health.state == RH_OK;
-        p->packets = (uint32_t)perf_get_msgs_total();
+        p->radio_valid = radio_health_get(id, &health) && health.state == RH_OK;
+        p->packets = p->source == LS_FIELD_RTL ? (uint32_t)perf_get_msgs_total() : 0;
         ls_radio_endpoint_info_t endpoint;
-        if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &endpoint) == LS_RADIO_OK && endpoint.configured)
+        if (ls_radio_endpoint_get(id, &endpoint) == LS_RADIO_OK && endpoint.configured)
             p->frequency = (uint32_t)endpoint.actual_iq.center_hz;
     } else if (p->source == LS_FIELD_WIFI || p->source == LS_FIELD_BLE) {
         ls_wireless_get(&s_wireless);
@@ -360,6 +376,16 @@ static void sample(int64_t now)
 void ls_field_step(void)
 {
     const int64_t now = esp_timer_get_time();
+    const int profile=ls_keypad_present()?1:0;
+    if(profile!=s_profile) {
+        s_profile=profile;s_next_sample=0;
+        if(s_live.calibrating) {
+            s_live.calibrating=false;s_live.calibration_failed=false;
+            ls_compass_begin(&s_fit);ls_compass_guide_begin(&s_guide);
+            snprintf(s_live.compass_status,sizeof(s_live.compass_status),"Setup changed; calibration cancelled. Restart for this setup.");
+        }
+    }
+    s_live.calibration_keyboard=profile!=0;
     lock(); bool want = s_want, stop = s_stop, watching = s_watch; s_stop = false; s_live.recording = s_record; unlock();
     lock(); bool wireless = (watching || s_record) && (s_source == LS_FIELD_WIFI || s_source == LS_FIELD_BLE); unlock();
     if (wireless != s_wireless_watch) { s_wireless_watch = wireless; ls_wireless_observe(wireless); }
@@ -411,7 +437,7 @@ void ls_field_step(void)
         } else if (c->kind == CMD_CLEAR) {
             memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
             for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
-            message("Plot cleared; radio counters retained");
+            s_live.spectrum_us=0;message("Plot cleared; radio counters retained");
         } else if (s_live.transmitting) message("Transmission in progress; control unchanged");
         else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE) {
             ls_lora_cfg_t old = s_live.config; ls_lab_mode_t mode = s_live.mode;
@@ -449,10 +475,12 @@ void ls_field_step(void)
         } else if (n < 0) s_live.bad++;
     }
     if ((watching || s_live.recording || s_live.direct || s_live.calibrating) && now >= s_next_sample) {
-        s_next_sample = now + 100000;
+        s_next_sample = now + (s_live.direct && s_live.mode==LS_LAB_SPECTRUM?20000:100000);
         if (s_live.direct && !s_live.transmitting) {
             if (s_live.mode == LS_LAB_SPECTRUM) {
-                bool done; ls_lora_scan_pass(s_live.spectrum, LS_FIELD_BINS, &done);
+                bool done=false;int bins=ls_lora_scan_pass(s_scan_work,LS_FIELD_BINS,&done);
+                if(bins!=LS_FIELD_BINS) {s_live.spectrum_errors++;s_live.spectrum_us=0;}
+                else if(done) {memcpy(s_live.spectrum,s_scan_work,sizeof(s_scan_work));s_live.spectrum_us=esp_timer_get_time();s_live.spectrum_sweeps++;}
             } else {
                 float rssi = -140;
                 ls_lora_rssi_inst(&rssi);
@@ -495,46 +523,50 @@ static void io_step(void)
 {
     if (!s_loaded) {
         load_notes();
-        char name[160];
-        for (int slot = 0; slot < 2; slot++) if (path(name, sizeof(name), slot ? "compass1.cal" : "compass0.cal")) {
-            FILE *f = fopen(name, "rb");
-            compass_record record;
-            bool valid = f && fread(&record, sizeof(record), 1, f) == 1 &&
-                record.magic == 0x43414c01 && record.generation > 0 &&
-                record.sum == checksum(&record, sizeof(record) - sizeof(record.sum)) &&
-                ls_compass_cal_valid(&record.cal);
-            if (f) fclose(f);
-            if (valid) { lock(); if (s_calibration_version == s_calibration_written &&
-                (!s_calibration_valid || (int32_t)(record.generation - s_calibration_version) > 0)) {
-                s_calibration = record.cal; s_calibration_valid = s_calibration_saved = true;
-                s_calibration_version = s_calibration_written = record.generation;
-            } unlock(); }
+        for(int profile=0;profile<2;profile++) for(int slot=0;slot<2;slot++) {
+            char name[160],leaf[40];
+            snprintf(leaf,sizeof(leaf),"compass-%s%d.cal",profile?"kbd":"solo",slot);
+            if(!path(name,sizeof(name),leaf))continue;
+            FILE *f=fopen(name,"rb"); compass_record record;
+            bool valid=f && fread(&record,sizeof(record),1,f)==1 &&
+                record.magic==0x43414c02u+(unsigned)profile && record.generation>0 &&
+                record.sum==checksum(&record,sizeof(record)-sizeof(record.sum)) && ls_compass_cal_valid(&record.cal);
+            if(f)fclose(f);
+            if(valid) {
+                lock();compass_profile *c=&s_profiles[profile];
+                if(c->version==c->written && (!c->valid || (int32_t)(record.generation-c->version)>0)) {
+                    c->cal=record.cal;c->valid=c->saved=true;c->version=c->written=record.generation;
+                }
+                unlock();
+            }
         }
-        s_loaded = true;
+        /* Old compass0/1 files lack attachment identity. Preserve them without
+           guessing which setup they describe. New profiles require calibration. */
+        s_loaded=true;
     }
-    lock(); uint32_t version = s_calibration_version;
-    ls_compass_cal_t calibration = s_calibration; unlock();
-    if (version != s_calibration_written) {
-        char name[160];
-        bool saved = false;
-        /* Alternate slots: interrupted writes leave the previous generation. */
-        if (path(name, sizeof(name), version & 1 ? "compass1.cal" : "compass0.cal")) {
+    for(int profile=0;profile<2;profile++) {
+        lock();compass_profile c=s_profiles[profile];unlock();
+        if(c.version==c.written)continue;
+        char name[160],leaf[40];bool saved=false;
+        snprintf(leaf,sizeof(leaf),"compass-%s%d.cal",profile?"kbd":"solo",(int)(c.version&1));
+        if(path(name,sizeof(name),leaf)) {
 #ifdef _WIN32
             mkdir(s_directory);
 #else
-            mkdir(s_directory, 0775);
+            mkdir(s_directory,0775);
 #endif
-            FILE *f = fopen(name, "wb");
-            if (f) {
-                compass_record record = {.magic=0x43414c01, .generation=version, .cal=calibration};
-                record.sum = checksum(&record, sizeof(record) - sizeof(record.sum));
-                bool ok = fwrite(&record, sizeof(record), 1, f) == 1;
-                if (fclose(f) != 0) ok = false;
-                saved = ok;
+            FILE *f=fopen(name,"wb");
+            if(f) {
+                compass_record record={.magic=0x43414c02u+(unsigned)profile,.generation=c.version,.cal=c.cal};
+                record.sum=checksum(&record,sizeof(record)-sizeof(record.sum));
+                saved=fwrite(&record,sizeof(record),1,f)==1;
+                if(fclose(f)!=0)saved=false;
             }
         }
-        lock(); if (version == s_calibration_version) s_calibration_saved = saved; unlock();
-        s_calibration_written = version;
+        lock();
+        if(c.version==s_profiles[profile].version)s_profiles[profile].saved=saved;
+        s_profiles[profile].written=c.version;
+        unlock();
     }
     lock(); bool have_note = s_note_count > 0;
     if (have_note) { s_disk = s_notes[s_note_head]; s_note_head = (s_note_head + 1) % QUEUE_CAP; s_note_count--; }
@@ -552,7 +584,9 @@ static void io_step(void)
     const int64_t now = esp_timer_get_time();
     if (record && now >= s_next_record) {
         s_next_record = now + 1000000;
-        if (!save_sample(&current)) { lock(); s_record = false; s_live.recording = false; unlock(); }
+        bool saved=save_sample(&current);lock();
+        if(saved){record_rows++;record_saved_us=current.time_us;snprintf(s_live.record_saved_utc,sizeof(s_live.record_saved_utc),"%s",current.utc);}else{record_errors++;s_record=false;s_live.recording=false;}
+        unlock();
     }
 }
 
@@ -620,6 +654,7 @@ static bool enqueue(const command *c)
     unlock(); return true;
 }
 
+void ls_field_sample_snapshot(ls_field_sample_t *out) { if(!out) return; if(!s_lock) { memset(out,0,sizeof(*out)); return; } lock(); *out=s_public.sample; unlock(); }
 void ls_field_snapshot(ls_field_state_t *out) { if (!out) return; if (!s_lock) { memset(out, 0, sizeof(*out)); return; } lock(); *out = s_public; unlock(); }
 bool ls_field_owned(void) { if (!s_lock) return false; lock(); bool owned = s_want || s_public.direct || s_public.busy; unlock(); return owned; }
 bool ls_field_direct(bool on) { if (!s_started) return false; lock(); s_want = on; if (!on) s_stop = true; unlock(); return true; }
@@ -634,8 +669,9 @@ bool ls_field_calibrate(int action) { if (action < 0 || action > 2) return false
 bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active = s_public.calibrating; unlock(); return active; }
 bool ls_field_clear_plot(void) { command c = {.kind = CMD_CLEAR}; return enqueue(&c); }
 bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command c = {.kind = CMD_TX}; snprintf(c.entry.text, sizeof(c.entry.text), "%s", text); return enqueue(&c); }
-bool ls_field_source(ls_field_source_t source) { if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false; lock(); s_source = source; unlock(); return true; }
-bool ls_field_record(bool on) { if (!s_started) return false; lock(); s_record = on; unlock(); return true; }
+bool ls_field_source(ls_field_source_t source) { if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false; lock(); if(s_record && source != s_source) { unlock(); return false; } s_source = source; unlock(); return true; }
+bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(on && !s_record){record_rows=record_errors=0;record_saved_us=0;}s_record = on; unlock(); return true; }
+bool ls_field_recording(void) { if(!s_lock) return false; lock(); bool active=s_record; unlock(); return active; }
 void ls_field_watch(bool on) { if (!s_lock) return; lock(); s_watch = on; unlock(); }
 bool ls_field_note(uint32_t id, const char *title, const char *text)
 {
@@ -716,11 +752,10 @@ void ls_field_test_reset(const char *directory)
     s_directory = directory; s_started = s_loaded = s_stop = s_want = s_record = s_have_saved = false;
     s_qhead = s_qcount = s_count = s_note_head = s_note_count = 0; s_next_id = 1; s_next_sample = s_next_record = 0;
     s_valid_bytes = 0; s_damaged = s_incompatible = false;
-    s_wireless_watch = false;
+    s_wireless_watch = false;record_rows=record_errors=0;record_saved_us=0;
     s_last_imu_us = 0;
     s_mesh_baseline=false;s_next_peers=0;s_mesh_seen=0;
-    s_calibration_valid = s_calibration_saved = false;
-    s_calibration_version = s_calibration_written = 0;
+    memset(s_profiles,0,sizeof(s_profiles));s_profile=ls_keypad_present()?1:0;
     ls_compass_begin(&s_fit);
     ls_compass_guide_begin(&s_guide);
     memset(&s_live, 0, sizeof(s_live)); memset(s_providers, 0, sizeof(s_providers));
