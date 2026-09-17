@@ -1,0 +1,33 @@
+name: Star ping
+
+# Native GitHub events, no polling: 'watch/started' fires the moment someone
+# stars the repo, 'fork' fires on a fork. Each pushes one line to an ntfy topic.
+on:
+  watch:
+    types: [started]
+  fork:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push to ntfy
+        env:
+          TOPIC: lakeshark-0a69be2a81a0c5a026
+          ACTOR: ${{ github.actor }}
+          EVENT: ${{ github.event_name }}
+          STARS: ${{ github.event.repository.stargazers_count }}
+          FORKS: ${{ github.event.repository.forks_count }}
+        run: |
+          if [ "$EVENT" = "fork" ]; then
+            TITLE="LakeShark forked"
+            BODY="$ACTOR forked it - $FORKS forks now"
+            TAGS="fork"
+          else
+            TITLE="LakeShark starred"
+            BODY="$ACTOR starred it - $STARS stars now"
+            TAGS="star"
+          fi
+          curl -sS --fail-with-body -H "Title: $TITLE" -H "Tags: $TAGS" -d "$BODY" "https://ntfy.sh/$TOPIC"
