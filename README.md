@@ -5,21 +5,11 @@ LakeShark is a handheld SDR scanner and radio workbench built around the **LilyG
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
-> **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
+<!-- DEMO GIF HERE: 8-10s, <10MB, ~800px wide. Drag into a GitHub issue comment to get a user-attachments URL, then: ![demo](URL) -->
 
-**New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: 
+**[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
 
-**Experiments:**
-
-- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
-- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is unverified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
-- **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
-
-**[Download the P4 release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[LoRa Labs and Journal](docs/FIELD_LABS.md)** · **[Keyboard radios and NFC](docs/MIX_RF.md)** · **[Scanning and imports](docs/LOCATION_SCAN.md)**
-
-### ><> Everything else is on [terminalbay.com](https://terminalbay.com/?m=lakeshark)
-
-The setup page flashes a board from Chrome or Edge with one button, no toolchain and no Python. It also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you. The [wiki](https://terminalbay.com/?m=wiki) has the guides and every screenshot.
+No toolchain, no Python. Chrome or Edge, one button. The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
@@ -50,7 +40,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
 | REC | RTL or CC1101 source, Flipper `.sub` export and shared capture controls; CC1101 capture `[EXPERIMENTAL]` |
 | SUB-GHZ | Passive watch, repeated OOK24 payload decoding, duplicate grouping, storage limits and Journal bookmarks |
-| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED] |
+| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED]` |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
@@ -65,6 +55,8 @@ This port is for the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. The other T
 
 LINK needs matching ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT will not do.
 Flipper control on the T-Display-P4 uses Bluetooth.
+
+> **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
 ## }<((((()°> Headless
 
@@ -90,6 +82,14 @@ The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) controls the r
 If you already own one, there is a 480 x 800 image for it. It came before the T-Display port and it is not where new work goes, so treat it as worth a try on hardware you already have. [Install it](https://terminalbay.com/?m=lakeshark&board=lcd43) or read the [quick start](https://terminalbay.com/?m=wiki#lcd43/LCD43_QUICKSTART).
 
 The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
+
+## ><)))°> Experiments
+
+Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
+
+- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
+- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is unverified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
+- **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
 
 ## ><)))O> Build from source
 
@@ -132,7 +132,6 @@ live account authentication has not been validated.
 - **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
 
 **Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
-
 
 ## °<)))>< Standing on
 
