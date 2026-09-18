@@ -15,7 +15,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
 
-No toolchain, no Python. Chrome or Edge, one button. The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
+The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
