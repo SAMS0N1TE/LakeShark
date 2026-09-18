@@ -89,7 +89,7 @@ If you already own one, there is a 480 x 800 image for it. It came before the T-
 
 The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
 
-## ><)))°> Experiments
+## }<))•> Experiments
 
 Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
