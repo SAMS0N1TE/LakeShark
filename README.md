@@ -60,7 +60,7 @@ Flipper control on the T-Display-P4 uses Bluetooth.
 
 > **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
-## }<((((()°> Headless
+## }<((((-- Headless
 
 The Waveshare ESP32-P4-NANO and ESP32-P4-WIFI6 run the same receivers with no screen. You drive them from a serial console or from the Flipper, which suits leaving the radio in a bag with the antenna.
 
