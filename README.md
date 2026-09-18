@@ -68,7 +68,7 @@ Flipper control on the T-Display-P4 uses Bluetooth.
 
 The Waveshare ESP32-P4-NANO and ESP32-P4-WIFI6 run the same receivers with no screen. You drive them from a serial console or from the Flipper, which suits leaving the radio in a bag with the antenna.
 
-## ><)))°> The Flipper head
+## ><))))º< ⁠The Flipper head
 
 The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) controls the radio over Bluetooth or the GPIO header. No pairing code. The Flipper advertises and the radio connects to it.
 
