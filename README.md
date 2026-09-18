@@ -10,7 +10,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase#renders/01">New case design renders</a></p>
 
 <p align="center">
-  <img height="610" alt="LakeShark case turntable" src="PASTE_NEW_GIF_URL_HERE">
+  <img height="610" alt="LakeShark case turntable" src="assets/IMG_7820.gif">
 </p>
 
 **[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
