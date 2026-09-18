@@ -1,6 +1,8 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
+<p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
+
 LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and save observations in a field journal.
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
