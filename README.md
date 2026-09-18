@@ -20,7 +20,7 @@ The site also builds P25 profiles, GPS scan lists, channel memories and offline 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
 ## <°)))>< LilyGO T-Display-P4
-<img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
+  <img height="610" alt="lowq" src="https://github.com/user-attachments/assets/b448a354-9de3-4639-bebb-596f50eddec9">
 
 The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
