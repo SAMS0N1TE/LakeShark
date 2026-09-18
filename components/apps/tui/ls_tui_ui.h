@@ -42,6 +42,11 @@ void ls_btn_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                      int focus, int slot);
 /* Taller controls with shortcut badges; height adapts to the available pane. */
+/* Whether a three-row bar of these buttons can put each label and its value
+   on one line, or whether asking for three rows would cut a word in half.
+   A landscape pane wants the short bar; a half-width one cannot have it. */
+bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n);
+
 int ls_btn_raised_height(tui_rect area, int n);
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus);
@@ -68,6 +73,13 @@ int  ls_btn_hit(int col, int row);
 bool ls_btn_navigate(ls_tk_t key, int *slot, int *focus, bool two_bars);
 bool ls_btn_enabled(int slot, int focus);
 int  ls_btn_hit_slot(int col, int row, int slot);
+
+/* How many buttons the last draw of `slot` recorded, and where the i'th one
+   landed. The hit table already knows both; this reads it out so a test can
+   check what was actually drawn instead of a screenshot. Returns false when
+   the index is out of range. Any of the out pointers may be NULL. */
+int  ls_btn_count_slot(int slot);
+bool ls_btn_rect_slot(int slot, int i, int *x, int *y, int *w, int *h);
 /* Resolve the shortcuts actually displayed in a bar, including availability. */
 int ls_btn_shortcut(char ch, int slot);
 void ls_btn_clear_hits(void);

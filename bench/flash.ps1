@@ -118,5 +118,31 @@ if ($rc -ne 0) {
     exit $rc
 }
 
+# Keep the ELF that was just flashed, filed under the hash the firmware
+# reports and esp-coredump checks against.
+#
+# A core dump is only decodable with the exact ELF of the build that wrote
+# it, and this repo kept none - so every crash on a build that had since been
+# replaced was unreadable, which is exactly the position three crashes were
+# lost to. One ELF is a few megabytes and a debuggable crash is worth far
+# more than that.
+$elf = Join-Path $root "$($c.dir)\lakeshark.elf"
+if (Test-Path $elf) {
+    $sha = (Get-FileHash -Algorithm SHA256 $elf).Hash.ToLower()
+    $keep = Join-Path $root "$($c.dir)\elf-archive"
+    if (-not (Test-Path $keep)) { New-Item -ItemType Directory -Force $keep | Out-Null }
+    # The app SHA256 that esp-coredump compares is the image hash, not the
+    # ELF file hash, so the name carries both: the file hash identifies this
+    # copy, and app-desc.txt beside it records what the image reported.
+    $dest = Join-Path $keep "$($sha.Substring(0,12)).elf"
+    if (-not (Test-Path $dest)) {
+        Copy-Item $elf $dest
+        Write-Host "  kept $([IO.Path]::GetFileName($dest)) for decoding a future core dump" -ForegroundColor DarkGray
+    }
+    # Oldest first, keep the last twelve.
+    Get-ChildItem $keep -Filter *.elf | Sort-Object LastWriteTime |
+        Select-Object -SkipLast 12 | Remove-Item -ErrorAction SilentlyContinue
+}
+
 Write-Host "`nflashed. This is Build-verified only." -ForegroundColor Green
 Write-Host "It is not Hardware-verified until something is observed working on the device." -ForegroundColor DarkGray

@@ -311,6 +311,17 @@ ls_add_test(test_tui_surface ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_include_directories(test_tui_surface PRIVATE
     ${FW}/components/apps/tui/tuilib)
 
+# Optional extra tests, if this tree has any.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/private.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/private.cmake)
+endif()
+
+ls_add_test(test_fsk_capture
+    ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${FW}/components/lakeshark/radio/ls_sub_fsk.c)
+target_include_directories(test_fsk_capture PRIVATE
+    ${FW}/components/lakeshark/radio)
+
 ls_add_test(test_display_dim)
 ls_add_test(test_audio_pcm_ring)
 target_include_directories(test_audio_pcm_ring PRIVATE ${FW}/components/lakeshark/audio)
@@ -652,6 +663,13 @@ target_include_directories(test_tui_touch PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 
+ls_add_test(test_tui_button_centre
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_tui_button_centre PRIVATE
+    ${LS_TUI_APP_INCLUDES})
+
 ls_add_test(test_tui_theme ${FW}/components/apps/tui/ls_theme.c)
 target_include_directories(test_tui_theme PRIVATE ${FW}/components/apps/tui)
 
@@ -832,7 +850,12 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
-ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c ${APP}/rec/rec_ook24.c)
+# The export writes a 2-FSK preset for a demodulated capture, so it needs
+# the CC1101 register arithmetic that builds one.
+ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c ${APP}/rec/rec_ook24.c
+    ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
+target_include_directories(test_rec_watch PRIVATE ${FW}/components/lakeshark/radio)
 ls_add_test(test_screenshot_plan ${FW}/main/screenshot_plan.c)
 ls_add_test(test_p25_dsp_modes
     ${APP}/p25/dsp_pipeline.c
@@ -899,6 +922,17 @@ ls_add_test(test_p25_receive ${APP}/p25/dsd_frame.c ${APP}/p25/p25_tsbk.c
 ls_add_test(test_p25_scan_ctrl ${APP}/p25/scan_ctrl.c
     ${APP}/p25/grant_follower.c ${APP}/p25/p25_ess.c
     ${APP}/p25/p25_controls.c)
+ls_add_test(test_p25_geo ${APP}/p25/p25_geo.c)
+# The route preset is operator-supplied data. The test runs once it is there.
+set(LS_ROUTE_PROFILE ${FW}/tools/p25_profile_franklin_nh_to_west_dennis_ma.example)
+if(EXISTS ${LS_ROUTE_PROFILE})
+    ls_add_test(test_p25_route_profile ${APP}/p25/p25_profile.c
+                ${APP}/p25/p25_cqpsk_controls.c ${APP}/p25/p25_geo.c)
+    target_compile_definitions(test_p25_route_profile PRIVATE
+        P25_ROUTE_PROFILE_PATH="${LS_ROUTE_PROFILE}")
+else()
+    message(STATUS "route preset absent: test_p25_route_profile not built")
+endif()
 ls_add_test(test_p25_profile ${APP}/p25/p25_profile.c
     ${APP}/p25/p25_cqpsk_controls.c)
 target_compile_definitions(test_p25_profile PRIVATE
@@ -1128,6 +1162,19 @@ ls_add_test(test_p25_hdu_ess ${APP}/p25/p25p1_hdu.c
 ls_add_test(test_location_pref)
 ls_add_test(test_p25_tg_observed ${APP}/p25/p25_tg_observed.c ${APP}/p25/p25_lcw.c)
 file(GLOB P25_IMBE_TEST_SOURCES ${FW}/components/imbe_vocoder/*.cc)
+# The vocoder overflows on purpose and is correct doing it.  L_add in
+# basicop2.cc is the ETSI saturating add: it performs the addition that
+# overflows and then reads the sign bits to clamp to MIN_32/MAX_32, which is
+# how every fixed-point reference implementation of that operator is written.
+# v_synt.cc says so on the line itself - "integer multiplication by mod 1".
+#
+# So the wrap is the contract, and -fwrapv states it instead of leaving it to
+# chance.  It also keeps UBSan out of code whose whole method it would
+# otherwise report, which is what left the sanitizer gate red and unrunnable:
+# two of its three failures were this, and neither was a defect.
+set_source_files_properties(
+    ${P25_IMBE_TEST_SOURCES} ${FW}/components/imbe_vocoder/imbe_shim.cpp
+    PROPERTIES COMPILE_OPTIONS "-fwrapv")
 add_executable(test_imbe_pcm tests/test_imbe_pcm.cpp ${P25_IMBE_TEST_SOURCES}
     ${FW}/components/imbe_vocoder/imbe_shim.cpp)
 target_include_directories(test_imbe_pcm PRIVATE ${FW}/components/imbe_vocoder)

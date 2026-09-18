@@ -12,6 +12,11 @@
 #include "tui/ls_field.h"
 #include "rec_watch.h"
 #include "sx1262_console.h"
+#if defined(__has_include)
+#  if __has_include("private_console.h")
+#    include "private_console.h"
+#  endif
+#endif
 #include "ls_gps.h"
 #include "ls_rtc.h"
 #include "ls_gauge.h"
@@ -526,7 +531,12 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec },
             { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled },
-            { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN,
+            /* PAGER, not CHIP: CHIP is documented as system and health and
+               DIAG owns it. Two tiles with one picture says they do the
+               same thing - which is exactly what happened, DIAG was
+               opened instead of this. A body with a stub aerial is a
+               small radio, which is what the keyboard board carries. */
+            { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_PAGER, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mixrf, nullptr },
             { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
               LS_APP_EXTRA, &ls_scr_diag, nullptr },
@@ -1283,6 +1293,20 @@ static int tui_cmd(int argc, char **argv)
                    "%lu dropped\n", ls_wf_source_name(), (int)w.bins,
                    (int)w.rows, (unsigned long)w.row_ms,
                    (unsigned long)w.draw_us, (unsigned long)w.dropped);
+            /* And what that row LOOKED like, because "the waterfall looks
+               wrong" needs a number or it stays an argument. at_floor is
+               the black-spot count: bins the renderer drew as nothing. */
+            printf("tui: waterfall levels %u/16 used, %u..%u, "
+                   "%u of %u bins at floor, %u saturated  (window %u-%u)\n",
+                   (unsigned)w.levels_used, (unsigned)w.level_lo,
+                   (unsigned)w.level_hi, (unsigned)w.at_floor,
+                   (unsigned)w.row_bins,
+                   (unsigned)w.at_ceiling, (unsigned)w.scale_lo,
+                   (unsigned)w.scale_hi);
+            printf("tui: waterfall hist");
+            for (int i = 0; i < 16; i++)
+                printf(" %u", (unsigned)w.level_hist[i]);
+            printf("\n");
         }
         return 0;
     }
@@ -1465,6 +1489,13 @@ static int lora_cmd(int argc, char **argv)
     if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
     if (argc > 1 && (!strcmp(argv[1], "pocsag") || !strcmp(argv[1], "fsk")))
         return sx1262_receive_command(argc, argv);
+    /* Takes and releases the radio itself, the same way the receive commands
+       do, so it goes here rather than below the mesh check. */
+    if (argc > 1 && !strcmp(argv[1], "fsktx"))
+        return sx1262_transmit_command(argc, argv);
+    if (argc > 1 && (!strcmp(argv[1], "fskls") || !strcmp(argv[1], "fskplay") ||
+                     !strcmp(argv[1], "fsksave")))
+        return sx1262_capture_command(argc, argv);
     /* One owner at a time. */
 
     if (argc >= 2 && ls_mesh_running() &&
@@ -1488,10 +1519,22 @@ static int lora_cmd(int argc, char **argv)
         /* The mesh first, and loudly if it will not let go: a sweep that
            silently retuned the radio under a running node would look like
            the node had died. */
-        if (!ls_mesh_radio_hold(true)) {
+        /* Wait the transmit out rather than refusing on the first look.
+           A mesh node transmits for tens of milliseconds at a time, so a
+           single attempt lands mid-frame often enough that "try again" was
+           the usual answer and trying again was the usual fix. The receive
+           commands already retry on a one second deadline; a sweep that is
+           less patient than they are is an inconsistency, not a policy. */
+        {
+            const int64_t deadline = esp_timer_get_time() + 1000000;
+            while (!ls_mesh_radio_hold(true) &&
+                   esp_timer_get_time() < deadline)
+                vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!ls_mesh_radio_held()) {
             ls_mesh_radio_hold(false);
-            printf("lora: the mesh would not release the radio - a transmit "
-                   "may be in flight; try again\n");
+            printf("lora: the mesh would not release the radio within a "
+                   "second - a transmit may be stuck; try again\n");
             return 1;
         }
         if (!ls_lora_cfg()) {
@@ -2250,9 +2293,16 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
     static const esp_console_cmd_t lora={.command="lora",
-        .help="SX1262: status, config, rx, tx, scan, pocsag, fsk",
+        .help="SX1262: status, config, rx, tx, scan, pocsag, fsk, fsktx, "
+              "fskls, fskplay, fsksave",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
+    /* Optional extensions register themselves through the include guard. */
+#if defined(__has_include)
+#  if __has_include("private_console.h")
+    ls_private_console_register();
+#  endif
+#endif
     static const esp_console_cmd_t spi={.command="spi",
         .help="SPI: 'spi' reports the bus, 'spi up' creates it",
         .hint=nullptr,.func=spi_cmd,.argtable=nullptr};

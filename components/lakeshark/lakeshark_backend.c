@@ -552,6 +552,19 @@ void lakeshark_p25_reset_stats(void)
     P25.src_seen_us = 0;
 }
 
+/* Request a gain AND remember it, which is the pair every caller wants.
+   p25_request_gain alone moves the receiver and forgets, so a gain set from
+   the TUI came back as whatever NVS still held on the next entry. The FM side
+   has always done both together - see lakeshark_fm_set_gain. */
+void lakeshark_p25_set_gain(int tenths)
+{
+    if (tenths < 0)   tenths = 0;
+    if (tenths > 496) tenths = 496;
+    p25_request_gain(tenths);
+    const app_t *a = app_current();
+    if (a) settings_set_gain(a, tenths);
+}
+
 void lakeshark_p25_gain_step(void)
 {
     static const int gains[] = { 0, 90, 200, 280, 340, 370, 400, 437, 463, 496 };
@@ -559,19 +572,25 @@ void lakeshark_p25_gain_step(void)
     int cur = P25.rtl_gain_tenths;
     int next_idx = 0;
     for (int i = 0; i < n; i++) if (gains[i] == cur) { next_idx = (i + 1) % n; break; }
-    p25_request_gain(gains[next_idx]);
-    const app_t *a = app_current();
-    if (a) settings_set_gain(a, gains[next_idx]);
+    lakeshark_p25_set_gain(gains[next_idx]);
 }
 
 extern volatile bool p25_agc_on;
 
+/* AGC on this receiver IS gain 0: app_p25.c maps a zero to
+   LS_RADIO_GAIN_AUTO and everything else to LS_RADIO_GAIN_MANUAL. This used
+   to clear the flag and pin 28.0 dB, so the one control labelled AGC was the
+   one that guaranteed AGC was off and the gain was stuck. It toggles now, and
+   keeps the manual gain to come back to. */
 void lakeshark_p25_agc(void)
 {
-    p25_agc_on = false;
-    p25_request_gain(280);
-    const app_t *a = app_current();
-    if (a) settings_set_gain(a, 280);
+    static int manual_tenths = 280;
+    if (p25_agc_on) {
+        lakeshark_p25_set_gain(manual_tenths > 0 ? manual_tenths : 280);
+        return;
+    }
+    if (P25.rtl_gain_tenths > 0) manual_tenths = P25.rtl_gain_tenths;
+    lakeshark_p25_set_gain(0);
 }
 
 bool lakeshark_p25_agc_enabled(void) { return p25_agc_on; }

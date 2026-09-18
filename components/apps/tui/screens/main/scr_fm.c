@@ -46,6 +46,15 @@ static const fm_mode_t FM_MODES[] = {
 };
 #define N_MODES ((int)(sizeof(FM_MODES) / sizeof(FM_MODES[0])))
 static int s_last_mode = -1;
+/* Set when show_page asked the receiver to change mode. Those requests are
+   asynchronous - ls_wf_fm_sweep and choose_mode only queue a handoff - so
+   FM.mode still holds the old value when show_page returns, and the change
+   lands a frame or two later. Without this the draw below read that late
+   change as "the mode moved on its own" and re-derived the page from it:
+   leaving SPECTRUM for VFO restored POCSAG, which maps to the PAGER page, so
+   the tap appeared to select the wrong button. Only a change nobody asked
+   for should move the page. */
+static bool s_mode_requested;
 
 static int mode_page(fm_mode_t mode)
 {
@@ -654,6 +663,11 @@ static const ls_btn_t PAGES[] = {
 
 static tui_rect s_bar;
 static tui_rect s_controls;
+/* Where VOLUME, GAIN and SQUELCH landed. They were defined in QUICK all
+   along but only ls_quick_key ever reached them, so they existed on the
+   keyboard and nowhere on the screen - unreachable on a handheld whose
+   keyboard detaches. GPS, MAP and P25 all draw theirs; this one did not. */
+static tui_rect s_quick_rect;
 
 static void band_picked(int index)
 {
@@ -725,12 +739,25 @@ static void show_page(int i)
     s_page = i;
     s_last_mode = (int)FM.mode;
     if (i == 2) {
-        if (FM.mode != FM_MODE_SCAN) ls_wf_fm_sweep(true);
+        /* OPENING THE SPECTRUM DOES NOT START A SWEEP.
+
+           It used to: entering this page took a receiver that was listening
+           to something and put it into SCAN, so asking to SEE the signal
+           stopped you hearing it. That is the opposite of what a waterfall
+           is for, and it is not even the only way in - this page carries a
+           RUN button (w) and a MODE button (e) that do exactly this, on
+           purpose, when it is wanted.
+
+           So the page now opens on whatever the receiver is already doing:
+           the live FFT of the tuned channel while listening, or the sweep
+           if a sweep was already running. Starting one is a button press,
+           which is where a decision like that belongs. */
     } else {
         ls_wf_source_release();
-        if (i == 0 && FM.mode == FM_MODE_SCAN) ls_wf_fm_sweep(false);
-        if (i == 1 && FM.mode != FM_MODE_POCSAG && FM.mode != FM_MODE_FLEX)
-            choose_mode(FM_MODE_POCSAG);
+        if (i == 0 && FM.mode == FM_MODE_SCAN) { ls_wf_fm_sweep(false); s_mode_requested = true; }
+        if (i == 1 && FM.mode != FM_MODE_POCSAG && FM.mode != FM_MODE_FLEX) {
+            choose_mode(FM_MODE_POCSAG); s_mode_requested = true;
+        }
     }
 }
 
@@ -780,13 +807,20 @@ static void radio_action(char c)
     if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
 }
 
+/* Whether the VFO page had room for the waterfall under the box. Touch asks,
+   because when there was no room ls_waterfall's plot rect still holds
+   whatever the sweep page left there and would claim taps meant for the VFO. */
+static bool s_vfo_sweep;
+
 static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
 {
     const int vfo_h = ls_tui_is_wide() ? 9 : VFO_ROWS;
     if (body.h < vfo_h + 6) {
+        s_vfo_sweep = false;
         draw_vfo(sf, body);
         return;
     }
+    s_vfo_sweep = true;
     draw_vfo(sf, tui_rect_make(body.x, body.y, body.w, vfo_h));
     draw_sweep(sf, tui_rect_make(body.x, body.y + vfo_h, body.w,
                                  body.h - vfo_h));
@@ -803,7 +837,10 @@ static void draw(tui_surface *sf, tui_rect area)
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
         s_last_mode = (int)FM.mode;
-        s_page = mode_page(FM.mode);
+        /* Ours, arriving late: honour the page the user picked. Anyone
+           else's - console, Flipper, the control head - still moves it. */
+        if (s_mode_requested) s_mode_requested = false;
+        else s_page = mode_page(FM.mode);
     }
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait: a two row bar with one line of text has no middle row to put it on. */
@@ -833,9 +870,24 @@ static void draw(tui_surface *sf, tui_rect area)
     const int control_rows = ls_btn_raised_height(body, 5);
     body.y += control_rows;
     body.h -= control_rows;
+
+    /* The VFO page only. The pager page owns its bottom rows with UP/OPEN/
+       DOWN, and the spectrum page already carries the waterfall's own two
+       rows of controls; a third bar on either would be a screen that wants
+       splitting rather than one more strip. */
+    const int want = s_page == 0 ? ls_quick_rows(QUICK, N_QUICK, area.w, wide) : 0;
+    const int ctl_h = (want && body.h > want + 12) ? want : 0;
+    if (ctl_h) {
+        s_quick_rect = tui_rect_make(body.x, body.y + body.h - ctl_h,
+                                     body.w, ctl_h);
+        body.h -= ctl_h;
+    } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
+
     if (s_page == 1) draw_pages(sf, body);
     else if (s_page == 2) draw_sweep(sf, body);
     else draw_vfo_waterfall(sf, body);
+    if (s_quick_rect.h > 0)
+        ls_quick_draw_posture(sf, s_quick_rect, wide, QUICK, N_QUICK);
 
     /* Draw navigation after the waterfall so each bar keeps a distinct hit
        slot and cannot steal the other's touch targets. */
@@ -925,6 +977,19 @@ static bool touch(int col, int row)
         if (i >= 0) { show_page(i); return true; }
         return true;
     }
+    if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
+        row < s_quick_rect.y + s_quick_rect.h) {
+        ls_quick_touch(col, row, QUICK, N_QUICK, ls_quick_grant_builtin(), NULL);
+        return true;
+    }
+    /* The VFO page draws the same waterfall page 2 does, under the VFO box,
+       so a tap in its plot has to reach the marker too. The key path already
+       treats both pages alike - see LEFT/RIGHT/SPACE in key() - and touch did
+       not, which is why arrows moved that marker and a finger did not.
+       Falls through when the tap misses the plot, because the box above owns
+       those rows, and is skipped entirely when the pane was too short to draw
+       a waterfall at all and the plot rect is left over from page 2. */
+    if (s_page == 0 && s_vfo_sweep && ls_wf_touch(col, row)) return true;
     if (s_page == 2) return ls_wf_touch(col, row);
 
     if (s_page == 1) {

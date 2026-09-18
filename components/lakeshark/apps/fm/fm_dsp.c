@@ -1,6 +1,7 @@
 
 #include "fm_dsp.h"
 #include "esp_attr.h"
+#include <limits.h>
 #include <math.h>
 #include <string.h>
 
@@ -12,14 +13,48 @@ static inline void cmultiply(int ar, int aj, int br, int bj, int *cr, int *cj)
     *cj = aj * br + ar * bj;
 }
 
+/* The largest magnitude pi4 can still be multiplied by inside an int. */
+#define FM_ATAN_LIMIT (INT_MAX / (1 << 12))
+
 static inline int fast_atan2_i(int y, int x)
 {
-    int yabs, angle;
-    int pi4 = (1 << 12), pi34 = 3 * (1 << 12);
+    const int pi4 = (1 << 12), pi34 = 3 * (1 << 12);
     if (x == 0 && y == 0) return 0;
-    yabs = y < 0 ? -y : y;
-    if (x >= 0) angle = pi4  - pi4 * (x - yabs) / (x + yabs);
-    else        angle = pi34 - pi4 * (x + yabs) / (yabs - x);
+
+    /* The whole function is one ratio, so form it first and in a width that
+       cannot wrap.  pi4 * numerator is what used to leave an int, and on the
+       narrowband path it did so on any signal worth listening to: three
+       interpolation passes bring an IQ sample to about +/-1024, and the dot
+       product of two of those passes FM_ATAN_LIMIT.  The wrap put the angle
+       out by up to a fifth of full scale - an impulse in the audio, arriving
+       exactly when the signal got strong.
+
+       yabs is taken here too rather than in an int, because negating INT_MIN
+       in one is undefined in its own right. */
+    const int64_t yabs = y < 0 ? -(int64_t)y : (int64_t)y;
+    int64_t num = (x >= 0) ? (int64_t)x - yabs : (int64_t)x + yabs;
+    int64_t den = (x >= 0) ? (int64_t)x + yabs : yabs - (int64_t)x;
+
+    /* Halve the ratio until both halves fit, which leaves its value alone and
+       costs only resolution - of which there is a large surplus, a thirteen
+       bit result being read off a divisor still twenty bits wide.
+
+       The test is on the numerator and the divisor themselves, not on x and
+       yabs: two large values close together make a small difference, and
+       that case never needed shifting.  Testing the quantity that actually
+       has to fit is what makes every input that already worked come back
+       bit-identical rather than merely close.
+
+       It cannot divide its way to a zero divisor, because den >= |num| holds
+       throughout - for either sign of x, |x -/+ yabs| <= |x| + yabs - so the
+       loop stops while den is still at least half the limit. */
+    while (num > FM_ATAN_LIMIT || num < -FM_ATAN_LIMIT || den > INT_MAX) {
+        num /= 2;
+        den /= 2;
+    }
+
+    const int base = (x >= 0) ? pi4 : pi34;
+    const int angle = base - pi4 * (int)num / (int)den;
     return (y < 0) ? -angle : angle;
 }
 

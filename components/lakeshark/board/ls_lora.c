@@ -324,6 +324,8 @@ static bool     s_fsk_active;
 static ls_lora_cfg_t s_fsk_saved;
 static bool     s_fsk_saved_valid, s_fsk_saved_rx;
 static uint8_t  s_fsk_bytes;
+static uint16_t s_fsk_preamble_bits;
+static uint8_t  s_fsk_sync_bits;
 static bool     s_scanning;        /* a sweep owns the synthesiser */
 static bool     s_rx_mode;
 static bool     s_tx_busy;
@@ -694,6 +696,37 @@ static uint8_t fsk_bw_code(uint32_t hz)
     return 0;
 }
 
+/* Fixed length, 32-bit sync, no preamble gate, no CRC and no whitening.
+
+   The CRC is off on purpose and not for lack of hardware. A protocol whose
+   CRC uses an initial value the part cannot be told to use has to compute
+   its own and carry it inside the payload, and a listener that switched the
+   hardware CRC back on would then reject every frame as corrupt. Off is the
+   setting that works for both those protocols and for the ones with no CRC
+   at all; a caller that wants the radio's own CRC should say so here.
+
+   Transmit and receive both come through here because they must agree on
+   every one of these: a frame sent with one preamble length and listened for
+   with another is a fault that only shows up on air. */
+static esp_err_t fsk_packet_params(uint8_t payload_bytes)
+{
+    const uint16_t pre = s_fsk_preamble_bits;
+    uint8_t packet[] = {OP_SET_PKT_PARAMS, (uint8_t)(pre >> 8), (uint8_t)pre,
+                        0, s_fsk_sync_bits, 0, 0, payload_bytes, 1, 0};
+    return xfer(packet, NULL, sizeof(packet));
+}
+
+uint32_t ls_lora_fsk_bw_snap(uint32_t hz)
+{
+    static const uint32_t RUNG[] = {
+        4800,5800,7300,9700,11700,14600,19500,23400,29300,39000,46900,
+        58600,78200,93800,117300,156200,187200,234300,312000,373600,467000
+    };
+    for (size_t i = 0; i < sizeof(RUNG)/sizeof(RUNG[0]); i++)
+        if (RUNG[i] >= hz) return RUNG[i];
+    return RUNG[sizeof(RUNG)/sizeof(RUNG[0]) - 1];
+}
+
 bool ls_lora_fsk_active(void) { return s_fsk_active; }
 
 esp_err_t ls_lora_fsk_end(void)
@@ -724,7 +757,14 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
         cfg->bitrate < 600 || cfg->bitrate > 300000 ||
         cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||
         !cfg->payload_bytes || !fsk_bw_code(cfg->bandwidth_hz) ||
-        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz)
+        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz ||
+        (cfg->preamble_bits && cfg->preamble_bits < 8) ||
+        /* 32, not the part's 64: sync_word is a uint32_t and ls_lora_fsk_begin
+           writes four registers from it. Asking the radio to match 40 bits
+           would have it match four written bytes and one register nobody set,
+           which is a session that hears nothing and says nothing about why. */
+        (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
+        cfg->power_dbm < -9 || cfg->power_dbm > 22)
         return ESP_ERR_INVALID_ARG;
     if (s_fsk_active || s_scanning || s_tx_busy) return ESP_ERR_INVALID_STATE;
 
@@ -736,6 +776,9 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
     setup.freq_hz = cfg->freq_hz;
     setup.cal_min_mhz = (uint16_t)((cfg->freq_hz / 4000000u) * 4);
     setup.cal_max_mhz = setup.cal_min_mhz + 4;
+    setup.power_dbm = cfg->power_dbm;
+    s_fsk_preamble_bits = cfg->preamble_bits ? cfg->preamble_bits : 32;
+    s_fsk_sync_bits = cfg->sync_bits ? cfg->sync_bits : 32;
     s_fsk_active = true;
     esp_err_t err = configure_lora(&setup);
     if (err != ESP_OK) goto fail;
@@ -748,10 +791,7 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
         (uint8_t)br, 0, fsk_bw_code(cfg->bandwidth_hz),
         (uint8_t)(dev >> 16), (uint8_t)(dev >> 8), (uint8_t)dev};
     if ((err = xfer(mod, NULL, sizeof(mod))) != ESP_OK) goto fail;
-    /* Fixed payload, 32-bit sync, no preamble gate, CRC or whitening. */
-    uint8_t packet[] = {OP_SET_PKT_PARAMS, 0, 32, 0, 32, 0, 0,
-                       cfg->payload_bytes, 1, 0};
-    if ((err = xfer(packet, NULL, sizeof(packet))) != ESP_OK) goto fail;
+    if ((err = fsk_packet_params(cfg->payload_bytes)) != ESP_OK) goto fail;
     for (int i = 0; i < 4; i++) {
         err = write_reg((uint16_t)(0x06c0 + i),
                         (uint8_t)(cfg->sync_word >> (24 - i * 8)));
@@ -789,6 +829,57 @@ int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
         *rssi_dbm = -(float)status[4] / 2.0f;
     /* Continuous RX searches for the next sync without restarting. */
     return s_fsk_bytes;
+}
+
+esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
+{
+    if (!s_fsk_active || !s_pkt) return ESP_ERR_INVALID_STATE;
+    if (!data || len == 0)       return ESP_ERR_INVALID_ARG;
+    if (len > 255)               return ESP_ERR_INVALID_SIZE;
+    if (s_tx_busy || s_scanning) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t err;
+    uint8_t b = STANDBY_RC;
+    if ((err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0)) != ESP_OK) return err;
+    /* Cleared before the buffer write, not after the transmit: a receive
+       that was running owns this flag and a failure below must not leave it
+       claiming the part is still listening. */
+    s_rx_mode = false;
+    if ((err = clear_irq(0xFFFF)) != ESP_OK) return err;
+    /* The length the payload actually is, which is not the session's receive
+       length - ls_lora_fsk_receive puts that back. */
+    if ((err = fsk_packet_params((uint8_t)len)) != ESP_OK) return err;
+
+    if (!wait_not_busy(20)) return ESP_ERR_TIMEOUT;
+    s_pkt[0] = OP_WRITE_BUFFER;
+    s_pkt[1] = 0x00;
+    memcpy(&s_pkt[2], data, len);
+    spi_transaction_t t = { .length = (2 + len) * 8, .tx_buffer = s_pkt,
+                            .rx_buffer = NULL };
+    if ((err = spi_device_transmit(s_dev, &t)) != ESP_OK) return err;
+
+    uint8_t tx[4] = { OP_SET_TX, 0x00, 0x00, 0x00 };
+    if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
+
+    s_tx_busy = true;
+    s_tx_deadline = esp_timer_get_time() + (int64_t)TX_TIMEOUT_MS * 1000;
+    ESP_LOGI(TAG, "FSK TX: %u byte payload behind a %u-bit preamble and a "
+             "32-bit sync word, at %d dBm", (unsigned)len,
+             (unsigned)s_fsk_preamble_bits, (int)s_cfg.power_dbm);
+    return ESP_OK;
+}
+
+esp_err_t ls_lora_fsk_receive(void)
+{
+    if (!s_fsk_active) return ESP_ERR_INVALID_STATE;
+    if (s_tx_busy)     return ESP_ERR_INVALID_STATE;
+    esp_err_t err;
+    if ((err = fsk_packet_params(s_fsk_bytes)) != ESP_OK) return err;
+    if ((err = clear_irq(0xffff)) != ESP_OK) return err;
+    uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
+    if ((err = xfer(rx, NULL, sizeof(rx))) != ESP_OK) return err;
+    s_rx_mode = true;
+    return ESP_OK;
 }
 
 /* See ls_lora.h. Both pure, both used once per bin. */
@@ -1093,6 +1184,9 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *c)
 { (void)c; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_fsk_poll(uint8_t *b, size_t n, float *r)
 { (void)b; (void)n; (void)r; return -1; }
+esp_err_t ls_lora_fsk_send(const uint8_t *d, size_t l)
+{ (void)d; (void)l; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_fsk_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_fsk_active(void) { return false; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)

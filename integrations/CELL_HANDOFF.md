@@ -79,12 +79,7 @@ broadcast receiver; SIB1 and a validated simulator classifier remain unfinished.
 
 ## Checkouts on the next PC
 
-```sh
-git clone --branch work/p4-cell-detector https://github.com/SAMS0N1TE/LS_Test1.git
-git clone --branch work/cell-watch-integrated https://github.com/SAMS0N1TE/LakeSharkGroundStation.git
-```
-
-Both repositories are private. The firmware branch contains the MeshCore receiver
+The firmware and ground-station checkouts are held separately. The firmware branch contains the MeshCore receiver
 patch in `integrations/meshcore`, the research ledger in
 `docs/CELL_DETECTOR_FOCUS.md`, and portable recorded-IQ replay in
 `integrations/cell-recordings`. The GUI branch preserves its external LTE decoder

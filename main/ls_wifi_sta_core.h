@@ -40,6 +40,25 @@ void ls_wifi_connecting_status(char *out, size_t cap, const char *ssid,
    previous value; pass 0 to start at `min`. Reset with ls_wifi_backoff_reset. */
 uint32_t ls_wifi_backoff_next(uint32_t cur, uint32_t min_ms, uint32_t max_ms);
 
+/* WHEN TO STOP TRYING.
+
+   The backoff clamps the interval but nothing clamped the number of
+   attempts, so a stored network that is simply not here was retried every
+   sixty seconds for as long as the board was on - each attempt waking the
+   co-processor link to ask a question already answered. An idle device
+   should settle, not keep poking a radio forever.
+
+   "Network not found" is treated harder than the rest: reason 201 means the
+   AP is not in range at all, which does not become true by asking again, so
+   it gives up in a few tries. A handshake or auth failure might be a busy
+   AP or a moment of interference and gets the longer count.
+
+   Giving up is not forgetting: an explicit join, or the network appearing in
+   a scan, re-arms it. Pure so the bench can pin it. */
+#define LS_WIFI_TRIES_NOT_FOUND 4
+#define LS_WIFI_TRIES_OTHER     12
+bool ls_wifi_should_retry(int attempts, int reason);
+
 /* Convenience: initial backoff value. */
 static inline uint32_t ls_wifi_backoff_reset(uint32_t min_ms) { return min_ms; }
 

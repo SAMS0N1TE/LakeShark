@@ -46,6 +46,15 @@ void ls_wifi_connecting_status(char *out, size_t cap, const char *ssid,
     } else snprintf(out, cap, "Connecting to \"%s\"", ssid ? ssid : "");
 }
 
+bool ls_wifi_should_retry(int attempts, int reason)
+{
+    if (attempts < 0) return true;
+    /* 201 is "network not found": the AP is not in range, and asking a
+       fifth time does not put it there. */
+    if (reason == 201) return attempts < LS_WIFI_TRIES_NOT_FOUND;
+    return attempts < LS_WIFI_TRIES_OTHER;
+}
+
 bool ls_wifi_ssid_valid(const char *ssid)
 {
     if (!ssid) return false;

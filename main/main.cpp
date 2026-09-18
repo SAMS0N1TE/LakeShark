@@ -307,8 +307,14 @@ extern "C" void app_main(void)
                                          : LS_SAFE_DUMP_NONE);
 
     ls_safe_stage(LS_SAFE_STAGE_STORAGE);
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
-    ESP_LOGI(TAG, "SPIFFS mount successfully");
+    {
+        const esp_err_t fs = bsp_spiffs_mount();
+        if (fs != ESP_OK)
+            ESP_LOGW(TAG, "no SPIFFS (%s) - running without it",
+                     esp_err_to_name(fs));
+        else
+            ESP_LOGI(TAG, "SPIFFS mounted");
+    }
 
     /* A board that declares its own SDIO pins mounts from them. */
 

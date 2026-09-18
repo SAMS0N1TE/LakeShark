@@ -59,6 +59,7 @@
 #include "ls_vitals.h"
 #include "ls_sdcard.h"
 #include "ls_keypad.h"
+#include "ls_gauge.h"
 #include "ls_board_hw.h"
 #include "ls_lora.h"
 #include "ls_hosted_board.h"
@@ -1051,6 +1052,15 @@ static int cmd_link(int argc, char **argv)
     if (argc < 2) {
         uint32_t rx, tx, bad;
         flipper_link_stats(&rx, &tx, &bad);
+#if !LS_HAS_LINK_UART
+        /* Saying "link=off uart=2 rx_gpio=33" on a board that has no link
+           pins reads as a link that is merely switched off, and sent me
+           looking for a cable that cannot exist. This board's variant header
+           leaves LS_BOARD_LINK_*_GPIO undefined, so say that instead. */
+        printf("link=unsupported on this board - no link UART pins defined\n");
+        (void)cfg; (void)rx; (void)tx; (void)bad;
+        return 0;
+#endif
         printf("link=%s uart=%d rx_gpio=%d tx_gpio=%d baud=%lu tel=%dHz "
                "verbose=%d  rx_lines=%lu tx_lines=%lu bad=%lu\n",
                flipper_link_running() ? "on" : "off",
@@ -2594,7 +2604,14 @@ void app_main(void)
                                          : LS_SAFE_DUMP_NONE);
 
     ls_safe_stage(LS_SAFE_STAGE_STORAGE);
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
+    /* Storage is optional here, matching the card below. compact_ui_start
+       owns the panel handoff, so boot always continues to it. */
+    {
+        const esp_err_t fs = bsp_spiffs_mount();
+        if (fs != ESP_OK)
+            ESP_LOGW(TAG, "no SPIFFS (%s) - running without it",
+                     esp_err_to_name(fs));
+    }
 
     /* The card, from this board's own pins. */
 
@@ -2624,7 +2641,12 @@ void app_main(void)
        up output-only whatever anybody passed. It means what it says now, and
        boot asks for both directions because the microphone costs one I2S
        channel that is idle until something reads it. */
-    if(!cell_performance_active())ESP_ERROR_CHECK(ls_audio_hw_init(false));
+    if (!cell_performance_active()) {
+        const esp_err_t codec = ls_audio_hw_init(false);
+        if (codec != ESP_OK)
+            ESP_LOGE(TAG, "codec init failed (%s) - speaker disabled",
+                     esp_err_to_name(codec));
+    }
 #else
     ESP_LOGW(TAG, "audio: no codec driver for this board - speaker disabled");
 #endif
@@ -2782,6 +2804,25 @@ void app_main(void)
     /* Probe before the link decides. The UI probes again later and that call
        is idempotent; what matters is that the answer exists by now. */
     ls_keypad_start();
+
+    /* THE BATTERY INDICATOR NEEDS SOMEBODY TO OPEN THE GAUGE.
+
+       Nothing did. draw_status asks ls_gauge_present() before it reserves a
+       cell for the meter, and that only reports what a previous start found -
+       it never starts one. ls_gauge_get() does start the gauge lazily, but
+       the only path to it in the status bar is inside draw_battery, which
+       draw_status will not call until ls_gauge_present() is already true. So
+       the meter could not appear on its own, and did appear once something
+       else read the gauge first: opening DIAG, or the mesh reading pack
+       voltage for a telemetry frame. That is exactly the "works sometimes"
+       this was reported as.
+
+       It is started here rather than from the draw loop on purpose. A start
+       with no cell in the bay costs an I2C probe with a 100 ms timeout, and
+       from the draw loop that would be a 100 ms stall on EVERY frame for as
+       long as the battery is out. Once, at boot, it costs 100 ms once.
+       A failure is not an error: plenty of runs have no cell fitted. */
+    (void)ls_gauge_start();
 
     vTaskDelay(pdMS_TO_TICKS(1500));
     /* The Flipper link and the keyboard radios want the same two pins. */

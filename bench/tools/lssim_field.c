@@ -34,6 +34,8 @@ void ls_field_snapshot(ls_field_state_t *out) { ls_field_start(); s.sequence = (
 bool ls_field_direct(bool on) { s.requested = s.direct = on; snprintf(s.status, sizeof(s.status), "%s", on ? "Direct control; mesh paused" : "Mesh control restored"); return true; }
 bool ls_field_owned(void) { return s.direct; }
 bool ls_field_configure(const ls_lora_cfg_t *cfg) { s.config = *cfg; return true; }
+/* The FSK demodulator's own parameters, for GFSK and POCSAG. */
+bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg) { s.fsk = *cfg; return true; }
 bool ls_field_mode(ls_lab_mode_t mode) { s.mode = mode; return true; }
 void lssim_field_calibration(int step, int hold, bool failed)
 {

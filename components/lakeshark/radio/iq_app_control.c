@@ -6,23 +6,30 @@
 
 #include <string.h>
 
-/* rec_rx was captured spinning here while starving IDLE1. A bare
- * atomic flag lets a high-priority reader preempt its lower-priority owner
- * on the same core forever. Hold the FreeRTOS SMP critical section before
- * taking the flag so its owner cannot be descheduled until it releases it.
- * These sections only copy control state; no I/O or blocking calls occur. */
+/* rec_rx was captured spinning on a bare atomic flag here while starving
+ * IDLE1: a high-priority reader can preempt its lower-priority owner on the
+ * same core forever. This mux is what fixes that - its owner cannot be
+ * descheduled - and being one global, it serializes every caller of every
+ * control. These sections only copy control state; no I/O or blocking calls
+ * occur.
+ *
+ * The mux is the whole lock. An inner per-control flag used to be taken
+ * after it, which added nothing - nobody can reach the flag without the mux
+ * - and spun without a bound INSIDE a region that runs with interrupts
+ * disabled. An unbounded spin there is an interrupt watchdog on both cores
+ * and a reset with nothing printed, which is a far worse failure than the
+ * one it was guarding against. */
 static portMUX_TYPE s_control_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void control_lock(ls_iq_control_t *control)
 {
+    (void)control;
     portENTER_CRITICAL(&s_control_mux);
-    while (__atomic_test_and_set(&control->writer_lock, __ATOMIC_ACQUIRE)) {
-    }
 }
 
 static void control_unlock(ls_iq_control_t *control)
 {
-    __atomic_clear(&control->writer_lock, __ATOMIC_RELEASE);
+    (void)control;
     portEXIT_CRITICAL(&s_control_mux);
 }
 

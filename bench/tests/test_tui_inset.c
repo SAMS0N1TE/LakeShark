@@ -351,3 +351,80 @@ LS_CASE(corner_padding_refuses_what_it_should_not_get)
     /* A radius far past the panel still leaves half the row for words. */
     LS_CHECK(ls_tui_corner_cells(W, H, 10, 17, 4000, ox, oy, 0) <= 54 / 2);
 }
+
+
+/* THE OTHER HALF OF THE SAME JOB.
+
+   corner_cells keeps the grid's TEXT out of the rounded corners. This says
+   how far the CHROME BEHIND that text has to reach to get back out to the
+   glass. Painting only the first and leaving the second is what makes a bar
+   look as though the whole border has been pulled inside a black frame -
+   which it has, because the background stopped where the text did. */
+LS_CASE(the_row_inset_follows_the_arc_from_the_edge_to_nothing)
+{
+    const int r = 72;
+    /* The very first scanline touches the arc at its widest: nothing is
+       drawable until the full radius across. */
+    LS_EQ_INT(r, ls_tui_row_inset(0, H, r));
+    LS_EQ_INT(r, ls_tui_row_inset(H - 1, H, r));
+    /* And past the arc's centre there is no arc left to clear. */
+    LS_EQ_INT(0, ls_tui_row_inset(r, H, r));
+    LS_EQ_INT(0, ls_tui_row_inset(H / 2, H, r));
+    LS_EQ_INT(0, ls_tui_row_inset(H - 1 - r, H, r));
+    /* Monotonic in between - an inset that grew again would paint a notch
+       into a straight edge. */
+    for (int y = 1; y <= r; y++)
+        LS_CHECK(ls_tui_row_inset(y, H, r) <= ls_tui_row_inset(y - 1, H, r));
+    /* Symmetric, because the panel is: the bottom bar gets the same shape
+       as the top one without a second piece of arithmetic. */
+    for (int y = 0; y <= r; y++)
+        LS_EQ_INT(ls_tui_row_inset(y, H, r),
+                  ls_tui_row_inset(H - 1 - y, H, r));
+}
+
+/* It has to agree with the circle it claims to be tracing. Stepping out one
+   pixel at a time is cheaper than a square root on this core, but only if it
+   lands in the same place. */
+LS_CASE(the_row_inset_traces_the_same_circle_the_grid_stands_off)
+{
+    for (int r = 1; r <= 96; r += 5) {
+        for (int y = 0; y < r; y++) {
+            const int inset = ls_tui_row_inset(y, H, r);
+            /* Inside the arc: the pixel it names is clear... */
+            LS_CHECK_MSG(ls_tui_corner_clear(inset, y, r),
+                         "r=%d y=%d inset=%d is still inside the arc", r, y, inset);
+            /* ...and the one before it is not, so nothing was given away. */
+            if (inset > 0)
+                LS_CHECK_MSG(!ls_tui_corner_clear(inset - 1, y, r),
+                             "r=%d y=%d inset=%d stopped a pixel short", r, y, inset);
+            /* Against the circle itself, allowing the one pixel a whole
+               number of columns costs. */
+            const double want = r - sqrt((double)r * r - (double)(r - y) * (r - y));
+            LS_CHECK_MSG(inset >= (int)want && inset <= (int)want + 1,
+                         "r=%d y=%d inset=%d wanted %.2f", r, y, inset, want);
+        }
+    }
+}
+
+/* A square panel, a scanline off the end and a nonsense radius each have to
+   answer something rather than run off. The answer is a COLUMN, not a span -
+   an arc bigger than the panel legitimately swallows the whole scanline, so
+   it is the caller that checks whether anything is left to fill. */
+LS_CASE(the_row_inset_refuses_what_it_should_not_get)
+{
+    LS_EQ_INT(0, ls_tui_row_inset(10, H, 0));
+    LS_EQ_INT(0, ls_tui_row_inset(10, H, -40));
+    LS_EQ_INT(0, ls_tui_row_inset(10, 0, 40));
+    /* Off the panel is treated as the worst case rather than as clear: a
+       fill that began there would run past the glass. */
+    LS_EQ_INT(40, ls_tui_row_inset(-1, H, 40));
+    LS_EQ_INT(40, ls_tui_row_inset(H, H, 40));
+    /* An arc larger than the panel swallows every scanline, and says so by
+       naming a column past the far edge rather than by pretending there is
+       room. Never negative, and never past the radius it was given. */
+    for (int y = 0; y < H; y += 37) {
+        const int inset = ls_tui_row_inset(y, H, 4000);
+        LS_CHECK(inset >= 0 && inset <= 4000);
+        LS_CHECK(2 * inset > W);   /* nothing left of this row to paint */
+    }
+}

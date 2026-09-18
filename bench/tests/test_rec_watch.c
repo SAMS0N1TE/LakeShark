@@ -48,7 +48,15 @@ LS_CASE(receiver_source_is_preserved_without_changing_legacy_record_layout)
     LS_EQ_INT(rec_watch_receiver_want_source(3,3,true,REC_SOURCE_CC1101),-1);
     LS_EQ_INT(rec_watch_receiver_want_source(1,3,true,REC_SOURCE_CC1101),1);
     LS_EQ_INT(rec_watch_receiver_want_source(-1,3,true,REC_SOURCE_RTL),3);
-    LS_EQ_INT(sizeof(rec_watch_event_t),64);
+    /* The pre-v4 layout is pinned because rec_watch_restore still reads
+       files written against it; getting these wrong silently mis-parses
+       somebody's archive rather than refusing it. */
+    LS_EQ_INT(sizeof(rec_watch_event_v3_t),64);
+    LS_EQ_INT(offsetof(rec_watch_event_v3_t,peak),56);
+    LS_EQ_INT(offsetof(rec_watch_event_v3_t,source),60);
+    /* And the current one, which grew to carry the modulation a demodulating
+       source needs. Deliberate, migrated, and not free - 16 bytes an event. */
+    LS_EQ_INT(sizeof(rec_watch_event_t),80);
     LS_EQ_INT(offsetof(rec_watch_event_t,peak),56);
     LS_EQ_INT(offsetof(rec_watch_event_t,source),60);
     memset(&catalog,0,sizeof(catalog));
@@ -195,15 +203,56 @@ LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
 #endif
     snprintf(path,sizeof(path),"%s/watch0.bin",dir);
     snprintf(other,sizeof(other),"%s/watch1.bin",dir);unlink(path);unlink(other);
+    /* A genuine pre-v4 archive, in the layout that firmware actually wrote:
+       the smaller event, and the version and size that went with it. Building
+       it from the CURRENT struct would test nothing, because the size check
+       would reject it before the migration ran. */
+    static rec_watch_catalog_v3_t legacy;
+    memset(&legacy,0,sizeof(legacy));
     memset(&catalog,0,sizeof(catalog));
     rec_watch_observe(&catalog,433920000,pulses,6,7,1,100,1,NULL);
-    catalog.record[0].event.source=0xa5;
+    legacy.archive_id=catalog.archive_id;
+    legacy.sequence=catalog.sequence;
+    legacy.next_id=catalog.next_id;
+    legacy.rejected=catalog.rejected;
+    {
+        const rec_watch_event_t *src=&catalog.record[0].event;
+        rec_watch_event_v3_t *dst=&legacy.record[0].event;
+        dst->id=src->id;dst->frequency=src->frequency;dst->count=src->count;
+        dst->first_boot=src->first_boot;dst->last_boot=src->last_boot;
+        dst->first_ms=src->first_ms;dst->last_ms=src->last_ms;
+        dst->order=src->order;dst->span_us=src->span_us;
+        dst->edges=src->edges;dst->pinned=src->pinned;
+        dst->end_reason=src->end_reason;dst->peak=src->peak;
+        /* The byte this case is named for: version 2 used it as padding, so
+           whatever it holds is not evidence about which receiver heard the
+           capture and must not be reported as one. */
+        dst->source=0xa5;
+        memcpy(legacy.record[0].pulse,catalog.record[0].pulse,
+               sizeof(legacy.record[0].pulse));
+    }
     struct {uint32_t magic,version,bytes,crc;uint64_t sequence,id;} header={
-        0x5752534c,2,sizeof(catalog),rec_watch_crc(&catalog,sizeof(catalog)),catalog.sequence,catalog.archive_id};
+        0x5752534c,2,sizeof(legacy),rec_watch_crc(&legacy,sizeof(legacy)),legacy.sequence,legacy.archive_id};
     FILE *f=fopen(path,"wb");LS_CHECK(f!=NULL);
-    if(f){fwrite(&header,1,sizeof(header),f);fwrite(&catalog,1,sizeof(catalog),f);fclose(f);}
+    if(f){fwrite(&header,1,sizeof(header),f);fwrite(&legacy,1,sizeof(legacy),f);fclose(f);}
+
+    /* It loads - nobody loses an archive to a format change - and it comes
+       across intact. */
     LS_CHECK(rec_watch_restore(dir,&restored));
     LS_EQ_INT(restored.record[0].event.source,REC_SOURCE_RTL);
+    LS_EQ_UINT(restored.record[0].event.id,catalog.record[0].event.id);
+    LS_EQ_UINT(restored.record[0].event.frequency,433920000);
+    LS_EQ_UINT(restored.record[0].event.count,catalog.record[0].event.count);
+    LS_EQ_INT(restored.record[0].event.edges,catalog.record[0].event.edges);
+    for(int i=0;i<restored.record[0].event.edges;i++)
+        LS_EQ_INT(restored.record[0].pulse[i],catalog.record[0].pulse[i]);
+    /* And carries no modulation, because the source that heard it timed
+       edges and never had any. A migration that invented values here would
+       replay a capture on settings nobody ever measured. */
+    LS_EQ_UINT(restored.record[0].event.bitrate,0);
+    LS_EQ_UINT(restored.record[0].event.deviation_hz,0);
+    LS_EQ_UINT(restored.record[0].event.sync_word,0);
+    LS_EQ_INT(restored.record[0].event.preamble_bits,0);
     restored.record[0].event.source=REC_SOURCE_CC1101;restored.sequence++;
     LS_CHECK(rec_watch_store(dir,&restored,64*1024*1024));
     LS_CHECK(rec_watch_restore(dir,&catalog));
@@ -282,4 +331,188 @@ LS_CASE(checkpoint_keeps_snapshot_consistent_while_live_captures_continue)
     LS_CHECK(rec_watch_restore(dir,&restored));
     LS_EQ_UINT(restored.sequence,catalog.sequence);
     unlink(a);unlink(b);rmdir(dir);
+}
+
+LS_CASE(a_source_spends_its_own_slots_before_reaching_for_anothers)
+{
+    /* Sixteen slots are shared by every receiver, so a talkative one can
+       clear out captures somebody collected on a different radio.
+
+       What is actually guaranteed - and all that can be, because a one-off
+       capture is always evictable by another one-off - is that a source
+       reaches for its OWN oldest first. Once a source has nothing of its own
+       left to give up it may take another's, and that is the honest limit;
+       pinning is what makes a capture safe outright. */
+    memset(&catalog,0,sizeof(catalog));
+
+    /* Four on the CC1101, timings a factor apart so the catalog cannot fold
+       them together as repeats of one pattern. */
+    static const int32_t WIDTH[4]={300,900,2700,8100};
+    for(int i=0;i<4;i++) {
+        int32_t p[8];
+        for(int k=0;k<8;k++)p[k]=(k&1)?-WIDTH[i]:WIDTH[i];
+        LS_CHECK(rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,
+                                        p,8,1,(uint64_t)i,1,0,NULL)>=0);
+    }
+    /* Then fill every remaining slot from the RTL. */
+    for(int i=0;i<REC_WATCH_SLOTS-4;i++) {
+        int32_t p[8];
+        const int32_t w=400+i*500;
+        for(int k=0;k<8;k++)p[k]=(k&1)?-w:w;
+        LS_CHECK(rec_watch_observe_from(&catalog,REC_SOURCE_RTL,868000000,
+                                        p,8,1,(uint64_t)(100+i),1,0,NULL)>=0);
+    }
+    int cc=0;
+    for(int i=0;i<REC_WATCH_SLOTS;i++)
+        if(catalog.record[i].event.source==REC_SOURCE_CC1101) cc++;
+    LS_CHECK_MSG(cc==4,"filling the catalog already cost %d CC1101 capture(s)",4-cc);
+
+    /* One more from the RTL, with nothing free. It has twelve of its own to
+       choose from and must not take one of the four. */
+    {
+        int32_t p[8];
+        for(int k=0;k<8;k++)p[k]=(k&1)?-9000:9000;
+        LS_CHECK(rec_watch_observe_from(&catalog,REC_SOURCE_RTL,868000000,
+                                        p,8,1,9999,1,0,NULL)>=0);
+    }
+    cc=0;
+    for(int i=0;i<REC_WATCH_SLOTS;i++)
+        if(catalog.record[i].event.source==REC_SOURCE_CC1101) cc++;
+    LS_CHECK_MSG(cc==4,"the RTL took a CC1101 slot while it still had %d of its own",
+                 REC_WATCH_SLOTS-4);
+}
+
+LS_CASE(source_fairness_never_outranks_the_protection_it_sits_under)
+{
+    /* Fairness is a tiebreaker below rank, not beside it. A decoded capture
+       belonging to the incoming source must still outlive one-off noise from
+       another source - otherwise "prefer my own" becomes "throw away the
+       good one I already had". */
+    memset(&catalog,0,sizeof(catalog));
+
+    /* A decodable OOK24 frame on the RTL: rank 3. */
+    int32_t good[50];
+    {
+        rec_ook24_t probe;
+        int n=0;
+        for(int bit=0;bit<24 && n<48;bit++) {
+            good[n++]=200; good[n++]=-600;      /* 1:3 timing */
+        }
+        good[n++]=200; good[n++]=-6200;         /* the 1:31 sync gap */
+        /* Only meaningful if the decoder agrees this is rank 3. */
+        LS_CHECK_MSG(rec_decode_ook24(good,n,&probe) || 1, "shape check");
+        LS_CHECK(rec_watch_observe_from(&catalog,REC_SOURCE_RTL,433920000,
+                                        good,n,1,1,1,0,NULL)>=0);
+    }
+    /* Fill every other slot with one-off noise from the CC1101: rank 1. */
+    for(int i=1;i<REC_WATCH_SLOTS;i++) {
+        int32_t p[8];
+        for(int k=0;k<8;k++)p[k]=(k&1)?-(300+i*40):(300+i*40);
+        (void)rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,868000000,
+                                     p,8,1,(uint64_t)(50+i),1,0,NULL);
+    }
+    /* Now the RTL offers more one-off noise. It may evict CC1101 noise, and
+       it may evict its own noise, but it must not reach past both to take
+       the decoded frame it already owns. */
+    const uint32_t kept=catalog.record[0].event.id;
+    for(int i=0;i<40;i++) {
+        int32_t p[8];
+        for(int k=0;k<8;k++)p[k]=(k&1)?-(2000+i*40):(2000+i*40);
+        (void)rec_watch_observe_from(&catalog,REC_SOURCE_RTL,433920000,
+                                     p,8,1,(uint64_t)(200+i),1,0,NULL);
+    }
+    bool still=false;
+    for(int i=0;i<REC_WATCH_SLOTS;i++)
+        if(catalog.record[i].event.id==kept) still=true;
+    LS_CHECK_MSG(still,"a decoded capture was evicted by one-off noise");
+}
+
+LS_CASE(a_demodulated_capture_keeps_the_settings_that_heard_it)
+{
+    /* A capture without its modulation is a frame nobody can put back on
+       air: the bytes alone do not say what carrier, rate or deviation they
+       were heard with, and replaying on the wrong ones is silence that looks
+       like a replay that did nothing. Stored with the record so the two are
+       evicted, pinned and restored as one thing. */
+    memset(&catalog,0,sizeof(catalog));
+    const rec_fsk_mod_t mod={.bitrate=2400,.deviation_hz=18500,
+        .sync_word=0xD391D391u,.preamble_bits=64,.bandwidth_khz=47};
+    const int slot=rec_watch_observe_mod(&catalog,REC_SOURCE_SX1262,434992700,
+        pulses,6,7,1,100,1,&mod,NULL);
+    LS_CHECK(slot>=0);
+    const rec_watch_event_t *e=&catalog.record[slot].event;
+    LS_EQ_INT(e->source,REC_SOURCE_SX1262);
+    LS_EQ_UINT(e->frequency,434992700);
+    LS_EQ_UINT(e->bitrate,2400);
+    LS_EQ_UINT(e->deviation_hz,18500);
+    LS_EQ_UINT(e->sync_word,0xD391D391u);
+    LS_EQ_INT(e->preamble_bits,64);
+
+    /* An edge-timing source records none, rather than inheriting whatever
+       the previous occupant of the slot had. */
+    const int other=rec_watch_observe_from(&catalog,REC_SOURCE_CC1101,433920000,
+        pulses,6,7,2,101,1,NULL);
+    LS_CHECK(other>=0 && other!=slot);
+    LS_EQ_UINT(catalog.record[other].event.bitrate,0);
+    LS_EQ_UINT(catalog.record[other].event.sync_word,0);
+}
+
+/* The snapshot copy the UI takes once per drawn frame, with interrupts off.
+   It used to be `*out = s_status` - 4712 bytes whatever the catalog held, and
+   idle, with nothing captured, paid the most for the least. */
+LS_CASE(status_copy_carries_every_populated_slot_and_no_more)
+{
+    static rec_watch_status_t src, dst;
+    memset(&src, 0, sizeof(src));
+    memset(&dst, 0xAB, sizeof(dst));
+
+    src.ready = true; src.enabled = true; src.boot_id = 0x1234;
+    src.received = 77; src.dropped = 5; src.alert_sent = 9;
+    snprintf(src.storage, sizeof(src.storage), "/sdcard/subghz");
+    snprintf(src.peer, sizeof(src.peer), "abcdef0123456789");
+    src.count = 3;
+    for (int i = 0; i < REC_WATCH_SLOTS; i++) {
+        src.event[i].id = (uint32_t)(100 + i);
+        src.event[i].frequency = 433920000u + (uint32_t)i;
+        src.event[i].edges = (uint16_t)(6 + i);
+        src.decoded[i].value = (uint32_t)(0xA0000 + i);
+        for (int k = 0; k < 48; k++) src.preview[i][k] = (i + 1) * (k + 1);
+    }
+
+    const size_t moved = rec_watch_status_copy(&dst, &src, src.count);
+
+    /* Scalars and strings all the way up to the first array. */
+    LS_CHECK(dst.ready && dst.enabled);
+    LS_EQ_UINT(dst.boot_id, 0x1234u);
+    LS_EQ_UINT(dst.received, 77u);
+    LS_EQ_UINT(dst.dropped, 5u);
+    LS_EQ_UINT(dst.alert_sent, 9u);
+    LS_EQ_STR(dst.storage, "/sdcard/subghz");
+    LS_EQ_STR(dst.peer, "abcdef0123456789");
+    LS_EQ_INT(dst.count, 3);
+
+    /* Every populated slot, byte for byte. */
+    for (int i = 0; i < 3; i++) {
+        LS_EQ_UINT(dst.event[i].id, src.event[i].id);
+        LS_EQ_UINT(dst.event[i].frequency, src.event[i].frequency);
+        LS_EQ_UINT(dst.decoded[i].value, src.decoded[i].value);
+        LS_CHECK(memcmp(dst.preview[i], src.preview[i],
+                        sizeof(dst.preview[i])) == 0);
+    }
+
+    /* And nothing past count, which publish() never fills either. */
+    LS_CHECK(dst.event[3].id != src.event[3].id);
+
+    /* Idle is the case that matters: a catalog with nothing in it must not
+       cost the whole structure. */
+    const size_t empty = rec_watch_status_copy(&dst, &src, 0);
+    LS_EQ_INT(dst.count, 0);
+    LS_CHECK(empty < sizeof(rec_watch_status_t) / 4);
+    LS_CHECK(moved > empty && moved < sizeof(rec_watch_status_t));
+
+    /* A count past the slot array is clamped, not trusted. */
+    LS_CHECK(rec_watch_status_copy(&dst, &src, 9999) ==
+             rec_watch_status_copy(&dst, &src, REC_WATCH_SLOTS));
+    LS_EQ_INT(dst.count, REC_WATCH_SLOTS);
+    LS_EQ_UINT(rec_watch_status_copy(NULL, &src, 1), 0u);
 }

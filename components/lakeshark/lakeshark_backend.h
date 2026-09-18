@@ -87,6 +87,8 @@ int         lakeshark_p25_mode_index(void);
 void        lakeshark_p25_set_mode(int idx);
 void        lakeshark_p25_reset_stats(void);
 void        lakeshark_p25_gain_step(void);
+/* Set the tuner gain in tenths of a dB and persist it. 0 means AGC. */
+void        lakeshark_p25_set_gain(int tenths);
 void        lakeshark_p25_agc(void);
 bool        lakeshark_p25_agc_enabled(void);
 int         lakeshark_p25_gain_tenths(void);

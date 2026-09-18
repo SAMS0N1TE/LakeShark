@@ -592,3 +592,62 @@ LS_CASE(screen_lock_consumes_keys_and_taps_without_changing_app)
     LS_CHECK(!ls_tui_locked());
     LS_CHECK(ls_tui_screen_current() == 0);
 }
+
+
+/* THE LANDSCAPE TAB STRIP IS CENTRED, not run out from the left edge.
+
+   This is the third time a landscape bar has ended up hugging an edge and
+   the second time on this strip, so it gets a test rather than another
+   apology. Portrait never showed it: there the tabs are boxes that divide
+   the whole width between them, so they cannot bunch. The landscape branch
+   is a plain run of words, and a run has to be PLACED - drawn from column
+   one it sat in columns 1..44 of a 118 column panel with seventy columns of
+   nothing beside it.
+
+   Measured as the gap either side of the ink, which is the thing the eye
+   actually judges, rather than as a column number that moves whenever a
+   screen is renamed. */
+LS_CASE(the_landscape_tab_strip_is_centred_not_flush_left)
+{
+    setup(118, 31);
+    s_corner_pad = 0;
+    ls_tui_router_draw(&g_sf);
+
+    /* The strip is the row the tab hit boxes were recorded on. Find the ink
+       on it and measure what is left on each side. */
+    /* The strip is the row carrying TWO tab names. The status row above it
+       contains an H in LAKESHARK, which is what a looser search found. */
+    int row = -1, first = -1, last = -1;
+    char line[160];
+    for (int y = 0; y < s_rows && row < 0; y++) {
+        int k = 0;
+        for (int x = 0; x < s_cols && k + 1 < (int)sizeof(line); x++) {
+            const char c = g_back[(size_t)y * s_cols + x].ch;
+            line[k++] = (c >= 0x20 && c < 0x7F) ? c : ' ';
+        }
+        line[k] = 0;
+        if (strstr(line, "HOME") && strstr(line, "P25")) row = y;
+    }
+    LS_CHECK_MSG(row >= 0, "no tab strip row found in landscape");
+    if (row < 0) return;
+
+    for (int x = 0; x < s_cols; x++) {
+        const char c = g_back[(size_t)row * s_cols + x].ch;
+        if (c > 0x20 && c < 0x7F) { if (first < 0) first = x; last = x; }
+    }
+    LS_CHECK_MSG(first >= 0, "the tab strip row is empty");
+    if (first < 0) return;
+
+    const int left = first;
+    const int right = s_cols - 1 - last;
+    /* Centred to within a column - an odd remainder cannot be split evenly
+       and one cell is invisible. */
+    const int skew = left > right ? left - right : right - left;
+    LS_CHECK_MSG(skew <= 1,
+                 "tab strip ink in [%d,%d] of %d: %d columns left, %d right",
+                 first, last, s_cols, left, right);
+    /* And it is genuinely a run in the middle, not one label stretched. */
+    LS_CHECK_MSG(left > 4,
+                 "the strip starts at column %d - that is flush left, which "
+                 "is the bug this case exists for", first);
+}

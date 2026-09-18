@@ -58,6 +58,27 @@ void settings_set_antenna_external(bool external);
 bool settings_get_alert_ring(void);
 void settings_set_alert_ring(bool en);
 bool settings_get_alert_vibe(void);
+
+/* Sub-GHz scan preferences. Every one of these is something an operator
+   changes while using the thing, so every one of them survives a reboot -
+   a setting that resets is a setting you have to find and fix again each
+   time, which is worse than not offering it. */
+int  settings_get_subghz_gate_db(void);      /* detection threshold, dB    */
+void settings_set_subghz_gate_db(int db);
+int  settings_get_subghz_on_hit(void);       /* rec_scan_on_hit_t          */
+void settings_set_subghz_on_hit(int mode);
+int  settings_get_subghz_style(void);        /* spectrum grain             */
+void settings_set_subghz_style(int style);
+int  settings_get_subghz_colour(void);       /* spectrum palette           */
+void settings_set_subghz_colour(int colour);
+/* The FSK receive parameters, which are the ones that take real effort to
+   work out and so are the ones it would be most annoying to lose. */
+void settings_get_subghz_fsk(uint32_t *bitrate, uint32_t *deviation_hz,
+                             uint32_t *sync_word, int *preamble_bits,
+                             int *bandwidth_khz);
+void settings_set_subghz_fsk(uint32_t bitrate, uint32_t deviation_hz,
+                             uint32_t sync_word, int preamble_bits,
+                             int bandwidth_khz);
 void settings_set_alert_vibe(bool en);
 
 /* Turn the screen to match the way the board is being held.

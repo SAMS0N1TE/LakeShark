@@ -64,6 +64,10 @@ void ls_app_open(int index)
 {
     if (index < 0 || index >= s_count) return;
 
-    ls_anim_cancel();
+    /* The launch animation. This was swapped for a bare cancel in the rc2
+       commit, one line inside a 112-file change, which left the whole
+       animation path built and wired - the router still draws it and both
+       input paths still dismiss it - with nothing anywhere to start it. */
+    ls_anim_start(s_app[index].icon, s_app[index].name, s_app[index].hue);
     ls_tui_screen_show(s_screen_index[index]);
 }

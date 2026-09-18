@@ -83,6 +83,30 @@ static uint32_t s_lora_max_hz = 928000000u;
    because a band change starts the next row over. */
 static int64_t  s_lora_row_t0;
 
+/* THE WINDOW THE SWEEP IS DRAWN THROUGH, tracked rather than fixed.
+
+   A fixed -130/-40 was the original. A quiet ISM band is about
+   thirteen decibels wide - a measured 902-928 sweep read -107 to -94 -
+   so the whole band arrived inside a seventh of a ninety decibel
+   window, low in it. The renderer then estimates its floor as the 25th
+   percentile less six, which on a distribution that tight lands above
+   the weakest bins: nineteen of sixty-four drawn as nothing, five of
+   sixteen levels ever reached. Measured, on the board, with tui cost.
+
+   Per-row minimum and maximum was tried next and was worse. Every row
+   gets its own scale, so identical noise renders at a different
+   brightness depending on whether that row happened to catch a peak,
+   and the history stops being comparable - which is the whole point of
+   a waterfall rather than a spectrum.
+
+   So: tracked across rows and moved an eighth of the way each time,
+   the same smoothing the renderer uses on its own window. The band
+   sets the scale, and it sets it slowly enough that two rows a second
+   apart still mean the same thing. Reset on a band change, because the
+   next band is not this one. */
+static float s_lora_floor_db = -120.0f, s_lora_top_db = -60.0f;
+static bool  s_lora_window_seeded;
+
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz)
 {
     if (max_hz <= min_hz) return;
@@ -216,6 +240,7 @@ bool ls_wf_preset_apply(ls_wf_src_t src, int i)
 
             ls_wf_claim(LS_WF_OWNER_NONE, NULL);
             s_lora_row_t0 = 0;
+            s_lora_window_seeded = false;
             return true;
         }
         FM.scan_start_hz = t[i].lo_hz;
@@ -548,7 +573,32 @@ static bool pump_lora(void)
         (uint32_t)((esp_timer_get_time() - s_lora_row_t0) / 1000);
     s_lora_row_t0 = 0;
 
-    const float floor_db = -130.0f, top_db = -40.0f;
+    /* This row first, then the window it moves. A twelve dB minimum
+       span keeps a genuinely flat band from being amplified into the
+       receiver's own scatter, and two dB of headroom below the
+       weakest bin keeps that bin visible instead of sitting exactly
+       on the floor. */
+    float row_lo = dbm[0], row_hi = dbm[0];
+    for (int i = 1; i < got; i++) {
+        if (dbm[i] < row_lo) row_lo = dbm[i];
+        if (dbm[i] > row_hi) row_hi = dbm[i];
+    }
+    /* The SX1262 reports RSSI in half decibels, so a thirteen dB band is
+       about twenty-six distinct values. Stretched across a window much
+       narrower than that, consecutive values jump more than one level and
+       the ramp posterises - the histogram comes back with every other
+       bucket empty. A wider minimum span keeps a step below one level. */
+    row_lo -= 4.0f;
+    if (row_hi - row_lo < 26.0f) row_hi = row_lo + 26.0f;
+    if (!s_lora_window_seeded) {
+        s_lora_window_seeded = true;
+        s_lora_floor_db = row_lo;
+        s_lora_top_db   = row_hi;
+    } else {
+        s_lora_floor_db += (row_lo - s_lora_floor_db) / 8.0f;
+        s_lora_top_db   += (row_hi - s_lora_top_db)   / 8.0f;
+    }
+    const float floor_db = s_lora_floor_db, top_db = s_lora_top_db;
     for (int i = 0; i < got; i++) {
         float v = (dbm[i] - floor_db) / (top_db - floor_db);
         if (v < 0.0f) v = 0.0f;

@@ -482,6 +482,10 @@ void p25_request_gain(int gain_tenths_db)
     if (gain_tenths_db < 0)   gain_tenths_db = 0;
     if (gain_tenths_db > 496) gain_tenths_db = 496;
     P25.rtl_gain_tenths = gain_tenths_db;
+    /* Same rule the receiver applies, set here too so a button lights the
+       moment it is pressed rather than whenever the RX task next runs - and
+       so it is still right when no receiver is running to consume this. */
+    p25_agc_on = (gain_tenths_db == 0);
     ls_iq_control_request_gain(&s_radio_control, gain_tenths_db);
 }
 
@@ -1209,7 +1213,12 @@ static void p25_rx_task(void *arg)
         if ((radio_request.flags & LS_IQ_CONTROL_GAIN) != 0) {
             p25_iq_capture_interrupt(P25_IQ_CAPTURE_CONFIG_CHANGED);
             int gain = radio_request.gain_tenths_db;
-            p25_agc_on = false;
+            /* Zero IS auto - the config above turns it into
+               LS_RADIO_GAIN_AUTO and the log line below already says "(AGC)".
+               This was an unconditional false, so the flag reported AGC off
+               even while the tuner was running it, and nothing could ever
+               turn the lamp on. */
+            p25_agc_on = (gain == 0);
             P25.rtl_gain_tenths = gain;
             ls_radio_err_t error = ls_iq_control_apply_gain(
                 &s_radio_control, s_session, &radio_request);

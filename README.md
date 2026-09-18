@@ -1,26 +1,49 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
-<p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
-
 LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and save observations in a field journal.
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
-<p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase#renders/01">New case design renders</a></p>
+> **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
 
-<p align="center">
-  <img height="610" alt="LakeShark case turntable" src="assets/lakeshark_turntable.gif">
-</p>
+**Current P4 release: [2.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.0).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
-**[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
+**New in 2.2.0:** visible FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, clearer FM/recording controls, recording timestamps, keyboard backlight control, and settings-save/Flipper shutdown fixes. The version screen still shows `2.2.0-rc1-g8565ac966a01`. If that build is already installed, no reflash is needed.
 
-The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
+**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
+
+**New in 2.1.0:**
+
+- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
+- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
+- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
+- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
+- **Waterfalls:** tap to mark a signal, then tune to it.
+- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
+- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
+- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
+
+**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
+
+**New on this branch** `[EXPERIMENTAL]` `[UNRELEASED]`: the [field map](docs/map-field.md) adds pixel terrain, blue water, warm roads, a fresh-GPS marker, an SD map picker and clearer format errors. Cached views avoid repeated tile decoding; unchanged map cells skip redraws.
+
+**Experiments:**
+
+- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
+- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is unverified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
+- **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
+
+**[Download the P4 release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[LoRa Labs and Journal](docs/FIELD_LABS.md)** · **[Keyboard radios and NFC](docs/MIX_RF.md)** · **[Scanning and imports](docs/LOCATION_SCAN.md)**
+
+### ><> Everything else is on [terminalbay.com](https://terminalbay.com/?m=lakeshark)
+
+The setup page flashes a board from Chrome or Edge with one button, no toolchain and no Python. It also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you. The [wiki](https://terminalbay.com/?m=wiki) has the guides and every screenshot.
 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
 
 ## <°)))>< LilyGO T-Display-P4
-  <img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
+<img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
 
 The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
@@ -46,7 +69,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
 | REC | RTL or CC1101 source, Flipper `.sub` export and shared capture controls; CC1101 capture `[EXPERIMENTAL]` |
 | SUB-GHZ | Passive watch, repeated OOK24 payload decoding, duplicate grouping, storage limits and Journal bookmarks |
-| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED]` |
+| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED] |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
@@ -62,13 +85,11 @@ This port is for the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. The other T
 LINK needs matching ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT will not do.
 Flipper control on the T-Display-P4 uses Bluetooth.
 
-> **P4 keyboard power warning:** Do not connect the keyboard's 5V USB output back into the P4 yet. This caused repeated power cycling in testing, even without the RTL attached. I'm investigating the easiest reliable way to power the RTL on battery.
-
-## }<((((-- Headless
+## }<((((()°> Headless
 
 The Waveshare ESP32-P4-NANO and ESP32-P4-WIFI6 run the same receivers with no screen. You drive them from a serial console or from the Flipper, which suits leaving the radio in a bag with the antenna.
 
-## ><))))º< ⁠The Flipper head
+## ><)))°> The Flipper head
 
 The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) controls the radio over Bluetooth or the GPIO header. No pairing code. The Flipper advertises and the radio connects to it.
 
@@ -88,14 +109,6 @@ The [Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) controls the r
 If you already own one, there is a 480 x 800 image for it. It came before the T-Display port and it is not where new work goes, so treat it as worth a try on hardware you already have. [Install it](https://terminalbay.com/?m=lakeshark&board=lcd43) or read the [quick start](https://terminalbay.com/?m=wiki#lcd43/LCD43_QUICKSTART).
 
 The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
-
-## }<))•> Experiments
-
-Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
-
-- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
-- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is unverified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
-- **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
 
 ## ><)))O> Build from source
 
@@ -119,25 +132,6 @@ pwsh -File bench/verify.ps1 -Level host
 CSV/JSON imports work without RadioReference. The optional RadioReference adapter
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
-
-**Current P4 release: [2.2.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.0).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
-
-**New in 2.2.0:** visible FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, clearer FM/recording controls, recording timestamps, keyboard backlight control, and settings-save/Flipper shutdown fixes. The version screen still shows `2.2.0-rc1-g8565ac966a01`. If that build is already installed, no reflash is needed.
-
-**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
-
-**New in 2.1.0:**
-
-- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
-- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
-- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
-- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
-- **Waterfalls:** tap to mark a signal, then tune to it.
-- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
-- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
-- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
-
-**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
 
 ## °<)))>< Standing on
 

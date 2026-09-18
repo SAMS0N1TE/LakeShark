@@ -8,12 +8,22 @@ static pthread_mutex_t critical = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t scheduler = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static _Thread_local int role;
-static int low_entered, high_attempted, entries, release_violations;
+static int low_entered, high_attempted, entries;
 static ls_iq_control_t control;
 static ls_iq_control_request_t taken;
 static bool high_took_request;
 
-/* Backend operations are outside this scheduler regression. */
+/* What this pins is the handoff: a higher-priority reader becoming runnable
+   while a lower-priority owner is inside its critical section must wait for
+   that owner and then get the request, rather than spinning past it.
+
+   The critical section is the whole of the lock. There used to be a second
+   per-control flag taken inside it, and a check here that it was clear on
+   exit; the flag was redundant - nothing can reach it without the mux - and
+   spun without a bound in a region that runs with interrupts disabled, so it
+   is gone. The property below is unchanged and is still enforced, by the mux.
+
+   Backend operations are outside this scheduler regression. */
 ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *s,
     const ls_radio_iq_config_t *r, ls_radio_iq_config_t *a)
 { (void)s; (void)r; (void)a; return LS_RADIO_ERR_UNAVAILABLE; }
@@ -48,7 +58,6 @@ void iq_test_critical_enter(int *mux)
 void iq_test_critical_exit(int *mux)
 {
     (void)mux;
-    if (control.writer_lock) ++release_violations;
     pthread_mutex_unlock(&critical);
 }
 static void *low(void *arg)
@@ -80,5 +89,4 @@ LS_CASE(receiver_waits_until_lower_priority_owner_releases_control)
     LS_EQ_INT(taken.tune_generation, 1);
     LS_CHECK(!ls_iq_control_take(&control, &request));
     LS_CHECK(entries >= 4);
-    LS_EQ_INT(release_violations, 0);
 }

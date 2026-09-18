@@ -1,5 +1,24 @@
 # LakeShark release notes
 
+## 2.2.1 - T-Display P4
+
+Install writes the complete firmware. Works on a new board or over any
+existing install.
+
+- Boots to the interface whatever state the storage partition is in, and a
+  blank one formats itself on first mount.
+- Sub-GHz scan and learn, SX1262 FSK transmit and a capture archive.
+- GFSK and POCSAG in LORA LABS, with launch animations restored.
+- One .sub writer, universal record and replay, and readable menus.
+- FM touch routing fixed, and the FM spectrum leaves the radio alone.
+- SUB-GHZ keeps its landscape rows, the tab strip is centred, and the top
+  bar reaches the glass in portrait.
+- Async sampler programmed at twice the capture bit rate.
+- P25 profile format version 2 carries site coordinates.
+- Waterfall and LoRa sweep measurements carried by the gauge.
+
+Supersedes 2.2.0.
+
 ## 2.2.0-rc1 — experimental T-Display P4 candidate
 
 - FM/P25 waterfalls show a cursor: left/right selects a frequency; Space tunes to it. Radio panels retain direct arrow tuning and lists retain navigation.

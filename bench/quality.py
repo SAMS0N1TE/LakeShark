@@ -53,9 +53,8 @@ def require_release(data, artifact, evidence):
     for source in data['universal_sources']:
         cases = record.get('source_cases', {}).get(source['source'], {})
         for operation in ('recording', 'waterfall'):
-            case = cases.get(operation, {})
-            if case.get('result') != 'pass' or not case.get('observation') or not case.get('data_format'):
-                raise ValueError('missing source coverage: ' + source['source'] + '/' + operation)
+            require_source_case(cases.get(operation, {}), source['source'],
+                                operation, record)
     for name in ('log', 'flipper_app', 'sdkconfig'):
         item = record.get(name, {})
         path = Path(evidence).resolve().parent / item.get('path', '')
@@ -85,6 +84,41 @@ def require_release(data, artifact, evidence):
                     raise ValueError('incident clearance differs from hardware run')
             if c['log_sha256'] != record['log']['sha256']:
                 raise ValueError('incident log differs from hardware run')
+
+
+
+def require_source_case(case, source, operation, record):
+    """One source, one operation: exercised, or absent from this board and said so.
+
+    This used to demand a passing recording and waterfall for all nine sources
+    unconditionally. Four of them - HackRF, CC1101, nRF24, NFC - are not on a
+    T-Display-P4 at all; its own SOURCE picker reports "CC1101 - Not detected".
+    So the matrix could not be completed by any amount of testing, and a gate
+    nobody can satisfy is not a high standard - it is one a release eventually
+    goes around instead of through.
+
+    Nothing became optional. Every source still needs an explicit entry, and
+    claiming one is absent costs MORE than claiming it works: the claim names
+    the board it was established on, that board has to be the one being
+    released, and it has to say how the absence was established. What is gone
+    is the demand to test a radio that is not there.
+    """
+    result = case.get('result')
+    if result == 'pass':
+        if not case.get('observation') or not case.get('data_format'):
+            raise ValueError('missing source coverage: ' + source + '/' + operation)
+        return
+    if result == 'not_present':
+        # Per board, so an absence established on other hardware cannot be
+        # carried across to the one being released.
+        if case.get('verified_absent_on') != record.get('board'):
+            raise ValueError('absent source must be verified on the release board: '
+                             + source + '/' + operation)
+        if not case.get('observation'):
+            raise ValueError('absent source must say how absence was established: '
+                             + source + '/' + operation)
+        return
+    raise ValueError('missing source coverage: ' + source + '/' + operation)
 
 
 def require_memory_evidence(report, record, text):
@@ -404,6 +438,53 @@ class RegressionTests(unittest.TestCase):
         for message in ('HardFault', 'FuriCrash', 'Stack overflow', 'assert failed'):
             self.assertEqual(quality.analyze(message)['finding'], 'review-required')
 
+    def test_absent_radio_costs_more_to_claim_than_a_working_one(self):
+        """A source the board does not carry can be recorded as absent - but
+        only against the board being released, and only with an account of how
+        that was established. Waving it through with a bare result must fail,
+        or the escape hatch becomes the way every untested radio leaves."""
+        record = dict(board='T-Display-P4')
+        ok = dict(result='not_present', verified_absent_on='T-Display-P4',
+                  observation='SOURCE picker reports "CC1101 - Not detected"; '
+                              'mixrf probe finds no chip.')
+        quality.require_source_case(ok, 'CC1101', 'recording', record)
+
+        # No board named at all.
+        bare = dict(ok, verified_absent_on=None)
+        with self.assertRaises(ValueError):
+            quality.require_source_case(bare, 'CC1101', 'recording', record)
+
+        # Absent "on" some other board, carried across to this release.
+        elsewhere = dict(ok, verified_absent_on='ESP32-P4-NANO')
+        with self.assertRaises(ValueError):
+            quality.require_source_case(elsewhere, 'CC1101', 'recording', record)
+
+        # Named the right board but said nothing about how it was checked.
+        silent = dict(ok, observation='')
+        with self.assertRaises(ValueError):
+            quality.require_source_case(silent, 'CC1101', 'recording', record)
+
+        # And an unknown verdict is still a hole, not a pass.
+        for verdict in (None, '', 'skip', 'fail', 'n/a'):
+            with self.assertRaises(ValueError):
+                quality.require_source_case(dict(result=verdict), 'CC1101',
+                                            'recording', record)
+
+    def test_a_present_radio_still_has_to_be_exercised(self):
+        """The absent path must not become a shortcut for a radio that IS on
+        the board: a passing case still needs an observation and a data
+        format, exactly as before."""
+        record = dict(board='T-Display-P4')
+        quality.require_source_case(
+            dict(result='pass', observation='433.92 MHz pulse capture #1463',
+                 data_format='Flipper .sub RAW'),
+            'RTL-SDR', 'recording', record)
+        for missing in ('observation', 'data_format'):
+            case = dict(result='pass', observation='seen', data_format='sub')
+            case[missing] = ''
+            with self.assertRaises(ValueError):
+                quality.require_source_case(case, 'RTL-SDR', 'recording', record)
+
     def test_release_evidence_matrix(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -500,10 +581,29 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(quality.analyze('E CMD53 ESP_ERR_INVALID_ARG')['finding'], 'review-required')
 
     def test_verified_requires_evidence(self):
+        # Strip the clearance as well as setting the state. Reading incident
+        # zero and only flipping its state assumed that incident was not
+        # already cleared, so the case started passing for the wrong reason
+        # the moment a real one was verified - it was asserting "this
+        # incident has no evidence" rather than "evidence is required".
         data = json.loads((quality.ROOT / 'bench/regressions.json').read_text())
         data['incidents'][0]['state'] = 'verified'
+        data['incidents'][0]['clearance'] = None
         with self.assertRaises(ValueError):
             quality.validate(data)
+        # A clearance missing any one required field is also not evidence.
+        for drop in ('source_digest', 'firmware_sha256', 'log_sha256',
+                     'board', 'observer', 'procedure', 'result'):
+            d2 = json.loads((quality.ROOT / 'bench/regressions.json').read_text())
+            inc = d2['incidents'][0]
+            inc['state'] = 'verified'
+            inc['clearance'] = dict(
+                source_digest='a' * 64, firmware_sha256='b' * 64,
+                log_sha256='c' * 64, board='T-Display-P4',
+                observer='tester', procedure='matrix', result='pass')
+            del inc['clearance'][drop]
+            with self.assertRaises(ValueError, msg='missing ' + drop):
+                quality.validate(d2)
 
     def test_release_blocked_on_open_incident(self):
         with patch('sys.argv', ['quality.py', 'release-check']), patch('quality.source_digest', return_value='test'):
@@ -640,6 +740,59 @@ class ReleaseSurfaceTests(unittest.TestCase):
                      'components/lakeshark/apps/fm/trap.h',
                      'bench/fixtures/trap_gen.c', 'bench/fixtures/trap_gen.h'):
             self.assertFalse((ROOT / name).exists(), name)
+
+    def test_public_docs_link_to_existing_local_documents(self):
+        docs = [ROOT / 'README.md', *(ROOT / 'docs').glob('LCD43_*.md')]
+        docs = [p for p in docs if 'PREVIEW_' not in p.name]
+        for path in docs:
+            for link in re.findall(r'\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
+                if '://' in link or link.startswith('#'):
+                    continue
+                target = link.split('#', 1)[0]
+                with self.subTest(document=path.name, link=link):
+                    self.assertTrue((path.parent / target).is_file())
+
+    def test_no_two_apps_share_a_directory_icon(self):
+        """Two tiles with one picture says they do the same thing.
+
+        ls_icons.h already carries this rule - it was written when GPS had
+        the map pin and RADIOS had the P25 tower - and it has regressed
+        three times since. It cost a real misclick: DIAG was opened instead
+        of MIX-RF because both drew LS_ICON_CHIP.
+
+        KNOWN is the debt, not permission. Each of those needs art drawn in
+        bench/tools/mkicons.py before it can go, and until then this stops a
+        FOURTH pair appearing unnoticed.
+        """
+        known = {
+            # icon: the apps sharing it, and why it has not been split yet
+            'LS_ICON_TOWER':  {'p25', 'cell'},    # both are masts; needs a cell icon
+            'LS_ICON_RECORD': {'rec', 'subghz'},  # both capture; needs a watch icon
+        }
+        src = (ROOT / 'main' / 'compact_ui.cpp').read_text(encoding='utf-8',
+                                                           errors='replace')
+        rows = re.findall(r'\{\s*"([a-z0-9]+)",\s*"[^"]*",\s*"[^"]*",\s*'
+                          r'(LS_ICON_[A-Z0-9_]+)', src)
+        self.assertGreater(len(rows), 10, 'the app table was not parsed')
+
+        by_icon = {}
+        for app, icon in rows:
+            by_icon.setdefault(icon, set()).add(app)
+
+        for icon, apps in sorted(by_icon.items()):
+            if len(apps) < 2:
+                continue
+            with self.subTest(icon=icon):
+                self.assertIn(icon, known,
+                              '%s is drawn by %s - give one of them its own '
+                              'icon' % (icon, ', '.join(sorted(apps))))
+                self.assertEqual(apps, known[icon],
+                                 '%s is now shared by %s, not the recorded %s'
+                                 % (icon, ', '.join(sorted(apps)),
+                                    ', '.join(sorted(known[icon]))))
+
+        # And the debt does not get to grow by adding a name to KNOWN either.
+        self.assertLessEqual(len(known), 2, 'more shared icons than recorded')
 
     def test_public_docs_link_to_existing_local_documents(self):
         docs = [ROOT / 'README.md', *(ROOT / 'docs').glob('LCD43_*.md')]

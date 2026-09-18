@@ -64,8 +64,28 @@ static void usb_boot_retry_tick(usb_boot_retry_t *retry, int64_t now, int device
 {
     if(retry->done) return;
     /* A successful attach permanently ends boot recovery. Never disturb a
-       working receiver, hub or any other registered USB peripheral. */
-    if(devices > 0 && !retry->off) { retry->done=true; return; }
+       working receiver, hub or any other registered USB peripheral.
+
+       SAY SO WHEN IT HAPPENS. A ten-reset series recovered nine times;
+       the tenth failed CHECK_SHORT_DEV_DESC at 4541 ms - the exact
+       failure this incident records - and then no retry ever ran. The
+       suspect is this line: a device that FAILED enumeration may still
+       be counted by usb_host_lib_info, in which case devices > 0 is
+       true, recovery concludes something attached and disables itself
+       permanently, in precisely the case it exists for.
+
+       That is a suspicion, not a finding, and changing the guard on a
+       suspicion risks power-cycling a port with a working dongle on it.
+       So this logs the inputs to the decision instead. The next
+       occurrence says outright whether the count was nonzero, and the
+       fix after that is evidence rather than a guess. */
+    if(devices > 0 && !retry->off) {
+        ESP_LOGW(TAG,"USB boot recovery stood down: %d device(s) "
+                     "enumerated at %lld ms",devices,
+                     (long long)(now/1000));
+        retry->done=true;
+        return;
+    }
     if(devices < 0 || now < retry->next_us) return;
     if(retry->off) {
         esp_err_t err=usb_host_lib_set_root_port_power(true);

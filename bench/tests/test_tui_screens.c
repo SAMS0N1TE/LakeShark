@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: the three screens plus tui_core, with the state they read faked */
 
 #include "ls_test.h"
+#include <stdlib.h>
 #include "rec_watch.h"
 #include "tui_core.h"
 #include "ls_tui_screen.h"
@@ -69,6 +70,13 @@ void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
+/* Sub-GHz display preferences. Real state, because the screen reads them
+   back to draw the option lists with the current choice marked. */
+static int s_sg_style, s_sg_colour;
+int  settings_get_subghz_style(void) { return s_sg_style; }
+void settings_set_subghz_style(int v) { s_sg_style = v; }
+int  settings_get_subghz_colour(void) { return s_sg_colour; }
+void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 
 /* ADSB's radar page () reads a centre point through these two -
@@ -415,6 +423,26 @@ LS_CASE(fm_mode_picker_reaches_every_fm_receiver_and_nfm_disables_p25_mixing)
     LS_CHECK(!scan_engine_mixed());
 }
 
+/* OPENING THE SPECTRUM MUST NOT HIJACK THE RECEIVER.
+
+   It used to force FM_MODE_SCAN on entry, so asking to SEE a signal stopped
+   you hearing it - and the page carries a RUN button that does exactly that
+   when it is actually wanted. The page opens on whatever the receiver is
+   already doing; starting a sweep is a decision, so it is a button. */
+LS_CASE(opening_the_fm_spectrum_leaves_the_receiver_where_it_was)
+{
+    fresh();
+    const tui_rect pane = {1, 2, 113, 24};
+    grid_for(pane);
+    FM.mode = FM_MODE_LISTEN;
+    ls_scr_fm.enter();
+    ls_scr_fm_show_page(2);
+    LS_CHECK_MSG(FM.mode != FM_MODE_SCAN,
+                 "opening SPECTRUM put the receiver into SCAN (mode %d)",
+                 (int)FM.mode);
+    ls_scr_fm.leave();
+}
+
 LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
 {
     fresh();
@@ -427,6 +455,13 @@ LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
     LS_CHECK(ls_scr_fm.touch(pane.x + pane.w / 6, pane.y + pane.h - 4));
     LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
     ls_scr_fm_show_page(2);
+    /* Opening the page no longer starts a sweep - it used to, and the owner
+       asked for it changed: entering SPECTRUM took a receiver that was
+       listening and put it into SCAN, so asking to SEE a signal stopped you
+       hearing it. Starting one is the RUN button, which is what the rest of
+       this case then exercises. */
+    LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'w'));
     LS_EQ_INT(FM.mode, FM_MODE_SCAN);
     ls_scr_fm_show_page(1);
     LS_EQ_INT(FM.mode, FM_MODE_POCSAG);
@@ -541,7 +576,14 @@ static void draw_pane(const ls_tui_screen_t *scr, tui_rect pane)
 
 /* ---------------------------------------------------------------- cases -- */
 
-LS_CASE(home_touch_opens_an_unselected_app_without_a_splash)
+/* The splash was disabled on 2026-09-13 by swapping ls_anim_start for
+   ls_anim_cancel in ls_app_open - one line inside a 112-file commit, with no
+   reason recorded - and this case was added in the same commit to hold the
+   new behaviour. It is wanted back, so the case now asserts the splash it
+   used to forbid. What it still checks is the part that always mattered: the
+   tile that was touched is the app that opened, and the splash is dismissable
+   rather than something you have to sit through. */
+LS_CASE(home_touch_opens_an_unselected_app_and_plays_its_splash)
 {
     apps_once();
     for (int p = 0; p < 2; p++) {
@@ -556,7 +598,8 @@ LS_CASE(home_touch_opens_an_unselected_app_without_a_splash)
         LS_CHECK(xhit >= 0);
         LS_CHECK(ls_scr_home.touch(xhit, yhit));
         LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_adsb), ls_tui_screen_current());
-        LS_CHECK(!ls_anim_active());
+        LS_CHECK(ls_anim_active());
+        ls_anim_cancel();   /* leave the next iteration a clean slate */
     }
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
 }
@@ -601,6 +644,98 @@ LS_CASE(no_screen_writes_outside_the_rect_it_was_handed)
                          SCREENS[s]->name, PANES[p].w, PANES[p].h,
                          escaped(PANES[p]));
         }
+}
+
+/* Lettering, as opposed to the dither texture and the frame. Any printable
+   character counts except the vertical rule, because labels carry '%', '/',
+   '.' and '-' and stopping at the last letter measured "VOL 65 %" as ending
+   at the 5. The dither glyphs are outside printable ASCII and the frame's
+   verticals are the only printable thing drawn inside a button's columns. */
+static bool centre_ink(char c)
+{
+    const unsigned char u = (unsigned char)c;
+    return u > 32 && u < 127 && u != '|';
+}
+
+LS_CASE(every_button_a_real_screen_draws_is_centred)
+{
+    /* test_tui_button_centre sweeps the shared bar in isolation; this proves
+       the screens actually get that bar, at the sizes the hardware hands
+       them. A screen that grows its own button drawer is not covered here -
+       which is the point. Adopting ls_btn_bar is what buys the check.
+       Only rows inside the frame are measured: shortcut badges and the [*]
+       state marker live on the border deliberately. */
+    seed_health();
+    int checked = 0;
+    for (int s = 0; s < N_SCREENS; s++)
+        for (int p = 0; p < N_PANES; p++) {
+            if (SCREENS[s]->enter) SCREENS[s]->enter();
+            fresh();
+            /* What ls_tui_router_draw does before every frame. These cases
+               call scr->draw directly, so without it a screen that draws no
+               bar is measured against the previous screen's rects. */
+            ls_btn_clear_hits();
+            draw_pane(SCREENS[s], PANES[p]);
+
+            for (int slot = 0; slot < 3; slot++)
+                for (int i = 0; i < ls_btn_count_slot(slot); i++) {
+                    int x = 0, y = 0, w = 0, h = 0;
+                    if (!ls_btn_rect_slot(slot, i, &x, &y, &w, &h)) continue;
+                    if (x < 0 || y < 0 || x + w > W || y + h > H) continue;
+
+                    const int r0 = h >= 3 ? y + 1 : y;
+                    const int r1 = h >= 3 ? y + h - 2 : y + h - 1;
+                    for (int r = r0; r <= r1; r++) {
+                        int first = -1, last = -1;
+                        for (int c = 0; c < w; c++) {
+                            if (!centre_ink(g_back[(size_t)r * W + x + c].ch)) continue;
+                            if (first < 0) first = c;
+                            last = c;
+                        }
+                        if (first < 0) continue;
+                        /* The focus caret sits hard against the left edge,
+                           the same way the shortcut badge sits against the
+                           right. Neither is part of the label. */
+                        if (first == 0 &&
+                            g_back[(size_t)r * W + x].ch == '>') {
+                            first = -1;
+                            for (int c = 1; c < w; c++)
+                                if (centre_ink(g_back[(size_t)r * W + x + c].ch))
+                                { first = c; break; }
+                            if (first < 0) continue;
+                        }
+                        /* A box too narrow for a bracketed badge puts the
+                           shortcut as a bare character against the right
+                           edge (see ls_tui_ui.c). That is a right-aligned
+                           badge, not part of the label, so drop it before
+                           measuring - otherwise every keyed button in a
+                           narrow box reads as jammed right. */
+                        if (last == w - 1 && last - 1 > first &&
+                            !centre_ink(g_back[(size_t)r * W + x + last - 1].ch)) {
+                            last = -1;
+                            for (int c = first; c <= w - 2; c++)
+                                if (centre_ink(g_back[(size_t)r * W + x + c].ch))
+                                    last = c;
+                        }
+                        if (last < first) continue;
+                        const int left = first, right = w - 1 - last;
+                        const int skew = left > right ? left - right
+                                                      : right - left;
+                        checked++;
+                        LS_CHECK_MSG(skew <= 1,
+                                     "%s pane %d slot %d button %d: gaps %d/%d "
+                                     "in a %d-wide box", SCREENS[s]->name, p,
+                                     slot, i, left, right, w);
+                        break;   /* the label row is enough */
+                    }
+                }
+        }
+
+    /* Without this the case passes by looking at nothing the day a screen
+       stops drawing a bar, which is how a layout test usually dies. */
+    LS_CHECK_MSG(checked >= 8,
+                 "only %d labelled buttons examined across all screens",
+                 checked);
 }
 
 /* Count cells inside `r` that the screen actually changed. */
@@ -1892,6 +2027,343 @@ LS_CASE(scan_choice_separates_saved_channels_from_frequency_steps)
     LS_CHECK(scan_engine_active());scan_engine_stop();
 }
 
+/* THE SCREEN IS A FLOW, NOT A PILE.
+
+   Point it, set it up, run it, act on what it heard - in that order, left to
+   right, and everything that is not one of those five things lives behind
+   MORE. The bar had TUNE and BANDS side by side, which are the same question
+   asked twice, and no SCAN at all: a sweep could only be started - and worse,
+   only stopped - from three rows down a menu.
+
+   Checked by drawing rather than by reading the table, because the table is
+   not what the operator presses. */
+LS_CASE(subghz_bar_is_point_setup_run_scan_act)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    int x,y;
+    LS_CHECK(find_text("TUNE",&x,&y));
+    LS_CHECK(find_text("SETUP",&x,&y));
+    LS_CHECK(find_text("WATCH",&x,&y));
+    LS_CHECK(find_text("SCAN",&x,&y));
+    LS_CHECK(find_text("CAPTURE",&x,&y));
+    /* BANDS folded into TUNE. A second button for the same question is a
+       button the operator has to rule out before pressing the first. */
+    LS_CHECK(!find_text("BANDS",&x,&y));
+    ls_scr_subghz.leave();
+}
+
+/* One question, one list. A typed frequency, a preset and a peak the sweep
+   found are three answers to "where should it listen", and they were spread
+   across two buttons and a menu row that only appeared after a sweep. */
+LS_CASE(subghz_tune_offers_typing_presets_and_the_last_sweep)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'f'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    int x,y;
+    LS_CHECK(find_text("TYPE A FREQUENCY",&x,&y));
+    LS_CHECK(find_text("433.9200 MHz",&x,&y));
+    /* Typing still reaches the keypad - a list that swallowed the one way of
+       entering a frequency it does not have a preset for would be a trade
+       down from the button it replaced. */
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_CHECK(ls_numpad_active());
+    ls_numpad_close();
+    /* A preset tunes. Fourth row: typing, then 152.600, 154.785, 315. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'f'));
+    for(int i=0;i<3;i++)LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_EQ_INT(rec_get_freq(),315000000);
+    ls_scr_subghz.leave();
+}
+
+/* The sweep, and everything you can do to one while it runs.
+
+   SCAN is on the bar so that stopping is one press: a running sweep holds
+   the radio, and the control for letting go of it does not belong three rows
+   down a menu called MORE. */
+LS_CASE(subghz_scan_starts_from_the_bar_and_can_be_stopped_there)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    rec_set_freq(433920000);
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'n'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    int x,y;LS_CHECK(find_text("SCAN WHERE",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));       /* watch this frequency */
+    LS_CHECK(rec_watch_scan_busy());
+    /* Now the same button offers the sweep's own controls, stopping first. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'n'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    LS_CHECK(find_text("STOP",&x,&y));
+    LS_CHECK(find_text("THRESHOLD",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_CHECK(!rec_watch_scan_busy());
+    ls_scr_subghz.leave();
+}
+
+/* The detections view belongs to the sweep, and dies with it.
+
+   It used to share a flag with the capture list's legend, and it used to
+   keep the pane after the sweep ended - so a sweep that finished while it
+   was on left a table on screen whose only off switch lived in a menu that
+   is only reachable while a sweep is running. */
+LS_CASE(subghz_detections_view_does_not_outlive_the_sweep)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    rec_set_freq(433920000);
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'n'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_CHECK(rec_watch_scan_busy());
+    /* SWEEP > SHOW DETECTIONS is the fourth row: stop, threshold, on
+       detect, then the view toggle. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'n'));
+    for(int i=0;i<3;i++)LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    fresh();ls_scr_subghz.draw(&g_sf,pane);
+    int x,y;LS_CHECK(find_text("DETECTIONS",&x,&y));
+    rec_watch_scan_stop();
+    fresh();ls_scr_subghz.draw(&g_sf,pane);
+    /* Back to the capture list, with no sweep left to explain it, and the
+       findings reachable from TUNE rather than pinned over the pane. */
+    LS_CHECK(!find_text("DETECTIONS",&x,&y));
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'f'));
+    fresh();ls_picker_draw(&g_sf,pane);
+    LS_CHECK(find_text("FROM THE LAST SWEEP",&x,&y));
+    ls_picker_close();
+    /* And the next sweep starts on the band again. Carrying the view over
+       would mean a sweep begun to see whether anything is out there opened
+       on a table of what the LAST one found. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'n'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_CHECK(rec_watch_scan_busy());
+    fresh();ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(!find_text("DETECTIONS",&x,&y));
+    rec_watch_scan_stop();
+    ls_scr_subghz.leave();
+}
+
+/* MORE is what is left over, and it should be short.
+
+   Nine rows, four of which were about the sweep or the spectrum, is a menu
+   you read rather than use. RECEIVER TOOLS in particular could only ever
+   print a sentence saying it was the wrong source - a row that exists to
+   refuse itself. */
+LS_CASE(subghz_more_is_short_and_receiver_tools_belong_to_the_rtl)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'m'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    int x,y;
+    LS_CHECK(find_text("LEARN SIGNAL",&x,&y));
+    LS_CHECK(find_text("ALERTS",&x,&y));
+    LS_CHECK(find_text("DISPLAY",&x,&y));
+    LS_CHECK(find_text("NOTES",&x,&y));
+    LS_CHECK(find_text("RECEIVER TOOLS",&x,&y));
+    /* The sweep and the spectrum moved to the controls they belong to. */
+    LS_CHECK(!find_text("ON DETECT",&x,&y));
+    LS_CHECK(!find_text("COLOUR",&x,&y));
+    ls_picker_close();
+    /* On any other receiver the row is simply not there. */
+    rec_watch_select_source(REC_SOURCE_SX1262);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'m'));
+    fresh();ls_picker_draw(&g_sf,pane);
+    LS_CHECK(!find_text("RECEIVER TOOLS",&x,&y));
+    LS_CHECK(find_text("DISPLAY",&x,&y));
+    ls_picker_close();
+    rec_watch_select_source(REC_SOURCE_RTL);
+    ls_scr_subghz.leave();
+}
+
+/* LEARN and its answer were two rows of the same menu, and the second did
+   nothing until the first had been run - with nothing in the list to say the
+   order mattered. */
+LS_CASE(subghz_learn_shows_what_it_heard_in_the_same_list)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_SX1262);
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'m'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));       /* LEARN SIGNAL */
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    int x,y;LS_CHECK(find_text("LEARN SIGNAL",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));       /* listen */
+    /* Opened again, the reading is in the same list as the control that
+       produced it, applying it at the top. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'m'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    fresh();ls_picker_draw(&g_sf,pane);
+    LS_CHECK(find_text("APPLY THESE",&x,&y));
+    LS_CHECK(find_text("2400 baud",&x,&y));
+    LS_CHECK(find_text("Sync word",&x,&y));
+    ls_picker_close();
+    rec_watch_select_source(REC_SOURCE_RTL);
+    ls_scr_subghz.leave();
+}
+
+/* Putting something back on air is a decision, and it had a hidden default.
+
+   REPLAY sent at 14 dBm with no say in the matter, which is the wrong answer
+   in both directions: too much for a receiver a foot away on the bench, and
+   not enough for whatever you are actually trying to reach. */
+int rec_watch_sim_replay_dbm(void);
+LS_CASE(subghz_replay_asks_how_hard_to_send)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_SX1262);
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    /* The third capture is the one from a receiver that can transmit. The
+       other two cannot, and their menus have no REPLAY row at all. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_DOWN,0));
+    LS_CHECK(ls_scr_subghz.key(LS_TK_DOWN,0));
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'c'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    int x,y;LS_CHECK(find_text("REPLAY",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    /* Nothing has gone out yet - the power list comes first. */
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
+    LS_CHECK(find_text("SEND AT",&x,&y));
+    LS_CHECK(find_text("-9 dBm",&x,&y));
+    LS_CHECK(find_text("22 dBm",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_EQ_INT(rec_watch_sim_replay_dbm(),-9);
+    /* And the choice is the operator's every time, not remembered as a new
+       silent default. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'c'));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    for(int i=0;i<3;i++)LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_EQ_INT(rec_watch_sim_replay_dbm(),22);
+    rec_watch_select_source(REC_SOURCE_RTL);
+    ls_scr_subghz.leave();
+}
+
+/* ROWS SPENT ON CONTROLS VERSUS ROWS SPENT ON THE SIGNAL.
+
+   A landscape pane has a third of the rows a portrait one does, and this
+   screen asked for the portrait treatment anyway: four rows of buttons at
+   the top, then a rule that made it SIX whenever the pane was short - taller
+   controls the less height there was to spare - over a hardcoded six at the
+   bottom. Twelve of thirty-one rows were buttons and the captures got
+   thirteen.
+
+   Measured as a share of the pane rather than as row numbers, because the
+   point is the proportion and the exact rows move whenever anything above
+   them changes. */
+LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    const tui_rect pane={1,2,113,24};
+    fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+
+    /* The top bar, the panel under it and the bar under that. */
+    const int bar=find_row_text("TUNE");
+    const int body=find_row_text("PASSIVE WATCH");
+    const int foot=find_row_text("SOURCE");
+    LS_CHECK_MSG(bar>=0 && body>bar && foot>body,
+                 "landscape SUB-GHZ: bar=%d body=%d foot=%d",bar,body,foot);
+    /* Three rows of button means one row of text with a frame either side,
+       so the panel opens two rows after the lettering. Four would be three. */
+    LS_EQ_INT(2,body-bar);
+    /* The compact form, spelled out: label and value share the line. */
+    int cx,cy;
+    LS_CHECK(find_text("TUNE MHz",&cx,&cy));
+    LS_CHECK(find_text("SETUP CAPTURE",&cx,&cy));
+    /* And what is left over is most of the pane, not a third of it. */
+    const int content=foot-body;
+    LS_CHECK_MSG(content*2>pane.h,"only %d of %d rows left for the captures",
+                 content,pane.h);
+    ls_scr_subghz.leave();
+}
+
+/* The short bar is not free everywhere. Three rows is a frame plus ONE line,
+   so a button carrying a value writes "LABEL VALUE" into it - and on a
+   half-width landscape split, five buttons in fifty-six columns leave eight
+   columns for that. SETUP CAPTURE is thirteen.
+
+   The old code carried a comment saying exactly this and drew the wrong
+   conclusion from it: it gave up the short bar in EVERY landscape pane
+   rather than in the one that cannot take it. */
+LS_CASE(subghz_gives_up_the_short_bar_rather_than_cut_a_label_in_half)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    const tui_rect split={1,2,56,24};
+    fresh();grid_for(split);
+    ls_scr_subghz.draw(&g_sf,split);
+    const int bar=find_row_text("SETUP");
+    const int body=find_row_text("PASSIVE WATCH");
+    LS_CHECK_MSG(bar>=0 && body>bar,"split SUB-GHZ: bar=%d body=%d",bar,body);
+    /* Four rows: the value gets its own line, so every word survives. */
+    LS_EQ_INT(3,body-bar);
+    int x,y;
+    LS_CHECK(find_text("SETUP",&x,&y));
+    LS_CHECK(find_text("CAPTURE",&x,&y));
+    LS_CHECK(find_text("WATCH",&x,&y));
+    /* The clip this exists to prevent, spelled out. */
+    LS_CHECK(!find_text("SETUP CA",&x,&y));
+    LS_CHECK(!find_text("WATCH OF",&x,&y));
+    ls_scr_subghz.leave();
+}
+
+/* Portrait is not touched by any of it: it has the rows to spare and the
+   fatter target is worth them. */
+LS_CASE(subghz_portrait_keeps_its_fat_buttons)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
+    rec_watch_scan_stop();
+    ls_scr_subghz.enter();
+    const tui_rect pane={1,2,46,63};
+    fresh();grid_for(pane);
+    ls_scr_subghz.draw(&g_sf,pane);
+    const int bar=find_row_text("TUNE");
+    const int body=find_row_text("PASSIVE WATCH");
+    LS_CHECK_MSG(bar>=0 && body>bar,"portrait SUB-GHZ: bar=%d body=%d",bar,body);
+    /* Never the compact form: the value keeps its own row under the label,
+       which is the difference the short bar trades away. Asserted as the
+       shape rather than as a row count, because this pane is narrow enough
+       that the five buttons wrap onto two rows and the count says more about
+       the wrapping than about the posture. */
+    int x,y;
+    LS_CHECK(find_text("TUNE",&x,&y));
+    LS_CHECK(!find_text("TUNE MHz",&x,&y));
+    LS_CHECK(!find_text("WATCH OFF",&x,&y));
+    LS_CHECK_MSG(body-bar>=4,"portrait bar collapsed to %d rows",body-bar);
+    ls_scr_subghz.leave();
+}
+
 LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
 {
     rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
@@ -1901,17 +2373,44 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
     ls_scr_rec.draw(&g_sf,pane);
     int x,y;LS_CHECK(find_text("SOURCE",&x,&y));
     LS_CHECK(find_text("RTL OOK",&x,&y));
+    /* SOURCE opens a list rather than stepping to the next receiver. Cycling
+       gave no way to see what the other two were before committing to one,
+       and no room to say that the CC1101 is missing or that the SX1262 takes
+       the mesh down while it listens. The rows are in rec_source_t order, so
+       the index IS the source. */
     ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_CHECK(ls_picker_active());
+    LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);   /* not until it is chosen */
+    LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
     LS_EQ_INT(rec_get_freq(),433920000);
     fresh();ls_scr_rec.draw(&g_sf,pane);
     LS_CHECK(find_text("CC1101 OOK",&x,&y));
+    /* A running watch refuses the change, and says so rather than moving. */
     ls_scr_rec.key(LS_TK_CHAR,'w');
     LS_CHECK(rec_watch_enabled());
     ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_CHECK(!ls_picker_active());
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
     ls_scr_rec.key(LS_TK_CHAR,'w');
+    LS_CHECK(!rec_watch_enabled());
+    /* The SX1262 is on the list now that the archive can describe what it
+       hears and the runtime can feed it; it is also the only one of the
+       three that can transmit, which is what makes replay possible at all. */
     ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_CHECK(ls_picker_active());
+    LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_EQ_INT(rec_watch_source(),REC_SOURCE_SX1262);
+    /* And back to the RTL, which still remembers where it was pointed. Each
+       receiver keeps its own frequency; sharing one meant switching to the
+       CC1101 at a VHF frequency it cannot reach and back again to find the
+       RTL retuned to 433. */
+    ls_scr_rec.key(LS_TK_CHAR,'r');
+    LS_CHECK(ls_picker_active());
+    LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);
     LS_EQ_INT(rec_get_freq(),152600000);
     ls_scr_rec.leave();
@@ -2031,8 +2530,16 @@ LS_CASE(home_function_groups_numeric_launch_and_compass_rotation_policy)
     fresh();draw_pane(&ls_scr_home,PANES[0]);
     int x,y;LS_CHECK(!find_text("PAGE",&x,&y));
     LS_EQ_INT(ls_btn_hit_slot(PANES[0].x+5,PANES[0].y+PANES[0].h-2,LS_BTN_SLOT_QUICK),-1);
+    /* Slot 2 is the second tile of the open group, wherever the group's
+       membership has got to: the same place RIGHT then ENTER lands. */
+    LS_CHECK(ls_tui_router_key(LS_TK_RIGHT,0));
+    LS_CHECK(ls_tui_router_key(LS_TK_ENTER,0));
+    const int by_navigation = ls_tui_screen_current();
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    ls_anim_cancel();
+    LS_CHECK(ls_tui_router_key(LS_TK_F3,0));
     LS_CHECK(ls_tui_router_key(LS_TK_CHAR,'2'));
-    LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_diag),ls_tui_screen_current());
+    LS_EQ_INT(by_navigation,ls_tui_screen_current());
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_labs));
     LS_CHECK(ls_tui_screen_holds_rotation());
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));

@@ -28,7 +28,9 @@ static int64_t s_heading_us;
 static ls_fresh_t packet_arrival;
 EXT_RAM_BSS_ATTR static float s_trace[LS_FIELD_BINS], s_spectrum[LS_FIELD_BINS], s_bearing[36];
 EXT_RAM_BSS_ATTR static uint16_t s_bearing_count[36];
-static const char *const modes[] = {"PACKETS", "SPECTRUM", "BEARING"};
+static const char *const modes[] = {"PACKETS", "SPECTRUM", "BEARING",
+                                    "GFSK", "POCSAG"};
+#define MODE_N ((int)(sizeof(modes) / sizeof(modes[0])))
 static const char *const settings[] = {"FREQUENCY", "SPREAD FACTOR", "BANDWIDTH", "CODING RATE", "POWER", "PREAMBLE", "SYNC WORD", "CRC", "INVERT IQ"};
 static const uint32_t bandwidths[] = {7810, 10420, 15630, 20830, 31250, 41670, 62500, 125000, 250000, 500000};
 
@@ -54,6 +56,120 @@ static void set_number(double n)
     result(ls_field_configure(&cfg));
 }
 static void set_bw(int i) { if (i < 0 || i >= 10) return; ls_lora_cfg_t cfg = s.config; cfg.bw_hz = bandwidths[i]; result(ls_field_configure(&cfg)); }
+
+/* Somewhere useful to start, per band. This screen tunes ONE frequency, so
+   these are points rather than the ranges ls_wf_source.c sweeps for the
+   waterfall - the picker's second column carries the exact figure. All of
+   them sit inside the 150-959 MHz the numeric entry already enforces. */
+static const struct { const char *name; double mhz; } LABS_BANDS[] = {
+    { "mesh US",     910.525 },
+    { "mesh EU",     869.525 },
+    { "US915 low",   902.300 },
+    { "US915 mid",   915.000 },
+    { "US915 high",  927.500 },
+    { "EU868",       868.100 },
+    { "433 ISM",     433.175 },
+    { "315 remotes", 315.000 },
+    /* Reachable because the part tunes down to 150 MHz, and the obvious place
+       to point POCSAG mode. Nothing to do with LoRa. */
+    { "VHF pager",   152.600 },
+};
+#define LABS_BAND_N ((int)(sizeof(LABS_BANDS) / sizeof(LABS_BANDS[0])))
+
+/* The same move the numeric entry makes for frequency, including the 4 MHz
+   calibration window - a retune with a stale window is what makes the part
+   come back deaf. */
+static void set_band(int i)
+{
+    if (i < 0 || i >= LABS_BAND_N) return;
+    const double mhz = LABS_BANDS[i].mhz;
+    ls_lora_cfg_t cfg = s.config;
+    cfg.freq_hz = (uint32_t)llround(mhz * 1e6);
+    cfg.cal_min_mhz = (uint16_t)(mhz / 4) * 4;
+    cfg.cal_max_mhz = cfg.cal_min_mhz + 4;
+    result(ls_field_configure(&cfg));
+}
+
+static void open_band_picker(void)
+{
+    ls_picker_open("LORA BAND", set_band);
+    for (int i = 0; i < LABS_BAND_N; i++) {
+        char detail[16];
+        snprintf(detail, sizeof(detail), "%.4f", LABS_BANDS[i].mhz);
+        ls_picker_add(LABS_BANDS[i].name, detail);
+    }
+}
+
+/* What REC should read. A count rather than "ON", because the question you
+   actually have while walking around is whether anything is landing on the
+   card. PACKETS mode counts payloads into packets.csv; the other two modes
+   produce no packets at all, so they count sample rows instead rather than
+   sitting on a permanent zero. */
+static const char *rec_face(void)
+{
+    static char buf[12];
+    if (!s.recording) return "OFF";
+    if (s.mode == LS_LAB_PACKETS)
+        snprintf(buf, sizeof(buf), "%lu PKT", (unsigned long)s.record_packets);
+    else
+        snprintf(buf, sizeof(buf), "%lu ROW", (unsigned long)s.record_rows);
+    return buf;
+}
+
+/* The decoded pages, newest first, the way the FM screen lists them. UP and
+   DOWN walk the selection; the selected message gets its own full-width line
+   underneath, because eighty characters do not fit on a list row. */
+static int s_page_sel;
+
+static void pages_list(tui_surface *sf, tui_rect r)
+{
+    const int count = s.page_log_count;
+    if (!count) {
+        tui_put_str(sf, r, r.x + 1, r.y + 1,
+                    s.direct ? "Listening for pages"
+                             : "Enable DIRECT to listen; Mesh will pause",
+                    TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        return;
+    }
+    if (s_page_sel >= count) s_page_sel = count - 1;
+    if (s_page_sel < 0) s_page_sel = 0;
+
+    /* Two rows held back for the selected message and its detail line. */
+    int rows = r.h - 3;
+    if (rows > count) rows = count;
+    if (rows < 1) rows = 1;
+    int top = s_page_sel - rows + 1;
+    if (top < 0) top = 0;
+
+    char row[96];
+    for (int i = 0; i < rows && top + i < count; i++) {
+        const ls_field_page_t *p = &s.page_log[top + i];
+        const bool on = top + i == s_page_sel;
+        snprintf(row, sizeof(row), "%c %lu  %s", on ? '>' : ' ',
+                 (unsigned long)p->address, p->text);
+        tui_put_str(sf, r, r.x, r.y + i, row,
+                    on ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
+    }
+    const ls_field_page_t *sel = &s.page_log[s_page_sel];
+    snprintf(row, sizeof(row), "%d of %d | addr %lu | f%u | %u bd",
+             s_page_sel + 1, count, (unsigned long)sel->address,
+             sel->function, sel->baud);
+    tui_put_str(sf, r, r.x, r.y + r.h - 2, row, LS_ATTR_DIM);
+    tui_put_str(sf, r, r.x, r.y + r.h - 1, sel->text,
+                TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+}
+
+/* The preset the radio is sitting on, or the bare frequency when it is
+   somewhere the list has no name for. */
+static const char *band_now(void)
+{
+    static char buf[16];
+    for (int i = 0; i < LABS_BAND_N; i++)
+        if ((uint32_t)llround(LABS_BANDS[i].mhz * 1e6) == s.config.freq_hz)
+            return LABS_BANDS[i].name;
+    snprintf(buf, sizeof(buf), "%.3f", s.config.freq_hz / 1e6);
+    return buf;
+}
 static void edit_setting(int i)
 {
     if (i < 0 || i >= 9) return;
@@ -89,17 +205,93 @@ static void setup(void)
         ls_picker_add(settings[i], value);
     }
 }
+/* An FSK mode has its own parameters, so SETUP shows a different list. In
+   POCSAG only the first two appear: the rest are pinned by fsk_params in
+   ls_field.c, and offering a control that the next retune overwrites is the
+   lit-control-that-does-nothing fault. Baud is offered because 1200 and 2400
+   are both in use. */
+static const char *const fsk_settings[] = {"FREQUENCY", "BITRATE", "DEVIATION",
+                                           "BANDWIDTH", "SYNC WORD", "PAYLOAD"};
+#define FSK_SETTING_N ((int)(sizeof(fsk_settings) / sizeof(fsk_settings[0])))
+static int s_fsk_setting;
+
+static void set_fsk_number(double n)
+{
+    if (!isfinite(n)) { result(false); return; }
+    ls_fsk_cfg_t cfg = s.fsk;
+    switch (s_fsk_setting) {
+    case 0: {
+        /* Frequency lives on the LoRa config, so one BAND choice moves every
+           mode rather than each carrying its own. */
+        if (n < 150 || n > 959) { result(false); return; }
+        ls_lora_cfg_t tuned = s.config;
+        tuned.freq_hz = (uint32_t)llround(n * 1e6);
+        tuned.cal_min_mhz = (uint16_t)(n / 4) * 4;
+        tuned.cal_max_mhz = tuned.cal_min_mhz + 4;
+        result(ls_field_configure(&tuned));
+        return;
+    }
+    case 1: cfg.bitrate = (uint32_t)llround(n); break;
+    case 2: cfg.deviation_hz = (uint32_t)llround(n); break;
+    case 3: cfg.bandwidth_hz = (uint32_t)llround(n); break;
+    case 4: cfg.sync_word = (uint32_t)llround(n); break;
+    case 5: cfg.payload_bytes = (uint8_t)llround(n); break;
+    default: return;
+    }
+    /* Limits, including that the signal fits the bandwidth, are the
+       demodulator's and are checked in ls_field_configure_fsk. */
+    result(ls_field_configure_fsk(&cfg));
+}
+
+static void edit_fsk_setting(int i)
+{
+    if (i < 0 || i >= FSK_SETTING_N) return;
+    s_fsk_setting = i;
+    const double values[] = { s.config.freq_hz / 1e6, s.fsk.bitrate,
+        s.fsk.deviation_hz, s.fsk.bandwidth_hz, s.fsk.sync_word,
+        s.fsk.payload_bytes };
+    static const char *const units[] = {"MHz", "baud", "Hz", "Hz",
+                                        "decimal", "bytes"};
+    ls_numpad_open(fsk_settings[i], units[i], values[i], set_fsk_number);
+}
+
+static void setup_fsk(void)
+{
+    const bool paging = s.mode == LS_LAB_POCSAG;
+    const int n = paging ? 2 : FSK_SETTING_N;
+    ls_picker_open(paging ? "POCSAG SETTINGS" : "GFSK SETTINGS", edit_fsk_setting);
+    char value[32];
+    for (int i = 0; i < n; i++) {
+        switch (i) {
+        case 0: snprintf(value, sizeof(value), "%.4f MHz", s.config.freq_hz / 1e6); break;
+        case 1: snprintf(value, sizeof(value), "%lu baud", (unsigned long)s.fsk.bitrate); break;
+        case 2: snprintf(value, sizeof(value), "%.1f kHz", s.fsk.deviation_hz / 1000.0); break;
+        case 3: snprintf(value, sizeof(value), "%.1f kHz", s.fsk.bandwidth_hz / 1000.0); break;
+        case 4: snprintf(value, sizeof(value), "0x%08lX", (unsigned long)s.fsk.sync_word); break;
+        default: snprintf(value, sizeof(value), "%u bytes", s.fsk.payload_bytes); break;
+        }
+        ls_picker_add(fsk_settings[i], value);
+    }
+}
+
 static void send_text(const char *text) { result(ls_field_transmit(text)); }
 static void action(int i)
 {
     s_feedback[0] = 0;
     if (i == 0) result(ls_field_direct(!(s.direct || s.requested)));
-    else if (i == 1) result(ls_field_mode((ls_lab_mode_t)((s.mode + 1) % 3)));
-    else if (i == 2) setup();
-    else if (i == 3) {
+    else if (i == 1) result(ls_field_mode((ls_lab_mode_t)((s.mode + 1) % MODE_N)));
+    else if (i == 2) { if (LS_LAB_IS_FSK(s.mode)) setup_fsk(); else setup(); }
+    else if (i == 3) open_band_picker();
+    else if (i == 4) {
         if (!s.direct || s.transmitting || s.mode == LS_LAB_SPECTRUM) { result(false); return; }
         ls_keyboard_open("SEND ONE LORA PACKET", "", 64, send_text);
-    } else if (i == 4) result(ls_field_mark_lora());
+    } else if (i == 5) result(ls_field_mark_lora());
+    /* The survey log: samples.csv, one row per sample, carrying RSSI, SNR,
+       frequency and packet counts alongside GPS and the IMU. It is what
+       BEARING and SPECTRUM are worth keeping - not packet payloads, which
+       this writer does not carry. JOURNAL has had this button all along;
+       the screen actually doing the measuring did not. */
+    else if (i == 6) result(ls_field_record(!s.recording));
 }
 static void switch_action(int i)
 {
@@ -402,6 +594,15 @@ static void full_compass_draw(tui_surface *sf, tui_rect a)
     ls_btn_t buttons[]={{"BACK","LABS",'v',false,false},{"VIEW",s_show_signal?"SIGNALS":"SENSORS",'b',s_show_signal,false},{"MARK","JOURNAL",'j',false,false},{"CAL","SETUP",'k',false,false}};
     ls_btn_bar_raised(sf,tui_rect_make(a.x+3,a.y+a.h-6,a.w-6,4),buttons,4,button_focus);
 }
+/* Inside the frame, never on it: these notes vary in length with the mode. */
+static void panel_note(tui_surface *sf, tui_rect panel, int row, const char *text)
+{
+    const int w = panel.w - 4;
+    if (w < 1) return;
+    tui_put_str(sf, tui_rect_make(panel.x + 2, row, w, 1),
+                panel.x + 2, row, text, LS_ATTR_DIM);
+}
+
 static void draw(tui_surface *sf, tui_rect a)
 {
     if (a.h < 14 || a.w < 24) {
@@ -424,10 +625,12 @@ static void draw(tui_surface *sf, tui_rect a)
     if (s_full_compass) { full_compass_draw(sf,a); return; }
     ls_btn_t buttons[] = {{"DIRECT", s.direct ? "ON" : s.requested ? "WAIT" : "OFF", 'd', s.direct, false},
         {"MODE", modes[s.mode], 'm', false, false}, {"SETUP", NULL, 's', false, false},
+        {"BAND", band_now(), 'b', false, false},
         {"SEND", s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || s.mode == LS_LAB_SPECTRUM},
-        {"MARK", "JOURNAL", 'j', false, false}};
-    const int bar_h = ls_btn_raised_height(a, 5);
-    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_slot==0?button_focus:-1);
+        {"MARK", "JOURNAL", 'j', false, false},
+        {"REC", rec_face(), 'r', s.recording, !s.ready}};
+    const int bar_h = ls_btn_raised_height(a, 7);
+    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 7, button_slot==0?button_focus:-1);
     ls_btn_t switches[] = {{"CRC", s.config.crc_on ? "ON" : "OFF", 'c', s.config.crc_on, s.transmitting},
         {"IQ", s.config.invert_iq ? "INVERT" : "NORMAL", 'i', s.config.invert_iq, s.transmitting},
         {"SYNC", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM", 'p', s.config.sync_word == 0x34, s.transmitting},
@@ -443,7 +646,22 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_panel_box(sf, panel, "LORA LABS", TUI_CYAN);
     ls_motion_busy(sf,panel,s.busy || s.transmitting || (s.requested && !s.direct));
     char line[100];
-    snprintf(line, sizeof(line), "%.4f MHz  SF%u  %.1fk  4/%u", s.config.freq_hz / 1e6, s.config.sf, s.config.bw_hz / 1000.0, s.config.cr);
+    /* Spreading factor and coding rate are LoRa's and mean nothing to the FSK
+       demodulator, so an FSK mode reports what it is actually listening
+       with. Showing SF7 while running GFSK is a quiet lie about the radio. */
+    if (s.mode == LS_LAB_POCSAG)
+        /* Deviation, bandwidth and sync are pinned for paging, so only the
+           two that a user can move are worth the width. */
+        snprintf(line, sizeof(line), "%.4f MHz  %lu bd  POCSAG%s",
+                 s.config.freq_hz / 1e6, (unsigned long)s.fsk.bitrate,
+                 s.config.invert_iq ? "  INVERTED" : "");
+    else if (s.mode == LS_LAB_GFSK)
+        snprintf(line, sizeof(line), "%.4f MHz  %lu bd  dev %.1fk  bw %.1fk%s",
+                 s.config.freq_hz / 1e6, (unsigned long)s.fsk.bitrate,
+                 s.fsk.deviation_hz / 1000.0, s.fsk.bandwidth_hz / 1000.0,
+                 s.config.invert_iq ? "  INV" : "");
+    else
+        snprintf(line, sizeof(line), "%.4f MHz  SF%u  %.1fk  4/%u", s.config.freq_hz / 1e6, s.config.sf, s.config.bw_hz / 1000.0, s.config.cr);
     tui_put_str(sf, panel, panel.x + 2, panel.y + 1, line, LS_ATTR_DIM);
     snprintf(line, sizeof(line), "%s | RX %lu BAD %lu TX %lu", s.direct || s.busy ? "MESH PAUSED" : "MESH CONTROL", (unsigned long)s.rx, (unsigned long)s.bad, (unsigned long)s.tx);
     uint8_t fresh=ls_fresh(&packet_arrival,s.rx+s.tx+s.bad,600);
@@ -464,10 +682,13 @@ static void draw(tui_surface *sf, tui_rect a)
         else tui_put_str(sf,plot,plot.x+1,plot.y+1,s.direct?"No complete fresh sweep":"Enable DIRECT to scan; Mesh will pause",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
         snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",(s.config.freq_hz-1000000)/1e6,(s.config.freq_hz+1000000)/1e6);
         tui_put_str(sf,plot,plot.x,plot.y+plot.h-1,line,LS_ATTR_DIM);
-    } else graph(sf, plot, s_trace);
+    } else if (s.mode == LS_LAB_POCSAG) pages_list(sf, plot);
+    else graph(sf, plot, s_trace);
     const char *caption = s.mode == LS_LAB_BEARING ? "Yellow: board top | Red N: north" :
-        s.mode == LS_LAB_SPECTRUM ? "Swept energy: brief packets may fall between looks" : s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
-    tui_put_str(sf, panel, panel.x + 2, plot.y + plot.h + 1, caption, LS_ATTR_DIM);
+        s.mode == LS_LAB_SPECTRUM ? "Swept energy: brief packets may fall between looks" :
+        s.mode == LS_LAB_POCSAG ? "UP/DOWN walk the pages | newest first" :
+        s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
+    panel_note(sf, panel, plot.y + plot.h + 1, caption);
     if (s.mode == LS_LAB_BEARING) {
         static const char *const directions[] = {"N","NE","E","SE","S","SW","W","NW"};
         if (isfinite(s.sample.heading)) snprintf(line, sizeof(line), "[%03u %s MAG] %s", (unsigned)lroundf(s.sample.heading) % 360,
@@ -496,11 +717,19 @@ static void draw(tui_surface *sf, tui_rect a)
         ls_kv(sf, info, 10, "PACKETS", line, LS_ATTR_DIM);
         ls_kv(sf, info, 12, "JOURNAL", "MARK attaches this observation", LS_ATTR_DIM);
     }
-    if (s.mode == LS_LAB_PACKETS) {
+    if (s.mode == LS_LAB_POCSAG) {
+        /* The list above carries the messages; this is the running total,
+           which is what tells you the decoder is alive on a quiet channel. */
+        snprintf(line, sizeof(line), "%lu page%s decoded this session",
+                 (unsigned long)s.pages, s.pages == 1 ? "" : "s");
+        panel_note(sf, panel, panel.y + panel.h - 3, line);
+    } else if (s.mode == LS_LAB_PACKETS || s.mode == LS_LAB_GFSK) {
         int n = s.packet_len < 12 ? s.packet_len : 12, used = 0;
         for (int i = 0; i < n; i++) used += snprintf(line + used, sizeof(line) - used, "%02X ", s.packet[i]);
-        if (!n) snprintf(line, sizeof(line), "Waiting for a matching LoRa packet");
-        tui_put_str(sf, panel, panel.x + 2, panel.y + panel.h - 3, line, LS_ATTR_DIM);
+        if (!n) snprintf(line, sizeof(line), "%s", s.mode == LS_LAB_GFSK
+            ? "Waiting for an FSK frame with this sync word"
+            : "Waiting for a matching LoRa packet");
+        panel_note(sf, panel, panel.y + panel.h - 3, line);
     }
     ls_safe_line(sf, a, a.y + a.h - 2, s.status, LS_ATTR_DIM);
     ls_safe_line(sf, a, a.y + a.h - 1, s.calibrating && s.compass_status[0] ? s.compass_status : s_feedback[0] ? s_feedback : "Leaving Labs returns the radio to Mesh", LS_ATTR_DIM);
@@ -515,7 +744,7 @@ static void leave(void) { s_guide_visible = false; ls_field_direct(false); ls_fi
 static bool touch(int col, int row) {
     int i = ls_btn_hit(col,row);
     if (s.calibrating || s_guide_visible) { if(i>=0)calibration_action(i); return true; }
-    if (s_full_compass) { if(i==0)expand_compass(false);else if(i==1)s_show_signal=!s_show_signal;else if(i==2)action(4);else if(i==3){expand_compass(false);switch_action(5);}return true; }
+    if (s_full_compass) { if(i==0)expand_compass(false);else if(i==1)s_show_signal=!s_show_signal;else if(i==2)action(5);else if(i==3){expand_compass(false);switch_action(5);}return true; }
     if (col>=s_expand_hit.x && col<s_expand_hit.x+s_expand_hit.w &&
         row>=s_expand_hit.y && row<s_expand_hit.y+s_expand_hit.h) { expand_compass(true);return true; }
     if(i>=0)action(i);else { i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)switch_action(i); }
@@ -531,17 +760,26 @@ static bool key(ls_tk_t k, char ch) {
     if (s_full_compass) {
         if (k==LS_TK_CHAR && ch=='k') { expand_compass(false);switch_action(5);return true; }
         if (k==LS_TK_ESC || k==LS_TK_BACKSPACE || (k==LS_TK_CHAR && (ch=='v' || ch=='q'))) { expand_compass(false);return true; }
-        if (k==LS_TK_CHAR && ch=='j') { action(4);return true; }
+        if (k==LS_TK_CHAR && ch=='j') { action(5);return true; }
         if (k==LS_TK_CHAR && ch=='b') { s_show_signal=!s_show_signal;return true; }
         if (ls_btn_navigate(k,&button_slot,&button_focus,false)) return true;
-        if (k==LS_TK_ENTER) { if(button_focus==0)expand_compass(false);else if(button_focus==1)s_show_signal=!s_show_signal;else if(button_focus==2)action(4);else if(button_focus==3){expand_compass(false);switch_action(5);}return true; }
+        if (k==LS_TK_ENTER) { if(button_focus==0)expand_compass(false);else if(button_focus==1)s_show_signal=!s_show_signal;else if(button_focus==2)action(5);else if(button_focus==3){expand_compass(false);switch_action(5);}return true; }
         return false;
     }
     if (k==LS_TK_CHAR && ch=='v') { expand_compass(true);return true; }
+    /* The page list owns UP/DOWN while it is the view, the way the FM pager
+       does. Buttons stay reachable by letter and by thumb. */
+    if (s.mode == LS_LAB_POCSAG && (k == LS_TK_UP || k == LS_TK_DOWN)) {
+        const int count = s.page_log_count;
+        s_page_sel += k == LS_TK_DOWN ? 1 : -1;
+        if (s_page_sel >= count) s_page_sel = count ? count - 1 : 0;
+        if (s_page_sel < 0) s_page_sel = 0;
+        return true;
+    }
     if (ls_btn_navigate(k,&button_slot,&button_focus,true)) return true;
     if (k==LS_TK_ENTER) { if(ls_btn_enabled(button_slot,button_focus)) { if(button_slot==0)action(button_focus);else switch_action(button_focus); } return true; }
     if (k != LS_TK_CHAR || !ch) return false;
-    const char *p = strchr("dmstj", ch); if (p) { action((int)(p - "dmstj")); return true; }
+    const char *p = strchr("dmsbtjr", ch); if (p) { action((int)(p - "dmsbtjr")); return true; }
     p = strchr("ciphxk", ch); if (!p) return false; switch_action((int)(p - "ciphxk")); return true;
 }
-const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};
+const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  B band  R record  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};

@@ -1,4 +1,5 @@
 #include "rec_watch.h"
+#include <stddef.h>
 #include <limits.h>
 #include <string.h>
 
@@ -36,8 +37,14 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
     const int32_t *p, int n, uint32_t boot, uint64_t ms,
     int peak, int reason, bool *novel)
 {
+    return rec_watch_observe_mod(c,source,hz,p,n,boot,ms,peak,reason,NULL,novel);
+}
+int rec_watch_observe_mod(rec_watch_catalog_t *c, rec_source_t source, uint32_t hz,
+    const int32_t *p, int n, uint32_t boot, uint64_t ms,
+    int peak, int reason, const rec_fsk_mod_t *mod, bool *novel)
+{
     if (novel) *novel = false;
-    if ((source != REC_SOURCE_RTL && source != REC_SOURCE_CC1101) || !c || !p || n < 6 || n > REC_WATCH_EDGES || !hz ||
+    if (source >= REC_SOURCE_COUNT || !c || !p || n < 6 || n > REC_WATCH_EDGES || !hz ||
         c->sequence == UINT64_MAX) return -1;
     uint64_t span = 0;
     for (int i = 0; i < n; i++) {
@@ -48,7 +55,7 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
     if (!c->archive_id) c->archive_id=((uint64_t)boot<<32)|hz;
     rec_ook24_t incoming;
     int incoming_rank=rec_decode_ook24(p,n,&incoming)?3:1;
-    int slot = -1, slot_rank=99;
+    int slot = -1, slot_rank=99, slot_class=99;
     for (int i = 0; i < REC_WATCH_SLOTS; i++) {
         if (c->record[i].event.source == source && matches(&c->record[i], hz, p, n)) {
             rec_watch_event_t *e = &c->record[i].event;
@@ -62,10 +69,30 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
         int rank=!candidate->event.id?0:
             rec_decode_ook24(candidate->pulse,candidate->event.edges,&decoded)?3:
             candidate->event.count>1?2:1;
+        /* Which source it belongs to, as a tiebreaker only - an empty slot
+           first, then one this source already owns, then anyone's.
+
+           This is what stops a talkative receiver from clearing the others
+           out. Sixteen slots are shared, so a source hearing a frame every
+           three seconds will take every one of them inside a minute, and the
+           captures it evicts are the ones somebody spent a field session
+           collecting on a different radio.
+
+           It sits BELOW rank on purpose. Rank is the existing protection -
+           noise never evicts something decoded or repeated - and fairness
+           between sources must not be able to talk it into dropping good
+           data to spare another source's junk. Rank first, then whose it is,
+           then age. */
+        const int klass = !candidate->event.id ? 0
+                        : candidate->event.source == (uint8_t)source ? 1 : 2;
+        const bool better = slot<0 || rank<slot_rank ||
+            (rank==slot_rank && (klass<slot_class ||
+             (klass==slot_class &&
+              candidate->event.order<c->record[slot].event.order)));
         /* One-off noise cannot evict a repeated or decoded observation. */
-        if (!candidate->event.pinned && rank<=incoming_rank &&
-            (slot<0 || rank<slot_rank || (rank==slot_rank &&
-             candidate->event.order<c->record[slot].event.order))) {slot=i;slot_rank=rank;}
+        if (!candidate->event.pinned && rank<=incoming_rank && better) {
+            slot=i; slot_rank=rank; slot_class=klass;
+        }
     }
     if (slot < 0 || c->next_id == UINT32_MAX) {
         if (c->rejected < UINT32_MAX) c->rejected++;
@@ -77,6 +104,13 @@ int rec_watch_observe_from(rec_watch_catalog_t *c, rec_source_t source, uint32_t
         .first_boot=boot, .last_boot=boot, .first_ms=ms, .last_ms=ms,
         .order=++c->sequence, .span_us=(uint32_t)span, .edges=(uint16_t)n,
         .peak=peak, .end_reason=(uint8_t)reason, .source=(uint8_t)source};
+    if (mod) {
+        r->event.bitrate=mod->bitrate;
+        r->event.deviation_hz=mod->deviation_hz;
+        r->event.sync_word=mod->sync_word;
+        r->event.preamble_bits=mod->preamble_bits;
+        r->event.bandwidth_khz=mod->bandwidth_khz;
+    }
     memcpy(r->pulse, p, (size_t)n * sizeof(*p));
     if (novel) *novel = true;
     return slot;
@@ -135,4 +169,32 @@ int rec_watch_filter_pulses(int32_t *pulse,int edges,uint32_t min_us)
     }
     if(out && pulse[0]<0){memmove(pulse,pulse+1,(--out)*sizeof(*pulse));}
     return out;
+}
+
+/* See rec_watch.h. Kept beside the filter it feeds rather than in the runtime,
+   because the runtime needs FreeRTOS and so never reaches the bench, and a
+   memcpy whose length is computed from an offsetof is exactly the kind of
+   arithmetic that wants a test rather than a careful reading. */
+size_t rec_watch_status_copy(rec_watch_status_t *dst,
+                             const rec_watch_status_t *src, int count)
+{
+    if(!dst || !src) return 0;
+    if(count<0) count=0;
+    if(count>REC_WATCH_SLOTS) count=REC_WATCH_SLOTS;
+
+    /* Everything ahead of the first array: the flags, the counters, the
+       strings and count itself. */
+    size_t moved = offsetof(rec_watch_status_t, event);
+    memcpy(dst, src, moved);
+    dst->count = count;
+    if(count) {
+        const size_t events  = (size_t)count * sizeof(dst->event[0]);
+        const size_t preview = (size_t)count * sizeof(dst->preview[0]);
+        const size_t decoded = (size_t)count * sizeof(dst->decoded[0]);
+        memcpy(dst->event,   src->event,   events);
+        memcpy(dst->preview, src->preview, preview);
+        memcpy(dst->decoded, src->decoded, decoded);
+        moved += events + preview + decoded;
+    }
+    return moved;
 }

@@ -6,9 +6,17 @@ else()
     set(LS_BLE_REQ "")
 endif()
 
+# Optional extensions, compiled only when this tree has them.
+# Deleting the file is the whole removal -
+# compact_ui.cpp reaches it through __has_include and needs no edit.
+set(LS_PRIVATE_SRC "")
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/private_console.cpp)
+    list(APPEND LS_PRIVATE_SRC private_console.cpp)
+endif()
+
 if(CONFIG_LAKESHARK_HEADLESS)
     idf_component_register(
-        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c
+        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c
         INCLUDE_DIRS .
         PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted ${LS_BLE_REQ})
 else()
@@ -27,6 +35,11 @@ if(CONFIG_LS_BLE_HEAD)
     target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=hci_rx_handler"
         "-Wl,--wrap=transport_drv_reconfigure")
 endif()
+
+# Format checking back on for main/, against the project-wide -Wno-format.
+# This is where the console commands live, and a console command is almost
+# entirely printf.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wformat -Wno-format-truncation)
 
 idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)
 target_compile_options(

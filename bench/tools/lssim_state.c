@@ -48,6 +48,13 @@ void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
+/* Sub-GHz display preferences. Real state, because the screen reads them
+   back to draw the option lists with the current choice marked. */
+static int s_sg_style, s_sg_colour;
+int  settings_get_subghz_style(void) { return s_sg_style; }
+void settings_set_subghz_style(int v) { s_sg_style = v; }
+int  settings_get_subghz_colour(void) { return s_sg_colour; }
+void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 int  settings_get_theme(void) { return 0; }
 void settings_set_theme(int v) { (void)v; }
@@ -155,6 +162,10 @@ void fm_get_receiver_status(ls_iq_control_status_t *out)
     }
 }
 void p25_request_gain(int tenths) { P25.rtl_gain_tenths = tenths; }
+/* The board persists this to NVS as well; there is none here, so the pair
+   collapses back to the request. lakeshark_p25_gain_tenths is already
+   provided by lssim_p25_settings.c. */
+void lakeshark_p25_set_gain(int tenths) { p25_request_gain(tenths); }
 bool p25_running(void) { return true; }
 
 void lakeshark_fm_set_freq(uint32_t hz) { FM.freq_hz = hz; }

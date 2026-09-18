@@ -403,26 +403,60 @@ static void paint_margin(uint16_t *fb, int native_w)
 }
 
 /* Bars reach the physical rounded edge; text remains inside corner_pad.
-   Only the empty end caps are painted here, never a word or touch target. */
+   Only the empty end caps and the margin outside them are painted here,
+   never a word or a touch target.
+
+   THIS USED TO BE LANDSCAPE ONLY, and portrait is the posture this board is
+   held in. The grid stands its text off the corners - corner_pad is five
+   cells at the top of a 72 px radius - and nothing put the bar back behind
+   that standoff, so the status bar began fifty pixels in from the glass and
+   the whole bar read as inset. The complaint is always that the border has
+   been brought inside; what had been brought inside is the background, and
+   the fix is to paint it back out rather than to move the text.
+
+   The margin band outside the bar's own row goes with it. Filling the ends
+   but not the strip above them leaves the bar floating a cell below the top
+   edge, which is the same defect one axis over. */
 static void paint_bar_ends(uint16_t *fb,int native_w)
 {
-    if(!s_landscape) return;
     for(int end=0;end<2;end++) {
+        /* The status bar is drawn in both postures. The hint bar is not -
+           portrait has no hint row, and its last row belongs to whatever
+           screen is up - so the bottom end stays gated. s_landscape is the
+           conservative test for it: a panel wide enough for a hint row is
+           not necessarily landscape, but a landscape panel always has one,
+           so this can miss a bleed and can never bleed a screen's own row. */
+        if(end && !s_landscape) continue;
         const int row=end?s_rows-1:0;
         const int pad=ls_tui_corner_pad(row);
         const int left=s_ox+pad*s_cw;
         const int right=s_ox+(s_cols-pad)*s_cw;
         const uint8_t attr=s_back[(size_t)row*s_cols+pad].attr;
-        /* Arbitrary surfaces (including pixel/touch calibration) do not
-           have router bars. Never erase their edge cells. */
-        if(TUI_ATTR_BG(attr)!=(end?(TUI_BLACK|TUI_BRIGHT):TUI_CYAN)) continue;
-        const uint16_t color=attr_bg(attr);
-        for(int y=s_oy+row*s_ch;y<s_oy+(row+1)*s_ch;y++) {
-            int inset=0;
-            const int gap=y<s_screen_h-1-y?y:s_screen_h-1-y;
-            while(inset<s_corner_r && !ls_tui_corner_clear(inset,gap,s_corner_r)) inset++;
-            fill_logical(fb,native_w,inset,y,left-inset,1,color);
-            fill_logical(fb,native_w,right,y,s_screen_w-inset-right,1,color);
+        /* Arbitrary surfaces (including pixel/touch calibration) do not have
+           router bars. Their edge CELLS are never touched - but the margin
+           outside the grid still has to be put back, because the last screen
+           may have left this strip painted its bar colour and nothing else
+           repaints the margin between look changes. */
+        const bool is_bar=TUI_ATTR_BG(attr)==(end?(TUI_BLACK|TUI_BRIGHT):TUI_CYAN);
+        const uint16_t color=is_bar?attr_bg(attr):PALETTE[0];
+        const int band_top=s_oy+row*s_ch, band_bottom=s_oy+(row+1)*s_ch;
+        /* Out to the glass on the bar's own side, and no further: the middle
+           of the panel is the grid's. */
+        const int y0=end?band_top:0;
+        const int y1=end?s_screen_h:band_bottom;
+        for(int y=y0;y<y1;y++) {
+            const int inset=ls_tui_row_inset(y,s_screen_h,s_corner_r);
+            if(y>=band_top && y<band_bottom) {
+                if(!is_bar) continue;
+                /* The grid has already drawn the middle of this row, text
+                   and all. Only the ends are ours. */
+                if(left>inset) fill_logical(fb,native_w,inset,y,left-inset,1,color);
+                if(s_screen_w-inset>right)
+                    fill_logical(fb,native_w,right,y,s_screen_w-inset-right,1,color);
+            } else if(s_screen_w-2*inset>0) {
+                /* Outside the grid entirely, so the bar takes the lot. */
+                fill_logical(fb,native_w,inset,y,s_screen_w-2*inset,1,color);
+            }
         }
     }
 }

@@ -32,6 +32,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include "mode-s.h"
+#include <time.h>
 #include "esp_attr.h"
 
 #define MODE_S_PREAMBLE_US 8

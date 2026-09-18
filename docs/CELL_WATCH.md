@@ -1,6 +1,6 @@
 # CELL WATCH: experimental cellular anomaly monitor
 
-Built on private LS_Test1 042923b8. Open HOME > CELL WATCH.
+Open HOME > CELL WATCH.
 
 The current product focus is a standalone P4 passive cell-site-simulator
 detector with an attached SDR. A PC or cellular hotspot is not a required part

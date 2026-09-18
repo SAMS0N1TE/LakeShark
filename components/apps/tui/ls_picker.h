@@ -19,7 +19,13 @@ extern "C" {
    for. The caller's own limit is usually smaller. */
 #define LS_PICKER_MAX     48
 #define LS_PICKER_TEXT    32
-#define LS_PICKER_DETAIL  16
+/* Wide enough to say something. At sixteen every detail on every menu
+   was cut mid-word - "Find what is transmitting" reached the screen as
+   "Find what is tr" - which is worse than no detail at all, because a
+   sentence that stops halfway reads as a fault. The row still declines
+   to draw a detail that will not fit the frame, so a narrow screen
+   loses the explanation rather than the label. */
+#define LS_PICKER_DETAIL  40
 
 /* The index the item was ADDED at, not its position in the list as filtered
    or sorted for display. The caller's array is the thing it wants back, and

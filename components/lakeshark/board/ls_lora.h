@@ -4,6 +4,7 @@
 #define LS_LORA_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
 
@@ -31,7 +32,7 @@ esp_err_t ls_lora_status(uint8_t *out);
 
 esp_err_t ls_lora_read_reg(uint16_t addr, uint8_t *buf, size_t len);
 
-/* Receive-only FSK session. The caller must hold the MeshCore radio. */
+/* An FSK session. The caller must hold the MeshCore radio. */
 typedef struct {
     uint32_t freq_hz;
     uint32_t bitrate;
@@ -39,10 +40,57 @@ typedef struct {
     uint32_t bandwidth_hz;
     uint32_t sync_word;
     uint8_t payload_bytes;
+    /* Preamble length in BITS. 0 means the 32 this session sent before the
+       field existed, so a caller that only listens can leave it alone. A
+       protocol whose receiver opens on preamble has to say what it wants -
+       eight bytes of it is 64 - because the radio transmits exactly what it
+       is told, and a preamble shorter than the far end waits for is a frame
+       nobody ever hears. */
+    uint16_t preamble_bits;
+    /* Only read when the session transmits. -9..22 dBm, and 0 is a real
+       level rather than a sentinel, so a listener's zeroed struct simply
+       configures a power it never uses. */
+    int8_t power_dbm;
+    /* How much of sync_word the part must match, in bits. 0 means the 32
+       this session always used, and 32 is also the most it will take: the
+       part itself will match 64, but sync_word is a uint32_t and only four
+       registers are written from it, so anything longer matches against a
+       register nobody set.
+
+       Short values are for discovery rather than reception: a receiver
+       cannot be told to find an unknown sync word, because matching one is
+       the only thing it does with it. Triggering on eight bits of the
+       preamble instead puts whatever follows the preamble - which includes
+       the real sync word - into the buffer where it can be read. */
+    uint8_t sync_bits;
 } ls_fsk_cfg_t;
+
+/* The nearest receive bandwidth the part actually has, at or above `hz`.
+
+   The filter is a ladder of fixed rungs, not a continuous setting, and a
+   value between two of them is refused outright - which surfaces as a
+   session that will not start, with nothing on screen saying why. Anything
+   choosing a bandwidth from a rate and a deviation should come through here
+   first. */
+uint32_t ls_lora_fsk_bw_snap(uint32_t hz);
 
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg);
 int       ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm);
+
+/* Transmit one frame inside the running session and return immediately; poll
+   ls_lora_send_done() for the end of it.
+
+   The preamble and the sync word belong to the session and the radio emits
+   them itself, so `data` is only what follows them, not the whole frame.
+   Handing over bytes the sync word already covers puts them on air twice.
+
+   The part is left in standby afterwards; ls_lora_fsk_receive() listens
+   again. */
+esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len);
+
+/* Re-arm continuous receive, restoring the session's payload length. */
+esp_err_t ls_lora_fsk_receive(void);
+
 esp_err_t ls_lora_fsk_end(void);
 bool      ls_lora_fsk_active(void);
 

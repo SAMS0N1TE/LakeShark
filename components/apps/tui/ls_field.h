@@ -16,7 +16,15 @@ extern "C" {
 
 typedef enum { LS_FIELD_NONE, LS_FIELD_MESH, LS_FIELD_LORA, LS_FIELD_RTL,
                LS_FIELD_CC1101, LS_FIELD_NRF24, LS_FIELD_NFC, LS_FIELD_WIFI, LS_FIELD_BLE, LS_FIELD_HACKRF, LS_FIELD_SOURCES } ls_field_source_t;
-typedef enum { LS_LAB_PACKETS, LS_LAB_SPECTRUM, LS_LAB_BEARING } ls_lab_mode_t;
+/* Appended, not inserted: the first three are stored in NVS and named in
+   saved journal entries, so their numbers have to stay put.
+   GFSK and POCSAG drive the same part through its other modulation - a
+   receive-only FSK session, so neither can transmit. POCSAG is GFSK with the
+   paging parameters pinned and the decoder attached. */
+typedef enum { LS_LAB_PACKETS, LS_LAB_SPECTRUM, LS_LAB_BEARING,
+               LS_LAB_GFSK, LS_LAB_POCSAG } ls_lab_mode_t;
+/* True when the mode listens with the FSK demodulator rather than LoRa. */
+#define LS_LAB_IS_FSK(m) ((m) == LS_LAB_GFSK || (m) == LS_LAB_POCSAG)
 
 typedef struct {
     int64_t time_us;
@@ -46,10 +54,32 @@ typedef struct {
 } ls_field_detection_t;
 typedef struct { char name[20], id[17]; float rssi; } ls_field_peer_t;
 
+/* A decoded page, copied out of the decoder's own ring. Kept here rather than
+   exposing fm_page_t so a screen does not have to include the FM app to read
+   one. 80 is FM_PAGE_TEXT_MAX; a static assert in ls_field.c holds them
+   together. */
+#define LS_FIELD_PAGES 8
+typedef struct {
+    int64_t  ts_us;
+    uint32_t address;
+    uint16_t baud;
+    uint8_t  function;
+    char     text[80];
+} ls_field_page_t;
+
 typedef struct {
     bool ready, requested, direct, busy, transmitting, recording;
     ls_lab_mode_t mode;
     ls_lora_cfg_t config;
+    /* What GFSK and POCSAG listen with. freq_hz tracks config.freq_hz so one
+       BAND choice moves every mode; the rest are the FSK demodulator's own. */
+    ls_fsk_cfg_t fsk;
+    uint32_t pages;   /* POCSAG messages decoded this session */
+    /* The recent ones, newest first. Copied out of the decoder's own ring so
+       the FM app's state never has to be a public type, and so a screen can
+       read them without taking the field worker's lock. */
+    ls_field_page_t page_log[LS_FIELD_PAGES];
+    uint8_t page_log_count;
     float trace[LS_FIELD_BINS], spectrum[LS_FIELD_BINS], bearing[36];
     uint16_t bearing_count[36];
     uint32_t rx, bad, tx, sequence, drops;
@@ -61,7 +91,7 @@ typedef struct {
     ls_field_peer_t peers[3];
     char status[80], storage[80];
     bool calibrating, calibrated, calibration_saved;
-    uint32_t record_rows, record_errors;
+    uint32_t record_rows, record_errors, record_packets;
     int64_t record_saved_us;
     char record_saved_utc[24];
     uint32_t spectrum_sweeps, spectrum_errors;
@@ -82,6 +112,10 @@ void ls_field_sample_snapshot(ls_field_sample_t *out);
 bool ls_field_direct(bool enabled);
 bool ls_field_owned(void);
 bool ls_field_configure(const ls_lora_cfg_t *cfg);
+/* The FSK demodulator's parameters, for GFSK and POCSAG. Rejected the same
+   way ls_lora_fsk_begin would reject them, so a bad set is refused at the
+   button rather than by a session that silently fails to start. */
+bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg);
 bool ls_field_mode(ls_lab_mode_t mode);
 /* 0 starts the guide, 1 retries the completed fit, 2 cancels. */
 bool ls_field_calibrate(int action);

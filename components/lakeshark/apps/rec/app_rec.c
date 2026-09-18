@@ -20,6 +20,7 @@
 #include "radio_endpoint.h"
 #include "rec_state.h"
 #include "rec_watch.h"
+#include "ls_sub_fsk.h"
 #include "rec_unique_name.h"
 #include "rec_file_open.h"
 #include "rec_list_format.h"
@@ -958,7 +959,15 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
     fprintf(f, "Filetype: Flipper SubGhz RAW File\n");
     fprintf(f, "Version: 1\n");
     fprintf(f, "Frequency: %lu\n", (unsigned long)s_freq_hz);
-    fprintf(f, "Preset: FuriHalSubGhzPresetOok650Async\n");
+    /* Through the shared renderer, not a literal here: this recorder
+       times edges and so is always amplitude keyed, but the preset a
+       .sub carries is one thing that belongs in one place. Three copies
+       of it is how two of them came to be wrong. */
+    {
+        char preset[320];
+        if (ls_sub_preset_text(NULL, preset, sizeof(preset)))
+            fputs(preset, f);
+    }
     fprintf(f, "Protocol: RAW\n");
     /**/
     /* When we know the wall clock (SNTP or an RTC has landed), stamp the capture with it so the file has more provenance than "the counter said 003". */

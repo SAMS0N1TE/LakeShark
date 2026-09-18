@@ -47,7 +47,8 @@ LS_CASE(shipped_example_parses_and_matches_version_1_defaults)
                  (unsigned long)diagnostic.line, diagnostic.reason);
     if (!parsed) return;
 
-    LS_EQ_UINT(profile.format_version, P25_PROFILE_FORMAT_VERSION);
+    /* What the FILE said, not the newest version the parser knows. */
+    LS_EQ_UINT(profile.format_version, 1U);
     LS_EQ_UINT(profile.preferred_control_hz, profile.control_channels[0]);
     LS_CHECK(profile.auto_follow);
     LS_CHECK(profile.encrypted_skip_enabled);
@@ -64,7 +65,8 @@ LS_CASE(valid_minimal_profile_uses_policy_defaults)
     p25_profile_diagnostic_t diagnostic;
     LS_CHECK(parse_text(&profile, &scratch, P25_PROFILE_MINIMAL_FIXTURE,
                         &diagnostic));
-    LS_EQ_UINT(profile.format_version, P25_PROFILE_FORMAT_VERSION);
+    /* What the FILE said, not the newest version the parser knows. */
+    LS_EQ_UINT(profile.format_version, 1U);
     LS_EQ_STR(profile.system_name, "Example System");
     LS_EQ_STR(profile.site_name, "Example Site");
     LS_EQ_UINT(profile.control_count, 1);
@@ -132,7 +134,10 @@ LS_CASE(duplicates_are_rejected_instead_of_silently_overriding)
 
 LS_CASE(unknown_fields_and_versions_are_rejected)
 {
-    expect_error("version=2\nsystem=S\nsite=X\ncontrol=851000000\n",
+    /* Two is a real version now - it adds coordinates to a control line -
+       so the unsupported case moves up. One and two are both accepted, and
+       a version 1 file is read exactly as it always was. */
+    expect_error("version=3\nsystem=S\nsite=X\ncontrol=851000000\n",
                  P25_PROFILE_ERROR_UNSUPPORTED_VERSION, 1);
     expect_error("version=1\nsystem=S\nsite=X\ncolour=blue\ncontrol=851000000\n",
                  P25_PROFILE_ERROR_UNKNOWN_FIELD, 4);

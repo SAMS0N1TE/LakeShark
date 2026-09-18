@@ -394,9 +394,11 @@ static ls_act_status_t a_p25_gain(const ls_args_t *in, ls_val_t *out)
     const float db = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i
                                                  : in->v[0].f;
     if (db < 0.0f || db > 50.0f) return LS_ACT_BADARG;
-    p25_request_gain((int)(db * 10.0f + 0.5f));
+    /* Not p25_request_gain: that moves the receiver without saving, so a gain
+       set here was silently reverted to the stored one on the next entry. */
+    lakeshark_p25_set_gain((int)(db * 10.0f + 0.5f));
     out->kind = LS_VAL_FLOAT;
-    out->f = db;
+    out->f = lakeshark_p25_gain_tenths() / 10.0f;
     return LS_ACT_OK;
 }
 

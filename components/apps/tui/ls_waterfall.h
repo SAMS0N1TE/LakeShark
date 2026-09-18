@@ -94,6 +94,28 @@ typedef struct {
     bool     ready;      /* the PSRAM history exists                       */
 
     uint8_t  scale_lo, scale_hi, scale_top;
+
+    /* WHAT THE LAST ROW ACTUALLY LOOKED LIKE, as levels rather than as dBm.
+
+       "The waterfall looks wrong" was being settled by reading a character
+       dump and forming an opinion, which produced two wrong diagnoses and
+       two bad changes in one afternoon. These are the numbers that make it
+       a measurement: how many of the sixteen levels the row used, how many
+       of its bins landed on the floor (drawn as nothing) and how many
+       saturated. A row that is mostly at_floor with two or three levels in
+       use IS the "black spots" complaint, and a row spread across a dozen
+       levels is a picture whatever anyone thinks of it. */
+    uint16_t at_floor;     /* bins rendering at level 0 - blank on screen   */
+    uint16_t at_ceiling;   /* bins rendering at level 15 - saturated        */
+    uint8_t  levels_used;  /* distinct levels in the row, 0..16             */
+    uint8_t  level_lo, level_hi;   /* the extremes actually drawn           */
+    uint16_t level_hist[16];       /* bins per level, newest row            */
+    /* What the histogram counted: the row AS PUSHED. NOT `bins`, which is
+       columns on screen - a source pushes its own bin count and the widget
+       resamples. Printing one against the other produced "74 of 50 bins at
+       floor", which is not a rounding error, it is two quantities in one
+       sentence. */
+    uint16_t row_bins;
 } ls_wf_stats_t;
 
 /* Claim the instrument. A different owner clears the history, because two

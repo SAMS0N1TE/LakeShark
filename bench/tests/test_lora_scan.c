@@ -266,3 +266,71 @@ LS_CASE(each_filter_acquisition_fits_one_bounded_batch)
         LS_CHECK(p.settle_us>=300 && p.settle_us<=20000);
     }
 }
+
+
+/* WHAT A ROW COSTS, PER PRESET, IN RADIO TIME.
+
+   The waterfall advances this sweep one pass per drawn frame, so the number
+   below is what decides whether the display crawls: a row needs
+   bins * looks measurements, each one a standby, a retune, an RX, a settle
+   and an RSSI read, and the settle alone is 4800 us on the narrowest filter.
+
+   These are the presets the FALLS screen offers (ls_wf_source.c LORA_BANDS).
+   The point of pinning them is that the two knobs pull against each other -
+   a narrower filter separates the bins better AND waits longer for each one -
+   so a change that looks like a resolution improvement can quietly triple the
+   time to paint a screen. If one of these numbers moves, that is the trade
+   being made, and it should be made on purpose. */
+LS_CASE(each_preset_band_costs_what_the_waterfall_was_measured_at)
+{
+    static const struct {
+        const char *name;
+        uint32_t lo, hi;
+        int      looks;        /* retunes per bin to cover its slice   */
+        uint32_t settle_us;    /* filter acquisition, per measurement  */
+    } PRESET[] = {
+        { "mesh watch",  909500000u, 911500000u,  1, 3600 },
+        { "US915 ISM",   902000000u, 928000000u,  1,  300 },
+        { "EU868",       863000000u, 870000000u,  1, 1200 },
+        { "433 ISM",     433050000u, 434790000u,  1, 4800 },
+        { "315 remotes", 314000000u, 316000000u,  1, 3600 },
+        { "full range",  150000000u, 960000000u, 26,  300 },
+    };
+    const int n = LS_LORA_SCAN_BINS;
+
+    for (unsigned i = 0; i < sizeof(PRESET)/sizeof(PRESET[0]); i++) {
+        ls_lora_scan_plan_t plan;
+        ls_lora_scan_plan(PRESET[i].lo, PRESET[i].hi, n, &plan);
+        LS_CHECK_MSG(plan.looks == PRESET[i].looks,
+                     "%s: %d looks per bin, expected %d",
+                     PRESET[i].name, plan.looks, PRESET[i].looks);
+        LS_CHECK_MSG(plan.settle_us == PRESET[i].settle_us,
+                     "%s: %lu us settle, expected %lu",
+                     PRESET[i].name, (unsigned long)plan.settle_us,
+                     (unsigned long)PRESET[i].settle_us);
+
+        /* Settle only - the SPI either side of it is the board's business and
+           is not modelled here. This is the floor a row cannot go below. */
+        const uint32_t floor_ms =
+            (uint32_t)((uint64_t)n * plan.looks * plan.settle_us / 1000u);
+        LS_CHECK_MSG(floor_ms <= 800,
+                     "%s: %lu ms of settle per row is past anything usable",
+                     PRESET[i].name, (unsigned long)floor_ms);
+    }
+}
+
+/* The narrow presets are the slow ones, and it is worth having that written
+   down somewhere other than a comment: the band you would actually park on
+   to watch a remote costs more than ten times the band that covers the whole
+   of US915, because its filter is sixteen times narrower. */
+LS_CASE(a_narrow_preset_costs_more_per_row_than_a_wide_one)
+{
+    ls_lora_scan_plan_t narrow, wide;
+    ls_lora_scan_plan(433050000u, 434790000u, LS_LORA_SCAN_BINS, &narrow);
+    ls_lora_scan_plan(902000000u, 928000000u, LS_LORA_SCAN_BINS, &wide);
+    LS_CHECK(narrow.bw_hz < wide.bw_hz);
+    LS_CHECK(narrow.settle_us > wide.settle_us);
+    LS_EQ_INT(narrow.looks, wide.looks);          /* both one look per bin */
+    /* Sixteen times the filter, sixteen times the wait, to within rounding. */
+    LS_CHECK(narrow.settle_us >= 15 * wide.settle_us);
+}

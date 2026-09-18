@@ -20,6 +20,16 @@ void ls_tui_corner_inset(int screen_w, int screen_h,
                          int cell_w, int cell_h, int radius,
                          int *ox, int *oy);
 
+/* The first pixel column drawable on scanline `y` of a panel `screen_h` tall
+   with corners of `radius`.
+
+   The mirror of corner_cells and for the other half of the same job: the grid
+   keeps its TEXT out of the corners, and the chrome behind that text has to
+   run past them to the glass or the bar reads as floating inside a black
+   frame. Zero everywhere a corner does not reach, `radius` on the very first
+   and last scanline, and symmetric - the right edge is screen_w minus this. */
+int ls_tui_row_inset(int y, int screen_h, int radius);
+
 /* How many cells at each end of grid row `row` sit closer to a rounded corner than the grid sits to the panel's straight edges - the cells a word should not be drawn in. */
 
 int ls_tui_corner_cells(int screen_w, int screen_h, int cell_w, int cell_h,

@@ -323,3 +323,127 @@ LS_CASE(waterfall_cursor_moves_without_tuning_and_space_commits)
     ls_wf_key(LS_TK_CHAR,'y');LS_EQ_INT(tuned_mark,0);
     ls_wf_set_tuner(NULL);ls_wf_cfg_set(&saved);
 }
+
+
+/* THE INSTRUMENT HAS TO BE RIGHT BEFORE IT IS USEFUL.
+
+   These numbers exist so that "the waterfall looks wrong" can be settled
+   with a measurement instead of an opinion - reading a character dump and
+   forming one produced two wrong diagnoses and two bad changes in a single
+   afternoon. A histogram that is itself wrong would be worse than none,
+   because it would be believed.
+
+   So: the counts must add up to the bins pushed, at_floor must be exactly
+   the bins the renderer draws as nothing, and a flat row and a spread row
+   must be distinguishable by the numbers alone. */
+LS_CASE(the_level_histogram_accounts_for_every_bin_it_was_given)
+{
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_P25, "P25");
+
+    float bins[64];
+    for (int i = 0; i < 64; i++) bins[i] = (float)i / 63.0f;
+    ls_wf_feed_t f = { .center_hz = 915000000u, .span_hz = 26000000u,
+                       .floor_db = -120.0f, .top_db = -40.0f, .live = true };
+    ls_wf_push(LS_WF_OWNER_P25, bins, 64, &f);
+
+    ls_wf_stats_t st;
+    ls_wf_stats(&st);
+
+    int total = 0;
+    for (int v = 0; v < 16; v++) total += st.level_hist[v];
+    LS_EQ_INT(64, total);
+    /* And it reports what it counted, not the columns on screen. */
+    LS_EQ_INT(64, st.row_bins);
+
+    /* The extremes the histogram reports are the extremes it counted. */
+    LS_CHECK(st.level_hist[st.level_lo] > 0);
+    LS_CHECK(st.level_hist[st.level_hi] > 0);
+    LS_CHECK(st.level_lo <= st.level_hi);
+    for (int v = 0; v < st.level_lo; v++) LS_EQ_INT(0, st.level_hist[v]);
+    for (int v = st.level_hi + 1; v < 16; v++) LS_EQ_INT(0, st.level_hist[v]);
+
+    /* levels_used is the count of buckets that have anything in them. */
+    int used = 0;
+    for (int v = 0; v < 16; v++) if (st.level_hist[v]) used++;
+    LS_EQ_INT(used, st.levels_used);
+
+    /* at_floor and at_ceiling are the end buckets, not a separate count. */
+    LS_EQ_INT(st.level_hist[0], st.at_floor);
+    LS_EQ_INT(st.level_hist[15], st.at_ceiling);
+}
+
+/* A ramp spends its bins across the range; a flat row piles them into one
+   bucket. If the instrument cannot tell those two apart it cannot answer
+   the question it was built for. */
+LS_CASE(a_flat_row_and_a_ramp_are_distinguishable_by_the_numbers_alone)
+{
+    ls_wf_feed_t f = { .center_hz = 915000000u, .span_hz = 26000000u,
+                       .floor_db = -120.0f, .top_db = -40.0f, .live = true };
+    float bins[64];
+
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_P25, "P25");
+    for (int i = 0; i < 64; i++) bins[i] = (float)i / 63.0f;
+    ls_wf_push(LS_WF_OWNER_P25, bins, 64, &f);
+    ls_wf_stats_t ramp;
+    ls_wf_stats(&ramp);
+
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_P25, "P25");
+    for (int i = 0; i < 64; i++) bins[i] = 0.5f;
+    ls_wf_push(LS_WF_OWNER_P25, bins, 64, &f);
+    ls_wf_stats_t flat;
+    ls_wf_stats(&flat);
+
+    LS_CHECK_MSG(ramp.levels_used > flat.levels_used,
+                 "ramp used %u levels, flat used %u - the histogram cannot "
+                 "tell a picture from a wash",
+                 (unsigned)ramp.levels_used, (unsigned)flat.levels_used);
+    LS_EQ_INT(1, flat.levels_used);
+    LS_EQ_INT(64, flat.level_hist[flat.level_lo]);
+}
+
+/* THE BLACK-SPOT CASE, stated as a measurement.
+
+   The first version of this asserted that a uniformly crushed row goes
+   black, and it failed - correctly. track_scale re-expands a row that is
+   consistently low, so a whole band sitting quietly near the bottom comes
+   back up within a few rows. That is the auto-scale doing its job.
+
+   What actually blacks bins out is a LOW TAIL: a dense cluster with a
+   handful of bins some way below it. The floor estimate is the 25th
+   percentile less six, which on that shape lands above the tail, and the
+   tail clips to level zero on every row - the same columns, every time,
+   which reads as vertical stripes rather than speckle. That is the shape a
+   902-928 sweep measured on real hardware: fifty-four bins inside four dB
+   of each other and ten bins six to thirteen dB below them.
+
+   This pins that the instrument reports those bins, because that count is
+   the whole reason it exists. */
+LS_CASE(a_low_tail_is_reported_as_bins_on_the_floor)
+{
+    ls_wf_feed_t f = { .center_hz = 915000000u, .span_hz = 26000000u,
+                       .floor_db = -120.0f, .top_db = -40.0f, .live = true };
+    float bins[64];
+
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_P25, "P25");
+    /* The measured shape, normalised: the cluster tight, the tail well
+       below it, and the tail contiguous so it draws as a stripe. */
+    for (int i = 0; i < 64; i++) bins[i] = 0.62f + (float)(i % 4) * 0.01f;
+    for (int i = 8; i < 18; i++) bins[i] = 0.42f;
+    for (int r = 0; r < 12; r++) ls_wf_push(LS_WF_OWNER_P25, bins, 64, &f);
+
+    ls_wf_stats_t st;
+    ls_wf_stats(&st);
+    LS_CHECK_MSG(st.at_floor >= 8,
+                 "a ten bin low tail reported only %u bins on the floor",
+                 (unsigned)st.at_floor);
+    LS_CHECK_MSG(st.at_floor <= 20,
+                 "%u bins on the floor - the cluster went black too, which "
+                 "is a different fault", (unsigned)st.at_floor);
+    /* And the cluster above it still has somewhere to be drawn. */
+    LS_CHECK_MSG(st.level_hi >= 4,
+                 "the cluster only reached level %u", (unsigned)st.level_hi);
+}

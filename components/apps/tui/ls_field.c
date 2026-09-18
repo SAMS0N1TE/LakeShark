@@ -1,6 +1,7 @@
 #include "ls_field.h"
 #include "ls_compass.h"
 #include "ls_keypad.h"
+#include "apps/fm/pocsag.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -24,10 +25,12 @@
 
 #define LOG_LIMIT (16u * 1024u * 1024u)
 #define QUEUE_CAP 4
-typedef enum { CMD_CONFIG, CMD_MODE, CMD_TX, CMD_NOTE, CMD_CAL, CMD_CLEAR } command_kind;
+typedef enum { CMD_CONFIG, CMD_MODE, CMD_TX, CMD_NOTE, CMD_CAL, CMD_CLEAR,
+               CMD_FSK } command_kind;
 typedef struct {
     command_kind kind;
     ls_lora_cfg_t cfg;
+    ls_fsk_cfg_t fsk;
     ls_lab_mode_t mode;
     ls_journal_entry_t entry;
     int value;
@@ -45,7 +48,7 @@ static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb;
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
 static bool s_watch;
 static bool s_wireless_watch;
-static uint32_t record_rows,record_errors;
+static uint32_t record_rows,record_errors,record_packets;
 static int64_t record_saved_us;
 EXT_RAM_BSS_ATTR static ls_wireless_snapshot_t s_wireless;
 static ls_field_source_t s_source = LS_FIELD_MESH;
@@ -59,6 +62,7 @@ static unsigned s_note_head, s_note_count;
 EXT_RAM_BSS_ATTR static ls_journal_entry_t s_notes[QUEUE_CAP];
 static char s_storage[80];
 static void io_step(void);
+static void pocsag_stop(void);
 static uint32_t s_next_id = 1;
 static int64_t s_next_sample, s_next_record, s_hold_since, s_tx_deadline;
 static ls_imu_sample_t s_last_imu;
@@ -85,7 +89,7 @@ static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
-static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
+static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
 
 static void detected(int64_t now, uint32_t frequency, float rssi, float snr, bool mesh)
 {
@@ -245,15 +249,56 @@ static bool save_sample(const ls_field_sample_t *p)
     return ok;
 }
 
+/* Payloads, one row per packet. Separate from samples.csv because a packet
+   arrives when it arrives and the sample log is a one-second heartbeat -
+   folding them together would either lose packets or pad the file with
+   repeats. Hex rather than raw bytes so the result is still a text CSV that
+   opens anywhere, and the position fields come from the last sample so a
+   capture can be placed on a map afterwards. */
+static bool save_packet(const ls_field_sample_t *p, const uint8_t *data, int len)
+{
+    char name[160];
+    if (len <= 0) return true;
+    if (!path(name, sizeof(name), "packets.csv")) return false;
+    struct stat st;
+    bool empty = stat(name, &st) != 0;
+    if (!empty && (uint64_t)st.st_size > LOG_LIMIT - 1024) {
+        storage("Packet log full; recording stopped");
+        return false;
+    }
+#ifdef _WIN32
+    mkdir(s_directory);
+#else
+    mkdir(s_directory, 0775);
+#endif
+    FILE *f = fopen(name, "ab");
+    if (!f) { storage("SD unavailable; recording stopped"); return false; }
+    if (empty) fputs("uptime_us,utc,source,hz,rssi,snr,gps_valid,lat,lon,len,hex\n", f);
+    int n = fprintf(f, "%lld,%s,%s,%lu,%.1f,%.1f,%d,%.7f,%.7f,%d,",
+        (long long)p->time_us, p->utc, ls_field_source_name(p->source),
+        (unsigned long)p->frequency, p->rssi, p->snr,
+        p->gps_valid, p->lat, p->lon, len);
+    for (int i = 0; i < len && n > 0; i++) n = fprintf(f, "%02X", data[i]);
+    if (n > 0) n = fprintf(f, "\n");
+    bool ok = fclose(f) == 0 && n > 0;
+    if (!ok) storage("SD write failed; recording stopped");
+    return ok;
+}
+
 static bool restore(void)
 {
     if (s_live.transmitting && !ls_lora_send_done() && esp_timer_get_time() <= s_tx_deadline) return false;
     s_live.transmitting = false;
     esp_err_t err = ESP_OK;
     if (ls_lora_scanning()) err = ls_lora_scan_end();
+    /* The FSK session put the part in a different modulation and saved the
+       LoRa settings itself; ending it first means the restore below writes
+       over a part that is back in a known state. */
+    if (err == ESP_OK && ls_lora_fsk_active()) err = ls_lora_fsk_end();
     if (err == ESP_OK && s_have_saved) err = ls_lora_configure(&s_saved);
     if (err == ESP_OK && s_have_saved && s_saved_rx) err = ls_lora_receive();
     if (err != ESP_OK) { message("Restore failed; radio held. Toggle DIRECT off to retry"); return false; }
+    pocsag_stop();
     ls_mesh_radio_hold(false);
     s_live.direct = s_live.busy = false;
     s_have_saved = false;
@@ -261,10 +306,122 @@ static bool restore(void)
     return true;
 }
 
+/* POCSAG, with the numbers the console receiver already works with - see the
+   'lora pocsag' command. Pinned rather than offered: a paging receiver with
+   the wrong deviation or sync word looks exactly like a quiet channel, so
+   there is nothing useful for a user to choose here.
+   0x7cd215d8 is the POCSAG frame synchronisation word. Systems that transmit
+   inverted need its complement, which is what the IQ switch selects - that
+   control does nothing else in an FSK mode. */
+#define POCSAG_SYNC      0x7cd215d8u
+#define POCSAG_DEVIATION 4500u
+/* Carson for 1200 baud at +-4.5 kHz is 2*(4500+1200) = 11.4 kHz, and 11700 is
+   the narrowest the part offers above it. The console used 19500, which is
+   nearly double the noise for no extra signal - worth about 2 dB of
+   sensitivity, and at VHF on a board matched for 915 MHz every dB counts. */
+#define POCSAG_BANDWIDTH 11700u
+/* 64 payload bytes plus the 32 sync bits the hardware strips: 544 bits, which
+   is the batch period the decoder's contiguity check is written against. */
+#define POCSAG_BYTES     64u
+#define POCSAG_BITS      544u
+
+/* The paging decoder, alive only while POCSAG mode is. fm_state_t carries a
+   sixteen-entry page ring and is far too big for internal RAM, which is why
+   the console puts it in PSRAM too. */
+static fm_state_t   *s_pocsag_state;
+static pocsag_ctx_t *s_pocsag;
+static int64_t       s_pocsag_last;
+
+static void pocsag_stop(void)
+{
+    if (s_pocsag) { pocsag_destroy(s_pocsag); s_pocsag = NULL; }
+    if (s_pocsag_state) { heap_caps_free(s_pocsag_state); s_pocsag_state = NULL; }
+    s_pocsag_last = 0;
+}
+
+static bool pocsag_ready(int baud)
+{
+    if (s_pocsag) { pocsag_set_baud(s_pocsag, baud); return true; }
+    s_pocsag_state = heap_caps_calloc(1, sizeof(*s_pocsag_state),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_pocsag_state) { message("No PSRAM for the paging decoder"); return false; }
+    s_pocsag = pocsag_create(s_pocsag_state, baud);
+    if (!s_pocsag) { pocsag_stop(); message("Paging decoder unavailable"); return false; }
+    s_pocsag_last = 0;
+    /* The counts belong to this session, not the last one. */
+    s_live.pages = 0; s_live.page_log_count = 0;
+    return true;
+}
+
+/* One batch. `contiguous` tells the decoder whether this batch butts onto the
+   previous one, which is how it keeps frame alignment across a transmission;
+   the period is the 544 bits a batch takes at the current baud. */
+static void pocsag_feed(const uint8_t *data, int len, int64_t now)
+{
+    if (!s_pocsag) return;
+    const uint32_t baud = s_live.fsk.bitrate ? s_live.fsk.bitrate : 1200u;
+    const int64_t period = (int64_t)POCSAG_BITS * 1000000 / baud;
+    const bool contiguous = s_pocsag_last &&
+        llabs(now - s_pocsag_last - period) <= period / 10 + 20000;
+    s_pocsag_last = now;
+    const uint32_t before = pocsag_n_pages(s_pocsag);
+    pocsag_process_batch(s_pocsag, data, len, s_live.config.invert_iq, contiguous);
+    const uint32_t after = pocsag_n_pages(s_pocsag);
+    s_live.pages = after;
+    if (after == before || s_pocsag_state->page_count <= 0) return;
+
+    /* Copy the ring out newest-first, so a screen can page through recent
+       messages the way the FM screen does without reaching into the FM app's
+       state or taking this worker's lock. */
+    int held = s_pocsag_state->page_count;
+    if (held > FM_PAGE_LOG_MAX) held = FM_PAGE_LOG_MAX;
+    if (held > LS_FIELD_PAGES) held = LS_FIELD_PAGES;
+    for (int i = 0; i < held; i++) {
+        const int idx = (s_pocsag_state->page_head - 1 - i +
+                         2 * FM_PAGE_LOG_MAX) % FM_PAGE_LOG_MAX;
+        const fm_page_t *p = &s_pocsag_state->pages[idx];
+        ls_field_page_t *out = &s_live.page_log[i];
+        out->ts_us = p->ts_us;
+        out->address = p->address;
+        out->baud = p->baud;
+        out->function = p->function;
+        snprintf(out->text, sizeof(out->text), "%s", p->text);
+    }
+    s_live.page_log_count = (uint8_t)held;
+}
+_Static_assert(sizeof(((ls_field_page_t *)0)->text) == FM_PAGE_TEXT_MAX,
+               "ls_field_page_t.text must match FM_PAGE_TEXT_MAX");
+
+static void fsk_params(ls_fsk_cfg_t *out)
+{
+    *out = s_live.fsk;
+    out->freq_hz = s_live.config.freq_hz;   /* BAND moves every mode */
+    if (s_live.mode == LS_LAB_POCSAG) {
+        if (out->bitrate != 1200u && out->bitrate != 2400u) out->bitrate = 1200u;
+        out->deviation_hz = POCSAG_DEVIATION;
+        out->bandwidth_hz = POCSAG_BANDWIDTH;
+        out->sync_word = s_live.config.invert_iq ? ~POCSAG_SYNC : POCSAG_SYNC;
+        out->payload_bytes = POCSAG_BYTES;
+    }
+}
+
 static bool configure(void)
 {
     if (ls_lora_scanning() && ls_lora_scan_end() != ESP_OK) return false;
+    if (ls_lora_fsk_active() && ls_lora_fsk_end() != ESP_OK) return false;
     s_live.spectrum_us=0;
+    if (LS_LAB_IS_FSK(s_live.mode)) {
+        /* The FSK session configures the part itself, so there is no
+           ls_lora_configure first - that would set LoRa modulation and then
+           immediately be replaced. */
+        ls_fsk_cfg_t fsk;
+        fsk_params(&fsk);
+        if (s_live.mode == LS_LAB_POCSAG) {
+            if (!pocsag_ready((int)fsk.bitrate)) return false;
+        } else pocsag_stop();
+        return ls_lora_fsk_begin(&fsk) == ESP_OK;
+    }
+    pocsag_stop();
     if (ls_lora_configure(&s_live.config) != ESP_OK) return false;
     if (s_live.mode == LS_LAB_SPECTRUM) {
         uint32_t hz = s_live.config.freq_hz;
@@ -439,12 +596,14 @@ void ls_field_step(void)
             for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
             s_live.spectrum_us=0;message("Plot cleared; radio counters retained");
         } else if (s_live.transmitting) message("Transmission in progress; control unchanged");
-        else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE) {
+        else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE || c->kind == CMD_FSK) {
             ls_lora_cfg_t old = s_live.config; ls_lab_mode_t mode = s_live.mode;
+            ls_fsk_cfg_t old_fsk = s_live.fsk;
             if (c->kind == CMD_CONFIG) s_live.config = c->cfg;
+            else if (c->kind == CMD_FSK) s_live.fsk = c->fsk;
             else s_live.mode = c->mode;
             if (s_live.direct && !configure()) {
-                s_live.config = old; s_live.mode = mode;
+                s_live.config = old; s_live.mode = mode; s_live.fsk = old_fsk;
                 if (!configure()) { lock(); s_want = false; unlock(); restore(); }
                 message("Setting rejected; previous configuration retained");
             } else {
@@ -453,7 +612,12 @@ void ls_field_step(void)
                 message(s_live.direct ? "Direct settings applied" : "Settings ready; enable DIRECT to apply");
             }
         } else if (c->kind == CMD_TX) {
-            if (!s_live.direct || !want || s_live.mode == LS_LAB_SPECTRUM) message("SEND needs DIRECT packet or bearing mode");
+            /* The FSK session is receive-only, so GFSK and POCSAG have no
+               transmit path at all - not a refusal by policy, there is
+               nothing to call. */
+            if (!s_live.direct || !want || s_live.mode == LS_LAB_SPECTRUM ||
+                LS_LAB_IS_FSK(s_live.mode))
+                message("SEND needs DIRECT packet or bearing mode");
             else if (ls_lora_send((const uint8_t *)c->entry.text, strlen(c->entry.text)) == ESP_OK) {
                 s_live.transmitting = true; s_live.tx++;
                 s_tx_deadline = now + ((int64_t)ls_lora_airtime_ms((int)strlen(c->entry.text)) + 2000) * 1000;
@@ -466,12 +630,30 @@ void ls_field_step(void)
         else if (now > s_tx_deadline) { s_live.transmitting = false; configure(); message("TX timeout; receiver reset"); }
     }
     if (s_live.direct && !s_live.transmitting && s_live.mode != LS_LAB_SPECTRUM) {
-        uint8_t packet[255]; float rssi, snr;
-        int n = ls_lora_poll(packet, sizeof(packet), &rssi, &snr);
+        uint8_t packet[255]; float rssi = NAN, snr = NAN;
+        /* The FSK demodulator reports level but not signal-to-noise: it has
+           no reference to measure one against. NAN rather than zero, because
+           a zero here would be read as a real 0 dB. */
+        const bool fsk = LS_LAB_IS_FSK(s_live.mode);
+        int n = fsk ? ls_lora_fsk_poll(packet, sizeof(packet), &rssi)
+                    : ls_lora_poll(packet, sizeof(packet), &rssi, &snr);
         if (n > 0) {
             s_live.rx++; s_live.packet_len = n < 64 ? n : 64;
             memcpy(s_live.packet, packet, s_live.packet_len);
             detected(now,s_live.config.freq_hz,rssi,snr,false);
+            if (s_live.mode == LS_LAB_POCSAG) pocsag_feed(packet, n, now);
+            /* The whole packet, not the 64 bytes the live view keeps. Its
+               position comes from the last sample; its radio figures come
+               from this reception rather than that heartbeat. */
+            if (s_record) {
+                ls_field_sample_t ps = s_live.sample;
+                ps.time_us = now;
+                ps.frequency = s_live.config.freq_hz;
+                ps.rssi = rssi; ps.snr = snr;
+                ps.radio_valid = ps.signal_valid = true;
+                if (save_packet(&ps, packet, n)) record_packets++;
+                else { record_errors++; s_record = false; s_live.recording = false; }
+            }
         } else if (n < 0) s_live.bad++;
     }
     if ((watching || s_live.recording || s_live.direct || s_live.calibrating) && now >= s_next_sample) {
@@ -616,6 +798,13 @@ bool ls_field_start(void)
     if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory);
     if (!s_lock) return false;
     ls_lora_cfg_default(&s_live.config);
+    /* The console's proven paging set, which is also a valid generic GFSK
+       one: 1200 + 2*4500 fits inside 19500. freq_hz is filled from the LoRa
+       config when a session starts, so BAND moves every mode together. */
+    s_live.fsk = (ls_fsk_cfg_t){ .freq_hz = s_live.config.freq_hz,
+        .bitrate = 1200, .deviation_hz = POCSAG_DEVIATION,
+        .bandwidth_hz = POCSAG_BANDWIDTH, .sync_word = POCSAG_SYNC,
+        .payload_bytes = POCSAG_BYTES };
     for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
     message("Mesh keeps control until DIRECT is enabled");
     storage("Journal ready");
@@ -664,13 +853,25 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg)
         cfg->bw_hz < 7810 || cfg->bw_hz > 500000 || cfg->cr < 5 || cfg->cr > 8 || cfg->power_dbm < -9 || cfg->power_dbm > 22 || !cfg->preamble) return false;
     command c = {.kind = CMD_CONFIG, .cfg = *cfg}; return enqueue(&c);
 }
-bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_BEARING) return false; command c = {.kind = CMD_MODE, .mode = mode}; return enqueue(&c); }
+bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_POCSAG) return false; command c = {.kind = CMD_MODE, .mode = mode}; return enqueue(&c); }
+bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
+{
+    /* The same limits ls_lora_fsk_begin enforces, checked here so a bad set
+       is refused at the button instead of by a session that will not start.
+       The bandwidth rule is the demodulator's: the signal has to fit in it. */
+    if (!cfg || cfg->bitrate < 600 || cfg->bitrate > 300000 ||
+        cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||
+        cfg->bandwidth_hz < 4800 || cfg->bandwidth_hz > 467000 ||
+        !cfg->payload_bytes ||
+        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) return false;
+    command c = {.kind = CMD_FSK, .fsk = *cfg}; return enqueue(&c);
+}
 bool ls_field_calibrate(int action) { if (action < 0 || action > 2) return false; command c = {.kind = CMD_CAL, .value = action}; return enqueue(&c); }
 bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active = s_public.calibrating; unlock(); return active; }
 bool ls_field_clear_plot(void) { command c = {.kind = CMD_CLEAR}; return enqueue(&c); }
 bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command c = {.kind = CMD_TX}; snprintf(c.entry.text, sizeof(c.entry.text), "%s", text); return enqueue(&c); }
 bool ls_field_source(ls_field_source_t source) { if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false; lock(); if(s_record && source != s_source) { unlock(); return false; } s_source = source; unlock(); return true; }
-bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(on && !s_record){record_rows=record_errors=0;record_saved_us=0;}s_record = on; unlock(); return true; }
+bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(on && !s_record){record_rows=record_errors=record_packets=0;record_saved_us=0;}s_record = on; unlock(); return true; }
 bool ls_field_recording(void) { if(!s_lock) return false; lock(); bool active=s_record; unlock(); return active; }
 void ls_field_watch(bool on) { if (!s_lock) return; lock(); s_watch = on; unlock(); }
 bool ls_field_note(uint32_t id, const char *title, const char *text)
@@ -752,7 +953,7 @@ void ls_field_test_reset(const char *directory)
     s_directory = directory; s_started = s_loaded = s_stop = s_want = s_record = s_have_saved = false;
     s_qhead = s_qcount = s_count = s_note_head = s_note_count = 0; s_next_id = 1; s_next_sample = s_next_record = 0;
     s_valid_bytes = 0; s_damaged = s_incompatible = false;
-    s_wireless_watch = false;record_rows=record_errors=0;record_saved_us=0;
+    s_wireless_watch = false;record_rows=record_errors=record_packets=0;record_saved_us=0;
     s_last_imu_us = 0;
     s_mesh_baseline=false;s_next_peers=0;s_mesh_seen=0;
     memset(s_profiles,0,sizeof(s_profiles));s_profile=ls_keypad_present()?1:0;

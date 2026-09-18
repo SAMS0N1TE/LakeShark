@@ -16,7 +16,12 @@
 extern "C" {
 #endif
 
-#define P25_PROFILE_FORMAT_VERSION       1U
+/* Version 2 adds coordinates to a control line. A version 1 file is
+   still read exactly as it was, and a version 1 file that carries
+   coordinates is REFUSED rather than quietly accepted - a format that
+   silently means two things is one nobody can trust the version of. */
+#define P25_PROFILE_FORMAT_VERSION       2U
+#define P25_PROFILE_FORMAT_VERSION_MIN   1U
 #define P25_PROFILE_CONTROL_MAX          16U
 #define P25_PROFILE_TALKGROUP_MAX        P25_SCAN_ALLOW_MAX
 #define P25_PROFILE_PRIORITY_MAX         P25_SCAN_PRIORITY_MAX
@@ -42,6 +47,22 @@ typedef struct {
     uint64_t control_channels[P25_PROFILE_CONTROL_MAX];
     uint8_t  control_count;
     uint64_t preferred_control_hz;
+
+    /* WHERE EACH CONTROL CHANNEL IS, when the file says.
+
+       Parallel arrays rather than a struct per control, because
+       control_channels is already read by name in several places and
+       an on-card format plus a published header is a bad place to
+       reshape something for tidiness.
+
+       Degrees times ten million, matching scan_channel_t, so the two
+       geometries in this firmware agree about what a coordinate is.
+       has_geo is separate from a zero radius: (0,0) is a real point in
+       the Atlantic and must not double as "unknown". */
+    int32_t  control_lat_e7[P25_PROFILE_CONTROL_MAX];
+    int32_t  control_lon_e7[P25_PROFILE_CONTROL_MAX];
+    uint32_t control_radius_m[P25_PROFILE_CONTROL_MAX];
+    bool     control_has_geo[P25_PROFILE_CONTROL_MAX];
 
     bool     auto_follow;
     bool     encrypted_skip_enabled;
@@ -83,6 +104,10 @@ typedef enum {
     P25_PROFILE_ERROR_CONTROL_CAPACITY,
     P25_PROFILE_ERROR_PREFERRED_NOT_FOUND,
     P25_PROFILE_ERROR_MALFORMED_TALKGROUP,
+    P25_PROFILE_ERROR_MALFORMED_CONTROL,
+    P25_PROFILE_ERROR_MALFORMED_COORDINATE,
+    P25_PROFILE_ERROR_RADIUS_OUT_OF_RANGE,
+    P25_PROFILE_ERROR_GEO_NEEDS_VERSION_2,
     P25_PROFILE_ERROR_DUPLICATE_TALKGROUP,
     P25_PROFILE_ERROR_TALKGROUP_CAPACITY,
     P25_PROFILE_ERROR_PRIORITY_CAPACITY,

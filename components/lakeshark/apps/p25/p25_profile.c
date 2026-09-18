@@ -47,6 +47,10 @@ const char *p25_profile_error_reason(p25_profile_error_t error)
     case P25_PROFILE_ERROR_CONTROL_CAPACITY:       return "too many control frequencies";
     case P25_PROFILE_ERROR_PREFERRED_NOT_FOUND:    return "preferred control is not in the control list";
     case P25_PROFILE_ERROR_MALFORMED_TALKGROUP:    return "talkgroup must be id|alias|enabled|priority";
+    case P25_PROFILE_ERROR_MALFORMED_CONTROL:      return "control must be hz or hz|lat|lon|radius_m";
+    case P25_PROFILE_ERROR_MALFORMED_COORDINATE:   return "latitude or longitude is not decimal degrees in range";
+    case P25_PROFILE_ERROR_RADIUS_OUT_OF_RANGE:    return "site radius must be 500 to 200000 metres";
+    case P25_PROFILE_ERROR_GEO_NEEDS_VERSION_2:    return "control coordinates require version=2";
     case P25_PROFILE_ERROR_DUPLICATE_TALKGROUP:    return "talkgroup ID is duplicated";
     case P25_PROFILE_ERROR_TALKGROUP_CAPACITY:     return "too many talkgroups";
     case P25_PROFILE_ERROR_PRIORITY_CAPACITY:      return "too many nonzero-priority talkgroups";
@@ -139,12 +143,88 @@ static bool singleton_once(unsigned *seen, unsigned bit,
     return true;
 }
 
+/* Degrees as a person writes them: an optional sign, digits, an
+   optional point and up to seven decimals, returned times ten
+   million.
+   Fixed point throughout, deliberately. strtod would drag the locale
+   into a file format, and in a locale with a comma decimal separator
+   a coordinate would parse as a truncated integer and place a site
+   hundreds of miles away - silently, and only on somebody else's
+   machine. */
+static bool parse_degrees_e7(const char *text, int32_t limit_deg, int32_t *out)
+{
+    if (!text || !*text || !out) return false;
+
+    bool negative = false;
+    if (*text == '+' || *text == '-') {
+        negative = (*text == '-');
+        text++;
+    }
+    if (!*text) return false;
+
+    int64_t whole = 0;
+    size_t digits = 0;
+    while (*text >= '0' && *text <= '9') {
+        whole = whole * 10 + (*text - '0');
+        if (whole > 1000) return false;          /* far past any legal degree */
+        text++;
+        digits++;
+    }
+    if (!digits) return false;
+
+    int64_t frac = 0;
+    if (*text == '.') {
+        text++;
+        size_t places = 0;
+        while (*text >= '0' && *text <= '9') {
+            /* Past the seventh decimal the value cannot be represented, and
+               a coordinate with more of them is a copy-paste, not a
+               measurement. Consume and ignore rather than refuse. */
+            if (places < 7) frac = frac * 10 + (*text - '0');
+            places++;
+            text++;
+        }
+        if (!places) return false;               /* a trailing point is a typo */
+        while (places < 7 && places++ < 7) frac *= 10;
+    }
+    if (*text) return false;                     /* trailing rubbish */
+
+    int64_t value = whole * 10000000 + frac;
+    if (value > (int64_t)limit_deg * 10000000) return false;
+    *out = (int32_t)(negative ? -value : value);
+    return true;
+}
+
 static bool parse_control(p25_profile_t *profile, const char *value,
                           const p25_profile_parse_config_t *config,
                           p25_profile_diagnostic_t *diagnostic, size_t line)
 {
+    /* Two shapes, and the short one is still the whole of version 1:
+
+           control=851012500
+           control=851012500|43.4406|-71.6498|25000
+
+       The long one says where the site is and how far it reaches, so the
+       receiver can pick it from a position instead of from a survey. All
+       four parts or none; a half-filled coordinate is a mistake worth
+       refusing rather than guessing at. */
+    char *parts[4] = { value, NULL, NULL, NULL };
+    size_t nparts = 1;
+    for (size_t i = 1; i < 4; ++i) {
+        char *separator = strchr(parts[i - 1], '|');
+        if (!separator) break;
+        *separator = '\0';
+        parts[i] = separator + 1;
+        nparts = i + 1;
+    }
+    if (nparts != 1 && nparts != 4)
+        return fail(diagnostic, line, P25_PROFILE_ERROR_MALFORMED_CONTROL);
+    if (nparts == 4 && strchr(parts[3], '|'))
+        return fail(diagnostic, line, P25_PROFILE_ERROR_MALFORMED_CONTROL);
+    for (size_t i = 0; i < nparts; ++i) parts[i] = trim(parts[i]);
+
     uint64_t hz;
-    number_result_t nr = parse_u64(value, &hz);
+    number_result_t nr = parse_u64(parts[0], &hz);
     if (nr != NUMBER_OK) return fail(diagnostic, line, number_error(nr));
     if (!frequency_allowed(hz, config))
         return fail(diagnostic, line, P25_PROFILE_ERROR_FREQUENCY_OUT_OF_RANGE);
@@ -153,9 +233,36 @@ static bool parse_control(p25_profile_t *profile, const char *value,
             return fail(diagnostic, line, P25_PROFILE_ERROR_DUPLICATE_CONTROL);
     if (profile->control_count >= P25_PROFILE_CONTROL_MAX)
         return fail(diagnostic, line, P25_PROFILE_ERROR_CONTROL_CAPACITY);
-    profile->control_channels[profile->control_count++] = hz;
+
+    int32_t lat_e7 = 0, lon_e7 = 0;
+    uint64_t radius = 0;
+    if (nparts == 4) {
+        /* Coordinates are a version 2 thing. A version 1 file carrying them
+           is refused outright: a reader that ignored them would follow the
+           wrong site and say nothing about it. */
+        if (profile->format_version < 2U)
+            return fail(diagnostic, line, P25_PROFILE_ERROR_GEO_NEEDS_VERSION_2);
+        if (!parse_degrees_e7(parts[1], 90, &lat_e7) ||
+            !parse_degrees_e7(parts[2], 180, &lon_e7))
+            return fail(diagnostic, line, P25_PROFILE_ERROR_MALFORMED_COORDINATE);
+        nr = parse_u64(parts[3], &radius);
+        if (nr != NUMBER_OK) return fail(diagnostic, line, number_error(nr));
+        /* Metres. A radius under half a kilometre is almost certainly
+           kilometres typed by mistake, and a site that can never be entered
+           is worse than one that is always eligible. */
+        if (radius < 500U || radius > 200000U)
+            return fail(diagnostic, line, P25_PROFILE_ERROR_RADIUS_OUT_OF_RANGE);
+    }
+
+    const size_t at = profile->control_count++;
+    profile->control_channels[at] = hz;
+    profile->control_lat_e7[at] = lat_e7;
+    profile->control_lon_e7[at] = lon_e7;
+    profile->control_radius_m[at] = (uint32_t)radius;
+    profile->control_has_geo[at] = (nparts == 4);
     return true;
 }
+
 
 static bool parse_demod(const char *value, int *preference)
 {
@@ -251,7 +358,10 @@ static bool parse_line(p25_profile_t *profile, char *line_text,
         uint64_t version;
         number_result_t nr = parse_u64(value, &version);
         if (nr != NUMBER_OK) return fail(diagnostic, line, number_error(nr));
-        if (version != P25_PROFILE_FORMAT_VERSION)
+        /* One or two. Version 1 is read exactly as it always was; version
+           2 additionally permits coordinates on a control line. */
+        if (version < P25_PROFILE_FORMAT_VERSION_MIN ||
+            version > P25_PROFILE_FORMAT_VERSION)
             return fail(diagnostic, line, P25_PROFILE_ERROR_UNSUPPORTED_VERSION);
         profile->format_version = (uint16_t)version;
         return true;

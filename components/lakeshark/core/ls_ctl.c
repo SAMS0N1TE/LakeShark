@@ -455,7 +455,8 @@ static int cmd_p25enc(int argc, char **argv)
                    nm ? nm : "?",
                    (unsigned)P25.p25_enc_tg[i].kid);
             if (P25.p25_enc_tg[i].skip_remaining_ms > 0)
-                printf("  skip=%ds", P25.p25_enc_tg[i].skip_remaining_ms / 1000);
+                printf("  skip=%ds",
+                       (int)(P25.p25_enc_tg[i].skip_remaining_ms / 1000));
             printf("\n");
         }
     }

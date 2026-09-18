@@ -104,10 +104,21 @@ LS_CASE(a_failed_open_preserves_the_working_map)
     static uint16_t saved[W * H];
     memcpy(saved, before, sizeof(saved));
     const uint32_t serial = ls_map_render_serial();
+    /* What this case is actually about: the open that failed must leave the
+       archive that was working alone. Compared against what was open a
+       moment ago rather than against PMTILES_FIXTURE, because ls_map keeps
+       the path in a 128-byte buffer and a checkout nested deeply enough
+       makes the fixture's absolute path longer than that - the string then
+       differs by truncation alone and the case fails for a reason that has
+       nothing to do with maps. */
+    char held[160];
+    snprintf(held, sizeof(held), "%s", ls_map_archive() ? ls_map_archive() : "");
+    LS_CHECK(held[0] != 0);
     LS_CHECK(!ls_map_open("missing-map.pmtiles"));
     LS_CHECK(ls_map_open_error() != NULL);
     LS_CHECK(ls_map_status() == NULL);
-    LS_CHECK(!strcmp(ls_map_archive(), PMTILES_FIXTURE));
+    LS_CHECK(ls_map_archive() != NULL);
+    LS_CHECK(ls_map_archive() && !strcmp(ls_map_archive(), held));
     LS_CHECK(!memcmp(saved, render_all(NULL, NULL), sizeof(saved)));
     LS_EQ_UINT(serial, ls_map_render_serial());
 }

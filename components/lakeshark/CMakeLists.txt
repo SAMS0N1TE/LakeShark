@@ -77,6 +77,13 @@ set(P25_C_SOURCES
     apps/p25/p25p1_check_nid.c
     apps/p25/diag.c
 )
+# Format checking back on for this component, against the project-wide
+# -Wno-format in the root CMakeLists. That flag exists for ESP-IDF and the
+# vendored trees, not for this code. The vendored P25 sources below keep their
+# own -Wno-format: per-source options are applied after per-target ones, so
+# they still win.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wformat -Wno-format-truncation)
+
 set_source_files_properties(${P25_C_SOURCES}
     PROPERTIES COMPILE_FLAGS
     "-Wno-unused-function -Wno-unused-variable -Wno-incompatible-pointer-types -Wno-format -Wno-int-conversion -Wno-return-type -Wno-implicit-function-declaration"

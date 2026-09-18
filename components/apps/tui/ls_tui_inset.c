@@ -51,6 +51,28 @@ void ls_tui_corner_inset(int screen_w, int screen_h,
 
 /* See ls_tui_inset.h. */
 
+int ls_tui_row_inset(int y, int screen_h, int radius)
+{
+    if (radius <= 0 || screen_h <= 0) return 0;
+    if (y < 0 || y >= screen_h) return radius;
+
+    /* Which corner this scanline is near. The far half of the panel is the
+       near half measured from the other end, so one arc answers for both. */
+    const int below = screen_h - 1 - y;
+    const int gap = y < below ? y : below;
+    if (gap >= radius) return 0;
+
+    /* Walk out until the arc lets go. The same stepping loop the grid inset
+       uses, kept rather than a square root: this runs per scanline on a core
+       with nothing to spare for the FPU, and the exact comparison is what
+       makes the two agree about where the arc is. */
+    int inset = 0;
+    while (inset < radius && !ls_tui_corner_clear(inset, gap, radius)) inset++;
+    return inset;
+}
+
+/* See ls_tui_inset.h. */
+
 int ls_tui_corner_cells(int screen_w, int screen_h, int cell_w, int cell_h,
                         int radius, int ox, int oy, int row)
 {

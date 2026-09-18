@@ -135,6 +135,13 @@ void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
+/* Sub-GHz display preferences. Real state, because the screen reads them
+   back to draw the option lists with the current choice marked. */
+static int s_sg_style, s_sg_colour;
+int  settings_get_subghz_style(void) { return s_sg_style; }
+void settings_set_subghz_style(int v) { s_sg_style = v; }
+int  settings_get_subghz_colour(void) { return s_sg_colour; }
+void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 int  settings_get_theme(void) { return 0; }
 void settings_set_theme(int v) { (void)v; }
@@ -297,6 +304,69 @@ LS_CASE(portrait_renders_without_the_chrome_colliding)
     ls_tui_end();
 }
 
+/* The portrait tab strip is a box, and what is written in a box sits in the
+   middle of it.
+
+   This was reported as "HOME, MESH, RADIOS and SET are still touching the
+   bottom of the buttons" and fixed twice before this test existed, because
+   the only check was to look at the panel. The strip drew two lines - the
+   function-key number and the name - and centred the PAIR, but portrait is
+   touch-first and passes no number, so the name was laid out as the second
+   of two lines and came out a row low, hard against the bottom border.
+
+   The measurement is deliberately dumb and does not know how tall the strip
+   is: find the border above the names and the border below them, and require
+   the same number of rows on each side. It fails for a name drawn on the
+   bottom interior row, for one drawn on the top interior row, and for a strip
+   whose interior is even and therefore has no middle to draw on. */
+
+LS_CASE(the_portrait_tab_names_sit_in_the_middle_of_their_boxes)
+{
+    LS_CHECK(ls_tui_begin(568, 1232));
+    register_once();
+    ls_tui_screen_show(0);
+    frame(4);
+
+    int cols, rows;
+    ls_tui_geometry(&cols, &rows, NULL, NULL);
+
+    /* A border row of the strip starts with the corner of the first tab. */
+    int top = -1, bot = -1;
+    for (int r = 1; r < rows && r < 16; r++) {
+        char t[200];
+        row_text(r, t, sizeof(t));
+        if (t[0] != '+') continue;
+        if (top < 0) top = r; else { bot = r; break; }
+    }
+    LS_CHECK_MSG(top >= 0 && bot > top,
+                 "the portrait tab strip has no box to measure (top %d, bottom %d)",
+                 top, bot);
+
+    /* Every tab writes its name, and they all write it on the same row. */
+    static const char *const NAMES[] = { "HOME", "P25", "SET", "REC" };
+    int label = -1;
+    for (int r = top + 1; r < bot; r++)
+        if (row_has(r, NAMES[0])) { label = r; break; }
+    LS_CHECK_MSG(label > 0, "no tab name between rows %d and %d", top, bot);
+
+    for (unsigned i = 1; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        char t[200];
+        row_text(label, t, sizeof(t));
+        LS_CHECK_MSG(row_has(label, NAMES[i]),
+                     "%s is not on the same row as %s: '%s'",
+                     NAMES[i], NAMES[0], t);
+    }
+
+    const int above = label - top, below = bot - label;
+    char t[200];
+    row_text(label, t, sizeof(t));
+    LS_CHECK_MSG(above == below,
+                 "the tab names are %d row(s) below the top border and %d "
+                 "above the bottom one: '%s'", above - 1, below - 1, t);
+
+    ls_tui_end();
+}
+
 LS_CASE(every_screen_renders_something)
 {
     /* Walk the tab strip and dump each one. The assertion is weak on purpose
@@ -362,34 +432,72 @@ static bool grid_has(const char *needle)
     return false;
 }
 
-/* Landscape chrome owns only these rounded end-cap pixels. Ground tests
-   below still check all remaining margins, including the invisible corners. */
-static bool bar_end_pixel(int x,int y)
+/* THE PIXELS THE CHROME OWNS OUTSIDE ITS OWN TEXT.
+
+   The grid keeps its words out of the rounded corners; the bar behind those
+   words has to run back out past them to the glass, or it reads as a border
+   that has been pulled inside a black frame. Two pieces, and both used to be
+   claimed for landscape only:
+
+     - the END CAPS beside the bar's row, from the arc to where the words are
+       allowed to start. These lie over real grid cells, which is why the
+       ground checks below have to skip them: the router deliberately leaves
+       those cells blank so this can paint them.
+     - the MARGIN BAND beyond the bar's row, outside the grid altogether.
+       Filling the caps and not the strip above them leaves the bar floating
+       a cell below the top edge, which is the same defect one axis over.
+
+   Portrait has no hint row - its last row belongs to whatever screen is up -
+   so only the top bar exists there. Everything this does NOT claim still has
+   to be plain ground, including the invisible corners, so the two checks
+   below catch it if this and paint_bar_ends ever drift apart. */
+static bool bar_pixel(int x,int y,int *which)
 {
-    if(!ls_tui_is_wide()) return false;
     int cols,rows,cw,ch;ls_tui_geometry(&cols,&rows,&cw,&ch);
-    const int ox=(NATIVE_H-cols*cw)/2,oy=(NATIVE_W-rows*ch)/2;
-    const int lx=NATIVE_H-1-y,ly=x;
-    const int r=(ly-oy)/ch;
-    if(ly<oy || ly>=oy+rows*ch || (r!=0 && r!=rows-1)) return false;
-    const int pad=ls_tui_corner_pad(r);
-    if(lx>=ox+pad*cw && lx<ox+(cols-pad)*cw) return false;
-    return ls_tui_corner_clear(lx<NATIVE_H-1-lx?lx:NATIVE_H-1-lx,
-        ly<NATIVE_W-1-ly?ly:NATIVE_W-1-ly,ls_tui_corner_radius());
+    const bool wide=ls_tui_is_wide();
+    /* Logical coordinates: the panel is rotated in the wide posture. */
+    const int sw=wide?NATIVE_H:NATIVE_W, sh=wide?NATIVE_W:NATIVE_H;
+    const int lx=wide?NATIVE_H-1-y:x,   ly=wide?x:y;
+    const int ox=(sw-cols*cw)/2, oy=(sh-rows*ch)/2;
+    const int radius=ls_tui_corner_radius();
+
+    for(int end=0;end<2;end++) {
+        if(end && !wide) continue;
+        const int row=end?rows-1:0;
+        const int top=oy+row*ch, bottom=top+ch;
+        const int y0=end?top:0, y1=end?sh:bottom;
+        if(ly<y0 || ly>=y1) continue;
+        /* Past the arc is off the glass, and nothing paints there. */
+        const int inset=ls_tui_row_inset(ly,sh,radius);
+        if(lx<inset || lx>=sw-inset) return false;
+        /* Inside the bar's own row the words own the middle. */
+        if(ly>=top && ly<bottom) {
+            const int pad=ls_tui_corner_pad(row);
+            if(lx>=ox+pad*cw && lx<ox+(cols-pad)*cw) return false;
+        }
+        if(which)*which=end;
+        return true;
+    }
+    return false;
 }
+
+static bool bar_end_pixel(int x,int y){return bar_pixel(x,y,NULL);}
 
 static void check_bar_ends(void)
 {
-    if(!ls_tui_is_wide()) return;
     int checked=0,wrong=0;
     const ls_tui_theme_t *theme=ls_tui_active_theme();
     for(int y=0;y<NATIVE_H;y++) for(int x=0;x<NATIVE_W;x++) {
-        if(!bar_end_pixel(x,y)) continue;
-        const uint16_t want=theme->palette[x<NATIVE_W/2?TUI_CYAN:TUI_BLACK|TUI_BRIGHT];
+        int end=0;
+        if(!bar_pixel(x,y,&end)) continue;
+        const uint16_t want=theme->palette[end?(TUI_BLACK|TUI_BRIGHT):TUI_CYAN];
         checked++;
         if(g_fb[(size_t)y*NATIVE_W+x]!=want) wrong++;
     }
-    LS_CHECK(checked>500);
+    /* Portrait has one bar rather than two, so it claims fewer pixels - but
+       a posture that claimed none at all is exactly the bug, and a floor of
+       zero would not have noticed it. */
+    LS_CHECK_MSG(checked>500,"only %d chrome pixels outside the words",checked);
     LS_EQ_INT(wrong,0);
 }
 

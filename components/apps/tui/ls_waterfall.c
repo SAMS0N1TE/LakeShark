@@ -172,6 +172,33 @@ static inline int level_in_row(uint8_t raw, int row_back)
     return level_between(raw, s_row_lo[idx], s_row_hi[idx]);
 }
 
+/* The row as the eye gets it: one pass over the bins through the same
+   level_of the renderer uses, counted. Cheap - sixteen buckets over at most
+   256 bins, once per accepted row, which is at most a few times a second. */
+static void measure_levels(const uint8_t *row, int n)
+{
+    memset(s_st.level_hist, 0, sizeof(s_st.level_hist));
+    s_st.at_floor = s_st.at_ceiling = 0;
+    s_st.levels_used = 0;
+    s_st.level_lo = 15;
+    s_st.level_hi = 0;
+    s_st.row_bins = (uint16_t)(n > 0 ? n : 0);
+    if (n <= 0) { s_st.level_lo = 0; return; }
+
+    for (int i = 0; i < n; i++) {
+        int v = level_of(row[i]);
+        if (v < 0) v = 0;
+        if (v > 15) v = 15;
+        s_st.level_hist[v]++;
+        if (v == 0)  s_st.at_floor++;
+        if (v == 15) s_st.at_ceiling++;
+        if (v < s_st.level_lo) s_st.level_lo = (uint8_t)v;
+        if (v > s_st.level_hi) s_st.level_hi = (uint8_t)v;
+    }
+    for (int v = 0; v < 16; v++)
+        if (s_st.level_hist[v]) s_st.levels_used++;
+}
+
 /* How TALL a spectrum bar is, which is a different question. */
 
 static inline int height_of(uint8_t raw)
@@ -373,6 +400,12 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
         memset(row + dst_n, 0, (size_t)(LS_WF_BINS_MAX - dst_n));
 
     track_scale(row, dst_n);
+
+    /* Measured AFTER track_scale, because the row is drawn through the
+       window that row updated - anything computed before it would describe
+       a picture nobody saw. */
+    measure_levels(row, dst_n);
+
     /* The window this row was written under travels with it. */
     s_row_lo[s_head] = (uint8_t)(s_auto_lo < 0 ? 0 : s_auto_lo > 255 ? 255 : s_auto_lo);
     s_row_hi[s_head] = (uint8_t)(s_auto_hi < 0 ? 0 : s_auto_hi > 255 ? 255 : s_auto_hi);

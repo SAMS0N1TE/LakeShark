@@ -30,9 +30,16 @@ bool ls_tui_locked(void) { return s_locked; }
 
 static int tab_rows(void)
 {
-    /* Four rows in portrait, not two. */
+    /* Odd in portrait, so the strip HAS a middle row to sit a label on.
 
-    return ls_tui_is_wide() ? 1 : 4;
+       Four rows is a border, two interior rows and a border, and one line of
+       text in an even interior can only be above or below the middle. It was
+       below, hard against the bottom border, and no centring arithmetic
+       fixes a box with no centre. Five leaves three interior rows, the label
+       lands on the middle one, and the touch target grows a row rather than
+       losing one. */
+
+    return ls_tui_is_wide() ? 1 : 5;
 }
 
 /* Portrait has no hint row. */
@@ -330,11 +337,19 @@ static void tab_box(tui_surface *sf, tui_rect r, bool on,
     /* The number and the name, centred together. The number is the function
        key AND the touch target, so it is the part that survives a narrow
        grid; the name is the convenience. */
-    const bool named = (name && name[0] && f.h >= 2 && f.w >= 4);
-    const int lines = named ? 2 : 1;
-    const int ly = f.y + (f.h - lines) / 2;
-    if (num) ls_dither_label(sf, f, ly - f.y, num, face);
-    if (named) ls_dither_label(sf, f, ly + 1 - f.y, name, sub);
+    /* Centred over what is actually DRAWN. Portrait is touch-first and
+       passes no number at all, but the empty line still counted towards the
+       block, so the name was laid out as the SECOND of two lines and came
+       out a row low - against the bottom border on every tab. A line nobody
+       can see takes no space. */
+    const bool numbered = (num && num[0]);
+    const bool named = (name && name[0] && f.w >= 4 &&
+                        (!numbered || f.h >= 2));
+    const int lines = (numbered ? 1 : 0) + (named ? 1 : 0);
+    if (!lines) return;
+    int ly = f.y + (f.h - lines) / 2;
+    if (numbered) ls_dither_label(sf, f, ly++ - f.y, num, face);
+    if (named)    ls_dither_label(sf, f, ly   - f.y, name, sub);
 }
 
 static void draw_tabs(tui_surface *sf, int cols, int row, int height)
@@ -395,7 +410,39 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
     tui_fill(sf, tui_rect_make(0, row, cols, height), ' ',
              TUI_ATTR(TUI_WHITE, TUI_BLACK));
     const int ly = row + (height - 1) / 2;   /* centred, same reason */
-    int x = 1;
+
+    /* MEASURE THE RUN, THEN CENTRE IT.
+
+       Drawn from column one it started hard against the left edge and ran
+       right, which on the 118 column landscape panel left the four tabs
+       occupying columns one to forty-four and SEVENTY columns of nothing
+       beside them. Portrait never showed it because there the tabs are boxes
+       that divide the whole width between them; this branch is a plain run
+       of words and a run has to be placed.
+
+       Two passes over the same formatting, because the width cannot be known
+       until the labels exist and the labels depend on which screen is
+       current. Cheap: four to six short snprintfs, once a frame. */
+    int total = 0;
+    for (int i = 0; i < ntab; i++) {
+        const int scr = tab_screen(i);
+        char label[24];
+        if(s_current==0) snprintf(label,sizeof(label)," %s ",s_screens[scr]->name);
+        else snprintf(label, sizeof(label), " F%d %s ", i + 1, s_screens[scr]->name);
+        total += (int)strlen(label) + 1;
+    }
+    if (total > 0) total--;            /* no gap after the last one */
+
+    /* Inside the rounded corners on both sides, and never left of column
+       one even when the run is wider than the panel - a centred thing that
+       does not fit is drawn from the start and clipped, not from a negative
+       column. */
+    const int pad = ls_tui_corner_pad(row);
+    const int lo = pad > 1 ? pad : 1;
+    const int hi = cols - lo;
+    int x = lo + (hi - lo - total) / 2;
+    if (x < lo) x = lo;
+
     for (int i = 0; i < ntab && x < cols - 4; i++) {
         const int scr = tab_screen(i);
         char label[24];

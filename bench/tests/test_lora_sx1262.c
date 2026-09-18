@@ -210,6 +210,21 @@ LS_CASE(fsk_receive_preserves_lora_and_has_no_packet_restart)
     LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
     LS_EQ_INT(fsk_mod[1], 0x06); LS_EQ_INT(fsk_mod[2], 0x82); LS_EQ_INT(fsk_mod[3], 0xab);
     LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+
+    /* A sync word match can only be as long as the sync word. The part will
+       match 64 bits and begin writes four registers from a uint32_t, so 40 is
+       a whole byte of match against a register nobody set - which does not
+       fail, it just never hears anything. 40 is a multiple of eight on
+       purpose: it is refused for its length and nothing else. */
+    cfg.sync_bits = 32;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    cfg.sync_bits = 40;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_ERR_INVALID_ARG);
+    cfg.sync_bits = 8;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    cfg.sync_bits = 0;
 }
 
 /* ---------------------------------------------------------------- cases -- */

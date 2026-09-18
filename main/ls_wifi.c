@@ -406,9 +406,26 @@ static void reconnect_cb(void *arg)
     ls_wifi_operation_end(&s_operation);
 }
 
+/* Consecutive failed attempts since the last success or explicit join. */
+static int s_sta_attempts;
+/* Set when the budget ran out, so the screen can say so. Without it the
+   station stays "running but not connected", which the status line renders
+   as a retry countdown for a retry that is never coming. */
+static bool s_sta_gave_up;
+
 static void schedule_reconnect(void)
 {
     if (!s_sta_running) return;
+    if (!ls_wifi_should_retry(s_sta_attempts, s_sta_reason)) {
+        const char *why = ls_wifi_reason_text(s_sta_reason);
+        ESP_LOGW(TAG, "wifi: giving up after %d attempts (%s); "
+                      "join again to retry",
+                 s_sta_attempts, why ? why : "unknown reason");
+        if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
+        s_sta_gave_up = true;
+        return;
+    }
+    s_sta_attempts++;
     if (!s_reconnect_timer) {
         const esp_timer_create_args_t args = {
             .callback = &reconnect_cb,
@@ -464,6 +481,9 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
         s_sta_connected = true;
         s_sta_reason = 0;
         s_reconnect_ms  = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
+        /* Connected, so the attempt budget starts over. */
+        s_sta_attempts = 0;
+        s_sta_gave_up = false;
         /* Serve the file browser over the station too, so captures can
            be pulled without dropping the BLE head to raise the SoftAP. */
         if (httpd_ensure_started() == ESP_OK)
@@ -816,6 +836,12 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
         if (leave != ESP_OK) return leave;
     }
     s_sta_reason = 0;
+    /* Here rather than only in ls_wifi_sta_join: the settings screen and the
+       Flipper head rejoin through autojoin, which reaches this and not that,
+       so without this a rejoin after the budget ran out gives up again on
+       its first disconnect. */
+    s_sta_attempts = 0;
+    s_sta_gave_up = false;
 
     strncpy(s_sta_ssid, ssid, sizeof(s_sta_ssid) - 1);
     s_sta_ssid[sizeof(s_sta_ssid) - 1] = '\0';
@@ -1008,6 +1034,10 @@ static void sta_status_locked(char *buf, int cap)
     }
     if (s_sta_connected) {
         snprintf(buf, cap, "Connected: %s  IP %s", s_sta_ssid, s_ip_sta);
+    } else if (s_sta_gave_up) {
+        const char *why = ls_wifi_reason_text(s_sta_reason);
+        snprintf(buf, cap, "Stopped trying \"%s\"; %s - join again to retry",
+                 s_sta_ssid, why ? why : "unknown reason");
     } else {
         ls_wifi_connecting_status(buf, (size_t)cap, s_sta_ssid, s_sta_reason, s_reconnect_ms);
     }
@@ -1090,6 +1120,11 @@ esp_err_t ls_wifi_stop(void)
 
 esp_err_t ls_wifi_sta_join(const char *ssid, const char *password)
 {
+    /* An explicit join is the operator saying "it is there now", which
+       is the one thing that can be known from outside. Re-arms the
+       budget so giving up is never permanent. */
+    s_sta_attempts = 0;
+    s_sta_reason = 0;
     return perform(WIFI_OP_JOIN, ssid, password, NULL, 0);
 }
 

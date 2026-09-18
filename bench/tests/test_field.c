@@ -6,6 +6,7 @@
 #include "esp_timer.h"
 #include "radio/radio_health.h"
 #include "ls_wireless.h"
+#include "apps/fm/pocsag.h"
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <math.h>
@@ -21,7 +22,59 @@ bool ls_keypad_present(void) { return keyboard_attached; }
 static ls_imu_sample_t imu_data;
 static uint32_t mesh_received=42;
 bool ls_lora_present(void) { return !absent; }
-bool ls_lora_fsk_active(void) { return false; }
+/* ---- the FSK session and the paging decoder, faked like the radio ------ */
+static bool fsk_on;
+static ls_fsk_cfg_t fsk_cfg;
+static unsigned fsk_begins, fsk_ends;
+static uint8_t fsk_inbound[8];
+static int fsk_inbound_len;
+static bool fsk_refuse;
+bool ls_lora_fsk_active(void) { return fsk_on; }
+esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
+{
+    if (fsk_refuse) return ESP_FAIL;
+    fsk_cfg = *cfg; fsk_on = true; fsk_begins++; return ESP_OK;
+}
+esp_err_t ls_lora_fsk_end(void) { fsk_on = false; fsk_ends++; return ESP_OK; }
+int ls_lora_fsk_poll(uint8_t *buf, size_t max, float *rssi)
+{
+    *rssi = -95;
+    if (fsk_inbound_len <= 0 || !buf) return 0;
+    int n = fsk_inbound_len < (int)max ? fsk_inbound_len : (int)max;
+    memcpy(buf, fsk_inbound, n);
+    fsk_inbound_len = 0;
+    return n;
+}
+
+struct pocsag_ctx { int baud; };
+static struct pocsag_ctx fake_pocsag;
+static fm_state_t *fake_pocsag_state;
+static unsigned pocsag_creates, pocsag_destroys, pocsag_batches;
+static uint32_t pocsag_pages_seen;
+pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud)
+{
+    fake_pocsag_state = out; fake_pocsag.baud = baud; pocsag_creates++;
+    return (pocsag_ctx_t *)&fake_pocsag;
+}
+void pocsag_destroy(pocsag_ctx_t *c) { (void)c; pocsag_destroys++; fake_pocsag_state = NULL; }
+void pocsag_set_baud(pocsag_ctx_t *c, int baud) { (void)c; fake_pocsag.baud = baud; }
+uint32_t pocsag_n_pages(const pocsag_ctx_t *c) { (void)c; return pocsag_pages_seen; }
+/* Every batch decodes to one page, so the copy-out path is exercised. */
+bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
+                          bool inverted, bool contiguous)
+{
+    (void)c; (void)data; (void)len; (void)inverted; (void)contiguous;
+    pocsag_batches++;
+    if (!fake_pocsag_state) return false;
+    fm_page_t *p = &fake_pocsag_state->pages[fake_pocsag_state->page_head];
+    p->address = 1234567; snprintf(p->text, sizeof(p->text), "CALL THE OFFICE");
+    fake_pocsag_state->page_head =
+        (fake_pocsag_state->page_head + 1) % FM_PAGE_LOG_MAX;
+    if (fake_pocsag_state->page_count < FM_PAGE_LOG_MAX)
+        fake_pocsag_state->page_count++;
+    pocsag_pages_seen++;
+    return true;
+}
 bool ls_lora_scanning(void) { return scan; }
 bool ls_mesh_radio_hold(bool on) { held = on; return held_ready; }
 bool ls_mesh_radio_held(void) { return held_ready; }
@@ -36,7 +89,18 @@ int ls_lora_scan_pass(float *dbm, int n, bool *done) { for (int i=0;i<n;i++) dbm
 bool ls_lora_send_done(void) { return tx_done; }
 esp_err_t ls_lora_send(const uint8_t *data, size_t n) { (void)data; (void)n; sends++; tx_done = false; return ESP_OK; }
 uint32_t ls_lora_airtime_ms(int len) { return (uint32_t)len * 10; }
-int ls_lora_poll(uint8_t *buf, size_t max, float *rssi, float *snr) { (void)buf; (void)max; polls++; *rssi=-90; *snr=7; return 0; }
+/* One packet, handed over once, so a case can say exactly what arrived. */
+static uint8_t inbound[8];
+static int inbound_len;
+int ls_lora_poll(uint8_t *buf, size_t max, float *rssi, float *snr)
+{
+    polls++; *rssi=-90; *snr=7;
+    if (inbound_len <= 0 || !buf) return 0;
+    int n = inbound_len < (int)max ? inbound_len : (int)max;
+    memcpy(buf, inbound, n);
+    inbound_len = 0;
+    return n;
+}
 esp_err_t ls_lora_rssi_inst(float *dbm) { *dbm = -92; return ESP_OK; }
 void ls_gps_get(ls_gps_state_t *out) { *out = gps; }
 bool ls_imu_read(ls_imu_sample_t *out) { if (imu_busy) return false; *out=imu_data; return true; }
@@ -58,6 +122,9 @@ static void reset(void)
     mkdir("field-test", 0775);
 #endif
     remove("field-test/entries.bin"); remove("field-test/notes.md"); remove("field-test/samples.csv");
+    remove("field-test/packets.csv"); inbound_len = 0;
+    fsk_on=fsk_refuse=false; fsk_begins=fsk_ends=0; fsk_inbound_len=0;
+    pocsag_creates=pocsag_destroys=pocsag_batches=0; pocsag_pages_seen=0;
     remove("field-test/compass-solo0.cal"); remove("field-test/compass-solo1.cal");
     remove("field-test/compass-kbd0.cal");remove("field-test/compass-kbd1.cal");
     held=scan=fail_config=absent=false; held_ready=receiving=tx_done=true; configurations=sends=polls=0;
@@ -367,4 +434,119 @@ LS_CASE(recorded_timestamp_survives_live_updates_and_rejects_impossible_gps_date
     LS_CHECK(!strcmp(state.record_saved_utc,"2026-09-15T12:34:56Z"));
     gps.month=2;gps.day=30;ls_shim_time_advance(100000);ls_field_step();ls_field_snapshot(&state);
     LS_CHECK(!state.sample.utc[0]);
+}
+
+LS_CASE(a_received_payload_is_written_to_packets_csv)
+{
+    /* samples.csv is a one-second heartbeat of where you were; packets.csv is
+       what actually arrived. This is the second one. */
+    reset();
+    LS_CHECK(ls_field_direct(true)); ls_field_step();
+    ls_field_snapshot(&state); LS_CHECK(state.direct);
+    LS_CHECK(ls_field_record(true));
+
+    static const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    memcpy(inbound, payload, sizeof(payload));
+    inbound_len = (int)sizeof(payload);
+    ls_shim_time_advance(100000); ls_field_step();
+
+    ls_field_snapshot(&state);
+    LS_EQ_UINT(state.record_packets, 1);
+    LS_EQ_UINT(state.record_errors, 0);
+
+    char text[512] = {0};
+    FILE *f = fopen("field-test/packets.csv", "rb");
+    LS_CHECK(f != NULL);
+    size_t got = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    LS_CHECK(got > 0);
+    LS_CHECK(strstr(text, "uptime_us,utc,source,hz,rssi,snr,gps_valid,lat,lon,len,hex") != NULL);
+    /* The bytes, as hex, and the length that says how many to read. */
+    LS_CHECK(strstr(text, "DEADBEEF") != NULL);
+    LS_CHECK(strstr(text, ",4,DEADBEEF") != NULL);
+
+    /* A packet arriving with recording off leaves the file alone. */
+    LS_CHECK(ls_field_record(false));
+    memcpy(inbound, payload, sizeof(payload));
+    inbound_len = (int)sizeof(payload);
+    ls_shim_time_advance(100000); ls_field_step();
+    ls_field_snapshot(&state);
+    LS_EQ_UINT(state.record_packets, 1);
+}
+
+LS_CASE(gfsk_listens_with_the_fsk_demodulator_and_cannot_transmit)
+{
+    reset();
+    LS_CHECK(ls_field_direct(true)); ls_field_step();
+    ls_field_snapshot(&state); LS_CHECK(state.direct);
+    LS_EQ_UINT(fsk_begins, 0);
+
+    LS_CHECK(ls_field_mode(LS_LAB_GFSK)); ls_field_step();
+    ls_field_snapshot(&state);
+    LS_EQ_INT(state.mode, LS_LAB_GFSK);
+    LS_EQ_UINT(fsk_begins, 1);
+    LS_CHECK(fsk_on);
+    /* One BAND choice moves every mode, so the session takes its frequency
+       from the LoRa config rather than carrying a second one. */
+    LS_EQ_UINT(fsk_cfg.freq_hz, state.config.freq_hz);
+
+    const unsigned before_polls = polls;
+    static const uint8_t bytes[] = {0x01, 0x02, 0x03};
+    memcpy(fsk_inbound, bytes, sizeof(bytes));
+    fsk_inbound_len = (int)sizeof(bytes);
+    ls_shim_time_advance(100000); ls_field_step();
+    ls_field_snapshot(&state);
+    LS_EQ_UINT(state.rx, 1);
+    LS_EQ_INT(state.packet_len, 3);
+    /* Through the FSK poll, not the LoRa one. */
+    LS_EQ_UINT(polls, before_polls);
+    /* The FSK demodulator has no reference to measure SNR against. */
+    LS_CHECK(isnan(state.detections[0].snr));
+
+    /* Receive only: there is no FSK transmit call to make. */
+    const unsigned before_sends = sends;
+    ls_field_transmit("nope"); ls_field_step();
+    LS_EQ_UINT(sends, before_sends);
+
+    /* Leaving DIRECT ends the session and gives the mesh its radio back. */
+    ls_field_direct(false); ls_field_step();
+    LS_CHECK(!fsk_on);
+    LS_CHECK(fsk_ends >= 1);
+    LS_CHECK(!held);
+}
+
+LS_CASE(pocsag_pins_the_paging_parameters_and_surfaces_a_page)
+{
+    reset();
+    LS_CHECK(ls_field_direct(true)); ls_field_step();
+    LS_CHECK(ls_field_mode(LS_LAB_POCSAG)); ls_field_step();
+    LS_EQ_UINT(pocsag_creates, 1);
+    /* Not offered to the user: wrong values here look like a quiet channel.
+       These are the set the console receiver already works with. */
+    LS_EQ_UINT(fsk_cfg.deviation_hz, 4500);
+    /* Carson for 1200 baud at +-4.5 kHz is 11.4 kHz, so the narrowest the
+       part offers above it. Anything wider is noise the demodulator does not
+       need, which costs sensitivity at VHF on a 915 MHz front end. */
+    LS_EQ_UINT(fsk_cfg.bandwidth_hz, 11700);
+    LS_CHECK(fsk_cfg.bitrate + 2 * fsk_cfg.deviation_hz <= fsk_cfg.bandwidth_hz);
+    LS_EQ_UINT(fsk_cfg.sync_word, 0x7cd215d8u);
+    LS_EQ_UINT(fsk_cfg.payload_bytes, 64);
+
+    static const uint8_t batch[] = {0xAA, 0xBB};
+    memcpy(fsk_inbound, batch, sizeof(batch));
+    fsk_inbound_len = (int)sizeof(batch);
+    ls_shim_time_advance(100000); ls_field_step();
+    ls_field_snapshot(&state);
+    LS_EQ_UINT(pocsag_batches, 1);
+    LS_EQ_UINT(state.pages, 1);
+    /* Newest first, so a screen can list them the way FM does. */
+    LS_EQ_UINT(state.page_log_count, 1);
+    LS_EQ_UINT(state.page_log[0].address, 1234567);
+    LS_CHECK(!strcmp(state.page_log[0].text, "CALL THE OFFICE"));
+
+    /* Back to a LoRa mode and the decoder is handed back too - it is a
+       sixteen-entry page ring in PSRAM, not something to leave allocated. */
+    LS_CHECK(ls_field_mode(LS_LAB_PACKETS)); ls_field_step();
+    LS_EQ_UINT(pocsag_destroys, 1);
+    LS_CHECK(!fsk_on);
 }

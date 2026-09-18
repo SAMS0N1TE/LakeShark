@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ls_tui_ui.h"
+#include "esp_attr.h"
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -14,8 +15,13 @@ static bool s_open;
 static char s_title[24];
 static char s_why[48];
 
-static char s_label[LS_PICKER_MAX][LS_PICKER_TEXT];
-static char s_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
+/* PSRAM: together these are a few kilobytes and they are read by the
+   drawing task, never from an interrupt or with the cache down. As
+   plain statics they spent internal .bss this board does not have -
+   the same pressure that once left the largest DMA block at 176
+   bytes and the panel showing its test pattern. */
+static EXT_RAM_BSS_ATTR char s_label[LS_PICKER_MAX][LS_PICKER_TEXT];
+static EXT_RAM_BSS_ATTR char s_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_n;
 
 static ls_picker_done_t s_done;
@@ -154,10 +160,19 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     const int mid = (f.h - 1) / 2;
     put_over(sf, f, f.x + 1, f.y + mid, s_label[idx], text);
 
-    const int dn = (int)strlen(s_detail[idx]);
-    if (dn > 0 && dn + 3 < f.w)
-        put_over(sf, f, f.x + f.w - 1 - dn, f.y + mid, s_detail[idx],
+    /* What is left after the label and a space between them. A detail
+       longer than that is cut to fit rather than dropped: half a
+       sentence still says more than none, and the label - the part
+       that has to be right - is never touched. */
+    int dn = (int)strlen(s_detail[idx]);
+    const int room = f.w - 2 - (int)strlen(s_label[idx]) - 2;
+    if (dn > room) dn = room;
+    if (dn > 0) {
+        char cut[LS_PICKER_DETAIL];
+        snprintf(cut, (size_t)dn + 1, "%s", s_detail[idx]);
+        put_over(sf, f, f.x + f.w - 1 - dn, f.y + mid, cut,
                  A(TUI_WHITE, TUI_BLACK));
+    }
 
     if (slot < ROWS_MAX) {
         s_hit_row[slot] = a;

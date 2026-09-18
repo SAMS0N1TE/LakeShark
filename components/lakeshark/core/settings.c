@@ -579,6 +579,106 @@ void settings_set_antenna_external(bool external)
     sput_u8("ant_ext", external ? 1 : 0);
 }
 
+/* The threshold default. Twelve dB was too close to the noise: thermal
+   spread across a sweep is several dB, so nearly every bin eventually
+   crossed it, the detection list filled with grass, and it buzzed once per
+   bin on the way. Twenty-five leaves the noise well clear and is still far
+   below anything worth catching - the reference signal this was built
+   against sits about sixty dB over the floor. */
+#define SUBGHZ_GATE_DEFAULT 25
+
+int settings_get_subghz_gate_db(void)
+{
+    if (!s_nvs_ok) return SUBGHZ_GATE_DEFAULT;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "sg_gate", &v) != ESP_OK || !v)
+        return SUBGHZ_GATE_DEFAULT;
+    return v;
+}
+void settings_set_subghz_gate_db(int db)
+{
+    if (!s_nvs_ok || db < 1 || db > 60) return;
+    sput_u8("sg_gate", (uint8_t)db);
+}
+int settings_get_subghz_on_hit(void)
+{
+    if (!s_nvs_ok) return 1;                       /* buzz */
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "sg_onhit", &v) != ESP_OK) return 1;
+    return v > 2 ? 1 : v;
+}
+void settings_set_subghz_on_hit(int mode)
+{
+    if (!s_nvs_ok || mode < 0 || mode > 2) return;
+    sput_u8("sg_onhit", (uint8_t)mode);
+}
+int settings_get_subghz_style(void)
+{
+    if (!s_nvs_ok) return 2;                       /* bars */
+    uint8_t v = 2;
+    if (nvs_get_u8(s_nvs, "sg_style", &v) != ESP_OK) return 2;
+    return v;
+}
+void settings_set_subghz_style(int style)
+{
+    if (!s_nvs_ok || style < 0 || style > 8) return;
+    sput_u8("sg_style", (uint8_t)style);
+}
+int settings_get_subghz_colour(void)
+{
+    if (!s_nvs_ok) return 0;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "sg_col", &v) != ESP_OK) return 0;
+    return v;
+}
+void settings_set_subghz_colour(int colour)
+{
+    if (!s_nvs_ok || colour < 0 || colour > 8) return;
+    sput_u8("sg_col", (uint8_t)colour);
+}
+void settings_get_subghz_fsk(uint32_t *bitrate, uint32_t *deviation_hz,
+                             uint32_t *sync_word, int *preamble_bits,
+                             int *bandwidth_khz)
+{
+    uint32_t br = 4800, dev = 25000, sync = 0x2DD42DD4u;
+    uint32_t pre32 = 32, bw = 59;
+    if (s_nvs_ok) {
+        (void)nvs_get_u32(s_nvs, "sg_br",   &br);
+        (void)nvs_get_u32(s_nvs, "sg_dev",  &dev);
+        (void)nvs_get_u32(s_nvs, "sg_sync", &sync);
+        /* sg_pre held a uint8_t and the screen offers up to 1024, so
+           anything past 255 could never be written back. sg_pre32 is
+           the real range; the old key is still read so a preamble set
+           before this survives the upgrade. */
+        if (nvs_get_u32(s_nvs, "sg_pre32", &pre32) != ESP_OK) {
+            uint8_t legacy = 0;
+            if (nvs_get_u8(s_nvs, "sg_pre", &legacy) == ESP_OK && legacy)
+                pre32 = legacy;
+        }
+        (void)nvs_get_u32(s_nvs, "sg_bw",   &bw);
+    }
+    if (bitrate)       *bitrate = br;
+    if (deviation_hz)  *deviation_hz = dev;
+    if (sync_word)     *sync_word = sync;
+    if (preamble_bits) *preamble_bits = pre32 ? (int)pre32 : 32;
+    if (bandwidth_khz) *bandwidth_khz = bw ? (int)bw : 59;
+}
+void settings_set_subghz_fsk(uint32_t bitrate, uint32_t deviation_hz,
+                             uint32_t sync_word, int preamble_bits,
+                             int bandwidth_khz)
+{
+    if (!s_nvs_ok) return;
+    sput_u32("sg_br", bitrate);
+    sput_u32("sg_dev", deviation_hz);
+    sput_u32("sg_sync", sync_word);
+    /* 1024 is what the screen offers and what rec_watch_fsk_set
+       accepts, so that is what has to fit here. */
+    if (preamble_bits > 0 && preamble_bits <= 1024)
+        sput_u32("sg_pre32", (uint32_t)preamble_bits);
+    if (bandwidth_khz > 0 && bandwidth_khz <= 1000)
+        sput_u32("sg_bw", (uint32_t)bandwidth_khz);
+}
+
 bool settings_get_alert_ring(void)
 {
     if (!s_nvs_ok) return true;

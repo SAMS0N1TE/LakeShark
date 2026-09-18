@@ -3,6 +3,7 @@
 #include "ls_mixrf.h"
 #include "esp_timer.h"
 #include <string.h>
+#include <stdio.h>
 static rec_watch_status_t state;
 static ls_mixrf_status_t mix;
 static rec_source_t source;
@@ -47,12 +48,110 @@ bool rec_watch_start(void)
         }
     }
     state.event[0].edges=100;state.event[0].span_us=76800;
+    /* One of the three from the SX1262, with the modulation it was heard
+       with. The archive really does hold a mix - the source is per capture,
+       not per session - and without one here nothing that depends on a
+       capture being replayable or exportable as FSK was reachable at all. */
+    state.event[2].source=REC_SOURCE_SX1262;
+    state.event[2].bitrate=2400;
+    state.event[2].deviation_hz=18500;
     memcpy(state.preview[0],pulse,sizeof(state.preview[0]));
     rec_decode_ook24(pulse,100,&state.decoded[0]);
     return true;
 }
 bool rec_watch_enable(bool on){state.enabled=on;return true;}
 bool rec_watch_enabled(void){return state.enabled;}
+/* The bench has no radio to refuse a session, so nothing ever went wrong
+   and the reason is always empty. */
+const char *rec_watch_error(void){return "";}
+/* No radio on the bench, so a replay goes nowhere - but it refuses under a
+   running watch exactly as the real one does, which is the only outcome the
+   screen has to say anything about. The power is kept so a test can check
+   that the screen sent what the operator picked rather than a constant. */
+static int sim_replay_dbm = -128;
+int  rec_watch_sim_replay_dbm(void){return sim_replay_dbm;}
+bool rec_watch_request_replay(uint32_t id,int dbm)
+{(void)id;if(state.enabled)return false;sim_replay_dbm=dbm;return true;}
+/* The FSK settings are plain state, so the bench keeps them for real - the
+   screen reads them back to draw the setup list. */
+static rec_fsk_mod_t sim_fsk={4800,25000,0x2DD42DD4u,32,59};
+void rec_watch_fsk_get(rec_fsk_mod_t *out){if(out)*out=sim_fsk;}
+/* No radio to sweep, but the sweep is a state machine as far as the screen
+   is concerned - busy or not, with or without findings - and every control
+   that acts on a running sweep was unreachable from the bench while this
+   returned a flag that never changed. So it keeps the state instead: a
+   request starts it, a stop ends it, and it leaves two findings behind for
+   whatever wants to tune to one.
+
+   The frequencies are inside the range asked for, because that is the one
+   property a caller can check without knowing what the bench made up. */
+static bool sim_sweeping;
+static int  sim_found;
+static rec_scan_bin_t sim_bin[2];
+bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
+{
+    (void)secs;(void)bins;
+    if(state.enabled)return false;   /* the radio is busy watching */
+    if(hi<=lo)return false;
+    sim_sweeping=true;
+    sim_found=2;
+    sim_bin[0].hz=lo+(hi-lo)/4;   sim_bin[0].dbm=-72.0f;
+    sim_bin[1].hz=lo+(hi-lo)*3/4; sim_bin[1].dbm=-88.0f;
+    return true;
+}
+bool rec_watch_scan_busy(void){return sim_sweeping;}
+int rec_watch_scan_progress(void){return sim_sweeping?50:0;}
+const char *rec_watch_scan_stage(void){return sim_sweeping?"Sweeping":"";}
+int rec_watch_scan_live(rec_scan_bin_t *o,int m){(void)o;(void)m;return 0;}
+float rec_watch_scan_live_floor(void){return -120.0f;}
+int rec_watch_scan_hits(void){return sim_found;}
+void rec_watch_scan_stop(void){sim_sweeping=false;}
+static rec_scan_on_hit_t sim_on_hit=REC_SCAN_ON_HIT_BUZZ;
+void rec_watch_scan_on_hit(rec_scan_on_hit_t m){sim_on_hit=m;}
+rec_scan_on_hit_t rec_watch_scan_on_hit_get(void){return sim_on_hit;}
+uint32_t rec_watch_scan_last_hit(void){return 0;}
+static float sim_gate=REC_SCAN_DETECT_DB;
+float rec_watch_scan_threshold(void){return sim_gate;}
+void rec_watch_scan_set_threshold(float db){sim_gate=db;}
+/* -1 for "no sweep has run", which is what the screen tests to decide
+   whether to offer the findings at all - distinct from a sweep that ran and
+   found nothing. */
+int rec_watch_scan_result(rec_scan_bin_t *out,int max)
+{
+    if(!sim_found)return -1;
+    int n=sim_found<max?sim_found:max;
+    if(out)for(int i=0;i<n;i++)out[i]=sim_bin[i];
+    return out?n:sim_found;
+}
+float rec_watch_scan_floor(void){return -120.0f;}
+/* Nothing on the air to learn from, so the bench answers with a fixed
+   reading once it has been asked - the screen's job is to lay it out and
+   say how sure it is, and neither can be checked against a function that
+   never returns anything. */
+static bool sim_learned;
+bool rec_watch_request_learn(uint32_t secs)
+{(void)secs;if(state.enabled)return false;sim_learned=true;return true;}
+bool rec_watch_learn_busy(void){return false;}
+bool rec_watch_learn_result(rec_learn_t *out)
+{
+    if(!sim_learned)return false;
+    if(out) {
+        memset(out,0,sizeof(*out));
+        out->bitrate=2400;
+        out->deviation_hz=18500;
+        out->sync_word=0xD391D391u;
+        out->confidence=76;
+        snprintf(out->note,sizeof(out->note),"valley between two tones");
+    }
+    return true;
+}
+bool rec_watch_learn_apply(void)
+{
+    if(!sim_learned || state.enabled)return false;
+    sim_fsk.bitrate=2400;sim_fsk.deviation_hz=18500;sim_fsk.sync_word=0xD391D391u;
+    return true;
+}
+bool rec_watch_fsk_set(const rec_fsk_mod_t *in){if(!in)return false;sim_fsk=*in;return true;}
 bool rec_watch_request_export(uint32_t id)
 {if(!id)return false;strcpy(state.export_status,"SIMULATED export; no SD write");return true;}
 void rec_watch_snapshot(rec_watch_status_t *out){if(out)*out=state;}

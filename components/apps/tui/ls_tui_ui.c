@@ -13,6 +13,11 @@
 typedef struct { int16_t x0, y0, x1, y1; } hit_t;
 
 #define BTN_SLOTS 3
+/* A button stops getting wider. At file scope because
+   ls_btn_compact_fits has to answer for the same button the renderer
+   will draw, and a second copy of this number is a second chance for
+   the two to disagree about whether a word will fit. */
+#define BTN_MAX_W 16
 static hit_t s_btn_hit[BTN_SLOTS][MAX_HITS];
 static int   s_btn_n[BTN_SLOTS];
 static bool s_btn_enabled[BTN_SLOTS][MAX_HITS];
@@ -80,9 +85,6 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
     int row_h = bar.h / rows;
     const int max_h = raised ? 7 : 5;
     if (row_h > max_h) row_h = max_h;
-    /* A button stops getting wider. */
-
-#define BTN_MAX_W 16
     int cell_w = bar.w / per_row;
     if (cell_w > BTN_MAX_W) cell_w = BTN_MAX_W;
     if (cell_w < 3 || row_h < 1) return;
@@ -153,7 +155,11 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 
         const char *lab = btn[i].label ? btn[i].label : "";
         char compact[48];
-        const bool compact_value = raised && h == 3 && btn[i].value;
+        /* Three rows is a frame plus one usable line, so a label and a value
+           cannot both have their own row - they go on one line or they land
+           on the border. The raised bar already knew this; the plain one did
+           not, and wrote its label over the top edge. */
+        const bool compact_value = h == 3 && btn[i].value;
         if (compact_value) { snprintf(compact,sizeof(compact),"%s %s",lab,btn[i].value); lab=compact; }
         int lw = (int)strlen(lab);
         const int text_w = h >= 3 ? box.w - 2 : box.w;
@@ -162,7 +168,12 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         snprintf(cut, sizeof(cut), "%.*s", lw, lab);
 
         const int lines = (h > 1 && btn[i].value && !compact_value) ? 2 : 1;
-        const int ly = box.y + (h - lines) / 2;
+        /* Centre inside the frame, not inside the box. Rows 0 and h-1 belong
+           to the border when there is one, so counting them pushed the
+           lettering a row high - onto the top edge for the tightest boxes. */
+        const int inner_y = h >= 3 ? box.y + 1 : box.y;
+        const int inner_h = h >= 3 ? h - 2 : h;
+        const int ly = inner_y + (inner_h - lines) / 2;
         const int lx = box.x + (box.w - lw) / 2;
         /* A space either side: the field under the lettering is texture, and
            a word butting into it loses its first and last letter. */
@@ -222,6 +233,41 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
     button_bar(sf, bar, btn, n, focus, slot, false);
 }
 
+/* Whether a three-row bar can put every label and its value on one line.
+
+   Three rows is a frame plus one usable line, so a button carrying a value
+   writes "LABEL VALUE" into box.w-2 columns rather than giving the value a
+   row of its own. That compact form is what gives a landscape pane its
+   height back - and what quietly cuts a word in half when the pane is not
+   wide enough for it. SUB-GHZ on a half-width landscape split is the case:
+   five buttons in fifty-six columns leaves eight for the text, and SETUP
+   CAPTURE is thirteen.
+
+   So the caller asks instead of assuming, and takes the four-row form when
+   the answer is no. The arithmetic below is button_bar's own, for the
+   single-row case a three-row bar always is. */
+bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n)
+{
+    if (!btn || n < 1 || bar.w < 6) return false;
+    /* The corners take their cells off both ends before anything is laid
+       out, exactly as button_bar does it. */
+    const int corner = ls_tui_corner_pad(bar.y);
+    const int w = bar.w - 2 * corner;
+    if (w < 6) return false;
+    int cell_w = w / n;
+    if (cell_w > BTN_MAX_W) cell_w = BTN_MAX_W;
+    /* box.w is cell_w - 1, and a frame eats a column at each end. */
+    const int text_w = cell_w - 3;
+    if (text_w < 1) return false;
+    for (int i = 0; i < n; i++) {
+        const char *lab = btn[i].label ? btn[i].label : "";
+        int want = (int)strlen(lab);
+        if (btn[i].value) want += 1 + (int)strlen(btn[i].value);
+        if (want > text_w) return false;
+    }
+    return true;
+}
+
 int ls_btn_raised_height(tui_rect area, int n)
 {
     if (n < 1 || area.w < 1 || area.h < 1) return 0;
@@ -259,6 +305,24 @@ int ls_btn_hit_slot(int col, int row, int slot)
     if (i < 0 || !s_btn_enabled[slot][i]) return -1;
     s_btn_change[slot][i] = esp_timer_get_time();
     return i;
+}
+
+int ls_btn_count_slot(int slot)
+{
+    if (slot < 0 || slot >= BTN_SLOTS) return 0;
+    return s_btn_n[slot];
+}
+
+bool ls_btn_rect_slot(int slot, int i, int *x, int *y, int *w, int *h)
+{
+    if (slot < 0 || slot >= BTN_SLOTS) return false;
+    if (i < 0 || i >= s_btn_n[slot]) return false;
+    const hit_t *r = &s_btn_hit[slot][i];
+    if (x) *x = r->x0;
+    if (y) *y = r->y0;
+    if (w) *w = r->x1 - r->x0 + 1;
+    if (h) *h = r->y1 - r->y0 + 1;
+    return true;
 }
 
 int ls_btn_shortcut(char ch, int slot)

@@ -15,16 +15,27 @@ idf_component_register(
     INCLUDE_DIRS ${APPS_DIR}
     REQUIRES libcarto pmtiles meshcore lvgl__lvgl esp_event esp_wifi esp_netif lwip esp_hw_support esp_app_format nvs_flash esp_mm bsp_extra esp32_p4_wifi6_touch_lcd_4b espressif__esp_lcd_touch_gt911 esp_http_client esp_http_server json vfs lakeshark esp_adc esp_driver_jpeg chmorgan__esp-file-iterator chmorgan__esp-audio-player)
 
+# -Wformat and the two pointer checks are turned back ON here, against the
+# project-wide -Wno-format in the root CMakeLists.  That flag is there for
+# ESP-IDF and the vendored trees - esp_log_color.h alone accounts for ten
+# diagnostics, and with -Werror on 1840 of 1841 translation units it cannot
+# simply be dropped - but it was covering this component too, which is how a
+# %f handed an int in scr_subghz.c reached a device without the build saying
+# a word.  Asking the whole build what these cost found fifteen, of which one
+# was ours; none at all were in here, so switching them on is free today and
+# is the point at which the next one gets caught.
 target_compile_options(
     ${COMPONENT_LIB}
     PRIVATE
     $<$<COMPILE_LANGUAGE:C>:
-        -Wno-format
-        -Wno-incompatible-pointer-types
-        -Wno-int-conversion
+        -Wformat
+        -Wno-format-truncation
+        -Wincompatible-pointer-types
+        -Wint-conversion
     >
     $<$<COMPILE_LANGUAGE:CXX>:
-        -Wno-format
+        -Wformat
+        -Wno-format-truncation
         -Wno-conversion-null
         -Wno-attributes
         -Wno-write-strings

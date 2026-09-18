@@ -44,11 +44,9 @@ in these tests, including after fitting an ADS-B antenna.
 - Startup with one connected USB radio is the validation target. Hot swapping
   is not yet a verified feature.
 
-## Earlier private research
+## Earlier research
 
-[LS_Test1's HackRF task](https://github.com/SAMS0N1TE/LS_Test1/blob/HEAD/bench/done/340-hackrf-endpoint.md)
-explicitly separated writing/compiling the driver from hardware bring-up.
-[TT_Flipper](https://github.com/SAMS0N1TE/TT_Flipper) contains `iqdecode.py`,
-`rxframes.py` and `HANDOFF.md`: earlier PC-side HackRF capture and FSK analysis
-at 2 MSPS. Those scripts are useful measurement references, rather than proof
-of ESP32 USB host operation.
+Driver work and hardware bring-up are tracked as separate steps. Earlier
+PC-side HackRF capture and FSK analysis at 2 MSPS informed the approach and
+serves as a measurement reference, rather than proof of ESP32 USB host
+operation.

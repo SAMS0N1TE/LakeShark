@@ -168,3 +168,29 @@ LS_CASE(backoff_max_below_min_is_tolerated)
     uint32_t v = ls_wifi_backoff_next(500u, 2000u, 1000u);
     LS_EQ_UINT(v, 2000u);
 }
+
+LS_CASE(a_network_that_is_not_there_is_not_retried_forever)
+{
+    /* The backoff clamped the interval but nothing clamped the count, so a
+       stored network out of range was retried every sixty seconds for as
+       long as the board was on - each attempt waking the co-processor link
+       to ask a question already answered. An idle device should settle. */
+    LS_CHECK(ls_wifi_should_retry(0, 201));
+    LS_CHECK(ls_wifi_should_retry(LS_WIFI_TRIES_NOT_FOUND - 1, 201));
+    LS_CHECK_MSG(!ls_wifi_should_retry(LS_WIFI_TRIES_NOT_FOUND, 201),
+                 "still retrying after %d attempts at a network that is not "
+                 "in range", LS_WIFI_TRIES_NOT_FOUND);
+
+    /* A handshake or auth failure might be a busy AP or a moment of
+       interference, so it gets the longer count rather than the short one. */
+    LS_CHECK(ls_wifi_should_retry(LS_WIFI_TRIES_NOT_FOUND, 15));
+    LS_CHECK(ls_wifi_should_retry(LS_WIFI_TRIES_OTHER - 1, 15));
+    LS_CHECK(!ls_wifi_should_retry(LS_WIFI_TRIES_OTHER, 15));
+    LS_CHECK_MSG(LS_WIFI_TRIES_NOT_FOUND < LS_WIFI_TRIES_OTHER,
+                 "not-found should give up sooner than a transient failure");
+
+    /* Whatever the reason, it stops eventually - a code this build has
+       never seen must not mean "retry without end". */
+    LS_CHECK_MSG(!ls_wifi_should_retry(LS_WIFI_TRIES_OTHER, 9999),
+                 "an unknown reason retried forever");
+}

@@ -20,7 +20,8 @@ enum {
 };
 
 typedef struct {
-    volatile bool writer_lock;
+    /* No lock word here: the one global mux in iq_app_control.c serializes
+       every caller of every control, so a per-control flag was redundant. */
     volatile uint32_t pending;
     volatile uint32_t center_hz;
     volatile int gain_tenths_db;
