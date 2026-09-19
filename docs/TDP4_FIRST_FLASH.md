@@ -43,15 +43,30 @@ Both fail the same way, and it does not look like a Wi-Fi fault — the link tim
 E (7589) transport: Init event not received within timeout, Resetting myself
 ```
 
-The matching images ship in `c6_firmware/`. Connect the **C6's USB-C port** — the one that is not P4U — and write all four:
+The matching images ship in `c6_firmware/`. The C6 is not on a USB port: the left-hand USB-C is charge only, and the C6 has a dedicated UART header. You need a **3.3 V USB-to-UART adapter**, and the P4 has to be holding the C6 in download mode while you write it.
+
+**1. Put the P4 into co-processor download mode.** Flash LilyGO's `coprocessor_download_mode` program over P4U and watch the serial output until it prints `Coprocessor preparation completed`. Source is in [lilygo_device_driver_example](https://github.com/Xinyuan-LilyGO/lilygo_device_driver_example/tree/main/main/examples/coprocessor_download_mode); prebuilt images are in the [T-Display-P4 repo](https://github.com/Xinyuan-LilyGO/T-Display-P4). This overwrites LakeShark on the P4, which step 4 puts back.
+
+**2. Wire the adapter to the C6 UART header**, RX and TX crossed:
+
+| C6 header | Adapter |
+| --- | --- |
+| RX | TX |
+| TX | RX |
+| GND | GND |
+| 3.3V | reference only, leave it if the board is powered |
+
+**3. Hold the C6 `BOOT` button, press and release its `RESET`, then let go of BOOT.** The C6 is now in download mode on the adapter's port:
 
 ```sh
-esptool.py -c esp32c6 -p YOUR_PORT -b 460800 write_flash \
+esptool.py -c esp32c6 -p YOUR_ADAPTER_PORT -b 460800 write_flash \
   0x0     c6_firmware/bootloader.bin \
   0x8000  c6_firmware/partition-table.bin \
   0xd000  c6_firmware/ota_data_initial.bin \
   0x10000 c6_firmware/network_adapter.bin
 ```
+
+**4. Flash LakeShark back onto the P4** over P4U, then power-cycle.
 
 | Image | Offset | Partition |
 | --- | --- | --- |
@@ -60,7 +75,7 @@ esptool.py -c esp32c6 -p YOUR_PORT -b 460800 write_flash \
 | `ota_data_initial.bin` | `0xd000` | `otadata` |
 | `network_adapter.bin` | `0x10000` | `ota_0` |
 
-These offsets are the C6's: the bootloader sits at `0x0` here and at `0x2000` on the P4. Power-cycle afterwards. A successful link logs:
+These offsets are the C6's: the bootloader sits at `0x0` here and at `0x2000` on the P4. A successful link logs:
 
 ```
 I (....) headless: ESP-Hosted co-processor link: up (0)
