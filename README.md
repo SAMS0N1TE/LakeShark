@@ -13,7 +13,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
   <img height="610" alt="LakeShark case turntable" src="assets/lakeshark_turntable.gif">
 </p>
 
-**[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
+**[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)** · **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)**
 
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
