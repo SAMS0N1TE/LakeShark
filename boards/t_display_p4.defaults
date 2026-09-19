@@ -11,6 +11,10 @@ CONFIG_LS_VBUS_EN_GPIO=-1
 
 CONFIG_LS_C6_LINK=y
 CONFIG_LS_BLE_HEAD=y
+# A C6 that does not answer must not take the board down with it. Left on, the
+# transport reboots the host 5s in, before the UI ever starts, and the board
+# loops. Off, the probe gives up on its own and boot carries on without Wi-Fi.
+# CONFIG_ESP_HOSTED_HOST_RESTART_NO_COMMUNICATION_WITH_SLAVE is not set
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
