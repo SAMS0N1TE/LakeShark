@@ -51,7 +51,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
 | SET | Brightness, theme, font, sounds, Daylight mode for the sun |
-| LINK | Wi-Fi and Bluetooth: scan, join with a masked keyboard, signal and channel graphs |
+| LINK | Wi-Fi and Bluetooth: scan, signal and channel graphs |
 
 <img width="900" height="900" alt="keyboard-home" src="https://github.com/user-attachments/assets/dd1bd6fd-4d65-4800-b7c7-abdfebe80094" />
 
