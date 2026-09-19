@@ -11,6 +11,9 @@ sdkconfig.old
 *.elf
 *.map
 
+# Shipped artefact, not build output: the C6 must match the pinned host.
+!/c6_firmware/*.bin
+
 *.log
 serial*.txt
 
@@ -54,7 +57,6 @@ serial*.txt
 /build_headless/
 /build_*/
 /sdkconfig.board
-/c6_firmware/
 
 __pycache__/
 *.pyc

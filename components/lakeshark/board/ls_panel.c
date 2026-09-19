@@ -228,6 +228,12 @@ esp_err_t ls_panel_start(void)
     err = esp_lcd_dpi_panel_register_event_callbacks(s_panel, &callbacks, NULL);
     if (err != ESP_OK)
         ESP_LOGW("rm69a10", "refresh count unavailable: %s", esp_err_to_name(err));
+    /* Blank both buffers before the bars come down: boot calls this well
+       before the TUI paints, and an unwritten framebuffer scans out as noise. */
+    const size_t fb_bytes = (size_t)LS_BOARD_LCD_H_RES * LS_BOARD_LCD_V_RES
+                            * sizeof(uint16_t);
+    memset(s_frames[0], 0, fb_bytes);
+    memset(s_frames[1], 0, fb_bytes);
     return esp_lcd_dpi_panel_set_pattern(s_panel, MIPI_DSI_PATTERN_NONE);
 }
 

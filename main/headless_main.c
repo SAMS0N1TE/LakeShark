@@ -2593,7 +2593,16 @@ void app_main(void)
        says the stored value is not a time. */
     ls_rtc_seed_system_time();
 
-    ls_panel_test_start();
+    /* Full bring-up, not just the DSI bars: compact_ui_start() is far enough
+       down that anything stalling before it leaves a test pattern on screen.
+       Idempotent - the UI still calls it. */
+    {
+        const esp_err_t panel = ls_panel_start();
+        if (panel != ESP_OK) {
+            ESP_LOGE(TAG, "panel: %s", esp_err_to_name(panel));
+            ls_panel_test_start();
+        }
+    }
 
     defer_start();
 
@@ -2694,8 +2703,11 @@ void app_main(void)
                 snprintf(s_c6_fw, sizeof(s_c6_fw), "%lu.%lu.%lu",
                          (unsigned long)v.major1, (unsigned long)v.minor1,
                          (unsigned long)v.patch1);
+                /* Patch counts: 2.12.9 against 2.12.3 passed this and the
+                   transport still framed packets differently. */
                 bool skew = ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
-                             (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1);
+                             (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1 ||
+                             (uint32_t)ESP_HOSTED_VERSION_PATCH_1 != v.patch1);
                 ESP_LOGW(TAG, "C6 esp_hosted: host %d.%d.%d, co-processor %s%s",
                          ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
                          ESP_HOSTED_VERSION_PATCH_1, s_c6_fw,
