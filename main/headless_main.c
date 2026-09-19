@@ -2593,16 +2593,7 @@ void app_main(void)
        says the stored value is not a time. */
     ls_rtc_seed_system_time();
 
-    /* Full bring-up, not just the DSI bars: compact_ui_start() is far enough
-       down that anything stalling before it leaves a test pattern on screen.
-       Idempotent - the UI still calls it. */
-    {
-        const esp_err_t panel = ls_panel_start();
-        if (panel != ESP_OK) {
-            ESP_LOGE(TAG, "panel: %s", esp_err_to_name(panel));
-            ls_panel_test_start();
-        }
-    }
+    ls_panel_test_start();
 
     defer_start();
 
