@@ -2712,15 +2712,15 @@ void app_main(void)
                          ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
                          ESP_HOSTED_VERSION_PATCH_1, s_c6_fw,
                          skew ? "  <-- MISMATCH, expect RPC/HCI timeouts" : "");
-                esp_err_t be = ble_link_start();
-                ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
-                wifi_autojoin_ready = be == ESP_OK;
             } else {
                 /* connect_to_slave() answers 0 even when the transport gave up,
-                   so this query is what proves the link. Starting BLE on a dead
-                   one only fails later and further from the cause. */
-                ESP_LOGW(TAG, "C6 did not answer - no Wi-Fi or BLE this boot");
+                   so a failed query here is the first sign the link is dead. */
+                ESP_LOGW(TAG, "C6 firmware version query failed");
             }
+
+            esp_err_t be = ble_link_start();
+            ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
+            wifi_autojoin_ready = be == ESP_OK;
         }
     }
 #endif /* CONFIG_LS_C6_LINK */
