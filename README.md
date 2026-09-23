@@ -17,7 +17,11 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
-[September development gallery: FILES replay, RECORD and ADS-B mini maps](docs/REPLAY_AND_AIRCRAFT.md) — native device screenshots and controls; not a newly cleared firmware release.
+**[Development preview: replay and aircraft controls](docs/REPLAY_AND_AIRCRAFT.md)** — FILES opens recordings in RECORD; ADS-B adds an offline mini map and remembered home. These changes are not in the 2.2.1 installer yet.
+
+| RECORD replay | ADS-B mini map |
+| --- | --- |
+| ![Recording playback](docs/screenshots/tdp4/development-20260923/replay-land.png) | ![Aircraft map with example home](docs/screenshots/tdp4/development-20260923/adsb-land.png) |
 
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
@@ -41,16 +45,17 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 |---|---|
 | P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning; Phase II `[EXPERIMENTAL]` |
 | FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists and POCSAG pagers |
-| ADS-B | Aircraft at 1090 MHz: table, radar, traffic history |
+| ADS-B | Aircraft at 1090 MHz, traffic history; offline mini map and remembered home in the development preview |
 | FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
 | MESH | MeshCore messaging and nodes on the onboard SX1262 |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
 | JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
-| REC | RTL or CC1101 source, Flipper `.sub` export and shared capture controls; CC1101 capture `[EXPERIMENTAL]` |
-| SUB-GHZ | Passive watch, repeated OOK24 payload decoding, duplicate grouping, storage limits and Journal bookmarks |
-| MAP | Offline maps, aircraft and Mesh nodes; new pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` `[UNRELEASED]` |
+| REC | Shared capture workspace and `.sub` export; development preview adds file replay, inline power and an animated waveform. All nine sources remain visible with adapter gaps labeled |
+| SUB-GHZ | Scan, learn, watch, decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
+| FILES | SD-card browsing, sorting and `.sub` preview; development replay opens directly in RECORD |
+| MAP | Offline maps, aircraft and Mesh nodes; pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
 | DIAG | Memory, radios, sensors, rebuild counts |
@@ -128,20 +133,7 @@ live account authentication has not been validated.
 
 **New in 2.2.1:** one button writes the complete firmware, on a new board or over an existing install. Sub-GHz scan and learn with SX1262 FSK transmit and a capture archive, GFSK and POCSAG in LORA LABS, universal record and replay behind a single `.sub` writer, SUB-GHZ landscape rows, and P25 profiles that carry site coordinates. Also includes the FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, recording timestamps and keyboard backlight control.
 
-**2.1.1 hotfix:** corrects ESP32-P4 external-RAM DMA alignment in ESP-Hosted so simultaneous Wi-Fi and Flipper Bluetooth traffic cannot collapse the shared SDIO transport and flash the display blue.
-
-**New in 2.1.0:**
-
-- **Scanning:** mixed conventional P25 Phase I and analog FM channel lists, plus a separate stepped-band scanner.
-- **GPS filtering** `[EXPERIMENTAL]`: choose channels by coverage radius, with fresh-fix checks and safe pauses after GPS loss.
-- **Scan-list imports:** CSV/JSON over USB or SD, plus the website's GPS list builder.
-- **P25 settings:** AUTO C4FM/CQPSK selection, manual demodulation and CQPSK tuning.
-- **Waterfalls:** tap to mark a signal, then tune to it.
-- **Recording:** shared REC/SUB-GHZ workspace with RTL or CC1101 selection, grouped captures, Journal bookmarks and bounded storage. CC1101 pulse capture is `[EXPERIMENTAL]`.
-- **Field UI:** faster app opening, rounded-corner spacing and compact landscape controls.
-- **Bluetooth:** discovery duplicate filtering and recovery from advertising bursts.
-
-**Also in the 2.1 series:** LoRa Labs with direct controls and a full-screen compass; Journal with radio, GPS and nine-axis attachments; NFC card/block inspection; keyboard radio monitors; animated aircraft and Mesh markers.
+Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 
 ## °<)))>< Standing on
 
