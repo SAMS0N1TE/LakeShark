@@ -227,20 +227,23 @@ processFrame(dsd_opts *opts, dsd_state *state)
         processLDU1(opts, state);
     } else if (strcmp(duid, "22") == 0) {
         diag_count_frame("22");
-        if (state->lastp25type != 1) {
-            if (opts->errorbars == 1) {
-                printFrameInfo(opts, state);
-                printf(" Ignoring LDU2 not preceeded by LDU1\n");
-            }
-            state->lastp25type = 0;
-            sprintf(state->fsubtype, "              ");
-        } else {
-            if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" LDU2  "); }
-            state->lastp25type = 2;
-            sprintf(state->fsubtype, " LDU2         ");
-            state->numtdulc = 0;
-            processLDU2(opts, state);
+        /* Upstream ignored an LDU2 whose LDU1 was missed. Its NID has
+           passed BCH by the time it gets here, so it is an LDU2, and ignoring
+           it left its 180 ms body unread: the sync hunt then ran through it
+           and usually locked on the LDU2 after the next LDU1, orphaning that
+           one too. On a 154.7850 capture of 2026-09-23, four LDU2s in a row
+           went that way - each LDU1 between them never found - which is 720
+           ms of voice for one missed sync. Decoding it keeps the frame
+           alignment, plays its nine frames and reads the ESS the next LDU1
+           needs. */
+        if (opts->errorbars == 1) {
+            printFrameInfo(opts, state);
+            printf(state->lastp25type != 1 ? " LDU2 (no LDU1) " : " LDU2  ");
         }
+        state->lastp25type = 2;
+        sprintf(state->fsubtype, " LDU2         ");
+        state->numtdulc = 0;
+        processLDU2(opts, state);
     } else if (strcmp(duid, "33") == 0) {
         diag_count_frame("33");
         if (opts->errorbars == 1) { printFrameInfo(opts, state); printf(" TDULC\n"); }

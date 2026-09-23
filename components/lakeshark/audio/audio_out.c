@@ -16,7 +16,12 @@
 
 static const char *TAG = "audio_out";
 
-#define RING_MS         600
+/* P25 voice held for proof is released in one piece - up to two LDUs held
+   plus the LDU2 that proved the call, 540 ms - and the next LDU lands 180 ms
+   later (p25_voice_hold.h). At 600 ms that left one frame of jitter before
+   audio_write_mono dropped whole chunks. The ring is PSRAM; this costs no
+   internal RAM. */
+#define RING_MS         1000
 #define PREBUF_MS       280
 #define RING_BYTES      (AUDIO_RATE_HZ * RING_MS  / 1000 * (int)sizeof(int16_t))
 #define PREBUF_BYTES    (AUDIO_RATE_HZ * PREBUF_MS / 1000 * (int)sizeof(int16_t))
@@ -283,7 +288,7 @@ esp_err_t audio_out_init(void)
     s_push_lock = xSemaphoreCreateMutex();
 
     /* The stream payload is only touched from normal task context; keeping its
-       600 ms queue in internal RAM needlessly competes with USB/I2S DMA and
+       queue in internal RAM needlessly competes with USB/I2S DMA and
        makes audio startup depend on heap contiguity after enumeration. */
     const size_t storage_bytes = audio_pcm_storage_bytes(RING_BYTES);
     s_ring_buf = heap_caps_malloc(storage_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

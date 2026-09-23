@@ -220,14 +220,18 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
          so this reaches only the call that proved it. Clearing here dropped
          the nine IMBE frames just decoded and muted the next LDU1: 360 ms
          of silence per failure, measured as a third of one call's voice on
-         154.7850. Unknown or encrypted still mutes and drops, as before. */
+         154.7850. Encrypted still drops, as before. */
       if (state->p25_ess_valid && state->p25_algid == 0x80)
         {
           state->p25_ess_rs_kept++;
           return;
         }
       p25_ess_clear(state);
-      state->pcm_out_write = 0;
+      /* Frames decoded while the ESS was unknown are the caller's to hold
+         until a later ESS decides them; dropping them here was the second
+         360 ms. Anything else this LDU2 produced is dropped as before. */
+      if (!state->pcm_out_unproven)
+        state->pcm_out_write = 0;
       return;
     }
   else

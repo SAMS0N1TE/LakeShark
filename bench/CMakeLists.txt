@@ -923,6 +923,7 @@ ls_add_test(test_p25_tsbk ${APP}/p25/p25_tsbk.c
     ${APP}/p25/grant_follower.c ${APP}/p25/p25_ess.c
     ${APP}/p25/p25_controls.c)
 ls_add_test(test_p25_ess ${APP}/p25/p25_ess.c)
+ls_add_test(test_p25_voice_hold ${APP}/p25/p25_voice_hold.c)
 ls_add_test(test_p25_grant ${APP}/p25/p25_tsbk.c ${APP}/p25/grant_follower.c
     ${APP}/p25/p25_ess.c ${APP}/p25/p25_controls.c)
 ls_add_test(test_p25_receive ${APP}/p25/dsd_frame.c ${APP}/p25/p25_tsbk.c
@@ -1380,3 +1381,40 @@ target_sources(test_tui_render_dump PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/su
 
 add_executable(subdecode tools/subdecode.c ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
 target_include_directories(subdecode PRIVATE ${APP}/subghz)
+
+# The production voice path end to end on a real capture: HDU/LDU/TDU, the ESS
+# mute policy and the OP25 IMBE decoder. A diagnostic, like p25_iq_replay;
+# test_p25_voice_capture turns it into a gate when a capture is present.
+set(P25_VOICE_REPLAY_SOURCES
+    ${APP}/p25/dsp_pipeline.c
+    ${APP}/p25/dsd_symbol.c
+    ${APP}/p25/dsd_dibit.c
+    ${APP}/p25/dsd_frame_sync.c
+    ${APP}/p25/dsd_frame.c
+    ${APP}/p25/dsd_filters.c
+    ${APP}/p25/dsd_main.c
+    ${APP}/p25/p25p1_heuristics.c
+    ${APP}/p25/p25p1_hdu.c
+    ${APP}/p25/p25p1_ldu.c
+    ${APP}/p25/p25p1_ldu1.c
+    ${APP}/p25/p25p1_ldu2.c
+    ${APP}/p25/p25p1_tdu.c
+    ${APP}/p25/p25p1_tdulc.c
+    ${APP}/p25/p25p1_check_nid.c
+    ${APP}/p25/p25p1_check_hdu.cpp
+    ${APP}/p25/p25p1_check_ldu.cpp
+    ${APP}/p25/Hamming.cpp
+    ${APP}/p25/p25_lcw.c
+    ${APP}/p25/p25_ess.c
+    ${APP}/p25/p25_tsbk.c
+    ${APP}/p25/p25_cqpsk_controls.c
+    ${APP}/p25/p25_acquisition.c
+    ${APP}/p25/p25_voice_hold.c
+    ${FW}/components/mbelib/mbelib.c
+    ${FW}/components/mbelib/ecc.c
+    ${FW}/components/mbelib/imbe7200x4400.c
+    ${P25_IMBE_TEST_SOURCES}
+    ${FW}/components/imbe_vocoder/imbe_shim.cpp)
+add_executable(p25_voice_replay tools/p25_voice_replay.c ${P25_VOICE_REPLAY_SOURCES})
+target_include_directories(p25_voice_replay PRIVATE ${FW}/components/imbe_vocoder)
+target_link_libraries(p25_voice_replay ls_harness m)

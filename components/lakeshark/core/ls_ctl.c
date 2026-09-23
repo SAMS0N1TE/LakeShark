@@ -30,6 +30,7 @@
 #include "p25_state.h"
 #include "dsd.h"
 #include "p25_iq_capture.h"
+#include "rec_state.h"
 #include "cell_iq.h"
 #include "cell_report.h"
 #include "esp_timer.h"
@@ -477,13 +478,102 @@ static __attribute__((noinline)) int print_p25_acquisition(void)
     return 0;
 }
 
+/* `p25 capture save [name]` puts a finished capture on the card beside REC's
+   captures, to be taken off the card (or from the Wi-Fi file page, on the
+   headless boards that run it - boards with a screen do not). 'p25 capture
+   read' moves 256 bytes a command, and a full 4 MiB capture took 35 minutes
+   over the console on 2026-09-23. Writing 4 MiB to the card takes 30-90 s.
+   The .txt beside it carries what bench/tools/p25_voice_replay needs to
+   decode it: rate and demod gain. */
+static EXT_RAM_BSS_ATTR uint8_t s_capture_stage[16 * P25_IQ_CAPTURE_READ_MAX];
+
+static int p25_capture_save(const char *name)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000LL);
+    p25_iq_capture_status_t st;
+    if (!p25_iq_capture_status(&st, now) || !st.captured_bytes ||
+        (st.phase != P25_IQ_CAPTURE_DONE && st.phase != P25_IQ_CAPTURE_ABORTED)) {
+        puts("P25IQ save: no finished capture - 'p25 capture start' first");
+        return 1;
+    }
+    char base[48];
+    if (name) {
+        size_t n = strlen(name);
+        if (!n || n >= sizeof(base)) { puts("P25IQ save: name too long"); return 1; }
+        for (size_t i = 0; i < n; i++) {
+            char c = name[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+                puts("P25IQ save: name is letters, digits, - and _ only");
+                return 1;
+            }
+        }
+        snprintf(base, sizeof(base), "%s", name);
+    } else {
+        snprintf(base, sizeof(base), "p25iq_%lu", (unsigned long)st.session);
+    }
+    const char *dir = rec_dir();
+    if (!dir) { puts("P25IQ save: no card"); return 1; }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/%s.iq", dir, base);
+    FILE *f = fopen(path, "wb");
+    if (!f) { printf("P25IQ save: cannot create %s\n", path); return 1; }
+    uint32_t off = 0;
+    int rc = 0;
+    while (off < st.captured_bytes && !rc) {
+        size_t fill = 0;
+        while (fill < sizeof(s_capture_stage) && off < st.captured_bytes) {
+            size_t got = 0;
+            p25_iq_capture_result_t r = p25_iq_capture_read(off, s_capture_stage + fill,
+                P25_IQ_CAPTURE_READ_MAX, &got, now);
+            if (r != P25_IQ_CAPTURE_OK || !got) {
+                printf("P25IQ save: read at %lu: %s\n", (unsigned long)off,
+                       p25_iq_capture_result_name(r));
+                rc = 1;
+                break;
+            }
+            fill += got;
+            off += (uint32_t)got;
+        }
+        if (fill && fwrite(s_capture_stage, 1, fill, f) != fill) {
+            printf("P25IQ save: card write failed at %lu\n", (unsigned long)off);
+            rc = 1;
+        }
+    }
+    if (fclose(f) != 0) rc = 1;
+    if (rc) { remove(path); return 1; }
+
+    snprintf(path, sizeof(path), "%s/%s.txt", dir, base);
+    FILE *m = fopen(path, "w");
+    if (m) {
+        uint32_t gain_bits;
+        memcpy(&gain_bits, &st.receiver.demod_gain, sizeof(gain_bits));
+        fprintf(m, "format=u8-iq\nbytes=%lu\nfrequency=%lu\nrate=%lu\nbandwidth=%lu\n"
+                   "gain_tenths=%ld\ndemod_mode=%ld\ndemod_gain=%g\ndemod_gain_bits=%08lx\n"
+                   "phase=%s\nreason=%s\nfirst_ms=%lu\nlast_ms=%lu\nfirmware=%s\n",
+                (unsigned long)st.captured_bytes, (unsigned long)st.receiver.frequency_hz,
+                (unsigned long)st.receiver.sample_rate_hz, (unsigned long)st.receiver.bandwidth_hz,
+                (long)st.receiver.gain_tenths, (long)st.receiver.demod_mode,
+                (double)st.receiver.demod_gain, (unsigned long)gain_bits,
+                p25_iq_capture_phase_name(st.phase), p25_iq_capture_result_name(st.reason),
+                (unsigned long)st.first_ms, (unsigned long)st.last_ms,
+                esp_app_get_description()->version);
+        fclose(m);
+    }
+    printf("P25IQ saved=%s.iq bytes=%lu in %s\n",
+           base, (unsigned long)st.captured_bytes, dir);
+    return 0;
+}
+
 static int cmd_p25(int argc, char **argv)
 {
+    if (argc >= 3 && !strcmp(argv[1], "capture") && !strcmp(argv[2], "save"))
+        return p25_capture_save(argc >= 4 ? argv[3] : NULL);
     if (argc >= 3 && !strcmp(argv[1], "capture"))
         return p25_iq_capture_command(argc - 2, argv + 2,
             (uint32_t)(esp_timer_get_time() / 1000LL));
     if (argc != 2 || strcmp(argv[1], "acquisition")) {
-        puts("usage: p25 acquisition | capture start [blocks] | status | cancel | read <offset> [bytes] | free");
+        puts("usage: p25 acquisition | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
         return 0;
     }
     return print_p25_acquisition();
@@ -528,6 +618,11 @@ static int cmd_p25enc(int argc, char **argv)
            (unsigned)P25.p25_enc_muted_unknown_total,
            (unsigned)P25.p25_ess_rs_failed_total,
            (unsigned)P25.p25_ess_rs_kept_total);
+    printf("  unproven voice: %u frames held until the call proved itself, "
+           "%u released clear, %u discarded (encrypted, ended or overflow)\n",
+           (unsigned)P25.p25_voice_held_total,
+           (unsigned)P25.p25_voice_released_total,
+           (unsigned)P25.p25_voice_discarded_total);
     printf("  current: tg=%u algid=0x%02X %s kid=0x%04X ess=%s muted=%s\n",
            (unsigned)P25.grant_talkgroup,
            (unsigned)P25.p25_algid,

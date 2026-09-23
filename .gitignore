@@ -63,6 +63,7 @@ serial*.txt
 !/tools/test_check_board_identity.py
 !/tools/check_module_shadow.py
 !/tools/ls_console.py
+!/tools/p25_capture.py
 !/tools/release_preflight.py
 !/tools/make_public_commit.sh
 !/tools/gen_font_mono.py
@@ -104,3 +105,6 @@ sim.bmp
 
 /ls_userapp_test-*/
 /ls_userapp_bad-*/
+
+# Recorded radio traffic for bench/p25_voice_check.py - never published.
+/bench/captures/

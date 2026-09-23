@@ -443,6 +443,12 @@ if ($LASTEXITCODE -ne 0) { $script:failures += 'regression index validation fail
 & python bench/quality.py test
 if ($LASTEXITCODE -ne 0) { $script:failures += 'regression tooling tests failed' }
 
+# Real P25 traffic through the production voice path. Passes with a note when
+# no captures are present; bench/p25_voice_check.py says how to add one.
+Step 'p25 voice captures'
+& python bench/p25_voice_check.py
+if ($LASTEXITCODE -ne 0) { $script:failures += 'p25 voice: a capture plays less voice than its baseline' }
+
 if ($Level -eq 'smoke') {
     Invoke-Firmware @($cfg.configs | Where-Object { $_.name -eq $cfg.smoke })
 } elseif ($Level -eq 'full') {

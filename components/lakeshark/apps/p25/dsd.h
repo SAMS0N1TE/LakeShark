@@ -376,6 +376,11 @@ typedef struct dsd_state {
     short *pcm_out_buf;
     int pcm_out_write;
     int pcm_out_size;
+    /* Set by process_IMBE when this frame's PCM was decoded while the ESS was
+       still unknown. The caller holds such PCM until the call proves clear
+       (p25_voice_hold.h) instead of playing it. Cleared by the caller before
+       each frame. */
+    int pcm_out_unproven;
 } dsd_state;
 
 #define INV_P25P1_SYNC "333331331133111131311111"
@@ -435,6 +440,9 @@ int16_t dsd_ring_read_one(dsd_sample_ring_t *r);
 void p25_ess_clear(dsd_state *state);
 const char *p25_algid_name(uint8_t algid);
 int  p25_ldu_should_mute_encrypted(const dsd_state *state, const dsd_opts *opts);
+/* 1 when the ESS is unknown and the frame should be decoded and held rather
+ * than muted - see p25_voice_hold.h. Known-encrypted still mutes. */
+int  p25_ldu_should_hold_unproven(const dsd_state *state, const dsd_opts *opts);
 /* byte-in predicate for the grant follower - it does not carry a
  * dsd_state and only needs the CLEAR vs anything-else decision. */
 int  p25_algid_is_encrypted(uint8_t algid);

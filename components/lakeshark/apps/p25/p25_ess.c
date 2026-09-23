@@ -35,6 +35,13 @@ int p25_ldu_should_mute_encrypted(const dsd_state *state, const dsd_opts *opts)
     return state->p25_algid != 0x80;
 }
 
+int p25_ldu_should_hold_unproven(const dsd_state *state, const dsd_opts *opts)
+{
+    if (!state || !opts) return 0;
+    if (opts->unmute_encrypted_p25 != 0) return 0;  /* plays everything anyway */
+    return state->p25_ess_valid == 0;
+}
+
 int p25_algid_is_encrypted(uint8_t algid)
 {
     /* CLEAR is 0x80. Anything else in a valid ESS is an encryption algorithm

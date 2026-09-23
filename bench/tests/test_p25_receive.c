@@ -505,18 +505,22 @@ LS_CASE(tdma_signed_offsets_and_invalid_replacement_do_not_reuse_old_plan)
     LS_EQ_INT(decoder.p25_net_valid, 0);
 }
 
-LS_CASE(ignored_ldu2_and_corrupt_nid_are_not_terminators_or_audio)
+LS_CASE(orphan_ldu2_is_decoded_and_corrupt_nid_is_not_a_terminator_or_audio)
 {
     setup();
     uint8_t b[2][12];
     fdma_iden(b[0], 2); make_group_grant(b[1], 0x200f, 42); tsdu(b, 2);
-    frame(10); /* ignored LDU2, lastp25type=0 is not a terminator */
+    /* An LDU2 whose LDU1 was missed: its NID passed BCH, so it is decoded
+       now (dsd_frame.c) rather than left unread, and it is still not a
+       terminator. */
+    frame(10);
     LS_EQ_UINT(tune_count, 1);
-    LS_EQ_UINT(s_ldu2_calls, 0);
+    LS_EQ_UINT(s_ldu2_calls, 1);
+    const unsigned voice_calls = s_ldu1_calls + s_ldu2_calls;
     for (int previous = 1; previous <= 2; previous++) {
         decoder.lastp25type = previous;
         load_frame(1, 0); processFrame(&options, &decoder);
-        LS_EQ_UINT(s_ldu1_calls + s_ldu2_calls, 0);
+        LS_EQ_UINT(s_ldu1_calls + s_ldu2_calls, voice_calls);
         LS_EQ_INT(decoder.p25_frame_valid, 0);
     }
     load_frame(5, 0);
@@ -525,7 +529,7 @@ LS_CASE(ignored_ldu2_and_corrupt_nid_are_not_terminators_or_audio)
     decoder.pcm_out_write = 0;
     processFrame(&options, &decoder);
     LS_EQ_INT(decoder.p25_frame_valid, 0);
-    LS_EQ_UINT(s_ldu1_calls + s_ldu2_calls, 0);
+    LS_EQ_UINT(s_ldu1_calls + s_ldu2_calls, voice_calls);
     (void)p25_receive_frame(&scanner, &follower, &decoder, now_us, true);
     LS_EQ_UINT(tune_count, 1);
     LS_EQ_INT(decoder.pcm_out_write, 0);

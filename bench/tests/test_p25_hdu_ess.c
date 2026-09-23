@@ -58,6 +58,10 @@ LS_CASE(corrupt_hdu_cannot_publish_clear_or_retain_prior_permission)
     alg=0x80;failed=1;decoded=skipped=0;processHDU(&o,&s);
     LS_EQ_INT(s.p25_ess_valid,0);LS_EQ_INT(s.pcm_out_write,0);
     LS_EQ_INT(s.lasttg,7);LS_EQ_INT(skipped,5);
+    /* Unknown ESS decodes but flags the frame unproven: the caller holds it
+       until a valid ESS proves the call clear (p25_voice_hold.h), so a
+       corrupt HDU still cannot let it play on its own say-so. */
     int status=21;process_IMBE(&o,&s,&status);
-    LS_EQ_INT(decoded,0);LS_EQ_INT(s.p25_enc_muted_frames,1);
+    LS_EQ_INT(decoded,1);LS_EQ_INT(s.pcm_out_unproven,1);
+    LS_EQ_INT(s.p25_enc_muted_frames,0);
 }

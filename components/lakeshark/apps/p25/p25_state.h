@@ -142,6 +142,11 @@ typedef struct {
     uint32_t p25_enc_muted_unknown_total;
     uint32_t p25_ess_rs_failed_total;
     uint32_t p25_ess_rs_kept_total;
+    /* IMBE frames decoded before the call proved clear (p25_voice_hold.h):
+       held, then released once proven or discarded unplayed. */
+    uint32_t p25_voice_held_total;
+    uint32_t p25_voice_released_total;
+    uint32_t p25_voice_discarded_total;
     uint32_t p25_enc_returns;
     uint32_t p25_enc_skips;
     uint32_t p25_enc_tg_evictions;

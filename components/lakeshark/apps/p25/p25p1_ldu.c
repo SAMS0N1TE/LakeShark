@@ -118,7 +118,15 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
   state->debug_prefix = '\0';
 #endif
 
-  if (p25_ldu_should_mute_encrypted(state, opts))
+  /* Unknown ESS no longer mutes: the frame is decoded and flagged, and the
+     caller holds its PCM until the call proves clear or discards it if the
+     call proves encrypted (p25_voice_hold.h). Known-encrypted mutes here. */
+  int hold = p25_ldu_should_hold_unproven(state, opts);
+  if (hold)
+    {
+      state->pcm_out_unproven = 1;
+    }
+  if (!hold && p25_ldu_should_mute_encrypted(state, opts))
     {
       /* count every muted frame so the UI can say "42 frames muted
        * on TG X, ADP" instead of just presenting silence. The count is

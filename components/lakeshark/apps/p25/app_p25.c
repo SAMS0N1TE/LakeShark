@@ -44,6 +44,7 @@
 #include "p25_tune_policy.h"
 #include "p25_entry_settings.h"
 #include "p25_p2_runtime.h"
+#include "p25_voice_hold.h"
 #include "rtl-sdr.h"
 
 p25_state_t       P25 = {0};
@@ -115,6 +116,10 @@ static volatile uint32_t s_health_internal_free;
 static volatile uint32_t s_health_internal_largest;
 static volatile uint32_t s_health_psram_free;
 static EXT_RAM_BSS_ATTR p25_health_raw_t s_health_raw;
+/* Voice decoded before the call proved clear, and what leaves it. PSRAM:
+   only the decoder task touches either, and never with the cache off. */
+static EXT_RAM_BSS_ATTR p25_voice_hold_t s_voice_hold;
+static EXT_RAM_BSS_ATTR int16_t s_voice_out[P25_HOLD_MAX_SAMPLES + 2000];
 
 static void p25_health_publish_ui(uint32_t now_ms)
 {
@@ -711,6 +716,7 @@ static void dsd_decoder_task(void *arg)
     s_dsd_state.pcm_out_buf = pcm_buf;
     s_dsd_state.pcm_out_size = 2000;
     s_dsd_state.pcm_out_write = 0;
+    p25_voice_hold_reset(&s_voice_hold);
     sys_log(1, "DSD decoder running heap=%lu", (unsigned long)esp_get_free_heap_size());
 
     s_dsd_running = true;
@@ -726,6 +732,7 @@ static void dsd_decoder_task(void *arg)
     int64_t  q_t0 = 0, q_last_sync_us = 0;
     int      q_bch_ok0 = 0, q_bch_fail0 = 0, q_voice0 = 0;
     uint32_t q_under0 = 0, q_drop0 = 0;
+    uint32_t q_rel0 = 0, q_disc0 = 0, q_muted0 = 0;
     int      q_nac = 0;
     p25_acquisition_gate_t acquisition = {0};
     acquisition.generation = atomic_load_explicit(
@@ -762,6 +769,7 @@ static void dsd_decoder_task(void *arg)
         unsigned int tune_generation = atomic_load_explicit(
             &s_decode_tune_generation, memory_order_acquire);
         if (tune_generation != acquisition.generation) {
+            p25_voice_hold_end_call(&s_voice_hold);
             P25.voice_active_until_us = 0;
             P25.dsd_tg = P25.dsd_src = 0;
         }
@@ -818,6 +826,7 @@ static void dsd_decoder_task(void *arg)
 
             esp_task_wdt_reset();
             s_dsd_state.pcm_out_write = 0;
+            s_dsd_state.pcm_out_unproven = 0;
 
             int64_t pf_t0 = esp_timer_get_time();
             /* sample the validated-LCW counter before decoding so the
@@ -863,6 +872,9 @@ static void dsd_decoder_task(void *arg)
                     q_voice0    = P25.dsd_voice_count;
                     q_under0    = audio_underruns_get();
                     q_drop0     = audio_drops_get();
+                    q_rel0      = s_voice_hold.released_frames;
+                    q_disc0     = s_voice_hold.discarded_frames;
+                    q_muted0    = s_dsd_state.p25_enc_muted_frames;
                 }
                 q_last_sync_us = q_now;
                 q_nac = P25.dsd_nac;
@@ -873,14 +885,28 @@ static void dsd_decoder_task(void *arg)
                 &s_dsd_state, now_grant, p25_tune_policy_allows_grant(
                     scan_engine_active(), p25_program_survey_active_now()));
 
-            if (s_dsd_state.pcm_out_write > 0) {
+            /* HDU opens a call and TDU/TDULC close one: voice still held
+               for proof belongs to the call before. */
+            if (s_dsd_state.p25_frame_valid &&
+                (s_dsd_state.p25_frame_duid == 0 || s_dsd_state.p25_frame_duid == 3 ||
+                 s_dsd_state.p25_frame_duid == 15))
+                p25_voice_hold_end_call(&s_voice_hold);
+            int decoded = s_dsd_state.pcm_out_write;
+            if (decoded > s_dsd_state.pcm_out_size) decoded = s_dsd_state.pcm_out_size;
+            int n = p25_voice_hold_frame(&s_voice_hold, pcm_buf, decoded,
+                s_dsd_state.pcm_out_unproven, s_dsd_state.p25_ess_valid,
+                s_dsd_state.p25_algid, (uint32_t)s_dsd_state.lasttg,
+                (uint32_t)(esp_timer_get_time() / 1000LL),
+                s_voice_out, (int)(sizeof(s_voice_out) / sizeof(s_voice_out[0])));
+            P25.p25_voice_held_total      = s_voice_hold.held_frames;
+            P25.p25_voice_released_total  = s_voice_hold.released_frames;
+            P25.p25_voice_discarded_total = s_voice_hold.discarded_frames;
+            if (n > 0) {
                 p25_grant_on_voice(&s_grant_follower, now_grant);
                 P25.dsd_voice_count++;
                 P25.voice_active_until_us = esp_timer_get_time() + 500000LL;
-                int n = s_dsd_state.pcm_out_write;
-                if (n > s_dsd_state.pcm_out_size) n = s_dsd_state.pcm_out_size;
                 if (!audio_is_muted()) {
-                    if (!p25_p2_enabled()) audio_write_p25_voice(pcm_buf, n);
+                    if (!p25_p2_enabled()) audio_write_p25_voice(s_voice_out, n);
                     P25.audio_drops = audio_drops_get();
 
                     esp_task_wdt_reset();
@@ -910,6 +936,8 @@ static void dsd_decoder_task(void *arg)
             }
         } else {
             s_dsd_state.p25_frame_valid = 0;
+            p25_voice_hold_tick(&s_voice_hold,
+                                (uint32_t)(esp_timer_get_time() / 1000LL));
             p25_grant_on_frame(&s_grant_follower, &s_dsd_state,
                                esp_timer_get_time());
             if (esp_timer_get_time() >= P25.sync_active_until_us) {
@@ -943,10 +971,18 @@ static void dsd_decoder_task(void *arg)
                    to the console, so the line would be invisible on UART.
                    ESP_LOGW is what headless-p25-wifi6 used, and "P25QUAL" is
                    not in LOG_QUIET_TAGS, so it shows without a `log` command. */
+                /* rel/disc/muted are IMBE frames: voice held for proof and
+                   then played, held and dropped, and muted as encrypted. A
+                   choppy call with muted=0 and disc=0 lost its voice before
+                   the decoder - sync, not policy. */
                 ESP_LOGW("P25QUAL",
-                    "nac=%03X dur=%.1fs bchOK=%d bchFAIL=%d ok%%=%d vox=%d under=%u drop=%u dec=%dms",
+                    "nac=%03X dur=%.1fs bchOK=%d bchFAIL=%d ok%%=%d vox=%d under=%u drop=%u dec=%dms "
+                    "rel=%u disc=%u muted=%u",
                     q_nac, dur, dok, dfail, okpct, dvox,
-                    (unsigned)dund, (unsigned)ddrp, qr.dec_ms);
+                    (unsigned)dund, (unsigned)ddrp, qr.dec_ms,
+                    (unsigned)(s_voice_hold.released_frames - q_rel0),
+                    (unsigned)(s_voice_hold.discarded_frames - q_disc0),
+                    (unsigned)(s_dsd_state.p25_enc_muted_frames - q_muted0));
                 q_active = false;
             }
         }
