@@ -1,17 +1,9 @@
 #ifndef P25_P2_FOLLOW_H
 #define P25_P2_FOLLOW_H
 
-/* How long a followed Phase II call lasts, read from the traffic slot.
- *
- * Pure policy with the clock passed in, like p25_voice_hold: the app feeds
- * it the decoder's status and gets back "stay" or the reason to go back to
- * the control channel. It owns no radio and no decoder.
- *
- * A call's end is read from the slot's MAC PDUs, not from voice or sync. A
- * two-slot carrier stays up while the other slot talks, so a carrier is no
- * evidence that this slot's call is still going. On the public recording
- * (docs/P25_PHASE2.md) every transmission carries MAC_ACTIVE every 360 ms and
- * closes with two END_PTT; the idle slot sends nothing but MAC_IDLE. */
+/* When a followed Phase II call ends, from the slot's MAC PDUs. Pure policy,
+ * clock passed in. A two-slot carrier stays up while the other slot talks,
+ * so carrier and sync alone do not mean the call is still going. */
 
 #include "p25_phase2.h"
 #include <stdbool.h>
@@ -53,8 +45,7 @@ typedef struct {
     uint16_t talkgroup;
     bool ever_synced;
     uint32_t start_ms, deadline_ms, last_sync_ms, last_activity_ms;
-    /* Decoder counters as last seen. The decoder restarts its counts when
-       it is reconfigured, so a count that goes down is a fresh decoder. */
+    /* last seen decoder counts; a drop means a fresh decoder */
     uint32_t seen_bursts, seen_voice, seen_control;
     p25_p2f_verdict_t last_verdict;
     uint32_t calls, leaves[P25_P2F_VERDICTS];
@@ -62,14 +53,14 @@ typedef struct {
 
 void p25_p2_follow_defaults(p25_p2f_config_t *cfg);
 void p25_p2_follow_init(p25_p2_follow_t *f);
-/* A grant was followed: the radio is being retuned to its carrier. */
+
 void p25_p2_follow_start(p25_p2_follow_t *f, uint16_t talkgroup,
                          uint32_t now_ms);
-/* status is NULL until the decoder has been configured for this call. */
+/* status is NULL until the decoder is configured for this call */
 p25_p2f_verdict_t p25_p2_follow_tick(p25_p2_follow_t *f,
                                      const p25p2_status_t *status,
                                      uint32_t now_ms);
-/* The call ended some other way (retune, scan, operator). */
+
 void p25_p2_follow_stop(p25_p2_follow_t *f);
 bool p25_p2_follow_active(const p25_p2_follow_t *f);
 const char *p25_p2_follow_verdict_name(p25_p2f_verdict_t v);

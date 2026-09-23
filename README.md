@@ -106,7 +106,7 @@ The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
 
 Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
-- **P25 Phase II** `[EXPERIMENTAL]`: a manually tuned traffic channel and slot, or automatic following of two-slot TDMA grants from a Phase I control channel; both off after restart. Recorded-symbol replay works on the P4 and following is bench-tested on a public recording; live RF remains unverified. [Details](docs/P25_PHASE2.md).
+- **P25 Phase II** `[EXPERIMENTAL]`: manual traffic channel or automatic grant following, both off after restart. Bench-tested on a public recording; live RF unverified. [Details](docs/P25_PHASE2.md).
 - **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is somewhat verified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
 - **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
 
@@ -133,7 +133,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.2.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.2).** Full browser install, FILES → RECORD replay, aircraft mini maps, saved home and improved GPS recording startup. Experimental radio features remain marked.
+**Current P4 release: [2.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.3.0).** Whole-call P25 voice, cleaner audio and experimental Phase II grant following. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

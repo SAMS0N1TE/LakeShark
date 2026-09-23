@@ -221,9 +221,7 @@ LS_CASE(a_phase_2_grant_is_counted_and_not_followed)
     LS_EQ_UINT(follower.control_hz, 852000000ull);
     LS_EQ_UINT(spy.calls, 0);
     LS_EQ_UINT(spy.last_hz, 0ull);
-    /* The legacy single-grant path never follows Phase II, switched on or
-       not: its frequency field stays zero for TDMA. The typed batch through
-       p25_grant_on_call is the only way to a Phase II carrier. */
+    /* legacy path never follows Phase II */
     p25_grant_set_phase2_follow(&follower, true);
     LS_CHECK(!p25_grant_from_state(&follower, &state, 2000000));
     LS_EQ_UINT(spy.calls, 0);

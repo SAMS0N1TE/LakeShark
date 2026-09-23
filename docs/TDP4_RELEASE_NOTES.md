@@ -1,5 +1,13 @@
 # LakeShark release notes
 
+## 2.3.0
+
+- P25 voice no longer chops: whole calls play, including their first frames.
+- Cleaner P25 audio from a steadier symbol clock.
+- P25 SYNC, NAC and scanner ignore noise.
+- P25 Phase II grant following (experimental, off by default).
+- Phase II handles reversed polarity and up to 1.6 kHz offset.
+
 ## 2.2.2
 
 - Wi-Fi and Bluetooth startup toggles in RADIOS; changes take effect after reboot.

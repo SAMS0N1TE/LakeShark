@@ -86,11 +86,8 @@ static uint32_t s_radio_sample_rate_hz;
 static uint32_t s_radio_bandwidth_hz;
 static p25_demod_control_t s_demod_control;
 static p25_grant_follower_t s_grant_follower;
-/* Phase II following. The grant follower takes a TDMA call; this decides
- * when it is over, from the slot's MAC PDUs (p25_p2_follow.c), on the decode
- * task, which owns the follower. The RX task only decodes. Owned means the
- * follower switched Phase II on, so it is the follower's to switch off: the
- * operator's manual Phase II is never touched. */
+/* Phase II following. Owned: the follower enabled Phase II and will disable
+ * it; manual Phase II is left alone. Runs on the decode task. */
 static p25_p2_follow_t s_p2_follow;
 static bool s_p2_owned;
 static uint32_t s_p2_follow_generation;
@@ -381,9 +378,6 @@ static void p25_grant_retune_cb(void *user, uint64_t center_hz, bool to_traffic)
             P25_SURVEY_CANCEL_FOLLOWING_CALL);
     const p25_call_info_t *call = &s_grant_follower.active_call;
     if (to_traffic && call->support == P25_CALL_PHASE2) {
-        /* Configure before tuning: the RX task reconfigures the decoder
-         * again when the new centre lands, which also clears the control
-         * channel's counts out of the status the follower will read. */
         if (p25_p2_config(call->wacn, call->sysid, call->nac, call->slot)) {
             s_p2_follow_generation = p25_p2_config_generation();
             s_p2_follow_audio = 0;
@@ -575,8 +569,7 @@ bool p25_get_leave_on_encrypted(void)
     return s_grant_follower.leave_on_encrypted;
 }
 
-/* Phase II following: off after every restart and not saved, like the
- * manual Phase II switch it builds on, until it has been heard on the air. */
+/* off after restart, not saved */
 void p25_set_phase2_follow(bool enabled)
 {
     p25_grant_set_phase2_follow(&s_grant_follower, enabled);
@@ -610,9 +603,7 @@ void p25_p2_follow_describe(char *text, unsigned capacity)
              (unsigned long)f->leaves[P25_P2F_LEAVE_OTHER_TG]);
 }
 
-/* A followed Phase II call, once per decode-loop pass while the decoder
- * sleeps. It is the only thing that ends one: TSBKs are not decoded on a
- * traffic channel, and the Phase I hang timer is not ticked here. */
+/* Ends a followed Phase II call; the Phase I hang timer does not run here. */
 static void p25_p2_follow_service(void)
 {
     int64_t now = esp_timer_get_time();
@@ -620,7 +611,6 @@ static void p25_p2_follow_service(void)
     const char *why;
     bool tune_failed = false, returned = false;
     if (!p25_p2_enabled()) {
-        /* A scan start (scan_engine.c) or the operator switched it off. */
         why = "phase II switched off";
     } else {
         ls_iq_control_status_t tune;
@@ -648,8 +638,6 @@ static void p25_p2_follow_service(void)
         } else {
             why = p25_p2_follow_verdict_name(v);
             if (v == P25_P2F_LEAVE_ENCRYPTED)
-                /* Stamps the talkgroup's skip, as an encrypted Phase I ESS
-                   does, and returns to control. */
                 returned = p25_grant_on_ess(&s_grant_follower,
                                             s_grant_follower.talkgroup,
                                             st.algorithm, 0, now);
@@ -663,7 +651,6 @@ static void p25_p2_follow_service(void)
     if (returned) p25_receive_call_reset(&s_dsd_state);
     if (tune_failed) s_grant_follower.receive_state = P25_RX_TUNE_FAILED;
     if (s_p2_owned) {
-        /* The follower was not on traffic to return from. */
         s_p2_owned = false;
         p25_p2_follow_stop(&s_p2_follow);
         p25_p2_enable(false);
@@ -1804,7 +1791,6 @@ static void p25_on_enter(void)
     bool phase2_follow = s_grant_follower.phase2_follow;
     p25_grant_init(&s_grant_follower, (uint64_t)s_tune_freq_hz,
                    p25_grant_retune_cb, NULL);
-    /* Kept across leaving and re-entering P25, not across a restart. */
     p25_grant_set_phase2_follow(&s_grant_follower, phase2_follow);
     p25_p2_follow_init(&s_p2_follow);
     s_p2_owned = false;

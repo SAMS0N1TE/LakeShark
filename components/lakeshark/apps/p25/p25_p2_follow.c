@@ -2,9 +2,7 @@
 
 #include <string.h>
 
-/* Measured against the public recording (test_p25_p2_follow): MAC_ACTIVE
- * arrives every 360 ms through a transmission and END_PTT about 60 ms after
- * its last voice. The hang default matches the Phase I follower's 2 s. */
+/* Tuned on the public recording; hang matches Phase I's 2 s. */
 void p25_p2_follow_defaults(p25_p2f_config_t *cfg)
 {
     cfg->acquire_ms = 1500;
@@ -83,8 +81,7 @@ p25_p2f_verdict_t p25_p2_follow_tick(p25_p2_follow_t *f,
             return leave(f, P25_P2F_LEAVE_ENCRYPTED);
         if (f->talkgroup && s->talkgroup && s->talkgroup != f->talkgroup)
             return leave(f, P25_P2F_LEAVE_OTHER_TG);
-        /* Several PDUs can land between ticks; the latest says where the
-           call is now. Voice decoded after it outranks it. */
+        /* latest PDU wins; voice after it outranks it */
         if (control) {
             switch (s->last_mac_opcode) {
             case P25P2_MAC_PTT:
@@ -99,9 +96,7 @@ p25_p2f_verdict_t p25_p2_follow_tick(p25_p2_follow_t *f,
                 }
                 break;
             case P25P2_MAC_HANGTIME:
-                /* Set once on entry: a system repeats HANGTIME for as long
-                   as it holds the channel, and that is not a reason to
-                   stay past our own limit. */
+                /* deadline set once; repeated HANGTIME does not extend it */
                 if (f->phase != P25_P2F_HANG) {
                     f->phase = P25_P2F_HANG;
                     f->deadline_ms = now_ms + f->cfg.hang_ms;
@@ -115,10 +110,8 @@ p25_p2f_verdict_t p25_p2_follow_tick(p25_p2_follow_t *f,
                 break;
             }
         }
-        /* A voice burst is recognised before it is descrambled, so a slot
-           configured with the wrong WACN/system/NAC still "has voice". It
-           counts once the slot has passed a MAC PDU's CRC, which proves the
-           scrambling is ours; until then the call is still acquiring. */
+        /* voice is typed before descrambling, so it counts only after a
+           PDU has passed CRC (wrong system ids otherwise hold forever) */
         if (voice && s->control_ok &&
             (!control || s->last_voice_symbol > s->last_mac_symbol)) {
             f->phase = P25_P2F_CALL;
@@ -143,8 +136,7 @@ p25_p2f_verdict_t p25_p2_follow_tick(p25_p2_follow_t *f,
             return leave(f, P25_P2F_LEAVE_HANG);
         break;
     case P25_P2F_ACQUIRE:
-        /* Synchronised and silent: the grant's retune time is still in
-           last_activity, so this allows acquire and quiet together. */
+        /* synced but silent since the grant */
         if (reached(now_ms, f->last_activity_ms,
                     f->cfg.acquire_ms + f->cfg.quiet_ms))
             return leave(f, P25_P2F_LEAVE_QUIET);

@@ -6,9 +6,7 @@ static void audio(const int16_t *pcm, size_t n, void *ctx) {
   fwrite(pcm, sizeof(*pcm), n, (FILE *)ctx);
 }
 int main(int argc, char **argv) {
-  /* --timeline prints every MAC PDU and every run of voice with the time
-     it arrived, which is how a call's boundaries were read off the public
-     recording before a follower was built on them. */
+  /* --timeline: every MAC PDU and voice run, timestamped */
   bool timeline = argc == 8 && std::strcmp(argv[7], "--timeline") == 0;
   if (argc != 7 && !timeline) {
     fprintf(stderr, "usage: p25p2_replay symbols.bin output.s16 wacn_hex "

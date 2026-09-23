@@ -1,14 +1,4 @@
-/* How long a followed Phase II call lasts (p25_p2_follow.c).
- *
- * The first cases drive the policy with hand-built decoder status. The last
- * ones follow the public mixed Phase I/II recording (docs/P25_PHASE2.md) the
- * way the firmware would: a grant arrives, the decoder is configured fresh
- * for the slot, and the follower is ticked every 10 ms of air until it says
- * to go back. Every transmission in it must be heard to its end and left
- * promptly after. The recording is not redistributed: set LS_P25P2_CAPTURE
- * (bench/tools/check_p25p2_sample.py does). Without it those cases say so
- * and pass.
- */
+/* p25_p2_follow.c. Recording cases need LS_P25P2_CAPTURE and skip without it. */
 #include "ls_test.h"
 #include "p25_p2_follow.h"
 #include <stdio.h>
@@ -155,8 +145,6 @@ LS_CASE(a_ptt_for_another_talkgroup_is_not_ours)
 
 LS_CASE(voice_without_a_valid_mac_pdu_does_not_hold_the_channel)
 {
-    /* The wrong WACN/system/NAC: voice bursts are recognised before they
-       are descrambled, but no scrambled PDU passes its CRC. */
     begin(7);
     for (uint32_t t = 100; t < 3500; t += 30) {
         burst(t, -1, 1);
@@ -241,9 +229,7 @@ static double follow(double grant_s, unsigned slot, uint32_t wacn,
     return at_sym / 6000.0;
 }
 
-/* The six transmissions on slot 0, from `p25p2_replay ... --timeline`:
-   the voice run's first and last frame, in seconds. The grant is placed
-   just before each, as the control channel would. */
+/* slot 0 voice runs (p25p2_replay --timeline), grant just before each */
 static const struct { double grant, first, last; unsigned frames; } calls[] = {
     { 20.0, 20.129, 22.469, 124 },
     { 26.7, 27.021, 28.881,  98 },
@@ -271,8 +257,6 @@ LS_CASE(every_call_in_the_public_recording_is_heard_to_its_end_and_left_after_it
         LS_CHECK(left > calls[i].last);
         LS_CHECK(left - calls[i].last < 1.0);
     }
-    /* Every voice frame on the air was inside a followed window: the
-       follower never cut a transmission short. */
     LS_EQ_UINT(voice_heard, 1368);
 }
 
@@ -288,8 +272,6 @@ LS_CASE(the_recordings_idle_slot_is_left_within_a_burst_or_two)
 
 LS_CASE(the_wrong_system_does_not_hold_the_recordings_longest_call)
 {
-    /* Descrambled with the wrong WACN: voice bursts, no valid PDU until the
-       unscrambled END_PTT - or the quiet limit, whichever is first. */
     if (!load()) return;
     p25_p2f_verdict_t v;
     double left = follow(31.6, 0, 0x12345, &v);

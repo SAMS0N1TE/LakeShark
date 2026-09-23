@@ -343,7 +343,6 @@ void p25_grant_observe(p25_grant_follower_t *f, const p25_call_info_t *call)
     f->observed_grant = *call;
     if (call->support == P25_CALL_PHASE2) {
         f->phase2_grants++;
-        /* Not taken is still not supported, as far as the counts go. */
         if (!p25_grant_call_followable(f, call)) f->unsupported_grants++;
     } else if (call->support == P25_CALL_UNSUPPORTED) f->unsupported_grants++;
     else if (call->support != P25_CALL_PHASE1) f->unresolved_grants++;

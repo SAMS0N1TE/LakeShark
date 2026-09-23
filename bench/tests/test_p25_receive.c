@@ -381,8 +381,6 @@ LS_CASE(all_channel_types_have_truthful_support_and_canonical_slot_defaults)
             LS_EQ_UINT(g->slots_per_carrier, slots);
             LS_EQ_UINT(g->slot, 15 % slots);
             LS_EQ_UINT(g->carrier_hz, 851012500 + (15 / slots) * 12500);
-            /* Two-slot TDMA is Phase II voice; with following off (the
-               default) it is still observed and never tuned. */
             LS_EQ_INT(g->support, type == 1 ? P25_CALL_PHASE1 :
                       type == 3 || type == 5 ? P25_CALL_PHASE2 :
                       P25_CALL_UNSUPPORTED);
@@ -459,8 +457,6 @@ LS_CASE(a_phase2_grant_is_followed_to_its_carrier_and_slot_when_switched_on)
 
 LS_CASE(a_phase2_grant_is_not_followed_before_the_system_is_known)
 {
-    /* The slot's scrambling is keyed on WACN and SYSID: without NET_STS the
-       traffic channel could not be descrambled, so it is not tuned. */
     setup();
     p25_grant_set_phase2_follow(&follower, true);
     uint8_t b[2][12];

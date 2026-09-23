@@ -89,17 +89,14 @@ def main():
         print(result.stdout)
         raise RuntimeError("Phase II from IQ fell short of its floors")
     print("Phase II from IQ: voice recovered through the front end, +-1600 Hz")
-    # Following: each of the recording's six calls granted in turn, the
-    # decoder configured fresh, the follower ticked every 10 ms of air
-    # (bench/tests/test_p25_p2_follow.c). Every voice frame must fall inside
-    # a followed window and every call must be left on its END_PTT.
+    # Phase II following over the recording's six calls.
     follow_test = repo / "bench/build" / ("test_p25_p2_follow.exe" if sys.platform == "win32" else "test_p25_p2_follow")
     result = subprocess.run([str(follow_test)], text=True, capture_output=True,
                             env={**os.environ, "LS_P25P2_CAPTURE": str(capture)})
     if result.returncode != 0 or "0 failed" not in result.stdout or "skipped" in result.stdout:
         print(result.stdout)
         raise RuntimeError("Phase II following cut a call short or stayed too long")
-    print("Phase II following: six calls heard whole, each left on END_PTT")
+    print("Phase II following: OK")
 
 
 if __name__ == "__main__":
