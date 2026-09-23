@@ -255,8 +255,13 @@ LS_CASE(production_cqpsk_sign_is_not_normalized_away_by_fixture_slicer)
             LS_CHECK(autoscan_bch_ok_flag >= EXPECTED_COMPLETE_FRAMES);
             LS_CHECK(replay.state.p25_tsbk_valid_count >= EXPECTED_COMPLETE_FRAMES);
         } else {
+            /* The sync tolerates a few symbol errors (dsd_frame_sync.c), so
+               data sliced with the wrong sign can now and then pass for a
+               sync; its NID then fails BCH and nothing is decoded. What this
+               case guards is that a wrong sign never becomes a frame. */
             LS_EQ_UINT(frames, 0);
-            LS_EQ_UINT(replay.state.acquisition_hunt.raw_syncs, 0);
+            LS_EQ_INT(autoscan_bch_ok_flag, 0);
+            LS_CHECK(replay.state.acquisition_hunt.raw_syncs <= 3);
             LS_CHECK(replay.state.acquisition_hunt.inverted_matches > 0);
         }
     }
@@ -503,7 +508,11 @@ LS_CASE(noise_has_no_valid_frames_and_inverted_sync_is_diagnostic_not_a_lock)
     replay_init(noise, sizeof(noise), 4096);
     LS_CHECK(prepare(false, false));
     while (!exitflag) LS_CHECK(!replay_frame());
-    LS_EQ_UINT(replay.state.acquisition_hunt.raw_syncs, 0);
+    /* A sync with up to three symbol errors passes about 1.4e-4 of noise
+       positions; this is ~2000 symbols, so one is possible. Every one must
+       then fail its NID: noise never produces a frame. */
+    LS_CHECK(replay.state.acquisition_hunt.raw_syncs <= 3);
+    LS_EQ_INT(dsd_bch_fail_counter, (int)replay.state.acquisition_hunt.raw_syncs);
     LS_EQ_INT(autoscan_bch_ok_flag, 0);
     LS_EQ_UINT(replay.state.p25_tsbk_valid_count, 0);
 
@@ -517,12 +526,14 @@ LS_CASE(noise_has_no_valid_frames_and_inverted_sync_is_diagnostic_not_a_lock)
         LS_CHECK(prepare(false, false));
         while (!exitflag) LS_CHECK(!replay_frame());
         LS_EQ_UINT(replay.state.acquisition_hunt.raw_syncs, 0);
-        LS_EQ_UINT(replay.state.acquisition_hunt.inverted_matches, 1);
+        /* One inverted sync, which the tolerant test can count at more than
+           one neighbouring offset - still diagnostic, never a lock. */
+        LS_CHECK(replay.state.acquisition_hunt.inverted_matches >= 1);
         inverted += replay.state.acquisition_hunt.inverted_matches;
         LS_EQ_UINT(replay.gate.accepted_syncs, 0);
         LS_EQ_INT(autoscan_bch_ok_flag, 0);
     }
-    LS_EQ_UINT(inverted, N_FRAMES);
+    LS_CHECK(inverted >= N_FRAMES);
 }
 
 LS_CASE(exact_sync_with_corrupt_nid_does_not_become_a_valid_frame)

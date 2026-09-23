@@ -96,6 +96,14 @@ static void timeline_put(int16_t *tl, size_t tl_n, double t, const int16_t *pcm,
     for (int i = 0; i < n && at + i >= 0 && (size_t)(at + i) < tl_n; i++) tl[at + i] = pcm[i];
 }
 
+/* --symbols: every symbol the sync hunt sees, with the slicer thresholds it
+   was cut against, for looking at why a frame on the air was not found. */
+static FILE *s_symf;
+static void symbol_observer(int symbol, int center, int umid, int lmid)
+{
+    if (s_symf) fprintf(s_symf, "%.5f %d %d %d %d\n", air_seconds(), symbol, center, umid, lmid);
+}
+
 static void wav_write(const char *path, const int16_t *pcm, size_t n)
 {
     FILE *f = fopen(path, "wb");
@@ -114,13 +122,17 @@ static void wav_write(const char *path, const int16_t *pcm, size_t n)
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin> <demod-gain> [out.wav] [--frames]\n");
+        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt]\n");
         return 2;
     }
     const char *wav = NULL;
     int list = 0;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--frames")) list = 1;
+        else if (!strcmp(argv[i], "--symbols") && i + 1 < argc) {
+            s_symf = fopen(argv[++i], "w");
+            dsd_set_symbol_observer(symbol_observer);
+        }
         else wav = argv[i];
     }
     char *end; errno = 0;
@@ -169,6 +181,7 @@ int main(int argc, char **argv)
             continue;
         }
         unsigned muted0 = r.state.p25_enc_muted_frames;
+        int hdr0 = r.state.debug_header_errors, crit0 = r.state.debug_header_critical_errors;
         int lastp25type0 = r.state.lastp25type;
         r.state.pcm_out_write = 0;
         r.state.pcm_out_unproven = 0;
@@ -237,9 +250,12 @@ int main(int argc, char **argv)
                written above at its own times. */
             timeline_put(timeline, timeline_n, t, r.pcm, decoded);
         if (list)
-            printf("%8.3f  %s  decoded=%d played=%d muted=%d held=%d ess=%s algid=%02X\n",
+            printf("%8.3f  %s  decoded=%d played=%d muted=%d held=%d ess=%s algid=%02X "
+                   "hdr_fixed=%d hdr_critical=%d\n",
                    t, d, decoded / 160, played, muted, r.hold.n / 160,
-                   r.state.p25_ess_valid ? "valid" : "unknown", r.state.p25_algid);
+                   r.state.p25_ess_valid ? "valid" : "unknown", r.state.p25_algid,
+                   r.state.debug_header_errors - hdr0,
+                   r.state.debug_header_critical_errors - crit0);
     }
 
     /* Voice slots on the air: LDUs arrive every 180 ms inside a call. A gap
@@ -269,6 +285,7 @@ int main(int argc, char **argv)
            r.hold.held_frames, r.hold.released_frames, r.hold.discarded_frames,
            on_air ? 100.0 * imbe_played / on_air : 0.0);
     if (wav && timeline) wav_write(wav, timeline, (size_t)(dur * 8000.0));
+    if (s_symf) fclose(s_symf);
     free(timeline); free(iq);
     return 0;
 }

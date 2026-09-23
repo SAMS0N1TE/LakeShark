@@ -29,6 +29,37 @@ static dsd_symbol_observer_t s_symbol_observer;
 
 void dsd_set_symbol_observer(dsd_symbol_observer_t fn) { s_symbol_observer = fn; }
 
+/* How many of the 24 sync symbols may disagree with the pattern.
+
+   The pattern is 24 outer symbols; a real sync is still recognised with a few
+   of them wrong, and a false one is caught next by the NID's BCH check in
+   processFrame, which rejects it before anything is decoded. Exact match was
+   upstream's rule and it lost the start of every transmission on 154.7850
+   (2026-09-23 capture): the first LDU1 of each call arrived with 2-3 symbols
+   off while the demodulator settled, and was hunted past. On that capture 0
+   errors found 6 of 9 LDU1s, 3 found all 9; 4 began locking on a false sync
+   and cost a real frame. In noise, 3 errors pass about 1.4e-4 of positions -
+   under one false sync a second, each costing one NID read. */
+#define P25_SYNC_MAX_ERRORS 3
+
+/* Mismatches between the last 24 symbols and a sync pattern, each symbol cut
+   at the window's own midpoint. A sync holds only outer symbols, so the
+   window's extremes ARE the two outer levels and their midpoint is the true
+   centre - where slicing at zero is wrong by whatever DC the discriminator
+   still carries. At carrier onset that was ~1100 against ~2200 outer levels,
+   for the first 100 ms of every call: the HDU was on the air, clean, and
+   failed the old zero-threshold test. */
+static int sync_errors(const int *ring, int oldest, int centre, const char *pattern)
+{
+    int errors = 0;
+    for (int k = 0; k < 24; k++) {
+        const char want = pattern[k];
+        const char got = ring[(oldest + k) % 24] > centre ? '1' : '3';
+        if (got != want) errors++;
+    }
+    return errors;
+}
+
 static void publish_hunt(dsd_state *state, int low, int high,
                          unsigned normal_hd, unsigned inverted_hd)
 {
@@ -185,12 +216,12 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
             strncpy(synctest, (synctest_p - 23), 24);
 
             int hd_norm = 24, hd_inv = 24;
-            if (opts->frame_p25p1 == 1) {
-                hd_norm = 0; hd_inv = 0;
-                for (int k = 0; k < 24; k++) {
-                    if (synctest[k] != P25P1_SYNC[k])     hd_norm++;
-                    if (synctest[k] != INV_P25P1_SYNC[k]) hd_inv++;
-                }
+            /* A full window only: before 24 symbols part of it is the
+               zeroed start of lbuf. lidx is the oldest entry now. */
+            if (opts->frame_p25p1 == 1 && t >= 24) {
+                const int local_centre = (lmax + lmin) / 2;
+                hd_norm = sync_errors(lbuf, lidx, local_centre, P25P1_SYNC);
+                hd_inv  = sync_errors(lbuf, lidx, local_centre, INV_P25P1_SYNC);
                 if (hd_norm < diag_best_hd_norm) {
                     diag_best_hd_norm = hd_norm;
                     diag_best_hd_norm_pos = synctest_pos;
@@ -202,7 +233,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
             }
 
             if (opts->frame_p25p1 == 1) {
-                if (strcmp(synctest, P25P1_SYNC) == 0) {
+                if (hd_norm <= P25_SYNC_MAX_ERRORS) {
                     state->acquisition_hunt.raw_syncs++;
                     publish_hunt(state, diag_symmin, diag_symmax,
                                  diag_best_hd_norm, diag_best_hd_inv);
@@ -236,7 +267,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
                               state->lmid, state->umid, lmax, lmin);
                     return 0;
                 }
-                if (strcmp(synctest, INV_P25P1_SYNC) == 0) {
+                if (hd_inv <= P25_SYNC_MAX_ERRORS) {
                     state->acquisition_hunt.inverted_matches++;
                     publish_hunt(state, diag_symmin, diag_symmax,
                                  diag_best_hd_norm, diag_best_hd_inv);
