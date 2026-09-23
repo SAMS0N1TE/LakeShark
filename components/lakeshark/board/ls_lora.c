@@ -93,6 +93,20 @@ uint32_t ls_lora_scan_look_hz(uint32_t min_hz, uint32_t max_hz, int n, int i,
     return min_hz + (uint32_t)off;
 }
 
+/* Arithmetic only, so every board has it. It sat inside the fitted-radio
+   half, and rec_watch_runtime.c calls it on every board: the five boards
+   without an SX1262 stopped linking. */
+uint32_t ls_lora_fsk_bw_snap(uint32_t hz)
+{
+    static const uint32_t RUNG[] = {
+        4800,5800,7300,9700,11700,14600,19500,23400,29300,39000,46900,
+        58600,78200,93800,117300,156200,187200,234300,312000,373600,467000
+    };
+    for (size_t i = 0; i < sizeof(RUNG)/sizeof(RUNG[0]); i++)
+        if (RUNG[i] >= hz) return RUNG[i];
+    return RUNG[sizeof(RUNG)/sizeof(RUNG[0]) - 1];
+}
+
 #if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
     defined(LS_BOARD_XL_RADIO_RST)
 
@@ -714,17 +728,6 @@ static esp_err_t fsk_packet_params(uint8_t payload_bytes)
     uint8_t packet[] = {OP_SET_PKT_PARAMS, (uint8_t)(pre >> 8), (uint8_t)pre,
                         0, s_fsk_sync_bits, 0, 0, payload_bytes, 1, 0};
     return xfer(packet, NULL, sizeof(packet));
-}
-
-uint32_t ls_lora_fsk_bw_snap(uint32_t hz)
-{
-    static const uint32_t RUNG[] = {
-        4800,5800,7300,9700,11700,14600,19500,23400,29300,39000,46900,
-        58600,78200,93800,117300,156200,187200,234300,312000,373600,467000
-    };
-    for (size_t i = 0; i < sizeof(RUNG)/sizeof(RUNG[0]); i++)
-        if (RUNG[i] >= hz) return RUNG[i];
-    return RUNG[sizeof(RUNG)/sizeof(RUNG[0]) - 1];
 }
 
 bool ls_lora_fsk_active(void) { return s_fsk_active; }

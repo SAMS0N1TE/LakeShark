@@ -2,6 +2,11 @@
 
 LakeShark on the LilyGO T-Display-P4. Native panel captures use the Terminal Bay theme unless labeled Daylight.
 
+
+## September 2026 development gallery
+
+[FILES, RECORD replay, SUB-GHZ and the ADS-B mini map](REPLAY_AND_AIRCRAFT.md) have new portrait and landscape device captures. This gallery is a development preview; the release images below retain their original version context.
+
 ## Portrait
 
 <table>

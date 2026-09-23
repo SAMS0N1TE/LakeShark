@@ -1,0 +1,116 @@
+{
+  "feature": "fsk-bandwidth-linkage",
+  "source_digest": "fd60d08c2c253da0b5e7b1b11c5746ddc35c4414a7ac9a7046101e9c43105370",
+  "inventory_review": "Reviewed all nine sources. Public CI fails on five non-SX1262 profiles because recorder code calls an arithmetic helper defined only inside the hardware guard.",
+  "memory_display_audio_impact": "Move the existing pure bandwidth-rounding function outside the SX1262 hardware guard. No new task, heap, DMA buffer, display or audio behavior. The existing constant lookup table becomes available on every board; radio I/O stays guarded.",
+  "radios": [
+    {
+      "source": "RTL-SDR",
+      "decision": "covered",
+      "reason": "Common recording code must link even without fitted SX1262 hardware; bandwidth arithmetic and radio ownership remain unchanged.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "HackRF",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "CC1101",
+      "decision": "covered",
+      "reason": "Common recording code must link even without fitted SX1262 hardware; bandwidth arithmetic and radio ownership remain unchanged.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "SX1262/LoRa",
+      "decision": "covered",
+      "reason": "Common recording code must link even without fitted SX1262 hardware; bandwidth arithmetic and radio ownership remain unchanged.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "GPS/GNSS",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "nRF24",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "NFC",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "Wi-Fi",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    },
+    {
+      "source": "Bluetooth",
+      "decision": "not_applicable",
+      "reason": "This source performs no SX1262 bandwidth rounding. Recording, metadata, tuning, alerts and adapter gaps are unchanged; no new claimed hardware support.",
+      "evidence": "components/lakeshark/board/ls_lora.c; components/lakeshark/apps/rec/rec_watch_runtime.c; GitHub Actions run 35816914764 (five identical undefined-reference failures).",
+      "checks": [
+        "Six-board CI matrix",
+        "Existing recording paths",
+        "No memory allocation or radio I/O changes"
+      ],
+      "gap_id": ""
+    }
+  ]
+}

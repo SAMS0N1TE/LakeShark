@@ -1,0 +1,70 @@
+{
+  "date": "2026-09-23",
+  "firmware_sha256": "472f7cd5006c4587d519b436318e75b2d5c6dc3318d5f65e645c83e708d343b3",
+  "kind": "native-framebuffer-development-captures",
+  "images": [
+    {
+      "file": "subghz-land.png",
+      "sha256": "1c016c751deab9385f2de986fb8e9fa07b1b0d386ae2061a20909803e439c965",
+      "bytes": 34360
+    },
+    {
+      "file": "subghz-port.png",
+      "sha256": "32c2fd8713ede45d08e186e922748dd22f3a3066c5eae9c2ca3acdd7c95b2dcc",
+      "bytes": 31179
+    },
+    {
+      "file": "files-preview-land.png",
+      "sha256": "c39feaff6624b526f381c1b3e53706b6fb0832f3d2a763606828171bc0b45c78",
+      "bytes": 33990
+    },
+    {
+      "file": "files-preview-port.png",
+      "sha256": "ec051715ea391a89bc79598f86102d231bdae3718c18caa5be6cb7444458780d",
+      "bytes": 37519
+    },
+    {
+      "file": "replay-land.png",
+      "sha256": "3047979c2caff586e0817617cc6c5592fedb21b087cc4de0a15b2ec4e0272f07",
+      "bytes": 35807
+    },
+    {
+      "file": "replay-port.png",
+      "sha256": "544e2461163013633702a0448cbbf46c30dae3f5f0ffb211e9256c3814c93479",
+      "bytes": 31239
+    },
+    {
+      "file": "record-port.png",
+      "sha256": "dbe3e55c19bfba1653e6ed8f373cd38815838efdb6d25682aaa77d4877a4c3a4",
+      "bytes": 35930
+    },
+    {
+      "file": "record-sources-port.png",
+      "sha256": "aeffdaf9d0e337d9ce7ccbdd61e5f030bd34b8586c85e5a9d705fec55087c6f8",
+      "bytes": 27559
+    },
+    {
+      "file": "record-land.png",
+      "sha256": "b27b9f0998b9b6f58fd8f0e7c785ab1e3e7a2d36055cd1be50ca0bd0e2923997",
+      "bytes": 35841
+    },
+    {
+      "file": "adsb-land.png",
+      "sha256": "f7e826db725b8d608e0ef90fb813549ce360d40aa898835a2fe312975a86f860",
+      "bytes": 40759,
+      "location": "Example saved home 43.00000, -71.00000; not the receiver position"
+    },
+    {
+      "file": "adsb-port.png",
+      "sha256": "9e32a363f78021662a2570894025e7c5f486893b46d59b43c151575731c87005",
+      "bytes": 38391,
+      "location": "Example saved home 43.00000, -71.00000; not the receiver position"
+    },
+    {
+      "file": "adsb-set-home-port.png",
+      "sha256": "f3ca7911b8ca66b96b46dcc020529aa9b33ca8e8ccdf3727c6db942c2db7fcea",
+      "bytes": 20999,
+      "location": "Example saved home 43.00000, -71.00000; not the receiver position"
+    }
+  ]
+}

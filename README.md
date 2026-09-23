@@ -17,6 +17,8 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
+[September development gallery: FILES replay, RECORD and ADS-B mini maps](docs/REPLAY_AND_AIRCRAFT.md) — native device screenshots and controls; not a newly cleared firmware release.
+
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
 Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
