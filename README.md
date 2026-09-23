@@ -38,10 +38,10 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 
 | | | |
 | --- | --- | --- |
-| <img src="https://terminalbay.com/wiki/tdp4/images/link_home.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/p25_port.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/adsb_port.png" width="200" /> |
+| <img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="200" /> |
 | HOME | P25 | ADS-B |
-| <img src="https://terminalbay.com/wiki/tdp4/images/falls_lora_port.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/map_port.png" width="200" /> | <img src="https://terminalbay.com/wiki/tdp4/images/link_wifi.png" width="200" /> |
-| FALLS, LoRa sweep | MAP | LINK |
+| <img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/link-port.png" width="200" /> |
+| FALLS, P25 waterfall | MAP | LINK |
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
