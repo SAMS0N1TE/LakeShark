@@ -39,6 +39,7 @@ public:
   uint32_t last_metadata = 0;
   bool configured = false;
   int next_algorithm = -1;
+  uint8_t reverse = 0;      /* XORed into every dibit: 2 while polarity is reversed */
   explicit decoder(p25p2_audio_fn fn, void *ctx) : output(fn), context(ctx) {
     reset();
   }
@@ -46,6 +47,9 @@ public:
     unsigned slot = stats.slot;
     stats = {};
     stats.slot = slot;
+    /* Polarity belongs to the receive chain, not the call: it survives a
+       reset, as it does in OP25. */
+    stats.polarity_reversed = reverse != 0;
     stats.algorithm = 0xff;
     framer = p25p2_framer();
     sync = p25p2_sync();
@@ -242,11 +246,28 @@ extern "C" void p25p2_push(p25p2_decoder_t *d, const uint8_t *dibits,
       continue;
     }
     d->core.stats.symbols++;
-    if (d->core.framer.rx_sym(dibits[i])) {
+    if (d->core.framer.rx_sym(dibits[i] ^ d->core.reverse)) {
       uint8_t packet[180];
       for (int j = 0; j < 180; j++)
         packet[j] = (d->core.framer.d_frame_body[j * 2] << 1) |
                     d->core.framer.d_frame_body[j * 2 + 1];
+      const uint64_t fs = d->core.framer.get_fs();
+      if (fs == P25P2_FRAME_SYNC_REV_P) {
+        /* OP25's rx_sync answers a reversed sync by inverting everything
+           that follows. The framer matched the reversed pattern and kept the
+           burst as received, and the reversed pattern is the normal one with
+           every dibit's high bit flipped - so flipping all 180 gives the
+           burst a correctly polarised receiver would have framed. This was
+           ignored: an inverted stream framed its bursts and decoded none
+           (the public capture inverted: 1263 bursts, 0 voice frames). */
+        for (int j = 0; j < 180; j++)
+          packet[j] ^= 2;
+        d->core.reverse ^= 2;
+        d->core.stats.polarity_flips++;
+        d->core.stats.polarity_reversed = d->core.reverse != 0;
+      } else if (fs != P25P2_FRAME_SYNC_MAGIC) {
+        d->core.stats.mistuned_syncs++;
+      }
       d->core.packet(packet);
     }
   }

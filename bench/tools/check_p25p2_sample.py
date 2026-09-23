@@ -3,6 +3,7 @@ import argparse
 import array
 import hashlib
 import io
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -60,6 +61,34 @@ def main():
     if result.returncode != 1 or "audio=0 " not in result.stdout or any(negative.read_bytes()):
         raise RuntimeError("wrong-system negative control produced audio")
     print("Wrong-system negative control: muted")
+    # The same capture as a receiver of the other polarity delivers it: every
+    # dibit's high bit flipped. OP25 answers the reversed sync by inverting
+    # what follows; before the adapter did, this framed bursts and decoded
+    # no voice at all.
+    inverted = cache / "p25p1andp2-inverted.bin"
+    inverted.write_bytes(bytes(b ^ 2 for b in raw))
+    inverted_pcm = cache / "phase2-inverted.s16"
+    result = subprocess.run([str(executable), str(inverted), str(inverted_pcm), "92715", "1f6", "01a", "0"],
+                            text=True, capture_output=True, check=True)
+    counts = {k: int(v) for k, v in re.findall(r"(symbols|voice|audio|muted)=(\d+)", result.stdout)}
+    if counts != {"symbols": 416245, "voice": 1368, "audio": 1214, "muted": 154}:
+        raise RuntimeError(f"inverted polarity replay counts: {counts}")
+    if inverted_pcm.read_bytes() != data:
+        raise RuntimeError("inverted polarity decoded different audio")
+    if "polarity_flips=1 reversed=1" not in result.stdout:
+        raise RuntimeError("inverted polarity was not reported")
+    print("Inverted polarity: same voice, same PCM, one flip reported")
+    # The same recording as IQ through the production front end: dsp_pipeline
+    # in Phase II mode, the FLL, p25_p2_slice and the decoder, across carrier
+    # offset, noise and echo (bench/tests/test_p25_phase2_iq.c).
+    iq_test = repo / "bench/build" / ("test_p25_phase2_iq.exe" if sys.platform == "win32" else "test_p25_phase2_iq")
+    result = subprocess.run([str(iq_test)], text=True, capture_output=True,
+                            env={**os.environ, "LS_P25P2_CAPTURE": str(capture)})
+    print(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else result.stderr)
+    if result.returncode != 0 or "0 failed" not in result.stdout:
+        print(result.stdout)
+        raise RuntimeError("Phase II from IQ fell short of its floors")
+    print("Phase II from IQ: voice recovered through the front end, +-1600 Hz")
 
 
 if __name__ == "__main__":

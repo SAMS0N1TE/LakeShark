@@ -21,7 +21,9 @@ tune the desired traffic frequency before enabling. The status shows recovered
 voice/audio frame counts and worst decoder block time. Unknown or encrypted
 calls stay muted; a receive gap or retune discards clear-call authorization.
 
-Automatic Phase II traffic following and live RF reception are still unverified.
+Automatic Phase II traffic following and live RF reception are still unverified,
+though the receive front end is now tested from IQ against real Phase II
+traffic across +-1.6 kHz of carrier offset (below).
 The existing Phase I AUTO/manual demodulation and scanner remain available with
 this switch off. This is not a claim of complete Phase II scanner support.
 
@@ -45,6 +47,32 @@ gate produces 1,214 synthesized frames and mutes 154. PCM is 8 kHz mono.
 This validates the symbol-to-voice path; it does not establish live RF or speaker
 quality. The host gate separately exercises 6000-baud synthetic IQ and verifies
 that the normal Phase I clock remains the default.
+
+The same script then checks two things the symbol replay cannot:
+
+- **Reversed polarity.** The capture with every dibit's polarity bit flipped,
+  as a receiver of the other sign convention delivers it, must decode to the
+  same 1,368 voice frames and byte-identical PCM. OP25's framer recognised
+  the reversed sync, but the adapter ignored it, so an inverted stream framed
+  its bursts and decoded no voice at all. It now inverts the stream from that
+  burst on, as OP25's `rx_sync` does (`p2 status` counts `polarity_flips`).
+- **From IQ.** `bench/tests/test_p25_phase2_iq` takes 20 s of the capture,
+  decodes its dibits directly as the reference, then modulates the same
+  dibits as 6000-baud pi/4-DQPSK IQ. It runs them through `dsp_pipeline` in
+  Phase II mode, `p25_p2_slice` and the decoder. It asks for the same voice
+  under carrier offset, noise and multipath echo, and for sample-identical
+  PCM on a clean channel. This is the half of Phase II that had never seen a
+  signal.
+
+That second test found the front end's real limit. The differential
+detector's AFC corrects at most pi/8 a symbol, 375 Hz at 6000 baud. So the
+capture decoded whole at +-300 Hz and not one voice frame at +-400, while an
+RTL-SDR's 1 ppm alone is 850 Hz at the 700/800 MHz where Phase II lives. A
+frequency-locked loop now steers the pre-demodulator NCO from the signal's
+mean instantaneous frequency (pi/4-DQPSK averages to zero, so what is left is
+the carrier offset). It has a 150 Hz deadband, so the existing AFC still owns
+small offsets and Phase I CQPSK behaves as before. The capture now decodes
+fully from -1600 to +1600 Hz.
 
 The public capture also passed on the P4 through its USB console: 416,245
 symbols, 1,368 voice frames, 1,214 synthesized frames and 218,880 PCM samples.

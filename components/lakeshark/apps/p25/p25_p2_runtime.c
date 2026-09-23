@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "p25_phase2.h"
+#include "p25_p2_slice.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -110,13 +111,8 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
     last_generation = gen;
     last_hz = hz;
   }
-  int count = dsp_process_iq(dsp, iq, length, samples, 8192), out = 0;
-  float threshold = fabsf(dsp->demod_gain) * 2.0f;
-  for (int i = 0; i + 7 < count && out < 1024; i += 8) {
-    int v = samples[i];
-    symbols[out++] =
-        v >= 0 ? (v > threshold ? 1 : 0) : (v < -threshold ? 3 : 2);
-  }
+  int count = dsp_process_iq(dsp, iq, length, samples, 8192);
+  int out = p25_p2_slice(samples, count, dsp->demod_gain, symbols, 1024);
   int64_t start = esp_timer_get_time();
   p25p2_push(decoder, symbols, (size_t)out);
   uint32_t elapsed = (uint32_t)(esp_timer_get_time() - start);

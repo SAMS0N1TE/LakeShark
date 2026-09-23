@@ -28,6 +28,8 @@ int main(int argc, char **argv) {
          "audio=%u muted=%u TG=%u SRC=%u ALG=%02x\n",
          s.symbols, s.bursts, s.control_ok, s.control_errors, s.voice_frames,
          s.audio_frames, s.muted_frames, s.talkgroup, s.source, s.algorithm);
+  printf("polarity_flips=%u reversed=%d mistuned_syncs=%u\n",
+         s.polarity_flips, s.polarity_reversed ? 1 : 0, s.mistuned_syncs);
   p25p2_destroy(d);
   fclose(in);
   fclose(out);

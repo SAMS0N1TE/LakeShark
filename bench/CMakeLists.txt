@@ -1431,3 +1431,13 @@ list(REMOVE_ITEM P25_VOICE_CALL_SOURCES
 ls_add_test(test_p25_voice_call fixtures/p25_call_gen.c ${P25_VOICE_CALL_SOURCES})
 target_include_directories(test_p25_voice_call PRIVATE
     ${FW}/components/imbe_vocoder ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+
+# Phase II from IQ: the public recording re-modulated at 6000 baud through
+# dsp_pipeline, p25_p2_slice and the decoder. Needs LS_P25P2_CAPTURE, which
+# bench/tools/check_p25p2_sample.py sets; passes with a note without it.
+add_executable(test_p25_phase2_iq tests/test_p25_phase2_iq.c
+    ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c
+    ${APP}/p25/p25_p2_slice.c fixtures/lsm_gen.c)
+target_compile_definitions(test_p25_phase2_iq PRIVATE LSM_GEN_BAUD=6000)
+target_link_libraries(test_p25_phase2_iq p25_phase2_host ls_harness m)
+add_test(NAME test_p25_phase2_iq COMMAND test_p25_phase2_iq)

@@ -15,6 +15,11 @@ typedef struct {
   uint32_t source;
   uint8_t slot, algorithm;
   bool synchronized, clear_confirmed;
+  /* Bursts whose sync arrived with reversed polarity (the stream is then
+     inverted until another says otherwise), and syncs that match only a
+     1200/2400 Hz rotation - the receiver is mistuned, not the burst bad. */
+  uint32_t polarity_flips, mistuned_syncs;
+  bool polarity_reversed;
 } p25p2_status_t;
 p25p2_decoder_t *p25p2_create(p25p2_audio_fn output, void *context);
 void p25p2_destroy(p25p2_decoder_t *decoder);

@@ -105,6 +105,12 @@ void dsp_set_mode(dsp_state_t *s, demod_mode_t mode)
         s->rrc_idx = 0;
     }
     if (mode == DEMOD_CQPSK) dsp_reset_cqpsk_loops(s);
+    /* The pre-demod NCO is driven by FSK4_TRACKING and CQPSK only; any other
+       mode must not inherit a shift one of them left behind. */
+    if (mode != DEMOD_CQPSK && mode != DEMOD_FSK4_TRACKING) {
+        s->nco_phase = 0.0;
+        s->nco_step_rad = 0.0;
+    }
     /* On entry to FSK4_TRACKING, reset tracker state so the 3 loops start
      * clean and the diagnostic logger fires fresh. Also reset the static
      * diag counter inside the tracker. */
@@ -159,6 +165,13 @@ void dsp_reset_cqpsk_loops(dsp_state_t *s)
     s->diff_prev_i = 1.0f;
     s->diff_prev_q = 0.0f;
     s->cqpsk_polarity = 0;
+    /* The FLL and the NCO it steers start from no correction: a retune or a
+       mode change is a different carrier. */
+    s->cqpsk_fll_prev_i = 1.0f;
+    s->cqpsk_fll_prev_q = 0.0f;
+    s->cqpsk_fll_avg = 0.0f;
+    s->nco_phase = 0.0;
+    s->nco_step_rad = 0.0;
 }
 
 bool dsp_set_cqpsk_loops(dsp_state_t *s,
@@ -262,6 +275,19 @@ static int16_t fm_demod(dsp_state_t *s, float si, float sq)
     if (v < -32767.0f) v = -32767.0f;
     return (int16_t)v;
 }
+
+/* CQPSK FLL (dsp_process_iq). Averaging over ~10 ms at 48 kHz and an NCO
+   time constant near 40 ms; clamped at +-2 kHz, beyond any tuner or
+   transmitter this is meant to absorb, so noise cannot walk it off the
+   channel. */
+#define CQPSK_FLL_AVG      0.002f
+#define CQPSK_FLL_GAIN     0.0005
+#define CQPSK_FLL_MAX_STEP (2.0 * M_PI * 2000.0 / DSP_SAMPLE_RATE)
+/* Below this the residual AFC already has it, and moving the carrier under
+   the first frame cost that frame (test_p25_cqpsk_baseline, 18 of 19): the
+   FLL steers only an offset the AFC could not. 150 Hz, in radians per 48 kHz
+   sample. */
+#define CQPSK_FLL_DEADBAND (2.0f * (float)M_PI * 150.0f / DSP_AUDIO_RATE)
 
 /* ── CQPSK: Gardner + differential detection + residual AFC ── */
 static int cqpsk_sample(dsp_state_t *s, float si, float sq,
@@ -920,6 +946,30 @@ int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                 }
             }
         } else {
+            /* Frequency-locked loop ahead of the CQPSK demodulator. The
+               differential detector's residual AFC corrects a phase step of
+               at most pi/8 a symbol - 375 Hz at Phase II's 6000 baud, 300 Hz
+               at 4800 - and it was the only carrier correction: the public
+               Phase II capture re-modulated as IQ decoded whole at +-300 Hz
+               and not one voice frame at +-400 (test_p25_phase2_iq). An
+               RTL's 1 ppm is 850 Hz at 850 MHz, where Phase II lives. A
+               pi/4-DQPSK signal's instantaneous frequency averages to zero,
+               so its mean here is the carrier offset left after the NCO; the
+               NCO integrates it, and the residual AFC keeps its fine trim. */
+            {
+                const float cr = si * s->cqpsk_fll_prev_i + sq * s->cqpsk_fll_prev_q;
+                const float ci = sq * s->cqpsk_fll_prev_i - si * s->cqpsk_fll_prev_q;
+                s->cqpsk_fll_prev_i = si;
+                s->cqpsk_fll_prev_q = sq;
+                s->cqpsk_fll_avg += CQPSK_FLL_AVG * (atan2f(ci, cr) - s->cqpsk_fll_avg);
+                const float excess = s->cqpsk_fll_avg > CQPSK_FLL_DEADBAND
+                                   ? s->cqpsk_fll_avg - CQPSK_FLL_DEADBAND
+                                   : s->cqpsk_fll_avg < -CQPSK_FLL_DEADBAND
+                                   ? s->cqpsk_fll_avg + CQPSK_FLL_DEADBAND : 0.0f;
+                s->nco_step_rad += CQPSK_FLL_GAIN * excess / DSP_DECIMATION;
+                if (s->nco_step_rad >  CQPSK_FLL_MAX_STEP) s->nco_step_rad =  CQPSK_FLL_MAX_STEP;
+                if (s->nco_step_rad < -CQPSK_FLL_MAX_STEP) s->nco_step_rad = -CQPSK_FLL_MAX_STEP;
+            }
             int n = cqpsk_sample(s, si, sq, &audio_out[n_out], audio_max - n_out);
             n_out += n;
         }

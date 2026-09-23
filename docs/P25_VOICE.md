@@ -210,6 +210,13 @@ The WAV is laid out on the air's own timeline, so choppiness is audible.
   before the two-speed clock existed: 99% / 95% bit-exact against C4FM's
   77% / 57% at the time. It loses frames at call starts on the real
   capture. Its tracker is worth studying, not switching to.
+- **Noise occasionally passes the NID check.** BCH(63,16) corrects up to 11
+  errors, so about one random word in 1,100 decodes to *a* valid codeword.
+  The tolerant hunt offers about 0.8 raw syncs a second in noise, so roughly
+  every 20-25 minutes a noise frame is taken for a real one: a half-second
+  SYNC blip with a random NAC. Its voice cannot play, because the unknown ESS
+  holds it and it is discarded. If it matters, require the expected NAC, or
+  two frames back to back, before a sync counts as signal.
 - **Only one real call is in the corpus.** Every capture added makes every
   decision above better informed. Weak, fading and trunked-voice captures
   would be the most useful additions.

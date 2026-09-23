@@ -54,6 +54,11 @@ typedef struct {
 
     float  cqpsk_afc_phase_err;
     float  cqpsk_afc_alpha;
+    /* CQPSK frequency-locked loop (dsp_process_iq): the previous 48 kHz
+       sample, and the mean instantaneous frequency left after the NCO, in
+       radians per 48 kHz sample. */
+    float  cqpsk_fll_prev_i, cqpsk_fll_prev_q;
+    float  cqpsk_fll_avg;
 
     float  diff_prev_i;
     float  diff_prev_q;
