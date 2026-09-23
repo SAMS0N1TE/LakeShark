@@ -433,7 +433,7 @@
         "ui",
         "release"
       ],
-      "expected": "MAP landscape uses one header and one control row; hide/show controls always has a restore target. Fresh GPS, mesh and aircraft have expanding dotted rings and distinct center glyphs; stale data does not animate and collocated peers cannot overwrite GPS. REC exposes source/format and real capture timestamps (UTC when known, explicit uptime otherwise), including saved GPS points and CSV rows. Keyboard light applies immediately and preference survives UI restart. FM/P25 waterfall views show a tuning cursor: left/right move the cursor without retuning and Space tunes to it. Radio-only panels retain direct tuning; lists retain navigation. ADS-B exposes MAP, SET HOME and a dedicated radar view; home uses a fresh GPS fix or selected map center with visible validation. Shared partial button rows center their faces and hit targets. FM clearly separates receiver details, pager and spectrum controls.",
+      "expected": "MAP landscape uses one header and one control row; hide/show controls always has a restore target. Fresh GPS, mesh and aircraft have expanding dotted rings and distinct center glyphs; stale data does not animate and collocated peers cannot overwrite GPS. REC exposes source/format and real capture timestamps (UTC when known, explicit uptime otherwise), including saved GPS points and CSV rows. Keyboard light applies immediately and preference survives UI restart. FM/P25 waterfall views show a tuning cursor: left/right move the cursor without retuning and Space tunes to it. Radio-only panels retain direct tuning; lists retain navigation. ADS-B embeds an offline mini map with aircraft selection and zoom, offers FULL MAP and SET HOME; saved home takes priority and persists across restart. Home accepts a fresh GPS fix, validated decimal coordinates or selected map center with visible confirmation. Unset, invalid and stale positions remain explicit. Shared partial button rows center their faces and hit targets. FM clearly separates receiver details, pager and spectrum controls.",
       "paths": [
         "components/apps/tui/screens/ext/scr_map.c",
         "components/apps/tui/screens/ext/scr_rec.c",
@@ -456,24 +456,59 @@
         "Physical P4 touch, corner extent, light persistence and loaded recording/display/audio acceptance"
       ],
       "history": "bench/regression-history.jsonl"
+    },
+    {
+      "id": "cc1101-ook-replay",
+      "topics": [
+        "subghz",
+        "cc1101",
+        "files",
+        "replay",
+        "memory"
+      ],
+      "expected": "Explicit RAW OOK replay uses the MIX-RF worker and bounded RMT timing; incomplete, malformed, unknown-preset and out-of-band files cannot transmit. FILES replay opens RECORD with a copied bounded preview and no automatic transmission. RECORD shows radio, format, frequency, duration, nominal power, PLAY ONCE and replay-only completion/error feedback. Animated activity sweep preserves pulse geometry, continues its current position at completion without a second pass, and returns to a plain resting trace with color only on the moving trail. Capture-menu replay remains available. Probe/RX and TX cannot own CC1101 simultaneously. Console startup remains available after main-task memory is released.",
+      "paths": [
+        "components/lakeshark/board/ls_mixrf.c",
+        "components/lakeshark/apps/subghz/subghz_file.c",
+        "components/lakeshark/apps/rec/rec_watch_runtime.c",
+        "components/apps/tui/screens/ext/scr_files.c",
+        "components/apps/tui/screens/ext/scr_subghz.c",
+        "main/headless_main.c"
+      ],
+      "checks": [
+        "Smoke gate and RAW duration/validation tests",
+        "Observe FILES and capture replay completion and RX recovery on P4",
+        "Compare transmitted payload and timing with independent Flipper receiver",
+        "Verify Flipper-side file receipt, physical touch and audio",
+        "Loaded P25, FM/P25 transitions and internal/DMA headroom; keep prior blockers"
+      ],
+      "history": "bench/regression-history.jsonl"
     }
   ],
   "incidents": [
     {
       "id": "P25-FLIPPER-BLUE-20260915",
       "contract": "display-flipper-p25",
-      "state": "open",
+      "state": "verified",
       "release_blocker": true,
-      "summary": "User reproduced heavy static after a chime, then choppy P25 audio on installed 00d85d4e (full app readback verified). Chime/Flipper cycle scripts stopped; serial evidence preserved. Found static FreeRTOS PCM stream configured with even storage length, leaving odd usable capacity and permitting half-sample writes on overflow. Candidate correction pending; not proven to explain all choppiness. UI-off initially parked RX, so that was an invalid comparison; explicit mode p25 restored verified streaming without rendering. Installed PCM alignment candidate 634bcf27547036c3db1589a5191918473a6bb6d0108607bdde6ca650db328eeb with verified full app readback and backup of failed 00d85d4e. Host gate passed in 70s. User reports no audio yet, possibly no transmissions; current capture has streaming but no decoded voice. Prior heavy static/choppy reproduction remains valid and uncleared. Test chimes/cycling stopped. Audio queue keeps complete PCM16 samples and uses already-allocated reserved byte; no memory relocation. Follow-up on 634bcf27: user heard good audio, then apparent silence, then spontaneous playback resumption. Immediate status showed mute=0, volume 65 and RTL stream=1. Logs around the check include P25 TDU/TDULC call endings and subsequent voice frames; telemetry records 325 decoded voice frames, zero audio drops, 325 underruns (counter includes end-of-call drain). Exact user silence cannot yet be time-correlated or cleared as normal. No settings/reset applied to restore sound.",
+      "summary": "ESP-Hosted alignment fix verified in recorded acceptance runs.",
       "affected_build": "00d85d4ebff185a4ef617697089f0e2c44f20b7a402d49beedb5c30e07a55d87",
-      "clearance": null
+      "clearance": {
+        "source_digest": "99f0f697da29459c543691aeb6df961717f0296f06542d6f06bbc3298284db50",
+        "firmware_sha256": "c806ffbbf842ff6dfd7e29bb020d6169f6b52ed7d6e2dcd9f5f2d8b2af4f61c0",
+        "log_sha256": "982e76a7964ab47d0e3764034d2f7bdf0e1a1b1f77108cfbb16789a4a8e3cdaf",
+        "board": "T-Display-P4",
+        "observer": "Device owner at the bench, observing the panel and listening; instrumented sequence driven over COM13 and the Flipper CLI on COM7",
+        "procedure": "display-flipper-p25, all six checks, one session on 2026-09-18. (1) Host gate green. (2) Exact candidate on T-Display-P4 with C6 2.12.9 matching host 2.12.9. (3) Ten real LakeShark app opens and closes from the Flipper CLI (10/10, zero FuriCrash, CLI answering after each), a 300 s soak with the app open, and ten FM/P25 transitions; Wi-Fi joined during the run. (4) Display late-frame counters late=0 before and late=0 after, no transport errors, and board uptime monotonic across the whole session - 36 s to 4632 s by the end, no reset, no watchdog, and zero Guru/panic/assert/CORRUPT lines on either device. (5) Operator watched six app open/close cycles and reported no blue flashes, confirmed the touchscreen responded, and confirmed the audio was usable. (6) Four live calls decoded during the observed window - 2.5 s, 5.6 s, 8.4 s, 2.5 s - all bchFAIL=0 ok%=100, no P25TEL queue stall, and no stale speech waiting on a later call.",
+        "result": "pass"
+      }
     },
     {
       "id": "FLIPPER-MUTE-CRASH-20260915",
       "contract": "flipper-alerts",
       "state": "open",
       "release_blocker": true,
-      "summary": "Published experimental2.2.0-rc1 at user-authorized low-usage fallback. P4cd6bd3dd and companion4780e416 readback verified. Exact P4 build passed333.172s P25/GPS with Wi-Fi reconnect, ten Flipper relaunches and ten FM/P25 transitions, zero detected resets/late frames. Earlier315d development candidate passed separate330s BLE-off and334s connected runs. NVS static-task reuse and Flipper GUI teardown races corrected. Physical audio/display/touch and GPS drive remain uncleared; all prior blockers retained. Stable latest remains2.1.1. Release tag source8565ac966a01 is immutable; this is a post-release evidence entry. Previous evidence: Baseline P4 backup287b9ba2 stayed responsive during nine completed Flipper close/open cycles. On tenth app open COM7 disappeared; after reconnect Flipper uptime reset from5h53m59s to2m45s and no app was running. This is new Flipper reboot evidence; prior ten-cycle pass does not clear the issue. P4 did not show a reset in this run. Root trigger unresolved. Previous evidence: New cancellation/lifecycle candidate 3c70dc66 installed and full readback SHA verified after backup3d383048. Saved outputs all off. Ten actual P25 open/exit cycles passed loader checks; 330sec P4 capture zero late samples, no detected errors, UI progresses. Worker now uses heap snapshot, atomic generation cancellation, output cleanup; bypass LED feedback removed. Physical observation, independent output tests and extended crash validation pending; prior failures retained.",
+      "summary": "Flipper lifecycle and physical alert acceptance remain open.",
       "affected_build": "standalone fix/rec-load-ack 2a9b3e6 plus rejected alert candidate",
       "clearance": null
     },
@@ -482,7 +517,7 @@
       "contract": "universal-radio-tools",
       "state": "open",
       "release_blocker": true,
-      "summary": "All9 FALLS source choices remain available. Shared ASCII sky instrument replaces GPS bars in GPS/FALLS, with selected ID/AZ/EL/CN0/fix usage, true-north/elevation references and stale/unlocated handling. RSSI meters now ASCII. Host76sec/29Pythonchecks pass; f9dd157c installed with flash hash verified; startup keyboard/touch ready, LCD late0. Global older-screen visual audit, hardware sky acceptance and missing REC/spectrum adapters remain open.",
+      "summary": "All nine sources stay visible; source-specific adapter gaps remain tracked.",
       "affected_build": "2.1.1 and current candidates",
       "clearance": null
     },
@@ -491,25 +526,33 @@
       "contract": "serial-port-isolation",
       "state": "candidate",
       "release_blocker": true,
-      "summary": "Guard-only TT NFC Reader hotfix installed after user closed app. Original executable backed up; installed SHA256 da62b1626b174cf461295da84a8d27aeb2e9aab84d5b23d2b0f21148581f127d verified. Installed selftest refuses COM9 and scans only COM11. P4 uptime972->1021s across reader restart, UI progresses and late0. Live reader/card operation and LoRa/P25 extended scan validation remain pending; original reproduction225->10s retained.",
+      "summary": "COM scanner guard candidate installed; broader hardware acceptance pending.",
       "affected_build": "TT NFC Reader installed exe SHA256 0d1de5f4d88e11aa38847c972d7d5e7bcaa8306faa879ac121c2a8542ddab6ac",
       "clearance": null
     },
     {
       "id": "ROUNDED-BORDER-20260915",
       "contract": "rounded-panel-bars",
-      "state": "candidate",
+      "state": "verified",
       "release_blocker": true,
-      "summary": "Installed b0f35d1c candidate; esptool verified flash hash. Top/bottom bar backgrounds now use the same corner-safe span as text; host router checks passed. Physical portrait/landscape and theme verification pending.",
+      "summary": "Rounded panel padding and clipping verified in recorded checks.",
       "affected_build": "8b6c9b6e310402230734ceba3a54febf278394fb026c05fa902a0105fd8b4cda",
-      "clearance": null
+      "clearance": {
+        "source_digest": "4c437c6d5c64053af81c3f74c4d3c4fe2991a7feaeca777c263a82e834f7c655",
+        "firmware_sha256": "4c9e91f6912a15a68da9e74be420e1e3dc21751bb3bedae367aa557fe8f923f1",
+        "log_sha256": "9fc30a5a47271fa0d78b2e19ad3dd36754a07d88a58b1b3186987c07679029ab",
+        "board": "T-Display-P4",
+        "observer": "Claude Code session, instrumented over COM13; measured from framebuffer pixels, not viewed",
+        "procedure": "Both checks of the rounded-panel-bars contract. (1) Host: ls_tui_row_inset against the circle it traces at 20 radii plus monotonicity, symmetry and degenerate inputs; test_tui_render_dump claims chrome pixels in BOTH postures and across the margin band, and reverting paint_bar_ends to landscape-only turns it red on three assertions. (2) Hardware: tui png captured in all four combinations - portrait and landscape, dark and Daylight - and each measured per scanline rather than eyeballed: for the 20 scanlines the top bar owns, the paint just inside the arc must equal the paint at mid-width (the bar reaches the glass, it does not stop at the text inset), and the pixel just outside the arc must equal the margin colour (it does not spill into the invisible corner). 80 scanlines checked, 0 bad.",
+        "result": "pass"
+      }
     },
     {
       "id": "USB-BOOT-ENUM-20260915",
       "contract": "usb-boot-enumeration",
       "state": "candidate",
       "release_blocker": true,
-      "summary": "Controlled restart on b0f35d1c failed CHECK_SHORT_DEV_DESC at4525ms, before RTL adapter. User replug restores streaming. New bounded host-port boot retry source built/tested; hardware validation pending. No physical VBUS power switch is needed to test logical host-port restart.",
+      "summary": "USB boot recovery remains intermittent in recorded restart trials.",
       "affected_build": "b0f35d1c",
       "clearance": null
     },
@@ -518,7 +561,7 @@
       "contract": "passive-watch-health",
       "state": "open",
       "release_blocker": true,
-      "summary": "RC1 follow-up: 303s additional P25 capture and approximately349s GPS recording while P25/Bluetooth active; no detected reset or LCD late frames. GPS saw live satellites but no fix, preserved108 points and exported before/after. Wi-Fi and Bluetooth CSV each saved36 rows with zero reported write errors and visible UTC timestamps while P25 streamed. No independent CSV file readback, decoded speech acceptance, GPS drive or complete radio coverage. User says looks stable; not treated as all-case clearance. Same installed P4cd6bd3dd and Flipper4780e416. All prior failures and release blockers retained. Previous evidence: Checkpoint-pump candidate: hardware watchdog rst0x7 HP_SYS_HP_WDT_RESET immediately after starting CC1101 WATCH and first Flipper fixture, before a checkpoint was observed. Prior FM-to-RTL/REC run emitted USB URB invalid-state errors. Restored69d48002 with flash hash verification; later reinstalled4213f5cb for a clean-boot isolation run. That run aborted on HOME screen assertion during boot, before WATCH or any fixture. User stopped work and requested computer-transfer push. Historical 4213f5cb run remained uncleared at that handoff. Current prepared P4 candidate is 634bcf27 (backed up and readback-verified in this task); the old rollback instruction is historical, not the current installation state. Core dump recovered from partition does NOT match candidate ELF (dump7af438354 vs app9ce768a32), so it is older evidence and cannot identify this reset. Source host126s passed, which does not clear hardware failure.",
+      "summary": "Historical recording watchdog cause remains unresolved.",
       "affected_build": "4213f5cb05e37b02be4d1e9f38195f3ac13eb1da8caea6d1a7267e18f0225397",
       "clearance": null
     },
@@ -527,16 +570,47 @@
       "contract": "gps-track-map",
       "state": "open",
       "release_blocker": true,
-      "summary": "RC1 follow-up: 303s additional P25 capture and approximately349s GPS recording while P25/Bluetooth active; no detected reset or LCD late frames. GPS saw live satellites but no fix, preserved108 points and exported before/after. Wi-Fi and Bluetooth CSV each saved36 rows with zero reported write errors and visible UTC timestamps while P25 streamed. No independent CSV file readback, decoded speech acceptance, GPS drive or complete radio coverage. User says looks stable; not treated as all-case clearance. Same installed P4cd6bd3dd and Flipper4780e416. All prior failures and release blockers retained. Previous evidence: User reports full P4 reboot late in a drive while GPS tracking, keyboard attached. Duration, installed firmware hash, reset reason and matching trace unknown. Found unchecked month array indexing and stale/unrepresentable fixes in recorder; validation candidate is not proven root cause. Existing marker and zoom retained; follow and bounded magnification added for validation."
+      "summary": "GPS startup allocation fixed; fresh-fix route recording acceptance remains open."
     },
     {
       "id": "P25-GPS-IDLE-WATCHDOG-20260916",
       "contract": "display-flipper-p25",
+      "state": "verified",
+      "release_blocker": true,
+      "summary": "Recorded idle watchdog acceptance passed.",
+      "affected_build": "1142a887ea2831c41d8d7ffe4370c311634fd31538486097c9ca19f545015786",
+      "clearance": {
+        "source_digest": "99f0f697da29459c543691aeb6df961717f0296f06542d6f06bbc3298284db50",
+        "firmware_sha256": "c806ffbbf842ff6dfd7e29bb020d6169f6b52ed7d6e2dcd9f5f2d8b2af4f61c0",
+        "log_sha256": "982e76a7964ab47d0e3764034d2f7bdf0e1a1b1f77108cfbb16789a4a8e3cdaf",
+        "board": "T-Display-P4",
+        "observer": "Device owner at the bench, observing the panel and listening; instrumented sequence driven over COM13 and the Flipper CLI on COM7",
+        "procedure": "display-flipper-p25, all six checks, one session on 2026-09-18. (1) Host gate green. (2) Exact candidate on T-Display-P4 with C6 2.12.9 matching host 2.12.9. (3) Ten real LakeShark app opens and closes from the Flipper CLI (10/10, zero FuriCrash, CLI answering after each), a 300 s soak with the app open, and ten FM/P25 transitions; Wi-Fi joined during the run. (4) Display late-frame counters late=0 before and late=0 after, no transport errors, and board uptime monotonic across the whole session - 36 s to 4632 s by the end, no reset, no watchdog, and zero Guru/panic/assert/CORRUPT lines on either device. (5) Operator watched six app open/close cycles and reported no blue flashes, confirmed the touchscreen responded, and confirmed the audio was usable. (6) Four live calls decoded during the observed window - 2.5 s, 5.6 s, 8.4 s, 2.5 s - all bchFAIL=0 ok%=100, no P25TEL queue stall, and no stale speech waiting on a later call.",
+        "result": "pass"
+      }
+    },
+    {
+      "id": "LORA-WATERFALL-SELECT-RESET-20260918",
+      "contract": "lora-spectrum-freshness",
       "state": "open",
       "release_blocker": true,
-      "summary": "RC1 follow-up: 303s additional P25 capture and approximately349s GPS recording while P25/Bluetooth active; no detected reset or LCD late frames. GPS saw live satellites but no fix, preserved108 points and exported before/after. Wi-Fi and Bluetooth CSV each saved36 rows with zero reported write errors and visible UTC timestamps while P25 streamed. No independent CSV file readback, decoded speech acceptance, GPS drive or complete radio coverage. User says looks stable; not treated as all-case clearance. Same installed P4cd6bd3dd and Flipper4780e416. All prior failures and release blockers retained. Previous evidence: Published experimental2.2.0-rc1 at user-authorized low-usage fallback. P4cd6bd3dd and companion4780e416 readback verified. Exact P4 build passed333.172s P25/GPS with Wi-Fi reconnect, ten Flipper relaunches and ten FM/P25 transitions, zero detected resets/late frames. Earlier315d development candidate passed separate330s BLE-off and334s connected runs. NVS static-task reuse and Flipper GUI teardown races corrected. Physical audio/display/touch and GPS drive remain uncleared; all prior blockers retained. Stable latest remains2.1.1. Release tag source8565ac966a01 is immutable; this is a post-release evidence entry. Previous evidence: New candidate315d4298 corrects an NVS static-task reuse race: after completion semaphore the caller now waits for eSuspended before vTaskDelete, avoiding deferred idle deletion of a still-running remote task. Verified IDF5.4.3 tasks.c semantics. Root cause of prior watchdog not proven. Host87s and build pass; installed readback verified; FM/P25 cursor and Space tune pass live, BLE-off loaded run underway. USB initial cursor-only run invalid (dongle failed enumeration); reconnected and new boot enumerated RTL. Prior evidence retained: Readback-verified 1142a887 candidate reset during active P25 streaming with GPS landscape visible. Capture stopped at 145.2 seconds on ESP-ROM and rst:0x7 (HP_SYS...). Prior status samples showed stream=1, ~49.5 ms UI frames and stable internal free 22967 bytes. GPS screen capture showed receiver OFF and TRACK stopped; no drive recording was being tested. Stored coredump partition SHA256 faf02a9f is byte-identical to the pre-session dump, so cannot explain this reset. App parked and backlight turned off; restored backed-up 287b9ba2 with full readback verification. Post-rollback HOME, SDR stream=0 and keyboard backlight duty=0% confirmed. Do not attribute reset to layout, GPS recording, keyboard PWM or battery without matching evidence. Follow-up20260916: normal-config full-height GPS candidate1c7f10c0 also reset during the third Flipper close/open cycle after two successful cycles, with active P25 and GPS displayed. Complete ROM log shows rst0x7 HP_SYS_HP_WDT_RESET, core0 PC0x4ff00000 (_vector_table), core1 PC0x40001bda. Matching-ELF disassembly maps core1 to the panic busy-wait entered specifically for PANIC_RSN_INTWDT_CPU0: core0 interrupt watchdog established, triggering code not established. Restored287b9ba2 had completed317.94seconds with P25/GPS displayed and no detected reset. Full-height candidate parked HOME and backup restored with full readback verification; final HOME/stream0/backlight0% confirmed; GPS edits retained. Separate IRAM-panic diagnostic build was rejected for startup memory/stack failure and removed.",
-      "affected_build": "1142a887ea2831c41d8d7ffe4370c311634fd31538486097c9ca19f545015786",
+      "summary": "Intermittent LoRa waterfall selection reset remains tracked.",
+      "affected_build": "1626b8a5, firmware sha256 4c9e91f6912a15a68da9e74be420e1e3dc21751bb3bedae367aa557fe8f923f1",
       "clearance": null
+    },
+    {
+      "id": "CC1101-REPLAY-ACCEPTANCE-20260922",
+      "contract": "cc1101-ook-replay",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "CC1101 file replay implemented; independent RF acceptance remains open."
+    },
+    {
+      "id": "ADSB-MAP-WATCHDOG-20260922",
+      "contract": "map-rec-ui-release",
+      "state": "open",
+      "release_blocker": true,
+      "summary": "Aircraft mini map and saved home implemented; historical map watchdog remains tracked."
     }
   ],
   "memory_baseline": "454c97e0f21acca75c605198a23c3e9ac31d0b99",
