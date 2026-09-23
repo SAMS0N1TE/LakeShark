@@ -1440,10 +1440,17 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
         return -1;
     }
 
-    /* perform a dummy write, if it fails, it's safe to ignore now */
+    /* perform a dummy write. Upstream calls libusb_reset_device() when it
+     * fails; this port has no in-place reset, so it continues and leaves the
+     * decision to the endpoint service. If the control pipe stays
+     * dead, configure reports io, and a run of those sends the health
+     * watchdog to the board's power cycle - a root-port reset where there is
+     * no VBUS switch. */
     if (rtlsdr_write_reg(dev, USBB, USB_SYSCTL, 0x09, 1) < 0)
     {
-        printf("Dummy write failed. Device might need reset, continuing anyway...\n");
+        printf("Dummy write failed - the dongle is not answering control "
+               "requests. Continuing; configure will report io and the health "
+               "watchdog takes it from there.\n");
     }
 
     dev->rtl_xtal = 28800000; // DEF_RTL_XTAL_FREQ

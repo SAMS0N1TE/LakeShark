@@ -104,9 +104,14 @@ static const ls_quick_t QUICK[] = {
     { .label = "GAIN", .kind = LS_QUICK_STEP, .action = "fm.gain",
       .value = "fm.gain", .delta = 2.0f, .lo = 0, .hi = 50,
       .key = 'u', .key_down = 'j' },
+    /* Not 'w': RUN SWEEP claims it in key() and returns before the quick bar
+       is consulted, so squelch down never ran and the sweep toggled instead. */
+    /* A letter opens exact entry, a pair nudges. 'q' is the SQUELCH button
+       on the control row, so the nudge pair is 's' and 'a'. Not 'w': RUN
+       SWEEP had it and key() returns before the quick bar is consulted. */
     { .label = "SQUELCH", .kind = LS_QUICK_STEP, .action = "fm.sql",
       .value = "fm.sql", .delta = 1.0f, .lo = 0, .hi = 100,
-      .key = 'q', .key_down = 'w' },
+      .key = 's', .key_down = 'a' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
@@ -134,9 +139,14 @@ static bool tune_step(int direction)
     args.v[0].kind = LS_VAL_INT;
     args.v[0].i = (int32_t)hz;
     ls_val_t result;
-    lakeshark_fm_frequency_lock(true);
-    return ls_action_call("fm.freq_hz", &args, &result,
-                          ls_quick_grant_builtin()) == LS_ACT_OK;
+    /* Release, tune, then hold the new carrier. See tuned_fm in
+       ls_action_builtin.c: locking first captured the frequency being left,
+       which every other path then refused to move away from. */
+    lakeshark_fm_frequency_lock(false);
+    const bool ok = ls_action_call("fm.freq_hz", &args, &result,
+                                   ls_quick_grant_builtin()) == LS_ACT_OK;
+    if (ok) lakeshark_fm_frequency_lock(true);
+    return ok;
 }
 
 /* draw_vfo splits its rect in two, so in portrait it draws a VFO box above a
@@ -152,6 +162,18 @@ static void field(tui_surface *sf, tui_rect a, int row, const char *l,
     tui_put_str(sf, a, a.x + 2, a.y + row, l, la);
     tui_put_str(sf, a, a.x + 12, a.y + row, v, va);
 }
+
+static float    s_sig_hold;      /* decaying peak on the signal meter */
+/* The dial spins and the mode wipes. Both are frame-counted off s_blink, and
+   both are covering something the radio is really doing: a retune has a
+   settle time before the squelch is allowed to open, and a mode change tears
+   the receiver down and builds it again. The motion is the length of the
+   wait, so it reads as the radio working rather than as decoration. */
+static uint32_t s_dial_hz;       /* what the readout is showing right now   */
+static uint32_t s_dial_target;   /* where it is heading                     */
+static int      s_dial_frames;   /* frames left in the spin                 */
+static int      s_mode_wipe;     /* frames left in the mode change wipe     */
+static int      s_wipe_mode = -1;
 
 static void draw_vfo(tui_surface *sf, tui_rect area)
 {
@@ -170,10 +192,53 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     ls_tui_split(area, &left, &right);
 
     tui_box(sf, left, "RECEIVER", frame);
-    snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(hz / 1000000u),
-             (unsigned)((hz % 1000000u) / 100u));
-    tui_put_str(sf, left, left.x + (left.w - (int)strlen(buf)) / 2,
-                left.y + 2, buf, val);
+
+    /* A retune is not instant, so neither is the readout. The dial runs from
+       where it was to where it is going over the settle, and the digits that
+       are still moving are the ones drawn bright. */
+    if (hz != s_dial_target) {
+        s_dial_target = hz;
+        s_dial_frames = 10;
+        if (s_dial_hz == 0) s_dial_hz = hz;
+    }
+    if (s_dial_frames > 0) {
+        s_dial_frames--;
+        const int64_t gap = (int64_t)s_dial_target - (int64_t)s_dial_hz;
+        s_dial_hz = (uint32_t)((int64_t)s_dial_hz + gap / 3);
+        if (s_dial_frames == 0) s_dial_hz = s_dial_target;
+    } else {
+        s_dial_hz = s_dial_target;
+    }
+    const uint32_t shown = s_dial_hz ? s_dial_hz : hz;
+    snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(shown / 1000000u),
+             (unsigned)((shown % 1000000u) / 100u));
+    {
+        char settled[48];
+        snprintf(settled, sizeof(settled), "%u.%04u MHz",
+                 (unsigned)(hz / 1000000u), (unsigned)((hz % 1000000u) / 100u));
+        const int x0 = left.x + (left.w - (int)strlen(buf)) / 2;
+        const uint8_t moving = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+        for (int i = 0; buf[i]; i++) {
+            const bool differs = settled[i] && buf[i] != settled[i];
+            char one[2] = { buf[i], 0 };
+            tui_put_str(sf, left, x0 + i, left.y + 2, one, differs ? moving : val);
+        }
+    }
+
+    /* A mode change tears the receiver down and brings it back. The wipe is
+       that gap, made visible, rather than the readout simply changing. */
+    if (s_wipe_mode != (int)FM.mode) {
+        if (s_wipe_mode >= 0) s_mode_wipe = 12;
+        s_wipe_mode = (int)FM.mode;
+    }
+    if (s_mode_wipe > 0) {
+        const int col = (12 - s_mode_wipe) * (left.w - 2) / 12;
+        for (int y = 1; y < left.h - 1 && y < 4; y++)
+            tui_put_char(sf, left, left.x + 1 + col, left.y + y,
+                         LS_TUI_SHADE_50,
+                         TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        s_mode_wipe--;
+    }
     snprintf(buf, sizeof(buf), "%d%%", sq);
     field(sf, left, 5, "SQUELCH", buf, lab, val);
     field(sf, left, 4, "CARRIER", open ? "OPEN" : "closed", lab,
@@ -189,19 +254,58 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     field(sf, left, 7, "GAIN", buf, lab, val);
 
     tui_box(sf, right, "SIGNAL", frame);
-    int bw = right.w - 4;
-    int lit = (int)(level * (float)bw);
-    if (lit < 0) lit = 0;
-    if (lit > bw) lit = bw;
+    /* QUIETING, NOT LEVEL.
+
+       This bar used to read FM.iq_level, the carrier level across the whole
+       IQ block, and it barely moved: measured on hardware, dead air 3% and
+       the strongest local broadcast 5%, so the meter sat near empty whatever
+       the radio heard. An FM receiver measures signal by how much a carrier
+       quietens the discriminator, so the bar reads the inverse of the noise
+       the squelch is already measuring. Same bench: broadcast 0.46 of full
+       hiss, dead air 0.81 to 0.97, which is most of the bar's travel.
+
+       That also puts the squelch on this scale, so the gate can be drawn as
+       a mark on the bar and set by eye. */
+    const int bw = right.w - 4;
+    float sig = 1.0f - FM.noise;
+    if (sig < 0.0f) sig = 0.0f;
+    if (sig > 1.0f) sig = 1.0f;
+
+    /* Peak hold, decaying, so a burst between two looks still registers. */
+    if (sig >= s_sig_hold) s_sig_hold = sig;
+    else                   s_sig_hold -= (s_sig_hold - sig) * 0.06f;
+
+    const int lit  = (int)(sig * (float)bw);
+    const int hold = (int)(s_sig_hold * (float)bw);
+    /* Where the squelch opens, on the same travel as the bar. */
+    int gate = (int)((float)(100 - sq) * 0.01f * (float)bw);
+    if (gate < 0) gate = 0;
+    if (gate >= bw) gate = bw - 1;
+    gate = bw - gate;
+
     for (int i = 0; i < bw; i++) {
-        uint8_t c = i < lit ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
-                             : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
-                                              : TUI_GREEN | TUI_BRIGHT)
-                            : (TUI_BLACK | TUI_BRIGHT);
-        tui_put_char(sf, right, right.x + 2 + i, right.y + 2,
-                     i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
+        const bool on = i < lit;
+        uint8_t c = on ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
+                        : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
+                                         : TUI_GREEN | TUI_BRIGHT)
+                       : (TUI_BLACK | TUI_BRIGHT);
+        char g = on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25;
+        if (!on && i == hold && hold > lit) {
+            g = LS_TUI_SHADE_50;
+            c = TUI_WHITE | TUI_BRIGHT;
+        }
+        tui_put_char(sf, right, right.x + 2 + i, right.y + 2, g,
                      TUI_ATTR(c, TUI_BLACK));
     }
+    /* The gate marker sits under the bar so it never covers the reading.
+       Above it the squelch is open, below it the audio is muted. */
+    for (int i = 0; i < bw; i++)
+        tui_put_char(sf, right, right.x + 2 + i, right.y + 3,
+                     i == gate ? '^' : ' ',
+                     TUI_ATTR(i == gate ? (open ? TUI_GREEN | TUI_BRIGHT
+                                                : TUI_CYAN | TUI_BRIGHT)
+                                        : TUI_BLACK, TUI_BLACK));
+    (void)level;
     snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
     field(sf, right, 4, "IQ RATE", buf, lab, val);
     snprintf(buf, sizeof(buf), "%u", (unsigned)FM.pocsag_pages);
@@ -661,7 +765,20 @@ static const ls_btn_t PAGES[] = {
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
+/* PAGER decodes; the other three are true of any mode. Offering a tab that
+   can only ever be empty is the kind of thing that makes a screen feel
+   bigger than it is. */
+static bool pager_mode(void)
+{
+    return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX;
+}
+
 static tui_rect s_bar;
+/* Which page each drawn tab belongs to. The strip hides PAGER outside a pager
+   mode, so the slot a thumb lands on is not the page index; without this map
+   tapping RADIO acted on SPECTRUM and SPECTRUM acted on a hidden tab. */
+static int      s_tab_page[N_PAGES];
+static int      s_tab_count;
 static tui_rect s_controls;
 /* Where VOLUME, GAIN and SQUELCH landed. They were defined in QUICK all
    along but only ls_quick_key ever reached them, so they existed on the
@@ -704,12 +821,20 @@ static int draw_controls(tui_surface *sf, tui_rect area)
     const uint32_t lock_hz = lakeshark_fm_frequency_lock_hz();
     if (lock_hz) snprintf(locked, sizeof(locked), "%.4f", lock_hz / 1e6);
     else snprintf(locked, sizeof(locked), "OFF");
+    /* SWEEP is a mode, so it lives in the mode picker with the rest and not
+       in a button of its own; TUNE was this row and the quick bar calling the
+       same action twice. The two slots that frees are the two controls a
+       receiver actually needs to hand and that this screen did not offer
+       without going through the quick bar: how loud, and when to open. */
+    char vol[12], sql[12];
+    snprintf(vol, sizeof(vol), "%d%%", audio_volume_get());
+    snprintf(sql, sizeof(sql), "%d", FM.squelch_tenths);
     ls_btn_t buttons[] = {
         {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false},
-        {"TUNE", "MHz", 't', false, false},
-        {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
         {"BAND", ls_wf_preset_current(LS_WF_SRC_FM), 'n', false, false},
-        {"RUN SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
+        {"VOLUME", vol, 'v', false, false},
+        {"SQUELCH", sql, 'q', FM.squelch_open, false},
+        {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
     };
     const int h = area.h;
     s_controls = area;
@@ -717,14 +842,26 @@ static int draw_controls(tui_surface *sf, tui_rect area)
     return h;
 }
 
+static void set_squelch(double value);
+
+static void set_volume(double value)
+{
+    if (!(value >= 0 && value <= 100)) return;
+    ls_args_t args = {.n = 1}; ls_val_t out;
+    args.v[0].kind = LS_VAL_INT; args.v[0].i = (int)(value + 0.5);
+    ls_action_call("audio.volume", &args, &out, ls_quick_grant_builtin());
+}
+
 static bool control_action(int index)
 {
     switch (index) {
     case 0: open_mode_picker(); return true;
-    case 1: ls_quick_fire(&QUICK[0], ls_quick_grant_builtin()); return true;
-    case 2: toggle_frequency_lock(); return true;
-    case 3: open_band_picker(); return true;
-    case 4: toggle_sweep(); return true;
+    case 1: open_band_picker(); return true;
+    case 2: ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(),
+                           set_volume); return true;
+    case 3: ls_numpad_open("SQUELCH", "0 opens on anything, 100 on nothing",
+                           FM.squelch_tenths, set_squelch); return true;
+    case 4: toggle_frequency_lock(); return true;
     default: return false;
     }
 }
@@ -734,6 +871,10 @@ static bool control_action(int index)
 static void show_page(int i)
 {
     s_page_open=false;
+    /* A tab that is not on offer does nothing at all. Falling back to VFO
+       would stop a running sweep, which is the same reaching-over this
+       change exists to remove. */
+    if (i == 1 && !pager_mode()) return;
     if (i==3) {s_details=false;ls_wf_source_release();return;}
     scan_engine_stop();
     s_page = i;
@@ -755,16 +896,18 @@ static void show_page(int i)
     } else {
         ls_wf_source_release();
         if (i == 0 && FM.mode == FM_MODE_SCAN) { ls_wf_fm_sweep(false); s_mode_requested = true; }
-        if (i == 1 && FM.mode != FM_MODE_POCSAG && FM.mode != FM_MODE_FLEX) {
-            choose_mode(FM_MODE_POCSAG); s_mode_requested = true;
-        }
+        /* PAGER no longer reaches over and changes the receiver. A tab is a
+           view; picking what the radio does is what MODE is for, and this
+           silently putting a listening receiver into POCSAG was one of the
+           ways the speaker ended up carrying pager bursts instead of speech.
+           The tab only offers itself when a pager mode is already running. */
     }
 }
 
 /* Called by the UI task when the control head chooses FM or POCSAG. */
 void ls_scr_fm_show_page(int page)
 {
-    if (page >= 0 && page < N_PAGES) {s_details=page!=0;show_page(page);}
+    if (page >= 0 && page < N_PAGES) {s_details=(page!=3);show_page(page);}
 }
 
 static void radio_view(void)
@@ -775,6 +918,16 @@ static void radio_view(void)
     s_view.standby=s_standby;
     s_view.mode=FM.mode==FM_MODE_LISTEN?"NFM":fm_mode_label(FM.mode);
     s_view.power=FM.iq_level;
+    {
+        float sig = 1.0f - FM.noise;
+        if (sig < 0.0f) sig = 0.0f;
+        if (sig > 1.0f) sig = 1.0f;
+        s_view.volume = audio_volume_get();
+        s_view.signal = sig;
+        s_view.gate = (float)FM.squelch_tenths * 0.01f;
+        s_view.squelch_open = FM.squelch_open;
+        s_view.has_squelch = true;
+    }
     fm_get_receiver_status(&s_view.receiver);
     snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
     snprintf(s_view.detail[1],64,"SQL %d%%  GAIN %.1f dB",FM.squelch_tenths,FM.gain_tenths/10.0);
@@ -792,14 +945,19 @@ static void set_squelch(double value)
 static void radio_action(char c)
 {
     if(c=='M') {s_details=true;return;}
-    if(c=='Q') {ls_numpad_open("SQUELCH","% IQ level",FM.squelch_tenths,set_squelch);return;}
+    if(c=='Q') {ls_numpad_open("SQUELCH","0 opens on anything, 100 on nothing",FM.squelch_tenths,set_squelch);return;}
     if(c=='A') {
         scan_engine_stop();
         uint32_t previous=FM.freq_hz;
         ls_args_t args={0}; ls_val_t out;
         args.n=1; args.v[0].kind=LS_VAL_INT; args.v[0].i=s_standby;
-        lakeshark_fm_frequency_lock(true);
-        if(ls_action_call("fm.freq_hz",&args,&out,ls_quick_grant_builtin())==LS_ACT_OK) s_standby=previous;
+        /* Same order as the keypad: the swap is the decision, so release the
+           lock, make the move, then hold whichever carrier we landed on. */
+        lakeshark_fm_frequency_lock(false);
+        if(ls_action_call("fm.freq_hz",&args,&out,ls_quick_grant_builtin())==LS_ACT_OK) {
+            s_standby=previous;
+            lakeshark_fm_frequency_lock(true);
+        }
         return;
     }
     if(c=='['||c==']') {scan_engine_stop();tune_step(c=='['?-1:1);return;}
@@ -846,7 +1004,7 @@ static void draw(tui_surface *sf, tui_rect area)
     /* Three rows in portrait: a two row bar with one line of text has no middle row to put it on. */
 
     const int bar_h = wide ? 3 : 5;
-    const int bar_pad = wide ? 0 : 1;
+    const int bar_pad = 0;
 
     /* Portrait puts the page bar at the bottom, where the thumb is.
 
@@ -892,8 +1050,16 @@ static void draw(tui_surface *sf, tui_rect area)
     /* Draw navigation after the waterfall so each bar keeps a distinct hit
        slot and cannot steal the other's touch targets. */
     ls_btn_t b[N_PAGES];
-    for (int i = 0; i < N_PAGES; i++) { b[i] = PAGES[i]; b[i].on = (i == s_page); }
-    ls_btn_bar_slot(sf, s_bar, b, N_PAGES, -1, LS_BTN_SLOT_QUICK);
+    int nb = 0;
+    for (int i = 0; i < N_PAGES; i++) {
+        if (i == 1 && !pager_mode()) continue;   /* PAGER decodes or it hides */
+        b[nb] = PAGES[i];
+        b[nb].on = (i == s_page);
+        s_tab_page[nb] = i;
+        nb++;
+    }
+    s_tab_count = nb;
+    ls_btn_bar_slot(sf, s_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
     (void)draw_controls(sf, tui_rect_make(area.x, wide ? area.y + bar_h : area.y,
                                           area.w, control_rows));
 }
@@ -902,7 +1068,14 @@ static void leave(void) { ls_wf_source_release(); }
 
 static void enter(void)
 {
-    s_details=mode_page(FM.mode)!=0;
+    /* Open on the receiver, not on the scanner.
+
+       s_details was set from mode_page(), which returns 0 for LISTEN, so
+       opening FM in its ordinary mode rendered the shared scan panel and
+       returned before the VFO page could draw. The front door of a receiver
+       was a channel list in a different interface. RADIO is still a tab away
+       for when the scanner IS what you want. */
+    s_details=true;
     s_last_mode = (int)FM.mode;
     s_page = mode_page(FM.mode);
     s_page_open = false;
@@ -925,6 +1098,8 @@ static bool key(ls_tk_t k, char ch)
         }
         if (ch == 'k' || ch == 'K') { toggle_frequency_lock(); return true; }
         if (ch == 'n' || ch == 'N') { open_band_picker(); return true; }
+        if (ch == 'v' || ch == 'V') { control_action(2); return true; }
+        if (ch == 'q' || ch == 'Q') { control_action(3); return true; }
         if (ch == 'w' || ch == 'W') { toggle_sweep(); return true; }
         if (ch == 't' || ch == 'T') {
             ls_quick_fire(&QUICK[0], ls_quick_grant_builtin()); return true;
@@ -973,8 +1148,8 @@ static bool touch(int col, int row)
     if (tui_rect_contains(s_controls, col, row))
         return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
-        const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
-        if (i >= 0) { show_page(i); return true; }
+        const int slot = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
+        if (slot >= 0 && slot < s_tab_count) { show_page(s_tab_page[slot]); return true; }
         return true;
     }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&

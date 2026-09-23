@@ -52,6 +52,7 @@ struct endpoint_slot {
     uint64_t bytes_read;
     uint64_t packets_read;
     ls_radio_err_t last_error;
+    uint32_t control_io_errors;
     SemaphoreHandle_t control_lock;
     SemaphoreHandle_t quiesced;
     ls_radio_session_t session;
@@ -60,6 +61,8 @@ struct endpoint_slot {
 static endpoint_slot_t s_endpoints[LS_RADIO_MAX_ENDPOINTS];
 static SemaphoreHandle_t s_registry_lock;
 static volatile int s_registry_init;
+/**/
+static uint32_t s_generation;
 
 typedef struct {
     ls_radio_endpoint_event_fn callback;
@@ -258,6 +261,27 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
     return error;
 }
 
+/* For configure, gain, start and retune: a request that reached the
+   driver and came back io extends the run, one that succeeded ends it, and
+   anything else - DISCONNECTED, BUSY, a refusal before the driver - says
+   nothing about whether the device answers. Stop is left out on purpose:
+   the RTL's stop is host-side and always succeeds, so counting it would
+   clear the run between every failed open. Counted while the operation is
+   still in flight, so the slot cannot be re-registered under the count. */
+static ls_radio_err_t session_leave_control(endpoint_slot_t *slot,
+                                            ls_radio_err_t driver_error)
+{
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    if (slot->present) {
+        if (driver_error == LS_RADIO_ERR_IO)
+            ++slot->control_io_errors;
+        else if (driver_error == LS_RADIO_OK)
+            slot->control_io_errors = 0;
+    }
+    xSemaphoreGive(s_registry_lock);
+    return session_leave(slot, driver_error, false, 0, 0);
+}
+
 static void fill_info(const endpoint_slot_t *slot,
                       ls_radio_endpoint_info_t *out)
 {
@@ -284,6 +308,7 @@ static void fill_info(const endpoint_slot_t *slot,
     out->bytes_read = slot->bytes_read;
     out->packets_read = slot->packets_read;
     out->last_error = slot->last_error;
+    out->control_io_errors = slot->control_io_errors;
 }
 
 static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
@@ -380,6 +405,8 @@ ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
     slot->bytes_read = 0;
     slot->packets_read = 0;
     slot->last_error = LS_RADIO_OK;
+    slot->control_io_errors = 0;
+    __atomic_add_fetch(&s_generation, 1, __ATOMIC_RELEASE);
     slot->capabilities = endpoint->capabilities;
     slot->duplex = endpoint->duplex;
     slot->iq_formats = endpoint->iq_formats;
@@ -446,6 +473,7 @@ ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
     slot->driver_ctx = NULL;
     memset(&slot->ops, 0, sizeof(slot->ops));
     slot->removing = false;
+    __atomic_add_fetch(&s_generation, 1, __ATOMIC_RELEASE);
     xSemaphoreGive(s_registry_lock);
     publish_endpoint_event(LS_RADIO_ENDPOINT_DETACHED, published_id,
                            published_caps);
@@ -461,6 +489,11 @@ size_t ls_radio_endpoint_count(void)
         if (s_endpoints[i].used) ++count;
     xSemaphoreGive(s_registry_lock);
     return count;
+}
+
+uint32_t ls_radio_endpoint_generation(void)
+{
+    return __atomic_load_n(&s_generation, __ATOMIC_ACQUIRE);
 }
 
 ls_radio_err_t ls_radio_endpoint_info(size_t index,
@@ -707,7 +740,7 @@ ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *session,
         }
         xSemaphoreGive(s_registry_lock);
     }
-    error = session_leave(slot, error, false, 0, 0);
+    error = session_leave_control(slot, error);
     xSemaphoreGive(slot->control_lock);
     return error;
 }
@@ -742,7 +775,7 @@ ls_radio_err_t ls_radio_iq_set_gain(ls_radio_session_t *session,
         }
         xSemaphoreGive(s_registry_lock);
     }
-    error = session_leave(slot, error, false, 0, 0);
+    error = session_leave_control(slot, error);
     xSemaphoreGive(slot->control_lock);
     return error;
 }
@@ -775,7 +808,7 @@ ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session)
         }
         xSemaphoreGive(s_registry_lock);
     }
-    error = session_leave(slot, error, false, 0, 0);
+    error = session_leave_control(slot, error);
     xSemaphoreGive(slot->control_lock);
     return error;
 }
@@ -833,7 +866,7 @@ ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
             slot->actual_iq.center_hz = *actual_hz;
         xSemaphoreGive(s_registry_lock);
     }
-    error = session_leave(slot, error, false, 0, 0);
+    error = session_leave_control(slot, error);
     xSemaphoreGive(slot->control_lock);
     return error;
 }

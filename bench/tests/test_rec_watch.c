@@ -7,9 +7,6 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#ifdef _WIN32
-#include <direct.h>
-#endif
 static rec_watch_catalog_t catalog, restored;
 static const int32_t pulses[]={300,-300,600,-300,300,-600};
 static int frame24(int32_t *p, uint32_t value, int unit)
@@ -141,12 +138,8 @@ LS_CASE(invalid_and_oversized_captures_do_not_change_the_catalog)
 }
 LS_CASE(two_generations_recover_after_a_torn_write_and_keep_a_fixed_footprint)
 {
-    char dir[160];snprintf(dir,sizeof(dir),"rec-watch-test-%ld",(long)getpid());
-#ifdef _WIN32
-    _mkdir(dir);
-#else
-    mkdir(dir,0700);
-#endif
+    char dir[160];ls_test_fixture_dir(dir,sizeof(dir),"rec-watch-test");
+    ls_test_mkdir(dir);
     char a[200],b[200];snprintf(a,sizeof(a),"%s/watch0.bin",dir);snprintf(b,sizeof(b),"%s/watch1.bin",dir);
     unlink(a);unlink(b);
     memset(&catalog,0,sizeof(catalog));observe(433920000,1,NULL);
@@ -165,17 +158,13 @@ LS_CASE(two_generations_recover_after_a_torn_write_and_keep_a_fixed_footprint)
     restored.archive_id++;
     LS_CHECK(!rec_watch_store(dir,&restored,64*1024*1024));
     LS_CHECK(rec_watch_restore(dir,&restored));LS_EQ_UINT(restored.archive_id,catalog.archive_id);
-    unlink(a);unlink(b);rmdir(dir);
+    unlink(a);unlink(b);ls_test_rmdir(dir);
 }
 
 LS_CASE(two_invalid_generations_are_preserved_and_a_clean_archive_starts)
 {
-    char dir[160];snprintf(dir,sizeof(dir),"rec-watch-bad-%ld",(long)getpid());
-#ifdef _WIN32
-    _mkdir(dir);
-#else
-    mkdir(dir,0700);
-#endif
+    char dir[160];ls_test_fixture_dir(dir,sizeof(dir),"rec-watch-bad");
+    ls_test_mkdir(dir);
     char a[200],b[200],qa[200],qb[200];
     snprintf(a,sizeof(a),"%s/watch0.bin",dir);snprintf(b,sizeof(b),"%s/watch1.bin",dir);
     snprintf(qa,sizeof(qa),"%s/watch0.invalid",dir);snprintf(qb,sizeof(qb),"%s/watch1.invalid",dir);
@@ -189,18 +178,14 @@ LS_CASE(two_invalid_generations_are_preserved_and_a_clean_archive_starts)
     LS_EQ_INT(stat(qb,&st),0);LS_EQ_INT((int)st.st_size,5);
     LS_CHECK(rec_watch_restore(dir,&restored));
     LS_EQ_UINT(restored.record[0].event.count,1);
-    unlink(a);unlink(b);unlink(qa);unlink(qb);rmdir(dir);
+    unlink(a);unlink(b);unlink(qa);unlink(qb);ls_test_rmdir(dir);
 }
 
 LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
 {
     char dir[160],path[200],other[200];
-    snprintf(dir,sizeof(dir),"rec-legacy-%ld",(long)getpid());
-#ifdef _WIN32
-    _mkdir(dir);
-#else
-    mkdir(dir,0700);
-#endif
+    ls_test_fixture_dir(dir,sizeof(dir),"rec-legacy");
+    ls_test_mkdir(dir);
     snprintf(path,sizeof(path),"%s/watch0.bin",dir);
     snprintf(other,sizeof(other),"%s/watch1.bin",dir);unlink(path);unlink(other);
     /* A genuine pre-v4 archive, in the layout that firmware actually wrote:
@@ -257,7 +242,7 @@ LS_CASE(legacy_archive_padding_is_not_interpreted_as_a_receiver_source)
     LS_CHECK(rec_watch_store(dir,&restored,64*1024*1024));
     LS_CHECK(rec_watch_restore(dir,&catalog));
     LS_EQ_INT(catalog.record[0].event.source,REC_SOURCE_CC1101);
-    unlink(path);unlink(other);rmdir(dir);
+    unlink(path);unlink(other);ls_test_rmdir(dir);
 }
 
 LS_CASE(watch_rejects_broken_edges_and_filters_history_by_receiver)
@@ -306,12 +291,8 @@ static void capture_during_checkpoint(void *context)
 LS_CASE(checkpoint_keeps_snapshot_consistent_while_live_captures_continue)
 {
     char dir[160],a[200],b[200];
-    snprintf(dir,sizeof(dir),"rec-pump-%ld",(long)getpid());
-#ifdef _WIN32
-    _mkdir(dir);
-#else
-    mkdir(dir,0700);
-#endif
+    ls_test_fixture_dir(dir,sizeof(dir),"rec-pump");
+    ls_test_mkdir(dir);
     snprintf(a,sizeof(a),"%s/watch0.bin",dir);snprintf(b,sizeof(b),"%s/watch1.bin",dir);
     unlink(a);unlink(b);
     static rec_watch_catalog_t snapshot;
@@ -330,7 +311,7 @@ LS_CASE(checkpoint_keeps_snapshot_consistent_while_live_captures_continue)
     LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
     LS_CHECK(rec_watch_restore(dir,&restored));
     LS_EQ_UINT(restored.sequence,catalog.sequence);
-    unlink(a);unlink(b);rmdir(dir);
+    unlink(a);unlink(b);ls_test_rmdir(dir);
 }
 
 LS_CASE(a_source_spends_its_own_slots_before_reaching_for_anothers)

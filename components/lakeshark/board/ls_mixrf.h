@@ -2,6 +2,7 @@
 #define LS_MIXRF_H
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +41,9 @@ bool ls_mixrf_start(void);
 void ls_mixrf_snapshot(ls_mixrf_status_t *out);
 bool ls_mixrf_receive(bool on,uint32_t frequency);
 bool ls_mixrf_capture(bool on,uint32_t frequency);
+/* Blocking, bounded one-shot on the mixrf worker; caller retains pulses.
+   Refuses competing receive/probe work. Nominal power: -10, 0, 5, 10 dBm. */
+bool ls_mixrf_replay(uint32_t frequency, const int32_t *pulses, size_t count, int dbm);
 bool ls_mixrf_scan(bool on);
 bool ls_mixrf_nfc_watch(bool on);
 bool ls_mixrf_card_scan(bool on);

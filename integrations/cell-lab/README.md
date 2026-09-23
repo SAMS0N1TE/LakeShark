@@ -17,9 +17,9 @@ Run from this checkout in PowerShell:
 ./tools/cell_lab.ps1 archive -Port COM13 -OutputDirectory ../cell-archive
 ```
 
-`doctor` identifies Python, NumPy, pyserial, GCC and serial devices. On the
-14 September development PC, the P4 CH343 is COM13, USB serial `5C84301528`;
-the MeshCore USB device is COM12. Enumerate on every new PC. Never assume that
+`doctor` identifies Python, NumPy, pyserial, GCC and serial devices. The
+examples below use COM13 for the P4 and COM12 for the MeshCore USB device;
+enumerate on every new PC. Never assume that
 the MeshCore port is the P4 console.
 
 The runtime already installed here is ESP-IDF 5.4.3 at

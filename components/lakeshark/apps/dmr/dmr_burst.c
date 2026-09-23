@@ -84,17 +84,32 @@ int dmr_slot_type_decode(const uint8_t in[3], uint8_t *cc_out, uint8_t *dt_out)
     return errs;
 }
 
-uint8_t dmr_burst_colour_code(const uint8_t burst_bits[DMR_BURST_BITS / 8])
+/* Pull the 20-bit Slot Type codeword back out of the burst.  The first half
+ * (10 bits) sits at burst positions 98..107, the second half at 156..165.
+ * Pack them MSB-first into a 3-byte buffer for the Golay decoder; the low
+ * nibble of packed[2] is padding. */
+static void slot_type_packed(const uint8_t burst_bits[DMR_BURST_BITS / 8],
+                             uint8_t packed[3])
 {
-    /* Pull the 20-bit Slot Type codeword back out of the burst.  The first
-     * half (10 bits) sits at burst positions 98..107, the second half at
-     * 156..165.  Pack them MSB-first into a 3-byte buffer for the Golay
-     * decoder; the low nibble of packed[2] is padding. */
-    uint8_t packed[3] = { 0, 0, 0 };
+    packed[0] = packed[1] = packed[2] = 0;
     for (unsigned i = 0; i < 10; i++)
         wr_bit(packed, i, rd_bit(burst_bits, 98u + i));
     for (unsigned i = 0; i < 10; i++)
         wr_bit(packed, 10u + i, rd_bit(burst_bits, 156u + i));
+}
+
+int dmr_burst_slot_type(const uint8_t burst_bits[DMR_BURST_BITS / 8],
+                        uint8_t *cc_out, uint8_t *dt_out)
+{
+    uint8_t packed[3];
+    slot_type_packed(burst_bits, packed);
+    return dmr_slot_type_decode(packed, cc_out, dt_out);
+}
+
+uint8_t dmr_burst_colour_code(const uint8_t burst_bits[DMR_BURST_BITS / 8])
+{
+    uint8_t packed[3];
+    slot_type_packed(burst_bits, packed);
 
     uint8_t cc = 0, dt = 0;
     if (dmr_slot_type_decode(packed, &cc, &dt) < 0) {

@@ -8,7 +8,6 @@
 #include "file_iterator.h"
 #include "media_playlist.h"
 
-#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,13 +78,13 @@ static void remove_fixture(void)
         fixture_path(path, sizeof(path), files[i]);
         remove(path);
     }
-    _rmdir(fixture);
+    ls_test_rmdir(fixture);
 }
 
 static void make_fixture(void)
 {
     remove_fixture();
-    LS_EQ_INT(_mkdir(fixture), 0);
+    LS_EQ_INT(ls_test_mkdir(fixture), 0);
     create_file("alpha.mp3");
     create_file("beta.WAV");
     create_file("gamma.txt");

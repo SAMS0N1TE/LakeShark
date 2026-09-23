@@ -89,6 +89,18 @@ void settings_set_alert_vibe(bool en);
 bool settings_get_auto_rotate(void);
 void settings_set_auto_rotate(bool enabled);
 
+/* Which radios start at boot. BLE scans continuously once it is up, so a
+   board with no control head attached pays for it all day. Both default on,
+   which is what every existing unit already does. */
+bool settings_get_ble_at_boot(void);
+/* Same value, readable before settings_init(). */
+bool settings_peek_ble_at_boot(void);
+void settings_set_ble_at_boot(bool enabled);
+bool settings_get_wifi_at_boot(void);
+/* Same value, readable before settings_init(). */
+bool settings_peek_wifi_at_boot(void);
+void settings_set_wifi_at_boot(bool enabled);
+
 /**/
 bool settings_get_nav_autohide(void);
 void settings_set_nav_autohide(bool enabled);

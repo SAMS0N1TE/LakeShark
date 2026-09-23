@@ -25,6 +25,10 @@ void ls_tui_touch_stats(uint32_t *reads, uint32_t *taps,
    same cell counts. */
 bool ls_tui_touch_poll(ls_tui_touch_t *out);
 
+/* True while a finger is down: the cell it went down on and the cell it is
+   on now. For a control that follows a drag, which never becomes a tap. */
+bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row);
+
 #ifdef __cplusplus
 }
 #endif

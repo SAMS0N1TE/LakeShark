@@ -3,7 +3,6 @@
 #include "ls_test.h"
 #include "media_playlist.h"
 
-#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -38,16 +37,16 @@ static void remove_fixture(void)
         remove(path);
     }
     fixture_path(path, sizeof(path), "album.mp3");
-    _rmdir(path);
+    ls_test_rmdir(path);
     fixture_path(path, sizeof(path), "nested");
-    _rmdir(path);
-    _rmdir(fixture);
+    ls_test_rmdir(path);
+    ls_test_rmdir(fixture);
 }
 
 LS_CASE(mixed_directory_exposes_only_decodable_regular_files)
 {
     remove_fixture();
-    LS_EQ_INT(_mkdir(fixture), 0);
+    LS_EQ_INT(ls_test_mkdir(fixture), 0);
 
     create_file("lake.mp3");
     create_file("dispatch.WAV");
@@ -58,9 +57,9 @@ LS_CASE(mixed_directory_exposes_only_decodable_regular_files)
 
     char path[256];
     fixture_path(path, sizeof(path), "album.mp3");
-    LS_EQ_INT(_mkdir(path), 0);
+    LS_EQ_INT(ls_test_mkdir(path), 0);
     fixture_path(path, sizeof(path), "nested");
-    LS_EQ_INT(_mkdir(path), 0);
+    LS_EQ_INT(ls_test_mkdir(path), 0);
 
     file_iterator_instance_t *playlist = ls_media_playlist_open(fixture);
     LS_CHECK(playlist != NULL);

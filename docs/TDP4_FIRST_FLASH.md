@@ -54,7 +54,7 @@ The matching images ship in `c6_firmware/`. The C6 is not on a USB port: the lef
 | RX | TX |
 | TX | RX |
 | GND | GND |
-| 3.3V | reference only, leave it if the board is powered |
+| 3.3V | not connected - the board powers the C6 itself |
 
 **3. Hold the C6 `BOOT` button, press and release its `RESET`, then let go of BOOT.** The C6 is now in download mode on the adapter's port:
 

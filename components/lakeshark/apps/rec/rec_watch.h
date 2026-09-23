@@ -20,8 +20,7 @@ typedef enum {
     REC_SOURCE_CC1101,
     /* The base-board SX1262. Unlike the other two it demodulates rather than
        timing edges, so its captures carry the modulation that heard them -
-       see the fsk fields on rec_watch_event_t - and unlike the other two it
-       can transmit, which is what makes replay possible at all. */
+       see the fsk fields on rec_watch_event_t. It replays FSK; CC1101 replays OOK. */
     REC_SOURCE_SX1262,
     REC_SOURCE_COUNT
 } rec_source_t;
@@ -43,12 +42,14 @@ static inline const char *rec_source_name(rec_source_t source)
     }
 }
 
-/* Whether a source can put a capture back on air. Today only the SX1262:
-   the RTL is a receiver, and no CC1101 transmit path is implemented. */
+/* Replay follows the capture source: CC1101 OOK or SX1262 FSK. */
 static inline bool rec_source_can_replay(rec_source_t source)
 {
-    return source == REC_SOURCE_SX1262;
+    return source == REC_SOURCE_SX1262 || source == REC_SOURCE_CC1101;
 }
+#include "subghz_pwm.h"
+#include "subghz_nrz.h"
+
 typedef struct { uint32_t value; uint16_t repeats, unit_us; } rec_ook24_t;
 int rec_watch_filter_pulses(int32_t *pulse,int edges,uint32_t min_us);
 bool rec_decode_ook24(const int32_t *pulse, int edges, rec_ook24_t *out);
@@ -151,6 +152,13 @@ typedef struct {
     rec_watch_event_t event[REC_WATCH_SLOTS];
     int32_t preview[REC_WATCH_SLOTS][48];
     rec_ook24_t decoded[REC_WATCH_SLOTS];
+    /* The same frames read for any length and, at 24 bits, for what the
+       payload means. Kept beside decoded[] rather than replacing it: the
+       catalogue's ranking and de-duplication key on the 24-bit result. */
+    subghz_pwm_t pwm[REC_WATCH_SLOTS];
+    /* The other family: run-length OOK, which the PWM reader cannot see
+       because it sends no long preamble space. */
+    subghz_nrz_t nrz[REC_WATCH_SLOTS];
 } rec_watch_status_t;
 bool rec_watch_start(void);
 bool rec_watch_enable(bool on);
@@ -276,6 +284,20 @@ void rec_watch_scan_on_hit(rec_scan_on_hit_t mode);
 rec_scan_on_hit_t rec_watch_scan_on_hit_get(void);
 /* The frequency of the most recent detection, or 0. */
 uint32_t rec_watch_scan_last_hit(void);
+/* How many times, this sweep, any bin rose through the threshold. Counts
+   bursts, where rec_watch_scan_hits counts frequencies. */
+int rec_watch_scan_events(void);
+/* Stop the running sweep, tune to hz and start WATCH on it - the same
+   hand-off as ON DETECT CATCH, on request. False when no sweep is running. */
+bool rec_watch_scan_catch(uint32_t hz);
+/* Send a .sub file once on the SX1262, on the storage worker. Only files
+   that carry FSK settings can be sent; the result lands in
+   rec_watch_last_result(). False when the worker is busy or WATCH is on. */
+bool rec_watch_request_replay_file(const char *path, int dbm);
+/* The last export, replay or sweep result, for a screen that is not SUB-GHZ. */
+const char *rec_watch_last_result(void);
+/* Atomic replay-only busy/result snapshot; includes queued work. */
+bool rec_watch_replay_status(char *out, size_t len);
 
 /* How far above the floor a bin has to sit before it counts as something
    rather than as noise. The default; the working value is adjustable,
@@ -288,6 +310,8 @@ uint32_t rec_watch_scan_last_hit(void);
 
 float rec_watch_scan_threshold(void);
 void  rec_watch_scan_set_threshold(float db);
+/* Moves the line without saving it - for a drag, which saves once on release. */
+void  rec_watch_scan_preview_threshold(float db);
 
 /* The last completed sweep, strongest first. Returns how many were written. */
 int  rec_watch_scan_result(rec_scan_bin_t *out, int max);

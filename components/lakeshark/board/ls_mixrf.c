@@ -7,6 +7,8 @@
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "driver/gpio.h"
+#include "driver/rmt_tx.h"
+#include "subghz_file.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -23,6 +25,11 @@ static spi_device_handle_t cc_dev,nrf_dev,nfc_dev;
 static DRAM_ATTR spi_transaction_t transaction;
 static DRAM_ATTR uint8_t nfc_tx[65],nfc_rx[65];
 static esp_err_t transfer_error;
+static bool tx_active,tx_pending,tx_done,tx_ok;
+static uint32_t tx_hz;
+static int tx_dbm;
+static const int32_t *tx_pulses;
+static size_t tx_count;
 
 static bool cc_ready(void)
 {
@@ -323,6 +330,87 @@ static bool tune(uint32_t hz, bool capture)
         cc_write(0x1b,capture?0x07:0x03) && cc_write(0x1c,0) && cc_write(0x1d,0x91) &&
         cc_write(0x17,0x3c) && cc_write(0x18,0x18) && cc_strobe(0x34);
 }
+
+/* TI CC1101 datasheet tables 36/39. PATABLE[0] is off, [1] is the
+   requested nominal mark power; the board/antenna is not calibrated. */
+static bool transmit_ook(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
+{
+    static const uint8_t pa[4][4]={{0x34,0x51,0x85,0xc2},
+        {0x34,0x60,0x84,0xc0},{0x27,0x50,0x81,0xc2},{0x27,0x8e,0xcd,0xc0}};
+    int power=dbm==-10?0:dbm==0?1:dbm==5?2:dbm==10?3:-1;
+    size_t words=subghz_ook_symbols(pulses,count,NULL,0);
+    if(power<0 || !words)return false;
+    uint32_t *symbols=heap_caps_malloc(words*4,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    rmt_channel_handle_t channel=NULL;
+    rmt_encoder_handle_t encoder=NULL;
+    bool enabled=false,ok=false;
+    const char *stage="symbols";
+    esp_err_t error=ESP_OK;
+    uint8_t marc=0xff;
+    transfer_error=ESP_OK;
+    if(!symbols || !subghz_ook_symbols(pulses,count,symbols,words))goto cleanup;
+    uint8_t route=hz<400000000?4:hz<500000000?6:2;
+    uint32_t word=(uint32_t)(((uint64_t)hz*65536+13000000)/26000000);
+    stage="register setup";
+    /* Keep GDO0 high impedance until the MCU owns it. Never enter RX here. */
+    if(!cc_strobe(0x36) || !cc_write(0x02,0x2e) ||
+       !ls_keypad_expander_update(2,6,route) || !ls_keypad_expander_update(6,6,0) ||
+       !cc_write(0x0d,word>>16) || !cc_write(0x0e,word>>8) || !cc_write(0x0f,word) ||
+       !cc_write(0x08,0x32) || !cc_write(0x10,0x17) || !cc_write(0x11,0x32) ||
+       !cc_write(0x12,0x30) || !cc_write(0x17,0) || !cc_write(0x18,0x18) ||
+       !cc_write(0x22,0x11))goto cleanup;
+    stage="PATABLE";
+    if((error=ls_spi_hold(cc_dev))!=ESP_OK)goto cleanup;
+    gpio_set_level(LS_BOARD_MIX_CC_CS,0);
+    transaction=(spi_transaction_t){.flags=SPI_TRANS_USE_TXDATA,.length=24};
+    transaction.tx_data[0]=0x7e; /* PATABLE burst; CS resets the table index. */
+    transaction.tx_data[1]=0;
+    transaction.tx_data[2]=pa[hz<400000000?0:hz<500000000?1:hz<900000000?2:3][power];
+    ok=cc_ready() && spi_device_polling_transmit(cc_dev,&transaction)==ESP_OK;
+    gpio_set_level(LS_BOARD_MIX_CC_CS,1);spi_device_release_bus(cc_dev);
+    if(!ok)goto cleanup;
+    ok=false;
+    rmt_tx_channel_config_t cfg={.gpio_num=LS_BOARD_MIX_CC_GDO0,
+        .clk_src=RMT_CLK_SRC_DEFAULT,.resolution_hz=1000000,
+        .mem_block_symbols=192,.trans_queue_depth=1,.intr_priority=3};
+    rmt_copy_encoder_config_t enc={0};
+    stage="RMT channel";
+    if((error=rmt_new_tx_channel(&cfg,&channel))!=ESP_OK)goto cleanup;
+    stage="RMT encoder";
+    if((error=rmt_new_copy_encoder(&enc,&encoder))!=ESP_OK)goto cleanup;
+    stage="RMT enable";
+    if((error=rmt_enable(channel))!=ESP_OK)goto cleanup;
+    enabled=true;
+    stage="STX";
+    if(!cc_strobe(0x35))goto cleanup;
+    stage="TX state";
+    int64_t deadline=esp_timer_get_time()+100000;
+    for(;;) {
+        if(!cc_read(0x35,&marc))goto cleanup;
+        if((marc&31)==19)break;
+        /* Check fresh hardware state after waking, even when scheduling
+           delayed this low-priority worker beyond the polling deadline. */
+        if(esp_timer_get_time()>=deadline)goto cleanup;
+        vTaskDelay(1);
+    }
+    rmt_transmit_config_t send={.loop_count=0,.flags.eot_level=0};
+    stage="RMT transmit";
+    if((error=rmt_transmit(channel,encoder,symbols,words*4,&send))!=ESP_OK)goto cleanup;
+    stage="RMT completion";
+    ok=(error=rmt_tx_wait_all_done(channel,11000))==ESP_OK;
+cleanup:
+    /* Stop the RF carrier on every path before releasing timing memory. */
+    if(!cc_strobe(0x36)){ok=false;stage="SIDLE cleanup";}
+    if(enabled)rmt_disable(channel);
+    if(channel)rmt_del_channel(channel);
+    if(encoder)rmt_del_encoder(encoder);
+    gpio_set_direction(LS_BOARD_MIX_CC_GDO0,GPIO_MODE_INPUT);
+    heap_caps_free(symbols);
+    if(!ok)printf("mixrf: TX failure at %s: error=%s SPI=%s MARCSTATE=%02x\n",stage,esp_err_to_name(error),esp_err_to_name(transfer_error),marc);
+    status_text(ok?"CC1101 OOK replay complete; idle":"CC1101 replay failed; idle requested");
+    printf("mixrf: OOK TX %.4f MHz %u edges nominal %d dBm: %s\n",hz/1e6,(unsigned)count,dbm,ok?"complete":"FAILED");
+    return ok;
+}
 static void worker(void *arg)
 {
     (void)arg;
@@ -339,6 +427,12 @@ static void worker(void *arg)
     bool capturing=false;
     uint32_t raw_captures=0, raw_overflows=0;
     for(;;) {
+        portENTER_CRITICAL(&lock);bool send=tx_pending;tx_pending=false;portEXIT_CRITICAL(&lock);
+        if(send) {
+            ls_cc_capture_stop();capturing=running=false;
+            bool sent=ls_keypad_present() && transmit_ook(tx_hz,tx_pulses,tx_count,tx_dbm);
+            portENTER_CRITICAL(&lock);tx_ok=sent;tx_done=true;state.receiving=state.capturing=false;portEXIT_CRITICAL(&lock);
+        }
         portENTER_CRITICAL(&lock);bool retry=reprobe;reprobe=false;portEXIT_CRITICAL(&lock);
         if(retry) {probe_radios();portENTER_CRITICAL(&lock);state.busy=false;portEXIT_CRITICAL(&lock);}
         portENTER_CRITICAL(&lock);bool on=want && state.cc,scan=want_scan && state.nrf,nfc_on=want_nfc && state.nfc,card_on=want_card && state.nfc;uint32_t next=requested;bool capture=want_capture;portEXIT_CRITICAL(&lock);
@@ -440,7 +534,7 @@ static void worker(void *arg)
 bool ls_mixrf_start(void)
 {
     portENTER_CRITICAL(&lock);
-    if(started){if(!ls_nfc_suite_busy() && !want && !want_scan && !want_nfc && !want_card && !state.scanning && !state.nfc_watching && !state.card_scanning){reprobe=true;state.busy=true;}portEXIT_CRITICAL(&lock);return true;}
+    if(started){if(!tx_active && !ls_nfc_suite_busy() && !want && !want_scan && !want_nfc && !want_card && !state.scanning && !state.nfc_watching && !state.card_scanning){reprobe=true;state.busy=true;}portEXIT_CRITICAL(&lock);return true;}
     started=true;state.busy=true;state.rssi=NAN;
     portEXIT_CRITICAL(&lock);
     bool ok=xTaskCreatePinnedToCoreWithCaps(worker,"mixrf",4096,NULL,1,NULL,0,
@@ -453,16 +547,44 @@ void ls_mixrf_snapshot(ls_mixrf_status_t *out)
 bool ls_mixrf_receive(bool on,uint32_t hz)
 {
     if(on && !((hz>=300000000 && hz<=348000000) || (hz>=387000000 && hz<=464000000) || (hz>=779000000 && hz<=928000000)))return false;
-    portENTER_CRITICAL(&lock);bool ok=!on || state.cc;
+    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !tx_active);
     if(ok && !want_capture){want=on;requested=hz;}else if(want_capture)ok=false;
     portEXIT_CRITICAL(&lock);return ok;
 }
 bool ls_mixrf_capture(bool on,uint32_t hz)
 {
     if(on && !((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||(hz>=779000000 && hz<=928000000)))return false;
-    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !state.busy && !want);
+    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !state.busy && !want && !tx_active);
     if(ok){want=want_capture=on;requested=hz;}
     portEXIT_CRITICAL(&lock);return ok;
+}
+bool ls_mixrf_replay(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
+{
+    if(!((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||
+         (hz>=779000000 && hz<=928000000)) ||
+       (dbm!=-10 && dbm!=0 && dbm!=5 && dbm!=10) ||
+       !subghz_ook_symbols(pulses,count,NULL,0))return false;
+    portENTER_CRITICAL(&lock);bool needs_start=!started;portEXIT_CRITICAL(&lock);
+    if(needs_start && !ls_mixrf_start())return false;
+    int64_t deadline=esp_timer_get_time()+2000000;
+    for(;;) {
+        portENTER_CRITICAL(&lock);bool probing=state.busy;portEXIT_CRITICAL(&lock);
+        if(!probing)break;
+        if(esp_timer_get_time()>=deadline)return false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    portENTER_CRITICAL(&lock);
+    bool ok=started && state.cc && !state.busy && !reprobe && !tx_active && !want && !want_capture;
+    if(ok){tx_active=tx_pending=true;tx_done=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=pulses;tx_count=count;}
+    portEXIT_CRITICAL(&lock);
+    if(!ok)return false;
+    for(;;) {
+        portENTER_CRITICAL(&lock);bool done=tx_done;ok=tx_ok;portEXIT_CRITICAL(&lock);
+        if(done)break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    portENTER_CRITICAL(&lock);tx_active=false;tx_pulses=NULL;portEXIT_CRITICAL(&lock);
+    return ok;
 }
 bool ls_mixrf_scan(bool on)
 {
@@ -483,6 +605,7 @@ bool ls_mixrf_card_scan(bool on)
     portEXIT_CRITICAL(&lock);return ok;
 }
 #else
+bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm){(void)hz;(void)p;(void)n;(void)dbm;return false;}
 bool ls_mixrf_start(void){return false;}
 void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(out){memset(out,0,sizeof(*out));snprintf(out->status,sizeof(out->status),"No keyboard radio wiring for this board");}}
 bool ls_mixrf_receive(bool on,uint32_t hz){(void)on;(void)hz;return false;}

@@ -1,0 +1,139 @@
+LSCAN1
+# LakeShark conventional scan list - everything, Franklin NH to Provincetown MA
+#
+#     python tools/sd_put.py tools/scanlist_all.lscan scanlist_all.lscan PORT
+#     ch load /sdcard/scanlist_all.lscan
+#
+# This is the whole list. There is nothing to switch between and nothing to
+# reload on the road: 63 channels in eight zones, laid out north to south, and
+# LOCATION filtering decides what is worth scanning from the GPS fix. Drive
+# from Franklin to Provincetown and the list follows you down without being
+# touched.
+#
+# scanlist_nh_ma.lscan and scanlist_cape_cod.lscan are the two halves of this
+# file and are kept for a shorter list. Loading either one REPLACES everything,
+# which is how Franklin PD goes missing after loading the Cape half.
+#
+# ---------------------------------------------------------------------------
+# ZONES
+#
+#     0  wide area      NH statewide, BAPERN, interop, amateur calling
+#     1  Franklin       Franklin PD, Lakes Region fire, Troop E
+#     2  Concord        Merrimack County, Concord PD, capital area fire
+#     3  south NH       Troop B, Plymouth County
+#     4  mid Cape       canal, Barnstable County, Yarmouth, Dennis
+#     5  lower Cape     Brewster, Harwich, Chatham, Orleans
+#     6  outer Cape     Eastham, Wellfleet, Truro, Provincetown, Seashore
+#     7  marine and EMS marine, Coast Guard, CMED, NOAA
+#
+# Eight is the firmware limit, so geography does the rest through LOCATION.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS HERE AND WHAT IS NOT
+#
+# P25 is 16 of the 63: NH State Police, Franklin PD, Merrimack and Concord,
+# BAPERN, Plymouth County and the Cape Cod National Seashore.
+#
+# Town POLICE from Brewster east to Provincetown are talkgroups on the county
+# 800 MHz trunk and cannot be followed conventionally, so those towns carry no
+# police entry. Yarmouth PD is conventional 800 and is here, as are the four
+# shared Barnstable County VHF police channels.
+#
+# Town FIRE is the opposite: every Cape town simulcasts its fire alarm
+# dispatch on its own 33 MHz LOW BAND channel in clear analogue. That is the
+# one thing a conventional receiver follows the whole way out.
+#
+# LOW BAND CAVEAT: 33 MHz sits 9 MHz above the bottom of the R820T2 range, so
+# those are the weakest channels here and reward a longer antenna.
+#
+# ---------------------------------------------------------------------------
+# FIELD ORDER
+#     name|freq_hz|MODE|zone|latitude|longitude|radius_km|priority
+#
+# MODE is P25 or NFM only. Every field must be present; '#' starts a comment.
+#
+# SOURCING: 154.7850 Franklin PD is the only frequency here the board has
+# actually decoded. The rest come from published listener references, so treat
+# a silent channel as unconfirmed rather than broken. One known conflict:
+# Harwich fire alarm is listed as 33.94 by one source and 33.96 by another,
+# and 33.94 is used here.
+# ---------------------------------------------------------------------------
+
+# --- zone 0, wide area: NH statewide, BAPERN, interop and amateur calling 
+NHSP STATE|159315000|P25|0|43.2081|-71.5376|150|1
+NH FIRE STATE|154280000|NFM|0|43.2081|-71.5376|150|0
+NH MED-1|155340000|NFM|0|43.2081|-71.5376|150|0
+NH MED-2|155385000|NFM|0|43.2081|-71.5376|150|0
+NH MED-5|155400000|NFM|0|43.2081|-71.5376|150|0
+VCALL10|155752500|NFM|0|42.5500|-70.9100|130|0
+2M CALL|146520000|NFM|0|42.5500|-70.9100|130|0
+70CM CALL|446000000|NFM|0|42.5500|-70.9100|130|0
+BAPERN TAC N|482962500|P25|0|42.5000|-71.1000|80|0
+BAPERN TAC SE|483037500|P25|0|41.9000|-71.0000|80|0
+BAPERN TAC S|470150000|P25|0|42.0000|-71.2000|80|0
+
+# --- zone 1, Franklin and the Lakes Region -----------------------
+FRANKLIN PD|154785000|P25|1|43.4406|-71.6498|25|1
+LRMFA F-1 DISP|159900000|NFM|1|43.5279|-71.4703|60|1
+LRMFA F-2 FG|160110000|NFM|1|43.5279|-71.4703|60|0
+NHSP TROOP E|151325000|P25|1|43.8600|-71.2680|80|0
+
+# --- zone 2, Concord and Merrimack County ------------------------
+NHSP TROOP D|156210000|P25|2|43.2081|-71.5376|80|1
+MERR SO WEST|155685000|P25|2|43.2081|-71.5376|60|0
+MERR SO EAST|155700000|P25|2|43.2081|-71.5376|60|0
+MERR SO SIMUL|159090000|P25|2|43.2081|-71.5376|60|0
+CONCORD PD OPS|155625000|P25|2|43.2081|-71.5376|30|0
+CONCORD PD SPC|155820000|P25|2|43.2081|-71.5376|30|0
+CAP AREA FIRE|154355000|NFM|2|43.2081|-71.5376|60|0
+
+# --- zone 3, southern NH and the run down to the canal -----------
+NHSP TROOP B|154935000|P25|3|42.9460|-71.5160|60|1
+PLYM SO BCI|483400000|P25|3|41.9584|-70.6673|50|0
+
+# --- zone 4, the canal, Barnstable County, Yarmouth and Dennis ---
+MARINE 13 CANAL|156650000|NFM|4|41.7440|-70.6160|50|0
+ACOE CANAL|163412500|NFM|4|41.7440|-70.6160|50|0
+BARN MUTUAL|33700000|NFM|4|41.7003|-70.3000|70|1
+CO PD 1|155565000|NFM|4|41.7003|-70.3000|70|1
+CO PD 2 PTOWN|155700000|NFM|4|41.7003|-70.3000|70|0
+CO PD 3|155640000|NFM|4|41.7003|-70.3000|70|0
+CO PD 4|155520000|NFM|4|41.7003|-70.3000|70|0
+CAPE PD TAC 1|866812500|NFM|4|41.7003|-70.3000|70|0
+CAPE PD TAC 2|866062500|NFM|4|41.7003|-70.3000|70|0
+FG DIRECT 1|851312500|NFM|4|41.7003|-70.3000|70|0
+FG DIRECT 2|851837500|NFM|4|41.7003|-70.3000|70|0
+YARMOUTH FIRE|33580000|NFM|4|41.6690|-70.2028|30|1
+YARMOUTH PD|855237500|NFM|4|41.6690|-70.2028|30|1
+DENNIS FIRE|33860000|NFM|4|41.7353|-70.1936|30|1
+DENNIS HARBOR|155985000|NFM|4|41.7353|-70.1936|30|0
+BARN PD TAC 1|851062500|NFM|4|41.7003|-70.3000|50|0
+
+# --- zone 5, lower Cape: Brewster, Harwich, Chatham, Orleans -----
+BREWSTER FIRE|33520000|NFM|5|41.7601|-70.0819|30|1
+HARWICH FIRE|33940000|NFM|5|41.6862|-70.0759|30|1
+CHATHAM FIRE|33620000|NFM|5|41.6821|-69.9597|30|1
+ORLEANS FIRE|33740000|NFM|5|41.7898|-69.9895|30|1
+
+# --- zone 6, outer Cape: Eastham, Wellfleet, Truro, Provincetown -
+EASTHAM FIRE|33820000|NFM|6|41.8298|-69.9740|30|1
+WELLFLEET FIRE|33540000|NFM|6|41.9376|-70.0328|30|1
+TRURO FIRE|33660000|NFM|6|41.9954|-70.0492|30|1
+PTOWN FIRE|33460000|NFM|6|42.0587|-70.1787|30|1
+CCNS P25 1|173762500|P25|6|41.9100|-69.9900|45|0
+CCNS P25 2|171725000|P25|6|41.9100|-69.9900|45|0
+
+# --- zone 7, marine, Coast Guard, medical and weather ------------
+MARINE 16|156800000|NFM|7|41.8500|-70.2000|80|1
+MARINE 09|156450000|NFM|7|41.8500|-70.2000|80|0
+MARINE 22A CG|157100000|NFM|7|41.8500|-70.2000|80|0
+MARINE 21A CG|157050000|NFM|7|41.8500|-70.2000|80|0
+MARINE 23 CG|157150000|NFM|7|41.8500|-70.2000|80|0
+USCG AIR CC|164550000|NFM|7|41.6580|-70.5210|70|0
+CMED 4 HAIL|463075000|NFM|7|41.6520|-70.2820|80|0
+CMED 2|463025000|NFM|7|41.6520|-70.2820|80|0
+CMED 3|463050000|NFM|7|41.6520|-70.2820|80|0
+CMED 7|463150000|NFM|7|41.6520|-70.2820|80|0
+NOAA HYANNIS|162550000|NFM|7|41.6520|-70.2820|100|0
+NOAA CONCORD|162400000|NFM|7|43.2081|-71.5376|120|0
+NOAA S NH|162525000|NFM|7|42.9956|-71.4548|80|0

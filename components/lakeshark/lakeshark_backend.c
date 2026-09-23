@@ -21,6 +21,8 @@
 #include "usb_host.h"
 
 #include "p25_state.h"
+#include "dsd.h"
+#include "apps/dmr/dmr_watch.h"
 #include "p25_health.h"
 #include "p25_controls.h"
 #include "fm_state.h"
@@ -133,6 +135,10 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+
+    /* DMR shares P25's 4FSK rate, so it reads the demodulator's symbols
+       rather than owning a receiver. Attached once; it is passive. */
+    dsd_set_symbol_observer(dmr_watch_symbol);
 
     ESP_LOGI(TAG, "backend started (adsb=%d p25=%d)", s_adsb_idx, s_p25_idx);
 }

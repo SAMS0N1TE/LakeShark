@@ -275,11 +275,50 @@ static bool image_changed(int col, int row)
     return false;
 }
 
+/* THE BAR ROWS SIT IN A TALLER BAND THAN THEY ARE.
+
+   paint_bar_ends floods the margin outside the grid with the bar's colour so
+   the bar meets the glass instead of floating a cell inside it. That makes
+   the painted top bar s_oy + s_ch tall - 38 px against a 17 px cell on this
+   panel - with the text in the bottom 17, and the bottom bar the same the
+   other way up.
+
+   The grid itself cannot move: ls_tui_corner_inset picks s_oy so the corner
+   CELLS clear the rounded arc, and that has its own suite. So the two bar
+   rows, and only those, rasterise centred in the band painted for them, and
+   paint_bar_ends fills the rest of that band FULL WIDTH rather than only at
+   the ends. Getting that second half wrong is what left an unpainted strip
+   under the text the first time. */
+static int bar_row_offset(int row)
+{
+    /* Top bar: the band is 0 .. s_oy + s_ch, so a centred cell starts at
+       s_oy / 2 instead of s_oy. */
+    if (row == 0) return -(s_oy / 2);
+    /* Bottom bar: the band runs from the row's own top to the glass, so its
+       spare height is whatever margin sits below the grid. Portrait has no
+       hint row and paint_bar_ends leaves its last row alone, so this only
+       applies where a bottom bar is actually painted. */
+    if (s_landscape && row == s_rows - 1) {
+        const int below = s_screen_h - s_oy - s_rows * s_ch;
+        return below / 2;
+    }
+    return 0;
+}
+
+/* The pixel rows the bar row's own cell occupies, after the offset. */
+static void bar_text_span(int row, int *top, int *bottom)
+{
+    const int y = s_oy + row * s_ch + bar_row_offset(row);
+    *top = y;
+    *bottom = y + s_ch;
+}
+
 static void blit_cell(uint16_t *fb, int native_w, int native_h,
                       int col, int row, const tui_cell *cell)
 {
     (void)native_h;
-    const int x0 = s_ox + col * s_cw, y0 = s_oy + row * s_ch;
+    const int x0 = s_ox + col * s_cw;
+    const int y0 = s_oy + row * s_ch + bar_row_offset(row);
     const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
 
     if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
@@ -446,7 +485,9 @@ static void paint_bar_ends(uint16_t *fb,int native_w)
         const int y1=end?s_screen_h:band_bottom;
         for(int y=y0;y<y1;y++) {
             const int inset=ls_tui_row_inset(y,s_screen_h,s_corner_r);
-            if(y>=band_top && y<band_bottom) {
+            int text_top, text_bottom;
+            bar_text_span(row, &text_top, &text_bottom);
+            if(y>=text_top && y<text_bottom) {
                 if(!is_bar) continue;
                 /* The grid has already drawn the middle of this row, text
                    and all. Only the ends are ours. */
@@ -765,10 +806,33 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row)
         ly = s_screen_h - 1 - native_x;
     }
     lx -= s_ox;
-    ly -= s_oy;
-    if (lx < 0 || ly < 0) return false;
-    int c = lx / s_cw, r = ly / s_ch;
-    if (c >= s_cols || r >= s_rows) return false;
+    if (lx < 0) return false;
+    int c = lx / s_cw;
+    if (c >= s_cols) return false;
+    /* Off the glass is still not a cell: the bands below widen what counts
+       as a bar row, they do not widen the panel. */
+    if (ly < 0 || ly >= s_screen_h) return false;
+
+    /* The bar rows are rasterised centred in the taller band painted for
+       them, so uniform row arithmetic would hand back a cell the pixel is
+       not drawn in and put the tab strip's touch targets off from its
+       labels. The whole painted band belongs to its bar row, which is what
+       a thumb aiming at a bar expects anyway. */
+    int r;
+    int top_text, top_end;
+    bar_text_span(0, &top_text, &top_end);
+    const int bottom_start = s_oy + (s_rows - 1) * s_ch + bar_row_offset(s_rows - 1);
+    if (ly < s_oy + s_ch) {
+        r = 0;
+    } else if (s_landscape && ly >= bottom_start) {
+        r = s_rows - 1;
+    } else {
+        const int gy = ly - s_oy;
+        if (gy < 0) return false;
+        r = gy / s_ch;
+    }
+    if (r < 0 || r >= s_rows) return false;
+    (void)top_text; (void)top_end;
     if (col) *col = c;
     if (row) *row = r;
     return true;

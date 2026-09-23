@@ -205,6 +205,20 @@ static void do_recover(const char *endpoint_id)
     }
     const app_t *cur = s_apps[s_current_app];
     bool restart_app = !s_parked && endpoint_owned_by_app(&info, cur);
+    /* WHY THE APP WAS NOT RESTARTED, NAMED.
+
+       on_enter is only called again when restart_app is true. When it is
+       false the endpoint recovers and goes back to idle with nothing holding
+       it, which reads from the outside as the receiver being permanently
+       unusable until a reboot - reported after rotating in FM, and a reboot
+       does clear it. Which of the two reasons applied decides the fix, and
+       neither was written down, so the next occurrence says so itself
+       rather than being narrowed by guesswork. */
+    if (!restart_app)
+        ESP_LOGW(TAG, "recovery will not restart an app: parked=%d owner='%s' "
+                      "current='%s' leased=%d",
+                 (int)s_parked, info.owner, cur && cur->name ? cur->name : "?",
+                 (int)info.leased);
     s_switch_in_flight = true;
     ESP_LOGW(TAG, "recovering endpoint '%s'%s", endpoint_id,
              restart_app ? " after releasing the current app session" : "");

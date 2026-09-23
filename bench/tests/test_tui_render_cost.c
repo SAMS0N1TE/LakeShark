@@ -274,3 +274,16 @@ LS_CASE(bottom_controls_do_not_accept_taps_in_rounded_corners)
     ls_tui_end();
     ls_tui_set_corner_radius(40);
 }
+
+/* The radio panel shows system volume; this screen test does not run audio. */
+int audio_volume_get(void) { return 60; }
+
+/* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
+   session lives in p25_program_sd.c, which the bench deliberately does not
+   link - a host test that really loaded a profile off a card would be lying
+   about what it exercised.  NULL here is the same first-run empty state a
+   board shows before any profile has been read. */
+#include "p25_program.h"
+const p25_program_t *p25_program_session(void) { return NULL; }
+bool p25_program_request_reload_path(const char *path)
+{ (void)path; return false; }

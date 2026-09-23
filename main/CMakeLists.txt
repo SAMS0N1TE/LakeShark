@@ -6,7 +6,7 @@ else()
     set(LS_BLE_REQ "")
 endif()
 
-# Optional extensions, compiled only when this tree has them.
+# Optional private extensions, compiled only when this tree has them.
 # Deleting the file is the whole removal -
 # compact_ui.cpp reaches it through __has_include and needs no edit.
 set(LS_PRIVATE_SRC "")

@@ -17,7 +17,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
-**[Development preview: replay and aircraft controls](docs/REPLAY_AND_AIRCRAFT.md)** — FILES opens recordings in RECORD; ADS-B adds an offline mini map and remembered home. These changes are not in the 2.2.1 installer yet.
+**[New in 2.2.2: replay and aircraft controls](docs/REPLAY_AND_AIRCRAFT.md)** — FILES opens recordings in RECORD with animated playback; ADS-B adds an offline mini map and remembered home.
 
 | RECORD replay | ADS-B mini map |
 | --- | --- |
@@ -45,16 +45,16 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 |---|---|
 | P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning; Phase II `[EXPERIMENTAL]` |
 | FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists and POCSAG pagers |
-| ADS-B | Aircraft at 1090 MHz, traffic history; offline mini map and remembered home in the development preview |
+| ADS-B | Aircraft at 1090 MHz, traffic history; offline mini map and remembered home in 2.2.2 |
 | FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
 | MESH | MeshCore messaging and nodes on the onboard SX1262 |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
 | JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
-| REC | Shared capture workspace and `.sub` export; development preview adds file replay, inline power and an animated waveform. All nine sources remain visible with adapter gaps labeled |
+| REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. All nine sources remain visible with adapter gaps labeled |
 | SUB-GHZ | Scan, learn, watch, decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
-| FILES | SD-card browsing, sorting and `.sub` preview; development replay opens directly in RECORD |
+| FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
 | MAP | Offline maps, aircraft and Mesh nodes; pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | What is powered, and the switch for each |
@@ -108,7 +108,7 @@ Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or l
 
 ## ><)))O> Build from source
 
-Use ESP-IDF 5.4.3. Give every board its own build directory:
+Use the [pinned ESP-IDF 5.4.3 SDK](sdk/esp-idf-5.4.3/README.md). Give every board its own build directory:
 
 ```sh
 idf.py -B build_tdp4 -D SDKCONFIG=build_tdp4/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults" build
@@ -129,9 +129,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.2.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.1).** Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
-
-**New in 2.2.1:** one button writes the complete firmware, on a new board or over an existing install. Sub-GHz scan and learn with SX1262 FSK transmit and a capture archive, GFSK and POCSAG in LORA LABS, universal record and replay behind a single `.sub` writer, SUB-GHZ landscape rows, and P25 profiles that carry site coordinates. Also includes the FM/P25 tuning cursors (arrows select, Space tunes), GPS landscape and map improvements, ADS-B home selection, recording timestamps and keyboard backlight control.
+**Current P4 release: [2.2.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.2).** Full browser install, FILES → RECORD replay, aircraft mini maps, saved home and improved GPS recording startup. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

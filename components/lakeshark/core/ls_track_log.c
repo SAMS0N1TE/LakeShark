@@ -8,6 +8,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -152,7 +153,11 @@ static void track_task(void *arg)
 
     ESP_LOGI(TAG, "recording stopped, %d points", ls_rlog_count(&s_log));
     s_task = NULL;
+#if defined(CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    vTaskDeleteWithCaps(NULL);
+#else
     vTaskDelete(NULL);
+#endif
 }
 
 esp_err_t ls_track_rec_start(void)
@@ -175,7 +180,16 @@ esp_err_t ls_track_rec_start(void)
 
     s_have_last = false;
     s_stop = false;
-    if (xTaskCreate(track_task, "ls_track", 3584, NULL, 3, &s_task) != pdPASS) {
+    /* This worker only reads GPS snapshots and writes the SD-card log;
+       it never writes NVS or internal flash. As with the GPS reader, keep
+       its stack out of the internal/DMA heap used by active receivers. */
+#if defined(CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    BaseType_t created = xTaskCreateWithCaps(track_task, "ls_track", 3584, NULL, 3,
+                                            &s_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    BaseType_t created = xTaskCreate(track_task, "ls_track", 3584, NULL, 3, &s_task);
+#endif
+    if (created != pdPASS) {
         s_task = NULL;
         return s_record_error=ESP_ERR_NO_MEM;
     }

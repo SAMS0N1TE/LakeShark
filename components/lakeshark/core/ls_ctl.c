@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../apps/dmr/dmr_watch.h"
 
 static const char *TAG = "ls_ctl";
 
@@ -366,6 +367,92 @@ static int cmd_p25tsbk(int argc, char **argv)
     return 0;
 }
 
+/* `dmr` - what the DMR watcher has seen on the symbol stream the P25 sync
+ * search is already producing. Read-only; it steers nothing. */
+static const char *dmr_class_name(dmr_sync_class_t c)
+{
+    switch (c) {
+    case DMR_SYNC_BS_VOICE: return "BS voice";
+    case DMR_SYNC_BS_DATA:  return "BS data";
+    case DMR_SYNC_MS_VOICE: return "MS voice";
+    case DMR_SYNC_MS_DATA:  return "MS data";
+    default:                return "none";
+    }
+}
+
+static int cmd_dmr(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    dmr_watch_t w;
+    if (!dmr_watch_get(&w)) {
+        printf("dmr: nothing fed yet - the watcher runs while P25 hunts in C4FM\n");
+        return 0;
+    }
+    printf("dmr symbols=%lu bursts=%lu slot_type=%lu bptc ok=%lu fail=%lu lc=%lu\n",
+           (unsigned long)w.symbols, (unsigned long)w.bursts,
+           (unsigned long)w.slot_type_ok, (unsigned long)w.bptc_ok,
+           (unsigned long)w.bptc_fail, (unsigned long)w.lc_ok);
+    printf("last burst: %s errors=%u cc=%u polarity=%s\n",
+           dmr_class_name(w.last_class), (unsigned)w.last_sync_errors,
+           (unsigned)w.colour_code, w.inverted ? "inverted" : "normal");
+    if (w.have_lc)
+        printf("last LC: flco=%u fid=%u src=%lu dst=%lu opts=0x%02X\n",
+               (unsigned)w.lc.flco, (unsigned)w.lc.fid,
+               (unsigned long)w.lc.source, (unsigned long)w.lc.destination,
+               (unsigned)w.lc.service_options);
+    else
+        printf("last LC: none has passed parity\n");
+
+    /* Only the link control is evidence. A sync match inside its 5-bit
+       threshold happens on noise, the Slot Type's Golay accepts about a
+       third of random words within its correction radius, and BPTC corrects
+       its way to a clean block often enough to have done so on a P25
+       channel here. The RS parity behind the LC is 24 bits checked against
+       a data-type mask, which noise does not pass. */
+    if (w.lc_ok) printf("verdict: DMR - %lu link control block(s) decoded\n",
+                        (unsigned long)w.lc_ok);
+    else if (w.bursts)
+        printf("verdict: no DMR - %lu sync hit(s), %lu through BPTC, none "
+               "carried a valid link control\n",
+               (unsigned long)w.bursts, (unsigned long)w.bptc_ok);
+    else printf("verdict: no bursts\n");
+    return 0;
+}
+
+/* `radios` - which radios come up at boot. BLE scans continuously once
+ * started, so a board with no control head attached pays for it all day.
+ * The preference is applied at boot rather than by stopping the radio
+ * afterwards, which would still have powered it up. */
+static int cmd_radios(int argc, char **argv)
+{
+    if (argc >= 3) {
+        const bool on = !strcmp(argv[2], "on") || !strcmp(argv[2], "1");
+        bool now;
+        if (!strcmp(argv[1], "ble")) {
+            settings_set_ble_at_boot(on);
+            now = settings_get_ble_at_boot();
+        } else if (!strcmp(argv[1], "wifi")) {
+            settings_set_wifi_at_boot(on);
+            now = settings_get_wifi_at_boot();
+        } else { printf("usage: radios [ble|wifi] [on|off]\n"); return 0; }
+        /* The setters only move the value once the write is queued, so the
+           read-back is what was saved. This used to echo the request, and
+           a write refused before settings were up read as a success. */
+        if (now != on)
+            printf("%s at boot: NOT saved (settings not ready?) - still %s\n",
+                   argv[1], now ? "on" : "off");
+        else
+            printf("%s at boot: %s - takes effect on the next reboot\n",
+                   argv[1], on ? "on" : "off");
+        return 0;
+    }
+    printf("at boot:  ble=%s  wifi=%s\n",
+           settings_get_ble_at_boot() ? "on" : "off",
+           settings_get_wifi_at_boot() ? "on" : "off");
+    printf("usage: radios [ble|wifi] [on|off]\n");
+    return 0;
+}
+
 static int cmd_p25gate(int argc, char **argv)
 {
     if (argc < 2) {
@@ -436,6 +523,11 @@ static int cmd_p25enc(int argc, char **argv)
            (unsigned)P25.p25_enc_returns,
            (unsigned)P25.p25_enc_skips,
            (unsigned)P25.p25_enc_tg_evictions);
+    printf("  of the muted: %u with ESS still unknown; LDU2 ESS failed RS %u times, "
+           "%u of them kept (call already clear), the rest dropped 180 ms each\n",
+           (unsigned)P25.p25_enc_muted_unknown_total,
+           (unsigned)P25.p25_ess_rs_failed_total,
+           (unsigned)P25.p25_ess_rs_kept_total);
     printf("  current: tg=%u algid=0x%02X %s kid=0x%04X ess=%s muted=%s\n",
            (unsigned)P25.grant_talkgroup,
            (unsigned)P25.p25_algid,
@@ -713,6 +805,12 @@ void ls_ctl_register_commands(void)
         { .command = "p25",
           .help = "Read-only P25 acquisition, tuning fence and IQ diagnostics",
           .hint = "acquisition", .func = &cmd_p25 },
+        { .command = "radios",
+          .help = "Which radios start at boot: 'radios', 'radios ble off'",
+          .hint = "[ble|wifi] [on|off]", .func = &cmd_radios },
+        { .command = "dmr",
+          .help = "DMR seen on the P25 symbol stream: bursts, colour code, last LC",
+          .func = &cmd_dmr },
         /**/
         { .command = "p25enc",
           .help = "P25 encryption gate: status, counters, and leave-on-encrypted",

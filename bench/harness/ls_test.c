@@ -3,7 +3,55 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <process.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
+
 int ls_shim_log_enabled = 0;
+
+int ls_test_mkdir(const char *path)
+{
+#ifdef _WIN32
+    return _mkdir(path);
+#else
+    return mkdir(path, 0777);
+#endif
+}
+
+int ls_test_rmdir(const char *path)
+{
+#ifdef _WIN32
+    return _rmdir(path);
+#else
+    return rmdir(path);
+#endif
+}
+
+void ls_test_sleep_ms(int ms)
+{
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+#endif
+}
+
+void ls_test_fixture_dir(char *buf, size_t n, const char *stem)
+{
+#ifdef _WIN32
+    int pid = (int)_getpid();
+#else
+    int pid = (int)getpid();
+#endif
+    snprintf(buf, n, "%s-%d", stem, pid);
+}
 
 #define LS_MAX_CASES 256
 

@@ -77,6 +77,11 @@ typedef struct {
     int       gain_tenths;
     float     iq_level;
     float     audio_level;
+    /* Post-demod noise, 0 quiet to about 1 full hiss. The squelch runs on it
+       and the S-meter reads its inverse, because an FM receiver measures
+       signal by how much the carrier quietens the discriminator, not by how
+       far the carrier moves a wideband level. */
+    float     noise;
     bool      squelch_open;
     int       squelch_tenths;
     uint32_t  iq_bytes_sec;

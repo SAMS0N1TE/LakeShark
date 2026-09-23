@@ -296,3 +296,37 @@ void class_driver_client_deregister(void)
     xSemaphoreGive(s_driver_obj->constant.mux_lock);
     ESP_ERROR_CHECK(usb_host_client_unblock(s_driver_obj->constant.client_hdl));
 }
+
+static esp_err_t root_port_set_power(bool on)
+{
+    return usb_host_lib_set_root_port_power(on);
+}
+
+static int root_port_device_count(void)
+{
+    usb_host_lib_info_t info;
+    if (usb_host_lib_info(&info) != ESP_OK) return -1;
+    return info.num_devices;
+}
+
+static void root_port_delay_ms(uint32_t ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    vTaskDelay(ticks ? ticks : 1);
+}
+
+bool usb_host_root_port_has_device(void)
+{
+    return root_port_device_count() > 0;
+}
+
+/**/
+usb_port_cycle_result_t usb_host_root_port_cycle(void)
+{
+    static const usb_port_cycle_ops_t ops = {
+        .set_power = root_port_set_power,
+        .device_count = root_port_device_count,
+        .delay_ms = root_port_delay_ms,
+    };
+    return usb_port_cycle_run(&ops);
+}

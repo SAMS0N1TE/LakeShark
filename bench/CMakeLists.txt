@@ -27,9 +27,11 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_radio_panel.c
     ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/tools/lssim_watch.c
+    ${APP}/subghz/subghz_file.c
     ${APP}/rec/rec_ook24.c
     ${FW}/components/apps/tui/ls_compass.c
     ${FW}/components/apps/tui/ls_app.c
+    ${FW}/components/apps/tui/ls_app_docs.c
     ${FW}/components/apps/tui/ls_anim.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -124,6 +126,7 @@ include_directories(
     ${APP}/fm
     ${APP}/p25
     ${APP}/rec
+    ${APP}/subghz
     ${APP}/adsb
     ${APP}/fm
     ${FW}/components/lakeshark/radio
@@ -150,6 +153,7 @@ add_library(ls_harness STATIC
 )
 target_include_directories(ls_harness PUBLIC
     ${APP}/dmr
+    ${APP}/subghz
     ${FW}/components/lakeshark/core
 )
 target_compile_definitions(ls_harness PUBLIC LS_TIME_HOST=1)
@@ -311,7 +315,8 @@ ls_add_test(test_tui_surface ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_include_directories(test_tui_surface PRIVATE
     ${FW}/components/apps/tui/tuilib)
 
-# Optional extra tests, if this tree has any.
+# Optional private tests, if this tree has any. The file names what it
+# registers; this line does not, so it is safe to publish either way.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/private.cmake)
     include(${CMAKE_CURRENT_SOURCE_DIR}/private.cmake)
 endif()
@@ -376,6 +381,7 @@ target_include_directories(test_tui_screens PRIVATE
     ${FW}/components/lakeshark/radio
     ${APP}/p25
     ${APP}/rec
+    ${APP}/subghz
     ${FW}/bench/shims)
 
 ls_add_test(test_tui_router
@@ -574,6 +580,7 @@ target_include_directories(lssim PRIVATE
     ${FW}/components/meshcore
     ${APP}/p25
     ${APP}/rec
+    ${APP}/subghz
     ${FW}/bench/harness
     ${FW}/bench/shims)
 target_sources(lssim PRIVATE
@@ -806,6 +813,8 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ext/scr_subghz.c)
 target_sources(test_tui_render_dump PRIVATE tools/lssim_field.c)
+target_sources(test_tui_p25_screen PRIVATE tools/lssim_field.c)
+target_sources(test_tui_render_cost PRIVATE tools/lssim_field.c)
 target_include_directories(test_tui_render_dump PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -973,12 +982,59 @@ target_link_options(test_p25_diag_disabled PRIVATE
     -Wl,--wrap=calloc
     -Wl,--wrap=free)
 ls_add_test(test_p25_lcw ${APP}/p25/p25_lcw.c)
+ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
+target_include_directories(test_app_contract PRIVATE
+    ${FW}/components/apps/tui)
+
+# Links the real loader, so it does not take the hardware stubs.
+ls_add_test(test_userapp
+    ${FW}/components/apps/tui/ls_userapp.c
+    ${FW}/components/apps/tui/ls_app.c)
+target_include_directories(test_userapp PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_dmr
     ${APP}/dmr/dmr_sync.c
     ${APP}/dmr/dmr_slot.c
     ${APP}/dmr/dmr_bptc.c
     ${APP}/dmr/dmr_lc.c
     ${APP}/dmr/dmr_burst.c)
+ls_add_test(test_dmr_framer
+    ${APP}/dmr/dmr_sync.c
+    ${APP}/dmr/dmr_slot.c
+    ${APP}/dmr/dmr_bptc.c
+    ${APP}/dmr/dmr_lc.c
+    ${APP}/dmr/dmr_burst.c
+    ${APP}/dmr/dmr_framer.c)
+ls_add_test(test_dmr_watch
+    ${APP}/dmr/dmr_sync.c
+    ${APP}/dmr/dmr_slot.c
+    ${APP}/dmr/dmr_bptc.c
+    ${APP}/dmr/dmr_lc.c
+    ${APP}/dmr/dmr_burst.c
+    ${APP}/dmr/dmr_framer.c
+    ${APP}/dmr/dmr_watch.c)
+ls_add_test(test_subghz_nrz ${APP}/subghz/subghz_nrz.c)
+ls_add_test(test_subghz_file ${APP}/subghz/subghz_file.c)
+target_include_directories(test_subghz_file PRIVATE ${APP}/subghz)
+target_include_directories(test_subghz_nrz PRIVATE ${APP}/subghz)
+ls_add_test(test_subghz_pwm
+    ${APP}/subghz/subghz_pwm.c
+    ${APP}/rec/rec_ook24.c)
+target_include_directories(test_subghz_pwm PRIVATE
+    ${APP}/subghz ${APP}/rec)
+ls_add_test(test_dmr_over_iq
+    ${APP}/dmr/dmr_sync.c
+    ${APP}/dmr/dmr_slot.c
+    ${APP}/dmr/dmr_bptc.c
+    ${APP}/dmr/dmr_lc.c
+    ${APP}/dmr/dmr_burst.c
+    ${APP}/dmr/dmr_framer.c
+    ${APP}/dmr/dmr_watch.c
+    ${APP}/p25/dsp_pipeline.c
+    ${APP}/p25/dsd_filters.c
+    ${APP}/p25/p25_cqpsk_controls.c
+    ${APP}/p25/p25_demod_control.c
+    fixtures/dmr_iq_gen.c)
+target_include_directories(test_dmr_over_iq PRIVATE ${APP}/dmr ${APP}/p25)
 ls_add_test(test_wifi_sta ${FW}/main/ls_wifi_sta_core.c)
 ls_add_test(test_ble_hci_rx_guard ${FW}/main/ble_hci_rx_guard.c
     shims/hci_rx_fake.c)
@@ -1063,6 +1119,18 @@ ls_add_test(test_radio_health
 ls_add_test(test_radio_health_report
     ${FW}/components/lakeshark/radio/radio_endpoint.c
     ${FW}/components/lakeshark/radio/radio_health.c)
+# a dongle that enumerates and then answers no control request. The
+# endpoint counts control io, the watchdog escalates without waiting for a
+# stall that cannot come, and the root-port cycle keeps the order IDF 5.4.3
+# needs if it is not to abort.
+ls_add_test(test_radio_control_fault
+    ${FW}/components/lakeshark/radio/radio_endpoint.c
+    ${FW}/components/lakeshark/radio/radio_health.c)
+ls_add_test(test_usb_port_cycle
+    ${FW}/components/lakeshark/radio/usb_port_cycle.c)
+# FM's radio open bounded for io, lifted by an endpoint change.
+ls_add_test(test_radio_open_retry
+    ${FW}/components/lakeshark/radio/radio_open_retry.c)
 ls_add_test(test_usb_stream_start
     ${FW}/components/lakeshark/radio/esp_libusb.c)
 ls_add_test(test_receiver_diagnostics
@@ -1281,6 +1349,21 @@ target_include_directories(test_scan_journal PRIVATE ${FW}/components/lakeshark/
 ls_add_test(test_scan_store)
 target_include_directories(test_scan_store BEFORE PRIVATE ${FW}/bench/shims/scan_store)
 ls_add_test(test_scan_upload ${FW}/components/lakeshark/core/scan_import.c)
+ls_add_test(test_scan_list_nh_ma
+    ${FW}/components/lakeshark/core/scan_import.c
+    ${FW}/components/lakeshark/core/scan_geo.c)
+target_compile_definitions(test_scan_list_nh_ma PRIVATE
+    SCAN_LIST_NH_MA_PATH="${FW}/tools/scanlist_nh_ma.lscan")
+ls_add_test(test_scan_list_cape_cod
+    ${FW}/components/lakeshark/core/scan_import.c
+    ${FW}/components/lakeshark/core/scan_geo.c)
+target_compile_definitions(test_scan_list_cape_cod PRIVATE
+    SCAN_LIST_CAPE_PATH="${FW}/tools/scanlist_cape_cod.lscan")
+ls_add_test(test_scan_list_all
+    ${FW}/components/lakeshark/core/scan_import.c
+    ${FW}/components/lakeshark/core/scan_geo.c)
+target_compile_definitions(test_scan_list_all PRIVATE
+    SCAN_LIST_ALL_PATH="${FW}/tools/scanlist_all.lscan")
 ls_add_test(test_hub_transfer)
 target_include_directories(test_scan_engine PRIVATE
     ${FW}/components/lakeshark
@@ -1291,3 +1374,9 @@ ls_add_test(test_cell_session ${APP}/cell/cell_session.c)
 target_include_directories(test_cell_session PRIVATE ${APP}/cell)
 ls_add_test(test_panel_id)
 target_include_directories(test_panel_id PRIVATE ${FW}/components/lakeshark/board)
+target_sources(lssim PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
+target_sources(test_tui_screens PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
+target_sources(test_tui_render_dump PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
+
+add_executable(subdecode tools/subdecode.c ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
+target_include_directories(subdecode PRIVATE ${APP}/subghz)

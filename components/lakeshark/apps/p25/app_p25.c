@@ -418,6 +418,9 @@ static void p25_grant_publish_ui(void)
      * the TG table; process_IMBE increments p25_enc_muted_frames on the
      * decoder state. */
     P25.p25_enc_muted_frames_total = s_dsd_state.p25_enc_muted_frames;
+    P25.p25_enc_muted_unknown_total = s_dsd_state.p25_enc_muted_unknown;
+    P25.p25_ess_rs_failed_total    = s_dsd_state.p25_ess_rs_failed;
+    P25.p25_ess_rs_kept_total      = s_dsd_state.p25_ess_rs_kept;
     P25.p25_enc_returns            = s_grant_follower.encrypted_returns;
     P25.p25_enc_skips              = s_grant_follower.encrypted_skips;
     P25.p25_enc_tg_evictions       = s_grant_follower.tg_state_evictions;

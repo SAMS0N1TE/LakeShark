@@ -18,6 +18,8 @@
 #include "rtl-sdr.h"
 #include "rtl_adapter_private.h"
 #include "rtl_sdr_private.h"
+/**/
+#include "usb_host.h"
 
 static const char *TAG = "rtlsdr_dev";
 static rtlsdr_dev_t *s_dev;
@@ -217,7 +219,10 @@ static ls_radio_err_t rtl_register_endpoint(rtlsdr_dev_t *dev)
 
 static void rtl_unregister_endpoint(void)
 {
-    if (!s_dev) return;
+    /* No s_dev check: teardown, the one caller, has already claimed and
+       cleared it, so a check here skipped the unregister and left the old
+       endpoint standing. The next attach then failed with "exists" and
+       every app talked to a device that was gone. */
     /* present is cleared before cancellation, so a read that races a
      * USB detach can only complete as DISCONNECTED and teardown cannot free
      * the rtlsdr_dev_t until that read has left the adapter. */
@@ -226,7 +231,8 @@ static void rtl_unregister_endpoint(void)
 
 bool rtl_adapter_note_removed(usb_device_handle_t device)
 {
-    if (!s_dev || rtlsdr_usb_device_handle(s_dev) != device) return false;
+    rtlsdr_dev_t *dev = __atomic_load_n(&s_dev, __ATOMIC_ACQUIRE);
+    if (!dev || rtlsdr_usb_device_handle(dev) != device) return false;
     /* A real unplug must invalidate USB handles before close tries to drain
      * transfer objects. unregister first wakes and quiesces every session read;
      * neither step calls an application lifecycle callback. */
@@ -243,7 +249,14 @@ void rtl_adapter_note_transport_fault(void)
 /**/
 void rtlsdr_dev_teardown(void)
 {
-    rtlsdr_dev_t *dev = s_dev;
+    /* Claimed, not read. A software port reset and a real unplug can
+       now both arrive here at once, and two callers that each read s_dev
+       would both close and free the same device; the loser of the exchange
+       returns. Clearing it before the drain rather than after changes
+       nothing else: the ops reach the device through their own context
+       pointer, and a probe that sees NULL early waits on endpoint
+       registration, as it would during an ordinary attach. */
+    rtlsdr_dev_t *dev = __atomic_exchange_n(&s_dev, NULL, __ATOMIC_ACQ_REL);
     if (!dev) return;
 
     rtl_unregister_endpoint();
@@ -253,9 +266,36 @@ void rtlsdr_dev_teardown(void)
      * becomes a transport-local no-op. */
     rtlsdr_stream_stop_for(dev);
     __atomic_store_n(&s_adapter_streaming, false, __ATOMIC_RELEASE);
-    s_dev = NULL;
     rtlsdr_close(dev);
     ESP_LOGW(TAG, "device object released");
+}
+
+/* The software stand-in for a replug on a board with no VBUS switch.
+
+   Observed on the T-Display-P4, 2026-09-11, firmware 1.0.3-g951f9933: the
+   dongle dropped off USB and came back six times in eighteen minutes, and
+   after the seventh attach every demod register read and write failed. FM
+   retried its open every ~150 ms and P25 showed RX stopped until an
+   app-only flash rebooted the board - with no replug, and the boot log's
+   root port found the R820T after a run of "Root port reset failed". A bus
+   reset was enough; VBUS never dropped.
+
+   Order is the detach-safe teardown, because the device is still on the bus: free while its
+   handle is valid (teardown unregisters, drains the transfer pool with
+   halt/flush/clear, then closes), and only then take the port away. Cutting
+   the port first would make this the real-unplug path, which nulls the
+   handle before the drain. With nothing holding the device open, the host
+   library frees it the moment the port drops, and the power-on after that
+   enumerates it afresh through the usual probe. */
+usb_port_cycle_result_t rtl_adapter_port_reset(void)
+{
+    rtlsdr_dev_teardown();
+    return usb_host_root_port_cycle();
+}
+
+bool rtl_adapter_port_reset_possible(void)
+{
+    return usb_host_root_port_has_device();
 }
 
 static void rtlsdr_setup_task(void *arg)

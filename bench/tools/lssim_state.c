@@ -45,6 +45,11 @@ static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
+static bool s_ble_boot = true, s_wifi_boot = true;
+bool settings_get_ble_at_boot(void)  { return s_ble_boot; }
+void settings_set_ble_at_boot(bool v)  { s_ble_boot = v; }
+bool settings_get_wifi_at_boot(void) { return s_wifi_boot; }
+void settings_set_wifi_at_boot(bool v) { s_wifi_boot = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
@@ -471,6 +476,8 @@ void lakeshark_p25_set_freq(uint32_t hz) { s_tune_freq_hz = hz; }
    with a sentence in it, and this is how it gets drawn without a card. */
 const p25_program_t *p25_program_session(void) { return 0; }
 bool p25_program_step_control_now(int delta) { (void)delta; return false; }
+bool p25_program_request_reload_path(const char *path)
+{ (void)path; return false; }
 
 /* perf.c publishes a heartbeat onto the event bus, which is a task and a
    queue and nothing a still image needs. */

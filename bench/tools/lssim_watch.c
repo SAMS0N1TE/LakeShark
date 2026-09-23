@@ -113,6 +113,9 @@ uint32_t rec_watch_scan_last_hit(void){return 0;}
 static float sim_gate=REC_SCAN_DETECT_DB;
 float rec_watch_scan_threshold(void){return sim_gate;}
 void rec_watch_scan_set_threshold(float db){sim_gate=db;}
+void rec_watch_scan_preview_threshold(float db){sim_gate=db;}
+int rec_watch_scan_events(void){return sim_found;}
+bool rec_watch_scan_catch(uint32_t hz){(void)hz;if(!sim_sweeping)return false;sim_sweeping=false;return true;}
 /* -1 for "no sweep has run", which is what the screen tests to decide
    whether to offer the findings at all - distinct from a sweep that ran and
    found nothing. */
@@ -161,3 +164,22 @@ bool rec_watch_alert_target(const char *peer)
 {if(!peer)return false;strncpy(state.peer,peer,16);state.peer[16]=0;state.alerts=peer[0]!=0;return true;}
 
 bool ls_mixrf_card_scan(bool on){mix.card_requested=mix.card_scanning=on;mix.card_polls=12;mix.card_tx=12;return true;}
+
+/* No finger on the bench: nothing is ever being dragged. */
+bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r){(void)sc;(void)sr;(void)c;(void)r;return false;}
+
+static bool file_replay_busy;
+static char file_replay_result[112];
+static int file_replay_count, file_replay_dbm;
+bool rec_watch_request_replay_file(const char *path,int dbm)
+{
+    if(!path || !path[0] || file_replay_busy || state.enabled)return false;
+    file_replay_busy=true;file_replay_count++;file_replay_dbm=dbm;
+    snprintf(file_replay_result,sizeof(file_replay_result),"Replay queued");return true;
+}
+bool rec_watch_replay_status(char *out,size_t len)
+{if(out && len)snprintf(out,len,"%s",file_replay_result);return file_replay_busy;}
+void rec_watch_sim_file_done(const char *result)
+{file_replay_busy=false;snprintf(file_replay_result,sizeof(file_replay_result),"%s",result);}
+int rec_watch_sim_file_count(void){return file_replay_count;}
+int rec_watch_sim_file_dbm(void){return file_replay_dbm;}

@@ -27,6 +27,33 @@ static uint32_t          s_rx_epoch;
 static uint32_t          s_pub_epoch;
 static uint32_t          s_center_hz;
 static uint32_t          s_span_hz;
+/* The tuner leaks its local oscillator into the mix, so the centre bin carries
+   a spur that is not in the air and drew a permanent line down the middle of
+   the waterfall. The band sweep masks a whole guard band either side of centre
+   (LS_SWEEP_DC_GUARD_HZ) and this view cannot: the channel being watched IS at
+   centre, so a guard band would hide the signal rather than the artifact.
+   Interpolating across the spur instead is a trade, and the width is where the
+   trade is made. Measured skirt of a pure DC tone through this FFT, as a
+   fraction of full scale: centre 1.00, +-2 0.265, +-3 0.134, +-4 0.050, +-5 0.
+   Anchoring at +-3 knocks the line down to about an eighth of full scale while
+   touching five bins, roughly 2.3 kHz of a 12.5 kHz channel at the 240 kHz
+   span. Going wider would flatten the spur completely and take the middle of a
+   real C4FM carrier with it, which is the worse failure for a view whose job
+   is showing where the energy is. The demodulator is unaffected either way:
+   it runs its own DC blocker (dsp_pipeline.c). */
+#define P25_SPECTRUM_DC_NOTCH_BINS 2
+
+static void notch_dc(float *db, int bins)
+{
+    const int centre = bins / 2;
+    const int lo = centre - P25_SPECTRUM_DC_NOTCH_BINS - 1;
+    const int hi = centre + P25_SPECTRUM_DC_NOTCH_BINS + 1;
+    if (!db || lo < 0 || hi >= bins) return;
+    const float a = db[lo], b = db[hi];
+    const float step = (b - a) / (float)(hi - lo);
+    for (int i = lo + 1; i < hi; i++) db[i] = a + step * (float)(i - lo);
+}
+
 static uint32_t          s_filter_hz;
 static unsigned          s_stride_blocks;
 static p25_spectrum_snapshot_t s_snapshot;
@@ -103,6 +130,7 @@ p25_spectrum_feed_result_t p25_spectrum_feed_iq(
         return P25_SPECTRUM_FEED_INVALID;
     }
     spectrum_reset();
+    notch_dc(s_db, P25_SPECTRUM_BINS);
 
     float range = P25_SPECTRUM_TOP_DB - P25_SPECTRUM_FLOOR_DB;
     __atomic_fetch_add(&s_pub_seq, 1u, __ATOMIC_ACQ_REL); /* odd: writing */

@@ -27,6 +27,11 @@ static bool         s_home_write_ready = false;
 /* Read every UI frame and by the console (whose stack may be in TCM).
  * Load on the cache-safe boot task; never issue flash reads in that path. */
 static bool         s_auto_rotate = true;
+/* Radios that come up at boot. BLE scans continuously once started and is
+   the one that costs power with nothing attached, so it is separately
+   switchable from the Wi-Fi that shares the same co-processor. */
+static bool         s_ble_at_boot = true;
+static bool         s_wifi_at_boot = true;
 static bool         s_keyboard_light = true;
 static uint64_t s_location;
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -235,6 +240,8 @@ bool settings_init(void)
 {
     s_location = 0;
     __atomic_store_n(&s_auto_rotate,true,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_ble_at_boot,true,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_wifi_at_boot,true,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
     esp_err_t err = nvs_flash_init();
@@ -260,6 +267,12 @@ bool settings_init(void)
     uint8_t auto_rotate = 1;
     if(nvs_get_u8(s_nvs,"autorot",&auto_rotate)==ESP_OK)
         __atomic_store_n(&s_auto_rotate,auto_rotate!=0,__ATOMIC_RELEASE);
+
+    uint8_t ble_boot = 1, wifi_boot = 1;
+    if(nvs_get_u8(s_nvs,"bleboot",&ble_boot)==ESP_OK)
+        __atomic_store_n(&s_ble_at_boot,ble_boot!=0,__ATOMIC_RELEASE);
+    if(nvs_get_u8(s_nvs,"wifiboot",&wifi_boot)==ESP_OK)
+        __atomic_store_n(&s_wifi_at_boot,wifi_boot!=0,__ATOMIC_RELEASE);
 
     /* settings_init runs on the cache-safe boot task in both LCD and
      * headless builds.  Load this one byte here, before p25_rx_task starts on
@@ -738,6 +751,53 @@ void settings_reset_app(const app_t *a)
 }
 
 /**/
+/* The C6 and its BLE stack come up before settings_init() runs, so the
+   ordinary getter would still be reading its default when the decision is
+   made. This opens the namespace read-only for the one byte. Defaults to on,
+   which is what every unit did before the preference existed. */
+static bool peek_on_by_default(const char *key)
+{
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return true;
+    uint8_t v = 1;
+    const esp_err_t err = nvs_get_u8(h, key, &v);
+    nvs_close(h);
+    return err == ESP_OK ? v != 0 : true;
+}
+
+bool settings_peek_ble_at_boot(void)
+{
+    return peek_on_by_default("bleboot");
+}
+
+/* Wi-Fi's autojoin is decided at the same point as BLE, and it was read
+   through the ordinary getter: 'radios wifi off' stored the byte, 'radios'
+   read it back as off, and every boot still rejoined, because the getter
+   was answering from its default half a second before settings_init(). */
+bool settings_peek_wifi_at_boot(void)
+{
+    return peek_on_by_default("wifiboot");
+}
+
+bool settings_get_ble_at_boot(void)
+{
+    return __atomic_load_n(&s_ble_at_boot,__ATOMIC_ACQUIRE);
+}
+void settings_set_ble_at_boot(bool enabled)
+{
+    if (s_nvs_ok && sput_u8("bleboot", enabled ? 1 : 0))
+        __atomic_store_n(&s_ble_at_boot,enabled,__ATOMIC_RELEASE);
+}
+bool settings_get_wifi_at_boot(void)
+{
+    return __atomic_load_n(&s_wifi_at_boot,__ATOMIC_ACQUIRE);
+}
+void settings_set_wifi_at_boot(bool enabled)
+{
+    if (s_nvs_ok && sput_u8("wifiboot", enabled ? 1 : 0))
+        __atomic_store_n(&s_wifi_at_boot,enabled,__ATOMIC_RELEASE);
+}
+
 bool settings_get_auto_rotate(void)
 {
     return __atomic_load_n(&s_auto_rotate,__ATOMIC_ACQUIRE);

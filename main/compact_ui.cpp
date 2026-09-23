@@ -47,8 +47,10 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 {return ls_mesh_dm_state(peer,text);}
 #include "tui/ls_tui_touch.h"
 #include "tui/ls_keyboard.h"
+#include "tui/ls_numpad.h"
 #include "tui/ls_tui_png.h"
 #include "tui/ls_app.h"
+#include "tui/ls_app_docs.h"
 #include "tui/ls_icons.h"
 #include "tui/ls_splash.h"
 #include "tui/ls_tui_density.h"
@@ -87,6 +89,7 @@ extern "C" {
 }
 #include <dirent.h>
 #include <sys/stat.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -112,28 +115,58 @@ static TouchSample touch_snapshot()
     portEXIT_CRITICAL(&s_touch_lock);
     return sample;
 }
+/* Every press and release the sampler saw, in order.
+
+   The TUI reads touch once a frame, and a frame is 30-60 ms. A quick tap, or
+   the short lift between two taps on the same key, fits inside one frame and
+   was lost when the TUI only saw the latest sample - repeated taps on DEL
+   merged into one. The sampler runs every 10 ms and queues each edge, and
+   the TUI replays them in order. */
+#define TOUCH_EDGES 16
+static TouchSample s_edge[TOUCH_EDGES];
+static unsigned s_edge_head, s_edge_tail;
 static void touch_task(void *)
 {
     TouchSample sample={};
+    bool was=false;
+    uint16_t last_x=0,last_y=0;
+    int64_t last_ok=0;
     for(;;) {
-        if(ls_touch_read(&sample.x,&sample.y,&sample.pressed)) {
-            sample.received=esp_timer_get_time();
-            portENTER_CRITICAL(&s_touch_lock); s_touch=sample; portEXIT_CRITICAL(&s_touch_lock);
-        }
+        const int64_t now=esp_timer_get_time();
+        bool ok=ls_touch_read(&sample.x,&sample.y,&sample.pressed);
+        if(ok) last_ok=now;
+        else sample.pressed=was && now-last_ok<=250000;
+        sample.received=now;
+        if(sample.pressed){last_x=sample.x;last_y=sample.y;}
+        else {sample.x=last_x;sample.y=last_y;}
+        portENTER_CRITICAL(&s_touch_lock);
+        s_touch=sample;
+        if(sample.pressed!=was && s_edge_head-s_edge_tail<TOUCH_EDGES)
+            s_edge[s_edge_head++%TOUCH_EDGES]=sample;
+        portEXIT_CRITICAL(&s_touch_lock);
+        was=sample.pressed;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+static bool touch_edge_pending()
+{
+    portENTER_CRITICAL(&s_touch_lock);
+    const bool any=s_edge_head!=s_edge_tail;
+    portEXIT_CRITICAL(&s_touch_lock);
+    return any;
 }
 /* The TUI takes its touch from the task that already owns the controller, instead of reading it a second time. */
 
 static bool tui_touch_source(int *x, int *y, bool *pressed)
 {
-    TouchSample sample = touch_snapshot();
-    if (esp_timer_get_time() - sample.received > 250000) sample.pressed = false;
-    if (sample.pressed) {
-        *x = sample.x; *y = sample.y;
-        /* A finger on the glass is the auto-dim clock's input. */
-        display_ctl_activity();
-    }
+    TouchSample sample;
+    portENTER_CRITICAL(&s_touch_lock);
+    if (s_edge_head != s_edge_tail) sample = s_edge[s_edge_tail++ % TOUCH_EDGES];
+    else sample = s_touch;
+    portEXIT_CRITICAL(&s_touch_lock);
+    *x = sample.x; *y = sample.y;
+    /* A finger on the glass is the auto-dim clock's input. */
+    if (sample.pressed) display_ctl_activity();
     *pressed = sample.pressed;
     return true;
 }
@@ -494,7 +527,8 @@ static bool tui_session(void)
                                  ls_scr_adsb, ls_scr_falls, ls_scr_mesh,
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
-                                 ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell;
+                                 ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
+                                 ls_scr_files;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -508,50 +542,52 @@ static bool tui_session(void)
 
         static const ls_app_t APPS[] = {
             { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
-              LS_APP_MAIN, &ls_scr_home, nullptr },
+              LS_APP_MAIN, &ls_scr_home, nullptr, &ls_doc_home },
             { "p25",  "P25",  "trunking",  LS_ICON_TOWER, TUI_GREEN,
-              LS_APP_MAIN, &ls_scr_p25, tui_live_p25 },
+              LS_APP_MAIN, &ls_scr_p25, tui_live_p25, &ls_doc_p25 },
             { "fm",   "FM",   "analogue",  LS_ICON_WAVE,  TUI_YELLOW,
-              LS_APP_MAIN, &ls_scr_fm, tui_live_fm },
+              LS_APP_MAIN, &ls_scr_fm, tui_live_fm, &ls_doc_fm },
             { "adsb", "ADSB", "aircraft",  LS_ICON_PLANE, TUI_MAGENTA,
-              LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb },
+              LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb, &ls_doc_adsb },
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
-              LS_APP_EXTRA, &ls_scr_falls, nullptr },
+              LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
             { "cell", "CELL WATCH", "cellular RF survey", LS_ICON_TOWER, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_cell, nullptr },
+              LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh },
+              LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh, &ls_doc_mesh },
 
             { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_labs, nullptr },
+              LS_APP_EXTRA, &ls_scr_labs, nullptr, &ls_doc_labs },
             { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_journal, nullptr },
+              LS_APP_EXTRA, &ls_scr_journal, nullptr, &ls_doc_journal },
 
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
-              LS_APP_EXTRA, &ls_scr_rec, tui_live_rec },
+              LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
             { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled },
+              LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
+            { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
+              LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
             /* PAGER, not CHIP: CHIP is documented as system and health and
                DIAG owns it. Two tiles with one picture says they do the
                same thing - which is exactly what happened, DIAG was
                opened instead of this. A body with a stub aerial is a
                small radio, which is what the keyboard board carries. */
             { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_PAGER, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_mixrf, nullptr },
+              LS_APP_EXTRA, &ls_scr_mixrf, nullptr, &ls_doc_mixrf },
             { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
-              LS_APP_EXTRA, &ls_scr_diag, nullptr },
+              LS_APP_EXTRA, &ls_scr_diag, nullptr, &ls_doc_diag },
             { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
-              LS_APP_EXTRA, &ls_scr_settings, nullptr },
+              LS_APP_EXTRA, &ls_scr_settings, nullptr, &ls_doc_settings },
 
             { "map",  "MAP",  "vector tiles", LS_ICON_MAP, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_map, nullptr },
+              LS_APP_EXTRA, &ls_scr_map, nullptr, &ls_doc_map },
             { "gps",  "GPS",  "position",  LS_ICON_SAT,   TUI_YELLOW,
-              LS_APP_EXTRA, &ls_scr_gps, tui_live_gps },
+              LS_APP_EXTRA, &ls_scr_gps, tui_live_gps, &ls_doc_gps },
 
             { "radios", "RADIOS", "power",  LS_ICON_POWER, TUI_RED,
-              LS_APP_EXTRA, &ls_scr_radios, nullptr },
+              LS_APP_EXTRA, &ls_scr_radios, nullptr, &ls_doc_radios },
             { "link", "LINK", "Wi-Fi + Bluetooth", LS_ICON_WIRELESS, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_wireless, nullptr },
+              LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
         };
         /* LINK was the thirteenth app, beyond the router's old
            twelve-screen limit, and vanished without a startup error. */
@@ -559,8 +595,10 @@ static bool tui_session(void)
                       "Built-in apps exceed the screen registry capacity");
         for (unsigned i = 0; i < sizeof(APPS) / sizeof(APPS[0]); i++) {
             if(cell_performance_active() && strcmp(APPS[i].id,"cell"))continue;
-            if (ls_app_register(&APPS[i]) < 0)
-                ESP_LOGE("tdp_ui", "could not register app %s", APPS[i].id);
+            const int rc = ls_app_register(&APPS[i]);
+            if (rc < 0)
+                ESP_LOGE("tdp_ui", "could not register app %s: %s",
+                         APPS[i].id, ls_app_register_why(rc));
         }
 
         {
@@ -770,7 +808,10 @@ static bool tui_session(void)
         /* Touch is polled beside the keyboard and lands in the same router,
            so a screen cannot tell which drove it. */
         ls_tui_touch_t tap;
-        if (ls_tui_touch_poll(&tap)) ls_tui_router_touch(tap.col, tap.row);
+        for (int i = 0; i < TOUCH_EDGES; i++) {
+            if (ls_tui_touch_poll(&tap)) ls_tui_router_touch(tap.col, tap.row);
+            if (!touch_edge_pending()) break;
+        }
 
         /* Between frames, where the grid is one whole frame. */
         if (s_tui_shot_req) {
@@ -889,7 +930,7 @@ static bool tui_session(void)
 
         /* short keyboard taps must not wait behind the normal
            40 ms idle cadence. The touch sampler updates every 10 ms. */
-        vTaskDelay(pdMS_TO_TICKS(ls_keyboard_active() ? 10 :
+        vTaskDelay(pdMS_TO_TICKS(ls_keyboard_active() || ls_numpad_active() ? 10 :
                                  ls_map_render_busy() ? 5 : 40));
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
     }
@@ -1006,8 +1047,97 @@ static bool tui_rotate_to(int quarter)
    declares no pins. `sd` says which. `sd ls` lists a directory, because the
    first question after "is it mounted" is always "is my file where I think
    it is" - and answering that over a serial link beats pulling the card. */
+/* WRITE A FILE TO THE CARD OVER THE CONSOLE.
+
+   The board already accepts uploads over HTTP - that is what the web widget
+   posts to - but reaching it needs Wi-Fi, and the `wifi` console command
+   lives in gui_link.cpp which this headless build does not compile. So on a
+   bench cable there was no way to put a file on the card at all, which is
+   the wrong answer when the card is right there on the end of a serial
+   line.
+
+   'sd put <name> <base64>' writes one chunk; 'sd put <name>' with no payload
+   truncates the file first. Base64 because a P25 profile is text with
+   newlines in it and the console splits arguments on whitespace - and
+   because a transfer that survives an interrupted line is worth more than
+   one that is readable in the scrollback.
+
+   At most one directory level, no '..' and no absolute path, so a write
+   lands in the card's root or one folder directly under it. The folder is
+   created if missing, which is how a user app reaches /sdcard/apps over a
+   bench cable. */
+static int b64_value(char c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+static int sd_put(int argc, char **argv)
+{
+    if (argc < 3) { printf("sd: usage 'sd put [dir/]<name> [base64]'\n"); return 1; }
+    const char *name = argv[2];
+    /* One separator at most, never leading, never trailing, and no '..',
+       so the widest a name can reach is <mount>/<dir>/<file>. */
+    const char *slash = strchr(name, '/');
+    if (!*name || strstr(name, "..") || strchr(name, '\\') ||
+        (slash && (slash == name || !slash[1] || strchr(slash + 1, '/')))) {
+        printf("sd: refusing '%s' - <name> or <dir>/<name>, nothing deeper\n",
+               name);
+        return 1;
+    }
+    if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
+
+    if (slash) {
+        char dir[280];
+        const size_t n = (size_t)(slash - name);
+        snprintf(dir, sizeof(dir), "%s/%.*s", LS_SDCARD_MOUNT, (int)n, name);
+        /* EEXIST is the normal case from the second chunk on. */
+        if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+            printf("sd: cannot create %s\n", dir);
+            return 1;
+        }
+    }
+
+    char full[280];
+    snprintf(full, sizeof(full), "%s/%s", LS_SDCARD_MOUNT, name);
+
+    /* No payload truncates, so a transfer starts from nothing rather than
+       appending to whatever was there from a previous attempt. */
+    FILE *f = fopen(full, argc >= 4 ? "ab" : "wb");
+    if (!f) { printf("sd: cannot open %s\n", full); return 1; }
+    if (argc < 4) { fclose(f); printf("sd: %s truncated\n", full); return 0; }
+
+    const char *in = argv[3];
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t wrote = 0;
+    for (const char *c = in; *c; ++c) {
+        if (*c == '=') break;
+        const int v = b64_value(*c);
+        if (v < 0) { fclose(f); printf("sd: bad base64 near '%c'\n", *c); return 1; }
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            const uint8_t byte = (uint8_t)((acc >> bits) & 0xFF);
+            if (fwrite(&byte, 1, 1, f) != 1) {
+                fclose(f); printf("sd: write failed\n"); return 1;
+            }
+            wrote++;
+        }
+    }
+    fclose(f);
+    printf("sd: +%u bytes -> %s\n", (unsigned)wrote, full);
+    return 0;
+}
+
 static int sd_cmd(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "put")) return sd_put(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "ls")) {
         const char *dir = (argc >= 3) ? argv[2] : LS_SDCARD_MOUNT;
         if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
@@ -2282,7 +2412,8 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t sd={.command="sd",
-        .help="SD card: 'sd' says whether it mounted and why not, 'sd mount' retries, 'sd ls [dir]' lists",
+        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, "
+              "'sd put [dir/]<name> [base64]' writes (no payload truncates)",
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
     static const esp_console_cmd_t mixrf={.command="mixrf",.help="Keyboard radios: probe, status, cc/scan/nfc on/off, stop",
@@ -2297,7 +2428,9 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
               "fskls, fskplay, fsksave",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
-    /* Optional extensions register themselves through the include guard. */
+    /* Anything proprietary registers itself and is reached only through the
+       include guard, so removing it is deleting files and nothing else;
+       the list of what goes is kept with those files. */
 #if defined(__has_include)
 #  if __has_include("private_console.h")
     ls_private_console_register();

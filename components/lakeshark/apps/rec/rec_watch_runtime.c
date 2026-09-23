@@ -6,6 +6,7 @@
 #include "ls_haptic.h"
 #include "settings.h"
 #include "ls_sub_fsk.h"
+#include "subghz_file.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_random.h"
@@ -36,8 +37,13 @@ static uint32_t s_pin_id;
 static uint32_t s_export_id;
 /* Queued the same way a pin or an export is: the catalog belongs to the
    storage worker, so the UI asks and the worker acts. */
+static bool s_replay_busy;
+static char s_replay_result[112];
 static uint32_t s_replay_id; static int s_replay_dbm;
 static void replay(uint32_t id,int dbm,char *result,size_t len);
+/* A file to send instead of a catalog entry, for the FILES app. */
+static char s_replay_path[160];
+static void replay_file(const char *path,int dbm,char *result,size_t len);
 static uint32_t s_scan_min,s_scan_max,s_scan_secs;
 static int s_scan_bins=REC_SCAN_BINS;
 static volatile bool s_scan_busy;
@@ -48,6 +54,11 @@ static EXT_RAM_BSS_ATTR rec_scan_bin_t s_scan_live[REC_SCAN_BINS];
 static int s_scan_live_n; static float s_scan_live_floor=-120.0f;
 static volatile bool s_scan_stop_req;
 static int s_scan_hits;
+/* Every time a bin rises through the threshold - a burst, not a frequency.
+   A remote pressed five times on one frequency is five of these and one
+   entry in s_scan. */
+static volatile int s_scan_events;
+static EXT_RAM_BSS_ATTR bool s_scan_above[REC_SCAN_BINS];
 static int s_on_hit_loaded=-1;
 static uint32_t s_last_hit;
 static float s_gate_db=-1.0f;
@@ -59,12 +70,16 @@ float rec_watch_scan_threshold(void)
     if(s_gate_db<0)s_gate_db=(float)settings_get_subghz_gate_db();
     return s_gate_db;
 }
-void rec_watch_scan_set_threshold(float db)
+void rec_watch_scan_preview_threshold(float db)
 {
     if(db<REC_SCAN_DETECT_MIN)db=REC_SCAN_DETECT_MIN;
     if(db>REC_SCAN_DETECT_MAX)db=REC_SCAN_DETECT_MAX;
     s_gate_db=db;
-    settings_set_subghz_gate_db((int)(db+0.5f));
+}
+void rec_watch_scan_set_threshold(float db)
+{
+    rec_watch_scan_preview_threshold(db);
+    settings_set_subghz_gate_db((int)(s_gate_db+0.5f));
 }
 static volatile bool s_catch_armed;
 void rec_watch_scan_on_hit(rec_scan_on_hit_t m)
@@ -81,13 +96,23 @@ rec_scan_on_hit_t rec_watch_scan_on_hit_get(void)
 uint32_t rec_watch_scan_last_hit(void){ return s_last_hit; }
 int rec_watch_scan_live(rec_scan_bin_t *out,int max)
 {
-    if(!out || max<=0)return 0;
+    if(!out || max<=0)return s_scan_n;
     int n=s_scan_live_n<max?s_scan_live_n:max;
     for(int i=0;i<n;i++)out[i]=s_scan_live[i];
     return n;
 }
 float rec_watch_scan_live_floor(void){ return s_scan_live_floor; }
 int  rec_watch_scan_hits(void){ return s_scan_hits; }
+int  rec_watch_scan_events(void){ return s_scan_events; }
+bool rec_watch_scan_catch(uint32_t hz)
+{
+    if(!hz || !s_scan_busy)return false;
+    s_last_hit=hz;
+    rec_set_freq(hz);
+    s_catch_armed=true;
+    s_scan_stop_req=true;
+    return true;
+}
 void rec_watch_scan_stop(void){ s_scan_stop_req=true; }
 static EXT_RAM_BSS_ATTR char s_scan_stage[40];
 int rec_watch_scan_progress(void){ return s_scan_pct; }
@@ -128,8 +153,16 @@ __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
 static void publish(void)
 {
     rec_ook24_t decoded[REC_WATCH_SLOTS] = {0};
-    for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id)
+    static subghz_pwm_t pwm[REC_WATCH_SLOTS];
+    static subghz_nrz_t nrz[REC_WATCH_SLOTS];
+    memset(pwm, 0, sizeof(pwm));
+    memset(nrz, 0, sizeof(nrz));
+    for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id) {
         rec_decode_ook24(s_catalog->record[i].pulse, s_catalog->record[i].event.edges, &decoded[i]);
+        subghz_pwm_decode(s_catalog->record[i].pulse, s_catalog->record[i].event.edges, &pwm[i]);
+        if (!pwm[i].repeats)
+            subghz_nrz_decode(s_catalog->record[i].pulse, s_catalog->record[i].event.edges, &nrz[i]);
+    }
     portENTER_CRITICAL(&s_lock);
     s_status.count=0;
     s_status.boot_id=s_boot;
@@ -138,6 +171,8 @@ static void publish(void)
         s_status.event[n]=s_catalog->record[i].event;
         memcpy(s_status.preview[n],s_catalog->record[i].pulse,sizeof(s_status.preview[n]));
         s_status.decoded[n] = decoded[i];
+        s_status.pwm[n] = pwm[i];
+        s_status.nrz[n] = nrz[i];
     }
     s_status.ready=true;
     portEXIT_CRITICAL(&s_lock);
@@ -208,6 +243,9 @@ static void worker(void *arg)
         uint32_t pin=s_pin_id;bool value=s_pin_value;s_pin_id=0;
         uint32_t export_id=s_export_id;s_export_id=0;
         uint32_t replay_id=s_replay_id;int replay_dbm=s_replay_dbm;s_replay_id=0;
+        char replay_path[sizeof(s_replay_path)];
+        memcpy(replay_path,s_replay_path,sizeof(replay_path));s_replay_path[0]=0;
+        s_replay_busy=replay_id || replay_path[0];
         uint32_t scan_min=s_scan_min,scan_max=s_scan_max,scan_secs=s_scan_secs;s_scan_min=0;
         uint32_t learn_secs=s_learn_secs;s_learn_secs=0;
         bool enabled=s_status.enabled;
@@ -247,14 +285,24 @@ static void worker(void *arg)
                 publish();
             }
         }
+        if(replay_path[0]) {
+            char result[112];
+            replay_file(replay_path,replay_dbm,result,sizeof(result));
+            portENTER_CRITICAL(&s_lock);
+            snprintf(s_status.export_status,sizeof(s_status.export_status),"%s",result);
+            snprintf(s_replay_result,sizeof(s_replay_result),"%s",result);
+            portEXIT_CRITICAL(&s_lock);
+        }
         if(replay_id) {
             char result[112];
             replay(replay_id,replay_dbm,result,sizeof(result));
             portENTER_CRITICAL(&s_lock);
             snprintf(s_status.export_status,sizeof(s_status.export_status),"%s",result);
+            snprintf(s_replay_result,sizeof(s_replay_result),"%s",result);
             portEXIT_CRITICAL(&s_lock);
             publish();
         }
+        portENTER_CRITICAL(&s_lock);s_replay_busy=false;portEXIT_CRITICAL(&s_lock);
         if(export_id) {
             uint64_t total=0,free_bytes=UINT64_MAX;
             char result[112];
@@ -294,6 +342,13 @@ bool rec_watch_start(void)
     if(s_starting || ready) { portEXIT_CRITICAL(&s_lock);return ready; }
     s_starting=true;
     portEXIT_CRITICAL(&s_lock);
+    /* Read every setting the worker uses here, on the caller's stack. The
+       worker's stack is in PSRAM, and an NVS read is a flash read, which
+       disables the cache - a task whose stack lives behind that cache
+       asserts in spi_flash_disable_interrupts_caches_and_other_cpu. */
+    (void)rec_watch_scan_threshold();
+    (void)rec_watch_scan_on_hit_get();
+    rec_watch_fsk_get(NULL);
     s_catalog=heap_caps_calloc(1,sizeof(*s_catalog),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     s_checkpoint=heap_caps_malloc(sizeof(*s_checkpoint),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     capture_t *pool=heap_caps_calloc(2,sizeof(*pool),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -470,6 +525,13 @@ bool rec_watch_enable(bool on)
 {
     portENTER_CRITICAL(&s_lock);bool ready=s_status.ready;portEXIT_CRITICAL(&s_lock);
     if(on && !ready)return false;
+    if(on)s_fsk_error[0]=0;
+    /* A sweep or a LEARN run owns the SX1262 until it ends; starting a
+       receive session under it would be two tasks driving one radio. */
+    if(on && (s_scan_busy || s_learn_busy || s_scan_min || s_learn_secs || s_replay_busy || s_replay_id || s_replay_path[0])) {
+        snprintf(s_fsk_error,sizeof(s_fsk_error),"Stop SCAN before WATCH");
+        return false;
+    }
     if (rec_watch_source() == REC_SOURCE_CC1101 && !ls_mixrf_capture(on, rec_get_freq()))
         return false;
     if (rec_watch_source() == REC_SOURCE_SX1262 && !fsk_session(on))
@@ -553,10 +615,12 @@ bool rec_watch_select_source(rec_source_t source)
 }
 bool rec_watch_request_replay(uint32_t id,int dbm)
 {
-    if(!id || dbm<-9 || dbm>22)return false;
+    if(!id || dbm<-10 || dbm>22)return false;
     portENTER_CRITICAL(&s_lock);
-    bool ok=!s_replay_id && !s_status.enabled;
-    if(ok){s_replay_id=id;s_replay_dbm=dbm;}
+    bool ok=!s_replay_busy && !s_replay_id && !s_replay_path[0] && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
+    if(ok){s_replay_id=id;s_replay_dbm=dbm;
+        snprintf(s_replay_result,sizeof(s_replay_result),"Replay queued");
+        snprintf(s_status.export_status,sizeof(s_status.export_status),"Replay queued");}
     portEXIT_CRITICAL(&s_lock);
     return ok;
 }
@@ -565,6 +629,10 @@ bool rec_watch_request_replay(uint32_t id,int dbm)
    catalog is owned; it is a deliberate keypress, not a stream, so the few
    hundred milliseconds it costs that worker are not competing with
    anything. */
+static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
+                     uint32_t deviation_hz,uint32_t sync_word,
+                     uint16_t preamble_bits,const int32_t *pulse,int edges,
+                     int dbm,char *result,size_t len);
 static void replay(uint32_t id,int dbm,char *result,size_t len)
 {
     const rec_watch_record_t *r=NULL;
@@ -576,13 +644,31 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
                  rec_source_name((rec_source_t)r->event.source));
         return;
     }
+    if(r->event.source==REC_SOURCE_CC1101) {
+        bool sent=ls_mixrf_replay(r->event.frequency,r->pulse,r->event.edges,dbm);
+        snprintf(result,len,sent?"Sent #%lu on CC1101":"Replay: CC1101 failed/busy; check MIX-RF",(unsigned long)id);
+        return;
+    }
     if(!r->event.bitrate) {
         snprintf(result,len,"Replay: capture has no modulation recorded");
         return;
     }
+    char what[16];
+    snprintf(what,sizeof(what),"#%lu",(unsigned long)id);
+    send_fsk(what,r->event.frequency,r->event.bitrate,r->event.deviation_hz,
+             r->event.sync_word,r->event.preamble_bits,r->pulse,r->event.edges,
+             dbm,result,len);
+}
+
+/* Rebuild the frame from edge timings and send it once on the SX1262. */
+static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
+                     uint32_t deviation_hz,uint32_t sync_word,
+                     uint16_t preamble_bits,const int32_t *pulse,int edges,
+                     int dbm,char *result,size_t len)
+{
     static EXT_RAM_BSS_ATTR uint8_t payload[LS_FSK_CAPTURE_BYTES];
-    const size_t n=ls_fsk_payload_from_raw(r->pulse,r->event.edges,
-        r->event.bitrate,r->event.preamble_bits,payload,sizeof(payload));
+    const size_t n=ls_fsk_payload_from_raw(pulse,(size_t)edges,
+        bitrate,preamble_bits,payload,sizeof(payload));
     if(!n){snprintf(result,len,"Replay: could not rebuild the frame");return;}
 
     const int64_t deadline=esp_timer_get_time()+1000000;
@@ -594,12 +680,12 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
         return;
     }
     ls_fsk_cfg_t cfg={0};
-    cfg.freq_hz=r->event.frequency;
-    cfg.bitrate=r->event.bitrate;
-    cfg.deviation_hz=r->event.deviation_hz;
+    cfg.freq_hz=freq_hz;
+    cfg.bitrate=bitrate;
+    cfg.deviation_hz=deviation_hz;
     cfg.bandwidth_hz=ls_lora_fsk_bw_snap(cfg.bitrate+2u*cfg.deviation_hz);
-    cfg.sync_word=r->event.sync_word;
-    cfg.preamble_bits=r->event.preamble_bits;
+    cfg.sync_word=sync_word;
+    cfg.preamble_bits=preamble_bits;
     cfg.payload_bytes=(uint8_t)n;
     cfg.power_dbm=(int8_t)dbm;
     esp_err_t err=ls_lora_fsk_begin(&cfg);
@@ -609,15 +695,54 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
             const int64_t end=esp_timer_get_time()+2000000;
             while(!ls_lora_send_done() && esp_timer_get_time()<end)
                 vTaskDelay(pdMS_TO_TICKS(5));
+            if(!ls_lora_send_done())err=ESP_ERR_TIMEOUT;
         }
         const esp_err_t ended=ls_lora_fsk_end();
         if(err==ESP_OK)err=ended;
     }
     ls_mesh_radio_hold(false);
-    if(err==ESP_OK) snprintf(result,len,"Sent #%lu, %u bytes at %d dBm",
-        (unsigned long)id,(unsigned)n,dbm);
+    if(err==ESP_OK) snprintf(result,len,"Sent %s, %u bytes at %d dBm",
+        what,(unsigned)n,dbm);
     else snprintf(result,len,"Replay failed: %s",esp_err_to_name(err));
 }
+
+static void replay_file(const char *path,int dbm,char *result,size_t len)
+{
+    static EXT_RAM_BSS_ATTR int32_t edges[REC_WATCH_EDGES];
+    static EXT_RAM_BSS_ATTR char line[6144];
+    static EXT_RAM_BSS_ATTR subghz_file_t f;
+    if(!subghz_file_load(path,&f,edges,REC_WATCH_EDGES,line,sizeof(line))) {
+        snprintf(result,len,"Replay: not a readable .sub file");
+        return;
+    }
+    if(subghz_file_is_ook(&f)) {
+        bool sent=ls_mixrf_replay(f.freq_hz,edges,f.edges,dbm);
+        snprintf(result,len,"%s",sent?"Sent file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");
+        return;
+    }
+    if(!subghz_file_is_fsk(&f)) {
+        snprintf(result,len,"Replay: incomplete or unsupported RAW/modulation");
+        return;
+    }
+    const char *name=strrchr(path,'/');
+    send_fsk(name?name+1:path,f.freq_hz,f.bitrate,f.deviation_hz,f.sync_word,
+             f.preamble_bits?f.preamble_bits:32,edges,f.edges,dbm,result,len);
+}
+
+bool rec_watch_request_replay_file(const char *path,int dbm)
+{
+    if(!path || !path[0] || strlen(path)>=sizeof(s_replay_path) || dbm<-10 || dbm>22)
+        return false;
+    if(!rec_watch_start())return false;
+    portENTER_CRITICAL(&s_lock);
+    bool ok=!s_replay_busy && !s_replay_path[0] && !s_replay_id && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
+    if(ok){memcpy(s_replay_path,path,strlen(path)+1);s_replay_dbm=dbm;
+        snprintf(s_replay_result,sizeof(s_replay_result),"Replay queued");
+        snprintf(s_status.export_status,sizeof(s_status.export_status),"Replay queued");}
+    portEXIT_CRITICAL(&s_lock);
+    return ok;
+}
+const char *rec_watch_last_result(void){ return s_status.export_status; }
 
 bool rec_watch_request_scan(uint32_t min_hz,uint32_t max_hz,uint32_t seconds,
                             int bins)
@@ -627,7 +752,7 @@ bool rec_watch_request_scan(uint32_t min_hz,uint32_t max_hz,uint32_t seconds,
     if(seconds>180)return false;
     if(bins<4 || bins>REC_SCAN_BINS)bins=REC_SCAN_BINS;
     portENTER_CRITICAL(&s_lock);
-    bool ok=!s_scan_min && !s_status.enabled;
+    bool ok=!s_scan_min && !s_status.enabled && !s_replay_busy && !s_replay_id && !s_replay_path[0];
     if(ok){s_scan_min=min_hz;s_scan_max=max_hz;s_scan_secs=seconds;s_scan_bins=bins;}
     portEXIT_CRITICAL(&s_lock);
     return ok;
@@ -635,7 +760,7 @@ bool rec_watch_request_scan(uint32_t min_hz,uint32_t max_hz,uint32_t seconds,
 bool rec_watch_scan_busy(void){ return s_scan_busy; }
 int rec_watch_scan_result(rec_scan_bin_t *out,int max)
 {
-    if(!out || max<=0)return 0;
+    if(!out || max<=0)return s_scan_n;
     int n=s_scan_n<max?s_scan_n:max;
     for(int i=0;i<n;i++)out[i]=s_scan[i];
     return n;
@@ -680,6 +805,8 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,char *result
     int passes=0;
     s_scan_stop_req=false;
     s_scan_hits=0;
+    s_scan_events=0;
+    memset(s_scan_above,0,sizeof(s_scan_above));
     s_scan_n=0;
     /* The live spectrum is per sweep too. Left set, it means "a pass
        has already been drawn", so the first pass of the NEXT sweep
@@ -736,8 +863,15 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,char *result
                what counts as a detection would mean the release curve, not
                the receiver, chose what got recorded. */
             int fresh_hits=0; uint32_t fresh_hz=0; float fresh_dbm=-200.0f;
+            int rising=0; uint32_t rise_hz=0; float rise_dbm=-200.0f;
             for(int i=0;i<nb;i++) {
-                if(row[i] < lo+rec_watch_scan_threshold()) continue;
+                const bool above=row[i] >= lo+rec_watch_scan_threshold();
+                if(above && !s_scan_above[i]) {
+                    rising++;
+                    if(row[i]>rise_dbm){rise_dbm=row[i];rise_hz=s_scan_live[i].hz;}
+                }
+                s_scan_above[i]=above;
+                if(!above) continue;
                 const uint32_t hz=s_scan_live[i].hz;
                 int at=-1;
                 for(int j=0;j<s_scan_n;j++) if(s_scan[j].hz==hz){at=j;break;}
@@ -758,18 +892,22 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,char *result
             }
             /* Once per pass, for the strongest new thing in it. A buzz per
                bin would fire thirty-two times for one transmitter. */
-            if(fresh_hits && fresh_hz) {
-                s_last_hit=fresh_hz;
+            /* Once per pass, for the strongest burst that started in it -
+               a new frequency or a known one speaking again. Buzzing only
+               for new frequencies made the second press of the same remote
+               silent. */
+            if(rising && rise_hz) {
+                s_scan_events+=rising;
+                s_last_hit=rise_hz;
                 const rec_scan_on_hit_t mode=rec_watch_scan_on_hit_get();
-                /* At most one alert every two seconds, whatever the
-                   threshold is set to. A threshold below the noise makes
-                   every bin a detection, and that once meant one buzz per
-                   bin until the list filled - thirty-two of them. A limit
-                   here means a bad setting is merely a bad setting rather
-                   than the device shaking itself across the bench. */
+                /* A floor on the spacing, whatever the threshold is set to.
+                   A threshold below the noise makes every pass a detection,
+                   and a limit here keeps a bad setting from shaking the
+                   device across the bench. 600 ms still separates two
+                   presses of a remote. */
                 static int64_t last_alert;
                 const int64_t now_alert=esp_timer_get_time();
-                const bool may_alert=now_alert-last_alert>2000000;
+                const bool may_alert=now_alert-last_alert>600000;
                 if(mode!=REC_SCAN_ON_HIT_NOTHING && may_alert) {
                     last_alert=now_alert;
                     ls_haptic_play(LS_HAPTIC_ALERT);
@@ -778,7 +916,9 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,char *result
                     bool alerts=s_status.alerts;
                     memcpy(peer,s_status.peer,sizeof(peer));
                     portEXIT_CRITICAL(&s_lock);
-                    if(alerts && peer[0]) {
+                    /* A message only for a frequency not heard before this
+                       sweep; a buzz for every burst is fine, a DM is not. */
+                    if(alerts && peer[0] && fresh_hits) {
                         char text[80];
                         snprintf(text,sizeof(text),"SubGHz: %.4f MHz at %.0f dBm",
                                  fresh_hz/1e6,(double)fresh_dbm);
@@ -788,7 +928,7 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,char *result
                 /* And the hand-off: stop looking around, point at it, and
                    let the receiver try to make a capture out of it. */
                 if(mode==REC_SCAN_ON_HIT_CATCH) {
-                    rec_set_freq(fresh_hz);
+                    rec_set_freq(rise_hz);
                     s_scan_stop_req=true;
                     s_catch_armed=true;
                 }
@@ -837,7 +977,7 @@ bool rec_watch_request_learn(uint32_t seconds)
 {
     if(seconds<5 || seconds>90)return false;
     portENTER_CRITICAL(&s_lock);
-    bool ok=!s_learn_secs && !s_status.enabled;
+    bool ok=!s_learn_secs && !s_status.enabled && !s_replay_busy && !s_replay_id && !s_replay_path[0];
     if(ok)s_learn_secs=seconds;
     portEXIT_CRITICAL(&s_lock);
     return ok;
@@ -1057,4 +1197,14 @@ bool rec_watch_request_export(uint32_t id)
         snprintf(s_status.export_status,sizeof(s_status.export_status),"Export queued; saving selected pattern");
     }
     portEXIT_CRITICAL(&s_lock);return ok;
+}
+
+/* Snapshot is separate from export feedback: an export cannot finish a replay. */
+bool rec_watch_replay_status(char *out,size_t len)
+{
+    portENTER_CRITICAL(&s_lock);
+    bool busy=s_replay_busy || s_replay_id || s_replay_path[0];
+    if(out && len)snprintf(out,len,"%s",s_replay_result);
+    portEXIT_CRITICAL(&s_lock);
+    return busy;
 }

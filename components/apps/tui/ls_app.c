@@ -12,11 +12,38 @@ static int      s_screen_index[MAX_APPS];
 static int      s_count;
 static bool     s_main_prefix = true;
 
+/* The contract, checked where an app enters the directory rather than
+   trusted. A descriptor that cannot say what it is for, what it keeps, or
+   what it does with a position is refused - see ls_app_doc_t. */
+static bool doc_is_complete(const ls_app_doc_t *d)
+{
+    if (!d) return false;
+    if (!d->purpose || !d->purpose[0]) return false;
+    if (d->records != LS_APP_RECORDS_NOTHING &&
+        (!d->record_note || !d->record_note[0])) return false;
+    if (d->gps != LS_APP_GPS_UNUSED &&
+        (!d->gps_note || !d->gps_note[0])) return false;
+    return true;
+}
+
+const char *ls_app_register_why(int rc)
+{
+    switch (rc) {
+    case LS_APP_REG_BAD_ARGS:  return "no screen to show";
+    case LS_APP_REG_NO_DOC:    return "does not say what it is for";
+    case LS_APP_REG_DIR_FULL:  return "no room left in the app directory";
+    case LS_APP_REG_NO_SCREEN: return "no room left in the screen table";
+    default:                   return "refused by the app directory";
+    }
+}
+
 int ls_app_register(const ls_app_t *app)
 {
-    if (!app || !app->screen || s_count >= MAX_APPS) return -1;
+    if (!app || !app->screen)     return LS_APP_REG_BAD_ARGS;
+    if (s_count >= MAX_APPS)      return LS_APP_REG_DIR_FULL;
+    if (!doc_is_complete(app->doc)) return LS_APP_REG_NO_DOC;
     const int si = ls_tui_screen_register(app->screen);
-    if (si < 0) return -1;
+    if (si < 0) return LS_APP_REG_NO_SCREEN;
     s_app[s_count] = *app;
     s_screen_index[s_count] = si;
     s_count++;

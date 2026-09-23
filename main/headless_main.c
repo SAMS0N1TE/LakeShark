@@ -2,6 +2,7 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,6 +26,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/gpio.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
@@ -227,12 +230,17 @@ static RTC_NOINIT_ATTR uint32_t s_sdr_pwr_count;
 
 /* The two ways a power cycle can be refused, declared where the
    caller can see them. See hl_sdr_power_cycle_try. */
+/* A board with no VBUS switch now resets the USB root port instead,
+   so "no switch" is not a refusal anywhere any more. What such a board can
+   still refuse is a reset with nothing enumerated for it to act on. */
 typedef enum {
     SDRPWR_STARTED = 0,
-    SDRPWR_NO_SWITCH,   /* this board has no software VBUS control */
-    SDRPWR_BUSY,        /* a cycle is already in flight */
+    SDRPWR_NOTHING_ENUMERATED, /* no device on the port for a reset */
+    SDRPWR_BUSY,               /* a cycle is already in flight */
 } sdrpwr_result_t;
 static sdrpwr_result_t hl_sdr_power_cycle_try(void);
+static bool hl_sdr_power_cycle_running(void);
+#define SDR_CYCLE_NOUN (LS_HAS_VBUS_CTRL ? "power cycle" : "root-port reset")
 
 static bool hl_sdr_power_cycle(void);
 /**/
@@ -241,40 +249,36 @@ static bool hl_sdr_power_cycle_now(void);
 /**/
 static bool sdr_auto_power_cycle(const char *why)
 {
-    if (!LS_HAS_VBUS_CTRL) {
-        ESP_LOGE(TAG, "SDR %s. %s cannot cut VBUS in software, so there is "
-                      "nothing left to try automatically - replug the dongle.",
-                 why, LS_BOARD_NAME);
-        return false;
-    }
     if (s_sdr_pwr_magic != SDR_PWR_MAGIC) {
         s_sdr_pwr_magic = SDR_PWR_MAGIC;
         s_sdr_pwr_count = 0;
     }
     if (s_sdr_pwr_count >= SDR_PWR_MAX) {
-        ESP_LOGE(TAG, "SDR %s and %lu power cycles did not fix it - stopping. "
-                      "Replug the dongle, then 'SDR power'.",
-                 why, (unsigned long)s_sdr_pwr_count);
+        ESP_LOGE(TAG, "SDR %s and %lu %ss did not fix it - stopping. "
+                      "Replug the dongle, then 'rtl reset'.",
+                 why, (unsigned long)s_sdr_pwr_count, SDR_CYCLE_NOUN);
         return false;
     }
     /**/
     /* Each refusal named as itself. A board with no VBUS switch and a
        board already cycling want different things from whoever is reading. */
     const sdrpwr_result_t r = hl_sdr_power_cycle_try();
-    if (r == SDRPWR_NO_SWITCH) {
-        ESP_LOGE(TAG, "SDR %s, and this board cannot power cycle the dongle in "
-                      "software - replug it, or run 'SDR recover'. Not counted "
-                      "against the budget.", why);
+    if (r == SDRPWR_NOTHING_ENUMERATED) {
+        ESP_LOGE(TAG, "SDR %s, and nothing is enumerated on the USB host port "
+                      "for a %s to act on - replug the dongle. Not counted "
+                      "against the budget.", why, SDR_CYCLE_NOUN);
         return false;
     }
     if (r == SDRPWR_BUSY) {
-        ESP_LOGE(TAG, "SDR %s, and a power cycle is already running - not "
-                      "counting it against the budget.", why);
+        ESP_LOGE(TAG, "SDR %s, and a %s is already running - not "
+                      "counting it against the budget.", why, SDR_CYCLE_NOUN);
         return false;
     }
     s_sdr_pwr_count++;
-    ESP_LOGW(TAG, "SDR %s - power cycling the dongle (attempt %lu of %d)",
-             why, (unsigned long)s_sdr_pwr_count, SDR_PWR_MAX);
+    ESP_LOGW(TAG, "SDR %s - %s (attempt %lu of %d)", why,
+             LS_HAS_VBUS_CTRL ? "power cycling the dongle"
+                              : "resetting the USB root port",
+             (unsigned long)s_sdr_pwr_count, SDR_PWR_MAX);
     return true;
 }
 
@@ -328,15 +332,30 @@ static void settings_task(void *arg)
                 healthy_ms = 0;
                 if (!absent_told && absent_ms >= SDR_ABSENT_POWER_S * 1000) {
                     absent_ms = 0;
-                    if (!sdr_auto_power_cycle("not enumerated")) absent_told = true;
+                    /* A root-port reset acts on a device that is
+                       enumerated and not answering. It cannot bring back one
+                       that is absent, and on a port holding some other device
+                       it would reset that instead, so a board without a VBUS
+                       switch only says so here. */
+                    if (!LS_HAS_VBUS_CTRL) {
+                        ESP_LOGW(TAG, "SDR not enumerated for %d s - replug the "
+                                      "dongle", SDR_ABSENT_POWER_S);
+                        absent_told = true;
+                    } else if (!sdr_auto_power_cycle("not enumerated")) {
+                        absent_told = true;
+                    }
                 }
             } else {
                 absent_told = false;
                 absent_ms   = 0;
 
+                /* Healthy means samples moving. "ok" alone is also
+                   what an idle dongle with a dead control pipe reports, and
+                   refilling the budget on that would hand a wedged dongle
+                   two more resets every time it sat idle for ten seconds. */
                 radio_health_snapshot_t health;
                 if (radio_health_get(usb_endpoint, &health) &&
-                    health.state == RH_OK) {
+                    health.state == RH_OK && health.bytes_per_second > 0) {
                     healthy_ms += 250;
                     if (healthy_ms >= 10000) {
                         healthy_ms = 0;
@@ -548,7 +567,7 @@ static int cmd_status(int argc, char **argv)
            scan_engine_active() ? "on" : "off", scan_engine_location() ? "on" : "off");
     /**/
     {
-        char rh[128];
+        char rh[160];
         radio_health_report(LS_RADIO_ENDPOINT_RTL_USB, rh, sizeof(rh));
         printf("%s\n", rh);
     }
@@ -560,17 +579,38 @@ static int cmd_rtl(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "detach")) {
         printf("simulating a dongle detach - the device object will be torn down.\n"
-               "Only a real VBUS cycle or a replug brings it back ('SDR power').\n");
+               "A VBUS cycle, a root-port reset ('rtl reset') or a replug brings it back.\n");
         /* Park and free BEFORE marking the device gone, which is what 's rtlsdr_dev_teardown() exists to do. */
 
         rtlsdr_dev_teardown();
         return 0;
     }
 
-    char rh[128];
+    /* The operator's way to the recovery the health watchdog takes on
+       its own: a VBUS cycle where the board has a switch, a root-port reset
+       where it does not. Not counted against the automatic budget, like SDR
+       power from the head. Waits for the worker, so what is printed is the
+       outcome rather than a promise of one. */
+    if (argc >= 2 && !strcmp(argv[1], "reset")) {
+        const sdrpwr_result_t r = hl_sdr_power_cycle_try();
+        if (r == SDRPWR_BUSY) {
+            printf("a %s is already running\n", SDR_CYCLE_NOUN);
+            return 0;
+        }
+        if (r == SDRPWR_NOTHING_ENUMERATED) {
+            printf("nothing is enumerated on the USB host port for a %s to act "
+                   "on - replug the dongle\n", SDR_CYCLE_NOUN);
+            return 0;
+        }
+        printf("%s started - waiting for it to finish\n", SDR_CYCLE_NOUN);
+        for (int i = 0; i < 300 && hl_sdr_power_cycle_running(); i++)
+            vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    char rh[160];
     radio_health_report(LS_RADIO_ENDPOINT_RTL_USB, rh, sizeof(rh));
     printf("%s\n", rh);
-    if (argc < 2) printf("usage: rtl [detach]\n");
+    if (argc < 2) printf("usage: rtl [reset|detach]\n");
     return 0;
 }
 
@@ -752,6 +792,8 @@ static volatile int s_radio_applied = -2;   /* -2: nothing answered yet    */
 static StackType_t   s_defer_stack[DEFER_STACK_WORDS];
 static StaticTask_t  s_defer_tcb;
 static QueueHandle_t s_defer_q = NULL;
+static atomic_bool s_console_retry;
+static void console_retry_start(void);
 
 /* The receiver the visible TUI screen asked for. */
 
@@ -819,6 +861,14 @@ static void defer_task(void *arg)
         }
 
         radio_reconcile();
+        if (atomic_exchange(&s_console_retry, false)) {
+            /* app_main's 8 KB internal stack is still live at the first
+               attempt. Let it return and idle reclaim it before retrying.
+               This existing internal-stack worker performs setup only;
+               the REPL keeps its own internal stack for NVS commands. */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            console_retry_start();
+        }
     }
 }
 
@@ -900,7 +950,33 @@ const char *ls_tui_radio_claimed(void)
 #define SDRPWR_STACK_WORDS (3072 / sizeof(StackType_t))
 static StackType_t  s_sdrpwr_stack[SDRPWR_STACK_WORDS];
 static StaticTask_t s_sdrpwr_tcb;
-static volatile bool s_sdrpwr_busy = false;
+
+/* Who owns the worker slot. The port worker shares this static
+   stack, and a static stack may be reused only once the task on it has
+   stopped touching it - An earlier fault found rtl_pump restarting on a stack that was
+   still running. So the port worker parks itself suspended when it is done
+   (FINISHED) instead of deleting itself, and the next caller that wins the
+   compare-exchange deletes it from outside before creating the next one.
+   The VBUS worker is unchanged: it goes straight back to IDLE. */
+enum { SDRPWR_IDLE = 0, SDRPWR_RUNNING, SDRPWR_FINISHED };
+static int s_sdrpwr_state = SDRPWR_IDLE;
+static TaskHandle_t s_sdrpwr_task;
+
+static bool hl_sdr_power_cycle_running(void)
+{
+    return __atomic_load_n(&s_sdrpwr_state, __ATOMIC_ACQUIRE) == SDRPWR_RUNNING;
+}
+
+/* Called only by the caller that moved FINISHED to RUNNING. */
+static bool sdrpwr_reclaim_finished_worker(void)
+{
+    for (int i = 0; i < 40 && eTaskGetState(s_sdrpwr_task) != eSuspended; i++)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    if (eTaskGetState(s_sdrpwr_task) != eSuspended) return false;
+    vTaskDelete(s_sdrpwr_task);
+    s_sdrpwr_task = NULL;
+    return true;
+}
 
 static void sdr_power_task(void *arg)
 {
@@ -923,7 +999,7 @@ static void sdr_power_task(void *arg)
         if (lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB)) {
             ESP_LOGW(TAG, "SDR power cycle: re-enumerated after %d ms, no restart needed",
                      (i + 1) * 100);
-            s_sdrpwr_busy = false;
+            __atomic_store_n(&s_sdrpwr_state, SDRPWR_IDLE, __ATOMIC_RELEASE);
             vTaskDelete(NULL);
             return;
         }
@@ -934,20 +1010,101 @@ static void sdr_power_task(void *arg)
     esp_restart();
 }
 
+/* Where a root-port reset cannot bring the dongle back. A reboot is
+   what revived it on 2026-09-11, but it is taken only with the operator's
+   USB auto-reboot setting on (off by default). The automatic path
+   counts each reset against the RTC budget, which survives the restart, so
+   a dongle that is still wedged afterwards cannot turn this into a loop. */
+static void sdr_port_give_up(const char *what)
+{
+    if (lakeshark_usb_autoreboot()) {
+        ESP_LOGE(TAG, "SDR reset: %s - restarting (USB auto-reboot is on)", what);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+    ESP_LOGE(TAG, "SDR reset: %s. USB auto-reboot is off, so the board stays "
+                  "up - replug the dongle or reboot to bring it back.", what);
+}
+
+/* The worker for a board with no VBUS switch. rtl_adapter_port_reset
+   does the detach-safe teardown and the root-port cycle; this waits for the dongle
+   to come back and says what happened. Pinned to core 1 below the USB lib
+   task (priority 13 there), because usb_port_cycle.c relies on port events
+   being handled before it acts on the port. The boot that revived the wedged
+   dongle spent 2.6 s on "Root port reset failed" before the R820T answered,
+   hence a longer wait than the VBUS path's 8 s. */
+#define SDR_PORT_WAIT_MS 15000
+
+static void sdr_port_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "SDR reset: releasing the dongle, then power cycling the USB "
+                  "root port (VBUS stays up: this is a disconnect and a bus reset)");
+    const usb_port_cycle_result_t r = rtl_adapter_port_reset();
+    ESP_LOGW(TAG, "SDR reset: root-port cycle %s", usb_port_cycle_result_name(r));
+
+    if (r == USB_PORT_CYCLE_STILL_OFF) {
+        sdr_port_give_up("the USB host port did not power back on");
+    } else if (r == USB_PORT_CYCLE_DONE || r == USB_PORT_CYCLE_NOT_RELEASED) {
+        int waited_ms = 0;
+        while (waited_ms < SDR_PORT_WAIT_MS &&
+               !lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            waited_ms += 100;
+        }
+        if (lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB))
+            ESP_LOGW(TAG, "SDR reset: re-enumerated after %d ms, no restart needed",
+                     waited_ms);
+        else
+            sdr_port_give_up("nothing re-enumerated");
+    }
+    /* NOTHING and OFF_FAILED left the port alone with the dongle released,
+       which is where 'rtl detach' leaves it: a replug brings it back. */
+    ESP_LOGI(TAG, "SDR reset: worker done, %u bytes of stack to spare",
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    /* Parked, not deleted: see SDRPWR_FINISHED. The next caller reclaims it. */
+    __atomic_store_n(&s_sdrpwr_state, SDRPWR_FINISHED, __ATOMIC_RELEASE);
+    vTaskSuspend(NULL);
+}
+
 /**/
 /**/
 /* WHY it did not start, not just that it did not. */
 
 static sdrpwr_result_t hl_sdr_power_cycle_try(void)
 {
-    if (!LS_HAS_VBUS_CTRL) {
-        ESP_LOGW(TAG, "%s has no VBUS switch on the USB host port - cannot power "
-                      "cycle the dongle in software. Replug it, or run "
-                      "'SDR recover'.", LS_BOARD_NAME);
-        return SDRPWR_NO_SWITCH;
+    /* Claimed with a compare-exchange, not a test then a set: the
+       health watchdog, the console and the head can all ask at once, and two
+       workers on one static stack is the worst thing this function could do.
+       A finished port worker is still parked on that stack; the caller that
+       claims the slot from FINISHED deletes it before reusing the stack. */
+    int expected = SDRPWR_IDLE;
+    if (!__atomic_compare_exchange_n(&s_sdrpwr_state, &expected,
+                                     SDRPWR_RUNNING, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE)) {
+        if (expected != SDRPWR_FINISHED ||
+            !__atomic_compare_exchange_n(&s_sdrpwr_state, &expected,
+                                         SDRPWR_RUNNING, false,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return SDRPWR_BUSY;
+        if (!sdrpwr_reclaim_finished_worker()) {
+            __atomic_store_n(&s_sdrpwr_state, SDRPWR_FINISHED, __ATOMIC_RELEASE);
+            return SDRPWR_BUSY;
+        }
     }
-    if (s_sdrpwr_busy) return SDRPWR_BUSY;
-    s_sdrpwr_busy = true;
+    if (!LS_HAS_VBUS_CTRL) {
+        if (!rtl_adapter_port_reset_possible()) {
+            ESP_LOGW(TAG, "nothing is enumerated on the USB host port - a "
+                          "root-port reset has nothing to act on. Replug the "
+                          "dongle.");
+            __atomic_store_n(&s_sdrpwr_state, SDRPWR_IDLE, __ATOMIC_RELEASE);
+            return SDRPWR_NOTHING_ENUMERATED;
+        }
+        s_sdrpwr_task = xTaskCreateStaticPinnedToCore(
+            sdr_port_task, "sdr_port", SDRPWR_STACK_WORDS, NULL, 5,
+            s_sdrpwr_stack, &s_sdrpwr_tcb, 1);
+        return SDRPWR_STARTED;
+    }
     xTaskCreateStatic(sdr_power_task, "sdr_pwr", SDRPWR_STACK_WORDS, NULL, 5,
                       s_sdrpwr_stack, &s_sdrpwr_tcb);
     return SDRPWR_STARTED;
@@ -1343,7 +1500,8 @@ static void c6_print_versions(void)
                "build.\n");
     } else if ((uint32_t)ESP_HOSTED_VERSION_PATCH_1 != v.patch1) {
         printf("c6 patch levels differ (host %d, slave %lu). esp_hosted only enforces "
-               "major.minor, so this is usually benign.\n",
+               "major.minor, but 2.12.9 against 2.12.3 passed that and the transport "
+               "still framed packets differently - reflash the C6.\n",
                ESP_HOSTED_VERSION_PATCH_1, (unsigned long)v.patch1);
     } else {
         printf("c6 host and co-processor firmware are in step.\n");
@@ -2414,7 +2572,7 @@ static int cmd_fl(int argc, char **argv)
 /* full=false registers only the recovery set. Everything below
    dereferences the radio backend, the audio path or the BLE link, none of
    which safe mode started. */
-static void console_start(bool full)
+static bool console_start(bool full)
 {
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -2424,12 +2582,22 @@ static void console_start(bool full)
     esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     esp_err_t cerr = esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl);
     if (cerr != ESP_OK) {
+        /* IDF 5.4.3's error path deletes the UART driver after pointing the
+           console VFS at it, and leaves the VFS pointing there. Every write
+           to stdout then fails inside uart_write_bytes, which logs "uart
+           driver error" - to stdout. That recursion overflowed the main task
+           on every boot with Wi-Fi joined, where the REPL task could not get
+           its 4 KB stack (3.8 KB internal left), and the log line below was
+           the first to fall into it. Put the VFS back on the plain FIFO
+           before anything prints. */
+        if (!uart_is_driver_installed(uart_cfg.channel))
+            uart_vfs_dev_use_nonblocking(uart_cfg.channel);
         ESP_LOGE(TAG, "console REPL unavailable: %s (internal=%u largest=%u). "
                       "Radio and links keep running; the head still works.",
                  esp_err_to_name(cerr),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        return;
+        return false;
     }
 
     /* This table used to consume roughly a kilobyte of the already-small
@@ -2442,7 +2610,7 @@ static void console_start(bool full)
           .func = &cmd_status },
         { .command = "p2", .help = "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot", .func = &cmd_p2 },
         /**/
-        { .command = "rtl", .help = "RTL health; 'rtl detach' simulates an unplug",
+        { .command = "rtl", .help = "RTL health; 'rtl reset' resets the dongle, 'rtl detach' simulates an unplug",
           .func = &cmd_rtl },
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
@@ -2518,7 +2686,17 @@ static void console_start(bool full)
     esp_err_t serr = esp_console_start_repl(repl);
     if (serr != ESP_OK) {
         ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));
+        return false;
     }
+    return true;
+}
+
+static void console_retry_start(void)
+{
+    if (console_start(true))
+        ESP_LOGI(TAG, "console ready after main-task memory release");
+    else
+        ESP_LOGE(TAG, "console retry failed; no further retries this boot");
 }
 
 /* Headless safe mode. No display to fall back on, so the report is
@@ -2709,9 +2887,24 @@ void app_main(void)
                 ESP_LOGW(TAG, "C6 firmware version query failed");
             }
 
-            esp_err_t be = ble_link_start();
-            ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
-            wifi_autojoin_ready = be == ESP_OK;
+            /* BLE scans continuously once started, so a board with no
+               control head attached pays for it all day. The preference is
+               honoured here rather than by stopping it afterwards, which
+               would still have brought the radio up. */
+            esp_err_t be = ESP_OK;
+            if (settings_peek_ble_at_boot()) {
+                be = ble_link_start();
+                ESP_LOGI(TAG, "BLE control head link: %s", esp_err_to_name(be));
+            } else {
+                ESP_LOGI(TAG, "BLE held off at boot by preference ('radios ble on' starts it)");
+            }
+            /* Peek, not get: settings_init() has not run yet, so the getter
+               would answer from its default and 'radios wifi off' would be
+               stored, reported and ignored. */
+            const bool wifi_pref = settings_peek_wifi_at_boot();
+            if (!wifi_pref)
+                ESP_LOGI(TAG, "WiFi autojoin held off at boot by preference ('radios wifi on' restores it)");
+            wifi_autojoin_ready = be == ESP_OK && wifi_pref;
         }
     }
 #endif /* CONFIG_LS_C6_LINK */
@@ -2865,15 +3058,19 @@ void app_main(void)
         ESP_LOGI(TAG,"CELL sensors: GPS=%s IMU=%s",
                  esp_err_to_name(ls_gps_start()),esp_err_to_name(ls_imu_start()));
     }
-    console_start(true);
+    const bool console_up = console_start(true);
 #if LS_HAS_COMPACT_UI
     esp_err_t ui_err=compact_ui_start(compact_mode_changed);
     if (ui_err!=ESP_OK) ESP_LOGE(TAG,"compact UI: %s",esp_err_to_name(ui_err));
 #endif
-    ESP_LOGI(TAG, "console ready - type 'help' for commands");
+    if (console_up)
+        ESP_LOGI(TAG, "console ready - type 'help' for commands");
+    else
+        ESP_LOGW(TAG, "boot finished WITHOUT a serial console - see the REPL line above");
 
     /* Not healthy yet: the one-shot at LS_SAFE_HEALTHY_MS clears the
        startup fault counter, not the end of app_main. */
     ls_safe_stage(LS_SAFE_STAGE_RUNNING);
     ls_safe_healthy_arm();
+    if (!console_up && s_defer_q) atomic_store(&s_console_retry, true);
 }

@@ -254,8 +254,8 @@ void lakeshark_fm_set_mode(int mode)
     ++s_set_count;
 }
 int lakeshark_fm_get_mode(void) { return s_fm_mode; }
-void lakeshark_fm_tune(int delta_hz) { (void)delta_hz; }
-void lakeshark_fm_set_freq(uint32_t hz) { (void)hz; ++s_freq_sets; }
+bool lakeshark_fm_tune(int delta_hz) { (void)delta_hz; return true; }
+bool lakeshark_fm_set_freq(uint32_t hz) { (void)hz; ++s_freq_sets; return true; }
 uint32_t lakeshark_fm_get_freq(void) { return 0; }
 void lakeshark_fm_set_baud(int baud) { (void)baud; }
 int lakeshark_fm_get_baud(void) { return 1200; }

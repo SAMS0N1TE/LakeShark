@@ -7,23 +7,108 @@ static fm_dsp_t dsp;
 static uint8_t iq[4096];
 static int16_t audio[8192];
 
+/* Bench measurements on a T-Display-P4 with an RTL-SDR, demod_noise as the
+   code sees it: a strong local broadcast 0.28..0.59, dead air 0.81..0.97.
+   The cases use those numbers rather than invented ones, because the defect
+   this replaced was a test that drove iq_block_peak at 0.30 and 1.00 while
+   the hardware never produced more than 0.07. */
+#define NFM_SIGNAL  0.47f
+#define NFM_HISS    0.90f
+
 LS_CASE(nfm_squelch_rejects_retune_and_short_spikes)
 {
     fm_dsp_init(&dsp);
-    dsp.iq_block_peak = 1.0f;
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
-    dsp.iq_block_peak = 0.08f;
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
-    dsp.iq_block_peak = 0.30f;
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
-    LS_CHECK(fm_nfm_squelch(&dsp, 15, 1024));
-    dsp.iq_block_peak = 0.08f;
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    dsp.demod_noise = NFM_SIGNAL;
+    /* The settle window after a retune holds it shut whatever it hears. */
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+    dsp.demod_noise = NFM_HISS;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+    dsp.demod_noise = NFM_SIGNAL;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+    LS_CHECK(fm_nfm_squelch(&dsp, 30, 1024));
+    /* Hiss now has to be sustained to shut it, so one block does not. */
+    dsp.demod_noise = NFM_HISS;
+    LS_CHECK(fm_nfm_squelch(&dsp, 30, 1024));
     fm_dsp_init(&dsp);
-    dsp.iq_block_peak = 0.30f;
-    LS_CHECK(!fm_nfm_squelch(&dsp, 15, 1024));
+    dsp.demod_noise = NFM_SIGNAL;
+    LS_CHECK(!fm_nfm_squelch(&dsp, 30, 1024));
+}
+
+LS_CASE(one_noisy_block_inside_a_transmission_does_not_chop_the_audio)
+{
+    /* The chop, as a case. A solid signal with an occasional noisy block used
+       to shut the squelch on that block and then need another 64 ms qualify
+       window to reopen, and the player splices a silence in for every gap.
+       Hardware showed about 1.6 of those a second on a clean broadcast. */
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = NFM_SIGNAL;
+    int open = 0;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 30, 1024);
+    LS_CHECK(open);
+
+    for (int i = 0; i < 6; i++) {
+        dsp.demod_noise = NFM_HISS;            /* one bad block */
+        LS_CHECK_MSG(fm_nfm_squelch(&dsp, 30, 1024),
+                     "a single noisy block shut the squelch at spike %d", i);
+        dsp.demod_noise = NFM_SIGNAL;          /* and the signal is back */
+        LS_CHECK(fm_nfm_squelch(&dsp, 30, 1024));
+    }
+}
+
+LS_CASE(sustained_hiss_still_closes_it)
+{
+    /* Hysteresis must not become a latch: when the transmission really ends,
+       the squelch has to shut rather than hold the hiss open. */
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = NFM_SIGNAL;
+    int open = 0;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 30, 1024);
+    LS_CHECK(open);
+
+    dsp.demod_noise = NFM_HISS;
+    for (int i = 0; i < 40 && open; i++) open = fm_nfm_squelch(&dsp, 30, 1024);
+    LS_CHECK_MSG(!open, "sustained hiss never closed the squelch");
+}
+
+LS_CASE(the_default_gate_sits_between_measured_signal_and_measured_hiss)
+{
+    /* The whole defect in one case: at the shipped default, a real signal
+       must open and real dead air must not. */
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = NFM_SIGNAL;
+    int open = 0;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 30, 1024);
+    LS_CHECK_MSG(open, "a signal at %.2f stays muted at the default gate",
+                 (double)NFM_SIGNAL);
+
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = NFM_HISS;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 30, 1024);
+    LS_CHECK_MSG(!open, "dead air at %.2f opens the squelch at the default gate",
+                 (double)NFM_HISS);
+}
+
+LS_CASE(the_control_still_runs_the_right_way_round)
+{
+    /* Higher is more squelch. 0 opens on anything, 100 opens on nothing. */
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = NFM_HISS;
+    int open = 0;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 0, 1024);
+    LS_CHECK_MSG(open, "squelch 0 should pass even hiss");
+
+    fm_dsp_init(&dsp);
+    dsp.squelch_settle_samples = 0;
+    dsp.demod_noise = 0.0f;
+    for (int i = 0; i < 8; i++) open = fm_nfm_squelch(&dsp, 100, 1024);
+    LS_CHECK_MSG(!open, "squelch 100 should pass nothing");
 }
 
 LS_CASE(nfm_current_level_does_not_retain_previous_peak)

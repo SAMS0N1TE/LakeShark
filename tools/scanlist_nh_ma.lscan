@@ -1,0 +1,151 @@
+LSCAN1
+# LakeShark conventional scan list - New Hampshire and Massachusetts
+#
+# Copy to the SD card and load it:
+#
+#     sd put scanlist_nh_ma.lscan <base64>      (tools/sd_put.py does this)
+#     ch load /sdcard/scanlist_nh_ma.lscan
+#
+# 'ch load' REPLACES the whole channel list and stops the scanner. This file
+# is therefore the complete list, not an addition to one.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS IS, AND HOW IT RELATES TO THE P25 PROFILE
+#
+# tools/p25_profile_franklin_nh_to_west_dennis_ma.example holds the TRUNKED
+# systems - the ones the P25 app follows by control channel. This file holds
+# the CONVENTIONAL channels: single frequencies, P25 or analogue, that the
+# scanner steps through one at a time. They are two different lists because
+# they are two different things, and most of the traffic on this route is on
+# this one.
+#
+# FIELD ORDER
+#     name|freq_hz|MODE|zone|latitude|longitude|radius_km|priority
+#
+# MODE is P25 or NFM only - the importer rejects anything else, WFM included.
+# Every field must be present and non-empty; '#' starts a comment line.
+#
+# The coordinates and radius are only consulted when LOCATION filtering is
+# switched on in the SCAN app. With it on, a channel is skipped unless the
+# GPS fix is inside its circle, so driving the route walks the list from the
+# Lakes Region down to the Cape without touching anything. With it off, the
+# whole list scans everywhere and the coordinates are inert. Radii are
+# deliberately generous - a channel wrongly skipped is worse than one
+# wrongly scanned.
+#
+# PRIORITY (last field) marks the channels checked between every other
+# channel. Kept to dispatch and distress only; making everything priority is
+# the same as making nothing priority.
+#
+# ZONES
+#     0  NH statewide            4  Massachusetts statewide / BAPERN
+#     1  Franklin / Lakes Region 5  Cape Cod
+#     2  Concord / Merrimack Co  6  Weather and marine
+#     3  Southern NH             7  Interop and amateur
+#
+# CONFIDENCE - read this before trusting a silent channel
+# Frequencies here came from published listener references, not from a
+# receiver. NH State Police and Merrimack County are P25 CONVENTIONAL with
+# the NAC shown in the comment; the board has already decoded 154.7850
+# NAC 527 (Franklin PD), which is the one first-hand confirmation in the
+# file. Treat the rest as good leads. NH State Police channels are
+# encryption-CAPABLE at the trooper's discretion - intermittent encrypted
+# traffic there is normal, not a fault.
+#
+# MEASURED COVERAGE - where this list is thin, and why
+# bench/tests/test_scan_list_nh_ma.c drives the route through the firmware's
+# own geo filter. Something is in range at every point of the drive, but the
+# middle of the Massachusetts leg - roughly Framingham to Norfolk - has no
+# LOCAL channel at all: only the wide-area BAPERN tactical channels and the
+# route-wide interop reach it. That is not a gap in the file, it is the
+# region: municipal police and fire there are on the Motorola SmartZone
+# trunk, which a P25 decoder cannot follow at all. Expect the scanner to go
+# quiet through the I-495 arc and to come back to life at the canal.
+# ---------------------------------------------------------------------------
+
+# --- Zone 0: New Hampshire statewide ---------------------------------------
+# Centred on Concord with a radius that covers the whole NH leg of the drive.
+# 159.3150 is the statewide talk-around and the air unit; it is the one NH
+# channel worth priority, because it carries traffic from anywhere.
+NHSP STATE|159315000|P25|0|43.2081|-71.5376|150|1
+NH FIRE STATE|154280000|NFM|0|43.2081|-71.5376|150|0
+NH MED-1|155340000|NFM|0|43.2081|-71.5376|150|0
+NH MED-2|155385000|NFM|0|43.2081|-71.5376|150|0
+NH MED-5|155400000|NFM|0|43.2081|-71.5376|150|0
+
+# --- Zone 1: Franklin and the Lakes Region ---------------------------------
+# Home. Franklin PD is the NAC the board has actually decoded, so it is the
+# reference channel: if this one is silent the problem is the receiver, not
+# the list.
+# Lakes Region Mutual Fire Aid dispatches Franklin itself - F-1 is the
+# dispatch channel and is the busiest thing in this zone.
+FRANKLIN PD|154785000|P25|1|43.4406|-71.6498|25|1
+LRMFA F-1 DISP|159900000|NFM|1|43.5279|-71.4703|60|1
+LRMFA F-2 FG|160110000|NFM|1|43.5279|-71.4703|60|0
+# Troop E covers the lakes and the notches, north of Franklin.
+NHSP TROOP E|151325000|P25|1|43.8600|-71.2680|80|0
+
+# --- Zone 2: Concord and Merrimack County ----------------------------------
+# Troop D is the Concord barracks - the first state police coverage heading
+# south out of Franklin on I-93.
+NHSP TROOP D|156210000|P25|2|43.2081|-71.5376|80|1
+MERR SO WEST|155685000|P25|2|43.2081|-71.5376|60|0
+MERR SO EAST|155700000|P25|2|43.2081|-71.5376|60|0
+MERR SO SIMUL|159090000|P25|2|43.2081|-71.5376|60|0
+CONCORD PD OPS|155625000|P25|2|43.2081|-71.5376|30|0
+CONCORD PD SPC|155820000|P25|2|43.2081|-71.5376|30|0
+CAP AREA FIRE|154355000|NFM|2|43.2081|-71.5376|60|0
+
+# --- Zone 3: Southern New Hampshire ----------------------------------------
+# Manchester and Nashua public safety are TRUNKED - they are in the P25
+# profile, not here. What is left conventional in this zone is the state
+# police barracks at Bedford, which covers the I-93 and I-293 run through
+# Manchester and on to the state line.
+NHSP TROOP B|154935000|P25|3|42.9460|-71.5160|60|1
+
+# --- Zone 4: Massachusetts statewide and BAPERN ----------------------------
+# BAPERN is the Boston Area Police Emergency Radio Network - the UHF
+# interop tactical channels, P25 conventional. TAC North and TAC Southeast
+# between them cover the I-495 arc this route drives.
+# Most Massachusetts municipal traffic is NOT here and NOT followable: it is
+# on the legacy Motorola Type II SmartZone system 0D14, which has an
+# analogue control channel a P25 decoder cannot follow. Those control
+# channels are listed at the foot of the P25 profile for the day a Motorola
+# trunk-follower exists.
+BAPERN TAC N|482962500|P25|4|42.5000|-71.1000|80|0
+BAPERN TAC SE|483037500|P25|4|41.9000|-71.0000|80|0
+BAPERN TAC S|470150000|P25|4|42.0000|-71.2000|80|0
+PLYM SO BCI|483400000|P25|4|41.9584|-70.6673|50|0
+
+# --- Zone 5: Cape Cod ------------------------------------------------------
+# The destination end. Barnstable County fireground and police tactical are
+# analogue on the 851 MHz band and are clear - unlike the dispatch traffic,
+# which is on the SmartZone trunk.
+BARN FG 1|851312500|NFM|5|41.7003|-70.3000|50|0
+BARN FG 2|851837500|NFM|5|41.7003|-70.3000|50|0
+BARN PD TAC 1|851062500|NFM|5|41.7003|-70.3000|50|0
+# Route 25 crosses the canal at Bourne; canal control works vessels through
+# it on marine channel 13.
+CANAL CTRL 13|156650000|NFM|5|41.7440|-70.6160|40|0
+
+# --- Zone 6: Weather and marine --------------------------------------------
+# Three NOAA transmitters, handed off down the route: Concord, southern NH,
+# then Hyannis for the Cape. Not priority - they transmit continuously and
+# would hold the scanner forever.
+NOAA CONCORD|162400000|NFM|6|43.2081|-71.5376|120|0
+NOAA S NH|162525000|NFM|6|42.9956|-71.4548|80|0
+NOAA HYANNIS|162550000|NFM|6|41.6520|-70.2820|100|0
+# Channel 16 is the international distress and calling frequency and 22A is
+# where the Coast Guard moves traffic off it. Both worth priority near the
+# water; neither is worth scanning inland, hence the tight circles.
+MARINE 16|156800000|NFM|6|41.6620|-70.1700|60|1
+MARINE 22A USCG|157100000|NFM|6|41.6620|-70.1700|60|0
+
+# --- Zone 7: Interop and amateur -------------------------------------------
+# VCALL10 is the national VHF interop calling channel - the one place a
+# mutual-aid response to something on this route would organise itself.
+# Centred midway down the drive with a radius that spans the whole of it.
+VCALL10|155752500|NFM|7|42.5500|-70.9100|130|0
+# National FM simplex calling frequencies, same route-wide circle.
+2M CALL|146520000|NFM|7|42.5500|-70.9100|130|0
+70CM CALL|446000000|NFM|7|42.5500|-70.9100|130|0

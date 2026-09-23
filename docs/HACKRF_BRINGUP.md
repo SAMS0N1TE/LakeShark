@@ -43,10 +43,3 @@ in these tests, including after fitting an ADS-B antenna.
 - No HackRF transmission was implemented or tested.
 - Startup with one connected USB radio is the validation target. Hot swapping
   is not yet a verified feature.
-
-## Earlier research
-
-Driver work and hardware bring-up are tracked as separate steps. Earlier
-PC-side HackRF capture and FSK analysis at 2 MSPS informed the approach and
-serves as a measurement reference, rather than proof of ESP32 USB host
-operation.

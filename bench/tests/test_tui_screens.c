@@ -1,11 +1,16 @@
 /* LS_TEST_SOURCES: the three screens plus tui_core, with the state they read faked */
 
 #include "ls_test.h"
+#include "ls_value.h"
+#include "ls_map.h"
+#include "ls_rec_replay.h"
+#include <math.h>
 #include <stdlib.h>
 #include "rec_watch.h"
 #include "tui_core.h"
 #include "ls_tui_screen.h"
 #include "ls_app.h"
+#include "ls_app_docs.h"
 #include "ls_anim.h"
 #include "ls_icons.h"
 /* ls_tile_grid and ls_tile_shape: the layout under test. */
@@ -91,6 +96,27 @@ bool settings_get_home(float *lat, float *lon)
     if (lat) *lat = 43.4445f;
     if (lon) *lon = -71.6473f;
     return true;
+}
+
+/* Geographic rendering has its own real-reader/renderer host suite.
+ * This screen fixture supplies a deterministic basemap projection only. */
+static int map_zoom=8;
+int ls_map_zoom(void) {return map_zoom;}
+void ls_map_zoom_by(int dz) {map_zoom+=dz;}
+int ls_map_tile_px(void) {return 76;}
+bool ls_map_render_busy(void) {return false;}
+const char *ls_map_status(void) {return NULL;}
+void ls_map_preview_leave(void) {}
+void ls_map_follow_set(bool enable) {(void)enable;}
+void ls_map_preview_reserve(tui_rect a,int x,int y,int w) {(void)a;(void)x;(void)y;(void)w;}
+void ls_map_preview_labels(tui_surface *sf,tui_rect a) {(void)sf;(void)a;}
+void ls_map_preview(tui_surface *sf,tui_rect a,double lat,double lon)
+{(void)sf;(void)a;(void)lat;(void)lon;}
+bool ls_map_preview_point(double lat,double lon,tui_rect a,int *x,int *y)
+{
+    *x=a.x+a.w/2+(int)lround((lon+71.6473)*20);
+    *y=a.y+a.h/2-(int)lround((lat-43.4445)*20);
+    return *x>=a.x && *x<a.x+a.w && *y>=a.y && *y<a.y+a.h;
 }
 
 static bool s_gps_fix = false;
@@ -397,6 +423,77 @@ static ls_act_status_t fm_test_select(const ls_args_t *args, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+static float s_sql_seen;
+static int   s_sql_calls;
+/* The STEP control reads its current value before it writes the next one, and
+   ls_value_builtin is not linked here, so the value has to be published too or
+   the step reports UNAVAILABLE and never reaches the action. */
+static bool fm_test_sql_value(ls_val_t *out)
+{
+    out->kind = LS_VAL_FLOAT;
+    out->f = (float)FM.squelch_tenths;
+    return true;
+}
+static ls_act_status_t fm_test_sql(const ls_args_t *args, ls_val_t *out)
+{
+    (void)out;
+    if (!args || args->n != 1) return LS_ACT_BADARG;
+    s_sql_seen = args->v[0].kind == LS_VAL_INT ? (float)args->v[0].i
+                                               : args->v[0].f;
+    s_sql_calls++;
+    return LS_ACT_OK;
+}
+
+LS_CASE(squelch_down_lowers_squelch_instead_of_toggling_the_sweep)
+{
+    /* The screen's own key() claims some letters and returns before the quick
+       bar is ever consulted, so a quick control that names one of those is a
+       control with no key at all. SQUELCH named 'w', RUN SWEEP already had it,
+       and winding the squelch down toggled the sweep and dropped the receiver
+       back into whatever sub-mode it came from. */
+    fresh();
+    const tui_rect pane = {1, 2, 46, 63};
+    grid_for(pane);
+    ls_action_register("fm.sql", "f", LS_CAP_TUNE, fm_test_sql, "squelch");
+    ls_value_publish("fm.sql", "%", fm_test_sql_value);
+    s_sql_calls = 0; s_sql_seen = -1.0f;
+    FM.mode = FM_MODE_LISTEN;
+    FM.squelch_tenths = 40;
+
+    ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));          /* into the detail page */
+
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'a'));          /* squelch down */
+    LS_EQ_INT(1, s_sql_calls);
+    LS_CHECK_MSG(s_sql_seen < 40.0f,
+                 "squelch down asked for %.1f against a starting 40",
+                 (double)s_sql_seen);
+    LS_EQ_INT(FM_MODE_LISTEN, (int)FM.mode);
+
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 's'));          /* squelch up */
+    LS_EQ_INT(2, s_sql_calls);
+    LS_CHECK_MSG(s_sql_seen > 40.0f,
+                 "squelch up asked for %.1f against a starting 40",
+                 (double)s_sql_seen);
+    LS_EQ_INT(FM_MODE_LISTEN, (int)FM.mode);
+}
+
+LS_CASE(w_still_belongs_to_run_sweep)
+{
+    /* The other half of the fix: RUN SWEEP keeps the key it advertises on its
+       own button, so moving squelch off 'w' cannot have taken it away. */
+    fresh();
+    const tui_rect pane = {1, 2, 46, 63};
+    grid_for(pane);
+    FM.mode = FM_MODE_LISTEN;
+    ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'w'));
+    LS_EQ_INT(FM_MODE_SCAN, (int)FM.mode);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'w'));
+    LS_EQ_INT(FM_MODE_LISTEN, (int)FM.mode);
+}
+
 LS_CASE(fm_mode_picker_reaches_every_fm_receiver_and_nfm_disables_p25_mixing)
 {
     fresh();
@@ -463,8 +560,12 @@ LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
     LS_EQ_INT(FM.mode, FM_MODE_LISTEN);
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'w'));
     LS_EQ_INT(FM.mode, FM_MODE_SCAN);
+    /* The PAGER tab used to put a listening receiver into POCSAG on its own,
+       which is a view reaching over and changing what the radio does. It no
+       longer does, and outside a pager mode it is not offered at all, so
+       asking for it leaves the receiver where it was. */
     ls_scr_fm_show_page(1);
-    LS_EQ_INT(FM.mode, FM_MODE_POCSAG);
+    LS_EQ_INT(FM.mode, FM_MODE_SCAN);
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
     LS_CHECK(ls_picker_key(LS_TK_DOWN, 0));
     LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
@@ -546,23 +647,23 @@ static void apps_once(void)
 
     static const ls_app_t APPS[N_SCREENS] = {
         { "set",  "SET",  "display, theme", LS_ICON_GEAR,  TUI_BLUE,
-          LS_APP_EXTRA, &ls_scr_settings, NULL },
+          LS_APP_EXTRA, &ls_scr_settings, NULL, &ls_doc_settings },
         { "diag", "DIAG", "health",   LS_ICON_CHIP,   TUI_WHITE,
-          LS_APP_EXTRA, &ls_scr_diag, NULL },
+          LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
         { "rec",  "REC",  "capture",  LS_ICON_RECORD, TUI_RED,
-          LS_APP_EXTRA, &ls_scr_rec, NULL },
+          LS_APP_EXTRA, &ls_scr_rec, NULL, &ls_doc_rec },
         { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
-          LS_APP_MAIN, &ls_scr_home, NULL },
+          LS_APP_MAIN, &ls_scr_home, NULL, &ls_doc_home },
         { "fm",   "FM",   "analogue", LS_ICON_WAVE,   TUI_YELLOW,
-          LS_APP_MAIN, &ls_scr_fm, NULL },
+          LS_APP_MAIN, &ls_scr_fm, NULL, &ls_doc_fm },
         { "adsb", "ADSB", "aircraft", LS_ICON_PLANE,  TUI_MAGENTA,
-          LS_APP_MAIN, &ls_scr_adsb, NULL },
+          LS_APP_MAIN, &ls_scr_adsb, NULL, &ls_doc_adsb },
         { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
-          LS_APP_EXTRA, &ls_scr_labs, NULL },
+          LS_APP_EXTRA, &ls_scr_labs, NULL, &ls_doc_labs },
         { "journal", "JOURNAL", "notes", LS_ICON_JOURNAL, TUI_GREEN,
-          LS_APP_EXTRA, &ls_scr_journal, NULL },
+          LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
         { "subghz", "SUB-GHZ", "watch", LS_ICON_RECORD, TUI_GREEN,
-          LS_APP_EXTRA, &ls_scr_subghz, NULL },
+          LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     };
     for (int i = 0; i < N_SCREENS; i++) ls_app_register(&APPS[i]);
 }
@@ -960,7 +1061,7 @@ LS_CASE(adsb_radar_does_not_merge_two_close_labels)
        false failure if the whole row were searched. Only the radar's own
        columns, to the right of the split draw() uses, say anything about
        whether the collision check worked. */
-    const int radar_x = PANES[0].x + (PANES[0].w - 38);
+    const int radar_x = PANES[0].x + PANES[0].w / 2;
     char line[W + 1];
     bool saw_first = false, saw_second = false, saw_merge = false;
     for (int y = 0; y < H; y++) {
@@ -1005,7 +1106,7 @@ LS_CASE(adsb_portrait_has_a_radar_under_a_list_that_holds_all_sixteen)
     for (int y = 0; y < H; y++) {
         row_text(y, line, sizeof(line));
         if (list_y < 0 && strstr(line, "AIRCRAFT")) list_y = y;
-        if (radar_y < 0 && strstr(line, "- RADAR ")) radar_y = y;
+        if (radar_y < 0 && strstr(line, "- MINI MAP ")) radar_y = y;
         for (uint32_t i = 0; i < ADSB_MAX_TRACKED; i++) {
             char hex[8];
             snprintf(hex, sizeof(hex), "%06lX", (unsigned long)(0xB00000u + i));
@@ -1055,7 +1156,7 @@ LS_CASE(adsb_radar_tap_picks_the_nearest_contact_and_a_second_opens_it)
     for (int y = 0; y < H; y++) {
         row_text(y, line, sizeof(line));
         if (radar_y < 0) {
-            if (strstr(line, "- RADAR ")) radar_y = y;
+            if (strstr(line, "- MINI MAP ")) radar_y = y;
             continue;
         }
         const char *p = strstr(line, "SOUTH2");
@@ -1995,6 +2096,11 @@ LS_CASE(fm_dashboard_bank_swap_uses_hz_and_squelch_opens_an_editor)
     ls_action_register("fm.freq_hz","i",LS_CAP_TUNE,fm_test_freq,"Frequency");
     FM.mode=FM_MODE_LISTEN;FM.freq_hz=154785000;
     ls_scr_fm.enter();
+    /* The screen opens on the receiver now rather than on the shared scan
+       panel, so the A/B swap is reached by going to RADIO first. '0' is the
+       tab's own key. On the detail pages 'a' nudges squelch instead, which
+       is a different view and not a clash. */
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'0'));
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'a'));
     LS_EQ_INT(s_fm_tuned_hz,152600000);
     FM.freq_hz=152600000;
@@ -2116,13 +2222,13 @@ LS_CASE(subghz_scan_starts_from_the_bar_and_can_be_stopped_there)
     ls_scr_subghz.leave();
 }
 
-/* The detections view belongs to the sweep, and dies with it.
+/* The detections view outlives the sweep, and always has a way out.
 
-   It used to share a flag with the capture list's legend, and it used to
-   keep the pane after the sweep ended - so a sweep that finished while it
-   was on left a table on screen whose only off switch lived in a menu that
-   is only reachable while a sweep is running. */
-LS_CASE(subghz_detections_view_does_not_outlive_the_sweep)
+   What a sweep found is worth looking at after it stops, so the view stays.
+   Its off switch is the DETECTED counter in the banner, which is drawn
+   whenever the view can be - not a row in a menu that only exists while a
+   sweep is running. */
+LS_CASE(subghz_detections_view_outlives_the_sweep_and_closes)
 {
     rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_RTL);
     rec_watch_scan_stop();
@@ -2142,8 +2248,11 @@ LS_CASE(subghz_detections_view_does_not_outlive_the_sweep)
     int x,y;LS_CHECK(find_text("DETECTIONS",&x,&y));
     rec_watch_scan_stop();
     fresh();ls_scr_subghz.draw(&g_sf,pane);
-    /* Back to the capture list, with no sweep left to explain it, and the
-       findings reachable from TUNE rather than pinned over the pane. */
+    LS_CHECK(find_text("DETECTIONS",&x,&y));
+    /* The counter closes it, back to the capture list. */
+    LS_CHECK(find_text("CLOSE",&x,&y));
+    LS_CHECK(ls_scr_subghz.touch(x,y));
+    fresh();ls_scr_subghz.draw(&g_sf,pane);
     LS_CHECK(!find_text("DETECTIONS",&x,&y));
     LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'f'));
     fresh();ls_picker_draw(&g_sf,pane);
@@ -2547,13 +2656,23 @@ LS_CASE(home_function_groups_numeric_launch_and_compass_rotation_policy)
     LS_CHECK(!ls_scr_home.key(LS_TK_CHAR,']'));
 }
 
+/* Paging fixtures below are not apps and do not need a real contract, but
+   registration refuses a descriptor without one - which is the point of it.
+   One shared stand-in keeps the paging cases about paging. */
+static const ls_app_doc_t k_fixture_doc = {
+    .purpose = "A registration stand-in used only to fill the app directory "
+               "while a paging case counts pages.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 LS_CASE(home_later_page_returns_and_sky_landscape_has_referenced_table)
 {
     apps_once();
     static const ls_app_t extra[]={
-        {.id="page-a",.name="TEST A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
-        {.id="page-b",.name="TEST B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
-        {.id="page-c",.name="TEST C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm}};
+        {.id="page-a",.name="TEST A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc},
+        {.id="page-b",.name="TEST B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc},
+        {.id="page-c",.name="TEST C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc}};
     for(int i=0;i<3;i++)ls_app_register(&extra[i]);
     ls_scr_home.key(LS_TK_F1,0);
     const tui_rect small={1,2,46,33};
@@ -2584,9 +2703,9 @@ LS_CASE(home_portrait_pager_has_large_touch_targets_and_no_function_labels)
     apps_once();
     const tui_rect small={1,2,34,41};
     static const ls_app_t extra[]={
-        {.id="touch-a",.name="TOUCH A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
-        {.id="touch-b",.name="TOUCH B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm},
-        {.id="touch-c",.name="TOUCH C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm}};
+        {.id="touch-a",.name="TOUCH A",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc},
+        {.id="touch-b",.name="TOUCH B",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc},
+        {.id="touch-c",.name="TOUCH C",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc}};
     for(int i=0;i<3;i++)ls_app_register(&extra[i]);
     ls_scr_home.key(LS_TK_F1,0);fresh();draw_pane(&ls_scr_home,small);
     int x,y;LS_CHECK(!find_text("F1",&x,&y));LS_CHECK(!find_text("F5",&x,&y));
@@ -2649,7 +2768,7 @@ LS_CASE(adsb_portrait_always_offers_map_home_and_radar_view)
     LS_CHECK(find_text("SET HOME",&x,&y));
     LS_CHECK(ls_scr_adsb.key(LS_TK_CHAR,'r'));
     fresh();grid_for(pane);ls_scr_adsb.draw(&g_sf,pane);
-    LS_CHECK(find_text("RADAR",&x,&y));
+    LS_CHECK(find_text("MINI MAP",&x,&y));
     LS_CHECK(find_text("LIST",&x,&y));
     LS_EQ_INT(escaped(pane),0);
     ls_scr_adsb.key(LS_TK_CHAR,'r');
@@ -2678,4 +2797,55 @@ LS_CASE(fm_waterfall_arrows_select_space_commits)
         LS_EQ_INT(cursor_committed,selected);
         ls_wf_set_tuner(NULL);if(screens[i]->leave)screens[i]->leave();
     }
+}
+
+void rec_watch_sim_file_done(const char *result);
+int rec_watch_sim_file_count(void);
+int rec_watch_sim_file_dbm(void);
+LS_CASE(record_replay_loads_without_tx_and_waits_for_real_completion)
+{
+    int64_t old_time=esp_timer_get_time();ls_shim_time_set(1000000);
+    apps_once();rec_watch_enable(false);
+    subghz_file_t f={.freq_hz=433920000,.filetype_ok=true,.edges=6,.edges_total=6,.span_us=1800};
+    strcpy(f.protocol,"RAW");strcpy(f.preset,"FuriHalSubGhzPresetOok650Async");
+    int32_t edges[]={300,-300,300,-300,300,-300};
+    int before=rec_watch_sim_file_count();
+    LS_CHECK(ls_scr_rec_replay_file("/sdcard/test.sub",&f,edges));
+    LS_EQ_INT(rec_watch_sim_file_count(),before);
+    LS_EQ_INT(ls_tui_screen_current(),ls_tui_screen_index_of(&ls_scr_rec));
+    tui_rect pane={1,2,46,63};fresh();grid_for(pane);draw_pane(&ls_scr_rec,pane);
+    int x,y;LS_CHECK(find_text("PLAY ONCE",&x,&y));LS_CHECK(find_text("433.9200",&x,&y));
+    LS_CHECK(find_text("STORED PULSES",&x,&y));
+    ls_scr_rec.key(LS_TK_CHAR,'+');ls_scr_rec.key(LS_TK_ENTER,0);
+    LS_EQ_INT(rec_watch_sim_file_count(),before+1);LS_EQ_INT(rec_watch_sim_file_dbm(),0);
+    ls_scr_rec.key(LS_TK_ENTER,0);LS_EQ_INT(rec_watch_sim_file_count(),before+1);
+    LS_CHECK(!ls_scr_rec_replay_file("/sdcard/other.sub",&f,edges));
+    fresh();draw_pane(&ls_scr_rec,pane);LS_CHECK(find_text("BUSY",&x,&y));
+    LS_CHECK(find_text("STORED PULSES",&x,&y));int trace_row=y+2;
+    int first=-1,second=-1;
+    for(int i=0;i<W;i++)if(g_back[trace_row*W+i].ch==':')first=i;
+    LS_CHECK(first>=0);ls_shim_time_advance(175000);
+    fresh();draw_pane(&ls_scr_rec,pane);
+    for(int i=0;i<W;i++)if(g_back[trace_row*W+i].ch==':')second=i;
+    LS_CHECK(second-first>15); /* halfway across after 175 ms */
+    LS_CHECK(find_text("#1 HIGH 300 us",&x,&y));
+    rec_watch_sim_file_done("Sent file once on CC1101");
+    fresh();draw_pane(&ls_scr_rec,pane);LS_CHECK(find_text("Sent file once",&x,&y));
+    int completed=-1;
+    for(int i=0;i<W;i++)if(g_back[trace_row*W+i].ch==':')completed=i;
+    LS_EQ_INT(completed,second); /* no completion reset to the left */
+    ls_shim_time_advance(300000);fresh();draw_pane(&ls_scr_rec,pane);
+    for(int i=pane.x+3;i<pane.x+pane.w-3;i++)LS_CHECK(g_back[trace_row*W+i].ch!=':');
+    LS_CHECK(find_text("STORED PULSES",&x,&y));
+    bool plain=false;
+    for(int i=pane.x+3;i<pane.x+pane.w-3;i++) {
+        tui_cell cell=g_back[(y+1)*W+i];
+        if(cell.ch!='-' && cell.ch!='|')continue;
+        uint8_t fg=cell.attr&15;
+        LS_CHECK(fg==TUI_GREEN || fg==(TUI_YELLOW|TUI_BRIGHT));
+        if(fg==TUI_GREEN)plain=true;
+    }
+    LS_CHECK(plain); /* blue/cyan belongs only to the moving activity trail */
+    f.invalid=true;LS_CHECK(!ls_scr_rec_replay_file("/sdcard/bad.sub",&f,edges));
+    ls_scr_rec.key(LS_TK_TAB,0);ls_scr_rec.leave();ls_shim_time_set(old_time);
 }

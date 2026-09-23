@@ -1,6 +1,6 @@
-# FILES, replay and aircraft tracking — development preview
+# FILES, replay and aircraft tracking — 2.2.2
 
-These controls are from the T-Display-P4 development build checked on September 23, 2026. They are **not a newly cleared firmware release**. The current published release is [2.2.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.1); use the firmware and instructions for your exact board.
+Available in [LakeShark 2.2.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.2) for T-Display-P4. Use the firmware for your exact board.
 
 The pictures below are native device framebuffer captures, not simulator renders. The replay example is a synthetic test file at 433.920 MHz, with 300 edges and a stored duration of 268.80 ms. Aircraft screenshots use **example home coordinates, 43.00000, -71.00000**, not the receiver's position. Empty traffic means no aircraft were available in that capture.
 
@@ -57,8 +57,4 @@ SUB-GHZ keeps its passive capture and pulse-inspection controls. The FILES-to-RE
 
 <img src="screenshots/tdp4/development-20260923/subghz-port.png" width="280" alt="SUB-GHZ capture view in portrait">
 
-## What the checks establish
-
-Host tests, firmware builds, serial-driven UI checks and real framebuffer captures establish specific software behavior. They do not establish independent RF timing, physical touch reliability, speaker quality or absence of visible panel flashing.
-
-The release sweep retains blockers for Flipper lifecycle/control, independent RF acceptance, GPS recording and memory headroom, historical watchdog/restart cases, source-adapter coverage, and clean public-source/build reconciliation. Wi-Fi retries were observed with the saved network unavailable; successful reconnection was not established. No release was promoted on the strength of these screenshots.
+Experimental radio paths retain their in-app labels; source availability does not imply every format can be recorded or replayed.

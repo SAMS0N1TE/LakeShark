@@ -19,6 +19,8 @@
 #include "spectrum.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
+/**/
+#include "radio_open_retry.h"
 #include "audio_out.h"
 #include "ls_cpu_busy.h"
 #include "freertos/FreeRTOS.h"
@@ -416,7 +418,7 @@ static void fm_receiver_lost(ls_radio_err_t error)
     ls_iq_control_receiver_lost(&s_radio_control, error);
 }
 
-static bool fm_radio_open(void)
+static ls_radio_err_t fm_radio_open(void)
 {
     const ls_radio_requirements_t requirements = {
         .required_caps = LS_RADIO_RX_IQ_U8,
@@ -428,7 +430,7 @@ static bool fm_radio_open(void)
     ls_radio_err_t error = ls_radio_acquire("fm", &requirements, &s_session);
     if (error != LS_RADIO_OK) {
         fm_receiver_lost(error);
-        return false;
+        return error;
     }
 
     uint32_t center_hz = FM.mode == FM_MODE_SCAN
@@ -450,14 +452,14 @@ static bool fm_radio_open(void)
         ESP_LOGE(TAG, "radio open failed: %s", ls_radio_err_name(error));
         ls_radio_release(s_session);
         s_session = NULL;
-        return false;
+        return error;
     }
     ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
     ESP_LOGI(TAG, "radio: %.4f MHz %lukSPS gain=%d",
              actual.center_hz / 1e6,
              (unsigned long)(actual.sample_rate_hz / 1000),
              actual.gain_tenths_db);
-    return true;
+    return LS_RADIO_OK;
 }
 
 static void fm_fail_receiver_start(void);
@@ -490,12 +492,31 @@ static void fm_rx_run_once(void)
     int64_t stats_ts = esp_timer_get_time();
     int64_t last_yield = stats_ts;
     bool allocation_failed = false;
+    radio_open_retry_t open_retry;
+    radio_open_retry_reset(&open_retry);
     while (fm_lifecycle_active()) {
         if (!s_session) {
-            if (!fm_radio_open()) {
+            /* Bounded for io; see radio_open_retry.c. Holding costs
+               one atomic read every quarter second and never touches the
+               dongle; the next attach or detach lifts it. */
+            const uint32_t generation = ls_radio_endpoint_generation();
+            if (!radio_open_retry_may_try(&open_retry, generation)) {
+                vTaskDelay(pdMS_TO_TICKS(250));
+                continue;
+            }
+            const ls_radio_err_t open_error = fm_radio_open();
+            if (open_error != LS_RADIO_OK) {
+                if (radio_open_retry_failed(&open_retry, open_error,
+                                            generation) ==
+                    RADIO_OPEN_RETRY_HOLD)
+                    ESP_LOGE(TAG, "radio open failed with io %u times in a row - "
+                                  "not retrying until a receiver attaches or "
+                                  "detaches (replug, 'rtl reset', or re-enter FM)",
+                             (unsigned)RADIO_OPEN_IO_ATTEMPTS);
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
+            radio_open_retry_succeeded(&open_retry);
         }
 
         fm_mode_t requested_mode;
@@ -614,7 +635,11 @@ static void fm_rx_run_once(void)
         } else if (FM.mode == FM_MODE_AM) {
             int na = fm_demod_am(&s_dsp, iq, FM_IQ_BLOCK_BYTES, pcm, 600);
             FM.iq_level = s_dsp.iq_peak;
-            FM.squelch_open = (int)(FM.iq_level * 100.0f) >= FM.squelch_tenths;
+            /* AM is a carrier mode, so level is the right measure here, but
+               against a reachable scale: the same receiver reads 3% on dead
+               air and 5% on a strong signal, so the control is read in tenths
+               of a percent rather than whole percent. */
+            FM.squelch_open = (FM.iq_level * 1000.0f) >= (float)FM.squelch_tenths;
             float ss = 0.0f;
             for (int i = 0; i < na; ++i) ss += (float)pcm[i] * pcm[i];
             FM.audio_level = na > 0 ? sqrtf(ss / na) / 8000.0f : 0.0f;
@@ -657,6 +682,7 @@ static void fm_rx_run_once(void)
                 flex_dispatch(demod, nd);
             } else {
                 FM.iq_level = s_dsp.iq_block_peak;
+                FM.noise = s_dsp.demod_noise;
                 int sq_open = fm_nfm_squelch(&s_dsp, FM.squelch_tenths, nd);
                 FM.squelch_open = sq_open;
                 if (sq_open) {
@@ -717,9 +743,10 @@ static void fm_rx_run_once(void)
                     (unsigned long)as->n_synced,
                     (int)(FM.iq_level * 100.0f));
             } else {
-                ESP_LOGI(TAG, "LISTEN %.4f sq=%s iq=%d%% act=%d%% audio(drop=%lu under=%lu)",
+                ESP_LOGI(TAG, "LISTEN %.4f sq=%s iq=%d%% act=%d%% nse=%d audio(drop=%lu under=%lu)",
                     FM.freq_hz / 1e6, FM.squelch_open ? "open" : "mute",
                     (int)(FM.iq_level * 100.0f), (int)(FM.audio_level / 0.65f * 100.0f),
+                    (int)(s_dsp.demod_noise * 1000.0f),
                     (unsigned long)audio_drops_get(), (unsigned long)audio_underruns_get());
             }
         }
@@ -822,10 +849,15 @@ static void fm_defaults_once(void)
     static bool done = false;
     if (done) return;
     done = true;
-    FM.mode           = FM_MODE_POCSAG;
+    /* Voice, not pager data. A fresh install has no saved mode, so this is
+       what the FM app comes up in, and coming up in POCSAG makes NFM look
+       broken: the speaker carries decoder bursts instead of speech. */
+    FM.mode           = FM_MODE_LISTEN;
     FM.freq_hz        = FM_DEFAULT_FREQ;
     FM.gain_tenths    = FM_DEFAULT_GAIN;
-    FM.squelch_tenths = 15;
+    /* 30 puts the NFM noise gate at 0.70, between a measured broadcast at
+       0.28..0.59 and measured dead air at 0.81..0.97. */
+    FM.squelch_tenths = 30;
     FM.pocsag_baud    = 1200;
     FM.pocsag_lock_baud = 0;
     FM.pocsag_auto    = true;
@@ -866,7 +898,7 @@ static void fm_on_enter(void)
        explicit request chooses the initial mode and its saved/default
        frequency. With no request, retaining FM.mode preserves manual entry. */
     FM.mode = fm_mode_handoff_resolve_entry(&s_mode_handoff, FM.mode,
-                                             FM_MODE_POCSAG);
+                                             FM_MODE_LISTEN);
 
     fm_dsp_init(&s_dsp);
     /**/
@@ -969,8 +1001,19 @@ void lakeshark_fm_set_mode(int mode)
 }
 int  lakeshark_fm_get_mode(void) { return (int)FM.mode; }
 
-void lakeshark_fm_tune(int delta_hz)
+bool lakeshark_fm_tune(int delta_hz)
 {
+    /* THE LOCK IS HONOURED HERE TOO.
+
+       This path ignored it entirely: stepping while locked moved the tuner
+       and left s_frequency_lock_hz pointing at the old carrier, so the next
+       mode change snapped back to a frequency the operator had already left.
+       A lock that only the mode-change path respects is not a lock. */
+    if (s_frequency_locked) {
+        ESP_LOGW(TAG, "frequency locked at %.4f MHz - step refused",
+                 s_frequency_lock_hz / 1e6);
+        return false;
+    }
     long f = (long)FM.freq_hz + delta_hz;
     if (f < 1000000L) f = 1000000L;
     FM.freq_hz = (uint32_t)f;
@@ -978,16 +1021,25 @@ void lakeshark_fm_tune(int delta_hz)
     if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
     const app_t *a = app_current();
     if (a) settings_set_freq_mode(a, FM.mode, FM.freq_hz);
+    return true;
 }
-void lakeshark_fm_set_freq(uint32_t hz)
+bool lakeshark_fm_set_freq(uint32_t hz)
 {
-    if (hz < 1000000UL) return;
+    if (hz < 1000000UL) return false;
+    /* This one used to drag the lock along to wherever it was told to go,
+       which is the same as not having one. Tuning somewhere else is a
+       decision to leave the locked carrier, so it asks for the lock off. */
+    if (s_frequency_locked && hz != s_frequency_lock_hz) {
+        ESP_LOGW(TAG, "frequency locked at %.4f MHz - tune to %.4f refused",
+                 s_frequency_lock_hz / 1e6, hz / 1e6);
+        return false;
+    }
     FM.freq_hz = hz;
-    if (s_frequency_locked) s_frequency_lock_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, false);
     if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = hz;
     const app_t *a = app_current();
     if (a) settings_set_freq_mode(a, FM.mode, hz);
+    return true;
 }
 uint32_t lakeshark_fm_get_freq(void) { return FM.freq_hz; }
 

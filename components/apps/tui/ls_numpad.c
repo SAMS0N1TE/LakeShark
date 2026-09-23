@@ -170,14 +170,23 @@ void ls_numpad_draw(tui_surface *sf, tui_rect area)
                  KEYS[i], false, i);
     }
 
-    /* CANCEL is wide and OK is loud: one of them undoes nothing and the
-       other changes what the radio is doing. */
+    /* OK IS THE BIG ONE.
+
+       CANCEL used to take two thirds of the row on the reasoning that it is
+       the harmless button. On a touch screen that made it the easy one to
+       hit, and the one people hit was the one that threw the number away
+       after they had finished typing it. The target sizes now match which
+       button the operator is reaching for: OK gets two thirds, CANCEL gets
+       the third on the left, and ESC still cancels from the keyboard. */
     const int ay = y0 + KEY_ROWS * kh;
-    const int aw = (kw * KEY_COLS) * 2 / 3;
-    draw_key(sf, tui_rect_make(x0, ay, aw - 1, kh), "CANCEL", false, HIT_CANCEL);
-    draw_key(sf, tui_rect_make(x0 + aw, ay, kw * KEY_COLS - aw - 1, kh),
+    const int cw = (kw * KEY_COLS) / 3;
+    draw_key(sf, tui_rect_make(x0, ay, cw - 1, kh), "CANCEL", false, HIT_CANCEL);
+    draw_key(sf, tui_rect_make(x0 + cw, ay, kw * KEY_COLS - cw - 1, kh),
              "OK", true, HIT_OK);
     s_hit_n = HIT_OK + 1;
+    /* The one-cell gutter between keys belongs to the key on its left, so a
+       tap that lands in it still presses something. */
+    for (int i = 0; i <= HIT_CANCEL; i++) s_hit[i].w++;
 
     if (area.h > 20)
         tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,

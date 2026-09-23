@@ -51,6 +51,8 @@ typedef struct {
     const char *(*state_text)(void);  /* NULL: the on/off words          */
     const char *(*action_text)(void); /* NULL: TURN ON / TURN OFF        */
     bool        no_power;             /* selects a path, draws nothing   */
+    bool        at_boot;              /* a preference for the next boot,
+                                         not a load running now          */
 } radio_row_t;
 
 /* ------------------------------------------------------------------ rows -- */
@@ -132,6 +134,21 @@ static const char *ant_action(void)
     return ls_board_hw_antenna_is_external() ? "USE INTERNAL" : "USE MMCX1";
 }
 
+#if LS_HAS_C6
+/* BLE and Wi-Fi are decided once, at boot, before settings load - so these
+   rows switch the stored preference and say so, the same byte 'radios ble'
+   and 'radios wifi' write on the console. Stopping a running BLE stack from
+   here is a different control with different risks, and is not this one. */
+static radio_state_t ble_read(void)  { return settings_get_ble_at_boot()  ? RS_ON : RS_OFF; }
+static radio_state_t wifi_read(void) { return settings_get_wifi_at_boot() ? RS_ON : RS_OFF; }
+static void ble_set(bool on)  { settings_set_ble_at_boot(on); }
+static void wifi_set(bool on) { settings_set_wifi_at_boot(on); }
+static const char *ble_state(void)  { return settings_get_ble_at_boot()  ? "on at boot" : "off at boot"; }
+static const char *wifi_state(void) { return settings_get_wifi_at_boot() ? "on at boot" : "off at boot"; }
+static const char *ble_action(void)  { return settings_get_ble_at_boot()  ? "OFF AT BOOT" : "ON AT BOOT"; }
+static const char *wifi_action(void) { return settings_get_wifi_at_boot() ? "OFF AT BOOT" : "ON AT BOOT"; }
+#endif
+
 static const radio_row_t ROWS[] = {
     { "SDR",  "USB dongle, the biggest draw here",
       sdr_read, sdr_set },
@@ -143,6 +160,12 @@ static const radio_row_t ROWS[] = {
       gps_read, gps_set },
     { "ANTENNA", "internal, or external through MMCX1",
       ant_read, ant_set, ant_state, ant_action, true },
+#if LS_HAS_C6
+    { "BLE",  "scans for a control head all day; next reboot",
+      ble_read, ble_set, ble_state, ble_action, false, true },
+    { "WI-FI", "rejoins the saved network; next reboot",
+      wifi_read, wifi_set, wifi_state, wifi_action, false, true },
+#endif
 #ifdef LS_BOARD_MIX_CC_CS
     { "CC1101", "Keyboard sub-GHz receive monitor",cc_read,open_mix,NULL,mix_action },
     { "NRF24", "Keyboard 2.4 GHz energy survey",nrf_read,open_mix,NULL,mix_action },
@@ -187,6 +210,7 @@ static int count_live(void)
     int n = 0;
     for (int i = 0; i < N_ROWS; i++) {
         if (ROWS[i].no_power) continue;   /* a path, not a load */
+        if (ROWS[i].at_boot) continue;    /* next boot, not now */
         const radio_state_t s = ROWS[i].read();
         if (s == RS_ON || s == RS_BUSY) n++;
     }
@@ -195,7 +219,7 @@ static int count_live(void)
 
 /* Each radio is a box you press, not a row you select. */
 
-static tui_rect s_hit[8];
+static tui_rect s_hit[12];
 static int      s_hit_n;
 
 static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
@@ -282,7 +306,10 @@ static void draw(tui_surface *sf, tui_rect area)
     if (area.h < 8 || area.w < 20) return;
 
     const int live = count_live();
-    snprintf(buf, sizeof(buf), "%d of %d powered", live, N_ROWS);
+    int loads = 0;
+    for (int i = 0; i < N_ROWS; i++)
+        if (!ROWS[i].no_power && !ROWS[i].at_boot) loads++;
+    snprintf(buf, sizeof(buf), "%d of %d powered", live, loads);
     tui_put_str(sf, area, area.x + 2, area.y + 1, buf,
                 live ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : dim);
 

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 /* One NVS u64 stores the pair atomically. Zero explicitly means unset;
  * the high bit identifies v1; biased microdegrees leave reserved bits. */
 static inline bool location_pack(double lat, double lon, uint64_t *out)
@@ -41,6 +42,25 @@ static inline bool location_parse(const char *text, bool longitude, double *out)
     if (!isfinite(v) || v < -bound || v > bound) return false;
     *out = v;
     return true;
+}
+/* UI entry allows spaces around each signed decimal, never trailing junk. */
+static inline bool location_parse_pair(const char *text, double *lat, double *lon)
+{
+    if (!text || !lat || !lon || strlen(text)>=64) return false;
+    char pair[64]; strcpy(pair,text);
+    char *comma=strchr(pair,',');
+    if (!comma || strchr(comma+1,',')) return false;
+    *comma++=0;
+    char *a=pair,*b=comma;
+    while (*a==' ') ++a;
+    while (*b==' ') ++b;
+    char *end=a+strlen(a);
+    while(end>a && end[-1]==' ') *--end=0;
+    end=b+strlen(b);
+    while(end>b && end[-1]==' ') *--end=0;
+    double x,y;
+    if (!location_parse(a,false,&x) || !location_parse(b,true,&y)) return false;
+    *lat=x; *lon=y; return true;
 }
 static inline uint64_t location_load(bool found, uint64_t stored,
                                     bool legacy_found, int32_t lat, int32_t lon)

@@ -9,14 +9,11 @@
 #include "file_iterator.h"
 #include "bsp_extra_player_state.h"
 
-#include <direct.h>
 #include <errno.h>
-#include <process.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <windows.h>
 
 esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance,
                                       int index);
@@ -62,8 +59,7 @@ static char g_dir[96];
 static void fixture_init(void)
 {
     if (g_dir[0] == '\0') {
-        snprintf(g_dir, sizeof(g_dir), ".ls_player_open_fixture_%lu",
-                 (unsigned long)_getpid());
+        ls_test_fixture_dir(g_dir, sizeof(g_dir), ".ls_player_open_fixture");
     }
 }
 
@@ -93,7 +89,7 @@ static bool fixture_remove_file(const char *path)
             if (fixture_path_is_gone(path)) return true;
         }
         last_error = errno;
-        Sleep(10);
+        ls_test_sleep_ms(10);
     }
 
     LS_CHECK_MSG(false, "could not clear fixture file %s after retries: %s",
@@ -107,11 +103,11 @@ static bool fixture_remove_dir(const char *path)
 
     for (int attempt = 0; attempt < 20; ++attempt) {
         errno = 0;
-        if (_rmdir(path) == 0 || errno == ENOENT) {
+        if (ls_test_rmdir(path) == 0 || errno == ENOENT) {
             if (fixture_path_is_gone(path)) return true;
         }
         last_error = errno;
-        Sleep(10);
+        ls_test_sleep_ms(10);
     }
 
     LS_CHECK_MSG(false, "could not clear fixture directory %s after retries: %s",
@@ -137,12 +133,12 @@ static bool remove_fixture(void)
 static bool make_fixture(void)
 {
     /* a locked one.mp3 reproduced the intermittent gate failure as
-       _mkdir plus file-create errors and a misleading 16/32 play-call count.
+       ls_test_mkdir plus file-create errors and a misleading 16/32 play-call count.
        Isolate each process, retry Windows deletion, and stop at a direct
        cleanup diagnostic instead of continuing with a partial fixture. */
     if (!remove_fixture()) return false;
     errno = 0;
-    if (_mkdir(g_dir) != 0) {
+    if (ls_test_mkdir(g_dir) != 0) {
         LS_CHECK_MSG(false, "could not create fixture directory %s: %s",
                      g_dir, strerror(errno));
         return false;

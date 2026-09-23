@@ -38,6 +38,36 @@ void dmr_gen_lc_bits(const dmr_lc_t *lc, uint8_t bits96[12])
     /* Bits 72..95 (RS parity) intentionally left zero. */
 }
 
+/* RS(12,9) parity over the nine LC bytes, masked by data type - the same
+ * generator dmr_lc_decode() checks against. Without it the fixture produces
+ * an LC that every receive path is right to refuse, so nothing could test
+ * the path that accepts one. */
+static uint8_t gf_multiply(uint8_t a, uint8_t b)
+{
+    uint8_t result = 0;
+    while (b) {
+        if (b & 1u) result ^= a;
+        a = (uint8_t)((a << 1) ^ ((a & 0x80u) ? 0x1Du : 0u));
+        b >>= 1;
+    }
+    return result;
+}
+
+static void lc_sign(uint8_t bits96[12], uint8_t data_type)
+{
+    if (data_type != 1 && data_type != 2) return;
+    uint8_t parity[3] = { 0, 0, 0 };
+    for (unsigned i = 0; i < 9; i++) {
+        uint8_t feedback = (uint8_t)(bits96[i] ^ parity[2]);
+        parity[2] = (uint8_t)(parity[1] ^ gf_multiply(14, feedback));
+        parity[1] = (uint8_t)(parity[0] ^ gf_multiply(56, feedback));
+        parity[0] = gf_multiply(64, feedback);
+    }
+    const uint8_t mask = data_type == 1 ? 0x96u : 0x99u;
+    for (unsigned i = 0; i < 3; i++)
+        bits96[9 + i] = (uint8_t)(parity[2 - i] ^ mask);
+}
+
 void dmr_gen_burst(uint8_t out_burst[33],
                    const uint8_t sync_pattern[6],
                    uint8_t colour_code,
@@ -50,6 +80,7 @@ void dmr_gen_burst(uint8_t out_burst[33],
     memset(out_burst, 0, 33);
 
     dmr_gen_lc_bits(lc, lc_bits);
+    lc_sign(lc_bits, data_type);
     dmr_bptc_encode(lc_bits, coded);
 
     /* Split the 196-bit BPTC block back into info1 (98 bits) + info2. */

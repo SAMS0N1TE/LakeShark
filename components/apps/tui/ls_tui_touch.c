@@ -20,6 +20,19 @@ static ls_tui_touch_src_fn s_source;
 
 static int s_last_x, s_last_y;
 
+/* Where the finger is now, while it is down, for controls that follow it. */
+static int s_cur_col = -1, s_cur_row = -1;
+
+bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row)
+{
+    if (!s_down || s_start_col < 0 || s_cur_col < 0) return false;
+    if (start_col) *start_col = s_start_col;
+    if (start_row) *start_row = s_start_row;
+    if (col)       *col = s_cur_col;
+    if (row)       *row = s_cur_row;
+    return true;
+}
+
 void ls_tui_touch_set_source(ls_tui_touch_src_fn fn) { s_source = fn; }
 
 /* Counters for the diagnostics screen; see the header. */
@@ -53,6 +66,7 @@ bool ls_tui_touch_poll(ls_tui_touch_t *out)
 
     int col = 0, row = 0;
     bool on_grid = ls_tui_pixel_to_cell(x, y, &col, &row);
+    if (pressed && on_grid) { s_cur_col = col; s_cur_row = row; }
 
     if (pressed && !s_down) {
         s_down = true;

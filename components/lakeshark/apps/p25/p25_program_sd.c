@@ -3,6 +3,7 @@
 #include "p25_program.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
@@ -192,7 +193,21 @@ static void p25_program_worker(void *arg)
     vTaskDelete(NULL);
 }
 
-bool p25_program_request_reload(void)
+/* The mount the worker is allowed to read, with its trailing separator, so
+ * "/sdcardX/..." cannot pass a prefix test that "/sdcard" alone would. */
+#define P25_PROGRAM_CARD_PREFIX "/sdcard/"
+
+static bool profile_path_on_card(const char *path)
+{
+    if (!path) return false;
+    if (strncmp(path, P25_PROGRAM_CARD_PREFIX,
+                sizeof(P25_PROGRAM_CARD_PREFIX) - 1) != 0) return false;
+    /* One ".." anywhere is enough to leave the mount, and refusing the whole
+     * path is cheaper than normalising it. */
+    return strstr(path, "..") == NULL;
+}
+
+static bool request_reload_path(const char *path)
 {
     p25_program_t *program = program_session();
     if (!program) return false;
@@ -202,7 +217,7 @@ bool p25_program_request_reload(void)
      * overlap it; failure still retains the same active profile/control. */
     (void)p25_program_survey_cancel(program,
                                     P25_SURVEY_CANCEL_PROFILE_CHANGE, &s_ops);
-    if (!p25_program_claim(program, P25_PROGRAM_DEFAULT_PATH)) return false;
+    if (!p25_program_claim(program, path)) return false;
 
     s_worker_live = true;
     if (xTaskCreate(p25_program_worker, "p25_prog",
@@ -214,6 +229,21 @@ bool p25_program_request_reload(void)
         return false;
     }
     return true;
+}
+
+bool p25_program_request_reload(void)
+{
+    return request_reload_path(P25_PROGRAM_DEFAULT_PATH);
+}
+
+bool p25_program_request_reload_path(const char *path)
+{
+    if (!profile_path_on_card(path)) {
+        ESP_LOGE(TAG, "refusing a profile path off the card: %s",
+                 path ? path : "(null)");
+        return false;
+    }
+    return request_reload_path(path);
 }
 
 bool p25_program_step_control_now(int delta)

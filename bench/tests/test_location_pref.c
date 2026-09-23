@@ -42,3 +42,17 @@ LS_CASE(location_manual_entry_is_strict)
     LS_CHECK(!location_parse("90.000001",false,&value));
     LS_CHECK(!location_parse("180.000001",true,&value));
 }
+
+LS_CASE(location_pair_accepts_signed_coordinates_and_rejects_partial_input)
+{
+    double lat=12,lon=34;
+    LS_CHECK(location_parse_pair(" 43.4445, -71.6473 ",&lat,&lon));
+    LS_CHECK(fabs(lat-43.4445)<1e-8 && fabs(lon+71.6473)<1e-8);
+    const char *bad[]={"",",","43","43,","43,-71x","43,-71,2","nan,0","91,0","1 2,3"};
+    for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++) {
+        lat=12;lon=34;
+        LS_CHECK(!location_parse_pair(bad[i],&lat,&lon));
+        LS_CHECK(lat==12 && lon==34);
+    }
+    LS_CHECK(location_parse_pair("0, 0",&lat,&lon) && lat==0 && lon==0);
+}

@@ -30,6 +30,12 @@ typedef struct {
     const char *power_cycle_endpoint_id;
 } radio_health_hooks_t;
 
+/* Control operations failing with io in a row, at which the watchdog
+   stops waiting for a stall and treats the device as not answering. Public
+   because an app that stops retrying must not stop before this is reached;
+   radio_open_retry.c holds RADIO_OPEN_IO_ATTEMPTS to it at compile time. */
+#define RADIO_HEALTH_CONTROL_IO_FAULTS 3u
+
 typedef struct {
     char endpoint_id[LS_RADIO_ENDPOINT_ID_MAX];
     rh_state_t state;

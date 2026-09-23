@@ -2,6 +2,7 @@
 #define LS_DMR_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -106,6 +107,14 @@ int dmr_lc_decode(const uint8_t bits96[12], uint8_t data_type, dmr_lc_t *out);
  * Slot Type region are corrected before the nibble is read. */
 uint8_t dmr_burst_colour_code(const uint8_t burst_bits[DMR_BURST_BITS / 8]);
 
+/* Colour code AND data type from the burst's Slot Type, through the same
+ * Golay(20,8,7) correction. Returns the number of bit errors corrected, or
+ * -1 when the codeword was outside the correction radius - in which case
+ * neither output is written, because a data type guessed from a broken
+ * codeword sends the LC parse down the wrong branch. */
+int dmr_burst_slot_type(const uint8_t burst_bits[DMR_BURST_BITS / 8],
+                        uint8_t *cc_out, uint8_t *dt_out);
+
 /* Extract the 196-bit BPTC block that straddles the sync in a burst. */
 void dmr_burst_extract_bptc(const uint8_t burst_bits[DMR_BURST_BITS / 8],
                             uint8_t out_bits[DMR_BPTC_BITS / 8 + 1]);
@@ -119,6 +128,48 @@ int dmr_slot_type_decode(const uint8_t in[3],
  * colour code; bit 0 (LSB) carries the low parity bit.  Fixtures and any
  * on-device Slot Type transmitter use this. */
 uint32_t dmr_slot_type_encode(uint8_t data8);
+
+/* ------------------------------------------------------------ framer ---
+ * The step between a symbol stream and everything above: find where a burst
+ * starts.  Sync sits at a fixed place INSIDE a burst - bits 108..155 of 264 -
+ * so a burst is only complete 108 bits after its sync has gone by, and the
+ * framer reports it then.
+ *
+ * Bit-fed rather than dibit-fed on purpose.  A dibit carries two bits and a
+ * burst can complete on either of them, so a dibit-shaped call would have to
+ * return two results or silently drop one.  A 4FSK caller pushes the two bits
+ * of each symbol MSB first.
+ *
+ * Slot number is NOT derived here.  On the outbound path that needs the
+ * 24-bit CACH ahead of the burst, and on the inbound path it needs burst
+ * timing; neither belongs in a sync search.  dmr_tracker_burst() still takes
+ * the slot from its caller. */
+
+#define DMR_SYNC_OFFSET_BITS 108u    /* where sync sits inside a burst */
+
+typedef struct {
+    uint8_t  window[DMR_BURST_BITS / 8];  /* the last 264 bits, MSB first */
+    unsigned filled;                      /* bits seen, saturating at 264 */
+    unsigned since_hit;                   /* bits since the last report   */
+    uint8_t  max_sync_errors;
+} dmr_framer_t;
+
+typedef struct {
+    uint8_t          burst[DMR_BURST_BITS / 8];
+    dmr_sync_class_t class_id;
+    uint8_t          sync_errors;
+} dmr_burst_frame_t;
+
+/* max_sync_errors of 5 is the OP25/DSD threshold for a 48-bit pattern, and is
+ * what dmr_sync_detect() is documented against. */
+void dmr_framer_reset(dmr_framer_t *f, uint8_t max_sync_errors);
+
+/* Push one bit.  Returns true and fills `out` on the bit that completes a
+ * burst whose sync matched.  Two reports can never overlap: a burst is only
+ * offered once a full burst of bits has arrived since the previous one, which
+ * is exactly the spacing of contiguous bursts and less than the 288-bit
+ * spacing the outbound CACH produces. */
+bool dmr_framer_bit(dmr_framer_t *f, int bit, dmr_burst_frame_t *out);
 
 #ifdef __cplusplus
 }

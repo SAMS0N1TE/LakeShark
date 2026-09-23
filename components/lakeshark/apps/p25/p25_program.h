@@ -246,6 +246,14 @@ const p25_program_t *p25_program_session(void);
  * p25_program_session() for what actually happened. */
 bool p25_program_request_reload(void);
 
+/* The same reload, for a profile the operator chose off the card rather than
+ * the one fixed name.  The path must sit on the SD mount: the worker's stack
+ * is sized for fopen/fread on esp_vfs_fat and carries no cache-disabled
+ * allowance, so a path that reached SPIFFS would read through flash on a
+ * stack that cannot take it.  Anything outside the mount, or containing a
+ * "..", is refused here rather than at the read. */
+bool p25_program_request_reload_path(const char *path);
+
 /* Step the selected control channel of the active profile, and re-issue the
  * active profile after the decoder restarts.  Both run in the caller's task:
  * they only touch the follower and the tune latch. */

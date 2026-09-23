@@ -102,11 +102,40 @@ function Invoke-HostBench {
 
     if (-not $exes -or $exes.Count -eq 0) { $script:failures += 'host bench produced no test binaries'; return }
 
+    # The compiler's own bin directory goes first for the run. More than one
+    # libstdc++-6.dll exists on a machine with both a mingw and an ESP-IDF
+    # toolchain - Git for Windows ships one too, ahead of C:\mingw64 on a
+    # git-bash PATH - and a C++ suite that loads the wrong one dies with
+    # 0xC0000139 before main(), printing nothing. Only the .cpp suites link
+    # it, which is what made this look like a flake in seven fixed tests.
+    $pathWas = $env:PATH
+    $ccLine = Select-String -Path (Join-Path $buildDir 'CMakeCache.txt') `
+                            -Pattern '^CMAKE_C_COMPILER:.*=(.*)$' |
+              ForEach-Object { $_.Matches[0].Groups[1].Value }
+    if ($ccLine) {
+        $ccDir = Split-Path -Parent ($ccLine -replace '/', '\')
+        if ($ccDir -and (Test-Path $ccDir)) { $env:PATH = "$ccDir;$env:PATH" }
+    }
+
+    try {
     foreach ($exe in $exes) {
         $args = @()
         if ($Filter) { $args += $Filter }
         $out = & $exe.FullName @args 2>&1
         $rc  = $LASTEXITCODE
+
+        # A binary can fail to launch while the build is still writing its
+        # neighbours, and says nothing at all when it does. Every suite that
+        # runs prints, so no output whatsoever means it never started - that,
+        # and only that, is retried, so a suite that ran and failed is
+        # reported the first time.
+        # A suite that runs always prints something, so a silent failure is
+        # the loader refusing the image rather than a case going red. Say
+        # which, because the two read identically in a bare FAIL line.
+        if ($rc -ne 0 -and -not $out) {
+            $out = @(("never started: exit 0x{0:X8}, no output - the loader " +
+                      "refused the image") -f $rc)
+        }
 
         $tail = ($out | Select-Object -Last 1)
         if ($rc -eq 0) {
@@ -119,6 +148,7 @@ function Invoke-HostBench {
             $script:failures += "$($exe.BaseName) failed`n$($out -join "`n")"
         }
     }
+    } finally { $env:PATH = $pathWas }
 
     $runnerTest = Join-Path $bench 'tests/test_runner_control.ps1'
     if (Test-Path $runnerTest) {

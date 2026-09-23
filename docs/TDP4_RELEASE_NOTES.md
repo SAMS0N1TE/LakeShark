@@ -1,5 +1,14 @@
 # LakeShark release notes
 
+## 2.2.2 - T-Display P4
+
+- FILES opens recordings in RECORD with inline power and animated playback.
+- ADS-B adds an offline mini map and remembered home.
+- GPS recording starts with less internal-memory pressure.
+- Fixes builds without SX1262 and pins the release SDK.
+
+Radio features marked experimental retain that status.
+
 ## 2.2.1 - T-Display P4
 
 Install writes the complete firmware. Works on a new board or over any

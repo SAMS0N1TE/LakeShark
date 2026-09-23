@@ -24,6 +24,11 @@ void p25_get_receiver_status(ls_iq_control_status_t *out)
     if (out) memset(out, 0, sizeof(*out));
 }
 
+/* The IQ probe the SIGNAL panel reads, stubbed in tools/lssim_field.c
+   because every target that compiles scr_p25.c needs one. */
+void ls_sim_set_clipping(int percent);
+#define set_clipping ls_sim_set_clipping
+
 static int  s_shape;
 static bool s_have_spectrum = true;
 
@@ -526,6 +531,31 @@ LS_CASE(a_silent_receiver_and_a_quiet_system_do_not_say_the_same_thing)
     P25.dsd_has_sync = false;
 }
 
+LS_CASE(a_front_end_driven_into_its_rails_says_so_on_the_level_line)
+{
+    /* A strong signal and a saturated front end both read near 1.0, and the
+       cure for one is the opposite of the cure for the other. The share of
+       samples pinned at the rails is what separates them. */
+    no_traffic();
+
+    set_clipping(0);
+    draw_decode_now(PORTRAIT);
+    LS_CHECK_MSG(!rect_has(PORTRAIT, "CLIP"),
+                 "a clean signal was reported as clipping");
+
+    set_clipping(5);
+    draw_decode_now(PORTRAIT);
+    LS_CHECK_MSG(!rect_has(PORTRAIT, "CLIP"),
+                 "ordinary peaks were reported as clipping");
+
+    set_clipping(35);
+    draw_decode_now(PORTRAIT);
+    LS_CHECK_MSG(rect_has(PORTRAIT, "CLIP 35%"),
+                 "a saturated front end did not say so");
+
+    set_clipping(0);
+}
+
 LS_CASE(the_activity_panel_stays_inside_every_pane_it_is_offered)
 {
     /* A full store against every pane the screen is drawn into, including
@@ -722,7 +752,19 @@ LS_CASE(p25_settings_scroll_and_change_backend_controls)
 {
     ls_scr_p25.key(LS_TK_CHAR,'0');
     ls_scr_p25.key(LS_TK_CHAR,'4');
-    for(int i=0;i<7;i++)ls_scr_p25.key(LS_TK_DOWN,0);
+    /* The panel keeps its cursor and its scroll between openings, so the row
+       is found by its label and touched. Counting keys down from a top the
+       cursor is not on lands on whichever setting happens to sit there, and
+       toggles that one instead. */
+    int row = -1;
+    for (int i = 0; i < 24 && row < 0; i++) {
+        fresh(); draw_pane(&ls_scr_p25, PANES[0]);
+        row = rect_row_of(PANES[0], "auto-follow");
+        if (row < 0) ls_scr_p25.key(LS_TK_DOWN, 0);
+    }
+    LS_CHECK_MSG(row >= 0, "no auto-follow row in the settings list");
+    if (row < 0) return;
+    LS_CHECK(ls_scr_p25.touch(PANES[0].x + 2, row));
     bool before=p25_get_auto_follow();
     ls_scr_p25.key(LS_TK_ENTER,0);
     LS_CHECK(p25_get_auto_follow()!=before);
@@ -787,3 +829,16 @@ LS_CASE(p25_waterfall_arrows_select_space_commits)
     LS_EQ_INT(cursor_committed,selected);
     ls_wf_set_tuner(NULL);
 }
+
+/* The radio panel shows system volume; this screen test does not run audio. */
+int audio_volume_get(void) { return 60; }
+
+/* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
+   session lives in p25_program_sd.c, which the bench deliberately does not
+   link - a host test that really loaded a profile off a card would be lying
+   about what it exercised.  NULL here is the same first-run empty state a
+   board shows before any profile has been read. */
+#include "p25_program.h"
+const p25_program_t *p25_program_session(void) { return NULL; }
+bool p25_program_request_reload_path(const char *path)
+{ (void)path; return false; }

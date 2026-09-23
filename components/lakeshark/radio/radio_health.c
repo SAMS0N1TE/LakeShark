@@ -228,7 +228,31 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
         go(slot, RH_STALLED, now, "driver reported an endpoint fault");
     }
 
-    switch (slot->state) {
+    /* A device can enumerate and then answer no control request at
+       all. Observed on the T-Display-P4, 2026-09-11: after the dongle's
+       seventh attach every demod register access failed, and `rtl` read
+       "ok present=1 stream=0" for as long as it was left. This watchdog
+       judges stream progress, nothing was streaming because nothing could
+       be configured, so it never moved. In-place recovery re-claims the
+       interface on the host side and cannot reach a device that ignores its
+       control pipe, so a run of control io failures skips it: the platform
+       power cycle if this endpoint has one, failed if not. A failed
+       endpoint asks again after RH_FAILED_RETRY_S, as a stall does. */
+    const bool control_dead =
+        info->control_io_errors >= RADIO_HEALTH_CONTROL_IO_FAULTS &&
+        slot->state != RH_POWER_CYCLING && slot->state != RH_FAILED;
+    if (control_dead) {
+        if (s_hooks.power_cycle && s_hooks.power_cycle_endpoint_id &&
+            strcmp(slot->endpoint_id, s_hooks.power_cycle_endpoint_id) == 0) {
+            power_cycle = s_hooks.power_cycle;
+            copy_string(action_id, sizeof(action_id), slot->endpoint_id);
+            go(slot, RH_POWER_CYCLING, now,
+               "endpoint does not answer control requests");
+        } else {
+            go(slot, RH_FAILED, now,
+               "endpoint does not answer control requests");
+        }
+    } else switch (slot->state) {
     case RH_ABSENT:
         go(slot, RH_SETTLING, now, "endpoint present");
         break;
@@ -371,13 +395,17 @@ int radio_health_report(const char *endpoint_id, char *buf, size_t len)
                         endpoint_id ? endpoint_id : "radio",
                         have_endpoint ? (info.present ? "1" : "0") : "?",
                         have_endpoint ? (info.streaming ? "1" : "0") : "?");
+    /* ctlio is the run of control requests the device has failed.
+       The incident's line read "ok ... stream=0" while every register access
+       failed; a diagnostic that goes quiet during a fault has it backwards. */
     return snprintf(buf, len,
-                    "%s %s present=%d stream=%d bps=%lu stall=%ds "
+                    "%s %s present=%d stream=%d bps=%lu stall=%ds ctlio=%lu "
                     "rec=%lu attach=%lu detach=%lu",
                     health.endpoint_id, radio_health_state_name(health.state),
                     have_endpoint && info.present ? 1 : 0,
                     have_endpoint && info.streaming ? 1 : 0,
                     (unsigned long)health.bytes_per_second, health.stall_s,
+                    (unsigned long)(have_endpoint ? info.control_io_errors : 0),
                     (unsigned long)health.recoveries,
                     (unsigned long)health.attaches,
                     (unsigned long)health.detaches);

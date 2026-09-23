@@ -1,0 +1,152 @@
+# LakeShark P25 profile - Franklin NH to West Dennis MA
+# Format version 2: control lines may carry coordinates, so the receiver can
+# follow the route from GPS instead of being surveyed by hand.
+#
+# Copy to /sdcard/p25_profile.txt and press RELOAD on the P25 PROGRAM tab.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE EXPECTING TOO MUCH OF IT
+#
+# Most of this drive is NOT a P25 trunking corridor, and no preset file can
+# change that:
+#
+#   * New Hampshire has no statewide P25 trunked system. NH State Police and
+#     the state agencies run CONVENTIONAL P25 on VHF. Those are single
+#     frequencies, not a trunk, and they do not belong in this file - they
+#     belong in the conventional scan list. They are listed at the bottom as
+#     a comment so the numbers are not lost.
+#
+#   * Cape Cod, and most of eastern Massachusetts, is still on the legacy
+#     MOTOROLA TYPE II SMARTZONE system (system ID 0D14) - an analogue
+#     control channel. A P25 decoder cannot follow it. That is most of the
+#     police and fire traffic on the second half of this drive, including
+#     West Dennis itself. Those control channels are listed at the bottom as
+#     a comment too, for the day a Motorola trunk-follower exists.
+#
+#   * The new Massachusetts statewide P25 Phase 2 system (CoMIRS BC5) IS
+#     live and IS in this file, but it currently carries Department of
+#     Correction traffic only. It is clear, and it is genuinely followable,
+#     but it is not state police dispatch.
+#
+# So: this file follows what is actually followable. Ordered north to south,
+# the way it is driven.
+# ---------------------------------------------------------------------------
+
+version=2
+system=Franklin NH to West Dennis MA
+site=Route (GPS followed)
+
+# --- Manchester NH -- P25 Phase 1 -- WACN BEE00, SysID 8A6, NAC 8A1 --------
+# Verified against two independent sources.
+# WARNING: Manchester POLICE is 100% encrypted. Fire, DPW and transit are
+# clear, and that is what makes this site worth having.
+# Site coordinates are the city centre; 25 km covers the I-93 pass-through.
+control=859487500|42.9956|-71.4548|25000
+control=858487500|42.9956|-71.4548|25000
+control=858212500|42.9956|-71.4548|25000
+control=857937500|42.9956|-71.4548|25000
+
+# --- Nashua NH -- P25 -- WACN BEE00, SysID 5C6, NAC 5C2 --------------------
+# Verified against two sources for the system identity and three of four
+# control channels. Sources DISAGREE on Phase 1 vs Phase 2 - if it will not
+# lock, that is the first thing to suspect.
+# Police Ch 1-2 and TAC are encrypted; fire, EMS and public works are clear.
+control=853450000|42.7654|-71.4676|20000
+control=853262500|42.7654|-71.4676|20000
+control=852550000|42.7654|-71.4676|20000
+# 852.750 is listed as a control channel by one source only. Left in, because
+# a control channel that is not there costs a few seconds of survey, while a
+# missing one costs the whole site.
+control=852750000|42.7654|-71.4676|20000
+
+# --- CoMIRS D14 -- Massport Hanscom Field -- SysID D14, NAC D14 ------------
+# Verified against two sources. Bedford MA, just off I-95/Route 3.
+control=857012500|42.4700|-71.2890|20000
+control=859437500|42.4700|-71.2890|20000
+
+# --- CoMIRS BC5 -- MCI Concord -- P25 Phase 2, SysID BC5, NAC BC1 ---------
+# Single source. Facility site, so a tight radius - it will not come up until
+# you are close.
+control=853175000|42.4600|-71.3490|12000
+
+# --- CoMIRS BC5 -- MCI Framingham -- NAC BC1 ------------------------------
+# Sits almost exactly on the I-495 line.
+control=852375000|42.2790|-71.4160|12000
+
+# --- CoMIRS BC5 -- MCI Norfolk -- NAC BC1 ---------------------------------
+control=853887500|42.1180|-71.3250|12000
+
+# --- CoMIRS BC5 -- Bridgewater State Hospital -- NAC BC1 ------------------
+# The last followable P25 trunk before the canal.
+control=853775000|41.9900|-70.9750|12000
+
+# --- Talkgroups -------------------------------------------------------------
+# Manchester NH: fire and public works are clear, police is not.
+tg=10001|Manchester Fire Disp|true|9
+tg=10003|Manchester Fire Alt|true|5
+tg=12003|Manchester DPW|true|0
+tg=12053|Manchester Transit|true|0
+# Listed but ENCRYPTED - kept enabled only as an activity indicator, so the
+# screen shows the system is busy even when nothing is decodable.
+tg=11003|Manchester PD (enc)|true|0
+
+# Nashua NH: fire and EMS clear.
+tg=2049|Nashua Fire Disp|true|9
+tg=2081|Nashua EMS Disp|true|8
+tg=2101|Nashua Public Safety|true|0
+tg=515|Nashua Interop|true|0
+
+# ---------------------------------------------------------------------------
+# NOT IN THIS FILE, AND WHY
+#
+# CONVENTIONAL P25 (single frequencies - put these in the conventional scan
+# list, they are not trunked and cannot go in a profile):
+#   156.2100  NAC 826  NH State Police Troop D (Concord)
+#   151.3250  NAC 800  NH State Police Troop E (Tamworth, north of Franklin)
+#   154.9350  NAC 826  NH State Police Troop B (Bedford)
+#   159.3150  NAC 293  NHSP statewide talk + air unit
+#   154.7850  NAC 527  Franklin PD          <-- this is the NAC the board has
+#   155.6850  NAC 117  Merrimack County Sheriff West       been decoding
+#   155.7000  NAC 117  Merrimack County Sheriff East
+#   159.0900  NAC 317  Merrimack County Sheriff East simulcast
+#   155.6250  NAC 117  Concord PD Operations
+#   155.8200  NAC ACE  Concord PD Special Ops
+#   483.4000  NAC 205  Plymouth County Sheriff BCI
+#   482.9625  NAC 537  BAPERN TAC North
+#   483.0375  NAC 537  BAPERN TAC Southeast
+#   470.1500  NAC 627  BAPERN TAC South
+# NH State Police channels are encryption-CAPABLE and applied at the
+# trooper's discretion. Expect intermittent encrypted traffic, not silence.
+#
+# ANALOGUE, NOT P25 (clear, and worth having on the conventional list):
+#   159.9000  210.7 PL  Lakes Region Mutual Fire Aid F-1 (dispatches Franklin)
+#   160.1100  331 DPL   Lakes Region F-2 fireground
+#   154.2800  136.5 PL  NH statewide fire
+#   154.3550  136.5 PL  Capital Area Mutual Aid (Concord region)
+#   155.3400 / 155.3850 / 155.4000  NH EMS Med-1 / Med-2 / Med-5
+#   851.3125  146.2 PL  Barnstable County Fireground 1
+#   851.8375  146.2 PL  Barnstable County Fireground 2
+#   851.0625  146.2 PL  Barnstable County Police Tac 1
+#   156.6500            Cape Cod Canal Control (Ch 13) - Route 25 crosses it
+#   162.4000            NOAA WXJ-40 Concord NH
+#   162.5250            NOAA WNG575 southern NH
+#   162.5500            NOAA KEC73 Hyannis - Cape Cod
+#
+# MOTOROLA TYPE II SMARTZONE, system 0D14 - ANALOGUE CONTROL CHANNEL.
+# A P25 decoder CANNOT follow these. This is where most of the Massachusetts
+# and all of the Cape Cod public-safety traffic actually is, including the
+# dispatch for West Dennis itself.
+#   853.4750 853.6375              Zone 020 Haverhill
+#   854.0875 854.5625 854.6125 856.0625   Zone 005 Metro Boston
+#   855.9125 858.3625 859.2875 859.8375   Zone 003 Bristol/Plymouth
+#   854.3625 855.5375 859.2125 859.2375   Zone 004 Upper and Mid Cape  <-- the
+#                                          one covering West Dennis
+#   856.2125 857.2125              Zone 006 Outer Cape/Truro
+# MSP talkgroups on it (analogue SmartNet IDs): statewide 35472,
+# D-Patrol-3 34032 is Yarmouth/Bourne, i.e. the West Dennis area.
+#
+# Camp Edwards / Joint Base Cape Cod is a real P25 Phase 2 system
+# (WACN 1FF6B, SysID 00A, NAC 00B) sitting right on Route 25 at the canal,
+# on military UHF 380-382 MHz - but it was reported silent as of April 2026
+# and the RTL front end is not matched for that band. Not included.
+# ---------------------------------------------------------------------------

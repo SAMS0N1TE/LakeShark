@@ -5,7 +5,6 @@
 #include "rec_unique_name.h"
 #include "rec_file_open.h"
 
-#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,13 +63,13 @@ static void fx_rm_all(void)
             remove(path);
         }
     }
-    _rmdir(fixture);
+    ls_test_rmdir(fixture);
 }
 
 static void fx_setup(void)
 {
     fx_rm_all();
-    LS_EQ_INT(_mkdir(fixture), 0);
+    LS_EQ_INT(ls_test_mkdir(fixture), 0);
 }
 
 LS_CASE(fresh_name_is_returned_verbatim)

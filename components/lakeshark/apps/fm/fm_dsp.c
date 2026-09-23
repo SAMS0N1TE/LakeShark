@@ -182,6 +182,8 @@ int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
     s->iq_block_peak = 0.0f;
 
     const float k = 3.14159265f / (float)(1 << 14);
+    float noise_sum = 0.0f;
+    int   noise_n = 0;
     int out = 0;
     for (int off = 0; off < iq_len && out < max; off += FM_DSP_CHUNK) {
         int n = iq_len - off;
@@ -194,13 +196,44 @@ int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
         }
         s->lp_len >>= FM_NBFM_PASSES;
         fm_demod(s);
-        for (int i = 0; i < s->result_len && out < max; i++)
-            demod_out[out++] = (float)s->result[i] * k;
+        for (int i = 0; i < s->result_len && out < max; i++) {
+            const float d = (float)s->result[i] * k;
+            demod_out[out++] = d;
+            /* One-pole high pass, then power. The pole sits well above speech
+               so voice contributes little and hiss contributes nearly all. */
+            s->noise_hp += 0.25f * (d - s->noise_hp);
+            const float hp = d - s->noise_hp;
+            noise_sum += hp * hp;
+            noise_n++;
+        }
     }
+    if (noise_n > 0) s->demod_noise = sqrtf(noise_sum / (float)noise_n);
     return out;
 }
 
 #define FM_NB_DEEMPH_A   0.30f
+/* How much quieter than the gate the noise must get to open, versus how much
+   louder to shut: 0.06 of full scale, against a gate that sits at 0.70 by
+   default. The release window is about 250 ms at FM_DEMOD_RATE, long enough
+   that a burst of noise inside a transmission rides through. */
+#define FM_SQUELCH_HYSTERESIS       0.06f
+#define FM_SQUELCH_RELEASE_SAMPLES  (FM_DEMOD_RATE * 250 / 1000)
+/* Open on quiet, not on level.
+
+   This used to gate on iq_block_peak, the carrier level across the whole IQ
+   block, and that cannot do the job: a 12.5 kHz channel barely moves the peak
+   of a wideband block. Measured on a T-Display-P4 with an RTL-SDR, the
+   strongest broadcast in the area read 5% of full scale and dead air read 3%,
+   against a default threshold of 15. The squelch could never open, which is
+   what "NFM never picks anything up" was.
+
+   Post-demod noise separates the same two cases cleanly, which is what an FM
+   noise squelch has always measured: with no carrier the discriminator puts
+   out loud hiss, and a carrier quietens it. Same bench, demod_noise x1000:
+   broadcast 280..593, dead air 809..973. The gate sits between them.
+
+   threshold_pct keeps its direction, higher is more squelch: 0 opens on
+   anything, 100 never opens, and the default 30 puts the gate at 0.70. */
 int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples)
 {
     const int qualify = FM_DEMOD_RATE * 64 / 1000;
@@ -210,12 +243,46 @@ int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples)
         s->squelch_samples = 0;
         return 0;
     }
-    if ((int)(s->iq_block_peak * 100.0f) < threshold_pct) {
+    if (threshold_pct < 0)   threshold_pct = 0;
+    if (threshold_pct > 100) threshold_pct = 100;
+    const float gate = (float)(100 - threshold_pct) * 0.010f;
+
+    /* Two thresholds and a release timer, which is what stops the chop.
+       Closing on the same number it opens on means a single noisy block
+       drops the audio and costs another 64 ms qualify window to recover,
+       and the player splices a silence chunk into the speaker for every one
+       of those. Measured on hardware: a solid broadcast reads 0.24 to 0.55
+       against a 0.70 gate and still produced ~1.6 underruns a second, all
+       of them audible. So once open it takes a clear rise and a sustained
+       one to shut again. */
+    const float release = gate + FM_SQUELCH_HYSTERESIS;
+
+    if (s->squelch_is_open) {
+        if (s->demod_noise > release) {
+            s->squelch_release_samples += samples;
+            if (s->squelch_release_samples >= FM_SQUELCH_RELEASE_SAMPLES) {
+                s->squelch_is_open = false;
+                s->squelch_samples = 0;
+                s->squelch_release_samples = 0;
+                return 0;
+            }
+        } else {
+            s->squelch_release_samples = 0;
+        }
+        return 1;
+    }
+
+    if (s->demod_noise >= gate) {
         s->squelch_samples = 0;
         return 0;
     }
     if (s->squelch_samples < qualify) s->squelch_samples += samples;
-    return s->squelch_samples >= qualify;
+    if (s->squelch_samples >= qualify) {
+        s->squelch_is_open = true;
+        s->squelch_release_samples = 0;
+        return 1;
+    }
+    return 0;
 }
 
 #define FM_NB_SCALE      9000.0f

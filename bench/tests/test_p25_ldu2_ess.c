@@ -25,15 +25,41 @@ void correct_hamming_dibits(char *d, int n, AnalogSignal *a) { (void)d;(void)n;(
 void contribute_to_heuristics(int r, P25Heuristics *h, AnalogSignal *a, int n)
 { (void)r;(void)h;(void)a;(void)n; }
 void update_error_stats(P25Heuristics *h, int b, int e) { (void)h;(void)b;(void)e; }
-LS_CASE(failed_ess_must_not_publish_corrupt_clear_or_keep_old_clear)
+/* A damaged ESS in a call a valid ESS already proved clear keeps the call
+   clear and keeps the nine frames just decoded. Measured on 154.7850,
+   clearing here cost a third of one call's voice: each failure dropped its
+   own 180 ms and muted the LDU1 after it. The corrupt word is still never
+   published - the ESS stays what the good one said. */
+LS_CASE(failed_ess_in_a_proven_clear_call_keeps_the_call_and_its_audio)
 {
     dsd_state s; dsd_opts o; memset(&o,0,sizeof(o));
-    for (unsigned old=0; old<2; ++old) {
-        memset(&s,0,sizeof(s)); s.p25_ess_valid=old; s.p25_algid=0x80;
+    memset(&s,0,sizeof(s)); s.p25_ess_valid=1; s.p25_algid=0x80;
+    failed=1; alg=0x84; voices=0; processLDU2(&o,&s);
+    LS_EQ_INT(voices,9); LS_EQ_INT(s.debug_header_critical_errors,1);
+    LS_EQ_INT(s.p25_ess_valid,1);
+    LS_EQ_INT(s.p25_algid,0x80);           /* not the corrupt word's 0x84 */
+    LS_EQ_INT(s.pcm_out_write,9*160);
+    LS_EQ_INT(s.p25_ess_rs_failed,1); LS_EQ_INT(s.p25_ess_rs_kept,1);
+    LS_CHECK(!p25_ldu_should_mute_encrypted(&s,&o));
+}
+
+/* Unknown, or known encrypted: a damaged ESS proves nothing, so it still
+   clears, drops the frame's audio and mutes. Nothing encrypted is let through
+   on the strength of a word that failed its check. */
+LS_CASE(failed_ess_without_a_proven_clear_call_still_mutes_and_drops)
+{
+    dsd_state s; dsd_opts o; memset(&o,0,sizeof(o));
+    const struct { int valid; unsigned algid; } before[] = {
+        {0, 0x00}, {0, 0x80}, {1, 0x84}, {1, 0x81},
+    };
+    for (unsigned i=0; i<sizeof(before)/sizeof(before[0]); ++i) {
+        memset(&s,0,sizeof(s));
+        s.p25_ess_valid=before[i].valid; s.p25_algid=(uint8_t)before[i].algid;
         failed=1; alg=0x80; voices=0; processLDU2(&o,&s);
-        LS_EQ_INT(voices,9); LS_EQ_INT(s.debug_header_critical_errors,1);
+        LS_EQ_INT(voices,9);
         LS_EQ_INT(s.p25_ess_valid,0);
         LS_EQ_INT(s.pcm_out_write,0);
+        LS_EQ_INT(s.p25_ess_rs_kept,0);
         LS_CHECK(p25_ldu_should_mute_encrypted(&s,&o));
     }
 }

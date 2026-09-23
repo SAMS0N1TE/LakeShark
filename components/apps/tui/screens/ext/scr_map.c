@@ -651,13 +651,17 @@ static double merc_y(double lat)
 static bool map_cell_of(double lat, double lon, tui_rect a, int pw, int ph,
                         int *cx, int *cy)
 {
+    if (!isfinite(lat) || !isfinite(lon) || fabs(lat)>85 || fabs(lon)>180) return false;
     double clat = 0, clon = 0;
     ls_map_get_center(&clat, &clon);
 
     const int tp = ls_map_tile_px() > 0 ? ls_map_tile_px() : 256;
     const double world = (double)tp * ldexp(1.0, ls_map_zoom());
 
-    const double dx = ((lon - clon) / 360.0) * world;
+    double delta = (lon - clon) / 360.0;
+    if (delta > 0.5) delta -= 1;
+    if (delta < -0.5) delta += 1;
+    const double dx = delta * world;
     const double dy = (merc_y(lat) - merc_y(clat)) * world;
 
     const double fx = pw / 2.0 + dx;
@@ -668,6 +672,43 @@ static bool map_cell_of(double lat, double lon, tui_rect a, int pw, int ph,
     *cy = (int)(fy / sub_y());
     return (*cx >= 0 && *cy >= 0 && *cx < a.w && *cy < a.h);
 }
+
+void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
+{
+    if (area.w<1 || area.h<1) return;
+    if (!s_opened) { s_opened=true; rescan(); }
+    ls_map_center(lat,lon);
+    int cw=10;
+    ls_tui_geometry(NULL,NULL,&cw,NULL);
+    ls_map_set_tile_px(256*SUB_X/(cw>0?cw:10));
+    if (!ls_map_begin(area.w*SUB_X,area.h*sub_y())) return;
+    int pw=0,ph=0;
+    const uint16_t *px=ls_map_render(&pw,&ph);
+    if (px) {
+        draw_cells(sf,area,px,pw,ph);
+        overlay_reset(area,tui_rect_make(0,0,0,0));
+    }
+}
+
+void ls_map_preview_reserve(tui_rect area,int x,int y,int width)
+{
+    box_take(x-area.x,x-area.x+width-1,y-area.y);
+}
+
+void ls_map_preview_labels(tui_surface *sf,tui_rect area)
+{
+    draw_labels(sf,area,SUB_X,sub_y(),tui_rect_make(0,0,0,0));
+}
+
+bool ls_map_preview_point(double lat,double lon,tui_rect area,int *x,int *y)
+{
+    int cx,cy;
+    if (!map_cell_of(lat,lon,area,area.w*SUB_X,area.h*sub_y(),&cx,&cy)) return false;
+    *x=area.x+cx;*y=area.y+cy;
+    return true;
+}
+
+void ls_map_preview_leave(void) { leave(); }
 
 /* Expanding dotted rings indicate a fresh tracked position, not accuracy
    or radio range. Cell aspect is corrected so the ring reads as a circle. */

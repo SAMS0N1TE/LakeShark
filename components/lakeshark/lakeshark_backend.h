@@ -31,8 +31,11 @@ void     lakeshark_acars_set_freq(uint32_t hz);
 
 void     lakeshark_fm_set_mode(int mode);
 int      lakeshark_fm_get_mode(void);
-void     lakeshark_fm_tune(int delta_hz);
-void     lakeshark_fm_set_freq(uint32_t hz);
+/* Both refuse while the frequency lock is on and return false, because a
+   lock that only some callers check is not a lock. LOCK shows the frequency
+   it is holding, so the readout says why nothing moved. */
+bool     lakeshark_fm_tune(int delta_hz);
+bool     lakeshark_fm_set_freq(uint32_t hz);
 /* A locked carrier remains authoritative across FM submodes and survives a
    spectrum sweep.  The sweep may retune transiently, but returning to a live
    demodulator restores this exact frequency. */

@@ -37,8 +37,20 @@ typedef struct {
 
     float   iq_peak;
     float   iq_block_peak;
+    /* RMS of the demodulated stream above the voice band, which is what an
+       FM noise squelch actually measures: with no carrier the discriminator
+       output is loud hiss, and a carrier quietens it. Carrier level alone
+       cannot do this job on a wideband IQ block, where a 12.5 kHz channel
+       barely moves the peak. */
+    float   demod_noise;
+    float   noise_hp;
     int     squelch_samples;
     int     squelch_settle_samples;
+    /* Hysteresis. Opening and closing on the same number makes one noisy
+       block shut the audio and cost a whole qualify window to get back, and
+       every one of those splices a silence into the speaker. */
+    bool    squelch_is_open;
+    int     squelch_release_samples;
     float   am_dc;
 } fm_dsp_t;
 

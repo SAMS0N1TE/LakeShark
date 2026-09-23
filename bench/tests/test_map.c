@@ -8,6 +8,7 @@
 #include "carto/raster.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #ifndef PMTILES_FIXTURE
@@ -794,4 +795,13 @@ LS_CASE(follow_waits_for_tiles_ignores_stale_fixes_and_pan_releases_it)
     double after_lat,after_lon;ls_map_get_center(&after_lat,&after_lon);
     LS_CHECK(lat == after_lat && lon == after_lon);
     ls_map_set_step_limit(0, 0);
+}
+
+LS_CASE(explicit_zero_home_is_a_valid_map_center)
+{
+    ls_map_center(0,0);
+    double lat=1,lon=1;ls_map_get_center(&lat,&lon);
+    LS_CHECK(lat==0 && lon==0);
+    ls_map_center(NAN,INFINITY);
+    ls_map_get_center(&lat,&lon);LS_CHECK(lat==0 && lon==0);
 }

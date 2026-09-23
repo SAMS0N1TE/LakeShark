@@ -219,6 +219,14 @@ typedef struct dsd_state {
      * the UI/console; incremented inside process_IMBE, so a fault report that
      * says "it went quiet" can be answered with "42 frames muted on TG X". */
     uint32_t p25_enc_muted_frames;
+    /* Of those, the ones muted only because no valid ESS had been seen yet
+     * in this call - clear or encrypted was unknown, not known to be
+     * encrypted - and the LDU2s whose ESS failed Reed-Solomon, each of
+     * which drops its own PCM and leaves the next LDU1 unknown. Together
+     * they say how much of the muting is the gate being unsure. */
+    uint32_t p25_enc_muted_unknown;
+    uint32_t p25_ess_rs_failed;
+    uint32_t p25_ess_rs_kept;   /* of those, in a call already proven clear */
     int currentslot;
     mbe_parms *cur_mp;
     mbe_parms *prev_mp;
@@ -389,6 +397,13 @@ int  comp(const void *a, const void *b);
 void noCarrier(dsd_opts *opts, dsd_state *state);
 void processFrame(dsd_opts *opts, dsd_state *state);
 int  getFrameSync(dsd_opts *opts, dsd_state *state);
+
+/* A copy of every symbol the frame-sync hunt sees, with the slicer
+   thresholds measured alongside it, for decoders that share this 4FSK rate
+   but not this protocol. Called from the demodulator task; it must not block
+   and must not touch the P25 state. NULL detaches. */
+typedef void (*dsd_symbol_observer_t)(int symbol, int center, int umid, int lmid);
+void dsd_set_symbol_observer(dsd_symbol_observer_t fn);
 void printFrameSync(dsd_opts *opts, dsd_state *state, char *frametype, int offset, char *modulation);
 void printFrameInfo(dsd_opts *opts, dsd_state *state);
 void processHDU(dsd_opts *opts, dsd_state *state);

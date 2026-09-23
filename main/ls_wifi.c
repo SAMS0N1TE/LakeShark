@@ -8,6 +8,7 @@
 #include "ble_link.h"
 #include "ls_time.h"
 #include "tui/ls_field.h"
+#include "ls_board.h"   /* LS_USE_DISPLAY */
 #include "esp_attr.h"
 
 #include "esp_wifi.h"
@@ -485,12 +486,19 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
         s_sta_attempts = 0;
         s_sta_gave_up = false;
         /* Serve the file browser over the station too, so captures can
-           be pulled without dropping the BLE head to raise the SoftAP. */
+           be pulled without dropping the BLE head to raise the SoftAP.
+           Headless boards only: on a board with a screen the page is not
+           wanted, and its 4 KB task stack was the internal RAM the serial
+           console needed once the station had joined. */
+#if LS_USE_DISPLAY
+        ESP_LOGW(TAG, "wifi: joined \"%s\" - %s", s_sta_ssid, s_ip_sta);
+#else
         if (httpd_ensure_started() == ESP_OK)
             ESP_LOGW(TAG, "wifi: joined \"%s\" - http://%s/", s_sta_ssid, s_ip_sta);
         else
             ESP_LOGW(TAG, "wifi: joined \"%s\" - %s (file server unavailable)",
                      s_sta_ssid, s_ip_sta);
+#endif
 
         ls_time_sntp_start();
     }
@@ -542,6 +550,11 @@ static wifi_mode_t compose_mode(void)
 
 static esp_err_t ap_start_locked(void)
 {
+#if LS_USE_DISPLAY
+    /* The SoftAP exists to serve the file page, which is for headless
+       boards only - see httpd_ensure_started(). */
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (s_ap_running) return ESP_OK;
 
     /**/
@@ -707,6 +720,12 @@ static esp_err_t h_hub_map(httpd_req_t *req)
 
 static esp_err_t httpd_ensure_started(void)
 {
+#if LS_USE_DISPLAY
+    /* The file page is for headless boards only. Refused here, where every
+       caller passes, because gating two of the three callers left the
+       server running at join time. */
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (s_httpd) return ESP_OK;
 
     httpd_config_t hc   = HTTPD_DEFAULT_CONFIG();
@@ -871,7 +890,7 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
        measured-small worker while startup still has contiguous RAM.  A web
        failure must not prevent the station itself from connecting. */
     esp_err_t web = httpd_ensure_started();
-    if (web != ESP_OK)
+    if (web != ESP_OK && web != ESP_ERR_NOT_SUPPORTED)
         ESP_LOGW(TAG, "wifi: file server reservation failed: %s",
                  esp_err_to_name(web));
 

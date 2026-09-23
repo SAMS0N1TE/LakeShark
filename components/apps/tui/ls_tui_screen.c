@@ -12,6 +12,8 @@
 #include <string.h>
 
 #include "ls_anim.h"
+#include "ls_app.h"
+#include "ls_text.h"
 #include "ls_theme.h"
 
 #define MAX_SCREENS LS_TUI_MAX_SCREENS
@@ -500,6 +502,62 @@ static void draw_hints(tui_surface *sf, int cols, int row)
         tui_put_str(sf, all, hl.tail_x + in, row, hl.tail, key);
 }
 
+/* The [?] overlay. It used to print the same nine global keys in every app,
+   which told an operator standing in front of an unfamiliar screen nothing
+   about the screen they were standing in front of. It now leads with that
+   app's own contract - what it is for, its keys, what it keeps and what it
+   does with a position - and puts the global keys underneath, where they are
+   still true but no longer the whole answer. See ls_app_doc_t. */
+
+#define HELP_ROWS_MAX 48
+#define HELP_LBL_MAX  14
+#define HELP_VAL_MAX  64
+
+static int help_row(char lbl[][HELP_LBL_MAX], char val[][HELP_VAL_MAX],
+                    uint8_t *ind, int n, const char *l, const char *v,
+                    uint8_t indent)
+{
+    if (n >= HELP_ROWS_MAX) return n;
+    snprintf(lbl[n], HELP_LBL_MAX, "%s", l ? l : "");
+    snprintf(val[n], HELP_VAL_MAX, "%s", v ? v : "");
+    ind[n] = indent;
+    return n + 1;
+}
+
+/* Wrapped text under an optional label. Continuation lines carry no label but
+   keep the indent, so the value column stays a column instead of the second
+   line starting back at the frame. */
+static int help_wrapped(char lbl[][HELP_LBL_MAX], char val[][HELP_VAL_MAX],
+                        uint8_t *ind, int n, const char *l, const char *text,
+                        int width, uint8_t indent)
+{
+    if (!text || !text[0]) return n;
+    if (width < 8) width = 8;
+    char lines[8][HELP_VAL_MAX];
+    const int got = ls_wrap_text(text, width, lines[0], HELP_VAL_MAX, 8);
+    for (int i = 0; i < got; i++)
+        n = help_row(lbl, val, ind, n, i == 0 ? l : "", lines[i], indent);
+    return n;
+}
+
+static const char *records_word(ls_app_records_t r)
+{
+    switch (r) {
+    case LS_APP_RECORDS_MANUAL:    return "on request";
+    case LS_APP_RECORDS_AUTOMATIC: return "as it goes";
+    default:                       return "nothing";
+    }
+}
+
+static const char *gps_word(ls_app_gps_t g)
+{
+    switch (g) {
+    case LS_APP_GPS_STAMPS:    return "stamps";
+    case LS_APP_GPS_NAVIGATES: return "navigates";
+    default:                   return "unused";
+    }
+}
+
 static void draw_help(tui_surface *sf, int cols, int rows)
 {
     tui_rect all = tui_surface_rect(sf);
@@ -507,11 +565,46 @@ static void draw_help(tui_surface *sf, int cols, int rows)
     const uint8_t key   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     const uint8_t text  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
-    int w = 46, h = 14;
-    int x = (cols - w) / 2, y = (rows - h) / 2;
-    tui_fill(sf, tui_rect_make(x, y, w, h), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
-    tui_box(sf, tui_rect_make(x, y, w, h), "KEYS", frame);
+    const ls_app_t     *app = ls_app_current();
+    const ls_app_doc_t *doc = app ? app->doc : NULL;
 
+    int w = cols - 4;
+    if (w > 52) w = 52;
+    if (w < 20) w = cols;
+    const int lblw = 12;
+    const int wrapw = w - 4 - lblw;
+
+    static char    lbl[HELP_ROWS_MAX][HELP_LBL_MAX];
+    static char    val[HELP_ROWS_MAX][HELP_VAL_MAX];
+    static uint8_t ind[HELP_ROWS_MAX];
+    int n = 0;
+
+    if (doc) {
+        n = help_wrapped(lbl, val, ind, n, "", doc->purpose, w - 4, 0);
+        n = help_row(lbl, val, ind, n, "", "", 0);
+        /* The screen's own hint line, not a second copy of it. */
+        if (app->screen && app->screen->hint && app->screen->hint[0]) {
+            n = help_wrapped(lbl, val, ind, n, "KEYS", app->screen->hint,
+                             wrapw, (uint8_t)lblw);
+            n = help_row(lbl, val, ind, n, "", "", 0);
+        }
+        /* Wide enough for the longest word plus its note. HELP_VAL_MAX is the
+           width of one WRAPPED line, not of the sentence being wrapped -
+           composing into a row-sized buffer truncated every note mid-word. */
+        char line[240];
+        snprintf(line, sizeof(line), "%s - %s", records_word(doc->records),
+                 doc->records == LS_APP_RECORDS_NOTHING
+                     ? "this one is for looking at"
+                     : doc->record_note);
+        n = help_wrapped(lbl, val, ind, n, "KEEPS", line, wrapw, (uint8_t)lblw);
+        snprintf(line, sizeof(line), "%s - %s", gps_word(doc->gps),
+                 doc->gps == LS_APP_GPS_UNUSED ? "not needed here"
+                                               : doc->gps_note);
+        n = help_wrapped(lbl, val, ind, n, "GPS", line, wrapw, (uint8_t)lblw);
+        n = help_row(lbl, val, ind, n, "", "", 0);
+    }
+
+    /* Global keys last: still true everywhere, no longer the only thing said. */
     static const char *const K[][2] = {
         { "F1..F4",   "the numbered tabs along the top" },
         { "TAB",      "next page in this app" },
@@ -523,12 +616,32 @@ static void draw_help(tui_surface *sf, int cols, int rows)
         { "F10",      "this list" },
         { "F11",      "rotate the screen" },
     };
-    for (unsigned i = 0; i < sizeof(K) / sizeof(K[0]); i++) {
-        tui_put_str(sf, all, x + 2, y + 2 + (int)i, K[i][0], key);
-        tui_put_str(sf, all, x + 14, y + 2 + (int)i, K[i][1], text);
+    for (unsigned i = 0; i < sizeof(K) / sizeof(K[0]); i++)
+        n = help_row(lbl, val, ind, n, K[i][0], K[i][1], (uint8_t)lblw);
+
+    /* Height is the content, clipped to the glass. The app's own answer is
+       first, so a short screen loses global keys the operator can press F10
+       from anywhere to see, not the part that is only here. */
+    int h = n + 3;
+    if (h > rows - 2) h = rows - 2;
+    int body = h - 3;
+    if (body < 1) body = 1;
+    const bool clipped = body < n;
+    if (clipped && body > 1) body--;   /* room for the "more" line */
+
+    const int x = (cols - w) / 2;
+    const int y = (rows - h) / 2;
+    tui_fill(sf, tui_rect_make(x, y, w, h), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_box(sf, tui_rect_make(x, y, w, h), app && app->name ? app->name : "KEYS",
+            frame);
+
+    for (int i = 0; i < body && i < n; i++) {
+        if (lbl[i][0]) tui_put_str(sf, all, x + 2, y + 2 + i, lbl[i], key);
+        tui_put_str(sf, all, x + 2 + ind[i], y + 2 + i, val[i], text);
     }
-    tui_put_str(sf, all, x + 2, y + h - 2,
-                "turn the board and the screen turns with it", text);
+    if (clipped)
+        tui_put_str(sf, all, x + 2, y + h - 2, "F10 again for the global keys",
+                    text);
 }
 
 void ls_tui_router_draw(tui_surface *sf)

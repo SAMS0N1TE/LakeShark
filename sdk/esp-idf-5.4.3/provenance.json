@@ -1,0 +1,9 @@
+{
+  "base_commit": "ea1c174c1cbb7348bd8ba0ff1eb306246938dd80",
+  "commit": "48260d430a456b3966a989eb8b0f31aef5de0777",
+  "file": "components/esp_system/port/soc/esp32p4/system_internal.c",
+  "file_sha256": "0e36524d8d2b7dbb213fe1a428bcc92f96bf6d64942614aecd418bd402930768",
+  "patch_sha256": "63f2296fb9396d9fcc9cac471490c7f62f12b801c6c558ad125d0aa874b7c51b",
+  "bundle_sha256": "3c0ed14c4a3d04acee744d645f94d2001a3f7a98822c33291671b67208ef0266",
+  "file_hash_encoding": "LF-normalized source bytes"
+}

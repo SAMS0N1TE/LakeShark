@@ -125,6 +125,7 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
        * cumulative for the P25 session; app_p25 samples it into p25_state_t
        * on each frame. */
       state->p25_enc_muted_frames++;
+      if (!state->p25_ess_valid) state->p25_enc_muted_unknown++;
     }
   else
     {

@@ -9,6 +9,7 @@
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
 #include "../../ls_waterfall.h"
+#include "../../ls_tui_touch.h"
 #include "settings.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -37,6 +38,7 @@ static const char BTN_KEYS[]="fswnc";
 /* Defined below, beside the other source helpers, but the banner draws
    above them. */
 static bool source_takes_the_mesh(void);
+static bool hit_flash_on(void);
 static EXT_RAM_BSS_ATTR rec_watch_status_t s;
 static int selected;
 static char feedback[80], peers[LS_MESH_MAX_PEERS][17];
@@ -58,7 +60,15 @@ static uint64_t pulse_total;
    it laid a legend over the capture list. Sharing a bool meant turning the
    legend off changed what the next sweep would draw, which nothing on the
    screen explained. */
-static bool sweep_hits;   /* sweep pane: detections instead of the spectrum */
+static bool sweep_hits;   /* detections instead of the spectrum or the list */
+/* The counter in the banner, which opens and closes the detections view. */
+static tui_rect det_hit;
+/* The frequency behind each drawn detection row, so a tap acts on what was
+   on the screen even if the list is re-sorted before the finger lifts. */
+#define DET_ROWS_MAX 32
+static tui_rect det_rows;
+static uint32_t det_row_hz[DET_ROWS_MAX];
+static int det_row_n;
 static bool notes;        /* capture list: the legend overlay              */
 static ls_fresh_t arrivals;
 static int setup_item;
@@ -134,13 +144,31 @@ static void state_banner(tui_surface *sf, tui_rect r,
     }
     const uint32_t up = (s->enabled && listening_since)
                       ? (uint32_t)((now - listening_since) / 1000000) : 0;
-    snprintf(line, sizeof(line), "%lu:%02lu   %d capture%s   heard %lu",
-             (unsigned long)(up / 60), (unsigned long)(up % 60),
-             s->count, s->count == 1 ? "" : "s",
-             (unsigned long)s->received);
-    tui_put_str(sf, r, r.x + 1, r.y + 1, line,
-                ls_fresh_attr(fresh, TUI_WHITE | TUI_BRIGHT,
-                              TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const int events = rec_watch_scan_events();
+    det_hit = tui_rect_make(0, 0, 0, 0);
+    if (rec_watch_scan_busy() || events) {
+        /* A chip, because it is a control: it opens the detections. It
+           blinks with every new burst, so a count going up is seen rather
+           than read. */
+        static EXT_RAM_BSS_ATTR rec_scan_bin_t tmp[REC_SCAN_BINS];
+        const int freqs = rec_watch_scan_result(tmp, REC_SCAN_BINS);
+        snprintf(line, sizeof(line), " %d DETECTED  %d FREQ  %s ",
+                 events, freqs > 0 ? freqs : 0, sweep_hits ? "CLOSE" : "VIEW >");
+        const bool blink = hit_flash_on();
+        const uint8_t hue = events ? TUI_GREEN : TUI_CYAN;
+        const uint8_t at = blink ? TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT)
+                                 : TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT);
+        tui_put_str(sf, r, r.x + 1, r.y + 1, line, at);
+        det_hit = tui_rect_make(r.x, r.y, (int)strlen(line) + 2, 2);
+    } else {
+        snprintf(line, sizeof(line), "%lu:%02lu   %d capture%s   heard %lu",
+                 (unsigned long)(up / 60), (unsigned long)(up % 60),
+                 s->count, s->count == 1 ? "" : "s",
+                 (unsigned long)s->received);
+        tui_put_str(sf, r, r.x + 1, r.y + 1, line,
+                    ls_fresh_attr(fresh, TUI_WHITE | TUI_BRIGHT,
+                                  TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    }
 
     const char *store = s->save_failed ? "SD FAIL"
                       : s->pending_save ? "SAVING"
@@ -300,7 +328,8 @@ static const char *disabled_reason(char c)
 {
     const bool watching=rec_watch_enabled();
     switch(c) {
-    case 'w': return s.ready?NULL:"Still loading capture history from the card";
+    case 'w': return !s.ready?"Still loading capture history from the card":
+                     !watching && rec_watch_scan_busy()?"Stop SCAN before WATCH":NULL;
     case 'f': return watching?"Stop WATCH before retuning":NULL;
     /* Stopping a sweep must never be refused, and a sweep cannot be running
        while WATCH is, so the guard is only about starting one. */
@@ -350,17 +379,19 @@ static void menu_add(char id, const char *label, const char *detail)
    are the radio's own, and the list says what each one is for rather than
    leaving the operator to know what a dBm is. */
 static const int REPLAY_DBM[] = {-9, 0, 14, 22};
+static const int OOK_DBM[] = {-10, 0, 5, 10};
 static void replay_power_done(int index)
 {
     if (index < 0 || index >= (int)(sizeof(REPLAY_DBM)/sizeof(REPLAY_DBM[0]))) return;
     rec_watch_snapshot(&s);
     if (selected >= s.count) return;
     const rec_watch_event_t *e = &s.event[selected];
-    if (!rec_watch_request_replay(e->id, REPLAY_DBM[index]))
+    const int dbm=e->source==REC_SOURCE_CC1101?OOK_DBM[index]:REPLAY_DBM[index];
+    if (!rec_watch_request_replay(e->id, dbm))
         snprintf(feedback,sizeof(feedback),"Stop WATCH before replaying");
     else
         snprintf(feedback,sizeof(feedback),"Sending #%lu at %d dBm...",
-                 (unsigned long)e->id, REPLAY_DBM[index]);
+                 (unsigned long)e->id, dbm);
 }
 static void replay_power_open(void)
 {
@@ -371,6 +402,12 @@ static void replay_power_open(void)
         "Normal range",
         "Maximum - check your licence"
     };
+    if (selected<s.count && s.event[selected].source==REC_SOURCE_CC1101) {
+        static const char *const O[]={"-10 dBm","0 dBm","5 dBm","10 dBm"};
+        ls_picker_open("CC1101 NOMINAL POWER",replay_power_done);
+        for(int i=0;i<4;i++)ls_picker_add(O[i],"Send RAW OOK once");
+        return;
+    }
     ls_picker_open("SEND AT", replay_power_done);
     for (int i = 0; i < (int)(sizeof(REPLAY_DBM)/sizeof(REPLAY_DBM[0])); i++)
         ls_picker_add(LABEL[i], WHY[i]);
@@ -499,7 +536,7 @@ static int hit_flash_seen;
 static uint32_t hit_flash_hz;
 static void hit_flash_poll(void)
 {
-    const int hits = rec_watch_scan_hits();
+    const int hits = rec_watch_scan_events();
     if (hits > hit_flash_seen) {
         hit_flash_us = esp_timer_get_time();
         hit_flash_hz = rec_watch_scan_last_hit();
@@ -526,12 +563,23 @@ static bool hit_flash_on(void)
 static void hits_table(tui_surface *sf, tui_rect r)
 {
     static EXT_RAM_BSS_ATTR rec_scan_bin_t hit[REC_SCAN_BINS];
-    const int n = rec_watch_scan_result(hit, REC_SCAN_BINS);
-    const float floor_dbm = rec_watch_scan_live_floor();
+    int n = rec_watch_scan_result(hit, REC_SCAN_BINS);
+    if (n < 0) n = 0;
+    /* Strongest first. A finished sweep is already sorted; a running one
+       is in the order things were found. */
+    for (int i = 1; i < n; i++) {
+        const rec_scan_bin_t k = hit[i];
+        int j = i - 1;
+        while (j >= 0 && hit[j].dbm < k.dbm) { hit[j + 1] = hit[j]; j--; }
+        hit[j + 1] = k;
+    }
+    det_row_n = 0;
+    const float floor_dbm = rec_watch_scan_busy() ? rec_watch_scan_live_floor()
+                                                  : rec_watch_scan_floor();
     char line[110];
 
-    snprintf(line, sizeof(line), "DETECTIONS  %d over %.0f dB", n,
-             (double)rec_watch_scan_threshold());
+    snprintf(line, sizeof(line), "DETECTIONS  %d bursts on %d freq, over %.0f dB",
+             rec_watch_scan_events(), n, (double)rec_watch_scan_threshold());
     tui_put_str(sf, r, r.x, r.y, line,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     if (!n) {
@@ -546,8 +594,11 @@ static void hits_table(tui_surface *sf, tui_rect r)
     tui_put_str(sf, r, r.x, r.y + 1, line, LS_ATTR_DIM);
 
     const int64_t now = esp_timer_get_time();
-    const int rows = r.h - 2;
+    const int rows = r.h - 3;
+    det_rows = tui_rect_make(r.x, r.y + 2, r.w, rows < n ? rows : n);
+    det_row_n = 0;
     for (int i = 0; i < n && i < rows; i++) {
+        if (det_row_n < DET_ROWS_MAX) det_row_hz[det_row_n++] = hit[i].hz;
         const float over = hit[i].dbm - floor_dbm;
         char age[12];
         if (!hit[i].last_us) snprintf(age, sizeof(age), "--");
@@ -564,14 +615,51 @@ static void hits_table(tui_surface *sf, tui_rect r)
                     i == 0 ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
                            : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     }
-    if (n > rows)
-        tui_put_str(sf, r, r.x, r.y + r.h - 1, "...more in SCAN RESULTS",
-                    LS_ATTR_DIM);
+    tui_put_str(sf, r, r.x, r.y + r.h - 1,
+                n > rows ? "Tap a row to act on it - more below"
+                         : "Tap a row to act on it",
+                LS_ATTR_DIM);
+}
+
+/* Columns left of the track that still grab it. */
+#define GATE_REACH 5
+
+/* The threshold as a height on the plot, from a row inside gate_hit. */
+static float gate_db_at_row(int y)
+{
+    if (y < gate_hit.y) y = gate_hit.y;
+    if (y > gate_hit.y + gate_hit.h - 1) y = gate_hit.y + gate_hit.h - 1;
+    const int from_bottom = gate_hit.y + gate_hit.h - 1 - y;
+    return gate_hit_span * (float)from_bottom / (float)gate_hit.h;
+}
+static void gate_set_from_row(int y) { rec_watch_scan_set_threshold(gate_db_at_row(y)); }
+
+/* A finger that went down on the track drags the line with it, frame by
+   frame, until it lifts - wherever it wanders, up or down.
+
+   The line moves in memory while the finger is down and is saved once when
+   it lifts: a save per frame would be a flash write every 40 ms. */
+static bool gate_dragging;
+static void gate_follow_drag(void)
+{
+    int sc, sr, c, r;
+    const bool held = gate_hit.h > 0 && ls_tui_touch_held(&sc, &sr, &c, &r) &&
+                      tui_rect_contains(gate_hit, sc, sr);
+    if (!held) {
+        if (gate_dragging) rec_watch_scan_set_threshold(rec_watch_scan_threshold());
+        gate_dragging = false;
+        return;
+    }
+    gate_dragging = true;
+    rec_watch_scan_preview_threshold(gate_db_at_row(r));
+    snprintf(feedback, sizeof(feedback), "Detect above %.0f dB over the floor",
+             (double)rec_watch_scan_threshold());
 }
 
 static void spectrum(tui_surface *sf, tui_rect r)
 {
     scan_look_load();
+    gate_follow_drag();
     static EXT_RAM_BSS_ATTR rec_scan_bin_t bins[REC_SCAN_BINS];
     const int n = rec_watch_scan_live(bins, REC_SCAN_BINS);
     if (r.h < 6 || r.w < 20) return;
@@ -595,6 +683,7 @@ static void spectrum(tui_surface *sf, tui_rect r)
 
     /* Header: what it is doing, and the loudest thing it can hear. */
     char line[96];
+    ls_safe_line(sf,r,r.y,"",LS_ATTR_DIM);
     if (hit_flashing()) {
         /* The whole header row, so it cannot be mistaken for the usual
            status text, and inverted on the blink. */
@@ -663,7 +752,9 @@ static void spectrum(tui_surface *sf, tui_rect r)
     if (r.w >= 20 && rows >= 4) {
         const int gw = 3;
         const int gx = r.x + r.w - gw;
-        gate_hit = tui_rect_make(gx, top_row, gw, rows);
+        /* The target is wider than the track: the track sits against the
+           panel's edge, where a fingertip lands short of it. */
+        gate_hit = tui_rect_make(gx - GATE_REACH, top_row, gw + GATE_REACH, rows);
         gate_hit_span = span;
         for (int y = 0; y < rows; y++) {
             const bool at = (y == gate_row);
@@ -809,12 +900,77 @@ static void spectrum(tui_surface *sf, tui_rect r)
         for (unsigned i = 0; i < sizeof(KEY)/sizeof(KEY[0]); i++) {
             const int w = (int)strlen(KEY[i].t) + 2;
             if (x + w >= r.x + r.w) break;
-            tui_put_char(sf, r, x, r.y + r.h - 2, LS_TUI_SHADE_75,
+            tui_put_char(sf, r, x, r.y + r.h - 3, LS_TUI_SHADE_75,
                          TUI_ATTR(scan_hue(KEY[i].d) | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, r, x + 1, r.y + r.h - 2, KEY[i].t, LS_ATTR_DIM);
+            tui_put_str(sf, r, x + 1, r.y + r.h - 3, KEY[i].t, LS_ATTR_DIM);
             x += w;
         }
     }
+}
+
+static uint32_t det_selected_hz;
+static void detection_done(int index)
+{
+    if (index < 0 || index >= menu_n || !det_selected_hz) return;
+    const uint32_t hz = det_selected_hz;
+    switch (menu_id[index]) {
+    case 'C':
+        if (rec_watch_scan_busy()) {
+            if (rec_watch_scan_catch(hz))
+                snprintf(feedback, sizeof(feedback), "Stopping the sweep to capture %.4f MHz", hz / 1e6);
+            sweep_hits = false;
+            return;
+        }
+        if (rec_watch_enabled()) {
+            snprintf(feedback, sizeof(feedback), "Stop WATCH before retuning");
+            return;
+        }
+        source_frequency[rec_watch_source()] = hz;
+        rec_set_freq(hz);
+        sweep_hits = false;
+        action('w');
+        break;
+    case 'T':
+        if (rec_watch_scan_busy() || rec_watch_enabled()) {
+            snprintf(feedback, sizeof(feedback), "Stop the sweep or WATCH before tuning");
+            return;
+        }
+        source_frequency[rec_watch_source()] = hz;
+        rec_set_freq(hz);
+        sweep_hits = false;
+        snprintf(feedback, sizeof(feedback), "Tuned to %.4f MHz", hz / 1e6);
+        break;
+    case 'N': {
+        /* Look closer: a narrow sweep centred on it, where nearly every
+           burst lands. */
+        if (rec_watch_scan_busy()) { rec_watch_scan_stop(); snprintf(feedback, sizeof(feedback), "Stop the sweep, then ZOOM again"); return; }
+        const uint32_t half = 150000u;
+        if (rec_watch_request_scan(hz > half ? hz - half : hz, hz + half, 0, 8))
+            snprintf(feedback, sizeof(feedback), "Sweeping %.4f MHz +/-150 kHz", hz / 1e6);
+        sweep_hits = false;
+        break;
+    }
+    default: break;
+    }
+}
+static void detection_open(uint32_t hz)
+{
+    static EXT_RAM_BSS_ATTR rec_scan_bin_t bins[REC_SCAN_BINS];
+    int n = rec_watch_scan_result(bins, REC_SCAN_BINS);
+    const rec_scan_bin_t *b = NULL;
+    for (int i = 0; i < n; i++) if (bins[i].hz == hz) b = &bins[i];
+    char title[40], seen[40];
+    snprintf(title, sizeof(title), "DETECTION %.4f MHz", hz / 1e6);
+    if (b) snprintf(seen, sizeof(seen), "%.0f dBm peak, seen %lu times", (double)b->dbm, (unsigned long)b->seen);
+    else seen[0] = 0;
+    det_selected_hz = hz;
+    menu_n = 0;
+    ls_picker_open(title, detection_done);
+    /* Capture is what turns a detection into something that can be looked
+       at, replayed or sent: a sweep only knows that energy was there. */
+    menu_add('C', "CAPTURE IT", rec_watch_scan_busy() ? "Stop, tune, start WATCH" : "Tune and start WATCH");
+    menu_add('T', "TUNE HERE", seen[0] ? seen : "Point the receiver at it");
+    menu_add('N', "ZOOM IN", "Sweep +/-150 kHz around it");
 }
 
 static void scan_result_done(int index)
@@ -882,9 +1038,12 @@ static void scan_range_done(int index)
         snprintf(feedback,sizeof(feedback),"%s",
                  rec_watch_enabled()?"Stop WATCH before scanning":
                                      "The receiver would not start a sweep");
-    else
+    else {
+        /* A new sweep opens on the band, not on what the last one found. */
+        sweep_hits=false;
         snprintf(feedback,sizeof(feedback),"Sweeping %.3f-%.3f MHz, %d bins - SCAN again to stop",
                  lo/1e6,hi/1e6,bins);
+    }
 }
 static void scan_open(void)
 {
@@ -1152,7 +1311,7 @@ static void tune_open(void)
             "VHF business","VHF business","ISM 315","ISM 433","ISM 868","ISM 915"};
         menu_add((char)('0'+j),label,WHAT[j]);
     }
-    if(rec_watch_scan_result(NULL,0)>=0)
+    if(rec_watch_scan_result(NULL,0)>0)
         menu_add('V',"FROM THE LAST SWEEP","Tune to a peak it found");
 }
 
@@ -1206,7 +1365,7 @@ static void action(char c)
         /* Offered only when it can actually be done. A capture from a
            receiver that cannot transmit, or one with no modulation recorded,
            has nothing to send it under. */
-        if(rec_source_can_replay((rec_source_t)e->source) && e->bitrate)
+        if(rec_source_can_replay((rec_source_t)e->source) && (e->source==REC_SOURCE_CC1101 || e->bitrate))
             menu_add('R',"REPLAY","Send it again - pick the power");
         menu_add('S',"SAVE .SUB","Flipper file on the card");
         menu_add('P',e->pinned?"UNPIN":"PIN",e->pinned?"Allow eviction":"Keep it");
@@ -1338,7 +1497,12 @@ static void waveform(tui_surface *sf,tui_rect a)
     }
     if(a.h>12)tui_put_str(sf,a,a.x+2,a.y+10,"| = transition(s) within one time cell",LS_ATTR_DIM);
     if(a.h>11 && s.decoded[selected].repeats) {
-        snprintf(text,sizeof(text),"OOK24 %06lX / %u frames / %u us unit",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats,s.decoded[selected].unit_us);
+        /* What it is, where that is known, rather than the payload alone. */
+        char what[64];
+        subghz_pwm_format(&s.pwm[selected], what, sizeof(what));
+        if(!what[0]) subghz_nrz_format(&s.nrz[selected], what, sizeof(what));
+        if(what[0]) snprintf(text,sizeof(text),"%s / %u frames / %u us unit",what,s.decoded[selected].repeats,s.decoded[selected].unit_us);
+        else snprintf(text,sizeof(text),"OOK24 %06lX / %u frames / %u us unit",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats,s.decoded[selected].unit_us);
         tui_put_str(sf,a,a.x+2,a.y+9,text,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
 }
@@ -1370,10 +1534,16 @@ static void draw(tui_surface *sf,tui_rect a)
     const bool wide=a.w>a.h*2;
 
     if(selected>=s.count)selected=s.count?s.count-1:0;
+    if (!strncmp(feedback,"Sending #",9) && strcmp(s.export_status,"Replay queued") &&
+        (!strncmp(s.export_status,"Sent #",6) || !strncmp(s.export_status,"Replay",6)))
+        snprintf(feedback,sizeof(feedback),"%s",s.export_status);
     rec_hub_status_t rx;rec_get_hub_status(&rx);
     ls_mixrf_status_t cc;ls_mixrf_snapshot(&cc);
     bool cc_source=rec_watch_source()==REC_SOURCE_CC1101;
     if(cc_source){rx.freq_hz=rec_get_freq();rx.receiver_streaming=cc.capturing && cc.receiving;}
+    /* The SX1262 is not on the RTL's hub. WATCH only turns on once its
+       receive session has started, so on this source enabled is listening. */
+    if(rec_watch_source()==REC_SOURCE_SX1262){rx.freq_hz=rec_get_freq();rx.receiver_streaming=s.enabled;}
     /* In the order the job is done: point the receiver, start it, then act
        on what it heard. The old order was whatever each control was added in,
        which is why the screen read as a pile of buttons rather than a flow.
@@ -1501,7 +1671,7 @@ static void draw(tui_surface *sf,tui_rect a)
         if(sweep_hits) hits_table(sf,tui_rect_make(body.x+2,body.y+2,body.w-4,body.h-3));
         else spectrum(sf,tui_rect_make(body.x+2,body.y+3,body.w-4,body.h-4));
         ls_safe_line(sf,a,a.y+a.h-1,
-            feedback[0]?feedback:sweep_hits?"SCAN > SHOW SPECTRUM returns to the band":s.export_status,
+            feedback[0]?feedback:sweep_hits?"Tap the DETECTED counter for the spectrum":s.export_status,
             LS_ATTR_DIM);
         return;
     }
@@ -1511,7 +1681,13 @@ static void draw(tui_surface *sf,tui_rect a)
        was on left the screen showing a table with no way back to the capture
        list. The findings are still there: TUNE offers them as somewhere to
        tune to, which is what they were for. */
-    sweep_hits=false;
+    if(sweep_hits && !learning) {
+        hits_table(sf,tui_rect_make(body.x+2,body.y+2,body.w-4,body.h-3));
+        ls_safe_line(sf,a,a.y+a.h-1,
+            feedback[0]?feedback:"Tap the DETECTED counter to go back",
+            LS_ATTR_DIM);
+        return;
+    }
     if(learning) {
         tui_rect w=tui_rect_make(body.x+2,body.y+4,body.w-4,body.h-6);
         char head[72];
@@ -1549,7 +1725,11 @@ static void draw(tui_surface *sf,tui_rect a)
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
         snprintf(line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->last_boot==s.boot_id?"[RX]":"[SD]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
         tui_put_str(sf,list,list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        if(s.decoded[first+i].repeats)snprintf(line,sizeof(line),"%s OOK24 %06lX / %u repeats",rec_source_name((rec_source_t)e->source),(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
+        char what[64];
+        subghz_pwm_format(&s.pwm[first+i], what, sizeof(what));
+        if(!what[0]) subghz_nrz_format(&s.nrz[first+i], what, sizeof(what));
+        if(what[0])snprintf(line,sizeof(line),"%s %s / %u repeats",rec_source_name((rec_source_t)e->source),what,s.decoded[first+i].repeats);
+        else if(s.decoded[first+i].repeats)snprintf(line,sizeof(line),"%s OOK24 %06lX / %u repeats",rec_source_name((rec_source_t)e->source),(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
         else snprintf(line,sizeof(line),"%s %u edges %.1fms",e->end_reason!=REC_END_GAP?"LIMIT":e->count>1?"REPEAT":"RAW?",e->edges,e->span_us/1000.);
         tui_put_str(sf,list,list.x,y+1,line,LS_ATTR_DIM);
     }
@@ -1602,15 +1782,23 @@ static bool key(ls_tk_t k,char ch)
 }
 static bool touch(int x,int y)
 {
+    if(det_hit.w>0 && tui_rect_contains(det_hit,x,y)) {
+        sweep_hits=!sweep_hits;
+        feedback[0]=0;
+        return true;
+    }
+    if(sweep_hits && det_row_n && tui_rect_contains(det_rows,x,y)) {
+        const int i=y-det_rows.y;
+        if(i>=0 && i<det_row_n) detection_open(det_row_hz[i]);
+        return true;
+    }
     /* The threshold control first: it sits inside the spectrum, which is
        drawn over the area the capture list would otherwise own. */
     if(rec_watch_scan_busy() && gate_hit.h>0 && tui_rect_contains(gate_hit,x,y)) {
         /* Straight to the height that was tapped, on the plot's own scale -
            the bottom of the track is the floor and the top is whatever the
            display is currently showing as full height. */
-        const int from_bottom=gate_hit.y+gate_hit.h-1-y;
-        float db=gate_hit_span*(float)from_bottom/(float)gate_hit.h;
-        rec_watch_scan_set_threshold(db);
+        gate_set_from_row(y);
         snprintf(feedback,sizeof(feedback),"Detect above %.0f dB over the floor",
                  (double)rec_watch_scan_threshold());
         return true;

@@ -15,6 +15,7 @@
 #include "ls_tui.h"
 #include "ls_tui_screen.h"
 #include "ls_app.h"
+#include "ls_app_docs.h"
 #include "ls_notify.h"
 #include "ls_icons.h"
 #include "ls_theme.h"
@@ -169,39 +170,48 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
    a radio stack this tool has no use for. Kept in the same order so a screen
    index here means what it means on the board. */
 extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview;
+/* The two design previews exist only in the simulator, so they carry a
+   simulator doc rather than one of the real ones. */
+static const ls_app_doc_t sim_preview_doc = {
+    .purpose = "A layout preview that exists only in the simulator, for "
+               "looking at a design without a board.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 static const ls_app_t APPS[] = {
     { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
-      LS_APP_MAIN, &ls_scr_home, NULL },
+      LS_APP_MAIN, &ls_scr_home, NULL, &ls_doc_home },
     { "p25",  "P25",  "trunking",  LS_ICON_TOWER, TUI_GREEN,
-      LS_APP_MAIN, &ls_scr_p25, NULL },
+      LS_APP_MAIN, &ls_scr_p25, NULL, &ls_doc_p25 },
     { "fm",   "FM",   "analogue",  LS_ICON_WAVE,  TUI_YELLOW,
-      LS_APP_MAIN, &ls_scr_fm, NULL },
+      LS_APP_MAIN, &ls_scr_fm, NULL, &ls_doc_fm },
     { "adsb", "ADSB", "aircraft",  LS_ICON_PLANE, TUI_MAGENTA,
-      LS_APP_MAIN, &ls_scr_adsb, NULL },
+      LS_APP_MAIN, &ls_scr_adsb, NULL, &ls_doc_adsb },
     { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
-      LS_APP_EXTRA, &ls_scr_rec, NULL },
+      LS_APP_EXTRA, &ls_scr_rec, NULL, &ls_doc_rec },
     { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
-      LS_APP_EXTRA, &ls_scr_diag, NULL },
+      LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
     { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
-      LS_APP_EXTRA, &ls_scr_settings, NULL },
+      LS_APP_EXTRA, &ls_scr_settings, NULL, &ls_doc_settings },
     { "gps",  "GPS",  "position",  LS_ICON_SAT,   TUI_YELLOW,
-      LS_APP_EXTRA, &ls_scr_gps, NULL },
+      LS_APP_EXTRA, &ls_scr_gps, NULL, &ls_doc_gps },
 
     { "map",  "MAP",  "charts",    LS_ICON_MAP,   TUI_GREEN,
-      LS_APP_EXTRA, &ls_scr_map, NULL },
+      LS_APP_EXTRA, &ls_scr_map, NULL, &ls_doc_map },
     { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_CYAN,
-      LS_APP_EXTRA, &ls_scr_falls, NULL },
+      LS_APP_EXTRA, &ls_scr_falls, NULL, &ls_doc_falls },
     { "mesh", "MESH", "lora",      LS_ICON_MESH,  TUI_MAGENTA,
-      LS_APP_EXTRA, &ls_scr_mesh, NULL },
+      LS_APP_EXTRA, &ls_scr_mesh, NULL, &ls_doc_mesh },
     /* what is powered, and how to stop it. */
     { "radios", "RADIOS", "power",  LS_ICON_POWER, TUI_RED,
-      LS_APP_EXTRA, &ls_scr_radios, NULL },
-    { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN, LS_APP_EXTRA, &ls_scr_labs, NULL },
-    { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL },
-    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL },
-    { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL },
-    { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL },
-    { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL },
+      LS_APP_EXTRA, &ls_scr_radios, NULL, &ls_doc_radios },
+    { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN, LS_APP_EXTRA, &ls_scr_labs, NULL, &ls_doc_labs },
+    { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
+    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
+    { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
+    { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
+    { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL, &sim_preview_doc },
 
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
@@ -317,10 +327,22 @@ static void feed_adsb(void)
    exists for looking at those. */
 void lssim_tick_state(void);
 
+/* How far the frozen clock moves between frames, in microseconds.
+
+   Zero keeps the old behaviour exactly: the clock sits at 120 s and never
+   moves, so every screenshot is reproducible.  That is also why anything
+   driven by ls_motion_phase(), ls_fresh() or ls_map_motion renders as a
+   single static instant here - those read esp_timer_get_time() rather than
+   counting frames, so without this they cannot be seen at all except under
+   -T, whose live clock is not reproducible.  Frame-counted animation
+   (ls_anim, ls_notify, the keyboard cursor) never needed it. */
+static int64_t s_step_us;
+
 static void frame(int n)
 {
     tui_surface *sf = ls_tui_surface();
     for (int i = 0; i < n; i++) {
+        if (s_step_us) ls_shim_time_advance(s_step_us);
         lssim_tick_state();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
@@ -413,11 +435,14 @@ static void usage(void)
     printf("  -f N      frames to settle (default 3)\n");
     printf("  -d        also print the cell grid as text\n");
     printf("  -e        empty: no radio, no map - the idle branches\n");
-    printf("  -n TEXT   post a notification banner, to look at it\n");
+    printf("  -n TEXT   post a notification banner, to look at it;\n");
+    printf("            -f then counts frames into the banner's own life\n");
     printf("  -F N      font index: 0 is 10x17, 1 is 9x16, 2 is 15x26\n");
     printf("  -m FILE   a .pmtiles archive instead of the fixture\n");
     printf("  -T N      time N frames of this screen and print us/frame\n");
     printf("  -P N      the same, panning between frames\n");
+    printf("  -A MS     advance the clock MS per frame, so time-based\n");
+    printf("            animation moves (default 0: one frozen instant)\n");
 }
 
 int main(int argc, char **argv)
@@ -456,6 +481,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-F") && i + 1 < argc)
             font = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) maparc = argv[++i];
+        else if (!strcmp(argv[i], "-A") && i + 1 < argc)
+            s_step_us = (int64_t)atoi(argv[++i]) * 1000;
         else if (!strcmp(argv[i], "-T") && i + 1 < argc) timed = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-P") && i + 1 < argc) {
             timed = atoi(argv[++i]);
@@ -611,7 +638,18 @@ int main(int argc, char **argv)
         n.hue = TUI_CYAN;
         n.screen = -1;
         ls_notify_post(&n);
-        frame(1);
+        /* The banner's own frames, not one.
+
+           This used to draw a single frame after posting, which pinned every
+           -n render to slide age 1 - a two-row box that has not grown enough
+           to draw its text yet (ls_notify.c only puts the words in once the
+           box is tall enough). So the banner's slide, its flash and its
+           expiry could not be looked at from here at all, which is awkward
+           for the one piece of animation the code comments actually ask to
+           improve. With -n, -f now means how many frames into the banner's
+           life to render: 1 is the first sliver, 4 has it open, 150 is the
+           last frame before it goes. */
+        frame(settle);
     }
 
     if (timed > 0) time_frames(timed, moving);

@@ -2,6 +2,7 @@
 
 #include "../../ls_tui_screen.h"
 #include "../../ls_radio_panel.h"
+#include "audio/audio_out.h"
 #include "scan_engine.h"
 
 #include <stdio.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 
 #include "p25_state.h"
+#include "p25_acquisition.h"
 #include "p25_tg_observed.h"
 #include "esp_attr.h"
 #include "iq_app_control.h"
@@ -19,6 +21,13 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 #include "../../ls_text.h"
+#include "../../ls_picker.h"
+#include "../../ls_field.h"
+#include "../../ls_notify.h"
+#include "p25_program.h"
+
+#include <dirent.h>
+#include <strings.h>
 
 static char s_hint[80] = "LEFT/RIGHT tune  1/2/3 views  +/- volume";
 static ls_radio_panel_t s_radio = { .focus = -1 };
@@ -56,6 +65,12 @@ static void tg_refresh(int64_t now_us)
     s_tg_read_us = now_us;
     if (p25_tg_observed_read(&s_tg)) s_tg_have = true;
 }
+
+/* Clipping share worth showing. Peaks pin a few samples on any strong
+   signal; a fifth of them means the gain is past what the ADC can hold.
+   Measured on 154.7850 at 49.6 dB: 5792 of 16384 components, which is what
+   too much gain looks like on this receiver. */
+#define P25_CLIP_SHOW_PCT     20
 
 static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us)
 {
@@ -300,8 +315,23 @@ static void draw_decode(tui_surface *sf, tui_rect area)
                              i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
                              TUI_ATTR(i < lit ? TUI_GREEN | TUI_BRIGHT
                                               : TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
-            snprintf(buf, sizeof(buf), "%.3f", (double)level);
-            field(sf, signal, 4, "IQ", buf, label, value);
+            /* Level alone does not separate a strong signal from a front end
+               being driven into its rails, and both read near 1.0. The share
+               of samples pinned at 0 or 255 does, so it sits on the same
+               line once there is enough of it to matter. */
+            p25_acquisition_status_t acq;
+            p25_get_acquisition_status(&acq);
+            const uint32_t comps = acq.iq.sampled_pairs * 2u;
+            const int clip_pct = comps
+                ? (int)((acq.iq.clipped_components * 100u) / comps) : 0;
+            if (clip_pct >= P25_CLIP_SHOW_PCT)
+                snprintf(buf, sizeof(buf), "%.3f  CLIP %d%%",
+                         (double)level, clip_pct);
+            else
+                snprintf(buf, sizeof(buf), "%.3f", (double)level);
+            field(sf, signal, 4, "IQ", buf, label,
+                  clip_pct >= P25_CLIP_SHOW_PCT
+                      ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : value);
             field(sf, signal, 6, "RX", st.receiver_streaming ? "STREAMING" : "stopped",
                   label, st.receiver_streaming ? good : idle);
             field(sf, signal, 7, "AUDIO", voice_status(), label,
@@ -392,6 +422,228 @@ static void draw_signal(tui_surface *sf, tui_rect area)
    page existed was the hint bar, and the hint bar is a legend, not a control.
    Two fat buttons cost two rows in portrait and one in landscape, and they
    are the same action from either input. */
+/* ----------------------------------------- keeping an observation --- */
+
+/* P25 kept nothing. A site hit - control channel, NAC, talkgroup, the signal
+   it was heard at - is the most obviously recordable thing this board sees,
+   and until now the only way to keep one was to write the numbers down off
+   the glass. ls_field_mark_radio does exactly this shape of write already;
+   four other screens use it.
+
+   Manual, not automatic, on purpose. The journal is a notebook: MIX_RF.md
+   states the rule as "no automatic SD files; only explicit marks enqueue
+   notes through Journal", and a trunked system would fill the 48-entry ring
+   in under a minute if every grant kept itself. */
+
+static void mark_observation(void)
+{
+    char title[48];
+    char text[512];
+
+    const bool sync = P25.dsd_has_sync;
+    snprintf(title, sizeof(title), sync ? "P25 site NAC %03X" : "P25 search",
+             P25.dsd_nac);
+
+    size_t n = (size_t)snprintf(text, sizeof(text),
+        "%.4f MHz, %s. ", s_tune_freq_hz / 1e6,
+        sync ? "synchronised" : "no sync at the time this was kept");
+
+    if (sync && n < sizeof(text))
+        n += (size_t)snprintf(text + n, sizeof(text) - n,
+            "NAC %03X, talkgroup %d, unit %d, %s. ",
+            P25.dsd_nac, P25.dsd_tg, P25.dsd_src,
+            P25.dsd_modulation[0] ? P25.dsd_modulation : "modulation unknown");
+
+    if (n < sizeof(text))
+        n += (size_t)snprintf(text + n, sizeof(text) - n,
+            "Signal %.2f of full scale, gain %.1f dB. "
+            "%d sync events and %d voice frames this session. Audio: %s. ",
+            (double)P25.iq_level, P25.rtl_gain_tenths / 10.0,
+            P25.dsd_sync_count, P25.dsd_voice_count, voice_status());
+
+    /* Said plainly, the way the sub-GHz bookmark says it: the attachment is
+       where the RECEIVER was when the note was kept. It is not where the
+       transmitter is, and a trunked site can be tens of kilometres away. */
+    if (n < sizeof(text))
+        snprintf(text + n, sizeof(text) - n,
+            "The position and motion attached describe this receiver when "
+            "the note was kept, not the location of the transmitter.");
+
+    const bool ok = ls_field_mark_radio(title, text, LS_FIELD_RTL,
+                                        (uint32_t)s_tune_freq_hz,
+                                        (uint32_t)P25.dsd_sync_count);
+
+    /* Through the banner, not a status field this screen would have to find
+       room for. It also gives the operator somewhere to go: tapping it opens
+       JOURNAL, which is where the answer about whether it saved actually is. */
+    ls_notice_t note;
+    memset(&note, 0, sizeof(note));
+    snprintf(note.title, sizeof(note.title), "P25");
+    snprintf(note.body, sizeof(note.body), "%s",
+             ok ? "observation kept - check JOURNAL for the save"
+                : "journal busy - try again shortly");
+    note.hue = TUI_GREEN;
+    /* By name over the registry rather than an extern to another screen's
+       descriptor: the notice carries a registry index, and P25 has no
+       business holding a pointer to JOURNAL to get one. -1 if it is not
+       registered, which is what a build without it should do. */
+    note.screen = -1;
+    for (int i = 0; i < ls_tui_screen_count(); i++) {
+        const char *nm = ls_tui_screen_name(i);
+        if (nm && !strcmp(nm, "JOURNAL")) { note.screen = i; break; }
+    }
+    ls_notify_post(&note);
+}
+
+/* ------------------------------------------ profiles off the card --- */
+
+/* The TUI build has always been able to SHOW a loaded profile - ls_wf_source
+   lists its control channels and steps between them - but nothing in this
+   build ever loaded one. p25_program_request_reload is only called from the
+   LVGL AppP25, which is not compiled here, so on this board a profile on the
+   card was unreachable. This is that missing half. */
+
+#define P25_PROFILE_DIR "/sdcard"
+
+/* Sized to what the session will actually hold. A name too long for
+   P25_PROGRAM_PATH_MAX is dropped while listing rather than offered and then
+   refused by the claim, because a row that cannot be chosen is worse than an
+   absent one. */
+static char s_profiles[LS_PICKER_MAX][P25_PROGRAM_PATH_MAX];
+static char s_profile_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
+static int  s_profile_n;
+
+static int profile_order(const void *a, const void *b)
+{
+    return strcasecmp((const char *)a, (const char *)b);
+}
+
+/* The system= line is the one thing worth knowing about a profile before
+   loading it. Reading the head of the file is far cheaper than a full parse,
+   which would also want a p25_profile_parse_scratch_t - far too large to put
+   on the UI task's stack for a list of up to forty-eight files. */
+static void profile_describe(const char *path, char *out, size_t cap)
+{
+    /* UI task only, so a static head buffer is safe and keeps 2 KiB off the
+       stack. The example profiles carry long comment preambles, so 512 bytes
+       was not enough to reach system= on a real file. */
+    static char head[2048];
+
+    snprintf(out, cap, "profile");
+    FILE *f = fopen(path, "rb");
+    if (!f) { snprintf(out, cap, "unreadable"); return; }
+    size_t n = fread(head, 1, sizeof(head) - 1, f);
+    fclose(f);
+    head[n] = '\0';
+
+    for (char *line = head; line && *line; ) {
+        char *end = strchr(line, '\n');
+        if (end) *end = '\0';
+        while (*line == ' ' || *line == '\t') line++;
+        if (!strncmp(line, "system=", 7)) {
+            const char *v = line + 7;
+            while (*v == ' ') v++;
+            size_t len = strlen(v);
+            while (len && (v[len - 1] == '\r' || v[len - 1] == ' ')) len--;
+            if (len) snprintf(out, cap, "%.*s", (int)len, v);
+            return;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    /* Reaching here means no system= in the first 2 KiB. Say that rather than
+       "profile", because it is also what an unrelated .txt looks like. */
+    snprintf(out, cap, "no system= line");
+}
+
+static void pick_profile(int i)
+{
+    if (i < 0 || i >= s_profile_n) return;
+    if (!p25_program_request_reload_path(s_profiles[i])) {
+        snprintf(s_hint, sizeof(s_hint), "profile refused: %s",
+                 s_profiles[i] + sizeof(P25_PROFILE_DIR));
+        return;
+    }
+    /* The worker reports through the session, not through here: the load is
+       asynchronous and this call only says the request was taken. */
+    snprintf(s_hint, sizeof(s_hint), "loading %s",
+             s_profiles[i] + sizeof(P25_PROFILE_DIR));
+}
+
+static ls_act_status_t a_p25_profile(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    s_profile_n = 0;
+
+    /* A file that matched the name but could not be offered is counted, not
+       dropped in silence. A card holding one profile with a long name would
+       otherwise produce an empty list and the advice to go put a profile on
+       the card, which is the one thing the operator has already done. */
+    int skipped = 0;
+
+    DIR *d = opendir(P25_PROFILE_DIR);
+    const struct dirent *e;
+    if (d) {
+        while ((e = readdir(d)) != NULL) {
+            const size_t n = strlen(e->d_name);
+            if (strncasecmp(e->d_name, "p25_profile", 11)) continue;
+            if (n < 5 || strcasecmp(e->d_name + n - 4, ".txt")) continue;
+            if (s_profile_n >= LS_PICKER_MAX ||
+                sizeof(P25_PROFILE_DIR) + n > sizeof(s_profiles[0])) {
+                skipped++;
+                continue;
+            }
+            snprintf(s_profiles[s_profile_n++], sizeof(s_profiles[0]),
+                     "%s/%s", P25_PROFILE_DIR, e->d_name);
+        }
+        closedir(d);
+    }
+    qsort(s_profiles, (size_t)s_profile_n, sizeof(s_profiles[0]), profile_order);
+
+    static char title[LS_PICKER_TEXT];
+    if (skipped) snprintf(title, sizeof(title), "P25 PROFILES  %d SKIPPED", skipped);
+    else         snprintf(title, sizeof(title), "P25 PROFILES");
+
+    const p25_program_t *ps = p25_program_session();
+    ls_picker_open(title, pick_profile);
+    for (int i = 0; i < s_profile_n; i++) {
+        const bool loaded = ps && ps->active_valid &&
+                            !strcmp(ps->active_path, s_profiles[i]);
+        if (loaded)
+            snprintf(s_profile_detail[i], sizeof(s_profile_detail[i]), "loaded");
+        else
+            profile_describe(s_profiles[i], s_profile_detail[i],
+                             sizeof(s_profile_detail[i]));
+        ls_picker_add(s_profiles[i] + sizeof(P25_PROFILE_DIR),
+                      s_profile_detail[i]);
+    }
+    if (!s_profile_n)
+        ls_picker_empty_reason(skipped
+            ? "names too long for the card path - rename them shorter"
+            : "put p25_profile*.txt in the SD root");
+
+    out->kind = LS_VAL_TEXT;
+    out->s = "choose a P25 profile";
+    return LS_ACT_OK;
+}
+
+/* Registered on entry rather than with the builtins: the action belongs to
+   this screen, which owns the list it picks from. */
+static void register_p25_actions(void)
+{
+    static bool done;
+    if (done) return;
+    /* STORE as well as TUNE: applying a profile rewrites the persisted scan
+       roster, so this is not a read-only browse. */
+    done = ls_action_register("p25.profile", "", LS_CAP_TUNE | LS_CAP_STORE,
+                              a_p25_profile,
+                              "choose a P25 profile from the card");
+}
+
+static void enter(void)
+{
+    register_p25_actions();
+}
+
 static const ls_btn_t PAGES[] = {
     { "DECODE", NULL, '1', false, false },
     { "SIGNAL", NULL, '2', false, false },
@@ -441,6 +693,7 @@ static void radio_view(void)
     s_view.frequency=s_tune_freq_hz;
     s_view.mode="P25";
     s_view.power=P25.iq_level;
+    s_view.volume=audio_volume_get();
     p25_get_receiver_status(&s_view.receiver);
     bool sync=s_view.receiver.receiver_streaming && P25.dsd_has_sync;
     if(sync) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
@@ -551,6 +804,21 @@ static bool key(ls_tk_t k, char ch)
     if(ps_open)return ps_key(k,ch);
     if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {ps_open=true;ls_wf_source_release();return true;}
     if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {s_page=ch-'1';return true;}
+    /* 'l' for load. The profile chooser gets no quick-bar slot on purpose:
+       every control there costs rows the waterfall and the activity table
+       need, and choosing a profile is not what a thumb does while watching a
+       decode. It lives on SETTINGS; this is the keyboard way in. p and P
+       already open SETTINGS, and the waterfall owns a c d f g h k p r s y on
+       SIGNAL, which is searched after this. */
+    /* 'n' for note. LABS and SUB-GHZ both keep an observation on 'j', but 'j'
+       is gain-down on this screen and moving it would break a binding that is
+       in the hint line and in muscle memory. */
+    if(k==LS_TK_CHAR && ch=='n') { mark_observation(); return true; }
+    if(k==LS_TK_CHAR && ch=='l') {
+        ls_args_t a={.n=0}; ls_val_t out;
+        ls_action_call("p25.profile",&a,&out,ls_quick_grant_builtin());
+        return true;
+    }
     if (s_page==1 && (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
         return ls_wf_key(k,ch);
     if (s_page!=2 && (k==LS_TK_LEFT || k==LS_TK_RIGHT)) {
@@ -613,7 +881,7 @@ const ls_tui_screen_t ls_scr_p25 = {
        than dropped: H is real and worth knowing about, it just lives on the
        other page. */
     .hint = s_hint,
-    .enter = NULL,
+    .enter = enter,
     .leave = leave,
     .draw = draw,
     .key = key,

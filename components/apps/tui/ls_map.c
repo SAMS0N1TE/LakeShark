@@ -19,8 +19,6 @@
 
 #include "zeromesh_pmtiles.h"
 
-/* So a refused centre says which module refused it. */
-static const char *TAG = "ls_map";
 
 /* Tile pixels. 256 is what the archives are cut at and what libcarto's
    default style is drawn for; asking for anything else scales the geometry
@@ -558,14 +556,7 @@ void ls_map_follow_fix(bool valid, double lat, double lon, int64_t stamp, int64_
 void ls_map_center(double lat, double lon)
 {
     if (!isfinite(lat) || !isfinite(lon)) return;
-    /* AN EXACT 0,0 IS NOT A PLACE, IT IS A ZEROED STRUCT. */
-
-    if (lat == 0.0 && lon == 0.0) {
-        ESP_LOGW(TAG, "refused a centre on exactly 0,0 - a caller handed over "
-                      "a position it had not filled in");
-        return;
-    }
-
+    /* Freshness/unset is validated by callers; explicit saved 0,0 is valid. */
     if (lat >  85.0) lat =  85.0;
     if (lat < -85.0) lat = -85.0;
     while (lon >  180.0) lon -= 360.0;

@@ -141,8 +141,14 @@ static int g_scan_restarts;
 void lakeshark_fm_set_mode(int mode) { g_fm_mode_asked = mode; FM.mode = mode; }
 static bool g_fm_locked;
 static uint32_t g_fm_lock_hz;
-void lakeshark_fm_set_freq(uint32_t hz)
-{ FM.freq_hz = hz;if(g_fm_locked)g_fm_lock_hz=hz; }
+/* Mirrors the real one: a lock refuses a tune somewhere else rather than
+   dragging itself along to the new frequency. */
+bool lakeshark_fm_set_freq(uint32_t hz)
+{
+    if (g_fm_locked && hz != g_fm_lock_hz) return false;
+    FM.freq_hz = hz;
+    return true;
+}
 void lakeshark_fm_frequency_lock(bool on) { g_fm_locked=on;g_fm_lock_hz=on?FM.freq_hz:0; }
 bool lakeshark_fm_frequency_locked(void) { return g_fm_locked; }
 uint32_t lakeshark_fm_frequency_lock_hz(void) { return g_fm_lock_hz; }
@@ -171,6 +177,8 @@ bool p25_spectrum_read(float *out, int n, uint32_t now_ms, uint32_t max_age_ms,
 }
 const p25_program_t *p25_program_session(void) { return NULL; }
 bool p25_program_step_control_now(int delta) { (void)delta; return false; }
+bool p25_program_request_reload_path(const char *path)
+{ (void)path; return false; }
 
 /* ---- between cases ------------------------------------------------------ */
 
@@ -520,6 +528,29 @@ LS_CASE(marker_tune_stops_fm_sweep_and_uses_mark_frequency)
     LS_CHECK(!test_tuner(LS_WF_OWNER_FM,152600000));
     LS_EQ_INT(FM.freq_hz,154785000);
     LS_CHECK(!test_tuner(LS_WF_OWNER_USER,154785000));
+}
+
+LS_CASE(a_locked_receiver_refuses_a_marker_tune)
+{
+    /* LOCK has to mean it everywhere, not only on the path that happened to
+       check. Tapping the waterfall is a tune like any other, so a locked
+       receiver stays where it is and the marker reports that it did not move
+       rather than claiming a frequency change that never happened. */
+    fresh();g_fm_streaming=true;
+    FM.mode=FM_MODE_LISTEN;FM.freq_hz=33940000;
+    ls_wf_source_select(LS_WF_SRC_FM);ls_wf_source_pump();
+    LS_CHECK(test_tuner!=NULL);
+
+    lakeshark_fm_frequency_lock(true);
+    LS_CHECK_MSG(!test_tuner(LS_WF_OWNER_FM,91000000),
+                 "a locked receiver accepted a marker tune");
+    LS_EQ_INT(FM.freq_hz,33940000);
+    LS_EQ_INT(lakeshark_fm_frequency_lock_hz(),33940000);
+
+    /* And unlocking hands the frequency back. */
+    lakeshark_fm_frequency_lock(false);
+    LS_CHECK(test_tuner(LS_WF_OWNER_FM,91000000));
+    LS_EQ_INT(FM.freq_hz,91000000);
 }
 
 LS_CASE(marker_tune_routes_p25_and_lora_to_their_receivers)

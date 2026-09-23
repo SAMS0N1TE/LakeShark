@@ -213,6 +213,19 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
       // were 5 errors of 2 bits.
       update_error_stats(&state->p25_heuristics, 12*6+12*6, 5*2);
 
+      state->p25_ess_rs_failed++;
+      /* A call already proven clear by a valid ESS stays clear through a
+         damaged one. The algorithm does not change inside a call, and HDU,
+         TDU/TDULC and a talkgroup change still clear the ESS in dsd_frame.c,
+         so this reaches only the call that proved it. Clearing here dropped
+         the nine IMBE frames just decoded and muted the next LDU1: 360 ms
+         of silence per failure, measured as a third of one call's voice on
+         154.7850. Unknown or encrypted still mutes and drops, as before. */
+      if (state->p25_ess_valid && state->p25_algid == 0x80)
+        {
+          state->p25_ess_rs_kept++;
+          return;
+        }
       p25_ess_clear(state);
       state->pcm_out_write = 0;
       return;

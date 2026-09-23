@@ -87,6 +87,21 @@ static inline float ls_rng_noise(ls_rng_t *r)
     return a * 0.5f;
 }
 
+/* Directory calls, for suites that need a real one on disk. The two hosts the
+   bench runs on disagree: mingw takes one argument and declares them in
+   <direct.h>, POSIX takes a mode and declares them in <sys/stat.h>. Both of
+   these return 0 on success and set errno, on either host.
+   ls_test_fixture_dir() builds a per-process relative name, so two runs of the
+   same suite cannot collide and the path is valid either way. */
+int  ls_test_mkdir(const char *path);
+int  ls_test_rmdir(const char *path);
+void ls_test_fixture_dir(char *buf, size_t n, const char *stem);
+
+/* For the delete-retry loops. A fixture file held open elsewhere fails to
+   unlink on Windows and succeeds on POSIX, so the retry is only load-bearing
+   on one host, but the sleep has to compile on both. */
+void ls_test_sleep_ms(int ms);
+
 /* Captured diag_line() output, so a decoder's own diagnostics become
    assertable instead of something you squint at over serial. */
 void        ls_diag_clear(void);

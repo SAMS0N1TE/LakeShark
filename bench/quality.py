@@ -191,6 +191,13 @@ def validate(data):
             raise ValueError('empty behavior contract')
         for p in c['paths'] + [c['history']]:
             path = (ROOT / p).resolve()
+            # The history is bench evidence with serials and machine paths
+            # in it, and is on the private list. Absent from a public
+            # snapshot, which is the one tree without that list; required
+            # everywhere else.
+            if (p == c['history'] and not PRIVATE_SURFACE
+                    and path.is_relative_to(ROOT) and not path.exists()):
+                continue
             if not path.is_relative_to(ROOT) or not path.is_file():
                 raise ValueError('missing or external contract path: ' + p)
     for incident in data['incidents']:
@@ -726,31 +733,114 @@ class PackageValidation(unittest.TestCase):
 
 
 
+# What never ships public lives in exactly the paths bench/private_surface.txt
+# lists, and nowhere else. Deleting them has to leave a tree that builds,
+# which is why none of the three places that reach them - compact_ui.cpp,
+# main/CMakeLists.txt, bench/CMakeLists.txt - may name them.
+#
+# The list is itself on the list. A public snapshot therefore carries no
+# copy of the paths or of the words banned below, and these tests there
+# check only the generic names - there is nothing private left to find.
+#
+# What is withheld is the reverse engineering, not the capability: the generic
+# `lora fsktx` path transmits arbitrary 2-FSK and stays public.
+def _private_list():
+    paths, words = [], []
+    try:
+        text = (ROOT / 'bench/private_surface.txt').read_text(encoding='utf-8')
+    except OSError:
+        return (), ()
+    for line in text.splitlines():
+        kind, _, value = line.partition(':')
+        value = value.strip()
+        if kind.strip() == 'path' and value:
+            paths.append(value)
+        elif kind.strip() == 'word' and value:
+            words.append(value)
+    return tuple(paths), tuple(words)
+
+
+PRIVATE_SURFACE, PRIVATE_WORDS = _private_list()
+
+# The older names of the excluded protocol, generic enough to publish.
+# The FM mode's name stays here and not on the private list: two public
+# bench tests spell it to prove the command is refused, on purpose.
+_TRAP_NAMES = (r'FM_MODE_TRAP|FM_FREQ_TRAP|fm_trap_frame_t|'
+               r'trap_(?:create|process|destroy|reset|dispatch)|"TRAP"|'
+               r'target[ _-]?tag')
+
+
+def _banned_names():
+    return re.compile('|'.join((_TRAP_NAMES,) + PRIVATE_WORDS), re.I)
+
+
+def _under_private_surface(path):
+    resolved = path.resolve()
+    for name in PRIVATE_SURFACE:
+        private = (ROOT / name).resolve()
+        if resolved == private or private in resolved.parents:
+            return True
+    return False
+
+
 class ReleaseSurfaceTests(unittest.TestCase):
     def test_excluded_protocol_has_no_production_entrypoint(self):
-        forbidden = re.compile(r'FM_MODE_TRAP|FM_FREQ_TRAP|fm_trap_frame_t|'
-                               r'trap_(?:create|process|destroy|reset|dispatch)|'
-                               r'buildTrapTab|"TRAP"|target[ _-]?tag', re.I)
+        """Nothing outside the private surface may mention the protocol.
+
+        The protocol's current name is banned alongside the older trap names
+        because a keyword ban that does not know the current name of the
+        thing is decoration. The hooks that reach the private files are
+        deliberately generic, so this catches a leak rather than the
+        mechanism.
+        """
+        forbidden = _banned_names()
         for folder in ('main', 'components/apps', 'components/lakeshark'):
             for path in (ROOT / folder).rglob('*'):
-                if path.suffix in ('.c', '.cpp', '.h', '.hpp'):
-                    with self.subTest(path=str(path.relative_to(ROOT))):
-                        self.assertIsNone(forbidden.search(path.read_bytes().decode('latin-1')))
+                if path.suffix not in ('.c', '.cpp', '.h', '.hpp'):
+                    continue
+                if _under_private_surface(path):
+                    continue
+                with self.subTest(path=str(path.relative_to(ROOT))):
+                    self.assertIsNone(forbidden.search(path.read_bytes().decode('latin-1')))
         for name in ('components/lakeshark/apps/fm/trap.c',
                      'components/lakeshark/apps/fm/trap.h',
                      'bench/fixtures/trap_gen.c', 'bench/fixtures/trap_gen.h'):
             self.assertFalse((ROOT / name).exists(), name)
 
-    def test_public_docs_link_to_existing_local_documents(self):
-        docs = [ROOT / 'README.md', *(ROOT / 'docs').glob('LCD43_*.md')]
-        docs = [p for p in docs if 'PREVIEW_' not in p.name]
-        for path in docs:
-            for link in re.findall(r'\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
-                if '://' in link or link.startswith('#'):
-                    continue
-                target = link.split('#', 1)[0]
-                with self.subTest(document=path.name, link=link):
-                    self.assertTrue((path.parent / target).is_file())
+    def test_the_private_surface_is_reached_only_through_generic_hooks(self):
+        """The shared files that reach it must not name it.
+
+        This is what makes the removal a deletion rather than a patch. If any
+        of these spelled the protocol, taking the private files out would
+        leave a tree that does not build, and the next person under a
+        deadline would put them back rather than fix the build.
+        """
+        named = _banned_names()
+        for name in ('main/compact_ui.cpp', 'main/CMakeLists.txt',
+                     'bench/CMakeLists.txt', 'main/sx1262_console.cpp',
+                     'main/sx1262_console.h'):
+            path = ROOT / name
+            with self.subTest(path=name):
+                self.assertTrue(path.exists(), name)
+                hit = named.search(path.read_bytes().decode('latin-1'))
+                self.assertIsNone(hit, '%s names the private protocol' % name)
+
+    def test_the_generic_transmit_capability_is_not_private(self):
+        """`lora fsktx` and the driver path under it stay public.
+
+        The point of the split. Someone who deletes the private surface must
+        still be able to transmit an arbitrary FSK frame - otherwise this is
+        not an exclusion, it is a removed feature.
+        """
+        for name, needle in (
+                ('main/sx1262_console.cpp', 'sx1262_transmit_command'),
+                ('main/compact_ui.cpp', 'fsktx'),
+                ('components/lakeshark/board/ls_lora.h', 'ls_lora_fsk_send'),
+                ('components/lakeshark/board/ls_lora.c', 'ls_lora_fsk_send')):
+            path = ROOT / name
+            with self.subTest(path=name):
+                self.assertFalse(_under_private_surface(path), name)
+                self.assertIn(needle, path.read_bytes().decode('latin-1'))
 
     def test_no_two_apps_share_a_directory_icon(self):
         """Two tiles with one picture says they do the same thing.
@@ -928,6 +1018,239 @@ int main(void) {
             c=Path(tmp)/'retry.c';exe=Path(tmp)/'retry.exe';c.write_text(code)
             subprocess.run([shutil.which('gcc') or 'gcc','-std=c11','-Wall','-Wextra','-Werror',str(c),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
+
+
+class BootPreferenceTests(unittest.TestCase):
+    """A preference read before settings_init() reads its default.
+
+    The C6, BLE and Wi-Fi autojoin are decided in app_main before
+    lakeshark_backend_start() loads settings, so an ordinary settings_get_*
+    there answers from the compiled-in default. 'radios wifi off' shipped
+    that way: stored, reported back as off, and ignored on every boot.
+    settings.c has no host build, so this reads app_main as text.
+    """
+
+    def test_app_main_reads_no_setting_before_settings_load(self):
+        text = (ROOT / 'main/headless_main.c').read_bytes().decode('latin-1')
+        start = text.find('\nvoid app_main(void)')
+        self.assertNotEqual(start, -1, 'app_main not found in headless_main.c')
+        load = text.find('lakeshark_backend_start();', start)
+        self.assertNotEqual(load, -1, 'lakeshark_backend_start() not found in app_main')
+        early = re.findall(r'\bsettings_get_\w+\s*\(', text[start:load])
+        self.assertEqual(early, [], 'read before settings load - use a settings_peek_* instead')
+
+
+class ConsoleFailureTests(unittest.TestCase):
+    """A console that cannot start must not take the board with it.
+
+    esp_console_new_repl_uart() in IDF 5.4.3 points the console VFS at the
+    UART driver, and on a later failure deletes the driver without pointing
+    it back. The next printf fails in uart_write_bytes, which logs to stdout,
+    which fails again - recursion until the main task's stack runs out. On
+    the board that was every boot with Wi-Fi joined. console_start() must put
+    the VFS back before its own error line prints.
+    """
+
+    def test_repl_failure_restores_the_console_vfs_before_logging(self):
+        text = (ROOT / 'main/headless_main.c').read_bytes().decode('latin-1')
+        start = text.find('console_start(bool full)')
+        self.assertNotEqual(start, -1, 'console_start not found')
+        branch = text.find('if (cerr != ESP_OK)', start)
+        self.assertNotEqual(branch, -1, 'REPL failure branch not found')
+        restore = text.find('uart_vfs_dev_use_nonblocking(', branch)
+        log = text.find('ESP_LOG', branch)
+        self.assertNotEqual(restore, -1, 'REPL failure does not restore the VFS')
+        self.assertLess(restore, log, 'VFS restored after the first log line')
+
+
+class TrackedReferenceTests(unittest.TestCase):
+    """A file the tree names must be a file the tree carries.
+
+    /docs/* and /tools/* are ignored with an allowlist, so a new file in
+    either is invisible to git until someone adds its '!' line. Nothing
+    complains: status is clean, the push succeeds, and the file exists only
+    on the machine that wrote it. docs/PUBLIC_MAIN_RECONCILED.txt went that
+    way - release_preflight.py reads it and no other checkout had it - and
+    so did two tools and a document that code comments point at.
+
+    A path is resolved against the naming file's own directory first, then
+    the repository root, the way a reader would look for it.
+    """
+
+    SKIP = ('managed_components/', 'components/meshcore/upstream/',
+            'components/lvgl', 'components/esp_lvgl_port/',
+            'components/chmorgan__')
+    REF = re.compile(r'(?<![\w./-])((?:tools|docs|bench|c6_firmware|boards|notes|'
+                     r'main|components|flipper-app|integrations)/[\w./-]*\w\.\w+)')
+    # Named on purpose and never meant to exist here: upstream rtl_433's own
+    # document, PORTING.md's example name, and a file inside ESP-IDF.
+    NOT_OURS = {'docs/CONTRIBUTING.md', 'boards/my_board.defaults',
+                'components/esp_system/port/soc/esp32p4/system_internal.c'}
+    # Tests name fixtures they write into a temporary tree, and files they
+    # assert are gone, so they are not read as references.
+    NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')
+    # Known gaps, each with where the file is. Remove a line when it lands.
+    KNOWN_MISSING = {
+        'docs/PUBLIC_MAIN_RECONCILED.txt':
+            "the release preflight's ledger; written, not yet committed",
+        'tools/gen_font_mono.py': 'the font generator; the generated fonts are checked in',
+        'tools/lakeshark_upgrade.py': 'deleted by the v2.0.0 release; '
+            'docs/TDP4_RC_CHECKLIST.md still names it',
+        'tools/package_lcd43_app.py': 'deleted by the v2.0.0 release; LCD43 docs still name it',
+        'bench/HANDOFF_NEXT.md': 'a bench note this tree does not carry',
+        'bench/HARDWARE_2026-09-09.md': 'a bench note this tree does not carry',
+        'bench/NFC.md': 'a bench note this tree does not carry',
+        'bench/P25_ACCEPTANCE.md': 'a bench note this tree does not carry',
+        'bench/P25_LCD_MEMORY_HEADROOM.md': 'a bench note this tree does not carry',
+        'bench/PLAN_INSTRUMENT.md': 'a bench note this tree does not carry',
+        'bench/WIFI_RESOURCE_MODES.md': 'a bench note this tree does not carry',
+        'bench/done/140-cc1101-subghz-driver.md': 'a finished task this tree does not carry',
+        'bench/done/190-add-fail-closed-transmit-broker.md':
+            'a finished task this tree does not carry',
+    }
+
+    def _refs(self):
+        import shutil
+        if not shutil.which('git') or not (ROOT / '.git').exists():
+            self.skipTest('not a git checkout')
+        out = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT,
+                             capture_output=True, text=True, check=True).stdout
+        tracked = {f for f in out.split('\0') if f}
+        refs = {}
+        for name in tracked:
+            if name.startswith(self.SKIP) or name.startswith(self.NOT_READ):
+                continue
+            try:
+                text = (ROOT / name).read_text(encoding='utf-8')
+            except (UnicodeDecodeError, OSError):
+                continue
+            base = Path(name).parent
+            for ref in self.REF.findall(text):
+                if ref in self.NOT_OURS or '/build/' in '/' + ref:
+                    continue
+                if (base / ref).as_posix() in tracked or ref in tracked:
+                    continue
+                refs.setdefault(ref, set()).add(name)
+        return refs
+
+    def test_no_named_file_is_ignored(self):
+        refs = self._refs()
+        out = subprocess.run(['git', '-c', 'core.quotePath=false', 'check-ignore',
+                              '--no-index', '-z', '--stdin'], cwd=ROOT,
+                             input='\0'.join(refs), capture_output=True, text=True).stdout
+        ignored = {p: sorted(refs[p]) for p in out.split('\0') if p}
+        self.assertEqual(ignored, {}, 'named by tracked files but ignored by '
+                         '.gitignore - add a "!" line and commit the file')
+
+    def test_no_named_file_is_missing(self):
+        # The contracts' history file is on the private list; a public tree,
+        # the one without that list, may lack it (see validate()).
+        histories = set()
+        if not PRIVATE_SURFACE:
+            data = json.loads((ROOT / 'bench/regressions.json').read_text())
+            histories = {c['history'] for c in data['contracts']}
+        missing = {p: sorted(n) for p, n in self._refs().items()
+                   if p not in self.KNOWN_MISSING and p not in histories
+                   and not (ROOT / p).exists()}
+        self.assertEqual(missing, {}, 'named by tracked files and absent from the tree')
+
+
+class AppContractTests(unittest.TestCase):
+    """The half of the app contract a data-only test cannot see.
+
+    test_app_contract walks ls_app_docs_all[] and checks the prose is
+    complete and consistent with itself. It cannot see the firmware: a screen
+    that starts writing journal entries while its doc still says it keeps
+    nothing passes there, because nothing in the data changed. That is the
+    hole this closes, and it is the direction that actually goes wrong -
+    somebody adds the feature and forgets the sentence.
+
+    Only one direction is enforceable. A screen that calls a journal writer
+    must not be documented as keeping nothing. The reverse is not a fault:
+    REC records to samples.csv, MESH stores sightings, CELL WATCH writes its
+    own log and GPS writes track points, none of them through ls_field_note.
+    """
+
+    JOURNAL_WRITERS = re.compile(
+        r'\bls_field_(?:note|mark_lora|mark_radio)\s*\(')
+
+    def _apps(self):
+        """Screen symbol -> doc symbol, read from the real registration.
+
+        The rows are counted independently of the pattern that reads them,
+        and the two counts must agree, so a change to the field order fails
+        here rather than quietly narrowing what this suite covers.
+        """
+        text = (ROOT / 'main/compact_ui.cpp').read_bytes().decode('latin-1')
+        block = re.search(r'static const ls_app_t APPS\[\]\s*=\s*\{(.*?)\n\s*\};',
+                          text, re.S)
+        self.assertIsNotNone(block, 'APPS[] not found in compact_ui.cpp')
+        body = block.group(1)
+        rows = re.findall(r'&(ls_scr_\w+)', body)
+        self.assertTrue(rows, 'no apps found in compact_ui.cpp APPS[]')
+        pairs = re.findall(
+            r'&(ls_scr_\w+)\s*,\s*(?:nullptr|NULL|\w+)\s*,\s*&(ls_doc_\w+)',
+            body)
+        self.assertEqual(
+            len(pairs), len(rows),
+            'APPS[] has %d rows and %d matched screen/doc pairs; update the '
+            'row pattern in _apps(). Unmatched: %s'
+            % (len(rows), len(pairs),
+               sorted(set(rows) - {p[0] for p in pairs})))
+        out = dict(pairs)
+        self.assertEqual(len(out), len(pairs),
+                         'two APPS[] rows name the same screen')
+        return out
+
+    def _records(self):
+        """Doc symbol -> its .records value, read from ls_app_docs.c."""
+        text = (ROOT / 'components/apps/tui/ls_app_docs.c').read_bytes().decode('latin-1')
+        out = {}
+        for m in re.finditer(
+                r'const\s+ls_app_doc_t\s+(ls_doc_\w+)\s*=\s*\{(.*?)\n\};',
+                text, re.S):
+            name, body = m.group(1), m.group(2)
+            r = re.search(r'\.records\s*=\s*(LS_APP_RECORDS_\w+)', body)
+            out[name] = r.group(1) if r else None
+        self.assertTrue(out, 'no docs found in ls_app_docs.c')
+        return out
+
+    def _screen_files(self):
+        """Screen symbol -> the file that defines it."""
+        out = {}
+        for path in (ROOT / 'components/apps/tui/screens').rglob('*.c'):
+            text = path.read_bytes().decode('latin-1')
+            for m in re.finditer(r'ls_tui_screen_t\s+(ls_scr_\w+)\s*=', text):
+                out[m.group(1)] = path
+        return out
+
+    def test_every_registered_app_has_a_doc_with_a_records_answer(self):
+        records = self._records()
+        for screen, doc in self._apps().items():
+            with self.subTest(app=doc):
+                self.assertIn(doc, records, '%s is registered but not defined' % doc)
+                self.assertIsNotNone(records[doc],
+                                     '%s does not state .records' % doc)
+
+    def test_a_screen_that_writes_to_the_journal_does_not_claim_to_keep_nothing(self):
+        apps = self._apps()
+        records = self._records()
+        files = self._screen_files()
+
+        for screen, doc in apps.items():
+            path = files.get(screen)
+            if path is None:
+                continue          # a screen defined outside screens/, e.g. a preview
+            text = path.read_bytes().decode('latin-1')
+            if not self.JOURNAL_WRITERS.search(text):
+                continue
+            with self.subTest(app=doc, screen=str(path.relative_to(ROOT))):
+                self.assertNotEqual(
+                    records.get(doc), 'LS_APP_RECORDS_NOTHING',
+                    '%s writes journal entries but %s says it keeps nothing - '
+                    'update the contract in the same change as the feature'
+                    % (path.name, doc))
+
 
 if __name__ == '__main__':
     raise SystemExit(main())

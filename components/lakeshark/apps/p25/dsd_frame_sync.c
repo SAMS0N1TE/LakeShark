@@ -22,6 +22,13 @@
 #include "dsd.h"
 #include "diag.h"
 
+/* Anything that wants the raw symbol stream attaches here. The demodulator
+   does not know what is listening, which keeps the P25 sources free of a
+   link dependency on every decoder that might want a copy. */
+static dsd_symbol_observer_t s_symbol_observer;
+
+void dsd_set_symbol_observer(dsd_symbol_observer_t fn) { s_symbol_observer = fn; }
+
 static void publish_hunt(dsd_state *state, int low, int high,
                          unsigned normal_hd, unsigned inverted_hd)
 {
@@ -87,6 +94,15 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
         t++;
         symbol = getSymbol(opts, state, 0);
         state->acquisition_hunt.symbols++;
+
+        /* Every symbol on the channel passes here while the P25 sync search
+           runs, and is thrown away when it is not P25. An observer sees the
+           same symbols against the same slicer thresholds. Only once those
+           have been measured - they are zero for the first 18 symbols - and
+           only in C4FM, which is the 4FSK the other modes on this rate use. */
+        if (s_symbol_observer && state->rf_mod == 0 &&
+            state->umid > state->center && state->center > state->lmid)
+            s_symbol_observer(symbol, state->center, state->umid, state->lmid);
 
         if (symbol < diag_symmin) diag_symmin = symbol;
         if (symbol > diag_symmax) diag_symmax = symbol;

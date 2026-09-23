@@ -32,6 +32,9 @@ serial*.txt
 !/docs/TDP4_RELEASE_NOTES.md
 !/docs/TDP4_FIRST_FLASH.md
 !/docs/TDP4_SCREENS.md
+!/docs/TDP4_DECODERS.md
+!/docs/PUBLIC_MAIN_RECONCILED.txt
+!/docs/T_DISPLAY_P4_USB_POWER.md
 !/docs/FIELD_LABS.md
 !/docs/MIX_RF.md
 !/docs/UI_CONTROLS.md
@@ -51,9 +54,20 @@ serial*.txt
 !/tools/test_cell_archive.py
 !/tools/gen_cell_font.py
 !/tools/p25_profile.example
+!/tools/p25_profile_franklin_nh_to_west_dennis_ma.example
+!/tools/scanlist_nh_ma.lscan
+!/tools/scanlist_cape_cod.lscan
+!/tools/scanlist_all.lscan
+!/tools/sd_put.py
 !/tools/check_board_identity.py
 !/tools/test_check_board_identity.py
 !/tools/check_module_shadow.py
+!/tools/ls_console.py
+!/tools/release_preflight.py
+!/tools/make_public_commit.sh
+!/tools/gen_font_mono.py
+!/tools/lakeshark_upgrade.py
+!/tools/package_lcd43_app.py
 /build_headless/
 /build_*/
 /sdkconfig.board
@@ -87,3 +101,6 @@ sim.bmp
 /release-artifacts/
 /review-findings.md
 /sx1262-isolation.md
+
+/ls_userapp_test-*/
+/ls_userapp_bad-*/

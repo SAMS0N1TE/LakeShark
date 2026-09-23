@@ -4,6 +4,9 @@
 #include "../../ls_tui_screen.h"
 
 #include "esp_timer.h"
+#include "esp_attr.h"
+#include "../../ls_motion.h"
+#include "../../ls_rec_replay.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -479,6 +482,166 @@ static bool touch(int col, int row)
     return true;
 }
 
+/* File replay is a workspace, not a picker that sends on selection. */
+#define REPLAY_PREVIEW 128
+static EXT_RAM_BSS_ATTR struct {
+    subghz_file_t file;
+    int32_t edges[REPLAY_PREVIEW];
+    char path[160];
+    char result[112];
+    uint64_t preview_us;
+    int n, selected, power;
+    bool loaded, waiting;
+    int64_t started, finished;
+} player;
+static bool replay_view;
+static bool rec_child_active;
+static tui_rect rec_tabs[3], replay_trace;
+static ls_fresh_t replay_flash;
+static const int replay_ook_power[]={-10,0,5,10};
+static const int replay_fsk_power[]={-9,0,14,22};
+static int replay_dbm(void) {return subghz_file_is_ook(&player.file)?replay_ook_power[player.power]:replay_fsk_power[player.power];}
+static void replay_poll(void)
+{
+    if(!player.waiting)return;
+    char result[112];
+    if(rec_watch_replay_status(result,sizeof(result)))return;
+    player.waiting=false;player.finished=esp_timer_get_time();
+    snprintf(player.result,sizeof(player.result),"%s",result[0]?result:"Replay ended without a result");
+    ls_fresh_bump(&replay_flash);
+}
+static void replay_play(void)
+{
+    replay_poll();
+    if(!player.loaded || player.waiting)return;
+    if(!rec_watch_request_replay_file(player.path,replay_dbm())) {
+        snprintf(player.result,sizeof(player.result),"Radio busy - stop WATCH / SCAN first");return;
+    }
+    player.waiting=true;player.started=esp_timer_get_time();player.finished=0;
+    snprintf(player.result,sizeof(player.result),"Queued - waiting for radio worker");
+}
+static void replay_browse(void)
+{
+    for(int i=0;i<ls_tui_screen_count();i++)if(!strcmp(ls_tui_screen_name(i),"FILES")){ls_tui_screen_show(i);break;}
+}
+static void replay_control(int i)
+{
+    if(i==0)replay_play();
+    else if(i==1 && !player.waiting && player.power>0)player.power--;
+    else if(i==2 && !player.waiting && player.power<3)player.power++;
+    else if(i==3 && !player.waiting)replay_browse();
+}
+static void replay_draw(tui_surface *sf,tui_rect a)
+{
+    replay_poll();replay_trace=tui_rect_make(0,0,0,0);
+    if(!player.loaded) {
+        ls_panel_notice(sf,a,"REPLAY","FILES > capture > ACTIONS > REPLAY","Load a file, then press PLAY ONCE");return;
+    }
+    char power[24];snprintf(power,sizeof(power),"%+d dBm",replay_dbm());
+    ls_btn_t controls[]={
+        {player.waiting?"BUSY":"PLAY ONCE",player.waiting?"WAIT":"TRANSMIT",'p',player.waiting,player.waiting},
+        {"POWER-",power,'-',false,player.waiting || player.power==0},
+        {"POWER+",power,'+',false,player.waiting || player.power==3},
+        {"BROWSE","FILES",'o',false,player.waiting}};
+    int h=ls_tui_is_wide()?5:10;
+    if(a.h<h+12)h=5;
+    tui_rect bar=tui_rect_make(a.x,a.y,a.w,h);
+    if(!ls_tui_is_wide() && bar.w>38){bar.x+=(bar.w-38)/2;bar.w=38;}
+    ls_btn_bar_raised_slot(sf,bar,controls,4,-1,LS_BTN_SLOT_QUICK);
+    a.y+=h;a.h-=h;
+    const bool ook=subghz_file_is_ook(&player.file);
+    ls_panel_box(sf,a,ook?"REPLAY / CC1101 OOK":"REPLAY / SX1262 FSK",TUI_CYAN);
+    ls_motion_busy(sf,a,player.waiting);
+    const uint8_t ink=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
+    const char *name=strrchr(player.path,'/');name=name?name+1:player.path;
+    char text[112];
+    tui_put_str(sf,a,a.x+2,a.y+1,name,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+    snprintf(text,sizeof(text),"%.4f MHz  |  %s  |  %+.0f dBm nominal",player.file.freq_hz/1e6,ook?"RAW OOK":"RAW FSK",(double)replay_dbm());
+    tui_put_str(sf,a,a.x+2,a.y+2,text,ink);
+    snprintf(text,sizeof(text),"%.2f ms  |  %d edges  |  one transmission",player.file.span_us/1000.,player.file.edges);
+    tui_put_str(sf,a,a.x+2,a.y+3,text,LS_ATTR_DIM);
+    if(a.h>=15 && player.n && player.preview_us) {
+        replay_trace=tui_rect_make(a.x+3,a.y+6,a.w-6,a.h-12);
+        if(replay_trace.h>12)replay_trace.h=12;
+        tui_put_str(sf,a,a.x+2,a.y+5,"STORED PULSES: HIGH / LOW",ink);
+        /* This sweep indicates worker activity, not measured RF position.
+           Pulse geometry stays fixed while the palette and cursor move. */
+        const int sweep_ms=350;
+        const int trail=replay_trace.w/6>4?replay_trace.w/6:4;
+        int head=-1;
+        const int64_t now=esp_timer_get_time();
+        if(player.waiting || player.finished) {
+            int64_t elapsed=(now-player.started)/1000;
+            if(elapsed<0)elapsed=0;
+            /* Completion keeps this cycle's position, then lets the same
+               blue trail leave the right edge. Never restart a green pass. */
+            int64_t position=elapsed%sweep_ms;
+            if(!player.waiting) {
+                int64_t at_finish=(player.finished-player.started)/1000;
+                if(at_finish<0)at_finish=0;
+                position=at_finish%sweep_ms+(now-player.finished)/1000;
+            }
+            if(position>=0 && position*replay_trace.w/sweep_ms<replay_trace.w+trail)
+                head=(int)(position*replay_trace.w/sweep_ms);
+        }
+        uint64_t sum=0;int edge=0,prev=-1,head_y=replay_trace.y;
+        for(int x=0;x<replay_trace.w;x++) {
+            uint64_t t=(uint64_t)x*player.preview_us/replay_trace.w;
+            while(edge<player.n-1 && sum+(uint64_t)(player.edges[edge]<0?-(int64_t)player.edges[edge]:player.edges[edge])<=t) {
+                sum+=player.edges[edge]<0?-(int64_t)player.edges[edge]:player.edges[edge];edge++;
+            }
+            int y=player.edges[edge]>0?replay_trace.y:replay_trace.y+replay_trace.h-1;
+            uint8_t fg=edge==player.selected?(TUI_YELLOW|TUI_BRIGHT):TUI_GREEN;
+            int distance=head-x;
+            if(head>=0 && distance>=0 && distance<=trail) {
+                fg=distance<trail/3?(TUI_CYAN|TUI_BRIGHT):distance<2*trail/3?(TUI_BLUE|TUI_BRIGHT):TUI_BLUE;
+                if(distance==0)fg=TUI_WHITE|TUI_BRIGHT;
+            }
+            if(x==head)head_y=y;
+            uint8_t color=TUI_ATTR(fg,TUI_BLACK);
+            if(prev>=0 && prev!=y)for(int k=replay_trace.y;k<replay_trace.y+replay_trace.h;k++)tui_put_char(sf,a,replay_trace.x+x,k,'|',color);
+            tui_put_char(sf,a,replay_trace.x+x,y,'-',color);prev=y;
+        }
+        if(head>=0 && head<replay_trace.w) {
+            uint8_t glow_ink=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK);
+            for(int y=replay_trace.y;y<replay_trace.y+replay_trace.h;y++)
+                tui_put_char(sf,a,replay_trace.x+head,y,y==head_y?'+':':',glow_ink);
+        }
+        snprintf(text,sizeof(text),"0 -> %.2f ms  (first %d/%d edges)",player.preview_us/1000.,player.n,player.file.edges);
+        tui_put_str(sf,a,a.x+2,replay_trace.y+replay_trace.h,text,LS_ATTR_DIM);
+        int32_t v=player.edges[player.selected];
+        snprintf(text,sizeof(text),"Tap trace: #%d %s %lu us",player.selected+1,v>0?"HIGH":"LOW",(unsigned long)(v<0?-(int64_t)v:v));
+        tui_put_str(sf,a,a.x+2,replay_trace.y+replay_trace.h+1,text,ink);
+    }
+    if(player.waiting)snprintf(text,sizeof(text),"%c Working %.1fs - one bounded send",ls_motion_pip(true),(esp_timer_get_time()-player.started)/1e6);
+    else snprintf(text,sizeof(text),"%s",player.result[0]?player.result:"READY - press PLAY ONCE to transmit");
+    uint8_t level=ls_fresh_level(&replay_flash,1500);
+    uint8_t result_color=player.waiting || !player.result[0]?TUI_CYAN:
+                         !strncmp(player.result,"Sent",4)?TUI_GREEN:TUI_RED;
+    tui_put_str(sf,a,a.x+2,a.y+a.h-3,text,ls_fresh_attr(level,TUI_WHITE,result_color,TUI_BLACK));
+    tui_put_str(sf,a,a.x+2,a.y+a.h-2,player.waiting?"White line = activity, not RF progress":"Yellow = selected pulse; stored preview",LS_ATTR_DIM);
+}
+static bool replay_key(ls_tk_t k,char c)
+{
+    if(k==LS_TK_ENTER || c=='p'||c=='P'){replay_control(0);return true;}
+    if(c=='-'){replay_control(1);return true;}
+    if(c=='+' || c=='='){replay_control(2);return true;}
+    if(c=='o'||c=='O'){replay_control(3);return true;}
+    if(k==LS_TK_LEFT && player.selected>0){player.selected--;return true;}
+    if(k==LS_TK_RIGHT && player.selected+1<player.n){player.selected++;return true;}
+    return false;
+}
+static bool replay_touch(int x,int y)
+{
+    int b=ls_btn_hit_slot(x,y,LS_BTN_SLOT_QUICK);
+    if(b>=0){replay_control(b);return true;}
+    if(tui_rect_contains(replay_trace,x,y) && player.preview_us) {
+        uint64_t t=(uint64_t)(x-replay_trace.x)*player.preview_us/replay_trace.w,sum=0;
+        for(int i=0;i<player.n;i++) {sum+=player.edges[i]<0?-(int64_t)player.edges[i]:player.edges[i];if(sum>t){player.selected=i;break;}}
+    }
+    return true;
+}
+
 static const ls_tui_screen_t *recorder_child(void) { return recorder_source >= 3 ? &ls_scr_journal : gps_view ? &ls_scr_gps : &ls_scr_subghz; }
 static void recorder_source_done(int choice)
 {
@@ -502,10 +665,42 @@ static void recorder_sources(void)
         ls_picker_add(recorder_sources_table[i].name,
                       i < 2 ? "OOK pulses" : i == 2 ? "GPS points" : "CSV metadata");
 }
-static void recorder_enter(void) { tools_view=false; const ls_tui_screen_t *c=recorder_child(); if(c->enter)c->enter(); if(recorder_source>=3)ls_scr_journal_rec_view(); }
-static void recorder_leave(void) { const ls_tui_screen_t *c=recorder_child(); if(c->leave)c->leave(); }
+static void recorder_enter(void) { tools_view=false; replay_poll(); if(replay_view){rec_child_active=false;return;} rec_child_active=true; const ls_tui_screen_t *c=recorder_child(); if(c->enter)c->enter(); if(recorder_source>=3)ls_scr_journal_rec_view(); }
+static void recorder_leave(void) { if(rec_child_active){const ls_tui_screen_t *c=recorder_child(); if(c->leave)c->leave();}rec_child_active=false; }
+static void recorder_mode(bool replay)
+{
+    if(replay_view==replay)return;
+    recorder_leave();replay_view=replay;recorder_enter();
+}
+bool ls_scr_rec_replay_file(const char *path,const subghz_file_t *f,const int32_t *edges)
+{
+    replay_poll();
+    if(player.waiting || !path || strlen(path)>=sizeof(player.path) || !f || !edges ||
+       (!subghz_file_is_ook(f) && !subghz_file_is_fsk(f)))return false;
+    int i=ls_tui_screen_index_of(&ls_scr_rec);if(i<0)return false;
+    snprintf(player.path,sizeof(player.path),"%s",path);player.file=*f;
+    player.n=f->edges<REPLAY_PREVIEW?f->edges:REPLAY_PREVIEW;
+    player.preview_us=0;player.selected=0;player.power=0;player.result[0]=0;player.finished=0;
+    for(int n=0;n<player.n;n++){player.edges[n]=edges[n];player.preview_us+=edges[n]<0?-(int64_t)edges[n]:edges[n];}
+    player.loaded=true;
+    if(ls_tui_screen_current()==i)recorder_mode(true);
+    else {replay_view=true;ls_tui_screen_show(i);}
+    ls_fresh_bump(&replay_flash);return true;
+}
 static void recorder_draw(tui_surface *sf,tui_rect a) {
     if(a.w<24 || a.h<12) { source_bar=tui_rect_make(0,0,0,0); ls_panel_notice(sf,a,"REC","Enlarge pane",""); return; }
+    if(!tools_view) {
+    const int tab_h=ls_tui_is_wide()?3:5;
+    const char *tabs[]={"RECORD","REPLAY","FILES"};
+    for(int i=0;i<3;i++) {
+        int left=a.x+i*a.w/3,right=a.x+(i+1)*a.w/3;
+        rec_tabs[i]=tui_rect_make(left,a.y,right-left-1,tab_h);
+        ls_panel_box(sf,rec_tabs[i],NULL,(i==0&&!replay_view)||(i==1&&replay_view)?TUI_GREEN:TUI_CYAN);
+        tui_put_str(sf,rec_tabs[i],left+2,a.y+tab_h/2,tabs[i],TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    }
+    a.y+=tab_h;a.h-=tab_h;
+    } else memset(rec_tabs,0,sizeof(rec_tabs));
+    if(replay_view){snprintf(recorder_hint,sizeof(recorder_hint),"P play once  +/- power  O files  LEFT/RIGHT inspect");replay_draw(sf,a);return;}
     snprintf(recorder_hint,sizeof(recorder_hint),"%s",tools_view?"B recorder  ENTER arm/stop":recorder_source>=3?"U source  C CSV metadata  V sensors":gps_view?"U source  R GPS track  M map":"U source  W watch  E export  D RTL tools");
     int h=ls_tui_is_wide()?3:5;
     if(tools_view) {
@@ -539,18 +734,25 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     recorder_child()->draw(sf,a);
 }
 static bool recorder_key(ls_tk_t k,char c) {
+    if(k==LS_TK_TAB){recorder_mode(!replay_view);return true;}
+    if(replay_view)return replay_key(k,c);
     if(k==LS_TK_CHAR && (c=='u'||c=='U')){recorder_sources();return true;}
     if(!tools_view)return recorder_child()->key(k,c);
     if(k==LS_TK_ESC || c=='b'||c=='B'){tools_view=false;return true;}
     return key(k,c);
 }
 static bool recorder_touch(int x,int y) {
+    for(int i=0;i<3;i++)if(tui_rect_contains(rec_tabs[i],x,y)) {
+        if(i==2)replay_browse();else recorder_mode(i==1);return true;
+    }
+    if(replay_view)return replay_touch(x,y);
     if(x>=source_bar.x && x<source_bar.x+source_bar.w && y>=source_bar.y && y<source_bar.y+source_bar.h){recorder_sources();return true;}
     if(!tools_view)return recorder_child()->touch(x,y);
     if(ls_btn_hit(x,y)==0){tools_view=false;return true;}
     return touch(x,y);
 }
 void ls_scr_rec_tools(void) {
+    replay_view=false;
     int index=ls_tui_screen_index_of(&ls_scr_rec);
     if(index>=0)ls_tui_screen_show(index);
     recorder_source=0;gps_view=false;tools_view=true;ls_tui_radio_want("REC");on_enter();

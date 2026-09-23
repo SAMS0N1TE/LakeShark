@@ -4,6 +4,7 @@
 #include "p25_demod_control.h"
 #include "p25_p2_runtime.h"
 #include "ls_numpad.h"
+#include "p25_program.h"
 static int ps_volume(void)
 {
     ls_val_t v;
@@ -40,7 +41,8 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Reset CQPSK tuning",
                                        "Scan threshold (%)",
                                        "Scan hang (ms)",
-                                       "Phase II (experimental)"};
+                                       "Phase II (experimental)",
+                                       "Profile from card"};
 #define PS_COUNT ((int)(sizeof(ps_names) / sizeof(ps_names[0])))
 static const ls_btn_t ps_buttons[] = {
     {"UP", NULL, 'U', false, false},     {"DOWN", NULL, 'D', false, false},
@@ -99,6 +101,19 @@ static void ps_value(int i, char *out, size_t n)
     case 15:
         snprintf(out,n,"%s",p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
         break;
+    case 16: {
+        /* The system name is what the operator recognises; the path is what
+           they chose. Neither is useful before a profile has ever loaded, so
+           say that instead of showing an empty field. */
+        const p25_program_t *ps = p25_program_session();
+        if (ps && ps->active_valid && ps->active.system_name[0])
+            snprintf(out, n, "%s", ps->active.system_name);
+        else if (ps && ps->active_valid)
+            snprintf(out, n, "loaded");
+        else
+            snprintf(out, n, "none loaded - ENTER to choose");
+        break;
+    }
     }
 }
 static void ps_number(double v)
@@ -197,6 +212,19 @@ static void ps_change(int direction, bool edit)
         else
             return;
         break;
+    case 16:
+        /* ENTER only, like Reset CQPSK tuning: a list you step through with
+           LEFT/RIGHT should not open a modal in passing. */
+        if (!edit) return;
+        {
+            ls_args_t a = {.n = 0};
+            ls_val_t r;
+            ok = ls_action_call("p25.profile", &a, &r,
+                                ls_quick_grant_builtin()) == LS_ACT_OK;
+        }
+        if (!ok) snprintf(ps_status, sizeof(ps_status), "%s",
+                          "No profile chooser on this build");
+        return;
     case 15:
         scan_engine_stop();
         p25_p2_enable(edit?!p25_p2_enabled():direction>0);

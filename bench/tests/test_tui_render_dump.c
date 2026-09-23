@@ -464,8 +464,14 @@ static bool bar_pixel(int x,int y,int *which)
     for(int end=0;end<2;end++) {
         if(end && !wide) continue;
         const int row=end?rows-1:0;
-        const int top=oy+row*ch, bottom=top+ch;
-        const int y0=end?top:0, y1=end?sh:bottom;
+        /* The bar rows rasterise centred in the taller band painted for
+           them, so the words do not start at the row's nominal top. Derived
+           here independently of ls_tui.c on purpose: if the two ever drift
+           apart that is the bug this check exists to catch. */
+        const int below=sh-oy-rows*ch;
+        const int shift=end?below/2:-(oy/2);
+        const int top=oy+row*ch+shift, bottom=top+ch;
+        const int y0=end?oy+row*ch:0, y1=end?sh:oy+ch;
         if(ly<y0 || ly>=y1) continue;
         /* Past the arc is off the glass, and nothing paints there. */
         const int inset=ls_tui_row_inset(ly,sh,radius);
@@ -710,3 +716,16 @@ void settings_set_keyboard_light(bool on) { keyboard_light=on; }
 int ls_keypad_backlight(bool on) { (void)on; return 0; }
 
 bool ls_track_rec_running(void) { return false; }
+
+/* The radio panel shows system volume; this dump does not run audio. */
+int audio_volume_get(void) { return 60; }
+
+/* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
+   session lives in p25_program_sd.c, which the bench deliberately does not
+   link - a host test that really loaded a profile off a card would be lying
+   about what it exercised.  NULL here is the same first-run empty state a
+   board shows before any profile has been read. */
+#include "p25_program.h"
+const p25_program_t *p25_program_session(void) { return NULL; }
+bool p25_program_request_reload_path(const char *path)
+{ (void)path; return false; }

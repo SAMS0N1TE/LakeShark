@@ -861,9 +861,13 @@ static void handle_line(char *line, char *reply, size_t reply_len)
             if (s_host.sdr_power_cycle()) {
                 snprintf(reply, reply_len, "+OK sdr power cycling\n");
             } else {
+                /* No longer always "no switch": a board without one
+                   resets the root port instead, and refuses only when nothing
+                   is enumerated or a reset is already running. The board log
+                   names which; this reply must not name the wrong one. */
                 snprintf(reply, reply_len,
-                         "-ERR no VBUS switch on this board - replug the "
-                         "dongle, or SDR recover\n");
+                         "-ERR sdr power cycle not started - the board log "
+                         "says why; replug the dongle, or SDR recover\n");
             }
         } else {
 

@@ -1,4 +1,5 @@
 #include "ls_field.h"
+#include "p25_acquisition.h"
 #include "esp_timer.h"
 #include <math.h>
 #include <stdio.h>
@@ -68,3 +69,23 @@ bool ls_field_mark_radio(const char *title,const char *text,ls_field_source_t so
 bool ls_field_note(uint32_t id, const char *title, const char *text) { (void)id; snprintf(entry.title, sizeof(entry.title), "%s", title); snprintf(entry.text, sizeof(entry.text), "%s", text); return true; }
 bool ls_field_entry(int index, ls_journal_entry_t *out) { if (index != 0) return false; *out = entry; return true; }
 bool ls_field_provider(ls_field_source_t source, ls_field_provider_t provider) { (void)source; (void)provider; return true; }
+
+/* The IQ probe the P25 SIGNAL panel reads. Every screen target that compiles
+   scr_p25.c needs one; ls_sim_set_clipping() lets a test drive it. */
+static uint32_t s_acq_pairs, s_acq_clipped;
+
+void ls_sim_set_clipping(int percent)
+{
+    /* 5000 pairs is 10000 components, so a whole percent is a whole number
+       of samples and the panel's integer division gives back what was set. */
+    s_acq_pairs   = 5000;
+    s_acq_clipped = (uint32_t)(100u * (unsigned)percent);
+}
+
+void p25_get_acquisition_status(p25_acquisition_status_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->iq.sampled_pairs      = s_acq_pairs;
+    out->iq.clipped_components = s_acq_clipped;
+}

@@ -204,6 +204,11 @@ typedef struct {
     uint64_t bytes_read;
     uint64_t packets_read;
     ls_radio_err_t last_error;
+    /* Control operations - configure, gain, start, retune - that
+       have failed with LS_RADIO_ERR_IO in a row, since the last one that
+       succeeded or the last attach. Reads do not count: this measures
+       whether the device answers requests, not whether samples arrive. */
+    uint32_t control_io_errors;
 } ls_radio_endpoint_info_t;
 
 ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint);
@@ -219,6 +224,10 @@ bool ls_radio_endpoint_available(
 int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,
                                 void *user);
 ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id);
+/* Bumped on every attach and every detach. An app that has stopped
+   retrying a receiver that will not answer watches this to learn that
+   something changed, without touching the device it has given up on. */
+uint32_t ls_radio_endpoint_generation(void);
 
 ls_radio_err_t ls_radio_acquire(const char *owner,
                                 const ls_radio_requirements_t *requirements,

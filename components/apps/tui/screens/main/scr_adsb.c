@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 
 #include "../../ls_geo.h"
+#include "../../ls_map.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
 #include "apps/adsb/adsb_state.h"
@@ -208,6 +209,12 @@ static void bearing_range_nm(double lat0, double lon0, double lat1, double lon1,
 
 static bool radar_center(double *lat, double *lon, bool *live)
 {
+    float hlat, hlon;
+    if (settings_get_home(&hlat, &hlon) && fabs(hlat)<=85 && fabs(hlon)<=180) {
+        *lat=hlat; *lon=hlon;
+        if (live) *live=false;
+        return true;
+    }
     ls_gps_state_t g;
     ls_gps_get(&g);
     const int64_t now=esp_timer_get_time();
@@ -217,166 +224,63 @@ static bool radar_center(double *lat, double *lon, bool *live)
         if (live) *live = true;
         return true;
     }
-    float hlat, hlon;
-    if (settings_get_home(&hlat, &hlon)) {
-        *lat = (double)hlat; *lon = (double)hlon;
-        if (live) *live = false;
-        return true;
-    }
     return false;
-}
-
-static int ring_scale_nm(double max_range_nm)
-{
-    static const int STEPS[] = { 5, 10, 20, 40, 80, 160, 320 };
-    for (unsigned i = 0; i < sizeof(STEPS) / sizeof(STEPS[0]); i++)
-        if (max_range_nm <= STEPS[i]) return STEPS[i];
-    return STEPS[sizeof(STEPS) / sizeof(STEPS[0]) - 1];
 }
 
 static void draw_radar(tui_surface *sf, tui_rect area)
 {
-    const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    tui_box(sf, area, "RADAR", frame);
-    if (area.w < 14 || area.h < 10) return;
-
-    double clat, clon;
-    bool live;
-    if (!radar_center(&clat, &clon, &live)) {
-
-        ls_panel_notice(sf, area, "RADAR", "no position to centre on",
-                        "SET HOME: GPS or map");
+    const uint8_t bright=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
+    tui_box(sf,area,"MINI MAP / RTL ADS-B",bright);
+    if(area.w<20 || area.h<10) return;
+    double lat,lon; bool live;
+    if(!radar_center(&lat,&lon,&live)) {
+        ls_panel_notice(sf,area,"SET HOME","GPS, coordinates or map","Saved for next time");
         return;
     }
-
-    /* One row of air below the title, one row reserved above the bottom
-       border for the scale legend - the scope itself is what is left. */
-    const tui_rect body = tui_rect_make(area.x + 1, area.y + 2,
-                                        area.w - 2, area.h - 4);
-    if (body.w < 10 || body.h < 6) return;
-    const int legend_row = area.y + area.h - 2;
-
-    /* Circle, not ellipse - corrected for the cell's own aspect
-       (10x17, nowhere near square) the same way the map's sub-pixel buffer
-       is: a radius equal in cells in both axes draws something one and
-       seven tenths taller than it is wide. */
-    int cw = 10, ch = 17;
-    ls_tui_geometry(NULL, NULL, &cw, &ch);
-    if (cw < 1) cw = 10;
-    if (ch < 1) ch = 17;
-    const double max_rx_px = (body.w / 2.0) * cw;
-    const double max_ry_px = (body.h / 2.0) * ch;
-    const double radius_px = max_rx_px < max_ry_px ? max_rx_px : max_ry_px;
-    const double rx = radius_px / cw, ry = radius_px / ch;
-    const double ccx = body.x + body.w / 2.0, ccy = body.y + body.h / 2.0;
-
-    double max_range = 0.0;
-    for (int slot = 0; slot < 16; slot++) {
-        const adsb_aircraft_t *a = adsb_state_get(slot);
-        if (!a || !a->active || !a->pos_valid) continue;
-        double brg, rng;
-        bearing_range_nm(clat, clon, (double)a->lat, (double)a->lon, &brg, &rng);
-        if (rng > max_range) max_range = rng;
-    }
-    const int scale_nm = ring_scale_nm(max_range);
-
-    const uint8_t ring_c = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t comp_c = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-
-    /* A dotted circle, not a filled one - the same "line drawing,
-       not colour turned off" reasoning the map's mono view is built on: a
-       filled disc buries every contact near the centre of the screen under
-       its own background. Two passes, the boundary and a half-scale ring,
-       so there is a sense of distance without a number attached to every
-       point on it. */
-    for (int pass = 0; pass < 2; pass++) {
-        const double frac = pass == 0 ? 1.0 : 0.5;
-        for (int i = 0; i < 72; i++) {
-            const double a_rad = (double)i / 72.0 * 2.0 * M_PI;
-            const int px = (int)lround(ccx + sin(a_rad) * rx * frac);
-            const int py = (int)lround(ccy - cos(a_rad) * ry * frac);
-            if (px >= body.x && px < body.x + body.w &&
-                py >= body.y && py < body.y + body.h)
-                tui_put_char(sf, body, px, py, '.', ring_c);
+    const tui_rect body=tui_rect_make(area.x+1,area.y+3,area.w-2,area.h-6);
+    ls_map_preview(sf,body,lat,lon);
+    char text[80];
+    snprintf(text,sizeof(text),"%s %.4f, %.4f",live?"GPS":"HOME",lat,lon);
+    tui_put_str(sf,area,area.x+2,area.y+1,text,bright);
+    tui_put_str(sf,area,area.x+2,area.y+2,"^N  +home  >air  @selected  .stale",LS_ATTR_DIM);
+    const int64_t now=esp_timer_get_time();
+    const uint32_t selected=adsb_select_get_icao();
+    struct {int x0,x1,y;} labels[ADSB_MAX_TRACKED]; int nlabels=0;
+    for(int i=0;i<ADSB_MAX_TRACKED;i++) {
+        const adsb_aircraft_t *a=adsb_state_get(i);
+        if(!a || !a->active || !a->pos_valid) continue;
+        int x,y;
+        if(!ls_map_preview_point(a->lat,a->lon,body,&x,&y)) continue;
+        bool fresh=a->pos_ts_us>0 && now>=a->pos_ts_us && now-a->pos_ts_us<=15000000;
+        uint8_t ink=fresh?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM;
+        tui_put_char(sf,body,x,y,a->icao==selected?'@':fresh?'>':'.',ink);
+        ls_map_preview_reserve(body,x,y,1);
+        if(s_nplot<ADSB_MAX_TRACKED) s_plot[s_nplot++]=(radar_plot_t){x,y,a->icao};
+        if(x+9<body.x+body.w) {
+            snprintf(text,sizeof(text),"%.8s",a->callsign[0]?a->callsign:"");
+            const int end=x+(int)strlen(text);
+            bool clear=true;
+            for(int j=0;j<nlabels;j++) if(labels[j].y==y && x+1<=labels[j].x1 && end>=labels[j].x0) clear=false;
+            if(clear && nlabels<ADSB_MAX_TRACKED) {
+                tui_put_str(sf,body,x+1,y,text,ink);
+                ls_map_preview_reserve(body,x+1,y,(int)strlen(text));
+                labels[nlabels].x0=x+1;labels[nlabels].x1=end;labels[nlabels++].y=y;
+            }
         }
     }
-
-    const int icx = (int)lround(ccx), icy = (int)lround(ccy);
-    tui_put_char(sf, body, icx, body.y, 'N', comp_c);
-    tui_put_char(sf, body, icx, body.y + body.h - 1, 'S', comp_c);
-    tui_put_char(sf, body, body.x, icy, 'W', comp_c);
-    tui_put_char(sf, body, body.x + body.w - 1, icy, 'E', comp_c);
-
-    tui_put_char(sf, body, icx, icy, '+',
-                TUI_ATTR(live ? (TUI_GREEN | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT),
-                         TUI_BLACK));
-
-    typedef struct { int x0, x1, y; } rbox;
-    rbox taken[16];
-    int ntaken = 0;
-
-    const uint32_t sel_icao = adsb_select_get_icao();
-    for (int slot = 0; slot < 16; slot++) {
-        const adsb_aircraft_t *a = adsb_state_get(slot);
-        if (!a || !a->active || !a->pos_valid) continue;
-        double brg, rng;
-        bearing_range_nm(clat, clon, (double)a->lat, (double)a->lon, &brg, &rng);
-        if (rng > scale_nm) continue;   /* off the scope, not off the sky */
-
-        const double frac = rng / scale_nm;
-        const double rad = brg * M_PI / 180.0;
-        const int px = (int)lround(ccx + sin(rad) * rx * frac);
-        const int py = (int)lround(ccy - cos(rad) * ry * frac);
-        if (px < body.x || px >= body.x + body.w ||
-            py < body.y || py >= body.y + body.h) continue;
-
-        /* Altitude band, the three-colour read a real scope uses: low is
-           not the same picture as high and transiting, and colour says
-           which without spending a label on every point. */
-        const uint8_t hue = a->altitude < 5000  ? TUI_YELLOW
-                           : a->altitude < 20000 ? TUI_GREEN
-                                                  : TUI_CYAN;
-        const bool sel = (a->icao == sel_icao);
-        tui_put_char(sf, body, px, py, sel ? '@' : LS_TUI_BLOCK_FULL,
-                    TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
-
-        /* Where it landed, for touch(): a tap is resolved against the
-           contacts actually on the scope, not recomputed from a projection
-           the next frame might draw differently. Recorded before the label,
-           which a crowd can drop - the dot is always drawn. */
-        if (s_nplot < ADSB_MAX_TRACKED) {
-            s_plot[s_nplot].x = (int16_t)px;
-            s_plot[s_nplot].y = (int16_t)py;
-            s_plot[s_nplot].icao = a->icao;
-            s_nplot++;
-        }
-
-        /* A callsign one cell clear of its dot, only when it fits inside
-           the scope AND nothing else already claimed that row-span. */
-        if (!a->callsign[0] || ntaken >= 16) continue;
-        char cs[9];
-        snprintf(cs, sizeof(cs), "%.8s", a->callsign);
-        const int len = (int)strlen(cs);
-        const int x0 = px + 1, x1 = x0 + len - 1;
-        if (x1 >= body.x + body.w) continue;
-        bool free = true;
-        for (int i = 0; i < ntaken; i++) {
-            if (taken[i].y != py) continue;
-            if (x0 <= taken[i].x1 && x1 >= taken[i].x0) { free = false; break; }
-        }
-        if (!free) continue;
-        tui_put_str(sf, body, x0, py, cs, TUI_ATTR(hue, TUI_BLACK));
-        taken[ntaken].x0 = x0; taken[ntaken].x1 = x1; taken[ntaken].y = py;
-        ntaken++;
+    int hx,hy;
+    if(ls_map_preview_point(lat,lon,body,&hx,&hy)) {
+        tui_put_char(sf,body,hx,hy,'+',bright);
+        ls_map_preview_reserve(body,hx,hy,1);
     }
-
-    char scale_buf[16];
-    snprintf(scale_buf, sizeof(scale_buf), "%d NM", scale_nm);
-    tui_put_str(sf, area, area.x + area.w - 2 - (int)strlen(scale_buf),
-               legend_row, scale_buf, LS_ATTR_DIM);
-    if (!live)
-        tui_put_str(sf, area, area.x + 2, legend_row, "using saved home",
-                   LS_ATTR_DIM);
+    ls_map_preview_labels(sf,body);
+    double width_nm=40075016.686*cos(lat*M_PI/180.0)*(body.w*3)/
+        (ldexp(1.0,ls_map_zoom())*ls_map_tile_px()*LS_GEO_M_PER_NM);
+    snprintf(text,sizeof(text),"%s z%d  %.1f NM across",ls_map_render_busy()?"LOADING":"OFFLINE",ls_map_zoom(),width_nm);
+    tui_put_str(sf,area,area.x+2,area.y+area.h-3,text,LS_ATTR_DIM);
+    const char *why=ls_map_status();
+    tui_put_str(sf,area,area.x+2,area.y+area.h-2,
+        why && !ls_map_render_busy()?"No tiles here; MAPS in full map":"Tap aircraft for details",LS_ATTR_DIM);
 }
 
 /* The dashboard band: what the last two minutes looked like. */
@@ -590,11 +494,13 @@ static void draw(tui_surface *sf, tui_rect area)
     memset(s_nav, 0, sizeof(s_nav));
     s_tools=tui_rect_make(0,-1,0,0);
     if(area.h>=18 && area.w>=24) {
-    const ls_btn_t tools[]={{"MAP",NULL,'m',false,false},
-        {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"RADAR",NULL,'r',s_radar_only,false}};
-    int th=ls_tui_is_wide()?3:5;
+    const ls_btn_t tools[]={{"FULL MAP",NULL,'m',false,false},
+        {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"MAP ONLY",NULL,'r',s_radar_only,false},
+        {"ZOOM+",NULL,'=',false,false},{"ZOOM-",NULL,'-',false,false}};
+    int th=ls_tui_is_wide()?3:10;
     s_tools=tui_rect_make(area.x,area.y,area.w,th);
-    ls_btn_bar_raised_slot(sf,s_tools,tools,3,-1,LS_BTN_SLOT_QUICK);
+    if(!ls_tui_is_wide() && s_tools.w>49) {s_tools.x+=(s_tools.w-49)/2;s_tools.w=49;}
+    ls_btn_bar_raised_slot(sf,s_tools,tools,5,-1,LS_BTN_SLOT_QUICK);
     area.y+=th;area.h-=th;
     }
 
@@ -637,7 +543,7 @@ static void draw(tui_surface *sf, tui_rect area)
                       now);
         }
         tui_rect list, radar;
-        ls_tui_split_at(top, top.w - 38, &list, &radar);
+        ls_tui_split_at(top, top.w / 2, &list, &radar);
         draw_list(sf, list, now);
         draw_radar(sf, radar);
         s_list_rect  = list;
@@ -665,10 +571,18 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k==LS_TK_CHAR && (ch=='='||ch=='+'||ch=='-')) {ls_map_zoom_by(ch=='-'?-1:1);return true;}
     if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {s_radar_only=!s_radar_only;s_detail=false;return true;}
     if(k==LS_TK_CHAR && (ch=='m'||ch=='M'||ch=='h'||ch=='H')) {
         ls_args_t a={0};ls_val_t out;
         ls_action_call(ch=='m'||ch=='M'?"map.here":"map.home",&a,&out,ls_quick_grant_builtin());
+        if(ch=='m'||ch=='M') {
+            float lat,lon;
+            if(settings_get_home(&lat,&lon) && fabs(lat)<=85) {
+                ls_map_follow_set(false);
+                ls_map_center(lat,lon);
+            }
+        }
         return true;
     }
     /* UP/DOWN keep working in DETAIL - moving through contacts is the more
@@ -698,7 +612,7 @@ static bool touch(int col, int row)
 {
     if(hit(s_tools,col,row)) {
         int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
-        if(i>=0 && i<3) return key(LS_TK_CHAR,"mhr"[i]);
+        if(i>=0 && i<5) return key(LS_TK_CHAR,"mhr=-"[i]);
         return true;
     }
 
@@ -737,14 +651,20 @@ static bool touch(int col, int row)
     return false;
 }
 
-static void leave(void) { s_detail = false; }
+static void enter(void)
+{
+    /* A useful regional overview; preserve the user zoom across relaunches. */
+    static bool first=true;
+    if(first) {ls_map_zoom_by(8-ls_map_zoom());first=false;}
+}
+static void leave(void) { s_detail = false; ls_map_preview_leave(); }
 
 const ls_tui_screen_t ls_scr_adsb = {
     /* an aircraft list with no receiver behind it is an empty table. */
     .radio = "ADS-B",
     .name = "ADSB",
     .hint = "UP/DOWN aircraft  ENTER details  ESC back",
-    .enter = NULL,
+    .enter = enter,
     .leave = leave,
     .draw = draw,
     .key = key,

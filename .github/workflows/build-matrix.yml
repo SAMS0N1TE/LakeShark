@@ -34,6 +34,7 @@ jobs:
           esp_idf_version: v5.4.3
           target: esp32p4
           command: >-
+            python tools/prepare_sdk.py --idf "$IDF_PATH" &&
             idf.py
             -B build
             -DSDKCONFIG=build/sdkconfig

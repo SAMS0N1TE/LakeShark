@@ -8,12 +8,19 @@
 
 /* carto_label, which ls_map_labels hands back. */
 #include "carto/label.h"
+#include "tuilib/tui_core.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 bool ls_map_begin(int px_w, int px_h);
+/* UI-task only: shared offline basemap for the ADS-B pane. */
+void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon);
+bool ls_map_preview_point(double lat, double lon, tui_rect area, int *x, int *y);
+void ls_map_preview_reserve(tui_rect area, int x, int y, int width);
+void ls_map_preview_labels(tui_surface *sf, tui_rect area);
+void ls_map_preview_leave(void);
 void ls_map_end(void);
 
 /* Failed opens preserve the current archive. */

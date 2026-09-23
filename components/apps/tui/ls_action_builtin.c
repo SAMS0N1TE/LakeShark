@@ -6,14 +6,17 @@
 #include "ls_waterfall.h"
 #include "ls_map.h"
 #include "ls_numpad.h"
+#include "ls_keyboard.h"
 #include "ls_picker.h"
 #include "ls_app.h"
 #include "ls_gps.h"
 #include "ls_track_log.h"
 /* The saved home, the fallback under a live fix. */
 #include "core/settings.h"
+#include "core/location_pref.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include "esp_timer.h"
 
@@ -23,7 +26,7 @@
 #include "audio/audio_out.h"
 #include "ls_mesh.h"
 
-void lakeshark_fm_set_freq(uint32_t hz);
+bool lakeshark_fm_set_freq(uint32_t hz);
 void lakeshark_p25_set_freq(uint32_t hz);
 void lakeshark_fm_set_mode(int mode);
 int  lakeshark_fm_get_mode(void);
@@ -133,10 +136,40 @@ static void home_feedback(const char *title,const char *message)
     ls_picker_add("OK",message);
     ls_tui_status_set(message,NULL);
 }
+static void home_save(double lat, double lon)
+{
+    if (!isfinite(lat) || !isfinite(lon) || fabs(lat)>85 || fabs(lon)>180) {
+        home_feedback("HOME UNCHANGED", "Use latitude -85..85, longitude -180..180");
+        return;
+    }
+    if (!settings_set_home((float)lat, (float)lon)) {
+        home_feedback("SAVE FAILED", "Home unchanged; try again");
+        return;
+    }
+    ls_map_follow_set(false);
+    ls_map_center(lat, lon);
+    char message[48];
+    snprintf(message,sizeof(message),"%.5f, %.5f (remembered)",lat,lon);
+    home_feedback("HOME SAVED",message);
+}
+static void home_coordinates(const char *text)
+{
+    double lat,lon;
+    if (!location_parse_pair(text,&lat,&lon)) {
+        home_feedback("HOME UNCHANGED","Enter decimal latitude, longitude");return;
+    }
+    home_save(lat,lon);
+}
 static void home_choice(int choice)
 {
     double lat=0,lon=0;
     if(choice==2) { ls_val_t out; a_map_here(NULL,&out); return; }
+    if(choice==1) {
+        float a=0,b=0; char initial[48]="";
+        if(settings_get_home(&a,&b)) snprintf(initial,sizeof(initial),"%.5f, %.5f",(double)a,(double)b);
+        ls_keyboard_open("HOME: LAT, LON",initial,47,home_coordinates);
+        return;
+    }
     if(choice==0) {
         ls_gps_state_t g; ls_gps_get(&g);
         int64_t now=esp_timer_get_time();
@@ -144,15 +177,14 @@ static void home_choice(int choice)
             home_feedback("NO GPS FIX","Use map instead"); return;
         }
         lat=g.lat_deg; lon=g.lon_deg;
-    } else if(choice==1) {
+    } else if(choice==3) {
         if(!ls_map_archive()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
         ls_map_get_center(&lat,&lon);
     } else return;
     if(!isfinite(lat)||!isfinite(lon)||fabs(lat)>85||fabs(lon)>180) {
         home_feedback("HOME UNCHANGED","Invalid position"); return;
     }
-    bool saved=settings_set_home((float)lat,(float)lon);
-    home_feedback(saved?"HOME SAVED":"SAVE FAILED",saved?"GPS fallback":"Home unchanged");
+    home_save(lat,lon);
 }
 static ls_act_status_t a_map_home(const ls_args_t *in, ls_val_t *out)
 {
@@ -160,8 +192,12 @@ static ls_act_status_t a_map_home(const ls_args_t *in, ls_val_t *out)
     (void)ls_gps_start();
     ls_picker_open("SET HOME",home_choice);
     ls_picker_add("Use my GPS position","fresh fix only");
-    ls_picker_add("Save map center as home","pan map first");
+    float lat=0,lon=0;char saved[48];
+    if(settings_get_home(&lat,&lon)) snprintf(saved,sizeof(saved),"saved %.4f, %.4f",(double)lat,(double)lon);
+    else snprintf(saved,sizeof(saved),"no GPS or map needed");
+    ls_picker_add("Enter latitude, longitude",saved);
     ls_picker_add("Choose a place on the map","then SET HOME");
+    ls_picker_add("Save map center as home","pan map first; remembered after restart");
     out->kind=LS_VAL_TEXT;out->s="Choose how to set home";
     return LS_ACT_OK;
 }
@@ -321,9 +357,17 @@ static void tuned_fm(double mhz)
     a.v[0].kind = LS_VAL_FLOAT;
     a.v[0].f = (float)mhz;
     /* A typed carrier is an explicit user choice.  Keep it authoritative
-       across MODE and SWEEP until the user selects a band or unlocks it. */
-    lakeshark_fm_frequency_lock(true);
-    (void)ls_action_call("fm.freq", &a, NULL, LS_CAP_TUNE);
+       across MODE and SWEEP until the user selects a band or unlocks it.
+
+       Release before tuning and take it again after. Locking first meant the
+       lock captured the frequency being left, and every other tuning path now
+       refuses a move away from the locked carrier, so the typed frequency was
+       refused for differing from the one just captured. Typing an exact
+       carrier is the most deliberate act on the screen; it wins, and then it
+       is what is held. */
+    lakeshark_fm_frequency_lock(false);
+    if (ls_action_call("fm.freq", &a, NULL, LS_CAP_TUNE) == LS_ACT_OK)
+        lakeshark_fm_frequency_lock(true);
 }
 
 static ls_act_status_t a_p25_tune(const ls_args_t *in, ls_val_t *out)

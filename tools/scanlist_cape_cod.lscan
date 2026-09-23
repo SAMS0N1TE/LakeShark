@@ -1,0 +1,104 @@
+LSCAN1
+# LakeShark conventional scan list - Cape Cod Bay and the Outer Cape
+#
+# Copy to the SD card and load it:
+#
+#     python tools/sd_put.py tools/scanlist_cape_cod.lscan scanlist_cape_cod.lscan PORT
+#     ch load /sdcard/scanlist_cape_cod.lscan
+#
+# 'ch load' REPLACES the whole channel list and stops the scanner. This file
+# is therefore the complete list, not an addition to one.
+#
+# ---------------------------------------------------------------------------
+# THE ROUTE THIS IS BUILT FOR
+#
+# Yarmouth north and east along the bay to Provincetown, zoned so LOCATION
+# filtering walks the list up the Cape on its own:
+#
+#     0  Countywide, mutual aid and the shared police channels
+#     1  Mid Cape        Yarmouth, Dennis
+#     2  Lower Cape      Brewster, Harwich, Chatham, Orleans
+#     3  Outer Cape      Eastham, Wellfleet, Truro, Provincetown
+#     4  Cape Cod Bay    marine, Coast Guard, the canal
+#     5  Medical and weather
+#
+# ---------------------------------------------------------------------------
+# WHAT YOU WILL AND WILL NOT HEAR, AND WHY
+#
+# Town POLICE from Brewster east to Provincetown are talkgroups on the county
+# 800 MHz trunk. A conventional scanner cannot follow a trunk, so those towns
+# have no police entry here and their absence is the system, not the file.
+# Yarmouth PD is conventional 800 and is included. So are the four shared
+# Barnstable County VHF police channels, which is where inter-town and
+# Provincetown VHF traffic appears.
+#
+# Town FIRE is the opposite and it is the reason this list is worth carrying:
+# every town's fire alarm dispatch is simulcast on its own LOW BAND 33 MHz
+# channel, in clear analogue, all the way out to Provincetown.
+#
+# LOW BAND CAVEAT: 33 MHz sits at the very bottom of the R820T2's range. It
+# tunes there, but well below where the tuner is happy. Expect these to be
+# the weakest channels in the list and to reward a longer antenna.
+#
+# Cape Cod National Seashore is P25 and covers the outer beaches.
+#
+# ---------------------------------------------------------------------------
+# FIELD ORDER
+#     name|freq_hz|MODE|zone|latitude|longitude|radius_km|priority
+#
+# MODE is P25 or NFM only. Every field must be present; '#' starts a comment.
+#
+# SOURCING: published listener references for the region, cross-checked
+# between two of them where possible. None of these has been decoded by the
+# board yet, so treat a silent channel as unconfirmed rather than broken.
+# One known conflict between sources: Harwich fire alarm is listed as 33.94
+# by one and 33.96 by the other. 33.94 is used here.
+# ---------------------------------------------------------------------------
+
+# --- zone 0, countywide -----------------------------------------------------
+BARN MUTUAL|33700000|NFM|0|41.7003|-70.3000|70|1
+CO PD 1|155565000|NFM|0|41.7003|-70.3000|70|1
+CO PD 2 PTOWN|155700000|NFM|0|41.7003|-70.3000|70|0
+CO PD 3|155640000|NFM|0|41.7003|-70.3000|70|0
+CO PD 4|155520000|NFM|0|41.7003|-70.3000|70|0
+CAPE PD TAC 1|866812500|NFM|0|41.7003|-70.3000|70|0
+CAPE PD TAC 2|866062500|NFM|0|41.7003|-70.3000|70|0
+FG DIRECT 1|851312500|NFM|0|41.7003|-70.3000|70|0
+FG DIRECT 2|851837500|NFM|0|41.7003|-70.3000|70|0
+
+# --- zone 1, mid cape -------------------------------------------------------
+YARMOUTH FIRE|33580000|NFM|1|41.6690|-70.2028|30|1
+YARMOUTH PD|855237500|NFM|1|41.6690|-70.2028|30|1
+DENNIS FIRE|33860000|NFM|1|41.7353|-70.1936|30|1
+DENNIS HARBOR|155985000|NFM|1|41.7353|-70.1936|30|0
+
+# --- zone 2, lower cape -----------------------------------------------------
+BREWSTER FIRE|33520000|NFM|2|41.7601|-70.0819|30|1
+HARWICH FIRE|33940000|NFM|2|41.6862|-70.0759|30|1
+CHATHAM FIRE|33620000|NFM|2|41.6821|-69.9597|30|1
+ORLEANS FIRE|33740000|NFM|2|41.7898|-69.9895|30|1
+
+# --- zone 3, outer cape -----------------------------------------------------
+EASTHAM FIRE|33820000|NFM|3|41.8298|-69.9740|30|1
+WELLFLEET FIRE|33540000|NFM|3|41.9376|-70.0328|30|1
+TRURO FIRE|33660000|NFM|3|41.9954|-70.0492|30|1
+PTOWN FIRE|33460000|NFM|3|42.0587|-70.1787|30|1
+CCNS P25 1|173762500|P25|3|41.9100|-69.9900|45|0
+CCNS P25 2|171725000|P25|3|41.9100|-69.9900|45|0
+
+# --- zone 4, cape cod bay ---------------------------------------------------
+MARINE 16|156800000|NFM|4|41.8500|-70.2000|80|1
+MARINE 09|156450000|NFM|4|41.8500|-70.2000|80|0
+MARINE 13 CANAL|156650000|NFM|4|41.7440|-70.6160|50|0
+MARINE 22A CG|157100000|NFM|4|41.8500|-70.2000|80|0
+MARINE 21A CG|157050000|NFM|4|41.8500|-70.2000|80|0
+MARINE 23 CG|157150000|NFM|4|41.8500|-70.2000|80|0
+USCG AIR CC|164550000|NFM|4|41.6580|-70.5210|70|0
+ACOE CANAL|163412500|NFM|4|41.7440|-70.6160|50|0
+
+# --- zone 5, medical and weather --------------------------------------------
+CMED 4 HAIL|463075000|NFM|5|41.6520|-70.2820|80|0
+CMED 2|463025000|NFM|5|41.6520|-70.2820|80|0
+CMED 3|463050000|NFM|5|41.6520|-70.2820|80|0
+CMED 7|463150000|NFM|5|41.6520|-70.2820|80|0
+NOAA HYANNIS|162550000|NFM|5|41.6520|-70.2820|100|0

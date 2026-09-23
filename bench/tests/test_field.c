@@ -116,11 +116,7 @@ void ls_wireless_get(ls_wireless_snapshot_t *out) { memset(out, 0, sizeof(*out))
 
 static void reset(void)
 {
-#ifdef _WIN32
-    mkdir("field-test");
-#else
-    mkdir("field-test", 0775);
-#endif
+    ls_test_mkdir("field-test");
     remove("field-test/entries.bin"); remove("field-test/notes.md"); remove("field-test/samples.csv");
     remove("field-test/packets.csv"); inbound_len = 0;
     fsk_on=fsk_refuse=false; fsk_begins=fsk_ends=0; fsk_inbound_len=0;

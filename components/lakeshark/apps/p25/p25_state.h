@@ -139,6 +139,9 @@ typedef struct {
     bool     p25_enc_muted;
 
     uint32_t p25_enc_muted_frames_total;
+    uint32_t p25_enc_muted_unknown_total;
+    uint32_t p25_ess_rs_failed_total;
+    uint32_t p25_ess_rs_kept_total;
     uint32_t p25_enc_returns;
     uint32_t p25_enc_skips;
     uint32_t p25_enc_tg_evictions;

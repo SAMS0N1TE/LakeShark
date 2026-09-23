@@ -18,6 +18,14 @@ typedef struct {
     const char *mode;
     ls_iq_control_status_t receiver;
     float power;
+    /* Quieting, 0 hiss to 1 fully quiet, and where the squelch opens on the
+       same travel. The panel draws the meter and the gate from these so it
+       stays a view and does not reach into any one receiver's state. */
+    int   volume;
+    float signal;
+    float gate;
+    bool  squelch_open;
+    bool  has_squelch;
     char detail[4][64];
 } ls_radio_view_t;
 

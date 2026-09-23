@@ -641,7 +641,9 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
         if(!fm_running()||!status.receiver_streaming||hz<24000000||hz>1766000000)return false;
         scan_engine_stop();
         if(FM.mode==FM_MODE_SCAN)ls_wf_fm_sweep(false);
-        lakeshark_fm_set_freq(hz);return true;
+        /* Report what happened: a locked receiver refuses, and saying it
+           tuned would leave the marker claiming a move that never occurred. */
+        return lakeshark_fm_set_freq(hz);
     }
     if(owner==LS_WF_OWNER_LORA) {
         if(!ls_lora_present()||hz<150000000||hz>959000000)return false;

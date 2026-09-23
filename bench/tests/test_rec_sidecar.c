@@ -5,22 +5,18 @@
 #include "ls_test.h"
 #include "rec_sidecar.h"
 
-#include <direct.h>
 #include <errno.h>
-#include <process.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <windows.h>
 
 static char fixture[96];
 
 static void fx_init(void)
 {
     if (fixture[0] == '\0') {
-        snprintf(fixture, sizeof(fixture), ".ls_rec_sidecar_fixture_%lu",
-                 (unsigned long)_getpid());
+        ls_test_fixture_dir(fixture, sizeof(fixture), ".ls_rec_sidecar_fixture");
     }
 }
 
@@ -55,7 +51,7 @@ static bool fx_remove_file(const char *path)
             if (fx_path_is_gone(path)) return true;
         }
         last_error = errno;
-        Sleep(10);
+        ls_test_sleep_ms(10);
     }
 
     LS_CHECK_MSG(false, "could not clear fixture file %s after retries: %s",
@@ -69,11 +65,11 @@ static bool fx_remove_dir(const char *path)
 
     for (int attempt = 0; attempt < 20; ++attempt) {
         errno = 0;
-        if (_rmdir(path) == 0 || errno == ENOENT) {
+        if (ls_test_rmdir(path) == 0 || errno == ENOENT) {
             if (fx_path_is_gone(path)) return true;
         }
         last_error = errno;
-        Sleep(10);
+        ls_test_sleep_ms(10);
     }
 
     LS_CHECK_MSG(false, "could not clear fixture directory %s after retries: %s",
@@ -102,11 +98,11 @@ static bool fx_setup(void)
 {
     /* fixed fixture names let a transient Windows sharing violation
        leave state for the next run.  A locked collide.json reproduced five
-       unrelated failures beginning at _mkdir.  Use a per-process path, retry
+       unrelated failures beginning at ls_test_mkdir.  Use a per-process path, retry
        Windows deletion, and stop a case at the path-specific cleanup error. */
     if (!fx_rm_all()) return false;
     errno = 0;
-    if (_mkdir(fixture) != 0) {
+    if (ls_test_mkdir(fixture) != 0) {
         LS_CHECK_MSG(false, "could not create fixture directory %s: %s",
                      fixture, strerror(errno));
         return false;

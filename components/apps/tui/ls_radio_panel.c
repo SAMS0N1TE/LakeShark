@@ -326,6 +326,48 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
                                                           : "CHANNEL LIST / HOLD")
              : text,
          amber);
+    /* VOLUME AND SQUELCH, WHERE THE SCANNING HAPPENS.
+
+       Both lived only on the FM detail pages, so the screen you actually run
+       a scan from had no way to turn it down or open it up without leaving.
+       The row between the status box and the body was empty, so they go
+       there, with the meter reading quieting and a caret marking where the
+       squelch opens. Above the caret is audio, below it is silence. */
+    {
+        char vs[40];
+        const int vol = v->volume;
+        snprintf(vs, sizeof(vs), "VOL %3d%%", vol);
+        tui_put_str(sf, a, a.x + 1, a.y + 4, vs,
+                    TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (v->has_squelch) {
+            snprintf(vs, sizeof(vs), "SQL %3d", (int)(v->gate * 100.0f + 0.5f));
+            tui_put_str(sf, a, a.x + 11, a.y + 4, vs,
+                        TUI_ATTR(v->squelch_open ? (TUI_GREEN | TUI_BRIGHT)
+                                                 : TUI_CYAN, TUI_BLACK));
+            const int mx = a.x + 20, mw = a.w - 22;
+            if (mw > 6) {
+                int lit = (int)(v->signal * (float)mw);
+                if (lit < 0) lit = 0;
+                if (lit > mw) lit = mw;
+                int gate = (int)(v->gate * (float)mw);
+                if (gate < 0) gate = 0;
+                if (gate >= mw) gate = mw - 1;
+                for (int i = 0; i < mw; i++) {
+                    const bool on = i < lit;
+                    uint8_t col = on ? (i > mw * 3 / 4 ? TUI_RED | TUI_BRIGHT
+                                      : i > mw / 2     ? TUI_YELLOW | TUI_BRIGHT
+                                                       : TUI_GREEN | TUI_BRIGHT)
+                                     : (i == gate ? TUI_CYAN | TUI_BRIGHT
+                                                  : TUI_BLACK | TUI_BRIGHT);
+                    tui_put_char(sf, a, mx + i, a.y + 4,
+                                 on ? LS_TUI_SHADE_FULL
+                                    : (i == gate ? '^' : LS_TUI_SHADE_25),
+                                 TUI_ATTR(col, TUI_BLACK));
+                }
+            }
+        }
+    }
+
     int bh = wide ? 5 : 10;
     tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
     tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);

@@ -110,8 +110,7 @@ rules once SIBs are decoded. [Heuristics](https://efforg.github.io/rayhunter/heu
 
 ## Current boundary
 
-**Handoff checkpoint:** `integrations/CELL_HANDOFF.md` is the current resume guide
-for moving PCs. The final 8 MS/s live test recovered PCI 244, 16 observations,
+**Latest checkpoint:** the final 8 MS/s live test recovered PCI 244, 16 observations,
 15 consistent pairs and eight CRC-valid MIB occasions (50 RB, two ports, SFN 446).
 Capture CRC32 `16d8f0ac`, sync 3,234 ms, MIB 2,287 ms. UI was 42.5 ms per frame,
 panel 40 Hz, no late frames. Host verification remains 171 programs / 62 headers.

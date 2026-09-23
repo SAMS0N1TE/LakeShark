@@ -323,6 +323,12 @@ static char           s_hint[LS_UA_MAX_APPS][40];
 static int            s_loaded;
 static char           s_last_err[96];
 
+/* The contract answers, the same for every user app: a described screen
+   reads published values and draws them. Only the purpose line differs,
+   and it names the file the app came from. */
+static char           s_purpose[LS_UA_MAX_APPS][192];
+static ls_app_doc_t   s_doc[LS_UA_MAX_APPS];
+
 /* One draw function per slot, because a screen descriptor has no user
    pointer - the router deliberately keeps that contract narrow. Six slots is
    six three-line functions, which is cheaper than widening the contract for
@@ -372,6 +378,17 @@ static bool load_one(const char *path, const char *fname)
 
     const int slot = s_loaded;
     snprintf(s_hint[slot], sizeof(s_hint[slot]), "user app  ESC  directory");
+    snprintf(s_purpose[slot], sizeof(s_purpose[slot]),
+             "A user app, described by %s on the card. It shows the values "
+             "that file names, as they change, and keeps nothing of its own.",
+             fname);
+    s_doc[slot] = (ls_app_doc_t){
+        .purpose     = s_purpose[slot],
+        .records     = LS_APP_RECORDS_NOTHING,
+        .record_note = NULL,
+        .gps         = LS_APP_GPS_UNUSED,
+        .gps_note    = NULL,
+    };
     s_screen[slot].name  = s_model[slot].name;
     s_screen[slot].hint  = s_hint[slot];
     s_screen[slot].draw  = UA_DRAW[slot];
@@ -389,10 +406,12 @@ static bool load_one(const char *path, const char *fname)
         .cat    = LS_APP_USER,
         .screen = &s_screen[slot],
         .live   = NULL,
+        .doc    = &s_doc[slot],
     };
-    if (ls_app_register(&app) < 0) {
-        snprintf(s_last_err, sizeof(s_last_err),
-                 "%s: no room left in the app directory", fname);
+    const int rc = ls_app_register(&app);
+    if (rc < 0) {
+        snprintf(s_last_err, sizeof(s_last_err), "%s: %s",
+                 fname, ls_app_register_why(rc));
         return false;
     }
     s_loaded++;
