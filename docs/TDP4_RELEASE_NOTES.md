@@ -1,13 +1,14 @@
 # LakeShark release notes
 
-## 2.2.2 - T-Display P4
+## 2.2.2
 
-- FILES opens recordings in RECORD with inline power and animated playback.
-- ADS-B adds an offline mini map and remembered home.
-- GPS recording starts with less internal-memory pressure.
-- Fixes builds without SX1262 and pins the release SDK.
-
-Radio features marked experimental retain that status.
+- Wi-Fi and Bluetooth startup toggles in RADIOS; changes take effect after reboot.
+- SUB-GHZ scanning with an animated sweep, selectable styles and colours, a draggable threshold and a detections list.
+- SD-card file browsing and recording previews; FILES opens replay in RECORD with power controls and animated playback.
+- ADS-B offline mini map and saved home, set from GPS, coordinates or the map.
+- P25 profile picker and Journal marks.
+- FM volume and squelch controls, a signal meter with a threshold marker, and animated tuning.
+- Improved FM tuning and pager navigation, receiver recovery and GPS recording startup.
 
 ## 2.2.1 - T-Display P4
 

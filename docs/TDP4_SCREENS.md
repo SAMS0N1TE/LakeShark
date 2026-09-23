@@ -3,9 +3,13 @@
 LakeShark on the LilyGO T-Display-P4.
 
 
-## 2.2.2 gallery
+## Scanning, replay and aircraft
 
 [FILES, RECORD replay, SUB-GHZ and the ADS-B mini map](REPLAY_AND_AIRCRAFT.md) in portrait and landscape.
+
+![SUB-GHZ scanning](screenshots/tdp4/development-20260923/subghz-scan-land.png)
+
+![Wi-Fi and Bluetooth controls](screenshots/tdp4/development-20260923/radios-land.png)
 
 ## Portrait
 

@@ -17,11 +17,15 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
-**[New in 2.2.2: replay and aircraft controls](docs/REPLAY_AND_AIRCRAFT.md)** — FILES opens recordings in RECORD with animated playback; ADS-B adds an offline mini map and remembered home.
+**[Scanning, replay and aircraft tracking](docs/REPLAY_AND_AIRCRAFT.md)** — Animated SUB-GHZ scans, FILES-to-RECORD playback, ADS-B mini maps and saved home. RADIOS adds Wi-Fi and Bluetooth startup toggles.
 
 | RECORD replay | ADS-B mini map |
 | --- | --- |
 | ![Recording playback](docs/screenshots/tdp4/development-20260923/replay-land.png) | ![ADS-B mini map](docs/screenshots/tdp4/development-20260923/adsb-land.png) |
+
+| SUB-GHZ scan | Wireless startup controls |
+| --- | --- |
+| ![SUB-GHZ scanning](docs/screenshots/tdp4/development-20260923/subghz-scan-land.png) | ![Wi-Fi and Bluetooth controls](docs/screenshots/tdp4/development-20260923/radios-land.png) |
 
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
@@ -57,7 +61,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
 | MAP | Offline maps, aircraft and Mesh nodes; pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |
-| RADIOS | What is powered, and the switch for each |
+| RADIOS | Radio power, antenna selection, and Wi-Fi/Bluetooth startup toggles |
 | DIAG | Memory, radios, sensors, rebuild counts |
 | SET | Brightness, theme, font, sounds, Daylight mode for the sun |
 | LINK | Wi-Fi and Bluetooth: scan, signal and channel graphs |

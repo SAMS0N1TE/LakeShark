@@ -1,6 +1,6 @@
-# FILES, replay and aircraft tracking — 2.2.2
+# Scanning, replay and aircraft tracking
 
-Available in [LakeShark 2.2.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.2) for T-Display-P4. Use the firmware for your exact board.
+Browse recordings, replay captures and follow aircraft on the T-Display-P4.
 
 ## Open a recording from FILES
 
@@ -45,9 +45,21 @@ The on-screen legend identifies home, aircraft, selected aircraft and stale posi
 
 <img src="screenshots/tdp4/development-20260923/adsb-port.png" width="280" alt="ADS-B portrait mini map"> <img src="screenshots/tdp4/development-20260923/adsb-set-home-port.png" width="280" alt="Four ways to set and remember home">
 
+## Wi-Fi and Bluetooth
+
+Open **RADIOS** and use **ON AT BOOT / OFF AT BOOT** for **WI-FI** and **BLE**. Restart to apply the saved choices. **LINK** manages Wi-Fi networks and shows the Flipper connection.
+
+![Wi-Fi and Bluetooth startup controls](screenshots/tdp4/development-20260923/radios-land.png)
+
 ## SUB-GHZ
 
-Use SUB-GHZ to capture and inspect pulses, then open saved recordings in RECORD through FILES.
+Use **SCAN / N** and choose a band or a range around the current frequency. The moving sweep line shows the frequency being sampled. Open **MORE OPTIONS → DISPLAY** to choose the spectrum style and colour palette.
+
+Drag the threshold line to change detection sensitivity. Tap **DETECTED** to browse hits, then choose **CAPTURE IT**, **TUNE HERE** or **ZOOM IN**. While scanning, **SCAN → ON DETECT** selects NOTHING, BUZZ or BUZZ + CATCH. **SCAN → STOP** ends the sweep.
+
+![SUB-GHZ scan in landscape](screenshots/tdp4/development-20260923/subghz-scan-land.png)
+
+<img src="screenshots/tdp4/development-20260923/subghz-scan-port.png" width="280" alt="SUB-GHZ scan in portrait">
 
 ![SUB-GHZ capture view in landscape](screenshots/tdp4/development-20260923/subghz-land.png)
 
