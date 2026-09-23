@@ -1418,3 +1418,16 @@ set(P25_VOICE_REPLAY_SOURCES
 add_executable(p25_voice_replay tools/p25_voice_replay.c ${P25_VOICE_REPLAY_SOURCES})
 target_include_directories(p25_voice_replay PRIVATE ${FW}/components/imbe_vocoder)
 target_link_libraries(p25_voice_replay ls_harness m)
+
+# Generated voice calls through the production path, vocoder recorded:
+# which IMBE frames reach the speaker, bit-exact, under the impairments that
+# have broken voice on the air. The fixture includes the NID module itself,
+# and the real vocoder is replaced by the recorder, so neither is linked.
+set(P25_VOICE_CALL_SOURCES ${P25_VOICE_REPLAY_SOURCES})
+list(REMOVE_ITEM P25_VOICE_CALL_SOURCES
+    ${APP}/p25/p25p1_check_nid.c
+    ${FW}/components/imbe_vocoder/imbe_shim.cpp
+    ${P25_IMBE_TEST_SOURCES})
+ls_add_test(test_p25_voice_call fixtures/p25_call_gen.c ${P25_VOICE_CALL_SOURCES})
+target_include_directories(test_p25_voice_call PRIVATE
+    ${FW}/components/imbe_vocoder ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)

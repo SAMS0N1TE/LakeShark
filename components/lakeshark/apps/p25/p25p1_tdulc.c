@@ -180,14 +180,18 @@ void
 read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, unsigned int length,
         int* status_count, int new_sequence)
 {
-  char* buffer;
+  /* Upstream malloc'd this on every TDU and TDULC and wrote into it
+     unchecked. On the decoder task, with P25 entry measured leaving under
+     3 KB of internal RAM, a failed malloc was a NULL write at the end of
+     every call. The callers read 28 and 20 bits. */
+  char buffer[32];
   unsigned int i;
   int analog_signal_index;
 
+  if (length > sizeof(buffer))
+    length = sizeof(buffer);
   analog_signal_index = 0;
-  buffer = malloc(length);
   read_dibit_update_analog_data (opts, state, buffer, length, status_count, analog_signal_array, &analog_signal_index);
-  free(buffer);
   if (new_sequence)
     {
       analog_signal_array[0].sequence_broken = 1;

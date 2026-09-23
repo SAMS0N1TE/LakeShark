@@ -278,12 +278,15 @@ int main(int argc, char **argv)
     printf("P25VOICE seconds=%.2f hdu=%u ldu1=%u ldu2=%u tdu=%u other=%u "
            "ldu_missed=%u ldu2_orphan=%u imbe_on_air=%u imbe_played=%u "
            "muted=%u muted_unknown_ess=%u ess_rs_failed=%u ess_rs_kept=%u "
-           "held=%u released=%u discarded=%u played_pct=%.1f\n",
+           "held=%u released=%u discarded=%u played_pct=%.1f "
+           "hdr_fixed=%d hdr_critical=%d imbe_bit_fixes=%d\n",
            dur, hdu, ldu1, ldu2, tdu, other, missed, ldu2_orphan, on_air, imbe_played,
            r.state.p25_enc_muted_frames, r.state.p25_enc_muted_unknown,
            r.state.p25_ess_rs_failed, r.state.p25_ess_rs_kept,
            r.hold.held_frames, r.hold.released_frames, r.hold.discarded_frames,
-           on_air ? 100.0 * imbe_played / on_air : 0.0);
+           on_air ? 100.0 * imbe_played / on_air : 0.0,
+           r.state.debug_header_errors, r.state.debug_header_critical_errors,
+           r.state.debug_audio_errors);
     if (wav && timeline) wav_write(wav, timeline, (size_t)(dur * 8000.0));
     if (s_symf) fclose(s_symf);
     free(timeline); free(iq);
