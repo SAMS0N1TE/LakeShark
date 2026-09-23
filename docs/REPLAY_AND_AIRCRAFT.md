@@ -2,8 +2,6 @@
 
 Available in [LakeShark 2.2.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.2.2) for T-Display-P4. Use the firmware for your exact board.
 
-The pictures below are native device framebuffer captures, not simulator renders. The replay example is a synthetic test file at 433.920 MHz, with 300 edges and a stored duration of 268.80 ms. Aircraft screenshots use **example home coordinates, 43.00000, -71.00000**, not the receiver's position. Empty traffic means no aircraft were available in that capture.
-
 ## Open a recording from FILES
 
 1. Open **FILES**, browse the SD card and select a supported `.sub` file.
@@ -11,7 +9,7 @@ The pictures below are native device framebuffer captures, not simulator renders
 3. Check the destination radio, format, frequency, duration and nominal power.
 4. Use **POWER− / POWER+**, then **PLAY ONCE**. On the keyboard, **P** plays once and **+/−** changes power.
 
-RAW OOK files use CC1101. Compatible FSK recordings use the existing SX1262 path. A file's metadata determines replay support; a file extension or a source-menu entry alone does not make a recording replayable.
+RAW OOK files use CC1101. Compatible FSK recordings use SX1262.
 
 ![FILES preview in landscape](screenshots/tdp4/development-20260923/files-preview-land.png)
 
@@ -19,11 +17,9 @@ RAW OOK files use CC1101. Compatible FSK recordings use the existing SX1262 path
 
 ## Replay controls and the moving line
 
-RECORD has **RECORD**, **REPLAY** and **FILES** tabs. The replay panel shows a bounded preview of the stored pulses; its axis states how much of the file is visible. Tap a pulse to read its exact HIGH/LOW duration. Yellow marks the selected pulse.
+RECORD has **RECORD**, **REPLAY** and **FILES** tabs. Tap a pulse in the replay preview to see its HIGH/LOW duration. Yellow marks the selected pulse.
 
-The white line and blue/cyan trail show worker activity. The sweep takes **350 ms**, four times faster than the earlier 1.4-second animation. It includes radio setup time and **does not show measured RF progress or exact playback position**. When the worker completes, the existing sweep exits without starting a second pass, then the waveform returns to plain green. Read the status line for completion or failure.
-
-Replay is one bounded send. There is no implied repeat loop, sample-accurate transport timeline or calibrated RF-power measurement.
+A white line with a blue/cyan trail shows playback activity. Read the status line for completion or errors.
 
 ![REPLAY loaded and ready in landscape](screenshots/tdp4/development-20260923/replay-land.png)
 
@@ -31,7 +27,7 @@ Replay is one bounded send. There is no implied repeat loop, sample-accurate tra
 
 ## Recording sources
 
-The source picker exposes RTL-SDR, CC1101, GPS/GNSS, HackRF, SX1262/LoRa, nRF24, NFC, Wi-Fi and Bluetooth. Each source names its available data format. Metadata recording is distinct from raw waveform recording, and missing adapters remain explicit limitations.
+Choose from RTL-SDR, CC1101, GPS/GNSS, HackRF, SX1262/LoRa, nRF24, NFC, Wi-Fi and Bluetooth. Select a source to see its available formats.
 
 ![RECORD capture view in landscape](screenshots/tdp4/development-20260923/record-land.png)
 
@@ -41,20 +37,18 @@ The source picker exposes RTL-SDR, CC1101, GPS/GNSS, HackRF, SX1262/LoRa, nRF24,
 
 The aircraft screen combines the traffic list with an offline mini map. **MAP ONLY** gives the map more space; **FULL MAP** opens the map application. **ZOOM+ / ZOOM−** adjusts the view.
 
-Open **SET HOME** and choose a fresh GPS fix, decimal latitude/longitude, a place on the map, or the current map center. Saving home is explicit and persists for later sessions. GPS is not required when entering coordinates or using a map center. Offline terrain still requires a compatible map archive on the SD card.
+Open **SET HOME** and choose a GPS fix, decimal latitude/longitude, a place on the map, or the current map center. Save your home location to reuse it in later sessions. GPS is optional when setting home manually. Offline terrain requires a compatible map archive on the SD card.
 
-Use the on-screen legend for home, aircraft, selected aircraft and stale positions. A saved home point is a reference location, not proof of a current receiver fix. Missing or stale positions must not be read as live tracking.
+The on-screen legend identifies home, aircraft, selected aircraft and stale positions.
 
-![ADS-B mini map with example home coordinates](screenshots/tdp4/development-20260923/adsb-land.png)
+![ADS-B mini map](screenshots/tdp4/development-20260923/adsb-land.png)
 
-<img src="screenshots/tdp4/development-20260923/adsb-port.png" width="280" alt="ADS-B portrait mini map with example home coordinates"> <img src="screenshots/tdp4/development-20260923/adsb-set-home-port.png" width="280" alt="Four ways to set and remember home">
+<img src="screenshots/tdp4/development-20260923/adsb-port.png" width="280" alt="ADS-B portrait mini map"> <img src="screenshots/tdp4/development-20260923/adsb-set-home-port.png" width="280" alt="Four ways to set and remember home">
 
 ## SUB-GHZ
 
-SUB-GHZ keeps its passive capture and pulse-inspection controls. The FILES-to-RECORD replay route complements that workflow.
+Use SUB-GHZ to capture and inspect pulses, then open saved recordings in RECORD through FILES.
 
 ![SUB-GHZ capture view in landscape](screenshots/tdp4/development-20260923/subghz-land.png)
 
 <img src="screenshots/tdp4/development-20260923/subghz-port.png" width="280" alt="SUB-GHZ capture view in portrait">
-
-Experimental radio paths retain their in-app labels; source availability does not imply every format can be recorded or replayed.

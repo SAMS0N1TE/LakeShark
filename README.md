@@ -21,7 +21,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 | RECORD replay | ADS-B mini map |
 | --- | --- |
-| ![Recording playback](docs/screenshots/tdp4/development-20260923/replay-land.png) | ![Aircraft map with example home](docs/screenshots/tdp4/development-20260923/adsb-land.png) |
+| ![Recording playback](docs/screenshots/tdp4/development-20260923/replay-land.png) | ![ADS-B mini map](docs/screenshots/tdp4/development-20260923/adsb-land.png) |
 
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
@@ -52,7 +52,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
-| REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. All nine sources remain visible with adapter gaps labeled |
+| REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. |
 | SUB-GHZ | Scan, learn, watch, decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
 | FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
 | MAP | Offline maps, aircraft and Mesh nodes; pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` |
