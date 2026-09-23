@@ -167,6 +167,9 @@ void initState(dsd_state *state)
     state->c4fm_clk_run_dir = 0;
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
+    state->c4fm_timing_acc = 0;
+    state->c4fm_timing_acquiring = 1;
+    state->c4fm_timing_run = 0;
     state->c4fm_clk_nudges = 0;
     memset(state->algid, 0, 9);
     memset(state->keyid, 0, 17);
@@ -314,6 +317,9 @@ void noCarrier(dsd_opts *opts, dsd_state *state)
     state->c4fm_clk_run_dir = 0;
     state->c4fm_clk_run_len = 0;
     state->c4fm_clk_cooldown = 0;
+    state->c4fm_timing_acc = 0;
+    state->c4fm_timing_acquiring = 1;
+    state->c4fm_timing_run = 0;
     p25_ess_clear(state);
 
     p25_lcw_call_clear(state);

@@ -41,6 +41,7 @@ serial*.txt
 !/docs/HACKRF_BRINGUP.md
 !/docs/TDP4_RC_CHECKLIST.md
 !/docs/P25_PHASE2.md
+!/docs/P25_VOICE.md
 !/docs/LOCATION_SCAN.md
 !/docs/CELL_WATCH.md
 !/docs/CELL_DETECTOR_FOCUS.md
@@ -64,6 +65,7 @@ serial*.txt
 !/tools/check_module_shadow.py
 !/tools/ls_console.py
 !/tools/p25_capture.py
+!/tools/p25_soak.py
 !/tools/release_preflight.py
 !/tools/make_public_commit.sh
 !/tools/gen_font_mono.py

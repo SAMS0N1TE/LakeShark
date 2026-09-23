@@ -800,30 +800,6 @@ static void dsd_decoder_task(void *arg)
         p25_publish_acquisition(&acquisition, tune_status.tune_state);
         if (!same_tune) continue;
         if (sync >= 0) {
-            P25.dsd_sync_count++;
-            P25.dsd_has_sync = true;
-
-            P25.sync_active_until_us = esp_timer_get_time() + 500000LL;
-            extern int dsp_has_signal_lock;
-            dsp_has_signal_lock = 1;
-
-            if (s_dsd_state.nac != 0) {
-                P25.dsd_nac = s_dsd_state.nac;
-                P25.nac_seen_us = esp_timer_get_time();
-            }
-            if (s_dsd_state.lasttg != 0) {
-                P25.dsd_tg = s_dsd_state.lasttg;
-                P25.tg_seen_us = esp_timer_get_time();
-            }
-            if (s_dsd_state.lastsrc != 0) {
-                P25.dsd_src = s_dsd_state.lastsrc;
-                P25.src_seen_us = esp_timer_get_time();
-            }
-            snprintf(P25.dsd_ftype, sizeof(P25.dsd_ftype), "%s", s_dsd_state.ftype);
-            if (s_dsd_state.rf_mod == 0) strcpy(P25.dsd_modulation, "C4FM");
-            else if (s_dsd_state.rf_mod == 1) strcpy(P25.dsd_modulation, "QPSK");
-            else strcpy(P25.dsd_modulation, "GFSK");
-
             esp_task_wdt_reset();
             s_dsd_state.pcm_out_write = 0;
             s_dsd_state.pcm_out_unproven = 0;
@@ -849,6 +825,35 @@ static void dsd_decoder_task(void *arg)
 
             esp_task_wdt_reset();
 
+            /* A sync is signal only once its NID has passed BCH. The hunt
+               accepts a few symbol errors (dsd_frame_sync.c), so in noise it
+               passes about one false sync a second, which processFrame then
+               rejects. Counted as signal, those lit the SYNC lamp, flickered
+               a random NAC onto the screen, slowed the demodulator's DC
+               tracking, opened P25QUAL "calls", and - through dsd_has_sync -
+               stopped the scanner on empty channels (seen on the air,
+               2026-09-23: 97 "calls" in ten minutes, 59 of them noise). */
+            extern int dsp_has_signal_lock;
+            const bool frame_ok = s_dsd_state.p25_frame_valid != 0;
+            if (frame_ok) {
+                P25.dsd_sync_count++;
+                P25.dsd_has_sync = true;
+                P25.sync_active_until_us = esp_timer_get_time() + 500000LL;
+                dsp_has_signal_lock = 1;
+                if (s_dsd_state.nac != 0) {
+                    P25.dsd_nac = s_dsd_state.nac;
+                    P25.nac_seen_us = esp_timer_get_time();
+                }
+                snprintf(P25.dsd_ftype, sizeof(P25.dsd_ftype), "%s", s_dsd_state.ftype);
+                if (s_dsd_state.rf_mod == 0) strcpy(P25.dsd_modulation, "C4FM");
+                else if (s_dsd_state.rf_mod == 1) strcpy(P25.dsd_modulation, "QPSK");
+                else strcpy(P25.dsd_modulation, "GFSK");
+            } else {
+                dsp_has_signal_lock = 0;
+                if (esp_timer_get_time() >= P25.sync_active_until_us)
+                    P25.dsd_has_sync = false;
+            }
+
             if (s_dsd_state.lasttg != 0) {
                 P25.dsd_tg = s_dsd_state.lasttg;
                 P25.tg_seen_us = esp_timer_get_time();
@@ -860,9 +865,9 @@ static void dsd_decoder_task(void *arg)
             snprintf(P25.dsd_fsubtype, sizeof(P25.dsd_fsubtype), "%s", s_dsd_state.fsubtype);
             snprintf(P25.dsd_err_str, sizeof(P25.dsd_err_str), "%s", s_dsd_state.err_str);
 
-            if (s_dsd_state.nac != 0) P25.dsd_last_ok_nac = s_dsd_state.nac;
+            if (frame_ok && s_dsd_state.nac != 0) P25.dsd_last_ok_nac = s_dsd_state.nac;
 
-            {
+            if (frame_ok) {
                 int64_t q_now = esp_timer_get_time();
                 if (!q_active) {
                     q_active    = true;

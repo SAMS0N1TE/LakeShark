@@ -207,6 +207,13 @@ typedef struct dsd_state {
     int c4fm_clk_run_len;     /* consecutive symbols in same direction */
     int c4fm_clk_cooldown;    /* symbols remaining before next nudge allowed */
     int c4fm_clk_nudges;      /* diagnostic: total nudges performed since init */
+    /* C4FM symbol timing at 10 samples a symbol: signed zero-crossing error,
+       in samples, accumulated until it is worth a one-sample move; and
+       whether the sync hunt is acquiring (moves at once) or between two
+       frames (moves on evidence). See getSymbol. */
+    int c4fm_timing_acc;
+    int c4fm_timing_acquiring;
+    int c4fm_timing_run;      /* frames in a row found where the last one ended */
     char algid[9];
     char keyid[17];
     /* Encryption Sync Stream from LDU2 (ALGID, KID, 72-bit MI). */

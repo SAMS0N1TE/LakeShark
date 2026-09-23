@@ -248,10 +248,9 @@ LS_CASE(a_clean_call_is_heard_whole)
     LS_EQ_INT(r.tdu, 1);
     LS_EQ_INT(r.played, CALL_FRAMES);
     LS_EQ_INT(r.tg, 101);
-    /* Not 100%: C4FM symbol timing leaves a floor of bit errors even with
-       no noise (docs/P25_VOICE.md, "timing floor"). Measured 77% over five
-       calls; this is the floor a change must not go under. */
-    LS_CHECK(exact_fraction() >= 0.68);
+    /* 77% before the symbol clock stopped dithering across the eye
+       (dsd_symbol.c; docs/P25_VOICE.md), 99% after. */
+    LS_CHECK(exact_fraction() >= 0.95);
 }
 
 LS_CASE(the_hdu_proves_the_call_clear_so_the_first_ldu1_plays_at_once)
@@ -362,10 +361,11 @@ LS_CASE(voice_quality_under_noise_does_not_fall_below_its_measured_floor)
 {
     /* noise_sd 0.3 / 0.5 / 0.7 / 1.0 are about 20 / 16 / 13 / 10 dB in the
        12.5 kHz channel; the 154.7850 capture sits between 12 and 19. Floors
-       are the measured exact-frame share (5 calls each: 69 / 57 / 45 / 30%)
-       less a margin. Raising them is how an improvement is kept. */
+       are the measured exact-frame share over 5 calls, less a margin: 97 /
+       91 / 84 / 62% now, 69 / 56 / 45 / 30% before the symbol clock was
+       fixed. Raising them is how an improvement is kept. */
     const struct { float sd; double exact; int played_pct; } levels[] = {
-        { 0.3f, 0.60, 100 }, { 0.5f, 0.48, 100 }, { 0.7f, 0.36, 100 }, { 1.0f, 0.22, 95 },
+        { 0.3f, 0.92, 100 }, { 0.5f, 0.85, 100 }, { 0.7f, 0.76, 100 }, { 1.0f, 0.52, 95 },
     };
     for (unsigned i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
         int played = 0;

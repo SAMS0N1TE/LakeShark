@@ -301,10 +301,31 @@ getSymbol(dsd_opts *opts, dsd_state *state, int have_sync)
                 else if ((state->jitter >= state->symbolCenter + 1) && (state->jitter <= state->symbolCenter + 2))
                     i++;
             } else if (state->rf_mod == 0) {
+                /* Upstream moved the window a whole sample at every crossing
+                   off the boundary. At 10 samples a symbol the C4FM eye is
+                   about one sample wide, so that dithered across it: a clean
+                   generated call reached the vocoder only 77% bit-exact with
+                   no noise at all, 56% at 16 dB (bench test_p25_voice_call).
+                   The signed crossing error is accumulated instead and the
+                   window moves once it adds up to C4FM_TIMING_LOCKED samples,
+                   which took those to 100% and 94%. While acquiring it still
+                   moves at every crossing, as before - a patient clock found
+                   17 HDUs of 20 where the eager one found 20. */
+                enum { C4FM_TIMING_LOCKED = 4 };
+                const int need = state->c4fm_timing_acquiring ? 1 : C4FM_TIMING_LOCKED;
+                int e = 0;
                 if ((state->jitter > 0) && (state->jitter <= state->symbolCenter))
-                    i--;
+                    e = state->jitter;
                 else if ((state->jitter > state->symbolCenter) && (state->jitter < state->samplesPerSymbol))
+                    e = state->jitter - state->samplesPerSymbol;
+                state->c4fm_timing_acc += e;
+                if (state->c4fm_timing_acc >= need) {
+                    i--;
+                    state->c4fm_timing_acc = 0;
+                } else if (state->c4fm_timing_acc <= -need) {
                     i++;
+                    state->c4fm_timing_acc = 0;
+                }
             }
             state->jitter = -1;
         }

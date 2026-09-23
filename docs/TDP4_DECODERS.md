@@ -153,6 +153,9 @@ figure has to be measured on battery.
 
 ## P25 signal panel
 
+How Phase 1 voice is decoded, what must stay true, the failures behind
+each rule and the tools that measure them: [P25_VOICE.md](P25_VOICE.md).
+
 The level bar cannot separate a strong signal from a saturated front end -
 both read near 1.0, and the fix for one is the opposite of the fix for the
 other. The share of IQ components pinned at 0 or 255 does separate them, so it

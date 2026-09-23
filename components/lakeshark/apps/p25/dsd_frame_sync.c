@@ -42,6 +42,19 @@ void dsd_set_symbol_observer(dsd_symbol_observer_t fn) { s_symbol_observer = fn;
    under one false sync a second, each costing one NID read. */
 #define P25_SYNC_MAX_ERRORS 3
 
+/* Symbols into a hunt after which it counts as acquiring. The flywheel sync
+   between back-to-back frames lands at 24. */
+#define P25_TIMING_ACQUIRE_AFTER 30
+/* Frames found back to back before the symbol clock turns patient. */
+#define P25_TIMING_LOCK_RUN 2
+
+/* A sync was found t symbols into the hunt: back to back with the frame
+   before it, or not. */
+static void timing_sync(dsd_state *state, int t)
+{
+    state->c4fm_timing_run = t <= P25_TIMING_ACQUIRE_AFTER ? state->c4fm_timing_run + 1 : 1;
+}
+
 /* Mismatches between the last 24 symbols and a sync pattern, each symbol cut
    at the window's own midpoint. A sync holds only outer symbols, so the
    window's extremes ARE the two outer levels and their midpoint is the true
@@ -123,6 +136,15 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
             return -1;
 
         t++;
+        /* Between two frames the next sync is at symbol 24 of this hunt;
+           a hunt that has gone past that is acquiring, and its symbol clock
+           must move at every crossing (getSymbol). So is one that has not
+           yet found two frames back to back: a transmitter on 154.7850 opens
+           with a 72-symbol frame and then its HDU, so the HDU arrives on
+           time after only 15 ms of carrier - too soon for a patient clock,
+           which found 1 of its 3 HDUs where an eager one found 3. */
+        state->c4fm_timing_acquiring = t > P25_TIMING_ACQUIRE_AFTER ||
+                                       state->c4fm_timing_run < P25_TIMING_LOCK_RUN;
         symbol = getSymbol(opts, state, 0);
         state->acquisition_hunt.symbols++;
 
@@ -265,6 +287,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
                     diag_line("SLICE", "lock min=%d max=%d center=%d lmid=%d umid=%d lmax_in=%d lmin_in=%d",
                               state->min, state->max, state->center,
                               state->lmid, state->umid, lmax, lmin);
+                    timing_sync(state, t);
                     return 0;
                 }
                 if (hd_inv <= P25_SYNC_MAX_ERRORS) {
@@ -289,6 +312,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
                         printFrameSync(opts, state, "(+P25p1)   ", synctest_pos + 1, modulation);
                     state->lastsynctype = -1;
                     state->synctype     = 0;
+                    timing_sync(state, t);
                     return 0;
                 } else if ((state->lastsynctype == 1) && ((state->lastp25type == 1) || (state->lastp25type == 2))) {
                     state->carrier = 1;
@@ -302,6 +326,7 @@ getFrameSync(dsd_opts *opts, dsd_state *state)
                     if (opts->errorbars == 1)
                         printFrameSync(opts, state, "(-P25p1)   ", synctest_pos + 1, modulation);
                     state->lastsynctype = -1;
+                    timing_sync(state, t);
                     return 1;
                 }
             }
