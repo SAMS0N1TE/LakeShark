@@ -78,6 +78,11 @@ typedef enum {
     P25_CALL_UNSUPPORTED,
     P25_CALL_MISSING_IDEN,
     P25_CALL_INVALID,
+    /* A two-slot TDMA carrier (channel types 3 and 5): Phase II voice, which
+     * the follower takes only when Phase II following is switched on. The
+     * four-slot type 4 stays UNSUPPORTED. Appended so older values keep
+     * their numbers. */
+    P25_CALL_PHASE2,
 } p25_call_support_t;
 
 /* resolved grant evidence, independent of the legacy zero-frequency

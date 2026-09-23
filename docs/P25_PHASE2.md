@@ -21,11 +21,56 @@ tune the desired traffic frequency before enabling. The status shows recovered
 voice/audio frame counts and worst decoder block time. Unknown or encrypted
 calls stay muted; a receive gap or retune discards clear-call authorization.
 
-Automatic Phase II traffic following and live RF reception are still unverified,
-though the receive front end is now tested from IQ against real Phase II
-traffic across +-1.6 kHz of carrier offset (below).
-The existing Phase I AUTO/manual demodulation and scanner remain available with
-this switch off. This is not a claim of complete Phase II scanner support.
+Live RF reception is still unverified, though the receive front end is now
+tested from IQ against real Phase II traffic across +-1.6 kHz of carrier
+offset (below). The existing Phase I AUTO/manual demodulation and scanner
+remain available with this switch off. This is not a claim of complete Phase
+II scanner support.
+
+## Automatic following (experimental)
+
+Enable **P25 → SETTINGS → Phase II follow (exp)**, or `p2 follow on` on the
+console. Like the manual switch, it is OFF after a restart and not saved.
+With it on, a Phase I control channel's grant onto a two-slot TDMA carrier
+(IDEN_UP_TDMA channel types 3 and 5) is followed like a Phase I grant: the
+same talkgroup filter, hold, lockout and encrypted-skip policy decide whether
+to take it, the radio retunes to the carrier, the decoder is configured for
+the granted slot with the system's WACN, SYSID and control-channel NAC, and
+the receiver returns to the control channel when the call ends. Four-slot
+type 4 stays unsupported. A grant is not followed until NET_STS_BCST has
+given the WACN and SYSID, because the slot's scrambling is keyed on them.
+With the switch off, a TDMA grant is observed and counted, and never tuned.
+
+A call's end is read from the slot's own MAC PDUs, not from voice or sync: a
+two-slot carrier stays up while the other slot talks. On the public
+recording every transmission carries MAC_ACTIVE (opcode 4) every 360 ms and
+closes with two MAC_END_PTT (2); the idle slot sends only MAC_IDLE (3). The
+policy (`p25_p2_follow.c`, host tested with a fake clock) leaves on:
+
+| Reason | When |
+|---|---|
+| `ended` | 500 ms after END_PTT with no HANGTIME or new PTT |
+| `idle` | MAC_IDLE on the granted slot |
+| `hang` | 2 s after the first HANGTIME, if no one keys |
+| `no-sync` | no sync 1.5 s after the grant, retune included |
+| `lost` | sync gone for 1 s |
+| `quiet` | synchronised, no PTT/ACTIVE/voice for 2 s (3.5 s before the first) |
+| `encrypted` | the PTT or ESS names an algorithm other than clear; stamps the talkgroup's encrypted skip, as Phase I does |
+| `other-tg` | the slot's PTT names another talkgroup |
+
+Voice counts as activity only once a MAC PDU on the slot has passed its CRC,
+because a voice burst is recognised before it is descrambled: configured
+with the wrong system, the slot "has voice" and nothing else.
+
+`test_p25_p2_follow` follows the recording's six calls the way the firmware
+does - a grant, a fresh decoder, a tick every 10 ms of air - and requires all
+1,368 voice frames to fall inside a followed window and every call to be
+left as `ended`, 560-690 ms after its last voice. `p2 status` prints the
+follower's phase and a count of every way a call has ended.
+
+While a Phase II call is followed, the Phase I decoder is idle, so no
+control-channel grants are heard: a higher-priority grant cannot preempt it,
+exactly as on a Phase I traffic channel. Only the granted slot is decoded.
 
 ## Public recording
 

@@ -484,8 +484,7 @@ bool p25_scan_apply_from_state(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
         bool tuned = false;
         for (unsigned int i = 0; i < state->p25_grant_count; i++) {
             const p25_call_info_t *g = &state->p25_grants[i];
-            if (g->support != P25_CALL_PHASE1 || g->slots_per_carrier != 1 ||
-                g->slot != 0) {
+            if (!p25_grant_call_followable(f, g)) {
                 p25_grant_observe(f, g);
                 continue;
             }

@@ -20,7 +20,23 @@ typedef struct {
      1200/2400 Hz rotation - the receiver is mistuned, not the burst bad. */
   uint32_t polarity_flips, mistuned_syncs;
   bool polarity_reversed;
+  /* The slot's MAC PDUs, validated by CRC, counted by the opcode in the
+     top three bits of the MAC header (TIA-102.BBAC, as OP25 reads it):
+     0 SIGNAL, 1 PTT, 2 END_PTT, 3 IDLE, 4 ACTIVE, 6 HANGTIME. A follower
+     reads the call's lifetime from these, not from voice or sync, because a
+     two-slot carrier stays up while the other slot talks. */
+  uint32_t mac_opcodes[8];
+  uint8_t last_mac_opcode, last_mac_mco;
+  uint32_t last_mac_symbol, last_voice_symbol;
+  /* PTT or ACTIVE seen more recently than END_PTT, IDLE or HANGTIME. */
+  bool call_active;
 } p25p2_status_t;
+#define P25P2_MAC_SIGNAL 0
+#define P25P2_MAC_PTT 1
+#define P25P2_MAC_END_PTT 2
+#define P25P2_MAC_IDLE 3
+#define P25P2_MAC_ACTIVE 4
+#define P25P2_MAC_HANGTIME 6
 p25p2_decoder_t *p25p2_create(p25p2_audio_fn output, void *context);
 void p25p2_destroy(p25p2_decoder_t *decoder);
 bool p25p2_configure(p25p2_decoder_t *decoder, uint32_t wacn, uint16_t system,

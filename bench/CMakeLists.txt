@@ -1441,3 +1441,11 @@ add_executable(test_p25_phase2_iq tests/test_p25_phase2_iq.c
 target_compile_definitions(test_p25_phase2_iq PRIVATE LSM_GEN_BAUD=6000)
 target_link_libraries(test_p25_phase2_iq p25_phase2_host ls_harness m)
 add_test(NAME test_p25_phase2_iq COMMAND test_p25_phase2_iq)
+
+# How long a followed Phase II call lasts: pure policy, then the public
+# recording's six calls followed as the firmware would (LS_P25P2_CAPTURE).
+add_executable(test_p25_p2_follow tests/test_p25_p2_follow.c
+    ${APP}/p25/p25_p2_follow.c)
+target_include_directories(test_p25_p2_follow PRIVATE ${APP}/p25)
+target_link_libraries(test_p25_p2_follow p25_phase2_host ls_harness m)
+add_test(NAME test_p25_p2_follow COMMAND test_p25_p2_follow)

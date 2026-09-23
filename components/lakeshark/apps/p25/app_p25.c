@@ -44,6 +44,8 @@
 #include "p25_tune_policy.h"
 #include "p25_entry_settings.h"
 #include "p25_p2_runtime.h"
+#include "p25_p2_runtime_status.h"
+#include "p25_p2_follow.h"
 #include "p25_voice_hold.h"
 #include "rtl-sdr.h"
 
@@ -84,6 +86,15 @@ static uint32_t s_radio_sample_rate_hz;
 static uint32_t s_radio_bandwidth_hz;
 static p25_demod_control_t s_demod_control;
 static p25_grant_follower_t s_grant_follower;
+/* Phase II following. The grant follower takes a TDMA call; this decides
+ * when it is over, from the slot's MAC PDUs (p25_p2_follow.c), on the decode
+ * task, which owns the follower. The RX task only decodes. Owned means the
+ * follower switched Phase II on, so it is the follower's to switch off: the
+ * operator's manual Phase II is never touched. */
+static p25_p2_follow_t s_p2_follow;
+static bool s_p2_owned;
+static uint32_t s_p2_follow_generation;
+static uint32_t s_p2_follow_audio;
 static atomic_uint s_decode_tune_generation;
 static portMUX_TYPE s_acquisition_lock = portMUX_INITIALIZER_UNLOCKED;
 static p25_acquisition_status_t s_acquisition_status;
@@ -368,11 +379,36 @@ static void p25_grant_retune_cb(void *user, uint64_t center_hz, bool to_traffic)
     if (to_traffic)
         (void)p25_program_survey_cancel_now(
             P25_SURVEY_CANCEL_FOLLOWING_CALL);
+    const p25_call_info_t *call = &s_grant_follower.active_call;
+    if (to_traffic && call->support == P25_CALL_PHASE2) {
+        /* Configure before tuning: the RX task reconfigures the decoder
+         * again when the new centre lands, which also clears the control
+         * channel's counts out of the status the follower will read. */
+        if (p25_p2_config(call->wacn, call->sysid, call->nac, call->slot)) {
+            s_p2_follow_generation = p25_p2_config_generation();
+            s_p2_follow_audio = 0;
+            s_p2_follow.cfg.leave_encrypted =
+                s_grant_follower.leave_on_encrypted;
+            p25_p2_follow_start(&s_p2_follow, call->talkgroup,
+                                (uint32_t)(esp_timer_get_time() / 1000LL));
+            s_p2_owned = true;
+            p25_p2_enable(true);
+        } else {
+            sys_log(4, "P2 follow: bad system ids %05lX/%03X/%03X",
+                    (unsigned long)call->wacn, (unsigned)call->sysid,
+                    (unsigned)call->nac);
+        }
+    } else if (!to_traffic && s_p2_owned) {
+        s_p2_owned = false;
+        p25_p2_follow_stop(&s_p2_follow);
+        p25_p2_enable(false);
+    }
     p25_request_tune((uint32_t)center_hz, /* fast=*/to_traffic);
-    sys_log(1, "Grant %s %.4f MHz tg=%u",
+    sys_log(1, "Grant %s %.4f MHz tg=%u%s",
             to_traffic ? "->traffic" : "->control",
             (double)center_hz / 1e6,
-            (unsigned)s_grant_follower.talkgroup);
+            (unsigned)s_grant_follower.talkgroup,
+            to_traffic && s_p2_owned ? " (phase II)" : "");
 }
 
 static void p25_grant_publish_ui(void)
@@ -537,6 +573,101 @@ bool p25_set_encrypted_skip_ms(unsigned int ms)
 bool p25_get_leave_on_encrypted(void)
 {
     return s_grant_follower.leave_on_encrypted;
+}
+
+/* Phase II following: off after every restart and not saved, like the
+ * manual Phase II switch it builds on, until it has been heard on the air. */
+void p25_set_phase2_follow(bool enabled)
+{
+    p25_grant_set_phase2_follow(&s_grant_follower, enabled);
+    if (!enabled && s_p2_owned)
+        (void)p25_grant_force_return_to_control(&s_grant_follower);
+}
+
+bool p25_get_phase2_follow(void)
+{
+    return s_grant_follower.phase2_follow;
+}
+
+void p25_p2_follow_describe(char *text, unsigned capacity)
+{
+    const p25_p2_follow_t *f = &s_p2_follow;
+    snprintf(text, capacity,
+             "follow %s %s tg=%u calls=%lu grants=%u last=%s "
+             "(ended %lu idle %lu hang %lu no-sync %lu lost %lu quiet %lu "
+             "enc %lu other-tg %lu)",
+             s_grant_follower.phase2_follow ? "ON" : "OFF",
+             p25_p2_follow_phase_name(f->phase), (unsigned)f->talkgroup,
+             (unsigned long)f->calls, s_grant_follower.phase2_grants,
+             p25_p2_follow_verdict_name(f->last_verdict),
+             (unsigned long)f->leaves[P25_P2F_LEAVE_ENDED],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_IDLE],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_HANG],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_NO_SYNC],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_LOST],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_QUIET],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_ENCRYPTED],
+             (unsigned long)f->leaves[P25_P2F_LEAVE_OTHER_TG]);
+}
+
+/* A followed Phase II call, once per decode-loop pass while the decoder
+ * sleeps. It is the only thing that ends one: TSBKs are not decoded on a
+ * traffic channel, and the Phase I hang timer is not ticked here. */
+static void p25_p2_follow_service(void)
+{
+    int64_t now = esp_timer_get_time();
+    uint32_t started = s_p2_follow.start_ms;
+    const char *why;
+    bool tune_failed = false, returned = false;
+    if (!p25_p2_enabled()) {
+        /* A scan start (scan_engine.c) or the operator switched it off. */
+        why = "phase II switched off";
+    } else {
+        ls_iq_control_status_t tune;
+        ls_iq_control_status(&s_radio_control, &tune);
+        p25p2_status_t st;
+        bool have = p25_p2_status_for(s_p2_follow_generation, &st);
+        p25_p2f_verdict_t v = p25_p2_follow_tick(&s_p2_follow,
+            have ? &st : NULL, (uint32_t)(now / 1000LL));
+        if (have) {
+            if (st.audio_frames != s_p2_follow_audio) {
+                s_p2_follow_audio = st.audio_frames;
+                p25_grant_on_voice(&s_grant_follower, now);
+                s_grant_follower.receive_state = P25_RX_AUDIO;
+                P25.voice_active_until_us = now + 500000LL;
+            } else if (st.synchronized &&
+                       s_grant_follower.receive_state == P25_RX_TRAFFIC_WAIT) {
+                s_grant_follower.receive_state = P25_RX_TRAFFIC_SYNC;
+            }
+        }
+        if (tune.tune_state == LS_IQ_RESULT_FAILED) {
+            tune_failed = true;
+            why = "tune failed";
+        } else if (v == P25_P2F_STAY) {
+            return;
+        } else {
+            why = p25_p2_follow_verdict_name(v);
+            if (v == P25_P2F_LEAVE_ENCRYPTED)
+                /* Stamps the talkgroup's skip, as an encrypted Phase I ESS
+                   does, and returns to control. */
+                returned = p25_grant_on_ess(&s_grant_follower,
+                                            s_grant_follower.talkgroup,
+                                            st.algorithm, 0, now);
+        }
+    }
+    sys_log(1, "P2 follow tg=%u: %s after %lu ms",
+            (unsigned)s_grant_follower.talkgroup, why,
+            (unsigned long)((uint32_t)(now / 1000LL) - started));
+    if (!returned)
+        returned = p25_grant_force_return_to_control(&s_grant_follower);
+    if (returned) p25_receive_call_reset(&s_dsd_state);
+    if (tune_failed) s_grant_follower.receive_state = P25_RX_TUNE_FAILED;
+    if (s_p2_owned) {
+        /* The follower was not on traffic to return from. */
+        s_p2_owned = false;
+        p25_p2_follow_stop(&s_p2_follow);
+        p25_p2_enable(false);
+    }
 }
 
 unsigned int p25_get_encrypted_skip_ms(void)
@@ -740,7 +871,12 @@ static void dsd_decoder_task(void *arg)
     uint64_t decode_control_hz = s_grant_follower.control_hz;
     while (s_app_active) {
         esp_task_wdt_reset();
-        if (p25_p2_enabled()) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+        if (s_p2_owned) p25_p2_follow_service();
+        if (p25_p2_enabled()) {
+            p25_grant_publish_ui();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         diag_emit_periodic();
 
         P25.dsd_bch_ok_count   = autoscan_bch_ok_flag;
@@ -1665,8 +1801,13 @@ static void p25_on_enter(void)
     /* init the grant follower against whatever the current tune is
      * treated as the control channel. If the user retunes, the follower's
      * control_hz is refreshed in p25_rx_task when it processes the request. */
+    bool phase2_follow = s_grant_follower.phase2_follow;
     p25_grant_init(&s_grant_follower, (uint64_t)s_tune_freq_hz,
                    p25_grant_retune_cb, NULL);
+    /* Kept across leaving and re-entering P25, not across a restart. */
+    p25_grant_set_phase2_follow(&s_grant_follower, phase2_follow);
+    p25_p2_follow_init(&s_p2_follow);
+    s_p2_owned = false;
     /* scan controller singleton is init once on app enter. The
      * persisted lockouts/allow list/hold are then reloaded on top of the
      * empty state by p25_scan_persist_reload(); a failing load leaves the

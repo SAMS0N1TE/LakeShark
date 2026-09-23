@@ -1,4 +1,5 @@
 #include "p25_p2_runtime.h"
+#include "p25_p2_runtime_status.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -17,6 +18,7 @@ static unsigned cfg_slot;
 static p25p2_decoder_t *decoder;
 static p25p2_status_t status;
 static uint32_t last_generation, last_hz;
+static uint32_t applied_generation = UINT32_MAX;
 static uint32_t max_decode_us;
 static EXT_RAM_BSS_ATTR int16_t samples[8192];
 static EXT_RAM_BSS_ATTR uint8_t symbols[1024];
@@ -61,6 +63,20 @@ static void output(const int16_t *pcm, size_t count, void *context) {
   if (p25_p2_enabled())
     audio_write_p25_voice(pcm, (int)count);
 }
+uint32_t p25_p2_config_generation(void) {
+  portENTER_CRITICAL(&lock);
+  uint32_t g = generation;
+  portEXIT_CRITICAL(&lock);
+  return g;
+}
+bool p25_p2_status_for(uint32_t wanted_generation, p25p2_status_t *out) {
+  portENTER_CRITICAL(&lock);
+  bool ok = applied_generation == wanted_generation;
+  if (ok && out)
+    *out = status;
+  portEXIT_CRITICAL(&lock);
+  return ok;
+}
 void p25_p2_stop(void) {
   if (decoder) {
     p25p2_destroy(decoder);
@@ -69,6 +85,7 @@ void p25_p2_stop(void) {
   portENTER_CRITICAL(&lock);
   memset(&status, 0, sizeof(status));
   max_decode_us = 0;
+  applied_generation = UINT32_MAX;
   portEXIT_CRITICAL(&lock);
 }
 bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
@@ -120,6 +137,7 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
   p25p2_status(decoder, &snapshot);
   portENTER_CRITICAL(&lock);
   status = snapshot;
+  applied_generation = last_generation;
   if (elapsed > max_decode_us)
     max_decode_us = elapsed;
   portEXIT_CRITICAL(&lock);

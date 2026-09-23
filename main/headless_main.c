@@ -54,6 +54,7 @@
 #include "rec_watch.h"
 #include "p25_p2_runtime.h"
 #include "p25_p2_bench.h"
+#include "p25_state.h"
 #include "scan_engine.h"
 #include "app_registry.h"
 /**/
@@ -536,10 +537,14 @@ static int cmd_p2(int argc,char **argv)
         if(*end[0]||*end[1]||*end[2]||*end[3]||w>0xfffff||s>0xfff||n>0xfff||slot<1||slot>2||!p25_p2_config(w,s,n,slot-1)) {
             printf("Invalid WACN/SYS/NAC or slot (1-2)\n");return 1;
         }
+    } else if(argc==3 && !strcmp(argv[1],"follow") &&
+              (!strcmp(argv[2],"on") || !strcmp(argv[2],"off"))) {
+        p25_set_phase2_follow(!strcmp(argv[2],"on"));
     } else if(argc>1 && strcmp(argv[1],"status")) {
-        printf("p2 on|off|status|config <WACN hex> <SYS hex> <NAC hex> <slot 1-2>\n");return 1;
+        printf("p2 on|off|status|follow on|off|config <WACN hex> <SYS hex> <NAC hex> <slot 1-2>\n");return 1;
     }
-    char text[128];p25_p2_describe(text,sizeof(text));printf("p2: %s\n",text);return 0;
+    char text[256];p25_p2_describe(text,sizeof(text));printf("p2: %s\n",text);
+    p25_p2_follow_describe(text,sizeof(text));printf("p2: %s\n",text);return 0;
 }
 
 static int cmd_status(int argc, char **argv)

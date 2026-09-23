@@ -73,6 +73,15 @@ bool p25_set_leave_on_encrypted(bool v)
     encrypted = v;
     return true;
 }
+static bool phase2_follow;
+bool p25_get_phase2_follow(void)
+{
+    return phase2_follow;
+}
+void p25_set_phase2_follow(bool v)
+{
+    phase2_follow = v;
+}
 unsigned p25_get_encrypted_skip_ms(void)
 {
     return skip;

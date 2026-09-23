@@ -252,7 +252,8 @@ static void tune_spy(void *user, uint64_t hz, bool traffic)
     if (traffic) {
         LS_EQ_UINT(follower.active_call.carrier_hz, hz);
         LS_EQ_UINT(follower.active_call.nac, s_nac);
-        LS_EQ_UINT(follower.active_call.slots_per_carrier, 1);
+        LS_EQ_UINT(follower.active_call.slots_per_carrier,
+                   follower.active_call.support == P25_CALL_PHASE2 ? 2 : 1);
     } else {
         LS_EQ_INT(follower.active_call.support, P25_CALL_NONE);
     }
@@ -380,7 +381,11 @@ LS_CASE(all_channel_types_have_truthful_support_and_canonical_slot_defaults)
             LS_EQ_UINT(g->slots_per_carrier, slots);
             LS_EQ_UINT(g->slot, 15 % slots);
             LS_EQ_UINT(g->carrier_hz, 851012500 + (15 / slots) * 12500);
-            LS_EQ_INT(g->support, type == 1 ? P25_CALL_PHASE1 : P25_CALL_UNSUPPORTED);
+            /* Two-slot TDMA is Phase II voice; with following off (the
+               default) it is still observed and never tuned. */
+            LS_EQ_INT(g->support, type == 1 ? P25_CALL_PHASE1 :
+                      type == 3 || type == 5 ? P25_CALL_PHASE2 :
+                      P25_CALL_UNSUPPORTED);
         } else {
             LS_CHECK(!decoder.p25_iden_table[2].valid);
             LS_EQ_UINT(g->carrier_hz, 0);
@@ -421,10 +426,63 @@ LS_CASE(unsupported_held_priority_grant_does_not_preempt_or_refresh_phase1)
     LS_EQ_UINT(follower.active_call.talkgroup, 43);
     LS_EQ_INT(follower.last_activity_us, activity);
     LS_EQ_UINT(follower.observed_grant.slot, 1);
-    LS_EQ_INT(follower.observed_grant.support, P25_CALL_UNSUPPORTED);
+    LS_EQ_INT(follower.observed_grant.support, P25_CALL_PHASE2);
+    LS_EQ_UINT(follower.unsupported_grants, 1); /* following is off */
     LS_CHECK(p25_grant_tick(&follower, activity + 2000000));
     p25_receive_call_reset(&decoder);
     LS_EQ_UINT(tunes[1], 852000000);
+}
+
+LS_CASE(a_phase2_grant_is_followed_to_its_carrier_and_slot_when_switched_on)
+{
+    setup();
+    p25_grant_set_phase2_follow(&follower, true);
+    uint8_t b[3][12];
+    network(b[0], 0xabcde, 0x123);
+    make_tdma_iden(b[1], 2);
+    make_group_grant(b[2], 0x200f, 42);
+    tsdu(b, 3);
+    LS_EQ_UINT(tune_count, 1);
+    LS_EQ_UINT(tunes[0], 851012500 + 7 * 12500);
+    LS_EQ_INT(follower.state, P25_GRANT_ON_TRAFFIC);
+    LS_EQ_INT(follower.active_call.support, P25_CALL_PHASE2);
+    LS_EQ_UINT(follower.active_call.slot, 1);
+    LS_EQ_UINT(follower.active_call.slots_per_carrier, 2);
+    LS_EQ_UINT(follower.active_call.wacn, 0xabcde);
+    LS_EQ_UINT(follower.active_call.sysid, 0x123);
+    LS_EQ_UINT(follower.active_call.nac, 0x293);
+    LS_EQ_UINT(follower.phase2_grants, 1);
+    LS_EQ_UINT(follower.unsupported_grants, 0);
+    LS_CHECK(p25_grant_force_return_to_control(&follower));
+    LS_EQ_UINT(tunes[1], 852000000);
+}
+
+LS_CASE(a_phase2_grant_is_not_followed_before_the_system_is_known)
+{
+    /* The slot's scrambling is keyed on WACN and SYSID: without NET_STS the
+       traffic channel could not be descrambled, so it is not tuned. */
+    setup();
+    p25_grant_set_phase2_follow(&follower, true);
+    uint8_t b[2][12];
+    make_tdma_iden(b[0], 2);
+    make_group_grant(b[1], 0x200f, 42);
+    tsdu(b, 2);
+    LS_EQ_UINT(tune_count, 0);
+    LS_EQ_INT(follower.observed_grant.support, P25_CALL_PHASE2);
+    LS_EQ_UINT(follower.unsupported_grants, 1);
+}
+
+LS_CASE(a_four_slot_grant_stays_unsupported_with_phase2_following_on)
+{
+    setup();
+    p25_grant_set_phase2_follow(&follower, true);
+    uint8_t b[3][12];
+    network(b[0], 0xabcde, 0x123);
+    make_tdma_iden(b[1], 2); set_bits(b[1], 20, 4, 4); add_crc(b[1]);
+    make_group_grant(b[2], 0x200f, 42);
+    tsdu(b, 3);
+    LS_EQ_UINT(tune_count, 0);
+    LS_EQ_INT(follower.observed_grant.support, P25_CALL_UNSUPPORTED);
 }
 
 LS_CASE(unknown_identifier_and_malformed_grants_do_not_replay_or_tune)

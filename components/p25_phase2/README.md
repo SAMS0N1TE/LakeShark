@@ -24,6 +24,8 @@ requires CRC/FEC-validated clear-call metadata before audio. No decryption is
 implemented. Recovered codewords can be logged in host builds with
 `LS_P25P2_TRACE`; normal firmware does not log them.
 
-This is a limited manual voice path, not a complete OP25 receiver. Automatic
-Phase II trunk following, all ISCH variants, two-slot audio mixing and RF
-qualification are not included. See [testing and controls](../../docs/P25_PHASE2.md).
+This is a limited voice path, not a complete OP25 receiver. The adapter
+counts the slot's MAC PDUs by opcode (PTT, END_PTT, IDLE, ACTIVE, HANGTIME)
+so the firmware's experimental grant following can tell when a call ends;
+it does not decode the MAC messages' contents beyond PTT. All ISCH variants,
+two-slot audio mixing and RF qualification are not included. See [testing and controls](../../docs/P25_PHASE2.md).

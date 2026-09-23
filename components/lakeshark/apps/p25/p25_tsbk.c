@@ -234,6 +234,9 @@ static void queue_voice_grant(dsd_state *state, uint16_t channel,
     g->support = !talkgroup || channel == 0xffff ? P25_CALL_INVALID :
         !iden->valid ? P25_CALL_MISSING_IDEN :
         !r.frequency_hz ? P25_CALL_INVALID :
+        r.slots_per_carrier == 2 &&
+            (iden->channel_type == 3 || iden->channel_type == 5)
+            ? P25_CALL_PHASE2 :
         iden->voice_unsupported || r.slots_per_carrier > 1
             ? P25_CALL_UNSUPPORTED : P25_CALL_PHASE1;
 }

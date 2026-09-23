@@ -64,6 +64,15 @@ public:
   int process_mac_pdu(const uint8_t *bytes, unsigned length, int) {
     stats.control_ok++;
     unsigned opcode = bytes[0] >> 5;
+    stats.mac_opcodes[opcode]++;
+    stats.last_mac_opcode = (uint8_t)opcode;
+    stats.last_mac_mco = length > 1 ? bytes[1] : 0;
+    stats.last_mac_symbol = stats.symbols;
+    if (opcode == P25P2_MAC_PTT || opcode == P25P2_MAC_ACTIVE)
+      stats.call_active = true;
+    else if (opcode == P25P2_MAC_END_PTT || opcode == P25P2_MAC_IDLE ||
+             opcode == P25P2_MAC_HANGTIME)
+      stats.call_active = false;
     if (opcode == 1 && length >= 18) {
       stats.algorithm = bytes[10];
       stats.clear_confirmed = bytes[10] == 0x80;
@@ -110,6 +119,7 @@ public:
   }
   void voice(const uint8_t *dibits) {
     stats.voice_frames++;
+    stats.last_voice_symbol = stats.symbols;
     int b[9], u[4];
     vf.process_vcw(&errors, dibits, b, u);
 #ifdef LS_P25P2_TRACE

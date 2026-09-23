@@ -42,7 +42,8 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Scan threshold (%)",
                                        "Scan hang (ms)",
                                        "Phase II (experimental)",
-                                       "Profile from card"};
+                                       "Profile from card",
+                                       "Phase II follow (exp)"};
 #define PS_COUNT ((int)(sizeof(ps_names) / sizeof(ps_names[0])))
 static const ls_btn_t ps_buttons[] = {
     {"UP", NULL, 'U', false, false},     {"DOWN", NULL, 'D', false, false},
@@ -100,6 +101,9 @@ static void ps_value(int i, char *out, size_t n)
         break;
     case 15:
         snprintf(out,n,"%s",p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
+        break;
+    case 17:
+        snprintf(out, n, "%s", p25_get_phase2_follow() ? "ON" : "OFF");
         break;
     case 16: {
         /* The system name is what the operator recognises; the path is what
@@ -224,6 +228,13 @@ static void ps_change(int direction, bool edit)
         }
         if (!ok) snprintf(ps_status, sizeof(ps_status), "%s",
                           "No profile chooser on this build");
+        return;
+    case 17:
+        p25_set_phase2_follow(edit ? !p25_get_phase2_follow() : direction > 0);
+        snprintf(ps_status, sizeof(ps_status), "%s",
+                 p25_get_phase2_follow()
+                     ? "EXP: TDMA grants followed; needs WACN/SYS"
+                     : "TDMA grants observed only");
         return;
     case 15:
         scan_engine_stop();

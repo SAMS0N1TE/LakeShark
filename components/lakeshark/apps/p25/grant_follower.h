@@ -79,6 +79,12 @@ typedef struct {
     bool     leave_on_encrypted;
     int64_t  encrypted_skip_us;
 
+    /* Take P25_CALL_PHASE2 grants. Off by default, like the manual Phase II
+     * switch: a TDMA grant is then observed and counted as unsupported, as
+     * it always was. */
+    bool     phase2_follow;
+    unsigned int phase2_grants;        /* PHASE2 grants seen, followed or not */
+
     /* bounded per-TG history. Used for skip-window enforcement and for
      * the "last ALGID/KID seen on this TG" readout. */
     p25_grant_tg_state_t tg_state[P25_GRANT_TG_STATE_MAX];
@@ -113,6 +119,14 @@ void p25_grant_set_filter(p25_grant_follower_t *f,
 #define P25_GRANT_DEFAULT_ENCRYPTED_SKIP_MS P25_CONTROL_ENCRYPTED_SKIP_DEFAULT_MS
 void p25_grant_set_leave_on_encrypted(p25_grant_follower_t *f, bool enabled);
 void p25_grant_set_encrypted_skip_ms(p25_grant_follower_t *f, unsigned int ms);
+void p25_grant_set_phase2_follow(p25_grant_follower_t *f, bool enabled);
+
+/* Whether this follower can take the call at all: a Phase I single-slot
+ * carrier, or a two-slot Phase II one when following it is on and the
+ * system's WACN/SYSID are known (the slot's scrambling is keyed on them).
+ * The scanner asks this before its own talkgroup policy. */
+bool p25_grant_call_followable(const p25_grant_follower_t *f,
+                               const p25_call_info_t *call);
 
 /* Feed a decoded grant. Returns true when a retune to the traffic channel
  * was issued. A grant for the call already being followed refreshes the hang

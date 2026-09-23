@@ -158,6 +158,25 @@ void p25_grant_set_leave_on_encrypted(p25_grant_follower_t *f, bool enabled)
     f->leave_on_encrypted = enabled;
 }
 
+void p25_grant_set_phase2_follow(p25_grant_follower_t *f, bool enabled)
+{
+    if (!f) return;
+    f->phase2_follow = enabled;
+}
+
+bool p25_grant_call_followable(const p25_grant_follower_t *f,
+                               const p25_call_info_t *call)
+{
+    if (!f || !call) return false;
+    if (call->support == P25_CALL_PHASE1)
+        return call->slots_per_carrier == 1 && call->slot == 0;
+    if (call->support == P25_CALL_PHASE2)
+        return f->phase2_follow && call->slots_per_carrier == 2 &&
+               call->slot < 2 && call->system_valid && call->wacn &&
+               call->sysid;
+    return false;
+}
+
 void p25_grant_set_encrypted_skip_ms(p25_grant_follower_t *f, unsigned int ms)
 {
     if (!f) return;
@@ -322,7 +341,11 @@ void p25_grant_observe(p25_grant_follower_t *f, const p25_call_info_t *call)
 {
     if (!f || !call) return;
     f->observed_grant = *call;
-    if (call->support == P25_CALL_UNSUPPORTED) f->unsupported_grants++;
+    if (call->support == P25_CALL_PHASE2) {
+        f->phase2_grants++;
+        /* Not taken is still not supported, as far as the counts go. */
+        if (!p25_grant_call_followable(f, call)) f->unsupported_grants++;
+    } else if (call->support == P25_CALL_UNSUPPORTED) f->unsupported_grants++;
     else if (call->support != P25_CALL_PHASE1) f->unresolved_grants++;
 }
 
@@ -331,8 +354,7 @@ bool p25_grant_on_call(p25_grant_follower_t *f, const p25_call_info_t *call,
 {
     if (!f || !call) return false;
     p25_grant_observe(f, call);
-    if (call->support != P25_CALL_PHASE1 || call->slots_per_carrier != 1 ||
-        call->slot != 0) return false;
+    if (!p25_grant_call_followable(f, call)) return false;
     if (f->state == P25_GRANT_ON_TRAFFIC &&
         (f->active_call.slot != call->slot ||
          (f->active_call.system_valid && call->system_valid &&

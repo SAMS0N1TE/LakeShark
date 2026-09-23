@@ -106,7 +106,7 @@ The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
 
 Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
-- **P25 Phase II** `[EXPERIMENTAL]`: manually tuned traffic channel and slot, off after restart. Recorded-symbol replay works on the P4; live RF and automatic call following remain unverified. [Details](docs/P25_PHASE2.md).
+- **P25 Phase II** `[EXPERIMENTAL]`: a manually tuned traffic channel and slot, or automatic following of two-slot TDMA grants from a Phase I control channel; both off after restart. Recorded-symbol replay works on the P4 and following is bench-tested on a public recording; live RF remains unverified. [Details](docs/P25_PHASE2.md).
 - **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is somewhat verified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
 - **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
 

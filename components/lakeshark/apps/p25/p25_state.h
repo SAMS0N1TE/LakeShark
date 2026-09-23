@@ -200,6 +200,10 @@ bool p25_set_leave_on_encrypted(bool enabled);
 bool p25_set_encrypted_skip_ms(unsigned int ms);
 bool p25_get_leave_on_encrypted(void);
 unsigned int p25_get_encrypted_skip_ms(void);
+/* Follow Phase II (two-slot TDMA) grants. Off by default, not saved. */
+void p25_set_phase2_follow(bool enabled);
+bool p25_get_phase2_follow(void);
+void p25_p2_follow_describe(char *text, unsigned capacity);
 /* one-press hold/lockout actions the P25 main screen calls. Both
  * key on the currently-followed grant TG, falling back to the last-decoded
  * dsd_tg when the follower is on control. Return true on success. */

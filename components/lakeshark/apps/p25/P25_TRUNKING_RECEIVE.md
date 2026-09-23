@@ -36,15 +36,19 @@ positions 14 and 15 both resolve to 851.1000 MHz on a two-slot carrier, slots
 | 0 | 1 | Unsupported FDMA half-rate |
 | 1 | 1 | Phase I full-rate path |
 | 2 | 1 | Unsupported FDMA half-rate |
-| 3, 5 | 2 | Unsupported TDMA |
+| 3, 5 | 2 | Phase II (`P25_CALL_PHASE2`): followed only with Phase II follow on and WACN/SYSID known |
 | 4 | 4 | Unsupported TDMA |
 | 6–15 | Unresolved | Reserved; invalidate that identifier |
 
 Zero base/spacing and carriers beyond the 32-bit tune API do not yield a
 followable carrier. The legacy `p25_tsbk_frequency_hz` stays zero for
 unsupported grants. The typed grant preserves the real carrier even when
-voice is unsupported. No TDMA or half-rate grant can reach the Phase I
-follower through the production scanner, including HOLD/priority paths.
+voice is unsupported. No half-rate or four-slot grant can reach the
+follower through the production scanner, including HOLD/priority paths, and
+no two-slot grant can while Phase II follow is off (the default).
+`p25_grant_call_followable()` is that gate, for the scanner and the follower
+alike. A followed Phase II call is ended by `p25_p2_follow.c`; see
+[P25_PHASE2.md](../../../../docs/P25_PHASE2.md#automatic-following-experimental).
 
 Existing API names/signatures remain. Existing `p25_iden_entry_t` FDMA slot
 values remain **zero**, because that sentinel is already public and explicitly
