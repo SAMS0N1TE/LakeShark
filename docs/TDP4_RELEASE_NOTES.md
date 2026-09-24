@@ -1,5 +1,13 @@
 # LakeShark release notes
 
+## 2.3.1
+
+- P25 SYNC no longer flickers on noise: a NAC must repeat before it counts.
+- P25 profiles with site coordinates follow the nearest site by GPS.
+- A profile can turn on Phase II follow (`phase2_follow=true`).
+- Load a P25 profile from the console: `p25 profile [name]`.
+- Flipper app 2.6: a P25 SYSTEM page to see the profile and site, switch Phase II follow and load profiles.
+
 ## 2.3.0
 
 - P25 voice no longer chops: whole calls play, including their first frames.

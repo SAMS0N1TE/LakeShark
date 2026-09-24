@@ -13,6 +13,7 @@ Required singleton fields are `version=1`, `system`, and `site`.  At least one
 |---|---|---|
 | `preferred` | a frequency present in the control list | first control |
 | `auto_follow` | `true` or `false` | `true` |
+| `phase2_follow` | `true` or `false` | absent: the switch is left as it is |
 | `encrypted_skip` | `true` or `false` | `true` |
 | `encrypted_skip_ms` | unsigned 32-bit decimal milliseconds | `30000` |
 | `demod` | `auto`, `c4fm`, `cqpsk`, `diff_4fsk`, `fsk4_tracking` | `auto` |
@@ -68,6 +69,18 @@ Applied: the control channel and the selected control, auto-follow, the
 encrypted-skip policy and its duration, the demod preference, and the scan
 controller's allow list and priority ranks. The hold is cleared, because a hold
 names a talkgroup on the system that was programmed before this one.
+
+A version 2 profile whose controls carry `hz|lat|lon|radius_m` is followed by
+position: once a second, while no call is being followed and the scanner does
+not own the tuner, the receiver moves to the nearest site whose radius it is
+inside, with 2 km of hysteresis. It uses the GPS only if something else
+started it, because starting the GPS allocates internal RAM that P25 leaves
+almost none of. Choosing a control by hand, or running a survey, pauses this
+until the next profile load. `p25 profile` shows which of those it is doing.
+
+`phase2_follow`, when present, sets the Phase II follow switch on a load the
+operator chose. Re-entering P25 reapplies the profile without it, so a switch
+turned off by hand stays off. Like the switch itself, it is not saved.
 
 Not applied: lockouts, which are the operator's "never again" and outlive a
 profile swap; the names table, which `/sdcard/p25_names.csv` still owns; and

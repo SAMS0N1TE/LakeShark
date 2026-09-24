@@ -63,8 +63,8 @@ and measured memory budgets. See design_references in bench/regressions.json.
 - During display acceptance captures, avoid heap/runtimes/task dumps: these diagnostic commands enumerate task stacks and can disturb the display timing being measured.
 - Public publishing requires explicit user authorization. Do not bypass the gate.
 
-Private current branch: `work/p4-cell-detector`, not old `consolidate`.
-Standalone Flipper app: `fix/rec-load-ack`; bundled companion is different source.
+Work from public `main` (2.3.0 and later). Private branches hold only private paths, evidence and notes.
+Flipper companion source: `companion/modern-20260923` in LakeShark-Flipper (v2.6) is the current source and the build terminalbay.com hosts.
 
 Memory evidence: release JSON requires memory_review.diff_sha256 from quality.py memory, placement_rationale, positive required_internal_largest/required_dma_largest allocation budgets, and two memory-command snapshots covering the loaded run. Use watch --memory with firmware containing the memory command. Full stack dumps stay outside timing captures.
 

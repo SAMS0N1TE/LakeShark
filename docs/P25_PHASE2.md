@@ -30,7 +30,8 @@ II scanner support.
 ## Automatic following (experimental)
 
 **P25 > SETTINGS > Phase II follow (exp)** or `p2 follow on`. Off after
-restart, not saved.
+restart, not saved. A profile with
+`phase2_follow=true` turns it on when that profile is chosen.
 
 - Follows two-slot TDMA grants (IDEN types 3 and 5) with the Phase I
   talkgroup, hold, lockout and encrypted-skip rules. Type 4 is unsupported.

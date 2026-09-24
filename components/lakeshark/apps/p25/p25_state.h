@@ -147,6 +147,10 @@ typedef struct {
     uint32_t p25_voice_held_total;
     uint32_t p25_voice_released_total;
     uint32_t p25_voice_discarded_total;
+    /* Frames whose NID passed BCH but were not corroborated, so did not
+       count as signal (p25_sync_confirm.h). Mostly noise. */
+    uint32_t sync_unconfirmed_total;
+    uint16_t sync_unconfirmed_nac;
     uint32_t p25_enc_returns;
     uint32_t p25_enc_skips;
     uint32_t p25_enc_tg_evictions;

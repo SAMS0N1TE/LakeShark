@@ -29,6 +29,8 @@
 #include "flipper_link_telemetry.h"
 #include "ble_link.h"
 #include "rec_state.h"
+#include "p25_program.h"
+#include "p25_state.h"
 /**/
 #include "radio_health.h"
 /**/
@@ -493,6 +495,27 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
                  "-ERR rec <arm|stop|freq|gain|thresh|gap|bw|minp|maxspan|"
                  "minedges|save|get|ls|load|del>\n");
     }
+}
+
+/* `+OK psys ...` - the P25 system state the head's SYSTEM page shows: Phase II
+   follow and its grants, the loaded profile, site following, and how many
+   valid-looking frames were held back as uncorroborated. */
+static void psys_reply(char *reply, size_t reply_len)
+{
+    const char *active = p25_program_active_name();
+    const p25_program_t *ps = p25_program_session();
+    char system[40], geo[16];
+    snprintf(system, sizeof(system), "%s",
+             ps && ps->active_valid ? ps->active.system_name : "-");
+    sanitize(system);
+    p25_program_geo_code_now(geo, sizeof(geo));
+    snprintf(reply, reply_len,
+             "+OK psys p2f=%d p2g=%lu pf=%s sys=%s geo=%s nu=%lu unac=%03X\n",
+             p25_get_phase2_follow() ? 1 : 0,
+             (unsigned long)P25.p25_phase2_grant_count,
+             active ? active : "-", system, geo,
+             (unsigned long)P25.sync_unconfirmed_total,
+             (unsigned)P25.sync_unconfirmed_nac);
 }
 
 static void handle_line(char *line, char *reply, size_t reply_len)
@@ -1019,6 +1042,50 @@ static void handle_line(char *line, char *reply, size_t reply_len)
                      ls_track_rec_running() ? 1 : 0,
                      ls_track_points(), ls_mesh_sightings());
         }
+
+    } else if (!strcmp(cmd, "PSYS")) {
+        psys_reply(reply, reply_len);
+
+    } else if (!strcmp(cmd, "P2")) {
+        const char *a2 = (argc > 2) ? argv[2] : NULL;
+        if (a1 && a2 && !strcasecmp(a1, "follow") &&
+            (!strcasecmp(a2, "on") || !strcasecmp(a2, "off"))) {
+            p25_set_phase2_follow(!strcasecmp(a2, "on"));
+            psys_reply(reply, reply_len);
+        } else {
+            snprintf(reply, reply_len, "-ERR p2 follow <on|off>\n");
+        }
+
+    } else if (!strcmp(cmd, "PROF")) {
+        /* One card profile per round trip, like REC LS:
+               %P <index> <total> <file> <system>
+           and PROF LOAD <file>, by name so a card that changed between the
+           list and the load cannot load the wrong one. */
+        char name[64], system[40];
+        if (a1 && !strcasecmp(a1, "load")) {
+            const char *want = (argc > 2) ? argv[2] : NULL;
+            if (!want || !p25_program_is_profile_name(want)) {
+                snprintf(reply, reply_len, "-ERR prof load <p25_profile*.txt>\n");
+            } else if (!p25_program_request_card_profile(want)) {
+                snprintf(reply, reply_len, "-ERR prof busy\n");
+            } else {
+                snprintf(reply, reply_len, "+OK prof loading %s\n", want);
+            }
+            return;
+        }
+        int32_t idx = 0;
+        if (a1 && !parse_i32(a1, &idx)) {
+            snprintf(reply, reply_len, "-ERR prof <index>|load <file>\n");
+            return;
+        }
+        int total = p25_program_card_profile((int)idx, name, sizeof(name),
+                                             system, sizeof(system));
+        if (idx < 0 || idx >= total) {
+            snprintf(reply, reply_len, "%%P %ld %d - -\n", (long)idx, total);
+            return;
+        }
+        sanitize(system);
+        snprintf(reply, reply_len, "%%P %ld %d %s %s\n", (long)idx, total, name, system);
 
     } else {
         s_bad_lines++;

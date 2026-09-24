@@ -295,3 +295,33 @@ LS_CASE(file_byte_limit_and_invalid_range_config_are_bounded)
     LS_EQ_INT(diagnostic.code, P25_PROFILE_ERROR_ARGUMENT);
     LS_CHECK(memcmp(&profile, &before, sizeof(profile)) == 0);
 }
+
+LS_CASE(phase2_follow_is_optional_and_parsed_when_present)
+{
+    p25_profile_t profile;
+    p25_profile_parse_scratch_t scratch;
+    p25_profile_diagnostic_t diagnostic;
+
+    LS_CHECK(parse_text(&profile, &scratch, P25_PROFILE_MINIMAL_FIXTURE,
+                        &diagnostic));
+    LS_CHECK(!profile.phase2_follow_set);
+
+    LS_CHECK(parse_text(&profile, &scratch,
+                        "version=1\nsystem=S\nsite=X\ncontrol=451075000\n"
+                        "phase2_follow=true\n", &diagnostic));
+    LS_CHECK(profile.phase2_follow_set);
+    LS_CHECK(profile.phase2_follow);
+
+    LS_CHECK(parse_text(&profile, &scratch,
+                        "version=1\nsystem=S\nsite=X\ncontrol=451075000\n"
+                        "phase2_follow=false\n", &diagnostic));
+    LS_CHECK(profile.phase2_follow_set);
+    LS_CHECK(!profile.phase2_follow);
+
+    expect_error("version=1\nsystem=S\nsite=X\ncontrol=451075000\n"
+                 "phase2_follow=yes\n",
+                 P25_PROFILE_ERROR_INVALID_BOOLEAN, 5);
+    expect_error("version=1\nsystem=S\nsite=X\ncontrol=451075000\n"
+                 "phase2_follow=true\nphase2_follow=false\n",
+                 P25_PROFILE_ERROR_DUPLICATE_FIELD, 6);
+}

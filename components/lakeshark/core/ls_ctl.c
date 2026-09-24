@@ -30,6 +30,7 @@
 #include "p25_state.h"
 #include "dsd.h"
 #include "p25_iq_capture.h"
+#include "p25_program.h"
 #include "rec_state.h"
 #include "cell_iq.h"
 #include "cell_report.h"
@@ -475,6 +476,10 @@ static __attribute__((noinline)) int print_p25_acquisition(void)
     size_t n = p25_acquisition_format(&status, output, sizeof(output));
     fputs(output, stdout);
     if (n >= sizeof(output)) puts("[acquisition snapshot truncated]");
+    printf("signal: syncs=%d uncorroborated=%u last_nac=%03X "
+           "(NID passed BCH, not counted)\n",
+           P25.dsd_sync_count, (unsigned)P25.sync_unconfirmed_total,
+           (unsigned)P25.sync_unconfirmed_nac);
     return 0;
 }
 
@@ -565,15 +570,54 @@ static int p25_capture_save(const char *name)
     return 0;
 }
 
+/* `p25 profile` lists the card's p25_profile*.txt and the last load;
+   `p25 profile <name>` loads one. The same reload the P25 screen's picker
+   asks for, so a board with no screen can change system too. */
+static int p25_profile_command(int argc, char **argv)
+{
+    char text[160];
+    const p25_program_t *ps = p25_program_session();
+    const char *active = p25_program_active_name();
+
+    if (argc == 0) {
+        char name[P25_PROGRAM_PATH_MAX], system[40];
+        int total = p25_program_card_profile(-1, NULL, 0, NULL, 0);
+        for (int i = 0; i < total; i++) {
+            p25_program_card_profile(i, name, sizeof(name), system, sizeof(system));
+            printf("  %-32s %s%s\n", name, system,
+                   active && !strcmp(active, name) ? "  (loaded)" : "");
+        }
+        if (!total) puts("  no p25_profile*.txt in the SD root");
+        p25_program_format_status(ps, text, sizeof(text));
+        printf("P25PROFILE %s\n", text);
+        p25_program_format_geo_now(text, sizeof(text));
+        printf("P25PROFILE %s\n", text);
+        return 0;
+    }
+
+    if (!p25_program_is_profile_name(argv[0])) {
+        puts("P25PROFILE refused: a p25_profile*.txt name in the SD root");
+        return 1;
+    }
+    if (!p25_program_request_card_profile(argv[0])) {
+        puts("P25PROFILE refused: a load is already running");
+        return 1;
+    }
+    printf("P25PROFILE loading %s - 'p25 profile' shows the result\n", argv[0]);
+    return 0;
+}
+
 static int cmd_p25(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "profile"))
+        return p25_profile_command(argc - 2, argv + 2);
     if (argc >= 3 && !strcmp(argv[1], "capture") && !strcmp(argv[2], "save"))
         return p25_capture_save(argc >= 4 ? argv[3] : NULL);
     if (argc >= 3 && !strcmp(argv[1], "capture"))
         return p25_iq_capture_command(argc - 2, argv + 2,
             (uint32_t)(esp_timer_get_time() / 1000LL));
     if (argc != 2 || strcmp(argv[1], "acquisition")) {
-        puts("usage: p25 acquisition | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
+        puts("usage: p25 acquisition | profile [name] | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
         return 0;
     }
     return print_p25_acquisition();
@@ -898,8 +942,8 @@ void ls_ctl_register_commands(void)
           .help = "P25 control-channel state: IDEN, neighbours, unhandled opcodes",
           .func = &cmd_p25tsbk },
         { .command = "p25",
-          .help = "Read-only P25 acquisition, tuning fence and IQ diagnostics",
-          .hint = "acquisition", .func = &cmd_p25 },
+          .help = "P25 acquisition and IQ diagnostics; 'p25 profile [name]' lists or loads a profile",
+          .hint = "acquisition | profile [name]", .func = &cmd_p25 },
         { .command = "radios",
           .help = "Which radios start at boot: 'radios', 'radios ble off'",
           .hint = "[ble|wifi] [on|off]", .func = &cmd_radios },

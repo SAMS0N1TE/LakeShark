@@ -4,15 +4,20 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include <stdlib.h>
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include "p25_controls.h"
+#include "ls_gps.h"
 #include "p25_state.h"
 #include "scan_ctrl.h"
 
@@ -105,6 +110,12 @@ static void op_auto_follow(void *user, bool enabled)
     (void)p25_set_auto_follow(enabled);
 }
 
+static void op_phase2_follow(void *user, bool enabled)
+{
+    (void)user;
+    p25_set_phase2_follow(enabled);
+}
+
 static void op_encrypted_policy(void *user, bool skip_enabled, uint32_t skip_ms)
 {
     (void)user;
@@ -151,6 +162,7 @@ static void op_set_control(void *user, uint64_t control_hz)
 static const p25_program_ops_t s_ops = {
     .release              = op_release,
     .set_auto_follow      = op_auto_follow,
+    .set_phase2_follow    = op_phase2_follow,
     .set_encrypted_policy = op_encrypted_policy,
     .set_cqpsk_loops      = op_cqpsk_loops,
     .set_demod_preference = op_demod_preference,
@@ -283,4 +295,134 @@ bool p25_program_survey_cancel_now(p25_survey_cancel_t reason)
 bool p25_program_survey_active_now(void)
 {
     return p25_program_survey_active(s_program);
+}
+
+int p25_program_geo_poll_now(bool may_tune)
+{
+    if (!s_program || !s_program->active_valid || s_program->geo_paused ||
+        !p25_geo_profile_has_sites(&s_program->active) || !ls_gps_running())
+        return -1;
+    static EXT_RAM_BSS_ATTR ls_gps_state_t gps;   /* decoder task only */
+    ls_gps_get(&gps);
+    const int index = p25_program_geo_poll(s_program, gps.fix, gps.lat_deg,
+                                           gps.lon_deg, gps.last_fix_us,
+                                           esp_timer_get_time(), may_tune,
+                                           &s_ops);
+    if (index >= 0)
+        ESP_LOGI(TAG, "GEO: site %d, %.1f km away", index + 1,
+                 s_program->geo.distance_m / 1000.0);
+    return index;
+}
+
+void p25_program_format_geo_now(char *out, size_t out_size)
+{
+    if (s_program && s_program->active_valid && !s_program->geo_paused &&
+        p25_geo_profile_has_sites(&s_program->active) && !ls_gps_running()) {
+        snprintf(out, out_size, "GEO waiting: GPS is off - open GPS to start it");
+        return;
+    }
+    p25_program_format_geo(s_program, esp_timer_get_time(), out, out_size);
+}
+
+/* Short, space-free form of p25_program_format_geo_now for the head link. */
+void p25_program_geo_code_now(char *out, size_t out_size)
+{
+    const p25_program_t *p = s_program;
+    if (!p || !p->active_valid || !p25_geo_profile_has_sites(&p->active))
+        snprintf(out, out_size, "off");
+    else if (p->geo_paused)
+        snprintf(out, out_size, "paused");
+    else if (!ls_gps_running())
+        snprintf(out, out_size, "gpsoff");
+    else if (!p25_geo_ready(&p->geo, esp_timer_get_time()))
+        snprintf(out, out_size, "nofix");
+    else
+        snprintf(out, out_size, "site%u/%u",
+                 (unsigned)p->selected_control + 1u,
+                 (unsigned)p->active.control_count);
+}
+
+/* ------------------------------------------------------- card listing --- */
+
+#define P25_CARD_DIR  "/sdcard"
+#define P25_CARD_MAX  48
+
+static EXT_RAM_BSS_ATTR char s_card[P25_CARD_MAX][P25_PROGRAM_PATH_MAX];
+
+static int card_order(const void *a, const void *b)
+{
+    return strcasecmp((const char *)a, (const char *)b);
+}
+
+bool p25_program_is_profile_name(const char *name)
+{
+    const size_t n = name ? strlen(name) : 0;
+    return n >= 15 && !strncasecmp(name, "p25_profile", 11) &&
+           !strcasecmp(name + n - 4, ".txt") && !strchr(name, '/') &&
+           sizeof(P25_CARD_DIR "/") + n <= P25_PROGRAM_PATH_MAX;
+}
+
+/* The system= line, read from the head of the file. */
+static void card_system(const char *path, char *out, size_t cap)
+{
+    static EXT_RAM_BSS_ATTR char head[2048];
+    snprintf(out, cap, "-");
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(head, 1, sizeof(head) - 1, f);
+    fclose(f);
+    head[n] = '\0';
+    for (char *line = head; line && *line; ) {
+        char *end = strchr(line, '\n');
+        if (end) *end = '\0';
+        while (*line == ' ' || *line == '\t') line++;
+        if (!strncmp(line, "system=", 7)) {
+            const char *v = line + 7;
+            size_t len = strlen(v);
+            while (len && (v[len - 1] == '\r' || v[len - 1] == ' ')) len--;
+            if (len) snprintf(out, cap, "%.*s", (int)len, v);
+            return;
+        }
+        line = end ? end + 1 : NULL;
+    }
+}
+
+int p25_program_card_profile(int index, char *name, size_t name_cap,
+                             char *system, size_t system_cap)
+{
+    int total = 0;
+    DIR *d = opendir(P25_CARD_DIR);
+    if (d) {
+        const struct dirent *e;
+        while ((e = readdir(d)) != NULL && total < P25_CARD_MAX) {
+            if (!p25_program_is_profile_name(e->d_name)) continue;
+            snprintf(s_card[total++], sizeof(s_card[0]), "%s", e->d_name);
+        }
+        closedir(d);
+    }
+    qsort(s_card, (size_t)total, sizeof(s_card[0]), card_order);
+    if (index < 0 || index >= total) return total;
+    if (name) snprintf(name, name_cap, "%s", s_card[index]);
+    if (system) {
+        char path[P25_PROGRAM_PATH_MAX + 8];
+        snprintf(path, sizeof(path), P25_CARD_DIR "/%s", s_card[index]);
+        card_system(path, system, system_cap);
+    }
+    return total;
+}
+
+bool p25_program_request_card_profile(const char *name)
+{
+    if (!p25_program_is_profile_name(name)) return false;
+    char path[P25_PROGRAM_PATH_MAX];
+    snprintf(path, sizeof(path), P25_CARD_DIR "/%s", name);
+    return p25_program_request_reload_path(path);
+}
+
+const char *p25_program_active_name(void)
+{
+    const p25_program_t *p = s_program;
+    if (!p || !p->active_valid) return NULL;
+    const char *slash = strrchr(p->active_path, '/');
+    return slash ? slash + 1 : p->active_path;
 }

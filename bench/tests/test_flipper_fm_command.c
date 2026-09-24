@@ -558,3 +558,102 @@ LS_CASE(an_unknown_verb_is_still_refused_and_counted)
     flipper_link_stats(&rx, &tx, &bad1);
     LS_CHECK_MSG(bad1 > bad0, "an unknown verb was not counted as bad");
 }
+
+/* --------------------------------------------- P25 system for the head */
+
+#include "p25_program.h"
+#include "p25_state.h"
+
+p25_state_t P25;
+static bool s_p2_follow;
+static const char *s_active_profile;
+static p25_program_t s_fake_program;
+static const char *s_card[] = { "p25_profile.txt", "p25_profile_seabrook.txt" };
+static const char *s_card_system[] = { "Home County", "Seabrook Station" };
+static char s_load_requested[64];
+
+bool p25_get_phase2_follow(void) { return s_p2_follow; }
+void p25_set_phase2_follow(bool on) { s_p2_follow = on; }
+const char *p25_program_active_name(void) { return s_active_profile; }
+const p25_program_t *p25_program_session(void) { return &s_fake_program; }
+void p25_program_geo_code_now(char *out, size_t cap) { snprintf(out, cap, "off"); }
+
+bool p25_program_is_profile_name(const char *name)
+{
+    const size_t n = name ? strlen(name) : 0;
+    return n >= 15 && !strncmp(name, "p25_profile", 11) &&
+           !strcmp(name + n - 4, ".txt") && !strchr(name, '/');
+}
+
+int p25_program_card_profile(int index, char *name, size_t name_cap,
+                             char *system, size_t system_cap)
+{
+    const int total = (int)(sizeof(s_card) / sizeof(s_card[0]));
+    if (index < 0 || index >= total) return total;
+    if (name) snprintf(name, name_cap, "%s", s_card[index]);
+    if (system) snprintf(system, system_cap, "%s", s_card_system[index]);
+    return total;
+}
+
+bool p25_program_request_card_profile(const char *name)
+{
+    snprintf(s_load_requested, sizeof(s_load_requested), "%s", name);
+    return true;
+}
+
+LS_CASE(the_head_sees_the_p25_system_state)
+{
+    s_p2_follow = true;
+    P25.p25_phase2_grant_count = 3;
+    P25.sync_unconfirmed_total = 4;
+    P25.sync_unconfirmed_nac = 0x2E7;
+    s_active_profile = "p25_profile_seabrook.txt";
+    memset(&s_fake_program, 0, sizeof(s_fake_program));
+    s_fake_program.active_valid = true;
+    snprintf(s_fake_program.active.system_name,
+             sizeof(s_fake_program.active.system_name), "Seabrook Station");
+
+    LS_CHECK(reply_has("PSYS", "+OK psys "));
+    LS_CHECK(reply_has("PSYS", "p2f=1"));
+    LS_CHECK(reply_has("PSYS", "p2g=3"));
+    LS_CHECK(reply_has("PSYS", "pf=p25_profile_seabrook.txt"));
+    /* Free text crosses the wire with its spaces turned to underscores. */
+    LS_CHECK(reply_has("PSYS", "sys=Seabrook_Station"));
+    LS_CHECK(reply_has("PSYS", "geo=off"));
+    LS_CHECK(reply_has("PSYS", "nu=4"));
+    LS_CHECK(reply_has("PSYS", "unac=2E7"));
+
+    s_active_profile = NULL;
+    s_fake_program.active_valid = false;
+    LS_CHECK(reply_has("PSYS", "pf=- sys=-"));
+}
+
+LS_CASE(the_head_switches_phase2_follow)
+{
+    s_p2_follow = false;
+    LS_CHECK(reply_has("P2 FOLLOW on", "p2f=1"));
+    LS_CHECK(s_p2_follow);
+    LS_CHECK(reply_has("P2 follow OFF", "p2f=0"));
+    LS_CHECK(!s_p2_follow);
+    LS_CHECK(reply_has("P2 FOLLOW maybe", "-ERR"));
+    LS_CHECK(reply_has("P2", "-ERR"));
+}
+
+LS_CASE(the_head_lists_and_loads_card_profiles)
+{
+    LS_CHECK(reply_has("PROF 0", "%P 0 2 p25_profile.txt Home_County"));
+    LS_CHECK(reply_has("PROF 1", "%P 1 2 p25_profile_seabrook.txt Seabrook_Station"));
+    /* Past the end is an empty row, which is how the head knows to stop. */
+    LS_CHECK(reply_has("PROF 2", "%P 2 2 - -"));
+    LS_CHECK(reply_has("PROF x", "-ERR"));
+
+    s_load_requested[0] = '\0';
+    LS_CHECK(reply_has("PROF LOAD p25_profile_seabrook.txt",
+                       "+OK prof loading p25_profile_seabrook.txt"));
+    LS_EQ_STR(s_load_requested, "p25_profile_seabrook.txt");
+    /* Only a profile name in the card root, never a path. */
+    s_load_requested[0] = '\0';
+    LS_CHECK(reply_has("PROF LOAD ../p25_profile_x.txt", "-ERR"));
+    LS_CHECK(reply_has("PROF LOAD notes.txt", "-ERR"));
+    LS_EQ_STR(s_load_requested, "");
+}

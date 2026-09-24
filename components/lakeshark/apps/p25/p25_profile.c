@@ -16,6 +16,7 @@ enum {
     SEEN_DEMOD          = 1u << 7,
     SEEN_CQPSK_TIMING   = 1u << 8,
     SEEN_CQPSK_CARRIER  = 1u << 9,
+    SEEN_PHASE2_FOLLOW  = 1u << 10,
 };
 
 typedef enum {
@@ -395,6 +396,13 @@ static bool parse_line(p25_profile_t *profile, char *line_text,
         if (!singleton_once(seen, SEEN_AUTO_FOLLOW, diagnostic, line)) return false;
         if (!parse_bool(value, &profile->auto_follow))
             return fail(diagnostic, line, P25_PROFILE_ERROR_INVALID_BOOLEAN);
+        return true;
+    }
+    if (strcmp(key, "phase2_follow") == 0) {
+        if (!singleton_once(seen, SEEN_PHASE2_FOLLOW, diagnostic, line)) return false;
+        if (!parse_bool(value, &profile->phase2_follow))
+            return fail(diagnostic, line, P25_PROFILE_ERROR_INVALID_BOOLEAN);
+        profile->phase2_follow_set = true;
         return true;
     }
     if (strcmp(key, "encrypted_skip") == 0) {

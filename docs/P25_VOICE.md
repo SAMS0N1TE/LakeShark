@@ -66,8 +66,13 @@ bench.
    each one. The SYNC lamp, the NAC on screen, the sync count, the
    demodulator's lock flag, P25QUAL's call window and the scanner's "this
    channel is active" (`P25.dsd_has_sync`) are all set after the check, in
-   `app_p25.c`. Nothing on the host bench compiles that loop, so this one is
-   guarded by a live soak: noise must not open P25QUAL calls.
+   `app_p25.c`. BCH alone still passes a noise frame every 20-25 minutes, so
+   a valid frame must also be corroborated: its NAC matches the one already
+   confirmed on this tune, or a second frame with the same NAC follows within
+   500 ms (`p25_sync_confirm.c`). A retune forgets the NAC. `p25 acquisition`
+   counts the uncorroborated frames. *Tests:* `test_p25_sync_confirm`. The loop
+   itself is not compiled on the host bench, so a live soak still guards it:
+   noise must not open P25QUAL calls.
 
 7. **What is measured is what the listener hears.** Frames played, and the
    share of IMBE frames that reach the vocoder bit-exact. "It decodes" was
@@ -210,13 +215,10 @@ The WAV is laid out on the air's own timeline, so choppiness is audible.
   before the two-speed clock existed: 99% / 95% bit-exact against C4FM's
   77% / 57% at the time. It loses frames at call starts on the real
   capture. Its tracker is worth studying, not switching to.
-- **Noise occasionally passes the NID check.** BCH(63,16) corrects up to 11
-  errors, so about one random word in 1,100 decodes to *a* valid codeword.
-  The tolerant hunt offers about 0.8 raw syncs a second in noise, so roughly
-  every 20-25 minutes a noise frame is taken for a real one: a half-second
-  SYNC blip with a random NAC. Its voice cannot play, because the unknown ESS
-  holds it and it is discarded. If it matters, require the expected NAC, or
-  two frames back to back, before a sync counts as signal.
+- **The first call on a fresh tune counts as signal one frame late.** Rule 6
+  needs a second frame to corroborate a NAC nobody has confirmed yet, so the
+  SYNC lamp and P25QUAL start about 180 ms after the first frame. Voice is not
+  delayed: every valid frame is decoded either way.
 - **Only one real call is in the corpus.** Every capture added makes every
   decision above better informed. Weak, fading and trunked-voice captures
   would be the most useful additions.

@@ -924,6 +924,7 @@ ls_add_test(test_p25_tsbk ${APP}/p25/p25_tsbk.c
     ${APP}/p25/p25_controls.c)
 ls_add_test(test_p25_ess ${APP}/p25/p25_ess.c)
 ls_add_test(test_p25_voice_hold ${APP}/p25/p25_voice_hold.c)
+ls_add_test(test_p25_sync_confirm ${APP}/p25/p25_sync_confirm.c)
 ls_add_test(test_p25_grant ${APP}/p25/p25_tsbk.c ${APP}/p25/grant_follower.c
     ${APP}/p25/p25_ess.c ${APP}/p25/p25_controls.c)
 ls_add_test(test_p25_receive ${APP}/p25/dsd_frame.c ${APP}/p25/p25_tsbk.c
@@ -947,7 +948,7 @@ ls_add_test(test_p25_profile ${APP}/p25/p25_profile.c
     ${APP}/p25/p25_cqpsk_controls.c)
 target_compile_definitions(test_p25_profile PRIVATE
     P25_PROFILE_EXAMPLE_PATH="${FW}/tools/p25_profile.example")
-ls_add_test(test_p25_program ${APP}/p25/p25_program.c ${APP}/p25/p25_profile.c
+ls_add_test(test_p25_program ${APP}/p25/p25_program.c ${APP}/p25/p25_profile.c ${APP}/p25/p25_geo.c
     ${APP}/p25/p25_cqpsk_controls.c
     ${APP}/p25/scan_ctrl.c ${APP}/p25/grant_follower.c
     ${APP}/p25/p25_controls.c ${APP}/p25/p25_ess.c)

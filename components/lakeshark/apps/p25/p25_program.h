@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "p25_geo.h"
 #include "p25_profile.h"
 #include "scan_ctrl.h"
 
@@ -94,6 +95,9 @@ typedef p25_program_result_t (*p25_program_read_fn)(void *ctx, const char *path,
 typedef struct {
     void (*release)(void *user);
     void (*set_auto_follow)(void *user, bool enabled);
+    /* Only on a load the operator chose, never on reapply: a switch turned
+     * off by hand stays off when P25 is re-entered. */
+    void (*set_phase2_follow)(void *user, bool enabled);
     void (*set_encrypted_policy)(void *user, bool skip_enabled, uint32_t skip_ms);
     void (*set_cqpsk_loops)(void *user, const p25_cqpsk_config_t *config);
     void (*set_demod_preference)(void *user, int preference);
@@ -145,6 +149,13 @@ typedef struct {
     /* Fixed-size and held with the PROGRAM session in PSRAM.  No survey
      * transition allocates, blocks, or stores frequencies outside active. */
     p25_control_survey_t survey;
+
+    /* Site selection by position, for a profile whose controls carry
+     * coordinates.  A control chosen by hand - step, select or survey -
+     * pauses it until the next profile load, so the operator's choice is
+     * not undone a second later. */
+    p25_geo_t geo;
+    bool      geo_paused;
 } p25_program_t;
 
 void p25_program_init(p25_program_t *program);
@@ -198,6 +209,20 @@ bool p25_program_survey_cancel(p25_program_t *program,
 bool p25_program_survey_active(const p25_program_t *program);
 
 uint64_t p25_program_selected_control_hz(const p25_program_t *program);
+
+/* Move to the profile's nearest in-range site when position says so.
+ * may_tune is false while a call is being followed or the scanner owns the
+ * tuner; nothing is decided then, so the next poll decides afresh.  Returns
+ * the control index tuned, or -1 when nothing changed. */
+int p25_program_geo_poll(p25_program_t *program, bool fix_valid,
+                         double lat, double lon, int64_t fix_us,
+                         int64_t now_us, bool may_tune,
+                         const p25_program_ops_t *ops);
+
+/* "GEO off (no site coordinates)", "GEO paused (control chosen by hand)",
+ * "GEO waiting for a GPS fix", "GEO site 2 of 4, 3.1 km". */
+void p25_program_format_geo(const p25_program_t *program, int64_t now_us,
+                            char *out, size_t out_size);
 
 const char *p25_program_result_reason(p25_program_result_t result);
 const char *p25_program_state_name(const p25_program_t *program);
@@ -264,6 +289,22 @@ bool p25_program_survey_poll_now(uint32_t now_ms, uint32_t valid_nids,
                                  uint32_t valid_tsbks);
 bool p25_program_survey_cancel_now(p25_survey_cancel_t reason);
 bool p25_program_survey_active_now(void);
+/* Once a second from the decoder task.  Uses the GPS only if something else
+ * already started it: starting the GPS allocates internal RAM, which P25
+ * leaves almost none of. */
+int  p25_program_geo_poll_now(bool may_tune);
+void p25_program_format_geo_now(char *out, size_t out_size);
+void p25_program_geo_code_now(char *out, size_t out_size);
+
+/* The card's p25_profile*.txt, in name order - the one list the screen, the
+ * console and the head all show.  Fills name and the file's system= line for
+ * index and returns how many there are. */
+bool p25_program_is_profile_name(const char *name);
+int  p25_program_card_profile(int index, char *name, size_t name_cap,
+                              char *system, size_t system_cap);
+bool p25_program_request_card_profile(const char *name);
+/* File name of the loaded profile, or NULL. */
+const char *p25_program_active_name(void);
 
 #ifdef __cplusplus
 }

@@ -47,6 +47,7 @@
 #include "p25_p2_runtime_status.h"
 #include "p25_p2_follow.h"
 #include "p25_voice_hold.h"
+#include "p25_sync_confirm.h"
 #include "rtl-sdr.h"
 
 p25_state_t       P25 = {0};
@@ -127,6 +128,7 @@ static EXT_RAM_BSS_ATTR p25_health_raw_t s_health_raw;
 /* Voice decoded before the call proved clear, and what leaves it. PSRAM:
    only the decoder task touches either, and never with the cache off. */
 static EXT_RAM_BSS_ATTR p25_voice_hold_t s_voice_hold;
+static EXT_RAM_BSS_ATTR p25_sync_confirm_t s_sync_confirm;
 static EXT_RAM_BSS_ATTR int16_t s_voice_out[P25_HOLD_MAX_SAMPLES + 2000];
 
 static void p25_health_publish_ui(uint32_t now_ms)
@@ -856,6 +858,8 @@ static void dsd_decoder_task(void *arg)
     acquisition.generation = atomic_load_explicit(
         &s_decode_tune_generation, memory_order_acquire);
     uint64_t decode_control_hz = s_grant_follower.control_hz;
+    p25_sync_confirm_reset(&s_sync_confirm);
+    int64_t geo_next_us = 0;
     while (s_app_active) {
         esp_task_wdt_reset();
         if (s_p2_owned) p25_p2_follow_service();
@@ -955,9 +959,18 @@ static void dsd_decoder_task(void *arg)
                a random NAC onto the screen, slowed the demodulator's DC
                tracking, opened P25QUAL "calls", and - through dsd_has_sync -
                stopped the scanner on empty channels (seen on the air,
-               2026-09-23: 97 "calls" in ten minutes, 59 of them noise). */
+               2026-09-23: 97 "calls" in ten minutes, 59 of them noise).
+               BCH alone still passes noise every 20-25 minutes, so a valid
+               frame also has to be corroborated (p25_sync_confirm.h). */
             extern int dsp_has_signal_lock;
-            const bool frame_ok = s_dsd_state.p25_frame_valid != 0;
+            const bool frame_ok = s_dsd_state.p25_frame_valid != 0 &&
+                p25_sync_confirm_frame(&s_sync_confirm,
+                    (uint16_t)s_dsd_state.nac,
+                    (uint32_t)(esp_timer_get_time() / 1000LL),
+                    atomic_load_explicit(&s_decode_tune_generation,
+                                         memory_order_acquire));
+            P25.sync_unconfirmed_total = s_sync_confirm.unconfirmed;
+            P25.sync_unconfirmed_nac = s_sync_confirm.unconfirmed_nac;
             if (frame_ok) {
                 P25.dsd_sync_count++;
                 P25.dsd_has_sync = true;
@@ -1124,6 +1137,12 @@ static void dsd_decoder_task(void *arg)
         (void)p25_program_survey_poll_now(
             (uint32_t)(esp_timer_get_time() / 1000LL),
             (uint32_t)P25.dsd_bch_ok_count, P25.p25_tsbk_ok_count);
+        if (esp_timer_get_time() >= geo_next_us) {
+            geo_next_us = esp_timer_get_time() + 1000000LL;
+            (void)p25_program_geo_poll_now(
+                s_grant_follower.state != P25_GRANT_ON_TRAFFIC &&
+                !s_p2_owned && !scan_engine_active());
+        }
     }
     esp_task_wdt_delete(NULL);
     s_dsd_running = false;

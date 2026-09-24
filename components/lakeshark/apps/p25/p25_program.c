@@ -104,6 +104,8 @@ static void apply_profile(const p25_profile_t *profile, uint64_t control_hz,
     if (ops->release) ops->release(ops->user);
     if (ops->set_auto_follow)
         ops->set_auto_follow(ops->user, profile->auto_follow);
+    if (!restore && profile->phase2_follow_set && ops->set_phase2_follow)
+        ops->set_phase2_follow(ops->user, profile->phase2_follow);
     if (ops->set_encrypted_policy)
         ops->set_encrypted_policy(ops->user, profile->encrypted_skip_enabled,
                                   profile->encrypted_skip_ms);
@@ -192,6 +194,7 @@ bool p25_program_survey_start(p25_program_t *program, uint32_t now_ms,
     survey->deadline_ms = now_ms + P25_SURVEY_SETTLE_MS;
     survey->nid_baseline = valid_nids;
     survey->tsbk_baseline = valid_tsbks;
+    program->geo_paused = true;
 
     /* Survey owns tuning until it terminates.  Release a traffic call once,
      * then use only frequencies from the immutable active profile list. */
@@ -326,6 +329,9 @@ p25_program_result_t p25_program_reload(p25_program_t *program,
     program->active            = staging->candidate;
     program->active_valid      = true;
     program->selected_control  = index;
+    memset(&program->geo, 0, sizeof(program->geo));
+    program->geo.chosen        = -1;
+    program->geo_paused        = false;
     copy_str(program->active_path, sizeof(program->active_path),
              program->last_path);
     program->last_bytes      = length;
@@ -361,8 +367,8 @@ bool p25_program_reapply(p25_program_t *program, const p25_program_ops_t *ops)
     return true;
 }
 
-bool p25_program_select_control(p25_program_t *program, uint8_t index,
-                                const p25_program_ops_t *ops)
+static bool select_index(p25_program_t *program, uint8_t index,
+                         const p25_program_ops_t *ops)
 {
     if (!program || !ops) return false;
     if (program->state == P25_PROGRAM_BUSY) return false;
@@ -383,6 +389,14 @@ bool p25_program_select_control(p25_program_t *program, uint8_t index,
     return true;
 }
 
+bool p25_program_select_control(p25_program_t *program, uint8_t index,
+                                const p25_program_ops_t *ops)
+{
+    if (!select_index(program, index, ops)) return false;
+    program->geo_paused = true;
+    return true;
+}
+
 bool p25_program_step_control(p25_program_t *program, int delta,
                               const p25_program_ops_t *ops)
 {
@@ -397,6 +411,39 @@ bool p25_program_step_control(p25_program_t *program, int delta,
     next %= count;
     if (next < 0) next += count;
     return p25_program_select_control(program, (uint8_t)next, ops);
+}
+
+int p25_program_geo_poll(p25_program_t *program, bool fix_valid,
+                         double lat, double lon, int64_t fix_us,
+                         int64_t now_us, bool may_tune,
+                         const p25_program_ops_t *ops)
+{
+    if (!program || !ops || !may_tune) return -1;
+    if (program->state == P25_PROGRAM_BUSY || !program->active_valid) return -1;
+    if (program->geo_paused || survey_running(&program->survey)) return -1;
+
+    const int index = p25_geo_select(&program->geo, &program->active,
+                                     fix_valid, lat, lon, fix_us, now_us);
+    if (index < 0 || index == (int)program->selected_control) return -1;
+    return select_index(program, (uint8_t)index, ops) ? index : -1;
+}
+
+void p25_program_format_geo(const p25_program_t *program, int64_t now_us,
+                            char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return;
+    if (!program || !program->active_valid ||
+        !p25_geo_profile_has_sites(&program->active))
+        snprintf(out, out_size, "GEO off (no site coordinates)");
+    else if (program->geo_paused)
+        snprintf(out, out_size, "GEO paused (control chosen by hand)");
+    else if (!p25_geo_ready(&program->geo, now_us))
+        snprintf(out, out_size, "GEO waiting for a GPS fix");
+    else
+        snprintf(out, out_size, "GEO site %u of %u, %.1f km",
+                 (unsigned)program->selected_control + 1u,
+                 (unsigned)program->active.control_count,
+                 program->geo.distance_m / 1000.0);
 }
 
 uint64_t p25_program_selected_control_hz(const p25_program_t *program)

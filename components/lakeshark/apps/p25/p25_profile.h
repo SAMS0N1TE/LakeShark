@@ -67,6 +67,10 @@ typedef struct {
     bool     auto_follow;
     bool     encrypted_skip_enabled;
     uint32_t encrypted_skip_ms;
+    /* phase2_follow= is optional. Absent leaves the operator's switch
+       alone; present sets it when the profile is chosen. */
+    bool     phase2_follow_set;
+    bool     phase2_follow;
     /* P25_DEMOD_AUTO or one of the existing demod_mode_t values. */
     int      demod_preference;
     p25_cqpsk_config_t cqpsk;

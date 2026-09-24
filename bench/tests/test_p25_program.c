@@ -1,4 +1,4 @@
-/* LS_TEST_SOURCES: ${APP}/p25/p25_program.c ${APP}/p25/p25_profile.c
+/* LS_TEST_SOURCES: ${APP}/p25/p25_program.c ${APP}/p25/p25_profile.c ${APP}/p25/p25_geo.c
  *                  ${APP}/p25/scan_ctrl.c ${APP}/p25/grant_follower.c
  *                  ${APP}/p25/p25_controls.c ${APP}/p25/p25_ess.c */
 
@@ -917,4 +917,207 @@ LS_CASE(profile_change_cancels_stale_survey_before_atomic_apply)
     LS_EQ_UINT(radio.tune_latch, 771031250);
     LS_EQ_INT(program.survey.state, P25_SURVEY_CANCELED);
     LS_EQ_INT(program.survey.cancel_reason, P25_SURVEY_CANCEL_PROFILE_CHANGE);
+}
+
+static int  s_p2_calls;
+static bool s_p2_last;
+
+static void op_phase2_follow(void *user, bool enabled)
+{
+    log_op((fake_radio_t *)user, 'P');
+    s_p2_calls++;
+    s_p2_last = enabled;
+}
+
+static const char PHASE2_PROFILE[] =
+    "version=1\n"
+    "system=Seabrook Station\n"
+    "site=001 Seabrook Nuclear\n"
+    "control=451075000\n"
+    "control=451100000\n"
+    "phase2_follow=true\n"
+    "tg=8501|8501 Ops|true|0\n";
+
+LS_CASE(phase2_follow_is_set_on_a_chosen_load_but_not_on_reapply)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_file_t file = { PHASE2_PROFILE, P25_PROGRAM_OK, 0, NULL };
+
+    p25_program_init(&program);
+    fake_radio_init(&radio, &ops);
+    ops.set_phase2_follow = op_phase2_follow;
+    s_p2_calls = 0;
+
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile_seabrook.txt"),
+              P25_PROGRAM_OK);
+    LS_EQ_INT(s_p2_calls, 1);
+    LS_CHECK(s_p2_last);
+    LS_EQ_STR(radio.log, "RFPEQDSC");
+
+    /* Re-entering P25 must not turn it back on after the operator turned
+     * it off by hand. */
+    fake_radio_init(&radio, &ops);
+    ops.set_phase2_follow = op_phase2_follow;
+    LS_CHECK(p25_program_reapply(&program, &ops));
+    LS_EQ_INT(s_p2_calls, 1);
+    LS_EQ_STR(radio.log, "RFEQDSC");
+}
+
+LS_CASE(a_profile_without_phase2_follow_leaves_the_switch_alone)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_file_t file = { P25_PROFILE_FULL_FIXTURE, P25_PROGRAM_OK, 0, NULL };
+
+    p25_program_init(&program);
+    fake_radio_init(&radio, &ops);
+    ops.set_phase2_follow = op_phase2_follow;
+    s_p2_calls = 0;
+
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile.txt"),
+              P25_PROGRAM_OK);
+    LS_EQ_INT(s_p2_calls, 0);
+    LS_EQ_STR(radio.log, "RFEQDSC");
+}
+
+/* ------------------------------------------------------ site by position */
+
+/* Franklin and Concord, 26 km apart, each claiming 15 km. */
+static const char GEO_PROFILE[] =
+    "version=2\n"
+    "system=Two Site Test\n"
+    "site=Merrimack\n"
+    "control=851012500|43.4406|-71.6498|15000\n"
+    "control=851287500|43.2081|-71.5376|15000\n";
+
+#define FIX_US   100000000LL
+#define NOW_US   (FIX_US + 1000000LL)
+
+static void load_geo(p25_program_t *program, fake_radio_t *radio,
+                     p25_program_ops_t *ops)
+{
+    fake_file_t file = { GEO_PROFILE, P25_PROGRAM_OK, 0, NULL };
+    p25_program_init(program);
+    fake_radio_init(radio, ops);
+    LS_EQ_INT(load(program, &file, ops, "/sdcard/p25_profile_geo.txt"),
+              P25_PROGRAM_OK);
+    LS_EQ_UINT(program->selected_control, 0);
+    fake_radio_init(radio, ops);
+}
+
+LS_CASE(geo_moves_to_the_site_the_receiver_is_inside)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    load_geo(&program, &radio, &ops);
+
+    /* Parked in Concord. */
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), 1);
+    LS_EQ_UINT(program.selected_control, 1);
+    LS_EQ_UINT(radio.control_hz, 851287500);
+    LS_EQ_STR(radio.log, "RC");
+
+    /* Still there a second later: nothing to do. */
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US + 1000000LL, NOW_US + 1000000LL,
+                                   true, &ops), -1);
+    LS_EQ_STR(radio.log, "RC");
+
+    char text[96];
+    p25_program_format_geo(&program, NOW_US + 1000000LL, text, sizeof(text));
+    LS_EQ_STR(text, "GEO site 2 of 2, 0.0 km");
+}
+
+LS_CASE(geo_waits_while_a_call_is_followed)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    load_geo(&program, &radio, &ops);
+
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, false, &ops), -1);
+    LS_EQ_STR(radio.log, "");
+    /* The call ends; the next poll decides afresh. */
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), 1);
+}
+
+LS_CASE(geo_does_nothing_without_a_fix)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    load_geo(&program, &radio, &ops);
+
+    LS_EQ_INT(p25_program_geo_poll(&program, false, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), -1);
+    char text[96];
+    p25_program_format_geo(&program, NOW_US, text, sizeof(text));
+    LS_EQ_STR(text, "GEO waiting for a GPS fix");
+    LS_EQ_STR(radio.log, "");
+}
+
+LS_CASE(a_control_chosen_by_hand_pauses_geo_until_the_next_load)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_file_t file = { GEO_PROFILE, P25_PROGRAM_OK, 0, NULL };
+    load_geo(&program, &radio, &ops);
+
+    /* The operator steps to Concord's control while sitting in Franklin. */
+    LS_CHECK(p25_program_step_control(&program, +1, &ops));
+    LS_EQ_UINT(program.selected_control, 1);
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.4406, -71.6498,
+                                   FIX_US, NOW_US, true, &ops), -1);
+    LS_EQ_UINT(program.selected_control, 1);
+    char text[96];
+    p25_program_format_geo(&program, NOW_US, text, sizeof(text));
+    LS_EQ_STR(text, "GEO paused (control chosen by hand)");
+
+    /* Loading the profile again hands the choice back to position. */
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile_geo.txt"),
+              P25_PROGRAM_OK);
+    LS_CHECK(!program.geo_paused);
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), 1);
+}
+
+LS_CASE(a_survey_pauses_geo)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    load_geo(&program, &radio, &ops);
+
+    LS_CHECK(p25_program_survey_start(&program, 1000, 0, 0, &ops));
+    LS_CHECK(program.geo_paused);
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), -1);
+}
+
+LS_CASE(geo_is_off_for_a_profile_without_coordinates)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_file_t file = { P25_PROFILE_FULL_FIXTURE, P25_PROGRAM_OK, 0, NULL };
+    p25_program_init(&program);
+    fake_radio_init(&radio, &ops);
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile.txt"),
+              P25_PROGRAM_OK);
+    fake_radio_init(&radio, &ops);
+
+    LS_EQ_INT(p25_program_geo_poll(&program, true, 43.2081, -71.5376,
+                                   FIX_US, NOW_US, true, &ops), -1);
+    LS_EQ_STR(radio.log, "");
+    char text[96];
+    p25_program_format_geo(&program, NOW_US, text, sizeof(text));
+    LS_EQ_STR(text, "GEO off (no site coordinates)");
 }

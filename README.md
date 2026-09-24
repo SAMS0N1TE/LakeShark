@@ -133,7 +133,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.3.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.3.0).** Whole-call P25 voice, cleaner audio and experimental Phase II grant following. Experimental radio features remain marked.
+**Current P4 release: [2.3.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.3.1).** P25 SYNC ignores noise, profiles follow the nearest site by GPS and can turn on Phase II follow, and the Flipper app gains a P25 SYSTEM page. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 
