@@ -33,6 +33,8 @@ bool ls_panel_fb(ls_panel_fb_t *out)
     return true;
 }
 void ls_panel_fb_present(void) { }
+static int g_rows_y0 = -1, g_rows_y1 = -1;
+void ls_panel_fb_present_rows(int y0, int y1) { g_rows_y0 = y0; g_rows_y1 = y1; }
 
 /* ---------------------------------------------------------------- fakes -- */
 
@@ -706,6 +708,50 @@ LS_CASE(pixel_map_updates_only_changed_cells_and_text_covers_it)
         LS_EQ_INT(0, ls_tui_present());
         tui_put_char(sf, area, 3, 10, LS_TUI_IMAGE_CELL, 0);
         LS_EQ_INT(1, ls_tui_present());
+        ls_tui_end();
+    }
+}
+
+/* A present hands the panel only the native rows it wrote, and skipping the
+   bar ends when nothing about them changed must leave exactly the pixels a
+   full repaint would: one changed cell, then the whole frame compared. */
+static uint16_t g_ref[NATIVE_W * NATIVE_H];
+
+LS_CASE(present_writes_back_only_changed_rows_and_matches_a_full_repaint)
+{
+    register_once();
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        ls_tui_screen_show(0);
+        frame(3);
+        int cols = 0, rows = 0, cw = 0, ch = 0;
+        ls_tui_geometry(&cols, &rows, &cw, &ch);
+        tui_surface *sf = ls_tui_surface();
+
+        /* Only one cell, in the middle of the grid, differs from last frame. */
+        ls_tui_router_draw(sf);
+        const int mc = cols / 2, mr = rows / 2;
+        tui_put_char(sf, tui_surface_rect(sf), mc, mr, '@',
+                     TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLUE));
+        g_rows_y0 = g_rows_y1 = -1;
+        LS_EQ_INT(1, ls_tui_present());
+        LS_CHECK(g_rows_y0 >= 0);
+        LS_CHECK(g_rows_y1 - g_rows_y0 <= (wide ? cw : ch));
+        memcpy(g_ref, g_fb, sizeof(g_fb));
+
+        /* The same grid painted from nothing. */
+        memset(g_fb, 0x5A, sizeof(g_fb));
+        ls_tui_end();
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        sf = ls_tui_surface();
+        ls_tui_router_draw(sf);
+        tui_put_char(sf, tui_surface_rect(sf), mc, mr, '@',
+                     TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLUE));
+        ls_tui_present();
+        size_t bad = 0;
+        for (size_t i = 0; i < (size_t)NATIVE_W * NATIVE_H; i++)
+            if (g_fb[i] != g_ref[i]) bad++;
+        LS_EQ_UINT(0, bad);
         ls_tui_end();
     }
 }

@@ -1,5 +1,13 @@
 # LakeShark release notes
 
+## 2.3.2
+
+- Waterfall runs at about 25 fps in both orientations.
+- Unplugging the RTL-SDR no longer reboots the board; replug and it resumes.
+- Swapping RTL-SDR dongles no longer crashes P25.
+- Reconnecting the RTL-SDR no longer leaks memory.
+- No colour-bar test screen at boot.
+
 ## 2.3.1
 
 - P25 SYNC no longer flickers on noise: a NAC must repeat before it counts.

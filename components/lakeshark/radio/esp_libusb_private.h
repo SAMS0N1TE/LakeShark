@@ -72,6 +72,15 @@ uint32_t esp_libusb_total_bytes(void);
 bool esp_libusb_streaming(void);
 bool esp_libusb_bulk_active(void);
 void esp_libusb_note_device_gone(usb_device_handle_t device);
+/* Control transfers and closing a device. Holding the lock waits out a
+   transfer that is still inside its wait and keeps new ones from starting;
+   false means no lock was taken (none exists yet, or the wait ran out).
+   pending is true while the host library still owns a control transfer on
+   that device - including one whose caller has already timed out - and
+   usb_host_device_close() must not be called until it is false. */
+bool esp_libusb_ctrl_lock(uint32_t timeout_ms);
+void esp_libusb_ctrl_unlock(void);
+bool esp_libusb_ctrl_pending(usb_device_handle_t device);
 int esp_libusb_control_transfer(class_driver_t *driver_obj,
                                 uint8_t bm_req_type, uint8_t b_request,
                                 uint16_t wValue, uint16_t wIndex,

@@ -29,6 +29,7 @@ bool ls_panel_fb(ls_panel_fb_t *out)
     return true;
 }
 void ls_panel_fb_present(void) { g_presents++; }
+void ls_panel_fb_present_rows(int y0, int y1) { (void)y0; (void)y1; g_presents++; }
 
 /* ------------------------------------------------------------- helpers -- */
 

@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* First panel milestone: DSI-generated color bars, no LVGL allocation. */
+/* Panel bring-up: scans a black framebuffer until the TUI draws. */
 esp_err_t ls_panel_test_start(void);
 
 /* The panel, brought up for the TUI and nothing else.
@@ -33,6 +33,10 @@ typedef struct {
 
 bool ls_panel_fb(ls_panel_fb_t *out);
 void ls_panel_fb_present(void);
+/* Present only native rows [y0, y1). The cache writeback is what a present
+   costs, and it is proportional to the rows handed over, so a frame that
+   changed a strip should not pay for the whole 1.4 MB. */
+void ls_panel_fb_present_rows(int y0, int y1);
 #ifdef __cplusplus
 }
 #endif

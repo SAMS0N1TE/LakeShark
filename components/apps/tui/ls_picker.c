@@ -19,7 +19,7 @@ static char s_why[48];
    drawing task, never from an interrupt or with the cache down. As
    plain statics they spent internal .bss this board does not have -
    the same pressure that once left the largest DMA block at 176
-   bytes and the panel showing its test pattern. */
+   bytes and the panel dark. */
 static EXT_RAM_BSS_ATTR char s_label[LS_PICKER_MAX][LS_PICKER_TEXT];
 static EXT_RAM_BSS_ATTR char s_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_n;

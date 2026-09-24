@@ -37,7 +37,7 @@ All four images are required for a first installation. Use the generated `build_
 
 The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6 over SDIO. The host is pinned to **ESP-Hosted 2.12.9** and the C6 must run the matching `network_adapter` slave. A board straight from LilyGO carries the factory image, which does not speak ESP-Hosted; an older slave enumerates but frames packets differently.
 
-Both fail the same way, and it does not look like a Wi-Fi fault — the link times out, the host restarts before the UI starts, and the panel is left on the DSI test pattern. Vertical colour bars plus a reboot loop mean this step is needed:
+Both fail the same way, and it does not look like a Wi-Fi fault: the link times out and the host restarts before the UI starts. A dark screen plus a reboot loop means this step is needed:
 
 ```
 E (7589) transport: Init event not received within timeout, Resetting myself

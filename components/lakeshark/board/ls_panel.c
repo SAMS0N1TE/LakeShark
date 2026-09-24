@@ -84,11 +84,20 @@ bool ls_panel_fb(ls_panel_fb_t *out)
 
 void ls_panel_fb_present(void)
 {
+    ls_panel_fb_present_rows(0, LS_BOARD_LCD_V_RES);
+}
+
+void ls_panel_fb_present_rows(int y0, int y1)
+{
     if (!s_panel || !s_frames[s_back]) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 > LS_BOARD_LCD_V_RES) y1 = LS_BOARD_LCD_V_RES;
+    if (y1 <= y0) return;
     /* The pixels are already in the buffer being scanned; this writes the
-       cache back so the scan sees them. */
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0,
-                              LS_BOARD_LCD_H_RES, LS_BOARD_LCD_V_RES,
+       cache back so the scan sees them. The DPI driver only uses the pointer
+       to find which framebuffer it is in and writes back just rows y0..y1. */
+    esp_lcd_panel_draw_bitmap(s_panel, 0, y0,
+                              LS_BOARD_LCD_H_RES, y1,
                               s_frames[s_back]);
     static uint32_t reported, last_report_ms;
     uint32_t late = __atomic_load_n(&s_late_frames, __ATOMIC_RELAXED);
@@ -192,11 +201,12 @@ esp_err_t ls_panel_test_start(void)
     };
     /* IDF owns both PSRAM framebuffers; only a completed frame is scanned. */
     TRY(esp_lcd_new_panel_dpi(s_bus, &dpi, &s_panel));
+    /* Scans the zeroed framebuffer from here on, so the glass is black until
+       the first frame. No DSI test pattern: enabling one stops the bridge
+       under a DMA transfer already in flight, and switching it off again
+       could leave the scan stopped after one frame. */
     TRY(esp_lcd_panel_init(s_panel));
-    TRY(esp_lcd_dpi_panel_set_pattern(s_panel, MIPI_DSI_PATTERN_BAR_VERTICAL));
-    uint8_t brightness = 96;
-    TRY(esp_lcd_panel_io_tx_param(s_io, 0x51, &brightness, 1));
-    ESP_LOGI("rm69a10", "ID 0x%02x; %dx%d DSI color bars enabled", id,
+    ESP_LOGI("rm69a10", "ID 0x%02x; %dx%d scanning", id,
              LS_BOARD_LCD_H_RES, LS_BOARD_LCD_V_RES);
     return ESP_OK;
 fail:
@@ -228,7 +238,7 @@ esp_err_t ls_panel_start(void)
     err = esp_lcd_dpi_panel_register_event_callbacks(s_panel, &callbacks, NULL);
     if (err != ESP_OK)
         ESP_LOGW("rm69a10", "refresh count unavailable: %s", esp_err_to_name(err));
-    return esp_lcd_dpi_panel_set_pattern(s_panel, MIPI_DSI_PATTERN_NONE);
+    return ESP_OK;
 }
 
 esp_err_t ls_panel_set_brightness(unsigned percent)
@@ -246,4 +256,5 @@ esp_err_t ls_panel_set_brightness(unsigned percent) { (void)percent; return ESP_
 void ls_panel_diagnostics(void) {}
 bool ls_panel_fb(ls_panel_fb_t *out) { (void)out; return false; }
 void ls_panel_fb_present(void) {}
+void ls_panel_fb_present_rows(int y0, int y1) { (void)y0; (void)y1; }
 #endif

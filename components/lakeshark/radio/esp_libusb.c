@@ -44,8 +44,17 @@ void bulk_transfer_read_cb(usb_transfer_t *transfer)
     xSemaphoreGive(adsbdev->done_sem);
 }
 
+/* The device a control transfer is outstanding on, from submit until the
+   host library hands it back through transfer_read_cb. A wait that times out
+   gives up on the transfer but the host does not: IDF 5.4 neither enforces
+   timeout_ms nor cancels control transfers, and usb_host_device_close()
+   asserts while one is in flight. So this outlives the timeout, and whoever
+   closes the device asks it first. */
+static volatile usb_device_handle_t s_ctrl_pending_hdl;
+
 void transfer_read_cb(usb_transfer_t *transfer)
 {
+    s_ctrl_pending_hdl = NULL;
     for (int i = 0; i < transfer->actual_num_bytes; i++) {
         adsbdev->response_buf[i] = transfer->data_buffer[i];
     }
@@ -657,6 +666,11 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
 {
     if (!adsbdev || !adsbdev->transfer) return -1;
     if (s_ctrl_dead_hdl && driver_obj->dev_hdl == s_ctrl_dead_hdl) return -1;
+    /* The one control transfer object is still the host's from a wait that
+       timed out: not a byte of it may change, and submitting it again is not
+       allowed. The device it is stuck on is not answering anyway; a root-port
+       reset or unplug retires it and clears this. */
+    if (s_ctrl_pending_hdl) return -1;
 
     size_t sizePacket = sizeof(usb_setup_packet_t) + wLength;
 
@@ -677,8 +691,10 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
 
     xSemaphoreTake(adsbdev->done_sem, 0);
 
+    s_ctrl_pending_hdl = driver_obj->dev_hdl;
     esp_err_t r = usb_host_transfer_submit_control(driver_obj->client_hdl, adsbdev->transfer);
     if (r != ESP_OK) {
+        s_ctrl_pending_hdl = NULL;
 
         if (r == ESP_ERR_INVALID_STATE && ++s_ctrl_invalid_state >= CTRL_DEAD_AFTER) {
             s_ctrl_dead_hdl = driver_obj->dev_hdl;
@@ -694,7 +710,8 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
     s_ctrl_invalid_state = 0;
 
     if (xSemaphoreTake(adsbdev->done_sem, pdMS_TO_TICKS(timeout + 500)) != pdTRUE) {
-        ESP_LOGE(TAG_ADSB, "Control transfer timed out");
+        ESP_LOGE(TAG_ADSB, "Control transfer timed out - still owned by the "
+                           "USB host; control requests refused until it returns");
         return -1;
     }
 
@@ -711,6 +728,22 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
     }
 
     return adsbdev->bytes_transferred;
+}
+
+bool esp_libusb_ctrl_lock(uint32_t timeout_ms)
+{
+    if (!s_ctl_mux) return false;
+    return xSemaphoreTake(s_ctl_mux, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void esp_libusb_ctrl_unlock(void)
+{
+    if (s_ctl_mux) xSemaphoreGive(s_ctl_mux);
+}
+
+bool esp_libusb_ctrl_pending(usb_device_handle_t device)
+{
+    return device && s_ctrl_pending_hdl == device;
 }
 
 void esp_libusb_get_string_descriptor_ascii(const usb_str_desc_t *str_desc, char *str)

@@ -289,6 +289,26 @@ void rtlsdr_dev_teardown(void)
    enumerates it afresh through the usual probe. */
 usb_port_cycle_result_t rtl_adapter_port_reset(void)
 {
+    /* Except when the dongle has a control transfer the host still owns -
+       one that timed out on our side, from a device that stopped answering.
+       IDF cannot cancel it and asserts if the device is closed under it, and
+       that is the device most likely to be reset. So that case takes the
+       real-unplug order on purpose: the port goes first, the host retires
+       the transfer as the device leaves (its callback runs before DEV_GONE
+       is delivered), and rtl_adapter_note_removed then tears down a device
+       with nothing in flight. */
+    rtlsdr_dev_t *dev = __atomic_load_n(&s_dev, __ATOMIC_ACQUIRE);
+    if (dev) {
+        const usb_device_handle_t hdl = rtlsdr_usb_device_handle(dev);
+        const bool locked = esp_libusb_ctrl_lock(3000);
+        const bool stuck = esp_libusb_ctrl_pending(hdl);
+        if (locked) esp_libusb_ctrl_unlock();
+        if (stuck) {
+            ESP_LOGW(TAG, "port reset: a control transfer is stuck on the "
+                          "dongle - dropping the port first, as an unplug");
+            return usb_host_root_port_cycle();
+        }
+    }
     rtlsdr_dev_teardown();
     return usb_host_root_port_cycle();
 }
@@ -308,7 +328,7 @@ static void rtlsdr_setup_task(void *arg)
             ESP_LOGI(TAG, "an RTL endpoint is already present - ignoring USB addr %u",
                      setup->dev_addr);
             vPortFree(setup);
-            vTaskDelete(NULL);
+            vTaskDeleteWithCaps(NULL);
             return;
         }
         ESP_LOGW(TAG, "a device object was still open - releasing it before re-opening");
@@ -320,7 +340,7 @@ static void rtlsdr_setup_task(void *arg)
         ESP_LOGI(TAG, "USB device is not a supported RTL-SDR endpoint");
         s_dev = NULL;
         vPortFree(setup);
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
 
@@ -342,7 +362,7 @@ static void rtlsdr_setup_task(void *arg)
         rtlsdr_close(s_dev);
         s_dev = NULL;
         vPortFree(setup);
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
 
@@ -350,7 +370,7 @@ static void rtlsdr_setup_task(void *arg)
     ESP_LOGI(TAG, "IQ endpoint registered, awaiting app config");
 
     vPortFree(setup);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 void rtl_adapter_probe_async(uint8_t dev_addr,
@@ -369,7 +389,10 @@ void rtl_adapter_probe_async(uint8_t dev_addr,
        stack left no block for endpoint publication and enumeration ended in
        LS_RADIO_ERR_NO_MEMORY.  The setup path does not retain stack-backed
        USB buffers; put this short-lived worker in PSRAM like the other
-       bounded radio workers and keep internal RAM for the USB endpoint. */
+       bounded radio workers and keep internal RAM for the USB endpoint.
+       Created with caps, so every exit is vTaskDeleteWithCaps: a plain
+       vTaskDelete never frees the TCB (internal) or stack, and each attach
+       would keep both. */
     if (xTaskCreatePinnedToCoreWithCaps(rtlsdr_setup_task, "rtlsdr_setup", 8192,
             setup, 4, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "setup task create failed");

@@ -18,15 +18,23 @@ def main():
         return subprocess.check_output(['git', '-C', str(args.idf), *cmd], text=True).strip()
     if git('status', '--porcelain', '--untracked-files=no'):
         raise SystemExit('SDK has tracked changes; preserve or commit them before selecting the release SDK')
-    head = git('rev-parse', 'HEAD')
-    if head not in (pin['base_commit'], pin['commit']):
-        raise SystemExit('Expected the pinned ESP-IDF 5.4.3 base or LakeShark SDK revision')
     git('bundle', 'verify', str(bundle))
     git('fetch', str(bundle), 'HEAD')
+    # The pinned base, the recorded revision, or an earlier LakeShark SDK
+    # revision on the way to it.
+    head = git('rev-parse', 'HEAD')
+    on_path = subprocess.run(['git', '-C', str(args.idf), 'merge-base', '--is-ancestor',
+                              pin['base_commit'], head]).returncode == 0 and \
+              subprocess.run(['git', '-C', str(args.idf), 'merge-base', '--is-ancestor',
+                              head, pin['commit']]).returncode == 0
+    if not on_path:
+        raise SystemExit('Expected the pinned ESP-IDF 5.4.3 base or LakeShark SDK revision')
     git('checkout', '--detach', pin['commit'])
-    source = (args.idf / pin['file']).read_bytes().replace(b'\r\n', b'\n')
-    if hashlib.sha256(source).hexdigest() != pin['file_sha256']:
-        raise SystemExit('SDK source checksum mismatch')
+    files = pin.get('files') or [{'file': pin['file'], 'file_sha256': pin['file_sha256']}]
+    for entry in files:
+        source = (args.idf / entry['file']).read_bytes().replace(b'\r\n', b'\n')
+        if hashlib.sha256(source).hexdigest() != entry['file_sha256']:
+            raise SystemExit('SDK source checksum mismatch: ' + entry['file'])
     print('SDK ready:', pin['commit'])
 
 if __name__ == '__main__':

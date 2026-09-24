@@ -91,6 +91,9 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row);
 
 /* Microseconds spent inside the last present, and cells drawn. */
 void ls_tui_last_cost(uint32_t *us, int *cells);
+/* The costliest present since the last call (which resets it): total time,
+   cells drawn, the cache writeback's share, and coverage ramps rebuilt. */
+void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ramps);
 
 void ls_tui_dump(void);
 void ls_tui_remote_geometry(void);

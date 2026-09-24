@@ -142,16 +142,18 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
         /* Shades: one flat colour, mixed. 0x93 is a solid fill. */
         static const uint8_t mix[4] = { 64, 128, 191, 255 };
         uint16_t c = blend565(fg, bg, mix[ch - 0x90]);
-        for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++) {
+        const uint32_t c2 = ((uint32_t)c << 16) | c;
+        if (s_landscape) {
             int n = s_ch;
             if (y0 + n > s_screen_h) n = s_screen_h - y0;
-            if (s_landscape) {
-                uint16_t *run = fb + (uint32_t)(s_screen_w - 1 - (x0 + x)) * native_w + y0;
-                fill_run(run, n, c, ((uint32_t)c << 16) | c);
-            } else {
-                for (int y = 0; y < n; y++)
-                    fb[(uint32_t)(y0 + y) * native_w + x0 + x] = c;
-            }
+            for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++)
+                fill_run(fb + (uint32_t)(s_screen_w - 1 - (x0 + x)) * native_w + y0,
+                         n, c, c2);
+        } else {
+            int n = s_cw;
+            if (x0 + n > s_screen_w) n = s_screen_w - x0;
+            for (int y = 0; y < s_ch && y0 + y < s_screen_h; y++)
+                fill_run(fb + (uint32_t)(y0 + y) * native_w + x0, n, c, c2);
         }
         return true;
     }
@@ -220,9 +222,11 @@ static void ramp_build(uint8_t attr)
     s_ramp_valid = true;
 }
 
+static uint32_t s_prof_ramps;
+
 static inline void ramp_for(uint8_t attr)
 {
-    if (!s_ramp_valid || attr != s_ramp_attr) ramp_build(attr);
+    if (!s_ramp_valid || attr != s_ramp_attr) { ramp_build(attr); s_prof_ramps++; }
 }
 
 static tui_rect s_image_rect;
@@ -323,14 +327,29 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
 
     if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
         const int iw = s_image_rect.w * s_cw, ih = s_image_rect.h * s_ch;
-        for (int y = 0; y < s_ch && y0 + y < s_screen_h; y++) {
-            const int sy = ((row - s_image_rect.y) * s_ch + y) * s_image_h / ih;
-            for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++) {
-                const int sx = ((col - s_image_rect.x) * s_cw + x) * s_image_w / iw;
-                const uint32_t dst = s_landscape ?
-                    (uint32_t)(s_screen_w - 1 - x0 - x) * native_w + y0 + y :
-                    (uint32_t)(y0 + y) * native_w + x0 + x;
-                fb[dst] = s_image[(size_t)sy * s_image_w + sx];
+        /* Source coordinates once per cell, not a divide per pixel, and the
+           inner loop along the framebuffer's contiguous axis. */
+        /* 128 bytes: this runs on a 6 KB internal stack, and the largest
+           face's cell is 15x26. */
+        uint16_t sxs[32], sys[32];
+        const int nx = s_cw < 32 ? s_cw : 32, ny = s_ch < 32 ? s_ch : 32;
+        for (int x = 0; x < nx; x++)
+            sxs[x] = ((col - s_image_rect.x) * s_cw + x) * s_image_w / iw;
+        for (int y = 0; y < ny; y++)
+            sys[y] = ((row - s_image_rect.y) * s_ch + y) * s_image_h / ih;
+        if (s_landscape) {
+            for (int x = 0; x < nx && x0 + x < s_screen_w; x++) {
+                uint16_t *run = fb + (uint32_t)(s_screen_w - 1 - x0 - x) * native_w + y0;
+                const uint16_t *src = s_image + sxs[x];
+                for (int y = 0; y < ny && y0 + y < s_screen_h; y++)
+                    run[y] = src[(size_t)sys[y] * s_image_w];
+            }
+        } else {
+            for (int y = 0; y < ny && y0 + y < s_screen_h; y++) {
+                uint16_t *run = fb + (uint32_t)(y0 + y) * native_w + x0;
+                const uint16_t *src = s_image + (size_t)sys[y] * s_image_w;
+                for (int x = 0; x < nx && x0 + x < s_screen_w; x++)
+                    run[x] = src[sxs[x]];
             }
         }
         return;
@@ -378,10 +397,15 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
     const int gx = x0 + dsc->ofs_x;
     const int gy = y0 + (s_ch - s_font->base_line) - dsc->box_h - dsc->ofs_y;
 
-    for (int y = 0; y < dsc->box_h; y++) {
-        int py = gy + y;
-        if (py < 0 || py >= s_screen_h) continue;
-        for (int x = 0; x < dsc->box_w; x++) {
+    /* Outer loop across the framebuffer's stride, inner along it: rows in
+       portrait, logical columns in landscape. */
+    const int outer_n = s_landscape ? dsc->box_w : dsc->box_h;
+    const int inner_n = s_landscape ? dsc->box_h : dsc->box_w;
+    for (int o = 0; o < outer_n; o++) {
+        for (int i = 0; i < inner_n; i++) {
+            const int x = s_landscape ? o : i, y = s_landscape ? i : o;
+            int py = gy + y;
+            if (py < 0 || py >= s_screen_h) continue;
             int px = gx + x;
             if (px < 0 || px >= s_screen_w) continue;
             uint32_t bit = (uint32_t)y * dsc->box_w + x;
@@ -410,6 +434,20 @@ static void look_apply(void)
     ls_tui_invalidate();
 }
 
+/* Native rows written since the last present. The cache writeback that makes
+   pixels visible costs in proportion to the rows handed to it, so a present
+   hands over only these. In landscape a native row is a logical column. */
+static int s_dirty_lo = INT32_MAX, s_dirty_hi = -1;
+
+static void dirty_logical(int x, int y, int w, int h)
+{
+    int lo, hi;
+    if (s_landscape) { lo = s_screen_w - (x + w); hi = s_screen_w - 1 - x; }
+    else             { lo = y; hi = y + h - 1; }
+    if (lo < s_dirty_lo) s_dirty_lo = lo;
+    if (hi > s_dirty_hi) s_dirty_hi = hi;
+}
+
 /* Everything on the glass that is not a cell. */
 
 static void fill_logical(uint16_t *fb, int native_w, int x, int y, int w,
@@ -420,6 +458,7 @@ static void fill_logical(uint16_t *fb, int native_w, int x, int y, int w,
     if (x + w > s_screen_w) w = s_screen_w - x;
     if (y + h > s_screen_h) h = s_screen_h - y;
     if (w <= 0 || h <= 0) return;
+    dirty_logical(x, y, w, h);
     const uint32_t c2 = ((uint32_t)c << 16) | c;
     if (s_landscape) {
         for (int px = x; px < x + w; px++)
@@ -456,6 +495,13 @@ static void paint_margin(uint16_t *fb, int native_w)
    The margin band outside the bar's own row goes with it. Filling the ends
    but not the strip above them leaves the bar floating a cell below the top
    edge, which is the same defect one axis over. */
+/* What each end was last painted with, and whether the grid redrew any cell
+   of that bar row since. The ends only change when one of those does, and in
+   landscape repainting them is a scatter of single pixels across the whole
+   panel, so an unchanged end is left alone. */
+static uint32_t s_bar_sig[2] = { UINT32_MAX, UINT32_MAX };
+static bool     s_bar_row_drawn[2];
+
 static void paint_bar_ends(uint16_t *fb,int native_w)
 {
     for(int end=0;end<2;end++) {
@@ -478,6 +524,11 @@ static void paint_bar_ends(uint16_t *fb,int native_w)
            repaints the margin between look changes. */
         const bool is_bar=TUI_ATTR_BG(attr)==(end?(TUI_BLACK|TUI_BRIGHT):TUI_CYAN);
         const uint16_t color=is_bar?attr_bg(attr):PALETTE[0];
+        const uint32_t sig=((uint32_t)color<<16)|((uint32_t)is_bar<<15)|
+                           ((uint32_t)(pad&0x7F)<<8)|(uint32_t)(s_corner_r&0xFF);
+        if(sig==s_bar_sig[end] && !s_bar_row_drawn[end]) continue;
+        s_bar_sig[end]=sig;
+        s_bar_row_drawn[end]=false;
         const int band_top=s_oy+row*s_ch, band_bottom=s_oy+(row+1)*s_ch;
         /* Out to the glass on the bar's own side, and no further: the middle
            of the panel is the grid's. */
@@ -591,6 +642,7 @@ void ls_tui_invalidate(void)
 {
     /* A cell that cannot occur forces every comparison to differ. */
     if (s_front) memset(s_front, 0xFF, (size_t)s_cols * s_rows * sizeof(tui_cell));
+    s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
 }
 
 /* The blitter writes one transform and only one: every framebuffer index it computes is the clockwise `(s_screen_w - 1 - x) * native_w + y` form, inline in the run loops. */
@@ -743,7 +795,22 @@ void ls_tui_blit_rgb565(tui_rect cells, const uint16_t *src,
             memcpy(run, src + (size_t)y * src_w, (size_t)w * sizeof(uint16_t));
         }
     }
-    ls_panel_fb_present();
+    if (s_landscape) ls_panel_fb_present_rows(s_screen_w - (x0 + w), s_screen_w - x0);
+    else             ls_panel_fb_present_rows(y0, y0 + h);
+}
+
+/* The worst frame since the last look, and where its time went: a full
+   repaint lasts one frame, so the last frame alone never shows it. */
+static struct { uint32_t us, sync_us, ramps; int cells; } s_peak;
+
+
+void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ramps)
+{
+    if (us)      *us = s_peak.us;
+    if (cells)   *cells = s_peak.cells;
+    if (sync_us) *sync_us = s_peak.sync_us;
+    if (ramps)   *ramps = s_peak.ramps;
+    memset(&s_peak, 0, sizeof(s_peak));
 }
 
 int ls_tui_present(void)
@@ -753,6 +820,8 @@ int ls_tui_present(void)
     if (!ls_panel_fb(&fb)) return 0;
 
     uint64_t t0 = esp_timer_get_time();
+    uint32_t sync_us = 0;
+    const uint32_t ramps0 = s_prof_ramps;
     /* A theme or Daylight change lands here, where the palette, the
        ramp, every cell and the margin outside the grid change together. */
     bool margin = false;
@@ -771,6 +840,10 @@ int ls_tui_present(void)
                 !(s_image_dirty && (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL &&
                   image_changed(col, row))) continue;
             blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i]);
+            dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
+                          s_cw, s_ch);
+            if (row == 0) s_bar_row_drawn[0] = true;
+            if (row == s_rows - 1) s_bar_row_drawn[1] = true;
             s_front[i] = s_back[i];
             drawn++;
         }
@@ -781,11 +854,24 @@ int ls_tui_present(void)
     }
     s_image_dirty = false;
     if (drawn || margin) {
+        if (margin) s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
         paint_bar_ends(fb.pixels,fb.width);
-        ls_panel_fb_present();
+    }
+    if (s_dirty_hi >= s_dirty_lo) {
+        const int64_t ts = esp_timer_get_time();
+        ls_panel_fb_present_rows(s_dirty_lo, s_dirty_hi + 1);
+        sync_us = (uint32_t)(esp_timer_get_time() - ts);
+        s_dirty_lo = INT32_MAX;
+        s_dirty_hi = -1;
     }
     s_last_us = (uint32_t)(esp_timer_get_time() - t0);
     s_last_cells = drawn;
+    if (s_last_us > s_peak.us) {
+        s_peak.us = s_last_us;
+        s_peak.cells = drawn;
+        s_peak.sync_us = sync_us;
+        s_peak.ramps = s_prof_ramps - ramps0;
+    }
     return drawn;
 }
 

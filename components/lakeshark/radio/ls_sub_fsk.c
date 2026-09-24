@@ -7,7 +7,7 @@
    in internal .bss. This board has about 8 KB of internal heap left by the
    time the display comes up, and taking that much of it dropped the largest
    DMA-capable block to 176 bytes - too small for the panel path to
-   allocate, so nothing painted and the screen sat on its test pattern.
+   allocate, so nothing painted and the screen stayed dark.
    PSRAM is where a kilobyte-scale scratch buffer belongs. */
 
 #include <stdio.h>

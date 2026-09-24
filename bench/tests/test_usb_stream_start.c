@@ -199,3 +199,34 @@ LS_CASE(cold_start_resources_survive_failure_and_reentry)
     LS_EQ_UINT(s_frees, 2 * TEST_STREAM_SLOTS);
     LS_EQ_UINT(ls_shim_task_delete_count(), 3);
 }
+
+/* A control transfer whose wait gave up is still owned by the host, and
+   closing the device under it trips usbh.c's num_ctrl_xfers_inflight
+   assert. The shim must report it pending until the host hands it back,
+   and must not touch or resubmit it in the meantime. */
+LS_CASE(a_timed_out_control_transfer_stays_pending_until_the_host_returns_it)
+{
+    init_adsb_dev();
+    class_driver_t drv = {0};
+    drv.dev_hdl = (usb_device_handle_t)(uintptr_t)0x1234;
+    unsigned char buf[2] = {0};
+
+    LS_CHECK(!esp_libusb_ctrl_pending(drv.dev_hdl));
+    const unsigned before = s_submits;
+    LS_EQ_INT(-1, esp_libusb_control_transfer(&drv, CTRL_IN, 0, 0, 0, buf, 1, 0));
+    LS_EQ_UINT(before + 1, s_submits);
+    LS_CHECK(esp_libusb_ctrl_pending(drv.dev_hdl));
+    LS_CHECK(!esp_libusb_ctrl_pending((usb_device_handle_t)(uintptr_t)0x5678));
+
+    /* Refused without resubmitting the transfer the host still holds. */
+    LS_EQ_INT(-1, esp_libusb_control_transfer(&drv, CTRL_IN, 0, 0, 0, buf, 1, 0));
+    LS_EQ_UINT(before + 1, s_submits);
+
+    /* The lock is free again once the timed-out call has returned. */
+    LS_CHECK(esp_libusb_ctrl_lock(10));
+    esp_libusb_ctrl_unlock();
+
+    /* The host retires it - as it does when the port drops - and it clears. */
+    complete_usb();
+    LS_CHECK(!esp_libusb_ctrl_pending(drv.dev_hdl));
+}

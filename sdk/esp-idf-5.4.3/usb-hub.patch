@@ -1,0 +1,24 @@
+diff --git a/components/usb/hub.c b/components/usb/hub.c
+index dccd92ba..ddd8a196 100644
+--- a/components/usb/hub.c
++++ b/components/usb/hub.c
+@@ -432,7 +432,18 @@ reset_err:
+         HUB_DRIVER_EXIT_CRITICAL();
+ 
+         if (port_has_device) {
+-            ESP_ERROR_CHECK(dev_tree_node_dev_gone(NULL, 0));
++            // LakeShark: the device may already be gone and freed. Freeing it
++            // recycles the port (removing its tree node and queuing recovery)
++            // but leaves root_port_state ENABLED until that recovery runs, so a
++            // second disconnect/error event from a physical unplug lands here
++            // with no node. Nothing is left to report gone, and recovery is
++            // already queued: do not abort.
++            const esp_err_t gone_ret = dev_tree_node_dev_gone(NULL, 0);
++            if (gone_ret == ESP_ERR_NOT_FOUND) {
++                ESP_LOGW(HUB_DRIVER_TAG, "Root port event %d after its device was freed - ignored", port_event);
++            } else {
++                ESP_ERROR_CHECK(gone_ret);
++            }
+         }
+ 
+         break;

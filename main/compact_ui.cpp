@@ -744,7 +744,17 @@ static bool tui_session(void)
 
         if (!s_tui_stop && s_imu_ok && settings_get_auto_rotate() && !ls_field_calibrating() && !ls_tui_screen_holds_rotation()) {
             const int64_t ph_imu = esp_timer_get_time();
-            const ls_imu_pose_t pose = ls_imu_pose();
+            /* A pose is only adopted after it has held for half a second, so
+               reading it every frame bought nothing and cost an I2C
+               transaction - 1.5 to 5 ms - out of every 40 ms frame. Ten
+               samples a second still sees a turn well inside that hold. */
+            static int64_t s_imu_read_us;
+            static ls_imu_pose_t s_imu_last = LS_IMU_FLAT;
+            if (ph_imu - s_imu_read_us >= 100000) {
+                s_imu_read_us = ph_imu;
+                s_imu_last = ls_imu_pose();
+            }
+            const ls_imu_pose_t pose = s_imu_last;
             if (s_keyboard_pose_pending && pose != LS_IMU_FLAT) {
                 s_manual_pose = pose;
                 s_keyboard_pose_pending = false;
@@ -930,8 +940,20 @@ static bool tui_session(void)
 
         /* short keyboard taps must not wait behind the normal
            40 ms idle cadence. The touch sampler updates every 10 ms. */
-        vTaskDelay(pdMS_TO_TICKS(ls_keyboard_active() || ls_numpad_active() ? 10 :
-                                 ls_map_render_busy() ? 5 : 40));
+        /* The idle cadence is a period, not a pause after the work: a
+           waterfall frame costs ~16 ms, and sleeping a flat 40 ms after it
+           ran the loop at 56 ms (18 fps). Sleeping to the 40 ms mark keeps
+           the cadence the rest of the loop was written for, and the floor
+           still hands lower-priority tasks at least 15 ms every frame. */
+        int sleep_ms = 10;
+        if (ls_keyboard_active() || ls_numpad_active()) sleep_ms = 10;
+        else if (ls_map_render_busy()) sleep_ms = 5;
+        else {
+            const int spent_ms = (int)((esp_timer_get_time() - ph_start) / 1000);
+            sleep_ms = 40 - spent_ms;
+            if (sleep_ms < 15) sleep_ms = 15;
+        }
+        vTaskDelay(pdMS_TO_TICKS(sleep_ms));
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
     }
 
@@ -1382,6 +1404,31 @@ static int tui_cmd(int argc, char **argv)
                ls_tui_screen_current(), scr ? scr : "?");
         return 0;
     }
+    if (argc >= 2 && !strcmp(argv[1], "membench")) {
+        /* Raw framebuffer bandwidth, so the blitter's cost can be read
+           against what the memory itself allows. Scribbles the glass for a
+           moment; the grid is repainted after. */
+        ls_panel_fb_t fb;
+        if (!ls_panel_fb(&fb)) { printf("tui: no framebuffer\n"); return 1; }
+        const size_t bytes = (size_t)fb.width * fb.height * sizeof(uint16_t);
+        int64_t t = esp_timer_get_time();
+        memset(fb.pixels, 0x10, bytes);
+        const int64_t set_us = esp_timer_get_time() - t;
+        volatile uint32_t sum = 0;
+        const uint32_t *w = (const uint32_t *)fb.pixels;
+        t = esp_timer_get_time();
+        for (size_t i = 0; i < bytes / 4; i += 32) sum += w[i];
+        const int64_t rd_us = esp_timer_get_time() - t;
+        t = esp_timer_get_time();
+        ls_panel_fb_present();
+        const int64_t wb_us = esp_timer_get_time() - t;
+        printf("tui: membench %u KB  memset %lld us (%lld MB/s)  line-read %lld us  writeback %lld us\n",
+               (unsigned)(bytes / 1024), (long long)set_us,
+               set_us ? (long long)(bytes / set_us) : 0LL, (long long)rd_us, (long long)wb_us);
+        (void)sum;
+        ls_tui_invalidate();
+        return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "cost")) {
 
         uint32_t us = 0;
@@ -1392,6 +1439,12 @@ static int tui_cmd(int argc, char **argv)
         const char *scr = ls_tui_screen_name(ls_tui_screen_current());
         printf("tui: %s  %d cells of %d  %lu us\n", scr ? scr : "?",
                cells, cols * rows, (unsigned long)us);
+        {
+            uint32_t pus = 0, psync = 0, pramps = 0; int pcells = 0;
+            ls_tui_peak_cost(&pus, &pcells, &psync, &pramps);
+            printf("tui: peak frame %d cells %lu us (writeback %lu us, %lu ramp builds)\n",
+                   pcells, (unsigned long)pus, (unsigned long)psync, (unsigned long)pramps);
+        }
         /* And how often the loop actually comes round, which is what
            "slow" means to somebody watching it. */
         printf("tui: a frame every %lu.%lu ms\n",

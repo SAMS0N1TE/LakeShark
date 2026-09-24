@@ -1020,6 +1020,64 @@ int main(void) {
             subprocess.run([str(exe)],check=True)
 
 
+class TaskWithCapsTests(unittest.TestCase):
+    """A task created WithCaps must end with vTaskDeleteWithCaps.
+
+    FreeRTOS treats its TCB and stack as caller-owned, so a plain vTaskDelete
+    leaves both allocated; the TCB is internal RAM. A task that is started
+    per event (a USB attach, a screen) loses that memory every time.
+    """
+
+    CREATE = re.compile(r'\b(?:xTaskCreate(?:PinnedToCore)?WithCaps|ls_flash_task_create)'
+                        r'\s*\(\s*(?:\(\s*TaskFunction_t\s*\)\s*)?(\w+)\s*,')
+
+    @staticmethod
+    def _body(text, name):
+        m = re.search(r'\bvoid\s+%s\s*\(\s*void\s*\*\s*\w*\s*\)\s*\{' % re.escape(name), text)
+        if not m:
+            return None
+        depth, i = 1, m.end()
+        while depth and i < len(text):
+            depth += {'{': 1, '}': -1}.get(text[i], 0)
+            i += 1
+        return text[m.end():i]
+
+    def _offenders(self, sources):
+        names = {n for text in sources.values() for n in self.CREATE.findall(text)}
+        found, bad = set(), []
+        for path, text in sources.items():
+            for name in names:
+                body = self._body(text, name)
+                if body is None:
+                    continue
+                found.add(name)
+                # A plain delete is right only beside a WithCaps one, under the
+                # same configuration switch that chose how it was created.
+                if (re.search(r'\bvTaskDelete\s*\(', body)
+                        and 'vTaskDeleteWithCaps' not in body):
+                    bad.append('%s: %s' % (path, name))
+        return names, found, bad
+
+    def test_checker_catches_a_plain_delete(self):
+        src = {'x.c': 'static void w(void *a) { if (a) { vTaskDelete(NULL); } }\n'
+                      'void go(void) { xTaskCreatePinnedToCoreWithCaps(w, "w", 1, 0, 1, 0, 0, 0); }\n'}
+        self.assertEqual(self._offenders(src)[2], ['x.c: w'])
+        paired = {'y.c': 'static void w(void *a) {\n#if C\n vTaskDeleteWithCaps(NULL);\n'
+                         '#else\n vTaskDelete(NULL);\n#endif\n}\n'
+                         'void go(void) { xTaskCreateWithCaps(w, "w", 1, 0, 1, 0, 0); }\n'}
+        self.assertEqual(self._offenders(paired)[2], [])
+
+    def test_with_caps_tasks_free_themselves_with_caps(self):
+        sources = {}
+        for top in ('main', 'components/lakeshark'):
+            for path in (ROOT / top).rglob('*'):
+                if path.suffix in ('.c', '.cpp'):
+                    sources[str(path.relative_to(ROOT))] = path.read_bytes().decode('latin-1')
+        names, found, bad = self._offenders(sources)
+        self.assertIn('rtlsdr_setup_task', found)
+        self.assertEqual(bad, [], 'created WithCaps but deleted with vTaskDelete')
+
+
 class BootPreferenceTests(unittest.TestCase):
     """A preference read before settings_init() reads its default.
 
@@ -1083,9 +1141,10 @@ class TrackedReferenceTests(unittest.TestCase):
     REF = re.compile(r'(?<![\w./-])((?:tools|docs|bench|c6_firmware|boards|notes|'
                      r'main|components|flipper-app|integrations)/[\w./-]*\w\.\w+)')
     # Named on purpose and never meant to exist here: upstream rtl_433's own
-    # document, PORTING.md's example name, and a file inside ESP-IDF.
+    # document, PORTING.md's example name, and files inside ESP-IDF.
     NOT_OURS = {'docs/CONTRIBUTING.md', 'boards/my_board.defaults',
-                'components/esp_system/port/soc/esp32p4/system_internal.c'}
+                'components/esp_system/port/soc/esp32p4/system_internal.c',
+                'components/usb/hub.c'}
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
     NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')

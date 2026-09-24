@@ -1590,10 +1590,24 @@ int rtlsdr_close(rtlsdr_dev_t *dev)
 
     if (dev->driver_obj) {
         if (dev->driver_obj->dev_hdl) {
-            usb_host_interface_release(dev->driver_obj->client_hdl,
-                                       dev->driver_obj->dev_hdl, 0);
-            usb_host_device_close(dev->driver_obj->client_hdl,
-                                  dev->driver_obj->dev_hdl);
+            /* Wait out any control transfer another task is still inside, and
+               keep new ones from starting, for the length of the close. One
+               the host still owns makes usb_host_device_close() assert
+               (usbh.c num_ctrl_xfers_inflight), so leave the handle open
+               instead. A root-port reset or unplug retires the transfer, and
+               the device goes with the port. */
+            const bool locked = esp_libusb_ctrl_lock(3000);
+            if (esp_libusb_ctrl_pending(dev->driver_obj->dev_hdl)) {
+                ESP_LOGE(TAG_ADSB, "close: a control transfer is still in flight on "
+                              "this device - not closing it; a port reset or "
+                              "unplug releases it");
+            } else {
+                usb_host_interface_release(dev->driver_obj->client_hdl,
+                                           dev->driver_obj->dev_hdl, 0);
+                usb_host_device_close(dev->driver_obj->client_hdl,
+                                      dev->driver_obj->dev_hdl);
+            }
+            if (locked) esp_libusb_ctrl_unlock();
             dev->driver_obj->dev_hdl = NULL;
         }
         free(dev->driver_obj);
