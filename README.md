@@ -29,8 +29,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 The site also builds P25 profiles, GPS scan lists, channel memories and offline map tiles for you.
 
-Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI).
-
+Designed to work with my other project [CartoTUI, a terminal ascii map](https://github.com/SAMS0N1TE/CartoTUI). *(Note: This integration is currently in development, untested, and may not work due to recent firmware updates).*
 ## <°)))>< LilyGO T-Display-P4
   <img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
 
