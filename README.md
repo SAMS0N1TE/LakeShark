@@ -40,7 +40,7 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 <img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="32%" alt="P25" />
 <img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
-<img src="docs/screenshots/tdp4/motion/subghz-scan.gif" width="32%" alt="SUB-GHZ scan" />
+<img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
 <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="32%" alt="MAP" />
 <img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="32%" alt="FALLS on P25" />
