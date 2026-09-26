@@ -35,14 +35,19 @@ Designed to work with my other project [CartoTUI, a terminal ascii map](https://
 
 The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
-| | | |
-| --- | --- | --- |
-| <img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="200" /> |
-| HOME | P25 | ADS-B |
-| <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="200" /> | <img src="docs/screenshots/tdp4/motion/subghz-scan.gif" width="200" /> |
-| FALLS, Flipper remote bursts at 433.92 MHz | MAP | SUB-GHZ scanning 433 MHz |
-| <img src="docs/screenshots/tdp4/motion/compass.gif" width="200" /> | <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="200" /> | |
-| COMPASS FIND on two channels while turning | SUB-GHZ WATCH decoding a Flipper remote | |
+<p align="center">
+<img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="32%" alt="HOME" />
+<img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="32%" alt="P25" />
+<img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="32%" alt="ADS-B" />
+<img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
+<img src="docs/screenshots/tdp4/motion/subghz-scan.gif" width="32%" alt="SUB-GHZ scan" />
+<img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
+<img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="32%" alt="MAP" />
+<img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="32%" alt="FALLS on P25" />
+<img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
+</p>
+
+Recorded on the board: FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, and COMPASS FIND turning on two channels.
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
