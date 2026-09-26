@@ -1144,7 +1144,7 @@ class TrackedReferenceTests(unittest.TestCase):
     # document, PORTING.md's example name, and files inside ESP-IDF.
     NOT_OURS = {'docs/CONTRIBUTING.md', 'boards/my_board.defaults',
                 'components/esp_system/port/soc/esp32p4/system_internal.c',
-                'components/usb/hub.c'}
+                'components/usb/hub.c', 'components/usb/hcd_dwc.c'}
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
     NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')

@@ -1,4 +1,5 @@
 #include <string.h>
+#include "ls_trail.h"
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -84,6 +85,9 @@
 #include "ls_cpu_busy.h"
 
 #include "tui/ls_tui_screen.h"
+#include "tui/ls_field.h"
+#include "tui/ls_compass_live.h"
+#include "tui/ls_df_sources.h"
 
 static const char *TAG = "headless";
 
@@ -1872,6 +1876,59 @@ static const char *imu_pose_word(ls_imu_pose_t p)
     }
 }
 
+static int cmd_trail(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    ls_trail_print();
+    return 0;
+}
+
+/* The active compass calibration and what it makes of the sensor now. Uses
+   the pure solver on its own sample, not ls_compass_live, whose state
+   belongs to the TUI task. */
+static int cmd_compass(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    ls_field_compass_report();
+    ls_compass_cal_t cal;
+    const bool have = ls_field_compass_cal(&cal);
+    if (!have) printf("compass: no calibration for this setup (%s)\n",
+                      ls_keypad_present() ? "keyboard" : "standalone");
+    else {
+        printf("compass: %s profile  offset %+.1f %+.1f %+.1f uT  radius %.1f  error %.3f\n",
+               ls_keypad_present() ? "keyboard" : "standalone",
+               cal.offset[0], cal.offset[1], cal.offset[2], cal.radius, cal.error);
+        for (int i = 0; i < 3; i++)
+            printf("compass: soft  %+.3f %+.3f %+.3f\n", cal.soft[i][0], cal.soft[i][1], cal.soft[i][2]);
+        printf("compass: basis %d %d %d  dip spread %.1f deg\n",
+               cal.basis[0], cal.basis[1], cal.basis[2], cal.dip_spread);
+    }
+    ls_imu_sample_t s;
+    if (ls_imu_start() != ESP_OK || !ls_imu_read(&s)) { printf("compass: no IMU sample\n"); return 0; }
+    printf("compass: accel %+.2f %+.2f %+.2f g  mag %+.1f %+.1f %+.1f uT\n",
+           s.ax, s.ay, s.az, s.mx, s.my, s.mz);
+    ls_compass_reading_t r; bool back = false;
+    if (ls_compass_solve(&s, have ? &cal : NULL, &back, &r))
+        printf("compass: heading %.0f M  dip %.1f  field %.1f uT  tilt %.0f\n",
+               r.magnetic, r.dip, r.field_ut, r.tilt);
+    else printf("compass: no heading from this sample\n");
+    /* What FIND is listening to, and where the LoRa radio really is. */
+    ls_dfs_status_t d;
+    ls_dfs_poll(&d);
+    printf("find: %s %s  %.4f MHz  level %.1f %s  %s  (%lu levels)  %s\n", ls_dfs_name(d.source),
+           d.active ? "active" : "idle", d.freq_hz / 1e6, d.level, d.unit ? d.unit : "",
+           d.fresh ? "fresh" : "STALE", (unsigned long)d.updates, d.status);
+    ls_field_state_t *f = heap_caps_malloc(sizeof(*f), MALLOC_CAP_SPIRAM);
+    if (f) {
+        ls_field_snapshot(f);
+        printf("find: lora %s  %.4f MHz  sf%u bw%lu  mode %d  antenna %s\n", f->direct ? "held (direct)" : "with Mesh",
+               f->config.freq_hz / 1e6, (unsigned)f->config.sf, (unsigned long)f->config.bw_hz, (int)f->mode,
+               ls_board_hw_antenna_is_external() ? "EXTERNAL" : "internal");
+        heap_caps_free(f);
+    }
+    return 0;
+}
+
 static int cmd_imu(int argc, char **argv)
 {
     const int n = (argc > 1) ? atoi(argv[1]) : 1;
@@ -1986,6 +2043,9 @@ static int cmd_notify(int argc, char **argv)
    The RADIOS page has the same control; this is here because the answer to
    "which way is it pointing" is worth having without navigating, and because
    a transmit test is run from here. */
+extern bool ls_scr_compass_console(int argc, char **argv);
+static int cmd_find(int argc, char **argv) { return ls_scr_compass_console(argc, argv) ? 0 : 1; }
+
 static int cmd_ant(int argc, char **argv)
 {
 #if !LS_HAS_RF_SWITCH
@@ -2650,6 +2710,9 @@ static bool console_start(bool full)
           .func = &cmd_i2c },
         { .command = "mic",    .help = "Microphone: capture and report the level. 'mic <ms> [gain dB]'",
           .func = &cmd_mic },
+        { .command = "find",   .help = "COMPASS FIND: what it hears, its hit log, and control of it",
+          .hint = "[status|log|src <radio> [2]|off2|ch <MHz,...> [2]|show <1-8|A-H>|clear|view <v>|method <m>|set <k> <v>]",
+          .func = &cmd_find },
         { .command = "ant",    .help = "Antenna path: internal or external through MMCX1",
           .hint = "[int|ext]", .func = &cmd_ant },
         { .command = "notify", .help = "Post a test notice through the real path: banner, count, ring and vibrate",
@@ -2661,6 +2724,10 @@ static bool console_start(bool full)
           .func = &cmd_track },
         { .command = "imu",    .help = "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats",
           .func = &cmd_imu },
+        { .command = "compass", .help = "Compass calibration in use and what it reads from the sensor now",
+          .func = &cmd_compass },
+        { .command = "trail",  .help = "Where each busy task last was: this run, and the run a watchdog reset ended",
+          .func = &cmd_trail },
         { .command = "memory", .help = "Allocator headroom without task/stack enumeration", .func = &cmd_memory },
         { .command = "heap",   .help = "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile",
           .func = &cmd_heap },
@@ -2733,6 +2800,7 @@ void app_main(void)
     flipper_link_set_host(&s_link_host);
     /* First, before anything that can fault. */
     const ls_safe_boot_t *boot = ls_safe_boot_begin();
+    ls_trail_boot();
     ls_safe_boot_plan_t plan;
     ls_safe_boot_plan(boot->safe, &plan);
     if (boot->safe) {

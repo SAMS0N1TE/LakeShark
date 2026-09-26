@@ -34,6 +34,7 @@ static bool         s_ble_at_boot = true;
 static bool         s_wifi_at_boot = true;
 static bool         s_keyboard_light = true;
 static uint64_t s_location;
+static uint64_t s_last_fix;   /* COMPASS declination without a live fix */
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define SET_Q_DEPTH     16
@@ -239,6 +240,7 @@ static void settings_apply_schema(void)
 bool settings_init(void)
 {
     s_location = 0;
+    s_last_fix = 0;
     __atomic_store_n(&s_auto_rotate,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_ble_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_wifi_at_boot,true,__ATOMIC_RELEASE);
@@ -295,6 +297,9 @@ bool settings_init(void)
                   nvs_get_i32(s_nvs, "home_lon", &lon) == ESP_OK;
     s_location = location_load(location_err != ESP_ERR_NVS_NOT_FOUND,
                                location, legacy, lat, lon);
+    uint64_t last_fix = 0;
+    esp_err_t last_fix_err = nvs_get_u64(s_nvs, "lastfix_v1", &last_fix);
+    s_last_fix = location_load(last_fix_err == ESP_OK, last_fix, false, 0, 0);
 
     s_wq = xQueueCreateStatic(SET_Q_DEPTH, sizeof(set_write_t),
                               s_wq_store, &s_wq_ctrl);
@@ -485,6 +490,94 @@ bool settings_set_home(float lat, float lon)
 }
 bool settings_clear_home(void) { return settings_put_location(0); }
 
+/* Stored in tenths of a degree; this value means none (NVS keys cannot be
+   removed through the deferred write queue). */
+#define DF_OFFSET_NONE 0x7FFFFFFFu
+
+bool settings_get_df_offset(int source, int method, float *degrees)
+{
+    if (!s_nvs_ok || source < 0 || source > 15 || method < 0 || method > 1) return false;
+    char k[12]; snprintf(k, sizeof(k), "dfo%d_%d", source, method);
+    uint32_t v = DF_OFFSET_NONE;
+    if (nvs_get_u32(s_nvs, k, &v) != ESP_OK || v == DF_OFFSET_NONE) return false;
+    const float d = (int32_t)v / 10.0f;
+    if (!isfinite(d) || d < -180 || d > 180) return false;
+    if (degrees) *degrees = d;
+    return true;
+}
+
+void settings_set_df_offset(int source, int method, float degrees)
+{
+    if (!s_nvs_ok || source < 0 || source > 15 || method < 0 || method > 1) return;
+    char k[12]; snprintf(k, sizeof(k), "dfo%d_%d", source, method);
+    const uint32_t v = isfinite(degrees) && degrees >= -180 && degrees <= 180
+        ? (uint32_t)(int32_t)lroundf(degrees * 10.0f) : DF_OFFSET_NONE;
+    sput_u32(k, v);
+}
+
+int settings_get_df_option(int id, int fallback)
+{
+    if (!s_nvs_ok || id < 0 || id > 31) return fallback;
+    char k[8]; snprintf(k, sizeof(k), "dfx%d", id);
+    uint8_t v;
+    return nvs_get_u8(s_nvs, k, &v) == ESP_OK ? v : fallback;
+}
+
+void settings_set_df_option(int id, int value)
+{
+    if (!s_nvs_ok || id < 0 || id > 31 || value < 0 || value > 255) return;
+    char k[8]; snprintf(k, sizeof(k), "dfx%d", id);
+    sput_u8(k, (uint8_t)value);
+}
+
+#define DF_CHANNELS_MAX 8
+int settings_get_df_channels(int slot, uint32_t *hz, int max)
+{
+    if (!s_nvs_ok || !hz || slot < 0 || slot > 1) return 0;
+    char k[8]; snprintf(k, sizeof(k), "dfn%d", slot);
+    uint8_t n = 0;
+    if (nvs_get_u8(s_nvs, k, &n) != ESP_OK) return 0;
+    if (n > DF_CHANNELS_MAX) n = DF_CHANNELS_MAX;
+    int got = 0;
+    for (int i = 0; i < n && got < max; i++) {
+        snprintf(k, sizeof(k), "dfc%d_%d", slot, i);
+        uint32_t v;
+        if (nvs_get_u32(s_nvs, k, &v) == ESP_OK && v) hz[got++] = v;
+    }
+    return got;
+}
+
+void settings_set_df_channels(int slot, const uint32_t *hz, int n)
+{
+    if (!s_nvs_ok || !hz || slot < 0 || slot > 1 || n < 0) return;
+    if (n > DF_CHANNELS_MAX) n = DF_CHANNELS_MAX;
+    char k[8];
+    /* Only what changed goes on the write queue, which is short. */
+    uint32_t old[DF_CHANNELS_MAX];
+    const int had = settings_get_df_channels(slot, old, DF_CHANNELS_MAX);
+    for (int i = 0; i < n; i++)
+        if (i >= had || old[i] != hz[i]) { snprintf(k, sizeof(k), "dfc%d_%d", slot, i); sput_u32(k, hz[i]); }
+    if (had != n) { snprintf(k, sizeof(k), "dfn%d", slot); sput_u8(k, (uint8_t)n); }
+}
+
+bool settings_get_last_fix(float *lat, float *lon)
+{
+    portENTER_CRITICAL(&s_location_lock);
+    uint64_t location = s_last_fix;
+    portEXIT_CRITICAL(&s_location_lock);
+    return location_unpack(location, lat, lon);
+}
+bool settings_set_last_fix(float lat, float lon)
+{
+    uint64_t location;
+    if (!location_pack(lat, lon, &location) || !s_home_write_ready ||
+        !sput_u64("lastfix_v1", location)) return false;
+    portENTER_CRITICAL(&s_location_lock);
+    s_last_fix = location;
+    portEXIT_CRITICAL(&s_location_lock);
+    return true;
+}
+
 int settings_get_brightness(void)
 {
     if (!s_nvs_ok) return 80;
@@ -624,6 +717,19 @@ void settings_set_subghz_on_hit(int mode)
 {
     if (!s_nvs_ok || mode < 0 || mode > 2) return;
     sput_u8("sg_onhit", (uint8_t)mode);
+}
+/* COMPASS: bit 0 simple style, bit 1 magnetic rather than true. */
+int settings_get_compass_options(void)
+{
+    if (!s_nvs_ok) return 0;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "compass_opt", &v) != ESP_OK) return 0;
+    return v & 3;
+}
+void settings_set_compass_options(int options)
+{
+    if (!s_nvs_ok || options < 0 || options > 3) return;
+    sput_u8("compass_opt", (uint8_t)options);
 }
 int settings_get_subghz_style(void)
 {

@@ -1,6 +1,7 @@
 /* See ls_tui_png.h. Firmware only: the compressor is the ROM's. */
 #include "ls_tui_png.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
@@ -13,6 +14,8 @@ typedef struct {
     size_t   total;
     uint8_t  carry[57];    /* 57 bytes is exactly one 76-character line */
     int      n;
+    FILE    *file;         /* set: raw bytes to a file instead of base64 lines */
+    bool     failed;
 } png_out_t;
 
 /* Bitwise and table-free. A screenshot is tens of kilobytes, so the speed a
@@ -56,6 +59,10 @@ static void out_bytes(png_out_t *o, const void *data, size_t len)
     const uint8_t *p = (const uint8_t *)data;
     o->crc = crc32_step(o->crc, p, len);
     o->total += len;
+    if (o->file) {
+        if (len && fwrite(p, 1, len, o->file) != len) o->failed = true;
+        return;
+    }
     while (len) {
         size_t take = sizeof(o->carry) - (size_t)o->n;
         if (take > len) take = len;
@@ -106,11 +113,9 @@ static inline void rgb888(uint16_t v, uint8_t *d)
     d[2] = (uint8_t)((b << 3) | (b >> 2));
 }
 
-size_t ls_tui_png_emit(const uint16_t *px, int native_w, int native_h,
-                       bool landscape, ls_tui_png_line_fn emit, void *ctx,
-                       uint32_t *crc_out)
+static size_t encode(png_out_t *o_in, const uint16_t *px, int native_w,
+                     int native_h, bool landscape)
 {
-    if (!px || !emit || native_w <= 0 || native_h <= 0) return 0;
     const int w = landscape ? native_h : native_w;
     const int h = landscape ? native_w : native_h;
     const size_t row_len = (size_t)w * 3u + 1u;
@@ -125,7 +130,7 @@ size_t ls_tui_png_emit(const uint16_t *px, int native_w, int native_h,
         return 0;
     }
 
-    png_out_t o = { .emit = emit, .ctx = ctx };
+    png_out_t o = *o_in;
     static const uint8_t SIG[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
     out_bytes(&o, SIG, sizeof(SIG));
 
@@ -165,6 +170,27 @@ size_t ls_tui_png_emit(const uint16_t *px, int native_w, int native_h,
 
     heap_caps_free(row);
     heap_caps_free(d);
+    *o_in = o;
+    return ok && !o.failed ? o.total : 0;
+}
+
+size_t ls_tui_png_emit(const uint16_t *px, int native_w, int native_h,
+                       bool landscape, ls_tui_png_line_fn emit, void *ctx,
+                       uint32_t *crc_out)
+{
+    if (!px || !emit || native_w <= 0 || native_h <= 0) return 0;
+    png_out_t o = { .emit = emit, .ctx = ctx };
+    const size_t n = encode(&o, px, native_w, native_h, landscape);
     if (crc_out) *crc_out = o.crc;
-    return ok ? o.total : 0;
+    return n;
+}
+
+size_t ls_tui_png_write(const uint16_t *px, int w, int h, const char *path)
+{
+    if (!px || !path || w <= 0 || h <= 0) return 0;
+    png_out_t o = { .file = fopen(path, "wb") };
+    if (!o.file) return 0;
+    const size_t n = encode(&o, px, w, h, false);
+    if (fclose(o.file) != 0) return 0;
+    return n;
 }

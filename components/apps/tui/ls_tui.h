@@ -44,6 +44,10 @@ void ls_tui_invalidate(void);
 #define LS_TUI_BLOCK_LOWER  LS_TUI_QUAD(0, 0, 1, 1)
 #define LS_TUI_BLOCK_LEFT   LS_TUI_QUAD(1, 0, 1, 0)
 #define LS_TUI_BLOCK_RIGHT  LS_TUI_QUAD(0, 1, 0, 1)
+/* Sextants: the same two colours, but two across and three down, so half
+   again the vertical resolution and dots nearly square on this font. Bit
+   (row * 2 + col), rows from the top. The printable stand-in is '#'. */
+#define LS_TUI_SEXT(bits)   ((char)(0xC0 | ((bits) & 0x3F)))
 #define LS_TUI_SHADE_25     ((char)0x90)
 #define LS_TUI_SHADE_50     ((char)0x91)
 #define LS_TUI_SHADE_75     ((char)0x92)

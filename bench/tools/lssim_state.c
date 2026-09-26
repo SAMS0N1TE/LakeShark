@@ -58,6 +58,17 @@ bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 static int s_sg_style, s_sg_colour;
 int  settings_get_subghz_style(void) { return s_sg_style; }
 void settings_set_subghz_style(int v) { s_sg_style = v; }
+static int s_compass_opt;
+int  settings_get_compass_options(void) { return s_compass_opt; }
+bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; return false; }
+bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
+bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d; return false; }
+void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
+int  settings_get_df_option(int id, int f) { (void)id; return f; }
+void settings_set_df_option(int id, int v) { (void)id; (void)v; }
+int  settings_get_df_channels(int s, uint32_t *hz, int m) { (void)s; (void)hz; (void)m; return 0; }
+void settings_set_df_channels(int s, const uint32_t *hz, int n) { (void)s; (void)hz; (void)n; }
+void settings_set_compass_options(int v) { s_compass_opt = v; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }

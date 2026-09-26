@@ -14,7 +14,14 @@ $patches=@(
     @{ File='components/usb/hub.c'
        Markers=@('after its device was freed - ignored')
        Patch='esp-idf-v5.4.3-usb-hub-freed-node.patch'
-       Name='USB hub freed-device root port event fix' }
+       Name='USB hub freed-device root port event fix' },
+    # A bulk or control transfer whose DMA descriptor comes back failed
+    # (packet or buffer error, seen streaming an RTL-SDR) asserts in the USB
+    # interrupt and panics the board; this fails that one transfer instead.
+    @{ File='components/usb/hcd_dwc.c'
+       Markers=@('hcd_dwc_desc_errors++')
+       Patch='esp-idf-v5.4.3-usb-hcd-desc-error.patch'
+       Name='USB host failed-descriptor transfer error' }
 )
 
 foreach($p in $patches){

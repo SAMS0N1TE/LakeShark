@@ -15,7 +15,8 @@ typedef struct {
     bool     present;
     uint16_t millivolts;    /* pack voltage, measured                     */
     int16_t  milliamps;     /* positive charging, negative discharging    */
-    uint8_t  percent;       /* the gauge's learned estimate, 0..100       */
+    uint8_t  percent;       /* from the pack voltage, see ls_gauge_soc.h  */
+    uint8_t  learned_percent; /* the gauge's own estimate, 0..100         */
     int16_t  temp_c10;      /* tenths of a degree C                       */
     uint16_t remaining_mah;
     uint16_t full_mah;

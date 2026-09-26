@@ -1,5 +1,8 @@
 #include "ls_field.h"
+#include "ls_trail.h"
 #include "ls_compass.h"
+#include "ls_notes.h"
+#include "ls_df_sources.h"
 #include "ls_keypad.h"
 #include "apps/fm/pocsag.h"
 
@@ -433,14 +436,34 @@ static bool configure(void)
 static void finish_calibration(void)
 {
     ls_compass_cal_t cal;
-    if (s_guide.step == 6 && ls_compass_finish(&s_fit, &cal)) {
+    bool fitted = s_guide.step == LS_COMPASS_STEPS && ls_compass_finish(&s_fit, &cal);
+    /* A fit is judged by how far the corrected field strength strays from
+       one value. A good one on this board is about 4 %; one at 11 % was
+       accepted, replaced a 4 % fit only because it was newer, and left the
+       interference check almost no margin. Refuse it, and never trade a
+       saved fit for a clearly worse one. */
+    lock(); const compass_profile prev = s_profiles[s_profile]; unlock();
+    if (fitted && (cal.error > LS_FIELD_CAL_ERROR_MAX ||
+                   (prev.valid && cal.error > prev.cal.error + .02f))) {
+        s_live.calibration_failed = true;
+        if (prev.valid && cal.error > prev.cal.error + .02f)
+            snprintf(s_live.compass_status, sizeof(s_live.compass_status),
+                     "Fit %.0f%%, worse than the saved %.0f%%; kept the saved one",
+                     cal.error * 100, prev.cal.error * 100);
+        else
+            snprintf(s_live.compass_status, sizeof(s_live.compass_status),
+                     "Fit %.0f%%: the field moved while turning. Retry off chargers and metal",
+                     cal.error * 100);
+        return;
+    }
+    if (fitted) {
         lock(); s_profiles[s_profile].cal = cal; s_profiles[s_profile].valid = true;
         s_profiles[s_profile].saved = false; s_profiles[s_profile].version++; unlock();
         s_live.calibrating = false;
         s_live.calibration_failed = false;
         memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
         snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration complete; hold flat to use compass");
-    } else if (s_guide.step == 6) {
+    } else if (s_guide.step == LS_COMPASS_STEPS) {
         s_live.calibration_failed = true;
         snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Readings did not agree; move away from metal and retry");
     } else snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Follow the picture; each position advances itself");
@@ -483,7 +506,16 @@ static void sample(int64_t now)
         const ls_imu_sample_t *fresh = p->imu_valid && s_last_imu_us == now ? &p->imu : NULL;
         ls_compass_collect(&s_fit, fresh);
         ls_compass_guide_sample(&s_guide, fresh);
-        if (s_guide.step == 6) finish_calibration();
+        if (s_guide.step == LS_COMPASS_FACE_STEPS && !s_fit.tumble) {
+            /* The faces pin the offset; the figure eight that follows fills
+               in the directions soft iron needs. Faces that do not fit fail
+               here rather than after another half minute of waving. */
+            if (ls_compass_tumble_begin(&s_fit))
+                snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Wave it in a figure eight, turning it over as you go");
+            else { s_guide.step = LS_COMPASS_STEPS; finish_calibration(); }
+        } else if (ls_compass_tumble_done(&s_fit)) {
+            s_guide.step = LS_COMPASS_STEPS; finish_calibration();
+        }
     }
     lock(); ls_compass_cal_t calibration = s_profiles[s_profile].cal;
     s_live.calibrated = s_profiles[s_profile].valid;
@@ -493,6 +525,7 @@ static void sample(int64_t now)
     }
     s_live.calibration_faces = s_fit.faces;
     s_live.calibration_samples = (uint16_t)s_fit.samples;
+    s_live.calibration_cover = (uint8_t)ls_compass_tumble_cover(&s_fit);
     s_live.calibration_step = s_guide.step;
     s_live.calibration_hold = s_guide.hold;
     s_live.calibration_aligned = s_guide.aligned;
@@ -532,6 +565,7 @@ static void sample(int64_t now)
 
 void ls_field_step(void)
 {
+    ls_trail(LS_TRAIL_FIELD, "step");
     const int64_t now = esp_timer_get_time();
     const int profile=ls_keypad_present()?1:0;
     if(profile!=s_profile) {
@@ -589,6 +623,7 @@ void ls_field_step(void)
                 s_live.calibrating = false;
                 snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration cancelled; previous values retained");
             } else if (s_live.calibrating) {
+                if (s_fit.tumble) s_guide.step = LS_COMPASS_STEPS;
                 finish_calibration();
             }
         } else if (c->kind == CMD_CLEAR) {
@@ -701,6 +736,30 @@ void ls_field_step(void)
 #endif
 }
 
+/* A mark kept by another app is a note too. Before NOTES has imported the
+   journal once, the import will carry it; after, it is written here. */
+static void mirror_to_notes(const ls_journal_entry_t *e)
+{
+    char marker[160];
+    struct stat st;
+    snprintf(marker, sizeof(marker), "%s/.journal-imported", ls_notes_directory());
+    if (stat(marker, &st) != 0) return;
+    EXT_RAM_BSS_ATTR static char body[LS_JOURNAL_TEXT + 400];
+    const ls_field_sample_t *p = &e->sample;
+    int n = snprintf(body, sizeof(body), "%s\n", e->text);
+    if (p->gps_valid && n > 0 && (size_t)n < sizeof(body))
+        n += snprintf(body + n, sizeof(body) - (size_t)n, "> GPS %.6f, %.6f  alt %.0f m\n", p->lat, p->lon, p->alt_m);
+    if (p->radio_valid && n > 0 && (size_t)n < sizeof(body)) {
+        char level[24] = "";
+        if (p->signal_valid) snprintf(level, sizeof(level), "  %.0f dBm", p->rssi);
+        n += snprintf(body + n, sizeof(body) - (size_t)n, "> RADIO %s  %.4f MHz%s\n",
+                      ls_field_source_name(p->source), p->frequency / 1e6, level);
+    }
+    if (p->imu_valid && isfinite(p->heading) && n > 0 && (size_t)n < sizeof(body))
+        snprintf(body + n, sizeof(body) - (size_t)n, "> HEADING %03.0f M\n", p->heading);
+    ls_notes_mark(e->title, body);
+}
+
 static void io_step(void)
 {
     if (!s_loaded) {
@@ -711,7 +770,7 @@ static void io_step(void)
             if(!path(name,sizeof(name),leaf))continue;
             FILE *f=fopen(name,"rb"); compass_record record;
             bool valid=f && fread(&record,sizeof(record),1,f)==1 &&
-                record.magic==0x43414c02u+(unsigned)profile && record.generation>0 &&
+                record.magic==0x43414c10u+(unsigned)profile && record.generation>0 &&
                 record.sum==checksum(&record,sizeof(record)-sizeof(record.sum)) && ls_compass_cal_valid(&record.cal);
             if(f)fclose(f);
             if(valid) {
@@ -723,7 +782,9 @@ static void io_step(void)
             }
         }
         /* Old compass0/1 files lack attachment identity. Preserve them without
-           guessing which setup they describe. New profiles require calibration. */
+           guessing which setup they describe. New profiles require calibration.
+           Records before 0x43414c10 are hard iron only, with an unchecked
+           magnetic basis, and are left unread for the same reason. */
         s_loaded=true;
     }
     for(int profile=0;profile<2;profile++) {
@@ -739,7 +800,7 @@ static void io_step(void)
 #endif
             FILE *f=fopen(name,"wb");
             if(f) {
-                compass_record record={.magic=0x43414c02u+(unsigned)profile,.generation=c.version,.cal=c.cal};
+                compass_record record={.magic=0x43414c10u+(unsigned)profile,.generation=c.version,.cal=c.cal};
                 record.sum=checksum(&record,sizeof(record)-sizeof(record.sum));
                 saved=fwrite(&record,sizeof(record),1,f)==1;
                 if(fclose(f)!=0)saved=false;
@@ -759,8 +820,10 @@ static void io_step(void)
     if (have_note) {
         if (!s_disk.id && full) storage("RAM full; existing unsaved notes retained");
         else {
+            const bool fresh = !s_disk.id;
             if (!s_disk.id) s_disk.id = s_next_id++;
             save_note(&s_disk); remember(&s_disk);
+            if (fresh) mirror_to_notes(&s_disk);
         }
     }
     const int64_t now = esp_timer_get_time();
@@ -780,6 +843,8 @@ static void worker(void *arg)
     if (!ls_gps_running()) ls_gps_start();
     for (;;) {
         ls_field_step();
+        /* Direction finding reads its radio here, beside the heading it pairs with. */
+        ls_dfs_step();
         lock(); bool active = s_watch || s_record || s_want || s_public.direct || s_public.calibrating || s_qcount; unlock();
         vTaskDelay(pdMS_TO_TICKS(active ? 25 : 200));
     }
@@ -788,7 +853,7 @@ static void io_worker(void *arg)
 {
     (void)arg;
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    for (;;) { io_step(); vTaskDelay(pdMS_TO_TICKS(100)); }
+    for (;;) { io_step(); ls_notes_io_step(); vTaskDelay(pdMS_TO_TICKS(100)); }
 }
 #endif
 
@@ -834,14 +899,21 @@ bool ls_field_start(void)
     s_started = true; return true;
 }
 
-static bool enqueue(const command *c)
+/* A request is written straight into its queue slot, under the lock the
+   worker takes to read it. Built on the caller's stack, a command (it holds
+   a whole journal entry) took a kilobyte of the 6 KB TUI stack per call.
+   reserve() returns with the lock held; commit() releases it. */
+static command *reserve(void)
 {
-    if (!s_started) return false;
+    if (!s_started) return NULL;
     lock();
-    if (s_qcount == QUEUE_CAP) { s_live.drops++; s_public.drops = s_live.drops; unlock(); return false; }
-    s_queue[(s_qhead + s_qcount++) % QUEUE_CAP] = *c;
-    unlock(); return true;
+    if (s_qcount == QUEUE_CAP) { s_live.drops++; s_public.drops = s_live.drops; unlock(); return NULL; }
+    command *c = &s_queue[(s_qhead + s_qcount) % QUEUE_CAP];
+    memset(c, 0, sizeof(*c));
+    return c;
 }
+
+static bool commit(void) { s_qcount++; unlock(); return true; }
 
 void ls_field_sample_snapshot(ls_field_sample_t *out) { if(!out) return; if(!s_lock) { memset(out,0,sizeof(*out)); return; } lock(); *out=s_public.sample; unlock(); }
 void ls_field_snapshot(ls_field_state_t *out) { if (!out) return; if (!s_lock) { memset(out, 0, sizeof(*out)); return; } lock(); *out = s_public; unlock(); }
@@ -851,9 +923,10 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg)
 {
     if (!cfg || cfg->freq_hz < 150000000 || cfg->freq_hz > 959000000 || cfg->sf < 5 || cfg->sf > 12 ||
         cfg->bw_hz < 7810 || cfg->bw_hz > 500000 || cfg->cr < 5 || cfg->cr > 8 || cfg->power_dbm < -9 || cfg->power_dbm > 22 || !cfg->preamble) return false;
-    command c = {.kind = CMD_CONFIG, .cfg = *cfg}; return enqueue(&c);
+    command *c = reserve(); if (!c) return false;
+    c->kind = CMD_CONFIG; c->cfg = *cfg; return commit();
 }
-bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_POCSAG) return false; command c = {.kind = CMD_MODE, .mode = mode}; return enqueue(&c); }
+bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_POCSAG) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_MODE; c->mode = mode; return commit(); }
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
 {
     /* The same limits ls_lora_fsk_begin enforces, checked here so a bad set
@@ -864,12 +937,49 @@ bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
         cfg->bandwidth_hz < 4800 || cfg->bandwidth_hz > 467000 ||
         !cfg->payload_bytes ||
         cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) return false;
-    command c = {.kind = CMD_FSK, .fsk = *cfg}; return enqueue(&c);
+    command *c = reserve(); if (!c) return false;
+    c->kind = CMD_FSK; c->fsk = *cfg; return commit();
 }
-bool ls_field_calibrate(int action) { if (action < 0 || action > 2) return false; command c = {.kind = CMD_CAL, .value = action}; return enqueue(&c); }
+bool ls_field_calibrate(int action) { if (action < 0 || action > 2) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_CAL; c->value = action; return commit(); }
+void ls_field_compass_report(void)
+{
+    if (!s_lock) { printf("compass: field worker not started (open COMPASS)\n"); return; }
+    lock(); const int active = s_profile; compass_profile pr[2]; memcpy(pr, s_profiles, sizeof(pr));
+    const bool loaded = s_loaded; unlock();
+    printf("compass: active profile %s, files %s\n", active ? "keyboard" : "standalone",
+           loaded ? "read" : "NOT read yet");
+    for (int profile = 0; profile < 2; profile++) {
+        printf("compass: %-10s valid %d saved %d version %u written %u\n", profile ? "keyboard" : "standalone",
+               pr[profile].valid, pr[profile].saved, (unsigned)pr[profile].version, (unsigned)pr[profile].written);
+        for (int slot = 0; slot < 2; slot++) {
+            char name[160], leaf[40];
+            snprintf(leaf, sizeof(leaf), "compass-%s%d.cal", profile ? "kbd" : "solo", slot);
+            if (!path(name, sizeof(name), leaf)) continue;
+            FILE *f = fopen(name, "rb"); compass_record record;
+            if (!f) { printf("compass:   %s: absent\n", leaf); continue; }
+            const bool whole = fread(&record, sizeof(record), 1, f) == 1;
+            fclose(f);
+            if (!whole) { printf("compass:   %s: short\n", leaf); continue; }
+            const char *problem = ls_compass_cal_problem(&record.cal);
+            printf("compass:   %s: magic %s gen %u sum %s cal %s  radius %.1f error %.3f basis %d %d %d\n", leaf,
+                   record.magic == 0x43414c10u + (unsigned)profile ? "ok" : "OLD",
+                   (unsigned)record.generation,
+                   record.sum == checksum(&record, sizeof(record) - sizeof(record.sum)) ? "ok" : "BAD",
+                   problem ? problem : "ok", record.cal.radius, record.cal.error,
+                   record.cal.basis[0], record.cal.basis[1], record.cal.basis[2]);
+        }
+    }
+}
+
+bool ls_field_compass_cal(ls_compass_cal_t *out)
+{
+    if (!s_lock) return false;
+    lock(); const bool ok = s_profiles[s_profile].valid; if (ok && out) *out = s_profiles[s_profile].cal; unlock();
+    return ok;
+}
 bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active = s_public.calibrating; unlock(); return active; }
-bool ls_field_clear_plot(void) { command c = {.kind = CMD_CLEAR}; return enqueue(&c); }
-bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command c = {.kind = CMD_TX}; snprintf(c.entry.text, sizeof(c.entry.text), "%s", text); return enqueue(&c); }
+bool ls_field_clear_plot(void) { command *c = reserve(); if (!c) return false; c->kind = CMD_CLEAR; return commit(); }
+bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_TX; snprintf(c->entry.text, sizeof(c->entry.text), "%s", text); return commit(); }
 bool ls_field_source(ls_field_source_t source) { if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false; lock(); if(s_record && source != s_source) { unlock(); return false; } s_source = source; unlock(); return true; }
 bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(on && !s_record){record_rows=record_errors=record_packets=0;record_saved_us=0;}s_record = on; unlock(); return true; }
 bool ls_field_recording(void) { if(!s_lock) return false; lock(); bool active=s_record; unlock(); return active; }
@@ -877,19 +987,23 @@ void ls_field_watch(bool on) { if (!s_lock) return; lock(); s_watch = on; unlock
 bool ls_field_note(uint32_t id, const char *title, const char *text)
 {
     if (!s_started || !title || !*title || !text || strlen(title) >= sizeof(s_disk.title) || strlen(text) >= LS_JOURNAL_TEXT) return false;
-    command c = {.kind = CMD_NOTE};
-    c.entry.id = id;
-    snprintf(c.entry.title, sizeof(c.entry.title), "%s", title);
-    snprintf(c.entry.text, sizeof(c.entry.text), "%s", text);
-    lock(); c.entry.sample = s_public.sample;
+    /* Written in place, like reserve(): an entry is a kilobyte. */
+    lock();
+    const ls_field_sample_t *sample = &s_public.sample;
     if (id) {
         unsigned i;
         for (i = 0; i < s_count && s_entries[i].id != id; i++) {}
         if (i == s_count) { unlock(); return false; }
-        c.entry.sample = s_entries[i].sample;
+        sample = &s_entries[i].sample;
     }
     if (s_note_count == QUEUE_CAP || (!id && s_count == LS_JOURNAL_CAP && !s_entries[0].saved)) { unlock(); return false; }
-    s_notes[(s_note_head + s_note_count++) % QUEUE_CAP] = c.entry;
+    ls_journal_entry_t *e = &s_notes[(s_note_head + s_note_count) % QUEUE_CAP];
+    memset(e, 0, sizeof(*e));      /* sample points elsewhere: never into s_notes */
+    e->id = id;
+    e->sample = *sample;
+    snprintf(e->title, sizeof(e->title), "%s", title);
+    snprintf(e->text, sizeof(e->text), "%s", text);
+    s_note_count++;
     unlock(); return true;
 }
 bool ls_field_mark_lora(void)

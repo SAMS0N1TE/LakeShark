@@ -261,7 +261,6 @@
       ],
       "expected": "ASCII/LED/VFO instrument styling is default. Solid graphics only as a purposeful optional representation. Every data visual has source, units, scale/orientation, legend, fresh/unavailable state and usable exact values or selection. No decorative or fabricated measurements.",
       "paths": [
-        "AGENTS.md",
         "components/apps/tui/ls_skyview.c",
         "components/apps/tui/ls_skyview.h",
         "components/apps/tui/screens/ext/scr_falls.c",

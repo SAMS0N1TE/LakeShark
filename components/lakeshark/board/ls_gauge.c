@@ -1,5 +1,6 @@
 /* See ls_gauge.h. Register map from the vendor driver, not memory. */
 #include "ls_gauge.h"
+#include "ls_gauge_soc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,7 @@ static i2c_master_dev_handle_t s_dev;
 static bool       s_present;
 static ls_gauge_t s_cache;
 static int64_t    s_cache_us;
+static float      s_smoothed = -1;
 
 static bool rd16(uint8_t reg, uint16_t *out)
 {
@@ -82,7 +84,7 @@ esp_err_t ls_gauge_read(ls_gauge_t *out)
     out->millivolts = v;
 
     if (rd16(REG_CURRENT, &v))   out->milliamps = (int16_t)v;
-    if (rd16(REG_SOC, &v))       out->percent = (uint8_t)(v > 100 ? 100 : v);
+    if (rd16(REG_SOC, &v))       out->learned_percent = (uint8_t)(v > 100 ? 100 : v);
     if (rd16(REG_REMAINING, &v)) out->remaining_mah = v;
     if (rd16(REG_FULL, &v))      out->full_mah = v;
     if (rd16(REG_TEMPERATURE, &v)) {
@@ -92,6 +94,8 @@ esp_err_t ls_gauge_read(ls_gauge_t *out)
 
     out->charging = out->milliamps > 0;
     out->present  = true;
+    out->percent  = (uint8_t)ls_gauge_soc_from_rest_mv(
+                        ls_gauge_rest_mv(out->millivolts, out->milliamps));
     return ESP_OK;
 }
 
@@ -102,6 +106,11 @@ bool ls_gauge_get(ls_gauge_t *out)
     if (!s_cache.present || now - s_cache_us > CACHE_US) {
         if (ls_gauge_read(&s_cache) != ESP_OK) { s_cache.present = false; return false; }
         s_cache_us = now;
+        /* The load moves with the radio and the backlight; a few seconds
+           of averaging keeps the number from twitching. */
+        const float pct = s_cache.percent;
+        s_smoothed = s_smoothed < 0 ? pct : s_smoothed + .15f * (pct - s_smoothed);
+        if (s_smoothed >= 0) s_cache.percent = (uint8_t)(s_smoothed + .5f);
     }
     *out = s_cache;
     return s_cache.present;
@@ -121,13 +130,16 @@ void ls_gauge_diagnostics(void)
                LS_BOARD_GAUGE_I2C_ADDR, esp_err_to_name(err));
         return;
     }
-    printf("gauge: %u mV  %d mA  %u%%  %d.%d C  %u/%u mAh  %s\n",
+    printf("gauge: %u mV  %d mA  %u%% from voltage (gauge learned %u%%)  "
+           "%d.%d C  %u/%u mAh  %s\n",
            (unsigned)g.millivolts, (int)g.milliamps, (unsigned)g.percent,
+           (unsigned)g.learned_percent,
            g.temp_c10 / 10, (g.temp_c10 < 0 ? -g.temp_c10 : g.temp_c10) % 10,
            (unsigned)g.remaining_mah, (unsigned)g.full_mah,
            g.charging ? "charging" : "discharging");
-    printf("gauge: the percentage is the gauge's LEARNED estimate; the "
-           "voltage is the measurement.\n");
+    printf("gauge: the percentage is the rest voltage (%d mV after %d mOhm) "
+           "on a Li-ion curve; the gauge was never configured for this cell.\n",
+           ls_gauge_rest_mv(g.millivolts, g.milliamps), LS_GAUGE_PACK_MOHM);
 }
 
 #else  /* board declares no gauge */

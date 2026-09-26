@@ -77,8 +77,9 @@ def list_boards():
 class Console:
     def __init__(self, port, reset=False, baudrate=115200):
         self.port = port
-        self.serial = serial.Serial()
-        self.serial.port = port
+        # A COM port, or a board somewhere else: rfc2217://host:port from
+        # tools/ls_remote.py serve.
+        self.serial = serial.serial_for_url(port, do_not_open=True)
         self.serial.baudrate = baudrate
         self.serial.timeout = 0.1
         # Low before open: on a CH343 the host asserting these pulses the
@@ -128,10 +129,14 @@ class Console:
         The first thing on the wire after an open is the boot log: about
         seven seconds, or twenty-three while an empty storage partition
         formats. Silence is the test that it has finished, since the right
-        delay is not a constant.
+        delay is not a constant. A running board is never silent (Bluetooth
+        logs a line about every second), so once a second a bare newline
+        asks for the prompt: the console answering is the other way to know
+        it is ready.
         """
-        start = last = time.monotonic()
+        start = last = probe = time.monotonic()
         data = bytearray()
+        mark = 0
         while time.monotonic() - start < max_wait:
             n = self.serial.in_waiting
             if n:
@@ -139,8 +144,15 @@ class Console:
                 last = time.monotonic()
             else:
                 time.sleep(0.05)
-            if time.monotonic() - last > quiet and time.monotonic() - start > 1.0:
+            now = time.monotonic()
+            if now - last > quiet and now - start > 1.0:
                 break
+            if PROMPT.encode() in data[mark:]:
+                break
+            if now - start > 1.0 and now - probe > 1.0:
+                mark = len(data)
+                self.send("")
+                probe = now
         return data.decode(errors="replace").replace("\r", "")
 
     def batch(self, commands, settle=1.5, first_settle=2.5):

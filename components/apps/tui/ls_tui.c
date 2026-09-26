@@ -94,7 +94,27 @@ static inline void fill_run(uint16_t *run, int n, uint16_t bg, uint32_t bg2)
 static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
                        uint8_t ch, uint16_t fg, uint16_t bg)
 {
-    if (ch < 0x80 || ch > 0xA7) return false;
+    if (ch < 0x80 || (ch > 0xA7 && ch < 0xC0)) return false;
+
+    if (ch >= 0xC0) {
+        /* Sextant: two columns, three rows, each ink or paper. */
+        const int hw = s_cw / 2;
+        for (int sy = 0; sy < 3; sy++) {
+            const int ya = y0 + s_ch * sy / 3, yb = y0 + s_ch * (sy + 1) / 3;
+            for (int sx = 0; sx < 2; sx++) {
+                const uint16_t c = (ch & (1u << (sy * 2 + sx))) ? fg : bg;
+                const int xa = x0 + (sx ? hw : 0), xb = x0 + (sx ? s_cw : hw);
+                for (int x = xa; x < xb && x < s_screen_w; x++)
+                    for (int y = ya; y < yb && y < s_screen_h; y++) {
+                        const uint32_t idx = s_landscape
+                            ? (uint32_t)(s_screen_w - 1 - x) * native_w + y
+                            : (uint32_t)y * native_w + x;
+                        fb[idx] = c;
+                    }
+            }
+        }
+        return true;
+    }
 
     if (ch >= 0xA0) {
         /* Thin trace, eighth-height. Solid blocks read as bars and a
@@ -931,6 +951,7 @@ static char printable(char ch)
     unsigned char c = (unsigned char)ch;
     if (c >= 0x20 && c < 0x7F) return ch;
     if (c >= 0x80 && c <= 0x8F) return '#';        /* quadrant blocks */
+    if (c >= 0xC0) return '#';                     /* sextants        */
     if (c == 0x90) return '.';                     /* 25% shade       */
     if (c == 0x91) return ':';                     /* 50%             */
     if (c == 0x92) return '+';                     /* 75%             */

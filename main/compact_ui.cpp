@@ -67,6 +67,8 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "esp_console.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
+#include "driver/uart.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include "ls_flash_task.h"
@@ -337,6 +339,26 @@ static volatile bool s_tui_shot_req = false;
 static volatile bool      s_tui_png_req = false;
 static uint16_t *volatile s_tui_png_buf = nullptr;
 
+/* 'tui rec': the grid as a video. A PNG is 30 to 55 KB and the console
+   moves about 11 KB a second, so pixels cannot be sent at 24 frames a
+   second; the cells can. Between frames this task copies the grid as it is
+   on the glass, every frame it paces at 40 ms; a task of its own sends
+   only the cells that changed, as hex, on lines starting '~', while the
+   console runs at a faster rate for the length of the recording. tools/ls_record.py turns the
+   stream back into frames through the same renderer (lssim play). A copy
+   that finds the sender still busy is skipped, and the time stamp on each
+   frame keeps the video's timing right. Console commands typed during a
+   recording run when it ends. */
+static volatile bool    s_rec_on = false;
+static volatile bool    s_rec_ready = false;     /* snapshot waiting to be sent */
+static tui_cell        *s_rec_snap = nullptr;    /* PSRAM */
+static tui_cell        *s_rec_last = nullptr;
+static int              s_rec_cols, s_rec_rows, s_rec_baud;
+static int64_t          s_rec_start_us, s_rec_until_us, s_rec_snap_us, s_rec_last_cap_us;
+static volatile uint32_t s_rec_frames, s_rec_skipped;
+static TaskHandle_t     s_rec_task = nullptr;
+#define REC_FRAME_US 35000          /* under the TUI's 40 ms frame, so every frame is a candidate */
+
 /* The encode runs on a task of its own with a 16 kB stack in PSRAM. */
 
 struct TuiPngJob {
@@ -357,6 +379,156 @@ static void tui_png_task(void *arg)
     xTaskNotifyGive(j->waiter);
 
     vTaskSuspend(nullptr);
+}
+
+/* 'tui rec' sender. A frame is "~F <ms>", then a line per run of changed
+   cells, "~<row> <col> <hex>", four hex digits a cell (character, then
+   attribute), then "~E". Every REC_WHOLE_EVERY frames, the first included,
+   every cell is sent, so a line lost on the way is mended within two seconds.
+   Runs close up over gaps of two cells, which costs less than a new line.
+   A row that is nearer the last frame's row above or below it than to its
+   own (a waterfall scrolling) is sent as "~C <row> <from>", a copy of that
+   row as it was, and then only what still differs from it. */
+#define REC_WHOLE_EVERY 48
+static int rec_row_diff(const tui_cell *a, const tui_cell *b, int cols)
+{
+    int n = 0;
+    for (int c = 0; c < cols; c++) n += a[c].ch != b[c].ch || a[c].attr != b[c].attr;
+    return n;
+}
+/* A frame goes to the UART driver in one write: through stdio, byte by
+   byte, a waterfall frame of 7 KB took 140 ms, a quarter of the line rate. */
+static void rec_out(const char *buf, size_t n)
+{
+    if (uart_write_bytes((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, buf, n) < 0)
+        fwrite(buf, 1, n, stdout);
+}
+static void tui_rec_task(void *)
+{
+    const int cols = s_rec_cols, rows = s_rec_rows;
+    /* Worst case a row: a copy line, and a run of up to 12 bytes of header
+       every fourth cell besides four hex digits a cell. */
+    const size_t cap = (size_t)rows * ((size_t)cols * 7 + 64) + 64;
+    char *buf = (char *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    /* The receiver changes its own rate after it reads the begin line. */
+    vTaskDelay(pdMS_TO_TICKS(300));
+    fflush(stdout);
+    uint32_t sent = 0;
+    while (buf && s_rec_on && esp_timer_get_time() < s_rec_until_us) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        if (!s_rec_ready) continue;
+        const bool whole = sent++ % REC_WHOLE_EVERY == 0;
+        size_t n = (size_t)snprintf(buf, 32, "~F %lu\n", (unsigned long)((s_rec_snap_us - s_rec_start_us) / 1000));
+        for (int r = 0; r < rows; r++) {
+            const tui_cell *now = s_rec_snap + (size_t)r * cols, *was = s_rec_last + (size_t)r * cols;
+            if (!whole) {
+                int best = rec_row_diff(now, was, cols);
+                for (int d = -1; d <= 1 && best > 4; d += 2) {
+                    const int k = r + d;
+                    if (k < 0 || k >= rows) continue;
+                    const tui_cell *cand = s_rec_last + (size_t)k * cols;
+                    const int diff = rec_row_diff(now, cand, cols);
+                    if (diff + 4 < best) { best = diff; was = cand; }
+                }
+                if (was != s_rec_last + (size_t)r * cols)
+                    n += (size_t)snprintf(buf + n, 24, "~C %d %d\n", r, (int)((was - s_rec_last) / cols));
+            }
+            int c = 0;
+            while (c < cols) {
+                if (!whole && now[c].ch == was[c].ch && now[c].attr == was[c].attr) { c++; continue; }
+                int end = c + 1, quiet = 0;
+                for (int k = end; k < cols && quiet <= 2; k++) {
+                    if (whole || now[k].ch != was[k].ch || now[k].attr != was[k].attr) { end = k + 1; quiet = 0; }
+                    else quiet++;
+                }
+                n += (size_t)snprintf(buf + n, 24, "~%d %d ", r, c);
+                static const char HEX[] = "0123456789abcdef";
+                for (int k = c; k < end; k++) {
+                    const uint8_t ch = (uint8_t)now[k].ch, at = now[k].attr;
+                    buf[n++] = HEX[ch >> 4]; buf[n++] = HEX[ch & 15];
+                    buf[n++] = HEX[at >> 4]; buf[n++] = HEX[at & 15];
+                }
+                buf[n++] = '\n';
+                c = end;
+            }
+        }
+        memcpy(buf + n, "~E\n", 3); n += 3;
+        rec_out(buf, n);
+        memcpy(s_rec_last, s_rec_snap, (size_t)cols * rows * sizeof(tui_cell));
+        s_rec_frames++;
+        s_rec_ready = false;
+    }
+    s_rec_on = false;
+    esp_log_level_set("*", (esp_log_level_t)CONFIG_LOG_DEFAULT_LEVEL);
+    printf("tui: rec end %lu frames %lu skipped\n", (unsigned long)s_rec_frames, (unsigned long)s_rec_skipped);
+    fflush(stdout);
+    uart_wait_tx_done((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(500));
+    /* Back to the rate everything else expects, only after the last line is out. */
+    uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+    heap_caps_free(buf);
+    heap_caps_free(s_rec_snap); s_rec_snap = nullptr;
+    heap_caps_free(s_rec_last); s_rec_last = nullptr;
+    s_rec_task = nullptr;
+    vTaskDeleteWithCaps(nullptr);
+}
+
+/* 'tui rec <seconds> [baud]' and 'tui rec stop'. */
+static int tui_rec_cmd(int argc, char **argv)
+{
+    if (argc >= 3 && !strcmp(argv[2], "stop")) {
+        s_rec_on = false;
+        if (s_rec_task) xTaskNotifyGive(s_rec_task);
+        return 0;
+    }
+    if (s_rec_task) { printf("tui: rec is already running\n"); return 1; }
+    tui_surface *sf = ls_tui_surface();
+    if (!s_tui_task || !sf) { printf("tui: not running - nothing on the glass\n"); return 1; }
+    const int seconds = argc >= 3 ? atoi(argv[2]) : 20;
+    const int baud = argc >= 4 ? atoi(argv[3]) : 2000000;
+    if (seconds < 1 || seconds > 600 || baud < 115200 || baud > 2500000) {
+        printf("tui: rec <1-600 seconds> [115200-2500000 baud]\n");
+        return 1;
+    }
+    s_rec_cols = sf->w; s_rec_rows = sf->h;
+    const size_t bytes = (size_t)s_rec_cols * s_rec_rows * sizeof(tui_cell);
+    s_rec_snap = (tui_cell *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    s_rec_last = (tui_cell *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM);
+    if (!s_rec_snap || !s_rec_last) {
+        heap_caps_free(s_rec_snap); heap_caps_free(s_rec_last); s_rec_snap = s_rec_last = nullptr;
+        printf("tui: no PSRAM for the recording\n");
+        return 1;
+    }
+    int cw = 0, ch = 0;
+    ls_tui_geometry(nullptr, nullptr, &cw, &ch);
+    const ls_tui_theme_t *theme = ls_tui_get_theme();
+    printf("tui: rec begin cols %d rows %d cw %d ch %d font %d theme %s daylight %d rotation %d seconds %d baud %d\n",
+           s_rec_cols, s_rec_rows, cw, ch, ls_tui_font_index(), theme && theme->name ? theme->name : "-",
+           ls_tui_daylight() ? 1 : 0, s_rotation, seconds, baud);
+    fflush(stdout);
+    uart_wait_tx_done((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(500));
+    s_rec_baud = baud;
+    /* A log line written in pieces by another task lands inside a frame
+       line and spoils it; only errors while recording. The SDR and P25
+       throughput warnings come every second. */
+    esp_log_level_set("*", ESP_LOG_ERROR);
+    uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, (uint32_t)baud);
+    s_rec_frames = s_rec_skipped = 0;
+    s_rec_ready = false;
+    s_rec_start_us = esp_timer_get_time();
+    s_rec_until_us = s_rec_start_us + (int64_t)seconds * 1000000;
+    s_rec_last_cap_us = 0;
+    s_rec_on = true;
+    if (xTaskCreatePinnedToCoreWithCaps(tui_rec_task, "tui_rec", 4096, nullptr, 1, &s_rec_task,
+                                        tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) {
+        s_rec_on = false;
+        s_rec_task = nullptr;
+        uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+        esp_log_level_set("*", (esp_log_level_t)CONFIG_LOG_DEFAULT_LEVEL);
+        heap_caps_free(s_rec_snap); heap_caps_free(s_rec_last); s_rec_snap = s_rec_last = nullptr;
+        printf("tui: could not start the recorder\n");
+        return 1;
+    }
+    return 0;
 }
 
 typedef struct { int16_t col, row; } tui_tap_t;
@@ -528,6 +700,7 @@ static bool tui_session(void)
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
+                                 ls_scr_notes, ls_scr_compass,
                                  ls_scr_files;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
@@ -558,8 +731,10 @@ static bool tui_session(void)
 
             { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_labs, nullptr, &ls_doc_labs },
-            { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_journal, nullptr, &ls_doc_journal },
+            { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_notes, nullptr, &ls_doc_notes },
+            { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW,
+              LS_APP_EXTRA, &ls_scr_compass, nullptr, &ls_doc_compass },
 
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
@@ -835,6 +1010,21 @@ static bool tui_session(void)
                 memcpy(s_tui_png_buf, fb.pixels,
                        (size_t)fb.width * fb.height * sizeof(uint16_t));
             s_tui_png_req = false;
+        }
+        /* 'tui rec': the grid as it is on the glass, when the sender is free. */
+        if (s_rec_on) {
+            const int64_t now = esp_timer_get_time();
+            if (now - s_rec_last_cap_us >= REC_FRAME_US) {
+                tui_surface *sf = ls_tui_surface();
+                if (s_rec_ready) s_rec_skipped++;
+                else if (sf && sf->w == s_rec_cols && sf->h == s_rec_rows) {
+                    memcpy(s_rec_snap, sf->front, (size_t)s_rec_cols * s_rec_rows * sizeof(tui_cell));
+                    s_rec_snap_us = now;
+                    s_rec_ready = true;
+                    if (s_rec_task) xTaskNotifyGive(s_rec_task);
+                } else s_rec_on = false;          /* turned: the grid changed shape */
+                s_rec_last_cap_us = now;
+            }
         }
 
         const int screen = __atomic_exchange_n(&s_tui_screen_req, -1, __ATOMIC_ACQ_REL);
@@ -1511,6 +1701,7 @@ static int tui_cmd(int argc, char **argv)
        end line, every data line starts with '~' so a log line from another
        task landing in the middle cannot be mistaken for part of the image,
        and the end line carries the size and CRC-32 for the receiver. */
+    if (argc >= 2 && !strcmp(argv[1], "rec")) return tui_rec_cmd(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "png")) {
         if (!s_tui_task) { printf("tui: not running - nothing on the glass\n"); return 1; }
         ls_panel_fb_t fb;

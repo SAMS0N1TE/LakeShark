@@ -121,3 +121,6 @@ const ls_safe_boot_t *ls_safe_boot_result(void)
 }
 
 __attribute__((weak)) bool ls_field_owned(void) { return false; }
+
+/* No keyboard board in the simulator: editors show their touch keyboard. */
+bool ls_keypad_present(void) { return false; }

@@ -15,7 +15,8 @@ bool ls_field_start(void)
     s.config = (ls_lora_cfg_t){.freq_hz=910525000, .sf=7, .bw_hz=125000, .cr=5, .power_dbm=10, .preamble=16, .sync_word=0x12, .crc_on=true};
     s.sample = (ls_field_sample_t){.source=LS_FIELD_MESH, .gps_valid=true, .imu_valid=true, .radio_valid=true,
         .lat=43.20, .lon=-71.65, .heading=72, .rssi=-88, .frequency=910525000,
-        .imu={.ax=.02, .ay=.06, .az=.99, .gx=.3, .gy=-.2, .gz=.1, .mx=22, .my=31, .mz=-19, .mag_valid=true}};
+        /* Face up, as ls_imu reports it on the board: x and z reversed. */
+        .imu={.ax=-.02, .ay=.06, .az=-.99, .gx=.3, .gy=-.2, .gz=.1, .mx=22, .my=31, .mz=-19, .mag_valid=true}};
     snprintf(s.sample.utc, sizeof(s.sample.utc), "2026-09-12T14:20:00Z");
     snprintf(s.status, sizeof(s.status), "Mesh keeps control until DIRECT is enabled");
     snprintf(s.storage, sizeof(s.storage), "Preview fixture | /sdcard/journal");
@@ -30,7 +31,22 @@ bool ls_field_start(void)
     for (int i = 0; i < 36; i++) { s.bearing[i] = -85 + 20 * cosf(i * .17453f); s.bearing_count[i] = 3; }
     return true;
 }
-void ls_field_sample_snapshot(ls_field_sample_t *out) { ls_field_start(); if(out) { *out=s.sample; out->time_us=esp_timer_get_time(); } }
+/* LSSIM_TURN=<deg/s> turns the board on the spot as the clock advances
+   (-A), so FIND's sweep can be seen filling. */
+float lssim_turn_deg(void)
+{
+    const char *e = getenv("LSSIM_TURN");
+    return e ? (float)fmod(atof(e) * esp_timer_get_time() / 1e6, 360.0) : 0.0f;
+}
+void ls_field_sample_snapshot(ls_field_sample_t *out)
+{
+    ls_field_start();
+    if (!out) return;
+    *out = s.sample; out->time_us = esp_timer_get_time();
+    const float a = -lssim_turn_deg() * 0.01745329f, c = cosf(a), n = sinf(a);
+    const float mx = out->imu.mx, my = out->imu.my;
+    out->imu.mx = mx * c - my * n; out->imu.my = mx * n + my * c;
+}
 void ls_field_snapshot(ls_field_state_t *out) { ls_field_start(); s.sequence = (uint32_t)(esp_timer_get_time() / 100000); if (out) *out = s; }
 bool ls_field_direct(bool on) { s.requested = s.direct = on; snprintf(s.status, sizeof(s.status), "%s", on ? "Direct control; mesh paused" : "Mesh control restored"); return true; }
 bool ls_field_owned(void) { return s.direct; }
@@ -89,3 +105,4 @@ void p25_get_acquisition_status(p25_acquisition_status_t *out)
     out->iq.sampled_pairs      = s_acq_pairs;
     out->iq.clipped_components = s_acq_clipped;
 }
+bool ls_field_compass_cal(ls_compass_cal_t *out) { (void)out; return false; }

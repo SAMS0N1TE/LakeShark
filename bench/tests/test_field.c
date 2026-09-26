@@ -204,10 +204,18 @@ static void calibrate(float offset)
             .my=-80+45*y,.mz=100+45*z,.mag_valid=true};
         ls_shim_time_advance(100000); ls_field_step();
     }
+    /* The figure eight: the field swept over the sphere. */
+    for (int i = 0; i < 200 && ls_field_calibrating(); i++) {
+        float z=1-2*(i+.5f)/200, r=sqrtf(1-z*z), x=r*cosf(i*2.39996323f), y=r*sinf(i*2.39996323f);
+        imu_data = (ls_imu_sample_t){.ax=x,.ay=y,.az=z,.mx=offset+45*x,
+            .my=-80+45*y,.mz=100+45*z,.mag_valid=true};
+        ls_shim_time_advance(100000); ls_field_step();
+    }
     ls_shim_time_advance(100000); ls_field_step();
     ls_field_snapshot(&state);
     LS_CHECK(state.calibrated); LS_CHECK(state.calibration_saved); LS_CHECK(!state.calibrating);
-    LS_EQ_UINT(state.calibration_step,6);
+    LS_EQ_UINT(state.calibration_step,LS_COMPASS_STEPS);
+    LS_CHECK(state.calibration_cover>=LS_COMPASS_COVER_NEEDED);
 }
 
 LS_CASE(compass_calibration_survives_restart_and_an_interrupted_new_save)
@@ -545,4 +553,28 @@ LS_CASE(pocsag_pins_the_paging_parameters_and_surfaces_a_page)
     LS_CHECK(ls_field_mode(LS_LAB_PACKETS)); ls_field_step();
     LS_EQ_UINT(pocsag_destroys, 1);
     LS_CHECK(!fsk_on);
+}
+
+LS_CASE(a_noisy_calibration_is_refused_and_the_saved_one_kept)
+{
+    reset(); calibrate(60);
+    LS_CHECK(ls_field_calibrate(0)); ls_field_step();
+    const float poses[6][3]={{0,0,1},{0,1,0},{1,0,0},{0,-1,0},{-1,0,0},{0,0,-1}};
+    /* The field's strength swinging by 15 percent as the board turns: what
+       a moving offset does to a fit. */
+    for (int i = 0; i < 320 && ls_field_calibrating(); i++) {
+        float x, y, z;
+        if (i < 120) { x=poses[i/20][0]; y=poses[i/20][1]; z=poses[i/20][2]; }
+        else { int k=i-120; z=1-2*(k+.5f)/200; float r=sqrtf(1-z*z); x=r*cosf(k*2.39996323f); y=r*sinf(k*2.39996323f); }
+        const float len = 45 * ((i & 1) ? 1.15f : 0.85f);
+        imu_data = (ls_imu_sample_t){.ax=x,.ay=y,.az=z,.mx=90+len*x,.my=-80+len*y,.mz=100+len*z,.mag_valid=true};
+        ls_shim_time_advance(100000); ls_field_step();
+    }
+    ls_field_snapshot(&state);
+    LS_CHECK(state.calibration_failed); LS_CHECK(state.calibrated);
+    /* Still the first calibration: offset 60 reads south here. */
+    ls_field_calibrate(2); ls_field_step();
+    imu_data=(ls_imu_sample_t){.az=1,.mx=85,.my=-80,.mz=100,.mag_valid=true};
+    ls_shim_time_advance(100000); ls_field_step(); ls_field_snapshot(&state);
+    LS_NEAR(state.sample.heading,180,.01);
 }

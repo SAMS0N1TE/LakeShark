@@ -20,6 +20,7 @@ static char s_feedback[72];
 static bool s_hold;
 static bool s_guide_visible;
 static bool s_full_compass;
+static bool s_embedded;
 static bool s_show_signal = true;
 static int64_t s_full_open_us;
 static tui_rect s_expand_hit;
@@ -325,6 +326,15 @@ static void cal_board(tui_surface *sf, tui_rect r, int step, int64_t now)
     if (r.w < 22 || r.h < 9) return;
     uint8_t ink = TUI_ATTR((s.calibration_aligned ? TUI_GREEN : TUI_CYAN) | TUI_BRIGHT, TUI_BLACK);
     const int cx = r.x + r.w/2, cy = r.y + r.h/2;
+    if (step == LS_COMPASS_FACE_STEPS) {
+        static const char *const eight[] = {
+            "  .--.      .--.  ", " /    \\    /    \\ ", "|      \\  /      |",
+            "|       ><       |", "|      /  \\      |", " \\    /    \\    / ", "  '--'      '--'  "};
+        for (int j = 0; j < 7; j++) cal_center(sf, r, cy - 3 + j, eight[j], ink);
+        cal_center(sf, r, cy - 5, "WAVE IT IN A FIGURE EIGHT", LS_ATTR_DIM);
+        cal_center(sf, r, cy + 5, (now/400000)%2 ? "TURN IT OVER" : "AND AROUND", LS_ATTR_DIM);
+        return;
+    }
     if (step == 0 || step == 5) {
         int half = r.w/2 - 5; if (half > 13) half = 13;
         int x[] = {cx-half, cx+half-3, cx+half, cx-half+3};
@@ -382,7 +392,7 @@ static void calibration_action(int i)
 
 static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
 {
-    const bool done=!s.calibrating && s.calibration_step==6 && !s.calibration_failed;
+    const bool done=!s.calibrating && s.calibration_step==LS_COMPASS_STEPS && !s.calibration_failed;
     ls_btn_t buttons[]={{done?"DONE":"CANCEL",done?"COMPASS":"BACK",'q',false,false},
                        {"RESTART","GUIDE",'r',false,false}};
     int bh=ls_btn_raised_height(a,2);
@@ -395,15 +405,17 @@ static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
     if (done || s.calibration_failed) {
         int y=inside.y+inside.h/2-3;
         cal_center(sf,inside,y,done?"[ OK ] CALIBRATION COMPLETE":"[ ! ] LET'S TRY AGAIN",done?green:yellow);
-        cal_center(sf,inside,y+2,done?(s.calibration_saved?"Saved on SD card":"Active now; not saved on SD yet."):"The magnetic readings did not agree.",LS_ATTR_DIM);
+        cal_center(sf,inside,y+2,done?(s.calibration_saved?"Saved on SD card":"Active now; not saved on SD yet."):s.compass_status,LS_ATTR_DIM);
         cal_center(sf,inside,y+4,done?"Turn the screen up and hold it flat.":"Move away from metal, then tap RESTART.",LS_ATTR_DIM);
         cal_center(sf,inside,y+6,done?"Tap DONE to use the compass.":"Your previous calibration is still kept.",LS_ATTR_DIM);
     } else {
-        static const char *const names[]={"SCREEN UP","USB EDGE DOWN","RIGHT EDGE DOWN","TOP EDGE DOWN","LEFT EDGE DOWN","SCREEN DOWN"};
-        static const char *const move[]={"Lay it flat, with the screen facing UP.","Stand it upright, like holding a phone.","Turn right; lower the RIGHT edge.","Keep turning until the TOP edge is down.","Keep turning until the LEFT edge is down.","Turn it over, with the screen facing DOWN."};
-        static const char *const detail[]={"Hold it in your hand, away from metal.","The screen faces you; USB edge is down.","The USB edge now points to your left.","The USB edge now points up.","The USB edge now points to your right.","Hold 2 seconds, then turn it back over."};
-        unsigned step=s.calibration_step<6?s.calibration_step:5;
-        char line[96]; snprintf(line,sizeof(line),"%u / 6   %s",step+1,names[step]);
+        static const char *const names[]={"SCREEN UP","USB EDGE DOWN","RIGHT EDGE DOWN","TOP EDGE DOWN","LEFT EDGE DOWN","SCREEN DOWN","FIGURE EIGHT"};
+        static const char *const move[]={"Lay it flat, with the screen facing UP.","Stand it upright, like holding a phone.","Turn right; lower the RIGHT edge.","Keep turning until the TOP edge is down.","Keep turning until the LEFT edge is down.","Turn it over, with the screen facing DOWN.","Wave it slowly in a big figure eight."};
+        static const char *const detail[]={"Hold it in your hand, away from metal.","The screen faces you; USB edge is down.","The USB edge now points to your left.","The USB edge now points up.","The USB edge now points to your right.","Hold 2 seconds, then turn it back over.","Tip and turn it every way as you go."};
+        const unsigned steps=LS_COMPASS_STEPS;
+        unsigned step=s.calibration_step<steps?s.calibration_step:steps-1;
+        const bool eight=step==LS_COMPASS_FACE_STEPS;
+        char line[96]; snprintf(line,sizeof(line),"%u / %u   %s",step+1,steps,names[step]);
         cal_center(sf,inside,inside.y,line,yellow);
         tui_rect picture, words;
         if (inside.w >= 76) {
@@ -418,22 +430,25 @@ static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
         cal_center(sf,words,words.y,move[step],LS_ATTR_DIM);
         cal_center(sf,words,words.y+2,detail[step],LS_ATTR_DIM);
         if (!s.sample.imu_valid || !s.sample.imu.mag_valid) snprintf(line,sizeof(line),"Waiting for the motion sensor...");
+        else if (eight) snprintf(line,sizeof(line),"DIRECTIONS  %u of %u",
+                                 (unsigned)s.calibration_cover,(unsigned)LS_COMPASS_COVER_NEEDED);
         else if (s.calibration_hold) snprintf(line,sizeof(line),"HOLD STILL  %.1f seconds",(LS_COMPASS_HOLD_SAMPLES-s.calibration_hold)/10.0);
         else snprintf(line,sizeof(line),"%s",s.calibration_aligned?"Position matched. Hold still.":"Move the board to match the picture.");
-        cal_center(sf,words,words.y+4,line,s.calibration_aligned?green:yellow);
+        cal_center(sf,words,words.y+4,line,(s.calibration_aligned||eight)?green:yellow);
         char bar[23]="[--------------------]";
-        for(int i=0;i<s.calibration_hold && i<20;i++)bar[i+1]='#';
+        const int filled=eight?s.calibration_cover*20/LS_COMPASS_COVER_NEEDED:s.calibration_hold;
+        for(int i=0;i<filled && i<20;i++)bar[i+1]='#';
         cal_center(sf,words,words.y+5,bar,green);
         cal_center(sf,words,words.y+7,"Next step is automatic. No tapping needed.",LS_ATTR_DIM);
-        if(words.h>=21) {
+        if(words.h>=22) {
             cal_center(sf,words,words.y+10,"YOUR PROGRESS",LS_ATTR_DIM);
-            for(unsigned i=0;i<6;i++) {
+            for(unsigned i=0;i<steps;i++) {
                 snprintf(line,sizeof(line),"%u [%s] %-16s",i+1,i<step?"OK":i==step?">>":"  ",names[i]);
                 cal_center(sf,words,words.y+12+i,line,i<step?green:i==step?yellow:LS_ATTR_DIM);
             }
         } else {
             char progress[60]; int n=0;
-            for(unsigned i=0;i<6;i++)n+=snprintf(progress+n,sizeof(progress)-n,"%s%u:%s",i?"  ":"",i+1,i<step?"OK":i==step?">>":"--");
+            for(unsigned i=0;i<steps;i++)n+=snprintf(progress+n,sizeof(progress)-n,"%s%u:%s",i?"  ":"",i+1,i<step?"OK":i==step?">>":"--");
             cal_center(sf,words,words.y+9,progress,LS_ATTR_DIM);
         }
     }
@@ -591,8 +606,26 @@ static void full_compass_draw(tui_surface *sf, tui_rect a)
     cal_center(sf,detail,detail.y+10,s.calibrated ? "Calibration retained" : "Calibration required",LS_ATTR_DIM);
     }
     cal_center(sf,detail,detail.y+11,s_show_signal ? "Cyan: board heading at RX, not location" : "Signal overlay hidden",LS_ATTR_DIM);
+    if (s_embedded) return;
     ls_btn_t buttons[]={{"BACK","LABS",'v',false,false},{"VIEW",s_show_signal?"SIGNALS":"SENSORS",'b',s_show_signal,false},{"MARK","JOURNAL",'j',false,false},{"CAL","SETUP",'k',false,false}};
     ls_btn_bar_raised(sf,tui_rect_make(a.x+3,a.y+a.h-6,a.w-6,4),buttons,4,button_focus);
+}
+
+/* COMPASS's SIMPLE style is this screen's full compass, drawn by this
+   code, without this screen's own buttons. */
+void ls_scr_labs_classic_compass(tui_surface *sf, tui_rect a)
+{
+    ls_field_snapshot(&s);
+    const int64_t now = esp_timer_get_time();
+    if (now < s.sample.time_us || now - s.sample.time_us > 350000) s.sample.imu_valid = false;
+    const float dt = s_heading_us ? (now - s_heading_us) / 1e6f : 1;
+    s_heading = ls_compass_ease(s_heading, s.sample.imu_valid && s.sample.imu.mag_valid ? s.sample.heading : NAN, 1 - expf(-dt / .12f));
+    s_heading_us = now;
+    memcpy(s_bearing, s.bearing, sizeof(s_bearing)); memcpy(s_bearing_count, s.bearing_count, sizeof(s_bearing_count));
+    const bool was = s_full_compass;
+    s_full_compass = true; s_embedded = true;
+    full_compass_draw(sf, a);
+    s_full_compass = was; s_embedded = false;
 }
 /* Inside the frame, never on it: these notes vary in length with the mode. */
 static void panel_note(tui_surface *sf, tui_rect panel, int row, const char *text)
@@ -739,7 +772,11 @@ static void draw(tui_surface *sf, tui_rect a)
         ls_btn_bar_raised_slot(sf,s_expand_hit,&expand,1,-1,LS_BTN_SLOT_QUICK);
     }
 }
-static void enter(void) { expand_compass(false); button_focus=-1;button_slot=0; s_guide_visible = false; s_hold = false; s_heading = NAN; s_heading_us = 0; s_feedback[0] = 0; if (!ls_field_start()) snprintf(s_feedback, sizeof(s_feedback), "Field worker could not start"); ls_field_watch(true); }
+/* COMPASS asks for the calibration guide and then opens this screen. */
+static bool s_calibrate_on_enter;
+void ls_scr_labs_request_calibration(void) { s_calibrate_on_enter = true; }
+static void enter_guide(void) { if (s_calibrate_on_enter) { s_calibrate_on_enter = false; s_guide_visible = ls_field_calibrate(0); } }
+static void enter(void) { expand_compass(false); button_focus=-1;button_slot=0; s_guide_visible = false; s_hold = false; s_heading = NAN; s_heading_us = 0; s_feedback[0] = 0; if (!ls_field_start()) snprintf(s_feedback, sizeof(s_feedback), "Field worker could not start"); ls_field_watch(true); enter_guide(); }
 static void leave(void) { s_guide_visible = false; ls_field_direct(false); ls_field_calibrate(2); ls_field_watch(false); }
 static bool touch(int col, int row) {
     int i = ls_btn_hit(col,row);

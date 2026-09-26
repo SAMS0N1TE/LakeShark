@@ -1,5 +1,21 @@
 # LakeShark release notes
 
+## 2.4.0
+
+- NOTES replaces JOURNAL: Markdown notes on the SD card with checklists and live GPS, heading and radio lines.
+- COMPASS: tilt-compensated compass with true north, GO TO a saved place, and a level.
+- FIND: point to a transmitter by signal strength on any radio.
+- FIND scans up to eight channels and runs two radios at once, with presets for FRS, MURS, NOAA, marine, ISM and LoRa.
+- FIND hit log, and RADAR and HEAT views beside the dial.
+- FIND calibrates against the Flipper's DF Beacon on 915 MHz, or 433.92 MHz.
+- COMPASS LOOKS: orange direction letters, and settings for the signal fill, the heard trail and the style.
+- Steady compass heading when the board is still.
+- RTL-SDR gain follows the signal in FIND, so a nearby transmitter no longer overloads it.
+- RTL-SDR keeps streaming through USB transfer errors.
+- Battery percent from pack voltage.
+- Console: `find` reports and sets FIND; `trail` shows where each task was after a watchdog reset; `tui rec` streams the screen, and `tools/ls_record.py` turns it into video.
+- Flipper app 2.7: DF Beacon, 915 MHz at about -10 dBm by default.
+
 ## 2.3.2
 
 - Waterfall runs at about 25 fps in both orientations.

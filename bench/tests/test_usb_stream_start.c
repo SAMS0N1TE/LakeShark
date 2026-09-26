@@ -109,6 +109,7 @@ LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
 }
 
 void rtl_adapter_note_transport_fault(void) {}
+volatile uint32_t hcd_dwc_desc_errors;
 
 LS_CASE(completed_in_transfers_repost_without_scheduling_the_recovery_pump)
 {

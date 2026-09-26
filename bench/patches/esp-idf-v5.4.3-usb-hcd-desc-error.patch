@@ -1,0 +1,50 @@
+diff --git a/components/usb/hcd_dwc.c b/components/usb/hcd_dwc.c
+index e051e282..e0065085 100644
+--- a/components/usb/hcd_dwc.c
++++ b/components/usb/hcd_dwc.c
+@@ -2374,6 +2374,9 @@ static void _buffer_exec_cont(pipe_t *pipe)
+     usb_dwc_hal_chan_activate(pipe->chan_obj, buffer_inflight->xfer_desc_list, XFER_LIST_LEN_CTRL, buffer_inflight->flags.ctrl.cur_stg);
+ }
+ 
++// Control and bulk transfers completed with a failed descriptor, since boot
++volatile uint32_t hcd_dwc_desc_errors;
++
+ static inline void _buffer_parse_ctrl(dma_buffer_block_t *buffer)
+ {
+     usb_transfer_t *transfer = &buffer->urb->transfer;
+@@ -2386,8 +2389,15 @@ static inline void _buffer_parse_ctrl(dma_buffer_block_t *buffer)
+         int rem_len;
+         int desc_status;
+         usb_dwc_hal_xfer_desc_parse(buffer->xfer_desc_list, 1, &rem_len, &desc_status);
+-        assert(desc_status == USB_DWC_HAL_XFER_DESC_STS_SUCCESS);
+-        assert(rem_len <= (transfer->num_bytes - sizeof(usb_setup_packet_t)));
++        if (desc_status != USB_DWC_HAL_XFER_DESC_STS_SUCCESS ||
++                rem_len > (int)(transfer->num_bytes - sizeof(usb_setup_packet_t))) {
++            // A failed data stage is the transfer's error, not the host's
++            hcd_dwc_desc_errors++;
++            transfer->actual_num_bytes = sizeof(usb_setup_packet_t);
++            transfer->status = USB_TRANSFER_STATUS_ERROR;
++            memset(buffer->xfer_desc_list, 0, XFER_LIST_LEN_CTRL * sizeof(usb_dwc_ll_dma_qtd_t));
++            return;
++        }
+         transfer->actual_num_bytes = transfer->num_bytes - rem_len;
+     }
+     // Update URB status
+@@ -2403,8 +2413,15 @@ static inline void _buffer_parse_bulk(dma_buffer_block_t *buffer)
+     int rem_len;
+     int desc_status;
+     usb_dwc_hal_xfer_desc_parse(buffer->xfer_desc_list, 0, &rem_len, &desc_status);
+-    assert(desc_status == USB_DWC_HAL_XFER_DESC_STS_SUCCESS);
+-    assert(rem_len <= transfer->num_bytes);
++    if (desc_status != USB_DWC_HAL_XFER_DESC_STS_SUCCESS || rem_len > transfer->num_bytes) {
++        // A packet error or buffer error on a bulk descriptor fails this
++        // transfer; the pipe stays usable for the next one.
++        hcd_dwc_desc_errors++;
++        transfer->actual_num_bytes = 0;
++        transfer->status = USB_TRANSFER_STATUS_ERROR;
++        memset(buffer->xfer_desc_list, 0, XFER_LIST_LEN_BULK * sizeof(usb_dwc_ll_dma_qtd_t));
++        return;
++    }
+     transfer->actual_num_bytes = transfer->num_bytes - rem_len;
+     // Update URB's status
+     transfer->status = USB_TRANSFER_STATUS_COMPLETED;

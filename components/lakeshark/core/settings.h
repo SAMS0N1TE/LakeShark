@@ -31,6 +31,22 @@ bool settings_get_home(float *lat, float *lon);
 /* RAM-only read; setters report acceptance by the deferred write queue. */
 bool settings_set_home(float lat, float lon);
 bool settings_clear_home(void);
+/* Where the GPS last had a fix, packed like HOME. COMPASS takes declination
+   from it indoors; same RAM read and deferred write as HOME. */
+bool settings_get_last_fix(float *lat, float *lon);
+/* COMPASS FIND's correction for one radio and method (0 peak, 1 null),
+   degrees taken off each estimate, from a beacon calibration. False when
+   there is none. NAN clears it. */
+bool settings_get_df_offset(int source, int method, float *degrees);
+void settings_set_df_offset(int source, int method, float degrees);
+/* COMPASS FIND's settings, each a small number (an index into the screen's
+   own table of values); `fallback` when none is stored. */
+int  settings_get_df_option(int id, int fallback);
+void settings_set_df_option(int id, int value);
+/* The channels a FIND slot scans, in Hz; returns how many are stored. */
+int  settings_get_df_channels(int slot, uint32_t *hz, int max);
+void settings_set_df_channels(int slot, const uint32_t *hz, int n);
+bool settings_set_last_fix(float lat, float lon);
 
 int  settings_get_brightness(void);
 void settings_set_brightness(int pct);
@@ -67,6 +83,8 @@ int  settings_get_subghz_gate_db(void);      /* detection threshold, dB    */
 void settings_set_subghz_gate_db(int db);
 int  settings_get_subghz_on_hit(void);       /* rec_scan_on_hit_t          */
 void settings_set_subghz_on_hit(int mode);
+int  settings_get_compass_options(void);     /* COMPASS: 1 simple, 2 magnetic */
+void settings_set_compass_options(int options);
 int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */

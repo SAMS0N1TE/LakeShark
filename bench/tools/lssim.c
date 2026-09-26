@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -25,6 +27,7 @@
 #include "ls_waterfall.h"
 #include "ls_wf_source.h"
 #include "ls_map.h"
+#include "ls_notes.h"
 #include "apps/adsb/adsb_state.h"
 #include "apps/fm/fm_state.h"
 
@@ -165,7 +168,8 @@ static void dump_grid(FILE *f)
 extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_rec, ls_scr_diag, ls_scr_settings,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
-                             ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
+                             ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
+                             ls_scr_notes, ls_scr_compass;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -209,6 +213,8 @@ static const ls_app_t APPS[] = {
       LS_APP_EXTRA, &ls_scr_radios, NULL, &ls_doc_radios },
     { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN, LS_APP_EXTRA, &ls_scr_labs, NULL, &ls_doc_labs },
     { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
+    { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
+    { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
     { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
     { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
@@ -339,12 +345,53 @@ void lssim_tick_state(void);
    (ls_anim, ls_notify, the keyboard cursor) never needed it. */
 static int64_t s_step_us;
 
+/* NOTES works on a scratch copy of the fixture notes, so whatever a run
+   types, imports or trashes never reaches the fixtures themselves. */
+static const char *sim_notes_copy(void)
+{
+    static const char *dir = "build/lssim_notes";
+#ifdef _WIN32
+    mkdir("build"); mkdir(dir);
+#else
+    mkdir("build", 0775); mkdir(dir, 0775);
+#endif
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.' && (!e->d_name[1] || e->d_name[1] == '.')) continue;
+            char path[512]; snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+            remove(path);
+        }
+        closedir(d);
+    }
+    d = opendir("fixtures/notes");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.' && (!e->d_name[1] || e->d_name[1] == '.')) continue;
+            char from[512], to[512];
+            snprintf(from, sizeof(from), "fixtures/notes/%s", e->d_name);
+            snprintf(to, sizeof(to), "%s/%s", dir, e->d_name);
+            FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
+            char buf[4096]; size_t n;
+            while (a && b && (n = fread(buf, 1, sizeof(buf), a)) > 0) fwrite(buf, 1, n, b);
+            if (a) fclose(a);
+            if (b) fclose(b);
+        }
+        closedir(d);
+    }
+    return dir;
+}
+
 static void frame(int n)
 {
     tui_surface *sf = ls_tui_surface();
     for (int i = 0; i < n; i++) {
         if (s_step_us) ls_shim_time_advance(s_step_us);
         lssim_tick_state();
+        /* The notes store's worker, which on the board is the field I/O task. */
+        for (int k = 0; k < 4; k++) ls_notes_io_step();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
         ls_tui_present();
@@ -446,9 +493,78 @@ static void usage(void)
     printf("            animation moves (default 0: one frozen instant)\n");
 }
 
+/* lssim play REC OUT: a recording from the board ('tui rec', gathered by
+   tools/ls_record.py) drawn frame by frame through this same renderer, as
+   raw RGB24 at the panel's native size, for ffmpeg. The file is a text
+   line "LSREC1 cols rows landscape font theme daylight", then each frame as
+   cols*rows pairs of (character, attribute) bytes. Off the glass is black. */
+static int play(const char *in, const char *out)
+{
+    FILE *f = fopen(in, "rb");
+    if (!f) { printf("lssim: cannot read %s\n", in); return 1; }
+    char head[160];
+    if (!fgets(head, sizeof(head), f)) { fclose(f); return 1; }
+    int cols, rows, landscape, font, daylight;
+    char theme[40];
+    if (sscanf(head, "LSREC1 %d %d %d %d %39s %d", &cols, &rows, &landscape, &font, theme, &daylight) != 6) {
+        printf("lssim: %s is not a recording\n", in);
+        fclose(f);
+        return 1;
+    }
+    ls_shim_time_set(120000000);
+    ls_tui_set_font_index(font);
+    ls_tui_set_corner_radius(CORNER_R);
+    if (!ls_tui_begin(landscape ? NATIVE_H : NATIVE_W, landscape ? NATIVE_W : NATIVE_H)) {
+        fclose(f);
+        return 1;
+    }
+    ls_tui_set_rotation_cw(true);
+    for (char *c = theme; *c; c++) if (*c == '_') *c = ' ';     /* names with spaces travel with underscores */
+    const ls_tui_theme_t *t = ls_tui_theme_by_name(theme);
+    if (t) ls_tui_set_theme(t);
+    if (daylight) ls_tui_set_daylight(true);
+    int gc, gr;
+    ls_tui_geometry(&gc, &gr, NULL, NULL);
+    if (gc != cols || gr != rows) {
+        printf("lssim: the board's grid is %dx%d, this one %dx%d\n", cols, rows, gc, gr);
+        fclose(f);
+        return 1;
+    }
+    FILE *o = fopen(out, "wb");
+    if (!o) { fclose(f); return 1; }
+    const size_t cells = (size_t)cols * rows;
+    uint8_t *raw = malloc(cells * 2);
+    uint8_t *rgb = malloc((size_t)NATIVE_W * NATIVE_H * 3);
+    tui_surface *sf = ls_tui_surface();
+    int frames = 0;
+    while (raw && rgb && fread(raw, 1, cells * 2, f) == cells * 2) {
+        for (size_t i = 0; i < cells; i++) { sf->back[i].ch = (char)raw[2 * i]; sf->back[i].attr = raw[2 * i + 1]; }
+        ls_tui_present();
+        for (int y = 0; y < NATIVE_H; y++)
+            for (int x = 0; x < NATIVE_W; x++) {
+                uint8_t *px = rgb + ((size_t)y * NATIVE_W + x) * 3;
+                if (off_glass(x, y)) { px[0] = px[1] = px[2] = 0; continue; }
+                const uint16_t p = g_fb[(size_t)y * NATIVE_W + x];
+                px[0] = (uint8_t)(((p >> 11) & 0x1F) * 255 / 31);
+                px[1] = (uint8_t)(((p >> 5) & 0x3F) * 255 / 63);
+                px[2] = (uint8_t)((p & 0x1F) * 255 / 31);
+            }
+        fwrite(rgb, 1, (size_t)NATIVE_W * NATIVE_H * 3, o);
+        frames++;
+    }
+    free(raw); free(rgb);
+    fclose(o); fclose(f);
+    printf("lssim: %d frames, %dx%d, %s\n", frames, NATIVE_W, NATIVE_H, landscape ? "landscape" : "portrait");
+    return frames ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { usage(); return 1; }
+    if (!strcmp(argv[1], "play")) {
+        if (argc < 4) { printf("lssim play REC OUT.rgb\n"); return 1; }
+        return play(argv[2], argv[3]);
+    }
 
     const char *want = argv[1];
     const char *out = "sim.bmp";
@@ -519,7 +635,10 @@ int main(int argc, char **argv)
     ls_tui_set_rotation_cw(true);
 
     if (theme) {
-        const ls_tui_theme_t *t = ls_tui_theme_by_name(theme);
+        char name[48];
+        snprintf(name, sizeof(name), "%s", theme);
+        for (char *c = name; *c; c++) if (*c == '_') *c = ' ';     /* names with spaces travel with underscores */
+        const ls_tui_theme_t *t = ls_tui_theme_by_name(name);
         if (!t) { printf("lssim: no theme '%s'\n", theme); return 1; }
         ls_tui_set_theme(t);
     }
@@ -557,6 +676,7 @@ int main(int argc, char **argv)
     void lssim_set_empty(bool on);
     lssim_set_empty(empty);
     if (maparc) s_map_archive = maparc;
+    ls_notes_use_directory(sim_notes_copy());
     if (!empty) {
         feed_waterfall();
         feed_map();

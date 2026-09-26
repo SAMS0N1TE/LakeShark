@@ -1,4 +1,5 @@
 #include "flipper_link.h"
+#include "ls_trail.h"
 
 #include <ctype.h>
 #include <strings.h>
@@ -528,6 +529,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
 
     str_upper(argv[0]);
     const char *cmd = argv[0];
+    ls_trail(LS_TRAIL_LINK, cmd);
     const char *a1  = (argc > 1) ? argv[1] : NULL;
     int32_t     n   = 0;
 

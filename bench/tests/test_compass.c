@@ -1,6 +1,7 @@
 #include "ls_test.h"
 #include "ls_compass.h"
 #include <math.h>
+#include <string.h>
 
 static ls_compass_fit_t fit;
 static const float bias[3] = {70, -95, 120};
@@ -107,4 +108,127 @@ LS_CASE(waiting_on_one_side_does_not_exhaust_the_fit)
     LS_CHECK(ls_compass_finish(&fit,&c));
     for(int i=0;i<3;i++)LS_NEAR(c.offset[i],bias[i],.01);
     LS_CHECK(fit.samples<=512);
+}
+
+/* ---- physical poses: the board turned in a real field -------------------- */
+
+#define RAD 0.017453292519943295
+typedef struct { double n, e, d; } ned;
+static ned cross3(ned a, ned b) { return (ned){ a.e*b.d - a.d*b.e, a.d*b.n - a.n*b.d, a.n*b.e - a.e*b.n }; }
+static double dot3(ned a, ned b) { return a.n*b.n + a.e*b.e + a.d*b.d; }
+static const ned EARTH = { 20, 0, 45 };   /* about New England: 66 degrees of dip */
+/* AK09916 noise is about 0.6 uT; the accelerometer in a hand, a few
+   hundredths of a g. Deterministic so a failure repeats. */
+static uint32_t noise_state;
+static bool quiet;
+static double noise(double amplitude)
+{
+    if (quiet) return 0;
+    noise_state = noise_state * 1664525u + 1013904223u;
+    return amplitude * ((noise_state >> 8) / 8388608.0 - 1);
+}
+static const double SOFT[3][3] = {{1.25, .10, 0}, {.10, .85, .05}, {0, .05, 1.0}};
+
+/* The board with its top at `yaw`, raised by `pitch`, rolled by `roll`
+   (degrees). `datasheet` stores the field the way the ICM-20948 figure has
+   the AK09916 (screen = {my, -mx, mz}) instead of the firmware's default. */
+static ls_imu_sample_t pose(double yaw, double pitch, double roll, bool datasheet, bool soft)
+{
+    const double y = yaw*RAD, p = pitch*RAD, r = roll*RAD;
+    const ned top = { cos(y)*cos(p), sin(y)*cos(p), -sin(p) };
+    const ned r0 = { -sin(y), cos(y), 0 }, tr = cross3(top, r0);
+    const ned right = { r0.n*cos(r) + tr.n*sin(r), r0.e*cos(r) + tr.e*sin(r), r0.d*cos(r) + tr.d*sin(r) };
+    const ned out = cross3(right, top), up = { 0, 0, -1 };
+    const double bx = dot3(EARTH, right), by = dot3(EARTH, top), bz = dot3(EARTH, out);
+    double t[3];
+    if (datasheet) { t[0] = -by; t[1] = bx; t[2] = bz; }
+    else           { t[0] = -by; t[1] = -bx; t[2] = -bz; }
+    /* The accelerometer as ls_imu delivers it on this board: x and z reversed. */
+    ls_imu_sample_t s = {.ax=(float)(-dot3(up, right) + noise(.03)), .ay=(float)(dot3(up, top) + noise(.03)),
+                         .az=(float)(-dot3(up, out) + noise(.03)), .mag_valid=true};
+    float *m[3] = {&s.mx, &s.my, &s.mz};
+    for (int i = 0; i < 3; i++) {
+        double v = t[i];
+        if (soft) v = SOFT[i][0]*t[0] + SOFT[i][1]*t[1] + SOFT[i][2]*t[2];
+        *m[i] = (float)(bias[i] + v + noise(1.5));
+    }
+    return s;
+}
+
+/* Six faces turned through a circle each, then (optionally) a figure eight. */
+static void physical_fit(bool datasheet, bool soft, bool tumble)
+{
+    ls_compass_begin(&fit);
+    noise_state = 12345;
+    static const double faces[6][2] = {{0,0},{0,180},{90,0},{-90,0},{0,90},{0,-90}};
+    for (int f = 0; f < 6; f++)
+        for (int i = 0; i < 64; i++) {
+            ls_imu_sample_t s = pose(i * 360.0 / 64, faces[f][0], faces[f][1], datasheet, soft);
+            ls_compass_collect(&fit, &s);
+        }
+    if (!tumble) return;
+    LS_CHECK(ls_compass_tumble_begin(&fit));
+    for (int i = 0; i < 400 && !ls_compass_tumble_done(&fit); i++) {
+        ls_imu_sample_t s = pose(i * 137.508, asin(1 - 2*(i + .5)/192) / RAD, fmod(i * 57.3, 360), datasheet, soft);
+        ls_compass_collect(&fit, &s);
+    }
+    LS_CHECK(ls_compass_tumble_done(&fit));
+}
+
+static double worst_flat_error(const ls_compass_cal_t *c, bool datasheet, bool soft)
+{
+    double worst = 0;
+    quiet = true;   /* judge the calibration, not one noisy sample */
+    for (int deg = 0; deg < 360; deg += 10) {
+        ls_imu_sample_t s = pose(deg, 0, 0, datasheet, soft);
+        const double e = fabs(fmod(ls_compass_heading(&s, c) - deg + 540, 360) - 180);
+        if (e > worst) worst = e;
+    }
+    quiet = false;
+    return worst;
+}
+
+LS_CASE(the_figure_eight_takes_out_soft_iron_a_sphere_cannot)
+{
+    ls_compass_cal_t sphere_only, full;
+    /* Held faces only: either the residual is refused outright, or the
+       sphere is accepted and the heading is bent. */
+    physical_fit(false, true, false);
+    const bool accepted = ls_compass_finish(&fit, &sphere_only);
+    physical_fit(false, true, true);
+    LS_CHECK(ls_compass_finish(&fit, &full));
+    LS_CHECK(full.soft[0][0] != 0);
+    LS_CHECK(full.error < .03f);
+    LS_CHECK(!accepted || worst_flat_error(&sphere_only, false, true) > 5);
+    LS_CHECK(worst_flat_error(&full, false, true) < 2);
+}
+
+LS_CASE(a_right_basis_is_kept_and_its_dip_agrees_in_every_pose)
+{
+    physical_fit(false, false, true);
+    ls_compass_cal_t c;
+    LS_CHECK(ls_compass_finish(&fit, &c));
+    LS_EQ_INT(c.basis[0], -2); LS_EQ_INT(c.basis[1], -1); LS_EQ_INT(c.basis[2], -3);
+    LS_CHECK(c.dip_spread < 3);
+    LS_CHECK(worst_flat_error(&c, false, false) < 2);
+}
+
+LS_CASE(the_basis_is_always_the_default_and_others_are_refused)
+{
+    physical_fit(true, false, true);
+    ls_compass_cal_t c;
+    LS_CHECK(ls_compass_finish(&fit, &c));
+    LS_EQ_INT(c.basis[0], -2); LS_EQ_INT(c.basis[1], -1); LS_EQ_INT(c.basis[2], -3);
+    LS_CHECK(c.dip_spread > 10);   /* data from another basis shows as spread */
+    c.basis[0] = 2; c.basis[2] = 3;
+    LS_CHECK(!ls_compass_cal_valid(&c));
+}
+
+LS_CASE(six_held_faces_alone_still_calibrate_hard_iron)
+{
+    physical_fit(false, false, false);
+    ls_compass_cal_t c;
+    LS_CHECK(ls_compass_finish(&fit, &c));
+    LS_CHECK(c.soft[0][0] == 0);
+    for (int i = 0; i < 3; i++) LS_NEAR(c.offset[i], bias[i], .5);
 }

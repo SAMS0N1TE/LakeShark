@@ -1,5 +1,6 @@
 /* Router. See ls_tui_screen.h for the contract it enforces. */
 #include "ls_tui_screen.h"
+#include "ls_trail.h"
 #include "ls_keyboard.h"
 #include "ls_notify.h"
 #include "ls_numpad.h"
@@ -647,6 +648,7 @@ static void draw_help(tui_surface *sf, int cols, int rows)
 void ls_tui_router_draw(tui_surface *sf)
 {
     if (!sf || !s_count) return;
+    ls_trail(LS_TRAIL_TUI, s_screens[s_current] && s_screens[s_current]->name ? s_screens[s_current]->name : "?");
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
 

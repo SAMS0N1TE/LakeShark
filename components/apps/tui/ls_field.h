@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "ls_lora.h"
 #include "ls_imu.h"
+#include "ls_compass.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,6 +100,7 @@ typedef struct {
     bool calibration_keyboard; /* Active automatic attachment profile. */
     uint8_t calibration_faces;
     uint16_t calibration_samples;
+    uint8_t calibration_cover;   /* figure-eight directions reached, of 26 */
     uint8_t calibration_step, calibration_hold;
     bool calibration_aligned, calibration_failed;
     char compass_status[80];
@@ -120,6 +122,14 @@ bool ls_field_mode(ls_lab_mode_t mode);
 /* 0 starts the guide, 1 retries the completed fit, 2 cancels. */
 bool ls_field_calibrate(int action);
 bool ls_field_calibrating(void);
+/* The hard-iron calibration for the attachment in use now, if it has one. */
+/* The worst calibration fit accepted: RMS spread of the corrected field
+   strength, as a fraction. Good fits on the T-Display-P4 are about 0.04. */
+#define LS_FIELD_CAL_ERROR_MAX .08f
+bool ls_field_compass_cal(ls_compass_cal_t *out);
+/* Console: both profiles and every calibration file, and why each is or is
+   not in use. Reads the card from the caller's task. */
+void ls_field_compass_report(void);
 bool ls_field_clear_plot(void);
 bool ls_field_transmit(const char *text);
 bool ls_field_source(ls_field_source_t source);

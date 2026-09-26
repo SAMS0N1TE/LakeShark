@@ -147,6 +147,7 @@ add_library(ls_harness STATIC
     harness/shim_impl.c
     shims/freertos_shim.c
     shims/spi_shim.c
+    shims/ls_trail_host.c
     fixtures/pocsag_gen.c
     fixtures/dmr_gen.c
     ${FW}/components/lakeshark/core/ls_time.c
@@ -355,6 +356,21 @@ ls_add_test(test_tui_screens
     ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
     ${FW}/components/lakeshark/nfc/nfc_classic.c
     ${FW}/components/apps/tui/screens/ext/scr_journal.c
+    ${FW}/components/apps/tui/screens/ext/scr_notes.c
+    ${FW}/components/apps/tui/screens/ext/scr_compass.c
+    ${FW}/components/apps/tui/ls_compass_art.c
+    ${FW}/components/apps/tui/ls_df.c
+    ${FW}/components/apps/tui/ls_df_cal.c
+    ${FW}/components/apps/tui/ls_df_hits.c
+    ${FW}/components/apps/tui/ls_df_view.c
+    ${FW}/components/apps/tui/ls_sun.c
+    tools/lssim_dfs.c
+    ${FW}/components/apps/tui/ls_compass_live.c
+    ${FW}/components/apps/tui/ls_wmm.c
+    ${FW}/components/apps/tui/ls_textbuf.c
+    ${FW}/components/apps/tui/ls_keydock.c
+    ${FW}/components/apps/tui/ls_notes.c
+    ${FW}/components/apps/tui/ls_note_blocks.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
     ${FW}/components/lakeshark/core/ls_vitals.c
@@ -504,6 +520,7 @@ target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
 add_executable(lssim
     ${FW}/components/apps/tui/ls_splash.c
+    shims/ls_trail_host.c
     ${FW}/components/apps/tui/ls_wordmark.c
     tools/lssim.c
     tools/lssim_radio_preview.c
@@ -515,6 +532,21 @@ add_executable(lssim
     ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
     ${FW}/components/lakeshark/nfc/nfc_classic.c
     ${FW}/components/apps/tui/screens/ext/scr_journal.c
+    ${FW}/components/apps/tui/screens/ext/scr_notes.c
+    ${FW}/components/apps/tui/screens/ext/scr_compass.c
+    ${FW}/components/apps/tui/ls_compass_art.c
+    ${FW}/components/apps/tui/ls_df.c
+    ${FW}/components/apps/tui/ls_df_cal.c
+    ${FW}/components/apps/tui/ls_df_hits.c
+    ${FW}/components/apps/tui/ls_df_view.c
+    ${FW}/components/apps/tui/ls_sun.c
+    tools/lssim_dfs.c
+    ${FW}/components/apps/tui/ls_compass_live.c
+    ${FW}/components/apps/tui/ls_wmm.c
+    ${FW}/components/apps/tui/ls_textbuf.c
+    ${FW}/components/apps/tui/ls_keydock.c
+    ${FW}/components/apps/tui/ls_notes.c
+    ${FW}/components/apps/tui/ls_note_blocks.c
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/ls_tui.c
     ${FW}/components/apps/tui/ls_tui_inset.c
@@ -850,6 +882,12 @@ ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
 ls_add_test(test_rec_list_format ${APP}/rec/rec_list_format.c)
 ls_add_test(test_rec_sidecar     ${APP}/rec/rec_sidecar.c)
+ls_add_test(test_df_cal ${FW}/components/apps/tui/ls_df_cal.c)
+target_include_directories(test_df_cal PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_df_hits ${FW}/components/apps/tui/ls_df_hits.c)
+target_include_directories(test_df_hits PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_gauge_soc)
+target_include_directories(test_gauge_soc PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_tdp4_power ${FW}/components/lakeshark/board/ls_board_hw.c)
 target_compile_definitions(test_tdp4_power PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 ls_add_test(test_hosted_board ${FW}/main/ls_hosted_board.c)
@@ -1312,8 +1350,26 @@ target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
 
-ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c)
+ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_notes.c)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+ls_add_test(test_wmm ${FW}/components/apps/tui/ls_wmm.c)
+target_include_directories(test_wmm PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_compass_live ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
+target_include_directories(test_compass_live PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+ls_add_test(test_df ${FW}/components/apps/tui/ls_df.c ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
+target_include_directories(test_df PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+ls_add_test(test_ble_heard ${FW}/components/apps/tui/ls_ble_heard.c)
+target_include_directories(test_ble_heard PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_sun ${FW}/components/apps/tui/ls_sun.c)
+target_include_directories(test_sun PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_textbuf ${FW}/components/apps/tui/ls_textbuf.c)
+ls_add_test(test_notes ${FW}/components/apps/tui/ls_notes.c)
+target_include_directories(test_notes PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_definitions(test_notes PRIVATE LS_NOTES_TEST=1)
+ls_add_test(test_note_blocks ${FW}/components/apps/tui/ls_note_blocks.c ${FW}/components/apps/tui/ls_notes.c ${FW}/components/apps/tui/ls_value.c)
+target_include_directories(test_note_blocks PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_definitions(test_note_blocks PRIVATE LS_NOTES_TEST=1)
+target_include_directories(test_textbuf PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_compass ${FW}/components/apps/tui/ls_compass.c)
 target_include_directories(test_compass PRIVATE ${LS_TUI_APP_INCLUDES})
 target_compile_definitions(test_field PRIVATE LS_FIELD_TEST=1)

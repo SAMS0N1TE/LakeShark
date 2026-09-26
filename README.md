@@ -17,7 +17,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
-**[Scanning, replay and aircraft tracking](docs/REPLAY_AND_AIRCRAFT.md)** — Animated SUB-GHZ scans, FILES-to-RECORD playback, ADS-B mini maps and saved home. RADIOS adds Wi-Fi and Bluetooth startup toggles.
+**[Scanning, replay and aircraft tracking](docs/REPLAY_AND_AIRCRAFT.md)**: animated SUB-GHZ scans, FILES-to-RECORD playback, ADS-B mini maps and saved home. RADIOS adds Wi-Fi and Bluetooth startup toggles.
 
 | RECORD replay | ADS-B mini map |
 | --- | --- |
@@ -39,8 +39,10 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 | --- | --- | --- |
 | <img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="200" /> |
 | HOME | P25 | ADS-B |
-| <img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/subghz-port.png" width="200" /> |
-| FALLS, P25 waterfall | MAP | SUB-GHZ |
+| <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="200" /> | <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="200" /> | <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="200" /> |
+| FALLS, Flipper remote bursts at 433.92 MHz | MAP | SUB-GHZ decoding a Flipper remote |
+| <img src="docs/screenshots/tdp4/motion/compass.gif" width="200" /> | <img src="docs/screenshots/tdp4/motion/find-beacon.gif" width="200" /> | |
+| COMPASS FIND on two channels while turning | FIND hearing the Flipper DF Beacon | |
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
@@ -52,7 +54,8 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
 | MESH | MeshCore messaging and nodes on the onboard SX1262 |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
-| JOURNAL | Field notes with radio, GPS and motion attachments; SD archives and bookmarks |
+| NOTES | Markdown notes on the SD card with checklists and live GPS, heading and radio lines |
+| COMPASS | Tilt-compensated compass with true north; FIND points to a transmitter on any radio, with channel scanning, two radios at once, a hit log, and RADAR and HEAT views; GO TO and a level |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
 | REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. |
@@ -132,7 +135,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.3.2](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.3.2).** A smoother screen, and the RTL-SDR can be unplugged or swapped without a reboot. Experimental radio features remain marked.
+**Current P4 release: [2.4.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.4.0).** NOTES, COMPASS and direction finding on every radio. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

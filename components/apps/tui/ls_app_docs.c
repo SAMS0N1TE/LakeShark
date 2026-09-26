@@ -109,6 +109,32 @@ const ls_app_doc_t ls_doc_journal = {
                 "rather than attached",
 };
 
+const ls_app_doc_t ls_doc_notes = {
+    .purpose = "A field notebook: write notes with a real cursor, and insert "
+               "the time, a GPS fix, the heading, a map picture or what a "
+               "radio is hearing right where you are typing.",
+    .records     = LS_APP_RECORDS_MANUAL,
+    .record_note = "each note as a Markdown file in /sdcard/notes, with map "
+                   "pictures saved beside it as PNG; trash moves them to "
+                   "notes/trash and deletes nothing",
+    .gps      = LS_APP_GPS_STAMPS,
+    .gps_note = "a GPS line is written only from a fix under three seconds "
+                "old, and says there was no fix otherwise",
+};
+
+const ls_app_doc_t ls_doc_compass = {
+    .purpose = "A tilt-compensated compass that reads true north from the "
+               "World Magnetic Model, follows a saved place, finds a "
+               "transmitter by signal strength on any radio, and levels.",
+    .records     = LS_APP_RECORDS_MANUAL,
+    .record_note = "bearings and fixes you save go into NOTES as BEARING and "
+                   "FIX lines with the place they were taken from",
+    .gps      = LS_APP_GPS_NAVIGATES,
+    .gps_note = "the fix sets declination, places each bearing and gives the "
+                "distance to a target; without one the compass reads "
+                "magnetic north",
+};
+
 const ls_app_doc_t ls_doc_rec = {
     .purpose = "Capture what a radio is receiving to the card: an OOK "
                "recorder that writes Flipper-compatible sub-GHz files, and a "
@@ -219,6 +245,8 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "mesh",    &ls_doc_mesh    },
     { "labs",    &ls_doc_labs    },
     { "journal", &ls_doc_journal },
+    { "notes",   &ls_doc_notes   },
+    { "compass", &ls_doc_compass },
     { "rec",     &ls_doc_rec     },
     { "subghz",  &ls_doc_subghz  },
     { "files",   &ls_doc_files   },

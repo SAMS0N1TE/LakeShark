@@ -30,7 +30,8 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
 static int group_of(const ls_app_t *a)
 {
     if (a->cat == LS_APP_USER) return 3;
-    if (!strcmp(a->id, "map") || !strcmp(a->id, "gps") || !strcmp(a->id, "journal") || !strcmp(a->id, "rec")) return 1;
+    if (!strcmp(a->id, "map") || !strcmp(a->id, "gps") || !strcmp(a->id, "notes") ||
+        !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
     if (!strcmp(a->id, "set") || !strcmp(a->id, "diag") || !strcmp(a->id, "radios") || !strcmp(a->id, "link")) return 2;
     return 0;
 }

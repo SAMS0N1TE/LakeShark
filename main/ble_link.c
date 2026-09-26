@@ -1,3 +1,4 @@
+#include "tui/ls_ble_heard.h"
 #include "ble_link.h"
 #include "ls_board.h"   /**/
 
@@ -717,6 +718,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_adv_since++;
 
         int64_t now_us = esp_timer_get_time();
+        /* Every advert, heard or matched, for COMPASS to find a device by. */
+        ls_ble_heard_note(event->disc.addr.val, (const char *)f.name, f.name_len,
+                          event->disc.rssi, now_us);
         bool due = s_verbose || matched || (now_us - s_last_adv_log_us) >= 1000000;
         if (due) {
             char seen[36] = "(no name)";

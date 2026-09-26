@@ -1,23 +1,29 @@
 {
   "base_commit": "ea1c174c1cbb7348bd8ba0ff1eb306246938dd80",
-  "commit": "e2676185dfff619c8e4567ce778cd1b839a8ed8b",
+  "commit": "70b9387ea77c974d80d435092a764c48a339544f",
   "file": "components/esp_system/port/soc/esp32p4/system_internal.c",
   "file_sha256": "0e36524d8d2b7dbb213fe1a428bcc92f96bf6d64942614aecd418bd402930768",
-  "patch_sha256": "63f2296fb9396d9fcc9cac471490c7f62f12b801c6c558ad125d0aa874b7c51b",
-  "bundle_sha256": "fcd0f6e074767706b2923f4e66257767ebd4896617bfc013eb55ca3acede3b67",
+  "patch_sha256": "1a45ec9fdc070c0435c1071de8c06965641427ffa71270c75de6839ff8bee94d",
+  "bundle_sha256": "a0b65c50fe639644af05cbaa59b0dba859c40a948c74396c62b76f267371400a",
   "file_hash_encoding": "LF-normalized source bytes",
   "files": [
     {
       "file": "components/esp_system/port/soc/esp32p4/system_internal.c",
       "file_sha256": "0e36524d8d2b7dbb213fe1a428bcc92f96bf6d64942614aecd418bd402930768",
       "patch": "p4-reset.patch",
-      "patch_sha256": "63f2296fb9396d9fcc9cac471490c7f62f12b801c6c558ad125d0aa874b7c51b"
+      "patch_sha256": "1a45ec9fdc070c0435c1071de8c06965641427ffa71270c75de6839ff8bee94d"
     },
     {
       "file": "components/usb/hub.c",
       "file_sha256": "06ecbfd82a674da642d07b4fa238f7525a4bd511025da0fa48dcd1b4cce45d58",
       "patch": "usb-hub.patch",
-      "patch_sha256": "1f69713fc6a2d46efbb65458782289da2ec2ede77021cf4a228cab0b0ca66088"
+      "patch_sha256": "5bec9a34595be0c6bd2e16885aff5e72b1723a3364167c4fbb50ae65437ad9b6"
+    },
+    {
+      "file": "components/usb/hcd_dwc.c",
+      "patch": "usb-hcd.patch",
+      "file_sha256": "7ec4ca77b3b1639c0d6633032599246fa05a49fda35745da0ac7e78f5f4ab271",
+      "patch_sha256": "a633817366cd2ac06e590d9cb8bca8ba0f5dd060b3d91533d6a0c285906dbaef"
     }
   ]
 }

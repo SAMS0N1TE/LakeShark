@@ -64,6 +64,8 @@ serial*.txt
 !/tools/test_check_board_identity.py
 !/tools/check_module_shadow.py
 !/tools/ls_console.py
+!/tools/ls_remote.py
+!/tools/ls_record.py
 !/tools/p25_capture.py
 !/tools/p25_soak.py
 !/tools/release_preflight.py

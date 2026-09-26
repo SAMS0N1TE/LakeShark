@@ -410,6 +410,10 @@ static bool stream_reprime(void)
     return posted > 0;
 }
 
+/* Transfers the host controller failed on a bad descriptor (hcd_dwc.c, as
+ * patched by bench/patches): each is a dropped transfer here, not a panic. */
+extern volatile uint32_t hcd_dwc_desc_errors;
+
 static void stream_pump_task(void *arg)
 {
     (void)arg;
@@ -433,13 +437,14 @@ static void stream_pump_task(void *arg)
             if (s_streaming && bytes == 0) {
                 /**/
                 stall_secs++;
-                ESP_LOGW(TAG_ADSB, "stream stalled %ds, re-priming pipe (dropped=%llu)",
-                         stall_secs, (unsigned long long)s_sdropped);
+                ESP_LOGW(TAG_ADSB, "stream stalled %ds, re-priming pipe (dropped=%llu, usb errors=%lu)",
+                         stall_secs, (unsigned long long)s_sdropped, (unsigned long)hcd_dwc_desc_errors);
                 stream_reprime();
             } else {
                 stall_secs = 0;
-                ESP_LOGW(TAG_ADSB, "stream throughput: %u B/s (%.2f MB/s), dropped=%llu",
-                         (unsigned)bytes, bytes / 1e6, (unsigned long long)s_sdropped);
+                ESP_LOGW(TAG_ADSB, "stream throughput: %u B/s (%.2f MB/s), dropped=%llu, usb errors=%lu",
+                         (unsigned)bytes, bytes / 1e6, (unsigned long long)s_sdropped,
+                         (unsigned long)hcd_dwc_desc_errors);
             }
             last_head = s_shead; last_log = now;
         }

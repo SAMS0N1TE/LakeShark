@@ -573,10 +573,10 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                      (int)gz.milliamps);
             row(sf, a, 18, "pack", buf, gz.milliamps ? val : dim);
 
-            snprintf(buf, sizeof(buf), "%u %%  %u of %u mAh  %.1f C",
-                     (unsigned)gz.percent, (unsigned)gz.remaining_mah,
-                     (unsigned)gz.full_mah, gz.temp_c10 / 10.0);
-            row(sf, a, 19, "learned", buf, dim);
+            snprintf(buf, sizeof(buf), "%u %%  (gauge %u %%)  %.1f C",
+                     (unsigned)gz.percent, (unsigned)gz.learned_percent,
+                     gz.temp_c10 / 10.0);
+            row(sf, a, 19, "charge", buf, dim);
             if (gz.milliamps == 0)
                 row(sf, a, 20, "note", "not sourcing - this is the charger",
                     dim);
@@ -891,9 +891,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
                         gz.millivolts < 3400 ? bad
                         : gz.millivolts < 3700 ? val : good);
 
-                    int pct = ((int)gz.millivolts - 3300) * 100 / 900;
-                    if (pct < 0) pct = 0;
-                    if (pct > 100) pct = 100;
+                    const int pct = gz.percent;
                     /* The bar is the block's sixth row and only
                        exists while the pack is sourcing, so it is asked for
                        on its own - a landscape half stops one row short of

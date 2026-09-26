@@ -21,6 +21,10 @@ size_t ls_tui_png_emit(const uint16_t *px, int native_w, int native_h,
                        bool landscape, ls_tui_png_line_fn emit, void *ctx,
                        uint32_t *crc_out);
 
+/* The same encoding to a file: `px` is row-major RGB565, w x h. Returns
+   the size written, or 0 on any failure (the file may then be partial). */
+size_t ls_tui_png_write(const uint16_t *px, int w, int h, const char *path);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,4 +1,5 @@
 #include "ls_mixrf.h"
+#include "ls_trail.h"
 #include "ls_cc_capture.h"
 #include "ls_nfc_suite.h"
 #include "ls_board.h"
@@ -427,6 +428,7 @@ static void worker(void *arg)
     bool capturing=false;
     uint32_t raw_captures=0, raw_overflows=0;
     for(;;) {
+        ls_trail(LS_TRAIL_MIXRF, "loop");
         portENTER_CRITICAL(&lock);bool send=tx_pending;tx_pending=false;portEXIT_CRITICAL(&lock);
         if(send) {
             ls_cc_capture_stop();capturing=running=false;
@@ -519,6 +521,7 @@ static void worker(void *arg)
             else {cc_strobe(0x36);status_text("CC1101 RX/RMT unavailable; check memory and wiring");portENTER_CRITICAL(&lock);want=want_capture=false;portEXIT_CRITICAL(&lock);}
         } else if(!on && (running || capturing)) {ls_cc_capture_stop();capturing=false;cc_strobe(0x36);running=false;status_text("CC1101 receive monitor stopped");}
         uint8_t raw=0,marc=0;
+        ls_trail(LS_TRAIL_MIXRF, "cc rssi");
         bool valid=running && cc_read(0x35,&marc) && (marc&31)==13 && cc_read(0x34,&raw);
         /* Clear a packet FIFO overflow; this monitor reads energy, not payloads. */
         if(running && (marc&31)==17){cc_strobe(0x36);cc_strobe(0x3a);cc_strobe(0x34);}

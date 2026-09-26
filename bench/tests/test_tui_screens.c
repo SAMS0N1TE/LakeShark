@@ -80,6 +80,19 @@ bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 static int s_sg_style, s_sg_colour;
 int  settings_get_subghz_style(void) { return s_sg_style; }
 void settings_set_subghz_style(int v) { s_sg_style = v; }
+static int s_compass_opt;
+int  settings_get_compass_options(void) { return s_compass_opt; }
+bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; return false; }
+bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
+bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d; return false; }
+esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
+bool ls_board_hw_antenna_is_external(void) { return false; }
+void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
+int  settings_get_df_option(int id, int f) { (void)id; return f; }
+void settings_set_df_option(int id, int v) { (void)id; (void)v; }
+int  settings_get_df_channels(int s, uint32_t *hz, int m) { (void)s; (void)hz; (void)m; return 0; }
+void settings_set_df_channels(int s, const uint32_t *hz, int n) { (void)s; (void)hz; (void)n; }
+void settings_set_compass_options(int v) { s_compass_opt = v; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
@@ -110,6 +123,9 @@ void ls_map_preview_leave(void) {}
 void ls_map_follow_set(bool enable) {(void)enable;}
 void ls_map_preview_reserve(tui_rect a,int x,int y,int w) {(void)a;(void)x;(void)y;(void)w;}
 void ls_map_preview_labels(tui_surface *sf,tui_rect a) {(void)sf;(void)a;}
+void ls_map_get_center(double *lat,double *lon) {if(lat)*lat=43.4445;if(lon)*lon=-71.6473;}
+void ls_map_pan(int dx,int dy) {(void)dx;(void)dy;}
+const uint16_t *ls_map_render(int *w,int *h) {if(w)*w=0;if(h)*h=0;return NULL;}
 void ls_map_preview(tui_surface *sf,tui_rect a,double lat,double lon)
 {(void)sf;(void)a;(void)lat;(void)lon;}
 bool ls_map_preview_point(double lat,double lon,tui_rect a,int *x,int *y)
@@ -369,11 +385,13 @@ static bool rec_gps_touch(int x,int y) {(void)x;(void)y;return true;}
 const ls_tui_screen_t ls_scr_gps = { .name = "GPS", .draw=rec_gps_draw, .key=rec_gps_key, .touch=rec_gps_touch };
 
 extern const ls_tui_screen_t ls_scr_falls, ls_scr_settings, ls_scr_diag, ls_scr_rec,
-                             ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf;
+                             ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
+                             ls_scr_notes, ls_scr_compass;
 
 static const ls_tui_screen_t *const SCREENS[] = {
     &ls_scr_settings, &ls_scr_diag, &ls_scr_rec, &ls_scr_home,
     &ls_scr_fm, &ls_scr_adsb, &ls_scr_labs, &ls_scr_journal, &ls_scr_subghz, &ls_scr_mixrf,
+    &ls_scr_notes, &ls_scr_compass,
 };
 #define N_SCREENS ((int)(sizeof(SCREENS) / sizeof(SCREENS[0])))
 
@@ -660,8 +678,10 @@ static void apps_once(void)
           LS_APP_MAIN, &ls_scr_adsb, NULL, &ls_doc_adsb },
         { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
           LS_APP_EXTRA, &ls_scr_labs, NULL, &ls_doc_labs },
-        { "journal", "JOURNAL", "notes", LS_ICON_JOURNAL, TUI_GREEN,
-          LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
+        { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
+          LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
+        { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW,
+          LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
         { "subghz", "SUB-GHZ", "watch", LS_ICON_RECORD, TUI_GREEN,
           LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     };
@@ -898,7 +918,7 @@ LS_CASE(home_landscape_tiles_keep_their_labels)
     fresh();
     draw_pane(&ls_scr_home, PANES[0]);   /* landscape body, 113x24 */
 
-    static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB", "LORA LABS", "JOURNAL" };
+    static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB", "LORA LABS", "NOTES" };
     static const char GROUP[] = {'s','s','f','r','r','r','f'};
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
         ls_scr_home.key((ls_tk_t)(LS_TK_F1+(GROUP[i]=='s'?2:GROUP[i]=='f'?1:0)), 0);
