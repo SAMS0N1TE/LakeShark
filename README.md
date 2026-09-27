@@ -38,19 +38,19 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 <p align="center">
 <img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="32%" alt="HOME" />
 <img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="32%" alt="P25" />
-<img src="docs/screenshots/tdp4/gallery-20260923/adsb-port.png" width="32%" alt="ADS-B" />
+<img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="32%" alt="MAP" />
-<img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="32%" alt="FALLS on P25" />
+<img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
+<img src="docs/screenshots/tdp4/motion/falls-p25.gif" width="32%" alt="FALLS on P25" />
 <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
-<img src="docs/screenshots/tdp4/motion/adsb-map.gif" width="32%" alt="ADS-B and MAP following an aircraft" />
+<img src="docs/screenshots/tdp4/motion/fm-noaa.gif" width="32%" alt="FM on NOAA weather" />
 <img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
 <img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
 </p>
 
-Recorded on the board: FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, COMPASS FIND turning on two channels, MAP following an aircraft, mesh messages arriving as notices, and the Night theme.
+Recorded on the board: ADS-B traffic on the mini map, FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, COMPASS FIND turning on two channels, MAP following an aircraft, the P25 waterfall, FM on NOAA weather, mesh messages arriving as notices, and the Night theme.
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
