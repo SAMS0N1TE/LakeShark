@@ -52,10 +52,6 @@ private:
     static void setAgcCb(lv_event_t *e);
     static void presetLeftCb(lv_event_t *e);
     static void presetRightCb(lv_event_t *e);
-    static void lpLeftCb(lv_event_t *e);
-    static void lpRightCb(lv_event_t *e);
-    static void shelfLeftCb(lv_event_t *e);
-    static void shelfRightCb(lv_event_t *e);
     static void voiceTestCb(lv_event_t *e);
     static void newCycleCb(lv_event_t *e);
     static void lostCycleCb(lv_event_t *e);
@@ -96,8 +92,6 @@ private:
 
     lv_obj_t *_set_gain_val   = nullptr;
     lv_obj_t *_set_preset_val = nullptr;
-    lv_obj_t *_set_lp_val     = nullptr;
-    lv_obj_t *_set_shelf_val  = nullptr;
     lv_obj_t *_set_new_val    = nullptr;
     lv_obj_t *_set_lost_val   = nullptr;
     lv_obj_t *_set_pos_val    = nullptr;

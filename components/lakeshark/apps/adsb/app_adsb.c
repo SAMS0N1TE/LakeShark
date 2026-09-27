@@ -36,7 +36,13 @@ static ls_iq_control_t s_radio_control;
 static const char *TAG = "adsb";
 static volatile bool s_age_running = false;
 static volatile bool s_age_should_run = false;
+static TaskHandle_t  s_age_task;
 
+/* Its stack is in PSRAM: internal memory is all DMA-capable on the P4, and
+   ADS-B streaming leaves little of it for the SPI and SD transfers that need
+   it. Nothing here writes flash. The task stops itself and the stopping side
+   deletes it; deleting itself WithCaps would have IDF start a helper task in
+   internal memory to do it. */
 static void age_task(void *arg)
 {
     s_age_running = true;
@@ -48,7 +54,15 @@ static void age_task(void *arg)
         adsb_periodic_age(esp_timer_get_time());
     }
     s_age_running = false;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
+}
+
+static void age_reap(void)
+{
+    if (s_age_task && !s_age_running) {
+        vTaskDeleteWithCaps(s_age_task);
+        s_age_task = NULL;
+    }
 }
 
 static uint32_t s_cfg_freq = 1090000000UL;
@@ -241,10 +255,12 @@ static void adsb_on_enter(void)
         return;
     }
 
+    age_reap();
     s_age_should_run = true;
     s_age_running = true;
-    if (xTaskCreatePinnedToCore(age_task, "adsb_age", 3072, NULL, 1,
-                                NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(age_task, "adsb_age", 3072, NULL, 1,
+                                        &s_age_task, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
+        s_age_task = NULL;
         s_age_should_run = false;
         s_age_running = false;
         ESP_LOGE(TAG, "adsb_age task create failed - contacts will not time "
@@ -271,6 +287,7 @@ static bool adsb_on_stop(void)
         ESP_LOGE(TAG, "*** Next app will see degraded throughput. Reboot ***");
         return false;
     } else {
+        age_reap();
         if (s_session) {
             ls_radio_release(s_session);
             s_session = NULL;

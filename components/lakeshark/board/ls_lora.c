@@ -342,6 +342,11 @@ static uint16_t s_fsk_preamble_bits;
 static uint8_t  s_fsk_sync_bits;
 static bool     s_scanning;        /* a sweep owns the synthesiser */
 static bool     s_rx_mode;
+/* A receive that could not be armed. On the P4 every SPI transfer here takes
+   bounce buffers from internal DMA memory, which ADS-B streaming leaves
+   short; a failed one after RX_DONE left the part in standby, so nothing
+   more was ever heard. ls_lora_poll tries again until it takes. */
+static bool     s_rearm;
 static bool     s_tx_busy;
 static int64_t  s_tx_deadline;
 
@@ -582,11 +587,12 @@ esp_err_t ls_lora_receive(void)
 {
     if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
     esp_err_t err = clear_irq(0xFFFF);
-    if (err != ESP_OK) return err;
-
-    uint8_t tx[4] = { OP_SET_RX, 0xFF, 0xFF, 0xFF };
-    err = xfer(tx, NULL, sizeof(tx));
+    if (err == ESP_OK) {
+        uint8_t tx[4] = { OP_SET_RX, 0xFF, 0xFF, 0xFF };
+        err = xfer(tx, NULL, sizeof(tx));
+    }
     if (err == ESP_OK) { s_rx_mode = true; s_tx_busy = false; }
+    s_rearm = err != ESP_OK;
     return err;
 }
 
@@ -605,6 +611,7 @@ esp_err_t ls_lora_send(const uint8_t *data, size_t len)
     esp_err_t err;
     uint8_t b = STANDBY_RC;
     if ((err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0)) != ESP_OK) return err;
+    s_rearm = true;             /* out of receive until the transmit starts */
     if ((err = clear_irq(0xFFFF)) != ESP_OK) return err;
     if ((err = set_packet_params((uint8_t)len)) != ESP_OK) return err;
 
@@ -623,6 +630,7 @@ esp_err_t ls_lora_send(const uint8_t *data, size_t len)
 
     s_tx_busy = true;
     s_rx_mode = false;
+    s_rearm = false;
     s_tx_deadline = esp_timer_get_time() + (int64_t)TX_TIMEOUT_MS * 1000;
     ESP_LOGI(TAG, "TX begin: %u bytes at %d dBm, estimated %lu ms",
              (unsigned)len, s_cfg.power_dbm,
@@ -653,6 +661,7 @@ bool ls_lora_send_done(void)
 int ls_lora_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 {
     if (!s_cfg_valid || s_fsk_active || !buf || !max || !s_pkt) return 0;
+    if (s_rearm && !s_tx_busy && ls_lora_receive() != ESP_OK) return 0;
 
     /* DIO1 first: one expander read is much cheaper than an SPI round trip
        and this runs in a loop. Low means there is nothing to collect. */
@@ -1147,7 +1156,11 @@ void ls_lora_diagnostics(void)
         }
     }
     uint8_t st = 0;
-    ls_lora_status(&st);
+    const esp_err_t st_err = ls_lora_status(&st);
+    if (st_err != ESP_OK)
+        printf("lora: status read failed: %s (zeros below are not the part's)\n",
+               esp_err_to_name(st_err));
+    if (s_rearm) printf("lora: receive not armed yet - retried on every poll\n");
     /* 0x0740 is the LoRa sync word. Its reset value is known, so reading it
        distinguishes a working SPI path from a wire that merely is not shorted. */
     uint8_t sync[2] = { 0, 0 };

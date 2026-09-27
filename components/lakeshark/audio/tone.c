@@ -1,6 +1,6 @@
 #include "tone.h"
 #include "audio_out.h"
-#include "sam_tts.h"
+#include "speech.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -22,7 +22,7 @@ void audio_tone(float freq, float dur_s, float amp)
             float t = (float)(i + j) / AUDIO_RATE_HZ;
             buf[j] = (int16_t)(sinf(2.0f * (float)M_PI * freq * t) * amp);
         }
-        audio_write_mono(buf, chunk);
+        audio_write_cue(buf, chunk);
     }
 }
 
@@ -50,7 +50,7 @@ void snd_p25_chirp(void)
         else if (i >= total - fade_out) env = (float)(total - i) / (float)fade_out;
         buf[i] = (int16_t)(sinf(ph) * amp * env);
     }
-    audio_write_mono(buf, total);
+    audio_write_cue(buf, total);
 }
 
 /* The power-on chime. */
@@ -63,7 +63,7 @@ static void tone_write_paced(const int16_t *buf, int n)
                           (uint32_t)sizeof(int16_t);
     for (int i = 0; i < 200 && audio_out_ring_avail() > half; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
-    audio_write_mono(buf, n);
+    audio_write_cue(buf, n);
 }
 
 void snd_boot(void)
@@ -154,7 +154,7 @@ static void moto_tone(float freq, float dur_s, float amp)
             float s = sinf(ph) + 0.18f * sinf(ph3);
             buf[j] = (int16_t)(s * amp * env * 0.85f);
         }
-        audio_write_mono(buf, chunk);
+        audio_write_cue(buf, chunk);
     }
 }
 
@@ -320,7 +320,7 @@ static void play_boot_chime(void)
     audio_out_ensure_unmuted();
     snd_boot();
     static const int16_t sil[1600] = { 0 };
-    audio_write_mono(sil, 1600);
+    audio_write_cue(sil, 1600);
     for (int i = 0; i < 250 && audio_out_ring_avail() > 320; i++)
         vTaskDelay(pdMS_TO_TICKS(20));
 }
@@ -349,9 +349,9 @@ static void test_worker(void *arg)
            already turns mode 2 into the chime, and this is the same rule for
            anything that queues the job directly. */
         case SND_JOB_WELCOME:
-            if (!sam_tts_available()) { play_boot_chime(); break; }
+            if (!speech_available()) { play_boot_chime(); break; }
             audio_out_ensure_unmuted();
-            sam_tts_speak("WELCOME.");
+            speech_say("WELCOME.");
             break;
         default: break;
         }
@@ -392,7 +392,7 @@ bool snd_boot_start(int mode)
     if (!s_test_q || s_test_busy) return false;
     /* Spoken only when something can speak. With no engine the
        greeting is the chime, which is also what SETTINGS now says it is. */
-    if (mode == 2 && !sam_tts_available()) mode = 1;
+    if (mode == 2 && !speech_available()) mode = 1;
     uint8_t w = (uint8_t)(mode == 2 ? SND_JOB_WELCOME : SND_JOB_BOOT);
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }

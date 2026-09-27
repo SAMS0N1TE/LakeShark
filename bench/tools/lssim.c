@@ -27,6 +27,8 @@
 #include "ls_waterfall.h"
 #include "ls_wf_source.h"
 #include "ls_map.h"
+#include "ls_map_marks.h"
+#include <math.h>
 #include "ls_notes.h"
 #include "apps/adsb/adsb_state.h"
 #include "apps/fm/fm_state.h"
@@ -252,6 +254,22 @@ static void feed_map(void)
         ls_map_center(43.4445, -71.6473);
     else
         printf("lssim: no map archive at %s\n", s_map_archive);
+    /* Markers and a drawn line, in a scratch file so a render never writes
+       into the fixtures. */
+    char marks[512];
+    const char *tmp = getenv("TEMP");
+    snprintf(marks, sizeof(marks), "%s/lssim_marks.txt", tmp ? tmp : ".");
+    remove(marks);
+    ls_marks_use_file(marks);
+    ls_marks_add(43.4520, -71.6620, LS_MARK_CAMP, "BASE CAMP");
+    ls_marks_add(43.4380, -71.6300, LS_MARK_HAZARD, "WASHOUT");
+    ls_marks_add(43.4300, -71.6750, LS_MARK_WATER, NULL);
+    ls_sketch_begin();
+    ls_sketch_add_point(43.4520, -71.6620);
+    ls_sketch_add_point(43.4470, -71.6500);
+    ls_sketch_add_point(43.4410, -71.6420);
+    ls_sketch_add_point(43.4380, -71.6300);
+    ls_sketch_finish();
 }
 
 static void feed_pages(void)
@@ -297,6 +315,14 @@ static void feed_adsb(void)
         { 0xA4C5D6u, "N914QT",   5500, 140,  185, -600,  43.41f, -71.69f, true,  12 },
         { 0xAABBCCu, "DAL118",  28000, 480,   95, 1200,  43.40f, -71.60f, true,  40 },
         { 0xA00777u, "",        1800,  90,   30,    0,   0.0f,    0.0f, false,   3 },
+        { 0xA7E001u, "LIFE1",   1200, 110,  320,    0,  43.455f, -71.705f, true,  1 },
+        { 0xA5FD03u, "FDX903",  21000, 390,  40, 1800,  43.425f, -71.585f, true,  2 },
+        { 0xA77000u, "N55EM",   3500, 120,  140, -900,  43.465f, -71.625f, true,  1 },
+    };
+    /* Emitter categories, for the symbols: rotorcraft, heavy, light. */
+    static const struct { uint32_t icao; uint8_t tc, ca; } CAT[] = {
+        { 0xA1B2C3u, 4, 3 }, { 0xA7E001u, 4, 7 }, { 0xA5FD03u, 4, 5 }, { 0xA77000u, 4, 1 },
+        { 0xA4C5D6u, 4, 1 },
     };
     adsb_state_init();
     const int64_t now = esp_timer_get_time();
@@ -319,6 +345,26 @@ static void feed_adsb(void)
         a->first_seen_us  = a->last_seen_us - 120 * 1000000LL;
         for (int k = 0; k < 32; k++)
             a->alt_history[k] = (int16_t)(SEED[i].alt - 400 + k * 25);
+        for (unsigned c = 0; c < sizeof(CAT) / sizeof(CAT[0]); c++)
+            if (CAT[c].icao == a->icao) { a->emitter_tc = CAT[c].tc; a->emitter_ca = CAT[c].ca; }
+        /* Where it has been: back along a gently turning track, a report
+           every five seconds for the last hundred. */
+        if (a->pos_valid) {
+            const float lat = a->lat, lon = a->lon;
+            const int64_t ts = a->pos_ts_us;
+            for (int k = 20; k >= 1; k--) {
+                const double hdg = (SEED[i].hdg + k * 2.5) * M_PI / 180.0;
+                const double nm = SEED[i].vel * (k * 5.0) / 3600.0;
+                a->lat = lat - (float)(nm * cos(hdg) / 60.0);
+                a->lon = lon - (float)(nm * sin(hdg) / 60.0 / cos(lat * M_PI / 180.0));
+                a->pos_ts_us = ts - (int64_t)k * 5000000LL;
+                adsb_state_push_position(a);
+            }
+            a->lat = lat; a->lon = lon; a->pos_ts_us = ts;
+            adsb_state_push_position(a);
+        }
+        if (a->icao == 0xA77000u) { adsb_state_set_squawk(a, 7700); adsb_state_set_squawk(a, 7700); }
+        else if (a->pos_valid) { adsb_state_set_squawk(a, 1200 + (int)i); adsb_state_set_squawk(a, 1200 + (int)i); }
     }
     adsb_select_set_icao(SEED[0].icao);
 }
@@ -497,19 +543,39 @@ static void usage(void)
    tools/ls_record.py) drawn frame by frame through this same renderer, as
    raw RGB24 at the panel's native size, for ffmpeg. The file is a text
    line "LSREC1 cols rows landscape font theme daylight", then each frame as
-   cols*rows pairs of (character, attribute) bytes. Off the glass is black. */
+   cols*rows pairs of (character, attribute) bytes; LSREC2 (see
+   tools/ls_record.py) adds the map pictures and each frame's glass bits.
+   Off the glass is black. */
 static int play(const char *in, const char *out)
 {
     FILE *f = fopen(in, "rb");
     if (!f) { printf("lssim: cannot read %s\n", in); return 1; }
     char head[160];
     if (!fgets(head, sizeof(head), f)) { fclose(f); return 1; }
-    int cols, rows, landscape, font, daylight;
+    int cols, rows, landscape, font, daylight, version = 0, nimages = 0;
     char theme[40];
-    if (sscanf(head, "LSREC1 %d %d %d %d %39s %d", &cols, &rows, &landscape, &font, theme, &daylight) != 6) {
+    if (sscanf(head, "LSREC%d %d %d %d %d %39s %d", &version, &cols, &rows, &landscape, &font, theme,
+               &daylight) != 7 || (version != 1 && version != 2)) {
         printf("lssim: %s is not a recording\n", in);
         fclose(f);
         return 1;
+    }
+    /* LSREC2 adds the pictures behind image cells (the map), then each
+       frame's glass bits and which picture it shows. */
+    typedef struct { tui_rect r; int w, h; uint16_t *px; } rec_image_t;
+    rec_image_t *images = NULL;
+    const char *ni = strstr(head, " images ");
+    if (version == 2 && ni) nimages = atoi(ni + 8);
+    if (nimages > 0) images = calloc((size_t)nimages, sizeof(*images));
+    for (int i = 0; i < nimages && images; i++) {
+        int16_t d[6];
+        if (fread(d, sizeof(d), 1, f) != 1) { nimages = i; break; }
+        images[i].r = tui_rect_make(d[0], d[1], d[2], d[3]);
+        images[i].w = d[4]; images[i].h = d[5];
+        images[i].px = malloc((size_t)d[4] * d[5] * 2);
+        if (!images[i].px || fread(images[i].px, 2, (size_t)d[4] * d[5], f) != (size_t)d[4] * d[5]) {
+            nimages = i; break;
+        }
     }
     ls_shim_time_set(120000000);
     ls_tui_set_font_index(font);
@@ -536,9 +602,22 @@ static int play(const char *in, const char *out)
     uint8_t *raw = malloc(cells * 2);
     uint8_t *rgb = malloc((size_t)NATIVE_W * NATIVE_H * 3);
     tui_surface *sf = ls_tui_surface();
+    const size_t gbytes = (cells + 7) / 8;
+    uint8_t *glass = malloc(gbytes);
     int frames = 0;
-    while (raw && rgb && fread(raw, 1, cells * 2, f) == cells * 2) {
+    while (raw && rgb && glass && fread(raw, 1, cells * 2, f) == cells * 2) {
         for (size_t i = 0; i < cells; i++) { sf->back[i].ch = (char)raw[2 * i]; sf->back[i].attr = raw[2 * i + 1]; }
+        if (version == 2) {
+            int32_t pic = -1;
+            if (fread(glass, 1, gbytes, f) != gbytes || fread(&pic, sizeof(pic), 1, f) != 1) break;
+            if (pic >= 0 && pic < nimages) {
+                ls_tui_image(images[pic].r, images[pic].px, images[pic].w, images[pic].h, (uint32_t)pic + 1);
+                for (size_t i = 0; i < cells; i++)
+                    if (glass[i >> 3] >> (i & 7) & 1) ls_tui_glass((int)(i % (size_t)cols), (int)(i / (size_t)cols));
+            } else {
+                ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
+            }
+        }
         ls_tui_present();
         for (int y = 0; y < NATIVE_H; y++)
             for (int x = 0; x < NATIVE_W; x++) {
@@ -552,7 +631,9 @@ static int play(const char *in, const char *out)
         fwrite(rgb, 1, (size_t)NATIVE_W * NATIVE_H * 3, o);
         frames++;
     }
-    free(raw); free(rgb);
+    free(raw); free(rgb); free(glass);
+    for (int i = 0; i < nimages && images; i++) free(images[i].px);
+    free(images);
     fclose(o); fclose(f);
     printf("lssim: %d frames, %dx%d, %s\n", frames, NATIVE_W, NATIVE_H, landscape ? "landscape" : "portrait");
     return frames ? 0 : 1;

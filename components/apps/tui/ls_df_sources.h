@@ -59,6 +59,8 @@ typedef struct {
 } ls_dfs_reading_t;
 
 const char *ls_dfs_name(ls_dfs_t s);
+/* Whether either slot is listening, so the worker knows how often to step. */
+bool ls_dfs_any_active(void);
 /* NULL when the source can be used now, otherwise why not. */
 const char *ls_dfs_unavailable(ls_dfs_t s);
 /* NULL when `s` can run in `slot` beside the other slot's radio. */

@@ -13,8 +13,11 @@
    well as stores. */
 #include "core/display_ctl.h"
 #include "../../ls_notify.h"
-/* Whether a spoken greeting can exist, so it is offered only then. */
-#include "audio/sam_tts.h"
+/* Whether speech exists, so the spoken greeting and voice are offered only then. */
+#include "audio/speech.h"
+#include "audio/audio_out.h"
+#include "audio/audio_events.h"
+#include "../../ls_picker.h"
 
 static int s_sel;
 
@@ -113,15 +116,97 @@ static void boot_show(char *b, size_t n)
 {
     static const char *M[] = { "off", "chime", "spoken" };
     int m = settings_get_boot_sound();
-    if (m == 2 && !sam_tts_available()) m = 1;
+    if (m == 2 && !speech_available()) m = 1;
     snprintf(b, n, "%s", (m >= 0 && m < 3) ? M[m] : "?");
 }
 static void boot_next(void)
 {
-    const int modes = sam_tts_available() ? 3 : 2;
+    const int modes = speech_available() ? 3 : 2;
     int m = settings_get_boot_sound();
-    if (m == 2 && !sam_tts_available()) m = 1;
+    if (m == 2 && !speech_available()) m = 1;
     settings_set_boot_sound((m + 1) % modes);
+}
+
+static void keydim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_keyboard_dim() ? "with screen" : "off"); }
+static void keydim_next(void) { display_ctl_set_keyboard_dim(!display_ctl_keyboard_dim()); }
+
+/* ---- voice -------------------------------------------------------------- */
+
+/* A menu rather than one box: the voice, its level, a test, and what gets
+   announced. Each choice is heard at once where there is something to hear,
+   replacing any sample still playing, and the menu comes back so the next
+   change is one press away. */
+
+enum { V_VOICE, V_LEVEL, V_TEST, V_NEW, V_LOST, V_POS, V_MESH, V_COUNT };
+
+static void voice_sample(const char *text)
+{
+    speech_cancel();
+    audio_out_ensure_unmuted();
+    speech_say_async(text);
+}
+
+static const char *callout_label(audio_evt_kind_t k)
+{
+    switch (audio_event_mode_get(k)) {
+    case AUD_MODE_VOICE: return "spoken";
+    case AUD_MODE_BEEP:  return "tone";
+    default:             return "off";
+    }
+}
+
+static void voice_menu(void);
+
+static void voice_menu_done(int i)
+{
+    if (i < 0) return;
+    switch (i) {
+    case V_VOICE:
+        speech_voice_step(+1);
+        voice_sample("RECEIVER READY.");
+        break;
+    case V_LEVEL: {
+        const int v = speech_volume_get();
+        const int next = v >= 100 ? 25 : v >= 75 ? 100 : v >= 50 ? 75 : 50;
+        speech_volume_set(next);
+        settings_speech_volume_set(next);
+        voice_sample("RECEIVER READY.");
+        break;
+    }
+    case V_TEST: audio_out_ensure_unmuted(); audio_events_play_test(); break;
+    case V_NEW:  audio_event_mode_cycle(AUDIO_EVT_NEW_CONTACT); break;
+    case V_LOST: audio_event_mode_cycle(AUDIO_EVT_LOST_CONTACT); break;
+    case V_POS:  audio_event_mode_cycle(AUDIO_EVT_POSITION); break;
+    case V_MESH: audio_events_mesh_say_cycle(); break;
+    default: return;
+    }
+    voice_menu();
+}
+
+static void voice_menu(void)
+{
+    char level[16];
+    snprintf(level, sizeof(level), "%d%% of volume", speech_volume_get());
+    ls_picker_open("VOICE", voice_menu_done);
+    ls_picker_add("Voice", speech_voice_name(speech_voice_get()));
+    ls_picker_add("Level", level);
+    ls_picker_add("Test", "say the ADS-B voice check");
+    ls_picker_add("New aircraft", callout_label(AUDIO_EVT_NEW_CONTACT));
+    ls_picker_add("Lost aircraft", callout_label(AUDIO_EVT_LOST_CONTACT));
+    ls_picker_add("Aircraft position", callout_label(AUDIO_EVT_POSITION));
+    ls_picker_add("Mesh messages", audio_mesh_say_label(audio_events_mesh_say_get()));
+}
+
+static void voice_show(char *b, size_t n)
+{
+    if (speech_available())
+        snprintf(b, n, "%s %d%%", speech_voice_name(speech_voice_get()), speech_volume_get());
+    else
+        snprintf(b, n, "off");
+}
+static void voice_next(void)
+{
+    if (speech_available()) voice_menu();
 }
 
 /* ---- font --------------------------------------------------------------- */
@@ -161,6 +246,7 @@ static const item_t ITEMS[] = {
     { "Screen lock", lock_show, lock_next },
     { "Brightness",     bri_show,   bri_next   },
     { "Keyboard light", keylight_show, keylight_next },
+    { "Keyboard dim",   keydim_show, keydim_next },
     { "Auto dim",       dim_show,   dim_next   },
     { "Dim after",      dimt_show,  dimt_next  },
     { "Volume",         vol_show,   vol_next   },
@@ -168,6 +254,7 @@ static const item_t ITEMS[] = {
     { "Daylight",       day_show,   day_next   },
     { "Font",           font_show,  font_next  },
     { "Boot sound",     boot_show,  boot_next  },
+    { "Voice",          voice_show, voice_next },
     { "Alert sound",    ring_show,  ring_next  },
     { "Vibrate",        vibe_show,  vibe_next  },
     { "USB autoreboot", usb_show,   usb_next   },

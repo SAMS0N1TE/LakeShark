@@ -1,3 +1,4 @@
+#include <stdlib.h>
 
 
 #include <stdbool.h>
@@ -123,4 +124,35 @@ const ls_safe_boot_t *ls_safe_boot_result(void)
 __attribute__((weak)) bool ls_field_owned(void) { return false; }
 
 /* No keyboard board in the simulator: editors show their touch keyboard. */
-bool ls_keypad_present(void) { return false; }
+/* LSSIM_KEYPAD=1 renders a screen as it looks with the keyboard attached. */
+bool ls_keypad_present(void) { const char *e = getenv("LSSIM_KEYPAD"); return e && e[0] == '1'; }
+
+/* No speech engine on the host screens: Settings shows the voice as off. */
+#include "../../components/lakeshark/audio/speech.h"
+bool speech_available(void) { return false; }
+speech_voice_t speech_voice_get(void) { return SPEECH_VOICE_GLITCH; }
+speech_voice_t speech_voice_step(int dir) { (void)dir; return SPEECH_VOICE_GLITCH; }
+const char *speech_voice_name(speech_voice_t v) { (void)v; return "glitch"; }
+speech_result_t speech_say_async(const char *t) { (void)t; return SPEECH_UNAVAILABLE; }
+void speech_cancel(void) {}
+int  speech_volume_get(void) { return 100; }
+void speech_volume_set(int pct) { (void)pct; }
+void settings_speech_volume_set(int pct) { (void)pct; }
+void audio_out_ensure_unmuted(void) {}
+
+#include "../../components/lakeshark/audio/audio_events.h"
+static audio_mode_t s_callout[AUDIO_EVT_KIND_COUNT];
+static audio_mesh_say_t s_mesh_say;
+audio_mode_t audio_event_mode_get(audio_evt_kind_t k) { return s_callout[k]; }
+audio_mode_t audio_event_mode_cycle(audio_evt_kind_t k)
+{ s_callout[k] = (audio_mode_t)((s_callout[k] + 1) % AUD_MODE_COUNT); return s_callout[k]; }
+void audio_events_play_test(void) {}
+audio_mesh_say_t audio_events_mesh_say_get(void) { return s_mesh_say; }
+audio_mesh_say_t audio_events_mesh_say_cycle(void)
+{ s_mesh_say = (audio_mesh_say_t)((s_mesh_say + 1) % AUD_MESH_COUNT); return s_mesh_say; }
+const char *audio_mesh_say_label(audio_mesh_say_t m) { (void)m; return "sender"; }
+void audio_events_mesh_message(const char *text, bool direct) { (void)text; (void)direct; }
+
+static bool s_key_dim = true;
+bool display_ctl_keyboard_dim(void) { return s_key_dim; }
+void display_ctl_set_keyboard_dim(bool on) { s_key_dim = on; }

@@ -37,7 +37,12 @@ static ls_textbuf_t s_tb;
 static view_t s_view;
 static int s_sel, s_first, s_read_scroll, s_read_rows;
 static int button_focus = -1, button_slot;
-static bool s_dock, s_new, s_loaded;
+/* s_dock is whether the touch keys are wanted; they are shown only while
+   the keyboard is not attached, which is checked every frame, so attaching
+   it mid-note puts them away and taking it off brings them back. */
+static bool s_dock = true, s_new, s_loaded;
+
+static bool dock_shown(void) { return s_dock && !ls_keypad_present(); }
 static int64_t s_last_edit_us, s_trash_armed_us;
 EXT_RAM_BSS_ATTR static char s_feedback[80];
 static tui_rect s_list_area, s_text_area, s_dock_area;
@@ -148,7 +153,7 @@ static void new_note(void)
     memset(&s_info, 0, sizeof(s_info));
     s_loaded = true; s_new = true;
     s_view = V_EDIT;
-    s_dock = !ls_keypad_present();
+    s_dock = true;
     ls_keydock_reset(true);
     s_last_edit_us = esp_timer_get_time();
 }
@@ -157,7 +162,7 @@ static void edit_note(void)
 {
     s_view = V_EDIT;
     s_tb.cursor = s_tb.len; s_tb.want_col = -1;
-    s_dock = !ls_keypad_present();
+    s_dock = true;
     ls_keydock_reset(false);
     s_last_edit_us = esp_timer_get_time();
 }
@@ -438,11 +443,12 @@ static void draw_edit(tui_surface *sf, tui_rect a)
 {
     ls_btn_t buttons[] = {{"DONE", s_tb.dirty ? "SAVE" : "SAVED", 's', false, false},
                           {"INSERT", "DATA", 'i', false, false},
-                          {"KEYS", s_dock ? "ON" : "OFF", 'k', s_dock, false}};
+                          {"KEYS", ls_keypad_present() ? "KB ON" : s_dock ? "ON" : "OFF", 'k',
+                           dock_shown(), ls_keypad_present()}};
     const int bar_h = ls_btn_raised_height(a, 3);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 3, button_focus);
     tui_rect body = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
-    int dock_h = s_dock ? ls_keydock_height(body) : 0;
+    int dock_h = dock_shown() ? ls_keydock_height(body) : 0;
     s_dock_area = tui_rect_make(body.x, body.y + body.h - dock_h, body.w, dock_h);
     tui_rect panel = tui_rect_make(body.x, body.y, body.w, body.h - dock_h);
     ls_panel_box(sf, panel, s_new ? "NEW NOTE" : "EDIT", TUI_GREEN);
@@ -560,7 +566,7 @@ static void edit_action(int i)
     s_feedback[0] = 0;
     if (i == 0) leave_editor();
     else if (i == 1) open_insert();
-    else if (i == 2) s_dock = !s_dock;
+    else if (i == 2 && !ls_keypad_present()) s_dock = !s_dock;
 }
 
 static void map_action(int i)
@@ -648,7 +654,7 @@ static bool touch(int col, int row)
     if (b >= 0) { action(b); return true; }
     if (s_view == V_EDIT) {
         ls_tk_t k; char ch;
-        if (s_dock && ls_keydock_touch(col, row, &k, &ch)) { if (k != LS_TK_NONE) edit_key(k, ch); return true; }
+        if (dock_shown() && ls_keydock_touch(col, row, &k, &ch)) { if (k != LS_TK_NONE) edit_key(k, ch); return true; }
         if (col >= s_text_area.x && col < s_text_area.x + s_text_area.w &&
             row >= s_text_area.y && row < s_text_area.y + s_text_area.h) {
             s_tb.cursor = ls_textbuf_index_at(&s_tb, s_text_area.w, s_tb.scroll + row - s_text_area.y, col - s_text_area.x);

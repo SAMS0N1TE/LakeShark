@@ -134,7 +134,7 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     /* Nine fields now, rows 1 to 9, so the box needs eleven rows to
        keep them inside its borders. The old floor of eight let the last two
        of the eight it had land on the bottom border and past it. */
-    if (area.w < 20 || area.h < 11) return;
+    if (area.w < 20 || area.h < 12) return;
 
     int row = 1;
     snprintf(buf, sizeof(buf), "%.8s", a->callsign[0] ? a->callsign : "unknown");
@@ -150,6 +150,21 @@ static void draw_detail(tui_surface *sf, tui_rect area,
         snprintf(buf, sizeof(buf), "not sent yet");
     }
     ls_kv(sf, area, row++, "CATEGORY", buf, a->emitter_tc ? val : dim);
+
+    /* The Mode A code, from identity replies; the three emergency codes
+       say so in red. */
+    int squawk = 0;
+    for (int s = 0; s < ADSB_MAX_TRACKED; s++)
+        if (adsb_state_get(s) == a) squawk = adsb_state_squawk(s);
+    const bool emergency = squawk == 7500 || squawk == 7600 || squawk == 7700;
+    if (squawk)
+        snprintf(buf, sizeof(buf), "%04d%s", squawk,
+                 squawk == 7500 ? "  HIJACK" : squawk == 7600 ? "  RADIO FAILURE" :
+                 squawk == 7700 ? "  EMERGENCY" : "");
+    else
+        snprintf(buf, sizeof(buf), "not heard yet");
+    ls_kv(sf, area, row++, "SQUAWK", buf,
+          emergency ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : squawk ? val : dim);
 
     snprintf(buf, sizeof(buf), "%d ft", a->altitude);
     ls_kv(sf, area, row++, "ALTITUDE", buf, val);
@@ -242,37 +257,13 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     char text[80];
     snprintf(text,sizeof(text),"%s %.4f, %.4f",live?"GPS":"HOME",lat,lon);
     tui_put_str(sf,area,area.x+2,area.y+1,text,bright);
-    tui_put_str(sf,area,area.x+2,area.y+2,"^N  +home  >air  @selected  .stale",LS_ATTR_DIM);
-    const int64_t now=esp_timer_get_time();
-    const uint32_t selected=adsb_select_get_icao();
-    struct {int x0,x1,y;} labels[ADSB_MAX_TRACKED]; int nlabels=0;
-    for(int i=0;i<ADSB_MAX_TRACKED;i++) {
-        const adsb_aircraft_t *a=adsb_state_get(i);
-        if(!a || !a->active || !a->pos_valid) continue;
-        int x,y;
-        if(!ls_map_preview_point(a->lat,a->lon,body,&x,&y)) continue;
-        bool fresh=a->pos_ts_us>0 && now>=a->pos_ts_us && now-a->pos_ts_us<=15000000;
-        uint8_t ink=fresh?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM;
-        tui_put_char(sf,body,x,y,a->icao==selected?'@':fresh?'>':'.',ink);
-        ls_map_preview_reserve(body,x,y,1);
-        if(s_nplot<ADSB_MAX_TRACKED) s_plot[s_nplot++]=(radar_plot_t){x,y,a->icao};
-        if(x+9<body.x+body.w) {
-            snprintf(text,sizeof(text),"%.8s",a->callsign[0]?a->callsign:"");
-            const int end=x+(int)strlen(text);
-            bool clear=true;
-            for(int j=0;j<nlabels;j++) if(labels[j].y==y && x+1<=labels[j].x1 && end>=labels[j].x0) clear=false;
-            if(clear && nlabels<ADSB_MAX_TRACKED) {
-                tui_put_str(sf,body,x+1,y,text,ink);
-                ls_map_preview_reserve(body,x+1,y,(int)strlen(text));
-                labels[nlabels].x0=x+1;labels[nlabels].x1=end;labels[nlabels++].y=y;
-            }
-        }
-    }
-    int hx,hy;
-    if(ls_map_preview_point(lat,lon,body,&hx,&hy)) {
-        tui_put_char(sf,body,hx,hy,'+',bright);
-        ls_map_preview_reserve(body,hx,hy,1);
-    }
+    tui_put_str(sf,area,area.x+2,area.y+2,"^N  alt: yellow<5k green<20k cyan  trails",LS_ATTR_DIM);
+    /* The full map's aircraft, drawn the same way here: one look for a
+       plane wherever it is shown. */
+    ls_map_plot_t plots[ADSB_MAX_TRACKED];
+    const int n=ls_map_preview_air(sf,body,plots,ADSB_MAX_TRACKED);
+    for(int i=0;i<n && s_nplot<ADSB_MAX_TRACKED;i++)
+        s_plot[s_nplot++]=(radar_plot_t){(int16_t)plots[i].x,(int16_t)plots[i].y,plots[i].icao};
     ls_map_preview_labels(sf,body);
     double width_nm=40075016.686*cos(lat*M_PI/180.0)*(body.w*3)/
         (ldexp(1.0,ls_map_zoom())*ls_map_tile_px()*LS_GEO_M_PER_NM);

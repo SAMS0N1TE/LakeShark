@@ -21,6 +21,7 @@ extern "C" {
 typedef struct {
     int      volume;
     int      muted;
+    int      tts_volume;
     int      rtl_ready;
     uint32_t uptime_s;
     uint32_t free_internal;

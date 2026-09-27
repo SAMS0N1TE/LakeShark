@@ -1,0 +1,32 @@
+--- a/components/sdmmc/sdmmc_cmd.c
++++ b/components/sdmmc/sdmmc_cmd.c
+@@ -475,6 +475,14 @@
+         // will decide based on the buffer size and memory availability.
+         dma_mem_info.extra_heap_caps &= ~MALLOC_CAP_SPIRAM;
+         err = esp_dma_capable_malloc(block_size, &dma_mem_info, &tmp_buf, &actual_size);
++#if SOC_SDMMC_PSRAM_DMA_CAPABLE
++        /* LakeShark: with internal DMA memory exhausted, bounce through PSRAM
++           rather than fail the write. */
++        if (err != ESP_OK) {
++            dma_mem_info.extra_heap_caps |= MALLOC_CAP_SPIRAM;
++            err = esp_dma_capable_malloc(block_size, &dma_mem_info, &tmp_buf, &actual_size);
++        }
++#endif
+         if (err != ESP_OK) {
+             return err;
+         }
+@@ -609,6 +617,14 @@
+         void *tmp_buf = NULL;
+         size_t actual_size = 0;
+         err = esp_dma_capable_malloc(block_size, &dma_mem_info, &tmp_buf, &actual_size);
++#if SOC_SDMMC_PSRAM_DMA_CAPABLE
++        /* LakeShark: with internal DMA memory exhausted, bounce through PSRAM
++           rather than fail the read. */
++        if (err != ESP_OK) {
++            dma_mem_info.extra_heap_caps |= MALLOC_CAP_SPIRAM;
++            err = esp_dma_capable_malloc(block_size, &dma_mem_info, &tmp_buf, &actual_size);
++        }
++#endif
+         if (err != ESP_OK) {
+             return err;
+         }

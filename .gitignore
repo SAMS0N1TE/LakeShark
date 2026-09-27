@@ -66,6 +66,7 @@ serial*.txt
 !/tools/ls_console.py
 !/tools/ls_remote.py
 !/tools/ls_record.py
+!/tools/ls_record_gui.py
 !/tools/p25_capture.py
 !/tools/p25_soak.py
 !/tools/release_preflight.py

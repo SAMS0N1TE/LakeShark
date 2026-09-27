@@ -21,7 +21,11 @@ $patches=@(
     @{ File='components/usb/hcd_dwc.c'
        Markers=@('hcd_dwc_desc_errors++')
        Patch='esp-idf-v5.4.3-usb-hcd-desc-error.patch'
-       Name='USB host failed-descriptor transfer error' }
+       Name='USB host failed-descriptor transfer error' },
+    @{ File='components/sdmmc/sdmmc_cmd.c'
+       Markers=@('bounce through PSRAM')
+       Patch='esp-idf-v5.4.3-sdmmc-psram-bounce.patch'
+       Name='SD card bounce buffer falls back to PSRAM' }
 )
 
 foreach($p in $patches){

@@ -13,6 +13,8 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | Classic NFC cipher helpers | `components/lakeshark/nfc/nfc_classic.c` header and `LICENSE` | GPL-3.0-or-later; adapted from Flipper Zero firmware Crypto1 helpers |
 | MeshCore and ed25519 | `components/meshcore/` notices and upstream notices | Preserve each component's license |
 | libcarto, PMTiles and TUI library | Notices within their component directories | Preserve each component's license |
+| Speech synthesis (Moonshine klatt-tts and g2p) | `components/klatt_tts/NOTICE` and `LICENSE` | MIT |
+| Pronouncing dictionary | `components/klatt_tts/LICENSE.CMUdict` | CMU Pronouncing Dictionary BSD-style terms; the notice ships with binaries |
 | DejaVu fonts | `components/apps/tui/DEJAVU-LICENSE.txt` | Bitstream Vera and DejaVu terms |
 | LVGL | `managed_components/lvgl__lvgl/LICENCE.txt` and nested notices | MIT and applicable nested notices |
 | Espressif and Waveshare components | Their component license files and source headers | Primarily Apache-2.0; retain nested notices |

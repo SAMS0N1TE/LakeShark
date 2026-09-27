@@ -46,7 +46,9 @@ static TaskHandle_t s_task, s_io_task;
 #define FIELD_STACK_WORDS (8192 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_field_stack[FIELD_STACK_WORDS];
 static EXT_RAM_BSS_ATTR StackType_t s_io_stack[FIELD_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb;
+static EXT_RAM_BSS_ATTR StackType_t s_find_stack[FIELD_STACK_WORDS];
+static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb, s_find_tcb;
+static TaskHandle_t s_find_task;
 #endif
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
 static bool s_watch;
@@ -843,12 +845,27 @@ static void worker(void *arg)
     if (!ls_gps_running()) ls_gps_start();
     for (;;) {
         ls_field_step();
-        /* Direction finding reads its radio here, beside the heading it pairs with. */
-        ls_dfs_step();
         lock(); bool active = s_watch || s_record || s_want || s_public.direct || s_public.calibrating || s_qcount; unlock();
         vTaskDelay(pdMS_TO_TICKS(active ? 25 : 200));
     }
 }
+/* Direction finding on its own task. Its radio work blocks - opening the
+   SDR, a capture read against a timeout, taking the LoRa radio from Mesh -
+   and on the field worker that stopped the heading it is read against, so
+   the compass froze for as long as a radio took. FIND pairs a reading with
+   the heading when the screen takes it, so nothing here needs the two in
+   step. Below the field worker's priority, so the heading always comes
+   first. */
+static void find_worker(void *arg)
+{
+    (void)arg;
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    for (;;) {
+        ls_dfs_step();
+        vTaskDelay(pdMS_TO_TICKS(ls_dfs_any_active() ? 25 : 200));
+    }
+}
+
 static void io_worker(void *arg)
 {
     (void)arg;
@@ -893,8 +910,12 @@ bool ls_field_start(void)
         vTaskDelete(s_io_task); s_io_task = NULL;
         s_live.ready = false; message("Field worker could not start"); publish(); return false;
     }
+    s_find_task = xTaskCreateStaticPinnedToCore(
+        find_worker, "find", FIELD_STACK_WORDS, NULL, 1,
+        s_find_stack, &s_find_tcb, 0);
     xTaskNotifyGive(s_io_task);
     xTaskNotifyGive(s_task);
+    if (s_find_task) xTaskNotifyGive(s_find_task);
 #endif
     s_started = true; return true;
 }

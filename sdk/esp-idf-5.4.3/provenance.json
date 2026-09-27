@@ -1,10 +1,10 @@
 {
   "base_commit": "ea1c174c1cbb7348bd8ba0ff1eb306246938dd80",
-  "commit": "70b9387ea77c974d80d435092a764c48a339544f",
+  "commit": "e28b8b0705cf754e1e02d6ef1fb565ca5e8819bd",
   "file": "components/esp_system/port/soc/esp32p4/system_internal.c",
   "file_sha256": "0e36524d8d2b7dbb213fe1a428bcc92f96bf6d64942614aecd418bd402930768",
   "patch_sha256": "1a45ec9fdc070c0435c1071de8c06965641427ffa71270c75de6839ff8bee94d",
-  "bundle_sha256": "a0b65c50fe639644af05cbaa59b0dba859c40a948c74396c62b76f267371400a",
+  "bundle_sha256": "9b62332d701e82b2a229b89efa1f1f1775edb2e6fea094352950bfe0c8349b6e",
   "file_hash_encoding": "LF-normalized source bytes",
   "files": [
     {
@@ -23,7 +23,13 @@
       "file": "components/usb/hcd_dwc.c",
       "patch": "usb-hcd.patch",
       "file_sha256": "7ec4ca77b3b1639c0d6633032599246fa05a49fda35745da0ac7e78f5f4ab271",
-      "patch_sha256": "a633817366cd2ac06e590d9cb8bca8ba0f5dd060b3d91533d6a0c285906dbaef"
+      "patch_sha256": "9c0eb3e5227a59fe172cb3da6aafbc0854081ada417a4e438d713cbc74dc6aaf"
+    },
+    {
+      "file": "components/sdmmc/sdmmc_cmd.c",
+      "patch": "sdmmc-bounce.patch",
+      "file_sha256": "f721e320f3898f93cf36035acc013c243a1d52afe25117e9028e24570e2436bd",
+      "patch_sha256": "6b80af557b0300706e3ff1bbf9802698664a4f5a271764b2fb2e9a711448c775"
     }
   ]
 }

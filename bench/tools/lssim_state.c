@@ -69,6 +69,10 @@ void settings_set_df_option(int id, int v) { (void)id; (void)v; }
 int  settings_get_df_channels(int s, uint32_t *hz, int m) { (void)s; (void)hz; (void)m; return 0; }
 void settings_set_df_channels(int s, const uint32_t *hz, int n) { (void)s; (void)hz; (void)n; }
 void settings_set_compass_options(int v) { s_compass_opt = v; }
+static uint32_t s_map_layers;
+static bool s_map_layers_set;
+uint32_t settings_get_map_layers(uint32_t fallback) { return s_map_layers_set ? s_map_layers : fallback; }
+void settings_set_map_layers(uint32_t v) { s_map_layers = v; s_map_layers_set = true; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }

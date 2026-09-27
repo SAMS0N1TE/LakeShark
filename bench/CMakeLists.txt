@@ -331,6 +331,35 @@ target_include_directories(test_fsk_capture PRIVATE
 ls_add_test(test_display_dim)
 ls_add_test(test_audio_pcm_ring)
 target_include_directories(test_audio_pcm_ring PRIVATE ${FW}/components/lakeshark/audio)
+
+set(KLATT ${FW}/components/klatt_tts)
+add_library(klatt_tts_host STATIC
+    ${KLATT}/klatt-tts/src/config.cc
+    ${KLATT}/klatt-tts/src/klatt.cc
+    ${KLATT}/klatt-tts/src/phonemes.cc
+    ${KLATT}/klatt-tts/src/synth_internal.cc
+    ${KLATT}/klatt-tts/src/synth_stream.cc
+    ${KLATT}/g2p/src/g2p.cc
+    ${KLATT}/g2p/src/g2p_dict.cc
+    ${KLATT}/g2p/src/g2p_numbers.cc
+    ${KLATT}/g2p/src/g2p_phones.cc
+    ${KLATT}/g2p/src/g2p_rules.cc
+    ${KLATT}/g2p/src/ipa_tokens.cc)
+# BEFORE: the bench-wide include list has its own config.h.
+target_include_directories(klatt_tts_host BEFORE
+    PUBLIC  ${KLATT}/klatt-tts/include ${KLATT}/g2p/include
+    PRIVATE ${KLATT}/klatt-tts/include/tts ${KLATT}/g2p/include/g2p ${KLATT}/g2p/src)
+target_compile_definitions(klatt_tts_host PRIVATE LAKESHARK_COMPACT_DICT)
+target_compile_options(klatt_tts_host PRIVATE -O2)
+
+ls_add_test(test_speech_engine
+    ${FW}/components/lakeshark/audio/speech_engine.cpp
+    ${FW}/components/lakeshark/audio/plane_audio.c)
+target_include_directories(test_speech_engine PRIVATE ${FW}/components/lakeshark/audio)
+target_link_libraries(test_speech_engine klatt_tts_host)
+
+ls_add_test(test_mesh_phrase ${FW}/components/lakeshark/audio/mesh_phrase.c)
+target_include_directories(test_mesh_phrase PRIVATE ${FW}/components/lakeshark/audio)
 target_include_directories(test_display_dim PRIVATE
     ${FW}/components/lakeshark/core)
 
@@ -573,6 +602,8 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_map_motion.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
     ${FW}/components/apps/tui/ls_map.c
+    ${FW}/components/apps/tui/ls_map_ink.c
+    ${FW}/components/apps/tui/ls_map_marks.c
     ${FW}/components/apps/tui/ls_stroke.c
     ${FW}/components/apps/tui/screens/ext/scr_falls.c
     ${FW}/components/apps/tui/ls_wf_source.c
@@ -1376,6 +1407,12 @@ target_compile_definitions(test_field PRIVATE LS_FIELD_TEST=1)
 
 ls_add_test(test_map_motion ${FW}/components/apps/tui/ls_map_motion.c)
 target_include_directories(test_map_motion PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_map_marks
+    ${FW}/components/apps/tui/ls_map_marks.c
+    ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_map_marks PRIVATE
+    ${FW}/components/apps/tui ${FW}/bench/shims)
 target_include_directories(test_tui_screens PRIVATE ${CARTO}/include)
 
 ls_add_test(test_nfc_classic ${FW}/components/lakeshark/nfc/nfc_classic.c)

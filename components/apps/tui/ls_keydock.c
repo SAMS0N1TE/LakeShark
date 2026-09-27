@@ -6,6 +6,8 @@
 
 #define COLS    10
 #define KEY_MIN 3
+#define KEY_MAX 6        /* rows a key may be, gap included */
+#define MIN_TEXT_ROWS 6  /* what the editor keeps above the dock */
 
 enum { LOWER, UPPER, SYM, MORE, LAYERS };
 static const char *const ROW0[LAYERS] = { "qwertyuiop", "QWERTYUIOP", "1234567890", "[]{}<>\\^|`" };
@@ -23,10 +25,20 @@ static bool s_once = true, s_drawn;
 
 void ls_keydock_reset(bool capital) { s_layer = capital ? UPPER : LOWER; s_once = capital; }
 
+/* Rows per key row: as tall as a finger wants, taking up to about 45% of
+   the area, and never so much that the text above has no room. */
+static int key_rows(tui_rect area)
+{
+    int kh = area.h * 45 / 100 / 4;
+    if (kh < KEY_MIN) kh = KEY_MIN;       /* a short landscape body still gets keys */
+    if (kh > KEY_MAX) kh = KEY_MAX;
+    while (kh >= KEY_MIN && area.h - kh * 4 < MIN_TEXT_ROWS) kh--;
+    return kh;
+}
+
 int ls_keydock_height(tui_rect area)
 {
-    int kh = area.h / 3 / 4;
-    if (kh > 3) kh = 3;
+    const int kh = key_rows(area);
     if (kh < KEY_MIN || area.w < COLS * 3) return 0;
     return kh * 4;
 }
@@ -34,12 +46,24 @@ int ls_keydock_height(tui_rect area)
 static void key(tui_surface *sf, tui_rect a, const char *label, char fig, uint8_t hue, int slot, bool lit)
 {
     s_hit[slot] = a;
-    if ((a.w & 1) == 0 && a.w > 1) { a.x++; a.w--; }
     const bool flash = slot == s_flash && s_flash_frames > 0;
     ls_fill_dither(sf, a, flash ? LS_DITHER_HEAVY : lit ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT,
                    flash ? TUI_GREEN | TUI_BRIGHT : hue);
     char one[2] = { fig, 0 };
     ls_dither_label(sf, a, (a.h - 1) / 2, label ? label : one, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+}
+
+/* The keyboard is ten units across and fills the width it is given: each
+   key runs from its first unit to its last, less one cell of gap, and the
+   units are spread so the row ends flush with the edge. */
+static int s_x0, s_span;
+
+static int unit_x(int u) { return s_x0 + u * s_span / COLS; }
+
+static tui_rect key_rect(int u0, int u1, int y, int h)
+{
+    const int x = unit_x(u0);
+    return tui_rect_make(x, y, unit_x(u1) - x - 1, h);
 }
 
 void ls_keydock_draw(tui_surface *sf, tui_rect area)
@@ -48,40 +72,42 @@ void ls_keydock_draw(tui_surface *sf, tui_rect area)
     s_drawn = false;
     /* `area` is the dock itself, already sized by ls_keydock_height. */
     int kh = area.h / 4;
-    if (kh > 3) kh = 3;
+    if (kh > KEY_MAX) kh = KEY_MAX;
     if (kh < KEY_MIN || area.w < COLS * 3) return;
-    const int h = kh * 4, krow = kh > KEY_MIN ? kh - 1 : kh;
-    /* Clear of the panel's rounded corners, which eat the outer cells. */
-    int kw = (area.w - 4) / COLS;
-    if (kw > 9) kw = 9;
-    const int x0 = area.x + (area.w - kw * COLS) / 2;
-    const int y0 = area.y + area.h - h, inner = kw - 1;
+    const int h = kh * 4, krow = kh - 1;     /* a row of air under each row of keys */
+    /* One cell in from each side: the rounded glass is handled by the
+       grid's own inset, and anything more is width a thumb could use. */
+    s_x0 = area.x + 1;
+    s_span = area.w - 1;
+    const int y0 = area.y + area.h - h;
     tui_fill(sf, tui_rect_make(area.x, y0, area.w, h), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
     if (s_flash_frames > 0) s_flash_frames--;
     for (int c = 0; c < COLS; c++) {
-        key(sf, tui_rect_make(x0 + c * kw, y0, inner, krow), NULL, ROW0[s_layer][c], TUI_CYAN, c, false);
-        key(sf, tui_rect_make(x0 + c * kw, y0 + kh, inner, krow), NULL, ROW1[s_layer][c], TUI_CYAN, 10 + c, false);
+        key(sf, key_rect(c, c + 1, y0, krow), NULL, ROW0[s_layer][c], TUI_CYAN, c, false);
+        key(sf, key_rect(c, c + 1, y0 + kh, krow), NULL, ROW1[s_layer][c], TUI_CYAN, 10 + c, false);
     }
     const int y2 = y0 + 2 * kh, y3 = y0 + 3 * kh;
-    key(sf, tui_rect_make(x0, y2, inner, krow),
+    key(sf, key_rect(0, 1, y2, krow),
         s_layer == MORE ? "2/2" : s_layer == SYM ? "1/2" : s_layer == UPPER ? (s_once ? "Shf" : "CAP") : "shf",
         0, TUI_YELLOW, S_SHIFT, s_layer == UPPER);
     for (int c = 0; c < 8; c++)
-        key(sf, tui_rect_make(x0 + (c + 1) * kw, y2, inner, krow), NULL, ROW2[s_layer][c], TUI_CYAN, 21 + c, false);
-    key(sf, tui_rect_make(x0 + 9 * kw, y2, inner, krow), "DEL", 0, TUI_RED, S_DEL, false);
-    key(sf, tui_rect_make(x0, y3, inner, krow), s_layer >= SYM ? "ABC" : "123", 0, TUI_YELLOW, S_LAYER, s_layer >= SYM);
-    key(sf, tui_rect_make(x0 + kw, y3, inner, krow), "<", 0, TUI_BLUE, S_LEFT, false);
-    key(sf, tui_rect_make(x0 + 2 * kw, y3, inner, krow), ">", 0, TUI_BLUE, S_RIGHT, false);
-    key(sf, tui_rect_make(x0 + 3 * kw, y3, 4 * kw - 1, krow), "SPACE", 0, TUI_CYAN, S_SPACE, false);
-    key(sf, tui_rect_make(x0 + 7 * kw, y3, inner, krow), "^", 0, TUI_BLUE, S_UP, false);
-    key(sf, tui_rect_make(x0 + 8 * kw, y3, inner, krow), "v", 0, TUI_BLUE, S_DOWN, false);
-    key(sf, tui_rect_make(x0 + 9 * kw, y3, inner, krow), "RET", 0, TUI_GREEN, S_ENTER, false);
+        key(sf, key_rect(c + 1, c + 2, y2, krow), NULL, ROW2[s_layer][c], TUI_CYAN, 21 + c, false);
+    key(sf, key_rect(9, 10, y2, krow), "DEL", 0, TUI_RED, S_DEL, false);
+    key(sf, key_rect(0, 1, y3, krow), s_layer >= SYM ? "ABC" : "123", 0, TUI_YELLOW, S_LAYER, s_layer >= SYM);
+    key(sf, key_rect(1, 2, y3, krow), "<", 0, TUI_BLUE, S_LEFT, false);
+    key(sf, key_rect(2, 3, y3, krow), ">", 0, TUI_BLUE, S_RIGHT, false);
+    key(sf, key_rect(3, 7, y3, krow), "SPACE", 0, TUI_CYAN, S_SPACE, false);
+    key(sf, key_rect(7, 8, y3, krow), "^", 0, TUI_BLUE, S_UP, false);
+    key(sf, key_rect(8, 9, y3, krow), "v", 0, TUI_BLUE, S_DOWN, false);
+    key(sf, key_rect(9, 10, y3, krow), "RET", 0, TUI_GREEN, S_ENTER, false);
     s_drawn = true;
 }
 
 static bool inside(tui_rect r, int col, int row)
 {
-    return r.w > 0 && col >= r.x && col < r.x + r.w + 1 && row >= r.y && row < r.y + r.h;
+    /* The gap after a key, across and below, is part of it: a thumb that
+       lands between two keys still types something. */
+    return r.w > 0 && col >= r.x && col < r.x + r.w + 1 && row >= r.y && row < r.y + r.h + 1;
 }
 
 bool ls_keydock_touch(int col, int row, ls_tk_t *out_key, char *out_ch)

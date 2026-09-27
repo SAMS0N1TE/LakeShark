@@ -12,7 +12,7 @@ extern "C" {
 #include "adsb_state.h"
 #include "adsb_decode.h"
 #include "lakeshark_backend.h"
-#include "sam_tts.h"
+#include "speech.h"
 #include "audio_events.h"
 #include "audio_out.h"
 
@@ -642,22 +642,12 @@ void AppADSB::buildSettingsTab(lv_obj_t *parent)
     ls_ui_button(r.controls, "STEP", LS_BTN_DEFAULT, setGainStepCb, this, nullptr);
     ls_ui_button(r.controls, "AGC", LS_BTN_TOGGLE_OFF, setAgcCb, this, nullptr);
 
-    sdr_section(parent, "VOICE (SAM)");
+    sdr_section(parent, "SPEECH");
 
-    sdr_setting_row(parent, "PRESET", &r);
+    sdr_setting_row(parent, "VOICE", &r);
     _set_preset_val = r.value;
     ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, presetLeftCb, this, nullptr);
     ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, presetRightCb, this, nullptr);
-
-    sdr_setting_row(parent, "LOW-PASS", &r);
-    _set_lp_val = r.value;
-    ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, lpLeftCb, this, nullptr);
-    ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, lpRightCb, this, nullptr);
-
-    sdr_setting_row(parent, "LOW-SHELF", &r);
-    _set_shelf_val = r.value;
-    ls_ui_button(r.controls, "<", LS_BTN_DEFAULT, shelfLeftCb, this, nullptr);
-    ls_ui_button(r.controls, ">", LS_BTN_DEFAULT, shelfRightCb, this, nullptr);
 
     sdr_setting_row(parent, "VOICE TEST", &r);
     lv_label_set_text(r.value, "");
@@ -713,11 +703,7 @@ void AppADSB::updateSettings(void)
     }
     if (_set_preset_val)
         lv_label_set_text(_set_preset_val,
-            sam_tts_preset_name((sam_tts_voice_preset_t)settings_voice_preset_get()));
-    if (_set_lp_val)
-        lv_label_set_text(_set_lp_val, sam_tts_lowpass_name(settings_voice_lowpass_get()));
-    if (_set_shelf_val)
-        lv_label_set_text(_set_shelf_val, sam_tts_lowshelf_name(settings_voice_lowshelf_get()));
+            speech_available() ? speech_voice_name(speech_voice_get()) : "OFF");
     if (_set_new_val)
         lv_label_set_text(_set_new_val,
             audio_mode_label(audio_event_mode_get(AUDIO_EVT_NEW_CONTACT)));
@@ -738,33 +724,11 @@ void AppADSB::updateSettings(void)
         lv_label_set_text(_set_carto_val, lakeshark_cartotui_enabled() ? "ON" : "OFF");
 }
 
-static void adsb_cycle_preset(int dir)
-{
-    int p = (settings_voice_preset_get() + SAM_PRESET_COUNT + dir) % SAM_PRESET_COUNT;
-    settings_voice_preset_set(p);
-    sam_tts_set_preset((sam_tts_voice_preset_t)p);
-}
-static void adsb_cycle_lp(int dir)
-{
-    int m = (settings_voice_lowpass_get() + 3 + dir) % 3;
-    settings_voice_lowpass_set(m);
-    sam_tts_set_lowpass(m);
-}
-static void adsb_cycle_shelf(int dir)
-{
-    int m = (settings_voice_lowshelf_get() + 3 + dir) % 3;
-    settings_voice_lowshelf_set(m);
-    sam_tts_set_lowshelf(m);
-}
 
 void AppADSB::setGainStepCb(lv_event_t *) { lakeshark_adsb_gain_step(); }
 void AppADSB::setAgcCb(lv_event_t *)      { lakeshark_adsb_agc(); }
-void AppADSB::presetLeftCb(lv_event_t *)  { adsb_cycle_preset(-1); }
-void AppADSB::presetRightCb(lv_event_t *) { adsb_cycle_preset(+1); }
-void AppADSB::lpLeftCb(lv_event_t *)      { adsb_cycle_lp(-1); }
-void AppADSB::lpRightCb(lv_event_t *)     { adsb_cycle_lp(+1); }
-void AppADSB::shelfLeftCb(lv_event_t *)   { adsb_cycle_shelf(-1); }
-void AppADSB::shelfRightCb(lv_event_t *)  { adsb_cycle_shelf(+1); }
+void AppADSB::presetLeftCb(lv_event_t *)  { speech_voice_step(-1); }
+void AppADSB::presetRightCb(lv_event_t *) { speech_voice_step(+1); }
 void AppADSB::voiceTestCb(lv_event_t *)   { audio_out_ensure_unmuted(); audio_events_play_test(); }
 void AppADSB::newCycleCb(lv_event_t *)    { audio_event_mode_cycle(AUDIO_EVT_NEW_CONTACT); }
 void AppADSB::lostCycleCb(lv_event_t *)   { audio_event_mode_cycle(AUDIO_EVT_LOST_CONTACT); }

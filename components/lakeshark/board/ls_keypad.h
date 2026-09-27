@@ -32,6 +32,8 @@ bool ls_keypad_read(ls_keypad_event_t *out);
 /* Keyboard backlight, 0 disables.  Board declares the pin; boards without one
    return ESP_ERR_NOT_SUPPORTED. */
 esp_err_t ls_keypad_backlight(bool on);
+/* Low while true, normal while false; follows the screen's auto-dim. */
+esp_err_t ls_keypad_backlight_dim(bool dim);
 
 /* The backlight's switching rate and depth, changeable while it runs. */
 

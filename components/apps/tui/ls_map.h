@@ -21,6 +21,10 @@ bool ls_map_preview_point(double lat, double lon, tui_rect area, int *x, int *y)
 void ls_map_preview_reserve(tui_rect area, int x, int y, int width);
 void ls_map_preview_labels(tui_surface *sf, tui_rect area);
 void ls_map_preview_leave(void);
+/* The full map's aircraft layer over the preview: symbols, trails and
+   callsigns, with ADS-B's own selection. Returns how many were plotted. */
+typedef struct { int x, y; uint32_t icao; } ls_map_plot_t;
+int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int max);
 void ls_map_end(void);
 
 /* Failed opens preserve the current archive. */

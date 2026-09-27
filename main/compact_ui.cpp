@@ -357,7 +357,25 @@ static int              s_rec_cols, s_rec_rows, s_rec_baud;
 static int64_t          s_rec_start_us, s_rec_until_us, s_rec_snap_us, s_rec_last_cap_us;
 static volatile uint32_t s_rec_frames, s_rec_skipped;
 static TaskHandle_t     s_rec_task = nullptr;
+static volatile bool    s_rec_busy = false;      /* a recording from command to its last line */
 #define REC_FRAME_US 35000          /* under the TUI's 40 ms frame, so every frame is a candidate */
+
+/* The picture behind image cells (the map) travels too, but only when it
+   changes, at most every REC_IMAGE_US, as run-length pixels; the glass marks
+   that let cells show over it go with every frame that has a picture. Both
+   are copied by the TUI task with the cells, while the sender is idle. */
+#define REC_IMAGE_US   250000
+#define REC_IMAGE_RUNS 60000        /* a picture that codes to more runs than this is not sent */
+static uint16_t        *s_rec_img = nullptr;     /* PSRAM copy */
+static size_t           s_rec_img_cap;
+static tui_rect         s_rec_img_rect;
+static int              s_rec_img_w, s_rec_img_h;
+static const uint16_t  *s_rec_img_src;
+static uint32_t         s_rec_img_serial;
+static bool             s_rec_img_on, s_rec_img_new;
+static int64_t          s_rec_img_us;
+static uint8_t         *s_rec_glass = nullptr, *s_rec_glass_last = nullptr;
+static size_t           s_rec_glass_n;
 
 /* The encode runs on a task of its own with a 16 kB stack in PSRAM. */
 
@@ -390,6 +408,13 @@ static void tui_png_task(void *arg)
    own (a waterfall scrolling) is sent as "~C <row> <from>", a copy of that
    row as it was, and then only what still differs from it. */
 #define REC_WHOLE_EVERY 48
+static vprintf_like_t s_rec_prev_vprintf = vprintf;
+/* Log output while recording: errors only. Lines start with their level
+   letter (no log colours in this build). */
+static int rec_log_vprintf(const char *fmt, va_list ap)
+{
+    return fmt[0] == 'E' ? s_rec_prev_vprintf(fmt, ap) : 0;
+}
 static int rec_row_diff(const tui_cell *a, const tui_cell *b, int cols)
 {
     int n = 0;
@@ -403,13 +428,49 @@ static void rec_out(const char *buf, size_t n)
     if (uart_write_bytes((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, buf, n) < 0)
         fwrite(buf, 1, n, stdout);
 }
-static void tui_rec_task(void *)
+static const char REC_HEX[] = "0123456789abcdef";
+
+/* The picture as "~I <x> <y> <w> <h> <pixels wide> <high>" and lines of
+   "~P" runs, six hex digits a run (count 1-255, then the RGB565 value), or
+   "~N" when there is none or it is too busy to send. */
+static void rec_send_image(char *chunk, size_t chunk_cap)
+{
+    const size_t px = (size_t)s_rec_img_w * s_rec_img_h;
+    size_t runs = 0;
+    if (s_rec_img_on)
+        for (size_t i = 0; i < px && runs <= REC_IMAGE_RUNS; runs++) {
+            size_t k = i + 1;
+            while (k < px && k - i < 255 && s_rec_img[k] == s_rec_img[i]) k++;
+            i = k;
+        }
+    if (!s_rec_img_on || runs > REC_IMAGE_RUNS) { rec_out("~N\n", 3); return; }
+    size_t n = (size_t)snprintf(chunk, 64, "~I %d %d %d %d %d %d\n~P ", s_rec_img_rect.x, s_rec_img_rect.y,
+                                s_rec_img_rect.w, s_rec_img_rect.h, s_rec_img_w, s_rec_img_h);
+    for (size_t i = 0; i < px;) {
+        size_t k = i + 1;
+        while (k < px && k - i < 255 && s_rec_img[k] == s_rec_img[i]) k++;
+        const unsigned cnt = (unsigned)(k - i), v = s_rec_img[i];
+        chunk[n++] = REC_HEX[cnt >> 4];       chunk[n++] = REC_HEX[cnt & 15];
+        chunk[n++] = REC_HEX[(v >> 12) & 15]; chunk[n++] = REC_HEX[(v >> 8) & 15];
+        chunk[n++] = REC_HEX[(v >> 4) & 15];  chunk[n++] = REC_HEX[v & 15];
+        i = k;
+        if (n + 16 > chunk_cap || i == px) {
+            chunk[n++] = '\n';
+            rec_out(chunk, n);
+            n = 0;
+            if (i < px) { memcpy(chunk, "~P ", 3); n = 3; }
+        }
+    }
+}
+
+static void tui_rec_run(void)
 {
     const int cols = s_rec_cols, rows = s_rec_rows;
     /* Worst case a row: a copy line, and a run of up to 12 bytes of header
-       every fourth cell besides four hex digits a cell. */
-    const size_t cap = (size_t)rows * ((size_t)cols * 7 + 64) + 64;
+       every fourth cell besides four hex digits a cell; then the glass line. */
+    const size_t cap = (size_t)rows * ((size_t)cols * 7 + 64) + 64 + 2 * s_rec_glass_n + 16;
     char *buf = (char *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    char *chunk = (char *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
     /* The receiver changes its own rate after it reads the begin line. */
     vTaskDelay(pdMS_TO_TICKS(300));
     fflush(stdout);
@@ -442,15 +503,30 @@ static void tui_rec_task(void *)
                     else quiet++;
                 }
                 n += (size_t)snprintf(buf + n, 24, "~%d %d ", r, c);
-                static const char HEX[] = "0123456789abcdef";
                 for (int k = c; k < end; k++) {
                     const uint8_t ch = (uint8_t)now[k].ch, at = now[k].attr;
-                    buf[n++] = HEX[ch >> 4]; buf[n++] = HEX[ch & 15];
-                    buf[n++] = HEX[at >> 4]; buf[n++] = HEX[at & 15];
+                    buf[n++] = REC_HEX[ch >> 4]; buf[n++] = REC_HEX[ch & 15];
+                    buf[n++] = REC_HEX[at >> 4]; buf[n++] = REC_HEX[at & 15];
                 }
                 buf[n++] = '\n';
                 c = end;
             }
+        }
+        if (chunk && (s_rec_img_new || sent == 1)) {
+            rec_out(buf, n);
+            n = 0;
+            rec_send_image(chunk, 4096);
+            s_rec_img_new = false;
+        }
+        if (s_rec_img_on && s_rec_glass &&
+            (whole || memcmp(s_rec_glass, s_rec_glass_last, s_rec_glass_n))) {
+            memcpy(buf + n, "~G ", 3); n += 3;
+            for (size_t i = 0; i < s_rec_glass_n; i++) {
+                buf[n++] = REC_HEX[s_rec_glass[i] >> 4];
+                buf[n++] = REC_HEX[s_rec_glass[i] & 15];
+            }
+            buf[n++] = '\n';
+            memcpy(s_rec_glass_last, s_rec_glass, s_rec_glass_n);
         }
         memcpy(buf + n, "~E\n", 3); n += 3;
         rec_out(buf, n);
@@ -459,17 +535,31 @@ static void tui_rec_task(void *)
         s_rec_ready = false;
     }
     s_rec_on = false;
-    esp_log_level_set("*", (esp_log_level_t)CONFIG_LOG_DEFAULT_LEVEL);
+    esp_log_set_vprintf(s_rec_prev_vprintf);
     printf("tui: rec end %lu frames %lu skipped\n", (unsigned long)s_rec_frames, (unsigned long)s_rec_skipped);
     fflush(stdout);
     uart_wait_tx_done((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(500));
     /* Back to the rate everything else expects, only after the last line is out. */
     uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
     heap_caps_free(buf);
+    heap_caps_free(chunk);
     heap_caps_free(s_rec_snap); s_rec_snap = nullptr;
     heap_caps_free(s_rec_last); s_rec_last = nullptr;
-    s_rec_task = nullptr;
-    vTaskDeleteWithCaps(nullptr);
+    heap_caps_free(s_rec_glass); s_rec_glass = nullptr;
+    heap_caps_free(s_rec_glass_last); s_rec_glass_last = nullptr;
+    heap_caps_free(s_rec_img); s_rec_img = nullptr; s_rec_img_cap = 0;
+    s_rec_busy = false;
+}
+
+/* One sender for every recording, started by the first. A task that
+   deletes itself WithCaps has IDF create a helper task in internal RAM to
+   free it, which with the radios running can be more than is left. */
+static void tui_rec_task(void *)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_rec_busy) tui_rec_run();
+    }
 }
 
 /* 'tui rec <seconds> [baud]' and 'tui rec stop'. */
@@ -480,7 +570,7 @@ static int tui_rec_cmd(int argc, char **argv)
         if (s_rec_task) xTaskNotifyGive(s_rec_task);
         return 0;
     }
-    if (s_rec_task) { printf("tui: rec is already running\n"); return 1; }
+    if (s_rec_busy) { printf("tui: rec is already running\n"); return 1; }
     tui_surface *sf = ls_tui_surface();
     if (!s_tui_task || !sf) { printf("tui: not running - nothing on the glass\n"); return 1; }
     const int seconds = argc >= 3 ? atoi(argv[2]) : 20;
@@ -498,6 +588,36 @@ static int tui_rec_cmd(int argc, char **argv)
         printf("tui: no PSRAM for the recording\n");
         return 1;
     }
+    size_t glass_n = 0;
+    ls_tui_glass_now(&glass_n);
+    s_rec_glass = (uint8_t *)heap_caps_calloc(1, glass_n, MALLOC_CAP_SPIRAM);
+    s_rec_glass_last = (uint8_t *)heap_caps_calloc(1, glass_n, MALLOC_CAP_SPIRAM);
+    if (!s_rec_glass || !s_rec_glass_last) {
+        heap_caps_free(s_rec_glass); heap_caps_free(s_rec_glass_last);
+        s_rec_glass = s_rec_glass_last = nullptr;
+        glass_n = 0;
+    }
+    s_rec_glass_n = glass_n;
+    s_rec_img_on = false;
+    s_rec_img_new = true;
+    s_rec_img_src = nullptr;
+    s_rec_img_us = 0;
+    if (!s_rec_task) {
+        /* Control block in TCM, which DMA cannot use, so the recorder takes
+           nothing from the DMA memory the radios' SPI transfers need. */
+        StaticTask_t *tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_TCM);
+        if (!tcb) tcb = (StaticTask_t *)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        StackType_t *stack = (StackType_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        if (tcb && stack)
+            s_rec_task = xTaskCreateStaticPinnedToCore(tui_rec_task, "tui_rec", 4096, nullptr, 1,
+                                                       stack, tcb, tskNO_AFFINITY);
+        if (!s_rec_task) { heap_caps_free(tcb); heap_caps_free(stack); }
+    }
+    if (!s_rec_task) {
+        heap_caps_free(s_rec_snap); heap_caps_free(s_rec_last); s_rec_snap = s_rec_last = nullptr;
+        printf("tui: could not start the recorder\n");
+        return 1;
+    }
     int cw = 0, ch = 0;
     ls_tui_geometry(nullptr, nullptr, &cw, &ch);
     const ls_tui_theme_t *theme = ls_tui_get_theme();
@@ -509,25 +629,19 @@ static int tui_rec_cmd(int argc, char **argv)
     s_rec_baud = baud;
     /* A log line written in pieces by another task lands inside a frame
        line and spoils it; only errors while recording. The SDR and P25
-       throughput warnings come every second. */
-    esp_log_level_set("*", ESP_LOG_ERROR);
+       throughput warnings come every second. Filtered at the output, not
+       by level: setting "*" wipes every tag's own level, and NimBLE, ADSB
+       and P25 would stay loud after the recording. */
+    s_rec_prev_vprintf = esp_log_set_vprintf(rec_log_vprintf);
     uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, (uint32_t)baud);
     s_rec_frames = s_rec_skipped = 0;
     s_rec_ready = false;
     s_rec_start_us = esp_timer_get_time();
     s_rec_until_us = s_rec_start_us + (int64_t)seconds * 1000000;
     s_rec_last_cap_us = 0;
+    s_rec_busy = true;
     s_rec_on = true;
-    if (xTaskCreatePinnedToCoreWithCaps(tui_rec_task, "tui_rec", 4096, nullptr, 1, &s_rec_task,
-                                        tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) {
-        s_rec_on = false;
-        s_rec_task = nullptr;
-        uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
-        esp_log_level_set("*", (esp_log_level_t)CONFIG_LOG_DEFAULT_LEVEL);
-        heap_caps_free(s_rec_snap); heap_caps_free(s_rec_last); s_rec_snap = s_rec_last = nullptr;
-        printf("tui: could not start the recorder\n");
-        return 1;
-    }
+    xTaskNotifyGive(s_rec_task);
     return 0;
 }
 
@@ -1019,6 +1133,34 @@ static bool tui_session(void)
                 if (s_rec_ready) s_rec_skipped++;
                 else if (sf && sf->w == s_rec_cols && sf->h == s_rec_rows) {
                     memcpy(s_rec_snap, sf->front, (size_t)s_rec_cols * s_rec_rows * sizeof(tui_cell));
+                    size_t gn = 0;
+                    const uint8_t *glass = ls_tui_glass_now(&gn);
+                    if (s_rec_glass && glass && gn == s_rec_glass_n) memcpy(s_rec_glass, glass, gn);
+                    tui_rect ir;
+                    const uint16_t *isrc = nullptr;
+                    int iw = 0, ih = 0;
+                    uint32_t iser = 0;
+                    const bool has = ls_tui_image_now(&ir, &isrc, &iw, &ih, &iser);
+                    const bool changed = has != s_rec_img_on ||
+                        (has && (isrc != s_rec_img_src || iser != s_rec_img_serial || iw != s_rec_img_w ||
+                                 ih != s_rec_img_h || memcmp(&ir, &s_rec_img_rect, sizeof(ir))));
+                    if (changed && (s_rec_img_new || now - s_rec_img_us >= REC_IMAGE_US)) {
+                        const size_t bytes = (size_t)iw * ih * sizeof(uint16_t);
+                        if (has && bytes > s_rec_img_cap) {
+                            heap_caps_free(s_rec_img);
+                            s_rec_img = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+                            s_rec_img_cap = s_rec_img ? bytes : 0;
+                        }
+                        s_rec_img_on = has && s_rec_img;
+                        if (s_rec_img_on) {
+                            memcpy(s_rec_img, isrc, bytes);
+                            s_rec_img_rect = ir;
+                            s_rec_img_w = iw; s_rec_img_h = ih;
+                            s_rec_img_src = isrc; s_rec_img_serial = iser;
+                        }
+                        s_rec_img_new = true;
+                        s_rec_img_us = now;
+                    }
                     s_rec_snap_us = now;
                     s_rec_ready = true;
                     if (s_rec_task) xTaskNotifyGive(s_rec_task);

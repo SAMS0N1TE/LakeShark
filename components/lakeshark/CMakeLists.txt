@@ -1,11 +1,11 @@
 
 if(CMAKE_SCRIPT_MODE_FILE)
     file(GLOB_RECURSE LS_SRCS
-        board/*.c core/*.c radio/*.c audio/*.c output/*.c dsp/*.c nfc/*.c
+        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
         apps/*/*.c apps/*/*.cpp)
 else()
     file(GLOB_RECURSE LS_SRCS CONFIGURE_DEPENDS
-        board/*.c core/*.c radio/*.c audio/*.c output/*.c dsp/*.c nfc/*.c
+        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
         apps/*/*.c apps/*/*.cpp)
 endif()
 
@@ -54,6 +54,7 @@ idf_component_register(
         esp_lcd
         esp_lvgl_port
         lvgl
+        klatt_tts
 )
 
 set(P25_C_SOURCES

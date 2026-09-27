@@ -16,12 +16,12 @@ endif()
 
 if(CONFIG_LAKESHARK_HEADLESS)
     idf_component_register(
-        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c
+        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c
         INCLUDE_DIRS .
         PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted ${LS_BLE_REQ})
 else()
     idf_component_register(
-        SRCS main.cpp boot_splash.cpp bsod.c gui_link.cpp flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c screenshot.c screenshot_plan.c
+        SRCS main.cpp boot_splash.cpp bsod.c panic_crumb.c gui_link.cpp flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c screenshot.c screenshot_plan.c
         INCLUDE_DIRS .)
 endif()
 
@@ -30,6 +30,10 @@ if(CONFIG_LAKESHARK_HEADLESS)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
 endif()
+
+# panic_crumb.c notes each core's trap frame before IDF's panic handler runs.
+target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=panicHandler"
+    "-Wl,--wrap=xt_unhandled_exception")
 
 if(CONFIG_LS_BLE_HEAD)
     target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=hci_rx_handler"

@@ -6,6 +6,7 @@
 #include "bsp/display.h"
 #include "ls_board.h"
 #include "ls_panel.h"
+#include "ls_keypad.h"
 #include "esp_timer.h"
 
 #include <math.h>
@@ -19,6 +20,15 @@ static bool s_autodim     = true;
 static int  s_timeout_s   = 120;
 static bool s_dimmed      = false;
 static int  s_applied_pct = -1;
+static bool s_key_dim     = true;
+
+/* The keyboard backlight follows the screen down and back, when asked to. */
+static void keypad_follow(void)
+{
+#if LS_HAS_COMPACT_UI
+    ls_keypad_backlight_dim(s_dimmed && s_key_dim);
+#endif
+}
 
 static int perceptual(int slider)
 {
@@ -47,9 +57,10 @@ static void apply_now(int applied)
 static void dim_policy(uint32_t idle_ms)
 {
     if (display_dim_due(s_autodim, s_timeout_s, idle_ms)) {
-        s_dimmed = true;
+        if (!s_dimmed) { s_dimmed = true; keypad_follow(); }
     } else if (s_dimmed) {
         s_dimmed = false;
+        keypad_follow();
         apply_now(perceptual(s_user_pct));
         return;
     }
@@ -69,6 +80,7 @@ void display_ctl_activity(void)
     s_last_input_us = esp_timer_get_time();
     if (s_dimmed) {
         s_dimmed = false;
+        keypad_follow();
         apply_now(perceptual(s_user_pct));
     }
 }
@@ -99,6 +111,7 @@ void display_ctl_init(void)
     s_user_pct  = settings_get_brightness();
     s_autodim   = settings_get_autodim();
     s_timeout_s = settings_get_autodim_timeout();
+    s_key_dim   = settings_get_keyboard_dim();
     s_dimmed    = false;
     apply_now(perceptual(s_user_pct));
 #if LS_HAS_COMPACT_UI
@@ -124,6 +137,7 @@ void display_ctl_set_user(int pct)
     if (pct > 100) pct = 100;
     s_user_pct = pct;
     s_dimmed   = false;
+    keypad_follow();
     settings_set_brightness(pct);
     apply_now(perceptual(pct));
 }
@@ -141,9 +155,19 @@ void display_ctl_set_autodim(bool enabled)
 #endif
     if (!enabled && s_dimmed) {
         s_dimmed = false;
+        keypad_follow();
         apply_now(perceptual(s_user_pct));
     }
 }
+
+void display_ctl_set_keyboard_dim(bool enabled)
+{
+    s_key_dim = enabled;
+    settings_set_keyboard_dim(enabled);
+    keypad_follow();
+}
+
+bool display_ctl_keyboard_dim(void) { return s_key_dim; }
 
 bool display_ctl_autodim_enabled(void) { return s_autodim; }
 

@@ -262,3 +262,60 @@ LS_CASE(a_new_aircraft_starts_with_an_empty_altitude_history)
                      "altitude history slot %u started at %d instead of -1",
                      i, a->alt_history[i]);
 }
+
+LS_CASE(trail_keeps_one_point_per_gap_and_resets_with_the_slot)
+{
+    adsb_state_init();
+    ls_shim_time_set(100000000);
+    adsb_aircraft_t *a = adsb_state_find_or_create(0xABCDEF);
+    a->pos_valid = true;
+    for (int i = 0; i < 20; i++) {
+        a->lat = 43.0f + i * 0.01f;
+        a->lon = -71.0f;
+        a->pos_ts_us = 100000000 + (int64_t)i * 1000000;   /* one a second */
+        adsb_state_push_position(a);
+    }
+    adsb_trail_pt_t pts[ADSB_TRAIL_N];
+    const int slot = 0;
+    const int n = adsb_state_trail(slot, pts, ADSB_TRAIL_N);
+    /* Twenty reports a second apart, kept four seconds apart. */
+    LS_EQ_INT(n, 5);
+    LS_CHECK(pts[0].ts_us < pts[n - 1].ts_us);
+    a->active = false;
+    adsb_aircraft_t *b = adsb_state_find_or_create(0x123456);
+    LS_CHECK(b == a);
+    LS_EQ_INT(adsb_state_trail(slot, pts, ADSB_TRAIL_N), 0);
+}
+
+LS_CASE(trail_ring_holds_the_newest_points)
+{
+    adsb_state_init();
+    adsb_aircraft_t *a = adsb_state_find_or_create(0xABCDEF);
+    a->pos_valid = true;
+    for (int i = 0; i < ADSB_TRAIL_N + 10; i++) {
+        a->pos_ts_us = (int64_t)i * ADSB_TRAIL_GAP_US;
+        a->lat = (float)i;
+        adsb_state_push_position(a);
+    }
+    adsb_trail_pt_t pts[ADSB_TRAIL_N];
+    LS_EQ_INT(adsb_state_trail(0, pts, ADSB_TRAIL_N), ADSB_TRAIL_N);
+    LS_NEAR(pts[0].lat, 10.0, 1e-6);
+    LS_NEAR(pts[ADSB_TRAIL_N - 1].lat, ADSB_TRAIL_N + 9.0, 1e-6);
+}
+
+LS_CASE(squawk_needs_two_agreeing_replies)
+{
+    adsb_state_init();
+    adsb_aircraft_t *a = adsb_state_find_or_create(0xABCDEF);
+    adsb_state_set_squawk(a, 7700);
+    LS_EQ_INT(adsb_state_squawk(0), 0);
+    adsb_state_set_squawk(a, 1200);
+    LS_EQ_INT(adsb_state_squawk(0), 0);
+    adsb_state_set_squawk(a, 1200);
+    LS_EQ_INT(adsb_state_squawk(0), 1200);
+    /* One stray reply does not change an accepted code. */
+    adsb_state_set_squawk(a, 7700);
+    LS_EQ_INT(adsb_state_squawk(0), 1200);
+    adsb_state_set_squawk(a, 1200);
+    LS_EQ_INT(adsb_state_squawk(0), 1200);
+}

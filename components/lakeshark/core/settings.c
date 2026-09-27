@@ -237,6 +237,8 @@ static void settings_apply_schema(void)
     }
 }
 
+static void settings_drop_sam_voice_keys(void);
+
 bool settings_init(void)
 {
     s_location = 0;
@@ -265,6 +267,7 @@ bool settings_init(void)
     s_keyboard_light=key_light!=0;
 
     /**/  settings_apply_schema();
+    settings_drop_sam_voice_keys();
 
     uint8_t auto_rotate = 1;
     if(nvs_get_u8(s_nvs,"autorot",&auto_rotate)==ESP_OK)
@@ -731,6 +734,19 @@ void settings_set_compass_options(int options)
     if (!s_nvs_ok || options < 0 || options > 3) return;
     sput_u8("compass_opt", (uint8_t)options);
 }
+/* MAP: which overlay layers are shown, as bits; `fallback` when unset. */
+uint32_t settings_get_map_layers(uint32_t fallback)
+{
+    if (!s_nvs_ok) return fallback;
+    uint32_t v = 0;
+    if (nvs_get_u32(s_nvs, "map_layers", &v) != ESP_OK) return fallback;
+    return v;
+}
+void settings_set_map_layers(uint32_t layers)
+{
+    if (!s_nvs_ok) return;
+    sput_u32("map_layers", layers);
+}
 int settings_get_subghz_style(void)
 {
     if (!s_nvs_ok) return 2;                       /* bars */
@@ -963,6 +979,17 @@ bool settings_get_daylight(void)
     if (nvs_get_u8(s_nvs, "ui_daylight", &v) != ESP_OK) return false;
     return v != 0;
 }
+bool settings_get_keyboard_dim(void)
+{
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    if (nvs_get_u8(s_nvs, "key_dim", &v) != ESP_OK) return true;
+    return v != 0;
+}
+void settings_set_keyboard_dim(bool on)
+{
+    if (s_nvs_ok) sput_u8("key_dim", on ? 1 : 0);
+}
 bool settings_get_keyboard_light(void) { return s_keyboard_light; }
 void settings_set_keyboard_light(bool on)
 {
@@ -1000,30 +1027,59 @@ void settings_set_scan_zone(int zone)
     (void)set_put("scan_zone", SV_I8, (uint64_t)(int64_t)zone);
 }
 
-int settings_voice_preset_get(void)
+/* Speech voice by stable id (speech_voice_t); out-of-range reads as 0. */
+int settings_speech_voice_get(void)
 {
     if (!s_nvs_ok) return 0;
     uint8_t v = 0;
-    if (nvs_get_u8(s_nvs, "voice_preset", &v) != ESP_OK) return 0;
+    if (nvs_get_u8(s_nvs, "speech_voice", &v) != ESP_OK) return 0;
     return (int)v;
 }
-void settings_voice_preset_set(int p)
+void settings_speech_voice_set(int v)
 {
-    if (!s_nvs_ok || p < 0 || p > 255) return;
-    sput_u8("voice_preset", (uint8_t)p);
+    if (!s_nvs_ok || v < 0 || v > 255) return;
+    sput_u8("speech_voice", (uint8_t)v);
 }
-int settings_voice_lowpass_get(void)
+
+/* Callout modes, packed by audio_events.c. False when never saved. */
+bool settings_get_callouts(uint32_t *out)
 {
-    if (!s_nvs_ok) return 0;
-    uint8_t v = 0;
-    if (nvs_get_u8(s_nvs, "voice_lp", &v) != ESP_OK) return 0;
+    if (!s_nvs_ok || !out) return false;
+    return nvs_get_u32(s_nvs, "callouts", out) == ESP_OK;
+}
+void settings_set_callouts(uint32_t packed)
+{
+    if (s_nvs_ok) sput_u32("callouts", packed);
+}
+
+int settings_speech_volume_get(void)
+{
+    if (!s_nvs_ok) return 100;
+    uint8_t v = 100;
+    if (nvs_get_u8(s_nvs, "speech_vol", &v) != ESP_OK || v > 100) return 100;
     return (int)v;
 }
-void settings_voice_lowpass_set(int m)
+void settings_speech_volume_set(int pct)
 {
-    if (!s_nvs_ok || m < 0 || m > 2) return;
-    sput_u8("voice_lp", (uint8_t)m);
+    if (!s_nvs_ok || pct < 0 || pct > 100) return;
+    sput_u8("speech_vol", (uint8_t)pct);
 }
+
+/* voice_preset, voice_lp and voice_shelf configured the SAM engine. Their
+   numbers mean nothing to the formant voice, so they are erased rather than
+   read as something else. */
+static void settings_drop_sam_voice_keys(void)
+{
+    static const char *const keys[] = { "voice_preset", "voice_lp", "voice_shelf" };
+    bool erased = false;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        if (nvs_erase_key(s_nvs, keys[i]) == ESP_OK) erased = true;
+    if (erased) {
+        nvs_commit(s_nvs);
+        ESP_LOGI(TAG, "SAM voice settings removed");
+    }
+}
+
 static int eq_get_i(const char *key, int deflt, int lo, int hi)
 {
     if (!s_nvs_ok) return deflt;
@@ -1053,16 +1109,3 @@ int  settings_eq_punch_get(void)       { return eq_get_i("eq_punch", 30,  0, 100
 void settings_eq_punch_set(int v)      { eq_set_i("eq_punch", v,   0, 100);          }
 int  settings_eq_loud_get(void)        { return eq_get_i("eq_loud",  1,   0,   3);   }
 void settings_eq_loud_set(int v)       { eq_set_i("eq_loud",  v,   0,   3);          }
-
-int settings_voice_lowshelf_get(void)
-{
-    if (!s_nvs_ok) return 0;
-    uint8_t v = 0;
-    if (nvs_get_u8(s_nvs, "voice_shelf", &v) != ESP_OK) return 0;
-    return (int)v;
-}
-void settings_voice_lowshelf_set(int m)
-{
-    if (!s_nvs_ok || m < 0 || m > 2) return;
-    sput_u8("voice_shelf", (uint8_t)m);
-}

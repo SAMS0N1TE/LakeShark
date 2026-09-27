@@ -15,7 +15,7 @@ extern "C" {
 #include "settings.h"
 #include "p25_state.h"
 #include "lakeshark_backend.h"
-#include "sam_tts.h"
+#include "speech.h"
 #include "audio_events.h"
 #include "audio_out.h"
 #include "scan_channels.h"
@@ -1562,19 +1562,11 @@ void AppP25::buildSettingsTab(lv_obj_t *parent)
     ls_ui_group_button(fav_group, "TUNE", LS_BTN_PRIMARY, favTuneCb, this, nullptr);
     ls_ui_group_button(fav_group, "CLR",  LS_BTN_DANGER, favClrCb,  this, nullptr);
 
-    ls_ui_section(parent, "VOICE (SAM)");
+    ls_ui_section(parent, "SPEECH");
 
-    ls_ui_value(parent, "PRESET", &r);
+    ls_ui_value(parent, "VOICE", &r);
     _set_preset_val = r.value;
     ls_ui_stepper(&r, presetLeftCb, this, presetRightCb, this);
-
-    ls_ui_value(parent, "LOW-PASS", &r);
-    _set_lp_val = r.value;
-    ls_ui_stepper(&r, lpLeftCb, this, lpRightCb, this);
-
-    ls_ui_value(parent, "LOW-SHELF", &r);
-    _set_shelf_val = r.value;
-    ls_ui_stepper(&r, shelfLeftCb, this, shelfRightCb, this);
 
     ls_ui_value(parent, "VOICE TEST", &r);
     lv_label_set_text(r.value, "");
@@ -2145,11 +2137,7 @@ void AppP25::updateSettings(void)
     }
     if (_set_preset_val)
         set_text_if_changed(_set_preset_val,
-            sam_tts_preset_name((sam_tts_voice_preset_t)settings_voice_preset_get()));
-    if (_set_lp_val)
-        set_text_if_changed(_set_lp_val, sam_tts_lowpass_name(settings_voice_lowpass_get()));
-    if (_set_shelf_val)
-        set_text_if_changed(_set_shelf_val, sam_tts_lowshelf_name(settings_voice_lowshelf_get()));
+            speech_available() ? speech_voice_name(speech_voice_get()) : "OFF");
     if (_set_vol_val) {
         snprintf(b, sizeof(b), "VOLUME  %d", audio_volume_get());
         set_text_if_changed(_set_vol_val, b);
@@ -2166,24 +2154,6 @@ void AppP25::updateSettings(void)
         set_text_if_changed(_set_reboot_val, app_usb_autoreboot() ? "ON" : "OFF");
 }
 
-static void p25_cycle_preset(int dir)
-{
-    int p = (settings_voice_preset_get() + SAM_PRESET_COUNT + dir) % SAM_PRESET_COUNT;
-    settings_voice_preset_set(p);
-    sam_tts_set_preset((sam_tts_voice_preset_t)p);
-}
-static void p25_cycle_lp(int dir)
-{
-    int m = (settings_voice_lowpass_get() + 3 + dir) % 3;
-    settings_voice_lowpass_set(m);
-    sam_tts_set_lowpass(m);
-}
-static void p25_cycle_shelf(int dir)
-{
-    int m = (settings_voice_lowshelf_get() + 3 + dir) % 3;
-    settings_voice_lowshelf_set(m);
-    sam_tts_set_lowshelf(m);
-}
 
 void AppP25::freqM1Cb(lv_event_t *)  { lakeshark_p25_tune(-1000000); }
 void AppP25::freqm25Cb(lv_event_t *) { lakeshark_p25_tune(-25000); }
@@ -2290,12 +2260,8 @@ void AppP25::favClrCb(lv_event_t *e)
     if (a) settings_fav_clear(a, self->_fav_slot);
 }
 
-void AppP25::presetLeftCb(lv_event_t *)  { p25_cycle_preset(-1); }
-void AppP25::presetRightCb(lv_event_t *) { p25_cycle_preset(+1); }
-void AppP25::lpLeftCb(lv_event_t *)      { p25_cycle_lp(-1); }
-void AppP25::lpRightCb(lv_event_t *)     { p25_cycle_lp(+1); }
-void AppP25::shelfLeftCb(lv_event_t *)   { p25_cycle_shelf(-1); }
-void AppP25::shelfRightCb(lv_event_t *)  { p25_cycle_shelf(+1); }
+void AppP25::presetLeftCb(lv_event_t *)  { speech_voice_step(-1); }
+void AppP25::presetRightCb(lv_event_t *) { speech_voice_step(+1); }
 void AppP25::voiceTestCb(lv_event_t *)   { audio_out_ensure_unmuted(); audio_events_play_test(); }
 void AppP25::rebootToggleCb(lv_event_t *){ app_set_usb_autoreboot(!app_usb_autoreboot()); }
 void AppP25::volDownCb(lv_event_t *)     { audio_volume_delta(-5); }

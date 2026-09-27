@@ -13,13 +13,24 @@ extern "C" {
 
 esp_err_t audio_out_init(void);
 
+/* Live radio audio (FM, P25 voice): it takes the speaker from speech. */
 void audio_write_mono(const int16_t *samples, int n);
-void audio_write_mono_blocking(const int16_t *samples, int n);
+/* Tones and chimes: same ring, but they neither stop nor discard speech. */
+void audio_write_cue(const int16_t *samples, int n);
+
+/* Speech into the ring, waiting for room. False means stop speaking: muted,
+   live radio has the speaker, or the player stopped taking samples. Live
+   audio that arrives while speech is still queued discards the speech. */
+bool audio_write_speech(const int16_t *samples, int n);
+/* Called before each announcement; clears a previous discard. */
+void audio_out_speech_begin(void);
+/* Stops audio_write_speech and drops speech still in the ring. */
+void audio_out_speech_discard(void);
 
 /* True while live radio audio (FM or P25 voice) is reaching the
    speaker. Speech yields to it instead of interleaving into the same ring. */
 bool audio_out_live_active(void);
-/* Utterances dropped or cut short because live audio held the speaker. */
+/* Speech stopped or discarded because live audio held the speaker. */
 uint32_t audio_out_tts_yielded(void);
 
 void audio_write_p25_voice(const int16_t *src8k, int n);

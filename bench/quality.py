@@ -1141,10 +1141,13 @@ class TrackedReferenceTests(unittest.TestCase):
     REF = re.compile(r'(?<![\w./-])((?:tools|docs|bench|c6_firmware|boards|notes|'
                      r'main|components|flipper-app|integrations)/[\w./-]*\w\.\w+)')
     # Named on purpose and never meant to exist here: upstream rtl_433's own
-    # document, PORTING.md's example name, and files inside ESP-IDF.
+    # document, PORTING.md's example name, files inside ESP-IDF, and
+    # Moonshine's dictionary generator named in the vendored g2p header.
     NOT_OURS = {'docs/CONTRIBUTING.md', 'boards/my_board.defaults',
                 'components/esp_system/port/soc/esp32p4/system_internal.c',
-                'components/usb/hub.c', 'components/usb/hcd_dwc.c'}
+                'components/usb/hub.c', 'components/usb/hcd_dwc.c',
+                'components/sdmmc/sdmmc_cmd.c',
+                'tools/build_g2p_dict.py'}
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
     NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')

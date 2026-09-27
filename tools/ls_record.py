@@ -16,13 +16,15 @@ The board takes console commands only between recordings, so each scene's
 commands run first, then it is recorded, and the scenes are joined without
 the gaps. With no --scene, one scene of --seconds after --before.
 
-Cells only: an app that paints pixels of its own (the map's terrain, a
-waterfall) shows what its cells hold, not those pixels. Needs
-bench/build/lssim.exe (the host bench build) and ffmpeg.
+The map's picture comes along whenever it changes, at most four times a
+second. Other pixels an app paints itself (a waterfall) are not sent: the
+video shows what those cells hold. Needs bench/build/lssim.exe (the host
+bench build) and ffmpeg.
 """
 import argparse
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,17 @@ NATIVE_W, NATIVE_H = 568, 1232
 BEGIN = re.compile(r"tui: rec begin cols (\d+) rows (\d+) cw (\d+) ch (\d+) font (\d+) theme (.+?) "
                    r"daylight (\d) rotation (\d) seconds (\d+) baud (\d+)")
 FRAME_MS = 40
+
+
+def unique_path(path):
+    """`path`, or `name_2.ext`, `name_3.ext`... whichever does not exist yet."""
+    if not path or not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists("%s_%d%s" % (stem, n, ext)):
+        n += 1
+    return "%s_%d%s" % (stem, n, ext)
 
 
 def ffmpeg():
@@ -99,9 +112,13 @@ def record_scene(s, seconds, baud, cmds):
     return head, data.decode("latin-1")
 
 
-def frames_of(head, text):
+def frames_of(head, text, images):
+    """Frames as (ms, cells, glass, picture index or -1). Pictures are appended
+    to images as (x, y, w, h, pixels wide, high, RGB565 little-endian bytes)."""
     cols, rows = int(head.group(1)), int(head.group(2))
     grid = bytearray(cols * rows * 2)
+    nglass = (cols * rows + 7) // 8
+    glass, pic, building = bytes(nglass), -1, None
     frames, t, bad = [], None, 0
     prev = bytes(grid)
     row = cols * 2
@@ -110,6 +127,33 @@ def frames_of(head, text):
         if line.startswith("~F "):
             t = int(line[3:])
             prev = bytes(grid)              # a row copy takes the row as it was last frame
+        elif line.startswith("~I ") and t is not None:
+            try:
+                building = ([int(x) for x in line[3:].split()], bytearray())
+                if len(building[0]) != 6:
+                    raise ValueError
+            except ValueError:
+                building, bad = None, bad + 1
+        elif line.startswith("~P ") and t is not None:
+            if building is None:
+                continue
+            try:
+                runs = bytes.fromhex(line[3:])
+                px = building[1]
+                for i in range(0, len(runs) - 2, 3):
+                    px += bytes((runs[i + 2], runs[i + 1])) * runs[i]
+            except ValueError:
+                building, bad = None, bad + 1
+        elif line == "~N" and t is not None:
+            pic, building, glass = -1, None, bytes(nglass)
+        elif line.startswith("~G ") and t is not None:
+            try:
+                g = bytes.fromhex(line[3:])
+                if len(g) != nglass:
+                    raise ValueError
+                glass = g
+            except ValueError:
+                bad += 1
         elif line.startswith("~C ") and t is not None:
             try:
                 r, k = (int(x) for x in line[3:].split())
@@ -119,8 +163,16 @@ def frames_of(head, text):
             except ValueError:
                 bad += 1
         elif line == "~E":
+            if building is not None:
+                (x, y, w, h, iw, ih), px = building
+                if len(px) == iw * ih * 2:
+                    images.append((x, y, w, h, iw, ih, bytes(px)))
+                    pic = len(images) - 1
+                else:
+                    bad += 1
+                building = None
             if t is not None:
-                frames.append((t, bytes(grid)))
+                frames.append((t, bytes(grid), glass if pic >= 0 else bytes(nglass), pic))
             t = None
         elif line.startswith("~") and t is not None:
             try:
@@ -151,12 +203,18 @@ def main():
                          "smooths the glyphs; at 2 the colour is also sampled at the glass's own pixels")
     ap.add_argument("--crf", type=int, default=12, help="x264 quality, lower is better")
     ap.add_argument("--replay", help="encode this .lsrec again instead of recording")
+    ap.add_argument("--gif", action="store_true", help="also write a GIF beside the video, at the glass's own size")
+    ap.add_argument("--gif-fps", type=int, default=12)
     ap.add_argument("--baud", type=int, default=2000000)
     ap.add_argument("--port", help="device path or rfc2217:// URL, overriding --serial")
     ap.add_argument("--serial", default="5C84301528", help="the board's USB serial number")
     ap.add_argument("--keep", help="also keep the recording (.lsrec) here")
     ap.add_argument("--log", help="write the console's own lines (everything that is not a frame) here")
     args = ap.parse_args()
+    # A take never replaces an earlier one.
+    args.out = unique_path(args.out)
+    args.keep = unique_path(args.keep)
+    args.gif_out = unique_path(os.path.splitext(args.out)[0] + ".gif") if args.gif else None
 
     if args.replay:
         replay(args)
@@ -167,10 +225,10 @@ def main():
         sys.exit("no board with serial %s" % args.serial)
 
     s = open_board(port)
-    frames, offset, shape, head0, log = [], 0, None, None, []
+    frames, offset, shape, head0, log, images = [], 0, None, None, [], []
     for n, (seconds, cmds) in enumerate(scenes, 1):
         head, text = record_scene(s, seconds, args.baud, cmds)
-        cols, rows, got, bad = frames_of(head, text)
+        cols, rows, got, bad = frames_of(head, text, images)
         log.append("\n".join(l for l in text.splitlines() if not l.startswith("~")))
         end = re.search(r"tui: rec end (\d+) frames (\d+) skipped", text)
         print("scene %d: %d frames over %.1f s, %s skipped by the board, %d bad lines"
@@ -181,7 +239,7 @@ def main():
             sys.exit("scene %d is %dx%d, the first was %dx%d: the board turned" % (n, cols, rows, *shape))
         shape, head0 = (cols, rows), head0 or head
         first = got[0][0]
-        frames += [(offset + t - first, g) for t, g in got]
+        frames += [(offset + fr[0] - first,) + fr[1:] for fr in got]
         offset = frames[-1][0] + FRAME_MS
     s.close()
     if args.log:
@@ -200,23 +258,30 @@ def main():
         tk = k * 1000 / args.fps
         while j + 1 < len(frames) and frames[j + 1][0] <= tk:
             j += 1
-        out_frames.append(frames[j][1])
+        out_frames.append(frames[j][1:])
 
     for path in (args.out, args.keep):
         if path and os.path.dirname(os.path.abspath(path)):
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     work = tempfile.mkdtemp(prefix="lsrec_")
     rec = args.keep or os.path.join(work, "take.lsrec")
+    # LSREC2: the header line, the pictures (six little-endian int16s, then
+    # the pixels), then each frame's cells, glass bits and int32 picture index.
     with open(rec, "wb") as f:
-        f.write(("LSREC1 %d %d %d %s %s %s fps %d\n" % (cols, rows, int(landscape), head0.group(5),
-                                                        head0.group(6).replace(" ", "_"), head0.group(7),
-                                                        args.fps)).encode())
-        for g in out_frames:
+        f.write(("LSREC2 %d %d %d %s %s %s fps %d images %d\n" % (cols, rows, int(landscape), head0.group(5),
+                                                                  head0.group(6).replace(" ", "_"), head0.group(7),
+                                                                  args.fps, len(images))).encode())
+        for x, y, w, h, iw, ih, px in images:
+            f.write(struct.pack("<6h", x, y, w, h, iw, ih))
+            f.write(px)
+        for g, glass, pic in out_frames:
             f.write(g)
-    encode(rec, landscape, args.fps, args.out, args.scale, args.crf, work)
+            f.write(glass)
+            f.write(struct.pack("<i", pic))
+    encode(rec, landscape, args.fps, args.out, args.scale, args.crf, work, args.gif_out, args.gif_fps)
 
 
-def encode(rec, landscape, fps, out, scale, crf, work):
+def encode(rec, landscape, fps, out, scale, crf, work, gif=None, gif_fps=12):
     """Draw a .lsrec with the board's renderer and encode it."""
     rgb = os.path.join(work, "take.rgb")
     r = subprocess.run([LSSIM, "play", rec, rgb], capture_output=True, text=True)
@@ -236,8 +301,20 @@ def encode(rec, landscape, fps, out, scale, crf, work):
            "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", out]
     subprocess.run(cmd, check=True)
     frames = os.path.getsize(rgb) // (NATIVE_W * NATIVE_H * 3)
+    print("wrote %s: %d frames at %d fps, %.1f s, %dx scale" % (out, frames, fps, frames / fps, scale), flush=True)
+    if gif:
+        # The glass uses a small palette, so a 64-colour GIF without dither is exact.
+        src = ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (NATIVE_W, NATIVE_H), "-r", str(fps), "-i", rgb]
+        chain = "fps=%d" % gif_fps + (",transpose=2" if landscape else "")
+        pal = os.path.join(work, "palette.png")
+        subprocess.run([ffmpeg(), "-y", "-loglevel", "error"] + src +
+                       ["-vf", chain + ",palettegen=max_colors=64:stats_mode=full:reserve_transparent=0", pal],
+                       check=True)
+        subprocess.run([ffmpeg(), "-y", "-loglevel", "error"] + src + ["-i", pal, "-lavfi",
+                        chain + "[v];[v][1:v]paletteuse=dither=none:diff_mode=rectangle", "-loop", "0", gif],
+                       check=True)
+        print("wrote %s: GIF at %d fps, %.1f MB" % (gif, gif_fps, os.path.getsize(gif) / 1e6), flush=True)
     os.remove(rgb)
-    print("wrote %s: %d frames at %d fps, %.1f s, %dx scale" % (out, frames, fps, frames / fps, scale))
 
 
 def replay(args):
@@ -245,7 +322,8 @@ def replay(args):
         head = f.readline().decode("latin-1").split()
     landscape = head[3] == "1"
     fps = int(head[head.index("fps") + 1]) if "fps" in head else args.fps
-    encode(args.replay, landscape, fps, args.out, args.scale, args.crf, tempfile.mkdtemp(prefix="lsrec_"))
+    encode(args.replay, landscape, fps, args.out, args.scale, args.crf, tempfile.mkdtemp(prefix="lsrec_"),
+           args.gif_out, args.gif_fps)
 
 
 if __name__ == "__main__":

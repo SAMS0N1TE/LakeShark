@@ -327,6 +327,26 @@ void audio_volume_delta(int delta) { (void)delta; }
 void audio_volume_set(int volume) { (void)volume; }
 int audio_volume_get(void) { return 0; }
 
+static int s_tts_vol = 100, s_tts_vol_saved = -1;
+int  speech_volume_get(void) { return s_tts_vol; }
+void speech_volume_set(int pct) { s_tts_vol = pct; }
+void settings_speech_volume_set(int pct) { s_tts_vol_saved = pct; }
+
+LS_CASE(the_head_sets_the_speech_volume_and_it_is_kept)
+{
+    char reply[64];
+    flipper_link_set_host(&TEST_HOST);
+    flipper_link_inject("TTSVOL 40", reply, sizeof(reply));
+    LS_EQ_STR("+OK tv=40\n", reply);
+    LS_EQ_INT(40, s_tts_vol_saved);
+    flipper_link_inject("TTSVOL 250", reply, sizeof(reply));
+    LS_EQ_STR("+OK tv=100\n", reply);
+    flipper_link_inject("TTSVOL", reply, sizeof(reply));
+    LS_EQ_STR("+OK tv=100\n", reply);
+    flipper_link_inject("TTSVOL loud", reply, sizeof(reply));
+    LS_EQ_STR("-ERR ttsvol\n", reply);
+}
+
 bool snd_test_start(int which) { (void)which; return true; }
 int snd_test_from_name(const char *name) { (void)name; return -1; }
 const char *snd_test_name(int which) { (void)which; return "test"; }

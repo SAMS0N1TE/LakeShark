@@ -25,6 +25,8 @@
 #include "ble_link.h"
 #include "ls_sweep.h"   /**/
 #include "adsb_demo.h"    /**/
+#include "settings.h"
+#include "tui/ls_map.h"
 /**/
 #include "ls_wifi.h"
 #include "lakeshark_backend.h"
@@ -44,7 +46,15 @@ extern "C" {
    exercised without waiting for a plane. See adsb_demo.h. */
 static int cmd_adsbdemo(int argc, char **argv)
 {
-    if (argc >= 2) adsb_demo_set(atoi(argv[1]));
+    if (argc >= 2) {
+        /* Orbit where the map is looking: the saved home, or the map's
+           centre, so the aircraft land on whatever map is on the card. */
+        float hl, ho;
+        double ml, mo;
+        if (settings_get_home(&hl, &ho)) adsb_demo_center(hl, ho);
+        else { ls_map_get_center(&ml, &mo); adsb_demo_center((float)ml, (float)mo); }
+        adsb_demo_set(atoi(argv[1]));
+    }
     int n = adsb_demo_count();
     if (n) {
         printf("%d SYNTHETIC aircraft - generated, not received.\n"

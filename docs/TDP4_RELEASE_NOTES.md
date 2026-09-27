@@ -1,5 +1,24 @@
 # LakeShark release notes
 
+## 2.5.0
+
+- MAP draws aircraft, mesh nodes and your own marks over the map, with trails, callsigns and squawk codes.
+- MAP: tap or TAB to select, FOLLOW an aircraft, GO TO a place, range rings, coverage and LAYERS.
+- MAP: MARK places and DRAW lines, saved to the SD card.
+- MAP: eight palettes, including Daylight, Night and two radar scopes.
+- Night theme: the whole interface in reds.
+- Speech: a formant voice announces aircraft as they appear, get a position and drop out, and reads mesh messages. Settings > Voice sets the voice, level and callouts.
+- Mesh messages show in a small red notice.
+- MESH lists saved contacts after a restart.
+- Keyboard backlight dims with the screen.
+- NOTES keyboard uses the full width; touch keys hide while a keyboard is attached.
+- COMPASS keeps its heading moving while FIND scans.
+- About 3 KB more memory free while ADS-B runs, so MESH keeps receiving alongside it.
+- SD card writes keep working when memory is tight.
+- Smoother switching between P25 and FM.
+- Console: `say` speaks text and tests the voice; `crumb` shows where a crash stopped.
+- Screen recordings show the map, and a recorder window: `tools/ls_record_gui.py`.
+
 ## 2.4.0
 
 - NOTES replaces JOURNAL: Markdown notes on the SD card with checklists and live GPS, heading and radio lines.

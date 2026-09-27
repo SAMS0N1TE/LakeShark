@@ -13,6 +13,7 @@
 #include "ls_board.h"
 #include "settings.h"
 #include <math.h>
+#include <string.h>
 
 static const char *TAG = "audio_out";
 
@@ -58,9 +59,28 @@ static volatile bool     s_play_now    = false;
    static between them. P25 voice only started actually decoding once the
    HDU/ESS work landed, which is why speech had the speaker to itself until
    now. Live traffic wins; speech yields. */
-static volatile int64_t  s_live_us     = 0;
+/* In 1024 us ticks: 32 bits, so a read from the other core cannot tear. */
+static volatile uint32_t s_live_tick   = 0;
+static volatile bool     s_live_seen   = false;
 static volatile uint32_t s_tts_yielded = 0;
-#define AUDIO_LIVE_HOLD_US 300000
+#define AUDIO_LIVE_HOLD_TICKS (300000 / 1024)
+#define AUDIO_NOW_TICK()      ((uint32_t)(esp_timer_get_time() >> 10))
+
+/* Every byte into the ring is counted under s_push_lock, every byte out by
+   the player alone, so a position in the ring is a byte count and
+   differences stay right across wrap. Speech is discarded by moving
+   s_skip_to past it: the player drops what it reads before that point. Only
+   the player ever resets the ring itself. */
+static volatile uint32_t s_wr_bytes    = 0;
+static volatile uint32_t s_rd_bytes    = 0;
+static volatile uint32_t s_speech_end  = 0;
+static volatile uint32_t s_skip_to     = 0;
+static volatile bool     s_speech_stop = false;
+
+/* Codec reconfiguration is asked for here and done by the player between
+   writes: closing the codec under a write in progress is not safe. */
+static volatile uint32_t s_codec_reset_req  = 0;
+static volatile uint32_t s_codec_reset_done = 0;
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
@@ -68,56 +88,111 @@ uint32_t audio_out_ring_avail(void){ return s_ring ? (uint32_t)xStreamBufferByte
 
 void audio_out_play_now(void) { s_play_now = true; }
 
+static inline size_t IRAM_ATTR ring_send_locked(const void *p, size_t want)
+{
+    /* A partial PCM16 sample shifts every following sample by one byte,
+       turning otherwise valid decoded voice into sustained static. */
+    const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
+    const size_t sent = whole ? xStreamBufferSend(s_ring, p, whole, 0) : 0;
+    s_wr_bytes += (uint32_t)sent;
+    return sent;
+}
+
 void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 {
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
     /* Live radio audio claims the speaker. */
-    s_live_us = esp_timer_get_time();
+    s_live_tick = AUDIO_NOW_TICK();
+    s_live_seen = true;
 
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
-    size_t want = (size_t)n * sizeof(int16_t);
-    /* A partial PCM16 sample shifts every following sample by one byte,
-       turning otherwise valid decoded voice into sustained static. */
-    const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
-    size_t sent = whole ? xStreamBufferSend(s_ring, samples, whole, 0) : 0;
+    /* Speech not yet played would make this transmission wait behind it. */
+    if ((int32_t)(s_speech_end - s_rd_bytes) > 0 &&
+        (int32_t)(s_speech_end - s_skip_to) > 0) {
+        s_skip_to = s_speech_end;
+        s_tts_yielded++;
+    }
+    const size_t want = (size_t)n * sizeof(int16_t);
+    const size_t sent = ring_send_locked(samples, want);
     xSemaphoreGive(s_push_lock);
 
+    if (sent < want) s_audio_drops++;
+}
+
+void audio_write_cue(const int16_t *samples, int n)
+{
+    if (!s_ready || s_muted || n <= 0 || !s_ring) return;
+    if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
+    const size_t want = (size_t)n * sizeof(int16_t);
+    const size_t sent = ring_send_locked(samples, want);
+    xSemaphoreGive(s_push_lock);
     if (sent < want) s_audio_drops++;
 }
 
 /**/
 bool audio_out_live_active(void)
 {
-    int64_t last = s_live_us;
-    if (last == 0) return false;
-    return (esp_timer_get_time() - last) < AUDIO_LIVE_HOLD_US;
+    if (!s_live_seen) return false;
+    return (uint32_t)(AUDIO_NOW_TICK() - s_live_tick) < AUDIO_LIVE_HOLD_TICKS;
+}
+
+void audio_out_speech_begin(void) { s_speech_stop = false; }
+
+void audio_out_speech_discard(void)
+{
+    s_speech_stop = true;
+    if (!s_ready || !s_push_lock) return;
+    if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    if ((int32_t)(s_speech_end - s_skip_to) > 0) s_skip_to = s_speech_end;
+    xSemaphoreGive(s_push_lock);
 }
 
 uint32_t audio_out_tts_yielded(void) { return s_tts_yielded; }
 
-void audio_write_mono_blocking(const int16_t *samples, int n)
+bool audio_write_speech(const int16_t *samples, int n)
 {
-    if (!s_ready || s_muted || n <= 0 || !s_ring) return;
-
-    /* Do not start speaking over a live transmission. */
-    if (audio_out_live_active()) { s_tts_yielded++; return; }
+    if (!s_ready || n <= 0 || !s_ring) return false;
 
     const uint8_t *p = (const uint8_t *)samples;
     size_t remaining = (size_t)n * sizeof(int16_t);
-    int64_t deadline = esp_timer_get_time() + 3000000;
+    int64_t stalled_since = 0;
 
     while (remaining > 0) {
-        if (s_muted) break;
-        /* A transmission that starts mid-utterance stops it, rather
-           than letting the two share the ring. */
-        if (audio_out_live_active()) { s_tts_yielded++; break; }
-        if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(100)) != pdTRUE) break;
-        size_t sent = xStreamBufferSend(s_ring, p, remaining, pdMS_TO_TICKS(100));
-        xSemaphoreGive(s_push_lock);
-        p += sent; remaining -= sent;
-        if (esp_timer_get_time() > deadline) { s_audio_drops++; break; }
+        if (s_muted || s_speech_stop) return false;
+        /* A transmission, or one about to resume, has the speaker. */
+        if (audio_out_live_active()) { s_tts_yielded++; return false; }
+
+        size_t sent = 0;
+        if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            /* Again under the lock: radio that arrived since the check above
+               must not end up queued behind this. */
+            if (audio_out_live_active()) {
+                xSemaphoreGive(s_push_lock);
+                s_tts_yielded++;
+                return false;
+            }
+            if (s_speech_stop) {
+                xSemaphoreGive(s_push_lock);
+                return false;
+            }
+            sent = ring_send_locked(p, remaining);
+            if (sent) s_speech_end = s_wr_bytes;
+            xSemaphoreGive(s_push_lock);
+        }
+        if (sent) {
+            p += sent; remaining -= sent;
+            stalled_since = 0;
+            continue;
+        }
+        /* Waiting for room happens without the lock, so radio audio is
+           never held up behind speech. */
+        const int64_t now = esp_timer_get_time();
+        if (!stalled_since) stalled_since = now;
+        else if (now - stalled_since > 1000000) { s_audio_drops++; return false; }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
+    return true;
 }
 
 void audio_write_p25_voice(const int16_t *src8k, int n)
@@ -176,6 +251,59 @@ static bool audio_prebuffer_ready(size_t available, bool force, int64_t now,
 }
 /* AUDIO_PREBUFFER_END */
 
+/* The player's helpers stay out of IRAM: internal RAM is the scarcest
+   thing on this board, and the player's own stack is PSRAM anyway. */
+
+static void __attribute__((noinline)) player_codec_reset(void)
+{
+    esp_err_t err = ls_audio_hw_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
+    if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
+    int set = 0;
+    esp_err_t volume_err = ls_audio_hw_volume(s_volume, &set);
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+    s_volume_applied = volume_err == ESP_OK;
+#endif
+    if (volume_err != ESP_OK)
+        ESP_LOGW(TAG, "reset volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
+    ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
+             esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
+}
+
+/* Empties the ring. Producers never block on it, so the reset only fails
+   if the lock cannot be had; then it is tried again next pass. */
+static bool __attribute__((noinline)) player_reprime(void)
+{
+    if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(20)) != pdTRUE) return false;
+    xStreamBufferReset(s_ring);
+    s_rd_bytes = s_wr_bytes;
+    s_skip_to = s_wr_bytes;
+    xSemaphoreGive(s_push_lock);
+    audio_eq_reset_state();
+    return true;
+}
+
+/* Drops the part of a chunk just read that lies before s_skip_to. Returns
+   the bytes left to play, moved to the front of the chunk. */
+static size_t __attribute__((noinline)) player_skip(int16_t *mono, size_t got)
+{
+    const uint32_t start = s_rd_bytes;
+    s_rd_bytes = start + (uint32_t)got;
+    const int32_t skip = (int32_t)(s_skip_to - start);
+    if (skip <= 0) return got;
+    if ((size_t)skip >= got) return 0;
+    memmove(mono, (uint8_t *)mono + skip, got - (size_t)skip);
+    return got - (size_t)skip;
+}
+
+/* A write that fails returns at once; without the pause a closed codec
+   would have this priority-11 task spinning. */
+static void __attribute__((noinline)) player_write(const void *buf, size_t bytes)
+{
+    size_t wr = 0;
+    if (ls_audio_hw_write((void *)buf, bytes, &wr, portMAX_DELAY) != ESP_OK)
+        vTaskDelay(pdMS_TO_TICKS(5));
+}
+
 static void IRAM_ATTR audio_player_task(void *arg)
 {
     (void)arg;
@@ -204,10 +332,14 @@ static void IRAM_ATTR audio_player_task(void *arg)
 #endif
 
     for (;;) {
-        if (s_reprime) {
+        const uint32_t reset_req = s_codec_reset_req;
+        if (reset_req != s_codec_reset_done) {
+            player_codec_reset();
+            s_codec_reset_done = reset_req;
+            s_reprime = true;
+        }
+        if (s_reprime && player_reprime()) {
             s_reprime = false;
-            if (s_ring) xStreamBufferReset(s_ring);
-            audio_eq_reset_state();
             playing = false;
             waiting_since = -1;
         }
@@ -222,35 +354,34 @@ static void IRAM_ATTR audio_player_task(void *arg)
                 playing = true;
                 last_data = esp_timer_get_time();
             } else {
-                size_t wr = 0;
-                ls_audio_hw_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
-                                    &wr, portMAX_DELAY);
+                player_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t));
                 continue;
             }
         }
 
         size_t got = xStreamBufferReceive(s_ring, mono, CHUNK_FRAMES * sizeof(int16_t),
                                           pdMS_TO_TICKS(20));
+        if (got) {
+            last_data = esp_timer_get_time();
+            got = player_skip(mono, got);
+            if (!got) continue;
+        }
         int frames = (int)(got / sizeof(int16_t));
 
         if (frames > 0) {
-            last_data = esp_timer_get_time();
             audio_eq_process(mono, frames);
             for (int i = 0; i < frames; i++) {
                 int16_t s = mono[i];
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;
             }
-            size_t wr = 0;
-            ls_audio_hw_write(stereo, frames * 4, &wr, portMAX_DELAY);
+            player_write(stereo, (size_t)frames * 4);
         } else {
 
             if (esp_timer_get_time() - last_data > IDLE_DROP_US) {
                 playing = false;
             } else {
                 s_underruns++;
-                size_t wr = 0;
-                ls_audio_hw_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t),
-                                    &wr, portMAX_DELAY);
+                player_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t));
             }
         }
     }
@@ -325,7 +456,7 @@ esp_err_t audio_out_init(void)
 void audio_toggle_mute(void)
 {
     s_muted = !s_muted;
-    if (s_muted && s_ring) xStreamBufferReset(s_ring);
+    if (s_muted) s_reprime = true;
     /* s_ready is false on a board whose codec was never initialised,
        and the handle behind this call is NULL there.  audio_out_ensure_unmuted
        already checked; this one did not, so the console's `mute` command was
@@ -340,22 +471,16 @@ void audio_out_ensure_unmuted(void)
 
 void audio_out_reprime(void) { s_reprime = true; }
 
+/* Waits, up to half a second, for the player to reconfigure the codec
+   between two of its writes. */
 void audio_out_reset(void)
 {
     if (!s_ready) return;
-
-    esp_err_t err = ls_audio_hw_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
-    if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
-    int set = 0;
-    esp_err_t volume_err = ls_audio_hw_volume(s_volume, &set);
-#if defined(LS_BOARD_CODEC_I2C_BUS)
-    s_volume_applied = volume_err == ESP_OK;
-#endif
-    if (volume_err != ESP_OK)
-        ESP_LOGW(TAG, "reset volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
-    s_reprime = true;
-    ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
-             esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
+    const uint32_t want = ++s_codec_reset_req;
+    for (int i = 0; i < 100 && (int32_t)(s_codec_reset_done - want) < 0; i++)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    if ((int32_t)(s_codec_reset_done - want) < 0)
+        ESP_LOGW(TAG, "audio_out_reset: player has not taken the reset yet");
 }
 
 bool audio_is_muted(void) { return s_muted; }

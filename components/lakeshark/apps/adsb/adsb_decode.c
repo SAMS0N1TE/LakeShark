@@ -280,6 +280,9 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
     } else if (mm->msgtype == 4 || mm->msgtype == 5 ||
                mm->msgtype == 20 || mm->msgtype == 21) {
         a->mt_surv++;
+        /* Identity replies carry the Mode A code where altitude replies
+           carry altitude. */
+        if (mm->msgtype == 5 || mm->msgtype == 21) adsb_state_set_squawk(a, mm->identity);
     } else {
         a->mt_other++;
     }
@@ -448,6 +451,7 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
                 got = true;
             }
         }
+        if (got) adsb_state_push_position(a);
         if (got && !was_valid) {
             if (a->announced) {
                 audio_events_publish(AUDIO_EVT_POSITION, icao, a->callsign, false);
@@ -543,6 +547,7 @@ void adsb_inject_fake_aircraft(void)
     a->pos_valid = true;
     
     a->pos_ts_us = esp_timer_get_time();
+    adsb_state_push_position(a);
 
     a->altitude  = 5000 + ((s_test_seq * 250) % 30000);
     a->velocity  = 200 + ((s_test_seq * 13) % 200);

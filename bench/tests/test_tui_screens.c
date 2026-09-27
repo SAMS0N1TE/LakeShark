@@ -134,6 +134,27 @@ bool ls_map_preview_point(double lat,double lon,tui_rect a,int *x,int *y)
     *y=a.y+a.h/2-(int)lround((lat-43.4445)*20);
     return *x>=a.x && *x<a.x+a.w && *y>=a.y && *y<a.y+a.h;
 }
+/* The aircraft layer, reduced to one mark per contact on the same
+   projection, so the radar's hit-testing is exercised. */
+int ls_map_preview_air(tui_surface *sf,tui_rect a,ls_map_plot_t *plots,int max)
+{
+    int n=0;
+    struct {int x0,x1,y;} taken[ADSB_MAX_TRACKED*2]; int nt=0;
+    for(int i=0;i<ADSB_MAX_TRACKED && n<max;i++) {
+        const adsb_aircraft_t *ac=adsb_state_get(i);
+        int x,y;
+        if(!ac || !ac->active || !ac->pos_valid || !ls_map_preview_point(ac->lat,ac->lon,a,&x,&y)) continue;
+        tui_put_char(sf,a,x,y,'>',TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        plots[n++]=(ls_map_plot_t){x,y,ac->icao};
+        /* A label one cell right of its mark, skipped rather than drawn
+           over one already there - the rule the map's layer keeps. */
+        const int len=(int)strlen(ac->callsign), x0=x+1, x1=x+len;
+        bool clear=len>0;
+        for(int k=0;k<nt && clear;k++) if(taken[k].y==y && x0<=taken[k].x1+1 && x1>=taken[k].x0-1) clear=false;
+        if(clear) { tui_put_str(sf,a,x0,y,ac->callsign,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)); taken[nt].x0=x0; taken[nt].x1=x1; taken[nt++].y=y; }
+    }
+    return n;
+}
 
 static bool s_gps_fix = false;
 static bool s_gps_sat_view;

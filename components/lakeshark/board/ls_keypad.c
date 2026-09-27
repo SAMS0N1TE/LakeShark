@@ -309,6 +309,9 @@ static uint32_t s_bl_freq = 32000;
 
 static int      s_bl_res  = 10;       /* duty resolution bits in use */
 static int      s_bl_pct  = 89;
+/* Share of the normal level used while the screen is dimmed. */
+#define KEYPAD_BL_DIM_PCT 12
+static bool     s_bl_dim;
 
 esp_err_t ls_keypad_backlight(bool on)
 {
@@ -349,6 +352,7 @@ esp_err_t ls_keypad_backlight(bool on)
        toggles and the converter is back to free-running. */
     const uint32_t full = (1u << s_bl_res) - 1u;
     uint32_t duty = (uint32_t)((uint64_t)full * (uint32_t)s_bl_pct / 100u);
+    if (s_bl_dim) duty = duty * KEYPAD_BL_DIM_PCT / 100u;
     if (duty >= full && full) duty = full - 1;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, on ? duty : 0u);
     s_bl_on = on;
@@ -403,6 +407,14 @@ esp_err_t ls_keypad_backlight_tune(uint32_t freq_hz, int duty_1024)
 #endif
 }
 
+esp_err_t ls_keypad_backlight_dim(bool dim)
+{
+    if (dim == s_bl_dim) return ESP_OK;
+    s_bl_dim = dim;
+    /* An unlit keyboard stays unlit; the level applies when it is next on. */
+    return s_bl_on ? ls_keypad_backlight(true) : ESP_OK;
+}
+
 uint32_t ls_keypad_backlight_freq(void)
 {
 #if defined(LS_BOARD_KEYPAD_BL_GPIO) && (LS_BOARD_KEYPAD_BL_GPIO >= 0)
@@ -416,7 +428,8 @@ uint32_t ls_keypad_backlight_freq(void)
 int ls_keypad_backlight_duty(void)
 {
 #if defined(LS_BOARD_KEYPAD_BL_GPIO) && (LS_BOARD_KEYPAD_BL_GPIO >= 0)
-    return s_bl_on ? s_bl_pct : 0;
+    if (!s_bl_on) return 0;
+    return s_bl_dim ? s_bl_pct * KEYPAD_BL_DIM_PCT / 100 : s_bl_pct;
 #else
     return 0;
 #endif
@@ -471,6 +484,7 @@ bool ls_keypad_present(void) { return false; }
 void ls_keypad_tick(void) { }
 bool ls_keypad_read(ls_keypad_event_t *out) { (void)out; return false; }
 esp_err_t ls_keypad_backlight(bool on) { (void)on; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_keypad_backlight_dim(bool dim) { (void)dim; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_keypad_backlight_tune(uint32_t f, int d)
 { (void)f; (void)d; return ESP_ERR_NOT_SUPPORTED; }
 uint32_t ls_keypad_backlight_freq(void) { return 0; }

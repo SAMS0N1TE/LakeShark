@@ -60,3 +60,9 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
+
+# MeshCore decrypts a 16-byte block at a time. The P4 AES unit runs every
+# block through DMA and allocates its descriptors and alignment buffers from
+# internal DMA memory, which ADS-B streaming nearly exhausts; a failed
+# allocation left the mesh radio deaf. Software AES needs no DMA memory.
+# CONFIG_MBEDTLS_HARDWARE_AES is not set

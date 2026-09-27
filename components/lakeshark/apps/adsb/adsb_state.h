@@ -79,6 +79,30 @@ void                   adsb_state_age_out(int64_t now_us, int64_t timeout_us,
 
 void                   adsb_state_push_altitude(adsb_aircraft_t *a, int alt_ft);
 
+/* Where each aircraft has been: one point per position report, at most
+   one every ADSB_TRAIL_GAP_US, the newest ADSB_TRAIL_N kept. Held beside
+   the table in PSRAM rather than in it, so the table's internal RAM does not
+   grow. */
+#define ADSB_TRAIL_N      48
+#define ADSB_TRAIL_GAP_US (4 * 1000000LL)
+
+typedef struct {
+    float   lat, lon;
+    int32_t altitude;
+    int64_t ts_us;
+} adsb_trail_pt_t;
+
+/* Call after a new position has been written to `a`. */
+void                   adsb_state_push_position(adsb_aircraft_t *a);
+/* Oldest first; returns how many were written. */
+int                    adsb_state_trail(int slot, adsb_trail_pt_t *out, int max);
+
+/* The Mode A code from DF5/DF21 replies, accepted once two agree. 0 until
+   then; the code itself is octal digits written as a decimal number, the
+   way it is read out (7700). */
+void                   adsb_state_set_squawk(adsb_aircraft_t *a, int code);
+int                    adsb_state_squawk(int slot);
+
 void                   adsb_select_set_icao(uint32_t icao);
 uint32_t               adsb_select_get_icao(void);
 const adsb_aircraft_t *adsb_select_get(void);

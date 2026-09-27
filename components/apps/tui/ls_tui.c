@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -257,8 +258,29 @@ static bool s_image_dirty;
 static uint16_t *s_image_previous;
 static bool s_image_previous_valid;
 
+/* Glass: cells whose glyph is drawn over the image instead of on a solid
+   ground. The mark records the cell as it was written, and a present honours
+   it only while the back grid still holds exactly that, so anything drawn
+   over the map afterwards (a picker, the keyboard) is solid again without
+   having to know the map was there. */
+static uint8_t  *s_glass_back, *s_glass_front;   /* one bit per cell */
+static tui_cell *s_glass_rec;
+
+static inline bool glass_bit(const uint8_t *bits, size_t i)
+{
+    return bits && (bits[i >> 3] >> (i & 7)) & 1;
+}
+
+static inline void glass_set(uint8_t *bits, size_t i, bool on)
+{
+    if (!bits) return;
+    if (on) bits[i >> 3] |= (uint8_t)(1u << (i & 7));
+    else    bits[i >> 3] &= (uint8_t)~(1u << (i & 7));
+}
+
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
 {
+    if (s_glass_back) memset(s_glass_back, 0, ((size_t)s_cols * s_rows + 7) / 8);
     if (!src || s_image_w != w || s_image_h != h ||
         memcmp(&s_image_rect, &cells, sizeof(cells))) {
         heap_caps_free(s_image_previous);
@@ -276,11 +298,49 @@ void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t se
     s_image_serial = serial;
 }
 
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial)
+{
+    if (!s_image || s_image_w <= 0 || s_image_h <= 0) return false;
+    if (cells)  *cells = s_image_rect;
+    if (src)    *src = s_image;
+    if (w)      *w = s_image_w;
+    if (h)      *h = s_image_h;
+    if (serial) *serial = s_image_serial;
+    return true;
+}
+
+const uint8_t *ls_tui_glass_now(size_t *bytes)
+{
+    if (bytes) *bytes = ((size_t)s_cols * s_rows + 7) / 8;
+    return s_glass_front;
+}
+
 static bool image_cell(int col, int row)
 {
     return s_image && s_image_w > 0 && s_image_h > 0 &&
         col >= s_image_rect.x && row >= s_image_rect.y &&
         col < s_image_rect.x + s_image_rect.w && row < s_image_rect.y + s_image_rect.h;
+}
+
+void ls_tui_glass(int col, int row)
+{
+    if (!s_glass_back || !s_back || col < 0 || row < 0 || col >= s_cols || row >= s_rows) return;
+    const size_t i = (size_t)row * s_cols + col;
+    glass_set(s_glass_back, i, true);
+    s_glass_rec[i] = s_back[i];
+}
+
+void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t attr)
+{
+    if (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h) return;
+    tui_put_char(sf, clip, x, y, ch, attr);
+    ls_tui_glass(x, y);
+}
+
+static bool glass_live(int col, int row, size_t i)
+{
+    return glass_bit(s_glass_back, i) && image_cell(col, row) &&
+           s_back[i].ch == s_glass_rec[i].ch && s_back[i].attr == s_glass_rec[i].attr;
 }
 
 static bool image_changed(int col, int row)
@@ -337,15 +397,10 @@ static void bar_text_span(int row, int *top, int *bottom)
     *bottom = y + s_ch;
 }
 
-static void blit_cell(uint16_t *fb, int native_w, int native_h,
-                      int col, int row, const tui_cell *cell)
+static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
+                            int x0, int y0)
 {
-    (void)native_h;
-    const int x0 = s_ox + col * s_cw;
-    const int y0 = s_oy + row * s_ch + bar_row_offset(row);
-    const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
-
-    if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
+    {
         const int iw = s_image_rect.w * s_cw, ih = s_image_rect.h * s_ch;
         /* Source coordinates once per cell, not a divide per pixel, and the
            inner loop along the framebuffer's contiguous axis. */
@@ -372,6 +427,128 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
                     run[x] = src[sxs[x]];
             }
         }
+    }
+}
+
+/* Coverage, 0 to 15, of one cell's glyph at every pixel of the cell. The
+   same shapes blit_block and the font path paint, but as a mask, so glass
+   can put ink and a halo over whatever the image left there. */
+EXT_RAM_BSS_ATTR static uint8_t s_cov[32 * 32];
+
+static bool glass_coverage(uint8_t ch, bool *halo)
+{
+    const int cw = s_cw < 32 ? s_cw : 32, chh = s_ch < 32 ? s_ch : 32;
+    memset(s_cov, 0, sizeof(s_cov));
+    *halo = true;
+    if (ch == ' ') return false;
+    if (ch >= 0xC0) {
+        const int hw = cw / 2;
+        for (int sy = 0; sy < 3; sy++)
+            for (int sx = 0; sx < 2; sx++) {
+                if (!(ch & (1u << (sy * 2 + sx)))) continue;
+                const int ya = chh * sy / 3, yb = chh * (sy + 1) / 3;
+                const int xa = sx ? hw : 0, xb = sx ? cw : hw;
+                for (int y = ya; y < yb; y++) memset(s_cov + y * 32 + xa, 15, (size_t)(xb - xa));
+            }
+        return true;
+    }
+    if (ch >= 0xA0 && ch <= 0xA7) {
+        int h = chh * ((ch - 0xA0) + 1) / 8;
+        if (h < 1) h = 1;
+        const int cx = cw / 2 - 1;
+        for (int y = chh - h; y < chh; y++) { s_cov[y * 32 + cx] = 15; if (cx + 1 < cw) s_cov[y * 32 + cx + 1] = 15; }
+        return true;
+    }
+    if (ch >= 0x90 && ch <= 0x93) {
+        static const uint8_t mix[4] = { 4, 8, 12, 15 };
+        for (int y = 0; y < chh; y++) memset(s_cov + y * 32, mix[ch - 0x90], (size_t)cw);
+        *halo = false;
+        return true;
+    }
+    if (ch >= 0x80 && ch <= 0x8F) {
+        const int hw = cw / 2, hh = chh / 2;
+        for (int q = 0; q < 4; q++) {
+            if (!(ch & (1u << q))) continue;
+            const int xa = (q & 1) ? hw : 0, xb = (q & 1) ? cw : hw;
+            const int ya = (q & 2) ? hh : 0, yb = (q & 2) ? chh : hh;
+            for (int y = ya; y < yb; y++) memset(s_cov + y * 32 + xa, 15, (size_t)(xb - xa));
+        }
+        return true;
+    }
+    const ls_font_glyph_t *dsc = ls_font_glyph(s_font, ch);
+    if (!dsc) return false;
+    const uint8_t *bmp = &s_font->bitmap[dsc->bitmap_index];
+    const int gx = dsc->ofs_x;
+    const int gy = (s_ch - s_font->base_line) - dsc->box_h - dsc->ofs_y;
+    for (int y = 0; y < dsc->box_h; y++) {
+        const int py = gy + y;
+        if (py < 0 || py >= chh) continue;
+        for (int x = 0; x < dsc->box_w; x++) {
+            const int px = gx + x;
+            if (px < 0 || px >= cw) continue;
+            const uint32_t bit = (uint32_t)y * dsc->box_w + x;
+            uint8_t cov = (bit & 1) ? (bmp[bit >> 1] & 0x0F) : (bmp[bit >> 1] >> 4);
+            if (s_draw_crisp) cov = cov >= 8 ? 15 : 0;
+            s_cov[py * 32 + px] = cov;
+        }
+    }
+    return true;
+}
+
+/* A glyph over the image: the picture shows through, the glyph is inked in
+   its foreground, and a one pixel halo in its background colour keeps it
+   readable over any part of the map. */
+static void blit_glass(uint16_t *fb, int native_w, int col, int row,
+                       int x0, int y0, const tui_cell *cell)
+{
+    blit_image_cell(fb, native_w, col, row, x0, y0);
+    bool halo;
+    if (!glass_coverage((uint8_t)cell->ch, &halo)) return;
+    const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
+    const int cw = s_cw < 32 ? s_cw : 32, chh = s_ch < 32 ? s_ch : 32;
+    for (int y = 0; y < chh; y++) {
+        const int py = y0 + y;
+        if (py < 0 || py >= s_screen_h) continue;
+        for (int x = 0; x < cw; x++) {
+            const int px = x0 + x;
+            if (px < 0 || px >= s_screen_w) continue;
+            const uint8_t c = s_cov[y * 32 + x];
+            uint8_t near = 0;
+            if (!c && halo) {
+                for (int dy = -1; dy <= 1 && near < 8; dy++) {
+                    const int yy = y + dy;
+                    if (yy < 0 || yy >= chh) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        const int xx = x + dx;
+                        if (xx < 0 || xx >= cw) continue;
+                        if (s_cov[yy * 32 + xx] > near) near = s_cov[yy * 32 + xx];
+                    }
+                }
+                if (near < 6) continue;
+            } else if (!c) continue;
+            const uint32_t idx = s_landscape
+                ? (uint32_t)(s_screen_w - 1 - px) * native_w + py
+                : (uint32_t)py * native_w + px;
+            fb[idx] = c ? blend565(fg, fb[idx], (uint8_t)(c * 17))
+                        : blend565(bg, fb[idx], 200);
+        }
+    }
+}
+
+static void blit_cell(uint16_t *fb, int native_w, int native_h,
+                      int col, int row, const tui_cell *cell, bool glass)
+{
+    (void)native_h;
+    const int x0 = s_ox + col * s_cw;
+    const int y0 = s_oy + row * s_ch + bar_row_offset(row);
+    const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
+
+    if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
+        blit_image_cell(fb, native_w, col, row, x0, y0);
+        return;
+    }
+    if (glass) {
+        blit_glass(fb, native_w, col, row, x0, y0, cell);
         return;
     }
 
@@ -608,7 +785,13 @@ bool ls_tui_begin(int screen_w, int screen_h)
     size_t cells = (size_t)s_cols * s_rows;
     s_back  = heap_caps_calloc(cells, sizeof(tui_cell), MALLOC_CAP_SPIRAM);
     s_front = heap_caps_calloc(cells, sizeof(tui_cell), MALLOC_CAP_SPIRAM);
-    if (!s_back || !s_front) { ls_tui_end(); return false; }
+    s_glass_back  = heap_caps_calloc((cells + 7) / 8, 1, MALLOC_CAP_SPIRAM);
+    s_glass_front = heap_caps_calloc((cells + 7) / 8, 1, MALLOC_CAP_SPIRAM);
+    s_glass_rec   = heap_caps_calloc(cells, sizeof(tui_cell), MALLOC_CAP_SPIRAM);
+    if (!s_back || !s_front || !s_glass_back || !s_glass_front || !s_glass_rec) {
+        ls_tui_end();
+        return false;
+    }
 
     /* Wipe the whole panel, not just the grid. The TUI paints cells and
        nothing else, so whatever LVGL left behind - the status bar, and the
@@ -636,6 +819,11 @@ bool ls_tui_begin(int screen_w, int screen_h)
 
 void ls_tui_end(void)
 {
+    /* The marks first: begin calls this after the grid size has already
+       changed, and clearing them at the new size would overrun the old. */
+    free(s_glass_back);  s_glass_back = NULL;
+    free(s_glass_front); s_glass_front = NULL;
+    free(s_glass_rec);   s_glass_rec = NULL;
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     free(s_back);  s_back = NULL;
     free(s_front); s_front = NULL;
@@ -855,11 +1043,14 @@ int ls_tui_present(void)
         for (int col = 0; col < s_cols; col++) {
             if (reserved_cell(col, row)) continue;
             size_t i = (size_t)row * s_cols + col;
+            const bool glass = glass_live(col, row, i);
             if (s_back[i].ch == s_front[i].ch &&
                 s_back[i].attr == s_front[i].attr &&
-                !(s_image_dirty && (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL &&
+                glass == glass_bit(s_glass_front, i) &&
+                !(s_image_dirty && (glass || (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL) &&
                   image_changed(col, row))) continue;
-            blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i]);
+            blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
+            glass_set(s_glass_front, i, glass);
             dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
                           s_cw, s_ch);
             if (row == 0) s_bar_row_drawn[0] = true;

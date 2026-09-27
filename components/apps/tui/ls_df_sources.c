@@ -271,6 +271,15 @@ void ls_dfs_stop_slot(int k)
 
 void ls_dfs_stop(void) { ls_dfs_stop_slot(0); }
 
+bool ls_dfs_any_active(void)
+{
+    bool any = false;
+    lock();
+    for (int k = 0; k < LS_DFS_SLOTS; k++) any |= s.slot[k].active;
+    unlock();
+    return any;
+}
+
 void ls_dfs_poll_slot(int k, ls_dfs_status_t *out)
 {
     if (!out) return;

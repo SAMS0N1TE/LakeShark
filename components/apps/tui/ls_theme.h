@@ -23,6 +23,7 @@ extern const ls_tui_theme_t ls_theme_ice;
 extern const ls_tui_theme_t ls_theme_synth;
 extern const ls_tui_theme_t ls_theme_vfd;
 extern const ls_tui_theme_t ls_theme_arcade;
+extern const ls_tui_theme_t ls_theme_night;
 
 /* The white one. Not in the table below, so the count, the index,
    the lookup by name and the cycle never see it: it is reached through

@@ -56,6 +56,20 @@ void ls_tui_invalidate(void);
 /* Caller-owned image behind IMAGE_CELL cells; normal text can cover it. */
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial);
 
+/* Glass: draw this cell's glyph over the image instead of on its own
+   ground. The glyph is inked in the attribute's foreground with a one pixel
+   halo in its background, and the picture shows everywhere else. Marks last
+   until the next ls_tui_image call, and a mark is ignored once the cell has
+   been written with anything else, so a panel drawn over the map is solid.
+   Outside the image rectangle a marked cell draws normally. */
+void ls_tui_glass(int col, int row);
+void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t attr);
+
+/* For the screen recorder: the image as it was last handed over (false when
+   there is none), and the glass marks as last presented, one bit per cell. */
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial);
+const uint8_t *ls_tui_glass_now(size_t *bytes);
+
 #define LS_TUI_TRACE(eighths) ((char)(0xA0 + (((eighths) < 1 ? 1 :                                               (eighths) > 8 ? 8 : (eighths)) - 1)))
 
 /* Pick the face. The grid size follows from it, so this takes effect

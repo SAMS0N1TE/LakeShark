@@ -1,6 +1,7 @@
 /* See ls_keyboard.h. The keyboard, and the box that shows what you have
    typed into it. */
 #include "ls_keyboard.h"
+#include "ls_keypad.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -263,7 +264,10 @@ void ls_keyboard_draw(tui_surface *sf, tui_rect full)
     /* Two more rows in portrait than the contents strictly need. */
 
     const int reveal_h = s_secret ? 4 : 0;
-    const int need = tbox_h + 4 * kh + 4 + reveal_h;
+    /* With the keyboard attached the keys would only be in the way: the
+       overlay is the text being typed and a line saying how to finish. */
+    const bool physical = ls_keypad_present();
+    const int need = tbox_h + (physical ? 4 : 4 * kh + 4) + reveal_h;
     const int margin = (full.h - need) >= 8 ? 2 : 0;
     const int want = need + margin;
     tui_rect area = full;
@@ -302,6 +306,12 @@ void ls_keyboard_draw(tui_surface *sf, tui_rect full)
     }
     const int pad_y = box.y + box.h + 1 + reveal_h;
     const int pad_h = (area.y + area.h - 1) - pad_y;
+    if (physical) {
+        tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
+                    "keyboard attached: type, ENTER to accept, ESC to cancel", A(DIM_FG, TUI_BLACK));
+        if (s_secret) s_hit_n = SLOT_REVEAL + 1;      /* SHOW PASSWORD still taps */
+        return;
+    }
 
     /* Four rows: three of characters and one of actions. Below KEY_MIN rows
        each they are targets nobody can hit, and half a keyboard is worse

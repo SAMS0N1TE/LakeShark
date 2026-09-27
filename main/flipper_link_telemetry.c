@@ -123,14 +123,14 @@ int ls_telemetry_build_adsb(char *buf, size_t len,
                      "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu "
                      "md=ADSB "
                      "ac=%d mt=%d mps=%d cg=%d ce=%d bps1=%d mga=%d mgp=%d lms=%d "
-                     "aci=%d acn=%d",
+                     "aci=%d acn=%d tv=%d",
                      (unsigned long)t->freq_hz, t->gain_tenths,
                      common->volume, common->muted,
                      common->rtl_ready, (unsigned long)t->iq_bytes_sec,
                      t->tracked, t->msgs_total, t->msgs_sec, t->crc_good,
                      t->crc_err, t->bursts_sec, t->mag_avg, t->mag_peak,
                      t->last_msg_ms,
-                     s_ac_cursor, t->n_aircraft);
+                     s_ac_cursor, t->n_aircraft, common->tts_volume);
     if (n < 0) return n;
     if ((size_t)n >= len - 1) return len - 1;
 

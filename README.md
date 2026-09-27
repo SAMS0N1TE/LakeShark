@@ -3,7 +3,7 @@
 
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
 
-LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and save observations in a field journal.
+LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
@@ -45,9 +45,12 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 <img src="docs/screenshots/tdp4/gallery-20260923/map-port.png" width="32%" alt="MAP" />
 <img src="docs/screenshots/tdp4/gallery-20260923/falls-p25-port.png" width="32%" alt="FALLS on P25" />
 <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
+<img src="docs/screenshots/tdp4/motion/adsb-map.gif" width="32%" alt="ADS-B and MAP following an aircraft" />
+<img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
+<img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
 </p>
 
-Recorded on the board: FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, and COMPASS FIND turning on two channels.
+Recorded on the board: FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, COMPASS FIND turning on two channels, MAP following an aircraft, mesh messages arriving as notices, and the Night theme.
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
@@ -55,9 +58,9 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 |---|---|
 | P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning; Phase II `[EXPERIMENTAL]` |
 | FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists and POCSAG pagers |
-| ADS-B | Aircraft at 1090 MHz, traffic history; offline mini map and remembered home in 2.2.2 |
+| ADS-B | Aircraft at 1090 MHz, traffic history, offline mini map and remembered home; spoken callouts for new, located and lost aircraft |
 | FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
-| MESH | MeshCore messaging and nodes on the onboard SX1262 |
+| MESH | MeshCore messaging and nodes on the onboard SX1262; new messages show as a notice on any screen and can be read aloud |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
 | NOTES | Markdown notes on the SD card with checklists and live GPS, heading and radio lines |
 | COMPASS | Tilt-compensated compass with true north; FIND points to a transmitter on any radio, with channel scanning, two radios at once, a hit log, and RADAR and HEAT views; GO TO and a level |
@@ -66,11 +69,11 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. |
 | SUB-GHZ | Scan, learn, watch, decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
 | FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
-| MAP | Offline maps, aircraft and Mesh nodes; pixel field view, GPS marker and archive picker `[EXPERIMENTAL]` |
+| MAP | Offline maps with aircraft trails, Mesh nodes, marks and drawn lines; FOLLOW, GO TO, layers and eight palettes; pixel field view and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | Radio power, antenna selection, and Wi-Fi/Bluetooth startup toggles |
 | DIAG | Memory, radios, sensors, rebuild counts |
-| SET | Brightness, theme, font, sounds, Daylight mode for the sun |
+| SET | Brightness, theme (Night keeps everything red), font, sounds, voice and callouts, Daylight mode for the sun |
 | LINK | Wi-Fi and Bluetooth: scan, signal and channel graphs |
 
 <img width="900" height="900" alt="keyboard-home" src="https://github.com/user-attachments/assets/dd1bd6fd-4d65-4800-b7c7-abdfebe80094" />
@@ -140,7 +143,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.4.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.4.0).** NOTES, COMPASS and direction finding on every radio. Experimental radio features remain marked.
+**Current P4 release: [2.5.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.5.0).** MAP with aircraft trails and marks, spoken callouts, mesh notices and the Night theme. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

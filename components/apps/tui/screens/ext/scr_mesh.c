@@ -25,6 +25,7 @@
 #include "../../ls_map.h"
 
 #include "core/settings.h"
+#include "audio/audio_events.h"
 #include "ls_gps.h"
 #include "ls_mesh.h"
 #include "ls_lora.h"
@@ -2008,6 +2009,7 @@ bool ls_scr_mesh_notice(ls_notice_t *out)
     if (n < 1) return false;
     const ls_mesh_msg_t *m = &s_msg_buf[n - 1];
     if (m->mine) return false;
+    audio_events_mesh_message(m->text, m->direct);
 
     snprintf(out->title, sizeof(out->title), "%s",
              m->direct ? "DIRECT MESSAGE" : "MESH");

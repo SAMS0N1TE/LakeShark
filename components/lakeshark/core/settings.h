@@ -85,6 +85,8 @@ int  settings_get_subghz_on_hit(void);       /* rec_scan_on_hit_t          */
 void settings_set_subghz_on_hit(int mode);
 int  settings_get_compass_options(void);     /* COMPASS: 1 simple, 2 magnetic */
 void settings_set_compass_options(int options);
+uint32_t settings_get_map_layers(uint32_t fallback);  /* MAP overlay layer bits */
+void settings_set_map_layers(uint32_t layers);
 int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
@@ -126,6 +128,9 @@ int settings_get_theme(void);
 void settings_set_theme(int theme);
 
 bool settings_get_daylight(void);
+/* Whether the keyboard backlight dims along with the screen. */
+bool settings_get_keyboard_dim(void);
+void settings_set_keyboard_dim(bool on);
 bool settings_get_keyboard_light(void);
 void settings_set_keyboard_light(bool on);
 void settings_set_daylight(bool on);
@@ -159,12 +164,12 @@ bool     settings_set_p25_cqpsk(const p25_cqpsk_config_t *config);
 /**/
 void settings_reset_app(const app_t *a);
 
-int  settings_voice_preset_get(void);
-void settings_voice_preset_set(int preset);
-int  settings_voice_lowpass_get(void);
-void settings_voice_lowpass_set(int mode);
-int  settings_voice_lowshelf_get(void);
-void settings_voice_lowshelf_set(int mode);
+int  settings_speech_voice_get(void);
+void settings_speech_voice_set(int voice);
+bool settings_get_callouts(uint32_t *packed);
+void settings_set_callouts(uint32_t packed);
+int  settings_speech_volume_get(void);
+void settings_speech_volume_set(int pct);
 
 int  settings_eq_preset_get(void);
 void settings_eq_preset_set(int v);

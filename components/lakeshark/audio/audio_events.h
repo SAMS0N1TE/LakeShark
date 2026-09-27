@@ -39,6 +39,20 @@ audio_mode_t audio_event_mode_cycle(audio_evt_kind_t kind);
 void         audio_event_mode_set_all(audio_mode_t m);
 const char  *audio_mode_label(audio_mode_t m);
 
+/* Incoming MeshCore messages, spoken. Saved with the callout modes. */
+typedef enum {
+    AUD_MESH_OFF = 0,
+    AUD_MESH_SENDER,     /* "MESSAGE FROM NAME." */
+    AUD_MESH_FULL,       /* and the message itself */
+    AUD_MESH_COUNT
+} audio_mesh_say_t;
+
+audio_mesh_say_t audio_events_mesh_say_get(void);
+audio_mesh_say_t audio_events_mesh_say_cycle(void);
+const char      *audio_mesh_say_label(audio_mesh_say_t m);
+/* text is the message as it goes on air, "name: message". */
+void             audio_events_mesh_message(const char *text, bool direct);
+
 #ifdef __cplusplus
 }
 #endif

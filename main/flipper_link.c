@@ -25,6 +25,8 @@
 #include "fm_mode_label.h"
 #include "audio_out.h"
 #include "audio_eq.h"
+#include "speech.h"
+#include "settings.h"
 #include "tone.h"
 #include "ls_board.h"
 #include "flipper_link_telemetry.h"
@@ -154,6 +156,7 @@ static ls_telemetry_common_t telemetry_common(void)
     return (ls_telemetry_common_t){
         .volume = audio_volume_get(),
         .muted = audio_is_muted() ? 1 : 0,
+        .tts_volume = speech_volume_get(),
         .rtl_ready = lakeshark_iq_receiver_ready() ? 1 : 0,
         .uptime_s = s_host.uptime_s ? s_host.uptime_s() : 0,
         .free_internal = fi,
@@ -677,6 +680,17 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         } else {
             snprintf(reply, reply_len, "-ERR vol\n");
         }
+
+    } else if (!strcmp(cmd, "TTSVOL")) {
+        if (a1) {
+            if (!parse_i32(a1, &n)) { snprintf(reply, reply_len, "-ERR ttsvol\n"); return; }
+            if (n < 0) n = 0;
+            if (n > 100) n = 100;
+            speech_volume_set((int)n);
+            settings_speech_volume_set((int)n);
+            s_stat_now = true;
+        }
+        snprintf(reply, reply_len, "+OK tv=%d\n", speech_volume_get());
 
     } else if (!strcmp(cmd, "MUTE")) {
         if (!a1) {

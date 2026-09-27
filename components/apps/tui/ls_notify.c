@@ -119,17 +119,30 @@ void ls_notify_alert_hw(bool ring, bool vibe) { (void)ring; (void)vibe; }
 
 /* ---------------------------------------------------------------- draw -- */
 
+/* The cell at step `i` of the way round the box's edge, clockwise from the
+   top-left corner, and the character the box has there. */
+static void edge_at(tui_rect r, int i, int *x, int *y, char *ch)
+{
+    const int w = r.w, h = r.h;
+    const int top = w - 1, right = h - 1, bottom = w - 1;
+    if (i < top)                      { *x = r.x + i;               *y = r.y; }
+    else if (i < top + right)         { *x = r.x + w - 1;           *y = r.y + (i - top); }
+    else if (i < top + right + bottom){ *x = r.x + w - 1 - (i - top - right); *y = r.y + h - 1; }
+    else                              { *x = r.x;                   *y = r.y + h - 1 - (i - top - right - bottom); }
+    const bool corner = (*x == r.x || *x == r.x + w - 1) && (*y == r.y || *y == r.y + h - 1);
+    *ch = corner ? '+' : (*y == r.y || *y == r.y + h - 1) ? '-' : '|';
+}
+
 void ls_notify_draw(tui_surface *sf, tui_rect area)
 {
     s_rect = tui_rect_make(0, -1, 0, 0);
     s_close = tui_rect_make(0, -1, 0, 0);
     if (s_ttl <= 0 || area.w < 20 || area.h < 5) return;
 
-    /* Three rows at the TOP of the screen's area, under the chrome. Top
-       because that is where every device anyone has held puts one, and
-       because the bottom of this interface is where the controls are: a
-       banner over a DISARM button would be the worst three rows on the
-       panel to cover. */
+    /* Four rows at the TOP of the screen's area, under the chrome: that is
+       where every device anyone has held puts one, and the bottom of this
+       interface is where the controls are. Small, and made to stand out by
+       moving: a light runs round its red edge for as long as it is up. */
     const int full = 4;
 
     const int age = SHOW_FRAMES - s_ttl;
@@ -142,38 +155,62 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
     tui_rect r = tui_rect_make(area.x, area.y, area.w, h);
     s_rect = r;
 
-    const uint8_t hue = s_now.hue ? s_now.hue : TUI_CYAN;
-
-    /* And it flashes for the first second, then settles. */
-
-    const bool flash = age < FLASH_FRAMES && ((age / 6) & 1);
-    const uint8_t edge = flash ? (TUI_WHITE | TUI_BRIGHT) : (hue | TUI_BRIGHT);
-
+    const uint8_t hue = TUI_RED;
     tui_fill(sf, r, ' ', A(TUI_WHITE, TUI_BLACK));
-    ls_panel_box(sf, r, NULL, edge);
-    if (r.h > 2)
-        ls_fill_dither(sf, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
-                       flash ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
+    ls_panel_box(sf, r, NULL, hue | TUI_BRIGHT);
 
-    /* The text only once there is a row to put it on. During the slide the
-       frame arrives first, which is what makes the movement legible. */
-    if (r.h >= 3)
-        tui_put_str(sf, r, r.x + 2, r.y + 1, s_now.title,
-                    A(hue | TUI_BRIGHT, TUI_BLACK));
+    if (h == full) {
+        /* "name: message" is split so who sent it sits in the title bar. */
+        const char *msg = s_now.body;
+        char head[LS_NOTIFY_TITLE + LS_NOTIFY_BODY + 8];
+        const char *colon = strstr(s_now.body, ": ");
+        if (colon && colon - s_now.body < 40) {
+            snprintf(head, sizeof(head), "%s  FROM %.*s", s_now.title,
+                     (int)(colon - s_now.body), s_now.body);
+            msg = colon + 2;
+        } else {
+            snprintf(head, sizeof(head), "%s", s_now.title);
+        }
 
-    if (r.h >= 4) {
-        char body[LS_NOTIFY_BODY];
-        snprintf(body, sizeof(body), "%.*s", r.w - 5, s_now.body);
-        tui_put_str(sf, r, r.x + 2, r.y + 2, body,
-                    A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        /* The bar pulses red and white for its first two seconds. */
+        const bool pulse = age < FLASH_FRAMES * 2 && ((age / 5) & 1);
+        const uint8_t bar = pulse ? A(TUI_RED, TUI_WHITE | TUI_BRIGHT)
+                                  : A(TUI_WHITE | TUI_BRIGHT, hue);
+        tui_fill(sf, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, 1), ' ', bar);
+        tui_put_str(sf, r, r.x + 2, r.y + 1, head, bar);
+        tui_put_str(sf, r, r.x + r.w - 5, r.y + 1, "[X]", bar);
+
+        /* A message longer than the line scrolls through it, pausing at
+           each end so both are readable. */
+        const int width = r.w - 4;
+        const int len = (int)strlen(msg);
+        int off = 0;
+        if (len > width) {
+            const int travel = len - width, pause = 20;
+            const int t = (age / 3) % (travel + 2 * pause);
+            off = t < pause ? 0 : t < pause + travel ? t - pause : travel;
+        }
+        char line[LS_NOTIFY_BODY];
+        snprintf(line, sizeof(line), "%.*s", width, msg + off);
+        tui_put_str(sf, r, r.x + 2, r.y + 2, line, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+
+        /* The light: sixteen heavy cells travelling round the edge, white
+           at the head, yellow behind it. */
+        const int perim = 2 * (r.w - 1) + 2 * (r.h - 1);
+        const int head_at = (age * 3) % perim;
+        for (int k = 0; k < 16; k++) {
+            int x, y;
+            char ch;
+            edge_at(r, (head_at - k + perim) % perim, &x, &y, &ch);
+            ch = ch == '-' ? '=' : '#';
+            tui_put_char(sf, r, x, y, ch,
+                         A(k < 5 ? (TUI_WHITE | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT), TUI_BLACK));
+        }
     }
 
     /* A dismiss target of its own, so tapping the banner can mean "take me
        there" without that being the only thing a tap can mean. */
-    s_close = tui_rect_make(r.x + r.w - 5, r.y, 5, r.h);
-    if (r.h >= 3)
-        tui_put_str(sf, r, r.x + r.w - 4, r.y + 1, "[X]",
-                    A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    s_close = tui_rect_make(r.x + r.w - 7, r.y, 7, r.h);
 }
 
 /* The badge, blinking, for as long as anything is unread. */

@@ -168,6 +168,36 @@ const ls_tui_theme_t ls_theme_vfd = {
     },
 };
 
+/* Night: everything in reds, for eyes that have adjusted to the dark. Red
+   keeps night vision because the rods barely see it. The colours differ in
+   brightness and a little in warmth, not in hue, so the whole interface
+   reads as one colour. Text and badges still have to be read, so the
+   brighter ones run up into salmon rather than stopping at pure red, which
+   cannot reach the contrast a word on a coloured badge needs. */
+
+const ls_tui_theme_t ls_theme_night = {
+    .name = "Night",
+    .desc = "red only, to keep night vision",
+    .palette = {
+        0x0000,  /* BLACK                  */
+        0x90A1,  /* RED        deep red    */
+        0xC1A2,  /* GREEN      warm red    */
+        0xE9E3,  /* YELLOW     orange red  */
+        0x7884,  /* BLUE       wine        */
+        0x98C7,  /* MAGENTA    crimson     */
+        0xF185,  /* CYAN       signal red  */
+        0xEAA7,  /* WHITE      body text   */
+        0x80C2,  /* BR_BLACK   furniture   */
+        0xF943,  /* BR_RED                 */
+        0xFB87,  /* BR_GREEN               */
+        0xFCCC,  /* BR_YELLOW              */
+        0xF9EB,  /* BR_BLUE                */
+        0xFA8F,  /* BR_MAGENTA             */
+        0xFBCB,  /* BR_CYAN                */
+        0xFCEF,  /* BR_WHITE   headings    */
+    },
+};
+
 /* Daylight. */
 
 const ls_tui_theme_t ls_theme_daylight = {
@@ -198,6 +228,9 @@ static const ls_tui_theme_t *const THEMES[] = {
     &ls_theme_phosphor, &ls_theme_ice,
     &ls_theme_vfd,
     &ls_theme_synth, &ls_theme_arcade,
+    /* Last, so the index a board has already stored still names the theme
+       it chose. */
+    &ls_theme_night,
 };
 
 int ls_tui_theme_count(void) { return (int)(sizeof(THEMES) / sizeof(THEMES[0])); }

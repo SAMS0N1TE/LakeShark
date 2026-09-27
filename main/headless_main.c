@@ -24,6 +24,7 @@
 #include "ls_nvs_safe.h"
 /**/
 #include "ls_safe_mode.h"
+#include "panic_crumb.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/gpio.h"
@@ -45,6 +46,8 @@
 #include "ble_hci_rx_guard.h"
 #endif
 #include "settings.h"
+#include "adsb_demo.h"
+#include "tui/ls_map.h"
 /**/
 #include "radio_health.h"
 #include "rtlsdr_dev.h"
@@ -2490,6 +2493,24 @@ static int cmd_top(int argc, char **argv)
 
 /* Bounded allocator summaries only: never enumerate tasks or scan stacks.
  * Run between load measurements; allocator inspection itself is not free. */
+/* Synthetic aircraft, so the map and the ADS-B screen can be exercised
+   without waiting for a plane. They orbit the saved home, or the map's
+   centre, and are generated, not received. */
+static int cmd_adsbdemo(int argc, char **argv)
+{
+    if (argc >= 2) {
+        float hl, ho;
+        double ml, mo;
+        if (settings_get_home(&hl, &ho)) adsb_demo_center(hl, ho);
+        else { ls_map_get_center(&ml, &mo); adsb_demo_center((float)ml, (float)mo); }
+        adsb_demo_set(atoi(argv[1]));
+    }
+    const int n = adsb_demo_count();
+    if (n) printf("%d SYNTHETIC aircraft - generated, not received. `adsbdemo 0` removes them.\n", n);
+    else   printf("demo aircraft off. `adsbdemo <1-8>` creates some; ADS-B must be running.\n");
+    return 0;
+}
+
 static int cmd_memory(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -2740,6 +2761,8 @@ static bool console_start(bool full)
           .hint = "[n]", .func = &cmd_tel },
         { .command = "fl",     .help = "Run one flipper-link protocol line locally",
           .hint = "<PING|FREQ|VOL|GAIN|DEMOD|...>", .func = &cmd_fl },
+        { .command = "adsbdemo", .help = "Synthetic aircraft around home or the map centre, for testing",
+          .hint = "<0-8>", .func = &cmd_adsbdemo },
     };
     esp_console_register_help_command();
     if (full) {
@@ -2755,6 +2778,7 @@ static bool console_start(bool full)
         (void)cmds;
         ls_ctl_register_recovery_commands();
     }
+    panic_crumb_register_command();
     esp_err_t serr = esp_console_start_repl(repl);
     if (serr != ESP_OK) {
         ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));
@@ -2800,6 +2824,7 @@ void app_main(void)
     flipper_link_set_host(&s_link_host);
     /* First, before anything that can fault. */
     const ls_safe_boot_t *boot = ls_safe_boot_begin();
+    panic_crumb_boot();
     ls_trail_boot();
     ls_safe_boot_plan_t plan;
     ls_safe_boot_plan(boot->safe, &plan);

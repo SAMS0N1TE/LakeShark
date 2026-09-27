@@ -253,6 +253,10 @@ static int note_msg(const char *text, bool mine)
 {
     const int slot = s_msg_head;
     ls_mesh_msg_t *m = &s_msgs[slot];
+    /* The slot is reused round the ring: a DM set these, a channel message
+       must not inherit them. */
+    m->direct = false;
+    m->peer[0] = 0;
     m->t      = mesh_now();
     m->mine   = mine;
     m->state  = mine ? LS_MSG_SENDING : LS_MSG_IN;
@@ -1612,11 +1616,16 @@ extern "C" esp_err_t ls_mesh_add_contact(const char *hex, const char *name)
 extern "C" bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 {
     if (!out || rank < 0 || rank >= s_peer_count) return false;
-    /* Same ranking ls_mesh_peers() produces, without building the list. */
+    /* Same ranking ls_mesh_peers() produces, without building the list.
+       Ties - every peer restored at boot has last_heard 0 - go by table
+       order, or two tied peers would share a rank and the second would
+       never be listed. */
     for (int i = 0; i < s_peer_count; i++) {
         int r = 0;
         for (int j = 0; j < s_peer_count; j++)
-            if (j != i && s_peers[j].last_heard > s_peers[i].last_heard) r++;
+            if (j != i && (s_peers[j].last_heard > s_peers[i].last_heard ||
+                           (s_peers[j].last_heard == s_peers[i].last_heard && j < i)))
+                r++;
         if (r == rank) { *out = s_peers[i]; return true; }
     }
     return false;

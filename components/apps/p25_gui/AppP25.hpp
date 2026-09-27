@@ -138,10 +138,6 @@ private:
     static void favClrCb(lv_event_t *e);
     static void presetLeftCb(lv_event_t *e);
     static void presetRightCb(lv_event_t *e);
-    static void lpLeftCb(lv_event_t *e);
-    static void lpRightCb(lv_event_t *e);
-    static void shelfLeftCb(lv_event_t *e);
-    static void shelfRightCb(lv_event_t *e);
     static void voiceTestCb(lv_event_t *e);
     static void rebootToggleCb(lv_event_t *e);
     static void volDownCb(lv_event_t *e);
@@ -223,8 +219,6 @@ private:
     lv_obj_t *_set_cqpsk_carrier_val = nullptr;
     lv_obj_t *_set_fav_val    = nullptr;
     lv_obj_t *_set_preset_val = nullptr;
-    lv_obj_t *_set_lp_val     = nullptr;
-    lv_obj_t *_set_shelf_val  = nullptr;
     lv_obj_t  *_set_vol_val    = nullptr;
     sdr_seg_t *_set_vol_slider = nullptr;
     lv_obj_t  *_set_gate_lbl   = nullptr;

@@ -13,6 +13,9 @@
 #include "p25_state.h"
 /**/
 #include "audio_out.h"
+#include "audio_events.h"
+#include "speech.h"
+#include "esp_heap_caps.h"
 /**/
 #include "ls_time.h"
 #include "ls_board.h"
@@ -704,6 +707,91 @@ static int cmd_vol(int argc, char **argv)
     return 0;
 }
 
+/* `say` - speech status, or say something. Anything that is not a
+   subcommand is spoken as written. */
+static int cmd_say(int argc, char **argv)
+{
+    if (argc < 2) {
+        speech_stats_t st;
+        speech_stats_get(&st);
+        printf("speech %s voice=%s level=%d%% arena=%u/%u B stack free=%u/%u B\n",
+               st.available ? "ready" : "unavailable",
+               speech_voice_name(speech_voice_get()), speech_volume_get(),
+               (unsigned)st.arena_peak, (unsigned)st.arena_bytes,
+               st.stack_unused, st.stack_bytes);
+        printf("  spoken=%u stopped=%u failed=%u busy=%u last_error=%d radio_yields=%u\n",
+               (unsigned)st.spoken, (unsigned)st.stopped, (unsigned)st.failed,
+               (unsigned)st.busy, st.last_error, (unsigned)audio_out_tts_yielded());
+        printf("  last: first sample %u ms, synth %u ms, audio %u ms, %u unit(s); max first %u ms, max synth %u ms\n",
+               (unsigned)st.last_first_ms, (unsigned)st.last_synth_ms,
+               (unsigned)st.last_audio_ms, (unsigned)st.last_units,
+               (unsigned)st.max_first_ms, (unsigned)st.max_synth_ms);
+        printf("  audio drops=%u underruns=%u\n",
+               (unsigned)audio_drops_get(), (unsigned)audio_underruns_get());
+        printf("  heap internal=%u largest=%u psram=%u\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        return 0;
+    }
+    if (!strcmp(argv[1], "voice")) {
+        if (argc > 2) {
+            for (int v = 0; v < SPEECH_VOICE_COUNT; v++) {
+                if (!strcmp(argv[2], speech_voice_name((speech_voice_t)v))) {
+                    speech_voice_set((speech_voice_t)v);
+                    settings_speech_voice_set(v);
+                }
+            }
+        }
+        printf("voice=%s\n", speech_voice_name(speech_voice_get()));
+        return 0;
+    }
+    if (!strcmp(argv[1], "vol")) {
+        if (argc > 2) {
+            speech_volume_set(atoi(argv[2]));
+            settings_speech_volume_set(speech_volume_get());
+        }
+        printf("speech volume=%d%% (of vol)\n", speech_volume_get());
+        return 0;
+    }
+    if (!strcmp(argv[1], "mesh") && argc > 2) {
+        /* As if MeshCore had just delivered it: 'say mesh [dm] name: text'. */
+        const bool dm = !strcmp(argv[2], "dm");
+        char text[SPEECH_TEXT_MAX];
+        size_t len = 0;
+        text[0] = 0;
+        for (int i = dm ? 3 : 2; i < argc && len + 1 < sizeof(text); i++)
+            len += (size_t)snprintf(text + len, sizeof(text) - len, "%s%s", len ? " " : "", argv[i]);
+        audio_events_mesh_message(text, dm);
+        printf("mesh voice: %s\n", audio_mesh_say_label(audio_events_mesh_say_get()));
+        return 0;
+    }
+    if (!strcmp(argv[1], "stop")) { speech_cancel(); return 0; }
+    if (!strcmp(argv[1], "test")) { audio_events_play_test(); return 0; }
+    if (!strcmp(argv[1], "burst")) {
+        /* New contacts in a burst, as ADS-B reports them: one is spoken in
+           full and the rest as "AND n MORE". */
+        static const char *const cs[] = { "N123AB", "UAL1234", "RCH871", "DAL88", "", "N9KX" };
+        const int n = argc > 2 ? atoi(argv[2]) : 4;
+        for (int i = 0; i < n && i < 8; i++)
+            audio_events_publish(AUDIO_EVT_NEW_CONTACT, 0xA10000u + (uint32_t)i,
+                                 cs[i % 6], false);
+        return 0;
+    }
+
+    char text[SPEECH_TEXT_MAX];
+    size_t len = 0;
+    text[0] = 0;
+    for (int i = 1; i < argc && len + 1 < sizeof(text); i++)
+        len += (size_t)snprintf(text + len, sizeof(text) - len, "%s%s", i > 1 ? " " : "", argv[i]);
+    audio_out_ensure_unmuted();
+    const speech_result_t r = speech_say_async(text);
+    printf("%s\n", r == SPEECH_SPOKEN ? "queued" :
+                   r == SPEECH_BUSY ? "busy" :
+                   r == SPEECH_UNAVAILABLE ? "unavailable" : "refused");
+    return 0;
+}
+
 /**/
 static int cmd_mute(int argc, char **argv)
 {
@@ -935,6 +1023,8 @@ void ls_ctl_register_commands(void)
           .hint = "<n|+n|-n>", .func = &cmd_vol },
         { .command = "mute",    .help = "Toggle audio mute",
           .func = &cmd_mute },
+        { .command = "say",     .help = "Speech status, or speak text",
+          .hint = "[voice glitch|dark | vol 0-100 | stop | test | burst n | mesh [dm] name: text | <text>]", .func = &cmd_say },
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
         /**/

@@ -15,7 +15,7 @@ extern "C" {
 #endif
 
 #define LS_NOTIFY_TITLE 20
-#define LS_NOTIFY_BODY  64
+#define LS_NOTIFY_BODY  128
 
 typedef struct {
     char    title[LS_NOTIFY_TITLE];  /* who: "MESH", "KB1QWE"          */

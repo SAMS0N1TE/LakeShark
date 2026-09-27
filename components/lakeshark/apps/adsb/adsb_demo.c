@@ -56,7 +56,10 @@ void adsb_demo_tick(void)
         if (!a) continue;
 
         double radius_deg = 0.05 + 0.03 * i;          /* ~5 to ~30 km out */
-        double rate       = 0.05 + 0.01 * i;          /* radians per second */
+        /* An airliner's speed or less: 180 kt and up, so the orbit is one a
+           real aircraft could fly. A degree of arc is 60 nm. */
+        const double kt   = 180.0 + 50.0 * i;
+        double rate       = kt / (radius_deg * 60.0 * 3600.0);   /* radians per second */
         double ang        = t * rate + (double)i;
 
         a->icao      = (uint32_t)(DEMO_ICAO_BASE + i);
@@ -70,10 +73,18 @@ void adsb_demo_tick(void)
         a->pos_ts_us = esp_timer_get_time();
 
         a->altitude  = 3000 + i * 1500;
-        a->velocity  = 220 + i * 15;
-        /* Heading is the tangent of the orbit, in compass degrees. */
-        a->heading   = (int)(fmod((-ang * 180.0 / M_PI) + 450.0, 360.0));
-        a->vert_rate = 0;
+        /* The speed the orbit actually flies, so a map that dead reckons
+           between reports lands where the next report does. */
+        const double north_deg_s = radius_deg * rate * cos(ang);
+        const double east_deg_s  = -radius_deg * rate * sin(ang);
+        const double kt_per_deg_s = 60.0 * 3600.0;
+        a->ns_velocity = (int)lround(north_deg_s * kt_per_deg_s);
+        a->ew_velocity = (int)lround(east_deg_s * kt_per_deg_s);
+        a->velocity  = (int)lround(hypot(north_deg_s, east_deg_s) * kt_per_deg_s);
+        /* Heading is the direction of travel, in compass degrees. */
+        a->heading   = (int)lround(fmod(atan2(east_deg_s, north_deg_s) * 180.0 / M_PI + 360.0, 360.0)) % 360;
+        a->vert_rate = (i % 3 == 0) ? 0 : (i % 3 == 1) ? 900 : -700;
+        adsb_state_push_position(a);
         a->msg_count += 1;
         a->last_seen_us = esp_timer_get_time();
         a->active    = true;

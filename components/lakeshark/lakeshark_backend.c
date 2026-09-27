@@ -40,7 +40,7 @@
 
 #include "audio_out.h"
 #include "audio_events.h"
-#include "sam_tts.h"
+#include "speech.h"
 #include "tone.h"
 #include "event_stream.h"
 
@@ -99,12 +99,8 @@ void lakeshark_backend_start(void)
     esp_log_level_set("P25DBG",  ESP_LOG_ERROR);
 
     if (!cell_performance_active()) {
-        int p  = settings_voice_preset_get();
-        int lp = settings_voice_lowpass_get();
-        int sh = settings_voice_lowshelf_get();
-        if (p >= 0 && p < SAM_PRESET_COUNT) sam_tts_set_preset((sam_tts_voice_preset_t)p);
-        sam_tts_set_lowpass(lp);
-        sam_tts_set_lowshelf(sh);
+        speech_voice_set((speech_voice_t)settings_speech_voice_get());
+        speech_volume_set(settings_speech_volume_get());
     }
 
     ESP_LOGW(TAG, "heap before USB host: internal=%u DMA=%u largest-DMA=%u (bytes)",
@@ -147,13 +143,13 @@ void lakeshark_boot_sound(void)
 {
     int mode = settings_get_boot_sound();
     /* The same fallback as snd_boot_start: no engine, no greeting. */
-    if (mode == 2 && !sam_tts_available()) mode = 1;
+    if (mode == 2 && !speech_available()) mode = 1;
     if (mode == 1) {
         snd_boot();
         static const int16_t sil[1600] = {0};
-        audio_write_mono(sil, 1600);
+        audio_write_cue(sil, 1600);
     } else if (mode == 2) {
-        sam_tts_speak("WELCOME.");
+        speech_say("WELCOME.");
     } else {
         return;
     }
