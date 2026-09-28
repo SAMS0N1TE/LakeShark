@@ -7,13 +7,23 @@ LakeShark is a handheld SDR scanner and radio workbench built around the **LilyG
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
+## Start here
+
+**[Flash LakeShark from your browser](https://terminalbay.com/?m=lakeshark)** · **[First flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH)** · **[Download the latest release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)**
+
+1. **Check your board:** the primary build is for the **LilyGO T-Display P4 with the 4.1-inch 568 × 1232 AMOLED and 16 MB flash**. Other display variants need different firmware. The keyboard is optional.
+2. **Flash from Chrome or Edge on a computer:** open the browser flasher and select your exact board. Follow the first flash guide for setup.
+3. **Choose your radio:** add an RTL-SDR Blog V3 or V4 for P25 Phase I, FM, POCSAG and ADS-B reception, or use the onboard SX1262 for MeshCore and LoRa tools.
+
+**[Wiki and setup guides](https://terminalbay.com/?m=wiki)** · **[Project overview](https://terminalbay.com/?m=lakeshark-showcase)**
+
+> **Powering the T-Display P4:** use the P4's USB-C power input for now. Do not feed the keyboard's 5V USB output back into the P4; it caused repeated power cycling in testing. The battery case shown below is still in development.
+
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase#renders/01">New case design renders</a></p>
 
 <p align="center">
   <img height="610" alt="LakeShark case turntable" src="assets/lakeshark_turntable.gif">
 </p>
-
-**[Flash it from your browser](https://terminalbay.com/?m=lakeshark)** · **[Download a release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)** · **[Wiki and guides](https://terminalbay.com/?m=wiki)**
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
