@@ -106,3 +106,11 @@ void p25_get_acquisition_status(p25_acquisition_status_t *out)
     out->iq.clipped_components = s_acq_clipped;
 }
 bool ls_field_compass_cal(ls_compass_cal_t *out) { (void)out; return false; }
+bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
+{
+    if (corr) corr[0] = corr[1] = corr[2] = 0;
+    if (sigma_deg) *sigma_deg = NAN;
+    return false;
+}
+void ls_field_compass_learn(int action) { (void)action; }
+void ls_field_compass_learn_report(void) {}

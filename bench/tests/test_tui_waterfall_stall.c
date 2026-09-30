@@ -8,6 +8,7 @@
 #include <string.h>
 
 bool ls_tui_is_wide(void) { return true; }
+bool ls_tui_keyboard_mode(void) { return false; }
 /* Asked by the draw path for which way round the ground is. The
    blitter that knows is not linked here: dark. */
 bool ls_tui_daylight(void) { return false; }

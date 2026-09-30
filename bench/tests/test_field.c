@@ -1,5 +1,6 @@
 #include "ls_test.h"
 #include "ls_field.h"
+#include "ls_compass_live.h"
 #include "ls_gps.h"
 #include "core/ls_time.h"
 #include "ls_mesh.h"
@@ -113,6 +114,9 @@ int perf_get_msgs_total(void) { return 0; }
 ls_radio_err_t ls_radio_endpoint_get(const char *id, ls_radio_endpoint_info_t *out) { (void)id; (void)out; return LS_RADIO_ERR_UNAVAILABLE; }
 void ls_wireless_observe(bool on) { (void)on; }
 void ls_wireless_get(ls_wireless_snapshot_t *out) { memset(out, 0, sizeof(*out)); }
+bool ls_gauge_peek(int16_t *milliamps, int64_t *age_us) { (void)milliamps; (void)age_us; return false; }
+bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal, bool *back, ls_compass_reading_t *out)
+{ (void)s; (void)cal; (void)back; memset(out, 0, sizeof(*out)); return false; }
 
 static void reset(void)
 {

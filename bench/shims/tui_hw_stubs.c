@@ -13,6 +13,8 @@ int ls_tui_corner_pad(int row) { (void)row; return 0; }
 #endif
 #ifdef LS_TUI_WIDE_STUB
 bool ls_tui_is_wide(void) { return true; }
+bool ls_keypad_present(void);
+bool ls_tui_keyboard_mode(void) { return ls_keypad_present(); }
 #endif
 
 /* ---- fuel gauge ---------------------------------------------------- */
@@ -125,7 +127,15 @@ __attribute__((weak)) bool ls_field_owned(void) { return false; }
 
 /* No keyboard board in the simulator: editors show their touch keyboard. */
 /* LSSIM_KEYPAD=1 renders a screen as it looks with the keyboard attached. */
-bool ls_keypad_present(void) { const char *e = getenv("LSSIM_KEYPAD"); return e && e[0] == '1'; }
+/* LSSIM_KEYPAD=1 in the simulator; a test forces it with ls_shim_keypad. */
+static int s_keypad_forced = -1;
+void ls_shim_keypad(int present) { s_keypad_forced = present; }
+bool ls_keypad_present(void)
+{
+    if (s_keypad_forced >= 0) return s_keypad_forced != 0;
+    const char *e = getenv("LSSIM_KEYPAD");
+    return e && e[0] == '1';
+}
 
 /* No speech engine on the host screens: Settings shows the voice as off. */
 #include "../../components/lakeshark/audio/speech.h"

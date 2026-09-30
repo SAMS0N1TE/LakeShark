@@ -118,6 +118,11 @@ void ls_tui_split_at(tui_rect area, int want, tui_rect *first,
    this; if it does, prefer ls_tui_split. */
 bool ls_tui_is_wide(void);
 
+/* True while a physical keyboard is attached. This, not the orientation,
+   decides whether controls carry key legends: landscape does not mean a
+   keyboard, and a keyboard does not mean landscape. */
+bool ls_tui_keyboard_mode(void);
+
 /* Turning the screen is the router's to ask for and somebody else's to do:
    the rotation lives in the display layer, which this component deliberately
    knows nothing about. F11 lands here; took the status-row tap out. */

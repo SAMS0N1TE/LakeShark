@@ -23,6 +23,7 @@
    it brings its own. */
 static bool g_wide = true;
 bool ls_tui_is_wide(void) { return g_wide; }
+bool ls_tui_keyboard_mode(void) { return false; }
 int  ls_tui_corner_pad(int row) { (void)row; return 0; }
 
 #define MAX_W 160

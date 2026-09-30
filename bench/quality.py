@@ -317,6 +317,18 @@ def main():
     if command == 'test':
         load_test_tools()
         suite = unittest.defaultTestLoader.loadTestsFromModule(quality)
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_pmtiles_extract_args.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_p25_scan_read.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_cell_worker.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_player_shutdown.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_player_create.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_p25_scan_timing.py"))
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
     if command == 'watch':
         return capture_main()

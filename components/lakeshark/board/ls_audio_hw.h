@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 esp_err_t ls_audio_hw_init(bool speaker_only);
+/* Physical DAC topology, independent of the two-slot I2S transport. */
+bool ls_audio_hw_output_is_mono(void);
 
 /* Release the codec and the I2S channel so init can run again.
 

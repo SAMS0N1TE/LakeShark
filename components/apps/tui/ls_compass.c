@@ -373,6 +373,33 @@ bool ls_compass_field(const ls_imu_sample_t *s, const ls_compass_cal_t *c, float
     return true;
 }
 
+bool ls_compass_unfield(const ls_compass_cal_t *c, const float screen[3], float raw[3])
+{
+    const int8_t *b = DEFAULT_BASIS;
+    if (c && (c->basis[0] || c->basis[1] || c->basis[2])) b = c->basis;
+    float m[3];
+    for (int i = 0; i < 3; i++) {
+        const int axis = (b[i] < 0 ? -b[i] : b[i]) - 1;
+        m[axis] = b[i] < 0 ? -screen[i] : screen[i];
+    }
+    if (!c || !has_soft(c)) { memcpy(raw, m, sizeof(m)); return true; }
+    /* soft * raw = m, by Cramer's rule. */
+    const float (*s)[3] = c->soft;
+    const float det = s[0][0] * (s[1][1] * s[2][2] - s[1][2] * s[2][1]) -
+                      s[0][1] * (s[1][0] * s[2][2] - s[1][2] * s[2][0]) +
+                      s[0][2] * (s[1][0] * s[2][1] - s[1][1] * s[2][0]);
+    if (!(fabsf(det) > 1e-6f)) return false;
+    for (int k = 0; k < 3; k++) {
+        float t[3][3];
+        memcpy(t, s, sizeof(t));
+        for (int i = 0; i < 3; i++) t[i][k] = m[i];
+        raw[k] = (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1]) -
+                  t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0]) +
+                  t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / det;
+    }
+    return true;
+}
+
 float ls_compass_heading(const ls_imu_sample_t *s, const ls_compass_cal_t *c)
 {
     float f[3];

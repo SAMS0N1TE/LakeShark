@@ -33,7 +33,7 @@ static void button(tui_surface *sf, tui_rect r, const char *label, char key,
     ls_fill_dither(sf, inset(r), on ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
     ls_panel_box(sf, r, "", hue);
     char text[48];
-    if (ls_tui_is_wide()) snprintf(text, sizeof(text), "[%c] %s", key, label);
+    if (ls_tui_keyboard_mode()) snprintf(text, sizeof(text), "[%c] %s", key, label);
     else snprintf(text, sizeof(text), "%s", label);
     ls_dither_label(sf, inset(r), (r.h - 3) / 2,
                     text, dim ? LS_ATTR_DIM : WHITE);
@@ -180,8 +180,8 @@ static void channels(tui_surface *sf, tui_rect a)
 static void networks(tui_surface *sf, tui_rect a)
 {
     ls_panel_box(sf, a, "NEARBY / TAP TO JOIN", TUI_CYAN);
-    int row_h = ls_tui_is_wide() ? 3 : 4;
-    int nav_h = ls_tui_is_wide() ? 3 : 4;
+    int row_h = ls_tui_is_wide() && ls_tui_keyboard_mode() ? 3 : 4;
+    int nav_h = ls_tui_is_wide() && ls_tui_keyboard_mode() ? 3 : 4;
     s_page_size = (a.h - 3 - nav_h) / row_h;
     if (s_page_size < 1) s_page_size = 1;
     if (s_page_size > 5) s_page_size = 5;

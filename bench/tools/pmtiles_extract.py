@@ -8,6 +8,7 @@ Use --help for archive URL, bounding box and zoom options.
 import argparse
 import gzip
 import io
+import math
 import os
 import struct
 import sys
@@ -382,6 +383,23 @@ def main():
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
+    west, south, east, north = args.bbox
+    for label, value in zip(("west", "south", "east", "north"), args.bbox):
+        if not math.isfinite(value):
+            ap.error("--bbox %s must be finite" % label)
+    if not (-180 <= west <= 180 and -180 <= east <= 180):
+        ap.error("--bbox west and east must be within [-180, 180]")
+    if not (-85.05112878 <= south <= 85.05112878
+            and -85.05112878 <= north <= 85.05112878):
+        ap.error("--bbox south and north must be within Web Mercator latitude [-85.05112878, 85.05112878]; poles cannot be represented")
+    if west >= east:
+        ap.error("--bbox requires west < east; antimeridian crossing is unsupported by this extractor")
+    if south >= north:
+        ap.error("--bbox requires south < north")
+    if not (0 <= args.minzoom <= args.maxzoom <= 26):
+        ap.error("--minzoom and --maxzoom must satisfy 0 <= minzoom <= maxzoom <= 26")
+
+    print("bbox: west=%s south=%s east=%s north=%s" % (west, south, east, north))
     remote = Remote(args.url)
     hdr = Header(remote.get(0, HEADER_LEN))
     print("remote: z%d..z%d, %d tiles addressed, tile compression %d"

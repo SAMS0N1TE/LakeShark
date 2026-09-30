@@ -506,7 +506,7 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
         }
     }
     if (!compact && r.h >= 4) {
-        const char *h = ls_tui_is_wide() ? "ENTER opens the node"
+        const char *h = ls_tui_keyboard_mode() ? "ENTER opens the node"
                                          : "tap a node twice to open it";
         tui_put_str(sf, r, r.x + 2, r.y + r.h - 2, h, A(DIM_FG, TUI_BLACK));
     }

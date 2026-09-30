@@ -36,6 +36,11 @@ esp_err_t ls_gauge_read(ls_gauge_t *out);
    a drawing path should call. Returns false when there is no gauge. */
 bool ls_gauge_get(ls_gauge_t *out);
 
+/* The cached current and how old it is, with no bus traffic, so a task
+   other than the one refreshing it can read it. False before the first
+   read or with no gauge. */
+bool ls_gauge_peek(int16_t *milliamps, int64_t *age_us);
+
 void ls_gauge_diagnostics(void);
 
 #ifdef __cplusplus

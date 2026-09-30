@@ -8,6 +8,7 @@
 #include "../../ls_compass_live.h"
 #include "../../ls_compass_art.h"
 #include "../../ls_df.h"
+#include "../../ls_df_fit.h"
 #include "../../ls_df_sources.h"
 #include "../../ls_df_cal.h"
 #include "../../ls_df_hits.h"
@@ -20,6 +21,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_app.h"
 #include "../../ls_map.h"
+#include "../../ls_geo.h"
 #include "../../ls_sun.h"
 #include "board/ls_board_hw.h"
 #include "esp_attr.h"
@@ -91,20 +93,62 @@ static void save_options(void) { settings_set_compass_options((s_simple ? 1 : 0)
 
 /* ------------------------------------------------------------ bearings -- */
 
-static bool true_mode(void) { return s_r.true_valid && !s_magnetic; }
+/* Whether declination is known, not whether this frame solved: a frame
+   the accelerometer spoils (a quick move, a flip) used to drop the dial to
+   magnetic and reset its filter, then throw it back to true on the next. */
+static bool true_mode(void) { return isfinite(s_r.declination) && !s_magnetic; }
 /* The heading as the sensor gives it this frame. */
 static float raw_heading(void)
 {
     if (!s_r.valid) return NAN;
-    return true_mode() ? s_r.true_deg : s_r.magnetic;
+    return true_mode() ? fmodf(s_r.magnetic + s_r.declination + 720.0f, 360.0f) : s_r.magnetic;
 }
 /* The heading the dial shows: true when it can be, unless asked not to,
    and steadied. */
 static float shown_heading(void)
 {
-    if (!s_r.valid || !s_steady.started) return raw_heading();
+    /* A frame that could not be solved keeps what the filter holds; the
+       gyro carries it meanwhile (ls_compass_steady_step). */
+    if (!s_steady.started) return raw_heading();
     return s_steady.heading;
 }
+/* The shown heading, true, frame by frame, so a FIND reading is filed at
+   the heading it was MEASURED at. 2.5.0 moved the radios to their own task
+   and filed a whole batch at the heading the frame was drawn with; turning,
+   that is the turn rate times the reading's age, and it leads one way when
+   turning clockwise and the other way back. 64 frames is over two seconds. */
+#define HHIST 64
+EXT_RAM_BSS_ATTR static struct { int64_t us; float h; } s_hhist[HHIST];
+static int s_hhist_n, s_hhist_head;
+
+static float to_true(float d);
+static void heading_note(int64_t us, float h)
+{
+    if (!isfinite(h)) return;
+    s_hhist[s_hhist_head].us = us; s_hhist[s_hhist_head].h = h;
+    s_hhist_head = (s_hhist_head + 1) % HHIST;
+    if (s_hhist_n < HHIST) s_hhist_n++;
+}
+
+/* The true heading at `us`, between the two frames either side of it. Older
+   than the history: its oldest; newer than the last frame: the last. */
+static float heading_at(int64_t us)
+{
+    if (!s_hhist_n) return NAN;
+    const int newest = (s_hhist_head - 1 + HHIST) % HHIST;
+    if (us >= s_hhist[newest].us) return s_hhist[newest].h;
+    for (int k = 1; k < s_hhist_n; k++) {
+        const int b = (s_hhist_head - k + HHIST) % HHIST, a = (b - 1 + HHIST) % HHIST;
+        if (us >= s_hhist[a].us) {
+            const float span = (float)(s_hhist[b].us - s_hhist[a].us);
+            const float f = span > 0 ? (float)(us - s_hhist[a].us) / span : 1.0f;
+            const float d = fmodf(s_hhist[b].h - s_hhist[a].h + 540.0f, 360.0f) - 180.0f;
+            return fmodf(s_hhist[a].h + d * f + 720.0f, 360.0f);
+        }
+    }
+    return s_hhist[(s_hhist_head - s_hhist_n + HHIST) % HHIST].h;
+}
+
 /* A true bearing in the dial's reference, and back. */
 static float to_dial(float t)
 {
@@ -312,6 +356,32 @@ __attribute__((noinline)) static void draw_dial(tui_surface *sf, tui_rect body)
 #define TRACKS (LS_DFS_SLOTS * LS_DFS_CHANNELS)
 EXT_RAM_BSS_ATTR static ls_df_sweep_t s_sw[TRACKS];
 EXT_RAM_BSS_ATTR static ls_df_estimate_t s_te[TRACKS];
+/* FIT's own answer per track, and the patterns learnt for the radio in each
+   slot; s_pat_cal is the one a beacon calibration is building. */
+EXT_RAM_BSS_ATTR static ls_df_fit_t s_tf[TRACKS];
+EXT_RAM_BSS_ATTR static ls_df_pattern_t s_pat[LS_DFS_SLOTS], s_pat_cal;
+EXT_RAM_BSS_ATTR static uint32_t s_tf_samples[TRACKS];
+EXT_RAM_BSS_ATTR static int64_t s_tf_us[TRACKS];
+/* Every estimator on the shown track, for `find` to set against the truth. */
+EXT_RAM_BSS_ATTR static struct {
+    int64_t us;
+    ls_df_estimate_t peak;
+    ls_df_fit_t fit, learnt;
+} s_cmp;
+/* Learning the pattern in the field: whenever the truth is known (both ends
+   have GPS, far enough apart for it to mean something), each fresh circle
+   on slot 0 is one more circle of the pattern. */
+EXT_RAM_BSS_ATTR static struct {
+    bool on;
+    int64_t us, saved_us;
+    uint32_t samples;
+    uint16_t added, saved_circles;
+    float truth, range_m;
+    char why[64];
+} s_auto;
+/* Outside s_auto: PSRAM statics start zeroed whatever their initializer says. */
+static bool s_auto_on = true;
+static bool truth_bearing(double *brg, double *range_m, const char **why);
 EXT_RAM_BSS_ATTR static struct { float peak, last; int64_t us, last_us, clip_us; } s_tlev[TRACKS];
 static int s_sel;                         /* the track whose lobe is drawn */
 EXT_RAM_BSS_ATTR static ls_dfs_status_t s_dfs2;
@@ -351,7 +421,15 @@ static const float DWELL_MS[] = { 200, 400, 800, 1500 };
 static const float PEAKS_DB[] = { 0, 3, 6, 10 };
 static const struct { const float *v; int n, dflt; const char *name, *unit, *zero; } OPT[O_TUNED] = {
     { HOLD_S, 5, 2, "Hold each peak", "s", "no hold" },
-    { DECAY_DB, 6, 2, "Then let it fall", "dB/s", "never: hold forever" },
+    /* Never, by default: the max-hold the operator signed off on 2026-09-25.
+       2.5.0 defaulted to 1 dB/s after 5 s, and on a pulsed beacon (a read
+       in a gap is a bin's "latest") the directions swept first had fallen
+       7 dB by the end of a 12 s circle. That pulled the estimate toward
+       wherever the board last pointed - which, ending a circle facing
+       away, is behind the operator. The operator reported FIND showing the
+       Flipper opposite to where it was (2026-09-27). Decay is for a moving
+       transmitter; choose it for one. */
+    { DECAY_DB, 6, 0, "Then let it fall", "dB/s", "never: hold forever" },
     { FORGET_S, 4, 2, "Forget a direction after", "s", NULL },
     { THRESH_DB, 5, 1, "A hit stands over noise by", "dB", NULL },
     { SPIKE_N, 4, 1, "Believe a hit after", "reads", NULL },
@@ -417,9 +495,24 @@ static uint32_t default_freq(ls_dfs_t src)
     return 915000000u;
 }
 
+static const char *method_name(void)
+{
+    return s_method == LS_DF_FIT ? "FIT" : s_method == LS_DF_NULL ? "NULL" : "PEAK";
+}
+
+static void load_pattern(int slot, ls_dfs_t src)
+{
+    int8_t g[LS_DF_PAT_BINS];
+    uint16_t circles = 0;
+    if (src < LS_DFS_COUNT && settings_get_df_pattern((int)src, g, &circles)) ls_df_pattern_unpack(&s_pat[slot], g, circles);
+    else ls_df_pattern_clear(&s_pat[slot]);
+}
+
 static void load_df_offset(void)
 {
     float d;
+    load_pattern(0, s_dfs_source);
+    load_pattern(1, s_src2);
     s_df_offset = settings_get_df_offset((int)s_dfs_source, (int)s_method, &d) ? d : NAN;
     s_df_offset2 = s_src2 < LS_DFS_COUNT && settings_get_df_offset((int)s_src2, (int)s_method, &d) ? d : NAN;
 }
@@ -451,6 +544,10 @@ static void load_find_settings(void)
 /* Start what the operator chose: slot 0 always, slot 1 when set and able. */
 static void find_start(void)
 {
+    /* Levels still queued from the last run were heard pointing somewhere
+       else; filed now, they land at this heading and a bin's "latest" keeps
+       them up until it is forgotten. */
+    { EXT_RAM_BSS_ATTR static ls_dfs_reading_t junk[16]; while (ls_dfs_take(junk, 16) > 0) {} }
     s_find_on = !ls_dfs_unavailable(s_dfs_source) && ls_dfs_select_slot(0, s_dfs_source, s_ch[0][0]);
     if (s_find_on) ls_dfs_set_channels(0, s_ch[0], s_nch[0], (uint32_t)OPTV(O_DWELL));
     if (s_src2 < LS_DFS_COUNT && s_cal.phase == LS_DF_CAL_OFF && !ls_dfs_unavailable(s_src2) &&
@@ -488,6 +585,54 @@ static float track_peak(int t, int64_t now)
     return isfinite(s_tlev[t].last) && s_tlev[t].last > p ? s_tlev[t].last : p;
 }
 
+static void save_pattern(int slot, ls_dfs_t src)
+{
+    int8_t g[LS_DF_PAT_BINS];
+    ls_df_pattern_pack(&s_pat[slot], g);
+    settings_set_df_pattern((int)src, g, s_pat[slot].circles);
+}
+
+__attribute__((noinline)) static void compare_and_learn(int64_t now)
+{
+    s_cmp.us = now;
+    const ls_df_sweep_t *sw = &s_sw[s_sel];
+    const ls_df_pattern_t *pat = &s_pat[s_sel / LS_DFS_CHANNELS];
+    ls_df_estimate(sw, LS_DF_PEAK, &s_cmp.peak);
+    ls_df_fit(sw, LS_DF_PEAK, NULL, &s_cmp.fit);
+    if (pat->circles) ls_df_fit(sw, LS_DF_PEAK, pat, &s_cmp.learnt);
+    else memset(&s_cmp.learnt, 0, sizeof(s_cmp.learnt));
+
+    /* One pattern circle from slot 0's first channel per fresh circle heard
+       with the truth known. After the first, a circle that looks nothing
+       like the pattern (a reflection, a car between) is not taken. */
+    double b = NAN, m = NAN;
+    const char *why = NULL;
+    const bool truth = s_auto_on && s_sel == 0 && truth_bearing(&b, &m, &why);
+    s_auto.truth = truth ? (float)b : NAN; s_auto.range_m = truth ? (float)m : NAN;
+    if (!s_auto_on) snprintf(s_auto.why, sizeof(s_auto.why), "off");
+    else if (!truth) snprintf(s_auto.why, sizeof(s_auto.why), "%s", why ? why : "no truth");
+    else if (m < 30) snprintf(s_auto.why, sizeof(s_auto.why), "beacon under 30 m away");
+    else if (s_cmp.fit.bins && s_cmp.peak.coverage < 330)
+        snprintf(s_auto.why, sizeof(s_auto.why), "turn a full circle (%d of 360)", s_cmp.peak.coverage);
+    else if (sw->samples < s_auto.samples + 30 || now - s_auto.us < 20000000)
+        snprintf(s_auto.why, sizeof(s_auto.why), "waiting for a fresh circle");
+    else {
+        ls_df_fit_t check;
+        const bool fits = !s_pat[0].circles ||
+                          (ls_df_fit(sw, LS_DF_PEAK, &s_pat[0], &check) && check.match > 0.3f);
+        if (fits && ls_df_pattern_learn(&s_pat[0], sw, (float)b)) {
+            s_auto.added++;
+            snprintf(s_auto.why, sizeof(s_auto.why), "learnt circle %u", (unsigned)s_pat[0].circles);
+        } else snprintf(s_auto.why, sizeof(s_auto.why), "circle refused: unlike the pattern");
+        s_auto.samples = sw->samples; s_auto.us = now;
+    }
+    /* Saved at most once a minute, and only when it grew. */
+    if (s_pat[0].circles != s_auto.saved_circles && now - s_auto.saved_us >= 60000000) {
+        save_pattern(0, s_dfs_source);
+        s_auto.saved_circles = s_pat[0].circles; s_auto.saved_us = now;
+    }
+}
+
 __attribute__((noinline)) static void update_find(void)
 {
     ls_dfs_poll_slot(0, &s_dfs);
@@ -504,6 +649,14 @@ __attribute__((noinline)) static void update_find(void)
     }
     s_turn_prev = h; s_turn_prev_us = now;
 
+    /* A track whose frequency changed is another transmitter: BAND gives
+       a freed track to the next emitter it finds. */
+    EXT_RAM_BSS_ATTR static uint32_t track_hz[TRACKS];
+    for (int t = 0; t < TRACKS; t++) {
+        const uint32_t hz = track_live(t) ? track_freq(t) : 0;
+        if (hz != track_hz[t]) { if (track_hz[t] && hz) clear_track(t); track_hz[t] = hz; }
+    }
+
     EXT_RAM_BSS_ATTR static ls_dfs_reading_t rd[32];
     const int n = s_find_on ? ls_dfs_take(rd, 32) : 0;
     for (int i = 0; i < n; i++) {
@@ -515,12 +668,18 @@ __attribute__((noinline)) static void update_find(void)
            logged, and kept out of the sweep. */
         const bool clipped = rd[i].flags & LS_DFS_READ_OVERLOAD;
         if (clipped) s_tlev[t].clip_us = rd[i].us;
-        if (isfinite(h) && !clipped) ls_df_add(&s_sw[t], h, level, rd[i].us);
+        /* Filed anyway. Overload is judged on the whole capture, so near a
+           transmitter the reads it drops are the main lobe's, and 2.5.0's
+           estimate was left to pick a side or back lobe. A clipped read is
+           at least as loud as it says; a lobe that clips all round is flat,
+           and the contrast test already refuses a flat one. */
+        const float hr = heading_at(rd[i].us);
+        if (isfinite(hr)) ls_df_add(&s_sw[t], hr, level, rd[i].us);
         uint8_t flags = 0;
         if (rd[i].flags & LS_DFS_READ_OVERLOAD) flags |= LS_DF_HIT_OVERLOAD;
         if (s_turn_rate > LS_DF_CAL_TURN_MAX * 2) flags |= LS_DF_HIT_FAST;
         if (s_te[t].coverage >= 180 && s_te[t].contrast < 3.0f) flags |= LS_DF_HIT_FLAT;
-        ls_df_log_feed(&s_log, hit_cfg(), t, rd[i].freq_hz, rd[i].level, h, flags, rd[i].us);
+        ls_df_log_feed(&s_log, hit_cfg(), t, rd[i].freq_hz, rd[i].level, isfinite(hr) ? hr : h, flags, rd[i].us);
         s_tlev[t].last = rd[i].level; s_tlev[t].last_us = rd[i].us;
         if (!isfinite(track_peak(t, rd[i].us)) || rd[i].level >= track_peak(t, rd[i].us)) {
             s_tlev[t].peak = rd[i].level; s_tlev[t].us = rd[i].us;
@@ -534,11 +693,23 @@ __attribute__((noinline)) static void update_find(void)
         if (!s_sw[t].samples) { memset(&s_te[t], 0, sizeof(s_te[t])); continue; }
         ls_df_decay(&s_sw[t], now, &decay);
         ls_df_age(&s_sw[t], now, forget);
-        ls_df_estimate(&s_sw[t], s_method, &s_te[t]);
+        if (s_method == LS_DF_FIT) {
+            /* A calibration measures the board as it is: no pattern of its
+               own. Refitted when the track has news, at most four times a
+               second, and each second anyway since bins age out. */
+            const bool news = s_sw[t].samples != s_tf_samples[t];
+            if ((news && now - s_tf_us[t] >= 250000) || now - s_tf_us[t] >= 1000000) {
+                const ls_df_pattern_t *pat = &s_pat[t / LS_DFS_CHANNELS];
+                ls_df_fit(&s_sw[t], LS_DF_PEAK, !cal && pat->circles ? pat : NULL, &s_tf[t]);
+                s_tf_samples[t] = s_sw[t].samples; s_tf_us[t] = now;
+            }
+            ls_df_fit_estimate(&s_sw[t], &s_tf[t], &s_te[t]);
+        } else ls_df_estimate(&s_sw[t], s_method, &s_te[t]);
         const float off = t < LS_DFS_CHANNELS ? s_df_offset : s_df_offset2;
         if (!cal && s_te[t].valid) s_te[t].bearing = ls_df_cal_apply(s_te[t].bearing, off);
     }
     if (!track_live(s_sel)) s_sel = 0;
+    if (!cal && now - s_cmp.us >= 500000) compare_and_learn(now);
     const ls_df_sweep_t *sw = &s_sw[s_sel];
     s_est = s_te[s_sel];
     s_peak = track_peak(s_sel, now);
@@ -562,6 +733,7 @@ __attribute__((noinline)) static void update_find(void)
         /* A full circle heard well enough is one measurement; start the
            next circle from nothing so they stay independent. */
         if (ls_df_cal_circle(&s_cal, &s_est)) {
+            ls_df_pattern_learn(&s_pat_cal, &s_sw[0], s_cal.mark);
             ls_df_cal_result_t r; ls_df_cal_result(&s_cal, &r);
             char t[64]; snprintf(t, sizeof(t), "Circle %d: %+.0f deg%s", r.circles,
                                  s_cal.offset[(s_cal.next + LS_DF_CAL_CIRCLES - 1) % LS_DF_CAL_CIRCLES],
@@ -787,6 +959,7 @@ static void cal_start(uint32_t hz)
     s_sel = 0;
     clear_all();
     ls_df_cal_begin(&s_cal);
+    ls_df_pattern_clear(&s_pat_cal);
     s_recent_n = 0;
     cal_antenna(true);
     load_df_offset();
@@ -808,11 +981,22 @@ static void cal_step(void)
     }
     ls_df_cal_result_t r; ls_df_cal_result(&s_cal, &r);
     if (!r.ready) return;
-    settings_set_df_offset((int)s_dfs_source, (int)s_method, r.offset);
+    if (s_method != LS_DF_FIT) settings_set_df_offset((int)s_dfs_source, (int)s_method, r.offset);
+    /* The pattern FIT aims by, from the same circles. */
+    const uint16_t circles = s_pat_cal.circles;
+    if (circles) {
+        int8_t g[LS_DF_PAT_BINS];
+        ls_df_pattern_pack(&s_pat_cal, g);
+        settings_set_df_pattern((int)s_dfs_source, g, circles);
+    }
     const ls_dfs_t calibrated = s_dfs_source;
     cal_end();
-    char t[80]; snprintf(t, sizeof(t), "Saved: %s %s bearings corrected by %+.1f deg", ls_dfs_name(calibrated),
-                         s_method == LS_DF_PEAK ? "PEAK" : "NULL", -r.offset);
+    char t[96];
+    if (s_method == LS_DF_FIT)
+        snprintf(t, sizeof(t), "Saved: %s pattern from %u circles for FIT", ls_dfs_name(calibrated), (unsigned)circles);
+    else
+        snprintf(t, sizeof(t), "Saved: %s %s corrected by %+.1f deg, and a pattern for FIT", ls_dfs_name(calibrated),
+                 method_name(), -r.offset);
     say(t);
 }
 
@@ -820,6 +1004,7 @@ static void cal_step(void)
 static void cal_remark(void)
 {
     ls_df_cal_begin(&s_cal);
+    ls_df_pattern_clear(&s_pat_cal);
     s_recent_n = 0;
     clear_track(0); memset(&s_est, 0, sizeof(s_est)); s_peak = NAN;
     say("Aim the board's top at the beacon again, then MARK");
@@ -839,7 +1024,7 @@ __attribute__((noinline)) static int cal_lines(tui_surface *sf, tui_rect side, i
     const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK), warn = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     snprintf(line, sizeof(line), "BEACON CALIBRATION  %.2f MHz  %s%s  %s", s_dfs_freq / 1e6,
              ls_dfs_name(s_dfs_source), s_dfs_source == LS_DFS_LORA && s_cal_hz != BEACON_915 ? " (EXT ANT)" : "",
-             s_method == LS_DF_PEAK ? "PEAK" : "NULL");
+             method_name());
     ls_safe_line(sf, side, y++, line, head);
     if (s_cal.phase == LS_DF_CAL_AIM) {
         snprintf(line, sizeof(line), "1 Flipper: LakeShark > DF Beacon, %s > OK", s_cal_hz == BEACON_915 ? "915" : "433");
@@ -955,6 +1140,11 @@ __attribute__((noinline)) static void draw_log(tui_surface *sf, tui_rect side)
 
 static void tune_value(char *out, size_t cap)
 {
+    ls_dfs_band_status_t b;
+    if (s_dfs.source == LS_DFS_BAND && ls_dfs_band_status(&b) && b.hi_hz) {
+        snprintf(out, cap, "%.0f-%.0f", b.lo_hz / 1e6, b.hi_hz / 1e6);
+        return;
+    }
     if (s_dfs.tunable && s_dfs.channels > 1) snprintf(out, cap, "%d CH", s_dfs.channels);
     else if (s_dfs.tunable) snprintf(out, cap, "%.3f", s_dfs.freq_hz / 1e6);
     else snprintf(out, cap, "%.10s", s_dfs.target);
@@ -988,9 +1178,9 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
     else snprintf(radio, sizeof(radio), "%s", ls_dfs_name(s_dfs_source));
     const ls_btn_t buttons[] = {
         { "RADIO", radio, 'r', s_dfs2.active, cal },
-        { s_dfs.tunable ? (s_dfs.channels > 1 ? "SCAN" : "TUNE") : "TARGET", tune, 't', s_dfs.channels > 1,
+        { s_dfs.source == LS_DFS_BAND ? "BAND" : s_dfs.tunable ? (s_dfs.channels > 1 ? "SCAN" : "TUNE") : "TARGET", tune, 't', s_dfs.channels > 1,
           cal || (!s_dfs.tunable && !s_dfs.targets) },
-        { "METHOD", s_method == LS_DF_PEAK ? "PEAK" : "NULL", 'n', s_method == LS_DF_NULL, cal },
+        { "METHOD", method_name(), 'n', s_method != LS_DF_PEAK, cal },
         !cal ? (ls_btn_t){ "SAVE", "BEARING", 's', s_est.valid, false } :
         s_cal.phase == LS_DF_CAL_AIM ? (ls_btn_t){ "MARK", "BEACON", 's', true, !s_r.valid } :
         cr.ready ? (ls_btn_t){ "SAVE", "CAL", 's', true, false } :
@@ -1038,6 +1228,22 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
         else snprintf(line, sizeof(line), "%s", s_method == LS_DF_PEAK ? "Turn slowly through a full circle" :
                                           "Board to your chest, turn a full circle");
         ls_safe_line(sf, side, y++, line, TUI_ATTR((s_est.valid ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
+        if (s_method == LS_DF_FIT) {
+            const ls_df_fit_t *ft = &s_tf[s_sel];
+            const ls_df_pattern_t *pat = &s_pat[s_sel / LS_DFS_CHANNELS];
+            if (ft->valid && isfinite(ft->match))
+                snprintf(line, sizeof(line), "LEARNT PATTERN (%u)  match %.2f  depth %.0f dB", (unsigned)pat->circles,
+                         ft->match, ft->depth);
+            else if (ft->valid)
+                snprintf(line, sizeof(line), "CURVE FIT  explains %.0f%%  depth %.0f dB%s", 100 * fmaxf(0, ft->r2), ft->depth,
+                         pat->circles ? "" : "  no pattern yet");
+            else snprintf(line, sizeof(line), "FIT: %d dirs heard, widest gap %d", ft->bins, ft->gap);
+            ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
+            if (ft->valid && ft->ambiguous) {
+                snprintf(line, sizeof(line), "OR %03.0f %s: front and back look alike", to_dial(ft->alt), ref());
+                ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            }
+        }
         /* Every other channel's answer, in one line. */
         if (scanning) {
             int n = snprintf(line, sizeof(line), "OTHERS");
@@ -1158,7 +1364,7 @@ __attribute__((noinline)) static void draw_level(tui_surface *sf, tui_rect body)
 
 static bool s_steady_true;
 static float s_gyro_rest[3];
-static float s_rate = NAN;
+static float s_rate = NAN, s_yaw = NAN;
 static void find_requests(void);
 
 static void draw(tui_surface *sf, tui_rect a)
@@ -1178,21 +1384,33 @@ static void draw(tui_surface *sf, tui_rect a)
            rests near 4 deg/s, which alone looked like a turn. The rest
            reading is learnt whenever the rate is under 6 deg/s, over about 5 s. */
         ls_field_sample_t p; ls_field_sample_snapshot(&p);
-        float rate = NAN;
+        float rate = NAN, yaw = NAN;
         if (p.imu_valid) {
             const float g[3] = { p.imu.gx, p.imu.gy, p.imu.gz };
+            const float acc[3] = { p.imu.ax, p.imu.ay, p.imu.az };
             float d[3], r2 = 0;
             for (int i = 0; i < 3; i++) { d[i] = g[i] - s_gyro_rest[i]; r2 += d[i] * d[i]; }
             rate = sqrtf(r2);
             if (rate < 6.0f) for (int i = 0; i < 3; i++) s_gyro_rest[i] += d[i] * fminf(1.0f, dt / 5.0f);
+            /* The raw gyro: the fusion learns its own bias about up, and
+               the rest vector above also learns any turn under 6 deg/s. */
+            yaw = ls_compass_yaw_rate(g, acc);
         }
         /* A switch between true and magnetic is a jump, not a turn. */
         if (s_steady.started && s_steady_true != true_mode()) s_steady.started = false;
         s_steady_true = true_mode();
-        ls_compass_steady_step(&s_steady, raw_heading(), s_r.pitch, s_r.roll, rate, dt);
+        s_steady.mag_tau_s = s_r.interference ? 8.0f : LS_COMPASS_FUSE_TAU_S;
+        ls_compass_steady_step(&s_steady, raw_heading(), s_r.pitch, s_r.roll, yaw, dt);
         s_rate = rate;
+        s_yaw = yaw;
+        heading_note(now, to_true(shown_heading()));
     }
-    ls_compass_spring_step(&s_spring, shown_heading(), dt);
+    /* No spring on the fused heading. It was there to hide jitter the
+       fusion no longer has, and with it the dial swung past every stop and
+       ran slow on any frame over 100 ms (its dt cap). */
+    s_spring.angle = shown_heading();
+    s_spring.velocity = 0;
+    s_spring.started = isfinite(s_spring.angle);
 
     ls_btn_t tabs[P_COUNT + 2];
     for (int i = 0; i < P_COUNT; i++) tabs[i] = (ls_btn_t){ PAGE_NAMES[i], NULL, (char)('1' + i), s_page == i, false };
@@ -1266,7 +1484,7 @@ static void open_more(void)
     ls_picker_add("Calibrate FIND with a beacon", "the Flipper's DF Beacon, 915 MHz");
     char c[48];
     if (isfinite(s_df_offset)) snprintf(c, sizeof(c), "%s %s: %+.1f deg", ls_dfs_name(s_dfs_source),
-                                        s_method == LS_DF_PEAK ? "PEAK" : "NULL", -s_df_offset);
+                                        method_name(), -s_df_offset);
     else snprintf(c, sizeof(c), "none for %s", ls_dfs_name(s_dfs_source));
     ls_picker_add("Clear FIND correction", c);
 }
@@ -1368,7 +1586,8 @@ static void second_open(void)
         if (!why && (ls_dfs_t)i == s_dfs_source) why = "the first radio";
         if (!why) {
             /* Against the first radio, not whatever slot 1 holds now. */
-            const bool same = (i <= LS_DFS_LORA && s_dfs_source <= LS_DFS_LORA) ||
+            const bool sx = i <= LS_DFS_LORA || i == LS_DFS_BAND;
+            const bool same = (sx && (s_dfs_source <= LS_DFS_LORA || s_dfs_source == LS_DFS_BAND)) ||
                               ((i == LS_DFS_RTL || i == LS_DFS_HACKRF) && (s_dfs_source == LS_DFS_RTL || s_dfs_source == LS_DFS_HACKRF)) ||
                               ((i == LS_DFS_CC1101 || i == LS_DFS_NRF24) && (s_dfs_source == LS_DFS_CC1101 || s_dfs_source == LS_DFS_NRF24));
             if (same) why = "shares hardware with the first radio";
@@ -1762,7 +1981,7 @@ static void action(int i)
             if (s_dfs.tunable) channels_open(0);
             else if (s_dfs.targets) pick_target();
         }
-        else if (i == 2) { s_method = s_method == LS_DF_PEAK ? LS_DF_NULL : LS_DF_PEAK; load_df_offset(); }
+        else if (i == 2) { s_method = s_method == LS_DF_PEAK ? LS_DF_NULL : s_method == LS_DF_NULL ? LS_DF_FIT : LS_DF_PEAK; load_df_offset(); }
         else if (i == 3) save_bearing();
         else if (i == 4) { clear_all(); ls_df_log_clear(&s_log); }
         else if (i == 5) make_fix();
@@ -1858,7 +2077,7 @@ static void leave(void)
 /* The console runs in its own task; FIND's state belongs to the TUI's. A
    change is left here and picked up by the next frame (find_requests);
    the report only reads, and a torn number in it is harmless. */
-enum { RQ_NONE, RQ_SRC, RQ_CH, RQ_CLEAR, RQ_VIEW, RQ_METHOD, RQ_SHOW, RQ_LOGCLEAR, RQ_SETTING };
+enum { RQ_NONE, RQ_SRC, RQ_CH, RQ_CLEAR, RQ_VIEW, RQ_METHOD, RQ_SHOW, RQ_LOGCLEAR, RQ_SETTING, RQ_FORGET };
 static volatile int s_rq_kind;
 static int s_rq_slot, s_rq_arg, s_rq_n, s_rq_val;
 EXT_RAM_BSS_ATTR static uint32_t s_rq_hz[LS_DFS_CHANNELS];
@@ -1883,6 +2102,8 @@ static void find_requests(void)
         else if (kind == RQ_METHOD) { s_method = (ls_df_method_t)s_rq_arg; load_df_offset(); }
         else if (kind == RQ_SHOW && track_live(s_rq_arg)) s_sel = s_rq_arg;
         else if (kind == RQ_SETTING) { s_opt[s_rq_arg] = s_rq_val; settings_set_df_option(s_rq_arg, s_rq_val); }
+        else if (kind == RQ_FORGET) { ls_df_pattern_clear(&s_pat[0]); settings_set_df_pattern((int)s_dfs_source, NULL, 0);
+                                      s_auto.saved_circles = 0; s_auto.added = 0; }
     }
     s_rq_kind = RQ_NONE;
 }
@@ -1911,7 +2132,97 @@ static void report_track(int t, int64_t now)
            track_peak(t, now), (int)(sw->samples ? e->coverage / 5 : 0), e->coverage, e->contrast, est,
            t == s_sel ? "  <- shown" : "");
     if (s_tlev[t].clip_us && now - s_tlev[t].clip_us < 2000000)
-        printf("find:    %c CLIPPING: these readings are kept out of the bearing\n", track_tag(t));
+        printf("find:    %c CLIPPING: filed at their level, so the lobe reads flatter than it is\n", track_tag(t));
+}
+
+/* Ground truth, when there is some: FIND is following a mesh node that
+   sends its position (the LS DF beacon, a T-Beam, puts its GPS fix in
+   every advert) and this board has a live fix. The bearing from one fix to
+   the other is what the estimate should have said. `why` says what is
+   missing otherwise; it never goes quiet. */
+static bool truth_bearing(double *brg, double *range_m, const char **why)
+{
+    *why = NULL;
+    if (s_dfs.active && s_dfs.source == LS_DFS_LORA) {
+        ls_dfs_beacon_t b;
+        if (!ls_dfs_beacon(&b)) { *why = "no LS DF beacon packet heard on this channel"; return false; }
+        if (esp_timer_get_time() - b.us > 60000000) { *why = "the LS DF beacon has not been heard for a minute"; return false; }
+        if (!b.fix) { *why = "the LS DF beacon has no GPS fix"; return false; }
+        ls_field_sample_t p; ls_field_sample_snapshot(&p);
+        if (!p.gps_valid) { *why = "no live GPS fix on this board (a saved fix is not truth)"; return false; }
+        ls_geo_bearing_range(p.lat, p.lon, b.lat, b.lon, brg, range_m);
+        return isfinite(*brg);
+    }
+    if (!s_dfs.active || s_dfs.source != LS_DFS_MESH) { *why = "FIND is on neither LORA nor MESH"; return false; }
+    if (!s_dfs.targets || !strcmp(s_dfs.target, "everything heard")) { *why = "no mesh node picked"; return false; }
+    ls_mesh_peer_t q;
+    int r = 0;
+    for (; r < 32 && ls_mesh_peer_at(r, &q); r++)
+        if (!strcmp(q.name, s_dfs.target) || !strcmp(q.id, s_dfs.target)) break;
+    if (r >= 32 || !ls_mesh_peer_at(r, &q)) { *why = "the picked node is not in the peer list"; return false; }
+    if (!q.has_loc) { *why = "the picked node sends no position"; return false; }
+    ls_field_sample_t p; ls_field_sample_snapshot(&p);
+    if (!p.gps_valid) { *why = "no live GPS fix on this board (a saved fix is not truth)"; return false; }
+    ls_geo_bearing_range(p.lat, p.lon, q.lat_e6 / 1e6, q.lon_e6 / 1e6, brg, range_m);
+    return isfinite(*brg);
+}
+
+static const char *fmt_est(const ls_df_estimate_t *e)
+{
+    EXT_RAM_BSS_ATTR static char b[40];
+    if (e->valid) snprintf(b, sizeof(b), "%05.1fT+/-%.0f", e->bearing, e->spread);
+    else snprintf(b, sizeof(b), "---");
+    return b;
+}
+
+static const char *fmt_fit(const ls_df_fit_t *f, int which)
+{
+    EXT_RAM_BSS_ATTR static char b[2][56];
+    char *o = b[which & 1];
+    if (!f->valid) snprintf(o, 56, "--- (%d dirs, gap %d)", f->bins, f->gap);
+    else if (isfinite(f->match))
+        snprintf(o, 56, "%05.1fT sd %.0f match %.2f%s", f->bearing, f->sigma, f->match, f->ambiguous ? " AMBIG" : "");
+    else
+        snprintf(o, 56, "%05.1fT sd %.0f r2 %.2f %.0fdB%s", f->bearing, f->sigma, f->r2, f->depth, f->ambiguous ? " AMBIG" : "");
+    return o;
+}
+
+static void report_band(void)
+{
+    ls_dfs_band_status_t b;
+    if (!ls_dfs_band_status(&b)) return;
+    const int64_t now = esp_timer_get_time();
+    printf("find: band %.3f-%.3f MHz  passes %lu  floor %.1f dBm  emitters found %lu\n", b.lo_hz / 1e6, b.hi_hz / 1e6,
+           (unsigned long)b.passes, b.floor, (unsigned long)b.opened);
+    for (int t = 0; t < 8; t++)
+        if (b.track[t].live)
+            printf("find:   %c %9.4f MHz  %6.1f dBm  peak %6.1f  +%4.1f over its background  %lu passes  %.1fs ago\n",
+                   track_tag(t), b.track[t].hz / 1e6, b.track[t].level, b.track[t].peak, b.track[t].over,
+                   (unsigned long)b.track[t].passes, (double)(now - b.track[t].last_us) / 1e6);
+}
+
+static void report_truth(void)
+{
+    double b = NAN, m = NAN;
+    const char *why;
+    ls_dfs_beacon_t bc;
+    if (ls_dfs_beacon(&bc))
+        printf("find: LS DF beacon: %lu packets, last %.1f s ago, seq %u, %.1f dBm, %s, %u sats, TX %d dBm\n",
+               (unsigned long)bc.packets, (double)(esp_timer_get_time() - bc.us) / 1e6, bc.seq, bc.rssi,
+               bc.fix ? "GPS fix" : "no GPS fix", bc.sats, bc.tx_dbm);
+    printf("find: compare  peak %s  fit %s  learnt %s\n", fmt_est(&s_cmp.peak), fmt_fit(&s_cmp.fit, 0),
+           fmt_fit(&s_cmp.learnt, 1));
+    if (!truth_bearing(&b, &m, &why)) { printf("find: truth: none - %s\n", why); return; }
+    const ls_df_estimate_t *e = &s_te[s_sel];
+    printf("find: truth %s %05.1fT at %.0f m (GPS both ends)", s_dfs.source == LS_DFS_LORA ? "LS DF beacon" : s_dfs.target, b, m);
+    if (e->valid) printf("  estimate %05.1fT  error %+.1f\n", e->bearing, fmod(e->bearing - b + 540.0, 360.0) - 180.0);
+    else printf("  estimate none yet\n");
+    #define ERR(x) (fmod((x) - b + 540.0, 360.0) - 180.0)
+    printf("find: truth errors  peak %+.1f  fit %+.1f  learnt %+.1f\n",
+           s_cmp.peak.valid ? ERR(s_cmp.peak.bearing) : NAN, s_cmp.fit.valid ? ERR(s_cmp.fit.bearing) : NAN,
+           s_cmp.learnt.valid ? ERR(s_cmp.learnt.bearing) : NAN);
+    #undef ERR
+    if (m < 30) printf("find: truth: under 30 m, a few metres of GPS error is a wide angle\n");
 }
 
 /* `find` on the console: what FIND hears, and control of it. */
@@ -1919,14 +2230,36 @@ bool ls_scr_compass_console(int argc, char **argv)
 {
     const char *verb = argc > 1 ? argv[1] : "status";
     const int slot = argc > 3 && !strcmp(argv[argc - 1], "2") ? 1 : 0;
+    if (!strcmp(verb, "learn")) {
+        if (argc > 2 && !strcmp(argv[2], "on")) s_auto_on = true;
+        else if (argc > 2 && !strcmp(argv[2], "off")) s_auto_on = false;
+        else if (argc > 2 && !strcmp(argv[2], "forget")) {
+            if (s_rq_kind != RQ_NONE) { printf("find: the last change is still waiting for the screen\n"); return false; }
+            s_rq_kind = RQ_FORGET;
+        }
+        const ls_df_pattern_t *p = &s_pat[0];
+        printf("find: learn %s  pattern %u circles (%u this session)  %s\n", s_auto_on ? "on" : "off",
+               (unsigned)p->circles, (unsigned)s_auto.added, s_auto.why[0] ? s_auto.why : "-");
+        if (p->circles) {
+            printf("find: pattern dB by where the board faces, from the transmitter, 10 deg steps:\n find: ");
+            for (int k = 0; k < LS_DF_PAT_BINS; k++) printf("%+.0f%s", p->g[k], k == LS_DF_PAT_BINS - 1 ? "\n" : " ");
+        }
+        return true;
+    }
     if (!strcmp(verb, "status") || !strcmp(verb, "log")) {
         const int64_t now = esp_timer_get_time();
         printf("find: %s  method %s  view %s%s\n", s_page == P_FIND && s_find_on ? "FIND running" : "FIND not open (call ui.screen 9, tui key 2)",
-               s_method == LS_DF_PEAK ? "PEAK" : "NULL", VIEW_NAMES[s_view], s_logmode ? "  LOG" : "");
+               method_name(), VIEW_NAMES[s_view], s_logmode ? "  LOG" : "");
         printf("find: heading raw %.1f  shown %.1f  %s  gyro %.1f deg/s  turn %.1f deg/s  tilt %.0f%s\n",
                raw_heading(), shown_heading(), ref(), s_rate, s_turn_rate, s_r.tilt, s_r.interference ? "  MAG CAUTION" : "");
+        printf("find: fusion %s  yaw %+.1f deg/s  bias %+.2f deg/s  gyro/mag agree %+.2f  glitches %lu%s\n",
+               s_steady.gyro_used ? "GYRO+MAG" : "MAG ONLY", s_yaw, s_steady.bias, s_steady.agree,
+               (unsigned long)s_steady.glitches,
+               s_steady.agree <= -0.5f ? "  GYRO TURNS AGAINST THE MAGNETOMETER: axis fault, gyro left out" : "");
         printf("find: hold %.0f s  fall %.1f dB/s  forget %.0f s  hit %.0f dB over  sure at %.0f  dwell %.0f ms\n",
                OPTV(O_HOLD), OPTV(O_DECAY), OPTV(O_FORGET), OPTV(O_THRESH), OPTV(O_SPIKE), OPTV(O_DWELL));
+        report_band();
+        report_truth();
         for (int k = 0; k < LS_DFS_SLOTS; k++) {
             const ls_dfs_status_t *st = slot_status(k);
             if (!st->active) { if (k) printf("find: slot 2 off\n"); continue; }
@@ -1970,7 +2303,7 @@ bool ls_scr_compass_console(int argc, char **argv)
         if (v < 0) return false;
         s_rq_arg = v; s_rq_kind = RQ_VIEW;
     } else if (!strcmp(verb, "method") && argc > 2) {
-        s_rq_arg = !strcasecmp(argv[2], "null") ? LS_DF_NULL : LS_DF_PEAK; s_rq_kind = RQ_METHOD;
+        s_rq_arg = !strcasecmp(argv[2], "null") ? LS_DF_NULL : !strcasecmp(argv[2], "fit") ? LS_DF_FIT : LS_DF_PEAK; s_rq_kind = RQ_METHOD;
     } else if (!strcmp(verb, "show") && argc > 2) {
         const char c = argv[2][0];
         const int t = c >= '1' && c <= '8' ? c - '1' : c >= 'A' && c <= 'H' ? LS_DFS_CHANNELS + c - 'A' :
@@ -1989,7 +2322,8 @@ bool ls_scr_compass_console(int argc, char **argv)
         printf("find: %s -> %g %s\n", argv[2], OPT[id].v[best], OPT[id].unit);
     } else {
         printf("find [status|log]  |  src <radio> [2]  off2  ch <MHz,MHz,...> [2]  show <1-8|A-H>\n"
-               "     clear  logclear  view <dial|radar|heat>  method <peak|null>  set <name> <value>\n");
+               "     clear  logclear  view <dial|radar|heat>  method <peak|null|fit>  set <name> <value>\n"
+               "     learn [on|off|forget]\n");
         return false;
     }
     return true;

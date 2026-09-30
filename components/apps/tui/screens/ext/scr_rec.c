@@ -702,7 +702,8 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     } else memset(rec_tabs,0,sizeof(rec_tabs));
     if(replay_view){snprintf(recorder_hint,sizeof(recorder_hint),"P play once  +/- power  O files  LEFT/RIGHT inspect");replay_draw(sf,a);return;}
     snprintf(recorder_hint,sizeof(recorder_hint),"%s",tools_view?"B recorder  ENTER arm/stop":recorder_source>=3?"U source  C CSV metadata  V sensors":gps_view?"U source  R GPS track  M map":"U source  W watch  E export  D RTL tools");
-    int h=ls_tui_is_wide()?3:5;
+    /* A row taller for thumbs alone, when the pane has the row to give. */
+    int h=ls_tui_is_wide()?(!ls_tui_keyboard_mode() && a.h>=26?4:3):5;
     if(tools_view) {
         source_bar=tui_rect_make(0,0,0,0);
         ls_btn_t back={"RECORDER","BACK",'b',false,false};

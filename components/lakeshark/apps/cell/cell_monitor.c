@@ -21,6 +21,8 @@
 
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t worker;
+static StaticTask_t worker_tcb;
+static bool endpoint_subscribed;
 static cell_status_t state;
 static int command;
 static bool manual;
@@ -409,9 +411,21 @@ finished:
 void cell_monitor_init(void)
 {
     if(worker) return;
-    ls_radio_endpoint_subscribe(receiver_event,NULL);
+    if(!endpoint_subscribed) {
+        endpoint_subscribed=ls_radio_endpoint_subscribe(receiver_event,NULL)>=0;
+        if(!endpoint_subscribed) {message("Receiver subscription failed");return;}
+    }
     message("Select band, then LEARN or START");
-    if(xTaskCreate(task,"cell_watch",8192,NULL,2,&worker)!=pdPASS) message("Worker allocation failed");
+    /* Permanent worker: PSRAM stack avoids exhausting the UI's internal heap.
+       ESP-IDF task stack sizes are bytes, including the static creation API. */
+    StackType_t *stack=heap_caps_malloc(8192,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!stack) {message("Worker allocation failed");return;}
+    worker=xTaskCreateStaticPinnedToCore(task,"cell_watch",8192,NULL,2,
+                                          stack,&worker_tcb,tskNO_AFFINITY);
+    if(!worker) {
+        heap_caps_free(stack);
+        message("Worker allocation failed");
+    }
 }
 bool cell_monitor_request(int job,unsigned band,bool manual_site)
 {

@@ -105,28 +105,93 @@ void ls_compass_apply_model(ls_compass_reading_t *r, double declination,
     }
 }
 
+static float wrap180f(float a) { return fmodf(a + 540.0f, 360.0f) - 180.0f; }
+
+float ls_compass_yaw_rate(const float g[3], const float a[3])
+{
+    const float an = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    if (!isfinite(an) || an < 0.5f || an > 1.5f) return NAN;
+    const float w = (g[0] * a[0] + g[1] * a[1] + g[2] * a[2]) / an;
+    return isfinite(w) ? -w : NAN;
+}
+
 float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch, float roll,
-                             float rate_dps, float dt)
+                             float yaw_dps, float dt)
 {
     if (!s) return heading;
-    if (!isfinite(heading)) return s->started ? s->heading : NAN;
+    if (!isfinite(heading)) {
+        /* No magnetic heading this frame (the accelerometer was swung off
+           1 g, or the board points straight up): the gyro turns what is
+           held, for up to LS_COMPASS_COAST_S, then it simply holds. */
+        if (!s->started) return NAN;
+        if (dt > 0 && dt < 0.5f && isfinite(yaw_dps) && s->agree > -0.5f && s->coast_s < LS_COMPASS_COAST_S) {
+            s->coast_s += dt;
+            s->heading = fmodf(s->heading + (yaw_dps - s->bias) * dt + 720.0f, 360.0f);
+        }
+        return s->heading;
+    }
+    s->coast_s = 0;
     if (!s->started || !isfinite(s->heading)) {
+        const float agree = s->started ? s->agree : 0.0f, bias = s->started ? s->bias : 0.0f;
+        const float tau = s->mag_tau_s;
+        memset(s, 0, sizeof(*s));
+        s->mag_tau_s = tau;
         s->heading = heading; s->pitch = pitch; s->roll = roll; s->started = true;
+        s->agree = agree; s->bias = bias; s->prev_mag = heading;
         return heading;
     }
     if (dt <= 0) return s->heading;
     if (dt > 0.5f) dt = 0.5f;
-    const float d = fmodf(heading - s->heading + 540.0f, 360.0f) - 180.0f;
-    const float a = fabsf(d);
-    const float t = a <= 1.5f ? 1.0f : a >= 4.0f ? 0.0f : (4.0f - a) / 2.5f;
-    /* Turning, by the gyro: all but the sensor's own lag, so a sweep is
-       filed where it was heard. */
-    const float tau = isfinite(rate_dps) && rate_dps > 4.0f ? 0.03f : 0.08f + t * (1.5f - 0.08f);
-    const float k = 1.0f - expf(-dt / tau);
-    s->heading = fmodf(s->heading + d * k + 720.0f, 360.0f);
-    const float kt = 1.0f - expf(-dt / 0.5f);
+    const float kt = 1.0f - expf(-dt / 0.2f);
     if (isfinite(pitch)) s->pitch += (pitch - s->pitch) * kt;
     if (isfinite(roll)) s->roll += (roll - s->roll) * kt;
+
+    /* Does the gyro turn the way the magnetometer does? Judged over half a
+       second, and only when both saw a clear turn, so the magnetometer's
+       own jitter cannot cast the vote. */
+    const float mag_step = wrap180f(heading - s->prev_mag);
+    s->prev_mag = heading;
+    if (isfinite(yaw_dps)) {
+        /* The raw rate: a gyro turning the wrong way would otherwise be
+           half learnt away as bias. A true bias of a few deg/s is a degree
+           or two a window, under the 8 needed to vote. */
+        s->win_s += dt; s->win_gyro += yaw_dps * dt; s->win_mag += mag_step;
+        if (s->win_s >= 0.5f) {
+            if (fabsf(s->win_gyro) > 8.0f && fabsf(s->win_mag) > 8.0f) {
+                const float vote = (s->win_gyro > 0) == (s->win_mag > 0) ? 1.0f : -1.0f;
+                s->agree += (vote - s->agree) * 0.5f;
+            }
+            s->win_s = s->win_gyro = s->win_mag = 0;
+        }
+    }
+    s->gyro_used = isfinite(yaw_dps) && s->agree > -0.5f;
+
+    if (fabsf(wrap180f(heading - s->heading)) > 45.0f) {
+        s->far_s += dt;
+        if (s->far_s >= LS_COMPASS_JUMP_S) {
+            s->heading = heading; s->far_s = 0;
+            return s->heading;
+        }
+        /* A glitch until it lasts: the gyro carries the heading, or with
+           no gyro it holds. */
+        if (s->far_s <= dt) s->glitches++;
+        if (s->gyro_used) s->heading = fmodf(s->heading + (yaw_dps - s->bias) * dt + 720.0f, 360.0f);
+        return s->heading;
+    }
+    s->far_s = 0;
+    if (s->gyro_used) {
+        s->heading += (yaw_dps - s->bias) * dt;
+        const float d = wrap180f(heading - s->heading);
+        const float tau = s->mag_tau_s > 0 ? s->mag_tau_s : LS_COMPASS_FUSE_TAU_S;
+        const float kp = 1.0f / tau, ki = kp * kp / 4.0f;   /* critically damped */
+        s->heading += d * (1.0f - expf(-dt * kp));
+        s->bias -= d * ki * dt;
+        if (s->bias > 15.0f) s->bias = 15.0f;
+        if (s->bias < -15.0f) s->bias = -15.0f;
+    } else {
+        s->heading += wrap180f(heading - s->heading) * (1.0f - expf(-dt / 0.25f));
+    }
+    s->heading = fmodf(s->heading + 720.0f, 360.0f);
     return s->heading;
 }
 
@@ -197,6 +262,8 @@ void ls_compass_live(ls_compass_reading_t *out)
         out->magnetic = out->true_deg = NAN;
         out->valid = false;
     }
+    out->sigma_deg = NAN;
+    if (p.imu_valid) out->learnt = ls_field_compass_learnt(NULL, &out->sigma_deg);
     if (!s_saved.read) {
         float lat, lon;
         s_saved.ok = settings_get_last_fix(&lat, &lon);
@@ -231,6 +298,8 @@ void ls_compass_live(ls_compass_reading_t *out)
     if (s_model.ok)
         ls_compass_apply_model(out, s_model.f.declination, s_model.f.total_nt / 1000.0, s_model.f.inclination);
     out->interference = ls_compass_bend_step(&s_bend, out->bend, esp_timer_get_time());
+    /* Bent by something near, the learner's figure no longer holds. */
+    if (out->interference && isfinite(out->sigma_deg)) out->sigma_deg = fmaxf(out->sigma_deg, 15.0f);
 }
 
 void ls_compass_set_target(double lat, double lon, const char *name)

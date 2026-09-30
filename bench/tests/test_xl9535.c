@@ -21,6 +21,8 @@ static int     s_writes;
 static uint8_t s_write_log[64][2];
 static int     s_write_n;
 static bool    s_bus_ok = true;
+static int     s_tx_timeouts;   /* next N writes time out, LS-1239 */
+static int     s_clears;
 
 static void part_reset(void)
 {
@@ -38,6 +40,7 @@ esp_err_t i2c_master_transmit(i2c_master_dev_handle_t dev, const uint8_t *buf,
                               size_t len, int timeout)
 {
     (void)dev; (void)timeout;
+    if (s_tx_timeouts > 0) { s_tx_timeouts--; return ESP_ERR_TIMEOUT; }
     if (!s_bus_ok) return ESP_FAIL;
     if (len != 2) return ESP_ERR_INVALID_ARG;
     if (buf[0] < 8) s_reg[buf[0]] = buf[1];
@@ -64,10 +67,30 @@ esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t dev,
 /* The driver asks ls_i2c for a device handle; any non-null one will do. */
 static struct { int x; } s_fake_dev;
 
+/* LS-1239: the next N probes time out; probes and clears are counted. */
+static int s_probe_timeouts;
+static int s_probes;
+
 esp_err_t ls_i2c_probe(ls_i2c_bus_id_t id, uint8_t addr, int ms)
 {
     (void)id; (void)addr; (void)ms;
+    s_probes++;
+    if (s_probe_timeouts > 0) { s_probe_timeouts--; return ESP_ERR_TIMEOUT; }
     return s_bus_ok ? ESP_OK : ESP_FAIL;
+}
+
+void ls_i2c_line_levels(ls_i2c_bus_id_t id, int *sda, int *scl)
+{
+    (void)id;
+    if (sda) *sda = 0;
+    if (scl) *scl = 1;
+}
+
+esp_err_t ls_i2c_bus_clear(ls_i2c_bus_id_t id)
+{
+    (void)id;
+    s_clears++;
+    return ESP_OK;
 }
 
 esp_err_t ls_i2c_device(ls_i2c_bus_id_t id, uint8_t addr, uint32_t hz,
@@ -79,12 +102,21 @@ esp_err_t ls_i2c_device(ls_i2c_bus_id_t id, uint8_t addr, uint32_t hz,
     return ESP_OK;
 }
 
+static int s_init_probes;
+static int s_init_clears;
+
 static void ensure_up(void)
 {
     static bool once;
     if (!once) {
         part_reset();
+        /* The only init: two timeouts, then an answer. */
+        s_probe_timeouts = 2;
+        s_probes = 0;
+        s_clears = 0;
         LS_CHECK(ls_xl9535_init(LS_I2C_PRIMARY, 0x20) == ESP_OK);
+        s_init_probes = s_probes;
+        s_init_clears = s_clears;
         once = true;
     }
     LS_CHECK(ls_xl9535_ready());
@@ -119,6 +151,27 @@ LS_CASE(the_second_bank_starts_at_bit_eight_not_bit_ten)
     LS_EQ_INT(8,  LS_XL9535_IO10);
     LS_EQ_INT(15, LS_XL9535_IO17);
     LS_EQ_INT(16, LS_XL9535_PIN_COUNT);
+}
+
+LS_CASE(a_probe_that_times_out_is_cleared_and_retried_not_given_up_on)
+{
+    /* LS-1239: two probe timeouts are survived, with a clear after each. */
+    ensure_up();
+    LS_EQ_INT(3, s_init_probes);
+    LS_EQ_INT(2, s_init_clears);
+}
+
+LS_CASE(a_write_that_times_out_after_init_is_cleared_and_lands)
+{
+    /* LS-1239: a lockup after init is cleared and the write lands. */
+    ensure_up();
+    ls_xl9535_set(LS_XL9535_IO5, false);
+    int clears = s_clears;
+    s_tx_timeouts = 1;
+    LS_EQ_INT(ESP_OK, ls_xl9535_set(LS_XL9535_IO5, true));
+    LS_EQ_INT(clears + 1, s_clears);
+    LS_CHECK(s_reg[R_OUTPUT0] & expect_mask(LS_XL9535_IO5));
+    LS_EQ_INT(0, s_tx_timeouts);
 }
 
 LS_CASE(every_pin_writes_its_own_bit_in_its_own_register)

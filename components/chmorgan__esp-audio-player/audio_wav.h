@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdio.h>
+#include <stdbool.h>
 #include "audio_log.h"
 #include "audio_decode_types.h"
 
@@ -28,7 +29,14 @@ typedef struct {
 
 typedef struct {
     wav_header_t header;
+    uint32_t remaining;
 } wav_instance;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 bool is_wav(FILE *fp, wav_instance *pInstance);
 DECODE_STATUS decode_wav(FILE *fp, decode_data *pData, wav_instance *pInstance);
+#ifdef __cplusplus
+}
+#endif

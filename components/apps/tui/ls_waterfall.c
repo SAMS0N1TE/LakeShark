@@ -399,7 +399,15 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
     if (dst_n < LS_WF_BINS_MAX)
         memset(row + dst_n, 0, (size_t)(LS_WF_BINS_MAX - dst_n));
 
-    track_scale(row, dst_n);
+    /* A source that scaled its own row is drawn as it scaled it. Stretching
+       its window again turned the LoRa sweep's half-dB noise into black
+       holes and a picture that flickered with every row. */
+    if (s_have_feed && s_feed.scaled) {
+        s_auto_lo = 0; s_auto_hi = 255; s_auto_top = 255;
+        s_auto_seeded = false;
+    } else {
+        track_scale(row, dst_n);
+    }
 
     /* Measured AFTER track_scale, because the row is drawn through the
        window that row updated - anything computed before it would describe

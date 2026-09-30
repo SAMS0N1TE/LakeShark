@@ -74,11 +74,10 @@ static void usb_boot_retry_tick(usb_boot_retry_t *retry, int64_t now, int device
        true, recovery concludes something attached and disables itself
        permanently, in precisely the case it exists for.
 
-       That is a suspicion, not a finding, and changing the guard on a
-       suspicion risks power-cycling a port with a working dongle on it.
-       So this logs the inputs to the decision instead. The next
-       occurrence says outright whether the count was nonzero, and the
-       fix after that is evidence rather than a guess. */
+       It was: after "Root port reset failed" and CHECK_SHORT_DEV_DESC
+       FAILED the library still reported one device and recovery stood
+       down with no dongle attached. The caller now passes the devices that
+       actually reached this client, which a failed enumeration never does. */
     if(devices > 0 && !retry->off) {
         ESP_LOGW(TAG,"USB boot recovery stood down: %d device(s) "
                      "enumerated at %lld ms",devices,
@@ -105,12 +104,16 @@ static void usb_boot_retry_tick(usb_boot_retry_t *retry, int64_t now, int device
 /* USB_BOOT_RETRY_END */
 
 static class_driver_t *s_driver_obj;
+/* Devices that reached this client. A device that fails enumeration is
+   still counted by usb_host_lib_info, but never arrives here. */
+static volatile int s_client_devices;
 
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
 {
     class_driver_t *driver_obj = (class_driver_t *)arg;
     switch (event_msg->event) {
     case USB_HOST_CLIENT_EVENT_NEW_DEV:
+        s_client_devices++;
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);
         driver_obj->mux_protected.device[event_msg->new_dev.address].dev_addr =
             event_msg->new_dev.address;
@@ -258,11 +261,8 @@ void class_driver_task(void *arg)
     usb_boot_retry_t boot_retry={.next_us=esp_timer_get_time()+10000000};
 
     while (1) {
-        if(!boot_retry.done) {
-            usb_host_lib_info_t info;
-            int devices=usb_host_lib_info(&info)==ESP_OK?(int)info.num_devices:-1;
-            usb_boot_retry_tick(&boot_retry,esp_timer_get_time(),devices);
-        }
+        if(!boot_retry.done)
+            usb_boot_retry_tick(&boot_retry,esp_timer_get_time(),s_client_devices);
         if (obj.mux_protected.flags.unhandled_devices) {
             xSemaphoreTake(obj.constant.mux_lock, portMAX_DELAY);
             for (uint8_t i = 0; i < DEV_MAX_COUNT; i++)

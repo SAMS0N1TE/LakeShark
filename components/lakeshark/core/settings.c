@@ -518,6 +518,39 @@ void settings_set_df_offset(int source, int method, float degrees)
     sput_u32(k, v);
 }
 
+/* Five u64 keys: bytes 0-35 the pattern, 36 the circles (capped at 255),
+   37-39 a tag so a stray key never reads as a pattern. */
+bool settings_get_df_pattern(int source, int8_t pattern[36], uint16_t *circles)
+{
+    if (!s_nvs_ok || !pattern || source < 0 || source > 15) return false;
+    uint8_t b[40];
+    for (int i = 0; i < 5; i++) {
+        char k[12]; snprintf(k, sizeof(k), "dfp%d_%d", source, i);
+        uint64_t v;
+        if (nvs_get_u64(s_nvs, k, &v) != ESP_OK) return false;
+        for (int j = 0; j < 8; j++) b[i * 8 + j] = (uint8_t)(v >> (8 * j));
+    }
+    if (b[37] != 'P' || b[38] != 'T' || b[39] != 1 || !b[36]) return false;
+    memcpy(pattern, b, 36);
+    if (circles) *circles = b[36];
+    return true;
+}
+
+void settings_set_df_pattern(int source, const int8_t pattern[36], uint16_t circles)
+{
+    if (!s_nvs_ok || source < 0 || source > 15) return;
+    uint8_t b[40] = { 0 };
+    if (pattern && circles) memcpy(b, pattern, 36);
+    b[36] = (uint8_t)(circles > 255 ? 255 : circles);
+    b[37] = 'P'; b[38] = 'T'; b[39] = 1;
+    for (int i = 0; i < 5; i++) {
+        char k[12]; snprintf(k, sizeof(k), "dfp%d_%d", source, i);
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i * 8 + j] << (8 * j);
+        sput_u64(k, v);
+    }
+}
+
 int settings_get_df_option(int id, int fallback)
 {
     if (!s_nvs_ok || id < 0 || id > 31) return fallback;

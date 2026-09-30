@@ -1,6 +1,9 @@
 #include "ls_field.h"
 #include "ls_trail.h"
 #include "ls_compass.h"
+#include "ls_compass_live.h"
+#include "ls_compass_learn.h"
+#include "ls_gauge.h"
 #include "ls_notes.h"
 #include "ls_df_sources.h"
 #include "ls_keypad.h"
@@ -87,11 +90,132 @@ static compass_profile s_profiles[2]; /* standalone, keyboard attached */
 static int s_profile; /* field worker owns selection; I/O addresses both by index */
 typedef struct { uint32_t magic, generation; ls_compass_cal_t cal; uint32_t sum; } compass_record;
 static long s_valid_bytes;
+/* The calibration's drift and the battery current's part in it, learnt
+   from every reading (ls_compass_learn.h). Worker-owned; `s_learn_pub` is
+   the copy other tasks read under the lock. The saved record carries the
+   learning across a restart for the calibration it was made against. */
+EXT_RAM_BSS_ATTR static ls_compass_learn_t s_learn, s_learn_pub;
+/* What is taken off now: it follows the learner at LEARN_SLEW_UT a second,
+   so a correction arriving or going never steps the dial. */
+EXT_RAM_BSS_ATTR static float s_learn_applied[3];
+#define LEARN_SLEW_UT 2.0f
+static int s_learn_profile = -1;
+static uint32_t s_learn_version;
+static int64_t s_learn_us;
+static float s_learn_amps = NAN;
+/* The spectrum sweep's band; zero is 1 MHz either side of the tuned frequency. */
+static uint32_t s_span_lo, s_span_hi;
+static bool s_learn_off, s_learn_reset;
+typedef struct { uint32_t magic, cal_version; float d[3], k[3], amps_lo, amps_hi; uint32_t used, sum; } learn_record;
+EXT_RAM_BSS_ATTR static struct { bool loaded[2], have[2]; learn_record rec[2]; uint32_t written_used[2]; } s_learn_disk;
 static bool s_damaged, s_incompatible;
 static const char *s_directory = "/sdcard/journal";
 
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
+
+/* The last IMU_TRACE samples exactly as the field worker used them, for
+   `compass trace`. Added 2026-09-28: turning the board by hand, the magnetic
+   heading jumped 100-180 degrees within a second (129, 156, 84, 5, 118)
+   while it held to a few degrees at rest, and the `find` report at three a
+   second could not say whether the field, the tilt or a stale sample did
+   it. At 25 ms this is about 12 s. */
+#define IMU_TRACE 512
+typedef struct { int64_t us; float a[3], g[3], m[3]; bool mag_valid, fresh; } imu_trace_t;
+EXT_RAM_BSS_ATTR static imu_trace_t s_trace[IMU_TRACE];
+EXT_RAM_BSS_ATTR static imu_trace_t s_trace_copy[IMU_TRACE];
+static int s_trace_head, s_trace_n;
+
+static void imu_trace_note(int64_t us, const ls_imu_sample_t *s, bool fresh)
+{
+    lock();
+    imu_trace_t *t = &s_trace[s_trace_head];
+    *t = (imu_trace_t){ .us = us, .a = { s->ax, s->ay, s->az }, .g = { s->gx, s->gy, s->gz },
+                        .m = { s->mx, s->my, s->mz }, .mag_valid = s->mag_valid, .fresh = fresh };
+    s_trace_head = (s_trace_head + 1) % IMU_TRACE;
+    if (s_trace_n < IMU_TRACE) s_trace_n++;
+    unlock();
+}
+
+void ls_field_imu_trace(float seconds)
+{
+    if (!s_lock) { printf("compass trace: field worker not started (open COMPASS)\n"); return; }
+    lock();
+    const int n = s_trace_n, head = s_trace_head;
+    memcpy(s_trace_copy, s_trace, sizeof(s_trace));
+    unlock();
+    if (!n) { printf("compass trace: nothing recorded yet\n"); return; }
+    ls_compass_cal_t cal;
+    const bool have = ls_field_compass_cal(&cal);
+    const int64_t last = s_trace_copy[(head - 1 + IMU_TRACE) % IMU_TRACE].us;
+    const int64_t from = last - (int64_t)(seconds * 1e6f);
+    printf("compass trace: %d samples, calibration %s. ms  fresh  accel g  |a|  gyro dps  mag uT  |m|  heading dip tilt back\n",
+           n, have ? "applied" : "NONE");
+    bool back = false;
+    for (int k = 0; k < n; k++) {
+        const imu_trace_t *t = &s_trace_copy[(head - n + k + IMU_TRACE) % IMU_TRACE];
+        if (t->us < from) continue;
+        ls_imu_sample_t s = { .ax = t->a[0], .ay = t->a[1], .az = t->a[2], .gx = t->g[0], .gy = t->g[1], .gz = t->g[2],
+                              .mx = t->m[0], .my = t->m[1], .mz = t->m[2], .mag_valid = t->mag_valid };
+        ls_compass_reading_t r;
+        const bool ok = ls_compass_solve(&s, have ? &cal : NULL, &back, &r);
+        printf("T %7lld %c %+5.2f %+5.2f %+5.2f %4.2f  %+7.1f %+7.1f %+7.1f  %+6.1f %+6.1f %+6.1f %5.1f  %6.1f %5.1f %4.0f %d%s\n",
+               (long long)((t->us - last) / 1000), t->fresh ? 'F' : 'r', t->a[0], t->a[1], t->a[2],
+               sqrtf(t->a[0] * t->a[0] + t->a[1] * t->a[1] + t->a[2] * t->a[2]), t->g[0], t->g[1], t->g[2],
+               t->m[0], t->m[1], t->m[2], sqrtf(t->m[0] * t->m[0] + t->m[1] * t->m[1] + t->m[2] * t->m[2]),
+               ok ? r.magnetic : NAN, ok ? r.dip : NAN, ok ? r.tilt : NAN, (int)back, t->mag_valid ? "" : "  NO MAG");
+        if ((k & 31) == 31) vTaskDelay(1);   /* let the console drain */
+    }
+}
+/* Feeds one sample to the learner and takes what it has learnt off the
+   sample every reader of it gets. The trace keeps the raw reading. */
+static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t *cal,
+                       uint32_t version, bool fresh)
+{
+    lock();
+    const bool off = s_learn_off, reset = s_learn_reset;
+    s_learn_reset = false;
+    const bool have = s_learn_disk.have[s_profile] && s_learn_disk.rec[s_profile].cal_version == version;
+    const learn_record rec = s_learn_disk.rec[s_profile];
+    unlock();
+    if (reset || s_learn_profile != s_profile || s_learn_version != version) {
+        ls_compass_learn_reset(&s_learn, cal->radius);
+        if (s_learn_profile != s_profile || s_learn_version != version)
+            s_learn_applied[0] = s_learn_applied[1] = s_learn_applied[2] = 0;
+        if (have && !reset) {
+            ls_compass_learn_seed(&s_learn, rec.d, rec.k, 3.0f, 15.0f);
+            s_learn.amps_lo = rec.amps_lo; s_learn.amps_hi = rec.amps_hi;
+        }
+        s_learn_profile = s_profile; s_learn_version = version; s_learn_us = 0;
+    }
+    int16_t ma; int64_t age;
+    const float amps = ls_gauge_peek(&ma, &age) && age < 3000000 ? ma / 1000.0f : NAN;
+    if (fresh && !off) {
+        float f[3], up[3], rate = NAN;
+        if (ls_compass_field(&p->imu, cal, f)) {
+            ls_compass_gravity(&p->imu, up);
+            if (isfinite(p->imu.gx) && isfinite(p->imu.gy) && isfinite(p->imu.gz))
+                rate = sqrtf(p->imu.gx * p->imu.gx + p->imu.gy * p->imu.gy + p->imu.gz * p->imu.gz);
+            const float dt = s_learn_us && now > s_learn_us ? (float)(now - s_learn_us) / 1e6f : 0.1f;
+            ls_compass_learn_step(&s_learn, f, up, rate, amps, dt);
+        }
+        s_learn_us = now;
+    }
+    float corr[3], raw[3];
+    if (off || !ls_compass_learn_correction(&s_learn, amps, corr)) corr[0] = corr[1] = corr[2] = 0;
+    if (fresh) {
+        const float step = LEARN_SLEW_UT * 0.1f;
+        for (int i = 0; i < 3; i++) {
+            const float d = corr[i] - s_learn_applied[i];
+            s_learn_applied[i] += d > step ? step : d < -step ? -step : d;
+        }
+    }
+    if (ls_compass_unfield(cal, s_learn_applied, raw)) {
+        p->imu.mx -= raw[0]; p->imu.my -= raw[1]; p->imu.mz -= raw[2];
+    }
+    lock(); s_learn_pub = s_learn; s_learn_amps = amps; unlock();
+}
+
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
 static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
@@ -430,6 +554,8 @@ static bool configure(void)
     if (ls_lora_configure(&s_live.config) != ESP_OK) return false;
     if (s_live.mode == LS_LAB_SPECTRUM) {
         uint32_t hz = s_live.config.freq_hz;
+        lock(); const uint32_t lo = s_span_lo, hi = s_span_hi; unlock();
+        if (lo && hi > lo) return ls_lora_scan_begin(lo, hi) == ESP_OK;
         return ls_lora_scan_begin(hz - 1000000u, hz + 1000000u) == ESP_OK;
     }
     return ls_lora_receive() == ESP_OK;
@@ -495,15 +621,18 @@ static void sample(int64_t now)
         }
     }
     if(!p->utc[0] && ls_time_is_synced()) ls_time_render_stamp(p->utc,sizeof(p->utc));
+    bool imu_fresh = false;
     if (ls_imu_read(&p->imu)) {
         s_last_imu = p->imu;
         s_last_imu_us = now;
         p->imu_valid = true;
+        imu_fresh = true;
     } else if (s_last_imu_us > 0 && now >= s_last_imu_us && now - s_last_imu_us < 350000) {
         /* The touch/rotation reader can briefly own the sensor bus. */
         p->imu = s_last_imu;
         p->imu_valid = true;
     }
+    if (p->imu_valid) imu_trace_note(now, &p->imu, imu_fresh);
     if (s_live.calibrating && !s_live.calibration_failed) {
         const ls_imu_sample_t *fresh = p->imu_valid && s_last_imu_us == now ? &p->imu : NULL;
         ls_compass_collect(&s_fit, fresh);
@@ -521,7 +650,10 @@ static void sample(int64_t now)
     }
     lock(); ls_compass_cal_t calibration = s_profiles[s_profile].cal;
     s_live.calibrated = s_profiles[s_profile].valid;
-    s_live.calibration_saved = s_profiles[s_profile].saved; unlock();
+    s_live.calibration_saved = s_profiles[s_profile].saved;
+    const uint32_t cal_version = s_profiles[s_profile].version; unlock();
+    if (p->imu_valid && s_live.calibrated && !s_live.calibrating)
+        learn_step(now, p, &calibration, cal_version, imu_fresh);
     if (p->imu_valid) {
         p->heading = ls_compass_heading(&p->imu, s_live.calibrated ? &calibration : NULL);
     }
@@ -783,6 +915,16 @@ static void io_step(void)
                 unlock();
             }
         }
+        for(int profile=0;profile<2;profile++) {
+            char name[160],leaf[40];
+            snprintf(leaf,sizeof(leaf),"compass-%s.learn",profile?"kbd":"solo");
+            if(!path(name,sizeof(name),leaf))continue;
+            FILE *f=fopen(name,"rb"); learn_record r;
+            const bool ok=f && fread(&r,sizeof(r),1,f)==1 && r.magic==0x4c524e01u+(unsigned)profile &&
+                r.sum==checksum(&r,sizeof(r)-sizeof(r.sum));
+            if(f)fclose(f);
+            lock(); if(ok){s_learn_disk.rec[profile]=r;s_learn_disk.have[profile]=true;s_learn_disk.written_used[profile]=0;} unlock();
+        }
         /* Old compass0/1 files lack attachment identity. Preserve them without
            guessing which setup they describe. New profiles require calibration.
            Records before 0x43414c10 are hard iron only, with an unchecked
@@ -812,6 +954,24 @@ static void io_step(void)
         if(c.version==s_profiles[profile].version)s_profiles[profile].saved=saved;
         s_profiles[profile].written=c.version;
         unlock();
+    }
+    /* What the learner found, every few minutes of use, for the profile it
+       is running: a restart then starts from it instead of from nothing. */
+    lock();
+    const int lp=s_learn_profile; const ls_compass_learn_t lc=s_learn_pub; const uint32_t lv=s_learn_version;
+    /* Only what a turn has confirmed: an offset learnt holding still is
+       half a guess, and seeding the next start with it is worse than none. */
+    const bool due=lp>=0 && lc.started && lc.applied && lc.used>=s_learn_disk.written_used[lp]+3000;
+    unlock();
+    if(due) {
+        char name[160],leaf[40];
+        snprintf(leaf,sizeof(leaf),"compass-%s.learn",lp?"kbd":"solo");
+        learn_record r={.magic=0x4c524e01u+(unsigned)lp,.cal_version=lv,.amps_lo=lc.amps_lo,.amps_hi=lc.amps_hi,.used=lc.used};
+        for(int i=0;i<3;i++){r.d[i]=lc.x[i];r.k[i]=lc.x[3+i];}
+        r.sum=checksum(&r,sizeof(r)-sizeof(r.sum));
+        bool ok=false;
+        if(path(name,sizeof(name),leaf)){FILE *f=fopen(name,"wb");if(f){ok=fwrite(&r,sizeof(r),1,f)==1;if(fclose(f)!=0)ok=false;}}
+        lock(); s_learn_disk.written_used[lp]=lc.used; if(ok){s_learn_disk.rec[lp]=r;s_learn_disk.have[lp]=true;} unlock();
     }
     lock(); bool have_note = s_note_count > 0;
     if (have_note) { s_disk = s_notes[s_note_head]; s_note_head = (s_note_head + 1) % QUEUE_CAP; s_note_count--; }
@@ -947,6 +1107,13 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg)
     command *c = reserve(); if (!c) return false;
     c->kind = CMD_CONFIG; c->cfg = *cfg; return commit();
 }
+bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz)
+{
+    if (!s_lock || (lo_hz && (hi_hz <= lo_hz || lo_hz < 150000000u || hi_hz > 960000000u))) return false;
+    lock(); s_span_lo = lo_hz; s_span_hi = lo_hz ? hi_hz : 0; const ls_lora_cfg_t cfg = s_public.config; unlock();
+    /* A configure restarts the sweep on the new band. */
+    return ls_field_configure(&cfg);
+}
 bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_POCSAG) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_MODE; c->mode = mode; return commit(); }
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
 {
@@ -998,6 +1165,68 @@ bool ls_field_compass_cal(ls_compass_cal_t *out)
     lock(); const bool ok = s_profiles[s_profile].valid; if (ok && out) *out = s_profiles[s_profile].cal; unlock();
     return ok;
 }
+bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
+{
+    if (corr) corr[0] = corr[1] = corr[2] = 0;
+    if (sigma_deg) *sigma_deg = NAN;
+    if (!s_lock) return false;
+    lock();
+    const bool off = s_learn_off;
+    const float amps = s_learn_amps;
+    float c[3];
+    memcpy(c, s_learn_applied, sizeof(c));
+    const bool ok = !off && (c[0] || c[1] || c[2]);
+    if (sigma_deg && !off) *sigma_deg = ls_compass_learn_accuracy(&s_learn_pub, amps);
+    unlock();
+    if (ok && corr) memcpy(corr, c, sizeof(c));
+    return ok;
+}
+
+void ls_field_compass_learn(int action)
+{
+    if (!s_lock) return;
+    lock();
+    if (action == 0) s_learn_off = true;
+    else if (action == 1) s_learn_off = false;
+    else s_learn_reset = true;
+    unlock();
+}
+
+void ls_field_compass_learn_report(void)
+{
+    if (!s_lock) { printf("compass learn: field worker not started (open COMPASS)\n"); return; }
+    lock();
+    const ls_compass_learn_t l = s_learn_pub;
+    const bool off = s_learn_off; const float amps = s_learn_amps; const int prof = s_learn_profile;
+    const bool have = prof >= 0 && s_learn_disk.have[prof];
+    const learn_record rec = have ? s_learn_disk.rec[prof] : (learn_record){0};
+    unlock();
+    float corr[3];
+    lock(); memcpy(corr, s_learn_applied, sizeof(corr)); unlock();
+    const bool ok = corr[0] || corr[1] || corr[2];
+    printf("compass learn: %s, %s profile, used %lu refused %lu relearns %lu\n",
+           off ? "OFF" : !l.started ? "waiting" : ok ? "applied" : "learning",
+           prof == 1 ? "keyboard" : prof == 0 ? "standalone" : "no", (unsigned long)l.used,
+           (unsigned long)l.refused, (unsigned long)l.relearns);
+    printf("compass learn: drift %+.1f %+.1f %+.1f uT (sd %.1f %.1f %.1f)\n", l.x[0], l.x[1], l.x[2],
+           sqrtf(l.P[0][0]), sqrtf(l.P[1][1]), sqrtf(l.P[2][2]));
+    printf("compass learn: per amp %+.1f %+.1f %+.1f uT/A (sd %.1f %.1f %.1f), current %+.3f A, seen %+.3f..%+.3f A\n",
+           l.x[3], l.x[4], l.x[5], sqrtf(l.P[3][3]), sqrtf(l.P[4][4]), sqrtf(l.P[5][5]), amps,
+           isfinite(l.amps_lo) ? l.amps_lo : NAN, isfinite(l.amps_hi) ? l.amps_hi : NAN);
+    printf("compass learn: vertical %.1f uT of radius %.1f (dip %.1f), fit rms %.2f uT, heading sd %.1f deg\n",
+           l.x[6], l.radius, l.radius > 0 ? asinf(fmaxf(-1, fminf(1, l.x[6] / l.radius))) * 57.29578f : NAN,
+           sqrtf(l.res2), ls_compass_learn_accuracy(&l, amps));
+    int16_t ma = 0; int64_t age = 0;
+    if (ls_gauge_peek(&ma, &age)) printf("compass learn: gauge %+d mA, read %.1f s ago\n", ma, age / 1e6);
+    else printf("compass learn: gauge not read yet, the current term waits for it\n");
+    int sec = 0; for (int i = 0; i < 8; i++) sec += (l.sectors >> i) & 1;
+    printf("compass learn: field seen from %d of 8 directions (%d needed), axes applied %c%c%c\n", sec, LS_CL_SECTORS,
+           l.applied & 1 ? 'x' : '-', l.applied & 2 ? 'y' : '-', l.applied & 4 ? 'z' : '-');
+    if (ok) printf("compass learn: taking off %+.1f %+.1f %+.1f uT now\n", corr[0], corr[1], corr[2]);
+    if (have) printf("compass learn: saved record from %lu readings, drift %+.1f %+.1f %+.1f, per amp %+.1f %+.1f %+.1f\n",
+                     (unsigned long)rec.used, rec.d[0], rec.d[1], rec.d[2], rec.k[0], rec.k[1], rec.k[2]);
+}
+
 bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active = s_public.calibrating; unlock(); return active; }
 bool ls_field_clear_plot(void) { command *c = reserve(); if (!c) return false; c->kind = CMD_CLEAR; return commit(); }
 bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_TX; snprintf(c->entry.text, sizeof(c->entry.text), "%s", text); return commit(); }

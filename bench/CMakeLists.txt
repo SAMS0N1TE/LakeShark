@@ -389,12 +389,15 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_compass.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/ls_df.c
+    ${FW}/components/apps/tui/ls_df_fit.c
+    ${FW}/components/apps/tui/ls_df_band.c
     ${FW}/components/apps/tui/ls_df_cal.c
     ${FW}/components/apps/tui/ls_df_hits.c
     ${FW}/components/apps/tui/ls_df_view.c
     ${FW}/components/apps/tui/ls_sun.c
     tools/lssim_dfs.c
     ${FW}/components/apps/tui/ls_compass_live.c
+    ${FW}/components/apps/tui/ls_compass_learn.c
     ${FW}/components/apps/tui/ls_wmm.c
     ${FW}/components/apps/tui/ls_textbuf.c
     ${FW}/components/apps/tui/ls_keydock.c
@@ -548,6 +551,8 @@ ls_add_test(test_tui_quick
 target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
 add_executable(lssim
+    ${FW}/components/apps/tui/screens/ext/scr_music.c
+    tools/lssim_music.c
     ${FW}/components/apps/tui/ls_splash.c
     shims/ls_trail_host.c
     ${FW}/components/apps/tui/ls_wordmark.c
@@ -565,12 +570,15 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_compass.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/ls_df.c
+    ${FW}/components/apps/tui/ls_df_fit.c
+    ${FW}/components/apps/tui/ls_df_band.c
     ${FW}/components/apps/tui/ls_df_cal.c
     ${FW}/components/apps/tui/ls_df_hits.c
     ${FW}/components/apps/tui/ls_df_view.c
     ${FW}/components/apps/tui/ls_sun.c
     tools/lssim_dfs.c
     ${FW}/components/apps/tui/ls_compass_live.c
+    ${FW}/components/apps/tui/ls_compass_learn.c
     ${FW}/components/apps/tui/ls_wmm.c
     ${FW}/components/apps/tui/ls_textbuf.c
     ${FW}/components/apps/tui/ls_keydock.c
@@ -913,10 +921,16 @@ ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
 ls_add_test(test_rec_list_format ${APP}/rec/rec_list_format.c)
 ls_add_test(test_rec_sidecar     ${APP}/rec/rec_sidecar.c)
+ls_add_test(test_df_fit ${FW}/components/apps/tui/ls_df_fit.c ${FW}/components/apps/tui/ls_df.c)
+target_include_directories(test_df_fit PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_df_band ${FW}/components/apps/tui/ls_df_band.c)
+target_include_directories(test_df_band PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_df_cal ${FW}/components/apps/tui/ls_df_cal.c)
 target_include_directories(test_df_cal PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_df_hits ${FW}/components/apps/tui/ls_df_hits.c)
 target_include_directories(test_df_hits PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_df_beacon ${FW}/components/apps/tui/ls_df_beacon.c)
+target_include_directories(test_df_beacon PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_gauge_soc)
 target_include_directories(test_gauge_soc PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_tdp4_power ${FW}/components/lakeshark/board/ls_board_hw.c)
@@ -1054,6 +1068,22 @@ target_link_options(test_p25_diag_disabled PRIVATE
     -Wl,--wrap=free)
 ls_add_test(test_p25_lcw ${APP}/p25/p25_lcw.c)
 ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
+ls_add_test(test_music_transport)
+ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c)
+target_include_directories(test_music_backend BEFORE PRIVATE
+    ${FW}/components/chmorgan__esp-audio-player/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/shims/music
+    ${FW}/components/apps/tui ${FW}/components/lakeshark)
+target_link_options(test_music_backend PRIVATE -Wl,--wrap=fopen -Wl,--wrap=fclose -Wl,--wrap=audio_player_get_state)
+ls_add_test(test_wav_decoder ${FW}/components/chmorgan__esp-audio-player/audio_wav.cpp)
+target_include_directories(test_wav_decoder PRIVATE ${FW}/components/chmorgan__esp-audio-player)
+target_include_directories(test_music_transport PRIVATE ${FW}/components/apps/tui)
+ls_add_test(test_tui_music
+    ${FW}/components/apps/tui/screens/ext/scr_music.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_tui_music PRIVATE ${LS_TUI_APP_INCLUDES})
 target_include_directories(test_app_contract PRIVATE
     ${FW}/components/apps/tui)
 
@@ -1381,12 +1411,14 @@ target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
 
-ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_notes.c)
+ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_notes.c)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_wmm ${FW}/components/apps/tui/ls_wmm.c)
 target_include_directories(test_wmm PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_compass_live ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
 target_include_directories(test_compass_live PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+ls_add_test(test_compass_learn ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_compass.c)
+target_include_directories(test_compass_learn PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_df ${FW}/components/apps/tui/ls_df.c ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
 target_include_directories(test_df PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_ble_heard ${FW}/components/apps/tui/ls_ble_heard.c)

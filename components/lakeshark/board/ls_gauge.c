@@ -116,6 +116,15 @@ bool ls_gauge_get(ls_gauge_t *out)
     return s_cache.present;
 }
 
+bool ls_gauge_peek(int16_t *milliamps, int64_t *age_us)
+{
+    const int64_t at = s_cache_us;
+    if (!s_cache.present || !at) return false;
+    if (milliamps) *milliamps = s_cache.milliamps;
+    if (age_us) *age_us = esp_timer_get_time() - at;
+    return true;
+}
+
 void ls_gauge_diagnostics(void)
 {
     ls_gauge_t g;
@@ -148,6 +157,7 @@ esp_err_t ls_gauge_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool      ls_gauge_present(void) { return false; }
 esp_err_t ls_gauge_read(ls_gauge_t *o) { (void)o; return ESP_ERR_NOT_SUPPORTED; }
 bool      ls_gauge_get(ls_gauge_t *o) { (void)o; return false; }
+bool      ls_gauge_peek(int16_t *ma, int64_t *age) { (void)ma; (void)age; return false; }
 void      ls_gauge_diagnostics(void) { printf("gauge: board declares none\n"); }
 
 #endif

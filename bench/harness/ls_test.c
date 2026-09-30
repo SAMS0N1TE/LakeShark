@@ -5,6 +5,9 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 #include <process.h>
 #include <windows.h>
 #else
@@ -40,6 +43,23 @@ void ls_test_sleep_ms(int ms)
 #else
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
+#endif
+}
+
+FILE *ls_test_tmpfile(void)
+{
+#ifdef _WIN32
+    char *path = _tempnam(NULL, "lst");
+    if (!path) return NULL;
+    int fd = _open(path, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY | _O_TEMPORARY,
+                   _S_IREAD | _S_IWRITE);
+    free(path);
+    if (fd < 0) return NULL;
+    FILE *f = _fdopen(fd, "w+b");
+    if (!f) _close(fd);
+    return f;
+#else
+    return tmpfile();
 #endif
 }
 

@@ -40,6 +40,7 @@ typedef enum {
     LS_ICON_LABS,
     LS_ICON_JOURNAL,
     LS_ICON_COMPASS,    /* COMPASS: a ring and its needle                 */
+    LS_ICON_MUSIC,      /* MUSIC: a cassette, distinct from FM's wave */
     LS_ICON__COUNT
 } ls_icon_t;
 

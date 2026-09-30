@@ -12,6 +12,10 @@ extern "C" {
 #define AUDIO_RATE_HZ 16000
 
 esp_err_t audio_out_init(void);
+/* Exclusive decoder lease. Acquire only from the UI task after parking RF.
+   Release only after the decoder has stopped writing; restores radio format. */
+esp_err_t audio_out_media_acquire(void);
+void audio_out_media_release(void);
 
 /* Live radio audio (FM, P25 voice): it takes the speaker from speech. */
 void audio_write_mono(const int16_t *samples, int n);

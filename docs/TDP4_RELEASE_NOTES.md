@@ -1,5 +1,22 @@
 # LakeShark release notes
 
+## 2.6.0
+
+- MUSIC: a WAV player for the SD card, with a library, VFD level meters, an FFT spectrum, and scan and waterfall views.
+- MUSIC: the microphone as a live source, and a recorder that saves WAV files to the SD card.
+- COMPASS: gyro-fused heading that follows a turn without lag.
+- COMPASS learns its own magnetometer drift, including the offset from battery and USB current.
+- FIND aims using the whole turn and files each reading at the heading it was taken; FIND BAND.
+- Landscape touch keys are taller when no keyboard is attached, and key hints follow the attached keyboard.
+- Boot recovers from an I2C bus lockup instead of starting with no screen, touch or SD card.
+- LoRa start-up reports what went wrong instead of blaming the radio.
+- RTL-SDR retunes with about half the USB traffic.
+- USB boot recovery counts only devices that actually enumerated.
+- The LoRa sweep waterfall draws in its own window.
+- The console starts once memory allows, instead of stopping the boot.
+- GPS keeps satellite in-use flags whatever order the receiver reports them in.
+- Flipper app 2.8 is unchanged and tested with this release.
+
 ## 2.5.0
 
 - MAP draws aircraft, mesh nodes and your own marks over the map, with trails, callsigns and squawk codes.

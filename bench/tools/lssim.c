@@ -171,7 +171,7 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_rec, ls_scr_diag, ls_scr_settings,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
-                             ls_scr_notes, ls_scr_compass;
+                             ls_scr_notes, ls_scr_compass, ls_scr_music;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -218,6 +218,7 @@ static const ls_app_t APPS[] = {
     { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
     { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
     { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
+    { "music", "MUSIC", "player", LS_ICON_MUSIC, TUI_CYAN, LS_APP_EXTRA, &ls_scr_music, NULL, &ls_doc_music },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
     { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
     { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL, &sim_preview_doc },

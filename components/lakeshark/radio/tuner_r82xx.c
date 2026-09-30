@@ -283,6 +283,11 @@ static int r82xx_write(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
 {
     int rc, size, pos = 0;
 
+    if (priv->skip_unchanged && len == 1 &&
+        reg >= REG_SHADOW_START && reg < REG_SHADOW_START + NUM_REGS &&
+        priv->regs[reg - REG_SHADOW_START] == val[0])
+        return 0;
+
     /* Store the shadow registers */
     shadow_store(priv, reg, val, len);
 
@@ -575,7 +580,13 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
     if (rc < 0)
         return rc;
 
-    for (i = 0; i < 2; i++)
+    /* Check the lock straight away: the read is a USB round trip of a few
+       milliseconds, which is usually enough. Only when it has not locked yet
+       does the wait-and-retry below run, exactly as before. */
+    rc = r82xx_read(priv, 0x00, data, 3);
+    if (rc < 0)
+        return rc;
+    for (i = 0; i < 2 && !(data[2] & 0x40); i++)
     {
         usleep(10000);
 
@@ -1190,6 +1201,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 
     lo_freq = upconvert_freq + priv->int_freq;
 
+    priv->skip_unchanged = priv->init_done;
     rc = r82xx_set_mux(priv, lo_freq);
     if (rc < 0)
         goto err;
@@ -1233,6 +1245,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
     }
 
 err:
+    priv->skip_unchanged = 0;
     if (rc < 0)
         fprintf(stderr, "%s: failed=%d\n", __FUNCTION__, rc);
     return rc;

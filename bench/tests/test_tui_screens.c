@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: the three screens plus tui_core, with the state they read faked */
 
 #include "ls_test.h"
+void ls_shim_keypad(int present);
 #include "ls_value.h"
 #include "ls_map.h"
 #include "ls_rec_replay.h"
@@ -88,6 +89,8 @@ bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d;
 esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
 bool ls_board_hw_antenna_is_external(void) { return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
+bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }
+void settings_set_df_pattern(int s, const int8_t p[36], uint16_t c) { (void)s; (void)p; (void)c; }
 int  settings_get_df_option(int id, int f) { (void)id; return f; }
 void settings_set_df_option(int id, int v) { (void)id; (void)v; }
 int  settings_get_df_channels(int s, uint32_t *hz, int m) { (void)s; (void)hz; (void)m; return 0; }
@@ -1925,7 +1928,12 @@ LS_CASE(compact_controls_keep_values_and_keyboard_focus)
 {
     fresh();
     tui_rect a=tui_rect_make(2,2,110,24);
+    /* A keyboard user gets the compact bar; thumbs alone get a taller one. */
+    ls_shim_keypad(1);
     LS_EQ_INT(ls_btn_raised_height(a,5),3);
+    ls_shim_keypad(0);
+    LS_EQ_INT(ls_btn_raised_height(a,5),4);
+    ls_shim_keypad(-1);
     ls_btn_t btn[]={{"FIRST","ON",'a',true,false},{"BLOCKED",NULL,'b',false,true},{"LAST","OFF",'c',false,false}};
     ls_btn_bar_raised(&g_sf,tui_rect_make(a.x,a.y,a.w,3),btn,3,-1);
     int slot=0,focus=-1;
@@ -2012,20 +2020,27 @@ LS_CASE(large_text_radio_controls_survive_both_orientations_and_submenus)
     }
 }
 
-LS_CASE(portrait_hides_letter_guides_but_keeps_the_same_actions)
+/* Key legends follow the attached keyboard, never the orientation; the
+   shortcut works either way. */
+LS_CASE(key_legends_follow_the_keyboard_not_the_orientation)
 {
     ls_btn_t button = {"SCAN", "OFF", 's', false, false};
     const tui_rect portrait = {0,5,34,41}, landscape = {0,2,79,17};
-    fresh(); grid_for(portrait);
-    ls_btn_bar_raised(&g_sf, tui_rect_make(3,36,28,5), &button, 1, -1);
     int x,y;
-    LS_CHECK(find_text("SCAN", &x, &y));
-    LS_EQ_INT(ls_btn_hit(x,y), 0);
-    LS_EQ_INT(ls_btn_shortcut('s',0), 0);
-    LS_CHECK(!find_text("[s]", &x, &y));
-    fresh(); grid_for(landscape);
-    ls_btn_bar_raised(&g_sf, tui_rect_make(3,10,28,5), &button, 1, -1);
-    LS_CHECK(find_text("[s]", &x, &y));
+    for (int keyboard = 0; keyboard < 2; keyboard++) {
+        ls_shim_keypad(keyboard);
+        fresh(); grid_for(portrait);
+        ls_btn_bar_raised(&g_sf, tui_rect_make(3,36,28,5), &button, 1, -1);
+        LS_CHECK(find_text("SCAN", &x, &y));
+        LS_EQ_INT(ls_btn_hit(x,y), 0);
+        LS_EQ_INT(ls_btn_shortcut('s',0), 0);
+        LS_EQ_INT(find_text("[s]", &x, &y), keyboard);
+        fresh(); grid_for(landscape);
+        ls_btn_bar_raised(&g_sf, tui_rect_make(3,10,28,5), &button, 1, -1);
+        LS_EQ_INT(ls_btn_shortcut('s',0), 0);
+        LS_EQ_INT(find_text("[s]", &x, &y), keyboard);
+    }
+    ls_shim_keypad(-1);
 }
 
 LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
@@ -2120,6 +2135,7 @@ LS_CASE(saved_channel_list_blank_space_does_not_select_an_unseen_row)
 
 LS_CASE(compact_waterfall_labels_leave_room_for_their_shortcuts)
 {
+    ls_shim_keypad(1);
     fresh();
     grid_for((tui_rect){0,2,79,17});
     ls_btn_t buttons[] = {{"DETAIL", "shade", 'f', false, false},
@@ -2130,6 +2146,7 @@ LS_CASE(compact_waterfall_labels_leave_room_for_their_shortcuts)
     LS_CHECK(diag_has(bar, "CNTRST c"));
     LS_EQ_INT(ls_btn_shortcut('f', 0), 0);
     LS_EQ_INT(ls_btn_shortcut('c', 0), 1);
+    ls_shim_keypad(-1);
 }
 
 LS_CASE(fm_dashboard_bank_swap_uses_hz_and_squelch_opens_an_editor)
@@ -2434,6 +2451,7 @@ LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
     rec_watch_scan_stop();
     ls_scr_subghz.enter();
     const tui_rect pane={1,2,113,24};
+    ls_shim_keypad(1);
     fresh();grid_for(pane);
     ls_scr_subghz.draw(&g_sf,pane);
 
@@ -2454,6 +2472,21 @@ LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
     const int content=foot-body;
     LS_CHECK_MSG(content*2>pane.h,"only %d of %d rows left for the captures",
                  content,pane.h);
+    /* Without a keyboard, on the board's full landscape pane, the keys take
+       one more row, label over value, and the captures keep most of it. A
+       shorter pane keeps the compact keys. */
+    ls_shim_keypad(0);
+    fresh();ls_scr_subghz.draw(&g_sf,pane);
+    LS_EQ_INT(2,find_row_text("PASSIVE WATCH")-find_row_text("TUNE"));
+    const tui_rect full={1,2,113,28};
+    fresh();grid_for(full);ls_scr_subghz.draw(&g_sf,full);
+    const int bar2=find_row_text("TUNE"),body2=find_row_text("PASSIVE WATCH"),
+              foot2=find_row_text("SOURCE");
+    LS_EQ_INT(3,body2-bar2);
+    LS_CHECK(!find_text("TUNE MHz",&cx,&cy));
+    LS_CHECK_MSG((foot2-body2)*2>full.h,"only %d of %d rows left without a keyboard",
+                 foot2-body2,full.h);
+    ls_shim_keypad(-1);
     ls_scr_subghz.leave();
 }
 

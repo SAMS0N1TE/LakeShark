@@ -52,6 +52,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_app.h"
 #include "tui/ls_app_docs.h"
 #include "tui/ls_icons.h"
+#include "audio_player.h"
 #include "tui/ls_splash.h"
 #include "tui/ls_tui_density.h"
 /* For the waterfall's own numbers in 'tui cost'. */
@@ -814,7 +815,7 @@ static bool tui_session(void)
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
-                                 ls_scr_notes, ls_scr_compass,
+                                 ls_scr_notes, ls_scr_compass, ls_scr_music,
                                  ls_scr_files;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
@@ -856,6 +857,8 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
+            { "music", "MUSIC", "ASCII mixtape", LS_ICON_MUSIC, TUI_MAGENTA,
+              LS_APP_EXTRA, &ls_scr_music, nullptr, &ls_doc_music },
             /* PAGER, not CHIP: CHIP is documented as system and health and
                DIAG owns it. Two tiles with one picture says they do the
                same thing - which is exactly what happened, DIAG was
@@ -1541,7 +1544,12 @@ static int audio_cmd(int argc, char **argv)
     printf("audio: this board has no codec driver\n");
     return 0;
 #else
-    if (argc == 1) { ls_audio_diag_report(); return 0; }
+    if (argc == 1) {
+        ls_audio_diag_report();
+        printf("  music    decoder stack minimum free=%lu bytes (0: not measured)\n",
+               (unsigned long)audio_player_stack_free_bytes());
+        return 0;
+    }
 
     if (!strcmp(argv[1], "swap")) {
         const esp_err_t e = ls_audio_diag_swap_pins();

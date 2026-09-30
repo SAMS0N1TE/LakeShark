@@ -23,7 +23,7 @@ static int64_t s_last_us;
 const char *ls_dfs_name(ls_dfs_t s)
 {
     static const char *const N[LS_DFS_COUNT] = { "MESH", "LORA", "RTL-SDR", "HACKRF", "CC1101",
-                                                 "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS" };
+                                                 "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS", "BAND" };
     return s >= 0 && s < LS_DFS_COUNT ? N[s] : "?";
 }
 const char *ls_dfs_unavailable(ls_dfs_t s)
@@ -41,6 +41,7 @@ const char *ls_dfs_conflict(int slot, ls_dfs_t s)
         return "shares hardware with the other slot";
     return NULL;
 }
+bool ls_dfs_band_status(ls_dfs_band_status_t *out) { memset(out, 0, sizeof(*out)); return false; }
 bool ls_dfs_in_range(ls_dfs_t s, uint32_t hz) { (void)s; return hz >= 24000000u && hz <= 2500000000u; }
 bool ls_dfs_select_slot(int k, ls_dfs_t s, uint32_t f)
 {
@@ -86,6 +87,13 @@ static float level_for(int k, int ch, float facing)
     /* A main lobe, a weaker back lobe, and a little fading. */
     const float fade = 1.5f * sinf(facing * 0.21f + ch);
     return -96.0f + 18.0f * powf(cosf(off * 0.5f), 4.0f) + 5.0f * powf(sinf(off * 0.5f), 8.0f) + fade - ch * 2.0f;
+}
+
+/* No LS DF beacon in the simulator. */
+bool ls_dfs_beacon(ls_dfs_beacon_t *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    return false;
 }
 
 int ls_dfs_take(ls_dfs_reading_t *out, int max)

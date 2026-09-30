@@ -39,6 +39,10 @@ bool settings_get_last_fix(float *lat, float *lon);
    there is none. NAN clears it. */
 bool settings_get_df_offset(int source, int method, float *degrees);
 void settings_set_df_offset(int source, int method, float degrees);
+/* FIND's learnt pattern for a radio (ls_df_fit.h): 36 half-dB steps and how
+   many circles made it. circles 0 forgets it. */
+bool settings_get_df_pattern(int source, int8_t pattern[36], uint16_t *circles);
+void settings_set_df_pattern(int source, const int8_t pattern[36], uint16_t circles);
 /* COMPASS FIND's settings, each a small number (an index into the screen's
    own table of values); `fallback` when none is stored. */
 int  settings_get_df_option(int id, int fallback);

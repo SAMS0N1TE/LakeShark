@@ -9,6 +9,7 @@
 #include <string.h>
 
 bool ls_tui_is_wide(void) { return true; }
+bool ls_tui_keyboard_mode(void) { return false; }
 /* The waterfall asks the blitter which way round the ground is, and
    the blitter is not linked here. Dark, the way every theme but one is. */
 bool ls_tui_daylight(void) { return false; }
@@ -446,4 +447,50 @@ LS_CASE(a_low_tail_is_reported_as_bins_on_the_floor)
     /* And the cluster above it still has somewhere to be drawn. */
     LS_CHECK_MSG(st.level_hi >= 4,
                  "the cluster only reached level %u", (unsigned)st.level_hi);
+}
+
+/* THE LORA SWEEP IS ALREADY SCALED, AND STRETCHING IT AGAIN BREAKS IT.
+
+   The SX1262 sweep reports RSSI in half decibels and its feed maps each row
+   into its own window of at least 26 dB. Auto-contrast on top of that took
+   the quarter-percentile of a few quantised noise values as the floor, so a
+   quarter of the bins drew as level 0 - black holes in the picture - and
+   the window chased the noise from row to row. A feed that says it is
+   scaled is drawn through a fixed window: quiet noise sits low and steady,
+   nothing drops to the floor, and a real signal still stands out. */
+LS_CASE(a_scaled_feed_is_not_stretched_again)
+{
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_LORA, "LORA");
+    const float floor_db = -105.0f, top_db = -79.0f;
+    unsigned seed = 1;
+    ls_wf_stats_t st;
+    int worst_floor = 0, lo_min = 255, lo_max = 0;
+    for (int row = 0; row < 24; row++) {
+        float bins[64];
+        for (int i = 0; i < 64; i++) {
+            seed = seed * 1103515245u + 12345u;
+            /* The upper half of the band reads a couple of dB quieter. */
+            const float dbm = (i < 32 ? -100.0f : -102.5f) + 0.5f * (float)((seed >> 16) % 5);
+            bins[i] = (dbm - floor_db) / (top_db - floor_db);
+        }
+        bins[40] = (-86.0f - floor_db) / (top_db - floor_db);   /* a carrier */
+        ls_wf_feed_t f = { .center_hz = 915000000u, .span_hz = 26000000u,
+                           .floor_db = floor_db, .top_db = top_db,
+                           .live = true, .scaled = true };
+        ls_wf_push(LS_WF_OWNER_LORA, bins, 64, &f);
+        ls_wf_stats(&st);
+        if (row >= 8) {
+            if (st.at_floor > worst_floor) worst_floor = st.at_floor;
+            if (st.scale_lo < lo_min) lo_min = st.scale_lo;
+            if (st.scale_lo > lo_max) lo_max = st.scale_lo;
+        }
+    }
+    LS_CHECK_MSG(worst_floor == 0, "%d bins drawn at the floor", worst_floor);
+    LS_CHECK_MSG(lo_max == lo_min, "window moved %d..%d between rows", lo_min, lo_max);
+    /* Noise stays in the bottom few levels; the carrier is well above it. */
+    LS_CHECK_MSG(st.level_lo >= 1 && st.level_lo <= 4, "noise at level %d", st.level_lo);
+    LS_CHECK_MSG(st.level_hi >= st.level_lo + 5, "carrier level %d vs noise %d",
+                 st.level_hi, st.level_lo);
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
 }

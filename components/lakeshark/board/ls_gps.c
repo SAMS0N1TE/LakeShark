@@ -115,6 +115,27 @@ static void parse_date(const char *v, ls_gps_state_t *st)
     st->year = (uint16_t)(yy >= 80 ? 1900 + yy : 2000 + yy);
 }
 
+/* GSA and GSV are not ordered relative to each other by NMEA, so a GSA naming
+   a satellite can arrive before the GSV that first reports it. This set
+   remembers, for the cycle in progress, which PRNs a GSA has marked used;
+   a GSV that creates a new sat_acc entry consults it. Bounded and
+   deduplicated so a receiver repeating or splitting GSA sentences cannot
+   grow it past LS_GPS_MAX_SATS. */
+static bool gsa_prn_used(const ls_gps_state_t *st, int prn)
+{
+    for (int i = 0; i < st->gsa_used_count; i++)
+        if (st->gsa_used_prns[i] == prn) return true;
+    return false;
+}
+
+static void gsa_prn_remember(ls_gps_state_t *st, int prn)
+{
+    if (prn <= 0 || prn > UINT8_MAX) return;
+    if (gsa_prn_used(st, prn)) return;
+    if (st->gsa_used_count < LS_GPS_MAX_SATS)
+        st->gsa_used_prns[st->gsa_used_count++] = (uint8_t)prn;
+}
+
 /* The talker ID varies with the constellation mix - GP, GL, GA, GN - so the
    type is matched on the last three characters only. */
 static void parse_sentence(char *s, int len, ls_gps_state_t *out)
@@ -132,7 +153,11 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
            The satellite table is published on the same boundary and for the
            same reason: a drawing path that read the accumulator directly
            would see a sky that is half this sweep and half the last one,
-           which flickers as satellites appear and vanish between frames. */
+           which flickers as satellites appear and vanish between frames.
+
+           The remembered GSA PRN set is cleared here too, once this cycle's
+           satellites have published: a PRN a GSA marked used belongs only to
+           the cycle it arrived in, not to whatever GSV shows up next. */
         out->sats_visible = out->sats_acc;
         out->sats_acc = 0;
         if (out->sat_acc_count) {
@@ -141,6 +166,7 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
             out->sat_count = out->sat_acc_count;
             out->sat_acc_count = 0;
         }
+        out->gsa_used_count = 0;
         parse_time(f[1], out);
         out->quality   = (uint8_t)atoi(f[6]);
         out->sats_used = (uint8_t)atoi(f[7]);
@@ -178,12 +204,13 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
         for (int i = 4; i + 3 < n && out->sat_acc_count < LS_GPS_MAX_SATS;
              i += 4) {
             if (!*f[i]) continue;
+            const int prn = atoi(f[i]);
             ls_gps_sat_t *sat = &out->sat_acc[out->sat_acc_count++];
-            sat->prn       = (uint8_t)atoi(f[i]);
+            sat->prn       = (uint8_t)prn;
             sat->elevation = (uint8_t)atoi(f[i + 1]);
             sat->azimuth   = (uint16_t)atoi(f[i + 2]);
             sat->snr       = (uint8_t)atoi(f[i + 3]);
-            sat->used      = false;
+            sat->used      = gsa_prn_used(out, prn);
         }
     } else if (strcmp(type, "GSA") == 0 && n >= 15) {
 
@@ -192,6 +219,7 @@ static void parse_sentence(char *s, int len, ls_gps_state_t *out)
             const int prn = atoi(f[i]);
             for (int k = 0; k < out->sat_acc_count; k++)
                 if (out->sat_acc[k].prn == prn) out->sat_acc[k].used = true;
+            gsa_prn_remember(out, prn);
         }
     }
 

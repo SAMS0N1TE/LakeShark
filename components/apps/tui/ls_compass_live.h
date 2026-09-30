@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "ls_imu.h"
 #include "ls_compass.h"
 
@@ -36,6 +37,8 @@ typedef struct {
     float field_ut;      /* measured strength */
     float cal_ut;        /* the strength the calibration measured, or NAN */
     float expected_ut, expected_dip;
+    bool learnt;         /* the learner's drift and current terms are taken off */
+    float sigma_deg;     /* the heading's 1-sigma from the learner, NAN when unknown */
 } ls_compass_reading_t;
 
 /* Pure core: one IMU sample in, a reading out. `back` carries the
@@ -54,17 +57,66 @@ void ls_compass_apply_model(ls_compass_reading_t *r, double declination,
 typedef struct { bool primed, on; float score; int64_t last_us, edge_us; } ls_compass_bend_t;
 bool ls_compass_bend_step(ls_compass_bend_t *b, float bend, int64_t now_us);
 
-/* A heading held steady at rest and quick in a turn. A change of a
-   degree and a half is noise and is followed over about a second and a half;
-   one past four degrees is a turn and is followed within a tenth of a
-   second; between the two the time blends. The gyro says a turn has begun
-   before the heading has moved far: past 4 deg/s the heading is followed
-   within 30 ms, so a slow sweep is not read late. Pitch and roll are smoothed
-   over half a second. Angles in degrees, rate in deg/s (NAN unknown), dt
-   in seconds. */
-typedef struct { bool started; float heading, pitch, roll; } ls_compass_steady_t;
+/* A heading held steady at rest and quick in a turn: the gyro turns it and
+   the magnetometer pulls it back over LS_COMPASS_FUSE_TAU_S.
+
+   2.5.0 filtered the magnetic heading alone at one of two speeds, 1.5 s
+   for a small change and 30 ms once the gyro passed 4 deg/s, and then ran
+   it through the dial's spring. The operator reported it "sluggish, and
+   moves oddly": each correction jumped most of the way, overshot on the
+   spring and crawled the last degree and a half. A gyro turns the heading
+   the moment the board turns and does not jitter; the magnetometer knows
+   north and does. Each covers the other's fault, so nothing needs a gate.
+
+   yaw_dps is clockwise-from-above, the gyro's rate about the accelerometer's
+   up (see ls_compass_yaw_rate), NAN when unknown. The gyro's own bias about
+   that axis is learnt from the magnetometer's pull (a PI loop), so it
+   follows the board as it is tilted and as it warms.
+
+   `agree` watches whether the gyro and the magnetometer turn the same way
+   in a real turn. It starts at 0 and heads to +1. If it ever passes -0.5
+   the gyro is left out and the heading follows the magnetometer alone:
+   that is an axis fault somewhere, and the console says so rather than
+   the dial quietly spinning against the turn.
+
+   A magnetic reading over 45 degrees from the fused heading is a jump (the
+   upright/flat axis switch, true/magnetic, a calibration) only once it has
+   stayed there for LS_COMPASS_JUMP_S; until then it is a glitch and the
+   gyro alone carries the heading. Taking every such reading at once made
+   one bad sample throw the dial across and straight back.
+
+   `agree` votes once per half second of turning: the gyro's integrated
+   turn against the magnetometer's, each over 8 degrees. A gyro turning
+   the wrong way is out within about a second of turning.
+
+   Pitch and roll are smoothed over 0.2 s. Angles in degrees, dt in
+   seconds. */
+#define LS_COMPASS_FUSE_TAU_S 1.0f
+#define LS_COMPASS_JUMP_S     0.3f
+#define LS_COMPASS_COAST_S    3.0f
+typedef struct {
+    bool started;
+    float heading, pitch, roll;
+    float bias;      /* learnt gyro bias about up, deg/s */
+    float agree;     /* -1..+1: gyro and magnetometer turn the same way */
+    float prev_mag;  /* last magnetic input, for agree */
+    float far_s;     /* how long the magnetometer has been over 45 deg away */
+    float win_s, win_gyro, win_mag;   /* the current agree window */
+    uint32_t glitches;                /* single readings refused as jumps */
+    bool gyro_used;  /* the last step was turned by the gyro */
+    float coast_s;   /* how long the gyro alone has carried it */
+    float mag_tau_s; /* how slowly the magnetometer pulls; 0 is LS_COMPASS_FUSE_TAU_S.
+                        Longer while the field is bent, so the gyro carries the heading. */
+} ls_compass_steady_t;
 float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch, float roll,
-                             float rate_dps, float dt);
+                             float yaw_dps, float dt);
+
+/* Clockwise-from-above turn rate, deg/s: minus the gyro's component along
+   the accelerometer's reaction (up). Both are ls_imu's axes, and a dot
+   product does not care which proper rotation turns those into the
+   screen's, so this needs no knowledge of the mounting. NAN when the
+   accelerometer is not near 1 g. */
+float ls_compass_yaw_rate(const float g[3], const float a[3]);
 
 /* Live, from the field worker's latest sample and the GPS. */
 void ls_compass_live(ls_compass_reading_t *out);

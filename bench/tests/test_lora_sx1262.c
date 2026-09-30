@@ -13,32 +13,34 @@
 
 /* The expander carries reset; the driver only writes it. */
 static int s_rst_writes;
-bool ls_xl9535_out(uint8_t pin, bool level)
+esp_err_t ls_xl9535_out(int pin, bool level)
 {
     (void)pin; (void)level;
     s_rst_writes++;
-    return true;
+    return ESP_OK;
 }
+
+bool ls_xl9535_ready(void) { return true; }
 
 /* Direction, which the driver sets once for DIO1 so a later change to the
    board bring-up cannot turn the radio's interrupt line into an output. The
    fake records it because "asking is possible" is the whole contract. */
 static bool s_dio1_is_output = true;
-bool ls_xl9535_set_dir(uint8_t pin, bool output)
+esp_err_t ls_xl9535_set_dir(int pin, bool output)
 {
     (void)pin;
     s_dio1_is_output = output;
-    return true;
+    return ESP_OK;
 }
 
 /* DIO1 as the part would drive it: the driver polls this for packet done.
    Low is the resting state, which is what a test that is not sending sees. */
 static bool s_dio1_level;
-bool ls_xl9535_get(uint8_t pin, bool *level)
+esp_err_t ls_xl9535_get(int pin, bool *level)
 {
     (void)pin;
     if (level) *level = s_dio1_level;
-    return true;
+    return ESP_OK;
 }
 
 /* BUSY, as the part would drive it: high for `s_busy_for` reads after each

@@ -71,6 +71,10 @@ const char *ls_compass_cal_problem(const ls_compass_cal_t *cal);
 void ls_compass_gravity(const ls_imu_sample_t *sample, float out[3]);
 /* The corrected field in screen axes (x right, y up, z out of the glass). */
 bool ls_compass_field(const ls_imu_sample_t *sample, const ls_compass_cal_t *cal, float out[3]);
+/* The raw sensor change that moves ls_compass_field's result by `screen`:
+   subtracting `raw` from a sample's mx, my, mz subtracts `screen` from its
+   corrected field. */
+bool ls_compass_unfield(const ls_compass_cal_t *cal, const float screen[3], float raw[3]);
 float ls_compass_heading(const ls_imu_sample_t *sample, const ls_compass_cal_t *cal);
 float ls_compass_ease(float current, float target, float fraction);
 

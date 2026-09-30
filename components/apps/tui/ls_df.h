@@ -20,8 +20,10 @@ extern "C" {
 
 #define LS_DF_BINS     72          /* 5 degrees each */
 #define LS_DF_BEARINGS 8
+#define LS_DF_RING     5           /* reads kept per bin for its median */
 
-typedef enum { LS_DF_PEAK, LS_DF_NULL } ls_df_method_t;
+/* FIT aims by the whole turn (ls_df_fit.h) rather than the strongest bin. */
+typedef enum { LS_DF_PEAK, LS_DF_NULL, LS_DF_FIT } ls_df_method_t;
 
 typedef struct {
     float level[LS_DF_BINS];       /* held level: the strongest, until it decays */
@@ -32,6 +34,8 @@ typedef struct {
     int64_t  decayed_us;
     float floor, top;              /* weakest and strongest bin with data */
     uint32_t samples;
+    float ring[LS_DF_BINS][LS_DF_RING];   /* the latest reads in each bin */
+    uint8_t ring_n[LS_DF_BINS], ring_at[LS_DF_BINS];
 } ls_df_sweep_t;
 
 /* How a held level lets go. It stays hold_s after it was heard, then falls
@@ -70,6 +74,9 @@ void ls_df_clear(ls_df_sweep_t *s);
 void ls_df_add(ls_df_sweep_t *s, float heading, float level, int64_t now_us);
 /* Bins older than max_age_us are forgotten, so a sweep follows a walk. */
 void ls_df_age(ls_df_sweep_t *s, int64_t now_us, int64_t max_age_us);
+/* The median of the latest reads in a bin: what that direction typically
+   hears, where `level` is the most it ever heard. NAN when unheard. */
+float ls_df_typical(const ls_df_sweep_t *s, int bin);
 bool ls_df_estimate(const ls_df_sweep_t *s, ls_df_method_t method, ls_df_estimate_t *out);
 void ls_df_decay(ls_df_sweep_t *s, int64_t now_us, const ls_df_decay_t *d);
 /* Up to max peaks at least min_prominence_db tall, strongest first; true

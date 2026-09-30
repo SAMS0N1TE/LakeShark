@@ -182,7 +182,7 @@ static void draw(tui_surface *sf,tui_rect a)
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,view_24?"RPD ~-64 dBm threshold; no packet IDs":"V switches survey / NFC field views",LS_ATTR_DIM);
     }
     ls_safe_line(sf,a,a.y+a.h-2,state.status,LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_is_wide()?"M RX | S scan | N NFC | V view | X stop":"",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_keyboard_mode()?"M RX | S scan | N NFC | V view | X stop":"",LS_ATTR_DIM);
 }
 static bool key(ls_tk_t k,char c)
 {

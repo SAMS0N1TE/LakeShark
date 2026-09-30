@@ -119,6 +119,9 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg);
    button rather than by a session that silently fails to start. */
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg);
 bool ls_field_mode(ls_lab_mode_t mode);
+/* The band LS_LAB_SPECTRUM sweeps, 150-960 MHz; 0 goes back to 1 MHz
+   either side of the tuned frequency. */
+bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz);
 /* 0 starts the guide, 1 retries the completed fit, 2 cancels. */
 bool ls_field_calibrate(int action);
 bool ls_field_calibrating(void);
@@ -130,6 +133,17 @@ bool ls_field_compass_cal(ls_compass_cal_t *out);
 /* Console: both profiles and every calibration file, and why each is or is
    not in use. Reads the card from the caller's task. */
 void ls_field_compass_report(void);
+/* `compass trace [s]`: the last seconds of IMU samples the field worker used,
+   each solved as a heading, field strength, dip and tilt. */
+void ls_field_imu_trace(float seconds);
+/* What the compass learner takes off the calibrated field now, screen axes,
+   uT (ls_compass_learn.h), and the heading's 1-sigma in degrees. False while
+   it is still learning or switched off; the sample from
+   ls_field_sample_snapshot already has it taken off. */
+bool ls_field_compass_learnt(float corr[3], float *sigma_deg);
+/* 0 switches the learner off, 1 on, 2 starts it over. */
+void ls_field_compass_learn(int action);
+void ls_field_compass_learn_report(void);
 bool ls_field_clear_plot(void);
 bool ls_field_transmit(const char *text);
 bool ls_field_source(ls_field_source_t source);

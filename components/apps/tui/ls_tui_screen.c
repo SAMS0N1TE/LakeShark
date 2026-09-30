@@ -2,6 +2,7 @@
 #include "ls_tui_screen.h"
 #include "ls_trail.h"
 #include "ls_keyboard.h"
+#include "ls_keypad.h"
 #include "ls_notify.h"
 #include "ls_numpad.h"
 #include "ls_picker.h"
@@ -183,6 +184,11 @@ void ls_tui_status_set(const char *left, const char *right)
 {
     if (left)  snprintf(s_status_left,  sizeof(s_status_left),  "%s", left);
     if (right) snprintf(s_status_right, sizeof(s_status_right), "%s", right);
+}
+
+bool ls_tui_keyboard_mode(void)
+{
+    return ls_keypad_present();
 }
 
 bool ls_tui_is_wide(void)

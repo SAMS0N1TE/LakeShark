@@ -245,7 +245,7 @@ static void draw(tui_surface *sf, tui_rect area)
         summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,4);
         ls_panel_box(sf,summary,"TRACK LOG",TUI_CYAN);
     } else s_view_hit=tui_rect_make(body.x,body.y,body.w,2);
-    tui_put_str(sf,framed?s_view_hit:body,body.x+2,body.y+(framed?1:0),ls_tui_is_wide()?(s_sky_mode?"[V] SKY / switch to receiver details":"[V] DETAILS / switch to satellite sky"):(s_sky_mode?"[ SKY ]  Tap for receiver details":"[ DETAILS ]  Tap for satellite sky"),A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,framed?s_view_hit:body,body.x+2,body.y+(framed?1:0),ls_tui_keyboard_mode()?(s_sky_mode?"[V] SKY / switch to receiver details":"[V] DETAILS / switch to satellite sky"):(s_sky_mode?"[ SKY ]  Tap for receiver details":"[ DETAILS ]  Tap for satellite sky"),A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     char health[80];snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_error()!=ESP_OK?"FAILED":ls_track_rec_running()?(g.fix?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
     tui_put_str(sf,summary,summary.x+2,summary.y+1,health,A(ls_track_rec_running()?TUI_GREEN:TUI_YELLOW,TUI_BLACK));
     uint32_t seconds=0;bool epoch=false;

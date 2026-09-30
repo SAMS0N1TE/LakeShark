@@ -48,12 +48,12 @@ static int hit_find(const hit_t *h, int n, int col, int row)
    decoration, it is the whole affordance - and it costs the same number of
    cells either way, because the background was going to be painted regardless. */
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
-                        int focus, int slot, bool raised)
+                        int focus, int slot, bool raised, bool stretch)
 {
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
     if (!sf || n <= 0 || bar.w < 6 || bar.h < 1) return;
-    const bool key_hints = ls_tui_is_wide();
+    const bool key_hints = ls_tui_keyboard_mode();
 
     /* Rows follow the height the caller gave us, columns follow from that.
        Portrait passes two or four rows and gets fat targets without this
@@ -62,7 +62,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
     int corner = ls_tui_corner_pad(bar.y);
     int bottom_corner = ls_tui_corner_pad(bar.y + bar.h - 1);
     if (bottom_corner > corner) corner = bottom_corner;
-    if (corner > 0) {
+    if (corner > 0 && !stretch) {
         int right = bar.x + bar.w;
         int cols = tui_surface_rect(sf).w;
         if (bar.x < corner) bar.x = corner;
@@ -94,8 +94,22 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         if (r >= rows) break;
 
         const int count = n - r * per_row < per_row ? n - r * per_row : per_row;
+        /* Full-width transport rows respect their own rounded corners.
+           The bottom row must not shrink every row above it. */
+        int row_x=bar.x,row_w=bar.w;
+        if(stretch) {
+            int pad=ls_tui_corner_pad(bar.y+r*row_h);
+            int end_pad=ls_tui_corner_pad(bar.y+(r+1)*row_h-1);
+            if(end_pad>pad)pad=end_pad;
+            int right=bar.x+bar.w,cols=tui_surface_rect(sf).w;
+            if(row_x<pad)row_x=pad;
+            if(right>cols-pad)right=cols-pad;
+            row_w=right-row_x;
+            cell_w=row_w/count;
+            if(cell_w<3)continue;
+        }
         const int row_width = count * cell_w - 1;
-        const int x0 = bar.x + (bar.w - row_width) / 2 + c * cell_w;
+        const int x0 = row_x + (row_w - row_width) / 2 + c * cell_w;
         const int y0 = bar.y + r * row_h;
         const int w = cell_w;
         const int h = row_h;
@@ -230,7 +244,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                      int focus, int slot)
 {
-    button_bar(sf, bar, btn, n, focus, slot, false);
+    button_bar(sf, bar, btn, n, focus, slot, false, false);
 }
 
 /* Whether a three-row bar can put every label and its value on one line.
@@ -274,7 +288,11 @@ int ls_btn_raised_height(tui_rect area, int n)
     int columns = area.w / 10;
     if (columns < 1) columns = 1;
     const int rows = (n + columns - 1) / columns;
-    int height = area.w > area.h * 2 ? 3 : area.h >= 48 ? 7 : 5;
+    /* Landscape without a keyboard is driven by thumbs alone, so its keys
+       get the row a keyboard user does not need. */
+    const bool wide = area.w > area.h * 2;
+    int height = wide ? (!ls_tui_keyboard_mode() && area.h >= 20 ? 4 : 3)
+                      : area.h >= 48 ? 7 : 5;
     if (height * rows > area.h / 3) height = area.h / (3 * rows);
     if (height < 1) height = 1;
     return height * rows < area.h ? height * rows : area.h;
@@ -283,13 +301,18 @@ int ls_btn_raised_height(tui_rect area, int n)
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus)
 {
-    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true);
+    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true, false);
+}
+
+void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)
+{
+    button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,true);
 }
 
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
                             int n, int focus, int slot)
 {
-    button_bar(sf, bar, btn, n, focus, slot, true);
+    button_bar(sf, bar, btn, n, focus, slot, true, false);
 }
 
 void ls_btn_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
@@ -471,7 +494,7 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         tui_fill(sf, box, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
         tui_box(sf, box, NULL, frame);
-        if(ls_tui_is_wide() && i<9) tui_put_char(sf,box,box.x+2,box.y,'1'+i,frame);
+        if(ls_tui_keyboard_mode() && i<9) tui_put_char(sf,box,box.x+2,box.y,'1'+i,frame);
 
         if (sel_now)
             tui_fill(sf, tui_rect_make(box.x + 1, box.y + 1, box.w - 2, box.h - 2),

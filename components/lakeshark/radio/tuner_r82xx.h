@@ -95,6 +95,9 @@ struct r82xx_priv
     int reg_cache;
     int reg_batch, reg_low, reg_high;
     int disable_dither;
+    /* While retuning: a one-register write that matches the shadow is
+       already in the chip, so it is not sent again. */
+    int skip_unchanged;
     /* Store current mode */
     uint32_t delsys;
     enum r82xx_tuner_type type;

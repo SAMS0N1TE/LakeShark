@@ -1,6 +1,7 @@
 /* See ls_i2c.h for why this exists at all. */
 #include "ls_i2c.h"
 
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -84,13 +85,37 @@ esp_err_t ls_i2c_bus(ls_i2c_bus_id_t id, i2c_master_bus_handle_t *out)
                      BUS[id].sda, BUS[id].scl, esp_err_to_name(err));
             s_bus[id] = NULL;
         } else {
-            ESP_LOGI(TAG, "bus %d up on SDA%d/SCL%d (I2C%d)", (int)id,
-                     BUS[id].sda, BUS[id].scl, BUS[id].port);
+            /* A reset can land in the middle of a byte, and the slave that
+               was sending it keeps SDA low until it is clocked out. The
+               driver's first transaction then waits for a bus that never
+               goes idle, with no timeout. Clock it free before first use. */
+            esp_err_t clear = i2c_master_bus_reset(s_bus[id]);
+            ESP_LOGI(TAG, "bus %d up on SDA%d/SCL%d (I2C%d), bus clear %s", (int)id,
+                     BUS[id].sda, BUS[id].scl, BUS[id].port, esp_err_to_name(clear));
         }
     }
     if (err == ESP_OK) *out = s_bus[id];
     xSemaphoreGive(s_lock);
     return err;
+}
+
+void ls_i2c_line_levels(ls_i2c_bus_id_t id, int *sda, int *scl)
+{
+    if (sda) *sda = -1;
+    if (scl) *scl = -1;
+    if (!ls_i2c_bus_present(id)) return;
+    /* The driver leaves both pins open-drain with the input path enabled,
+       so reading them does not disturb the bus. */
+    if (sda) *sda = gpio_get_level((gpio_num_t)BUS[id].sda);
+    if (scl) *scl = gpio_get_level((gpio_num_t)BUS[id].scl);
+}
+
+esp_err_t ls_i2c_bus_clear(ls_i2c_bus_id_t id)
+{
+    i2c_master_bus_handle_t bus = NULL;
+    esp_err_t err = ls_i2c_bus(id, &bus);
+    if (err != ESP_OK) return err;
+    return i2c_master_bus_reset(bus);
 }
 
 esp_err_t ls_i2c_probe(ls_i2c_bus_id_t id, uint8_t addr, int timeout_ms)

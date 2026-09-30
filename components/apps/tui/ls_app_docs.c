@@ -235,7 +235,14 @@ const ls_app_doc_t ls_doc_link = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_music = {
+    .purpose = "Play 16-bit PCM WAV tracks with a separate library, touch transport, volume-adjusted output history and an optional warm tone. Landscape uses a side-by-side layout.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_row_t ls_app_docs_all[] = {
+    { "music", &ls_doc_music },
     { "home",    &ls_doc_home    },
     { "p25",     &ls_doc_p25     },
     { "fm",      &ls_doc_fm      },

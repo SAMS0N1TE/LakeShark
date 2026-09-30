@@ -1891,7 +1891,15 @@ static int cmd_trail(int argc, char **argv)
    belongs to the TUI task. */
 static int cmd_compass(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc > 1 && !strcmp(argv[1], "trace")) {
+        ls_field_imu_trace(argc > 2 ? (float)atof(argv[2]) : 5.0f);
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "learn")) {
+        if (argc > 2) ls_field_compass_learn(!strcmp(argv[2], "off") ? 0 : !strcmp(argv[2], "on") ? 1 : 2);
+        ls_field_compass_learn_report();
+        return 0;
+    }
     ls_field_compass_report();
     ls_compass_cal_t cal;
     const bool have = ls_field_compass_cal(&cal);
@@ -2666,6 +2674,17 @@ static bool console_start(bool full)
     repl_cfg.max_cmdline_length = 128;
 
     esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    /* The REPL cannot start without its task stack in one internal block,
+       and on the way there the UART driver creates a mutex from the same
+       heap - lazily, calling abort() if that fails. With internal RAM that
+       short, decline here and leave it to the retry after the main task
+       releases memory. */
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest < repl_cfg.task_stack_size + 256) {
+        ESP_LOGW(TAG, "console deferred: internal largest %u, the REPL needs %u",
+                 (unsigned)largest, (unsigned)(repl_cfg.task_stack_size + 256));
+        return false;
+    }
     esp_err_t cerr = esp_console_new_repl_uart(&uart_cfg, &repl_cfg, &repl);
     if (cerr != ESP_OK) {
         /* IDF 5.4.3's error path deletes the UART driver after pointing the

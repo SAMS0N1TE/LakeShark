@@ -14,6 +14,7 @@
 #include "settings.h"
 #include <math.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static const char *TAG = "audio_out";
 
@@ -32,6 +33,7 @@ static const char *TAG = "audio_out";
 static volatile int      s_volume = 35;
 static volatile bool     s_muted  = false;
 static bool              s_ready  = false;
+static atomic_bool       s_media_request = false, s_media_owned = false;
 #if defined(LS_BOARD_CODEC_I2C_BUS)
 static bool              s_volume_applied = false;
 #endif
@@ -100,6 +102,7 @@ static inline size_t IRAM_ATTR ring_send_locked(const void *p, size_t want)
 
 void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 {
+    if (s_media_request) return;
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
     /* Live radio audio claims the speaker. */
@@ -122,6 +125,7 @@ void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
 
 void audio_write_cue(const int16_t *samples, int n)
 {
+    if (s_media_request) return;
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
     const size_t want = (size_t)n * sizeof(int16_t);
@@ -159,7 +163,7 @@ bool audio_write_speech(const int16_t *samples, int n)
     int64_t stalled_since = 0;
 
     while (remaining > 0) {
-        if (s_muted || s_speech_stop) return false;
+        if (s_muted || s_speech_stop || s_media_request) return false;
         /* A transmission, or one about to resume, has the speaker. */
         if (audio_out_live_active()) { s_tts_yielded++; return false; }
 
@@ -265,6 +269,10 @@ static void __attribute__((noinline)) player_codec_reset(void)
 #endif
     if (volume_err != ESP_OK)
         ESP_LOGW(TAG, "reset volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
+    /* Media closes muted. Restore the user's mute setting as well as rate
+       and volume before returning this codec to radio/tone playback. */
+    esp_err_t mute_err = ls_audio_hw_mute(s_muted);
+    if (mute_err != ESP_OK) ESP_LOGW(TAG, "reset mute: %s", esp_err_to_name(mute_err));
     ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
              esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
 }
@@ -332,6 +340,14 @@ static void IRAM_ATTR audio_player_task(void *arg)
 #endif
 
     for (;;) {
+        /* Acknowledge between hardware writes, never by suspending a task
+           that may still hold the codec's lock. */
+        if (s_media_request) {
+            s_media_owned = true;
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        s_media_owned = false;
         const uint32_t reset_req = s_codec_reset_req;
         if (reset_req != s_codec_reset_done) {
             player_codec_reset();
@@ -481,6 +497,26 @@ void audio_out_reset(void)
         vTaskDelay(pdMS_TO_TICKS(5));
     if ((int32_t)(s_codec_reset_done - want) < 0)
         ESP_LOGW(TAG, "audio_out_reset: player has not taken the reset yet");
+}
+
+esp_err_t audio_out_media_acquire(void)
+{
+    if (!s_ready || s_media_request || s_media_owned) return ESP_ERR_INVALID_STATE;
+    s_media_request = true;
+    for (int i = 0; i < 100 && !s_media_owned; ++i) vTaskDelay(pdMS_TO_TICKS(5));
+    if (s_media_owned) return ESP_OK;
+    s_media_request = false;
+    return ESP_ERR_TIMEOUT;
+}
+
+void audio_out_media_release(void)
+{
+    if (!s_media_request) return;
+    ++s_codec_reset_req;
+    s_reprime = true;
+    s_media_request = false;
+    /* Wait for the acknowledgement to clear before a subsequent acquire. */
+    for (int i = 0; i < 100 && s_media_owned; ++i) vTaskDelay(pdMS_TO_TICKS(5));
 }
 
 bool audio_is_muted(void) { return s_muted; }

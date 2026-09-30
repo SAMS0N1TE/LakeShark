@@ -19,6 +19,7 @@ extern "C" {
 #endif
 
 extern const ls_app_doc_t ls_doc_home;
+extern const ls_app_doc_t ls_doc_music;
 extern const ls_app_doc_t ls_doc_p25;
 extern const ls_app_doc_t ls_doc_fm;
 extern const ls_app_doc_t ls_doc_adsb;

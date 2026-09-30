@@ -102,6 +102,11 @@ void ls_test_fixture_dir(char *buf, size_t n, const char *stem);
    on one host, but the sleep has to compile on both. */
 void ls_test_sleep_ms(int ms);
 
+/* tmpfile() that works on Windows, where the CRT puts it in the drive root
+   and fails without admin. Deleted on close. Does not call fopen, so tests
+   that wrap fopen can use it. */
+FILE *ls_test_tmpfile(void);
+
 /* Captured diag_line() output, so a decoder's own diagnostics become
    assertable instead of something you squint at over serial. */
 void        ls_diag_clear(void);

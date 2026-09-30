@@ -24,6 +24,7 @@ static const audio_codec_data_if_t *s_data;
 static const audio_codec_ctrl_if_t *s_ctrl;
 static const audio_codec_gpio_if_t *s_gpio;
 static const audio_codec_if_t *s_codec;
+bool ls_audio_hw_output_is_mono(void) { return true; } /* ES8311 */
 
 static void codec_cleanup(void)
 {
@@ -212,6 +213,7 @@ esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value)
         ? ESP_OK : ESP_FAIL;
 }
 #else
+bool ls_audio_hw_output_is_mono(void) { return false; }
 void ls_audio_hw_deinit(void) { /* the BSP owns its own lifetime */ }
 esp_err_t ls_audio_hw_init(bool speaker_only)
 { return speaker_only ? bsp_extra_codec_init_speaker_only() : bsp_extra_codec_init(); }

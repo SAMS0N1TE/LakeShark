@@ -10,3 +10,9 @@ void ls_gps_get(ls_gps_state_t *g) { memset(g, 0, sizeof(*g)); }
 bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; return false; }
 bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
 bool settings_get_home(float *lat, float *lon) { (void)lat; (void)lon; return false; }
+bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
+{
+    if (corr) corr[0] = corr[1] = corr[2] = 0;
+    if (sigma_deg) *sigma_deg = 0.0f / 0.0f;
+    return false;
+}

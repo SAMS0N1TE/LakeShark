@@ -37,6 +37,14 @@ esp_err_t ls_i2c_device(ls_i2c_bus_id_t id, uint8_t addr, uint32_t hz,
    board has no such bus. */
 bool ls_i2c_pins(ls_i2c_bus_id_t id, int *sda, int *scl);
 
+/* What SDA and SCL read right now: 1 idle high, 0 held low, -1 unknown.
+   Read it BEFORE a clear, so a failure log says which line was stuck. */
+void ls_i2c_line_levels(ls_i2c_bus_id_t id, int *sda, int *scl);
+
+/* Clock the bus free and reset the controller.  Bring-up only: it does not
+   wait for a transaction another task may have in flight. */
+esp_err_t ls_i2c_bus_clear(ls_i2c_bus_id_t id);
+
 #ifdef __cplusplus
 }
 #endif

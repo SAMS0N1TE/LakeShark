@@ -182,6 +182,16 @@ static uint8_t *s_pkt;
    separately below with a longer budget. */
 /* Spin briefly, then yield. */
 
+/* The reset pin as the expander reads it back, not as we last wrote it:
+   "high", "low", or why it could not be read. */
+static const char *rst_readback(void)
+{
+    bool level = false;
+    const esp_err_t err = ls_xl9535_get(LS_BOARD_XL_RADIO_RST, &level);
+    if (err != ESP_OK) return esp_err_to_name(err);
+    return level ? "high" : "low";
+}
+
 static bool wait_not_busy(int timeout_ms)
 {
     for (int i = 0; i < 256; i++) {
@@ -282,14 +292,26 @@ esp_err_t ls_lora_start(void)
        output. */
     ls_xl9535_set_dir(LS_BOARD_XL_RADIO_DIO1, false);
 
-    ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
+    /* LS-1240: reset is an expander pin; when I2C0 fails (LS-1239) the
+       part is never reset and the error below blamed MISO. Keep going, but
+       report it. */
+    const esp_err_t rst_lo = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
     vTaskDelay(pdMS_TO_TICKS(2));
-    ls_xl9535_out(LS_BOARD_XL_RADIO_RST, true);
+    const esp_err_t rst_hi = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, true);
+    if (rst_lo != ESP_OK || rst_hi != ESP_OK) {
+        ESP_LOGE(TAG, "reset not pulsed: expander %s, drive low %s, release %s"
+                 " - the part is in whatever state the last boot left it",
+                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_lo),
+                 esp_err_to_name(rst_hi));
+    }
 
     /* Cold start runs the 32 MHz crystal up; the datasheet allows several
        milliseconds and BUSY stays high throughout. */
     if (!wait_not_busy(100)) {
-        ESP_LOGE(TAG, "busy never fell after reset - part unpowered or absent");
+        ESP_LOGE(TAG, "busy never fell after reset - part unpowered or absent"
+                 " (expander %s, reset release %s, RST reads %s)",
+                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_hi),
+                 rst_readback());
         return ESP_ERR_TIMEOUT;
     }
 
@@ -303,7 +325,10 @@ esp_err_t ls_lora_start(void)
         /* A floating MISO reads as one of these depending on the pull, and
            both mean nothing is driving the bus. Reporting "not found" is more
            useful than reporting a status of zero as though it were real. */
-        ESP_LOGE(TAG, "status 0x%02X - nothing is driving MISO", st);
+        ESP_LOGE(TAG, "status 0x%02X - nothing is driving MISO (BUSY %d,"
+                 " expander %s, reset release %s, RST reads %s)", st,
+                 gpio_get_level(BUSY_PIN), ls_xl9535_ready() ? "up" : "DOWN",
+                 esp_err_to_name(rst_hi), rst_readback());
         return ESP_ERR_NOT_FOUND;
     }
 

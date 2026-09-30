@@ -24,6 +24,8 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
     return true;
 }
 bool ls_tui_is_wide(void) { return wide; }
+static bool keyboard;
+bool ls_tui_keyboard_mode(void) { return keyboard; }
 void ls_tui_split(tui_rect a, tui_rect *first, tui_rect *second)
 {
     if (wide) {
@@ -42,9 +44,9 @@ static void draw(void)
 }
 static bool tap(const char *text)
 {
-    /* Portrait buttons use their words; keyboard badges belong to landscape. */
+    /* Buttons carry their key only while a keyboard is attached. */
     const bool bottom_button = text[0] == '[' && text[1] != 'B' && text[1] != 'W';
-    if (!wide && text[0] == '[' && strlen(text) > 4 && text[2] == ']') text += 4;
+    if (!keyboard && text[0] == '[' && strlen(text) > 4 && text[2] == ']') text += 4;
     for (int row_index = 0; row_index < height; row_index++) {
         int y = bottom_button ? height - 1 - row_index : row_index;
         char row[129];
@@ -78,7 +80,9 @@ static void setup(bool landscape)
 
 LS_CASE(wifi_and_bluetooth_buttons_work_in_both_orientations)
 {
-    for (int landscape = 0; landscape < 2; landscape++) {
+    for (int mode = 0; mode < 3; mode++) {
+        const int landscape = mode > 0;
+        keyboard = mode == 2;
         setup(landscape);
         LS_CHECK(active);
         LS_CHECK(tap("[S] SCAN")); LS_EQ_INT(operation, LS_WIRELESS_SCAN);
@@ -90,6 +94,7 @@ LS_CASE(wifi_and_bluetooth_buttons_work_in_both_orientations)
         LS_CHECK(tap("[D] STOP")); LS_EQ_INT(operation, LS_WIRELESS_BT_STOP);
         ls_scr_wireless.leave(); LS_CHECK(!active);
     }
+    keyboard = false;
 }
 
 LS_CASE(paged_network_tap_joins_the_name_that_was_drawn)

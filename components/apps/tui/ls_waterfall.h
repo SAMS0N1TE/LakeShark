@@ -49,6 +49,10 @@ typedef struct {
        say; 0 when it cannot. A band sweep can, and it is seconds - see
        stall_after_ms in ls_waterfall.c for what reads it. */
     uint32_t period_ms;
+    /* The bins already span floor_db..top_db the way the source means
+       them to be seen, so the waterfall draws them through a fixed window
+       instead of stretching its own around them. */
+    bool     scaled;
 } ls_wf_feed_t;
 
 typedef enum {

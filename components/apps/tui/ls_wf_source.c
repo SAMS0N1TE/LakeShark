@@ -614,6 +614,7 @@ static bool pump_lora(void)
         .live      = true,
         .note      = "swept",
         .period_ms = period_ms,
+        .scaled    = true,
     };
     ls_wf_push(LS_WF_OWNER_LORA, s_bins, got, &f);
     return true;

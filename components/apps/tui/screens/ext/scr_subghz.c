@@ -1606,7 +1606,10 @@ static void draw(tui_surface *sf,tui_rect a)
        gets box.w-2 columns and the longest pair, SETUP CAPTURE, is
        thirteen. test_tui_screens holds that measurement so a wider label
        cannot quietly start clipping again. */
-    int h=wide?(ls_btn_compact_fits(tui_rect_make(a.x,a.y,a.w,3),btn,5)?3:4)
+    /* Without a keyboard the landscape keys take an extra row, when the
+       pane is tall enough to give it without cutting into the captures. */
+    const bool thumbs=!ls_tui_keyboard_mode() && a.h>=22;
+    int h=wide?(!thumbs && ls_btn_compact_fits(tui_rect_make(a.x,a.y,a.w,3),btn,5)?3:4)
               :ls_btn_raised_height(a,5);
     /* A tall narrow split: two columns of buttons, so it needs the rows
        for two of them. */

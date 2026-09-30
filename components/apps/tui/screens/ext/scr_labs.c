@@ -564,7 +564,7 @@ static void full_compass_draw(tui_surface *sf, tui_rect a)
     cal_center(sf,detail,detail.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
     cal_center(sf,detail,detail.y+1,s.sample.imu_valid && s.sample.imu.mag_valid ? "IMU live <350ms / orientation held" : "IMU stale or magnetometer unavailable",TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     cal_center(sf,detail,detail.y+2,"Board top ^ / N magnetic / deg CW",LS_ATTR_DIM);
-    snprintf(line,sizeof(line),ls_tui_is_wide()?"%s: %s / K calibrate":"%s: %s",s.calibration_keyboard?"KEYBOARD":"STANDALONE",
+    snprintf(line,sizeof(line),ls_tui_keyboard_mode()?"%s: %s / K calibrate":"%s: %s",s.calibration_keyboard?"KEYBOARD":"STANDALONE",
              s.calibrated?(s.calibration_saved?"saved":"RAM only"):"UNCALIBRATED");
     cal_center(sf,detail,detail.y+3,line,TUI_ATTR((s.calibrated?TUI_GREEN:TUI_YELLOW)|TUI_BRIGHT,TUI_BLACK));
     if (s_show_signal) {

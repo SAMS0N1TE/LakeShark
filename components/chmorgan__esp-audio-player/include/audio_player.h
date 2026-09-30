@@ -43,6 +43,11 @@ typedef enum {
  * @return the present audio_player_state_t
  */
 audio_player_state_t audio_player_get_state();
+/* Measured minimum stack headroom after a playback; zero until measured. */
+uint32_t audio_player_stack_free_bytes(void);
+/* Decoded PCM accepted by the output; excludes time spent paused. */
+uint32_t audio_player_position_ms(void);
+uint32_t audio_player_duration_ms(void);
 
 typedef enum {
     AUDIO_PLAYER_CALLBACK_EVENT_IDLE, /**< Player is idle, not playing audio */

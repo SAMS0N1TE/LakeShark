@@ -9,6 +9,7 @@
 /* Never reached: this case does not draw. The linker wants every symbol the
    instrument's draw path names, and orientation is not what is under test. */
 bool ls_tui_is_wide(void) { return true; }
+bool ls_tui_keyboard_mode(void) { return false; }
 /* Asked by the draw path for which way round the ground is. */
 bool ls_tui_daylight(void) { return false; }
 

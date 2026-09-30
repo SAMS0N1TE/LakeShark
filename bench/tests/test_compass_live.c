@@ -200,24 +200,120 @@ LS_CASE(the_interference_warning_does_not_flicker)
     LS_CHECK(!ls_compass_bend_step(&b, NAN, t));
 }
 
-/* Lying still, a heading that wobbles by a couple of degrees reads within
-   half a degree; a turn is followed at once. */
-LS_CASE(the_steady_heading_holds_at_rest_and_follows_a_turn)
+static float off_deg(float a, float b) { return fabsf(fmodf(a - b + 540.0f, 360.0f) - 180.0f); }
+
+/* Lying still, a magnetic heading that wobbles by a couple of degrees and a
+   gyro that rests at 3 deg/s read within half a degree once the bias is
+   learnt; a turn is followed as it happens, not after. */
+LS_CASE(the_fused_heading_holds_at_rest_and_follows_a_turn)
 {
     ls_compass_steady_t s = { 0 };
     float h = 0;
-    for (int i = 0; i < 250; i++) {                      /* 10 s at 25 frames a second */
+    for (int i = 0; i < 500; i++) {                      /* 20 s at 25 frames a second */
         const float wobble = 2.0f * sinf(i * 1.7f) + 1.0f * sinf(i * 4.3f);
-        h = ls_compass_steady_step(&s, fmodf(359.5f + wobble + 360.0f, 360.0f), 0, 0, 0.5f, 0.04f);
+        h = ls_compass_steady_step(&s, fmodf(359.5f + wobble + 360.0f, 360.0f), 0, 0, 3.0f, 0.04f);
     }
-    const float off = fabsf(fmodf(h - 359.5f + 540.0f, 360.0f) - 180.0f);
-    LS_CHECK_MSG(off < 0.7f, "at rest %.2f from true", off);
-    /* A 45 degree turn over half a second, the gyro saying so. */
-    for (int i = 1; i <= 12; i++) h = ls_compass_steady_step(&s, fmodf(359.5f + i * 3.75f, 360.0f), 0, 0, 90.0f, 0.04f);
-    LS_CHECK_MSG(fabsf(h - 44.5f) < 1.5f, "after the turn %.1f", h);
-    /* Without a gyro, a jump is still a turn. */
+    LS_CHECK_MSG(off_deg(h, 359.5f) < 0.5f, "at rest %.2f from true", off_deg(h, 359.5f));
+    LS_CHECK_MSG(fabsf(s.bias - 3.0f) < 0.5f, "bias learnt as %.2f", s.bias);
+    /* Still after the bias is learnt: the last few frames barely move. */
+    float lo = 999, hi = -999;
+    for (int i = 0; i < 25; i++) {
+        const float wobble = 2.0f * sinf(i * 1.7f) + 1.0f * sinf(i * 4.3f);
+        h = ls_compass_steady_step(&s, fmodf(359.5f + wobble + 360.0f, 360.0f), 0, 0, 3.0f, 0.04f);
+        const float d = fmodf(h - 359.5f + 540.0f, 360.0f) - 180.0f;
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+    }
+    LS_CHECK_MSG(hi - lo < 0.6f, "jitter at rest %.2f deg", hi - lo);
+    /* A 90 degree turn at 90 deg/s: every frame of it within 2 degrees of
+       where the board points, not trailing it. */
+    float worst = 0;
+    for (int i = 1; i <= 25; i++) {
+        const float truth = fmodf(359.5f + i * 3.6f, 360.0f);
+        h = ls_compass_steady_step(&s, truth, 0, 0, 90.0f + 3.0f, 0.04f);
+        worst = fmaxf(worst, off_deg(h, truth));
+    }
+    LS_CHECK_MSG(worst < 2.0f, "worst lag in the turn %.2f deg", worst);
+    LS_CHECK_MSG(s.agree > 0.4f, "agree %.2f after a clean turn", s.agree);
+    /* Stopping: no overshoot past where it stopped. */
+    float past = 0;
+    for (int i = 0; i < 50; i++) {
+        h = ls_compass_steady_step(&s, 89.5f, 0, 0, 3.0f, 0.04f);
+        past = fmaxf(past, fmodf(h - 89.5f + 540.0f, 360.0f) - 180.0f);
+    }
+    LS_CHECK_MSG(past < 1.0f, "overshoot %.2f deg", past);
+}
+
+/* Without a gyro it follows the magnetometer alone; a jump past 45 degrees
+   is taken once it has lasted 0.3 s. */
+LS_CASE(the_fused_heading_without_a_gyro)
+{
     ls_compass_steady_t q = { 0 };
-    ls_compass_steady_step(&q, 100, 0, 0, NAN, 0.04f);
-    for (int i = 0; i < 10; i++) h = ls_compass_steady_step(&q, 160, 0, 0, NAN, 0.04f);
-    LS_CHECK_MSG(fabsf(h - 160) < 3.0f, "jump %.1f", h);
+    float h = ls_compass_steady_step(&q, 100, 0, 0, NAN, 0.04f);
+    h = ls_compass_steady_step(&q, 160, 0, 0, NAN, 0.04f);
+    LS_CHECK_MSG(fabsf(h - 100) < 0.1f, "one reading is not yet a jump %.1f", h);
+    for (int i = 0; i < 8; i++) h = ls_compass_steady_step(&q, 160, 0, 0, NAN, 0.04f);
+    LS_CHECK_MSG(fabsf(h - 160) < 0.1f, "jump %.1f", h);
+    for (int i = 0; i < 25; i++) h = ls_compass_steady_step(&q, 180, 0, 0, NAN, 0.04f);
+    LS_CHECK_MSG(fabsf(h - 180) < 1.0f, "20 degrees after a second %.1f", h);
+    LS_CHECK(!q.gyro_used);
+}
+
+/* One wild magnetic reading - 2.5.0's field showed eight-degree blips at
+   rest, and a bus glitch can do far worse - does not throw the dial across
+   and back. */
+LS_CASE(a_single_glitched_reading_does_not_throw_the_dial)
+{
+    ls_compass_steady_t s = { 0 };
+    float h = 0, worst = 0;
+    for (int i = 0; i < 100; i++) h = ls_compass_steady_step(&s, 200, 0, 0, 0, 0.04f);
+    for (int k = 0; k < 3; k++) {
+        h = ls_compass_steady_step(&s, 20, 0, 0, 0, 0.04f);          /* 180 out, one frame */
+        worst = fmaxf(worst, off_deg(h, 200));
+        for (int i = 0; i < 10; i++) { h = ls_compass_steady_step(&s, 200, 0, 0, 0, 0.04f); worst = fmaxf(worst, off_deg(h, 200)); }
+    }
+    LS_CHECK_MSG(worst < 1.0f, "a glitch moved the dial %.1f deg", worst);
+    LS_EQ_INT((int)s.glitches, 3);
+}
+
+/* A gyro that turns against the magnetometer is found out and left out,
+   not believed. */
+LS_CASE(a_gyro_turning_the_wrong_way_is_left_out)
+{
+    ls_compass_steady_t s = { 0 };
+    float h = ls_compass_steady_step(&s, 0, 0, 0, 0, 0.04f);
+    for (int i = 1; i <= 100; i++) h = ls_compass_steady_step(&s, fmodf(i * 1.2f, 360.0f), 0, 0, -30.0f, 0.04f);
+    LS_CHECK_MSG(s.agree < -0.5f, "agree %.2f", s.agree);
+    LS_CHECK(!s.gyro_used);
+    for (int i = 0; i < 50; i++) h = ls_compass_steady_step(&s, 120, 0, 0, -30.0f, 0.04f);
+    LS_CHECK_MSG(off_deg(h, 120) < 1.0f, "follows the magnetometer %.1f", h);
+}
+
+/* Clockwise from above is positive whichever proper rotation the IMU is
+   mounted in: face up, and the same turn with x and z reversed. */
+LS_CASE(yaw_rate_is_clockwise_from_above_in_any_mounting)
+{
+    const float up[3] = { 0, 0, 1 }, turn_cw[3] = { 0, 0, -40 };
+    LS_CHECK(fabsf(ls_compass_yaw_rate(turn_cw, up) - 40) < 1e-3f);
+    const float up_r[3] = { 0, 0, -1 }, turn_r[3] = { 0, 0, 40 };
+    LS_CHECK(fabsf(ls_compass_yaw_rate(turn_r, up_r) - 40) < 1e-3f);
+    /* Held upright, top up: a turn about the board's y axis. */
+    const float up_y[3] = { 0, 0.98f, 0.1f }, turn_y[3] = { 0, -25, 0 };
+    LS_CHECK(fabsf(ls_compass_yaw_rate(turn_y, up_y) - 25 * 0.98f / sqrtf(0.98f * 0.98f + 0.01f)) < 0.1f);
+    const float free_fall[3] = { 0, 0, 0.1f };
+    LS_CHECK(isnan(ls_compass_yaw_rate(turn_cw, free_fall)));
+}
+
+/* A frame with no magnetic heading does not blank or reset the dial: the
+   gyro carries it, for a while, then it holds. */
+LS_CASE(a_frame_without_a_heading_coasts_on_the_gyro)
+{
+    ls_compass_steady_t s = { 0 };
+    for (int i = 0; i < 50; i++) ls_compass_steady_step(&s, 100, 0, 0, 0, 0.04f);
+    float h = ls_compass_steady_step(&s, NAN, 0, 0, 30.0f, 0.1f);
+    for (int i = 0; i < 9; i++) h = ls_compass_steady_step(&s, NAN, 0, 0, 30.0f, 0.1f);
+    LS_CHECK_MSG(off_deg(h, 130) < 1.0f, "coasted to %.1f", h);
+    for (int i = 0; i < 100; i++) h = ls_compass_steady_step(&s, NAN, 0, 0, 30.0f, 0.1f);
+    LS_CHECK_MSG(off_deg(h, 100 + 30 * LS_COMPASS_COAST_S) < 3.5f, "held at %.1f", h);   /* a step either side of the limit */
+    LS_CHECK(s.started);
 }

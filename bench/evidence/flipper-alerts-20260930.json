@@ -1,0 +1,28 @@
+{
+ "contract": "flipper-alerts",
+ "incident": "FLIPPER-MUTE-CRASH-20260915",
+ "date": "2026-09-30",
+ "board": "T-Display-P4 5C84301528",
+ "firmware": "2.6.0-rc1-g3f1e7bbcc526",
+ "firmware_sha256": "d856c0124fc89005b40aa20c63212cfe1149fd6b4bf8d09a2079792db5d7a225",
+ "source_digest": "3158827d603a1b7733cc4a409d4981405dcb8327d9613288aa1c373bbe507a3e",
+ "flipper_firmware": "Momentum mntm-dev 430a3d50, API 87.1",
+ "flipper_app_md5": "36cefe4ec095ad036b6e85968f6b8624",
+ "flipper_app_source": "LakeShark-Flipper v2.8 release asset lakeshark_p25-v2.8.fap (md5 matches)",
+ "log": {
+  "path": "flipper-alerts-20260930.txt",
+  "sha256": "ca6c307686f3502dbe88d5e2685c7526d51d2f5bde860547cd6474fc233b13a6"
+ },
+ "observer": "operator",
+ "passed": [
+  "relaunch 10/10 over BLE, link in 3.8 s, no Flipper reboot",
+  "all outputs off: SDR lost/recovered toasts only, no LED/vibration/tone",
+  "LED only, vibration only, short tone only: each output independent",
+  "SDR loss and recovery via rtl reset alerts with configured outputs",
+  "settings persisted across launches and restored",
+  "installed app is byte-identical to the Flipper app 2.8 release"
+ ],
+ "not_covered": [
+  "capture alert (needs a real transmission)"
+ ]
+}

@@ -62,6 +62,13 @@ typedef struct {
     ls_gps_sat_t sat_acc[LS_GPS_MAX_SATS];
     uint8_t  sat_acc_count;
 
+    /* Internal: PRNs a GSA has marked used this cycle, kept independently of
+       sat_acc because a GSA can name a satellite before the GSV that first
+       creates its entry. Bounded and deduplicated; cleared when the GGA that
+       ends the cycle publishes sat_acc into sats. */
+    uint8_t  gsa_used_prns[LS_GPS_MAX_SATS];
+    uint8_t  gsa_used_count;
+
     uint32_t bytes;
     uint32_t sentences;      /* passed checksum                              */
     uint32_t checksum_errors;

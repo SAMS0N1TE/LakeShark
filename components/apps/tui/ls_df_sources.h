@@ -20,13 +20,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ls_df_beacon.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef enum {
     LS_DFS_MESH, LS_DFS_LORA, LS_DFS_RTL, LS_DFS_HACKRF, LS_DFS_CC1101,
-    LS_DFS_NRF24, LS_DFS_WIFI, LS_DFS_BLE, LS_DFS_NFC, LS_DFS_GPS, LS_DFS_COUNT
+    LS_DFS_NRF24, LS_DFS_WIFI, LS_DFS_BLE, LS_DFS_NFC, LS_DFS_GPS,
+    /* The SX1262 sweeping a band (ls_df_band.h): each emitter it finds is
+       a channel of its own. Appended: the numbers above are stored. */
+    LS_DFS_BAND, LS_DFS_COUNT
 } ls_dfs_t;
 
 #define LS_DFS_SLOTS    2
@@ -84,6 +89,15 @@ int  ls_dfs_set_channels(int slot, const uint32_t *hz, int n, uint32_t dwell_ms)
 /* Levels heard since the last call, oldest first. */
 int  ls_dfs_take(ls_dfs_reading_t *out, int max);
 
+/* BAND: the band swept, the learnt quiet level and each track. False
+   unless a slot runs BAND. */
+typedef struct {
+    uint32_t lo_hz, hi_hz, passes, opened;
+    float floor;
+    struct { bool live; uint32_t hz; float level, peak, over; uint32_t passes; int64_t last_us; } track[8];
+} ls_dfs_band_status_t;
+bool ls_dfs_band_status(ls_dfs_band_status_t *out);
+
 /* Targets for slot 0, strongest or most recent first. */
 int  ls_dfs_target_count(void);
 bool ls_dfs_target_label(int i, char *label, size_t lcap, char *detail, size_t dcap);
@@ -91,6 +105,10 @@ bool ls_dfs_target_pick(int i);   /* -1 follows everything the source hears */
 
 /* The field worker runs this; it may block on a radio briefly. */
 void ls_dfs_step(void);
+
+/* The last LS DF beacon packet the LORA source decoded (ls_df_beacon.h).
+   Each is also filed as a level, at its own RSSI. False until one is heard. */
+bool ls_dfs_beacon(ls_dfs_beacon_t *out);
 
 #ifdef __cplusplus
 }

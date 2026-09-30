@@ -35,6 +35,10 @@ void ls_df_add(ls_df_sweep_t *s, float heading, float level, int64_t now_us)
        direction a few times and fading only ever takes signal away. */
     if (!s->count[b] || level >= s->level[b]) { s->level[b] = level; s->peak_us[b] = now_us; }
     s->last[b] = level;
+    if (!s->count[b]) s->ring_n[b] = s->ring_at[b] = 0;
+    s->ring[b][s->ring_at[b]] = level;
+    s->ring_at[b] = (uint8_t)((s->ring_at[b] + 1) % LS_DF_RING);
+    if (s->ring_n[b] < LS_DF_RING) s->ring_n[b]++;
     if (s->count[b] < UINT16_MAX) s->count[b]++;
     s->seen_us[b] = now_us;
     s->samples++;
@@ -47,6 +51,20 @@ void ls_df_age(ls_df_sweep_t *s, int64_t now_us, int64_t max_age_us)
     for (int i = 0; i < LS_DF_BINS; i++)
         if (s->count[i] && now_us - s->seen_us[i] > max_age_us) s->count[i] = 0;
     bounds(s);
+}
+
+float ls_df_typical(const ls_df_sweep_t *s, int bin)
+{
+    if (!s || bin < 0 || bin >= LS_DF_BINS || !s->count[bin] || !s->ring_n[bin]) return NAN;
+    float v[LS_DF_RING];
+    const int n = s->ring_n[bin];
+    for (int i = 0; i < n; i++) {
+        float x = s->ring[bin][i];
+        int j = i;
+        while (j > 0 && v[j - 1] > x) { v[j] = v[j - 1]; j--; }
+        v[j] = x;
+    }
+    return n & 1 ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
 }
 
 void ls_df_decay(ls_df_sweep_t *s, int64_t now_us, const ls_df_decay_t *d)
@@ -92,7 +110,7 @@ bool ls_df_estimate(const ls_df_sweep_t *s, ls_df_method_t method, ls_df_estimat
         v[i] = s->count[i] ? smoothed(s, i) : NAN;
         if (!s->count[i]) continue;
         covered++;
-        const bool better = best < 0 || (method == LS_DF_PEAK ? v[i] > v[best] : v[i] < v[best]);
+        const bool better = best < 0 || (method != LS_DF_NULL ? v[i] > v[best] : v[i] < v[best]);
         if (better) best = i;
     }
     out->coverage = (int)(covered * STEP);
@@ -100,7 +118,7 @@ bool ls_df_estimate(const ls_df_sweep_t *s, ls_df_method_t method, ls_df_estimat
     if (best < 0) return false;
     /* A peak needs the far side seen to be a peak; a null needs nearly the
        whole circle, because a missing direction could hold a deeper one. */
-    const int need = method == LS_DF_PEAK ? 180 : 270;
+    const int need = method != LS_DF_NULL ? 180 : 270;
     if (out->coverage < need || out->contrast < 3.0f) return false;
     /* Parabola through the extreme and its neighbours for sub-bin aim. */
     float offset = 0;
@@ -113,16 +131,16 @@ bool ls_df_estimate(const ls_df_sweep_t *s, ls_df_method_t method, ls_df_estimat
     }
     float bearing = (best + offset) * STEP;
     /* Width of the lobe: bins within 3 dB of the extreme, walking out. */
-    const float edge = method == LS_DF_PEAK ? v[best] - 3.0f : v[best] + 3.0f;
+    const float edge = method != LS_DF_NULL ? v[best] - 3.0f : v[best] + 3.0f;
     int left = 0, right = 0;
     for (int k = 1; k < LS_DF_BINS / 2; k++) {
         const int j = (best - k + LS_DF_BINS) % LS_DF_BINS;
-        if (!isfinite(v[j]) || (method == LS_DF_PEAK ? v[j] < edge : v[j] > edge)) break;
+        if (!isfinite(v[j]) || (method != LS_DF_NULL ? v[j] < edge : v[j] > edge)) break;
         left = k;
     }
     for (int k = 1; k < LS_DF_BINS / 2; k++) {
         const int j = (best + k) % LS_DF_BINS;
-        if (!isfinite(v[j]) || (method == LS_DF_PEAK ? v[j] < edge : v[j] > edge)) break;
+        if (!isfinite(v[j]) || (method != LS_DF_NULL ? v[j] < edge : v[j] > edge)) break;
         right = k;
     }
     bearing += (right - left) * STEP * 0.5f;

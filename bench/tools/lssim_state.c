@@ -64,6 +64,8 @@ bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; retur
 bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
 bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d; return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
+bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }
+void settings_set_df_pattern(int s, const int8_t p[36], uint16_t c) { (void)s; (void)p; (void)c; }
 int  settings_get_df_option(int id, int f) { (void)id; return f; }
 void settings_set_df_option(int id, int v) { (void)id; (void)v; }
 int  settings_get_df_channels(int s, uint32_t *hz, int m) { (void)s; (void)hz; (void)m; return 0; }

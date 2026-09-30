@@ -177,7 +177,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_safe_line(sf, a, a.y + a.h - 3, status, LS_ATTR_DIM);
     snprintf(status,sizeof(status),"LAST SAVED %s",stamp);
     ls_safe_line(sf,a,a.y+a.h-2,status,LS_ATTR_DIM);
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_is_wide()?"ENTER read  ARROWS browse  BS back":s.storage, LS_ATTR_DIM);
+    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_keyboard_mode()?"ENTER read  ARROWS browse  BS back":s.storage, LS_ATTR_DIM);
 }
 static void enter(void) { button_focus=-1;button_slot=0; ls_field_start(); ls_field_watch(true); s_detail = s_sensors = false; s_scroll = 0; }
 static void leave(void) { s_rec_source=false; ls_field_watch(false); }

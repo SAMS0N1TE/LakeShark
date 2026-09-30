@@ -42,6 +42,40 @@ static bool feed(ls_gps_state_t *st, const char *line)
 
 static void fresh(ls_gps_state_t *st) { memset(st, 0, sizeof(*st)); }
 
+/* Builds "$<payload>*HH" with the checksum computed from the payload, so a
+   sentence assembled for a test is never at odds with what it claims to
+   carry. */
+static void checksum_line(char *out, size_t outsz, const char *payload)
+{
+    uint8_t sum = 0;
+    for (const char *p = payload; *p; p++) sum ^= (uint8_t)*p;
+    snprintf(out, outsz, "$%s*%02X", payload, sum);
+}
+
+/* A GSA carrying the given PRN strings (each e.g. "04", or "" to leave a slot
+   empty) in its twelve satellite-ID fields. */
+static void gsa_line(char *out, size_t outsz, const char *const *prns, int nprns)
+{
+    char payload[96];
+    int pos = snprintf(payload, sizeof(payload), "GPGSA,A,3");
+    for (int i = 0; i < 12; i++) {
+        const char *v = (i < nprns) ? prns[i] : "";
+        pos += snprintf(payload + pos, sizeof(payload) - (size_t)pos, ",%s", v);
+    }
+    snprintf(payload + pos, sizeof(payload) - (size_t)pos, ",2.5,1.3,2.1");
+    checksum_line(out, outsz, payload);
+}
+
+/* A one-message GSV series reporting a single satellite. */
+static void gsv_line(char *out, size_t outsz, const char *prn,
+                     int elevation, int azimuth, int snr)
+{
+    char payload[96];
+    snprintf(payload, sizeof(payload), "GPGSV,1,1,01,%s,%02d,%03d,%02d",
+             prn, elevation, azimuth, snr);
+    checksum_line(out, outsz, payload);
+}
+
 LS_CASE(position_freshness_is_not_refreshed_by_satellites_or_void_rmc)
 {
     ls_gps_state_t st = {0};
@@ -284,4 +318,175 @@ LS_CASE(the_input_sentence_is_not_modified)
     LS_CHECK(ls_gps_parse_line(line, (int)strlen(line), &st));
     LS_CHECK_MSG(memcmp(line, copy, sizeof(line)) == 0,
                  "the parser modified the sentence it was given");
+}
+
+/* ------------------------------------------------- GSA/GSV ordering cases -- */
+
+LS_CASE(gsa_before_gsv_still_marks_the_satellite_used)
+{
+    /* GSA and GSV are not ordered relative to each other by NMEA. A GSA
+       naming PRN 04 before the GSV that first reports it must not lose the
+       used flag once that satellite's entry exists. */
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    const char *prns[] = { "04" };
+    gsa_line(line, sizeof(line), prns, 1);
+    LS_CHECK(feed(&st, line));
+
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    LS_CHECK(st.fix);
+    LS_EQ_INT(1, st.quality);
+    LS_EQ_INT(8, st.sats_used);
+    LS_CHECK_MSG(st.sat_count >= 1, "expected at least one published satellite");
+    LS_CHECK_MSG(st.sats[0].prn == 4, "expected PRN 4, got %d", st.sats[0].prn);
+    LS_CHECK_MSG(st.sats[0].used, "GSA-before-GSV lost the used flag for PRN 4");
+}
+
+LS_CASE(gsv_before_gsa_also_marks_the_satellite_used)
+{
+    /* The order the driver has been fed most often. Must keep working. */
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    const char *prns[] = { "04" };
+    gsa_line(line, sizeof(line), prns, 1);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    LS_CHECK_MSG(st.sats[0].used,
+                 "PRN 4 should be used regardless of sentence order");
+}
+
+LS_CASE(a_remembered_gsa_prn_does_not_leak_into_the_next_cycle)
+{
+    /* A PRN a GSA marked used belongs to the cycle it arrived in. A GSV that
+       reports the same PRN next cycle, with no GSA of its own, must not
+       inherit the previous cycle's flag. */
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    const char *prns[] = { "04" };
+    gsa_line(line, sizeof(line), prns, 1);
+    LS_CHECK(feed(&st, line));
+
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+    LS_CHECK(st.sats[0].used);
+
+    /* Second cycle: same PRN reported by GSV, no GSA this time. */
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    LS_CHECK_MSG(!st.sats[0].used,
+                 "a GSA from a previous cycle still marked this cycle's satellite used");
+}
+
+LS_CASE(a_duplicate_gsa_prn_id_is_deduplicated)
+{
+    /* The same PRN can appear more than once across a GSA sentence's own
+       fields, or across the sentences some receivers split it into. Neither
+       should grow the remembered set past one entry per satellite or change
+       the outcome. */
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    const char *prns[] = { "04", "04" };
+    gsa_line(line, sizeof(line), prns, 2);
+    LS_CHECK(feed(&st, line));
+    /* A second GSA sentence repeating the same PRN. */
+    LS_CHECK(feed(&st, line));
+
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(feed(&st, line));
+
+    LS_CHECK(st.sats[0].used);
+    LS_EQ_INT(1, st.sat_count);
+}
+
+LS_CASE(no_false_fix_when_quality_is_zero_despite_satellites_used)
+{
+    /* A GSA/GSV pair naming a tracked satellite is not a fix. Quality 0 must
+       stay a non-fix even though a used flag is published. */
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+
+    const char *prns[] = { "04" };
+    gsa_line(line, sizeof(line), prns, 1);
+    LS_CHECK(feed(&st, line));
+
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+
+    checksum_line(line, sizeof(line),
+                  "GNGGA,044750.600,,,,,0,00,25.5,,,,,");
+    LS_CHECK(feed(&st, line));
+
+    LS_CHECK_MSG(!st.fix,
+                 "quality 0 must not be reported as a fix even with tracked satellites");
+    LS_EQ_INT(0, st.quality);
+    LS_CHECK_MSG(st.sats[0].used,
+                 "GSA-reported used flag should still publish even without a fix");
+}
+
+LS_CASE(out_of_range_gsa_prns_do_not_alias_valid_satellites)
+{
+    ls_gps_state_t st;
+    fresh(&st);
+    char line[100];
+    const char *prns[] = { "260", "-252", "0" };
+    gsa_line(line, sizeof(line), prns, 3);
+    LS_CHECK(feed(&st, line));
+    gsv_line(line, sizeof(line), "04", 15, 270, 40);
+    LS_CHECK(feed(&st, line));
+    checksum_line(line, sizeof(line), "GNGGA,044750.600,,,,,0,00,25.5,,,,,");
+    LS_CHECK(feed(&st, line));
+    LS_EQ_INT(1, st.sat_count);
+    LS_CHECK(!st.sats[0].used);
+    LS_CHECK(!st.fix);
 }

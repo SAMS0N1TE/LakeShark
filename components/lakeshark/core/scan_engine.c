@@ -196,7 +196,9 @@ static bool select_decoder(int mode)
 static bool wait_for_tune(uint32_t target_hz, int mode,
                           ls_radio_err_t *error)
 {
-    for (int waited = 0; waited < 500; waited += 10) {
+    /* Polled finely: the retune itself is tens of milliseconds, and a
+       coarse poll added half its period to every channel of every pass. */
+    for (int waited = 0; waited < 500; waited += 2) {
         if (!s_enabled || !scan_foreground()) {
             if (error) *error = LS_RADIO_ERR_STOPPED;
             return false;
@@ -220,7 +222,7 @@ static bool wait_for_tune(uint32_t target_hz, int mode,
                 return true;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
     if (error) *error = LS_RADIO_ERR_TIMEOUT;
     return false;
@@ -673,6 +675,27 @@ static bool advance_requested(int idx)
     return true;
 }
 
+/* Where one pass through the list goes: logged once per pass, from counters
+   the loop already passes through, so the measurement costs nothing a pass
+   would notice. */
+typedef struct {
+    int64_t started, tune_us, measure_us, dwell_us, hold_us;
+    unsigned steps, holds;
+} scan_pass_t;
+static EXT_RAM_BSS_ATTR scan_pass_t s_pass;
+static void pass_boundary(void)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_pass.steps) {
+        ESP_LOGI(TAG, "pass %u ch %lld ms: tune %lld measure %lld sync %lld hold %lld ms, %u holds",
+                 s_pass.steps, (now - s_pass.started) / 1000, s_pass.tune_us / 1000,
+                 s_pass.measure_us / 1000, s_pass.dwell_us / 1000, s_pass.hold_us / 1000,
+                 s_pass.holds);
+    }
+    memset(&s_pass, 0, sizeof(s_pass));
+    s_pass.started = now;
+}
+
 static void scan_task(void *arg)
 {
     (void)arg;
@@ -770,13 +793,14 @@ static void scan_task(void *arg)
                 continue;
             }
             if (s_band_pos >= n) s_band_pos = 0;
-            if (s_band_pos == 0) { s_pk_max = s_pk_acc; s_pk_acc = 0; }
+            if (s_band_pos == 0) { s_pk_max = s_pk_acc; s_pk_acc = 0; pass_boundary(); }
             idx = s_band_pos;
             s_band_pos = (s_band_pos + 1) % n;
             c = band_channel(idx);
         } else {
             /**/
             if (s_force_idx < 0 && s_order_pos == 0) {
+                pass_boundary();
                 rebuild_order();
                 s_pk_max = s_pk_acc;
                 s_pk_acc = 0;
@@ -812,9 +836,13 @@ static void scan_task(void *arg)
         if (c->mode == SCAN_MODE_NFM && !nfm_wait_listen(800)) continue;
         s_candidate = idx;
         s_scan_error = LS_RADIO_OK;
+        int64_t mark = esp_timer_get_time();
+        s_pass.steps++;
         tune_to(c);
         ls_radio_err_t tune_error = LS_RADIO_OK;
-        if (!wait_for_tune(c->freq_hz, c->mode, &tune_error)) {
+        const bool tuned = wait_for_tune(c->freq_hz, c->mode, &tune_error);
+        s_pass.tune_us += esp_timer_get_time() - mark;
+        if (!tuned) {
             if (s_enabled && scan_foreground()) {
                 s_scan_error = tune_error;
                 ls_iq_control_status_t failed;
@@ -831,9 +859,11 @@ static void scan_task(void *arg)
         s_journal_tunes++;
 
         /**/
+        mark = esp_timer_get_time();
         int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? 100 : SETTLE_MS,
                                c->mode == SCAN_MODE_NFM ? 100 : MEASURE_MS,
                                c->mode);
+        s_pass.measure_us += esp_timer_get_time() - mark;
         if (pwi > s_pk_acc) s_pk_acc = pwi;
         if (!s_enabled || !scan_foreground()) continue;
 
@@ -851,8 +881,10 @@ static void scan_task(void *arg)
            what SYNC_DWELL_MS buys. NFM has no sync - a carrier over threshold
            already IS the hit, so waiting 900 ms would just miss the call. */
         bool sync = scan_engine_manual_hold() || (c->mode != SCAN_MODE_P25);
+        const bool dwelt = !sync;
         if (!sync) {
             int64_t t0 = esp_timer_get_time();
+            mark = t0;
             while (esp_timer_get_time() - t0 < (int64_t)SYNC_DWELL_MS * 1000) {
                 if (!s_enabled || !scan_foreground()) break;
                 if (s_advance) break;
@@ -860,11 +892,14 @@ static void scan_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
         }
+        if (dwelt) s_pass.dwell_us += esp_timer_get_time() - mark;
         if (advance_requested(idx) || !s_enabled || !scan_foreground()) continue;
         if (!sync) continue;
 
         s_cur = idx;
         s_journal_holds++;
+        s_pass.holds++;
+        const int64_t held_since = esp_timer_get_time();
         snprintf(s_status, sizeof(s_status), "HOLD %-10s %.4f", c->name, c->freq_hz / 1e6);
         ls_iq_control_status_t held_at_start;
         receiver_status_for(c->mode, &held_at_start);
@@ -929,6 +964,7 @@ static void scan_task(void *arg)
 
             vTaskDelay(pdMS_TO_TICKS(30));
         }
+        s_pass.hold_us += esp_timer_get_time() - held_since;
         s_cur = -1;
         s_journal_releases++;
         scan_journal_record_t release_record = journal_record(

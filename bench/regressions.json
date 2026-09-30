@@ -505,10 +505,10 @@
     {
       "id": "FLIPPER-MUTE-CRASH-20260915",
       "contract": "flipper-alerts",
-      "state": "open",
+      "state": "candidate",
       "release_blocker": true,
-      "summary": "Flipper lifecycle and physical alert acceptance remain open.",
-      "affected_build": "standalone fix/rec-load-ack 2a9b3e6 plus rejected alert candidate",
+      "summary": "2026-09-30 on 2.6.0-rc1 with Flipper app 2.8 (release asset, md5 match): relaunch, all-off, independent outputs, SDR loss/recovery and settings pass (bench/evidence/flipper-alerts-20260930.json). Capture alert remains open.",
+      "affected_build": "2.6.0-rc1-g3f1e7bbcc526 with Flipper app 2.8",
       "clearance": null
     },
     {

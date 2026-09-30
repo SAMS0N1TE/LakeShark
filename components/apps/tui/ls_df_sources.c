@@ -1,4 +1,5 @@
 #include "ls_df_sources.h"
+#include "ls_df_band.h"
 #include "ls_trail.h"
 
 #include <math.h>
@@ -31,7 +32,7 @@
 #define DWELL_MIN_MS 150
 
 static const char *const NAMES[LS_DFS_COUNT] = {
-    "MESH", "LORA", "RTL-SDR", "HACKRF", "CC1101", "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS" };
+    "MESH", "LORA", "RTL-SDR", "HACKRF", "CC1101", "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS", "BAND" };
 
 typedef struct {
     bool active;
@@ -91,6 +92,7 @@ typedef struct {
     int64_t dwell_until;
     uint32_t tuned_hz;
     int settle;                     /* readings still to drop after a retune */
+    int64_t det_us, beacon_us;      /* last packet seen; last beacon packet */
 } work_t;
 static work_t w[LS_DFS_SLOTS] = { { .running = LS_DFS_COUNT }, { .running = LS_DFS_COUNT } };
 
@@ -99,9 +101,8 @@ static void unlock(void) { xSemaphoreGive(s_lock); }
 
 static bool slot_ok(int k) { return k >= 0 && k < LS_DFS_SLOTS; }
 
-static void publish(int k, int ch, uint32_t hz, float level, const char *unit, uint8_t flags)
+static void publish_at(int k, int ch, uint32_t hz, float level, const char *unit, uint8_t flags, int64_t now)
 {
-    const int64_t now = esp_timer_get_time();
     lock();
     slot_t *sl = &s.slot[k];
     sl->level = level; sl->unit = unit; sl->level_us = now; sl->updates++;
@@ -111,6 +112,24 @@ static void publish(int k, int ch, uint32_t hz, float level, const char *unit, u
     *r = (ls_dfs_reading_t){ .us = now, .freq_hz = hz, .level = level, .slot = (uint8_t)k,
                              .channel = (uint8_t)ch, .flags = flags };
     unlock();
+}
+
+static void publish(int k, int ch, uint32_t hz, float level, const char *unit, uint8_t flags)
+{
+    publish_at(k, ch, hz, level, unit, flags, esp_timer_get_time());
+}
+
+/* What BAND has found, for the screen and the console. */
+EXT_RAM_BSS_ATTR static ls_dfs_band_status_t s_band_pub;
+
+/* The LS DF beacon's packets. See ls_df_sources.h. */
+EXT_RAM_BSS_ATTR static ls_dfs_beacon_t s_beacon;
+
+bool ls_dfs_beacon(ls_dfs_beacon_t *out)
+{
+    if (!out) return false;
+    lock(); *out = s_beacon; unlock();
+    return out->heard;
 }
 
 static void status(int k, const char *text) { lock(); snprintf(s.slot[k].status, sizeof(s.slot[k].status), "%s", text); unlock(); }
@@ -131,6 +150,7 @@ const char *ls_dfs_unavailable(ls_dfs_t src)
     case LS_DFS_MESH: { ls_mesh_stats_t st; ls_mesh_get_stats(&st);
         return st.running ? NULL : "MeshCore is off: open MESH to start it"; }
     case LS_DFS_LORA:   return ls_lora_present() ? NULL : "No SX1262 LoRa radio answered at boot";
+    case LS_DFS_BAND:   return ls_lora_present() ? NULL : "No SX1262 LoRa radio answered at boot";
     case LS_DFS_RTL:    return endpoint_present(LS_RADIO_ENDPOINT_RTL_USB) ? NULL : "Plug an RTL-SDR into the USB-A port";
     case LS_DFS_HACKRF: return endpoint_present(LS_RADIO_ENDPOINT_HACKRF_USB) ? NULL : "Plug a HackRF into the USB-A port";
     case LS_DFS_CC1101: ls_mixrf_snapshot(&m); return m.cc ? NULL : "Needs the T-MixRF keyboard board (CC1101)";
@@ -148,7 +168,7 @@ const char *ls_dfs_unavailable(ls_dfs_t src)
 static int hardware(ls_dfs_t src)
 {
     switch (src) {
-    case LS_DFS_MESH: case LS_DFS_LORA: return 0;
+    case LS_DFS_MESH: case LS_DFS_LORA: case LS_DFS_BAND: return 0;
     case LS_DFS_RTL: case LS_DFS_HACKRF: return 1;
     case LS_DFS_CC1101: case LS_DFS_NRF24: return 2;
     case LS_DFS_WIFI: return 3;
@@ -177,6 +197,7 @@ bool ls_dfs_in_range(ls_dfs_t src, uint32_t hz)
 {
     switch (src) {
     case LS_DFS_LORA:   return hz >= 150000000u && hz <= 960000000u;
+    case LS_DFS_BAND:   return hz >= 150000000u && hz <= 960000000u;
     case LS_DFS_RTL:    return hz >= 24000000u + SDR_OFFSET && hz <= 1766000000u;
     case LS_DFS_HACKRF: return hz >= 1000000u + SDR_OFFSET && hz <= 6000000000u;
     case LS_DFS_CC1101: return (hz >= 300000000u && hz <= 348000000u) || (hz >= 387000000u && hz <= 464000000u) ||
@@ -188,7 +209,7 @@ bool ls_dfs_in_range(ls_dfs_t src, uint32_t hz)
 
 static bool tunable(ls_dfs_t src)
 {
-    return src == LS_DFS_LORA || src == LS_DFS_RTL || src == LS_DFS_HACKRF || src == LS_DFS_CC1101 || src == LS_DFS_NRF24;
+    return src == LS_DFS_LORA || src == LS_DFS_BAND || src == LS_DFS_RTL || src == LS_DFS_HACKRF || src == LS_DFS_CC1101 || src == LS_DFS_NRF24;
 }
 
 /* Wi-Fi and Bluetooth observation is one switch on the co-processor: on
@@ -293,6 +314,11 @@ void ls_dfs_poll_slot(int k, ls_dfs_status_t *out)
     out->freq_hz = sl->freq[0]; out->updates = sl->updates;
     out->channels = sl->nch ? sl->nch : 1; out->channel = sl->cur;
     memcpy(out->freqs, sl->freq, sizeof(out->freqs));
+    /* BAND's channels are the emitters it has found, not a list. */
+    if (sl->source == LS_DFS_BAND) {
+        out->channels = LS_DFS_CHANNELS;
+        for (int i = 0; i < LS_DFS_CHANNELS; i++) out->freqs[i] = s_band_pub.track[i].live ? s_band_pub.track[i].hz : 0;
+    }
     snprintf(out->target, sizeof(out->target), "%s", sl->target_name[0] ? sl->target_name : "everything heard");
     snprintf(out->status, sizeof(out->status), "%s", sl->status);
     const ls_dfs_t src = sl->source;
@@ -300,6 +326,16 @@ void ls_dfs_poll_slot(int k, ls_dfs_status_t *out)
     out->tunable = tunable(src);
     out->targets = src == LS_DFS_MESH || src == LS_DFS_WIFI || src == LS_DFS_BLE;
     if (!out->tunable) out->channels = 1;
+}
+
+bool ls_dfs_band_status(ls_dfs_band_status_t *out)
+{
+    if (!out) return false;
+    lock();
+    const bool on = (s.slot[0].active && s.slot[0].source == LS_DFS_BAND) || (s.slot[1].active && s.slot[1].source == LS_DFS_BAND);
+    *out = s_band_pub;
+    unlock();
+    return on;
 }
 
 void ls_dfs_poll(ls_dfs_status_t *out) { ls_dfs_poll_slot(0, out); }
@@ -429,11 +465,31 @@ static void step_lora(int k, const slot_t *c, bool retune)
     }
     ls_field_snapshot(&f);
     if (!f.direct || f.config.freq_hz != want) return;       /* not applied yet */
+    /* A packet from the LS DF beacon is filed at its own RSSI and the time
+       it was received. A packet's level is measured over the whole packet
+       and only when the beacon is on the air, so there are no gaps to
+       read as nulls and nothing else on the channel is counted. While its
+       packets keep arriving, carrier readings are not filed at all. */
+    if (f.detection_count && f.detections[0].observed_us != w[k].det_us) {
+        const ls_field_detection_t *d = &f.detections[0];
+        w[k].det_us = d->observed_us;
+        ls_dfs_beacon_t b = { 0 };
+        if (d->frequency == want && isfinite(d->rssi) && ls_dfs_beacon_parse(f.packet, f.packet_len, &b)) {
+            b.heard = true; b.us = d->observed_us; b.rssi = d->rssi; b.freq_hz = want;
+            lock(); b.packets = s_beacon.packets + 1; s_beacon = b; unlock();
+            w[k].beacon_us = d->observed_us;
+            /* Heard at the packet's end; its middle is half an airtime back. */
+            const int64_t mid = d->observed_us - (int64_t)ls_lora_airtime_ms(LS_DFS_BEACON_LEN) * 500;
+            publish_at(k, w[k].cur, want, d->rssi, "dBm", 0, mid);
+            status(k, b.fix ? "LS DF beacon packets, with its GPS position" : "LS DF beacon packets, beacon has no GPS fix");
+        }
+    }
+    const bool beacon = w[k].beacon_us && now - w[k].beacon_us < 1500000;
     if (f.sequence != w[k].field_seq) {
         w[k].field_seq = f.sequence;
         const float v = f.trace[LS_FIELD_BINS - 1];
         if (w[k].settle > 0) w[k].settle--;
-        else if (isfinite(v) && v > -139) {
+        else if (!beacon && isfinite(v) && v > -139) {
             publish(k, w[k].cur, want, v, "dBm", 0);
             status(k, c->nch > 1 ? "Carrier level, channel by channel" : "Carrier level at the tuned frequency");
         }
@@ -657,8 +713,65 @@ static void step_ble(int k, const uint8_t *addr, bool targeted)
 }
 
 /* Give back whatever a slot's last source held. */
+/* The band a BAND slot sweeps: from the lowest channel to the highest, or
+   4 MHz either side of a single one. */
+static void band_edges(const slot_t *c, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t a = c->freq[0], b = c->freq[0];
+    for (int i = 1; i < c->nch; i++) { if (c->freq[i] < a) a = c->freq[i]; if (c->freq[i] > b) b = c->freq[i]; }
+    if (b - a < 1000000u) { a = c->freq[0] > 154000000u ? c->freq[0] - 4000000u : 150000000u; b = a + 8000000u; }
+    if (b > 960000000u) { b = 960000000u; if (a > b - 1000000u) a = b - 1000000u; }
+    *lo = a; *hi = b;
+}
+
+static void step_band(int k, const slot_t *c, bool retune)
+{
+    EXT_RAM_BSS_ATTR static ls_field_state_t f;
+    EXT_RAM_BSS_ATTR static ls_dfb_t band;
+    uint32_t lo, hi;
+    band_edges(c, &lo, &hi);
+    if (retune || band.lo_hz != lo || band.hi_hz != hi) {
+        ls_field_mode(LS_LAB_SPECTRUM);
+        ls_field_direct(true);
+        ls_field_spectrum_span(lo, hi);
+        ls_dfb_reset(&band, lo, hi);
+        w[k].heard = 0;
+        char line[96];
+        snprintf(line, sizeof(line), "Learning %.3f-%.3f MHz: what is always there", lo / 1e6, hi / 1e6);
+        status(k, line);
+        lock(); memset(&s_band_pub, 0, sizeof(s_band_pub)); s_band_pub.lo_hz = lo; s_band_pub.hi_hz = hi; unlock();
+    }
+    ls_field_snapshot(&f);
+    if (!f.direct || f.mode != LS_LAB_SPECTRUM || !f.spectrum_sweeps || f.spectrum_sweeps == w[k].heard) return;
+    w[k].heard = f.spectrum_sweeps;
+    ls_dfb_read_t r[LS_DFB_TRACKS];
+    const int n = ls_dfb_pass(&band, f.spectrum, f.spectrum_us, r, LS_DFB_TRACKS);
+    for (int i = 0; i < n; i++) publish_at(k, r[i].track, r[i].hz, r[i].level, "dBm", 0, f.spectrum_us);
+    int live = 0;
+    lock();
+    s_band_pub.passes = band.passes; s_band_pub.opened = band.opened; s_band_pub.floor = band.floor;
+    for (int t = 0; t < LS_DFB_TRACKS && t < 8; t++) {
+        const ls_dfb_track_t *tr = &band.track[t];
+        s_band_pub.track[t].live = tr->live; s_band_pub.track[t].hz = tr->hz; s_band_pub.track[t].level = tr->level;
+        s_band_pub.track[t].peak = tr->peak; s_band_pub.track[t].over = tr->over;
+        s_band_pub.track[t].passes = tr->passes; s_band_pub.track[t].last_us = tr->last_us;
+        live += tr->live;
+    }
+    unlock();
+    char line[96];
+    if (band.passes <= LS_DFB_WARM) snprintf(line, sizeof(line), "Learning the band: pass %lu of %d", (unsigned long)band.passes, LS_DFB_WARM);
+    else snprintf(line, sizeof(line), "%d emitter%s on %.3f-%.3f MHz, floor %.0f dBm", live, live == 1 ? "" : "s",
+                  lo / 1e6, hi / 1e6, band.floor);
+    status(k, line);
+}
+
 static void release(ls_dfs_t running, ls_dfs_t next, bool active)
 {
+    if (running == LS_DFS_BAND && (next != LS_DFS_BAND || !active)) {
+        ls_field_spectrum_span(0, 0);
+        ls_field_mode(LS_LAB_PACKETS);
+        if (next != LS_DFS_LORA || !active) ls_field_direct(false);
+    }
     if (running == LS_DFS_RTL || running == LS_DFS_HACKRF) sdr_close();
     if (running == LS_DFS_LORA && (next != LS_DFS_LORA || !active)) ls_field_direct(false);
     if ((running == LS_DFS_CC1101 || running == LS_DFS_NRF24) && (next != running || !active)) {
@@ -691,6 +804,7 @@ void ls_dfs_step(void)
         switch (c[k].source) {
         case LS_DFS_MESH:   step_mesh(k, c[k].target_key, targeted); break;
         case LS_DFS_LORA:   step_lora(k, &c[k], retune); break;
+        case LS_DFS_BAND:   step_band(k, &c[k], retune); break;
         case LS_DFS_RTL:    step_sdr(k, &c[k], false, retune); break;
         case LS_DFS_HACKRF: step_sdr(k, &c[k], true, retune); break;
         case LS_DFS_CC1101: step_mixrf(k, &c[k], false, retune); break;

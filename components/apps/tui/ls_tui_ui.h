@@ -48,6 +48,8 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n);
 
 int ls_btn_raised_height(tui_rect area, int n);
+/* Stretch each row to the usable width, insetting only its own corners. */
+void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus);
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,

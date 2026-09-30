@@ -1,0 +1,28 @@
+cycle  1: running=True link=('ready', '1') in 3.9s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6010s OK
+cycle  2: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6028s OK
+cycle  3: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6046s OK
+cycle  4: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6064s OK
+cycle  5: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6082s OK
+cycle  6: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6100s OK
+cycle  7: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6118s OK
+cycle  8: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6136s OK
+cycle  9: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6153s OK
+cycle 10: running=True link=('ready', '1') in 3.8s  exited=True link-after-exit=('scanning', '0') flipper-uptime=6171s OK
+10/10 cycles clean
+PHASE 1 all off @ 12:10:57: settings-written=True link=('ready', '1') rtl-reset=ok exited=True
+      rhealth: rtl-sdr.usb ok -> absent (endpoint detached)
+      rhealth: rtl-sdr.usb absent -> settling (endpoint attached)
+      rhealth: rtl-sdr.usb settling -> ok (settled)
+PHASE 2 LED only @ 12:11:56: settings-written=True link=('ready', '1') rtl-reset=ok exited=True
+      rhealth: rtl-sdr.usb ok -> absent (endpoint detached)
+      rhealth: rtl-sdr.usb absent -> settling (endpoint attached)
+      rhealth: rtl-sdr.usb settling -> ok (settled)
+PHASE 3 vibration only @ 12:12:56: settings-written=True link=('ready', '1') rtl-reset=ok exited=True
+      rhealth: rtl-sdr.usb ok -> absent (endpoint detached)
+      rhealth: rtl-sdr.usb absent -> settling (endpoint attached)
+      rhealth: rtl-sdr.usb settling -> ok (settled)
+PHASE 4 tone only (short) @ 12:13:56: settings-written=True link=('ready', '1') rtl-reset=ok exited=True
+      rhealth: rtl-sdr.usb ok -> absent (endpoint detached)
+      rhealth: rtl-sdr.usb absent -> settling (endpoint attached)
+      rhealth: rtl-sdr.usb settling -> ok (settled)
+restored: aled=1 avib=0 atone=0 amask=31

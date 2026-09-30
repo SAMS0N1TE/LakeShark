@@ -23,11 +23,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <atomic>
 #include <sys/unistd.h>
 #include <sys/stat.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -72,10 +74,10 @@ typedef enum {
 
 typedef struct audio_instance {
     /**
-     * Set to true before task is created, false immediately before the
-     * task is deleted.
+     * False once the worker has finished using this instance.
      */
-    bool running;
+    std::atomic<bool> running;
+    TaskHandle_t task_handle;
 
     decode_data output;
 
@@ -99,6 +101,11 @@ typedef struct audio_instance {
 } audio_instance_t;
 
 static audio_instance_t instance;
+static std::atomic<uint32_t> stack_free_bytes;
+static std::atomic<uint32_t> position_ms, duration_ms;
+uint32_t audio_player_position_ms(void) { return position_ms.load(); }
+uint32_t audio_player_duration_ms(void) { return duration_ms.load(); }
+uint32_t audio_player_stack_free_bytes(void) { return stack_free_bytes.load(); }
 
 audio_player_state_t audio_player_get_state() {
     return instance.state;
@@ -189,6 +196,7 @@ static void set_state(audio_instance_t *i, audio_player_state_t new_state) {
 }
 
 static void audio_instance_init(audio_instance_t &i) {
+    i.task_handle = NULL;
     i.event_queue = NULL;
     i.s_audio_cb = NULL;
     i.audio_cb_usrt_ctx = NULL;
@@ -245,6 +253,8 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
 
     esp_err_t ret = ESP_OK;
     audio_player_event_t audio_event = { .type = AUDIO_PLAYER_REQUEST_NONE, .fp = NULL };
+    uint64_t played_frames = 0;
+    position_ms=0; duration_ms=0;
 
     FILE_TYPE file_type = FILE_TYPE_UNKNOWN;
 
@@ -267,6 +277,8 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     {
         if(is_wav(fp, &i->wav_data)) {
             file_type = FILE_TYPE_WAV;
+            duration_ms=(uint64_t)i->wav_data.remaining*1000 /
+                ((uint32_t)i->wav_data.header.SampleRate*i->wav_data.header.BlockAlign);
             LOGI_1("file is wav");
         }
     }
@@ -391,6 +403,8 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
                 i->output.frame_count);
 
             i->config.write_fn(i->output.samples, bytes_to_write, &i2s_bytes_written, portMAX_DELAY);
+            played_frames += i2s_bytes_written / (i2s_format.channels*(i2s_format.bits_per_sample/8));
+            position_ms=played_frames*1000/i2s_format.sample_rate;
             if(bytes_to_write != i2s_bytes_written) {
                 ESP_LOGE(TAG, "to write %d != written %d", bytes_to_write, i2s_bytes_written);
             }
@@ -439,9 +453,11 @@ static void audio_task(void *pvParam)
                     set_state(i, AUDIO_PLAYER_STATE_SHUTDOWN);
                     i->running = false;
 
-                    // should never return
-                    vTaskDelete(NULL);
-                    break;
+                    // The owner deletes this task after observing suspension.
+                    // A stray resume must not let it touch the instance again.
+                    while (true) {
+                        vTaskSuspend(NULL);
+                    }
                 } else {
                     // ignore other events when not playing
                 }
@@ -455,6 +471,7 @@ static void audio_task(void *pvParam)
 
         i->config.mute_fn(AUDIO_PLAYER_UNMUTE);
         esp_err_t ret_val = aplay_file(i, audio_event.fp);
+        stack_free_bytes = uxTaskGetStackHighWaterMark(NULL);
         if(ret_val != ESP_OK)
         {
             ESP_LOGE(TAG, "aplay_file() %d", ret_val);
@@ -524,13 +541,18 @@ static void cleanup_memory(audio_instance_t &i)
     if(i.mp3_data.data_buf) free(i.mp3_data.data_buf);
 #endif
     if(i.output.samples) free(i.output.samples);
+    i.output.samples = NULL;
 
-    vQueueDelete(i.event_queue);
+    if(i.event_queue) vQueueDelete(i.event_queue);
+    i.event_queue = NULL;
 }
 
 esp_err_t audio_player_new(audio_player_config_t config)
 {
     BaseType_t task_val;
+
+    ESP_RETURN_ON_FALSE(instance.task_handle == NULL && instance.event_queue == NULL,
+        ESP_ERR_INVALID_STATE, TAG, "Audio player still owns resources");
 
     audio_instance_init(instance);
 
@@ -562,14 +584,19 @@ esp_err_t audio_player_new(audio_player_config_t config)
 #endif
 
     instance.running = true;
-    task_val = xTaskCreatePinnedToCore(
+    stack_free_bytes = 0;
+    /* WAV uses no recursive decoder. Keep scarce DMA memory available for
+       BLE/SD, and select DRAM explicitly for SPIFFS callers (P4 TCM is unsafe
+       as the stack of a flash operation). Measure headroom after playback. */
+    task_val = xTaskCreatePinnedToCoreWithCaps(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
-                                4 * 1024,
+                                3 * 1024,
                                 &instance,
         (UBaseType_t)           instance.config.priority,
-        (TaskHandle_t * const)  NULL,
-        (BaseType_t)            instance.config.coreID);
+                                &instance.task_handle,
+        (BaseType_t)            instance.config.coreID,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
 
     ESP_GOTO_ON_FALSE(pdPASS == task_val, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed create audio task");
@@ -583,6 +610,8 @@ esp_err_t audio_player_new(audio_player_config_t config)
 // means cppcheck doesn't know that ESP_GOTO_ON_FALSE() etc are making use of this label
 // cppcheck-suppress unusedLabelConfiguration
 cleanup:
+    instance.running = false;
+    instance.task_handle = NULL;
     cleanup_memory(instance);
 
     return ret;
@@ -590,22 +619,29 @@ cleanup:
 
 esp_err_t audio_player_delete() {
     const int MAX_RETRIES = 5;
-    int retries = MAX_RETRIES;
-    while(instance.running && retries) {
-        // stop any playback and shutdown the thread
-        audio_player_stop();
-        _internal_audio_player_shutdown_thread();
+    for (int retries = 0; instance.task_handle && retries < MAX_RETRIES; ++retries) {
+        if (!instance.running && eTaskGetState(instance.task_handle) == eSuspended) {
+            break;
+        }
+        if (instance.running) {
+            audio_player_stop();
+            _internal_audio_player_shutdown_thread();
+        }
 
         vTaskDelay(pdMS_TO_TICKS(100));
-        retries--;
     }
 
-    cleanup_memory(instance);
-
-    // if we ran out of retries, return fail code
-    if(retries == 0) {
+    // Keep resources until the worker is suspended, including on timeout.
+    if (instance.task_handle &&
+        (instance.running || eTaskGetState(instance.task_handle) != eSuspended)) {
         return ESP_FAIL;
     }
+
+    if (instance.task_handle) {
+        vTaskDeleteWithCaps(instance.task_handle);
+        instance.task_handle = NULL;
+    }
+    cleanup_memory(instance);
 
     return ESP_OK;
 }

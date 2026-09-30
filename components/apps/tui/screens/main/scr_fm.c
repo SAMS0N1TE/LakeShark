@@ -1025,7 +1025,10 @@ static void draw(tui_surface *sf, tui_rect area)
 
 
     if (body.h <= 0) return;
-    const int control_rows = ls_btn_raised_height(body, 5);
+    /* Landscape keeps the compact bar even without a keyboard: the VFO
+       page's waterfall is only a few rows tall there already. */
+    int control_rows = ls_btn_raised_height(body, 5);
+    if (wide && control_rows > 3) control_rows = 3;
     body.y += control_rows;
     body.h -= control_rows;
 
