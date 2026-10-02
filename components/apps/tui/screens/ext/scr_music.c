@@ -5,6 +5,7 @@
    portrait most of the height. */
 #include "../../ls_music_backend.h"
 #include "../../ls_music_transport.h"
+#include "../../ls_options.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "esp_attr.h"
@@ -38,12 +39,13 @@ enum {
   BACK,
   PAGEUP,
   PAGEDOWN,
+  OPTIONS,
   ACTIONS
 };
 /* The key each control answers to, drawn on it while a keyboard is fitted. */
 static const char *const KEYS[ACTIONS] = {
     "B", "P", "N", "-", "M", "+", "L", "I", "W", "1", "2", "3",
-    "4", "C", "Z", "E", "D", "R", "ESC", "U", "J"};
+    "4", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O"};
 enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEWS };
 static const char *const VIEW_NAME[VIEWS] = {"LEVEL", "BANDS", "SCAN",
                                              "WATERFALL"};
@@ -196,6 +198,48 @@ static void mic_stopped(void) {
     if (!strcmp(ls_music_name(i), name))
       selected = i;
 }
+/* OPTIONS: how the player looks and sounds, each row doing what its own
+   control does - the view and colour tabs, SPAN, TONE and SOURCE. */
+static void act(int id);
+static void o_act(const ls_opt_t *o) {
+  act(o->arg == TAB_LEVEL ? TAB_LEVEL + (view + 1) % VIEWS : o->arg);
+}
+static void o_show(const ls_opt_t *o, char *out, size_t n) {
+  switch (o->arg) {
+  case TAB_LEVEL:
+    snprintf(out, n, "%s", VIEW_NAME[view]);
+    break;
+  case COLOUR:
+    snprintf(out, n, "%s", PALETTE_NAME[palette]);
+    break;
+  case SPAN: {
+    ls_music_format_t f;
+    unsigned rate = ls_music_format(&f) ? f.rate_hz : 44100;
+    snprintf(out, n, "%u ms/COL",
+             (unsigned)(SPAN_HOPS[span_step] * LS_MUSIC_FFT_SIZE * 1000u / rate));
+    break;
+  }
+  case TONE:
+    snprintf(out, n, "%s", ls_music_warm() ? "WARM" : "FLAT");
+    break;
+  case SOURCE:
+    snprintf(out, n, "%s", source ? "FLASH" : "SD");
+    break;
+  default:
+    break;
+  }
+}
+#define MUSIC_ROW(l, id)                                                       \
+  { .label = (l), .kind = LS_OPT_ACTION, .arg = (id), .act = o_act, .show = o_show }
+static const ls_opt_t OPT_MUSIC[] = {
+    MUSIC_ROW("VIEW", TAB_LEVEL), MUSIC_ROW("COLOUR", COLOUR),
+    MUSIC_ROW("SPAN", SPAN),      MUSIC_ROW("TONE", TONE),
+    MUSIC_ROW("SOURCE", SOURCE),
+};
+#undef MUSIC_ROW
+static const ls_opt_ctx_t CTX_MUSIC = {.name = "MUSIC", .job = -1,
+                                       .radio = LS_RSEL_NONE,
+                                       LS_OPT_ROWS(OPT_MUSIC), .tag = "PLAYER"};
 static void act(int id) {
   switch (id) {
   case PREV:
@@ -280,6 +324,9 @@ static void act(int id) {
     selected += visible_rows;
     if (selected >= ls_music_count())
       selected = ls_music_count() - 1;
+    break;
+  case OPTIONS:
+    ls_opt_open(&CTX_MUSIC);
     break;
   }
 }
@@ -957,7 +1004,11 @@ static void title(tui_surface *sf, tui_rect r) {
 /* Status, title, clock and progress: eight rows. */
 static void info(tui_surface *sf, tui_rect r, bool playing) {
   ls_music_mic_t mic = ls_music_mic_state();
-  int bw = (r.w - 2) / 3 > 10 ? 10 : (r.w - 2) / 3, x = r.x + r.w - 3 * bw - 2;
+  /* OPTIONS makes four where the row is wide enough to spell it; a narrower
+     pane keeps three, and its view, colour and span keys are on the panel. */
+  const int keys = (r.w - 3) / 4 >= 9 ? 4 : 3;
+  int bw = keys == 4 ? 9 : (r.w - 2) / 3 > 10 ? 10 : (r.w - 2) / 3;
+  int x = r.x + r.w - keys * bw - (keys - 1);
   ls_safe_line(sf, tui_rect_make(r.x, r.y, x - r.x, r.h), r.y + 1,
                mic == LS_MIC_RECORDING               ? "RECORDING"
                : mic == LS_MIC_LIVE                  ? "LISTENING"
@@ -966,13 +1017,16 @@ static void info(tui_surface *sf, tui_rect r, bool playing) {
                                                      : "READY",
                mic == LS_MIC_RECORDING ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT)
                                        : TUI_ATTR(TUI_GREEN, TUI_BLACK));
-  /* Three keys across the top: listen, record, and the track list. */
+  /* Keys across the top: listen, record, the track list, and OPTIONS. */
   button(sf, MIC, tui_rect_make(x, r.y, bw, 3), "MIC", mic == LS_MIC_LIVE,
          ready);
   button(sf, REC, tui_rect_make(x + bw + 1, r.y, bw, 3), "REC",
          mic == LS_MIC_RECORDING, ready);
   button(sf, LIBRARY, tui_rect_make(x + 2 * (bw + 1), r.y, bw, 3), "TRACKS",
          false, true);
+  if (keys == 4)
+    button(sf, OPTIONS, tui_rect_make(x + 3 * (bw + 1), r.y, bw, 3), "OPTIONS",
+           false, true);
   unsigned elapsed, total;
   if (mic != LS_MIC_OFF) {
     const char *path = ls_music_mic_file(), *name = strrchr(path, '/');
@@ -1250,6 +1304,9 @@ static bool key(ls_tk_t key, char ch) {
       return false;
     act(ch == 'u' ? PAGEUP : PAGEDOWN);
     break;
+  case 'o':
+    act(OPTIONS);
+    break;
   case 's':
     ls_music_stop();
     current = -1;
@@ -1275,7 +1332,7 @@ static bool touch(int x, int y) {
 }
 const ls_tui_screen_t ls_scr_music = {
     .name = "MUSIC",
-    .hint = "1-4/V view  C colour  SPACE play  I mic  W rec  L tracks  +/- vol",
+    .hint = "1-4/V view  C colour  O options  SPACE play  I mic  W rec  L tracks  +/- vol",
     .enter = enter,
     .leave = leave,
     .draw = draw,

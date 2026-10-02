@@ -9,7 +9,9 @@
 #include "ls_spi.h"
 #include "ls_mixrf.h"
 #include "ls_lora.h"
+#include "adsb_app.h"
 #include "tui/ls_field.h"
+#include "tui/ls_experiments.h"
 #include "rec_watch.h"
 #include "sx1262_console.h"
 #if defined(__has_include)
@@ -297,6 +299,7 @@ static bool tui_live_mesh(void)  { return tui_live_from("mesh.up"); }
 /* Lit when there is a fix, not when the receiver is merely talking: the tile is a glance and a fix is the thing worth glancing at. */
 
 static bool tui_live_gps(void)   { return tui_live_from("gps.on"); }
+static bool tui_live_exp(void)   { return ls_exp_running() != nullptr; }
 
 /* The TUI holds the screen until it is told to stop. */
 
@@ -816,7 +819,7 @@ static bool tui_session(void)
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
                                  ls_scr_notes, ls_scr_compass, ls_scr_music,
-                                 ls_scr_files;
+                                 ls_scr_files, ls_scr_experiments;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -846,6 +849,8 @@ static bool tui_session(void)
 
             { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_labs, nullptr, &ls_doc_labs },
+            { "experiments", "EXPERIMENTS", "LR2021 and friends", LS_ICON_EXPERIMENT, TUI_MAGENTA,
+              LS_APP_EXTRA, &ls_scr_experiments, tui_live_exp, &ls_doc_experiments },
             { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_notes, nullptr, &ls_doc_notes },
             { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW,
@@ -1521,6 +1526,24 @@ static int sd_cmd(int argc, char **argv)
         return 0;
     }
 
+    /* A text file off the card, to read a profile or a log without pulling
+       the card. Printed as it is, a line at a time. */
+    if (argc >= 3 && !strcmp(argv[1], "cat")) {
+        if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
+        FILE *f = fopen(argv[2], "r");
+        if (!f) { printf("sd: cannot open %s\n", argv[2]); return 1; }
+        char line[160];
+        unsigned lines = 0;
+        while (fgets(line, sizeof(line), f)) {
+            fputs(line, stdout);
+            if (!strchr(line, '\n')) continue;
+            if (++lines % 20 == 0) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        fclose(f);
+        printf("\nsd: %u lines from %s\n", lines, argv[2]);
+        return 0;
+    }
+
     if (argc >= 2 && !strcmp(argv[1], "mount")) {
         const esp_err_t e = ls_sdcard_mount();
         printf("sd: %s\n", esp_err_to_name(e));
@@ -2008,6 +2031,58 @@ static int spi_cmd(int argc, char **argv)
    receiver that is configured but not listening looks identical to one that
    is listening and hearing nothing, and telling those apart from the far end
    of a serial cable is most of the work. */
+/* LoRa Labs from the console: what it hears, and a POCSAG session on the
+   LoRa chip, so the chip and an SDR can be compared on one pager at once. */
+static int labs_cmd(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[1], "off")) {
+        ls_field_direct(false);
+        printf("labs: radio handed back\n");
+        return 0;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "pocsag")) {
+        const double mhz = atof(argv[2]);
+        const int baud = argc >= 4 ? atoi(argv[3]) : 1200;
+        const bool invert = argc >= 5 && !strcmp(argv[4], "1");
+        if (mhz < 150.0 || mhz > 959.0 || (baud != 1200 && baud != 2400)) {
+            printf("labs pocsag MHz [1200|2400] [invert 0|1], 150-959 MHz\n");
+            return 1;
+        }
+        if (!ls_field_start()) { printf("labs: field worker would not start\n"); return 1; }
+        ls_field_mode(LS_LAB_POCSAG);
+        ls_field_state_t *st = (ls_field_state_t *)heap_caps_malloc(sizeof(*st), MALLOC_CAP_SPIRAM);
+        if (!st) { printf("labs: no memory\n"); return 1; }
+        ls_field_snapshot(st);
+        ls_lora_cfg_t cfg = st->config;
+        cfg.freq_hz = (uint32_t)(mhz * 1e6 + 0.5);
+        cfg.invert_iq = invert;
+        cfg.cal_min_mhz = (uint16_t)(cfg.freq_hz / 4000000u * 4u);
+        cfg.cal_max_mhz = cfg.cal_min_mhz + 4;
+        ls_fsk_cfg_t fsk = st->fsk;
+        fsk.bitrate = (uint32_t)baud;
+        heap_caps_free(st);
+        const bool ok = ls_field_configure(&cfg) && ls_field_configure_fsk(&fsk) &&
+                        ls_field_direct(true);
+        printf("labs: POCSAG %.4f MHz %d baud %s: %s\n", mhz, baud,
+               invert ? "inverted" : "normal", ok ? "listening" : "refused");
+        return ok ? 0 : 1;
+    }
+    ls_field_state_t *st = (ls_field_state_t *)heap_caps_malloc(sizeof(*st), MALLOC_CAP_SPIRAM);
+    if (!st) { printf("labs: no memory\n"); return 1; }
+    ls_field_snapshot(st);
+    printf("labs: %s mode %d %.4f MHz %s rx=%lu bad=%lu pages=%lu\n",
+           st->direct ? "DIRECT" : "idle", (int)st->mode, st->config.freq_hz / 1e6,
+           st->config.invert_iq ? "inverted" : "normal", (unsigned long)st->rx,
+           (unsigned long)st->bad, (unsigned long)st->pages);
+    for (int i = 0; i < st->page_log_count; i++)
+        printf("  %lu  fn%u  %u bd  \"%s\"\n", (unsigned long)st->page_log[i].address,
+               (unsigned)st->page_log[i].function, (unsigned)st->page_log[i].baud,
+               st->page_log[i].text);
+    if (st->status[0]) printf("labs: %s\n", st->status);
+    heap_caps_free(st);
+    return 0;
+}
+
 static int lora_cmd(int argc, char **argv)
 {
     if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
@@ -2028,6 +2103,28 @@ static int lora_cmd(int argc, char **argv)
                "or use 'mesh' to see what it is hearing\n");
 
         return 1;
+    }
+
+    /* Whether the part takes an OOK detector pattern: opens a receive
+       session with it and closes it again. Nothing is transmitted. */
+    if (argc >= 5 && !strcmp(argv[1], "ooktry")) {
+        ls_ook_cfg_t c = {};
+        c.freq_hz = (uint32_t)(atof(argv[2]) * 1e6 + 0.5);
+        c.bitrate = 2000000;
+        c.bandwidth_hz = 3076923;
+        c.pattern = (uint16_t)strtoul(argv[3], nullptr, 16);
+        c.pattern_bits = (uint8_t)atoi(argv[4]);
+        c.frame_bytes = 12;
+        c.gain_step = 13;
+        c.boost = 7;
+        const int64_t deadline = esp_timer_get_time() + 1000000;
+        while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        const esp_err_t e = ls_lora_ook_begin(&c);
+        if (e == ESP_OK) ls_lora_ook_end();
+        ls_mesh_radio_hold(false);
+        printf("ooktry %04X/%u: %s\n", (unsigned)c.pattern, (unsigned)c.pattern_bits, esp_err_to_name(e));
+        return e == ESP_OK ? 0 : 1;
     }
 
     if (argc >= 2 && !strcmp(argv[1], "scan")) {
@@ -2195,6 +2292,125 @@ static int lora_cmd(int argc, char **argv)
                          "'lora rx [secs]', 'lora tx [text]'\n");
     return 0;
 }
+/* The Mode S session's live tuning, as `ls_lora_modes_tuning` holds it. */
+static bool adsb_print_tuning(void)
+{
+    ls_lora_modes_tuning_t t;
+    const esp_err_t err = ls_lora_modes_tuning(&t);
+    if (err != ESP_OK) {
+        printf("adsb lr: no Mode S session on the LoRa chip (%s) - ADS-B has to be running "
+               "from the lr-chip source\n", esp_err_to_name(err));
+        return false;
+    }
+    char gain[24], thr[40];
+    if (t.gain_step == 0) snprintf(gain, sizeof(gain), "auto (chip AGC)");
+    else                  snprintf(gain, sizeof(gain), "step %d (fixed)", t.gain_step);
+    if (t.thresh_override) snprintf(thr, sizeof(thr), "override %d dB", t.thresh_level);
+    else                   snprintf(thr, sizeof(thr), "chip's own");
+    printf("adsb lr: gain %s, boost %d, rx bw %.1f kHz, detection threshold %s "
+           "(runtime only, not saved)\n", gain, t.boost, t.rx_bw_hz / 1000.0, thr);
+    return true;
+}
+
+/* After a change: the counters start again so the rates are the new setting's. */
+static int adsb_tuned(esp_err_t err, const char *what)
+{
+    if (err != ESP_OK) {
+        printf("adsb lr: %s failed: %s\n", what, esp_err_to_name(err));
+        return 1;
+    }
+    adsb_chip_diag_reset();
+    adsb_print_tuning();
+    printf("adsb lr: counters cleared; `adsb chips` shows this setting's trigger and decode rates "
+           "after a few seconds\n");
+    return 0;
+}
+
+static bool adsb_parse_long(const char *text, long lo, long hi, long *out)
+{
+    char *end = nullptr;
+    const long v = strtol(text, &end, 10);
+    if (end == text || *end || v < lo || v > hi) return false;
+    *out = v;
+    return true;
+}
+
+/* `adsb lr ...`: tune the running Mode S session, to see what makes the chip
+   stop triggering on noise. Each change is under the socket's lock (standby,
+   reprogram, Rx again) and none is saved. */
+static int adsb_lr_cmd(int argc, char **argv)
+{
+    if (argc < 3) return adsb_print_tuning() ? 0 : 1;
+    const char *what = argv[2];
+    long v;
+    if (!strcmp(what, "gain")) {
+        if (argc < 4) { printf("adsb lr gain <0..13|auto>   (0 or auto: the chip's AGC)\n"); return 1; }
+        if (!strcmp(argv[3], "auto")) v = 0;
+        else if (!adsb_parse_long(argv[3], 0, LS_LORA_MODES_GAIN_MAX, &v)) {
+            printf("adsb lr gain <0..13|auto>\n");
+            return 1;
+        }
+        return adsb_tuned(ls_lora_modes_set_gain((int)v), "gain");
+    }
+    if (!strcmp(what, "boost")) {
+        if (argc < 4 || !adsb_parse_long(argv[3], 0, 7, &v)) { printf("adsb lr boost <0..7>\n"); return 1; }
+        return adsb_tuned(ls_lora_modes_set_boost((int)v), "boost");
+    }
+    if (!strcmp(what, "bw")) {
+        char *end = nullptr;
+        const double khz = argc >= 4 ? strtod(argv[3], &end) : 0.0;
+        if (argc < 4 || end == argv[3] || *end || khz <= 0.0) {
+            printf("adsb lr bw <kHz>   (nearest rung of 3077 2857 2667 2222 1333 1111 889 769 741 714 667 615 571 556 533 513)\n");
+            return 1;
+        }
+        uint32_t chosen = 0;
+        const esp_err_t err = ls_lora_modes_set_bw((uint32_t)(khz * 1000.0 + 0.5), &chosen);
+        if (err == ESP_OK) printf("adsb lr: nearest rung to %.1f kHz is %.1f kHz\n", khz, chosen / 1000.0);
+        return adsb_tuned(err, "bw");
+    }
+    if (!strcmp(what, "thresh")) {
+        if (argc < 4) {
+            int raw = 0;
+            const esp_err_t err = ls_lora_modes_read_threshold(&raw);
+            if (err != ESP_OK) { printf("adsb lr: threshold read failed: %s\n", esp_err_to_name(err)); return 1; }
+            printf("adsb lr: detection threshold field %d (level %d dB, level = field - 64); "
+                   "`adsb lr thresh <-64..63|auto>` sets it\n", raw, raw - 64);
+            return 0;
+        }
+        if (!strcmp(argv[3], "auto")) return adsb_tuned(ls_lora_modes_set_threshold(0, true), "threshold");
+        if (!adsb_parse_long(argv[3], -64, 63, &v)) { printf("adsb lr thresh <-64..63|auto>\n"); return 1; }
+        return adsb_tuned(ls_lora_modes_set_threshold((int)v, false), "threshold");
+    }
+    printf("adsb lr [gain <0..13|auto> | bw <kHz> | boost <0..7> | thresh [<-64..63>|auto]]\n");
+    return 1;
+}
+
+/* `adsb chips` prints what the LR20xx Mode S session delivered: the last eight
+   raw 28-byte chip frames with level and verdict, the counters, the trigger and
+   decode rates, where in the frame the first invalid chip pair fell, and the
+   tuning in force. `adsb chips reset` clears them. Reading is a copy under a
+   short critical section; it sends the chip nothing. */
+static int adsb_cmd(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[1], "chips")) {
+        if (argc >= 3 && !strcmp(argv[2], "reset")) {
+            adsb_chip_diag_reset();
+            printf("adsb chips: cleared\n");
+            return 0;
+        }
+        printf("adsb: source %s\n", adsb_active_source_name());
+        adsb_print_tuning();
+        adsb_chip_diag_print();
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "lr")) return adsb_lr_cmd(argc, argv);
+    printf("adsb: source %s\n", adsb_active_source_name());
+    printf("adsb: 'adsb chips' prints the last 8 raw chip frames from the LR20xx, the counters and "
+           "rates and the tuning, 'adsb chips reset' clears them; 'adsb lr gain|bw|boost|thresh' "
+           "tunes the running session\n");
+    return 0;
+}
+
 /* The RTC's console face. `rtc set` takes UNIX epoch seconds rather
    than a friendly date on purpose: parsing a human date needs a timezone to
    be meaningful, this board has no timezone, and the one thing worse than no
@@ -2783,6 +2999,17 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
               "'mesh tx on|off' (off at boot), 'mesh advert', 'mesh stop'.",
         .hint="[start|stop|tx on|off|advert|peers|dm <n> <text>|role|repeat|loc|auto|radio [default]]",.func=mesh_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mesh_c);
+    static const esp_console_cmd_t labs_c={.command="labs",
+        .help="LoRa Labs: 'labs' status and decoded pages, 'labs pocsag MHz [baud] [invert 0|1]' "
+              "pages on the LoRa chip, 'labs off' hands the radio back",
+        .hint=nullptr,.func=labs_cmd,.argtable=nullptr};
+    esp_console_cmd_register(&labs_c);
+    ls_exp_register_builtin();
+    static const esp_console_cmd_t exp_c={.command="exp",
+        .help="Experiments: 'exp' lists them, 'exp <id>' its readout, "
+              "'exp <id> start [args]', 'exp <id> stop' or 'exp stop'",
+        .hint=nullptr,.func=ls_exp_console,.argtable=nullptr};
+    esp_console_cmd_register(&exp_c);
     static const esp_console_cmd_t gauge_c={.command="gauge",
         .help="Battery fuel gauge: voltage, current, learned charge, temperature.",
         .hint=nullptr,.func=gauge_cmd,.argtable=nullptr};
@@ -2806,7 +3033,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t sd={.command="sd",
-        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, "
+        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, "
               "'sd put [dir/]<name> [base64]' writes (no payload truncates)",
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
@@ -2822,6 +3049,14 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
               "fskls, fskplay, fsksave",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
+    static const esp_console_cmd_t adsbc={.command="adsb",
+        .help="ADS-B on the LoRa chip: 'adsb chips' prints the last 8 raw Mode S frames with "
+              "level and verdict, the counters, trigger and decode rates and the first-bad-bit "
+              "histogram ('adsb chips reset' clears them); 'adsb lr gain <0..13|auto>', "
+              "'adsb lr bw <kHz>', 'adsb lr boost <0..7>' and 'adsb lr thresh [<dB>|auto]' tune "
+              "the running session, runtime only",
+        .hint=nullptr,.func=adsb_cmd,.argtable=nullptr};
+    esp_console_cmd_register(&adsbc);
     /* Anything proprietary registers itself and is reached only through the
        include guard, so removing it is deleting files and nothing else;
        the list of what goes is kept with those files. */

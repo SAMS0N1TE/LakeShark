@@ -1,6 +1,7 @@
 #include "audio_out.h"
 #include "audio_eq.h"
 #include "audio_pcm_ring.h"
+#include "audio_speech_level.h"
 #include "tone.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -78,11 +79,19 @@ static volatile uint32_t s_rd_bytes    = 0;
 static volatile uint32_t s_speech_end  = 0;
 static volatile uint32_t s_skip_to     = 0;
 static volatile bool     s_speech_stop = false;
+/* Speech still in the ring and its level, applied by the player after the
+   equalizer (audio_speech_level.h). Written under s_push_lock; the player
+   reads without it, and the worst a stale read does is play something
+   quieter. */
+static audio_speech_span_t s_speech_span;
+static volatile int32_t    s_speech_gain = AUDIO_SPEECH_UNITY;
 
 /* Codec reconfiguration is asked for here and done by the player between
    writes: closing the codec under a write in progress is not safe. */
 static volatile uint32_t s_codec_reset_req  = 0;
 static volatile uint32_t s_codec_reset_done = 0;
+
+void audio_out_speech_level_set(int pct) { s_speech_gain = audio_speech_gain(pct); }
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
@@ -96,6 +105,18 @@ static inline size_t IRAM_ATTR ring_send_locked(const void *p, size_t want)
        turning otherwise valid decoded voice into sustained static. */
     const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
     const size_t sent = whole ? xStreamBufferSend(s_ring, p, whole, 0) : 0;
+    s_wr_bytes += (uint32_t)sent;
+    return sent;
+}
+
+/* Speech into the ring: the same send, with the speech span marked first. */
+static inline size_t ring_send_speech_locked(const void *p, size_t want)
+{
+    const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
+    if (!whole) return 0;
+    audio_speech_span_add(&s_speech_span, s_rd_bytes, s_wr_bytes,
+                          s_wr_bytes + (uint32_t)whole);
+    const size_t sent = xStreamBufferSend(s_ring, p, whole, 0);
     s_wr_bytes += (uint32_t)sent;
     return sent;
 }
@@ -180,7 +201,7 @@ bool audio_write_speech(const int16_t *samples, int n)
                 xSemaphoreGive(s_push_lock);
                 return false;
             }
-            sent = ring_send_locked(p, remaining);
+            sent = ring_send_speech_locked(p, remaining);
             if (sent) s_speech_end = s_wr_bytes;
             xSemaphoreGive(s_push_lock);
         }
@@ -292,14 +313,17 @@ static bool __attribute__((noinline)) player_reprime(void)
 
 /* Drops the part of a chunk just read that lies before s_skip_to. Returns
    the bytes left to play, moved to the front of the chunk. */
-static size_t __attribute__((noinline)) player_skip(int16_t *mono, size_t got)
+static size_t __attribute__((noinline)) player_skip(int16_t *mono, size_t got,
+                                                    uint32_t *pos)
 {
     const uint32_t start = s_rd_bytes;
     s_rd_bytes = start + (uint32_t)got;
     const int32_t skip = (int32_t)(s_skip_to - start);
+    *pos = start;
     if (skip <= 0) return got;
     if ((size_t)skip >= got) return 0;
     memmove(mono, (uint8_t *)mono + skip, got - (size_t)skip);
+    *pos = start + (uint32_t)skip;
     return got - (size_t)skip;
 }
 
@@ -377,15 +401,17 @@ static void IRAM_ATTR audio_player_task(void *arg)
 
         size_t got = xStreamBufferReceive(s_ring, mono, CHUNK_FRAMES * sizeof(int16_t),
                                           pdMS_TO_TICKS(20));
+        uint32_t pos = 0;
         if (got) {
             last_data = esp_timer_get_time();
-            got = player_skip(mono, got);
+            got = player_skip(mono, got, &pos);
             if (!got) continue;
         }
         int frames = (int)(got / sizeof(int16_t));
 
         if (frames > 0) {
             audio_eq_process(mono, frames);
+            audio_speech_level_apply(&s_speech_span, pos, mono, frames, s_speech_gain);
             for (int i = 0; i < frames; i++) {
                 int16_t s = mono[i];
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;

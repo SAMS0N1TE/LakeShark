@@ -110,7 +110,7 @@ static bool  s_lora_window_seeded;
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz)
 {
     if (max_hz <= min_hz) return;
-    if (min_hz < 150000000u || max_hz > 960000000u) return;
+    if (!ls_lora_rx_range_ok(ls_lora_caps(), min_hz, max_hz)) return;
     s_lora_min_hz = min_hz;
     s_lora_max_hz = max_hz;
 }
@@ -131,6 +131,9 @@ typedef struct {
     uint32_t    hi_hz;
 } wf_band_t;
 
+/* The first six are every LoRa chip's. After them, the bands only a part
+   that sweeps past 960 MHz can reach, in the order the capabilities unlock
+   them: the rest of the LF input, then the HF input. */
 static const wf_band_t LORA_BANDS[] = {
     { "mesh watch",  909500000u, 911500000u },
     { "US915 ISM",   902000000u, 928000000u },
@@ -138,8 +141,25 @@ static const wf_band_t LORA_BANDS[] = {
     { "433 ISM",     433050000u, 434790000u },
     { "315 remotes", 314000000u, 316000000u },
     { "full range",  150000000u, 960000000u },
+    { "aviation",    960000000u, 1100000000u },
+    { "LF input",    150000000u, 1100000000u },
+    { "GPS L1",     1570000000u, 1581000000u },
+    { "Iridium",    1616000000u, 1626500000u },
+    { "2.4G ISM",   2400000000u, 2483500000u },
+    { "HF input",   1500000000u, 2500000000u },
 };
-#define LORA_BAND_N ((int)(sizeof(LORA_BANDS) / sizeof(LORA_BANDS[0])))
+#define LORA_BAND_ALL ((int)(sizeof(LORA_BANDS) / sizeof(LORA_BANDS[0])))
+#define LORA_BAND_SX  6
+#define LORA_BAND_LF  8
+
+/* How many of LORA_BANDS the radio fitted can sweep. */
+static int lora_band_n(void)
+{
+    const uint32_t caps = ls_lora_caps();
+    if (!(caps & LS_LORA_CAP_RX_WIDE)) return LORA_BAND_SX;
+    return (caps & LS_LORA_CAP_BAND_1G5_2G5) ? LORA_BAND_ALL : LORA_BAND_LF;
+}
+#define LORA_BAND_N lora_band_n()
 
 static const wf_band_t FM_BANDS[] = {
     { "VHF land",    150000000u, 162000000u },
@@ -219,7 +239,11 @@ const char *ls_wf_preset_detail(ls_wf_src_t src, int i)
         /* The span, not the endpoints: the endpoints are most of the label's
            information already and twelve columns will not hold both. */
         const bool fractional = t[i].lo_hz % 1000000u || t[i].hi_hz % 1000000u;
-        snprintf(s_pre_detail, sizeof(s_pre_detail), fractional ? "%.3f-%.3f" : "%.0f-%.0f",
+        /* Above 1 GHz a third decimal no longer fits, and the bands there are
+           never closer than 100 kHz. */
+        const bool ghz = t[i].hi_hz >= 1000000000u;
+        snprintf(s_pre_detail, sizeof(s_pre_detail),
+                 !fractional ? "%.0f-%.0f" : ghz ? "%.1f-%.1f" : "%.3f-%.3f",
                  t[i].lo_hz / 1e6, t[i].hi_hz / 1e6);
         return s_pre_detail;
     }

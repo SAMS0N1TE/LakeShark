@@ -161,6 +161,11 @@ uint8_t ls_wf_level_colour(int palette, int level, bool light_ground);
 /* Controls. The key path and the touch path reach the same actions; neither
    is the real one. Both return true when they consumed the input. */
 bool ls_wf_key(ls_tk_t key, char ch);
+
+/* The strip's display settings as an OPTIONS list (ls_options.h), each row
+   doing what its button does, for a screen where the waterfall is the app. */
+struct ls_opt_ctx_s;
+const struct ls_opt_ctx_s *ls_wf_options(void);
 bool ls_wf_touch(int col, int row);
 
 /* Marker frequency, or 0 when there is no marker or no known span. */

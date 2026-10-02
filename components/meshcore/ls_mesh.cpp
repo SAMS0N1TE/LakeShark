@@ -5,6 +5,7 @@
 #include "ls_mesh.h"
 
 #include <string.h>
+#include <new>
 #include <stdio.h>
 #include <sys/stat.h>
 
@@ -804,7 +805,87 @@ static DRAM_ATTR StaticTask_t s_mesh_tcb;
 static LsMillis   *s_ms;
 static LsRtcClock *s_rtc;
 static LsBoard    *s_board;
-static StaticPoolPacketManager *s_mgr;
+/* The mesh objects are plain RAM with no DMA and no ISR users, so they live in
+   external RAM: the pool, tables and queues together were ~7 KB of the boot
+   heap that audio, RTL and the health mutex then could not get. */
+template <class T, class... A> static T *psram_new(A &&...a)
+{
+    void *m = heap_caps_malloc(sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!m) m = heap_caps_malloc(sizeof(T), MALLOC_CAP_8BIT);
+    return m ? new (m) T(static_cast<A &&>(a)...) : nullptr;
+}
+
+/* StaticPoolPacketManager's behaviour with its storage in one external-RAM
+   block (upstream's `new` per packet and per queue column lands in internal). */
+class LsPoolManager : public mesh::PacketManager {
+    struct Q { mesh::Packet **pkt; uint8_t *pri; uint32_t *when; int size, num; };
+    Q _unused, _send, _rx;
+
+    static void qinit(Q &q, uint8_t *&blk, int n)
+    {
+        q.pkt  = reinterpret_cast<mesh::Packet **>(blk); blk += sizeof(mesh::Packet *) * n;
+        q.when = reinterpret_cast<uint32_t *>(blk);      blk += sizeof(uint32_t) * n;
+        q.pri  = blk;                                    blk += (n + 7) & ~7;
+        q.size = n; q.num = 0;
+    }
+    static bool qadd(Q &q, mesh::Packet *p, uint8_t pri, uint32_t when)
+    {
+        if (q.num == q.size) return false;
+        q.pkt[q.num] = p; q.pri[q.num] = pri; q.when[q.num] = when; q.num++;
+        return true;
+    }
+    static mesh::Packet *qremove(Q &q, int i)
+    {
+        if (i < 0 || i >= q.num) return nullptr;
+        mesh::Packet *p = q.pkt[i];
+        q.num--;
+        for (; i < q.num; i++) { q.pkt[i] = q.pkt[i + 1]; q.pri[i] = q.pri[i + 1]; q.when[i] = q.when[i + 1]; }
+        return p;
+    }
+    static mesh::Packet *qget(Q &q, uint32_t now)
+    {
+        uint8_t best = 0xFF; int idx = -1;
+        for (int j = 0; j < q.num; j++) {
+            if ((int32_t)(q.when[j] - now) > 0) continue;
+            if (q.pri[j] < best) { best = q.pri[j]; idx = j; }
+        }
+        return idx < 0 ? nullptr : qremove(q, idx);
+    }
+    static int qbefore(const Q &q, uint32_t now)
+    {
+        if (now == 0xFFFFFFFF) return q.num;
+        int n = 0;
+        for (int j = 0; j < q.num; j++) if ((int32_t)(q.when[j] - now) <= 0) n++;
+        return n;
+    }
+
+public:
+    bool ok = false;
+    explicit LsPoolManager(int pool)
+    {
+        const size_t qbytes = (sizeof(mesh::Packet *) + sizeof(uint32_t)) * (size_t)pool + (((size_t)pool + 7) & ~(size_t)7);
+        uint8_t *blk = static_cast<uint8_t *>(heap_caps_malloc(
+            qbytes * 3 + 16 + sizeof(mesh::Packet) * (size_t)pool, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!blk) return;
+        qinit(_unused, blk, pool); qinit(_send, blk, pool); qinit(_rx, blk, pool);
+        mesh::Packet *pk = reinterpret_cast<mesh::Packet *>(((uintptr_t)blk + 7) & ~(uintptr_t)7);
+        for (int i = 0; i < pool; i++) qadd(_unused, new (&pk[i]) mesh::Packet(), 0, 0);
+        ok = true;
+    }
+    mesh::Packet *allocNew() override { return qremove(_unused, 0); }
+    void free(mesh::Packet *p) override { qadd(_unused, p, 0, 0); }
+    void queueOutbound(mesh::Packet *p, uint8_t pri, uint32_t at) override
+    { if (!qadd(_send, p, pri, at)) free(p); }
+    mesh::Packet *getNextOutbound(uint32_t now) override { return qget(_send, now); }
+    int getOutboundCount(uint32_t now) const override { return qbefore(_send, now); }
+    int getOutboundTotal() const override { return _send.num; }
+    int getFreeCount() const override { return _unused.num; }
+    mesh::Packet *getOutboundByIdx(int i) override { return (i >= 0 && i < _send.num) ? _send.pkt[i] : nullptr; }
+    mesh::Packet *removeOutboundByIdx(int i) override { return qremove(_send, i); }
+    void queueInbound(mesh::Packet *p, uint32_t at) override { if (!qadd(_rx, p, 0, at)) free(p); }
+    mesh::Packet *getNextInbound(uint32_t now) override { return qget(_rx, now); }
+};
+static LsPoolManager *s_mgr;
 static SimpleMeshTables        *s_tables;
 static LsMesh     *s_mesh;
 
@@ -888,37 +969,50 @@ static void load_settings(void)
     nvs_close(h);
 }
 
-static esp_err_t save_setting_str(const char *key, const char *val)
+/* Setters are reached from the console, whose stack may be TCM, and from tasks
+   with PSRAM or RTC stacks; NVS needs a DRAM stack, so they all go through
+   ls_nvs_run (inline when the caller's stack is DRAM). */
+struct SaveReq {
+    const char *key;
+    const char *str;
+    const void *blob;
+    size_t      n;
+    uint8_t     u8;
+    int         kind;    /* 0 str, 1 u8, 2 blob */
+};
+
+static esp_err_t save_setting_job(void *ctx)
 {
+    const SaveReq *r = static_cast<const SaveReq *>(ctx);
     nvs_handle_t h;
     esp_err_t err = nvs_open("meshcore", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_str(h, key, val);
+    switch (r->kind) {
+    case 0:  err = nvs_set_str(h, r->key, r->str); break;
+    case 1:  err = nvs_set_u8(h, r->key, r->u8); break;
+    default: err = nvs_set_blob(h, r->key, r->blob, r->n); break;
+    }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
+}
+
+static esp_err_t save_setting_str(const char *key, const char *val)
+{
+    SaveReq r = { key, val, nullptr, 0, 0, 0 };
+    return ls_nvs_run(save_setting_job, &r, 0);
 }
 
 static esp_err_t save_setting_u8(const char *key, uint8_t v)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("meshcore", NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_set_u8(h, key, v);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
+    SaveReq r = { key, nullptr, nullptr, 0, v, 1 };
+    return ls_nvs_run(save_setting_job, &r, 0);
 }
 
 static esp_err_t save_setting_blob(const char *key, const void *val, size_t n)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("meshcore", NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_set_blob(h, key, val, n);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
+    SaveReq r = { key, nullptr, val, n, 0, 2 };
+    return ls_nvs_run(save_setting_job, &r, 0);
 }
 
 static bool our_position(int32_t *lat_e7, int32_t *lon_e7,
@@ -1268,17 +1362,17 @@ extern "C" esp_err_t ls_mesh_start(void)
         return err;
     }
 
-    s_ms     = new LsMillis();
-    s_rtc    = new LsRtcClock();
-    s_rng    = new LsRng();
-    s_board  = new LsBoard();
-    s_radio  = new LsRadio();
-    s_mgr    = new StaticPoolPacketManager(MESH_POOL);
-    s_tables = new SimpleMeshTables();
-    if (!s_ms || !s_rtc || !s_rng || !s_board || !s_radio || !s_mgr || !s_tables)
+    s_ms     = psram_new<LsMillis>();
+    s_rtc    = psram_new<LsRtcClock>();
+    s_rng    = psram_new<LsRng>();
+    s_board  = psram_new<LsBoard>();
+    s_radio  = psram_new<LsRadio>();
+    s_mgr    = psram_new<LsPoolManager>(MESH_POOL);
+    s_tables = psram_new<SimpleMeshTables>();
+    if (!s_ms || !s_rtc || !s_rng || !s_board || !s_radio || !s_mgr || !s_mgr->ok || !s_tables)
         return ESP_ERR_NO_MEM;
 
-    s_mesh = new LsMesh(*s_radio, *s_ms, *s_rng, *s_rtc, *s_mgr, *s_tables);
+    s_mesh = psram_new<LsMesh>(*s_radio, *s_ms, *s_rng, *s_rtc, *s_mgr, *s_tables);
     if (!s_mesh) return ESP_ERR_NO_MEM;
 
     if (!load_or_create_identity(s_mesh->self_id, *s_rng)) return ESP_FAIL;
@@ -1534,13 +1628,8 @@ extern "C" esp_err_t ls_mesh_set_auto(bool listen, bool tx)
 {
     s_auto_listen = listen;
     s_auto_tx     = tx;
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("meshcore", NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_set_u8(h, "autolisten", listen ? 1 : 0);
-    if (err == ESP_OK) err = nvs_set_u8(h, "autotx", tx ? 1 : 0);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
+    esp_err_t err = save_setting_u8("autolisten", listen ? 1 : 0);
+    if (err == ESP_OK) err = save_setting_u8("autotx", tx ? 1 : 0);
     /* Apply immediately to a stack that is already up, so the setting and
        the state never disagree while you are looking at them. */
     if (s_task && s_radio) s_radio->setTxEnabled(tx);
@@ -1775,11 +1864,15 @@ extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
     if (peer_index < 0 || peer_index >= s_peer_count) return ESP_ERR_NOT_FOUND;
 
+    /* The row `mesh peers` printed: ls_mesh_peer_at's ranking, ties by
+       table order. */
     int pi = -1;
     for (int i = 0; i < s_peer_count; i++) {
         int rank = 0;
         for (int j = 0; j < s_peer_count; j++)
-            if (j != i && s_peers[j].last_heard > s_peers[i].last_heard) rank++;
+            if (j != i && (s_peers[j].last_heard > s_peers[i].last_heard ||
+                           (s_peers[j].last_heard == s_peers[i].last_heard && j < i)))
+                rank++;
         if (rank == peer_index) { pi = i; break; }
     }
     return send_dm_to(pi, text);

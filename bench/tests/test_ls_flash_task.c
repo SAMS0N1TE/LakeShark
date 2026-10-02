@@ -144,3 +144,28 @@ LS_CASE(nvs_waits_for_remote_worker_to_suspend_before_static_reuse)
     LS_EQ_UINT(ls_shim_task_running_delete_count(),0);
     LS_EQ_UINT(ls_shim_task_delete_count(),2);
 }
+
+LS_CASE(nvs_run_is_inline_on_a_dram_stack_and_never_inline_elsewhere)
+{
+    LS_EQ_INT(ls_nvs_init(), ESP_OK);
+    ls_shim_task_reset();
+    ls_shim_task_execute_on_create(pdTRUE);
+    s_callback_count = 0;
+    esp_err_t want = 55;
+
+    /* DRAM stack: the callback runs in the caller, no worker is spawned. */
+    LS_CHECK(ls_nvs_stack_is_flash_safe());
+    LS_EQ_INT(ls_nvs_run(nvs_callback, &want, 0), want);
+    LS_EQ_INT(s_callback_count, 1);
+    LS_EQ_UINT(ls_shim_task_static_create_count(), 0);
+    LS_EQ_INT(ls_nvs_run(NULL, &want, 0), ESP_ERR_INVALID_ARG);
+
+    /* PSRAM/TCM stack: the callback must go to the worker. Here the shim's
+       single DRAM answer also fails the worker check, so the hand-off is
+       refused - and fn must not have run on the unsafe caller stack. */
+    ls_shim_ptr_in_dram_result = false;
+    LS_CHECK(!ls_nvs_stack_is_flash_safe());
+    LS_EQ_INT(ls_nvs_run(nvs_callback, &want, 0), ESP_ERR_NO_MEM);
+    LS_EQ_INT(s_callback_count, 1);
+    ls_shim_ptr_in_dram_result = true;
+}

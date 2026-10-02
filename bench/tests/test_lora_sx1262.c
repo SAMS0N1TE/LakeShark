@@ -1,4 +1,4 @@
-/* LS_TEST_SOURCES: ls_lora.c and ls_spi.c against the SPI and GPIO shims */
+/* LS_TEST_SOURCES: ls_lora.c, ls_lora_sx126x.c, ls_lora_lr20xx.c and ls_spi.c against the SPI and GPIO shims */
 
 #include "ls_test.h"
 #include "ls_lora.h"
@@ -21,6 +21,9 @@ esp_err_t ls_xl9535_out(int pin, bool level)
 }
 
 bool ls_xl9535_ready(void) { return true; }
+
+/* Linked in for the LR20xx backend's antenna choice; an SX1262 never asks. */
+bool ls_board_hw_antenna_is_external(void) { return false; }
 
 /* Direction, which the driver sets once for DIO1 so a later change to the
    board bring-up cannot turn the radio's interrupt line into an output. The
@@ -404,4 +407,13 @@ LS_CASE(the_mesh_default_spreading_factor_stays_at_seven)
     /* MeshCore's own rule, from RadioLibWrappers.h: 32 symbols at or below
        SF8. SF7 is below it, so this must not have moved either. */
     LS_EQ_UINT(32u, cfg.preamble);
+}
+LS_CASE(sx1262_refuses_the_lr20xx_sync_rssi_request)
+{
+    bring_up(0x22, 0x14, 0x24);
+    ls_fsk_cfg_t cfg = {.freq_hz = 929000000, .bitrate = 1200,
+        .deviation_hz = 4500, .bandwidth_hz = 19500, .sync_word = 0x7cd215d8,
+        .payload_bytes = 64, .rssi_at_sync = true};
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_ERR_NOT_SUPPORTED);
+    LS_CHECK(!ls_lora_fsk_active());
 }

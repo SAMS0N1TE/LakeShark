@@ -3,6 +3,7 @@
 #include "ls_board.h"   /**/
 
 #include <stdio.h>
+#include "esp_attr.h"
 #include <ctype.h>
 #include <string.h>
 
@@ -400,6 +401,9 @@ static void tel_task(void *arg)
         char eqline[96];
         int eqn = flipper_link_eq_snapshot(eqline, sizeof(eqline));
         if (eqn > 0) ble_write(eqline, eqn);
+        static EXT_RAM_BSS_ATTR char scanline[192];
+        int scn = flipper_link_scan_snapshot(scanline, sizeof(scanline));
+        if (scn > 0) ble_write(scanline, scn);
         vTaskDelay(pdMS_TO_TICKS(1000 / hz));
     }
 }

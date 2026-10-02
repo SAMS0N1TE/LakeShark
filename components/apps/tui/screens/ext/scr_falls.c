@@ -10,6 +10,8 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
 #include "../../ls_field.h"
 #include "../../ls_skyview.h"
 #include "ls_gps.h"
@@ -19,23 +21,64 @@
 #include "apps/fm/fm_state.h"
 #include "apps/fm/fm_mode_label.h"
 
-/* Spectrum sources retain their existing ordinal; other radios use honest
- * passive data views until their spectrum adapters are available. */
-typedef struct { const char *label, *detail; ls_field_source_t field; } data_source_t;
+/* The SDRs and the LoRa chip draw a spectrum; the other radios use honest
+   passive data views until their spectrum adapters are available. */
+typedef struct { ls_rsel_radio_t radio; const char *detail; ls_field_source_t field; } data_source_t;
 static const data_source_t data_sources[] = {
-    {"CC1101", "Receiver data; spectrum pending", LS_FIELD_CC1101},
-    {"GPS/GNSS", "Satellite signal levels", LS_FIELD_NONE},
-    {"HackRF", "Receiver data; spectrum pending", LS_FIELD_HACKRF},
-    {"nRF24", "Survey data; spectrum pending", LS_FIELD_NRF24},
-    {"NFC", "Field data", LS_FIELD_NFC},
-    {"Wi-Fi", "Link data", LS_FIELD_WIFI},
-    {"Bluetooth", "Link data", LS_FIELD_BLE},
+    {LS_RSEL_CC1101, "Receiver data; spectrum pending", LS_FIELD_CC1101},
+    {LS_RSEL_GPS, "Satellite signal levels", LS_FIELD_NONE},
+    {LS_RSEL_NRF24, "Survey data; spectrum pending", LS_FIELD_NRF24},
+    {LS_RSEL_NFC, "Field data", LS_FIELD_NFC},
+    {LS_RSEL_WIFI, "Link data", LS_FIELD_WIFI},
+    {LS_RSEL_BLE, "Link data", LS_FIELD_BLE},
 };
 #define DATA_COUNT ((int)(sizeof(data_sources)/sizeof(data_sources[0])))
 static int s_data = -1;
 static int s_satellite;
 static EXT_RAM_BSS_ATTR ls_gps_state_t s_gps;
-static void enter(void) { s_data=-1; ls_wf_source_select(LS_WF_SRC_AUTO); }
+/* The SDR last chosen here, for the button while no receiver holds one. */
+static ls_rsel_radio_t s_sdr = LS_RSEL_SDR_RTL;
+
+static int data_of(ls_rsel_radio_t r)
+{
+    for (int i = 0; i < DATA_COUNT; i++) if (data_sources[i].radio == r) return i;
+    return -1;
+}
+
+/* What the screen is showing, as a radio: a data view's radio, the LoRa
+   chip's sweep, or the SDR a receiver holds. */
+static ls_rsel_radio_t in_use(void)
+{
+    if (s_data >= 0) return data_sources[s_data].radio;
+    if (ls_wf_source_get() == LS_WF_SRC_LORA) return LS_RSEL_LORA;
+    ls_rsel_radio_t r = ls_rsel_sdr_held_by("fm");
+    if (r == LS_RSEL_NONE) r = ls_rsel_sdr_held_by("p25");
+    return r != LS_RSEL_NONE ? r : s_sdr;
+}
+
+static bool show_data(int data)
+{
+    if (!ls_field_start() || !ls_field_source(data_sources[data].field)) return false;
+    ls_wf_source_release();
+    ls_field_watch(true);
+    s_data = data; s_satellite = 0;
+    return true;
+}
+
+static void enter(void)
+{
+    s_data = -1;
+    ls_rsel_track(LS_RSEL_WATERFALL, in_use);
+    /* The radio chosen last time, without starting a receiver: an SDR
+       follows whichever receiver is running, and starting one stays a
+       choice made here. */
+    const ls_rsel_radio_t saved = ls_rsel_saved(LS_RSEL_WATERFALL);
+    if (saved == LS_RSEL_SDR_RTL || saved == LS_RSEL_SDR_HACKRF) s_sdr = saved;
+    const int data = data_of(saved);
+    if (saved == LS_RSEL_LORA && !ls_wf_source_blocked(LS_WF_SRC_LORA)) ls_wf_source_select(LS_WF_SRC_LORA);
+    else ls_wf_source_select(LS_WF_SRC_AUTO);
+    if (data >= 0) show_data(data);
+}
 static void leave(void) { if(s_data>=0) ls_field_watch(false); s_data=-1; ls_wf_source_release(); }
 
 
@@ -45,9 +88,16 @@ static const fm_mode_t MODES[] = {
     FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM, FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS,
 };
 
+static void pick(ls_wf_src_t src);
+
+/* The FM receiver's modes, and P25 after them: both are what an SDR here
+   can be listening as. */
+#define MODE_COUNT ((int)(sizeof(MODES) / sizeof(MODES[0])))
 static void mode_picked(int index)
 {
-    if (index < 0 || index >= (int)(sizeof(MODES) / sizeof(MODES[0]))) return;
+    if (index == MODE_COUNT) { pick(LS_WF_SRC_P25); return; }
+    if (index < 0 || index >= MODE_COUNT) return;
+    if (ls_wf_source_get() != LS_WF_SRC_FM) pick(LS_WF_SRC_FM);
     ls_args_t args = {.n = 1};
     args.v[0].kind = LS_VAL_TEXT;
     args.v[0].s = fm_mode_command_name(MODES[index]);
@@ -57,9 +107,27 @@ static void mode_picked(int index)
 
 static void open_mode_picker(void)
 {
+    const ls_wf_src_t src = ls_wf_source_get();
     ls_picker_open("RECEIVER MODE", mode_picked);
-    for (int i = 0; i < (int)(sizeof(MODES) / sizeof(MODES[0])); ++i)
-        ls_picker_add(fm_mode_label(MODES[i]), FM.mode == MODES[i] ? "selected" : "");
+    for (int i = 0; i < MODE_COUNT; ++i)
+        ls_picker_add(fm_mode_label(MODES[i]), src == LS_WF_SRC_FM && FM.mode == MODES[i] ? "selected" : "");
+    ls_picker_add("P25", src == LS_WF_SRC_P25 ? "selected" : "");
+}
+
+/* MODE's face: what the SDR is listening as. */
+static const char *mode_face(void)
+{
+    switch (ls_wf_source_get()) {
+    case LS_WF_SRC_FM:  return fm_mode_label(FM.mode);
+    case LS_WF_SRC_P25: return "P25";
+    default:            return "ANY";
+    }
+}
+
+static bool sdr_view(void)
+{
+    const ls_wf_src_t src = ls_wf_source_get();
+    return s_data < 0 && src != LS_WF_SRC_LORA;
 }
 
 static void tune_fm(void)
@@ -75,15 +143,13 @@ static char     s_flash[64];
    only exists while it is being drawn has no business reading a clock. */
 static int      s_flash_ttl;
 
-/* What each source IS, as opposed to what it is called. One line each, and
-   the reason the picker carries a detail column at all. */
+/* What each source IS, as opposed to what it is called. */
 static const char *source_detail(ls_wf_src_t src)
 {
-
     switch (src) {
-    case LS_WF_SRC_P25:  return "RTL dongle";
-    case LS_WF_SRC_FM:   return "RTL dongle";
-    case LS_WF_SRC_LORA: return "SX1262";
+    case LS_WF_SRC_P25:
+    case LS_WF_SRC_FM:   return ls_rsel_name(in_use());
+    case LS_WF_SRC_LORA: return ls_rsel_name(LS_RSEL_LORA);
     default:             return "any running";
     }
 }
@@ -109,19 +175,36 @@ static void pick(ls_wf_src_t src)
     s_flash_ttl = 40;
 }
 
-static void picked(int index)
+/* The receiver an SDR's spectrum comes from: P25 when it is the one
+   running, otherwise FM. The chosen dongle becomes that receiver's own
+   choice too - this spectrum is that receiver's - and a receiver holding
+   the other one starts again on this one. */
+static void pick_sdr(ls_rsel_radio_t radio)
 {
-    if (index >= 0 && index < (int)LS_WF_SRC__COUNT) { pick((ls_wf_src_t)index); return; }
-    int data=index-(int)LS_WF_SRC__COUNT;
-    if(data<0 || data>=DATA_COUNT) return;
-    if(!ls_field_start() || !ls_field_source(data_sources[data].field)) {
+    const char *claimed = ls_tui_radio_claimed();
+    const bool p25 = claimed && !strcmp(claimed, "P25");
+    const ls_rsel_job_t job = p25 ? LS_RSEL_P25 :
+        FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX ? LS_RSEL_PAGER :
+        FM.mode == FM_MODE_ACARS ? LS_RSEL_ACARS : LS_RSEL_FM;
+    s_sdr = radio;
+    ls_rsel_set(job, radio);
+    const ls_rsel_radio_t held = ls_rsel_sdr_held_by(p25 ? "p25" : "fm");
+    pick(p25 ? LS_WF_SRC_P25 : LS_WF_SRC_FM);
+    if (held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
+}
+
+static void picked(ls_rsel_radio_t radio)
+{
+    if (radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) { pick_sdr(radio); return; }
+    if (radio == LS_RSEL_LORA) { pick(LS_WF_SRC_LORA); return; }
+    const int data = data_of(radio);
+    if (data < 0) return;
+    if (!show_data(data)) {
+        ls_rsel_set(LS_RSEL_WATERFALL, in_use());
         snprintf(s_flash,sizeof(s_flash),"Stop recording before changing its source");
         s_flash_ttl=90; return;
     }
-    ls_wf_source_release();
-    ls_field_watch(true);
-    s_data=data; s_satellite=0; s_flash[0]=0; s_flash_ttl=0;
-
+    s_flash[0]=0; s_flash_ttl=0;
 }
 
 static void preset_picked(int index)
@@ -151,37 +234,38 @@ static void open_preset_picker(void)
     if (why) ls_picker_empty_reason(why);
 }
 
-static void open_radio_picker(void)
-{
-    ls_picker_open("RADIO", picked);
-    for (int i = 0; i < (int)LS_WF_SRC__COUNT; i++) {
-        const ls_wf_src_t src = (ls_wf_src_t)i;
-        const char *no = ls_wf_source_blocked(src);
-        char label[LS_PICKER_TEXT];
+static void open_radio_picker(void) { ls_rsel_open(LS_RSEL_WATERFALL, picked); }
 
-        snprintf(label, sizeof(label), "%s%s",
-                 ls_wf_source_label(src),
-                 s_data<0 && src == ls_wf_source_get() ? " *" : "");
-        ls_picker_add(label, no ? no : source_detail(src));
-    }
-    for(int i=0;i<DATA_COUNT;i++) {
-        char label[LS_PICKER_TEXT];
-        snprintf(label,sizeof(label),"%s%s",data_sources[i].label,s_data==i?" *":"");
-        ls_picker_add(label,data_sources[i].detail);
-    }
+/* How many of the buttons below apply: RADIO alone for a data view, BAND
+   for a spectrum, MODE for an SDR, and FM's TUNE and SWEEP when FM is it. */
+static int button_count(void)
+{
+    if (s_data >= 0) return 1;
+    if (ls_wf_source_get() == LS_WF_SRC_FM) return 5;
+    return sdr_view() ? 3 : 2;
 }
+
+/* The waterfall's display settings, while a spectrum is what is shown; a
+   data view has none. */
+static const ls_opt_ctx_t *falls_options(void) { return s_data < 0 ? ls_wf_options() : NULL; }
+
+/* The buttons that apply, and OPTIONS after them when there is one. */
+static int bar_count(void) { return button_count() + (ls_opt_count(falls_options()) ? 1 : 0); }
 
 static void draw_buttons(tui_surface *sf, tui_rect r)
 {
     const ls_wf_src_t src = ls_wf_source_get();
     ls_btn_t buttons[] = {
-        {"RADIO", s_data>=0 ? data_sources[s_data].label : ls_wf_source_label(src), 'v', false, false},
+        ls_rsel_button(LS_RSEL_WATERFALL),
         {"BAND", ls_wf_preset_current(src), 'n', false, ls_wf_preset_count(src) == 0},
-        {"MODE", fm_mode_label(FM.mode), 'e', false, false},
+        {"MODE", mode_face(), 'e', false, false},
         {"TUNE", "MHz", 't', false, false},
         {"SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
+        {0},
     };
-    ls_btn_bar_raised(sf, r, buttons, s_data>=0 ? 1 : src == LS_WF_SRC_FM ? 5 : 2, -1);
+    const int n = button_count();
+    buttons[n] = ls_opt_button(falls_options());
+    ls_btn_bar_raised(sf, r, buttons, bar_count(), -1);
 }
 
 /* Current measurement only: no extra history or fabricated spectrum. */
@@ -215,7 +299,7 @@ static void draw_data(tui_surface *sf, tui_rect area)
         ls_kv(sf,area,3,"SOURCE","No fresh data; receiver or adapter unavailable",LS_ATTR_DIM);
         return;
     }
-    ls_kv(sf,area,3,"SOURCE",source->label,LS_ATTR_DIM);
+    ls_kv(sf,area,3,"SOURCE",ls_rsel_name(source->radio),LS_ATTR_DIM);
     if(sample.frequency) snprintf(line,sizeof(line),"%.4f MHz",sample.frequency/1e6);
     else snprintf(line,sizeof(line),"Not reported");
     ls_kv(sf,area,5,"FREQ",line,LS_ATTR_DIM);
@@ -234,7 +318,7 @@ static void draw(tui_surface *sf, tui_rect area)
 {
     if(s_data<0) ls_wf_source_pump();
 
-    int want = ls_btn_raised_height(area, s_data>=0 ? 1 : ls_wf_source_get() == LS_WF_SRC_FM ? 5 : 2);
+    int want = ls_btn_raised_height(area, bar_count());
     draw_buttons(sf, tui_rect_make(area.x, area.y, area.w, want));
     tui_rect body = tui_rect_make(area.x, area.y + want, area.w, area.h - want);
 
@@ -272,8 +356,8 @@ static bool key(ls_tk_t k, char ch)
         if(n) s_satellite=(s_satellite+(ch=='j'||ch=='J'?1:n-1))%n;
         return true;
     }
+    if (k == LS_TK_CHAR && sdr_view() && (ch == 'e' || ch == 'E')) { open_mode_picker(); return true; }
     if (k == LS_TK_CHAR && s_data<0 && ls_wf_source_get() == LS_WF_SRC_FM) {
-        if (ch == 'e' || ch == 'E') { open_mode_picker(); return true; }
         if (ch == 'w' || ch == 'W') {
             ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
             return true;
@@ -285,11 +369,14 @@ static bool key(ls_tk_t k, char ch)
         return true;
     }
     /* The source selector is this screen's, not the widget's: the widget
-       draws whatever it is given and has no opinion about radios. */
-    if (k == LS_TK_CHAR && (ch == 'v' || ch == 'V')) {
+       draws whatever it is given and has no opinion about radios. R as in
+       every app, and V. */
+    if (k == LS_TK_CHAR && (ch == 'r' || ch == 'R' || ch == 'v' || ch == 'V')) {
         open_radio_picker();
         return true;
     }
+    /* O before the waterfall, whose strip has no O of its own. */
+    if (k == LS_TK_CHAR && ls_opt_key(falls_options(), ch)) return true;
     /* N for the band list. Not B, which the waterfall already uses
        to hide its own buttons, and not P, which is its palette. */
     if (k == LS_TK_CHAR && (ch == 'n' || ch == 'N')) {
@@ -303,7 +390,8 @@ static bool key(ls_tk_t k, char ch)
 static bool touch(int col, int row)
 {
     int i = ls_btn_hit(col, row);
-    if (i >= 0) return key(LS_TK_CHAR, "vnetw"[i]);
+    if (i >= 0 && i < button_count()) return key(LS_TK_CHAR, "rnetw"[i]);
+    if (i >= 0 && i == button_count()) { ls_opt_open(falls_options()); return true; }
     return s_data<0 && ls_wf_touch(col, row);
 }
 
@@ -315,7 +403,7 @@ const ls_tui_screen_t ls_scr_falls = {
        is a surprise worth avoiding. It says so instead, and says which
        screen to open. */
     .name = "FALLS",
-    .hint = "V radio  E mode  T tune  N band  W sweep",
+    .hint = "R radio  E mode  T tune  N band  W sweep  O options",
     .enter = enter,
     .leave = leave,
     .draw = draw,

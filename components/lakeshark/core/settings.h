@@ -51,6 +51,11 @@ void settings_set_df_option(int id, int value);
 int  settings_get_df_channels(int slot, uint32_t *hz, int max);
 void settings_set_df_channels(int slot, const uint32_t *hz, int n);
 bool settings_set_last_fix(float lat, float lon);
+/* The radio each job runs on (radio_choice.h): -1 when none is saved. All
+   sixteen jobs share one key; the getter reads RAM, the setter queues the
+   write only when the value changed. */
+int  settings_get_radio_choice(int job);
+bool settings_set_radio_choice(int job, int radio);
 
 int  settings_get_brightness(void);
 void settings_set_brightness(int pct);
@@ -104,6 +109,11 @@ void settings_set_subghz_fsk(uint32_t bitrate, uint32_t deviation_hz,
                              uint32_t sync_word, int preamble_bits,
                              int bandwidth_khz);
 void settings_set_alert_vibe(bool en);
+
+/* REC's own configuration, kept across a reboot (LS-1243). Stored as
+   rec_<name>; a missing key reads as the caller's default. */
+uint32_t settings_get_rec(const char *name, uint32_t deflt);
+void     settings_set_rec(const char *name, uint32_t value);
 
 /* Turn the screen to match the way the board is being held.
 

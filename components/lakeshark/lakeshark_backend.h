@@ -104,6 +104,8 @@ bool        lakeshark_p25_polarity_inverted(void);
 
 void        lakeshark_adsb_gain_step(void);
 void        lakeshark_adsb_agc(void);
+/* 0 is automatic, up to 496; saved, as the step and AGC controls are. */
+void        lakeshark_adsb_set_gain(int tenths);
 int         lakeshark_adsb_gain_tenths(void);
 
 bool        lakeshark_p25_agc_enabled(void);

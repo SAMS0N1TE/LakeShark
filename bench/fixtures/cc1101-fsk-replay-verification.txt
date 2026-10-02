@@ -1,0 +1,47 @@
+CC1101 RAW 2-FSK replay — implementation and bench summary, 2026-10-01
+
+Flipper RAW files with stock 2FSKDev238/476Async presets or supported custom
+CC1101 asynchronous 2-FSK presets can replay once through CC1101/RMT.
+Preset modem timing, deviation and frequency offset are preserved; operator
+power and board routing remain driver-controlled. Replay requires complete
+RAW edges within supported CC1101 bands, at most 4096 edges and 10 seconds.
+Malformed presets, unsupported modulation and unknown declared modules are
+rejected. Existing OOK and legacy SX1262 paths remain supported.
+
+RECORD/FILES recognize CC1101 FSK, display the correct radio and offer its
+-10/0/5/10 dBm power choices. Loading a file does not transmit; PLAY is explicit.
+The simulator's -r option loads a replay file for portrait/landscape/touch QA.
+REC console help now accurately advertises 'rec freq <MHz>'.
+
+Validation:
+- Replay implementation passed bench/verify.ps1 -Level host and real simulator
+  portrait/landscape/touch review.
+- Final parser tests: 15/15 passed, including an unknown-module fallback test
+  that failed before its fix. Firmware t-display-p4 build passed.
+- ESP32S3/Si4463 emitted channel 2/trap 99 at 433.3943 MHz; P4 RTL captured 95 edges
+  and offline decoding recovered D391D391026300012F9E with CRC OK.
+- P4 CC1101 replay at nominal -10 dBm was independently received by the separate
+  on-board RTL-SDR:97 edges, 61524 us, identical payload and CRC OK. This actual
+  RF capture is fixtures/cc1101-fsk-ch2-t99.sub and is a host regression fixture
+  for file classification, exact RMT pulse/level preservation and truncation.
+
+Hardware state:
+- Latest app-only image SHA256:
+  6A24F4550FEDE5520D61F2BBD140FFF1E54163E3F4E6D75660572FDA560D29DB
+  flashed once to USB serial 5C84301528; esptool hash verified, healthy boot.
+  Archived ELF 9fe0d1eeb450.elf. Build was made from the tested pre-commit tree.
+- Readbacks: volume 45, mute 0; REC idle 433.9200 MHz, gain 40 dB, FSK, autosaveon.
+  Storage/crash partitions retained; all bench ports closed.
+
+Evidence limits:
+- RF/CRC verification was on the earlier FSK image; the latest image adds only
+  the parser-module guard and console-help correction, with RF driver unchanged.
+  Its flash integrity, boot and settings were checked without another RF send.
+- The RTL is co-located with CC1101. ESP reception, external range and relay
+  operation remain unverified. First ESP RSSI watch saw no hit; its receive
+  modem setup has not been validated as a control. No speculative IF/GPIO fix.
+- A crosscheck ESP control used an incorrect REC frequency command and is
+  inconclusive. It is not counted as positive RF evidence.
+- No channel 2/trap 1 addressing or microphone recording was performed. Flipper
+  and the reference ESP source/firmware were left unchanged. Full release
+  acceptance is not implied by these focused checks.

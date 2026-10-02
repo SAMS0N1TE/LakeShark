@@ -65,6 +65,9 @@ static int      g_looks = 1, g_look;
 bool ls_field_owned(void) { return false; }
 
 bool ls_lora_present(void)  { return true; }
+/* An SX1262 unless a case says otherwise. */
+static uint32_t g_caps;
+uint32_t ls_lora_caps(void) { return g_caps; }
 bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return g_scanning; }
 
@@ -207,6 +210,7 @@ static void fresh(void)
     g_fm_mode_asked = -1;
     g_scan_restarts = 0;
     g_radio_asked = NULL;
+    g_caps = 0;
     ls_shim_time_set(5000000);
 }
 
@@ -562,4 +566,38 @@ LS_CASE(marker_tune_routes_p25_and_lora_to_their_receivers)
     LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000));
     LS_EQ_INT(g_field_frequency,915000000);LS_CHECK(g_field_direct);
     LS_CHECK(!test_tuner(LS_WF_OWNER_LORA,1000000000));
+}
+
+LS_CASE(lora_bands_past_960_mhz_are_offered_only_to_a_part_that_sweeps_there)
+{
+    fresh();
+    LS_EQ_INT(6, ls_wf_preset_count(LS_WF_SRC_LORA));
+    LS_EQ_STR("full range", ls_wf_preset_label(LS_WF_SRC_LORA, 5));
+    LS_EQ_STR("", ls_wf_preset_label(LS_WF_SRC_LORA, 6));
+    LS_CHECK(!ls_wf_preset_apply(LS_WF_SRC_LORA, 9));
+    ls_wf_source_lora_band(1616000000u, 1626500000u);          /* refused */
+    uint32_t lo = 0, hi = 0;
+    ls_wf_source_lora_band_get(&lo, &hi);
+    LS_EQ_UINT(902000000u, lo);
+
+    /* An LR2012/LR2022: the LF input to 1100 MHz and nothing above. */
+    g_caps = LS_LORA_CAP_RX_WIDE;
+    LS_EQ_INT(8, ls_wf_preset_count(LS_WF_SRC_LORA));
+    LS_EQ_STR("aviation", ls_wf_preset_label(LS_WF_SRC_LORA, 6));
+    LS_EQ_STR("960-1100", ls_wf_preset_detail(LS_WF_SRC_LORA, 6));
+
+    /* An LR2021: the HF input too. */
+    g_caps = LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5;
+    LS_EQ_INT(12, ls_wf_preset_count(LS_WF_SRC_LORA));
+    LS_EQ_STR("Iridium", ls_wf_preset_label(LS_WF_SRC_LORA, 9));
+    LS_EQ_STR("1616.0-1626.5", ls_wf_preset_detail(LS_WF_SRC_LORA, 9));
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_LORA, 9));
+    ls_wf_source_lora_band_get(&lo, &hi);
+    LS_EQ_UINT(1616000000u, lo);
+    LS_EQ_UINT(1626500000u, hi);
+    LS_EQ_STR("Iridium", ls_wf_preset_current(LS_WF_SRC_LORA));
+    /* A band across the gap between the inputs is never taken. */
+    ls_wf_source_lora_band(1000000000u, 1600000000u);
+    ls_wf_source_lora_band_get(&lo, &hi);
+    LS_EQ_UINT(1616000000u, lo);
 }

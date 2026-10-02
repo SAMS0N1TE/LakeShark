@@ -8,6 +8,9 @@ extern "C" {
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void);
 SemaphoreHandle_t xSemaphoreCreateBinary(void);
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t *storage);
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t ticks);
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t semaphore);
 SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *storage);
 SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *storage);
 SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max_count,

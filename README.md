@@ -5,13 +5,13 @@
 
 LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
 
-Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 runs MeshCore or LoRa Labs. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
+Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 (or the LR2021 on that variant) runs MeshCore or LoRa Labs; the LR2021 also hears ADS-B on its own. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
 ## Start here
 
 **[Flash LakeShark from your browser](https://terminalbay.com/?m=lakeshark)** · **[First flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH)** · **[Download the latest release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)**
 
-1. **Check your board:** the primary build is for the **LilyGO T-Display P4 with the 4.1-inch 568 × 1232 AMOLED and 16 MB flash**. Other display variants need different firmware. The keyboard is optional.
+1. **Check your board:** the primary build is for the **LilyGO T-Display P4 with the 4.1-inch 568 × 1232 AMOLED and 16 MB flash**. The SX1262 and LR2021 radio variants run the same firmware. Other display variants need different firmware. The keyboard is optional.
 2. **Flash from Chrome or Edge on a computer:** open the browser flasher and select your exact board. Follow the first flash guide for setup.
 3. **Choose your radio:** add an RTL-SDR Blog V3 or V4 for P25 Phase I, FM, POCSAG and ADS-B reception, or use the onboard SX1262 for MeshCore and LoRa tools.
 
@@ -43,7 +43,7 @@ Designed to work with my other project [CartoTUI, a terminal ascii map](https://
 ## <°)))>< LilyGO T-Display-P4
   <img width="1600" alt="hero-falls" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
 
-The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
+The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 or LR2021 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
 <p align="center">
 <img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="32%" alt="HOME" />
@@ -77,7 +77,8 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
 | REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. |
-| SUB-GHZ | Scan, learn, watch, decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
+| SUB-GHZ | Six tiles: read, analyzer, saved, read raw, learn and settings; decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
+| EXPERIMENTS | LR2021 trials that may become apps, one at a time `[EXPERIMENTAL]` |
 | FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
 | MAP | Offline maps with aircraft trails, Mesh nodes, marks and drawn lines; FOLLOW, GO TO, layers and eight palettes; pixel field view and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |

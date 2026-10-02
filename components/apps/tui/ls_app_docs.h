@@ -27,6 +27,7 @@ extern const ls_app_doc_t ls_doc_falls;
 extern const ls_app_doc_t ls_doc_cell;
 extern const ls_app_doc_t ls_doc_mesh;
 extern const ls_app_doc_t ls_doc_labs;
+extern const ls_app_doc_t ls_doc_experiments;
 extern const ls_app_doc_t ls_doc_journal;
 extern const ls_app_doc_t ls_doc_notes;
 extern const ls_app_doc_t ls_doc_compass;

@@ -44,8 +44,22 @@ bool ls_picker_add(const char *label, const char *detail);
    nothing here" and "something went wrong". */
 void ls_picker_empty_reason(const char *why);
 
+/* A line or two under the title, until the list is opened again: what the
+   last choice could not do, for a list that reopens to say so. */
+void ls_picker_note(const char *text);
+
+/* Put the cursor on the row added at `index`, so a list reopened in place
+   keeps it where it was. */
+void ls_picker_select(int index);
+
+/* Say something else beside the row added at `index`, for a list whose
+   values change while it is up. */
+void ls_picker_set_detail(int index, const char *detail);
+
 void ls_picker_close(void);
 bool ls_picker_active(void);
+/* Whether the list up now is the one opened with `on_done`. */
+bool ls_picker_is(ls_picker_done_t on_done);
 
 bool ls_picker_key(ls_tk_t key, char ch);
 bool ls_picker_touch(int col, int row);

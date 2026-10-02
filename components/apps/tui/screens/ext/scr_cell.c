@@ -2,6 +2,8 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_app.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
 #include "../../ls_value.h"
 #include "../../ls_action.h"
 #include "cell_monitor.h"
@@ -76,6 +78,7 @@ static void view_choose(int i)
     if(i==1){ls_tui_set_font_index(ls_tui_font_index()==2?0:2);ls_tui_screen_request_regrid();}
     if(i==2)ls_tui_set_crisp_text(!ls_tui_crisp_text());
 }
+static void action(int i);
 static void more_choose(int i)
 {
     if(i==0)auto_multi=!auto_multi;
@@ -83,6 +86,62 @@ static void more_choose(int i)
     if(i==2){ls_picker_open("ONCE: CAPTURE LENGTH",hrf_choose_duration);ls_picker_add("30 ms","Short burst");ls_picker_add("80 ms","Recommended");ls_picker_add("100 ms","Longer burst");}
     if(i==3){ls_picker_open("REPORT DESTINATION",report_choose);ls_picker_add("Reports OFF","Disable reports");for(int n=0;n<LS_MESH_MAX_PEERS;n++){ls_mesh_peer_t peer;if(!ls_mesh_peer_at(n,&peer))break;snprintf(report_peers[n],sizeof(report_peers[n]),"%s",peer.id);ls_picker_add(peer.name[0]?peer.name:peer.id,peer.id);}}
 }
+/* OPTIONS. The survey's: which band, where the site is, where reports go.
+   HIGH RATE's: the capture plan, as rows that show what is set. Neither
+   changes under a running capture. */
+static const char *o_cell_busy(const ls_opt_t *o)
+{
+    (void)o;
+    cell_monitor_get(&status);
+    return status.busy ? "Stop the survey first" : NULL;
+}
+static void o_band(const ls_opt_t *o) { (void)o; action(1); }
+static void o_band_show(const ls_opt_t *o,char *out,size_t n)
+{
+    (void)o;
+    snprintf(out,n,"%s",band<cell_band_count?cell_bands[band].name:"none");
+}
+static const char *const SITE[]={"GPS","LOCAL"};
+static int o_site(const ls_opt_t *o){(void)o;return manual_site;}
+static void o_set_site(const ls_opt_t *o,int v){(void)o;manual_site=v!=0;}
+static void o_report(const ls_opt_t *o){(void)o;action(6);}
+static void o_report_show(const ls_opt_t *o,char *out,size_t n){(void)o;cell_report_status(out,n);}
+static const ls_opt_t OPT_CELL[]={
+    {.label="BAND",.kind=LS_OPT_ACTION,.act=o_band,.show=o_band_show,.why_not=o_cell_busy},
+    {.label="SITE",.kind=LS_OPT_TOGGLE,.names=SITE,.get=o_site,.set=o_set_site,.why_not=o_cell_busy},
+    {.label="LORA REPORTS",.kind=LS_OPT_ACTION,.act=o_report,.show=o_report_show},
+};
+static const ls_opt_ctx_t CTX_CELL={.name="CELL",.job=LS_RSEL_CELL,.radio=LS_RSEL_NONE,LS_OPT_ROWS(OPT_CELL),.tag="SURVEY"};
+
+static const char *o_hrf_busy(const ls_opt_t *o)
+{
+    (void)o;
+    cell_iq_status_t iq;cell_iq_get_status(&iq);
+    return iq.busy?"Stop the capture first":NULL;
+}
+static const char *const PLAN[]={"selected channel","six presets"};
+static int o_plan(const ls_opt_t *o){(void)o;return auto_multi;}
+static void o_set_plan(const ls_opt_t *o,int v){(void)o;auto_multi=v!=0;}
+static const char *const HRF_CH[]={"739.000 MHz","751.000 MHz","881.500 MHz","1981.250 MHz","1992.500 MHz","2150.000 MHz"};
+static int o_hrf_ch(const ls_opt_t *o){(void)o;for(int i=0;i<6;i++)if(hrf_centers[i]==hrf_frequency)return i;return -1;}
+static void o_set_hrf_ch(const ls_opt_t *o,int v){(void)o;hrf_choose_frequency(v);}
+static void o_hrf_ch_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%.3f MHz",hrf_frequency/1e6);}
+static const char *const RATE[]={"8.0 MS/s","10.0 MS/s","19.2 MS/s","20.0 MS/s"};
+static int o_rate(const ls_opt_t *o){(void)o;for(int i=0;i<4;i++)if(hrf_rates[i]==hrf_rate)return i;return 0;}
+static void o_set_rate(const ls_opt_t *o,int v){(void)o;hrf_choose_rate(v);}
+static const char *const LENGTH[]={"30 ms","80 ms","100 ms"};
+static int o_length(const ls_opt_t *o){(void)o;return hrf_ms==30?0:hrf_ms==80?1:2;}
+static void o_set_length(const ls_opt_t *o,int v){(void)o;hrf_choose_duration(v);}
+static void o_hrf_report(const ls_opt_t *o){(void)o;more_choose(3);}
+static const ls_opt_t OPT_HRF[]={
+    {.label="AUTO PLAN",.kind=LS_OPT_TOGGLE,.names=PLAN,.get=o_plan,.set=o_set_plan,.why_not=o_hrf_busy},
+    {.label="CHANNEL",.kind=LS_OPT_CYCLE,.names=HRF_CH,.n=6,.get=o_hrf_ch,.set=o_set_hrf_ch,.show=o_hrf_ch_show,.why_not=o_hrf_busy},
+    {.label="ONCE: SAMPLE RATE",.kind=LS_OPT_CYCLE,.names=RATE,.n=4,.get=o_rate,.set=o_set_rate,.why_not=o_hrf_busy},
+    {.label="ONCE: LENGTH",.kind=LS_OPT_CYCLE,.names=LENGTH,.n=3,.get=o_length,.set=o_set_length,.why_not=o_hrf_busy},
+    {.label="LORA REPORTS",.kind=LS_OPT_ACTION,.act=o_hrf_report,.show=o_report_show,.why_not=o_hrf_busy},
+};
+static const ls_opt_ctx_t CTX_HRF={.name="HIGH RATE",.job=-1,.radio=LS_RSEL_SDR_HACKRF,LS_OPT_ROWS(OPT_HRF),.tag="CAPTURE"};
+
 static void action(int i)
 {
     if(cell_performance_active()) {
@@ -94,7 +153,7 @@ static void action(int i)
         if(i==0){if(!cell_iq_auto_begin(hrf_frequency,auto_multi))snprintf(control_message,sizeof(control_message),"Auto needs mounted SD + idle HackRF");}
         if(i==1){if(!cell_iq_hackrf_begin(hrf_frequency,hrf_rate,hrf_ms))snprintf(control_message,sizeof(control_message),"Cannot start capture");}
         if(i==2){ls_picker_open("RECEIVE CHANNEL",hrf_choose_frequency);for(int n=0;n<6;n++){char text[32];snprintf(text,sizeof(text),"%.3f MHz",hrf_centers[n]/1e6);ls_picker_add(text,"Preset / not full band coverage");}}
-        if(i==4){ls_picker_open("CAPTURE OPTIONS",more_choose);ls_picker_add(auto_multi?"Auto: six presets":"Auto: selected channel","Tap to switch plan");ls_picker_add("Once: sample rate","Auto always uses 8 MS/s");ls_picker_add("Once: capture length","Auto always uses 80 ms");ls_picker_add("LoRa reporting","High-rate results stay on SD");}
+        if(i==4)ls_opt_open(&CTX_HRF);
         if(i==5)performance_picker();
         return;
     }
@@ -122,6 +181,10 @@ static void action(int i)
         }
     } else if(i==7 && !status.busy)request(CELL_LTE);
     else if(i==8 && !status.busy)performance_picker();
+    /* The survey is the RTL-SDR's; the list is the one every app has, and
+       says why for the rest. */
+    else if(i==9)ls_rsel_open(LS_RSEL_CELL,NULL);
+    else if(i==10)ls_opt_open(&CTX_CELL);
 }
 static void draw_high_rate(tui_surface *sf,tui_rect area)
 {
@@ -194,8 +257,9 @@ render_controls:;
         {"ONCE","single",'C',false,iq.busy},
         {"CHANNEL","tune",'B',false,iq.busy},
         {"VIEW","theme/size",'V',false,false},
-        {"OPTIONS","setup",'O',false,iq.busy},
+        ls_opt_button(&CTX_HRF),
         {"EXIT","normal OS",'H',false,iq.busy}};
+    buttons[4].dim=iq.busy;
     if(body.h<24)for(unsigned i=0;i<6;i++)buttons[i].value=NULL;
     ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,6,focus);
 }
@@ -206,7 +270,7 @@ static void draw(tui_surface *sf,tui_rect area)
     bool same_setup=status.band==band && status.manual_site==manual_site;
     uint8_t white=TUI_ATTR(TUI_WHITE,TUI_BLACK), cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
     uint8_t yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK), faint=LS_ATTR_FAINT;
-    int controls=ls_btn_raised_height(area,9);
+    int controls=ls_btn_raised_height(area,11);
     if(ls_tui_is_wide() && area.h>=24 && controls<5)controls=5;
     tui_rect body=tui_rect_make(area.x,area.y,area.w,area.h-controls);
     char text[100];int y=body.y;
@@ -308,14 +372,16 @@ static void draw(tui_surface *sf,tui_rect area)
         {status.busy?"STOP":"START","survey",'S',status.busy,false},
         {"BAND","range",'B',false,status.busy},
         {"LEARN","3 passes",'L',false,status.busy},
-        {"LOAD","SD",'R',false,status.busy},
+        {"LOAD","SD",'D',false,status.busy},
         {"SITE",manual_site?"LOCAL":"GPS",'G',manual_site,status.busy},
         {"HOME","exit",'H',false,false},
         {"REPORT","LoRa",'T',false,false},
         {"LTE","search",'E',false,status.busy},
         {"HIGH RATE","restart",'P',false,status.busy},
+        ls_rsel_button(LS_RSEL_CELL),
+        ls_opt_button(&CTX_CELL),
     };
-    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,9,focus);
+    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,11,focus);
 }
 static bool key(ls_tk_t k,char ch)
 {
@@ -351,6 +417,6 @@ void ls_cell_publish(void)
     ls_action_register("cell.stop","",LS_CAP_TUNE,stop,"stop passive cellular survey");
 }
 const ls_tui_screen_t ls_scr_cell={
-    .name="CELL WATCH",.hint="S capture/scan  B freq/band  T report  H exit",
+    .name="CELL WATCH",.hint="S capture/scan  B freq/band  T report  R radio  O options  H exit",
     .enter=enter,.leave=leave,.draw=draw,.key=key,.touch=touch,
 };

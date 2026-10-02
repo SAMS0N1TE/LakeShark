@@ -12,8 +12,11 @@
 #define DIM_FG LS_DIM_FG
 
 static bool s_open;
-static char s_title[24];
+/* Long enough for a list named for what it is about and the radio doing
+   it: "WATERFALL OPTIONS / RTL-SDR". */
+static EXT_RAM_BSS_ATTR char s_title[40];
 static char s_why[48];
+static EXT_RAM_BSS_ATTR char s_note[80];
 
 /* PSRAM: together these are a few kilobytes and they are read by the
    drawing task, never from an interrupt or with the cache down. As
@@ -79,6 +82,7 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
 {
     snprintf(s_title, sizeof(s_title), "%s", title ? title : "CHOOSE");
     s_why[0] = 0;
+    s_note[0] = 0;
     s_done = on_done;
     s_n = 0;
     s_flen = 0;
@@ -104,8 +108,26 @@ void ls_picker_empty_reason(const char *why)
     snprintf(s_why, sizeof(s_why), "%s", why ? why : "");
 }
 
+void ls_picker_note(const char *text)
+{
+    snprintf(s_note, sizeof(s_note), "%s", text ? text : "");
+}
+
+void ls_picker_select(int index)
+{
+    for (int i = 0; i < s_shown; i++)
+        if (s_order[i] == index) { s_cur = i; return; }
+}
+
+void ls_picker_set_detail(int index, const char *detail)
+{
+    if (index < 0 || index >= s_n) return;
+    snprintf(s_detail[index], LS_PICKER_DETAIL, "%s", detail ? detail : "");
+}
+
 void ls_picker_close(void) { s_open = false; s_done = NULL; }
 bool ls_picker_active(void) { return s_open; }
+bool ls_picker_is(ls_picker_done_t on_done) { return s_open && on_done && s_done == on_done; }
 
 static void accept(void)
 {
@@ -219,6 +241,25 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
         if (area.w - 2 - cn > (int)strlen(line) + 3)
             tui_put_str(sf, area, area.x + area.w - 2 - cn, y, count, dim);
         y++;
+    }
+
+    /* --- the note, at most two lines, broken at a space ---------------- */
+    if (s_note[0] && s_flen == 0) {
+        const tui_rect inner = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2);
+        const int w = area.w - 4;
+        const int n = (int)strlen(s_note);
+        int cut = n;
+        if (n > w) {
+            cut = w;
+            while (cut > 0 && s_note[cut] != ' ') cut--;
+            if (cut <= 0) cut = w;
+        }
+        char line[sizeof(s_note)];
+        snprintf(line, sizeof(line), "%.*s", cut, s_note);
+        const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+        tui_put_str(sf, inner, area.x + 2, y++, line, warn);
+        if (cut < n)
+            tui_put_str(sf, inner, area.x + 2, y++, s_note + cut + (s_note[cut] == ' '), warn);
     }
 
     /* --- the buttons, anchored to the bottom --------------------------- */

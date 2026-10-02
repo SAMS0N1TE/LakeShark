@@ -1,4 +1,5 @@
 #include "ls_splash.h"
+#include "ls_rec_replay.h"
 #include "ls_tui_density.h"
 /* The panel, on this machine. */
 
@@ -30,6 +31,7 @@
 #include "ls_map_marks.h"
 #include <math.h>
 #include "ls_notes.h"
+#include "ls_experiments.h"
 #include "apps/adsb/adsb_state.h"
 #include "apps/fm/fm_state.h"
 
@@ -171,7 +173,7 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_rec, ls_scr_diag, ls_scr_settings,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
-                             ls_scr_notes, ls_scr_compass, ls_scr_music;
+                             ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -214,6 +216,7 @@ static const ls_app_t APPS[] = {
     { "radios", "RADIOS", "power",  LS_ICON_POWER, TUI_RED,
       LS_APP_EXTRA, &ls_scr_radios, NULL, &ls_doc_radios },
     { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN, LS_APP_EXTRA, &ls_scr_labs, NULL, &ls_doc_labs },
+    { "experiments", "EXPERIMENTS", "LR2021 and friends", LS_ICON_EXPERIMENT, TUI_MAGENTA, LS_APP_EXTRA, &ls_scr_experiments, NULL, &ls_doc_experiments },
     { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
     { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
     { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
@@ -439,6 +442,8 @@ static void frame(int n)
         lssim_tick_state();
         /* The notes store's worker, which on the board is the field I/O task. */
         for (int k = 0; k < 4; k++) ls_notes_io_step();
+        /* The experiments worker, which on the board is its own task. */
+        ls_exp_service();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
         ls_tui_present();
@@ -518,6 +523,7 @@ static void usage(void)
     for (int i = 0; i < N_APPS; i++) printf("%s ", APPS[i].id);
     printf("\n");
     printf("  -o FILE   output BMP (default sim.bmp)\n");
+    printf("  -r FILE   load a .sub into RECORD replay without transmitting\n");
     printf("  -l        landscape (default portrait)\n");
     printf("  -t NAME   theme by name\n");
     printf("  -D        Daylight: black on white over the theme\n");
@@ -655,6 +661,7 @@ int main(int argc, char **argv)
     const char *navkeys = NULL;
     const char *taps = NULL;
     const char *notice = NULL;
+    const char *replay_path = NULL;
     bool landscape = false;
     bool dump = false;
     bool empty = false;
@@ -672,6 +679,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-K") && i + 1 < argc) navkeys = argv[++i];
         else if (!strcmp(argv[i], "-x") && i + 1 < argc) taps = argv[++i];
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) notice = argv[++i];
+        else if (!strcmp(argv[i], "-r") && i + 1 < argc) replay_path = argv[++i];
         else if (!strcmp(argv[i], "-f") && i + 1 < argc) settle = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-l")) landscape = true;
         else if (!strcmp(argv[i], "-d")) dump = true;
@@ -767,6 +775,16 @@ int main(int argc, char **argv)
     }
 
     ls_tui_screen_show(idx);
+    if (replay_path) {
+        subghz_file_t file;
+        int32_t edges[4096];
+        char line[6144];
+        if (!subghz_file_load(replay_path,&file,edges,4096,line,sizeof(line)) ||
+            !ls_scr_rec_replay_file(replay_path,&file,edges)) {
+            fprintf(stderr,"lssim: unsupported replay file %s\n",replay_path);
+            return 1;
+        }
+    }
     ls_tui_invalidate();
     frame(settle);
 

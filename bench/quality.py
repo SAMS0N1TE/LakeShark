@@ -985,6 +985,46 @@ int main(void) {
             subprocess.run([shutil.which('gcc') or 'gcc','-std=c11','-Wall','-Wextra','-Werror',str(c),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
 
+class SpeechLevelWiringTests(unittest.TestCase):
+    """speech.c and audio_out.c cannot be built on the host, so the order that
+    test_speech_level.c models is pinned here: the speech level is applied by
+    the player after the equalizer, never before the ring, where the
+    equalizer's leveler flattens it."""
+
+    @staticmethod
+    def _body(source, signature):
+        start = source.index(signature)
+        brace = source.index('{', start)
+        depth = 0
+        for i in range(brace, len(source)):
+            depth += (source[i] == '{') - (source[i] == '}')
+            if depth == 0:
+                return source[brace:i + 1]
+        raise AssertionError('unterminated ' + signature)
+
+    def test_the_sink_does_not_scale_and_the_setter_reaches_the_player(self):
+        speech = (ROOT/'components/lakeshark/audio/speech.c').read_text()
+        sink = self._body(speech, 'static bool speech_sink(')
+        self.assertNotRegex(sink, r'\*\s*vol|scaled|s_volume')
+        setter = self._body(speech, 'void speech_volume_set(')
+        self.assertIn('audio_out_speech_level_set(', setter)
+
+    def test_the_player_levels_speech_after_the_equalizer(self):
+        out = (ROOT/'components/lakeshark/audio/audio_out.c').read_text()
+        player = self._body(out, 'static void IRAM_ATTR audio_player_task(')
+        eq = player.index('audio_eq_process(')
+        level = player.index('audio_speech_level_apply(')
+        write = player.index('player_write(stereo')
+        self.assertTrue(eq < level < write)
+
+    def test_speech_is_marked_before_the_player_can_see_it(self):
+        out = (ROOT/'components/lakeshark/audio/audio_out.c').read_text()
+        send = self._body(out, 'static inline size_t ring_send_speech_locked(')
+        self.assertLess(send.index('audio_speech_span_add('), send.index('xStreamBufferSend('))
+        write = self._body(out, 'bool audio_write_speech(')
+        self.assertIn('ring_send_speech_locked(', write)
+        self.assertNotIn('ring_send_locked(', write)
+
 class UsbBootRecoveryTests(unittest.TestCase):
     def test_production_retry_is_bounded_and_preserves_registered_devices(self):
         import shutil
@@ -1218,13 +1258,15 @@ class TrackedReferenceTests(unittest.TestCase):
 
     def test_no_named_file_is_missing(self):
         # The contracts' history file is on the private list; a public tree,
-        # the one without that list, may lack it (see validate()).
+        # the one without that list, may lack it (see validate()). Private
+        # paths such as bench/queue live outside git by design.
         histories = set()
         if not PRIVATE_SURFACE:
             data = json.loads((ROOT / 'bench/regressions.json').read_text())
             histories = {c['history'] for c in data['contracts']}
         missing = {p: sorted(n) for p, n in self._refs().items()
                    if p not in self.KNOWN_MISSING and p not in histories
+                   and not _under_private_surface(ROOT / p)
                    and not (ROOT / p).exists()}
         self.assertEqual(missing, {}, 'named by tracked files and absent from the tree')
 

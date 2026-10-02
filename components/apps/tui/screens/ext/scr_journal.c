@@ -4,7 +4,9 @@
 #include "../../ls_motion.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
 #include "../../ls_app.h"
+#include "ls_mesh.h"
 #include "../../ls_map.h"
 #include "esp_attr.h"
 #include "core/ls_time.h"
@@ -33,13 +35,50 @@ static void title_done(const char *title)
     snprintf(s_title, sizeof(s_title), "%s", title);
     ls_keyboard_open("NOTE", "", LS_JOURNAL_TEXT - 1, save_text);
 }
-static void source_done(int i) { feedback(ls_field_source((ls_field_source_t)i)); }
+/* The radio behind what an entry attaches. The LoRa chip is two sources:
+   the mesh's traffic while MeshCore runs, Labs' tuning otherwise. GPS is
+   the entry with no radio: position and motion only. */
+static ls_rsel_radio_t radio_of(ls_field_source_t f)
+{
+    switch (f) {
+    case LS_FIELD_MESH: case LS_FIELD_LORA: return LS_RSEL_LORA;
+    case LS_FIELD_RTL:    return LS_RSEL_SDR_RTL;
+    case LS_FIELD_HACKRF: return LS_RSEL_SDR_HACKRF;
+    case LS_FIELD_CC1101: return LS_RSEL_CC1101;
+    case LS_FIELD_NRF24:  return LS_RSEL_NRF24;
+    case LS_FIELD_NFC:    return LS_RSEL_NFC;
+    case LS_FIELD_WIFI:   return LS_RSEL_WIFI;
+    case LS_FIELD_BLE:    return LS_RSEL_BLE;
+    default:              return LS_RSEL_GPS;
+    }
+}
+static ls_field_source_t field_of(ls_rsel_radio_t r)
+{
+    switch (r) {
+    case LS_RSEL_LORA: { ls_mesh_stats_t st; ls_mesh_get_stats(&st);
+                         return st.running ? LS_FIELD_MESH : LS_FIELD_LORA; }
+    case LS_RSEL_SDR_RTL:    return LS_FIELD_RTL;
+    case LS_RSEL_SDR_HACKRF: return LS_FIELD_HACKRF;
+    case LS_RSEL_CC1101:     return LS_FIELD_CC1101;
+    case LS_RSEL_NRF24:      return LS_FIELD_NRF24;
+    case LS_RSEL_NFC:        return LS_FIELD_NFC;
+    case LS_RSEL_WIFI:       return LS_FIELD_WIFI;
+    case LS_RSEL_BLE:        return LS_FIELD_BLE;
+    default:                 return LS_FIELD_NONE;
+    }
+}
+/* What is attached now is the field worker's, so it is the button's too. */
+static ls_rsel_radio_t attached(void) { return radio_of(s.sample.source); }
+static void source_done(ls_rsel_radio_t r)
+{
+    const bool ok = ls_field_source(field_of(r));
+    if (!ok) ls_rsel_set(LS_RSEL_JOURNAL, attached());
+    feedback(ok);
+}
 static void pick_source(void)
 {
-    if(s_rec_source) { snprintf(s_feedback,sizeof(s_feedback),"Use REC SOURCE to change radio"); return; }
-    ls_picker_open("ATTACH RADIO", source_done);
-    for (int i = 0; i < LS_FIELD_SOURCES; i++)
-        ls_picker_add(ls_field_source_name((ls_field_source_t)i), i == LS_FIELD_CC1101 ? "MIX-RF monitor" : i == LS_FIELD_NRF24 ? "2.4 GHz survey" : i == LS_FIELD_NFC ? "External field watch" : i == LS_FIELD_NONE ? "GPS + motion" : "Current tuning");
+    if(s_rec_source) { snprintf(s_feedback,sizeof(s_feedback),"REC's RADIO above changes the radio"); return; }
+    ls_rsel_open(LS_RSEL_JOURNAL, source_done);
 }
 static void action(int i)
 {
@@ -118,7 +157,7 @@ static void draw(tui_surface *sf, tui_rect a)
         a.h-=5;
     }
     if (s_selected >= s.journal_count) s_selected = s.journal_count ? s.journal_count - 1 : 0;
-    ls_btn_t buttons[] = {{"NEW", "NOTE", 'n', false, false}, {"RADIO", ls_field_source_name(s.sample.source), 'r', false, false},
+    ls_btn_t buttons[] = {{"NEW", "NOTE", 'n', false, false}, ls_rsel_button(LS_RSEL_JOURNAL),
         {"RECORD", s.recording ? "ON" : "OFF", 'c', s.recording, false}, {"SENSORS", s_detail ? "ENTRY" : "LIVE", 'v', s_sensors, false},
         {"EDIT", NULL, 'e', false, !s.journal_count}, {"MAP", "ENTRY", 'g', false, !s.journal_count}};
     const int bar_h = ls_btn_raised_height(a, 6);
@@ -179,7 +218,8 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_safe_line(sf,a,a.y+a.h-2,status,LS_ATTR_DIM);
     ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_keyboard_mode()?"ENTER read  ARROWS browse  BS back":s.storage, LS_ATTR_DIM);
 }
-static void enter(void) { button_focus=-1;button_slot=0; ls_field_start(); ls_field_watch(true); s_detail = s_sensors = false; s_scroll = 0; }
+static void enter(void) { button_focus=-1;button_slot=0; ls_field_start(); ls_field_watch(true); s_detail = s_sensors = false; s_scroll = 0;
+                          ls_field_snapshot(&s); ls_rsel_track(LS_RSEL_JOURNAL, attached); }
 static void leave(void) { s_rec_source=false; ls_field_watch(false); }
 static bool key(ls_tk_t k, char ch)
 {

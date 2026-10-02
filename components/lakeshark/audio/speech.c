@@ -57,15 +57,8 @@ static bool speech_sink(const int16_t *pcm, int n, void *ctx)
     speech_job_t *j = (speech_job_t *)ctx;
     if (j->gen != __atomic_load_n(&s_gen, __ATOMIC_ACQUIRE)) { j->stopped = true; return false; }
 
-    /* Speech level against everything else; the codec volume still
-       applies on top. */
-    int16_t scaled[256];
-    const int vol = s_volume;
-    if (vol < 100 && n <= (int)(sizeof(scaled) / sizeof(scaled[0]))) {
-        for (int i = 0; i < n; i++) scaled[i] = (int16_t)(pcm[i] * vol / 100);
-        pcm = scaled;
-    }
-
+    /* The speech level is not applied here: audio_out applies it after the
+       equalizer, whose leveler would otherwise undo it. */
     const int64_t t0 = esp_timer_get_time();
     const bool ok = audio_write_speech(pcm, n);
     const int64_t t1 = esp_timer_get_time();
@@ -243,6 +236,7 @@ void speech_volume_set(int pct)
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     s_volume = pct;
+    audio_out_speech_level_set(pct);
 }
 
 speech_voice_t speech_voice_step(int dir)

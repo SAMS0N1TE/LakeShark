@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "subghz_file.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,6 +45,9 @@ bool ls_mixrf_capture(bool on,uint32_t frequency);
 /* Blocking, bounded one-shot on the mixrf worker; caller retains pulses.
    Refuses competing receive/probe work. Nominal power: -10, 0, 5, 10 dBm. */
 bool ls_mixrf_replay(uint32_t frequency, const int32_t *pulses, size_t count, int dbm);
+/* Same timing and ownership contract; continuous 2-FSK, PA entry zero. */
+bool ls_mixrf_replay_fsk(uint32_t frequency, const int32_t *pulses, size_t count,
+                         int dbm, const subghz_cc_fsk_t *mod);
 bool ls_mixrf_scan(bool on);
 bool ls_mixrf_nfc_watch(bool on);
 bool ls_mixrf_card_scan(bool on);

@@ -46,6 +46,16 @@
       "usb_serial": "5C84301528",
       "flash_mb": 16,
       "board": "T-Display-P4"
+    },
+    {
+      "name": "t-display-p4-lr2021",
+      "dir": "build_tdp4",
+      "idf_export": "C:/esp/v5.4.3/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
+      "enabled": true,
+      "usb_serial": "5B91081095",
+      "flash_mb": 16,
+      "board": "T-Display-P4"
     }
   ],
   "smoke": "t-display-p4",

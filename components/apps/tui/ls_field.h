@@ -97,6 +97,9 @@ typedef struct {
     char record_saved_utc[24];
     uint32_t spectrum_sweeps, spectrum_errors;
     int64_t spectrum_us;
+    /* The band SPECTRUM sweeps when one was set (ls_field_spectrum_span);
+       0 when it sweeps round the tuned frequency. */
+    uint32_t span_lo_hz, span_hi_hz;
     bool calibration_keyboard; /* Active automatic attachment profile. */
     uint8_t calibration_faces;
     uint16_t calibration_samples;
@@ -119,8 +122,9 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg);
    button rather than by a session that silently fails to start. */
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg);
 bool ls_field_mode(ls_lab_mode_t mode);
-/* The band LS_LAB_SPECTRUM sweeps, 150-960 MHz; 0 goes back to 1 MHz
-   either side of the tuned frequency. */
+/* The band LS_LAB_SPECTRUM sweeps: 150-960 MHz, or wherever the part says
+   it sweeps (ls_lora_rx_range_ok); 0 goes back to 1 MHz either side of the
+   tuned frequency. */
 bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz);
 /* 0 starts the guide, 1 retries the completed fit, 2 cancels. */
 bool ls_field_calibrate(int action);

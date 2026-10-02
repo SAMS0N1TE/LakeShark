@@ -131,6 +131,49 @@
 
 #define LS_BOARD_XL_RADIO_DIO1   LS_XL9535_IO17
 
+/* The same socket may carry an LR20xx (LR2021) module. ls_lora_start() probes
+   for one first and falls back to the SX1262.
+
+   What LilyGO's own sources confirm for the LR2021 carrier (github.com/
+   Xinyuan-LilyGO/T-Display-P4, branch v1-debug-lr2021: the
+   radiolib_lr2021_send_receive and sx1262_lora_send_receive examples, and the
+   board's pin configuration header in its private_library component):
+     - CS 24, BUSY 6, SCLK 2 / MOSI 3 / MISO 4: the example reuses the SX1262
+       macros above, so the socket and its reset (XL9535 IO16) are shared.
+     - IRQ: Lr2021.irqDioNum = 11, and the example polls XL9535 IO17 for it, so
+       expander IO17 is LR2021 DIO11 (on the SX1262 it is DIO1).
+     - RF switch: the example drives it from LR2021 DIO6/7/8/10 through
+       setRfSwitchTable. STBY is all low; LF receive (1090 MHz ADS-B included)
+       needs DIO8 high; HF receive is DIO6 + DIO10; DIO8 is also the LF transmit
+       state and DIO7 + DIO10 the HF transmit state. Without DIO8 the front end
+       is off.
+     - Antenna: SKY13453 VCTL is XL9535 IO1. The SX1262 example sets it HIGH
+       under the comment "use the RF1 antenna by default" (lines 63-65 of
+       that example's main source); the LR2021 example sets it HIGH too. ls_board_hw.c already parks it HIGH and calls that the
+       internal antenna. So HIGH is RF1; the level that selects RF2 is not
+       stated in any LilyGO source read.
+   Not confirmed by any source: whether the SIMO inductor is fitted. The driver
+   therefore sends no SetRegMode (the regulator stays on its LDO default, which
+   works either way) and no SetTcxoMode (plain crystal). It transmits on the LF
+   path only, below 1 GHz: LilyGO's example warns that an HF power above 12
+   damages the 2.4 GHz front-end module, and the driver never writes one. */
+#define LS_BOARD_LORA_MAY_BE_LR20XX 1
+
+/* LR2021 DIO that carries the interrupt to expander IO17. The driver maps it
+   and still polls the IRQ word over SPI; nothing reads IO17 for an LR2021. */
+#define LS_BOARD_LR20XX_IRQ_DIO     11
+
+/* RF switch DIOs, { dio, config }. config is the SetDioRfSwitchConfig byte:
+   bit 0 standby, 1 Rx LF, 2 Tx LF, 3 Rx HF, 4 Tx HF, set where the DIO is
+   high in that mode. DIO8 carries both LF states, as in LilyGO's table. The
+   Tx HF bits (DIO7 and DIO10 on this carrier) are left clear on purpose, so
+   the HF transmit state routes nothing to the antenna; the driver refuses a
+   table that sets one. */
+#define LS_BOARD_LR20XX_RFSW_TABLE     { 6, 0x08 },   /* high in Rx HF            */     { 7, 0x00 },   /* high only in Tx HF       */     { 8, 0x06 },   /* high in Rx LF and Tx LF  */     { 10, 0x08 }   /* high in Rx HF            */
+
+/* VCTL level that selects RF1, the antenna the factory firmware defaults to. */
+#define LS_BOARD_LR20XX_RF1_VCTL_LEVEL true
+
 #define LS_BOARD_GPS_UART_NUM    2
 #define LS_BOARD_GPS_RX_GPIO     22
 #define LS_BOARD_GPS_TX_GPIO     23

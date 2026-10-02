@@ -31,6 +31,8 @@ static uint32_t tx_hz;
 static int tx_dbm;
 static const int32_t *tx_pulses;
 static size_t tx_count;
+static bool tx_fsk;
+static subghz_cc_fsk_t tx_mod;
 
 static bool cc_ready(void)
 {
@@ -332,9 +334,9 @@ static bool tune(uint32_t hz, bool capture)
         cc_write(0x17,0x3c) && cc_write(0x18,0x18) && cc_strobe(0x34);
 }
 
-/* TI CC1101 datasheet tables 36/39. PATABLE[0] is off, [1] is the
-   requested nominal mark power; the board/antenna is not calibrated. */
-static bool transmit_ook(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
+/* TI CC1101 datasheet tables 36/39. OOK uses off/mark in PATABLE[0/1];
+   FSK uses continuous power in PATABLE[0]. The antenna is not calibrated. */
+static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
 {
     static const uint8_t pa[4][4]={{0x34,0x51,0x85,0xc2},
         {0x34,0x60,0x84,0xc0},{0x27,0x50,0x81,0xc2},{0x27,0x8e,0xcd,0xc0}};
@@ -357,16 +359,19 @@ static bool transmit_ook(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     if(!cc_strobe(0x36) || !cc_write(0x02,0x2e) ||
        !ls_keypad_expander_update(2,6,route) || !ls_keypad_expander_update(6,6,0) ||
        !cc_write(0x0d,word>>16) || !cc_write(0x0e,word>>8) || !cc_write(0x0f,word) ||
-       !cc_write(0x08,0x32) || !cc_write(0x10,0x17) || !cc_write(0x11,0x32) ||
-       !cc_write(0x12,0x30) || !cc_write(0x17,0) || !cc_write(0x18,0x18) ||
-       !cc_write(0x22,0x11))goto cleanup;
+       !cc_write(0x08,0x32) || !cc_write(0x10,tx_fsk?tx_mod.mdmcfg4:0x17) || !cc_write(0x11,tx_fsk?tx_mod.mdmcfg3:0x32) ||
+       !cc_write(0x12,tx_fsk?0x04:0x30) ||
+       !cc_write(0x0c,tx_fsk?tx_mod.freqoff:0) || !cc_write(0x06,0) ||
+       !cc_write(0x13,0x02) || !cc_write(0x15,tx_fsk?tx_mod.deviatn:0) || !cc_write(0x17,0) || !cc_write(0x18,0x18) ||
+       !cc_write(0x22,tx_fsk?0x10:0x11))goto cleanup;
     stage="PATABLE";
     if((error=ls_spi_hold(cc_dev))!=ESP_OK)goto cleanup;
     gpio_set_level(LS_BOARD_MIX_CC_CS,0);
     transaction=(spi_transaction_t){.flags=SPI_TRANS_USE_TXDATA,.length=24};
     transaction.tx_data[0]=0x7e; /* PATABLE burst; CS resets the table index. */
-    transaction.tx_data[1]=0;
-    transaction.tx_data[2]=pa[hz<400000000?0:hz<500000000?1:hz<900000000?2:3][power];
+    uint8_t amplitude=pa[hz<400000000?0:hz<500000000?1:hz<900000000?2:3][power];
+    transaction.tx_data[1]=tx_fsk?amplitude:0;
+    transaction.tx_data[2]=tx_fsk?0:amplitude;
     ok=cc_ready() && spi_device_polling_transmit(cc_dev,&transaction)==ESP_OK;
     gpio_set_level(LS_BOARD_MIX_CC_CS,1);spi_device_release_bus(cc_dev);
     if(!ok)goto cleanup;
@@ -408,8 +413,8 @@ cleanup:
     gpio_set_direction(LS_BOARD_MIX_CC_GDO0,GPIO_MODE_INPUT);
     heap_caps_free(symbols);
     if(!ok)printf("mixrf: TX failure at %s: error=%s SPI=%s MARCSTATE=%02x\n",stage,esp_err_to_name(error),esp_err_to_name(transfer_error),marc);
-    status_text(ok?"CC1101 OOK replay complete; idle":"CC1101 replay failed; idle requested");
-    printf("mixrf: OOK TX %.4f MHz %u edges nominal %d dBm: %s\n",hz/1e6,(unsigned)count,dbm,ok?"complete":"FAILED");
+    status_text(ok?(tx_fsk?"CC1101 FSK replay complete; idle":"CC1101 OOK replay complete; idle"):"CC1101 replay failed; idle requested");
+    printf("mixrf: %s TX %.4f MHz %u edges nominal %d dBm: %s\n",tx_fsk?"FSK":"OOK",hz/1e6,(unsigned)count,dbm,ok?"complete":"FAILED");
     return ok;
 }
 static void worker(void *arg)
@@ -432,7 +437,7 @@ static void worker(void *arg)
         portENTER_CRITICAL(&lock);bool send=tx_pending;tx_pending=false;portEXIT_CRITICAL(&lock);
         if(send) {
             ls_cc_capture_stop();capturing=running=false;
-            bool sent=ls_keypad_present() && transmit_ook(tx_hz,tx_pulses,tx_count,tx_dbm);
+            bool sent=ls_keypad_present() && transmit_raw(tx_hz,tx_pulses,tx_count,tx_dbm);
             portENTER_CRITICAL(&lock);tx_ok=sent;tx_done=true;state.receiving=state.capturing=false;portEXIT_CRITICAL(&lock);
         }
         portENTER_CRITICAL(&lock);bool retry=reprobe;reprobe=false;portEXIT_CRITICAL(&lock);
@@ -561,7 +566,7 @@ bool ls_mixrf_capture(bool on,uint32_t hz)
     if(ok){want=want_capture=on;requested=hz;}
     portEXIT_CRITICAL(&lock);return ok;
 }
-bool ls_mixrf_replay(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
+static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,const subghz_cc_fsk_t *mod)
 {
     if(!((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||
          (hz>=779000000 && hz<=928000000)) ||
@@ -578,7 +583,7 @@ bool ls_mixrf_replay(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     }
     portENTER_CRITICAL(&lock);
     bool ok=started && state.cc && !state.busy && !reprobe && !tx_active && !want && !want_capture;
-    if(ok){tx_active=tx_pending=true;tx_done=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=pulses;tx_count=count;}
+    if(ok){tx_active=tx_pending=true;tx_done=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=pulses;tx_count=count;tx_fsk=mod!=NULL;if(mod)tx_mod=*mod;}
     portEXIT_CRITICAL(&lock);
     if(!ok)return false;
     for(;;) {
@@ -589,6 +594,10 @@ bool ls_mixrf_replay(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     portENTER_CRITICAL(&lock);tx_active=false;tx_pulses=NULL;portEXIT_CRITICAL(&lock);
     return ok;
 }
+bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm)
+{return replay_raw(hz,p,n,dbm,NULL);}
+bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const subghz_cc_fsk_t *mod)
+{return mod && replay_raw(hz,p,n,dbm,mod);}
 bool ls_mixrf_scan(bool on)
 {
     portENTER_CRITICAL(&lock);bool ok=!on || (state.nrf && !state.busy);
@@ -609,6 +618,7 @@ bool ls_mixrf_card_scan(bool on)
 }
 #else
 bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm){(void)hz;(void)p;(void)n;(void)dbm;return false;}
+bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const subghz_cc_fsk_t *mod){(void)hz;(void)p;(void)n;(void)dbm;(void)mod;return false;}
 bool ls_mixrf_start(void){return false;}
 void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(out){memset(out,0,sizeof(*out));snprintf(out->status,sizeof(out->status),"No keyboard radio wiring for this board");}}
 bool ls_mixrf_receive(bool on,uint32_t hz){(void)on;(void)hz;return false;}

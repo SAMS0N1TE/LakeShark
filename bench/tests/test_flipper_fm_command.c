@@ -14,6 +14,7 @@
 #include "ls_version.h"
 #include "radio_health.h"
 #include "rec_state.h"
+#include "rec_watch.h"
 #include "tone.h"
 #include "freertos/task.h"
 
@@ -297,6 +298,16 @@ void lakeshark_adsb_telemetry(lakeshark_adsb_tel_t *out) { memset(out, 0, sizeof
 
 void rec_get_status(rec_status_t *out) { memset(out, 0, sizeof(*out)); }
 void rec_set_freq(uint32_t hz) { (void)hz; }
+/* REC SCAN's sweep, which these tests do not exercise. */
+bool rec_watch_scan_busy(void) { return false; }
+void rec_watch_scan_stop(void) { }
+bool rec_watch_enabled(void) { return false; }
+bool rec_watch_request_scan(uint32_t lo, uint32_t hi, uint32_t s, int b)
+{ (void)lo; (void)hi; (void)s; (void)b; return false; }
+int rec_watch_scan_live(rec_scan_bin_t *o, int m) { (void)o; (void)m; return 0; }
+float rec_watch_scan_live_floor(void) { return 0; }
+int rec_watch_scan_result(rec_scan_bin_t *o, int m) { (void)o; (void)m; return 0; }
+int rec_watch_scan_events(void) { return 0; }
 uint32_t rec_get_freq(void) { return 0; }
 void rec_set_gain(int gain) { (void)gain; }
 void rec_set_thresh(int threshold) { (void)threshold; }
@@ -309,6 +320,13 @@ void rec_arm_request(void) {}
 void rec_disarm(void) {}
 int rec_edges_copy(int from, int32_t *out, int max) { (void)from; (void)out; (void)max; return 0; }
 int rec_save(const char *name, char *path, size_t len) { (void)name; (void)path; (void)len; return -1; }
+int rec_files_snapshot(void) { return 0; }
+static int s_rec_mod;
+static bool s_rec_autosave = true;
+void rec_set_mod(int mod) { s_rec_mod = mod; }
+int rec_get_mod(void) { return s_rec_mod; }
+void rec_set_autosave(bool on) { s_rec_autosave = on; }
+bool rec_get_autosave(void) { return s_rec_autosave; }
 int rec_file_info(int index, char *name, size_t len, uint32_t *freq, long *size)
 { (void)index; (void)name; (void)len; (void)freq; (void)size; return 0; }
 int rec_load(int index) { (void)index; return -1; }
@@ -566,6 +584,27 @@ LS_CASE(the_head_can_start_the_track_and_see_whether_it_kept_anything)
     LS_CHECK_MSG(reply_has("TRACK on", "-ERR"),
                  "a recorder that would not start still answered +OK");
     g_track_refuses = false;
+}
+
+LS_CASE(the_head_sets_rec_modulation_and_autosave)
+{
+    /* LS-1241/1242: an FSK trap needs REC set to FSK before it records. */
+    char reply[64];
+    flipper_link_set_host(&TEST_HOST);
+    flipper_link_inject("REC MOD FSK", reply, sizeof(reply));
+    LS_EQ_STR("+OK mo=1\n", reply);
+    LS_EQ_INT(REC_MOD_FSK, s_rec_mod);
+    flipper_link_inject("rec mod ook", reply, sizeof(reply));
+    LS_EQ_STR("+OK mo=0\n", reply);
+    flipper_link_inject("REC MOD AM", reply, sizeof(reply));
+    LS_EQ_STR("-ERR rec mod\n", reply);
+    flipper_link_inject("REC AUTOSAVE OFF", reply, sizeof(reply));
+    LS_EQ_STR("+OK autosave=0\n", reply);
+    LS_CHECK(!s_rec_autosave);
+    flipper_link_inject("REC AUTOSAVE", reply, sizeof(reply));
+    LS_EQ_STR("+OK autosave=0\n", reply);
+    flipper_link_inject("REC AUTOSAVE ON", reply, sizeof(reply));
+    LS_EQ_STR("+OK autosave=1\n", reply);
 }
 
 LS_CASE(an_unknown_verb_is_still_refused_and_counted)

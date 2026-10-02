@@ -6,6 +6,9 @@
 #include "../../ls_keyboard.h"
 #include "../../ls_numpad.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
+#include "ls_lora.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include <math.h>
@@ -77,12 +80,39 @@ static const struct { const char *name; double mhz; } LABS_BANDS[] = {
 };
 #define LABS_BAND_N ((int)(sizeof(LABS_BANDS) / sizeof(LABS_BANDS[0])))
 
+/* What SPECTRUM can sweep instead of the 2 MHz round the tuned frequency, on
+   a part that reaches past 960 MHz (the LR2021, asked rather than assumed).
+   Spans, not points: the LoRa configuration stays below 960 MHz, where it
+   can transmit, and only the sweep moves. */
+static const struct { const char *name; uint32_t lo, hi; } LABS_SPANS[] = {
+    { "aviation",  960000000u, 1100000000u },
+    { "GPS L1",   1570000000u, 1581000000u },
+    { "Iridium",  1616000000u, 1626500000u },
+    { "2.4G ISM", 2400000000u, 2483500000u },
+};
+#define LABS_SPAN_N ((int)(sizeof(LABS_SPANS) / sizeof(LABS_SPANS[0])))
+/* Picker rows past the points -> LABS_SPANS, as the list was last opened. */
+EXT_RAM_BSS_ATTR static int labs_span_row[LABS_SPAN_N];
+static int labs_span_rows;
+
+static bool spans_offered(void)
+{
+    return s.mode == LS_LAB_SPECTRUM && (ls_lora_caps() & LS_LORA_CAP_RX_WIDE);
+}
+
 /* The same move the numeric entry makes for frequency, including the 4 MHz
    calibration window - a retune with a stale window is what makes the part
    come back deaf. */
 static void set_band(int i)
 {
+    if (i >= LABS_BAND_N && i < LABS_BAND_N + labs_span_rows) {
+        const int k = labs_span_row[i - LABS_BAND_N];
+        result(ls_field_spectrum_span(LABS_SPANS[k].lo, LABS_SPANS[k].hi));
+        return;
+    }
     if (i < 0 || i >= LABS_BAND_N) return;
+    /* A point after a span sweeps round the point again. */
+    if (s.span_lo_hz && (ls_lora_caps() & LS_LORA_CAP_RX_WIDE)) ls_field_spectrum_span(0, 0);
     const double mhz = LABS_BANDS[i].mhz;
     ls_lora_cfg_t cfg = s.config;
     cfg.freq_hz = (uint32_t)llround(mhz * 1e6);
@@ -98,6 +128,16 @@ static void open_band_picker(void)
         char detail[16];
         snprintf(detail, sizeof(detail), "%.4f", LABS_BANDS[i].mhz);
         ls_picker_add(LABS_BANDS[i].name, detail);
+    }
+    labs_span_rows = 0;
+    if (!spans_offered()) return;
+    const uint32_t caps = ls_lora_caps();
+    for (int i = 0; i < LABS_SPAN_N; i++) {
+        if (!ls_lora_rx_range_ok(caps, LABS_SPANS[i].lo, LABS_SPANS[i].hi)) continue;
+        char detail[24];
+        snprintf(detail, sizeof(detail), "sweep %.1f-%.1f", LABS_SPANS[i].lo / 1e6, LABS_SPANS[i].hi / 1e6);
+        labs_span_row[labs_span_rows++] = i;
+        ls_picker_add(LABS_SPANS[i].name, detail);
     }
 }
 
@@ -165,6 +205,10 @@ static void pages_list(tui_surface *sf, tui_rect r)
 static const char *band_now(void)
 {
     static char buf[16];
+    if (s.mode == LS_LAB_SPECTRUM && s.span_lo_hz)
+        for (int i = 0; i < LABS_SPAN_N; i++)
+            if (LABS_SPANS[i].lo == s.span_lo_hz && LABS_SPANS[i].hi == s.span_hi_hz)
+                return LABS_SPANS[i].name;
     for (int i = 0; i < LABS_BAND_N; i++)
         if ((uint32_t)llround(LABS_BANDS[i].mhz * 1e6) == s.config.freq_hz)
             return LABS_BANDS[i].name;
@@ -187,22 +231,26 @@ static void edit_setting(int i)
         ls_numpad_open(settings[i], i == 0 ? "MHz" : i == 4 ? "dBm" : i == 6 ? "decimal" : "", values[i], set_number);
     }
 }
+static void lora_value(int i, char *value, size_t n)
+{
+    switch (i) {
+    case 0: snprintf(value, n, "%.4f MHz", s.config.freq_hz / 1e6); break;
+    case 1: snprintf(value, n, "SF%u", s.config.sf); break;
+    case 2: snprintf(value, n, "%.2f kHz", s.config.bw_hz / 1000.0); break;
+    case 3: snprintf(value, n, "4/%u", s.config.cr); break;
+    case 4: snprintf(value, n, "%d dBm", s.config.power_dbm); break;
+    case 5: snprintf(value, n, "%u symbols", s.config.preamble); break;
+    case 6: snprintf(value, n, "0x%02X", s.config.sync_word); break;
+    case 7: snprintf(value, n, "%s", s.config.crc_on ? "on" : "off"); break;
+    default: snprintf(value, n, "%s", s.config.invert_iq ? "on" : "off"); break;
+    }
+}
 static void setup(void)
 {
     ls_picker_open("LORA SETTINGS", edit_setting);
     char value[32];
     for (int i = 0; i < 9; i++) {
-        switch (i) {
-        case 0: snprintf(value, sizeof(value), "%.4f MHz", s.config.freq_hz / 1e6); break;
-        case 1: snprintf(value, sizeof(value), "SF%u", s.config.sf); break;
-        case 2: snprintf(value, sizeof(value), "%.2f kHz", s.config.bw_hz / 1000.0); break;
-        case 3: snprintf(value, sizeof(value), "4/%u", s.config.cr); break;
-        case 4: snprintf(value, sizeof(value), "%d dBm", s.config.power_dbm); break;
-        case 5: snprintf(value, sizeof(value), "%u symbols", s.config.preamble); break;
-        case 6: snprintf(value, sizeof(value), "0x%02X", s.config.sync_word); break;
-        case 7: snprintf(value, sizeof(value), "%s", s.config.crc_on ? "on" : "off"); break;
-        default: snprintf(value, sizeof(value), "%s", s.config.invert_iq ? "on" : "off"); break;
-        }
+        lora_value(i, value, sizeof(value));
         ls_picker_add(settings[i], value);
     }
 }
@@ -256,6 +304,17 @@ static void edit_fsk_setting(int i)
     ls_numpad_open(fsk_settings[i], units[i], values[i], set_fsk_number);
 }
 
+static void fsk_value(int i, char *value, size_t n)
+{
+    switch (i) {
+    case 0: snprintf(value, n, "%.4f MHz", s.config.freq_hz / 1e6); break;
+    case 1: snprintf(value, n, "%lu baud", (unsigned long)s.fsk.bitrate); break;
+    case 2: snprintf(value, n, "%.1f kHz", s.fsk.deviation_hz / 1000.0); break;
+    case 3: snprintf(value, n, "%.1f kHz", s.fsk.bandwidth_hz / 1000.0); break;
+    case 4: snprintf(value, n, "0x%08lX", (unsigned long)s.fsk.sync_word); break;
+    default: snprintf(value, n, "%u bytes", s.fsk.payload_bytes); break;
+    }
+}
 static void setup_fsk(void)
 {
     const bool paging = s.mode == LS_LAB_POCSAG;
@@ -263,16 +322,66 @@ static void setup_fsk(void)
     ls_picker_open(paging ? "POCSAG SETTINGS" : "GFSK SETTINGS", edit_fsk_setting);
     char value[32];
     for (int i = 0; i < n; i++) {
-        switch (i) {
-        case 0: snprintf(value, sizeof(value), "%.4f MHz", s.config.freq_hz / 1e6); break;
-        case 1: snprintf(value, sizeof(value), "%lu baud", (unsigned long)s.fsk.bitrate); break;
-        case 2: snprintf(value, sizeof(value), "%.1f kHz", s.fsk.deviation_hz / 1000.0); break;
-        case 3: snprintf(value, sizeof(value), "%.1f kHz", s.fsk.bandwidth_hz / 1000.0); break;
-        case 4: snprintf(value, sizeof(value), "0x%08lX", (unsigned long)s.fsk.sync_word); break;
-        default: snprintf(value, sizeof(value), "%u bytes", s.fsk.payload_bytes); break;
-        }
+        fsk_value(i, value, sizeof(value));
         ls_picker_add(fsk_settings[i], value);
     }
+}
+
+/* OPTIONS: SETUP's rows for the mode running, through SETUP's own code, and
+   for POCSAG the two things a pager is wrong about when it hears nothing -
+   the rate and the polarity - as choices in place. */
+static void o_lora(const ls_opt_t *o) { edit_setting(o->arg); }
+static void o_lora_show(const ls_opt_t *o, char *out, size_t n) { lora_value(o->arg, out, n); }
+static void o_fsk(const ls_opt_t *o) { edit_fsk_setting(o->arg); }
+static void o_fsk_show(const ls_opt_t *o, char *out, size_t n) { fsk_value(o->arg, out, n); }
+#define LORA_ROW(i, l) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_lora, .show = o_lora_show }
+#define FSK_ROW(i, l)  { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_fsk, .show = o_fsk_show }
+
+static const char *const PAGER_BAUD[] = { "1200", "2400" };
+static int o_pager_baud(const ls_opt_t *o) { (void)o; return s.fsk.bitrate == 2400 ? 1 : 0; }
+static void o_set_pager_baud(const ls_opt_t *o, int v)
+{
+    (void)o;
+    ls_fsk_cfg_t cfg = s.fsk;
+    cfg.bitrate = v ? 2400 : 1200;
+    result(ls_field_configure_fsk(&cfg));
+}
+static const char *const POLARITY[] = { "NORMAL", "INVERTED" };
+static int o_polarity(const ls_opt_t *o) { (void)o; return s.config.invert_iq; }
+static void o_set_polarity(const ls_opt_t *o, int v)
+{
+    (void)o;
+    ls_lora_cfg_t cfg = s.config;
+    cfg.invert_iq = v != 0;
+    result(ls_field_configure(&cfg));
+}
+
+static const ls_opt_t OPT_LORA[] = {
+    LORA_ROW(0, "FREQUENCY"), LORA_ROW(1, "SPREAD FACTOR"), LORA_ROW(2, "BANDWIDTH"), LORA_ROW(3, "CODING RATE"), LORA_ROW(4, "POWER"),
+    LORA_ROW(5, "PREAMBLE"), LORA_ROW(6, "SYNC WORD"), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ") };
+static const ls_opt_t OPT_SPECTRUM[] = { LORA_ROW(0, "FREQUENCY") };
+static const ls_opt_t OPT_GFSK[] = {
+    FSK_ROW(0, "FREQUENCY"), FSK_ROW(1, "BITRATE"), FSK_ROW(2, "DEVIATION"), FSK_ROW(3, "BANDWIDTH"), FSK_ROW(4, "SYNC WORD"), FSK_ROW(5, "PAYLOAD"), LORA_ROW(8, "INVERT IQ") };
+static const ls_opt_t OPT_POCSAG[] = {
+    FSK_ROW(0, "FREQUENCY"),
+    { .label = "BAUD", .kind = LS_OPT_CYCLE, .names = PAGER_BAUD, .n = 2,
+      .get = o_pager_baud, .set = o_set_pager_baud },
+    { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
+      .get = o_polarity, .set = o_set_polarity },
+};
+#undef LORA_ROW
+#undef FSK_ROW
+static const ls_opt_ctx_t CTX_LABS[] = {
+    [LS_LAB_PACKETS]  = { .name = "PACKETS", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_LORA) },
+    [LS_LAB_SPECTRUM] = { .name = "SPECTRUM", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_SPECTRUM) },
+    [LS_LAB_BEARING]  = { .name = "BEARING", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_LORA) },
+    [LS_LAB_GFSK]     = { .name = "GFSK", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GFSK) },
+    [LS_LAB_POCSAG]   = { .name = "POCSAG", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG) },
+};
+static const ls_opt_ctx_t *labs_options(void)
+{
+    const int m = (int)s.mode;
+    return m >= 0 && m < (int)(sizeof(CTX_LABS) / sizeof(CTX_LABS[0])) ? &CTX_LABS[m] : NULL;
 }
 
 static void send_text(const char *text) { result(ls_field_transmit(text)); }
@@ -293,6 +402,10 @@ static void action(int i)
        this writer does not carry. JOURNAL has had this button all along;
        the screen actually doing the measuring did not. */
     else if (i == 6) result(ls_field_record(!s.recording));
+    /* The same list as every app; Labs works the LoRa chip, and the list
+       says so for the others. */
+    else if (i == 7) ls_rsel_open(LS_RSEL_LABS, NULL);
+    else if (i == 8) ls_opt_open(labs_options());
 }
 static void switch_action(int i)
 {
@@ -661,9 +774,12 @@ static void draw(tui_surface *sf, tui_rect a)
         {"BAND", band_now(), 'b', false, false},
         {"SEND", s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || s.mode == LS_LAB_SPECTRUM},
         {"MARK", "JOURNAL", 'j', false, false},
-        {"REC", rec_face(), 'r', s.recording, !s.ready}};
-    const int bar_h = ls_btn_raised_height(a, 7);
-    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 7, button_slot==0?button_focus:-1);
+        /* REC is E: R is RADIO, as in every app. */
+        {"REC", rec_face(), 'e', s.recording, !s.ready},
+        ls_rsel_button(LS_RSEL_LABS),
+        ls_opt_button(labs_options())};
+    const int bar_h = ls_btn_raised_height(a, 9);
+    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 9, button_slot==0?button_focus:-1);
     ls_btn_t switches[] = {{"CRC", s.config.crc_on ? "ON" : "OFF", 'c', s.config.crc_on, s.transmitting},
         {"IQ", s.config.invert_iq ? "INVERT" : "NORMAL", 'i', s.config.invert_iq, s.transmitting},
         {"SYNC", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM", 'p', s.config.sync_word == 0x34, s.transmitting},
@@ -713,7 +829,8 @@ static void draw(tui_surface *sf, tui_rect a)
             tui_put_str(sf,plot,plot.x,plot.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
         }
         else tui_put_str(sf,plot,plot.x+1,plot.y+1,s.direct?"No complete fresh sweep":"Enable DIRECT to scan; Mesh will pause",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-        snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",(s.config.freq_hz-1000000)/1e6,(s.config.freq_hz+1000000)/1e6);
+        if(s.span_lo_hz) snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",s.span_lo_hz/1e6,s.span_hi_hz/1e6);
+        else snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",(s.config.freq_hz-1000000)/1e6,(s.config.freq_hz+1000000)/1e6);
         tui_put_str(sf,plot,plot.x,plot.y+plot.h-1,line,LS_ATTR_DIM);
     } else if (s.mode == LS_LAB_POCSAG) pages_list(sf, plot);
     else graph(sf, plot, s_trace);
@@ -731,7 +848,7 @@ static void draw(tui_surface *sf, tui_rect a)
         tui_put_str(sf, panel, panel.x + 2, plot.y + plot.h + 2, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     }
     if(s.mode==LS_LAB_SPECTRUM) {
-        snprintf(line,sizeof(line),"SX1262 sweeps %lu / errors %lu / age %s",(unsigned long)s.spectrum_sweeps,(unsigned long)s.spectrum_errors,s.direct&&s.spectrum_us&&now>=s.spectrum_us&&now-s.spectrum_us<3000000?"<3s":"STALE");
+        snprintf(line,sizeof(line),"%s sweeps %lu / errors %lu / age %s",ls_rsel_name(LS_RSEL_LORA),(unsigned long)s.spectrum_sweeps,(unsigned long)s.spectrum_errors,s.direct&&s.spectrum_us&&now>=s.spectrum_us&&now-s.spectrum_us<3000000?"<3s":"STALE");
         tui_put_str(sf,panel,panel.x+2,plot.y+plot.h+2,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     if (panel.h > 36) {
@@ -816,7 +933,7 @@ static bool key(ls_tk_t k, char ch) {
     if (ls_btn_navigate(k,&button_slot,&button_focus,true)) return true;
     if (k==LS_TK_ENTER) { if(ls_btn_enabled(button_slot,button_focus)) { if(button_slot==0)action(button_focus);else switch_action(button_focus); } return true; }
     if (k != LS_TK_CHAR || !ch) return false;
-    const char *p = strchr("dmsbtjr", ch); if (p) { action((int)(p - "dmsbtjr")); return true; }
+    const char *p = strchr("dmsbtjero", ch); if (p) { action((int)(p - "dmsbtjero")); return true; }
     p = strchr("ciphxk", ch); if (!p) return false; switch_action((int)(p - "ciphxk")); return true;
 }
-const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  B band  R record  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};
+const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  O options  B band  E record  R radio  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};

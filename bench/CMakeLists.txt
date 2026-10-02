@@ -48,6 +48,9 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_notify.c
     ${FW}/components/apps/tui/ls_geo.c
     ${FW}/components/apps/tui/ls_picker.c
+    ${FW}/components/apps/tui/ls_radio_select.c
+    ${FW}/bench/tools/lssim_rsel.c
+    ${FW}/components/apps/tui/ls_options.c
     ${FW}/components/apps/tui/ls_action.c
     ${FW}/components/apps/tui/ls_value.c
     ${FW}/components/apps/tui/ls_font_list.c
@@ -55,6 +58,33 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/bench/shims/tui_hw_stubs.c)
+
+set(LS_EXP_SRCS
+    ${FW}/components/apps/tui/experiments/exp_loramon.c
+    ${FW}/components/apps/tui/experiments/exp_zwave.c
+    ${FW}/components/apps/tui/experiments/exp_wisun.c
+    ${FW}/components/apps/tui/experiments/lorafam_decode.c
+    ${FW}/bench/shims/lorafam_fake.c
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/ls_experiments_builtin.c
+    ${FW}/components/apps/tui/experiments/exp_aviation.c
+    ${FW}/components/apps/tui/experiments/aviation_decode.c
+    ${FW}/components/apps/tui/experiments/exp_uat.c
+    ${FW}/components/apps/tui/experiments/uat_decode.c
+    ${FW}/components/apps/tui/experiments/exp_carrier.c
+    ${FW}/components/apps/tui/experiments/exp_dfm17.c
+    ${FW}/components/apps/tui/experiments/dfm_decode.c
+    ${FW}/components/apps/tui/experiments/exp_p25site.c
+    ${FW}/components/apps/tui/experiments/p25_sitefind.c
+    ${FW}/components/apps/tui/experiments/exp_pagers.c
+    ${FW}/components/apps/tui/experiments/pager_recon.c
+    ${APP}/fm/pocsag.c
+    ${FW}/components/apps/tui/experiments/exp_burst.c
+    ${FW}/components/apps/tui/experiments/exp_iridium.c
+    ${FW}/components/apps/tui/experiments/exp_rf.c
+    ${FW}/components/apps/tui/experiments/exp_survey.c
+    ${FW}/components/apps/tui/experiments/exp_lr433.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
 
 set(LS_TUI_APP_INCLUDES
     ${FW}/components/lakeshark/core
@@ -381,6 +411,10 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_labs.c
     ${FW}/components/apps/tui/screens/ext/scr_subghz.c
     ${FW}/components/apps/tui/screens/ext/scr_mixrf.c
+    ${FW}/components/apps/tui/screens/ext/scr_experiments.c
+    ${LS_EXP_SRCS}
+    ${FW}/bench/shims/ls_exp_fake.c
+    ${FW}/bench/shims/ls_scan_fake.c
     ${FW}/components/apps/tui/screens/ext/scr_nfc.c
     ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
     ${FW}/components/lakeshark/nfc/nfc_classic.c
@@ -431,6 +465,49 @@ target_include_directories(test_tui_screens PRIVATE
     ${APP}/rec
     ${APP}/subghz
     ${FW}/bench/shims)
+
+ls_add_test(test_experiments
+    ${LS_EXP_SRCS}
+    ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_experiments PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_exp_dfm17
+    ${FW}/components/apps/tui/experiments/dfm_decode.c
+    ${FW}/components/apps/tui/experiments/exp_dfm17.c
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_exp_dfm17 PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui/experiments)
+
+ls_add_test(test_exp_pagers
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/experiments/exp_pagers.c
+    ${FW}/components/apps/tui/experiments/pager_recon.c
+    ${APP}/fm/pocsag.c)
+target_include_directories(test_exp_pagers PRIVATE
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
+
+ls_add_test(test_exp_p25site
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/experiments/exp_p25site.c
+    ${FW}/components/apps/tui/experiments/p25_sitefind.c)
+target_include_directories(test_exp_p25site PRIVATE
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
+
+foreach(exp_id burst iridium survey)
+    ls_add_test(test_exp_${exp_id}
+        ${FW}/components/apps/tui/ls_experiments.c
+        ${FW}/components/apps/tui/experiments/exp_rf.c
+        ${FW}/components/apps/tui/experiments/exp_${exp_id}.c)
+    target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES})
+endforeach()
+
+ls_add_test(test_exp_lr433
+    ${LS_EXP_SRCS}
+    ${FW}/components/apps/tui/ls_geo.c
+    ${FW}/bench/shims/ls_scan_fake.c
+    ${FW}/bench/shims/ls_exp_others_fake.c)
+target_include_directories(test_exp_lr433 PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_tui_router
     ${LS_TUI_APP_SRCS}
@@ -518,6 +595,32 @@ ls_add_test(test_tui_picker
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_picker PRIVATE ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_radio_select
+    ${FW}/components/apps/tui/ls_radio_select.c
+    ${FW}/components/lakeshark/core/radio_choice.c
+    ${FW}/components/apps/tui/ls_picker.c
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_radio_select PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_options
+    ${FW}/components/apps/tui/ls_options.c
+    ${FW}/components/apps/tui/ls_radio_select.c
+    ${FW}/components/lakeshark/core/radio_choice.c
+    ${FW}/components/apps/tui/ls_picker.c
+    ${FW}/components/apps/tui/ls_numpad.c
+    ${FW}/components/apps/tui/ls_keyboard.c
+    ${FW}/components/apps/tui/ls_glyph.c
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_options PRIVATE ${LS_TUI_APP_INCLUDES})
+
 ls_add_test(test_tui_keyboard
     ${FW}/components/apps/tui/ls_keyboard.c
     ${FW}/components/apps/tui/ls_glyph.c
@@ -562,6 +665,9 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_labs.c
     ${FW}/components/apps/tui/screens/ext/scr_subghz.c
     ${FW}/components/apps/tui/screens/ext/scr_mixrf.c
+    ${FW}/components/apps/tui/screens/ext/scr_experiments.c
+    ${LS_EXP_SRCS}
+    ${FW}/bench/shims/ls_exp_fake.c
     ${FW}/components/apps/tui/screens/ext/scr_nfc.c
     ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
     ${FW}/components/lakeshark/nfc/nfc_classic.c
@@ -786,11 +892,43 @@ target_link_libraries(test_tui_render_cost lvgl)
 
 ls_add_test(test_lora_sx1262
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
 target_include_directories(test_lora_sx1262 PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 target_compile_definitions(test_lora_sx1262 PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+ls_add_test(test_lr20xx_proto
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lr20xx_proto PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lr20xx_proto PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+ls_add_test(test_lora_concurrency
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lora_concurrency PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lora_concurrency PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+ls_add_test(test_lora_chip_detect
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lora_chip_detect PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lora_chip_detect PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
 ls_add_test(test_lora_scan
     ${FW}/components/lakeshark/board/ls_lora.c
@@ -854,6 +992,35 @@ ls_add_test(test_adsb_phantom
 target_include_directories(test_adsb_phantom PRIVATE
     ${APP}/adsb
     ${FW}/components/lakeshark/audio
+    ${FW}/bench/shims)
+
+ls_add_test(test_adsb_df18
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_adsb_df18 PRIVATE
+    ${APP}/adsb
+    ${FW}/components/lakeshark/audio
+    ${FW}/bench/shims)
+
+ls_add_test(test_modes_chips
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_modes_chips PRIVATE
+    ${APP}/adsb
+    ${FW}/components/lakeshark/audio
+    ${FW}/bench/shims)
+
+ls_add_test(test_adsb_source
+    ${APP}/adsb/adsb_source.c
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_adsb_source PRIVATE
+    ${APP}/adsb
+    ${FW}/components/lakeshark/audio
+    ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 
 ls_add_test(test_adsb_cpr
@@ -942,6 +1109,10 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
+ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
+    ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
+target_include_directories(test_rec_fsk PRIVATE ${FW}/components/lakeshark/radio)
 # The export writes a 2-FSK preset for a demodulated capture, so it needs
 # the CC1101 register arithmetic that builds one.
 ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c ${APP}/rec/rec_ook24.c
@@ -1116,6 +1287,8 @@ ls_add_test(test_dmr_watch
 ls_add_test(test_subghz_nrz ${APP}/subghz/subghz_nrz.c)
 ls_add_test(test_subghz_file ${APP}/subghz/subghz_file.c)
 target_include_directories(test_subghz_file PRIVATE ${APP}/subghz)
+target_compile_definitions(test_subghz_file PRIVATE
+    CC1101_FSK_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/cc1101-fsk-ch2-t99.sub")
 target_include_directories(test_subghz_nrz PRIVATE ${APP}/subghz)
 ls_add_test(test_subghz_pwm
     ${APP}/subghz/subghz_pwm.c
@@ -1455,12 +1628,12 @@ add_test(NAME test_p25_phase2 COMMAND test_p25_phase2)
 ls_add_test(test_p25_phase2_dsp ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c fixtures/lsm_gen.c)
 target_compile_definitions(test_p25_phase2_dsp PRIVATE LSM_GEN_BAUD=6000)
 
-foreach(target test_tui_picker test_tui_wireless test_tui_waterfall_claim
+foreach(target test_tui_picker test_radio_select test_options test_tui_wireless test_tui_waterfall_claim
                test_tui_waterfall_scale test_tui_quick test_tui_waterfall_stall
                test_tui_keyboard)
     target_compile_definitions(${target} PRIVATE LS_TUI_CORNER_STUB=1)
 endforeach()
-foreach(target test_tui_picker test_tui_quick test_tui_keyboard)
+foreach(target test_tui_picker test_radio_select test_options test_tui_quick test_tui_keyboard)
     target_compile_definitions(${target} PRIVATE LS_TUI_WIDE_STUB=1)
 endforeach()
 target_include_directories(test_nfc_classic PRIVATE ${FW}/components/lakeshark/nfc)
@@ -1574,3 +1747,26 @@ add_executable(test_p25_p2_follow tests/test_p25_p2_follow.c
 target_include_directories(test_p25_p2_follow PRIVATE ${APP}/p25)
 target_link_libraries(test_p25_p2_follow p25_phase2_host ls_harness m)
 add_test(NAME test_p25_p2_follow COMMAND test_p25_p2_follow)
+
+ls_add_test(test_speech_level
+    ${FW}/components/lakeshark/audio/speech_engine.cpp
+    ${FW}/components/lakeshark/audio/audio_eq.c)
+target_include_directories(test_speech_level PRIVATE
+    ${FW}/components/lakeshark/audio ${FW}/components/lakeshark/core)
+target_link_libraries(test_speech_level klatt_tts_host)
+
+foreach(exp_id aviation uat)
+    ls_add_test(test_exp_${exp_id}
+        ${FW}/components/apps/tui/experiments/${exp_id}_decode.c
+        ${FW}/components/apps/tui/experiments/exp_${exp_id}.c
+        ${FW}/components/apps/tui/ls_experiments.c)
+    target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES}
+        ${FW}/components/apps/tui/experiments)
+endforeach()
+
+foreach(exp_id loramon zwave wisun)
+    ls_add_test(test_exp_${exp_id} ${FW}/components/apps/tui/experiments/lorafam_decode.c
+        ${FW}/components/apps/tui/experiments/exp_${exp_id}.c
+        fixtures/lorafam_module_fake.c)
+    target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
+endforeach()

@@ -212,6 +212,9 @@ typedef struct {
     unsigned count;
     unsigned max_count;
     bool dynamic;
+    /* Recursive mutexes: who holds it, and how many times over. */
+    pthread_t owner;
+    unsigned depth;
 } ls_host_semaphore_t;
 
 static SemaphoreHandle_t create_semaphore(unsigned max_count,
@@ -269,6 +272,11 @@ SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *storage)
     return create_semaphore_static(storage, 1, 0);
 }
 
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t *storage)
+{
+    return create_semaphore_static(storage, 1, 1);
+}
+
 SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max_count,
                                            UBaseType_t initial_count)
 {
@@ -276,11 +284,17 @@ SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max_count,
     return create_semaphore(max_count, initial_count);
 }
 
-BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks)
+static BaseType_t take_impl(SemaphoreHandle_t handle, TickType_t ticks,
+                            bool recursive)
 {
     ls_host_semaphore_t *sem = (ls_host_semaphore_t *)handle;
     if (!sem) return pdFALSE;
     pthread_mutex_lock(&sem->lock);
+    if (recursive && sem->depth > 0 && pthread_equal(sem->owner, pthread_self())) {
+        ++sem->depth;
+        pthread_mutex_unlock(&sem->lock);
+        return pdTRUE;
+    }
     int rc = 0;
     if (ticks == portMAX_DELAY) {
         while (sem->count == 0)
@@ -303,9 +317,42 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks)
             rc = pthread_cond_timedwait(&sem->changed, &sem->lock,
                                         &deadline);
     }
-    if (rc == 0 && sem->count != 0) --sem->count;
+    if (rc == 0 && sem->count != 0) {
+        --sem->count;
+        if (recursive) {
+            sem->owner = pthread_self();
+            sem->depth = 1;
+        }
+    }
     pthread_mutex_unlock(&sem->lock);
     return rc == 0 ? pdTRUE : pdFALSE;
+}
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks)
+{
+    return take_impl(handle, ticks, false);
+}
+
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t handle, TickType_t ticks)
+{
+    return take_impl(handle, ticks, true);
+}
+
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t handle)
+{
+    ls_host_semaphore_t *sem = (ls_host_semaphore_t *)handle;
+    if (!sem) return pdFALSE;
+    pthread_mutex_lock(&sem->lock);
+    BaseType_t result = pdFALSE;
+    if (sem->depth > 0 && pthread_equal(sem->owner, pthread_self())) {
+        if (--sem->depth == 0 && sem->count < sem->max_count) {
+            ++sem->count;
+            pthread_cond_signal(&sem->changed);
+        }
+        result = pdTRUE;
+    }
+    pthread_mutex_unlock(&sem->lock);
+    return result;
 }
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
@@ -331,6 +378,12 @@ void vSemaphoreDelete(SemaphoreHandle_t handle)
     pthread_cond_destroy(&sem->changed);
     pthread_mutex_destroy(&sem->lock);
     if (dynamic) free(sem);
+}
+
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    static __thread char here;
+    return &here;
 }
 
 void vTaskDelay(TickType_t ticks)

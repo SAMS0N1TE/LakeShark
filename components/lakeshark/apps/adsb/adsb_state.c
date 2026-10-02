@@ -6,7 +6,7 @@
 
 #define GATE_WINDOW_US (10 * 1000000LL)
 
-static adsb_aircraft_t s_aircraft[ADSB_MAX_TRACKED];
+static EXT_RAM_BSS_ATTR adsb_aircraft_t s_aircraft[ADSB_MAX_TRACKED];
 static uint32_t        s_selected_icao = 0;
 
 /* Written by the decoder, read by the UI. A point is stored before the

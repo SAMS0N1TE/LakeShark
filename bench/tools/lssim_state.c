@@ -225,6 +225,12 @@ void lakeshark_fm_set_gain_live(int tenths) { FM.gain_tenths = tenths; }
 int  lakeshark_fm_gain_tenths(void) { return FM.gain_tenths; }
 void lakeshark_fm_set_squelch(int v) { FM.squelch_tenths = v; }
 int  lakeshark_fm_squelch_get(void) { return FM.squelch_tenths; }
+void lakeshark_fm_set_baud(int baud)
+{
+    if (baud == 0) FM.pocsag_auto = true;
+    else { FM.pocsag_auto = false; FM.pocsag_baud = baud; }
+}
+int  lakeshark_fm_get_baud(void) { return FM.pocsag_baud; }
 
 /* --------------------------------------------------------------- gps ---- */
 

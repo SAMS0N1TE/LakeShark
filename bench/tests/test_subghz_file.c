@@ -6,6 +6,10 @@
 
 #include <string.h>
 
+#ifndef CC1101_FSK_FIXTURE
+#define CC1101_FSK_FIXTURE "fixtures/cc1101-fsk-ch2-t99.sub"
+#endif
+
 static void feed(subghz_file_t *f, const char *text, int32_t *e, int cap)
 {
     char line[512];
@@ -141,4 +145,179 @@ LS_CASE(rmt_replay_rejects_bad_edges_and_unbounded_duration)
     e[1]=0;LS_CHECK(!subghz_ook_symbols(e,6,NULL,0));
     e[1]=-10000000;LS_CHECK(!subghz_ook_symbols(e,6,NULL,0));
     e[1]=INT32_MIN;LS_CHECK(!subghz_ook_symbols(e,6,NULL,0));
+}
+
+static const char *fsk_raw = "Filetype: Flipper SubGhz RAW File\n"
+    "Frequency: 433420000\nProtocol: RAW\nRAW_Data: 417 -417 834 -417 417 -1251\n";
+static const char *fsk_custom = "Custom_preset_data: 02 0D 08 32 10 67 11 83 12 04 15 34 0C 02 13 02 00 00 C0 00 00 00 00 00 00 00";
+
+LS_CASE(cc1101_fsk_stock_presets_need_no_private_comments)
+{
+    int32_t e[8]; subghz_file_t f;
+    feed(&f,fsk_raw,e,8);
+    subghz_file_line(&f,"Preset: FuriHalSubGhzPreset2FSKDev238Async",e,8);
+    LS_CHECK(subghz_file_is_cc_fsk(&f));
+    LS_EQ_INT(f.cc_fsk.mdmcfg4,0x67); LS_EQ_INT(f.cc_fsk.mdmcfg3,0x83);
+    LS_EQ_INT(f.cc_fsk.deviatn,0x04);
+    subghz_file_line(&f,"Preset: FuriHalSubGhzPreset2FSKDev476Async",e,8);
+    LS_EQ_INT(f.cc_fsk.deviatn,0x47); LS_CHECK(subghz_file_is_cc_fsk(&f));
+    LS_CHECK(!subghz_file_is_ook(&f));
+}
+
+LS_CASE(cc1101_fsk_custom_preserves_sampler_deviation_offset_and_raw)
+{
+    int32_t e[8]; subghz_file_t f;
+    feed(&f,fsk_raw,e,8);
+    subghz_file_line(&f,"Preset: FuriHalSubGhzPresetCustom",e,8);
+    subghz_file_line(&f,"Custom_preset_module: CC1101",e,8);
+    subghz_file_line(&f,fsk_custom,e,8);
+    LS_CHECK(subghz_file_is_cc_fsk(&f));
+    LS_EQ_INT(f.cc_fsk.mdmcfg4,0x67); LS_EQ_INT(f.cc_fsk.mdmcfg3,0x83);
+    LS_EQ_INT(f.cc_fsk.deviatn,0x34); LS_EQ_INT(f.cc_fsk.freqoff,2);
+    LS_EQ_INT(e[0],417); LS_EQ_INT(e[5],-1251);
+    f.freq_hz=500000000; LS_CHECK(!subghz_file_is_cc_fsk(&f));
+    f.freq_hz=433420000; f.span_us=10000001; LS_CHECK(!subghz_file_is_cc_fsk(&f));
+    f.span_us=3753; f.edges_total++; LS_CHECK(!subghz_file_is_cc_fsk(&f));
+}
+
+LS_CASE(is_fsk_rejects_a_declared_module_other_than_cc1101)
+{
+    static const char *unknown_module =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 433394300\n"
+        "Preset: FuriHalSubGhzPresetCustom\n"
+        "Custom_preset_module: UnknownRadio\n"
+        "Custom_preset_data: 08 32 10 67 11 85 12 04 15 33 00 00 C0 00 00 00 00 00 00 00\n"
+        "Protocol: RAW\n"
+        "# 2400 baud, 18500 Hz deviation\n"
+        "RAW_Data: 417 -417 834 -417 417 -1251\n";
+    int32_t e[8]; subghz_file_t f;
+
+    /* Valid CC1101-shaped register bytes, but a declared module that is not
+       CC1101: is_cc_fsk correctly refuses it, and is_fsk must not silently
+       fall back to the SX1262 generic FSK path on its behalf. */
+    feed(&f,unknown_module,e,8);
+    LS_CHECK(f.bitrate==2400); LS_CHECK(f.deviation_hz==18500);
+    LS_CHECK(f.cc_fsk_valid);
+    LS_CHECK(!subghz_file_is_cc_fsk(&f));
+    LS_CHECK_MSG(!subghz_file_is_fsk(&f),
+        "a declared module other than CC1101 must not fall back to the SX1262 FSK path");
+
+    /* Backward compatibility: a declared module of exactly CC1101 with valid
+       register bytes still satisfies both the CC1101 and generic FSK checks. */
+    subghz_file_line(&f,"Custom_preset_module: CC1101",e,8);
+    LS_CHECK(subghz_file_is_cc_fsk(&f));
+    LS_CHECK(subghz_file_is_fsk(&f));
+
+    /* Backward compatibility: no declared module at all (this board's own
+       private-comment-only FSK captures) is untouched by the module check. */
+    static const char *no_module =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 433394300\n"
+        "Preset: FuriHalSubGhzPresetCustom\n"
+        "Protocol: RAW\n"
+        "# 2400 baud, 18500 Hz deviation\n"
+        "RAW_Data: 417 -417 834 -417 417 -1251\n";
+    feed(&f,no_module,e,8);
+    LS_CHECK(!f.custom_module[0]);
+    LS_CHECK(subghz_file_is_fsk(&f));
+}
+
+LS_CASE(cc1101_fsk_refuses_malformed_or_other_modulation_presets)
+{
+    const char *bad[]={
+        "Custom_preset_data: 08 32 10 67 11 83 12 04 15 34 00 00 C0",
+        "Custom_preset_data: 08 32 10 67 11 83 12 04 15 34 00 00 C0 00 00 00 00 00 00 ZZ",
+        "Custom_preset_data: 08 32 10 67 11 83 12 30 15 34 00 00 C0 00 00 00 00 00 00 00",
+        "Custom_preset_data: 08 05 10 67 11 83 12 04 15 34 00 00 C0 00 00 00 00 00 00 00",
+        "Custom_preset_data: 08 32 10 67 11 83 12 0C 15 34 00 00 C0 00 00 00 00 00 00 00",
+        "Custom_preset_data: 08 32 10 67 11 83 12 04 15 34 13 82 00 00 C0 00 00 00 00 00 00 00",
+        "Custom_preset_data: 08 32 10 67 11 83 12 04 15 34 15 47 00 00 C0 00 00 00 00 00 00 00",
+    };
+    for (unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++) {
+        int32_t e[8]; subghz_file_t f;
+        feed(&f,fsk_raw,e,8);
+        subghz_file_line(&f,"Preset: FuriHalSubGhzPresetCustom",e,8);
+        subghz_file_line(&f,"Custom_preset_module: CC1101",e,8);
+        subghz_file_line(&f,bad[i],e,8);
+        LS_CHECK(!subghz_file_is_cc_fsk(&f));
+    }
+    int32_t e[8]; subghz_file_t f;
+    feed(&f,fsk_raw,e,8);
+    subghz_file_line(&f,"Preset: FuriHalSubGhzPresetCustom",e,8);
+    subghz_file_line(&f,fsk_custom,e,8);
+    LS_CHECK(!subghz_file_is_cc_fsk(&f));
+    subghz_file_line(&f,"Custom_preset_module: CC1101",e,8);
+    strcpy(f.protocol,"Princeton"); LS_CHECK(!subghz_file_is_cc_fsk(&f));
+}
+
+/* fixtures/cc1101-fsk-ch2-t99.sub is a byte-verbatim copy of a real over-air
+   RTL-SDR capture of this board's CC1101 custom 2-FSK RAW transmit, not a
+   synthetic vector. These cases pin the exact classification and replay
+   shape of that capture so a parser or RMT-packing regression trips here
+   instead of only showing up on the bench with real hardware. */
+LS_CASE(the_real_cc1101_fsk_capture_classifies_with_its_exact_parameters)
+{
+    int32_t e[128];
+    char line[600];
+    subghz_file_t f;
+    LS_CHECK(subghz_file_load(CC1101_FSK_FIXTURE, &f, e, 128, line, sizeof(line)));
+    LS_CHECK(f.filetype_ok);
+    LS_CHECK(!f.invalid);
+    LS_EQ_INT(f.edges, 97);
+    LS_EQ_INT(f.edges_total, 97);
+    LS_CHECK_MSG(f.span_us == 61524ull, "got %llu", (unsigned long long)f.span_us);
+    LS_EQ_UINT(f.freq_hz, 433394300u);
+    LS_CHECK(subghz_file_is_cc_fsk(&f));
+    LS_EQ_INT(f.cc_fsk.mdmcfg4, 0x67);
+    LS_EQ_INT(f.cc_fsk.mdmcfg3, 0x85);
+    LS_EQ_INT(f.cc_fsk.deviatn, 0x33);
+    LS_EQ_INT(f.cc_fsk.freqoff, 0);
+    LS_EQ_INT(e[0], 46);
+    LS_EQ_INT(e[96], 1691);
+}
+
+LS_CASE(the_real_cc1101_fsk_capture_replays_through_rmt_with_every_source_edge)
+{
+    int32_t e[128];
+    char line[600];
+    subghz_file_t f;
+    LS_CHECK(subghz_file_load(CC1101_FSK_FIXTURE, &f, e, 128, line, sizeof(line)));
+    LS_CHECK(subghz_file_is_cc_fsk(&f));
+
+    uint32_t words[64];
+    size_t n = subghz_ook_symbols(e, (size_t)f.edges, words, 64);
+    LS_CHECK(n > 0);
+    LS_CHECK(n == subghz_ook_symbols(e, (size_t)f.edges, NULL, 0));
+
+    unsigned i = 0;
+    uint64_t duration = 0;
+    for (size_t h = 0; h < n * 2; h++) {
+        uint32_t v = (words[h/2] >> ((h%2)*16)) & 65535;
+        unsigned us = v & 32767;
+        if (!us) break;
+        duration += us;
+        if (i < (unsigned)f.edges) {
+            LS_CHECK((v>>15) == (e[i] > 0));
+            e[i] += e[i] > 0 ? -(int)us : (int)us;
+            if (!e[i]) i++;
+        } else {
+            LS_CHECK_MSG((v>>15) == 0, "only idle low padding may follow the source edges");
+        }
+    }
+    LS_CHECK_MSG(i == (unsigned)f.edges, "every source edge must be consumed");
+    LS_CHECK_MSG(duration == 61524ull + 1, "source span plus the mandatory trailing low padding");
+}
+
+LS_CASE(an_undersized_capture_buffer_is_rejected_for_cc_fsk_not_silently_replayed)
+{
+    int32_t e[40];
+    char line[600];
+    subghz_file_t f;
+    LS_CHECK(subghz_file_load(CC1101_FSK_FIXTURE, &f, e, 40, line, sizeof(line)));
+    LS_CHECK(f.filetype_ok);
+    LS_EQ_INT(f.edges, 40);
+    LS_EQ_INT(f.edges_total, 97);
+    LS_CHECK_MSG(!subghz_file_is_cc_fsk(&f),
+                 "a truncated edge buffer must not pass as a complete capture");
 }

@@ -54,6 +54,7 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg) { s.config = *cfg; return true
 /* The FSK demodulator's own parameters, for GFSK and POCSAG. */
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg) { s.fsk = *cfg; return true; }
 bool ls_field_mode(ls_lab_mode_t mode) { s.mode = mode; return true; }
+bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz) { s.span_lo_hz = lo_hz; s.span_hi_hz = lo_hz ? hi_hz : 0; return true; }
 void lssim_field_calibration(int step, int hold, bool failed)
 {
     s.calibration_step = (uint8_t)step; s.calibration_hold = (uint8_t)hold;

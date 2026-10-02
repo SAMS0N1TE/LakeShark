@@ -4,6 +4,7 @@
 #include "radio_endpoint.h"
 
 #include <string.h>
+#include "esp_attr.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -58,7 +59,7 @@ struct endpoint_slot {
     ls_radio_session_t session;
 };
 
-static endpoint_slot_t s_endpoints[LS_RADIO_MAX_ENDPOINTS];
+static EXT_RAM_BSS_ATTR endpoint_slot_t s_endpoints[LS_RADIO_MAX_ENDPOINTS];
 static SemaphoreHandle_t s_registry_lock;
 static volatile int s_registry_init;
 /**/

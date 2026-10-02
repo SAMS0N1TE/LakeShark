@@ -17,6 +17,64 @@ bool ls_keypad_present(void);
 bool ls_tui_keyboard_mode(void) { return ls_keypad_present(); }
 #endif
 
+/* ---- ADS-B receiver --------------------------------------------------- */
+
+/* adsb_source_t is an enum whose ADSB_SRC_NONE is 0; the header is not on
+   every stub user's include path. */
+int adsb_active_source(void) { return 0; }
+
+/* The gain setting, kept here as the back end keeps it: tenths of a dB, 0
+   automatic. */
+static int s_adsb_gain = 496;
+int  lakeshark_adsb_gain_tenths(void) { return s_adsb_gain; }
+void lakeshark_adsb_set_gain(int tenths) { s_adsb_gain = tenths < 0 ? 0 : tenths > 496 ? 496 : tenths; }
+/* adsb_source.c's mapping, which that file's test checks against the part. */
+int adsb_lr_gain_step(int gain_tenths_db)
+{
+    if (gain_tenths_db <= 0 || gain_tenths_db >= 496) return 13;
+    const int step = (gain_tenths_db * 13 + 495) / 496;
+    return step < 1 ? 1 : step > 13 ? 13 : step;
+}
+
+/* A Mode S session on the LR2021, off until a test starts one. */
+#include "ls_lora.h"
+bool ls_test_modes_session;
+ls_lora_modes_tuning_t ls_test_modes_tuning = { 13, 7, 3076923, false, 0 };
+int ls_test_modes_raw = 70;
+bool ls_lora_modes_active(void) { return ls_test_modes_session; }
+esp_err_t ls_lora_modes_tuning(ls_lora_modes_tuning_t *out)
+{
+    if (!ls_test_modes_session) return ESP_ERR_INVALID_STATE;
+    *out = ls_test_modes_tuning;
+    return ESP_OK;
+}
+esp_err_t ls_lora_modes_set_boost(int boost)
+{
+    if (!ls_test_modes_session) return ESP_ERR_INVALID_STATE;
+    ls_test_modes_tuning.boost = boost;
+    return ESP_OK;
+}
+esp_err_t ls_lora_modes_set_bw(uint32_t hz, uint32_t *chosen_hz)
+{
+    if (!ls_test_modes_session) return ESP_ERR_INVALID_STATE;
+    ls_test_modes_tuning.rx_bw_hz = hz;
+    if (chosen_hz) *chosen_hz = hz;
+    return ESP_OK;
+}
+esp_err_t ls_lora_modes_set_threshold(int level_db, bool automatic)
+{
+    if (!ls_test_modes_session) return ESP_ERR_INVALID_STATE;
+    ls_test_modes_tuning.thresh_override = !automatic;
+    ls_test_modes_tuning.thresh_level = automatic ? 0 : level_db;
+    return ESP_OK;
+}
+esp_err_t ls_lora_modes_read_threshold(int *raw)
+{
+    if (!ls_test_modes_session) return ESP_ERR_INVALID_STATE;
+    *raw = ls_test_modes_raw;
+    return ESP_OK;
+}
+
 /* ---- fuel gauge ---------------------------------------------------- */
 
 bool ls_gauge_present(void) { return false; }

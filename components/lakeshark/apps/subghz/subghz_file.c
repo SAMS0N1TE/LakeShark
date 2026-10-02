@@ -49,6 +49,40 @@ static void comment(subghz_file_t *f, const char *line)
     if (s) f->sync_word = (uint32_t)strtoul(s + 5, NULL, 16);
 }
 
+/* Parse register pairs followed by the terminator and eight PA bytes.
+   Only modem timing/deviation/offset are applied; board routing and operator
+   power remain under the replay driver's control. Never guess a partial preset. */
+static void custom_preset(subghz_file_t *f, const char *p)
+{
+    uint8_t bytes[104], regs[47]={0};
+    bool seen[47]={0};
+    size_t n=0, i=0;
+    f->cc_fsk_valid=false;
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        if (!isxdigit((unsigned char)*p)) goto bad;
+        char *end; errno=0;
+        unsigned long v=strtoul(p,&end,16);
+        if (errno || v>255 || n==sizeof(bytes) || (*end && !isspace((unsigned char)*end))) goto bad;
+        bytes[n++]=(uint8_t)v; p=end;
+    }
+    while (i+1<n && (bytes[i] || bytes[i+1])) {
+        unsigned reg=bytes[i];
+        if (reg>=sizeof(regs) || seen[reg]) goto bad;
+        seen[reg]=true; regs[reg]=bytes[i+1]; i+=2;
+    }
+    if (i+10!=n || !seen[8] || !seen[16] || !seen[17] ||
+        !seen[18] || !seen[21]) goto bad;
+    /* Async serial, 2-FSK, no Manchester or FEC. Other modulation is unsupported. */
+    if (regs[8]!=0x32 || (regs[18]&0x78) || (regs[19]&0x80)) return;
+    f->cc_fsk=(subghz_cc_fsk_t){regs[16],regs[17],regs[21],regs[12]};
+    f->cc_fsk_valid=true;
+    return;
+bad:
+    f->invalid=true;
+}
+
 void subghz_file_line(subghz_file_t *f, const char *line,
                       int32_t *edges, int cap)
 {
@@ -64,6 +98,17 @@ void subghz_file_line(subghz_file_t *f, const char *line,
         f->freq_hz=(uint32_t)hz;
     } else if (!strncmp(line, "Preset:", 7)) {
         copy_value(f->preset, sizeof(f->preset), line + 7);
+        f->cc_fsk_valid=false;
+        if (!strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev238Async") ||
+            !strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev476Async")) {
+            f->cc_fsk=(subghz_cc_fsk_t){0x67,0x83,
+                strstr(f->preset,"Dev238")?0x04:0x47,0};
+            f->cc_fsk_valid=true;
+        }
+    } else if (!strncmp(line, "Custom_preset_module:", 21)) {
+        copy_value(f->custom_module,sizeof(f->custom_module),line+21);
+    } else if (!strncmp(line, "Custom_preset_data:", 19)) {
+        custom_preset(f,line+19);
     } else if (!strncmp(line, "Protocol:", 9)) {
         copy_value(f->protocol, sizeof(f->protocol), line + 9);
     } else if (line[0] == '#') {
@@ -97,8 +142,26 @@ void subghz_file_line(subghz_file_t *f, const char *line,
 
 bool subghz_file_is_fsk(const subghz_file_t *f)
 {
+    /* A declared custom module must be the one whose registers were parsed
+       (CC1101); an unrecognized module must not fall back to this generic
+       SX1262 path just because its bytes happened to parse as CC1101-valid. */
     return f && !f->invalid && f->filetype_ok && f->edges == f->edges_total &&
+        (!f->custom_module[0] || (f->cc_fsk_valid && !strcmp(f->custom_module,"CC1101"))) &&
         f->bitrate && f->deviation_hz && f->edges >= 6 && f->edges <= 4096;
+}
+
+bool subghz_file_is_cc_fsk(const subghz_file_t *f)
+{
+    return f && f->cc_fsk_valid && !f->invalid && f->filetype_ok &&
+        (!strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev238Async") ||
+         !strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev476Async") ||
+         (!strcmp(f->preset,"FuriHalSubGhzPresetCustom") &&
+          !strcmp(f->custom_module,"CC1101"))) &&
+        !strcmp(f->protocol,"RAW") && f->edges==f->edges_total &&
+        f->edges>=6 && f->edges<=4096 && f->span_us<=10000000 &&
+        ((f->freq_hz>=300000000 && f->freq_hz<=348000000) ||
+         (f->freq_hz>=387000000 && f->freq_hz<=464000000) ||
+         (f->freq_hz>=779000000 && f->freq_hz<=928000000));
 }
 
 bool subghz_file_is_ook(const subghz_file_t *f)

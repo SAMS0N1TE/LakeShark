@@ -26,6 +26,10 @@ void audio_write_cue(const int16_t *samples, int n);
    live radio has the speaker, or the player stopped taking samples. Live
    audio that arrives while speech is still queued discards the speech. */
 bool audio_write_speech(const int16_t *samples, int n);
+/* Level of speech against everything else, 0-100 %, applied at the player
+   after the equalizer; the codec volume still applies on top. Takes effect on
+   speech already in the ring. */
+void audio_out_speech_level_set(int pct);
 /* Called before each announcement; clears a previous discard. */
 void audio_out_speech_begin(void);
 /* Stops audio_write_speech and drops speech still in the ring. */

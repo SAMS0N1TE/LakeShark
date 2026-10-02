@@ -162,7 +162,9 @@ static const char *k_p25[] = {
 };
 static const char *k_rec[] = {
     "rph", "red", "rsp", "rmg", "rfl", "rth", "rtf", "rgp", "rcp",
-    "rbw", "rmp", "rms", "rme", "ren", "rmn", "rmx", "rbd", "rlf"
+    "rbw", "rmp", "rms", "rme", "ren", "rmn", "rmx", "rbd", "rlf",
+    /* LS-1241: the head writes the .sub preset from these. */
+    "rmo", "rdv", "rcf", "rbr"
 };
 
 LS_CASE(flipper_telemetry_contract_fm)

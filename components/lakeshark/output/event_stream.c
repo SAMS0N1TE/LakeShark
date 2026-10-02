@@ -5,6 +5,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "nvs.h"
+#include "ls_nvs_safe.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -102,23 +103,39 @@ static void on_event(const event_t *e, void *user)
     }
 }
 
-static void persist_enabled(bool en)
+/* The console and the ADS-B panel call these on stacks that are not DRAM. */
+static esp_err_t persist_job(void *ctx)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u8(h, NVS_KEY_ENABLED, en ? 1 : 0);
-    nvs_commit(h);
+    esp_err_t e = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    e = nvs_set_u8(h, NVS_KEY_ENABLED, *(const uint8_t *)ctx);
+    if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
+    return e;
+}
+
+static void persist_enabled(bool en)
+{
+    uint8_t v = en ? 1 : 0;
+    ls_nvs_run(persist_job, &v, 0);
+}
+
+static esp_err_t load_job(void *ctx)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return ESP_FAIL;
+    nvs_get_u8(h, NVS_KEY_ENABLED, &v);
+    nvs_close(h);
+    *(uint8_t *)ctx = v;
+    return ESP_OK;
 }
 
 static bool load_enabled(void)
 {
-    nvs_handle_t h;
     uint8_t v = 0;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
-    nvs_get_u8(h, NVS_KEY_ENABLED, &v);
-    nvs_close(h);
-    return v != 0;
+    return ls_nvs_run(load_job, &v, 0) == ESP_OK && v != 0;
 }
 
 void event_stream_set_enabled(bool en)

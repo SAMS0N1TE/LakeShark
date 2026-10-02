@@ -334,3 +334,43 @@ LS_CASE(a_narrow_preset_costs_more_per_row_than_a_wide_one)
     /* Sixteen times the filter, sixteen times the wait, to within rounding. */
     LS_CHECK(narrow.settle_us >= 15 * wide.settle_us);
 }
+
+LS_CASE(where_a_sweep_may_run_follows_the_capabilities)
+{
+    /* An SX126x, or a part without the wide receive: 150-960 MHz, as always. */
+    const uint32_t sx = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
+    LS_CHECK(ls_lora_rx_range_ok(sx, 150000000u, 960000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(sx, 902000000u, 960000001u));
+    LS_CHECK(!ls_lora_rx_range_ok(sx, 149999999u, 160000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(sx, 1575000000u, 1576000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(0, 902000000u, 928000000u + 40000000u));
+    LS_CHECK(ls_lora_rx_range_ok(0, 915000000u, 915000000u));          /* one frequency */
+    LS_CHECK(!ls_lora_rx_range_ok(sx, 928000000u, 902000000u));        /* backwards     */
+
+    /* The LF input to 1100 MHz on any LR20xx. */
+    const uint32_t lf = sx | LS_LORA_CAP_RX_WIDE;
+    LS_CHECK(ls_lora_rx_range_ok(lf, 150000000u, 1100000000u));
+    LS_CHECK(ls_lora_rx_range_ok(lf, 1090000000u, 1090000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(lf, 1000000000u, 1100000001u));
+    LS_CHECK(!ls_lora_rx_range_ok(lf, 2400000000u, 2483500000u));      /* no HF input   */
+
+    /* And the HF input where the part has one, never across the gap. */
+    const uint32_t hf = lf | LS_LORA_CAP_BAND_1G5_2G5;
+    LS_CHECK(ls_lora_rx_range_ok(hf, 1500000000u, 2500000000u));
+    LS_CHECK(ls_lora_rx_range_ok(hf, 1616000000u, 1626500000u));
+    LS_CHECK(!ls_lora_rx_range_ok(hf, 1100000000u, 1500000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(hf, 1499999999u, 1500000000u));
+    LS_CHECK(!ls_lora_rx_range_ok(hf, 1500000000u, 2500000001u));
+    LS_CHECK(!ls_lora_rx_range_ok(hf, 1200000000u, 1200000000u));      /* the gap       */
+    /* The silicon bit alone, without the driver saying it sweeps there, is
+       the old range. */
+    LS_CHECK(!ls_lora_rx_range_ok(sx | LS_LORA_CAP_BAND_1G5_2G5, 1500000000u, 1600000000u));
+}
+
+LS_CASE(the_settle_time_is_public_and_the_plan_uses_it)
+{
+    LS_EQ_UINT(300u, ls_lora_scan_settle_us(500000u));
+    LS_EQ_UINT(300u, ls_lora_scan_settle_us(3076923u));
+    LS_EQ_UINT(300u, ls_lora_scan_settle_us(0));
+    LS_EQ_UINT(600u, ls_lora_scan_settle_us(250000u));
+}

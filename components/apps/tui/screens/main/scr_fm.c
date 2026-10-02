@@ -6,6 +6,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_numpad.h"
+#include "../../ls_options.h"
 #include "scan_engine.h"
 #include "../../ls_text.h"
 
@@ -19,12 +20,16 @@
 
 #include "../../ls_quick.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_field.h"
+#include "esp_attr.h"
+#include "esp_timer.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_waterfall.h"
 #include "../../ls_wf_source.h"
 
 static bool s_details;
-static char s_hint[80] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
+static EXT_RAM_BSS_ATTR char s_hint[96] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 static uint32_t s_standby = 152600000;
@@ -56,6 +61,119 @@ static int s_last_mode = -1;
    for should move the page. */
 static bool s_mode_requested;
 
+/* POCSAG ON THE LORA CHIP.
+
+   When RADIO puts the pager on the LoRa socket's chip, POCSAG runs there:
+   the LoRa Labs paging engine (ls_field, LS_LAB_POCSAG) at this receiver's
+   frequency and baud, the SDR handed back, and the PAGER tab listing what
+   the chip decodes. FLEX and the other modes stay on the SDR. */
+static bool s_lora_pager;       /* POCSAG is running on the LoRa chip     */
+static bool s_pager_leaving;    /* a mode away from POCSAG was asked for */
+static uint32_t s_lora_hz;
+static int s_lora_baud;
+static ls_lab_mode_t s_lora_was;
+/* The chip matches one sync word, so it hears one polarity at a time where
+   the SDR's decoder takes both. Until frames arrive it changes polarity
+   every LORA_FLIP_US, and holds the one that syncs. */
+#define LORA_FLIP_US  5000000
+#define LORA_HOLD_US 30000000
+static bool s_lora_inv;
+/* What OPTIONS asked for: 0 both in turn, 1 normal, 2 inverted. */
+static int s_lora_pol;
+static int64_t s_lora_flip_at;
+static uint32_t s_lora_rx;
+EXT_RAM_BSS_ATTR static ls_field_state_t s_field;
+
+static ls_rsel_job_t fm_job(void)
+{
+    if (FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX) return LS_RSEL_PAGER;
+    if (FM.mode == FM_MODE_ACARS) return LS_RSEL_ACARS;
+    return LS_RSEL_FM;
+}
+
+/* The radio really in use: the chip while it pages, otherwise the dongle
+   the receiver holds. */
+static ls_rsel_radio_t fm_in_use(void)
+{
+    return s_lora_pager ? LS_RSEL_LORA : ls_rsel_sdr_held_by("fm");
+}
+
+static void lora_pager_stop(bool give_back)
+{
+    if (!s_lora_pager) return;
+    s_lora_pager = false;
+    ls_field_direct(false);
+    ls_field_mode(s_lora_was);
+    if (give_back) ls_tui_radio_want("FM");
+}
+
+static void lora_pager_sync(void)
+{
+    if (s_pager_leaving && FM.mode != FM_MODE_POCSAG) s_pager_leaving = false;
+    const bool want = FM.mode == FM_MODE_POCSAG && !s_pager_leaving &&
+                      ls_rsel_resolved(LS_RSEL_PAGER) == LS_RSEL_LORA &&
+                      FM.freq_hz >= 150000000u && FM.freq_hz <= 959000000u;
+    if (want && !s_lora_pager) {
+        if (!ls_field_start()) return;
+        ls_field_snapshot(&s_field);
+        s_lora_was = s_field.mode;
+        s_lora_pager = true;
+        s_lora_hz = 0;
+        s_lora_baud = 0;
+        s_lora_inv = false;
+        s_lora_rx = s_field.rx;
+        s_lora_flip_at = esp_timer_get_time() + LORA_FLIP_US;
+        ls_field_mode(LS_LAB_POCSAG);
+        ls_field_direct(true);
+        ls_tui_radio_want(NULL);            /* the SDR goes back */
+    } else if (!want && s_lora_pager) {
+        lora_pager_stop(true);
+    }
+    if (!s_lora_pager) return;
+    ls_field_snapshot(&s_field);
+    /* The chip decodes 1200 and 2400 baud, one at a time: the rate the
+       receiver is set to, or the one its search last locked. */
+    const int asked = FM.pocsag_auto ? FM.pocsag_lock_baud : FM.pocsag_baud;
+    const int baud = asked == 2400 ? 2400 : 1200;
+    const int64_t now = esp_timer_get_time();
+    if (s_field.rx != s_lora_rx) {
+        s_lora_rx = s_field.rx;
+        s_lora_flip_at = now + LORA_HOLD_US;
+    } else if (!s_lora_pol && now >= s_lora_flip_at) {
+        s_lora_inv = !s_lora_inv;
+        s_lora_flip_at = now + LORA_FLIP_US;
+        s_lora_hz = 0;
+    }
+    /* A polarity chosen in OPTIONS is held, and taking it is a retune. */
+    if (s_lora_pol && s_lora_inv != (s_lora_pol == 2)) {
+        s_lora_inv = s_lora_pol == 2;
+        s_lora_hz = 0;
+    }
+    if (FM.freq_hz == s_lora_hz && baud == s_lora_baud) return;
+    ls_lora_cfg_t cfg = s_field.config;
+    cfg.freq_hz = FM.freq_hz;
+    cfg.invert_iq = s_lora_inv;
+    cfg.cal_min_mhz = (uint16_t)(FM.freq_hz / 4000000u * 4u);
+    cfg.cal_max_mhz = cfg.cal_min_mhz + 4;
+    ls_fsk_cfg_t fsk = s_field.fsk;
+    fsk.bitrate = (uint32_t)baud;
+    if (ls_field_configure(&cfg) && ls_field_configure_fsk(&fsk)) {
+        s_lora_hz = FM.freq_hz;
+        s_lora_baud = baud;
+    }
+}
+
+/* A different dongle than the one held: the receiver starts again on it.
+   The chip needs nothing here; the next frame's sync moves the pager. */
+static void radio_chosen(ls_rsel_radio_t radio)
+{
+    const ls_rsel_radio_t held = ls_rsel_sdr_held_by("fm");
+    if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
+        held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
+}
+
+static void open_radio(void) { ls_rsel_open(fm_job(), radio_chosen); }
+
 static int mode_page(fm_mode_t mode)
 {
     if (mode == FM_MODE_SCAN) return 2;
@@ -68,6 +186,11 @@ static bool choose_mode(fm_mode_t mode)
     /* NFM is an FM demodulator.  A previously enabled mixed channel scan
        must not silently pull P25 into this screen. */
     if (mode == FM_MODE_LISTEN) scan_engine_set_mixed(false);
+    /* Off the chip first, so the receiver is running to take the mode. */
+    if (mode != FM_MODE_POCSAG && s_lora_pager) {
+        s_pager_leaving = true;
+        lora_pager_stop(true);
+    }
     ls_args_t args = {0};
     args.n = 1;
     args.v[0].kind = LS_VAL_TEXT;
@@ -457,6 +580,22 @@ static tui_rect s_pager_hit[3];
    index means. */
 static const fm_page_t *page_at(int i)
 {
+    if (s_lora_pager) {
+        /* The chip's pages, newest first already, in the receiver's shape.
+           One at a time: every caller is done with a page before the next. */
+        EXT_RAM_BSS_ATTR static fm_page_t one;
+        if (i < 0 || i >= s_field.page_log_count) return NULL;
+        const ls_field_page_t *p = &s_field.page_log[i];
+        memset(&one, 0, sizeof(one));
+        one.ts_us = p->ts_us;
+        one.address = p->address;
+        one.function = p->function;
+        one.protocol = FM_PAGE_PROTOCOL_POCSAG;
+        one.type = p->text[0] ? 'A' : 'T';
+        one.baud = p->baud;
+        snprintf(one.text, sizeof(one.text), "%s", p->text);
+        return &one;
+    }
     if (i < 0 || i >= (int)FM.page_count || i >= FM_PAGE_LOG_MAX) return NULL;
     const int idx = (FM.page_head - 1 - i + 2 * FM_PAGE_LOG_MAX) % FM_PAGE_LOG_MAX;
     return &FM.pages[idx];
@@ -464,6 +603,7 @@ static const fm_page_t *page_at(int i)
 
 static int page_count(void)
 {
+    if (s_lora_pager) return s_field.page_log_count;
     int n = (int)FM.page_count;
     if (n > FM_PAGE_LOG_MAX) n = FM_PAGE_LOG_MAX;
     return n;
@@ -662,12 +802,23 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
         area = tui_rect_make(whole.x, whole.y + th, whole.w, whole.h - th);
     }
 
-    tui_box(sf, area, "DECODED PAGES", frame);
+    char box[40];
+    if (s_lora_pager) snprintf(box, sizeof(box), "DECODED PAGES / %s", ls_rsel_name(LS_RSEL_LORA));
+    else snprintf(box, sizeof(box), "DECODED PAGES");
+    tui_box(sf, area, box, frame);
     s_page_rect = area;
 
     const int count = page_count();
     if (!count) {
         tui_put_str(sf, area, area.x + 2, area.y + 2, "listening...", dim);
+        /* FLEX with the chip chosen: the chip reads POCSAG only, so FLEX
+           stays on the SDR, and says so rather than looking deaf. */
+        if (FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA) {
+            char why[64];
+            snprintf(why, sizeof(why), "FLEX needs an SDR; the %s reads POCSAG",
+                     ls_rsel_name(LS_RSEL_LORA));
+            tui_put_str(sf, area, area.x + 2, area.y + 3, why, dim);
+        }
         return;
     }
 
@@ -757,11 +908,13 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
     ls_wf_draw(sf, area);
 }
 
+/* SCANNER is the stored-channel scanner panel. RADIO is the radio itself,
+   the button every app carries, on the control row above. */
 static const ls_btn_t PAGES[] = {
     { "VFO",   NULL, '1', false, false },
     { "PAGER", NULL, '2', false, false },
     { "SPECTRUM", NULL, '3', false, false },
-    { "RADIO", NULL, '0', false, false },
+    { "SCANNER", NULL, '0', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
@@ -815,6 +968,154 @@ static void toggle_sweep(void)
     s_page = FM.mode == FM_MODE_SCAN ? 2 : 0;
 }
 
+/* ------------------------------------------------------------- OPTIONS -- */
+
+/* What each mode has to set, and only that: squelch where the mode has one
+   (NFM gates on noise, AM on level, WFM and the decoders on nothing), the
+   paging rate and polarity for POCSAG, the channel for ACARS, and gain for
+   whatever an SDR is doing. */
+
+static void set_squelch(double value);
+
+static double o_gain(const ls_opt_t *o) { (void)o; return FM.gain_tenths / 10.0; }
+static void o_set_gain(const ls_opt_t *o, double db)
+{
+    (void)o;
+    ls_args_t args = {.n = 1}; ls_val_t out;
+    args.v[0].kind = LS_VAL_FLOAT; args.v[0].f = (float)db;
+    ls_action_call("fm.gain", &args, &out, ls_quick_grant_builtin());
+}
+static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (FM.gain_tenths <= 0) snprintf(out, n, "AUTO");
+    else snprintf(out, n, "%d.%d dB", FM.gain_tenths / 10, FM.gain_tenths % 10);
+}
+
+static double o_squelch(const ls_opt_t *o) { (void)o; return FM.squelch_tenths; }
+static void o_set_squelch(const ls_opt_t *o, double v) { (void)o; set_squelch(v); }
+
+/* The SDR's decoders run 512, 1200 and 2400 at once on AUTO; the chip hears
+   one of 1200 and 2400 at a time. arg 1 is the chip's row. */
+static const char *const BAUD_SDR[] = { "AUTO", "512", "1200", "2400" };
+static const char *const BAUD_CHIP[] = { "AUTO", "1200", "2400" };
+static const int BAUD_SDR_V[] = { 0, 512, 1200, 2400 };
+static const int BAUD_CHIP_V[] = { 0, 1200, 2400 };
+
+static int o_baud(const ls_opt_t *o)
+{
+    const int *v = o->arg ? BAUD_CHIP_V : BAUD_SDR_V;
+    if (FM.pocsag_auto) return 0;
+    for (int i = 1; i < o->n; i++) if (v[i] == FM.pocsag_baud) return i;
+    return 1;
+}
+static void o_set_baud(const ls_opt_t *o, int i)
+{
+    const int *v = o->arg ? BAUD_CHIP_V : BAUD_SDR_V;
+    if (i >= 0 && i < o->n) lakeshark_fm_set_baud(v[i]);
+}
+static void o_show_baud(const ls_opt_t *o, char *out, size_t n)
+{
+    if (!FM.pocsag_auto) { snprintf(out, n, "%d", FM.pocsag_baud); return; }
+    /* On AUTO, the rate in use once there is one to name. */
+    if (o->arg) snprintf(out, n, "AUTO (%d)", s_lora_pager && s_lora_baud ? s_lora_baud : 1200);
+    else if (FM.pocsag_lock_baud) snprintf(out, n, "AUTO (%d)", FM.pocsag_lock_baud);
+    else snprintf(out, n, "AUTO");
+}
+
+static const char *const POLARITY[] = { "AUTO", "NORMAL", "INVERTED" };
+static int o_polarity(const ls_opt_t *o) { (void)o; return s_lora_pol; }
+static void o_set_polarity(const ls_opt_t *o, int v)
+{
+    (void)o;
+    s_lora_pol = v >= 0 && v < 3 ? v : 0;
+    s_lora_flip_at = esp_timer_get_time() + LORA_FLIP_US;
+}
+static void o_show_polarity(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (s_lora_pol) snprintf(out, n, "%s", POLARITY[s_lora_pol]);
+    else snprintf(out, n, "AUTO (%s)", s_lora_inv ? "inverted" : "normal");
+}
+
+/* ACARS: the three North American channels. */
+static const char *const ACARS_CH[] = { "131.550", "130.025", "129.125" };
+static const uint32_t ACARS_HZ[] = { 131550000u, 130025000u, 129125000u };
+static int o_acars(const ls_opt_t *o)
+{
+    (void)o;
+    for (int i = 0; i < 3; i++) if (FM.freq_hz == ACARS_HZ[i]) return i;
+    return -1;
+}
+static void o_set_acars(const ls_opt_t *o, int i)
+{
+    (void)o;
+    if (i < 0 || i >= 3) return;
+    ls_args_t args = {.n = 1}; ls_val_t out;
+    args.v[0].kind = LS_VAL_INT; args.v[0].i = (int32_t)ACARS_HZ[i];
+    /* The keypad's order: release, tune, hold the new carrier. */
+    lakeshark_fm_frequency_lock(false);
+    if (ls_action_call("fm.freq_hz", &args, &out, ls_quick_grant_builtin()) == LS_ACT_OK)
+        lakeshark_fm_frequency_lock(true);
+}
+static void o_show_acars(const ls_opt_t *o, char *out, size_t n)
+{
+    const int i = o_acars(o);
+    if (i >= 0) snprintf(out, n, "%s MHz", ACARS_CH[i]);
+    else snprintf(out, n, "%.3f MHz", FM.freq_hz / 1e6);
+}
+
+#define OPT_GAIN { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_SDR, \
+                   .num = o_gain, .set_num = o_set_gain, .lo = 0, .hi = 49.6, \
+                   .unit = "dB, 0 is automatic", .show = o_show_gain }
+
+static const ls_opt_t OPT_NFM[] = {
+    { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
+      .lo = 0, .hi = 100, .unit = "0 opens on anything, 100 on nothing" },
+    OPT_GAIN,
+};
+static const ls_opt_t OPT_AM[] = {
+    { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
+      .lo = 0, .hi = 100, .unit = "carrier level, tenths of a percent" },
+    OPT_GAIN,
+};
+static const ls_opt_t OPT_GAIN_ONLY[] = { OPT_GAIN };
+static const ls_opt_t OPT_POCSAG[] = {
+    { .label = "BAUD", .kind = LS_OPT_CYCLE, .radios = LS_OPT_SDR, .arg = 0,
+      .names = BAUD_SDR, .n = 4, .get = o_baud, .set = o_set_baud, .show = o_show_baud },
+    { .label = "BAUD", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA, .arg = 1,
+      .names = BAUD_CHIP, .n = 3, .get = o_baud, .set = o_set_baud, .show = o_show_baud },
+    { .label = "POLARITY", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA,
+      .names = POLARITY, .n = 3, .get = o_polarity, .set = o_set_polarity, .show = o_show_polarity },
+    OPT_GAIN,
+};
+static const ls_opt_t OPT_ACARS[] = {
+    { .label = "CHANNEL", .kind = LS_OPT_CYCLE, .names = ACARS_CH, .n = 3,
+      .get = o_acars, .set = o_set_acars, .show = o_show_acars },
+    OPT_GAIN,
+};
+
+static const ls_opt_ctx_t CTX_NFM    = { .name = "NFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_NFM) };
+static const ls_opt_ctx_t CTX_WFM    = { .name = "WFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GAIN_ONLY) };
+static const ls_opt_ctx_t CTX_AM     = { .name = "AM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_AM) };
+static const ls_opt_ctx_t CTX_POCSAG = { .name = "POCSAG", .job = LS_RSEL_PAGER, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG) };
+static const ls_opt_ctx_t CTX_FLEX   = { .name = "FLEX", .job = LS_RSEL_PAGER, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GAIN_ONLY) };
+static const ls_opt_ctx_t CTX_ACARS  = { .name = "ACARS", .job = LS_RSEL_ACARS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ACARS) };
+
+/* The mode's, or NULL in a sweep, which has nothing here to set. */
+static const ls_opt_ctx_t *fm_options(void)
+{
+    switch (FM.mode) {
+    case FM_MODE_LISTEN: return &CTX_NFM;
+    case FM_MODE_WFM:    return &CTX_WFM;
+    case FM_MODE_AM:     return &CTX_AM;
+    case FM_MODE_POCSAG: return &CTX_POCSAG;
+    case FM_MODE_FLEX:   return &CTX_FLEX;
+    case FM_MODE_ACARS:  return &CTX_ACARS;
+    default:             return NULL;
+    }
+}
+
 static int draw_controls(tui_surface *sf, tui_rect area)
 {
     char locked[20];
@@ -835,10 +1136,12 @@ static int draw_controls(tui_surface *sf, tui_rect area)
         {"VOLUME", vol, 'v', false, false},
         {"SQUELCH", sql, 'q', FM.squelch_open, false},
         {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
+        ls_rsel_button(fm_job()),
+        ls_opt_button(fm_options()),
     };
     const int h = area.h;
     s_controls = area;
-    ls_btn_bar_raised(sf, s_controls, buttons, 5, -1);
+    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 7 : 6, -1);
     return h;
 }
 
@@ -862,6 +1165,8 @@ static bool control_action(int index)
     case 3: ls_numpad_open("SQUELCH", "0 opens on anything, 100 on nothing",
                            FM.squelch_tenths, set_squelch); return true;
     case 4: toggle_frequency_lock(); return true;
+    case 5: open_radio(); return true;
+    case 6: ls_opt_open(fm_options()); return true;
     default: return false;
     }
 }
@@ -986,11 +1291,13 @@ static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
-    snprintf(s_hint,sizeof(s_hint),"%s",s_details?
+    lora_pager_sync();
+    snprintf(s_hint,sizeof(s_hint),"%s%s",s_details?
              (ls_tui_is_wide() && (s_page==0 || s_page==2) ?
-              "LEFT/RIGHT select  SPACE tune  E mode  T freq  K lock  0 radio" :
-              "E mode  T tune  K lock  N band  W sweep  0 radio"):
-             "LEFT/RIGHT tune  UP/DOWN controls  M details");
+              "LEFT/RIGHT select  SPACE tune  E mode  T freq  K lock  R radio  0 scanner" :
+              "E mode  T tune  K lock  N band  W sweep  R radio  0 scanner"):
+             "LEFT/RIGHT tune  UP/DOWN controls  M details  R radio",
+             ls_opt_count(fm_options()) ? "  O options" : "");
     if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
@@ -1027,7 +1334,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (body.h <= 0) return;
     /* Landscape keeps the compact bar even without a keyboard: the VFO
        page's waterfall is only a few rows tall there already. */
-    int control_rows = ls_btn_raised_height(body, 5);
+    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 7 : 6);
     if (wide && control_rows > 3) control_rows = 3;
     body.y += control_rows;
     body.h -= control_rows;
@@ -1067,10 +1374,13 @@ static void draw(tui_surface *sf, tui_rect area)
                                           area.w, control_rows));
 }
 
-static void leave(void) { ls_wf_source_release(); }
+static void leave(void) { ls_wf_source_release(); lora_pager_stop(false); }
 
 static void enter(void)
 {
+    ls_rsel_track(LS_RSEL_FM, fm_in_use);
+    ls_rsel_track(LS_RSEL_PAGER, fm_in_use);
+    ls_rsel_track(LS_RSEL_ACARS, fm_in_use);
     /* Open on the receiver, not on the scanner.
 
        s_details was set from mode_page(), which returns 0 for LISTEN, so
@@ -1088,6 +1398,15 @@ static bool key(ls_tk_t k, char ch)
 {
     if(k>=LS_TK_F1) return false;
     if(k==LS_TK_CHAR && ch>='1' && ch<='3') {s_details=true;show_page(ch-'1');return true;}
+    /* R is RADIO on every page, except inside the scanner's lists, where
+       R is RANGE. */
+    if (k==LS_TK_CHAR && (ch=='r'||ch=='R') && (s_details || (!s_radio.lists && !s_radio.scan_choice))) {
+        open_radio(); return true;
+    }
+    /* O is OPTIONS for the mode, on the same terms: inside the scanner's
+       lists it is SCAN TYPE. */
+    if (k==LS_TK_CHAR && (s_details || (!s_radio.lists && !s_radio.scan_choice)) &&
+        ls_opt_key(fm_options(), ch)) return true;
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
     if ((s_page==0 || s_page==2) &&

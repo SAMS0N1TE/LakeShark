@@ -21,6 +21,11 @@ void          pocsag_process(pocsag_ctx_t *c, const float *demod, int n);
 bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
                           bool inverted, bool contiguous);
 
+/* One received codeword against its BCH(31,21) and even parity: 0 when it
+   is clean, 1 when one flipped bit was put right in *cw, -1 when it is past
+   correcting. */
+int           pocsag_check_codeword(uint32_t *cw);
+
 bool          pocsag_synced(const pocsag_ctx_t *c);
 int           pocsag_baud_of(const pocsag_ctx_t *c);
 uint32_t      pocsag_n_frames(const pocsag_ctx_t *c);

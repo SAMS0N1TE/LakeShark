@@ -57,8 +57,10 @@ void           speech_voice_set(speech_voice_t v);
 /* Next (+1) or previous (-1) voice, saved to settings. */
 speech_voice_t speech_voice_step(int dir);
 
-/* Speech level, 0-100 %, relative to radio audio and tones. In memory only;
-   callers save it with settings_speech_volume_set(). */
+/* Speech level, 0-100 %, relative to radio audio and tones. It scales the
+   speech linearly after the equalizer and never raises it; the volume of the
+   codec still applies on top. In memory only; callers save it with
+   settings_speech_volume_set(). */
 int  speech_volume_get(void);
 void speech_volume_set(int pct);
 

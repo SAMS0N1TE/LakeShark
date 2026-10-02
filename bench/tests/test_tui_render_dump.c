@@ -17,6 +17,10 @@ bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; r
 #include <stdio.h>
 #include <string.h>
 
+#include "ls_lora.h"
+/* An SX1262: the SUB-GHZ sweep list is the 150-960 MHz one. */
+uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST; }
+
 /* ---------------------------------------------------------- panel stub -- */
 
 #define NATIVE_W 568
@@ -780,6 +784,7 @@ bool ls_track_rec_running(void) { return false; }
 
 /* The radio panel shows system volume; this dump does not run audio. */
 int audio_volume_get(void) { return 60; }
+void audio_volume_set(int v) { (void)v; }
 
 /* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
    session lives in p25_program_sd.c, which the bench deliberately does not

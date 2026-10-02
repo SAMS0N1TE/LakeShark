@@ -7,6 +7,7 @@
 #include <string.h>
 #include "esp_timer.h"
 #include "ls_df_sources.h"
+#include "ls_radio_select.h"
 
 extern float lssim_turn_deg(void);
 
@@ -20,11 +21,20 @@ static struct {
                            { .src = LS_DFS_COUNT, .freq = { 433920000 }, .nch = 1 } };
 static int64_t s_last_us;
 
+/* The names ls_df_sources.c gives: the radios' own, through ls_rsel. */
 const char *ls_dfs_name(ls_dfs_t s)
 {
-    static const char *const N[LS_DFS_COUNT] = { "MESH", "LORA", "RTL-SDR", "HACKRF", "CC1101",
-                                                 "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS", "BAND" };
-    return s >= 0 && s < LS_DFS_COUNT ? N[s] : "?";
+    static const ls_rsel_radio_t R[LS_DFS_COUNT] = {
+        LS_RSEL_LORA, LS_RSEL_LORA, LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_CC1101,
+        LS_RSEL_NRF24, LS_RSEL_WIFI, LS_RSEL_BLE, LS_RSEL_NFC, LS_RSEL_GPS, LS_RSEL_LORA };
+    if (s < 0 || s >= LS_DFS_COUNT) return "?";
+    if (s == LS_DFS_MESH) return "MESH";
+    if (s == LS_DFS_BAND) {
+        static char band[24];
+        snprintf(band, sizeof(band), "%s BAND", ls_rsel_name(LS_RSEL_LORA));
+        return band;
+    }
+    return ls_rsel_name(R[s]);
 }
 const char *ls_dfs_unavailable(ls_dfs_t s)
 {

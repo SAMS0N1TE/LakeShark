@@ -228,7 +228,8 @@ int ls_telemetry_build_rec(char *buf, size_t len,
     int n = snprintf(buf, len,
                      "$ f=%lu g=%d v=%d mu=%d rtl=%d bps=%lu md=REC "
                      "rph=%d red=%d rsp=%lu rmg=%d rfl=%d rth=%d rtf=%d rgp=%d rcp=%lu "
-                     "rbw=%lu rmp=%lu rms=%lu rme=%d ren=%d rmn=%lu rmx=%lu rbd=%lu rlf=%s",
+                     "rbw=%lu rmp=%lu rms=%lu rme=%d ren=%d rmn=%lu rmx=%lu rbd=%lu "
+                     "rmo=%d rdv=%lu rcf=%lu rbr=%lu rlf=%s",
                      (unsigned long)s->freq_hz, s->gain_tenths,
                      common->volume, common->muted, common->rtl_ready,
                      (unsigned long)s->bytes_sec,
@@ -238,7 +239,10 @@ int ls_telemetry_build_rec(char *buf, size_t len,
                      (unsigned long)s->bw_hz, (unsigned long)s->min_pulse_us,
                      (unsigned long)(s->max_span_us / 1000u), s->min_edges, s->end_reason,
                      (unsigned long)s->min_mark_us, (unsigned long)s->max_mark_us,
-                     (unsigned long)s->baud_est, last);
+                     (unsigned long)s->baud_est,
+                     s->mod, (unsigned long)s->cap_dev_hz,
+                     (unsigned long)s->cap_freq_hz, (unsigned long)s->cap_bitrate,
+                     last);
     if (n < 0) return n;
     if ((size_t)n >= len - 1) n = (int)len - 1;
 

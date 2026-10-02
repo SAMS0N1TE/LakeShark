@@ -2,6 +2,8 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_field.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
 #include "../../ls_motion.h"
 #include "ls_mixrf.h"
 #include "rec_watch.h"
@@ -50,6 +52,26 @@ static void band_done(int i)
     frequency=hz[i];
     if(enabled && !ls_mixrf_receive(true,frequency))snprintf(feedback,sizeof(feedback),"Receiver unavailable");
 }
+/* OPTIONS: the CC1101's receive band, while the CC1101 is what is shown -
+   the same four choices as BAND, stepped in place. The 2.4 GHz survey and
+   the NFC views have nothing to set. */
+static const char *const BAND_NAME[]={"315 MHz","433.920 MHz","868.350 MHz","915 MHz"};
+static const uint32_t BAND_HZ[]={315000000,433920000,868350000,915000000};
+static int o_band(const ls_opt_t *o){(void)o;for(int i=0;i<4;i++)if(BAND_HZ[i]==frequency)return i;return -1;}
+static void o_set_band(const ls_opt_t *o,int v){(void)o;band_done(v);}
+static void o_band_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%.3f MHz",frequency/1e6);}
+static const ls_opt_t OPT_CC1101[]={
+    {.label="RECEIVE BAND",.kind=LS_OPT_CYCLE,.names=BAND_NAME,.n=4,.get=o_band,.set=o_set_band,.show=o_band_show}};
+static const ls_opt_ctx_t CTX_CC1101={.name="MONITOR",.job=-1,.radio=LS_RSEL_CC1101,LS_OPT_ROWS(OPT_CC1101)};
+
+/* RADIO picks which of the board's three radios the view shows. */
+static ls_rsel_radio_t viewed(void) { return view_nfc?LS_RSEL_NFC:view_24?LS_RSEL_NRF24:LS_RSEL_CC1101; }
+static const ls_opt_ctx_t *mixrf_options(void) { return viewed()==LS_RSEL_CC1101?&CTX_CC1101:NULL; }
+static void radio_chosen(ls_rsel_radio_t r)
+{
+    view_24=r==LS_RSEL_NRF24;
+    view_nfc=r==LS_RSEL_NFC;
+}
 static void action(int i)
 {
     feedback[0]=0;
@@ -85,10 +107,13 @@ static void action(int i)
     else if(i==5){if(view_nfc)view_nfc=false;else if(view_24){view_24=false;view_nfc=true;}else view_24=true;}
     else if(i==6){bool on=!nfc_enabled;if(ls_mixrf_card_scan(on)){nfc_enabled=on;view_nfc=true;view_24=false;}}
     else if(i==7){if(rec_watch_source()==REC_SOURCE_CC1101)rec_watch_enable(false);ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
+    else if(i==8)ls_rsel_open(LS_RSEL_MIXRF,radio_chosen);
+    else if(i==9)ls_opt_open(mixrf_options());
 }
 static void enter(void)
 {
     button_focus=-1;button_slot=0;
+    ls_rsel_track(LS_RSEL_MIXRF,viewed);
     ls_field_start();ls_field_watch(true);ls_field_provider(LS_FIELD_CC1101,provider);
     ls_field_provider(LS_FIELD_NRF24,provider_24);ls_field_provider(LS_FIELD_NFC,provider_nfc);ls_mixrf_start();
     feedback[0]=0;
@@ -111,10 +136,12 @@ static void draw(tui_surface *sf,tui_rect a)
         {"2.4 SCAN",scan_enabled?"ON":"OFF",'s',scan_enabled,!state.nrf || state.busy},
         {"VIEW",view_nfc?"NFC":view_24?"2.4 GHz":"SUB-GHZ",'v',view_24||view_nfc,false},
         {"NFC",nfc_enabled?"SCAN":"OFF",'n',nfc_enabled,!state.nfc || state.busy},
-        {"STOP","ALL",'x',false,!(enabled || scan_enabled || nfc_enabled || state.nfc_requested)}};
-    int h=ls_btn_raised_height(a,8);
+        {"STOP","ALL",'x',false,!(enabled || scan_enabled || nfc_enabled || state.nfc_requested)},
+        ls_rsel_button(LS_RSEL_MIXRF),ls_opt_button(mixrf_options())};
+    const int nb=ls_opt_count(mixrf_options())?10:9;
+    int h=ls_btn_raised_height(a,nb);
     if(a.h<22 && a.w>=72) h=6;
-    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,8,button_focus);
+    ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,nb,button_focus);
     tui_rect panel=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);
     ls_panel_box(sf,panel,"KEYBOARD RADIOS / RECEIVE",TUI_CYAN);
     ls_motion_busy(sf,panel,state.busy || state.receiving || state.scanning || state.card_scanning);
@@ -193,9 +220,10 @@ static bool key(ls_tk_t k,char c)
     if(k==LS_TK_ENTER){if(ls_btn_enabled(0,button_focus))action(button_focus);return true;}
     if(k!=LS_TK_CHAR)return false;
     if(c=='f'){ls_mixrf_nfc_watch(!state.nfc_requested);view_nfc=true;view_24=false;return true;}
-    const char *p=strchr("pmbjsvnx",c);
+    if(ls_opt_key(mixrf_options(),c))return true;
+    const char *p=strchr("pmbjsvnxr",c);
     if(!c || !p)return false;
-    action((int)(p-"pmbjsvnx"));return true;
+    action((int)(p-"pmbjsvnxr"));return true;
 }
 static bool touch(int x,int y){if(card_suite){if(!ls_scr_nfc.touch(x,y))card_suite=false;return true;}int i=ls_btn_hit(x,y);if(i>=0)action(i);return true;}
-const ls_tui_screen_t ls_scr_mixrf={.name="MIX-RF",.hint="M monitor  B band  C NFC cards",.enter=enter,.leave=leave,.draw=draw,.key=key,.touch=touch};
+const ls_tui_screen_t ls_scr_mixrf={.name="MIX-RF",.hint="M monitor  B band  R radio  O options  C NFC cards",.enter=enter,.leave=leave,.draw=draw,.key=key,.touch=touch};

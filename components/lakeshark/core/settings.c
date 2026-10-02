@@ -2,6 +2,7 @@
 #include "settings_schema.h"
 #include "home_widget_pref.h"
 #include "location_pref.h"
+#include "radio_choice.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -18,6 +19,7 @@
 
 /* For the auto-dim default below, which is a board capability. */
 #include "ls_board.h"
+#include "ls_nvs_safe.h"
 
 static const char  *TAG      = "settings";
 static const char  *NS       = "sdr-tool";
@@ -36,6 +38,11 @@ static bool         s_keyboard_light = true;
 static uint64_t s_location;
 static uint64_t s_last_fix;   /* COMPASS declination without a live fix */
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
+/* The radio each job runs on, four bits a job, 0xF for none. Read by the
+   receive tasks, some with PSRAM stacks, so it is loaded once at boot and
+   every read after that is this word. */
+static uint64_t s_radio_choice = LS_RSEL_PACKED_NONE;
+static portMUX_TYPE s_radio_choice_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define SET_Q_DEPTH     16
 #define SET_PENDING_MAX 16
@@ -121,6 +128,45 @@ static void set_worker(void *arg)
     }
 }
 
+/* Every flash read, like every write, must run on a DRAM stack: callers
+ * here include PSRAM-stack tasks (scan, REC, ADS-B, audio) and TCM-stack ones
+ * (console). On a DRAM stack this is the plain call; elsewhere it is handed to
+ * the ls_nvs worker, and a failed hand-off returns an error (getters then give
+ * their default) instead of asserting with the cache off. */
+typedef enum { SG_U8, SG_I8, SG_U32, SG_I32, SG_U64 } sg_type_t;
+typedef struct { sg_type_t t; const char *key; void *out; } sget_job_t;
+
+static esp_err_t sget_job(void *ctx)
+{
+    sget_job_t *j = (sget_job_t *)ctx;
+    switch (j->t) {
+    case SG_U8:  return nvs_get_u8 (s_nvs, j->key, (uint8_t  *)j->out);
+    case SG_I8:  return nvs_get_i8 (s_nvs, j->key, (int8_t   *)j->out);
+    case SG_U32: return nvs_get_u32(s_nvs, j->key, (uint32_t *)j->out);
+    case SG_I32: return nvs_get_i32(s_nvs, j->key, (int32_t  *)j->out);
+    case SG_U64: return nvs_get_u64(s_nvs, j->key, (uint64_t *)j->out);
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t sget(sg_type_t t, const char *key, void *out)
+{
+    sget_job_t j = { t, key, out };
+    return ls_nvs_run(sget_job, &j, 0);
+}
+
+#define nvs_get_u8(h, k, p)  sget(SG_U8,  (k), (p))
+#define nvs_get_i8(h, k, p)  sget(SG_I8,  (k), (p))
+#define nvs_get_u32(h, k, p) sget(SG_U32, (k), (p))
+#define nvs_get_i32(h, k, p) sget(SG_I32, (k), (p))
+#define nvs_get_u64(h, k, p) sget(SG_U64, (k), (p))
+
+static esp_err_t write_now_job(void *ctx)
+{
+    esp_err_t err = nvs_apply((const set_write_t *)ctx);
+    return err == ESP_OK ? nvs_commit(s_nvs) : err;
+}
+
 static bool set_put(const char *key, sv_type_t type, uint64_t raw)
 {
     if (!s_nvs_ok || !key || !*key) return false;
@@ -138,8 +184,7 @@ static bool set_put(const char *key, sv_type_t type, uint64_t raw)
     }
 
     if (!s_wq) {
-        esp_err_t err = nvs_apply(&w);
-        if (err == ESP_OK) err = nvs_commit(s_nvs);
+        esp_err_t err = ls_nvs_run(write_now_job, &w, 0);
         if (err != ESP_OK) ESP_LOGW(TAG, "settings write failed: %d", err);
         return err == ESP_OK;
     }
@@ -303,6 +348,12 @@ bool settings_init(void)
     uint64_t last_fix = 0;
     esp_err_t last_fix_err = nvs_get_u64(s_nvs, "lastfix_v1", &last_fix);
     s_last_fix = location_load(last_fix_err == ESP_OK, last_fix, false, 0, 0);
+    uint64_t radio_choice = LS_RSEL_PACKED_NONE;
+    if (nvs_get_u64(s_nvs, "rsel_v1", &radio_choice) == ESP_OK) {
+        portENTER_CRITICAL(&s_radio_choice_lock);
+        s_radio_choice = radio_choice;
+        portEXIT_CRITICAL(&s_radio_choice_lock);
+    }
 
     s_wq = xQueueCreateStatic(SET_Q_DEPTH, sizeof(set_write_t),
                               s_wq_store, &s_wq_ctrl);
@@ -614,6 +665,26 @@ bool settings_set_last_fix(float lat, float lon)
     return true;
 }
 
+int settings_get_radio_choice(int job)
+{
+    portENTER_CRITICAL(&s_radio_choice_lock);
+    const uint64_t packed = s_radio_choice;
+    portEXIT_CRITICAL(&s_radio_choice_lock);
+    return ls_rsel_unpack(packed, job);
+}
+
+bool settings_set_radio_choice(int job, int radio)
+{
+    if (job < 0 || job > 15 || radio < -1 || radio > 14) return false;
+    portENTER_CRITICAL(&s_radio_choice_lock);
+    const uint64_t was = s_radio_choice;
+    const uint64_t now = ls_rsel_pack(was, job, radio);
+    s_radio_choice = now;
+    portEXIT_CRITICAL(&s_radio_choice_lock);
+    /* The same choice again is not a write. */
+    return now == was || sput_u64("rsel_v1", now);
+}
+
 int settings_get_brightness(void)
 {
     if (!s_nvs_ok) return 80;
@@ -804,6 +875,22 @@ void settings_set_subghz_colour(int colour)
     if (!s_nvs_ok || colour < 0 || colour > 8) return;
     sput_u8("sg_col", (uint8_t)colour);
 }
+uint32_t settings_get_rec(const char *name, uint32_t deflt)
+{
+    char key[16];
+    if (!s_nvs_ok || !name || snprintf(key, sizeof(key), "rec_%s", name) >= (int)sizeof(key))
+        return deflt;
+    uint32_t v = deflt;
+    return nvs_get_u32(s_nvs, key, &v) == ESP_OK ? v : deflt;
+}
+
+void settings_set_rec(const char *name, uint32_t value)
+{
+    char key[16];
+    if (!name || snprintf(key, sizeof(key), "rec_%s", name) >= (int)sizeof(key)) return;
+    (void)sput_u32(key, value);
+}
+
 void settings_get_subghz_fsk(uint32_t *bitrate, uint32_t *deviation_hz,
                              uint32_t *sync_word, int *preamble_bits,
                              int *bandwidth_khz)
@@ -873,15 +960,11 @@ void settings_set_alert_vibe(bool en)
 }
 
 /**/
-void settings_reset_app(const app_t *a)
+typedef struct { const char *pfx; size_t plen; int n; } reset_job_t;
+
+static esp_err_t reset_app_job(void *ctx)
 {
-    if (!s_nvs_ok || !a || !a->name) return;
-
-    char pfx[16];
-    mk_key(pfx, sizeof(pfx), a->name, "");
-    const size_t plen = strlen(pfx);
-    if (plen < 2) return;
-
+    reset_job_t *r = (reset_job_t *)ctx;
     char doomed[24][NVS_KEY_NAME_MAX_SIZE];
     int  n = 0;
 
@@ -890,7 +973,7 @@ void settings_reset_app(const app_t *a)
     while (err == ESP_OK && it && n < (int)(sizeof(doomed) / sizeof(doomed[0]))) {
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);
-        if (strncmp(info.key, pfx, plen) == 0) {
+        if (strncmp(info.key, r->pfx, r->plen) == 0) {
             memcpy(doomed[n], info.key, sizeof(info.key));
             doomed[n][NVS_KEY_NAME_MAX_SIZE - 1] = 0;
             n++;
@@ -901,6 +984,26 @@ void settings_reset_app(const app_t *a)
 
     for (int i = 0; i < n; i++) nvs_erase_key(s_nvs, doomed[i]);
     if (n) nvs_commit(s_nvs);
+    r->n = n;
+    return ESP_OK;
+}
+
+void settings_reset_app(const app_t *a)
+{
+    if (!s_nvs_ok || !a || !a->name) return;
+
+    char pfx[16];
+    mk_key(pfx, sizeof(pfx), a->name, "");
+    const size_t plen = strlen(pfx);
+    if (plen < 2) return;
+
+    /* Callable from a PSRAM- or TCM-stack UI/console task. */
+    reset_job_t job = { pfx, plen, 0 };
+    if (ls_nvs_run(reset_app_job, &job, 0) != ESP_OK) {
+        ESP_LOGW(TAG, "reset '%s' not done - no cache-safe stack", a->name);
+        return;
+    }
+    const int n = job.n;
 
     ESP_LOGW(TAG, "reset '%s' to defaults (%d keys erased)", a->name, n);
 }
@@ -915,7 +1018,7 @@ static bool peek_on_by_default(const char *key)
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return true;
     uint8_t v = 1;
-    const esp_err_t err = nvs_get_u8(h, key, &v);
+    const esp_err_t err = (nvs_get_u8)(h, key, &v);
     nvs_close(h);
     return err == ESP_OK ? v != 0 : true;
 }

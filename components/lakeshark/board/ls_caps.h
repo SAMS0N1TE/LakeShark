@@ -130,6 +130,17 @@
 #define LS_HAS_LORA          0
 #endif
 
+/* The LoRa socket may hold an LR20xx (LR2021 class) part instead of an
+   SX1262. Which one is a RUNTIME fact, resolved by ls_lora_start(); this flag
+   only says the LR20xx driver is compiled in and probed first, so an image for
+   a board that cannot take one carries none of it. Behaviour must not branch
+   on it outside board/: ask ls_lora_caps() what the radio can do. */
+#if LS_HAS_LORA && defined(LS_BOARD_LORA_MAY_BE_LR20XX) && LS_BOARD_LORA_MAY_BE_LR20XX
+#define LS_HAS_LORA_LR20XX_PROBE 1
+#else
+#define LS_HAS_LORA_LR20XX_PROBE 0
+#endif
+
 /* Sub-GHz TX-capable ISM transceiver (TI CC1101 class).  This is the
    capability the REC app cares about: on every board so far REC has only
    ever been able to receive and replay through a separate HackRF, so the

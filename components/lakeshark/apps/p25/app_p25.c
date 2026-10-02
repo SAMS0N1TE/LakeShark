@@ -24,6 +24,7 @@
 #include "tone.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
+#include "radio_choice.h"
 #include "radio_decode_worker.h"
 
 #include "p25_state.h"
@@ -57,7 +58,7 @@ dsp_state_t       s_dsp;
 dsd_opts          s_dsd_opts;
 /**/
 EXT_RAM_BSS_ATTR dsd_state s_dsd_state;
-dsd_sample_ring_t s_ring;
+EXT_RAM_BSS_ATTR dsd_sample_ring_t s_ring;
 
 int autoscan_bch_ok_flag = 0;
 int dsd_bch_fail_counter = 0;
@@ -1160,6 +1161,7 @@ static ls_radio_err_t p25_radio_open(void)
         .max_hz = P25_CONTROL_TUNER_MAX_HZ,
         .sample_rate_hz = RTL_SAMPLE_RATE,
         .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_P25),
     };
     ls_radio_err_t error = ls_radio_acquire("p25", &requirements, &s_session);
     if (error != LS_RADIO_OK) {

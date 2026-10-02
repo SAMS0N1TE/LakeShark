@@ -2,6 +2,7 @@
 #include "ls_tui_screen.h"
 #include "ls_tui_ui.h"
 #include "ls_music_backend.h"
+#include "ls_options.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -57,6 +58,9 @@ static bool locate(tui_cell *cells,int w,int h,const char*text,int*x,int*y) {
     }
     return false;
 }
+/* OPTIONS is the shared list's to draw; here it is enough that the player asks for its own. */
+static const ls_opt_ctx_t *opened;
+void ls_opt_open(const ls_opt_ctx_t *ctx){opened=ctx;}
 static void paint(tui_surface*sf,int w,int h){tui_frame_begin(sf);ls_scr_music.draw(sf,tui_rect_make(0,0,w,h));}
 static void tap_label(tui_surface*sf,tui_cell*c,int w,int h,const char*text){
     int x=-1,y=-1;paint(sf,w,h);LS_CHECK_MSG(locate(c,w,h,text,&x,&y),"missing button %s at %dx%d",text,w,h);
@@ -67,6 +71,10 @@ static void exercise(int w,int h) {
     size_t n=(size_t)w*h;tui_cell *back=calloc(n+2,sizeof(*back)),*front=calloc(n+2,sizeof(*front));LS_CHECK(back&&front);
     back[0].ch='A';back[n+1].ch='Z';tui_surface sf;tui_surface_setup(&sf,back+1,front+1,w,h);
     ls_scr_music.enter();paint(&sf,w,h);
+    /* A button where the row can spell it, and the key everywhere. */
+    if(!wide){opened=NULL;tap_label(&sf,back+1,w,h,"OPTIONS");
+        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==5);}
+    opened=NULL;LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'o'));LS_CHECK(opened!=NULL);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(last_play,0);LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"PAUSE");LS_EQ_INT(state,LS_MUSIC_PAUSED);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(state,LS_MUSIC_PLAYING);

@@ -8,6 +8,8 @@
 #include "ls_safe_mode.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_select.h"
+#include "esp_attr.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -249,6 +251,18 @@ static const char *const DETAIL_TITLE[D__COUNT] = {
 static void group(tui_surface *sf, tui_rect a, int y, const char *t)
 {
     tui_put_str(sf, a, a.x + 2, a.y + y, t, TUI_ATTR(TUI_CYAN, TUI_BLACK));
+}
+
+/* "LORA SX1262", or "lora lr2021" for a row: the socket and the chip that
+   answered in it, by the name every app uses. Just the socket when none did. */
+static const char *lora_name(bool upper)
+{
+    EXT_RAM_BSS_ATTR static char name[32];
+    if (!ls_lora_present()) { snprintf(name, sizeof(name), "%s", upper ? "LORA" : "lora"); return name; }
+    snprintf(name, sizeof(name), "%s %s", upper ? "LORA" : "lora", ls_rsel_name(LS_RSEL_LORA));
+    for (char *c = name; *c; c++)
+        if (upper ? (*c >= 'a' && *c <= 'z') : (*c >= 'A' && *c <= 'Z')) *c ^= 0x20;
+    return name;
 }
 
 /* Everything the endpoint registry and the health record know. */
@@ -531,7 +545,9 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
             gp.checksum_errors ? val : gp.bytes ? good : dim);
     }
 
-    group(sf, a, 11, "LORA SX1262 / MESHCORE");
+    char lora_group[48];
+    snprintf(lora_group, sizeof(lora_group), "%s / MESHCORE", lora_name(true));
+    group(sf, a, 11, lora_group);
     if (!ls_lora_present()) {
         row(sf, a, 12, "radio", "not fitted", dim);
     } else {
@@ -838,7 +854,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
 
             /* Fitted or not is a board fact and never changes; what it is
                DOING is the part worth a colour. */
-            row(sf, left, 24, "lora sx1262",
+            row(sf, left, 24, lora_name(false),
                 ls_lora_present()
                     ? (ls_mesh_running() ? "up, mesh running" : "up, idle")
                     : "not fitted",

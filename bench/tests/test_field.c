@@ -23,6 +23,8 @@ bool ls_keypad_present(void) { return keyboard_attached; }
 static ls_imu_sample_t imu_data;
 static uint32_t mesh_received=42;
 bool ls_lora_present(void) { return !absent; }
+/* An SX1262: sweeps 150-960 MHz. */
+uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST; }
 /* ---- the FSK session and the paging decoder, faked like the radio ------ */
 static bool fsk_on;
 static ls_fsk_cfg_t fsk_cfg;

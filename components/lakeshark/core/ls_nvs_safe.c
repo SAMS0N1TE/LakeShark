@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "ls_flash_task.h"
 
 static const char *TAG = "ls_nvs";
@@ -95,4 +96,17 @@ esp_err_t ls_nvs_call(ls_nvs_fn_t fn, void *ctx, unsigned stack_bytes)
     vSemaphoreDelete(j.done);
     xSemaphoreGive(s_worker_lock);
     return j.err;
+}
+
+bool __attribute__((noinline)) ls_nvs_stack_is_flash_safe(void)
+{
+    volatile int marker = 0;
+    return esp_ptr_in_dram((const void *)&marker);
+}
+
+esp_err_t ls_nvs_run(ls_nvs_fn_t fn, void *ctx, unsigned stack_bytes)
+{
+    if (!fn) return ESP_ERR_INVALID_ARG;
+    if (ls_nvs_stack_is_flash_safe()) return fn(ctx);
+    return ls_nvs_call(fn, ctx, stack_bytes);
 }

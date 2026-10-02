@@ -69,6 +69,19 @@ struct mode_s_msg
 
     int ca;
 
+    /* DF18 only: the control field, which says what kind of message it is. */
+    int cf;
+    /* The ME field is laid out as an ADS-B one and was decoded below: always
+       for DF17, for DF18 only where the control field and type code allow. */
+    int me_ok;
+    /* The address in aa1..aa3 is not an ICAO address (DF18 CF=1 and 5, or
+       a TIS-B/ADS-R message whose IMF bit says so), so it must not be taken
+       as one. */
+    int addr_nonicao;
+    /* The message is a ground station's relay (TIS-B, ADS-R), not the
+       aircraft's own transmission. */
+    int rebroadcast;
+
     int metype;
     int mesub;
     int heading_is_valid;
@@ -103,3 +116,28 @@ void mode_s_compute_magnitude_vector(unsigned char *data, uint16_t *mag, uint32_
 void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callback_t);
 void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg);
 void runme();
+int mode_s_msg_len_by_type(int type);
+
+/* Mode S frames from the LR2021 OOK packet engine: the bytes it delivers
+   after the 0x0285 preamble, 2 chips per bit (PPM: chips 10 = 1, 01 = 0). */
+#define MODE_S_CHIP_BYTES_SHORT 14   /* 56 bits * 2 chips / 8 */
+#define MODE_S_CHIP_BYTES_LONG  28   /* 112 bits * 2 chips / 8 */
+
+typedef struct
+{
+    int bad_pairs;      /* 00 or 11 pairs among the first 56 bits: what mode_s_detect rejects on */
+    int bad_pairs_tail; /* the same beyond bit 56 of a 112-bit frame; the CRC judges those */
+    int first_bad_bit;  /* message bit index of the first bad pair, -1 if none */
+    uint8_t bad[MODE_S_LONG_MSG_BYTES]; /* bit set where the pair was bad, msg layout */
+} mode_s_chip_info_t;
+
+/* head_bits/head_value: leading message bits the detector pattern already
+   consumed (0 for the plain 0x0285 preamble; 4 and 0x8 = "1000" for a
+   DF17-assisted pattern). Returns 56 or 112, the length the DF field names,
+   with msg filled and zero beyond it; or -1 for bad arguments or fewer chips
+   than that frame needs. Bad pairs do not fail the call: they are counted in
+   info (may be NULL) and the bit takes the pair's first chip. */
+int mode_s_msg_from_chips(const uint8_t *chips, int chip_bytes,
+                          int head_bits, uint8_t head_value,
+                          uint8_t msg[MODE_S_LONG_MSG_BYTES],
+                          mode_s_chip_info_t *info);

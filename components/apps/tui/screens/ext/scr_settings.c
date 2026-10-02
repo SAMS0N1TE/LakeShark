@@ -64,12 +64,14 @@ static void dimt_next(void)
 }
 
 /* ---- volume ------------------------------------------------------------ */
-static void vol_show(char *b, size_t n) { snprintf(b, n, "%d %%", settings_get_volume()); }
+/* The live volume, not the stored one: this used to write only the saved
+   setting, so the box changed and the speaker (spoken callouts included) did
+   not until the next boot. audio_volume_set() moves the codec and saves. */
+static void vol_show(char *b, size_t n) { snprintf(b, n, "%d %%", audio_volume_get()); }
 static void vol_next(void)
 {
-    int v = settings_get_volume() + 10;
-    if (v > 100) v = 0;
-    settings_set_volume(v);
+    const int now = audio_volume_get();
+    audio_volume_set(now >= 100 ? 0 : now + 10 > 100 ? 100 : now + 10);
 }
 
 static void theme_show(char *b, size_t n)

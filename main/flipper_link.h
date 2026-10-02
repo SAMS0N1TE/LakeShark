@@ -78,6 +78,8 @@ void flipper_link_inject(const char *line, char *reply, size_t reply_len);
 int flipper_link_snapshot(char *buf, size_t len);
 
 int flipper_link_eq_snapshot(char *buf, size_t len);
+/* "& xon=..." line with the SX1262 sweep, in REC mode only; 0 otherwise. */
+int flipper_link_scan_snapshot(char *buf, size_t len);
 
 int flipper_link_scan_rx(int dwell_ms);
 

@@ -349,6 +349,14 @@ bool rec_watch_start(void)
     (void)rec_watch_scan_threshold();
     (void)rec_watch_scan_on_hit_get();
     rec_watch_fsk_get(NULL);
+    /* The receiver chosen last, kept across a reboot (radio_choice.h). */
+    const rec_source_t saved=rec_source_of_radio(ls_rsel_saved(LS_RSEL_SUBGHZ_READ));
+    if(saved<REC_SOURCE_COUNT) {
+        portENTER_CRITICAL(&s_lock);
+        if(!s_status.enabled) s_source=saved;
+        portEXIT_CRITICAL(&s_lock);
+        if(saved==REC_SOURCE_CC1101) ls_mixrf_start();
+    }
     s_catalog=heap_caps_calloc(1,sizeof(*s_catalog),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     s_checkpoint=heap_caps_malloc(sizeof(*s_checkpoint),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     capture_t *pool=heap_caps_calloc(2,sizeof(*pool),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -497,8 +505,8 @@ static bool fsk_session(bool on)
         const esp_err_t err=ls_lora_fsk_begin(&cfg);
         if(err!=ESP_OK){
             ls_mesh_radio_hold(false);
-            snprintf(s_fsk_error,sizeof(s_fsk_error),"SX1262 refused %lu bd / %.1f kHz dev",
-                (unsigned long)cfg.bitrate,cfg.deviation_hz/1000.0);
+            snprintf(s_fsk_error,sizeof(s_fsk_error),"%s refused %lu bd / %.1f kHz dev",
+                rec_source_name(REC_SOURCE_SX1262),(unsigned long)cfg.bitrate,cfg.deviation_hz/1000.0);
             return false;
         }
         s_fsk_run=true;
@@ -715,6 +723,11 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
         snprintf(result,len,"Replay: not a readable .sub file");
         return;
     }
+    if(subghz_file_is_cc_fsk(&f)) {
+        bool sent=ls_mixrf_replay_fsk(f.freq_hz,edges,f.edges,dbm,&f.cc_fsk);
+        snprintf(result,len,"%s",sent?"Sent FSK file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");
+        return;
+    }
     if(subghz_file_is_ook(&f)) {
         bool sent=ls_mixrf_replay(f.freq_hz,edges,f.edges,dbm);
         snprintf(result,len,"%s",sent?"Sent file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");
@@ -747,7 +760,9 @@ const char *rec_watch_last_result(void){ return s_status.export_status; }
 bool rec_watch_request_scan(uint32_t min_hz,uint32_t max_hz,uint32_t seconds,
                             int bins)
 {
-    if(min_hz<150000000u || max_hz>960000000u || max_hz<=min_hz)return false;
+    /* 150-960 MHz, or as far as the part says it sweeps: the LR2021's two
+       inputs reach 1100 MHz and 1500-2500 MHz. */
+    if(max_hz<=min_hz || !ls_lora_rx_range_ok(ls_lora_caps(),min_hz,max_hz))return false;
     /* 0 means run until stopped. */
     if(seconds>180)return false;
     if(bins<4 || bins>REC_SCAN_BINS)bins=REC_SCAN_BINS;

@@ -6,6 +6,7 @@
 #include "ls_notify.h"
 #include "ls_numpad.h"
 #include "ls_picker.h"
+#include "ls_options.h"
 #include "ls_tui_chrome.h"
 #include "ls_gauge.h"
 #include "ls_tui_ui.h"
@@ -696,6 +697,9 @@ void ls_tui_router_draw(tui_surface *sf)
 
     if (hint_rows()) draw_hints(sf, cols, rows - 1);
     if (s_help_open) draw_help(sf, cols, rows);
+    /* After the screen, which is what an OPTIONS row reads its value from,
+       and before the overlays, one of which it may open again. */
+    ls_opt_poll();
     /* The keypad is drawn last and over the screen's own area, not
        over the chrome: the tab strip stays readable so it is obvious which
        app is being tuned, and the status row keeps saying what the radio is

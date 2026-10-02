@@ -16,6 +16,7 @@
 #include "../../ls_icons.h"
 /* The typed-text overlay. A router concern, opened from here. */
 #include "../../ls_keyboard.h"
+#include "../../ls_options.h"
 /* How far away a node that advertises a position is. */
 #include "../../ls_geo.h"
 /* What this screen reports to the rest of the unit. */
@@ -1025,35 +1026,77 @@ static void draw_setup(tui_surface *sf, tui_rect r)
 
 static const char *const PAGE_NAMES[PAGE__COUNT] = { "CHAT", "NODES", "SETUP" };
 
+static void open_field_edit(int field);
+
+/* OPTIONS: the radio's rows from SETUP, from any page. Each does what its
+   row does there: a choice changes in place, a number opens the keyboard. */
+static void o_field(const ls_opt_t *o)
+{
+    if (FIELDS[o->arg].kind == F_TOGGLE) {
+        const char *msg = toggle_field(o->arg);
+        if (msg) flash(msg);
+        return;
+    }
+    open_field_edit(o->arg);
+}
+static void o_field_show(const ls_opt_t *o, char *out, size_t n)
+{
+    char v[EDIT_MAX + 8];
+    field_value(o->arg, v, sizeof(v));
+    const char *unit = FIELDS[o->arg].unit;
+    /* SF11 and 4/5, the way they are written; MHz and dBm after the number. */
+    if (!unit) snprintf(out, n, "%s", v);
+    else if (!strcmp(unit, "SF")) snprintf(out, n, "SF%s", v);
+    else if (!strcmp(unit, "4/x")) snprintf(out, n, "4/%s", v);
+    else snprintf(out, n, "%s %s", v, unit);
+}
+#define MESH_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_field, .show = o_field_show }
+static const ls_opt_t OPT_MESH[] = {
+    MESH_ROW("BAND", F_BAND), MESH_ROW("FREQUENCY", F_FREQ), MESH_ROW("SPREADING", F_SF),
+    MESH_ROW("BANDWIDTH", F_BW), MESH_ROW("CODING RATE", F_CR), MESH_ROW("POWER", F_PWR),
+    MESH_ROW("SYNC WORD", F_SYNC), MESH_ROW("CRC", F_CRC),
+};
+#undef MESH_ROW
+static const ls_opt_ctx_t CTX_MESH = { .name = "MESH", .job = -1, .radio = LS_RSEL_LORA,
+                                       LS_OPT_ROWS(OPT_MESH), .tag = "RADIO" };
+
+/* The pages, and OPTIONS in the last cell: a list over the page, not a
+   page of its own. */
+#define TAB_CELLS (PAGE__COUNT + 1)
+static const char *tab_name(int i) { return i < PAGE__COUNT ? PAGE_NAMES[i] : "OPTIONS"; }
+
 static tui_rect page_tab_rect(tui_rect bar, int i)
 {
-    const int cw = bar.w / PAGE__COUNT;
+    const int cw = bar.w / TAB_CELLS;
     const int x0 = bar.x + i * cw;
-    const int w  = (i == PAGE__COUNT - 1) ? bar.x + bar.w - x0 : cw;
+    const int w  = (i == TAB_CELLS - 1) ? bar.x + bar.w - x0 : cw;
     return tui_rect_make(x0, bar.y, w, bar.h);
 }
 
 static void portrait_tabs(tui_surface *sf, tui_rect bar)
 {
-    for (int i = 0; i < PAGE__COUNT; i++) {
+    for (int i = 0; i < TAB_CELLS; i++) {
         const tui_rect t = page_tab_rect(bar, i);
-        const bool on = ((mesh_page_t)i == s_page);
+        const bool on = i < PAGE__COUNT && ((mesh_page_t)i == s_page);
         const uint8_t hue = on ? (TUI_GREEN | TUI_BRIGHT) : TUI_CYAN;
 
         ls_panel_box(sf, t, NULL, hue);
         tui_rect f = tui_rect_make(t.x + 1, t.y + 1, t.w - 2, t.h - 2);
         if (f.w <= 0 || f.h <= 0) {
             /* Too short for a box; the word alone still has to be readable. */
-            const int len = (int)strlen(PAGE_NAMES[i]);
-            tui_put_str(sf, bar, t.x + (t.w - len) / 2, t.y, PAGE_NAMES[i],
+            const int len = (int)strlen(tab_name(i));
+            tui_put_str(sf, bar, t.x + (t.w - len) / 2, t.y, tab_name(i),
                         A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
             continue;
         }
         ls_fill_dither(sf, f, on ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
-        ls_dither_label(sf, f, (f.h - 1) / 2, PAGE_NAMES[i],
+        ls_dither_label(sf, f, (f.h - 1) / 2, tab_name(i),
                         A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     }
 }
+
+/* Landscape: where OPTIONS was drawn on the tab row. */
+static tui_rect s_opt_tab;
 
 /* -------------------------------------------------------------- landscape */
 
@@ -1071,10 +1114,15 @@ static void page_tabs(tui_surface *sf, tui_rect r)
         x += w + 1;
     }
     tui_put_char(sf, r, x, r.y, '>', A(FAINT_FG, TUI_BLACK));
+    x += 2;
+    s_opt_tab = tui_rect_make(x, r.y, 9, 1);
+    tui_fill(sf, s_opt_tab, ' ', A(TUI_WHITE, TUI_BLACK));
+    tui_put_str(sf, r, x + 1, r.y, "OPTIONS", A(TUI_CYAN, TUI_BLACK));
+    x += 9;
     if (s_flash_ttl > 0)
-        tui_put_str(sf, r, x + 3, r.y, s_flash, A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, r, x + 2, r.y, s_flash, A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     else
-        tui_put_str(sf, r, x + 3, r.y, "/help for commands",
+        tui_put_str(sf, r, x + 2, r.y, "/help for commands",
                     A(DIM_FG, TUI_BLACK));
 }
 
@@ -1672,6 +1720,7 @@ static bool slash(const char *text)
         flash("chat locked - /pub or tap the name to leave");
         return true;
     }
+    if (!strncasecmp(cmd, "options", 7)) { ls_opt_open(&CTX_MESH); return true; }
     if (!strncasecmp(cmd, "start", 5))  { act_start_on();  return true; }
     if (!strncasecmp(cmd, "stop", 4))   { act_stop();      return true; }
     if (!strncasecmp(cmd, "arm", 3))    { act_set_tx(true);  return true; }
@@ -1732,6 +1781,11 @@ static bool key(ls_tk_t k, char ch)
         s_detail = false;
         return true;
     }
+
+    /* O for OPTIONS where letters are not text: CHAT has the tab, and
+       '/options' on its compose line. */
+    if (k == LS_TK_CHAR && s_page != PAGE_CHAT && !(s_page == PAGE_NODES && s_detail) &&
+        ls_opt_key(&CTX_MESH, ch)) return true;
 
     if (s_page == PAGE_SETUP) {
         switch (k) {
@@ -1854,9 +1908,10 @@ static bool touch(int col, int row)
         /* The page bar first: it is drawn over everything else and is the
            only way to reach NODES and SETUP without a keyboard. */
         if (row >= s_page_bar.y && row < s_page_bar.y + s_page_bar.h) {
-            for (int i = 0; i < PAGE__COUNT; i++) {
+            for (int i = 0; i < TAB_CELLS; i++) {
                 const tui_rect t = page_tab_rect(s_page_bar, i);
                 if (col >= t.x && col < t.x + t.w) {
+                    if (i == PAGE__COUNT) { ls_opt_open(&CTX_MESH); return true; }
                     s_page = (mesh_page_t)i;
                     s_edit_field = -1;
                     s_detail = false;
@@ -1947,6 +2002,10 @@ static bool touch(int col, int row)
     /* Landscape: the tab strip is the bottom row, and it is the one thing
        worth hit-testing here - the rest of the page is a display. */
 
+    if (s_opt_tab.w > 0 && tui_rect_contains(s_opt_tab, col, row)) {
+        ls_opt_open(&CTX_MESH);
+        return true;
+    }
     int x = 1;
     for (int i = 0; i < PAGE__COUNT; i++) {
         const int w = (int)strlen(PAGE_NAMES[i]) + 2;

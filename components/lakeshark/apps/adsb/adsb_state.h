@@ -49,6 +49,9 @@ typedef struct {
        grow. */
     uint8_t          emitter_tc;
     uint8_t          emitter_ca;
+    /* The last message came from a ground station's relay (TIS-B or ADS-R),
+       not the aircraft. Fits the padding as well. */
+    uint8_t          rebroadcast;
 
     int              pending_alt;
     int              pending_vel;

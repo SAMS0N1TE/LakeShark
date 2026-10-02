@@ -5,8 +5,10 @@
 #include "adsb_state.h"
 #include "adsb_app.h"
 #include "adsb_demo.h"   /**/
+#include "adsb_source.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
+#include "radio_choice.h"
 #include "radio_decode_worker.h"
 #include "perf.h"
 #include "freertos/FreeRTOS.h"
@@ -14,6 +16,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "ls_lora.h"
 #include "sdkconfig.h"
 #include <stdlib.h>
 
@@ -32,6 +35,27 @@ static volatile bool s_rx_should_run = false;
 static volatile bool s_rx_running    = false;
 static ls_radio_session_t *s_session;
 static ls_iq_control_t s_radio_control;
+
+/* Which receiver is feeding the decoder right now. Written by the rx task,
+   read by whatever reports radio status. */
+static volatile adsb_source_t s_source = ADSB_SRC_NONE;
+
+adsb_source_t adsb_active_source(void) { return s_source; }
+const char *adsb_active_source_name(void) { return adsb_source_name(s_source); }
+
+/* The mesh owns the LoRa socket between sessions, so a Mode S session has to
+   ask, as an FSK session does. Declared rather than included: ls_mesh.h belongs
+   to the meshcore component, which depends on this one. Weak, so a build
+   without a mesh links and reports the radio as free, which it is. */
+__attribute__((weak)) bool ls_mesh_radio_hold(bool hold) { (void)hold; return true; }
+__attribute__((weak)) bool ls_mesh_radio_held(void) { return true; }
+
+static const adsb_modes_ops_t LORA_OPS = {
+    .begin    = ls_lora_modes_begin,
+    .poll     = ls_lora_modes_poll,
+    .set_gain = ls_lora_modes_set_gain,
+    .end      = ls_lora_modes_end,
+};
 
 static const char *TAG = "adsb";
 static volatile bool s_age_running = false;
@@ -81,15 +105,32 @@ void adsb_request_gain(int gain_tenths_db)
     ls_iq_control_request_gain(&s_radio_control, gain_tenths_db);
 }
 
+static const ls_radio_requirements_t IQ_REQUIREMENTS = {
+    .required_caps = LS_RADIO_RX_IQ_U8,
+    .min_hz = 1080000000UL,
+    .max_hz = 1100000000UL,
+    .sample_rate_hz = 2000000,
+    .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+};
+
+static bool adsb_iq_present(void)
+{
+    return ls_radio_endpoint_available(&IQ_REQUIREMENTS);
+}
+
+/* Where frames should come from now: the RADIO picker's choice, falling
+   back as the picker's button does. RAM reads only - this runs on the
+   receive task. */
+static adsb_source_t adsb_choose(void)
+{
+    return adsb_source_choose(ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_LORA,
+                              adsb_iq_present(), ls_lora_caps());
+}
+
 static bool adsb_radio_open(void)
 {
-    const ls_radio_requirements_t requirements = {
-        .required_caps = LS_RADIO_RX_IQ_U8,
-        .min_hz = 1080000000UL,
-        .max_hz = 1100000000UL,
-        .sample_rate_hz = 2000000,
-        .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
-    };
+    ls_radio_requirements_t requirements = IQ_REQUIREMENTS;
+    requirements.preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_ADSB);
     ls_radio_err_t error = ls_radio_acquire("adsb", &requirements,
                                             &s_session);
     if (error != LS_RADIO_OK) return false;
@@ -111,9 +152,98 @@ static bool adsb_radio_open(void)
         s_session = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "radio %.3f MHz %lu SPS gain=%d", actual.center_hz / 1e6,
+    ESP_LOGI(TAG, "source: %s, radio %.3f MHz %lu SPS gain=%d",
+             adsb_source_name(ADSB_SRC_IQ), actual.center_hz / 1e6,
              (unsigned long)actual.sample_rate_hz, actual.gain_tenths_db);
     return true;
+}
+
+/* Take the LoRa socket's radio from the mesh, as an FSK session does. */
+static bool adsb_lora_hold(void)
+{
+    const int64_t deadline = esp_timer_get_time() + 1000000;
+    while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < deadline)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (!ls_mesh_radio_held()) {
+        ls_mesh_radio_hold(false);
+        return false;
+    }
+    return true;
+}
+
+/* The Mode S session on the LoRa socket's chip, until the app stops, the
+   choice moves to an IQ receiver (one that appears is taken unless the chip
+   was chosen), or the chip stops answering. Returns
+   with the chip back in standby and the radio handed back to the mesh. */
+static void adsb_lora_run(void)
+{
+    if (!adsb_lora_hold()) {
+        ESP_LOGW(TAG, "mesh would not release the LoRa radio");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        return;
+    }
+
+    int step = adsb_lr_gain_step(adsb_requested_gain());
+    const esp_err_t error = LORA_OPS.begin(s_cfg_freq, step);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "Mode S session on the LoRa chip failed: %s", esp_err_to_name(error));
+        ls_mesh_radio_hold(false);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        return;
+    }
+    s_source = ADSB_SRC_LORA;
+    adsb_chip_diag_mark_start();     /* the rates in `adsb chips` run from here */
+    ESP_LOGI(TAG, "source: %s, %.3f MHz gain step %d", adsb_source_name(ADSB_SRC_LORA),
+             s_cfg_freq / 1e6, step);
+
+    adsb_modes_stats_t stats = { 0 };
+    int failed_in_a_row = 0;
+    int64_t now = esp_timer_get_time();
+    int64_t next_iq_check = now + 500000;
+    int64_t last_report_us = now;
+
+    while (s_rx_should_run) {
+        /* The gain request flag is only an edge; the setting itself is read
+           below, so a request that arrived before the session is not stale. */
+        ls_iq_control_request_t control;
+        (void)ls_iq_control_take(&s_radio_control, &control);
+        const int want = adsb_lr_gain_step(adsb_requested_gain());
+        if (want != step) {
+            if (LORA_OPS.set_gain(want) == ESP_OK) step = want;
+            else ESP_LOGW(TAG, "gain step %d refused", want);
+        }
+
+        const int n = adsb_modes_pump(&LORA_OPS, &stats, 9);
+        if (n < 0) {
+            if (++failed_in_a_row >= 20) {
+                ESP_LOGE(TAG, "LoRa chip stopped answering, restarting the session");
+                break;
+            }
+        } else {
+            failed_in_a_row = 0;
+        }
+        vTaskDelay(1);   /* 1 ms: the chip holds nine frames */
+
+        now = esp_timer_get_time();
+        if (now >= next_iq_check) {
+            next_iq_check = now + 500000;
+            if (adsb_choose() != ADSB_SRC_LORA) {
+                ESP_LOGI(TAG, "IQ receiver attached or chosen, leaving the LoRa chip");
+                break;
+            }
+        }
+        if (now - last_report_us >= 2000000) {
+            ESP_LOGI(TAG, "lr-chip frames=%lu decoded=%lu bad_chips=%lu bad_crc=%lu errors=%lu",
+                     (unsigned long)stats.frames, (unsigned long)stats.decoded,
+                     (unsigned long)stats.bad_chips, (unsigned long)stats.bad_crc,
+                     (unsigned long)stats.errors);
+            last_report_us = now;
+        }
+    }
+
+    (void)LORA_OPS.end();
+    ls_mesh_radio_hold(false);
+    s_source = ADSB_SRC_NONE;
 }
 
 static void adsb_rx_task(void *arg)
@@ -131,14 +261,24 @@ static void adsb_rx_task(void *arg)
     uint64_t loops = 0, fulls = 0, shorts = 0, errors = 0;
     int64_t last_report_us = esp_timer_get_time();
     int64_t last_yield = last_report_us;
+    int64_t next_choice_check = last_report_us + 500000;
     s_rx_running = true;
 
     while (s_rx_should_run) {
         if (!s_session) {
+            /* The chosen receiver, falling back to whichever of an IQ
+               receiver and the LoRa socket's chip can do Mode S. With
+               neither, the IQ open below keeps retrying, as it always has. */
+            if (adsb_choose() == ADSB_SRC_LORA) {
+                adsb_lora_run();
+                continue;
+            }
             if (!adsb_radio_open()) {
+                s_source = ADSB_SRC_NONE;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
+            s_source = ADSB_SRC_IQ;
         }
 
         ls_iq_control_request_t control;
@@ -173,6 +313,7 @@ static void adsb_rx_task(void *arg)
             if (error == LS_RADIO_ERR_DISCONNECTED) {
                 ls_radio_release(s_session);
                 s_session = NULL;
+                s_source = ADSB_SRC_NONE;
             }
             break;
         }
@@ -191,6 +332,19 @@ static void adsb_rx_task(void *arg)
                      loops, fulls, shorts, errors);
             last_report_us = now;
         }
+        /* The LoRa chip chosen while the IQ receiver runs: give the dongle
+           back and let the top of the loop start the chip's session. */
+        if (s_session && now >= next_choice_check) {
+            next_choice_check = now + 500000;
+            if (adsb_choose() == ADSB_SRC_LORA) {
+                ESP_LOGI(TAG, "LoRa chip chosen, leaving the IQ receiver");
+                (void)ls_radio_iq_stop(s_session);
+                ls_radio_release(s_session);
+                s_session = NULL;
+                s_source = ADSB_SRC_NONE;
+                continue;
+            }
+        }
         if (now - last_yield > 25000) {
             last_yield = now;
             vTaskDelay(1);
@@ -200,6 +354,7 @@ static void adsb_rx_task(void *arg)
     if (s_session) {
         (void)ls_radio_iq_stop(s_session);
     }
+    s_source = ADSB_SRC_NONE;
     heap_caps_free(buffer);
     s_rx_running = false;
 }

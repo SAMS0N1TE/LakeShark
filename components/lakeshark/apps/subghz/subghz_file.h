@@ -3,13 +3,20 @@
    What this board writes and what a Flipper writes are the same format, so
    one reader serves both. The FSK parameters the SX1262 needs to send a
    capture again are not part of the format; this board records them in a
-   comment line, and a file without one is only good for amplitude keying. */
+   comment line. CC1101 RAW FSK replay reads the stock or custom preset and
+   needs no private comments or packet reconstruction. */
 #ifndef SUBGHZ_FILE_H
 #define SUBGHZ_FILE_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+/* Transmit parameters from a CC1101 asynchronous 2-FSK preset.
+   RAW timings already contain preamble, sync and payload. */
+typedef struct {
+    uint8_t mdmcfg4, mdmcfg3, deviatn, freqoff;
+} subghz_cc_fsk_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +35,10 @@ typedef struct {
     uint32_t sync_word;
     uint16_t preamble_bits;
 
+    subghz_cc_fsk_t cc_fsk;
+    bool cc_fsk_valid;
+    char custom_module[16];
+
     int      edges;          /* stored in the caller's buffer */
     int      edges_total;    /* in the file, which may be more */
     uint64_t span_us;        /* of the stored edges */
@@ -43,6 +54,8 @@ void subghz_file_line(subghz_file_t *f, const char *line,
 /* True when the file carries what the SX1262 needs to send it again. */
 bool subghz_file_is_fsk(const subghz_file_t *f);
 bool subghz_file_is_ook(const subghz_file_t *f);
+/* Stock 2FSKDev238/476Async or a complete CC1101 custom 2-FSK preset. */
+bool subghz_file_is_cc_fsk(const subghz_file_t *f);
 
 /* Validate and pack microsecond edges into pairs of 15-bit RMT durations.
    A NULL output returns the required word count. At most 4096 edges/10 s;

@@ -3,11 +3,12 @@
 #include "scan_ctrl.h"
 
 #include <ctype.h>
+#include "esp_attr.h"
 #include <string.h>
 
 /* Single global instance. Constructing more than one would only mean two
  * radios in one firmware, which we do not have. */
-p25_scan_ctrl_t g_p25_scan;
+EXT_RAM_BSS_ATTR p25_scan_ctrl_t g_p25_scan;
 
 void p25_scan_init(p25_scan_ctrl_t *sc)
 {

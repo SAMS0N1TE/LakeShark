@@ -8,6 +8,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
 #include "../../ls_motion.h"
 #include "../../ls_rec_replay.h"
 #include "../../ls_keyboard.h"
@@ -159,15 +160,31 @@ static const char *selected_name(void)
 
 static bool at_root(void) { return !strcmp(s_path, ROOT); }
 
-static void go_up(void)
+/* The screen that sent the operator here to pick a file, or -1. BACK at the
+   top of the card goes there rather than nowhere: arriving from REC's
+   BROWSE and then having no way back except through the home is how this
+   screen was first reported. */
+static int s_return_to = -1;
+void ls_scr_files_return_to(int screen) { s_return_to = screen; }
+
+/* False at the top of the card with nobody to return to, so the router
+   takes ESC home as it does on every other screen. */
+static bool go_up(void)
 {
-    if (s_view != VIEW_LIST) { s_view = VIEW_LIST; return; }
-    if (at_root()) return;
+    if (s_view != VIEW_LIST) { s_view = VIEW_LIST; return true; }
+    if (at_root()) {
+        if (s_return_to < 0) return false;
+        const int to = s_return_to;
+        s_return_to = -1;
+        ls_tui_screen_show(to);
+        return true;
+    }
     char *slash = strrchr(s_path, '/');
     if (slash && slash != s_path) *slash = 0;
     load_dir();
     s_selected = s_depth > 0 ? s_sel_stack[--s_depth] : 0;
     if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
+    return true;
 }
 
 static const char *ext_of(const char *name)
@@ -408,8 +425,13 @@ static void actions_open(void)
     ls_picker_open(title, actions_done);
     if (sub) {
         menu_add('F', "SEND TO FLIPPER", "Copy where the Flipper app reads");
-        if (s_view == VIEW_SUB && subghz_file_is_fsk(&s_sub))
-            menu_add('R', "REPLAY", "Open in RECORD / SX1262");
+        if (s_view == VIEW_SUB && subghz_file_is_cc_fsk(&s_sub))
+            menu_add('R', "REPLAY", "Open in RECORD / CC1101 FSK");
+        else if (s_view == VIEW_SUB && subghz_file_is_fsk(&s_sub)) {
+            char where[40];
+            snprintf(where, sizeof(where), "Open in RECORD / %s", ls_rsel_name(LS_RSEL_LORA));
+            menu_add('R', "REPLAY", where);
+        }
         else if (s_view == VIEW_SUB && subghz_file_is_ook(&s_sub))
             menu_add('R', "REPLAY", "Open in RECORD / CC1101");
         else if (s_view == VIEW_SUB)
@@ -800,7 +822,7 @@ static bool key(ls_tk_t k, char ch)
         return true;
     }
     if (k == LS_TK_UP || k == LS_TK_DOWN || k == LS_TK_BACKSPACE) button_focus = -1;
-    if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) { go_up(); return true; }
+    if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) return go_up();
     if (k == LS_TK_UP) {
         if (s_view == VIEW_LIST) { if (s_selected) s_selected--; }
         else if (s_scroll) s_scroll--;
@@ -839,6 +861,10 @@ static bool touch(int col, int row)
     return true;
 }
 
+/* Leaving by any other route - the home, another app - forgets the caller,
+   so opening FILES later from the directory does not jump somewhere odd. */
+static void leave(void) { s_return_to = -1; }
+
 const ls_tui_screen_t ls_scr_files = {
     .name = "FILES", .hint = "ENTER open  BS up  A actions  S sort  M more",
-    .enter = enter, .draw = draw, .key = key, .touch = touch};
+    .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch};

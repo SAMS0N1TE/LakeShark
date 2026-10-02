@@ -1,5 +1,12 @@
-/* See ls_lora.h for why BUSY and DIO1 shape this file. */
+/* The LoRa socket: a dispatcher over two backends.
+
+   This file owns what is true of the socket whatever sits in it - the SPI
+   device, BUSY, the reset pulse, the DMA packet buffer, and finding out which
+   part answered - plus the arithmetic every board has. The commands live in
+   ls_lora_sx126x.c (the SX1262, unchanged) and ls_lora_lr20xx.c. See
+   ls_lora.h for why BUSY and DIO1 shape all of it. */
 #include "ls_lora.h"
+#include "ls_lora_priv.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -11,23 +18,38 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "ls_board.h"
 #include "ls_spi.h"
 #include "ls_xl9535.h"
 
-static const char *TAG = "ls_lora";
+#if LS_HAS_LORA_LR20XX_PROBE
+#include "ls_lora_lr20xx.h"
+#endif
+
+/* ls_lora_lr20xx.c builds its backend under this condition and no other. */
+#if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
+    defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#define LR20XX_BACKEND_BUILT 1
+#else
+#define LR20XX_BACKEND_BUILT 0
+#endif
 
 /* ------------------------------------------------------------ ladder -- */
 
-/* The chip's LoRa bandwidth ladder, once. */
+/* The SX126x LoRa bandwidth ladder, once. The sweep plan below is built on it
+   and so is the SX126x backend; the LR20xx has its own filter table. */
 
-static const struct { uint32_t hz; uint8_t code; } BW_LADDER[] = {
+const ls_lora_bw_rung_t ls_lora_sx126x_bw_ladder[] = {
     {   7810, 0x00 }, {  10420, 0x08 }, {  15630, 0x01 }, {  20830, 0x09 },
     {  31250, 0x02 }, {  41670, 0x0A }, {  62500, 0x03 }, { 125000, 0x04 },
     { 250000, 0x05 }, { 500000, 0x06 },
 };
-#define BW_LADDER_N ((int)(sizeof(BW_LADDER) / sizeof(BW_LADDER[0])))
+const int ls_lora_sx126x_bw_ladder_n =
+    (int)(sizeof(ls_lora_sx126x_bw_ladder) / sizeof(ls_lora_sx126x_bw_ladder[0]));
+#define BW_LADDER   ls_lora_sx126x_bw_ladder
+#define BW_LADDER_N ls_lora_sx126x_bw_ladder_n
 
 /* -------------------------------------------------------- sweep plan -- */
 
@@ -35,11 +57,10 @@ static const struct { uint32_t hz; uint8_t code; } BW_LADDER[] = {
    stays the figure for. The plan below adds to it as the filter narrows. */
 #define SCAN_SETTLE_US   300
 #define SCAN_BW_WIDEST   500000u
-#define SCAN_PASS_BUDGET_US 20000
 
 /* Preserve the measured wideband acquisition interval in filter samples.
    The former additive 8/BW estimate read 41.67kHz before RSSI was ready. */
-static uint32_t scan_settle_us(uint32_t bw_hz)
+uint32_t ls_lora_scan_settle_us(uint32_t bw_hz)
 {
     if (!bw_hz || bw_hz>SCAN_BW_WIDEST)bw_hz=SCAN_BW_WIDEST;
     return (SCAN_SETTLE_US*SCAN_BW_WIDEST+bw_hz-1)/bw_hz;
@@ -70,7 +91,7 @@ void ls_lora_scan_plan(uint32_t min_hz, uint32_t max_hz, int n,
             out->looks = (int)looks;
         }
     }
-    out->settle_us = scan_settle_us(out->bw_hz);
+    out->settle_us = ls_lora_scan_settle_us(out->bw_hz);
 }
 
 uint32_t ls_lora_scan_look_hz(uint32_t min_hz, uint32_t max_hz, int n, int i,
@@ -95,9 +116,14 @@ uint32_t ls_lora_scan_look_hz(uint32_t min_hz, uint32_t max_hz, int n, int i,
 
 /* Arithmetic only, so every board has it. It sat inside the fitted-radio
    half, and rec_watch_runtime.c calls it on every board: the five boards
-   without an SX1262 stopped linking. */
+   without an SX1262 stopped linking. An LR20xx has a filter table of its own,
+   used only while one is bound; every other board, with a part or without,
+   gets the SX126x ladder below. */
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz)
 {
+#if LR20XX_BACKEND_BUILT
+    if (ls_lora_chip() == LS_LORA_CHIP_LR20XX) return lr20xx_fsk_rx_bw(hz).hz;
+#endif
     static const uint32_t RUNG[] = {
         4800,5800,7300,9700,11700,14600,19500,23400,29300,39000,46900,
         58600,78200,93800,117300,156200,187200,234300,312000,373600,467000
@@ -107,66 +133,112 @@ uint32_t ls_lora_fsk_bw_snap(uint32_t hz)
     return RUNG[sizeof(RUNG)/sizeof(RUNG[0]) - 1];
 }
 
+/* See ls_lora.h. Both pure, both used once per bin. They describe the SX126x
+   synthesiser step and the evenly spaced bin grid, with or without a part on
+   the board, so they stay out of the conditional. */
+uint32_t ls_lora_freq_steps(uint32_t hz)
+{
+    return (uint32_t)(((uint64_t)hz << 25) / 32000000ull);
+}
+
+uint32_t ls_lora_scan_bin_hz(uint32_t min_hz, uint32_t max_hz, int n, int i)
+{
+    if (n <= 0) return min_hz;
+    if (i < 0) i = 0;
+    if (i >= n) i = n - 1;
+    if (n == 1 || max_hz <= min_hz) return min_hz;
+
+    const uint64_t span = (uint64_t)(max_hz - min_hz);
+    return min_hz + (uint32_t)((span * (uint64_t)i) / (uint64_t)(n - 1));
+}
+
 #if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
     defined(LS_BOARD_XL_RADIO_RST)
 
 #define CS_PIN    ((gpio_num_t)LS_BOARD_LORA_CS_GPIO)
 #define BUSY_PIN  ((gpio_num_t)LS_BOARD_LORA_BUSY_GPIO)
 
-/* SX1262 opcodes, datasheet table 11-1. */
-#define OP_GET_STATUS       0xC0
-#define OP_SET_STANDBY      0x80
-#define OP_READ_REGISTER    0x1D
-#define OP_WRITE_REGISTER   0x0D
-#define OP_WRITE_BUFFER     0x0E
-#define OP_READ_BUFFER      0x1E
-#define OP_SET_TX           0x83
-#define OP_SET_RX           0x82
-#define OP_SET_RF_FREQ      0x86
-#define OP_SET_PKT_TYPE     0x8A
-#define OP_SET_TX_PARAMS    0x8E
-#define OP_SET_PA_CFG       0x95
-#define OP_SET_BUF_BASE     0x8F
-#define OP_SET_MOD_PARAMS   0x8B
-#define OP_SET_PKT_PARAMS   0x8C
-#define OP_SET_DIO_IRQ      0x08
-#define OP_GET_IRQ_STATUS   0x12
-#define OP_CLR_IRQ_STATUS   0x02
-#define OP_SET_DIO2_RFSW    0x9D
-#define OP_SET_DIO3_TCXO    0x97
-#define OP_CAL              0x89
-#define OP_CAL_IMAGE        0x98
-#define OP_SET_REGULATOR    0x96
-#define OP_SET_FALLBACK     0x93
-#define OP_GET_RX_BUF_STAT  0x13
-#define OP_GET_PKT_STATUS   0x14
-#define OP_GET_RSSI_INST    0x15
-
-#define STANDBY_RC       0x00
-/* Standby with the crystal LEFT RUNNING. */
-
-#define STANDBY_XOSC     0x01
-#define PKT_TYPE_LORA    0x01
-
-/* IRQ bits, datasheet table 13-29. */
-#define IRQ_TX_DONE      (1u << 0)
-#define IRQ_RX_DONE      (1u << 1)
-#define IRQ_HEADER_ERR   (1u << 5)
-#define IRQ_CRC_ERR      (1u << 6)
-#define IRQ_TIMEOUT      (1u << 9)
-
-/* Registers touched by hand. */
-#define REG_LORA_SYNCWORD   0x0740
-#define REG_OCP             0x08E7
-#define REG_RX_GAIN         0x08AC
-#define REG_TX_CLAMP        0x08D8
-
-/* The one transmit in a thousand that never raises TX_DONE must not wedge the
-   sender for good. The longest legal frame here is well under 5 s. */
-#define TX_TIMEOUT_MS    8000
+static const char *TAG = "ls_lora";
 
 static spi_device_handle_t s_dev;
 static bool s_present;
+
+/* ---------------------------------------------------------- SPI lock -- */
+
+/* One device handle, several tasks: the console (diagnostics, scans), the
+   ADS-B pump (the Mode S session), the mesh. The IDF driver asserts when two
+   tasks transmit on one handle at once, and an LR20xx read is two frames with
+   a BUSY wait between them that no other frame may land in. This lock is held
+   across a whole command sequence, from the dispatcher's public entry points,
+   and again by each backend around the commands it issues. Static storage,
+   made on first use under a spinlock, so there is no start-up order to get
+   wrong and nothing to allocate. */
+static StaticSemaphore_t s_lock_buf;
+static SemaphoreHandle_t s_lock;
+static portMUX_TYPE      s_lock_init = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t      s_lock_owner;     /* written by the holder only */
+static unsigned          s_lock_depth;     /* ditto */
+static unsigned          s_unguarded;
+
+static SemaphoreHandle_t lock_handle(void)
+{
+    SemaphoreHandle_t h = __atomic_load_n(&s_lock, __ATOMIC_ACQUIRE);
+    if (!h) {
+        portENTER_CRITICAL(&s_lock_init);
+        h = s_lock;
+        if (!h) {
+            h = xSemaphoreCreateRecursiveMutexStatic(&s_lock_buf);
+            __atomic_store_n(&s_lock, h, __ATOMIC_RELEASE);
+        }
+        portEXIT_CRITICAL(&s_lock_init);
+    }
+    return h;
+}
+
+bool ls_lora_hw_locked_by_me(void)
+{
+    return __atomic_load_n(&s_lock_owner, __ATOMIC_ACQUIRE) == xTaskGetCurrentTaskHandle();
+}
+
+void ls_lora_hw_lock(void)
+{
+    SemaphoreHandle_t h = lock_handle();
+    if (xSemaphoreTakeRecursive(h, portMAX_DELAY) != pdTRUE) return;
+    s_lock_depth++;
+    __atomic_store_n(&s_lock_owner, xTaskGetCurrentTaskHandle(), __ATOMIC_RELEASE);
+}
+
+void ls_lora_hw_unlock(void)
+{
+    if (!ls_lora_hw_locked_by_me()) return;      /* not ours to give */
+    if (--s_lock_depth == 0)
+        __atomic_store_n(&s_lock_owner, (TaskHandle_t)NULL, __ATOMIC_RELEASE);
+    xSemaphoreGiveRecursive(lock_handle());
+}
+
+unsigned ls_lora_hw_unguarded(void) { return __atomic_load_n(&s_unguarded, __ATOMIC_RELAXED); }
+
+esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
+{
+    if (!ls_lora_hw_locked_by_me()) {
+        if (__atomic_fetch_add(&s_unguarded, 1, __ATOMIC_RELAXED) == 0)
+            ESP_LOGW(TAG, "SPI transaction outside a locked sequence");
+    }
+    ls_lora_hw_lock();
+    const esp_err_t err = spi_device_transmit(s_dev, t);
+    ls_lora_hw_unlock();
+    return err;
+}
+
+/* Run `expr` with the lock held and return its value. */
+#define LOCKED_RET(type, expr)                                                \
+    do { ls_lora_hw_lock(); type r_ = (expr); ls_lora_hw_unlock(); return r_; } while (0)
+
+/* Until a part has answered, calls go to the SX126x backend exactly as they
+   did when that was the only code in this file; a part that identifies as
+   something else rebinds, and ls_lora_stop() unbinds. */
+static const ls_lora_ops_t *s_ops = &ls_lora_sx126x_ops;
+static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
 
 /* SPI wants DMA-capable memory for a transfer this size and DMA cannot reach
    PSRAM, so this is internal RAM and there is no choice about that. 259 bytes
@@ -176,23 +248,16 @@ static bool s_present;
    direction: the driver is single-threaded by contract. */
 static uint8_t *s_pkt;
 
+spi_device_handle_t ls_lora_hw_dev(void) { return s_dev; }
+uint8_t *ls_lora_hw_pkt(void) { return s_pkt; }
+int ls_lora_hw_busy_level(void) { return gpio_get_level(BUSY_PIN); }
+
 /* The part holds BUSY high while it works and ignores anything clocked in
    meanwhile. 1 ms is generous for every command used here; the datasheet's
    worst case is the crystal start after a cold reset, which is handled
    separately below with a longer budget. */
 /* Spin briefly, then yield. */
-
-/* The reset pin as the expander reads it back, not as we last wrote it:
-   "high", "low", or why it could not be read. */
-static const char *rst_readback(void)
-{
-    bool level = false;
-    const esp_err_t err = ls_xl9535_get(LS_BOARD_XL_RADIO_RST, &level);
-    if (err != ESP_OK) return esp_err_to_name(err);
-    return level ? "high" : "low";
-}
-
-static bool wait_not_busy(int timeout_ms)
+bool ls_lora_hw_wait_not_busy(int timeout_ms)
 {
     for (int i = 0; i < 256; i++) {
         if (!gpio_get_level(BUSY_PIN)) return true;
@@ -206,53 +271,142 @@ static bool wait_not_busy(int timeout_ms)
     return true;
 }
 
-/* One command: opcode, then any parameters, then any reply. The SX1262 is
-   full duplex and returns a status byte during the opcode, but nothing here
-   needs it, so the transaction is kept simple deliberately. */
-static esp_err_t cmd(uint8_t opcode, const uint8_t *tx, size_t tx_len,
-                     uint8_t *rx, size_t rx_len)
+/* The reset pin as the expander reads it back, not as we last wrote it:
+   "high", "low", or why it could not be read. */
+static const char *rst_readback(void)
 {
-    if (!s_dev) return ESP_ERR_INVALID_STATE;
-    if (!wait_not_busy(20)) {
-        ESP_LOGW(TAG, "busy stuck high before 0x%02X", opcode);
-        return ESP_ERR_TIMEOUT;
+    bool level = false;
+    const esp_err_t err = ls_xl9535_get(LS_BOARD_XL_RADIO_RST, &level);
+    if (err != ESP_OK) return esp_err_to_name(err);
+    return level ? "high" : "low";
+}
+
+static bool ensure_pkt(void)
+{
+    if (!s_pkt) {
+        s_pkt = heap_caps_malloc(259, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!s_pkt) {
+            ESP_LOGE(TAG, "no DMA memory for the packet buffer");
+            return false;
+        }
+    }
+    return true;
+}
+
+/* How many times the part is reset and looked at before it is called absent,
+   and how long each waits after BUSY falls: the first is the datasheet's, the
+   rest are for a part that has not finished starting. */
+#define START_ATTEMPTS 4
+static const unsigned START_SETTLE_MS[START_ATTEMPTS] = { 10, 30, 60, 120 };
+
+/* One NRESET pulse (an expander pin) and the wait for the part to come up.
+   BUSY rises as it starts and falls when it is ready; a level read the moment
+   NRESET is released can be the low from before it started, so the rise is
+   waited for first (a part that never raises it has already finished, as the
+   SX126x does) and the fall after it, then `settle_ms` more. The lock is held. */
+static esp_err_t reset_part_locked(unsigned settle_ms)
+{
+    /* LS-1240: reset is an expander pin; when I2C0 fails (LS-1239) the
+       part is never reset and the error below blamed MISO. Keep going, but
+       report it. */
+    const esp_err_t rst_lo = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    const esp_err_t rst_hi = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, true);
+    if (rst_lo != ESP_OK || rst_hi != ESP_OK) {
+        ESP_LOGE(TAG, "reset not pulsed: expander %s, drive low %s, release %s"
+                 " - the part is in whatever state the last boot left it",
+                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_lo),
+                 esp_err_to_name(rst_hi));
     }
 
-    uint8_t buf[16];
-    size_t n = 1 + tx_len + rx_len;
-    if (n > sizeof(buf)) return ESP_ERR_INVALID_SIZE;
-    memset(buf, 0, n);
-    buf[0] = opcode;
-    if (tx && tx_len) memcpy(&buf[1], tx, tx_len);
+    for (int i = 0; i < 50 && !gpio_get_level(BUSY_PIN); i++) esp_rom_delay_us(100);
 
-    spi_transaction_t t = {
-        .length = n * 8,
-        .tx_buffer = buf,
-        .rx_buffer = buf,
-    };
-    esp_err_t err = spi_device_transmit(s_dev, &t);
-    if (err == ESP_OK && rx && rx_len) memcpy(rx, &buf[1 + tx_len], rx_len);
+    /* Cold start runs the 32 MHz crystal up; the datasheet allows several
+       milliseconds and BUSY stays high throughout. */
+    if (!ls_lora_hw_wait_not_busy(100)) {
+        ESP_LOGE(TAG, "busy never fell after reset - part unpowered or absent"
+                 " (expander %s, reset release %s, RST reads %s)",
+                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_hi),
+                 rst_readback());
+        return ESP_ERR_TIMEOUT;
+    }
+    if (settle_ms) vTaskDelay(pdMS_TO_TICKS(settle_ms));
+    return ESP_OK;
+}
+
+/* A reset and the wait for the part to come back, for a backend whose part
+   has stopped taking commands. Lock held by the caller or taken here. */
+esp_err_t ls_lora_hw_reset(void)
+{
+    ls_lora_hw_lock();
+    const esp_err_t err = reset_part_locked(START_SETTLE_MS[1]);
+    ls_lora_hw_unlock();
     return err;
 }
 
-esp_err_t ls_lora_read_reg(uint16_t addr, uint8_t *buf, size_t len)
+/* Which part answered, binding its backend. NOT_FOUND when none did; the
+   caller resets and asks again before believing that. `last` says whether
+   this is the final look, so that only it logs as an error. */
+static esp_err_t identify_locked(bool last)
 {
-    /* ReadRegister is address high, address low, then one status byte the
-       part inserts before the data. That NOP is easy to forget and shifts
-       every byte by one, which reads as plausible-but-wrong data. */
-    uint8_t tx[3] = { (uint8_t)(addr >> 8), (uint8_t)addr, 0x00 };
-    return cmd(OP_READ_REGISTER, tx, sizeof(tx), buf, len);
-}
+#define IDENT_LOG(...) do { if (last) ESP_LOGE(TAG, __VA_ARGS__); else ESP_LOGW(TAG, __VA_ARGS__); } while (0)
 
-esp_err_t ls_lora_status(uint8_t *out)
-{
+#if LS_HAS_LORA_LR20XX_PROBE
+    /* An LR20xx first. On one, the SX126x probe below would read the 16-bit
+       status word of a part that rejected its opcodes and call it an SX1262. */
+    {
+        lr20xx_info_t info;
+        if (lr20xx_probe(&info) == ESP_OK) {
+            if (!ensure_pkt()) return ESP_ERR_NO_MEM;
+            lr20xx_bind(&info);
+            s_ops = &ls_lora_lr20xx_ops;
+            s_chip = LS_LORA_CHIP_LR20XX;
+            s_present = true;
+            ESP_LOGI(TAG, "%s up: FW %u.%u, stat 0x%04X (chip mode %u)",
+                     ls_lora_chip_name(), (unsigned)info.fw_major,
+                     (unsigned)info.fw_minor, (unsigned)info.stat,
+                     (unsigned)(info.stat & 7));
+            return ESP_OK;
+        }
+    }
+#endif
+
     uint8_t st = 0;
-    esp_err_t err = cmd(OP_GET_STATUS, NULL, 0, &st, 1);
-    if (err == ESP_OK && out) *out = st;
-    return err;
+    const esp_err_t err = ls_lora_sx126x_probe(&st);
+    if (err != ESP_OK) return err;
+    if (st == 0x00 || st == 0xFF) {
+        /* A floating MISO reads as one of these depending on the pull, and
+           both mean nothing is driving the bus. Reporting "not found" is more
+           useful than reporting a status of zero as though it were real. */
+        IDENT_LOG("status 0x%02X - nothing is driving MISO (BUSY %d,"
+                 " expander %s, RST reads %s)", st,
+                 gpio_get_level(BUSY_PIN), ls_xl9535_ready() ? "up" : "DOWN",
+                 rst_readback());
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (st & 0x81) {
+        /* Bits 7 and 0 of an SX126x status are reserved and read zero. Set,
+           it is something else answering - quite possibly an LR20xx that did
+           not identify - and it is not reported as an SX1262. */
+        IDENT_LOG("status 0x%02X is not an SX126x status (reserved bits"
+                 " set) and no LR20xx answered GetVersion - part not identified"
+                 " (BUSY %d, expander %s, RST reads %s)", st,
+                 gpio_get_level(BUSY_PIN), ls_xl9535_ready() ? "up" : "DOWN",
+                 rst_readback());
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (!ensure_pkt()) return ESP_ERR_NO_MEM;
+
+    s_ops = &ls_lora_sx126x_ops;
+    s_chip = LS_LORA_CHIP_SX126X;
+    s_present = true;
+    ESP_LOGI(TAG, "SX1262 up: status 0x%02X (mode %u, cmd %u)",
+             st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7));
+    return ESP_OK;
 }
 
-esp_err_t ls_lora_start(void)
+static esp_err_t start_locked(void)
 {
     if (s_present) return ESP_OK;
 
@@ -292,125 +446,73 @@ esp_err_t ls_lora_start(void)
        output. */
     ls_xl9535_set_dir(LS_BOARD_XL_RADIO_DIO1, false);
 
-    /* LS-1240: reset is an expander pin; when I2C0 fails (LS-1239) the
-       part is never reset and the error below blamed MISO. Keep going, but
-       report it. */
-    const esp_err_t rst_lo = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
-    vTaskDelay(pdMS_TO_TICKS(2));
-    const esp_err_t rst_hi = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, true);
-    if (rst_lo != ESP_OK || rst_hi != ESP_OK) {
-        ESP_LOGE(TAG, "reset not pulsed: expander %s, drive low %s, release %s"
-                 " - the part is in whatever state the last boot left it",
-                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_lo),
-                 esp_err_to_name(rst_hi));
-    }
-
-    /* Cold start runs the 32 MHz crystal up; the datasheet allows several
-       milliseconds and BUSY stays high throughout. */
-    if (!wait_not_busy(100)) {
-        ESP_LOGE(TAG, "busy never fell after reset - part unpowered or absent"
-                 " (expander %s, reset release %s, RST reads %s)",
-                 ls_xl9535_ready() ? "up" : "DOWN", esp_err_to_name(rst_hi),
-                 rst_readback());
-        return ESP_ERR_TIMEOUT;
-    }
-
-    uint8_t standby = STANDBY_RC;
-    cmd(OP_SET_STANDBY, &standby, 1, NULL, 0);
-
-    uint8_t st = 0;
-    err = ls_lora_status(&st);
-    if (err != ESP_OK) return err;
-    if (st == 0x00 || st == 0xFF) {
-        /* A floating MISO reads as one of these depending on the pull, and
-           both mean nothing is driving the bus. Reporting "not found" is more
-           useful than reporting a status of zero as though it were real. */
-        ESP_LOGE(TAG, "status 0x%02X - nothing is driving MISO (BUSY %d,"
-                 " expander %s, reset release %s, RST reads %s)", st,
-                 gpio_get_level(BUSY_PIN), ls_xl9535_ready() ? "up" : "DOWN",
-                 esp_err_to_name(rst_hi), rst_readback());
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    if (!s_pkt) {
-        s_pkt = heap_caps_malloc(259, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-        if (!s_pkt) {
-            ESP_LOGE(TAG, "no DMA memory for the packet buffer");
-            return ESP_ERR_NO_MEM;
+    /* A part that does not identify straight after a reset is reset again and
+       given longer: the first frames of a part still starting come back as
+       nonsense, which was read as "nothing in the socket" for the whole
+       session. */
+    err = ESP_ERR_NOT_FOUND;
+    for (unsigned attempt = 0; attempt < START_ATTEMPTS; attempt++) {
+        const bool last = attempt + 1 == START_ATTEMPTS;
+        if (attempt) {
+            ESP_LOGW(TAG, "part not identified (%s), reset and look again (%u/%u)",
+                     esp_err_to_name(err), attempt + 1, (unsigned)START_ATTEMPTS);
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
+        err = reset_part_locked(START_SETTLE_MS[attempt]);
+        if (err != ESP_OK) return err;      /* BUSY never fell: nothing to look at */
+        err = identify_locked(last);
+        if (err != ESP_ERR_NOT_FOUND) return err;
     }
-
-    s_present = true;
-    ESP_LOGI(TAG, "SX1262 up: status 0x%02X (mode %u, cmd %u)",
-             st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7));
-    return ESP_OK;
+    return err;
 }
 
-bool ls_lora_present(void) { return s_present; }
+/* The reset pulse, the identification and the bind are one sequence: held
+   whole, so a second task's start waits and then finds the part present. */
+esp_err_t ls_lora_start(void)
+{
+    LOCKED_RET(esp_err_t, start_locked());
+}
+
+/* A part that can be used as a LoRa radio, which is what every caller of this
+   means by "present" (mesh, waterfall, field, diagnostics screens): one whose
+   backend has the LoRa packet path, an SX126x or an LR20xx. ls_lora_chip()
+   says which is bound. */
+bool ls_lora_present(void) { return s_present && (s_ops->caps() & LS_LORA_CAP_LORA) != 0; }
 
 void ls_lora_stop(void)
 {
     /* The SPI device is left registered on purpose: the bus is shared and
        tearing it down would disturb the other parts on it. Forgetting that
        the part answered is the whole job, so the next start re-runs the
-       reset and the liveness check. */
+       reset and the identification, and a module that was swapped meanwhile
+       is not left bound to the wrong backend. */
+    ls_lora_hw_lock();
+    if (s_ops->stop) s_ops->stop();
     s_present = false;
+    s_chip = LS_LORA_CHIP_NONE;
+    s_ops = &ls_lora_sx126x_ops;
+    ls_lora_hw_unlock();
 }
 
-static ls_lora_cfg_t s_cfg;
-static bool     s_cfg_valid;
-static bool     s_fsk_active;
-static ls_lora_cfg_t s_fsk_saved;
-static bool     s_fsk_saved_valid, s_fsk_saved_rx;
-static uint8_t  s_fsk_bytes;
-static uint16_t s_fsk_preamble_bits;
-static uint8_t  s_fsk_sync_bits;
-static bool     s_scanning;        /* a sweep owns the synthesiser */
-static bool     s_rx_mode;
-/* A receive that could not be armed. On the P4 every SPI transfer here takes
-   bounce buffers from internal DMA memory, which ADS-B streaming leaves
-   short; a failed one after RX_DONE left the part in standby, so nothing
-   more was ever heard. ls_lora_poll tries again until it takes. */
-static bool     s_rearm;
-static bool     s_tx_busy;
-static int64_t  s_tx_deadline;
+ls_lora_chip_t ls_lora_chip(void) { return s_chip; }
 
-static esp_err_t xfer(const uint8_t *tx, uint8_t *rx, size_t n)
+const char *ls_lora_chip_name(void)
 {
-    if (!s_dev || !s_pkt) return ESP_ERR_INVALID_STATE;
-    if (n > 259) return ESP_ERR_INVALID_SIZE;
-    if (!wait_not_busy(20)) return ESP_ERR_TIMEOUT;
-    memcpy(s_pkt, tx, n);
-    spi_transaction_t t = { .length = n * 8, .tx_buffer = s_pkt, .rx_buffer = s_pkt };
-    esp_err_t err = spi_device_transmit(s_dev, &t);
-    if (err == ESP_OK && rx) memcpy(rx, s_pkt, n);
-    return err;
+    if (s_chip == LS_LORA_CHIP_NONE) return "none";
+    return s_ops->name_fn ? s_ops->name_fn() : s_ops->name;
 }
 
-static esp_err_t write_reg(uint16_t addr, uint8_t value)
-{
-    uint8_t tx[4] = { OP_WRITE_REGISTER, (uint8_t)(addr >> 8), (uint8_t)addr, value };
-    return xfer(tx, NULL, sizeof(tx));
-}
+uint32_t ls_lora_caps(void) { return s_present ? s_ops->caps() : 0; }
 
-/* The chip's bandwidth ladder (BW_LADDER, above). A value between two rungs
-   snaps DOWN, so a caller never silently gets a wider channel than it asked
-   for - too wide is a receiver that hears its neighbours, which is far
-   harder to diagnose than too narrow. */
-static uint8_t bw_code(uint32_t hz)
-{
-    uint8_t code = BW_LADDER[0].code;
-    for (int i = 0; i < BW_LADDER_N; i++)
-        if (hz >= BW_LADDER[i].hz) code = BW_LADDER[i].code;
-    return code;
-}
+/* Everything below that reaches the chip runs with the SPI lock held, and
+   reads s_ops after taking it so a start or stop cannot rebind it mid-call.
+   What only reads state the dispatcher or a backend keeps in RAM (the
+   configuration, the receive/scan/FSK flags, the airtime sum, the scan profile)
+   does not touch the bus and does not take it. */
+esp_err_t ls_lora_status(uint8_t *out) { LOCKED_RET(esp_err_t, s_ops->status(out)); }
 
-static uint32_t bw_hz_of(uint8_t code)
-{
-    for (int i = 0; i < BW_LADDER_N; i++)
-        if (BW_LADDER[i].code == code) return BW_LADDER[i].hz;
-    return 500000;
-}
+esp_err_t ls_lora_read_reg(uint16_t addr, uint8_t *buf, size_t len)
+{ LOCKED_RET(esp_err_t, s_ops->read_reg(addr, buf, len)); }
 
 void ls_lora_cfg_default(ls_lora_cfg_t *out)
 {
@@ -435,737 +537,173 @@ void ls_lora_cfg_default(ls_lora_cfg_t *out)
     out->cal_max_mhz = 928;
 }
 
-const ls_lora_cfg_t *ls_lora_cfg(void) { return s_cfg_valid ? &s_cfg : NULL; }
-
-static esp_err_t set_packet_params(uint8_t payload_len)
-{
-    uint8_t tx[7] = {
-        OP_SET_PKT_PARAMS,
-        (uint8_t)(s_cfg.preamble >> 8), (uint8_t)s_cfg.preamble,
-        0x00,                                   /* explicit, variable length */
-        payload_len,
-        (uint8_t)(s_cfg.crc_on ? 1 : 0),
-        (uint8_t)(s_cfg.invert_iq ? 1 : 0),
-    };
-    return xfer(tx, NULL, sizeof(tx));
-}
-
-static esp_err_t configure_lora(const ls_lora_cfg_t *cfg)
-{
-    if (!s_present) { esp_err_t e = ls_lora_start(); if (e != ESP_OK) return e; }
-    if (!cfg) return ESP_ERR_INVALID_ARG;
-    if (cfg->sf < 5 || cfg->sf > 12) return ESP_ERR_INVALID_ARG;
-    if (cfg->cr < 5 || cfg->cr > 8)  return ESP_ERR_INVALID_ARG;
-    if (cfg->power_dbm < -9 || cfg->power_dbm > 22) return ESP_ERR_INVALID_ARG;
-    if (cfg->cal_min_mhz >= cfg->cal_max_mhz) return ESP_ERR_INVALID_ARG;
-
-    s_cfg = *cfg;
-    s_cfg.bw_hz = bw_hz_of(bw_code(cfg->bw_hz));   /* report what was set */
-    s_cfg_valid = false;
-    s_rx_mode = false;
-    s_tx_busy = false;
-
-    uint8_t b;
-    esp_err_t err;
-
-    b = STANDBY_RC;
-    if ((err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0)) != ESP_OK) return err;
-
-    /* DCDC. The board has the inductor fitted; LDO would work and burns
-       roughly twice the receive current. */
-    b = 0x01;
-    if ((err = cmd(OP_SET_REGULATOR, &b, 1, NULL, 0)) != ESP_OK) return err;
-
-    /* DIO2 as an RF switch control: high in transmit, low in receive.
-
-       That is TX versus RX and nothing else. It does NOT drive the SKY13453,
-       which selects internal antenna against external MMCX1 and is on
-       expander IO1 - see ls_lora.h, which said the opposite until the vendor
-       README was read properly. The two switches are independent and both
-       have to be right before this board transmits. */
-    b = 0x01;
-    if ((err = cmd(OP_SET_DIO2_RFSW, &b, 1, NULL, 0)) != ESP_OK) return err;
-
-    /* TCXO on DIO3 at 1.6 V, 320 RTC steps of 15.625 us = 5 ms. This must
-       come before Calibrate: calibrating against a crystal that has not
-       started produces a radio that configures without error and hears
-       nothing, which is a miserable thing to debug from the far end. */
-    {
-        uint8_t tx[5] = { OP_SET_DIO3_TCXO, 0x01, 0x00, 0x01, 0x40 };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    /* Re-run the full calibration now the reference is real. */
-    b = 0x7F;
-    if ((err = cmd(OP_CAL, &b, 1, NULL, 0)) != ESP_OK) return err;
-    vTaskDelay(pdMS_TO_TICKS(5));
-    if (!wait_not_busy(100)) return ESP_ERR_TIMEOUT;
-
-    {   /* Image calibration for the band actually in use. */
-        uint8_t tx[3] = { OP_CAL_IMAGE,
-                          (uint8_t)(s_cfg.cal_min_mhz / 4),
-                          (uint8_t)(s_cfg.cal_max_mhz / 4) };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    b = PKT_TYPE_LORA;
-    if ((err = cmd(OP_SET_PKT_TYPE, &b, 1, NULL, 0)) != ESP_OK) return err;
-
-    {   /* RF frequency in steps of Fxtal / 2^25, Fxtal = 32 MHz. */
-        uint64_t steps = ((uint64_t)s_cfg.freq_hz << 25) / 32000000ull;
-        uint8_t tx[5] = { OP_SET_RF_FREQ, (uint8_t)(steps >> 24),
-                          (uint8_t)(steps >> 16), (uint8_t)(steps >> 8),
-                          (uint8_t)steps };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    {   /* PA for the SX1262 high-power path. These four are a matched set;
-           mixing them with SX1261 values can damage the PA. */
-        uint8_t tx[5] = { OP_SET_PA_CFG, 0x04, 0x07, 0x00, 0x01 };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    {   /* TX clamp workaround, datasheet 15.2: set bits 1..4 of 0x08D8. */
-        uint8_t v = 0;
-        ls_lora_read_reg(REG_TX_CLAMP, &v, 1);
-        write_reg(REG_TX_CLAMP, (uint8_t)(v | 0x1E));
-    }
-
-    {   /* Power and ramp. 40 us is the vendor's ramp for this board. */
-        uint8_t tx[3] = { OP_SET_TX_PARAMS, (uint8_t)s_cfg.power_dbm, 0x02 };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    write_reg(REG_OCP, 0x38);       /* 140 mA, the SX1262 high-power figure */
-    write_reg(REG_RX_GAIN, 0x96);   /* boosted receive gain */
-
-    {   /* Modulation. LDRO goes on when a symbol runs past ~16 ms, which is
-           the datasheet's condition; without it the receiver loses lock on
-           the slow spreading factors as the crystal drifts. */
-        uint32_t bw = s_cfg.bw_hz;
-        uint32_t sym_ms = bw ? ((1u << s_cfg.sf) * 1000u) / bw : 0;
-        uint8_t ldro = sym_ms >= 16 ? 1 : 0;
-        uint8_t tx[5] = { OP_SET_MOD_PARAMS, s_cfg.sf, bw_code(bw),
-                          (uint8_t)(s_cfg.cr - 4), ldro };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    if ((err = set_packet_params(255)) != ESP_OK) return err;
-
-    {   /* The sync word lives in a register, not a command. 0x12 private
-           becomes 0x1424 - the low nibbles are fixed at 4. */
-        write_reg(REG_LORA_SYNCWORD,     (uint8_t)((s_cfg.sync_word & 0xF0) | 0x04));
-        write_reg(REG_LORA_SYNCWORD + 1, (uint8_t)(((s_cfg.sync_word & 0x0F) << 4) | 0x04));
-    }
-
-    {   /* Buffer bases: transmit at 0, receive at 0. */
-        uint8_t tx[3] = { OP_SET_BUF_BASE, 0x00, 0x00 };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    {   /* Everything worth knowing on the IRQ status word. DIO1 carries the
-           same mask because it is the only line brought out on this board. */
-        uint16_t mask = IRQ_TX_DONE | IRQ_RX_DONE | IRQ_CRC_ERR |
-                        IRQ_HEADER_ERR | IRQ_TIMEOUT;
-        uint8_t tx[9] = { OP_SET_DIO_IRQ,
-                          (uint8_t)(mask >> 8), (uint8_t)mask,
-                          (uint8_t)(mask >> 8), (uint8_t)mask,
-                          0, 0, 0, 0 };
-        if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-    }
-
-    {
-
-        uint8_t fb = 0x20;
-        if ((err = cmd(OP_SET_FALLBACK, &fb, 1, NULL, 0)) != ESP_OK) return err;
-    }
-
-    s_cfg_valid = true;
-    ESP_LOGI(TAG, "configured %.4f MHz SF%u BW%lu CR4/%u %+d dBm sync 0x%02X",
-             s_cfg.freq_hz / 1e6, (unsigned)s_cfg.sf,
-             (unsigned long)s_cfg.bw_hz, (unsigned)s_cfg.cr,
-             (int)s_cfg.power_dbm, (unsigned)s_cfg.sync_word);
-    return ESP_OK;
-}
+const ls_lora_cfg_t *ls_lora_cfg(void) { return s_ops->cfg(); }
 
 esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
 {
-    if (s_fsk_active) return ESP_ERR_INVALID_STATE;
-    return configure_lora(cfg);
+    /* Bring the part up first so the right backend is bound before it is
+       asked to configure anything. */
+    ls_lora_hw_lock();
+    esp_err_t e = s_present ? ESP_OK : start_locked();
+    if (e == ESP_OK) e = s_ops->configure(cfg);
+    ls_lora_hw_unlock();
+    return e;
 }
 
-static esp_err_t clear_irq(uint16_t mask)
-{
-    uint8_t tx[3] = { OP_CLR_IRQ_STATUS, (uint8_t)(mask >> 8), (uint8_t)mask };
-    return xfer(tx, NULL, sizeof(tx));
-}
-
-static esp_err_t get_irq(uint16_t *out)
-{
-    uint8_t rx[4] = { OP_GET_IRQ_STATUS, 0, 0, 0 };
-    esp_err_t err = xfer(rx, rx, sizeof(rx));
-    if (err == ESP_OK && out) *out = (uint16_t)((rx[2] << 8) | rx[3]);
-    return err;
-}
-
-esp_err_t ls_lora_receive(void)
-{
-    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
-    esp_err_t err = clear_irq(0xFFFF);
-    if (err == ESP_OK) {
-        uint8_t tx[4] = { OP_SET_RX, 0xFF, 0xFF, 0xFF };
-        err = xfer(tx, NULL, sizeof(tx));
-    }
-    if (err == ESP_OK) { s_rx_mode = true; s_tx_busy = false; }
-    s_rearm = err != ESP_OK;
-    return err;
-}
-
-bool ls_lora_is_receiving(void) { return s_rx_mode; }
-
+esp_err_t ls_lora_receive(void) { LOCKED_RET(esp_err_t, s_ops->receive()); }
+bool ls_lora_is_receiving(void) { return s_ops->is_receiving(); }
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
-{
-    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
-    if (!data || len == 0) return ESP_ERR_INVALID_ARG;
-    if (len > 255) return ESP_ERR_INVALID_SIZE;
-    if (s_tx_busy)  return ESP_ERR_INVALID_STATE;
-
-    if (s_scanning) return ESP_ERR_INVALID_STATE;
-    if (!s_pkt)     return ESP_ERR_INVALID_STATE;
-
-    esp_err_t err;
-    uint8_t b = STANDBY_RC;
-    if ((err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0)) != ESP_OK) return err;
-    s_rearm = true;             /* out of receive until the transmit starts */
-    if ((err = clear_irq(0xFFFF)) != ESP_OK) return err;
-    if ((err = set_packet_params((uint8_t)len)) != ESP_OK) return err;
-
-    /* WriteBuffer: opcode, offset, then the payload. */
-    if (!wait_not_busy(20)) return ESP_ERR_TIMEOUT;
-    s_pkt[0] = OP_WRITE_BUFFER;
-    s_pkt[1] = 0x00;
-    memcpy(&s_pkt[2], data, len);
-    spi_transaction_t t = { .length = (2 + len) * 8, .tx_buffer = s_pkt, .rx_buffer = NULL };
-    if ((err = spi_device_transmit(s_dev, &t)) != ESP_OK) return err;
-
-    /* A SetTx timeout of 0 means the chip imposes none; the transmit ends
-       when it ends. The deadline below is ours, not the chip's. */
-    uint8_t tx[4] = { OP_SET_TX, 0x00, 0x00, 0x00 };
-    if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-
-    s_tx_busy = true;
-    s_rx_mode = false;
-    s_rearm = false;
-    s_tx_deadline = esp_timer_get_time() + (int64_t)TX_TIMEOUT_MS * 1000;
-    ESP_LOGI(TAG, "TX begin: %u bytes at %d dBm, estimated %lu ms",
-             (unsigned)len, s_cfg.power_dbm,
-             (unsigned long)ls_lora_airtime_ms((int)len));
-    return ESP_OK;
-}
-
-bool ls_lora_send_done(void)
-{
-    if (!s_tx_busy) return true;
-    uint16_t irq = 0;
-    if (get_irq(&irq) == ESP_OK && (irq & (IRQ_TX_DONE | IRQ_TIMEOUT))) {
-        clear_irq(0xFFFF);
-        s_tx_busy = false;
-        ESP_LOGI(TAG, "TX finished: irq=0x%04x", irq);
-        return true;
-    }
-    if (esp_timer_get_time() > s_tx_deadline) {
-
-        ESP_LOGW(TAG, "transmit did not complete in %d ms", TX_TIMEOUT_MS);
-        clear_irq(0xFFFF);
-        s_tx_busy = false;
-        return true;
-    }
-    return false;
-}
+{ LOCKED_RET(esp_err_t, s_ops->send(data, len)); }
+/* Polls the part's IRQ word and clears it, so it is a bus sequence. */
+bool ls_lora_send_done(void) { LOCKED_RET(bool, s_ops->send_done()); }
 
 int ls_lora_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
-{
-    if (!s_cfg_valid || s_fsk_active || !buf || !max || !s_pkt) return 0;
-    if (s_rearm && !s_tx_busy && ls_lora_receive() != ESP_OK) return 0;
+{ LOCKED_RET(int, s_ops->poll(buf, max, rssi_dbm, snr_db)); }
 
-    /* DIO1 first: one expander read is much cheaper than an SPI round trip
-       and this runs in a loop. Low means there is nothing to collect. */
-bool dio1 = false;
-    if (ls_xl9535_get(LS_BOARD_XL_RADIO_DIO1, &dio1) != ESP_OK || !dio1) return 0;
-
-    uint16_t irq = 0;
-    if (get_irq(&irq) != ESP_OK) return 0;
-    if (!irq) return 0;
-    clear_irq(0xFFFF);
-
-    if (irq & (IRQ_CRC_ERR | IRQ_HEADER_ERR)) { ls_lora_receive(); return -1; }
-    if (irq & IRQ_TX_DONE) s_tx_busy = false;
-    if (!(irq & IRQ_RX_DONE)) return 0;
-
-    uint8_t st[4] = { OP_GET_RX_BUF_STAT, 0, 0, 0 };
-    if (xfer(st, st, sizeof(st)) != ESP_OK) { ls_lora_receive(); return 0; }
-    uint8_t len = st[2], off = st[3];
-    if (len == 0) { ls_lora_receive(); return 0; }
-    if (len > max) len = (uint8_t)max;
-
-    /* ReadBuffer is opcode, offset, one NOP the part uses to turn the bus
-       around, then the data. Forgetting that NOP shifts every byte by one -
-       the same trap ls_lora_read_reg already documents. */
-    if (!wait_not_busy(20)) { ls_lora_receive(); return 0; }
-    memset(s_pkt, 0, (size_t)3 + len);
-    s_pkt[0] = OP_READ_BUFFER;
-    s_pkt[1] = off;
-    spi_transaction_t t = { .length = (3 + len) * 8, .tx_buffer = s_pkt, .rx_buffer = s_pkt };
-    if (spi_device_transmit(s_dev, &t) != ESP_OK) { ls_lora_receive(); return 0; }
-    memcpy(buf, &s_pkt[3], len);
-
-    uint8_t ps[4] = { OP_GET_PKT_STATUS, 0, 0, 0 };
-    if (xfer(ps, ps, sizeof(ps)) == ESP_OK) {
-        if (rssi_dbm) *rssi_dbm = -((float)ps[2]) / 2.0f;
-        if (snr_db)   *snr_db   = ((float)(int8_t)ps[3]) / 4.0f;
-    }
-
-    ls_lora_receive();
-    return len;
-}
-
-static uint8_t fsk_bw_code(uint32_t hz)
-{
-    static const struct { uint32_t hz; uint8_t code; } bw[] = {
-        {4800,0x1f},{5800,0x17},{7300,0x0f},{9700,0x1e},
-        {11700,0x16},{14600,0x0e},{19500,0x1d},{23400,0x15},
-        {29300,0x0d},{39000,0x1c},{46900,0x14},{58600,0x0c},
-        {78200,0x1b},{93800,0x13},{117300,0x0b},{156200,0x1a},
-        {187200,0x12},{234300,0x0a},{312000,0x19},{373600,0x11},
-        {467000,0x09}
-    };
-    for (size_t i = 0; i < sizeof(bw) / sizeof(bw[0]); i++)
-        if (bw[i].hz == hz) return bw[i].code;
-    return 0;
-}
-
-/* Fixed length, 32-bit sync, no preamble gate, no CRC and no whitening.
-
-   The CRC is off on purpose and not for lack of hardware. A protocol whose
-   CRC uses an initial value the part cannot be told to use has to compute
-   its own and carry it inside the payload, and a listener that switched the
-   hardware CRC back on would then reject every frame as corrupt. Off is the
-   setting that works for both those protocols and for the ones with no CRC
-   at all; a caller that wants the radio's own CRC should say so here.
-
-   Transmit and receive both come through here because they must agree on
-   every one of these: a frame sent with one preamble length and listened for
-   with another is a fault that only shows up on air. */
-static esp_err_t fsk_packet_params(uint8_t payload_bytes)
-{
-    const uint16_t pre = s_fsk_preamble_bits;
-    uint8_t packet[] = {OP_SET_PKT_PARAMS, (uint8_t)(pre >> 8), (uint8_t)pre,
-                        0, s_fsk_sync_bits, 0, 0, payload_bytes, 1, 0};
-    return xfer(packet, NULL, sizeof(packet));
-}
-
-bool ls_lora_fsk_active(void) { return s_fsk_active; }
-
-esp_err_t ls_lora_fsk_end(void)
-{
-    if (!s_fsk_active) return ESP_OK;
-    uint8_t standby = STANDBY_RC;
-    esp_err_t err = cmd(OP_SET_STANDBY, &standby, 1, NULL, 0);
-    s_rx_mode = false;
-    if (s_fsk_saved_valid) {
-        esp_err_t restored = configure_lora(&s_fsk_saved);
-        if (restored == ESP_OK && s_fsk_saved_rx) {
-            uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
-            restored = clear_irq(0xffff);
-            if (restored == ESP_OK) restored = xfer(rx, NULL, sizeof(rx));
-            s_rx_mode = restored == ESP_OK;
-        }
-        if (restored != ESP_OK) err = restored;
-    } else {
-        s_cfg_valid = false;
-    }
-    s_fsk_active = false;
-    return err;
-}
+esp_err_t ls_lora_rssi_inst(float *dbm) { LOCKED_RET(esp_err_t, s_ops->rssi_inst(dbm)); }
+uint32_t ls_lora_airtime_ms(int len) { return s_ops->airtime_ms(len); }
 
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
-{
-    if (!cfg || cfg->freq_hz < 150000000u || cfg->freq_hz > 960000000u ||
-        cfg->bitrate < 600 || cfg->bitrate > 300000 ||
-        cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||
-        !cfg->payload_bytes || !fsk_bw_code(cfg->bandwidth_hz) ||
-        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz ||
-        (cfg->preamble_bits && cfg->preamble_bits < 8) ||
-        /* 32, not the part's 64: sync_word is a uint32_t and ls_lora_fsk_begin
-           writes four registers from it. Asking the radio to match 40 bits
-           would have it match four written bytes and one register nobody set,
-           which is a session that hears nothing and says nothing about why. */
-        (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
-        cfg->power_dbm < -9 || cfg->power_dbm > 22)
-        return ESP_ERR_INVALID_ARG;
-    if (s_fsk_active || s_scanning || s_tx_busy) return ESP_ERR_INVALID_STATE;
-
-    s_fsk_saved_valid = s_cfg_valid;
-    s_fsk_saved_rx = s_rx_mode;
-    s_fsk_saved = s_cfg;
-    ls_lora_cfg_t setup;
-    ls_lora_cfg_default(&setup);
-    setup.freq_hz = cfg->freq_hz;
-    setup.cal_min_mhz = (uint16_t)((cfg->freq_hz / 4000000u) * 4);
-    setup.cal_max_mhz = setup.cal_min_mhz + 4;
-    setup.power_dbm = cfg->power_dbm;
-    s_fsk_preamble_bits = cfg->preamble_bits ? cfg->preamble_bits : 32;
-    s_fsk_sync_bits = cfg->sync_bits ? cfg->sync_bits : 32;
-    s_fsk_active = true;
-    esp_err_t err = configure_lora(&setup);
-    if (err != ESP_OK) goto fail;
-
-    uint8_t type = 0;
-    if ((err = cmd(OP_SET_PKT_TYPE, &type, 1, NULL, 0)) != ESP_OK) goto fail;
-    const uint32_t br = (1024000000u + cfg->bitrate / 2) / cfg->bitrate;
-    const uint32_t dev = (uint32_t)(((uint64_t)cfg->deviation_hz << 25) / 32000000u);
-    uint8_t mod[] = {OP_SET_MOD_PARAMS, (uint8_t)(br >> 16), (uint8_t)(br >> 8),
-        (uint8_t)br, 0, fsk_bw_code(cfg->bandwidth_hz),
-        (uint8_t)(dev >> 16), (uint8_t)(dev >> 8), (uint8_t)dev};
-    if ((err = xfer(mod, NULL, sizeof(mod))) != ESP_OK) goto fail;
-    if ((err = fsk_packet_params(cfg->payload_bytes)) != ESP_OK) goto fail;
-    for (int i = 0; i < 4; i++) {
-        err = write_reg((uint16_t)(0x06c0 + i),
-                        (uint8_t)(cfg->sync_word >> (24 - i * 8)));
-        if (err != ESP_OK) goto fail;
-    }
-    if ((err = clear_irq(0xffff)) != ESP_OK) goto fail;
-    uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
-    if ((err = xfer(rx, NULL, sizeof(rx))) != ESP_OK) goto fail;
-    s_fsk_bytes = cfg->payload_bytes;
-    s_rx_mode = true;
-    return ESP_OK;
-fail:
-    {
-        esp_err_t restored = ls_lora_fsk_end();
-        return restored == ESP_OK ? err : restored;
-    }
-}
-
+{ LOCKED_RET(esp_err_t, s_ops->fsk_begin(cfg)); }
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
-{
-    if (!s_fsk_active || !buf || size < s_fsk_bytes) return -1;
-    uint16_t irq;
-    if (get_irq(&irq) != ESP_OK) return -1;
-    if (!(irq & (IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_TIMEOUT))) return 0;
-    if (clear_irq(irq) != ESP_OK) return -1;
-    if (irq & (IRQ_CRC_ERR | IRQ_TIMEOUT)) return -1;
-    uint8_t st[] = {OP_GET_RX_BUF_STAT, 0, 0, 0};
-    if (xfer(st, st, sizeof(st)) != ESP_OK || st[2] != s_fsk_bytes) return -1;
-    uint8_t rx[258] = {OP_READ_BUFFER, st[3], 0};
-    if (xfer(rx, rx, (size_t)s_fsk_bytes + 3) != ESP_OK) return -1;
-    memcpy(buf, rx + 3, s_fsk_bytes);
-    uint8_t status[] = {OP_GET_PKT_STATUS, 0, 0, 0, 0};
-    if (rssi_dbm) *rssi_dbm = -200.0f;
-    if (xfer(status, status, sizeof(status)) == ESP_OK && rssi_dbm)
-        *rssi_dbm = -(float)status[4] / 2.0f;
-    /* Continuous RX searches for the next sync without restarting. */
-    return s_fsk_bytes;
-}
-
+{ LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
+{ LOCKED_RET(esp_err_t, s_ops->fsk_send(data, len)); }
+esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
+esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
+bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
+esp_err_t ls_lora_fsk_retune(uint32_t freq_hz)
 {
-    if (!s_fsk_active || !s_pkt) return ESP_ERR_INVALID_STATE;
-    if (!data || len == 0)       return ESP_ERR_INVALID_ARG;
-    if (len > 255)               return ESP_ERR_INVALID_SIZE;
-    if (s_tx_busy || s_scanning) return ESP_ERR_INVALID_STATE;
-
-    esp_err_t err;
-    uint8_t b = STANDBY_RC;
-    if ((err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0)) != ESP_OK) return err;
-    /* Cleared before the buffer write, not after the transmit: a receive
-       that was running owns this flag and a failure below must not leave it
-       claiming the part is still listening. */
-    s_rx_mode = false;
-    if ((err = clear_irq(0xFFFF)) != ESP_OK) return err;
-    /* The length the payload actually is, which is not the session's receive
-       length - ls_lora_fsk_receive puts that back. */
-    if ((err = fsk_packet_params((uint8_t)len)) != ESP_OK) return err;
-
-    if (!wait_not_busy(20)) return ESP_ERR_TIMEOUT;
-    s_pkt[0] = OP_WRITE_BUFFER;
-    s_pkt[1] = 0x00;
-    memcpy(&s_pkt[2], data, len);
-    spi_transaction_t t = { .length = (2 + len) * 8, .tx_buffer = s_pkt,
-                            .rx_buffer = NULL };
-    if ((err = spi_device_transmit(s_dev, &t)) != ESP_OK) return err;
-
-    uint8_t tx[4] = { OP_SET_TX, 0x00, 0x00, 0x00 };
-    if ((err = xfer(tx, NULL, sizeof(tx))) != ESP_OK) return err;
-
-    s_tx_busy = true;
-    s_tx_deadline = esp_timer_get_time() + (int64_t)TX_TIMEOUT_MS * 1000;
-    ESP_LOGI(TAG, "FSK TX: %u byte payload behind a %u-bit preamble and a "
-             "32-bit sync word, at %d dBm", (unsigned)len,
-             (unsigned)s_fsk_preamble_bits, (int)s_cfg.power_dbm);
-    return ESP_OK;
-}
-
-esp_err_t ls_lora_fsk_receive(void)
-{
-    if (!s_fsk_active) return ESP_ERR_INVALID_STATE;
-    if (s_tx_busy)     return ESP_ERR_INVALID_STATE;
-    esp_err_t err;
-    if ((err = fsk_packet_params(s_fsk_bytes)) != ESP_OK) return err;
-    if ((err = clear_irq(0xffff)) != ESP_OK) return err;
-    uint8_t rx[] = {OP_SET_RX, 0xff, 0xff, 0xff};
-    if ((err = xfer(rx, NULL, sizeof(rx))) != ESP_OK) return err;
-    s_rx_mode = true;
-    return ESP_OK;
-}
-
-/* See ls_lora.h. Both pure, both used once per bin. */
-uint32_t ls_lora_freq_steps(uint32_t hz)
-{
-    return (uint32_t)(((uint64_t)hz << 25) / 32000000ull);
-}
-
-uint32_t ls_lora_scan_bin_hz(uint32_t min_hz, uint32_t max_hz, int n, int i)
-{
-    if (n <= 0) return min_hz;
-    if (i < 0) i = 0;
-    if (i >= n) i = n - 1;
-    if (n == 1 || max_hz <= min_hz) return min_hz;
-
-    const uint64_t span = (uint64_t)(max_hz - min_hz);
-    return min_hz + (uint32_t)((span * (uint64_t)i) / (uint64_t)(n - 1));
-}
-
-/* --------------------------------------------------------------- sweep -- */
-
-static ls_lora_cfg_t s_scan_saved;
-static bool          s_scan_saved_valid;
-static uint32_t      s_scan_min_hz, s_scan_max_hz;
-/* The plan in force, the bin count it was made for, and which of its
-   looks the next pass takes. SCAN_SETTLE_US and its note moved up
-   beside the plan, which is the only thing that reads it now. */
-static ls_lora_scan_plan_t s_scan_plan;
-static int           s_scan_plan_n;
-static int           s_scan_look, s_scan_bin;
-
-bool ls_lora_scanning(void) { return s_scanning; }
-
-/* Configure the part for the band in s_scan_min_hz..s_scan_max_hz,
-   planned for `n` bins. Built on the configuration the sweep saved rather
-   than on s_cfg, because once a sweep is running s_cfg is the previous
-   band's scan configuration and not the mesh's. */
-static esp_err_t scan_configure(int n)
-{
-    ls_lora_scan_plan(s_scan_min_hz, s_scan_max_hz, n, &s_scan_plan);
-    s_scan_plan_n = n;
-    s_scan_look = 0; s_scan_bin=0;
-
-    ls_lora_cfg_t sc = s_scan_saved;
-    sc.freq_hz     = s_scan_min_hz;
-    sc.bw_hz       = s_scan_plan.bw_hz;
-    sc.cal_min_mhz = (uint16_t)(s_scan_min_hz / 1000000u);
-    sc.cal_max_mhz = (uint16_t)((s_scan_max_hz + 999999u) / 1000000u);
-
-    sc.cal_min_mhz = (uint16_t)((sc.cal_min_mhz / 4) * 4);
-    sc.cal_max_mhz = (uint16_t)(((sc.cal_max_mhz + 3) / 4) * 4);
-
-    esp_err_t err = ls_lora_configure(&sc);
-    if (err != ESP_OK) return err;
-    return ls_lora_receive();
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->fsk_retune) ? ESP_ERR_NOT_SUPPORTED
+                                                           : s_ops->fsk_retune(freq_hz);
+    ls_lora_hw_unlock();
+    return e;
 }
 
 esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz)
-{
-    /* The same band again is nothing to do: the waterfall asks once
-       a frame. A different band while sweeping is retuned below, in place. */
-    if (s_scanning && min_hz == s_scan_min_hz && max_hz == s_scan_max_hz)
-        return ESP_OK;
-    if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
-    /* Never on top of a transmission. The part would be retuned mid-burst
-       and the burst would finish somewhere it was never meant to be. */
-    if (s_tx_busy) return ESP_ERR_INVALID_STATE;
-    if (max_hz <= min_hz) return ESP_ERR_INVALID_ARG;
-    if (min_hz < 150000000u || max_hz > 960000000u) return ESP_ERR_INVALID_ARG;
-
-    /* A band change is a retune, not an end and a beginning. */
-
-    const bool retune = s_scanning;
-    if (!retune) {
-        s_scan_saved = s_cfg;
-        s_scan_saved_valid = true;
-    }
-    s_scan_min_hz = min_hz;
-    s_scan_max_hz = max_hz;
-
-    esp_err_t err = scan_configure(LS_LORA_SCAN_BINS);
-    if (err != ESP_OK) {
-        /* A first begin that fails never had the radio. A retune that fails
-           did, and gives it back exactly as ending the sweep would. */
-        if (retune) (void)ls_lora_scan_end();
-        else        s_scan_saved_valid = false;
-        return err;
-    }
-    s_scanning = true;
-    return ESP_OK;
-}
-
-static esp_err_t scan_tune(uint32_t hz)
-{
-    const uint32_t steps = ls_lora_freq_steps(hz);
-    uint8_t tx[5] = { OP_SET_RF_FREQ, (uint8_t)(steps >> 24),
-                      (uint8_t)(steps >> 16), (uint8_t)(steps >> 8),
-                      (uint8_t)steps };
-    return xfer(tx, NULL, sizeof(tx));
-}
-
-static ls_lora_scan_prof_t s_prof;
-
-void ls_lora_scan_profile(ls_lora_scan_prof_t *out)
-{
-    if (out) *out = s_prof;
-}
-
-/* Semtech status: chip mode 5 is RX; command statuses 3..5 are errors.
-   An absent SPI peer (FF/00) must never become a quiet RSSI measurement. */
-static bool rssi_status_valid(uint8_t status)
-{
-    unsigned mode=(status>>4)&7, command=(status>>1)&7;
-    /* 0/1 occur before a packet has completed (observed idle RX 0x52). */
-    return mode==5 && command!=7 && !(command>=3 && command<=5);
-}
-
+{ LOCKED_RET(esp_err_t, s_ops->scan_begin(min_hz, max_hz)); }
+/* A sweep is every look of a row: many passes. The backend takes the lock one
+   pass at a time, so the other tasks wait at most a pass, not a sweep. */
+int ls_lora_scan_sweep(float *dbm, int n) { return s_ops->scan_sweep(dbm, n); }
 int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
+{ LOCKED_RET(int, s_ops->scan_pass(dbm, n, row_done)); }
+esp_err_t ls_lora_scan_end(void) { LOCKED_RET(esp_err_t, s_ops->scan_end()); }
+bool ls_lora_scanning(void) { return s_ops->scanning(); }
+void ls_lora_scan_profile(ls_lora_scan_prof_t *out) { s_ops->scan_profile(out); }
+
+esp_err_t ls_lora_modes_begin(uint32_t freq_hz, int gain_step)
 {
-    if (row_done) *row_done = false;
-    if (!s_scanning || !dbm || n <= 0) return 0;
-    /* A bin count the plan was not made for is planned again, once:
-       the filter depends on the spacing and the spacing on the count. */
-    if (n != s_scan_plan_n && scan_configure(n) != ESP_OK) return 0;
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_begin) ? ESP_ERR_NOT_SUPPORTED
+                                                            : s_ops->modes_begin(freq_hz, gain_step);
+    ls_lora_hw_unlock();
+    return e;
+}
 
-    const int looks = s_scan_plan.looks > 0 ? s_scan_plan.looks : 1;
-    const int k = (s_scan_look >= 0 && s_scan_look < looks) ? s_scan_look : 0;
-
-    uint32_t t_standby = 0, t_tune = 0, t_rx = 0, t_settle = 0, t_rssi = 0;
-    int64_t mark;
-
-    int got = 0; bool failed=false;
-    const int64_t pass_start=esp_timer_get_time();
-    for (int i = s_scan_bin; i < n; i++) {
-        const uint32_t hz = ls_lora_scan_look_hz(s_scan_min_hz, s_scan_max_hz,
-                                                 n, i, looks, k);
-
-        uint8_t b = STANDBY_XOSC;
-        mark = esp_timer_get_time();
-        if (cmd(OP_SET_STANDBY, &b, 1, NULL, 0) != ESP_OK) {failed=true;break;}
-        t_standby += (uint32_t)(esp_timer_get_time() - mark);
-
-        mark = esp_timer_get_time();
-        if (scan_tune(hz) != ESP_OK) {failed=true;break;}
-        t_tune += (uint32_t)(esp_timer_get_time() - mark);
-
-        uint8_t rx_cmd[4] = { OP_SET_RX, 0xFF, 0xFF, 0xFF };
-        mark = esp_timer_get_time();
-        if (xfer(rx_cmd, NULL, sizeof(rx_cmd)) != ESP_OK) {failed=true;break;}
-        t_rx += (uint32_t)(esp_timer_get_time() - mark);
-
-        mark = esp_timer_get_time();
-        esp_rom_delay_us(s_scan_plan.settle_us);
-        t_settle += (uint32_t)(esp_timer_get_time() - mark);
-
-        uint8_t r[3] = { OP_GET_RSSI_INST, 0, 0 };
-        mark = esp_timer_get_time();
-        if (xfer(r, r, sizeof(r)) != ESP_OK || !rssi_status_valid(r[1])) {failed=true;break;}
-        t_rssi += (uint32_t)(esp_timer_get_time() - mark);
-
-        /* The first look of a row writes; every later one keeps the
-           peak, so a bin reports the strongest thing anywhere in its slice. */
-        const float v = -((float)r[2]) / 2.0f;
-        if (k == 0 || v > dbm[i]) dbm[i] = v;
-        got++;s_scan_bin=i+1;
-        if(esp_timer_get_time()-pass_start>=SCAN_PASS_BUDGET_US)break;
-    }
-
-    if (got) {
-        s_prof.standby_us = t_standby / (uint32_t)got;
-        s_prof.tune_us    = t_tune    / (uint32_t)got;
-        s_prof.rx_us      = t_rx      / (uint32_t)got;
-        s_prof.settle_us  = t_settle  / (uint32_t)got;
-        s_prof.rssi_us    = t_rssi    / (uint32_t)got;
-    }
-
-    if(failed){s_scan_bin=0;s_scan_look=0;return 0;}
-    if (s_scan_bin == n) {
-        s_scan_bin=0;
-        s_scan_look = (k + 1) % looks;
-        if (row_done) *row_done = (k + 1 == looks);
-    }
+int ls_lora_modes_poll(uint8_t *buf, size_t size, float *rssi_dbm)
+{
+    ls_lora_hw_lock();
+    const int n = (!s_present || !s_ops->modes_poll) ? -1
+                                                     : s_ops->modes_poll(buf, size, rssi_dbm);
+    ls_lora_hw_unlock();
     return n;
 }
 
-int ls_lora_scan_sweep(float *dbm, int n)
+esp_err_t ls_lora_modes_set_gain(int gain_step)
 {
-    if (!s_scanning || !dbm || n <= 0) return 0;
-    /* Every look of one row, starting from the first. The console
-       prints a single sweep and has no frame to spread the looks across, so
-       it waits for all of them; the waterfall calls ls_lora_scan_pass. */
-    s_scan_look = 0; s_scan_bin=0;
-    bool done = false;
-    int got = 0;
-    while (!done) {
-        got = ls_lora_scan_pass(dbm, n, &done);
-        if (got < n) break;
-    }
-    return got;
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_set_gain) ? ESP_ERR_NOT_SUPPORTED
+                                                               : s_ops->modes_set_gain(gain_step);
+    ls_lora_hw_unlock();
+    return e;
 }
 
-esp_err_t ls_lora_scan_end(void)
+esp_err_t ls_lora_modes_end(void)
 {
-    if (!s_scanning) return ESP_OK;
-    s_scanning = false;
-    s_scan_plan_n = 0;   /* the next sweep plans afresh */
-    if (!s_scan_saved_valid) return ESP_ERR_INVALID_STATE;
-
-    const ls_lora_cfg_t back = s_scan_saved;
-    s_scan_saved_valid = false;
-    esp_err_t err = ls_lora_configure(&back);
-    if (err != ESP_OK) return err;
-    return ls_lora_receive();
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_end) ? ESP_OK : s_ops->modes_end();
+    ls_lora_hw_unlock();
+    return e;
 }
 
-esp_err_t ls_lora_rssi_inst(float *dbm)
+bool ls_lora_modes_active(void)
 {
-    if (!s_cfg_valid || !s_rx_mode) return ESP_ERR_INVALID_STATE;
-    uint8_t rx[3] = { OP_GET_RSSI_INST, 0, 0 };
-    esp_err_t err = xfer(rx, rx, sizeof(rx));
-    if (err == ESP_OK && !rssi_status_valid(rx[1])) err=ESP_ERR_INVALID_RESPONSE;
-    if (err == ESP_OK && dbm) *dbm = -((float)rx[2]) / 2.0f;
-    return err;
+    return s_present && s_ops->modes_active && s_ops->modes_active();
 }
 
-uint32_t ls_lora_airtime_ms(int len)
+esp_err_t ls_lora_modes_tuning(ls_lora_modes_tuning_t *out)
 {
-    if (!s_cfg_valid || len < 0) return 0;
-    /* Semtech AN1200.13, in microseconds throughout. This feeds a duty-cycle
-       budget, and a budget built on a rounded guess is how a device ends up
-       transmitting more than its licence allows. */
-    const uint32_t bw = s_cfg.bw_hz;
-    const uint32_t sf = s_cfg.sf;
-    if (!bw) return 0;
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_tuning) ? ESP_ERR_NOT_SUPPORTED
+                                                             : s_ops->modes_tuning(out);
+    ls_lora_hw_unlock();
+    return e;
+}
 
-    uint64_t ts_us = ((uint64_t)(1u << sf) * 1000000ull) / bw;
-    uint32_t sym_ms = (uint32_t)(ts_us / 1000);
-    int de  = sym_ms >= 16 ? 1 : 0;
-    int crc = s_cfg.crc_on ? 1 : 0;
+esp_err_t ls_lora_modes_set_boost(int boost)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_set_boost) ? ESP_ERR_NOT_SUPPORTED
+                                                                : s_ops->modes_set_boost(boost);
+    ls_lora_hw_unlock();
+    return e;
+}
 
-    int num = 8 * len - 4 * (int)sf + 28 + 16 * crc;   /* explicit header */
-    int den = 4 * ((int)sf - 2 * de);
-    int ceil_term = den > 0 ? (num + den - 1) / den : 0;
-    if (ceil_term < 0) ceil_term = 0;
-    int payload_symb = 8 + ceil_term * (int)s_cfg.cr;
+esp_err_t ls_lora_modes_set_bw(uint32_t hz, uint32_t *chosen_hz)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_set_bw) ? ESP_ERR_NOT_SUPPORTED
+                                                             : s_ops->modes_set_bw(hz, chosen_hz);
+    ls_lora_hw_unlock();
+    return e;
+}
 
-    uint64_t preamble_us = ts_us * s_cfg.preamble + (ts_us * 425) / 100; /* +4.25 */
-    uint64_t payload_us  = ts_us * (uint64_t)payload_symb;
-    return (uint32_t)((preamble_us + payload_us + 999) / 1000);
+esp_err_t ls_lora_modes_set_threshold(int level_db, bool automatic)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_set_thresh) ? ESP_ERR_NOT_SUPPORTED
+                                                                 : s_ops->modes_set_thresh(level_db, automatic);
+    ls_lora_hw_unlock();
+    return e;
+}
+
+esp_err_t ls_lora_modes_read_threshold(int *raw)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->modes_read_thresh) ? ESP_ERR_NOT_SUPPORTED
+                                                                  : s_ops->modes_read_thresh(raw);
+    ls_lora_hw_unlock();
+    return e;
+}
+
+esp_err_t ls_lora_ook_begin(const ls_ook_cfg_t *cfg)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->ook_begin) ? ESP_ERR_NOT_SUPPORTED : s_ops->ook_begin(cfg);
+    ls_lora_hw_unlock();
+    return e;
+}
+
+int ls_lora_ook_poll(uint8_t *buf, size_t size, float *rssi_dbm)
+{
+    ls_lora_hw_lock();
+    const int n = (!s_present || !s_ops->ook_poll) ? -1 : s_ops->ook_poll(buf, size, rssi_dbm);
+    ls_lora_hw_unlock();
+    return n;
+}
+
+esp_err_t ls_lora_ook_end(void)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->ook_end) ? ESP_OK : s_ops->ook_end();
+    ls_lora_hw_unlock();
+    return e;
+}
+
+bool ls_lora_ook_active(void)
+{
+    return s_present && s_ops->ook_active && s_ops->ook_active();
 }
 
 void ls_lora_diagnostics(void)
@@ -1180,21 +718,9 @@ void ls_lora_diagnostics(void)
             return;
         }
     }
-    uint8_t st = 0;
-    const esp_err_t st_err = ls_lora_status(&st);
-    if (st_err != ESP_OK)
-        printf("lora: status read failed: %s (zeros below are not the part's)\n",
-               esp_err_to_name(st_err));
-    if (s_rearm) printf("lora: receive not armed yet - retried on every poll\n");
-    /* 0x0740 is the LoRa sync word. Its reset value is known, so reading it
-       distinguishes a working SPI path from a wire that merely is not shorted. */
-    uint8_t sync[2] = { 0, 0 };
-    ls_lora_read_reg(0x0740, sync, sizeof(sync));
-    printf("lora: status=0x%02X mode=%u cmd=%u syncword=0x%02X%02X busy=%d\n",
-           st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7),
-           sync[0], sync[1], gpio_get_level(BUSY_PIN));
-    printf("lora: DIO1 is expander IO17 - polled over I2C, ~10 ms floor. "
-           "Receive is fine; anything with a turnaround deadline is not.\n");
+    printf("lora: chip %s, caps 0x%02X\n", ls_lora_chip_name(),
+           (unsigned)ls_lora_caps());
+    s_ops->diagnostics();
 }
 
 #else  /* board declares no LoRa */
@@ -1202,6 +728,9 @@ void ls_lora_diagnostics(void)
 esp_err_t ls_lora_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 void      ls_lora_stop(void) { }
 bool      ls_lora_present(void) { return false; }
+ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_NONE; }
+const char *ls_lora_chip_name(void) { return "none"; }
+uint32_t  ls_lora_caps(void) { return 0; }
 esp_err_t ls_lora_status(uint8_t *out) { (void)out; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_read_reg(uint16_t a, uint8_t *b, size_t l)
 { (void)a; (void)b; (void)l; return ESP_ERR_NOT_SUPPORTED; }
@@ -1218,9 +747,7 @@ int ls_lora_poll(uint8_t *b, size_t m, float *r, float *n)
 esp_err_t ls_lora_rssi_inst(float *d) { (void)d; return ESP_ERR_NOT_SUPPORTED; }
 uint32_t ls_lora_airtime_ms(int len) { (void)len; return 0; }
 
-/* The arithmetic is the same with or without a part on the board -
-   it describes the SX1262 and not this assembly of one - so it stays out of
-   the conditional. The sweep itself cannot exist without a radio. */
+/* The sweep itself cannot exist without a radio. */
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *c)
 { (void)c; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_fsk_poll(uint8_t *b, size_t n, float *r)
@@ -1230,6 +757,7 @@ esp_err_t ls_lora_fsk_send(const uint8_t *d, size_t l)
 esp_err_t ls_lora_fsk_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_fsk_active(void) { return false; }
+esp_err_t ls_lora_fsk_retune(uint32_t f) { (void)f; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)
 { (void)a; (void)b; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_scan_sweep(float *d, int n) { (void)d; (void)n; return 0; }
@@ -1237,22 +765,21 @@ int ls_lora_scan_pass(float *d, int n, bool *done)
 { (void)d; (void)n; if (done) *done = false; return 0; }
 esp_err_t ls_lora_scan_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_scanning(void) { return false; }
+esp_err_t ls_lora_modes_begin(uint32_t f, int g) { (void)f; (void)g; return ESP_ERR_NOT_SUPPORTED; }
+int ls_lora_modes_poll(uint8_t *b, size_t n, float *r) { (void)b; (void)n; (void)r; return -1; }
+esp_err_t ls_lora_modes_set_gain(int g) { (void)g; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_modes_end(void) { return ESP_OK; }
+bool ls_lora_modes_active(void) { return false; }
+esp_err_t ls_lora_modes_tuning(ls_lora_modes_tuning_t *o) { (void)o; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_modes_set_boost(int b) { (void)b; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_modes_set_bw(uint32_t h, uint32_t *c) { (void)h; (void)c; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_modes_set_threshold(int l, bool a) { (void)l; (void)a; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_modes_read_threshold(int *r) { (void)r; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_ook_begin(const ls_ook_cfg_t *c) { (void)c; return ESP_ERR_NOT_SUPPORTED; }
+int ls_lora_ook_poll(uint8_t *b, size_t n, float *r) { (void)b; (void)n; (void)r; return -1; }
+esp_err_t ls_lora_ook_end(void) { return ESP_OK; }
+bool ls_lora_ook_active(void) { return false; }
 void ls_lora_scan_profile(ls_lora_scan_prof_t *o)
 { if (o) { const ls_lora_scan_prof_t z = { 0, 0, 0, 0, 0 }; *o = z; } }
-
-uint32_t ls_lora_freq_steps(uint32_t hz)
-{
-    return (uint32_t)(((uint64_t)hz << 25) / 32000000ull);
-}
-
-uint32_t ls_lora_scan_bin_hz(uint32_t min_hz, uint32_t max_hz, int n, int i)
-{
-    if (n <= 0) return min_hz;
-    if (i < 0) i = 0;
-    if (i >= n) i = n - 1;
-    if (n == 1 || max_hz <= min_hz) return min_hz;
-    const uint64_t span = (uint64_t)(max_hz - min_hz);
-    return min_hz + (uint32_t)((span * (uint64_t)i) / (uint64_t)(n - 1));
-}
 
 #endif

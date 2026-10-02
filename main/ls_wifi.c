@@ -20,6 +20,7 @@
 #include "esp_mac.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "ls_nvs_safe.h"
 #include "bsp/esp-bsp.h"
 
 #include "freertos/FreeRTOS.h"
@@ -334,7 +335,7 @@ static esp_err_t nvs_open_creds(nvs_open_mode_t mode, nvs_handle_t *out)
     return nvs_open(LS_WIFI_NVS_NAMESPACE, mode, out);
 }
 
-static esp_err_t nvs_load_creds(char *ssid, size_t ssid_cap, char *pass, size_t pass_cap)
+static esp_err_t nvs_load_creds_inner(char *ssid, size_t ssid_cap, char *pass, size_t pass_cap)
 {
     nvs_handle_t h;
     esp_err_t e = nvs_open_creds(NVS_READONLY, &h);
@@ -358,7 +359,7 @@ static esp_err_t nvs_load_creds(char *ssid, size_t ssid_cap, char *pass, size_t 
     return ESP_OK;
 }
 
-static esp_err_t nvs_save_creds(const char *ssid, const char *pass)
+static esp_err_t nvs_save_creds_inner(const char *ssid, const char *pass)
 {
     nvs_handle_t h;
     esp_err_t e = nvs_open_creds(NVS_READWRITE, &h);
@@ -372,7 +373,7 @@ out:
     return e;
 }
 
-static esp_err_t nvs_erase_creds(void)
+static esp_err_t nvs_erase_creds_inner(void)
 {
     nvs_handle_t h;
     esp_err_t e = nvs_open_creds(NVS_READWRITE, &h);
@@ -385,6 +386,43 @@ static esp_err_t nvs_erase_creds(void)
     e = nvs_commit(h);
     nvs_close(h);
     return e;
+}
+
+/* Console and UI callers sit on PSRAM or TCM stacks, which assert the moment
+   NVS touches flash. ls_nvs_run keeps a DRAM-stack caller inline and hands the
+   rest to the cache-safe worker. */
+typedef struct {
+    char *ssid; size_t ssid_cap; char *pass; size_t pass_cap;
+    const char *save_ssid; const char *save_pass;
+    int op;
+} creds_job_t;
+
+static esp_err_t creds_job(void *ctx)
+{
+    creds_job_t *j = (creds_job_t *)ctx;
+    switch (j->op) {
+    case 0: return nvs_load_creds_inner(j->ssid, j->ssid_cap, j->pass, j->pass_cap);
+    case 1: return nvs_save_creds_inner(j->save_ssid, j->save_pass);
+    default: return nvs_erase_creds_inner();
+    }
+}
+
+static esp_err_t nvs_load_creds(char *ssid, size_t ssid_cap, char *pass, size_t pass_cap)
+{
+    creds_job_t j = { .ssid = ssid, .ssid_cap = ssid_cap, .pass = pass, .pass_cap = pass_cap, .op = 0 };
+    return ls_nvs_run(creds_job, &j, 0);
+}
+
+static esp_err_t nvs_save_creds(const char *ssid, const char *pass)
+{
+    creds_job_t j = { .save_ssid = ssid, .save_pass = pass, .op = 1 };
+    return ls_nvs_run(creds_job, &j, 0);
+}
+
+static esp_err_t nvs_erase_creds(void)
+{
+    creds_job_t j = { .op = 2 };
+    return ls_nvs_run(creds_job, &j, 0);
 }
 
 /* ------------------------------------------------------------- events ---- */

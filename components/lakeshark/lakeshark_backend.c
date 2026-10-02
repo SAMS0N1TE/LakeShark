@@ -392,6 +392,10 @@ int lakeshark_receiver_status(char *out, size_t len)
                           : !endpoint->present ? LS_RECEIVER_RX_DISCONNECTED
                           : LS_RECEIVER_RX_IDLE;
         }
+        /* Which receiver is feeding the decoder: iq, lr-chip or none. */
+        diag_copy(diag->demod, sizeof(diag->demod), adsb_active_source_name());
+        if (adsb_active_source() == ADSB_SRC_LORA)
+            diag->rx_state = LS_RECEIVER_RX_ACTIVE;
     } else if (app_current_index() == s_rec_idx) {
         rec_hub_status_t *rec = &work->app.rec;
         rec_get_hub_status(rec);
@@ -789,6 +793,13 @@ void lakeshark_adsb_gain_step(void)
 void lakeshark_adsb_agc(void)
 {
     adsb_apply_gain(0);
+}
+
+void lakeshark_adsb_set_gain(int tenths)
+{
+    if (tenths < 0) tenths = 0;
+    if (tenths > 496) tenths = 496;
+    adsb_apply_gain(tenths);
 }
 
 int lakeshark_adsb_gain_tenths(void)

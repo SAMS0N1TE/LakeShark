@@ -252,6 +252,13 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
     perf_count_msg_good();
     perf_mark_good_msg(esp_timer_get_time());
 
+    /* A DF18 whose layout is not decoded, or whose address is not an ICAO
+       one, is a good frame but not an aircraft in the ICAO-keyed table: a
+       non-ICAO address could belong to a different airframe than the ICAO
+       address with the same bits. */
+    if (mm->msgtype == 18 && (!mm->me_ok || mm->addr_nonicao))
+        return;
+
     adsb_aircraft_t *a = adsb_state_find_or_create(icao);
     if (!a) return;
 
@@ -265,7 +272,10 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
 
     if (mm->msgtype == 11) {
         a->mt_df11++;
-    } else if (mm->msgtype == 17) {
+    } else if (mm->me_ok) {
+        /* DF17, and DF18 where it is laid out the same. They share the DF17
+           counters. */
+        a->rebroadcast = mm->rebroadcast ? 1 : 0;
         if (mm->metype >= 1 && mm->metype <= 4) {
             a->mt_df17_id++;
             /* Kept for the detail page: what kind of aircraft the
@@ -429,7 +439,7 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
     }
 
     
-    if (mm->msgtype == 17 && mm->metype >= 9 && mm->metype <= 18) {
+    if (mm->me_ok && mm->metype >= 9 && mm->metype <= 18) {
         int64_t ts = esp_timer_get_time();
         if (mm->fflag == 0)
             a->cpr_even = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
@@ -460,7 +470,7 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
         }
     }
 
-    if (mm->msgtype == 17) {
+    if (mm->me_ok) {
         if (mm->metype >= 9  && mm->metype <= 18 && mm->altitude)
             emit_contact_event(EVT_CONTACT_ALTITUDE, a, false);
         else if (mm->metype >= 19 && mm->metype <= 22 && mm->velocity)
@@ -507,9 +517,80 @@ void adsb_on_sample(uint8_t *iq, int len)
     mode_s_detect(&s_state, s_mag_buf, mag_len, on_msg);
 }
 
+static int s_last_rssi = ADSB_RSSI_NONE;
+
+adsb_frame_result_t adsb_on_frame(const uint8_t *msg, int nbytes,
+                                  int rssi_tenths_dbm)
+{
+    uint8_t buf[MODE_S_LONG_MSG_BYTES] = { 0 };
+    struct mode_s_msg mm;
+
+    if (!msg || (nbytes != MODE_S_LONG_MSG_BYTES && nbytes != MODE_S_LONG_MSG_BYTES / 2))
+        return ADSB_FRAME_BAD_CHIPS;
+    memcpy(buf, msg, nbytes);
+    memset(&mm, 0, sizeof(mm));   /* mode_s_decode leaves most fields alone for most DFs */
+    /* A 7-byte buffer cannot hold a frame whose DF names 112 bits. */
+    if (mode_s_msg_len_by_type(buf[0] >> 3) / 8 > nbytes)
+        return ADSB_FRAME_BAD_CHIPS;
+
+    if (rssi_tenths_dbm != ADSB_RSSI_NONE)
+        s_last_rssi = rssi_tenths_dbm;
+
+    mode_s_decode(&s_state, &mm, buf);
+
+    /* The same gate mode_s_detect applies before its callback. */
+    if (s_state.check_crc == 0 || mm.crcok)
+        adsb_decode_on_message(&mm);
+    return mm.crcok ? ADSB_FRAME_OK : ADSB_FRAME_BAD_CRC;
+}
+
+adsb_frame_result_t adsb_on_chips(const uint8_t *chips, int nbytes,
+                                  int variant, int rssi_tenths_dbm)
+{
+    return adsb_on_chips_ex(chips, nbytes, variant, rssi_tenths_dbm, NULL);
+}
+
+adsb_frame_result_t adsb_on_chips_ex(const uint8_t *chips, int nbytes,
+                                     int variant, int rssi_tenths_dbm,
+                                     int *first_bad_bit)
+{
+    uint8_t buf[MODE_S_LONG_MSG_BYTES];
+    mode_s_chip_info_t info;
+    int bits;
+
+    if (first_bad_bit) *first_bad_bit = -1;
+
+    /* The detector fired: one preamble hit, as the RTL path counts them. */
+    perf_count_burst();
+
+    if (variant == ADSB_CHIPS_DF17_HEAD)
+        bits = mode_s_msg_from_chips(chips, nbytes, 4, 0x8, buf, &info);
+    else if (variant == ADSB_CHIPS_FULL)
+        bits = mode_s_msg_from_chips(chips, nbytes, 0, 0, buf, &info);
+    else
+        return ADSB_FRAME_BAD_CHIPS;
+    if (bits < 0)
+        return ADSB_FRAME_BAD_CHIPS;
+    if (first_bad_bit) *first_bad_bit = info.first_bad_bit;
+
+    /* mode_s_detect's rule: nothing undecided in the first 56 bits (fewer
+       than three when aggressive). Undecided pairs later in a long frame are
+       left to the CRC. */
+    if (info.bad_pairs > 0 && !(s_state.aggressive && info.bad_pairs < 3))
+        return ADSB_FRAME_BAD_CHIPS;
+
+    return adsb_on_frame(buf, bits / 8, rssi_tenths_dbm);
+}
+
+int adsb_last_rssi_tenths_dbm(void)
+{
+    return s_last_rssi;
+}
+
 void adsb_decode_init(void)
 {
     mode_s_init(&s_state);
+    s_last_rssi = ADSB_RSSI_NONE;
 
     s_state.on_preamble = perf_count_burst;
     adsb_state_init();

@@ -2,6 +2,8 @@
 
 Use the LilyGO T-Display-P4 with the 4.1-inch RM69A10 AMOLED, 568 x 1232 resolution and 16 MB flash.
 
+Both radio variants, SX1262 and LR2021, use this image and build. The firmware identifies the chip at start.
+
 ## Build
 
 Use ESP-IDF 5.4.3 in an exported IDF shell:

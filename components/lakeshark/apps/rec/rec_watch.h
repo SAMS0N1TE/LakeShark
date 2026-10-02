@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "ls_lora.h"
+#include "radio_choice.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,9 +20,10 @@ extern "C" {
 typedef enum {
     REC_SOURCE_RTL,
     REC_SOURCE_CC1101,
-    /* The base-board SX1262. Unlike the other two it demodulates rather than
-       timing edges, so its captures carry the modulation that heard them -
-       see the fsk fields on rec_watch_event_t. It replays FSK; CC1101 replays OOK. */
+    /* The chip in the base board's LoRa socket: an SX1262, or an LR2021.
+       Unlike the other two it demodulates rather than timing edges, so its
+       captures carry the modulation that heard them - see the fsk fields on
+       rec_watch_event_t. It replays FSK; CC1101 replays OOK. */
     REC_SOURCE_SX1262,
     REC_SOURCE_COUNT
 } rec_source_t;
@@ -35,10 +38,32 @@ typedef enum {
 static inline const char *rec_source_name(rec_source_t source)
 {
     switch (source) {
-    case REC_SOURCE_RTL:    return "RTL";
+    case REC_SOURCE_RTL:    return "RTL-SDR";
     case REC_SOURCE_CC1101: return "CC1101";
-    case REC_SOURCE_SX1262: return "SX1262";
+    /* The part that answered, by the name on it. */
+    case REC_SOURCE_SX1262: return ls_lora_chip() == LS_LORA_CHIP_LR20XX ? ls_lora_chip_name() : "SX1262";
     default:                return "?";
+    }
+}
+
+/* A capture source as the RADIO picker numbers it (radio_choice.h), and
+   back; REC_SOURCE_COUNT for a radio that is not a capture source. */
+static inline ls_rsel_radio_t rec_source_radio(rec_source_t source)
+{
+    switch (source) {
+    case REC_SOURCE_RTL:    return LS_RSEL_SDR_RTL;
+    case REC_SOURCE_CC1101: return LS_RSEL_CC1101;
+    case REC_SOURCE_SX1262: return LS_RSEL_LORA;
+    default:                return LS_RSEL_NONE;
+    }
+}
+static inline rec_source_t rec_source_of_radio(ls_rsel_radio_t radio)
+{
+    switch (radio) {
+    case LS_RSEL_SDR_RTL: return REC_SOURCE_RTL;
+    case LS_RSEL_CC1101:  return REC_SOURCE_CC1101;
+    case LS_RSEL_LORA:    return REC_SOURCE_SX1262;
+    default:              return REC_SOURCE_COUNT;
     }
 }
 

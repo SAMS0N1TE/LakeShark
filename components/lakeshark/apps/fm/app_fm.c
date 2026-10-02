@@ -19,6 +19,7 @@
 #include "spectrum.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
+#include "radio_choice.h"
 /**/
 #include "radio_open_retry.h"
 #include "audio_out.h"
@@ -418,6 +419,15 @@ static void fm_receiver_lost(ls_radio_err_t error)
     ls_iq_control_receiver_lost(&s_radio_control, error);
 }
 
+/* What the receiver is doing, as the RADIO picker files it: a pager and
+   ACARS can each be given their own dongle. */
+static ls_rsel_job_t fm_radio_job(void)
+{
+    if (FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX) return LS_RSEL_PAGER;
+    if (FM.mode == FM_MODE_ACARS) return LS_RSEL_ACARS;
+    return LS_RSEL_FM;
+}
+
 static ls_radio_err_t fm_radio_open(void)
 {
     const ls_radio_requirements_t requirements = {
@@ -426,6 +436,7 @@ static ls_radio_err_t fm_radio_open(void)
         .max_hz = 1766000000UL,
         .sample_rate_hz = FM_RTL_RATE,
         .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .preferred_endpoint_id = ls_rsel_sdr_endpoint(fm_radio_job()),
     };
     ls_radio_err_t error = ls_radio_acquire("fm", &requirements, &s_session);
     if (error != LS_RADIO_OK) {
@@ -998,6 +1009,16 @@ void lakeshark_fm_set_mode(int mode)
        same decoder. LISTEN remains composable with the scanner. */
     if (mode != FM_MODE_LISTEN && scan_engine_active()) scan_engine_stop();
     fm_mode_handoff_request(&s_mode_handoff, (fm_mode_t)mode);
+    /* With no receiver open nothing takes the request until one is, and the
+       screen - and a pager on the LoRa chip, which needs no receiver at all -
+       would keep the old mode. It is applied here; a receiver that opens
+       later takes the same request and lands in the same place. */
+    if (!s_session && mode != FM_MODE_SCAN) {
+        if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
+        FM.mode = (fm_mode_t)mode;
+        const uint32_t f = s_frequency_locked ? s_frequency_lock_hz : s_mode_freq[FM.mode];
+        FM.freq_hz = f >= 1000000UL ? f : fm_mode_default_freq(FM.mode);
+    }
 }
 int  lakeshark_fm_get_mode(void) { return (int)FM.mode; }
 
@@ -1119,7 +1140,16 @@ void fm_get_receiver_status(ls_iq_control_status_t *out)
     ls_iq_control_status(&s_radio_control, out);
 }
 
-void lakeshark_fm_set_baud(int baud) { s_baud_req = baud; }
+void lakeshark_fm_set_baud(int baud)
+{
+    /* Recorded here as well as queued for the receive loop, which resets the
+       decoders when it takes it: the screen shows the new rate at once, and
+       POCSAG on the LoRa chip, which runs with no receive loop, reads it from
+       here. */
+    if (baud == 0) FM.pocsag_auto = true;
+    else { FM.pocsag_auto = false; FM.pocsag_baud = baud; }
+    s_baud_req = baud;
+}
 int  lakeshark_fm_get_baud(void)     { return FM.pocsag_baud; }
 
 void lakeshark_fm_squelch_delta(int d)

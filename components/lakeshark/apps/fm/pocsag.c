@@ -73,16 +73,18 @@ static int even_parity_bad(uint32_t cw)
     return (int)(v & 1u);
 }
 
-static int bch_fix(uint32_t *cwp)
+int pocsag_check_codeword(uint32_t *cwp)
 {
     uint32_t cw = *cwp;
-    if (bch_syndrome(cw) == 0 && !even_parity_bad(cw)) return 1;
+    if (bch_syndrome(cw) == 0 && !even_parity_bad(cw)) return 0;
     for (int i = 0; i < 32; i++) {
         uint32_t t = cw ^ (1u << i);
         if (bch_syndrome(t) == 0 && !even_parity_bad(t)) { *cwp = t; return 1; }
     }
-    return 0;
+    return -1;
 }
+
+static int bch_fix(uint32_t *cwp) { return pocsag_check_codeword(cwp) >= 0; }
 
 static int popcount32(uint32_t v)
 {

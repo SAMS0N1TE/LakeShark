@@ -13,12 +13,14 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "ls_nvs_safe.h"
 
 #include "app_registry.h"
 #include "settings.h"
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
 #include "rec_state.h"
+#include "rec_fsk.h"
 #include "rec_watch.h"
 #include "ls_sub_fsk.h"
 #include "rec_unique_name.h"
@@ -108,6 +110,23 @@ static bool     s_level  = false;
 static uint32_t s_run_samples = 0;
 static uint32_t s_span_us = 0;
 
+/* LS-1241: modulation. OOK takes the bit from the amplitude; FSK keeps the
+   amplitude as the carrier gate and takes the bit from the frequency. The
+   capture's own values are kept apart from the setting, because a .sub
+   describes the capture it holds, not what REC is set to now. */
+static volatile int s_mod = REC_MOD_OOK;
+static EXT_RAM_BSS_ATTR rec_fsk_t s_fsk;   /* only the rx task touches it */
+static bool     s_carrier = false;
+static int      s_cap_mod = REC_MOD_OOK;
+static uint32_t s_cap_freq_hz = 0, s_cap_dev_hz = 0, s_cap_bitrate = 0;
+
+/* LS-1242: every live capture is written to the card as it completes, so
+   the head's FILES list shows what was just recorded. */
+static volatile bool s_autosave = true;
+static volatile bool s_keep_capture = false;
+static void rec_autosave_request(void);
+static void rec_cfg_load(void);
+
 /**/
 static volatile bool s_arm_pending = false;
 
@@ -148,6 +167,7 @@ static void rec_reset_capture(void)
     /**/
     s_capture_peak = 0;
     s_capture_floor_at_start = 0;
+    rec_fsk_clear_stats(&s_fsk);
 }
 
 /**/
@@ -167,6 +187,13 @@ static void rec_finish(int reason)
     s_min_mark_us = mn;
     s_max_mark_us = mx;
     s_baud_est    = mn ? (uint32_t)(1000000UL / mn) : 0;
+
+    s_cap_freq_hz = s_freq_hz;
+    s_cap_mod     = s_mod;
+    s_cap_dev_hz  = s_mod == REC_MOD_FSK ? rec_fsk_deviation(&s_fsk) : 0;
+    s_cap_bitrate = s_mod == REC_MOD_FSK
+                    ? rec_fsk_bitrate(s_edge, s_edges, s_min_pulse_us) : 0;
+    if (s_cap_bitrate) s_baud_est = s_cap_bitrate;
 
     s_phase = REC_DONE;
     s_captures++;
@@ -218,10 +245,10 @@ static void slice_block(const uint8_t *iq, int len)
     int blk_peak = 0;
 
     for (int i = 0; i + 1 < len; i += 2) {
-        int di = (int)iq[i]     - 127;
-        int dq = (int)iq[i + 1] - 127;
-        if (di < 0) di = -di;
-        if (dq < 0) dq = -dq;
+        const int si = (int)iq[i]     - 127;
+        const int sq = (int)iq[i + 1] - 127;
+        int di = si < 0 ? -si : si;
+        int dq = sq < 0 ? -sq : sq;
         int mag = di + dq;
 
         /**/
@@ -231,7 +258,7 @@ static void slice_block(const uint8_t *iq, int len)
         /**/
         /* THE FLOOR IS TRACKED ONLY WHILE THE CARRIER IS ABSENT. */
 
-        if (!s_level) {
+        if (!s_carrier) {
             s_floor_acc += mag - (s_floor_acc >> REC_FLOOR_SHIFT);
             s_mag_floor = s_floor_acc >> REC_FLOOR_SHIFT;
             if (s_mag_floor < 2) s_mag_floor = 2;
@@ -250,7 +277,10 @@ static void slice_block(const uint8_t *iq, int len)
         }
         s_mag_thresh = on_thresh;
 
-        bool hi = s_level ? (mag > off_thresh) : (mag > on_thresh);
+        const bool carrier = s_carrier ? (mag > off_thresh) : (mag > on_thresh);
+        s_carrier = carrier;
+        bool hi = carrier;
+        if (s_mod == REC_MOD_FSK) hi = rec_fsk_step(&s_fsk, si, sq, carrier);
 
         if (hi == s_level) {
             s_run_samples++;
@@ -313,7 +343,8 @@ static void slice_block(const uint8_t *iq, int len)
             }
         }
         /**/
-        bool quiet_end = (!s_level && idle_us >= s_gap_end_us);
+        bool quiet_end = (!s_level && idle_us >= s_gap_end_us &&
+                          (s_mod != REC_MOD_FSK || !s_carrier));
         if (quiet_end && s_edges < s_min_edges) {
             /**/
 
@@ -328,6 +359,7 @@ static void slice_block(const uint8_t *iq, int len)
                        : s_edges >= REC_MAX_EDGES ? REC_END_EDGES
                                                   : REC_END_SPAN;
             rec_finish(reason);
+            rec_autosave_request();
             ESP_LOGI(TAG, "capture done: %d edges, %lu us span, ended on %s"
                           " (mark %lu-%lu us, ~%lu baud)",
                      s_edges, (unsigned long)s_span_us,
@@ -550,6 +582,32 @@ static void rec_rx_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* LS-1243: REC's settings persist in NVS. They are read once at
+   registration, on the boot task: appsw, the console and the link can run
+   on TCM or PSRAM stacks, and an NVS read that reaches flash from one of
+   those asserts in cache_utils.c. Writes go through the settings worker. */
+static void rec_cfg_load(void)
+{
+    const uint32_t hz = settings_get_rec("freq", s_freq_hz);
+    if (hz >= 1000000UL && hz <= 2000000000UL) s_freq_hz = hz;
+    s_mod = settings_get_rec("mod", (uint32_t)s_mod) == REC_MOD_FSK ? REC_MOD_FSK : REC_MOD_OOK;
+    const uint32_t g = settings_get_rec("gain", (uint32_t)s_gain);
+    if (g <= 496) s_gain = (int)g;
+    const uint32_t th = settings_get_rec("thresh", (uint32_t)s_thresh_fixed);
+    if (th <= 255) s_thresh_fixed = (int)th;
+    const uint32_t gap = settings_get_rec("gap", s_gap_end_us);
+    if (gap >= 2000u && gap <= 2000000u) s_gap_end_us = gap;
+    const uint32_t bw = settings_get_rec("bw", s_bw_hz);
+    if (bw == 0 || (bw >= 50000u && bw <= 8000000u)) s_bw_hz = bw;
+    const uint32_t mp = settings_get_rec("minp", s_min_pulse_us);
+    if (mp >= 4u && mp <= 10000u) s_min_pulse_us = mp;
+    const uint32_t ms = settings_get_rec("maxspan", s_max_span_us);
+    if (ms >= 10000u && ms <= 30000000u) s_max_span_us = ms;
+    const uint32_t me = settings_get_rec("minedges", (uint32_t)s_min_edges);
+    if (me >= 2u && me <= REC_MAX_EDGES) s_min_edges = (int)me;
+    s_autosave = settings_get_rec("autosave", 1u) != 0;
+}
+
 static void rec_on_enter(void)
 {
     if (s_active) return;
@@ -572,8 +630,17 @@ static void rec_on_enter(void)
         }
     }
 
-    rec_reset_capture();
-    s_phase = REC_IDLE;
+    /* A save parks REC and hands the receiver back; the capture it just
+       wrote is still what the head is about to download. */
+    if (s_keep_capture) {
+        s_keep_capture = false;
+        s_phase = s_edges > 0 ? REC_DONE : REC_IDLE;
+    } else {
+        rec_reset_capture();
+        s_phase = REC_IDLE;
+    }
+    rec_fsk_init(&s_fsk, (float)REC_RTL_RATE);
+    s_carrier = false;
     s_floor_acc = 8 << REC_FLOOR_SHIFT;
     s_mag_floor = 8;
 
@@ -635,7 +702,11 @@ static const app_t REC_APP = {
     .on_sample    = rec_on_sample,
 };
 
-int rec_app_register(void) { return app_register(&REC_APP); }
+int rec_app_register(void)
+{
+    rec_cfg_load();
+    return app_register(&REC_APP);
+}
 
 void rec_get_hub_status(rec_hub_status_t *out)
 {
@@ -702,7 +773,28 @@ void rec_get_status(rec_status_t *out)
     /**/
     out->bytes_free         = rec_dir_free_bytes();
     strlcpy(out->last_file, s_last_file, sizeof(out->last_file));
+    out->mod          = s_mod;
+    out->cap_mod      = s_cap_mod;
+    out->cap_freq_hz  = s_cap_freq_hz;
+    out->cap_dev_hz   = s_cap_dev_hz;
+    out->cap_bitrate  = s_cap_bitrate;
+    out->autosave     = s_autosave;
 }
+
+void rec_set_mod(int mod)
+{
+    s_mod = mod == REC_MOD_FSK ? REC_MOD_FSK : REC_MOD_OOK;
+    settings_set_rec("mod", (uint32_t)s_mod);
+}
+
+int rec_get_mod(void) { return s_mod; }
+
+void rec_set_autosave(bool on)
+{
+    s_autosave = on;
+    settings_set_rec("autosave", on ? 1u : 0u);
+}
+bool rec_get_autosave(void) { return s_autosave; }
 
 /**/
 uint32_t rec_bytes_sec(void) { return s_bytes_sec; }
@@ -727,6 +819,7 @@ void rec_set_freq(uint32_t hz)
     if (rec_watch_enabled()) return;
     if (hz < 1000000UL || hz > 2000000000UL) return;
     s_freq_hz = hz;
+    settings_set_rec("freq", hz);
     /* The accumulator reset lives in the rx task (see
        LS_IQ_CONTROL_TUNE) so only the task that owns the FFT ever
        writes to it.  Snap the peak here so the GUI does not display
@@ -744,6 +837,7 @@ void rec_set_gain(int tenths)
     if (tenths < 0)   tenths = 0;
     if (tenths > 496) tenths = 496;
     s_gain = tenths;
+    settings_set_rec("gain", (uint32_t)tenths);
     ls_iq_control_request_gain(&s_radio_control, s_gain);
 }
 
@@ -779,6 +873,7 @@ void rec_set_thresh(int absolute)
     if (absolute < 0)   absolute = 0;
     if (absolute > 255) absolute = 255;
     s_thresh_fixed = absolute;
+    settings_set_rec("thresh", (uint32_t)absolute);
 }
 
 int rec_get_thresh(void) { return s_thresh_fixed; }
@@ -789,6 +884,7 @@ void rec_set_gap_ms(int ms)
     if (ms < 2)    ms = 2;
     if (ms > 2000) ms = 2000;
     s_gap_end_us = (uint32_t)ms * 1000u;
+    settings_set_rec("gap", s_gap_end_us);
 }
 
 int rec_get_gap_ms(void) { return (int)(s_gap_end_us / 1000u); }
@@ -799,6 +895,7 @@ void rec_set_bw(uint32_t hz)
     if (hz && hz < 50000u)   hz = 50000u;
     if (hz > 8000000u)       hz = 8000000u;
     s_bw_hz = hz;
+    settings_set_rec("bw", hz);
     /* setters may run on GUI, link, or console tasks. Reconfiguration
        is posted to rec_rx so only the session-owning task touches the radio. */
     ls_iq_control_request_bandwidth(&s_radio_control, s_bw_hz);
@@ -811,6 +908,7 @@ void rec_set_min_pulse(uint32_t us)
     if (us < 4)     us = 4;
     if (us > 10000) us = 10000;
     s_min_pulse_us = us;
+    settings_set_rec("minp", us);
 }
 
 uint32_t rec_get_min_pulse(void) { return s_min_pulse_us; }
@@ -820,6 +918,7 @@ void rec_set_max_span(uint32_t us)
     if (us < 10000)     us = 10000;
     if (us > 30000000u) us = 30000000u;
     s_max_span_us = us;
+    settings_set_rec("maxspan", us);
 }
 
 uint32_t rec_get_max_span(void) { return s_max_span_us; }
@@ -829,6 +928,7 @@ void rec_set_min_edges(int n)
     if (n < 2)             n = 2;
     if (n > REC_MAX_EDGES) n = REC_MAX_EDGES;
     s_min_edges = n;
+    settings_set_rec("minedges", (uint32_t)n);
 }
 
 int rec_get_min_edges(void) { return s_min_edges; }
@@ -891,6 +991,15 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
     /**/
     if (s_phase == REC_CAPTURING) return -3;
     if (s_edges <= 0) return -1;
+
+    /* With no SD card rec_dir() is SPIFFS, and touching flash from the
+       save worker's external-RAM stack asserts with the cache off. Moving
+       that 8 KiB stack to DRAM starved USB host at boot, so refuse instead. */
+    if (strncmp(rec_dir(), BSP_SD_MOUNT_POINT, strlen(BSP_SD_MOUNT_POINT)) != 0
+        && !ls_nvs_stack_is_flash_safe()) {
+        ESP_LOGE(TAG, "no SD card - REC saves need one");
+        return -4;
+    }
 
     char clean[24];
     sanitize_name(name && *name ? name : "capture", clean, sizeof(clean));
@@ -958,14 +1067,26 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
 
     fprintf(f, "Filetype: Flipper SubGhz RAW File\n");
     fprintf(f, "Version: 1\n");
-    fprintf(f, "Frequency: %lu\n", (unsigned long)s_freq_hz);
+    fprintf(f, "Frequency: %lu\n",
+            (unsigned long)(s_cap_freq_hz ? s_cap_freq_hz : s_freq_hz));
     /* Through the shared renderer, not a literal here: this recorder
        times edges and so is always amplitude keyed, but the preset a
        .sub carries is one thing that belongs in one place. Three copies
        of it is how two of them came to be wrong. */
     {
+        /* An FSK capture carries a 2-FSK preset built from what was
+           measured; an out-of-range measurement is pulled into range
+           rather than falling back to OOK, which would replay as nothing. */
+        ls_sub_mod_t mod = { 0 };
+        if (s_cap_mod == REC_MOD_FSK) {
+            mod.bitrate = s_cap_bitrate < 600u ? 2400u
+                        : s_cap_bitrate > 300000u ? 300000u : s_cap_bitrate;
+            mod.deviation_hz = s_cap_dev_hz < 600u ? 19043u
+                             : s_cap_dev_hz > 200000u ? 200000u : s_cap_dev_hz;
+        }
         char preset[320];
-        if (ls_sub_preset_text(NULL, preset, sizeof(preset)))
+        if (ls_sub_preset_text(s_cap_mod == REC_MOD_FSK ? &mod : NULL,
+                               preset, sizeof(preset)))
             fputs(preset, f);
     }
     fprintf(f, "Protocol: RAW\n");
@@ -977,6 +1098,9 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
         ls_time_render_stamp(stamp, sizeof(stamp));
         fprintf(f, "# Recorded: %s\n", stamp);
     }
+    if (s_cap_mod == REC_MOD_FSK)
+        fprintf(f, "# LakeShark: 2-FSK %lu baud, deviation %lu Hz measured\n",
+                (unsigned long)s_cap_bitrate, (unsigned long)s_cap_dev_hz);
 
     int per_line = 0;
     for (int i = 0; i < s_edges; i++) {
@@ -1006,7 +1130,7 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
         rec_sidecar_t sc;
         memset(&sc, 0, sizeof(sc));
         ls_time_render_stamp(sc.time, sizeof(sc.time));
-        sc.freq_hz     = s_freq_hz;
+        sc.freq_hz     = s_cap_freq_hz ? s_cap_freq_hz : s_freq_hz;
         sc.gain_tenths = s_gain;
         sc.bw_hz       = s_bw_hz;
         sc.sample_rate = REC_RTL_RATE;
@@ -1055,6 +1179,7 @@ typedef struct {
     char          path[128];
     volatile bool done;
     int           result;
+    bool          automatic;   /* the worker parks and resumes REC itself */
 } rec_save_job_t;
 
 static EXT_RAM_BSS_ATTR StackType_t s_save_stack[REC_SAVE_STACK_WORDS];
@@ -1064,16 +1189,81 @@ static rec_save_job_t s_save_job;
 static portMUX_TYPE s_save_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_save_busy;
 
+static void rec_autosave_run(void);
+
 static void rec_save_task(void *arg)
 {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_save_job.automatic) {
+            rec_autosave_run();
+            continue;
+        }
         s_save_job.result = rec_save_impl(s_save_job.name,
                                           s_save_job.path,
                                           sizeof(s_save_job.path));
         s_save_job.done = true;
     }
+}
+
+static bool rec_save_worker_ready(void)
+{
+    if (!s_save_worker) {
+        s_save_worker = xTaskCreateStaticPinnedToCore(
+            rec_save_task, "rec_save", REC_SAVE_STACK_WORDS, NULL, 5,
+            s_save_stack, &s_save_tcb, 1);
+    }
+    return s_save_worker != NULL;
+}
+
+/* The same park, write and resume as rec_save(), run on the worker so the
+   receive task that finished the capture never waits on the card. */
+static void rec_autosave_run(void)
+{
+    const bool resume = rec_active();
+    int result = -2;
+    if (resume) {
+        app_park();
+        for (int i = 0; i < 400 && (!app_parked() || s_running); i++)
+            vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (!resume || (app_parked() && !s_running)) {
+        result = rec_save_impl(s_save_job.name, s_save_job.path,
+                               sizeof(s_save_job.path));
+    }
+    if (result <= 0)
+        ESP_LOGW(TAG, "autosave failed (%d) - capture kept in memory", result);
+    s_save_job.automatic = false;
+    portENTER_CRITICAL(&s_save_lock);
+    s_save_busy = false;
+    portEXIT_CRITICAL(&s_save_lock);
+    if (resume) {
+        s_keep_capture = true;
+        app_unpark();
+    }
+}
+
+static void rec_autosave_request(void)
+{
+    /* WATCH keeps its own catalogue and re-arms continuously. */
+    if (!s_autosave || rec_watch_enabled() || s_edges <= 0) return;
+    bool accepted = false;
+    portENTER_CRITICAL(&s_save_lock);
+    if (!s_save_busy) { s_save_busy = true; accepted = true; }
+    portEXIT_CRITICAL(&s_save_lock);
+    if (!accepted) return;
+    if (!rec_save_worker_ready()) {
+        portENTER_CRITICAL(&s_save_lock);
+        s_save_busy = false;
+        portEXIT_CRITICAL(&s_save_lock);
+        return;
+    }
+    snprintf(s_save_job.name, sizeof(s_save_job.name), "LS_%lu",
+             (unsigned long)((s_cap_freq_hz ? s_cap_freq_hz : s_freq_hz) / 1000u));
+    s_save_job.path[0] = '\0';
+    s_save_job.automatic = true;
+    xTaskNotifyGive(s_save_worker);
 }
 #endif
 
@@ -1095,11 +1285,8 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     portEXIT_CRITICAL(&s_save_lock);
     if (!accepted) return -5;
 
-    if (!s_save_worker) {
-        s_save_worker = xTaskCreateStaticPinnedToCore(
-            rec_save_task, "rec_save", REC_SAVE_STACK_WORDS, NULL, 5,
-            s_save_stack, &s_save_tcb, 1);
-        if (!s_save_worker) {
+    {
+        if (!rec_save_worker_ready()) {
             portENTER_CRITICAL(&s_save_lock);
             s_save_busy = false;
             portEXIT_CRITICAL(&s_save_lock);
@@ -1131,6 +1318,7 @@ int rec_save(const char *name, char *path_out, size_t path_len)
     s_save_job.path[0] = '\0';
     s_save_job.result = -2;
     s_save_job.done = false;
+    s_save_job.automatic = false;
     xTaskNotifyGive(s_save_worker);
 
     while (!s_save_job.done) vTaskDelay(pdMS_TO_TICKS(1));
@@ -1290,54 +1478,103 @@ int rec_list(char *out, size_t len, bool *out_truncated)
    name into one string for the GUI's FILES tab; that is fine at 768 B on the
    LVGL side and useless over a 384 B link reply (). One entry per round
    trip is the same shape %D already uses, and for the same reason. */
-int rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size)
+/* LS-1242: the list the head pages through is a snapshot, newest first.
+   It used to be raw FAT directory order walked afresh on every request:
+   oldest first, so the head's 32-row window never reached a new capture,
+   and an index could name a different file by the time LOAD used it. */
+#define REC_SNAP_MAX 512
+
+typedef struct {
+    char    name[64];     /* without .sub */
+    int64_t mtime;
+    long    size;
+} rec_snap_t;
+
+static rec_snap_t *s_snap;
+static int s_snap_n = -1;
+
+static int snap_cmp(const void *a, const void *b)
 {
+    const rec_snap_t *x = a, *y = b;
+    if (x->mtime != y->mtime) return x->mtime > y->mtime ? -1 : 1;
+    /* Names carry an ISO stamp, so a tie on the clock still sorts by time. */
+    return -strcmp(x->name, y->name);
+}
+
+int rec_files_snapshot(void)
+{
+    if (!s_snap) {
+        s_snap = heap_caps_calloc(REC_SNAP_MAX, sizeof(*s_snap), MALLOC_CAP_SPIRAM);
+        if (!s_snap) { s_snap_n = 0; return 0; }
+    }
+    s_snap_n = 0;
     DIR *d = opendir(rec_dir());
     if (!d) return 0;
-
-    int n = 0;
     struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
+    while ((e = readdir(d)) != NULL && s_snap_n < REC_SNAP_MAX) {
         const char *dot = strrchr(e->d_name, '.');
         if (!dot || strcmp(dot, ".sub") != 0) continue;
-
-        if (n == index) {
-            if (name && nlen) {
-                size_t base = (size_t)(dot - e->d_name);
-                if (base >= nlen) base = nlen - 1;
-                memcpy(name, e->d_name, base);
-                name[base] = '\0';
-            }
-
-            char full[96];
-            snprintf(full, sizeof(full), "%s/%s", rec_dir(), e->d_name);
-
-            if (size) {
-                struct stat st;
-                *size = (stat(full, &st) == 0) ? (long)st.st_size : -1;
-            }
-            /* Frequency lives in the header, so this is a few hundred bytes of
-               read, not a full parse. The head needs it to label the row. */
-            if (freq_hz) {
-                *freq_hz = 0;
-                FILE *f = fopen(full, "r");
-                if (f) {
-                    char hdr[64];
-                    while (fgets(hdr, sizeof(hdr), f)) {
-                        if (!strncmp(hdr, "Frequency:", 10)) {
-                            *freq_hz = (uint32_t)strtoul(hdr + 10, NULL, 10);
-                            break;
-                        }
-                        if (!strncmp(hdr, "RAW_Data:", 9)) break;
-                    }
-                    fclose(f);
-                }
-            }
+        size_t base = (size_t)(dot - e->d_name);
+        if (base >= sizeof(s_snap[0].name)) continue;   /* LOAD could not open it */
+        rec_snap_t *r = &s_snap[s_snap_n];
+        memcpy(r->name, e->d_name, base);
+        r->name[base] = '\0';
+        char full[128];
+        snprintf(full, sizeof(full), "%s/%s", rec_dir(), e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0) {
+            r->mtime = (int64_t)st.st_mtime;
+            r->size = (long)st.st_size;
+        } else {
+            r->mtime = 0;
+            r->size = -1;
         }
-        n++;
+        s_snap_n++;
     }
     closedir(d);
-    return n;
+    qsort(s_snap, (size_t)s_snap_n, sizeof(*s_snap), snap_cmp);
+    return s_snap_n;
+}
+
+static void snap_forget(const char *name)
+{
+    for (int i = 0; i < s_snap_n; i++) {
+        if (strcmp(s_snap[i].name, name) != 0) continue;
+        memmove(&s_snap[i], &s_snap[i + 1],
+                (size_t)(s_snap_n - i - 1) * sizeof(*s_snap));
+        s_snap_n--;
+        return;
+    }
+}
+
+int rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size)
+{
+    if (s_snap_n < 0) rec_files_snapshot();
+    if (index < 0 || index >= s_snap_n) return s_snap_n < 0 ? 0 : s_snap_n;
+
+    const rec_snap_t *r = &s_snap[index];
+    if (name && nlen) strlcpy(name, r->name, nlen);
+    if (size) *size = r->size;
+    /* Frequency lives in the header, so this is a few hundred bytes of
+       read, not a full parse. The head needs it to label the row. */
+    if (freq_hz) {
+        *freq_hz = 0;
+        char full[128];
+        snprintf(full, sizeof(full), "%s/%s.sub", rec_dir(), r->name);
+        FILE *f = fopen(full, "r");
+        if (f) {
+            char hdr[64];
+            while (fgets(hdr, sizeof(hdr), f)) {
+                if (!strncmp(hdr, "Frequency:", 10)) {
+                    *freq_hz = (uint32_t)strtoul(hdr + 10, NULL, 10);
+                    break;
+                }
+                if (!strncmp(hdr, "RAW_Data:", 9)) break;
+            }
+            fclose(f);
+        }
+    }
+    return s_snap_n;
 }
 
 /**/
@@ -1352,7 +1589,7 @@ int rec_load(int index)
     int total = rec_file_info(index, name, sizeof(name), &freq, NULL);
     if (index < 0 || index >= total) return -1;
 
-    char path[96];
+    char path[128];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), name);
     FILE *f = fopen(path, "r");
     if (!f) return -2;
@@ -1371,10 +1608,22 @@ int rec_load(int index)
 
     int n = 0;
     uint32_t span = 0;
+    char preset[64] = "";
+    bool fsk = false;
+    uint32_t dev = 0;
     while (fgets(line, LINE, f)) {
         if (!strncmp(line, "Frequency:", 10)) {
             uint32_t hz = (uint32_t)strtoul(line + 10, NULL, 10);
             if (hz) freq = hz;
+            continue;
+        }
+        if (!strncmp(line, "Preset:", 7)) {
+            strlcpy(preset, line + 7, sizeof(preset));
+            fsk = rec_fsk_preset_is_fsk(preset, NULL, &dev);
+            continue;
+        }
+        if (!strncmp(line, "Custom_preset_data:", 19)) {
+            fsk = rec_fsk_preset_is_fsk(preset, line + 19, &dev);
             continue;
         }
         if (strncmp(line, "RAW_Data:", 9) != 0) continue;
@@ -1404,6 +1653,11 @@ int rec_load(int index)
     uint32_t saved = s_captures;
     rec_finish(REC_END_GAP);
     s_captures = saved;
+    /* rec_finish describes a live capture; a file describes itself. */
+    s_cap_freq_hz = s_freq_hz;
+    s_cap_mod     = fsk ? REC_MOD_FSK : REC_MOD_OOK;
+    s_cap_dev_hz  = fsk ? dev : 0;
+    s_cap_bitrate = fsk ? rec_fsk_bitrate(s_edge, s_edges, 1) : 0;
 
     ESP_LOGI(TAG, "loaded %s (%d edges, %lu us, %.4f MHz) - ready for GET",
              name, n, (unsigned long)span, s_freq_hz / 1e6);
@@ -1443,6 +1697,7 @@ int rec_remove(const char *name)
     char path[128];
     snprintf(path, sizeof(path), "%s/%s.sub", rec_dir(), clean);
     int rc = unlink(path) == 0 ? 0 : -2;
+    if (rc == 0) snap_forget(clean);
     /* Best-effort remove of the sidecar too.  A missing sidecar is
        normal for older captures and unlink returning -1 is not a failure of
        the delete; the .sub is what the caller wanted gone. */

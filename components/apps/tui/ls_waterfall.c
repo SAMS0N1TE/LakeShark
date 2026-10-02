@@ -1,5 +1,6 @@
 /* The one waterfall. See ls_waterfall.h for why there is only one. */
 #include "ls_waterfall.h"
+#include "ls_options.h"
 #include "ls_motion.h"
 
 #include <stdio.h>
@@ -841,7 +842,9 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
     snprintf(v[9], 12, "%s", contrast_name());
 
     b[0] = (ls_btn_t){ "SPLIT", v[0], 's', false, false };
-    b[1] = (ls_btn_t){ "REF",   v[1], 'r', false, false };
+    /* I, not R or O: those are RADIO and OPTIONS on every screen this strip
+       is drawn on. UP and DOWN still step it. */
+    b[1] = (ls_btn_t){ "REF",   v[1], 'i', false, false };
     b[2] = (ls_btn_t){ "RANGE", v[2], 'g', false, false };
     b[3] = (ls_btn_t){ "COLOR", v[3], 'p', false, false };
     b[4] = (ls_btn_t){ "AVG",   v[4], 'a', false, false };
@@ -883,6 +886,27 @@ static void act(int i)
     default: break;
     }
 }
+
+/* OPTIONS: the buttons above as rows. TUNE MARK is not a setting and stays
+   on the strip. */
+static void o_wf(const ls_opt_t *o) { act(o->arg); }
+static void o_wf_show(const ls_opt_t *o, char *out, size_t n)
+{
+    ls_btn_t b[LS_WF_BTNS];
+    char v[LS_WF_BTNS][12];
+    build_buttons(b, v);
+    snprintf(out, n, "%s", v[o->arg]);
+}
+#define WF_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_wf, .show = o_wf_show }
+static const ls_opt_t OPT_WF[] = {
+    WF_ROW("REF", 1), WF_ROW("RANGE", 2), WF_ROW("CONTRAST", 9), WF_ROW("COLOR", 3),
+    WF_ROW("DETAIL", 8), WF_ROW("AVG", 4), WF_ROW("SPEED", 5), WF_ROW("PEAK", 6),
+    WF_ROW("SPLIT", 0), WF_ROW("HOLD", 7),
+};
+#undef WF_ROW
+static const ls_opt_ctx_t CTX_WF = { .name = "WATERFALL", .job = LS_RSEL_WATERFALL, .radio = LS_RSEL_NONE,
+                                     LS_OPT_ROWS(OPT_WF), .tag = "DISPLAY" };
+const ls_opt_ctx_t *ls_wf_options(void) { return &CTX_WF; }
 
 bool ls_wf_key(ls_tk_t key, char ch)
 {

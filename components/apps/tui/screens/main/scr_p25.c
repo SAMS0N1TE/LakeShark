@@ -22,6 +22,8 @@
 #include "../../ls_wf_source.h"
 #include "../../ls_text.h"
 #include "../../ls_picker.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
 #include "../../ls_field.h"
 #include "../../ls_notify.h"
 #include "p25_program.h"
@@ -639,9 +641,59 @@ static void register_p25_actions(void)
                               "choose a P25 profile from the card");
 }
 
+/* The dongle the receiver really has; before it has one, the choice. */
+static ls_rsel_radio_t p25_in_use(void) { return ls_rsel_sdr_held_by("p25"); }
+
+/* A different dongle than the one held: the receiver starts again on it. */
+static void radio_chosen(ls_rsel_radio_t radio)
+{
+    const ls_rsel_radio_t held = p25_in_use();
+    if (held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
+}
+
+static void open_radio(void) { ls_rsel_open(LS_RSEL_P25, radio_chosen); }
+
+/* OPTIONS: the SETTINGS page's own rows, through its own code, so the two
+   cannot disagree. The CQPSK loop gains step both ways and stay on the page,
+   which has LESS and MORE for them; its last row goes there. */
+static void o_p25_act(const ls_opt_t *o)
+{
+    ps_selected = o->arg;
+    ps_change(1, true);
+}
+static void o_p25_show(const ls_opt_t *o, char *out, size_t n) { ps_value(o->arg, out, n); }
+static void o_p25_page(const ls_opt_t *o) { (void)o; ps_open = true; ls_wf_source_release(); }
+static void o_p25_page_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%d settings, CQPSK tuning", PS_COUNT);
+}
+static const ls_opt_t OPT_P25[] = {
+    { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Receiver gain (dB)",    .kind = LS_OPT_ACTION, .arg = 3,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Volume",                .kind = LS_OPT_ACTION, .arg = 4,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Voice gate",            .kind = LS_OPT_ACTION, .arg = 5,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Sync beep",             .kind = LS_OPT_ACTION, .arg = 6,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Trunking auto-follow",  .kind = LS_OPT_ACTION, .arg = 7,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Leave encrypted calls", .kind = LS_OPT_ACTION, .arg = 8,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Encrypted skip (s)",    .kind = LS_OPT_ACTION, .arg = 9,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Scan threshold (%)",    .kind = LS_OPT_ACTION, .arg = 13, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Scan hang (ms)",        .kind = LS_OPT_ACTION, .arg = 14, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Phase II (exp)",        .kind = LS_OPT_ACTION, .arg = 15, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Phase II follow (exp)", .kind = LS_OPT_ACTION, .arg = 17, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Profile from card",     .kind = LS_OPT_ACTION, .arg = 16, .act = o_p25_act, .show = o_p25_show },
+    { .label = "All settings",          .kind = LS_OPT_ACTION, .act = o_p25_page, .show = o_p25_page_show,
+      .leaves = true },
+};
+static const ls_opt_ctx_t CTX_P25 = { .name = "P25", .job = LS_RSEL_P25, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_P25) };
+static void open_options(void) { ls_opt_open(&CTX_P25); }
+
 static void enter(void)
 {
     register_p25_actions();
+    ls_rsel_track(LS_RSEL_P25, p25_in_use);
 }
 
 static const ls_btn_t PAGES[] = {
@@ -729,12 +781,14 @@ static void radio_action(char c)
 static void draw(tui_surface *sf, tui_rect area)
 {
     if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
-    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1/2/3 views" : "LEFT/RIGHT tune  1/2/3 views  +/- volume");
+    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1/2/3 views  R radio  O options" : "LEFT/RIGHT tune  1/2/3 views  +/- volume  R radio  O options");
     s_blink++;
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
 
-    const int bar_h = wide ? 3 : 5;
+    /* Portrait takes the six as two rows of three: one row of six leaves a
+       button five letters, and DECODE, SIGNAL and OPTIONS lose theirs. */
+    const int bar_h = wide ? 3 : 6;
 
     tui_rect body;
     s_quick_compact = !wide && area.h < 55 && s_page == 0;
@@ -770,13 +824,19 @@ static void draw(tui_surface *sf, tui_rect area)
         s_bar = tui_rect_make(area.x, body.y + body.h + 1, area.w, bar_h);
     }
 
-    ls_btn_t b[N_PAGES];
+    /* The pages, then RADIO and OPTIONS: the same controls every app
+       carries, on the bar a thumb already reaches. */
+    ls_btn_t b[N_PAGES + 2];
     for (int i = 0; i < N_PAGES; i++) {
         b[i] = PAGES[i];
         b[i].on = (i == s_page);
     }
-    if (area.w < 40) b[3].label = "SET";
-    ls_btn_bar_slot(sf, s_bar, b, N_PAGES, -1, LS_BTN_SLOT_QUICK);
+    /* A narrow landscape row still cuts SETTINGS. */
+    if (wide && area.w < 56) b[3].label = "SET";
+    b[N_PAGES] = ls_rsel_button(LS_RSEL_P25);
+    b[N_PAGES + 1] = ls_opt_button(&CTX_P25);
+    if (wide) ls_btn_bar_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
+    else ls_btn_bar_raised_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
 
     if (body.h > 0) {
         if (s_page == 1) draw_signal(sf, body);
@@ -802,13 +862,18 @@ static bool key(ls_tk_t k, char ch)
 {
     if(k>=LS_TK_F1) return false;
     if(ps_open)return ps_key(k,ch);
+    /* R is RADIO on every page, except inside the scanner's lists, where
+       R is RANGE. */
+    if(k==LS_TK_CHAR && (ch=='r'||ch=='R') && !(s_page==2 && (s_radio.lists || s_radio.scan_choice))) {open_radio();return true;}
+    /* O is OPTIONS on the same terms: inside the lists it is SCAN TYPE. */
+    if(k==LS_TK_CHAR && !(s_page==2 && (s_radio.lists || s_radio.scan_choice)) && ls_opt_key(&CTX_P25,ch)) return true;
     if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {ps_open=true;ls_wf_source_release();return true;}
     if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {s_page=ch-'1';return true;}
     /* 'l' for load. The profile chooser gets no quick-bar slot on purpose:
        every control there costs rows the waterfall and the activity table
        need, and choosing a profile is not what a thumb does while watching a
        decode. It lives on SETTINGS; this is the keyboard way in. p and P
-       already open SETTINGS, and the waterfall owns a c d f g h k p r s y on
+       already open SETTINGS, and the waterfall owns a c d f g h i k p s y on
        SIGNAL, which is searched after this. */
     /* 'n' for note. LABS and SUB-GHZ both keep an observation on 'j', but 'j'
        is gain-down on this screen and moving it would break a binding that is
@@ -849,6 +914,8 @@ static bool touch(int col, int row)
     if(ps_open)return ps_touch(col,row);
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
+        if (i == N_PAGES) { open_radio(); return true; }
+        if (i == N_PAGES + 1) { open_options(); return true; }
         if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         return true;
     }

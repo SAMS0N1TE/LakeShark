@@ -17,6 +17,7 @@
 #include "ls_track_log.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 #include "esp_rom_sys.h"
 #include "soc/soc_caps.h"
 
@@ -32,6 +33,7 @@
 #include "flipper_link_telemetry.h"
 #include "ble_link.h"
 #include "rec_state.h"
+#include "rec_watch.h"
 #include "p25_program.h"
 #include "p25_state.h"
 /**/
@@ -282,16 +284,106 @@ static void rec_reply_load_status(char *reply, size_t reply_len, int load_index)
     snprintf(reply + prefix, reply_len - (size_t)prefix,
              "ph=%d e=%d sp=%lu f=%lu th=%d gp=%d"
              /**/
-             " bw=%lu mp=%lu ms=%lu me=%d\n",
+             " bw=%lu mp=%lu ms=%lu me=%d mo=%d dv=%lu br=%lu\n",
              (int)s.phase, s.edges, (unsigned long)s.span_us,
              (unsigned long)s.freq_hz, s.thresh_fixed, s.gap_ms,
              (unsigned long)s.bw_hz, (unsigned long)s.min_pulse_us,
-             (unsigned long)(s.max_span_us / 1000u), s.min_edges);
+             (unsigned long)(s.max_span_us / 1000u), s.min_edges,
+             s.cap_mod, (unsigned long)s.cap_dev_hz,
+             (unsigned long)s.cap_bitrate);
 }
 
 static void rec_reply_status(char *reply, size_t reply_len)
 {
     rec_reply_load_status(reply, reply_len, -1);
+}
+
+/* REC SCAN: sweep a band on the SX1262 while REC keeps the RTL, so the
+   Flipper can find a transmitter before it knows the frequency.
+     REC SCAN <lo> <hi> [bins]   start, replacing any sweep already running
+     REC SCAN STOP
+     REC SCAN USE <hz>           stop, and point REC there */
+static bool rec_scan_stop_wait(void)
+{
+    if (!rec_watch_scan_busy()) return true;
+    rec_watch_scan_stop();
+    for (int i = 0; i < 100 && rec_watch_scan_busy(); i++) vTaskDelay(pdMS_TO_TICKS(10));
+    return !rec_watch_scan_busy();
+}
+
+static void handle_rec_scan(int argc, char **argv, char *reply, size_t reply_len)
+{
+    const char *a = argc > 2 ? argv[2] : NULL;
+    char up[8] = "";
+    if (a) { strlcpy(up, a, sizeof(up)); str_upper(up); }
+    uint32_t lo, hi;
+
+    if (!strcmp(up, "STOP")) {
+        rec_scan_stop_wait();
+        snprintf(reply, reply_len, "+OK scan=0\n");
+    } else if (!strcmp(up, "USE")) {
+        if (argc < 4 || !parse_freq_hz(argv[3], &lo)) {
+            snprintf(reply, reply_len, "-ERR rec scan use\n");
+            return;
+        }
+        rec_scan_stop_wait();
+        rec_set_freq(lo);
+        s_stat_now = true;
+        snprintf(reply, reply_len, "+OK f=%lu\n", (unsigned long)rec_get_freq());
+    } else if (argc >= 4 && parse_freq_hz(argv[2], &lo) && parse_freq_hz(argv[3], &hi)) {
+        int32_t bins = REC_SCAN_BINS;
+        if (argc >= 5) (void)parse_i32(argv[4], &bins);
+        if (!rec_scan_stop_wait()) {
+            snprintf(reply, reply_len, "-ERR scan busy\n");
+        } else if (!rec_watch_request_scan(lo, hi, 0, (int)bins)) {
+            snprintf(reply, reply_len, "-ERR %s\n",
+                     rec_watch_enabled() ? "watch is on" : "scan refused");
+        } else {
+            snprintf(reply, reply_len, "+OK scan=1\n");
+        }
+    } else {
+        snprintf(reply, reply_len, "-ERR rec scan\n");
+    }
+}
+
+/* The sweep as the Flipper draws it: range, floor, the loudest bin, the
+   strongest detection, and one letter per bin, 'a' at the floor to 'Z' at
+   51 dB above. Sent in REC only. */
+int flipper_link_scan_snapshot(char *buf, size_t len)
+{
+    if (!buf || len < 64 || host_mode() != HOST_MODE_REC) return 0;
+    static EXT_RAM_BSS_ATTR rec_scan_bin_t bins[REC_SCAN_BINS];
+    const int n = rec_watch_scan_live(bins, REC_SCAN_BINS);
+    const bool busy = rec_watch_scan_busy();
+    if (n <= 0) return snprintf(buf, len, "& xon=%d xn=0\n", busy ? 1 : 0);
+
+    const float floor_dbm = rec_watch_scan_live_floor();
+    int pk = 0;
+    char lv[REC_SCAN_BINS + 1];
+    for (int i = 0; i < n; i++) {
+        const float v = bins[i].hold > bins[i].dbm ? bins[i].hold : bins[i].dbm;
+        const float pv = bins[pk].hold > bins[pk].dbm ? bins[pk].hold : bins[pk].dbm;
+        if (v > pv) pk = i;
+        int d = (int)(v - floor_dbm + 0.5f);
+        if (d < 0) d = 0;
+        if (d > 51) d = 51;
+        lv[i] = (char)(d < 26 ? 'a' + d : 'A' + d - 26);
+    }
+    lv[n] = '\0';
+    const float pv = bins[pk].hold > bins[pk].dbm ? bins[pk].hold : bins[pk].dbm;
+    /* The strongest detection this sweep, which outlasts the live peak: the
+       operator starts a sweep, leaves to transmit, and comes back. */
+    rec_scan_bin_t hit;
+    const bool have_hit = rec_watch_scan_result(&hit, 1) > 0;
+    int w = snprintf(buf, len, "& xon=%d xn=%d xlo=%lu xhi=%lu xfl=%d xpk=%lu xpd=%d xev=%d "
+                               "xht=%lu xhd=%d xsp=%s\n",
+                     busy ? 1 : 0, n, (unsigned long)bins[0].hz,
+                     (unsigned long)bins[n - 1].hz, (int)floor_dbm,
+                     (unsigned long)bins[pk].hz, (int)pv,
+                     rec_watch_scan_events(),
+                     (unsigned long)(have_hit ? hit.hz : 0), have_hit ? (int)hit.dbm : 0, lv);
+    if (w < 0) return 0;
+    return (size_t)w >= len ? (int)len - 1 : w;
 }
 
 static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
@@ -323,6 +415,27 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
         rec_disarm();
         s_stat_now = true;
         rec_reply_status(reply, reply_len);
+
+    } else if (!strcmp(up, "MOD")) {
+        /* LS-1241: OOK takes the bit from amplitude, FSK from frequency. */
+        char m[8] = "";
+        if (arg) { strlcpy(m, arg, sizeof(m)); str_upper(m); }
+        if (!strcmp(m, "OOK"))      rec_set_mod(REC_MOD_OOK);
+        else if (!strcmp(m, "FSK")) rec_set_mod(REC_MOD_FSK);
+        else { snprintf(reply, reply_len, "-ERR rec mod\n"); return; }
+        s_stat_now = true;
+        snprintf(reply, reply_len, "+OK mo=%d\n", rec_get_mod());
+
+    } else if (!strcmp(up, "AUTOSAVE")) {
+        char m[8] = "";
+        if (arg) { strlcpy(m, arg, sizeof(m)); str_upper(m); }
+        if (!strcmp(m, "ON"))       rec_set_autosave(true);
+        else if (!strcmp(m, "OFF")) rec_set_autosave(false);
+        else if (arg) { snprintf(reply, reply_len, "-ERR rec autosave\n"); return; }
+        snprintf(reply, reply_len, "+OK autosave=%d\n", rec_get_autosave() ? 1 : 0);
+
+    } else if (!strcmp(up, "SCAN")) {
+        handle_rec_scan(argc, argv, reply, reply_len);
 
     } else if (!strcmp(up, "FREQ")) {
         uint32_t hz;
@@ -425,6 +538,9 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
             snprintf(reply, reply_len, "-ERR rec ls\n");
             return;
         }
+        /* Index 0 retakes the newest-first snapshot; the rest page it, so
+           an index keeps naming one file until the head starts over. */
+        if (idx == 0) rec_files_snapshot();
         char name[64];
         uint32_t freq = 0;
         long size = -1;
@@ -496,8 +612,8 @@ static void handle_rec(int argc, char **argv, char *reply, size_t reply_len)
 
     } else {
         snprintf(reply, reply_len,
-                 "-ERR rec <arm|stop|freq|gain|thresh|gap|bw|minp|maxspan|"
-                 "minedges|save|get|ls|load|del>\n");
+                 "-ERR rec <arm|stop|mod|autosave|freq|gain|thresh|gap|bw|minp|maxspan|"
+                 "minedges|scan|save|get|ls|load|del>\n");
     }
 }
 
@@ -1376,6 +1492,9 @@ static void link_task(void *arg)
             char eqline[96];
             int eqn = flipper_link_eq_snapshot(eqline, sizeof(eqline));
             if (eqn > 0) link_write(eqline, eqn);
+            static EXT_RAM_BSS_ATTR char scanline[192];
+            int scn = flipper_link_scan_snapshot(scanline, sizeof(scanline));
+            if (scn > 0) link_write(scanline, scn);
         }
     }
 

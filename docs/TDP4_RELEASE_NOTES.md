@@ -1,5 +1,24 @@
 # LakeShark release notes
 
+## 2.7.0
+
+- New board: the LilyGO T-Display-P4 with the LR2021 radio. The same firmware runs on both T-Display-P4 radios and finds the chip at start.
+- LR2021: LoRa packets, FSK listening up to 1100 MHz at 500 bps to 2 Mbps, and a sweep of 150 to 1100 MHz and 1500 to 2500 MHz. It transmits at 960 MHz and below only.
+- The LR2021 is found reliably at start, and resets and recovers by itself if it stops answering.
+- ADS-B decodes aircraft from the LR2021 with no RTL-SDR attached, and the mini map names the receiver. DF18 messages decode too.
+- RADIO: one radio picker in every app, with real chip names, remembered for each job.
+- OPTIONS: one settings list on `o` in every app, showing only what the current mode and radio take. The waterfall's REF moved to `i`.
+- SUB-GHZ opens on six tiles: READ, ANALYZER, SAVED, READ RAW, LEARN and SETTINGS. Every page has BACK.
+- LoRa Labs has more bands, and POCSAG pages (512 baud too) are read on the LoRa chip.
+- REC: FSK mode with a preset, settings kept across a reboot, autosave, and the newest files first.
+- REC replays CC1101 raw 2-FSK captures, and REC SCAN sweeps a band on the SX1262 while the RTL-SDR keeps recording.
+- EXPERIMENTAL: an EXPERIMENTS tab for trials that may become apps, one at a time. It has CARRIER LEVEL, BAND SURVEY, BURST SCOPE, RADIOSONDE (GRAW DFM), PAGER RECON, P25 SITE FINDER, IRIDIUM, LR433 (tire pressure, weather and meter sensors), AVIATION and UAT 978 receiver diagnostics, a LoRa monitor, and Z-Wave and Wi-SUN meters. Trials that need the LR2021 are marked. Expect rough edges.
+- Speech: the Settings volume reaches the speaker.
+- Settings are steady on every task. REC saves need an SD card.
+- LoRa: `lora` and ADS-B share the SPI bus safely.
+- Mesh: `mesh dm <n>` picks the same peer that `mesh peers` lists when signals tie.
+- Console: `sd cat` prints a text file, `lora fsk` takes a short sync word, `labs` shows LoRa Labs, `exp` runs experiments, and `adsb chips` shows the chip's Mode S counters.
+
 ## 2.6.0
 
 - MUSIC: a WAV player for the SD card, with a library, VFD level meters, an FFT spectrum, and scan and waterfall views.

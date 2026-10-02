@@ -20,6 +20,7 @@
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
 #include "ls_lora.h"
+#include "ls_radio_select.h"
 #include "radio/radio_endpoint.h"
 
 #define FRESH_US     1500000
@@ -31,8 +32,6 @@
 #define QUEUE        64
 #define DWELL_MIN_MS 150
 
-static const char *const NAMES[LS_DFS_COUNT] = {
-    "MESH", "LORA", "RTL-SDR", "HACKRF", "CC1101", "NRF24", "WI-FI", "BLUETOOTH", "NFC", "GPS", "BAND" };
 
 typedef struct {
     bool active;
@@ -134,33 +133,49 @@ bool ls_dfs_beacon(ls_dfs_beacon_t *out)
 
 static void status(int k, const char *text) { lock(); snprintf(s.slot[k].status, sizeof(s.slot[k].status), "%s", text); unlock(); }
 
-const char *ls_dfs_name(ls_dfs_t src) { return src >= 0 && src < LS_DFS_COUNT ? NAMES[src] : "?"; }
-
-static bool endpoint_present(const char *id)
+/* The radio behind a source, so the name and whether it is fitted come from
+   the one place every app asks (ls_radio_select.h). MESH and BAND are the
+   LoRa chip put to a particular use. */
+static ls_rsel_radio_t radio_of(ls_dfs_t src)
 {
-    ls_radio_endpoint_info_t info;
-    return ls_radio_endpoint_get(id, &info) == LS_RADIO_OK && info.present;
+    switch (src) {
+    case LS_DFS_MESH: case LS_DFS_LORA: case LS_DFS_BAND: return LS_RSEL_LORA;
+    case LS_DFS_RTL:    return LS_RSEL_SDR_RTL;
+    case LS_DFS_HACKRF: return LS_RSEL_SDR_HACKRF;
+    case LS_DFS_CC1101: return LS_RSEL_CC1101;
+    case LS_DFS_NRF24:  return LS_RSEL_NRF24;
+    case LS_DFS_WIFI:   return LS_RSEL_WIFI;
+    case LS_DFS_BLE:    return LS_RSEL_BLE;
+    case LS_DFS_NFC:    return LS_RSEL_NFC;
+    case LS_DFS_GPS:    return LS_RSEL_GPS;
+    default:            return LS_RSEL_NONE;
+    }
+}
+
+const char *ls_dfs_name(ls_dfs_t src)
+{
+    if (src == LS_DFS_MESH) return "MESH";
+    if (src == LS_DFS_BAND) {
+        EXT_RAM_BSS_ATTR static char band[24];
+        snprintf(band, sizeof(band), "%s BAND", ls_rsel_name(LS_RSEL_LORA));
+        return band;
+    }
+    const ls_rsel_radio_t r = radio_of(src);
+    return r == LS_RSEL_NONE ? "?" : ls_rsel_name(r);
 }
 
 const char *ls_dfs_unavailable(ls_dfs_t src)
 {
-    EXT_RAM_BSS_ATTR static ls_wireless_snapshot_t ws;
-    EXT_RAM_BSS_ATTR static ls_mixrf_status_t m;
-    switch (src) {
-    case LS_DFS_MESH: { ls_mesh_stats_t st; ls_mesh_get_stats(&st);
-        return st.running ? NULL : "MeshCore is off: open MESH to start it"; }
-    case LS_DFS_LORA:   return ls_lora_present() ? NULL : "No SX1262 LoRa radio answered at boot";
-    case LS_DFS_BAND:   return ls_lora_present() ? NULL : "No SX1262 LoRa radio answered at boot";
-    case LS_DFS_RTL:    return endpoint_present(LS_RADIO_ENDPOINT_RTL_USB) ? NULL : "Plug an RTL-SDR into the USB-A port";
-    case LS_DFS_HACKRF: return endpoint_present(LS_RADIO_ENDPOINT_HACKRF_USB) ? NULL : "Plug a HackRF into the USB-A port";
-    case LS_DFS_CC1101: ls_mixrf_snapshot(&m); return m.cc ? NULL : "Needs the T-MixRF keyboard board (CC1101)";
-    case LS_DFS_NRF24:  ls_mixrf_snapshot(&m); return m.nrf ? NULL : "Needs the T-MixRF keyboard board (nRF24)";
-    case LS_DFS_WIFI:   ls_wireless_get(&ws); return ws.wifi_available ? NULL : "Wi-Fi co-processor is not answering";
-    case LS_DFS_BLE:    ls_wireless_get(&ws); return ws.bt_available ? NULL : "Bluetooth is off: turn it on in RADIOS";
-    case LS_DFS_NFC:    return "NFC reaches a few centimetres: hold the board to the tag";
-    case LS_DFS_GPS:    return "Satellites are overhead: GPS places each bearing instead";
-    default: return "Unknown source";
+    if (src == LS_DFS_MESH) {
+        ls_mesh_stats_t st; ls_mesh_get_stats(&st);
+        return st.running ? NULL : "MeshCore is off: open MESH to start it";
     }
+    const ls_rsel_radio_t r = radio_of(src);
+    if (r == LS_RSEL_NONE) return "Unknown source";
+    /* What it cannot do first: plugging in a radio that cannot aim would
+       not help. */
+    const char *why = ls_rsel_cant(LS_RSEL_FIND, r);
+    return why ? why : ls_rsel_absent(r);
 }
 
 /* Radios that share hardware: the SX1262 (Mesh runs on it), the USB-A
@@ -186,10 +201,13 @@ const char *ls_dfs_conflict(int slot, ls_dfs_t src)
     const ls_dfs_t other = o->source;
     unlock();
     if (!clash) return NULL;
-    static const char *const WHY[] = { "shares the SX1262 with", "shares the USB-A port with",
+    static const char *const WHY[] = { NULL, "shares the USB-A port with",
                                        "shares the keyboard radio bus with", "is already", "is already" };
-    EXT_RAM_BSS_ATTR static char line[64];
-    snprintf(line, sizeof(line), "%s %s the other slot's %s", ls_dfs_name(src), WHY[hardware(src)], ls_dfs_name(other));
+    char why[40];
+    if (hardware(src) == 0) snprintf(why, sizeof(why), "shares the %s with", ls_rsel_name(LS_RSEL_LORA));
+    else snprintf(why, sizeof(why), "%s", WHY[hardware(src)]);
+    EXT_RAM_BSS_ATTR static char line[80];
+    snprintf(line, sizeof(line), "%s %s the other slot's %s", ls_dfs_name(src), why, ls_dfs_name(other));
     return line;
 }
 

@@ -18,6 +18,7 @@
 #include "esp_cpu.h"
 #include "esp_rom_sys.h"
 #include "ls_ctl.h"
+#include "link_ctl.h"
 #include "cell_performance.h"
 /**/
 #include "ls_crash.h"
@@ -161,62 +162,91 @@ static const char *LOG_QUIET_TAGS[] = { "P25TEL", "P25DIAG", "ADSB", "NimBLE" };
 /**/
 #define NVS_MODENM "modenm"
 
-static int settings_load_volume(void)
+/* settings_task below runs on an RTC_NOINIT (non-DRAM) stack, which asserts
+ * the moment NVS touches flash with the cache off, so every access here goes
+ * through ls_nvs_run (inline on the DRAM boot task, the worker elsewhere). */
+static esp_err_t load_volume_job(void *ctx)
 {
     nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return ESP_FAIL;
+    int32_t *v = (int32_t *)ctx;
+    if (nvs_get_i32(h, NVS_VOL, v) != ESP_OK) *v = DEFAULT_VOLUME;
+    nvs_close(h);
+    return ESP_OK;
+}
+
+static int settings_load_volume(void)
+{
     int32_t v = DEFAULT_VOLUME;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_i32(h, NVS_VOL, &v) != ESP_OK) v = DEFAULT_VOLUME;
-        nvs_close(h);
-    }
+    ls_nvs_run(load_volume_job, &v, 0);
     if (v < 0)   v = 0;
     if (v > 100) v = 100;
     return (int)v;
 }
 
-static void settings_save_volume(int v)
+static esp_err_t save_volume_job(void *ctx)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_i32(h, NVS_VOL, (int32_t)v);
-    nvs_commit(h);
+    esp_err_t e = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    e = nvs_set_i32(h, NVS_VOL, *(const int32_t *)ctx);
+    if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
+    return e;
+}
+
+static void settings_save_volume(int v)
+{
+    int32_t value = v;
+    ls_nvs_run(save_volume_job, &value, 0);
 }
 
 /**/
-static int settings_load_mode(void)
+static esp_err_t load_mode_job(void *ctx)
 {
     nvs_handle_t h;
-    int idx = 0;
-
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        /**/
-        char   name[16];
-        size_t len = sizeof(name);
-        if (nvs_get_str(h, NVS_MODENM, name, &len) == ESP_OK) {
-            for (int i = 0; i < N_MODES; i++) {
-                if (!strcasecmp(name, s_modes[i].name)) { idx = i; break; }
-            }
-        } else {
-            int32_t m = 0;
-            if (nvs_get_i32(h, NVS_MODE, &m) == ESP_OK && m >= 0 && m < N_MODES) {
-                idx = (int)m;
-            }
+    int *idx = (int *)ctx;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return ESP_FAIL;
+    /**/
+    char   name[16];
+    size_t len = sizeof(name);
+    if (nvs_get_str(h, NVS_MODENM, name, &len) == ESP_OK) {
+        for (int i = 0; i < N_MODES; i++) {
+            if (!strcasecmp(name, s_modes[i].name)) { *idx = i; break; }
         }
-        nvs_close(h);
+    } else {
+        int32_t m = 0;
+        if (nvs_get_i32(h, NVS_MODE, &m) == ESP_OK && m >= 0 && m < N_MODES) {
+            *idx = (int)m;
+        }
     }
+    nvs_close(h);
+    return ESP_OK;
+}
+
+static int settings_load_mode(void)
+{
+    int idx = 0;
+    ls_nvs_run(load_mode_job, &idx, 0);
     return idx;
+}
+
+static esp_err_t save_mode_job(void *ctx)
+{
+    nvs_handle_t h;
+    esp_err_t e = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    /**/
+    e = nvs_set_str(h, NVS_MODENM, s_modes[*(const int *)ctx].name);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    return e;
 }
 
 static void settings_save_mode(int m)
 {
     if (m < 0 || m >= N_MODES) return;
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    /**/
-    nvs_set_str(h, NVS_MODENM, s_modes[m].name);
-    nvs_commit(h);
-    nvs_close(h);
+    ls_nvs_run(save_mode_job, &m, 0);
 }
 
 #define SETTINGS_STACK_WORDS (3072 / sizeof(StackType_t))
@@ -1213,6 +1243,13 @@ static const flipper_link_host_t s_link_host = {
     .set_log_level       = hl_set_log_level,
 };
 
+/* The TUI's RADIO picker restarts a running receiver through this, so a
+   different dongle takes over without leaving the app. Nothing else is
+   offered here: this build has no BLE shade to drive. */
+static const ls_link_ctl_t s_link_ctl = {
+    .sdr_reset = hl_sdr_reset,
+};
+
 static int cmd_link(int argc, char **argv)
 {
     flipper_link_cfg_t cfg;
@@ -1327,6 +1364,10 @@ static int cmd_rec(int argc, char **argv)
                rec_end_reason_name(s.end_reason),
                (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
                (unsigned long)s.baud_est);
+        printf("    mod=%s autosave=%s  capture: %s %.4f MHz dev=%lu Hz rate=%lu\n",
+               s.mod == REC_MOD_FSK ? "fsk" : "ook", s.autosave ? "on" : "off",
+               s.cap_mod == REC_MOD_FSK ? "fsk" : "ook", s.cap_freq_hz / 1e6,
+               (unsigned long)s.cap_dev_hz, (unsigned long)s.cap_bitrate);
         /**/
         /* Free-space line so the operator can see the volume filling
            up from the console without a separate command.  UINT64_MAX
@@ -1344,8 +1385,11 @@ static int cmd_rec(int argc, char **argv)
         if (app_current_index() < 0 || strcmp(s_modes[s_mode].name, "REC") != 0) {
             printf("    note: not in REC mode - run 'mode rec' first\n");
         }
-        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
-               "maxspan <ms>|minedges <n>|arm|stop|save <name>|list|cat|rm>\n");
+        static EXT_RAM_BSS_ATTR char scanline[192];
+        if (flipper_link_scan_snapshot(scanline, sizeof(scanline)) > 0)
+            printf("    sweep %s", scanline + 2);
+        printf("usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n");
         return 0;
     }
 
@@ -1357,6 +1401,12 @@ static int cmd_rec(int argc, char **argv)
     } else if (!strcmp(argv[1], "stop")) {
         rec_disarm();
         printf("disarmed\n");
+    } else if (!strcmp(argv[1], "mod") && argc >= 3) {
+        rec_set_mod(!strcmp(argv[2], "fsk") ? REC_MOD_FSK : REC_MOD_OOK);
+        printf("mod=%s\n", rec_get_mod() == REC_MOD_FSK ? "fsk" : "ook");
+    } else if (!strcmp(argv[1], "autosave") && argc >= 3) {
+        rec_set_autosave(!strcmp(argv[2], "on"));
+        printf("autosave=%s\n", rec_get_autosave() ? "on" : "off");
     } else if (!strcmp(argv[1], "freq") && argc >= 3) {
         uint32_t hz = (uint32_t)(atof(argv[2]) * 1e6 + 0.5);
         rec_set_freq(hz);
@@ -1420,8 +1470,8 @@ static int cmd_rec(int argc, char **argv)
     } else if (!strcmp(argv[1], "rm") && argc >= 3) {
         printf("%s\n", rec_remove(argv[2]) == 0 ? "removed" : "not found");
     } else {
-        printf("usage: rec <freq MHz|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
-               "maxspan <ms>|minedges <n>|arm|stop|save <name>|list|cat|rm>\n");
+        printf("usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n");
     }
     return 0;
 }
@@ -2841,6 +2891,7 @@ void app_main(void)
     cell_performance_boot();
     /* Bluetooth command dispatch does not require a wired UART worker. */
     flipper_link_set_host(&s_link_host);
+    ls_link_ctl_register(&s_link_ctl);
     /* First, before anything that can fault. */
     const ls_safe_boot_t *boot = ls_safe_boot_begin();
     panic_crumb_boot();

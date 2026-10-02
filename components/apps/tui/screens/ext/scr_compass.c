@@ -19,6 +19,7 @@
 #include "../../ls_note_blocks.h"
 #include "../../ls_numpad.h"
 #include "../../ls_picker.h"
+#include "../../ls_options.h"
 #include "../../ls_app.h"
 #include "../../ls_map.h"
 #include "../../ls_geo.h"
@@ -38,6 +39,7 @@
 
 enum { P_DIAL, P_FIND, P_GOTO, P_LEVEL, P_COUNT };
 static const char *const PAGE_NAMES[P_COUNT] = { "DIAL", "FIND", "GO TO", "LEVEL" };
+static const ls_opt_ctx_t *compass_options(void);
 
 extern void ls_scr_labs_request_calibration(void);
 extern void ls_scr_labs_classic_compass(tui_surface *sf, tui_rect a);
@@ -1414,7 +1416,7 @@ static void draw(tui_surface *sf, tui_rect a)
 
     ls_btn_t tabs[P_COUNT + 2];
     for (int i = 0; i < P_COUNT; i++) tabs[i] = (ls_btn_t){ PAGE_NAMES[i], NULL, (char)('1' + i), s_page == i, false };
-    tabs[P_COUNT] = (ls_btn_t){ "MORE", s_page == P_FIND ? "FIND" : s_simple ? "SIMPLE" : "3D", 'o', false, false };
+    tabs[P_COUNT] = ls_opt_button(compass_options());
     tabs[P_COUNT + 1] = (ls_btn_t){ "LOOKS", NULL, 'y', false, false };
     /* The six tabs take the room five did, in two short rows if need be,
        so LOOKS costs the dial none of its height. */
@@ -1527,16 +1529,23 @@ static void opt_text(int i, int v, char *out, size_t cap)
     else snprintf(out, cap, "%.0f %s", x, OPT[i].unit);
 }
 
+/* Back to the list this came from: OPTIONS brings itself back, and FIND
+   SETTINGS is opened again. */
+static void back_to_settings(void)
+{
+    if (!ls_opt_returning()) find_settings();
+}
+
 static void opt_value_done(int v)
 {
-    if (v < 0 || v >= OPT[s_opt_edit].n) { find_settings(); return; }
+    if (v < 0 || v >= OPT[s_opt_edit].n) { back_to_settings(); return; }
     s_opt[s_opt_edit] = v;
     settings_set_df_option(s_opt_edit, v);
     if (s_opt_edit == O_DWELL && s_find_on) {
         ls_dfs_set_channels(0, s_ch[0], s_nch[0], (uint32_t)OPTV(O_DWELL));
         if (s_dfs2.active) ls_dfs_set_channels(1, s_ch[1], s_nch[1], (uint32_t)OPTV(O_DWELL));
     }
-    find_settings();
+    back_to_settings();
 }
 
 static void opt_values(int i)
@@ -1553,13 +1562,13 @@ static void channels_open(int slot);
 
 static void second_done(int i)
 {
-    if (i < 0) { find_settings(); return; }
+    if (i < 0) { back_to_settings(); return; }
     ls_dfs_t pick = i >= LS_DFS_COUNT ? LS_DFS_COUNT : (ls_dfs_t)i;
     if (pick < LS_DFS_COUNT) {
         const char *why = ls_dfs_unavailable(pick);
         if (!why && pick == s_dfs_source) why = "That is the first radio already";
         if (!why) why = ls_dfs_conflict(1, pick);
-        if (why) { say(why); find_settings(); return; }
+        if (why) { say(why); back_to_settings(); return; }
     }
     ls_dfs_stop_slot(1);
     clear_slot(1);
@@ -1603,7 +1612,7 @@ static void find_settings_done(int i)
     if (i < 0) return;
     if (i < O_TUNED) { opt_values(i); return; }
     if (i == F_SECOND) second_open();
-    else if (i == F_SECOND_CH) { if (s_src2 < LS_DFS_COUNT) channels_open(1); else find_settings(); }
+    else if (i == F_SECOND_CH) { if (s_src2 < LS_DFS_COUNT) channels_open(1); else back_to_settings(); }
     else if (i == F_CLEARLOG) { ls_df_log_clear(&s_log); s_log_pick = -1; s_log_top = 0; say("Hit log cleared"); }
     else if (i == F_DFCAL) cal_start(BEACON_915);
     else if (i == F_DFCLEAR) more_done(M_DFCLEAR);
@@ -1635,6 +1644,87 @@ static void find_settings(void)
     snprintf(d, sizeof(d), "%d kept", s_bearing_count);
     ls_picker_add("Clear saved bearings", d);
     ls_picker_add("Compass options", "north, style, calibration");
+}
+
+/* ---- OPTIONS ---- */
+
+/* The compass's settings and clears, as rows that show their values: on
+   FIND, FIND's settings with the compass's own after them, and on the other
+   pages the compass's. Every row runs the code COMPASS and FIND SETTINGS
+   run. */
+static void o_more(const ls_opt_t *o) { more_done(o->arg); }
+static void o_more_show(const ls_opt_t *o, char *out, size_t n)
+{
+    switch (o->arg) {
+    case M_NORTH: snprintf(out, n, "%s", s_magnetic ? "magnetic" : "true"); break;
+    case M_STYLE: snprintf(out, n, "%s", s_simple ? "simple" : "3D"); break;
+    case M_CAL: snprintf(out, n, "in LORA LABS"); break;
+    case M_LOCK:
+        if (isfinite(s_lock)) snprintf(out, n, "%03.0f %s", s_lock, ref());
+        else snprintf(out, n, "none set");
+        break;
+    case M_TARGET: snprintf(out, n, "%s", ls_compass_target(NULL, NULL, NULL, 0) ? "following one" : "none set"); break;
+    case M_BEARINGS: snprintf(out, n, "%d kept", s_bearing_count); break;
+    case M_DFCAL: snprintf(out, n, "Flipper DF Beacon, 915"); break;
+    case M_DFCLEAR:
+        if (isfinite(s_df_offset)) snprintf(out, n, "%s: %+.1f deg", ls_dfs_name(s_dfs_source), -s_df_offset);
+        else snprintf(out, n, "none for %s", ls_dfs_name(s_dfs_source));
+        break;
+    default: break;
+    }
+}
+static void o_find_opt(const ls_opt_t *o) { opt_values(o->arg); }
+static void o_find_opt_show(const ls_opt_t *o, char *out, size_t n) { opt_text(o->arg, s_opt[o->arg], out, n); }
+static void o_find(const ls_opt_t *o) { find_settings_done(o->arg); }
+static void o_find_show(const ls_opt_t *o, char *out, size_t n)
+{
+    switch (o->arg) {
+    case F_SECOND: snprintf(out, n, "%s", s_src2 < LS_DFS_COUNT ? ls_dfs_name(s_src2) : "off"); break;
+    case F_SECOND_CH:
+        snprintf(out, n, s_src2 < LS_DFS_COUNT ? "%d channel%s" : "off", s_nch[1], s_nch[1] == 1 ? "" : "s");
+        break;
+    case F_CLEARLOG: snprintf(out, n, "%d kept", ls_df_log_count(&s_log)); break;
+    default: break;
+    }
+}
+static const char *o_second_why(const ls_opt_t *o)
+{
+    (void)o;
+    return s_src2 < LS_DFS_COUNT ? NULL : "Turn a second radio on first";
+}
+#define MORE_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_more, .show = o_more_show }
+#define FIND_OPT(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_find_opt, .show = o_find_opt_show }
+#define COMPASS_ROWS \
+    MORE_ROW("North", M_NORTH), MORE_ROW("Style", M_STYLE), \
+    { .label = "Calibrate", .kind = LS_OPT_ACTION, .arg = M_CAL, .act = o_more, .show = o_more_show, .leaves = true }, \
+    MORE_ROW("Clear the lock", M_LOCK), MORE_ROW("Clear the target", M_TARGET), \
+    MORE_ROW("Clear saved bearings", M_BEARINGS), \
+    { .label = "Calibrate FIND", .kind = LS_OPT_ACTION, .arg = M_DFCAL, .act = o_more, .show = o_more_show, .leaves = true }, \
+    MORE_ROW("Clear FIND correction", M_DFCLEAR)
+static const ls_opt_t OPT_COMPASS[] = { COMPASS_ROWS };
+static const ls_opt_t OPT_FIND[] = {
+    FIND_OPT("Hold each peak", O_HOLD), FIND_OPT("Then let it fall", O_DECAY),
+    FIND_OPT("Forget a direction after", O_FORGET), FIND_OPT("A hit stands over noise by", O_THRESH),
+    FIND_OPT("Believe a hit after", O_SPIKE), FIND_OPT("Hit blips last", O_FADE),
+    FIND_OPT("Scan dwell per channel", O_DWELL), FIND_OPT("Mark other lobes this tall", O_PEAKS),
+    { .label = "Second radio at once", .kind = LS_OPT_ACTION, .arg = F_SECOND, .act = o_find, .show = o_find_show },
+    { .label = "Second radio's channels", .kind = LS_OPT_ACTION, .arg = F_SECOND_CH, .act = o_find,
+      .show = o_find_show, .why_not = o_second_why },
+    { .label = "Clear the hit log", .kind = LS_OPT_ACTION, .arg = F_CLEARLOG, .act = o_find, .show = o_find_show },
+    COMPASS_ROWS,
+};
+#undef COMPASS_ROWS
+#undef FIND_OPT
+#undef MORE_ROW
+static const ls_opt_ctx_t CTX_COMPASS = { .name = "COMPASS", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_COMPASS),
+                                          .tag = "DIAL" };
+static const ls_opt_ctx_t CTX_FIND = { .name = "FIND", .job = LS_RSEL_FIND, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_FIND) };
+
+/* FIND's own while it is finding; the compass's on the other pages, and on
+   FIND while a beacon calibration has the page. */
+static const ls_opt_ctx_t *compass_options(void)
+{
+    return s_page == P_FIND && s_cal.phase == LS_DF_CAL_OFF ? &CTX_FIND : &CTX_COMPASS;
 }
 
 /* ---- FIND channels ---- */
@@ -1796,7 +1886,10 @@ static void pick_source_done(int i)
 
 static void pick_source(void)
 {
-    ls_picker_open("FIND WITH", pick_source_done);
+    /* RADIO, as in every app, with every radio's own name and the same
+       reasons; MESH, BAND and the beacon presets are FIND's own uses of a
+       radio, so this list keeps them. */
+    ls_picker_open("RADIO", pick_source_done);
     for (int i = 0; i < LS_DFS_COUNT; i++) {
         const char *why = ls_dfs_unavailable((ls_dfs_t)i);
         ls_picker_add(ls_dfs_name((ls_dfs_t)i), why ? why : (ls_dfs_t)i == s_src2 ? "ready; takes it from the second slot" : "ready");
@@ -2018,7 +2111,7 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_ESC && s_page == P_FIND && s_logmode) { log_mode(false); return true; }
     if (k != LS_TK_CHAR) return false;
     if (ch >= '1' && ch < '1' + P_COUNT) { show_page(ch - '1'); return true; }
-    if (ch == 'o' || ch == 'O') { open_more(); return true; }
+    if (ls_opt_key(compass_options(), ch)) return true;
     if (ch == 'y' || ch == 'Y') { open_looks(); return true; }
     /* In FIND, [ and ] step the shown channel through the live ones. */
     if (s_page == P_FIND && (ch == '[' || ch == ']')) {
@@ -2038,7 +2131,7 @@ static bool touch(int col, int row)
     const int tab = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
     if (tab >= 0) {
         if (tab < P_COUNT) show_page(tab);
-        else if (tab == P_COUNT) open_more();
+        else if (tab == P_COUNT) ls_opt_open(compass_options());
         else open_looks();
         return true;
     }
@@ -2110,7 +2203,13 @@ static void find_requests(void)
 
 static int parse_source(const char *name)
 {
+    /* The console's words, which it has always taken, then the radios' own
+       names as the screen shows them ("lr2021", "sx1262"). */
+    static const char *const WORD[LS_DFS_COUNT] = {
+        "mesh", "lora", "rtl-sdr", "hackrf", "cc1101", "nrf24", "wi-fi", "bluetooth", "nfc", "gps", "band" };
     if (!strcasecmp(name, "off")) return LS_DFS_COUNT;
+    for (int i = 0; i < LS_DFS_COUNT; i++)
+        if (!strncasecmp(WORD[i], name, strlen(name))) return i;
     for (int i = 0; i < LS_DFS_COUNT; i++)
         if (!strncasecmp(ls_dfs_name((ls_dfs_t)i), name, strlen(name))) return i;
     return -1;

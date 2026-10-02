@@ -95,6 +95,16 @@ const ls_app_doc_t ls_doc_labs = {
                 "heading, which is the compass and not the receiver",
 };
 
+const ls_app_doc_t ls_doc_experiments = {
+    .purpose = "Radio experiments on the LoRa chip that may become apps of "
+               "their own: each says how far along it is and what it listens "
+               "for, and shows what it measures while it runs.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_NAVIGATES,
+    .gps_note = "RADIOSONDE gives a balloon's range and bearing from saved "
+                "home, or from a fresh GPS fix when home is unset.",
+};
+
 const ls_app_doc_t ls_doc_journal = {
     .purpose = "The field notebook. Notes you write, and the observations "
                "other apps kept, each with the sensor snapshot taken at the "
@@ -251,6 +261,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "cell",    &ls_doc_cell    },
     { "mesh",    &ls_doc_mesh    },
     { "labs",    &ls_doc_labs    },
+    { "experiments", &ls_doc_experiments },
     { "journal", &ls_doc_journal },
     { "notes",   &ls_doc_notes   },
     { "compass", &ls_doc_compass },

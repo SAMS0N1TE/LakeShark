@@ -4,6 +4,14 @@
 /* '#' is ink, anything else is ground. Twelve rows of twelve; the packer
    asserts nothing about that, so keep them square by hand. */
 static const char *const ART[LS_ICON__COUNT][12] = {
+/* A magnifier over a wave: looking into a signal. */
+[LS_ICON_EXPERIMENT] = {
+    ".....######.........", "...##......##.......",
+    "..#..........#......", ".#..##........#.....",
+    ".#.#..#....#.#......", ".#.....#..#..#......",
+    "..#.....##...#......", "...##......##.......",
+    ".....######.###.....", ".............###....",
+    "..............###...", "...............###.." },
 [LS_ICON_MUSIC] = {
     "....................", ".##################.",
     ".#................#.", ".#..###......###..#.",

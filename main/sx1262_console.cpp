@@ -32,7 +32,7 @@ int sx1262_receive_command(int argc, char **argv)
                "lora fsk MHz baud deviation_Hz bandwidth_Hz sync_hex bytes [seconds=30]\n");
         return 1;
     }
-    double mhz, baud, seconds = 30, dev = 4500, bw = 19500, bytes = 64;
+    double mhz = 0, baud = 0, seconds = 30, dev = 4500, bw = 19500, bytes = 64;
     const int secs_arg = paging ? 4 : 8;
     bool valid = number(argv[2], &mhz) && number(argv[3], &baud);
     if (argc > secs_arg) valid = number(argv[secs_arg], &seconds) && valid;
@@ -40,9 +40,14 @@ int sx1262_receive_command(int argc, char **argv)
                          number(argv[7], &bytes) && valid;
     bool inverted = paging && argc > 5 && !strcmp(argv[5], "1");
     if (paging && argc > 5 && strcmp(argv[5], "0") && strcmp(argv[5], "1")) valid = false;
-    if (!valid || mhz < 150 || mhz > 960 || baud < 600 || baud > 300000 ||
+    /* The wide receiver (the LR2021) hears to 1100 MHz at up to 2 Mbps with a
+       3 MHz filter, which is what UAT at 978 MHz needs; the SX1262 does not. */
+    const bool wide = (ls_lora_caps() & LS_LORA_CAP_WIDE_RX_BW) != 0;
+    const double max_mhz = wide ? 1100 : 960, max_baud = wide ? 2000000 : 300000;
+    const double max_dev = wide ? 500000 : 200000, max_bw = wide ? 3076923 : 467000;
+    if (!valid || mhz < 150 || mhz > max_mhz || baud < 600 || baud > max_baud ||
         floor(baud) != baud || seconds < 1 || seconds > 120 ||
-        dev < 600 || dev > 200000 || bw < 4800 || bw > 467000 ||
+        dev < 600 || dev > max_dev || bw < 4800 || bw > max_bw ||
         bytes < 1 || bytes > 255 || floor(bytes) != bytes ||
         (paging && baud != 1200 && baud != 2400)) {
         printf("lora: invalid receive settings; POCSAG supports 1200/2400 baud\n");
@@ -54,6 +59,14 @@ int sx1262_receive_command(int argc, char **argv)
         unsigned long long value = strtoull(argv[6], &end, 16);
         if (end == argv[6] || *end || value > 0xffffffffull) return 1;
         sync = (uint32_t)value;
+    }
+    /* A sync word shorter than 32 bits is written as fewer hex digits: six
+       digits match 24 bits. P25's frame sync is 24 bits to a two-level
+       receiver, which only sees the sign of each four-level symbol. */
+    uint8_t sync_bits = 0;
+    if (!paging) {
+        const size_t digits = strlen(argv[6]);
+        if (digits < 8) sync_bits = (uint8_t)(digits * 4);
     }
     if (ls_lora_scanning() || ls_lora_fsk_active()) {
         printf("lora: radio busy\n");
@@ -77,6 +90,7 @@ int sx1262_receive_command(int argc, char **argv)
     }
     ls_fsk_cfg_t cfg = {(uint32_t)llround(mhz * 1e6), (uint32_t)baud,
                        (uint32_t)dev, (uint32_t)bw, sync, (uint8_t)bytes};
+    cfg.sync_bits = sync_bits;
     esp_err_t err = ls_lora_fsk_begin(&cfg);
     if (err == ESP_OK) {
         printf("lora: experimental %s RX %.6f MHz %u baud, %.0f seconds\n",

@@ -38,6 +38,10 @@ typedef enum {
     REC_END_EDGES,
 } rec_end_t;
 
+/* How the slicer takes a bit: amplitude, or frequency under an amplitude
+   gate (LS-1241). */
+enum { REC_MOD_OOK = 0, REC_MOD_FSK = 1 };
+
 typedef struct {
     rec_phase_t phase;
     uint32_t    freq_hz;
@@ -78,6 +82,13 @@ typedef struct {
     /**/
 
     uint64_t    bytes_free;
+
+    int         mod;           /* current setting */
+    int         cap_mod;       /* what the held capture is */
+    uint32_t    cap_freq_hz;   /* where it was taken, or the file's */
+    uint32_t    cap_dev_hz;    /* FSK deviation, 0 for OOK */
+    uint32_t    cap_bitrate;   /* FSK bit rate, 0 for OOK */
+    bool        autosave;
 } rec_status_t;
 
 /* Lightweight read-only state for always-on presentation consumers. Unlike
@@ -146,6 +157,11 @@ void     rec_scout_peak(uint32_t *hz_out, float *level_out);
    frame rate. */
 uint32_t rec_scout_sweeps(void);
 
+void rec_set_mod(int mod);
+int  rec_get_mod(void);
+void rec_set_autosave(bool on);
+bool rec_get_autosave(void);
+
 bool rec_active(void);
 void rec_arm(void);
 /**/
@@ -176,6 +192,9 @@ int  rec_list(char *out, size_t len, bool *out_truncated);
 /**/
 const char *rec_dir(void);
 /**/
+/* Retake the newest-first snapshot rec_file_info and rec_load index into.
+   Returns the count. Until the next call an index names the same file. */
+int  rec_files_snapshot(void);
 int  rec_file_info(int index, char *name, size_t nlen, uint32_t *freq_hz, long *size);
 int  rec_load(int index);
 int  rec_dump(const char *name, void (*emit)(const char *line, void *ctx), void *ctx);

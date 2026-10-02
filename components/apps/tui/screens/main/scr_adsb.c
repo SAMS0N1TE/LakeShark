@@ -17,6 +17,11 @@
 #include "../../ls_map.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_select.h"
+#include "../../ls_options.h"
+#include "lakeshark_backend.h"
+#include "ls_lora.h"
+#include "apps/adsb/adsb_app.h"
 #include "apps/adsb/adsb_state.h"
 #include "core/perf.h"
 #include "core/settings.h"
@@ -242,10 +247,29 @@ static bool radar_center(double *lat, double *lon, bool *live)
     return false;
 }
 
+/* The receiver feeding the decoder: the LoRa chip's Mode S session, the
+   dongle the receiver holds, or - before either is running - the choice. */
+static ls_rsel_radio_t adsb_in_use(void)
+{
+    if (adsb_active_source() == ADSB_SRC_LORA) return LS_RSEL_LORA;
+    return ls_rsel_sdr_held_by("adsb");
+}
+
+/* A different dongle than the one held: the receiver starts again on it.
+   Between the chip and a dongle the receive task moves by itself. */
+static void radio_chosen(ls_rsel_radio_t radio)
+{
+    const ls_rsel_radio_t held = ls_rsel_sdr_held_by("adsb");
+    if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
+        held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
+}
+
 static void draw_radar(tui_surface *sf, tui_rect area)
 {
     const uint8_t bright=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
-    tui_box(sf,area,"MINI MAP / RTL ADS-B",bright);
+    char title[40];
+    snprintf(title,sizeof(title),"MINI MAP / %s ADS-B",ls_rsel_name(ls_rsel_effective(LS_RSEL_ADSB)));
+    tui_box(sf,area,title,bright);
     if(area.w<20 || area.h<10) return;
     double lat,lon; bool live;
     if(!radar_center(&lat,&lon,&live)) {
@@ -466,6 +490,124 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                 buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
 }
 
+/* ------------------------------------------------------------- OPTIONS -- */
+
+/* An SDR has a gain. The LR2021 has a gain step, saved like the SDR's gain
+   because it is the same setting on another scale, and the Mode S session's
+   live tuning - boost, filter and detection threshold - which lasts as long
+   as the session does: the next start is the part's defaults again. */
+
+static double o_gain(const ls_opt_t *o) { (void)o; return lakeshark_adsb_gain_tenths() / 10.0; }
+static void o_set_gain(const ls_opt_t *o, double db) { (void)o; lakeshark_adsb_set_gain((int)(db * 10.0 + 0.5)); }
+static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const int t = lakeshark_adsb_gain_tenths();
+    if (t <= 0) snprintf(out, n, "AUTO");
+    else snprintf(out, n, "%d.%d dB", t / 10, t % 10);
+}
+
+/* The step, from the same setting the receive task turns into one. */
+static double o_step(const ls_opt_t *o)
+{
+    (void)o;
+    const int t = lakeshark_adsb_gain_tenths();
+    return t <= 0 ? 0 : adsb_lr_gain_step(t);
+}
+static void o_set_step(const ls_opt_t *o, double v)
+{
+    (void)o;
+    const int step = (int)(v + 0.5);
+    /* The lowest setting that comes back as this step. */
+    lakeshark_adsb_set_gain(step <= 0 ? 0 : step * 496 / LS_LORA_MODES_GAIN_MAX);
+}
+static void o_show_step(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const int t = lakeshark_adsb_gain_tenths();
+    if (t <= 0) snprintf(out, n, "AUTO (step %d)", LS_LORA_MODES_GAIN_MAX);
+    else snprintf(out, n, "step %d", adsb_lr_gain_step(t));
+}
+
+/* The session's tuning, asked at most four times a second: the list reads
+   it every frame, and the question waits on the socket the pump is using. */
+static ls_lora_modes_tuning_t s_tuning;
+static bool s_tuning_ok;
+static int64_t s_tuning_us;
+static const ls_lora_modes_tuning_t *tuning(void)
+{
+    const int64_t now = esp_timer_get_time();
+    if (!s_tuning_us || now - s_tuning_us >= 250000 || now < s_tuning_us) {
+        s_tuning_ok = ls_lora_modes_active() && ls_lora_modes_tuning(&s_tuning) == ESP_OK;
+        s_tuning_us = now;
+    }
+    return s_tuning_ok ? &s_tuning : NULL;
+}
+static void tuned(void) { s_tuning_us = 0; }
+
+static const char *o_live(const ls_opt_t *o)
+{
+    (void)o;
+    return tuning() ? NULL : "Live: needs ADS-B running";
+}
+
+static const char *const BOOST[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
+static int o_boost(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->boost : 0; }
+static void o_set_boost(const ls_opt_t *o, int v) { (void)o; ls_lora_modes_set_boost(v); tuned(); }
+
+static double o_bw(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->rx_bw_hz / 1000.0 : 0; }
+static void o_set_bw(const ls_opt_t *o, double khz) { (void)o; ls_lora_modes_set_bw((uint32_t)(khz * 1000.0 + 0.5), NULL); tuned(); }
+static void o_show_bw(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const ls_lora_modes_tuning_t *t = tuning();
+    snprintf(out, n, "%.1f kHz", t ? t->rx_bw_hz / 1000.0 : 0.0);
+}
+
+static const char *const DETECT[] = { "AUTO", "FIXED" };
+static int o_detect(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t && t->thresh_override; }
+static void o_set_detect(const ls_opt_t *o, int fixed)
+{
+    (void)o;
+    if (!fixed) { ls_lora_modes_set_threshold(0, true); tuned(); return; }
+    /* Fixed at what the part is using now, so the change is only who
+       decides; LEVEL then moves it. */
+    int raw = 64;
+    if (ls_lora_modes_read_threshold(&raw) != ESP_OK) raw = 64;
+    ls_lora_modes_set_threshold(raw - 64, false);
+    tuned();
+}
+static double o_level(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->thresh_level : 0; }
+static void o_set_level(const ls_opt_t *o, double v) { (void)o; ls_lora_modes_set_threshold((int)(v < 0 ? v - 0.5 : v + 0.5), false); tuned(); }
+static void o_show_level(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const ls_lora_modes_tuning_t *t = tuning();
+    snprintf(out, n, "%d dB", t ? t->thresh_level : 0);
+}
+static const char *o_level_why(const ls_opt_t *o)
+{
+    const char *why = o_live(o);
+    if (why) return why;
+    return s_tuning.thresh_override ? NULL : "Set DETECTION to FIXED";
+}
+
+static const ls_opt_t OPT_ADSB[] = {
+    { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_SDR, .num = o_gain, .set_num = o_set_gain,
+      .lo = 0, .hi = 49.6, .unit = "dB, 0 is automatic", .show = o_show_gain },
+    { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_step, .set_num = o_set_step,
+      .lo = 0, .hi = LS_LORA_MODES_GAIN_MAX, .unit = "1 to 13, 0 is automatic (13)", .show = o_show_step },
+    { .label = "BOOST", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA, .names = BOOST, .n = 8,
+      .get = o_boost, .set = o_set_boost, .why_not = o_live },
+    { .label = "RX BANDWIDTH", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_bw, .set_num = o_set_bw,
+      .lo = 500, .hi = 3100, .unit = "kHz, nearest of 513 to 3077", .show = o_show_bw, .why_not = o_live },
+    { .label = "DETECTION", .kind = LS_OPT_TOGGLE, .radios = LS_OPT_LORA, .names = DETECT,
+      .get = o_detect, .set = o_set_detect, .why_not = o_live },
+    { .label = "DETECT LEVEL", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_level, .set_num = o_set_level,
+      .lo = -64, .hi = 63, .unit = "dB, -64 to 63", .show = o_show_level, .why_not = o_level_why },
+};
+static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ADSB) };
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     const int64_t now = esp_timer_get_time();
@@ -485,13 +627,16 @@ static void draw(tui_surface *sf, tui_rect area)
     memset(s_nav, 0, sizeof(s_nav));
     s_tools=tui_rect_make(0,-1,0,0);
     if(area.h>=18 && area.w>=24) {
+    /* MAP ONLY is V, for view: R is RADIO, as in every app. */
     const ls_btn_t tools[]={{"FULL MAP",NULL,'m',false,false},
-        {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"MAP ONLY",NULL,'r',s_radar_only,false},
-        {"ZOOM+",NULL,'=',false,false},{"ZOOM-",NULL,'-',false,false}};
+        {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"MAP ONLY",NULL,'v',s_radar_only,false},
+        {"ZOOM+",NULL,'=',false,false},{"ZOOM-",NULL,'-',false,false},
+        ls_rsel_button(LS_RSEL_ADSB),ls_opt_button(&CTX_ADSB)};
+    const int ntools=ls_opt_count(&CTX_ADSB)?7:6;
     int th=ls_tui_is_wide()?3:10;
     s_tools=tui_rect_make(area.x,area.y,area.w,th);
     if(!ls_tui_is_wide() && s_tools.w>49) {s_tools.x+=(s_tools.w-49)/2;s_tools.w=49;}
-    ls_btn_bar_raised_slot(sf,s_tools,tools,5,-1,LS_BTN_SLOT_QUICK);
+    ls_btn_bar_raised_slot(sf,s_tools,tools,ntools,-1,LS_BTN_SLOT_QUICK);
     area.y+=th;area.h-=th;
     }
 
@@ -563,7 +708,9 @@ static void draw(tui_surface *sf, tui_rect area)
 static bool key(ls_tk_t k, char ch)
 {
     if(k==LS_TK_CHAR && (ch=='='||ch=='+'||ch=='-')) {ls_map_zoom_by(ch=='-'?-1:1);return true;}
-    if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {s_radar_only=!s_radar_only;s_detail=false;return true;}
+    if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {ls_rsel_open(LS_RSEL_ADSB,radio_chosen);return true;}
+    if(k==LS_TK_CHAR && ls_opt_key(&CTX_ADSB,ch)) return true;
+    if(k==LS_TK_CHAR && (ch=='v'||ch=='V')) {s_radar_only=!s_radar_only;s_detail=false;return true;}
     if(k==LS_TK_CHAR && (ch=='m'||ch=='M'||ch=='h'||ch=='H')) {
         ls_args_t a={0};ls_val_t out;
         ls_action_call(ch=='m'||ch=='M'?"map.here":"map.home",&a,&out,ls_quick_grant_builtin());
@@ -603,7 +750,7 @@ static bool touch(int col, int row)
 {
     if(hit(s_tools,col,row)) {
         int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
-        if(i>=0 && i<5) return key(LS_TK_CHAR,"mhr=-"[i]);
+        if(i>=0 && i<7) return key(LS_TK_CHAR,"mhv=-ro"[i]);
         return true;
     }
 
@@ -647,6 +794,7 @@ static void enter(void)
     /* A useful regional overview; preserve the user zoom across relaunches. */
     static bool first=true;
     if(first) {ls_map_zoom_by(8-ls_map_zoom());first=false;}
+    ls_rsel_track(LS_RSEL_ADSB,adsb_in_use);
 }
 static void leave(void) { s_detail = false; ls_map_preview_leave(); }
 
@@ -654,7 +802,7 @@ const ls_tui_screen_t ls_scr_adsb = {
     /* an aircraft list with no receiver behind it is an empty table. */
     .radio = "ADS-B",
     .name = "ADSB",
-    .hint = "UP/DOWN aircraft  ENTER details  ESC back",
+    .hint = "UP/DOWN aircraft  ENTER details  R radio  O options  ESC back",
     .enter = enter,
     .leave = leave,
     .draw = draw,

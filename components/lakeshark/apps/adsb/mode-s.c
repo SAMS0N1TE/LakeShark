@@ -103,14 +103,12 @@ uint32_t mode_s_checksum(unsigned char *msg, int bits)
     return crc;
 }
 
+/* Downlink formats 16 and up have the top bit set and are 112 bits: DF16,
+   17 (ES), 18 (TIS-B/ADS-R/non-transponder ES), 19, 20, 21, 22, 23 and the
+   Comm-D ELM family, DF24-31. Below that, 56. */
 int mode_s_msg_len_by_type(int type)
 {
-    if (type == 16 || type == 17 ||
-        type == 19 || type == 20 ||
-        type == 21)
-        return MODE_S_LONG_MSG_BITS;
-    else
-        return MODE_S_SHORT_MSG_BITS;
+    return (type >= 16) ? MODE_S_LONG_MSG_BITS : MODE_S_SHORT_MSG_BITS;
 }
 
 int fix_single_bit_errors(unsigned char *msg, int bits)
@@ -217,7 +215,7 @@ int brute_force_ap(mode_s_t *self, unsigned char *msg, struct mode_s_msg *mm)
         msgtype == 16 ||
         msgtype == 20 ||
         msgtype == 21 ||
-        msgtype == 24)
+        msgtype >= 24)   /* DF24-31: Comm-D ELM, "11" in the top two bits */
     {
         uint32_t addr;
         uint32_t crc;
@@ -293,10 +291,55 @@ int decode_ac12_field(unsigned char *msg, int *unit)
 
 static const char *ais_charset = "?ABCDEFGHIJKLMNOPQRSTUVWXYZ????? ???????????????0123456789??????";
 
+/* DF18 control field. Only the formats whose ME is laid out like an ADS-B
+   one are decoded here; coarse TIS-B (3), TIS-B management (4) and the
+   reserved value (7) are not. Sets mm->me_ok, mm->addr_nonicao and
+   mm->rebroadcast. */
+static void classify_df18(struct mode_s_msg *mm, const unsigned char *msg)
+{
+    const int cf = msg[0] & 7;
+    const int tc = msg[4] >> 3;
+
+    mm->cf = cf;
+    switch (cf)
+    {
+    case 0:                     /* ADS-B, 24-bit ICAO address */
+        mm->me_ok = 1;
+        break;
+    case 1:                     /* ADS-B, some other address (anonymous, ground vehicle, ...) */
+        mm->me_ok = 1;
+        mm->addr_nonicao = 1;
+        break;
+    case 5:                     /* TIS-B relay of a non-ICAO address */
+        mm->me_ok = 1;
+        mm->addr_nonicao = 1;
+        mm->rebroadcast = 1;
+        break;
+    case 2:                     /* fine TIS-B */
+    case 6:                     /* ADS-R */
+        /* The IMF bit says whether the address is an ICAO one. It sits where
+           an airborne position carries NIC supplement B (the last bit of
+           the first ME byte), so it is read from position messages only;
+           nothing else from these is trusted. */
+        mm->rebroadcast = 1;
+        if (tc >= 9 && tc <= 18)
+        {
+            mm->me_ok = 1;
+            mm->addr_nonicao = msg[4] & 1;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
 {
     uint32_t crc2;
 
+    /* Every field starts at zero, so nothing a caller left in the struct
+       reaches the decoder (flight[0] alone would pass for an identification). */
+    memset(mm, 0, sizeof(*mm));
     memcpy(mm->msg, msg, MODE_S_LONG_MSG_BYTES);
     msg = mm->msg;
 
@@ -311,20 +354,32 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
     mm->errorbit = -1;
     mm->crcok = (mm->crc == crc2);
 
-    if (!mm->crcok && self->fix_errors && (mm->msgtype == 11 || mm->msgtype == 17))
+    if (!mm->crcok && self->fix_errors &&
+        (mm->msgtype == 11 || mm->msgtype == 17 || mm->msgtype == 18))
     {
         if ((mm->errorbit = fix_single_bit_errors(msg, mm->msgbits)) != -1)
         {
             mm->crc = mode_s_checksum(msg, mm->msgbits);
             mm->crcok = 1;
         }
-        else if (self->aggressive && mm->msgtype == 17 &&
+        else if (self->aggressive && mm->msgtype != 11 &&
                  (mm->errorbit = fix_two_bits_errors(msg, mm->msgbits)) != -1)
         {
             mm->crc = mode_s_checksum(msg, mm->msgbits);
             mm->crcok = 1;
         }
+
+        /* A repair that landed in the format field has made a different
+           message from the one the length and the rest of this decode were
+           chosen for. */
+        if (mm->crcok && (msg[0] >> 3) != mm->msgtype)
+            mm->crcok = 0;
     }
+
+    if (mm->msgtype == 17)
+        mm->me_ok = 1;
+    else if (mm->msgtype == 18)
+        classify_df18(mm, msg);
 
     mm->ca = msg[0] & 7;
 
@@ -358,7 +413,9 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
         mm->identity = a * 1000 + b * 100 + c * 10 + d;
     }
 
-    if (mm->msgtype != 11 && mm->msgtype != 17)
+    /* DF11, DF17 and DF18 carry the address in the clear, with plain parity;
+       everything else overlays it on the parity field. */
+    if (mm->msgtype != 11 && mm->msgtype != 17 && mm->msgtype != 18)
     {
 
         if (brute_force_ap(self, msg, mm))
@@ -375,13 +432,19 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
     {
         uint32_t addr = (mm->aa1 << 16) | (mm->aa2 << 8) | mm->aa3;
 
+        /* Only an ICAO address is evidence of an aircraft: a DF18 whose
+           address is not one, or whose layout is not decoded, says nothing
+           about who is out there. */
+        const int icao_addr = !mm->addr_nonicao && (mm->msgtype != 18 || mm->me_ok);
+
         if (mm->crcok && mm->errorbit == -1)
         {
-            add_recently_seen_icao_addr(self, addr);
+            if (icao_addr)
+                add_recently_seen_icao_addr(self, addr);
         }
         /* A frame that needed a bit repaired is believed only for an address already heard clean. */
 
-        else if (mm->crcok && !icao_addr_was_recently_seen(self, addr))
+        else if (mm->crcok && (!icao_addr || !icao_addr_was_recently_seen(self, addr)))
         {
             mm->crcok = 0;
         }
@@ -393,7 +456,7 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
         mm->altitude = decode_ac13_field(msg, &mm->unit);
     }
 
-    if (mm->msgtype == 17)
+    if (mm->me_ok)
     {
 
         if (mm->metype >= 1 && mm->metype <= 4)
@@ -651,7 +714,7 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
 
         if (errors == 0 || (self->aggressive && errors < 3))
         {
-            struct mode_s_msg mm;
+            struct mode_s_msg mm = {0};
 
             mode_s_decode(self, &mm, msg);
 
@@ -681,4 +744,84 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
             use_correction = 0;
         }
     }
+}
+
+/* Chips to a message, for a source that has already found the frame.
+ *
+ * ASSUMPTION, UNVERIFIED ON SILICON: the LR2021 OOK engine, with Manchester
+ * and whitening off, packs the chips it samples after the preamble pattern
+ * into the Rx FIFO MSB first - the first chip after the 16-chip 0x0285
+ * pattern is bit 7 of byte 0 - and starts exactly at the first chip of the
+ * first data bit (sfd_length 0, nothing between preamble and data). RadioLib's
+ * ADS-B example reads DF from the top five bits of byte 0 of the Manchester-
+ * inverted payload, which is the same MSB-first order, and Mode S "1" = chips
+ * 10 is what its MANCHESTER_INV setting yields. If the silicon packs LSB
+ * first or is one chip off, the pairs come out 00/11 or inverted and the
+ * frame fails the pair or CRC check in adsb_on_chips; nothing worse. */
+static int chip_pair(const uint8_t *chips, int k)
+{
+    return (chips[k >> 2] >> (6 - 2 * (k & 3))) & 3;   /* 2 = "10", 1 = "01" */
+}
+
+int mode_s_msg_from_chips(const uint8_t *chips, int chip_bytes,
+                          int head_bits, uint8_t head_value,
+                          uint8_t msg[MODE_S_LONG_MSG_BYTES],
+                          mode_s_chip_info_t *info)
+{
+    int pairs, nbits, m, bits;
+
+    if (info)
+    {
+        memset(info, 0, sizeof(*info));
+        info->first_bad_bit = -1;
+    }
+    if (!chips || !msg || chip_bytes <= 0 || head_bits < 0 || head_bits > 8)
+        return -1;
+    memset(msg, 0, MODE_S_LONG_MSG_BYTES);
+
+    pairs = chip_bytes * 4;
+    nbits = head_bits + pairs;
+    if (nbits > MODE_S_LONG_MSG_BITS)
+        nbits = MODE_S_LONG_MSG_BITS;
+    if (nbits < 5)
+        return -1;                          /* not even a downlink format */
+
+    for (m = 0; m < nbits; m++)
+    {
+        int bit;
+        if (m < head_bits)
+            bit = (head_value >> (head_bits - 1 - m)) & 1;
+        else
+            bit = chip_pair(chips, m - head_bits) >> 1;   /* 10 -> 1; 01 -> 0 */
+        if (bit)
+            msg[m >> 3] |= (uint8_t)(0x80 >> (m & 7));
+    }
+
+    bits = mode_s_msg_len_by_type(msg[0] >> 3);
+    if (nbits < bits)
+    {
+        memset(msg, 0, MODE_S_LONG_MSG_BYTES);
+        return -1;
+    }
+    /* Whatever the chips after a short frame say is noise; keep it out. */
+    for (m = bits; m < MODE_S_LONG_MSG_BITS; m++)
+        msg[m >> 3] &= (uint8_t)~(0x80 >> (m & 7));
+
+    if (info)
+    {
+        for (m = head_bits; m < bits; m++)
+        {
+            int p = chip_pair(chips, m - head_bits);
+            if (p == 1 || p == 2)
+                continue;
+            info->bad[m >> 3] |= (uint8_t)(0x80 >> (m & 7));
+            if (info->first_bad_bit < 0)
+                info->first_bad_bit = m;
+            if (m < MODE_S_SHORT_MSG_BITS)
+                info->bad_pairs++;
+            else
+                info->bad_pairs_tail++;
+        }
+    }
+    return bits;
 }

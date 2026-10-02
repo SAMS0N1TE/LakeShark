@@ -218,7 +218,7 @@ static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t
 
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
-static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
+static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; s_live.span_lo_hz = s_span_lo; s_live.span_hi_hz = s_span_hi; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
 
 static void detected(int64_t now, uint32_t frequency, float rssi, float snr, bool mesh)
 {
@@ -1109,8 +1109,10 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg)
 }
 bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz)
 {
-    if (!s_lock || (lo_hz && (hi_hz <= lo_hz || lo_hz < 150000000u || hi_hz > 960000000u))) return false;
-    lock(); s_span_lo = lo_hz; s_span_hi = lo_hz ? hi_hz : 0; const ls_lora_cfg_t cfg = s_public.config; unlock();
+    if (!s_lock || (lo_hz && (hi_hz <= lo_hz || !ls_lora_rx_range_ok(ls_lora_caps(), lo_hz, hi_hz)))) return false;
+    lock(); s_span_lo = lo_hz; s_span_hi = lo_hz ? hi_hz : 0;
+    s_public.span_lo_hz = s_span_lo; s_public.span_hi_hz = s_span_hi;
+    const ls_lora_cfg_t cfg = s_public.config; unlock();
     /* A configure restarts the sweep on the new band. */
     return ls_field_configure(&cfg);
 }
