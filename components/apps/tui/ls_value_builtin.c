@@ -136,22 +136,32 @@ RD_INT(v_crc_good,    perf_get_crc_good())
 RD_INT(v_crc_err,     perf_get_crc_err())
 
 /* Receiver */
+/* The SDR that is plugged in: the RTL-SDR, else the HackRF. */
+static const char *sdr_endpoint(void)
+{
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_RTL_USB;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_HACKRF_USB;
+    return LS_RADIO_ENDPOINT_RTL_USB;
+}
 static bool v_rf_state(ls_val_t *v)
 {
     radio_health_snapshot_t h;
-    if (!radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &h)) return false;
+    if (!radio_health_get(sdr_endpoint(), &h)) return false;
     v->kind = LS_VAL_TEXT; v->s = radio_health_state_name(h.state); return true;
 }
 static bool v_rf_bps(ls_val_t *v)
 {
     radio_health_snapshot_t h;
-    if (!radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &h)) return false;
+    if (!radio_health_get(sdr_endpoint(), &h)) return false;
     v->kind = LS_VAL_INT; v->i = (long)h.bytes_per_second; return true;
 }
 static bool v_rf_recover(ls_val_t *v)
 {
     radio_health_snapshot_t h;
-    if (!radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &h)) return false;
+    if (!radio_health_get(sdr_endpoint(), &h)) return false;
     v->kind = LS_VAL_INT; v->i = h.recoveries; return true;
 }
 

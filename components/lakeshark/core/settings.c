@@ -1188,6 +1188,18 @@ void settings_set_callouts(uint32_t packed)
     if (s_nvs_ok) sput_u32("callouts", packed);
 }
 
+int settings_hackrf_ppm_get(void)
+{
+    if (!s_nvs_ok) return 0;
+    int32_t v = 0;
+    if (nvs_get_i32(s_nvs, "hackrf_ppm", &v) != ESP_OK || v < -200 || v > 200) return 0;
+    return (int)v;
+}
+void settings_hackrf_ppm_set(int ppm)
+{
+    if (s_nvs_ok && ppm >= -200 && ppm <= 200) sput_i32("hackrf_ppm", ppm);
+}
+
 int settings_speech_volume_get(void)
 {
     if (!s_nvs_ok) return 100;

@@ -134,9 +134,8 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
         if (r == LS_RSEL_LORA) return lora_has(LS_LORA_CAP_MODES_RX) ? NULL : "No Mode S receiver on this chip";
         return kind ? kind : "Cannot tune 1090 MHz";
     case LS_RSEL_SUBGHZ_READ:
-        if (r == LS_RSEL_SDR_RTL || r == LS_RSEL_CC1101) return NULL;
+        if (is_sdr(r) || r == LS_RSEL_CC1101) return NULL;
         if (r == LS_RSEL_LORA) return lora_has(LS_LORA_CAP_FSK) ? NULL : "No FSK receiver on this chip";
-        if (r == LS_RSEL_SDR_HACKRF) return "SUB-GHZ has no HackRF capture";
         return kind;
     case LS_RSEL_SUBGHZ_SWEEP:
         if (r == LS_RSEL_LORA) return NULL;

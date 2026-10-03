@@ -195,16 +195,25 @@ bool ls_keypad_present(void)
     return e && e[0] == '1';
 }
 
-/* No speech engine on the host screens: Settings shows the voice as off. */
+/* No speech engine on the host screens: Settings shows the voice as off,
+   unless LSSIM_SPEECH=1 asks to see the rows that need one. */
 #include "../../components/lakeshark/audio/speech.h"
-bool speech_available(void) { return false; }
-speech_voice_t speech_voice_get(void) { return SPEECH_VOICE_GLITCH; }
-speech_voice_t speech_voice_step(int dir) { (void)dir; return SPEECH_VOICE_GLITCH; }
-const char *speech_voice_name(speech_voice_t v) { (void)v; return "glitch"; }
+bool speech_available(void)
+{
+    const char *e = getenv("LSSIM_SPEECH");
+    return e && e[0] == '1';
+}
+static speech_voice_t s_voice;
+static int s_speech_pct = 100;
+speech_voice_t speech_voice_get(void) { return s_voice; }
+speech_voice_t speech_voice_step(int dir)
+{ s_voice = (speech_voice_t)((s_voice + SPEECH_VOICE_COUNT + dir) % SPEECH_VOICE_COUNT); return s_voice; }
+const char *speech_voice_name(speech_voice_t v)
+{ return v == SPEECH_VOICE_DARK ? "dark" : v == SPEECH_VOICE_FEMALE ? "female" : "glitch"; }
 speech_result_t speech_say_async(const char *t) { (void)t; return SPEECH_UNAVAILABLE; }
 void speech_cancel(void) {}
-int  speech_volume_get(void) { return 100; }
-void speech_volume_set(int pct) { (void)pct; }
+int  speech_volume_get(void) { return s_speech_pct; }
+void speech_volume_set(int pct) { s_speech_pct = pct; }
 void settings_speech_volume_set(int pct) { (void)pct; }
 void audio_out_ensure_unmuted(void) {}
 
@@ -218,6 +227,11 @@ void audio_events_play_test(void) {}
 audio_mesh_say_t audio_events_mesh_say_get(void) { return s_mesh_say; }
 audio_mesh_say_t audio_events_mesh_say_cycle(void)
 { s_mesh_say = (audio_mesh_say_t)((s_mesh_say + 1) % AUD_MESH_COUNT); return s_mesh_say; }
+void audio_event_mode_set(audio_evt_kind_t k, audio_mode_t m) { s_callout[k] = m; }
+void audio_events_mesh_say_set(audio_mesh_say_t m) { s_mesh_say = m; }
+static bool s_mesh_direct;
+bool audio_events_mesh_direct_only(void) { return s_mesh_direct; }
+void audio_events_mesh_set_direct_only(bool on) { s_mesh_direct = on; }
 const char *audio_mesh_say_label(audio_mesh_say_t m) { (void)m; return "sender"; }
 void audio_events_mesh_message(const char *text, bool direct) { (void)text; (void)direct; }
 

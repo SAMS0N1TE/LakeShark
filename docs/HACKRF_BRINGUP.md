@@ -34,12 +34,44 @@ with HackRF connected throughout. Each boot registered the endpoint, restored
 host verification gate ended `VERIFY OK`. Aircraft decoding was not observed
 in these tests, including after fitting an ADS-B antenna.
 
+## Rates below 2 MSPS
+
+FM and pagers ask for 256 kSPS and P25 for 240 kSPS, below the HackRF's 2 MSPS
+floor. The radio runs at the smallest whole multiple of the asked rate (P25 at
+240 kSPS x9, FM and pagers at 256 kSPS x8, broadcast FM x4) and a third-order
+CIC filter brings it down. A decimated stream is tuned two output rates aside
+and mixed back, so the radio's own carrier leak lands on a filter null instead
+of the channel. A slow AGC keeps a weak carrier filling the 8-bit output.
+
+POCSAG at 152.6 MHz decoded the same pages through the HackRF as through an
+RTL-SDR in the same window. FM, pagers and ACARS stream with no ring overflows.
+P25 streams at its full 240 kSPS, but the decimator adds about a quarter of a
+core to P25's receive task, which then keeps its core about 90% busy; an IQ
+ring overflow comes every few seconds. Each one is reported as a single gap and
+the stream carries on.
+
+Gain reaches 113 dB, split about evenly between the LNA and VGA stages. AUTO is
+a fixed 48 dB. `hackrf ppm <n>` corrects the reference; 0 has measured right.
+
+## Console
+
+- `hackrf`: radio and output rates, decimation, gain stages, ring overflows,
+  time per read, and levels either side of the decimator.
+- `hackrf dump`: one second of decimated output, sent as checked base64.
+- `hackrf snap`: the last four seconds the app was given, the same way.
+
 ## Current limits
 
-- The receive-only driver advertises 2–20 MSPS. Only 2 MSPS has been measured
-  on this board; the advertised upper bound is not a sustained-throughput claim.
-- ADS-B requests 2 MSPS. FM/POCSAG requests 256 kSPS and P25 requests 240 kSPS,
-  so they need filtered rate conversion before using this driver.
+- The receive-only driver advertises 2 to 20 MSPS. Only 2 MSPS has been
+  measured at full rate on this board.
+- P25 decoding, ACARS, FLEX, REC and SUB-GHZ capture have not been confirmed
+  on live signals through the HackRF.
+- P25 gaps every few seconds on the HackRF (above) until the decimator runs on
+  the other core.
+- ADS-B on the LR2021 board uses the LR2021 unless the HackRF is picked as its
+  radio.
+- Gains saved for an RTL-SDR carry over and read low on the HackRF's scale.
+- CELL survey uses the RTL-SDR only.
 - No HackRF transmission was implemented or tested.
 - Startup with one connected USB radio is the validation target. Hot swapping
   is not yet a verified feature.

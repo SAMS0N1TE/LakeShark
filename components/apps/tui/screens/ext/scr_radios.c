@@ -26,6 +26,7 @@
    asks the same question ls_wf_source asks and must get the same answer. */
 #include "p25_state.h"
 #include "iq_app_control.h"
+#include "radio_endpoint.h"
 
 #if LS_HAS_LORA
 #include "ls_mesh.h"
@@ -59,12 +60,21 @@ typedef struct {
 
 static bool s_sdr_held_off;
 
+/* Either SDR streaming for any app: FM, ADS-B, REC and the rest, not only P25. */
+static bool sdr_streaming(void)
+{
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.streaming)
+        return true;
+    return ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.streaming;
+}
+
 static radio_state_t sdr_read(void)
 {
     ls_iq_control_status_t st;
     memset(&st, 0, sizeof(st));
     p25_get_receiver_status(&st);
-    if (st.receiver_streaming) return RS_BUSY;
+    if (st.receiver_streaming || sdr_streaming()) return RS_BUSY;
     return s_sdr_held_off ? RS_OFF : RS_ON;
 }
 
@@ -150,7 +160,7 @@ static const char *wifi_action(void) { return settings_get_wifi_at_boot() ? "OFF
 #endif
 
 static const radio_row_t ROWS[] = {
-    { "SDR",  "USB dongle, the biggest draw here",
+    { "SDR",  "RTL-SDR or HackRF, the biggest draw here",
       sdr_read, sdr_set },
 #if LS_HAS_LORA
     { "LORA", "MeshCore listens from boot",

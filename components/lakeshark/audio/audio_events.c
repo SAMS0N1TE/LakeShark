@@ -43,17 +43,19 @@ static QueueHandle_t s_audio_q = NULL;
    here and the queue carries only the fact that it arrived. */
 #define AUDIO_EVT_MESH ((audio_evt_kind_t)AUDIO_EVT_KIND_COUNT)
 static volatile audio_mesh_say_t s_mesh_say = AUD_MESH_SENDER;
+static volatile bool s_mesh_direct_only;
 static char        s_mesh_phrase[SPEECH_TEXT_MAX];
 static portMUX_TYPE s_mesh_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* Packed for settings: two bits per callout kind, the mesh choice at 10,
-   bit 31 marks a saved value. */
+   direct messages only at 12, and bit 31 marks a saved value. */
 static void callouts_save(void)
 {
     uint32_t v = 1u << 31;
     for (int k = AUDIO_EVT_BOOT; k < AUDIO_EVT_KIND_COUNT; k++)
         v |= ((uint32_t)s_mode[k] & 3u) << (2 * k);
     v |= ((uint32_t)s_mesh_say & 3u) << 10;
+    if (s_mesh_direct_only) v |= 1u << 12;
     settings_set_callouts(v);
 }
 
@@ -67,6 +69,7 @@ static void callouts_load(void)
     }
     const uint32_t mesh = (v >> 10) & 3u;
     if (mesh < AUD_MESH_COUNT) s_mesh_say = (audio_mesh_say_t)mesh;
+    s_mesh_direct_only = (v >> 12) & 1u;
 }
 
 /* The notice chime for the same message is usually still ringing. */
@@ -257,6 +260,28 @@ audio_mode_t audio_event_mode_cycle(audio_evt_kind_t kind)
 
 audio_mesh_say_t audio_events_mesh_say_get(void) { return s_mesh_say; }
 
+void audio_event_mode_set(audio_evt_kind_t kind, audio_mode_t m)
+{
+    if (kind <= AUDIO_EVT_NONE || kind >= AUDIO_EVT_KIND_COUNT || m >= AUD_MODE_COUNT) return;
+    s_mode[kind] = m;
+    callouts_save();
+}
+
+void audio_events_mesh_say_set(audio_mesh_say_t m)
+{
+    if (m >= AUD_MESH_COUNT) return;
+    s_mesh_say = m;
+    callouts_save();
+}
+
+bool audio_events_mesh_direct_only(void) { return s_mesh_direct_only; }
+
+void audio_events_mesh_set_direct_only(bool on)
+{
+    s_mesh_direct_only = on;
+    callouts_save();
+}
+
 audio_mesh_say_t audio_events_mesh_say_cycle(void)
 {
     s_mesh_say = (audio_mesh_say_t)((s_mesh_say + 1) % AUD_MESH_COUNT);
@@ -278,6 +303,7 @@ void audio_events_mesh_message(const char *text, bool direct)
 {
     const audio_mesh_say_t say = s_mesh_say;
     if (!s_audio_q || !text || say == AUD_MESH_OFF || !speech_available()) return;
+    if (s_mesh_direct_only && !direct) return;
     char phrase[SPEECH_TEXT_MAX];
     mesh_phrase(phrase, sizeof(phrase), text, direct, say == AUD_MESH_FULL);
     taskENTER_CRITICAL(&s_mesh_lock);

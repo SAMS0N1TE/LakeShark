@@ -607,6 +607,9 @@ static int cmd_status(int argc, char **argv)
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), ls_tui_locked() ? "on" : "off",
            scan_engine_active() ? "on" : "off", scan_engine_location() ? "on" : "off");
+    if (FM.mode == FM_MODE_POCSAG)
+        printf("pocsag: frames=%lu pages=%lu errors=%lu\n", (unsigned long)FM.pocsag_frames,
+               (unsigned long)FM.pocsag_pages, (unsigned long)FM.pocsag_cw_errs);
     /**/
     {
         char rh[160];
@@ -617,6 +620,20 @@ static int cmd_status(int argc, char **argv)
 }
 
 /**/
+/* hackrf_dev.c */
+void ls_hackrf_print_status(void);
+void ls_hackrf_dump(void);
+void ls_hackrf_set_ppm(int ppm);
+void ls_hackrf_snap(void);
+static int cmd_hackrf(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[1], "dump")) ls_hackrf_dump();
+    else if (argc >= 2 && !strcmp(argv[1], "snap")) ls_hackrf_snap();
+    else if (argc >= 3 && !strcmp(argv[1], "ppm")) ls_hackrf_set_ppm(atoi(argv[2]));
+    else ls_hackrf_print_status();
+    return 0;
+}
+
 static int cmd_rtl(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "detach")) {
@@ -2767,6 +2784,8 @@ static bool console_start(bool full)
         /**/
         { .command = "rtl", .help = "RTL health; 'rtl reset' resets the dongle, 'rtl detach' simulates an unplug",
           .func = &cmd_rtl },
+        { .command = "hackrf", .help = "HackRF: rates, gain, levels either side of the decimator; 'hackrf dump' prints one read's samples, 'hackrf snap' the last four seconds; 'hackrf ppm <n>' sets the reference correction",
+          .func = &cmd_hackrf },
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",

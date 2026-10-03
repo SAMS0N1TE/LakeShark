@@ -19,6 +19,7 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_voice_opts.h"
 #include "lakeshark_backend.h"
 #include "ls_lora.h"
 #include "apps/adsb/adsb_app.h"
@@ -499,6 +500,14 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 
 static double o_gain(const ls_opt_t *o) { (void)o; return lakeshark_adsb_gain_tenths() / 10.0; }
 static void o_set_gain(const ls_opt_t *o, double db) { (void)o; lakeshark_adsb_set_gain((int)(db * 10.0 + 0.5)); }
+/* The HackRF has no AGC: 0 is the driver's fixed 48 dB. */
+static void o_show_hackrf_gain(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const int t = lakeshark_adsb_gain_tenths();
+    if (t <= 0) snprintf(out, n, "48 dB");
+    else snprintf(out, n, "%d dB", (t + 5) / 10);
+}
 static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o;
@@ -593,8 +602,11 @@ static const char *o_level_why(const ls_opt_t *o)
 }
 
 static const ls_opt_t OPT_ADSB[] = {
-    { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_SDR, .num = o_gain, .set_num = o_set_gain,
-      .lo = 0, .hi = 49.6, .unit = "dB, 0 is automatic", .show = o_show_gain },
+    { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_RADIO(LS_RSEL_SDR_RTL), .num = o_gain,
+      .set_num = o_set_gain, .lo = 0, .hi = 49.6, .unit = "dB, 0 is automatic", .show = o_show_gain },
+    { .label = "GAIN", .kind = LS_OPT_LEVEL, .radios = LS_OPT_RADIO(LS_RSEL_SDR_HACKRF), .num = o_gain,
+      .set_num = o_set_gain, .lo = 0, .hi = 113, .step = 2,
+      .unit = "dB, LNA + VGA, amp above 102; 0 is 48", .show = o_show_hackrf_gain },
     { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_step, .set_num = o_set_step,
       .lo = 0, .hi = LS_LORA_MODES_GAIN_MAX, .unit = "1 to 13, 0 is automatic (13)", .show = o_show_step },
     { .label = "BOOST", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA, .names = BOOST, .n = 8,
@@ -606,7 +618,27 @@ static const ls_opt_t OPT_ADSB[] = {
     { .label = "DETECT LEVEL", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_level, .set_num = o_set_level,
       .lo = -64, .hi = 63, .unit = "dB, -64 to 63", .show = o_show_level, .why_not = o_level_why },
 };
-static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ADSB) };
+static const ls_opt_ctx_t CTX_RX = { .name = "RECEIVER", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ADSB) };
+
+/* DISPLAY: what V and +/- do on the screen. */
+static const char *const VIEW[] = { "LIST + MAP", "MAP ONLY" };
+static int o_view(const ls_opt_t *o) { (void)o; return s_radar_only; }
+static void o_set_view(const ls_opt_t *o, int v) { (void)o; s_radar_only = v != 0; s_detail = false; }
+static double o_zoom(const ls_opt_t *o) { (void)o; return ls_map_zoom(); }
+static void o_set_zoom(const ls_opt_t *o, double v) { (void)o; ls_map_zoom_by((int)(v + 0.5) - ls_map_zoom()); }
+static const ls_opt_t OPT_DISPLAY[] = {
+    { .label = "VIEW", .kind = LS_OPT_TOGGLE, .names = VIEW, .get = o_view, .set = o_set_view },
+    { .label = "MAP ZOOM", .kind = LS_OPT_LEVEL, .num = o_zoom, .set_num = o_set_zoom,
+      .lo = 0, .hi = 22, .step = 1, .unit = "tile zoom, 0 to 22" },
+};
+static const ls_opt_ctx_t CTX_DISPLAY = { .name = "DISPLAY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_DISPLAY) };
+
+static const ls_opt_t OPT_TOP[] = {
+    { .label = "RECEIVER", .kind = LS_OPT_MENU, .sub = &CTX_RX },
+    { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &ls_voice_ctx_adsb },
+    { .label = "DISPLAY", .kind = LS_OPT_MENU, .sub = &CTX_DISPLAY },
+};
+static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_TOP) };
 
 static void draw(tui_surface *sf, tui_rect area)
 {

@@ -51,6 +51,13 @@ struct VoiceParams {
   float f6 = -1.0f, b6 = 500.0f;
   // F0-dependent formant bandwidth widening (per 100 Hz above 100 Hz). 0 = off.
   float bw_f0_coef = 0.0f;
+  // LakeShark: pitch held to steps of this many semitones (from 100 Hz), so
+  // it jumps between notes instead of gliding - a pitch-corrected, synthetic
+  // sound. 0 = off.
+  float f0_step_semitones = 0.0f;
+  // LakeShark: >0 drops an /r/ that follows a vowel and has no vowel after
+  // it, as non-rhotic (southern British) English does. 0 = off.
+  float non_rhotic = 0.0f;
 
   // --- Voice identity: vocal-tract length & pitch scaling ---
   // Two independent multipliers that shift the apparent speaker without

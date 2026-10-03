@@ -65,6 +65,8 @@ std::unordered_map<std::string, float*> GlobalFields(VoiceParams& vp) {
       {"f6", &vp.f6},
       {"b6", &vp.b6},
       {"bw_f0_coef", &vp.bw_f0_coef},
+      {"f0_step_semitones", &vp.f0_step_semitones},
+      {"non_rhotic", &vp.non_rhotic},
       {"formant_scale", &vp.formant_scale},
       {"f0_scale", &vp.f0_scale},
       {"output_gain", &vp.output_gain},

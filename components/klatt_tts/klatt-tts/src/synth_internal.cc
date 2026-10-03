@@ -72,6 +72,20 @@ void AppendStop(const Phone& p, const VoiceParams& vp, int src_token,
 
 }  // namespace
 
+// Whether the next phone after token `ti`, stress marks skipped, is a vowel.
+static bool VowelFollows(const char* const* phones, int n_phones, int ti,
+                         const VoiceParams& vp) {
+  for (int k = ti + 1; k < n_phones; ++k) {
+    if (std::strcmp(phones[k], "\u02C8") == 0 ||
+        std::strcmp(phones[k], "\u02CC") == 0)
+      continue;
+    const Phone* q = vp.Lookup(phones[k]);
+    if (q == nullptr) continue;
+    return q->cls == PhoneClass::kVowel;
+  }
+  return false;
+}
+
 int BuildSegments(const char* const* phones, int n_phones, const VoiceParams& vp,
                   Segment* out, int max_out) {
   if (phones == nullptr || out == nullptr || max_out <= 0 || n_phones < 0) {
@@ -99,6 +113,7 @@ int BuildSegments(const char* const* phones, int n_phones, const VoiceParams& vp
 
   float pending_accent = 0.0f;
   bool word_needs_accent = true;
+  bool prev_vowel = false;
   int accents_in_phrase = 0;
   for (int ti = 0; ti < n_phones; ++ti) {
     const char* tok = phones[ti];
@@ -113,6 +128,10 @@ int BuildSegments(const char* const* phones, int n_phones, const VoiceParams& vp
 
     const Phone* p = vp.Lookup(tok);
     if (p == nullptr) continue;
+    if (vp.non_rhotic > 0.0f && std::strcmp(tok, "\u0279") == 0 &&
+        prev_vowel && !VowelFollows(phones, n_phones, ti, vp))
+      continue;
+    prev_vowel = (p->cls == PhoneClass::kVowel);
 
     if (p->cls == PhoneClass::kSilence) {
       word_needs_accent = true;
@@ -375,6 +394,7 @@ KlattParams MakeKlattParams(const VoiceParams& vp) {
   kp.f6 = (vp.f6 > 0.0f) ? vp.f6 * vp.formant_scale : vp.f6;
   kp.b6 = vp.b6;
   kp.bw_f0_coef = vp.bw_f0_coef;
+  kp.f0_step_semitones = vp.f0_step_semitones;
   return kp;
 }
 

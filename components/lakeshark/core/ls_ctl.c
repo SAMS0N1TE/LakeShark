@@ -1024,7 +1024,7 @@ void ls_ctl_register_commands(void)
         { .command = "mute",    .help = "Toggle audio mute",
           .func = &cmd_mute },
         { .command = "say",     .help = "Speech status, or speak text",
-          .hint = "[voice glitch|dark | vol 0-100 | stop | test | burst n | mesh [dm] name: text | <text>]", .func = &cmd_say },
+          .hint = "[voice glitch|dark|female | vol 0-100 | stop | test | burst n | mesh [dm] name: text | <text>]", .func = &cmd_say },
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
         /**/

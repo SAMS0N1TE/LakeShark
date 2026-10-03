@@ -182,6 +182,11 @@ int  settings_speech_voice_get(void);
 void settings_speech_voice_set(int voice);
 bool settings_get_callouts(uint32_t *packed);
 void settings_set_callouts(uint32_t packed);
+/* The HackRF's reference error in ppm: positive when its clock runs fast
+   and it hears everything that much low. Read it from a task whose stack
+   is in internal RAM. */
+int  settings_hackrf_ppm_get(void);
+void settings_hackrf_ppm_set(int ppm);
 int  settings_speech_volume_get(void);
 void settings_speech_volume_set(int pct);
 

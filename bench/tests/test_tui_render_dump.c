@@ -11,6 +11,7 @@
 bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; return false; }
 #include "ls_theme.h"
 #include "p25_state.h"
+#include "radio_endpoint.h"
 #include "apps/p25/p25_spectrum.h"
 #include "apps/rec/rec_state.h"
 
@@ -111,6 +112,12 @@ bool radio_health_get(const char *id, void *out)
     return false;                       /* no dongle attached */
 }
 const char *radio_health_state_name(int s) { (void)s; return "absent"; }
+/* No radio endpoints registered on this bench. */
+ls_radio_err_t ls_radio_endpoint_get(const char *id, ls_radio_endpoint_info_t *out)
+{
+    (void)id; (void)out;
+    return LS_RADIO_ERR_UNAVAILABLE;
+}
 
 static int s_bright = 60, s_vol = 40, s_dimt = 60, s_boot = 1;
 static bool s_autodim = true, s_usb;
@@ -562,8 +569,7 @@ static void blank_check(uint16_t want, int *blank, int *wrong)
 LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
 {
     static const char *const LABELS[] = {
-        "Brightness", "Auto dim", "Dim after", "Volume", "Theme", "Daylight",
-        "Font", "Boot sound", "Alert sound", "Vibrate", "USB autoreboot",
+        "Volume", "Brightness", "Mute", "Screen lock", "Display", "Sound", "Device",
     };
     static const int SIZE[2][2] = { { 568, 1232 }, { 1232, 568 } };
 
@@ -576,7 +582,7 @@ LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
         ls_tui_screen_show(2);                          /* SET */
         frame(3);
 
-        /* The real grid, not a test pane: every setting has its box. */
+        /* The real grid, not a test pane: every box of the first page. */
         for (unsigned i = 0; i < sizeof(LABELS) / sizeof(LABELS[0]); i++)
             LS_CHECK_MSG(grid_has(LABELS[i]), "%s SET has no '%s' box",
                          posture, LABELS[i]);
@@ -785,6 +791,8 @@ bool ls_track_rec_running(void) { return false; }
 /* The radio panel shows system volume; this dump does not run audio. */
 int audio_volume_get(void) { return 60; }
 void audio_volume_set(int v) { (void)v; }
+bool audio_is_muted(void) { return false; }
+void audio_toggle_mute(void) {}
 
 /* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
    session lives in p25_program_sd.c, which the bench deliberately does not

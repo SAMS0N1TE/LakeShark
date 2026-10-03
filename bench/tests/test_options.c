@@ -459,3 +459,102 @@ LS_CASE(an_action_that_leaves_keeps_the_list_shut)
     ls_opt_poll();
     LS_CHECK(!ls_picker_active());
 }
+
+/* ------------------------------------------------------- menus, levels -- */
+
+static double s_level = 50;
+static double get_level(const ls_opt_t *o) { (void)o; return s_level; }
+static void set_level(const ls_opt_t *o, double v) { (void)o; s_level = v; }
+
+static const ls_opt_t LEVEL_ROWS[] = {
+    { .label = "ALERT", .kind = LS_OPT_TOGGLE, .get = get_alert, .set = set_alert },
+    { .label = "LEVEL", .kind = LS_OPT_LEVEL, .num = get_level, .set_num = set_level,
+      .lo = 0, .hi = 100, .step = 5, .unit = "0 to 100" },
+};
+static const ls_opt_ctx_t CTX_LEVEL = { .name = "VOICE", .job = -1, .radio = LS_RSEL_NONE,
+                                        LS_OPT_ROWS(LEVEL_ROWS) };
+static const ls_opt_ctx_t CTX_EMPTY = { .name = "EMPTY", .job = LS_RSEL_PAGER, .radio = LS_RSEL_NONE,
+                                        LS_OPT_ROWS(CHIP_ONLY) };
+static const ls_opt_t TOP_ROWS[] = {
+    { .label = "BAUD", .kind = LS_OPT_CYCLE, .names = BAUD, .n = 4, .get = get_baud, .set = set_baud },
+    { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &CTX_LEVEL },
+    { .label = "CHIP ONLY", .kind = LS_OPT_MENU, .sub = &CTX_EMPTY },
+};
+static const ls_opt_ctx_t CTX_TOP = { .name = "MESH", .job = -1, .radio = LS_RSEL_NONE,
+                                      LS_OPT_ROWS(TOP_ROWS) };
+
+LS_CASE(a_menu_opens_its_own_list_and_back_returns_to_its_row)
+{
+    fresh(false);
+    settings_reset();
+    /* The menu whose rows are all for another radio is left out. */
+    LS_EQ_INT(ls_opt_count(&CTX_TOP), 2);
+    ls_opt_open(&CTX_TOP);
+    draw_picker();
+    LS_CHECK(row_says("VOICE", ">"));
+    LS_CHECK(row_of("CHIP ONLY") < 0);
+    LS_CHECK(row_of("BACK") < 0);
+
+    choose(1);
+    LS_CHECK(ls_picker_active());
+    draw_picker();
+    LS_CHECK(row_of("MESH > VOICE") >= 0);
+    LS_CHECK(row_of("< BACK") >= 0);
+    LS_CHECK(row_of("LEVEL") >= 0);
+
+    /* ESC goes back a level, on the row that opened it, then shuts. */
+    ls_picker_key(LS_TK_ESC, 0);
+    LS_CHECK(ls_picker_active());
+    draw_picker();
+    LS_CHECK(row_of("MESH OPTIONS") >= 0);
+    again();
+    draw_picker();
+    LS_CHECK(row_of("MESH > VOICE") >= 0);
+    ls_picker_key(LS_TK_ESC, 0);
+    ls_picker_key(LS_TK_ESC, 0);
+    LS_CHECK(!ls_picker_active());
+}
+
+LS_CASE(a_level_steps_with_left_right_and_its_arrows_and_stays_in_range)
+{
+    fresh(false);
+    settings_reset();
+    s_level = 50;
+    ls_opt_open(&CTX_LEVEL);
+    for (int i = 0; i < 20; i++) ls_picker_key(LS_TK_UP, 0);
+    ls_picker_key(LS_TK_DOWN, 0);
+    ls_picker_key(LS_TK_RIGHT, 0);
+    LS_CHECK(s_level == 55);
+    ls_picker_key(LS_TK_LEFT, 0);
+    ls_picker_key(LS_TK_LEFT, 0);
+    LS_CHECK(s_level == 45);
+    LS_CHECK(ls_picker_active());
+
+    /* The drawn arrows do the same, and the list stays up. */
+    draw_picker();
+    const int y = row_of("LEVEL");
+    LS_CHECK(y >= 0);
+    const char *gt = strrchr(g_text[y], '>'), *lt = strrchr(g_text[y], '<');
+    LS_CHECK(gt && lt);
+    if (!gt || !lt) return;
+    ls_picker_touch((int)(gt - g_text[y]), y);
+    LS_CHECK(s_level == 50);
+    ls_picker_touch((int)(lt - g_text[y]), y);
+    LS_CHECK(s_level == 45);
+    LS_CHECK(ls_picker_active());
+
+    /* Held to its range. */
+    s_level = 100;
+    ls_picker_key(LS_TK_RIGHT, 0);
+    LS_CHECK(s_level == 100);
+    s_level = 0;
+    ls_picker_key(LS_TK_LEFT, 0);
+    LS_CHECK(s_level == 0);
+
+    /* On a row that is not a level, LEFT and RIGHT still page. */
+    ls_picker_key(LS_TK_UP, 0);
+    s_alert = 0;
+    ls_picker_key(LS_TK_RIGHT, 0);
+    LS_EQ_INT(s_alert, 0);
+    ls_picker_close();
+}

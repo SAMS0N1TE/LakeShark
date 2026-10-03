@@ -67,12 +67,13 @@ static double rms(int n)
     return n ? sqrt(sq / n) / 32767.0 : 0;
 }
 
-LS_CASE(init_builds_both_voices)
+LS_CASE(init_builds_every_voice)
 {
     LS_EQ_INT(speech_engine_init(), SPEECH_ENGINE_OK);
     LS_EQ_INT(speech_engine_init(), SPEECH_ENGINE_OK);
     LS_EQ_STR(speech_voice_name(SPEECH_VOICE_GLITCH), "glitch");
     LS_EQ_STR(speech_voice_name(SPEECH_VOICE_DARK), "dark");
+    LS_EQ_STR(speech_voice_name(SPEECH_VOICE_FEMALE), "female");
 }
 
 /* Every phrase the firmware says, in both voices, inside the arena the

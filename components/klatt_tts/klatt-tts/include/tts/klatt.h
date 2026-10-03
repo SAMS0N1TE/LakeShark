@@ -92,6 +92,8 @@ struct KlattParams {
   // F0-dependent bandwidth widening: at higher pitch the formant bandwidths
   // effectively widen; coefficient scales the widening per 100 Hz above 100 Hz.
   float bw_f0_coef = 0.0f;
+  // Pitch steps in semitones from 100 Hz; 0 = continuous. See VoiceParams.
+  float f0_step_semitones = 0.0f;
 };
 
 // A general biquad, used as a band-pass for the frication source. Unlike the

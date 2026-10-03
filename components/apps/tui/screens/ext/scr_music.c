@@ -1328,7 +1328,10 @@ static bool touch(int x, int y) {
       start(i);
     return true;
   }
-  return false;
+  /* Everything this screen does is a drawn control. A tap anywhere else is
+     taken here, or the router would turn it into UP/ENTER/DOWN by where it
+     landed, and DOWN opens the track list. */
+  return true;
 }
 const ls_tui_screen_t ls_scr_music = {
     .name = "MUSIC",

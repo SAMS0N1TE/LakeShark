@@ -330,6 +330,9 @@ bool ls_wf_preset_apply(ls_wf_src_t src,int i)
 static int s_audio_vol = 60;
 static int s_audio_vol_calls;
 int audio_volume_get(void) { return s_audio_vol; }
+static bool s_audio_muted;
+bool audio_is_muted(void) { return s_audio_muted; }
+void audio_toggle_mute(void) { s_audio_muted = !s_audio_muted; }
 void audio_volume_set(int v)
 {
     s_audio_vol_calls++;
@@ -1659,6 +1662,8 @@ LS_CASE(settings_enter_cycles_a_value_and_wraps)
 {
     /* Brightness is the one with a floor that is not zero: it wraps to 5 so a
        stray press cannot leave the panel unreadable. */
+    ls_scr_settings.enter();
+    ls_scr_settings.key(LS_TK_DOWN, 0);
     s_bright = 100;
     ls_scr_settings.key(LS_TK_ENTER, 0);
     LS_CHECK_MSG(s_bright >= 5, "brightness wrapped to %d", s_bright);
@@ -1740,6 +1745,20 @@ LS_CASE(pager_touch_and_arrow_navigation_work_in_list_and_detail)
     }
 }
 
+/* Settings on its first page, then into `menu` by pressing its box. */
+static void settings_open(const char *menu, tui_rect pane)
+{
+    ls_scr_settings.enter();
+    fresh();
+    draw_pane(&ls_scr_settings, pane);
+    if (!menu) return;
+    int c, r;
+    LS_CHECK_MSG(find_text(menu, &c, &r), "no '%s' box on the first page", menu);
+    LS_CHECK(ls_scr_settings.touch(c, r));
+    fresh();
+    draw_pane(&ls_scr_settings, pane);
+}
+
 LS_CASE(every_setting_has_a_box_in_both_postures)
 {
     /* Daylight made eleven, and six boxes deep at the three-row
@@ -1747,22 +1766,49 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
        first box that would cross the edge, and the one it would have
        dropped was Daylight's. Every label must be on the glass in both
        postures and in half a landscape pane, which is the tightest case. */
-    static const char *const LABELS[] = {
-        "Brightness", "Keyboard light", "Auto dim", "Dim after", "Volume", "Theme", "Daylight",
-        "Font", "Boot sound", "Alert sound", "Vibrate", "USB autoreboot",
+    static const struct { const char *menu; const char *labels[7]; } PAGES_SEEN[] = {
+        { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Display", "Sound", "Device" } },
+        { "Display", { "BACK", "Theme", "Daylight", "Font", "Auto dim", "Dim after" } },
+        { "Sound",   { "BACK", "Boot sound", "Voice", "Alert sound", "Vibrate" } },
+        { "Device",  { "BACK", "Keyboard light", "Keyboard dim", "USB autoreboot" } },
     };
     static const int PANE_IDX[] = { 0, 1, 3 };
     s_daylight = false;
     for (unsigned p = 0; p < sizeof(PANE_IDX) / sizeof(PANE_IDX[0]); p++) {
         const tui_rect pane = PANES[PANE_IDX[p]];
-        fresh();
-        draw_pane(&ls_scr_settings, pane);
-        LS_EQ_INT(0, escaped(pane));
-        for (unsigned i = 0; i < sizeof(LABELS) / sizeof(LABELS[0]); i++) {
-            int c, r;
-            LS_CHECK_MSG(find_text(LABELS[i], &c, &r),
-                         "no '%s' box on a %dx%d pane", LABELS[i], pane.w, pane.h);
+        for (unsigned g = 0; g < sizeof(PAGES_SEEN) / sizeof(PAGES_SEEN[0]); g++) {
+            settings_open(PAGES_SEEN[g].menu, pane);
+            LS_EQ_INT(0, escaped(pane));
+            for (unsigned i = 0; i < 7 && PAGES_SEEN[g].labels[i]; i++) {
+                int c, r;
+                LS_CHECK_MSG(find_text(PAGES_SEEN[g].labels[i], &c, &r),
+                             "no '%s' box on a %dx%d pane", PAGES_SEEN[g].labels[i],
+                             pane.w, pane.h);
+            }
         }
+    }
+    ls_scr_settings.enter();
+}
+
+LS_CASE(every_settings_menu_has_a_back_box_and_esc_goes_back)
+{
+    static const char *const MENUS[] = { "Display", "Sound", "Device" };
+    for (unsigned m = 0; m < sizeof(MENUS) / sizeof(MENUS[0]); m++) {
+        settings_open(MENUS[m], PANES[0]);
+        int c, r;
+        LS_CHECK_MSG(find_text("BACK", &c, &r), "%s has no BACK box", MENUS[m]);
+        LS_CHECK(ls_scr_settings.touch(c, r));
+        fresh();
+        draw_pane(&ls_scr_settings, PANES[0]);
+        LS_CHECK_MSG(find_text("Screen lock", &c, &r), "BACK from %s did not go back", MENUS[m]);
+
+        settings_open(MENUS[m], PANES[1]);
+        LS_CHECK(ls_scr_settings.key(LS_TK_ESC, 0));
+        fresh();
+        draw_pane(&ls_scr_settings, PANES[1]);
+        LS_CHECK_MSG(find_text("Screen lock", &c, &r), "ESC from %s did not go back", MENUS[m]);
+        /* On the first page ESC is the router's, not ours. */
+        LS_CHECK(!ls_scr_settings.key(LS_TK_ESC, 0));
     }
 }
 
@@ -1777,8 +1823,7 @@ LS_CASE(the_daylight_box_turns_it_on_and_off_and_keeps_the_theme)
         s_daylight = false;
         s_daylight_stored = false;
 
-        fresh();
-        draw_pane(&ls_scr_settings, pane);
+        settings_open("Display", pane);
         int c, r;
         LS_CHECK(find_text("Daylight", &c, &r));
         LS_CHECK(ls_scr_settings.touch(c, r));
@@ -1798,44 +1843,81 @@ LS_CASE(the_daylight_box_turns_it_on_and_off_and_keeps_the_theme)
     s_active = NULL;
 }
 
+/* The column of `ch` on `row`, searching from `from` by `dir`, or -1. */
+static int find_on_row(char ch, int row, int from, int dir)
+{
+    for (int x = from; x >= 0 && x < W; x += dir)
+        if (g_back[row * W + x].ch == ch) return x;
+    return -1;
+}
+
 LS_CASE(the_volume_box_moves_the_volume_the_speaker_uses)
 {
     /* The box used to write only the saved setting, so the number on the
        glass changed and the speaker did not until the next boot. Every press
        has to reach the live volume, and the box has to read it back from
        there. Spoken callouts ride the same volume, so this is also what
-       makes them louder or quieter. */
+       makes them louder or quieter. The volume is a level: < and > step it
+       by five and it stops at either end rather than wrapping from full to
+       silent. */
     static const int PANE_IDX[] = { 0, 1 };
     for (unsigned p = 0; p < sizeof(PANE_IDX) / sizeof(PANE_IDX[0]); p++) {
         const tui_rect pane = PANES[PANE_IDX[p]];
         s_audio_vol = 60;
         s_audio_vol_calls = 0;
 
-        fresh();
-        draw_pane(&ls_scr_settings, pane);
+        settings_open(NULL, pane);
         int c, r;
-        LS_CHECK(find_text("Volume", &c, &r));
-        LS_CHECK(ls_scr_settings.touch(c, r));
-        LS_CHECK_MSG(s_audio_vol_calls == 1 && audio_volume_get() == 70,
-                     "a press left the live volume at %d after %d call(s)",
+        LS_CHECK(find_text("60 %", &c, &r));
+        const int up = find_on_row('>', r, c, 1), down = find_on_row('<', r, c, -1);
+        LS_CHECK_MSG(up >= 0 && down >= 0, "the volume box has no < and >");
+        if (up < 0 || down < 0) continue;
+        LS_CHECK(ls_scr_settings.touch(up, r));
+        LS_CHECK_MSG(s_audio_vol_calls == 1 && audio_volume_get() == 65,
+                     "> left the live volume at %d after %d call(s)",
                      audio_volume_get(), s_audio_vol_calls);
-        LS_EQ_INT(settings_get_volume(), 70);
+        LS_EQ_INT(settings_get_volume(), 65);
 
         fresh();
         draw_pane(&ls_scr_settings, pane);
-        LS_CHECK_MSG(find_text("70 %", &c, &r), "the box does not show the live volume");
+        LS_CHECK_MSG(find_text("65 %", &c, &r), "the box does not show the live volume");
+        LS_CHECK(ls_scr_settings.touch(down, r));
+        LS_CHECK(ls_scr_settings.touch(down, r));
+        LS_EQ_INT(audio_volume_get(), 55);
 
-        /* It reaches full volume rather than skipping over it, then wraps. */
+        /* Anywhere in the left half steps down, the right half up, so a
+           finger does not have to land on the arrow keys. */
+        LS_CHECK(ls_scr_settings.touch((down + c) / 2, r));
+        LS_EQ_INT(audio_volume_get(), 50);
+        LS_CHECK(ls_scr_settings.touch((up + c + 4) / 2, r));
+        LS_EQ_INT(audio_volume_get(), 55);
+        LS_CHECK(ls_scr_settings.touch((up + c + 4) / 2, r - 1));
+        LS_EQ_INT(audio_volume_get(), 60);
+        s_audio_vol = 55;
+
+        /* A muted board unmutes when its volume is turned. */
+        s_audio_muted = true;
+        LS_CHECK(ls_scr_settings.touch(up, r));
+        LS_CHECK_MSG(!s_audio_muted, "turning the volume left the board muted");
+        s_audio_vol = 55;
+
+        /* It stops at full and at silent. */
         s_audio_vol = 95;
-        fresh();
-        draw_pane(&ls_scr_settings, pane);
-        LS_CHECK(find_text("Volume", &c, &r));
-        LS_CHECK(ls_scr_settings.touch(c, r));
+        LS_CHECK(ls_scr_settings.touch(up, r));
         LS_EQ_INT(audio_volume_get(), 100);
-        fresh();
-        draw_pane(&ls_scr_settings, pane);
-        LS_CHECK(ls_scr_settings.touch(c, r));
+        LS_CHECK(ls_scr_settings.touch(up, r));
+        LS_EQ_INT(audio_volume_get(), 100);
+        s_audio_vol = 5;
+        LS_CHECK(ls_scr_settings.touch(down, r));
+        LS_CHECK(ls_scr_settings.touch(down, r));
         LS_EQ_INT(audio_volume_get(), 0);
+
+        /* LEFT and RIGHT step it with the box selected. */
+        s_audio_vol = 50;
+        LS_CHECK(ls_scr_settings.key(LS_TK_RIGHT, 0));
+        LS_EQ_INT(audio_volume_get(), 55);
+        LS_CHECK(ls_scr_settings.key(LS_TK_LEFT, 0));
+        LS_EQ_INT(audio_volume_get(), 50);
     }
     s_audio_vol = 60;
 }
@@ -1847,8 +1929,7 @@ LS_CASE(the_theme_box_under_daylight_steps_the_theme_and_keeps_daylight)
     s_daylight = true;
     s_theme_stored = -1;
 
-    fresh();
-    draw_pane(&ls_scr_settings, PANES[1]);
+    settings_open("Display", PANES[1]);
     int c, r;
     LS_CHECK(find_text("Theme", &c, &r));
     LS_CHECK(ls_scr_settings.touch(c, r));
@@ -2279,13 +2360,13 @@ LS_CASE(key_legends_follow_the_keyboard_not_the_orientation)
 LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
 {
     const tui_rect pane = {0,5,34,41};
-    fresh(); draw_pane(&ls_scr_settings, pane);
-    const char *labels[] = {"Screen lock", "Brightness", "Auto dim", "Dim after",
-        "Volume", "Theme", "Daylight", "Font", "Boot sound", "Alert sound",
-        "Vibrate", "USB autoreboot"};
+    settings_open(NULL, pane);
+    const char *labels[] = {"Volume", "Brightness", "Mute", "Screen lock", "Display",
+        "Sound", "Device"};
     int x,y;
     for (unsigned i=0; i<sizeof(labels)/sizeof(labels[0]); i++)
         LS_CHECK_MSG(find_text(labels[i], &x, &y), "missing setting %s", labels[i]);
+    settings_open("Device", pane);
     bool before = settings_get_usb_autoreboot();
     LS_CHECK(find_text("USB autoreboot", &x, &y));
     LS_CHECK(ls_scr_settings.touch(x,y));
@@ -2625,7 +2706,7 @@ LS_CASE(subghz_settings_lists_every_setting)
     fresh();ls_picker_draw(&g_sf,pane);
     LS_CHECK(find_text("RADIO",&x,&y));
     LS_CHECK(find_text("RTL-SDR",&x,&y));
-    LS_CHECK(find_text("SUB-GHZ has no HackRF capture",&x,&y));
+    LS_CHECK(!find_text("SUB-GHZ has no HackRF capture",&x,&y));
     ls_picker_close();
     ls_scr_subghz.leave();
 }
@@ -2861,12 +2942,13 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
 
 LS_CASE(rec_all_metadata_sources_select_and_record_without_sdr_claim)
 {
-    /* The radios that record what they measure, as CSV through JOURNAL. */
-    const ls_rsel_radio_t radios[]={LS_RSEL_SDR_HACKRF,LS_RSEL_NRF24,LS_RSEL_NFC,LS_RSEL_WIFI,LS_RSEL_BLE};
-    const ls_field_source_t sources[]={LS_FIELD_HACKRF,LS_FIELD_NRF24,LS_FIELD_NFC,LS_FIELD_WIFI,LS_FIELD_BLE};
+    /* The radios that record what they measure, as CSV through JOURNAL. The
+       HackRF is not one: it captures, as the RTL-SDR does. */
+    const ls_rsel_radio_t radios[]={LS_RSEL_NRF24,LS_RSEL_NFC,LS_RSEL_WIFI,LS_RSEL_BLE};
+    const ls_field_source_t sources[]={LS_FIELD_NRF24,LS_FIELD_NFC,LS_FIELD_WIFI,LS_FIELD_BLE};
     board_full();
     LS_CHECK(ls_scr_rec.radio==NULL);
-    for(int i=0;i<5;i++) {
+    for(int i=0;i<4;i++) {
         ls_field_record(false);
         ls_scr_rec.enter(); ls_scr_rec.key(LS_TK_CHAR,'u');
         LS_CHECK(ls_picker_active());
@@ -3075,7 +3157,7 @@ bool ls_track_rec_running(void) { return false; }
 LS_CASE(keyboard_light_toggle_is_applied_and_stored)
 {
     for(int orientation=0;orientation<2;orientation++) {
-        fresh();draw_pane(&ls_scr_settings,PANES[orientation]);
+        settings_open("Device",PANES[orientation]);
         int x,y;LS_CHECK(find_text("Keyboard light",&x,&y));
         bool before=settings_get_keyboard_light();
         LS_CHECK(ls_scr_settings.touch(x,y));

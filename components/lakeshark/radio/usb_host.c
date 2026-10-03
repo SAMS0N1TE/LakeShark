@@ -251,7 +251,23 @@ void class_driver_task(void *arg)
         .async = { .client_event_callback = client_event_cb,
                    .callback_arg          = (void *)&obj },
     };
-    ESP_ERROR_CHECK(usb_host_client_register(&cfg, &hdl));
+    /* Registering allocates from internal RAM, which boot can run short of.
+       A failure costs the USB radio, not the unit: retry for a while, then
+       say so and stop, instead of aborting into a crash loop. */
+    esp_err_t reg = ESP_FAIL;
+    for (int i = 0; i < 10; i++) {
+        reg = usb_host_client_register(&cfg, &hdl);
+        if (reg == ESP_OK) break;
+        ESP_LOGW(TAG, "client register failed: %s - retrying", esp_err_to_name(reg));
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (reg != ESP_OK) {
+        ESP_LOGE(TAG, "client register failed: %s - USB radios unavailable until reboot",
+                 esp_err_to_name(reg));
+        vSemaphoreDelete(mux);
+        vTaskSuspend(NULL);
+        return;
+    }
 
     obj.constant.mux_lock   = mux;
     obj.constant.client_hdl = hdl;

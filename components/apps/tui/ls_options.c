@@ -23,6 +23,12 @@ static int s_back = -1;
 static int s_screen = -1;
 /* The row a keypad or keyboard is writing to. */
 static int s_edit = -1;
+/* The lists above the one up now, and the row of each that opened the next:
+   where BACK goes. */
+#define DEPTH 4
+static const ls_opt_ctx_t *s_up[DEPTH];
+static int s_up_row[DEPTH];
+static int s_depth;
 
 /* ------------------------------------------------------------ the rows -- */
 
@@ -35,6 +41,7 @@ ls_rsel_radio_t ls_opt_radio(const ls_opt_ctx_t *ctx)
 
 static bool row_for(const ls_opt_t *o, ls_rsel_radio_t radio)
 {
+    if (o->kind == LS_OPT_MENU && ls_opt_count(o->sub) <= 0) return false;
     if (!o->radios) return true;
     return radio < LS_RSEL_RADIOS && (o->radios & LS_OPT_RADIO(radio));
 }
@@ -78,12 +85,16 @@ void ls_opt_value(const ls_opt_t *o, char *out, size_t n)
         snprintf(out, n, "%s", o->names ? o->names[v] : v ? "ON" : "OFF");
         break;
     }
-    case LS_OPT_NUMBER: {
+    case LS_OPT_NUMBER:
+    case LS_OPT_LEVEL: {
         const double v = o->num ? o->num(o) : 0;
         if (v == (double)(long)v) snprintf(out, n, "%ld", (long)v);
         else snprintf(out, n, "%.1f", v);
         break;
     }
+    case LS_OPT_MENU:
+        snprintf(out, n, ">");
+        break;
     case LS_OPT_TEXT: {
         const char *t = o->text ? o->text(o) : NULL;
         snprintf(out, n, "%s", t ? t : "");
@@ -105,16 +116,27 @@ static void detail(const ls_opt_t *o, char *out, size_t n)
 /* ------------------------------------------------------------ the list -- */
 
 static void picked(int row);
+static void stepped(int row, int dir);
+static void go_up(void);
 
 static void fill(const ls_opt_ctx_t *ctx)
 {
     char title[LS_PICKER_DETAIL];
     const ls_rsel_radio_t radio = ls_opt_radio(ctx);
-    if (radio < LS_RSEL_RADIOS)
-        snprintf(title, sizeof(title), "%s OPTIONS / %s", ctx->name, ls_rsel_name(radio));
-    else
+    const char *rname = radio < LS_RSEL_RADIOS ? ls_rsel_name(radio) : NULL;
+    if (s_depth > 0) {
+        const char *parent = s_up[s_depth - 1]->name;
+        if (rname && strlen(parent) + strlen(ctx->name) + strlen(rname) + 6 < sizeof(title))
+            snprintf(title, sizeof(title), "%s > %s / %s", parent, ctx->name, rname);
+        else
+            snprintf(title, sizeof(title), "%s > %s", parent, ctx->name);
+    } else if (rname) {
+        snprintf(title, sizeof(title), "%s OPTIONS / %s", ctx->name, rname);
+    } else {
         snprintf(title, sizeof(title), "%s OPTIONS", ctx->name);
+    }
     ls_picker_open(title, picked);
+    if (s_depth > 0) ls_picker_back(go_up);
     s_ctx = ctx;
     s_rows = 0;
     char d[LS_PICKER_DETAIL];
@@ -123,8 +145,22 @@ static void fill(const ls_opt_ctx_t *ctx)
         if (!row_for(o, radio)) continue;
         detail(o, d, sizeof(d));
         ls_picker_add(o->label, d);
+        if (o->kind == LS_OPT_LEVEL && !(o->why_not && o->why_not(o)))
+            ls_picker_stepper(s_rows, stepped);
         s_row_opt[s_rows++] = (uint8_t)i;
     }
+}
+
+/* BACK: the list above, on the row that opened this one. */
+static void go_up(void)
+{
+    if (s_depth <= 0) return;
+    s_depth--;
+    const ls_opt_ctx_t *ctx = s_up[s_depth];
+    const int row = s_up_row[s_depth];
+    s_back = -1;
+    fill(ctx);
+    ls_picker_select(row);
 }
 
 /* The list again, on the row that was chosen, saying `note` when there is
@@ -143,6 +179,24 @@ static const ls_opt_t *row_opt(int row)
 {
     if (!s_ctx || row < 0 || row >= s_rows) return NULL;
     return &s_ctx->opt[s_row_opt[row]];
+}
+
+/* A level's < or >: one step, held to its range, and the list stays up. */
+static void stepped(int row, int dir)
+{
+    const ls_opt_t *o = row_opt(row);
+    if (!o || !o->num || !o->set_num) return;
+    if (o->why_not && o->why_not(o)) return;
+    const double step = o->step > 0 ? o->step : 1;
+    double v = o->num(o) + dir * step;
+    if (o->lo < o->hi) {
+        if (v < o->lo) v = o->lo;
+        if (v > o->hi) v = o->hi;
+    }
+    o->set_num(o, v);
+    char d[LS_PICKER_DETAIL];
+    detail(o, d, sizeof(d));
+    ls_picker_set_detail(row, d);
 }
 
 static void number_done(double v)
@@ -203,9 +257,21 @@ static void picked(int row)
         reopen(row, NULL);
         return;
     case LS_OPT_NUMBER:
+    case LS_OPT_LEVEL:
         s_edit = row;
         s_back = row;   /* a cancelled keypad brings the list back too */
         ls_numpad_open(o->label, o->unit ? o->unit : "", o->num ? o->num(o) : 0, number_done);
+        return;
+    case LS_OPT_MENU:
+        if (o->sub && s_depth < DEPTH) {
+            s_up[s_depth] = s_ctx;
+            s_up_row[s_depth] = row;
+            s_depth++;
+            s_back = -1;
+            fill(o->sub);
+            return;
+        }
+        reopen(row, NULL);
         return;
     case LS_OPT_TEXT: {
         s_edit = row;
@@ -229,6 +295,7 @@ void ls_opt_open(const ls_opt_ctx_t *ctx)
     if (ls_opt_count(ctx) <= 0) return;
     s_back = -1;
     s_edit = -1;
+    s_depth = 0;
     s_screen = ls_tui_screen_current();
     fill(ctx);
 }
@@ -251,6 +318,7 @@ void ls_opt_close(void)
     if (s_ctx && ls_picker_is(picked)) ls_picker_close();
     s_back = -1;
     s_edit = -1;
+    s_depth = 0;
     s_ctx = NULL;
 }
 

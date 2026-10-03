@@ -68,6 +68,12 @@ ls_rsel_radio_t ls_rsel_saved(ls_rsel_job_t job);
    attached, so the acquire takes whatever matches. */
 const char *ls_rsel_sdr_endpoint(ls_rsel_job_t job);
 
+/* The most RF gain, in tenths of a dB, the SDR doing `job` takes: 1130 on
+   the HackRF (LNA, VGA and amp), 496 on the RTL-SDR's tuner. */
+#define LS_RSEL_GAIN_MAX_RTL    496
+#define LS_RSEL_GAIN_MAX_HACKRF 1130
+int ls_rsel_gain_max(ls_rsel_job_t job);
+
 #ifdef __cplusplus
 }
 #endif

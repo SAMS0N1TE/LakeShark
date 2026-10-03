@@ -28,6 +28,9 @@ static EXT_RAM_BSS_ATTR char s_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_n;
 
 static ls_picker_done_t s_done;
+static void (*s_on_back)(void);
+static void (*s_on_step)(int index, int dir);
+static EXT_RAM_BSS_ATTR bool s_stepper[LS_PICKER_MAX];
 
 #define FILTER_MAX 16
 static char s_filter[FILTER_MAX + 1];
@@ -44,7 +47,8 @@ static int  s_nvis;
 static tui_rect s_hit_row[ROWS_MAX];
 static int      s_hit_row_at[ROWS_MAX];   /* which s_order entry it shows */
 static int      s_hit_rows;
-static tui_rect s_hit_prev, s_hit_next, s_hit_close;
+static tui_rect s_hit_dec[ROWS_MAX], s_hit_inc[ROWS_MAX];
+static tui_rect s_hit_prev, s_hit_next, s_hit_close, s_hit_back;
 
 /* ------------------------------------------------------------------ open -- */
 
@@ -84,6 +88,9 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
     s_why[0] = 0;
     s_note[0] = 0;
     s_done = on_done;
+    s_on_back = NULL;
+    s_on_step = NULL;
+    memset(s_stepper, 0, sizeof(s_stepper));
     s_n = 0;
     s_flen = 0;
     s_filter[0] = 0;
@@ -125,7 +132,30 @@ void ls_picker_set_detail(int index, const char *detail)
     snprintf(s_detail[index], LS_PICKER_DETAIL, "%s", detail ? detail : "");
 }
 
-void ls_picker_close(void) { s_open = false; s_done = NULL; }
+void ls_picker_back(void (*on_back)(void)) { s_on_back = on_back; }
+
+void ls_picker_stepper(int index, void (*on_step)(int index, int dir))
+{
+    if (index < 0 || index >= LS_PICKER_MAX) return;
+    s_stepper[index] = on_step != NULL;
+    if (on_step) s_on_step = on_step;
+}
+
+void ls_picker_close(void) { s_open = false; s_done = NULL; s_on_back = NULL; s_on_step = NULL; }
+
+static void go_back(void)
+{
+    void (*cb)(void) = s_on_back;
+    ls_picker_close();
+    if (cb) cb();
+}
+
+static void step(int oi, int dir)
+{
+    if (oi < 0 || oi >= s_shown) return;
+    const int idx = s_order[oi];
+    if (s_stepper[idx] && s_on_step) s_on_step(idx, dir);
+}
 bool ls_picker_active(void) { return s_open; }
 bool ls_picker_is(ls_picker_done_t on_done) { return s_open && on_done && s_done == on_done; }
 
@@ -182,6 +212,34 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     const int mid = (f.h - 1) / 2;
     put_over(sf, f, f.x + 1, f.y + mid, s_label[idx], text);
 
+    /* A level: < and > as two solid keys the full height of the row at its
+       right end, the value between them. */
+    if (slot < ROWS_MAX) s_hit_dec[slot].w = s_hit_inc[slot].w = 0;
+    if (s_stepper[idx] && f.w >= 30) {
+        const int kw = 5, vw = 12;
+        const uint8_t key = A(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
+        const tui_rect inc = tui_rect_make(f.x + f.w - kw, f.y, kw, f.h);
+        const tui_rect dec = tui_rect_make(inc.x - vw - kw, f.y, kw, f.h);
+        tui_fill(sf, inc, ' ', key);
+        tui_fill(sf, dec, ' ', key);
+        tui_put_char(sf, f, inc.x + kw / 2, f.y + mid, '>', key);
+        tui_put_char(sf, f, dec.x + kw / 2, f.y + mid, '<', key);
+        tui_fill(sf, tui_rect_make(dec.x + kw, f.y, vw, f.h), ' ', A(TUI_WHITE, TUI_BLACK));
+        char v[16];
+        snprintf(v, sizeof(v), "%.*s", vw - 2, s_detail[idx]);
+        tui_put_str(sf, f, dec.x + kw + (vw - (int)strlen(v)) / 2, f.y + mid, v,
+                    A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        if (slot < ROWS_MAX) {
+            /* The whole row's height, a column either side: a thumb, not a cell. */
+            s_hit_dec[slot] = tui_rect_make(dec.x - 1, a.y, kw + 1, a.h);
+            s_hit_inc[slot] = tui_rect_make(inc.x, a.y, kw + 1, a.h);
+            s_hit_row[slot] = a;
+            s_hit_row_at[slot] = oi;
+            if (slot + 1 > s_hit_rows) s_hit_rows = slot + 1;
+        }
+        return;
+    }
+
     /* What is left after the label and a space between them. A detail
        longer than that is cut to fit rather than dropped: half a
        sentence still says more than none, and the label - the part
@@ -223,7 +281,7 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
 
     const uint8_t dim = A(DIM_FG, TUI_BLACK);
     s_hit_rows = 0;
-    s_hit_prev.w = s_hit_next.w = s_hit_close.w = 0;
+    s_hit_prev.w = s_hit_next.w = s_hit_close.w = s_hit_back.w = 0;
 
     tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, area, s_title, TUI_CYAN);
@@ -308,21 +366,24 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
             tui_put_str(sf, area, area.x + area.w - 2 - pn, area.y, pos,
                         A(TUI_CYAN, TUI_BLACK));
     }
-    const int bw = area.w - 2;
+    /* Named for what they do. PAGE UP and PAGE DN move a page, and a button
+       that says UP has to mean the thing the UP key means. BACK, on a list
+       opened from another, comes first: it is the way out most wanted. */
+    const char *names[4];
+    tui_rect *hits[4];
+    int n = 0;
+    if (s_on_back) { names[n] = "< BACK"; hits[n++] = &s_hit_back; }
     if (paged) {
-        const int third = bw / 3;
-        /* Named for what they do. They move a page, and a button
-           that says UP has to mean the thing the UP key means. */
-        draw_button(sf, tui_rect_make(area.x + 1, btn_y, third - 1, btn_h),
-                    "PAGE UP", false, &s_hit_prev);
-        draw_button(sf, tui_rect_make(area.x + 1 + third, btn_y, third - 1,
-                                      btn_h), "PAGE DN", false, &s_hit_next);
-        draw_button(sf, tui_rect_make(area.x + 1 + 2 * third, btn_y,
-                                      bw - 2 * third, btn_h),
-                    "CLOSE", false, &s_hit_close);
-    } else {
-        draw_button(sf, tui_rect_make(area.x + 1, btn_y, bw, btn_h),
-                    "CLOSE", false, &s_hit_close);
+        names[n] = "PAGE UP"; hits[n++] = &s_hit_prev;
+        names[n] = "PAGE DN"; hits[n++] = &s_hit_next;
+    }
+    names[n] = "CLOSE"; hits[n++] = &s_hit_close;
+    const int bw = area.w - 2, each = bw / n;
+    for (int i = 0; i < n; i++) {
+        const int x = area.x + 1 + i * each;
+        const int w = i == n - 1 ? area.x + 1 + bw - x : each - 1;
+        draw_button(sf, tui_rect_make(x, btn_y, w, btn_h), names[i],
+                    hits[i] == &s_hit_back, hits[i]);
     }
 }
 
@@ -373,16 +434,18 @@ bool ls_picker_key(ls_tk_t key, char ch)
         }
         return true;
     }
+    /* On a level, LEFT and RIGHT are its < and >; elsewhere they page. */
+    const bool level = s_cur >= 0 && s_cur < s_shown && s_stepper[s_order[s_cur]];
     switch (key) {
     case LS_TK_UP:    move(-1); return true;
     case LS_TK_DOWN:  move(1);  return true;
-    case LS_TK_LEFT:  page(-1); return true;
-    case LS_TK_RIGHT: page(1);  return true;
+    case LS_TK_LEFT:  if (level) step(s_cur, -1); else page(-1); return true;
+    case LS_TK_RIGHT: if (level) step(s_cur, 1);  else page(1);  return true;
     case LS_TK_ENTER: accept();  return true;
-    case LS_TK_ESC:   ls_picker_close(); return true;
+    case LS_TK_ESC:   go_back(); return true;
     case LS_TK_BACKSPACE:
         if (s_flen > 0) { s_filter[--s_flen] = 0; refilter(); }
-        else ls_picker_close();
+        else go_back();
         return true;
     default: return true;
     }
@@ -399,11 +462,20 @@ bool ls_picker_touch(int col, int row)
     if (!s_open) return false;
 
     if (in(s_hit_close, col, row)) { ls_picker_close(); return true; }
+    if (in(s_hit_back, col, row))  { go_back(); return true; }
     if (in(s_hit_prev, col, row))  { page(-1); return true; }
     if (in(s_hit_next, col, row))  { page(1);  return true; }
 
     for (int i = 0; i < s_hit_rows; i++) {
         if (!in(s_hit_row[i], col, row)) continue;
+        /* A level's arrows step it and leave the list up. */
+        const int dir = in(s_hit_dec[i], col, row) ? -1
+                      : in(s_hit_inc[i], col, row) ? 1 : 0;
+        if (dir) {
+            s_cur = s_hit_row_at[i];
+            step(s_cur, dir);
+            return true;
+        }
         /* One tap, not two.
 
            A tap that only moved a selection would need a second tap on a

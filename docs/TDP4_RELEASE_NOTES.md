@@ -1,5 +1,19 @@
 # LakeShark release notes
 
+## 2.7.1
+
+- HackRF One: FM, pagers, ACARS, P25 and REC can use it as their SDR. Rates below 2 MSPS run by decimation, and pagers decode the same pages as on an RTL-SDR.
+- HackRF One: gain reaches 113 dB in P25, FM, REC and ADS-B, split between LNA and VGA. SUB-GHZ READ captures from it too.
+- HOME, RADIOS and the value readers show whichever SDR is plugged in.
+- Speech: a female voice, the third choice in Settings > Voice and `say voice female`.
+- OPTIONS: MESH and ADS-B settings open in layers with BACK, and levels step with < and >. MESH SETUP is now part of OPTIONS.
+- Settings: Volume, Brightness, Mute and Screen lock up front, the rest in DISPLAY, SOUND and DEVICE menus with BACK. Volume and Brightness step from a tap on either half of their box, and turning the volume unmutes.
+- Settings: Voice uses the same lists, and mesh voice can speak direct messages only.
+- MUSIC: pause is silent, and a tap away from the controls stays on the player.
+- HOME: every tile subtitle fits its tile.
+- Start-up: the audio driver starts without errors, and a USB setup fault leaves the board running with the USB radios off.
+- Console: `hackrf` shows the HackRF's rates, gain and levels, and `status` counts POCSAG frames and pages.
+
 ## 2.7.0
 
 - New board: the LilyGO T-Display-P4 with the LR2021 radio. The same firmware runs on both T-Display-P4 radios and finds the chip at start.

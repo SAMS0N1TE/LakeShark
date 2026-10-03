@@ -29,6 +29,7 @@
 #include "rec_state.h"
 #include "adsb_state.h"
 #include "adsb_app.h"
+#include "radio_choice.h"
 #include "dsp_pipeline.h"
 #include "p25_demod_mode.h"
 #include "p25_demod_control.h"
@@ -441,7 +442,7 @@ static void adsb_apply_gain(int g);
 void lakeshark_radio_set_gain(int tenths)
 {
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > LS_RSEL_GAIN_MAX_HACKRF) tenths = LS_RSEL_GAIN_MAX_HACKRF;
     int idx = app_current_index();
     if (idx == s_p25_idx) {
         p25_request_gain(tenths);
@@ -466,7 +467,7 @@ int lakeshark_radio_get_gain_tenths(void)
 void lakeshark_radio_set_gain_live(int tenths)
 {
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > LS_RSEL_GAIN_MAX_HACKRF) tenths = LS_RSEL_GAIN_MAX_HACKRF;
     int idx = app_current_index();
     if (idx == s_p25_idx)      p25_request_gain(tenths);
     else if (idx == s_fm_idx)  lakeshark_fm_set_gain_live(tenths);
@@ -565,7 +566,7 @@ void lakeshark_p25_reset_stats(void)
 void lakeshark_p25_set_gain(int tenths)
 {
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > ls_rsel_gain_max(LS_RSEL_P25)) tenths = ls_rsel_gain_max(LS_RSEL_P25);
     p25_request_gain(tenths);
     const app_t *a = app_current();
     if (a) settings_set_gain(a, tenths);
@@ -797,8 +798,9 @@ void lakeshark_adsb_agc(void)
 
 void lakeshark_adsb_set_gain(int tenths)
 {
+    const int most = ls_rsel_gain_max(LS_RSEL_ADSB);
     if (tenths < 0) tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > most) tenths = most;
     adsb_apply_gain(tenths);
 }
 

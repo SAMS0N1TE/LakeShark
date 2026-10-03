@@ -36,6 +36,7 @@ void audio_events_publish(audio_evt_kind_t kind,
 
 audio_mode_t audio_event_mode_get(audio_evt_kind_t kind);
 audio_mode_t audio_event_mode_cycle(audio_evt_kind_t kind);
+void         audio_event_mode_set(audio_evt_kind_t kind, audio_mode_t m);
 void         audio_event_mode_set_all(audio_mode_t m);
 const char  *audio_mode_label(audio_mode_t m);
 
@@ -49,6 +50,10 @@ typedef enum {
 
 audio_mesh_say_t audio_events_mesh_say_get(void);
 audio_mesh_say_t audio_events_mesh_say_cycle(void);
+void             audio_events_mesh_say_set(audio_mesh_say_t m);
+/* Speak direct messages only, staying quiet for channel traffic. Saved. */
+bool             audio_events_mesh_direct_only(void);
+void             audio_events_mesh_set_direct_only(bool on);
 const char      *audio_mesh_say_label(audio_mesh_say_t m);
 /* text is the message as it goes on air, "name: message". */
 void             audio_events_mesh_message(const char *text, bool direct);

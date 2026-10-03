@@ -138,7 +138,7 @@ The Touch-LCD-4B and Smart 86 Box build from source at 720 x 720.
 Tags marked `[EXPERIMENTAL]` identify features still awaiting full hardware or live-RF validation.
 
 - **P25 Phase II** `[EXPERIMENTAL]`: manual traffic channel or automatic grant following, both off after restart. Bench-tested on a public recording; live RF unverified. [Details](docs/P25_PHASE2.md).
-- **HackRF** `[EXPERIMENTAL]`: USB IQ transport tested at 2 MSPS. Successful ADS-B decoding is somewhat verified; P25/FM support is deferred. [Status](docs/HACKRF_BRINGUP.md).
+- **HackRF** `[EXPERIMENTAL]`: FM, pagers, ACARS, P25, REC and ADS-B can use a HackRF One as their SDR; rates below 2 MSPS run by decimation. Pagers decode the same pages as on an RTL-SDR; P25 decoding is not yet confirmed on live signals. [Status](docs/HACKRF_BRINGUP.md).
 - **LoRa bearing plot** `[EXPERIMENTAL]`: RSSI grouped by compass heading, not a validated direction finder.
 
 ## ><)))O> Build from source
@@ -164,7 +164,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.5.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.5.0).** MAP with aircraft trails and marks, spoken callouts, mesh notices and the Night theme. Experimental radio features remain marked.
+**Current P4 release: [2.7.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.7.1).** A HackRF One as the SDR for FM, pagers and P25, a female voice, layered OPTIONS for MESH and ADS-B, and a silent MUSIC pause. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

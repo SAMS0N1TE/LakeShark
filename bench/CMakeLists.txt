@@ -438,6 +438,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/ls_note_blocks.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
     ${FW}/components/lakeshark/core/ls_vitals.c
     ${FW}/components/lakeshark/core/ls_trend.c
@@ -712,6 +713,7 @@ add_executable(lssim
     ${FW}/components/lakeshark/core/ls_safe_mode.c
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_gps.c
     ${FW}/components/apps/tui/ls_map_motion.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
@@ -1047,6 +1049,7 @@ ls_add_test(test_tui_render_dump
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ext/scr_subghz.c)
@@ -1583,6 +1586,9 @@ ls_add_test(test_tui_contrast
 target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
+# A diagnostic, like p25_iq_replay: an FM-rate IQ capture through NFM and POCSAG.
+add_executable(fm_iq_replay tools/fm_iq_replay.c ${APP}/fm/pocsag.c ${APP}/fm/fm_dsp.c)
+target_link_libraries(fm_iq_replay ls_harness m)
 
 ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_notes.c)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)

@@ -63,19 +63,74 @@ void make_voice(tts::VoiceParams &vp, speech_voice_t v)
         vp.f0_end = 62.0f;
         vp.formant_scale = 0.82f;
     }
+    if (v == SPEECH_VOICE_FEMALE) {
+        /* A synthetic woman, not a human one. The pitch sits level and moves
+           only in semitone steps, up on a stressed syllable, so it reads as
+           pitch-corrected rather than sung. Measured and exact, no breath, a
+           tense bright source, and southern British vowels with no r after
+           them. */
+        vp.f0_start = 185.0f;
+        vp.f0_end = 185.0f;
+        vp.final_fall_hz = 0.0f;
+        vp.f0_accent_hz = 22.0f;
+        vp.f0_flutter_hz = 0.0f;
+        vp.f0_step_semitones = 1.0f;
+        vp.formant_scale = 1.12f;
+        vp.duration_scale = 1.0f;
+        vp.stress_len_scale = 1.08f;
+        vp.glottal_open = 0.30f;
+        vp.glottal_close = 0.06f;
+        vp.breath = 0.0f;
+        vp.formant_smooth_ms = 10.0f;
+        vp.non_rhotic = 1.0f;
+        /* Wider formants at this pitch, or a harmonic sitting on a narrow
+           one rings several times louder than the rest of the word. */
+        vp.bw_f0_coef = 0.45f;
+        vp.output_gain = 0.040f;
+        for (auto &p : vp.phones) {
+            if (!std::strcmp(p.ipa, "\u025D")) { p.f2 = 1400; p.f3 = 2500; }  /* NURSE, no r */
+            if (!std::strcmp(p.ipa, "\u0251")) { p.f1 = 650; p.f2 = 920; }    /* LOT, rounded */
+            if (!std::strcmp(p.ipa, "o"))      { p.f1 = 480; p.f2 = 1180; }   /* GOAT, fronted */
+        }
+    }
 }
 
 /* Output stage, in the order it was tuned: bass lift, then either a 6-bit
    sample-and-hold with a slow two-level flutter (GLITCH) or plain 8-bit
-   steps (DARK), then a one-pole low pass. The constants assume 16 kHz. */
+   steps (DARK), then a one-pole low pass. FEMALE has none of that: a swept
+   short delay and a lighter low pass. The constants assume 16 kHz. */
 struct Effect {
     float    bass = 0.0f;
     float    lowpass = 0.0f;
     float    held = 0.0f;
     uint32_t n = 0;
+    /* FEMALE's metallic shimmer: a copy of the voice a millisecond or two
+       behind, the gap sweeping slowly, added back. */
+    static constexpr int kComb = 64;
+    float    line[kComb] = {};
+    /* And level: open vowels at this pitch come out several times louder
+       than the rest of the word, so peaks above a threshold are pressed
+       down 3:1, attack at once, release over about 60 ms. */
+    float    env = 0.0f;
 
     float step(float x, speech_voice_t v)
     {
+        if (v == SPEECH_VOICE_FEMALE) {
+            bass += 0.07f * (x - bass);   /* below ~180 Hz out: thin, like a PA */
+            x -= bass;
+            const float a = std::fabs(x);
+            env = a > env ? a : env * 0.999f;
+            constexpr float kKnee = 0.18f;
+            if (env > kKnee) x *= std::pow(kKnee / env, 2.0f / 3.0f);
+            x *= 2.2f;
+            line[n % kComb] = x;
+            const float sweep = 0.5f + 0.5f * std::sin(static_cast<float>(n) * 2.0f * 3.14159265f * 0.35f / SPEECH_RATE_HZ);
+            const int d = 14 + static_cast<int>(sweep * 18.0f);
+            x = 0.78f * x + 0.22f * line[(n + kComb - d) % kComb];
+            ++n;
+            lowpass += 0.85f * (x - lowpass);
+            return std::clamp(lowpass, -0.98f, 0.98f);
+        }
         bass += 0.075f * (x - bass);
         x = (x + 0.7f * bass) * 0.8f;
         if (v == SPEECH_VOICE_GLITCH) {
@@ -254,6 +309,7 @@ extern "C" const char *speech_voice_name(speech_voice_t voice)
     switch (voice) {
     case SPEECH_VOICE_GLITCH: return "glitch";
     case SPEECH_VOICE_DARK:   return "dark";
+    case SPEECH_VOICE_FEMALE: return "female";
     default:                  return "?";
     }
 }

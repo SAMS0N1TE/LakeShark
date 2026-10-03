@@ -20,6 +20,17 @@ static i2s_chan_handle_t s_tx;
    on this one it was NULL for a different reason: nobody had asked for it. */
 static i2s_chan_handle_t s_rx;
 static esp_codec_dev_handle_t s_dev;
+/* Whether s_dev is open. Closing it disables both I2S channels, and opening
+   it disables them again before setting the format, so a channel has to be
+   enabled between the two or the driver logs an error for each. While the
+   device is closed the channels are always enabled. */
+static bool s_dev_open;
+
+static void channels_enable(void)
+{
+    if (s_tx) i2s_channel_enable(s_tx);
+    if (s_rx) i2s_channel_enable(s_rx);
+}
 static const audio_codec_data_if_t *s_data;
 static const audio_codec_ctrl_if_t *s_ctrl;
 static const audio_codec_gpio_if_t *s_gpio;
@@ -28,18 +39,21 @@ bool ls_audio_hw_output_is_mono(void) { return true; } /* ES8311 */
 
 static void codec_cleanup(void)
 {
+    /* A close of an open device has already disabled the channels. */
+    const bool disabled = s_dev && s_dev_open;
     if (s_dev) { esp_codec_dev_close(s_dev); esp_codec_dev_delete(s_dev); s_dev = NULL; }
+    s_dev_open = false;
     if (s_codec) { audio_codec_delete_codec_if(s_codec); s_codec = NULL; }
     if (s_gpio) { audio_codec_delete_gpio_if(s_gpio); s_gpio = NULL; }
     if (s_ctrl) { audio_codec_delete_ctrl_if(s_ctrl); s_ctrl = NULL; }
     if (s_data) { audio_codec_delete_data_if(s_data); s_data = NULL; }
     if (s_rx) {
-        i2s_channel_disable(s_rx);
+        if (!disabled) i2s_channel_disable(s_rx);
         i2s_del_channel(s_rx);
         s_rx = NULL;
     }
     if (s_tx) {
-        i2s_channel_disable(s_tx);
+        if (!disabled) i2s_channel_disable(s_tx);
         i2s_del_channel(s_tx);
         s_tx = NULL;
     }
@@ -60,6 +74,10 @@ esp_err_t ls_audio_hw_init(bool speaker_only)
     i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan.dma_desc_num = 6;
     chan.dma_frame_num = 256;
+    /* A buffer the DMA has sent is zeroed, so when nothing new is written -
+       music paused, a player between tracks - the codec gets silence instead
+       of the last 35 ms of audio going round and round. */
+    chan.auto_clear_after_cb = true;
 
 #if LS_HAS_MIC
     err = i2s_new_channel(&chan, &s_tx, speaker_only ? NULL : &s_rx);
@@ -142,8 +160,21 @@ esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t chann
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = rate, .bits_per_sample = bits, .channel = channels,
     };
-    esp_codec_dev_close(s_dev);
-    return esp_codec_dev_open(s_dev, &fs) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
+    if (s_dev_open) {
+        esp_codec_dev_close(s_dev);
+        s_dev_open = false;
+        channels_enable();
+    }
+    s_dev_open = esp_codec_dev_open(s_dev, &fs) == ESP_CODEC_DEV_OK;
+    if (!s_dev_open) {
+        /* A failed open can stop with the device marked open and the
+           channels in either state; close it and enable them, so the next
+           attempt starts from the same place as the first. */
+        esp_codec_dev_close(s_dev);
+        channels_enable();
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout)

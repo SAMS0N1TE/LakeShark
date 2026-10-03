@@ -99,8 +99,11 @@ int adsb_requested_gain(void)
 
 void adsb_request_gain(int gain_tenths_db)
 {
+    /* The RTL-SDR tops out at 49.6 dB; the HackRF's LNA, VGA and amp
+       reach 113. */
+    const int most = ls_rsel_gain_max(LS_RSEL_ADSB);
     if (gain_tenths_db < 0) gain_tenths_db = 0;
-    if (gain_tenths_db > 496) gain_tenths_db = 496;
+    if (gain_tenths_db > most) gain_tenths_db = most;
     __atomic_store_n(&s_cfg_gain, gain_tenths_db, __ATOMIC_RELAXED);
     ls_iq_control_request_gain(&s_radio_control, gain_tenths_db);
 }

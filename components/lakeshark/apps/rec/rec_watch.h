@@ -38,7 +38,8 @@ typedef enum {
 static inline const char *rec_source_name(rec_source_t source)
 {
     switch (source) {
-    case REC_SOURCE_RTL:    return "RTL-SDR";
+    case REC_SOURCE_RTL:
+        return ls_rsel_saved(LS_RSEL_SUBGHZ_READ) == LS_RSEL_SDR_HACKRF ? "HackRF" : "RTL-SDR";
     case REC_SOURCE_CC1101: return "CC1101";
     /* The part that answered, by the name on it. */
     case REC_SOURCE_SX1262: return ls_lora_chip() == LS_LORA_CHIP_LR20XX ? ls_lora_chip_name() : "SX1262";
@@ -47,11 +48,14 @@ static inline const char *rec_source_name(rec_source_t source)
 }
 
 /* A capture source as the RADIO picker numbers it (radio_choice.h), and
-   back; REC_SOURCE_COUNT for a radio that is not a capture source. */
+   back; REC_SOURCE_COUNT for a radio that is not a capture source.
+   REC_SOURCE_RTL is the SDR capture, on whichever SDR SUB-GHZ READ has. */
 static inline ls_rsel_radio_t rec_source_radio(rec_source_t source)
 {
     switch (source) {
-    case REC_SOURCE_RTL:    return LS_RSEL_SDR_RTL;
+    case REC_SOURCE_RTL:
+        return ls_rsel_saved(LS_RSEL_SUBGHZ_READ) == LS_RSEL_SDR_HACKRF ? LS_RSEL_SDR_HACKRF
+                                                                        : LS_RSEL_SDR_RTL;
     case REC_SOURCE_CC1101: return LS_RSEL_CC1101;
     case REC_SOURCE_SX1262: return LS_RSEL_LORA;
     default:                return LS_RSEL_NONE;
@@ -60,7 +64,8 @@ static inline ls_rsel_radio_t rec_source_radio(rec_source_t source)
 static inline rec_source_t rec_source_of_radio(ls_rsel_radio_t radio)
 {
     switch (radio) {
-    case LS_RSEL_SDR_RTL: return REC_SOURCE_RTL;
+    case LS_RSEL_SDR_RTL:
+    case LS_RSEL_SDR_HACKRF: return REC_SOURCE_RTL;
     case LS_RSEL_CC1101:  return REC_SOURCE_CC1101;
     case LS_RSEL_LORA:    return REC_SOURCE_SX1262;
     default:              return REC_SOURCE_COUNT;

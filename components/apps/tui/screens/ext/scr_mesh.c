@@ -17,6 +17,7 @@
 /* The typed-text overlay. A router concern, opened from here. */
 #include "../../ls_keyboard.h"
 #include "../../ls_options.h"
+#include "../../ls_voice_opts.h"
 /* How far away a node that advertises a position is. */
 #include "../../ls_geo.h"
 /* What this screen reports to the rest of the unit. */
@@ -34,12 +35,11 @@
 
 /* ------------------------------------------------------------------ state */
 
-typedef enum { PAGE_CHAT = 0, PAGE_NODES, PAGE_SETUP, PAGE__COUNT } mesh_page_t;
+typedef enum { PAGE_CHAT = 0, PAGE_NODES, PAGE__COUNT } mesh_page_t;
 
 static mesh_page_t s_page;
 
 static tui_rect s_page_bar;
-static tui_rect s_setup_rect;
 static int    s_sel;               /* peer cursor on NODES                  */
 
 static bool     s_detail;
@@ -79,8 +79,8 @@ static void chat_unlock(void)
 
 /* Portrait: where the arm/disarm control was drawn. */
 static tui_rect s_tx_rect;
-static int    s_field;             /* field cursor on SETUP                 */
-/* Which SETUP field the text overlay is editing, or -1. */
+static int    s_field;             /* the field an edit is applied to       */
+/* Which field the text overlay is editing, or -1. */
 
 static int    s_edit_field = -1;
 
@@ -866,170 +866,19 @@ static const char *toggle_field(int i)
 
 #define CHAN_FIELD_BASE FIELD_COUNT
 
-static void draw_channels(tui_surface *sf, tui_rect r)
-{
-    ls_panel_box(sf, r, "CHANNELS", TUI_CYAN);
-
-    ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
-    const int n = ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
-    const int active = ls_mesh_channel_active();
-
-    for (int i = 0; i < n && i * 3 + 3 < r.h; i++) {
-        const int y = r.y + 1 + i * 3;
-        const bool sel = (s_field == CHAN_FIELD_BASE + i);
-
-        if (sel) {
-            tui_rect row = tui_rect_make(r.x + 1, y, r.w - 2, 1);
-            tui_fill(sf, row, ' ', A(TUI_BLACK, TUI_CYAN));
-        }
-        const uint8_t nc = sel ? A(TUI_BLACK, TUI_CYAN)
-                               : A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-        const uint8_t dc = sel ? A(TUI_BLACK, TUI_CYAN) : A(DIM_FG, TUI_BLACK);
-
-        /* A precision as well as a width. "%-10s" pads a short name
-           to ten and does nothing at all to a long one, so a full length
-           channel name ran past the end of the buffer's useful part; the
-           compiler could not prove the name was terminated either. The
-           precision bounds both. */
-        char line[48];
-        snprintf(line, sizeof(line), "%d %-10.*s", i,
-                 LS_MESH_CHAN_NAME - 1,
-                 c[i].name[0] ? c[i].name : "(empty)");
-        tui_put_str(sf, r, r.x + 2, y, line, nc);
-
-        /* The one that is actually sending, marked where it cannot be
-           mistaken for a selection cursor. */
-        if (i == active)
-            tui_put_str(sf, r, r.x + r.w - 6, y, "SEND",
-                        sel ? A(TUI_BLACK, TUI_CYAN)
-                            : A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-
-        const char *psk = c[i].psk[0] ? c[i].psk : "no key set";
-        char shown[40];
-        snprintf(shown, sizeof(shown), "%.*s", r.w - 6, psk);
-        tui_put_str(sf, r, r.x + 4, y + 1, shown, dc);
-
-        if (sel && s_edit_field == CHAN_FIELD_BASE + i) {
-            char ed[40];
-            snprintf(ed, sizeof(ed), "%.*s", r.w - 6, s_edit);
-            tui_rect row = tui_rect_make(r.x + 1, y + 1, r.w - 2, 1);
-            tui_fill(sf, row, ' ', A(TUI_BLACK, TUI_YELLOW));
-            tui_put_str(sf, r, r.x + 4, y + 1, ed, A(TUI_BLACK, TUI_YELLOW));
-            if ((s_blink / 12) & 1)
-                tui_put_char(sf, r, r.x + 4 + (int)strlen(ed), y + 1,
-                             LS_TUI_BLOCK_FULL, A(TUI_BLACK, TUI_YELLOW));
-        }
-    }
-
-    const int hy = r.y + r.h - 2;
-    if (hy > r.y + n * 3)
-        tui_put_str(sf, r, r.x + 2, hy,
-                    "ENTER or a second tap edits a key   SPACE send here",
-                    A(DIM_FG, TUI_BLACK));
-}
-
-static int value_col(void)
-{
-    int longest = 0;
-    for (int i = 0; i < FIELD_COUNT; i++) {
-        const int n = (int)strlen(FIELDS[i].label);
-        if (n > longest) longest = n;
-    }
-    return 2 + longest + 1;
-}
-
-/* A settings row you can actually hit with a thumb. */
-
-static int setup_row_h(void) { return ls_tui_is_wide() ? 1 : 3; }
-
-/* Which field a row inside the SETUP box belongs to, or -1. The one place
-   that knows, so touch and draw stay in step. */
-static int setup_field_at(tui_rect r, int row)
-{
-    const int rh = setup_row_h();
-    const int i = (row - r.y - 1) / rh;
-    return (i >= 0 && i < FIELD_COUNT) ? i : -1;
-}
-
-static void draw_setup(tui_surface *sf, tui_rect r)
-{
-    ls_panel_box(sf, r, "SETUP", TUI_YELLOW);
-
-    const int vx = value_col();
-    const int rh = setup_row_h();
-
-    /* One row per field now that there are thirteen. Two rows each
-       looked better with five and does not fit thirteen on any geometry the
-       gate builds. */
-    for (int i = 0; i < FIELD_COUNT && (i + 1) * rh + 1 < r.h; i++) {
-
-        const int top = r.y + 1 + i * rh;
-        const int y   = top + (rh - 1) / 2;
-        const bool sel = (i == s_field);
-        if (sel) {
-            tui_rect row = tui_rect_make(r.x + 1, top, r.w - 2, rh);
-            tui_fill(sf, row, ' ', A(TUI_BLACK, TUI_YELLOW));
-        } else if (rh > 1) {
-            /* Unselected fields get the quarter-block texture the
-               rest of this interface uses for "a field you may press"
-               (). Without it thirteen tall rows read as one large
-               empty panel with some words in it, and nothing says where one
-               target ends and the next begins. */
-            ls_fill_dither(sf, tui_rect_make(r.x + 1, top, r.w - 2, rh),
-                           LS_DITHER_LIGHT, TUI_YELLOW);
-        }
-        const uint8_t lab = sel ? A(TUI_BLACK, TUI_YELLOW) : A(TUI_WHITE, TUI_BLACK);
-        const uint8_t val = sel ? A(TUI_BLACK, TUI_YELLOW)
-                                : A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-
-        tui_put_str(sf, r, r.x + 2, y, FIELDS[i].label, lab);
-
-        /* Big enough for the longest thing that can be in it. */
-
-        char v[EDIT_MAX + 8];
-        if (sel && s_edit_field == i) {
-            snprintf(v, sizeof(v), "%s", s_edit);
-        } else {
-            field_value(i, v, sizeof(v));
-        }
-        const int vlen = (int)strlen(v);
-        const bool wrap = (vx + vlen >= r.w - 1);
-        /* Auto transmit reads in red when it is on, wherever the
-           cursor happens to be. A setting that lets the board emit
-           unattended should not look like every other row. */
-        const uint8_t vcol = (i == F_ATX && ls_mesh_auto_tx() && !sel)
-                             ? A(TUI_RED | TUI_BRIGHT, TUI_BLACK) : val;
-        if (wrap) {
-
-            tui_put_str(sf, r, r.x + 4, y + 1, v, vcol);
-        } else {
-            tui_put_str(sf, r, r.x + vx, y, v, vcol);
-        }
-        if (FIELDS[i].unit && !wrap)
-            tui_put_str(sf, r, r.x + vx + vlen + 1, y, FIELDS[i].unit,
-                        sel ? A(TUI_BLACK, TUI_YELLOW) : A(DIM_FG, TUI_BLACK));
-
-        if (sel && s_edit_field == i && ((s_blink / 12) & 1))
-            tui_put_char(sf, r, wrap ? r.x + 4 + vlen : r.x + vx + vlen,
-                         wrap ? y + 1 : y, LS_TUI_BLOCK_FULL,
-                         A(TUI_BLACK, TUI_YELLOW));
-    }
-
-    const int hy = r.y + r.h - 2;
-    if (hy > r.y + FIELD_COUNT)
-        tui_put_str(sf, r, r.x + 2, hy,
-                    "ENTER or a second tap edits   UP/DOWN choose",
-                    A(DIM_FG, TUI_BLACK));
-}
-
 /* --------------------------------------------------------------- portrait */
 
-static const char *const PAGE_NAMES[PAGE__COUNT] = { "CHAT", "NODES", "SETUP" };
+static const char *const PAGE_NAMES[PAGE__COUNT] = { "CHAT", "NODES" };
 
 static void open_field_edit(int field);
 
-/* OPTIONS: the radio's rows from SETUP, from any page. Each does what its
-   row does there: a choice changes in place, a number opens the keyboard. */
+static void act_start_on(void);
+static void act_stop(void);
+static void act_set_tx(bool on);
+
+/* OPTIONS: every setting the node has, from any page, in a list a level
+   deep per subject. A choice changes in place, a number or a key opens the
+   keyboard. */
 static void o_field(const ls_opt_t *o)
 {
     if (FIELDS[o->arg].kind == F_TOGGLE) {
@@ -1051,14 +900,125 @@ static void o_field_show(const ls_opt_t *o, char *out, size_t n)
     else snprintf(out, n, "%s %s", v, unit);
 }
 #define MESH_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_field, .show = o_field_show }
-static const ls_opt_t OPT_MESH[] = {
+static const ls_opt_t OPT_RADIO[] = {
     MESH_ROW("BAND", F_BAND), MESH_ROW("FREQUENCY", F_FREQ), MESH_ROW("SPREADING", F_SF),
     MESH_ROW("BANDWIDTH", F_BW), MESH_ROW("CODING RATE", F_CR), MESH_ROW("POWER", F_PWR),
     MESH_ROW("SYNC WORD", F_SYNC), MESH_ROW("CRC", F_CRC),
 };
+static const ls_opt_ctx_t CTX_RADIO = { .name = "RADIO", .job = -1, .radio = LS_RSEL_LORA,
+                                        LS_OPT_ROWS(OPT_RADIO) };
+
+static const ls_opt_t OPT_NODE[] = {
+    MESH_ROW("NAME", F_NAME), MESH_ROW("ADVERT EVERY", F_AEVERY),
+};
+static const ls_opt_ctx_t CTX_NODE = { .name = "NODE", .job = -1, .radio = LS_RSEL_NONE,
+                                       LS_OPT_ROWS(OPT_NODE) };
+
+static const ls_opt_t OPT_BOOT[] = {
+    MESH_ROW("LISTEN", F_ALIS), MESH_ROW("TRANSMIT", F_ATX), MESH_ROW("ADVERT", F_ABOOT),
+};
+static const ls_opt_ctx_t CTX_BOOT = { .name = "AT BOOT", .job = -1, .radio = LS_RSEL_NONE,
+                                       LS_OPT_ROWS(OPT_BOOT) };
 #undef MESH_ROW
+
+/* CHANNELS: which one messages go out on, and the key of each private one.
+   Slot 0 is the public channel and cannot be changed. */
+static void o_send_on(const ls_opt_t *o)
+{
+    (void)o;
+    ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
+    const int n = ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
+    const int now = ls_mesh_channel_active();
+    for (int step = 1; step <= n; step++) {
+        const int i = (now + step) % n;
+        if (ls_mesh_set_channel_active(i) == ESP_OK) {
+            flash(i == now ? "only this channel has a key" : "sending on this channel");
+            return;
+        }
+    }
+    flash("no channel has a key");
+}
+static void o_send_on_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
+    const int count = ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
+    const int i = ls_mesh_channel_active();
+    if (i >= 0 && i < count)
+        snprintf(out, n, "%d %.*s", i, LS_MESH_CHAN_NAME - 1, c[i].name[0] ? c[i].name : "(empty)");
+    else
+        snprintf(out, n, "--");
+}
+static void o_chan(const ls_opt_t *o) { open_field_edit(CHAN_FIELD_BASE + o->arg); }
+static void o_chan_show(const ls_opt_t *o, char *out, size_t n)
+{
+    ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
+    const int count = ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
+    if (o->arg >= count) { snprintf(out, n, "--"); return; }
+    if (c[o->arg].fixed) snprintf(out, n, "public");
+    else snprintf(out, n, "%s", c[o->arg].psk[0] ? "key set" : "no key");
+}
+static const char *o_chan_why(const ls_opt_t *o)
+{
+    return o->arg == 0 ? "The public channel is fixed" : NULL;
+}
+#define CHAN_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_chan, \
+                         .show = o_chan_show, .why_not = o_chan_why }
+static const ls_opt_t OPT_CHAN[] = {
+    { .label = "SEND ON", .kind = LS_OPT_ACTION, .act = o_send_on, .show = o_send_on_show },
+    CHAN_ROW("CHANNEL 0", 0), CHAN_ROW("CHANNEL 1", 1),
+    CHAN_ROW("CHANNEL 2", 2), CHAN_ROW("CHANNEL 3", 3),
+};
+#undef CHAN_ROW
+static const ls_opt_ctx_t CTX_CHAN = { .name = "CHANNELS", .job = -1, .radio = LS_RSEL_NONE,
+                                       LS_OPT_ROWS(OPT_CHAN) };
+
+/* The top: what the node is doing now, then a list per subject. */
+static void o_run(const ls_opt_t *o) { (void)o; ls_mesh_running() ? act_stop() : act_start_on(); }
+static void o_run_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%s", ls_mesh_running() ? "RUNNING" : "STOPPED");
+}
+static void o_tx(const ls_opt_t *o) { (void)o; act_set_tx(!ls_mesh_tx_enabled()); }
+static void o_tx_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%s", ls_mesh_tx_enabled() ? "ARMED" : "OFF");
+}
+static const char *o_tx_why(const ls_opt_t *o)
+{
+    (void)o;
+    return ls_mesh_running() ? NULL : "Start the mesh first";
+}
+static void o_advert(const ls_opt_t *o)
+{
+    (void)o;
+    flash(ls_mesh_advertise() == ESP_OK ? "advert sent" : "advert failed");
+}
+static void o_advert_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "announce this node");
+}
+static const char *o_advert_why(const ls_opt_t *o)
+{
+    (void)o;
+    return ls_mesh_tx_enabled() ? NULL : "Arm TRANSMIT first";
+}
+static const ls_opt_t OPT_MESH[] = {
+    { .label = "MESH", .kind = LS_OPT_ACTION, .act = o_run, .show = o_run_show },
+    { .label = "TRANSMIT", .kind = LS_OPT_ACTION, .act = o_tx, .show = o_tx_show, .why_not = o_tx_why },
+    { .label = "SEND ADVERT", .kind = LS_OPT_ACTION, .act = o_advert, .show = o_advert_show,
+      .why_not = o_advert_why },
+    { .label = "NODE", .kind = LS_OPT_MENU, .sub = &CTX_NODE },
+    { .label = "RADIO", .kind = LS_OPT_MENU, .sub = &CTX_RADIO },
+    { .label = "CHANNELS", .kind = LS_OPT_MENU, .sub = &CTX_CHAN },
+    { .label = "AT BOOT", .kind = LS_OPT_MENU, .sub = &CTX_BOOT },
+    { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &ls_voice_ctx_mesh },
+};
 static const ls_opt_ctx_t CTX_MESH = { .name = "MESH", .job = -1, .radio = LS_RSEL_LORA,
-                                       LS_OPT_ROWS(OPT_MESH), .tag = "RADIO" };
+                                       LS_OPT_ROWS(OPT_MESH) };
 
 /* The pages, and OPTIONS in the last cell: a list over the page, not a
    page of its own. */
@@ -1172,15 +1132,6 @@ static void draw_landscape(tui_surface *sf, tui_rect area,
             draw_nodes(sf, body, now, false);
         }
         break;
-    case PAGE_SETUP: {
-
-        const int lw = body.w * 55 / 100;
-        tui_rect left  = tui_rect_make(body.x, body.y, lw, body.h);
-        tui_rect right = tui_rect_make(body.x + lw, body.y, body.w - lw, body.h);
-        draw_setup(sf, left);
-        draw_channels(sf, right);
-        break;
-    }
     default: break;
     }
 }
@@ -1207,7 +1158,6 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
     const int bottom = area.y + area.h - armed_rows;
     const int body_y = area.y + bar_h + 1;
     tui_rect body = tui_rect_make(area.x, body_y, area.w, bottom - body_y);
-    s_setup_rect = tui_rect_make(0, -1, 0, 0);
 
     if (body.h < 3) return;
 
@@ -1225,27 +1175,6 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
             if (scopeh)
                 draw_scope(sf, tui_rect_make(body.x, body.y + list.h,
                                              body.w, scopeh));
-        }
-    } else if (s_page == PAGE_SETUP) {
-
-        /* The fields take what they need and the channels take the rest.
-           Sized the other way round it was the fields box that grew, so
-           thirteen rows of settings sat in a forty-five row frame above a
-           channel list with no room to say anything about a channel. A list
-           is the half that can use more room. */
-        /* Sized from the row height the fields actually use, not from
-           the field count: three rows each in portrait is what makes them
-           hittable, and the channel list still gets what it needs below. */
-        const int fields_h = FIELD_COUNT * setup_row_h() + 3;
-        const int chan_h = body.h - fields_h;
-        if (chan_h >= 1 + LS_MESH_MAX_CHANNELS * 3 + 1) {
-            s_setup_rect = tui_rect_make(body.x, body.y, body.w, fields_h);
-            draw_setup(sf, s_setup_rect);
-            draw_channels(sf, tui_rect_make(body.x, body.y + fields_h,
-                                            body.w, chan_h));
-        } else {
-            s_setup_rect = body;
-            draw_setup(sf, body);
         }
     } else {
         int y = body.y;
@@ -1386,7 +1315,7 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
 
         char sub[48];
         if (!st->running) {
-            snprintf(sub, sizeof(sub), "open SETUP to start the stack");
+            snprintf(sub, sizeof(sub), "OPTIONS starts the stack");
         } else if (on) {
             snprintf(sub, sizeof(sub), "this radio is emitting");
         } else {
@@ -1429,9 +1358,8 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_flash_ttl > 0) s_flash_ttl--;
     if (s_air_frames > 0) s_air_frames--;
 
-    /*/Every touch rect is cleared before the frame that
-       fills it, for the same reason s_setup_rect is cleared in
-       draw_portrait: a rect left over from the page you were on last is a
+    /* Every touch rect is cleared before the frame that
+       fills it: a rect left over from the page you were on last is a
        tap that lands on something no longer drawn. The draw puts back
        whatever it actually put on the screen. */
     s_compose_rect = tui_rect_make(0, -1, 0, 0);
@@ -1611,7 +1539,7 @@ static void open_field_edit(int field)
     ls_keyboard_open(title, s_edit, EDIT_MAX - 1, setup_edit_done);
 }
 
-/* SETUP: apply whatever is in the edit buffer to the selected field. */
+/* Apply whatever is in the edit buffer to the field being edited. */
 static void apply_field(void)
 {
     /* A channel slot first: its edit buffer is a base64 key, not a
@@ -1787,44 +1715,6 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_CHAR && s_page != PAGE_CHAT && !(s_page == PAGE_NODES && s_detail) &&
         ls_opt_key(&CTX_MESH, ch)) return true;
 
-    if (s_page == PAGE_SETUP) {
-        switch (k) {
-        case LS_TK_UP:   if (s_field > 0) s_field--; return true;
-        case LS_TK_DOWN:
-            if (s_field < FIELD_COUNT + LS_MESH_MAX_CHANNELS - 1) s_field++;
-            return true;
-        case LS_TK_CHAR:
-            /* SPACE selects the channel to send on. A letter would be
-               ambiguous next to the S/T shortcuts below. */
-            if (ch == ' ' && s_field >= CHAN_FIELD_BASE) {
-                const int idx = s_field - CHAN_FIELD_BASE;
-                const esp_err_t e = ls_mesh_set_channel_active(idx);
-                flash(e == ESP_OK ? "sending on this channel"
-                      : e == ESP_ERR_INVALID_STATE ? "no key set on that channel"
-                      : "cannot select");
-                return true;
-            }
-            break;
-        case LS_TK_ENTER:
-            if (s_field >= CHAN_FIELD_BASE) {
-                if (s_field == CHAN_FIELD_BASE) {
-                    flash("the public channel is fixed");
-                    return true;
-                }
-                open_field_edit(s_field);
-                return true;
-            }
-            if (FIELDS[s_field].kind == F_TOGGLE) {
-                const char *msg = toggle_field(s_field);
-                if (msg) flash(msg);
-                return true;
-            }
-            open_field_edit(s_field);
-            return true;
-        default: return false;
-        }
-    }
-
     if (s_page == PAGE_NODES) {
         /* The node's own page. ESC leaves it, the four letters
            printed on its buttons do the four things, and UP/DOWN still move
@@ -1906,7 +1796,7 @@ static bool touch(int col, int row)
 {
     if (!ls_tui_is_wide()) {
         /* The page bar first: it is drawn over everything else and is the
-           only way to reach NODES and SETUP without a keyboard. */
+           only way to reach NODES and OPTIONS without a keyboard. */
         if (row >= s_page_bar.y && row < s_page_bar.y + s_page_bar.h) {
             for (int i = 0; i < TAB_CELLS; i++) {
                 const tui_rect t = page_tab_rect(s_page_bar, i);
@@ -1919,22 +1809,6 @@ static bool touch(int col, int row)
                 }
             }
             return true;     /* a miss on the strip is not the body's tap */
-        }
-
-        if (s_setup_rect.h > 0 && row > s_setup_rect.y &&
-            row < s_setup_rect.y + s_setup_rect.h - 1 &&
-            col >= s_setup_rect.x && col < s_setup_rect.x + s_setup_rect.w) {
-            /* Through setup_field_at, which is also what the draw
-               uses - a hit test that recomputed the row height separately is
-               how a tap comes to land one field off the moment either
-               changes. */
-            const int i = setup_field_at(s_setup_rect, row);
-            if (i >= 0) {
-                if (i == s_field) return key(LS_TK_ENTER, 0);
-                s_field = i;
-                return true;
-            }
-            return true;
         }
 
         /* A node's page: the four action buttons, then anything
@@ -1952,8 +1826,8 @@ static bool touch(int col, int row)
         }
 
         /* A node in the list: the first tap picks it and a second
-           tap on the same node opens it, which is the rule SETUP's fields
-           already use - one tap must never fire an action, because a tap
+           tap on the same node opens it -
+           one tap must never fire an action, because a tap
            that both moves the cursor and does something is a tap you cannot
            take back. */
         if (!s_detail && s_node_rect.h > 0 && row > s_node_rect.y &&
@@ -1990,7 +1864,7 @@ static bool touch(int col, int row)
         if (s_tx_rect.h > 0 && row >= s_tx_rect.y &&
             row < s_tx_rect.y + s_tx_rect.h) {
             if (!ls_mesh_running()) {
-                flash("not running - open SETUP or type /start");
+                flash("not running - start it in OPTIONS or type /start");
                 return true;
             }
             act_set_tx(!ls_mesh_tx_enabled());

@@ -1118,7 +1118,7 @@ void lakeshark_fm_agc(void)
 void lakeshark_fm_set_gain(int tenths)
 {
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > ls_rsel_gain_max(fm_radio_job())) tenths = ls_rsel_gain_max(fm_radio_job());
     s_gain_chosen = true;   /**/
     fm_apply_gain(tenths);
     const app_t *a = app_current();
@@ -1128,7 +1128,7 @@ void lakeshark_fm_set_gain(int tenths)
 void lakeshark_fm_set_gain_live(int tenths)
 {
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > ls_rsel_gain_max(fm_radio_job())) tenths = ls_rsel_gain_max(fm_radio_job());
     s_gain_chosen = true;   /**/
     fm_apply_gain(tenths);
 }

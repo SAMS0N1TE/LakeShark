@@ -521,7 +521,8 @@ void p25_request_gain(int gain_tenths_db)
     /* The setting moves when it is asked to, not when the receiver gets round to applying it. */
 
     if (gain_tenths_db < 0)   gain_tenths_db = 0;
-    if (gain_tenths_db > 496) gain_tenths_db = 496;
+    const int most = ls_rsel_gain_max(LS_RSEL_P25);
+    if (gain_tenths_db > most) gain_tenths_db = most;
     P25.rtl_gain_tenths = gain_tenths_db;
     /* Same rule the receiver applies, set here too so a button lights the
        moment it is pressed rather than whenever the RX task next runs - and

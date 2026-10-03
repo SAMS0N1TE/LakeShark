@@ -842,14 +842,14 @@ static bool tui_session(void)
               LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb, &ls_doc_adsb },
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
-            { "cell", "CELL WATCH", "cellular RF survey", LS_ICON_TOWER, TUI_CYAN,
+            { "cell", "CELL WATCH", "cell survey", LS_ICON_TOWER, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh, &ls_doc_mesh },
 
             { "labs", "LORA LABS", "experiments", LS_ICON_LABS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_labs, nullptr, &ls_doc_labs },
-            { "experiments", "EXPERIMENTS", "LR2021 and friends", LS_ICON_EXPERIMENT, TUI_MAGENTA,
+            { "experiments", "EXPERIMENTS", "RF trials", LS_ICON_EXPERIMENT, TUI_MAGENTA,
               LS_APP_EXTRA, &ls_scr_experiments, tui_live_exp, &ls_doc_experiments },
             { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_notes, nullptr, &ls_doc_notes },
@@ -862,14 +862,14 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
-            { "music", "MUSIC", "ASCII mixtape", LS_ICON_MUSIC, TUI_MAGENTA,
+            { "music", "MUSIC", "audio player", LS_ICON_MUSIC, TUI_MAGENTA,
               LS_APP_EXTRA, &ls_scr_music, nullptr, &ls_doc_music },
             /* PAGER, not CHIP: CHIP is documented as system and health and
                DIAG owns it. Two tiles with one picture says they do the
                same thing - which is exactly what happened, DIAG was
                opened instead of this. A body with a stub aerial is a
                small radio, which is what the keyboard board carries. */
-            { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_PAGER, TUI_CYAN,
+            { "mixrf", "MIX-RF", "keyboard RF", LS_ICON_PAGER, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mixrf, nullptr, &ls_doc_mixrf },
             { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
               LS_APP_EXTRA, &ls_scr_diag, nullptr, &ls_doc_diag },
@@ -883,7 +883,7 @@ static bool tui_session(void)
 
             { "radios", "RADIOS", "power",  LS_ICON_POWER, TUI_RED,
               LS_APP_EXTRA, &ls_scr_radios, nullptr, &ls_doc_radios },
-            { "link", "LINK", "Wi-Fi + Bluetooth", LS_ICON_WIRELESS, TUI_CYAN,
+            { "link", "LINK", "Wi-Fi + BLE", LS_ICON_WIRELESS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
         };
         /* LINK was the thirteenth app, beyond the router's old

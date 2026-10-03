@@ -60,6 +60,17 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
     return n;
 }
 
+/* The SDR that is plugged in: the RTL-SDR, else the HackRF. */
+static const char *sdr_endpoint(void)
+{
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_RTL_USB;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_HACKRF_USB;
+    return LS_RADIO_ENDPOINT_RTL_USB;
+}
+
 static void draw_status(tui_surface *sf, tui_rect a)
 {
     char buf[48];
@@ -72,9 +83,10 @@ static void draw_status(tui_surface *sf, tui_rect a)
 
     int row = 1;
     radio_health_snapshot_t h;
-    if (radio_health_get(LS_RADIO_ENDPOINT_RTL_USB, &h)) {
-        ls_kv(sf, a, row++, "DONGLE", radio_health_state_name(h.state),
-              h.state == RH_OK ? good : bad);
+    const char *sdr = sdr_endpoint();
+    if (radio_health_get(sdr, &h)) {
+        ls_kv(sf, a, row++, !strcmp(sdr, LS_RADIO_ENDPOINT_HACKRF_USB) ? "HACKRF" : "DONGLE",
+              radio_health_state_name(h.state), h.state == RH_OK ? good : bad);
         snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)h.bytes_per_second);
         ls_kv(sf, a, row++, "STREAM", buf, h.bytes_per_second ? val : dim);
         if (h.recoveries) {

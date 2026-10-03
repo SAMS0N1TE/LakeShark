@@ -56,6 +56,16 @@ void ls_picker_select(int index);
    values change while it is up. */
 void ls_picker_set_detail(int index, const char *detail);
 
+/* For a list opened from another list: a BACK button beside CLOSE, and ESC
+   (or BACKSPACE with nothing typed) goes back instead of shutting. The list
+   is closed before `on_back` runs, so it can open the one it came from.
+   ls_picker_open clears it. */
+void ls_picker_back(void (*on_back)(void));
+/* Row `index` is a level: its value is drawn between a < and a > that a tap
+   steps down and up, as LEFT and RIGHT do while the row is selected. The
+   list stays up; `on_step` is handed the row and -1 or +1. ls_picker_open
+   clears every row's. */
+void ls_picker_stepper(int index, void (*on_step)(int index, int dir));
 void ls_picker_close(void);
 bool ls_picker_active(void);
 /* Whether the list up now is the one opened with `on_done`. */

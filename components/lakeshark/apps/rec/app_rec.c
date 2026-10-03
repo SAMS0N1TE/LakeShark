@@ -406,6 +406,8 @@ static bool rec_radio_open(void)
         .max_hz = 1766000000UL,
         .sample_rate_hz = REC_RTL_RATE,
         .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        /* The SDR SUB-GHZ READ (and so REC) has chosen. */
+        .preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_SUBGHZ_READ),
     };
     ls_radio_err_t error = ls_radio_acquire("rec", &requirements, &s_session);
     if (error != LS_RADIO_OK) {
@@ -592,7 +594,7 @@ static void rec_cfg_load(void)
     if (hz >= 1000000UL && hz <= 2000000000UL) s_freq_hz = hz;
     s_mod = settings_get_rec("mod", (uint32_t)s_mod) == REC_MOD_FSK ? REC_MOD_FSK : REC_MOD_OOK;
     const uint32_t g = settings_get_rec("gain", (uint32_t)s_gain);
-    if (g <= 496) s_gain = (int)g;
+    if (g <= LS_RSEL_GAIN_MAX_HACKRF) s_gain = (int)g;
     const uint32_t th = settings_get_rec("thresh", (uint32_t)s_thresh_fixed);
     if (th <= 255) s_thresh_fixed = (int)th;
     const uint32_t gap = settings_get_rec("gap", s_gap_end_us);
@@ -834,8 +836,9 @@ uint32_t rec_get_freq(void) { return s_freq_hz; }
 
 void rec_set_gain(int tenths)
 {
+    const int most = ls_rsel_gain_max(LS_RSEL_SUBGHZ_READ);
     if (tenths < 0)   tenths = 0;
-    if (tenths > 496) tenths = 496;
+    if (tenths > most) tenths = most;
     s_gain = tenths;
     settings_set_rec("gain", (uint32_t)tenths);
     ls_iq_control_request_gain(&s_radio_control, s_gain);

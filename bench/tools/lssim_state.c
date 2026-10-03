@@ -155,6 +155,9 @@ uint32_t s_tune_freq_hz = 851012500u;
 
 int audio_volume_get(void) { return s_vol; }
 void audio_volume_set(int v) { s_vol = v; }
+static bool s_muted;
+bool audio_is_muted(void) { return s_muted; }
+void audio_toggle_mute(void) { s_muted = !s_muted; }
 
 /* No perf_history_good here either: perf.c is linked for real, so the
    sparkline on ADSB is fed by the same ring the board fills. */

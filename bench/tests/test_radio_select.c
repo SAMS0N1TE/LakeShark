@@ -143,11 +143,11 @@ LS_CASE(each_job_takes_only_the_radios_that_can_run_it)
     /* POCSAG is two-level FSK, which the LoRa chip demodulates. */
     LS_CHECK(ls_rsel_cant(LS_RSEL_PAGER, LS_RSEL_LORA) == NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_PAGER, LS_RSEL_CC1101) != NULL);
-    /* SUB-GHZ READ has three capture sources and no HackRF one. */
+    /* SUB-GHZ READ captures from either SDR, the CC1101 or the LoRa chip. */
     LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_READ, LS_RSEL_SDR_RTL) == NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_READ, LS_RSEL_CC1101) == NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_READ, LS_RSEL_LORA) == NULL);
-    LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_READ, LS_RSEL_SDR_HACKRF) != NULL);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_READ, LS_RSEL_SDR_HACKRF) == NULL);
     /* ANALYZER sweeps with the LoRa chip and only that. */
     LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_SWEEP, LS_RSEL_LORA) == NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_SUBGHZ_SWEEP, LS_RSEL_SDR_RTL) != NULL);

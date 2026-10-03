@@ -1,5 +1,7 @@
 #include "radio_choice.h"
 
+#include <string.h>
+
 #include "settings.h"
 #include "radio_endpoint.h"
 
@@ -28,6 +30,13 @@ static bool plugged(const char *id)
 {
     ls_radio_endpoint_info_t info;
     return ls_radio_endpoint_get(id, &info) == LS_RADIO_OK && info.present;
+}
+
+int ls_rsel_gain_max(ls_rsel_job_t job)
+{
+    const char *id = ls_rsel_sdr_endpoint(job);
+    return id && !strcmp(id, LS_RADIO_ENDPOINT_HACKRF_USB) ? LS_RSEL_GAIN_MAX_HACKRF
+                                                           : LS_RSEL_GAIN_MAX_RTL;
 }
 
 const char *ls_rsel_sdr_endpoint(ls_rsel_job_t job)

@@ -202,8 +202,8 @@ const ls_app_doc_t ls_doc_diag = {
 };
 
 const ls_app_doc_t ls_doc_settings = {
-    .purpose = "Display and interface: theme, brightness, orientation, "
-               "fonts, and the home position used when there is no fix.",
+    .purpose = "Volume, brightness, mute and screen lock, with menus for "
+               "the display, sounds and alerts, and the keyboard and USB.",
     .records = LS_APP_RECORDS_NOTHING,
     .gps     = LS_APP_GPS_UNUSED,
 };

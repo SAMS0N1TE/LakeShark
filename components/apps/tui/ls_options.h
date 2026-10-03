@@ -39,6 +39,9 @@ typedef enum {
     LS_OPT_NUMBER,   /* typed on the keypad, from lo to hi                  */
     LS_OPT_TEXT,     /* typed on the keyboard, up to `max` characters       */
     LS_OPT_ACTION,   /* does something, and may open a list of its own      */
+    LS_OPT_MENU,     /* opens `sub`, whose list has a BACK to this one      */
+    LS_OPT_LEVEL,    /* a number stepped by `step` with < and >, lo to hi;
+                        choosing the row types one on the keypad instead    */
 } ls_opt_kind_t;
 
 /* Which radios a row belongs to, as bits of ls_rsel_radio_t. 0 is all. */
@@ -47,6 +50,7 @@ typedef enum {
 #define LS_OPT_LORA     LS_OPT_RADIO(LS_RSEL_LORA)
 
 typedef struct ls_opt_s ls_opt_t;
+typedef struct ls_opt_ctx_s ls_opt_ctx_t;
 
 /* One setting. Every callback is given the row, so one function can serve a
    table through `arg`. Only the fields the kind uses need filling. */
@@ -63,13 +67,18 @@ struct ls_opt_s {
     int (*get)(const ls_opt_t *o);
     void (*set)(const ls_opt_t *o, int v);
 
-    /* NUMBER. A value outside lo..hi is refused with the range said; lo == hi
-       leaves the checking to set_num. `unit` is the line under the keypad's
-       title. */
+    /* NUMBER and LEVEL. A value outside lo..hi is refused with the range
+       said; lo == hi leaves the checking to set_num. `unit` is the line under
+       the keypad's title. A LEVEL's < and > move it by `step`, held to lo..hi. */
     double (*num)(const ls_opt_t *o);
     void (*set_num)(const ls_opt_t *o, double v);
     double lo, hi;
     const char *unit;
+    double step;
+
+    /* MENU: the list it opens. A menu with nothing in it for the radio in
+       use is left out, as a row for another radio is. */
+    const ls_opt_ctx_t *sub;
 
     /* TEXT. */
     const char *(*text)(const ls_opt_t *o);
@@ -89,15 +98,16 @@ struct ls_opt_s {
     const char *(*why_not)(const ls_opt_t *o);
 };
 
-/* What the user is doing now. */
-typedef struct ls_opt_ctx_s {
+/* What the user is doing now, or one part of it opened from a MENU row,
+   which is titled "<PARENT> > <NAME>". */
+struct ls_opt_ctx_s {
     const char *name;        /* "POCSAG", "NFM", "ADS-B": title and button   */
     int job;                 /* ls_rsel_job_t whose radio is in use, or -1   */
     ls_rsel_radio_t radio;   /* with no job, the radio it drives, or NONE    */
     const ls_opt_t *opt;
     int n;
     const char *tag;         /* under OPTIONS on the button; NULL: the name  */
-} ls_opt_ctx_t;
+};
 
 /* A table's rows, for a context's initializer: LS_OPT_ROWS(OPT_NFM). */
 #define LS_OPT_ROWS(a) .opt = (a), .n = (int)(sizeof(a) / sizeof((a)[0]))
@@ -118,7 +128,8 @@ int ls_opt_count(const ls_opt_ctx_t *ctx);
 ls_btn_t ls_opt_button(const ls_opt_ctx_t *ctx);
 
 /* The one list, titled "<NAME> OPTIONS / <RADIO>". Does nothing for a
-   context with nothing to set. */
+   context with nothing to set. ESC or BACK in a list opened from a MENU row
+   comes back to that row; at the top they close. */
 void ls_opt_open(const ls_opt_ctx_t *ctx);
 
 /* 'o' or 'O' on a screen whose context has something to set: opens the list

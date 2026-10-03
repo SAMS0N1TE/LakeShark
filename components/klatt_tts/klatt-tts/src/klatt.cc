@@ -187,7 +187,11 @@ void KlattSynth::RenderFrame(const SynthFrame& cur, const SynthFrame& nxt,
     const float t = static_cast<float>(s) * inv;  // 0..1 across frame
 
     // Linearly interpolate the continuous parameters across the frame.
-    const float f0 = cur.f0 + (nxt.f0 - cur.f0) * t;
+    float f0 = cur.f0 + (nxt.f0 - cur.f0) * t;
+    if (p_.f0_step_semitones > 0.0f && f0 > 1.0f) {
+      const float steps = 12.0f * std::log2(f0 / 100.0f) / p_.f0_step_semitones;
+      f0 = 100.0f * std::exp2(std::round(steps) * p_.f0_step_semitones / 12.0f);
+    }
     const float f1 = cur.f1 + (nxt.f1 - cur.f1) * t;
     const float f2 = cur.f2 + (nxt.f2 - cur.f2) * t;
     const float f3 = cur.f3 + (nxt.f3 - cur.f3) * t;
