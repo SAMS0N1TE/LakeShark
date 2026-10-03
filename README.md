@@ -6,8 +6,6 @@
 > [!IMPORTANT]
 > **ADS-B with no RTL-SDR.** On the LR2021 version of the T-Display P4, the onboard LR2021 radio decodes aircraft by itself. Fit an antenna on its MMCX connector and open ADS-B; no dongle needed. New in 2.7.0.
 
-**Two radio versions, one firmware.** LakeShark finds the radio at start:
-
 | T-Display P4 | Onboard radio does | ADS-B |
 |---|---|---|
 | **SX1262** | MeshCore, LoRa Labs, POCSAG on the LoRa chip | needs an RTL-SDR |
