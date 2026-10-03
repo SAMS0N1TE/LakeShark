@@ -32,7 +32,8 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase#renders/01">New case design renders</a></p>
 
 <p align="center">
-  <img height="610" alt="LakeShark case turntable" src="assets/lakeshark_turntable.gif">
+  <img width="48%" alt="LakeShark P4 case, plastic" src="assets/lakeshark_p4_plastic.gif">
+  <img width="48%" alt="LakeShark P4 case, clear acrylic" src="assets/lakeshark_p4_acrylic.gif">
 </p>
 
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** · **[Submit a recommendation](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
