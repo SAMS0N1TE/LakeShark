@@ -26,6 +26,10 @@ else()
 endif()
 
 if(CONFIG_LAKESHARK_HEADLESS)
+    # The apps component's radio picker reads the wireless snapshot, and the
+    # headless main code does not, so the linker would pass main before
+    # anything asked for it.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
     idf_component_get_property(LS_HOSTED_DIR espressif__esp_hosted COMPONENT_DIR)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
