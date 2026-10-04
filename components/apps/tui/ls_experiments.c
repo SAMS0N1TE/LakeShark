@@ -304,7 +304,7 @@ int ls_exp_console(int argc, char **argv)
     if (!strcmp(argv[2], "start")) {
         if (argc > 3) {
             if (!e->configure) { printf("exp: %s takes no arguments\n", e->id); return 1; }
-            char why[64] = "";
+            char why[96] = "";
             if (!e->configure(argc - 3, argv + 3, why, sizeof(why))) {
                 printf("exp: %s: %s\n", e->id, why[0] ? why : "bad arguments");
                 return 1;

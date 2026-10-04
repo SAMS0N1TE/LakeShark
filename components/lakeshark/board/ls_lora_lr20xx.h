@@ -65,6 +65,7 @@ extern "C" {
 #define LR20XX_OP_SET_GFSK_MOD     0x0240   /* RadioLib */
 #define LR20XX_OP_SET_GFSK_PKT     0x0241   /* RadioLib */
 #define LR20XX_OP_SET_GFSK_SYNC    0x0244   /* RadioLib */
+#define LR20XX_OP_GET_GFSK_RX_STATS 0x0246  /* Semtech driver */
 #define LR20XX_OP_GET_GFSK_PKT_ST  0x0247   /* RadioLib */
 #define LR20XX_OP_GET_STATUS       0x0100
 #define LR20XX_OP_GET_VERSION      0x0101
@@ -383,8 +384,11 @@ void lr20xx_scan_plan(uint32_t min_hz, uint32_t max_hz, int n,
 esp_err_t lr20xx_gfsk_set_modulation(uint32_t bitrate_bps, uint8_t pulse_shape,
                                      uint8_t rx_bw, uint32_t deviation_hz);
 /* SetGfskPacketParams, fixed length with no address filter, no CRC and no
-   whitening. preamble_bits is what is sent; the preamble detector is off. */
-esp_err_t lr20xx_gfsk_set_packet_fixed(uint16_t preamble_bits, uint16_t payload_len);
+   whitening. preamble_bits is what is sent. detect_bits is the preamble
+   detector's length in bits: 0 is off, else 8, 16, 24 or 32; anything else
+   is ESP_ERR_INVALID_ARG and nothing is sent. */
+esp_err_t lr20xx_gfsk_set_packet_fixed(uint16_t preamble_bits, uint8_t detect_bits,
+                                       uint16_t payload_len);
 /* SetGfskSyncword: the top `bits` (8..32, whole bytes) of `sync_word`, sent
    and matched MSB first. */
 esp_err_t lr20xx_gfsk_set_syncword(uint32_t sync_word, uint8_t bits);
@@ -395,6 +399,14 @@ typedef struct {
     float    rssi_sync_dbm;
 } lr20xx_gfsk_pkt_status_t;
 esp_err_t lr20xx_get_gfsk_packet_status(lr20xx_gfsk_pkt_status_t *out);
+
+/* GetFskRxStats: seven big-endian 16-bit counters since the packet type was
+   set, read only. */
+typedef struct {
+    uint16_t received, crc_errors, length_errors, preamble_detections;
+    uint16_t sync_ok, sync_fail, timeouts;
+} lr20xx_gfsk_rx_stats_t;
+esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out);
 
 /* Receive-only packet engines; command bytes follow Semtech usp headers and
    RadioLib LR2021_commands.h. Side detectors share the main frequency/BW,

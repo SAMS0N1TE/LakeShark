@@ -285,7 +285,7 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     int n = 0;
 #define LINE(attr) do { if (n < rows) ls_safe_line(sf, a, y + n++, line, (attr)); } while (0)
     if (!s_r.calibrated)
-        { snprintf(line, sizeof(line), "NOT CALIBRATED: MORE > CALIBRATE"); LINE(TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
+        { snprintf(line, sizeof(line), "NOT CALIBRATED: OPTIONS > CALIBRATE"); LINE(TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
     else if (s_r.interference)
         { snprintf(line, sizeof(line), "MAG CAUTION  field %+.0f%%  dip %+.0f", s_r.strength_off * 100, s_r.dip_off);
           LINE(TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }

@@ -340,7 +340,7 @@ static const char *disabled_reason(char c)
                      s.exporting?"An export is already running":NULL;
     case 'd': {
         EXT_RAM_BSS_ATTR static char rtl_only[48];
-        snprintf(rtl_only,sizeof(rtl_only),"READ RAW records with the %s",ls_rsel_name(LS_RSEL_SDR_RTL));
+        snprintf(rtl_only,sizeof(rtl_only),"READ RAW records with the %s or %s",ls_rsel_name(LS_RSEL_SDR_RTL),ls_rsel_name(LS_RSEL_SDR_HACKRF));
         return rec_watch_source()!=REC_SOURCE_RTL?rtl_only:
                watching?"Stop WATCH in READ first":NULL;
     }
@@ -1862,7 +1862,7 @@ static void draw_raw(tui_surface *sf,tui_rect a)
     const char *no=disabled_reason('d');
     if(no) {
         char how[48];
-        snprintf(how,sizeof(how),"RADIO in READ picks the %s",ls_rsel_name(LS_RSEL_SDR_RTL));
+        snprintf(how,sizeof(how),"RADIO in READ picks the SDR");
         ls_panel_notice(sf,a,"READ RAW",no,how);
         return;
     }

@@ -230,7 +230,7 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
       /* Frames decoded while the ESS was unknown are the caller's to hold
          until a later ESS decides them; dropping them here was the second
          360 ms. Anything else this LDU2 produced is dropped as before. */
-      if (!state->pcm_out_unproven)
+      if (!state->pcm_out_unproven && !opts->play_unproven)
         state->pcm_out_write = 0;
       return;
     }

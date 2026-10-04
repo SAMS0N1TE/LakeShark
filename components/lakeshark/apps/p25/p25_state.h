@@ -46,6 +46,10 @@ typedef struct {
     int      read_errors;
     uint32_t read_errors_total;
     float    iq_level;
+    /* The LoRa socket's LR2021 is the receiver: Phase 1 only, and no IQ, so
+       no spectrum. Its RSSI is what iq_level shows then. */
+    bool     lora_rx;
+    float    lora_rssi_dbm;
 
     int      dsd_sync_count;
     int      dsd_voice_count;

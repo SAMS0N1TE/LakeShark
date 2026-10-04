@@ -969,12 +969,14 @@ esp_err_t lr20xx_gfsk_set_modulation(uint32_t bitrate_bps, uint8_t pulse_shape,
     return lr20xx_write(LR20XX_OP_SET_GFSK_MOD, a, sizeof(a));
 }
 
-esp_err_t lr20xx_gfsk_set_packet_fixed(uint16_t preamble_bits, uint16_t payload_len)
+esp_err_t lr20xx_gfsk_set_packet_fixed(uint16_t preamble_bits, uint8_t detect_bits,
+                                       uint16_t payload_len)
 {
-    /* Preamble(2), preamble detector length 0 (off), then long preamble,
-       length-in-bits, address filter and packet format all 0 (fixed length),
-       payload length(2), and CRC type 0 with whitening 0. */
-    const uint8_t a[7] = { (uint8_t)(preamble_bits >> 8), (uint8_t)preamble_bits, 0x00, 0x00,
+    if (detect_bits > 32 || detect_bits % 8) return ESP_ERR_INVALID_ARG;
+    /* Preamble(2), preamble detector length in bits (0 is off), then long
+       preamble, length-in-bits, address filter and packet format all 0 (fixed
+       length), payload length(2), and CRC type 0 with whitening 0. */
+    const uint8_t a[7] = { (uint8_t)(preamble_bits >> 8), (uint8_t)preamble_bits, detect_bits, 0x00,
                            (uint8_t)(payload_len >> 8), (uint8_t)payload_len, 0x00 };
     return lr20xx_write(LR20XX_OP_SET_GFSK_PKT, a, sizeof(a));
 }
@@ -1007,6 +1009,23 @@ esp_err_t lr20xx_get_gfsk_packet_status(lr20xx_gfsk_pkt_status_t *out)
         out->pkt_len = (uint16_t)((d[0] << 8) | d[1]);
         out->rssi_avg_dbm  = -(float)(((unsigned)d[2] << 1) | ((d[4] >> 2) & 1u)) / 2.0f;
         out->rssi_sync_dbm = -(float)(((unsigned)d[3] << 1) | (d[4] & 1u)) / 2.0f;
+    }
+    return ESP_OK;
+}
+
+esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out)
+{
+    uint8_t d[14] = { 0 };
+    ls_lora_hw_lock();
+    esp_err_t err = lr20xx_read(LR20XX_OP_GET_GFSK_RX_STATS, NULL, 0, d, sizeof(d));
+    if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+    ls_lora_hw_unlock();
+    if (err != ESP_OK) return err;
+    if (out) {
+        uint16_t *f[7] = { &out->received, &out->crc_errors, &out->length_errors,
+                           &out->preamble_detections, &out->sync_ok, &out->sync_fail,
+                           &out->timeouts };
+        for (int i = 0; i < 7; i++) *f[i] = (uint16_t)((d[2 * i] << 8) | d[2 * i + 1]);
     }
     return ESP_OK;
 }
@@ -1677,7 +1696,8 @@ static uint32_t lr_caps(void)
        receive-only sweep and FSK listener there that LS_LORA_CAP_RX_WIDE
        names. */
     uint32_t c = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST |
-                 LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_RX_WIDE;
+                 LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_RX_WIDE |
+                 LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_FSK_DETECT;
     if (s_info.lr2021) c |= LS_LORA_CAP_BAND_1G5_2G5;
     return c;
 }
@@ -1747,7 +1767,14 @@ static EXT_RAM_BSS_ATTR struct {
     bool     fsk_rssi_at_sync;
     uint16_t fsk_pre_bits;
     uint8_t  fsk_sync_bits;
+    uint8_t  fsk_detect_bits;
     int8_t   fsk_power;
+    /* A stream session: the bytes taken from the packet now arriving, and
+       whether the next ones read do not follow the last (a new packet, or
+       bytes lost to a full buffer). */
+    bool     fsk_stream;
+    bool     fsk_stream_fresh;
+    uint16_t fsk_stream_taken;
 
     bool     scanning;
     uint32_t scan_min_hz, scan_max_hz;
@@ -2194,13 +2221,24 @@ static uint32_t lr_airtime_ms(int len)
 
 /* ---- FSK sessions -------------------------------------------------------- */
 
-/* Fixed length, no preamble detector, no CRC and no whitening, for the reasons
-   ls_lora_sx126x.c gives; transmit and receive both come through here so they
-   agree on every field. */
-static esp_err_t fsk_packet(uint8_t payload_bytes)
+/* Fixed length, no CRC and no whitening, for the reasons ls_lora_sx126x.c
+   gives; transmit and receive both come through here so they agree on every
+   field. The preamble detector is the caller's: receive passes the
+   session's, transmit 0. */
+static esp_err_t fsk_packet(uint16_t payload_bytes, uint8_t detect_bits)
 {
-    return step_lr(lr20xx_gfsk_set_packet_fixed(lr.fsk_pre_bits, payload_bytes),
+    return step_lr(lr20xx_gfsk_set_packet_fixed(lr.fsk_pre_bits, detect_bits, payload_bytes),
                    "SetGfskPacketParams");
+}
+
+/* A stream session asks for the longest packet the field holds; the part
+   ends it at 8191 bytes. */
+#define FSK_STREAM_PACKET 0xFFFFu
+#define FSK_FIFO_BYTES    256u
+
+static uint16_t fsk_rx_bytes(void)
+{
+    return lr.fsk_stream ? FSK_STREAM_PACKET : lr.fsk_bytes;
 }
 
 static esp_err_t fsk_arm_rx(void)
@@ -2210,6 +2248,9 @@ static esp_err_t fsk_arm_rx(void)
     if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
     if (err == ESP_OK) err = expect_mode(LR20XX_MODE_RX);
     lr.rx_mode = err == ESP_OK;
+    /* Whatever a stream had read belongs to the packet just dropped. */
+    lr.fsk_stream_taken = 0;
+    lr.fsk_stream_fresh = true;
     return err;
 }
 
@@ -2238,7 +2279,7 @@ static esp_err_t fsk_program_once(void)
         err = step_lr(lr20xx_gfsk_set_modulation(cfg->bitrate, 0, bw.index, cfg->deviation_hz),
                       "SetGfskModulationParams");
     if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
-    if (err == ESP_OK) err = fsk_packet(cfg->payload_bytes);
+    if (err == ESP_OK) err = fsk_packet(fsk_rx_bytes(), lr.fsk_detect_bits);
     if (err == ESP_OK)
         err = step_lr(lr20xx_gfsk_set_syncword(cfg->sync_word, lr.fsk_sync_bits), "SetGfskSyncword");
     /* Above 960 MHz the session only listens: the PA is not programmed, so
@@ -2262,7 +2303,9 @@ static esp_err_t fsk_program(void)
    difference: the filter is this part's Table 11-4 rung at or above
    bandwidth_hz (what ls_lora_fsk_bw_snap returns with an LR20xx bound), not
    only an exact rung, so a caller that worked from the SX126x ladder still
-   gets a filter no narrower than it asked for. */
+   gets a filter no narrower than it asked for. A stream session is the
+   exception to the payload and filter checks: it has no payload length,
+   and it samples the signal at a bitrate above the signal's own. */
 static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
     /* Receive reaches 1100 MHz on the LF input, where the Mode S session
@@ -2272,12 +2315,14 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     if (!cfg || !ls_lora_rx_range_ok(lr_caps(), cfg->freq_hz, cfg->freq_hz) ||
         cfg->bitrate < LR20XX_FSK_BITRATE_MIN || cfg->bitrate > LR20XX_FSK_BITRATE_MAX ||
         cfg->deviation_hz < 600 || cfg->deviation_hz > LR20XX_FSK_DEVIATION_MAX ||
-        !cfg->payload_bytes || !cfg->bandwidth_hz ||
+        (!cfg->stream && !cfg->payload_bytes) || !cfg->bandwidth_hz ||
         cfg->bandwidth_hz > lr20xx_fsk_rx_bw_table[lr20xx_fsk_rx_bw_table_n - 1].hz ||
-        cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz ||
+        (!cfg->stream && cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) ||
+        (cfg->stream && cfg->rssi_at_sync) ||
         (cfg->preamble_bits && cfg->preamble_bits < 8) ||
         /* 32 at most: sync_word is a uint32_t, as on the SX126x. */
         (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
+        cfg->preamble_detect_bits > 32 || cfg->preamble_detect_bits % 8 ||
         cfg->power_dbm < LR20XX_TX_POWER_MIN_DBM || cfg->power_dbm > LR20XX_TX_POWER_MAX_DBM)
         return ESP_ERR_INVALID_ARG;
     if (lr.fsk_active || lr.scanning || lr.tx_busy || s_exp_active || lr20xx_modes_active())
@@ -2297,22 +2342,24 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     lr.fsk_bytes = cfg->payload_bytes;
     lr.fsk_pre_bits = cfg->preamble_bits ? cfg->preamble_bits : 32;
     lr.fsk_sync_bits = cfg->sync_bits ? cfg->sync_bits : 32;
+    lr.fsk_detect_bits = cfg->preamble_detect_bits;
     lr.fsk_rssi_at_sync = cfg->rssi_at_sync;
+    lr.fsk_stream = cfg->stream;
 
     const esp_err_t err = fsk_program();
     if (err != ESP_OK) {
         const esp_err_t restored = lr_fsk_end();
         return restored == ESP_OK ? err : restored;
     }
-    ESP_LOGI(TAG, "FSK session: %lu Hz, %lu bps, deviation %lu Hz, filter %lu Hz",
-             (unsigned long)cfg->freq_hz, (unsigned long)cfg->bitrate,
-             (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
+    ESP_LOGI(TAG, "FSK %s: %lu Hz, %lu bps, deviation %lu Hz, filter %lu Hz",
+             cfg->stream ? "stream" : "session", (unsigned long)cfg->freq_hz,
+             (unsigned long)cfg->bitrate, (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
     return ESP_OK;
 }
 
 static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 {
-    if (!lr.fsk_active || !buf || size < lr.fsk_bytes) return -1;
+    if (!lr.fsk_active || lr.fsk_stream || !buf || size < lr.fsk_bytes) return -1;
     heal();
     lr20xx_status_t st;
     if (lr20xx_get_status(&st) != ESP_OK || !lr20xx_stat_plausible(st.stat)) return -1;
@@ -2346,9 +2393,60 @@ static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
     return lr.fsk_bytes;
 }
 
+/* A stream session's bytes as they arrive. On RxDone the packet's last
+   bytes are read, as many as its length says are still in the buffer, and
+   the receive is armed again, which empties the buffer: nothing of the next
+   packet is ever read as the end of this one. */
+static int lr_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
+{
+    if (restarted) *restarted = false;
+    if (!lr.fsk_active || !lr.fsk_stream || !buf || size < FSK_FIFO_BYTES) return -1;
+    heal();
+    lr20xx_status_t st;
+    if (lr20xx_get_status(&st) != ESP_OK || !lr20xx_stat_plausible(st.stat)) return -1;
+    if (take_reset(st.stat) || lr.fsk_stale) {
+        ESP_LOGW(TAG, "FSK stream: part restarted (stat 0x%04X), reprogramming", (unsigned)st.stat);
+        lr.fsk_stale = false;
+        if (fsk_program() != ESP_OK) { lr.fsk_stale = true; return -1; }
+        return 0;
+    }
+    const bool done = (st.irq & LR20XX_IRQ_RX_DONE) != 0;
+    uint16_t level = 0;
+    if (lr20xx_get_rx_fifo_level(&level) != ESP_OK || level > FSK_FIFO_BYTES) return -1;
+    size_t want = level;
+    if (done) {
+        uint16_t len = 0;
+        if (lr20xx_get_rx_pkt_length(&len) == ESP_OK)
+            want = len > lr.fsk_stream_taken ? (size_t)(len - lr.fsk_stream_taken) : 0;
+        if (want > level) want = level;
+    }
+    if (want > size) want = size;
+    size_t n = 0;
+    while (n < want) {
+        const size_t part = want - n > 255 ? 255 : want - n;
+        if (lr20xx_read_rx_fifo(buf + n, part) != ESP_OK) {
+            /* What left the buffer is unknown: start clean. */
+            (void)lr20xx_set_standby(false);
+            (void)fsk_arm_rx();
+            return -1;
+        }
+        n += part;
+    }
+    if (n && restarted) *restarted = lr.fsk_stream_fresh;
+    if (n) lr.fsk_stream_fresh = false;
+    lr.fsk_stream_taken = (uint16_t)(lr.fsk_stream_taken + n);
+    /* A full buffer has dropped what arrived after it filled. */
+    if (level >= FSK_FIFO_BYTES) lr.fsk_stream_fresh = true;
+    if (done || LR20XX_STAT_MODE(st.stat) != LR20XX_MODE_RX) {
+        (void)lr20xx_set_standby(false);
+        if (fsk_arm_rx() != ESP_OK) return n ? (int)n : -1;
+    }
+    return (int)n;
+}
+
 static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)
 {
-    if (!lr.fsk_active || !ls_lora_hw_pkt()) return ESP_ERR_INVALID_STATE;
+    if (!lr.fsk_active || !ls_lora_hw_pkt() || lr.fsk_stream) return ESP_ERR_INVALID_STATE;
     if (!data || len == 0)          return ESP_ERR_INVALID_ARG;
     if (len > 255)                  return ESP_ERR_INVALID_SIZE;
     if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
@@ -2362,7 +2460,7 @@ static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)
     if ((err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq")) != ESP_OK) return err;
     /* The length this payload is, not the session's receive length;
        lr_fsk_receive puts that back. */
-    if ((err = fsk_packet((uint8_t)len)) != ESP_OK) return err;
+    if ((err = fsk_packet((uint16_t)len, 0)) != ESP_OK) return err;
     if ((err = load_tx_fifo(data, len)) != ESP_OK) return err;
     err = start_tx(len, lr.fsk_power, "FSK TX");
     if (err == ESP_OK)
@@ -2394,7 +2492,7 @@ static esp_err_t lr_fsk_receive(void)
     /* Standby first: SetRx is refused in Rx, and this may be asked of a
        session that is already listening. */
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
-    if (err == ESP_OK) err = fsk_packet(lr.fsk_bytes);
+    if (err == ESP_OK) err = fsk_packet(fsk_rx_bytes(), lr.fsk_detect_bits);
     if (err == ESP_OK) err = fsk_arm_rx();
     return err;
 }
@@ -2886,8 +2984,16 @@ static void lr_diagnostics(void)
     }
     const int busy = ls_lora_hw_busy_level();
     const ls_lora_cfg_t cfg = lr.cfg;
+    /* Read only, never ResetRxStats, and not asked of a part that has just
+       restarted: it has no packet type to count in. */
+    lr20xx_gfsk_rx_stats_t fstat = { 0 };
+    esp_err_t ferr = ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK && !session && lr.fsk_active && !lr.tx_busy &&
+        LR20XX_STAT_RESET_SRC(st.stat) == 0)
+        ferr = lr20xx_get_gfsk_rx_stats(&fstat);
     const bool cfg_valid = lr.cfg_valid, programmed = lr.programmed, rx = lr.rx_mode;
     const bool fsk = lr.fsk_active, scanning = lr.scanning, tx = lr.tx_busy;
+    const bool stream = lr.fsk_stream;
     ls_lora_hw_unlock();
 
     if (err != ESP_OK) {
@@ -2932,7 +3038,12 @@ static void lr_diagnostics(void)
                programmed ? "" : ", reprogrammed on next use");
     else
         printf("lora: LoRa not configured\n");
-    if (fsk) printf("lora: FSK session active\n");
+    if (fsk) printf("lora: FSK %s active\n", stream ? "stream" : "session");
+    if (fsk && ferr == ESP_OK)
+        printf("lora: FSK rx stats: received=%u crc=%u length=%u preamble=%u sync-ok=%u"
+               " sync-fail=%u timeout=%u\n", (unsigned)fstat.received, (unsigned)fstat.crc_errors,
+               (unsigned)fstat.length_errors, (unsigned)fstat.preamble_detections,
+               (unsigned)fstat.sync_ok, (unsigned)fstat.sync_fail, (unsigned)fstat.timeouts);
     if (scanning) printf("lora: sweep active\n");
     if (session) {
         printf("lora: %s session on: polls=%lu frames=%lu rearms=%lu resets=%lu"
@@ -2989,6 +3100,7 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
     .fsk_end = lr_fsk_end,
     .fsk_active = lr_fsk_active,
     .fsk_retune = lr_fsk_retune,
+    .fsk_stream_read = lr_fsk_stream_read,
     .scan_begin = lr_scan_begin,
     .scan_sweep = lr_scan_sweep,
     .scan_pass = lr_scan_pass,

@@ -184,14 +184,18 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const int step = r.h >= 11 ? 2 : 1;
     char line[80];
-    snprintf(line, sizeof(line), "IQ %lu B/s  AUDIO %lu samples/s",
-             (unsigned long)P25.iq_bytes_sec, (unsigned long)P25.audio_samples_sec);
+    if (P25.lora_rx)
+        snprintf(line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
+                 (unsigned long)P25.iq_bytes_sec, (double)P25.lora_rssi_dbm);
+    else
+        snprintf(line, sizeof(line), "IQ %lu B/s  AUDIO %lu samples/s",
+                 (unsigned long)P25.iq_bytes_sec, (unsigned long)P25.audio_samples_sec);
     tui_put_str(sf, r, r.x + 2, r.y + 1, line, ink);
     snprintf(line, sizeof(line), "SYNC %d   VOICE %d", P25.dsd_sync_count, P25.dsd_voice_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step, line, ink);
     snprintf(line, sizeof(line), "BCH OK %d   FAIL %d", P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 2, line, ink);
-    snprintf(line, sizeof(line), "USB errors %lu  AUDIO drops %lu",
+    snprintf(line, sizeof(line), "%s errors %lu  AUDIO drops %lu", P25.lora_rx ? "Read" : "USB",
              (unsigned long)P25.read_errors_total, (unsigned long)P25.audio_drops);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 3, line, ink);
     if (r.h >= 7) {
@@ -254,6 +258,8 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     }
     if (dial.h >= 10) {
         if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
+        else if (P25.lora_rx && st.receiver_streaming)
+            snprintf(buf, sizeof(buf), "MANUAL / %s ONLINE", ls_rsel_name(LS_RSEL_LORA));
         else snprintf(buf, sizeof(buf), "%s", st.receiver_streaming
                       ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER");
         tui_put_str(sf, dial, dial.x + 2, dial.y + 8, buf,
@@ -326,12 +332,14 @@ static void draw_decode(tui_surface *sf, tui_rect area)
             const uint32_t comps = acq.iq.sampled_pairs * 2u;
             const int clip_pct = comps
                 ? (int)((acq.iq.clipped_components * 100u) / comps) : 0;
-            if (clip_pct >= P25_CLIP_SHOW_PCT)
+            if (P25.lora_rx)
+                snprintf(buf, sizeof(buf), "%.0f dBm", (double)P25.lora_rssi_dbm);
+            else if (clip_pct >= P25_CLIP_SHOW_PCT)
                 snprintf(buf, sizeof(buf), "%.3f  CLIP %d%%",
                          (double)level, clip_pct);
             else
                 snprintf(buf, sizeof(buf), "%.3f", (double)level);
-            field(sf, signal, 4, "IQ", buf, label,
+            field(sf, signal, 4, P25.lora_rx ? "RSSI" : "IQ", buf, label,
                   clip_pct >= P25_CLIP_SHOW_PCT
                       ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : value);
             field(sf, signal, 6, "RX", st.receiver_streaming ? "STREAMING" : "stopped",
@@ -406,6 +414,12 @@ static void draw_signal(tui_surface *sf, tui_rect area)
         area.h--;
     }
 
+    if (P25.lora_rx) {
+        char text[48];
+        snprintf(text, sizeof(text), "The %s hands over symbols, not a spectrum", ls_rsel_name(LS_RSEL_LORA));
+        ls_panel_notice(sf, area, "SPECTRUM", text, "plug in an SDR to see the band");
+        return;
+    }
     const char *why = ls_wf_idle_reason();
     /* Keep HOLD reachable while the shared display is paused. */
     if (why && !ls_wf_cfg()->paused) {
@@ -641,14 +655,20 @@ static void register_p25_actions(void)
                               "choose a P25 profile from the card");
 }
 
-/* The dongle the receiver really has; before it has one, the choice. */
-static ls_rsel_radio_t p25_in_use(void) { return ls_rsel_sdr_held_by("p25"); }
+/* The radio the receiver really has; before it has one, the choice. */
+static ls_rsel_radio_t p25_in_use(void)
+{
+    if (P25.lora_rx) return LS_RSEL_LORA;
+    return ls_rsel_sdr_held_by("p25");
+}
 
-/* A different dongle than the one held: the receiver starts again on it. */
+/* A different dongle than the one held: the receiver starts again on it. A
+   move to or from the LoRa chip the receiver makes by itself. */
 static void radio_chosen(ls_rsel_radio_t radio)
 {
-    const ls_rsel_radio_t held = p25_in_use();
-    if (held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
+    const ls_rsel_radio_t held = ls_rsel_sdr_held_by("p25");
+    if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
+        held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
 
 static void open_radio(void) { ls_rsel_open(LS_RSEL_P25, radio_chosen); }

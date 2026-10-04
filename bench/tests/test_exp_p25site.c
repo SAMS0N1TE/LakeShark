@@ -1,5 +1,7 @@
 /* LS_TEST_SOURCES: experiments/p25_sitefind.c, and P25 SITE FINDER itself
-   (exp_p25site.c under ls_experiments.c) against a faked LoRa chip.
+   (exp_p25site.c under ls_experiments.c) against a faked LoRa chip: its
+   console setup (frequency, pinned polarity, filter, deviation, preamble
+   detector), what lasts one run, and what a short read does.
 
    The NIDs are built with the BCH(63,16) generator and were checked against
    OP25's own decoder (gr-op25_repeater/lib/bch.cc bchDec, unpacked as
@@ -232,23 +234,36 @@ static const char PROFILE[] =
     "control=\n"
     "control=860000000";
 
+/* The experiment's own range: 150 to 1100 MHz, so the VHF channel is in. */
 LS_CASE(a_profile_gives_its_control_channels_with_the_nac_each_section_names)
 {
     p25sf_chan_t ch[16];
-    const int n = p25sf_profile_parse(PROFILE, strlen(PROFILE), 200000000u, 1100000000u, ch, 16);
-    LS_EQ_INT(n, 7);
+    const int n = p25sf_profile_parse(PROFILE, strlen(PROFILE), 150000000u, 1100000000u, ch, 16);
+    LS_EQ_INT(n, 8);
     LS_EQ_UINT(ch[0].hz, 859487500u); LS_EQ_INT(ch[0].nac, 0x8A1); LS_EQ_STR(ch[0].label, "Manchester NH");
     LS_EQ_UINT(ch[1].hz, 858487500u); LS_EQ_INT(ch[1].nac, 0x8A1);
     LS_EQ_UINT(ch[2].hz, 853450000u); LS_EQ_INT(ch[2].nac, 0x5C2); LS_EQ_STR(ch[2].label, "Nashua NH");
     /* "852.750" in a comment is not a NAC. */
     LS_EQ_UINT(ch[3].hz, 852750000u); LS_EQ_INT(ch[3].nac, 0x5C2);
-    /* The duplicate 859.4875 and the VHF one are skipped; a section without a
-       NAC clears it. */
-    LS_EQ_UINT(ch[4].hz, 460125000u); LS_EQ_INT(ch[4].nac, -1); LS_EQ_STR(ch[4].label, "NH State Police");
-    LS_EQ_UINT(ch[5].hz, 771106250u); LS_EQ_INT(ch[5].nac, 0x3A2); LS_EQ_STR(ch[5].label, "Somewhere Else");
-    LS_EQ_UINT(ch[6].hz, 860000000u);
-    LS_EQ_INT(p25sf_profile_parse(PROFILE, strlen(PROFILE), 200000000u, 1100000000u, ch, 2), 2);
+    /* The duplicate 859.4875 is skipped; a section without a NAC clears it,
+       and its VHF 154.650 is taken in file order. */
+    LS_EQ_UINT(ch[4].hz, 154650000u); LS_EQ_INT(ch[4].nac, -1); LS_EQ_STR(ch[4].label, "NH State Police");
+    LS_EQ_UINT(ch[5].hz, 460125000u); LS_EQ_INT(ch[5].nac, -1); LS_EQ_STR(ch[5].label, "NH State Police");
+    LS_EQ_UINT(ch[6].hz, 771106250u); LS_EQ_INT(ch[6].nac, 0x3A2); LS_EQ_STR(ch[6].label, "Somewhere Else");
+    LS_EQ_UINT(ch[7].hz, 860000000u);
+    LS_EQ_INT(p25sf_profile_parse(PROFILE, strlen(PROFILE), 150000000u, 1100000000u, ch, 2), 2);
     LS_EQ_INT(p25sf_profile_parse("", 0, 0, 1, ch, 16), 0);
+}
+
+/* The parser's limits are the caller's: a 200 MHz floor leaves the VHF one out. */
+LS_CASE(a_profile_parser_keeps_to_the_range_it_is_given)
+{
+    p25sf_chan_t ch[16];
+    LS_EQ_INT(p25sf_profile_parse(PROFILE, strlen(PROFILE), 200000000u, 1100000000u, ch, 16), 7);
+    LS_EQ_UINT(ch[4].hz, 460125000u);
+    LS_EQ_INT(p25sf_profile_parse(PROFILE, strlen(PROFILE), 154650000u, 154650000u, ch, 16), 1);
+    LS_EQ_UINT(ch[0].hz, 154650000u);
+    LS_EQ_INT(p25sf_profile_parse(PROFILE, strlen(PROFILE), 154650001u, 460124999u, ch, 16), 0);
 }
 
 /* ===================================================== the experiment == */
@@ -260,22 +275,28 @@ bool ls_exp_hw_wake(void) { return false; }
 
 /* A control channel on one frequency sending a TSBK every 75 ms, heard by a
    receiver that slices the other way round. */
-static struct { uint32_t hz; uint16_t nac; bool inverted; int noisy; } SITE;
+static struct { uint32_t hz; uint16_t nac; bool inverted; int noisy; int short_len; } SITE;
 static bool s_open;
 static ls_fsk_cfg_t s_cfg;
 static int64_t s_sent;
+static int s_begins;
 
 int64_t esp_timer_get_time(void);
 
 uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST; }
-uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
+static uint32_t s_bw_cap;           /* the widest rung, when a test wants one */
+uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return s_bw_cap && hz > s_bw_cap ? s_bw_cap : hz; }
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
     if (s_open) return ESP_ERR_INVALID_STATE;
     if (cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) return ESP_ERR_INVALID_ARG;
     if (cfg->sync_bits != 24 || (cfg->sync_word & 0xFFu)) return ESP_ERR_INVALID_ARG;
+    if (cfg->freq_hz < 150000000u || cfg->freq_hz > 1100000000u) return ESP_ERR_INVALID_ARG;
+    if (cfg->deviation_hz < 600 || cfg->deviation_hz > 200000) return ESP_ERR_INVALID_ARG;
+    if (cfg->preamble_detect_bits > 32 || cfg->preamble_detect_bits % 8) return ESP_ERR_INVALID_ARG;
     s_cfg = *cfg;
     s_open = true;
+    s_begins++;
     s_sent = esp_timer_get_time();
     return ESP_OK;
 }
@@ -295,8 +316,17 @@ int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi)
     for (int i = 0; i < n; i++) bits[i] = slice(dibits[i], SITE.inverted);
     /* One frame in `noisy` has three sign bits wrong. */
     if (SITE.noisy && rnd() % SITE.noisy == 0) { bits[30] ^= 1; bits[40] ^= 1; bits[50] ^= 1; }
-    LS_CHECK(radio_receive(bits, n, s_cfg.sync_word >> 8, buf));
+    uint8_t full[P25SF_PAYLOAD_BYTES];
+    LS_CHECK(radio_receive(bits, n, s_cfg.sync_word >> 8, full));
     if (rssi) *rssi = -81.0f;
+    if (SITE.short_len) {
+        /* A read that is not the configured length: the bytes it has are the
+           start of a real payload, and what is past them is not touched. */
+        const int len = SITE.short_len < (int)size ? SITE.short_len : (int)size;
+        for (int i = 0; i < len && i < P25SF_PAYLOAD_BYTES; i++) buf[i] = full[i];
+        return len;
+    }
+    memcpy(buf, full, sizeof(full));
     return P25SF_PAYLOAD_BYTES;
 }
 
@@ -332,7 +362,7 @@ static void dump(void)
 
 static int console(const char *line)
 {
-    static char buf[96];
+    static char buf[160];
     snprintf(buf, sizeof(buf), "%s", line);
     char *argv[8];
     int argc = 0;
@@ -378,4 +408,386 @@ LS_CASE(the_profile_is_needed_for_a_scan_and_its_absence_is_said)
     char st[96];
     ls_exp_state_line(&exp_p25site, st, sizeof(st));
     LS_CHECK_MSG(strstr(st, "No profile at /sdcard/p25_profile.txt") != NULL, "%s", st);
+}
+
+/* ------------------------------------------------ console setup, one run -- */
+
+static void site(uint32_t hz, uint16_t nac, bool inverted)
+{
+    SITE.hz = hz; SITE.nac = nac; SITE.inverted = inverted; SITE.noisy = 0; SITE.short_len = 0;
+}
+
+/* OPTIONS' one frequency, so a bare `start` has something to listen to. */
+static void options_one_freq(double mhz)
+{
+    exp_p25site.opts[1].set_num(&exp_p25site.opts[1], mhz);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+static int console_args(const char *const *args, int n)
+{
+    char *argv[12] = { (char *)"exp", (char *)"p25site", (char *)"start" };
+    int argc = 3;
+    for (int i = 0; i < n && argc < 12; i++) argv[argc++] = (char *)args[i];
+    return ls_exp_console(argc, argv);
+}
+
+static unsigned long syncs_seen(void)
+{
+    static char out[24][LS_EXP_LINE];
+    const int n = ls_exp_read_lines(&exp_p25site, out, 24);
+    for (int i = 0; i < n; i++) {
+        unsigned long v;
+        double f;
+        if (sscanf(out[i], "%lf syncs %lu", &f, &v) == 2) return v;
+    }
+    return 0;
+}
+
+static void check_defaults(uint32_t hz)
+{
+    LS_EQ_UINT(s_cfg.freq_hz, hz);
+    LS_EQ_UINT(s_cfg.bitrate, 4800u);
+    LS_EQ_UINT(s_cfg.deviation_hz, 1800u);
+    LS_EQ_UINT(s_cfg.bandwidth_hz, 12500u);
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    LS_EQ_UINT(s_cfg.sync_bits, 24u);
+    LS_EQ_UINT(s_cfg.payload_bytes, (unsigned)P25SF_PAYLOAD_BYTES);
+}
+
+LS_CASE(the_default_run_is_4800_1800_12500_with_the_detector_off_and_both_polarities)
+{
+    fresh();
+    options_one_freq(154.785);
+    site(154785000u, 0x293, false);
+    LS_EQ_INT(console("exp p25site start"), 0);
+    check_defaults(154785000u);
+    /* Normal first, and the opposite way once a slice passes without a NID. */
+    LS_EQ_UINT(s_cfg.sync_word, P25SF_SYNC_NORMAL << 8);
+    site(0, 0, false);
+    bool saw_inverted = false;
+    for (int t = 0; t < 12; t++) { run_for(500000); saw_inverted |= s_cfg.sync_word == (P25SF_SYNC_INVERTED << 8); }
+    LS_CHECK(saw_inverted);
+    LS_CHECK(exp_p25site.opts[1].lo == 150.0);
+    LS_CHECK(exp_p25site.opts[1].hi == 1100.0);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(the_frequency_floor_is_150_mhz_and_154_785_is_listened_to)
+{
+    static const struct { const char *arg; bool ok; uint32_t hz; } T[] = {
+        { "150", true, 150000000u }, { "150.0", true, 150000000u }, { "150.0000004", true, 150000000u },
+        { "154.785", true, 154785000u },
+        { "460.125", true, 460125000u }, { "1100", true, 1100000000u }, { "1100.", true, 1100000000u },
+        { "149.999999", false, 0 }, { "149.9999", false, 0 }, { "149", false, 0 }, { "0", false, 0 },
+        { "1100.000001", false, 0 }, { "1100.1", false, 0 }, { "1101", false, 0 }, { "99999999999", false, 0 },
+        { "abc", false, 0 }, { "154.785x", false, 0 }, { "1.54785e2", false, 0 }, { "0x9A", false, 0 },
+        { "-154.785", false, 0 }, { "+154.785", false, 0 }, { "154.785.1", false, 0 }, { ".", false, 0 },
+        { "", false, 0 }, { "nan", false, 0 }, { "inf", false, 0 }, { " 154.785", false, 0 },
+        { "154,785", false, 0 }, { "1000000000000000000000000000", false, 0 },
+    };
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        fresh();
+        site(T[i].hz ? T[i].hz : 154785000u, 0x293, false);
+        const char *args[] = { T[i].arg };
+        const int rc = console_args(args, 1);
+        LS_CHECK_MSG((rc == 0) == T[i].ok, "'%s' -> %d", T[i].arg, rc);
+        if (T[i].ok) {
+            LS_CHECK_MSG(ls_exp_running() == &exp_p25site && s_open && s_cfg.freq_hz == T[i].hz,
+                         "'%s' -> %u Hz", T[i].arg, (unsigned)s_cfg.freq_hz);
+        } else {
+            LS_CHECK_MSG(!s_open && ls_exp_running() != &exp_p25site, "'%s' started something", T[i].arg);
+        }
+        ls_exp_stop();
+        ls_exp_settle(100);
+    }
+}
+
+LS_CASE(a_vhf_site_at_154_785_is_read_through_the_console_run)
+{
+    fresh();
+    site(154785000u, 0x293, false);
+    LS_EQ_INT(console("exp p25site start 154.785"), 0);
+    run_for(5LL * 1000000);
+    dump();
+    LS_CHECK(lines_have("ONE FREQ  154.7850 MHz"));
+    LS_CHECK(lines_have("154.7850 293"));
+    LS_CHECK(lines_have("TSBK"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(the_overrides_reach_the_radio_and_last_one_run)
+{
+    fresh();
+    options_one_freq(154.785);
+    site(154785000u, 0x293, true);
+    LS_EQ_INT(console("exp p25site start 154.785 I 15000 2400 16"), 0);
+    LS_EQ_UINT(s_cfg.freq_hz, 154785000u);
+    LS_EQ_UINT(s_cfg.bitrate, 4800u);
+    LS_EQ_UINT(s_cfg.bandwidth_hz, 15000u);
+    LS_EQ_UINT(s_cfg.deviation_hz, 2400u);
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 16u);
+    LS_EQ_UINT(s_cfg.sync_word, P25SF_SYNC_INVERTED << 8);
+    run_for(2LL * 1000000);
+    LS_CHECK(lines_have("TSBK"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* The next start without any: the defaults, and both polarities. */
+    LS_EQ_INT(console("exp p25site start"), 0);
+    check_defaults(154785000u);
+    LS_EQ_UINT(s_cfg.sync_word, P25SF_SYNC_NORMAL << 8);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* And one with a frequency only. */
+    LS_EQ_INT(console("exp p25site start 154.785 N 9000 1200 8"), 0);
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 8u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    LS_EQ_INT(console("exp p25site start 154.785"), 0);
+    check_defaults(154785000u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(an_override_never_started_is_dropped_by_the_next_start_and_by_profile)
+{
+    fresh();
+    options_one_freq(154.785);
+    char why[96];
+    char a0[] = "154.785", a1[] = "I", a2[] = "20000", a3[] = "3000", a4[] = "24";
+    char *good[] = { a0, a1, a2, a3, a4 };
+    LS_CHECK(exp_p25site.configure(5, good, why, sizeof(why)));
+    /* Asked for again with a bad detector: nothing of the first is left. */
+    char b4[] = "7";
+    char *bad[] = { a0, a1, a2, a3, b4 };
+    LS_CHECK(!exp_p25site.configure(5, bad, why, sizeof(why)));
+    LS_EQ_INT(console("exp p25site start"), 0);
+    check_defaults(154785000u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* `profile` is as it was: it names the profile, and takes nothing else. */
+    LS_CHECK(exp_p25site.configure(5, good, why, sizeof(why)));
+    char p[] = "profile";
+    char *prof[] = { p };
+    LS_CHECK(exp_p25site.configure(1, prof, why, sizeof(why)));
+    LS_CHECK(console("exp p25site start") != 0);
+    char st[96];
+    ls_exp_state_line(&exp_p25site, st, sizeof(st));
+    LS_CHECK_MSG(strstr(st, "No profile at /sdcard/p25_profile.txt") != NULL, "%s", st);
+    LS_CHECK(!s_open);
+    LS_CHECK(console("exp p25site start profile") != 0);
+    LS_CHECK(console("exp p25site start profile N") != 0);
+    LS_CHECK(!s_open);
+    options_one_freq(154.785);
+    LS_EQ_INT(console("exp p25site start"), 0);
+    check_defaults(154785000u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(polarity_and_detector_arguments_are_strict)
+{
+    static const struct { const char *a[5]; int n; bool ok; } T[] = {
+        { { "154.785", "auto" }, 2, true }, { { "154.785", "AUTO" }, 2, true },
+        { { "154.785", "n" }, 2, true }, { { "154.785", "i" }, 2, true },
+        { { "154.785", "I", "12500", "1800", "0" }, 5, true },
+        { { "154.785", "I", "8400" }, 3, true },                 /* 4800 + 2*1800 is the least */
+        { { "154.785", "I", "12500", "600" }, 4, true },
+        { { "154.785", "I", "12500", "200000" }, 4, false },     /* the filter cannot hold it */
+        { { "154.785", "I", "404800", "200000" }, 4, true },
+        { { "154.785", "I", "1000000", "200000", "32" }, 5, true },
+        { { "154.785", "X" }, 2, false }, { { "154.785", "NI" }, 2, false }, { { "154.785", "" }, 2, false },
+        { { "154.785", "0" }, 2, false }, { { "154.785", "1" }, 2, false }, { { "154.785", "autox" }, 2, false },
+        { { "154.785", "I", "8399" }, 3, false }, { { "154.785", "I", "0" }, 3, false },
+        { { "154.785", "I", "" }, 3, false }, { { "154.785", "I", "-12500" }, 3, false },
+        { { "154.785", "I", "+12500" }, 3, false }, { { "154.785", "I", "12500.5" }, 3, false },
+        { { "154.785", "I", "0x30D4" }, 3, false }, { { "154.785", "I", "1e4" }, 3, false },
+        { { "154.785", "I", "1000001" }, 3, false },
+        { { "154.785", "I", "4294967296" }, 3, false }, { { "154.785", "I", "4294967297" }, 3, false },
+        { { "154.785", "I", "18446744073709551617" }, 3, false },
+        { { "154.785", "I", "99999999999999999999999" }, 3, false },
+        { { "154.785", "I", "12500", "599" }, 4, false }, { { "154.785", "I", "12500", "0" }, 4, false },
+        { { "154.785", "I", "12500", "200001" }, 4, false }, { { "154.785", "I", "12500", "-1800" }, 4, false },
+        { { "154.785", "I", "12500", "4294967296" }, 4, false },
+        { { "154.785", "I", "12500", "1800", "7" }, 5, false }, { { "154.785", "I", "12500", "1800", "4" }, 5, false },
+        { { "154.785", "I", "12500", "1800", "40" }, 5, false }, { { "154.785", "I", "12500", "1800", "33" }, 5, false },
+        { { "154.785", "I", "12500", "1800", "-8" }, 5, false }, { { "154.785", "I", "12500", "1800", "8x" }, 5, false },
+        { { "154.785", "I", "12500", "1800", "" }, 5, false },
+        { { "154.785", "I", "12500", "1800", "4294967304" }, 5, false },   /* 2^32 + 8 */
+        { { "154.785", "I", "12500", "1800", "18446744073709551624" }, 5, false },
+    };
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        fresh();
+        options_one_freq(154.785);
+        site(154785000u, 0x293, false);
+        const int rc = console_args(T[i].a, T[i].n);
+        LS_CHECK_MSG((rc == 0) == T[i].ok, "case %d (%s ...) -> %d", (int)i, T[i].a[1], rc);
+        if (!T[i].ok) {
+            LS_CHECK_MSG(!s_open, "case %d started a session", (int)i);
+            /* A good frequency in front of a bad argument leaves nothing for the next bare start. */
+            LS_EQ_INT(console("exp p25site start"), 0);
+            check_defaults(154785000u);
+        }
+        ls_exp_stop();
+        ls_exp_settle(100);
+    }
+
+    /* Six arguments is one too many, and a frequency alone is still fine. */
+    fresh();
+    options_one_freq(154.785);
+    const char *six[] = { "154.785", "I", "12500", "1800", "0", "1" };
+    LS_CHECK(console_args(six, 6) != 0);
+    LS_CHECK(!s_open);
+}
+
+LS_CASE(the_filter_rung_the_part_would_use_must_hold_the_signal)
+{
+    fresh();
+    options_one_freq(154.785);
+    site(154785000u, 0x293, false);
+    s_bw_cap = 20000;
+    /* 100 kHz asked for, 20 kHz is the widest the part has: 4800 + 2*8000 does not fit. */
+    const char *wide[] = { "154.785", "N", "100000", "8000" };
+    LS_CHECK(console_args(wide, 4) != 0);
+    char why[96], a0[] = "154.785", a1[] = "N", a2[] = "100000", a3[] = "8000", a3b[] = "6000";
+    char *wide_v[] = { a0, a1, a2, a3 }, *fits_v[] = { a0, a1, a2, a3b };
+    LS_CHECK(!exp_p25site.configure(4, wide_v, why, sizeof(why)));    /* refused at the console, not at begin */
+    LS_CHECK_MSG(strstr(why, "rung 20000") != NULL, "%s", why);
+    LS_CHECK(exp_p25site.configure(4, fits_v, why, sizeof(why)));
+    LS_CHECK(!s_open);
+    const char *fits[] = { "154.785", "N", "100000", "6000" };       /* 16800 <= 20000 */
+    LS_EQ_INT(console_args(fits, 4), 0);
+    LS_EQ_UINT(s_cfg.bandwidth_hz, 20000u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    s_bw_cap = 0;
+    LS_EQ_INT(console_args(wide, 4), 0);
+    LS_EQ_UINT(s_cfg.bandwidth_hz, 100000u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(every_detector_length_the_generic_api_takes_reaches_the_radio)
+{
+    static const char *const D[] = { "0", "8", "16", "24", "32" };
+    for (int i = 0; i < 5; i++) {
+        fresh();
+        site(154785000u, 0x293, false);
+        const char *args[] = { "154.785", "auto", "12500", "1800", D[i] };
+        LS_EQ_INT(console_args(args, 5), 0);
+        LS_EQ_UINT(s_cfg.preamble_detect_bits, (unsigned)atoi(D[i]));
+        LS_EQ_UINT(s_cfg.bandwidth_hz, 12500u);
+        LS_EQ_UINT(s_cfg.deviation_hz, 1800u);
+        ls_exp_stop();
+        ls_exp_settle(100);
+    }
+}
+
+LS_CASE(a_pinned_polarity_is_never_switched_not_even_on_a_channel_gone_quiet)
+{
+    /* Pinned the wrong way for the site: silence for a minute and more, and
+       the other sync word is never tried. */
+    fresh();
+    site(154785000u, 0x293, true);
+    LS_EQ_INT(console("exp p25site start 154.785 N"), 0);
+    LS_EQ_UINT(s_cfg.sync_word, P25SF_SYNC_NORMAL << 8);
+    const int begins = s_begins;
+    for (int t = 0; t < 80; t++) {
+        run_for(500000);
+        LS_CHECK_MSG(s_cfg.sync_word == (P25SF_SYNC_NORMAL << 8), "switched at %d", t);
+    }
+    LS_EQ_INT(s_begins, begins);
+    LS_CHECK(!lines_have("TSBK"));
+    LS_EQ_UINT(syncs_seen(), 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* Pinned the right way: heard, then a long silence, then heard again on
+       the same session. */
+    fresh();
+    site(154785000u, 0x8A1, true);
+    LS_EQ_INT(console("exp p25site start 154.785 I"), 0);
+    run_for(4LL * 1000000);
+    LS_CHECK(lines_have("154.7850 8A1"));
+    LS_CHECK(lines_have("  I "));
+    const unsigned long before = syncs_seen();
+    LS_CHECK(before > 0);
+    const int begins_i = s_begins;
+    site(0, 0, true);
+    for (int t = 0; t < 240; t++) {          /* two minutes: past the 30 s the auto mode gives up on */
+        run_for(500000);
+        LS_CHECK_MSG(s_cfg.sync_word == (P25SF_SYNC_INVERTED << 8), "switched at %d", t);
+    }
+    LS_EQ_INT(s_begins, begins_i);
+    LS_CHECK(lines_have("  I "));          /* still locked to the pin, not "-" */
+    site(154785000u, 0x8A1, true);
+    run_for(4LL * 1000000);
+    LS_CHECK(syncs_seen() > before);
+    LS_EQ_INT(s_begins, begins_i);
+    LS_CHECK(s_cfg.sync_word == (P25SF_SYNC_INVERTED << 8));
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* The same silence in auto does give the lock up and try the other way. */
+    fresh();
+    site(154785000u, 0x8A1, false);
+    LS_EQ_INT(console("exp p25site start 154.785 auto"), 0);
+    run_for(4LL * 1000000);
+    LS_CHECK(lines_have("  N "));
+    site(0, 0, false);
+    bool inverted_tried = false;
+    for (int t = 0; t < 240; t++) { run_for(500000); inverted_tried |= s_cfg.sync_word == (P25SF_SYNC_INVERTED << 8); }
+    LS_CHECK(inverted_tried);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* A pin does not outlive its run. */
+    fresh();
+    options_one_freq(154.785);
+    site(154785000u, 0x8A1, true);
+    LS_EQ_INT(console("exp p25site start"), 0);
+    run_for(8LL * 1000000);
+    LS_CHECK(lines_have("  I "));
+    LS_CHECK(lines_have("154.7850 8A1"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(a_read_of_the_wrong_length_is_never_a_sync)
+{
+    fresh();
+    site(154785000u, 0x293, false);
+    LS_EQ_INT(console("exp p25site start 154.785 N"), 0);
+    run_for(3LL * 1000000);
+    LS_CHECK(lines_have("TSBK"));
+    /* Quiet for a second so the readout has caught up, then the baseline. */
+    site(0, 0, false);
+    run_for(1LL * 1000000);
+    const unsigned long base = syncs_seen();
+    LS_CHECK(base > 0);
+    /* Short ones carry the start of a real payload with the last packet's
+       bytes after it; longer ones are not what was asked for either. */
+    static const int LENS[] = { 1, 2, 3, 4, 6, 7, 8 };
+    for (size_t i = 0; i < sizeof(LENS) / sizeof(LENS[0]); i++) {
+        site(154785000u, 0x293, false);
+        SITE.short_len = LENS[i];
+        run_for(2LL * 1000000);
+        site(0, 0, false);
+        run_for(500000);
+        LS_CHECK_MSG(syncs_seen() == base, "length %d counted: %lu vs %lu", LENS[i], syncs_seen(), base);
+    }
+    LS_CHECK(ls_exp_running() == &exp_p25site);
+    site(154785000u, 0x293, false);
+    run_for(3LL * 1000000);
+    site(0, 0, false);
+    run_for(500000);
+    LS_CHECK(syncs_seen() > base);
+    ls_exp_stop();
+    ls_exp_settle(100);
 }

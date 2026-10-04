@@ -85,7 +85,7 @@ I (....) headless: ESP-Hosted co-processor link: up (0)
 
 ## Controls
 
-HOME opens the app list. Touch controls and the detachable keyboard provide navigation. The display rotates automatically; F11 rotates it from the keyboard. SET contains brightness, themes, sounds and Daylight mode.
+HOME opens the app list. Touch controls and the detachable keyboard provide navigation. The display rotates automatically; F11 rotates it from the keyboard. SET opens on Volume, Brightness, Mute and Screen lock; its DISPLAY, SOUND and DEVICE menus hold the theme, Daylight mode, font, sounds, voice and keyboard settings.
 
 Open LINK to manage Wi-Fi and the Flipper Bluetooth connection. SCAN lists nearby networks, MANUAL accepts a network name, and SAVED reconnects to the saved network. Password entry starts hidden; SHOW PASSWORD and HIDE PASSWORD switch visibility.
 

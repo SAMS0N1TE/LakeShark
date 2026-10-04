@@ -34,6 +34,8 @@ typedef enum {
 #define LS_LORA_CAP_RSSI_INST   (1u << 5)  /* ls_lora_rssi_inst while receiving         */
 #define LS_LORA_CAP_BAND_1G5_2G5 (1u << 6) /* silicon: 1.5-2.5 GHz receive input        */
 #define LS_LORA_CAP_RX_WIDE     (1u << 7)  /* sweeps and FSK listening past 960 MHz    */
+#define LS_LORA_CAP_FSK_STREAM  (1u << 8)  /* ls_fsk_cfg_t.stream and its reads        */
+#define LS_LORA_CAP_FSK_DETECT  (1u << 9)  /* ls_fsk_cfg_t.preamble_detect_bits        */
 
 /* Where a receive-only sweep or an FSK listener may sit. Without
    LS_LORA_CAP_RX_WIDE that is 150-960 MHz, the range every sweep has always
@@ -127,6 +129,24 @@ typedef struct {
        than its average packet RSSI. Other backends return NOT_SUPPORTED
        when this receive diagnostic is requested. */
     bool rssi_at_sync;
+    /* The receiver's preamble detector, in BITS: 0 (off, and what a zeroed
+       struct means), 8, 16, 24 or 32. Receive only: a transmit inside the
+       session always goes out with it off. With it on, the part only
+       starts a packet on a sync word that follows a preamble, so a burst of
+       frames behind one preamble yields its first. Parts without
+       LS_LORA_CAP_FSK_DETECT return NOT_SUPPORTED for a nonzero value, and
+       any other value is ESP_ERR_INVALID_ARG. */
+    uint8_t preamble_detect_bits;
+    /* Listen without packets: every bit after the sync word is handed over
+       as it arrives, through ls_lora_fsk_stream_read, and payload_bytes is
+       not used. The part ends a packet after 8191 bytes and the session
+       starts the next at the following sync word, so a short sync word
+       that matches often (8 bits) keeps the stream close to continuous.
+       The bitrate may be a multiple of the signal's own, to sample it, so
+       the filter is not checked against it. A stream session only listens:
+       a send is ESP_ERR_INVALID_STATE. Needs LS_LORA_CAP_FSK_STREAM;
+       without it the begin is ESP_ERR_NOT_SUPPORTED. */
+    bool stream;
 } ls_fsk_cfg_t;
 
 /* The nearest receive bandwidth the part actually has, at or above `hz`.
@@ -141,6 +161,16 @@ uint32_t ls_lora_fsk_bw_snap(uint32_t hz);
 
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg);
 int       ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm);
+
+/* A stream session's bytes since the last read, first bit in the top of
+   the first byte: at most `size` (256 or more), and never from two packets
+   at once. *restarted is set when the bytes do not continue the ones read
+   before: the first of a packet after a new sync word, or the first after
+   bytes were lost because the part's 256-byte buffer filled. Returns the
+   count, 0 when nothing has arrived, and -1 with no stream session or on a
+   fault. At 19200 bps the buffer fills in about 100 ms, so read more often
+   than that. */
+int       ls_lora_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted);
 
 /* Transmit one frame inside the running session and return immediately; poll
    ls_lora_send_done() for the end of it.

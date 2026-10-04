@@ -575,7 +575,7 @@ static esp_err_t sx_fsk_end(void)
 
 static esp_err_t sx_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
-    if (cfg && cfg->rssi_at_sync) return ESP_ERR_NOT_SUPPORTED;
+    if (cfg && (cfg->rssi_at_sync || cfg->preamble_detect_bits || cfg->stream)) return ESP_ERR_NOT_SUPPORTED;
     if (!cfg || cfg->freq_hz < 150000000u || cfg->freq_hz > 960000000u ||
         cfg->bitrate < 600 || cfg->bitrate > 300000 ||
         cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||

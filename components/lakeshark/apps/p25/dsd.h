@@ -131,6 +131,10 @@ typedef struct dsd_opts {
     int msize;
     int use_cosine_filter;
     int unmute_encrypted_p25;
+    /* Voice whose ESS has not shown the call clear yet plays at once instead of
+     * being held; a valid ESS naming encryption still mutes it. For a receiver
+     * whose ESS often fails to decode though the call is clear. */
+    int play_unproven;
     float audio_gain;
     int audio_out;
     int symboltiming;

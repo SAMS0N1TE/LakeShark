@@ -1,19 +1,25 @@
 /* P25 SITE FINDER: whether a P25 Phase 1 site is on the air here, and which
-   one, from the NAC and DUID in its frames - on the LoRa chip, which has no
-   four-level demodulator.
+   one, from the NAC and DUID in its frames, on the LoRa chip's FSK engine.
 
-   The FSK engine runs at the symbol rate, 4800 bps, and slices each C4FM
-   symbol by its sign. The frame sync is all outer symbols, so its 24 sign
-   bits are the session's sync word; the 33 bits after it are the NID's
-   first bits and one status symbol, and the nearest NID to them is the
-   answer (p25_sitefind.h has the code and why it is enough). Which way the
-   chip counts a positive deviation is not known, so both sync words are
-   tried until one decodes, and the channel keeps that one.
+   The engine runs at the symbol rate, 4800 bps, and slices each C4FM symbol
+   by its sign. The frame sync is all outer symbols, so its 24 sign bits are
+   the session's sync word; the 33 bits after it are the NID's first bits and
+   one status symbol, and the nearest NID to them is the answer
+   (p25_sitefind.h has the code and why it is enough). Which way the chip
+   counts a positive deviation is not known, so both sync words are tried
+   until one decodes, and the channel keeps that one. Voice is the P25 app's,
+   which samples four bits a symbol on the LR2021.
 
    The channels come from the P25 profile on the card - its control= lines,
-   with the NAC its comments say each should carry - or one frequency. A
-   simulcast site sending LSM rather than C4FM is not expected to come
-   through a sign slicer cleanly. */
+   with the NAC its comments say each should carry - or one frequency, 150 to
+   1100 MHz. A simulcast site sending LSM rather than C4FM is not expected to
+   come through a sign slicer cleanly.
+
+   `exp p25site start MHz [auto|N|I [BW_Hz [dev_Hz [detect_bits]]]]` is a
+   one-run bench setup for that frequency. N or I pins the polarity, and a
+   pinned polarity is never switched, not on a quiet channel either. The
+   filter is 12500 Hz, the deviation 1800 and the preamble detector off
+   unless given (0, 8, 16, 24 or 32 bits). */
 #include "../ls_experiments.h"
 
 #include <stdio.h>
@@ -28,8 +34,14 @@
 #include "ls_lora.h"
 #include "p25_sitefind.h"
 
-#define MHZ_LO 200.0
+#define MHZ_LO 150.0
 #define MHZ_HI 1100.0
+#define BW_DEFAULT    12500u       /* the channel */
+#define BW_MAX        1000000u
+#define DEV_DEFAULT   1800u        /* the outer symbols' deviation */
+#define DEV_MIN       600u
+#define DEV_MAX       200000u
+#define SYMBOL_RATE   4800u
 #define PROFILE_PATH  "/sdcard/p25_profile.txt"
 #define PROFILE_MAX   16384
 #define CH_MAX        32
@@ -48,7 +60,16 @@ enum { SRC_PROFILE, SRC_ONE };
 static volatile int s_set_src = SRC_PROFILE;
 static volatile uint32_t s_set_hz = 859487500u;
 static volatile int s_set_dwell = 4;
+/* A frequency given on the console is for that one run, and so are its
+   overrides: the next start takes them or, if it has none, the defaults. */
 static volatile uint32_t s_once_hz;
+static int s_once_pol = -1;
+static uint32_t s_once_bw = BW_DEFAULT, s_once_dev = DEV_DEFAULT;
+static uint8_t s_once_detect;
+/* What the running session uses. s_force is 0 or 1 for a pinned polarity. */
+static int s_force = -1;
+static uint32_t s_rx_bw = BW_DEFAULT, s_rx_dev = DEV_DEFAULT;
+static uint8_t s_rx_detect;
 
 /* ------------------------------------------------------------- state -- */
 
@@ -183,16 +204,18 @@ static esp_err_t open_session(uint32_t hz, int pol)
 {
     if (s_session) { ls_lora_fsk_end(); s_session = false; }
     const uint32_t sync = pol ? P25SF_SYNC_INVERTED : P25SF_SYNC_NORMAL;
-    /* 4800 symbols a second, sliced at zero; 1800 Hz is the outer symbols'
-       deviation. 12.5 kHz is the channel. */
+    /* 4800 symbols a second, sliced at zero. By default 1800 Hz is the outer
+       symbols' deviation, 12.5 kHz the channel and the preamble detector off;
+       a console run may override the three. */
     const ls_fsk_cfg_t cfg = {
         .freq_hz = hz,
-        .bitrate = 4800,
-        .deviation_hz = 1800,
-        .bandwidth_hz = ls_lora_fsk_bw_snap(12500),
+        .bitrate = SYMBOL_RATE,
+        .deviation_hz = s_rx_dev,
+        .bandwidth_hz = ls_lora_fsk_bw_snap(s_rx_bw),
         .sync_word = sync << (32 - P25SF_SYNC_BITS),
         .sync_bits = P25SF_SYNC_BITS,
         .payload_bytes = P25SF_PAYLOAD_BYTES,
+        .preamble_detect_bits = s_rx_detect,
     };
     const esp_err_t err = ls_lora_fsk_begin(&cfg);
     s_session = err == ESP_OK;
@@ -200,7 +223,11 @@ static esp_err_t open_session(uint32_t hz, int pol)
     return err;
 }
 
-static int pol_of(const chan_t *c) { return c->lock >= 0 ? c->lock : c->next_pol; }
+static int pol_of(const chan_t *c)
+{
+    if (s_force >= 0) return s_force;
+    return c->lock >= 0 ? c->lock : c->next_pol;
+}
 
 static void begin_listen(int64_t now)
 {
@@ -275,17 +302,25 @@ static int load_profile(char *why, size_t n)
     const int got = p25sf_profile_parse(text, len, (uint32_t)(MHZ_LO * 1e6), (uint32_t)(MHZ_HI * 1e6),
                                         s_parsed, CH_MAX);
     heap_caps_free(text);
-    if (!got) snprintf(why, n, "No control= line above %.0f MHz in the profile", MHZ_LO);
+    if (!got) snprintf(why, n, "No control= line in %.0f-%.0f MHz in the profile", MHZ_LO, MHZ_HI);
     return got;
 }
 
 static bool p25_start(char *why, size_t n)
 {
+    const uint32_t once = s_once_hz;
+    s_force = once ? s_once_pol : -1;
+    s_rx_bw = once ? s_once_bw : BW_DEFAULT;
+    s_rx_dev = once ? s_once_dev : DEV_DEFAULT;
+    s_rx_detect = once ? s_once_detect : 0;
+    s_once_hz = 0;
+    s_once_pol = -1;
+    s_once_bw = BW_DEFAULT;
+    s_once_dev = DEV_DEFAULT;
+    s_once_detect = 0;
+
     const uint32_t caps = ls_lora_caps();
     if (!(caps & LS_LORA_CAP_FSK)) { snprintf(why, n, "No FSK receiver on this chip"); return false; }
-
-    const uint32_t once = s_once_hz;
-    s_once_hz = 0;
     int got;
     if (once || s_set_src == SRC_ONE) {
         memset(&s_parsed[0], 0, sizeof(s_parsed[0]));
@@ -340,7 +375,9 @@ static void poll_listen(int64_t now)
     chan_t *c = &s_ch[s_cur];
     float rssi = -200.0f;
     const int got = ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi);
-    if (got >= P25SF_PAYLOAD_BYTES) on_packet(now, s_buf, rssi);
+    /* Only a read of exactly the configured length is a packet: a short one
+       is not parsed with what an earlier packet left in the buffer. */
+    if (got == P25SF_PAYLOAD_BYTES) on_packet(now, s_buf, rssi);
 
     if (now - s_now_t >= NOW_MS * 1000) {
         s_now_t = now;
@@ -358,12 +395,13 @@ static void poll_listen(int64_t now)
     }
 
     if (!s_single && now >= s_dwell_end) { next_channel(now); return; }
-    if (s_single && c->lock >= 0 && c->last_us >= 0 && now - c->last_us > SINGLE_QUIET_US) {
+    if (s_force < 0 && s_single && c->lock >= 0 && c->last_us >= 0 && now - c->last_us > SINGLE_QUIET_US) {
         c->lock = -1;
         s_slice_end = now;
     }
-    if (c->lock < 0 && now >= s_slice_end) {
-        /* Neither way has decoded yet: the other way round. */
+    if (s_force < 0 && c->lock < 0 && now >= s_slice_end) {
+        /* Neither way has decoded yet: the other way round. A pinned
+           polarity stays as it is. */
         c->next_pol = (uint8_t)!s_pol;
         if (open_session(c->ch.hz, c->next_pol) != ESP_OK) {
             s_hop_errors++;
@@ -499,26 +537,95 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
 
 /* ------------------------------------------------------------ console -- */
 
-static bool parse_mhz(const char *text, double *mhz)
+/* Digits only: no sign, space, hex or exponent, and nothing above `max`. */
+static bool parse_uint(const char *text, uint32_t max, uint32_t *out)
 {
-    char *end = NULL;
-    const double v = strtod(text, &end);
-    if (end == text || *end || !(v >= MHZ_LO && v <= MHZ_HI)) return false;
-    *mhz = v;
+    if (!*text) return false;
+    uint64_t v = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10 + (uint64_t)(*p - '0');
+        if (v > max) return false;
+    }
+    *out = (uint32_t)v;
     return true;
 }
 
-/* `exp p25site start 859.4875` listens to one frequency for that run; no
-   argument takes the profile's control channels, or OPTIONS' one. */
+/* A decimal number of MHz, to the Hz it rounds to, within MHZ_LO..MHZ_HI. */
+static bool parse_mhz(const char *text, uint32_t *hz)
+{
+    int digits = 0, dots = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p == '.') { if (++dots > 1) return false; }
+        else if (*p >= '0' && *p <= '9') digits++;
+        else return false;
+    }
+    if (!digits || strlen(text) > 24) return false;
+    const double v = strtod(text, NULL);
+    if (!(v >= 0.0 && v <= MHZ_HI + 1.0)) return false;
+    const uint32_t r = (uint32_t)(v * 1e6 + 0.5);
+    if (r < (uint32_t)(MHZ_LO * 1e6) || r > (uint32_t)(MHZ_HI * 1e6)) return false;
+    *hz = r;
+    return true;
+}
+
+static bool same_text(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++)
+        if ((*a | 0x20) != (*b | 0x20)) return false;
+    return !*a && !*b;
+}
+
+/* `exp p25site start 154.785` listens to one frequency for that run; no
+   argument takes the profile's control channels, or OPTIONS' one. After the
+   frequency come the run's polarity and receive settings, see the top of the
+   file. Nothing is kept unless every argument is good. */
 static bool p25_configure(int argc, char **argv, char *why, size_t n)
 {
-    double mhz;
+    uint32_t hz;
+    s_once_hz = 0;
+    s_once_pol = -1;
+    s_once_bw = BW_DEFAULT;
+    s_once_dev = DEV_DEFAULT;
+    s_once_detect = 0;
     if (argc == 1 && !strcmp(argv[0], "profile")) { s_set_src = SRC_PROFILE; return true; }
-    if (argc != 1 || !parse_mhz(argv[0], &mhz)) {
-        snprintf(why, n, "one frequency %.0f-%.0f MHz, or profile", MHZ_LO, MHZ_HI);
+    if (argc < 1 || argc > 5 || !parse_mhz(argv[0], &hz)) {
+        snprintf(why, n, "%.0f-%.0f MHz [auto|N|I [BW_Hz [dev_Hz [detect 0|8|16|24|32]]]] | profile",
+                 MHZ_LO, MHZ_HI);
         return false;
     }
-    s_once_hz = (uint32_t)(mhz * 1e6 + 0.5);
+    int pol = -1;
+    if (argc >= 2) {
+        if (same_text(argv[1], "auto")) pol = -1;
+        else if (same_text(argv[1], "N")) pol = 0;
+        else if (same_text(argv[1], "I")) pol = 1;
+        else { snprintf(why, n, "polarity: auto, N or I"); return false; }
+    }
+    uint32_t bw = BW_DEFAULT, dev = DEV_DEFAULT, detect = 0;
+    if (argc >= 3 && (!parse_uint(argv[2], BW_MAX, &bw) || !bw)) {
+        snprintf(why, n, "BW_Hz: whole Hz, at most %u", BW_MAX);
+        return false;
+    }
+    if (argc >= 4 && (!parse_uint(argv[3], DEV_MAX, &dev) || dev < DEV_MIN)) {
+        snprintf(why, n, "dev_Hz: whole Hz, %u-%u", DEV_MIN, DEV_MAX);
+        return false;
+    }
+    /* The rung the part will use, as its own begin checks it. */
+    const uint32_t need = SYMBOL_RATE + 2 * dev, rung = ls_lora_fsk_bw_snap(bw);
+    if (bw < need || rung < need) {
+        snprintf(why, n, "filter %u Hz (rung %u) must hold %u + 2*%u Hz", (unsigned)bw, (unsigned)rung,
+                 SYMBOL_RATE, (unsigned)dev);
+        return false;
+    }
+    if (argc == 5 && (!parse_uint(argv[4], 32, &detect) || detect % 8)) {
+        snprintf(why, n, "detect bits: 0 (off), 8, 16, 24 or 32");
+        return false;
+    }
+    s_once_pol = pol;
+    s_once_bw = bw;
+    s_once_dev = dev;
+    s_once_detect = (uint8_t)detect;
+    s_once_hz = hz;
     return true;
 }
 
@@ -555,9 +662,9 @@ static const ls_opt_t OPTS[] = {
 const ls_experiment_t exp_p25site = {
     .id = "p25site",
     .name = "P25 SITE FINDER",
-    .sub = "P25 NAC and frame type, 700/800 MHz",
+    .sub = "P25 NAC and frame type, VHF/UHF",
     .maturity = LS_EXP_TRYING,
-    .needs = "a strong 700/800 MHz P25 site",
+    .needs = "a strong P25 Phase 1 C4FM signal",
     .start = p25_start,
     .stop = p25_stop,
     .poll = p25_poll,

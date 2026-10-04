@@ -60,7 +60,7 @@ LS_CASE(the_uhf_plan_is_929_931_and_454_and_nothing_the_board_cannot_hear)
                                       454025000u, 454650000u };
     for (size_t i = 0; i < sizeof(KNOWN) / sizeof(KNOWN[0]); i++) LS_CHECK_MSG(has(hz, n, KNOWN[i]), "%u", KNOWN[i]);
     for (int i = 0; i < n; i++) {
-        LS_CHECK(hz[i] >= 400000000u);                         /* no VHF: the board is deaf there */
+        LS_CHECK(hz[i] >= 400000000u);                         /* the plans are UHF only; a one-frequency run can still tune VHF */
         LS_CHECK(!(hz[i] >= 930000000u && hz[i] < 931000000u)); /* narrowband PCS, not POCSAG */
         LS_CHECK(!(hz[i] >= 470000000u && hz[i] < 512000000u)); /* T-band: no paging allocation */
         LS_EQ_UINT(hz[i] % 12500u, 0u);
@@ -274,7 +274,12 @@ static struct {
     uint32_t hz;
     uint16_t baud;
     bool inverted;
-    uint8_t batch[PGR_BATCH_BYTES];
+    uint8_t payload[200];       /* after the first sync, normal polarity   */
+    size_t len;                 /* what the transmitter sends in one go    */
+    int limit, sent;            /* sends allowed (0: for ever), made       */
+    uint32_t sync;              /* the sync word it sends (0: POCSAG's)    */
+    int short_at;               /* the send number cut short (0: none)     */
+    size_t short_len;           /* ... to this many bytes, still positive  */
 } TX;
 static bool s_open;
 static ls_fsk_cfg_t s_cfg;
@@ -283,7 +288,8 @@ static int s_begins;
 
 int64_t esp_timer_get_time(void);
 
-uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST; }
+static uint32_t s_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
+uint32_t ls_lora_caps(void) { return s_caps; }
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
@@ -300,21 +306,26 @@ esp_err_t ls_lora_fsk_receive(void) { return s_open ? ESP_OK : ESP_ERR_INVALID_S
 
 static bool hears_tx(void)
 {
-    const uint32_t want = TX.inverted ? ~PGR_POCSAG_FSC : PGR_POCSAG_FSC;
+    const uint32_t want = TX.sync ? TX.sync : TX.inverted ? ~PGR_POCSAG_FSC : PGR_POCSAG_FSC;
     return s_open && s_cfg.freq_hz == TX.hz && s_cfg.bitrate == TX.baud && s_cfg.sync_word == want &&
-           s_cfg.payload_bytes == PGR_BATCH_BYTES;
+           s_cfg.payload_bytes == TX.len;
 }
 
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi)
 {
     if (!s_open || size < s_cfg.payload_bytes) return -1;
     const int64_t now = esp_timer_get_time();
-    const int64_t period = 544LL * 1000000 / (TX.baud ? TX.baud : 1200);
+    const int64_t period = (int64_t)(TX.len * 8) * 1000000 / (TX.baud ? TX.baud : 1200);
     if (!hears_tx() || now - s_sent < period) return 0;
+    if (TX.limit && TX.sent >= TX.limit) return 0;
+    TX.sent++;
     s_sent = now;
-    for (int i = 0; i < PGR_BATCH_BYTES; i++) buf[i] = TX.inverted ? (uint8_t)~TX.batch[i] : TX.batch[i];
+    /* A short read still returns a positive count, and leaves the rest of the
+       caller's buffer as the packet before it left it. */
+    const size_t n = TX.short_at && TX.sent == TX.short_at ? TX.short_len : TX.len;
+    for (size_t i = 0; i < n; i++) buf[i] = TX.inverted ? (uint8_t)~TX.payload[i] : TX.payload[i];
     if (rssi) *rssi = -71.0f;
-    return PGR_BATCH_BYTES;
+    return (int)n;
 }
 
 esp_err_t ls_lora_rssi_inst(float *dbm)
@@ -359,7 +370,8 @@ static void fresh(uint32_t hz, uint16_t baud, bool inverted, bool text)
     TX.hz = hz;
     TX.baud = baud;
     TX.inverted = inverted;
-    page_batch(1234560, 3, "HELLO WORLD", TX.batch);
+    page_batch(1234560, 3, "HELLO WORLD", TX.payload);
+    TX.len = PGR_BATCH_BYTES;
     /* OPTIONS: the UHF plan, the default dwell, message text as asked. */
     exp_pagers.opts[0].set(&exp_pagers.opts[0], PGR_PLAN_UHF);
     exp_pagers.opts[2].set_num(&exp_pagers.opts[2], 6);
@@ -423,8 +435,538 @@ LS_CASE(the_console_refuses_a_frequency_out_of_range)
 {
     fresh(929612500u, 1200, false, false);
     char why[96] = "";
-    char a0[] = "150";
+    char a0[] = "149.999";
     char *argv[] = { a0 };
     LS_CHECK(!exp_pagers.configure(1, argv, why, sizeof(why)));
-    LS_CHECK(strstr(why, "200-1100") != NULL);
+    LS_CHECK(strstr(why, "150-1100") != NULL);
+}
+
+LS_CASE(vhf_fixed_probe_stays_listening_and_overrides_are_only_for_one_run)
+{
+    fresh(152600000u, 2400, true, false);
+    char why[96] = "";
+    char *args[] = { "152.6", "2400I", "19500", "4500" };
+    LS_CHECK(exp_pagers.configure(4, args, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_INT(s_cfg.freq_hz, 152600000u);
+    LS_EQ_INT(s_cfg.bandwidth_hz, 19500u);
+    const int begins = s_begins;
+    TX.hz = 0; /* With no signal, a fixed probe must not rotate. */
+    run_for(15LL * 1000000);
+    LS_EQ_INT(s_begins, begins);
+    TX.hz = 152600000u;
+    run_for(2LL * 1000000);
+    LS_CHECK(lines_have("152.6000 POC  2400I"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+    char *normal[] = { "152.6" };
+    LS_CHECK(exp_pagers.configure(1, normal, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_INT(s_cfg.bandwidth_hz, 11700u);
+    LS_EQ_INT(s_cfg.bitrate, 1200u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+/* OPTIONS' PROBE pins a ONE FREQ run to one probe, which then never steps;
+   AUTO steps as before, and a scan plan ignores it. */
+LS_CASE(one_freq_listens_on_the_probe_options_name)
+{
+    fresh(152600000u, 1200, true, false);
+    for (int i = 0; i < PGR_N_PROBES; i++)
+        LS_EQ_STR(exp_pagers.opts[4].names[i + 1], pgr_probe(i)->tag);
+    exp_pagers.opts[1].set_num(&exp_pagers.opts[1], 152.6);
+    exp_pagers.opts[4].set(&exp_pagers.opts[4], 2);           /* 1200I */
+    ls_exp_start(&exp_pagers);
+    run_for(30LL * 1000000);
+    LS_EQ_UINT(s_cfg.freq_hz, 152600000u);
+    LS_EQ_UINT(s_cfg.bitrate, 1200u);
+    LS_EQ_UINT(s_cfg.sync_word, ~PGR_POCSAG_FSC);
+    LS_CHECK(lines_have("152.6000 POC  1200I"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    TX.hz = 0;                                               /* nothing on the air */
+    ls_exp_start(&exp_pagers);
+    run_for(30LL * 1000000);                                 /* AUTO would be on 512 by now */
+    LS_EQ_UINT(s_cfg.bitrate, 1200u);
+    LS_EQ_UINT(s_cfg.sync_word, ~PGR_POCSAG_FSC);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    exp_pagers.opts[4].set(&exp_pagers.opts[4], 0);           /* AUTO */
+}
+
+/* On a part with the detector, POCSAG listens behind it unless the console
+   says otherwise; FLEX does not. */
+LS_CASE(pocsag_probes_take_the_preamble_detector_where_the_part_has_one)
+{
+    fresh(152600000u, 1200, true, false);
+    s_caps |= LS_LORA_CAP_FSK_DETECT;
+    char why[96] = "";
+    char *probe[] = { "152.6", "1200I" };
+    LS_CHECK(exp_pagers.configure(2, probe, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 16u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    char *flex[] = { "929.6125", "FLEXN" };
+    LS_CHECK(exp_pagers.configure(2, flex, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    char *off[] = { "152.6", "1200I", "11700", "4500", "0" };
+    LS_CHECK(exp_pagers.configure(5, off, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    s_caps &= ~LS_LORA_CAP_FSK_DETECT;
+}
+
+LS_CASE(preamble_detector_argument_is_validated_and_lasts_one_run)
+{
+    fresh(152600000u, 2400, true, false);
+    char why[96] = "";
+
+    /* Not given: off, as it always was. */
+    char *plain[] = { "152.6", "2400I", "19500", "4500" };
+    LS_CHECK(exp_pagers.configure(4, plain, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    static const char *const good[] = { "0", "8", "16", "24", "32" };
+    for (unsigned i = 0; i < 5; i++) {
+        char *args[] = { "152.6", "2400I", "19500", "4500", (char *)good[i] };
+        LS_CHECK(exp_pagers.configure(5, args, why, sizeof(why)));
+        ls_exp_start(&exp_pagers);
+        ls_exp_service();
+        LS_EQ_UINT(s_cfg.preamble_detect_bits, (unsigned)atoi(good[i]));
+        LS_EQ_INT(s_cfg.bandwidth_hz, 19500u);
+        ls_exp_stop();
+        ls_exp_settle(100);
+    }
+
+    /* Anything else is refused with the choices named, and sets nothing. */
+    static const char *const bad[] = { "1", "12", "33", "40", "64", "-8", "16x", "" };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *args[] = { "152.6", "2400I", "19500", "4500", (char *)bad[i] };
+        why[0] = 0;
+        LS_CHECK(!exp_pagers.configure(5, args, why, sizeof(why)));
+        LS_CHECK(strstr(why, "0 (off), 8, 16, 24 or 32") != NULL);
+    }
+    char *seven[] = { "152.6", "2400I", "19500", "4500", "16", "1", "1" };
+    LS_CHECK(!exp_pagers.configure(7, seven, why, sizeof(why)));
+    LS_CHECK(strstr(why, "detect 0|8|16|24|32") != NULL);
+
+    /* A refused line leaves nothing from an earlier one: it is one run's. */
+    char *on[] = { "152.6", "2400I", "19500", "4500", "32" };
+    LS_CHECK(exp_pagers.configure(5, on, why, sizeof(why)));
+    char *refused[] = { "152.6", "2400I", "19500", "4500", "12" };
+    LS_CHECK(!exp_pagers.configure(5, refused, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* Used once, then gone: the next start, with or without a frequency. */
+    LS_CHECK(exp_pagers.configure(5, on, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 32u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    char *only[] = { "152.6" };
+    LS_CHECK(exp_pagers.configure(1, only, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0u);
+    LS_EQ_INT(s_cfg.bandwidth_hz, 11700u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+/* ============================================ fixed-length burst capture == */
+
+static const uint8_t FSC_BYTES[4] = { 0x7C, 0xD2, 0x15, 0xD8 };
+
+/* `n` batches as a transmitter sends them after its first sync: each is a page
+   to its own capcode, and the frame sync stands in front of every one after
+   the first. Normal polarity; the fake complements all of it when inverted. */
+static size_t burst_payload(int n)
+{
+    static const uint32_t RIC[3] = { 1234560, 2000000, 1500000 };
+    size_t at = 0;
+    for (int k = 0; k < n; k++) {
+        if (k) { memcpy(TX.payload + at, FSC_BYTES, 4); at += 4; }
+        page_batch(RIC[k], 3, "HELLO WORLD", TX.payload + at);
+        at += PGR_BATCH_BYTES;
+    }
+    return at;
+}
+
+static bool configure_burst(const char *probe, const char *batches, char *why, size_t n)
+{
+    char *args[] = { "152.6", (char *)probe, "11700", "4500", "16", (char *)batches };
+    return exp_pagers.configure(6, args, why, n);
+}
+
+/* Starts a one-shot burst run and lets `sends` bursts arrive. */
+static void run_burst(const char *probe, const char *batches, int sends)
+{
+    char why[96] = "";
+    LS_CHECK(configure_burst(probe, batches, why, sizeof(why)));
+    TX.limit = sends;
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    run_for(10LL * 1000000);
+    dump();
+}
+
+LS_CASE(burst_lengths_are_one_batch_then_each_later_batch_and_its_sync)
+{
+    fresh(152600000u, 1200, false, false);
+    LS_EQ_INT(burst_payload(2), 132);
+    LS_EQ_INT(burst_payload(3), 200);
+}
+
+LS_CASE(two_and_three_batch_bursts_decode_every_batch_in_both_polarities)
+{
+    for (int inv = 0; inv < 2; inv++) {
+        for (int n = 2; n <= 3; n++) {
+            fresh(152600000u, 1200, inv, false);
+            TX.len = burst_payload(n);
+            char b[2] = { (char)('0' + n), 0 };
+            run_burst(inv ? "1200I" : "1200N", b, 1);
+            LS_EQ_UINT(s_cfg.payload_bytes, n == 2 ? 132u : 200u);
+            LS_EQ_UINT(s_cfg.preamble_detect_bits, 16u);
+            LS_EQ_INT(TX.sent, 1);
+            LS_CHECK(lines_have(inv ? "152.6000 POC  1200I" : "152.6000 POC  1200N"));
+            char want[40];
+            /* One frame and 16 clean codewords per batch. */
+            snprintf(want, sizeof(want), "BCH ok %d fixed 0 lost 0", 16 * n);
+            LS_CHECK_MSG(lines_have(want), "%s", want);
+            /* The table row: one hardware sync plus a checked one per later batch, n frames. */
+            snprintf(want, sizeof(want), "%5d %5d", n, n);
+            LS_CHECK_MSG(lines_have(want), "%s", want);
+            ls_exp_stop();
+            ls_exp_settle(100);
+        }
+    }
+}
+
+LS_CASE(each_batch_of_a_burst_reaches_the_message_decoder)
+{
+    fresh(152600000u, 1200, true, true);
+    TX.len = burst_payload(3);
+    run_burst("1200I", "3", 1);
+    LS_CHECK(lines_have("152.6000 1500000 A HELLO WORLD"));
+    LS_CHECK(lines_have("152.6000 2000000 A HELLO WORLD"));
+    LS_CHECK(lines_have("152.6000 1234560 A HELLO WORLD"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(a_bad_intervening_sync_ends_the_walk)
+{
+    /* The second sync wrong by one bit, then the idle word, then the right
+       word moved a bit along: none of the batches after it is believed. */
+    static const uint8_t IDLE[4] = { 0x7A, 0x89, 0xC1, 0x97 };
+    for (int mode = 0; mode < 3; mode++) {
+        for (int inv = 0; inv < 2; inv++) {
+            fresh(152600000u, 1200, inv, false);
+            TX.len = burst_payload(3);
+            uint8_t *sync2 = TX.payload + 64 + 4 + 64;
+            if (mode == 0) {
+                sync2[1] ^= 0x10;
+            } else if (mode == 1) {
+                memcpy(sync2, IDLE, 4);
+            } else {
+                uint32_t w = (uint32_t)FSC_BYTES[0] << 24 | (uint32_t)FSC_BYTES[1] << 16 |
+                             (uint32_t)FSC_BYTES[2] << 8 | FSC_BYTES[3];
+                w >>= 1;
+                for (int i = 0; i < 4; i++) sync2[i] = (uint8_t)(w >> (24 - 8 * i));
+            }
+            run_burst(inv ? "1200I" : "1200N", "3", 1);
+            LS_CHECK_MSG(lines_have("BCH ok 32 fixed 0 lost 0"), "mode %d inv %d", mode, inv);
+            LS_CHECK(!lines_have("BCH ok 48"));
+            ls_exp_stop();
+            ls_exp_settle(100);
+        }
+    }
+    /* A bad FIRST intervening sync costs the second and third batches. */
+    fresh(152600000u, 1200, false, false);
+    TX.len = burst_payload(3);
+    TX.payload[64] ^= 0x01;
+    run_burst("1200N", "3", 1);
+    LS_CHECK(lines_have("BCH ok 16 fixed 0 lost 0"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(a_burst_in_the_other_polarity_is_not_read_as_this_one)
+{
+    fresh(152600000u, 1200, true, false);
+    TX.len = burst_payload(2);
+    run_burst("1200N", "2", 1);
+    LS_EQ_INT(TX.sent, 0);
+    LS_CHECK(!lines_have("152.6000 POC"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+/* Only the fake's contract: a radio that delivers nothing gives nothing. What a
+   real chip does with a transmission shorter than the fixed length is not
+   known, and this does not say. */
+LS_CASE(a_fake_that_withholds_the_short_transmission_delivers_no_batch)
+{
+    fresh(152600000u, 1200, false, false);
+    TX.len = PGR_BATCH_BYTES;             /* the transmitter stops after one batch */
+    run_burst("1200N", "2", 3);
+    LS_EQ_UINT(s_cfg.payload_bytes, 132u);
+    LS_EQ_INT(TX.sent, 0);
+    LS_CHECK(!lines_have("152.6000 POC"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+LS_CASE(batches_is_refused_unless_one_to_three_on_a_fixed_pocsag_probe)
+{
+    fresh(152600000u, 1200, false, false);
+    char why[96];
+    static const char *const bad[] = { "0", "4", "-1", "2x", "", "255", "256", "99999999999" };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        why[0] = 0;
+        LS_CHECK_MSG(!configure_burst("1200I", bad[i], why, sizeof(why)), "'%s'", bad[i]);
+        LS_CHECK(strstr(why, "batches: 1 (default), 2 or 3") != NULL);
+    }
+    static const char *const flex[] = { "FLEXN", "FLEXI" };
+    for (int i = 0; i < 2; i++) {
+        for (int n = 2; n <= 3; n++) {
+            char b[2] = { (char)('0' + n), 0 };
+            why[0] = 0;
+            LS_CHECK(!configure_burst(flex[i], b, why, sizeof(why)));
+            LS_CHECK(strstr(why, "not FLEX") != NULL);
+        }
+    }
+    why[0] = 0;
+    LS_CHECK(!configure_burst("900X", "2", why, sizeof(why)));
+    LS_CHECK(strstr(why, "probe:") != NULL);
+    /* A filter too narrow for the probe is still refused when batches is given. */
+    char *narrow[] = { "152.6", "2400I", "9000", "4500", "16", "2" };
+    LS_CHECK(!exp_pagers.configure(6, narrow, why, sizeof(why)));
+    LS_CHECK(strstr(why, "filter must contain") != NULL);
+    char *seven[] = { "152.6", "1200I", "11700", "4500", "16", "2", "3" };
+    LS_CHECK(!exp_pagers.configure(7, seven, why, sizeof(why)));
+}
+
+LS_CASE(the_burst_length_lasts_one_run_and_every_other_start_stays_one_batch)
+{
+    fresh(152600000u, 1200, false, false);
+    char why[96] = "";
+
+    /* The proven command, byte for byte, is untouched. */
+    char *proven[] = { "152.6", "1200I", "11700", "4500", "16" };
+    LS_CHECK(exp_pagers.configure(5, proven, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    LS_EQ_UINT(s_cfg.sync_word, ~PGR_POCSAG_FSC);
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 16u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* "1" is the default spelled out. */
+    LS_CHECK(configure_burst("1200I", "1", why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* Used once, then gone: the next plain start. */
+    LS_CHECK(configure_burst("1200I", "3", why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 200u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* A refused line leaves nothing from an earlier accepted one. */
+    LS_CHECK(configure_burst("1200I", "2", why, sizeof(why)));
+    LS_CHECK(!configure_burst("1200I", "4", why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* So does a later console line without the argument, or a plan name. */
+    LS_CHECK(configure_burst("1200I", "2", why, sizeof(why)));
+    LS_CHECK(exp_pagers.configure(5, proven, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+    char *plan[] = { "uhf" };
+    LS_CHECK(configure_burst("1200I", "3", why, sizeof(why)));
+    LS_CHECK(exp_pagers.configure(1, plan, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 64u);
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+/* A read that comes back positive but short is not a packet: the bytes past it
+   are whatever the packet before left, which here is a perfectly good batch. */
+LS_CASE(a_short_positive_read_is_dropped_not_parsed_with_the_previous_packets_tail)
+{
+    /* Default 64 bytes: the second read is 40 of them. */
+    fresh(152600000u, 1200, false, false);
+    TX.limit = 2; TX.short_at = 2; TX.short_len = 40;
+    char why[96] = "";
+    char *plain[] = { "152.6", "1200N", "11700", "4500", "16" };
+    LS_CHECK(exp_pagers.configure(5, plain, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    run_for(10LL * 1000000);
+    dump();
+    LS_EQ_INT(TX.sent, 2);
+    LS_CHECK(lines_have("BCH ok 16 fixed 0 lost 0"));
+    LS_CHECK(lines_have("    1     1"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* 2 and 3 batches, in both polarities: the second read stops inside
+       the second batch, so the first would still look whole. */
+    for (int inv = 0; inv < 2; inv++) {
+        for (int n = 2; n <= 3; n++) {
+            fresh(152600000u, 1200, inv, false);
+            TX.len = burst_payload(n);
+            TX.short_at = 2; TX.short_len = TX.len - 7;
+            char b[2] = { (char)('0' + n), 0 };
+            run_burst(inv ? "1200I" : "1200N", b, 2);
+            LS_EQ_INT(TX.sent, 2);
+            char want[40];
+            snprintf(want, sizeof(want), "BCH ok %d fixed 0 lost 0", 16 * n);
+            LS_CHECK_MSG(lines_have(want), "n %d inv %d: %s", n, inv, want);
+            snprintf(want, sizeof(want), "%5d %5d", n, n);
+            LS_CHECK_MSG(lines_have(want), "n %d inv %d: %s", n, inv, want);
+            ls_exp_stop();
+            ls_exp_settle(100);
+        }
+    }
+
+    /* FLEX, 2 bytes: the second read is 1 byte, the first byte new and the second stale. */
+    fresh(152600000u, 1600, false, false);
+    TX.sync = PGR_FLEX_MARKER;
+    TX.len = 2;
+    TX.payload[0] = 0x78; TX.payload[1] = 0xF3;       /* ~0x870C: mode 0, 1600/2 */
+    TX.limit = 2; TX.short_at = 2; TX.short_len = 1;
+    char *flex[] = { "152.6", "FLEXN" };
+    LS_CHECK(exp_pagers.configure(2, flex, why, sizeof(why)));
+    ls_exp_start(&exp_pagers);
+    ls_exp_service();
+    LS_EQ_UINT(s_cfg.payload_bytes, 2u);
+    run_for(10LL * 1000000);
+    dump();
+    LS_EQ_INT(TX.sent, 2);
+    LS_CHECK(lines_have("152.6000 FLEX 1600/2    1"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+}
+
+/* A message that runs from one batch into the next is joined only when the
+   batch before it was accepted. */
+LS_CASE(a_message_is_not_spliced_across_a_batch_that_was_not_accepted)
+{
+    static const char TEXT[] = "SPLICE-ACROSS-A-LOST-BATCH-0123";
+    /* The generator never runs a message past its first batch, so the two
+       batches are made here: capcode 1234567 sits in frame 7, the last, with
+       the start of the message after it; the rest of the message opens the
+       next batch, and idle ends it. */
+    uint8_t msg[7 * sizeof(TEXT)];
+    size_t n_msg = 0;
+    for (const char *t = TEXT; *t; t++)
+        for (int k = 0; k < 7; k++) msg[n_msg++] = (uint8_t)((*t >> k) & 1);
+    uint32_t wa[16], wc[16];
+    for (int i = 0; i < 16; i++) wa[i] = wc[i] = PGR_POCSAG_IDLE;
+    wa[14] = pocsag_encode_address(1234567, 3);
+    size_t used = 0;
+    for (int i = 15, in_a = 1, ci = 0; used < n_msg; ) {
+        uint32_t d = 0;
+        for (int b = 0; b < 20; b++, used++) d = (d << 1) | (used < n_msg ? msg[used] : 0u);
+        if (in_a) wa[i] = pocsag_encode_message(d); else wc[ci++] = pocsag_encode_message(d);
+        if (in_a) in_a = 0;
+    }
+    uint8_t a[PGR_BATCH_BYTES], c[PGR_BATCH_BYTES], noise[PGR_BATCH_BYTES];
+    for (int i = 0; i < 16; i++)
+        for (int k = 0; k < 4; k++) {
+            a[i * 4 + k] = (uint8_t)(wa[i] >> (24 - 8 * k));
+            c[i * 4 + k] = (uint8_t)(wc[i] >> (24 - 8 * k));
+        }
+    uint32_t x = 99;
+    pgr_batch_t r;
+    do {
+        for (int i = 0; i < PGR_BATCH_BYTES; i++) { x = x * 1103515245u + 12345u; noise[i] = (uint8_t)(x >> 16); }
+        pgr_scan_batch(noise, false, &r);
+    } while (pgr_batch_real(&r));
+    pgr_scan_batch(a, false, &r);
+    LS_CHECK(pgr_batch_real(&r));
+    pgr_scan_batch(c, false, &r);
+    LS_CHECK(pgr_batch_real(&r));
+
+    /* Two accepted batches in a row: the whole message arrives. */
+    fresh(152600000u, 1200, false, true);
+    memcpy(TX.payload, a, 64);
+    memcpy(TX.payload + 64, FSC_BYTES, 4);
+    memcpy(TX.payload + 68, c, 64);
+    TX.len = 132;
+    run_burst("1200N", "2", 1);
+    LS_CHECK(lines_have("1234567 A SPLICE-ACROSS-A-LOST-BATCH-0123"));
+    LS_CHECK(lines_have("BCH ok 32 fixed 0 lost 0"));
+    ls_exp_stop();
+    ls_exp_settle(100);
+
+    /* The batch between is noise: the two good ones still count, and the
+       second does not finish the first's message. */
+    fresh(152600000u, 1200, false, true);
+    memcpy(TX.payload, a, 64);
+    memcpy(TX.payload + 64, FSC_BYTES, 4);
+    memcpy(TX.payload + 68, noise, 64);
+    memcpy(TX.payload + 132, FSC_BYTES, 4);
+    memcpy(TX.payload + 136, c, 64);
+    TX.len = 200;
+    run_burst("1200N", "3", 1);
+    LS_CHECK(lines_have("BCH ok 32 fixed 0 lost 0"));
+    LS_CHECK(lines_have("    3     2"));
+    LS_CHECK(!lines_have("1234567"));
+    LS_CHECK(!lines_have("SPLICE"));
+    LS_CHECK(!lines_have("LOST-BATCH"));
+    ls_exp_stop();
+    ls_exp_settle(100);
 }

@@ -14,6 +14,11 @@
  * attributed - never synced, synced but muted for unknown ESS, muted as
  * encrypted.
  *
+ * With --dibits the input is instead packed dibits (four a byte, first in
+ * the top bits), each turned into demodulator samples by the synthesizer the
+ * LR2021 path feeds the board's decoder with; --unproven plays voice before
+ * the ESS shows the call clear, as that path does.
+ *
  * The WAV, if asked for, is laid out on the air's own timeline: each voice
  * frame at the moment it was transmitted, silence where nothing played. That
  * is what choppy sounds like, and it is the same file before and after a
@@ -23,6 +28,7 @@
 #include "dsp_pipeline.h"
 #include "imbe_shim.h"
 #include "p25_voice_hold.h"
+#include "p25_symbol_synth.h"
 #include <errno.h>
 #include <math.h>
 #include <stdarg.h>
@@ -52,11 +58,24 @@ static struct {
     mbe_parms cur, prev, enhanced;
     const uint8_t *iq;
     size_t iq_bytes, offset, chunk;
+    int dibits_in;
 } r;
 
 void dsd_yield(void)
 {
     if (r.offset >= r.iq_bytes) { exitflag = 1; dsd_abort = 1; return; }
+    if (r.dibits_in) {
+        /* 100 symbols a call: 1000 samples, well inside the ring. */
+        for (int k = 0; k < 100 && r.offset < r.iq_bytes; k++, r.offset++) {
+            int16_t out[P25_SYNTH_SAMPLES_PER_SYMBOL];
+            p25_symbol_synth((r.iq[r.offset / 4] >> (6 - (r.offset % 4) * 2)) & 3, out);
+            for (int i = 0; i < P25_SYNTH_SAMPLES_PER_SYMBOL; i++) {
+                r.ring.buf[r.ring.write_idx] = out[i];
+                r.ring.write_idx = (r.ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
+            }
+        }
+        return;
+    }
     int16_t out[4096];
     size_t n = r.iq_bytes - r.offset;
     if (n > r.chunk) n = r.chunk;
@@ -76,6 +95,7 @@ static double air_seconds(void)
 {
     int queued = (r.ring.write_idx - r.ring.read_idx + DSD_SAMPLE_RING_SIZE)
                  % DSD_SAMPLE_RING_SIZE;
+    if (r.dibits_in) return (double)r.offset / 4800.0 - queued / 48000.0;
     return (double)r.offset / 2.0 / 240000.0 - queued / 48000.0;
 }
 
@@ -122,13 +142,15 @@ static void wav_write(const char *path, const int16_t *pcm, size_t n)
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt]\n");
+        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin | dibits.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt] [--dibits] [--unproven]\n");
         return 2;
     }
     const char *wav = NULL;
-    int list = 0;
+    int list = 0, unproven = 0;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--frames")) list = 1;
+        else if (!strcmp(argv[i], "--dibits")) r.dibits_in = 1;
+        else if (!strcmp(argv[i], "--unproven")) unproven = 1;
         else if (!strcmp(argv[i], "--symbols") && i + 1 < argc) {
             s_symf = fopen(argv[++i], "w");
             dsd_set_symbol_observer(symbol_observer);
@@ -137,17 +159,19 @@ int main(int argc, char **argv)
     }
     char *end; errno = 0;
     float gain = strtof(argv[2], &end);
-    if (errno || *end || !isfinite(gain) || gain == 0) { fputs("bad demod gain\n", stderr); return 2; }
+    if (errno || *end || !isfinite(gain) || (gain == 0 && !r.dibits_in)) { fputs("bad demod gain\n", stderr); return 2; }
 
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 2; }
     fseek(f, 0, SEEK_END); long bytes = ftell(f); fseek(f, 0, SEEK_SET);
-    if (bytes <= 0 || (bytes & 1)) { fputs("capture must hold whole IQ pairs\n", stderr); return 2; }
+    if (bytes <= 0 || (!r.dibits_in && (bytes & 1))) { fputs("capture must hold whole IQ pairs\n", stderr); return 2; }
     uint8_t *iq = malloc((size_t)bytes);
     if (!iq || fread(iq, 1, (size_t)bytes, f) != (size_t)bytes) { fputs("read failed\n", stderr); return 2; }
     fclose(f);
 
+    const int dibits_in = r.dibits_in;
     memset(&r, 0, sizeof(r));
+    r.dibits_in = dibits_in;
     r.state.dibit_buf = r.dibits;
     r.state.audio_out_buf = r.audio;
     r.state.audio_out_float_buf = r.audio_float;
@@ -157,16 +181,17 @@ int main(int argc, char **argv)
     r.opts.mod_qpsk = 0; r.opts.mod_gfsk = 0;
     r.opts.ring = &r.ring;
     r.opts.verbose = 0;
+    r.opts.play_unproven = unproven;
     r.state.pcm_out_buf = r.pcm;
     r.state.pcm_out_size = 2000;
     dsp_init(&r.dsp);
     dsp_set_mode(&r.dsp, DEMOD_C4FM);
     dsp_set_gain(&r.dsp, gain);
-    r.iq = iq; r.iq_bytes = (size_t)bytes; r.chunk = 2048;
+    r.iq = iq; r.iq_bytes = r.dibits_in ? (size_t)bytes * 4 : (size_t)bytes; r.chunk = 2048;
     imbe_shim_init();
     p25_voice_hold_reset(&r.hold);
 
-    const double dur = (double)bytes / 2.0 / 240000.0;
+    const double dur = r.dibits_in ? (double)bytes * 4 / 4800.0 : (double)bytes / 2.0 / 240000.0;
     const size_t timeline_n = (size_t)(dur * 8000.0) + 8000;
     int16_t *timeline = calloc(timeline_n, sizeof(int16_t));
 

@@ -5,6 +5,9 @@
    nothing about RF or about the silicon. */
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "lora_fakes.h"
 #include "ls_board.h"
@@ -24,7 +27,7 @@ static bool known_lr_opcode(uint16_t op)
         0x0001, 0x0105, 0x0106, 0x0112, 0x0113, 0x0115, 0x011C, 0x011E, 0x0122, 0x0206, 0x0207,
         0x021A, 0x0281, 0x0282, 0x0284, 0x0287, 0x0288,
         /* LoRa and GFSK packets, and the DC-DC workaround */
-        0x0104, 0x0212, 0x0220, 0x0221, 0x0223, 0x022A, 0x0240, 0x0241, 0x0244, 0x0247,
+        0x0104, 0x0212, 0x0220, 0x0221, 0x0223, 0x022A, 0x0240, 0x0241, 0x0244, 0x0246, 0x0247,
         /* Receive-only LoRa sides, Wi-SUN and Z-Wave. */
         0x0224, 0x0225, 0x0270, 0x0271, 0x0272, 0x0273,
         0x0297, 0x0298, 0x0299, 0x029A, 0x029C, 0x029D,
@@ -2527,6 +2530,283 @@ LS_CASE(fsk_sync_rssi_is_latched_status_and_average_remains_the_default)
     LS_EQ_INT(fk.tx_starts, 0);
     LS_EQ_INT(unknown_frames(), 0);
 }
+/* Run ls_lora_diagnostics() with stdout going to `out`. */
+static void diagnostics_text(char *out, size_t n)
+{
+    FILE *tmp = tmpfile();
+    LS_CHECK(tmp != NULL);
+    fflush(stdout);
+    const int saved = dup(1);
+    dup2(fileno(tmp), 1);
+    ls_lora_diagnostics();
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    rewind(tmp);
+    const size_t got = fread(out, 1, n - 1, tmp);
+    out[got] = 0;
+    fclose(tmp);
+}
+
+LS_CASE(fsk_preamble_detector_is_off_by_default_and_packs_the_length_in_bits)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_868), ESP_OK);
+    static const uint8_t off[7] = { 0x00, 0x40, 0x00, 0x00, 0x00, 0x08, 0x00 };
+    LS_CHECK(memcmp(fk.gfsk_pkt, off, 7) == 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+
+    /* The third byte after the opcode, behind the 2-byte preamble, is the
+       length itself and nothing else in the frame moves. */
+    static const uint8_t bits[] = { 8, 16, 24, 32 };
+    for (unsigned i = 0; i < sizeof(bits); i++) {
+        ls_fsk_cfg_t f = FSK_868;
+        f.preamble_detect_bits = bits[i];
+        LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+        const uint8_t want[7] = { 0x00, 0x40, bits[i], 0x00, 0x00, 0x08, 0x00 };
+        LS_CHECK(memcmp(fk.gfsk_pkt, want, 7) == 0);
+        LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+        LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    }
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(fsk_preamble_detector_refuses_other_lengths_before_touching_the_part)
+{
+    lora_up(NULL);
+    static const uint8_t bad[] = { 1, 4, 7, 12, 31, 33, 40, 64, 255 };
+    for (unsigned i = 0; i < sizeof(bad); i++) {
+        ls_fsk_cfg_t f = FSK_868;
+        f.preamble_detect_bits = bad[i];
+        LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    }
+    LS_EQ_INT(fk.nframes, 0);
+    LS_CHECK(!ls_lora_fsk_active());
+    LS_EQ_INT(lr20xx_gfsk_set_packet_fixed(64, 9, 8), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(lr20xx_gfsk_set_packet_fixed(64, 40, 8), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.nframes, 0);
+}
+
+LS_CASE(fsk_preamble_detector_is_receive_only_and_survives_a_restart)
+{
+    session_up();
+    ls_fsk_cfg_t f = FSK_868;
+    f.preamble_detect_bits = 16;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+    LS_EQ_UINT(fk.gfsk_pkt[2], 16);
+
+    /* A transmit goes out with the detector off, and listening again puts it back. */
+    const uint8_t msg[3] = { 0x55, 0x66, 0x77 };
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_send(msg, sizeof(msg)), ESP_OK);
+    int ix[16];
+    LS_EQ_INT(cmds(ix, 16), 6);
+    CMD(2, 0x02, 0x41, 0x00, 0x40, 0x00, 0x00, 0x00, 0x03, 0x00);
+    fk_tx_complete();
+    LS_CHECK(ls_lora_send_done());
+    LS_EQ_INT(ls_lora_fsk_receive(), ESP_OK);
+    LS_EQ_UINT(fk.gfsk_pkt[2], 16);
+    LS_EQ_UINT(fk.gfsk_pkt[5], 8);
+
+    /* The part restarts under the session: the poll programs it again, with the detector. */
+    memset(fk.gfsk_pkt, 0, sizeof(fk.gfsk_pkt));
+    fk.reset_src = 2;
+    uint8_t buf[16]; float rssi = 0;
+    LS_EQ_INT(ls_lora_fsk_poll(buf, sizeof(buf), &rssi), 0);
+    LS_EQ_UINT(fk.gfsk_pkt[2], 16);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+
+    /* A session after it that does not ask is off again. */
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_868), ESP_OK);
+    LS_EQ_UINT(fk.gfsk_pkt[2], 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    no_hf_transmit();
+}
+
+LS_CASE(fsk_rx_stats_are_unpacked_and_diagnostics_only_reads_them)
+{
+    session_up();
+    static const uint8_t raw[14] = { 0x01, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05,
+                                     0x00, 0x06, 0x00, 0x07, 0xFF, 0xFE };
+    memcpy(fk.gfsk_stats, raw, sizeof(raw));
+    lr20xx_gfsk_rx_stats_t st;
+    LS_EQ_INT(lr20xx_get_gfsk_rx_stats(&st), ESP_OK);
+    LS_EQ_UINT(st.received, 0x0102);   LS_EQ_UINT(st.crc_errors, 3);
+    LS_EQ_UINT(st.length_errors, 4);   LS_EQ_UINT(st.preamble_detections, 5);
+    LS_EQ_UINT(st.sync_ok, 6);         LS_EQ_UINT(st.sync_fail, 7);
+    LS_EQ_UINT(st.timeouts, 0xFFFE);
+
+    /* No session: the stats are not asked for. */
+    char text[2048];
+    const int reads = fk.gfsk_stats_reads;
+    diagnostics_text(text, sizeof(text));
+    LS_EQ_INT(fk.gfsk_stats_reads, reads);
+    LS_CHECK(strstr(text, "FSK rx stats") == NULL);
+
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_868), ESP_OK);
+    const int arms = fk.rx_arms;
+    fk.nframes = 0;
+    diagnostics_text(text, sizeof(text));
+    LS_EQ_INT(fk.gfsk_stats_reads, reads + 1);
+    LS_CHECK(strstr(text, "FSK rx stats: received=258 crc=3 length=4 preamble=5 sync-ok=6"
+                          " sync-fail=7 timeout=65534") != NULL);
+    LS_EQ_INT(fk.rx_arms, arms);                 /* the part was not armed again */
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(count_frames_with(0x02, 0x45), 0); /* nothing like a reset of the counters */
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(fk.violations, 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+}
+
+LS_CASE(fsk_diagnostics_leave_a_restart_for_the_poll_and_do_not_read_stats_through_it)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_868), ESP_OK);
+    char text[2048];
+    const int reads = fk.gfsk_stats_reads;
+
+    fk.reset_src = 2;                              /* restarted under the session */
+    diagnostics_text(text, sizeof(text));          /* its GetStatus clears the source */
+    LS_EQ_INT(fk.reset_src, 0);
+    LS_EQ_INT(fk.gfsk_stats_reads, reads);         /* a part with no packet type is not asked */
+    LS_CHECK(strstr(text, "FSK rx stats") == NULL);
+
+    memset(fk.gfsk_pkt, 0, sizeof(fk.gfsk_pkt));
+    fk.gfsk_pkt_set = false;
+    uint8_t buf[16]; float rssi = 0;
+    LS_EQ_INT(ls_lora_fsk_poll(buf, sizeof(buf), &rssi), 0);
+    LS_CHECK(fk.gfsk_pkt_set);                     /* the poll still saw it, and programmed again */
+    LS_EQ_UINT(fk.gfsk_pkt[5], 8);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+}
+
+/* P25 on the LR2021: C4FM sampled at 19200 bps behind an 8-bit trigger
+   word, with no packet length of its own. */
+static const ls_fsk_cfg_t FSK_STREAM = {
+    .freq_hz = 154785000, .bitrate = 19200, .deviation_hz = 1800, .bandwidth_hz = 12019,
+    .sync_word = 0xCC000000, .sync_bits = 8, .stream = true,
+};
+
+/* `n` bytes arrive in the Rx FIFO, counting up from `first`, with no RxDone. */
+static void stream_arrives(uint8_t first, int n)
+{
+    for (int i = 0; i < n && fk.fifo_n < 256; i++) fk.fifo[fk.fifo_n++] = (uint8_t)(first + i);
+}
+
+LS_CASE(fsk_stream_asks_for_the_longest_packet_behind_an_eight_bit_trigger)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    /* 32 preamble bits to send, the detector off, fixed length 0xFFFF. */
+    static const uint8_t pkt[7] = { 0x00, 0x20, 0x00, 0x00, 0xFF, 0xFF, 0x00 };
+    LS_CHECK(memcmp(fk.gfsk_pkt, pkt, 7) == 0);
+    static const uint8_t sync[9] = { 0, 0, 0, 0, 0, 0, 0, 0xCC, 0x88 };
+    LS_CHECK(memcmp(fk.gfsk_sync, sync, 9) == 0);
+    static const uint8_t rate[4] = { 0x00, 0x00, 0x4B, 0x00 };   /* 19200 bps */
+    LS_CHECK(memcmp(fk.gfsk_mod, rate, 4) == 0);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+
+    /* A stream only listens, and has no packets to poll. */
+    uint8_t buf[300]; float rssi = 0;
+    LS_EQ_INT(ls_lora_fsk_poll(buf, sizeof(buf), &rssi), -1);
+    const uint8_t msg[2] = { 1, 2 };
+    LS_EQ_INT(ls_lora_fsk_send(msg, sizeof(msg)), ESP_ERR_INVALID_STATE);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+
+    /* The filter rule is a packet session's: the same numbers without
+       stream are refused, 19200 + 2 x 1800 being wider than 12019. */
+    ls_fsk_cfg_t f = FSK_STREAM;
+    f.stream = false;
+    f.payload_bytes = 8;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    f = FSK_STREAM;
+    f.rssi_at_sync = true;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    no_hf_transmit();
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(fsk_stream_hands_over_bytes_as_they_arrive_and_marks_each_new_packet)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    uint8_t buf[512];
+    bool restarted = true;
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 0);
+    LS_CHECK(!restarted);
+
+    stream_arrives(0x10, 40);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 40);
+    LS_CHECK(restarted);                           /* the first bytes of a packet */
+    LS_EQ_UINT(buf[0], 0x10);
+    LS_EQ_UINT(buf[39], 0x10 + 39);
+    stream_arrives(0x40, 30);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 30);
+    LS_CHECK(!restarted);                          /* these follow them */
+
+    /* The packet ends at 100 bytes: 30 of its own are left, and 5 behind
+       them are not its own. Those 30 are read, and Rx is armed again from
+       an empty buffer. */
+    stream_arrives(0x60, 35);
+    fk.rx_pkt_len = 100;
+    fk.irq |= (1u << 18);
+    const int arms = fk.rx_arms;
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 30);
+    LS_CHECK(!restarted);
+    LS_EQ_UINT(buf[29], 0x60 + 29);
+    LS_EQ_INT(fk.rx_arms, arms + 1);
+    LS_EQ_INT(fk.fifo_n, 0);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+
+    stream_arrives(0x80, 10);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 10);
+    LS_CHECK(restarted);                           /* the next packet */
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(fsk_stream_marks_what_follows_a_full_buffer_as_not_continuing)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    uint8_t buf[512];
+    bool restarted = false;
+    stream_arrives(0, 10);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 10);
+    stream_arrives(0, 256);                        /* full: what came after it was lost */
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 256);
+    LS_CHECK(!restarted);                          /* these still follow the last */
+    stream_arrives(0, 20);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 20);
+    LS_CHECK(restarted);                           /* these do not */
+
+    /* The part restarts under the stream: programmed again, and a new packet. */
+    fk.reset_src = 2;
+    memset(fk.gfsk_pkt, 0, sizeof(fk.gfsk_pkt));
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 0);
+    LS_EQ_UINT(fk.gfsk_pkt[4], 0xFF);
+    LS_EQ_UINT(fk.gfsk_pkt[5], 0xFF);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    stream_arrives(0, 5);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 5);
+    LS_CHECK(restarted);
+
+    /* A buffer smaller than the part's own is refused, and so is a read
+       with no stream. */
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, 100, &restarted), -1);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), -1);
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_868), ESP_OK);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), -1);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(fk.violations, 0);
+}
+
 LS_CASE(dme_ook_tuning_uses_only_lf_receive_through_1213_mhz)
 {
     session_up();

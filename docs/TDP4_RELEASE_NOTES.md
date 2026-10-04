@@ -1,11 +1,20 @@
 # LakeShark release notes
 
+## 2.8.0
+
+- P25 on the LR2021: the LR2021 version of the T-Display P4 decodes P25 Phase 1 voice by itself, with no SDR. Open P25 and it listens on the LR2021 whenever no SDR is plugged in, or pick it with RADIO. 150 MHz and up.
+- P25 shows the LR2021's signal strength and stream rate while it is the receiver.
+- PAGER RECON: POCSAG on VHF from the LR2021, from 150 MHz. POCSAG probes listen behind the LR2021's preamble detector, and OPTIONS > PROBE holds a one-frequency run on one rate and polarity. The console run also sets the filter, deviation and detector, and takes up to three batches in one capture.
+- P25 SITE FINDER listens from 150 MHz, VHF sites included, and its console run sets the polarity, filter, deviation and detector.
+- LoRa chip: FSK sessions can stream every received bit and set the LR2021's preamble detector. `lora` shows an FSK session's receive counters.
+- COMPASS points calibration at OPTIONS, and SUB-GHZ READ RAW names both SDRs.
+
 ## 2.7.1
 
 - HackRF One: FM, pagers, ACARS, P25 and REC can use it as their SDR. Rates below 2 MSPS run by decimation, and pagers decode the same pages as on an RTL-SDR.
 - HackRF One: gain reaches 113 dB in P25, FM, REC and ADS-B, split between LNA and VGA. SUB-GHZ READ captures from it too.
 - HOME, RADIOS and the value readers show whichever SDR is plugged in.
-- Speech: a female voice, the third choice in Settings > Voice and `say voice female`.
+- Speech: a female voice, the third choice in Settings > Sound > Voice and `say voice female`.
 - OPTIONS: MESH and ADS-B settings open in layers with BACK, and levels step with < and >. MESH SETUP is now part of OPTIONS.
 - Settings: Volume, Brightness, Mute and Screen lock up front, the rest in DISPLAY, SOUND and DEVICE menus with BACK. Volume and Brightness step from a tap on either half of their box, and turning the volume unmutes.
 - Settings: Voice uses the same lists, and mesh voice can speak direct messages only.

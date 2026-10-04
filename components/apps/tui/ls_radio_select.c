@@ -127,7 +127,9 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
         if (is_sdr(r)) return NULL;
         return kind ? kind : "No AM receiver for 131 MHz";
     case LS_RSEL_P25:
+        /* The LR2021 samples C4FM as a bit stream: Phase 1 voice. */
         if (is_sdr(r)) return NULL;
+        if (r == LS_RSEL_LORA) return lora_has(LS_LORA_CAP_FSK_STREAM) ? NULL : "P25 needs the LR2021";
         return kind ? kind : "No IQ stream to decode P25";
     case LS_RSEL_ADSB:
         if (is_sdr(r)) return NULL;
@@ -199,7 +201,7 @@ static const order_t ORDER[LS_RSEL_JOBS] = {
     [LS_RSEL_FM]           = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
     [LS_RSEL_PAGER]        = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ACARS]        = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
-    [LS_RSEL_P25]          = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
+    [LS_RSEL_P25]          = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ADSB]         = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_READ]  = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_CC1101, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_SWEEP] = { 1, { LS_RSEL_LORA } },

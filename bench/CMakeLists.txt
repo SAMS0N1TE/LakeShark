@@ -1502,6 +1502,7 @@ target_include_directories(test_usb_autoreboot_pref PRIVATE
     ${FW}/components/lakeshark/core)
 
 ls_add_test(test_p25_ldu2_ess ${APP}/p25/p25p1_ldu2.c ${APP}/p25/p25_ess.c)
+ls_add_test(test_p25_os4_decode ${APP}/p25/p25_os4_decode.c)
 ls_add_test(test_p25_hdu_ess ${APP}/p25/p25p1_hdu.c
     ${APP}/p25/p25p1_ldu.c ${APP}/p25/p25_ess.c)
 ls_add_test(test_location_pref)
@@ -1715,6 +1716,7 @@ set(P25_VOICE_REPLAY_SOURCES
     ${APP}/p25/p25_cqpsk_controls.c
     ${APP}/p25/p25_acquisition.c
     ${APP}/p25/p25_voice_hold.c
+    ${APP}/p25/p25_symbol_synth.c
     ${FW}/components/mbelib/mbelib.c
     ${FW}/components/mbelib/ecc.c
     ${FW}/components/mbelib/imbe7200x4400.c

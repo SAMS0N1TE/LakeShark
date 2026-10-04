@@ -22,7 +22,7 @@ void ls_rsel_hw(ls_rsel_hw_t *out) { *out = s_board; }
 void ls_rsel_hw_restart(void) { s_restarts++; }
 
 #define SX_CAPS (LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_OOK_RX | LS_LORA_CAP_RSSI_INST)
-#define LR_CAPS (SX_CAPS | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_WIDE_RX_BW)
+#define LR_CAPS (SX_CAPS | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_FSK_STREAM)
 
 /* The usual bench: an RTL-SDR, an SX1262 and the GPS. */
 static void board(bool rtl, bool hackrf, int lora)   /* lora: 0 none, 1 SX1262, 2 LR2021 */
@@ -122,6 +122,20 @@ LS_CASE(the_keyboard_radios_count_as_there_until_the_board_is_probed)
     LS_CHECK(ls_rsel_absent(LS_RSEL_CC1101) != NULL);
 }
 
+LS_CASE(p25_on_the_lora_chip_is_the_lr2021s)
+{
+    fresh(false, false, 1);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_LORA) != NULL);
+    fresh(false, false, 2);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_LORA) == NULL);
+    /* No dongle: P25 goes to the LR2021. A dongle comes first. */
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
+    fresh(true, false, 2);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_SDR_RTL);
+    ls_rsel_set(LS_RSEL_P25, LS_RSEL_LORA);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
+}
+
 LS_CASE(mode_s_is_the_lr2021s_and_not_the_sx1262s)
 {
     fresh(false, false, 1);
@@ -135,7 +149,7 @@ LS_CASE(mode_s_is_the_lr2021s_and_not_the_sx1262s)
 LS_CASE(each_job_takes_only_the_radios_that_can_run_it)
 {
     fresh(true, true, 1);
-    /* Audio and P25 want an IQ stream. */
+    /* Audio wants an IQ stream; P25 one, or the LR2021's bit stream. */
     LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_SDR_HACKRF) == NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) != NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_LORA) != NULL);

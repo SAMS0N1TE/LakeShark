@@ -153,6 +153,8 @@ typedef struct {
     int8_t   lora_snr_q;           /* GetLoraPacketStatus: SNR in quarter dB    */
     uint8_t  lora_rssi_hi, lora_rssi_flags;   /* RSSI(8:1), and its bit 0 in bit 1 */
     uint8_t  gfsk_rssi_avg, gfsk_rssi_flags;
+    uint8_t  gfsk_stats[14];       /* GetFskRxStats: seven big-endian counters  */
+    int      gfsk_stats_reads;
     /* The transmitter. hf_pa counts anything that selects, configures or
        powers the HF PA; tx_hf counts a SetTx accepted at 1 GHz or above. */
     uint8_t  pa_sel, pa_cfg[3], tx_params[2];
@@ -216,7 +218,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
 
     if (fk.read_pending) {
         /* Frame 2. */
-        uint8_t d[9] = { 0 };
+        uint8_t d[16] = { 0 };
         size_t n = 0;
         switch (fk.read_op) {
         case 0x0101: d[0] = fk.fw_major; d[1] = fk.fw_minor; n = 2; break;
@@ -242,6 +244,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         case 0x0272: case 0x0299: memcpy(d,fk.engine_stats,6); n = 6; break;
         case 0x0247: d[0] = (uint8_t)(fk.rx_pkt_len >> 8); d[1] = (uint8_t)fk.rx_pkt_len;
                      d[2] = fk.gfsk_rssi_avg; d[3] = fk.gfsk_rssi_avg; d[4] = fk.gfsk_rssi_flags; n = 6; break;
+        case 0x0246: memcpy(d, fk.gfsk_stats, 14); n = 14; fk.gfsk_stats_reads++; break;
         case 0x0117:
             d[0] = (uint8_t)(fk.irq >> 24); d[1] = (uint8_t)(fk.irq >> 16);
             d[2] = (uint8_t)(fk.irq >> 8);  d[3] = (uint8_t)fk.irq; n = 4;
@@ -291,7 +294,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         if (fk.has_next_mode) { fk.mode = fk.next_mode; fk.has_next_mode = false; }
         return;
     case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x0287: case 0x0106:
-    case 0x0212: case 0x022A: case 0x0247: case 0x0272: case 0x0273: case 0x0299: case 0x029A:
+    case 0x0212: case 0x022A: case 0x0246: case 0x0247: case 0x0272: case 0x0273: case 0x0299: case 0x029A:
         fk.read_pending = true;
         fk.read_op = op;
         if (op == 0x0106) fk.read_addr = ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 8) | t[4];

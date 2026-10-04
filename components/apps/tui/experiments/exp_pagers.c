@@ -33,7 +33,7 @@
 #include "pager_recon.h"
 #include "pocsag.h"
 
-#define MHZ_LO 200.0
+#define MHZ_LO 150.0
 #define MHZ_HI 1100.0
 #define CHECK_MS   40          /* the RSSI look before deciding to listen    */
 #define MARGIN_DB  6.0f        /* above the floor is a carrier               */
@@ -44,6 +44,9 @@
 #define ROWS 10
 #define PAGES 3
 #define FILTER_HZ 11700u       /* Carson for 2400 bps at 4.5 kHz, rounded up */
+#define BURST_MAX 3            /* batches in an opt-in fixed-length capture   */
+#define SYNC_BYTES 4           /* the frame sync that opens every batch       */
+#define BURST_BYTES(n) ((n) * PGR_BATCH_BYTES + ((n) - 1) * SYNC_BYTES)
 
 extern const ls_experiment_t exp_pagers;
 
@@ -57,6 +60,16 @@ static volatile int s_set_dwell = 6;
 static volatile bool s_set_text;
 /* A frequency given on the console is for that one run: OPTIONS keep theirs. */
 static volatile uint32_t s_once_hz;
+/* The probe a ONE FREQ run listens with, from OPTIONS; -1 steps through them
+   all, as a scan does. */
+static volatile int s_set_probe = -1;
+/* Optional receive-only bench overrides, consumed by the next start. */
+static int s_once_probe = -1, s_fixed_probe = -1;
+static uint32_t s_once_bw, s_once_dev, s_rx_bw = FILTER_HZ, s_rx_dev;
+/* The preamble detector in bits, or -1 for the probe's own (detector_bits). */
+static int s_once_detect = -1, s_rx_detect = -1;
+/* Batches per fixed-length capture: 1 is the ordinary one-batch session. */
+static uint8_t s_once_batches, s_rx_batches = 1;
 
 /* ------------------------------------------------------------- state -- */
 
@@ -80,7 +93,7 @@ typedef enum { ST_HOP, ST_CHECK, ST_LISTEN, ST_STOPPED } st_t;
 
 static EXT_RAM_BSS_ATTR chan_t s_ch[PGR_CH_MAX];
 static EXT_RAM_BSS_ATTR float s_levels[PGR_CH_MAX];
-static EXT_RAM_BSS_ATTR uint8_t s_buf[PGR_BATCH_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t s_buf[BURST_BYTES(BURST_MAX)];
 static int s_n, s_plan, s_cur, s_probe, s_pass, s_dwell_s;
 static bool s_single, s_session, s_text_on;
 static st_t s_st;
@@ -245,6 +258,22 @@ static void set_now(float dbm)
 
 /* ------------------------------------------------------------- radio -- */
 
+/* What the radio is asked to hand over per packet for this probe. */
+static uint8_t probe_payload(const pgr_probe_t *p)
+{
+    return (uint8_t)(p->kind == PGR_POCSAG ? BURST_BYTES(s_rx_batches) : p->payload_bytes);
+}
+
+/* A POCSAG probe listens behind a 16-bit preamble detector on a part that
+   has one: the LR2021 decodes no batch with it off, live or from a bench
+   transmitter, and the first batch after each preamble with it on. FLEX
+   and parts without the detector keep it off. */
+static uint8_t detector_bits(const pgr_probe_t *p)
+{
+    if (s_rx_detect >= 0) return (uint8_t)s_rx_detect;
+    return p->kind == PGR_POCSAG && (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0;
+}
+
 static esp_err_t open_session(uint32_t hz, int probe)
 {
     if (s_session) { ls_lora_fsk_end(); s_session = false; }
@@ -252,10 +281,11 @@ static esp_err_t open_session(uint32_t hz, int probe)
     const ls_fsk_cfg_t cfg = {
         .freq_hz = hz,
         .bitrate = p->baud,
-        .deviation_hz = p->deviation_hz,
-        .bandwidth_hz = ls_lora_fsk_bw_snap(FILTER_HZ),
+        .deviation_hz = s_rx_dev ? s_rx_dev : p->deviation_hz,
+        .bandwidth_hz = ls_lora_fsk_bw_snap(s_rx_bw),
         .sync_word = p->sync_word,
-        .payload_bytes = p->payload_bytes,
+        .payload_bytes = probe_payload(p),
+        .preamble_detect_bits = detector_bits(p),
     };
     const esp_err_t err = ls_lora_fsk_begin(&cfg);
     s_session = err == ESP_OK;
@@ -267,6 +297,7 @@ static bool flex_channel(const chan_t *c) { return c->flex >= 2 && c->lock < 0; 
 
 static int first_probe(const chan_t *c)
 {
+    if (s_fixed_probe >= 0) return s_fixed_probe;
     if (c->lock >= 0) return c->lock;
     if (flex_channel(c)) return pgr_probe_is_flex(c->next_probe) ? c->next_probe : 6;
     return c->next_probe;
@@ -327,6 +358,40 @@ static void take_pages(uint32_t hz, uint32_t before)
     if (s_n_pages > PAGES) s_n_pages = PAGES;
 }
 
+/* One POCSAG batch the radio delivered, counted when it is real; returns
+   whether it was. `k` is its place in the capture and `prev_ok` whether the
+   batch just before it was accepted: only then does it continue a message. */
+static bool take_batch(int64_t now, chan_t *c, const pgr_probe_t *p, const uint8_t *data, int k, bool prev_ok)
+{
+    pgr_batch_t b;
+    pgr_scan_batch(data, p->inverted, &b);
+    if (!pgr_batch_real(&b)) return false;
+    c->frames++;
+    c->codewords += 16;
+    c->fixed += b.fixed;
+    c->bad += b.bad;
+    for (int i = 0; i < b.n_caps; i++) pgr_capset_add(&c->caps, b.caps[i]);
+    c->last_us = now;
+    c->lock = (int8_t)s_probe;
+    c->quiet = 0;
+    c->probes_seen |= (uint8_t)(1u << s_probe);
+    s_visit_frames++;
+
+    if (s_text) {
+        /* A batch is 544 bits; one that follows the last by about that is
+           the same transmission, which keeps a message whole across it. */
+        const int64_t period = 544LL * 1000000 / p->baud;
+        const bool contiguous = k ? prev_ok :
+            (s_last_batch_us && llabs(now - s_last_batch_us - period) <= period / 10 + 20000);
+        const uint32_t before = pocsag_n_pages(s_text);
+        pocsag_set_baud(s_text, p->baud);
+        pocsag_process_batch(s_text, data, PGR_BATCH_BYTES, p->inverted, contiguous);
+        take_pages(c->hz, before);
+    }
+    s_last_batch_us = now;
+    return true;
+}
+
 static void on_packet(int64_t now, const uint8_t *data)
 {
     chan_t *c = &s_ch[s_cur];
@@ -344,31 +409,27 @@ static void on_packet(int64_t now, const uint8_t *data)
         if (!s_single) s_dwell_end = now;
         return;
     }
-    pgr_batch_t b;
-    pgr_scan_batch(data, p->inverted, &b);
-    if (!pgr_batch_real(&b)) return;
-    c->frames++;
-    c->codewords += 16;
-    c->fixed += b.fixed;
-    c->bad += b.bad;
-    for (int i = 0; i < b.n_caps; i++) pgr_capset_add(&c->caps, b.caps[i]);
-    c->last_us = now;
-    c->lock = (int8_t)s_probe;
-    c->quiet = 0;
-    c->probes_seen |= (uint8_t)(1u << s_probe);
-    s_visit_frames++;
-
-    if (s_text) {
-        /* A batch is 544 bits; one that follows the last by about that is
-           the same transmission, which keeps a message whole across it. */
-        const int64_t period = 544LL * 1000000 / p->baud;
-        const bool contiguous = s_last_batch_us && llabs(now - s_last_batch_us - period) <= period / 10 + 20000;
-        const uint32_t before = pocsag_n_pages(s_text);
-        pocsag_set_baud(s_text, p->baud);
-        pocsag_process_batch(s_text, data, PGR_BATCH_BYTES, p->inverted, contiguous);
-        take_pages(c->hz, before);
+    /* A fixed-length capture is s_rx_batches batches with the next frame
+       sync in front of each after the first. The hardware matched only the
+       first sync, so each later one is checked here, and the first that is
+       not exact ends the walk: what follows it cannot be trusted to be
+       aligned. Batches before it were whole and stay counted. A batch that
+       is not accepted breaks message continuity, so a later one cannot
+       splice a page across the data between. */
+    const int batches = s_rx_batches;
+    bool prev_ok = false;
+    for (int k = 0; k < batches; k++) {
+        const uint8_t *at = data + k * (PGR_BATCH_BYTES + SYNC_BYTES);
+        if (k) {
+            const uint8_t *sync = at - SYNC_BYTES;
+            const uint32_t w = p->sync_word;
+            const uint8_t want[SYNC_BYTES] = { (uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w };
+            if (memcmp(sync, want, SYNC_BYTES)) { s_last_batch_us = 0; break; }
+            c->syncs++;
+        }
+        prev_ok = take_batch(now, c, p, at, k, prev_ok);
+        if (batches > 1 && !prev_ok) s_last_batch_us = 0;
     }
-    s_last_batch_us = now;
 }
 
 /* -------------------------------------------------------- experiment -- */
@@ -387,6 +448,15 @@ static bool pagers_start(char *why, size_t n)
 
     const uint32_t once = s_once_hz;
     s_once_hz = 0;
+    s_fixed_probe = once ? s_once_probe : s_set_plan == PGR_PLAN_N ? s_set_probe : -1;
+    s_rx_bw = once && s_once_bw ? s_once_bw : FILTER_HZ;
+    s_rx_dev = once ? s_once_dev : 0;
+    s_rx_detect = once ? s_once_detect : -1;
+    s_rx_batches = once && s_once_batches ? s_once_batches : 1;
+    s_once_probe = -1;
+    s_once_bw = s_once_dev = 0;
+    s_once_detect = -1;
+    s_once_batches = 0;
     const int plan = once ? PGR_PLAN_N : s_set_plan;
     memset(s_ch, 0, sizeof(s_ch));
     uint32_t *hz = s_plan_hz;
@@ -500,7 +570,9 @@ static void poll_listen(int64_t now)
     chan_t *c = &s_ch[s_cur];
     float rssi;
     const int got = ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi);
-    if (got > 0) on_packet(now, s_buf);
+    /* Only a read of exactly the configured length is a packet: a short one
+       would be parsed with whatever an earlier packet left in the buffer. */
+    if (got > 0 && got == (int)probe_payload(pgr_probe(s_probe))) on_packet(now, s_buf);
 
     if (now - s_now_t >= NOW_MS * 1000) {
         s_now_t = now;
@@ -518,12 +590,12 @@ static void poll_listen(int64_t now)
     if (!s_single && now >= s_dwell_end) { next_channel(now); return; }
 
     /* One frequency, locked, gone quiet for a minute: probe again. */
-    if (s_single && c->lock >= 0 && c->last_us >= 0 && now - c->last_us > SINGLE_QUIET_US) {
+    if (s_single && s_fixed_probe < 0 && c->lock >= 0 && c->last_us >= 0 && now - c->last_us > SINGLE_QUIET_US) {
         c->lock = -1;
         c->next_probe = (uint8_t)((s_probe + 1) % PGR_N_PROBES);
         s_slice_end = now;
     }
-    if (c->lock < 0 && now >= s_slice_end) {
+    if (s_fixed_probe < 0 && c->lock < 0 && now >= s_slice_end) {
         /* Step to the next probe on the same channel. A FLEX channel only
            has the FLEX probes to step through. */
         int p = (s_probe + 1) % PGR_N_PROBES;
@@ -708,17 +780,71 @@ static bool parse_mhz(const char *text, double *mhz)
 }
 
 /* `exp pagers start 929.6125` listens to one channel for that run;
-   `exp pagers start uhf` or `onsite` picks the plan. No argument scans the
-   plan OPTIONS has. */
+   `... MHz probe BW dev detect` also pins the probe, the filter, the
+   deviation and the LR2021's preamble detector in bits (0 off, 8/16/24/32;
+   left out, detector_bits decides). A sixth
+   argument, `batches` 1-3, asks a fixed POCSAG probe for that many batches
+   in one capture (132 bytes for 2, 200 for 3, each later batch behind its
+   own frame sync, which is checked); nothing is delivered until the whole
+   capture has arrived. `exp pagers start uhf` or `onsite` picks the plan.
+   No argument scans the plan OPTIONS has. */
 static bool pagers_configure(int argc, char **argv, char *why, size_t n)
 {
     double mhz;
+    s_once_hz = s_once_bw = s_once_dev = s_once_batches = 0;
+    s_once_detect = s_once_probe = -1;
     if (argc == 1 && !strcmp(argv[0], "uhf")) { s_set_plan = PGR_PLAN_UHF; return true; }
     if (argc == 1 && !strcmp(argv[0], "onsite")) { s_set_plan = PGR_PLAN_ONSITE; return true; }
-    if (argc != 1 || !parse_mhz(argv[0], &mhz)) {
-        snprintf(why, n, "one frequency %.0f-%.0f MHz, or uhf or onsite", MHZ_LO, MHZ_HI);
+    if (argc < 1 || argc > 6 || !parse_mhz(argv[0], &mhz)) {
+        snprintf(why, n, "%.0f-%.0f MHz [probe [BW [dev [detect 0|8|16|24|32 [batches 1-3]]]]] | uhf | onsite",
+                 MHZ_LO, MHZ_HI);
         return false;
     }
+    int probe = -1;
+    uint32_t bw = FILTER_HZ, dev = 0;
+    if (argc >= 2) {
+        for (int i = 0; i < PGR_N_PROBES; i++)
+            if (!strcmp(argv[1], pgr_probe(i)->tag)) probe = i;
+        if (probe < 0) { snprintf(why, n, "probe: 512N/I, 1200N/I, 2400N/I, FLEXN/I"); return false; }
+        dev = pgr_probe(probe)->deviation_hz;
+    }
+    for (int i = 2; i < argc && i < 4; i++) {
+        char *end;
+        const unsigned long v = strtoul(argv[i], &end, 10);
+        if (end == argv[i] || *end || v < 600 || v > 200000) {
+            snprintf(why, n, "BW/deviation must be 600-200000 Hz"); return false;
+        }
+        if (i == 2) bw = (uint32_t)v; else dev = (uint32_t)v;
+    }
+    if (probe >= 0 && bw < pgr_probe(probe)->baud + 2 * dev) {
+        snprintf(why, n, "filter must contain bitrate + 2*deviation"); return false;
+    }
+    int detect = -1;
+    if (argc >= 5) {
+        char *end;
+        const unsigned long v = strtoul(argv[4], &end, 10);
+        if (end == argv[4] || *end || v > 32 || v % 8) {
+            snprintf(why, n, "detect bits: 0 (off), 8, 16, 24 or 32"); return false;
+        }
+        detect = (int)v;
+    }
+    uint8_t batches = 1;
+    if (argc == 6) {
+        char *end;
+        const unsigned long v = strtoul(argv[5], &end, 10);
+        if (end == argv[5] || *end || v < 1 || v > BURST_MAX) {
+            snprintf(why, n, "batches: 1 (default), 2 or 3"); return false;
+        }
+        if (v > 1 && pgr_probe_is_flex(probe)) {
+            snprintf(why, n, "batches 2-3 need a fixed POCSAG probe, not FLEX"); return false;
+        }
+        batches = (uint8_t)v;
+    }
+    s_once_probe = probe;
+    s_once_batches = batches;
+    s_once_bw = bw;
+    s_once_dev = dev;
+    s_once_detect = detect;
     s_once_hz = (uint32_t)(mhz * 1e6 + 0.5);
     return true;
 }
@@ -745,6 +871,19 @@ static double o_dwell(const ls_opt_t *o) { (void)o; return s_set_dwell; }
 static void o_set_dwell(const ls_opt_t *o, double v) { (void)o; s_set_dwell = (int)(v + 0.5); restart(); }
 static void o_show_dwell(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%d s", s_set_dwell); }
 
+/* A known channel is heard on its own probe far more often than by
+   stepping through all eight, each listening a twelfth of the time. In the
+   order of the probe table. */
+static const char *const PROBE_NAMES[PGR_N_PROBES + 1] = {
+    "AUTO", "1200N", "1200I", "512N", "512I", "2400N", "2400I", "FLEXN", "FLEXI" };
+static int o_probe(const ls_opt_t *o) { (void)o; return s_set_probe + 1; }
+static void o_set_probe(const ls_opt_t *o, int v)
+{
+    (void)o;
+    s_set_probe = v <= 0 || v > PGR_N_PROBES ? -1 : v - 1;
+    restart();
+}
+
 static const char *const TEXT_NAMES[] = { "OFF", "SHOWN" };
 static int o_text(const ls_opt_t *o) { (void)o; return s_set_text ? 1 : 0; }
 static void o_set_text(const ls_opt_t *o, int v) { (void)o; s_set_text = v != 0; restart(); }
@@ -756,14 +895,16 @@ static const ls_opt_t OPTS[] = {
     { .label = "DWELL", .kind = LS_OPT_NUMBER, .num = o_dwell, .set_num = o_set_dwell,
       .lo = 2, .hi = 60, .unit = "seconds on a live channel", .show = o_show_dwell },
     { .label = "MESSAGE TEXT", .kind = LS_OPT_TOGGLE, .names = TEXT_NAMES, .get = o_text, .set = o_set_text },
+    { .label = "PROBE", .kind = LS_OPT_CYCLE, .names = PROBE_NAMES, .n = PGR_N_PROBES + 1,
+      .get = o_probe, .set = o_set_probe },
 };
 
 const ls_experiment_t exp_pagers = {
     .id = "pagers",
     .name = "PAGER RECON",
-    .sub = "POCSAG channels, 929/931/454 MHz",
+    .sub = "POCSAG channels, VHF and UHF",
     .maturity = LS_EXP_TRYING,
-    .needs = "a paging transmitter in range on UHF",
+    .needs = "a paging transmitter in range",
     .start = pagers_start,
     .stop = pagers_stop,
     .poll = pagers_poll,

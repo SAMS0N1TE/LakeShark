@@ -4,16 +4,20 @@
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
 
 > [!IMPORTANT]
-> **ADS-B with no RTL-SDR.** On the LR2021 version of the T-Display P4, the onboard LR2021 radio decodes aircraft by itself. Fit an antenna on its MMCX connector and open ADS-B; no dongle needed. New in 2.7.0.
+> **P25 voice with no SDR.** On the LR2021 version of the T-Display P4, the onboard LR2021 radio decodes P25 Phase 1 voice by itself and plays it on the speaker. Fit a VHF antenna on its MMCX connector, open P25 and tune the channel; no dongle needed. New in 2.8.0.
+>
+> **POCSAG on VHF.** PAGER RECON hears pagers on the LR2021 from 150 MHz up. New in 2.8.0.
+>
+> **ADS-B with no RTL-SDR.** The LR2021 also decodes aircraft by itself. New in 2.7.0.
 
-| T-Display P4 | Onboard radio does | ADS-B |
+| T-Display P4 | Onboard radio does | P25 and ADS-B |
 |---|---|---|
-| **SX1262** | MeshCore, LoRa Labs, POCSAG on the LoRa chip | needs an RTL-SDR |
-| **LR2021** | MeshCore, LoRa Labs, FSK and sweeps from 150 to 1100 MHz and 1500 to 2500 MHz | built in, or an RTL-SDR |
+| **SX1262** | MeshCore, LoRa Labs, POCSAG on the LoRa chip | need an RTL-SDR |
+| **LR2021** | MeshCore, LoRa Labs, VHF and UHF POCSAG, FSK and sweeps from 150 to 1100 MHz and 1500 to 2500 MHz | built in, or an RTL-SDR |
 
 LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
 
-Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 (or the LR2021 on that variant) runs MeshCore or LoRa Labs; the LR2021 also hears ADS-B on its own. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
+Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 (or the LR2021 on that variant) runs MeshCore or LoRa Labs; the LR2021 also decodes P25 voice and ADS-B on its own. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
 ## Start here
 
@@ -21,7 +25,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 1. **Check your board:** the primary build is for the **LilyGO T-Display P4 with the 4.1-inch 568 × 1232 AMOLED and 16 MB flash**. The SX1262 and LR2021 radio variants run the same firmware. Other display variants need different firmware. The keyboard is optional.
 2. **Flash from Chrome or Edge on a computer:** open the browser flasher and select your exact board. Follow the first flash guide for setup.
-3. **Choose your radio:** add an RTL-SDR Blog V3 or V4 for P25 Phase I, FM, POCSAG and ADS-B reception, or use the onboard SX1262 or LR2021 for MeshCore and LoRa tools. On the LR2021, ADS-B works without the RTL-SDR.
+3. **Choose your radio:** add an RTL-SDR Blog V3 or V4 for P25 Phase I, FM, POCSAG and ADS-B reception, or use the onboard SX1262 or LR2021 for MeshCore and LoRa tools. On the LR2021, P25 and ADS-B work without the RTL-SDR.
 
 **[Wiki and setup guides](https://terminalbay.com/?m=wiki)** · **[Project overview](https://terminalbay.com/?m=lakeshark-showcase)**
 
@@ -163,7 +167,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.7.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.7.1).** A HackRF One as the SDR for FM, pagers and P25, a female voice, layered OPTIONS for MESH and ADS-B, and a silent MUSIC pause. Experimental radio features remain marked.
+**Current P4 release: [2.8.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.8.0).** P25 Phase 1 voice from the onboard LR2021 with no SDR, and POCSAG on VHF in PAGER RECON. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

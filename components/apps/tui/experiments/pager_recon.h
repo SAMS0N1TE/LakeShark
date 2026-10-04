@@ -4,9 +4,11 @@
    hold it to real codewords.
 
    WHERE IT LISTENS, AND WHY THERE.
-   The LR2021 on this board is measured deaf below about 200 MHz, so the VHF
-   paging channels (152.24, 152.84, 157.74, 158.10, 158.70, 163.25 hospital
-   paging) are left out on purpose. What is left that carries pagers:
+   The scan plans are UHF only: the VHF paging channels (152.24, 152.84,
+   157.74, 158.10, 158.70, 163.25 hospital paging) are not in them. That is
+   the plans' choice, not the chip's range: a one-frequency run from the
+   console accepts 150 MHz and up, and the LR2021 receives VHF POCSAG there.
+   What the plans do cover:
 
      - 929.0125-929.9875 MHz, 40 channels on a 25 kHz raster: Part 90
        private carrier paging. A mix of FLEX networks and POCSAG.

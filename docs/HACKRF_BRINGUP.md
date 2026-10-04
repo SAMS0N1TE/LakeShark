@@ -68,8 +68,8 @@ a fixed 48 dB. `hackrf ppm <n>` corrects the reference; 0 has measured right.
   on live signals through the HackRF.
 - P25 gaps every few seconds on the HackRF (above) until the decimator runs on
   the other core.
-- ADS-B on the LR2021 board uses the LR2021 unless the HackRF is picked as its
-  radio.
+- ADS-B uses the radio picked in its RADIO list. With nothing picked it takes
+  an RTL-SDR first, then the HackRF, then the LR2021.
 - Gains saved for an RTL-SDR carry over and read low on the HackRF's scale.
 - CELL survey uses the RTL-SDR only.
 - No HackRF transmission was implemented or tested.

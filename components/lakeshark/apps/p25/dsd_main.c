@@ -78,6 +78,7 @@ void initOpts(dsd_opts *opts)
     opts->msize = 256;
     opts->use_cosine_filter = 1;
     opts->unmute_encrypted_p25 = 0;
+    opts->play_unproven = 0;
     opts->audio_gain = 0.0f;
     opts->audio_out = 1;
     opts->symboltiming = 0;

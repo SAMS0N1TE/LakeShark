@@ -29,6 +29,38 @@ talkgroup (link control), an LDU2 the encryption sync (ESS: algorithm, key,
 message indicator). A transmission opens with an HDU (82 ms, which also
 carries the ESS), alternates LDU1/LDU2, and closes with a TDU or TDULC.
 
+## On the LR2021, with no SDR
+
+The LR2021 version of the T-Display P4 decodes Phase 1 by itself. Its FSK
+engine has no four-level demodulator, so it samples C4FM as a bit stream,
+four bits a symbol, and the symbols are rebuilt on the board:
+
+```
+LR2021 FSK stream  --SPI-->  p25_rx task (core 1)
+19200 bps, 12 kHz filter     ls_lora_fsk_stream_read every 10 ms
+8-bit trigger word           p25_os4_decode     bits -> symbols
+                             p25_symbol_synth   symbol -> 10 samples
+                             -> sample ring ---------------->  dsd_decode, as above
+```
+
+- The engine's detector tracks the frequency rather than slicing it, so a
+  symbol's level is in its middle three bits: three ones +3, two +1, one -1,
+  none -3.
+- Where a symbol starts is decided by the frame syncs: all four bit phases
+  are decoded side by side, and the one that reproduces a 24-symbol frame
+  sync is used until another sync says otherwise. *Test:*
+  `test_p25_os4_decode`.
+- The part ends a packet every 8191 bytes (3.4 s) and the next starts at the
+  following match of the trigger word, within milliseconds. Each seam
+  resets the symbol decoder, and the frame-sync hunt picks the call up again
+  at the next frame.
+- Voice plays until a valid ESS shows the call encrypted
+  (`dsd_opts.play_unproven`): the hold would wait on an ESS the chip often
+  cannot deliver.
+- RADIO chooses the LR2021, and P25 takes it whenever no SDR is plugged in.
+  It listens from 150 MHz up. There is no spectrum, band scan or Phase 2
+  from it: those need IQ.
+
 ## What must stay true
 
 Each of these is a rule because its opposite shipped and was measured on the
@@ -219,6 +251,10 @@ The WAV is laid out on the air's own timeline, so choppiness is audible.
   needs a second frame to corroborate a NAC nobody has confirmed yet, so the
   SYNC lamp and P25QUAL start about 180 ms after the first frame. Voice is not
   delayed: every valid frame is decoded either way.
+- **On the LR2021, each 3.4 s packet seam costs up to one LDU**, and weak
+  calls and the first moments of a key-up go first. `p25_voice_replay
+  --dibits --unproven` replays a recorded stream of decoded symbols through
+  the decoder.
 - **Only one real call is in the corpus.** Every capture added makes every
   decision above better informed. Weak, fading and trunked-voice captures
   would be the most useful additions.

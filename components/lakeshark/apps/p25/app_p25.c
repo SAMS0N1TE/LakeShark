@@ -49,6 +49,9 @@
 #include "p25_p2_follow.h"
 #include "p25_voice_hold.h"
 #include "p25_sync_confirm.h"
+#include "p25_os4_decode.h"
+#include "p25_symbol_synth.h"
+#include "ls_lora.h"
 #include "rtl-sdr.h"
 
 p25_state_t       P25 = {0};
@@ -365,6 +368,8 @@ int p25_demod_get_preference(void) { return s_demod_control.preference; }
 demod_mode_t p25_demod_get_active(void) { return s_demod_control.active; }
 const char *p25_demod_get_name(void)
 {
+    /* The LR2021's stream is C4FM only, whatever the SDR's hunt last said. */
+    if (P25.lora_rx) return "C4FM";
     return p25_demod_control_name(&s_demod_control);
 }
 
@@ -1198,6 +1203,257 @@ static ls_radio_err_t p25_radio_open(void)
     return LS_RADIO_OK;
 }
 
+/* The mesh owns the LoRa socket between sessions, so P25 asks for it as an
+   FSK session does. Declared rather than included, as in app_adsb.c: weak,
+   so a build without a mesh links and reports the radio as free. */
+__attribute__((weak)) bool ls_mesh_radio_hold(bool hold) { (void)hold; return true; }
+__attribute__((weak)) bool ls_mesh_radio_held(void) { return true; }
+
+static bool p25_iq_present(void)
+{
+    const ls_radio_requirements_t requirements = {
+        .required_caps = LS_RADIO_RX_IQ_U8,
+        .min_hz = P25_CONTROL_TUNER_MIN_HZ,
+        .max_hz = P25_CONTROL_TUNER_MAX_HZ,
+        .sample_rate_hz = RTL_SAMPLE_RATE,
+        .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+    };
+    return ls_radio_endpoint_available(&requirements);
+}
+
+/* Whether P25 should listen on the LoRa socket's chip: when it is chosen,
+   or when nothing else is, as the RADIO button falls back. RAM reads only. */
+static bool p25_lora_wanted(void)
+{
+    if (!(ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) return false;
+    if (ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) return true;
+    return !p25_iq_present();
+}
+
+/* What a retune does to the decoder, whichever radio made it: the ring is
+   emptied and the decoder starts its search again. */
+static void p25_decoder_retuned(uint32_t f)
+{
+    s_tune_freq_hz = f;
+    p25_spectrum_invalidate();
+    s_ring.write_idx = s_ring.read_idx;
+    atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                              memory_order_release);
+    P25.dsd_has_sync = false;
+    P25.sync_active_until_us = 0;
+    if (s_grant_follower.state == P25_GRANT_ON_CONTROL)
+        p25_grant_set_control(&s_grant_follower, (uint64_t)f);
+}
+
+/* P25 Phase 1 on the LR2021. Its FSK engine samples C4FM at four bits a
+   symbol, 19200 bps, as a stream; p25_os4_decode turns the bits into
+   symbols, and those reach the decoder's ring as the demodulator's samples
+   would. The 8-bit trigger word matches within milliseconds of each packet
+   ending, so the stream is close to continuous; the decoder finds the frame
+   syncs itself. */
+#define P25_LORA_BITRATE   19200u
+#define P25_LORA_DEV_HZ    1800u
+#define P25_LORA_FILTER_HZ 12019u
+#define P25_LORA_TRIGGER   0xCC000000u
+#define P25_LORA_READ      512
+
+static EXT_RAM_BSS_ATTR p25_os4_decoder_t s_os4;
+static EXT_RAM_BSS_ATTR uint8_t s_lora_bytes[P25_LORA_READ];
+static EXT_RAM_BSS_ATTR uint8_t s_lora_dibits[P25_LORA_READ * 2];
+
+static esp_err_t p25_lora_begin(uint32_t hz)
+{
+    const ls_fsk_cfg_t cfg = {
+        .freq_hz = hz,
+        .bitrate = P25_LORA_BITRATE,
+        .deviation_hz = P25_LORA_DEV_HZ,
+        .bandwidth_hz = ls_lora_fsk_bw_snap(P25_LORA_FILTER_HZ),
+        .sync_word = P25_LORA_TRIGGER,
+        .sync_bits = 8,
+        .stream = true,
+    };
+    p25_os4_reset(&s_os4);
+    return ls_lora_fsk_begin(&cfg);
+}
+
+/* Decoded symbols into the decoder's ring, as the demodulator's samples. */
+static int p25_lora_feed(const uint8_t *dibits, size_t n)
+{
+    int fed = 0;
+    uint32_t drops = 0;
+    for (size_t i = 0; i < n; i++) {
+        int16_t samples[P25_SYNTH_SAMPLES_PER_SYMBOL];
+        p25_symbol_synth(dibits[i], samples);
+        for (int k = 0; k < P25_SYNTH_SAMPLES_PER_SYMBOL; k++) {
+            const int next = (s_ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
+            if (next == s_ring.read_idx) { drops++; continue; }
+            s_ring.buf[s_ring.write_idx] = samples[k];
+            s_ring.write_idx = next;
+            fed++;
+        }
+    }
+    if (drops) {
+        portENTER_CRITICAL(&s_acquisition_lock);
+        s_acquisition_status.ring_drops += drops;
+        portEXIT_CRITICAL(&s_acquisition_lock);
+    }
+    return fed;
+}
+
+/* Until the app stops, the choice moves to an SDR (one plugged in is taken
+   unless the chip was chosen), or the chip keeps failing. Tunes and grants
+   arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ and are
+   not done here. Returns with the chip handed back to the mesh. */
+static void p25_lora_run(void)
+{
+    const int64_t give_up = esp_timer_get_time() + 1000000;
+    while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < give_up)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (!ls_mesh_radio_held()) {
+        ls_mesh_radio_hold(false);
+        sys_log(4, "The mesh would not release the %s", ls_lora_chip_name());
+        vTaskDelay(pdMS_TO_TICKS(500));
+        return;
+    }
+    P25.lora_rx = true;
+    /* The chip cannot say whether a call is encrypted as often as an SDR
+       can, so voice plays until a call is shown encrypted. */
+    s_dsd_opts.play_unproven = 1;
+    p25_decoder_retuned(s_tune_freq_hz);
+
+    bool running = false;
+    uint32_t told_hz = 0;
+    int failures = 0, read_faults = 0;
+    uint32_t byte_bucket = 0, sample_bucket = 0;
+    int64_t now = esp_timer_get_time();
+    int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
+
+    while (s_app_active) {
+        uint32_t want_hz = 0;
+        ls_iq_control_request_t request = {0};
+        if (ls_iq_control_take(&s_radio_control, &request) &&
+            (request.flags & LS_IQ_CONTROL_TUNE))
+            want_hz = request.center_hz;
+        if (SCAN.request_tune && SCAN.peak_freq > 0) {
+            SCAN.request_tune = false;
+            want_hz = SCAN.peak_freq;
+        }
+        if (SCAN.request_scan) {
+            SCAN.request_scan = false;
+            sys_log(4, "A band scan needs an SDR; the %s listens to one channel",
+                    ls_lora_chip_name());
+        }
+        if (want_hz) {
+            if (want_hz != s_tune_freq_hz || !running) {
+                p25_decoder_retuned(want_hz);
+                if (running && ls_lora_fsk_retune(want_hz) == ESP_OK) {
+                    s_radio_freq_hz = want_hz;
+                    p25_os4_reset(&s_os4);
+                } else if (running) {
+                    (void)ls_lora_fsk_end();
+                    running = false;
+                }
+                sys_log(1, "Tuned: %.4f MHz", want_hz / 1e6);
+            }
+            const bool reach = ls_lora_rx_range_ok(ls_lora_caps(), want_hz, want_hz);
+            ls_iq_control_note_tune_result(&s_radio_control, want_hz,
+                                           reach ? LS_RADIO_OK : LS_RADIO_ERR_UNSUPPORTED,
+                                           want_hz);
+        }
+
+        if (!running && esp_timer_get_time() >= next_begin) {
+            const uint32_t hz = s_tune_freq_hz;
+            if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) {
+                if (told_hz != hz) {
+                    told_hz = hz;
+                    sys_log(4, "The %s tunes %u MHz and up, not %.4f MHz",
+                            ls_lora_chip_name(), (unsigned)(LS_LORA_RX_MIN_HZ / 1000000u), hz / 1e6);
+                    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_UNSUPPORTED);
+                }
+            } else {
+                const esp_err_t e = p25_lora_begin(hz);
+                if (e == ESP_OK) {
+                    running = true;
+                    failures = read_faults = 0;
+                    s_radio_freq_hz = hz;
+                    ls_iq_control_note_tune_result(&s_radio_control, hz, LS_RADIO_OK, hz);
+                    ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
+                    sys_log(1, "Radio: %s %.4f MHz", ls_lora_chip_name(), hz / 1e6);
+                } else {
+                    sys_log(4, "%s receive did not start: %s", ls_lora_chip_name(), esp_err_to_name(e));
+                    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_IO);
+                    failures++;
+                    next_begin = esp_timer_get_time() + (failures < 5 ? 1000000 : 5000000);
+                }
+            }
+        }
+
+        if (running) {
+            for (;;) {
+                bool restarted = false;
+                const int n = ls_lora_fsk_stream_read(s_lora_bytes, sizeof(s_lora_bytes), &restarted);
+                if (n < 0) {
+                    P25.read_errors_total++;
+                    if (++read_faults >= 50) {
+                        sys_log(4, "%s stopped answering, starting again", ls_lora_chip_name());
+                        (void)ls_lora_fsk_end();
+                        running = false;
+                    }
+                    break;
+                }
+                read_faults = 0;
+                if (n == 0) break;
+                if (restarted) p25_os4_reset(&s_os4);
+                const size_t k = p25_os4_decode(&s_os4, s_lora_bytes, (size_t)n,
+                                                s_lora_dibits, sizeof(s_lora_dibits));
+                sample_bucket += (uint32_t)p25_lora_feed(s_lora_dibits, k);
+                byte_bucket += (uint32_t)n;
+            }
+        }
+
+        now = esp_timer_get_time();
+        if (running && now >= next_rssi) {
+            /* The channel scanner's stop gate reads this level too, and
+               samples it faster than a person watches it. */
+            next_rssi = now + (scan_engine_active() ? 50000 : 250000);
+            float dbm;
+            if (ls_lora_rssi_inst(&dbm) == ESP_OK) {
+                P25.lora_rssi_dbm = dbm;
+                float level = (dbm + 120.0f) / 70.0f;
+                level = level < 0.0f ? 0.0f : level > 1.0f ? 1.0f : level;
+                P25.iq_level = level;
+                p25_rx_power = level;
+            }
+        }
+        P25.ring_fill = dsd_ring_available(&s_ring);
+        if (now - stats_ts > 1000000LL) {
+            P25.iq_bytes_sec = byte_bucket;
+            P25.audio_samples_sec = sample_bucket;
+            P25.iq_bytes_total += byte_bucket;
+            byte_bucket = sample_bucket = 0;
+            stats_ts = now;
+        }
+        if (now >= next_choice) {
+            next_choice = now + 500000;
+            if (!p25_lora_wanted()) {
+                sys_log(1, "SDR attached or chosen, leaving the %s", ls_lora_chip_name());
+                break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    if (running) (void)ls_lora_fsk_end();
+    ls_mesh_radio_hold(false);
+    s_dsd_opts.play_unproven = 0;
+    s_radio_freq_hz = 0;
+    P25.lora_rx = false;
+    P25.iq_level = 0.0f;
+    p25_rx_power = 0.0f;
+    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_STOPPED);
+    p25_decoder_retuned(s_tune_freq_hz);
+}
+
 static void p25_rx_task(void *arg)
 {
     (void)arg;
@@ -1302,11 +1558,16 @@ static void p25_rx_task(void *arg)
     uint32_t iq_bucket = 0, audio_bucket = 0;
     int64_t stats_ts = esp_timer_get_time();
     int64_t last_yield = stats_ts;
+    int64_t last_choice_us = stats_ts;
 
     while (s_app_active) {
         /* UI and profile workers only publish commands.  The RX owner drains
          * this latch here, between complete input blocks. */
         p25_apply_cqpsk_request();
+        if (!s_session && p25_lora_wanted()) {
+            p25_lora_run();
+            continue;
+        }
         if (!s_session) {
             ls_radio_err_t open_error = p25_radio_open();
             if (open_error != LS_RADIO_OK) {
@@ -1374,20 +1635,13 @@ static void p25_rx_task(void *arg)
                 else if (radio_status.effective_center_known)
                     s_radio_freq_hz =
                         (uint32_t)radio_status.effective_center_hz;
-                p25_spectrum_invalidate();
-                s_ring.write_idx = s_ring.read_idx;
-                atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
-                                          memory_order_release);
-                P25.dsd_has_sync = false;
-                P25.sync_active_until_us = 0;
                 /* if the follower is on control, a retune request
                  * either came from the user (adopt as new control) or came
                  * from the follower's own return-to-control (target is
                  * already control_hz, so this is a no-op). If the follower
                  * is on traffic, this retune is the follower moving to a
                  * grant, so we must not touch control_hz. */
-                if (s_grant_follower.state == P25_GRANT_ON_CONTROL)
-                    p25_grant_set_control(&s_grant_follower, (uint64_t)f);
+                p25_decoder_retuned(f);
                 sys_log(1, "Tuned: %.4f MHz", f / 1e6);
             } else {
                 /* suppressing a redundant hardware retune must still
@@ -1676,6 +1930,22 @@ static void p25_rx_task(void *arg)
             if (s_app_active) sys_log(4, "Read errors, pause 2s");
             vTaskDelay(pdMS_TO_TICKS(2000));
             read_errors = 0;
+        }
+
+        /* The LoRa chip chosen while the SDR runs: give the dongle back and
+           let the top of the loop start the chip. */
+        if (s_session && now - last_choice_us > 500000) {
+            last_choice_us = now;
+            if (ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA && p25_lora_wanted()) {
+                sys_log(1, "%s chosen, leaving the SDR", ls_lora_chip_name());
+                p25_iq_capture_receiver(false);
+                (void)ls_radio_iq_stop(s_session);
+                ls_radio_release(s_session);
+                s_session = NULL;
+                s_radio_freq_hz = 0;
+                ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_STOPPED);
+                continue;
+            }
         }
 
         if (now - last_yield > 25000) { last_yield = now; vTaskDelay(1); }
