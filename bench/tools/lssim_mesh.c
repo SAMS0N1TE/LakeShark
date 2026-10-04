@@ -315,6 +315,9 @@ uint32_t ls_lora_airtime_ms(int len)
    board is the one the simulator never renders. */
 bool ls_mesh_radio_hold(bool on) { (void)on; return true; }
 bool ls_mesh_radio_held(void) { return true; }
+bool ls_mesh_radio_hold_bg(bool on) { (void)on; return true; }
+bool ls_mesh_radio_wanted(void) { return false; }
+bool ls_mesh_radio_bg(void) { return false; }
 
 bool ls_lora_present(void) { return false; }
 bool ls_lora_fsk_active(void) { return false; }

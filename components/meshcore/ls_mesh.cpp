@@ -123,6 +123,9 @@ static volatile uint32_t s_msg_seq;
    you do is retune the part underneath it. */
 static volatile bool  s_radio_hold;
 static volatile bool  s_radio_held;
+/* Who holds it: s_radio_hold is either. A background holder (P25 or ADS-B
+   left listening on the LoRa chip) gives way to the other kind. */
+static volatile bool  s_hold_fg, s_hold_bg;
 
 #define SIGHTLOG_PATH "/sdcard/lakeshark/sightings.log"
 #define SIGHT_MOVE_M  50.0f
@@ -1234,7 +1237,7 @@ static struct { char id[17], text[80]; int64_t expires; } s_outbox;
 extern "C" bool ls_mesh_queue_dm(const char *id, const char *text)
 {
     if (!id || strlen(id)!=16 || !text || !*text || strlen(text)>=80 ||
-        !ls_mesh_running() || !ls_mesh_tx_enabled() || ls_mesh_radio_held()) return false;
+        !ls_mesh_running() || !ls_mesh_tx_enabled() || s_radio_hold || s_radio_held) return false;
     portENTER_CRITICAL(&s_outbox_lock);
     const int64_t now=esp_timer_get_time();
     bool ok=s_outbox.expires<=now;
@@ -1445,7 +1448,7 @@ extern "C" void ls_mesh_stop(void)
 
 extern "C" bool ls_mesh_running(void) { return s_task != nullptr; }
 
-extern "C" bool ls_mesh_radio_held(void)
+static bool mesh_paused(void)
 {
     /* With no task there is nothing to hold the radio away from, so the
        answer is yes and the caller may proceed. Saying no would make a
@@ -1455,13 +1458,41 @@ extern "C" bool ls_mesh_radio_held(void)
     return s_radio_held && ls_lora_send_done();
 }
 
+extern "C" bool ls_mesh_radio_held(void)
+{
+    /* A background receiver has the part until it has let go. */
+    if (s_hold_bg) return false;
+    return mesh_paused();
+}
+
 extern "C" bool ls_mesh_radio_hold(bool on)
 {
-    s_radio_hold = on;
-    if (!on) { s_radio_held = false; return true; }
+    s_hold_fg = on;
+    s_radio_hold = s_hold_fg || s_hold_bg;
+    if (!on) {
+        if (!s_hold_bg) s_radio_held = false;
+        return true;
+    }
 
     return ls_mesh_radio_held();
 }
+
+extern "C" bool ls_mesh_radio_hold_bg(bool on)
+{
+    /* Another holder asking means this one gives way, even mid-wait. */
+    const bool take = on && !s_hold_fg;
+    s_hold_bg = take;
+    s_radio_hold = s_hold_fg || s_hold_bg;
+    if (!take) {
+        if (!s_hold_fg) s_radio_held = false;
+        return !on;
+    }
+
+    return mesh_paused();
+}
+
+extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg; }
+extern "C" bool ls_mesh_radio_bg(void) { return s_hold_bg; }
 
 extern "C" void ls_mesh_set_tx(bool on)
 {
@@ -2155,6 +2186,9 @@ extern "C" bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 { (void)rank; (void)out; return false; }
 extern "C" bool ls_mesh_radio_hold(bool on) { (void)on; return false; }
 extern "C" bool ls_mesh_radio_held(void) { return false; }
+extern "C" bool ls_mesh_radio_hold_bg(bool on) { (void)on; return false; }
+extern "C" bool ls_mesh_radio_wanted(void) { return false; }
+extern "C" bool ls_mesh_radio_bg(void) { return false; }
 extern "C" int  ls_mesh_sightings(void) { return 0; }
 extern "C" bool ls_mesh_sight_clear(void) { return false; }
 

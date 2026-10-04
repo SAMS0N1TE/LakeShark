@@ -1,5 +1,10 @@
 # LakeShark release notes
 
+## 2.8.1
+
+- P25 and ADS-B on the LR2021 hand the chip to EXPERIMENTS, LoRa Labs, the LoRa waterfall and `lora` whenever one of them asks, and take it back when it is free. P25 shows LR2021 IN USE ELSEWHERE in the meantime.
+- PAGER RECON shows the probe picked in OPTIONS > PROBE before a run.
+
 ## 2.8.0
 
 - P25 on the LR2021: the LR2021 version of the T-Display P4 decodes P25 Phase 1 voice by itself, with no SDR. Open P25 and it listens on the LR2021 whenever no SDR is plugged in, or pick it with RADIO. 150 MHz and up.

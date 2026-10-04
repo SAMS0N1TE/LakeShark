@@ -184,18 +184,23 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const int step = r.h >= 11 ? 2 : 1;
     char line[80];
+    uint8_t first = ink;
     if (P25.lora_rx)
         snprintf(line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
                  (unsigned long)P25.iq_bytes_sec, (double)P25.lora_rssi_dbm);
-    else
+    else if (P25.lora_wait) {
+        snprintf(line, sizeof(line), "%s IN USE ELSEWHERE", ls_rsel_name(LS_RSEL_LORA));
+        first = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    } else
         snprintf(line, sizeof(line), "IQ %lu B/s  AUDIO %lu samples/s",
                  (unsigned long)P25.iq_bytes_sec, (unsigned long)P25.audio_samples_sec);
-    tui_put_str(sf, r, r.x + 2, r.y + 1, line, ink);
+    tui_put_str(sf, r, r.x + 2, r.y + 1, line, first);
     snprintf(line, sizeof(line), "SYNC %d   VOICE %d", P25.dsd_sync_count, P25.dsd_voice_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step, line, ink);
     snprintf(line, sizeof(line), "BCH OK %d   FAIL %d", P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 2, line, ink);
-    snprintf(line, sizeof(line), "%s errors %lu  AUDIO drops %lu", P25.lora_rx ? "Read" : "USB",
+    snprintf(line, sizeof(line), "%s errors %lu  AUDIO drops %lu",
+             P25.lora_rx || P25.lora_wait ? "Read" : "USB",
              (unsigned long)P25.read_errors_total, (unsigned long)P25.audio_drops);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 3, line, ink);
     if (r.h >= 7) {
@@ -260,6 +265,8 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
         else if (P25.lora_rx && st.receiver_streaming)
             snprintf(buf, sizeof(buf), "MANUAL / %s ONLINE", ls_rsel_name(LS_RSEL_LORA));
+        else if (P25.lora_wait && !st.receiver_streaming)
+            snprintf(buf, sizeof(buf), "%s IN USE ELSEWHERE", ls_rsel_name(LS_RSEL_LORA));
         else snprintf(buf, sizeof(buf), "%s", st.receiver_streaming
                       ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER");
         tui_put_str(sf, dial, dial.x + 2, dial.y + 8, buf,

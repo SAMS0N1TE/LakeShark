@@ -165,6 +165,15 @@ int ls_mesh_forget_peer(const char *id);
 
 bool ls_mesh_radio_hold(bool on);
 bool ls_mesh_radio_held(void);
+/* A receiver that keeps the radio in the background (P25 or ADS-B on the
+   LoRa chip) holds it with ls_mesh_radio_hold_bg, which answers whether it
+   has it now and refuses while a ls_mesh_radio_hold holder is asking. That
+   holder's ls_mesh_radio_held answers false until the background holder has
+   let go, which it does as soon as ls_mesh_radio_wanted says so.
+   ls_mesh_radio_bg says a background holder has it. */
+bool ls_mesh_radio_hold_bg(bool on);
+bool ls_mesh_radio_wanted(void);
+bool ls_mesh_radio_bg(void);
 
 int ls_mesh_sightings(void);
 bool ls_mesh_sight_clear(void);

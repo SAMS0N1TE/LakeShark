@@ -643,6 +643,23 @@ LS_CASE(decode_uses_spare_space_for_health_and_keeps_busy_history_visible)
     LS_CHECK(escaped(PORTRAIT) == 0);
 }
 
+LS_CASE(an_lr2021_in_use_elsewhere_says_so_in_the_health_panel)
+{
+    /* P25 left on the LR2021 hands the chip to an experiment or a sweep;
+       the health panel says why nothing arrives. */
+    no_traffic();
+    P25.lora_wait = true;
+    draw_decode_now(PORTRAIT);
+    LS_CHECK_MSG(rect_has(PORTRAIT, "IN USE ELSEWHERE"),
+                 "P25 waiting for the LR2021 does not say so");
+    LS_CHECK(rect_has(PORTRAIT, "Read errors"));
+    LS_CHECK(escaped(PORTRAIT) == 0);
+
+    P25.lora_wait = false;
+    draw_decode_now(PORTRAIT);
+    LS_CHECK(!rect_has(PORTRAIT, "IN USE ELSEWHERE"));
+}
+
 LS_CASE(the_merged_decode_page_has_the_large_dial_and_receive_history)
 {
     no_traffic();

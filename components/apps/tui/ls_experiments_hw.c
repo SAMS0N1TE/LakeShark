@@ -14,9 +14,11 @@ const char *ls_exp_hw_radio_busy(void)
 {
     if (!ls_lora_present()) return "No LoRa chip answered in the socket";
     if (ls_field_owned()) return "LoRa Labs owns the radio; turn DIRECT off first";
-    if (ls_lora_modes_active()) return "ADS-B has the LoRa chip in a Mode S session";
+    /* P25 or ADS-B left listening on the chip gives it up to the take below. */
+    const bool bg = ls_mesh_radio_bg();
+    if (!bg && ls_lora_modes_active()) return "ADS-B has the LoRa chip in a Mode S session";
     if (ls_lora_scanning()) return "A sweep is using the LoRa chip";
-    if (ls_lora_fsk_active()) return "An FSK session is using the LoRa chip";
+    if (!bg && ls_lora_fsk_active()) return "An FSK session is using the LoRa chip";
     if (ls_lora_ook_active()) return "An OOK session is using the LoRa chip";
     return NULL;
 }

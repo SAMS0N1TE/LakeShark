@@ -60,6 +60,11 @@ LR2021 FSK stream  --SPI-->  p25_rx task (core 1)
 - RADIO chooses the LR2021, and P25 takes it whenever no SDR is plugged in.
   It listens from 150 MHz up. There is no spectrum, band scan or Phase 2
   from it: those need IQ.
+- P25 keeps the chip as a background holder (`ls_mesh_radio_hold_bg`).
+  Anything that asks for it with `ls_mesh_radio_hold` (an experiment, LoRa
+  Labs, the LoRa waterfall, `lora`) gets it once P25 has ended its session,
+  and P25 starts again when it is let go. ADS-B on the chip does the same.
+  *Tests:* `test_wf_source`, `test_field`.
 
 ## What must stay true
 

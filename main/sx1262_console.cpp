@@ -68,7 +68,7 @@ int sx1262_receive_command(int argc, char **argv)
         const size_t digits = strlen(argv[6]);
         if (digits < 8) sync_bits = (uint8_t)(digits * 4);
     }
-    if (ls_lora_scanning() || ls_lora_fsk_active()) {
+    if (ls_lora_scanning() || (ls_lora_fsk_active() && !ls_mesh_radio_bg())) {
         printf("lora: radio busy\n");
         return 1;
     }
@@ -269,7 +269,7 @@ static int fsk_transmit_command(int argc, char **argv)
         return 1;
     }
 
-    if (ls_lora_scanning() || ls_lora_fsk_active()) {
+    if (ls_lora_scanning() || (ls_lora_fsk_active() && !ls_mesh_radio_bg())) {
         printf("lora: radio busy\n");
         return 1;
     }
@@ -396,7 +396,7 @@ static int capture_play_command(int argc, char **argv)
         printf("lora: no capture %ld - 'lora fskls' lists them\n", index);
         return 1;
     }
-    if (ls_lora_scanning() || ls_lora_fsk_active()) {
+    if (ls_lora_scanning() || (ls_lora_fsk_active() && !ls_mesh_radio_bg())) {
         printf("lora: radio busy\n");
         return 1;
     }

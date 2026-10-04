@@ -47,8 +47,8 @@ const char *adsb_active_source_name(void) { return adsb_source_name(s_source); }
    ask, as an FSK session does. Declared rather than included: ls_mesh.h belongs
    to the meshcore component, which depends on this one. Weak, so a build
    without a mesh links and reports the radio as free, which it is. */
-__attribute__((weak)) bool ls_mesh_radio_hold(bool hold) { (void)hold; return true; }
-__attribute__((weak)) bool ls_mesh_radio_held(void) { return true; }
+__attribute__((weak)) bool ls_mesh_radio_hold_bg(bool hold) { (void)hold; return true; }
+__attribute__((weak)) bool ls_mesh_radio_wanted(void) { return false; }
 
 static const adsb_modes_ops_t LORA_OPS = {
     .begin    = ls_lora_modes_begin,
@@ -161,27 +161,32 @@ static bool adsb_radio_open(void)
     return true;
 }
 
-/* Take the LoRa socket's radio from the mesh, as an FSK session does. */
+/* Take the LoRa socket's radio from the mesh, as a background holder that
+   gives it to anything else that asks (an experiment, a sweep, LoRa Labs). */
 static bool adsb_lora_hold(void)
 {
+    bool held = false;
     const int64_t deadline = esp_timer_get_time() + 1000000;
-    while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < deadline)
+    while (!(held = ls_mesh_radio_hold_bg(true)) && !ls_mesh_radio_wanted() &&
+           esp_timer_get_time() < deadline)
         vTaskDelay(pdMS_TO_TICKS(10));
-    if (!ls_mesh_radio_held()) {
-        ls_mesh_radio_hold(false);
-        return false;
-    }
-    return true;
+    if (!held) ls_mesh_radio_hold_bg(false);
+    return held;
 }
 
 /* The Mode S session on the LoRa socket's chip, until the app stops, the
    choice moves to an IQ receiver (one that appears is taken unless the chip
-   was chosen), or the chip stops answering. Returns
-   with the chip back in standby and the radio handed back to the mesh. */
+   was chosen), something else asks for the chip, or the chip stops
+   answering. Returns with the chip back in standby and the radio handed
+   back to the mesh. */
 static void adsb_lora_run(void)
 {
+    if (ls_mesh_radio_wanted()) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        return;
+    }
     if (!adsb_lora_hold()) {
-        ESP_LOGW(TAG, "mesh would not release the LoRa radio");
+        if (!ls_mesh_radio_wanted()) ESP_LOGW(TAG, "mesh would not release the LoRa radio");
         vTaskDelay(pdMS_TO_TICKS(500));
         return;
     }
@@ -190,7 +195,7 @@ static void adsb_lora_run(void)
     const esp_err_t error = LORA_OPS.begin(s_cfg_freq, step);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Mode S session on the LoRa chip failed: %s", esp_err_to_name(error));
-        ls_mesh_radio_hold(false);
+        ls_mesh_radio_hold_bg(false);
         vTaskDelay(pdMS_TO_TICKS(1000));
         return;
     }
@@ -206,6 +211,10 @@ static void adsb_lora_run(void)
     int64_t last_report_us = now;
 
     while (s_rx_should_run) {
+        if (ls_mesh_radio_wanted()) {
+            ESP_LOGI(TAG, "LoRa chip asked for elsewhere, letting it go");
+            break;
+        }
         /* The gain request flag is only an edge; the setting itself is read
            below, so a request that arrived before the session is not stale. */
         ls_iq_control_request_t control;
@@ -245,7 +254,7 @@ static void adsb_lora_run(void)
     }
 
     (void)LORA_OPS.end();
-    ls_mesh_radio_hold(false);
+    ls_mesh_radio_hold_bg(false);
     s_source = ADSB_SRC_NONE;
 }
 

@@ -709,7 +709,12 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
             if (plan == PGR_PLAN_N) snprintf(out[n++], LS_EXP_LINE, "ONE FREQ %.4f MHz", s_set_hz / 1e6);
             else snprintf(out[n++], LS_EXP_LINE, "SCAN %s, dwell %d s", pgr_plan_name((pgr_plan_t)plan), s_set_dwell);
         }
-        if (n < max) snprintf(out[n++], LS_EXP_LINE, "POCSAG 512/1200/2400 N+I, FLEX sync");
+        if (n < max) {
+            if (plan == PGR_PLAN_N && s_set_probe >= 0)
+                snprintf(out[n++], LS_EXP_LINE, "probe %s only", pgr_probe(s_set_probe)->tag);
+            else
+                snprintf(out[n++], LS_EXP_LINE, "POCSAG 512/1200/2400 N+I, FLEX sync");
+        }
         if (n < max) snprintf(out[n++], LS_EXP_LINE, "message text %s", s_set_text ? "SHOWN" : "off");
         heap_caps_free(v);
         return n;

@@ -50,6 +50,8 @@ typedef struct {
        no spectrum. Its RSSI is what iq_level shows then. */
     bool     lora_rx;
     float    lora_rssi_dbm;
+    /* The LR2021 is the receiver but something else is using it now. */
+    bool     lora_wait;
 
     int      dsd_sync_count;
     int      dsd_voice_count;

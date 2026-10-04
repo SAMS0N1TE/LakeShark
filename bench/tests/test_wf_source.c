@@ -68,7 +68,11 @@ bool ls_lora_present(void)  { return true; }
 /* An SX1262 unless a case says otherwise. */
 static uint32_t g_caps;
 uint32_t ls_lora_caps(void) { return g_caps; }
-bool ls_lora_fsk_active(void) { return false; }
+/* An FSK session on the chip, and whether a background receiver (P25 or
+   ADS-B) holds it. */
+static bool g_fsk, g_bg;
+bool ls_lora_fsk_active(void) { return g_fsk; }
+bool ls_mesh_radio_bg(void) { return g_bg; }
 bool ls_lora_scanning(void) { return g_scanning; }
 
 esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi)
@@ -204,6 +208,7 @@ static void fresh(void)
     g_look = 0;
     g_mesh_parks = true;
     g_hold_asked = false;
+    g_fsk = g_bg = false;
     g_fm_streaming = false;
     g_p25_streaming=false;
     g_field_ready=false;
@@ -365,6 +370,50 @@ LS_CASE(a_hold_asked_for_before_the_mesh_parks_is_still_given_back)
     ls_wf_source_pump();
     LS_CHECK_MSG(!g_hold_asked, "the mesh was asked to park and never told "
                  "it could stop");
+}
+
+LS_CASE(a_receiver_left_on_the_chip_gives_it_to_the_sweep)
+{
+    /* P25 on the LR2021 in the background: the sweep asks, and starts once
+       P25 has let go. */
+    fresh();
+    g_fsk = g_bg = true;
+    g_mesh_parks = false;
+    ls_wf_source_select(LS_WF_SRC_LORA);
+    ls_wf_source_pump();
+    LS_CHECK(g_hold_asked);
+    LS_EQ_INT(0, g_begins);
+
+    g_fsk = g_bg = false;
+    g_mesh_parks = true;
+    ls_wf_source_pump();
+    LS_EQ_INT(1, g_begins);
+    LS_EQ_INT(LS_WF_OWNER_LORA, g_owner);
+}
+
+LS_CASE(an_fsk_session_of_the_sweeps_own_kind_still_keeps_it_off)
+{
+    fresh();
+    g_fsk = true;
+    ls_wf_source_select(LS_WF_SRC_LORA);
+    ls_wf_source_pump();
+    LS_CHECK(!g_hold_asked);
+    LS_EQ_INT(0, g_begins);
+}
+
+LS_CASE(leaving_before_the_background_receiver_let_go_still_gives_the_hold_back)
+{
+    fresh();
+    g_fsk = g_bg = true;
+    g_mesh_parks = false;
+    ls_wf_source_select(LS_WF_SRC_LORA);
+    ls_wf_source_pump();
+    LS_CHECK(g_hold_asked);
+
+    ls_wf_source_select(LS_WF_SRC_P25);
+    ls_wf_source_pump();
+    LS_CHECK_MSG(!g_hold_asked, "the background receiver would wait on a hold "
+                 "nobody gives back");
 }
 
 /* ---- a band change ----------------------------------------------- */

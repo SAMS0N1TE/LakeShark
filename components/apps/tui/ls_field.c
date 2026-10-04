@@ -423,7 +423,7 @@ static bool restore(void)
     /* The FSK session put the part in a different modulation and saved the
        LoRa settings itself; ending it first means the restore below writes
        over a part that is back in a known state. */
-    if (err == ESP_OK && ls_lora_fsk_active()) err = ls_lora_fsk_end();
+    if (err == ESP_OK && ls_lora_fsk_active() && !ls_mesh_radio_bg()) err = ls_lora_fsk_end();
     if (err == ESP_OK && s_have_saved) err = ls_lora_configure(&s_saved);
     if (err == ESP_OK && s_have_saved && s_saved_rx) err = ls_lora_receive();
     if (err != ESP_OK) { message("Restore failed; radio held. Toggle DIRECT off to retry"); return false; }
@@ -720,7 +720,8 @@ void ls_field_step(void)
     }
     if (want && !s_live.direct) {
         if (!s_live.busy) {
-            if (!ls_lora_present() || ls_lora_fsk_active() || ls_lora_scanning()) {
+            /* P25 or ADS-B left listening on the chip gives it up when asked. */
+            if (!ls_lora_present() || (ls_lora_fsk_active() && !ls_mesh_radio_bg()) || ls_lora_scanning()) {
                 message("Radio absent or in use; DIRECT unavailable");
                 lock(); s_want = false; unlock(); publish(); return;
             }

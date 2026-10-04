@@ -1203,11 +1203,12 @@ static ls_radio_err_t p25_radio_open(void)
     return LS_RADIO_OK;
 }
 
-/* The mesh owns the LoRa socket between sessions, so P25 asks for it as an
-   FSK session does. Declared rather than included, as in app_adsb.c: weak,
-   so a build without a mesh links and reports the radio as free. */
-__attribute__((weak)) bool ls_mesh_radio_hold(bool hold) { (void)hold; return true; }
-__attribute__((weak)) bool ls_mesh_radio_held(void) { return true; }
+/* The mesh owns the LoRa socket between sessions, so P25 asks for it, as a
+   background holder that gives it to anything else that asks. Declared
+   rather than included, as in app_adsb.c: weak, so a build without a mesh
+   links and reports the radio as free. */
+__attribute__((weak)) bool ls_mesh_radio_hold_bg(bool hold) { (void)hold; return true; }
+__attribute__((weak)) bool ls_mesh_radio_wanted(void) { return false; }
 
 static bool p25_iq_present(void)
 {
@@ -1301,20 +1302,35 @@ static int p25_lora_feed(const uint8_t *dibits, size_t n)
 }
 
 /* Until the app stops, the choice moves to an SDR (one plugged in is taken
-   unless the chip was chosen), or the chip keeps failing. Tunes and grants
-   arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ and are
-   not done here. Returns with the chip handed back to the mesh. */
+   unless the chip was chosen), something else asks for the chip (an
+   experiment, a sweep, LoRa Labs), or the chip keeps failing. Tunes and
+   grants arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ
+   and are not done here. Returns with the chip handed back to the mesh. */
 static void p25_lora_run(void)
 {
+    if (ls_mesh_radio_wanted()) {
+        if (!P25.lora_wait) {
+            P25.lora_wait = true;
+            ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_BUSY);
+            sys_log(1, "The %s is in use elsewhere; P25 listens again when it is free",
+                    ls_lora_chip_name());
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        return;
+    }
+    bool held = false;
     const int64_t give_up = esp_timer_get_time() + 1000000;
-    while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < give_up)
+    while (!(held = ls_mesh_radio_hold_bg(true)) && !ls_mesh_radio_wanted() &&
+           esp_timer_get_time() < give_up)
         vTaskDelay(pdMS_TO_TICKS(10));
-    if (!ls_mesh_radio_held()) {
-        ls_mesh_radio_hold(false);
-        sys_log(4, "The mesh would not release the %s", ls_lora_chip_name());
+    if (!held) {
+        ls_mesh_radio_hold_bg(false);
+        if (!ls_mesh_radio_wanted())
+            sys_log(4, "The mesh would not release the %s", ls_lora_chip_name());
         vTaskDelay(pdMS_TO_TICKS(500));
         return;
     }
+    P25.lora_wait = false;
     P25.lora_rx = true;
     /* The chip cannot say whether a call is encrypted as often as an SDR
        can, so voice plays until a call is shown encrypted. */
@@ -1328,7 +1344,7 @@ static void p25_lora_run(void)
     int64_t now = esp_timer_get_time();
     int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
 
-    while (s_app_active) {
+    while (s_app_active && !ls_mesh_radio_wanted()) {
         uint32_t want_hz = 0;
         ls_iq_control_request_t request = {0};
         if (ls_iq_control_take(&s_radio_control, &request) &&
@@ -1444,11 +1460,13 @@ static void p25_lora_run(void)
     }
 
     if (running) (void)ls_lora_fsk_end();
-    ls_mesh_radio_hold(false);
+    ls_mesh_radio_hold_bg(false);
     s_dsd_opts.play_unproven = 0;
     s_radio_freq_hz = 0;
     P25.lora_rx = false;
     P25.iq_level = 0.0f;
+    P25.iq_bytes_sec = 0;
+    P25.audio_samples_sec = 0;
     p25_rx_power = 0.0f;
     ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_STOPPED);
     p25_decoder_retuned(s_tune_freq_hz);
@@ -1568,6 +1586,7 @@ static void p25_rx_task(void *arg)
             p25_lora_run();
             continue;
         }
+        P25.lora_wait = false;
         if (!s_session) {
             ls_radio_err_t open_error = p25_radio_open();
             if (open_error != LS_RADIO_OK) {
@@ -1952,6 +1971,7 @@ static void p25_rx_task(void *arg)
     }
 
     p25_iq_capture_receiver(false);
+    P25.lora_wait = false;
     if (s_session) {
         (void)ls_radio_iq_stop(s_session);
     }

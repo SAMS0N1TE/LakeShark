@@ -562,7 +562,8 @@ static bool s_lora_held;
 
 static bool pump_lora(void)
 {
-    if (ls_lora_fsk_active()) return false;
+    /* P25 or ADS-B left listening on the chip gives it up when asked below. */
+    if (ls_lora_fsk_active() && !ls_mesh_radio_bg()) return false;
     if (!ls_lora_present()) return false;
 
     if (ls_field_owned()) return false;
@@ -648,7 +649,7 @@ static void lora_stop(void)
 {
     if (s_lora_held && ls_lora_scanning()) ls_lora_scan_end();
     if (s_lora_held) {
-        if (!ls_lora_fsk_active()) ls_mesh_radio_hold(false);
+        if (!ls_lora_fsk_active() || ls_mesh_radio_bg()) ls_mesh_radio_hold(false);
         s_lora_held = false;
     }
     s_lora_row_t0 = 0;

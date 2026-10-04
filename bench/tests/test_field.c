@@ -13,7 +13,7 @@
 #include <math.h>
 
 static ls_lora_cfg_t radio;
-static bool held, held_ready, scan, receiving, tx_done, fail_config, absent;
+static bool held, held_ready, scan, receiving, tx_done, fail_config, absent, bg;
 static unsigned configurations, sends, polls;
 static ls_gps_state_t gps;
 static ls_field_state_t state;
@@ -81,6 +81,7 @@ bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
 bool ls_lora_scanning(void) { return scan; }
 bool ls_mesh_radio_hold(bool on) { held = on; return held_ready; }
 bool ls_mesh_radio_held(void) { return held_ready; }
+bool ls_mesh_radio_bg(void) { return bg; }
 bool ls_lora_is_receiving(void) { return receiving; }
 const ls_lora_cfg_t *ls_lora_cfg(void) { return &radio; }
 void ls_lora_cfg_default(ls_lora_cfg_t *out) { *out = (ls_lora_cfg_t){.freq_hz=910525000,.sf=7,.bw_hz=125000,.cr=5,.preamble=16}; }
@@ -129,7 +130,7 @@ static void reset(void)
     pocsag_creates=pocsag_destroys=pocsag_batches=0; pocsag_pages_seen=0;
     remove("field-test/compass-solo0.cal"); remove("field-test/compass-solo1.cal");
     remove("field-test/compass-kbd0.cal");remove("field-test/compass-kbd1.cal");
-    held=scan=fail_config=absent=false; held_ready=receiving=tx_done=true; configurations=sends=polls=0;
+    held=scan=fail_config=absent=bg=false; held_ready=receiving=tx_done=true; configurations=sends=polls=0;
     scan_complete=true;scan_bins=64;imu_busy = keyboard_attached = false;
     mesh_received=42;
     imu_data = (ls_imu_sample_t){.az=1,.mx=25,.my=25,.mag_valid=true};
@@ -164,6 +165,24 @@ LS_CASE(direct_waits_for_mesh_and_restores_original_config)
     LS_CHECK(ls_field_configure(&changed)); ls_field_step(); LS_EQ_UINT(radio.sf,10);
     ls_field_direct(false); ls_field_step();
     LS_CHECK(!held); LS_CHECK(receiving); LS_EQ_UINT(radio.freq_hz,before.freq_hz); LS_EQ_UINT(radio.sf,before.sf);
+}
+/* P25 on the LR2021 in the background: DIRECT asks for the chip and gets it
+   once P25 lets go; given up while waiting, it leaves P25's session alone. */
+LS_CASE(direct_takes_the_chip_from_a_receiver_left_on_it)
+{
+    reset(); fsk_on=bg=true; held_ready=false;
+    LS_CHECK(ls_field_direct(true)); ls_field_step();
+    ls_field_snapshot(&state); LS_CHECK(held); LS_CHECK(!state.direct); LS_EQ_UINT(fsk_ends,0);
+    fsk_on=bg=false; held_ready=true; ls_field_step();
+    ls_field_snapshot(&state); LS_CHECK(state.direct);
+    ls_field_direct(false); ls_field_step(); LS_CHECK(!held);
+}
+LS_CASE(direct_given_up_while_waiting_leaves_the_receivers_session_alone)
+{
+    reset(); fsk_on=bg=true; held_ready=false;
+    LS_CHECK(ls_field_direct(true)); ls_field_step(); LS_CHECK(held);
+    ls_field_direct(false); ls_field_step();
+    LS_CHECK(!held); LS_EQ_UINT(fsk_ends,0); LS_CHECK(fsk_on);
 }
 LS_CASE(saved_radio_bookmark_does_not_inherit_another_radios_signal)
 {
