@@ -46,7 +46,7 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 | --- | --- |
 | ![Recording playback](docs/screenshots/tdp4/development-20260923/replay-land.png) | ![ADS-B mini map](docs/screenshots/tdp4/development-20260923/adsb-land.png) |
 
-| SUB-GHZ scan | Wireless startup controls |
+| SUB-GHZ scan | Radio startup controls |
 | --- | --- |
 | ![SUB-GHZ scanning](docs/screenshots/tdp4/development-20260923/subghz-scan-land.png) | ![Wi-Fi and Bluetooth controls](docs/screenshots/tdp4/development-20260923/radios-land.png) |
 
