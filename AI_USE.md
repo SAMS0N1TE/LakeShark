@@ -1,23 +1,27 @@
-# AI use in this project
+# AI Use Disclosure
 
-AI writes code here. This says how, and what is done so that the result is
-still engineering.
+## Disclosure
 
+Portions of the source code in this repository were written with the assistance
+of artificial intelligence (AI) tools.
 
-## Provenance
+## Responsibility
 
-Every commit is authored by the maintainer, who is responsible for it. There is
-no separate class of "AI commits" to be discounted or excused; if it is in the
-history, someone stands behind it.
+Every commit in this repository is made by the maintainer. The maintainer is
+solely responsible for its contents, regardless of how any part was produced.
+AI-assisted code is not treated differently from any other code.
 
-Vendored code keeps its origin and its licence. `components/lakeshark/apps/p25/`
-descends from DSD and mbelib and is kept close to upstream on purpose, so it can
-be followed rather than quietly diverged from. Reverse-engineered protocol
-details record how each number was obtained — measured off air, computed from
-registers, or confirmed out of sample — because a specification that cannot say
-where it came from cannot be checked by anyone else.
+## Third-Party Code
 
-## Licence
+Third-party code is used under, and remains subject to, its original license.
+The P25 decoder in `components/lakeshark/apps/p25/` is derived from DSD and
+mbelib. Sources and licenses are listed in the "Standing on" section of
+`README.md`.
 
-See `LICENSE`. Using this work is welcome; passing it off is not. If something
-here is useful, take it and say where it came from.
+## License
+
+This project is licensed under the GNU General Public License v3.0. See
+`LICENSE`. Use, modification and redistribution are permitted under its terms,
+including the requirement to keep copyright and license notices intact. This
+software is provided without warranty, as set out in sections 15 and 16 of the
+license.
