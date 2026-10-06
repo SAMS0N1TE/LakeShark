@@ -659,6 +659,11 @@ ls_add_test(test_tui_quick
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_ls_registry
+    ${FW}/components/apps/tui/ls_value.c
+    ${FW}/components/apps/tui/ls_action.c)
+target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
+
 add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     tools/lssim_music.c
@@ -779,6 +784,11 @@ target_compile_definitions(lssim PRIVATE
 target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim lvgl m)
+
+# Runs the lssim above with -C, which links everything the board registers.
+ls_add_test(test_lssim_census)
+add_dependencies(test_lssim_census lssim)
+target_compile_definitions(test_lssim_census PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
 
 ls_add_test(test_carto_render
     ${CARTO}/src/carto.c

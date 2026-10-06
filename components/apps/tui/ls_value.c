@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_VALUES 40
+#include "esp_attr.h"
 
 typedef struct {
     const char *path;
@@ -21,14 +21,23 @@ typedef struct {
     ls_val_fn   fn;
 } entry_t;
 
-static entry_t s_val[MAX_VALUES];
+/* PSRAM: internal RAM is what the P4 runs out of, and this is only read
+   from tasks, a few lookups a frame. */
+static EXT_RAM_BSS_ATTR entry_t s_val[LS_VALUE_MAX];
 static int     s_count;
+static int     s_refused;
 
 bool ls_value_publish(const char *path, const char *unit, ls_val_fn fn)
 {
-    if (!path || !fn || s_count >= MAX_VALUES) return false;
+    if (!path || !fn) return false;
+    /* A known path needs no new slot, full or not. */
     for (int i = 0; i < s_count; i++)
         if (strcmp(s_val[i].path, path) == 0) { s_val[i].fn = fn; return true; }
+    if (s_count >= LS_VALUE_MAX) {
+        s_refused++;
+        printf("ls_value: table full, %s not published\n", path);
+        return false;
+    }
     s_val[s_count].path = path;
     s_val[s_count].unit = unit;
     s_val[s_count].fn   = fn;
@@ -49,5 +58,6 @@ bool ls_value_read(const char *path, ls_val_t *out, const char **unit)
 }
 
 int         ls_value_count(void)          { return s_count; }
+int         ls_value_refused(void)        { return s_refused; }
 const char *ls_value_name(int i)          { return (i >= 0 && i < s_count) ? s_val[i].path : NULL; }
 const char *ls_value_unit(int i)          { return (i >= 0 && i < s_count) ? s_val[i].unit : NULL; }

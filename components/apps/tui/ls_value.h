@@ -27,7 +27,15 @@ typedef struct {
 
 typedef bool (*ls_val_fn)(ls_val_t *out);
 
+/* The table's size. A publish past it is refused, counted and printed: 2.8.2
+   filled it silently, and the value that fell off was sys.volume, the number
+   on the P25 and FM volume controls. `lssim -C` fails the bench on it. */
+#define LS_VALUE_MAX 64
+
 bool ls_value_publish(const char *path, const char *unit, ls_val_fn fn);
+
+/* Publishes the full table has refused since boot. */
+int ls_value_refused(void);
 
 /* False when the path is unknown or the reader declined - a user app renders
    that as `--`, never as zero. A zero that is really "no value" is the exact

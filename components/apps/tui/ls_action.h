@@ -45,10 +45,19 @@ typedef struct {
    zeroed before the handler runs, so a handler need not touch it. */
 typedef ls_act_status_t (*ls_act_fn)(const ls_args_t *in, ls_val_t *out);
 
+/* The table's size. MAP and P25 register theirs when first entered, so it
+   fills during use as well as at boot; `lssim -C` enters every screen and
+   fails the bench when the table refuses one or has too little room left. */
+#define LS_ACTION_MAX 64
+
 /* `path`, `sig` and `help` must outlive the program. False when the table is
-   full or the signature is malformed - both build-time mistakes. */
+   full or the signature is malformed - both build-time mistakes. A full table
+   counts and prints the path it refused. */
 bool ls_action_register(const char *path, const char *sig, ls_cap_t needs,
                         ls_act_fn fn, const char *help);
+
+/* Registrations the full table has refused since boot. */
+int ls_action_refused(void);
 
 /* The single dispatch point. Checks existence, then capability, then arity
    and argument kinds, then calls. `granted` is what the CALLER may do. */

@@ -548,6 +548,8 @@ static void usage(void)
     printf("  -P N      the same, panning between frames\n");
     printf("  -A MS     advance the clock MS per frame, so time-based\n");
     printf("            animation moves (default 0: one frozen instant)\n");
+    printf("  -C        census: enter every screen, count the value and\n");
+    printf("            action tables, exit 1 on a refusal or too little room\n");
 }
 
 /* lssim play REC OUT: a recording from the board ('tui rec', gathered by
@@ -675,6 +677,7 @@ int main(int argc, char **argv)
     int settle = 3;
     int timed = 0;
     bool moving = false;
+    bool census = false;
 
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
@@ -688,6 +691,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-l")) landscape = true;
         else if (!strcmp(argv[i], "-d")) dump = true;
         else if (!strcmp(argv[i], "-e")) empty = true;
+        else if (!strcmp(argv[i], "-C")) census = true;
         else if (!strcmp(argv[i], "-D")) daylight = true;
         else if (!strcmp(argv[i], "-F") && i + 1 < argc)
             font = atoi(argv[++i]);
@@ -776,6 +780,21 @@ int main(int argc, char **argv)
         feed_map();
         feed_adsb();
         feed_pages();
+    }
+
+    /* -C: what the board registers, counted. The built-in sets went in above;
+       MAP and P25 add theirs when entered, so every screen is entered once.
+       CELL is not linked here and adds 3 values and 2 actions on the board,
+       so a table that only just fits here is one that overflows there. */
+    if (census) {
+        enum { SPARE = 8 };
+        for (int i = 0; i < ls_tui_screen_count(); i++) ls_tui_screen_show(i);
+        const int nv = ls_value_count(), na = ls_action_count();
+        printf("lssim: values %d/%d, actions %d/%d, refused %d and %d\n",
+               nv, LS_VALUE_MAX, na, LS_ACTION_MAX,
+               ls_value_refused(), ls_action_refused());
+        return (ls_value_refused() || ls_action_refused() ||
+                LS_VALUE_MAX - nv < SPARE || LS_ACTION_MAX - na < SPARE) ? 1 : 0;
     }
 
     ls_tui_screen_show(idx);

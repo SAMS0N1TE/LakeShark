@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define MAX_ACTIONS 48
+#include "esp_attr.h"
 
 typedef struct {
     const char *path;
@@ -20,8 +20,10 @@ typedef struct {
     ls_act_fn   fn;
 } entry_t;
 
-static entry_t s_tab[MAX_ACTIONS];
+/* PSRAM, like ls_value's table: only tasks read it. */
+static EXT_RAM_BSS_ATTR entry_t s_tab[LS_ACTION_MAX];
 static int     s_count;
+static int     s_refused;
 
 static bool sig_ok(const char *sig)
 {
@@ -49,17 +51,24 @@ bool ls_action_register(const char *path, const char *sig, ls_cap_t needs,
                         ls_act_fn fn, const char *help)
 {
     if (!path || !fn || !sig_ok(sig)) return false;
-    if (s_count >= MAX_ACTIONS) return false;
 
+    /* A known path needs no new slot, full or not. */
     for (int i = 0; i < s_count; i++) {
         if (!strcmp(s_tab[i].path, path)) {
             s_tab[i] = (entry_t){ path, sig, help, needs, fn };
             return true;
         }
     }
+    if (s_count >= LS_ACTION_MAX) {
+        s_refused++;
+        printf("ls_action: table full, %s not registered\n", path);
+        return false;
+    }
     s_tab[s_count++] = (entry_t){ path, sig, help, needs, fn };
     return true;
 }
+
+int ls_action_refused(void) { return s_refused; }
 
 static int find(const char *path)
 {

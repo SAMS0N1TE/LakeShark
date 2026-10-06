@@ -1,5 +1,9 @@
 # LakeShark release notes
 
+## 2.8.3
+
+- The VOLUME controls on the P25 and FM screens show the volume again.
+
 ## 2.8.2
 
 - P25 on the LR2021 plays much more of every call. A small neural network on the P4's vector unit reads the chip's bits, and the voice error correction uses how sure it is of each symbol.
