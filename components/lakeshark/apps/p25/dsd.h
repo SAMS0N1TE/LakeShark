@@ -49,6 +49,13 @@ typedef struct {
     int16_t buf[DSD_SAMPLE_RING_SIZE];
     volatile int write_idx;
     volatile int read_idx;
+    /* Beside each sample, for a source that synthesizes its symbols: how much
+       it doubts the symbol's two bits (P25_OS4_DOUBTS: the low bit's in bits
+       0-1, the high bit's in 2-3), read by getSymbol when
+       dsd_opts.soft_symbols is set. last_aux is the one beside the sample
+       dsd_ring_read_one returned last. */
+    uint8_t aux[DSD_SAMPLE_RING_SIZE];
+    uint8_t last_aux;
 } dsd_sample_ring_t;
 
 typedef struct {
@@ -135,6 +142,20 @@ typedef struct dsd_opts {
      * being held; a valid ESS naming encryption still mutes it. For a receiver
      * whose ESS often fails to decode though the call is clear. */
     int play_unproven;
+    /* Inside a call a NID that fails BCH is taken as the call's NAC with LDU1
+     * or LDU2 when it lies clearly closest to one of those two codewords: a
+     * weak call's NID breaks before its voice does. */
+    int p25_nid_repair;
+    /* A symbol of exactly P25_SYNTH_ERASED_LEVEL is an erasure
+     * (p25_symbol_synth.h): an IMBE frame holding one is replaced like a
+     * frame past its FEC. For a source whose symbols are synthesized; a
+     * demodulator's can take any value. */
+    int erasure_marks;
+    /* The ring carries the source's doubts (dsd_sample_ring_t.aux): IMBE FEC
+       uses them, Chase-II (imbe_chase.h), in place of a hard decode. */
+    int soft_symbols;
+    /* TIA-102.BABA's frame repeat and muting on the IMBE error counts. */
+    int imbe_repeat;
     float audio_gain;
     int audio_out;
     int symboltiming;
@@ -240,12 +261,40 @@ typedef struct dsd_state {
     uint32_t p25_enc_muted_unknown;
     uint32_t p25_ess_rs_failed;
     uint32_t p25_ess_rs_kept;   /* of those, in a call already proven clear */
+    /* An ESS that would make a clear call encrypted, waiting for the next
+       LDU2 to agree (p25p1_ldu2.c), and how many were not confirmed. */
+    uint8_t  p25_ess_pending;
+    uint8_t  p25_ess_pending_algid;
+    uint16_t p25_ess_pending_kid;
+    uint32_t p25_ess_doubted;
     int currentslot;
     mbe_parms *cur_mp;
     mbe_parms *prev_mp;
     mbe_parms *prev_mp_enhanced;
     int p25kid;
     unsigned int debug_audio_errors;
+    /* imbe_repeat: the running error rate, the last frame played as decoded
+       (88 bits) and how many times in a row it has stood in, and what the
+       rule did. */
+    float imbe_error_rate;
+    uint8_t imbe_last_good[11];
+    uint8_t imbe_have_good;
+    uint8_t imbe_repeats_in_row;
+    unsigned int imbe_repeated, imbe_muted;
+    /* frames the rule took out because their c1..c6 needed too many fixes */
+    unsigned int imbe_gated;
+    /* every IMBE frame decoded, and how clean: 0-2 bits corrected, or 6 and up */
+    unsigned int imbe_frames, imbe_clean, imbe_rough;
+    /* erasures read, whether the frame being read holds one, and the frames
+       that did */
+    unsigned int erased_dibits;
+    int imbe_frame_erased;
+    unsigned int imbe_erased;
+    /* the doubts of the symbol read last, of the dibit read last, and of each
+       bit of the IMBE frame being read */
+    uint8_t symbol_aux;
+    uint8_t dibit_aux;
+    uint8_t imbe_doubt[8][23];
     unsigned int debug_header_errors;
     unsigned int debug_header_critical_errors;
     int last_dibit;
@@ -269,6 +318,11 @@ typedef struct dsd_state {
     uint8_t p25_frame_valid;
     uint8_t p25_frame_duid;
     uint8_t p25_frame_tsbks;
+    /* The NAC of the last NID that passed BCH, -1 before one has; the NIDs
+     * p25_nid_repair took, and the last failed NID's distance to the two. */
+    int p25_good_nac;
+    unsigned int p25_nid_repaired;
+    int p25_nid_d1, p25_nid_d2;
     uint16_t p25_control_nac;
     uint8_t p25_control_nac_valid;
     unsigned int p25_phase2_grant_count;
@@ -408,6 +462,13 @@ extern volatile int dsd_abort;
 void initOpts(dsd_opts *opts);
 void initState(dsd_state *state);
 int  getSymbol(dsd_opts *opts, dsd_state *state, int have_sync);
+/* Called with every symbol getSymbol hands back, when set. */
+extern void (*dsd_symbol_hook)(int symbol, const dsd_state *state);
+/* Called with every IMBE frame processMbeFrame settles, when set: the 88
+   bits the vocoder got and how (DSD_IMBE_DECODED, _REPEATED: the last good
+   frame again, _MUTED: silence, the bits as decoded). */
+enum { DSD_IMBE_DECODED = 0, DSD_IMBE_REPEATED = 1, DSD_IMBE_MUTED = 2 };
+extern void (*dsd_imbe_hook)(const uint8_t imbe88[11], int how, const dsd_state *state);
 int  getDibit(dsd_opts *opts, dsd_state *state);
 int  get_dibit_and_analog_signal(dsd_opts *opts, dsd_state *state, int *out_analog_signal);
 void skipDibit(dsd_opts *opts, dsd_state *state, int count);

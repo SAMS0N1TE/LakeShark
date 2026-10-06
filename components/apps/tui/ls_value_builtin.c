@@ -87,6 +87,7 @@ RD_FLT (v_fm_gain,    FM.gain_tenths / 10.0f)
    have stepped from 0 or 1 dB every time. */
 RD_FLT (v_fm_sql,     (float)FM.squelch_tenths)
 RD_FLT (v_p25_gain,   P25.rtl_gain_tenths / 10.0f)
+RD_INT (v_p25_lrgain, p25_lr_gain_step())
 
 /* Whether the track recorder is running, and how much it has. */
 static bool v_track_on(ls_val_t *o)
@@ -224,6 +225,7 @@ void ls_value_publish_builtin(void)
     ls_value_publish("p25.sync",     NULL,   v_p25_sync);
     ls_value_publish("p25.level",    NULL,   v_p25_level);
     ls_value_publish("p25.gain",     "dB",   v_p25_gain);
+    ls_value_publish("p25.lrgain",   "step", v_p25_lrgain);
 
     ls_value_publish("gps.on",       NULL,   v_gps_on);
     /* The track recorder, so a control can show its state rather

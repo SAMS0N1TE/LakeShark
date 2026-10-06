@@ -195,8 +195,18 @@ const ls_app_doc_t ls_doc_mixrf = {
 
 const ls_app_doc_t ls_doc_diag = {
     .purpose = "What the hardware is doing: memory, tasks, temperature, the "
-               "SD card, and the health of every radio including the GPS "
-               "receiver's own wire counters.",
+               "SD card, the health of every radio including the GPS "
+               "receiver's own wire counters, and the error log: each crash, "
+               "watchdog or brownout, saved at the next boot with the last "
+               "error lines before it.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
+const ls_app_doc_t ls_doc_terminal = {
+    .purpose = "The serial console's commands, typed on the board: crumb, "
+               "heap, safemode and the rest, with their output on the screen "
+               "when no laptop is plugged in.",
     .records = LS_APP_RECORDS_NOTHING,
     .gps     = LS_APP_GPS_UNUSED,
 };
@@ -270,6 +280,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "files",   &ls_doc_files   },
     { "mixrf",   &ls_doc_mixrf   },
     { "diag",    &ls_doc_diag    },
+    { "terminal", &ls_doc_terminal },
     { "set",     &ls_doc_settings},
     { "map",     &ls_doc_map     },
     { "gps",     &ls_doc_gps     },

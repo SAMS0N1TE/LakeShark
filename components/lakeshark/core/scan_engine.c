@@ -43,8 +43,15 @@ static const char *TAG = "scaneng";
 /**/
 #define PRI_SETTLE_MS    35
 #define PRI_MEASURE_MS   45
+/* The NFM squelch re-arms on every retune: 64 ms of settling, then 64 ms of
+   quiet before it may open. The window has to outlast that, so it is the same
+   for a scan step and a priority sample. */
+#define NFM_SETTLE_MS    100
+#define NFM_MEASURE_MS   100
 
 static volatile bool s_enabled = false;
+/* Set across the autosquelch sweep, which tunes as fast as a scan does. */
+static volatile bool s_autosq_busy = false;
 static bool s_mixed, s_location, s_handoff;
 static scan_geo_t s_geo;
 static portMUX_TYPE s_geo_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -199,7 +206,7 @@ static bool wait_for_tune(uint32_t target_hz, int mode,
     /* Polled finely: the retune itself is tens of milliseconds, and a
        coarse poll added half its period to every channel of every pass. */
     for (int waited = 0; waited < 500; waited += 2) {
-        if (!s_enabled || !scan_foreground()) {
+        if (!(s_enabled || s_autosq_busy) || !scan_foreground()) {
             if (error) *error = LS_RADIO_ERR_STOPPED;
             return false;
         }
@@ -255,13 +262,20 @@ static bool carrier_held(int mode)
 }
 
 /**/
-/* THE STOP GATE AND THE SQUELCH MUST BE THE SAME NUMBER FOR NFM. */
+/* Is a measured channel worth stopping on.
+   NFM: the noise squelch, and only that. The peak IQ level cannot be compared
+   with the squelch setting, they are different quantities: the level reads
+   about 3% on dead air and 5% on a strong broadcast, while the setting is a
+   noise gate in percent with a default of 30. The old peak-against-squelch
+   test could never pass, so the scanner never held an analog channel. The
+   squelch is also what opens the audio, so a hold always has something to
+   hear.
+   P25: the peak against the scan threshold; the sync dwell confirms it. */
 
-static int stop_threshold(int mode)
+static bool signal_present(int mode, int peak_pct, bool squelch_open)
 {
-    if (mode != SCAN_MODE_NFM) return s_thresh;
-    int sq = FM.squelch_tenths;
-    return (sq > 0) ? sq : s_thresh;
+    if (mode == SCAN_MODE_NFM) return squelch_open;
+    return peak_pct >= s_thresh;
 }
 
 /**/
@@ -291,9 +305,11 @@ static bool nfm_wait_listen(int timeout_ms)
 /* BAND SCAN - a bare frequency grid, no stored channels. */
 
 static scan_src_t s_src        = SCAN_SRC_CHANNELS;
+/* Default is the VHF land-mobile + weather preset of the radio panel: 150.000
+   to 162.600 MHz on a 7.5 kHz raster, which takes in NOAA 162.400-162.550. */
 static uint32_t   s_band_start = 150000000UL;
-static uint32_t   s_band_stop  = 162000000UL;
-static uint32_t   s_band_step  = 12500UL;
+static uint32_t   s_band_stop  = 162600000UL;
+static uint32_t   s_band_step  = 7500UL;
 static int        s_band_pos   = 0;
 static scan_channel_t s_band_ch;   /* scratch, refilled every step */
 
@@ -426,19 +442,30 @@ int scan_engine_band_steps(void) { return band_steps(); }
 /**/
 /* Defined below; the calibration sweep needs both and sits above them so it
    can read next to the squelch logic it exists to set. */
-static int  measure_peak(int settle_ms, int win_ms, int mode);
+static int  measure_noise(int settle_ms, int win_ms);
 static bool channel_eligible(const scan_channel_t *c);
 
 /**/
-/* AUTO SQUELCH - measure the floor, then sit a margin above it. */
+/* AUTO SQUELCH - measure the noise floor, then sit a margin below it.
+
+   The squelch is a noise gate: it opens when the post-demod noise falls under
+   (100 - setting)%, so a higher setting is more squelch. Dead air reads about
+   81..97% noise and a broadcast carrier 28..59%. The floor therefore has to be
+   measured as noise. It used to be the peak IQ level, a different quantity on
+   a different scale (3% on dead air), and calibrating from that set the
+   squelch to single digits - a gate at 91% noise, which opens on hiss. The
+   margin is in points of noise below the floor. Dead air spans that 81..97%
+   from channel to channel, so 6 points under the median still opened on the
+   noisiest channels; 15 puts the gate under all of it. */
 
 #define AUTOSQ_SAMPLES   24
-#define AUTOSQ_MARGIN    6
-#define AUTOSQ_SETTLE_MS 25
-#define AUTOSQ_MEAS_MS   35
+#define AUTOSQ_MARGIN    15
+/* Past the 64 ms the DSP spends settling after a retune, and wide enough to
+   catch a few demodulator blocks, which arrive about every 34 ms. */
+#define AUTOSQ_SETTLE_MS 70
+#define AUTOSQ_MEAS_MS   100
 
 static volatile bool s_autosq_req    = false;
-static volatile bool s_autosq_busy   = false;
 static volatile int  s_autosq_margin = AUTOSQ_MARGIN;
 static int           s_autosq_floor  = -1;
 
@@ -446,6 +473,37 @@ static int cmp_int(const void *a, const void *b)
 {
     int x = *(const int *)a, y = *(const int *)b;
     return (x > y) - (x < y);
+}
+
+/* Quietest post-demod noise in the window, in percent, 0 if none was
+   published. The quietest block is the one that could open a squelch, which
+   is what the floor is for. FM.noise reads 0 until the first block after a
+   retune, so a zero is "not measured yet" and is skipped, never counted as a
+   quiet channel. */
+static int measure_noise(int settle_ms, int win_ms)
+{
+    vTaskDelay(pdMS_TO_TICKS(settle_ms));
+
+    int lo = 0;
+    int64_t t0 = esp_timer_get_time();
+    while (esp_timer_get_time() - t0 < (int64_t)win_ms * 1000) {
+        if (!(s_enabled || s_autosq_busy) || !scan_foreground()) break;
+        int p = (int)(FM.noise * 100.0f + 0.5f);
+        if (p > 0 && (lo == 0 || p < lo)) lo = p;
+        vTaskDelay(pdMS_TO_TICKS(POWER_POLL_MS));
+    }
+    return lo;
+}
+
+/* Tune, wait for the tune to be in effect, read the noise. A channel that did
+   not tune or read nothing adds no sample. */
+static void autosq_sample(const scan_channel_t *c, int *samples, int *n)
+{
+    tune_to(c);
+    ls_radio_err_t error = LS_RADIO_OK;
+    if (!wait_for_tune(c->freq_hz, SCAN_MODE_NFM, &error)) return;
+    int v = measure_noise(AUTOSQ_SETTLE_MS, AUTOSQ_MEAS_MS);
+    if (v > 0) samples[(*n)++] = v;
 }
 
 /* Runs ON THE SCAN TASK - it tunes and blocks, so it must not be called from
@@ -486,8 +544,7 @@ static void do_autosquelch(void)
         if (stride < 1) stride = 1;
         for (int i = 0; i < steps && n < AUTOSQ_SAMPLES; i += stride) {
             if (!scan_foreground()) { s_autosq_busy = false; return; }
-            tune_to(band_channel(i));
-            samples[n++] = measure_peak(AUTOSQ_SETTLE_MS, AUTOSQ_MEAS_MS, SCAN_MODE_NFM);
+            autosq_sample(band_channel(i), samples, &n);
         }
     } else {
         int total = scan_channels_count();
@@ -495,39 +552,30 @@ static void do_autosquelch(void)
             const scan_channel_t *c = scan_channel_get(i);
             if (!c || !channel_eligible(c)) continue;
             if (!scan_foreground()) { s_autosq_busy = false; return; }
-            tune_to(c);
-            samples[n++] = measure_peak(AUTOSQ_SETTLE_MS, AUTOSQ_MEAS_MS, SCAN_MODE_NFM);
+            autosq_sample(c, samples, &n);
         }
     }
 
     s_autosq_busy = false;
     if (n < 3) {
         snprintf(s_status, sizeof(s_status),
-                 "autosql: only %d samples - need at least 3", n);
+                 "autosql: only %d noise readings - need at least 3, squelch unchanged", n);
+        ESP_LOGW(TAG, "autosql: %d noise readings, refusing to set squelch "
+                      "from a measurement that did not happen", n);
         return;
     }
 
     qsort(samples, n, sizeof(samples[0]), cmp_int);
 
-    /**/
-    /* A FLAT ZERO IS NOT A QUIET BAND, IT IS NO SAMPLES. */
-
-    if (samples[n - 1] == 0) {
-        snprintf(s_status, sizeof(s_status),
-                 "autosql: all %d samples read 0 - no signal path, squelch unchanged", n);
-        ESP_LOGW(TAG, "autosql: %d samples all zero - refusing to set squelch "
-                      "from a measurement that did not happen", n);
-        return;
-    }
-
+    /* Median: a band with a few live channels in it still reads as its floor. */
     int floor_pct = samples[n / 2];
-    int want = floor_pct + s_autosq_margin;
+    int want = (100 - floor_pct) + s_autosq_margin;
     if (want < 1)   want = 1;
     if (want > 100) want = 100;
 
     s_autosq_floor = floor_pct;
     lakeshark_fm_set_squelch(want);
-    ESP_LOGW(TAG, "autosql: floor=%d (median of %d, %d..%d) margin=%d -> squelch=%d",
+    ESP_LOGW(TAG, "autosql: noise floor=%d%% (median of %d, %d..%d) margin=%d -> squelch=%d",
              floor_pct, n, samples[0], samples[n - 1], s_autosq_margin, want);
     snprintf(s_status, sizeof(s_status),
              "autosql floor=%d n=%d -> sq=%d", floor_pct, n, want);
@@ -621,11 +669,14 @@ static void rebuild_order(void)
 }
 
 /**/
-static int measure_peak(int settle_ms, int win_ms, int mode)
+/* One measurement window: the peak level seen, and whether the carrier
+   detector (NFM squelch, P25 sync) was up on the last poll. */
+static int measure_peak(int settle_ms, int win_ms, int mode, bool *carrier)
 {
     vTaskDelay(pdMS_TO_TICKS(settle_ms));
 
     int pk = 0;
+    bool up = false;
     int64_t t0 = esp_timer_get_time();
     while (esp_timer_get_time() - t0 < (int64_t)win_ms * 1000) {
         /**/
@@ -633,8 +684,10 @@ static int measure_peak(int settle_ms, int win_ms, int mode)
         if (!(s_enabled || s_autosq_busy) || !scan_foreground()) break;
         int p = rx_power_pct(mode);
         if (p > pk) pk = p;
+        up = carrier_held(mode);
         vTaskDelay(pdMS_TO_TICKS(POWER_POLL_MS));
     }
+    if (carrier) *carrier = up;
     return pk;
 }
 
@@ -656,10 +709,13 @@ static int priority_sample(void)
             s_scan_error = tune_error;
             return -1;
         }
-        int pk = measure_peak(PRI_SETTLE_MS, PRI_MEASURE_MS, c->mode);
+        const bool nfm = c->mode == SCAN_MODE_NFM;
+        bool carrier = false;
+        int pk = measure_peak(nfm ? NFM_SETTLE_MS : PRI_SETTLE_MS,
+                              nfm ? NFM_MEASURE_MS : PRI_MEASURE_MS, c->mode, &carrier);
         if (!s_enabled || !scan_foreground()) return -1;
         /**/
-        if (pk >= stop_threshold(c->mode)) return i;
+        if (signal_present(c->mode, pk, carrier)) return i;
     }
     return -1;
 }
@@ -860,20 +916,20 @@ static void scan_task(void *arg)
 
         /**/
         mark = esp_timer_get_time();
-        int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? 100 : SETTLE_MS,
-                               c->mode == SCAN_MODE_NFM ? 100 : MEASURE_MS,
-                               c->mode);
+        bool carrier = false;
+        int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? NFM_SETTLE_MS : SETTLE_MS,
+                               c->mode == SCAN_MODE_NFM ? NFM_MEASURE_MS : MEASURE_MS,
+                               c->mode, &carrier);
         s_pass.measure_us += esp_timer_get_time() - mark;
         if (pwi > s_pk_acc) s_pk_acc = pwi;
         if (!s_enabled || !scan_foreground()) continue;
 
         /**/
         if (advance_requested(idx)) continue;
-        if (!scan_engine_manual_hold() && pwi < stop_threshold(c->mode)) {
+        if (!scan_engine_manual_hold() && !signal_present(c->mode, pwi, carrier)) {
             snprintf(s_status, sizeof(s_status), "SCAN %-9s p=%02d", c->name, pwi);
             continue;
         }
-        if (c->mode == SCAN_MODE_NFM && !FM.squelch_open && !scan_engine_manual_hold()) continue;
         snprintf(s_status, sizeof(s_status), "CHECK %-9s p=%02d", c->name, pwi);
 
         /**/

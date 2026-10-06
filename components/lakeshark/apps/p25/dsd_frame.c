@@ -69,6 +69,11 @@ printFrameInfo(dsd_opts *opts, dsd_state *state)
     printf("tg: %5i ", state->lasttg);
 }
 
+/* p25_nid_repair: a failed NID within this many bits of a candidate, and at
+   least this much nearer it than the other, is that candidate. */
+#define P25_NID_REPAIR_MAX    20
+#define P25_NID_REPAIR_MARGIN 4
+
 void
 processFrame(dsd_opts *opts, dsd_state *state)
 {
@@ -172,6 +177,28 @@ processFrame(dsd_opts *opts, dsd_state *state)
         if ((++fail_ctr & 3) == 0) {
             diag_dump_nid("FLDMP", nid_dibits, state->nac, duid, bch_ec, 0,
                           "uncorrectable");
+        }
+    }
+
+    if (check_result) {
+        state->p25_good_nac = new_nac;
+    } else if (state->p25_good_nac >= 0 &&
+               (state->lastp25type == 1 || state->lastp25type == 2)) {
+        /* Inside a call the NID can only be its NAC with LDU1 or LDU2, two
+           codewords at least 23 bits apart; a random word lies about 31 bits
+           from each. One clearly closest is that frame. */
+        const int d1 = nid_distance(bch_code, state->p25_good_nac, 5);
+        const int d2 = nid_distance(bch_code, state->p25_good_nac, 10);
+        state->p25_nid_d1 = d1;
+        state->p25_nid_d2 = d2;
+        const int best = d1 < d2 ? d1 : d2, other = d1 < d2 ? d2 : d1;
+        if (opts->p25_nid_repair && best <= P25_NID_REPAIR_MAX &&
+            other - best >= P25_NID_REPAIR_MARGIN) {
+            check_result = 1;
+            new_nac = state->p25_good_nac;
+            new_duid[0] = new_duid[1] = d1 < d2 ? '1' : '2';
+            new_duid[2] = 0;
+            state->p25_nid_repaired++;
         }
     }
 

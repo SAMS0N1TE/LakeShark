@@ -766,6 +766,40 @@ static const ls_btn_t COMPACT_QUICK[] = {
 };
 #define N_COMPACT_QUICK ((int)(sizeof(COMPACT_QUICK) / sizeof(COMPACT_QUICK[0])))
 
+/* On the LR2021 the gain keys choose the chip's gain instead: its AGC, or
+   held at the most, which a weak site wants and a strong one does not. */
+static const ls_quick_t QUICK_LR[] = {
+    { .label = "TUNE", .kind = LS_QUICK_ACTION, .action = "p25.tune",
+      .key = 't' },
+    { .label = "VOLUME", .kind = LS_QUICK_STEP, .action = "audio.volume",
+      .value = "sys.volume", .delta = 5, .lo = 0, .hi = 100,
+      .key = '+', .key_down = '-' },
+    { .label = "GAIN", .kind = LS_QUICK_STEP, .action = "p25.lrgain",
+      .value = "p25.lrgain", .delta = 13, .lo = 0, .hi = 13,
+      .lo_text = "AUTO", .hi_text = "MAX", .key = 'u', .key_down = 'j' },
+};
+_Static_assert(sizeof(QUICK_LR) / sizeof(QUICK_LR[0]) == N_QUICK, "one row each");
+
+static ls_btn_t s_compact_lr[] = {
+    { "TUNE", NULL, 't', false, false },
+    { "VOL-", NULL, '-', false, false },
+    { "VOL+", NULL, '+', false, false },
+    { "AUTO", NULL, 'j', false, false },
+    { "MAX",  NULL, 'u', false, false },
+};
+
+static bool lr_receiver(void) { return P25.lora_rx; }
+static const ls_quick_t *quick(void) { return lr_receiver() ? QUICK_LR : QUICK; }
+
+static const ls_btn_t *compact_quick(void)
+{
+    if (!lr_receiver()) return COMPACT_QUICK;
+    const char *g = ls_quick_state(&QUICK_LR[2]);
+    s_compact_lr[3].on = g && !strcmp(g, "AUTO");
+    s_compact_lr[4].on = g && !strcmp(g, "MAX");
+    return s_compact_lr;
+}
+
 static void radio_view(void)
 {
     memset(&s_view,0,sizeof(s_view));
@@ -778,7 +812,10 @@ static void radio_view(void)
     if(sync) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
     else snprintf(s_view.detail[0],64,"NAC ---   TG ---   UNIT ---");
     snprintf(s_view.detail[1],64,"SYNC %s",sync?"LOCKED":"SEARCHING");
-    snprintf(s_view.detail[2],64,"GAIN %.1f dB",P25.rtl_gain_tenths/10.0);
+    if(lr_receiver()) {
+        const char *g=ls_quick_state(&QUICK_LR[2]);
+        snprintf(s_view.detail[2],64,"GAIN %s",g?g:"-");
+    } else snprintf(s_view.detail[2],64,"GAIN %.1f dB",P25.rtl_gain_tenths/10.0);
     snprintf(s_view.detail[3],64,"AUDIO %s",s_view.receiver.receiver_streaming?voice_status():"OFFLINE");
     if(p25_p2_enabled()) {
         s_view.mode="P25 II EXP";
@@ -802,7 +839,7 @@ static void radio_action(char c)
         return;
     }
     if(c=='T') scan_engine_stop();
-    if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
+    if(c) ls_quick_key(c,quick(),N_QUICK,ls_quick_grant_builtin(),NULL);
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -822,7 +859,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (wide) {
         /* LANDSCAPE HAS THE CONTROLS TOO. */
 
-        const int want = ls_quick_rows(QUICK, N_QUICK, area.w, true);
+        const int want = ls_quick_rows(quick(), N_QUICK, area.w, true);
         const int ctl_h = (area.h > want + 8) ? want : 0;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         s_quick_rect = ctl_h
@@ -835,7 +872,7 @@ static void draw(tui_surface *sf, tui_rect area)
            setting are different kinds of thing, and the page bar was under
            the settings where it read as one more of them. */
         const int want = s_quick_compact ? 5
-            : (s_page == 0 ? ls_quick_rows(QUICK, N_QUICK, area.w, false) : 0);
+            : (s_page == 0 ? ls_quick_rows(quick(), N_QUICK, area.w, false) : 0);
         const int ctl_h = (area.h > want + 12) ? want : 0;
         s_quick_rect = ctl_h
             ? tui_rect_make(area.x, area.y + area.h - ctl_h, area.w, ctl_h)
@@ -875,9 +912,9 @@ static void draw(tui_surface *sf, tui_rect area)
 
     if (s_quick_rect.h > 0) {
         if (s_quick_compact)
-            ls_btn_bar(sf, s_quick_rect, COMPACT_QUICK, N_COMPACT_QUICK, -1);
+            ls_btn_bar(sf, s_quick_rect, compact_quick(), N_COMPACT_QUICK, -1);
         else
-            ls_quick_draw_posture(sf, s_quick_rect, wide, QUICK, N_QUICK);
+            ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
     }
 }
 
@@ -923,7 +960,7 @@ static bool key(ls_tk_t k, char ch)
         if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
-        if (ls_quick_key(ch, QUICK, N_QUICK,
+        if (ls_quick_key(ch, quick(), N_QUICK,
                          ls_quick_grant_builtin(), NULL)) return true;
     }
     /* SIGNAL hands its keys to the waterfall: it is the waterfall, and a
@@ -951,11 +988,11 @@ static bool touch(int col, int row)
         if (s_quick_compact) {
             const int i = ls_btn_hit(col, row);
             if (i >= 0 && i < N_COMPACT_QUICK)
-                ls_quick_key(COMPACT_QUICK[i].key, QUICK, N_QUICK,
+                ls_quick_key(compact_quick()[i].key, quick(), N_QUICK,
                              ls_quick_grant_builtin(), NULL);
             return true;
         }
-        if (ls_quick_touch(col, row, QUICK, N_QUICK,
+        if (ls_quick_touch(col, row, quick(), N_QUICK,
                            ls_quick_grant_builtin(), NULL)) return true;
     }
     if (s_page == 1) return ls_wf_touch(col, row);

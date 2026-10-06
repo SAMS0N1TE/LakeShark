@@ -160,7 +160,7 @@ mbe_7100x4400hamming1511 (char *in, char *out)
   if (syndrome > 0)
     {
       errs++;
-      block ^= hammingMatrix[syndrome];
+      block ^= imbe7100x4400hammingMatrix[syndrome];
     }
 
   for (i = 14; i >= 0; i--)

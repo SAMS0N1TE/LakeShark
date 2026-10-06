@@ -267,9 +267,12 @@ int16_t dsd_ring_read_one(dsd_sample_ring_t *r)
         dsd_yield();
     }
     int16_t val = r->buf[r->read_idx];
+    r->last_aux = r->aux[r->read_idx];
     r->read_idx = (r->read_idx + 1) % DSD_SAMPLE_RING_SIZE;
     return val;
 }
+
+void (*dsd_symbol_hook)(int symbol, const dsd_state *state);
 
 int
 getSymbol(dsd_opts *opts, dsd_state *state, int have_sync)
@@ -331,6 +334,8 @@ getSymbol(dsd_opts *opts, dsd_state *state, int have_sync)
         }
 
         sample = dsd_ring_read_one(opts->ring);
+        if (i == state->symbolCenter)
+            state->symbol_aux = opts->ring->last_aux;
 
         if (saved_idx < 10) {
             saved_samples[saved_idx++] = sample;
@@ -442,5 +447,6 @@ getSymbol(dsd_opts *opts, dsd_state *state, int have_sync)
         raw_trace_idx++;
     }
 
+    if (dsd_symbol_hook) dsd_symbol_hook(symbol, state);
     return symbol;
 }

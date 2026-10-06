@@ -25,6 +25,7 @@
 
 #define USE_OP25_VOCODER 1
 #include "imbe_shim.h"
+#include "imbe_chase.h"
 
 volatile int p25_voice_gate = 99;
 
@@ -79,6 +80,10 @@ void initOpts(dsd_opts *opts)
     opts->use_cosine_filter = 1;
     opts->unmute_encrypted_p25 = 0;
     opts->play_unproven = 0;
+    opts->p25_nid_repair = 1;
+    opts->erasure_marks = 0;
+    opts->soft_symbols = 0;
+    opts->imbe_repeat = 1;
     opts->audio_gain = 0.0f;
     opts->audio_out = 1;
     opts->symboltiming = 0;
@@ -178,6 +183,8 @@ void initState(dsd_state *state)
     state->p25_kid = 0;
     memset(state->p25_mi, 0, sizeof(state->p25_mi));
     state->p25_ess_valid = 0;
+    state->p25_ess_pending = 0;
+    state->p25_ess_doubted = 0;
     state->currentslot = 0;
     DSD_KEEP(cur_mp, mbe_parms, 1, DSD_MALLOC_FAST);
     DSD_KEEP(prev_mp, mbe_parms, 1, DSD_MALLOC_FAST);
@@ -202,6 +209,18 @@ void initState(dsd_state *state)
     state->p25_grant_generation = 0;
     state->p25_frame_valid = 0;
     state->p25_frame_duid = 0;
+    state->p25_good_nac = -1;
+    state->imbe_error_rate = 0.0f;
+    state->imbe_have_good = 0;
+    state->imbe_repeats_in_row = 0;
+    state->imbe_repeated = state->imbe_muted = 0;
+    state->imbe_gated = 0;
+    state->imbe_frames = state->imbe_clean = state->imbe_rough = 0;
+    state->erased_dibits = 0;
+    state->imbe_frame_erased = 0;
+    state->imbe_erased = 0;
+    state->p25_nid_repaired = 0;
+    state->p25_nid_d1 = state->p25_nid_d2 = -1;
     state->p25_frame_tsbks = 0;
     state->p25_control_nac = 0;
     state->p25_control_nac_valid = 0;
@@ -414,6 +433,13 @@ void processAudio(dsd_opts *opts, dsd_state *state)
     }
 }
 
+void (*dsd_imbe_hook)(const uint8_t imbe88[11], int how, const dsd_state *state);
+
+static void imbe_out(const uint8_t imbe88[11], int how, const dsd_state *state)
+{
+    if (dsd_imbe_hook) dsd_imbe_hook(imbe88, how, state);
+}
+
 void processMbeFrame(dsd_opts *opts, dsd_state *state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24])
 {
     int i;
@@ -430,15 +456,97 @@ void processMbeFrame(dsd_opts *opts, dsd_state *state, char imbe_fr[8][23], char
     if ((state->synctype == 0) || (state->synctype == 1)) {
 #if USE_OP25_VOCODER
 
-        state->errs  = mbe_eccImbe7200x4400C0(imbe_fr);
-        mbe_demodulateImbe7200x4400Data(imbe_fr);
-        state->errs2 = mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
+        int c0_sure_changed = 0;
+        if (opts->soft_symbols) {
+            /* each FEC word corrected with the source's doubts; mbelib's own
+               pass then finds codewords and only takes the data out */
+            state->errs = imbe_chase_c0(imbe_fr, state->imbe_doubt, &c0_sure_changed);
+            (void)mbe_eccImbe7200x4400C0(imbe_fr);
+            mbe_demodulateImbe7200x4400Data(imbe_fr);
+            state->errs2 = imbe_chase_data(imbe_fr, state->imbe_doubt);
+            (void)mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
+        } else {
+            state->errs  = mbe_eccImbe7200x4400C0(imbe_fr);
+            mbe_demodulateImbe7200x4400Data(imbe_fr);
+            state->errs2 = mbe_eccImbe7200x4400Data(imbe_fr, imbe_d);
+        }
         state->debug_audio_errors += 0;
         uint8_t imbe88[11];
         for (int b = 0; b < 11; b++) imbe88[b] = 0;
         for (int b = 0; b < 88; b++)
             if (imbe_d[b] & 1) imbe88[b >> 3] |= (uint8_t)(0x80 >> (b & 7));
         int16_t snd[160];
+        int how = DSD_IMBE_DECODED;
+        /* TIA-102.BABA: E0 the errors fixed in u0, ET all of them, and a
+           running rate. A frame with E0 >= 2 and ET >= 10 + 40*rate is
+           replaced by the last good one, three times at most; past a rate of
+           0.0875 the voice is muted. */
+        const int et = state->errs + state->errs2;
+        state->imbe_frames++;
+        if (state->imbe_frame_erased) {
+            /* Some of this frame's symbols were never received (the LR2021
+               loses ~150 at each packet seam): what FEC makes of the rest is
+               no frame at all. The last good one stands in, three times at
+               most, else silence; the error rate is left alone. */
+            state->imbe_erased++;
+            if (state->imbe_have_good && state->imbe_repeats_in_row < 3) {
+                state->imbe_repeats_in_row++;
+                state->imbe_repeated++;
+                for (int b = 0; b < 11; b++) imbe88[b] = state->imbe_last_good[b];
+                how = DSD_IMBE_REPEATED;
+                goto vocode;
+            }
+            state->imbe_muted++;
+            for (int k = 0; k < 160; k++) state->audio_out_temp_buf[k] = 0.0f;
+            state->err_str[0] = 0;
+            imbe_out(imbe88, DSD_IMBE_MUTED, state);
+            goto audio;
+        }
+        if (et <= 2) state->imbe_clean++;
+        else if (et >= 6) state->imbe_rough++;
+        state->imbe_error_rate = 0.95f * state->imbe_error_rate + 0.000365f * (float)et;
+        if (opts->imbe_repeat && state->imbe_error_rate > 0.0875f) {
+            state->imbe_muted++;
+            for (int k = 0; k < 160; k++) state->audio_out_temp_buf[k] = 0.0f;
+            state->err_str[0] = 0;
+            imbe_out(imbe88, DSD_IMBE_MUTED, state);
+            goto audio;
+        }
+        /* With the source's doubts, a c0 that had to change a bit the source
+           was sure of is replaced too: scored against an RTL on a held-out
+           call, that catches 39% of the wrong frames where the rule alone
+           catches 32%, for 2.1% of the right ones where it costs 1.5%.
+           So is a frame whose c1..c6 needed many fixes: the LR2021's 2400 Hz
+           calls replayed through this decoder, errs2 >= 6 (>= 5 with two c0
+           bits fixed) took out 96% of the frames that were garbage, over 10
+           of 81 bits wrong, for 6% of the right ones, which a repeat of the
+           frame before barely changes; garbage fell from 18.5% of the frames
+           played to 0.9%. */
+        const int many_fixed = opts->soft_symbols &&
+            (state->errs2 >= 6 || (state->errs >= 2 && state->errs2 >= 5));
+        if (many_fixed) state->imbe_gated++;
+        if (opts->imbe_repeat &&
+            ((state->errs >= 2 && (float)et >= 10.0f + 40.0f * state->imbe_error_rate) ||
+             c0_sure_changed >= 1 || many_fixed)) {
+            if (state->imbe_have_good && state->imbe_repeats_in_row < 3) {
+                state->imbe_repeats_in_row++;
+                state->imbe_repeated++;
+                for (int b = 0; b < 11; b++) imbe88[b] = state->imbe_last_good[b];
+                how = DSD_IMBE_REPEATED;
+            } else {
+                state->imbe_muted++;
+                for (int k = 0; k < 160; k++) state->audio_out_temp_buf[k] = 0.0f;
+                state->err_str[0] = 0;
+                imbe_out(imbe88, DSD_IMBE_MUTED, state);
+                goto audio;
+            }
+        } else {
+            state->imbe_repeats_in_row = 0;
+            for (int b = 0; b < 11; b++) state->imbe_last_good[b] = imbe88[b];
+            state->imbe_have_good = 1;
+        }
+vocode:
+    imbe_out(imbe88, how, state);
     if (!imbe_shim_try_decode_88(imbe88, snd)) return;
         for (int k = 0; k < 160; k++)
             state->audio_out_temp_buf[k] = (float)snd[k];
@@ -447,6 +555,9 @@ void processMbeFrame(dsd_opts *opts, dsd_state *state, char imbe_fr[8][23], char
         mbe_processImbe7200x4400Framef(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str, imbe_fr, imbe_d, state->cur_mp, state->prev_mp, state->prev_mp_enhanced, opts->uvquality);
 #endif
     }
+#if USE_OP25_VOCODER
+audio:
+#endif
 
     if (opts->errorbars == 1)
         printf("%s", state->err_str);

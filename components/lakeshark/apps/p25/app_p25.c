@@ -860,6 +860,9 @@ static void dsd_decoder_task(void *arg)
     int      q_bch_ok0 = 0, q_bch_fail0 = 0, q_voice0 = 0;
     uint32_t q_under0 = 0, q_drop0 = 0;
     uint32_t q_rel0 = 0, q_disc0 = 0, q_muted0 = 0;
+    /* and the IMBE frames' error counts, for how clean the voice was */
+    uint32_t q_imbe0 = 0, q_clean0 = 0, q_rough0 = 0, q_rep0 = 0, q_emute0 = 0, q_nidfix0 = 0, q_erase0 = 0,
+             q_essdoubt0 = 0, q_gate0 = 0;
     int      q_nac = 0;
     p25_acquisition_gate_t acquisition = {0};
     acquisition.generation = atomic_load_explicit(
@@ -1023,6 +1026,15 @@ static void dsd_decoder_task(void *arg)
                     q_rel0      = s_voice_hold.released_frames;
                     q_disc0     = s_voice_hold.discarded_frames;
                     q_muted0    = s_dsd_state.p25_enc_muted_frames;
+                    q_imbe0     = s_dsd_state.imbe_frames;
+                    q_clean0    = s_dsd_state.imbe_clean;
+                    q_rough0    = s_dsd_state.imbe_rough;
+                    q_rep0      = s_dsd_state.imbe_repeated;
+                    q_emute0    = s_dsd_state.imbe_muted;
+                    q_nidfix0   = s_dsd_state.p25_nid_repaired;
+                    q_erase0    = s_dsd_state.imbe_erased;
+                    q_essdoubt0 = s_dsd_state.p25_ess_doubted;
+                    q_gate0     = s_dsd_state.imbe_gated;
                 }
                 q_last_sync_us = q_now;
                 q_nac = P25.dsd_nac;
@@ -1123,14 +1135,30 @@ static void dsd_decoder_task(void *arg)
                    then played, held and dropped, and muted as encrypted. A
                    choppy call with muted=0 and disc=0 lost its voice before
                    the decoder - sync, not policy. */
+                /* imbe/clean/rough: IMBE frames decoded and how many had 0-2
+                   or 6+ bits corrected; rpt/emute what the repeat rule did;
+                   nidfix the NIDs taken from the call's NAC; erase the frames
+                   that held symbols never received; essdoubt the ESS that said
+                   encrypted and were not confirmed; gate the frames the rule
+                   took out for too many fixes in c1..c6. */
                 ESP_LOGW("P25QUAL",
                     "nac=%03X dur=%.1fs bchOK=%d bchFAIL=%d ok%%=%d vox=%d under=%u drop=%u dec=%dms "
-                    "rel=%u disc=%u muted=%u",
+                    "rel=%u disc=%u muted=%u imbe=%u clean=%u rough=%u rpt=%u emute=%u nidfix=%u erase=%u "
+                    "essdoubt=%u gate=%u",
                     q_nac, dur, dok, dfail, okpct, dvox,
                     (unsigned)dund, (unsigned)ddrp, qr.dec_ms,
                     (unsigned)(s_voice_hold.released_frames - q_rel0),
                     (unsigned)(s_voice_hold.discarded_frames - q_disc0),
-                    (unsigned)(s_dsd_state.p25_enc_muted_frames - q_muted0));
+                    (unsigned)(s_dsd_state.p25_enc_muted_frames - q_muted0),
+                    (unsigned)(s_dsd_state.imbe_frames - q_imbe0),
+                    (unsigned)(s_dsd_state.imbe_clean - q_clean0),
+                    (unsigned)(s_dsd_state.imbe_rough - q_rough0),
+                    (unsigned)(s_dsd_state.imbe_repeated - q_rep0),
+                    (unsigned)(s_dsd_state.imbe_muted - q_emute0),
+                    (unsigned)(s_dsd_state.p25_nid_repaired - q_nidfix0),
+                    (unsigned)(s_dsd_state.imbe_erased - q_erase0),
+                    (unsigned)(s_dsd_state.p25_ess_doubted - q_essdoubt0),
+                    (unsigned)(s_dsd_state.imbe_gated - q_gate0));
                 q_active = false;
             }
         }
@@ -1251,52 +1279,346 @@ static void p25_decoder_retuned(uint32_t f)
    symbols, and those reach the decoder's ring as the demodulator's samples
    would. The 8-bit trigger word matches within milliseconds of each packet
    ending, so the stream is close to continuous; the decoder finds the frame
-   syncs itself. */
+   syncs itself. The engine set for 2400 Hz of deviation, not C4FM's 1800,
+   tells the inner levels from the outer ones better: on the same calls,
+   packet for packet against 1800, it gave 12-14% more voice frames exact
+   (p25_os4_lut is learned at this setting). At 3600 the trigger seldom
+   fires. */
 #define P25_LORA_BITRATE   19200u
-#define P25_LORA_DEV_HZ    1800u
+#define P25_LORA_DEV_HZ    2400u
 #define P25_LORA_FILTER_HZ 12019u
 #define P25_LORA_TRIGGER   0xCC000000u
 #define P25_LORA_READ      512
+#define P25_LORA_BEHIND    128   /* bytes waiting at a read that send it to the lookup */
+#define P25_LORA_READ_AGAIN 64   /* a read of fewer bytes ends the pass: 27 ms of air */
+#define P25_LORA_OUT       (P25_LORA_READ * 2 + 24 + P25_OS4_GAP_MAX + P25_OS4_HOLD)
+#define P25_LORA_QUEUE     4096
 
 static EXT_RAM_BSS_ATTR p25_os4_decoder_t s_os4;
 static EXT_RAM_BSS_ATTR uint8_t s_lora_bytes[P25_LORA_READ];
-static EXT_RAM_BSS_ATTR uint8_t s_lora_dibits[P25_LORA_READ * 2];
+static EXT_RAM_BSS_ATTR uint8_t s_lora_dibits[P25_LORA_OUT];
+/* Symbols waiting for room in the decoder's ring: a bridged packet seam
+   sends up to P25_OS4_GAP_MAX + P25_OS4_HOLD at once, more than it holds. */
+static EXT_RAM_BSS_ATTR uint8_t s_lora_queue[P25_LORA_QUEUE];
+static size_t s_lora_q_head, s_lora_q_n;
+
+static p25_lr_cfg_t s_lr_cfg = { P25_LORA_BITRATE, P25_LORA_DEV_HZ, P25_LORA_FILTER_HZ, 0, 0 };
+static volatile bool s_lr_restart;
+static p25_lr_cfg_t s_lr_alt;
+static volatile bool s_lr_alt_on;
+static bool s_lr_on_alt;                 /* this session runs the alternate */
+
+static const p25_lr_cfg_t *p25_lr_now(void) { return s_lr_on_alt ? &s_lr_alt : &s_lr_cfg; }
+
+/* The raw capture: a ring of the stream's bytes as the chip hands them over,
+   and where each packet began, with its time from the capture's start. A
+   reader keeps SAFE bytes away from the writer, as a dump takes a minute. */
+#define P25_LR_CAP_BYTES (2u * 1024u * 1024u)
+#define P25_LR_CAP_SAFE  (P25_LR_CAP_BYTES - 512u * 1024u)
+#define P25_LR_CAP_PKTS  1024u
+static EXT_RAM_BSS_ATTR uint8_t s_lr_cap[P25_LR_CAP_BYTES];
+static EXT_RAM_BSS_ATTR uint32_t s_lr_cap_off[P25_LR_CAP_PKTS], s_lr_cap_ms[P25_LR_CAP_PKTS];
+static EXT_RAM_BSS_ATTR uint8_t s_lr_cap_alt[P25_LR_CAP_PKTS];
+static volatile uint32_t s_lr_cap_n, s_lr_cap_pkts;
+static volatile bool s_lr_cap_on, s_lr_cap_fresh;
+static int64_t s_lr_cap_t0;
+
+/* The symbol capture: four dibits to a byte, a ring counted in symbols. */
+#define P25_SYM_CAP_BYTES (1024u * 1024u)
+#define P25_SYM_CAP_SAFE  ((P25_SYM_CAP_BYTES - 256u * 1024u) * 4u)
+static EXT_RAM_BSS_ATTR uint8_t s_sym_cap[P25_SYM_CAP_BYTES];
+static volatile uint32_t s_sym_cap_n;
+static volatile bool s_sym_cap_on;
+
+static void p25_sym_hook(int symbol, const dsd_state *st)
+{
+    if (!s_sym_cap_on) return;
+    const unsigned d = symbol > st->center ? (symbol > st->umid ? 1u : 0u)
+                                           : (symbol < st->lmid ? 3u : 2u);
+    const uint32_t n = s_sym_cap_n;
+    const uint32_t at = (n / 4u) % P25_SYM_CAP_BYTES;
+    const unsigned sh = 6u - 2u * (n % 4u);
+    s_sym_cap[at] = (uint8_t)((s_sym_cap[at] & ~(3u << sh)) | (d << sh));
+    s_sym_cap_n = n + 1;
+}
+
+void p25_sym_capture_start(void)
+{
+    s_sym_cap_on = false;
+    s_sym_cap_n = 0;
+    dsd_symbol_hook = p25_sym_hook;
+    s_sym_cap_on = true;
+}
+
+void p25_sym_capture_stop(void) { s_sym_cap_on = false; }
+
+#define P25_IMBE_CAP_RECS 16384u                        /* five minutes of voice */
+#define P25_IMBE_CAP_SAFE (P25_IMBE_CAP_RECS - 2048u)
+static EXT_RAM_BSS_ATTR uint8_t s_imbe_cap[P25_IMBE_CAP_RECS * P25_IMBE_REC];
+static volatile uint32_t s_imbe_cap_n;
+static volatile bool s_imbe_cap_on;
+static int64_t s_imbe_cap_t0;
+
+static void p25_imbe_hook(const uint8_t imbe88[11], int how, const dsd_state *st)
+{
+    if (!s_imbe_cap_on) return;
+    uint8_t *r = &s_imbe_cap[(s_imbe_cap_n % P25_IMBE_CAP_RECS) * P25_IMBE_REC];
+    memcpy(r, imbe88, 11);
+    r[11] = (uint8_t)(how | (st->imbe_frame_erased ? 4 : 0));
+    r[12] = (uint8_t)st->errs;
+    r[13] = (uint8_t)st->errs2;
+    const uint32_t t = (uint32_t)((esp_timer_get_time() - s_imbe_cap_t0) / 10000);
+    r[14] = (uint8_t)(t >> 8);
+    r[15] = (uint8_t)t;
+    s_imbe_cap_n++;
+}
+
+void p25_imbe_capture_start(void)
+{
+    s_imbe_cap_on = false;
+    s_imbe_cap_n = 0;
+    s_imbe_cap_t0 = esp_timer_get_time();
+    dsd_imbe_hook = p25_imbe_hook;
+    s_imbe_cap_on = true;
+}
+
+void p25_imbe_capture_stop(void) { s_imbe_cap_on = false; }
+
+void p25_imbe_capture_info(p25_imbe_capture_info_t *out)
+{
+    out->on = s_imbe_cap_on;
+    out->frames = s_imbe_cap_n;
+    out->oldest = out->frames > P25_IMBE_CAP_SAFE ? out->frames - P25_IMBE_CAP_SAFE : 0;
+}
+
+bool p25_imbe_capture_read(uint32_t at, uint8_t *out, uint32_t n)
+{
+    const uint32_t end = s_imbe_cap_n;
+    if (at > end || n > end - at || end - at > P25_IMBE_CAP_SAFE) return false;
+    for (uint32_t i = 0; i < n; i++)
+        memcpy(out + i * P25_IMBE_REC, &s_imbe_cap[((at + i) % P25_IMBE_CAP_RECS) * P25_IMBE_REC], P25_IMBE_REC);
+    return true;
+}
+
+void p25_sym_capture_info(p25_sym_capture_info_t *out)
+{
+    out->on = s_sym_cap_on;
+    out->symbols = s_sym_cap_n;
+    out->oldest = out->symbols > P25_SYM_CAP_SAFE ? (out->symbols - P25_SYM_CAP_SAFE + 3u) & ~3u : 0;
+}
+
+bool p25_sym_capture_read(uint32_t at, uint8_t *out, uint32_t n)
+{
+    const uint32_t end = s_sym_cap_n;
+    if (at % 4u || at > end || n > end - at || end - at > P25_SYM_CAP_SAFE) return false;
+    for (uint32_t i = 0; i < (n + 3u) / 4u; i++)
+        out[i] = s_sym_cap[(at / 4u + i) % P25_SYM_CAP_BYTES];
+    return true;
+}
+
+void p25_lr_get_cfg(p25_lr_cfg_t *out) { *out = s_lr_cfg; }
+
+void p25_lr_set_cfg(const p25_lr_cfg_t *cfg)
+{
+    s_lr_cfg = *cfg;
+    s_lr_restart = true;
+}
+
+/* The gain chosen on the P25 screen, kept across boots: 0 is the chip's AGC,
+   any other step is held with RX boost 7. Near the transmitters the AGC read
+   a quarter more frames than step 13; at a weak site step 13 read several
+   times the AGC's. */
+static void p25_lr_gain_put(uint8_t step)
+{
+    s_lr_cfg.rx_gain_step = step;
+    s_lr_cfg.rx_boost_step = step ? 7 + 1 : 0;
+}
+
+uint8_t p25_lr_gain_step(void) { return s_lr_cfg.rx_gain_step; }
+
+void p25_lr_choose_gain(uint8_t step)
+{
+    if (step > 13) step = 13;
+    p25_lr_gain_put(step);
+    s_lr_restart = true;
+    settings_set_p25_lr_gain(step);
+}
+
+/* The lookup's doubts are what the soft FEC works from: without them every
+   bit reads as sure, so the FEC goes hard with the lookup. */
+void p25_lr_set_lut(bool on)
+{
+    p25_os4_lut_on = on;
+    if (!s_lr_on_alt) s_os4.use_lut = on;
+    if (P25.lora_rx) s_dsd_opts.soft_symbols = s_os4.use_lut || s_os4.use_nn;
+}
+bool p25_lr_lut(void) { return p25_os4_lut_on != 0; }
+
+/* The network decides later than the lookup (its window reaches further
+   ahead), so it takes effect at the stream's next reset rather than in the
+   middle of one. */
+void p25_lr_set_nn(bool on)
+{
+    p25_os4_nn_on = on;
+    s_lr_restart = true;
+}
+bool p25_lr_nn(void) { return p25_os4_nn_on != 0; }
+
+void p25_lr_set_alt(const p25_lr_cfg_t *alt)
+{
+    if (alt) s_lr_alt = *alt;
+    s_lr_alt_on = alt != NULL;
+    s_lr_restart = true;
+}
+
+bool p25_lr_get_alt(p25_lr_cfg_t *out)
+{
+    *out = s_lr_alt;
+    return s_lr_alt_on;
+}
+
+void p25_lr_capture_start(void)
+{
+    s_lr_cap_on = false;
+    s_lr_cap_n = s_lr_cap_pkts = 0;
+    s_lr_cap_t0 = esp_timer_get_time();
+    s_lr_cap_fresh = true;
+    s_lr_cap_on = true;
+}
+
+void p25_lr_capture_stop(void) { s_lr_cap_on = false; }
+
+void p25_lr_capture_info(p25_lr_capture_info_t *out)
+{
+    out->on = s_lr_cap_on;
+    out->bytes = s_lr_cap_n;
+    out->packets = s_lr_cap_pkts;
+    out->oldest = out->bytes > P25_LR_CAP_SAFE ? out->bytes - P25_LR_CAP_SAFE : 0;
+    out->freq_hz = s_tune_freq_hz;
+    out->cfg = s_lr_cfg;
+}
+
+bool p25_lr_capture_read(uint32_t at, uint8_t *out, uint32_t n)
+{
+    const uint32_t end = s_lr_cap_n;
+    if (at > end || n > end - at || end - at > P25_LR_CAP_SAFE) return false;
+    for (uint32_t i = 0; i < n;) {
+        const uint32_t pos = (at + i) % P25_LR_CAP_BYTES;
+        uint32_t run = P25_LR_CAP_BYTES - pos;
+        if (run > n - i) run = n - i;
+        memcpy(out + i, &s_lr_cap[pos], run);
+        i += run;
+    }
+    return true;
+}
+
+bool p25_lr_capture_packet(uint32_t i, uint32_t *offset, uint32_t *ms, bool *alt)
+{
+    const uint32_t n = s_lr_cap_pkts;
+    if (i >= n || n - i > P25_LR_CAP_PKTS) return false;
+    *offset = s_lr_cap_off[i % P25_LR_CAP_PKTS];
+    *ms = s_lr_cap_ms[i % P25_LR_CAP_PKTS];
+    if (alt) *alt = s_lr_cap_alt[i % P25_LR_CAP_PKTS] != 0;
+    return true;
+}
+
+static void p25_lr_capture_put(const uint8_t *b, size_t n, bool restarted)
+{
+    const uint32_t at = s_lr_cap_n;
+    if (restarted || s_lr_cap_fresh) {
+        const uint32_t k = s_lr_cap_pkts % P25_LR_CAP_PKTS;
+        s_lr_cap_off[k] = at;
+        s_lr_cap_ms[k] = (uint32_t)((esp_timer_get_time() - s_lr_cap_t0) / 1000);
+        s_lr_cap_alt[k] = s_lr_on_alt;
+        s_lr_cap_pkts++;
+    }
+    s_lr_cap_fresh = false;
+    for (size_t i = 0; i < n;) {
+        const uint32_t pos = (at + (uint32_t)i) % P25_LR_CAP_BYTES;
+        size_t run = P25_LR_CAP_BYTES - pos;
+        if (run > n - i) run = n - i;
+        memcpy(&s_lr_cap[pos], b + i, run);
+        i += run;
+    }
+    s_lr_cap_n = at + (uint32_t)n;
+}
 
 static esp_err_t p25_lora_begin(uint32_t hz)
 {
+    const p25_lr_cfg_t *now = p25_lr_now();
     const ls_fsk_cfg_t cfg = {
-        .freq_hz = hz,
-        .bitrate = P25_LORA_BITRATE,
-        .deviation_hz = P25_LORA_DEV_HZ,
-        .bandwidth_hz = ls_lora_fsk_bw_snap(P25_LORA_FILTER_HZ),
+        .freq_hz = p25_lr_tuned_hz(hz, now),
+        .bitrate = now->bitrate,
+        .deviation_hz = now->deviation_hz,
+        .bandwidth_hz = ls_lora_fsk_bw_snap(now->bandwidth_hz),
         .sync_word = P25_LORA_TRIGGER,
         .sync_bits = 8,
         .stream = true,
+        .rx_boost_step = now->rx_boost_step,
+        .pulse_shape = now->pulse_shape,
+        .rx_gain_step = now->rx_gain_step,
     };
     p25_os4_reset(&s_os4);
+    /* the lookup, the network and their doubts are learned for the main
+       setting's bitrate, deviation, filter and pulse; an alternate that only
+       moves the front end (boost, gain, trim) keeps them */
+    if (s_lr_on_alt && (s_lr_alt.bitrate != s_lr_cfg.bitrate ||
+                        s_lr_alt.deviation_hz != s_lr_cfg.deviation_hz ||
+                        s_lr_alt.bandwidth_hz != s_lr_cfg.bandwidth_hz ||
+                        s_lr_alt.pulse_shape != s_lr_cfg.pulse_shape))
+        s_os4.use_lut = s_os4.use_nn = 0;
+    s_dsd_opts.soft_symbols = s_os4.use_lut || s_os4.use_nn;
+    s_lora_q_n = 0;
+    s_lr_cap_fresh = true;
     return ls_lora_fsk_begin(&cfg);
 }
 
-/* Decoded symbols into the decoder's ring, as the demodulator's samples. */
-static int p25_lora_feed(const uint8_t *dibits, size_t n)
+static p25_lr_flow_t s_lr_flow;
+static uint64_t s_lr_dec_us, s_lr_dec_bytes;
+
+void p25_lr_get_flow(p25_lr_flow_t *out)
 {
-    int fed = 0;
+    *out = s_lr_flow;
+    out->us_per_kb = s_lr_dec_bytes ? (uint32_t)(s_lr_dec_us * 1024u / s_lr_dec_bytes) : 0;
+}
+
+static void p25_lora_queue(const uint8_t *dibits, size_t n)
+{
     uint32_t drops = 0;
     for (size_t i = 0; i < n; i++) {
-        int16_t samples[P25_SYNTH_SAMPLES_PER_SYMBOL];
-        p25_symbol_synth(dibits[i], samples);
-        for (int k = 0; k < P25_SYNTH_SAMPLES_PER_SYMBOL; k++) {
-            const int next = (s_ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
-            if (next == s_ring.read_idx) { drops++; continue; }
-            s_ring.buf[s_ring.write_idx] = samples[k];
-            s_ring.write_idx = next;
-            fed++;
-        }
+        if (s_lora_q_n == P25_LORA_QUEUE) { drops++; continue; }
+        s_lora_queue[(s_lora_q_head + s_lora_q_n) % P25_LORA_QUEUE] = dibits[i];
+        s_lora_q_n++;
     }
+    if (s_lora_q_n > s_lr_flow.q_max) s_lr_flow.q_max = (uint32_t)s_lora_q_n;
+    s_lr_flow.dropped += drops;
     if (drops) {
         portENTER_CRITICAL(&s_acquisition_lock);
-        s_acquisition_status.ring_drops += drops;
+        s_acquisition_status.ring_drops += drops * P25_SYNTH_SAMPLES_PER_SYMBOL;
         portEXIT_CRITICAL(&s_acquisition_lock);
+    }
+}
+
+/* Queued symbols into the decoder's ring, as the demodulator's samples, as
+   far as it has room; the rest wait for the next pass. */
+static int p25_lora_feed(void)
+{
+    int fed = 0;
+    while (s_lora_q_n) {
+        const int read_idx = s_ring.read_idx;
+        const int room = (read_idx - s_ring.write_idx - 1 + DSD_SAMPLE_RING_SIZE) % DSD_SAMPLE_RING_SIZE;
+        if (room < P25_SYNTH_SAMPLES_PER_SYMBOL) break;
+        int16_t samples[P25_SYNTH_SAMPLES_PER_SYMBOL];
+        const uint8_t sym = s_lora_queue[s_lora_q_head];
+        p25_symbol_synth(P25_OS4_DIBIT(sym), samples);
+        for (int k = 0; k < P25_SYNTH_SAMPLES_PER_SYMBOL; k++) {
+            s_ring.buf[s_ring.write_idx] = samples[k];
+            s_ring.aux[s_ring.write_idx] = P25_OS4_DOUBTS(sym);
+            s_ring.write_idx = (s_ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
+        }
+        s_lora_q_head = (s_lora_q_head + 1) % P25_LORA_QUEUE;
+        s_lora_q_n--;
+        fed += P25_SYNTH_SAMPLES_PER_SYMBOL;
     }
     return fed;
 }
@@ -1335,16 +1657,23 @@ static void p25_lora_run(void)
     /* The chip cannot say whether a call is encrypted as often as an SDR
        can, so voice plays until a call is shown encrypted. */
     s_dsd_opts.play_unproven = 1;
+    /* a symbol lost at a packet seam reaches the decoder marked as such, and
+       the lookup's doubts reach the IMBE FEC */
+    s_dsd_opts.erasure_marks = 1;
+    s_dsd_opts.soft_symbols = p25_os4_lut_on != 0 || p25_os4_nn_on != 0;
     p25_decoder_retuned(s_tune_freq_hz);
+    s_lora_q_n = 0;
 
     bool running = false;
     uint32_t told_hz = 0;
+    unsigned session_packets = 0;        /* packets begun in this session */
     int failures = 0, read_faults = 0;
     uint32_t byte_bucket = 0, sample_bucket = 0;
     int64_t now = esp_timer_get_time();
     int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
 
     while (s_app_active && !ls_mesh_radio_wanted()) {
+        const int64_t t_iter = esp_timer_get_time();
         uint32_t want_hz = 0;
         ls_iq_control_request_t request = {0};
         if (ls_iq_control_take(&s_radio_control, &request) &&
@@ -1362,6 +1691,7 @@ static void p25_lora_run(void)
         if (want_hz) {
             if (want_hz != s_tune_freq_hz || !running) {
                 p25_decoder_retuned(want_hz);
+                s_lora_q_n = 0;
                 if (running && ls_lora_fsk_retune(want_hz) == ESP_OK) {
                     s_radio_freq_hz = want_hz;
                     p25_os4_reset(&s_os4);
@@ -1377,6 +1707,13 @@ static void p25_lora_run(void)
                                            want_hz);
         }
 
+        if (s_lr_restart) {
+            /* new receive settings: a new session */
+            s_lr_restart = false;
+            s_lr_on_alt = false;
+            if (running) { (void)ls_lora_fsk_end(); running = false; }
+            next_begin = esp_timer_get_time();
+        }
         if (!running && esp_timer_get_time() >= next_begin) {
             const uint32_t hz = s_tune_freq_hz;
             if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) {
@@ -1390,6 +1727,7 @@ static void p25_lora_run(void)
                 const esp_err_t e = p25_lora_begin(hz);
                 if (e == ESP_OK) {
                     running = true;
+                    session_packets = 0;
                     failures = read_faults = 0;
                     s_radio_freq_hz = hz;
                     ls_iq_control_note_tune_result(&s_radio_control, hz, LS_RADIO_OK, hz);
@@ -1419,13 +1757,50 @@ static void p25_lora_run(void)
                 }
                 read_faults = 0;
                 if (n == 0) break;
-                if (restarted) p25_os4_reset(&s_os4);
+                if (s_lr_cap_on) p25_lr_capture_put(s_lora_bytes, (size_t)n, restarted);
+                byte_bucket += (uint32_t)n;
+                if (restarted && s_lr_alt_on && ++session_packets >= 2) {
+                    /* a whole packet on this setting: the other one next */
+                    s_lr_on_alt = !s_lr_on_alt;
+                    (void)ls_lora_fsk_end();
+                    running = false;
+                    next_begin = esp_timer_get_time();
+                    break;
+                }
+                if (p25_lr_now()->bitrate != P25_LORA_BITRATE) {
+                    if (n < P25_LORA_READ_AGAIN) break;
+                    continue;
+                }
+                /* a new packet: bits were lost before it */
+                if (restarted) p25_os4_seam(&s_os4);
+                /* Half the chip's 256-byte buffer waiting: the reader is 53 ms
+                   behind, so this read goes by the lookup, a few microseconds
+                   a symbol where the network takes 27 (190 from PSRAM with
+                   its tables out of the cache). */
+                s_os4.nn_off = n >= P25_LORA_BEHIND;
+                s_lr_flow.lookup_reads += s_os4.nn_off && s_os4.use_nn;
+                s_lr_flow.reads++;
+                const int64_t t_dec = esp_timer_get_time();
                 const size_t k = p25_os4_decode(&s_os4, s_lora_bytes, (size_t)n,
                                                 s_lora_dibits, sizeof(s_lora_dibits));
-                sample_bucket += (uint32_t)p25_lora_feed(s_lora_dibits, k);
-                byte_bucket += (uint32_t)n;
+                const uint32_t dec_us = (uint32_t)(esp_timer_get_time() - t_dec);
+                if (dec_us > s_lr_flow.chunk_us_max) s_lr_flow.chunk_us_max = dec_us;
+                s_lr_dec_us += dec_us;
+                s_lr_dec_bytes += (uint64_t)n;
+                p25_lora_queue(s_lora_dibits, k);
+                /* each read on to the frame decoder at once: fed only when a
+                   read came back empty, and with the network deciding, the
+                   next read always found a few bytes, so the frame decoder
+                   got each 3.4 s packet at once, past the queue (04:15 call,
+                   2026-10-05, 69 of the RTL's 189 frames) */
+                sample_bucket += (uint32_t)p25_lora_feed();
+                /* little waiting: the chip fills while this task sleeps.
+                   Reading on until a read came back empty polled the chip
+                   1800 times a second through every packet. */
+                if (n < P25_LORA_READ_AGAIN) break;
             }
         }
+        sample_bucket += (uint32_t)p25_lora_feed();
 
         now = esp_timer_get_time();
         if (running && now >= next_rssi) {
@@ -1456,12 +1831,16 @@ static void p25_lora_run(void)
                 break;
             }
         }
+        if ((uint32_t)(now - t_iter) > s_lr_flow.iter_us_max) s_lr_flow.iter_us_max = (uint32_t)(now - t_iter);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     if (running) (void)ls_lora_fsk_end();
     ls_mesh_radio_hold_bg(false);
+    s_lora_q_n = 0;
     s_dsd_opts.play_unproven = 0;
+    s_dsd_opts.erasure_marks = 0;
+    s_dsd_opts.soft_symbols = 0;
     s_radio_freq_hz = 0;
     P25.lora_rx = false;
     P25.iq_level = 0.0f;
@@ -2247,5 +2626,8 @@ static const app_t P25_APP = {
 
 int p25_app_register(void)
 {
+    /* Here, on the boot task: the P25 tasks' stacks are in PSRAM, where a
+       flash read asserts. */
+    p25_lr_gain_put((uint8_t)settings_get_p25_lr_gain());
     return app_register(&P25_APP);
 }

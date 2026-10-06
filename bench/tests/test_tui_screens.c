@@ -102,6 +102,9 @@ bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
+static bool s_auto_rotate = true;
+bool settings_get_auto_rotate(void) { return s_auto_rotate; }
+void settings_set_auto_rotate(bool v) { s_auto_rotate = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 /* Sub-GHz display preferences. Real state, because the screen reads them
    back to draw the option lists with the current choice marked. */
@@ -451,12 +454,12 @@ const ls_tui_screen_t ls_scr_gps = { .name = "GPS", .draw=rec_gps_draw, .key=rec
 
 extern const ls_tui_screen_t ls_scr_falls, ls_scr_settings, ls_scr_diag, ls_scr_rec,
                              ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
-                             ls_scr_notes, ls_scr_compass, ls_scr_experiments;
+                             ls_scr_notes, ls_scr_compass, ls_scr_experiments, ls_scr_terminal;
 
 static const ls_tui_screen_t *const SCREENS[] = {
     &ls_scr_settings, &ls_scr_diag, &ls_scr_rec, &ls_scr_home,
     &ls_scr_fm, &ls_scr_adsb, &ls_scr_labs, &ls_scr_journal, &ls_scr_subghz, &ls_scr_mixrf,
-    &ls_scr_notes, &ls_scr_compass, &ls_scr_experiments,
+    &ls_scr_notes, &ls_scr_compass, &ls_scr_experiments, &ls_scr_terminal,
 };
 #define N_SCREENS ((int)(sizeof(SCREENS) / sizeof(SCREENS[0])))
 
@@ -1766,8 +1769,8 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
        first box that would cross the edge, and the one it would have
        dropped was Daylight's. Every label must be on the glass in both
        postures and in half a landscape pane, which is the tightest case. */
-    static const struct { const char *menu; const char *labels[7]; } PAGES_SEEN[] = {
-        { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Display", "Sound", "Device" } },
+    static const struct { const char *menu; const char *labels[8]; } PAGES_SEEN[] = {
+        { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "Display", "Sound", "Device" } },
         { "Display", { "BACK", "Theme", "Daylight", "Font", "Auto dim", "Dim after" } },
         { "Sound",   { "BACK", "Boot sound", "Voice", "Alert sound", "Vibrate" } },
         { "Device",  { "BACK", "Keyboard light", "Keyboard dim", "USB autoreboot" } },
@@ -1779,7 +1782,7 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
         for (unsigned g = 0; g < sizeof(PAGES_SEEN) / sizeof(PAGES_SEEN[0]); g++) {
             settings_open(PAGES_SEEN[g].menu, pane);
             LS_EQ_INT(0, escaped(pane));
-            for (unsigned i = 0; i < 7 && PAGES_SEEN[g].labels[i]; i++) {
+            for (unsigned i = 0; i < 8 && PAGES_SEEN[g].labels[i]; i++) {
                 int c, r;
                 LS_CHECK_MSG(find_text(PAGES_SEEN[g].labels[i], &c, &r),
                              "no '%s' box on a %dx%d pane", PAGES_SEEN[g].labels[i],
@@ -2361,8 +2364,8 @@ LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
 {
     const tui_rect pane = {0,5,34,41};
     settings_open(NULL, pane);
-    const char *labels[] = {"Volume", "Brightness", "Mute", "Screen lock", "Display",
-        "Sound", "Device"};
+    const char *labels[] = {"Volume", "Brightness", "Mute", "Screen lock", "Rotate lock",
+        "Display", "Sound", "Device"};
     int x,y;
     for (unsigned i=0; i<sizeof(labels)/sizeof(labels[0]); i++)
         LS_CHECK_MSG(find_text(labels[i], &x, &y), "missing setting %s", labels[i]);
@@ -2373,6 +2376,22 @@ LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
     LS_CHECK(settings_get_usb_autoreboot() != before);
     settings_set_usb_autoreboot(before);
     LS_EQ_INT(escaped(pane),0);
+}
+
+LS_CASE(rotate_lock_on_the_first_page_holds_the_screen_where_it_is)
+{
+    const tui_rect pane = {0,5,34,41};
+    settings_set_auto_rotate(true);
+    settings_open(NULL, pane);
+    int x, y;
+    LS_CHECK(find_text("Rotate lock", &x, &y));
+    LS_CHECK(ls_scr_settings.touch(x, y));
+    LS_CHECK_MSG(!settings_get_auto_rotate(), "rotate lock on left auto-rotate running");
+    settings_open(NULL, pane);
+    LS_CHECK(find_text("Rotate lock", &x, &y));
+    LS_CHECK(ls_scr_settings.touch(x, y));
+    LS_CHECK(settings_get_auto_rotate());
+    LS_EQ_INT(escaped(pane), 0);
 }
 
 LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
@@ -2503,6 +2522,40 @@ LS_CASE(scan_choice_separates_saved_channels_from_frequency_steps)
     LS_CHECK(!scan_engine_active());
     ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
     LS_CHECK(scan_engine_active());scan_engine_stop();
+}
+
+/* The band presets are a raster as much as a range. A band scan steps from its
+   start, so a start that is not a multiple of the step puts every channel off
+   centre: 154.785 is 2.5 kHz off a 12.5 kHz grid from 150.000. */
+LS_CASE(band_presets_sit_on_the_channel_lattice_and_cover_vhf_noaa_and_uhf)
+{
+    scan_engine_stop();scan_engine_set_source(SCAN_SRC_BAND);
+    scan_engine_set_band(150000000,162600000,7500);
+    ls_radio_panel_t panel={.focus=-1,.scan_choice=true};
+    ls_radio_view_t view={.mode="NFM",.fm=true};
+    uint32_t lo[8],hi[8],step[8];int n=0;
+    bool vhf=false,wx=false,uhf=false,exact=false;
+    do{
+        ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'r');
+        LS_CHECK(n<8);
+        scan_engine_get_band(&lo[n],&hi[n],&step[n]);
+        LS_CHECK(step[n]>0);LS_EQ_INT(lo[n]%step[n],0);
+        if(lo[n]<=136010000&&hi[n]>=174000000)vhf=true;
+        if(lo[n]<=162400000&&hi[n]>=162550000)wx=true;
+        if(lo[n]<=450000000&&hi[n]>=470000000)uhf=true;
+        if(lo[n]<=154785000&&hi[n]>=154785000&&(154785000-lo[n])%step[n]==0)exact=true;
+        n++;
+    }while(!(lo[n-1]==150000000&&hi[n-1]==162600000));
+    LS_CHECK(vhf);LS_CHECK(wx);LS_CHECK(uhf);LS_CHECK(exact);
+    LS_EQ_INT(n,6);
+    /* NOAA lands exactly on its own preset: 7 channels, 25 kHz apart. */
+    bool noaa=false;
+    for(int i=0;i<n;i++)if(lo[i]==162400000&&hi[i]==162550000&&step[i]==25000)noaa=true;
+    LS_CHECK(noaa);
+    /* 7.5 kHz is one of the steps STEP offers, so it can be stepped through. */
+    scan_engine_set_band(150000000,162600000,6250);
+    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'i');
+    uint32_t st;scan_engine_get_band(NULL,NULL,&st);LS_EQ_INT(st,7500);
 }
 
 /* ONE HOME, SIX JOBS, AND BACK FROM ALL OF THEM.

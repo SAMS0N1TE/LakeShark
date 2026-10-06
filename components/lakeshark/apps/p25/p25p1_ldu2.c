@@ -381,6 +381,31 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
   algidhex = strtol (algid, NULL, 2);
   kidhex = strtol (kid, NULL, 2);
 
+  /* An ESS that says encrypted waits for the next LDU2 to say the same
+     before it mutes a call that is clear, or one that is playing unproven:
+     the algorithm does not change inside a call (HDU, TDU/TDULC and a
+     talkgroup change clear the ESS in dsd_frame.c), and RS(24,16,9) past
+     its reach lands on some other codeword. On the LR2021 that muted 27 and
+     36 frames of clear calls the RTL heard whole. A call never proven clear
+     on a path that does not play unproven voice mutes at once, as before. */
+  {
+    const uint8_t new_algid = (uint8_t)(algidhex & 0xFF);
+    const uint16_t new_kid = (uint16_t)(kidhex & 0xFFFF);
+    const int clear_now = (state->p25_ess_valid && state->p25_algid == 0x80) ||
+                          (!state->p25_ess_valid && opts->play_unproven);
+    if (new_algid != 0x80 && clear_now &&
+        !(state->p25_ess_pending && state->p25_ess_pending_algid == new_algid &&
+          state->p25_ess_pending_kid == new_kid))
+      {
+        state->p25_ess_pending = 1;
+        state->p25_ess_pending_algid = new_algid;
+        state->p25_ess_pending_kid = new_kid;
+        state->p25_ess_doubted++;
+        return;
+      }
+    state->p25_ess_pending = 0;
+  }
+
   /* land ALGID/KID/MI in state on every LDU2, not behind
    * opts->p25enc. process_IMBE consults state->p25_algid to decide whether
    * to hand the frame to the vocoder; before this the field was decoded and

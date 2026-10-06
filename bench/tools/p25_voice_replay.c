@@ -59,6 +59,7 @@ static struct {
     const uint8_t *iq;
     size_t iq_bytes, offset, chunk;
     int dibits_in;
+    int sym_bytes;          /* --sym: a byte a symbol, 0..3 dibits and 4 erased */
 } r;
 
 void dsd_yield(void)
@@ -68,9 +69,13 @@ void dsd_yield(void)
         /* 100 symbols a call: 1000 samples, well inside the ring. */
         for (int k = 0; k < 100 && r.offset < r.iq_bytes; k++, r.offset++) {
             int16_t out[P25_SYNTH_SAMPLES_PER_SYMBOL];
-            p25_symbol_synth((r.iq[r.offset / 4] >> (6 - (r.offset % 4) * 2)) & 3, out);
+            /* --sym: the decoder's byte, dibit in bits 0-2 and doubts above */
+            const uint8_t b = r.sym_bytes ? r.iq[r.offset]
+                                          : (uint8_t)((r.iq[r.offset / 4] >> (6 - (r.offset % 4) * 2)) & 3);
+            p25_symbol_synth(b & 7u, out);
             for (int i = 0; i < P25_SYNTH_SAMPLES_PER_SYMBOL; i++) {
                 r.ring.buf[r.ring.write_idx] = out[i];
+                r.ring.aux[r.ring.write_idx] = (uint8_t)((b >> 3) & 15u);
                 r.ring.write_idx = (r.ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
             }
         }
@@ -119,6 +124,17 @@ static void timeline_put(int16_t *tl, size_t tl_n, double t, const int16_t *pcm,
 /* --symbols: every symbol the sync hunt sees, with the slicer thresholds it
    was cut against, for looking at why a frame on the air was not found. */
 static FILE *s_symf;
+
+/* --imbe: every frame the decoder settles, as the board's `p25 imbe` keeps
+   them (88 bits, how, errs, errs2), one hex record a line */
+static FILE *s_imbef;
+static void imbe_writer(const uint8_t imbe88[11], int how, const dsd_state *st)
+{
+    if (!s_imbef) return;
+    for (int i = 0; i < 11; i++) fprintf(s_imbef, "%02X", imbe88[i]);
+    fprintf(s_imbef, "%02X%02X%02X0000\n", (unsigned)(how | (st->imbe_frame_erased ? 4 : 0)),
+            (unsigned)(st->errs & 0xFF), (unsigned)(st->errs2 & 0xFF));
+}
 static void symbol_observer(int symbol, int center, int umid, int lmid)
 {
     if (s_symf) fprintf(s_symf, "%.5f %d %d %d %d\n", air_seconds(), symbol, center, umid, lmid);
@@ -139,18 +155,65 @@ static void wav_write(const char *path, const int16_t *pcm, size_t n)
     fclose(f);
 }
 
+/* The IMBE decoder reports each frame's corrected errors as a VFRM diag
+   line: E0 in the first Golay word, ET over the whole frame. */
+int ls_diag_count(void);
+const char *ls_diag_line(int i);
+void ls_diag_clear(void);
+static unsigned s_et_hist[24], s_e0_hist[4], s_imbe_frames;
+static int s_print_vfrm;
+
+static void count_imbe_frames(void)
+{
+    for (int i = 0; i < ls_diag_count(); i++) {
+        const char *l = ls_diag_line(i);
+        const char *p = strstr(l, "errs=");
+        if (strncmp(l, "VFRM", 4) || !p) continue;
+        int e0 = 0, e2 = 0;
+        if (sscanf(p, "errs=%d errs2=%d", &e0, &e2) != 2) continue;
+        if (s_print_vfrm) printf("          %s\n", l);
+        const int et = e0 + e2;
+        s_et_hist[et > 23 ? 23 : et]++;
+        s_e0_hist[e0 > 3 ? 3 : e0]++;
+        s_imbe_frames++;
+    }
+    ls_diag_clear();
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin | dibits.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt] [--dibits] [--unproven]\n");
+        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin | dibits.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt] [--dibits] [--sym] [--soft] [--no-erase] [--unproven] [--imbe out.txt]\n");
         return 2;
     }
     const char *wav = NULL;
-    int list = 0, unproven = 0;
+    int list = 0, unproven = 0, repair = 1, no_repeat = 0, erase = 1, soft = 0;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--frames")) list = 1;
         else if (!strcmp(argv[i], "--dibits")) r.dibits_in = 1;
+        else if (!strcmp(argv[i], "--sym")) r.dibits_in = r.sym_bytes = 1;
+        else if (!strcmp(argv[i], "--no-erase")) erase = 0;
+        else if (!strcmp(argv[i], "--soft")) soft = 1;
+        else if (!strcmp(argv[i], "--imbe") && i + 1 < argc) {
+            s_imbef = fopen(argv[++i], "w");
+            if (s_imbef) fprintf(s_imbef, "# imbe replay\n");
+            dsd_imbe_hook = imbe_writer;
+        }
         else if (!strcmp(argv[i], "--unproven")) unproven = 1;
+        else if (!strcmp(argv[i], "--repair")) repair = 1;
+        else if (!strcmp(argv[i], "--no-repair")) repair = 0;
+        else if (!strcmp(argv[i], "--vfrm")) s_print_vfrm = 1;
+        else if (!strcmp(argv[i], "--no-repeat")) no_repeat = 1;
+        else if (!strcmp(argv[i], "--chase") && i + 1 < argc) {
+            extern int imbe_chase_npos;
+            imbe_chase_npos = atoi(argv[++i]);
+        }
+        else if (!strcmp(argv[i], "--chase-w") && i + 1 < argc) {
+            extern uint8_t imbe_chase_weight[4];
+            unsigned w[4];
+            if (sscanf(argv[++i], "%u,%u,%u,%u", &w[0], &w[1], &w[2], &w[3]) == 4)
+                for (int k = 0; k < 4; k++) imbe_chase_weight[k] = (uint8_t)w[k];
+        }
         else if (!strcmp(argv[i], "--symbols") && i + 1 < argc) {
             s_symf = fopen(argv[++i], "w");
             dsd_set_symbol_observer(symbol_observer);
@@ -169,9 +232,10 @@ int main(int argc, char **argv)
     if (!iq || fread(iq, 1, (size_t)bytes, f) != (size_t)bytes) { fputs("read failed\n", stderr); return 2; }
     fclose(f);
 
-    const int dibits_in = r.dibits_in;
+    const int dibits_in = r.dibits_in, sym_bytes = r.sym_bytes;
     memset(&r, 0, sizeof(r));
     r.dibits_in = dibits_in;
+    r.sym_bytes = sym_bytes;
     r.state.dibit_buf = r.dibits;
     r.state.audio_out_buf = r.audio;
     r.state.audio_out_float_buf = r.audio_float;
@@ -182,16 +246,21 @@ int main(int argc, char **argv)
     r.opts.ring = &r.ring;
     r.opts.verbose = 0;
     r.opts.play_unproven = unproven;
+    r.opts.p25_nid_repair = repair;
+    if (no_repeat) r.opts.imbe_repeat = 0;
+    /* synthesized symbols carry their erasures, as on the LR2021 path */
+    r.opts.erasure_marks = r.dibits_in && erase;
+    r.opts.soft_symbols = r.sym_bytes && soft;
     r.state.pcm_out_buf = r.pcm;
     r.state.pcm_out_size = 2000;
     dsp_init(&r.dsp);
     dsp_set_mode(&r.dsp, DEMOD_C4FM);
     dsp_set_gain(&r.dsp, gain);
-    r.iq = iq; r.iq_bytes = r.dibits_in ? (size_t)bytes * 4 : (size_t)bytes; r.chunk = 2048;
+    r.iq = iq; r.iq_bytes = r.sym_bytes ? (size_t)bytes : r.dibits_in ? (size_t)bytes * 4 : (size_t)bytes; r.chunk = 2048;
     imbe_shim_init();
     p25_voice_hold_reset(&r.hold);
 
-    const double dur = r.dibits_in ? (double)bytes * 4 / 4800.0 : (double)bytes / 2.0 / 240000.0;
+    const double dur = r.sym_bytes ? (double)bytes / 4800.0 : r.dibits_in ? (double)bytes * 4 / 4800.0 : (double)bytes / 2.0 / 240000.0;
     const size_t timeline_n = (size_t)(dur * 8000.0) + 8000;
     int16_t *timeline = calloc(timeline_n, sizeof(int16_t));
 
@@ -211,10 +280,12 @@ int main(int argc, char **argv)
         r.state.pcm_out_write = 0;
         r.state.pcm_out_unproven = 0;
         processFrame(&r.opts, &r.state);
+        count_imbe_frames();
         if (!r.state.p25_frame_valid) {
             if (list)
-                printf("%8.3f  --  sync found, frame rejected (nac=%03X synctype=%d)\n",
-                       t, r.state.nac, sync);
+                printf("%8.3f  --  sync found, frame rejected (nac=%03X synctype=%d d1=%d d2=%d)\n",
+                       t, r.state.nac, sync, r.state.p25_nid_d1, r.state.p25_nid_d2);
+            r.state.p25_nid_d1 = r.state.p25_nid_d2 = -1;
             p25_voice_hold_tick(&r.hold, (uint32_t)(t * 1000.0));
             if (!r.hold.n) n_pend = 0;
             continue;
@@ -300,6 +371,10 @@ int main(int argc, char **argv)
         last = ev[i].t;
     }
     unsigned on_air = (voice_frames + missed) * 9;
+    printf("IMBEHIST frames=%u e0=%u,%u,%u,%u et=", s_imbe_frames, s_e0_hist[0], s_e0_hist[1], s_e0_hist[2], s_e0_hist[3]);
+    for (int i = 0; i < 24; i++) printf("%s%u", i ? "," : "", s_et_hist[i]);
+    printf(" nid_repaired=%u imbe_repeated=%u imbe_muted=%u imbe_erased=%u\n", r.state.p25_nid_repaired,
+           r.state.imbe_repeated, r.state.imbe_muted, r.state.imbe_erased);
     printf("P25VOICE seconds=%.2f hdu=%u ldu1=%u ldu2=%u tdu=%u other=%u "
            "ldu_missed=%u ldu2_orphan=%u imbe_on_air=%u imbe_played=%u "
            "muted=%u muted_unknown_ess=%u ess_rs_failed=%u ess_rs_kept=%u "
@@ -314,6 +389,7 @@ int main(int argc, char **argv)
            r.state.debug_audio_errors);
     if (wav && timeline) wav_write(wav, timeline, (size_t)(dur * 8000.0));
     if (s_symf) fclose(s_symf);
+    if (s_imbef) fclose(s_imbef);
     free(timeline); free(iq);
     return 0;
 }

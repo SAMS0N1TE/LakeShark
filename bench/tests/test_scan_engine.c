@@ -23,6 +23,16 @@ static uint32_t tuned[32];
 static int64_t deadline;
 static bool phase2_enabled;
 static int switched;
+/* The NFM receiver as the FM app presents it. The squelch is a noise gate that
+   re-arms on every retune and cannot open for 128 ms after one (64 ms settle,
+   64 ms of quiet), and the IQ level is the peak of a wideband block: about 3%
+   on dead air and 5% on a strong broadcast. Defaults are the old fixture's. */
+#define ANY_HZ 0xFFFFFFFFu
+static uint32_t nfm_open_hz;           /* squelch opens on this frequency, 0 never */
+static float nfm_iq = 0.01f, nfm_noise;
+static int nfm_squelch = 4;
+static int64_t last_tune_us;
+static bool autosq_only;
 uint8_t settings_get_scan_options(void) { return 0; }
 bool settings_set_scan_options(uint8_t options) { (void)options; return true; }
 int app_count(void) { return 2; }
@@ -86,6 +96,8 @@ void lakeshark_fm_tune_transient(uint32_t hz)
     if (tune_count < 32)
         tuned[tune_count] = hz;
     tune_count++;
+    FM.squelch_open = false;
+    last_tune_us = esp_timer_get_time();
     receiver.requested_center_hz = hz;
     receiver.effective_center_hz = hz;
     receiver.effective_center_known = true;
@@ -115,6 +127,12 @@ void vTaskDelay(TickType_t ticks)
 {
     ls_shim_time_advance((int64_t)ticks * 1000);
     int64_t now = esp_timer_get_time();
+    if (tune_count && nfm_open_hz &&
+        (nfm_open_hz == ANY_HZ || nfm_open_hz == receiver.requested_center_hz) &&
+        now - last_tune_us >= 130000)
+        FM.squelch_open = true;
+    if (scenario == 13 && now >= 700000)
+        nfm_open_hz = channels[0].freq_hz;
     if (tune_count && !phase) {
         if (scenario == 1 || scenario == 2 || scenario == 4)
             scan_engine_hold(true);
@@ -146,8 +164,9 @@ static void run(int which, int ms)
     memset(&receiver, 0, sizeof(receiver));
     receiver.receiver_streaming = true;
     FM.mode = FM_MODE_LISTEN;
-    FM.squelch_tenths = 4;
-    FM.iq_level = 0.01f;
+    FM.squelch_tenths = nfm_squelch;
+    FM.iq_level = nfm_iq;
+    FM.noise = nfm_noise;
     for (int i = 0; i < 3; i++) {
         memset(&channels[i], 0, sizeof(channels[i]));
         channels[i].freq_hz = 150000000 + i * 12500;
@@ -158,10 +177,11 @@ static void run(int which, int ms)
     s_fg_mode = -1;
     s_order_n = 0;
     s_cur = -1;
-    foreground.name = which >= 6 ? "P25" : "FM";
-    p25_rx_power = which >= 6 ? 0.5f : 0.0f;
+    const bool p25 = which >= 6 && which < 11;
+    foreground.name = p25 ? "P25" : "FM";
+    p25_rx_power = p25 ? 0.5f : 0.0f;
     P25.dsd_has_sync = which == 7;
-    if (which >= 6)
+    if (p25)
         for (int i = 0; i < 3; i++)
             channels[i].mode = SCAN_MODE_P25;
     scenario = which;
@@ -174,11 +194,23 @@ static void run(int which, int ms)
         p25_rx_power = 0.01f;
     }
     if (which == 10) s_location = true;
-    scan_engine_start();
+    if (which == 13) channels[0].flags |= SCAN_FLAG_PRIORITY;
+    if (which == 13) scan_engine_set_priority_ms(500);
+    if (autosq_only) s_autosq_req = true;
+    else scan_engine_start();
     ls_shim_time_set(0);
     deadline = (int64_t)ms * 1000;
     if (!setjmp(done))
         scan_task(NULL);
+}
+static void nfm_reset(void)
+{
+    nfm_open_hz = 0;
+    nfm_iq = 0.01f;
+    nfm_noise = 0.0f;
+    nfm_squelch = 4;
+    autosq_only = false;
+    scan_engine_set_priority_ms(0);
 }
 LS_CASE(scan_quiet_channels_cycle_after_confirmed_tunes)
 {
@@ -260,6 +292,65 @@ LS_CASE(mixed_scan_switches_decoder_and_keeps_list_progress)
     LS_CHECK(switched >= 2); LS_CHECK(tune_count >= 3);
     LS_EQ_INT(tuned[0],150000000); LS_EQ_INT(tuned[1],150012500); LS_EQ_INT(tuned[2],150025000);
 }
+/* The default squelch (30) and the level a real strong broadcast reads (5%).
+   The level never reaches the squelch number, which is what kept the scanner
+   from ever holding an analog channel; the open squelch is the carrier. */
+LS_CASE(nfm_scan_holds_a_channel_the_squelch_opens_on)
+{
+    nfm_squelch = 30; nfm_iq = 0.05f; nfm_open_hz = ANY_HZ;
+    run(11, 1500);
+    nfm_reset();
+    LS_EQ_INT(tune_count, 1);
+    LS_EQ_INT(scan_engine_current(), 0);
+    LS_EQ_INT(scan_engine_phase(), SCAN_PHASE_HELD);
+}
+LS_CASE(nfm_scan_does_not_hold_with_the_squelch_closed)
+{
+    nfm_squelch = 30; nfm_iq = 0.05f;
+    run(12, 1500);
+    nfm_reset();
+    LS_CHECK(tune_count >= 4);
+    LS_EQ_INT(scan_engine_current(), -1);
+    LS_CHECK(scan_engine_phase() != SCAN_PHASE_HELD);
+}
+LS_CASE(nfm_scan_ignores_a_high_level_while_the_squelch_is_closed)
+{
+    nfm_squelch = 30; nfm_iq = 0.9f;
+    run(12, 1500);
+    nfm_reset();
+    LS_CHECK(tune_count >= 4);
+    LS_EQ_INT(scan_engine_current(), -1);
+}
+LS_CASE(nfm_priority_sample_sees_the_squelch_open)
+{
+    /* CH2 holds first; the priority channel CH0 only opens later. Its sample
+       window has to outlast the squelch's re-arm or it can never be seen. */
+    nfm_squelch = 30; nfm_iq = 0.05f; nfm_open_hz = 150025000;
+    run(13, 2500);
+    nfm_reset();
+    LS_EQ_INT(scan_engine_current(), 0);
+    LS_EQ_INT(scan_engine_phase(), SCAN_PHASE_HELD);
+}
+LS_CASE(autosquelch_sets_the_gate_below_the_noise_floor_not_from_the_iq_level)
+{
+    /* Dead air: 3% level, 88% noise. The squelch opens under (100 - setting)
+       so it must land under 88, not at level+margin = 9. 100-88+15 = 27. */
+    nfm_squelch = 30; nfm_iq = 0.03f; nfm_noise = 0.88f; autosq_only = true;
+    run(14, 1500);
+    const int sq = FM.squelch_tenths, floor = scan_engine_autosquelch_floor();
+    nfm_reset();
+    LS_EQ_INT(floor, 88);
+    LS_EQ_INT(sq, 27);
+}
+LS_CASE(autosquelch_leaves_the_squelch_alone_without_a_noise_reading)
+{
+    nfm_squelch = 30; nfm_iq = 0.03f; nfm_noise = 0.0f; autosq_only = true;
+    run(14, 1500);
+    const int sq = FM.squelch_tenths;
+    nfm_reset();
+    LS_EQ_INT(sq, 30);
+}
+
 LS_CASE(location_scan_never_tunes_without_a_fix)
 {
     run(10,1000);

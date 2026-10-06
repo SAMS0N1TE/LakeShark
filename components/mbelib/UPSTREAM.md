@@ -26,6 +26,14 @@ before release.** The ISC terms do not require a notice of change, but shipping
 modified code with no record of the base revision makes the source obligation
 on the GPL side of the build impossible to satisfy honestly.
 
+**Local fix (2026-10-04):** `hammingMatrix` in `ecc_const.h` listed the
+Hamming(15,11) syndromes in bit order, which matches neither generator: for
+IMBE 7200x4400 an error in data bits 4..7 of c4..c6 was never corrected and
+one in parity bit 3 was moved into data bit 7. It now holds the bit each
+syndrome of `hammingGenerator` points at, and `imbe7100x4400hammingMatrix`
+does the same for the 7100x4400 generator, used by
+`mbe_7100x4400hamming1511`. *Test:* `test_mbe_hamming`.
+
 The directory also carries AMBE tables (`ambe3600x2400_const.h`,
 `ambe3600x2450_const.h`) that the current CMake does not compile. Source
 inclusion is not the same as linked functionality; keep the distinction when

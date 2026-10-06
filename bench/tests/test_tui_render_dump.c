@@ -147,6 +147,9 @@ bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
+static bool s_auto_rotate = true;
+bool settings_get_auto_rotate(void) { return s_auto_rotate; }
+void settings_set_auto_rotate(bool v) { s_auto_rotate = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 /* Sub-GHz display preferences. Real state, because the screen reads them
    back to draw the option lists with the current choice marked. */
@@ -569,7 +572,7 @@ static void blank_check(uint16_t want, int *blank, int *wrong)
 LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
 {
     static const char *const LABELS[] = {
-        "Volume", "Brightness", "Mute", "Screen lock", "Display", "Sound", "Device",
+        "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "Display", "Sound", "Device",
     };
     static const int SIZE[2][2] = { { 568, 1232 }, { 1232, 568 } };
 

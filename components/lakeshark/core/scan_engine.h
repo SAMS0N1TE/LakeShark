@@ -68,16 +68,20 @@ typedef enum {
 
 void       scan_engine_set_source(scan_src_t src);
 scan_src_t scan_engine_get_source(void);
-/* step_hz 0 keeps the current step. Returns false if the range is unusable. */
+/* step_hz 0 keeps the current step. Returns false if the range is unusable.
+   The grid is start, start+step, start+2*step ... up to stop, so the raster is
+   fixed by start and step together: put start on the channel lattice you want
+   to land on (a multiple of the step from 0 Hz), not on a round MHz. */
 bool       scan_engine_set_band(uint32_t start_hz, uint32_t stop_hz, uint32_t step_hz);
 void       scan_engine_get_band(uint32_t *start_hz, uint32_t *stop_hz, uint32_t *step_hz);
 int        scan_engine_band_steps(void);
 
 /**/
-/* Measure the noise floor and set the NFM squelch a margin above it. Runs
-   asynchronously on the scan task (it tunes and blocks), so this returns
-   immediately - watch scan_engine_status() for the result. margin < 0 keeps
-   the current margin. NFM only: squelch is not a P25 concept. */
+/* Measure the post-demod noise floor and set the NFM squelch (a noise gate in
+   percent, higher is more squelch) so it sits margin points of noise below
+   it. Runs asynchronously on the scan task (it tunes and blocks), so this
+   returns immediately - watch scan_engine_status() for the result. margin < 0
+   keeps the current margin. NFM only: squelch is not a P25 concept. */
 void       scan_engine_autosquelch(int margin);
 int        scan_engine_autosquelch_floor(void);
 

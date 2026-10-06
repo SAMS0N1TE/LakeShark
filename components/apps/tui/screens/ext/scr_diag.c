@@ -4,6 +4,7 @@
 #include "ls_vitals.h"
 #include "ls_sdcard.h"
 #include "ls_crash.h"
+#include "ls_errlog.h"
 #include "ls_version.h"
 #include "ls_safe_mode.h"
 #include "../../ls_tui_touch.h"
@@ -134,12 +135,44 @@ typedef enum {
     D_MEMORY,
     D_ALERTS,
     D_SENSORS,
+    D_ERRORS,
     D__COUNT,
 } diag_detail_t;
 
 static diag_detail_t s_detail;
 static tui_rect      s_band[D__COUNT];
 static tui_rect      s_back_hit = { 0, -1, 0, 0 };
+static tui_rect      s_next_hit = { 0, -1, 0, 0 };
+static tui_rect      s_err_hit  = { 0, -1, 0, 0 };
+
+/* The error log page: the saved records newest first, then this run's own
+   errors and warnings so far. A record is read from flash when its page is
+   opened, never in draw. */
+EXT_RAM_BSS_ATTR static ls_errlog_rec_t s_err_rec;
+EXT_RAM_BSS_ATTR static char            s_err_live[LS_ERRLOG_TAIL_BYTES];
+static int                              s_err_page;
+static bool                             s_err_ok;
+
+static void err_load(void)
+{
+    const int n = ls_errlog_count();
+    if (s_err_page < 0 || s_err_page > n) s_err_page = 0;
+    s_err_ok = s_err_page < n && ls_errlog_get(s_err_page, &s_err_rec);
+}
+
+static void err_open(void)
+{
+    s_detail = D_ERRORS;
+    s_err_page = 0;
+    err_load();
+}
+
+static void err_step(int by)
+{
+    const int pages = ls_errlog_count() + 1;
+    s_err_page = ((s_err_page + by) % pages + pages) % pages;
+    err_load();
+}
 
 /* The one read on this screen that is NOT draw-path safe, cached. */
 
@@ -204,7 +237,12 @@ static bool on_key(ls_tk_t key, char ch)
     case 'm': case 'M': s_detail = D_MEMORY;   s_detail_us = 0; return true;
     case 'a': case 'A': s_detail = D_ALERTS;   s_detail_us = 0; return true;
     case 'r': case 'R': s_detail = D_SENSORS;  s_detail_us = 0; return true;
+    case 'l': case 'L': err_open(); return true;
     default: break;
+    }
+    if (s_detail == D_ERRORS) {
+        if (key == LS_TK_RIGHT || key == LS_TK_DOWN || ch == 'n' || ch == 'N') { err_step(1); return true; }
+        if (key == LS_TK_LEFT || key == LS_TK_UP) { err_step(-1); return true; }
     }
     return false;
 }
@@ -223,11 +261,13 @@ static bool on_touch(int col, int row)
        acting from behind a page. */
     if (s_detail != D_NONE) {
         if (hit(s_back_hit, col, row)) { s_detail = D_NONE; return true; }
+        if (s_detail == D_ERRORS && hit(s_next_hit, col, row)) { err_step(1); return true; }
         return true;                    /* see the note below */
     }
 
     if (hit(s_test_hit, col, row)) { self_test(); return true; }
     if (hit(s_sd_hit, col, row))   { check_sd();  return true; }
+    if (hit(s_err_hit, col, row))  { err_open();  return true; }
 
     /* The blocks, last, so a button sitting inside one still wins. */
     for (int i = 1; i < D__COUNT; i++)
@@ -245,7 +285,7 @@ static bool on_touch(int col, int row)
 /* --------------------------------------------------- detail -- */
 
 static const char *const DETAIL_TITLE[D__COUNT] = {
-    "", "ENDPOINT", "MEMORY", "ALERTS", "RADIOS AND SENSORS",
+    "", "ENDPOINT", "MEMORY", "ALERTS", "RADIOS AND SENSORS", "ERROR LOG",
 };
 
 static void group(tui_surface *sf, tui_rect a, int y, const char *t)
@@ -600,6 +640,111 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
     }
 }
 
+/* How much of s (len bytes left of one line) goes on a row w wide: all of
+   it if it fits, else up to the last space in the row's second half, else w. */
+static int wrap_take(const char *s, int len, int w)
+{
+    if (len <= w) return len;
+    for (int sp = w; sp > w / 2; sp--)
+        if (s[sp] == ' ') return sp;
+    return w;
+}
+
+/* text from row y, in at most `rows` rows: each line wrapped to the width,
+   and only printable ASCII (a byte above 0x7E is a graphics code on this
+   grid). With from_end the newest rows are the ones kept when it does not
+   all fit. Returns the rows used. */
+static int text_rows(tui_surface *sf, tui_rect a, int y, int rows, const char *text,
+                     uint8_t attr, bool from_end)
+{
+    const int w = a.w - 4 < 8 ? 8 : (a.w - 4 > 120 ? 120 : a.w - 4);
+    if (!text || rows <= 0) return 0;
+    int skip = 0;
+    for (int pass = from_end ? 0 : 1; pass < 2; pass++) {
+        int total = 0, used = 0;
+        char line[121];
+        for (const char *p = text; *p;) {
+            const char *e = strchr(p, '\n');
+            const int len = e ? (int)(e - p) : (int)strlen(p);
+            int off = 0;
+            do {
+                const int take = wrap_take(p + off, len - off, w);
+                if (pass == 1 && total >= skip && used < rows) {
+                    for (int i = 0; i < take; i++) {
+                        const unsigned char c = (unsigned char)p[off + i];
+                        line[i] = (c >= 0x20 && c <= 0x7E) ? (char)c : '.';
+                    }
+                    line[take] = '\0';
+                    tui_put_str(sf, a, a.x + 2, a.y + y + used, line, attr);
+                    used++;
+                }
+                total++;
+                off += take;
+                while (off < len && p[off] == ' ') off++;   /* no row starts blank */
+            } while (off < len);
+            p += len + (e ? 1 : 0);
+        }
+        if (pass == 0) skip = total > rows ? total - rows : 0;
+        else return used;
+    }
+    return 0;
+}
+
+static void detail_errors(tui_surface *sf, tui_rect a, uint8_t val,
+                          uint8_t good, uint8_t bad, uint8_t dim)
+{
+    char buf[64];
+    const int n = ls_errlog_count();
+    const int last = a.h - 2;                 /* the last row inside the frame */
+
+    if (s_err_page >= n) {
+        group(sf, a, 1, "THIS RUN SO FAR");
+        if (n) {
+            snprintf(buf, sizeof(buf), "%d saved  (N to see them)", n);
+            row(sf, a, 2, "saved", buf, bad);
+        } else {
+            row(sf, a, 2, "saved", "none since the last clear", good);
+        }
+        row(sf, a, 3, "coredump", ls_crash_present() ? "stored, 'crash' reads it" : "none",
+            ls_crash_present() ? val : dim);
+        group(sf, a, 5, "ERRORS AND WARNINGS");
+        ls_errlog_live(s_err_live, sizeof(s_err_live));
+        if (!s_err_live[0]) row(sf, a, 6, "log", "nothing yet", good);
+        else text_rows(sf, a, 6, last - 6 + 1, s_err_live, val, true);
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "SAVED ERROR %d OF %d", s_err_page + 1, n);
+    group(sf, a, 1, buf);
+    if (!s_err_ok) {
+        row(sf, a, 2, "record", "unreadable (another build's?)", bad);
+        return;
+    }
+    snprintf(buf, sizeof(buf), "#%lu", (unsigned long)s_err_rec.seq);
+    row(sf, a, 2, "number", buf, val);
+    ls_errlog_when(&s_err_rec, buf, sizeof(buf));
+    row(sf, a, 3, "when", buf, s_err_rec.wall > 0 ? val : dim);
+    row(sf, a, 4, "why", s_err_rec.reason, bad);
+    row(sf, a, 5, "firmware", s_err_rec.fw, dim);
+    int y = 6;
+    if (s_err_rec.dump[0]) row(sf, a, y++, "coredump", s_err_rec.dump, val);
+    if (s_err_rec.crumb[0] || s_err_rec.trail[0]) {
+        group(sf, a, ++y, "WHERE IT STOPPED");
+        y++;
+        y += text_rows(sf, a, y, last - y - 2, s_err_rec.crumb, val, false);
+        if (s_err_rec.trail[0] && y < last - 2) {
+            snprintf(buf, sizeof(buf), "trail: %.56s", s_err_rec.trail);
+            y += text_rows(sf, a, y, 2, buf, dim, false);
+        }
+    }
+    if (y < last - 1) {
+        group(sf, a, ++y, "LAST WORDS");
+        y++;
+        if (!s_err_rec.tail[0]) row(sf, a, y, "log", "none kept", dim);
+        else text_rows(sf, a, y, last - y + 1, s_err_rec.tail, dim, true);
+    }
+}
+
 static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
@@ -608,7 +753,7 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
     const uint8_t bad   = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
     const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
-    detail_tick(now_us);
+    if (s_detail != D_ERRORS) detail_tick(now_us);   /* I2C, not wanted here */
 
     tui_box(sf, a, DETAIL_TITLE[s_detail], frame);
 
@@ -622,10 +767,12 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
     case D_MEMORY:   detail_memory(sf, body, val, good, bad, dim);   break;
     case D_ALERTS:   detail_alerts(sf, body, val, good, bad, dim);   break;
     case D_SENSORS:  detail_sensors(sf, body, val, good, bad, dim);  break;
+    case D_ERRORS:   detail_errors(sf, body, val, good, bad, dim);   break;
     default: break;
     }
 
-    const int w = a.w - 4 < 24 ? a.w - 4 : 24;
+    int w = a.w - 4 < 24 ? a.w - 4 : 24;
+    if (s_detail == D_ERRORS && (a.w - 6) / 2 < w) w = (a.w - 6) / 2;  /* NEXT goes beside it */
     tui_rect b = tui_rect_make(a.x + 2, a.y + a.h - 4, w, 3);
     if (w > 8 && b.y > a.y + 1) {
         ls_panel_box(sf, b, NULL, TUI_CYAN | TUI_BRIGHT);
@@ -638,6 +785,19 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
         s_back_hit = b;
     } else {
         s_back_hit = tui_rect_make(0, -1, 0, 0);
+    }
+
+    /* NEXT beside BACK on the error log: the records, then this run. */
+    s_next_hit = tui_rect_make(0, -1, 0, 0);
+    tui_rect nb = tui_rect_make(b.x + w + 2, b.y, w, 3);
+    if (s_detail == D_ERRORS && s_back_hit.h > 0 && nb.x + nb.w <= a.x + a.w - 2) {
+        ls_panel_box(sf, nb, NULL, TUI_CYAN | TUI_BRIGHT);
+        ls_fill_dither(sf, tui_rect_make(nb.x + 1, nb.y + 1, nb.w - 2, nb.h - 2),
+                       LS_DITHER_LIGHT, TUI_CYAN);
+        const char *label = "N  NEXT";
+        tui_put_str(sf, nb, nb.x + (nb.w - (int)strlen(label)) / 2, nb.y + 1, label,
+                    TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        s_next_hit = nb;
     }
 }
 
@@ -956,6 +1116,7 @@ static void draw(tui_surface *sf, tui_rect area)
             s_band[i] = tui_rect_make(0, -1, 0, 0);
         s_test_hit = tui_rect_make(0, -1, 0, 0);
         s_sd_hit   = tui_rect_make(0, -1, 0, 0);
+        s_err_hit  = tui_rect_make(0, -1, 0, 0);
         draw_detail(sf, left, esp_timer_get_time());
     } else {
         s_back_hit = tui_rect_make(0, -1, 0, 0);
@@ -968,6 +1129,8 @@ static void draw(tui_surface *sf, tui_rect area)
                                            left.w - 2, 6);
         s_band[D_SENSORS]  = tui_rect_make(left.x + 1, left.y + 23,
                                            left.w - 2, 5);
+        s_band[D_ERRORS]   = tui_rect_make(0, -1, 0, 0);  /* the row on the right */
+        s_err_hit          = tui_rect_make(0, -1, 0, 0);  /* until it is drawn */
         /* A band that does not fit the pane is not offered: the rows it
            would open on are not being drawn either. */
         for (int i = 1; i < D__COUNT; i++)
@@ -1079,11 +1242,24 @@ static void draw(tui_surface *sf, tui_rect area)
             row(sf, right, 16, "board", v.board ? v.board : "?", dim);
         }
 
-        /* Whether one is stored, said in this screen's own words. */
-
-        row(sf, right, 17, "last crash",
-            ls_crash_present() ? "a dump is stored" : "none recorded",
-            ls_crash_present() ? bad : good);
+        /* What the error log holds: a crash, watchdog or brownout is
+           saved at the boot after it. Tap it (or L) for the records. */
+        {
+            const int n = ls_errlog_count();
+            const ls_errlog_rec_t *last = ls_errlog_newest();
+            if (!n) {
+                row(sf, right, 17, "errors", "none saved  (L)", good);
+            } else {
+                char when[32];
+                ls_errlog_when(last, when, sizeof(when));
+                snprintf(buf, sizeof(buf), "%d: %.18s %.11s", n,
+                         last ? last->reason : "?", last && last->wall > 0 ? when + 5 : "");
+                row(sf, right, 17, "errors", buf, bad);
+            }
+            s_err_hit = s_detail == D_NONE
+                ? tui_rect_make(right.x + 1, right.y + 17, right.w - 2, 1)
+                : tui_rect_make(0, -1, 0, 0);
+        }
 
         /* WHAT KIND OF BOOT THIS IS, which is the question the row above cannot answer and the one that actually matters. */
 
@@ -1149,7 +1325,7 @@ const ls_tui_screen_t ls_scr_diag = {
        as "red while it is moving", and these counters are cumulative - red
        means it moved at some point, which is a different and more useful
        claim. The highlight is the one that means now. */
-    .hint = "TAP A BLOCK for detail  E M A R  T alerts  S card  ESC back",
+    .hint = "TAP A BLOCK for detail  E M A R  L errors  T alerts  S card  ESC back",
     .enter = on_enter,
     .leave = NULL,
     .draw = draw,

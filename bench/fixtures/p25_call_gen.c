@@ -78,8 +78,16 @@ static void frame_head(emit_t *e, uint16_t nac, int duid, int corrupt)
     bch_encode(data16, parity);
     for (int i = 0; i < BCH_KK; i++) cw[i] = (char)data16[i];
     for (int i = 0; i < BCH_RR; i++) cw[BCH_KK + i] = (char)parity[i];
-    if (corrupt)            /* beyond BCH's reach: this frame is lost */
-        for (int i = 0; i < 40; i += 2) cw[i] ^= 1;
+    if (corrupt == 1) {
+        /* a NID as noise leaves it: a fixed random word, beyond BCH and too
+           far from either LDU's codeword for NID repair; the frame is lost */
+        uint32_t s = 0x2545F491u;
+        for (int i = 0; i < BCH_NN; i++) {
+            s = s * 1103515245u + 12345u;
+            cw[i] = (char)((s >> 16) & 1);
+        }
+    } else if (corrupt == 2)  /* 16 bits: beyond BCH, within NID repair */
+        for (int i = 0; i < 64 && i < BCH_NN; i += 4) cw[i] ^= 1;
 
     for (int i = 0; i < 11; i++) raw(e, (cw[i * 2] << 1) | cw[i * 2 + 1]);
     raw(e, STATUS_DIBIT);
@@ -240,14 +248,14 @@ static void ldu1(emit_t *e, const p25_call_t *c, const uint8_t (*v)[P25_CALL_IMB
     raw(e, STATUS_DIBIT);
 }
 
-static void ldu2(emit_t *e, const p25_call_t *c, const uint8_t (*v)[P25_CALL_IMBE_BYTES])
+static void ldu2(emit_t *e, const p25_call_t *c, const uint8_t (*v)[P25_CALL_IMBE_BYTES], int enc)
 {
     char d[16][6], p[8][6];
     memset(d, 0, sizeof(d));
     /* 96 bits from word 15 down: MI 72, ALGID 8, KID 16 */
     put_bits(d, 15, 16, 0, 0x123456, 24); put_bits(d, 15, 16, 24, 0x789abc, 24);
     put_bits(d, 15, 16, 48, 0xdef012, 24);
-    put_bits(d, 15, 16, 72, c->algid, 8);
+    put_bits(d, 15, 16, 72, enc ? 0x84 : c->algid, 8);
     put_bits(d, 15, 16, 80, c->kid, 16);
     encode_reedsolomon_24_16_9((char *)d, (char *)p);
     frame_head(e, c->nac, DUID_LDU2, 0);
@@ -283,8 +291,8 @@ int p25_call_symbols(const p25_call_t *call, const uint8_t (*v)[P25_CALL_IMBE_BY
     emit_t e = { sym, 0, sym_max, 21 };
     if (call->hdu) hdu(&e, call);
     for (int f = 0, pair = 1; f < n_imbe; f += 18, pair++) {
-        ldu1(&e, call, v + f, call->corrupt_ldu1 == pair);
-        ldu2(&e, call, v + f + 9);
+        ldu1(&e, call, v + f, call->corrupt_ldu1 == pair ? 1 : call->bend_ldu1 == pair ? 2 : 0);
+        ldu2(&e, call, v + f + 9, call->enc_ldu2 == pair);
     }
     if (call->tdu) tdu(&e, call);
     return e.n <= sym_max ? e.n : -1;

@@ -18,6 +18,7 @@
 #include <assert.h>
 
 #include "dsd.h"
+#include "p25_symbol_synth.h"
 
 #include "p25p1_heuristics.h"
 
@@ -396,6 +397,10 @@ get_dibit_and_analog_signal (dsd_opts* opts, dsd_state* state, int* out_analog_s
 #endif
 
   symbol = getSymbol (opts, state, 1);
+  state->dibit_aux = state->symbol_aux;
+  const int erased = opts->erasure_marks && symbol == P25_SYNTH_ERASED_LEVEL;
+  if (erased)
+    state->erased_dibits++;
 
   /* Debug: log first 6 raw symbol values for NAC extraction */
   {
@@ -419,13 +424,22 @@ get_dibit_and_analog_signal (dsd_opts* opts, dsd_state* state, int* out_analog_s
 #endif
 
   //
-  state->sbuf[state->sidx] = symbol;
   if (out_analog_signal != NULL)
     {
       *out_analog_signal = symbol;
     }
 
-  use_symbol (opts, state, symbol);
+  /* an erasure says nothing of the signal's levels: a run of them would pull
+     max and min, and every threshold, to 0 */
+  if (!erased)
+    {
+      state->sbuf[state->sidx] = symbol;
+      use_symbol (opts, state, symbol);
+    }
+  else if (state->dibit_buf_p > state->dibit_buf + 9000)
+    {
+      state->dibit_buf_p = state->dibit_buf + 200;
+    }
 
   dibit = digitize (opts, state, symbol);
 

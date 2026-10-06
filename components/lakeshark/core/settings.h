@@ -79,6 +79,9 @@ void settings_set_usb_autoreboot(bool en);
 
 bool settings_get_antenna_external(void);
 void settings_set_antenna_external(bool external);
+/* P25 on the LR2021: its receive gain, 0 the chip's AGC, 1..13 a fixed step. */
+int  settings_get_p25_lr_gain(void);
+void settings_set_p25_lr_gain(int step);
 
 bool settings_get_alert_ring(void);
 void settings_set_alert_ring(bool en);

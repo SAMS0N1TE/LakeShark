@@ -173,7 +173,8 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_rec, ls_scr_diag, ls_scr_settings,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
-                             ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments;
+                             ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments,
+                             ls_scr_terminal;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -201,6 +202,8 @@ static const ls_app_t APPS[] = {
       LS_APP_EXTRA, &ls_scr_rec, NULL, &ls_doc_rec },
     { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
       LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
+    { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
+      LS_APP_EXTRA, &ls_scr_terminal, NULL, &ls_doc_terminal },
     { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
       LS_APP_EXTRA, &ls_scr_settings, NULL, &ls_doc_settings },
     { "gps",  "GPS",  "position",  LS_ICON_SAT,   TUI_YELLOW,
@@ -509,6 +512,7 @@ static bool named_key(const char *name, ls_tk_t *out)
         { "up",    LS_TK_UP    }, { "down",  LS_TK_DOWN  },
         { "enter", LS_TK_ENTER }, { "esc",   LS_TK_ESC   },
         { "tab",   LS_TK_TAB   }, { "mic",   LS_TK_MIC   },
+        { "backspace", LS_TK_BACKSPACE },
     };
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
         if (!strcmp(name, NAMES[i].name)) { *out = NAMES[i].key; return true; }

@@ -5,7 +5,7 @@
 
 typedef struct {
     bool lists, scan_choice;
-    int selected, focus, slot, preset;
+    int selected, focus, slot;
     tui_rect list_area, previous, next;
     int visible[64], count, first;
     ls_btn_t buttons[6];

@@ -48,9 +48,68 @@ bool ls_sweep_plan(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
     return true;
 }
 
+bool ls_sweep_plan_overlap(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
+                           uint32_t sample_rate_hz, uint32_t usable_pct,
+                           uint32_t dc_guard_hz, uint32_t hop_hz,
+                           ls_sweep_plan_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+
+    if (stop_hz <= start_hz || bin_hz == 0 || sample_rate_hz == 0) return false;
+    if (usable_pct == 0 || usable_pct > 100 || hop_hz == 0) return false;
+
+    uint32_t half_span = (uint32_t)(((uint64_t)sample_rate_hz * usable_pct) / 200u);
+
+    /* A hole bin is read from the neighbour a hop away, at most hop + guard
+       + a bin and a half from that neighbour's centre. Two bins of margin. */
+    if ((uint64_t)hop_hz + dc_guard_hz + 2ull * bin_hz > half_span) return false;
+    /* And a tune must not lose its own centre bins to the neighbour's hole
+       as well: the holes may not meet. */
+    if (hop_hz <= 2ull * ((uint64_t)dc_guard_hz + bin_hz)) return false;
+
+    uint64_t span = stop_hz - start_hz;
+    uint64_t n_bins = (span + bin_hz - 1u) / bin_hz;
+    if (n_bins == 0 || n_bins > LS_SWEEP_MAX_BINS) return false;
+
+    uint64_t n_tunes = (span + hop_hz - 1u) / hop_hz;
+    if (n_tunes < 2) n_tunes = 2;
+
+    out->start_hz       = start_hz;
+    out->stop_hz        = stop_hz;
+    out->bin_hz         = bin_hz;
+    out->n_bins         = (uint32_t)n_bins;
+    out->sample_rate_hz = sample_rate_hz;
+    out->half_span_hz   = half_span;
+    out->strip_hz       = hop_hz;
+    out->n_tunes        = (uint32_t)n_tunes;
+    out->hop_hz         = hop_hz;
+    out->dc_guard_hz    = dc_guard_hz;
+    return true;
+}
+
+uint32_t ls_sweep_bin_owner(const ls_sweep_plan_t *plan, uint32_t bin)
+{
+    if (!plan || !plan->hop_hz || plan->n_tunes == 0) return 0;
+
+    int64_t  fc  = (int64_t)bin * plan->bin_hz + plan->bin_hz / 2u;  /* above start */
+    int64_t  j   = fc / (int64_t)plan->hop_hz;
+    if (j >= (int64_t)plan->n_tunes) j = (int64_t)plan->n_tunes - 1;
+    int64_t  off = fc - (j * (int64_t)plan->hop_hz + plan->hop_hz / 2u);
+    if (off < 0) off = -off;
+
+    /* In the hole of the nearest tune (a bin of margin: a bin is wider than
+       the FFT bins inside it): the neighbour owns it. */
+    if (off <= (int64_t)plan->dc_guard_hz + plan->bin_hz)
+        j = (j + 1 < (int64_t)plan->n_tunes) ? j + 1 : j - 1;
+    return (uint32_t)j;
+}
+
 uint64_t ls_sweep_tune_center(const ls_sweep_plan_t *plan, uint32_t i)
 {
     if (!plan || i >= plan->n_tunes) return 0;
+    if (plan->hop_hz) return plan->start_hz + plan->hop_hz / 2u +
+                             (uint64_t)plan->hop_hz * i;
     /* Strip i covers [start + i*strip, start + (i+1)*strip), and the strip
        begins one DC guard above the tune centre. */
     return plan->start_hz + (uint64_t)plan->strip_hz * i -
@@ -75,6 +134,20 @@ int ls_sweep_bin_index(const ls_sweep_plan_t *plan, uint64_t center_hz,
 
     int64_t hz = ls_sweep_bin_hz(plan, center_hz, fft_bin, fft_n);
     if (hz < 0) return -1;
+
+    if (plan->hop_hz) {
+        /* Overlapped plan: the bin belongs to whichever tune owns it. */
+        if ((uint64_t)hz < plan->start_hz) return -1;
+        int64_t off = hz - (int64_t)center_hz;
+        if (off < 0) off = -off;
+        if (off > (int64_t)plan->half_span_hz) return -1;
+        uint64_t idx = ((uint64_t)hz - plan->start_hz) / plan->bin_hz;
+        if (idx >= plan->n_bins) return -1;
+        int64_t i = ((int64_t)center_hz - (int64_t)plan->start_hz -
+                     plan->hop_hz / 2u) / (int64_t)plan->hop_hz;
+        return ls_sweep_bin_owner(plan, (uint32_t)idx) == (uint32_t)i
+                   ? (int)idx : -1;
+    }
 
     /* Above this tune's DC spike, and inside its trusted region. Everything
        below centre belongs to a lower tune; the guard band and the analogue

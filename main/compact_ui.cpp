@@ -819,7 +819,7 @@ static bool tui_session(void)
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
                                  ls_scr_notes, ls_scr_compass, ls_scr_music,
-                                 ls_scr_files, ls_scr_experiments;
+                                 ls_scr_files, ls_scr_experiments, ls_scr_terminal;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -873,6 +873,8 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_mixrf, nullptr, &ls_doc_mixrf },
             { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
               LS_APP_EXTRA, &ls_scr_diag, nullptr, &ls_doc_diag },
+            { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_terminal, nullptr, &ls_doc_terminal },
             { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_settings, nullptr, &ls_doc_settings },
 

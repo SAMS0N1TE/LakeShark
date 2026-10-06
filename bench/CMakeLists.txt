@@ -57,6 +57,10 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
+    ${FW}/components/lakeshark/core/ls_errlog.c
+    ${FW}/bench/shims/ls_errlog_fake.c
+    ${FW}/components/apps/tui/ls_term_scroll.c
+    ${FW}/bench/shims/ls_term_fake.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 
 set(LS_EXP_SRCS
@@ -440,6 +444,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
+    ${FW}/components/apps/tui/screens/ext/scr_terminal.c
     ${FW}/components/lakeshark/core/ls_vitals.c
     ${FW}/components/lakeshark/core/ls_trend.c
     ${FW}/components/lakeshark/core/ls_version.c
@@ -707,6 +712,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/main/scr_adsb.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
+    ${FW}/components/apps/tui/screens/ext/scr_terminal.c
     ${FW}/components/lakeshark/core/ls_vitals.c
     ${FW}/components/lakeshark/core/ls_trend.c
     ${FW}/components/lakeshark/core/ls_version.c
@@ -1321,6 +1327,8 @@ ls_add_test(test_wifi_operation)
 ls_add_test(test_wifi_file_stream)
 ls_add_test(test_ls_sweep ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
 target_include_directories(test_ls_sweep PRIVATE ${FW}/components/lakeshark/dsp)
+ls_add_test(test_ls_search_core ${FW}/components/lakeshark/dsp/ls_search_core.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
+target_include_directories(test_ls_search_core PRIVATE ${FW}/components/lakeshark/dsp)
 ls_add_test(test_cell_core ${APP}/cell/cell_core.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
 target_include_directories(test_cell_core PRIVATE ${APP}/cell ${FW}/components/lakeshark/dsp)
 ls_add_test(test_cell_report ${APP}/cell/cell_report_core.c)
@@ -1502,7 +1510,8 @@ target_include_directories(test_usb_autoreboot_pref PRIVATE
     ${FW}/components/lakeshark/core)
 
 ls_add_test(test_p25_ldu2_ess ${APP}/p25/p25p1_ldu2.c ${APP}/p25/p25_ess.c)
-ls_add_test(test_p25_os4_decode ${APP}/p25/p25_os4_decode.c)
+ls_add_test(test_p25_os4_decode ${APP}/p25/p25_os4_decode.c ${APP}/p25/p25_os4_lut.c
+    ${APP}/p25/p25_os4_nn.c ${APP}/p25/p25_os4_nn_model.c)
 ls_add_test(test_p25_hdu_ess ${APP}/p25/p25p1_hdu.c
     ${APP}/p25/p25p1_ldu.c ${APP}/p25/p25_ess.c)
 ls_add_test(test_location_pref)
@@ -1535,6 +1544,23 @@ add_test(NAME test_imbe_alloc COMMAND test_imbe_alloc)
 ls_add_test(test_ls_crash
     ${FW}/components/lakeshark/core/ls_crash.c)
 target_include_directories(test_ls_crash PRIVATE
+    ${FW}/components/lakeshark/core)
+
+ls_add_test(test_ls_errlog
+    ${FW}/components/lakeshark/core/ls_errlog.c)
+target_include_directories(test_ls_errlog PRIVATE
+    ${FW}/components/lakeshark/core)
+
+ls_add_test(test_ls_term
+    ${FW}/components/apps/tui/ls_term_scroll.c)
+target_include_directories(test_ls_term PRIVATE
+    ${FW}/components/apps/tui)
+
+ls_add_test(test_ls_errlog_esp
+    ${FW}/components/lakeshark/core/ls_errlog.c
+    ${FW}/components/lakeshark/core/ls_errlog_esp.c)
+target_include_directories(test_ls_errlog_esp BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/errlog_shims
     ${FW}/components/lakeshark/core)
 
 ls_add_test(test_ls_crash_esp
@@ -1717,12 +1743,15 @@ set(P25_VOICE_REPLAY_SOURCES
     ${APP}/p25/p25_acquisition.c
     ${APP}/p25/p25_voice_hold.c
     ${APP}/p25/p25_symbol_synth.c
+    ${APP}/p25/imbe_chase.c
     ${FW}/components/mbelib/mbelib.c
     ${FW}/components/mbelib/ecc.c
     ${FW}/components/mbelib/imbe7200x4400.c
     ${P25_IMBE_TEST_SOURCES}
     ${FW}/components/imbe_vocoder/imbe_shim.cpp)
 add_executable(p25_voice_replay tools/p25_voice_replay.c ${P25_VOICE_REPLAY_SOURCES})
+ls_add_test(test_mbe_hamming ${FW}/components/mbelib/ecc.c)
+ls_add_test(test_imbe_chase ${APP}/p25/imbe_chase.c ${FW}/components/mbelib/ecc.c)
 target_include_directories(p25_voice_replay PRIVATE ${FW}/components/imbe_vocoder)
 target_link_libraries(p25_voice_replay ls_harness m)
 

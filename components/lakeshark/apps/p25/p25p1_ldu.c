@@ -70,6 +70,7 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
   x = iX;
   y = iY;
   z = iZ;
+  const unsigned int erased_before = state->erased_dibits;
 
 #ifdef TRACE_DSD
   state->debug_prefix = 'I';
@@ -98,6 +99,8 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
       dibit = getDibit (opts, state);
       imbe_fr[*w][*x] = (1 & (dibit >> 1));
       imbe_fr[*y][*z] = (1 & dibit);
+      state->imbe_doubt[*w][*x] = (state->dibit_aux >> 2) & 3;
+      state->imbe_doubt[*y][*z] = state->dibit_aux & 3;
 
 #ifdef TRACE_DSD
       if (*w == 0) {
@@ -154,7 +157,9 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
 
               printf("(Non-standard IMBE c0 detected, skipped)");
           } else {
+              state->imbe_frame_erased = state->erased_dibits != erased_before;
               processMbeFrame (opts, state, imbe_fr, NULL, NULL);
+              state->imbe_frame_erased = 0;
           }
       }
     }

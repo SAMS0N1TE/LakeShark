@@ -11,6 +11,7 @@
 #include "fm_state.h"
 /**/
 #include "p25_state.h"
+#include "p25_os4_nn.h"
 /**/
 #include "audio_out.h"
 #include "audio_events.h"
@@ -21,6 +22,8 @@
 #include "ls_board.h"
 /**/
 #include "ls_crash.h"
+/**/
+#include "ls_search.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_app_desc.h"
@@ -610,8 +613,235 @@ static int p25_profile_command(int argc, char **argv)
     return 0;
 }
 
+/* The optional trim after the gain, in Hz and signed; false when it is out of range. */
+static bool p25_lr_trim_arg(int argc, char **argv, int at, int16_t *trim)
+{
+    const long hz = argc > at ? strtol(argv[at], NULL, 10) : 0;
+    if (hz < -5000 || hz > 5000) { puts("P25LR trim is -5000..5000 Hz"); return false; }
+    *trim = (int16_t)hz;
+    return true;
+}
+
+/* `p25 lr ...`: the LR2021 receive's settings and raw capture. The dump is
+   the stream format the bench tools read (OS4STRM/OS4SPKT/OS4SDATA). */
+static int p25_lr_command(int argc, char **argv)
+{
+    p25_lr_cfg_t cfg;
+    p25_lr_get_cfg(&cfg);
+    if (argc >= 4 && !strcmp(argv[0], "cfg")) {
+        cfg.bitrate = (uint32_t)strtoul(argv[1], NULL, 10);
+        cfg.deviation_hz = (uint32_t)strtoul(argv[2], NULL, 10);
+        cfg.bandwidth_hz = (uint32_t)strtoul(argv[3], NULL, 10);
+        cfg.rx_boost_step = argc >= 5 && strcmp(argv[4], "-") ? (uint8_t)(atoi(argv[4]) + 1) : 0;
+        cfg.pulse_shape = argc >= 6 ? (uint8_t)strtoul(argv[5], NULL, 0) : 0;
+        const long gain = argc >= 7 ? strtol(argv[6], NULL, 10) : 0;
+        if (cfg.rx_boost_step > 8) { puts("P25LR boost is 0..7 or -"); return 1; }
+        if (gain < 0 || gain > 13) { puts("P25LR gain is 0..13"); return 1; }
+        cfg.rx_gain_step = (uint8_t)gain;
+        if (!p25_lr_trim_arg(argc, argv, 7, &cfg.freq_trim_hz)) return 1;
+        p25_lr_set_cfg(&cfg);
+    } else if (argc >= 2 && !strcmp(argv[0], "cap")) {
+        if (!strcmp(argv[1], "start")) p25_lr_capture_start();
+        else if (!strcmp(argv[1], "stop")) p25_lr_capture_stop();
+    } else if (argc >= 2 && !strcmp(argv[0], "lut")) {
+        p25_lr_set_lut(!strcmp(argv[1], "on"));
+    } else if (argc >= 2 && !strcmp(argv[0], "nn")) {
+        p25_lr_set_nn(!strcmp(argv[1], "on"));
+    } else if (argc >= 1 && !strcmp(argv[0], "nnbench")) {
+        p25_os4_nn_bench();
+        return 0;
+    } else if (argc >= 2 && !strcmp(argv[0], "alt")) {
+        if (!strcmp(argv[1], "off")) {
+            p25_lr_set_alt(NULL);
+        } else if (argc >= 4) {
+            p25_lr_cfg_t alt = {
+                .bitrate = (uint32_t)strtoul(argv[1], NULL, 10),
+                .deviation_hz = (uint32_t)strtoul(argv[2], NULL, 10),
+                .bandwidth_hz = (uint32_t)strtoul(argv[3], NULL, 10),
+                .rx_boost_step = argc >= 5 && strcmp(argv[4], "-") ? (uint8_t)(atoi(argv[4]) + 1) : 0,
+                .pulse_shape = argc >= 6 ? (uint8_t)strtoul(argv[5], NULL, 0) : 0,
+            };
+            const long gain = argc >= 7 ? strtol(argv[6], NULL, 10) : 0;
+            if (alt.rx_boost_step > 8) { puts("P25LR boost is 0..7 or -"); return 1; }
+            if (gain < 0 || gain > 13) { puts("P25LR gain is 0..13"); return 1; }
+            alt.rx_gain_step = (uint8_t)gain;
+            if (!p25_lr_trim_arg(argc, argv, 7, &alt.freq_trim_hz)) return 1;
+            p25_lr_set_alt(&alt);
+        }
+    } else if (argc >= 1 && !strcmp(argv[0], "dump")) {
+        /* [from count] in bytes since the capture began; a packet that began
+           before `from` is shown as beginning there */
+        p25_lr_capture_info_t ci;
+        p25_lr_capture_info(&ci);
+        uint32_t from = argc >= 2 ? (uint32_t)strtoul(argv[1], NULL, 10) : ci.oldest;
+        if (from < ci.oldest) from = ci.oldest;
+        if (from > ci.bytes) from = ci.bytes;
+        uint32_t count = argc >= 3 ? (uint32_t)strtoul(argv[2], NULL, 10) : ci.bytes - from;
+        if (count > ci.bytes - from) count = ci.bytes - from;
+        printf("# lrcap freq=%lu dev=%lu bitrate=%lu bw=%lu boost=%d pulse=%u gain=%u trim=%d from=%lu\n",
+               (unsigned long)ci.freq_hz, (unsigned long)ci.cfg.deviation_hz, (unsigned long)ci.cfg.bitrate,
+               (unsigned long)ci.cfg.bandwidth_hz, (int)ci.cfg.rx_boost_step - 1, (unsigned)ci.cfg.pulse_shape,
+               (unsigned)ci.cfg.rx_gain_step, (int)ci.cfg.freq_trim_hz, (unsigned long)from);
+        printf("OS4STRM bytes %lu packets %lu\n", (unsigned long)(from + count), (unsigned long)ci.packets);
+        const uint32_t first = ci.packets > 1024u ? ci.packets - 1024u : 0;
+        uint32_t off, ms, next_off, next_ms;
+        bool alt;
+        for (uint32_t i = first; p25_lr_capture_packet(i, &off, &ms, &alt); i++) {
+            const bool more = p25_lr_capture_packet(i + 1, &next_off, &next_ms, NULL);
+            if (off >= from + count) break;
+            if (more && next_off <= from) continue;
+            printf("OS4SPKT %lu off %lu ms %lu alt %d\n", (unsigned long)i,
+                   (unsigned long)(off < from ? from : off), (unsigned long)ms, alt ? 1 : 0);
+        }
+        /* each line goes out in one write, so another task's log line lands
+           between two of them and not inside one; "c" is a Fletcher-16 of
+           the line's bytes, for the reader to check */
+        static const char hex[] = "0123456789ABCDEF";
+        uint8_t d[64];
+        char line[48 + 2 * sizeof d + 16];
+        for (uint32_t at = from; at < from + count; at += 64) {
+            const uint32_t n = from + count - at < 64 ? from + count - at : 64;
+            if (!p25_lr_capture_read(at, d, n)) { puts("OS4SLOST"); break; }
+            int k = snprintf(line, sizeof line, "OS4SDATA off %lu n %lu data ",
+                             (unsigned long)at, (unsigned long)n);
+            unsigned s1 = 0, s2 = 0;
+            for (uint32_t j = 0; j < n; j++) {
+                line[k++] = hex[d[j] >> 4];
+                line[k++] = hex[d[j] & 15];
+                s1 = (s1 + d[j]) % 255u;
+                s2 = (s2 + s1) % 255u;
+            }
+            snprintf(line + k, sizeof line - (size_t)k, " c %04X\n", (s2 << 8) | s1);
+            fputs(line, stdout);
+            if (((at - from) & 0x3FFF) == 0) vTaskDelay(1);
+        }
+        puts("OS4SEND");
+        return 0;
+    }
+    p25_lr_get_cfg(&cfg);
+    p25_lr_capture_info_t ci;
+    p25_lr_capture_info(&ci);
+    printf("P25LR bitrate=%lu dev=%lu bw=%lu boost=%s%d pulse=%u gain=%u trim=%d lut=%s nn=%s | capture %s bytes=%lu oldest=%lu packets=%lu\n",
+           (unsigned long)cfg.bitrate, (unsigned long)cfg.deviation_hz, (unsigned long)cfg.bandwidth_hz,
+           cfg.rx_boost_step ? "" : "default/", cfg.rx_boost_step ? (int)cfg.rx_boost_step - 1 : 0,
+           (unsigned)cfg.pulse_shape, (unsigned)cfg.rx_gain_step, (int)cfg.freq_trim_hz, p25_lr_lut() ? "on" : "off", p25_lr_nn() ? "on" : "off",
+           ci.on ? "on" : "off", (unsigned long)ci.bytes,
+           (unsigned long)ci.oldest, (unsigned long)ci.packets);
+    p25_lr_flow_t fl;
+    p25_lr_get_flow(&fl);
+    printf("P25LRFLOW q_max=%lu dropped=%lu chunk_us_max=%lu us_per_kb=%lu iter_us_max=%lu lookup_reads=%lu/%lu\n",
+           (unsigned long)fl.q_max, (unsigned long)fl.dropped, (unsigned long)fl.chunk_us_max,
+           (unsigned long)fl.us_per_kb, (unsigned long)fl.iter_us_max,
+           (unsigned long)fl.lookup_reads, (unsigned long)fl.reads);
+    p25_lr_cfg_t alt;
+    if (p25_lr_get_alt(&alt))
+        printf("P25LR alt bitrate=%lu dev=%lu bw=%lu boost=%s%d pulse=%u gain=%u trim=%d, every other packet\n",
+               (unsigned long)alt.bitrate, (unsigned long)alt.deviation_hz, (unsigned long)alt.bandwidth_hz,
+               alt.rx_boost_step ? "" : "default/", alt.rx_boost_step ? (int)alt.rx_boost_step - 1 : 0,
+               (unsigned)alt.pulse_shape, (unsigned)alt.rx_gain_step, (int)alt.freq_trim_hz);
+    if (argc == 0)
+        puts("usage: p25 lr [cfg <bitrate> <dev> <bw> [boost 0-7|-] [pulse] [gain 0-13] [trim -5000..5000 Hz] | alt <same>|off | lut on|off | nn on|off | cap start|stop | dump [from] [count]]");
+    return 0;
+}
+
+/* `p25 sym ...`: the decoder's symbols, whichever radio feeds it. A dump
+   line holds 256 symbols, four to a byte, with a Fletcher-16 as "c". */
+static int p25_sym_command(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[0], "cap")) {
+        if (!strcmp(argv[1], "start")) p25_sym_capture_start();
+        else if (!strcmp(argv[1], "stop")) p25_sym_capture_stop();
+    } else if (argc >= 1 && !strcmp(argv[0], "dump")) {
+        p25_sym_capture_info_t ci;
+        p25_sym_capture_info(&ci);
+        uint32_t from = argc >= 2 ? (uint32_t)strtoul(argv[1], NULL, 10) & ~3u : ci.oldest;
+        if (from < ci.oldest) from = ci.oldest;
+        if (from > ci.symbols) from = ci.symbols & ~3u;
+        uint32_t count = argc >= 3 ? (uint32_t)strtoul(argv[2], NULL, 10) : ci.symbols - from;
+        if (count > ci.symbols - from) count = ci.symbols - from;
+        printf("# symcap from=%lu count=%lu\n", (unsigned long)from, (unsigned long)count);
+        static const char hex[] = "0123456789ABCDEF";
+        uint8_t d[64];
+        char line[48 + 2 * sizeof d + 16];
+        for (uint32_t at = from; at < from + count; at += 256) {
+            const uint32_t n = from + count - at < 256 ? from + count - at : 256;
+            if (!p25_sym_capture_read(at, d, n)) { puts("SYMLOST"); break; }
+            int k = snprintf(line, sizeof line, "SYMDATA off %lu n %lu data ", (unsigned long)at, (unsigned long)n);
+            unsigned s1 = 0, s2 = 0;
+            for (uint32_t j = 0; j < (n + 3u) / 4u; j++) {
+                line[k++] = hex[d[j] >> 4];
+                line[k++] = hex[d[j] & 15];
+                s1 = (s1 + d[j]) % 255u;
+                s2 = (s2 + s1) % 255u;
+            }
+            snprintf(line + k, sizeof line - (size_t)k, " c %04X\n", (s2 << 8) | s1);
+            fputs(line, stdout);
+            if (((at - from) & 0xFFFF) == 0) vTaskDelay(1);
+        }
+        puts("SYMEND");
+        return 0;
+    }
+    p25_sym_capture_info_t ci;
+    p25_sym_capture_info(&ci);
+    printf("P25SYM capture %s symbols=%lu oldest=%lu\n", ci.on ? "on" : "off",
+           (unsigned long)ci.symbols, (unsigned long)ci.oldest);
+    if (argc == 0) puts("usage: p25 sym [cap start|stop | dump [from] [count]]");
+    return 0;
+}
+
+/* `p25 imbe ...`: the IMBE frames the decoder settled. A dump line holds 4
+   records (p25_state.h), with a Fletcher-16 as "c". */
+static int p25_imbe_command(int argc, char **argv)
+{
+    if (argc >= 2 && !strcmp(argv[0], "cap")) {
+        if (!strcmp(argv[1], "start")) p25_imbe_capture_start();
+        else if (!strcmp(argv[1], "stop")) p25_imbe_capture_stop();
+    } else if (argc >= 1 && !strcmp(argv[0], "dump")) {
+        p25_imbe_capture_info_t ci;
+        p25_imbe_capture_info(&ci);
+        uint32_t from = argc >= 2 ? (uint32_t)strtoul(argv[1], NULL, 10) : ci.oldest;
+        if (from < ci.oldest) from = ci.oldest;
+        if (from > ci.frames) from = ci.frames;
+        uint32_t count = argc >= 3 ? (uint32_t)strtoul(argv[2], NULL, 10) : ci.frames - from;
+        if (count > ci.frames - from) count = ci.frames - from;
+        printf("# imbecap from=%lu count=%lu\n", (unsigned long)from, (unsigned long)count);
+        static const char hex[] = "0123456789ABCDEF";
+        uint8_t d[4 * P25_IMBE_REC];
+        char line[48 + 2 * sizeof d + 16];
+        for (uint32_t at = from; at < from + count; at += 4) {
+            const uint32_t n = from + count - at < 4 ? from + count - at : 4;
+            if (!p25_imbe_capture_read(at, d, n)) { puts("IMBELOST"); break; }
+            int k = snprintf(line, sizeof line, "IMBEDATA off %lu n %lu data ", (unsigned long)at, (unsigned long)n);
+            unsigned s1 = 0, s2 = 0;
+            for (uint32_t j = 0; j < n * P25_IMBE_REC; j++) {
+                line[k++] = hex[d[j] >> 4];
+                line[k++] = hex[d[j] & 15];
+                s1 = (s1 + d[j]) % 255u;
+                s2 = (s2 + s1) % 255u;
+            }
+            snprintf(line + k, sizeof line - (size_t)k, " c %04X\n", (s2 << 8) | s1);
+            fputs(line, stdout);
+            if (((at - from) & 0x3FF) == 0) vTaskDelay(1);
+        }
+        puts("IMBEEND");
+        return 0;
+    }
+    p25_imbe_capture_info_t ci;
+    p25_imbe_capture_info(&ci);
+    printf("P25IMBE capture %s frames=%lu oldest=%lu\n", ci.on ? "on" : "off",
+           (unsigned long)ci.frames, (unsigned long)ci.oldest);
+    if (argc == 0) puts("usage: p25 imbe [cap start|stop | dump [from] [count]]");
+    return 0;
+}
+
 static int cmd_p25(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "lr"))
+        return p25_lr_command(argc - 2, argv + 2);
+    if (argc >= 2 && !strcmp(argv[1], "sym"))
+        return p25_sym_command(argc - 2, argv + 2);
+    if (argc >= 2 && !strcmp(argv[1], "imbe"))
+        return p25_imbe_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "profile"))
         return p25_profile_command(argc - 2, argv + 2);
     if (argc >= 3 && !strcmp(argv[1], "capture") && !strcmp(argv[2], "save"))
@@ -1058,6 +1288,9 @@ void ls_ctl_register_commands(void)
         /**/
         { .command = "spec", .help = "Strongest bins of the FM SWEEP spectrum",
           .hint = "[count]", .func = &cmd_spec },
+        /**/
+        { .command = "search", .help = "Repeating wideband search on the RTL: what keeps showing up",
+          .hint = "[start [lo_MHz hi_MHz] | stop | clear | dump]", .func = &ls_search_command },
         /**/
         { .command = "date", .help = "Print the wall-clock time (or uptime marker if unsynced)",
           .func = &cmd_date },

@@ -28,6 +28,8 @@ typedef struct {
     /* STEP */
     float           delta;    /* added to the value that was read         */
     float           lo, hi;   /* clamped into this, inclusive             */
+    const char     *lo_text;  /* shown for the value at lo, or NULL       */
+    const char     *hi_text;  /* shown for the value at hi, or NULL       */
 
     /* CYCLE: the argument walks this list, wrapping. Numbers are given as
        text and parsed by the action's own signature, so a cycle over an int

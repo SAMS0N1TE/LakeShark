@@ -32,6 +32,10 @@ typedef struct {
     int      hdu;           /* send an HDU ahead of the first LDU1 */
     int      tdu;           /* close with a TDU */
     int      corrupt_ldu1;  /* 1-based: damage this LDU1's NID so it is lost */
+    int      enc_ldu2;      /* 1-based: this LDU2's ESS says ADP (0x84), as an
+                               RS miscorrection would */
+    int      bend_ldu1;     /* 1-based: 16 bits of this LDU1's NID wrong, past BCH
+                               but within NID repair */
 } p25_call_t;
 
 /* Symbols ({-3,-1,+1,+3}) for a call carrying n_imbe frames, which must be a

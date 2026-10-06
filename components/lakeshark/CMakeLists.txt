@@ -2,11 +2,11 @@
 if(CMAKE_SCRIPT_MODE_FILE)
     file(GLOB_RECURSE LS_SRCS
         board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
-        apps/*/*.c apps/*/*.cpp)
+        apps/*/*.c apps/*/*.cpp apps/*/*.S)
 else()
     file(GLOB_RECURSE LS_SRCS CONFIGURE_DEPENDS
         board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
-        apps/*/*.c apps/*/*.cpp)
+        apps/*/*.c apps/*/*.cpp apps/*/*.S)
 endif()
 
 file(GLOB LS_APP_DIR_CANDIDATES ${CMAKE_CURRENT_SOURCE_DIR}/apps/*)

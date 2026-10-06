@@ -64,6 +64,23 @@ static void print_one(const char *title, const trail_t *t)
     }
 }
 
+size_t ls_trail_text(char *out, size_t n)
+{
+    if (!out || n == 0) return 0;
+    out[0] = '\0';
+    if (s_prev_reset < 0) return 0;
+    size_t k = 0;
+    for (int i = 0; i < LS_TRAIL_SLOTS && k + 1 < n; i++) {
+        const spot_t *s = &s_prev.spot[i];
+        if (!s->count) continue;
+        const int w = snprintf(out + k, n - k, "%s%s %.11s %lu.%lus", k ? ", " : "", NAMES[i], s->tag,
+                               (unsigned long)(s->at_ms / 1000), (unsigned long)(s->at_ms % 1000 / 100));
+        if (w < 0) break;
+        k = (size_t)w >= n - k ? n - 1 : k + (size_t)w;
+    }
+    return k;
+}
+
 void ls_trail_print(void)
 {
     if (s_prev_reset >= 0) {

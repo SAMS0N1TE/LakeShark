@@ -792,6 +792,21 @@ void settings_set_antenna_external(bool external)
     sput_u8("ant_ext", external ? 1 : 0);
 }
 
+int settings_get_p25_lr_gain(void)
+{
+    if (!s_nvs_ok) return 0;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "p25_lrgain", &v) != ESP_OK || v > 13) return 0;
+    return (int)v;
+}
+void settings_set_p25_lr_gain(int step)
+{
+    if (!s_nvs_ok) return;
+    if (step < 0)  step = 0;
+    if (step > 13) step = 13;
+    sput_u8("p25_lrgain", (uint8_t)step);
+}
+
 /* The threshold default. Twelve dB was too close to the noise: thermal
    spread across a sweep is several dB, so nearly every bin eventually
    crossed it, the detection list filled with grass, and it buzzed once per

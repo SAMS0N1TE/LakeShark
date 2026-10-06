@@ -33,6 +33,10 @@ typedef struct {
     uint32_t half_span_hz;    /* trusted distance above centre */
     uint32_t strip_hz;        /* per-tune span actually folded in */
     uint32_t n_tunes;
+    /* Overlapped plan (ls_sweep_plan_overlap). Both zero for the classic
+       single-sideband plan, which is every caller but the search. */
+    uint32_t hop_hz;          /* spacing of tune centres */
+    uint32_t dc_guard_hz;     /* masked either side of each centre */
 } ls_sweep_plan_t;
 
 /* Work out the tune list and output geometry. False on nonsense: stop below
@@ -40,6 +44,24 @@ typedef struct {
    finer than the FFT can resolve. */
 bool ls_sweep_plan(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
                    uint32_t sample_rate_hz, ls_sweep_plan_t *out);
+
+/* A plan for repeated, artefact-averse searching. Both sidebands of every
+   tune are used, but only inside +-usable_pct/2 of the sample rate (the
+   outer part is analogue and decimation roll-off) and outside +-dc_guard_hz
+   of the centre (the DC spike). Tunes are hop_hz apart, so every frequency
+   is inside the good part of at least two of them, and each output bin is
+   taken from the ONE tune that has it nearest its centre: the tune that
+   owns it. A bin in the DC hole of its nearest tune is owned by the
+   neighbour, which sees it a hop away from its own centre. False when the
+   numbers cannot be made gap-free: the hop must leave the holes inside the
+   neighbour's good part. At least two tunes are always planned. */
+bool ls_sweep_plan_overlap(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
+                           uint32_t sample_rate_hz, uint32_t usable_pct,
+                           uint32_t dc_guard_hz, uint32_t hop_hz,
+                           ls_sweep_plan_t *out);
+
+/* Which tune takes output bin `bin` in an overlapped plan. */
+uint32_t ls_sweep_bin_owner(const ls_sweep_plan_t *plan, uint32_t bin);
 
 /* Centre frequency for tune `i`, 0 <= i < n_tunes. */
 uint64_t ls_sweep_tune_center(const ls_sweep_plan_t *plan, uint32_t i);

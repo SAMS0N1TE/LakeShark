@@ -10,6 +10,8 @@
 #include "ls_waterfall.h"
 #include "ls_tui.h"
 #include "p25_p2_runtime.h"
+#include "ls_action.h"
+#include "ls_value.h"
 
 #include <string.h>
 
@@ -696,6 +698,41 @@ LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
     LS_CHECK(rect_has(large_font, "GAIN-"));
     LS_CHECK(rect_has(large_font, "GAIN+"));
     LS_CHECK(escaped(large_font) == 0);
+}
+
+static long s_fake_lrgain;
+static bool v_fake_lrgain(ls_val_t *v) { v->kind = LS_VAL_INT; v->i = s_fake_lrgain; return true; }
+static ls_act_status_t a_fake_lrgain(const ls_args_t *in, ls_val_t *out)
+{
+    s_fake_lrgain = in->v[0].i;
+    out->kind = LS_VAL_INT; out->i = s_fake_lrgain;
+    return LS_ACT_OK;
+}
+
+LS_CASE(on_the_lr2021_the_gain_keys_choose_auto_or_max)
+{
+    const tui_rect large_font = {1, 2, 32, 41};
+    ls_value_publish("p25.lrgain", "step", v_fake_lrgain);
+    ls_action_register("p25.lrgain", "i", LS_CAP_TUNE, a_fake_lrgain, "test");
+    no_traffic();
+    s_fake_lrgain = 0;
+    P25.lora_rx = true;
+    draw_decode_now(large_font);
+    LS_CHECK_MSG(rect_has(large_font, "AUTO") && rect_has(large_font, "MAX"),
+                 "the LR2021 gain choice is not where the gain keys were");
+    LS_CHECK(!rect_has(large_font, "GAIN-"));
+
+    ls_scr_p25.key(LS_TK_CHAR, 'u');
+    LS_EQ_INT((int)s_fake_lrgain, 13);
+    ls_scr_p25.key(LS_TK_CHAR, 'u');
+    LS_EQ_INT((int)s_fake_lrgain, 13);
+    ls_scr_p25.key(LS_TK_CHAR, 'j');
+    LS_EQ_INT((int)s_fake_lrgain, 0);
+    LS_CHECK(escaped(large_font) == 0);
+
+    P25.lora_rx = false;
+    draw_decode_now(large_font);
+    LS_CHECK(rect_has(large_font, "GAIN-") && rect_has(large_font, "GAIN+"));
 }
 
 LS_CASE(the_scanner_workflow_remains_reachable_from_the_merged_screen)

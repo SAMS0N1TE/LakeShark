@@ -52,6 +52,9 @@ bool settings_get_wifi_at_boot(void) { return s_wifi_boot; }
 void settings_set_wifi_at_boot(bool v) { s_wifi_boot = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
+static bool s_auto_rotate = true;
+bool settings_get_auto_rotate(void) { return s_auto_rotate; }
+void settings_set_auto_rotate(bool v) { s_auto_rotate = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 /* Sub-GHz display preferences. Real state, because the screen reads them
    back to draw the option lists with the current choice marked. */
@@ -191,6 +194,9 @@ void p25_request_gain(int tenths) { P25.rtl_gain_tenths = tenths; }
    collapses back to the request. lakeshark_p25_gain_tenths is already
    provided by lssim_p25_settings.c. */
 void lakeshark_p25_set_gain(int tenths) { p25_request_gain(tenths); }
+static uint8_t s_lr_gain;
+uint8_t p25_lr_gain_step(void) { return s_lr_gain; }
+void p25_lr_choose_gain(uint8_t step) { s_lr_gain = step > 13 ? 13 : step; }
 bool p25_running(void) { return true; }
 
 void lakeshark_fm_set_freq(uint32_t hz) { FM.freq_hz = hz; }

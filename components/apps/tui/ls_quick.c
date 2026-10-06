@@ -37,6 +37,11 @@ const char *ls_quick_state(const ls_quick_t *item)
     ls_val_t v;
     if (!read_value(item, &v)) return NULL;
 
+    if (item->kind == LS_QUICK_STEP && (v.kind == LS_VAL_INT || v.kind == LS_VAL_FLOAT)) {
+        const float now = v.kind == LS_VAL_FLOAT ? v.f : (float)v.i;
+        if (item->lo_text && now <= item->lo) return item->lo_text;
+        if (item->hi_text && now >= item->hi) return item->hi_text;
+    }
     switch (v.kind) {
     case LS_VAL_INT:   snprintf(buf, sizeof(buf), "%ld", v.i); break;
     case LS_VAL_FLOAT: snprintf(buf, sizeof(buf), "%.1f", (double)v.f); break;

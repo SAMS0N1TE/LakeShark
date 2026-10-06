@@ -17,6 +17,7 @@
 #include "dsp_pipeline.h"
 #include "imbe_shim.h"
 #include "p25_call_gen.h"
+#include "p25_symbol_synth.h"
 #include "p25_voice_hold.h"
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,8 @@ static struct {
     int16_t out[P25_HOLD_MAX_SAMPLES + 2000];
     const uint8_t *iq;
     size_t iq_bytes, offset;
+    const uint8_t *dib;     /* set: symbol bytes (p25_os4_decode.h) synthesized as the LR2021 path does */
+    size_t dib_n;
 } rx;
 
 /* LS_P25_DUMP=<prefix>: the demodulator's output (int16, 48 kHz) and the
@@ -66,6 +69,20 @@ static FILE *s_dump;
 
 void dsd_yield(void)
 {
+    if (rx.dib) {
+        if (rx.offset >= rx.dib_n) { exitflag = 1; dsd_abort = 1; return; }
+        for (int k = 0; k < 100 && rx.offset < rx.dib_n; k++, rx.offset++) {
+            int16_t s[P25_SYNTH_SAMPLES_PER_SYMBOL];
+            const uint8_t b = rx.dib[rx.offset];
+            p25_symbol_synth(b & 7u, s);
+            for (int i = 0; i < P25_SYNTH_SAMPLES_PER_SYMBOL; i++) {
+                rx.ring.buf[rx.ring.write_idx] = s[i];
+                rx.ring.aux[rx.ring.write_idx] = (uint8_t)((b >> 3) & 15u);
+                rx.ring.write_idx = (rx.ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
+            }
+        }
+        return;
+    }
     if (rx.offset >= rx.iq_bytes) { exitflag = 1; dsd_abort = 1; return; }
     int16_t demod[4096];
     size_t n = rx.iq_bytes - rx.offset;
@@ -84,6 +101,7 @@ void dsd_yield(void)
 static double now_s(void)
 {
     int queued = (rx.ring.write_idx - rx.ring.read_idx + DSD_SAMPLE_RING_SIZE) % DSD_SAMPLE_RING_SIZE;
+    if (rx.dib) return (double)rx.offset / 4800.0 - queued / 48000.0;
     return (double)rx.offset / 480000.0 - queued / 48000.0;
 }
 
@@ -98,7 +116,19 @@ typedef struct {
     int hdr_fixed, hdr_critical, imbe_bit_fixes;   /* FEC work: the margin left */
 } result_t;
 
+static void receive_from(const uint8_t *iq, int bytes, const uint8_t *dib, size_t dib_n,
+                         int erasure_marks, int soft, result_t *r);
+
+/* set: the repeat rule off, so the vocoder gets what FEC made of every frame */
+static int s_fec_only;
+
 static void receive(const uint8_t *iq, int bytes, result_t *r)
+{
+    receive_from(iq, bytes, NULL, 0, 0, 0, r);
+}
+
+static void receive_from(const uint8_t *iq, int bytes, const uint8_t *dib, size_t dib_n,
+                         int erasure_marks, int soft, result_t *r)
 {
     memset(&rx, 0, sizeof(rx));
     memset(r, 0, sizeof(*r));
@@ -119,6 +149,13 @@ static void receive(const uint8_t *iq, int bytes, result_t *r)
     dsp_set_gain(&rx.dsp, -9000.0f);
     p25_voice_hold_reset(&rx.hold);
     rx.iq = iq; rx.iq_bytes = (size_t)bytes;
+    rx.dib = dib; rx.dib_n = dib_n;
+    if (dib) {
+        rx.opts.play_unproven = 1;      /* as the LR2021 path runs it */
+        rx.opts.erasure_marks = erasure_marks;
+        rx.opts.soft_symbols = soft;
+    }
+    if (s_fec_only) rx.opts.imbe_repeat = 0;
     exitflag = 0; dsd_abort = 0;
 
     while (!exitflag) {
@@ -317,6 +354,177 @@ LS_CASE(a_lost_ldu1_costs_its_own_frames_and_nothing_more)
     LS_EQ_INT(r.ldu2, CALL_PAIRS);
     LS_EQ_INT(r.ldu1, CALL_PAIRS - 1);
     LS_EQ_INT(r.played, CALL_FRAMES - 9);
+}
+
+/* Inside a call the NID can only be its NAC with LDU1 or LDU2: one bent past
+   BCH's eleven bits, but much nearer one of the two than chance, is that
+   frame, and its voice plays. */
+LS_CASE(a_nid_bent_past_bch_inside_a_call_still_plays_its_ldu)
+{
+    p25_call_t c = clear_call();
+    c.bend_ldu1 = 3;
+    p25_call_channel_t ch = quiet_channel();
+    result_t r;
+    on_air(&c, &ch, 5, &r);
+    ls_note("bent LDU1 NID: LDU1 %d LDU2 %d played %d", r.ldu1, r.ldu2, r.played);
+    LS_EQ_INT(r.ldu1, CALL_PAIRS);
+    LS_EQ_INT(r.played, CALL_FRAMES);
+}
+
+/* The LR2021 loses ~150 symbols at every packet seam. Sent as erasures, the
+   IMBE frames they fall in are replaced by the last good frame: no frame
+   that is not one the radio sent reaches the vocoder. As plain symbols, FEC
+   makes some frame of them and it plays. */
+static uint8_t s_dib[40000];
+
+static size_t call_dibits(const p25_call_t *c, int cut_at, int lost)
+{
+    make_voice();
+    int n = p25_call_symbols(c, s_voice, CALL_FRAMES, s_sym, (int)(sizeof(s_sym) / sizeof(s_sym[0])));
+    LS_CHECK(n > 0 && n <= (int)sizeof(s_dib));
+    for (int i = 0; i < n; i++)
+        s_dib[i] = s_sym[i] == 3 ? 1 : s_sym[i] == 1 ? 0 : s_sym[i] == -1 ? 2 : 3;
+    for (int i = cut_at; i < cut_at + lost && i < n; i++) s_dib[i] = P25_SYNTH_ERASED;
+    return (size_t)n;
+}
+
+static int sent_frames_only(void)
+{
+    int strangers = 0;
+    for (int f = 0; f < s_n_decoded && f < MAX_FRAMES; f++) {
+        int known = 0;
+        for (int g = 0; g < CALL_FRAMES && !known; g++)
+            known = !memcmp(s_decoded[f], s_voice[g], P25_CALL_IMBE_BYTES);
+        strangers += !known;
+    }
+    return strangers;
+}
+
+LS_CASE(symbols_lost_at_a_packet_seam_are_replaced_not_played)
+{
+    p25_call_t c = clear_call();
+    result_t r;
+    /* the middle of the third LDU, past its sync, NID and first frames */
+    const int cut = 2 * 864 + 300 + 864 / 2;
+    size_t n = call_dibits(&c, cut, 150);
+    receive_from(NULL, 0, s_dib, n, 1, 0, &r);
+    const int strangers = sent_frames_only();
+    ls_note("erased: decoded %d, played %d, frames not sent %d, erased frames %u",
+            r.decoded, r.played, strangers, rx.state.imbe_erased);
+    LS_EQ_INT(strangers, 0);
+    LS_CHECK(rx.state.imbe_erased >= 1);
+    LS_CHECK(r.played >= CALL_FRAMES - 4);
+
+    n = call_dibits(&c, cut, 150);
+    for (size_t i = (size_t)cut; i < (size_t)cut + 150; i++) s_dib[i] = 0;   /* the old filler */
+    receive_from(NULL, 0, s_dib, n, 1, 0, &r);
+    ls_note("filled with +1: decoded %d, frames not sent %d", r.decoded, sent_frames_only());
+}
+
+/* One LDU2 whose ESS decodes to ADP inside a call its HDU proved clear, as
+   RS(24,16,9) past its reach does: the algorithm cannot change inside a
+   call, so nothing mutes until a second LDU2 agrees. */
+LS_CASE(one_ess_saying_encrypted_does_not_mute_a_clear_call)
+{
+    p25_call_t c = clear_call();
+    c.enc_ldu2 = 3;
+    p25_call_channel_t ch = quiet_channel();
+    result_t r;
+    on_air(&c, &ch, 5, &r);
+    ls_note("one ADP ESS in a clear call: played %d of %d, doubted %u",
+            r.played, CALL_FRAMES, rx.state.p25_ess_doubted);
+    LS_EQ_INT(r.played, CALL_FRAMES);
+    LS_CHECK(rx.state.p25_ess_doubted >= 1);
+}
+
+/* Of the IMBE frames the vocoder got, how many carry the sent c0..c6: the 81
+   bits FEC protects (c7's 7 never are, so no decoder can be held to them). */
+static double fec_exact_fraction(void)
+{
+    int exact = 0;
+    for (int f = 0; f < s_n_decoded && f < CALL_FRAMES; f++)
+        exact += !memcmp(s_decoded[f], s_voice[f], 10) &&
+                 !((s_decoded[f][10] ^ s_voice[f][10]) & 0x80u);
+    return (double)exact / CALL_FRAMES;
+}
+
+/* The LR2021's lookup says which symbols it doubts (p25_os4_decode.h), and
+   its errors are mostly an inner level read as outer or back, where it was
+   unsure. Here one symbol in eight has its inner/outer bit wrong and doubted,
+   and as many right ones are doubted too. The hard FEC brings 41% of frames'
+   protected bits back whole; with the doubts Chase-II brings 84% (measured).
+   That is the FEC alone: about nine fixes a frame is past what the repeat
+   rule lets through, so it is off here. */
+static double doubted_errors_exact(int soft)
+{
+    p25_call_t c = clear_call();
+    const size_t n = call_dibits(&c, 0, 0);
+    ls_rng_t g;
+    ls_rng_seed(&g, 0x5EEDu);
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t v = ls_rng_u32(&g) % 8u;
+        if (v == 0) s_dib[i] = (uint8_t)((s_dib[i] ^ 1u) | (3u << 3));
+        else if (v == 1) s_dib[i] |= (uint8_t)(3u << 3);
+    }
+    result_t r;
+    s_fec_only = 1;
+    receive_from(NULL, 0, s_dib, n, 1, soft, &r);
+    s_fec_only = 0;
+    ls_note("doubted inner/outer errors, %s: decoded %d, c0..c6 exact %.0f%% (all 88 bits %.0f%%)",
+            soft ? "soft FEC" : "hard FEC", r.decoded, 100.0 * fec_exact_fraction(), 100.0 * exact_fraction());
+    return fec_exact_fraction();
+}
+
+LS_CASE(doubted_symbol_errors_are_corrected_by_the_soft_fec)
+{
+    const double hard = doubted_errors_exact(0);
+    const double soft = doubted_errors_exact(1);
+    LS_CHECK(soft >= 0.80);
+    LS_CHECK(soft >= hard + 0.35);
+}
+
+/* A weak stretch: most of one LDU's symbols are noise, all of them doubted.
+   Chase still finds a codeword for every word, so the frames come out
+   "corrected" and garbage unless the many fixes in c1..c6 give them away.
+   A clear call next to it must not lose a frame to that rule. */
+/* where the k-th frame sync of the call in s_sym begins */
+static int frame_sync_at(int k, int n)
+{
+    static const int sync[24] = { 3, 3, 3, 3, 3, -3, 3, 3, -3, -3, 3, 3,
+                                  -3, -3, -3, -3, 3, -3, 3, -3, -3, -3, -3, -3 };
+    for (int i = 0; i + 24 <= n; i++) {
+        int j = 0;
+        while (j < 24 && s_sym[i + j] == sync[j]) j++;
+        if (j == 24 && k-- == 0) return i;
+    }
+    return -1;
+}
+
+LS_CASE(frames_that_needed_many_fixes_are_replaced_not_played)
+{
+    p25_call_t c = clear_call();
+    size_t n = call_dibits(&c, 0, 0);
+    result_t r;
+    receive_from(NULL, 0, s_dib, n, 1, 1, &r);
+    ls_note("clear, soft FEC: played %d of %d, gated %u", r.played, CALL_FRAMES, rx.state.imbe_gated);
+    LS_EQ_INT(r.played, CALL_FRAMES);
+    LS_EQ_INT((int)rx.state.imbe_gated, 0);
+
+    n = call_dibits(&c, 0, 0);
+    /* the fifth frame (HDU, LDU1, LDU2, LDU1, LDU2), past its sync and NID */
+    const int at = frame_sync_at(4, (int)n);
+    LS_CHECK(at > 0);
+    ls_rng_t g;
+    ls_rng_seed(&g, 0xBADu);
+    const size_t from = (size_t)at + 100;
+    for (size_t i = from; i < from + 600 && i < n; i++)
+        s_dib[i] = (uint8_t)((ls_rng_u32(&g) & 3u) | 0x78u);
+    receive_from(NULL, 0, s_dib, n, 1, 1, &r);
+    const int strangers = sent_frames_only();
+    ls_note("600 noise symbols, soft FEC: decoded %d, frames not sent %d, gated %u, repeated %u, muted %u",
+            r.decoded, strangers, rx.state.imbe_gated, rx.state.imbe_repeated, rx.state.imbe_muted);
+    LS_CHECK(rx.state.imbe_gated >= 4);
+    LS_CHECK(strangers <= 2);
 }
 
 LS_CASE(a_carrier_that_arrives_off_frequency_is_heard_from_its_first_ldu)

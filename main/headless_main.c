@@ -22,6 +22,7 @@
 #include "cell_performance.h"
 /**/
 #include "ls_crash.h"
+#include "ls_errlog.h"
 #include "ls_nvs_safe.h"
 /**/
 #include "ls_safe_mode.h"
@@ -2921,6 +2922,9 @@ void app_main(void)
         headless_safe_main(&plan);
         return;
     }
+    /* Keeps the run before's last words and starts this run's. Safe mode
+       starts nothing it can do without, so not there. */
+    ls_errlog_early();
 
     ls_safe_stage(LS_SAFE_STAGE_NVS);
     esp_err_t err = nvs_flash_init();
@@ -2967,6 +2971,13 @@ void app_main(void)
     /**/
     ls_safe_note_dump(ls_crash_present() ? LS_SAFE_DUMP_PRESENT
                                          : LS_SAFE_DUMP_NONE);
+    /* A crash in the field was "it rebooted" until a laptop came out: the
+       run before, if it ended badly, goes to flash for DIAG and 'crumb log'. */
+    {
+        static char crumb[LS_ERRLOG_CRUMB_MAX];
+        const bool panicked = panic_crumb_text(crumb, sizeof(crumb));
+        ls_errlog_boot(panicked, crumb);
+    }
 
     ls_safe_stage(LS_SAFE_STAGE_STORAGE);
     /* Storage is optional here, matching the card below. compact_ui_start

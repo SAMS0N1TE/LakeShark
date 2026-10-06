@@ -38,6 +38,9 @@ static lr20xx_info_t s_info;
    lr20xx_set_tx reads both and nothing else decides. */
 static uint32_t s_rf_hz;
 static bool     s_pa_lf;
+/* A fixed receive gain step is in the part (SetAgcGain with a nonzero step), so
+   whoever wants the AGC back knows it has to say so. A reset clears it. */
+static bool     s_agc_forced;
 static bool s_exp_active, s_exp_reset;
 static lr20xx_engine_t s_exp_engine;
 static unsigned s_exp_preset, s_exp_channel, s_exp_fec;
@@ -111,6 +114,7 @@ static bool take_reset(uint16_t stat)
 {
     const bool r = s_reset_seen || (lr20xx_stat_plausible(stat) && LR20XX_STAT_RESET_SRC(stat) != 0);
     s_reset_seen = false;
+    if (r) s_agc_forced = false;
     return r;
 }
 
@@ -471,7 +475,9 @@ esp_err_t lr20xx_set_packet_type_ook(void)
 esp_err_t lr20xx_set_agc_gain(uint8_t step)
 {
     if (step > LR20XX_MODES_GAIN_MAX) return ESP_ERR_INVALID_ARG;
-    return lr20xx_write(LR20XX_OP_SET_AGC_GAIN, &step, 1);
+    const esp_err_t err = lr20xx_write(LR20XX_OP_SET_AGC_GAIN, &step, 1);
+    if (err == ESP_OK) s_agc_forced = step != 0;
+    return err;
 }
 
 esp_err_t lr20xx_clear_rx_fifo(void)
@@ -1832,6 +1838,8 @@ static esp_err_t recover_locked(const char *why)
     s_info = info;
     s_fail_run = 0;
     s_reset_seen = true;
+    s_agc_forced = false;
+    lr.cal_hz = 0;
     lr.programmed = false;
     lr.rx_mode = false;
     lr.tx_busy = false;
@@ -2263,6 +2271,8 @@ static esp_err_t lr_fsk_end(void)
     lr.rx_mode = false;
     lr.tx_busy = false;          /* standby ended any transmit in flight */
     lr.fsk_active = false;
+    /* LoRa listens on the AGC: a step the session held does not stay behind it. */
+    if (s_agc_forced) (void)step_lr(lr20xx_set_agc_gain(0), "SetAgcGainManual");
     const esp_err_t restored = restore_lora(lr.restore_rx);
     if (restored != ESP_OK) err = restored;
     return err;
@@ -2275,8 +2285,11 @@ static esp_err_t fsk_program_once(void)
     const ls_fsk_cfg_t *cfg = &lr.fsk_cfg;
     const lr20xx_rx_bw_t bw = lr20xx_fsk_rx_bw(cfg->bandwidth_hz);
     esp_err_t err = setup_radio(LR20XX_PKT_TYPE_GFSK, lr.fsk_freq_hz);
+    if (err == ESP_OK && cfg->rx_boost_step)
+        err = step_lr(lr20xx_set_rx_path(lr20xx_path_for_hz(lr.fsk_freq_hz),
+                                         (uint8_t)(cfg->rx_boost_step - 1)), "SetRxPath");
     if (err == ESP_OK)
-        err = step_lr(lr20xx_gfsk_set_modulation(cfg->bitrate, 0, bw.index, cfg->deviation_hz),
+        err = step_lr(lr20xx_gfsk_set_modulation(cfg->bitrate, cfg->pulse_shape, bw.index, cfg->deviation_hz),
                       "SetGfskModulationParams");
     if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
     if (err == ESP_OK) err = fsk_packet(fsk_rx_bytes(), lr.fsk_detect_bits);
@@ -2286,6 +2299,10 @@ static esp_err_t fsk_program_once(void)
        lr20xx_set_tx refuses whatever is asked of it there. */
     if (err == ESP_OK && cfg->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
         err = lr20xx_set_pa_lf(cfg->power_dbm);
+    /* The chip's AGC, unless a step is asked for. Nothing is sent for the AGC
+       unless an earlier session left a step in the part: 0 is the AGC. */
+    if (err == ESP_OK && (cfg->rx_gain_step || s_agc_forced))
+        err = step_lr(lr20xx_set_agc_gain(cfg->rx_gain_step), "SetAgcGainManual");
     if (err == ESP_OK) err = fsk_arm_rx();
     return err;
 }
@@ -2323,6 +2340,7 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
         /* 32 at most: sync_word is a uint32_t, as on the SX126x. */
         (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
         cfg->preamble_detect_bits > 32 || cfg->preamble_detect_bits % 8 ||
+        cfg->rx_boost_step > 8 || cfg->rx_gain_step > LR20XX_MODES_GAIN_MAX ||
         cfg->power_dbm < LR20XX_TX_POWER_MIN_DBM || cfg->power_dbm > LR20XX_TX_POWER_MAX_DBM)
         return ESP_ERR_INVALID_ARG;
     if (lr.fsk_active || lr.scanning || lr.tx_busy || s_exp_active || lr20xx_modes_active())
@@ -2368,6 +2386,7 @@ static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
            until it is told again. */
         ESP_LOGW(TAG, "FSK session: part restarted (stat 0x%04X), reprogramming", (unsigned)st.stat);
         lr.fsk_stale = false;
+        lr.cal_hz = 0;
         if (fsk_program() != ESP_OK) { lr.fsk_stale = true; return -1; }
         return 0;
     }
@@ -2407,6 +2426,7 @@ static int lr_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
     if (take_reset(st.stat) || lr.fsk_stale) {
         ESP_LOGW(TAG, "FSK stream: part restarted (stat 0x%04X), reprogramming", (unsigned)st.stat);
         lr.fsk_stale = false;
+        lr.cal_hz = 0;
         if (fsk_program() != ESP_OK) { lr.fsk_stale = true; return -1; }
         return 0;
     }
@@ -3072,6 +3092,7 @@ static void lr_stop(void)
     s_irq = 0;
     s_rf_hz = 0;
     s_pa_lf = false;
+    s_agc_forced = false;
     s_reset_seen = false;
     s_fail_run = 0;
     s_recovered = false;

@@ -147,6 +147,17 @@ typedef struct {
        a send is ESP_ERR_INVALID_STATE. Needs LS_LORA_CAP_FSK_STREAM;
        without it the begin is ESP_ERR_NOT_SUPPORTED. */
     bool stream;
+    /* LR20xx receive tuning, for experiments: the RX path's boost plus one
+       (1..8 for boost 0..7; 0 keeps the band's default) and the GFSK pulse
+       shape code (0 none). Other parts return NOT_SUPPORTED for either
+       nonzero. */
+    uint8_t rx_boost_step;
+    uint8_t pulse_shape;
+    /* LR20xx receive gain: 0 leaves it to the chip's AGC (and what a zeroed
+       struct means), 1..13 holds a fixed step, 13 the most. Going back to 0
+       after a session that held a step sends the AGC setting again. Other
+       parts return NOT_SUPPORTED for a nonzero value. */
+    uint8_t rx_gain_step;
 } ls_fsk_cfg_t;
 
 /* The nearest receive bandwidth the part actually has, at or above `hz`.

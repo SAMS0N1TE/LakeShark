@@ -458,6 +458,53 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     ls_btn_bar_raised(sf, controls, p->buttons, 6, p->focus);
 }
 
+/* Band scan presets, cycled by RANGE. A band scan steps lo, lo+step, lo+2*step
+   ... so lo and step together fix the raster, and every lo here is a multiple
+   of its step counted from 0 Hz: the grid lands on the channel lattice, not on
+   a round MHz.
+
+   US VHF land mobile is not on a 12.5 kHz lattice. Its channels sit on a 2.5
+   kHz-aligned raster (5, 7.5, 12.5, 15, 25 kHz families), and 154.785 is 2.5
+   kHz off a grid that starts at 150.000 and steps 12.5. A 7.5 kHz step from a
+   multiple of 7.5 kHz lands every channel that is itself a multiple of 7.5
+   kHz (154.785 is step 638 from 150.000) and keeps any other 2.5 kHz-aligned
+   channel within 2.5 kHz of a step, which the NFM filter takes; a 12.5 kHz
+   step leaves up to 5 kHz. A 2.5 kHz step lands all of them and costs three
+   times the pass. NOAA WX is its own 25 kHz preset so it lands exactly. UHF
+   450-470 channels are 12.5 kHz centres, so 12.5 kHz from 450.000 lands them;
+   press STEP for 6.25 kHz to reach the half-channel centres.
+
+   A step costs about 230 ms (retune, then the NFM squelch's 100 ms settle and
+   100 ms window), so the pass time is steps x 0.23 s. */
+typedef struct {
+    uint32_t lo, hi, step;
+    const char *name;
+} band_preset_t;
+
+static const band_preset_t band_presets[] = {
+    {150000000, 162600000, 7500, "VHF 150-162.6"},   /* 1681 steps, 6.4 min  */
+    {136005000, 174000000, 7500, "VHF 136-174"},     /* 5067 steps, 19.4 min */
+    {162400000, 162550000, 25000, "NOAA WX"},        /* 7 steps, 1.6 s       */
+    {144000000, 148000000, 12500, "2m"},             /* 321 steps, 74 s      */
+    {420000000, 450000000, 12500, "70cm"},           /* 2401 steps, 9.2 min  */
+    {450000000, 470000000, 12500, "UHF 450-470"},    /* 1601 steps, 6.1 min  */
+};
+#define BAND_PRESETS ((int)(sizeof(band_presets) / sizeof(band_presets[0])))
+
+/* The preset after the one the band is on now; the first when it is on none. */
+static const band_preset_t *band_preset_next(void)
+{
+    uint32_t lo, hi;
+    scan_engine_get_band(&lo, &hi, NULL);
+    int next = 0;
+    for (int i = 0; i < BAND_PRESETS; i++)
+        if (band_presets[i].lo == lo && band_presets[i].hi == hi) {
+            next = (i + 1) % BAND_PRESETS;
+            break;
+        }
+    return &band_presets[next];
+}
+
 static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
 {
     ls_radio_view_t actual = *v;
@@ -489,23 +536,20 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             p->scan_choice = p->lists = false;
             scan_engine_start();
         } else if (c == 'I' && scan_engine_get_source() == SCAN_SRC_BAND) {
-            static const uint32_t steps[] = {5000, 6250, 10000, 12500, 15000, 20000, 25000, 50000};
+            static const uint32_t steps[] = {5000, 6250, 7500, 10000, 12500, 15000, 20000, 25000, 50000};
+            const int n = (int)(sizeof(steps) / sizeof(steps[0]));
             uint32_t lo, hi, step;
             scan_engine_get_band(&lo, &hi, &step);
             int next = 0;
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < n; i++)
                 if (steps[i] == step) {
-                    next = (i + 1) % 8;
+                    next = (i + 1) % n;
                     break;
                 }
             scan_engine_set_band(lo, hi, steps[next]);
         } else if (c == 'R' && scan_engine_get_source() == SCAN_SRC_BAND) {
-            static const uint32_t bands[][2] = {
-                {150000000, 162000000}, {144000000, 148000000}, {420000000, 450000000}};
-            uint32_t step;
-            scan_engine_get_band(NULL, NULL, &step);
-            int n = p->preset++ % 3;
-            scan_engine_set_band(bands[n][0], bands[n][1], step);
+            const band_preset_t *b = band_preset_next();
+            scan_engine_set_band(b->lo, b->hi, b->step);
         }
         return 0;
     }
@@ -557,14 +601,12 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             p->scan_choice = true;
             p->focus = -1;
         } else if (c == 'R') {
-            static const uint32_t bands[][3] = {{150000000, 162000000, 12500},
-                                                {144000000, 148000000, 12500},
-                                                {420000000, 450000000, 12500}};
             scan_engine_stop();
-            int n = p->preset++ % 3;
-            scan_engine_set_band(bands[n][0], bands[n][1], bands[n][2]);
+            const band_preset_t *b = band_preset_next();
+            scan_engine_set_band(b->lo, b->hi, b->step);
             scan_engine_set_source(SCAN_SRC_BAND);
-            snprintf(p->notice, sizeof(p->notice), "RANGE cycles VHF / 2m / 70cm");
+            snprintf(p->notice, sizeof(p->notice), "RANGE: %s / %.1fk step", b->name,
+                     b->step / 1000.0);
         }
         return 0;
     }

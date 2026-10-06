@@ -14,6 +14,8 @@
 #include "ls_xl9535.h"
 #include "ls_lora_lr20xx.h"
 #include "ls_lora_priv.h"
+#include "ls_test.h"
+#include "p25_state.h"
 
 /* The one place the LR20xx opcodes the driver is allowed to send are listed. A
    frame outside this set means something sent an SX126x opcode, or a command
@@ -2533,7 +2535,7 @@ LS_CASE(fsk_sync_rssi_is_latched_status_and_average_remains_the_default)
 /* Run ls_lora_diagnostics() with stdout going to `out`. */
 static void diagnostics_text(char *out, size_t n)
 {
-    FILE *tmp = tmpfile();
+    FILE *tmp = ls_test_tmpfile();
     LS_CHECK(tmp != NULL);
     fflush(stdout);
     const int saved = dup(1);
@@ -2805,6 +2807,172 @@ LS_CASE(fsk_stream_marks_what_follows_a_full_buffer_as_not_continuing)
     LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), -1);
     LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
     LS_EQ_INT(fk.violations, 0);
+}
+
+/* The first command frame with this opcode at or after `from`, or -1. */
+static int frame_from(uint8_t b0, uint8_t b1, int from)
+{
+    for (int i = from; i < fk.nframes; i++)
+        if (!fk.frames[i].read2 && fk.frames[i].b[0] == b0 && fk.frames[i].b[1] == b1) return i;
+    return -1;
+}
+
+static bool in_order(int a, int b) { return a >= 0 && b >= 0 && a < b; }
+
+LS_CASE(fsk_stream_gain_step_is_one_frame_after_the_setup_and_zero_sends_none)
+{
+    session_up();
+    /* The chip's AGC, which is what a zeroed config means: no frame for it. */
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 0);
+
+    ls_fsk_cfg_t f = FSK_STREAM;
+    f.rx_gain_step = 13;
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 1);
+    const int gain = frame_from(0x02, 0x1A, 0);
+    LS_EQ_UINT(fk.frames[gain].b[2], 13);
+    LS_EQ_UINT(fk.agc, 13);
+    /* In standby, after the modulation, packet, sync word and PA, and before
+       Rx is armed. */
+    LS_CHECK(in_order(frame_from(0x02, 0x40, 0), gain));
+    LS_CHECK(in_order(frame_from(0x02, 0x41, 0), gain));
+    LS_CHECK(in_order(frame_from(0x02, 0x44, 0), gain));
+    LS_CHECK(in_order(frame_from(0x02, 0x03, 0), gain));
+    LS_CHECK(in_order(gain, frame_from(0x02, 0x0C, 0)));
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+
+    /* Ending it hands the AGC back, so the mesh does not inherit the step. */
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 1);
+    LS_EQ_UINT(fk.agc, 0);
+
+    /* And the next session that does not ask sends nothing again. */
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(fk.bad_mode, 0);
+    LS_EQ_INT(fk.bad_args, 0);
+    LS_EQ_INT(fk.violations, 0);
+    LS_EQ_INT(unknown_frames(), 0);
+}
+
+LS_CASE(fsk_gain_step_above_13_is_refused_before_touching_the_part)
+{
+    session_up();
+    ls_fsk_cfg_t f = FSK_STREAM;
+    f.rx_gain_step = 14;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    f.rx_gain_step = 255;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.nframes, 0);
+    LS_CHECK(!ls_lora_fsk_active());
+
+    /* The SX126x has no such setting. */
+    ls_lora_stop();
+    fk_install(FK_SX_ECHO);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    f = FSK_868;
+    f.rx_gain_step = 1;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_NOT_SUPPORTED);
+}
+
+LS_CASE(fsk_gain_step_is_sent_again_after_the_part_restarts_and_the_agc_after_a_forced_step)
+{
+    session_up();
+    ls_fsk_cfg_t f = FSK_STREAM;
+    f.rx_gain_step = 13;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+
+    /* The part restarts under the stream and forgets the step: programmed
+       again, with it, by the setup's one calibration. */
+    uint8_t buf[512];
+    bool restarted = false;
+    fk.reset_src = 2;
+    fk.agc = 0;
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 0);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 1);
+    LS_EQ_UINT(fk.agc, 13);
+    LS_EQ_INT(count_frames_with(0x01, 0x22), 1);
+    LS_EQ_UINT(fk.calibrate_blocks, 0x2F);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+
+    /* A restart under a session with no step has nothing to put back. */
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    fk.reset_src = 2;
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 0);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+
+    /* A step another session left in the part (Mode S holds one) is taken
+       back with the AGC setting, once. */
+    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
+    LS_EQ_INT(ls_lora_modes_end(), ESP_OK);
+    LS_EQ_UINT(fk.agc, 13);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 1);
+    LS_EQ_UINT(fk.frames[frame_from(0x02, 0x1A, 0)].b[2], 0);
+    LS_EQ_UINT(fk.agc, 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);
+    LS_EQ_INT(count_frames_with(0x02, 0x1A), 0);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(fk.bad_mode, 0);
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(p25_receive_trim_reaches_the_frequency_the_fsk_session_tunes_to)
+{
+    session_up();
+    /* A P25 control channel; the trim is added where p25_lora_begin tunes. */
+    const uint32_t channel = 851012500u;
+    static const int16_t trims[] = { 0, -1500, 1500, -5000, 5000 };
+    for (unsigned i = 0; i < sizeof(trims) / sizeof(trims[0]); i++) {
+        const p25_lr_cfg_t cfg = { .freq_trim_hz = trims[i] };
+        ls_fsk_cfg_t f = FSK_STREAM;
+        f.freq_hz = p25_lr_tuned_hz(channel, &cfg);
+        LS_EQ_UINT(f.freq_hz, (uint32_t)((int32_t)channel + trims[i]));
+        LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+        LS_EQ_UINT(fk.last_freq_hz, (uint32_t)((int32_t)channel + trims[i]));
+        LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    }
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(an_fsk_session_far_from_the_mesh_calibrates_once_in_its_setup)
+{
+    lora_up(NULL);                                         /* the mesh, at 910.525 MHz */
+    LS_EQ_INT(ls_lora_fsk_begin(&FSK_STREAM), ESP_OK);     /* 154.785 MHz */
+
+    /* The setup's own calibration, ahead of the tune, and no second pass
+       behind it: P25 on the LR2021 was measured at its best this way. */
+    int tune = -1;
+    for (int i = 0; i < fk.nframes && tune < 0; i++) {
+        static const uint8_t hz[4] = { 0x09, 0x39, 0xD4, 0xE8 };     /* 154785000 */
+        if (!fk.frames[i].read2 && fk.frames[i].b[0] == 0x02 && fk.frames[i].b[1] == 0x00 &&
+            memcmp(&fk.frames[i].b[2], hz, sizeof(hz)) == 0) tune = i;
+    }
+    LS_CHECK(tune >= 0);
+    LS_EQ_INT(count_frames_with(0x01, 0x22), 1);
+    const int first = frame_from(0x01, 0x22, 0);
+    LS_EQ_UINT(fk.frames[first].b[2], 0x2F);
+    LS_CHECK(in_order(first, tune));
+    LS_EQ_UINT(fk.last_freq_hz, 154785000u);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+    LS_EQ_INT(fk.bad_mode, 0);
+    LS_EQ_INT(fk.violations, 0);
+    LS_EQ_INT(unknown_frames(), 0);
 }
 
 LS_CASE(dme_ook_tuning_uses_only_lf_receive_through_1213_mhz)

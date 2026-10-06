@@ -251,6 +251,18 @@ int check_NID_ec(char *bch_code, int *new_nac, char *new_duid,
     return 1;
 }
 
+int nid_distance(const char *bch_code, int nac, int duid)
+{
+    int data[BCH_KK], par[BCH_RR];
+    const int v = ((nac & 0xFFF) << 4) | (duid & 0xF);
+    for (int i = 0; i < BCH_KK; i++) data[BCH_KK - 1 - i] = (v >> i) & 1;
+    bch_encode(data, par);
+    int d = 0;
+    for (int i = 0; i < BCH_KK; i++) d += (bch_code[i] ? 1 : 0) != data[i];
+    for (int i = 0; i < BCH_RR; i++) d += (bch_code[BCH_KK + i] ? 1 : 0) != par[i];
+    return d;
+}
+
 int check_NID(char *bch_code, int *new_nac, char *new_duid, unsigned char parity)
 {
     int ec_unused;

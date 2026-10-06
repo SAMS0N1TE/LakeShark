@@ -10,6 +10,7 @@ void p25_ess_clear(dsd_state *state)
     state->p25_kid = 0;
     memset(state->p25_mi, 0, sizeof(state->p25_mi));
     state->p25_ess_valid = 0;
+    state->p25_ess_pending = 0;
 }
 
 const char *p25_algid_name(uint8_t algid)

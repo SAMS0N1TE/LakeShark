@@ -197,6 +197,11 @@ static void vibe_next(void)
 static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
 static void lock_next(void) { ls_tui_set_locked(true); }
 
+/* Holds the screen the way it is now: the board stops turning it to match
+   how it is held. Attaching the keyboard still turns it. */
+static void rotlock_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_auto_rotate() ? "off" : "on"); }
+static void rotlock_next(void) { settings_set_auto_rotate(!settings_get_auto_rotate()); }
+
 /* ---- pages ---------------------------------------------------------------
    The first page holds what gets changed often; the rest sit one level down
    in DISPLAY, SOUND and DEVICE, each opened from a box and left by its BACK
@@ -251,6 +256,7 @@ static const item_t ROOT_ITEMS[] = {
     { "Brightness",     bri_show,     bri_next,     bri_step },
     { "Mute",           mute_show,    mute_next,    NULL },
     { "Screen lock",    lock_show,    lock_next,    NULL },
+    { "Rotate lock",    rotlock_show, rotlock_next, NULL },
     { "Display",        display_show, display_next, NULL },
     { "Sound",          sound_show,   sound_next,   NULL },
     { "Device",         device_show,  device_next,  NULL },

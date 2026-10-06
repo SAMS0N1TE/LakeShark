@@ -1,5 +1,18 @@
 # LakeShark release notes
 
+## 2.8.2
+
+- P25 on the LR2021 plays much more of every call. A small neural network on the P4's vector unit reads the chip's bits, and the voice error correction uses how sure it is of each symbol.
+- P25 on the LR2021: the GAIN keys choose the chip's gain, AUTO or MAX, and the choice is kept. MAX helps far from the transmitter; AUTO is best close to it.
+- P25: a clear call keeps playing through one ESS that reads encrypted, and a voice frame that needed too many corrections is replaced by the last good one.
+- Settings: Rotate lock on the first page holds the screen the way it is.
+- DIAG: ERROR LOG keeps crashes, watchdog resets and brownouts through power-off, with the last log lines before each one. `crumb log` shows them on the console.
+- TERMINAL runs console commands from the board's own keyboard.
+- Scanner: NFM channels hold on the noise squelch, which sets itself from the noise. New band presets for the 7.5 kHz VHF raster, NOAA weather and UHF 450-470.
+- `search` finds active frequencies from 136 to 174 MHz with an RTL-SDR and logs them to the SD card.
+- Steadier on long runs: every address-range cache operation takes one lock.
+- Console: `p25 lr` shows and sets the LR2021's receive settings and captures its raw bits; `p25 sym` and `p25 imbe` capture the decoder's symbols and voice frames.
+
 ## 2.8.1
 
 - P25 and ADS-B on the LR2021 hand the chip to EXPERIMENTS, LoRa Labs, the LoRa waterfall and `lora` whenever one of them asks, and take it back when it is free. P25 shows LR2021 IN USE ELSEWHERE in the meantime.

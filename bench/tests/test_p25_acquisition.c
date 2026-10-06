@@ -25,6 +25,8 @@ void processTDULC(dsd_opts *o, dsd_state *s) { voice_dispatch(); }
 int mbe_eccImbe7200x4400C0(char f[8][23]) { LS_CHECK(false); return 0; }
 int mbe_eccImbe7200x4400Data(char f[8][23], char *d) { LS_CHECK(false); return 0; }
 void mbe_demodulateImbe7200x4400Data(char f[8][23]) { LS_CHECK(false); }
+int imbe_chase_c0(char f[8][23], const uint8_t d[8][23], int *s) { LS_CHECK(false); return 0; }
+int imbe_chase_data(char f[8][23], const uint8_t d[8][23]) { LS_CHECK(false); return 0; }
 void imbe_shim_decode_88(const uint8_t *in, int16_t *out) { LS_CHECK(false); }
 bool imbe_shim_try_decode_88(const uint8_t *in, int16_t *out)
 { (void)in; (void)out; LS_CHECK(false); return false; }

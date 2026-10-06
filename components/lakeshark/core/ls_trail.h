@@ -10,6 +10,7 @@
 #ifndef LS_TRAIL_H
 #define LS_TRAIL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,6 +33,9 @@ void ls_trail(ls_trail_slot_t slot, const char *tag);
 void ls_trail_boot(void);
 /* Prints the previous run's trail (if kept) and the live one. */
 void ls_trail_print(void);
+/* The dead run's trail on one line ("tui DIAG 812.3s, link p25 800.1s"),
+   or "" when none was kept. Returns the length. */
+size_t ls_trail_text(char *out, size_t n);
 
 #ifdef __cplusplus
 }
