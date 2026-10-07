@@ -79,8 +79,14 @@ void settings_set_usb_autoreboot(bool en);
 
 bool settings_get_antenna_external(void);
 void settings_set_antenna_external(bool external);
+/* Same value, readable before settings_init(). */
+bool settings_peek_antenna_external(void);
 /* P25 on the LR2021: its receive gain, 0 the chip's AGC, 1..13 a fixed step. */
 int  settings_get_p25_lr_gain(void);
+bool settings_get_lr_tcxo(void);
+bool settings_set_lr_tcxo(bool tcxo);
+bool settings_get_lr_dcdc(void);
+bool settings_set_lr_dcdc(bool dcdc);
 void settings_set_p25_lr_gain(int step);
 
 bool settings_get_alert_ring(void);
@@ -97,8 +103,15 @@ int  settings_get_subghz_on_hit(void);       /* rec_scan_on_hit_t          */
 void settings_set_subghz_on_hit(int mode);
 int  settings_get_compass_options(void);     /* COMPASS: 1 simple, 2 magnetic */
 void settings_set_compass_options(int options);
+/* Waterfall preferences packed by the widget; missing uses fallback. */
+uint32_t settings_get_waterfall(uint32_t fallback);
+void settings_set_waterfall(uint32_t value);
 uint32_t settings_get_map_layers(uint32_t fallback);  /* MAP overlay layer bits */
 void settings_set_map_layers(uint32_t layers);
+/* The ADS-B mini map's FOLLOW mode, 0 to 15 as the screen numbers it, or -1
+   when none has been chosen. Read once, at ADS-B's registration. */
+int  settings_get_adsb_follow(void);
+void settings_set_adsb_follow(int mode);
 int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
@@ -137,6 +150,11 @@ bool settings_get_wifi_at_boot(void);
 /* Same value, readable before settings_init(). */
 bool settings_peek_wifi_at_boot(void);
 void settings_set_wifi_at_boot(bool enabled);
+
+/* Settings > DEVICE > Check for updates: true is Daily (the default), false is
+   Off, which means no background network traffic for updates at all. */
+bool settings_get_update_check(void);
+void settings_set_update_check(bool daily);
 
 /**/
 bool settings_get_nav_autohide(void);

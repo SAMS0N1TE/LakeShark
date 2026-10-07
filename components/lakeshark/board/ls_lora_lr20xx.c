@@ -21,6 +21,7 @@
 #include "ls_board.h"
 #include "ls_board_hw.h"
 #include "ls_xl9535.h"
+#include "settings.h"
 
 #if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
     defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
@@ -33,6 +34,10 @@ static uint16_t s_stat;
 static uint32_t s_irq;
 static bool     s_bound;
 static lr20xx_info_t s_info;
+static bool s_tcxo, s_dcdc, s_xtal_fallback;
+static esp_err_t s_cal_result = ESP_ERR_INVALID_STATE;
+static uint16_t s_cal_errors;
+static void err_names(uint16_t errors, char *out, size_t n);
 /* The frequency last accepted by SetRfFrequency, and whether the LF PA has
    been programmed since the part was last tuned to where it may not transmit.
    lr20xx_set_tx reads both and nothing else decides. */
@@ -63,6 +68,10 @@ lr20xx_rx_path_t lr20xx_path_for_hz(uint32_t hz)
 
 uint16_t lr20xx_calib_fe_word(uint32_t hz, lr20xx_rx_path_t path)
 {
+    /* The word names the 4 MHz cell that holds hz (cell N is N*4 to N*4+4
+       MHz), so it is the step below. Rounding to the nearest step calibrated
+       the neighbouring cell: measured on the LR2021, 910.525 MHz lost 18 dB
+       and 315 MHz raised RXFREQ_NO_FE_CAL on every poll. */
     const uint32_t steps = hz / 4000000u;
     if (steps == 0 || steps > 0x7FFFu) return 0;
     return (uint16_t)(steps | (path == LR20XX_PATH_HF ? 0x8000u : 0u));
@@ -454,10 +463,67 @@ esp_err_t lr20xx_wait_ready(int timeout_ms)
     return ls_lora_hw_wait_not_busy(timeout_ms) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
-esp_err_t lr20xx_calibrate(uint8_t blocks)
+static esp_err_t calibrate_locked(uint8_t blocks)
 {
     if (blocks & 0x90) return ESP_ERR_INVALID_ARG;   /* rfu bits 7 and 4 */
-    return lr20xx_write(LR20XX_OP_CALIBRATE, &blocks, 1);
+    s_cal_result = lr20xx_write(LR20XX_OP_CALIBRATE, &blocks, 1);
+    if (s_cal_result == ESP_OK) s_cal_result = lr20xx_wait_ready(s_tcxo ? 300 : 200);
+    if (s_cal_result == ESP_OK) s_cal_result = lr20xx_check_last_ok();
+    s_cal_errors = 0;
+    const esp_err_t err = lr20xx_get_errors(&s_cal_errors);
+    if (s_cal_result == ESP_OK) s_cal_result = err;
+    if (s_cal_result == ESP_OK && s_cal_errors) s_cal_result = ESP_ERR_INVALID_RESPONSE;
+    return s_cal_result;
+}
+
+esp_err_t lr20xx_calibrate(uint8_t blocks)
+{
+    LOCKED_RET(esp_err_t, calibrate_locked(blocks));
+}
+
+/* LilyGO InitLr2021 order; retain the receive paths' calibration mask. */
+static esp_err_t initialize_locked(void)
+{
+    s_tcxo = settings_get_lr_tcxo() && !s_xtal_fallback;
+    s_dcdc = settings_get_lr_dcdc();
+    esp_err_t err = lr20xx_set_standby(false);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) err = lr20xx_clear_errors();
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK && s_tcxo) {
+        const uint32_t ticks = LR20XX_TCXO_DELAY_TICKS;
+        const uint8_t a[5] = { LR20XX_TCXO_3_3V, (uint8_t)(ticks >> 24),
+                              (uint8_t)(ticks >> 16), (uint8_t)(ticks >> 8), (uint8_t)ticks };
+        err = lr20xx_write(LR20XX_OP_SET_TCXO_MODE, a, sizeof(a));
+        if (err == ESP_OK) err = lr20xx_wait_ready(1200);
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+    }
+    const uint8_t reg = s_dcdc ? 1 : 0;
+    if (err == ESP_OK) err = lr20xx_write(LR20XX_OP_SET_REG_MODE, &reg, 1);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) err = lr20xx_set_fallback_standby_rc();
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) err = lr20xx_clear_irq(LR20XX_IRQ_ALL);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK)
+        err = lr20xx_calibrate(LR20XX_CAL_LF_RC | LR20XX_CAL_HF_RC | LR20XX_CAL_PLL |
+                               LR20XX_CAL_AAF | LR20XX_CAL_MU | LR20XX_CAL_PA_OFF);
+    uint16_t errors = 0;
+    const esp_err_t eerr = lr20xx_get_errors(&errors);
+    if (s_tcxo && eerr == ESP_OK && (errors & ((1u << 0) | (1u << 2)))) {
+        s_xtal_fallback = true;
+        ESP_LOGW(TAG, "TCXO errors 0x%04X, using xtal for this boot", (unsigned)errors);
+        err = ls_lora_hw_reset();
+        s_reset_seen = true;
+        s_agc_forced = false;
+        if (err == ESP_OK) err = initialize_locked();
+    }
+    return err;
+}
+
+esp_err_t lr20xx_initialize(void)
+{
+    LOCKED_RET(esp_err_t, initialize_locked());
 }
 
 esp_err_t lr20xx_set_fallback_standby_rc(void)
@@ -1089,6 +1155,7 @@ static esp_err_t dcdc_set_locked(void)
 
 static esp_err_t dcdc_reset_locked(void)
 {
+    if (!s_dcdc) return ESP_OK;
     esp_err_t err = dcdc_switcher(15, 15);
     if (err == ESP_OK) err = dcdc_finish(DCDC_FREQ_LF_2M8);
     return err;
@@ -1096,7 +1163,7 @@ static esp_err_t dcdc_reset_locked(void)
 
 esp_err_t lr20xx_dcdc_workaround_set(void)
 {
-    LOCKED_RET(esp_err_t, dcdc_set_locked());
+    LOCKED_RET(esp_err_t, s_dcdc ? dcdc_set_locked() : ESP_OK);
 }
 
 esp_err_t lr20xx_dcdc_workaround_reset(void)
@@ -1226,6 +1293,7 @@ static struct {
     float    q_rssi;                        /* level of the last frame in q      */
     uint16_t leftover;                      /* FIFO bytes beyond whole frames    */
     uint8_t  stale;
+    uint8_t  recal_tries;                   /* front-end recalibrations done this session */
     /* A GetStatus that is not the session's own (the console's) cleared the
        reset source this poll would have seen. It saw it instead, and says so. */
     bool     reset_seen;
@@ -1307,21 +1375,10 @@ static esp_err_t apply_threshold(void)
 /* Everything from standby to receive. */
 static esp_err_t configure_session_once(uint32_t freq_hz, int gain)
 {
-    esp_err_t err = step_ok(lr20xx_set_standby(false), "SetStandby");
+    esp_err_t err = lr20xx_initialize();
     if (err != ESP_OK) return err;
     select_antenna();
     err = lr20xx_configure_dios();
-    if (err != ESP_OK) return err;
-    err = step_ok(lr20xx_set_fallback_standby_rc(), "SetRxTxFallbackMode");
-    if (err == ESP_OK) err = step_ok(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
-    /* The start-up calibration was at 915 MHz (6.4); the PLL and the
-       anti-aliasing filter want redoing after a move of more than 50 MHz
-       (6.4.1). The power amplifier block is not asked for. */
-    if (err == ESP_OK)
-        err = lr20xx_calibrate(LR20XX_CAL_LF_RC | LR20XX_CAL_HF_RC | LR20XX_CAL_PLL |
-                               LR20XX_CAL_AAF | LR20XX_CAL_MU);
-    if (err == ESP_OK) err = lr20xx_wait_ready(200);
-    if (err == ESP_OK) err = step_ok(ESP_OK, "Calibrate");
     if (err == ESP_OK) err = step_ok(lr20xx_set_packet_type_ook(), "SetPacketType");
     if (err == ESP_OK) err = lr20xx_tune_rx(freq_hz, ms.boost);
     if (err == ESP_OK)
@@ -1601,15 +1658,64 @@ static esp_err_t drain_fifo(bool rxdone)
     return ESP_OK;
 }
 
-static void note_chip_errors(void)
+#define LR20XX_ERR_RXFREQ_NO_FE_CAL 0x0200u
+
+static const char *const ERR_NAMES[] = {
+    "HF_XOSC", "LF_XOSC", "PLL_LOCK", "LF_RC_CAL", "HF_RC_CAL", "PLL_CAL", "AAF_CAL",
+    "IMG_CAL", "CHIP_BUSY", "RXFREQ_NO_FE_CAL",
+};
+
+/* The GetErrors bits by name, for the log. */
+static void err_names(uint16_t errors, char *out, size_t n)
+{
+    size_t o = 0;
+    out[0] = 0;
+    for (unsigned i = 0; i < sizeof(ERR_NAMES) / sizeof(ERR_NAMES[0]) && o + 1 < n; i++)
+        if (errors & (1u << i))
+            o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "|" : "", ERR_NAMES[i]);
+}
+
+/* Reads and clears the chip's error word; returns it (0 when none or unread).
+   `quiet`: counted and cleared without a log line. */
+static uint16_t note_chip_errors(bool quiet)
 {
     uint16_t errors = 0;
     if (lr20xx_get_errors(&errors) == ESP_OK) {
         ms.stats.chip_errors++;
-        ESP_LOGW(TAG, "modes: chip errors 0x%04X", (unsigned)errors);
+        if (!quiet) {
+            char names[64];
+            err_names(errors, names, sizeof(names));
+            ESP_LOGW(TAG, "modes: chip errors 0x%04X %s", (unsigned)errors, names);
+        }
         (void)lr20xx_clear_errors();
     }
+    return errors;
 }
+
+/* The part had no front-end calibration for the Rx frequency (bit 9). Standby,
+   CalibFE and the frequency again, Rx armed from an empty FIFO. The second
+   try calibrates the cell and both its neighbours in the one command. */
+static esp_err_t recalibrate_front_end(unsigned attempt)
+{
+    esp_err_t err = step_ok(lr20xx_set_standby(false), "SetStandby");
+    if (err != ESP_OK) return err;
+    if (attempt < 2) {
+        err = lr20xx_tune_rx(ms.freq_hz, ms.boost);
+    } else {
+        const lr20xx_rx_path_t path = lr20xx_path_for_hz(ms.freq_hz);
+        const uint16_t w = lr20xx_calib_fe_word(ms.freq_hz, path);
+        const uint16_t words[3] = { w, (uint16_t)(w + 1), (uint16_t)(w > 1 ? w - 1 : w) };
+        err = step_ok(lr20xx_calib_fe(words), "CalibFE");
+        if (err == ESP_OK) err = step_ok(lr20xx_set_rf_frequency(ms.freq_hz), "SetRfFrequency");
+        if (err == ESP_OK) err = step_ok(lr20xx_set_rx_path(path, (uint8_t)ms.boost), "SetRxPath");
+    }
+    if (err == ESP_OK) err = arm_rx();
+    return err;
+}
+
+/* At most this many recalibrations in a session; after that the error is only
+   counted, so a part that keeps raising it costs neither time nor log. */
+#define RECAL_MAX 2
 
 /* Rx armed again after the part was seen out of it. It is asked once more
    first: the part comes back to Rx by itself after some packets, and SetRx and
@@ -1653,7 +1759,25 @@ int lr20xx_modes_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 
     const uint32_t irq = st.irq;
     const bool rxdone = (irq & LR20XX_IRQ_RX_DONE) != 0;
-    if (irq & (LR20XX_IRQ_ERROR | LR20XX_IRQ_CMD_ERROR)) note_chip_errors();
+    if (irq & (LR20XX_IRQ_ERROR | LR20XX_IRQ_CMD_ERROR)) {
+        const bool spent = ms.recal_tries > RECAL_MAX;      /* gave up, and said so */
+        const uint16_t e = note_chip_errors(spent);
+        if (e & LR20XX_ERR_RXFREQ_NO_FE_CAL) {
+            if (ms.recal_tries < RECAL_MAX) {
+                ms.stats.rearms++;
+                if (recalibrate_front_end(++ms.recal_tries) != ESP_OK) {
+                    ms.stats.bus_errors++;
+                    return -2;
+                }
+                return 0;
+            }
+            if (!spent) {
+                ms.recal_tries = RECAL_MAX + 1;
+                ESP_LOGW(TAG, "modes: no front-end calibration at %lu Hz after %d tries, receiving anyway",
+                         (unsigned long)ms.freq_hz, RECAL_MAX);
+            }
+        }
+    }
     /* Cleared before the FIFO is read, so a packet that finishes while it is
        read raises RxDone again rather than being lost with this one. */
     if (irq & MODES_IRQ_MASK) {
@@ -1849,8 +1973,7 @@ static esp_err_t recover_locked(const char *why)
     lr.scan_plan_n = 0;
     ms.reset_seen = ms.active;
     s_exp_reset = s_exp_active;
-    (void)lr20xx_clear_irq(LR20XX_IRQ_ALL);
-    return ESP_OK;
+    return lr20xx_initialize();
 }
 
 static bool retry_gate(unsigned n, esp_err_t err, const char *what)
@@ -1890,24 +2013,13 @@ static esp_err_t expect_mode(unsigned want)
     return ESP_OK;
 }
 
-/* What every packet path does first, from standby, in the Mode S session's
-   order, which is the one seen working on air: the antenna, the RF switch and
-   interrupt DIOs, the fallback, a calibration, the packet type with the DC-DC
-   settings it resets, and the tune on the LF input. The PA is not touched. */
+/* System setup, DIOs, packet type and receive tune. The PA is not touched. */
 static esp_err_t setup_radio(uint8_t pkt_type, uint32_t freq_hz)
 {
-    esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
+    esp_err_t err = lr20xx_initialize();
     if (err != ESP_OK) return err;
     select_antenna();
     err = configure_dios_mask(PKT_IRQ_MASK);
-    if (err == ESP_OK) err = step_lr(lr20xx_set_fallback_standby_rc(), "SetRxTxFallbackMode");
-    if (err == ESP_OK) err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
-    /* PA_OFF is left out of the calibration, as for Mode S. */
-    if (err == ESP_OK)
-        err = lr20xx_calibrate(LR20XX_CAL_LF_RC | LR20XX_CAL_HF_RC | LR20XX_CAL_PLL |
-                               LR20XX_CAL_AAF | LR20XX_CAL_MU);
-    if (err == ESP_OK) err = lr20xx_wait_ready(200);
-    if (err == ESP_OK) err = step_lr(ESP_OK, "Calibrate");
     if (err == ESP_OK) err = step_lr(lr20xx_set_packet_type(pkt_type), "SetPacketType");
     if (err == ESP_OK) err = lr20xx_dcdc_workaround_reset();
     if (err == ESP_OK) err = lr20xx_tune_rx(freq_hz, -1);
@@ -2117,7 +2229,7 @@ static bool lr_send_done(void)
     } else if (!done) {
         ESP_LOGW(TAG, "transmit did not complete in %d ms", TX_TIMEOUT_MS);
     }
-    (void)lr20xx_set_standby(false);
+    if (lr20xx_set_standby(false) != ESP_OK) return false;
     (void)lr20xx_clear_irq(LR20XX_IRQ_ALL);
     lr.tx_busy = false;
     if (done) ESP_LOGI(TAG, "TX finished: irq=0x%08lx", (unsigned long)st.irq);
@@ -2369,6 +2481,14 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
         const esp_err_t restored = lr_fsk_end();
         return restored == ESP_OK ? err : restored;
     }
+    /* Logged when the numbers change; a caller that restarts the same
+       listener (a polarity search) is not a line every few seconds. */
+    static struct { bool stream; uint32_t f, br, dev, bw; bool set; } logged;
+    const bool same = logged.set && logged.stream == cfg->stream && logged.f == cfg->freq_hz &&
+                      logged.br == cfg->bitrate && logged.dev == cfg->deviation_hz && logged.bw == bw.hz;
+    logged.set = true; logged.stream = cfg->stream; logged.f = cfg->freq_hz;
+    logged.br = cfg->bitrate; logged.dev = cfg->deviation_hz; logged.bw = bw.hz;
+    if (same) return ESP_OK;
     ESP_LOGI(TAG, "FSK %s: %lu Hz, %lu bps, deviation %lu Hz, filter %lu Hz",
              cfg->stream ? "stream" : "session", (unsigned long)cfg->freq_hz,
              (unsigned long)cfg->bitrate, (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
@@ -3077,6 +3197,72 @@ static void lr_diagnostics(void)
         if (tune.thresh_override) printf(" %d dB", tune.thresh_level);
         printf("\n");
     }
+}
+
+int lr20xx_clock_command(int argc, char **argv)
+{
+    const bool clock = argc > 1 && !strcmp(argv[1], "lrclk");
+    const bool reg = argc > 1 && !strcmp(argv[1], "lrreg");
+    if (!clock && !reg && !(argc > 1 && !strcmp(argv[1], "lrstat"))) return -1;
+    ls_lora_hw_lock();
+    if (!s_bound) {
+        ls_lora_hw_unlock();
+        puts("lora: LR20xx is not initialized");
+        return 1;
+    }
+    if (!clock && !reg) {
+        uint16_t errors = 0;
+        const esp_err_t err = lr20xx_get_errors(&errors);
+        const bool tcxo = s_tcxo, dcdc = s_dcdc, fallback = s_xtal_fallback;
+        const esp_err_t cal = s_cal_result;
+        const uint16_t cal_errors = s_cal_errors;
+        ls_lora_hw_unlock();
+        char names[128];
+        err_names(errors, names, sizeof(names));
+        printf("lora: clock=%s%s reg=%s errors=0x%04X %s (%s) calibration=%s errors=0x%04X\n",
+               tcxo ? "tcxo" : "xtal", fallback ? " (boot fallback)" : "",
+               dcdc ? "dcdc" : "ldo", (unsigned)errors, names, esp_err_to_name(err),
+               esp_err_to_name(cal), (unsigned)cal_errors);
+        return err == ESP_OK ? 0 : 1;
+    }
+    const bool current = clock ? settings_get_lr_tcxo() : settings_get_lr_dcdc();
+    if (argc == 2) {
+        ls_lora_hw_unlock();
+        printf("lora: %s=%s\n", argv[1], clock ? (current ? "tcxo" : "xtal") : (current ? "dcdc" : "ldo"));
+        return 0;
+    }
+    const char *on = clock ? "tcxo" : "dcdc", *off = clock ? "xtal" : "ldo";
+    if (argc != 3 || (strcmp(argv[2], on) && strcmp(argv[2], off))) {
+        ls_lora_hw_unlock();
+        printf("usage: lora %s [%s|%s]\n", argv[1], on, off);
+        return 1;
+    }
+    const bool value = !strcmp(argv[2], on);
+    esp_err_t err = ESP_OK;
+    if (value != current) {
+        if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
+        else if (!(clock ? settings_set_lr_tcxo(value) : settings_set_lr_dcdc(value)))
+            err = ESP_ERR_INVALID_STATE;
+        else {
+            const bool rx = lr.rx_mode || lr.rearm;
+            const int bins = lr.scan_plan_n ? lr.scan_plan_n : LS_LORA_SCAN_BINS;
+            s_recovered = false;
+            err = recover_locked("clock/regulator change");
+            if (err == ESP_OK) {
+                if (ms.active) err = configure_session(ms.freq_hz, ms.gain);
+                else if (s_exp_active) err = exp_program();
+                else if (lr.fsk_active) err = fsk_program();
+                else if (lr.scanning) err = scan_configure(bins);
+                else if (lr.cfg_valid) {
+                    err = program_lora();
+                    if (err == ESP_OK && rx) err = lr_receive();
+                }
+            }
+        }
+    }
+    ls_lora_hw_unlock();
+    printf("lora: %s=%s: %s\n", argv[1], value ? on : off, esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
 }
 
 static void lr_stop(void)

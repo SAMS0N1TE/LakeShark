@@ -461,6 +461,9 @@ static bool sx_send_done(void)
     if (esp_timer_get_time() > s_tx_deadline) {
 
         ESP_LOGW(TAG, "transmit did not complete in %d ms", TX_TIMEOUT_MS);
+        /* A software deadline does not establish that RF has stopped. */
+        uint8_t standby = STANDBY_RC;
+        if (cmd(OP_SET_STANDBY, &standby, 1, NULL, 0) != ESP_OK) return false;
         clear_irq(0xFFFF);
         s_tx_busy = false;
         return true;
@@ -970,6 +973,14 @@ static uint32_t sx_caps(void)
     return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
 }
 
+static void sx_stop(void)
+{
+    /* Reset invalidates every session and the configuration cached for it. */
+    s_cfg_valid = s_fsk_active = s_scanning = false;
+    s_rx_mode = s_rearm = s_tx_busy = false;
+    s_scan_saved_valid = false;
+}
+
 const ls_lora_ops_t ls_lora_sx126x_ops = {
     .kind = LS_LORA_CHIP_SX126X,
     .name = "SX126x",
@@ -998,7 +1009,7 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
     .scanning = sx_scanning,
     .scan_profile = sx_scan_profile,
     .diagnostics = sx_diagnostics,
-    .stop = NULL,
+    .stop = sx_stop,
 };
 
 #else  /* board declares no LoRa: nothing to bind */

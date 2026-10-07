@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "radio_endpoint.h"
+#include "ls_task_reap.h"
 #include "radio_health.h"
 #include "rtl-sdr.h"
 #include "rtl_adapter_private.h"
@@ -328,7 +329,7 @@ static void rtlsdr_setup_task(void *arg)
             ESP_LOGI(TAG, "an RTL endpoint is already present - ignoring USB addr %u",
                      setup->dev_addr);
             vPortFree(setup);
-            vTaskDeleteWithCaps(NULL);
+            ls_task_retire_self();
             return;
         }
         ESP_LOGW(TAG, "a device object was still open - releasing it before re-opening");
@@ -340,7 +341,7 @@ static void rtlsdr_setup_task(void *arg)
         ESP_LOGI(TAG, "USB device is not a supported RTL-SDR endpoint");
         s_dev = NULL;
         vPortFree(setup);
-        vTaskDeleteWithCaps(NULL);
+        ls_task_retire_self();
         return;
     }
 
@@ -362,7 +363,7 @@ static void rtlsdr_setup_task(void *arg)
         rtlsdr_close(s_dev);
         s_dev = NULL;
         vPortFree(setup);
-        vTaskDeleteWithCaps(NULL);
+        ls_task_retire_self();
         return;
     }
 
@@ -370,7 +371,7 @@ static void rtlsdr_setup_task(void *arg)
     ESP_LOGI(TAG, "IQ endpoint registered, awaiting app config");
 
     vPortFree(setup);
-    vTaskDeleteWithCaps(NULL);
+    ls_task_retire_self();
 }
 
 void rtl_adapter_probe_async(uint8_t dev_addr,
@@ -390,9 +391,10 @@ void rtl_adapter_probe_async(uint8_t dev_addr,
        LS_RADIO_ERR_NO_MEMORY.  The setup path does not retain stack-backed
        USB buffers; put this short-lived worker in PSRAM like the other
        bounded radio workers and keep internal RAM for the USB endpoint.
-       Created with caps, so every exit is vTaskDeleteWithCaps: a plain
+       Created with caps, so every exit is ls_task_retire_self: a plain
        vTaskDelete never frees the TCB (internal) or stack, and each attach
-       would keep both. */
+       would keep both, while deleting itself would need internal RAM at
+       the moment of the attach, when there is least of it. */
     if (xTaskCreatePinnedToCoreWithCaps(rtlsdr_setup_task, "rtlsdr_setup", 8192,
             setup, 4, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "setup task create failed");

@@ -8,6 +8,16 @@
 #include "freertos/task.h"
 #include "ls_board.h"
 #include "ls_caps.h"
+#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#include "ls_lora_priv.h"
+#define ANT_LOCK() ls_lora_hw_lock()
+#define ANT_UNLOCK() ls_lora_hw_unlock()
+#define ANT_IDLE() ls_lora_send_done()
+#else
+#define ANT_LOCK() ((void)0)
+#define ANT_UNLOCK() ((void)0)
+#define ANT_IDLE() true
+#endif
 
 #if LS_HAS_IO_EXPANDER
 #include "ls_xl9535.h"
@@ -97,17 +107,42 @@ bool ls_board_hw_ready(void)
    1 is the internal antenna, 0 is external through MMCX1. */
 #ifdef LS_BOARD_XL_RF_SW_VCTL
 static bool s_ant_external;
+static bool s_ant_confirmed;
 #endif
 
-esp_err_t ls_board_hw_antenna_external(bool external)
+static esp_err_t antenna_select(bool external, bool confirmed)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
-    const esp_err_t err = ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, !external);
-    if (err == ESP_OK) s_ant_external = external;
+    /* The socket lock excludes a transmit start between the idle check and
+       the switch write. A busy transmitter keeps its existing route. */
+    ANT_LOCK();
+    const esp_err_t err = !ANT_IDLE() ? ESP_ERR_INVALID_STATE :
+        ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, !external);
+    if (err == ESP_OK) {
+        s_ant_external = external;
+        s_ant_confirmed = external && confirmed;
+    }
+    ANT_UNLOCK();
     return err;
 #else
     (void)external;
+    (void)confirmed;
     return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+esp_err_t ls_board_hw_antenna_external(bool external)
+{ return antenna_select(external, false); }
+
+esp_err_t ls_board_hw_antenna_confirm_external(void)
+{ return antenna_select(true, true); }
+
+bool ls_board_hw_antenna_tx_allowed(void)
+{
+#ifdef LS_BOARD_XL_RF_SW_VCTL
+    return !s_ant_external || s_ant_confirmed;
+#else
+    return true;
 #endif
 }
 
@@ -169,6 +204,16 @@ esp_err_t ls_board_hw_early_init(void)
     /* The rail needs to be up before anything on it is released.  10 ms is
        the vendor's own settling time for this board. */
     vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+#ifdef LS_BOARD_XL_GPS_WAKE
+    /* The L76K's WAKE_UP: low is standby. The vendor drives it high as an
+       output; left an input, its level is whatever the board's resistors
+       make it. Not fatal: nothing at boot needs the GPS. */
+    {
+        const esp_err_t wake = ls_xl9535_out(LS_BOARD_XL_GPS_WAKE, true);
+        if (wake != ESP_OK)
+            ESP_LOGW(TAG, "GPS wake: %s", esp_err_to_name(wake));
+    }
 #endif
 
 #ifdef LS_BOARD_XL_AUDIO_PWR_EN

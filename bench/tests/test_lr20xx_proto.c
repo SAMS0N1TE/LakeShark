@@ -23,7 +23,7 @@
 static bool known_lr_opcode(uint16_t op)
 {
     static const uint16_t ok[] = {
-        0x0100, 0x0101, 0x0110, 0x0111, 0x0116, 0x0117, 0x0123, 0x0128,
+        0x0100, 0x0101, 0x0110, 0x0111, 0x0116, 0x0117, 0x0120, 0x0121, 0x0123, 0x0128,
         0x0200, 0x0201, 0x020B, 0x020C,
         /* the Mode S receive session */
         0x0001, 0x0105, 0x0106, 0x0112, 0x0113, 0x0115, 0x011C, 0x011E, 0x0122, 0x0206, 0x0207,
@@ -74,7 +74,7 @@ LS_CASE(an_lr2021_is_identified_with_exactly_these_frames)
     FK_FRAME(2, 0x00, 0x00, 0x00, 0x00);                      /* GetVersion, 2  */
     LS_CHECK(fk.frames[2].read2);
     FK_FRAME(3, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);          /* ClearIrq, all  */
-    LS_EQ_INT(fk.nframes, 4);
+    LS_EQ_INT(fk.nframes, 22);
     LS_EQ_INT(fk.violations, 0);
     LS_EQ_INT(unknown_frames(), 0);
 }
@@ -463,6 +463,8 @@ static int cmds(int *ix, int max)
 
 static void session_up(void)
 {
+    fk_lr_tcxo = true;
+    fk_lr_dcdc = false;
     lr_up();
     LS_EQ_INT(ls_lora_start(), ESP_OK);
     fk.nframes = 0;
@@ -580,33 +582,38 @@ LS_CASE(a_mode_s_session_programs_exactly_these_frames_and_none_of_them_transmit
 
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 26);
+    LS_EQ_INT(n, 31);
     CMD(0,  0x01, 0x28, 0x00);                               /* SetStandby, RC            */
-    CMD(1,  0x01, 0x12, 0x06, 0x23);                         /* RF switch and IRQ DIOs ... */
-    CMD(2,  0x01, 0x13, 0x06, 0x08);
-    CMD(3,  0x01, 0x12, 0x07, 0x23);
-    CMD(4,  0x01, 0x13, 0x07, 0x00);
-    CMD(5,  0x01, 0x12, 0x08, 0x23);
-    CMD(6,  0x01, 0x13, 0x08, 0x06);
-    CMD(7,  0x01, 0x12, 0x0A, 0x23);
-    CMD(8,  0x01, 0x13, 0x0A, 0x08);
-    CMD(9,  0x01, 0x12, 0x0B, 0x10);
-    CMD(10, 0x01, 0x15, 0x0B, 0x00, 0xE7, 0x00, 0x00);
-    CMD(11, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
-    CMD(12, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);             /* ClearIrq, all             */
-    CMD(13, 0x01, 0x22, 0x2F);                               /* Calibrate: LF_RC HF_RC PLL AAF MU */
-    CMD(14, 0x02, 0x07, 0x0A);                               /* SetPacketType OOK         */
-    CMD(15, 0x01, 0x23, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00); /* CalibFE 1088 MHz cell, LF */
-    CMD(16, 0x02, 0x00, 0x40, 0xF8, 0x14, 0x80);             /* SetRfFrequency 1090 MHz   */
-    CMD(17, 0x02, 0x01, 0x00, 0x07);                         /* SetRxPath LF, boost 7     */
-    CMD(18, 0x02, 0x81, 0x00, 0x1E, 0x84, 0x80, 0x00, 0x00, 0x00);  /* 2 Mbps, no shaping, 3077 kHz, full depth */
-    CMD(19, 0x02, 0x82, 0x00, 0x10, 0x00, 0x00, 0x1C, 0x00); /* fixed, 28 bytes, CRC off, Manchester off */
-    CMD(20, 0x02, 0x84, 0x00, 0x00, 0x00, 0x00, 0x80);       /* no sync word              */
-    CMD(21, 0x02, 0x88, 0x02, 0x85, 0x0F, 0x00, 0x00);       /* detector 0x0285, 16 bits  */
-    CMD(22, 0x02, 0x1A, 0x0D);                               /* gain step 13              */
-    CMD(23, 0x01, 0x1E);                                     /* ClearRxFifo               */
-    CMD(24, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);
-    CMD(25, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);                   /* SetRx, continuous         */
+    CMD(1, 0x01, 0x11);
+    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x01, 0x48);
+    CMD(3, 0x01, 0x21, 0x00);
+    CMD(4, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
+    CMD(5, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);             /* ClearIrq, all             */
+    CMD(6, 0x01, 0x22, 0x6F);                               /* Calibrate: LF_RC HF_RC PLL AAF MU PA_OFF */
+    CMD(7, 0x01, 0x10);
+    CMD(8, 0x01, 0x10);
+    CMD(9,  0x01, 0x12, 0x06, 0x23);                         /* RF switch and IRQ DIOs ... */
+    CMD(10,  0x01, 0x13, 0x06, 0x08);
+    CMD(11,  0x01, 0x12, 0x07, 0x23);
+    CMD(12,  0x01, 0x13, 0x07, 0x00);
+    CMD(13,  0x01, 0x12, 0x08, 0x23);
+    CMD(14,  0x01, 0x13, 0x08, 0x06);
+    CMD(15,  0x01, 0x12, 0x0A, 0x23);
+    CMD(16,  0x01, 0x13, 0x0A, 0x08);
+    CMD(17,  0x01, 0x12, 0x0B, 0x10);
+    CMD(18, 0x01, 0x15, 0x0B, 0x00, 0xE7, 0x00, 0x00);
+    CMD(19, 0x02, 0x07, 0x0A);                               /* SetPacketType OOK         */
+    CMD(20, 0x01, 0x23, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00); /* CalibFE 1088 MHz cell, LF */
+    CMD(21, 0x02, 0x00, 0x40, 0xF8, 0x14, 0x80);             /* SetRfFrequency 1090 MHz   */
+    CMD(22, 0x02, 0x01, 0x00, 0x07);                         /* SetRxPath LF, boost 7     */
+    CMD(23, 0x02, 0x81, 0x00, 0x1E, 0x84, 0x80, 0x00, 0x00, 0x00);  /* 2 Mbps, no shaping, 3077 kHz, full depth */
+    CMD(24, 0x02, 0x82, 0x00, 0x10, 0x00, 0x00, 0x1C, 0x00); /* fixed, 28 bytes, CRC off, Manchester off */
+    CMD(25, 0x02, 0x84, 0x00, 0x00, 0x00, 0x00, 0x80);       /* no sync word              */
+    CMD(26, 0x02, 0x88, 0x02, 0x85, 0x0F, 0x00, 0x00);       /* detector 0x0285, 16 bits  */
+    CMD(27, 0x02, 0x1A, 0x0D);                               /* gain step 13              */
+    CMD(28, 0x01, 0x1E);                                     /* ClearRxFifo               */
+    CMD(29, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);
+    CMD(30, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);                   /* SetRx, continuous         */
 
     /* The part ends up holding what the datasheet says it should. */
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
@@ -615,7 +622,7 @@ LS_CASE(a_mode_s_session_programs_exactly_these_frames_and_none_of_them_transmit
     LS_EQ_UINT(fk.last_freq_hz, 1090000000u);
     LS_EQ_UINT(fk.last_path, 0);
     LS_EQ_UINT(fk.last_boost, 7);
-    LS_EQ_UINT(fk.calibrate_blocks, 0x2F);
+    LS_EQ_UINT(fk.calibrate_blocks, 0x6F);
     LS_EQ_UINT(fk.fallback, 1);
     LS_CHECK(fk.ook_mod_set && fk.ook_pkt_set && fk.ook_sync_set && fk.ook_det_set);
     LS_EQ_INT(fk.rx_arms, 1);
@@ -641,8 +648,8 @@ LS_CASE(the_session_follows_the_requested_gain_step_and_agc_is_step_zero)
     LS_EQ_INT(ls_lora_modes_begin(1090000000u, 0), ESP_OK);
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 26);
-    CMD(22, 0x02, 0x1A, 0x00);
+    LS_EQ_INT(n, 31);
+    CMD(27, 0x02, 0x1A, 0x00);
 
     /* A new step is written in standby and Rx armed again. */
     fk.nframes = 0;
@@ -914,7 +921,7 @@ LS_CASE(a_chip_error_is_read_and_cleared_without_stopping_the_session)
     session_up();
     LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
     fk.irq = LR20XX_IRQ_ERROR;
-    fk.errors = 0x0200;                                    /* RxFreqNoCalErr, bit 9 */
+    fk.errors = 0x0004;                                    /* PLL_LOCK: noted, cleared, not acted on */
     fk.nframes = 0;
 
     uint8_t buf[28]; float rssi;
@@ -947,10 +954,10 @@ LS_CASE(a_chip_reset_in_the_middle_of_a_session_reprograms_the_whole_session)
     LS_EQ_INT(ls_lora_modes_poll(buf, sizeof(buf), &rssi), 0);
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 26);
+    LS_EQ_INT(n, 31);
     CMD(0, 0x01, 0x28, 0x00);
-    CMD(22, 0x02, 0x1A, 0x09);                             /* the gain it had */
-    CMD(25, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);
+    CMD(27, 0x02, 0x1A, 0x09);                             /* the gain it had */
+    CMD(30, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
     LS_CHECK(fk.ook_det_set);
     LS_CHECK(fk.dio_rfsw_set[8]);
@@ -1174,7 +1181,7 @@ LS_CASE(boost_is_set_in_standby_with_the_receive_path_and_rx_is_armed_again)
     ls_lora_modes_tuning_t t;
     LS_EQ_INT(ls_lora_modes_tuning(&t), ESP_OK);
     LS_EQ_INT(t.boost, 3);
-    LS_EQ_UINT(fk.calibrate_blocks, 0x2F);                 /* no recalibration for a boost change */
+    LS_EQ_UINT(fk.calibrate_blocks, 0x6F);                 /* no recalibration for a boost change */
 
     fk.nframes = 0;
     LS_EQ_INT(ls_lora_modes_set_boost(3), ESP_OK);         /* already in force */
@@ -1424,45 +1431,51 @@ static const ls_fsk_cfg_t FSK_868 = {
 LS_CASE(a_lora_configure_at_22_dbm_programs_exactly_these_frames)
 {
     session_up();
+    fk_lr_dcdc = true;
     /* 910.525 MHz, SF7, 62.5 kHz, CR 4/5, 22 dBm, 32 symbols, 0x12, CRC on. */
     ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
 
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 32);
+    LS_EQ_INT(n, 37);
     CMD(0,  0x01, 0x28, 0x00);                               /* SetStandby, RC            */
-    CMD(1,  0x01, 0x12, 0x06, 0x23);
-    CMD(2,  0x01, 0x13, 0x06, 0x08);
-    CMD(3,  0x01, 0x12, 0x07, 0x23);
-    CMD(4,  0x01, 0x13, 0x07, 0x00);                         /* DIO7: nothing in Tx HF    */
-    CMD(5,  0x01, 0x12, 0x08, 0x23);
-    CMD(6,  0x01, 0x13, 0x08, 0x06);                         /* DIO8: Rx LF and Tx LF     */
-    CMD(7,  0x01, 0x12, 0x0A, 0x23);
-    CMD(8,  0x01, 0x13, 0x0A, 0x08);
-    CMD(9,  0x01, 0x12, 0x0B, 0x10);
-    CMD(10, 0x01, 0x15, 0x0B, 0x00, 0xEF, 0x02, 0x00);       /* + TxDone, LoRa header error */
-    CMD(11, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
-    CMD(12, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);
-    CMD(13, 0x01, 0x22, 0x2F);                               /* Calibrate, no PA_OFF      */
-    CMD(14, 0x02, 0x07, 0x00);                               /* SetPacketType LoRa        */
-    CMD(15, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0xF0, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00);
-    CMD(16, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00);
-    CMD(17, 0x01, 0x04, 0x80, 0x00, 0x4C, 0x00, 0x2C, 0xCC, 0xCC);   /* DC-DC reset: 2.8 MHz */
-    CMD(18, 0x01, 0x23, 0x00, 0xE3, 0x00, 0x00, 0x00, 0x00); /* CalibFE 908 MHz cell, LF  */
-    CMD(19, 0x02, 0x00, 0x36, 0x45, 0x82, 0x48);             /* SetRfFrequency 910.525    */
-    CMD(20, 0x02, 0x01, 0x00, 0x00);                         /* SetRxPath LF, boost 0     */
-    CMD(21, 0x02, 0x20, 0x73, 0x10);                         /* SF7 | BW 0x03; CR 1, LDRO off */
-    CMD(22, 0x01, 0x06, 0xF4, 0x02, 0x00, 0x01);             /* DC-DC: read ADC control   */
-    CMD(23, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0xF0, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00);
-    CMD(24, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00);
-    CMD(25, 0x01, 0x04, 0x80, 0x00, 0x4C, 0x00, 0x2C, 0xCC, 0xCC);
-    CMD(26, 0x02, 0x00, 0x36, 0x45, 0x82, 0x48);             /* and the frequency again   */
-    CMD(27, 0x02, 0x21, 0x00, 0x20, 0xFF, 0x02);             /* 32 symbols, 255, explicit, CRC, IQ standard */
-    CMD(28, 0x02, 0x23, 0x12);                               /* the one-byte sync word    */
-    CMD(29, 0x02, 0x0F, 0x00);                               /* SelPa: the LF PA          */
-    CMD(30, 0x02, 0x02, 0x00, 0x67, 0x10);                   /* PaSel LF; duty 6, slices 7; HF unused */
-    CMD(31, 0x02, 0x03, 0x23, 0x05);                         /* power 35, 48 us ramp      */
+    CMD(1, 0x01, 0x11);
+    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x01, 0x48);
+    CMD(3, 0x01, 0x21, 0x01);
+    CMD(4, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
+    CMD(5, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);
+    CMD(6, 0x01, 0x22, 0x6F);                               /* Calibrate, PA_OFF too    */
+    CMD(7, 0x01, 0x10);
+    CMD(8, 0x01, 0x10);
+    CMD(9,  0x01, 0x12, 0x06, 0x23);
+    CMD(10,  0x01, 0x13, 0x06, 0x08);
+    CMD(11,  0x01, 0x12, 0x07, 0x23);
+    CMD(12,  0x01, 0x13, 0x07, 0x00);                         /* DIO7: nothing in Tx HF    */
+    CMD(13,  0x01, 0x12, 0x08, 0x23);
+    CMD(14,  0x01, 0x13, 0x08, 0x06);                         /* DIO8: Rx LF and Tx LF     */
+    CMD(15,  0x01, 0x12, 0x0A, 0x23);
+    CMD(16,  0x01, 0x13, 0x0A, 0x08);
+    CMD(17,  0x01, 0x12, 0x0B, 0x10);
+    CMD(18, 0x01, 0x15, 0x0B, 0x00, 0xEF, 0x02, 0x00);       /* + TxDone, LoRa header error */
+    CMD(19, 0x02, 0x07, 0x00);                               /* SetPacketType LoRa        */
+    CMD(20, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0xF0, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00);
+    CMD(21, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00);
+    CMD(22, 0x01, 0x04, 0x80, 0x00, 0x4C, 0x00, 0x2C, 0xCC, 0xCC);   /* DC-DC reset: 2.8 MHz */
+    CMD(23, 0x01, 0x23, 0x00, 0xE3, 0x00, 0x00, 0x00, 0x00); /* CalibFE 908 MHz cell, LF */
+    CMD(24, 0x02, 0x00, 0x36, 0x45, 0x82, 0x48);             /* SetRfFrequency 910.525    */
+    CMD(25, 0x02, 0x01, 0x00, 0x00);                         /* SetRxPath LF, boost 0     */
+    CMD(26, 0x02, 0x20, 0x73, 0x10);                         /* SF7 | BW 0x03; CR 1, LDRO off */
+    CMD(27, 0x01, 0x06, 0xF4, 0x02, 0x00, 0x01);             /* DC-DC: read ADC control   */
+    CMD(28, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0xF0, 0x00, 0x00, 0x00, 0xF0, 0x00, 0x00);
+    CMD(29, 0x01, 0x05, 0xF2, 0x00, 0x24, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x00);
+    CMD(30, 0x01, 0x04, 0x80, 0x00, 0x4C, 0x00, 0x2C, 0xCC, 0xCC);
+    CMD(31, 0x02, 0x00, 0x36, 0x45, 0x82, 0x48);             /* and the frequency again   */
+    CMD(32, 0x02, 0x21, 0x00, 0x20, 0xFF, 0x02);             /* 32 symbols, 255, explicit, CRC, IQ standard */
+    CMD(33, 0x02, 0x23, 0x12);                               /* the one-byte sync word    */
+    CMD(34, 0x02, 0x0F, 0x00);                               /* SelPa: the LF PA          */
+    CMD(35, 0x02, 0x02, 0x00, 0x67, 0x10);                   /* PaSel LF; duty 6, slices 7; HF unused */
+    CMD(36, 0x02, 0x03, 0x23, 0x05);                         /* power 35, 48 us ramp      */
 
     LS_EQ_UINT(fk.mode, LR20XX_MODE_STBY_RC);
     LS_EQ_UINT(fk.packet_type, 0x00);
@@ -1815,6 +1828,9 @@ LS_CASE(nothing_transmits_at_or_above_1_ghz_and_the_hf_pa_is_never_touched)
 LS_CASE(the_dcdc_workaround_takes_the_slower_settings_for_the_narrow_decimations)
 {
     session_up();
+    fk_lr_dcdc = true;
+    LS_EQ_INT(lr20xx_initialize(), ESP_OK);
+    fk.nframes = 0;
     LS_EQ_INT(lr20xx_set_standby(false), ESP_OK);
     LS_EQ_INT(lr20xx_set_rf_frequency(915000000u), ESP_OK);
 
@@ -2198,6 +2214,7 @@ LS_CASE(a_sweep_reaches_1100_mhz_on_the_lf_input)
 LS_CASE(a_sweep_of_the_hf_input_receives_there_and_gives_lora_back_on_lf)
 {
     lora_up(NULL);
+    fk_lr_dcdc = true;
     LS_EQ_INT(ls_lora_scan_begin(2400000000u, 2483500000u), ESP_OK);
     int boost = -1;
     LS_EQ_INT(last_rx_path(&boost), 1);                    /* SetRxPath HF        */
@@ -2414,22 +2431,22 @@ LS_CASE(an_ook_session_programs_the_rate_filter_pattern_and_frame_it_is_given)
 
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 26);                        /* the Mode S sequence, frame for frame */
+    LS_EQ_INT(n, 31);                        /* the Mode S sequence, frame for frame */
     CMD(0,  0x01, 0x28, 0x00);                                /* SetStandby, RC         */
-    CMD(14, 0x02, 0x07, 0x0A);                                /* SetPacketType OOK      */
-    CMD(16, 0x02, 0x00, 0x12, 0xC6, 0x84, 0xC0);              /* SetRfFrequency 315 MHz */
-    CMD(17, 0x02, 0x01, 0x00, 0x00);                          /* LF, the path's default boost */
+    CMD(19, 0x02, 0x07, 0x0A);                                /* SetPacketType OOK      */
+    CMD(21, 0x02, 0x00, 0x12, 0xC6, 0x84, 0xC0);              /* SetRfFrequency 315 MHz */
+    CMD(22, 0x02, 0x01, 0x00, 0x00);                          /* LF, the path's default boost */
     {
         const lr20xx_rx_bw_t bw = lr20xx_fsk_rx_bw(200000);
         LS_CHECK(bw.hz >= 200000);
         const uint8_t mod[] = { 0x02, 0x81, 0x00, 0x00, 0x9C, 0x40, 0x00, bw.index, 0x00 };  /* 40000 bps */
-        LS_CHECK(fk_frame_is(ix[18], mod, sizeof(mod)));
+        LS_CHECK(fk_frame_is(ix[23], mod, sizeof(mod)));
     }
-    CMD(19, 0x02, 0x82, 0x00, 0x10, 0x00, 0x00, 0xFC, 0x00);  /* fixed, 252 bytes      */
-    CMD(20, 0x02, 0x84, 0x00, 0x00, 0x00, 0x00, 0x80);        /* no sync word           */
-    CMD(21, 0x02, 0x88, 0x00, 0x0E, 0x03, 0x00, 0x00);        /* pattern 0x000E, 4 bits */
-    CMD(22, 0x02, 0x1A, 0x00);                                /* AGC                    */
-    CMD(25, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);                    /* SetRx, continuous      */
+    CMD(24, 0x02, 0x82, 0x00, 0x10, 0x00, 0x00, 0xFC, 0x00);  /* fixed, 252 bytes      */
+    CMD(25, 0x02, 0x84, 0x00, 0x00, 0x00, 0x00, 0x80);        /* no sync word           */
+    CMD(26, 0x02, 0x88, 0x00, 0x0E, 0x03, 0x00, 0x00);        /* pattern 0x000E, 4 bits */
+    CMD(27, 0x02, 0x1A, 0x00);                                /* AGC                    */
+    CMD(30, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);                    /* SetRx, continuous      */
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
     LS_EQ_UINT(fk.last_freq_hz, 315000000u);
     LS_EQ_INT(fk.bad_args, 0);
@@ -2495,6 +2512,104 @@ LS_CASE(an_ook_session_refuses_what_the_engine_cannot_do_and_sends_nothing)
     LS_EQ_INT(ls_lora_ook_begin(&OOK_315), ESP_ERR_INVALID_STATE);
     LS_EQ_INT(ls_lora_ook_end(), ESP_OK);                    /* not its session to end */
     LS_CHECK(ls_lora_modes_active());
+}
+
+static const ls_ook_cfg_t OOK_ERT = {
+    .freq_hz = 912600000u, .bitrate = 32768, .bandwidth_hz = 2222222, .pattern = 0x2999,
+    .pattern_bits = 14, .repeats = 0, .frame_bytes = 252, .gain_step = 13, .boost = -1,
+};
+
+LS_CASE(calib_fe_names_the_four_mhz_cell_that_holds_the_frequency)
+{
+    /* Measured: calibrating the nearer cell instead cost 18 dB at 910.525 MHz. */
+    LS_EQ_UINT(lr20xx_calib_fe_word(315000000u, LR20XX_PATH_LF), 78);     /* 312-316 */
+    LS_EQ_UINT(lr20xx_calib_fe_word(433920000u, LR20XX_PATH_LF), 108);    /* 432-436 */
+    LS_EQ_UINT(lr20xx_calib_fe_word(910525000u, LR20XX_PATH_LF), 227);    /* 908-912 */
+    LS_EQ_UINT(lr20xx_calib_fe_word(912600000u, LR20XX_PATH_LF), 228);    /* 912-916 */
+    LS_EQ_UINT(lr20xx_calib_fe_word(915000000u, LR20XX_PATH_LF), 228);
+    LS_EQ_UINT(lr20xx_calib_fe_word(900000000u, LR20XX_PATH_HF), 0x80E1);
+}
+
+LS_CASE(a_jump_from_ert_to_315_calibrates_the_front_end_at_the_new_band_and_ends_clean)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_ook_begin(&OOK_ERT), ESP_OK);
+    LS_EQ_INT(ls_lora_ook_end(), ESP_OK);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_ook_begin(&OOK_315), ESP_OK);
+
+    int ix[80];
+    const int n = cmds(ix, 80);
+    LS_EQ_INT(n, 31);
+    CMD(0,  0x01, 0x28, 0x00);                                /* SetStandby                     */
+    CMD(19, 0x02, 0x07, 0x0A);                                /* SetPacketType OOK              */
+    CMD(20, 0x01, 0x23, 0x00, 0x4E, 0x00, 0x00, 0x00, 0x00);  /* CalibFE, the 312 MHz cell holding 315 */
+    CMD(21, 0x02, 0x00, 0x12, 0xC6, 0x84, 0xC0);              /* SetRfFrequency 315 MHz         */
+    CMD(30, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);                    /* SetRx                          */
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.bad_args, 0);
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(ls_lora_ook_end(), ESP_OK);
+}
+
+LS_CASE(a_no_front_end_calibration_error_is_recalibrated_and_rx_armed_again)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_ook_begin(&OOK_315), ESP_OK);
+    fk.irq = LR20XX_IRQ_ERROR;
+    fk.errors = 0x0200;                                    /* RXFREQ_NO_FE_CAL, bit 9 */
+    fk.nframes = 0;
+
+    uint8_t buf[252]; float rssi;
+    LS_EQ_INT(ls_lora_ook_poll(buf, sizeof(buf), &rssi), 0);
+    int ix[40];
+    const int n = cmds(ix, 40);
+    LS_CHECK(n >= 9);
+    CMD(0, 0x01, 0x10);                                    /* GetErrors                */
+    CMD(1, 0x01, 0x11);                                    /* ClearErrors              */
+    CMD(2, 0x01, 0x28, 0x00);                              /* SetStandby               */
+    CMD(3, 0x01, 0x23, 0x00, 0x4E, 0x00, 0x00, 0x00, 0x00);  /* CalibFE, the 312 cell  */
+    CMD(4, 0x02, 0x00, 0x12, 0xC6, 0x84, 0xC0);            /* SetRfFrequency           */
+    CMD(5, 0x02, 0x01, 0x00, 0x00);                        /* SetRxPath                */
+    CMD(n - 1, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);              /* SetRx again              */
+    LS_EQ_UINT(fk.errors, 0);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    lr20xx_modes_stats_t st; lr20xx_modes_stats(&st);
+    LS_EQ_UINT(st.chip_errors, 1);
+    LS_EQ_UINT(st.rearms, 1);
+    LS_CHECK(ls_lora_ook_active());
+    LS_EQ_INT(unknown_frames(), 0);
+    LS_EQ_INT(ls_lora_ook_end(), ESP_OK);
+}
+
+LS_CASE(a_front_end_error_that_stays_is_retried_twice_then_counted_without_more_recalibrating)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_ook_begin(&OOK_315), ESP_OK);
+    fk.nframes = 0;
+    uint8_t buf[252]; float rssi;
+    for (int k = 0; k < 6; k++) {
+        fk.irq = LR20XX_IRQ_ERROR;
+        fk.errors = 0x0200;
+        LS_EQ_INT(ls_lora_ook_poll(buf, sizeof(buf), &rssi), 0);
+    }
+    LS_EQ_INT(count_frames_with(0x01, 0x23), 2);           /* two CalibFE, not six */
+    int ix[160];
+    const int n = cmds(ix, 160);
+    int seen = 0;
+    for (int i = 0; i < n; i++) {
+        const uint8_t one[] = { 0x01, 0x23, 0x00, 0x4E, 0x00, 0x00, 0x00, 0x00 };
+        const uint8_t three[] = { 0x01, 0x23, 0x00, 0x4E, 0x00, 0x4F, 0x00, 0x4D };
+        if (seen == 0 && fk_frame_is(ix[i], one, sizeof(one))) seen = 1;
+        else if (seen == 1 && fk_frame_is(ix[i], three, sizeof(three))) seen = 2;
+    }
+    LS_EQ_INT(seen, 2);                                    /* the cell, then it with both neighbours */
+    lr20xx_modes_stats_t st; lr20xx_modes_stats(&st);
+    LS_EQ_UINT(st.rearms, 2);
+    LS_EQ_UINT(st.chip_errors, 6);
+    LS_CHECK(ls_lora_ook_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(ls_lora_ook_end(), ESP_OK);
 }
 
 LS_CASE(an_ook_session_over_lora_gives_it_back_listening)
@@ -2900,7 +3015,7 @@ LS_CASE(fsk_gain_step_is_sent_again_after_the_part_restarts_and_the_agc_after_a_
     LS_EQ_INT(count_frames_with(0x02, 0x1A), 1);
     LS_EQ_UINT(fk.agc, 13);
     LS_EQ_INT(count_frames_with(0x01, 0x22), 1);
-    LS_EQ_UINT(fk.calibrate_blocks, 0x2F);
+    LS_EQ_UINT(fk.calibrate_blocks, 0x6F);
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
     LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
 
@@ -2965,7 +3080,7 @@ LS_CASE(an_fsk_session_far_from_the_mesh_calibrates_once_in_its_setup)
     LS_CHECK(tune >= 0);
     LS_EQ_INT(count_frames_with(0x01, 0x22), 1);
     const int first = frame_from(0x01, 0x22, 0);
-    LS_EQ_UINT(fk.frames[first].b[2], 0x2F);
+    LS_EQ_UINT(fk.frames[first].b[2], 0x6F);
     LS_CHECK(in_order(first, tune));
     LS_EQ_UINT(fk.last_freq_hz, 154785000u);
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);

@@ -1103,10 +1103,12 @@ class TaskWithCapsTests(unittest.TestCase):
                 if body is None:
                     continue
                 found.add(name)
-                # A plain delete is right only beside a WithCaps one, under the
-                # same configuration switch that chose how it was created.
+                # A plain delete is right only beside a WithCaps exit (its own
+                # delete or the reaper's), under the same configuration switch
+                # that chose how it was created.
                 if (re.search(r'\bvTaskDelete\s*\(', body)
-                        and 'vTaskDeleteWithCaps' not in body):
+                        and 'vTaskDeleteWithCaps' not in body
+                        and 'ls_task_retire_self' not in body):
                     bad.append('%s: %s' % (path, name))
         return names, found, bad
 
@@ -1118,6 +1120,10 @@ class TaskWithCapsTests(unittest.TestCase):
                          '#else\n vTaskDelete(NULL);\n#endif\n}\n'
                          'void go(void) { xTaskCreateWithCaps(w, "w", 1, 0, 1, 0, 0); }\n'}
         self.assertEqual(self._offenders(paired)[2], [])
+        reaped = {'z.c': 'static void w(void *a) {\n#if C\n ls_task_retire_self();\n'
+                         '#else\n vTaskDelete(NULL);\n#endif\n}\n'
+                         'void go(void) { xTaskCreateWithCaps(w, "w", 1, 0, 1, 0, 0); }\n'}
+        self.assertEqual(self._offenders(reaped)[2], [])
 
     def test_with_caps_tasks_free_themselves_with_caps(self):
         sources = {}

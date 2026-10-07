@@ -251,27 +251,31 @@ static void save_map_picture(void)
     if (ls_map_render_busy()) { say("Map still drawing; SAVE again in a moment"); return; }
     int w = 0, h = 0;
     const uint16_t *px = ls_map_render(&w, &h);
-    char leaf[LS_NOTE_STEM + 16] = "";
-    if (s_new) save_now();          /* a picture needs the note's name */
-    if (px && w > 0 && h > 0 && s_info.stem[0]) {
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    char line[200];
+    if (px && w > 0 && h > 0) {
+        /* The picture is named after the note, so a new note goes to the
+           card first. Its seed (the heading and the time) is not an edit and
+           save_now() skips a note with none, so a picture taken before
+           anything was typed used to be dropped for want of a name. */
+        if (s_new) { s_tb.dirty = true; save_now(); }
+        if (!s_info.stem[0]) { say("The card is busy; SAVE again for the picture"); return; }
+        char leaf[LS_NOTE_STEM + 16] = "";
         ls_notes_picture_leaf(s_info.stem, leaf, sizeof(leaf));
         char file[LS_NOTE_STEM + 24];
         snprintf(file, sizeof(file), "%s.png", leaf);
-        double lat, lon; ls_map_get_center(&lat, &lon);
-        char line[200];
-        if (ls_notes_save_png(leaf, px, w, h)) {
-            ls_note_fmt_map(line, sizeof(line), lat, lon, ls_map_zoom(), file);
-            s_view = V_EDIT; insert_line(line); say("Map picture saved beside the note");
-            return;
-        }
-        say("A picture is still being written; try again");
+        if (!ls_notes_save_png(leaf, px, w, h)) { say("A picture is still being written; try again"); return; }
+        ls_note_fmt_map(line, sizeof(line), lat, lon, ls_map_zoom(), file);
+        s_view = V_EDIT; insert_line(line); say("Map picture saved beside the note");
         return;
     }
-    double lat, lon; ls_map_get_center(&lat, &lon);
-    char line[200];
+    /* No frame to save: keep the place, and say why from the map itself. */
     ls_note_fmt_map(line, sizeof(line), lat, lon, ls_map_zoom(), NULL);
     s_view = V_EDIT; insert_line(line);
-    say("No map archive on the card: position saved without a picture");
+    const char *why = ls_map_status();
+    char msg[96];
+    snprintf(msg, sizeof(msg), "No picture (%s): position saved", why ? why : "no map frame");
+    say(msg);
 }
 
 /* -------------------------------------------------------------- drawing -- */
@@ -499,7 +503,11 @@ static void draw_map(tui_surface *sf, tui_rect a)
     if (ls_map_preview_point(lat, lon, box, &px, &py))
         tui_put_char(sf, box, px, py, '+', TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     char line[100];
-    snprintf(line, sizeof(line), "%.5f, %.5f  z%d  %s", lat, lon, ls_map_zoom(), ls_map_render_busy() ? "drawing..." : ls_map_status());
+    /* ls_map_status() is NULL when the map is fine; a NULL under %s took the
+       board down on the first finished frame. */
+    const char *why = ls_map_status();
+    snprintf(line, sizeof(line), "%.5f, %.5f  z%d  %s", lat, lon, ls_map_zoom(),
+             ls_map_render_busy() ? "drawing..." : why ? why : "ready");
     ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : line, LS_ATTR_DIM);
 }
 

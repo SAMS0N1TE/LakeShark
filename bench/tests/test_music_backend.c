@@ -301,3 +301,17 @@ LS_CASE(mono_files_analyse_at_their_true_rate){
     LS_EQ_INT(ls_music_peak(0),ls_music_peak(1));
     reset();
 }
+
+LS_CASE(archive_path_play_preserves_volume_and_mute_and_closes_failed_file)
+{
+    reset(); volume = 23; muted = true;
+    LS_CHECK(ls_music_open());
+    LS_CHECK(ls_music_play_path("/sdcard/lakeshark/calls/20261007/120000_42.wav"));
+    LS_EQ_INT(volume, 23); LS_CHECK(muted);
+    play_result = ESP_FAIL;
+    int before = closed;
+    LS_CHECK(!ls_music_play_path("/sdcard/lakeshark/calls/20261007/120001_43.wav"));
+    LS_EQ_INT(closed, before + 1);
+    LS_EQ_INT(volume, 23); LS_CHECK(muted);
+    reset();
+}

@@ -3,6 +3,7 @@
    else: upstream/ is unmodified MeshCore and must stay that way, so every
    accommodation for this hardware lives here. */
 #include "ls_mesh.h"
+#include "ls_radio_holders.h"
 
 #include <string.h>
 #include <new>
@@ -13,6 +14,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
@@ -126,6 +128,8 @@ static volatile bool  s_radio_held;
 /* Who holds it: s_radio_hold is either. A background holder (P25 or ADS-B
    left listening on the LoRa chip) gives way to the other kind. */
 static volatile bool  s_hold_fg, s_hold_bg;
+static ls_radio_holders_t s_fg_holders, s_bg_holders;
+static portMUX_TYPE s_hold_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define SIGHTLOG_PATH "/sdcard/lakeshark/sightings.log"
 #define SIGHT_MOVE_M  50.0f
@@ -252,15 +256,20 @@ static void note_event(ls_mesh_ev_kind_t kind, const char *id,
 }
 
 static void load_settings(void);
+static esp_err_t save_setting_blob(const char *key, const void *val, size_t n);
 
-static int note_msg(const char *text, bool mine)
+/* `peer` is the other end of a DM, NULL for a channel message on slot
+   `chan`. Both are set before the sequence moves, so a screen that reads the
+   message at once never sees a private one as public. */
+static int note_msg(const char *text, bool mine, uint8_t chan, const char *peer)
 {
     const int slot = s_msg_head;
     ls_mesh_msg_t *m = &s_msgs[slot];
-    /* The slot is reused round the ring: a DM set these, a channel message
-       must not inherit them. */
-    m->direct = false;
-    m->peer[0] = 0;
+    /* The slot is reused round the ring: every field is written. */
+    m->direct = peer != NULL;
+    if (peer) { memcpy(m->peer, peer, 16); m->peer[16] = 0; }
+    else      m->peer[0] = 0;
+    m->chan   = peer ? 0 : chan;
     m->t      = mesh_now();
     m->mine   = mine;
     m->state  = mine ? LS_MSG_SENDING : LS_MSG_IN;
@@ -457,6 +466,46 @@ public:
 
 /* ---- mesh::Radio ------------------------------------------------------- */
 
+/* Inspector state is shared with the TUI; packets remain owned by the Mesh task. */
+static portMUX_TYPE s_inspect_lock = portMUX_INITIALIZER_UNLOCKED;
+EXT_RAM_BSS_ATTR static ls_inspect_tracker_t s_inspect;
+static bool s_inspect_initialized;
+static void inspect_init_locked()
+{
+    if (!s_inspect_initialized) { ls_inspect_init(&s_inspect); s_inspect_initialized = true; }
+}
+static bool s_inspect_queued, s_inspect_packet_busy;
+static mesh::Packet *s_inspect_tx_packet;
+static uint8_t s_inspect_route[72], s_inspect_count, s_inspect_width;
+static bool s_inspect_route_known;
+static uint32_t inspect_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
+EXT_RAM_BSS_ATTR static struct { char id[17]; uint8_t path[72], count, width; } s_inspect_routes[LS_MESH_MAX_PEERS];
+/* Peers allowed to read this node's telemetry: empty, so nobody, until the
+   user adds one. Guarded by s_inspect_lock; stored in NVS. */
+static ls_inspect_allow_t s_telem_allow;
+/* The typed login password, held only until the login is built. */
+static char s_login_pw[LS_INSPECT_PASSWORD_MAX + 1];
+
+static void inspect_route_save(const char *id, const uint8_t *path, uint8_t encoded, bool reverse)
+{
+    unsigned count = encoded & 63, width = (encoded >> 6) + 1;
+    if (count > 24 || width > 3 || count * width > MAX_PATH_SIZE) return;
+    portENTER_CRITICAL(&s_inspect_lock);
+    int slot = -1;
+    for (int i = 0; i < LS_MESH_MAX_PEERS; i++) {
+        if (!strcmp(s_inspect_routes[i].id, id)) { slot = i; break; }
+        if (slot < 0 && !s_inspect_routes[i].id[0]) slot = i;
+    }
+    if (slot < 0) slot = id[0] % LS_MESH_MAX_PEERS;
+    if (slot >= 0) {
+        auto &r = s_inspect_routes[slot];
+        memcpy(r.id, id, 17); r.count = count; r.width = width;
+        for (unsigned i = 0; i < count; i++)
+            memcpy(r.path + i * width, path + (reverse ? count - i - 1 : i) * width, width);
+    }
+    portEXIT_CRITICAL(&s_inspect_lock);
+}
+
 class LsRadio : public mesh::Radio {
 public:
     int recvRaw(uint8_t *bytes, int sz) override
@@ -489,7 +538,31 @@ public:
     bool startSendRaw(const uint8_t *bytes, int len) override
     {
         if (!_tx_enabled) return false;
+        bool probe = false;
+        if (s_inspect_tx_packet && len >= 2) {
+            int path_offset = ((bytes[0] & PH_ROUTE_MASK) == ROUTE_TYPE_TRANSPORT_FLOOD ||
+                (bytes[0] & PH_ROUTE_MASK) == ROUTE_TYPE_TRANSPORT_DIRECT) ? 5 : 1;
+            if (path_offset < len) {
+                int payload_offset = path_offset + 1 + (bytes[path_offset] & 63) * ((bytes[path_offset] >> 6) + 1);
+                probe = payload_offset + s_inspect_tx_packet->payload_len == len &&
+                    ((bytes[0] >> PH_TYPE_SHIFT) & PH_TYPE_MASK) == s_inspect_tx_packet->getPayloadType() &&
+                    !memcmp(bytes + payload_offset, s_inspect_tx_packet->payload, s_inspect_tx_packet->payload_len);
+            }
+        }
+        if (probe) {
+            portENTER_CRITICAL(&s_inspect_lock);
+            ls_inspect_tick(&s_inspect, inspect_ms());
+            bool waiting = s_inspect.result.state == LS_INSPECT_WAITING;
+            portEXIT_CRITICAL(&s_inspect_lock);
+            if (!waiting) return false;
+        }
+        /* Dispatcher applies its airtime budget; ls_lora_send applies the antenna gate. */
         if (ls_lora_send(bytes, (size_t)len) != ESP_OK) return false;
+        if (probe) {
+            portENTER_CRITICAL(&s_inspect_lock);
+            ls_inspect_transmitted(&s_inspect, inspect_ms());
+            portEXIT_CRITICAL(&s_inspect_lock);
+        }
         _tx++;
         note_event(LS_MESH_EV_TX, NULL, 0, 0, (uint16_t)len);
         return true;
@@ -572,6 +645,8 @@ public:
         float snr  = packet ? packet->getSNR() : 0.0f;
         float rssi = s_radio ? s_radio->getLastRSSI() : 0.0f;
         note_peer(id, hex, &adv, rssi, snr);
+        if (packet && packet->isRouteFlood())
+            inspect_route_save(hex, packet->path, packet->path_len, true);
         note_event(LS_MESH_EV_ADVERT, hex, rssi, snr, 0);
         ESP_LOGI(TAG, "advert from %s%s%s t=%lu", hex,
                  adv.isValid() && adv.hasName() ? " " : "",
@@ -593,6 +668,13 @@ public:
 
     mesh::DispatcherAction onRecvPacket(mesh::Packet *pkt) override
     {
+        if (pkt && pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+            if (pkt->payload_len < 9 || pkt->path_len > LS_INSPECT_HOPS) return ACTION_RELEASE;
+            unsigned width = 1u << (pkt->payload[8] & 3);
+            unsigned bytes = pkt->payload_len - 9;
+            if (!bytes || bytes % width || bytes / width > LS_INSPECT_HOPS ||
+                pkt->path_len > bytes / width) return ACTION_RELEASE;
+        }
         check_own_echo(pkt);
         /* Say what arrived, before the stack decides what to do with
            it. A frame that passes CRC and then vanishes is the hardest thing
@@ -644,10 +726,63 @@ public:
         self_id.calcSharedSecret(dest_secret, s_peers[s_match[peer_idx]].pub_key);
     }
 
+    /* TELEM and STATUS requests from peers the user allowed. Anyone else
+       gets silence, as does everyone while transmit is disarmed. */
+    void answer_request(mesh::Packet *packet, int pi, const uint8_t *secret,
+                        const uint8_t *data, size_t len)
+    {
+        if (!ls_mesh_tx_enabled() || s_radio_hold || s_radio_held || ls_lora_fsk_active()) return;
+        ls_inspect_self_t me = {};
+        me.percent = -1;
+        ls_gauge_t g;
+        if (ls_gauge_get(&g) && g.millivolts) { me.millivolts = g.millivolts; me.percent = (int8_t)g.percent; }
+        me.uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        me.rx_packets = s_radio->rx(); me.tx_packets = s_radio->tx();
+        me.airtime_s = (uint32_t)(getTotalAirTime() / 1000);
+        me.noise_dbm = (int16_t)s_radio->getNoiseFloor();
+        /* Position only when the user chose to share it in adverts. */
+        if (s_radio_cfg.share_loc == 1) {
+            ls_gps_state_t gs;
+            ls_gps_get(&gs);
+            if (gs.fix) { me.has_loc = true; me.lat_e6 = (int32_t)(gs.lat_deg * 1e6); me.lon_e6 = (int32_t)(gs.lon_deg * 1e6); }
+        } else if (s_radio_cfg.share_loc == 2) {
+            me.has_loc = true; me.lat_e6 = s_radio_cfg.lat_e6; me.lon_e6 = s_radio_cfg.lon_e6;
+        }
+        touch_peer(pi, s_radio->getLastRSSI(), packet->getSNR());
+        uint8_t reply[96];
+        portENTER_CRITICAL(&s_inspect_lock);
+        size_t n = ls_inspect_answer(&s_telem_allow, inspect_ms(), s_peers[pi].id, data, len, &me,
+            s_radio->getLastRSSI(), packet->getSNR(), reply, sizeof(reply));
+        portEXIT_CRITICAL(&s_inspect_lock);
+        if (!n) return;
+        mesh::Identity dest(s_peers[pi].pub_key);
+        mesh::Packet *out;
+        if (packet->isRouteFlood()) {
+            /* The path back rides with the answer, as a repeater does it. */
+            out = createPathReturn(dest, secret, packet->path, packet->path_len,
+                PAYLOAD_TYPE_RESPONSE, reply, n);
+            if (out) sendFlood(out, 500, packet->getPathHashSize());
+        } else {
+            out = createDatagram(PAYLOAD_TYPE_RESPONSE, dest, secret, reply, n);
+            if (out) sendFlood(out, 500);
+        }
+        ESP_LOGI(TAG, "answered %s request from %s", data[4] == 1 ? "status" : "telemetry", s_peers[pi].id);
+    }
+
     void onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx,
                         const uint8_t *secret, uint8_t *data, size_t len) override
     {
-        (void)secret;
+        if (type == PAYLOAD_TYPE_REQ && sender_idx >= 0 && sender_idx < s_match_n) {
+            answer_request(packet, s_match[sender_idx], secret, data, len);
+            return;
+        }
+        if (type == PAYLOAD_TYPE_RESPONSE && sender_idx >= 0 && sender_idx < s_match_n) {
+            portENTER_CRITICAL(&s_inspect_lock);
+            ls_inspect_telemetry(&s_inspect, inspect_ms(), s_peers[s_match[sender_idx]].id,
+                data, len, s_radio->getLastRSSI(), packet->getSNR());
+            portEXIT_CRITICAL(&s_inspect_lock);
+            return;
+        }
         if (type != PAYLOAD_TYPE_TXT_MSG) return;
         if (len < 5) return;
         if ((data[4] >> 2) != 0) return;          /* not plain text */
@@ -661,6 +796,13 @@ public:
         touch_peer(pi, s_radio ? s_radio->getLastRSSI() : 0.0f,
                    packet ? packet->getSNR() : 0.0f);
 
+        /* Terminated at the decrypted length, as BaseChatMesh does: a text
+           that fills the last cipher block has no zero padding after it,
+           and the ACK hash below would run on into the rest of the buffer.
+           Mesh.cpp decrypts into MAX_PACKET_PAYLOAD and len is always
+           shorter, so data[len] is inside it. */
+        data[len] = 0;
+
         char text[LS_MESH_MSG_LEN];
         size_t n = len - 5;
         if (n >= sizeof(text)) n = sizeof(text) - 1;
@@ -670,9 +812,7 @@ public:
         char line[LS_MESH_MSG_LEN];
         snprintf(line, sizeof(line), "%s: %s",
                  s_peers[pi].name[0] ? s_peers[pi].name : s_peers[pi].id, text);
-        const int slot = note_msg(line, false);
-        s_msgs[slot].direct = true;
-        memcpy(s_msgs[slot].peer, s_peers[pi].id, sizeof(s_msgs[slot].peer));
+        note_msg(line, false, 0, s_peers[pi].id);
 
         /* Acknowledge it, exactly as BaseChatMesh.cpp:229 does:
            four bytes of sha256 over the payload and the SENDER's public key,
@@ -726,7 +866,18 @@ public:
                         uint8_t *path,uint8_t path_len,uint8_t extra_type,
                         uint8_t *extra,uint8_t extra_len) override
     {
-        (void)secret;(void)path;(void)path_len;
+        (void)secret;
+        if (sender_idx >= 0 && sender_idx < s_match_n) {
+            const char *id = s_peers[s_match[sender_idx]].id;
+            inspect_route_save(id, path, path_len, false);
+            if (extra_type == PAYLOAD_TYPE_RESPONSE) {
+                portENTER_CRITICAL(&s_inspect_lock);
+                ls_inspect_telemetry(&s_inspect, inspect_ms(), id, extra, extra_len,
+                    s_radio->getLastRSSI(), packet->getSNR());
+                portEXIT_CRITICAL(&s_inspect_lock);
+                return false;
+            }
+        }
         if(sender_idx<0 || sender_idx>=s_match_n || extra_type!=PAYLOAD_TYPE_ACK || extra_len<4)return false;
         uint32_t ack;memcpy(&ack,extra,4);
         const char *sender=s_peers[s_match[sender_idx]].id;
@@ -738,6 +889,43 @@ public:
             }
         }
         return false; /* No route cache here; subsequent DMs still use flood. */
+    }
+
+    void onTraceRecv(mesh::Packet *packet, uint32_t tag, uint32_t auth,
+                     uint8_t flags, const uint8_t *snrs, const uint8_t *hashes,
+                     uint8_t bytes) override
+    {
+        if (auth != 0) return;
+        portENTER_CRITICAL(&s_inspect_lock);
+        ls_inspect_trace(&s_inspect, inspect_ms(), tag, flags, hashes, bytes,
+            (const int8_t *)snrs, packet->path_len, s_radio->getLastRSSI(), packet->getSNR());
+        portEXIT_CRITICAL(&s_inspect_lock);
+    }
+
+    void logTx(mesh::Packet *p, int len) override { inspect_packet_done(p, false); }
+    void logTxFail(mesh::Packet *p, int len) override { inspect_packet_done(p, true); }
+    mesh::Packet *inspect_packet = nullptr;
+    void inspect_packet_done(mesh::Packet *p, bool failed)
+    {
+        if (p != inspect_packet) return;
+        inspect_packet = nullptr; s_inspect_tx_packet = nullptr;
+        portENTER_CRITICAL(&s_inspect_lock);
+        s_inspect_packet_busy = false;
+        if (!failed) s_inspect.last_ms = inspect_ms();
+        if (failed) ls_inspect_finish(&s_inspect, inspect_ms(), LS_INSPECT_REFUSED);
+        portEXIT_CRITICAL(&s_inspect_lock);
+    }
+    void inspect_cancel()
+    {
+        if (!inspect_packet) return;
+        for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
+            if (_mgr->getOutboundByIdx(i) == inspect_packet) {
+                auto p = _mgr->removeOutboundByIdx(i);
+                inspect_packet_done(p, false);
+                releasePacket(p);
+                return;
+            }
+        }
     }
 
     /* Tell the stack we hold the public channel. Upstream's Mesh
@@ -764,7 +952,7 @@ public:
                          const mesh::GroupChannel &channel,
                          uint8_t *data, size_t len) override
     {
-        (void)packet; (void)channel;
+        (void)packet;
         if (type != PAYLOAD_TYPE_GRP_TXT) return;
         if (len < 5) return;
         if ((data[4] >> 2) != 0) return;     /* not a plain text type */
@@ -777,7 +965,16 @@ public:
         /* The payload may be zero-padded by the block cipher; trim so the
            feed does not carry invisible trailing rubbish. */
         for (size_t i = 0; i < n; i++) if (!text[i]) { break; }
-        note_msg(text, false);
+        /* Which of our slots it came on, so the screen can mark a private
+           channel's message and answer on that channel. */
+        uint8_t chan = 0;
+        for (int i = 0; i < LS_MESH_MAX_CHANNELS; i++)
+            if (s_chan_ready[i] &&
+                !memcmp(channel.secret, s_chan[i].secret, sizeof(channel.secret))) {
+                chan = (uint8_t)i;
+                break;
+            }
+        note_msg(text, false, chan, NULL);
         ESP_LOGI(TAG, "msg: %s", text);
     }
 
@@ -897,6 +1094,164 @@ static volatile bool s_stop;
 static volatile uint32_t s_loops;
 static char s_self_id[17];
 
+extern "C" void ls_mesh_inspect_get(ls_inspect_tracker_t *out)
+{
+    if (!out) return;
+    portENTER_CRITICAL(&s_inspect_lock);
+    inspect_init_locked();
+    *out = s_inspect;
+    portEXIT_CRITICAL(&s_inspect_lock);
+}
+extern "C" void ls_mesh_inspect_set_options(ls_inspect_options_t o)
+{
+    portENTER_CRITICAL(&s_inspect_lock);
+    inspect_init_locked();
+    ls_inspect_options(&s_inspect, o);
+    portEXIT_CRITICAL(&s_inspect_lock);
+}
+static ls_inspect_state_t inspect_request(const char *id, ls_inspect_kind_t kind,
+    const uint8_t *route, uint8_t count, uint8_t width, const char *password)
+{
+    int pi = id ? peer_index(id) : -1;
+    if (pi < 0 || count > 24 || (route && (width < 1 || width > 3 || count * width > MAX_PATH_SIZE))) return LS_INSPECT_REFUSED;
+    if ((kind == LS_INSPECT_TRACE || kind == LS_INSPECT_STATUS) && s_peers[pi].type != LS_MESH_ROLE_REPEATER)
+        return LS_INSPECT_NOT_PERMITTED;
+    /* Repeaters and rooms answer only a logged-in client. */
+    const bool login_role = s_peers[pi].type == LS_MESH_ROLE_REPEATER || s_peers[pi].type == LS_MESH_ROLE_ROOM;
+    if (kind == LS_INSPECT_LOGIN) {
+        uint8_t probe[4 + LS_INSPECT_PASSWORD_MAX];
+        if (!login_role) return LS_INSPECT_NOT_PERMITTED;
+        if (!ls_inspect_login_build(probe, sizeof(probe), 0, password ? password : "")) return LS_INSPECT_REFUSED;
+    }
+    bool allowed = s_task && ls_mesh_tx_enabled() && !s_radio_hold && !s_radio_held && !ls_lora_fsk_active();
+    portENTER_CRITICAL(&s_inspect_lock);
+    inspect_init_locked();
+    if (s_inspect_queued || s_inspect_packet_busy) {
+        portEXIT_CRITICAL(&s_inspect_lock); return LS_INSPECT_REFUSED;
+    }
+    if (ls_inspect_needs_login(&s_inspect, id, kind, login_role)) {
+        portEXIT_CRITICAL(&s_inspect_lock); return LS_INSPECT_NEEDS_LOGIN;
+    }
+    uint32_t candidate = s_inspect.result.tag + 1;
+    if (!candidate) candidate = 1;
+    ls_inspect_state_t state = ls_inspect_begin(&s_inspect, inspect_ms(), candidate, id, kind, allowed);
+    if (state == LS_INSPECT_WAITING) {
+        uint32_t tag = s_rtc ? s_rtc->getCurrentTimeUnique() : mesh_now();
+        s_inspect.result.tag = tag < candidate ? candidate : tag;
+        s_inspect_count = 0; s_inspect_width = 1; s_inspect_route_known = route != nullptr;
+        if (route) {
+            s_inspect_count = count; s_inspect_width = width;
+            memcpy(s_inspect_route, route, count * width);
+        } else {
+            for (const auto &r : s_inspect_routes) if (!strcmp(r.id, id)) {
+                s_inspect_count = r.count; s_inspect_width = r.width; s_inspect_route_known = true;
+                memcpy(s_inspect_route, r.path, r.count * r.width); break;
+            }
+        }
+        if (kind == LS_INSPECT_TRACE && s_inspect_width == 3) {
+            /* TRACE encodes power-of-two hash widths, so use two-byte prefixes. */
+            for (int i = 0; i < s_inspect_count; i++)
+                memmove(s_inspect_route + i * 2, s_inspect_route + i * 3, 2);
+            s_inspect_width = 2;
+        }
+        if (kind == LS_INSPECT_TRACE) {
+            (void)ls_inspect_route(&s_inspect, s_inspect_route, s_inspect_count,
+                s_inspect_width, s_peers[pi].pub_key);
+        }
+        if (kind == LS_INSPECT_LOGIN) snprintf(s_login_pw, sizeof(s_login_pw), "%s", password ? password : "");
+        s_inspect_queued = true;
+    }
+    portEXIT_CRITICAL(&s_inspect_lock);
+    return state;
+}
+/* LOGIN here is a guest login with a blank password. */
+extern "C" ls_inspect_state_t ls_mesh_inspect_request(const char *id, ls_inspect_kind_t kind,
+    const uint8_t *route, uint8_t count, uint8_t width)
+{
+    return inspect_request(id, kind, route, count, width, "");
+}
+extern "C" ls_inspect_state_t ls_mesh_inspect_login(const char *id, const char *password)
+{
+    return inspect_request(id, LS_INSPECT_LOGIN, NULL, 0, 1, password);
+}
+
+static void inspect_service()
+{
+    char id[17]; uint32_t tag; ls_inspect_kind_t kind;
+    uint8_t route[98], count = 0, width = 1; bool known = false;
+    char pw[LS_INSPECT_PASSWORD_MAX + 1] = "";
+    portENTER_CRITICAL(&s_inspect_lock);
+    inspect_init_locked();
+    ls_inspect_tick(&s_inspect, inspect_ms());
+    bool waiting = s_inspect.result.state == LS_INSPECT_WAITING;
+    bool queued = s_inspect_queued && waiting;
+    bool repeat = !s_inspect_packet_busy && ls_inspect_repeat_due(&s_inspect, inspect_ms());
+    if (repeat) {
+        memcpy(id, s_inspect.result.peer, 17); kind = s_inspect.result.kind;
+        count = s_inspect_count; width = s_inspect_width; known = s_inspect_route_known;
+        memcpy(route, s_inspect_route, count * width);
+    }
+    s_inspect_queued = false;
+    if (queued) {
+        memcpy(id, s_inspect.result.peer, 17); tag = s_inspect.result.tag; kind = s_inspect.result.kind;
+        memcpy(pw, s_login_pw, sizeof(pw)); memset(s_login_pw, 0, sizeof(s_login_pw));
+        if (kind == LS_INSPECT_TRACE) {
+            count = s_inspect.result.hop_count; width = s_inspect.result.hash_size;
+            memcpy(route, s_inspect.result.hashes, count * width);
+        } else {
+            count = s_inspect_count; width = s_inspect_width; known = s_inspect_route_known;
+            memcpy(route, s_inspect_route, count * width);
+        }
+    }
+    portEXIT_CRITICAL(&s_inspect_lock);
+    if (repeat) {
+        (void)inspect_request(id, kind, known ? route : nullptr, count, width, "");
+        return;
+    }
+    if (!waiting || !ls_mesh_tx_enabled() || s_radio_hold || s_radio_held || ls_lora_fsk_active()) {
+        s_mesh->inspect_cancel();
+        if (waiting) {
+            portENTER_CRITICAL(&s_inspect_lock);
+            ls_inspect_finish(&s_inspect, inspect_ms(), LS_INSPECT_NOT_PERMITTED);
+            portEXIT_CRITICAL(&s_inspect_lock);
+        }
+        return;
+    }
+    if (!queued) return;
+    int pi = peer_index(id);
+    mesh::Packet *p = nullptr;
+    if (pi >= 0) {
+        if (kind == LS_INSPECT_TRACE) p = s_mesh->createTrace(tag, 0, width == 2 ? 1 : 0);
+        else if (kind == LS_INSPECT_LOGIN) {
+            /* ANON_REQ: the timestamp, then the password; blank is the guest login. */
+            uint8_t data[4 + LS_INSPECT_PASSWORD_MAX];
+            size_t n = ls_inspect_login_build(data, sizeof(data), tag, pw);
+            uint8_t secret[32]; s_mesh->self_id.calcSharedSecret(secret, s_peers[pi].pub_key);
+            mesh::Identity dest(s_peers[pi].pub_key);
+            if (n) p = s_mesh->createAnonDatagram(PAYLOAD_TYPE_ANON_REQ, s_mesh->self_id, dest, secret, data, n);
+            memset(data, 0, sizeof(data));
+        } else {
+            uint8_t data[13], nonce[4];
+            s_rng->random(nonce, 4);
+            ls_inspect_request_build(data, tag, kind, nonce);
+            uint8_t secret[32]; s_mesh->self_id.calcSharedSecret(secret, s_peers[pi].pub_key);
+            mesh::Identity dest(s_peers[pi].pub_key);
+            p = s_mesh->createDatagram(PAYLOAD_TYPE_REQ, dest, secret, data, sizeof(data));
+        }
+    }
+    memset(pw, 0, sizeof(pw));
+    if (!p) {
+        portENTER_CRITICAL(&s_inspect_lock);
+        ls_inspect_finish(&s_inspect, inspect_ms(), LS_INSPECT_REFUSED);
+        portEXIT_CRITICAL(&s_inspect_lock); return;
+    }
+    s_mesh->inspect_packet = p; s_inspect_tx_packet = p;
+    portENTER_CRITICAL(&s_inspect_lock); s_inspect_packet_busy = true; portEXIT_CRITICAL(&s_inspect_lock);
+    if (kind == LS_INSPECT_TRACE) s_mesh->sendDirect(p, route, count * width);
+    else if (known) s_mesh->sendDirect(p, route, count | ((width - 1) << 6));
+    else s_mesh->sendFlood(p);
+}
+
 /* Identity lives in NVS. A mesh node that generates a fresh key pair on
    every boot is a different node every time - it cannot be addressed, and it
    pollutes its neighbours' peer tables. */
@@ -969,6 +1324,14 @@ static void load_settings(void)
     if (nvs_get_u8(h, "autolisten", &v) == ESP_OK) s_auto_listen = (v != 0);
     v = 0;
     if (nvs_get_u8(h, "autotx", &v) == ESP_OK)     s_auto_tx = (v != 0);
+    char allow[LS_INSPECT_ALLOW_MAX][17];
+    len = sizeof(allow);
+    if (nvs_get_blob(h, "telallow", allow, &len) == ESP_OK && len == sizeof(allow)) {
+        portENTER_CRITICAL(&s_inspect_lock);
+        memset(&s_telem_allow, 0, sizeof(s_telem_allow));
+        for (auto &id : allow) { id[16] = 0; ls_inspect_allow_set(&s_telem_allow, id, true); }
+        portEXIT_CRITICAL(&s_inspect_lock);
+    }
     nvs_close(h);
 }
 
@@ -1016,6 +1379,31 @@ static esp_err_t save_setting_blob(const char *key, const void *val, size_t n)
 {
     SaveReq r = { key, nullptr, val, n, 0, 2 };
     return ls_nvs_run(save_setting_job, &r, 0);
+}
+
+extern "C" bool ls_mesh_telem_allowed(const char *id)
+{
+    portENTER_CRITICAL(&s_inspect_lock);
+    bool yes = ls_inspect_allowed(&s_telem_allow, id);
+    portEXIT_CRITICAL(&s_inspect_lock);
+    return yes;
+}
+extern "C" int ls_mesh_telem_allow_count(void)
+{
+    portENTER_CRITICAL(&s_inspect_lock);
+    int n = ls_inspect_allow_count(&s_telem_allow);
+    portEXIT_CRITICAL(&s_inspect_lock);
+    return n;
+}
+extern "C" esp_err_t ls_mesh_telem_allow(const char *id, bool allow)
+{
+    char list[LS_INSPECT_ALLOW_MAX][17];
+    portENTER_CRITICAL(&s_inspect_lock);
+    bool ok = ls_inspect_allow_set(&s_telem_allow, id, allow);
+    for (int i = 0; i < LS_INSPECT_ALLOW_MAX; i++) memcpy(list[i], s_telem_allow.id[i], 17);
+    portEXIT_CRITICAL(&s_inspect_lock);
+    if (!ok) return id && strlen(id) == 16 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    return save_setting_blob("telallow", list, sizeof(list));
 }
 
 static bool our_position(int32_t *lat_e7, int32_t *lon_e7,
@@ -1259,6 +1647,7 @@ static void mesh_task(void *arg)
            touches it is skipped - the dispatcher, the advert timer and the
            RSSI sample - and nothing else is: the message log still settles
            and still writes, because that is a card and not a radio. */
+        inspect_service();
         if (s_radio_hold || ls_lora_fsk_active()) {
             s_radio_held = true;
             msglog_service();
@@ -1312,6 +1701,11 @@ static void mesh_task(void *arg)
            costs the interface and buys nothing. */
         vTaskDelay(pdMS_TO_TICKS(5));
     }
+    s_mesh->inspect_cancel();
+    portENTER_CRITICAL(&s_inspect_lock);
+    s_inspect_queued = false;
+    ls_inspect_finish(&s_inspect, inspect_ms(), LS_INSPECT_NOT_PERMITTED);
+    portEXIT_CRITICAL(&s_inspect_lock);
     ESP_LOGI(TAG, "background task down");
     /* Stop owns deletion, after suspension, before this storage is reused. */
     vTaskSuspend(NULL);
@@ -1426,17 +1820,22 @@ extern "C" esp_err_t ls_mesh_start(void)
     return ESP_OK;
 }
 
-extern "C" void ls_mesh_stop(void)
+extern "C" esp_err_t ls_mesh_stop(void)
 {
-    if (s_radio_hold) return;
-    if (!s_task) return;
+    if (s_radio_hold) return ESP_ERR_INVALID_STATE;
+    if (!s_task) return ESP_OK;
     s_stop = true;
     for (int i = 0; i < 100 && eTaskGetState(s_task) != eSuspended; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (eTaskGetState(s_task) != eSuspended) {
         ESP_LOGW(TAG, "stop pending; task has not released the radio");
-        return;
+        return ESP_ERR_TIMEOUT;
     }
+    /* The suspended owner cannot re-arm RX or start another transmission. */
+    for (int i = 0; i < 100 && !ls_lora_send_done(); i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    const esp_err_t err = ls_lora_park();
+    if (err != ESP_OK) return err;
     vTaskDelete(s_task);
     s_task = nullptr;
     /* The task is gone, so nothing else is writing s_msgs: a last write here
@@ -1444,6 +1843,7 @@ extern "C" void ls_mesh_stop(void)
        round to yet. */
     msglog_flush();
     peerlog_flush();
+    return ESP_OK;
 }
 
 extern "C" bool ls_mesh_running(void) { return s_task != nullptr; }
@@ -1460,35 +1860,38 @@ static bool mesh_paused(void)
 
 extern "C" bool ls_mesh_radio_held(void)
 {
-    /* A background receiver has the part until it has let go. */
-    if (s_hold_bg) return false;
-    return mesh_paused();
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    portENTER_CRITICAL(&s_hold_lock);
+    const bool owns = ls_radio_holders_owns(&s_fg_holders, task) && !s_hold_bg;
+    portEXIT_CRITICAL(&s_hold_lock);
+    return owns && mesh_paused();
 }
 
 extern "C" bool ls_mesh_radio_hold(bool on)
 {
-    s_hold_fg = on;
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    portENTER_CRITICAL(&s_hold_lock);
+    const bool accepted = ls_radio_holders_set(&s_fg_holders, task, on);
+    s_hold_fg = s_fg_holders.count != 0;
     s_radio_hold = s_hold_fg || s_hold_bg;
-    if (!on) {
-        if (!s_hold_bg) s_radio_held = false;
-        return true;
-    }
-
-    return ls_mesh_radio_held();
+    if (!s_radio_hold) s_radio_held = false;
+    portEXIT_CRITICAL(&s_hold_lock);
+    return accepted && (!on || ls_mesh_radio_held());
 }
 
 extern "C" bool ls_mesh_radio_hold_bg(bool on)
 {
-    /* Another holder asking means this one gives way, even mid-wait. */
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    portENTER_CRITICAL(&s_hold_lock);
+    /* Foreground requests make each background holder release its own lease. */
     const bool take = on && !s_hold_fg;
-    s_hold_bg = take;
+    const bool accepted = ls_radio_holders_set(&s_bg_holders, task, take);
+    s_hold_bg = s_bg_holders.count != 0;
     s_radio_hold = s_hold_fg || s_hold_bg;
-    if (!take) {
-        if (!s_hold_fg) s_radio_held = false;
-        return !on;
-    }
-
-    return mesh_paused();
+    if (!s_radio_hold) s_radio_held = false;
+    const bool owns = take && ls_radio_holders_owns(&s_bg_holders, task);
+    portEXIT_CRITICAL(&s_hold_lock);
+    return accepted && (!on || (owns && mesh_paused()));
 }
 
 extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg; }
@@ -1633,7 +2036,7 @@ extern "C" int ls_mesh_band_current(void)
     ls_mesh_radio_t r;
     ls_mesh_get_radio(&r);
     const uint32_t mhz = r.freq_hz / 1000000u;
-    if (mhz >= 902 && mhz <= 928) return LS_MESH_BAND_US915;
+    if (r.freq_hz >= LS_MESH_US915_MIN_HZ && r.freq_hz <= LS_MESH_US915_MAX_HZ) return LS_MESH_BAND_US915;
     if (mhz >= 863 && mhz <= 870) return LS_MESH_BAND_EU868;
     return LS_MESH_BAND__COUNT;      /* reads as "custom" */
 }
@@ -1711,15 +2114,22 @@ extern "C" esp_err_t ls_mesh_add_contact(const char *hex, const char *name)
     char id[17];
     id_hex(id, key);
 
+    /* A node already in the table keeps what was heard from it: saving it
+       from its page must not make it look silent, nor put it first in line
+       for eviction. */
+    const bool heard = peer_index(id) >= 0;
     mesh::Identity ident(key);
     /* No advert, so no signal reading and no advert count - the table shows
        it as never heard, which is exactly what it is. */
-    note_peer(ident, id, NULL, 0.0f, 0.0f);
+    if (!heard) note_peer(ident, id, NULL, 0.0f, 0.0f);
 
     for (int i = 0; i < s_peer_count; i++) {
         if (strcmp(s_peers[i].id, id)) continue;
-        if (name && *name)
+        if (name && *name && strncmp(s_peers[i].name, name, sizeof(s_peers[i].name))) {
             snprintf(s_peers[i].name, sizeof(s_peers[i].name), "%s", name);
+            s_peer_ident_seq = s_peer_ident_seq + 1;   /* the card gets the new name */
+        }
+        if (heard) break;
         /* And the TIME, which the comment above has claimed since this was written and the code did not do. */
 
         s_peers[i].adverts     = 0;      /* it announced nothing   */
@@ -1875,9 +2285,7 @@ static esp_err_t send_dm_to(int pi, const char *text)
     char full[LS_MESH_MSG_LEN];
     snprintf(full, sizeof(full), "%s -> %.12s: %s", ls_mesh_name(),
              s_peers[pi].name[0] ? s_peers[pi].name : s_peers[pi].id, text);
-    const int slot = note_msg(full, true);
-    s_msgs[slot].direct = true;
-    memcpy(s_msgs[slot].peer, s_peers[pi].id, sizeof(s_msgs[slot].peer));
+    const int slot = note_msg(full, true, 0, s_peers[pi].id);
 
     s_ack[s_ack_head].expect = expect;
     s_ack[s_ack_head].slot   = slot;
@@ -1938,6 +2346,16 @@ extern "C" int ls_mesh_dm_state(const char *id,const char *text)
 
 extern "C" int ls_mesh_forget_peer(const char *id)
 {
+    const bool every = !id || !*id || !strcasecmp(id, "all");
+    portENTER_CRITICAL(&s_inspect_lock);
+    ls_inspect_session_drop(&s_inspect, id);
+    if (every) memset(&s_telem_allow, 0, sizeof(s_telem_allow));
+    else ls_inspect_allow_set(&s_telem_allow, id, false);
+    for (auto &r : s_inspect_routes)
+        if (!id || !*id || !strcasecmp(id, "all") || !strcasecmp(r.id, id)) r.id[0] = 0;
+    if (!id || !*id || !strcasecmp(id, "all") || !strcasecmp(s_inspect.result.peer, id))
+        s_inspect.options.repeat_minutes = 0;
+    portEXIT_CRITICAL(&s_inspect_lock);
     if (!id || !*id || !strcasecmp(id, "all")) {
         const int n = s_peer_count;
         s_peer_count = 0;
@@ -1961,9 +2379,13 @@ extern "C" int ls_mesh_forget_peer(const char *id)
 
 extern "C" esp_err_t ls_mesh_send_text(const char *text)
 {
+    return ls_mesh_send_text_on(s_chan_active, text);
+}
+
+extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
+{
     if (!s_mesh) return ESP_ERR_INVALID_STATE;
-    if (s_chan_active < 0 || s_chan_active >= LS_MESH_MAX_CHANNELS ||
-        !s_chan_ready[s_chan_active])
+    if (chan < 0 || chan >= LS_MESH_MAX_CHANNELS || !s_chan_ready[chan])
         return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
@@ -1989,7 +2411,7 @@ extern "C" esp_err_t ls_mesh_send_text(const char *text)
     temp[5 + prefix + tlen] = 0;
 
     mesh::Packet *pkt = s_mesh->createGroupDatagram(PAYLOAD_TYPE_GRP_TXT,
-                                                    s_chan[s_chan_active],
+                                                    s_chan[chan],
                                                     temp, (size_t)(5 + prefix + tlen));
     if (!pkt) return ESP_ERR_NO_MEM;
 
@@ -2000,7 +2422,7 @@ extern "C" esp_err_t ls_mesh_send_text(const char *text)
 
     s_mesh->sendFlood(pkt);
 
-    const int slot = note_msg((const char *)&temp[5], true);
+    const int slot = note_msg((const char *)&temp[5], true, (uint8_t)chan, NULL);
     memcpy(s_sent[s_sent_head].hash, h, MAX_HASH_SIZE);
     s_sent[s_sent_head].slot = slot;
     s_sent[s_sent_head].used = true;
@@ -2135,8 +2557,16 @@ extern "C" esp_err_t ls_mesh_radio_default(void)
 
 #else  /* board has no LoRa */
 
+extern "C" ls_inspect_state_t ls_mesh_inspect_request(const char *, ls_inspect_kind_t, const uint8_t *, uint8_t, uint8_t) { return LS_INSPECT_NOT_PERMITTED; }
+extern "C" void ls_mesh_inspect_get(ls_inspect_tracker_t *o) { if(o) ls_inspect_init(o); }
+extern "C" void ls_mesh_inspect_set_options(ls_inspect_options_t) {}
+extern "C" ls_inspect_state_t ls_mesh_inspect_login(const char *, const char *) { return LS_INSPECT_NOT_PERMITTED; }
+extern "C" bool ls_mesh_telem_allowed(const char *) { return false; }
+extern "C" int ls_mesh_telem_allow_count(void) { return 0; }
+extern "C" esp_err_t ls_mesh_telem_allow(const char *, bool) { return ESP_ERR_NOT_SUPPORTED; }
+
 extern "C" esp_err_t ls_mesh_start(void) { return ESP_ERR_NOT_SUPPORTED; }
-extern "C" void ls_mesh_stop(void) {}
+extern "C" esp_err_t ls_mesh_stop(void) { return ESP_OK; }
 extern "C" bool ls_mesh_running(void) { return false; }
 extern "C" void ls_mesh_set_tx(bool on) { (void)on; }
 extern "C" bool ls_mesh_tx_enabled(void) { return false; }
@@ -2168,6 +2598,7 @@ extern "C" esp_err_t ls_mesh_set_name(const char *n) { (void)n; return ESP_ERR_N
 extern "C" void ls_mesh_get_radio(ls_mesh_radio_t *o) { if (o) memset(o, 0, sizeof(*o)); }
 extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *c) { (void)c; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" esp_err_t ls_mesh_send_text(const char *t) { (void)t; return ESP_ERR_NOT_SUPPORTED; }
+extern "C" esp_err_t ls_mesh_send_text_on(int c, const char *t) { (void)c; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" esp_err_t ls_mesh_send_dm(int i, const char *t) { (void)i; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" esp_err_t ls_mesh_send_dm_id(const char *i, const char *t)
 { (void)i; (void)t; return ESP_ERR_NOT_SUPPORTED; }

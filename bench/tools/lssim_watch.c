@@ -1,6 +1,7 @@
 #include "rec_watch.h"
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
+#include "ls_mixrf_control.h"
 #include "esp_timer.h"
 #include <string.h>
 #include <stdio.h>
@@ -9,13 +10,15 @@ static ls_mixrf_status_t mix;
 static rec_source_t source;
 rec_source_t rec_watch_source(void){return source;}
 bool rec_watch_select_source(rec_source_t next){if(state.enabled)return false;source=next;return true;}
-bool ls_mixrf_capture(bool on,uint32_t hz){mix.capturing=on;mix.frequency=hz;return true;}
+bool ls_mixrf_capture(bool on,uint32_t hz){if(!ls_mixrf_cc_request(&mix,LS_MIXRF_OWNER_REC,on,hz,false))return false;mix.capturing=on;mix.frequency=hz;return true;}
 static uint32_t frequency=433920000;
 bool ls_mixrf_start(void){mix.ready=mix.keyboard=mix.power=mix.cc=mix.nfc=mix.nrf=true;mix.cc_version=0x14;mix.nfc_identity=0x2a;strcpy(mix.status,"SIMULATED keyboard radios");return true;}
 void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(mix.receiving)mix.samples=(uint32_t)(esp_timer_get_time()/100000);if(out)*out=mix;}
-bool ls_mixrf_receive(bool on,uint32_t hz){mix.receiving=mix.receive_requested=on;mix.frequency=hz;mix.rssi=-78;return true;}
+bool ls_mixrf_receive_owned(ls_mixrf_owner_t owner,bool on,uint32_t hz){if(!ls_mixrf_cc_request(&mix,owner,on,hz,false))return false;mix.receiving=on;mix.frequency=hz;mix.rssi=-78;return true;}
+bool ls_mixrf_receive(bool on,uint32_t hz){return ls_mixrf_receive_owned(LS_MIXRF_OWNER_MONITOR,on,hz);}
 void ls_mixrf_diagnostics(void){}
-bool ls_mixrf_scan(bool on){mix.scanning=mix.scan_requested=on;mix.sweeps=12;mix.energy_hits=82;for(int i=0;i<84;i++)mix.occupancy[i]=(i>=10&&i<22)?160:(i>=55&&i<62)?90:0;return true;}
+bool ls_mixrf_scan_owned(ls_mixrf_owner_t owner,bool on){if(!ls_mixrf_claim(&mix.scan_owner,owner,on))return false;mix.scanning=mix.scan_requested=on;mix.sweeps=12;mix.energy_hits=82;for(int i=0;i<84;i++)mix.occupancy[i]=(i>=10&&i<22)?160:(i>=55&&i<62)?90:0;return true;}
+bool ls_mixrf_scan(bool on){return ls_mixrf_scan_owned(LS_MIXRF_OWNER_MONITOR,on);}
 bool ls_mixrf_nfc_watch(bool on){mix.nfc_watching=mix.nfc_requested=on;return true;}
 static int threshold=0,gap=30,minimum_edges=6;
 static uint32_t min_pulse=40,max_span=8000000;
@@ -102,7 +105,23 @@ bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
 bool rec_watch_scan_busy(void){return sim_sweeping;}
 int rec_watch_scan_progress(void){return sim_sweeping?50:0;}
 const char *rec_watch_scan_stage(void){return sim_sweeping?"Sweeping":"";}
-int rec_watch_scan_live(rec_scan_bin_t *o,int m){(void)o;(void)m;return 0;}
+/* A fixed picture while sweeping - noise, one strong carrier and one weak
+   one - so the analyser's columns, gate and peak marker can be looked at. */
+int rec_watch_scan_live(rec_scan_bin_t *o,int m)
+{
+    if(!sim_sweeping||!o)return 0;
+    int n=m<32?m:32;
+    for(int i=0;i<n;i++){
+        float d=-112.0f+(float)((i*7)%5);
+        if(i==9)d=-74.0f;
+        if(i==10)d=-96.0f;
+        if(i==23)d=-88.0f;
+        o[i].hz=433050000u+(uint32_t)i*54000u;
+        o[i].dbm=d;
+        o[i].hold=d+(i==9?4.0f:2.0f);
+    }
+    return n;
+}
 float rec_watch_scan_live_floor(void){return -120.0f;}
 int rec_watch_scan_hits(void){return sim_found;}
 void rec_watch_scan_stop(void){sim_sweeping=false;}

@@ -40,12 +40,14 @@ const ls_app_doc_t ls_doc_fm = {
 
 const ls_app_doc_t ls_doc_adsb = {
     .purpose = "Aircraft heard directly off 1090 MHz, as a list and as a "
-               "mini map centred on your saved home.",
+               "mini map that follows them: all in view, the selected one, "
+               "or the one nearest you.",
     .records = LS_APP_RECORDS_NOTHING,
     .gps     = LS_APP_GPS_NAVIGATES,
     .gps_note = "SET HOME remembers GPS, decimal coordinates or the map center. "
-                "The offline mini map uses saved home, or a fresh GPS fix "
-                "when home is unset. FULL MAP opens the SD map controls.",
+                "The offline mini map rests on saved home, or a fresh GPS fix "
+                "when home is unset, and FOLLOW OFF keeps it there. FULL MAP "
+                "opens the SD map controls.",
 };
 
 const ls_app_doc_t ls_doc_falls = {
@@ -211,6 +213,15 @@ const ls_app_doc_t ls_doc_terminal = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_update = {
+    .purpose = "Updates over WiFi: asks the LakeShark update server for a "
+               "newer build, checks LakeShark signed it, writes it to the "
+               "other half of the flash and restarts into it. A build that "
+               "fails to start puts the last one back.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_t ls_doc_settings = {
     .purpose = "Volume, brightness, mute and screen lock, with menus for "
                "the display, sounds and alerts, and the keyboard and USB.",
@@ -281,6 +292,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "mixrf",   &ls_doc_mixrf   },
     { "diag",    &ls_doc_diag    },
     { "terminal", &ls_doc_terminal },
+    { "update",  &ls_doc_update   },
     { "set",     &ls_doc_settings},
     { "map",     &ls_doc_map     },
     { "gps",     &ls_doc_gps     },

@@ -48,6 +48,26 @@ LS_CASE(channel_clear_and_edits_use_the_cache_safe_worker)
     scan_channels_clear(); LS_EQ_INT(safe_dispatches,2); LS_EQ_INT(scan_channels_count(),0);
 }
 
+LS_CASE(receive_tones_survive_channel_save_and_reload)
+{
+    fail=false; saved_size=0; scan_channels_init();
+    int idx=scan_channel_add("Tone",154785000,SCAN_MODE_NFM,2);
+    LS_CHECK(scan_channel_set_lockout(idx,true));
+    const unsigned tones[]={13,51,155,256,258,0};
+    for (unsigned i=0;i<sizeof(tones)/sizeof(tones[0]);++i) {
+        LS_CHECK(scan_channel_set_tone(idx,tones[i]));
+        scan_channels_init();
+        const scan_channel_t *c=scan_channel_get(idx);
+        LS_EQ_INT(tones[i],scan_channel_tone(c));
+        LS_EQ_INT(2,c->zone);
+        LS_CHECK(c->flags & SCAN_FLAG_LOCKOUT);
+    }
+    LS_CHECK(!scan_channel_set_tone(idx,259));
+    LS_CHECK(!scan_channel_set_tone(-1,13));
+    idx=scan_channel_add("Digital",154800000,SCAN_MODE_P25,2);
+    LS_CHECK(!scan_channel_set_tone(idx,13));
+}
+
 bool scan_sd_available(void) { return false; }
 bool scan_sd_name(const char *name) { return true; }
 int scan_sd_read(const char *name, scan_channel_t *rows) { return -1; }

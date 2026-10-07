@@ -26,6 +26,7 @@ typedef struct {
     float gate;
     bool  squelch_open;
     bool  has_squelch;
+    uint16_t tone_required;
     char detail[4][64];
 } ls_radio_view_t;
 

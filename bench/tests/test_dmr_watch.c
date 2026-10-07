@@ -16,7 +16,6 @@
 
 #include <string.h>
 
-static const uint8_t BS_VOICE[6] = { 0x75, 0x5F, 0xD7, 0xDF, 0x75, 0xF7 };
 static const uint8_t BS_DATA [6] = { 0xDF, 0xF5, 0x7D, 0x75, 0xDF, 0x5D };
 
 /* Thresholds the P25 slicer would have measured, and four symbol levels
@@ -79,7 +78,7 @@ LS_CASE(a_voice_header_in_symbols_comes_out_as_a_talkgroup_and_a_radio_id)
 {
     const dmr_lc_t lc = reference_lc();
     uint8_t burst[33];
-    dmr_gen_burst(burst, BS_VOICE, 7, 1, &lc);
+    dmr_gen_burst(burst, BS_DATA, 7, 1, &lc);
 
     dmr_watch_reset();
     feed_silence(40);
@@ -89,7 +88,7 @@ LS_CASE(a_voice_header_in_symbols_comes_out_as_a_talkgroup_and_a_radio_id)
     dmr_watch_t w;
     LS_CHECK_MSG(dmr_watch_get(&w), "the watcher reported nothing");
     LS_CHECK_MSG(w.bursts >= 1, "no burst was framed out of the symbols");
-    LS_EQ_INT((int)w.last_class, (int)DMR_SYNC_BS_VOICE);
+    LS_EQ_INT((int)w.last_class, (int)DMR_SYNC_BS_DATA);
     LS_EQ_UINT(w.colour_code, 7);
     LS_CHECK_MSG(!w.inverted, "a normal-polarity burst was reported inverted");
     LS_CHECK_MSG(w.have_lc, "the link control never passed parity");
@@ -106,7 +105,7 @@ LS_CASE(the_same_burst_decodes_with_the_polarity_the_other_way_round)
        radios it met. */
     const dmr_lc_t lc = reference_lc();
     uint8_t burst[33];
-    dmr_gen_burst(burst, BS_VOICE, 3, 1, &lc);
+    dmr_gen_burst(burst, BS_DATA, 3, 1, &lc);
 
     dmr_watch_reset();
     feed_silence(40);
@@ -174,4 +173,15 @@ LS_CASE(the_watcher_counts_every_symbol_it_is_given)
     dmr_watch_t w;
     LS_CHECK(dmr_watch_get(&w));
     LS_EQ_UINT(w.symbols, 500);
+}
+
+LS_CASE(voice_sync_cannot_publish_a_fabricated_lc_payload)
+{
+    const uint8_t voice[6] = {0x75,0x5F,0xD7,0xDF,0x75,0xF7};
+    dmr_lc_t lc = reference_lc(); uint8_t b[33];
+    dmr_gen_burst(b, voice, 7, 1, &lc);
+    dmr_watch_reset(); feed_bits(b, DMR_BURST_BITS, false);
+    dmr_watch_t w; LS_CHECK(dmr_watch_get(&w));
+    LS_EQ_UINT(w.bursts, 1); LS_EQ_UINT(w.slot_type_ok, 0);
+    LS_CHECK(!w.have_lc);
 }

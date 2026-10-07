@@ -100,8 +100,8 @@ void dmr_lc_parse(const uint8_t bits96[12], dmr_lc_t *out);
  * changing *out. Detects errors only; no RS correction or voice decoding. */
 int dmr_lc_decode(const uint8_t bits96[12], uint8_t data_type, dmr_lc_t *out);
 
-/* Extract the DMR colour code from the burst's Slot Type field. Every burst
- * carries 20 bits of Slot Type - 10 before sync and 10 after (see ETSI
+/* Extract the DMR colour code from the burst's Slot Type field. Data-sync bursts
+ * carry 20 bits of Slot Type - 10 before sync and 10 after (see ETSI
  * §9.1.3). The high nibble of the 8-bit data field is the colour code. This
  * routes through dmr_slot_type_decode() so bit errors that landed in the
  * Slot Type region are corrected before the nibble is read. */
@@ -140,16 +140,14 @@ uint32_t dmr_slot_type_encode(uint8_t data8);
  * return two results or silently drop one.  A 4FSK caller pushes the two bits
  * of each symbol MSB first.
  *
- * Slot number is NOT derived here.  On the outbound path that needs the
- * 24-bit CACH ahead of the burst, and on the inbound path it needs burst
- * timing; neither belongs in a sync search.  dmr_tracker_burst() still takes
- * the slot from its caller. */
+ * The preceding 24 bits are retained as CACH for repeater slot identity.
+ * Mobile sync has no CACH; the observer leaves its slot unknown. */
 
 #define DMR_SYNC_OFFSET_BITS 108u    /* where sync sits inside a burst */
 
 typedef struct {
-    uint8_t  window[DMR_BURST_BITS / 8];  /* the last 264 bits, MSB first */
-    unsigned filled;                      /* bits seen, saturating at 264 */
+    uint8_t  window[DMR_BURST_BITS / 8 + 3]; /* CACH followed by burst */
+    unsigned filled;                      /* bits seen, saturating at 288 */
     unsigned since_hit;                   /* bits since the last report   */
     uint8_t  max_sync_errors;
 } dmr_framer_t;
@@ -158,6 +156,8 @@ typedef struct {
     uint8_t          burst[DMR_BURST_BITS / 8];
     dmr_sync_class_t class_id;
     uint8_t          sync_errors;
+    uint8_t          cach[3];
+    bool             have_cach;
 } dmr_burst_frame_t;
 
 /* max_sync_errors of 5 is the OP25/DSD threshold for a 48-bit pattern, and is

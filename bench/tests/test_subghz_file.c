@@ -4,6 +4,7 @@
 
 #include "subghz_file.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #ifndef CC1101_FSK_FIXTURE
@@ -307,6 +308,129 @@ LS_CASE(the_real_cc1101_fsk_capture_replays_through_rmt_with_every_source_edge)
     }
     LS_CHECK_MSG(i == (unsigned)f.edges, "every source edge must be consumed");
     LS_CHECK_MSG(duration == 61524ull + 1, "source span plus the mandatory trailing low padding");
+}
+
+/* Every replay, on the CC1101 or the LoRa chip, passes subghz_tx_refusal
+   before a radio is keyed. These are what it must stop and what it must
+   still let through. */
+static const char *FSK_433 =
+    "Filetype: Flipper SubGhz RAW File\n"
+    "Frequency: 433920000\n"
+    "Preset: FuriHalSubGhzPresetCustom\n"
+    "# 4800 baud, 25000 Hz deviation, sync 2DD42DD4, 32-bit preamble\n"
+    "Protocol: RAW\n"
+    "RAW_Data: 208 -208 208 -208 208 -416\n";
+
+LS_CASE(an_fsk_file_on_marine_channel_16_is_refused)
+{
+    static const char *T =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 156800000\n"
+        "Preset: FuriHalSubGhzPresetCustom\n"
+        "# 4800 baud, 25000 Hz deviation, sync 2DD42DD4, 32-bit preamble\n"
+        "Protocol: RAW\n"
+        "RAW_Data: 208 -208 208 -208 208 -416\n";
+    int32_t e[16]; subghz_file_t f;
+    feed(&f, T, e, 16);
+    LS_CHECK(f.bitrate == 4800 && f.deviation_hz == 25000);
+    LS_CHECK_MSG(!subghz_file_is_fsk(&f),
+                 "156.8 MHz is the marine distress channel, not a replay band");
+    LS_CHECK(!subghz_file_is_ook(&f) && !subghz_file_is_cc_fsk(&f));
+    LS_CHECK(subghz_tx_refusal(f.freq_hz, -9, (size_t)f.edges_total,
+                               f.span_us) != NULL);
+}
+
+LS_CASE(fsk_files_outside_every_replay_band_are_refused)
+{
+    static const uint32_t out[] = {
+        150000000u, 299999999u, 348000001u, 386999999u,
+        406050000u, 464000001u, 778999999u, 928000001u, 960000000u };
+    int32_t e[16]; subghz_file_t f;
+    for (size_t i = 0; i < sizeof(out) / sizeof(out[0]); i++) {
+        feed(&f, FSK_433, e, 16);
+        f.freq_hz = out[i];
+        LS_CHECK_MSG(!subghz_file_is_fsk(&f), "an FSK file out of band");
+        LS_CHECK(subghz_tx_refusal(out[i], 0, 6, 1456) != NULL);
+    }
+}
+
+LS_CASE(the_406_mhz_distress_beacon_band_is_refused_on_the_cc1101_too)
+{
+    static const char *T =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 406025000\n"
+        "Preset: FuriHalSubGhzPresetOok650Async\n"
+        "Protocol: RAW\n"
+        "RAW_Data: 350 -1050 1050 -350 350 -10500\n";
+    int32_t e[16]; subghz_file_t f;
+    feed(&f, T, e, 16);
+    LS_CHECK(!subghz_file_is_ook(&f));
+    f.freq_hz = 405999999u; LS_CHECK(subghz_file_is_ook(&f));
+    f.freq_hz = 406100001u; LS_CHECK(subghz_file_is_ook(&f));
+}
+
+LS_CASE(replay_power_above_ten_dbm_is_refused)
+{
+    LS_CHECK(subghz_tx_refusal(433920000u, 10, 6, 1456) == NULL);
+    LS_CHECK(subghz_tx_refusal(433920000u, -10, 6, 1456) == NULL);
+    LS_CHECK(subghz_tx_refusal(433920000u, 11, 6, 1456) != NULL);
+    LS_CHECK(subghz_tx_refusal(915000000u, 14, 6, 1456) != NULL);
+    LS_CHECK(subghz_tx_refusal(915000000u, 22, 6, 1456) != NULL);
+    LS_CHECK(subghz_tx_refusal(915000000u, -11, 6, 1456) != NULL);
+}
+
+LS_CASE(an_fsk_file_longer_than_ten_seconds_is_refused)
+{
+    static const char *T =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 433920000\n"
+        "Preset: FuriHalSubGhzPresetCustom\n"
+        "# 4800 baud, 25000 Hz deviation, sync 2DD42DD4, 32-bit preamble\n"
+        "Protocol: RAW\n"
+        "RAW_Data: 2000000 -2000000 2000000 -2000000 2000000 -2000000\n";
+    int32_t e[16]; subghz_file_t f;
+    feed(&f, T, e, 16);
+    LS_CHECK(f.span_us == 12000000u);
+    LS_CHECK(!subghz_file_is_fsk(&f));
+    LS_CHECK(subghz_tx_refusal(f.freq_hz, 0, 6, f.span_us) != NULL);
+    LS_CHECK(subghz_tx_refusal(433920000u, 0, 4097, 1000000u) != NULL);
+    LS_CHECK(subghz_tx_refusal(433920000u, 0, 5, 1000u) != NULL);
+    LS_CHECK(subghz_tx_refusal(433920000u, 0, 4096, 10000000u) == NULL);
+    const int32_t edges[] = { 2000000, -2000000, 2000000, -2000000 };
+    LS_CHECK(subghz_span_us(edges, 4) == 8000000u);
+}
+
+LS_CASE(fsk_replay_needs_a_raw_file_with_an_fsk_preset)
+{
+    int32_t e[16]; subghz_file_t f;
+    feed(&f, FSK_433, e, 16);
+    LS_CHECK(subghz_file_is_fsk(&f));
+    snprintf(f.preset, sizeof(f.preset), "FuriHalSubGhzPresetOok650Async");
+    LS_CHECK_MSG(!subghz_file_is_fsk(&f), "an OOK preset is not sent as FSK");
+    feed(&f, FSK_433, e, 16);
+    snprintf(f.protocol, sizeof(f.protocol), "Princeton");
+    LS_CHECK(!subghz_file_is_fsk(&f));
+}
+
+LS_CASE(in_band_ism_files_are_accepted_within_policy)
+{
+    int32_t e[16]; subghz_file_t f;
+    feed(&f, FSK_433, e, 16);
+    LS_CHECK(subghz_file_is_fsk(&f));
+    LS_CHECK(subghz_tx_refusal(f.freq_hz, 10, (size_t)f.edges_total,
+                               f.span_us) == NULL);
+    f.freq_hz = 915000000u;
+    LS_CHECK(subghz_file_is_fsk(&f));
+    LS_CHECK(subghz_tx_refusal(f.freq_hz, -9, 6, f.span_us) == NULL);
+    static const char *OOK =
+        "Filetype: Flipper SubGhz RAW File\n"
+        "Frequency: 433920000\n"
+        "Preset: FuriHalSubGhzPresetOok650Async\n"
+        "Protocol: RAW\n"
+        "RAW_Data: 350 -1050 1050 -350 350 -10500\n";
+    feed(&f, OOK, e, 16);
+    LS_CHECK(subghz_file_is_ook(&f));
+    LS_CHECK(subghz_tx_refusal(f.freq_hz, 10, 6, f.span_us) == NULL);
 }
 
 LS_CASE(an_undersized_capture_buffer_is_rejected_for_cc_fsk_not_silently_replayed)

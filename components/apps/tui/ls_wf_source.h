@@ -22,6 +22,7 @@ typedef enum {
 } ls_wf_src_t;
 
 void        ls_wf_source_select(ls_wf_src_t src);
+/* AUTO resolves to the running receiver, without starting or retuning it. */
 ls_wf_src_t ls_wf_source_get(void);
 
 /* The short name of a source, for a chip or a label. Never NULL. */

@@ -31,6 +31,10 @@ void ls_tui_geometry(int *cols, int *rows, int *cell_w, int *cell_h);
    matters: it is what separates this from a full repaint. */
 int ls_tui_present(void);
 
+/* How many presents have finished, for anything that wants to line its own
+   cache-off work up with the screen's frames. */
+uint32_t ls_tui_present_count(void);
+
 /* Force the next present to redraw every cell. */
 void ls_tui_invalidate(void);
 

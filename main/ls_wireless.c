@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <string.h>
 
+extern bool ls_survey_pending(void);
+extern void ls_survey_tick(void);
+
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_active, s_worker, s_observer;
 /* LINK could not allocate a 6 KiB DRAM stack after the radio and
@@ -116,7 +119,7 @@ static void worker(void *arg)
         wipe(s_pass, sizeof(s_pass));
         bool stop = !s_active && !s_observer && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
-        if (stop) {
+        if (stop && !ls_survey_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             last_poll = 0;
@@ -133,7 +136,7 @@ static void worker(void *arg)
             if (rc == ESP_OK) {
                 const char *done = "Connection updated";
                 if (op == LS_WIRELESS_SCAN) done = "Scan complete; tap a network to join";
-                if (op == LS_WIRELESS_JOIN || op == LS_WIRELESS_SAVED) done = "Joining network; credentials saved";
+                if (op == LS_WIRELESS_JOIN || op == LS_WIRELESS_SAVED) done = "Joining; saved once it connects";
                 if (op == LS_WIRELESS_FORGET) done = "Saved network removed";
                 snprintf(s_model.message, sizeof(s_model.message), "%s", done);
             } else {
@@ -150,6 +153,7 @@ static void worker(void *arg)
             publish();
             last_poll = now_ms();
         }
+        ls_survey_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
     }
 }
@@ -210,6 +214,7 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
 {
     if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_RESCAN ||
         (ssid && strlen(ssid) > 32) || (pass && strlen(pass) > 64)) return false;
+    if (ls_survey_pending()) return false;
     portENTER_CRITICAL(&s_mux);
     bool accept = s_pending == LS_WIRELESS_NONE && !s_public.busy;
     if (accept) {

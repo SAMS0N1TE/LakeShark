@@ -166,6 +166,65 @@ LS_CASE(direct_waits_for_mesh_and_restores_original_config)
     ls_field_direct(false); ls_field_step();
     LS_CHECK(!held); LS_CHECK(receiving); LS_EQ_UINT(radio.freq_hz,before.freq_hz); LS_EQ_UINT(radio.sf,before.sf);
 }
+LS_CASE(passive_exit_leaves_another_owners_scan_and_fsk_untouched)
+{
+    reset(); scan = held = true;
+    ls_field_direct(false); ls_field_step();
+    LS_CHECK(scan); LS_CHECK(held); LS_EQ_UINT(configurations, 0);
+    scan = false; fsk_on = true;
+    ls_field_direct(false); ls_field_step();
+    LS_CHECK(fsk_on); LS_CHECK(held); LS_EQ_UINT(fsk_ends, 0);
+}
+LS_CASE(cancelled_direct_wait_does_not_end_another_foreground_session)
+{
+    reset(); held_ready = false;
+    ls_field_direct(true); ls_field_step();
+    fsk_on = true; scan = true;
+    ls_field_direct(false); ls_field_step();
+    LS_CHECK(fsk_on); LS_CHECK(scan); LS_EQ_UINT(fsk_ends, 0);
+    LS_EQ_UINT(configurations, 0);
+}
+LS_CASE(falls_direct_expires_without_releasing_a_labs_request)
+{
+    reset();
+    LS_CHECK(ls_field_direct_falls(true)); ls_field_step(); LS_CHECK(held);
+    LS_CHECK(ls_field_direct_falls(false)); ls_field_step(); LS_CHECK(!held);
+    LS_CHECK(ls_field_direct(true));
+    LS_CHECK(ls_field_direct_falls(true)); ls_field_step();
+    LS_CHECK(ls_field_direct_falls(false)); ls_field_step(); LS_CHECK(held);
+    LS_CHECK(ls_field_direct(false)); ls_field_step(); LS_CHECK(!held);
+    LS_CHECK(ls_field_direct_falls(true)); ls_field_step(); LS_CHECK(held);
+    LS_CHECK(ls_field_direct(false)); ls_field_step(); LS_CHECK(!held);
+}
+LS_CASE(send_policy_blocks_radio_calls_and_survives_direct_release)
+{
+    reset(); ls_field_direct(true); ls_field_step();
+    ls_lora_cfg_t cfg = radio; cfg.freq_hz = 433920000;
+    LS_CHECK(ls_field_configure(&cfg)); ls_field_step();
+    LS_CHECK(ls_field_transmit("TEST")); ls_field_step(); LS_EQ_UINT(sends, 0);
+    ls_field_snapshot(&state); LS_CHECK(strstr(state.status, "US915") != NULL);
+    cfg.freq_hz = 915000000; cfg.power_dbm = 22;
+    LS_CHECK(ls_field_configure(&cfg)); ls_field_step();
+    LS_CHECK(ls_field_transmit("TEST")); ls_field_step(); LS_EQ_UINT(sends, 0);
+    ls_field_snapshot(&state); LS_CHECK(strstr(state.status, "power") != NULL);
+    cfg.power_dbm = 14;
+    LS_CHECK(ls_field_configure(&cfg)); ls_field_step();
+    const char *long_packet = "12345678901234567890123456789012345678901";
+    LS_CHECK(ls_field_transmit(long_packet)); ls_field_step(); LS_EQ_UINT(sends, 0);
+    ls_field_snapshot(&state); LS_CHECK(strstr(state.status, "airtime") != NULL);
+    const char *packet = "123456789012345678901234567890";
+    for (int i = 0; i < 2; i++) {
+        LS_CHECK(ls_field_transmit(packet)); ls_field_step();
+        tx_done = true; ls_field_step();
+    }
+    LS_EQ_UINT(sends, 2);
+    ls_field_direct(false); ls_field_step();
+    ls_field_direct(true); ls_field_step();
+    LS_CHECK(ls_field_transmit("TEST")); ls_field_step(); LS_EQ_UINT(sends, 2);
+    ls_field_snapshot(&state); LS_CHECK(strstr(state.status, "duty") != NULL);
+    ls_shim_time_advance(61000000);
+    LS_CHECK(ls_field_transmit("TEST")); ls_field_step(); LS_EQ_UINT(sends, 3);
+}
 /* P25 on the LR2021 in the background: DIRECT asks for the chip and gets it
    once P25 lets go; given up while waiting, it leaves P25's session alone. */
 LS_CASE(direct_takes_the_chip_from_a_receiver_left_on_it)

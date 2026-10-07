@@ -726,7 +726,8 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         }
 
         fm_mode_t mode;
-        if (!fm_mode_parse(a1, &mode)) {
+        /* Only modes with control-head screens can enter over this link. */
+        if (!fm_mode_parse(a1, &mode) || !fm_mode_flipper_allowed(mode)) {
             snprintf(reply, reply_len, "-ERR fm\n");
             return;
         }

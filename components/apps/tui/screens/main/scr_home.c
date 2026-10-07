@@ -12,6 +12,7 @@
 #include "../../ls_icons.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_userapp.h"
+#include "../../ls_value.h"
 
 /* Fully qualified: a bare "perf.h" resolved to something else on this
    include path and every call fell through as an implicit declaration. */
@@ -33,11 +34,18 @@ static int group_of(const ls_app_t *a)
     if (!strcmp(a->id, "map") || !strcmp(a->id, "gps") || !strcmp(a->id, "notes") ||
         !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
     if (!strcmp(a->id, "set") || !strcmp(a->id, "diag") || !strcmp(a->id, "radios") || !strcmp(a->id, "link") ||
-        !strcmp(a->id, "terminal")) return 2;
+        !strcmp(a->id, "terminal") || !strcmp(a->id, "update")) return 2;
     return 0;
 }
 
 static int  s_sel;
+
+/* A newer verified build is known (main/ls_ota.c publishes ota.notify). */
+static bool update_known(void)
+{
+    ls_val_t v;
+    return ls_value_read("ota.notify", &v, NULL) && v.kind == LS_VAL_INT && v.i != 0;
+}
 
 static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
 {
@@ -55,6 +63,7 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
             out[n].icon = a->icon;
             out[n].hue  = a->hue;
             out[n].live = a->live ? a->live() : false;
+            out[n].badge = !strcmp(a->id, "update") && update_known();
             n++;
         }
     }
@@ -134,7 +143,8 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_sel >= n) s_sel = n ? n - 1 : 0;
 
     ls_btn_t groups[4];
-    for (int i = 0; i < 4; i++) groups[i] = (ls_btn_t){GROUPS[i], ls_tui_is_wide()?(const char *const[]){"F1","F2","F3","F4"}[i]:NULL, 0, s_group == i, false};
+    const bool news = update_known();
+    for (int i = 0; i < 4; i++) groups[i] = (ls_btn_t){GROUPS[i], ls_tui_is_wide()?(const char *const[]){"F1","F2","F3","F4"}[i]:NULL, 0, s_group == i, false, news && !strcmp(GROUPS[i], "SYSTEM")};
     const int bar_h = ls_btn_raised_height(area, 4);
     ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, 4, -1);
     tui_rect body=tui_rect_make(area.x,area.y+bar_h,area.w,area.h-bar_h-1);

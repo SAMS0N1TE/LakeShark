@@ -48,6 +48,8 @@ static const char *TAG = "scaneng";
    for a scan step and a priority sample. */
 #define NFM_SETTLE_MS    100
 #define NFM_MEASURE_MS   100
+/* Tone-qualified memories need a full detector window after carrier opens. */
+#define NFM_TONE_MEASURE_MS 650
 
 static volatile bool s_enabled = false;
 /* Set across the autosquelch sweep, which tunes as fast as a scan does. */
@@ -240,7 +242,10 @@ static void tune_to(const scan_channel_t *c)
 {
     /**/
     if (c->mode == SCAN_MODE_P25) p25_request_tune(c->freq_hz, true);
-    else                          lakeshark_fm_tune_transient(c->freq_hz);
+    else {
+        lakeshark_fm_tune_transient(c->freq_hz);
+        FM.tone_required = scan_channel_tone(c);
+    }
 }
 
 /**/
@@ -250,7 +255,7 @@ static int rx_power_pct(int mode)
     return (int)(v * 100.0f + 0.5f);
 }
 
-/* P25 has a sync word to converge on; NFM has only carrier/squelch. */
+/* P25 converges on sync; NFM publishes its carrier and receive-tone gate. */
 /**/
 /* FM.squelch_open IS ONLY MAINTAINED IN FM_MODE_LISTEN. */
 
@@ -263,7 +268,7 @@ static bool carrier_held(int mode)
 
 /**/
 /* Is a measured channel worth stopping on.
-   NFM: the noise squelch, and only that. The peak IQ level cannot be compared
+   NFM: the combined noise and configured receive-tone gate. Peak IQ level cannot be compared
    with the squelch setting, they are different quantities: the level reads
    about 3% on dead air and 5% on a strong broadcast, while the setting is a
    noise gate in percent with a default of 30. The old peak-against-squelch
@@ -712,7 +717,7 @@ static int priority_sample(void)
         const bool nfm = c->mode == SCAN_MODE_NFM;
         bool carrier = false;
         int pk = measure_peak(nfm ? NFM_SETTLE_MS : PRI_SETTLE_MS,
-                              nfm ? NFM_MEASURE_MS : PRI_MEASURE_MS, c->mode, &carrier);
+                              nfm ? (scan_channel_tone(c) ? NFM_TONE_MEASURE_MS : NFM_MEASURE_MS) : PRI_MEASURE_MS, c->mode, &carrier);
         if (!s_enabled || !scan_foreground()) return -1;
         /**/
         if (signal_present(c->mode, pk, carrier)) return i;
@@ -918,7 +923,7 @@ static void scan_task(void *arg)
         mark = esp_timer_get_time();
         bool carrier = false;
         int pwi = measure_peak(c->mode == SCAN_MODE_NFM ? NFM_SETTLE_MS : SETTLE_MS,
-                               c->mode == SCAN_MODE_NFM ? NFM_MEASURE_MS : MEASURE_MS,
+                               c->mode == SCAN_MODE_NFM ? (scan_channel_tone(c) ? NFM_TONE_MEASURE_MS : NFM_MEASURE_MS) : MEASURE_MS,
                                c->mode, &carrier);
         s_pass.measure_us += esp_timer_get_time() - mark;
         if (pwi > s_pk_acc) s_pk_acc = pwi;

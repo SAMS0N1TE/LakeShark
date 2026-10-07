@@ -20,6 +20,7 @@
 #include "ls_app.h"
 #include "ls_app_docs.h"
 #include "ls_notify.h"
+#include "ls_route_live.h"
 #include "ls_icons.h"
 #include "ls_theme.h"
 #include "ls_value.h"
@@ -34,6 +35,11 @@
 #include "ls_experiments.h"
 #include "apps/adsb/adsb_state.h"
 #include "apps/fm/fm_state.h"
+#include "apps/fm/same_store.h"
+#include "apps/fm/aprs_store.h"
+#include "apps/fm/ais_store.h"
+#include "dmr_watch.h"
+#include "dmr_gen.h"
 
 /* ---------------------------------------------------------- the panel -- */
 
@@ -174,7 +180,7 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
                              ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments,
-                             ls_scr_terminal;
+                             ls_scr_terminal, ls_scr_update;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
@@ -204,6 +210,8 @@ static const ls_app_t APPS[] = {
       LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
     { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_terminal, NULL, &ls_doc_terminal },
+    { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
+      LS_APP_EXTRA, &ls_scr_update, NULL, &ls_doc_update },
     { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
       LS_APP_EXTRA, &ls_scr_settings, NULL, &ls_doc_settings },
     { "gps",  "GPS",  "position",  LS_ICON_SAT,   TUI_YELLOW,
@@ -376,6 +384,26 @@ static void feed_adsb(void)
     adsb_select_set_icao(SEED[0].icao);
 }
 
+/* Receive metadata fixtures reach the same symbol observer as firmware. */
+static void seed_dmr(void)
+{
+    static const uint8_t sync[6] = {0xDF,0xF5,0x7D,0x75,0xDF,0x5D};
+    static const uint8_t cach[2][3] = {{0x80,0x02,0x02},{0x88,0x00,0x20}};
+    dmr_watch_reset();
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        uint8_t frame[36];
+        memcpy(frame, cach[slot], 3);
+        dmr_lc_t lc = {.source = 1234567 + slot, .destination = slot ? 16777215 : 2051,
+                       .service_options = slot ? 0x40 : 0};
+        dmr_gen_burst(frame + 3, sync, 7, 1, &lc);
+        for (unsigned i = 0; i < 288; i += 2) {
+            unsigned hi = (frame[i/8] >> (7-i%8)) & 1;
+            unsigned lo = (frame[i/8] >> (6-i%8)) & 1;
+            dmr_watch_symbol(hi ? (lo ? -3600 : -1200) : (lo ? 3600 : 1200), 0, 2400, -2400);
+        }
+    }
+}
+
 /* -------------------------------------------------------------- driving -- */
 
 /* State advances between frames, not only at seed time.
@@ -513,6 +541,7 @@ static bool named_key(const char *name, ls_tk_t *out)
         { "enter", LS_TK_ENTER }, { "esc",   LS_TK_ESC   },
         { "tab",   LS_TK_TAB   }, { "mic",   LS_TK_MIC   },
         { "backspace", LS_TK_BACKSPACE },
+        { "f1", LS_TK_F1 }, { "f2", LS_TK_F2 }, { "f3", LS_TK_F3 }, { "f4", LS_TK_F4 },
     };
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
         if (!strcmp(name, NAMES[i].name)) { *out = NAMES[i].key; return true; }
@@ -536,7 +565,7 @@ static void usage(void)
     printf("            left,right,up,down,enter,esc,tab,mic  (before -k)\n");
     printf("  -x SCRIPT comma separated, in order, after -K and -k:\n");
     printf("            COL:ROW taps a cell, +text types it (_ is space),\n");
-    printf("            @name presses a named key\n");
+    printf("            @name presses a named key, ~N waits N frames\n");
     printf("  -f N      frames to settle (default 3)\n");
     printf("  -d        also print the cell grid as text\n");
     printf("  -e        empty: no radio, no map - the idle branches\n");
@@ -544,12 +573,19 @@ static void usage(void)
     printf("            -f then counts frames into the banner's own life\n");
     printf("  -F N      font index: 0 is 10x17, 1 is 9x16, 2 is 15x26\n");
     printf("  -m FILE   a .pmtiles archive instead of the fixture\n");
+    printf("  -g FILE   load a GPX route into MAP and COMPASS\n");
     printf("  -T N      time N frames of this screen and print us/frame\n");
     printf("  -P N      the same, panning between frames\n");
     printf("  -A MS     advance the clock MS per frame, so time-based\n");
     printf("            animation moves (default 0: one frozen instant)\n");
     printf("  -C        census: enter every screen, count the value and\n");
     printf("            action tables, exit 1 on a refusal or too little room\n");
+    printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
+    printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
+    printf("  LSSIM_TONE=1..258 seeds a detected receive tone in FM\n");
+    printf("  LSSIM_RS41=1 seeds EXPERIMENTS and MAP with sonde flight tracks\n");
+    printf("  LSSIM_AIS=1 seeds FM and MAP with receive-only vessels\n");
+    printf("  LSSIM_APRS=1 seeds FM and MAP with stations, weather and messages\n");
 }
 
 /* lssim play REC OUT: a recording from the board ('tui rec', gathered by
@@ -673,7 +709,7 @@ int main(int argc, char **argv)
     bool empty = false;
     bool daylight = false;              /* */
     int font = 0;
-    const char *maparc = NULL;
+    const char *maparc = NULL, *route_path = NULL;
     int settle = 3;
     int timed = 0;
     bool moving = false;
@@ -696,6 +732,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-F") && i + 1 < argc)
             font = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) maparc = argv[++i];
+        else if (!strcmp(argv[i], "-g") && i + 1 < argc) route_path = argv[++i];
         else if (!strcmp(argv[i], "-A") && i + 1 < argc)
             s_step_us = (int64_t)atoi(argv[++i]) * 1000;
         else if (!strcmp(argv[i], "-T") && i + 1 < argc) timed = atoi(argv[++i]);
@@ -746,9 +783,66 @@ int main(int argc, char **argv)
 
     void lssim_seed_state(void);
     lssim_seed_state();
+    if (getenv("LSSIM_DMR")) seed_dmr();
+    if (getenv("LSSIM_TONE")) {
+        unsigned tone = (unsigned)atoi(getenv("LSSIM_TONE"));
+        FM.mode = FM_MODE_LISTEN;
+        FM.tone_show = true;
+        FM.tone_required = tone < FM_TONE_CHOICES ? tone : 0;
+        FM.tone_detected = (fm_tone_result_t){FM.tone_required, 0.95f};
+    }
+    if (getenv("LSSIM_AIS")) {
+        ais_store_clear(); FM.mode = FM_MODE_AIS; FM.freq_hz = AIS_CENTER_HZ;
+        static ais_vessel_t v;
+        for (int i = 0; i < 4; ++i) {
+            memset(&v, 0, sizeof(v)); v.mmsi = 366123450+i;
+            v.fields = AIS_POSITION | AIS_MOTION | AIS_NAME | AIS_STATIC | AIS_VOYAGE;
+            v.message = i&1 ? 18 : 1; v.channel = i&1; v.position = true;
+            v.lat = 43.448+0.002*i; v.lon = -71.656+0.004*i;
+            v.sog = 75+30*i; v.cog = 450+700*i; v.heading = v.cog/10;
+            v.ship_type = i&1 ? 37 : 70; v.nav_status = i ? 0 : 5;
+            snprintf(v.name, sizeof(v.name), "%s", i&1 ? "SEA TEST" : "LAKESHARK");
+            snprintf(v.callsign, sizeof(v.callsign), "WDC123%d", i);
+            snprintf(v.destination, sizeof(v.destination), "BOSTON");
+            ais_store_receive(&v, NULL);
+        }
+    }
+    if (getenv("LSSIM_APRS")) {
+        static aprs_packet_t p;
+        static const char *const packets[] = {
+            "!4326.80N/07139.50W>Mobile / receive only",
+            "!4327.10N/07139.80W_180/010g020t072h50b10132",
+            ";TRAIL    *071234z4327.30N/07139.10W>Trailhead",
+            ":ANYONE   :Meet at the trailhead{12",
+            ">Listening on 144.390 MHz"
+        };
+        static const char *const calls[] = { "N0CALL-7", "WX1BOX", "N1OBJ", "N2MSG", "N3STAT" };
+        aprs_store_clear();
+        FM.mode = FM_MODE_APRS; FM.freq_hz = 144390000;
+        for (int i = 0; i < 5; ++i) {
+            aprs_parse(calls[i], "APRS", (const uint8_t *)packets[i], strlen(packets[i]), &p);
+            aprs_store_receive(&p, NULL);
+        }
+    }
+    /* Exercise the production alert view, including quiet tests and EOM. */
+    if (getenv("LSSIM_SAME")) {
+        static same_alert_t a;
+        FM.mode = FM_MODE_SAME;
+        same_options_t o = {.include_tests = true};
+        same_options_set(&o);
+        same_parse("ZCZC-WXR-RWT-025017+0015-2801400-KBOX/NWS-", &a);
+        same_store_receive(&a, NULL);
+        a.ended = true; same_store_receive(&a, NULL);
+        same_parse("ZCZC-WXR-TOR-025017-025021+0030-2801430-KBOX/NWS-", &a);
+        same_store_receive(&a, NULL);
+        /* Fixtures start with the list visible, without a banner obscuring it. */
+        same_store_notice(&a);
+    }
 
     ls_value_publish_builtin();
     ls_action_register_builtin();
+    void lssim_ota_publish(void);
+    lssim_ota_publish();          /* what main/ls_ota.c publishes on the board */
     for (int i = 0; i < N_APPS; i++) ls_app_register(&APPS[i]);
 
     /* The same four the firmware puts on the strip, by the same ids.
@@ -797,6 +891,17 @@ int main(int argc, char **argv)
                 LS_VALUE_MAX - nv < SPARE || LS_ACTION_MAX - na < SPARE) ? 1 : 0;
     }
 
+    if (route_path && !ls_route_live_load(route_path,false)) {
+        fprintf(stderr,"lssim: cannot load route %s\n",route_path);return 1;
+    }
+    if (getenv("LSSIM_RS41")) {
+        extern void lssim_seed_rs41(void);
+        lssim_seed_rs41();
+        if (!strcmp(want,"experiments")) {
+            extern const ls_experiment_t exp_rs41;
+            ls_exp_register_builtin(); ls_exp_start(&exp_rs41); ls_exp_service();
+        }
+    }
     ls_tui_screen_show(idx);
     if (replay_path) {
         subghz_file_t file;
@@ -863,6 +968,10 @@ int main(int argc, char **argv)
                 frame(1);
                 continue;
             }
+            if (tok[0] == '~') {                 /* let something finish: a map drawing */
+                frame(atoi(tok + 1) > 0 ? atoi(tok + 1) : 1);
+                continue;
+            }
             int tc = -1, tr = -1;
             if (sscanf(tok, "%d:%d", &tc, &tr) != 2 || tc < 0 || tr < 0) {
                 printf("lssim: bad tap '%s', want COL:ROW\n", tok);
@@ -872,6 +981,12 @@ int main(int argc, char **argv)
             frame(1);
         }
         frame(settle);
+    }
+
+    {
+        void lssim_ota_notice(void);
+        lssim_ota_notice();
+        if (getenv("LSSIM_OTA_NOTICE")) frame(settle);
     }
 
     if (notice) {
@@ -909,7 +1024,21 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (dump) dump_grid(stdout);
+    if (dump) {
+        dump_grid(stdout);
+#ifdef LS_MAP_AUDIT
+        if (!strcmp(want, "map")) {
+            extern int ls_map_label_audit(int *labels);
+            int labels = 0;
+            const int bad = ls_map_label_audit(&labels);
+            printf("label audit: %d labels, %d overlaps\n", labels, bad);
+        }
+#endif
+        if (getenv("LSSIM_RS41")) {
+            extern void lssim_report_rs41_target(void);
+            lssim_report_rs41_target();
+        }
+    }
 
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);

@@ -85,6 +85,8 @@ bool      ls_lora_present(void);
    reports success. Call this when the part's power or reset is touched by
    anything other than this driver. */
 void      ls_lora_stop(void);
+/* Hold reset after TX completes; return failures without claiming shutdown. */
+esp_err_t ls_lora_park(void);
 
 /* Raw status byte from GetStatus. SX126x: bits 6:4 are the chip mode, 3:1 the
    last command status; both being 0 or both being 7 means nothing is

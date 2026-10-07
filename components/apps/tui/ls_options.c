@@ -97,7 +97,9 @@ void ls_opt_value(const ls_opt_t *o, char *out, size_t n)
         break;
     case LS_OPT_TEXT: {
         const char *t = o->text ? o->text(o) : NULL;
-        snprintf(out, n, "%s", t ? t : "");
+        /* Empty is still a row that opens an editor: show the chevron the
+           submenu rows show, not a blank. */
+        snprintf(out, n, "%s", t && t[0] ? t : ">");
         break;
     }
     case LS_OPT_ACTION:
@@ -145,7 +147,8 @@ static void fill(const ls_opt_ctx_t *ctx)
         if (!row_for(o, radio)) continue;
         detail(o, d, sizeof(d));
         ls_picker_add(o->label, d);
-        if (o->kind == LS_OPT_LEVEL && !(o->why_not && o->why_not(o)))
+        if ((o->kind == LS_OPT_LEVEL || (o->kind == LS_OPT_CYCLE && o->step > 0)) &&
+            !(o->why_not && o->why_not(o)))
             ls_picker_stepper(s_rows, stepped);
         s_row_opt[s_rows++] = (uint8_t)i;
     }
@@ -185,8 +188,15 @@ static const ls_opt_t *row_opt(int row)
 static void stepped(int row, int dir)
 {
     const ls_opt_t *o = row_opt(row);
-    if (!o || !o->num || !o->set_num) return;
+    if (!o) return;
     if (o->why_not && o->why_not(o)) return;
+    if (o->kind == LS_OPT_CYCLE) {
+        if (!o->get || !o->set || o->n <= 0) return;
+        o->set(o, (o->get(o) + dir + o->n) % o->n);
+        reopen(row, NULL);
+        return;
+    }
+    if (!o->num || !o->set_num) return;
     const double step = o->step > 0 ? o->step : 1;
     double v = o->num(o) + dir * step;
     if (o->lo < o->hi) {

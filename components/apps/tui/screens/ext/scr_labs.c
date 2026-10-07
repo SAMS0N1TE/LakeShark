@@ -1,6 +1,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_field.h"
+#include "../../ls_labs_limits.h"
 #include "../../ls_compass.h"
 #include "../../ls_motion.h"
 #include "../../ls_keyboard.h"
@@ -280,11 +281,14 @@ static void set_fsk_number(double n)
         result(ls_field_configure(&tuned));
         return;
     }
-    case 1: cfg.bitrate = (uint32_t)llround(n); break;
-    case 2: cfg.deviation_hz = (uint32_t)llround(n); break;
-    case 3: cfg.bandwidth_hz = (uint32_t)llround(n); break;
-    case 4: cfg.sync_word = (uint32_t)llround(n); break;
-    case 5: cfg.payload_bytes = (uint8_t)llround(n); break;
+    case 1: case 2: case 3: case 4: case 5:
+        if (!ls_labs_fsk_number(n, s_fsk_setting == 5 ? 1 : 4)) { result(false); return; }
+        if (s_fsk_setting == 1) cfg.bitrate = (uint32_t)n;
+        else if (s_fsk_setting == 2) cfg.deviation_hz = (uint32_t)n;
+        else if (s_fsk_setting == 3) cfg.bandwidth_hz = (uint32_t)n;
+        else if (s_fsk_setting == 4) cfg.sync_word = (uint32_t)n;
+        else cfg.payload_bytes = (uint8_t)n;
+        break;
     default: return;
     }
     /* Limits, including that the signal fits the bandwidth, are the

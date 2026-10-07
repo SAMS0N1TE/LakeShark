@@ -7,6 +7,7 @@
    ls_lora.h for why BUSY and DIO1 shape all of it. */
 #include "ls_lora.h"
 #include "ls_lora_priv.h"
+#include "ls_board_hw.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -359,6 +360,11 @@ static esp_err_t identify_locked(bool last)
         if (lr20xx_probe(&info) == ESP_OK) {
             if (!ensure_pkt()) return ESP_ERR_NO_MEM;
             lr20xx_bind(&info);
+            const esp_err_t init_err = lr20xx_initialize();
+            if (init_err != ESP_OK) {
+                ls_lora_lr20xx_ops.stop();
+                return init_err;
+            }
             s_ops = &ls_lora_lr20xx_ops;
             s_chip = LS_LORA_CHIP_LR20XX;
             s_present = true;
@@ -479,6 +485,16 @@ esp_err_t ls_lora_start(void)
    says which is bound. */
 bool ls_lora_present(void) { return s_present && (s_ops->caps() & LS_LORA_CAP_LORA) != 0; }
 
+esp_err_t ls_lora_park(void)
+{
+    ls_lora_hw_lock();
+    esp_err_t err = !s_ops->send_done() ? ESP_ERR_INVALID_STATE :
+        ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
+    if (err == ESP_OK) ls_lora_stop();
+    ls_lora_hw_unlock();
+    return err;
+}
+
 void ls_lora_stop(void)
 {
     /* The SPI device is left registered on purpose: the bus is shared and
@@ -553,7 +569,7 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
 esp_err_t ls_lora_receive(void) { LOCKED_RET(esp_err_t, s_ops->receive()); }
 bool ls_lora_is_receiving(void) { return s_ops->is_receiving(); }
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
-{ LOCKED_RET(esp_err_t, s_ops->send(data, len)); }
+{ LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->send(data, len) : ESP_ERR_INVALID_STATE); }
 /* Polls the part's IRQ word and clears it, so it is a bus sequence. */
 bool ls_lora_send_done(void) { LOCKED_RET(bool, s_ops->send_done()); }
 
@@ -568,7 +584,7 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
-{ LOCKED_RET(esp_err_t, s_ops->fsk_send(data, len)); }
+{ LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->fsk_send(data, len) : ESP_ERR_INVALID_STATE); }
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
 bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
@@ -736,6 +752,7 @@ void ls_lora_diagnostics(void)
 
 esp_err_t ls_lora_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 void      ls_lora_stop(void) { }
+esp_err_t ls_lora_park(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool      ls_lora_present(void) { return false; }
 ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_NONE; }
 const char *ls_lora_chip_name(void) { return "none"; }

@@ -9,6 +9,7 @@
 #include "ls_spi.h"
 #include "ls_mixrf.h"
 #include "ls_lora.h"
+#include "ls_lora_lr20xx.h"
 #include "adsb_app.h"
 #include "tui/ls_field.h"
 #include "tui/ls_experiments.h"
@@ -77,6 +78,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "ls_flash_task.h"
 #include "nvs.h"
 #include "ls_wifi.h"
+#include "ls_ota.h"
 #include "tui/ls_wireless.h"
 /* No LVGL shell headers: see compact_ui_start. */
 extern "C" {
@@ -819,7 +821,8 @@ static bool tui_session(void)
                                  ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
                                  ls_scr_notes, ls_scr_compass, ls_scr_music,
-                                 ls_scr_files, ls_scr_experiments, ls_scr_terminal;
+                                 ls_scr_files, ls_scr_experiments, ls_scr_terminal,
+                                 ls_scr_update;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -830,6 +833,7 @@ static bool tui_session(void)
            to both by name and to neither by symbol. */
         ls_action_register_builtin();
         ls_cell_publish();
+        ls_ota_publish();
 
         static const ls_app_t APPS[] = {
             { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
@@ -875,6 +879,8 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_diag, nullptr, &ls_doc_diag },
             { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_terminal, nullptr, &ls_doc_terminal },
+            { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_update, nullptr, &ls_doc_update },
             { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_settings, nullptr, &ls_doc_settings },
 
@@ -2087,6 +2093,10 @@ static int labs_cmd(int argc, char **argv)
 
 static int lora_cmd(int argc, char **argv)
 {
+#if LS_HAS_LORA_LR20XX_PROBE
+    const int lr_clock = lr20xx_clock_command(argc, argv);
+    if (lr_clock >= 0) return lr_clock;
+#endif
     if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
     if (argc > 1 && (!strcmp(argv[1], "pocsag") || !strcmp(argv[1], "fsk")))
         return sx1262_receive_command(argc, argv);
@@ -2676,6 +2686,8 @@ static int mixrf_cmd(int argc,char **argv)
 static int gps_cmd(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "baud")) { ls_gps_scan_baud(); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "sky"))  { ls_gps_print_sky(); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "raw"))  { ls_gps_print_raw(); return 0; }
     ls_gps_diagnostics();
     return 0;
 }
@@ -2988,11 +3000,12 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     if (nvs_open("compact_ui",NVS_READONLY,&h)==ESP_OK) {
         uint8_t r=0; nvs_get_u8(h,"rotation",&r); nvs_close(h); if(r<4)s_rotation=r;
     }
-    display_ctl_init();
     /* Dark until the TUI has a frame up, and lit on its first present,
        so the boot reads as deliberate. there is no longer an old
-       interface behind it to hide - only an empty buffer. */
+       interface behind it to hide - only an empty buffer. 0 is dark, not
+       the dimmest lit level, and display_ctl_init leaves it there. */
     ls_panel_set_brightness(0);
+    display_ctl_init();
     /* Command descriptors are immutable.  Keeping them automatic made this
        late boot function reserve all of them on the 3.5 KB IDF main stack,
        on top of console_start's full command table. */
@@ -3025,6 +3038,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .help="Invoke a named action. Bare 'call' lists them.",
         .hint="<action> [args...]",.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
+    ls_ota_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 
@@ -3043,7 +3057,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=nullptr,.func=mixrf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mixrf);
     static const esp_console_cmd_t gps={.command="gps",
-        .help="GPS: report fix and sentence health. 'gps baud' listens at each rate and dumps the wire",
+        .help="GPS: report fix, sentence health, tracked satellites, C/N0 and antenna. 'gps sky' lists each satellite, 'gps raw' prints the last lines as received, 'gps baud' listens at each rate and dumps the wire",
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
     static const esp_console_cmd_t lora={.command="lora",

@@ -124,15 +124,28 @@ ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], co
     l->P[ZI][ZI] += Z_WALK * dt;
 
     float rh, rv, hh[LS_CL_N], hv[LS_CL_N];
-    if (!residuals(l, f, down, a, &rh, hh, &rv, hv)) return LS_CL_SKIPPED;
     /* Both facts are judged before either is taken, so a reading bent by
-       steel is refused whole. */
-    if (update(l, hh, rh, SIGMA_H_UT, false) < 0 || update(l, hv, rv, SIGMA_V_UT, false) < 0) {
+       steel is refused whole. One that cannot be judged at all is refused
+       too: with no current change to tell the current's term from the
+       offset, the two can carry the vertical field up to the radius, which
+       leaves no horizontal field to judge any reading by, and skipped it
+       would stay that way. */
+    const bool judged = residuals(l, f, down, a, &rh, hh, &rv, hv);
+    if (!judged || update(l, hh, rh, SIGMA_H_UT, false) < 0 || update(l, hv, rv, SIGMA_V_UT, false) < 0) {
         l->refused++;
         l->refused_s += dt;
         if (l->refused_s >= LS_CL_RELEARN_S) {
             for (int i = 0; i < 3; i++) l->P[D0 + i][D0 + i] += RELEARN_UT * RELEARN_UT;
             l->P[ZI][ZI] += Z_SIGMA0 * Z_SIGMA0;
+            /* A vertical field no reading can be judged against starts
+               again from this reading's, as at the start, kept inside the
+               range where one can. */
+            if (!(l->radius * l->radius - l->x[ZI] * l->x[ZI] > 0.05f * l->radius * l->radius)) {
+                const float zmax = 0.95f * l->radius;
+                float z = 0;
+                for (int i = 0; i < 3; i++) z += (f[i] - l->x[D0 + i] - l->x[K0 + i] * a) * down[i];
+                l->x[ZI] = z > zmax ? zmax : z < -zmax ? -zmax : z;
+            }
             l->refused_s = 0;
             l->relearns++;
             l->sectors = 0;

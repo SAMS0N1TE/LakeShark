@@ -1,4 +1,5 @@
 #include "../../ls_tui_screen.h"
+#include "../../ls_scan_look.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_numpad.h"
 #include "../../ls_picker.h"
@@ -374,8 +375,9 @@ static void menu_add(char id, const char *label, const char *detail)
    in both directions: too much for a receiver on the bench a foot away, and
    not enough for the thing you are actually trying to reach. The four steps
    are the radio's own, and the list says what each one is for rather than
-   leaving the operator to know what a dBm is. */
-static const int REPLAY_DBM[] = {-9, 0, 14, 22};
+   leaving the operator to know what a dBm is. Replay stops at +10 dBm on
+   every radio (subghz_tx_refusal). */
+static const int REPLAY_DBM[] = {-9, 0, 5, 10};
 static const int OOK_DBM[] = {-10, 0, 5, 10};
 static void replay_power_done(int index)
 {
@@ -392,7 +394,7 @@ static void replay_power_done(int index)
 }
 static void replay_power_open(void)
 {
-    static const char *const LABEL[] = {"-9 dBm","0 dBm","14 dBm","22 dBm"};
+    static const char *const LABEL[] = {"-9 dBm","0 dBm","5 dBm","10 dBm"};
     static const char *const WHY[] = {
         "Bench test, a few feet",
         "Same room",
@@ -519,6 +521,12 @@ static char scan_glyph(int level, int eighths)
              : level >= 6  ? LS_TUI_SHADE_50 : LS_TUI_SHADE_25;
     }
 }
+
+/* The same look, for the other plots that want to read like this one. */
+void ls_scan_look_load(void) { scan_look_load(); }
+uint8_t ls_scan_colour(float over, float span) { return scan_colour(over, span); }
+int ls_scan_level(float over, float span) { return scan_level(over, span); }
+char ls_scan_glyph(int level, int eighths) { return scan_glyph(level, eighths); }
 
 /* SOMETHING HAPPENED, said without sound or vibration.
 
@@ -1336,6 +1344,12 @@ static void saved_open(void)
            Flipper's - carries no rate or sync word for the SX1262 to rebuild
            a packet from. The Flipper sends it as it is. */
         const bool custom=strstr(player_sub.preset,"Custom")!=NULL;
+        const char *why=subghz_tx_refusal(player_sub.freq_hz,0,
+            (size_t)player_sub.edges_total,player_sub.span_us);
+        if(why && !ls_rec_player_busy()) {
+            snprintf(feedback,sizeof(feedback),"Replay refused: %s",why);
+            return;
+        }
         snprintf(feedback,sizeof(feedback),"%s",ls_rec_player_busy()?"A replay is still sending":
                  custom?"Custom FSK preset - send this one from the Flipper":
                  "Not a RAW file this board can send");

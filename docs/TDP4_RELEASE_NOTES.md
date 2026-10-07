@@ -1,5 +1,28 @@
 # LakeShark release notes
 
+## 2.9.0
+
+- Updates over WiFi: UPDATE in SYSTEM checks for a newer build and installs it with one tap. Updates are signed, and a build that does not start is rolled back to the one before it.
+- A daily check in the background shows a NEW tag on SYSTEM and UPDATE when a newer build is out. Builds come from ota.terminalbay.com.
+- Install 2.9.0 once with the web flasher or USB. The partition layout now holds two app slots, so this one install is not an update over WiFi. Storage is rewritten, as with every full install; settings and WiFi are kept. Later releases update over WiFi.
+- NOTES: a map picture in a new note is now saved.
+- ADS-B mini map: FOLLOW fits all aircraft, the selected one or the nearest, and the choice is kept.
+- EXPERIMENTS: a NOTE button and the N key save an experiment's readout to NOTES.
+- COMPASS: the heading now moves smoothly when the board is raised, with no jump between its top and its back.
+- New receivers: RS41 weather balloon sondes, AIS ship tracking, APRS, and SAME/EAS weather alerts.
+- CTCSS and DCS tone squelch for voice receive.
+- DMR view for digital voice activity. Encrypted traffic is shown as encrypted and is never decoded.
+- CALLS keeps an archive of heard calls.
+- Mesh INSPECT: trace a route, log in to a node and read its telemetry. LakeShark answers telemetry requests for peers you allow.
+- LINK SURVEY logs the Wi-Fi and BLE devices it hears, with position and best signal, to a CSV per walk.
+- Routes and GPX files can be followed on the map.
+- LR433 sensor readings keep a history.
+- LR2021: the radio now runs from the module's TCXO, as LilyGO's own driver does, for a steadier frequency. `lora lrclk xtal` returns to the old setting.
+- The antenna choice, internal or MMCX1, is kept after a reboot.
+- P25: one DECODE / SIGNAL window, the spectrum as a toggle tile, and full-size page tiles. CALLS tiles are taller.
+- Fixes in FILES, LABS, MIX-RF and FALLS.
+- Includes everything in [2.8.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.8.3).
+
 ## 2.8.3
 
 - The VOLUME controls on the P25 and FM screens show the volume again.

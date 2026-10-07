@@ -1,3 +1,4 @@
+#include "../../ls_calls.h"
 /* P25 screen. */
 
 #include "../../ls_tui_screen.h"
@@ -35,6 +36,7 @@ static char s_hint[80] = "LEFT/RIGHT tune  1/2/3 views  +/- volume";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 #include "../../ls_p25_settings.h"
+#include "../../ls_dmr_view.h"
 
 static int s_page;   /* 0 decode, 1 signal, 2 scanner */
 
@@ -209,6 +211,97 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     }
 }
 
+/* Rows the merged DECODE / SIGNAL window asks for in portrait: six lines
+   and a frame. */
+#define MERGED_ROWS 8
+
+static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
+              const char *v, uint8_t vattr)
+{
+    tui_put_str(sf, box, x, y, k, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    x += (int)strlen(k) + 1;
+    tui_put_str(sf, box, x, y, v, vattr);
+    return x + (int)strlen(v) + 3;
+}
+
+static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
+                        const char *mod, bool sync, float level, bool voice,
+                        const ls_iq_control_status_t *st)
+{
+    const uint8_t value = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t idle  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    const uint8_t warn  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    tui_box(sf, r, "DECODE / SIGNAL", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    const int inner = r.h - 2;
+    const int iw = r.w - 4;
+    if (inner < 1 || iw < 16) return;
+    const int x0 = r.x + 2;
+
+    char n[12], t[12], u[12], iq[32], rx[16];
+    if (nac > 0) snprintf(n, sizeof(n), "%03X", nac); else snprintf(n, sizeof(n), "---");
+    if (tg > 0) snprintf(t, sizeof(t), "%d", tg); else snprintf(t, sizeof(t), "---");
+    if (src > 0) snprintf(u, sizeof(u), "%d", src); else snprintf(u, sizeof(u), "---");
+
+    p25_acquisition_status_t acq;
+    p25_get_acquisition_status(&acq);
+    const uint32_t comps = acq.iq.sampled_pairs * 2u;
+    const int clip_pct = comps ? (int)((acq.iq.clipped_components * 100u) / comps) : 0;
+    const char *iqk = P25.lora_rx ? "RSSI" : "IQ";
+    if (P25.lora_rx) snprintf(iq, sizeof(iq), "%.0f dBm", (double)P25.lora_rssi_dbm);
+    else if (clip_pct >= P25_CLIP_SHOW_PCT)
+        snprintf(iq, sizeof(iq), "%.3f CLIP %d%%", (double)level, clip_pct);
+    else snprintf(iq, sizeof(iq), "%.3f", (double)level);
+    snprintf(rx, sizeof(rx), "%s", st->receiver_streaming ? "STREAMING" : "STOPPED");
+    const char *vs = voice_status();
+    const uint8_t iqattr = clip_pct >= P25_CLIP_SHOW_PCT ? warn : value;
+
+    /* Lines in reading order; the gauge is the first to go when rows run out,
+       because the IQ number says the same thing. */
+    int y = r.y + 1;
+    const int last = r.y + r.h - 2;
+    const bool gauge = inner >= 6;
+    /* Air between lines only when there is plenty. */
+    const int step = inner >= 11 ? 2 : 1;
+    int x;
+    #define ROW_OK() (y <= last)
+    if (ROW_OK()) {
+        x = kv(sf, r, x0, y, "NAC", n, nac > 0 ? value : idle);
+        x = kv(sf, r, x, y, "TG", t, tg > 0 ? value : idle);
+        if (voice && ((s_blink / 12) & 1) && x - 2 < r.x + r.w - 2)
+            tui_put_char(sf, r, x - 2, y, LS_TUI_SHADE_FULL, good);
+        y += step;
+    }
+    if (ROW_OK()) {
+        x = kv(sf, r, x0, y, "UNIT", u, src > 0 ? value : idle);
+        kv(sf, r, x, y, "MOD", mod[0] ? mod : "----", value);
+        y += step;
+    }
+    if (ROW_OK()) {
+        kv(sf, r, x0, y, "SYNC", sync ? "LOCKED" : "SEARCHING", sync ? good : idle);
+        y += step;
+    }
+    if (gauge && ROW_OK()) {
+        draw_iq_gauge(sf, tui_rect_make(x0, y, iw, 1), level);
+        y += step;
+    }
+    if (ROW_OK()) {
+        x = kv(sf, r, x0, y, iqk, iq, iqattr);
+        if (x - 3 + 3 + (int)strlen(rx) + 3 <= r.x + r.w - 2) {
+            kv(sf, r, x, y, "RX", rx, st->receiver_streaming ? good : idle);
+            rx[0] = 0;
+        }
+        y += step;
+    }
+    if (rx[0] && ROW_OK()) {
+        kv(sf, r, x0, y, "RX", rx, st->receiver_streaming ? good : idle);
+        y += step;
+    }
+    if (ROW_OK())
+        kv(sf, r, x0, y, "AUDIO", vs, P25.p25_enc_muted ? warn : idle);
+    #undef ROW_OK
+}
+
 static void draw_decode(tui_surface *sf, tui_rect area)
 {
     /* One read, at the top. See the header note. */
@@ -225,7 +318,6 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     const uint8_t label = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t value = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t idle  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
     if (area.w < 20 || area.h < 3) return;
@@ -273,25 +365,15 @@ static void draw_decode(tui_surface *sf, tui_rect area)
                     scan_engine_active() ? value : idle);
     }
 
+    /* One window for what is decoded and how well it is received. It was
+       two boxes in portrait (DECODE, SIGNAL) and a spectrum page behind a
+       tab; the numbers a thumb watches sit together now. */
+    tui_rect mbox = wide ? detail
+        : tui_rect_make(detail.x, detail.y, detail.w,
+                        detail.h < MERGED_ROWS ? detail.h : MERGED_ROWS);
+    if (mbox.h >= 3)
+        draw_merged(sf, mbox, nac, tg, src, mod, sync, level, voice, &st);
     if (wide) {
-        tui_box(sf, detail, "DECODE / SIGNAL", frame);
-        char line[80];
-        if (nac > 0 && tg > 0) snprintf(line, sizeof(line), "NAC %03X   TG %d", nac, tg);
-        else if (nac > 0) snprintf(line, sizeof(line), "NAC %03X   TG ---", nac);
-        else if (tg > 0) snprintf(line, sizeof(line), "NAC ---   TG %d", tg);
-        else snprintf(line, sizeof(line), "NAC ---   TG ---");
-        tui_put_str(sf, detail, detail.x + 2, detail.y + 1, line, value);
-        if (src > 0) snprintf(line, sizeof(line), "UNIT %d   MOD %s", src, mod[0] ? mod : "----");
-        else snprintf(line, sizeof(line), "UNIT ---   MOD %s", mod[0] ? mod : "----");
-        tui_put_str(sf, detail, detail.x + 2, detail.y + 2, line, value);
-        snprintf(line, sizeof(line), "SYNC %s", sync ? "LOCKED" : "SEARCHING");
-        tui_put_str(sf, detail, detail.x + 2, detail.y + 3, line, sync ? good : idle);
-        draw_iq_gauge(sf, tui_rect_make(detail.x + 2, detail.y + 5,
-                                        detail.w - 4, 1), level);
-        snprintf(line, sizeof(line), "RX %s   AUDIO %s",
-                 st.receiver_streaming ? "STREAMING" : "STOPPED", voice_status());
-        tui_put_str(sf, detail, detail.x + 2, detail.y + 7, line,
-                    st.receiver_streaming ? good : idle);
         int ah = area.h - top_h;
         if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h, area.w, ah);
         if (ah >= 7 && area.w >= 92) {
@@ -299,65 +381,10 @@ static void draw_decode(tui_surface *sf, tui_rect area)
             draw_receiver_health(sf, tui_rect_make(activity.x + activity.w + 1,
                 activity.y, area.w - activity.w - 1, ah));
         }
-    } else if (detail.h > 0) {
-        tui_rect decode = detail;
-        decode.h = detail.h < 8 ? detail.h : 8;
-        tui_box(sf, decode, "DECODE", frame);
-        if (nac > 0) snprintf(buf, sizeof(buf), "%03X", nac); else snprintf(buf, sizeof(buf), "---");
-        field(sf, decode, 1, "NAC", buf, label, nac > 0 ? value : idle);
-        if (tg > 0) snprintf(buf, sizeof(buf), "%d", tg); else snprintf(buf, sizeof(buf), "--");
-        field(sf, decode, 2, "TG", buf, label, tg > 0 ? value : idle);
-        if (voice && ((s_blink / 12) & 1))
-            tui_put_char(sf, decode, decode.x + 10 + (int)strlen(buf) + 1,
-                         decode.y + 2, LS_TUI_SHADE_FULL, good);
-        if (src > 0) snprintf(buf, sizeof(buf), "%d", src); else snprintf(buf, sizeof(buf), "--");
-        field(sf, decode, 3, "SRC", buf, label, src > 0 ? value : idle);
-        field(sf, decode, 4, "MOD", mod[0] ? mod : "----", label, value);
-        field(sf, decode, 5, "SYNC", sync ? "LOCKED" : "searching", label,
-              sync ? good : idle);
-
-        int remain = detail.h - decode.h;
-        tui_rect signal = tui_rect_make(area.x, decode.y + decode.h, area.w,
-                                        remain < 9 ? remain : 9);
-        if (signal.h > 0) {
-            tui_box(sf, signal, "SIGNAL", frame);
-            int bw = signal.w - 4;
-            int lit = (int)(level * (float)bw);
-            if (lit < 0) lit = 0;
-            if (lit > bw) lit = bw;
-            for (int i = 0; i < bw; i++)
-                tui_put_char(sf, signal, signal.x + 2 + i, signal.y + 2,
-                             i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
-                             TUI_ATTR(i < lit ? TUI_GREEN | TUI_BRIGHT
-                                              : TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
-            /* Level alone does not separate a strong signal from a front end
-               being driven into its rails, and both read near 1.0. The share
-               of samples pinned at 0 or 255 does, so it sits on the same
-               line once there is enough of it to matter. */
-            p25_acquisition_status_t acq;
-            p25_get_acquisition_status(&acq);
-            const uint32_t comps = acq.iq.sampled_pairs * 2u;
-            const int clip_pct = comps
-                ? (int)((acq.iq.clipped_components * 100u) / comps) : 0;
-            if (P25.lora_rx)
-                snprintf(buf, sizeof(buf), "%.0f dBm", (double)P25.lora_rssi_dbm);
-            else if (clip_pct >= P25_CLIP_SHOW_PCT)
-                snprintf(buf, sizeof(buf), "%.3f  CLIP %d%%",
-                         (double)level, clip_pct);
-            else
-                snprintf(buf, sizeof(buf), "%.3f", (double)level);
-            field(sf, signal, 4, P25.lora_rx ? "RSSI" : "IQ", buf, label,
-                  clip_pct >= P25_CLIP_SHOW_PCT
-                      ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : value);
-            field(sf, signal, 6, "RX", st.receiver_streaming ? "STREAMING" : "stopped",
-                  label, st.receiver_streaming ? good : idle);
-            field(sf, signal, 7, "AUDIO", voice_status(), label,
-                  P25.p25_enc_muted ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : idle);
-        }
-        remain -= signal.h;
-        int ah = remain;
+    } else {
+        const int ah = detail.h - mbox.h;
         if (ah >= 3) {
-            activity = tui_rect_make(area.x, signal.y + signal.h, area.w, ah);
+            activity = tui_rect_make(area.x, mbox.y + mbox.h, area.w, ah);
             if (ah >= fits + 7) {
                 activity.h = ah - 7;
                 draw_receiver_health(sf, tui_rect_make(area.x,
@@ -532,7 +559,7 @@ static void mark_observation(void)
    P25_PROGRAM_PATH_MAX is dropped while listing rather than offered and then
    refused by the claim, because a row that cannot be chosen is worse than an
    absent one. */
-static char s_profiles[LS_PICKER_MAX][P25_PROGRAM_PATH_MAX];
+static EXT_RAM_BSS_ATTR char s_profiles[LS_PICKER_MAX][P25_PROGRAM_PATH_MAX];
 static char s_profile_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_profile_n;
 
@@ -696,6 +723,7 @@ static void o_p25_page_show(const ls_opt_t *o, char *out, size_t n)
     snprintf(out, n, "%d settings, CQPSK tuning", PS_COUNT);
 }
 static const ls_opt_t OPT_P25[] = {
+    LS_CALLS_MENU,
     { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show },
@@ -723,13 +751,32 @@ static void enter(void)
     ls_rsel_track(LS_RSEL_P25, p25_in_use);
 }
 
+/* DECODE and SIGNAL are one window now (page 0). The spectrum is a toggle on
+   top of it, not a sibling tab: SPECTRUM turns it on, and again to return. */
+enum { PB_SPECTRUM, PB_SCAN, PB_SETTINGS, PB_CALLS, PB_DMR };
 static const ls_btn_t PAGES[] = {
-    { "DECODE", NULL, '1', false, false },
-    { "SIGNAL", NULL, '2', false, false },
+    { "SPECTRUM", "OFF", '2', false, false },
     { "SCAN", NULL, '3', false, false },
     { "SETTINGS", NULL, '4', false, false },
+    { "CALLS", NULL, '5', false, false },
+    { "DMR", NULL, '6', false, false },
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
+
+/* A page button's action. */
+static void page_button(int i)
+{
+    switch (i) {
+    case PB_SPECTRUM:
+        s_page = s_page == 1 ? 0 : 1;
+        if (s_page == 0) ls_wf_source_release();
+        break;
+    case PB_SCAN: s_page = 2; break;
+    case PB_SETTINGS: ps_open = true; ls_wf_source_release(); break;
+    case PB_CALLS: ls_calls_open("P25"); ls_wf_source_release(); break;
+    case PB_DMR: s_page = 5; break;
+    }
+}
 
 static tui_rect s_bar;
 static tui_rect s_quick_rect;
@@ -844,15 +891,42 @@ static void radio_action(char c)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    if (ls_calls_active()) {
+        snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
+        ls_wf_source_release(); ls_calls_draw(sf, area); return;
+    }
     if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
-    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1/2/3 views  R radio  O options" : "LEFT/RIGHT tune  1/2/3 views  +/- volume  R radio  O options");
+    if (s_page == 5) {
+        snprintf(s_hint, sizeof(s_hint), "S slot  H hold  O options  1 P25  R radio");
+        draw_dmr(sf, area);
+        return;
+    }
+    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1 back  R radio  O options" : "LEFT/RIGHT tune  2 spectrum  3 scan  +/- volume  R radio  O options");
     s_blink++;
     const bool wide = ls_tui_is_wide();
     /* Three rows in portrait, not two. */
 
     /* Portrait takes the six as two rows of three: one row of six leaves a
        button five letters, and DECODE, SIGNAL and OPTIONS lose theirs. */
-    const int bar_h = wide ? 3 : 6;
+    /* Landscape: a four-row thumb row unless a keyboard is attached and every
+       label fits the three-row form. Portrait: two rows of full tiles, label
+       over value, as FM draws them. */
+    int bar_h;
+    if (wide) {
+        const tui_rect probe = tui_rect_make(area.x, area.y, area.w, 3);
+        ls_btn_t pb[N_PAGES + 2];
+        for (int i = 0; i < N_PAGES; i++) pb[i] = PAGES[i];
+        pb[N_PAGES] = ls_rsel_button(LS_RSEL_P25);
+        pb[N_PAGES + 1] = ls_opt_button(&CTX_P25);
+        const bool fits = ls_btn_compact_fits(probe, pb, N_PAGES + 2);
+        bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 ? 3 : 4;
+    } else {
+        /* The spectrum and the scanner carry controls of their own and want
+           the rows, so their tiles are a size down. */
+        int tile = area.h >= 62 ? 6 : area.h >= 50 ? 5 : 4;
+        if (s_page != 0 && tile > 4) tile = 4;
+        bar_h = 2 * tile;
+    }
 
     tui_rect body;
     s_quick_compact = !wide && area.h < 55 && s_page == 0;
@@ -891,16 +965,13 @@ static void draw(tui_surface *sf, tui_rect area)
     /* The pages, then RADIO and OPTIONS: the same controls every app
        carries, on the bar a thumb already reaches. */
     ls_btn_t b[N_PAGES + 2];
-    for (int i = 0; i < N_PAGES; i++) {
-        b[i] = PAGES[i];
-        b[i].on = (i == s_page);
-    }
-    /* A narrow landscape row still cuts SETTINGS. */
-    if (wide && area.w < 56) b[3].label = "SET";
+    for (int i = 0; i < N_PAGES; i++) b[i] = PAGES[i];
+    b[PB_SPECTRUM].on = s_page == 1;
+    b[PB_SPECTRUM].value = s_page == 1 ? "ON" : "OFF";
+    b[PB_SCAN].on = s_page == 2;
     b[N_PAGES] = ls_rsel_button(LS_RSEL_P25);
     b[N_PAGES + 1] = ls_opt_button(&CTX_P25);
-    if (wide) ls_btn_bar_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
-    else ls_btn_bar_raised_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
+    ls_btn_bar_raised_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
 
     if (body.h > 0) {
         if (s_page == 1) draw_signal(sf, body);
@@ -920,12 +991,29 @@ static void draw(tui_surface *sf, tui_rect area)
 
 /* The feed follows the page, and leaving the app releases it whichever page
    was up - the spectrum must not keep costing FFTs behind another screen. */
-static void leave(void) { ls_wf_source_release(); }
+static void leave(void) { ls_calls_leave(); ls_wf_source_release(); }
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (ls_calls_active()) return ls_calls_key(k, ch);
+    if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("P25"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
     if(ps_open)return ps_key(k,ch);
+    if (k == LS_TK_CHAR && ch == '6') { s_page = 5; return true; }
+    if (s_page == 5) {
+        if (k == LS_TK_ESC || (k == LS_TK_CHAR && ch == '1')) {
+            s_page = 0; ls_wf_source_release(); return true;
+        }
+        if (k == LS_TK_CHAR && ls_opt_key(&CTX_DMR, ch)) return true;
+        if (k == LS_TK_CHAR && (ch == 's' || ch == 'S')) {
+            s_dmr_filter.slot = (s_dmr_filter.slot + 1) % 3; return true;
+        }
+        if (k == LS_TK_CHAR && (ch == 'h' || ch == 'H')) { dmr_hold(); return true; }
+        if (k == LS_TK_CHAR && (ch == 'r' || ch == 'R')) { open_radio(); return true; }
+        if (k == LS_TK_CHAR && (ch == '+' || ch == '-'))
+            return ls_quick_key(ch, quick(), N_QUICK, ls_quick_grant_builtin(), NULL);
+        return false;
+    }
     /* R is RADIO on every page, except inside the scanner's lists, where
        R is RANGE. */
     if(k==LS_TK_CHAR && (ch=='r'||ch=='R') && !(s_page==2 && (s_radio.lists || s_radio.scan_choice))) {open_radio();return true;}
@@ -957,7 +1045,7 @@ static bool key(ls_tk_t k, char ch)
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_page=0; ls_wf_source_release(); return true; }
     if (k == LS_TK_CHAR) {
         const int i = ls_btn_key(ch, PAGES, N_PAGES);
-        if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
+        if (i >= 0) { page_button(i); return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
         if (ls_quick_key(ch, quick(), N_QUICK,
@@ -975,12 +1063,19 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (ls_calls_active()) return ls_calls_touch(col, row);
     if(ps_open)return ps_touch(col,row);
+    if (s_page == 5) {
+        int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
+        static const char keys[] = {'1', 's', 'h', 'r', 'o'};
+        if (i >= 0 && i < 5) return key(LS_TK_CHAR, keys[i]);
+        return false;
+    }
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
         if (i == N_PAGES) { open_radio(); return true; }
         if (i == N_PAGES + 1) { open_options(); return true; }
-        if (i >= 0) { if(i==3) {ps_open=true;ls_wf_source_release();} else s_page=i; return true; }
+        if (i >= 0) { page_button(i); return true; }
         return true;
     }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&

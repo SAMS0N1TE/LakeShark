@@ -23,4 +23,13 @@ bool cell_baseline_valid(const cell_baseline_t *b, unsigned band, int lat, int l
 unsigned cell_compare(const int8_t *base, const int8_t *now, uint8_t *streak,
                       unsigned n, bool comparable);
 bool cell_motion_quiet(float ax, float ay, float az, float gx, float gy, float gz);
+
+/* Stillness judged against the gyro's own resting reading, which on these
+   boards is up to ~12 deg/s on one axis: a fixed limit on the raw rate reads
+   every board as moving. The resting reading is followed slowly, so a turn
+   reads as movement and a still board settles within a few seconds. */
+typedef struct { float rest[3]; bool seeded; } cell_motion_t;
+void cell_motion_reset(cell_motion_t *m);
+bool cell_motion_step(cell_motion_t *m, float ax, float ay, float az,
+                      float gx, float gy, float gz);
 #endif

@@ -246,10 +246,18 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
        that has to be right - is never touched. */
     int dn = (int)strlen(s_detail[idx]);
     const int room = f.w - 2 - (int)strlen(s_label[idx]) - 2;
-    if (dn > room) dn = room;
+    char cut[LS_PICKER_DETAIL];
+    snprintf(cut, sizeof(cut), "%s", s_detail[idx]);
+    if (dn > room) {
+        /* Cut at a word, not in the middle of one. */
+        dn = room > 0 ? room : 0;
+        int sp = dn;
+        while (sp > 0 && cut[sp] != ' ') sp--;
+        if (sp > dn / 2) dn = sp;
+        while (dn > 0 && cut[dn - 1] == ' ') dn--;
+    }
     if (dn > 0) {
-        char cut[LS_PICKER_DETAIL];
-        snprintf(cut, (size_t)dn + 1, "%s", s_detail[idx]);
+        cut[dn] = 0;
         put_over(sf, f, f.x + f.w - 1 - dn, f.y + mid, cut,
                  A(TUI_WHITE, TUI_BLACK));
     }

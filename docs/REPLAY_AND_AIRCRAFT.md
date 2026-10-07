@@ -37,6 +37,8 @@ Choose from RTL-SDR, CC1101, GPS/GNSS, HackRF, SX1262/LoRa, nRF24, NFC, Wi-Fi an
 
 The aircraft screen combines the traffic list with an offline mini map. **MAP ONLY** gives the map more space; **FULL MAP** opens the map application. **ZOOM+ / ZOOM−** adjusts the view.
 
+**FOLLOW** (F) moves the mini map with the traffic: **FIT ALL** keeps every aircraft with a position in view, **SELECTED** keeps the chosen aircraft centred, **NEAREST** shows home and the closest aircraft, and **OFF** stays on home. With FIT ALL or NEAREST, ZOOM+ / ZOOM− set the view a step closer or wider than the fit. The choice is kept across restarts and is also in OPTIONS > DISPLAY.
+
 Open **SET HOME** and choose a GPS fix, decimal latitude/longitude, a place on the map, or the current map center. Save your home location to reuse it in later sessions. GPS is optional when setting home manually. Offline terrain requires a compatible map archive on the SD card.
 
 The on-screen legend identifies home, aircraft, selected aircraft and stale positions.

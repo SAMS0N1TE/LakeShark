@@ -82,6 +82,43 @@ int ls_exp_read_lines(const ls_experiment_t *e, char (*out)[LS_EXP_LINE], int ma
     return n;
 }
 
+size_t ls_exp_note_text(const ls_experiment_t *e, const char *stamp, const char *state,
+                        const char (*lines)[LS_EXP_LINE], int n,
+                        char *title, size_t tcap, char *body, size_t bcap)
+{
+    if (title && tcap) title[0] = 0;
+    if (body && bcap) body[0] = 0;
+    if (!e || !title || !tcap || !body || !bcap) return 0;
+    char when[24] = "";
+    if (stamp && stamp[0]) {
+        /* 2026-10-06T14:21:09Z -> 2026-10-06 14:21; "up 12s" and the like stay whole. */
+        if (strlen(stamp) >= 16 && stamp[10] == 'T') {
+            snprintf(when, sizeof(when), "%.10s %.5s", stamp, stamp + 11);
+        } else {
+            snprintf(when, sizeof(when), "%s", stamp);
+        }
+    }
+    snprintf(title, tcap, "%s%s%s", e->name ? e->name : "Experiment", when[0] ? " " : "", when);
+    size_t len = (size_t)snprintf(body, bcap, "> %s %s %s  %s\n", e->no_radio ? "EXPERIMENT" : "RADIO",
+                                  e->name ? e->name : "", ls_exp_maturity_name(e->maturity),
+                                  state && state[0] ? state : "stopped");
+    if (len >= bcap) { len = bcap - 1; body[len] = 0; return len; }
+    if (n < 0 || !lines) n = 0;
+    if (n == 0) {
+        len += (size_t)snprintf(body + len, bcap - len, "(no readout yet)\n");
+    }
+    for (int i = 0; i < n; i++) {
+        char line[LS_EXP_LINE];
+        memcpy(line, lines[i], LS_EXP_LINE);
+        line[LS_EXP_LINE - 1] = 0;
+        const size_t need = strlen(line) + 1;
+        if (len + need >= bcap) break;
+        len += (size_t)snprintf(body + len, bcap - len, "%s\n", line);
+    }
+    if (len >= bcap) len = bcap - 1;
+    return len;
+}
+
 /* ------------------------------------------------------------ running -- */
 
 static void ask(const ls_experiment_t *e)
@@ -203,7 +240,13 @@ bool ls_exp_service(void)
     }
     const ls_experiment_t *run = s_run;
     if (run && run->poll) run->poll();
-    return run != NULL || ls_exp_busy();
+    bool upkeep = false;
+    const int count = ls_exp_count();
+    for (int i = 0; i < count; i++) {
+        const ls_experiment_t *e = ls_exp_at(i);
+        if (e && e->maintenance) upkeep |= e->maintenance();
+    }
+    return run != NULL || ls_exp_busy() || upkeep;
 }
 
 void ls_exp_forget(void)

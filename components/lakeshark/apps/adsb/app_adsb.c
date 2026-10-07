@@ -91,10 +91,25 @@ static void age_reap(void)
 
 static uint32_t s_cfg_freq = 1090000000UL;
 static int      s_cfg_gain = 496;
+/* The mini map's FOLLOW mode, -1 until one is chosen. Kept with the gain so
+   the screen reads RAM: NVS is read once, at registration. */
+static int      s_cfg_follow = -1;
 
 int adsb_requested_gain(void)
 {
     return __atomic_load_n(&s_cfg_gain, __ATOMIC_RELAXED);
+}
+
+int adsb_map_follow(void)
+{
+    return __atomic_load_n(&s_cfg_follow, __ATOMIC_RELAXED);
+}
+
+void adsb_set_map_follow(int mode)
+{
+    if (mode < 0 || mode > 15) return;
+    if (__atomic_exchange_n(&s_cfg_follow, mode, __ATOMIC_RELAXED) != mode)
+        settings_set_adsb_follow(mode);
 }
 
 void adsb_request_gain(int gain_tenths_db)
@@ -387,6 +402,7 @@ static void adsb_cache_settings(const app_t *a)
     }
     s_cfg_freq = freq;
     __atomic_store_n(&s_cfg_gain, gain, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_cfg_follow, settings_get_adsb_follow(), __ATOMIC_RELAXED);
 }
 
 static void adsb_on_enter(void)

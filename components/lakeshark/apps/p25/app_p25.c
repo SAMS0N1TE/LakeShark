@@ -1,3 +1,4 @@
+#include "call_archive.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -874,6 +875,7 @@ static void dsd_decoder_task(void *arg)
         esp_task_wdt_reset();
         if (s_p2_owned) p25_p2_follow_service();
         if (p25_p2_enabled()) {
+            call_archive_end(CALL_P25, false);
             p25_grant_publish_ui();
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
@@ -906,6 +908,7 @@ static void dsd_decoder_task(void *arg)
         unsigned int tune_generation = atomic_load_explicit(
             &s_decode_tune_generation, memory_order_acquire);
         if (tune_generation != acquisition.generation) {
+            call_archive_end(CALL_P25, false);
             p25_voice_hold_end_call(&s_voice_hold);
             P25.voice_active_until_us = 0;
             P25.dsd_tg = P25.dsd_src = 0;
@@ -1041,16 +1044,22 @@ static void dsd_decoder_task(void *arg)
             }
 
             int64_t now_grant = esp_timer_get_time();
-            (void)p25_receive_frame(&g_p25_scan, &s_grant_follower,
-                &s_dsd_state, now_grant, p25_tune_policy_allows_grant(
-                    scan_engine_active(), p25_program_survey_active_now()));
-
-            /* HDU opens a call and TDU/TDULC close one: voice still held
-               for proof belongs to the call before. */
+            /* Capture boundaries and encryption before following a grant or
+               returning to control clears the decoder's call state. */
             if (s_dsd_state.p25_frame_valid &&
                 (s_dsd_state.p25_frame_duid == 0 || s_dsd_state.p25_frame_duid == 3 ||
-                 s_dsd_state.p25_frame_duid == 15))
+                 s_dsd_state.p25_frame_duid == 15)) {
                 p25_voice_hold_end_call(&s_voice_hold);
+                call_archive_end(CALL_P25, false);
+            }
+            if (s_dsd_state.p25_frame_valid && s_dsd_state.p25_ess_valid &&
+                s_dsd_state.p25_algid != 0x80)
+                call_archive_audio(CALL_P25, 0, 0, 0, false, NULL, 0);
+            if (p25_receive_frame(&g_p25_scan, &s_grant_follower,
+                &s_dsd_state, now_grant, p25_tune_policy_allows_grant(
+                    scan_engine_active(), p25_program_survey_active_now())))
+                call_archive_end(CALL_P25, false);
+
             int decoded = s_dsd_state.pcm_out_write;
             if (decoded > s_dsd_state.pcm_out_size) decoded = s_dsd_state.pcm_out_size;
             int n = p25_voice_hold_frame(&s_voice_hold, pcm_buf, decoded,
@@ -1061,6 +1070,13 @@ static void dsd_decoder_task(void *arg)
             P25.p25_voice_held_total      = s_voice_hold.held_frames;
             P25.p25_voice_released_total  = s_voice_hold.released_frames;
             P25.p25_voice_discarded_total = s_voice_hold.discarded_frames;
+            if (n > 0 && frame_ok && !p25_p2_enabled() &&
+                s_dsd_state.p25_ess_valid && s_dsd_state.p25_algid == 0x80) {
+                call_archive_audio(CALL_P25,
+                    tune_status.effective_center_known ? (uint32_t)tune_status.effective_center_hz : 0,
+                    s_dsd_state.lasttg ? (uint32_t)s_dsd_state.lasttg : s_grant_follower.talkgroup,
+                    (uint32_t)s_dsd_state.lastsrc, true, s_voice_out, (unsigned)n);
+            }
             if (n > 0) {
                 p25_grant_on_voice(&s_grant_follower, now_grant);
                 P25.dsd_voice_count++;
@@ -1163,6 +1179,8 @@ static void dsd_decoder_task(void *arg)
             }
         }
 
+        call_archive_gate(CALL_P25,
+            (uint32_t)s_radio_control.effective_center_hz, false);
         /* silence timeout runs even when sync is lost - the call
          * ended by squelch or fade, not by a decoded TDU. */
         if (p25_grant_tick(&s_grant_follower, esp_timer_get_time()))
@@ -1180,6 +1198,7 @@ static void dsd_decoder_task(void *arg)
         }
     }
     esp_task_wdt_delete(NULL);
+    call_archive_end(CALL_P25, false);
     s_dsd_running = false;
     atomic_store_explicit(&s_dsd_start, P25_DSD_START_IDLE,
                           memory_order_release);
@@ -2370,6 +2389,7 @@ static void p25_rx_task(void *arg)
 
 static void p25_on_enter(void)
 {
+    call_archive_init();
     portENTER_CRITICAL(&s_acquisition_lock);
     memset(&s_acquisition_status, 0, sizeof(s_acquisition_status));
     portEXIT_CRITICAL(&s_acquisition_lock);

@@ -35,9 +35,10 @@
 
 /* Which number just moved, as opposed to which has ever moved. */
 
-#define DIAG_ROW_KEYS 40
+#define DIAG_ROW_KEYS 128
 #define DIAG_FLASH_MS 900
-static ls_fresh_t s_row_fresh[DIAG_ROW_KEYS];
+/* PSRAM: only the draw path reads it, and the startup code zeroes it. */
+static EXT_RAM_BSS_ATTR ls_fresh_t s_row_fresh[DIAG_ROW_KEYS];
 
 static uint32_t text_token(const char *t)
 {
@@ -52,7 +53,9 @@ static void row(tui_surface *sf, tui_rect a, int y, const char *label,
     tui_put_str(sf, a, a.x + 2, a.y + y, label,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
-    const int key = ((a.x > 0) ? 20 : 0) + (y % 20);
+    /* By screen row, not row within the panel: in portrait the panels are
+       stacked in one column, and their rows must not share a slot. */
+    const int key = ((a.x > 0) ? 64 : 0) + ((a.y + y) & 63);
     const uint8_t level = ls_fresh(&s_row_fresh[key], text_token(value),
                                    DIAG_FLASH_MS);
     /* Inverse of whatever the row already was, so the highlight does not
@@ -205,6 +208,9 @@ static void self_test(void)
     snprintf(n.title, sizeof(n.title), "SELF TEST");
     snprintf(n.body, sizeof(n.body), "if the alerts are on, this rings and buzzes");
     n.hue = TUI_CYAN;
+    /* A system notice: kept out of the unread count, so the test can neither
+       clear real messages nor leave a MSG badge behind. */
+    n.accent = TUI_CYAN;
 
     n.screen = -1;
     ls_notify_post(&n);
@@ -305,6 +311,18 @@ static const char *lora_name(bool upper)
     return name;
 }
 
+/* The SDR that is plugged in: the RTL-SDR, else the HackRF. Health records
+   are kept per endpoint, so asking without one finds nothing. */
+static const char *sdr_endpoint(void)
+{
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_RTL_USB;
+    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.present)
+        return LS_RADIO_ENDPOINT_HACKRF_USB;
+    return LS_RADIO_ENDPOINT_RTL_USB;
+}
+
 /* Everything the endpoint registry and the health record know. */
 
 static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
@@ -314,7 +332,7 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
 
     radio_health_snapshot_t rh;
     memset(&rh, 0, sizeof(rh));
-    const bool have = radio_health_get(NULL, &rh);
+    const bool have = radio_health_get(sdr_endpoint(), &rh);
 
     int y = 1;
 
@@ -564,10 +582,11 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
 
     group(sf, a, 7, "GPS L76K");
     {
-        ls_gps_state_t gp;
+        /* Static: the snapshot carries both satellite tables. */
+        EXT_RAM_BSS_ATTR static ls_gps_state_t gp;
         ls_gps_get(&gp);
         if (!ls_gps_running()) {
-            row(sf, a, 8, "state", "powered down", dim);
+            row(sf, a, 8, "state", "not reading", dim);
         } else {
             snprintf(buf, sizeof(buf), "%s  %u used / %u seen",
                      gp.fix ? "fix" : gp.alive ? "searching" : "silent",
@@ -822,7 +841,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
 
     radio_health_snapshot_t rh;
     memset(&rh, 0, sizeof(rh));
-    bool have_rh = radio_health_get(NULL, &rh);
+    bool have_rh = radio_health_get(sdr_endpoint(), &rh);
 
     if (!have_rh) {
         /* "none attached" is not the same as "not streaming", and this page said the first when it meant the second. */
@@ -1021,10 +1040,10 @@ static void draw_list(tui_surface *sf, tui_rect left)
                 ls_lora_present() ? good : dim);
 
             {
-                ls_gps_state_t g;
+                EXT_RAM_BSS_ATTR static ls_gps_state_t g;   /* as above */
                 ls_gps_get(&g);
                 if (!ls_gps_running()) {
-                    row(sf, left, 25, "gps l76k", "powered down", dim);
+                    row(sf, left, 25, "gps l76k", "not reading", dim);
                 } else {
                     /* Three states and not two, the same distinction
                        ls_gps.h was built around: silent, talking, fixed. */

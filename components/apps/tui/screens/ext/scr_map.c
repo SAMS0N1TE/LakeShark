@@ -18,6 +18,7 @@
 #include "../../ls_geo.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_map.h"
+#include "../../ls_route_live.h"
 #include "../../ls_map_ink.h"
 #include "../../ls_map_marks.h"
 #include "../../ls_motion.h"
@@ -36,6 +37,9 @@
 #include "esp_attr.h"
 #include "ls_mesh.h"
 #include "ls_gps.h"
+#include "apps/fm/aprs_store.h"
+#include "apps/fm/ais_store.h"
+#include "../../experiments/rs41_store.h"
 /* And the aircraft are ADS-B's own table - the one its list and radar
    read, not a copy of it. */
 #include "apps/adsb/adsb_state.h"
@@ -75,9 +79,13 @@ enum {
     L_PLACES  = 1u << 8,
     L_LINKS   = 1u << 9,
     L_VECTORS = 1u << 10,
+    L_APRS    = 1u << 11,
+    L_ROUTE   = 1u << 12,
+    L_AIS     = 1u << 13,
+    L_SONDE   = 1u << 14,
 };
 #define LAYERS_DEFAULT (L_AIR | L_TRAILS | L_MESH | L_MARKS | L_RINGS | \
-                        L_PLACES | L_LINKS | L_VECTORS)
+                        L_PLACES | L_LINKS | L_VECTORS | L_APRS | L_ROUTE | L_AIS | L_SONDE)
 
 static uint32_t s_layers = LAYERS_DEFAULT;
 static bool     s_layers_loaded;
@@ -109,6 +117,8 @@ static const ls_quick_t QUICK[] = {
     { .label = "ZOOM-", .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "-1" }, .nchoices = 1, .key = '-' },
     { .label = "GO TO", .kind = LS_QUICK_ACTION, .action = "map.find", .key = 'f' },
+    { .label = "ROUTE", .kind = LS_QUICK_ACTION, .action = "map.route", .key = 'u' },
+    { .label = "OPTIONS", .kind = LS_QUICK_ACTION, .action = "map.route_options", .key = 'o' },
     { .label = "FOLLOW", .kind = LS_QUICK_ACTION, .action = "map.track", .key = 'g' },
     { .label = "MARK", .kind = LS_QUICK_ACTION, .action = "map.mark", .key = 'k' },
     { .label = "DRAW", .kind = LS_QUICK_ACTION, .action = "map.draw", .key = 'd' },
@@ -432,7 +442,7 @@ static bool s_field_valid;
 
 static uint8_t s_acc[CELL_COLS_MAX * 4];
 static uint8_t s_ink[CELL_COLS_MAX * 4];
-static uint8_t s_prev[CELL_COLS_MAX * SUB_X];
+static EXT_RAM_BSS_ATTR uint8_t s_prev[CELL_COLS_MAX * SUB_X];
 
 static uint8_t s_cur[CELL_COLS_MAX * SUB_X];
 
@@ -704,35 +714,44 @@ static void draw_cells(tui_surface *sf, tui_rect a,
 /* ONE reservation list for the whole overlay pass: symbols claim their
    cells first, then every label steps around every symbol and every other
    label. Cells are relative to the pane. PSRAM: only the draw path uses it. */
-typedef struct { int16_t x0, x1, y; uint8_t air; } lbox;
-#define OVERLAY_BOXES_MAX 600
+typedef struct { int16_t x0, x1, y; uint8_t hair, vair; } lbox;
+#define OVERLAY_BOXES_MAX 1024
 EXT_RAM_BSS_ATTR static lbox s_taken[OVERLAY_BOXES_MAX];
 static int  s_ntaken;
+
+/* How much room a name asks for. 0: a clear cell either side and a clear row
+   above and below, so two names never read as one. 1: no clear row above and
+   below. 2: only never on top of anything. A label tries every spot at one
+   tier before it relaxes to the next, so it is dropped only when there is
+   truly no free cell for it. */
+static int s_tier;
 
 static bool box_free(int x0, int x1, int y)
 {
     for (int i = 0; i < s_ntaken; i++) {
-        if (s_taken[i].y != y) continue;
-        /* One cell of air either side of a name: two names that merely
-           touch read as one longer name. A symbol only needs not to be
-           written over. */
-        const int air = s_taken[i].air;
-        if (x0 <= s_taken[i].x1 + air && x1 >= s_taken[i].x0 - air) return false;
+        const int dy = s_taken[i].y - y;
+        if (dy < -1 || dy > 1) continue;
+        /* A name is not read next to another name, nor a symbol, without a
+           cell of air; the row above and below counts for names only. */
+        if (dy != 0 && (!s_taken[i].vair || s_tier > 0)) continue;
+        const int hair = s_tier >= 2 ? 0 : s_taken[i].hair;
+        if (x0 <= s_taken[i].x1 + hair && x1 >= s_taken[i].x0 - hair) return false;
     }
     return true;
 }
 
-static void box_take_air(int x0, int x1, int y, int air)
+static void box_take_air(int x0, int x1, int y, int hair, int vair)
 {
     if (s_ntaken >= OVERLAY_BOXES_MAX) return;
     s_taken[s_ntaken].x0 = (int16_t)x0;
     s_taken[s_ntaken].x1 = (int16_t)x1;
     s_taken[s_ntaken].y  = (int16_t)y;
-    s_taken[s_ntaken].air = (uint8_t)air;
+    s_taken[s_ntaken].hair = (uint8_t)hair;
+    s_taken[s_ntaken].vair = (uint8_t)vair;
     s_ntaken++;
 }
 
-static void box_take(int x0, int x1, int y) { box_take_air(x0, x1, y, 1); }
+static void box_take(int x0, int x1, int y) { box_take_air(x0, x1, y, 1, 1); }
 
 static void box_take_rect(tui_rect a, tui_rect r)
 {
@@ -746,10 +765,76 @@ static bool in_rect(tui_rect r, int x, int y)
     return r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
+#ifdef LS_MAP_AUDIT
+/* Host check: where every label went and which cells a symbol covers, so a
+   test can say that no label sits on a symbol or on another label. */
+#define AUDIT_LABELS_MAX 160
+static struct { int16_t x, y, w; } s_audit_lab[AUDIT_LABELS_MAX];
+static int s_audit_n;
+static uint8_t s_audit_sym[160 * 100 / 8 + 1];
+static int s_audit_w, s_audit_h;
+static void audit_label(int x, int y, int w)
+{
+    if (s_audit_n < AUDIT_LABELS_MAX) {
+        s_audit_lab[s_audit_n].x = (int16_t)x;
+        s_audit_lab[s_audit_n].y = (int16_t)y;
+        s_audit_lab[s_audit_n].w = (int16_t)w;
+        s_audit_n++;
+    }
+}
+int ls_map_label_audit(int *labels)
+{
+    int bad = 0;
+    for (int i = 0; i < s_audit_n; i++) {
+        for (int j = i + 1; j < s_audit_n; j++)
+            if (s_audit_lab[i].y == s_audit_lab[j].y &&
+                s_audit_lab[i].x < s_audit_lab[j].x + s_audit_lab[j].w &&
+                s_audit_lab[j].x < s_audit_lab[i].x + s_audit_lab[i].w) bad++;
+        for (int x = s_audit_lab[i].x; x < s_audit_lab[i].x + s_audit_lab[i].w; x++) {
+            if (x < 0 || x >= s_audit_w || s_audit_lab[i].y < 0 || s_audit_lab[i].y >= s_audit_h) continue;
+            const int k = s_audit_lab[i].y * s_audit_w + x;
+            if (s_audit_sym[k >> 3] & (1u << (k & 7))) bad++;
+        }
+    }
+    if (labels) *labels = s_audit_n;
+    return bad;
+}
+#endif
+
+/* Every cell the canvas holds a symbol in (marks, nodes, aircraft, the
+   receiver and above: lines, trails and rings sit lower) is taken, exactly
+   as drawn, whatever drew it. A cell of air either side, none above and
+   below: a label may sit right over a symbol's top or bottom row. */
+static void claim_ink(tui_rect a)
+{
+#ifdef LS_MAP_AUDIT
+    memset(s_audit_sym, 0, sizeof(s_audit_sym));
+    s_audit_w = a.w <= 160 ? a.w : 160;
+    s_audit_h = a.h <= 100 ? a.h : 100;
+#endif
+    for (int y = 0; y < a.h; y++) {
+        int run = -1;
+        for (int x = 0; x <= a.w; x++) {
+            const bool on = x < a.w && ls_ink_cell_prio(x, y) >= 5;
+#ifdef LS_MAP_AUDIT
+            if (on && x < s_audit_w && y < s_audit_h) {
+                const int k = y * s_audit_w + x;
+                s_audit_sym[k >> 3] |= (uint8_t)(1u << (k & 7));
+            }
+#endif
+            if (on && run < 0) run = x;
+            if (!on && run >= 0) { box_take_air(run, x - 1, y, 1, 0); run = -1; }
+        }
+    }
+}
+
 /* The pad and the card are already-taken ground. */
 static void overlay_reset(tui_rect a, tui_rect pad, tui_rect card)
 {
     s_ntaken = 0;
+#ifdef LS_MAP_AUDIT
+    s_audit_n = 0;
+#endif
     box_take_rect(a, pad);
     box_take_rect(a, card);
 }
@@ -797,7 +882,10 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         const int cy = lb->y / sy;
         if (cx < 0 || cy < 0 || cx >= a.w || cy >= a.h) continue;
         if (in_rect(avoid, a.x + cx, a.y + cy)) continue;
-        if (!box_free(cx, cx, cy)) continue;
+        s_tier = 1;
+        const bool dot_free = box_free(cx, cx, cy);
+        s_tier = 0;
+        if (!dot_free) continue;
 
         int len = (int)strlen(lb->text);
         const int room = a.w / 3;
@@ -807,21 +895,34 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
                 len--;
             while (len > 1 && lb->text[len - 1] == ' ') len--;
         }
+        if (len > a.w) continue;
 
-        int x0 = cx - len / 2;
-        if (x0 < 0) x0 = 0;
-        if (x0 + len > a.w) x0 = a.w - len;
-        if (x0 < 0) continue;
-
-        /* Under the dot when there is room, over it when there is not. */
-        int y = (cy + 1 < a.h) ? cy + 1 : cy - 1;
-        if (y < 0 || y >= a.h) continue;
-        if (!box_free(x0, x0 + len - 1, y)) continue;
+        /* Under the dot when there is room, then over it, then beside it. */
+        int top = cx - len / 2;
+        if (top < 0) top = 0;
+        if (top + len > a.w) top = a.w - len;
+        const int spot[6][2] = { { top, cy + 1 }, { top, cy - 1 }, { cx + 2, cy },
+                                 { cx - 1 - len, cy }, { top, cy + 2 }, { top, cy - 2 } };
+        int x0 = 0, y = -1;
+        for (int tier = 0; tier < 3 && y < 0; tier++) {
+            s_tier = tier;
+            for (int t = 0; t < 6; t++) {
+                if (spot[t][0] < 0 || spot[t][0] + len > a.w || spot[t][1] < 0 || spot[t][1] >= a.h) continue;
+                if (!box_free(spot[t][0], spot[t][0] + len - 1, spot[t][1])) continue;
+                x0 = spot[t][0]; y = spot[t][1];
+                break;
+            }
+        }
+        s_tier = 0;
+        if (y < 0) continue;
 
         glass(sf, a, a.x + cx, a.y + cy, '.', dot);
         box_take(cx, cx, cy);
         ls_ink_text(sf, a, a.x + x0, a.y + y, lb->text, len, attr);
         box_take(x0, x0 + len - 1, y);
+#ifdef LS_MAP_AUDIT
+        audit_label(x0, y, len);
+#endif
         drawn++;
     }
 }
@@ -1134,7 +1235,7 @@ static void claim_dots(int cx, int cy, int r, int aw, int ah)
     if (y0 < 0) y0 = 0;
     if (x1 >= aw) x1 = aw - 1;
     if (y1 >= ah) y1 = ah - 1;
-    for (int y = y0; y <= y1; y++) box_take_air(x0, x1, y, 0);
+    for (int y = y0; y <= y1; y++) box_take_air(x0, x1, y, 1, 0);
 }
 
 /* A ring that grows outward from a fresh report, then starts again. A
@@ -1185,9 +1286,9 @@ static bool crowded_at(int dx, int dy)
 
 /* ------------------------------------------------------------- aircraft -- */
 
-#define AIRCRAFT_SHOW_US   (120 * 1000000LL)
+#define AIRCRAFT_SHOW_US   LS_MAP_AIR_SHOW_US
 #define AIRCRAFT_FRESH_US   (30 * 1000000LL)
-#define AIRCRAFT_RECKON_US  (20 * 1000000LL)
+#define AIRCRAFT_RECKON_US LS_MAP_AIR_RECKON_US
 
 typedef struct {
     bool     on;             /* has a position worth drawing */
@@ -1406,8 +1507,53 @@ static void air_block_lines(const adsb_aircraft_t *ac, const air_view_t *v, char
     else snprintf(l2, cap, "%03d%c", hundreds, climb);
 }
 
-/* Put a one or two line label next to a symbol at cell (cx, cy): right,
-   then left, then above and below, whichever is clear first. */
+/* Where a one or two line label of w cells could go around a symbol at cell
+   (cx, cy): right, left, above, below, nudged a row up or down, and each a
+   few cells further out. spot[i][2] is how far the label's nearest cell is
+   from the symbol, a cell being 10 and a row 17, and the list is sorted so
+   the nearest comes first. */
+#define LABEL_SPOTS_MAX 64
+static int label_spots(int cx, int cy, int gap, int w, int rows, int a_w, int spot[][3])
+{
+    int n = 0;
+    int top = cx - w / 2;
+    if (top + w > a_w) top = a_w - w;
+    if (top < 0) top = 0;
+    int cand[LABEL_SPOTS_MAX][2];
+    for (int k = 0; k < 5 && n + 10 <= LABEL_SPOTS_MAX; k++) {
+        const int g = gap + k;
+        const int pos[10][2] = {
+            { cx + g, cy - (rows - 1) }, { cx - g - w + 1, cy - (rows - 1) },
+            { top, cy - g - (rows - 1) }, { top, cy + g },
+            { cx + g, cy }, { cx - g - w + 1, cy },
+            { cx + g, cy - (rows - 1) - 1 }, { cx - g - w + 1, cy - (rows - 1) - 1 },
+            { cx + g, cy - (rows - 1) + 1 }, { cx - g - w + 1, cy - (rows - 1) + 1 } };
+        for (int i = 0; i < 10; i++) {
+            if (rows == 1 && (i == 4 || i == 5)) continue;
+            cand[n][0] = pos[i][0];
+            cand[n][1] = pos[i][1];
+            n++;
+        }
+    }
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const int x0 = cand[i][0], y0 = cand[i][1];
+        const int dxn = x0 > cx ? x0 - cx : (x0 + w - 1 < cx ? cx - (x0 + w - 1) : 0);
+        const int dyn = y0 > cy ? y0 - cy : (y0 + rows - 1 < cy ? cy - (y0 + rows - 1) : 0);
+        const int cost = 10 * dxn + 17 * dyn;
+        int j = m++;
+        while (j > 0 && spot[j - 1][2] > cost) {
+            spot[j][0] = spot[j - 1][0]; spot[j][1] = spot[j - 1][1]; spot[j][2] = spot[j - 1][2];
+            j--;
+        }
+        spot[j][0] = x0; spot[j][1] = y0; spot[j][2] = cost;
+    }
+    return m;
+}
+
+/* Put a one or two line label next to a symbol at cell (cx, cy), the nearest
+   spot that is clear with air round it, then the nearest at all. Dropped only
+   when no spot is free of every symbol and every other label. */
 static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
                         const char *l1, const char *l2, uint8_t attr, bool solid)
 {
@@ -1415,29 +1561,40 @@ static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
     const int w = n1 > n2 ? n1 : n2;
     const int rows = n2 ? 2 : 1;
     s_label_rect = tui_rect_make(0, -1, 0, 0);
-    const int tries[6][2] = { { cx + gap, cy - (rows - 1) }, { cx - gap - w + 1, cy - (rows - 1) },
-                              { cx + gap, cy }, { cx - gap - w + 1, cy },
-                              { cx - w / 2, cy - gap - (rows - 1) }, { cx - w / 2, cy + gap } };
-    for (int t = 0; t < 6; t++) {
-        const int x0 = tries[t][0], y0 = tries[t][1];
-        if (x0 < 0 || x0 + w > a.w || y0 < 0 || y0 + rows > a.h) continue;
-        bool clear = true;
-        for (int r = 0; r < rows && clear; r++) clear = box_free(x0, x0 + w - 1, y0 + r);
-        if (!clear) continue;
-        for (int r = 0; r < rows; r++) {
-            const char *s = r ? l2 : l1;
-            const int n = r ? n2 : n1;
-            if (solid) {
-                for (int i = 0; i < w; i++)
-                    tui_put_char(sf, a, a.x + x0 + i, a.y + y0 + r, i < n ? s[i] : ' ', ls_ink_tinted(attr));
-            } else {
-                ls_ink_text(sf, a, a.x + x0, a.y + y0 + r, s, n, attr);
+    int spot[LABEL_SPOTS_MAX][3];
+    const int ns = label_spots(cx, cy, gap, w, rows, a.w, spot);
+    /* Air all round within a few cells, then a row of air lost, a few cells
+       further; touching, anywhere, is the last resort. */
+    const int plan[3][2] = { { 0, 10 * gap + 30 }, { 1, 10 * gap + 50 }, { 2, 1 << 20 } };
+    for (int pass = 0; pass < 3; pass++) {
+        s_tier = plan[pass][0];
+        for (int t = 0; t < ns; t++) {
+            if (spot[t][2] > plan[pass][1]) break;
+            const int x0 = spot[t][0], y0 = spot[t][1];
+            if (x0 < 0 || x0 + w > a.w || y0 < 0 || y0 + rows > a.h) continue;
+            bool clear = true;
+            for (int r = 0; r < rows && clear; r++) clear = box_free(x0, x0 + w - 1, y0 + r);
+            if (!clear) continue;
+            for (int r = 0; r < rows; r++) {
+                const char *s = r ? l2 : l1;
+                const int n = r ? n2 : n1;
+                if (solid) {
+                    for (int i = 0; i < w; i++)
+                        tui_put_char(sf, a, a.x + x0 + i, a.y + y0 + r, i < n ? s[i] : ' ', ls_ink_tinted(attr));
+                } else {
+                    ls_ink_text(sf, a, a.x + x0, a.y + y0 + r, s, n, attr);
+                }
+                box_take(x0, x0 + w - 1, y0 + r);
+#ifdef LS_MAP_AUDIT
+                audit_label(x0, y0 + r, w);
+#endif
             }
-            box_take(x0, x0 + w - 1, y0 + r);
+            s_label_rect = tui_rect_make(a.x + x0, a.y + y0, w, rows);
+            s_tier = 0;
+            return true;
         }
-        s_label_rect = tui_rect_make(a.x + x0, a.y + y0, w, rows);
-        return true;
     }
+    s_tier = 0;
     return false;
 }
 
@@ -1466,6 +1623,162 @@ static void air_text(tui_surface *sf, tui_rect a)
             }
             hit_label(HIT_AIR, ac->icao, v->lat, v->lon);
         }
+    }
+}
+
+/* APRS shares the map's symbol reservations, age colours and receive rings. */
+static EXT_RAM_BSS_ATTR aprs_packet_t s_aprs_points[APRS_STATIONS];
+static int s_aprs_count;
+static void aprs_prepare_map(int64_t now)
+{
+    s_aprs_count = 0;
+    aprs_options_t o; aprs_options_get(&o);
+    if (!layer(L_APRS) || !o.map) return;
+    int count = aprs_store_snapshot(s_aprs_points, APRS_STATIONS, now);
+    for (int i = 0; i < count; ++i) {
+        aprs_packet_t *p = &s_aprs_points[i];
+        if (!p->position ||
+            now < p->position_us || now-p->position_us > (int64_t)o.keep_minutes*60000000) continue;
+        if (aprs_visible(p, &o, now, s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
+                         s_receiver.last_fix_us, NULL, NULL)) {
+            s_aprs_points[s_aprs_count++] = *p;
+        }
+    }
+}
+static uint8_t aprs_hue(const aprs_packet_t *p, int64_t now)
+{
+    int64_t age = now-p->position_us;
+    uint8_t hue = p->weather || p->symbol == '_' ? TUI_YELLOW : TUI_CYAN;
+    return age < 300000000 ? hue | TUI_BRIGHT : age < 900000000 ? hue : LS_DIM_FG;
+}
+static void aprs_canvas(tui_rect a, int pw, int ph, int64_t now)
+{
+    aprs_prepare_map(now);
+    for (int i = 0; i < s_aprs_count; ++i) {
+        const aprs_packet_t *p = &s_aprs_points[i]; double fx, fy;
+        if (!frame_px(p->lat, p->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy);
+        uint8_t attr = TUI_ATTR(aprs_hue(p, now), TUI_BLACK);
+        if (now-p->heard_us < 2500000) ping_ring(dx, dy, attr, 2000);
+        claim_dots(dx, dy, 2, a.w, a.h);
+    }
+}
+static void aprs_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
+{
+    for (int i = 0; i < s_aprs_count; ++i) {
+        const aprs_packet_t *p = &s_aprs_points[i]; double fx, fy;
+        if (!frame_px(p->lat, p->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy);
+        uint8_t attr = TUI_ATTR(aprs_hue(p, now), TUI_BLACK);
+        tui_put_char(sf, a, a.x+dx/2, a.y+dy/3, p->symbol, attr);
+        place_label(sf, a, dx/2, dy/3, 2, p->call, p->name[0] ? p->name : NULL, attr, false);
+    }
+}
+
+/* Sonde tracks use the same geographic projection and age palette as aircraft. */
+static EXT_RAM_BSS_ATTR rs41_sonde_t s_map_sonde;
+static struct { double lat, lon; char serial[9]; int64_t us; } s_sonde_labels[RS41_SONDES];
+static int s_sonde_labels_n;
+static void sonde_canvas(tui_rect a, int pw, int ph, int64_t now)
+{
+    s_sonde_labels_n = 0;
+    if (!layer(L_SONDE) || !rs41_show_map()) return;
+    for (int slot = 0; slot < RS41_SONDES; ++slot) {
+        if (!rs41_store_copy(slot,&s_map_sonde,now) || !s_map_sonde.fix_us) continue;
+        uint8_t hue = now-s_map_sonde.fix_us < 300000000 ? TUI_YELLOW|TUI_BRIGHT : LS_DIM_FG;
+        uint8_t attr = TUI_ATTR(hue,TUI_BLACK);
+        int px = 0, py = 0; bool previous = false;
+        for (unsigned i = 0; i < s_map_sonde.count; ++i) {
+            double fx, fy; int dx, dy;
+            const rs41_point_t *p = &s_map_sonde.track[i];
+            if (!frame_px(p->lat,p->lon,pw,ph,&fx,&fy)) { previous = false; continue; }
+            px_dot(fx,fy,&dx,&dy);
+            if (previous) ls_ink_line(px,py,dx,dy,attr,1,0);
+            px = dx; py = dy; previous = true;
+        }
+        double fx,fy; int dx,dy;
+        if (!frame_px(s_map_sonde.report.lat,s_map_sonde.report.lon,pw,ph,&fx,&fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        px_dot(fx,fy,&dx,&dy);
+        ls_ink_ellipse(dx,dy,2,3,attr,3,0);
+        ls_ink_line(dx,dy+3,dx,dy+5,attr,3,0);
+        if (now-s_map_sonde.fix_us < 2500000) ping_ring(dx,dy,attr,2000);
+        claim_dots(dx,dy,3,a.w,a.h);
+        int k = s_sonde_labels_n++;
+        s_sonde_labels[k].lat = s_map_sonde.report.lat; s_sonde_labels[k].lon = s_map_sonde.report.lon;
+        s_sonde_labels[k].us = s_map_sonde.fix_us;
+        memcpy(s_sonde_labels[k].serial,s_map_sonde.report.serial,9);
+    }
+}
+static void sonde_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
+{
+    if (layer(L_NOLABEL)) return;
+    for (int i = 0; i < s_sonde_labels_n; ++i) {
+        double fx,fy; int dx,dy;
+        if (!frame_px(s_sonde_labels[i].lat,s_sonde_labels[i].lon,pw,ph,&fx,&fy)) continue;
+        px_dot(fx,fy,&dx,&dy);
+        place_label(sf,a,dx/2,dy/3,3,s_sonde_labels[i].serial,"RS41",
+            TUI_ATTR(now-s_sonde_labels[i].us < 300000000 ? TUI_YELLOW|TUI_BRIGHT : LS_DIM_FG,TUI_BLACK),false);
+    }
+}
+
+/* Vessel positions expire independently of static identity reports. */
+static EXT_RAM_BSS_ATTR ais_vessel_t s_ais_points[AIS_VESSELS];
+static int s_ais_count;
+static const pt_t SHAPE_VESSEL[] = { { 0, -3.5f }, { 1.8f, -0.8f }, { 1.8f, 2.8f }, { 0, 2.8f } };
+static uint8_t ais_hue(const ais_vessel_t *p, int64_t now)
+{
+    ais_options_t o; ais_options_get(&o);
+    int64_t age = now-p->position_us, keep = (int64_t)o.keep_minutes*60000000;
+    return age < keep/6 ? TUI_CYAN | TUI_BRIGHT : age < keep/2 ? TUI_CYAN : LS_DIM_FG;
+}
+static void ais_canvas(tui_rect a, int pw, int ph, int64_t now)
+{
+    s_ais_count = 0; ais_options_t o; ais_options_get(&o);
+    if (!layer(L_AIS) || !o.map) return;
+    int count = ais_store_snapshot(s_ais_points, AIS_VESSELS, now);
+    for (int i = 0; i < count; ++i) {
+        ais_vessel_t *p = &s_ais_points[i];
+        if (!p->position || now < p->position_us || now-p->position_us > (int64_t)o.keep_minutes*60000000 ||
+            !ais_visible(p, &o, now, s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
+                         s_receiver.last_fix_us, NULL, NULL)) continue;
+        s_ais_points[s_ais_count++] = *p;
+    }
+    for (int i = 0; i < s_ais_count; ++i) {
+        const ais_vessel_t *p = &s_ais_points[i]; double fx, fy;
+        if (!frame_px(p->lat, p->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy);
+        uint8_t attr = TUI_ATTR(ais_hue(p, now), TUI_BLACK);
+        if (layer(L_VECTORS) && p->sog < 1023 && p->sog > 0 && p->cog < 3600) {
+            double lat, lon, x, y;
+            double angle = p->cog*M_PI/1800;
+            /* A three-minute course vector uses the same geographic projection as aircraft. */
+            ls_map_dead_reckon(p->lat, p->lon, (int)lround(p->sog/10.0*cos(angle)),
+                (int)lround(p->sog/10.0*sin(angle)), 0, 180000000, 180000000, &lat, &lon);
+            if (frame_px(lat, lon, pw, ph, &x, &y)) {
+                int qx, qy; px_dot(x, y, &qx, &qy);
+                double length = hypot(qx-dx, qy-dy);
+                if (length > 24) { qx = dx+(int)lround((qx-dx)*24/length); qy = dy+(int)lround((qy-dy)*24/length); }
+                ls_ink_line(dx, dy, qx, qy, attr, 3, 2);
+            }
+        }
+        double heading = p->heading < 360 ? p->heading : p->cog/10.0;
+        if (heading < 360) silhouette(dx, dy, SIL(SHAPE_VESSEL), heading, 1, attr, 7);
+        else silhouette(dx, dy, SIL(SHAPE_DIAMOND), 0, 1, attr, 7);
+        if (now-p->heard_us < 2500000) ping_ring(dx, dy, attr, 2000);
+        claim_dots(dx, dy, 4, a.w, a.h);
+    }
+}
+static void ais_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
+{
+    ais_options_t o; ais_options_get(&o);
+    if (!o.names) return;
+    for (int i = 0; i < s_ais_count; ++i) {
+        const ais_vessel_t *p = &s_ais_points[i]; double fx, fy;
+        if (!frame_px(p->lat, p->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy); char mmsi[12];
+        snprintf(mmsi, sizeof(mmsi), "%09lu", (unsigned long)p->mmsi);
+        place_label(sf, a, dx/2, dy/3, 3, p->name[0] ? p->name : mmsi, NULL,
+                    TUI_ATTR(ais_hue(p, now), TUI_BLACK), false);
     }
 }
 
@@ -2352,7 +2665,11 @@ static const struct { uint32_t bit; const char *name; const char *what; } LAYER_
     { L_BLOCKS,  "Data blocks",    "altitude and speed labels" },
     { L_NOLABEL, "Hide labels",    "symbols only" },
     { L_MESH,    "Mesh nodes",     "peers with a position" },
+    { L_APRS,    "APRS stations",  "stations and weather" },
+    { L_AIS,     "AIS vessels",    "vessel positions, course" },
+    { L_SONDE,   "SONDE",          "RS41 tracks and last fix" },
     { L_LINKS,   "Mesh links",     "lines to nodes heard lately" },
+    { L_ROUTE,   "Route",          "planned and walked path" },
     { L_MARKS,   "Markers, lines", "placed by hand" },
     { L_RINGS,   "Range rings",    "distance from here" },
     { L_COVER,   "Coverage",       "furthest aircraft by bearing" },
@@ -2530,12 +2847,58 @@ static ls_act_status_t a_map_track(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+/* ROUTE keeps file names in PSRAM; the picker lends their labels to the UI. */
+#define ROUTE_DIR "/sdcard/lakeshark/routes"
+EXT_RAM_BSS_ATTR static char s_routes[LS_PICKER_MAX-1][128];
+static int s_route_n;
+static void route_pick(int i)
+{
+    if (i<0 || i>s_route_n) return;
+    bool ok=ls_route_live_load(i ? s_routes[i-1] : NULL,i==0);
+    if (!ok) { say("route unavailable, invalid, or too large"); return; }
+    layers_set(s_layers|L_ROUTE);
+    const ls_route_t *r=ls_route_live();
+    s_track=false;
+    ls_map_center(r->point[0].lat,r->point[0].lon);
+    ls_map_follow_set(true);
+    say(i ? "route loaded; waiting for GPS" : "backtracking saved walk; waiting for GPS");
+}
+static ls_act_status_t a_map_route(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    s_route_n=0;
+    DIR *d=opendir(ROUTE_DIR);
+    const struct dirent *e;
+    if (d) {
+        while ((e=readdir(d)) && s_route_n<LS_PICKER_MAX-1) {
+            size_t n=strlen(e->d_name);
+            if (n<5 || strcasecmp(e->d_name+n-4,".gpx") ||
+                n+sizeof(ROUTE_DIR)+1>sizeof(s_routes[0])) continue;
+            snprintf(s_routes[s_route_n++],sizeof(s_routes[0]),"%s/%.*s",ROUTE_DIR,(int)n,e->d_name);
+        }
+        closedir(d);
+    }
+    qsort(s_routes,s_route_n,sizeof(s_routes[0]),archive_order);
+    ls_picker_open("ROUTE",route_pick);
+    ls_picker_add("BACKTRACK","reverse current / last recorded walk");
+    for (int i=0;i<s_route_n;i++) ls_picker_add(s_routes[i]+sizeof(ROUTE_DIR),"follow GPX");
+    out->kind=LS_VAL_TEXT;out->s="GPX: SD /lakeshark/routes; or BACKTRACK";
+    return LS_ACT_OK;
+}
+static ls_act_status_t a_route_options(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;ls_opt_open(ls_route_options());
+    out->kind=LS_VAL_TEXT;out->s="route options";return LS_ACT_OK;
+}
+
 static void register_view_action(void)
 {
     static bool done;
     if (done) return;
     done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view,
                               "field, blocks, or line art");
+    ls_action_register("map.route", "", LS_CAP_UI, a_map_route, "follow GPX or backtrack a walk");
+    ls_action_register("map.route_options", "", LS_CAP_UI, a_route_options, "route guidance settings");
     ls_action_register("map.files", "", LS_CAP_UI, a_map_files, "choose an SD map");
     ls_action_register("map.find", "", LS_CAP_UI, a_map_find,
                        "aircraft, nodes, markers and places to go to");
@@ -2553,21 +2916,31 @@ static void register_view_action(void)
 
 /* --------------------------------------------------------- the preview -- */
 
+void ls_map_preview_frame(tui_rect area, int *pw, int *ph, int *tile_px)
+{
+    int cw=10;
+    ls_tui_geometry(NULL,NULL,&cw,NULL);
+    if (pw) *pw=area.w*SUB_X;
+    if (ph) *ph=area.h*sub_y();
+    if (tile_px) *tile_px=256*SUB_X/(cw>0?cw:10);
+}
+
 void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
 {
     if (area.w<1 || area.h<1) return;
     if (!s_opened) { s_opened=true; rescan(); }
+    /* The room the labels over this take starts empty every frame, picture
+       or not: with no archive there is nothing to draw, but the aircraft and
+       their callsigns still come, and the last frame's list would leave them
+       nowhere to go after a few frames. */
+    overlay_reset(area,tui_rect_make(0,0,0,0),tui_rect_make(0,0,0,0));
     ls_map_center(lat,lon);
-    int cw=10;
-    ls_tui_geometry(NULL,NULL,&cw,NULL);
-    ls_map_set_tile_px(256*SUB_X/(cw>0?cw:10));
-    if (!ls_map_begin(area.w*SUB_X,area.h*sub_y())) return;
-    int pw=0,ph=0;
+    int pw=0,ph=0,tile=256;
+    ls_map_preview_frame(area,&pw,&ph,&tile);
+    ls_map_set_tile_px(tile);
+    if (!ls_map_begin(pw,ph)) return;
     const uint16_t *px=ls_map_render(&pw,&ph);
-    if (px) {
-        draw_cells(sf,area,px,pw,ph);
-        overlay_reset(area,tui_rect_make(0,0,0,0),tui_rect_make(0,0,0,0));
-    }
+    if (px) draw_cells(sf,area,px,pw,ph);
 }
 
 void ls_map_preview_reserve(tui_rect area,int x,int y,int width)
@@ -2616,6 +2989,7 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
     if (s_nedges > 1) s_nedges = 1;      /* the selection only: the pane is small */
     edges_canvas(area, pw, ph);
     ls_ink_flush(sf, tui_rect_make(0, -1, 0, 0));
+    claim_ink(area);
     receiver_text(sf, area, pw, ph);
     air_text(sf, area);
     edges_text(sf, area, pw, ph);
@@ -2707,6 +3081,51 @@ static int count_air_positions(void)
     return n;
 }
 
+/* Clip in floating point before converting map pixels to ink dots. A long,
+   decimated leg may cross the pane with both endpoints outside it. */
+static void route_line(double x0,double y0,double x1,double y1,int pw,int ph,uint8_t attr)
+{
+    double dx=x1-x0,dy=y1-y0,lo=0,hi=1;
+    const double p[]={-dx,dx,-dy,dy}, q[]={x0,pw-1-x0,y0,ph-1-y0};
+    for (int k=0;k<4;k++) {
+        if (fabs(p[k])<1e-9) { if (q[k]<0) return; continue; }
+        double t=q[k]/p[k];
+        if (p[k]<0) lo=fmax(lo,t); else hi=fmin(hi,t);
+    }
+    if (lo>hi) return;
+    int ax,ay,bx,by;
+    px_dot(x0+lo*dx,y0+lo*dy,&ax,&ay);
+    px_dot(x0+hi*dx,y0+hi*dy,&bx,&by);
+    ls_ink_line(ax,ay,bx,by,attr,4,0);
+}
+static void route_canvas(int pw,int ph)
+{
+    const ls_route_t *r=ls_route_live();
+    if (!r->valid || !layer(L_ROUTE) || pw<1 || ph<1) return;
+    const uint8_t bright=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),dim=LS_ATTR_DIM;
+    for (size_t i=1;i<r->n;i++) {
+        const ls_route_point_t *a=&r->point[i-1],*b=&r->point[i];
+        double x0,y0,x1,y1;
+        if (b->start || !frame_px(a->lat,a->lon,pw,ph,&x0,&y0) ||
+            !frame_px(b->lat,b->lon,pw,ph,&x1,&y1)) continue;
+        if (r->arrived || b->along_m<=r->walked_m) route_line(x0,y0,x1,y1,pw,ph,dim);
+        else if (a->along_m<r->walked_m && b->along_m>a->along_m) {
+            double f=(r->walked_m-a->along_m)/(b->along_m-a->along_m);
+            double x=x0+f*(x1-x0),y=y0+f*(y1-y0);
+            route_line(x0,y0,x,y,pw,ph,dim);route_line(x,y,x1,y1,pw,ph,bright);
+        } else route_line(x0,y0,x1,y1,pw,ph,bright);
+    }
+    if (r->located && !r->arrived) {
+        double fx,fy;
+        if (frame_px(r->point[r->next].lat,r->point[r->next].lon,pw,ph,&fx,&fy) &&
+            fx>=0 && fx<pw && fy>=0 && fy<ph) {
+            int x,y;px_dot(fx,fy,&x,&y);
+            int radius=2+ls_motion_phase(2,600);
+            ls_ink_ellipse(x,y,radius,radius,bright,6,0);
+        }
+    }
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     const int64_t now = esp_timer_get_time();
@@ -2719,7 +3138,8 @@ static void draw(tui_surface *sf, tui_rect area)
     const ls_quick_t *quick = quick_table(&nq);
     const int want = ls_quick_rows(quick, nq, area.w, ls_tui_is_wide());
     const int ctl_h = (!s_controls_hidden && area.h > want + 10) ? want : 0;
-    s_header_h = ls_tui_is_wide() ? 1 : 3;
+    const bool guidance=ls_route_live()->valid;
+    s_header_h = (ls_tui_is_wide() ? 1 : 3)+(guidance ? 1 : 0);
     tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
 
     s_quick_rect = ctl_h
@@ -2804,17 +3224,25 @@ static void draw(tui_surface *sf, tui_rect area)
         s_nplaced = 0;
         rings_canvas(sf, body, pw, ph, false);
         cover_canvas(pw, ph);
+        route_canvas(pw,ph);
         marks_canvas(body, pw, ph, now);
         nodes_canvas(body, pw, ph);
+        aprs_canvas(body, pw, ph, now);
+        ais_canvas(body, pw, ph, now);
+        sonde_canvas(body, pw, ph, now);
         receiver_canvas(body, pw, ph);
         air_canvas(body, pw, ph, now);
         edges_collect(pw, ph);
         edges_canvas(body, pw, ph);
         ls_ink_flush(sf, s_card_rect);
+        claim_ink(body);
 
         receiver_text(sf, body, pw, ph);
         air_text(sf, body);
         nodes_text(sf, body, pw, ph);
+        aprs_text(sf, body, pw, ph, now);
+        ais_text(sf, body, pw, ph, now);
+        sonde_text(sf, body, pw, ph, now);
         marks_text(sf, body, pw, ph);
         edges_text(sf, body, pw, ph);
         rings_canvas(sf, body, pw, ph, true);
@@ -2848,6 +3276,11 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_pan_pad(sf, s_pad_rect);
     }
 
+    if (guidance) {
+        char strip[96];ls_route_guidance(strip,sizeof(strip));
+        tui_put_str(sf,area,area.x,area.y+s_header_h-1,strip,
+            TUI_ATTR(ls_route_live()->off_route ? TUI_YELLOW|TUI_BRIGHT : TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    }
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), quick, nq);
 }
 

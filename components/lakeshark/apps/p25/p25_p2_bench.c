@@ -4,6 +4,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ls_task_reap.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,7 +87,7 @@ static void worker(void *context)
     active = NULL;
     portEXIT_CRITICAL(&lock);
     heap_caps_free(q);
-    vTaskDeleteWithCaps(NULL);
+    ls_task_retire_self();
 }
 
 static int hex(char c)

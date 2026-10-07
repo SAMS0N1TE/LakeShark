@@ -97,6 +97,28 @@ static void session_with_two_task_fake(void)
 static int  console_bad;       /* answers the console got that were not the part's */
 static int  console_calls;
 static int  pump_pushed, pump_delivered, pump_bad;
+/* Frames a retune cleared from the part's Rx FIFO, and the retunes. */
+static int  pump_lost, knob_calls;
+
+/* A knob change is standby, reprogram, ClearRxFifo, Rx again (the sequence
+   test_lr20xx_proto.c pins), so a frame waiting in the FIFO then is lost.
+   Every frame that does arrive must be whole, one of ours, and later than
+   the last. */
+static void frame_for(int k, uint8_t out[28]);
+static void take(const uint8_t *buf, int *expect)
+{
+    uint8_t want[28];
+    for (int k = *expect; k < pump_pushed; k++) {
+        frame_for(k, want);
+        if (memcmp(buf, want, 28) == 0) {
+            pump_lost += k - *expect;
+            *expect = k + 1;
+            pump_delivered++;
+            return;
+        }
+    }
+    pump_bad++;
+}
 
 static void frame_for(int k, uint8_t out[28])
 {
@@ -123,6 +145,7 @@ static void *console_thread(void *arg)
         if (i % 10 == 5) {
             if (ls_lora_modes_set_boost((i / 10) % 8) != ESP_OK) console_bad++;
             if (ls_lora_modes_set_gain(1 + (i / 10) % 13) != ESP_OK) console_bad++;
+            knob_calls += 2;
         }
 
         /* The `lora` command itself; its output is not what is under test. */
@@ -151,24 +174,18 @@ static void *pump_thread(void *arg)
         }
         const int n = ls_lora_modes_poll(buf, sizeof(buf), &rssi);
         if (n == 28) {
-            uint8_t want[28];
-            frame_for(expect++, want);
-            if (memcmp(buf, want, 28) != 0) pump_bad++;
-            pump_delivered++;
+            take(buf, &expect);
         } else if (n < 0) {
             pump_bad++;
         }
     }
     /* Drain what is left. */
-    for (int i = 0; i < 40 && pump_delivered < pump_pushed; i++) {
+    for (int i = 0; i < 40 && pump_delivered + pump_lost < pump_pushed; i++) {
         const int n = ls_lora_modes_poll(buf, sizeof(buf), &rssi);
-        if (n == 28) {
-            uint8_t want[28];
-            frame_for(expect++, want);
-            if (memcmp(buf, want, 28) != 0) pump_bad++;
-            pump_delivered++;
-        }
+        if (n == 28) take(buf, &expect);
     }
+    /* Frames after the last one delivered that never came. */
+    pump_lost += pump_pushed - expect;
     return NULL;
 }
 
@@ -176,7 +193,7 @@ LS_CASE(the_console_and_the_ads_b_pump_never_interleave_on_the_spi_device)
 {
     session_with_two_task_fake();
     console_bad = console_calls = 0;
-    pump_pushed = pump_delivered = pump_bad = 0;
+    pump_pushed = pump_delivered = pump_bad = pump_lost = knob_calls = 0;
 
     pthread_t a, b;
     pthread_create(&a, NULL, console_thread, NULL);
@@ -191,7 +208,9 @@ LS_CASE(the_console_and_the_ads_b_pump_never_interleave_on_the_spi_device)
     LS_EQ_INT(fk.violations, 0);                     /* never a frame while BUSY was high */
     LS_EQ_INT(console_bad, 0);                       /* every answer was the part's own */
     LS_EQ_INT(pump_bad, 0);                          /* frames arrived whole and in order */
-    LS_EQ_INT(pump_delivered, pump_pushed);
+    LS_EQ_INT(pump_delivered + pump_lost, pump_pushed);
+    /* Only a retune may lose a frame: the one waiting when it cleared the FIFO. */
+    LS_CHECK_MSG(pump_lost <= knob_calls, "%d frames lost to %d retunes", pump_lost, knob_calls);
     LS_CHECK(pump_pushed >= ROUNDS);
     LS_EQ_UINT(ls_lora_hw_unguarded(), 0);
     lr20xx_modes_stats_t ms;
@@ -259,9 +278,16 @@ LS_CASE(the_fake_does_catch_two_tasks_that_share_the_device_without_the_lock)
        and two tasks inside the transmit at once; under ls_lora_hw_lock it sees
        neither. This is the control for the case above: it is what that case
        would report if the dispatcher did not take the lock. */
-    const int free_run = raw_pair_run(false);
+    /* Overlap without the lock is likely, not certain: on a loaded machine the
+       two threads can happen to take turns. One sighting is all the control
+       needs, so it gets ten tries. */
+    int free_run = 0, peak = 0;
+    for (int tries = 0; tries < 10 && (free_run == 0 || peak <= 1); tries++) {
+        free_run += raw_pair_run(false);
+        if (atomic_load(&max_in_flight) > peak) peak = atomic_load(&max_in_flight);
+    }
     LS_CHECK_MSG(free_run > 0, "the fake saw no interleaving without the lock (%d)", free_run);
-    LS_CHECK(atomic_load(&max_in_flight) > 1);
+    LS_CHECK(peak > 1);
 
     const int locked_run = raw_pair_run(true);
     LS_EQ_INT(locked_run, 0);

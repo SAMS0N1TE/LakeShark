@@ -15,6 +15,7 @@ void ls_exp_register_builtin(void)
     EXP(exp_lr433);
     EXP(exp_p25site);
     EXP(exp_pagers);
+    EXP(exp_rs41);
     EXP(exp_survey);
     EXP(exp_uat);
     EXP(exp_wisun);

@@ -14,6 +14,9 @@ bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; r
 #include "radio_endpoint.h"
 #include "apps/p25/p25_spectrum.h"
 #include "apps/rec/rec_state.h"
+#include "ls_experiments.h"
+#include "experiments/lr433_history.h"
+#include "ls_notify.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -140,6 +143,9 @@ int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
+static bool s_update_check = true;
+bool settings_get_update_check(void) { return s_update_check; }
+void settings_set_update_check(bool v) { s_update_check = v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
@@ -162,6 +168,8 @@ bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; retur
 bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
 bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d; return false; }
 esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
+esp_err_t ls_board_hw_antenna_confirm_external(void) { return ESP_OK; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
 bool ls_board_hw_antenna_is_external(void) { return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
 bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }
@@ -237,6 +245,101 @@ static bool row_has(int row, const char *needle)
     char buf[200];
     row_text(row, buf, sizeof(buf));
     return strstr(buf, needle) != NULL;
+}
+
+static bool grid_has(const char *needle);
+static bool sensor_hw_ring, sensor_hw_vibe;
+static unsigned sensor_hw_calls, sensor_volume_writes;
+void ls_notify_alert_hw(bool ring, bool vibe)
+{
+    sensor_hw_ring = ring; sensor_hw_vibe = vibe; sensor_hw_calls++;
+}
+
+static void sensor_pixels(const char *name, bool wide)
+{
+    char p[sizeof(LS_SENSOR_RENDER_DIR) + 64]; snprintf(p, sizeof(p), LS_SENSOR_RENDER_DIR "/sensors-%s-%s.ppm", name, wide ? "landscape" : "portrait");
+    FILE *f = fopen(p, "wb"); LS_CHECK(f != NULL); if (!f) return;
+    int w = wide ? NATIVE_H : NATIVE_W, h = wide ? NATIVE_W : NATIVE_H;
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        uint16_t c = g_fb[wide ? (NATIVE_H - 1 - x) * NATIVE_W + y : y * NATIVE_W + x];
+        unsigned char rgb[3] = { ((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31 };
+        fwrite(rgb, 1, 3, f);
+    }
+    fclose(f);
+}
+
+LS_CASE(sensor_history_list_detail_options_and_touch_render)
+{
+    extern const ls_tui_screen_t ls_scr_experiments;
+    register_once();
+    ls_tui_screen_register(&ls_scr_experiments);
+    ls_exp_register_builtin();
+    lr433_history_start();
+    lr433_msg_t m = { .proto = LR433_P_ACURITE_TOWER, .channel = 1, .battery_ok = 1,
+        .humidity = 62, .kpa = NAN, .rain_mm = NAN, .wind_ms = NAN };
+    strcpy(m.id, "001");
+    for (int i = 0; i < 48; i++) { m.temp_c = -18 + 0.12f * i + sinf(i * .45f); lr433_history_receive(&m); }
+    uint8_t order[SH_SENSORS]; LS_CHECK(lr433_history_list(order) > 0);
+    lr433_history_options(order[0]); lr433_history_name("FREEZER");
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_experiments));
+        for (int i = 0; i < ls_exp_count(); i++) {
+            const ls_experiment_t *e = ls_exp_at(i);
+            if (!strcmp(e->id, "lr433")) break;
+            ls_scr_experiments.key(LS_TK_DOWN, 0);
+        }
+        ls_scr_experiments.key(LS_TK_ENTER, 0); frame(2);
+        LS_CHECK(grid_has("SENSORS"));
+        ls_scr_experiments.key(LS_TK_CHAR, 'h'); frame(2);
+        LS_CHECK(grid_has("FREEZER")); sensor_pixels("list", wide);
+        ls_scr_experiments.key(LS_TK_ENTER, 0); frame(3);
+        LS_CHECK(grid_has("MIN")); LS_CHECK(grid_has("TREND")); sensor_pixels("graph", wide);
+        ls_scr_experiments.key(LS_TK_CHAR, 'o'); frame(2);
+        LS_CHECK(grid_has("NAME")); LS_CHECK(grid_has("THRESHOLD")); sensor_pixels("options", wide);
+        LS_CHECK(!grid_has("RTL-SDR"));
+        ls_opt_close();
+        ls_scr_experiments.key(LS_TK_ESC, 0); frame(2);
+        /* The row chosen by the keyboard opens through its real touch hit. */
+        bool opened = false;
+        int cols, rows; ls_tui_geometry(&cols, &rows, NULL, NULL);
+        for (int y = 0; y < rows; y++) if (row_has(y, "FREEZER")) {
+            ls_scr_experiments.touch(cols / 2, y); frame(2); opened = grid_has("MIN"); break;
+        }
+        LS_CHECK(opened);
+        ls_scr_experiments.key(LS_TK_ESC, 0);
+        ls_scr_experiments.key(LS_TK_ESC, 0);
+        ls_scr_experiments.key(LS_TK_ESC, 0);
+        ls_tui_end();
+    }
+}
+
+LS_CASE(sensor_history_threshold_uses_haptics_without_audio_or_volume_change)
+{
+    extern const ls_tui_screen_t ls_scr_experiments;
+    register_once(); LS_CHECK(ls_tui_begin(568, 1232));
+    ls_scr_experiments.enter(); lr433_history_start();
+    lr433_msg_t m = { .proto = LR433_P_AMBIENT_F007TH, .channel = 2, .battery_ok = 1,
+        .temp_c = -18, .humidity = NAN, .kpa = NAN, .rain_mm = NAN, .wind_ms = NAN };
+    strcpy(m.id, "alert-fixture"); lr433_history_receive(&m);
+    uint8_t order[SH_SENSORS]; int count = lr433_history_list(order), slot = -1;
+    static sh_sensor_t d;
+    for (int i = 0; i < count; i++) if (lr433_history_copy(order[i], &d) && !strcmp(d.id, m.id)) slot = order[i];
+    LS_CHECK(slot >= 0);
+    const ls_opt_ctx_t *ctx = lr433_history_options(slot);
+    lr433_history_name("FREEZER ALERT");
+    ctx->opt[3].set(&ctx->opt[3], 1);
+    sensor_hw_calls = sensor_volume_writes = 0;
+    int volume = settings_get_volume();
+    ls_notify_set_alerts(true, true);
+    m.temp_c = -9; lr433_history_receive(&m); ls_notify_poll(-1);
+    LS_CHECK(ls_notify_showing()); LS_EQ_INT(sensor_hw_calls, 1);
+    LS_CHECK(!sensor_hw_ring); LS_CHECK(sensor_hw_vibe);
+    LS_EQ_INT(sensor_volume_writes, 0); LS_EQ_INT(settings_get_volume(), volume);
+    m.temp_c = -9.5f; lr433_history_receive(&m); ls_notify_poll(-1); LS_EQ_INT(sensor_hw_calls, 1);
+    ctx->opt[1].set(&ctx->opt[1], 1);
+    ls_notify_clear(); ls_tui_end();
 }
 
 /* ---------------------------------------------------------------- cases -- */
@@ -793,7 +896,7 @@ bool ls_track_rec_running(void) { return false; }
 
 /* The radio panel shows system volume; this dump does not run audio. */
 int audio_volume_get(void) { return 60; }
-void audio_volume_set(int v) { (void)v; }
+void audio_volume_set(int v) { (void)v; sensor_volume_writes++; }
 bool audio_is_muted(void) { return false; }
 void audio_toggle_mute(void) {}
 

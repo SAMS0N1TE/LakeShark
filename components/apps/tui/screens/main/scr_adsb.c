@@ -13,8 +13,10 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 
+#include "../../ls_follow.h"
 #include "../../ls_geo.h"
 #include "../../ls_map.h"
+#include "../../ls_map_motion.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_radio_select.h"
@@ -265,6 +267,157 @@ static void radio_chosen(ls_rsel_radio_t radio)
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
 
+/* ------------------------------------------------------------ follow --- */
+
+/* Where the mini map looks. The view is this screen's, placed each frame by
+   ls_follow_step from what the map is about to draw, like the plot table
+   above. The mode is the ADS-B app's, a RAM copy loaded with the gain at
+   registration and saved the same way, so nothing here reads NVS. */
+static ls_follow_view_t s_follow;
+
+static ls_follow_mode_t follow_mode(void)
+{
+    const int m = adsb_map_follow();
+    return m >= 0 && m < LS_FOLLOW_MODES ? (ls_follow_mode_t)m : LS_FOLLOW_DEFAULT;
+}
+
+/* A new mode starts from its own fit, without the last one's ZOOM+ or -. */
+static void follow_set(ls_follow_mode_t m)
+{
+    adsb_set_map_follow((int)m);
+    ls_follow_clear(&s_follow);
+}
+
+/* ZOOM+ and ZOOM-. While FOLLOW picks the zoom they move it a step from the
+   fit and it keeps following; otherwise they are the map's, as they were. */
+static void zoom_by(int dz)
+{
+    if (ls_follow_picks_zoom(follow_mode()) && s_follow.picked) {
+        if (ls_follow_nudge(&s_follow, dz)) ls_map_zoom_by(s_follow.zoom - ls_map_zoom());
+        return;
+    }
+    ls_map_zoom_by(dz);
+}
+
+/* The aircraft the map's layer draws, where it draws them: a position under
+   two minutes old, carried along the track as scr_map.c carries it. */
+static int follow_points(ls_follow_pt_t *out, int64_t now)
+{
+    int n = 0;
+    for (int s = 0; s < ADSB_MAX_TRACKED; s++) {
+        const adsb_aircraft_t *a = adsb_state_get(s);
+        if (!a || !a->active || !a->pos_valid || a->pos_ts_us <= 0) continue;
+        const int64_t age = now - a->pos_ts_us;
+        if (age < 0 || age > LS_MAP_AIR_SHOW_US) continue;
+        int ns = a->ns_velocity, ew = a->ew_velocity;
+        if (!ns && !ew && a->velocity > 0) {
+            ns = (int)lround(a->velocity * cos(a->heading * M_PI / 180.0));
+            ew = (int)lround(a->velocity * sin(a->heading * M_PI / 180.0));
+        }
+        double lat, lon;
+        ls_map_dead_reckon(a->lat, a->lon, ns, ew, a->pos_ts_us, now,
+                           LS_MAP_AIR_RECKON_US, &lat, &lon);
+        out[n++] = (ls_follow_pt_t){ a->icao, lat, lon };
+    }
+    return n;
+}
+
+/* This frame's centre for the mini map, with its zoom set on the map. The
+   receiver is where FOLLOW OFF stays and where every mode rests with nothing
+   to follow. */
+static void follow_place(tui_rect body, double rx_lat, double rx_lon,
+                         double *lat, double *lon)
+{
+    const int64_t now = esp_timer_get_time();
+    const ls_follow_mode_t mode = follow_mode();
+    ls_follow_pt_t air[ADSB_MAX_TRACKED];
+    ls_follow_in_t in = {
+        .mode = mode, .zoom = ls_map_zoom(), .busy = ls_map_render_busy(),
+        .have_rx = true, .rx_lat = rx_lat, .rx_lon = rx_lon,
+        /* OFF follows nothing, so it carries nothing along its track. */
+        .air = air, .n = mode == LS_FOLLOW_OFF ? 0 : follow_points(air, now),
+        .selected = adsb_select_get_icao(), .now_us = now,
+    };
+    ls_map_preview_frame(body, &in.pw, &in.ph, &in.tile_px);
+    ls_map_zoom_limits(&in.zoom_lo, &in.zoom_hi);
+    ls_follow_step(&s_follow, &in);
+    *lat = rx_lat;
+    *lon = rx_lon;
+    if (!s_follow.valid) return;
+    if (s_follow.picked && s_follow.zoom != ls_map_zoom())
+        ls_map_zoom_by(s_follow.zoom - ls_map_zoom());
+    *lat = s_follow.lat;
+    *lon = s_follow.lon;
+}
+
+/* What FOLLOW has hold of, in a few words for the corner of the mini map. */
+static void follow_label(char *out, size_t n, double rx_lat, double rx_lon)
+{
+    const ls_follow_mode_t m = follow_mode();
+    char nudge[8] = "";
+    if (s_follow.picked && s_follow.bias)
+        snprintf(nudge, sizeof(nudge), " %+d", s_follow.bias);
+    const adsb_aircraft_t *t = NULL;
+    for (int s = 0; s < ADSB_MAX_TRACKED && s_follow.target; s++) {
+        const adsb_aircraft_t *a = adsb_state_get(s);
+        if (a && a->active && a->icao == s_follow.target) t = a;
+    }
+    char who[12] = "";
+    if (t && t->callsign[0]) snprintf(who, sizeof(who), "%.8s", t->callsign);
+    else if (t) snprintf(who, sizeof(who), "%06lX", (unsigned long)t->icao);
+    for (int i = (int)strlen(who) - 1; i >= 0 && who[i] == ' '; i--) who[i] = 0;
+
+    switch (m) {
+    case LS_FOLLOW_ALL:
+        snprintf(out, n, "FIT ALL %d%s", s_follow.count, nudge);
+        break;
+    case LS_FOLLOW_SELECTED:
+        if (t) snprintf(out, n, "SELECTED %s", who);
+        else snprintf(out, n, "%s", adsb_select_get_icao() ? "SELECTED: no position"
+                                                           : "SELECTED: none");
+        break;
+    case LS_FOLLOW_NEAREST:
+        if (t) {
+            double b = 0, nm = 0;
+            bearing_range_nm(rx_lat, rx_lon, t->lat, t->lon, &b, &nm);
+            snprintf(out, n, "NEAREST %s %.1fnm%s", who, nm, nudge);
+        } else {
+            snprintf(out, n, "NEAREST: none");
+        }
+        break;
+    default:
+        snprintf(out, n, "FOLLOW OFF");
+        break;
+    }
+}
+
+/* The mini map's first row: the receiver on the left, FOLLOW on the right.
+   The receiver gives way when the row is short, the label does not: it is
+   the one that says why the map is where it is. */
+static void follow_row(tui_surface *sf, tui_rect area, bool live, double rx_lat,
+                       double rx_lon)
+{
+    const int inner = area.w - 4;
+    if (inner < 4) return;
+    const bool on = follow_mode() != LS_FOLLOW_OFF;
+    char label[40], chip[44];
+    follow_label(label, sizeof(label), rx_lat, rx_lon);
+    if (on) snprintf(chip, sizeof(chip), " %.*s ", inner - 2, label);
+    else    snprintf(chip, sizeof(chip), "%.*s", inner - 2, label);
+    const int cw = (int)strlen(chip);
+    const int cx = area.x + 2 + inner - cw;
+    tui_put_str(sf, area, cx, area.y + 1, chip,
+                on ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
+
+    char text[40];
+    snprintf(text, sizeof(text), "%s %.4f, %.4f", live ? "GPS" : "HOME", rx_lat, rx_lon);
+    const int room = cx - 1 - (area.x + 2);
+    if ((int)strlen(text) > room) snprintf(text, sizeof(text), "%s", live ? "GPS" : "HOME");
+    if ((int)strlen(text) <= room)
+        tui_put_str(sf, area, area.x + 2, area.y + 1, text,
+                    TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+}
+
 static void draw_radar(tui_surface *sf, tui_rect area)
 {
     const uint8_t bright=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
@@ -278,10 +431,11 @@ static void draw_radar(tui_surface *sf, tui_rect area)
         return;
     }
     const tui_rect body=tui_rect_make(area.x+1,area.y+3,area.w-2,area.h-6);
-    ls_map_preview(sf,body,lat,lon);
+    double vlat=lat,vlon=lon;
+    follow_place(body,lat,lon,&vlat,&vlon);
+    ls_map_preview(sf,body,vlat,vlon);
     char text[80];
-    snprintf(text,sizeof(text),"%s %.4f, %.4f",live?"GPS":"HOME",lat,lon);
-    tui_put_str(sf,area,area.x+2,area.y+1,text,bright);
+    follow_row(sf,area,live,lat,lon);
     tui_put_str(sf,area,area.x+2,area.y+2,"^N  alt: yellow<5k green<20k cyan  trails",LS_ATTR_DIM);
     /* The full map's aircraft, drawn the same way here: one look for a
        plane wherever it is shown. */
@@ -290,7 +444,7 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     for(int i=0;i<n && s_nplot<ADSB_MAX_TRACKED;i++)
         s_plot[s_nplot++]=(radar_plot_t){(int16_t)plots[i].x,(int16_t)plots[i].y,plots[i].icao};
     ls_map_preview_labels(sf,body);
-    double width_nm=40075016.686*cos(lat*M_PI/180.0)*(body.w*3)/
+    double width_nm=40075016.686*cos(vlat*M_PI/180.0)*(body.w*3)/
         (ldexp(1.0,ls_map_zoom())*ls_map_tile_px()*LS_GEO_M_PER_NM);
     snprintf(text,sizeof(text),"%s z%d  %.1f NM across",ls_map_render_busy()?"LOADING":"OFFLINE",ls_map_zoom(),width_nm);
     tui_put_str(sf,area,area.x+2,area.y+area.h-3,text,LS_ATTR_DIM);
@@ -560,9 +714,9 @@ static const char *o_live(const ls_opt_t *o)
     return tuning() ? NULL : "Live: needs ADS-B running";
 }
 
-static const char *const BOOST[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
-static int o_boost(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->boost : 0; }
-static void o_set_boost(const ls_opt_t *o, int v) { (void)o; ls_lora_modes_set_boost(v); tuned(); }
+/* A level, so < and > step it and 7 does not turn into 0. */
+static double o_boost(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->boost : 0; }
+static void o_set_boost(const ls_opt_t *o, double v) { (void)o; ls_lora_modes_set_boost((int)(v + 0.5)); tuned(); }
 
 static double o_bw(const ls_opt_t *o) { (void)o; const ls_lora_modes_tuning_t *t = tuning(); return t ? t->rx_bw_hz / 1000.0 : 0; }
 static void o_set_bw(const ls_opt_t *o, double khz) { (void)o; ls_lora_modes_set_bw((uint32_t)(khz * 1000.0 + 0.5), NULL); tuned(); }
@@ -609,8 +763,8 @@ static const ls_opt_t OPT_ADSB[] = {
       .unit = "dB, LNA + VGA, amp above 102; 0 is 48", .show = o_show_hackrf_gain },
     { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_step, .set_num = o_set_step,
       .lo = 0, .hi = LS_LORA_MODES_GAIN_MAX, .unit = "1 to 13, 0 is automatic (13)", .show = o_show_step },
-    { .label = "BOOST", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA, .names = BOOST, .n = 8,
-      .get = o_boost, .set = o_set_boost, .why_not = o_live },
+    { .label = "BOOST", .kind = LS_OPT_LEVEL, .radios = LS_OPT_LORA, .num = o_boost, .set_num = o_set_boost,
+      .lo = 0, .hi = 7, .step = 1, .unit = "receive boost, 0 to 7", .why_not = o_live },
     { .label = "RX BANDWIDTH", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_bw, .set_num = o_set_bw,
       .lo = 500, .hi = 3100, .unit = "kHz, nearest of 513 to 3077", .show = o_show_bw, .why_not = o_live },
     { .label = "DETECTION", .kind = LS_OPT_TOGGLE, .radios = LS_OPT_LORA, .names = DETECT,
@@ -620,16 +774,29 @@ static const ls_opt_t OPT_ADSB[] = {
 };
 static const ls_opt_ctx_t CTX_RX = { .name = "RECEIVER", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ADSB) };
 
-/* DISPLAY: what V and +/- do on the screen. */
+/* DISPLAY: what V, F and +/- do on the screen. */
 static const char *const VIEW[] = { "LIST + MAP", "MAP ONLY" };
 static int o_view(const ls_opt_t *o) { (void)o; return s_radar_only; }
 static void o_set_view(const ls_opt_t *o, int v) { (void)o; s_radar_only = v != 0; s_detail = false; }
+static int o_follow(const ls_opt_t *o) { (void)o; return (int)follow_mode(); }
+static void o_set_follow(const ls_opt_t *o, int v) { (void)o; follow_set((ls_follow_mode_t)v); }
+/* The same step as ZOOM+ and ZOOM-, so under a picked zoom it is a step
+   from the fit and FOLLOW keeps going. */
 static double o_zoom(const ls_opt_t *o) { (void)o; return ls_map_zoom(); }
-static void o_set_zoom(const ls_opt_t *o, double v) { (void)o; ls_map_zoom_by((int)(v + 0.5) - ls_map_zoom()); }
+static void o_set_zoom(const ls_opt_t *o, double v) { (void)o; zoom_by((int)(v + 0.5) - ls_map_zoom()); }
+static void o_show_zoom(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (!s_follow.picked || !ls_follow_picks_zoom(follow_mode())) snprintf(out, n, "%d", ls_map_zoom());
+    else if (s_follow.bias) snprintf(out, n, "%d FIT%+d", ls_map_zoom(), s_follow.bias);
+    else snprintf(out, n, "%d FIT", ls_map_zoom());
+}
 static const ls_opt_t OPT_DISPLAY[] = {
     { .label = "VIEW", .kind = LS_OPT_TOGGLE, .names = VIEW, .get = o_view, .set = o_set_view },
+    { .label = "FOLLOW", .kind = LS_OPT_CYCLE, .names = ls_follow_names, .n = LS_FOLLOW_MODES,
+      .get = o_follow, .set = o_set_follow },
     { .label = "MAP ZOOM", .kind = LS_OPT_LEVEL, .num = o_zoom, .set_num = o_set_zoom,
-      .lo = 0, .hi = 22, .step = 1, .unit = "tile zoom, 0 to 22" },
+      .lo = 0, .hi = 22, .step = 1, .unit = "tile zoom, 0 to 22", .show = o_show_zoom },
 };
 static const ls_opt_ctx_t CTX_DISPLAY = { .name = "DISPLAY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_DISPLAY) };
 
@@ -659,15 +826,22 @@ static void draw(tui_surface *sf, tui_rect area)
     memset(s_nav, 0, sizeof(s_nav));
     s_tools=tui_rect_make(0,-1,0,0);
     if(area.h>=18 && area.w>=24) {
-    /* MAP ONLY is V, for view: R is RADIO, as in every app. */
+    /* MAP ONLY is V, for view: R is RADIO, as in every app. F is FOLLOW,
+       which says beside it what the mini map is following. */
+    const ls_follow_mode_t fm=follow_mode();
     const ls_btn_t tools[]={{"FULL MAP",NULL,'m',false,false},
         {"SET HOME",NULL,'h',false,false},{s_radar_only?"LIST":"MAP ONLY",NULL,'v',s_radar_only,false},
+        {"FOLLOW",ls_follow_name(fm),'f',fm!=LS_FOLLOW_OFF,false},
         {"ZOOM+",NULL,'=',false,false},{"ZOOM-",NULL,'-',false,false},
         ls_rsel_button(LS_RSEL_ADSB),ls_opt_button(&CTX_ADSB)};
-    const int ntools=ls_opt_count(&CTX_ADSB)?7:6;
+    const int ntools=ls_opt_count(&CTX_ADSB)?8:7;
     int th=ls_tui_is_wide()?3:10;
     s_tools=tui_rect_make(area.x,area.y,area.w,th);
     if(!ls_tui_is_wide() && s_tools.w>49) {s_tools.x+=(s_tools.w-49)/2;s_tools.w=49;}
+    /* Eight across a landscape row leave no room for a value beside its
+       label, which the three-row bar needs: the four-row bar gives the value
+       its own line rather than cutting RADIO's in half. */
+    if(ls_tui_is_wide() && !ls_btn_compact_fits(s_tools,tools,ntools)) s_tools.h=th=4;
     ls_btn_bar_raised_slot(sf,s_tools,tools,ntools,-1,LS_BTN_SLOT_QUICK);
     area.y+=th;area.h-=th;
     }
@@ -739,7 +913,8 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
-    if(k==LS_TK_CHAR && (ch=='='||ch=='+'||ch=='-')) {ls_map_zoom_by(ch=='-'?-1:1);return true;}
+    if(k==LS_TK_CHAR && (ch=='='||ch=='+'||ch=='-')) {zoom_by(ch=='-'?-1:1);return true;}
+    if(k==LS_TK_CHAR && (ch=='f'||ch=='F')) {follow_set(ls_follow_next(follow_mode()));return true;}
     if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {ls_rsel_open(LS_RSEL_ADSB,radio_chosen);return true;}
     if(k==LS_TK_CHAR && ls_opt_key(&CTX_ADSB,ch)) return true;
     if(k==LS_TK_CHAR && (ch=='v'||ch=='V')) {s_radar_only=!s_radar_only;s_detail=false;return true;}
@@ -782,7 +957,7 @@ static bool touch(int col, int row)
 {
     if(hit(s_tools,col,row)) {
         int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
-        if(i>=0 && i<7) return key(LS_TK_CHAR,"mhv=-ro"[i]);
+        if(i>=0 && i<8) return key(LS_TK_CHAR,"mhvf=-ro"[i]);
         return true;
     }
 
@@ -806,7 +981,13 @@ static bool touch(int col, int row)
         }
         if (best < 0) return true;
         if (adsb_select_get_icao() == s_plot[best].icao) s_detail = true;
-        else adsb_select_set_icao(s_plot[best].icao);
+        else {
+            adsb_select_set_icao(s_plot[best].icao);
+            /* It is already on the map: SELECTED leaves it there for the
+               second tap rather than snapping it to the middle. */
+            if (follow_mode() == LS_FOLLOW_SELECTED)
+                ls_follow_hold(&s_follow, s_plot[best].icao, esp_timer_get_time());
+        }
         return true;
     }
 
@@ -826,6 +1007,9 @@ static void enter(void)
     /* A useful regional overview; preserve the user zoom across relaunches. */
     static bool first=true;
     if(first) {ls_map_zoom_by(8-ls_map_zoom());first=false;}
+    /* The map is shared, and the full map may have moved it since: FOLLOW
+       places the mini map afresh, keeping any ZOOM+ or - on its fit. */
+    ls_follow_reset(&s_follow);
     ls_rsel_track(LS_RSEL_ADSB,adsb_in_use);
 }
 static void leave(void) { s_detail = false; ls_map_preview_leave(); }
@@ -834,7 +1018,7 @@ const ls_tui_screen_t ls_scr_adsb = {
     /* an aircraft list with no receiver behind it is an empty table. */
     .radio = "ADS-B",
     .name = "ADSB",
-    .hint = "UP/DOWN aircraft  ENTER details  R radio  O options  ESC back",
+    .hint = "UP/DOWN aircraft  ENTER details  F follow  R radio  O options  ESC back",
     .enter = enter,
     .leave = leave,
     .draw = draw,

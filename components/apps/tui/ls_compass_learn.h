@@ -28,7 +28,10 @@
    passing, steel close by). If readings keep being refused for
    LS_CL_RELEARN_S, the offset's uncertainty is widened so the filter can
    follow a real change it had no current reading to explain; it then has
-   to be turned again before anything is applied.
+   to be turned again before anything is applied. A reading the state
+   cannot judge at all (its vertical field pushed to the radius) counts as
+   refused, and the relearn then starts the vertical field over from the
+   reading.
 
    Pure: no sensor, gauge or storage is touched here. */
 

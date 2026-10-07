@@ -1,3 +1,4 @@
+#include "call_archive.h"
 #include "fm_app.h"
 #include "fm_state.h"
 #include "fm_mode_handoff.h"
@@ -10,11 +11,15 @@
 #include "acars_app.h"
 #include "acars_resample.h"
 #include "flex.h"
+#include "same_store.h"
+#include "aprs_store.h"
+#include "ais_store.h"
 #include "app_registry.h"
 #include "settings.h"
 #include "ls_nvs_safe.h"
 /**/
 #include "scan_engine.h"
+#include "scan_channels.h"
 /**/
 #include "spectrum.h"
 #include "iq_app_control.h"
@@ -61,10 +66,37 @@ static ls_radio_session_t *s_session;
 static ls_iq_control_t s_radio_control;
 /**/
 static EXT_RAM_BSS_ATTR fm_dsp_t s_dsp;
+static EXT_RAM_BSS_ATTR fm_tone_t s_tone;
+_Static_assert(FM_DEMOD_RATE == 32000, "Receive tone decimation requires 32 kHz");
 
 static const int     POC_BAUDS[3] = { 512, 1200, 2400 };
 static pocsag_ctx_t *s_poc[3] = { NULL, NULL, NULL };
 static flex_ctx_t   *s_flex[4] = { NULL, NULL, NULL, NULL };
+
+static ais_ctx_t *s_ais;
+_Static_assert(FM_RTL_RATE == AIS_SAMPLE_RATE, "AIS channel filters require 256 kHz IQ");
+static bool ais_prepare(void)
+{
+    if (!s_ais) s_ais = ais_create(ais_store_receive, NULL);
+    if (s_ais) ais_reset(s_ais);
+    return s_ais != NULL;
+}
+static aprs_ctx_t *s_aprs;
+_Static_assert(FM_AUDIO_RATE == APRS_SAMPLE_RATE, "APRS needs FM audio at 16 kHz");
+static bool aprs_prepare(void)
+{
+    if (!s_aprs) s_aprs = aprs_create(aprs_store_receive, NULL);
+    if (s_aprs) aprs_reset(s_aprs);
+    return s_aprs != NULL;
+}
+static same_ctx_t *s_same;
+_Static_assert(FM_AUDIO_RATE == SAME_SAMPLE_RATE, "SAME needs FM audio at 16 kHz");
+static bool same_prepare(void)
+{
+    if (!s_same) s_same = same_create(same_store_receive, NULL);
+    if (s_same) same_reset(s_same);
+    return s_same != NULL;
+}
 
 static acars_ctx_t *s_acars = NULL;
 static acars_rs_t   s_acars_rs;
@@ -230,6 +262,9 @@ static void fm_tune_hw(uint32_t hz)
 static uint32_t fm_mode_default_freq(fm_mode_t m)
 {
     switch (m) {
+        case FM_MODE_SAME:   return 162550000UL;
+        case FM_MODE_APRS:   return aprs_frequency();
+        case FM_MODE_AIS:    return AIS_CENTER_HZ;
         case FM_MODE_WFM:    return FM_FREQ_WFM;
         case FM_MODE_AM:     return 127500000UL;
         case FM_MODE_POCSAG: return FM_FREQ_POCSAG;
@@ -240,9 +275,24 @@ static uint32_t fm_mode_default_freq(fm_mode_t m)
     }
 }
 
+static void fm_load_tone(uint32_t hz)
+{
+    FM.tone_required = 0;
+    int zone = scan_engine_get_zone();
+    for (int i = 0; i < scan_channels_count(); ++i) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (c && c->freq_hz == hz && c->mode == SCAN_MODE_NFM &&
+            (zone < 0 || c->zone == zone)) {
+            FM.tone_required = scan_channel_tone(c);
+            break;
+        }
+    }
+}
+
 static void fm_apply_freq(uint32_t hz)
 {
     if (hz < 1000000UL) return;
+    fm_load_tone(hz);
     FM.freq_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, fm_fast_hopping());
 }
@@ -409,11 +459,15 @@ static void scan_step(const uint8_t *iq, int len)
 
 static void fm_receiver_lost(ls_radio_err_t error)
 {
+    if (s_same) same_reset(s_same);
+    if (s_aprs) aprs_reset(s_aprs);
+    if (s_ais) ais_reset(s_ais);
     fm_spectrum_invalidate();
     FM.iq_bytes_sec = 0;
     FM.iq_level = 0.0f;
     FM.audio_level = 0.0f;
     FM.squelch_open = false;
+    FM.tone_detected = (fm_tone_result_t){0};
     FM.pocsag_sync = false;
     FM.flex_sync = false;
     ls_iq_control_receiver_lost(&s_radio_control, error);
@@ -532,17 +586,20 @@ static void fm_rx_run_once(void)
 
         fm_mode_t requested_mode;
         if (fm_mode_handoff_take(&s_mode_handoff, &requested_mode)) {
+            call_archive_end(CALL_FM, false);
             int m = (int)requested_mode;
 
             if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
             FM.mode = (fm_mode_t)m;
             fm_dsp_init(&s_dsp);
+            fm_tone_init(&s_tone);
+            FM.tone_detected = s_tone.result;
             if (FM.mode == FM_MODE_SCAN) {
                 scan_begin(true);
             } else {
                 uint32_t f = s_frequency_locked ? s_frequency_lock_hz
-                                                : s_mode_freq[FM.mode];
-                FM.freq_hz = (f >= 1000000UL) ? f : fm_mode_default_freq(FM.mode);
+                                                : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : s_mode_freq[FM.mode]);
+                FM.freq_hz = FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : (f >= 1000000UL) ? f : fm_mode_default_freq(FM.mode);
                 fm_apply_freq(FM.freq_hz);
             }
             if (FM.mode == FM_MODE_POCSAG) {
@@ -555,6 +612,16 @@ static void fm_rx_run_once(void)
                 }
             } else if (FM.mode == FM_MODE_FLEX) {
                 flex_ensure(); flex_reset_all();
+            }
+            if ((FM.mode == FM_MODE_APRS && !aprs_prepare()) ||
+                (FM.mode == FM_MODE_AIS && !ais_prepare())) {
+                ESP_LOGE(TAG, "data decoder could not be allocated");
+                fm_receiver_lost(LS_RADIO_ERR_NO_MEMORY);
+                allocation_failed = true;
+                break;
+            }
+            if (FM.mode == FM_MODE_SAME && !same_prepare()) {
+                ESP_LOGE(TAG, "SAME decoder could not be allocated");
             }
             if (FM.mode == FM_MODE_ACARS) {
                 if (!acars_prepare()) {
@@ -573,10 +640,16 @@ static void fm_rx_run_once(void)
         ls_iq_control_request_t radio_request;
         if (ls_iq_control_take(&s_radio_control, &radio_request)) {
             if (radio_request.flags & LS_IQ_CONTROL_TUNE) {
+                call_archive_end(CALL_FM, false);
                 fm_spectrum_invalidate();
                 FM.squelch_open = false;
                 FM.iq_level = 0;
                 fm_dsp_init(&s_dsp);
+                fm_tone_init(&s_tone);
+                FM.tone_detected = s_tone.result;
+                if (s_same) same_reset(s_same);
+                if (s_aprs) aprs_reset(s_aprs);
+                if (s_ais) ais_reset(s_ais);
                 ls_radio_err_t error = ls_iq_control_apply_tune(
                     &s_radio_control, s_session, &radio_request);
                 if (error != LS_RADIO_OK)
@@ -613,7 +686,10 @@ static void fm_rx_run_once(void)
                 s_session, &iq[got], FM_IQ_BLOCK_BYTES - got,
                 FM_READ_TIMEOUT_MS, &part);
             if (error == LS_RADIO_OK) { got += (int)part; continue; }
-            if (error == LS_RADIO_ERR_TIMEOUT) continue;
+            if (error == LS_RADIO_ERR_TIMEOUT) {
+                call_archive_gate(CALL_FM, FM.freq_hz, false);
+                continue;
+            }
             if (++read_errors > 50 || error == LS_RADIO_ERR_DISCONNECTED) {
                 full = false;
                 read_errors = 0;
@@ -643,6 +719,10 @@ static void fm_rx_run_once(void)
         if (FM.mode == FM_MODE_SCAN) {
             scan_step(iq, FM_IQ_BLOCK_BYTES);
             FM.iq_level = fm_iq_rms(iq, FM_IQ_BLOCK_BYTES);
+        } else if (FM.mode == FM_MODE_AIS) {
+            ais_process(s_ais, iq, FM_IQ_BLOCK_BYTES);
+            FM.iq_level = fm_iq_rms(iq, FM_IQ_BLOCK_BYTES);
+            FM.audio_level = 0; FM.squelch_open = false;
         } else if (FM.mode == FM_MODE_AM) {
             int na = fm_demod_am(&s_dsp, iq, FM_IQ_BLOCK_BYTES, pcm, 600);
             FM.iq_level = s_dsp.iq_peak;
@@ -654,6 +734,9 @@ static void fm_rx_run_once(void)
             float ss = 0.0f;
             for (int i = 0; i < na; ++i) ss += (float)pcm[i] * pcm[i];
             FM.audio_level = na > 0 ? sqrtf(ss / na) / 8000.0f : 0.0f;
+            if (FM.squelch_tenths > 0 && FM.squelch_open && na > 0)
+                call_archive_audio(CALL_FM, FM.freq_hz, 0, 0, true, pcm, (unsigned)na);
+            call_archive_gate(CALL_FM, FM.freq_hz, FM.squelch_open && FM.squelch_tenths > 0);
             if (na > 0 && FM.squelch_open) audio_write_mono(pcm, na);
         } else if (FM.mode == FM_MODE_WFM) {
 
@@ -689,16 +772,32 @@ static void fm_rx_run_once(void)
                     if (acars && na > 0) acars_process(acars, acars_pcm, na);
                     fm_lifecycle_acars_leave();
                 }
+            } else if (FM.mode == FM_MODE_APRS) {
+                int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 600);
+                aprs_process(s_aprs, pcm, na);
+            } else if (FM.mode == FM_MODE_SAME) {
+                int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 600);
+                same_process(s_same, pcm, na);
             } else if (FM.mode == FM_MODE_FLEX) {
                 flex_dispatch(demod, nd);
             } else {
                 FM.iq_level = s_dsp.iq_block_peak;
                 FM.noise = s_dsp.demod_noise;
                 int sq_open = fm_nfm_squelch(&s_dsp, FM.squelch_tenths, nd);
+                sq_open = fm_tone_receive(&s_tone, demod, nd, sq_open, FM.tone_required);
+                FM.tone_detected = s_tone.result;
+                if (FM.tone_required && sq_open)
+                    FM.tone_detected.selection = FM.tone_required;
                 FM.squelch_open = sq_open;
+                call_archive_gate(CALL_FM, FM.freq_hz,
+                    sq_open && FM.mode == FM_MODE_LISTEN && FM.squelch_tenths > 0);
                 if (sq_open) {
                     int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 600);
-                    if (na > 0 && scan_engine_audio_open()) audio_write_mono(pcm, na);
+                    if (na > 0 && scan_engine_audio_open()) {
+                        if (FM.mode == FM_MODE_LISTEN && FM.squelch_tenths > 0)
+                            call_archive_audio(CALL_FM, FM.freq_hz, 0, 0, true, pcm, (unsigned)na);
+                        audio_write_mono(pcm, na);
+                    }
                 }
             }
         }
@@ -768,6 +867,7 @@ static void fm_rx_run_once(void)
     if (s_session) {
         (void)ls_radio_iq_stop(s_session);
     }
+    call_archive_end(CALL_FM, false);
     heap_caps_free(iq);
     if (allocation_failed) fm_fail_receiver_start();
     else {
@@ -860,6 +960,9 @@ static void fm_defaults_once(void)
     static bool done = false;
     if (done) return;
     done = true;
+    same_options_load();
+    aprs_options_load();
+    ais_options_load();
     /* Voice, not pager data. A fresh install has no saved mode, so this is
        what the FM app comes up in, and coming up in POCSAG makes NFM look
        broken: the speaker carries decoder bursts instead of speech. */
@@ -869,6 +972,7 @@ static void fm_defaults_once(void)
     /* 30 puts the NFM noise gate at 0.70, between a measured broadcast at
        0.28..0.59 and measured dead air at 0.81..0.97. */
     FM.squelch_tenths = 30;
+    FM.tone_show = true;
     FM.pocsag_baud    = 1200;
     FM.pocsag_lock_baud = 0;
     FM.pocsag_auto    = true;
@@ -879,6 +983,7 @@ static void fm_defaults_once(void)
 
 static void fm_on_enter(void)
 {
+    call_archive_init();
     if (fm_lifecycle_active()) return;
 
     for (int i = 0; i < 200 && fm_lifecycle_task_live(); i++)
@@ -912,6 +1017,8 @@ static void fm_on_enter(void)
                                              FM_MODE_LISTEN);
 
     fm_dsp_init(&s_dsp);
+    fm_tone_init(&s_tone);
+    FM.tone_detected = s_tone.result;
     /**/
     spectrum_init();
     poc_ensure();
@@ -920,6 +1027,12 @@ static void fm_on_enter(void)
     if (FM.mode == FM_MODE_FLEX) {
         flex_ensure();
         flex_reset_all();
+    } else if (FM.mode == FM_MODE_AIS) {
+        decoder_ready = ais_prepare();
+    } else if (FM.mode == FM_MODE_APRS) {
+        decoder_ready = aprs_prepare();
+    } else if (FM.mode == FM_MODE_SAME) {
+        decoder_ready = same_prepare();
     } else if (FM.mode == FM_MODE_ACARS) {
         decoder_ready = acars_prepare();
     }
@@ -934,6 +1047,9 @@ static void fm_on_enter(void)
     if (FM.mode != FM_MODE_SCAN)
         FM.freq_hz = settings_get_freq_mode(cur, FM.mode,
                                              fm_mode_default_freq(FM.mode));
+    if (FM.mode == FM_MODE_APRS) FM.freq_hz = aprs_frequency();
+    if (FM.mode == FM_MODE_AIS) FM.freq_hz = AIS_CENTER_HZ;
+    fm_load_tone(FM.freq_hz);
     ls_iq_control_reset(&s_radio_control);
     /* Preserve before the session's initial configuration: POCSAG
        defaults to automatic gain until the user explicitly chooses one. */
@@ -1016,14 +1132,15 @@ void lakeshark_fm_set_mode(int mode)
     if (!s_session && mode != FM_MODE_SCAN) {
         if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
         FM.mode = (fm_mode_t)mode;
-        const uint32_t f = s_frequency_locked ? s_frequency_lock_hz : s_mode_freq[FM.mode];
-        FM.freq_hz = f >= 1000000UL ? f : fm_mode_default_freq(FM.mode);
+        const uint32_t f = s_frequency_locked ? s_frequency_lock_hz : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : s_mode_freq[FM.mode]);
+        FM.freq_hz = FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : f >= 1000000UL ? f : fm_mode_default_freq(FM.mode);
     }
 }
 int  lakeshark_fm_get_mode(void) { return (int)FM.mode; }
 
 bool lakeshark_fm_tune(int delta_hz)
 {
+    if (FM.mode == FM_MODE_AIS) return false;
     /* THE LOCK IS HONOURED HERE TOO.
 
        This path ignored it entirely: stepping while locked moved the tuner
@@ -1046,6 +1163,7 @@ bool lakeshark_fm_tune(int delta_hz)
 }
 bool lakeshark_fm_set_freq(uint32_t hz)
 {
+    if (FM.mode == FM_MODE_AIS && hz != AIS_CENTER_HZ) return false;
     if (hz < 1000000UL) return false;
     /* This one used to drag the lock along to wherever it was told to go,
        which is the same as not having one. Tuning somewhere else is a
@@ -1055,6 +1173,7 @@ bool lakeshark_fm_set_freq(uint32_t hz)
                  s_frequency_lock_hz / 1e6, hz / 1e6);
         return false;
     }
+    fm_load_tone(hz);
     FM.freq_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, false);
     if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = hz;
@@ -1091,6 +1210,7 @@ uint32_t lakeshark_fm_frequency_lock_hz(void)
 void lakeshark_fm_tune_transient(uint32_t hz)
 {
     if (hz < 1000000UL) return;
+    fm_load_tone(hz);
     FM.freq_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, true);
 }

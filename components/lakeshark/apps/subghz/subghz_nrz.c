@@ -1,7 +1,11 @@
 #include "subghz_nrz.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 
 /* A capture carries the receiver's own chatter between frames - runs of tens
    of microseconds, far below the bit period. They are not signal and they
@@ -72,7 +76,7 @@ static int to_bits(const int32_t *p, int n, int unit, uint8_t *bits,
     return nb;
 }
 
-bool subghz_nrz_decode(const int32_t *pulse, int edges, subghz_nrz_t *out)
+static bool decode_into(const int32_t *pulse, int edges, subghz_nrz_t *out, uint8_t *bits)
 {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
@@ -81,8 +85,7 @@ bool subghz_nrz_decode(const int32_t *pulse, int edges, subghz_nrz_t *out)
     const int unit = estimate_unit(pulse, edges);
     if (unit <= 0) return false;
 
-    static uint8_t bits[MAX_BITS / 8];
-    memset(bits, 0, sizeof(bits));
+    memset(bits, 0, MAX_BITS / 8);
     int starts[64], n_starts = 0;
     const int nb = to_bits(pulse, edges, unit, bits, MAX_BITS,
                            starts, &n_starts, 64);
@@ -134,6 +137,26 @@ bool subghz_nrz_decode(const int32_t *pulse, int edges, subghz_nrz_t *out)
     out->unit_us = (uint16_t)unit;
     out->repeats = (uint8_t)(repeats > 255 ? 255 : repeats);
     return true;
+}
+
+/* The bit scratch is 512 bytes and each caller gets its own: the TUI and the
+   capture worker both decode, and on the TUI's 6 KB stack it would not fit
+   comfortably, so it comes from PSRAM. */
+bool subghz_nrz_decode(const int32_t *pulse, int edges, subghz_nrz_t *out)
+{
+#ifdef ESP_PLATFORM
+    uint8_t *bits = heap_caps_malloc(MAX_BITS / 8, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    uint8_t *bits = malloc(MAX_BITS / 8);
+#endif
+    if (!bits) return false;
+    const bool ok = decode_into(pulse, edges, out, bits);
+#ifdef ESP_PLATFORM
+    heap_caps_free(bits);
+#else
+    free(bits);
+#endif
+    return ok;
 }
 
 size_t subghz_nrz_format(const subghz_nrz_t *in, char *out, size_t n)

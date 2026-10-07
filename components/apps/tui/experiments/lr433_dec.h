@@ -81,6 +81,7 @@ typedef struct {
     float kpa;                /* tyre pressure; NAN when not sent           */
     float temp_c;             /* NAN when not sent                          */
     float humidity;           /* %RH; NAN when not sent                     */
+    float rain_mm, wind_ms;    /* accumulated rain and average wind; NAN     */
     int64_t consumption;      /* meter reading in the meter's units; -1     */
 } lr433_msg_t;
 

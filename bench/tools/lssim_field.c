@@ -7,6 +7,7 @@
 #include <string.h>
 
 static ls_field_state_t s;
+static bool s_labs_direct, s_falls_direct;
 static ls_journal_entry_t entry;
 bool ls_field_start(void)
 {
@@ -47,8 +48,11 @@ void ls_field_sample_snapshot(ls_field_sample_t *out)
     const float mx = out->imu.mx, my = out->imu.my;
     out->imu.mx = mx * c - my * n; out->imu.my = mx * n + my * c;
 }
+/* What the chip's pager engine has counted, for a screen test to set. */
+void lssim_field_pager(uint32_t rx, uint32_t pages) { s.rx = rx; s.pages = pages; }
 void ls_field_snapshot(ls_field_state_t *out) { ls_field_start(); s.sequence = (uint32_t)(esp_timer_get_time() / 100000); if (out) *out = s; }
-bool ls_field_direct(bool on) { s.requested = s.direct = on; snprintf(s.status, sizeof(s.status), "%s", on ? "Direct control; mesh paused" : "Mesh control restored"); return true; }
+bool ls_field_direct(bool on) { s_labs_direct = on; if (!on) s_falls_direct = false; s.requested = s.direct = s_labs_direct || s_falls_direct; snprintf(s.status, sizeof(s.status), "%s", s.direct ? "Direct control; mesh paused" : "Mesh control restored"); return true; }
+bool ls_field_direct_falls(bool on) { s_falls_direct = on; s.requested = s.direct = s_labs_direct || s_falls_direct; return true; }
 bool ls_field_owned(void) { return s.direct; }
 bool ls_field_configure(const ls_lora_cfg_t *cfg) { s.config = *cfg; return true; }
 /* The FSK demodulator's own parameters, for GFSK and POCSAG. */

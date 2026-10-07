@@ -1,6 +1,7 @@
 #include "rec_watch.h"
 #include "rec_state.h"
 #include "ls_mixrf.h"
+#include "ls_mixrf_control.h"
 #include "ls_lora.h"
 #include "ls_fsk_capture.h"
 #include "ls_haptic.h"
@@ -222,6 +223,7 @@ static void pump_capture(void *context)
     if(xQueueReceive(s_pending,&cap,0)==pdTRUE)
         consume_capture(cap,(capture_flow_t *)context);
 }
+static void sync_cc_watch(void);
 static void worker(void *arg)
 {
     (void)arg;
@@ -235,6 +237,7 @@ static void worker(void *arg)
     capture_flow_t flow={0};
     bool was_enabled=false;
     for(;;) {
+        sync_cc_watch();
         capture_t *cap=NULL;
         if(xQueueReceive(s_pending,&cap,pdMS_TO_TICKS(100))==pdTRUE) {
             consume_capture(cap,&flow);
@@ -540,8 +543,10 @@ bool rec_watch_enable(bool on)
         snprintf(s_fsk_error,sizeof(s_fsk_error),"Stop SCAN before WATCH");
         return false;
     }
-    if (rec_watch_source() == REC_SOURCE_CC1101 && !ls_mixrf_capture(on, rec_get_freq()))
-        return false;
+    if (rec_watch_source() == REC_SOURCE_CC1101 && !ls_mixrf_capture(on, rec_get_freq())) {
+        ls_mixrf_status_t mix;ls_mixrf_snapshot(&mix);
+        snprintf(s_fsk_error,sizeof(s_fsk_error),"%s",ls_mixrf_cc_refusal(&mix));return false;
+    }
     if (rec_watch_source() == REC_SOURCE_SX1262 && !fsk_session(on))
         return false;
     portENTER_CRITICAL(&s_lock);
@@ -550,8 +555,18 @@ bool rec_watch_enable(bool on)
     portEXIT_CRITICAL(&s_lock);
     return ok;
 }
+/* Synchronize a stopped hardware request before reporting or using WATCH state. */
+static void sync_cc_watch(void)
+{
+    ls_mixrf_status_t mix;
+    portENTER_CRITICAL(&s_lock);
+    ls_mixrf_snapshot(&mix);
+    if(s_source==REC_SOURCE_CC1101 && !mix.capture_requested)s_status.enabled=false;
+    portEXIT_CRITICAL(&s_lock);
+}
 bool rec_watch_enabled(void)
 {
+    sync_cc_watch();
     portENTER_CRITICAL(&s_lock);bool on=s_status.enabled;portEXIT_CRITICAL(&s_lock);return on;
 }
 /* Copy the slots that hold something, not all sixteen of them.
@@ -571,6 +586,7 @@ bool rec_watch_enabled(void)
 void rec_watch_snapshot(rec_watch_status_t *out)
 {
     if(!out)return;
+    sync_cc_watch();
     portENTER_CRITICAL(&s_lock);
     rec_watch_status_copy(out,&s_status,s_status.count);
     rec_source_t source=s_source;
@@ -641,6 +657,15 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
                      uint32_t deviation_hz,uint32_t sync_word,
                      uint16_t preamble_bits,const int32_t *pulse,int edges,
                      int dbm,char *result,size_t len);
+/* Every replay, CC1101 or LoRa chip, passes subghz_tx_refusal here before
+   either radio is touched, so a refusal reads as a reason on screen. */
+static bool replay_refused(uint32_t hz,int dbm,size_t edges,uint64_t span_us,
+                           char *result,size_t len)
+{
+    const char *why=subghz_tx_refusal(hz,dbm,edges,span_us);
+    if(why)snprintf(result,len,"Replay refused: %.3f MHz, %s",hz/1e6,why);
+    return why!=NULL;
+}
 static void replay(uint32_t id,int dbm,char *result,size_t len)
 {
     const rec_watch_record_t *r=NULL;
@@ -652,6 +677,10 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
                  rec_source_name((rec_source_t)r->event.source));
         return;
     }
+    const size_t edges=r->event.edges>0?(size_t)r->event.edges:0;
+    if(replay_refused(r->event.frequency,dbm,edges,
+                      subghz_span_us(r->pulse,edges),result,len))
+        return;
     if(r->event.source==REC_SOURCE_CC1101) {
         bool sent=ls_mixrf_replay(r->event.frequency,r->pulse,r->event.edges,dbm);
         snprintf(result,len,sent?"Sent #%lu on CC1101":"Replay: CC1101 failed/busy; check MIX-RF",(unsigned long)id);
@@ -723,6 +752,8 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
         snprintf(result,len,"Replay: not a readable .sub file");
         return;
     }
+    if(replay_refused(f.freq_hz,dbm,(size_t)f.edges_total,f.span_us,result,len))
+        return;
     if(subghz_file_is_cc_fsk(&f)) {
         bool sent=ls_mixrf_replay_fsk(f.freq_hz,edges,f.edges,dbm,&f.cc_fsk);
         snprintf(result,len,"%s",sent?"Sent FSK file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");

@@ -23,6 +23,7 @@ enum {
     SCAN_FLAG_ENABLED  = 1 << 0,
     SCAN_FLAG_LOCKOUT  = 1 << 1,
     SCAN_FLAG_PRIORITY = 1 << 2,
+    SCAN_FLAG_TONE_HIGH = 1 << 3,
 };
 
 typedef struct {
@@ -31,7 +32,7 @@ typedef struct {
     uint8_t  mode;
     uint8_t  flags;
     uint8_t  zone;
-    uint8_t  rsv;
+    uint8_t  rsv; /* Low eight bits of receive tone selection; flag holds bit 8. */
     int32_t  lat_e7;
     int32_t  lon_e7;
     uint32_t radius_m;
@@ -59,6 +60,11 @@ bool  scan_channel_set_priority(int idx, bool on);
 bool  scan_channel_set_enabled(int idx, bool on);
 /**/
 bool  scan_channel_set_name(int idx, const char *name);
+bool  scan_channel_set_tone(int idx, uint16_t selection);
+static inline uint16_t scan_channel_tone(const scan_channel_t *c)
+{
+    return c ? c->rsv | ((c->flags & SCAN_FLAG_TONE_HIGH) ? 256u : 0u) : 0;
+}
 /**/
 int   scan_channel_find_freq(uint32_t freq_hz);
 /**/

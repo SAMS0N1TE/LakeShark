@@ -19,6 +19,7 @@
 #include "ls_value.h"
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
+#include "ls_mixrf_control.h"
 #include "ls_lora.h"
 #include "ls_radio_select.h"
 #include "radio/radio_endpoint.h"
@@ -657,10 +658,14 @@ static void step_mixrf(int k, const slot_t *c, bool nrf, bool retune)
     const int64_t now = esp_timer_get_time();
     if (retune) {
         ls_mixrf_start();
-        if (nrf) ls_mixrf_scan(true);
         w[k].tuned_hz = 0; w[k].heard = 0;
     }
     if (nrf) {
+        if(!ls_mixrf_scan_owned(k?LS_MIXRF_OWNER_FIND_2:LS_MIXRF_OWNER_FIND,true)) {
+            ls_mixrf_snapshot(&m);
+            char why[80];snprintf(why,sizeof(why),"nRF24 in use by %s",ls_mixrf_owner_name(m.scan_owner));
+            status(k,m.scan_owner!=LS_MIXRF_OWNER_NONE?why:"nRF24 unavailable");return;
+        }
         ls_mixrf_snapshot(&m);
         if (m.samples == w[k].heard) return;
         w[k].heard = m.samples;
@@ -674,8 +679,11 @@ static void step_mixrf(int k, const slot_t *c, bool nrf, bool retune)
         return;
     }
     const uint32_t want = c->freq[w[k].cur];
-    if (w[k].tuned_hz != want) {
-        ls_mixrf_receive(true, want);
+    ls_mixrf_snapshot(&m);
+    if (w[k].tuned_hz != want || m.cc_owner!=(k?LS_MIXRF_OWNER_FIND_2:LS_MIXRF_OWNER_FIND)) {
+        if(!ls_mixrf_receive_owned(k?LS_MIXRF_OWNER_FIND_2:LS_MIXRF_OWNER_FIND,true,want)) {
+            ls_mixrf_snapshot(&m);status(k,ls_mixrf_cc_refusal(&m));return;
+        }
         w[k].tuned_hz = want; w[k].settle = 1;
         w[k].dwell_until = now + (int64_t)c->dwell_ms * 1000;
     }
@@ -783,7 +791,7 @@ static void step_band(int k, const slot_t *c, bool retune)
     status(k, line);
 }
 
-static void release(ls_dfs_t running, ls_dfs_t next, bool active)
+static void release(int k, ls_dfs_t running, ls_dfs_t next, bool active)
 {
     if (running == LS_DFS_BAND && (next != LS_DFS_BAND || !active)) {
         ls_field_spectrum_span(0, 0);
@@ -793,7 +801,9 @@ static void release(ls_dfs_t running, ls_dfs_t next, bool active)
     if (running == LS_DFS_RTL || running == LS_DFS_HACKRF) sdr_close();
     if (running == LS_DFS_LORA && (next != LS_DFS_LORA || !active)) ls_field_direct(false);
     if ((running == LS_DFS_CC1101 || running == LS_DFS_NRF24) && (next != running || !active)) {
-        ls_mixrf_receive(false, 0); ls_mixrf_scan(false);
+        ls_mixrf_owner_t owner=k?LS_MIXRF_OWNER_FIND_2:LS_MIXRF_OWNER_FIND;
+        if(running==LS_DFS_CC1101)ls_mixrf_receive_owned(owner,false,0);
+        else ls_mixrf_scan_owned(owner,false);
     }
 }
 
@@ -808,7 +818,7 @@ void ls_dfs_step(void)
         unlock();
         const bool retune = c[k].retune;
         if (!c[k].active || c[k].source != w[k].running || retune) {
-            release(w[k].running, c[k].source, c[k].active);
+            release(k, w[k].running, c[k].source, c[k].active);
             w[k].running = c[k].active ? c[k].source : LS_DFS_COUNT;
             w[k].heard = w[k].field_seq = w[k].wifi_rev = 0;
             w[k].cur = 0; w[k].tuned_hz = 0; w[k].dwell_until = 0;

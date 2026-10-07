@@ -81,6 +81,10 @@ extern "C" {
 #define LR20XX_OP_GET_RX_FIFO_LVL  0x011C   /* 6.10.5 */
 #define LR20XX_OP_CLEAR_RX_FIFO    0x011E   /* 6.10.7 */
 #define LR20XX_OP_CALIBRATE        0x0122   /* 6.4.1 */
+#define LR20XX_OP_SET_TCXO_MODE    0x0120
+#define LR20XX_OP_SET_REG_MODE     0x0121
+#define LR20XX_TCXO_3_3V           0x07
+#define LR20XX_TCXO_DELAY_TICKS    328u     /* 10 ms at 32.768 kHz; LilyGO v1 uses 1 s, paid on each RC to XOSC start */
 #define LR20XX_OP_CALIB_FE         0x0123
 #define LR20XX_OP_SET_STANDBY      0x0128
 #define LR20XX_OP_SET_RF_FREQUENCY 0x0200
@@ -119,6 +123,7 @@ extern "C" {
 #define LR20XX_CAL_PLL             (1u << 2)
 #define LR20XX_CAL_AAF             (1u << 3)
 #define LR20XX_CAL_MU              (1u << 5)
+#define LR20XX_CAL_PA_OFF          (1u << 6)   /* PA offset; LilyGO v1 InitLr2021 includes it */
 
 #define LR20XX_PKT_TYPE_LORA       0x00    /* 8.1.1 */
 #define LR20XX_PKT_TYPE_GFSK       0x02
@@ -223,6 +228,10 @@ esp_err_t lr20xx_check_last_ok(void);
 esp_err_t lr20xx_probe(lr20xx_info_t *info);
 /* The dispatcher found an LR20xx: remember it and clear any pending IRQ. */
 void      lr20xx_bind(const lr20xx_info_t *info);
+/* RC, clock/regulator settings and calibration. Holds the radio lock. */
+esp_err_t lr20xx_initialize(void);
+/* Returns -1 for other subcommands. */
+int       lr20xx_clock_command(int argc, char **argv);
 
 esp_err_t lr20xx_set_standby(bool xosc);
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz);

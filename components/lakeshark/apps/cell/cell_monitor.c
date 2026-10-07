@@ -37,6 +37,7 @@ static bool located, external, context_ok, quiet;
 static const char *context_reason;
 static int64_t last_motion;
 static int64_t last_imu_sample;
+static cell_motion_t motion;
 
 /* A lost receiver invalidates live evidence even while the worker is blocked
  * in USB I/O. Do not touch worker-owned baseline/streak storage here. */
@@ -103,7 +104,7 @@ static void check_context(void)
     int64_t now=esp_timer_get_time();
     if(ls_imu_read(&s)) {
         last_imu_sample=now;
-        if(!cell_motion_quiet(s.ax,s.ay,s.az,s.gx,s.gy,s.gz)) quiet=false;
+        if(!cell_motion_step(&motion,s.ax,s.ay,s.az,s.gx,s.gy,s.gz)) quiet=false;
     } else if(now-last_imu_sample>1000000) quiet=false;
 }
 static void progress(uint32_t tune,uint32_t tunes,void *arg)
@@ -342,9 +343,14 @@ static void task(void *arg)
         /* Give a touch on LEARN time to settle before measuring movement. */
         message("Settling for 3 seconds; keep device still");
         last_imu_sample=0;
+        /* The settling time also learns what the gyro reads at rest. */
+        cell_motion_reset(&motion);
         for(int i=0;i<12 && !cancel(NULL);i++) {
             ls_imu_sample_t sample;
-            if(ls_imu_read(&sample)) last_imu_sample=esp_timer_get_time();
+            if(ls_imu_read(&sample)) {
+                last_imu_sample=esp_timer_get_time();
+                cell_motion_step(&motion,sample.ax,sample.ay,sample.az,sample.gx,sample.gy,sample.gz);
+            }
             vTaskDelay(pdMS_TO_TICKS(250));
         }
         while(!cancel(NULL)) {

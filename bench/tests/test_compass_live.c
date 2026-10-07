@@ -1,5 +1,6 @@
 #include "ls_test.h"
 #include "ls_compass_live.h"
+#include "ls_field.h"
 #include <math.h>
 #include <string.h>
 
@@ -13,8 +14,9 @@ static double dot3(ned a, ned b) { return a.n * b.n + a.e * b.e + a.d * b.d; }
 static const ned FIELD = { 20, 0, 45 };
 
 /* The board with its top at azimuth `yaw`, raised by `pitch`, rolled about
-   the top by `roll`, all degrees. Fills a sample the way ls_imu does. */
-static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float offset[3])
+   the top by `roll`, all degrees, in `field`. Fills a sample the way ls_imu
+   does. */
+static ls_imu_sample_t pose_in(ned field, double yaw, double pitch, double roll, const float offset[3])
 {
     const double y = yaw * RAD, p = pitch * RAD, r = roll * RAD;
     const ned top = { cos(y) * cos(p), sin(y) * cos(p), -sin(p) };
@@ -28,11 +30,16 @@ static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float o
     /* As ls_imu delivers it on this board: x and z reversed. */
     s.ax = (float)-dot3(upward, right); s.ay = (float)dot3(upward, top); s.az = (float)-dot3(upward, out);
     /* Screen-frame field, then into the magnetometer's basis. */
-    const double mr = dot3(FIELD, right), mu = dot3(FIELD, top), mo = dot3(FIELD, out);
+    const double mr = dot3(field, right), mu = dot3(field, top), mo = dot3(field, out);
     s.mx = (float)-mu; s.my = (float)-mr; s.mz = (float)-mo;
     if (offset) { s.mx += offset[0]; s.my += offset[1]; s.mz += offset[2]; }
     s.mag_valid = true;
     return s;
+}
+
+static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float offset[3])
+{
+    return pose_in(FIELD, yaw, pitch, roll, offset);
 }
 
 static double angle_error(double a, double b) { double d = fmod(a - b + 540, 360) - 180; return fabs(d); }
@@ -82,6 +89,33 @@ LS_CASE(the_axis_choice_does_not_flicker_at_the_edge)
     s = pose(0, 70, 0, NULL); ls_compass_solve(&s, NULL, &back, &r); LS_CHECK(r.back_axis);
     s = pose(0, 50, 0, NULL); ls_compass_solve(&s, NULL, &back, &r); LS_CHECK(r.back_axis);
     s = pose(0, 30, 0, NULL); ls_compass_solve(&s, NULL, &back, &r); LS_CHECK(!r.back_axis);
+}
+
+/* Raising the board from flat to upright moves the heading smoothly, rolled
+   or not. The axis used to switch from the top to the back in one step, and
+   with any roll the two point different ways: the reading jumped, and a hold
+   near the switch flipped it back and forth. */
+LS_CASE(rising_from_flat_to_upright_never_jumps)
+{
+    for (int roll = -30; roll <= 30; roll += 10)
+        for (int yaw = 0; yaw < 360; yaw += 90) {
+            bool back = false;
+            double last = NAN, worst = 0;
+            int at = 0;
+            for (int i = 0; i <= 170; i++) {
+                const int pitch = i <= 85 ? i : 170 - i;     /* up to 85 and back down */
+                ls_imu_sample_t s = pose(yaw, pitch, roll, NULL);
+                ls_compass_reading_t r;
+                LS_CHECK(ls_compass_solve(&s, NULL, &back, &r));
+                if (isfinite(last) && angle_error(r.magnetic, last) > worst) {
+                    worst = angle_error(r.magnetic, last);
+                    at = pitch;
+                }
+                last = r.magnetic;
+            }
+            LS_CHECK_MSG(worst < 4.0, "roll %d yaw %d: the heading stepped %.1f degrees at pitch %d",
+                         roll, yaw, worst, at);
+        }
 }
 
 LS_CASE(calibration_offset_is_removed_and_dip_and_strength_are_measured)
@@ -316,4 +350,262 @@ LS_CASE(a_frame_without_a_heading_coasts_on_the_gyro)
     for (int i = 0; i < 100; i++) h = ls_compass_steady_step(&s, NAN, 0, 0, 30.0f, 0.1f);
     LS_CHECK_MSG(off_deg(h, 100 + 30 * LS_COMPASS_COAST_S) < 3.5f, "held at %.1f", h);   /* a step either side of the limit */
     LS_CHECK(s.started);
+}
+
+/* ------------------------------------------------ the board on the bench -- */
+
+/* The bench board's field: dip 67 degrees, 15.5 uT across and 36.5 down,
+   the 39.6 uT its calibration measured. */
+static const ned DIP67 = { 15.5, 0, 36.5 };
+/* About what its gyro reads lying still, deg/s, ls_imu axes: 12 in all,
+   4.9 of it about up when flat. */
+static const float REST[3] = { -7.4f, -8.1f, 4.9f };
+
+static double wrap180(double a)
+{
+    double d = fmod(a, 360.0);
+    if (d > 180) d -= 360;
+    if (d <= -180) d += 360;
+    return d;
+}
+
+/* The board flat on the bench as COMPASS's frames see it: the field worker
+   takes a sample every 100 ms (gyro, accelerometer, and the magnetic
+   heading ls_compass_solve finds), and the 40 ms frames read each until
+   the next. */
+typedef struct {
+    ned field;
+    float offset[3];      /* added to the magnetometer, its raw axes, uT */
+    float rest[3];        /* what the gyro reads lying still */
+    float declination;    /* added to the magnetic heading */
+    bool loop_only;       /* the fusion's own step, fed the raw turn rate */
+    float noise;          /* sensor noise: 1 is about 0.3 uT, 0.15 deg/s, 3 mg */
+    ls_rng_t rng;
+    double next;
+    float heading, g[3], a[3];
+    bool back;
+} bench_t;
+
+static bench_t bench(ned field, const float offset[3])
+{
+    bench_t b;
+    memset(&b, 0, sizeof(b));
+    b.field = field;
+    if (offset) memcpy(b.offset, offset, sizeof(b.offset));
+    memcpy(b.rest, REST, sizeof(b.rest));
+    b.noise = 1.0f;
+    ls_rng_seed(&b.rng, 5);
+    return b;
+}
+
+/* The magnetic heading the board reads pointing at `yaw`, without noise. */
+static float bench_heading(const bench_t *b, double yaw)
+{
+    ls_imu_sample_t s = pose_in(b->field, yaw, 0, 0, b->offset);
+    ls_compass_reading_t r; bool back = false;
+    return ls_compass_solve(&s, NULL, &back, &r) ? r.magnetic : NAN;
+}
+
+/* One 40 ms frame at time t, the board pointing at `yaw` and turning at
+   `rate` deg/s clockwise: a sample when one is due, then the fusion as
+   scr_compass runs it. */
+static float bench_frame(bench_t *b, ls_compass_steady_t *s, double t, double yaw, double rate)
+{
+    if (t >= b->next - 1e-6) {
+        b->next += 0.1;
+        ls_imu_sample_t m = pose_in(b->field, yaw, 0, 0, b->offset);
+        const float n = b->noise;
+        m.mx += n * ls_rng_noise(&b->rng); m.my += n * ls_rng_noise(&b->rng); m.mz += n * ls_rng_noise(&b->rng);
+        ls_compass_reading_t r;
+        b->heading = ls_compass_solve(&m, NULL, &b->back, &r) ? fmodf(r.magnetic + b->declination + 360.0f, 360.0f) : NAN;
+        /* ls_imu's axes: flat and face up, a clockwise turn reads positive
+           on z. Full scale is 250 deg/s. */
+        const float turn[3] = { 0, 0, (float)rate };
+        for (int i = 0; i < 3; i++)
+            b->g[i] = fmaxf(-250.1f, fminf(250.1f, turn[i] + b->rest[i] + 0.5f * n * ls_rng_noise(&b->rng)));
+        b->a[0] = m.ax + 0.01f * n * ls_rng_noise(&b->rng);
+        b->a[1] = m.ay + 0.01f * n * ls_rng_noise(&b->rng);
+        b->a[2] = m.az + 0.01f * n * ls_rng_noise(&b->rng);
+    }
+    if (b->loop_only) return ls_compass_steady_step(s, b->heading, 0, 0, ls_compass_yaw_rate(b->g, b->a), 0.04f);
+    return ls_compass_steady_imu(s, b->heading, 0, 0, b->g, b->a, 0.04f);
+}
+
+/* A turn of `deg` over `secs` from t0, as a hand makes one: from rest to
+   rest, quickest halfway. How far it has gone at t, and how fast. */
+static double turn_at(double t, double t0, double secs, double deg, double *rate)
+{
+    const double two_pi = 6.283185307179586, u = (t - t0) / secs;
+    *rate = 0;
+    if (u <= 0) return 0;
+    if (u >= 1) return deg;
+    *rate = deg / secs * (1 - cos(two_pi * u));
+    return deg * (u - sin(two_pi * u) / two_pi);
+}
+
+/* On USB the charge current puts a fixed offset on the magnetometer. Half
+   the horizontal field's worth bends the magnetic heading by up to 30
+   degrees, a different way at every heading, so through a flat turn it
+   swings tens of degrees away from the turn the gyro follows truly. Out 90
+   and back at 60 deg/s, from 24 headings, the first turn 0.6 s after the
+   dial opens (the gyro's 4.9 deg/s not yet learnt), at both pulls: no frame
+   moves the dial more than 5 degrees beyond what the board turned. */
+LS_CASE(a_flat_turn_through_a_bent_field_never_jumps)
+{
+    const float usb[3] = { 7.75f, 0, 0 };
+    float worst = 0, worst_tau = 0;
+    int worst_from = 0;
+    double worst_t = 0;
+    for (int k = 0; k < 2; k++)
+        for (int from = 0; from < 360; from += 15) {
+            bench_t b = bench(DIP67, usb);
+            ls_compass_steady_t s;
+            memset(&s, 0, sizeof(s));
+            s.mag_tau_s = k ? 8.0f : LS_COMPASS_FUSE_TAU_S;
+            double was = NAN;
+            float shown = NAN;
+            for (int i = 0; i < 390; i++) {                   /* 15.6 s */
+                const double t = i * 0.04;
+                double r1, r2;
+                const double yaw = from + turn_at(t, 0.6, 1.5, 90, &r1) + turn_at(t, 8.1, 1.5, -90, &r2);
+                const float h = bench_frame(&b, &s, t, yaw, r1 + r2);
+                if (isfinite(shown)) {
+                    const float excess = (float)fabs(wrap180(h - shown) - wrap180(yaw - was));
+                    if (excess > worst) { worst = excess; worst_tau = s.mag_tau_s; worst_from = from; worst_t = t; }
+                }
+                shown = h; was = yaw;
+            }
+        }
+    LS_CHECK_MSG(worst <= 5.0f, "the dial moved %.1f deg more than the board in one frame (from %d, pull %.0f s, at %.2f s)",
+                 worst, worst_from, worst_tau, worst_t);
+}
+
+/* Lying still on USB with the MAG lamp lit (the magnetometer pulls over
+   8 s), the gyro's 4.9 deg/s about up is how it reads at rest, not a turn:
+   once the board has been seen still the dial does not creep. */
+LS_CASE(still_with_the_lamp_on_it_does_not_drift)
+{
+    const float usb[3] = { 3.0f, -2.0f, -18.0f };      /* the field reads 24 uT of 39.6 */
+    bench_t b = bench(DIP67, usb);
+    ls_compass_steady_t s;
+    memset(&s, 0, sizeof(s));
+    s.mag_tau_s = 8.0f;
+    const float mag = bench_heading(&b, 40);
+    float worst = 0;
+    double at = 0;
+    for (int i = 0; i < 1538; i++) {                      /* 61.5 s */
+        const double t = i * 0.04;
+        const float h = bench_frame(&b, &s, t, 40, 0);
+        if (t >= 1.5 && off_deg(h, mag) > worst) { worst = off_deg(h, mag); at = t; }
+    }
+    LS_CHECK_MSG(worst <= 3.0f, "lying still the dial crept %.1f deg from the magnetometer (at %.1f s)", worst, at);
+    for (int i = 0; i < 3; i++)
+        LS_CHECK_MSG(fabsf(s.rest[i] - REST[i]) < 0.3f, "rest[%d] learnt as %.2f, the gyro reads %.2f", i, s.rest[i], REST[i]);
+}
+
+/* Switching between true and magnetic north starts the dial again from the
+   new reading. What it has learnt of the gyro is kept, so it does not start
+   drifting while that is learnt again. */
+LS_CASE(the_bias_survives_a_true_magnetic_switch)
+{
+    /* The loop's own trim, learnt lying still. */
+    ls_compass_steady_t s = { 0 };
+    for (int i = 0; i < 750; i++) ls_compass_steady_step(&s, 100, 0, 0, 3.0f, 0.04f);
+    LS_CHECK_MSG(fabsf(s.bias - 3.0f) < 0.3f, "bias learnt as %.2f", s.bias);
+    s.started = false;                                    /* the switch, as scr_compass makes it */
+    float worst = 0;
+    for (int i = 0; i < 500; i++)
+        worst = fmaxf(worst, off_deg(ls_compass_steady_step(&s, 114.5f, 0, 0, 3.0f, 0.04f), 114.5f));
+    LS_CHECK_MSG(fabsf(s.bias - 3.0f) < 0.3f, "bias %.2f after the switch", s.bias);
+    LS_CHECK_MSG(worst < 0.5f, "the dial drifted %.2f deg after the switch", worst);
+
+    /* The gyro's rest reading, learnt lying still, the same. Without noise,
+       so the reading the restart takes is the one it should hold. */
+    bench_t b = bench(DIP67, NULL);
+    b.noise = 0;
+    ls_compass_steady_t q;
+    memset(&q, 0, sizeof(q));
+    for (int i = 0; i < 125; i++) bench_frame(&b, &q, i * 0.04, 100, 0);    /* 5 s */
+    q.started = false;
+    b.declination = 14.5f;
+    const float want = fmodf(bench_heading(&b, 100) + 14.5f, 360.0f);
+    worst = 0;
+    for (int i = 125; i < 625; i++) worst = fmaxf(worst, off_deg(bench_frame(&b, &q, i * 0.04, 100, 0), want));
+    LS_CHECK_MSG(worst < 0.5f, "the dial drifted %.2f deg after the switch", worst);
+}
+
+/* Through a turn the magnetometer, bent by the USB current, swings away
+   from the turn the gyro follows. That is not the gyro's bias, and the loop
+   does not learn it as one. */
+LS_CASE(a_turn_through_a_bent_field_does_not_teach_bias)
+{
+    const float usb[3] = { 7.75f, 0, 0 };
+    float worst = 0;
+    int at = 0;
+    for (int from = 0; from < 360; from += 15) {
+        bench_t b = bench(DIP67, usb);
+        b.loop_only = true;
+        ls_compass_steady_t s;
+        memset(&s, 0, sizeof(s));
+        int i = 0;
+        for (; i < 750; i++) bench_frame(&b, &s, i * 0.04, from, 0);       /* 30 s still */
+        const float before = s.bias;
+        LS_CHECK_MSG(fabsf(before - REST[2]) < 0.5f, "from %d the loop learnt %.2f lying still", from, before);
+        for (; i <= 788; i++) {                                              /* to the end of the turn */
+            double r;
+            const double yaw = from + turn_at(i * 0.04, 30.0, 1.5, 90, &r);
+            bench_frame(&b, &s, i * 0.04, yaw, r);
+        }
+        if (fabsf(s.bias - before) > worst) { worst = fabsf(s.bias - before); at = from; }
+    }
+    LS_CHECK_MSG(worst < 0.5f, "a turn from %d taught the loop %.2f deg/s of bias", at, worst);
+}
+
+/* Spun faster than the gyro's 250 deg/s full scale, the gyro reads too
+   small a turn and the dial falls behind. The magnetometer has taken back
+   what the gyro lost within a second of the board coming to rest, what the
+   spin did is not learnt as the gyro's bias, and the dial then holds. */
+LS_CASE(a_spin_past_gyro_full_scale_still_recovers)
+{
+    bench_t b = bench(DIP67, NULL);
+    ls_compass_steady_t s;
+    memset(&s, 0, sizeof(s));
+    /* Still; a quarter turn, so the gyro is seen turning with the
+       magnetometer; still; two turns peaking at 400 deg/s; still. */
+    const double spin_at = 7.5, spin_s = 3.6, stop = spin_at + spin_s;
+    float soon = 0, worst = 0, trim = NAN, kicked = 0;
+    double at = 0;
+    for (int i = 0; i < (int)((stop + 10.0) / 0.04); i++) {
+        const double t = i * 0.04;
+        double r1, r2;
+        const double yaw = 30 + turn_at(t, 3.0, 1.5, 90, &r1) + turn_at(t, spin_at, spin_s, 720, &r2);
+        const float off = (float)fabs(wrap180(bench_frame(&b, &s, t, yaw, r1 + r2) - yaw));
+        if (t >= spin_at && !isfinite(trim)) trim = s.bias;
+        if (t >= spin_at && t <= stop) kicked = fmaxf(kicked, fabsf(s.bias - trim));
+        if (t >= stop + 1.0 && t < stop + 1.5) soon = fmaxf(soon, off);
+        if (t >= stop + 5.0 && off > worst) { worst = off; at = t - stop; }
+    }
+    LS_CHECK_MSG(soon < 45.0f, "a second after the spin the dial was %.0f deg out", soon);
+    LS_CHECK_MSG(kicked < 0.5f, "the spin moved the gyro's trim by %.2f deg/s", kicked);
+    LS_CHECK_MSG(worst < 2.0f, "%.1f deg out %.1f s after the spin", worst, at);
+}
+
+/* A frame the field worker has no IMU sample for, with no position known,
+   reads magnetic as every other frame does: a declination of 0 would say
+   true north is known and switch the dial to true and back. */
+extern ls_field_sample_t ls_stub_field_sample;
+LS_CASE(a_frame_without_the_imu_keeps_magnetic_north)
+{
+    memset(&ls_stub_field_sample, 0, sizeof(ls_stub_field_sample));
+    ls_stub_field_sample.imu_valid = true;
+    ls_stub_field_sample.imu = pose(30, 0, 0, NULL);
+    ls_compass_reading_t r;
+    ls_compass_live(&r);
+    LS_CHECK(r.valid);
+    LS_CHECK(!isfinite(r.declination));
+    ls_stub_field_sample.imu_valid = false;
+    ls_compass_live(&r);
+    LS_CHECK(!r.valid);
+    LS_CHECK_MSG(!isfinite(r.declination), "declination %.1f with no position known", r.declination);
+    memset(&ls_stub_field_sample, 0, sizeof(ls_stub_field_sample));
 }

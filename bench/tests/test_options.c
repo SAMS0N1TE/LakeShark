@@ -558,3 +558,29 @@ LS_CASE(a_level_steps_with_left_right_and_its_arrows_and_stays_in_range)
     LS_EQ_INT(s_alert, 0);
     ls_picker_close();
 }
+
+LS_CASE(a_cycle_can_opt_into_wrapping_arrow_steps)
+{
+    static const ls_opt_t rows[] = {
+        { .label="BAUD", .kind=LS_OPT_CYCLE, .names=BAUD, .n=4,
+          .get=get_baud, .set=set_baud, .step=1 },
+    };
+    static const ls_opt_ctx_t ctx = {.name="TONE", .job=-1,
+                                     .radio=LS_RSEL_NONE, LS_OPT_ROWS(rows)};
+    fresh(false); settings_reset();
+    s_baud=0;
+    ls_opt_open(&ctx);
+    ls_picker_key(LS_TK_LEFT,0);
+    LS_EQ_INT(s_baud,3);
+    ls_picker_key(LS_TK_RIGHT,0);
+    LS_EQ_INT(s_baud,0);
+    draw_picker();
+    int y=row_of("BAUD");
+    LS_CHECK(y>=0);
+    const char *arrow=y>=0 ? strrchr(g_text[y],'>') : NULL;
+    LS_CHECK(arrow!=NULL);
+    if (arrow) ls_picker_touch((int)(arrow-g_text[y]),y);
+    LS_EQ_INT(s_baud,1);
+    LS_CHECK(ls_picker_active());
+    ls_picker_close();
+}

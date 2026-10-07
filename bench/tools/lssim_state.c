@@ -40,6 +40,9 @@ int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
+static bool s_update_check = true;
+bool settings_get_update_check(void) { return s_update_check; }
+void settings_set_update_check(bool v) { s_update_check = v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
@@ -253,6 +256,12 @@ static ls_gps_state_t s_gps = {
     .quality = 1,
     .sats_used = 9,
     .sats_visible = 14,
+    /* The twelve below with a C/N0. */
+    .sats_tracked = 12,
+    .tracked_by_sys = { [LS_GPS_SYS_GPS] = 12 },
+    .cn0_best = 44,
+    .cn0_top4 = 40,
+    .antenna = LS_GPS_ANT_OK,
     .lat_deg = 43.44450,
     .lon_deg = -71.64730,
     .alt_m = 132.0f,
@@ -268,20 +277,20 @@ static ls_gps_state_t s_gps = {
 
     .sat_count = 14,
     .sats = {
-        {  2, 71, 156, 44, true  },   /* high and strong, nearly overhead */
-        {  5, 54,  92, 41, true  },
-        {  9, 47, 243, 38, true  },
-        { 12, 39,  47, 35, true  },
-        { 15, 33, 301, 33, true  },
-        { 18, 28, 128, 30, true  },
-        { 21, 22, 205, 26, true  },
-        { 24, 17, 274, 22, true  },
-        { 29, 11,  63, 19, true  },   /* ninth: the last one in the fix   */
-        { 31,  9, 349, 14, false },   /* low in the north, weak           */
-        {  7,  6,   8, 11, false },
-        { 13,  4, 337,  0, false },   /* seen, not tracked                */
-        { 25, 15, 172,  0, false },
-        { 30, 62, 218, 29, false },   /* high but not in the solution     */
+        {  2, 71, 156, 44, true,  LS_GPS_SYS_GPS },   /* high and strong, nearly overhead */
+        {  5, 54,  92, 41, true,  LS_GPS_SYS_GPS },
+        {  9, 47, 243, 38, true,  LS_GPS_SYS_GPS },
+        { 12, 39,  47, 35, true,  LS_GPS_SYS_GPS },
+        { 15, 33, 301, 33, true,  LS_GPS_SYS_GPS },
+        { 18, 28, 128, 30, true,  LS_GPS_SYS_GPS },
+        { 21, 22, 205, 26, true,  LS_GPS_SYS_GPS },
+        { 24, 17, 274, 22, true,  LS_GPS_SYS_GPS },
+        { 29, 11,  63, 19, true,  LS_GPS_SYS_GPS },   /* ninth: the last one in the fix   */
+        { 31,  9, 349, 14, false, LS_GPS_SYS_GPS },   /* low in the north, weak           */
+        {  7,  6,   8, 11, false, LS_GPS_SYS_GPS },
+        { 13,  4, 337,  0, false, LS_GPS_SYS_GPS },   /* seen, not tracked                */
+        { 25, 15, 172,  0, false, LS_GPS_SYS_GPS },
+        { 30, 62, 218, 29, false, LS_GPS_SYS_GPS },   /* high but not in the solution     */
     },
 };
 
@@ -323,7 +332,10 @@ bool ls_gps_running(void) { return s_gps_running; }
 /* The antenna select, for the simulator. Internal until switched,
    which is what the board comes up as. */
 static bool s_ant_ext_hw;
-esp_err_t ls_board_hw_antenna_external(bool ext) { s_ant_ext_hw = ext; return ESP_OK; }
+static bool s_ant_confirmed_hw;
+esp_err_t ls_board_hw_antenna_external(bool ext) { s_ant_ext_hw = ext; s_ant_confirmed_hw = false; return ESP_OK; }
+esp_err_t ls_board_hw_antenna_confirm_external(void) { s_ant_ext_hw = s_ant_confirmed_hw = true; return ESP_OK; }
+bool ls_board_hw_antenna_tx_allowed(void) { return !s_ant_ext_hw || s_ant_confirmed_hw; }
 bool ls_board_hw_antenna_is_external(void) { return s_ant_ext_hw; }
 
 esp_err_t ls_gps_start(void)

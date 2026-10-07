@@ -34,6 +34,9 @@ void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, 
 /* Whether the canvas already has a dot in this cell. */
 bool ls_ink_cell_used(int col, int row);
 
+/* The highest priority of any dot in the cell, 0 when it has none. */
+int ls_ink_cell_prio(int col, int row);
+
 /* Write every cell with a dot in it, as glass. `skip` cells are left alone
    (a panel drawn over the map). */
 void ls_ink_flush(tui_surface *sf, tui_rect skip);

@@ -17,6 +17,9 @@ extern "C" {
 bool ls_map_begin(int px_w, int px_h);
 /* UI-task only: shared offline basemap for the ADS-B pane. */
 void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon);
+/* The frame ls_map_preview draws `area` in: its size in map pixels and the
+   tile size it sets, for a caller choosing the centre and zoom beforehand. */
+void ls_map_preview_frame(tui_rect area, int *pw, int *ph, int *tile_px);
 bool ls_map_preview_point(double lat, double lon, tui_rect area, int *x, int *y);
 void ls_map_preview_reserve(tui_rect area, int x, int y, int width);
 void ls_map_preview_labels(tui_surface *sf, tui_rect area);
@@ -25,6 +28,11 @@ void ls_map_preview_leave(void);
    callsigns, with ADS-B's own selection. Returns how many were plotted. */
 typedef struct { int x, y; uint32_t icao; } ls_map_plot_t;
 int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int max);
+/* The aircraft layer draws a position while it is this young, carried along
+   the track for up to the second. Here so a caller framing aircraft frames
+   the ones that are drawn, where they are drawn. */
+#define LS_MAP_AIR_SHOW_US   (120 * 1000000LL)
+#define LS_MAP_AIR_RECKON_US  (20 * 1000000LL)
 void ls_map_end(void);
 
 /* Failed opens preserve the current archive. */
@@ -53,6 +61,9 @@ bool ls_map_go_last_good(void);
 void ls_map_get_center(double *lat, double *lon);
 void ls_map_zoom_by(int dz);
 int  ls_map_zoom(void);
+/* The zooms ls_map_zoom_by holds the map to: the archive's lowest, up to
+   three past its highest, magnified. */
+void ls_map_zoom_limits(int *lo, int *hi);
 
 /* Move by whole pixels of the current frame, which is what a swipe and an
    arrow key both mean. */

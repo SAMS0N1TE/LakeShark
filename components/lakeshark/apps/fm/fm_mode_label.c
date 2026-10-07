@@ -18,6 +18,9 @@ static const char *const s_mode_labels[] = {
     [FM_MODE_ACARS]  = "ACARS",
     [FM_MODE_FLEX]   = "FLEX",
     [FM_MODE_AM]     = "AM",
+    [FM_MODE_SAME]   = "SAME",
+    [FM_MODE_APRS]   = "APRS",
+    [FM_MODE_AIS]    = "AIS",
 };
 
 /* both console implementations carried a six-element positional
@@ -32,6 +35,9 @@ static const char *const s_mode_commands[] = {
     [FM_MODE_ACARS]  = "acars",
     [FM_MODE_FLEX]   = "flex",
     [FM_MODE_AM]     = "am",
+    [FM_MODE_SAME]   = "same",
+    [FM_MODE_APRS]   = "aprs",
+    [FM_MODE_AIS]    = "ais",
 };
 
 #define MODE_LABEL_COUNT (sizeof(s_mode_labels) / sizeof(s_mode_labels[0]))
@@ -84,8 +90,16 @@ bool fm_mode_parse(const char *text, fm_mode_t *mode)
 
     char *end = NULL;
     long numeric = strtol(text, &end, 0);
-    if (end == text || *end != '\0' || numeric < 0 || numeric >= FM_MODE_COUNT || numeric == 6)
+    if (end == text || *end != '\0' || numeric < 0 || numeric >= FM_MODE_COUNT ||
+        s_mode_commands[numeric] == NULL)
         return false;
     *mode = (fm_mode_t)numeric;
     return true;
+}
+
+/* The control head has no receive-data screens for these modes. */
+bool fm_mode_flipper_allowed(fm_mode_t mode)
+{
+    return mode >= 0 && mode < FM_MODE_COUNT && mode != 6 &&
+           mode != FM_MODE_SAME && mode != FM_MODE_APRS && mode != FM_MODE_AIS;
 }

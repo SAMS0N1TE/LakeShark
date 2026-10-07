@@ -5,6 +5,9 @@
 #include <string.h>
 
 #include "ls_tui_ui.h"
+#ifdef ESP_PLATFORM
+#include "ls_haptic.h"
+#endif
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -22,6 +25,9 @@ static int               s_probes;
 static ls_notice_t s_now;
 static int         s_ttl;
 static int         s_unread;
+/* The screen the unread MESSAGES came from. A system notice (accent) replaces
+   s_now for its few seconds but is not a message: it neither counts nor moves this. */
+static int         s_unread_screen = -1;
 static tui_rect    s_rect = { 0, -1, 0, 0 };
 static tui_rect    s_close = { 0, -1, 0, 0 };
 
@@ -51,13 +57,24 @@ void ls_notify_add_probe(ls_notify_probe_t probe)
     s_probe[s_probes++] = probe;
 }
 
-void ls_notify_post(const ls_notice_t *n)
+static void post(const ls_notice_t *n, bool alert)
 {
     if (!n) return;
     s_now = *n;
     s_ttl = SHOW_FRAMES;
-    if (s_unread < 999) s_unread++;
-    ls_notify_alert_hw(s_ring, s_vibe);
+    if (!n->accent) {
+        if (s_unread < 999) s_unread++;
+        s_unread_screen = n->screen;
+    }
+    if (alert && !n->quiet) {
+        if (n->haptic_only) {
+#ifdef ESP_PLATFORM
+            if (s_vibe) ls_haptic_play(LS_HAPTIC_ALERT);
+#else
+            ls_notify_alert_hw(false, s_vibe);
+#endif
+        } else ls_notify_alert_hw(s_ring, s_vibe);
+    }
     /* The banner covers rows the screen underneath already drew, and the
        cell renderer only blits what changed - so without this the first
        frame of a banner over a static screen would be the only one that
@@ -65,6 +82,9 @@ void ls_notify_post(const ls_notice_t *n)
        The same reason gives for the animation. */
     ls_tui_invalidate();
 }
+
+void ls_notify_post(const ls_notice_t *n) { post(n, true); }
+void ls_notify_post_quiet(const ls_notice_t *n) { post(n, false); }
 
 void ls_notify_poll(int visible)
 {
@@ -75,13 +95,13 @@ void ls_notify_poll(int visible)
             ls_tui_invalidate();
             /* A notice with nowhere to go is read when its banner ends, because there is no other way to read it. */
 
-            if (s_now.screen < 0 && s_unread) s_unread = 0;
+            if (!s_now.accent && s_now.screen < 0 && s_unread) s_unread = 0;
         }
     }
 
     /* AND A COUNT IS CLEARED BY LOOKING AT WHAT IT IS COUNTING. */
 
-    if (s_unread && s_now.screen >= 0 && s_now.screen == visible) {
+    if (s_unread && s_unread_screen >= 0 && s_unread_screen == visible) {
         s_unread = 0;
         ls_tui_invalidate();
     }
@@ -92,7 +112,7 @@ void ls_notify_poll(int visible)
         n.screen = -1;
         if (!s_probe[i](&n)) continue;
 
-        if (n.screen >= 0 && n.screen == visible) continue;
+        if (!n.notify_visible && n.screen >= 0 && n.screen == visible) continue;
         ls_notify_post(&n);
     }
 }
@@ -114,8 +134,10 @@ bool ls_notify_vibe(void) { return s_vibe; }
 
 void ls_notify_set_alerts(bool ring, bool vibe) { s_ring = ring; s_vibe = vibe; }
 
+#ifndef LS_NOTIFY_EXTERNAL_ALERT_HW
 __attribute__((weak))
 void ls_notify_alert_hw(bool ring, bool vibe) { (void)ring; (void)vibe; }
+#endif
 
 /* ---------------------------------------------------------------- draw -- */
 
@@ -155,7 +177,8 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
     tui_rect r = tui_rect_make(area.x, area.y, area.w, h);
     s_rect = r;
 
-    const uint8_t hue = TUI_RED;
+    /* Messages are red; a system notice (UPDATE) brings its own colour. */
+    const uint8_t hue = s_now.accent ? s_now.accent : TUI_RED;
     tui_fill(sf, r, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, r, NULL, hue | TUI_BRIGHT);
 
@@ -164,7 +187,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         const char *msg = s_now.body;
         char head[LS_NOTIFY_TITLE + LS_NOTIFY_BODY + 8];
         const char *colon = strstr(s_now.body, ": ");
-        if (colon && colon - s_now.body < 40) {
+        if (!s_now.accent && colon && colon - s_now.body < 40) {
             snprintf(head, sizeof(head), "%s  FROM %.*s", s_now.title,
                      (int)(colon - s_now.body), s_now.body);
             msg = colon + 2;
@@ -174,7 +197,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
 
         /* The bar pulses red and white for its first two seconds. */
         const bool pulse = age < FLASH_FRAMES * 2 && ((age / 5) & 1);
-        const uint8_t bar = pulse ? A(TUI_RED, TUI_WHITE | TUI_BRIGHT)
+        const uint8_t bar = pulse ? A(hue, TUI_WHITE | TUI_BRIGHT)
                                   : A(TUI_WHITE | TUI_BRIGHT, hue);
         tui_fill(sf, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, 1), ' ', bar);
         tui_put_str(sf, r, r.x + 2, r.y + 1, head, bar);
@@ -195,7 +218,9 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         tui_put_str(sf, r, r.x + 2, r.y + 2, line, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
 
         /* The light: sixteen heavy cells travelling round the edge, white
-           at the head, yellow behind it. */
+           at the head, yellow behind it (the notice's own colour for a system
+           notice). */
+        const uint8_t tail = s_now.accent ? (uint8_t)(hue | TUI_BRIGHT) : (uint8_t)(TUI_YELLOW | TUI_BRIGHT);
         const int perim = 2 * (r.w - 1) + 2 * (r.h - 1);
         const int head_at = (age * 3) % perim;
         for (int k = 0; k < 16; k++) {
@@ -204,7 +229,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
             edge_at(r, (head_at - k + perim) % perim, &x, &y, &ch);
             ch = ch == '-' ? '=' : '#';
             tui_put_char(sf, r, x, y, ch,
-                         A(k < 5 ? (TUI_WHITE | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT), TUI_BLACK));
+                         A(k < 5 ? (TUI_WHITE | TUI_BRIGHT) : tail, TUI_BLACK));
         }
     }
 
@@ -234,7 +259,7 @@ bool ls_notify_touch(int col, int row)
     s_ttl = 0;
     ls_tui_invalidate();
     if (!close && go >= 0 && go < ls_tui_screen_count()) {
-        s_unread = 0;
+        if (!s_now.accent) s_unread = 0;
         ls_tui_screen_show(go);
     }
     return true;

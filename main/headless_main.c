@@ -24,6 +24,7 @@
 #include "ls_crash.h"
 #include "ls_errlog.h"
 #include "ls_nvs_safe.h"
+#include "ls_task_reap.h"
 /**/
 #include "ls_safe_mode.h"
 #include "panic_crumb.h"
@@ -688,13 +689,13 @@ static int cmd_feed(int argc, char **argv)
 static int cmd_fm(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("fm submode=%s (listen|scan|pocsag|wfm|am|acars|flex)\n",
+        printf("fm submode=%s (listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais)\n",
                fm_mode_command_name((fm_mode_t)lakeshark_fm_get_mode()));
         return 0;
     }
     fm_mode_t mode;
     if (!fm_mode_parse(argv[1], &mode)) {
-        printf("usage: fm listen|scan|pocsag|wfm|am|acars|flex\n");
+        printf("usage: fm listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais\n");
         return 0;
     }
     if (s_mode != FM_IDX) select_mode(FM_IDX);
@@ -2790,7 +2791,7 @@ static bool console_start(bool full)
         { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",
-          .hint = "listen|scan|pocsag|wfm|am|acars|flex", .func = &cmd_fm },
+          .hint = "listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais", .func = &cmd_fm },
         { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
           .func = &cmd_vol },
         { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
@@ -2888,6 +2889,33 @@ static void console_retry_start(void)
    the serial log and the recovery console. Nothing that can fault is started:
    no gpio_init/PA, no NVS, no SPIFFS, no codec, no C6, no BLE, no backend, no
    mode restore, no boot chime. */
+#if LS_HAS_RF_SWITCH
+/* Puts the antenna switch where the stored choice says. The setting is only
+   read here, never written: a refusal (a transmit in flight) is retried, and
+   a route that cannot be set is reported with the reason. */
+static void apply_stored_antenna(bool external)
+{
+    if (ls_board_hw_antenna_is_external() == external) {
+        if (!external) ESP_LOGI(TAG, "antenna: internal");
+        return;
+    }
+    esp_err_t e = ESP_FAIL;
+    for (int i = 0; i < 20; i++) {
+        e = ls_board_hw_antenna_external(external);
+        if (e == ESP_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (e != ESP_OK)
+        ESP_LOGE(TAG, "antenna: could not select %s: %s",
+                 external ? "external" : "internal", esp_err_to_name(e));
+    else if (external)
+        ESP_LOGW(TAG, "antenna: EXTERNAL (MMCX1) - stored preference. "
+                      "Transmitting with nothing fitted may damage the front end");
+    else
+        ESP_LOGI(TAG, "antenna: internal");
+}
+#endif
+
 static void headless_safe_main(const ls_safe_boot_plan_t *plan)
 {
     ls_crash_boot_setup();
@@ -2964,6 +2992,9 @@ void app_main(void)
 
     ls_panel_test_start();
 
+    /* Before USB, the update check and any other worker made with caps can
+       end: they hand themselves to it rather than delete themselves. */
+    ls_task_reap_start();
     defer_start();
 
     /**/
@@ -3124,6 +3155,11 @@ void app_main(void)
     }
 
     ls_safe_stage(LS_SAFE_STAGE_BACKEND);
+#if LS_HAS_RF_SWITCH
+    /* Before the radio or the mesh can transmit: a transmit in flight makes
+       the switch refuse, and the stored choice was then dropped for the run. */
+    apply_stored_antenna(settings_peek_antenna_external());
+#endif
 #if defined(LS_BOARD_LORA_CS_GPIO)
     /* Reserve radio DMA buffers before USB enumeration consumes transient heap. */
     esp_err_t lora_err = ls_lora_start();
@@ -3134,15 +3170,9 @@ void app_main(void)
     lakeshark_backend_start();
 
 #if LS_HAS_RF_SWITCH
-    if (settings_get_antenna_external()) {
-        if (ls_board_hw_antenna_external(true) == ESP_OK)
-            ESP_LOGW(TAG, "antenna: EXTERNAL (MMCX1) - stored preference. "
-                          "Transmitting with nothing fitted may damage the front end");
-        else
-            ESP_LOGE(TAG, "antenna: could not select external, staying internal");
-    } else {
-        ESP_LOGI(TAG, "antenna: internal");
-    }
+    /* Normally already done above; this catches a refusal there and a
+       preference the early read could not see. Never writes the setting. */
+    apply_stored_antenna(settings_get_antenna_external());
 #endif
 
     ls_safe_stage(LS_SAFE_STAGE_APPS);

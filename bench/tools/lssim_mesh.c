@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ls_mesh.h"
@@ -24,7 +25,7 @@ bool ls_mesh_running(void) { return s_stats.running; }
 bool ls_mesh_tx_enabled(void) { return s_stats.tx_enabled; }
 void ls_mesh_set_tx(bool on) { s_stats.tx_enabled = on; }
 esp_err_t ls_mesh_start(void) { s_stats.running = true; return 0; }
-void ls_mesh_stop(void) { s_stats.running = false; }
+esp_err_t ls_mesh_stop(void) { s_stats.running = false; return ESP_OK; }
 esp_err_t ls_mesh_advertise(void) { s_stats.tx_packets++; return 0; }
 void ls_mesh_boot(void) { }
 void ls_mesh_diagnostics(void) { }
@@ -104,10 +105,16 @@ bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
     return true;
 }
 
+/* The backend takes the whole 64-character key and nothing shorter, so the
+   stub refuses the same way, and says what it was given: the MESH tests
+   read these lines to see what a tap would have done on the board. */
 esp_err_t ls_mesh_add_contact(const char *hex, const char *name)
 {
-    (void)hex; (void)name;
-    return 0;
+    (void)name;
+    const bool ok = hex && strlen(hex) == 64;
+    fprintf(stderr, "mesh-stub add_contact %s %s\n", hex ? hex : "-",
+            ok ? "ok" : "refused");
+    return ok ? 0 : ESP_ERR_INVALID_SIZE;
 }
 
 /* --------------------------------------------------------------- events -- */
@@ -149,26 +156,45 @@ uint32_t ls_mesh_event_seq(void) { return 1174; }
 /* ------------------------------------------------------------- messages -- */
 
 static const ls_mesh_msg_t MSGS[] = {
-    { 44120, false, false, "", LS_MSG_IN,      0, "NORTHFIELD: repeater is up on the hill again" },
-    { 44166, true,  false, "", LS_MSG_HEARD,   3, "SHARK: copy, hearing you at -74" },
-    { 44203, false, false, "", LS_MSG_IN,      0, "KB1QWE: anyone near the dam this afternoon" },
-    { 44255, true,  false, "", LS_MSG_SENT,    0, "SHARK: heading that way around four" },
-    { 44301, false, false, "", LS_MSG_IN,      0, "TILTON ROOM: net at 1900 local, usual channel" },
-    { 44340, true,  true,  "17BC5E90A3D46F82", LS_MSG_ACKED, 0, "SHARK: bringing the handheld" },
-    { 44366, true,  false, "", LS_MSG_SENDING, 0, "SHARK: testing the new firmware now" },
+    { 44120, false, false, "", LS_MSG_IN,      0, "NORTHFIELD: repeater is up on the hill again", 0 },
+    { 44166, true,  false, "", LS_MSG_HEARD,   3, "SHARK: copy, hearing you at -74", 0 },
+    { 44203, false, false, "", LS_MSG_IN,      0, "KB1QWE: anyone near the dam this afternoon", 0 },
+    { 44255, true,  false, "", LS_MSG_SENT,    0, "SHARK: heading that way around four", 0 },
+    { 44301, false, false, "", LS_MSG_IN,      0, "TILTON ROOM: net at 1900 local, usual channel", 0 },
+    { 44340, true,  true,  "17BC5E90A3D46F82", LS_MSG_ACKED, 0, "SHARK: bringing the handheld", 0 },
+    { 44366, true,  false, "", LS_MSG_SENDING, 0, "SHARK: testing the new firmware now", 0 },
 };
 #define N_MSGS ((int)(sizeof(MSGS) / sizeof(MSGS[0])))
+
+/* LSSIM_MESH_LAST=dm or =chan ends the feed with a private message - a DM
+   from KB1QWE, or one on the LAKE channel - for the reply-routing tests. */
+static const ls_mesh_msg_t LAST_DM =
+    { 44370, false, true, "17BC5E90A3D46F82", LS_MSG_IN, 0,
+      "KB1QWE: are you on the lake today", 0 };
+static const ls_mesh_msg_t LAST_CHAN =
+    { 44370, false, false, "", LS_MSG_IN, 0,
+      "TILTON ROOM: net moved to 2000", 1 };
 
 int ls_mesh_messages(ls_mesh_msg_t *out, int max)
 {
     int n = (max < N_MSGS) ? max : N_MSGS;
     for (int i = 0; i < n; i++) out[i] = MSGS[i];
+    const char *last = getenv("LSSIM_MESH_LAST");
+    if (last && n < max) {
+        if (!strcmp(last, "dm"))   out[n++] = LAST_DM;
+        if (!strcmp(last, "chan")) out[n++] = LAST_CHAN;
+    }
     return n;
 }
 
 uint32_t ls_mesh_msg_seq(void) { return 208; }
 
-esp_err_t ls_mesh_send_text(const char *t) { (void)t; return 0; }
+esp_err_t ls_mesh_send_text_on(int chan, const char *t)
+{
+    fprintf(stderr, "mesh-stub send_on %d %s\n", chan, t ? t : "");
+    return 0;
+}
+esp_err_t ls_mesh_send_text(const char *t) { return ls_mesh_send_text_on(0, t); }
 esp_err_t ls_mesh_send_dm(int peer_index, const char *t)
 {
     (void)peer_index; (void)t;
@@ -193,7 +219,7 @@ bool ls_mesh_peer_known(const char *id)
 
 esp_err_t ls_mesh_send_dm_id(const char *id, const char *t)
 {
-    (void)t;
+    fprintf(stderr, "mesh-stub send_dm %s %s\n", id ? id : "-", t ? t : "");
     return ls_mesh_peer_known(id) ? 0 : -1;
 }
 
@@ -329,3 +355,85 @@ int ls_lora_scan_sweep(float *d, int n) { (void)d; (void)n; return 0; }
 int ls_lora_scan_pass(float *d, int n, bool *done)
 { (void)d; (void)n; if (done) *done = false; return 0; }
 esp_err_t ls_lora_scan_end(void) { return 0; }
+
+/* Host inspector uses the production bookkeeping; no RF is involved. */
+#include "esp_timer.h"
+static ls_inspect_tracker_t s_probe;
+static bool s_probe_init;
+static void probe_init(void) { if (!s_probe_init) { ls_inspect_init(&s_probe); s_probe_init = true; } }
+void ls_mesh_inspect_get(ls_inspect_tracker_t *out)
+{
+    probe_init(); ls_inspect_tick(&s_probe, (uint32_t)(esp_timer_get_time() / 1000));
+    const char *mode = getenv("LSSIM_MESH_INSPECT");
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (mode && !strcmp(mode, "reply") && s_probe.result.state == LS_INSPECT_WAITING &&
+        now - s_probe.result.started_ms >= 200) {
+        if (s_probe.result.kind == LS_INSPECT_TRACE) {
+            const int8_t snrs[] = {-12, 20, 32};
+            ls_inspect_trace(&s_probe, now, s_probe.result.tag, 0, s_probe.result.hashes,
+                3, snrs, 3, -92, 6.5f);
+        } else if (s_probe.result.kind == LS_INSPECT_LOGIN) {
+            /* RESP_SERVER_LOGIN_OK as a guest, firmware level 2. */
+            uint8_t data[16] = {0};
+            data[6] = 0; data[7] = 1; data[12] = 2;
+            ls_inspect_telemetry(&s_probe, now, s_probe.result.peer, data, sizeof(data), -92, 6.5f);
+        } else if (s_probe.result.kind == LS_INSPECT_STATUS) {
+            uint8_t data[28] = {0};
+            memcpy(data, &s_probe.result.tag, 4);
+            data[4] = 0xA0; data[5] = 0x0F; /* 4000mV */
+            data[12] = 12; data[16] = 5; data[20] = 3; data[24] = 123;
+            ls_inspect_telemetry(&s_probe, now, s_probe.result.peer, data, sizeof(data), -92, 6.5f);
+        } else {
+            uint8_t data[] = {0,0,0,0, 1,116,1,144, 1,103,0,225, 2,104,100};
+            memcpy(data, &s_probe.result.tag, 4);
+            ls_inspect_telemetry(&s_probe, now, s_probe.result.peer, data, sizeof(data), -92, 6.5f);
+        }
+    }
+    if (out) *out = s_probe;
+}
+void ls_mesh_inspect_set_options(ls_inspect_options_t o) { probe_init(); ls_inspect_options(&s_probe, o); }
+static const char *kind_word(ls_inspect_kind_t kind)
+{
+    return kind == LS_INSPECT_TRACE ? "trace" : kind == LS_INSPECT_STATUS ? "status" :
+        kind == LS_INSPECT_LOGIN ? "login" : "telemetry";
+}
+static ls_inspect_state_t stub_request(const char *id, ls_inspect_kind_t kind, const char *pw)
+{
+    probe_init();
+    bool login_role = false;
+    for (int i = 0; i < N_PEERS; i++)
+        if (!strcmp(PEERS[i].id, id))
+            login_role = PEERS[i].type == LS_MESH_ROLE_REPEATER || PEERS[i].type == LS_MESH_ROLE_ROOM;
+    if (ls_inspect_needs_login(&s_probe, id, kind, login_role)) {
+        fprintf(stderr, "mesh-stub inspect %s %s %d\n", kind_word(kind), id, LS_INSPECT_NEEDS_LOGIN);
+        return LS_INSPECT_NEEDS_LOGIN;
+    }
+    ls_inspect_state_t state = ls_inspect_begin(&s_probe, (uint32_t)(esp_timer_get_time() / 1000),
+        s_probe.result.tag + 1, id, kind, s_stats.tx_enabled);
+    if (kind == LS_INSPECT_LOGIN) fprintf(stderr, "mesh-stub login password '%s'\n", pw ? pw : "");
+    if (state == LS_INSPECT_WAITING && kind == LS_INSPECT_TRACE) {
+        s_probe.result.hash_size = 1; s_probe.result.hop_count = 3;
+        memcpy(s_probe.result.hashes, "ABC", 3);
+    }
+    fprintf(stderr, "mesh-stub inspect %s %s %d\n", kind_word(kind), id, state);
+    return state;
+}
+ls_inspect_state_t ls_mesh_inspect_request(const char *id, ls_inspect_kind_t kind,
+    const uint8_t *route, uint8_t count, uint8_t width)
+{
+    (void)route; (void)count; (void)width;
+    return stub_request(id, kind, "");
+}
+ls_inspect_state_t ls_mesh_inspect_login(const char *id, const char *password)
+{
+    return stub_request(id, LS_INSPECT_LOGIN, password);
+}
+static ls_inspect_allow_t s_allow;
+bool ls_mesh_telem_allowed(const char *id) { return ls_inspect_allowed(&s_allow, id); }
+int ls_mesh_telem_allow_count(void) { return ls_inspect_allow_count(&s_allow); }
+esp_err_t ls_mesh_telem_allow(const char *id, bool allow)
+{
+    bool ok = ls_inspect_allow_set(&s_allow, id, allow);
+    fprintf(stderr, "mesh-stub telem-allow %s %d\n", id, allow);
+    return ok ? ESP_OK : ESP_ERR_NO_MEM;
+}

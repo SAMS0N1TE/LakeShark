@@ -6,6 +6,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "ls_mesh_inspect.h"
+
+#define LS_MESH_US915_MIN_HZ 902000000u
+#define LS_MESH_US915_MAX_HZ 928000000u
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,7 +38,7 @@ typedef struct {
    settings, loads or creates this node's identity in NVS, and begins
    listening. Safe to call more than once. */
 esp_err_t ls_mesh_start(void);
-void      ls_mesh_stop(void);
+esp_err_t ls_mesh_stop(void);
 bool      ls_mesh_running(void);
 
 /* Arm or disarm transmit. Off at boot, always. */
@@ -42,6 +46,27 @@ void ls_mesh_set_tx(bool enabled);
 bool ls_mesh_tx_enabled(void);
 
 void ls_mesh_get_stats(ls_mesh_stats_t *out);
+
+/* A NULL route uses the learned route, or a one-hop trace when none is known.
+   Explicit routes contain outbound relay hashes; the return leg is assembled
+   in the Mesh task. Up to 24 relays fit; routes use 1..3-byte hashes within MeshCore's path limit.
+   Traces use two-byte prefixes when a learned route has three-byte hashes. */
+ls_inspect_state_t ls_mesh_inspect_request(const char *id, ls_inspect_kind_t kind,
+    const uint8_t *route, uint8_t count, uint8_t hash_size);
+/* Repeater and room login (ANON_REQ). A blank password asks for the guest
+   role. Remembered per node in the tracker's sessions; TELEM and STATUS to a
+   repeater answer LS_INSPECT_NEEDS_LOGIN until it succeeds. The password is
+   held in RAM only until the request is built. */
+ls_inspect_state_t ls_mesh_inspect_login(const char *id, const char *password);
+void ls_mesh_inspect_get(ls_inspect_tracker_t *out);
+
+/* Who may read this node's telemetry and status. Empty (nobody) by default;
+   up to LS_INSPECT_ALLOW_MAX peers by 16-hex id, kept in NVS. Answers need
+   TRANSMIT armed and carry position only when location sharing is on. */
+bool      ls_mesh_telem_allowed(const char *id);
+int       ls_mesh_telem_allow_count(void);
+esp_err_t ls_mesh_telem_allow(const char *id, bool allow);
+void ls_mesh_inspect_set_options(ls_inspect_options_t options);
 
 /* Send a self-advert, the one outbound MeshCore action worth exposing before
    the higher layers are wired. Refused when transmit is disarmed. */
@@ -147,6 +172,7 @@ typedef struct {
     ls_mesh_msg_state_t state;
     uint8_t  relays;                /* how many times we heard it back   */
     char     text[LS_MESH_MSG_LEN]; /* "name: message", as it goes on air */
+    uint8_t  chan;                  /* channel slot when not direct; 0 is public */
 } ls_mesh_msg_t;
 
 esp_err_t ls_mesh_send_dm_id(const char *id, const char *text);
@@ -163,6 +189,8 @@ bool ls_mesh_peer_known(const char *id);
 
 int ls_mesh_forget_peer(const char *id);
 
+/* Each calling task holds one lease. Repeated requests poll that lease;
+   releases remove only that task, and the first foreground holder owns RF. */
 bool ls_mesh_radio_hold(bool on);
 bool ls_mesh_radio_held(void);
 /* A receiver that keeps the radio in the background (P25 or ADS-B on the
@@ -194,6 +222,10 @@ esp_err_t ls_mesh_send_dm(int peer_index, const char *text);
 /* Send on the public channel. ESP_ERR_NOT_ALLOWED when transmit is disarmed
    - the same refusal ls_mesh_advertise gives, for the same reason. */
 esp_err_t ls_mesh_send_text(const char *text);
+/* The same on one channel slot, without changing the saved SEND ON - for a
+   reply that goes where the message it answers came from.
+   ESP_ERR_INVALID_STATE when that slot has no key. */
+esp_err_t ls_mesh_send_text_on(int chan, const char *text);
 
 /* The name that prefixes every message and identifies this node to peers.
    Bounded, and sanitised - a name with a colon in it would break the

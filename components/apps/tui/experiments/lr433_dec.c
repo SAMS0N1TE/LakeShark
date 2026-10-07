@@ -348,6 +348,7 @@ static lr433_msg_t *msg_new(ctx_t *c, int proto, const char *model)
     m->kpa = NAN;
     m->temp_c = NAN;
     m->humidity = NAN;
+    m->rain_mm = m->wind_ms = NAN;
     m->consumption = -1;
     return m;
 }
@@ -359,6 +360,8 @@ static bool same_msg(const lr433_msg_t *a, const lr433_msg_t *b)
            ((isnan(a->kpa) && isnan(b->kpa)) || a->kpa == b->kpa) &&
            ((isnan(a->temp_c) && isnan(b->temp_c)) || a->temp_c == b->temp_c) &&
            ((isnan(a->humidity) && isnan(b->humidity)) || a->humidity == b->humidity) &&
+           ((isnan(a->rain_mm) && isnan(b->rain_mm)) || a->rain_mm == b->rain_mm) &&
+           ((isnan(a->wind_ms) && isnan(b->wind_ms)) || a->wind_ms == b->wind_ms) &&
            a->consumption == b->consumption;
 }
 
@@ -763,13 +766,18 @@ static int acurite_txr_cb(ctx_t *c, bitbuf_t *bbuf)
                 m->battery_ok = (bb[2] & 0x40) != 0;
                 m->temp_c = (tempf - 32.0f) * 5.0f / 9.0f;
                 m->humidity = (float)humidity;
+                const int wind = ((bb[3] & 0x1f) << 3) | ((bb[4] & 0x70) >> 4);
+                m->wind_ms = wind ? (wind * 0.8278f + 1.0f) / 3.6f : 0;
                 found += msg_done(c);
             } else {
-                /* Wind and rain only: the table shows that it was heard. */
+                /* Bucket tips are 0.01 inches; histories use millimetres. */
                 lr433_msg_t *m = msg_new(c, LR433_P_ACURITE_5N1, "Acurite-5n1");
                 snprintf(m->id, sizeof(m->id), "%d", id);
                 m->channel = (int8_t)ch;
                 m->battery_ok = (bb[2] & 0x40) != 0;
+                const int wind = ((bb[3] & 0x1f) << 3) | ((bb[4] & 0x70) >> 4);
+                m->wind_ms = wind ? (wind * 0.8278f + 1.0f) / 3.6f : 0;
+                m->rain_mm = (((bb[5] & 0x7f) << 7) | (bb[6] & 0x7f)) * 0.254f;
                 found += msg_done(c);
             }
         }
@@ -957,9 +965,8 @@ static int wh31e_cb(ctx_t *c, bitbuf_t *bb)
     return found;
 }
 
-/* fineoffset.c: WH24, WH65 and kin (the outdoor arrays of the 915 MHz
-   stations). Temperature and humidity only: the wind and rain scale depends
-   on which model it is, which upstream judges by the row's exact length. */
+/* fineoffset.c: WH24, WH65 and kin. The preamble and postamble lengths
+   distinguish the models' wind and bucket-tip scales. */
 static int wh24_cb(ctx_t *c, bitbuf_t *bb)
 {
     static const uint8_t pre[3] = { 0xAA, 0x2D, 0xD4 };
@@ -980,6 +987,14 @@ static int wh24_cb(ctx_t *c, bitbuf_t *bb)
         const int temp_raw = (b[3] & 0x07) << 8 | b[4];
         if (temp_raw != 0x7ff) m->temp_c = (temp_raw - 400) * 0.1f;
         if (b[5] != 0xff) m->humidity = (float)b[5];
+        /* The sampler and PCM slicer append quiet zeros after the frame.
+           Ignore that extension when judging the model's postamble. */
+        unsigned end = len;
+        while (end > off + 17 * 8 && !bit_at(bb->bb[r], end - 1)) end--;
+        const bool wh24 = end - off - 17 * 8 < 8 && off < 61;
+        const int wind = b[6] | ((b[3] & 0x10) << 4);
+        if (wind != 0x1ff) m->wind_ms = wind * 0.125f * (wh24 ? 1.12f : 0.51f);
+        m->rain_mm = ((b[8] << 8) | b[9]) * (wh24 ? 0.3f : 0.254f);
         found += msg_done(c);
     }
     return found;

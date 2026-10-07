@@ -21,6 +21,7 @@ typedef struct {
     char        key;     /* keyboard shortcut, 0 for none               */
     bool        on;      /* draw as engaged                             */
     bool        dim;     /* unavailable right now, still shown          */
+    bool        badge;   /* something new inside: a dot on the corner   */
 } ls_btn_t;
 
 /* Two hit slots, because a screen can carry two bars.
@@ -97,6 +98,7 @@ typedef struct {
     int         icon;    /* ls_icon_t                                   */
     uint8_t     hue;     /* TUI_* colour the tile is drawn in           */
     bool        live;    /* something is happening in there right now   */
+    bool        badge;   /* something new inside: a dot and NEW         */
 } ls_tile_t;
 
 /* A grid of large tiles filling `area`. Column count follows the width, so

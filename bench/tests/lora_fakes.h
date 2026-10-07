@@ -34,11 +34,13 @@ static bool fk_dio1_level;
 typedef struct { int pin; bool level; } fk_xl_write_t;
 static fk_xl_write_t fk_xl_log[32];
 static int fk_xl_log_n;
+static esp_err_t fk_xl_error;
 
 static void fk_reset_pin(bool level);
 
 esp_err_t ls_xl9535_out(int pin, bool level)
 {
+    if (fk_xl_error != ESP_OK) return fk_xl_error;
     fk_rst_writes++;
     if (pin == LS_BOARD_XL_RADIO_RST) fk_reset_pin(level);
     if (fk_xl_log_n < 32) { fk_xl_log[fk_xl_log_n].pin = pin; fk_xl_log[fk_xl_log_n].level = level; fk_xl_log_n++; }
@@ -47,7 +49,16 @@ esp_err_t ls_xl9535_out(int pin, bool level)
 
 /* What the settings say about the antenna (ls_board_hw.c owns it on the board). */
 static bool fk_ant_external;
+static bool fk_lr_tcxo = true, fk_lr_dcdc;
+static uint16_t fk_tcxo_errors;
+bool settings_get_lr_tcxo(void) { return fk_lr_tcxo; }
+bool settings_set_lr_tcxo(bool tcxo) { fk_lr_tcxo = tcxo; return true; }
+bool settings_get_lr_dcdc(void) { return fk_lr_dcdc; }
+bool settings_set_lr_dcdc(bool dcdc) { fk_lr_dcdc = dcdc; return true; }
+#ifndef LS_TEST_REAL_BOARD_HW
 bool ls_board_hw_antenna_is_external(void) { return fk_ant_external; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+#endif
 bool ls_xl9535_ready(void) { return true; }
 esp_err_t ls_xl9535_set_dir(int pin, bool output) { (void)pin; (void)output; return ESP_OK; }
 esp_err_t ls_xl9535_get(int pin, bool *level)
@@ -327,7 +338,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
        LR2021 module for the packet and transmit commands). */
     static const struct { uint16_t op; uint8_t n; } nargs_of[] = {
         { 0x0104, 7 }, { 0x0105, 11 }, { 0x0111, 0 }, { 0x0112, 2 }, { 0x0113, 2 }, { 0x0115, 5 },
-        { 0x0116, 4 }, { 0x011E, 0 }, { 0x011F, 0 }, { 0x0122, 1 }, { 0x0123, 6 }, { 0x0128, 1 },
+        { 0x0116, 4 }, { 0x011E, 0 }, { 0x011F, 0 }, { 0x0120, 5 }, { 0x0121, 1 }, { 0x0122, 1 }, { 0x0123, 6 }, { 0x0128, 1 },
         { 0x0200, 4 }, { 0x0201, 2 }, { 0x0202, 3 }, { 0x0203, 2 }, { 0x0206, 1 }, { 0x0207, 1 },
         { 0x020C, 3 }, { 0x020D, 3 }, { 0x020F, 1 }, { 0x021A, 1 },
         { 0x0220, 2 }, { 0x0221, 4 }, { 0x0223, 1 }, { 0x0240, 9 }, { 0x0241, 7 }, { 0x0244, 9 },
@@ -353,6 +364,8 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     if (!known) { fk.cmd_status = 1; return; }                 /* CMD_PERR */
 
     switch (op) {
+    case 0x0120: fk.errors |= fk_tcxo_errors; break;
+    case 0x0121: break;
     case 0x0128: fk.mode = t[2] ? 2 : 1; break;
     case 0x0105: {                      /* WriteRegMemMask32: Addr(3) Mask(4) Data(4) */
         const uint32_t addr = ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 8) | t[4];

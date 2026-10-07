@@ -121,6 +121,12 @@ bool ls_ink_cell_used(int col, int row)
     return s_bits[row * INK_COLS + col] != 0;
 }
 
+int ls_ink_cell_prio(int col, int row)
+{
+    if (!s_on || col < 0 || row < 0 || col >= s_rect.w || row >= s_rect.h) return 0;
+    return s_bits[row * INK_COLS + col] ? s_prio[row * INK_COLS + col] : 0;
+}
+
 void ls_ink_flush(tui_surface *sf, tui_rect skip)
 {
     if (!s_on) return;

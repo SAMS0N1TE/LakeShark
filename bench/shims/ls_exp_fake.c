@@ -24,7 +24,7 @@ static unsigned s_reads;
 
 uint32_t ls_lora_caps(void)
 {
-    return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST | LS_LORA_CAP_MODES_RX;
+    return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_FSK_STREAM;
 }
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg) { (void)cfg; s_fsk = true; return ESP_OK; }

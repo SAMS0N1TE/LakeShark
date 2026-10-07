@@ -1,3 +1,4 @@
+#include "call_archive.h"
 #include "p25_p2_runtime.h"
 #include "p25_p2_runtime_status.h"
 #include "esp_attr.h"
@@ -20,6 +21,7 @@ static p25p2_status_t status;
 static uint32_t last_generation, last_hz;
 static uint32_t applied_generation = UINT32_MAX;
 static uint32_t max_decode_us;
+static uint32_t archive_ptt, archive_end;
 static EXT_RAM_BSS_ATTR int16_t samples[8192];
 static EXT_RAM_BSS_ATTR uint8_t symbols[1024];
 extern void audio_write_p25_voice(const int16_t *, int);
@@ -60,8 +62,18 @@ void p25_p2_describe(char *text, unsigned capacity) {
 }
 static void output(const int16_t *pcm, size_t count, void *context) {
   (void)context;
-  if (p25_p2_enabled())
+  if (p25_p2_enabled()) {
+    p25p2_status_t current;
+    p25p2_status(decoder, &current);
+    uint32_t ends = current.mac_opcodes[P25P2_MAC_END_PTT] +
+        current.mac_opcodes[P25P2_MAC_IDLE] + current.mac_opcodes[P25P2_MAC_HANGTIME];
+    if (archive_ptt != current.mac_opcodes[P25P2_MAC_PTT] || archive_end != ends)
+      call_archive_end(CALL_P25_P2, false);
+    archive_ptt = current.mac_opcodes[P25P2_MAC_PTT]; archive_end = ends;
+    call_archive_audio(CALL_P25_P2, last_hz, current.talkgroup, current.source,
+        current.clear_confirmed && current.algorithm == 0x80, pcm, (unsigned)count);
     audio_write_p25_voice(pcm, (int)count);
+  }
 }
 uint32_t p25_p2_config_generation(void) {
   portENTER_CRITICAL(&lock);
@@ -78,6 +90,7 @@ bool p25_p2_status_for(uint32_t wanted_generation, p25p2_status_t *out) {
   return ok;
 }
 void p25_p2_stop(void) {
+  call_archive_end(CALL_P25_P2, false);
   if (decoder) {
     p25p2_destroy(decoder);
     decoder = NULL;
@@ -120,6 +133,8 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
   if (!ids)
     return true;
   if (last_generation != gen || hz != last_hz || !dsp->phase2) {
+    call_archive_end(CALL_P25_P2, false);
+    archive_ptt = archive_end = 0;
     p25p2_configure(decoder, w, s, n, slot);
     dsp->phase2 = true;
     dsp_set_gain(dsp, fabsf(dsp->demod_gain));
@@ -135,6 +150,10 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
   uint32_t elapsed = (uint32_t)(esp_timer_get_time() - start);
   p25p2_status_t snapshot;
   p25p2_status(decoder, &snapshot);
+  if (!snapshot.call_active) call_archive_end(CALL_P25_P2, false);
+  else if (!snapshot.clear_confirmed && snapshot.algorithm != 0x80)
+    call_archive_audio(CALL_P25_P2, 0, 0, 0, false, NULL, 0);
+  call_archive_gate(CALL_P25_P2, hz, false);
   portENTER_CRITICAL(&lock);
   status = snapshot;
   applied_generation = last_generation;

@@ -7,6 +7,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* FIND slots claim separately so stopping one cannot release the other. */
+typedef enum {
+    LS_MIXRF_OWNER_NONE, LS_MIXRF_OWNER_MONITOR, LS_MIXRF_OWNER_REC,
+    LS_MIXRF_OWNER_FIND, LS_MIXRF_OWNER_FIND_2
+} ls_mixrf_owner_t;
+static inline const char *ls_mixrf_owner_name(ls_mixrf_owner_t owner)
+{
+    return owner==LS_MIXRF_OWNER_MONITOR?"MIX-RF MONITOR":
+        owner==LS_MIXRF_OWNER_REC?"REC/SUB-GHZ WATCH":
+        (owner==LS_MIXRF_OWNER_FIND || owner==LS_MIXRF_OWNER_FIND_2)?"COMPASS FIND":"none";
+}
 #define LS_MIXRF_CHANNELS 84
 #define LS_MIXRF_CARD_HISTORY 32
 /* Arrivals require an observed absent -> present transition. The first
@@ -20,9 +31,11 @@ static inline bool ls_mixrf_field_arrival(ls_mixrf_field_edge_t *edge, bool pres
 }
 typedef struct {
     bool ready,busy,keyboard,power,cc,nrf,nfc,receiving;
+    bool transmitting; /* Replay owns the CC1101 until the worker completes. */
     uint8_t cc_version,nfc_identity,nrf_address_width;
     uint32_t frequency,samples;
-    bool capturing;
+    bool capturing,capture_requested;
+    ls_mixrf_owner_t cc_owner,scan_owner;
     uint32_t raw_captures, raw_overflows;
     float rssi;
     bool scanning;
@@ -40,6 +53,8 @@ typedef struct {
 } ls_mixrf_status_t;
 bool ls_mixrf_start(void);
 void ls_mixrf_snapshot(ls_mixrf_status_t *out);
+bool ls_mixrf_receive_owned(ls_mixrf_owner_t owner,bool on,uint32_t frequency);
+bool ls_mixrf_scan_owned(ls_mixrf_owner_t owner,bool on);
 bool ls_mixrf_receive(bool on,uint32_t frequency);
 bool ls_mixrf_capture(bool on,uint32_t frequency);
 /* Blocking, bounded one-shot on the mixrf worker; caller retains pulses.

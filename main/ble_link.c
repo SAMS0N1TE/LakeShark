@@ -1,4 +1,5 @@
 #include "tui/ls_ble_heard.h"
+#include "tui/ls_survey.h"
 #include "ble_link.h"
 #include "ls_board.h"   /**/
 
@@ -159,6 +160,7 @@ static volatile int64_t s_rescan_at_us = 0;
 
 static bool     s_disc_started = false;
 
+static bool s_passive;
 static bool     s_stack_up     = false;
 
 /* Frame reassembly lives in ble_link_core so the bench can drive it. */
@@ -692,10 +694,10 @@ static void start_scan(void)
     p.window        = 0;
     p.filter_policy = 0;
     p.limited       = 0;
-    p.passive       = 0;
+    p.passive       = s_passive;
 
     /* Rediscover peers on each scan without flooding the host with repeats. */
-    p.filter_duplicates = 1;
+    p.filter_duplicates = s_passive ? 0 : 1;
 
     s_state = BLE_LINK_SCANNING;
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, gap_event, NULL);
@@ -710,10 +712,21 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
 
     case BLE_GAP_EVENT_DISC: {
+        if (!s_run) return 0;
         struct ble_hs_adv_fields f;
         if (ble_hs_adv_parse_fields(&f, event->disc.data,
-                                    event->disc.length_data) != 0) return 0;
+                                    event->disc.length_data) != 0) {
+            if (s_passive) ls_survey_ble(event->disc.addr.val, event->disc.addr.type,
+                NULL, 0, event->disc.rssi, esp_timer_get_time());
+            return 0;
+        }
 
+        if (s_passive) {
+            ls_survey_ble(event->disc.addr.val, event->disc.addr.type,
+                          (const char *)f.name, f.name_len, event->disc.rssi,
+                          esp_timer_get_time());
+            return 0;
+        }
         char name[32];
         bool matched = adv_name_matches(&f, &event->disc.addr, name, sizeof(name));
 
@@ -1162,7 +1175,7 @@ static bool workers_start(void)
     return true;
 }
 
-esp_err_t ble_link_start(void)
+static esp_err_t link_start(void)
 {
     if (s_run) return ESP_ERR_INVALID_STATE;
 
@@ -1453,3 +1466,22 @@ bool ble_link_is_connected(void)
 {
     return s_conn != BLE_HS_CONN_HANDLE_NONE;
 }
+
+static portMUX_TYPE s_start_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_starting;
+static esp_err_t start_mode(bool passive)
+{
+    portENTER_CRITICAL(&s_start_mux);
+    bool busy = s_run || s_starting;
+    if (!busy) { s_starting = true; s_passive = passive; }
+    portEXIT_CRITICAL(&s_start_mux);
+    if (busy) return ESP_ERR_INVALID_STATE;
+    esp_err_t rc = link_start();
+    portENTER_CRITICAL(&s_start_mux);
+    s_starting = false;
+    portEXIT_CRITICAL(&s_start_mux);
+    return rc;
+}
+
+esp_err_t ble_link_start(void) { return start_mode(false); }
+esp_err_t ble_link_listen(void) { return start_mode(true); }

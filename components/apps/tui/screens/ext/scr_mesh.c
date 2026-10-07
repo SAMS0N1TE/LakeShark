@@ -10,6 +10,7 @@
    would have been truncated. The host bench compiles this file on its own
    and said so. */
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 
 #include "../../ls_tui_ui.h"
@@ -43,6 +44,12 @@ static tui_rect s_page_bar;
 static int    s_sel;               /* peer cursor on NODES                  */
 
 static bool     s_detail;
+static bool     s_inspect_page;
+static int      s_inspect_scroll;
+static ls_inspect_state_t s_inspect_notice;
+EXT_RAM_BSS_ATTR static ls_inspect_tracker_t s_inspect_view;
+static const ls_opt_ctx_t CTX_INSPECT;
+static tui_rect s_inspect_buttons, s_inspect_content;
 static char     s_detail_id[17];
 static tui_rect s_node_rect;       /* where the list was drawn, for taps    */
 #define DETAIL_ACTS 4
@@ -110,6 +117,84 @@ EXT_RAM_BSS_ATTR static ls_mesh_peer_t s_peer_buf[LS_MESH_MAX_PEERS];
 EXT_RAM_BSS_ATTR static float          s_scope_buf[LS_MESH_SCOPE_N];
 
 EXT_RAM_BSS_ATTR static ls_mesh_event_t s_ev_buf[LS_MESH_MAX_EVENTS];
+EXT_RAM_BSS_ATTR static ls_mesh_chan_t  s_chan_buf[LS_MESH_MAX_CHANNELS];
+
+/* ----------------------------------------------------------- conversation */
+
+/* Where a typed line goes when the chat is not held on a node: the channel
+   slot a private message moved the conversation to, or -1 for SEND ON. */
+static int      s_conv_chan = -1;
+static uint32_t s_conv_seq;        /* message sequence last looked at        */
+static uint32_t s_conv_mark;       /* the newest incoming message, hashed    */
+
+static int conv_chan(void)
+{
+    return s_conv_chan >= 0 ? s_conv_chan : ls_mesh_channel_active();
+}
+
+static bool conv_private(void) { return chat_locked() || conv_chan() != 0; }
+
+/* Back to SEND ON: ESC, /pub and a tap on the chip. */
+static void conv_leave(void)
+{
+    chat_unlock();
+    s_conv_chan = -1;
+}
+
+static uint32_t msg_mark(const ls_mesh_msg_t *m)
+{
+    uint32_t h = (2166136261u ^ m->t) * 16777619u;
+    h = (h ^ m->chan ^ (m->direct ? 0x100u : 0u)) * 16777619u;
+    for (const char *c = m->peer; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    for (const char *c = m->text; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    return h;
+}
+
+/* A reply goes where the conversation is. A private message - a DM, or a
+   channel other than the public one - moves the conversation to it, but
+   only out of the public channel and never under an open draft: a private
+   reply must not drift back to the public channel by itself, nor a DM to
+   another node, nor a line change destination while it is being typed. */
+static void conv_follow(void)
+{
+    const uint32_t seq = ls_mesh_msg_seq();
+    if (seq == s_conv_seq) return;
+    if (s_compose_len > 0 || ls_keyboard_active()) return;   /* after the draft */
+    s_conv_seq = seq;
+
+    const int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+    int k = n - 1;
+    while (k >= 0 && s_msg_buf[k].mine) k--;
+    if (k < 0) return;
+    const ls_mesh_msg_t *m = &s_msg_buf[k];
+    const uint32_t mark = msg_mark(m);
+    if (mark == s_conv_mark) return;
+    s_conv_mark = mark;
+
+    if (conv_private()) return;
+    if (m->direct && m->peer[0]) {
+        const char *name = "";
+        const int pn = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
+        for (int i = 0; i < pn; i++)
+            if (!strcasecmp(s_peer_buf[i].id, m->peer)) { name = s_peer_buf[i].name; break; }
+        chat_lock_to(m->peer, name);
+        flash("DM - replies go to its sender");
+    } else if (!m->direct && m->chan != 0) {
+        s_conv_chan = m->chan;
+        flash("replies go on that channel");
+    }
+}
+
+/* The feed box is titled by where a typed line goes. */
+static void conv_title(char *out, size_t n)
+{
+    if (chat_locked()) { snprintf(out, n, "DM %s", lock_label()); return; }
+    const int c = conv_chan();
+    if (c == 0) { snprintf(out, n, "PUBLIC CHANNEL"); return; }
+    const int cn = ls_mesh_channels(s_chan_buf, LS_MESH_MAX_CHANNELS);
+    if (c < cn && s_chan_buf[c].name[0]) snprintf(out, n, "%s CHANNEL", s_chan_buf[c].name);
+    else                                 snprintf(out, n, "CHANNEL %d", c);
+}
 
 /* --------------------------------------------------------------- fragments */
 
@@ -273,6 +358,12 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
     }
     tui_put_str(sf, r, r.x + 1, y, age, A(DIM_FG, TUI_BLACK));
     tui_put_char(sf, r, r.x + 5, y, mark, gut);
+    /* Where it was said: '@' a DM, '#' a private channel, nothing for the
+       public one, so a private message never looks public. */
+    if (m->direct)
+        tui_put_char(sf, r, r.x + 6, y, '@', A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    else if (m->chan)
+        tui_put_char(sf, r, r.x + 6, y, '#', A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
     /* The name is up to the first colon; the rest is what was said. Colouring
        them differently is the whole reason a chat is readable at a glance. */
@@ -300,7 +391,11 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
 
 static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
 {
-    if (with_box) ls_panel_box(sf, r, "PUBLIC CHANNEL", TUI_CYAN);
+    if (with_box) {
+        char title[40];
+        conv_title(title, sizeof(title));
+        ls_panel_box(sf, r, title, TUI_CYAN);
+    }
     const int top  = r.y + (with_box ? 1 : 0);
     const int rows = r.h - (with_box ? 2 : 0);
     if (rows < 1) return;
@@ -309,10 +404,14 @@ static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
     if (!n) {
         tui_put_str(sf, r, r.x + 2, top + 1, "no messages yet",
                     A(DIM_FG, TUI_BLACK));
-        tui_put_str(sf, r, r.x + 2, top + 3, "anything sent here is readable by",
+        tui_put_str(sf, r, r.x + 2, top + 3,
+                    chat_locked()     ? "only this node can read what is sent here."
+                    : conv_private()  ? "only holders of this channel's key can read it."
+                                      : "anything sent here is readable by",
                     A(DIM_FG, TUI_BLACK));
-        tui_put_str(sf, r, r.x + 2, top + 4, "every MeshCore node in range.",
-                    A(DIM_FG, TUI_BLACK));
+        if (!conv_private())
+            tui_put_str(sf, r, r.x + 2, top + 4, "every MeshCore node in range.",
+                        A(DIM_FG, TUI_BLACK));
         return;
     }
     /* Newest at the bottom, like every chat anyone has used. */
@@ -535,7 +634,7 @@ static int detail_index(int n)
     return -1;
 }
 
-static const char *const ACT_NAME[DETAIL_ACTS] = { "MESSAGE", "SAVE", "MAP", "PING" };
+static const char *const ACT_NAME[DETAIL_ACTS] = { "MESSAGE", "SAVE", "MAP", "INSPECT" };
 
 /* Which action was just pressed, and for how much longer to show it. */
 
@@ -548,10 +647,165 @@ static void act_press_mark(int which)
     s_act_pressed = which;
     s_act_press_ttl = ACT_PRESS_FRAMES;
 }
-static const char       ACT_KEY[DETAIL_ACTS]   = { 'd', 's', 'm', 'p' };
+static const char       ACT_KEY[DETAIL_ACTS]   = { 'd', 's', 'm', 'i' };
+
+static const char *inspect_state(ls_inspect_state_t state)
+{
+    static const char *const words[] = { "READY", "WAITING", "REPLY", "TIMED OUT", "REFUSED", "NOT PERMITTED", "LOGIN FIRST" };
+    return state <= LS_INSPECT_NEEDS_LOGIN ? words[state] : "READY";
+}
+static const char *inspect_kind(ls_inspect_kind_t kind, bool path)
+{
+    return kind == LS_INSPECT_TRACE ? (path ? "PATH" : "TRACE") : kind == LS_INSPECT_STATUS ? "STATUS" :
+        kind == LS_INSPECT_LOGIN ? "LOGIN" : "TELEM";
+}
+/* Typed in INSPECT OPTIONS; held in RAM only, blank is the guest login. */
+static char s_inspect_pw[LS_INSPECT_PASSWORD_MAX + 1];
+/* Buttons: TRACE TELEM STATUS LOGIN OPTIONS BACK. */
+#define INSPECT_BTNS 6
+static void inspect_action(int action)
+{
+    if (action == 4) { ls_opt_open(&CTX_INSPECT); return; }
+    if (action == 5) { s_inspect_page = false; return; }
+    if (action == 3) s_inspect_notice = ls_mesh_inspect_login(s_detail_id, s_inspect_pw);
+    else s_inspect_notice = ls_mesh_inspect_request(s_detail_id,
+        (ls_inspect_kind_t)action, NULL, 0, 1);
+    s_inspect_scroll = 0;
+}
+static const char *inspect_field_name(uint8_t type)
+{
+    switch (type) {
+    case 0: return "INPUT"; case 1: return "OUTPUT"; case 2: case 3: return "ANALOG";
+    case 100: return "SENSOR"; case 101: return "LIGHT lux"; case 102: return "PRESENCE";
+    case 103: return "TEMP C"; case 104: return "HUM %"; case 113: return "ACCEL G";
+    case 115: return "PRESS hPa"; case 116: return "VOLT V"; case 117: return "CURRENT A";
+    case 118: return "FREQ Hz"; case 120: return "LEVEL %"; case 121: return "ALT m";
+    case 125: return "CONC ppm"; case 128: return "POWER W"; case 130: return "DIST m";
+    case 131: return "ENERGY kWh"; case 132: return "DIR deg"; case 133: return "UNIXTIME";
+    case 134: return "GYRO deg/s"; case 135: return "RGB"; case 136: return "GPS";
+    case 142: return "SWITCH"; default: return "SENSOR";
+    }
+}
+static void draw_inspect(tui_surface *sf, tui_rect r)
+{
+    ls_mesh_inspect_get(&s_inspect_view);
+    const ls_inspect_result_t *p = &s_inspect_view.result;
+    const ls_inspect_result_t *path = p->kind == LS_INSPECT_TRACE && !strcmp(p->peer, s_detail_id) ?
+        p : &s_inspect_view.latest[LS_INSPECT_TRACE];
+    const ls_inspect_result_t *telem = &s_inspect_view.latest[LS_INSPECT_TELEMETRY];
+    const ls_inspect_result_t *status = &s_inspect_view.latest[LS_INSPECT_STATUS];
+    bool mine = !strcmp(p->peer, s_detail_id);
+    const ls_inspect_state_t state = s_inspect_notice == LS_INSPECT_REFUSED ||
+        s_inspect_notice == LS_INSPECT_NOT_PERMITTED || s_inspect_notice == LS_INSPECT_NEEDS_LOGIN ?
+        s_inspect_notice : mine ? p->state : LS_INSPECT_IDLE;
+    const int pn = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS), pidx = detail_index(pn);
+    const ls_mesh_peer_t *peer = pidx >= 0 ? &s_peer_buf[pidx] : NULL;
+    const bool login_role = peer && (peer->type == LS_MESH_ROLE_REPEATER || peer->type == LS_MESH_ROLE_ROOM);
+    const ls_inspect_session_t *session = ls_inspect_session(&s_inspect_view, s_detail_id);
+    const uint8_t hue = state == LS_INSPECT_WAITING ? TUI_CYAN : state == LS_INSPECT_OK ? TUI_GREEN : TUI_YELLOW;
+    ls_panel_box(sf, r, "INSPECT", hue);
+    tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    char line[80];
+    /* The name the node advertised; the key prefix only when it has none. */
+    snprintf(line, sizeof(line), "%.20s  %s", peer && peer->name[0] ? peer->name : s_detail_id, inspect_state(state));
+    ls_safe_line(sf, r, in.y, line, A(hue | TUI_BRIGHT, TUI_BLACK));
+    snprintf(line, sizeof(line), "%.16s%s%s%s%s", peer && peer->name[0] ? s_detail_id : "",
+        peer && peer->name[0] ? "  " : "", peer ? role_word(peer->type) : "",
+        session ? "  " : "", session ? (session->admin ? "admin" : "guest") : "");
+    ls_safe_line(sf, r, in.y + 1, line, LS_ATTR_DIM);
+    const ls_btn_t buttons[] = { {.label="TRACE", .value="route", .key='p'}, {.label="TELEM", .value="sensors", .key='t'},
+        {.label="STATUS", .value="uptime", .key='s'}, {.label="LOGIN", .value=session ? (session->admin ? "admin" : "guest") : "guest",
+        .key='l'}, {.label="OPTIONS", .value="probes", .key='o'}, {.label="BACK", .value="node", .key='b'} };
+    int bh = ls_tui_is_wide() ? 3 : 6;
+    s_inspect_buttons = tui_rect_make(in.x, in.y + in.h - bh, in.w, bh);
+    ls_btn_bar_raised(sf, s_inspect_buttons, buttons, INSPECT_BTNS, -1);
+    int bottom = s_inspect_buttons.y;
+    s_inspect_content = tui_rect_make(in.x, in.y + 2, in.w, bottom - in.y - 2);
+    int y = s_inspect_content.y - s_inspect_scroll;
+    if (mine && p->state != LS_INSPECT_IDLE) {
+        snprintf(line, sizeof(line), "%s %s tag %08lX %lums", inspect_kind(p->kind, false), inspect_state(p->state),
+            (unsigned long)p->tag, (unsigned long)p->rtt_ms);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
+        if (p->state == LS_INSPECT_OK) {
+            snprintf(line, sizeof(line), "RX %.0fdBm  SNR %+.1fdB", p->reply_rssi, p->reply_snr);
+            ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
+        }
+    } else ls_safe_line(sf, s_inspect_content, y++, login_role ?
+        (session ? "Logged in: TELEM and STATUS ready" : "LOGIN first (blank = guest), then TELEM") :
+        "TRACE: repeaters. TELEM: node must allow you", A(DIM_FG, TUI_BLACK));
+    if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_OK && session) {
+        snprintf(line, sizeof(line), "ROLE %s  PERMS %02X  FW %u", session->admin ? "admin" : "guest",
+            session->perms, session->fw_level);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
+    }
+    if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_TIMEOUT)
+        ls_safe_line(sf, s_inspect_content, y++, "No answer: out of range or password refused", A(FAINT_FG, TUI_BLACK));
+    if (!strcmp(path->peer, s_detail_id) && path->hop_count) {
+            snprintf(line, sizeof(line), "OUT + RETURN  %u hops  tag %08lX", path->hop_count, (unsigned long)path->tag);
+            ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
+            int pulse = (s_blink / 3) % path->hop_count;
+            for (int i = 0; i < path->hop_count; i++) {
+                bool active = path->state == LS_INSPECT_WAITING && i == pulse;
+                char hash[17];
+                for (int j = 0; j < path->hash_size; j++)
+                    snprintf(hash + j * 2, sizeof(hash) - j * 2, "%02X", path->hashes[i * path->hash_size + j]);
+                snprintf(line, sizeof(line), "%c %02d [%s]", active ? '>' : '|', i + 1, hash);
+                if (path->state == LS_INSPECT_OK) {
+                    size_t used = strlen(line);
+                    snprintf(line + used, sizeof(line) - used, " %+.1fdB", path->snr_q4[i] / 4.0f);
+                } else strncat(line, " --", sizeof(line) - strlen(line) - 1);
+                if (active && y >= s_inspect_content.y && y < bottom) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, 1), LS_DITHER_LIGHT, hue);
+                ls_safe_line(sf, s_inspect_content, y, line, A(active ? TUI_CYAN | TUI_BRIGHT : DIM_FG, TUI_BLACK));
+                if (path->state == LS_INSPECT_OK && in.w >= 27 && y >= s_inspect_content.y && y < bottom)
+                    ls_bar(sf, s_inspect_content, y - s_inspect_content.y, in.x + in.w - 9, 7, (path->snr_q4[i] / 4.0f + 20) / 40);
+                y++;
+            }
+            ls_safe_line(sf, s_inspect_content, y++, "RSSI: final RX only", LS_ATTR_DIM);
+        }
+    if (!strcmp(telem->peer, s_detail_id)) {
+        snprintf(line, sizeof(line), "LAST SENSORS tag %08lX", (unsigned long)telem->tag);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
+        if (!telem->field_count)
+            ls_safe_line(sf, s_inspect_content, y++, "No telemetry fields returned", A(FAINT_FG, TUI_BLACK));
+        for (int i = 0; i < telem->field_count; i++) {
+            const ls_inspect_field_t *f = &telem->fields[i];
+            if (f->type == 100 || f->type == 118 || f->type == 133)
+                snprintf(line, sizeof(line), "CH%u %s %lu", f->channel, inspect_field_name(f->type), (unsigned long)f->raw);
+            else snprintf(line, sizeof(line), "CH%u %s %.3f", f->channel, inspect_field_name(f->type), f->value);
+            ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
+            if ((f->type == 113 || f->type == 134 || f->type == 135 || f->type == 136)) {
+                snprintf(line, sizeof(line), "    Y %.4f  Z %.2f", f->value2, f->value3);
+                ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
+            }
+        }
+        if (telem->telemetry_truncated)
+            ls_safe_line(sf, s_inspect_content, y++, "Additional fields omitted or unparsed", A(FAINT_FG, TUI_BLACK));
+    }
+    if (!strcmp(status->peer, s_detail_id) && status->has_status) {
+        snprintf(line, sizeof(line), "STATUS tag %08lX  %.3fV", (unsigned long)status->tag, status->fields[0].value);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
+        snprintf(line, sizeof(line), "UP %lus  AIR %lus", (unsigned long)status->uptime_s, (unsigned long)status->airtime_s);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
+        snprintf(line, sizeof(line), "RX %lu  TX %lu packets", (unsigned long)status->rx_packets, (unsigned long)status->tx_packets);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
+    }
+    ls_safe_line(sf, s_inspect_content, y++, "HISTORY", A(TUI_CYAN, TUI_BLACK));
+    for (int i = 0; i < s_inspect_view.history_count; i++) {
+        const ls_inspect_history_t *h = &s_inspect_view.history[i];
+        if (strcmp(h->peer, s_detail_id)) continue;
+        snprintf(line, sizeof(line), "%s %s %lums", inspect_kind(h->kind, true),
+            inspect_state(h->state), (unsigned long)h->rtt_ms);
+        ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
+    }
+    int max_scroll = y + s_inspect_scroll - bottom;
+    if (max_scroll > 0) ls_safe_line(sf, s_inspect_content, y++, "UP/DOWN or tap top/bottom to scroll", LS_ATTR_DIM);
+    if (max_scroll < 0) max_scroll = 0;
+    if (s_inspect_scroll > max_scroll) s_inspect_scroll = max_scroll;
+}
 
 static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
 {
+    if (s_inspect_page) { draw_inspect(sf, r); return; }
     /* The press highlight ages here because this is the one function
        that runs every frame the buttons are on screen. It also has to keep
        asking for a repaint while it is lit: the cell renderer only pushes
@@ -1006,11 +1260,76 @@ static const char *o_advert_why(const ls_opt_t *o)
     (void)o;
     return ls_mesh_tx_enabled() ? NULL : "Arm TRANSMIT first";
 }
+static double o_probe_num(const ls_opt_t *o)
+{
+    ls_mesh_inspect_get(&s_inspect_view);
+    return o->arg == 0 ? s_inspect_view.options.timeout_s : o->arg == 1 ?
+        s_inspect_view.options.interval_s : s_inspect_view.options.repeat_minutes;
+}
+static void o_probe_set(const ls_opt_t *o, double value)
+{
+    ls_mesh_inspect_get(&s_inspect_view);
+    ls_inspect_options_t config = s_inspect_view.options;
+    if (o->arg == 0) config.timeout_s = (uint16_t)value;
+    else if (o->arg == 1) config.interval_s = (uint16_t)value;
+    else config.repeat_minutes = (uint16_t)value;
+    ls_mesh_inspect_set_options(config);
+}
+static void o_probe_show(const ls_opt_t *o, char *out, size_t n)
+{
+    int v = (int)o_probe_num(o);
+    if (o->arg == 2) { if (v) snprintf(out, n, "EVERY %d MIN", v); else snprintf(out, n, "OFF"); }
+    else snprintf(out, n, "%d SEC", v);
+}
+#define PROBE_ROW(label_, arg_, low_, high_, step_) { .label = label_, .kind = LS_OPT_LEVEL, \
+    .arg = arg_, .num = o_probe_num, .set_num = o_probe_set, .lo = low_, .hi = high_, \
+    .step = step_, .show = o_probe_show }
+static const char *o_pw_text(const ls_opt_t *o) { (void)o; return s_inspect_pw; }
+static void o_pw_set(const ls_opt_t *o, const char *text)
+{
+    (void)o;
+    snprintf(s_inspect_pw, sizeof(s_inspect_pw), "%s", text ? text : "");
+}
+static void o_pw_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (!s_inspect_pw[0]) { snprintf(out, n, "BLANK (GUEST)"); return; }
+    size_t k = strlen(s_inspect_pw);
+    snprintf(out, n, "%.*s", (int)(k < n - 1 ? k : n - 1), "***************");
+}
+static int o_answer_get(const ls_opt_t *o) { (void)o; return ls_mesh_telem_allowed(s_detail_id); }
+static void o_answer_set(const ls_opt_t *o, int v)
+{
+    (void)o;
+    if (ls_mesh_telem_allow(s_detail_id, v != 0) != ESP_OK) {
+        ls_notice_t note = {.title = "TELEMETRY", .body = "Allow list is full (8 nodes)", .hue = TUI_YELLOW};
+        ls_notify_post_quiet(&note);
+    }
+}
+static const char *o_answer_why(const ls_opt_t *o)
+{
+    (void)o;
+    return s_detail && s_detail_id[0] ? NULL : "Open a node first";
+}
+static const char *const ANSWER_NAMES[] = { "NO", "YES" };
+static const ls_opt_t OPT_INSPECT[] = {
+    PROBE_ROW("TIMEOUT", 0, 5, 120, 5),
+    PROBE_ROW("MIN INTERVAL", 1, 30, 3600, 30),
+    PROBE_ROW("AUTO REPEAT", 2, 0, 60, 1),
+    { .label = "LOGIN PASSWORD", .kind = LS_OPT_TEXT, .text = o_pw_text, .set_text = o_pw_set,
+      .max = LS_INSPECT_PASSWORD_MAX, .show = o_pw_show },
+    { .label = "ANSWER THIS NODE", .kind = LS_OPT_TOGGLE, .names = ANSWER_NAMES, .get = o_answer_get,
+      .set = o_answer_set, .why_not = o_answer_why },
+};
+static const ls_opt_ctx_t CTX_INSPECT = { .name = "INSPECT", .job = -1,
+    .radio = LS_RSEL_LORA, LS_OPT_ROWS(OPT_INSPECT) };
+
 static const ls_opt_t OPT_MESH[] = {
     { .label = "MESH", .kind = LS_OPT_ACTION, .act = o_run, .show = o_run_show },
     { .label = "TRANSMIT", .kind = LS_OPT_ACTION, .act = o_tx, .show = o_tx_show, .why_not = o_tx_why },
     { .label = "SEND ADVERT", .kind = LS_OPT_ACTION, .act = o_advert, .show = o_advert_show,
       .why_not = o_advert_why },
+    { .label = "INSPECT", .kind = LS_OPT_MENU, .sub = &CTX_INSPECT },
     { .label = "NODE", .kind = LS_OPT_MENU, .sub = &CTX_NODE },
     { .label = "RADIO", .kind = LS_OPT_MENU, .sub = &CTX_RADIO },
     { .label = "CHANNELS", .kind = LS_OPT_MENU, .sub = &CTX_CHAN },
@@ -1055,8 +1374,9 @@ static void portrait_tabs(tui_surface *sf, tui_rect bar)
     }
 }
 
-/* Landscape: where OPTIONS was drawn on the tab row. */
+/* Landscape: where OPTIONS and the page tabs were drawn on the tab row. */
 static tui_rect s_opt_tab;
+static tui_rect s_page_tab[PAGE__COUNT];
 
 /* -------------------------------------------------------------- landscape */
 
@@ -1068,6 +1388,7 @@ static void page_tabs(tui_surface *sf, tui_rect r)
         const bool on = ((mesh_page_t)i == s_page);
         const int w = (int)strlen(PAGE_NAMES[i]) + 2;
         tui_rect tab = tui_rect_make(x, r.y, w, 1);
+        s_page_tab[i] = tab;
         tui_fill(sf, tab, ' ', on ? A(TUI_BLACK, TUI_CYAN) : A(TUI_WHITE, TUI_BLACK));
         tui_put_str(sf, r, x + 1, r.y, PAGE_NAMES[i],
                     on ? A(TUI_BLACK, TUI_CYAN) : A(TUI_CYAN, TUI_BLACK));
@@ -1123,7 +1444,9 @@ static void draw_landscape(tui_surface *sf, tui_rect area,
     }
     case PAGE_NODES:
 
-        if (s_detail) {
+        if (s_detail && s_inspect_page) {
+            draw_inspect(sf, body);
+        } else if (s_detail) {
             const int lw = body.w * 45 / 100;
             draw_nodes(sf, tui_rect_make(body.x, body.y, lw, body.h), now, false);
             draw_detail(sf, tui_rect_make(body.x + lw, body.y,
@@ -1335,7 +1658,7 @@ static void enter(void)
 {
     s_page = PAGE_CHAT;
     s_sel = 0; s_field = 0; s_edit_field = -1;
-    s_detail = false; s_detail_id[0] = 0;
+    s_detail = false; s_inspect_page = false; s_detail_id[0] = 0;
     s_compose_len = 0; s_compose[0] = 0;
     s_seen_msg = ls_mesh_msg_seq();
     s_seen_ev  = ls_mesh_event_seq();
@@ -1353,6 +1676,7 @@ static void draw(tui_surface *sf, tui_rect area)
 
     const uint32_t ms = ls_mesh_msg_seq();
     if (ms != s_seen_msg) { s_seen_msg = ms; s_pulse = 8; }
+    conv_follow();
 
     s_blink++;
     if (s_flash_ttl > 0) s_flash_ttl--;
@@ -1404,7 +1728,7 @@ static bool act_send(void)
         }
         err = ls_mesh_send_dm_id(s_lock_id, s_compose);
     } else {
-        err = ls_mesh_send_text(s_compose);
+        err = ls_mesh_send_text_on(conv_chan(), s_compose);
     }
     if (err == ESP_ERR_NOT_ALLOWED) { flash("disarmed - type /arm"); return true; }
     if (err == ESP_ERR_NOT_FOUND)   { flash("that node is not in the list"); return true; }
@@ -1461,12 +1785,17 @@ static void detail_act(int which)
     case 0:
 
         chat_lock_to(p->id, p->name);
-        s_detail = false;
+        s_detail = false; s_inspect_page = false;
         s_page = PAGE_CHAT;
         flash("chat locked - ESC or tap the name to leave");
         return;
     case 1: {
-        const esp_err_t e = ls_mesh_add_contact(p->id, p->name);
+        /* The backend takes the whole public key: the 16-character id
+           only names a node, it cannot address one. */
+        char key[sizeof(p->pub_key) * 2 + 1];
+        for (size_t i = 0; i < sizeof(p->pub_key); i++)
+            snprintf(&key[i * 2], 3, "%02X", p->pub_key[i]);
+        const esp_err_t e = ls_mesh_add_contact(key, p->name);
         flash(e == ESP_OK ? "saved as a contact" : "could not save it");
         return;
     }
@@ -1490,15 +1819,9 @@ static void detail_act(int which)
         else flash("this build has no map screen");
         return;
     }
-    case 3: {
-        const esp_err_t e = ls_mesh_advertise();
-        /* An advert is an announcement, not a question. */
-
-        flash(e == ESP_OK ? "advert sent - this puts us in their list, "
-                            "there is no reply to wait for"
-                          : "cannot advertise while disarmed");
+    case 3:
+        s_inspect_page = true; s_inspect_scroll = 0; s_inspect_notice = LS_INSPECT_IDLE;
         return;
-    }
     default: return;
     }
 }
@@ -1622,7 +1945,7 @@ static bool slash(const char *text)
     }
 
     if (!strncasecmp(cmd, "pub", 3)) {
-        chat_unlock();
+        conv_leave();
         flash("back on the channel");
         return true;
     }
@@ -1697,16 +2020,27 @@ static bool key(ls_tk_t k, char ch)
         return true;
     }
 
+    if (s_detail && s_inspect_page) {
+        if (k == LS_TK_ESC) { s_inspect_page = false; return true; }
+        if (k == LS_TK_UP) { if (s_inspect_scroll > 0) s_inspect_scroll--; return true; }
+        if (k == LS_TK_DOWN) { if (s_inspect_scroll < LS_INSPECT_HOPS + 2 * LS_INSPECT_FIELDS) s_inspect_scroll++; return true; }
+        if (k == LS_TK_CHAR) {
+            const char *keys = "ptslob";
+            const char *hit = strchr(keys, (char)tolower((unsigned char)ch));
+            if (hit) { inspect_action((int)(hit - keys)); return true; }
+        }
+        if (k == LS_TK_LEFT || k == LS_TK_RIGHT) return true;
+    }
     if (k == LS_TK_LEFT) {
         s_page = (mesh_page_t)((s_page + PAGE__COUNT - 1) % PAGE__COUNT);
         s_edit_field = -1;
-        s_detail = false;
+        s_detail = false; s_inspect_page = false;
         return true;
     }
     if (k == LS_TK_RIGHT) {
         s_page = (mesh_page_t)((s_page + 1) % PAGE__COUNT);
         s_edit_field = -1;
-        s_detail = false;
+        s_detail = false; s_inspect_page = false;
         return true;
     }
 
@@ -1722,7 +2056,7 @@ static bool key(ls_tk_t k, char ch)
            screen beside it - so you can walk the nodes without closing and
            reopening the page. */
         if (s_detail) {
-            if (k == LS_TK_ESC) { s_detail = false; return true; }
+            if (k == LS_TK_ESC) { s_detail = false; s_inspect_page = false; return true; }
             if (k == LS_TK_CHAR) {
                 for (int i = 0; i < DETAIL_ACTS; i++)
                     if (ch == ACT_KEY[i] || ch == (char)(ACT_KEY[i] - 32)) {
@@ -1779,7 +2113,9 @@ static bool key(ls_tk_t k, char ch)
         /* Then the lock, so ESC walks out of the conversation the
            same way it walks out of everything else here: the draft first,
            then the destination, then the screen. */
-        if (chat_locked()) { chat_unlock(); flash("back on the channel"); return true; }
+        if (chat_locked() || s_conv_chan >= 0) {
+            conv_leave(); flash("back on the channel"); return true;
+        }
         return false;                     /* empty: let the router take it */
     case LS_TK_CHAR:
         if (ch >= 0x20 && ch < 0x7F && s_compose_len < COMPOSE_MAX - 1) {
@@ -1794,6 +2130,19 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (s_detail && s_inspect_page) {
+        int action = ls_btn_hit(col, row);
+        if (action >= 0 && action < INSPECT_BTNS && tui_rect_contains(s_inspect_buttons, col, row)) {
+            inspect_action(action); return true;
+        }
+        if (tui_rect_contains(s_inspect_buttons, col, row)) return true;
+        if (tui_rect_contains(s_inspect_content, col, row)) {
+            if (row < s_inspect_content.y + s_inspect_content.h / 2) {
+                if (s_inspect_scroll > 0) s_inspect_scroll--;
+            } else if (s_inspect_scroll < LS_INSPECT_HOPS + 2 * LS_INSPECT_FIELDS) s_inspect_scroll++;
+            return true;
+        }
+    }
     if (!ls_tui_is_wide()) {
         /* The page bar first: it is drawn over everything else and is the
            only way to reach NODES and OPTIONS without a keyboard. */
@@ -1804,7 +2153,7 @@ static bool touch(int col, int row)
                     if (i == PAGE__COUNT) { ls_opt_open(&CTX_MESH); return true; }
                     s_page = (mesh_page_t)i;
                     s_edit_field = -1;
-                    s_detail = false;
+                    s_detail = false; s_inspect_page = false;
                     return true;
                 }
             }
@@ -1847,7 +2196,7 @@ static bool touch(int col, int row)
         if (chat_locked() && s_lock_chip.h > 0 &&
             row >= s_lock_chip.y && row < s_lock_chip.y + s_lock_chip.h &&
             col >= s_lock_chip.x && col < s_lock_chip.x + s_lock_chip.w) {
-            chat_unlock();
+            conv_leave();
             flash("back on the channel");
             return true;
         }
@@ -1870,7 +2219,10 @@ static bool touch(int col, int row)
             act_set_tx(!ls_mesh_tx_enabled());
             return true;
         }
-        return false;
+        /* Every other tap is claimed. The router would turn it into
+           UP/ENTER/DOWN, and ENTER here sends the draft: a tap on the feed
+           must never transmit, nor walk the node page to another node. */
+        return true;
     }
 
     /* Landscape: the tab strip is the bottom row, and it is the one thing
@@ -1880,14 +2232,19 @@ static bool touch(int col, int row)
         ls_opt_open(&CTX_MESH);
         return true;
     }
-    int x = 1;
+    /* A tab answers on its own row only: the same columns hold node ids
+       and the destination chip further up. */
     for (int i = 0; i < PAGE__COUNT; i++) {
-        const int w = (int)strlen(PAGE_NAMES[i]) + 2;
-        if (col >= x && col < x + w) {
-            s_page = (mesh_page_t)i; s_edit_field = -1; s_detail = false;
+        if (s_page_tab[i].w > 0 && tui_rect_contains(s_page_tab[i], col, row)) {
+            s_page = (mesh_page_t)i; s_edit_field = -1; s_detail = false; s_inspect_page = false;
             return true;
         }
-        x += w + 1;
+    }
+    if (s_page == PAGE_CHAT && chat_locked() && s_lock_chip.h > 0 &&
+        tui_rect_contains(s_lock_chip, col, row)) {
+        conv_leave();
+        flash("back on the channel");
+        return true;
     }
 
     for (int i = 0; i < DETAIL_ACTS; i++) {
@@ -1922,7 +2279,7 @@ static bool touch(int col, int row)
         }
         return true;
     }
-    return false;
+    return true;        /* claimed, as in portrait: a stray tap never sends */
 }
 
 /* What MESH tells the rest of the unit while nobody is looking at it. */

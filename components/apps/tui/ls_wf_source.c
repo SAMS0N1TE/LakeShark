@@ -28,6 +28,7 @@ static ls_wf_src_t s_active;
 /* The measurement each source last pushed, so the same one is never pushed twice. */
 
 static uint32_t s_p25_seq;
+static uint32_t s_p25_center, s_p25_span;
 static bool     s_p25_seq_have;
 static uint32_t s_fm_sweeps;
 static bool     s_fm_seq_have;
@@ -53,7 +54,14 @@ void ls_wf_source_select(ls_wf_src_t src)
     s_fm_seq_have = false;
 }
 
-ls_wf_src_t ls_wf_source_get(void) { return s_want; }
+static bool p25_running(void);
+static bool fm_running(void);
+ls_wf_src_t ls_wf_source_get(void)
+{
+    if (s_want != LS_WF_SRC_AUTO) return s_want;
+    return p25_running() ? LS_WF_SRC_P25
+         : fm_running() ? LS_WF_SRC_FM : LS_WF_SRC_AUTO;
+}
 
 const char *ls_wf_source_name(void)
 {
@@ -64,8 +72,6 @@ const char *ls_wf_source_name(void)
     default:             return "none";
     }
 }
-
-static bool p25_running(void);
 
 const char *ls_wf_source_label(ls_wf_src_t src)
 {
@@ -136,7 +142,7 @@ typedef struct {
    them: the rest of the LF input, then the HF input. */
 static const wf_band_t LORA_BANDS[] = {
     { "mesh watch",  909500000u, 911500000u },
-    { "US915 ISM",   902000000u, 928000000u },
+    { "US915 ISM",   LS_MESH_US915_MIN_HZ, LS_MESH_US915_MAX_HZ },
     { "EU868",       863000000u, 870000000u },
     { "433 ISM",     433050000u, 434790000u },
     { "315 remotes", 314000000u, 316000000u },
@@ -417,6 +423,12 @@ static bool pump_p25(void)
     s_p25_seq      = snap.sequence;
     s_p25_seq_have = true;
 
+    /* A retune changes every bin's frequency, so restart the picture. */
+    if (snap.center_hz != s_p25_center || snap.span_hz != s_p25_span) {
+        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+        s_p25_center = snap.center_hz;
+        s_p25_span = snap.span_hz;
+    }
     ls_wf_feed_t f = {
         .center_hz = snap.center_hz,
         .span_hz   = snap.span_hz,
@@ -553,7 +565,7 @@ const char *ls_wf_source_progress(void)
 
 /* One pass of the sweep per call, which is one row per frame. */
 
-static bool s_lora_held;
+static bool s_lora_held, s_lora_owned;
 /* Still one pass per call. What changed is that a row is one pass
    only while the filter covers each bin's slice; on a band too wide for
    that (full range: 26 passes) the driver builds the row a look at a time
@@ -567,14 +579,13 @@ static bool pump_lora(void)
     if (!ls_lora_present()) return false;
 
     if (ls_field_owned()) return false;
-    if (!ls_lora_scanning()) {
-
-        /* Recorded the moment it is asked for. */
-
+    if (!s_lora_held) {
+        if (ls_lora_scanning()) return false;
         ls_mesh_radio_hold(true);
         s_lora_held = true;
-        if (!ls_mesh_radio_held()) return false;
     }
+    if (!ls_mesh_radio_held()) return false;
+    s_lora_owned = true;
 
     if (ls_lora_scan_begin(s_lora_min_hz, s_lora_max_hz) != ESP_OK)
         return false;
@@ -647,11 +658,12 @@ static bool pump_lora(void)
 
 static void lora_stop(void)
 {
-    if (s_lora_held && ls_lora_scanning()) ls_lora_scan_end();
+    if (s_lora_owned && ls_lora_scanning()) ls_lora_scan_end();
     if (s_lora_held) {
-        if (!ls_lora_fsk_active() || ls_mesh_radio_bg()) ls_mesh_radio_hold(false);
+        ls_mesh_radio_hold(false);
         s_lora_held = false;
     }
+    s_lora_owned = false;
     s_lora_row_t0 = 0;
 }
 
@@ -678,7 +690,7 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
         ls_lora_cfg_t cfg=state.config;cfg.freq_hz=hz;
         lora_stop();
         if(!ls_field_configure(&cfg)||!ls_field_mode(LS_LAB_PACKETS))return false;
-        return ls_field_direct(true);
+        return ls_field_direct_falls(true);
     }
     return false;
 }
@@ -686,21 +698,18 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 void ls_wf_source_pump(void)
 {
     ls_wf_set_tuner(tune_marker);
-    ls_wf_src_t use = s_want;
+    ls_wf_src_t use = ls_wf_source_get();
     /* AUTO deliberately never picks LORA. The other two are views of
        a receiver that is already running; a sweep STOPS the mesh to take the
        radio, and a screen that did that on its own would knock a node off
        the air because somebody opened the waterfall. It is chosen by hand or
        not at all. */
-    if (use == LS_WF_SRC_AUTO)
-        use = p25_running() ? LS_WF_SRC_P25
-            : (fm_running() ? LS_WF_SRC_FM : LS_WF_SRC_AUTO);
 
     if (use != LS_WF_SRC_P25)  p25_feed(false);
     if (use != LS_WF_SRC_FM) fm_spectrum_enable(false);
     /* And gives the radio back, which matters more than turning a
        feed off: a mesh left parked is a node that has stopped answering. */
-    if (use != LS_WF_SRC_LORA) lora_stop();
+    if (use != LS_WF_SRC_LORA) { lora_stop(); ls_field_direct_falls(false); }
 
     bool ok = false;
     switch (use) {
@@ -714,6 +723,7 @@ void ls_wf_source_pump(void)
 
 void ls_wf_source_release(void)
 {
+    ls_field_direct_falls(false);
     fm_spectrum_enable(false);
     s_fm_live_seq = 0;
     p25_feed(false);

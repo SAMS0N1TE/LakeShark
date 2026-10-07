@@ -592,22 +592,60 @@ LS_CASE(the_panels_above_the_table_keep_their_own_rows)
 
     draw_decode_now(PORTRAIT);
 
-    LS_CHECK(rect_has(PORTRAIT, "DECODE"));
-    LS_CHECK(rect_has(PORTRAIT, "SIGNAL"));
+    /* One window, not two tabs: DECODE and SIGNAL are a single frame, and
+       no page button carries either name any more. */
+    LS_CHECK(rect_has(PORTRAIT, "DECODE / SIGNAL"));
+    LS_CHECK(rect_has(PORTRAIT, "SPECTRUM"));
     LS_CHECK(rect_has(PORTRAIT, "ACTIVITY"));
 
-    /* SYNC is DECODE's last field and RX is SIGNAL's: if either panel lost
-       rows to the table, its bottom field is the one that goes. */
+    /* SYNC is the decode half's last field and AUDIO the signal half's: if
+       the window lost rows to the table, its bottom field is the one that
+       goes. */
     LS_CHECK_MSG(rect_has(PORTRAIT, "SYNC"),
-                 "DECODE lost its last field to the activity table");
-    LS_CHECK_MSG(rect_has(PORTRAIT, "RX"),
-                 "SIGNAL lost its last field to the activity table");
+                 "the decode half lost its last field to the activity table");
+    LS_CHECK_MSG(rect_has(PORTRAIT, "AUDIO"),
+                 "the signal half lost its last field to the activity table");
 
     const int activity = rect_row_of(PORTRAIT, "ACTIVITY");
-    const int rx       = rect_row_of(PORTRAIT, "RX");
+    const int rx       = rect_row_of(PORTRAIT, "AUDIO");
     LS_CHECK_MSG(activity > rx,
                  "the table is at row %d and SIGNAL's last field at %d - they "
                  "are drawn over each other", activity, rx);
+}
+
+static bool find_spectrum_tile(int *sx, int *sy)
+{
+    *sx = *sy = -1;
+    for (int y = PORTRAIT.y; y < PORTRAIT.y + PORTRAIT.h && y < H; y++)
+        for (int x = PORTRAIT.x; x + 8 < W && x < PORTRAIT.x + PORTRAIT.w; x++) {
+            char w[9];
+            for (int i = 0; i < 8; i++) w[i] = g_back[y * W + x + i].ch;
+            w[8] = 0;
+            if (!strcmp(w, "SPECTRUM")) { *sx = x; *sy = y; }
+        }
+    return *sx >= 0;
+}
+
+LS_CASE(spectrum_is_a_toggle_tile_on_the_merged_screen)
+{
+    /* The SIGNAL tab is gone; the spectrum is reached by the SPECTRUM tile
+       and left by the same tile. */
+    show_decode_page();
+    no_traffic();
+    draw_decode_now(PORTRAIT);
+    int sx, sy;
+    LS_CHECK_MSG(find_spectrum_tile(&sx, &sy), "no SPECTRUM tile on the merged screen");
+    if (sx < 0) return;
+    LS_CHECK(ls_scr_p25.touch(sx + 2, sy));
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK_MSG(!rect_has(PORTRAIT, "DECODE / SIGNAL"),
+                 "SPECTRUM did not leave the merged window");
+    LS_CHECK_MSG(find_spectrum_tile(&sx, &sy), "no SPECTRUM tile on the spectrum page");
+    if (sx < 0) return;
+    LS_CHECK(ls_scr_p25.touch(sx + 2, sy));
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK_MSG(rect_has(PORTRAIT, "DECODE / SIGNAL"),
+                 "SPECTRUM again did not come back to the merged window");
 }
 
 LS_CASE(landscape_gets_the_table_too)
@@ -896,3 +934,64 @@ int audio_volume_get(void) { return 60; }
 const p25_program_t *p25_program_session(void) { return NULL; }
 bool p25_program_request_reload_path(const char *path)
 { (void)path; return false; }
+
+#include "dmr_watch.h"
+#include "dmr_gen.h"
+#include "ls_tui_ui.h"
+#include "ls_options.h"
+#include "ls_picker.h"
+
+static void dmr_ui_feed(const uint8_t *b, unsigned n)
+{
+    for (unsigned i = 0; i < n * 8; i += 2) {
+        unsigned hi = (b[i/8] >> (7-i%8)) & 1;
+        unsigned lo = (b[i/8] >> (6-i%8)) & 1;
+        dmr_watch_symbol(hi ? (lo ? -3600 : -1200) : (lo ? 3600 : 1200), 0, 2400, -2400);
+    }
+}
+LS_CASE(dmr_mode_has_both_slots_touch_hold_and_layered_steppers)
+{
+    static const uint8_t sync[6] = {0xDF,0xF5,0x7D,0x75,0xDF,0x5D};
+    static const uint8_t cach[2][3] = {{0x80,0x02,0x02},{0x88,0x00,0x20}};
+    dmr_watch_reset(); ls_shim_time_set(1000000);
+    for (unsigned i = 0; i < 2; ++i) {
+        dmr_lc_t lc = {.destination = i ? 16777215 : 2051, .source = 1234567,
+                       .service_options = i ? 0x40 : 0};
+        uint8_t b[33]; dmr_gen_burst(b, sync, 7, 1, &lc);
+        dmr_ui_feed(cach[i], 3); dmr_ui_feed(b, 33);
+    }
+    ls_scr_p25.key(LS_TK_CHAR, '6');
+    for (unsigned p = 0; p < 2; ++p) {
+        fresh(); draw_pane(&ls_scr_p25, PANES[p]);
+        LS_CHECK(rect_has(PANES[p], "SLOT 1"));
+        LS_CHECK(rect_has(PANES[p], "SLOT 2"));
+        LS_CHECK(rect_has(PANES[p], "16777215"));
+        LS_CHECK(rect_has(PANES[p], "ENCRYPTED"));
+        LS_EQ_INT(escaped(PANES[p]), 0);
+        int x,y,w,h;
+        LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_QUICK, 2, &x,&y,&w,&h));
+        LS_CHECK(ls_scr_p25.touch(x+w/2,y+h/2));
+        fresh(); draw_pane(&ls_scr_p25, PANES[p]);
+        LS_CHECK(rect_has(tui_rect_make(x,y,w,h), "2051"));
+        ls_scr_p25.key(LS_TK_CHAR, 'h');
+    }
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'o'));
+    LS_CHECK(ls_picker_active());
+    ls_picker_key(LS_TK_ENTER, 0); ls_opt_poll();
+    LS_CHECK(ls_picker_active());
+    ls_picker_key(LS_TK_RIGHT, 0);
+    ls_opt_close();
+    fresh(); draw_pane(&ls_scr_p25, PANES[0]);
+    LS_CHECK(!rect_has(PANES[0], "BOTH"));
+    ls_scr_p25.key(LS_TK_CHAR, 's'); ls_scr_p25.key(LS_TK_CHAR, 's');
+    ls_scr_p25.key(LS_TK_CHAR, '1');
+}
+LS_CASE(dmr_mode_clips_every_small_pane)
+{
+    ls_scr_p25.key(LS_TK_CHAR, '6');
+    for (int p = 0; p < N_PANES; ++p) {
+        fresh(); draw_pane(&ls_scr_p25, PANES[p]);
+        LS_EQ_INT(escaped(PANES[p]), 0);
+    }
+    ls_scr_p25.key(LS_TK_CHAR, '1');
+}

@@ -74,7 +74,7 @@ struct ls_opt_s {
     void (*set_num)(const ls_opt_t *o, double v);
     double lo, hi;
     const char *unit;
-    double step;
+    double step; /* CYCLE: positive enables < and > with wrapping. */
 
     /* MENU: the list it opens. A menu with nothing in it for the radio in
        use is left out, as a row for another radio is. */

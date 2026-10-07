@@ -275,7 +275,10 @@ LS_CASE(the_compact_bar_is_offered_only_where_the_longest_pair_fits)
         const bool fits = ls_btn_compact_fits(tui_rect_make(1,2,w,3),bar,5);
         surface();
         ls_btn_bar_raised(&s_sf, tui_rect_make(0,0,w,3), bar, 5, -1);
-        const bool drawn = grid_has("SETUP CAPTURE");
+        /* Words now borrow columns from short neighbours, so the answer is
+           about the whole row: every pair on one line, none abbreviated. */
+        const bool drawn = grid_has("SETUP CAPTURE") && grid_has("CAPTURE MENU") &&
+                           grid_has("WATCH OFF") && grid_has("TUNE MHz");
         LS_CHECK_MSG(fits == drawn,
                      "w=%d: compact_fits said %d, the bar drew %d",
                      w, (int)fits, (int)drawn);
@@ -296,4 +299,24 @@ LS_CASE(the_compact_bar_refuses_what_it_should_not_get)
     LS_CHECK(!ls_btn_compact_fits(tui_rect_make(0,0,113,3),NULL,5));
     LS_CHECK(!ls_btn_compact_fits(tui_rect_make(0,0,113,3),labels,0));
     LS_CHECK(!ls_btn_compact_fits(tui_rect_make(0,0,2,3),labels,2));
+}
+
+/* A word that does not fit its share borrows from buttons that have room, and
+   when the row is truly short it is abbreviated whole, never cut mid-word. */
+LS_CASE(labels_borrow_room_and_abbreviate_instead_of_cutting_mid_word)
+{
+    g_wide = false;
+    const ls_btn_t tabs[] = {
+        {"VFO",NULL,'v',false,false}, {"STATION",NULL,'s',false,false},
+        {"SPECTRUM",NULL,'p',false,false}, {"SCANNER",NULL,'c',false,false},
+    };
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0,0,40,3), tabs, 4, -1);
+    LS_CHECK(grid_has("SPECTRUM")); LS_CHECK(grid_has("STATION")); LS_CHECK(grid_has("SCANNER"));
+    /* A value with a separator keeps its first word whole. */
+    const ls_btn_t radio[] = { {"RADIO","RTL-SDR",'r',false,false}, {"OPTIONS","P25",'o',false,false} };
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0,0,26,3), radio, 2, -1);
+    LS_CHECK(!grid_has("RTL-S ")); LS_CHECK(grid_has("RTL"));
+    g_wide = true;
 }

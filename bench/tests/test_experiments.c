@@ -172,6 +172,18 @@ static void fresh(void)
     ls_exp_register(&EXP_R);
 }
 
+static int maintenance_passes;
+static bool maintain(void) { return ++maintenance_passes < 2; }
+LS_CASE(stopped_maintenance_runs_without_starting_or_taking_radio)
+{
+    fresh(); maintenance_passes = 0;
+    static const ls_experiment_t e = { .id = "upkeep", .name = "UPKEEP", .maintenance = maintain };
+    ls_exp_register(&e);
+    LS_CHECK(ls_exp_service()); LS_CHECK(!ls_exp_service());
+    LS_EQ_INT(maintenance_passes, 2); LS_EQ_INT(s_takes, 0); LS_EQ_INT(s_begins, 0);
+    LS_CHECK(ls_exp_running() == NULL);
+}
+
 static void state_of(const ls_experiment_t *e, char *out)
 {
     ls_exp_state_line(e, out, 64);
@@ -602,4 +614,40 @@ LS_CASE(carrier_refuses_a_chip_without_fsk_or_a_session_the_chip_refuses)
     state_of(c, st);
     LS_CHECK_MSG(strstr(st, "refused") != NULL, "got [%s]", st);
     LS_EQ_INT(s_takes, s_gives);
+}
+
+/* ------------------------------------------------------------ NOTE -- */
+
+LS_CASE(note_text_is_the_readout_under_a_title_with_name_and_time)
+{
+    fresh();
+    char lines[4][LS_EXP_LINE], title[48], body[400];
+    int n = ls_exp_read_lines(&EXP_A, lines, 4);
+    size_t len = ls_exp_note_text(&EXP_A, "2026-10-06T14:21:09Z", "running 5s",
+                                  (const char (*)[LS_EXP_LINE])lines, n, title, sizeof(title), body, sizeof(body));
+    LS_EQ_STR(title, "ALPHA 2026-10-06 14:21");
+    LS_EQ_STR(body, "> RADIO ALPHA TRYING  running 5s\npolls 0\nsecond line\n");
+    LS_EQ_INT((int)len, (int)strlen(body));
+
+    /* No radio: a plain tag. No readout, no clock: said so, the stamp kept whole. */
+    len = ls_exp_note_text(&EXP_R, "up 12s", "stopped", NULL, 0, title, sizeof(title), body, sizeof(body));
+    LS_EQ_STR(title, "QUIET up 12s");
+    LS_EQ_STR(body, "> EXPERIMENT QUIET WORKS  stopped\n(no readout yet)\n");
+}
+
+LS_CASE(note_text_stops_at_a_line_boundary_when_the_room_runs_out)
+{
+    fresh();
+    char lines[3][LS_EXP_LINE], title[48], body[64];
+    for (int i = 0; i < 3; i++) snprintf(lines[i], LS_EXP_LINE, "line %d of the readout", i);
+    ls_exp_note_text(&EXP_A, "", "stopped", (const char (*)[LS_EXP_LINE])lines, 3, title, sizeof(title), body, sizeof(body));
+    LS_EQ_STR(title, "ALPHA");
+    LS_CHECK(strlen(body) < sizeof(body));
+    LS_CHECK(body[strlen(body) - 1] == '\n');
+    LS_CHECK(strstr(body, "line 0") != NULL);
+    LS_CHECK(strstr(body, "line 2") == NULL);
+
+    /* Nothing to write into, or no experiment: empty, not a crash. */
+    LS_EQ_INT((int)ls_exp_note_text(NULL, "", "", NULL, 0, title, sizeof(title), body, sizeof(body)), 0);
+    LS_EQ_INT((int)ls_exp_note_text(&EXP_A, "", "", NULL, 0, title, sizeof(title), body, 0), 0);
 }

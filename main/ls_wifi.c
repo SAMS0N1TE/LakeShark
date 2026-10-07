@@ -452,6 +452,26 @@ static int s_sta_attempts;
    as a retry countdown for a retry that is never coming. */
 static bool s_sta_gave_up;
 
+/* A join's credentials, saved once it has an address: a mistyped password
+   or a tap on the wrong network must not replace the network that works. */
+static char s_pending_ssid[LS_WIFI_SSID_MAX_LEN + 1];
+static char s_pending_pass[LS_WIFI_PASS_MAX_LEN + 1];
+static bool s_pending_save;
+
+/* Volatile stores, so the compiler cannot drop a wipe of a buffer that is
+   not read again. */
+static void wipe(void *p, size_t n)
+{
+    volatile unsigned char *v = (volatile unsigned char *)p;
+    while (n--) *v++ = 0;
+}
+
+static void pending_drop(void)
+{
+    s_pending_save = false;
+    wipe(s_pending_pass, sizeof(s_pending_pass));
+}
+
 static void schedule_reconnect(void)
 {
     if (!s_sta_running) return;
@@ -462,6 +482,7 @@ static void schedule_reconnect(void)
                  s_sta_attempts, why ? why : "unknown reason");
         if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
         s_sta_gave_up = true;
+        pending_drop();
         return;
     }
     s_sta_attempts++;
@@ -523,6 +544,12 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
         /* Connected, so the attempt budget starts over. */
         s_sta_attempts = 0;
         s_sta_gave_up = false;
+        if (s_pending_save) {
+            const esp_err_t save = nvs_save_creds(s_pending_ssid, s_pending_pass);
+            if (save != ESP_OK)
+                ESP_LOGW(TAG, "credential save failed: %s", esp_err_to_name(save));
+            pending_drop();
+        }
         /* Serve the file browser over the station too, so captures can
            be pulled without dropping the BLE head to raise the SoftAP.
            Headless boards only: on a board with a screen the page is not
@@ -913,12 +940,11 @@ static esp_err_t sta_join_locked(const char *ssid, const char *pass)
         return ESP_FAIL;
     }
 
-    esp_err_t save = nvs_save_creds(ssid, pass ? pass : "");
-    if (save != ESP_OK) {
-        ESP_LOGW(TAG, "credential save failed: %s", esp_err_to_name(save));
-        sta_leave_locked();
-        return save;
-    }
+    strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
+    s_pending_ssid[sizeof(s_pending_ssid) - 1] = '\0';
+    strncpy(s_pending_pass, pass ? pass : "", sizeof(s_pending_pass) - 1);
+    s_pending_pass[sizeof(s_pending_pass) - 1] = '\0';
+    s_pending_save = true;
 
     s_reconnect_ms = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
 
@@ -987,15 +1013,17 @@ static esp_err_t sta_autojoin_locked(void)
         rc = ESP_ERR_INVALID_STATE;
     } else if (rc == ESP_OK) {
         rc = sta_join_locked(ssid, pass);
+        /* These are the saved credentials: nothing to save when it joins. */
+        pending_drop();
     }
-    /* Zero the on-stack passphrase before returning. */
-    memset(pass, 0, sizeof(pass));
+    wipe(pass, sizeof(pass));
     return rc;
 }
 
-static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
+static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
 {
     if (!out || cap <= 0) return -1;
+    if (passive && (s_sta_running || s_ap_running)) return -1;
     if (ensure_stack() != ESP_OK) return -1;
 
     /* Scan requires WiFi to be started; enable STA transiently if idle. Do
@@ -1012,6 +1040,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
     }
 
     wifi_scan_config_t sc = {0};
+    if (passive) { sc.scan_type = WIFI_SCAN_TYPE_PASSIVE; sc.show_hidden = true; }
     esp_err_t e = esp_wifi_scan_start(&sc, /* block=*/true);
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(e));
@@ -1021,16 +1050,16 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
     }
 
     uint16_t n = (uint16_t)(cap < 64 ? cap : 64);
+    if (!passive && n > LS_WIFI_SCAN_LIST_MAX) n = LS_WIFI_SCAN_LIST_MAX;
     /* the console scan overflowed its 4 KiB stack in esp_log's
      * formatter with the AP record array live. Keep scan records off stacks. */
     wifi_ap_record_t *recs = heap_caps_malloc(
-        sizeof(*recs) * LS_WIFI_SCAN_LIST_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        sizeof(*recs) * n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!recs) {
         if (started_for_scan) esp_wifi_stop();
         else if (!s_sta_running && s_ap_running) esp_wifi_set_mode(WIFI_MODE_AP);
         return -1;
     }
-    if (n > LS_WIFI_SCAN_LIST_MAX) n = LS_WIFI_SCAN_LIST_MAX;
     e = esp_wifi_scan_get_ap_records(&n, recs);
     if (e != ESP_OK) {
         heap_caps_free(recs);
@@ -1046,7 +1075,9 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
         out[written].ssid[sizeof(out[written].ssid) - 1] = '\0';
         /* Hidden and control-character names cannot be selected by this API;
          * don't let newline SSIDs corrupt a dropdown's option mapping. */
-        if (!ls_wifi_ssid_valid(out[written].ssid)) continue;
+        if (!passive && !ls_wifi_ssid_valid(out[written].ssid)) continue;
+        memcpy(out[written].bssid, recs[i].bssid, 6);
+        out[written].auth = recs[i].authmode;
         out[written].rssi   = recs[i].rssi;
         out[written].secure = (recs[i].authmode != WIFI_AUTH_OPEN);
         out[written].channel = recs[i].primary;
@@ -1114,10 +1145,12 @@ static void status_locked(char *buf, int cap)
     }
 }
 
+static _Atomic bool s_survey;
+
 typedef enum {
     WIFI_OP_AP_START, WIFI_OP_AP_STOP, WIFI_OP_JOIN, WIFI_OP_LEAVE,
     WIFI_OP_FORGET, WIFI_OP_AUTOJOIN, WIFI_OP_SCAN, WIFI_OP_STA_STATUS,
-    WIFI_OP_STATUS, WIFI_OP_STA_INFO,
+    WIFI_OP_STATUS, WIFI_OP_STA_INFO, WIFI_OP_SURVEY, WIFI_OP_SURVEY_BEGIN,
 } wifi_operation_kind_t;
 
 typedef struct {
@@ -1131,14 +1164,21 @@ typedef struct {
 static int dispatch_operation(void *context)
 {
     const wifi_operation_request_t *r = context;
+    if (s_survey && (r->kind == WIFI_OP_AP_START || r->kind == WIFI_OP_JOIN ||
+                     r->kind == WIFI_OP_AUTOJOIN || r->kind == WIFI_OP_SCAN))
+        return ESP_ERR_INVALID_STATE;
     switch (r->kind) {
+    case WIFI_OP_SURVEY_BEGIN:
+        if (s_sta_running || s_ap_running || s_survey) return ESP_ERR_INVALID_STATE;
+        s_survey = true; return ESP_OK;
     case WIFI_OP_AP_START: return ap_start_locked();
     case WIFI_OP_AP_STOP: return ap_stop_locked();
     case WIFI_OP_JOIN: return sta_join_locked(r->ssid, r->password);
     case WIFI_OP_LEAVE: return sta_leave_locked();
     case WIFI_OP_FORGET: return sta_forget_locked();
     case WIFI_OP_AUTOJOIN: return sta_autojoin_locked();
-    case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity);
+    case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity, false);
+    case WIFI_OP_SURVEY: return s_survey ? sta_scan_locked(r->out, r->capacity, true) : -1;
     case WIFI_OP_STA_STATUS: sta_status_locked(r->out, r->capacity); return ESP_OK;
     case WIFI_OP_STATUS: status_locked(r->out, r->capacity); return ESP_OK;
     case WIFI_OP_STA_INFO: {
@@ -1151,6 +1191,7 @@ static int dispatch_operation(void *context)
         out->rssi = ap.rssi;
         out->secure = ap.authmode != WIFI_AUTH_OPEN;
         out->channel = ap.primary;
+        memcpy(out->bssid, ap.bssid, 6); out->auth = ap.authmode;
         return ESP_OK;
     }
     }
@@ -1223,4 +1264,16 @@ void ls_wifi_status(char *buf, int cap)
     if (!buf || cap <= 0) return;
     if (perform(WIFI_OP_STATUS, NULL, NULL, buf, cap) == ESP_ERR_INVALID_STATE)
         snprintf(buf, cap, "Wi-Fi busy; retry shortly");
+}
+
+int ls_wifi_survey_scan(ls_wifi_scan_ap_t *out, int cap)
+{
+    int rc = perform(WIFI_OP_SURVEY, NULL, NULL, out, cap);
+    return rc == ESP_ERR_INVALID_STATE ? -1 : rc;
+}
+
+esp_err_t ls_wifi_survey_mode(bool active)
+{
+    if (!active) { s_survey = false; return ESP_OK; }
+    return perform(WIFI_OP_SURVEY_BEGIN, NULL, NULL, NULL, 0);
 }

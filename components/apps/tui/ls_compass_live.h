@@ -69,9 +69,15 @@ bool ls_compass_bend_step(ls_compass_bend_t *b, float bend, int64_t now_us);
    north and does. Each covers the other's fault, so nothing needs a gate.
 
    yaw_dps is clockwise-from-above, the gyro's rate about the accelerometer's
-   up (see ls_compass_yaw_rate), NAN when unknown. The gyro's own bias about
-   that axis is learnt from the magnetometer's pull (a PI loop), so it
-   follows the board as it is tilted and as it warms.
+   up (see ls_compass_yaw_rate), NAN when unknown. What is left of the
+   gyro's bias about that axis once its rest reading is off
+   (ls_compass_steady_imu) is learnt from the magnetometer's pull (a PI
+   loop), so it follows the board as it is tilted and as it warms. The loop
+   learns only once the board has turned slower than LS_COMPASS_LEARN_DPS
+   for LS_COMPASS_SETTLE_S, while it is not lying still (the rest reading
+   covers that) and while the pull is under its limit: a field bent by the
+   board's own current swings the magnetic heading away from a turn the
+   gyro follows truly, and what that leaves behind is not bias.
 
    `agree` watches whether the gyro and the magnetometer turn the same way
    in a real turn. It starts at 0 and heads to +1. If it ever passes -0.5
@@ -79,11 +85,26 @@ bool ls_compass_bend_step(ls_compass_bend_t *b, float bend, int64_t now_us);
    that is an axis fault somewhere, and the console says so rather than
    the dial quietly spinning against the turn.
 
-   A magnetic reading over 45 degrees from the fused heading is a jump (the
-   upright/flat axis switch, true/magnetic, a calibration) only once it has
-   stayed there for LS_COMPASS_JUMP_S; until then it is a glitch and the
-   gyro alone carries the heading. Taking every such reading at once made
-   one bad sample throw the dial across and straight back.
+   A magnetic reading over 45 degrees from the fused heading is a glitch
+   until it has stayed there for LS_COMPASS_JUMP_S, and the gyro alone
+   carries the heading meanwhile: taking every such reading at once made
+   one bad sample throw the dial across and straight back. Once it lasts,
+   it depends on the gyro. One that is trusted (agree over 0.5, so seen
+   turning with the magnetometer, and not at full scale) is never overruled
+   in one step: the reading pulls, no faster than LS_COMPASS_PULL_DPS. A
+   current on the board bends the field by a fixed vector in the board's
+   frame, which swings the magnetic heading tens of degrees through a turn
+   the gyro follows truly, so a lasting difference is no proof of a jump.
+   It is taken in one step only once the board has lain still for
+   LS_COMPASS_STILL_S with the reading that far off all along. With no
+   gyro, or one not trusted yet, a lasting reading is taken in one step as
+   a jump (a new calibration, a gyro gone wrong). Never in one step while
+   the field is bent: a mag_tau_s over LS_COMPASS_FUSE_TAU_S is the MAG
+   lamp.
+
+   Clearing `started` (true/magnetic, COMPASS opened again) takes the next
+   reading as it is and keeps what is known of the gyro: its rest reading,
+   the loop's trim and `agree`. Only a reboot forgets them.
 
    `agree` votes once per half second of turning: the gyro's integrated
    turn against the magnetometer's, each over 8 degrees. A gyro turning
@@ -94,10 +115,14 @@ bool ls_compass_bend_step(ls_compass_bend_t *b, float bend, int64_t now_us);
 #define LS_COMPASS_FUSE_TAU_S 1.0f
 #define LS_COMPASS_JUMP_S     0.3f
 #define LS_COMPASS_COAST_S    3.0f
+#define LS_COMPASS_PULL_DPS   15.0f
+#define LS_COMPASS_STILL_S    2.5f
+#define LS_COMPASS_LEARN_DPS  10.0f
+#define LS_COMPASS_SETTLE_S   0.5f
 typedef struct {
     bool started;
     float heading, pitch, roll;
-    float bias;      /* learnt gyro bias about up, deg/s */
+    float bias;      /* learnt gyro bias about up, deg/s, after the rest reading */
     float agree;     /* -1..+1: gyro and magnetometer turn the same way */
     float prev_mag;  /* last magnetic input, for agree */
     float far_s;     /* how long the magnetometer has been over 45 deg away */
@@ -105,11 +130,49 @@ typedef struct {
     uint32_t glitches;                /* single readings refused as jumps */
     bool gyro_used;  /* the last step was turned by the gyro */
     float coast_s;   /* how long the gyro alone has carried it */
+    float slow_s;    /* how long it has turned slower than LS_COMPASS_LEARN_DPS */
     float mag_tau_s; /* how slowly the magnetometer pulls; 0 is LS_COMPASS_FUSE_TAU_S.
-                        Longer while the field is bent, so the gyro carries the heading. */
+                        Longer while the field is bent (the MAG lamp): the gyro carries
+                        the heading, and a lasting reading is never taken in one step. */
+    /* Kept by ls_compass_steady_imu. */
+    float rest[3];   /* the gyro's rest reading, deg/s, ls_imu axes; 0 until learnt */
+    bool rest_known;
+    bool resting;    /* a still spell is under way */
+    float still_s;   /* how long it has lasted */
+    float still_g[3], still_a[3];     /* the gyro's and accelerometer's means over it */
+    float sat_s;     /* a gyro axis was at full scale within this */
+    float yaw;       /* the turn rate last used, deg/s, NAN when none */
 } ls_compass_steady_t;
 float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch, float roll,
                              float yaw_dps, float dt);
+
+/* One frame from the IMU's own vectors, ls_imu axes in deg/s and g (NULL
+   when the frame has no sample): the gyro's rest reading taken off, the
+   rate about up found, and ls_compass_steady_step.
+
+   The rest reading is what the gyro reads lying still, about 12 deg/s on
+   the bench board. Taken off the whole vector before the rate about up is
+   found, it is right however the board is held, where a trim about up
+   learnt in one hold is wrong in the next. The board is lying still while
+   no gyro axis strays more than LS_COMPASS_QUIET_DPS from its mean since it
+   came to rest, and the accelerometer reads near 1 g with no axis more
+   than LS_COMPASS_STEADY_G from its mean: a spread, not a size, because the
+   rest reading alone is over any sensible size limit. After
+   LS_COMPASS_REST_USE_S of it the board is taken as not turning (that mean
+   is what comes off); after LS_COMPASS_REST_S the mean is kept as the rest
+   reading and the loop's trim starts over from it.
+
+   A gyro axis within 2% of full scale reads a slower turn than the board
+   makes: the gyro is not trusted then, nor for LS_COMPASS_SAT_HOLD_S after,
+   so the magnetometer can take back what a fast spin lost. */
+#define LS_COMPASS_REST_USE_S  0.3f
+#define LS_COMPASS_REST_S      1.0f
+#define LS_COMPASS_QUIET_DPS   1.5f
+#define LS_COMPASS_STEADY_G    0.03f
+#define LS_COMPASS_GYRO_FS_DPS 250.0f
+#define LS_COMPASS_SAT_HOLD_S  1.0f
+float ls_compass_steady_imu(ls_compass_steady_t *s, float heading, float pitch, float roll,
+                            const float g[3], const float a[3], float dt);
 
 /* Clockwise-from-above turn rate, deg/s: minus the gyro's component along
    the accelerometer's reaction (up). Both are ls_imu's axes, and a dot

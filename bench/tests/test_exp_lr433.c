@@ -48,6 +48,33 @@ static const lr433_msg_t *find_msg(const lr433_msg_t *m, int n, const lr433_vec_
 
 /* -------------------------------------------------------------- decoders -- */
 
+LS_CASE(weather_frames_retain_wind_and_rain)
+{
+    bool wh24 = false, acurite = false;
+    for (int i = 0; i < N_VECS; i++) {
+        const lr433_vec_t *v = &VECS[i];
+        if (strcmp(v->model, "Fineoffset-WH24") && strcmp(v->model, "Acurite-5n1")) continue;
+        const lr433_capture_t c = capture_of(v);
+        lr433_msg_t m[8]; int n = lr433_decode(&c, &W, m, 8);
+        const lr433_msg_t *got = find_msg(m, n, v);
+        LS_CHECK(got != NULL); if (!got) continue;
+        LS_CHECK(isfinite(got->wind_ms)); LS_CHECK(isfinite(got->rain_mm));
+        if (!strcmp(v->model, "Fineoffset-WH24")) {
+            /* The upstream recording describes 1.12 m/s and 22.2 mm. */
+            LS_NEAR(got->wind_ms, 1.12, .001); LS_NEAR(got->rain_mm, 22.2, .001); wh24 = true;
+            /* A longer WH65 preamble uses the smaller cup and wind scales. */
+            uint8_t long_frame[256] = {0};
+            memset(long_frame, 0x0f, 4);
+            memcpy(long_frame + 4, v->data, (size_t)v->len);
+            lr433_capture_t longer = c; longer.data = long_frame; longer.bits = c.bits + 32;
+            n = lr433_decode(&longer, &W, m, 8); got = find_msg(m, n, v);
+            LS_CHECK(got != NULL);
+            if (got) { LS_NEAR(got->wind_ms, .51, .001); LS_NEAR(got->rain_mm, 18.796, .001); }
+        } else acurite = true;
+    }
+    LS_CHECK(wh24 && acurite);
+}
+
 LS_CASE(every_recording_decodes_to_what_rtl_433_said_of_it)
 {
     LS_CHECK(N_VECS >= 20);
@@ -366,7 +393,7 @@ LS_CASE(the_315_plan_samples_ook_then_two_fsk_sessions_in_turn)
     LS_CHECK(!s_ook && !s_fsk);
 }
 
-LS_CASE(a_tyre_heard_goes_in_the_table_with_its_reading)
+LS_CASE(an_unowned_tyre_keeps_identity_without_readings)
 {
     const ls_experiment_t *e = lr433();
     clean(e);
@@ -381,7 +408,8 @@ LS_CASE(a_tyre_heard_goes_in_the_table_with_its_reading)
     LS_CHECK(has_line(l, n, "PLAN [315o] 315f 315p", NULL));
     LS_CHECK(has_line(l, n, "HEARD 1 bursts, 1 decoded, 1 device", NULL));
     LS_CHECK(has_line(l, n, "Schr-EG53", "2FC871"));
-    LS_CHECK(has_line(l, n, "0.0psi 90F", " -61 "));
+    LS_CHECK(has_line(l, n, "MY ID off", " -61 "));
+    LS_CHECK(!has_line(l, n, "psi", NULL));
     for (int i = 0; i < n; i++) LS_CHECK_MSG(strlen(l[i]) <= 48, "line %d is wider than the page", i);
 
     /* Heard again: the count, not a second row. */
@@ -396,7 +424,7 @@ LS_CASE(a_tyre_heard_goes_in_the_table_with_its_reading)
     for (int i = 0; i < e->n_opts; i++)
         if (!strcmp(e->opts[i].label, "UNITS")) e->opts[i].set(&e->opts[i], 1);
     n = read_lines(e, l, 24);
-    LS_CHECK(has_line(l, n, "2FC871", "0kPa 32C"));
+    LS_CHECK(has_line(l, n, "2FC871", "MY ID off"));
     LS_EQ_INT(run_console("exp lr433 stop"), 0);
 }
 
@@ -432,8 +460,8 @@ LS_CASE(the_newest_device_is_first_and_noise_counts_against_its_session)
         if (strstr(l[i], "03A38B2")) schrader = i;
     }
     LS_CHECK(ford >= 0 && schrader >= 0 && ford < schrader);
-    LS_CHECK(has_line(l, n, "Ford", "34.5psi"));
-    LS_CHECK(has_line(l, n, "Schrader", "58.0psi 73F"));
+    LS_CHECK(has_line(l, n, "Ford", "MY ID off"));
+    LS_CHECK(has_line(l, n, "Schrader", "MY ID off"));
     LS_CHECK(has_line(l, n, "KEYED, NOT DECODED", NULL));
     LS_CHECK(has_line(l, n, "315 OOK      1  last  -88 max  -88 dBm", NULL));
     LS_CHECK(has_line(l, n, "HEARD 3 bursts, 2 decoded, 2 devices", NULL));

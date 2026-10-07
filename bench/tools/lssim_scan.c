@@ -55,6 +55,15 @@ bool scan_channel_set_enabled(int i, bool enabled)
         channels[i].flags &= ~SCAN_FLAG_ENABLED;
     return true;
 }
+bool scan_channel_set_tone(int i, uint16_t selection)
+{
+    if (i < 0 || i >= count || selection > 258 || channels[i].mode != SCAN_MODE_NFM)
+        return false;
+    channels[i].rsv = (uint8_t)selection;
+    channels[i].flags = (channels[i].flags & ~SCAN_FLAG_TONE_HIGH) |
+                        (selection & 256 ? SCAN_FLAG_TONE_HIGH : 0);
+    return true;
+}
 void scan_engine_start(void)
 {
     active = true;

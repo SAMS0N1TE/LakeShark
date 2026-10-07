@@ -35,6 +35,10 @@ static bool         s_auto_rotate = true;
 static bool         s_ble_at_boot = true;
 static bool         s_wifi_at_boot = true;
 static bool         s_keyboard_light = true;
+/* Settings > DEVICE > Check for updates: Daily (true) or Off. Read by the update
+   scheduler's timer, so it is RAM only; loaded once in settings_init. */
+static bool         s_update_check = true;
+static bool         s_lr_tcxo = true, s_lr_dcdc;
 static uint64_t s_location;
 static uint64_t s_last_fix;   /* COMPASS declination without a live fix */
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -291,6 +295,7 @@ bool settings_init(void)
     __atomic_store_n(&s_auto_rotate,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_ble_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_wifi_at_boot,true,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_update_check,true,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
     esp_err_t err = nvs_flash_init();
@@ -313,6 +318,11 @@ bool settings_init(void)
 
     /**/  settings_apply_schema();
     settings_drop_sam_voice_keys();
+    uint8_t lr_tcxo = 1, lr_dcdc = 0;
+    if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
+    if (nvs_get_u8(s_nvs, "lr_dcdc", &lr_dcdc) != ESP_OK || lr_dcdc > 1) lr_dcdc = 0;
+    __atomic_store_n(&s_lr_tcxo, lr_tcxo != 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_lr_dcdc, lr_dcdc != 0, __ATOMIC_RELEASE);
 
     uint8_t auto_rotate = 1;
     if(nvs_get_u8(s_nvs,"autorot",&auto_rotate)==ESP_OK)
@@ -323,6 +333,9 @@ bool settings_init(void)
         __atomic_store_n(&s_ble_at_boot,ble_boot!=0,__ATOMIC_RELEASE);
     if(nvs_get_u8(s_nvs,"wifiboot",&wifi_boot)==ESP_OK)
         __atomic_store_n(&s_wifi_at_boot,wifi_boot!=0,__ATOMIC_RELEASE);
+    uint8_t upd_check = 1;
+    if(nvs_get_u8(s_nvs,"upd_check",&upd_check)==ESP_OK)
+        __atomic_store_n(&s_update_check,upd_check!=0,__ATOMIC_RELEASE);
 
     /* settings_init runs on the cache-safe boot task in both LCD and
      * headless builds.  Load this one byte here, before p25_rx_task starts on
@@ -792,6 +805,18 @@ void settings_set_antenna_external(bool external)
     sput_u8("ant_ext", external ? 1 : 0);
 }
 
+/* The same byte before settings_init(), so the route is set before the
+   radio or the mesh can transmit. Read-only, internal when unset. */
+bool settings_peek_antenna_external(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t v = 0;
+    const esp_err_t err = (nvs_get_u8)(h, "ant_ext", &v);
+    nvs_close(h);
+    return err == ESP_OK && v != 0;
+}
+
 int settings_get_p25_lr_gain(void)
 {
     if (!s_nvs_ok) return 0;
@@ -805,6 +830,27 @@ void settings_set_p25_lr_gain(int step)
     if (step < 0)  step = 0;
     if (step > 13) step = 13;
     sput_u8("p25_lrgain", (uint8_t)step);
+}
+
+bool settings_get_lr_tcxo(void)
+{
+    return __atomic_load_n(&s_lr_tcxo, __ATOMIC_ACQUIRE);
+}
+bool settings_set_lr_tcxo(bool tcxo)
+{
+    if (!sput_u8("lr_tcxo", tcxo ? 1u : 0u)) return false;
+    __atomic_store_n(&s_lr_tcxo, tcxo, __ATOMIC_RELEASE);
+    return true;
+}
+bool settings_get_lr_dcdc(void)
+{
+    return __atomic_load_n(&s_lr_dcdc, __ATOMIC_ACQUIRE);
+}
+bool settings_set_lr_dcdc(bool dcdc)
+{
+    if (!sput_u8("lr_dcdc", dcdc ? 1u : 0u)) return false;
+    __atomic_store_n(&s_lr_dcdc, dcdc, __ATOMIC_RELEASE);
+    return true;
 }
 
 /* The threshold default. Twelve dB was too close to the noise: thermal
@@ -854,6 +900,16 @@ void settings_set_compass_options(int options)
     sput_u8("compass_opt", (uint8_t)options);
 }
 /* MAP: which overlay layers are shown, as bits; `fallback` when unset. */
+uint32_t settings_get_waterfall(uint32_t fallback)
+{
+    if (!s_nvs_ok) return fallback;
+    uint32_t v;
+    return nvs_get_u32(s_nvs, "wf_display", &v) == ESP_OK ? v : fallback;
+}
+void settings_set_waterfall(uint32_t value)
+{
+    (void)sput_u32("wf_display", value);
+}
 uint32_t settings_get_map_layers(uint32_t fallback)
 {
     if (!s_nvs_ok) return fallback;
@@ -865,6 +921,19 @@ void settings_set_map_layers(uint32_t layers)
 {
     if (!s_nvs_ok) return;
     sput_u32("map_layers", layers);
+}
+/* ADS-B: the mini map's FOLLOW mode; -1 when unset. */
+int settings_get_adsb_follow(void)
+{
+    if (!s_nvs_ok) return -1;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "adsb_follow", &v) != ESP_OK || v > 15) return -1;
+    return (int)v;
+}
+void settings_set_adsb_follow(int mode)
+{
+    if (!s_nvs_ok || mode < 0 || mode > 15) return;
+    sput_u8("adsb_follow", (uint8_t)mode);
 }
 int settings_get_subghz_style(void)
 {
@@ -1069,6 +1138,16 @@ void settings_set_wifi_at_boot(bool enabled)
 {
     if (s_nvs_ok && sput_u8("wifiboot", enabled ? 1 : 0))
         __atomic_store_n(&s_wifi_at_boot,enabled,__ATOMIC_RELEASE);
+}
+
+bool settings_get_update_check(void)
+{
+    return __atomic_load_n(&s_update_check,__ATOMIC_ACQUIRE);
+}
+void settings_set_update_check(bool daily)
+{
+    if (s_nvs_ok && sput_u8("upd_check", daily ? 1 : 0))
+        __atomic_store_n(&s_update_check,daily,__ATOMIC_RELEASE);
 }
 
 bool settings_get_auto_rotate(void)

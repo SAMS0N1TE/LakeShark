@@ -589,13 +589,17 @@ void ls_map_get_center(double *lat, double *lon)
 
 int ls_map_zoom(void) { return s_zoom; }
 
+void ls_map_zoom_limits(int *lo, int *hi)
+{
+    const int max_source = s_pm ? pmtiles_max_zoom(s_pm) : 22;
+    if (lo) *lo = s_pm ? pmtiles_min_zoom(s_pm) : 0;
+    if (hi) *hi = max_source < 19 ? max_source + 3 : 22;
+}
+
 void ls_map_zoom_by(int dz)
 {
-    int z = s_zoom + dz;
-
-    const int lo = s_pm ? pmtiles_min_zoom(s_pm) : 0;
-    const int max_source = s_pm ? pmtiles_max_zoom(s_pm) : 22;
-    const int hi = max_source < 19 ? max_source + 3 : 22;
+    int z = s_zoom + dz, lo, hi;
+    ls_map_zoom_limits(&lo, &hi);
     if (z < lo) z = lo;
     if (z > hi) z = hi;
     s_zoom = z;

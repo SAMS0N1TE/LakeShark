@@ -22,7 +22,11 @@ void ls_shim_keypad(int present);
 #include "radio/radio_health.h"
 #include "apps/fm/fm_state.h"
 #include "apps/fm/fm_mode_label.h"
+#include "apps/fm/aprs_store.h"
+#include "screens/main/fm_aprs_view.h"
 #include "ls_action.h"
+#include "ls_follow.h"
+#include "apps/adsb/adsb_app.h"
 #include "apps/adsb/adsb_state.h"
 #include "esp_timer.h"
 #include "ls_gps.h"
@@ -95,6 +99,9 @@ int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
+static bool s_update_check = true;
+bool settings_get_update_check(void) { return s_update_check; }
+void settings_set_update_check(bool v) { s_update_check = v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
@@ -117,6 +124,8 @@ bool settings_get_last_fix(float *lat, float *lon) { (void)lat; (void)lon; retur
 bool settings_set_last_fix(float lat, float lon) { (void)lat; (void)lon; return false; }
 bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d; return false; }
 esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
+esp_err_t ls_board_hw_antenna_confirm_external(void) { return ESP_OK; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
 bool ls_board_hw_antenna_is_external(void) { return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
 bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }
@@ -148,8 +157,10 @@ bool settings_get_home(float *lat, float *lon)
  * This screen fixture supplies a deterministic basemap projection only. */
 static int map_zoom=8;
 int ls_map_zoom(void) {return map_zoom;}
-void ls_map_zoom_by(int dz) {map_zoom+=dz;}
+void ls_map_zoom_by(int dz) {map_zoom+=dz;if(map_zoom<0)map_zoom=0;if(map_zoom>22)map_zoom=22;}
+void ls_map_zoom_limits(int *lo,int *hi) {if(lo)*lo=0;if(hi)*hi=22;}
 int ls_map_tile_px(void) {return 76;}
+void ls_map_preview_frame(tui_rect a,int *pw,int *ph,int *tp) {if(pw)*pw=a.w*3;if(ph)*ph=a.h*5;if(tp)*tp=76;}
 bool ls_map_render_busy(void) {return false;}
 const char *ls_map_status(void) {return NULL;}
 void ls_map_preview_leave(void) {}
@@ -310,6 +321,11 @@ void lakeshark_fm_frequency_lock(bool on)
     s_fm_frequency_lock_hz=on?FM.freq_hz:0;
 }
 bool lakeshark_fm_frequency_locked(void){return s_fm_frequency_locked;}
+bool lakeshark_fm_set_freq(uint32_t hz)
+{
+    if (s_fm_frequency_locked && hz != s_fm_frequency_lock_hz) return false;
+    FM.freq_hz = hz; return true;
+}
 void lakeshark_fm_set_baud(int baud){if(baud==0)FM.pocsag_auto=true;else{FM.pocsag_auto=false;FM.pocsag_baud=baud;}}
 uint32_t lakeshark_fm_frequency_lock_hz(void){return s_fm_frequency_lock_hz;}
 extern int ls_test_wf_pumps, ls_test_wf_releases;
@@ -454,12 +470,14 @@ const ls_tui_screen_t ls_scr_gps = { .name = "GPS", .draw=rec_gps_draw, .key=rec
 
 extern const ls_tui_screen_t ls_scr_falls, ls_scr_settings, ls_scr_diag, ls_scr_rec,
                              ls_scr_home, ls_scr_fm, ls_scr_adsb, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
-                             ls_scr_notes, ls_scr_compass, ls_scr_experiments, ls_scr_terminal;
+                             ls_scr_notes, ls_scr_compass, ls_scr_experiments, ls_scr_terminal,
+                             ls_scr_update;
 
 static const ls_tui_screen_t *const SCREENS[] = {
     &ls_scr_settings, &ls_scr_diag, &ls_scr_rec, &ls_scr_home,
     &ls_scr_fm, &ls_scr_adsb, &ls_scr_labs, &ls_scr_journal, &ls_scr_subghz, &ls_scr_mixrf,
     &ls_scr_notes, &ls_scr_compass, &ls_scr_experiments, &ls_scr_terminal,
+    &ls_scr_update,
 };
 #define N_SCREENS ((int)(sizeof(SCREENS) / sizeof(SCREENS[0])))
 
@@ -587,17 +605,17 @@ LS_CASE(fm_mode_picker_reaches_every_fm_receiver_and_nfm_disables_p25_mixing)
     grid_for(pane);
     ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
     const fm_mode_t modes[] = {FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM,
-                              FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS};
+                              FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SAME, FM_MODE_APRS};
     FM.mode = FM_MODE_LISTEN;
     ls_scr_fm.enter();
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 8; ++i) {
         LS_CHECK(ls_picker_active());
         for (int j = 0; j < i; ++j) LS_CHECK(ls_picker_key(LS_TK_DOWN, 0));
         LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
         LS_EQ_INT(FM.mode, modes[i]);
-        if (i + 1 < 6) LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
+        if (i + 1 < 8) LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
     }
     scan_engine_set_mixed(true);
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'e'));
@@ -899,6 +917,8 @@ static void apps_once(void)
           LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
         { "subghz", "SUB-GHZ", "watch", LS_ICON_RECORD, TUI_GREEN,
           LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
+        { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
+          LS_APP_EXTRA, &ls_scr_update, NULL, &ls_doc_update },
     };
     for (int i = 0; i < N_SCREENS; i++) ls_app_register(&APPS[i]);
 }
@@ -1463,6 +1483,184 @@ LS_CASE(adsb_visible_touch_controls_open_step_and_return)
     ls_scr_adsb.leave();
 }
 
+/* Two aircraft with fresh positions: one nine miles north of home, which is
+   selected, and one under three miles south, the nearer. */
+static void seed_follow_traffic(void)
+{
+    adsb_state_init();
+    const int64_t now = esp_timer_get_time();
+    static const struct { uint32_t icao; const char *call; float lat; } T[] = {
+        { 0xD00001u, "NORTH1", 43.60f }, { 0xD00002u, "SOUTH2", 43.40f },
+    };
+    for (unsigned i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        adsb_aircraft_t *a = adsb_state_find_or_create(T[i].icao);
+        if (!a) continue;
+        snprintf(a->callsign, sizeof(a->callsign), "%s", T[i].call);
+        a->lat = T[i].lat;
+        a->lon = -71.6473f;
+        a->pos_valid = true;
+        a->pos_ts_us = a->last_seen_us = now;
+        a->altitude = 5000;
+    }
+    adsb_select_set_icao(0xD00001u);
+}
+
+/* FOLLOW: F, or its button, steps FIT ALL, SELECTED, NEAREST, OFF and round;
+   the ADS-B app is handed each choice to keep, and the mini map says what it
+   has hold of. */
+LS_CASE(adsb_follow_steps_on_f_and_its_button_and_the_mini_map_says_which)
+{
+    apps_once();
+    seed_follow_traffic();
+    adsb_set_map_follow(LS_FOLLOW_ALL);
+    if (ls_scr_adsb.enter) ls_scr_adsb.enter();
+    int x, y;
+    fresh(); draw_pane(&ls_scr_adsb, PANES[1]);
+    LS_CHECK(find_text("FIT ALL 2", &x, &y));
+    LS_CHECK(find_text("FOLLOW", &x, &y));
+
+    LS_CHECK(ls_scr_adsb.key(LS_TK_CHAR, 'f'));
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_SELECTED);
+    fresh(); draw_pane(&ls_scr_adsb, PANES[1]);
+    LS_CHECK(find_text("SELECTED NORTH1", &x, &y));
+
+    LS_CHECK(ls_scr_adsb.key(LS_TK_CHAR, 'F'));
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_NEAREST);
+    fresh(); draw_pane(&ls_scr_adsb, PANES[1]);
+    LS_CHECK(find_text("NEAREST SOUTH2", &x, &y));
+
+    /* The button is the same step. Its label is the first FOLLOW down the
+       screen, above the mini map's. */
+    LS_CHECK(find_text("FOLLOW", &x, &y));
+    LS_CHECK(ls_scr_adsb.touch(x + 1, y));
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_OFF);
+    fresh(); draw_pane(&ls_scr_adsb, PANES[1]);
+    LS_CHECK(find_text("FOLLOW OFF", &x, &y));
+    LS_CHECK(find_text("FOLLOW", &x, &y));
+    LS_CHECK(ls_scr_adsb.touch(x + 1, y));
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_ALL);
+    LS_EQ_INT(0, escaped(PANES[1]));
+    if (ls_scr_adsb.leave) ls_scr_adsb.leave();
+}
+
+int  lakeshark_adsb_gain_tenths(void);
+void lakeshark_adsb_set_gain(int tenths);
+extern bool ls_test_modes_session;
+extern ls_lora_modes_tuning_t ls_test_modes_tuning;
+static double read_zoom(void) { return ls_map_zoom(); }
+static double read_speaker(void) { return audio_volume_get(); }
+static double read_gain(void) { return lakeshark_adsb_gain_tenths(); }
+static double read_boost(void) { return ls_test_modes_tuning.boost; }
+
+/* `n` presses of LEFT or RIGHT on the level under the cursor. The value may
+   only move the way pressed - one that came round to the far end would move
+   back - and `end` is where it stopped. */
+static bool level_holds(ls_tk_t k, int n, double (*read)(void), double *end)
+{
+    double was = read();
+    for (int i = 0; i < n; i++) {
+        ls_picker_key(k, 0);
+        const double now = read();
+        if (k == LS_TK_RIGHT ? now < was : now > was) return false;
+        was = now;
+    }
+    *end = was;
+    return true;
+}
+
+/* Into OPTIONS on ADS-B, and the sub-list on row `menu`, cursor on `row`. */
+static void adsb_options_at(int menu, int row)
+{
+    ls_picker_close();
+    LS_CHECK(ls_scr_adsb.key(LS_TK_CHAR, 'o'));
+    picker_row(menu);
+    ls_picker_key(LS_TK_ENTER, 0);
+    picker_row(row);
+}
+
+/* Every level in ADS-B's OPTIONS steps with < and > and stops at its ends,
+   never coming round to the other: MAP ZOOM with FOLLOW picking the zoom and
+   without, the speaker, the HackRF's gain and the LR2021's boost. FOLLOW
+   itself is a choice of four and goes round. */
+LS_CASE(adsb_options_levels_stop_at_their_ends_and_follow_goes_round)
+{
+    apps_once();
+    seed_follow_traffic();
+    adsb_set_map_follow(LS_FOLLOW_ALL);
+    if (ls_scr_adsb.enter) ls_scr_adsb.enter();
+    fresh(); draw_pane(&ls_scr_adsb, PANES[1]);
+    double end;
+
+    /* MAP ZOOM under FIT ALL: four steps either side of the fit. */
+    const int fit = ls_map_zoom();
+    adsb_options_at(2, 2);
+    LS_CHECK(level_holds(LS_TK_RIGHT, 12, read_zoom, &end));
+    LS_EQ_INT((int)end, fit + LS_FOLLOW_BIAS_MAX);
+    LS_CHECK(level_holds(LS_TK_LEFT, 20, read_zoom, &end));
+    LS_EQ_INT((int)end, fit - LS_FOLLOW_BIAS_MAX);
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_ALL);
+
+    /* FOLLOW in the same list: SELECTED, NEAREST, OFF, then round. */
+    picker_row(1);
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_SELECTED);
+    LS_CHECK(ls_picker_active());
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_NEAREST);
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_OFF);
+
+    /* MAP ZOOM by hand: the map's whole range, and no further. */
+    picker_row(2);
+    LS_CHECK(level_holds(LS_TK_RIGHT, 30, read_zoom, &end));
+    LS_EQ_INT((int)end, 22);
+    LS_CHECK(level_holds(LS_TK_LEFT, 30, read_zoom, &end));
+    LS_EQ_INT((int)end, 0);
+    picker_row(1);
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_INT(adsb_map_follow(), LS_FOLLOW_ALL);
+
+    /* VOICE > SPEAKER. */
+    adsb_options_at(1, 5);
+    LS_CHECK(level_holds(LS_TK_RIGHT, 30, read_speaker, &end));
+    LS_EQ_INT((int)end, 100);
+    LS_CHECK(level_holds(LS_TK_LEFT, 30, read_speaker, &end));
+    LS_EQ_INT((int)end, 0);
+
+    /* RECEIVER on the HackRF: its gain. */
+    board_full();
+    ls_rsel_set(LS_RSEL_ADSB, LS_RSEL_SDR_HACKRF);
+    adsb_options_at(0, 0);
+    LS_CHECK(level_holds(LS_TK_RIGHT, 80, read_gain, &end));
+    LS_CHECK(level_holds(LS_TK_LEFT, 80, read_gain, &end));
+    LS_EQ_INT((int)end, 0);
+
+    /* And on the LR2021 with a Mode S session: the boost, 0 to 7. */
+    ls_rsel_hw_t hw;
+    memset(&hw, 0, sizeof(hw));
+    for (int i = 0; i < LS_RSEL_RADIOS; i++) hw.present[i] = true;
+    hw.lora_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_MODES_RX;
+    hw.lora_lr20xx = true;
+    hw.lora_name = "LR2021";
+    lssim_rsel_board(&hw);
+    ls_rsel_set(LS_RSEL_ADSB, LS_RSEL_LORA);
+    ls_test_modes_session = true;
+    adsb_options_at(0, 1);
+    LS_CHECK(level_holds(LS_TK_RIGHT, 12, read_boost, &end));
+    LS_EQ_INT((int)end, 7);
+    LS_CHECK(level_holds(LS_TK_LEFT, 12, read_boost, &end));
+    LS_EQ_INT((int)end, 0);
+
+    ls_picker_close();
+    ls_test_modes_session = false;
+    ls_test_modes_tuning.boost = 7;
+    lakeshark_adsb_set_gain(496);
+    s_audio_vol = 60;
+    map_zoom = 8;
+    board_usual();
+    if (ls_scr_adsb.leave) ls_scr_adsb.leave();
+}
+
 extern void ls_scr_rec_tools(void);
 
 LS_CASE(rec_gps_source_delegates_without_claiming_an_sdr)
@@ -1748,6 +1946,223 @@ LS_CASE(pager_touch_and_arrow_navigation_work_in_list_and_detail)
     }
 }
 
+extern void lssim_field_pager(uint32_t rx, uint32_t pages);
+
+/* The value of a drawn row sits ten cells after its label. `dy` reads the
+   row below the label, for a label the controls bar also carries. */
+static bool row_value_at(const char *label, int dy, char *out, int n)
+{
+    int x, y;
+    if (!find_text(label, &x, &y)) return false;
+    y += dy;
+    for (int i = 0; i < n - 1; i++)
+        out[i] = x + 10 + i < W ? (char)g_back[y * W + x + 10 + i].ch : ' ';
+    out[n - 1] = 0;
+    return true;
+}
+static bool row_value(const char *label, char *out, int n)
+{
+    return row_value_at(label, 0, out, n);
+}
+static bool is_digit_cell(char c) { return c >= '0' && c <= '9'; }
+
+static int count_char(char c)
+{
+    int n = 0;
+    for (int i = 0; i < W * H; i++) if (g_back[i].ch == (unsigned char)c) n++;
+    return n;
+}
+
+static void fm_page_drawn(fm_mode_t mode, int page, tui_rect pane)
+{
+    FM.mode = mode;
+    ls_scr_fm.enter();
+    ls_scr_fm_show_page(page);
+    fresh();
+    draw_pane(&ls_scr_fm, pane);
+}
+
+LS_CASE(fm_vfo_shows_squelch_and_signal_only_in_the_modes_that_have_them)
+{
+    seed_fm();
+    FM.squelch_tenths = 30;
+    FM.noise = 0.2f;                 /* what NFM last wrote */
+    FM.iq_level = 0.05f;
+    char v[8];
+
+    /* NFM gates on quieting, in percent. */
+    fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+    LS_CHECK(row_value_at("CARRIER", 1, v, 4));
+    LS_CHECK_MSG(!strncmp(v, "30%", 3), "NFM squelch reads '%s'", v);
+    LS_CHECK(row_value("CARRIER", v, 5));
+    LS_CHECK_MSG(!strncmp(v, "OPEN", 4), "NFM carrier reads '%s'", v);
+    LS_CHECK(count_char('^') >= 1);
+
+    /* AM gates on carrier level in tenths of a percent, so 30 is 3.0%. */
+    fm_page_drawn(FM_MODE_AM, 0, PANES[1]);
+    LS_CHECK(row_value_at("CARRIER", 1, v, 5));
+    LS_CHECK_MSG(!strncmp(v, "3.0%", 4), "AM squelch reads '%s'", v);
+    LS_CHECK(count_char('^') >= 1);
+
+    /* WFM and the decoders write neither, so they show neither. */
+    const fm_mode_t none[] = {FM_MODE_WFM, FM_MODE_POCSAG, FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SAME, FM_MODE_APRS};
+    for (unsigned i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
+        FM.squelch_open = true;
+        fm_page_drawn(none[i], 0, PANES[1]);
+        LS_CHECK(row_value_at("CARRIER", 1, v, 3));
+        LS_CHECK_MSG(!strncmp(v, "--", 2), "mode %d squelch reads '%s'", (int)none[i], v);
+        LS_CHECK(row_value("CARRIER", v, 3));
+        LS_CHECK_MSG(!strncmp(v, "--", 2), "mode %d carrier reads '%s'", (int)none[i], v);
+        LS_EQ_INT(0, count_char('^'));
+    }
+}
+
+LS_CASE(fm_pager_counters_come_from_the_decoder_that_is_running)
+{
+    seed_fm();                       /* POCSAG left 12 pages and sync */
+    FM.flex_sync = false;
+    FM.flex_pages = 7;
+    FM.flex_cw_errs = 3;
+    char v[8];
+    int x, y;
+
+    /* No pager running: no pager rows, and not the last POCSAG session's. */
+    fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+    LS_CHECK(!find_text("PAGES", &x, &y));
+    LS_CHECK(!find_text("LOCKED", &x, &y));
+    LS_CHECK(!find_text("hunting", &x, &y));
+
+    /* FLEX has its own counters. */
+    fm_page_drawn(FM_MODE_FLEX, 0, PANES[1]);
+    LS_CHECK(row_value("PAGES", v, 3));
+    LS_CHECK_MSG(v[0] == '7' && !is_digit_cell(v[1]), "FLEX VFO pages reads '%s'", v);
+    LS_CHECK(row_value("SYNC", v, 8));
+    LS_CHECK_MSG(!strncmp(v, "hunting", 7), "FLEX VFO sync reads '%s'", v);
+    fm_page_drawn(FM_MODE_FLEX, 1, PANES[1]);
+    LS_CHECK(find_text("7 pg", &x, &y));
+    LS_CHECK(find_text("3 err", &x, &y));
+    LS_CHECK(find_text("no sync", &x, &y));
+    LS_CHECK(!find_text("12 pg", &x, &y));
+    LS_CHECK(!find_text("no codewords yet", &x, &y));
+
+    /* POCSAG on an SDR is the one the tape and the counters were written for. */
+    fm_page_drawn(FM_MODE_POCSAG, 1, PANES[1]);
+    LS_CHECK(find_text("12 pg", &x, &y));
+    LS_CHECK(find_text("SYNC", &x, &y));
+    LS_CHECK(find_text("no codewords yet", &x, &y));
+
+    /* POCSAG on the chip: its own page and packet counts, never the SDR's. */
+    board_usual();
+    ls_field_direct(false);
+    ls_rsel_set(LS_RSEL_PAGER, LS_RSEL_LORA);
+    lssim_field_pager(5, 3);
+    FM.freq_hz = 152600000;
+    fm_page_drawn(FM_MODE_POCSAG, 1, PANES[1]);
+    LS_CHECK(find_text("3 pg", &x, &y));
+    LS_CHECK(find_text("5 rx", &x, &y));
+    LS_CHECK(!find_text("12 pg", &x, &y));
+    fm_page_drawn(FM_MODE_POCSAG, 0, PANES[1]);
+    LS_CHECK(row_value("PAGES", v, 3));
+    LS_CHECK_MSG(v[0] == '3' && !is_digit_cell(v[1]), "chip VFO pages reads '%s'", v);
+    ls_scr_fm.leave();
+    lssim_field_pager(0, 0);
+    board_usual();
+}
+
+/* Pages newest first, addresses 100 up, text "msg-<address>", as the decoder
+   leaves them. */
+static void fm_pages_seed(int n)
+{
+    memset(FM.pages, 0, sizeof(FM.pages));
+    FM.page_head = FM.page_count = 0;
+    for (int i = 0; i < n; i++) {
+        fm_page_t *p = &FM.pages[FM.page_head];
+        p->ts_us = 1000 + i;
+        p->address = 100 + (uint32_t)i;
+        p->type = 'A';
+        snprintf(p->text, sizeof(p->text), "msg-%d", 100 + i);
+        FM.page_head = (FM.page_head + 1) % FM_PAGE_LOG_MAX;
+        FM.page_count++;
+    }
+}
+
+static void fm_page_arrives(int address)
+{
+    fm_page_t *p = &FM.pages[FM.page_head];
+    memset(p, 0, sizeof(*p));
+    p->ts_us = 1000 + address;
+    p->address = (uint32_t)address;
+    p->type = 'A';
+    snprintf(p->text, sizeof(p->text), "msg-%d", address);
+    FM.page_head = (FM.page_head + 1) % FM_PAGE_LOG_MAX;
+    if (FM.page_count < FM_PAGE_LOG_MAX) FM.page_count++;
+}
+
+LS_CASE(pager_selection_stays_on_its_message_as_pages_arrive)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        seed_fm();
+        FM.mode = FM_MODE_POCSAG;
+        fm_pages_seed(4);
+        ls_scr_fm.enter();
+        for (int i = 0; i < FM_PAGE_LOG_MAX; ++i) ls_scr_fm.key(LS_TK_UP, 0);
+        int x, y;
+
+        /* On the newest, the selection stays on the newest. */
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 1/4", &x, &y));
+        fm_page_arrives(104);
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 1/5", &x, &y));
+
+        /* Anywhere else it stays on the message, so its place moves down. */
+        LS_CHECK(ls_scr_fm.key(LS_TK_DOWN, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 2/5", &x, &y));        /* msg-103 */
+        fm_page_arrives(105);
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 3/6", &x, &y));
+
+        /* And the page being read does not change under the reader. */
+        LS_CHECK(ls_scr_fm.key(LS_TK_ENTER, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("msg-103", &x, &y));
+        fm_page_arrives(106);
+        fm_page_arrives(107);
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("msg-103", &x, &y));
+        LS_CHECK(find_text("LIST 5/8", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_UP, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("msg-104", &x, &y));
+    }
+}
+
+LS_CASE(esc_closes_an_open_pager_page_before_anything_else)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        seed_fm();
+        FM.mode = FM_MODE_POCSAG;
+        fm_pages_seed(3);
+        ls_scr_fm.enter();
+        for (int i = 0; i < FM_PAGE_LOG_MAX; ++i) ls_scr_fm.key(LS_TK_UP, 0);
+        int x, y;
+        LS_CHECK(ls_scr_fm.key(LS_TK_ENTER, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("LIST 1/3", &x, &y));
+
+        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("OPEN 1/3", &x, &y));
+        LS_CHECK(find_text("DECODED PAGES", &x, &y));
+
+        /* With nothing open it does what it always did: leaves the page. */
+        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(!find_text("DECODED PAGES", &x, &y));
+    }
+}
+
 /* Settings on its first page, then into `menu` by pressing its box. */
 static void settings_open(const char *menu, tui_rect pane)
 {
@@ -1773,7 +2188,7 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
         { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "Display", "Sound", "Device" } },
         { "Display", { "BACK", "Theme", "Daylight", "Font", "Auto dim", "Dim after" } },
         { "Sound",   { "BACK", "Boot sound", "Voice", "Alert sound", "Vibrate" } },
-        { "Device",  { "BACK", "Keyboard light", "Keyboard dim", "USB autoreboot" } },
+        { "Device",  { "BACK", "Keyboard light", "Keyboard dim", "USB autoreboot", "Update" } },
     };
     static const int PANE_IDX[] = { 0, 1, 3 };
     s_daylight = false;
@@ -2399,7 +2814,7 @@ LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
     scan_channels_clear();
     scan_engine_set_source(SCAN_SRC_CHANNELS);
     ls_radio_panel_t panel={.focus=-1};
-    ls_radio_view_t view={.fm=true,.frequency=154785000,.mode="NFM"};
+    ls_radio_view_t view={.fm=true,.frequency=154785000,.mode="NFM",.tone_required=13};
     tui_rect pane={1,2,46,63};
     fresh();grid_for(pane);
     ls_radio_panel_draw(&panel,&view,&g_sf,pane);
@@ -2410,6 +2825,7 @@ LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
     ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'f');
     LS_EQ_INT(scan_channels_count(),1);
     LS_EQ_INT(scan_channel_get(0)->freq_hz,154785000);
+    LS_EQ_INT(scan_channel_tone(scan_channel_get(0)),13);
     ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'m');
     fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
     int x,y;LS_CHECK(find_text("SCAN",&x,&y));
@@ -2855,14 +3271,16 @@ LS_CASE(subghz_replay_asks_how_hard_to_send)
     fresh();ls_picker_draw(&g_sf,pane);
     LS_CHECK(find_text("SEND AT",&x,&y));
     LS_CHECK(find_text("-9 dBm",&x,&y));
-    LS_CHECK(find_text("22 dBm",&x,&y));
+    /* Replay stops at +10 dBm on every radio, so no step above it. */
+    LS_CHECK(find_text("10 dBm",&x,&y));
+    LS_CHECK(!find_text("22 dBm",&x,&y));
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_sim_replay_dbm(),-9);
     LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'c'));
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     for(int i=0;i<3;i++)LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
-    LS_EQ_INT(rec_watch_sim_replay_dbm(),22);
+    LS_EQ_INT(rec_watch_sim_replay_dbm(),10);
     rec_watch_select_source(REC_SOURCE_RTL);
     ls_scr_subghz.leave();
 }
@@ -3366,4 +3784,370 @@ LS_CASE(record_replay_loads_without_tx_and_waits_for_real_completion)
     LS_CHECK(plain); /* blue/cyan belongs only to the moving activity trail */
     f.invalid=true;LS_CHECK(!ls_scr_rec_replay_file("/sdcard/bad.sub",&f,edges));
     ls_scr_rec.key(LS_TK_TAB,0);ls_scr_rec.leave();ls_shim_time_set(old_time);
+}
+
+/* ---- UPDATE ---------------------------------------------------------------- */
+
+static long s_ota_stage, s_ota_got;
+static int  s_ota_steps;
+static const char *s_ota_failed = "";
+static bool fake_ota_stage(ls_val_t *o)   { o->kind = LS_VAL_INT; o->i = s_ota_stage; return true; }
+static bool fake_ota_got(ls_val_t *o)     { o->kind = LS_VAL_INT; o->i = s_ota_got; return true; }
+static bool fake_ota_size(ls_val_t *o)    { o->kind = LS_VAL_INT; o->i = 3787600; return true; }
+static bool fake_ota_trial(ls_val_t *o)   { o->kind = LS_VAL_INT; o->i = s_ota_stage == 9 ? 12 : 0; return true; }
+static bool fake_ota_build(ls_val_t *o)   { o->kind = LS_VAL_TEXT; o->s = "2.8.4-rc1-g47096733100f"; return true; }
+static bool fake_ota_running(ls_val_t *o) { o->kind = LS_VAL_TEXT; o->s = "2.8.3-gf6007a1684f0"; return true; }
+static bool fake_ota_failed(ls_val_t *o)  { o->kind = LS_VAL_TEXT; o->s = s_ota_failed; return true; }
+static bool fake_ota_state(ls_val_t *o)   { o->kind = LS_VAL_TEXT; o->s = "the state line"; return true; }
+static ls_act_status_t fake_ota_step(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    (void)out;
+    s_ota_steps++;
+    return LS_ACT_OK;
+}
+
+static void fake_ota_publish(void)
+{
+    ls_value_publish("ota.stage", NULL, fake_ota_stage);
+    ls_value_publish("ota.got", "B", fake_ota_got);
+    ls_value_publish("ota.size", "B", fake_ota_size);
+    ls_value_publish("ota.trial", "s", fake_ota_trial);
+    ls_value_publish("ota.build", NULL, fake_ota_build);
+    ls_value_publish("ota.running", NULL, fake_ota_running);
+    ls_value_publish("ota.failed", NULL, fake_ota_failed);
+    ls_value_publish("ota.state", NULL, fake_ota_state);
+    ls_action_register("ota.step", "", LS_CAP_STORE | LS_CAP_POWER, fake_ota_step, "test");
+}
+
+/* The first cell of a figure from the top of `pane`: on the update page that
+   is the big word, which nothing above it draws in. */
+static bool first_figure(tui_rect pane, int *col, int *row)
+{
+    for (int y = pane.y; y < pane.y + pane.h; y++)
+        for (int x = pane.x; x < pane.x + pane.w; x++)
+            if (g_back[y * W + x].ch == LS_TUI_SHADE_FULL) { *col = x; *row = y; return true; }
+    return false;
+}
+
+LS_CASE(the_update_app_draws_every_stage_inside_its_pane_and_its_button_installs)
+{
+    fake_ota_publish();
+    const int64_t old_time = esp_timer_get_time();
+
+    for (unsigned p = 0; p < 4; p++) {
+        const tui_rect pane = PANES[p];
+        s_ota_stage = 0;
+        s_ota_failed = "";
+        const int asked = s_ota_steps;
+        ls_scr_update.enter();
+        LS_EQ_INT(s_ota_steps, asked + 1);               /* opening the app checks */
+
+        int c, r;
+        for (long st = 0; st <= 9; st++) {
+            s_ota_stage = st;
+            s_ota_got = st == 5 ? 2400000 : st == 8 ? 900000 : 0;
+            /* several moments: every effect has to stay inside at any time */
+            for (int f = 0; f < 4; f++) {
+                ls_shim_time_set(7000000 + (int64_t)f * 377000 + st * 1000003);
+                fresh();
+                draw_pane(&ls_scr_update, pane);
+                LS_CHECK_MSG(escaped(pane) == 0, "stage %ld frame %d drew outside a %dx%d pane",
+                             st, f, pane.w, pane.h);
+            }
+            LS_CHECK_MSG(find_text("SYSTEM UPDATE", &c, &r), "stage %ld has no panel on a %dx%d pane",
+                         st, pane.w, pane.h);
+        }
+
+        /* READY: the big button says what it installs, and a tap on it
+           installs; so does ENTER */
+        s_ota_stage = 4;
+        s_ota_got = 0;
+        fresh();
+        draw_pane(&ls_scr_update, pane);
+        LS_CHECK_MSG(find_text("2.8.4-rc1  3.6 MB", &c, &r), "no INSTALL button on a %dx%d pane",
+                     pane.w, pane.h);
+        int before = s_ota_steps;
+        LS_CHECK(ls_scr_update.touch(c, r));
+        LS_EQ_INT(s_ota_steps, before + 1);
+        before = s_ota_steps;
+        LS_CHECK(ls_scr_update.key(LS_TK_ENTER, 0));
+        LS_EQ_INT(s_ota_steps, before + 1);
+
+        /* and so does READY itself, where there is room for the word */
+        const bool word = pane.h >= 55 || (pane.w >= 92 && pane.h >= 22);
+        if (word) {
+            LS_CHECK_MSG(first_figure(pane, &c, &r), "no READY on a %dx%d pane", pane.w, pane.h);
+            before = s_ota_steps;
+            LS_CHECK(ls_scr_update.touch(c, r));
+            LS_EQ_INT(s_ota_steps, before + 1);
+        }
+
+        /* a build that did not start last time is offered again, said so */
+        s_ota_failed = "2.8.4-rc1-g47096733100f";
+        fresh();
+        draw_pane(&ls_scr_update, pane);
+        LS_CHECK_MSG(find_text("2.8.4-rc1 again", &c, &r), "no retry button on a %dx%d pane",
+                     pane.w, pane.h);
+        LS_CHECK_MSG(find_text("did not start", &c, &r), "no rollback line on a %dx%d pane",
+                     pane.w, pane.h);
+        s_ota_failed = "";
+
+        /* the latest already: CHECK asks again */
+        s_ota_stage = 3;
+        fresh();
+        draw_pane(&ls_scr_update, pane);
+        LS_CHECK_MSG(find_text("ask the server again", &c, &r), "no CHECK button on a %dx%d pane",
+                     pane.w, pane.h);
+        before = s_ota_steps;
+        LS_CHECK(ls_scr_update.touch(c, r));
+        LS_EQ_INT(s_ota_steps, before + 1);
+
+        /* mid-download, and while a new build is on trial, nothing is
+           pressable: no button, and ENTER does nothing */
+        for (long st = 5; st <= 9; st += 4) {
+            s_ota_stage = st;
+            fresh();
+            draw_pane(&ls_scr_update, pane);
+            LS_CHECK_MSG(!find_text("ask the server again", &c, &r), "stage %ld has a button on a %dx%d pane",
+                         st, pane.w, pane.h);
+            before = s_ota_steps;
+            LS_CHECK(ls_scr_update.key(LS_TK_ENTER, 0));
+            LS_EQ_INT(s_ota_steps, before);
+        }
+
+        LS_CHECK(!ls_scr_update.key(LS_TK_ESC, 0));      /* ESC is the router's: HOME */
+    }
+    ls_shim_time_set(old_time);
+    s_ota_stage = 0;
+}
+
+/* The download's rain and pipe step on drawn frames, not on the clock: with
+   frame times that wander and a transfer rate that changes, the pipe moves
+   one cell a frame and every rain column falls a row on a beat of its own
+   (every 1st, 2nd or 3rd frame) and never jumps. */
+LS_CASE(the_update_download_scrolls_by_frame_not_by_wall_time)
+{
+    fake_ota_publish();
+    const int64_t old_time = esp_timer_get_time();
+    const tui_rect pane = PANES[1];                       /* portrait, roomy: pipe 12 cells */
+    /* the rain is checked above the steps line (row 34), where nothing else is drawn
+       over it, in the columns clear of the scene; a column is in those rows for only part of its fall, so there are
+       plenty of frames and columns */
+    enum { FRAMES = 160, PIPE_X = 24, PIPE_Y = 12, PIPE_LEN = 12, RAIN_COLS = 10, RAIN_Y0 = 6, RAIN_Y1 = 33 };
+    static char pipe_f[FRAMES][PIPE_LEN];
+    static unsigned char rain_f[FRAMES][RAIN_COLS][H];
+    int RAIN_X[RAIN_COLS];
+    for (int c = 0; c < RAIN_COLS; c++) RAIN_X[c] = c < 6 ? 2 + 2 * c : 38 + 2 * (c - 6);   /* clear of the scene */
+    static const int64_t GAP_MS[] = { 66, 66, 31, 120, 66, 90, 45, 66, 200, 66 };
+
+    s_ota_stage = 5;
+    s_ota_got = 100000;
+    int64_t t = 9000000;
+    ls_scr_update.enter();
+    for (int f = 0; f < FRAMES; f++) {
+        t += GAP_MS[f % 10] * 1000;
+        s_ota_got += (f % 7 == 3) ? 900000 : 20000;       /* the rate estimate keeps changing */
+        if (s_ota_got > 3700000) s_ota_got = 100000 + f;
+        ls_shim_time_set(t);
+        fresh();
+        draw_pane(&ls_scr_update, pane);
+        for (int i = 0; i < PIPE_LEN; i++) pipe_f[f][i] = g_back[(PIPE_Y + i) * W + PIPE_X].ch;
+        for (int c = 0; c < RAIN_COLS; c++)
+            for (int y = RAIN_Y0; y <= RAIN_Y1; y++) rain_f[f][c][y] = g_back[y * W + RAIN_X[c]].attr;
+    }
+
+    /* the pipe: this frame's column is the last one shifted down a cell */
+    int moved = 0;
+    for (int f = 1; f < FRAMES; f++) {
+        for (int i = 1; i < PIPE_LEN; i++)
+            LS_CHECK_MSG(pipe_f[f][i] == pipe_f[f - 1][i - 1], "pipe frame %d cell %d did not step one cell", f, i);
+        moved += memcmp(pipe_f[f], pipe_f[f - 1], PIPE_LEN) != 0;
+    }
+    LS_CHECK(moved > FRAMES / 2);
+
+    /* the rain: a column is the last frame's, down by 0 or 1 row, on a fixed beat */
+    int moving = 0;
+    for (int c = 0; c < RAIN_COLS; c++) {
+        signed char d[FRAMES] = { 0 };                    /* -1 when the column is empty both frames */
+        int seen = 0;
+        for (int f = 1; f < FRAMES; f++) {
+            bool empty = true, same = true, down = true;
+            /* the rain rows, less the first (its tail comes from above the
+               page) and the state line below them */
+            for (int y = RAIN_Y0; y <= RAIN_Y1; y++) {
+                const unsigned char a = rain_f[f][c][y], b = rain_f[f - 1][c][y];
+                if (a != TUI_DEFAULT_ATTR || b != TUI_DEFAULT_ATTR) empty = false;
+                if (a != b) same = false;
+                if (y > RAIN_Y0 && a != rain_f[f - 1][c][y - 1]) down = false;
+            }
+            if (empty) { d[f] = -1; continue; }
+            LS_CHECK_MSG(same || down, "rain column %d frame %d jumped", RAIN_X[c], f);
+            d[f] = same ? 0 : 1;
+            seen += d[f];
+        }
+        moving += seen;
+        bool fits = false;
+        for (int n = 1; n <= 3 && !fits; n++)
+            for (int ph = 0; ph < n && !fits; ph++) {
+                bool ok = true;
+                for (int f = 1; f < FRAMES; f++)
+                    if (d[f] >= 0 && d[f] != ((f + ph) % n == n - 1)) ok = false;
+                fits = ok;
+            }
+        LS_CHECK_MSG(fits, "rain column %d has no steady beat", RAIN_X[c]);
+    }
+    LS_CHECK(moving > RAIN_COLS);
+    ls_shim_time_set(old_time);
+    s_ota_stage = 0;
+}
+
+LS_CASE(update_is_an_app_that_settings_opens_and_back_leaves_for_home)
+{
+    fake_ota_publish();
+    apps_once();
+    s_ota_stage = 3;
+    settings_open("Device", PANES[1]);
+    int c, r;
+    LS_CHECK_MSG(find_text("Update", &c, &r), "no Update box in DEVICE");
+    LS_CHECK(ls_scr_settings.touch(c, r));
+    LS_EQ_INT(ls_tui_screen_current(), ls_tui_screen_index_of(&ls_scr_update));
+    ls_anim_cancel();
+
+    fresh();
+    draw_pane(&ls_scr_update, PANES[1]);
+    LS_CHECK_MSG(find_text("BACK", &c, &r), "no BACK on the update page");
+    LS_CHECK(ls_scr_update.touch(c, r));
+    LS_EQ_INT(ls_tui_screen_current(), ls_tui_screen_index_of(&ls_scr_home));
+    ls_scr_settings.enter();
+    s_ota_stage = 0;
+}
+
+extern const char *ls_test_radio_claimed;
+
+LS_CASE(falls_p25_lr2021_names_the_radio_and_explains_missing_spectrum)
+{
+    ls_rsel_hw_t hw = {0};
+    hw.present[LS_RSEL_LORA] = true;
+    hw.lora_lr20xx = true;
+    hw.lora_name = "LR2021";
+    hw.lora_caps = LS_LORA_CAP_FSK | LS_LORA_CAP_FSK_STREAM;
+    lssim_rsel_board(&hw);
+    ls_rsel_set(LS_RSEL_P25, LS_RSEL_LORA);
+    ls_rsel_set(LS_RSEL_WATERFALL, LS_RSEL_SDR_RTL);
+    ls_test_radio_claimed = "P25";
+    ls_scr_falls.enter();
+    /* MODE selects P25 through the screen's own start and flash path. */
+    ls_scr_falls.key(LS_TK_CHAR, 'e');
+    ls_picker_select(6);
+    ls_picker_key(LS_TK_ENTER, 0);
+    int x, y;
+    for (int pane = 0; pane < 4; pane++) {
+        fresh();
+        draw_pane(&ls_scr_falls, PANES[pane]);
+        LS_CHECK(find_text("LR2021", &x, &y));
+        LS_CHECK(find_text("LR2021 gives no P25 spectrum", &x, &y));
+        LS_CHECK(!find_text("no receiver is producing a spectrum", &x, &y));
+        LS_CHECK(!find_text("RTL-SDR", &x, &y));
+        LS_EQ_INT(LS_RSEL_LORA, ls_rsel_effective(LS_RSEL_WATERFALL));
+        LS_EQ_INT(0, escaped(PANES[pane]));
+    }
+    ls_scr_falls.leave();
+    ls_test_radio_claimed = NULL;
+    board_usual();
+}
+
+LS_CASE(aprs_station_list_detail_and_touch_fit_portrait_and_landscape)
+{
+    ls_shim_time_set(120000000); aprs_store_clear();
+    aprs_packet_t p;
+    LS_CHECK(aprs_parse("N3STAT", "APRS", (const uint8_t *)">ready", 6, &p));
+    aprs_store_receive(&p, NULL);
+    const char *info = "!4903.50N/07201.75W_180/010g020t072h50b10132";
+    LS_CHECK(aprs_parse("WX1BOX", "APRS", (const uint8_t *)info, strlen(info), &p));
+    aprs_store_receive(&p, NULL);
+    for (int pane = 0; pane < 2; ++pane) {
+        FM.mode = FM_MODE_APRS; ls_scr_fm.enter();
+        fresh(); draw_pane(&ls_scr_fm, PANES[pane]);
+        int x, y;
+        LS_CHECK(find_text("HEARD STATIONS", &x, &y));
+        LS_CHECK(find_text("PACKET HEARD", &x, &y));
+        LS_CHECK(find_text("WX1BOX", &x, &y));
+        LS_EQ_INT(0, escaped(PANES[pane]));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh(); draw_pane(&ls_scr_fm, PANES[pane]);
+        LS_CHECK(find_text("WEATHER", &x, &y));
+        LS_CHECK(find_text("72 F", &x, &y));
+        LS_EQ_INT(0, escaped(PANES[pane]));
+        LS_CHECK(ls_scr_fm.key(LS_TK_DOWN, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[pane]);
+        LS_CHECK(find_text("STATUS", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_UP, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[pane]);
+        LS_CHECK(find_text("WEATHER", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[pane]);
+        LS_CHECK(find_text("HEARD STATIONS", &x, &y));
+        ls_scr_fm.leave();
+    }
+    ls_shim_time_advance(3000000);
+    FM.mode = FM_MODE_APRS; ls_scr_fm.enter();
+    fresh(); draw_pane(&ls_scr_fm, PANES[1]);
+    int x, y; LS_CHECK(find_text("LISTENING", &x, &y)); LS_CHECK(!find_text("PACKET HEARD", &x, &y));
+    ls_scr_fm.leave(); aprs_store_clear();
+}
+
+LS_CASE(aprs_layered_options_step_presets_limits_and_honour_frequency_lock)
+{
+    fresh(); board_usual(); ls_opt_close();
+    aprs_options_t saved, o; aprs_options_get(&saved);
+    o = saved; o.preset = 0; o.keep_minutes = 30; o.max_km = 0; aprs_options_set(&o);
+    FM.mode = FM_MODE_APRS; FM.freq_hz = 144390000; lakeshark_fm_frequency_lock(false);
+    ls_opt_open(&fm_aprs_options); ls_picker_select(1);
+    LS_CHECK(ls_picker_key(LS_TK_RIGHT, 0)); aprs_options_get(&o); LS_EQ_INT(35, o.keep_minutes);
+    LS_CHECK(ls_picker_key(LS_TK_LEFT, 0)); aprs_options_get(&o); LS_EQ_INT(30, o.keep_minutes);
+    ls_picker_select(2); LS_CHECK(ls_picker_key(LS_TK_RIGHT, 0));
+    aprs_options_get(&o); LS_EQ_INT(10, o.max_km);
+    ls_picker_select(0); LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
+    LS_CHECK(ls_picker_key(LS_TK_RIGHT, 0)); aprs_options_get(&o);
+    LS_EQ_INT(1, o.preset); LS_EQ_INT(144800000, FM.freq_hz);
+    lakeshark_fm_frequency_lock(true);
+    LS_CHECK(ls_picker_key(LS_TK_LEFT, 0)); aprs_options_get(&o);
+    LS_EQ_INT(1, o.preset); LS_EQ_INT(144800000, FM.freq_hz);
+    lakeshark_fm_frequency_lock(false);
+    LS_CHECK(ls_picker_key(LS_TK_LEFT, 0)); aprs_options_get(&o);
+    LS_EQ_INT(0, o.preset); LS_EQ_INT(144390000, FM.freq_hz);
+    ls_opt_close(); aprs_options_set(&saved);
+}
+
+LS_CASE(fm_tone_readout_and_layered_arrow_controls)
+{
+    fresh(); board_usual(); ls_opt_close(); scan_engine_stop();
+    ls_action_register("fm.submode", "s", LS_CAP_TUNE, fm_test_select, "FM mode");
+    FM.mode=FM_MODE_LISTEN; FM.freq_hz=154785000;
+    FM.tone_show=true; FM.tone_required=13;
+    FM.tone_detected=(fm_tone_result_t){13,0.95f};
+    for (int i=0;i<2;++i) {
+        fm_page_drawn(FM_MODE_LISTEN,0,PANES[i]);
+        int x,y;
+        LS_CHECK(find_text("TONE",&x,&y));
+        LS_CHECK(find_text("100.0 Hz",&x,&y));
+    }
+    const tui_rect pane={1,2,46,63};
+    grid_for(pane); fresh(); ls_scr_fm.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR,'o'));
+    ls_picker_select(0); LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    fresh(); ls_picker_draw(&g_sf,pane);
+    int x,y;
+    LS_CHECK(find_text("NFM > TONE",&x,&y));
+    LS_CHECK(find_text("TONE SQUELCH",&x,&y));
+    LS_CHECK(ls_picker_key(LS_TK_RIGHT,0)); LS_EQ_INT(FM.tone_required,14);
+    LS_CHECK(ls_picker_key(LS_TK_LEFT,0)); LS_EQ_INT(FM.tone_required,13);
+    ls_picker_select(1); LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    LS_CHECK(!FM.tone_show);
+    ls_opt_close();
+    fm_page_drawn(FM_MODE_LISTEN,0,pane);
+    LS_CHECK(!find_text("100.0 Hz",&x,&y));
+    FM.tone_required=0; FM.tone_detected=(fm_tone_result_t){0};
+    ls_scr_fm.leave();
 }

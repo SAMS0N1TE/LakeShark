@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
+#include "esp_timer.h"
+
 #include "../../ls_map.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
@@ -45,30 +48,79 @@ static const ls_quick_t QUICK[] = {
 
 /* ---------------------------------------------------------------- parts -- */
 
+/* What the receiver is doing, in the order each rules out the next: the
+   reader off, listening with nothing framed yet, talking without a
+   position, a fix. */
+typedef enum { VIEW_OFF, VIEW_LISTENING, VIEW_NO_FIX, VIEW_FIX } gps_view_t;
+
+static gps_view_t view_of(const ls_gps_state_t *g)
+{
+    if (!ls_gps_running()) return VIEW_OFF;
+    if (!g->alive)         return VIEW_LISTENING;
+    return g->fix ? VIEW_FIX : VIEW_NO_FIX;
+}
+
+/* A start can take this long to hear a module left at the wrong rate: the
+   probe at 115200, the try at 9600, and the confirm once it is moved. */
+static bool still_starting(const ls_gps_state_t *g)
+{
+    return esp_timer_get_time() - g->start_us <
+           LS_GPS_PROBE_US + LS_GPS_TRY_9600_US + LS_GPS_CONFIRM_US;
+}
+
 static const char *state_word(const ls_gps_state_t *g)
 {
-    if (!g->alive) return "SILENT";
-    if (!g->fix)   return "SEARCHING";
-    return "FIX";
+    static const char *const WORD[] = { "READER OFF", "LISTENING", "NO FIX", "FIX" };
+    return WORD[view_of(g)];
 }
 
 static uint8_t state_hue(const ls_gps_state_t *g)
 {
-    if (!g->alive) return TUI_RED;
-    if (!g->fix)   return TUI_YELLOW;
-    return TUI_GREEN;
+    switch (view_of(g)) {
+    case VIEW_OFF:       return DIM_FG;
+    case VIEW_LISTENING: return still_starting(g) ? TUI_CYAN : TUI_RED;
+    case VIEW_NO_FIX:    return TUI_YELLOW;
+    default:             return TUI_GREEN;
+    }
+}
+
+/* One line for the header, with the counts where there are any. Tracked
+   sits between used and seen because it is between them: seen includes
+   satellites the almanac only predicts. */
+static void state_line(char *out, size_t n, const ls_gps_state_t *g)
+{
+    switch (view_of(g)) {
+    case VIEW_OFF:
+        snprintf(out, n, "READER OFF / G starts the receiver");
+        break;
+    case VIEW_LISTENING:
+        snprintf(out, n, "LISTENING / no sentences yet");
+        break;
+    default:
+        snprintf(out, n, "%s / %u used, %u tracked, %u seen", state_word(g),
+                 g->sats_used, g->sats_tracked, g->sats_visible);
+        break;
+    }
 }
 
 static const char *diagnosis(const ls_gps_state_t *g)
 {
-    if (g->fix) return NULL;
-    if (!g->bytes)
-        return "nothing on the wire - check power and the two pins";
-    if (!g->sentences)
+    switch (view_of(g)) {
+    case VIEW_FIX:
+        return NULL;
+    case VIEW_OFF:
+        return "the reader is off - G starts it";
+    case VIEW_LISTENING:
+        if (still_starting(g))
+            return "listening - give the receiver a few seconds";
+        if (!g->bytes)
+            return "nothing on the wire - check power and the two pins";
         return "bytes but no sentences - the baud rate is wrong";
-    if (g->checksum_errors > g->sentences / 4)
-        return "sentences arriving corrupt - a marginal wire or rate";
-    return "sentences are good, no position yet - antenna or sky";
+    default:
+        if (g->checksum_errors > g->sentences / 4)
+            return "sentences arriving corrupt - a marginal wire or rate";
+        return "sentences are good, no position yet - antenna or sky";
+    }
 }
 
 static void field(tui_surface *sf, tui_rect a, int row, const char *label,
@@ -115,7 +167,8 @@ static void draw_position(tui_surface *sf, tui_rect pos,
 
     ls_panel_box(sf, pos, "POSITION", TUI_CYAN);
 
-    if (!g->fix) {
+    /* A stopped reader keeps its last fix; it is not a position now. */
+    if (view_of(g) != VIEW_FIX) {
         field(sf, pos, 1, "LATITUDE", "--", dim);
         field(sf, pos, 2, "LONGITUDE", "--", dim);
         /* The note is wrapped, because it did not fit. */
@@ -154,7 +207,8 @@ static void draw_sky(tui_surface *sf, tui_rect sky, const ls_gps_state_t *g)
     char buf[48];
 
     ls_panel_box(sf, sky, "SKY", TUI_CYAN);
-    snprintf(buf, sizeof(buf), "%u of %u", g->sats_used, g->sats_visible);
+    snprintf(buf, sizeof(buf), "%u used, %u tracked, %u seen",
+             g->sats_used, g->sats_tracked, g->sats_visible);
     field(sf, sky, 1, "SATELLITES", buf, val);
     sats_bar(sf, sky, 2, g);
     if (g->year) {
@@ -219,7 +273,9 @@ static void draw_wire(tui_surface *sf, tui_rect wire, const ls_gps_state_t *g)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
-    ls_gps_state_t g;
+    /* Static and in PSRAM: the snapshot carries both satellite tables, and
+       this runs on the TUI task's internal-RAM stack. */
+    EXT_RAM_BSS_ATTR static ls_gps_state_t g;
     ls_gps_get(&g);
 
     /* One pulse per sentence that arrived since the last frame, so the
@@ -244,7 +300,12 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_panel_box(sf,s_view_hit,"GPS VIEW",TUI_CYAN);
         summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,4);
         ls_panel_box(sf,summary,"TRACK LOG",TUI_CYAN);
-    } else s_view_hit=tui_rect_make(body.x,body.y,body.w,2);
+    } else {
+        /* Unframed, the receiver's state takes the row under the toggle and
+           the track lines move down one. */
+        s_view_hit=tui_rect_make(body.x,body.y,body.w,2);
+        summary=tui_rect_make(body.x,body.y+1,body.w,body.h-1);
+    }
     tui_put_str(sf,framed?s_view_hit:body,body.x+2,body.y+(framed?1:0),ls_tui_keyboard_mode()?(s_sky_mode?"[V] SKY / switch to receiver details":"[V] DETAILS / switch to satellite sky"):(s_sky_mode?"[ SKY ]  Tap for receiver details":"[ DETAILS ]  Tap for satellite sky"),A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     char health[80];snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_error()!=ESP_OK?"FAILED":ls_track_rec_running()?(g.fix?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
     tui_put_str(sf,summary,summary.x+2,summary.y+1,health,A(ls_track_rec_running()?TUI_GREEN:TUI_YELLOW,TUI_BLACK));
@@ -265,11 +326,12 @@ static void draw(tui_surface *sf, tui_rect area)
         snprintf(health,sizeof(health),"LAST POINT %s",stamp);
     } else snprintf(health,sizeof(health),"LAST POINT -- / none saved");
     tui_put_str(sf,summary,summary.x+2,summary.y+2,health,LS_ATTR_DIM);
-    if(framed) {
-        char state[60];snprintf(state,sizeof(state),"%s / %u used of %u seen",state_word(&g),g.sats_used,g.sats_visible);
-        tui_put_str(sf,s_view_hit,s_view_hit.x+2,s_view_hit.y+2,state,A(state_hue(&g),TUI_BLACK));
+    {
+        char state[60];state_line(state,sizeof(state),&g);
+        if(framed) tui_put_str(sf,s_view_hit,s_view_hit.x+2,s_view_hit.y+2,state,A(state_hue(&g),TUI_BLACK));
+        else tui_put_str(sf,body,body.x+2,body.y+1,state,A(state_hue(&g),TUI_BLACK));
     }
-    const int header_h=framed?4:3;
+    const int header_h=4;
     body.y+=header_h;body.h-=header_h;
     if(s_sky_mode) {
         draw_skyview(sf,body,&g);
@@ -279,7 +341,11 @@ static void draw(tui_surface *sf, tui_rect area)
 
     /* State, as the biggest thing on the screen. */
     {
-        const char *w = state_word(&g);
+        char w[32];
+        if (view_of(&g) == VIEW_NO_FIX)
+            snprintf(w, sizeof(w), "NO FIX (%u tracked)", g.sats_tracked);
+        else
+            snprintf(w, sizeof(w), "%s", state_word(&g));
         tui_rect band = tui_rect_make(body.x, body.y, body.w, 3);
         tui_fill(sf, band, LS_TUI_SHADE_25, A(state_hue(&g), TUI_BLACK));
         tui_put_str(sf, body, body.x + (body.w - (int)strlen(w)) / 2,
@@ -344,6 +410,14 @@ static void draw(tui_surface *sf, tui_rect area)
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), QUICK, N_QUICK);
 }
 
+/* Started on the way in, as the FIELD apps start it: a screen about the
+   receiver should not open on a receiver nobody has started. Left running
+   on the way out, as they leave it. */
+static void enter(void)
+{
+    if (!ls_gps_running()) (void)ls_gps_start();
+}
+
 /* ---------------------------------------------------------------- input -- */
 
 static bool key(ls_tk_t k, char ch)
@@ -371,7 +445,7 @@ static bool touch(int col, int row)
 const ls_tui_screen_t ls_scr_gps = {
     .name = "GPS",
     .hint = "V sky/details  G receiver  M map  J/K satellite",
-    .enter = NULL,
+    .enter = enter,
     .leave = NULL,
     .draw = draw,
     .key = key,

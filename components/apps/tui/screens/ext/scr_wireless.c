@@ -2,6 +2,8 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_wireless.h"
+#include "../../ls_survey_ui.h"
+#include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -12,7 +14,7 @@
 typedef struct { tui_rect rect; char key; int ap; } hit_t;
 static hit_t s_hits[24];
 static int s_hit_count, s_tab, s_selected, s_page_size = 3;
-static ls_wireless_snapshot_t s_view;
+static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t s_view;
 static char s_join_ssid[33], s_note[80];
 static bool s_join_secure;
 
@@ -79,7 +81,7 @@ static void join_ap(int index)
 static void act(char ch)
 {
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    if (ch == 'w' || ch == 'b') { s_tab = ch == 'b'; s_hit_count = 0; return; }
+    if (ch == 'w' || ch == 'b' || ch == 'v') { s_tab = ch == 'v' ? 2 : ch == 'b'; s_hit_count = 0; return; }
     if (ch == '[' || ch == ']') {
         int p = s_selected / s_page_size + (ch == ']' ? 1 : -1);
         int pages = (s_view.ap_count + s_page_size - 1) / s_page_size;
@@ -251,9 +253,16 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     bool wide = ls_tui_is_wide();
     int tab_h = wide ? 3 : 4, action_h = wide ? 3 : (s_tab ? 5 : 8), msg_h = wide ? 1 : 2;
-    button(sf, tui_rect_make(area.x, area.y, area.w / 2, tab_h), "WI-FI", 'W', !s_tab, false, -1);
-    button(sf, tui_rect_make(area.x + area.w / 2, area.y, area.w - area.w / 2, tab_h),
-           "BLUETOOTH", 'B', s_tab, false, -1);
+    int tab_w = area.w / 3;
+    button(sf, tui_rect_make(area.x, area.y, tab_w, tab_h), "WI-FI", 'W', s_tab == 0, false, -1);
+    button(sf, tui_rect_make(area.x + tab_w, area.y, tab_w, tab_h),
+           "BLUETOOTH", 'B', s_tab == 1, false, -1);
+    button(sf, tui_rect_make(area.x + tab_w * 2, area.y, area.w - tab_w * 2, tab_h),
+           "SURVEY", 'V', s_tab == 2, false, -1);
+    if (s_tab == 2) {
+        ls_survey_draw(sf, tui_rect_make(area.x, area.y + tab_h, area.w, area.h - tab_h));
+        return;
+    }
     tui_rect status = tui_rect_make(area.x, area.y + tab_h, area.w, wide ? 4 : 6);
     ls_panel_box(sf, status, s_tab ? "BLUETOOTH STATUS" : "WI-FI STATUS", TUI_CYAN);
     char text[128];
@@ -321,6 +330,8 @@ static void draw(tui_surface *sf, tui_rect area)
 static bool key(ls_tk_t k, char ch)
 {
     if (k == LS_TK_TAB) { act(s_tab ? 'w' : 'b'); return true; }
+    if (k == LS_TK_CHAR && ch && strchr("vVwWbB", ch)) { act(ch); return true; }
+    if (s_tab == 2) return ls_survey_key(k, ch);
     if (!s_tab && (k == LS_TK_UP || k == LS_TK_DOWN)) {
         if (s_view.ap_count) s_selected = (s_selected + s_view.ap_count + (k == LS_TK_UP ? -1 : 1)) % s_view.ap_count;
         return true;
@@ -337,8 +348,9 @@ static bool touch(int x, int y)
         if (x < hit.rect.x || x >= hit.rect.x + hit.rect.w || y < hit.rect.y || y >= hit.rect.y + hit.rect.h) continue;
         if (hit.ap >= 0) join_ap(hit.ap);
         else if (hit.key) act(hit.key);
-        break;
+        return true;
     }
+    if (s_tab == 2) return ls_survey_touch(x, y);
     return true;
 }
 
@@ -346,6 +358,6 @@ static void enter(void) { s_hit_count = 0; s_note[0] = 0; ls_wireless_set_active
 static void leave(void) { s_hit_count = 0; ls_wireless_set_active(false); }
 
 const ls_tui_screen_t ls_scr_wireless = {
-    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  ARROWS select  ENTER join",
+    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

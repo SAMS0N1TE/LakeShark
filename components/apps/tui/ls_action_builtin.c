@@ -397,6 +397,7 @@ static ls_act_status_t a_fm_submode(const ls_args_t *in, ls_val_t *out)
         { "pocsag", FM_MODE_POCSAG }, { "acars", FM_MODE_ACARS },
         { "flex",   FM_MODE_FLEX   }, { "wfm",  FM_MODE_WFM   },
         { "am",     FM_MODE_AM     },
+        { "same",   FM_MODE_SAME   }, { "aprs", FM_MODE_APRS }, { "ais", FM_MODE_AIS },
     };
     const char *want = in->v[0].s;
     if (!want) return LS_ACT_BADARG;
@@ -558,7 +559,7 @@ void ls_action_register_builtin(void)
     ls_action_register("fm.freq_hz",     "i", LS_CAP_TUNE, a_fm_freq_hz,
                        "tune FM, Hz");
     ls_action_register("fm.submode",     "s", LS_CAP_TUNE, a_fm_submode,
-                       "listen|scan|pocsag|acars|flex|wfm");
+                       "listen|scan|pocsag|acars|flex|wfm|am|same|aprs|ais");
     ls_action_register("p25.freq",       "f", LS_CAP_TUNE, a_p25_freq,
                        "tune P25, MHz");
     ls_action_register("p25.tune",       "",  LS_CAP_TUNE, a_p25_tune,

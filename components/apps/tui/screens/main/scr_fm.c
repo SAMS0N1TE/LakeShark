@@ -1,3 +1,4 @@
+#include "../../ls_calls.h"
 /* FM screen: VFO on one page, decoded pages on another.
 
    `FM` is a plain global like `P25`, and `FM.scan_db[256]` is a bare
@@ -8,12 +9,18 @@
 #include "../../ls_numpad.h"
 #include "../../ls_options.h"
 #include "scan_engine.h"
+#include "scan_channels.h"
+#include "../../ls_motion.h"
 #include "../../ls_text.h"
+#include "fm_same_view.h"
+#include "fm_aprs_view.h"
+#include "fm_ais_view.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include "apps/fm/fm_state.h"
+#include "apps/fm/aprs_store.h"
 #include "apps/fm/fm_mode_label.h"
 #include "audio/audio_out.h"
 #include "lakeshark_backend.h"
@@ -47,7 +54,7 @@ static uint32_t s_blink;
 
 static const fm_mode_t FM_MODES[] = {
     FM_MODE_LISTEN, FM_MODE_WFM, FM_MODE_AM, FM_MODE_POCSAG,
-    FM_MODE_FLEX, FM_MODE_ACARS,
+    FM_MODE_FLEX, FM_MODE_ACARS, FM_MODE_SAME, FM_MODE_APRS, FM_MODE_AIS,
 };
 #define N_MODES ((int)(sizeof(FM_MODES) / sizeof(FM_MODES[0])))
 static int s_last_mode = -1;
@@ -177,7 +184,8 @@ static void open_radio(void) { ls_rsel_open(fm_job(), radio_chosen); }
 static int mode_page(fm_mode_t mode)
 {
     if (mode == FM_MODE_SCAN) return 2;
-    if (mode == FM_MODE_POCSAG || mode == FM_MODE_FLEX) return 1;
+    if (mode == FM_MODE_POCSAG || mode == FM_MODE_FLEX ||
+        mode == FM_MODE_SAME || mode == FM_MODE_APRS || mode == FM_MODE_AIS) return 1;
     return 0;
 }
 
@@ -286,7 +294,87 @@ static void field(tui_surface *sf, tui_rect a, int row, const char *l,
     tui_put_str(sf, a, a.x + 12, a.y + row, v, va);
 }
 
+/* WHAT EACH MODE CAN SAY ABOUT THE SIGNAL AND THE SQUELCH.
+
+   NFM measures quieting and gates on it, in percent. AM measures carrier
+   level and gates on that, in tenths of a percent. WFM has no squelch and the
+   decoders never write either reading, so FM.noise and FM.squelch_open there
+   are whatever NFM last left behind: those modes show "--" instead. */
+typedef enum { SIG_NONE, SIG_QUIETING, SIG_CARRIER } sig_kind_t;
+
+static sig_kind_t sig_kind(void)
+{
+    if (FM.mode == FM_MODE_LISTEN) return SIG_QUIETING;
+    if (FM.mode == FM_MODE_AM)     return SIG_CARRIER;
+    return SIG_NONE;
+}
+
+/* How far along the meter the signal is, 0 to 1. AM's meter spans the same
+   0 to 10.0% the squelch is set on, so the gate lands where it was set. */
+static float sig_level(sig_kind_t kind)
+{
+    float s = kind == SIG_CARRIER ? FM.iq_level * 10.0f : 1.0f - FM.noise;
+    if (s < 0.0f) s = 0.0f;
+    if (s > 1.0f) s = 1.0f;
+    return s;
+}
+
+static void squelch_text(char *out, size_t n)
+{
+    switch (sig_kind()) {
+    case SIG_QUIETING: snprintf(out, n, "%d%%", FM.squelch_tenths); break;
+    case SIG_CARRIER:  snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10,
+                                FM.squelch_tenths % 10); break;
+    default:           snprintf(out, n, "--"); break;
+    }
+}
+
+static const char *squelch_hint(void)
+{
+    return FM.mode == FM_MODE_AM ? "carrier level, tenths of a percent"
+                                 : "0 opens on anything, 100 on nothing";
+}
+
+/* WHAT THE PAGER DECODER THAT IS RUNNING HAS COUNTED.
+
+   POCSAG on an SDR fills FM.pocsag_*, FLEX fills FM.flex_*, and POCSAG on the
+   chip is counted in the ls_field snapshot, which has packets heard and pages
+   but no lock and no codeword errors. Every other mode runs no pager decoder,
+   and then there is nothing to show. */
+typedef struct {
+    bool     on;
+    bool     chip;      /* packets heard and pages, no lock or error count */
+    bool     tape;      /* counts codewords, which is what the tape draws  */
+    bool     sync;
+    int      baud;      /* 0 where the decoder reports no rate             */
+    uint32_t pages, errs, heard;
+} pager_counts_t;
+
+static pager_counts_t pager_counts(void)
+{
+    pager_counts_t c = {0};
+    if (FM.mode == FM_MODE_POCSAG && s_lora_pager) {
+        c.on = c.chip = true;
+        c.baud = s_lora_baud;
+        c.pages = s_field.pages;
+        c.heard = s_field.rx;
+    } else if (FM.mode == FM_MODE_POCSAG) {
+        c.on = c.tape = true;
+        c.sync = FM.pocsag_sync;
+        c.baud = FM.pocsag_lock_baud ? FM.pocsag_lock_baud : FM.pocsag_baud;
+        c.pages = FM.pocsag_pages;
+        c.errs = FM.pocsag_cw_errs;
+    } else if (FM.mode == FM_MODE_FLEX) {
+        c.on = true;
+        c.sync = FM.flex_sync;
+        c.pages = FM.flex_pages;
+        c.errs = FM.flex_cw_errs;
+    }
+    return c;
+}
+
 static float    s_sig_hold;      /* decaying peak on the signal meter */
+static sig_kind_t s_sig_kind;    /* what that peak was measured on    */
 /* The dial spins and the mode wipes. Both are frame-counted off s_blink, and
    both are covering something the radio is really doing: a retune has a
    settle time before the squelch is allowed to open, and a mode change tears
@@ -302,8 +390,8 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
 {
     const uint32_t hz    = FM.freq_hz;
     const int      sq    = FM.squelch_tenths;
-    const bool     open  = FM.squelch_open;
-    const float    level = FM.iq_level;
+    const sig_kind_t kind = sig_kind();
+    const bool     open  = kind != SIG_NONE && FM.squelch_open;
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     const uint8_t lab   = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
@@ -362,9 +450,10 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
                          TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         s_mode_wipe--;
     }
-    snprintf(buf, sizeof(buf), "%d%%", sq);
-    field(sf, left, 5, "SQUELCH", buf, lab, val);
-    field(sf, left, 4, "CARRIER", open ? "OPEN" : "closed", lab,
+    squelch_text(buf, sizeof(buf));
+    field(sf, left, 5, "SQUELCH", buf, lab, kind == SIG_NONE ? dim : val);
+    field(sf, left, 4, "CARRIER",
+          kind == SIG_NONE ? "--" : open ? "OPEN" : "closed", lab,
           open ? good : dim);
 
     if (open && ((s_blink / 12) & 1))
@@ -374,7 +463,19 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     field(sf, left, 6, "VOLUME", buf, lab, val);
     snprintf(buf, sizeof(buf), "%d.%d dB", FM.gain_tenths / 10,
              FM.gain_tenths % 10);
-    field(sf, left, 7, "GAIN", buf, lab, val);
+    if (left.h > 8) field(sf, left, 7, "GAIN", buf, lab, val);
+    else {
+        snprintf(buf, sizeof(buf), "%d%%  %.1f dB", audio_volume_get(), FM.gain_tenths / 10.0);
+        field(sf, left, 6, "VOL/GAIN", buf, lab, val);
+    }
+    if (FM.mode == FM_MODE_LISTEN && FM.tone_show) {
+        fm_tone_label(FM.tone_detected.selection, buf, sizeof(buf));
+        field(sf, left, 3, FM.tone_detected.selection ? "TONE LOCK" : "TONE",
+              FM.tone_detected.selection ? buf : "--", lab,
+              FM.tone_detected.selection ? good : dim);
+        tui_put_char(sf, left, left.x + 1, left.y + 3,
+                     ls_motion_pip(FM.tone_detected.selection != 0), good);
+    }
 
     tui_box(sf, right, "SIGNAL", frame);
     /* QUIETING, NOT LEVEL.
@@ -390,51 +491,63 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
        That also puts the squelch on this scale, so the gate can be drawn as
        a mark on the bar and set by eye. */
     const int bw = right.w - 4;
-    float sig = 1.0f - FM.noise;
-    if (sig < 0.0f) sig = 0.0f;
-    if (sig > 1.0f) sig = 1.0f;
+    if (kind != s_sig_kind) { s_sig_hold = 0.0f; s_sig_kind = kind; }
 
-    /* Peak hold, decaying, so a burst between two looks still registers. */
-    if (sig >= s_sig_hold) s_sig_hold = sig;
-    else                   s_sig_hold -= (s_sig_hold - sig) * 0.06f;
+    if (kind == SIG_NONE) {
+        /* No reading in this mode, so no bar and no gate to mark on it. */
+        tui_put_str(sf, right, right.x + 2, right.y + 2, "--", dim);
+    } else {
+        const float sig = sig_level(kind);
 
-    const int lit  = (int)(sig * (float)bw);
-    const int hold = (int)(s_sig_hold * (float)bw);
-    /* Where the squelch opens, on the same travel as the bar. */
-    int gate = (int)((float)(100 - sq) * 0.01f * (float)bw);
-    if (gate < 0) gate = 0;
-    if (gate >= bw) gate = bw - 1;
-    gate = bw - gate;
+        /* Peak hold, decaying, so a burst between two looks still registers. */
+        if (sig >= s_sig_hold) s_sig_hold = sig;
+        else                   s_sig_hold -= (s_sig_hold - sig) * 0.06f;
 
-    for (int i = 0; i < bw; i++) {
-        const bool on = i < lit;
-        uint8_t c = on ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
-                        : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
-                                         : TUI_GREEN | TUI_BRIGHT)
-                       : (TUI_BLACK | TUI_BRIGHT);
-        char g = on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25;
-        if (!on && i == hold && hold > lit) {
-            g = LS_TUI_SHADE_50;
-            c = TUI_WHITE | TUI_BRIGHT;
+        const int lit  = (int)(sig * (float)bw);
+        const int hold = (int)(s_sig_hold * (float)bw);
+        /* Where the squelch opens, on the same travel as the bar. */
+        int gate = (int)((float)(100 - sq) * 0.01f * (float)bw);
+        if (gate < 0) gate = 0;
+        if (gate >= bw) gate = bw - 1;
+        gate = bw - gate;
+
+        for (int i = 0; i < bw; i++) {
+            const bool on = i < lit;
+            uint8_t c = on ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
+                            : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
+                                             : TUI_GREEN | TUI_BRIGHT)
+                           : (TUI_BLACK | TUI_BRIGHT);
+            char g = on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25;
+            if (!on && i == hold && hold > lit) {
+                g = LS_TUI_SHADE_50;
+                c = TUI_WHITE | TUI_BRIGHT;
+            }
+            tui_put_char(sf, right, right.x + 2 + i, right.y + 2, g,
+                         TUI_ATTR(c, TUI_BLACK));
         }
-        tui_put_char(sf, right, right.x + 2 + i, right.y + 2, g,
-                     TUI_ATTR(c, TUI_BLACK));
+        /* The gate marker sits under the bar so it never covers the reading.
+           Above it the squelch is open, below it the audio is muted. */
+        for (int i = 0; i < bw; i++)
+            tui_put_char(sf, right, right.x + 2 + i, right.y + 3,
+                         i == gate ? '^' : ' ',
+                         TUI_ATTR(i == gate ? (open ? TUI_GREEN | TUI_BRIGHT
+                                                    : TUI_CYAN | TUI_BRIGHT)
+                                            : TUI_BLACK, TUI_BLACK));
     }
-    /* The gate marker sits under the bar so it never covers the reading.
-       Above it the squelch is open, below it the audio is muted. */
-    for (int i = 0; i < bw; i++)
-        tui_put_char(sf, right, right.x + 2 + i, right.y + 3,
-                     i == gate ? '^' : ' ',
-                     TUI_ATTR(i == gate ? (open ? TUI_GREEN | TUI_BRIGHT
-                                                : TUI_CYAN | TUI_BRIGHT)
-                                        : TUI_BLACK, TUI_BLACK));
-    (void)level;
     snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
     field(sf, right, 4, "IQ RATE", buf, lab, val);
-    snprintf(buf, sizeof(buf), "%u", (unsigned)FM.pocsag_pages);
-    field(sf, right, 5, "PAGES", buf, lab, FM.pocsag_pages ? good : dim);
-    field(sf, right, 6, "SYNC", FM.pocsag_sync ? "LOCKED" : "hunting", lab,
-          FM.pocsag_sync ? good : dim);
+    const pager_counts_t pc = pager_counts();
+    if (pc.on) {
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.pages);
+        field(sf, right, 5, "PAGES", buf, lab, pc.pages ? good : dim);
+        if (pc.chip) {
+            snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.heard);
+            field(sf, right, 6, "HEARD", buf, lab, pc.heard ? good : dim);
+        } else {
+            field(sf, right, 6, "SYNC", pc.sync ? "LOCKED" : "hunting", lab,
+                  pc.sync ? good : dim);
+        }
+    }
 }
 
 /* The codeword tape. */
@@ -466,6 +579,10 @@ static void tape_push(uint8_t mark, int n)
 
 static void tape_sample(void)
 {
+    /* Only POCSAG on an SDR counts codewords. Anywhere else the tape holds
+       nothing, and the next time it does it starts from that count. */
+    if (!pager_counts().tape) { s_tape_n = 0; s_seen_valid = false; return; }
+
     const uint32_t f = FM.pocsag_frames, a = FM.pocsag_addr;
     const uint32_t m = FM.pocsag_msg,    e = FM.pocsag_cw_errs;
 
@@ -524,22 +641,31 @@ static void draw_tape(tui_surface *sf, tui_rect a)
     const int tw = a.w - 2 - cw;
     if (tw < 8) return;
 
-    tui_put_str(sf, a, a.x + tw + 2, a.y + 1,
-                FM.pocsag_sync ? "SYNC" : "no sync",
-                FM.pocsag_sync ? good : dim);
+    const pager_counts_t pc = pager_counts();
+    const int cx = a.x + tw + 2;
+    int row = 1;
+    if (pc.chip) {
+        snprintf(buf, sizeof(buf), "%lu rx", (unsigned long)pc.heard);
+        tui_put_str(sf, a, cx, a.y + row++, buf, pc.heard ? good : dim);
+    } else {
+        tui_put_str(sf, a, cx, a.y + row++, pc.sync ? "SYNC" : "no sync",
+                    pc.sync ? good : dim);
+    }
+    if (pc.baud) {
+        snprintf(buf, sizeof(buf), "%d bd", pc.baud);
+        tui_put_str(sf, a, cx, a.y + row++, buf, dim);
+    }
+    snprintf(buf, sizeof(buf), "%lu pg", (unsigned long)pc.pages);
+    tui_put_str(sf, a, cx, a.y + row++, buf, pc.pages ? yel : dim);
+    if (!pc.chip && row < a.h - 2) {
+        snprintf(buf, sizeof(buf), "%lu err", (unsigned long)pc.errs);
+        tui_put_str(sf, a, cx, a.y + row++, buf, pc.errs ? red : dim);
+    }
 
-    snprintf(buf, sizeof(buf), "%d bd", FM.pocsag_lock_baud ? FM.pocsag_lock_baud
-                                                            : FM.pocsag_baud);
-    tui_put_str(sf, a, a.x + tw + 2, a.y + 2, buf, dim);
-
-    snprintf(buf, sizeof(buf), "%lu pg", (unsigned long)FM.pocsag_pages);
-    tui_put_str(sf, a, a.x + tw + 2, a.y + 3,
-                buf, FM.pocsag_pages ? yel : dim);
-
-    if (a.h > 6) {
-        snprintf(buf, sizeof(buf), "%lu err", (unsigned long)FM.pocsag_cw_errs);
-        tui_put_str(sf, a, a.x + tw + 2, a.y + 4,
-                    buf, FM.pocsag_cw_errs ? red : dim);
+    if (!pc.tape) {
+        snprintf(buf, sizeof(buf), "%.*s", tw - 1, "tape: POCSAG on an SDR");
+        tui_put_str(sf, a, a.x + 2, a.y + 1, buf, dim);
+        return;
     }
 
     const int rows = a.h - 2;
@@ -607,6 +733,42 @@ static int page_count(void)
     int n = (int)FM.page_count;
     if (n > FM_PAGE_LOG_MAX) n = FM_PAGE_LOG_MAX;
     return n;
+}
+
+/* HOLDING THE SELECTION ON ITS MESSAGE.
+
+   The selection is an index into a newest-first list, so each page that
+   arrives moves every message one place down and the index then names the
+   next newer one: a page being read turned into another under the reader.
+   While anything but the newest is selected, or a page is open, the message's
+   own time and address are kept as well, and found again before the next
+   draw, key or tap. Messages only move down the list, so the search starts
+   where the selection was; one that has left the list altogether keeps its
+   index. */
+static int64_t  s_sel_ts;
+static uint32_t s_sel_addr;
+static bool     s_sel_held;
+
+static void pager_refind(void)
+{
+    if (!s_sel_held) return;
+    const int count = page_count();
+    for (int i = s_page_sel; i < count; i++) {
+        const fm_page_t *p = page_at(i);
+        if (p && p->ts_us == s_sel_ts && p->address == s_sel_addr) {
+            s_page_top += i - s_page_sel;
+            s_page_sel = i;
+            return;
+        }
+    }
+}
+
+static void pager_remember(void)
+{
+    const fm_page_t *p = (s_page_sel > 0 || s_page_open) ? page_at(s_page_sel)
+                                                         : NULL;
+    s_sel_held = p != NULL;
+    if (p) { s_sel_ts = p->ts_us; s_sel_addr = p->address; }
 }
 
 static void pager_move(int delta)
@@ -776,6 +938,7 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
     const uint8_t body  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const uint8_t dim = LS_ATTR_DIM;
 
+    pager_refind();
     tape_sample();
 
     s_page_rect = tui_rect_make(0, -1, 0, 0);
@@ -923,7 +1086,7 @@ static const ls_btn_t PAGES[] = {
    bigger than it is. */
 static bool pager_mode(void)
 {
-    return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX;
+    return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX || FM.mode == FM_MODE_SAME || FM.mode == FM_MODE_APRS || FM.mode == FM_MODE_AIS;
 }
 
 static tui_rect s_bar;
@@ -1069,12 +1232,47 @@ static void o_show_acars(const ls_opt_t *o, char *out, size_t n)
                    .num = o_gain, .set_num = o_set_gain, .lo = 0, .hi = 49.6, \
                    .unit = "dB, 0 is automatic", .show = o_show_gain }
 
+static int o_tone(const ls_opt_t *o) { (void)o; return FM.tone_required; }
+static void o_set_tone(const ls_opt_t *o, int v)
+{
+    (void)o;
+    if (v < 0 || v >= FM_TONE_CHOICES) return;
+    FM.tone_required = (uint16_t)v;
+    /* Saved NFM memories retain the receive gate; free VFOs stay transient. */
+    int zone = scan_engine_get_zone();
+    for (int i = 0; i < scan_channels_count(); ++i) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (c && c->mode == SCAN_MODE_NFM && c->freq_hz == FM.freq_hz &&
+            (zone < 0 || c->zone == zone)) {
+            scan_channel_set_tone(i, (uint16_t)v);
+            break;
+        }
+    }
+}
+static void o_show_tone(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o; fm_tone_label(FM.tone_required, out, n);
+}
+static int o_tone_show(const ls_opt_t *o) { (void)o; return FM.tone_show; }
+static void o_set_tone_show(const ls_opt_t *o, int v) { (void)o; FM.tone_show = v != 0; }
+static const ls_opt_t OPT_TONE[] = {
+    { .label = "TONE SQUELCH", .kind = LS_OPT_CYCLE, .n = FM_TONE_CHOICES,
+      .get = o_tone, .set = o_set_tone, .show = o_show_tone, .step = 1 },
+    { .label = "SHOW DETECTED", .kind = LS_OPT_TOGGLE,
+      .get = o_tone_show, .set = o_set_tone_show },
+};
+static const ls_opt_ctx_t CTX_TONE = {
+    .name = "TONE", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_TONE)
+};
 static const ls_opt_t OPT_NFM[] = {
+    { .label = "TONE", .kind = LS_OPT_MENU, .sub = &CTX_TONE, .show = o_show_tone },
+    LS_CALLS_MENU,
     { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "0 opens on anything, 100 on nothing" },
     OPT_GAIN,
 };
 static const ls_opt_t OPT_AM[] = {
+    LS_CALLS_MENU,
     { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "carrier level, tenths of a percent" },
     OPT_GAIN,
@@ -1112,6 +1310,9 @@ static const ls_opt_ctx_t *fm_options(void)
     case FM_MODE_POCSAG: return &CTX_POCSAG;
     case FM_MODE_FLEX:   return &CTX_FLEX;
     case FM_MODE_ACARS:  return &CTX_ACARS;
+    case FM_MODE_SAME:   return &fm_same_options;
+    case FM_MODE_APRS:   return &fm_aprs_options;
+    case FM_MODE_AIS:    return &fm_ais_options;
     default:             return NULL;
     }
 }
@@ -1127,21 +1328,26 @@ static int draw_controls(tui_surface *sf, tui_rect area)
        same action twice. The two slots that frees are the two controls a
        receiver actually needs to hand and that this screen did not offer
        without going through the quick bar: how loud, and when to open. */
-    char vol[12], sql[12];
+    char vol[12], sql[12], band[16];
+    /* APRS sits on one channel, so name it; the sweep presets are for the rest. */
+    if (FM.mode == FM_MODE_APRS) snprintf(band, sizeof(band), "%.2f", aprs_frequency() / 1e6);
+    else snprintf(band, sizeof(band), "%s", FM.mode == FM_MODE_AIS ? "87B/88B" : ls_wf_preset_current(LS_WF_SRC_FM));
     snprintf(vol, sizeof(vol), "%d%%", audio_volume_get());
-    snprintf(sql, sizeof(sql), "%d", FM.squelch_tenths);
+    squelch_text(sql, sizeof(sql));
     ls_btn_t buttons[] = {
         {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false},
-        {"BAND", ls_wf_preset_current(LS_WF_SRC_FM), 'n', false, false},
+        {"BAND", band, 'n', false, false},
         {"VOLUME", vol, 'v', false, false},
-        {"SQUELCH", sql, 'q', FM.squelch_open, false},
+        {"SQUELCH", sql, 'q', sig_kind() != SIG_NONE && FM.squelch_open, false},
         {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
         ls_rsel_button(fm_job()),
         ls_opt_button(fm_options()),
+        {"CALLS", NULL, '5', false, false},
     };
+    if (!ls_opt_count(fm_options())) buttons[6] = buttons[7];
     const int h = area.h;
     s_controls = area;
-    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 7 : 6, -1);
+    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 8 : 7, -1);
     return h;
 }
 
@@ -1162,11 +1368,12 @@ static bool control_action(int index)
     case 1: open_band_picker(); return true;
     case 2: ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(),
                            set_volume); return true;
-    case 3: ls_numpad_open("SQUELCH", "0 opens on anything, 100 on nothing",
+    case 3: ls_numpad_open("SQUELCH", squelch_hint(),
                            FM.squelch_tenths, set_squelch); return true;
     case 4: toggle_frequency_lock(); return true;
     case 5: open_radio(); return true;
-    case 6: ls_opt_open(fm_options()); return true;
+    case 6: if (ls_opt_count(fm_options())) ls_opt_open(fm_options()); else ls_calls_open("FM"); return true;
+    case 7: ls_calls_open("FM"); ls_wf_source_release(); return true;
     default: return false;
     }
 }
@@ -1219,26 +1426,33 @@ static void radio_view(void)
 {
     memset(&s_view,0,sizeof(s_view));
     s_view.fm=true;
+    s_view.tone_required=FM.tone_required;
     s_view.frequency=FM.freq_hz;
     s_view.standby=s_standby;
     s_view.mode=FM.mode==FM_MODE_LISTEN?"NFM":fm_mode_label(FM.mode);
     s_view.power=FM.iq_level;
     {
-        float sig = 1.0f - FM.noise;
-        if (sig < 0.0f) sig = 0.0f;
-        if (sig > 1.0f) sig = 1.0f;
+        const sig_kind_t kind = sig_kind();
         s_view.volume = audio_volume_get();
-        s_view.signal = sig;
+        s_view.signal = kind == SIG_NONE ? 0.0f : sig_level(kind);
         s_view.gate = (float)FM.squelch_tenths * 0.01f;
-        s_view.squelch_open = FM.squelch_open;
-        s_view.has_squelch = true;
+        s_view.squelch_open = kind != SIG_NONE && FM.squelch_open;
+        s_view.has_squelch = kind != SIG_NONE;
     }
     fm_get_receiver_status(&s_view.receiver);
-    snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
-    snprintf(s_view.detail[1],64,"SQL %d%%  GAIN %.1f dB",FM.squelch_tenths,FM.gain_tenths/10.0);
+    char sql[12];
+    squelch_text(sql, sizeof(sql));
+    snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(!s_view.has_squelch?"--":FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
+    snprintf(s_view.detail[1],64,"SQL %s  GAIN %.1f dB",sql,FM.gain_tenths/10.0);
     snprintf(s_view.detail[2],64,"VOL %d  STEP %.1fk",audio_volume_get(),tune_step_hz()/1000.0);
     snprintf(s_view.detail[3],64,"%s / MORE: mode, waterfall, pager",
              lakeshark_fm_frequency_locked() ? "FREQ LOCKED" : "FREQ FREE");
+    if (FM.mode == FM_MODE_LISTEN && FM.tone_show) {
+        char tone[20];
+        fm_tone_label(FM.tone_detected.selection, tone, sizeof(tone));
+        snprintf(s_view.detail[2],64,"TONE %s %c", FM.tone_detected.selection ? tone : "--",
+                 ls_motion_pip(FM.tone_detected.selection != 0));
+    }
 }
 static void set_squelch(double value)
 {
@@ -1250,7 +1464,7 @@ static void set_squelch(double value)
 static void radio_action(char c)
 {
     if(c=='M') {s_details=true;return;}
-    if(c=='Q') {ls_numpad_open("SQUELCH","0 opens on anything, 100 on nothing",FM.squelch_tenths,set_squelch);return;}
+    if(c=='Q') {ls_numpad_open("SQUELCH",squelch_hint(),FM.squelch_tenths,set_squelch);return;}
     if(c=='A') {
         scan_engine_stop();
         uint32_t previous=FM.freq_hz;
@@ -1291,6 +1505,10 @@ static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    if (ls_calls_active()) {
+        snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
+        ls_wf_source_release(); ls_calls_draw(sf, area); return;
+    }
     lora_pager_sync();
     snprintf(s_hint,sizeof(s_hint),"%s%s",s_details?
              (ls_tui_is_wide() && (s_page==0 || s_page==2) ?
@@ -1334,7 +1552,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (body.h <= 0) return;
     /* Landscape keeps the compact bar even without a keyboard: the VFO
        page's waterfall is only a few rows tall there already. */
-    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 7 : 6);
+    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 8 : 7);
     if (wide && control_rows > 3) control_rows = 3;
     body.y += control_rows;
     body.h -= control_rows;
@@ -1351,7 +1569,10 @@ static void draw(tui_surface *sf, tui_rect area)
         body.h -= ctl_h;
     } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
 
-    if (s_page == 1) draw_pages(sf, body);
+    if (s_page == 1 && FM.mode == FM_MODE_AIS) fm_ais_draw(sf, body);
+    else if (s_page == 1 && FM.mode == FM_MODE_APRS) fm_aprs_draw(sf, body);
+    else if (s_page == 1 && FM.mode == FM_MODE_SAME) fm_same_draw(sf, body);
+    else if (s_page == 1) draw_pages(sf, body);
     else if (s_page == 2) draw_sweep(sf, body);
     else draw_vfo_waterfall(sf, body);
     if (s_quick_rect.h > 0)
@@ -1364,6 +1585,9 @@ static void draw(tui_surface *sf, tui_rect area)
     for (int i = 0; i < N_PAGES; i++) {
         if (i == 1 && !pager_mode()) continue;   /* PAGER decodes or it hides */
         b[nb] = PAGES[i];
+        if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
+        if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
+        if (i == 1 && FM.mode == FM_MODE_AIS) b[nb].label = "VESSELS";
         b[nb].on = (i == s_page);
         s_tab_page[nb] = i;
         nb++;
@@ -1374,10 +1598,11 @@ static void draw(tui_surface *sf, tui_rect area)
                                           area.w, control_rows));
 }
 
-static void leave(void) { ls_wf_source_release(); lora_pager_stop(false); }
+static void leave(void) { ls_calls_leave(); ls_wf_source_release(); lora_pager_stop(false); }
 
 static void enter(void)
 {
+    fm_same_enter();
     ls_rsel_track(LS_RSEL_FM, fm_in_use);
     ls_rsel_track(LS_RSEL_PAGER, fm_in_use);
     ls_rsel_track(LS_RSEL_ACARS, fm_in_use);
@@ -1394,8 +1619,10 @@ static void enter(void)
     s_page_open = false;
 }
 
-static bool key(ls_tk_t k, char ch)
+static bool key_in(ls_tk_t k, char ch)
 {
+    if (ls_calls_active()) return ls_calls_key(k, ch);
+    if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("FM"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
     if(k==LS_TK_CHAR && ch>='1' && ch<='3') {s_details=true;show_page(ch-'1');return true;}
     /* R is RADIO on every page, except inside the scanner's lists, where
@@ -1408,6 +1635,23 @@ static bool key(ls_tk_t k, char ch)
     if (k==LS_TK_CHAR && (s_details || (!s_radio.lists && !s_radio.scan_choice)) &&
         ls_opt_key(fm_options(), ch)) return true;
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
+    if (s_page == 1 && FM.mode == FM_MODE_AIS) {
+        if (fm_ais_key(k)) return true;
+        if (k == LS_TK_CHAR && (ch == 'u' || ch == 'a' || ch == 'd'))
+            return fm_ais_key(ch == 'u' ? LS_TK_UP : ch == 'd' ? LS_TK_DOWN : LS_TK_ENTER);
+    }
+    if (s_page == 1 && FM.mode == FM_MODE_APRS) {
+        if (fm_aprs_key(k)) return true;
+        if (k == LS_TK_CHAR && (ch == 'u' || ch == 'a' || ch == 'd'))
+            return fm_aprs_key(ch == 'u' ? LS_TK_UP : ch == 'd' ? LS_TK_DOWN : LS_TK_ENTER);
+    }
+    if (s_page == 1 && FM.mode == FM_MODE_SAME) {
+        if (fm_same_key(k)) return true;
+        if (k == LS_TK_CHAR && (ch == 'u' || ch == 'a' || ch == 'd'))
+            return fm_same_key(ch == 'u' ? LS_TK_UP : ch == 'd' ? LS_TK_DOWN : LS_TK_ENTER);
+    }
+    /* An open page is closed before ESC does anything else. */
+    if (k==LS_TK_ESC && s_page==1 && s_page_open) { s_page_open=false; return true; }
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
     if ((s_page==0 || s_page==2) &&
         (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
@@ -1438,12 +1682,11 @@ static bool key(ls_tk_t k, char ch)
     }
     if (s_page == 2 && ls_wf_key(k, ch)) return true;
 
-    /* The open page owns its keys while it is up. ESC closes it, and
-       UP/DOWN walk to the next message without going back to the list first,
-       which is what reading a run of pages actually looks like. */
+    /* The open page owns its keys while it is up. UP/DOWN walk to the next
+       message without going back to the list first, which is what reading a
+       run of pages actually looks like. */
     if (s_page == 1 && s_page_open) {
         switch (k) {
-        case LS_TK_ESC:   s_page_open = false; return true;
         case LS_TK_UP:    pager_move(-1); return true;
         case LS_TK_DOWN:  pager_move(1); return true;
         default: return true;
@@ -1464,8 +1707,9 @@ static bool key(ls_tk_t k, char ch)
     }
 }
 
-static bool touch(int col, int row)
+static bool touch_in(int col, int row)
 {
+    if (ls_calls_active()) return ls_calls_touch(col, row);
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     if (tui_rect_contains(s_controls, col, row))
         return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
@@ -1489,6 +1733,9 @@ static bool touch(int col, int row)
     if (s_page == 0 && s_vfo_sweep && ls_wf_touch(col, row)) return true;
     if (s_page == 2) return ls_wf_touch(col, row);
 
+    if (s_page == 1 && FM.mode == FM_MODE_AIS) return fm_ais_touch(col, row);
+    if (s_page == 1 && FM.mode == FM_MODE_APRS) return fm_aprs_touch(col, row);
+    if (s_page == 1 && FM.mode == FM_MODE_SAME) return fm_same_touch(col, row);
     if (s_page == 1) {
         for (int i = 0; i < 3; ++i) {
             if (!tui_rect_contains(s_pager_hit[i], col, row)) continue;
@@ -1523,6 +1770,24 @@ static bool touch(int col, int row)
         return true;
     }
     return false;
+}
+
+/* The selection is re-found before a key or tap acts on it and noted again
+   after, whichever of the many places in them moved it. */
+static bool key(ls_tk_t k, char ch)
+{
+    pager_refind();
+    const bool handled = key_in(k, ch);
+    pager_remember();
+    return handled;
+}
+
+static bool touch(int col, int row)
+{
+    pager_refind();
+    const bool handled = touch_in(col, row);
+    pager_remember();
+    return handled;
 }
 
 const ls_tui_screen_t ls_scr_fm = {

@@ -43,6 +43,7 @@ typedef enum {
     LS_ICON_MUSIC,      /* MUSIC: a cassette, distinct from FM's wave */
     LS_ICON_EXPERIMENT, /* EXPERIMENTS: a magnifier over a wave           */
     LS_ICON_TERMINAL,   /* TERMINAL: a screen with a prompt on it         */
+    LS_ICON_UPDATE,     /* UPDATE: an arrow coming down into a tray       */
     LS_ICON__COUNT
 } ls_icon_t;
 

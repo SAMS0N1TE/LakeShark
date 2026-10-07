@@ -43,3 +43,18 @@ bool cell_motion_quiet(float ax,float ay,float az,float gx,float gy,float gz)
     float a=ax*ax+ay*ay+az*az, g=gx*gx+gy*gy+gz*gz;
     return isfinite(a) && isfinite(g) && a>.85f && a<1.15f && g<25.f;
 }
+void cell_motion_reset(cell_motion_t *m)
+{
+    m->seeded=false;
+}
+bool cell_motion_step(cell_motion_t *m,float ax,float ay,float az,float gx,float gy,float gz)
+{
+    const float g[3]={gx,gy,gz};
+    float a=ax*ax+ay*ay+az*az, raw=gx*gx+gy*gy+gz*gz;
+    if(!isfinite(a) || !isfinite(raw)) return false;
+    if(!m->seeded) {for(int i=0;i<3;i++) m->rest[i]=g[i]; m->seeded=true;}
+    float d=0;
+    for(int i=0;i<3;i++) {float e=g[i]-m->rest[i]; d+=e*e; m->rest[i]+=e*.05f;}
+    /* 5 deg/s off the resting reading, and never more than 60 deg/s in all. */
+    return a>.85f && a<1.15f && d<25.f && raw<3600.f;
+}

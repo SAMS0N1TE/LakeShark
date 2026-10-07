@@ -4,6 +4,7 @@
 #include "ls_keyboard.h"
 #include "ls_keypad.h"
 #include "ls_notify.h"
+#include "ls_route_live.h"
 #include "ls_numpad.h"
 #include "ls_picker.h"
 #include "ls_options.h"
@@ -661,6 +662,7 @@ void ls_tui_router_draw(tui_surface *sf)
 
     const int th = tab_rows();
 
+    ls_route_live_poll();
     ls_notify_poll(s_current);
 
     tui_frame_begin(sf);

@@ -24,6 +24,7 @@ bool ls_xl9535_ready(void) { return true; }
 
 /* Linked in for the LR20xx backend's antenna choice; an SX1262 never asks. */
 bool ls_board_hw_antenna_is_external(void) { return false; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
 
 /* Direction, which the driver sets once for DIO1 so a later change to the
    board bring-up cannot turn the radio's interrupt line into an output. The
@@ -433,3 +434,9 @@ LS_CASE(sx1262_refuses_the_lr20xx_sync_rssi_request)
     LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_ERR_NOT_SUPPORTED);
     LS_CHECK(!ls_lora_fsk_active());
 }
+
+/* LR backend is linked even when this fake identifies an SX1262. */
+bool settings_get_lr_tcxo(void) { return true; }
+bool settings_get_lr_dcdc(void) { return false; }
+bool settings_set_lr_tcxo(bool value) { (void)value; return true; }
+bool settings_set_lr_dcdc(bool value) { (void)value; return true; }

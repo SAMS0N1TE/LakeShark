@@ -2,6 +2,7 @@
 
 set(MESH_SRCS
     ls_mesh.cpp
+    ls_mesh_inspect.c
     upstream/src/Dispatcher.cpp
     upstream/src/Identity.cpp
     upstream/src/Mesh.cpp
@@ -28,7 +29,7 @@ idf_component_register(
 )
 
 set(MESH_UPSTREAM_SRCS ${MESH_SRCS})
-list(REMOVE_ITEM MESH_UPSTREAM_SRCS ls_mesh.cpp)
+list(REMOVE_ITEM MESH_UPSTREAM_SRCS ls_mesh.cpp ls_mesh_inspect.c)
 set_source_files_properties(${MESH_UPSTREAM_SRCS} PROPERTIES COMPILE_OPTIONS "-w")
 
 set_source_files_properties(ls_mesh.cpp PROPERTIES COMPILE_OPTIONS "-Wno-reorder")

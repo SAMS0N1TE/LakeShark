@@ -585,6 +585,9 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
                 idx = scan_channel_add(name, v->frequency, mode, zone);
                 snprintf(p->notice, sizeof(p->notice),
                          idx >= 0 ? "Channel saved" : "Could not save channel / list full");
+                if (idx >= 0 && v->fm && v->tone_required &&
+                    !scan_channel_set_tone(idx, v->tone_required))
+                    snprintf(p->notice, sizeof(p->notice), "Could not save receive tone");
             }
         } else if (c == 'E' && p->count) {
             scan_engine_stop();

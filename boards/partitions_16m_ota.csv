@@ -1,0 +1,15 @@
+# T-Display-P4 with two app slots, for updates over WiFi.
+# Every offset of partitions_16m.csv is kept: the app at 0x10000 is ota_0,
+# storage stays at 0x910000 and coredump at 0xd10000, so a board moves to
+# this layout with one ordinary install. NVS (settings, Wi-Fi) is kept;
+# storage is rewritten with the stock image, as every full install does.
+# The 9M factory slot is split in two; otadata goes in the unused space
+# after coredump, and an install writes it blank so the board boots ota_0.
+# Name,   Type, SubType,  Offset,   Size, Flags
+nvs,      data, nvs,      0x9000,   0x6000,
+phy_init, data, phy,      0xf000,   0x1000,
+ota_0,    app,  ota_0,    0x10000,  0x480000,
+ota_1,    app,  ota_1,    0x490000, 0x480000,
+storage,  data, spiffs,   0x910000, 4M,
+coredump, data, coredump, 0xd10000, 64K,
+otadata,  data, ota,      0xd20000, 0x2000,

@@ -40,6 +40,19 @@ LS_CASE(orientation_is_not_stationarity)
     LS_CHECK(!cell_motion_quiet(.6f,0,1,0,0,0));
     LS_CHECK(!cell_motion_quiet(NAN,0,1,0,0,0));
 }
+LS_CASE(a_still_board_with_gyro_bias_reads_still)
+{
+    /* This board's gyro rests near -7.4, -8.1, +4.4 deg/s. */
+    cell_motion_t m; cell_motion_reset(&m);
+    for(int i=0;i<12;i++) LS_CHECK(cell_motion_step(&m,0,0,1,-7.4f,-8.1f,4.4f));
+    LS_CHECK(!cell_motion_quiet(0,0,1,-7.4f,-8.1f,4.4f));
+    /* A slow turn on top of it is movement. */
+    LS_CHECK(!cell_motion_step(&m,0,0,1,-7.4f,-8.1f,14.4f));
+    /* Back at rest it is still again. */
+    LS_CHECK(cell_motion_step(&m,0,0,1,-7.4f,-8.1f,4.4f));
+    /* Tipped off 1 g is not still, whatever the gyro says. */
+    LS_CHECK(!cell_motion_step(&m,.6f,0,1,-7.4f,-8.1f,4.4f));
+}
 LS_CASE(all_band_sweeps_fit_tuner_and_cover_every_bin)
 {
     static int8_t bins[CELL_MAX_BINS];float fft[512];

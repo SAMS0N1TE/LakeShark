@@ -115,6 +115,8 @@ void ls_field_snapshot(ls_field_state_t *out);
 /* Small passive view: no plot arrays copied onto the UI stack. */
 void ls_field_sample_snapshot(ls_field_sample_t *out);
 bool ls_field_direct(bool enabled);
+/* FALLS marker tuning holds DIRECT only for the lifetime of its source. */
+bool ls_field_direct_falls(bool enabled);
 bool ls_field_owned(void);
 bool ls_field_configure(const ls_lora_cfg_t *cfg);
 /* The FSK demodulator's parameters, for GFSK and POCSAG. Rejected the same

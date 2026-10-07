@@ -14,6 +14,7 @@
    still seen. Receive only: nothing here transmits or replays. */
 #include "../ls_experiments.h"
 #include "lr433_dec.h"
+#include "lr433_history.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -186,6 +187,8 @@ static void note_msg(view_t *v, const lr433_msg_t *m, float rssi, int plan, int6
     /* A message carries what it carries: an Acurite 5-in-1 sends wind and
        rain in one and temperature in the next, and the table keeps both. */
     d->plan = (uint8_t)plan;
+    if (lr433_proto_class(m->proto) == LR433_TPMS && isnan(m->kpa) && isnan(m->temp_c))
+        d->kpa = d->temp_c = NAN;
     if (m->battery_ok >= 0) d->battery_ok = m->battery_ok;
     if (!isnan(m->kpa)) d->kpa = m->kpa;
     if (!isnan(m->temp_c)) d->temp_c = m->temp_c;
@@ -209,6 +212,11 @@ static void take(int i, const uint8_t *buf, int n, float rssi, int64_t now)
         .bits = n * 8,
     };
     const int k = lr433_decode(&cap, &s_work, s_msgs, (int)(sizeof(s_msgs) / sizeof(s_msgs[0])));
+    for (int j = 0; j < k; j++) {
+        lr433_history_receive(&s_msgs[j]);
+        if (lr433_proto_class(s_msgs[j].proto) == LR433_TPMS && !lr433_history_owned(&s_msgs[j]))
+            s_msgs[j].kpa = s_msgs[j].temp_c = NAN;
+    }
     portENTER_CRITICAL(&s_lock);
     s_view.caps[i]++;
     if (k > 0) {
@@ -298,6 +306,7 @@ static void advance(int from, int64_t now)
 
 static bool lr433_start(char *why, size_t n)
 {
+    lr433_history_start();
     const uint32_t caps = ls_lora_caps();
     const int sel = s_sel;
     s_n_on = 0;
@@ -388,6 +397,9 @@ static void fmt_reading(char *out, size_t n, const heard_t *d, bool metric)
     out[0] = 0;
     switch (lr433_proto_class(d->proto)) {
     case LR433_TPMS: {
+        lr433_msg_t key = { .proto = d->proto, .channel = d->channel };
+        snprintf(key.id, sizeof(key.id), "%s", d->id);
+        if (!lr433_history_owned(&key)) { snprintf(out, n, "MY ID off"); break; }
         char p[12] = "";
         if (!isnan(d->kpa)) {
             if (metric) snprintf(p, sizeof(p), "%.0fkPa", (double)d->kpa);
@@ -628,4 +640,5 @@ const ls_experiment_t exp_lr433 = {
     .configure = lr433_configure,
     .opts = OPTS,
     .n_opts = (int)(sizeof(OPTS) / sizeof(OPTS[0])),
+    .maintenance = lr433_history_service,
 };

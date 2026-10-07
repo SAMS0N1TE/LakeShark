@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_app.h"
@@ -113,10 +114,13 @@ static const ls_opt_t OPT_CELL[]={
 };
 static const ls_opt_ctx_t CTX_CELL={.name="CELL",.job=LS_RSEL_CELL,.radio=LS_RSEL_NONE,LS_OPT_ROWS(OPT_CELL),.tag="SURVEY"};
 
+/* The capture and GPS snapshots this screen reads are static and in PSRAM:
+   on the TUI's 6 KB internal stack they leave a HIGH RATE redraw too little
+   room. Only the TUI task draws, so one copy each is enough. */
 static const char *o_hrf_busy(const ls_opt_t *o)
 {
     (void)o;
-    cell_iq_status_t iq;cell_iq_get_status(&iq);
+    static EXT_RAM_BSS_ATTR cell_iq_status_t iq;cell_iq_get_status(&iq);
     return iq.busy?"Stop the capture first":NULL;
 }
 static const char *const PLAN[]={"selected channel","six presets"};
@@ -145,7 +149,7 @@ static const ls_opt_ctx_t CTX_HRF={.name="HIGH RATE",.job=-1,.radio=LS_RSEL_SDR_
 static void action(int i)
 {
     if(cell_performance_active()) {
-        cell_iq_status_t iq;cell_iq_get_status(&iq);
+        static EXT_RAM_BSS_ATTR cell_iq_status_t iq;cell_iq_get_status(&iq);
         if(i==0 && iq.busy){cell_iq_stop();return;}
         if(i==3){ls_picker_open("DISPLAY",view_choose);ls_picker_add(ls_tui_daylight()?"Dark theme":"Light theme","Change now");ls_picker_add(ls_tui_font_index()==2?"Compact text":"Large text","Change text + touch targets");ls_picker_add(ls_tui_crisp_text()?"Smooth text":"Crisp text","Change edge rendering");return;}
         if(iq.busy)return;
@@ -188,7 +192,7 @@ static void action(int i)
 }
 static void draw_high_rate(tui_surface *sf,tui_rect area)
 {
-    cell_iq_status_t iq;cell_iq_get_status(&iq);
+    static EXT_RAM_BSS_ATTR cell_iq_status_t iq;cell_iq_get_status(&iq);
     int64_t now=esp_timer_get_time();
     if(ls_imu_status_poll_due(&imu_display,now)) {
         ls_imu_sample_t imu;
@@ -216,7 +220,7 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
             (iq.busy?iq.multi:auto_multi)?"six presets":"selected channel");ls_safe_line(sf,body,y++,text,white);
         snprintf(text,sizeof(text),"Last %.3f MHz / PCI %d / MIB %s / CRC x%d",iq.hz/1e6,
             iq.lte_found?iq.lte.pci:-1,iq.mib_found?"decoded":"unconfirmed",iq.mib.frames);ls_safe_line(sf,body,y++,text,cyan);
-        ls_gps_state_t gps;ls_gps_get(&gps);
+        static EXT_RAM_BSS_ATTR ls_gps_state_t gps;ls_gps_get(&gps);
         bool fix=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
         snprintf(text,sizeof(text),"GPS %s (%u sats) / 9 AXIS %s / SD %s",fix?"FIX":"SEEKING",gps.sats_visible,
             imu_text,ls_sdcard_mounted()?"READY":"MISSING");ls_safe_line(sf,body,y++,text,white);
@@ -240,7 +244,7 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     else snprintf(text,sizeof(text),"MIB: %s",iq.mib_checked?"CRC not confirmed":"not decoded");
     ls_safe_line(sf,body,y++,text,cyan);
     if(body.h>=25)y++;
-    ls_gps_state_t gps;ls_gps_get(&gps);
+    static EXT_RAM_BSS_ATTR ls_gps_state_t gps;ls_gps_get(&gps);
     bool fix=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
     snprintf(text,sizeof(text),"GPS %s / %u seen / %u used",fix?"FIX":ls_gps_running()?"SEEKING":"OFF",gps.sats_visible,gps.sats_used);ls_safe_line(sf,body,y++,text,fix?cyan:yellow);
     if(fix){snprintf(text,sizeof(text),"%.5f, %.5f",gps.lat_deg,gps.lon_deg);ls_safe_line(sf,body,y++,text,white);}

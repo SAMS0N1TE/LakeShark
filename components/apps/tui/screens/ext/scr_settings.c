@@ -18,6 +18,8 @@
 #include "audio/audio_out.h"
 #include "audio/audio_events.h"
 #include "../../ls_voice_opts.h"
+#include "../../ls_app.h"
+#include "../../ls_value.h"
 
 static int s_sel;
 
@@ -194,6 +196,32 @@ static void vibe_next(void)
     ls_notify_set_alerts(settings_get_alert_ring(), en);
 }
 
+/* ---- update ------------------------------------------------------------- */
+
+/* Updates over WiFi live in main and have an app of their own, UPDATE in
+   SYSTEM. This row shows where they stand and opens that app. */
+static void update_show(char *b, size_t n)
+{
+    ls_val_t v;
+    if (ls_value_read("ota.state", &v, NULL) && v.kind == LS_VAL_TEXT && v.s)
+        snprintf(b, n, "%s", v.s);
+    else
+        snprintf(b, n, "not in this build");
+}
+/* ENTER opens UPDATE, which checks as it opens. */
+static void update_next(void)
+{
+    for (int k = 0; k < ls_app_count(); k++) {
+        const ls_app_t *app = ls_app_at(k);
+        if (app && app->id && !strcmp(app->id, "update")) { ls_app_open(k); return; }
+    }
+}
+
+/* Daily or Off. Off means the board never looks for an update by itself,
+   not even a quiet one; the UPDATE app's CHECK still works. */
+static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_update_check() ? "Daily" : "Off"); }
+static void updchk_next(void) { settings_set_update_check(!settings_get_update_check()); }
+
 static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
 static void lock_next(void) { ls_tui_set_locked(true); }
 
@@ -281,6 +309,8 @@ static const item_t DEVICE_ITEMS[] = {
     { "Keyboard light", keylight_show, keylight_next, NULL },
     { "Keyboard dim",   keydim_show,   keydim_next, NULL },
     { "USB autoreboot", usb_show,      usb_next, NULL },
+    { "Update",         update_show,   update_next, NULL },
+    { "Check for updates", updchk_show, updchk_next, NULL },
 };
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 static const set_page_t SET_PAGES[SETP_COUNT] = {
@@ -402,7 +432,6 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
-    (void)ch;
     const set_page_t *pg = page_get();
     if (s_sel >= pg->n) s_sel = 0;
     switch (k) {

@@ -24,6 +24,14 @@ typedef struct {
     /* Which screen to open when the banner is tapped, or -1 for none.
        A notice you cannot act on is a notice you have to remember. */
     int     screen;
+    /* A system notice, not a message: a TUI_* colour the banner is drawn in
+       instead of the mesh red, and its body is shown whole, not split into
+       "FROM name". It is kept out of the unread count and the MSG badge.
+       0 for a message. */
+    uint8_t accent;
+    bool quiet;                    /* banner only, such as a routine test */
+    bool haptic_only;              /* vibrate without speaker output */
+    bool notify_visible;           /* alert even while its source is open */
 } ls_notice_t;
 
 /* Report a notice, or return false when nothing has happened. Called once a
@@ -38,6 +46,8 @@ void ls_notify_poll(int visible);
 
 /* Post one directly. For anything that is not a polled source. */
 void ls_notify_post(const ls_notice_t *n);
+/* Banner only: the caller supplies its own alert policy. */
+void ls_notify_post_quiet(const ls_notice_t *n);
 
 /* True while a banner is on screen. */
 bool ls_notify_showing(void);

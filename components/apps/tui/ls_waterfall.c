@@ -2,6 +2,7 @@
 #include "ls_waterfall.h"
 #include "ls_options.h"
 #include "ls_motion.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +49,37 @@ static ls_wf_cfg_t s_cfg = {
 
     .avg = 1, .decim = 1, .grain = LS_WF_GRAIN_SHADE, .paused = false,
 };
+
+/* One deferred settings write keeps the display preferences together. */
+static bool s_cfg_loaded;
+static uint32_t cfg_packed(void)
+{
+    return s_cfg.split_pct | ((uint32_t)(s_cfg.ref + 8) << 7)
+        | ((uint32_t)s_cfg.range << 12) | ((uint32_t)s_cfg.palette << 17)
+        | ((uint32_t)s_cfg.avg << 19) | ((uint32_t)s_cfg.decim << 23)
+        | ((uint32_t)s_cfg.peak_hold << 27) | ((uint32_t)s_cfg.grain << 28)
+        | ((uint32_t)s_cfg.paused << 30);
+}
+static void cfg_load(void)
+{
+    if (s_cfg_loaded) return;
+    s_cfg_loaded = true;
+    const uint32_t v = settings_get_waterfall(UINT32_MAX);
+    if (v == UINT32_MAX) return;
+    ls_wf_cfg_t cfg = {
+        .split_pct = v & 127, .ref = (int)((v >> 7) & 31) - 8,
+        .range = (v >> 12) & 31, .palette = (v >> 17) & 3,
+        .avg = (v >> 19) & 15, .decim = (v >> 23) & 15,
+        .peak_hold = (v >> 27) & 1, .grain = (v >> 28) & 3,
+        .paused = (v >> 30) & 1,
+    };
+    if (cfg.split_pct > 100 || cfg.split_pct % 25 || cfg.ref < -8 || cfg.ref > 8
+        || cfg.range < 4 || cfg.range > 16
+        || (cfg.avg != 1 && cfg.avg != 2 && cfg.avg != 4 && cfg.avg != 8)
+        || (cfg.decim != 1 && cfg.decim != 2 && cfg.decim != 4 && cfg.decim != 8)) return;
+    s_cfg = cfg;
+}
+static void cfg_save(void) { settings_set_waterfall(cfg_packed()); }
 
 static ls_wf_stats_t s_st;
 static int64_t       s_last_push_us;
@@ -289,6 +321,7 @@ static bool ensure_hist(void)
 
 void ls_wf_claim(ls_wf_owner_t owner, const char *label)
 {
+    cfg_load();
     if (owner == s_owner) return;
     s_owner = owner;
     snprintf(s_label, sizeof(s_label), "%s", label ? label : "");
@@ -691,14 +724,14 @@ static uint8_t peak_now(void)
 /* Returns the columns used, so the caller can keep what follows clear of it. */
 static int draw_level_meter(tui_surface *sf, tui_rect r, int x)
 {
-    if (r.w < 24) return 0;                 /* no room; the row has other jobs */
+    if (x + 20 > r.x + r.w) return 0;                 /* no room; the row has other jobs */
     const uint8_t raw = peak_now();
 
     char val[12];
     if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
         const float db = s_feed.floor_db +
             (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-        snprintf(val, sizeof(val), "%d dB", (int)db);
+        snprintf(val, sizeof(val), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS");
     } else {
         snprintf(val, sizeof(val), "%d%%", raw * 100 / 255);
     }
@@ -710,7 +743,7 @@ static int draw_level_meter(tui_surface *sf, tui_rect r, int x)
 
     /* Six rising traces, the same reading MESH's signal meter and P25's own
        gauge use, so a level looks like a level wherever it appears. */
-    const int bar_x = x + 3 + 8;
+    const int bar_x = x + 4 + (int)strlen(val);
     for (int i = 0; i < 6; i++) {
         const int h = 2 + i;                       /* 2..7 eighths */
         const bool lit = raw >= (uint8_t)((i + 1) * 255 / 7);
@@ -731,6 +764,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
     if(esp_timer_get_time()<s_tune_note_until) {
         tui_put_str(sf,r,r.x,r.y,s_tune_note,hot);return;
     }
+    int text_end = r.x;
     if (s_marker >= 0) {
         const uint32_t hz = ls_wf_marker_hz();
         const uint8_t raw = sample(0, s_marker, s_plot_rect.w);
@@ -741,7 +775,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
             const float db = s_feed.floor_db +
                 (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-            snprintf(lvl, sizeof(lvl), "%d dB", (int)db);
+            snprintf(lvl, sizeof(lvl), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS");
         } else {
             snprintf(lvl, sizeof(lvl), "%d%%", raw * 100 / 255);
         }
@@ -749,12 +783,15 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         fmt_mhz(mhz, sizeof(mhz), hz);
         snprintf(buf, sizeof(buf), "MARK %s MHz  %s  SPACE tune", mhz, lvl);
         tui_put_str(sf, r, r.x, r.y, buf, hot);
+        text_end += (int)strlen(buf);
     } else if (s_have_feed && s_feed.note) {
         tui_put_str(sf, r, r.x, r.y, s_feed.note, dim);
+        text_end += (int)strlen(s_feed.note);
     }
 
-    const int meter = draw_level_meter(sf, r, r.x + 24);
-    const int stats_left = meter > r.x + 24 ? meter : r.x + 24;
+    const int meter_x = text_end + 2;
+    const int meter = draw_level_meter(sf, r, meter_x);
+    const int stats_left = meter ? meter_x + meter : text_end;
 
     /* The instrument reports its own cost. A waterfall that starves the
        decoder is worse than no waterfall, and this is the number that says
@@ -767,9 +804,6 @@ static void draw_readout(tui_surface *sf, tui_rect r)
              (unsigned long)s_st.draw_us, (unsigned long)s_st.row_ms,
              (unsigned long)s_st.dropped);
     int x = r.x + r.w - (int)strlen(buf);
-    /* Against where the meter actually ENDED, not against the
-       column it started at. The end was computed and thrown away, so a wide
-       meter and a long stats line could still overlap. */
     if (x > stats_left) tui_put_str(sf, r, x, r.y, buf, dim);
 }
 
@@ -862,6 +896,7 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
 
 static void act(int i)
 {
+    cfg_load();
     switch (i) {
     case 0: s_cfg.split_pct = (uint8_t)((s_cfg.split_pct + 25) % 125); break;
     case 1: s_cfg.ref = (int8_t)(s_cfg.ref >= 8 ? -8 : s_cfg.ref + 2);  break;
@@ -885,11 +920,11 @@ static void act(int i)
     }
     default: break;
     }
+    cfg_save();
 }
 
 /* OPTIONS: the buttons above as rows. TUNE MARK is not a setting and stays
    on the strip. */
-static void o_wf(const ls_opt_t *o) { act(o->arg); }
 static void o_wf_show(const ls_opt_t *o, char *out, size_t n)
 {
     ls_btn_t b[LS_WF_BTNS];
@@ -897,16 +932,73 @@ static void o_wf_show(const ls_opt_t *o, char *out, size_t n)
     build_buttons(b, v);
     snprintf(out, n, "%s", v[o->arg]);
 }
-#define WF_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_wf, .show = o_wf_show }
+static double o_num(const ls_opt_t *o)
+{
+    switch (o->arg) {
+    case 0: return s_cfg.split_pct;
+    case 1: return s_cfg.ref;
+    case 2: return s_cfg.range;
+    case 4: return s_cfg.avg == 8 ? 3 : s_cfg.avg == 4 ? 2 : s_cfg.avg == 2 ? 1 : 0;
+    case 5: return s_cfg.decim == 8 ? 3 : s_cfg.decim == 4 ? 2 : s_cfg.decim == 2 ? 1 : 0;
+    default: return 0;
+    }
+}
+static void o_set_num(const ls_opt_t *o, double v)
+{
+    if (v < o->lo) v = o->lo;
+    if (v > o->hi) v = o->hi;
+    switch (o->arg) {
+    case 0: s_cfg.split_pct = (uint8_t)((int)(v / 25) * 25); break;
+    case 1: s_cfg.ref = (int8_t)v; break;
+    case 2: s_cfg.range = (uint8_t)v; break;
+    case 4: s_cfg.avg = (uint8_t)(1u << (int)v); break;
+    case 5: s_cfg.decim = (uint8_t)(1u << (int)v); break;
+    }
+    cfg_save();
+}
+static int o_get(const ls_opt_t *o)
+{
+    switch (o->arg) {
+    case 3: return s_cfg.palette;
+    case 6: return s_cfg.peak_hold;
+    case 7: return s_cfg.paused;
+    case 8: return s_cfg.grain;
+    default:
+        for (int i = 0; i < N_CONTRAST; i++)
+            if (s_cfg.ref == CONTRAST[i].ref && s_cfg.range == CONTRAST[i].range) return i;
+        return 0;
+    }
+}
+static void o_set(const ls_opt_t *o, int v)
+{
+    switch (o->arg) {
+    case 3: s_cfg.palette = v; break;
+    case 6: s_cfg.peak_hold = v; memset(s_peak, 0, sizeof(s_peak)); break;
+    case 7: s_cfg.paused = v; break;
+    case 8: s_cfg.grain = v; break;
+    case 9: s_cfg.ref = CONTRAST[v].ref; s_cfg.range = CONTRAST[v].range; break;
+    }
+    cfg_save();
+}
+static const char *const CONTRAST_NAME[] = {"soft", "norm", "hard", "max"};
+#define WF_LEVEL(l, i, low, high, inc) { .label = (l), .kind = LS_OPT_LEVEL, .arg = (i), \
+    .num = o_num, .set_num = o_set_num, .lo = (low), .hi = (high), .step = (inc), .show = o_wf_show }
+#define WF_CHOICE(l, i, k, labels, count) { .label = (l), .kind = (k), .arg = (i), \
+    .names = (labels), .n = (count), .get = o_get, .set = o_set, .show = o_wf_show }
 static const ls_opt_t OPT_WF[] = {
-    WF_ROW("REF", 1), WF_ROW("RANGE", 2), WF_ROW("CONTRAST", 9), WF_ROW("COLOR", 3),
-    WF_ROW("DETAIL", 8), WF_ROW("AVG", 4), WF_ROW("SPEED", 5), WF_ROW("PEAK", 6),
-    WF_ROW("SPLIT", 0), WF_ROW("HOLD", 7),
+    WF_LEVEL("REF", 1, -8, 8, 2), WF_LEVEL("RANGE", 2, 4, 16, 4),
+    WF_CHOICE("CONTRAST", 9, LS_OPT_CYCLE, CONTRAST_NAME, N_CONTRAST),
+    WF_CHOICE("COLOR", 3, LS_OPT_CYCLE, PAL_NAME, LS_WF_PAL__COUNT),
+    WF_CHOICE("DETAIL", 8, LS_OPT_CYCLE, GRAIN_NAME, LS_WF_GRAIN__COUNT),
+    WF_LEVEL("AVG", 4, 0, 3, 1), WF_LEVEL("SPEED", 5, 0, 3, 1),
+    WF_CHOICE("PEAK", 6, LS_OPT_TOGGLE, NULL, 2), WF_LEVEL("SPLIT", 0, 0, 100, 25),
+    WF_CHOICE("HOLD", 7, LS_OPT_TOGGLE, NULL, 2),
 };
-#undef WF_ROW
+#undef WF_LEVEL
+#undef WF_CHOICE
 static const ls_opt_ctx_t CTX_WF = { .name = "WATERFALL", .job = LS_RSEL_WATERFALL, .radio = LS_RSEL_NONE,
                                      LS_OPT_ROWS(OPT_WF), .tag = "DISPLAY" };
-const ls_opt_ctx_t *ls_wf_options(void) { return &CTX_WF; }
+const ls_opt_ctx_t *ls_wf_options(void) { cfg_load(); return &CTX_WF; }
 
 bool ls_wf_key(ls_tk_t key, char ch)
 {
@@ -945,9 +1037,9 @@ bool ls_wf_key(ls_tk_t key, char ch)
         if (s_marker < 0) s_marker = s_plot_rect.w / 2;
         else if (s_marker < s_plot_rect.w - 1) s_marker++;
         return true;
-    case LS_TK_UP:    s_cfg.ref = (int8_t)(s_cfg.ref < 8 ? s_cfg.ref + 1 : 8); return true;
-    case LS_TK_DOWN:  s_cfg.ref = (int8_t)(s_cfg.ref > -8 ? s_cfg.ref - 1 : -8); return true;
-    case LS_TK_ENTER: s_cfg.paused = !s_cfg.paused; return true;
+    case LS_TK_UP:    s_cfg.ref = (int8_t)(s_cfg.ref < 8 ? s_cfg.ref + 1 : 8); cfg_save(); return true;
+    case LS_TK_DOWN:  s_cfg.ref = (int8_t)(s_cfg.ref > -8 ? s_cfg.ref - 1 : -8); cfg_save(); return true;
+    case LS_TK_ENTER: s_cfg.paused = !s_cfg.paused; cfg_save(); return true;
     case LS_TK_ESC:   if (s_marker >= 0) { s_marker = -1; return true; } return false;
     default: return false;
     }
@@ -1090,11 +1182,12 @@ const char *ls_wf_idle_reason(void)
         return "waiting for the receiver";
     return NULL;
 }
-const ls_wf_cfg_t *ls_wf_cfg(void)   { return &s_cfg; }
+const ls_wf_cfg_t *ls_wf_cfg(void)   { cfg_load(); return &s_cfg; }
 
 void ls_wf_cfg_set(const ls_wf_cfg_t *cfg)
 {
     if (!cfg) return;
+    cfg_load();
     s_cfg = *cfg;
     if (s_cfg.avg   < 1) s_cfg.avg = 1;
     if (s_cfg.decim < 1) s_cfg.decim = 1;
@@ -1103,4 +1196,5 @@ void ls_wf_cfg_set(const ls_wf_cfg_t *cfg)
     if (s_cfg.palette >= LS_WF_PAL__COUNT) s_cfg.palette = 0;
     if (s_cfg.grain >= LS_WF_GRAIN__COUNT) s_cfg.grain = 0;
     if (s_cfg.split_pct > 100) s_cfg.split_pct = 100;
+    cfg_save();
 }

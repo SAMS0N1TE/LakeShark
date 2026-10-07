@@ -376,3 +376,16 @@ LS_CASE(scan_audio_is_closed_during_search_and_decoder_changes)
     s_handoff=false; s_enabled=false; s_cur=-1;
     LS_CHECK(scan_engine_audio_open());
 }
+
+LS_CASE(nfm_tune_restores_the_channels_receive_tone)
+{
+    scan_channel_t channel={.name="Tone",.freq_hz=154785000,.mode=SCAN_MODE_NFM,
+                            .rsv=2,.flags=SCAN_FLAG_ENABLED | SCAN_FLAG_TONE_HIGH};
+    scenario=0; tune_count=0;
+    tune_to(&channel);
+    LS_EQ_INT(258,FM.tone_required);
+    LS_CHECK(!carrier_held(SCAN_MODE_NFM));
+    channel.rsv=0; channel.flags=SCAN_FLAG_ENABLED;
+    tune_to(&channel);
+    LS_EQ_INT(0,FM.tone_required);
+}

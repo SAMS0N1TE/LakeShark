@@ -559,6 +559,13 @@ bool ls_music_play(int index)
     char path[512];
     int len = snprintf(path,sizeof(path),"%s/%s",roots[s_source],ls_music_name(index));
     if (len < 0 || (size_t)len >= sizeof(path)) { s_error="Track path too long"; return false; }
+    return ls_music_play_path(path);
+}
+bool ls_music_is_open(void) { return s_up; }
+bool ls_music_play_path(const char *path)
+{
+    if (!s_up || !path) return false;
+    ls_music_mic_stop();
     FILE *fp = fopen(path,"rb");
     if (!fp) { s_error="Track unavailable; rescan card"; return false; }
     if (audio_player_play(fp) != ESP_OK) { fclose(fp); s_error="Player queue busy"; return false; }

@@ -164,6 +164,8 @@ void ls_tui_radio_want(const char *mode_name) { g_radio_asked = mode_name; }
 
 /* ---- P25, which nothing here selects ------------------------------------ */
 
+static bool g_p25_ready;
+static p25_spectrum_snapshot_t g_p25_snap;
 static bool g_p25_feed;
 static bool g_p25_streaming;
 static uint32_t g_p25_tuned;
@@ -179,8 +181,11 @@ void p25_spectrum_enable(bool on) { g_p25_feed = on; }
 bool p25_spectrum_read(float *out, int n, uint32_t now_ms, uint32_t max_age_ms,
                        p25_spectrum_snapshot_t *snap)
 {
-    (void)out; (void)n; (void)now_ms; (void)max_age_ms; (void)snap;
-    return false;
+    (void)now_ms; (void)max_age_ms;
+    if (!g_p25_feed || !g_p25_ready) return false;
+    for (int i = 0; i < n; i++) out[i] = 0.5f;
+    *snap = g_p25_snap;
+    return true;
 }
 const p25_program_t *p25_program_session(void) { return NULL; }
 bool p25_program_step_control_now(int delta) { (void)delta; return false; }
@@ -211,6 +216,7 @@ static void fresh(void)
     g_fsk = g_bg = false;
     g_fm_streaming = false;
     g_p25_streaming=false;
+    g_p25_ready=false;
     g_field_ready=false;
     g_fm_mode_asked = -1;
     g_scan_restarts = 0;
@@ -298,6 +304,7 @@ LS_CASE(an_fm_receiver_that_has_stopped_is_not_a_spectrum)
     fm_sweeping_with_one_carrier();
     g_fm_streaming = false;
     g_p25_streaming=false;
+    g_p25_ready=false;
     g_field_ready=false;
     FM.scan_sweeps = 3;
 
@@ -349,6 +356,7 @@ LS_CASE(fm_first_sweep_reports_progress_only_while_receiving)
     LS_EQ_INT(previews + 1, g_previews);
     g_fm_streaming = false;
     g_p25_streaming=false;
+    g_p25_ready=false;
     g_field_ready=false;
     LS_CHECK(ls_wf_source_progress() == NULL);
 }
@@ -567,6 +575,7 @@ void ls_field_snapshot(ls_field_state_t *out){memset(out,0,sizeof(*out));out->re
 bool ls_field_configure(const ls_lora_cfg_t *cfg){g_field_frequency=cfg->freq_hz;return true;}
 bool ls_field_mode(ls_lab_mode_t mode){return true;}
 bool ls_field_direct(bool on){g_field_direct=on;return true;}
+bool ls_field_direct_falls(bool on) { return ls_field_direct(on); }
 
 LS_CASE(marker_tune_stops_fm_sweep_and_uses_mark_frequency)
 {
@@ -615,6 +624,19 @@ LS_CASE(marker_tune_routes_p25_and_lora_to_their_receivers)
     LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000));
     LS_EQ_INT(g_field_frequency,915000000);LS_CHECK(g_field_direct);
     LS_CHECK(!test_tuner(LS_WF_OWNER_LORA,1000000000));
+    ls_wf_source_release(); LS_CHECK(!g_field_direct);
+    LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000)); LS_CHECK(g_field_direct);
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump(); LS_CHECK(!g_field_direct);
+}
+LS_CASE(a_waiting_waterfall_cannot_end_another_owners_scan)
+{
+    fresh(); g_mesh_parks = false;
+    ls_wf_source_select(LS_WF_SRC_LORA); ls_wf_source_pump();
+    LS_CHECK(g_hold_asked);
+    g_scanning = true;
+    ls_wf_source_pump(); LS_EQ_INT(g_begins, 0); LS_EQ_INT(g_retunes, 0);
+    ls_wf_source_release(); LS_CHECK(g_scanning); LS_EQ_INT(g_ends, 0);
+    LS_CHECK(!g_hold_asked);
 }
 
 LS_CASE(lora_bands_past_960_mhz_are_offered_only_to_a_part_that_sweeps_there)
@@ -649,4 +671,47 @@ LS_CASE(lora_bands_past_960_mhz_are_offered_only_to_a_part_that_sweeps_there)
     ls_wf_source_lora_band(1000000000u, 1600000000u);
     ls_wf_source_lora_band_get(&lo, &hi);
     LS_EQ_UINT(1616000000u, lo);
+}
+
+LS_CASE(p25_retunes_and_span_changes_restart_history)
+{
+    fresh();
+    g_p25_streaming = g_p25_ready = true;
+    g_p25_snap = (p25_spectrum_snapshot_t){
+        .center_hz = 851000000, .span_hz = 240000, .sequence = 1,
+    };
+    ls_wf_source_select(LS_WF_SRC_P25);
+    ls_wf_source_pump();
+    LS_EQ_INT(1, g_pushes);
+    int clears = g_claims_none;
+    g_p25_snap.sequence++;
+    ls_wf_source_pump();
+    LS_EQ_INT(clears, g_claims_none);
+    g_p25_snap.center_hz += 1500000;
+    g_p25_snap.following_voice = true;
+    g_p25_snap.sequence++;
+    ls_wf_source_pump();
+    LS_EQ_INT(clears + 1, g_claims_none);
+    LS_EQ_UINT(g_p25_snap.center_hz, g_feed.center_hz);
+    g_p25_snap.span_hz *= 2;
+    g_p25_snap.sequence++;
+    ls_wf_source_pump();
+    LS_EQ_INT(clears + 2, g_claims_none);
+    LS_EQ_INT(4, g_pushes);
+}
+LS_CASE(auto_controls_follow_the_running_source_without_starting_it)
+{
+    fresh();
+    LS_EQ_INT(LS_WF_SRC_AUTO, ls_wf_source_get());
+    fm_sweeping_with_one_carrier();
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    LS_EQ_INT(FM_MODE_SCAN, FM.mode);
+    LS_CHECK(ls_wf_preset_count(ls_wf_source_get()) > 0);
+    LS_CHECK(g_radio_asked == NULL);
+    g_p25_streaming = true;
+    LS_EQ_INT(LS_WF_SRC_P25, ls_wf_source_get());
+    g_p25_streaming = false;
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    ls_wf_source_select(LS_WF_SRC_LORA);
+    LS_EQ_INT(LS_WF_SRC_LORA, ls_wf_source_get());
 }

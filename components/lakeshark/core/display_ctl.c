@@ -113,10 +113,13 @@ void display_ctl_init(void)
     s_timeout_s = settings_get_autodim_timeout();
     s_key_dim   = settings_get_keyboard_dim();
     s_dimmed    = false;
-    apply_now(perceptual(s_user_pct));
 #if LS_HAS_COMPACT_UI
+    /* The glass stays dark until the TUI's first frame is on it (the
+       reapply there lights it): a level written now would show the panel
+       before there is anything to show. */
     s_last_input_us = esp_timer_get_time();
 #else
+    apply_now(perceptual(s_user_pct));
     bsp_display_lock(0);
     lv_timer_create(tick_cb, TICK_MS, NULL);
     bsp_display_unlock();

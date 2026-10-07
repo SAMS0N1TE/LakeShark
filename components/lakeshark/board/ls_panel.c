@@ -241,18 +241,50 @@ esp_err_t ls_panel_start(void)
     return ESP_OK;
 }
 
+/* The last level written to the glass, and whether it has been put out for
+   good (a restart is coming). */
+static unsigned s_level;
+static bool s_blanked;
+
 esp_err_t ls_panel_set_brightness(unsigned percent)
 {
     if (!s_io) return ESP_ERR_INVALID_STATE;
-    if (percent < 5) percent = 5;
+    if (s_blanked) return ESP_OK;
+    /* 0 is dark, not the dimmest lit level: the boot keeps the glass dark
+       until the first frame is up. */
+    if (percent && percent < 5) percent = 5;
     if (percent > 100) percent = 100;
     uint8_t value = (percent * 255 + 50) / 100;
+    s_level = percent;
     return esp_lcd_panel_io_tx_param(s_io, 0x51, &value, 1);
+}
+
+/* Fade to black and switch the panel off, for good. The glass is dark and
+   stays dark through the reset that follows, instead of showing whatever
+   the panel shows when the video stops. Nothing lights it again until the
+   panel is brought up afresh. */
+esp_err_t ls_panel_blank(unsigned fade_ms)
+{
+    if (!s_io) return ESP_ERR_INVALID_STATE;
+    if (s_blanked) return ESP_OK;
+    const unsigned steps = fade_ms >= 40 ? 8 : 1;
+    const unsigned from = s_level ? s_level : 5;
+    for (unsigned i = 1; i < steps; i++) {
+        ls_panel_set_brightness(from - from * i / steps);
+        vTaskDelay(pdMS_TO_TICKS(fade_ms / steps));
+    }
+    uint8_t zero = 0;
+    esp_err_t e = esp_lcd_panel_io_tx_param(s_io, 0x51, &zero, 1);
+    s_blanked = true;
+    s_level = 0;
+    if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(s_io, 0x28, NULL, 0);   /* display off */
+    return e;
 }
 #else
 esp_err_t ls_panel_test_start(void) { return ESP_OK; }
 esp_err_t ls_panel_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_panel_set_brightness(unsigned percent) { (void)percent; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_panel_blank(unsigned fade_ms) { (void)fade_ms; return ESP_ERR_NOT_SUPPORTED; }
 void ls_panel_diagnostics(void) {}
 bool ls_panel_fb(ls_panel_fb_t *out) { (void)out; return false; }
 void ls_panel_fb_present(void) {}

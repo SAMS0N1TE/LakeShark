@@ -1,4 +1,5 @@
 #include "ls_mixrf.h"
+#include "ls_mixrf_control.h"
 #include "ls_trail.h"
 #include "ls_cc_capture.h"
 #include "ls_nfc_suite.h"
@@ -20,7 +21,7 @@
 #ifdef LS_BOARD_MIX_CC_CS
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static ls_mixrf_status_t state;
-static bool started,want,want_scan,want_nfc,want_card,reprobe,want_capture;
+static bool started,want_nfc,want_card,reprobe;
 static uint32_t requested=433920000;
 static spi_device_handle_t cc_dev,nrf_dev,nfc_dev;
 static DRAM_ATTR spi_transaction_t transaction;
@@ -263,6 +264,7 @@ static void status_text(const char *text)
 static bool probe_radios(void)
 {
     transfer_error=ESP_OK;
+    portENTER_CRITICAL(&lock);state.keyboard=state.power=state.cc=state.nrf=state.nfc=false;portEXIT_CRITICAL(&lock);
     extern bool flipper_link_running(void) __attribute__((weak));
     if(flipper_link_running && flipper_link_running()) {status_text("Stop wired Flipper link before radio probe");return false;}
     if(!ls_keypad_present()) {status_text("Keyboard not detected");return false;}
@@ -421,7 +423,7 @@ static void worker(void *arg)
 {
     (void)arg;
     probe_radios();
-    portENTER_CRITICAL(&lock);state.busy=false;portEXIT_CRITICAL(&lock);
+    portENTER_CRITICAL(&lock);ls_mixrf_probe_complete(&state);portEXIT_CRITICAL(&lock);
     bool running=false,scanning=false,nfc_watching=false;
     ls_mixrf_field_edge_t field_edge={0};
     bool card_scanning=false;
@@ -441,12 +443,12 @@ static void worker(void *arg)
             portENTER_CRITICAL(&lock);tx_ok=sent;tx_done=true;state.receiving=state.capturing=false;portEXIT_CRITICAL(&lock);
         }
         portENTER_CRITICAL(&lock);bool retry=reprobe;reprobe=false;portEXIT_CRITICAL(&lock);
-        if(retry) {probe_radios();portENTER_CRITICAL(&lock);state.busy=false;portEXIT_CRITICAL(&lock);}
-        portENTER_CRITICAL(&lock);bool on=want && state.cc,scan=want_scan && state.nrf,nfc_on=want_nfc && state.nfc,card_on=want_card && state.nfc;uint32_t next=requested;bool capture=want_capture;portEXIT_CRITICAL(&lock);
+        if(retry) {probe_radios();portENTER_CRITICAL(&lock);ls_mixrf_probe_complete(&state);portEXIT_CRITICAL(&lock);}
+        portENTER_CRITICAL(&lock);bool on=state.receive_requested && state.cc,scan=state.scan_requested && state.nrf,nfc_on=want_nfc && state.nfc,card_on=want_card && state.nfc;uint32_t next=requested;bool capture=state.capture_requested;ls_mixrf_owner_t cc_owner=state.cc_owner,scan_owner=state.scan_owner;portEXIT_CRITICAL(&lock);
         if(!ls_keypad_present()) {
             ls_cc_capture_stop();capturing=false;
             on=scan=nfc_on=card_on=false;running=false;
-            portENTER_CRITICAL(&lock);state.keyboard=state.power=false;state.cc=state.nrf=state.nfc=false;want=want_scan=want_nfc=want_card=false;portEXIT_CRITICAL(&lock);
+            portENTER_CRITICAL(&lock);ls_mixrf_detached(&state);want_nfc=want_card=false;portEXIT_CRITICAL(&lock);
             status_text("Keyboard absent; use PROBE after reconnecting");
         }
         if(ls_nfc_suite_busy()) {
@@ -458,7 +460,7 @@ static void worker(void *arg)
         }
         if(scan && !scanning) {
             scanning=scan_start();
-            if(!scanning){scan_stop();portENTER_CRITICAL(&lock);want_scan=false;portEXIT_CRITICAL(&lock);status_text("2.4 GHz receive setup failed");}
+            if(!scanning){scan_stop();portENTER_CRITICAL(&lock);if(ls_mixrf_claim(&state.scan_owner,scan_owner,false))state.scan_requested=false;portEXIT_CRITICAL(&lock);status_text("2.4 GHz receive setup failed");}
         } else if(!scan && scanning){scan_stop();scanning=false;}
         if(scanning) {
             bool hit=false;
@@ -470,7 +472,7 @@ static void worker(void *arg)
                 if(channel==LS_MIXRF_CHANNELS-1)state.sweeps++;
                 portEXIT_CRITICAL(&lock);
                 channel=(channel+1)%LS_MIXRF_CHANNELS;
-            } else {scan_stop();scanning=false;portENTER_CRITICAL(&lock);want_scan=false;portEXIT_CRITICAL(&lock);status_text("2.4 GHz register read failed");}
+            } else {scan_stop();scanning=false;portENTER_CRITICAL(&lock);if(ls_mixrf_claim(&state.scan_owner,scan_owner,false))state.scan_requested=false;portEXIT_CRITICAL(&lock);status_text("2.4 GHz register read failed");}
         }
         portENTER_CRITICAL(&lock);state.scanning=scanning;portEXIT_CRITICAL(&lock);
         if(!card_on && card_scanning){nfc_watch_stop();card_scanning=false;last_card_seen=0;}
@@ -514,7 +516,7 @@ static void worker(void *arg)
         portENTER_CRITICAL(&lock);state.nfc_watching=nfc_watching;state.nfc_field=field;portEXIT_CRITICAL(&lock);
         if (capturing && !ls_cc_capture_poll(hz,&raw_captures,&raw_overflows)) {
             ls_cc_capture_stop();capturing=false;on=false;
-            portENTER_CRITICAL(&lock);want=want_capture=false;portEXIT_CRITICAL(&lock);
+            portENTER_CRITICAL(&lock);ls_mixrf_cc_request(&state,cc_owner,false,0,false);portEXIT_CRITICAL(&lock);
             status_text("CC1101 pulse capture failed; stopped");
         }
         if(++tick%10){vTaskDelay(pdMS_TO_TICKS(10));continue;}
@@ -523,7 +525,7 @@ static void worker(void *arg)
             running=tune(next,capture);hz=next;
             if (running && capture) {capturing=ls_cc_capture_start();running=capturing;}
             if(running){vTaskDelay(pdMS_TO_TICKS(10));status_text(capturing?"CC1101 OOK capture / 650 kHz / 30 ms gap":"CC1101 channel energy; no packet decoding");}
-            else {cc_strobe(0x36);status_text("CC1101 RX/RMT unavailable; check memory and wiring");portENTER_CRITICAL(&lock);want=want_capture=false;portEXIT_CRITICAL(&lock);}
+            else {cc_strobe(0x36);status_text("CC1101 RX/RMT unavailable; check memory and wiring");portENTER_CRITICAL(&lock);ls_mixrf_cc_request(&state,cc_owner,false,0,false);portEXIT_CRITICAL(&lock);}
         } else if(!on && (running || capturing)) {ls_cc_capture_stop();capturing=false;cc_strobe(0x36);running=false;status_text("CC1101 receive monitor stopped");}
         uint8_t raw=0,marc=0;
         ls_trail(LS_TRAIL_MIXRF, "cc rssi");
@@ -542,7 +544,7 @@ static void worker(void *arg)
 bool ls_mixrf_start(void)
 {
     portENTER_CRITICAL(&lock);
-    if(started){if(!tx_active && !ls_nfc_suite_busy() && !want && !want_scan && !want_nfc && !want_card && !state.scanning && !state.nfc_watching && !state.card_scanning){reprobe=true;state.busy=true;}portEXIT_CRITICAL(&lock);return true;}
+    if(started){if(!tx_active && !ls_nfc_suite_busy() && !state.receive_requested && !state.scan_requested && !want_nfc && !want_card && !state.scanning && !state.nfc_watching && !state.card_scanning){reprobe=true;state.busy=true;}portEXIT_CRITICAL(&lock);return true;}
     started=true;state.busy=true;state.rssi=NAN;
     portEXIT_CRITICAL(&lock);
     bool ok=xTaskCreatePinnedToCoreWithCaps(worker,"mixrf",4096,NULL,1,NULL,0,
@@ -551,25 +553,22 @@ bool ls_mixrf_start(void)
     return ok;
 }
 void ls_mixrf_snapshot(ls_mixrf_status_t *out)
-{if(out){portENTER_CRITICAL(&lock);*out=state;out->scan_requested=want_scan;out->receive_requested=want;out->nfc_requested=want_nfc;out->card_requested=want_card;portEXIT_CRITICAL(&lock);}}
+{if(out){portENTER_CRITICAL(&lock);*out=state;out->transmitting=tx_active;out->scan_requested=state.scan_owner!=LS_MIXRF_OWNER_NONE;out->receive_requested=state.cc_owner!=LS_MIXRF_OWNER_NONE;out->nfc_requested=want_nfc;out->card_requested=want_card;portEXIT_CRITICAL(&lock);}}
+bool ls_mixrf_receive_owned(ls_mixrf_owner_t owner,bool on,uint32_t hz)
+{
+    portENTER_CRITICAL(&lock);
+    bool ok=ls_mixrf_cc_request(&state,owner,on,hz,tx_active);
+    if(ok && on)requested=hz;
+    portEXIT_CRITICAL(&lock);return ok;
+}
 bool ls_mixrf_receive(bool on,uint32_t hz)
-{
-    if(on && !((hz>=300000000 && hz<=348000000) || (hz>=387000000 && hz<=464000000) || (hz>=779000000 && hz<=928000000)))return false;
-    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !tx_active);
-    if(ok && !want_capture){want=on;requested=hz;}else if(want_capture)ok=false;
-    portEXIT_CRITICAL(&lock);return ok;
-}
+{return ls_mixrf_receive_owned(LS_MIXRF_OWNER_MONITOR,on,hz);}
 bool ls_mixrf_capture(bool on,uint32_t hz)
-{
-    if(on && !((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||(hz>=779000000 && hz<=928000000)))return false;
-    portENTER_CRITICAL(&lock);bool ok=!on || (state.cc && !state.busy && !want && !tx_active);
-    if(ok){want=want_capture=on;requested=hz;}
-    portEXIT_CRITICAL(&lock);return ok;
-}
+{return ls_mixrf_receive_owned(LS_MIXRF_OWNER_REC,on,hz);}
 static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,const subghz_cc_fsk_t *mod)
 {
-    if(!((hz>=300000000 && hz<=348000000)||(hz>=387000000 && hz<=464000000)||
-         (hz>=779000000 && hz<=928000000)) ||
+    /* The shared replay policy, then the four power steps this chip has. */
+    if(subghz_tx_refusal(hz,dbm,count,subghz_span_us(pulses,count)) ||
        (dbm!=-10 && dbm!=0 && dbm!=5 && dbm!=10) ||
        !subghz_ook_symbols(pulses,count,NULL,0))return false;
     portENTER_CRITICAL(&lock);bool needs_start=!started;portEXIT_CRITICAL(&lock);
@@ -582,7 +581,7 @@ static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,co
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     portENTER_CRITICAL(&lock);
-    bool ok=started && state.cc && !state.busy && !reprobe && !tx_active && !want && !want_capture;
+    bool ok=started && state.cc && !state.busy && !reprobe && !tx_active && !state.receive_requested && !state.capture_requested;
     if(ok){tx_active=tx_pending=true;tx_done=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=pulses;tx_count=count;tx_fsk=mod!=NULL;if(mod)tx_mod=*mod;}
     portEXIT_CRITICAL(&lock);
     if(!ok)return false;
@@ -598,12 +597,15 @@ bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm)
 {return replay_raw(hz,p,n,dbm,NULL);}
 bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const subghz_cc_fsk_t *mod)
 {return mod && replay_raw(hz,p,n,dbm,mod);}
-bool ls_mixrf_scan(bool on)
+bool ls_mixrf_scan_owned(ls_mixrf_owner_t owner,bool on)
 {
-    portENTER_CRITICAL(&lock);bool ok=!on || (state.nrf && !state.busy);
-    if(ok)want_scan=on;
+    portENTER_CRITICAL(&lock);
+    bool ok=(!on || (state.nrf && !state.busy)) && ls_mixrf_claim(&state.scan_owner,owner,on);
+    if(ok)state.scan_requested=on;
     portEXIT_CRITICAL(&lock);return ok;
 }
+bool ls_mixrf_scan(bool on)
+{return ls_mixrf_scan_owned(LS_MIXRF_OWNER_MONITOR,on);}
 bool ls_mixrf_nfc_watch(bool on)
 {
     portENTER_CRITICAL(&lock);bool ok=!on || (state.nfc && !state.busy);
@@ -620,7 +622,9 @@ bool ls_mixrf_card_scan(bool on)
 bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm){(void)hz;(void)p;(void)n;(void)dbm;return false;}
 bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const subghz_cc_fsk_t *mod){(void)hz;(void)p;(void)n;(void)dbm;(void)mod;return false;}
 bool ls_mixrf_start(void){return false;}
-void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(out){memset(out,0,sizeof(*out));snprintf(out->status,sizeof(out->status),"No keyboard radio wiring for this board");}}
+void ls_mixrf_snapshot(ls_mixrf_status_t *out){if(out){memset(out,0,sizeof(*out));out->ready=true;snprintf(out->status,sizeof(out->status),"No keyboard radio wiring for this board");}}
+bool ls_mixrf_receive_owned(ls_mixrf_owner_t owner,bool on,uint32_t hz){(void)owner;(void)on;(void)hz;return false;}
+bool ls_mixrf_scan_owned(ls_mixrf_owner_t owner,bool on){(void)owner;return !on;}
 bool ls_mixrf_receive(bool on,uint32_t hz){(void)on;(void)hz;return false;}
 bool ls_mixrf_capture(bool on,uint32_t hz){(void)hz;return !on;}
 bool ls_mixrf_scan(bool on){(void)on;return false;}

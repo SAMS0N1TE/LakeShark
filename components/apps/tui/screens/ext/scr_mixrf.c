@@ -6,7 +6,7 @@
 #include "../../ls_options.h"
 #include "../../ls_motion.h"
 #include "ls_mixrf.h"
-#include "rec_watch.h"
+#include "ls_mixrf_control.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -49,8 +49,14 @@ static void band_done(int i)
 {
     static const uint32_t hz[]={315000000,433920000,868350000,915000000};
     if(i<0 || i>3)return;
+    ls_mixrf_snapshot(&state);
+    if(state.cc_owner!=LS_MIXRF_OWNER_NONE && state.cc_owner!=LS_MIXRF_OWNER_MONITOR) {
+        snprintf(feedback,sizeof(feedback),"%s",ls_mixrf_cc_refusal(&state));return;
+    }
+    if(enabled && !ls_mixrf_receive(true,hz[i])) {
+        ls_mixrf_snapshot(&state);snprintf(feedback,sizeof(feedback),"%s",ls_mixrf_cc_refusal(&state));return;
+    }
     frequency=hz[i];
-    if(enabled && !ls_mixrf_receive(true,frequency))snprintf(feedback,sizeof(feedback),"Receiver unavailable");
 }
 /* OPTIONS: the CC1101's receive band, while the CC1101 is what is shown -
    the same four choices as BAND, stepped in place. The 2.4 GHz survey and
@@ -78,8 +84,13 @@ static void action(int i)
     if(i==3 && view_nfc){card_suite=true;ls_scr_nfc.enter();return;}
     if(i==3 && (view_nfc?!((state.nfc_watching && state.nfc_samples) || (state.card_scanning && state.card_polls)):view_24?!(state.scanning && state.sweeps):!state.receiving))return;
     if(i==0)ls_mixrf_start();
-    else if(i==1) {bool on=!enabled;if(ls_mixrf_receive(on,frequency))enabled=on;}
+    else if(i==1) {bool on=!enabled;if(ls_mixrf_receive(on,frequency))enabled=on;
+        else {ls_mixrf_snapshot(&state);snprintf(feedback,sizeof(feedback),"%s",ls_mixrf_cc_refusal(&state));}}
     else if(i==2) {
+        ls_mixrf_snapshot(&state);
+        if(state.cc_owner!=LS_MIXRF_OWNER_NONE && state.cc_owner!=LS_MIXRF_OWNER_MONITOR) {
+            snprintf(feedback,sizeof(feedback),"%s",ls_mixrf_cc_refusal(&state));return;
+        }
         ls_picker_open("CC1101 RECEIVE BAND",band_done);
         ls_picker_add("315 MHz","315 MHz RF path");ls_picker_add("433.920 MHz","434 MHz RF path");
         ls_picker_add("868.350 MHz","868/915 RF path");ls_picker_add("915 MHz","868/915 RF path");
@@ -103,10 +114,11 @@ static void action(int i)
             "Receiver estimate, not calibrated; no packet decoded.",state.frequency/1e6,state.rssi);
         bool ok=ls_field_mark_radio("CC1101 observation",text,LS_FIELD_CC1101,state.frequency,0);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy");
-    } else if(i==4) {bool on=!scan_enabled;if(ls_mixrf_scan(on)){scan_enabled=on;view_24=true;view_nfc=false;}}
+    } else if(i==4) {bool on=!scan_enabled;if(ls_mixrf_scan(on)){scan_enabled=on;view_24=true;view_nfc=false;}
+        else {ls_mixrf_snapshot(&state);snprintf(feedback,sizeof(feedback),state.scan_owner!=LS_MIXRF_OWNER_NONE?"nRF24 in use by %s":"nRF24 unavailable",ls_mixrf_owner_name(state.scan_owner));}}
     else if(i==5){if(view_nfc)view_nfc=false;else if(view_24){view_24=false;view_nfc=true;}else view_24=true;}
     else if(i==6){bool on=!nfc_enabled;if(ls_mixrf_card_scan(on)){nfc_enabled=on;view_nfc=true;view_24=false;}}
-    else if(i==7){if(rec_watch_source()==REC_SOURCE_CC1101)rec_watch_enable(false);ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
+    else if(i==7){ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
     else if(i==8)ls_rsel_open(LS_RSEL_MIXRF,radio_chosen);
     else if(i==9)ls_opt_open(mixrf_options());
 }
@@ -125,14 +137,15 @@ static void draw(tui_surface *sf,tui_rect a)
     if(card_suite){ls_scr_nfc.draw(sf,a);return;}
     if(a.w<30 || a.h<17){ls_panel_notice(sf,a,"MIX-RF","Enlarge the pane","Receive monitor keeps its state");return;}
     ls_mixrf_snapshot(&state);
-    enabled=state.receive_requested;scan_enabled=state.scan_requested;nfc_enabled=state.card_requested;
+    enabled=state.receive_requested && state.cc_owner==LS_MIXRF_OWNER_MONITOR;scan_enabled=state.scan_requested && state.scan_owner==LS_MIXRF_OWNER_MONITOR;nfc_enabled=state.card_requested;
     if(state.samples!=last_samples) {
         for(int i=0;i<47;i++)trace[i]=trace[i+1];
         trace[47]=state.receiving?state.rssi:-120;last_samples=state.samples;
     }
-    ls_btn_t buttons[]={{"PROBE","RADIOS",'p',false,state.busy || enabled || scan_enabled || nfc_enabled || state.nfc_requested},
-        {"MONITOR",enabled?"ON":"OFF",'m',enabled,!state.cc},
-        {"BAND","CC1101",'b',false,false},{view_nfc?"CARDS":"MARK",view_nfc?"SUITE":"NOTE",'j',false,view_nfc?false:view_24?!(state.scanning && state.sweeps):!state.receiving},
+    bool held=state.cc_owner!=LS_MIXRF_OWNER_NONE && state.cc_owner!=LS_MIXRF_OWNER_MONITOR;
+    ls_btn_t buttons[]={{"PROBE","RADIOS",'p',false,state.busy || state.receive_requested || state.scan_requested || nfc_enabled || state.nfc_requested},
+        {"MONITOR",enabled?"ON":"OFF",'m',enabled,!state.cc || held},
+        {"BAND","CC1101",'b',false,held},{view_nfc?"CARDS":"MARK",view_nfc?"SUITE":"NOTE",'j',false,view_nfc?false:view_24?!(state.scanning && state.sweeps):!state.receiving},
         {"2.4 SCAN",scan_enabled?"ON":"OFF",'s',scan_enabled,!state.nrf || state.busy},
         {"VIEW",view_nfc?"NFC":view_24?"2.4 GHz":"SUB-GHZ",'v',view_24||view_nfc,false},
         {"NFC",nfc_enabled?"SCAN":"OFF",'n',nfc_enabled,!state.nfc || state.busy},
@@ -158,7 +171,7 @@ static void draw(tui_surface *sf,tui_rect a)
     ls_kv(sf,panel,5,"NFC",line,LS_ATTR_DIM);
     if(view_nfc)snprintf(line,sizeof(line),"%lu polls / %lu replies",(unsigned long)state.card_polls,(unsigned long)state.card_hits);
     else if(view_24)snprintf(line,sizeof(line),"%lu sweeps / %lu hits",(unsigned long)state.sweeps,(unsigned long)state.energy_hits);
-    else snprintf(line,sizeof(line),"%.4f MHz",frequency/1e6);
+    else snprintf(line,sizeof(line),"%.4f MHz",(state.receive_requested?state.frequency:frequency)/1e6);
     ls_kv(sf,panel,a.h<22?6:7,view_nfc?"13.56 MHz":view_24?"SURVEY":"MONITOR",line,LS_ATTR_DIM);
     if(view_nfc && (state.card_requested || state.card_polls))snprintf(line,sizeof(line),"%s / ATQA %04X",state.card_present?"CARD PRESENT":state.card_scanning?"waiting for card":"stopped",state.card_atqa);
     else if(view_nfc)snprintf(line,sizeof(line),"%s",state.nfc_watching?(state.nfc_field?"FIELD PRESENT":"waiting for reader field"):"off");
@@ -208,7 +221,7 @@ static void draw(tui_surface *sf,tui_rect a)
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-3,view_24?"2400 MHz <--- activity ---> 2483 MHz":"CC1101 energy; packets not decoded",LS_ATTR_DIM);
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,view_24?"RPD ~-64 dBm threshold; no packet IDs":"V switches survey / NFC field views",LS_ATTR_DIM);
     }
-    ls_safe_line(sf,a,a.y+a.h-2,state.status,LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-2,held?ls_mixrf_cc_refusal(&state):state.status,LS_ATTR_DIM);
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_keyboard_mode()?"M RX | S scan | N NFC | V view | X stop":"",LS_ATTR_DIM);
 }
 static bool key(ls_tk_t k,char c)

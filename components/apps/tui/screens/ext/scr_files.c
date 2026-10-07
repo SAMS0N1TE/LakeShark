@@ -14,6 +14,7 @@
 #include "../../ls_keyboard.h"
 #include "rec_state.h"
 #include "rec_watch.h"
+#include "rec_file_open.h"
 #include "subghz_file.h"
 #include "subghz_pwm.h"
 #include "subghz_nrz.h"
@@ -34,8 +35,9 @@
 #define MAX_ENTRIES 256
 #define MAX_EDGES 8192
 #define TEXT_MAX 8192
+#define PATH_MAX_LEN 416
 
-typedef struct { char name[64]; uint32_t size; time_t mtime; bool dir; } entry_t;
+typedef struct { char name[256]; uint32_t size; time_t mtime; bool dir; } entry_t;
 
 typedef enum { SORT_NAME, SORT_NEWEST, SORT_OLDEST, SORT_LARGEST, SORT_TYPE, SORT__COUNT } sort_t;
 static const char *const SORT_NAME_TEXT[SORT__COUNT] = {"NAME", "NEWEST", "OLDEST", "LARGEST", "TYPE"};
@@ -63,7 +65,8 @@ static bool s_touch_nav;
 
 typedef enum { VIEW_LIST, VIEW_SUB, VIEW_TEXT } view_t;
 static view_t s_view;
-static char s_open_path[240];
+static EXT_RAM_BSS_ATTR char s_open_path[PATH_MAX_LEN];
+static char s_decode[64];
 
 static EXT_RAM_BSS_ATTR int32_t s_edges[MAX_EDGES];
 static EXT_RAM_BSS_ATTR subghz_file_t s_sub;
@@ -74,6 +77,16 @@ static int s_scroll, s_scroll_max;
 
 static const char *ext_of(const char *name);
 static bool is_text(const char *name);
+
+/* A shortened path must never address a different entry on the card. */
+static bool join_path(char *out, size_t len, const char *dir, const char *name)
+{
+    const int n = snprintf(out, len, "%s/%s", dir, name);
+    if (n >= 0 && (size_t)n < len) return true;
+    out[0] = 0;
+    snprintf(s_feedback, sizeof(s_feedback), "Path too long");
+    return false;
+}
 
 /* Folders first in every order: they are where you go, not what you look
    at, and mixing them into a date sort buries them. */
@@ -119,11 +132,12 @@ static void load_dir(void)
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') continue;
-        if (s_count >= MAX_ENTRIES) { s_truncated = true; break; }
-        entry_t *t = &s_entry[s_count];
-        snprintf(t->name, sizeof(t->name), "%s", e->d_name);
-        char full[240];
-        snprintf(full, sizeof(full), "%s/%s", s_path, e->d_name);
+        entry_t candidate = {0};
+        entry_t *t = &candidate;
+        if (strlen(e->d_name) >= sizeof(t->name)) continue;
+        strcpy(t->name, e->d_name);
+        char full[PATH_MAX_LEN];
+        if (!join_path(full, sizeof(full), s_path, e->d_name)) continue;
         struct stat st;
         if (stat(full, &st) == 0) {
             t->dir = S_ISDIR(st.st_mode);
@@ -134,10 +148,23 @@ static void load_dir(void)
             t->size = 0;
             t->mtime = 0;
         }
-        if (passes_filter(t)) s_count++;
+        if (!passes_filter(t)) continue;
+        /* Retain the first page of the active order across the whole folder,
+           including entries encountered after the storage limit. */
+        int lo = 0, hi = s_count;
+        while (lo < hi) {
+            const int mid = lo + (hi - lo) / 2;
+            if (entry_cmp(t, &s_entry[mid]) < 0) hi = mid;
+            else lo = mid + 1;
+        }
+        if (s_count == MAX_ENTRIES) s_truncated = true;
+        if (lo >= MAX_ENTRIES) continue;
+        if (s_count < MAX_ENTRIES) s_count++;
+        memmove(&s_entry[lo + 1], &s_entry[lo],
+                (size_t)(s_count - lo - 1) * sizeof(s_entry[0]));
+        s_entry[lo] = candidate;
     }
     closedir(d);
-    qsort(s_entry, (size_t)s_count, sizeof(s_entry[0]), entry_cmp);
     if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
 }
 
@@ -146,7 +173,7 @@ static void load_dir(void)
    your finger. */
 static void reload_keep(const char *keep)
 {
-    char name[64];
+    char name[256];
     snprintf(name, sizeof(name), "%s", keep ? keep : "");
     load_dir();
     if (!name[0]) return;
@@ -231,6 +258,21 @@ static void size_text(uint32_t n, char *out, size_t len)
 
 /* ------------------------------------------------------------------ open */
 
+/* Cache even a failed decode: an unchanged capture has the same answer. */
+static void decode_sub(void)
+{
+    subghz_pwm_t pwm;
+    subghz_nrz_t nrz;
+    rec_ook24_t ook;
+    s_decode[0] = 0;
+    if (subghz_pwm_decode(s_edges, s_sub.edges, &pwm))
+        subghz_pwm_format(&pwm, s_decode, sizeof(s_decode));
+    if (!s_decode[0] && subghz_nrz_decode(s_edges, s_sub.edges, &nrz))
+        subghz_nrz_format(&nrz, s_decode, sizeof(s_decode));
+    if (!s_decode[0] && rec_decode_ook24(s_edges, s_sub.edges, &ook))
+        snprintf(s_decode, sizeof(s_decode), "OOK24 %06lX x%u", (unsigned long)ook.value, ook.repeats);
+}
+
 static void open_text(void)
 {
     s_text[0] = 0;
@@ -259,10 +301,11 @@ static void open_selected(void)
         load_dir();
         return;
     }
-    snprintf(s_open_path, sizeof(s_open_path), "%s/%s", s_path, e->name);
+    if (!join_path(s_open_path, sizeof(s_open_path), s_path, e->name)) return;
     s_feedback[0] = 0;
     if (!strcasecmp(ext_of(e->name), "sub")) {
         if (subghz_file_load(s_open_path, &s_sub, s_edges, MAX_EDGES, s_line, sizeof(s_line))) {
+            decode_sub();
             s_scroll = 0;
             s_view = VIEW_SUB;
             return;
@@ -292,20 +335,34 @@ static void send_to_flipper(void)
         snprintf(s_feedback, sizeof(s_feedback), "No card folder for the Flipper to read");
         return;
     }
-    char to[240];
-    snprintf(to, sizeof(to), "%s/%s", dir, open_name());
+    char to[PATH_MAX_LEN];
+    if (!join_path(to, sizeof(to), dir, open_name())) return;
     if (!strcmp(to, s_open_path)) {
         snprintf(s_feedback, sizeof(s_feedback), "Already there: Flipper > LakeShark > FILES");
         return;
     }
     FILE *in = fopen(s_open_path, "rb");
     if (!in) { snprintf(s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
-    FILE *out = fopen(to, "wb");
+    /* Exclusive creation preserves captures even when another writer wins
+       the same name between attempts. Suffixes keep the .sub extension. */
+    FILE *out = NULL;
+    for (int suffix = 0; suffix <= 999; suffix++) {
+        if (suffix) {
+            char name[256];
+            const char *base = open_name(), *dot = strrchr(base, '.');
+            const int stem = dot ? (int)(dot - base) : (int)strlen(base);
+            const int n = snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, suffix, dot ? dot : "");
+            if (n < 0 || (size_t)n >= sizeof(name) || !join_path(to, sizeof(to), dir, name)) break;
+        }
+        out = rec_file_open_new(to);
+        if (out || errno != EEXIST) break;
+    }
     if (!out) { fclose(in); snprintf(s_feedback, sizeof(s_feedback), "Could not write %s", dir); return; }
     bool ok = true;
     size_t n;
     while ((n = fread(s_line, 1, sizeof(s_line), in)) > 0)
         if (fwrite(s_line, 1, n, out) != n) { ok = false; break; }
+    if (ferror(in)) ok = false;
     fclose(in);
     if (fclose(out) != 0) ok = false;
     if (!ok) unlink(to);
@@ -315,8 +372,10 @@ static void send_to_flipper(void)
 
 static void replay_open(void)
 {
-    if(!ls_scr_rec_replay_file(s_open_path,&s_sub,s_edges))
-        snprintf(s_feedback,sizeof(s_feedback),"Replay busy or file unsupported");
+    if(ls_scr_rec_replay_file(s_open_path,&s_sub,s_edges))return;
+    const char *why=subghz_tx_refusal(s_sub.freq_hz,0,(size_t)s_sub.edges_total,s_sub.span_us);
+    if(why)snprintf(s_feedback,sizeof(s_feedback),"Replay refused: %s",why);
+    else snprintf(s_feedback,sizeof(s_feedback),"Replay busy or file unsupported");
 }
 
 static void delete_done(int i)
@@ -339,7 +398,7 @@ static void delete_done(int i)
     }
 }
 
-static char s_rename_from[240];
+static EXT_RAM_BSS_ATTR char s_rename_from[PATH_MAX_LEN];
 static void rename_done(const char *name)
 {
     if (!name || !name[0]) return;
@@ -347,8 +406,8 @@ static void rename_done(const char *name)
         snprintf(s_feedback, sizeof(s_feedback), "A name cannot contain /");
         return;
     }
-    char to[240];
-    snprintf(to, sizeof(to), "%s/%s", s_path, name);
+    char to[PATH_MAX_LEN];
+    if (!join_path(to, sizeof(to), s_path, name)) return;
     struct stat st;
     if (stat(to, &st) == 0) { snprintf(s_feedback, sizeof(s_feedback), "%s already exists", name); return; }
     if (rename(s_rename_from, to) == 0) {
@@ -401,7 +460,8 @@ static void actions_done(int i)
         snprintf(title, sizeof(title), "DELETE %s?", open_name());
         ls_picker_open(title, delete_done);
         ls_picker_add("DELETE", "It cannot be brought back");
-        ls_picker_add("KEEP", "Leave it on the card");
+        ls_picker_add("CANCEL", "Leave it on the card");
+        ls_picker_select(1);
         break;
     }
     default: break;
@@ -416,7 +476,7 @@ static void actions_open(void)
             return;
         }
         dir = s_entry[s_selected].dir;
-        snprintf(s_open_path, sizeof(s_open_path), "%s/%s", s_path, s_entry[s_selected].name);
+        if (!join_path(s_open_path, sizeof(s_open_path), s_path, s_entry[s_selected].name)) return;
     }
     const bool sub = !dir && !strcasecmp(ext_of(open_name()), "sub");
     char title[48];
@@ -434,8 +494,12 @@ static void actions_open(void)
         }
         else if (s_view == VIEW_SUB && subghz_file_is_ook(&s_sub))
             menu_add('R', "REPLAY", "Open in RECORD / CC1101");
-        else if (s_view == VIEW_SUB)
-            menu_add('.', "REPLAY UNAVAILABLE", "Incomplete or unsupported RAW/modulation");
+        else if (s_view == VIEW_SUB) {
+            const char *why = subghz_tx_refusal(s_sub.freq_hz, 0,
+                (size_t)s_sub.edges_total, s_sub.span_us);
+            menu_add('.', why ? "REPLAY REFUSED" : "REPLAY UNAVAILABLE",
+                     why ? why : "Incomplete or unsupported RAW/modulation");
+        }
     }
     if (!dir && is_text(open_name()) && s_view != VIEW_TEXT) menu_add('T', "VIEW AS TEXT", "The file as written");
     menu_add('I', "INFO", "Size, date, where it is");
@@ -608,7 +672,8 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     snprintf(line, sizeof(line), "%.4f MHz   %s", s_sub.freq_hz / 1e6,
              s_sub.protocol[0] ? s_sub.protocol : "?");
     tui_put_str(sf, in, x, y++, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    if (subghz_file_is_fsk(&s_sub))
+    /* What the file is, whether or not it may be replayed. */
+    if (s_sub.bitrate && s_sub.deviation_hz && !strstr(s_sub.preset, "Ook"))
         snprintf(line, sizeof(line), "2-FSK %lu baud, %.1f kHz dev, sync %08lX",
                  (unsigned long)s_sub.bitrate, s_sub.deviation_hz / 1000.0,
                  (unsigned long)s_sub.sync_word);
@@ -621,16 +686,8 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     tui_put_str(sf, in, x, y++, line, LS_ATTR_DIM);
 
     /* What it decodes as, where the encoding is one this board knows. */
-    char what[64] = "";
-    subghz_pwm_t pwm;
-    subghz_nrz_t nrz;
-    rec_ook24_t ook;
-    if (subghz_pwm_decode(s_edges, s_sub.edges, &pwm)) subghz_pwm_format(&pwm, what, sizeof(what));
-    if (!what[0] && subghz_nrz_decode(s_edges, s_sub.edges, &nrz)) subghz_nrz_format(&nrz, what, sizeof(what));
-    if (!what[0] && rec_decode_ook24(s_edges, s_sub.edges, &ook))
-        snprintf(what, sizeof(what), "OOK24 %06lX x%u", (unsigned long)ook.value, ook.repeats);
-    snprintf(line, sizeof(line), "DECODE  %s", what[0] ? what : "no known encoding");
-    tui_put_str(sf, in, x, y++, line, what[0] ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    snprintf(line, sizeof(line), "DECODE  %s", s_decode[0] ? s_decode : "no known encoding");
+    tui_put_str(sf, in, x, y++, line, s_decode[0] ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     y++;
 
     const int left = p.y + p.h - 1 - y;
@@ -713,7 +770,7 @@ static void draw_list(tui_surface *sf, tui_rect p)
         const int y = s_list.y + i * rh;
         const bool sel = first + i == s_selected;
         if (sel) ls_fill_dither(sf, tui_rect_make(s_list.x, y, s_list.w, rh), LS_DITHER_LIGHT, TUI_CYAN);
-        char full[80], name[80];
+        char full[257], name[80];
         snprintf(full, sizeof(full), "%s%s", e->name, e->dir ? "/" : "");
         fit_name(full, rh == 2 ? s_list.w - 2 : s_list.w - 30, name, sizeof(name));
         const bool sub = !e->dir && !strcasecmp(ext_of(e->name), "sub");
@@ -774,7 +831,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), btn, 5, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
     char title[40];
-    if (list) snprintf(title, sizeof(title), "FILES  %d%s", s_count, s_truncated ? "+" : "");
+    if (list) snprintf(title, sizeof(title), "FILES  %s%d", s_truncated ? "first " : "", s_count);
     else snprintf(title, sizeof(title), "%s", s_view == VIEW_SUB ? "CAPTURE" : "TEXT");
     ls_panel_box(sf, panel, title, TUI_CYAN);
     if (s_view == VIEW_SUB) draw_sub(sf, panel);

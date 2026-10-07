@@ -22,6 +22,7 @@
 #include "../../ls_options.h"
 #include "../../ls_app.h"
 #include "../../ls_map.h"
+#include "../../ls_route_live.h"
 #include "../../ls_geo.h"
 #include "../../ls_sun.h"
 #include "board/ls_board_hw.h"
@@ -191,6 +192,14 @@ static float sun_azimuth(float *elevation)
 
 static bool target_nav(double *bearing_true, double *metres, char *name, size_t cap)
 {
+    const ls_route_t *route=ls_route_live();
+    if (route->valid) {
+        if (!route->located || route->arrived || !isfinite(route->bearing)) return false;
+        if (bearing_true) *bearing_true=route->bearing;
+        if (metres) *metres=route->remaining_m;
+        if (name && cap) snprintf(name,cap,"%s",route->off_route ? "OFF ROUTE" : "ROUTE");
+        return true;
+    }
     double tlat, tlon, lat, lon;
     if (!ls_compass_target(&tlat, &tlon, name, cap) || !position(&lat, &lon)) return false;
     ls_compass_nav(lat, lon, tlat, tlon, bearing_true, metres);
@@ -924,8 +933,11 @@ static void cal_antenna(bool calibrating)
         s_ant_restore = ls_board_hw_antenna_is_external() ? 1 : 0;
         if (s_ant_restore != (int)want_ext) ls_board_hw_antenna_external(want_ext);
     } else if (!calibrating && s_ant_restore >= 0) {
-        if (s_ant_restore != (int)want_ext) ls_board_hw_antenna_external(s_ant_restore == 1);
-        s_ant_restore = -1;
+        /* Forget the stored route only once it is back; a refusal (a
+           transmit in flight) is tried again at the next call. */
+        if (ls_board_hw_antenna_is_external() == (s_ant_restore == 1) ||
+            ls_board_hw_antenna_external(s_ant_restore == 1) == ESP_OK)
+            s_ant_restore = -1;
     }
 }
 
@@ -1290,10 +1302,11 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
 
 __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
 {
-    double tb, tm; char name[48];
+    double tb, tm; char name[48]="ROUTE";
+    const ls_route_t *route=ls_route_live();
     const bool have = target_nav(&tb, &tm, name, sizeof(name));
-    const bool set = ls_compass_target(NULL, NULL, NULL, 0);
-    ls_btn_t buttons[] = { { "SET", "TARGET", 't', false, false }, { "MAP", "SHOW", 'm', false, !set },
+    const bool set = route->valid || ls_compass_target(NULL, NULL, NULL, 0);
+    ls_btn_t buttons[] = { { route->valid ? "OPTIONS" : "SET", route->valid ? "ROUTE" : "TARGET", 't', false, false }, { "MAP", "SHOW", 'm', false, !set },
                            { "CLEAR", NULL, 'c', false, !set } };
     const int bar_h = ls_btn_raised_height(body, 3);
     ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, 3, button_focus);
@@ -1310,6 +1323,7 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
         return;
     }
     ls_safe_line(sf, side, y++, name, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    if (route->valid && route->arrived) { ls_safe_line(sf,side,y++,"Arrived at route end",TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));return; }
     if (!have) { ls_safe_line(sf, side, y++, "Waiting for a GPS fix to measure from", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); return; }
     const float bearing = to_dial((float)tb);
     big_number(sf, side, side.x + 2, y, bearing, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
@@ -1324,7 +1338,7 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
         else snprintf(line, sizeof(line), "%s %.0f deg %s", off > 0 ? "TURN RIGHT" : "TURN LEFT", fabsf(off), off > 0 ? "-->" : "<--");
         ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     }
-    ls_gps_state_t g; ls_gps_get(&g);
+    EXT_RAM_BSS_ATTR static ls_gps_state_t g; ls_gps_get(&g);
     if (g.fix && g.speed_kts > 0.8f) {
         const double ms = g.speed_kts * 0.514444;
         snprintf(line, sizeof(line), "%.1f km/h  about %.0f min", ms * 3.6, tm / ms / 60.0);
@@ -1365,7 +1379,6 @@ __attribute__((noinline)) static void draw_level(tui_surface *sf, tui_rect body)
 }
 
 static bool s_steady_true;
-static float s_gyro_rest[3];
 static float s_rate = NAN, s_yaw = NAN;
 static void find_requests(void);
 
@@ -1381,30 +1394,23 @@ static void draw(tui_surface *sf, tui_rect a)
     const float dt = s_last_us ? (float)((now - s_last_us) / 1e6) : 0.04f;
     s_last_us = now;
     {
-        /* Turning is judged by the gyro's whole rate, whichever way the
-           board is held, less what it reads lying still: this board's gyro
-           rests near 4 deg/s, which alone looked like a turn. The rest
-           reading is learnt whenever the rate is under 6 deg/s, over about 5 s. */
+        /* The fusion takes the gyro's rest reading off the whole vector and
+           learns it whenever the board lies still (ls_compass_steady_imu). */
         ls_field_sample_t p; ls_field_sample_snapshot(&p);
-        float rate = NAN, yaw = NAN;
-        if (p.imu_valid) {
-            const float g[3] = { p.imu.gx, p.imu.gy, p.imu.gz };
-            const float acc[3] = { p.imu.ax, p.imu.ay, p.imu.az };
-            float d[3], r2 = 0;
-            for (int i = 0; i < 3; i++) { d[i] = g[i] - s_gyro_rest[i]; r2 += d[i] * d[i]; }
-            rate = sqrtf(r2);
-            if (rate < 6.0f) for (int i = 0; i < 3; i++) s_gyro_rest[i] += d[i] * fminf(1.0f, dt / 5.0f);
-            /* The raw gyro: the fusion learns its own bias about up, and
-               the rest vector above also learns any turn under 6 deg/s. */
-            yaw = ls_compass_yaw_rate(g, acc);
-        }
+        const float g[3] = { p.imu.gx, p.imu.gy, p.imu.gz };
+        const float acc[3] = { p.imu.ax, p.imu.ay, p.imu.az };
         /* A switch between true and magnetic is a jump, not a turn. */
         if (s_steady.started && s_steady_true != true_mode()) s_steady.started = false;
         s_steady_true = true_mode();
         s_steady.mag_tau_s = s_r.interference ? 8.0f : LS_COMPASS_FUSE_TAU_S;
-        ls_compass_steady_step(&s_steady, raw_heading(), s_r.pitch, s_r.roll, yaw, dt);
-        s_rate = rate;
-        s_yaw = yaw;
+        ls_compass_steady_imu(&s_steady, raw_heading(), s_r.pitch, s_r.roll,
+                              p.imu_valid ? g : NULL, p.imu_valid ? acc : NULL, dt);
+        /* For the console: how fast it is turning, whichever way it is
+           held, less what the gyro reads at rest. */
+        float r2 = 0;
+        for (int i = 0; i < 3; i++) r2 += (g[i] - s_steady.rest[i]) * (g[i] - s_steady.rest[i]);
+        s_rate = p.imu_valid ? sqrtf(r2) : NAN;
+        s_yaw = s_steady.yaw;
         heading_note(now, to_true(shown_heading()));
     }
     /* No spring on the fused heading. It was there to hide jitter the
@@ -1428,7 +1434,10 @@ static void draw(tui_surface *sf, tui_rect a)
     else if (s_page == P_FIND) draw_find(sf, body);
     else if (s_page == P_GOTO) draw_goto(sf, body);
     else draw_level(sf, body);
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback, LS_ATTR_DIM);
+    if (ls_route_live()->valid && !s_feedback[0]) {
+        char strip[96];ls_route_guidance(strip,sizeof(strip));
+        ls_safe_line(sf,a,a.y+a.h-1,strip,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    } else ls_safe_line(sf, a, a.y + a.h - 1, s_feedback, LS_ATTR_DIM);
 }
 
 /* -------------------------------------------------------------- actions -- */
@@ -1701,7 +1710,7 @@ static const char *o_second_why(const ls_opt_t *o)
     MORE_ROW("Clear saved bearings", M_BEARINGS), \
     { .label = "Calibrate FIND", .kind = LS_OPT_ACTION, .arg = M_DFCAL, .act = o_more, .show = o_more_show, .leaves = true }, \
     MORE_ROW("Clear FIND correction", M_DFCLEAR)
-static const ls_opt_t OPT_COMPASS[] = { COMPASS_ROWS };
+static const ls_opt_t OPT_COMPASS[] = { COMPASS_ROWS, { .label="Route", .kind=LS_OPT_MENU, .sub=&LS_ROUTE_OPTIONS } };
 static const ls_opt_t OPT_FIND[] = {
     FIND_OPT("Hold each peak", O_HOLD), FIND_OPT("Then let it fall", O_DECAY),
     FIND_OPT("Forget a direction after", O_FORGET), FIND_OPT("A hit stands over noise by", O_THRESH),
@@ -1724,6 +1733,7 @@ static const ls_opt_ctx_t CTX_FIND = { .name = "FIND", .job = LS_RSEL_FIND, .rad
    FIND while a beacon calibration has the page. */
 static const ls_opt_ctx_t *compass_options(void)
 {
+    ls_route_options();
     return s_page == P_FIND && s_cal.phase == LS_DF_CAL_OFF ? &CTX_FIND : &CTX_COMPASS;
 }
 
@@ -2081,9 +2091,15 @@ static void action(int i)
         else if (i == 6) set_view(s_view + 1);
         else if (i == 7) log_mode(true);
     } else if (s_page == P_GOTO) {
-        if (i == 0) pick_place();
-        else if (i == 1) { double lat, lon; if (ls_compass_target(&lat, &lon, NULL, 0)) { ls_map_center(lat, lon); open_app("map"); } }
-        else if (i == 2) ls_compass_clear_target();
+        const ls_route_t *route=ls_route_live();
+        if (i == 0) { if (route->valid) ls_opt_open(ls_route_options()); else pick_place(); }
+        else if (i == 1) {
+            double lat,lon;
+            if (route->valid) {
+                size_t next=route->arrived ? route->n-1 : route->located ? route->next : 0;
+                ls_map_center(route->point[next].lat,route->point[next].lon);open_app("map");
+            } else if (ls_compass_target(&lat,&lon,NULL,0)) { ls_map_center(lat,lon);open_app("map"); }
+        } else if (i == 2) { if (route->valid) ls_route_live_clear(); else ls_compass_clear_target(); }
     }
 }
 
@@ -2153,6 +2169,9 @@ static void enter(void)
     load_find_settings();
     ls_field_start(); ls_field_watch(true);
     s_spring.started = false; s_last_us = 0;
+    /* The board may have turned while COMPASS was closed: the dial starts
+       from the next reading, and keeps what it knows of the gyro. */
+    s_steady.started = false;
     load_df_offset();
     show_page(s_page);
 }
@@ -2324,6 +2343,8 @@ static void report_truth(void)
     if (m < 30) printf("find: truth: under 30 m, a few metres of GPS error is a wide angle\n");
 }
 
+extern const ls_tui_screen_t ls_scr_compass;
+
 /* `find` on the console: what FIND hears, and control of it. */
 bool ls_scr_compass_console(int argc, char **argv)
 {
@@ -2347,7 +2368,11 @@ bool ls_scr_compass_console(int argc, char **argv)
     }
     if (!strcmp(verb, "status") || !strcmp(verb, "log")) {
         const int64_t now = esp_timer_get_time();
-        printf("find: %s  method %s  view %s%s\n", s_page == P_FIND && s_find_on ? "FIND running" : "FIND not open (call ui.screen 9, tui key 2)",
+        /* The screen's index depends on which apps this build registers. */
+        char closed[48];
+        snprintf(closed, sizeof(closed), "FIND not open (call ui.screen %d, tui key 2)",
+                 ls_tui_screen_index_of(&ls_scr_compass));
+        printf("find: %s  method %s  view %s%s\n", s_page == P_FIND && s_find_on ? "FIND running" : closed,
                method_name(), VIEW_NAMES[s_view], s_logmode ? "  LOG" : "");
         printf("find: heading raw %.1f  shown %.1f  %s  gyro %.1f deg/s  turn %.1f deg/s  tilt %.0f%s\n",
                raw_heading(), shown_heading(), ref(), s_rate, s_turn_rate, s_r.tilt, s_r.interference ? "  MAG CAUTION" : "");
@@ -2355,6 +2380,10 @@ bool ls_scr_compass_console(int argc, char **argv)
                s_steady.gyro_used ? "GYRO+MAG" : "MAG ONLY", s_yaw, s_steady.bias, s_steady.agree,
                (unsigned long)s_steady.glitches,
                s_steady.agree <= -0.5f ? "  GYRO TURNS AGAINST THE MAGNETOMETER: axis fault, gyro left out" : "");
+        printf("find: gyro at rest %+.2f %+.2f %+.2f deg/s%s  still %.1f s%s\n",
+               s_steady.rest[0], s_steady.rest[1], s_steady.rest[2],
+               s_steady.rest_known ? "" : " (not learnt: lay it still for a second)",
+               s_steady.resting ? s_steady.still_s : 0.0f, s_steady.sat_s > 0 ? "  GYRO AT FULL SCALE" : "");
         printf("find: hold %.0f s  fall %.1f dB/s  forget %.0f s  hit %.0f dB over  sure at %.0f  dwell %.0f ms\n",
                OPTV(O_HOLD), OPTV(O_DECAY), OPTV(O_FORGET), OPTV(O_THRESH), OPTV(O_SPIKE), OPTV(O_DWELL));
         report_band();
@@ -2379,7 +2408,10 @@ bool ls_scr_compass_console(int argc, char **argv)
         return true;
     }
     /* A change is applied by FIND's own frame, so FIND has to be on screen. */
-    if (s_page != P_FIND || !s_find_on) { printf("find: open FIND first: call ui.screen 9, then tui key 2\n"); return false; }
+    if (s_page != P_FIND || !s_find_on) {
+        printf("find: open FIND first: call ui.screen %d, then tui key 2\n", ls_tui_screen_index_of(&ls_scr_compass));
+        return false;
+    }
     if (s_rq_kind != RQ_NONE) { printf("find: the last change is still waiting for the screen\n"); return false; }
     if (!strcmp(verb, "src") && argc > 2) {
         const int src = parse_source(argv[2]);

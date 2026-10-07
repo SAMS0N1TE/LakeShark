@@ -33,6 +33,9 @@ int ls_board_hw_c6_state(void);
 /* Which antenna the SKY13453 is pointing at. */
 
 esp_err_t ls_board_hw_antenna_external(bool external);
+/* Acknowledgment lasts only until the route changes or the board reboots. */
+esp_err_t ls_board_hw_antenna_confirm_external(void);
+bool ls_board_hw_antenna_tx_allowed(void);
 
 /* True when MMCX1 is selected. False for the internal antenna, and false on
    a board that has no switch - which is correct, since such a board's signal

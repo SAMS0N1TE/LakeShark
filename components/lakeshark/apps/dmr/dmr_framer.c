@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#define WINDOW_BYTES (DMR_BURST_BITS / 8)   /* 264 bits is exactly 33 bytes */
+#define WINDOW_BYTES (DMR_BURST_BITS / 8 + 3)
 
 static int rd_bit(const uint8_t *buf, unsigned int idx)
 {
@@ -16,12 +16,8 @@ static void wr_bit(uint8_t *buf, unsigned int idx, int v)
     else   buf[idx >> 3] &= (uint8_t)~mask;
 }
 
-/* Shift the whole window one bit towards the oldest end and drop `bit` in at
- * the newest.  Thirty-three bytes per bit at 9600 bit/s is about 320 kB/s of
- * memory traffic, which is nothing next to the demodulator feeding it, and a
- * plain shift keeps the window contiguous - so the burst can be handed out
- * with one memcpy and read with the same bit indices the rest of the DMR code
- * already uses.  A ring buffer would save the shift and cost that. */
+/* Keep CACH and burst contiguous so sync and slot identity use the same
+ * received bits. The extra three bytes avoid a second history buffer. */
 static void window_push(dmr_framer_t *f, int bit)
 {
     for (unsigned i = 0; i < WINDOW_BYTES - 1u; i++)
@@ -42,7 +38,7 @@ bool dmr_framer_bit(dmr_framer_t *f, int bit, dmr_burst_frame_t *out)
     if (!f || !out) return false;
 
     window_push(f, bit);
-    if (f->filled < DMR_BURST_BITS) f->filled++;
+    if (f->filled < DMR_BURST_BITS + 24u) f->filled++;
     if (f->since_hit < DMR_BURST_BITS) f->since_hit++;
 
     /* Nothing can be said until a whole burst has been seen: the sync is in
@@ -57,12 +53,14 @@ bool dmr_framer_bit(dmr_framer_t *f, int bit, dmr_burst_frame_t *out)
     uint8_t sync[DMR_SYNC_BITS / 8];
     memset(sync, 0, sizeof(sync));
     for (unsigned i = 0; i < DMR_SYNC_BITS; i++)
-        wr_bit(sync, i, rd_bit(f->window, DMR_SYNC_OFFSET_BITS + i));
+        wr_bit(sync, i, rd_bit(f->window, 24u + DMR_SYNC_OFFSET_BITS + i));
 
     const dmr_sync_match_t m = dmr_sync_detect(sync, f->max_sync_errors);
     if (m.class_id == DMR_SYNC_NONE) return false;
 
-    memcpy(out->burst, f->window, WINDOW_BYTES);
+    memcpy(out->burst, f->window + 3, DMR_BURST_BITS / 8);
+    memcpy(out->cach, f->window, 3);
+    out->have_cach = f->filled >= DMR_BURST_BITS + 24u;
     out->class_id    = m.class_id;
     out->sync_errors = m.errors;
     f->since_hit     = 0;

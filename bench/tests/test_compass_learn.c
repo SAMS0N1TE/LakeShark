@@ -13,11 +13,11 @@ static double dot3(ned a, ned b) { return a.n * b.n + a.e * b.e + a.d * b.d; }
 /* 20 uT north, 48 down: R 52, dip 67, about New England. */
 static const ned FIELD = { 20, 0, 48 };
 
-/* The board with its top at `yaw`, raised by `pitch`, rolled by `roll`, and
-   `extra` (screen axes, uT) added to what the magnetometer reads, as a
-   drifted offset or a current near the sensor would. */
-static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float extra[3],
-                            const ls_compass_cal_t *cal)
+/* The board with its top at `yaw`, raised by `pitch`, rolled by `roll`, in
+   `field`, and `extra` (screen axes, uT) added to what the magnetometer
+   reads, as a drifted offset or a current near the sensor would. */
+static ls_imu_sample_t pose_in(ned field, double yaw, double pitch, double roll, const float extra[3],
+                               const ls_compass_cal_t *cal)
 {
     const double y = yaw * RAD, p = pitch * RAD, r = roll * RAD;
     const ned top = { cos(y) * cos(p), sin(y) * cos(p), -sin(p) };
@@ -29,13 +29,19 @@ static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float e
     ls_imu_sample_t s;
     memset(&s, 0, sizeof(s));
     s.ax = (float)-dot3(upward, right); s.ay = (float)dot3(upward, top); s.az = (float)-dot3(upward, out);
-    float scr[3] = { (float)dot3(FIELD, right), (float)dot3(FIELD, top), (float)dot3(FIELD, out) };
+    float scr[3] = { (float)dot3(field, right), (float)dot3(field, top), (float)dot3(field, out) };
     if (extra) for (int i = 0; i < 3; i++) scr[i] += extra[i];
     float raw[3];
     ls_compass_unfield(cal, scr, raw);
     s.mx = raw[0] + cal->offset[0]; s.my = raw[1] + cal->offset[1]; s.mz = raw[2] + cal->offset[2];
     s.mag_valid = true;
     return s;
+}
+
+static ls_imu_sample_t pose(double yaw, double pitch, double roll, const float extra[3],
+                            const ls_compass_cal_t *cal)
+{
+    return pose_in(FIELD, yaw, pitch, roll, extra, cal);
 }
 
 static ls_compass_cal_t plain_cal(void)
@@ -221,4 +227,43 @@ LS_CASE(a_lasting_step_is_relearnt)
     float corr[3];
     ls_compass_learn_correction(&l, NAN, corr);
     for (int k = 0; k < 3; k++) LS_CHECK_MSG(fabsf(corr[k] - step[k]) < 3.0f, "corr[%d] %.1f want %.1f", k, corr[k], step[k]);
+}
+
+/* On USB the charge current never changes, so its term cannot be told from
+   a drifted offset. Learning the step, the learner can push its vertical
+   field to the radius, which leaves no horizontal field to judge a reading
+   against. Flat on the bench (the board's field, dip 67 in 39.6 uT, which
+   the USB step brings down to 22-31 uT), turned a full circle every 30 s:
+   the learner must still be using readings two minutes on, whichever way
+   the step lies in the board. */
+LS_CASE(a_constant_current_does_not_wedge_the_learner)
+{
+    static const ned DIP67 = { 15.5, 0, 36.5 };
+    ls_compass_cal_t cal = plain_cal();
+    cal.radius = 39.6f;
+    int wedged = 0, worst = -1;
+    for (int k = 0; k < 12; k++) {
+        const float across = 8.0f, dir = k * 0.5236f;
+        const float usb[3] = { across * cosf(dir), across * sinf(dir), 16.0f };
+        ls_compass_learn_t l;
+        ls_compass_learn_reset(&l, cal.radius);
+        ls_rng_t rng; ls_rng_seed(&rng, 2 + k);
+        int late = 0, used = 0;
+        for (int i = 0; i < 1143; i++) {                       /* 120 s at the worker's 105 ms */
+            const double t = i * 0.105, lap = fmod(t, 30.0);
+            const bool turning = lap < 12.0;                   /* 12 s at 30 deg/s, then 18 still */
+            ls_imu_sample_t s = pose_in(DIP67, turning ? 30.0 * lap : 0.0, 0, 0, usb, &cal);
+            s.mx += ls_rng_noise(&rng) * 1.4f; s.my += ls_rng_noise(&rng) * 1.4f; s.mz += ls_rng_noise(&rng) * 1.4f;
+            float f[3], up[3];
+            ls_compass_field(&s, &cal, f);
+            ls_compass_gravity(&s, up);
+            const float spin = turning ? 34.9f : 4.9f;         /* about up, plus the gyro's rest reading */
+            const float gyro = sqrtf(spin * spin + 7.4f * 7.4f + 8.1f * 8.1f);
+            const ls_cl_result_t r = ls_compass_learn_step(&l, f, up, gyro, 0.4f, 0.105f);
+            if (t >= 90.0) { late++; used += r == LS_CL_USED; }
+        }
+        if (used * 4 < late) { wedged++; if (worst < 0) worst = k; }
+    }
+    LS_CHECK_MSG(!wedged, "%d of 12 USB steps left the learner using under a quarter of its readings (first at %d deg)",
+                 wedged, worst * 30);
 }

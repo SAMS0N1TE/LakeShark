@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 #include "iq_app_control.h"
+#include "fm_tone.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,9 +34,12 @@ typedef enum {
     FM_MODE_WFM    = 3,
     FM_MODE_ACARS  = 4,
     FM_MODE_FLEX   = 5,
-    /* Mode ID 6 is reserved. */
+    /* Value 6 was a removed decoder. Do not reuse persisted mode IDs. */
     FM_MODE_AM = 7,
-    FM_MODE_COUNT = 8
+    FM_MODE_SAME   = 8,
+    FM_MODE_APRS   = 9,
+    FM_MODE_AIS    = 10,
+    FM_MODE_COUNT = 11
 } fm_mode_t;
 
 /**/
@@ -83,6 +87,9 @@ typedef struct {
        far the carrier moves a wideband level. */
     float     noise;
     bool      squelch_open;
+    uint16_t  tone_required;
+    bool      tone_show;
+    fm_tone_result_t tone_detected;
     int       squelch_tenths;
     uint32_t  iq_bytes_sec;
     uint32_t  read_errors;

@@ -390,6 +390,41 @@ LS_CASE(an_unread_count_is_cleared_by_looking_at_what_it_counts)
                  ls_notify_unread());
 }
 
+LS_CASE(a_system_notice_shows_a_banner_but_is_not_a_message)
+{
+    /* The UPDATE pop-up wears the banner but must stay out of the MSG count. */
+    setup(115, 27);
+    ls_notify_clear();
+
+    ls_notice_t n;
+    memset(&n, 0, sizeof(n));
+    snprintf(n.title, sizeof(n.title), "UPDATE");
+    n.screen = 3;
+    n.accent = TUI_MAGENTA;
+    ls_notify_post(&n);
+    LS_CHECK(ls_notify_showing());
+    LS_EQ_INT(0, ls_notify_unread());
+
+    /* A real message still counts, and a system notice after it neither adds
+       to the count nor takes away the screen that clears it. */
+    post_on(1, "A MESSAGE");
+    LS_EQ_INT(1, ls_notify_unread());
+    ls_notify_post(&n);
+    LS_EQ_INT(1, ls_notify_unread());
+    notices_expire(0);
+    LS_EQ_INT(1, ls_notify_unread());
+    ls_notify_poll(1);
+    LS_EQ_INT(0, ls_notify_unread());
+
+    /* One with nowhere to go does not clear a message's count either. */
+    post_on(1, "A MESSAGE");
+    n.screen = -1;
+    ls_notify_post(&n);
+    notices_expire(0);
+    LS_EQ_INT(1, ls_notify_unread());
+    ls_notify_clear();
+}
+
 LS_CASE(a_notice_with_nowhere_to_go_is_read_when_its_banner_ends)
 {
     /* The other half, and the one that made the badge permanent.
@@ -650,4 +685,23 @@ LS_CASE(the_landscape_tab_strip_is_centred_not_flush_left)
     LS_CHECK_MSG(left > 4,
                  "the strip starts at column %d - that is flush left, which "
                  "is the bug this case exists for", first);
+}
+
+static int s_alert_calls;
+void ls_notify_alert_hw(bool ring, bool vibe)
+{
+    (void)ring; (void)vibe;
+    s_alert_calls++;
+}
+LS_CASE(route_banner_does_not_invoke_audio_or_change_notification_preferences)
+{
+    setup(115,27);
+    ls_notify_clear();
+    ls_notify_set_alerts(true,true);
+    s_alert_calls=0;
+    ls_notice_t notice={ .screen=-1, .accent=TUI_CYAN };
+    ls_notify_post_quiet(&notice);
+    LS_CHECK(ls_notify_showing());LS_EQ_INT(0,s_alert_calls);
+    LS_CHECK(ls_notify_ring());LS_CHECK(ls_notify_vibe());LS_EQ_INT(0,ls_notify_unread());
+    ls_notify_post(&notice);LS_EQ_INT(1,s_alert_calls);
 }

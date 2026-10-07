@@ -213,6 +213,16 @@ bool scan_channel_set_name(int idx, const char *name)
     return true;
 }
 
+bool scan_channel_set_tone(int idx, uint16_t selection)
+{
+    if (idx < 0 || idx >= s_count || selection > 258 || s_ch[idx].mode != SCAN_MODE_NFM)
+        return false;
+    s_ch[idx].rsv = (uint8_t)selection;
+    s_ch[idx].flags = (s_ch[idx].flags & ~SCAN_FLAG_TONE_HIGH) |
+                     (selection & 256 ? SCAN_FLAG_TONE_HIGH : 0);
+    return scan_channels_save();
+}
+
 /**/
 int scan_channel_find_freq(uint32_t freq_hz)
 {

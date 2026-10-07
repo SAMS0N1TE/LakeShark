@@ -140,14 +140,51 @@ void subghz_file_line(subghz_file_t *f, const char *line,
     }
 }
 
+const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges,
+                              uint64_t span_us)
+{
+    /* 406.0-406.1 MHz is COSPAS-SARSAT distress beacons, inside 387-464. */
+    if (!((freq_hz>=300000000 && freq_hz<=348000000) ||
+          (freq_hz>=387000000 && freq_hz<=464000000) ||
+          (freq_hz>=779000000 && freq_hz<=928000000)))
+        return "not a replay band";
+    if (freq_hz>=406000000 && freq_hz<=406100000)
+        return "406 MHz distress band";
+    if (dbm < -10 || dbm > 10) return "power outside -10 to +10 dBm";
+    if (edges < 6 || edges > 4096) return "not 6-4096 edges";
+    if (span_us > 10000000) return "longer than 10 s";
+    return NULL;
+}
+
+uint64_t subghz_span_us(const int32_t *edges, size_t count)
+{
+    uint64_t span = 0;
+    for (size_t i = 0; edges && i < count; i++)
+        span += (uint64_t)(edges[i] < 0 ? -(int64_t)edges[i] : edges[i]);
+    return span;
+}
+
+/* A file carries no power: 0 dBm leaves the sender's own power to its
+   check at the moment of sending. */
+static bool file_in_policy(const subghz_file_t *f)
+{
+    return f->edges == f->edges_total &&
+        !subghz_tx_refusal(f->freq_hz, 0, (size_t)f->edges_total, f->span_us);
+}
+
 bool subghz_file_is_fsk(const subghz_file_t *f)
 {
     /* A declared custom module must be the one whose registers were parsed
        (CC1101); an unrecognized module must not fall back to this generic
-       SX1262 path just because its bytes happened to parse as CC1101-valid. */
-    return f && !f->invalid && f->filetype_ok && f->edges == f->edges_total &&
+       SX1262 path just because its bytes happened to parse as CC1101-valid.
+       An OOK preset with FSK comments is not sent as FSK. */
+    return f && !f->invalid && f->filetype_ok && file_in_policy(f) &&
+        !strcmp(f->protocol,"RAW") &&
+        (!strcmp(f->preset,"FuriHalSubGhzPresetCustom") ||
+         !strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev238Async") ||
+         !strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev476Async")) &&
         (!f->custom_module[0] || (f->cc_fsk_valid && !strcmp(f->custom_module,"CC1101"))) &&
-        f->bitrate && f->deviation_hz && f->edges >= 6 && f->edges <= 4096;
+        f->bitrate && f->deviation_hz;
 }
 
 bool subghz_file_is_cc_fsk(const subghz_file_t *f)
@@ -157,11 +194,7 @@ bool subghz_file_is_cc_fsk(const subghz_file_t *f)
          !strcmp(f->preset,"FuriHalSubGhzPreset2FSKDev476Async") ||
          (!strcmp(f->preset,"FuriHalSubGhzPresetCustom") &&
           !strcmp(f->custom_module,"CC1101"))) &&
-        !strcmp(f->protocol,"RAW") && f->edges==f->edges_total &&
-        f->edges>=6 && f->edges<=4096 && f->span_us<=10000000 &&
-        ((f->freq_hz>=300000000 && f->freq_hz<=348000000) ||
-         (f->freq_hz>=387000000 && f->freq_hz<=464000000) ||
-         (f->freq_hz>=779000000 && f->freq_hz<=928000000));
+        !strcmp(f->protocol,"RAW") && file_in_policy(f);
 }
 
 bool subghz_file_is_ook(const subghz_file_t *f)
@@ -169,11 +202,7 @@ bool subghz_file_is_ook(const subghz_file_t *f)
     return f && !f->invalid && f->filetype_ok && !strcmp(f->protocol,"RAW") &&
         (!strcmp(f->preset,"FuriHalSubGhzPresetOok650Async") ||
          !strcmp(f->preset,"FuriHalSubGhzPresetOok270Async")) &&
-        !f->bitrate && !f->deviation_hz && f->edges >= 6 && f->edges <= 4096 &&
-        f->edges == f->edges_total && f->span_us <= 10000000 &&
-        ((f->freq_hz>=300000000 && f->freq_hz<=348000000) ||
-         (f->freq_hz>=387000000 && f->freq_hz<=464000000) ||
-         (f->freq_hz>=779000000 && f->freq_hz<=928000000));
+        !f->bitrate && !f->deviation_hz && file_in_policy(f);
 }
 
 size_t subghz_ook_symbols(const int32_t *edges, size_t count,

@@ -47,6 +47,53 @@ static int hit_find(const hit_t *h, int n, int col, int row)
    the difference between hitting and missing is four millimetres that is not
    decoration, it is the whole affordance - and it costs the same number of
    cells either way, because the background was going to be painted regardless. */
+/* The "something new to download" marker: a drip falling through ASCII,
+   . : v V v :, five frames a second off the same clock as the LIVE spinner. */
+static char drip_glyph(void)
+{
+    return ".:vVv:"[(esp_timer_get_time() / 200000) % 6];
+}
+
+/* A label that does not fit is shortened on purpose, not cut mid-word.
+
+   Whole word if it fits; else the first part of a hyphenated or spaced one
+   (RTL-SDR becomes RTL); else the vowels leave from the back (SPECTRUM becomes
+   SPCTRM); and only then the plain cut. Returns true when it came to that. */
+static bool fit_label(char *dst, size_t cap, const char *src, int w)
+{
+    if (cap == 0) return false;
+    if (w < 1) w = 1;
+    if ((size_t)w > cap - 1) w = (int)cap - 1;
+    snprintf(dst, cap, "%s", src ? src : "");
+    int n = (int)strlen(dst);
+    if (n <= w) return false;
+    int head = 0;
+    while (dst[head] && dst[head] != '-' && dst[head] != ' ' && dst[head] != '/') head++;
+    if (head >= 3 && head < n && head <= w) { dst[head] = 0; return false; }
+    for (int i = n - 2; i >= 1 && n > w; i--) {
+        const char c = dst[i];
+        if (c == 'A' || c == 'E' || c == 'I' || c == 'O' || c == 'U' ||
+            c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u') {
+            memmove(dst + i, dst + i + 1, (size_t)(n - i));
+            n--;
+        }
+    }
+    if (n <= w) return false;
+    dst[w] = 0;
+    return true;
+}
+
+/* How many columns a button's lettering wants, frame and gap included. */
+static int button_want(const ls_btn_t *b, int row_h)
+{
+    const int lab = b->label ? (int)strlen(b->label) : 0;
+    const int val = b->value ? (int)strlen(b->value) : 0;
+    int text = lab;
+    if (row_h == 3 && b->value) text = lab + 1 + val;
+    else if (row_h > 1 && b->value && val > lab) text = val;
+    return text + (row_h >= 3 ? 3 : 1);
+}
+
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch)
 {
@@ -108,10 +155,33 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
             cell_w=row_w/count;
             if(cell_w<3)continue;
         }
-        const int row_width = count * cell_w - 1;
-        const int x0 = row_x + (row_w - row_width) / 2 + c * cell_w;
+        /* Cells are even unless a word needs more than its share: then the
+           buttons with room to spare lend columns to the ones without. */
+        int cw[MAX_HITS];
+        const int first = r * per_row;
+        for (int k = 0; k < count && k < MAX_HITS; k++) cw[k] = cell_w;
+        /* A button is capped at BTN_MAX_W, which can leave the row short of
+           the bar: that slack goes to the words first. */
+        int free_cols = row_w - count * cell_w;
+        if (free_cols < 0) free_cols = 0;
+        for (int pass = 0; pass < MAX_HITS * 4; pass++) {
+            int needy = -1, donor = -1, best = 0;
+            for (int k = 0; k < count && k < MAX_HITS; k++) {
+                const int want = button_want(&btn[first + k], row_h);
+                if (want > cw[k] && needy < 0) needy = k;
+                const int spare = cw[k] - (want > 6 ? want : 6);
+                if (spare > best) { best = spare; donor = k; }
+            }
+            if (needy < 0) break;
+            if (free_cols > 0) { free_cols--; cw[needy]++; continue; }
+            if (donor < 0 || donor == needy) break;
+            cw[donor]--; cw[needy]++;
+        }
+        int xoff = 0, used = 0;
+        for (int k = 0; k < count && k < MAX_HITS; k++) { if (k < c) xoff += cw[k]; used += cw[k]; }
+        const int x0 = row_x + (row_w - (used - 1)) / 2 + xoff;
         const int y0 = bar.y + r * row_h;
-        const int w = cell_w;
+        const int w = c < MAX_HITS ? cw[c] : cell_w;
         const int h = row_h;
 
         /* A dithered field and a border, not a slab of colour. */
@@ -175,11 +245,23 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
            not, and wrote its label over the top edge. */
         const bool compact_value = h == 3 && btn[i].value;
         if (compact_value) { snprintf(compact,sizeof(compact),"%s %s",lab,btn[i].value); lab=compact; }
-        int lw = (int)strlen(lab);
         const int text_w = h >= 3 ? box.w - 2 : box.w;
-        if (lw > text_w) lw = text_w;
-        char cut[24];
-        snprintf(cut, sizeof(cut), "%.*s", lw, lab);
+        char cut[48];
+        if (compact_value && (int)strlen(lab) > text_w) {
+            /* "LABEL VALUE" on one line: the value gives way first, down to
+               three columns, then the label. */
+            const int ll = (int)strlen(btn[i].label ? btn[i].label : "");
+            const int vl = (int)strlen(btn[i].value);
+            int vw = text_w - ll - 1;
+            if (vw < 3) vw = vl < 3 ? vl : 3;
+            int lwid = text_w - 1 - vw;
+            char a[24], b[24];
+            fit_label(a, sizeof(a), btn[i].label, lwid);
+            fit_label(b, sizeof(b), btn[i].value, vw);
+            snprintf(cut, sizeof(cut), "%s %s", a, b);
+        } else fit_label(cut, sizeof(cut), lab, text_w);
+        int lw = (int)strlen(cut);
+        if (lw > text_w) { cut[text_w] = 0; lw = text_w; }
 
         const int lines = (h > 1 && btn[i].value && !compact_value) ? 2 : 1;
         /* Centre inside the frame, not inside the box. Rows 0 and h-1 belong
@@ -197,11 +279,10 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         tui_put_str(sf, box, lx, ly, cut, face);
 
         if (lines == 2) {
-            int vw = (int)strlen(btn[i].value);
-            if (vw > text_w) vw = text_w;
-            char vc[24];
-            snprintf(vc, sizeof(vc), "%.*s", vw, btn[i].value);
-            if (tall && (int)strlen(btn[i].value) > vw && vw > 0) vc[vw - 1] = '>';
+            char vc[48];
+            const bool hard = fit_label(vc, sizeof(vc), btn[i].value, text_w);
+            int vw = (int)strlen(vc);
+            if (tall && hard && vw > 0) vc[vw - 1] = '>';
             const uint8_t vattr = TUI_ATTR(btn[i].dim ? LS_DIM_FG
                                                       : (TUI_YELLOW | TUI_BRIGHT),
                                            TUI_BLACK);
@@ -230,6 +311,16 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         }
 
         if (sel) tui_put_char(sf,box,box.x,box.y+h/2,'>',face);
+        /* Something new inside: a magenta drip a cell clear of the label's
+           right end, on the label's own row. The label does not move; with no
+           room beside it nothing is drawn. */
+        if (btn[i].badge) {
+            const int dx = lx + lw + 1;
+            if (dx <= box.x + box.w - 2) {
+                tui_put_char(sf, box, dx, ly, drip_glyph(), TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
+                if (dx + 1 <= box.x + box.w - 2) tui_put_char(sf, box, dx + 1, ly, ' ', face);
+            }
+        }
         s_btn_enabled[slot][s_btn_n[slot]] = !btn[i].dim;
         s_btn_keys[slot][s_btn_n[slot]] = btn[i].key;
         hit_t *hit = &s_btn_hit[slot][s_btn_n[slot]];
@@ -268,17 +359,18 @@ bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n)
     const int corner = ls_tui_corner_pad(bar.y);
     const int w = bar.w - 2 * corner;
     if (w < 6) return false;
-    int cell_w = w / n;
-    if (cell_w > BTN_MAX_W) cell_w = BTN_MAX_W;
-    /* box.w is cell_w - 1, and a frame eats a column at each end. */
-    const int text_w = cell_w - 3;
-    if (text_w < 1) return false;
+    /* Words borrow columns from buttons with room to spare, so the question
+       is whether the row as a whole has them: each button wants its lettering
+       plus a frame and a gap, and never gives up below six columns. */
+    int total = 0;
     for (int i = 0; i < n; i++) {
         const char *lab = btn[i].label ? btn[i].label : "";
         int want = (int)strlen(lab);
         if (btn[i].value) want += 1 + (int)strlen(btn[i].value);
-        if (want > text_w) return false;
+        want += 3;
+        total += want > 6 ? want : 6;
     }
+    if (total > w) return false;
     return true;
 }
 
@@ -561,6 +653,19 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
             tui_put_char(sf, box, box.x + box.w - 2, box.y, LS_TUI_BLOCK_FULL,
                          TUI_ATTR(TUI_GREEN | TUI_BRIGHT,
                                   sel_now ? hue : TUI_BLACK));
+
+        /* Something new in there, in the same place and the same way as LIVE,
+           in the colour of the update pop-up. */
+        if (tile[i].badge && !tile[i].live) {
+            const uint8_t dot = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, sel_now ? hue : TUI_BLACK);
+            const char g = drip_glyph();
+            if (box.w >= 10) {
+                char tag[8] = { g, ' ', 'N', 'E', 'W', ' ', g, 0 };
+                tui_put_str(sf, box, box.x + box.w - 9, box.y, tag, dot);
+            } else {
+                tui_put_char(sf, box, box.x + box.w - 2, box.y, g, dot);
+            }
+        }
 
         s_tile_hit[s_tile_n].x0 = (int16_t)box.x;
         s_tile_hit[s_tile_n].y0 = (int16_t)box.y;

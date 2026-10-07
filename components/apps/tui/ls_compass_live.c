@@ -21,6 +21,18 @@ static v3 cross(v3 a, v3 b) { return (v3){ a.y * b.z - a.z * b.y, a.z * b.x - a.
 static float dot(v3 a, v3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static float norm(v3 a) { return sqrtf(dot(a, a)); }
 static v3 scale(v3 a, float k) { return (v3){ a.x * k, a.y * k, a.z * k }; }
+static float wrap180f(float a) { return fmodf(a + 540.0f, 360.0f) - 180.0f; }
+
+/* The compass direction `axis` lies in, clockwise from north, or NAN when
+   it points too nearly straight up or down to have one. */
+static float azimuth(v3 axis, v3 down, v3 north, v3 east)
+{
+    const v3 h = { axis.x - dot(axis, down) * down.x, axis.y - dot(axis, down) * down.y,
+                   axis.z - dot(axis, down) * down.z };
+    if (norm(h) < 0.1f) return NAN;
+    const float deg = atan2f(dot(h, east), dot(h, north)) * (float)DEG;
+    return deg < 0 ? deg + 360 : deg;
+}
 
 bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal,
                       bool *back, ls_compass_reading_t *out)
@@ -59,18 +71,26 @@ bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal,
     east = scale(east, 1 / en);
     const v3 north = cross(east, down);
     /* The direction the heading describes: the top of the board while it
-       lies near flat, the back of it once held up like a camera. */
+       lies near flat, the back of it once held up like a camera, and between
+       44 and 72 degrees of rise a blend of the two that moves with the rise.
+       It used to switch in one step, and rolled at all the top and the back
+       point different ways: the reading jumped 14 degrees at 10 of roll and
+       27 at 20, and a hold near the switch flipped it back and forth, the
+       skipping seen going from flat to antenna up. back_axis keeps its
+       hysteresis; it only says which the screen should describe. */
     bool upright = back ? *back : false;
     if (fabsf(up.y) > 0.85f) upright = true;
     else if (fabsf(up.y) < 0.70f) upright = false;
     if (back) *back = upright;
     out->back_axis = upright;
-    const v3 axis = upright ? (v3){ 0, 0, -1 } : (v3){ 0, 1, 0 };
-    const v3 h = { axis.x - dot(axis, down) * down.x, axis.y - dot(axis, down) * down.y,
-                   axis.z - dot(axis, down) * down.z };
-    if (norm(h) < 0.1f) return false;      /* pointing straight up or down */
-    float deg = atan2f(dot(h, east), dot(h, north)) * (float)DEG;
-    if (deg < 0) deg += 360;
+    const float t = (fabsf(up.y) - 0.70f) / 0.25f;
+    const float w = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+    const float top = w < 1 ? azimuth((v3){ 0, 1, 0 }, down, north, east) : NAN;
+    const float rear = w > 0 ? azimuth((v3){ 0, 0, -1 }, down, north, east) : NAN;
+    float deg = w <= 0 || !isfinite(rear) ? top
+              : w >= 1 || !isfinite(top) ? rear
+              : fmodf(top + w * wrap180f(rear - top) + 360, 360);
+    if (!isfinite(deg)) return false;      /* pointing straight up or down */
     out->magnetic = deg;
     out->valid = true;
     return true;
@@ -105,8 +125,6 @@ void ls_compass_apply_model(ls_compass_reading_t *r, double declination,
     }
 }
 
-static float wrap180f(float a) { return fmodf(a + 540.0f, 360.0f) - 180.0f; }
-
 float ls_compass_yaw_rate(const float g[3], const float a[3])
 {
     const float an = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
@@ -119,6 +137,10 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
                              float yaw_dps, float dt)
 {
     if (!s) return heading;
+    /* Lying still, what comes off the gyro is already all it reads
+       (ls_compass_steady_imu); the loop's trim is for a board on the move. */
+    const bool still = s->still_s >= LS_COMPASS_REST_USE_S;
+    const float trim = still ? 0.0f : s->bias;
     if (!isfinite(heading)) {
         /* No magnetic heading this frame (the accelerometer was swung off
            1 g, or the board points straight up): the gyro turns what is
@@ -126,18 +148,22 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
         if (!s->started) return NAN;
         if (dt > 0 && dt < 0.5f && isfinite(yaw_dps) && s->agree > -0.5f && s->coast_s < LS_COMPASS_COAST_S) {
             s->coast_s += dt;
-            s->heading = fmodf(s->heading + (yaw_dps - s->bias) * dt + 720.0f, 360.0f);
+            s->heading = fmodf(s->heading + (yaw_dps - trim) * dt + 720.0f, 360.0f);
         }
         return s->heading;
     }
     s->coast_s = 0;
     if (!s->started || !isfinite(s->heading)) {
-        const float agree = s->started ? s->agree : 0.0f, bias = s->started ? s->bias : 0.0f;
-        const float tau = s->mag_tau_s;
+        /* The reading as it is. What is known of the gyro holds for any
+           heading, so it is kept. */
+        const ls_compass_steady_t was = *s;
         memset(s, 0, sizeof(*s));
-        s->mag_tau_s = tau;
+        s->mag_tau_s = was.mag_tau_s;
+        s->agree = was.agree; s->bias = was.bias;
+        memcpy(s->rest, was.rest, sizeof(s->rest));
+        s->rest_known = was.rest_known; s->yaw = was.yaw;
         s->heading = heading; s->pitch = pitch; s->roll = roll; s->started = true;
-        s->agree = agree; s->bias = bias; s->prev_mag = heading;
+        s->prev_mag = heading;
         return heading;
     }
     if (dt <= 0) return s->heading;
@@ -165,34 +191,110 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
         }
     }
     s->gyro_used = isfinite(yaw_dps) && s->agree > -0.5f;
+    const bool trusted = s->gyro_used && s->agree > 0.5f && !(s->sat_s > 0);
+    const bool bent = s->mag_tau_s > LS_COMPASS_FUSE_TAU_S;
+    const float turn = s->gyro_used ? yaw_dps - trim : 0.0f;
+    s->slow_s = fabsf(turn) < LS_COMPASS_LEARN_DPS ? s->slow_s + dt : 0.0f;
 
-    if (fabsf(wrap180f(heading - s->heading)) > 45.0f) {
+    const bool far = fabsf(wrap180f(heading - s->heading)) > 45.0f;
+    if (far) {
         s->far_s += dt;
-        if (s->far_s >= LS_COMPASS_JUMP_S) {
+        const bool lasting = s->far_s >= LS_COMPASS_JUMP_S;
+        const bool settled = s->still_s >= LS_COMPASS_STILL_S && s->far_s >= LS_COMPASS_STILL_S;
+        if (!bent && (trusted ? settled : lasting)) {
             s->heading = heading; s->far_s = 0;
             return s->heading;
         }
         /* A glitch until it lasts: the gyro carries the heading, or with
-           no gyro it holds. */
+           no gyro it holds. After that it is pulled in, below. */
         if (s->far_s <= dt) s->glitches++;
-        if (s->gyro_used) s->heading = fmodf(s->heading + (yaw_dps - s->bias) * dt + 720.0f, 360.0f);
-        return s->heading;
+        if (!lasting) {
+            if (s->gyro_used) s->heading = fmodf(s->heading + turn * dt + 720.0f, 360.0f);
+            return s->heading;
+        }
+    } else {
+        s->far_s = 0;
     }
-    s->far_s = 0;
     if (s->gyro_used) {
-        s->heading += (yaw_dps - s->bias) * dt;
+        s->heading += turn * dt;
         const float d = wrap180f(heading - s->heading);
         const float tau = s->mag_tau_s > 0 ? s->mag_tau_s : LS_COMPASS_FUSE_TAU_S;
         const float kp = 1.0f / tau, ki = kp * kp / 4.0f;   /* critically damped */
-        s->heading += d * (1.0f - expf(-dt * kp));
-        s->bias -= d * ki * dt;
-        if (s->bias > 15.0f) s->bias = 15.0f;
-        if (s->bias < -15.0f) s->bias = -15.0f;
+        const float most = LS_COMPASS_PULL_DPS * dt;
+        float pull = d * (1.0f - expf(-dt * kp));
+        const bool capped = fabsf(pull) >= most;
+        if (capped) pull = pull > 0 ? most : -most;
+        s->heading += pull;
+        /* The trim learns from a board moving slowly for a while, not
+           lying still (the rest reading has all of it then). Nor while the
+           pull is held to its limit: that error is not bias, and learning
+           it would wind the trim up past anything the gyro reads. */
+        if (!far && !capped && !still && s->slow_s >= LS_COMPASS_SETTLE_S) {
+            s->bias -= d * ki * dt;
+            if (s->bias > 15.0f) s->bias = 15.0f;
+            if (s->bias < -15.0f) s->bias = -15.0f;
+        }
     } else {
         s->heading += wrap180f(heading - s->heading) * (1.0f - expf(-dt / 0.25f));
     }
     s->heading = fmodf(s->heading + 720.0f, 360.0f);
     return s->heading;
+}
+
+/* Lying still (ls_compass_steady_imu): each sample within
+   LS_COMPASS_QUIET_DPS and LS_COMPASS_STEADY_G of the means since the board
+   came to rest. A sample that is not starts the spell again from itself. */
+static void rest_step(ls_compass_steady_t *s, const float g[3], const float a[3], float dt)
+{
+    bool pinned = false;
+    for (int i = 0; i < 3; i++) if (fabsf(g[i]) >= 0.98f * LS_COMPASS_GYRO_FS_DPS) pinned = true;
+    if (pinned) s->sat_s = LS_COMPASS_SAT_HOLD_S;
+    const float an = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    const bool level = !pinned && an > 0.9f && an < 1.1f;
+    bool quiet = level && s->resting;
+    for (int i = 0; quiet && i < 3; i++)
+        if (fabsf(g[i] - s->still_g[i]) > LS_COMPASS_QUIET_DPS || fabsf(a[i] - s->still_a[i]) > LS_COMPASS_STEADY_G)
+            quiet = false;
+    if (!quiet) {
+        s->resting = level;
+        s->still_s = 0;
+        memcpy(s->still_g, g, sizeof(s->still_g));
+        memcpy(s->still_a, a, sizeof(s->still_a));
+        return;
+    }
+    /* The mean over the spell, by time; past 10 s it follows slowly, as
+       the gyro warms. */
+    s->still_s += dt;
+    const float w = dt / fminf(s->still_s + dt, 10.0f);
+    for (int i = 0; i < 3; i++) {
+        s->still_g[i] += (g[i] - s->still_g[i]) * w;
+        s->still_a[i] += (a[i] - s->still_a[i]) * w;
+    }
+    if (s->still_s >= LS_COMPASS_REST_S) {
+        memcpy(s->rest, s->still_g, sizeof(s->rest));
+        s->rest_known = true;
+        s->bias = 0;
+    }
+}
+
+float ls_compass_steady_imu(ls_compass_steady_t *s, float heading, float pitch, float roll,
+                            const float g[3], const float a[3], float dt)
+{
+    if (!s) return heading;
+    if (dt > 0 && s->sat_s > 0) s->sat_s -= dt;
+    bool have = g && a;
+    for (int i = 0; have && i < 3; i++) have = isfinite(g[i]) && isfinite(a[i]);
+    s->yaw = NAN;
+    if (!have) {
+        s->resting = false;
+        s->still_s = 0;
+    } else {
+        if (dt > 0) rest_step(s, g, a, dt > 0.5f ? 0.5f : dt);
+        const float *r = s->still_s >= LS_COMPASS_REST_USE_S ? s->still_g : s->rest;
+        const float off[3] = { g[0] - r[0], g[1] - r[1], g[2] - r[2] };
+        s->yaw = ls_compass_yaw_rate(off, a);
+    }
+    return ls_compass_steady_step(s, heading, pitch, roll, s->yaw, dt);
 }
 
 bool ls_compass_bend_step(ls_compass_bend_t *b, float bend, int64_t now)
@@ -257,8 +359,9 @@ void ls_compass_live(ls_compass_reading_t *out)
     ls_field_sample_snapshot(&p);
     ls_compass_cal_t cal;
     const bool has_cal = ls_field_compass_cal(&cal);
-    if (!p.imu_valid || !ls_compass_solve(&p.imu, has_cal ? &cal : NULL, &s_back, out)) {
-        if (!p.imu_valid) memset(out, 0, sizeof(*out));
+    /* With no sample the reading is empty the way ls_compass_solve leaves
+       it: a declination of 0 would say true north is known. */
+    if (!ls_compass_solve(p.imu_valid ? &p.imu : NULL, has_cal ? &cal : NULL, &s_back, out)) {
         out->magnetic = out->true_deg = NAN;
         out->valid = false;
     }

@@ -22,7 +22,21 @@ target_link_libraries(p25p2_replay p25_phase2_host m)
 set(CARTO ${FW}/components/libcarto/upstream)
 set(PMT   ${FW}/components/pmtiles)
 
+set(DMR_WATCH_SRCS
+    ${APP}/dmr/dmr_sync.c ${APP}/dmr/dmr_slot.c ${APP}/dmr/dmr_bptc.c
+    ${APP}/dmr/dmr_lc.c ${APP}/dmr/dmr_burst.c ${APP}/dmr/dmr_framer.c
+    ${APP}/dmr/dmr_watch.c ${APP}/dmr/dmr_listen.c)
 set(LS_TUI_APP_SRCS
+    ${DMR_WATCH_SRCS}
+    ${FW}/components/apps/tui/experiments/rs41_store.c
+    ${FW}/components/apps/tui/ls_calls.c
+    ${FW}/components/lakeshark/audio/call_archive.c
+    ${FW}/components/lakeshark/audio/call_recorder.c
+    ${FW}/components/lakeshark/audio/call_store.c
+    ${FW}/bench/tools/lssim_survey.c
+    ${FW}/components/apps/tui/ls_survey.c
+    ${FW}/components/apps/tui/ls_survey_ui.c
+    ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/bench/tools/lssim_p25_settings.c
     ${FW}/components/apps/tui/ls_radio_panel.c
     ${FW}/bench/tools/lssim_scan.c
@@ -36,6 +50,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_update_view.c
     ${FW}/components/apps/tui/ls_skyplot.c
     ${FW}/components/apps/tui/ls_skyview.c
     ${FW}/components/apps/tui/ls_text.c
@@ -45,6 +60,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_numpad.c
     ${FW}/components/apps/tui/ls_keyboard.c
     ${FW}/components/apps/tui/ls_glyph.c
+    ${FW}/components/apps/tui/ls_route_live.c
+    ${FW}/components/lakeshark/core/ls_route.c
     ${FW}/components/apps/tui/ls_notify.c
     ${FW}/components/apps/tui/ls_geo.c
     ${FW}/components/apps/tui/ls_picker.c
@@ -64,6 +81,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/bench/shims/tui_hw_stubs.c)
 
 set(LS_EXP_SRCS
+    ${FW}/bench/shims/rs41_stream_fake.c
     ${FW}/components/apps/tui/experiments/exp_loramon.c
     ${FW}/components/apps/tui/experiments/exp_zwave.c
     ${FW}/components/apps/tui/experiments/exp_wisun.c
@@ -76,6 +94,10 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/exp_uat.c
     ${FW}/components/apps/tui/experiments/uat_decode.c
     ${FW}/components/apps/tui/experiments/exp_carrier.c
+    ${FW}/components/apps/tui/experiments/exp_rs41.c
+    ${FW}/components/apps/tui/experiments/rs41_decode.c
+    ${FW}/components/apps/tui/experiments/rs41_stream.c
+    ${FW}/components/apps/tui/experiments/rs41_store.c
     ${FW}/components/apps/tui/experiments/exp_dfm17.c
     ${FW}/components/apps/tui/experiments/dfm_decode.c
     ${FW}/components/apps/tui/experiments/exp_p25site.c
@@ -88,7 +110,9 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/exp_rf.c
     ${FW}/components/apps/tui/experiments/exp_survey.c
     ${FW}/components/apps/tui/experiments/exp_lr433.c
-    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+    ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/apps/tui/experiments/sensor_history.c
+    ${FW}/components/apps/tui/experiments/lr433_history.c)
 
 set(LS_TUI_APP_INCLUDES
     ${FW}/components/lakeshark/core
@@ -154,6 +178,8 @@ if(LS_SANITIZE)
 endif()
 
 include_directories(
+    ${APP}/dmr
+    ${FW}/components/lakeshark/audio
     ${CMAKE_CURRENT_SOURCE_DIR}/shims
     ${CMAKE_CURRENT_SOURCE_DIR}/harness
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures
@@ -346,6 +372,21 @@ function(ls_add_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
+ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_radios_status PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark)
+target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+ls_add_test(test_radios_antenna
+    ${FW}/components/lakeshark/board/ls_board_hw.c
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_radios_antenna PRIVATE
+    ${FW}/components/lakeshark/board ${FW}/bench/shims)
+target_compile_definitions(test_radios_antenna PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
 ls_add_test(test_tui_surface ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_include_directories(test_tui_surface PRIVATE
     ${FW}/components/apps/tui/tuilib)
@@ -393,6 +434,8 @@ target_include_directories(test_speech_engine PRIVATE ${FW}/components/lakeshark
 target_link_libraries(test_speech_engine klatt_tts_host)
 
 ls_add_test(test_mesh_phrase ${FW}/components/lakeshark/audio/mesh_phrase.c)
+ls_add_test(test_mesh_inspect ${FW}/components/meshcore/ls_mesh_inspect.c)
+target_include_directories(test_mesh_inspect PRIVATE ${FW}/components/meshcore)
 target_include_directories(test_mesh_phrase PRIVATE ${FW}/components/lakeshark/audio)
 target_include_directories(test_display_dim PRIVATE
     ${FW}/components/lakeshark/core)
@@ -442,6 +485,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/ls_note_blocks.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
     ${FW}/components/apps/tui/screens/ext/scr_terminal.c
@@ -453,8 +497,20 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/screens/ext/scr_falls.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
+    ${APP}/fm/fm_tone.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
+    ${FW}/components/apps/tui/screens/main/fm_same_view.c
+    ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
+    ${FW}/components/apps/tui/screens/main/fm_ais_view.c
+    ${APP}/fm/same.c
+    ${APP}/fm/same_store.c
+    ${APP}/fm/ais.c
+    ${APP}/fm/ais_store.c
+    ${APP}/fm/aprs_store.c
+    ${APP}/fm/aprs.c
     ${FW}/components/apps/tui/screens/main/scr_adsb.c
+    ${FW}/components/apps/tui/ls_follow.c
+    ${FW}/components/apps/tui/ls_map_motion.c
     ${APP}/fm/fm_mode_label.c
     ${APP}/adsb/adsb_state.c
     ${APP}/p25/p25_health.c
@@ -515,6 +571,18 @@ ls_add_test(test_exp_lr433
     ${FW}/bench/shims/ls_exp_others_fake.c)
 target_include_directories(test_exp_lr433 PRIVATE ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_sensor_history
+    ${FW}/components/apps/tui/experiments/sensor_history.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_sensor_history PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_sensor_history_io
+    ${FW}/components/apps/tui/experiments/sensor_history.c
+    ${FW}/components/apps/tui/experiments/lr433_history.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_sensor_history_io PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_sensor_history_io PRIVATE LS_SENSOR_HISTORY_TEST=1
+    LS_SENSOR_ROOT="${CMAKE_CURRENT_BINARY_DIR}/sensor-history-io")
+
 ls_add_test(test_tui_router
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/ls_tui_screen.c
@@ -563,6 +631,19 @@ ls_add_test(test_tui_waterfall_claim
 target_include_directories(test_tui_waterfall_claim PRIVATE
     ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_falls_display
+    ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_falls_display PRIVATE
+    ${LS_TUI_APP_INCLUDES})
+
+target_compile_definitions(test_falls_display PRIVATE LS_TUI_CORNER_STUB=1 LS_WF_SETTINGS_FAKE=1)
+
 ls_add_test(test_tui_waterfall_scale
     ${FW}/components/apps/tui/ls_waterfall.c
     ${FW}/components/apps/tui/ls_motion.c
@@ -601,6 +682,8 @@ ls_add_test(test_tui_picker
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_picker PRIVATE ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_mixrf_control)
+
 ls_add_test(test_radio_select
     ${FW}/components/apps/tui/ls_radio_select.c
     ${FW}/components/lakeshark/core/radio_choice.c
@@ -638,6 +721,9 @@ ls_add_test(test_tui_keyboard
 target_include_directories(test_tui_keyboard PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_tui_wireless
+    ${FW}/components/apps/tui/ls_survey.c
+    ${FW}/components/apps/tui/ls_survey_ui.c
+    ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
     ${FW}/components/apps/tui/ls_wireless_history.c
     ${FW}/components/apps/tui/ls_keyboard.c
@@ -664,6 +750,8 @@ ls_add_test(test_ls_registry
     ${FW}/components/apps/tui/ls_action.c)
 target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 
+ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
+
 add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     tools/lssim_music.c
@@ -671,6 +759,8 @@ add_executable(lssim
     shims/ls_trail_host.c
     ${FW}/components/apps/tui/ls_wordmark.c
     tools/lssim.c
+    tools/lssim_ota.c
+    ${FW}/components/lakeshark/core/ls_ota_core.c
     tools/lssim_radio_preview.c
     tools/lssim_field.c
     ${FW}/components/apps/tui/screens/ext/scr_labs.c
@@ -713,7 +803,17 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
     ${APP}/p25/p25_tg_observed.c
+    ${APP}/fm/fm_tone.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
+    ${FW}/components/apps/tui/screens/main/fm_same_view.c
+    ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
+    ${FW}/components/apps/tui/screens/main/fm_ais_view.c
+    ${APP}/fm/same.c
+    ${APP}/fm/same_store.c
+    ${APP}/fm/ais.c
+    ${APP}/fm/ais_store.c
+    ${APP}/fm/aprs_store.c
+    ${APP}/fm/aprs.c
     ${FW}/components/apps/tui/screens/main/scr_adsb.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
@@ -724,9 +824,11 @@ add_executable(lssim
     ${FW}/components/lakeshark/core/ls_safe_mode.c
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_gps.c
     ${FW}/components/apps/tui/ls_map_motion.c
+    ${FW}/components/apps/tui/ls_follow.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
     ${FW}/components/apps/tui/ls_map.c
     ${FW}/components/apps/tui/ls_map_ink.c
@@ -737,6 +839,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_mesh.c
     ${FW}/components/apps/tui/screens/ext/scr_radios.c
     tools/lssim_mesh.c
+    ${FW}/components/meshcore/ls_mesh_inspect.c
     ${PMT}/upstream/zeromesh_pmtiles.c
     ${CARTO}/src/carto.c
     ${CARTO}/src/framebuffer.c
@@ -780,6 +883,7 @@ target_sources(lssim PRIVATE
 target_compile_definitions(lssim PRIVATE
     CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
+    LS_MAP_AUDIT
     LSSIM_PMTILES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/carto/franklin_z12.pmtiles")
 target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
@@ -789,6 +893,20 @@ target_link_libraries(lssim lvgl m)
 ls_add_test(test_lssim_census)
 add_dependencies(test_lssim_census lssim)
 target_compile_definitions(test_lssim_census PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
+
+# MESH driven through lssim: taps, keys and what the mesh stub was asked to send.
+ls_add_test(test_lssim_mesh)
+add_dependencies(test_lssim_mesh lssim)
+target_compile_definitions(test_lssim_mesh PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
+ls_add_test(test_lssim_mesh_inspect)
+add_dependencies(test_lssim_mesh_inspect lssim)
+target_compile_definitions(test_lssim_mesh_inspect PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
+
+ls_add_test(test_lssim_radio_fixtures)
+add_dependencies(test_lssim_radio_fixtures lssim)
+target_compile_definitions(test_lssim_radio_fixtures PRIVATE
+    LSSIM_EXE="$<TARGET_FILE:lssim>"
+    RADIO_RENDER="${CMAKE_CURRENT_BINARY_DIR}/radio-fixtures.bmp")
 
 ls_add_test(test_carto_render
     ${CARTO}/src/carto.c
@@ -928,6 +1046,16 @@ target_include_directories(test_lr20xx_proto PRIVATE
     ${FW}/bench/shims)
 target_compile_definitions(test_lr20xx_proto PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
+ls_add_test(test_lr20xx_clock
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lr20xx_clock PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lr20xx_clock PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
 ls_add_test(test_lora_concurrency
     ${FW}/components/lakeshark/board/ls_lora.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
@@ -1065,6 +1193,7 @@ ls_add_test(test_tui_render_dump
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
     ${FW}/components/apps/tui/tuilib/tui_core.c)
@@ -1082,6 +1211,19 @@ target_include_directories(test_tui_render_dump PRIVATE
     ${APP}/p25
     ${FW}/bench/shims)
 target_link_libraries(test_tui_render_dump lvgl)
+target_sources(test_tui_render_dump PRIVATE
+    ${FW}/components/apps/tui/screens/ext/scr_experiments.c
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/ls_notes.c
+    ${FW}/components/apps/tui/experiments/exp_lr433.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/apps/tui/experiments/sensor_history.c
+    ${FW}/components/apps/tui/experiments/lr433_history.c
+    fixtures/sensor_ui_fake.c)
+target_compile_definitions(test_tui_render_dump PRIVATE
+    LS_SENSOR_HISTORY_TEST=1
+    LS_SENSOR_RENDER_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+    LS_SENSOR_ROOT="${CMAKE_CURRENT_BINARY_DIR}/sensor-history-render")
 target_compile_definitions(test_tui_render_dump PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
 ls_add_test(test_pocsag  ${APP}/fm/pocsag.c)
@@ -1105,6 +1247,13 @@ ls_add_test(test_fm_rx_worker
 ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
+ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_files_safety BEFORE PRIVATE
+    ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
+target_compile_options(test_files_safety PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_files_safety PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_files_safety.c PROPERTIES COMPILE_OPTIONS -fwhole-program)
+ls_add_test(test_subghz_nrz_callers ${APP}/subghz/subghz_nrz.c)
 ls_add_test(test_rec_list_format ${APP}/rec/rec_list_format.c)
 ls_add_test(test_rec_sidecar     ${APP}/rec/rec_sidecar.c)
 ls_add_test(test_df_fit ${FW}/components/apps/tui/ls_df_fit.c ${FW}/components/apps/tui/ls_df.c)
@@ -1622,12 +1771,22 @@ ls_add_test(test_tui_contrast
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
+ls_add_test(test_fm_tone ${APP}/fm/fm_tone.c)
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
 # A diagnostic, like p25_iq_replay: an FM-rate IQ capture through NFM and POCSAG.
 add_executable(fm_iq_replay tools/fm_iq_replay.c ${APP}/fm/pocsag.c ${APP}/fm/fm_dsp.c)
 target_link_libraries(fm_iq_replay ls_harness m)
 
 ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_notes.c)
+ls_add_test(test_labs_limits)
+target_include_directories(test_labs_limits PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${FW}/components/meshcore)
+ls_add_test(test_labs_numbers)
+target_include_directories(test_labs_numbers PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${FW}/components/meshcore)
+# Only the numpad callback is linked; the screen's drawing dependencies are unused.
+target_compile_options(test_labs_numbers PRIVATE -fwhole-program -ffunction-sections -fdata-sections)
+target_link_options(test_labs_numbers PRIVATE -Wl,--gc-sections)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_wmm ${FW}/components/apps/tui/ls_wmm.c)
 target_include_directories(test_wmm PRIVATE ${LS_TUI_APP_INCLUDES})
@@ -1655,6 +1814,9 @@ target_compile_definitions(test_field PRIVATE LS_FIELD_TEST=1)
 
 ls_add_test(test_map_motion ${FW}/components/apps/tui/ls_map_motion.c)
 target_include_directories(test_map_motion PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_adsb_follow ${FW}/components/apps/tui/ls_follow.c)
+target_include_directories(test_adsb_follow PRIVATE ${FW}/components/apps/tui)
 
 ls_add_test(test_map_marks
     ${FW}/components/apps/tui/ls_map_marks.c
@@ -1817,3 +1979,111 @@ foreach(exp_id loramon zwave wisun)
         fixtures/lorafam_module_fake.c)
     target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
 endforeach()
+
+ls_add_test(test_same ${APP}/fm/same.c ${APP}/fm/same_store.c)
+
+ls_add_test(test_same_notice ${APP}/fm/same.c ${APP}/fm/same_store.c)
+target_include_directories(test_same_notice PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark)
+target_compile_options(test_same_notice PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_same_notice PRIVATE -Wl,--gc-sections)
+
+set_source_files_properties(tests/test_same_notice.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+
+ls_add_test(test_aprs ${APP}/fm/aprs.c ${APP}/fm/aprs_store.c ${APP}/fm/fm_dsp.c)
+ls_add_test(test_aprs_mode_action ${APP}/fm/fm_mode_label.c)
+target_include_directories(test_aprs_mode_action PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${CARTO}/include)
+target_compile_options(test_aprs_mode_action PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_aprs_mode_action PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_aprs_mode_action.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+ls_add_test(test_call_recorder ${FW}/components/lakeshark/audio/call_recorder.c)
+ls_add_test(test_call_store ${FW}/components/lakeshark/audio/call_recorder.c
+    ${FW}/components/lakeshark/audio/call_store.c)
+ls_add_test(test_call_archive ${FW}/components/lakeshark/audio/call_archive.c
+    ${FW}/components/lakeshark/audio/call_recorder.c ${FW}/components/lakeshark/audio/call_store.c)
+target_compile_definitions(test_call_archive PRIVATE CALL_ARCHIVE_HOST_TEST=1)
+
+ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
+    ${FW}/components/apps/tui/ls_icons.c ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_tui_inset.c
+    ${FW}/components/apps/tui/ls_theme.c ${FW}/components/apps/tui/ls_font_list.c
+    ${FW}/components/apps/tui/ls_font_mono_14.c ${FW}/components/apps/tui/ls_font_mono_16.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c)
+target_include_directories(test_tui_calls PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_tui_calls PRIVATE CALLS_RENDER_TEST=1)
+ls_add_test(test_survey ${FW}/components/apps/tui/ls_survey.c)
+target_include_directories(test_survey PRIVATE ${FW}/components/apps/tui)
+
+ls_add_test(test_survey_runtime ${FW}/main/ls_survey_runtime.c
+    ${FW}/components/apps/tui/ls_survey.c
+    ${FW}/components/lakeshark/core/ls_track.c)
+target_include_directories(test_survey_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_survey_runtime PRIVATE
+    LS_SURVEY_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/survey-host")
+
+ls_add_test(test_route ${FW}/components/lakeshark/core/ls_route.c)
+
+ls_add_test(test_route_live
+    ${FW}/components/apps/tui/ls_route_live.c
+    ${FW}/components/lakeshark/core/ls_route.c)
+target_include_directories(test_route_live PRIVATE ${LS_TUI_APP_INCLUDES})
+
+target_link_options(test_route_live PRIVATE -Wl,--wrap=esp_timer_get_time)
+
+foreach(route_ui_target test_tui_router test_tui_p25_screen test_tui_render_cost test_tui_render_dump)
+    target_sources(${route_ui_target} PRIVATE shims/ls_route_hw_fake.c)
+endforeach()
+target_sources(test_tui_screens PRIVATE shims/ls_route_hw_fake.c)
+target_compile_definitions(test_tui_screens PRIVATE LS_ROUTE_FAKE_START_ONLY=1)
+
+ls_add_test(test_lssim_route)
+add_dependencies(test_lssim_route lssim)
+target_compile_definitions(test_lssim_route PRIVATE
+    LSSIM_EXE="$<TARGET_FILE:lssim>"
+    ROUTE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/route.gpx"
+    ROUTE_RENDER="${CMAKE_CURRENT_BINARY_DIR}/route-test.bmp")
+
+foreach(merge_test test_map_layers test_notify_policy test_compass_storage)
+    ls_add_test(${merge_test})
+    target_include_directories(${merge_test} PRIVATE ${LS_TUI_APP_INCLUDES}
+        ${FW}/components/lakeshark ${CARTO}/include)
+    target_compile_options(${merge_test} PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(${merge_test} PRIVATE -Wl,--gc-sections)
+    set_source_files_properties(tests/${merge_test}.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+endforeach()
+
+ls_add_test(test_ais ${APP}/fm/ais.c ${APP}/fm/ais_store.c ${APP}/fm/fm_mode_label.c)
+
+ls_add_test(test_lssim_ais)
+add_dependencies(test_lssim_ais lssim)
+target_compile_definitions(test_lssim_ais PRIVATE
+    LSSIM_EXE="$<TARGET_FILE:lssim>"
+    AIS_RENDER="${CMAKE_CURRENT_BINARY_DIR}/ais-test.bmp")
+
+ls_add_test(test_dmr_listen ${DMR_WATCH_SRCS})
+
+target_sources(lssim PRIVATE fixtures/dmr_gen.c)
+
+ls_add_test(test_rs41 ${FW}/components/apps/tui/experiments/rs41_decode.c
+    ${FW}/components/apps/tui/experiments/rs41_stream.c
+    ${FW}/components/apps/tui/experiments/rs41_store.c)
+target_include_directories(test_rs41 PRIVATE ${FW}/components/apps/tui/experiments)
+
+target_sources(lssim PRIVATE tools/lssim_rs41.c)
+
+ls_add_test(test_exp_rs41
+    ${FW}/components/apps/tui/experiments/exp_rs41.c
+    ${FW}/components/apps/tui/experiments/rs41_decode.c
+    ${FW}/components/apps/tui/experiments/rs41_stream.c
+    ${FW}/components/apps/tui/experiments/rs41_store.c
+    ${FW}/components/apps/tui/ls_experiments.c)
+target_include_directories(test_exp_rs41 PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_lssim_rs41)
+add_dependencies(test_lssim_rs41 lssim)
+target_compile_definitions(test_lssim_rs41 PRIVATE
+    LSSIM_EXE="$<TARGET_FILE:lssim>"
+    RS41_RENDER="${CMAKE_CURRENT_BINARY_DIR}/rs41-test.bmp"
+    RS41_ROUTE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/route.gpx")

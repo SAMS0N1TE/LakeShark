@@ -8,6 +8,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -15,6 +16,7 @@
 #include "ls_gps.h"
 #include "ls_rlog.h"
 #include "ls_track.h"
+#include "ls_task_reap.h"
 
 static const char *TAG = "ls_track";
 
@@ -111,7 +113,9 @@ static void track_task(void *arg)
     ESP_LOGI(TAG, "recording to %s", TRACK_PATH);
 
     while (!s_stop) {
-        ls_gps_state_t g;
+        /* Static: the snapshot carries both satellite tables, and this
+           task's 3.5 KB stack also has to hold an SD card write. */
+        EXT_RAM_BSS_ATTR static ls_gps_state_t g;
         ls_gps_get(&g);
 
         if (ls_track_fix_usable(g.fix, g.lat_deg, g.lon_deg, g.alt_m,
@@ -154,7 +158,7 @@ static void track_task(void *arg)
     ESP_LOGI(TAG, "recording stopped, %d points", ls_rlog_count(&s_log));
     s_task = NULL;
 #if defined(CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) && CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
-    vTaskDeleteWithCaps(NULL);
+    ls_task_retire_self();
 #else
     vTaskDelete(NULL);
 #endif

@@ -92,3 +92,5 @@ esp_err_t ble_link_rssi(int *rssi)
     (void)rssi;
     return ESP_ERR_NOT_SUPPORTED;
 }
+
+esp_err_t ble_link_listen(void) { return ESP_ERR_NOT_SUPPORTED; }

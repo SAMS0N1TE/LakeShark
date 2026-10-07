@@ -43,6 +43,8 @@ esp_err_t uart_driver_install(int uart_num, int rx_buffer_size,
 esp_err_t uart_driver_delete(int uart_num);
 esp_err_t uart_param_config(int uart_num, const uart_config_t *config);
 esp_err_t uart_set_pin(int uart_num, int tx, int rx, int rts, int cts);
+esp_err_t uart_set_baudrate(int uart_num, uint32_t baudrate);
+esp_err_t uart_wait_tx_done(int uart_num, uint32_t ticks_to_wait);
 esp_err_t uart_flush_input(int uart_num);
 esp_err_t uart_get_buffered_data_len(int uart_num, size_t *size);
 int uart_read_bytes(int uart_num, void *buffer, uint32_t length,

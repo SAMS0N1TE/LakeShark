@@ -37,6 +37,7 @@ extern const ls_app_doc_t ls_doc_files;
 extern const ls_app_doc_t ls_doc_mixrf;
 extern const ls_app_doc_t ls_doc_diag;
 extern const ls_app_doc_t ls_doc_terminal;
+extern const ls_app_doc_t ls_doc_update;
 extern const ls_app_doc_t ls_doc_settings;
 extern const ls_app_doc_t ls_doc_map;
 extern const ls_app_doc_t ls_doc_gps;

@@ -515,7 +515,7 @@ static bool rec_child_active;
 static tui_rect rec_tabs[3], replay_trace;
 static ls_fresh_t replay_flash;
 static const int replay_ook_power[]={-10,0,5,10};
-static const int replay_fsk_power[]={-9,0,14,22};
+static const int replay_fsk_power[]={-9,0,5,10}; /* +10 dBm replay ceiling */
 static int replay_dbm(void) {return (subghz_file_is_ook(&player.file)||subghz_file_is_cc_fsk(&player.file))?replay_ook_power[player.power]:replay_fsk_power[player.power];}
 static void replay_poll(void)
 {

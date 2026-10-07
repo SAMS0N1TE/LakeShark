@@ -57,6 +57,17 @@ bool subghz_file_is_ook(const subghz_file_t *f);
 /* Stock 2FSKDev238/476Async or a complete CC1101 custom 2-FSK preset. */
 bool subghz_file_is_cc_fsk(const subghz_file_t *f);
 
+/* The one transmit rule every replay passes before a radio is keyed, on the
+   CC1101 and the LoRa chip alike: a CC1101 sub-GHz band (300-348, 387-464,
+   779-928 MHz) outside the 406.0-406.1 MHz distress-beacon band, -10 to
+   +10 dBm, 6 to 4096 edges and at most 10 s on air. NULL when allowed,
+   otherwise the reason in a few words for the screen. A file carries no
+   power, so the file checks above pass 0 dBm and the sender checks its own. */
+const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges,
+                              uint64_t span_us);
+/* Total duration of signed microsecond edges. */
+uint64_t subghz_span_us(const int32_t *edges, size_t count);
+
 /* Validate and pack microsecond edges into pairs of 15-bit RMT durations.
    A NULL output returns the required word count. At most 4096 edges/10 s;
    long spaces are split without changing their level or duration. */

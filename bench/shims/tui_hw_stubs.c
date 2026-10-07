@@ -28,6 +28,11 @@ int adsb_active_source(void) { return 0; }
 static int s_adsb_gain = 496;
 int  lakeshark_adsb_gain_tenths(void) { return s_adsb_gain; }
 void lakeshark_adsb_set_gain(int tenths) { s_adsb_gain = tenths < 0 ? 0 : tenths > 496 ? 496 : tenths; }
+/* The mini map's FOLLOW mode, kept as app_adsb.c keeps it: -1 until one is
+   chosen, which the screen reads as its default. */
+static int s_adsb_follow = -1;
+int  adsb_map_follow(void) { return s_adsb_follow; }
+void adsb_set_map_follow(int mode) { if (mode >= 0 && mode <= 15) s_adsb_follow = mode; }
 /* adsb_source.c's mapping, which that file's test checks against the part. */
 int adsb_lr_gain_step(int gain_tenths_db)
 {
@@ -118,7 +123,8 @@ void ls_tui_radio_want(const char *mode_name) { (void)mode_name; }
 /* The bench has no receiver, so nothing is ever claimed. A screen
    that lights its lamp off this would light it never here, which is the
    right way for a stub to be wrong. */
-const char *ls_tui_radio_claimed(void) { return 0; }
+const char *ls_test_radio_claimed;
+const char *ls_tui_radio_claimed(void) { return ls_test_radio_claimed; }
 
 /* ---- apps loaded from the card --------------------------------------- */
 
@@ -238,3 +244,8 @@ void audio_events_mesh_message(const char *text, bool direct) { (void)text; (voi
 static bool s_key_dim = true;
 bool display_ctl_keyboard_dim(void) { return s_key_dim; }
 void display_ctl_set_keyboard_dim(bool on) { s_key_dim = on; }
+
+#ifndef LS_WF_SETTINGS_FAKE
+uint32_t settings_get_waterfall(uint32_t fallback) { return fallback; }
+void settings_set_waterfall(uint32_t value) { (void)value; }
+#endif

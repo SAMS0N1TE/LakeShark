@@ -22,10 +22,7 @@
 #include "../../ls_app.h"
 #endif
 
-/* The receiver's own status, through the module that owns it. This screen
-   asks the same question ls_wf_source asks and must get the same answer. */
-#include "p25_state.h"
-#include "iq_app_control.h"
+/* Presence and activity come from the endpoint that owns each USB radio. */
 #include "radio_endpoint.h"
 
 #if LS_HAS_LORA
@@ -41,6 +38,8 @@ typedef enum {
     RS_OFF,
     RS_ON,
     RS_BUSY,         /* on and actually moving data                     */
+    RS_STARTING,
+    RS_FAILED,
 } radio_state_t;
 
 typedef struct {
@@ -58,29 +57,36 @@ typedef struct {
 
 /* ------------------------------------------------------------------ rows -- */
 
-static bool s_sdr_held_off;
+static const char *s_error;
+static bool s_ant_confirm, s_ant_accept;
+static tui_rect s_ant_yes, s_ant_no;
 
-/* Either SDR streaming for any app: FM, ADS-B, REC and the rest, not only P25. */
-static bool sdr_streaming(void)
+/* A parked endpoint does not establish that its hardware is drawing power. */
+static radio_state_t sdr_endpoint_read(const char *id)
 {
     ls_radio_endpoint_info_t info;
-    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.streaming)
-        return true;
-    return ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.streaming;
+    if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present)
+        return RS_ABSENT;
+    /* last_error is the last thing that went wrong in the endpoint and is
+       never cleared by success. A read that ends because the stream was
+       stopped, timed out or found the device busy is an ordinary event, and
+       reading it as failure showed a receiver that was streaming fine, and
+       one just turned off, as failed. Only a real device fault counts. */
+    if (info.last_error != LS_RADIO_OK && info.last_error != LS_RADIO_ERR_STOPPED &&
+        info.last_error != LS_RADIO_ERR_TIMEOUT && info.last_error != LS_RADIO_ERR_BUSY)
+        return RS_FAILED;
+    if (info.streaming) return RS_BUSY;
+    return info.leased && !info.configured ? RS_STARTING : RS_OFF;
 }
 
-static radio_state_t sdr_read(void)
-{
-    ls_iq_control_status_t st;
-    memset(&st, 0, sizeof(st));
-    p25_get_receiver_status(&st);
-    if (st.receiver_streaming || sdr_streaming()) return RS_BUSY;
-    return s_sdr_held_off ? RS_OFF : RS_ON;
-}
+static radio_state_t rtl_read(void) { return sdr_endpoint_read(LS_RADIO_ENDPOINT_RTL_USB); }
+static radio_state_t hackrf_read(void) { return sdr_endpoint_read(LS_RADIO_ENDPOINT_HACKRF_USB); }
+static const char *sdr_word(radio_state_t st);
+static const char *rtl_state(void) { return sdr_word(rtl_read()); }
+static const char *hackrf_state(void) { return sdr_word(hackrf_read()); }
 
 static void sdr_set(bool on)
 {
-    s_sdr_held_off = !on;
     /* Off is immediate. On hands the decision back to the screen, which
        asks again on its next change; a screen showing a receiver gets it
        back the moment it is looked at. */
@@ -111,13 +117,14 @@ static radio_state_t mesh_read(void)
 
 static void mesh_set(bool on)
 {
-    if (on) ls_mesh_start();
-    else    ls_mesh_stop();
+    const esp_err_t err = on ? ls_mesh_start() : ls_mesh_stop();
+    s_error = err == ESP_OK ? NULL : on ? "LORA start failed" : "LORA stop failed";
 }
 #endif
 
 #ifdef LS_BOARD_MIX_CC_CS
-static radio_state_t cc_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.cc?RS_ABSENT:s.receiving?RS_BUSY:RS_ON;}
+static radio_state_t cc_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.cc?RS_ABSENT:(s.receiving||s.transmitting)?RS_BUSY:RS_ON;}
+static const char *cc_state(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.cc?"absent":s.transmitting?"TX replay":s.receiving?"receiving":"on";}
 static radio_state_t nrf_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.nrf?RS_ABSENT:s.scanning?RS_BUSY:RS_ON;}
 static radio_state_t nfc_read(void){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);return !s.nfc?RS_ABSENT:(s.card_scanning||s.nfc_watching||ls_nfc_suite_busy())?RS_BUSY:RS_ON;}
 static void open_mix(bool on){(void)on;for(int i=0;i<ls_app_count();i++){const ls_app_t *a=ls_app_at(i);if(a && !strcmp(a->id,"mixrf")){ls_app_open(i);return;}}}
@@ -132,8 +139,14 @@ static radio_state_t ant_read(void)
 }
 static void ant_set(bool external)
 {
-    if (ls_board_hw_antenna_external(external) != ESP_OK) return;
-    settings_set_antenna_external(external);
+    if (external) {
+        s_ant_confirm = true; s_ant_accept = false;
+        s_ant_yes = s_ant_no = tui_rect_make(0, 0, 0, 0);
+        return;
+    }
+    const esp_err_t err = ls_board_hw_antenna_external(false);
+    s_error = err == ESP_OK ? NULL : "Antenna busy / switch failed";
+    if (err == ESP_OK) settings_set_antenna_external(false);
 }
 static const char *ant_state(void)
 {
@@ -141,7 +154,8 @@ static const char *ant_state(void)
 }
 static const char *ant_action(void)
 {
-    return ls_board_hw_antenna_is_external() ? "USE INTERNAL" : "USE MMCX1";
+    return ls_board_hw_antenna_is_external() ?
+        (ls_board_hw_antenna_tx_allowed() ? "USE INTERNAL" : "CONFIRM MMCX1") : "USE MMCX1";
 }
 
 #if LS_HAS_C6
@@ -160,8 +174,8 @@ static const char *wifi_action(void) { return settings_get_wifi_at_boot() ? "OFF
 #endif
 
 static const radio_row_t ROWS[] = {
-    { "SDR",  "RTL-SDR or HackRF, the biggest draw here",
-      sdr_read, sdr_set },
+    { "RTL-SDR", "USB receiver endpoint", rtl_read, sdr_set, rtl_state },
+    { "HackRF", "USB receiver endpoint", hackrf_read, sdr_set, hackrf_state },
 #if LS_HAS_LORA
     { "LORA", "MeshCore listens from boot",
       mesh_read, mesh_set },
@@ -177,7 +191,7 @@ static const radio_row_t ROWS[] = {
       wifi_read, wifi_set, wifi_state, wifi_action, false, true },
 #endif
 #ifdef LS_BOARD_MIX_CC_CS
-    { "CC1101", "Keyboard sub-GHz receive monitor",cc_read,open_mix,NULL,mix_action },
+    { "CC1101", "Keyboard sub-GHz receive monitor",cc_read,open_mix,cc_state,mix_action },
     { "NRF24", "Keyboard 2.4 GHz energy survey",nrf_read,open_mix,NULL,mix_action },
     { "NFC", "Keyboard card reader / workbench",nfc_read,open_mix,NULL,mix_action },
 #else
@@ -199,9 +213,14 @@ static const char *state_word(radio_state_t s)
     case RS_BUSY:   return "ACTIVE";
     case RS_ON:     return "on";
     case RS_OFF:    return "off";
+    case RS_STARTING: return "starting";
+    case RS_FAILED: return "failed";
     default:        return "absent";
     }
 }
+
+static const char *sdr_word(radio_state_t st)
+{ return st == RS_OFF ? "parked" : st == RS_ABSENT ? "unavailable" : state_word(st); }
 
 /* What pressing it would do, which is not the same as what it is.
 
@@ -314,6 +333,19 @@ static void draw(tui_surface *sf, tui_rect area)
     s_hit_n = 0;
     ls_panel_box(sf, area, "RADIOS", TUI_CYAN);
     if (area.h < 8 || area.w < 20) return;
+    if (s_ant_confirm) {
+        const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+        tui_put_str(sf, area, area.x + 2, area.y + 2, "MMCX1 EXTERNAL ANTENNA", warn);
+        tui_put_str(sf, area, area.x + 2, area.y + 4, "TX without an antenna", warn);
+        tui_put_str(sf, area, area.x + 2, area.y + 5, "can damage the radio.", warn);
+        tui_put_str(sf, area, area.x + 2, area.y + 7, "Attach a suitable antenna", dim);
+        tui_put_str(sf, area, area.x + 2, area.y + 8, "before confirming.", dim);
+        s_ant_no = tui_rect_make(area.x + 2, area.y + 10, area.w - 4, 3);
+        s_ant_yes = tui_rect_make(area.x + 2, area.y + 14, area.w - 4, 3);
+        tui_put_str(sf, area, s_ant_no.x, s_ant_no.y, s_ant_accept ? "  CANCEL" : "> CANCEL", dim);
+        tui_put_str(sf, area, s_ant_yes.x, s_ant_yes.y, s_ant_accept ? "> ANTENNA ATTACHED" : "  ANTENNA ATTACHED", warn);
+        return;
+    }
 
     const int live = count_live();
     int loads = 0;
@@ -322,6 +354,7 @@ static void draw(tui_surface *sf, tui_rect area)
     snprintf(buf, sizeof(buf), "%d of %d powered", live, loads);
     tui_put_str(sf, area, area.x + 2, area.y + 1, buf,
                 live ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : dim);
+    if (s_error) tui_put_str(sf, area, area.x + 2, area.y + 2, s_error, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
 
     tui_rect body = tui_rect_make(area.x + 1, area.y + 3,
                                   area.w - 2, area.h - 4);
@@ -374,12 +407,34 @@ static void toggle(int i)
 {
     if (i < 0 || i >= N_ROWS) return;
     if (!ROWS[i].set) return;
+    s_error = NULL;
+    if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external() &&
+        !ls_board_hw_antenna_tx_allowed()) { ant_set(true); return; }
     ROWS[i].set(ROWS[i].read() == RS_OFF);
 }
+
+static void ant_confirm(bool accept)
+{
+    s_ant_confirm = false;
+    if (!accept) return;
+    const esp_err_t err = ls_board_hw_antenna_confirm_external();
+    s_error = err == ESP_OK ? NULL : "Antenna busy / switch failed";
+    if (err == ESP_OK) settings_set_antenna_external(true);
+}
+
+static void enter(void) { s_ant_confirm = false; s_error = NULL; }
+static void leave(void) { s_ant_confirm = false; }
 
 static bool key(ls_tk_t k, char ch)
 {
     (void)ch;
+    if (s_ant_confirm) {
+        if (k == LS_TK_UP) s_ant_accept = false;
+        else if (k == LS_TK_DOWN) s_ant_accept = true;
+        else if (k == LS_TK_ENTER) ant_confirm(s_ant_accept);
+        else if (k == LS_TK_ESC) ant_confirm(false);
+        return true;
+    }
     switch (k) {
     case LS_TK_UP:    if (s_sel > 0) s_sel--; return true;
     case LS_TK_DOWN:  if (s_sel < N_ROWS - 1) s_sel++; return true;
@@ -390,6 +445,15 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (s_ant_confirm) {
+        const tui_rect r = s_ant_yes;
+        if (col >= r.x && col < r.x + r.w && row >= r.y && row < r.y + r.h)
+            ant_confirm(true);
+        else if (col >= s_ant_no.x && col < s_ant_no.x + s_ant_no.w &&
+                 row >= s_ant_no.y && row < s_ant_no.y + s_ant_no.h)
+            ant_confirm(false);
+        return true;
+    }
     for (int i = 0; i < s_hit_n && i < N_ROWS; i++) {
         const tui_rect r = s_hit[i];
         if (col >= r.x && col < r.x + r.w &&
@@ -407,8 +471,8 @@ static bool touch(int col, int row)
 const ls_tui_screen_t ls_scr_radios = {
     .name = "RADIOS",
     .hint = "TAP to switch  UP DOWN ENTER",
-    .enter = NULL,
-    .leave = NULL,
+    .enter = enter,
+    .leave = leave,
     .draw = draw,
     .key = key,
     .touch = touch,

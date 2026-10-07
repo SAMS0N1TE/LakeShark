@@ -1,4 +1,5 @@
 #include "ls_field.h"
+#include "ls_labs_limits.h"
 #include "ls_trail.h"
 #include "ls_compass.h"
 #include "ls_compass_live.h"
@@ -55,6 +56,8 @@ static TaskHandle_t s_find_task;
 #endif
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
 static bool s_watch;
+static bool s_falls_want, s_hold_acquired, s_radio_owned;
+static EXT_RAM_BSS_ATTR ls_labs_tx_budget_t s_tx_budget;
 static bool s_wireless_watch;
 static uint32_t record_rows,record_errors,record_packets;
 static int64_t record_saved_us;
@@ -416,6 +419,14 @@ static bool save_packet(const ls_field_sample_t *p, const uint8_t *data, int len
 
 static bool restore(void)
 {
+    /* Passive navigation and a cancelled wait have no radio session to end. */
+    if (!s_hold_acquired) return true;
+    if (!s_radio_owned) {
+        ls_mesh_radio_hold(false);
+        s_hold_acquired = false;
+        s_live.busy = false;
+        return true;
+    }
     if (s_live.transmitting && !ls_lora_send_done() && esp_timer_get_time() <= s_tx_deadline) return false;
     s_live.transmitting = false;
     esp_err_t err = ESP_OK;
@@ -429,6 +440,7 @@ static bool restore(void)
     if (err != ESP_OK) { message("Restore failed; radio held. Toggle DIRECT off to retry"); return false; }
     pocsag_stop();
     ls_mesh_radio_hold(false);
+    s_hold_acquired = s_radio_owned = false;
     s_live.direct = s_live.busy = false;
     s_have_saved = false;
     message("Mesh control restored");
@@ -711,7 +723,7 @@ void ls_field_step(void)
         }
     }
     s_live.calibration_keyboard=profile!=0;
-    lock(); bool want = s_want, stop = s_stop, watching = s_watch; s_stop = false; s_live.recording = s_record; unlock();
+    lock(); bool want = s_want || s_falls_want, stop = s_stop, watching = s_watch; s_stop = false; s_live.recording = s_record; unlock();
     lock(); bool wireless = (watching || s_record) && (s_source == LS_FIELD_WIFI || s_source == LS_FIELD_BLE); unlock();
     if (wireless != s_wireless_watch) { s_wireless_watch = wireless; ls_wireless_observe(wireless); }
     s_live.requested = want;
@@ -723,21 +735,23 @@ void ls_field_step(void)
             /* P25 or ADS-B left listening on the chip gives it up when asked. */
             if (!ls_lora_present() || (ls_lora_fsk_active() && !ls_mesh_radio_bg()) || ls_lora_scanning()) {
                 message("Radio absent or in use; DIRECT unavailable");
-                lock(); s_want = false; unlock(); publish(); return;
+                lock(); s_want = s_falls_want = false; unlock(); publish(); return;
             }
             s_live.busy = true; s_hold_since = now;
             ls_mesh_radio_hold(true);
+            s_hold_acquired = true;
             message("Waiting for mesh radio");
         }
         if (ls_mesh_radio_held()) {
+            s_radio_owned = true;
             const ls_lora_cfg_t *previous = ls_lora_cfg();
             s_have_saved = previous != NULL;
             if (previous) s_saved = *previous;
             s_saved_rx = ls_lora_is_receiving();
             if (configure()) { s_live.direct = true; s_live.busy = false; message("Direct control; mesh paused"); }
-            else { lock(); s_want = false; unlock(); message("Radio setup failed; restoring mesh"); restore(); }
+            else { lock(); s_want = s_falls_want = false; unlock(); message("Radio setup failed; restoring mesh"); restore(); }
         } else if (now - s_hold_since > 3000000) {
-            lock(); s_want = false; unlock(); restore(); message("Mesh busy; direct request timed out");
+            lock(); s_want = s_falls_want = false; unlock(); restore(); message("Mesh busy; direct request timed out");
         }
     }
     lock();
@@ -774,7 +788,7 @@ void ls_field_step(void)
             else s_live.mode = c->mode;
             if (s_live.direct && !configure()) {
                 s_live.config = old; s_live.mode = mode; s_live.fsk = old_fsk;
-                if (!configure()) { lock(); s_want = false; unlock(); restore(); }
+                if (!configure()) { lock(); s_want = s_falls_want = false; unlock(); restore(); }
                 message("Setting rejected; previous configuration retained");
             } else {
                 memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
@@ -788,11 +802,22 @@ void ls_field_step(void)
             if (!s_live.direct || !want || s_live.mode == LS_LAB_SPECTRUM ||
                 LS_LAB_IS_FSK(s_live.mode))
                 message("SEND needs DIRECT packet or bearing mode");
-            else if (ls_lora_send((const uint8_t *)c->entry.text, strlen(c->entry.text)) == ESP_OK) {
-                s_live.transmitting = true; s_live.tx++;
-                s_tx_deadline = now + ((int64_t)ls_lora_airtime_ms((int)strlen(c->entry.text)) + 2000) * 1000;
-                message("Sending one packet");
-            } else message("Radio refused packet");
+            else {
+                const uint32_t airtime = ls_lora_airtime_ms((int)strlen(c->entry.text));
+                const ls_lora_cfg_t *cfg = ls_lora_cfg();
+                const char *refusal = cfg ? ls_labs_tx_check(cfg, airtime, now, &s_tx_budget)
+                                          : "SEND refused: no radio settings";
+                if (refusal) message(refusal);
+                else {
+                    /* Charge before keying; a driver failure may still have emitted RF. */
+                    ls_labs_tx_charge(&s_tx_budget, airtime, now);
+                    if (ls_lora_send((const uint8_t *)c->entry.text, strlen(c->entry.text)) == ESP_OK) {
+                        s_live.transmitting = true; s_live.tx++;
+                        s_tx_deadline = now + ((int64_t)airtime + 2000) * 1000;
+                        message("Sending one packet");
+                    } else message("Radio refused packet");
+                }
+            }
         }
     }
     if (s_live.transmitting) {
@@ -1006,7 +1031,7 @@ static void worker(void *arg)
     if (!ls_gps_running()) ls_gps_start();
     for (;;) {
         ls_field_step();
-        lock(); bool active = s_watch || s_record || s_want || s_public.direct || s_public.calibrating || s_qcount; unlock();
+        lock(); bool active = s_watch || s_record || s_want || s_falls_want || s_public.direct || s_public.calibrating || s_qcount; unlock();
         vTaskDelay(pdMS_TO_TICKS(active ? 25 : 200));
     }
 }
@@ -1099,8 +1124,9 @@ static bool commit(void) { s_qcount++; unlock(); return true; }
 
 void ls_field_sample_snapshot(ls_field_sample_t *out) { if(!out) return; if(!s_lock) { memset(out,0,sizeof(*out)); return; } lock(); *out=s_public.sample; unlock(); }
 void ls_field_snapshot(ls_field_state_t *out) { if (!out) return; if (!s_lock) { memset(out, 0, sizeof(*out)); return; } lock(); *out = s_public; unlock(); }
-bool ls_field_owned(void) { if (!s_lock) return false; lock(); bool owned = s_want || s_public.direct || s_public.busy; unlock(); return owned; }
-bool ls_field_direct(bool on) { if (!s_started) return false; lock(); s_want = on; if (!on) s_stop = true; unlock(); return true; }
+bool ls_field_owned(void) { if (!s_lock) return false; lock(); bool owned = s_want || s_falls_want || s_public.direct || s_public.busy; unlock(); return owned; }
+bool ls_field_direct(bool on) { if (!s_started) return false; lock(); s_want = on; if (!on) { s_falls_want = false; s_stop = true; } unlock(); return true; }
+bool ls_field_direct_falls(bool on) { if (!s_started) return false; lock(); s_falls_want = on; if (!on && !s_want) s_stop = true; unlock(); return true; }
 bool ls_field_configure(const ls_lora_cfg_t *cfg)
 {
     if (!cfg || cfg->freq_hz < 150000000 || cfg->freq_hz > 959000000 || cfg->sf < 5 || cfg->sf > 12 ||
@@ -1317,6 +1343,8 @@ bool ls_field_provider(ls_field_source_t source, ls_field_provider_t provider)
 #ifdef LS_FIELD_TEST
 void ls_field_test_reset(const char *directory)
 {
+    s_falls_want = s_hold_acquired = s_radio_owned = false;
+    memset(&s_tx_budget, 0, sizeof(s_tx_budget));
     s_directory = directory; s_started = s_loaded = s_stop = s_want = s_record = s_have_saved = false;
     s_qhead = s_qcount = s_count = s_note_head = s_note_count = 0; s_next_id = 1; s_next_sample = s_next_record = 0;
     s_valid_bytes = 0; s_damaged = s_incompatible = false;

@@ -167,7 +167,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.8.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.8.3).** P25 Phase 1 voice from the onboard LR2021 with no SDR, now read by a neural network on the P4 for much clearer audio, with AUTO and MAX gain on the P25 screen. POCSAG on VHF in PAGER RECON, and P25 or ADS-B on the LR2021 sharing the chip with EXPERIMENTS, LoRa Labs and the LoRa waterfall. Experimental radio features remain marked.
+**Current P4 release: [2.9.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.9.0).** Updates over WiFi from the UPDATE app, with signed builds and rollback; install 2.9.0 once with the web flasher or USB. P25 Phase 1 voice from the onboard LR2021 with no SDR, now read by a neural network on the P4 for much clearer audio, with AUTO and MAX gain on the P25 screen. POCSAG on VHF in PAGER RECON, and P25 or ADS-B on the LR2021 sharing the chip with EXPERIMENTS, LoRa Labs and the LoRa waterfall. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

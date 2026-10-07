@@ -35,6 +35,12 @@ esp_err_t ls_xl9535_init(ls_i2c_bus_id_t bus, uint8_t address)
     return init_result;
 }
 bool ls_xl9535_ready(void) { return ready; }
+
+/* The antenna switch takes the radio's lock and waits for no transmission;
+   this test has no radio, so the lock is free and nothing is sending. */
+void ls_lora_hw_lock(void) {}
+void ls_lora_hw_unlock(void) {}
+bool ls_lora_send_done(void) { return true; }
 esp_err_t ls_xl9535_set(int pin, bool high)
 { levels[pin] = high; return ESP_OK; }
 esp_err_t ls_xl9535_set_dir(int pin, bool output)
@@ -62,6 +68,8 @@ LS_CASE(boot_enables_active_low_rails_and_releases_resets)
     LS_CHECK(outputs[8] && levels[8]); /* IO10: USB PHY */
     LS_CHECK(!outputs[12] && levels[12]); /* IO14: C6 EN, external pull-up */
     LS_CHECK(outputs[14] && !levels[14]); /* IO16: radio reset */
+    LS_CHECK_MSG(outputs[9] && levels[9],
+                 "IO11 GPS_WAKE_UP is not driven high - low is standby");
 
     LS_CHECK(outputs[1] && levels[1]);
     LS_CHECK(levels[2] && levels[3]);

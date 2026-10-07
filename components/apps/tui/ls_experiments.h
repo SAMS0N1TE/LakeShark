@@ -76,6 +76,9 @@ typedef struct ls_experiment {
        band the SX126x cannot receive). The list and `exp` mark it, and its start() refuses cleanly
        on any other chip with ls_exp_needs_lr2021. */
     bool lr2021_only;
+    /* Optional worker upkeep, including while stopped. UI setters wake the
+       worker; true asks for another pass without taking the radio socket. */
+    bool (*maintenance)(void);
 } ls_experiment_t;
 
 /* The refusal text a start() writes into `why` for a chip that is not an LR2021. */
@@ -103,6 +106,16 @@ const char *ls_exp_maturity_name(ls_exp_maturity_t m);
 /* e->lines, with the count clamped to 0..max and every line terminated.
    0 for an experiment without a readout. */
 int ls_exp_read_lines(const ls_experiment_t *e, char (*out)[LS_EXP_LINE], int max);
+
+/* The note a NOTE press saves for `e` (every experiment, no per-experiment code):
+   title "NAME 2026-10-06 14:21" from `stamp` (ls_time_render_stamp; any other
+   form is used whole), body a "> RADIO" (or "> EXPERIMENT" when it does not
+   use the radio) line with its name, maturity and `state`, then the `n`
+   readout lines as the page shows them. Pure. Returns the body length, which
+   is cut at a line boundary to fit `bcap`. */
+size_t ls_exp_note_text(const ls_experiment_t *e, const char *stamp, const char *state,
+                        const char (*lines)[LS_EXP_LINE], int n,
+                        char *title, size_t tcap, char *body, size_t bcap);
 
 /* ------------------------------------------------------------ running -- */
 

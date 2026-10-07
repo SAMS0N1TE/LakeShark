@@ -22,6 +22,13 @@ extern "C" {
 #endif
 
 typedef struct {
+    dmr_lc_t lc;
+    uint8_t colour_code;
+    bool have_lc, active, encrypted;
+    int64_t start_us, last_us, end_us;
+} dmr_call_t;
+
+typedef struct {
     uint32_t         bursts;        /* bursts framed, either polarity      */
     uint32_t         slot_type_ok;  /* Slot Type inside its Golay radius   */
     uint32_t         bptc_ok;
@@ -39,7 +46,12 @@ typedef struct {
     int64_t          lc_us;         /* when that was, esp_timer clock      */
 
     dmr_tracker_t    tracker;
+    dmr_call_t       call[2];
+    uint32_t         unknown_slot;
 } dmr_watch_t;
+
+/* Returns 1/2 for a repeater CACH; mobile sync has no slot identity. */
+unsigned dmr_cach_slot(const uint8_t cach[3]);
 
 /* Both framers are reset and every counter cleared. */
 void dmr_watch_reset(void);

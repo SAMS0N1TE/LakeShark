@@ -2,6 +2,7 @@
 #define LS_WIFI_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -25,6 +26,7 @@ typedef struct {
     int     rssi;
     bool    secure;
     int     channel;
+    uint8_t bssid[6], auth;
 } ls_wifi_scan_ap_t;
 
 esp_err_t ls_wifi_sta_join(const char *ssid, const char *pass);
@@ -32,6 +34,8 @@ esp_err_t ls_wifi_sta_leave(void);
 esp_err_t ls_wifi_sta_forget(void);
 esp_err_t ls_wifi_sta_autojoin(void);
 int       ls_wifi_sta_scan(ls_wifi_scan_ap_t *out, int cap);
+esp_err_t ls_wifi_survey_mode(bool active);
+int       ls_wifi_survey_scan(ls_wifi_scan_ap_t *out, int cap);
 esp_err_t ls_wifi_sta_info(ls_wifi_scan_ap_t *out);
 bool      ls_wifi_sta_running(void);
 bool      ls_wifi_sta_connected(void);

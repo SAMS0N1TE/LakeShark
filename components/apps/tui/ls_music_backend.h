@@ -13,6 +13,9 @@ int ls_music_count(void);
 const char *ls_music_name(int index);
 const char *ls_music_error(void);
 bool ls_music_play(int index);
+/* A caller-owned archive path; the decoder owns the file after queueing. */
+bool ls_music_play_path(const char *path);
+bool ls_music_is_open(void);
 bool ls_music_toggle(void);
 void ls_music_stop(void);
 ls_music_state_t ls_music_state(void);

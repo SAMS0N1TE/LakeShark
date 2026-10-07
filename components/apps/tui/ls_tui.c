@@ -1021,6 +1021,10 @@ void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ram
     memset(&s_peak, 0, sizeof(s_peak));
 }
 
+static volatile uint32_t s_present_count;
+
+uint32_t ls_tui_present_count(void) { return s_present_count; }
+
 int ls_tui_present(void)
 {
     if (!s_back || !s_front) return 0;
@@ -1083,6 +1087,7 @@ int ls_tui_present(void)
         s_peak.sync_us = sync_us;
         s_peak.ramps = s_prof_ramps - ramps0;
     }
+    s_present_count++;
     return drawn;
 }
 

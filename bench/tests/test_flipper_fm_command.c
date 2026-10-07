@@ -121,12 +121,12 @@ LS_CASE(actual_demod_command_restores_auto_without_changing_numeric_modes)
 LS_CASE(actual_fl_fm_path_selects_every_mode_and_reports_it)
 {
     static const char *const commands[] = {
-        "listen", "scan", "pocsag", "wfm", "acars", "flex", NULL, "am"
+        "listen", "scan", "pocsag", "wfm", "acars", "flex", NULL, "am", NULL
     };
     start_link();
 
     for (int mode = 0; mode < FM_MODE_COUNT; ++mode) {
-        if (mode == 6) continue;
+        if (mode == 6 || mode == FM_MODE_SAME || mode == FM_MODE_APRS || mode == FM_MODE_AIS) continue;
         char line[32];
         char expected[32];
         char reply[64];
@@ -167,7 +167,7 @@ LS_CASE(actual_fl_fm_queries_alias_numeric_and_invalid_inputs_are_bounded)
     start_link();
     s_host_mode = "FM";
     for (int mode = 0; mode < FM_MODE_COUNT; ++mode) {
-        if (mode == 6) continue;
+        if (mode == 6 || mode == FM_MODE_SAME || mode == FM_MODE_APRS || mode == FM_MODE_AIS) continue;
         char line[16];
         char expected[32];
         snprintf(line, sizeof(line), "FM %d", mode);
@@ -192,9 +192,10 @@ LS_CASE(actual_fl_fm_queries_alias_numeric_and_invalid_inputs_are_bounded)
 
     static const char *const invalid[] = {
         "FM bogus", "FM -1", "FM 6", "FM TRAP", "FM TargetTag",
-        "FM 8", "FM 999999999999999999999"
+        "FM 8", "FM same", "FM SAME", "FM 9", "FM 10", "FM ais", "FM AIS", "FM 999999999999999999999"
     };
     s_fm_mode = FM_MODE_FLEX;
+    s_host_mode = "P25";
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
         reset_observations();
         flipper_link_inject(invalid[i], reply, sizeof(reply));
@@ -715,4 +716,25 @@ LS_CASE(the_head_lists_and_loads_card_profiles)
     LS_CHECK(reply_has("PROF LOAD ../p25_profile_x.txt", "-ERR"));
     LS_CHECK(reply_has("PROF LOAD notes.txt", "-ERR"));
     LS_EQ_STR(s_load_requested, "");
+}
+
+LS_CASE(aprs_is_refused_without_changing_the_receiver)
+{
+    s_fm_mode = FM_MODE_LISTEN;
+    LS_CHECK(reply_has("FM APRS", "-ERR"));
+    LS_CHECK(reply_has("FM 9", "-ERR"));
+    LS_EQ_INT(FM_MODE_LISTEN, s_fm_mode);
+}
+
+LS_CASE(ais_is_refused_without_selecting_or_changing_the_receiver)
+{
+    start_link(); s_fm_mode = FM_MODE_LISTEN; s_host_mode = "P25";
+    static const char *const commands[] = {"FM ais", "FM AIS", "FM 10"};
+    for (unsigned i = 0; i < sizeof(commands)/sizeof(commands[0]); ++i) {
+        char reply[64]; reset_observations();
+        flipper_link_inject(commands[i], reply, sizeof(reply));
+        LS_EQ_STR("-ERR fm\n", reply); LS_EQ_INT(FM_MODE_LISTEN, s_fm_mode);
+        LS_EQ_INT(0, s_select_count); LS_EQ_INT(0, s_set_count);
+    }
+    flipper_link_stop();
 }

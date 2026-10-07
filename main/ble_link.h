@@ -14,6 +14,8 @@ extern "C" {
    bench can drive the state graph without an ESP-IDF build. */
 
 esp_err_t ble_link_start(void);
+/* Owns an idle link for passive adverts; never connects to an advertiser. */
+esp_err_t ble_link_listen(void);
 void      ble_link_stop(void);
 
 ble_link_state_t ble_link_state(void);

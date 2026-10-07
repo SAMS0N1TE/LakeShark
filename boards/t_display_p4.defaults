@@ -5,7 +5,13 @@ CONFIG_LAKESHARK_HEADLESS=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_16m.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/partitions_16m_ota.csv"
+# Updates over WiFi: a new build runs on trial and the bootloader goes back
+# to the last one if it never marks itself good.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# TLS in PSRAM. One HTTPS session wants more internal RAM than the board has
+# free once the radios are up.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
 CONFIG_LS_VBUS_EN_GPIO=-1
 

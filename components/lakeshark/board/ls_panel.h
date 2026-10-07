@@ -17,7 +17,11 @@ esp_err_t ls_panel_test_start(void);
    and the rest kept a whole second interface alive underneath it (HANDOFF
    6.2). */
 esp_err_t ls_panel_start(void);
+/* 0 is dark; 1..4 are raised to 5, the dimmest lit level. */
 esp_err_t ls_panel_set_brightness(unsigned percent);
+/* Fade to black over fade_ms, then switch the panel off. For a restart: the
+   glass stays dark through the reset. Later brightness writes do nothing. */
+esp_err_t ls_panel_blank(unsigned fade_ms);
 
 /* The refresh count, and how many the scan managed in the last second. Takes
    a second to answer. */

@@ -150,11 +150,14 @@
      - Antenna: SKY13453 VCTL is XL9535 IO1. The SX1262 example sets it HIGH
        under the comment "use the RF1 antenna by default" (lines 63-65 of
        that example's main source); the LR2021 example sets it HIGH too. ls_board_hw.c already parks it HIGH and calls that the
-       internal antenna. So HIGH is RF1; the level that selects RF2 is not
-       stated in any LilyGO source read.
-   Not confirmed by any source: whether the SIMO inductor is fitted. The driver
-   therefore sends no SetRegMode (the regulator stays on its LDO default, which
-   works either way) and no SetTcxoMode (plain crystal). It transmits on the LF
+       internal antenna. LilyGO lilygo_device_driver t_display_p4/v1/driver.cpp
+       sets IO1 HIGH for the internal antenna and LOW for the external MMCX1.
+   LilyGO lilygo_device_driver src/device/t_display_p4/v1/driver.cpp,
+   InitLr2021, selects TCXO 3.3 V with 32768 ticks before calibration and
+   DCDC. The module therefore supports DCDC with its SIMO inductor fitted.
+   LilyGO reports the T-LR2021 v0.3 TCXO supply is always on; v1 has no
+   TCXO power pin. This driver defaults to TCXO and LDO for sensitivity;
+   both clock and regulator modes are runtime settings. It transmits on the LF
    path only, below 1 GHz: LilyGO's example warns that an HF power above 12
    damages the 2.4 GHz front-end module, and the driver never writes one. */
 #define LS_BOARD_LORA_MAY_BE_LR20XX 1
