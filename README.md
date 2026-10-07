@@ -15,7 +15,7 @@
 | **SX1262** | MeshCore, LoRa Labs, POCSAG on the LoRa chip | need an RTL-SDR |
 | **LR2021** | MeshCore, LoRa Labs, VHF and UHF POCSAG, FSK and sweeps from 150 to 1100 MHz and 1500 to 2500 MHz | built in, or an RTL-SDR |
 
-LakeShark is a handheld SDR scanner and radio workbench built around the **LilyGO T-Display P4**: a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
+LakeShark is a handheld SDR scanner and radio workbench built around the [**LilyGO T-Display P4**:](https://lilygo.cc/en-us/products/t-display-p4) a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
 
 Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 (or the LR2021 on that variant) runs MeshCore or LoRa Labs; the LR2021 also decodes P25 voice and ADS-B on its own. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
 
