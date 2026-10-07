@@ -64,7 +64,7 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 
 <p align="center">
 <img src="docs/screenshots/tdp4/gallery-20261007/home-port.png" width="32%" alt="HOME" />
-<img src="docs/screenshots/tdp4/motion/p25-live-call.gif" width="32%" alt="P25 decoding a call" />
+<img src="docs/screenshots/tdp4/motion/p25-decode.gif" width="32%" alt="P25 decoding a call" />
 <img src="docs/screenshots/tdp4/motion/music-scan-waterfall.gif" width="32%" alt="MUSIC analyzer and waterfall" />
 <img src="docs/screenshots/tdp4/motion/update.gif" width="32%" alt="UPDATE over WiFi" />
 <img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
