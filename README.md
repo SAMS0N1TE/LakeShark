@@ -4,6 +4,10 @@
 <p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
 
 > [!IMPORTANT]
+> **Updates over WiFi.** UPDATE checks for a newer build and installs it with one tap. Builds are signed, and one that does not start rolls back. Install 2.9.0 once by USB or the web flasher; later releases arrive over WiFi. New in 2.9.0.
+>
+> **More to listen to.** RS41 weather balloon sondes, AIS ships, APRS and SAME/EAS weather alerts, a DMR activity view, CTCSS/DCS tone squelch and an archive of heard calls. New in 2.9.0.
+>
 > **P25 voice with no SDR.** On the LR2021 version of the T-Display P4, the onboard LR2021 radio decodes P25 Phase 1 voice by itself and plays it on the speaker. Fit a VHF antenna on its MMCX connector, open P25 and tune the channel; no dongle needed. New in 2.8.0.
 >
 > **POCSAG on VHF.** PAGER RECON hears pagers on the LR2021 from 150 MHz up. New in 2.8.0.
@@ -59,46 +63,53 @@ Designed to work with my other project [CartoTUI, a terminal ascii map](https://
 The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard SX1262 or LR2021 LoRa, GPS and nine-axis sensing. Use touch alone or add the detachable keyboard with its MIX-RF radios.
 
 <p align="center">
-<img src="docs/screenshots/tdp4/gallery-20260923/home-port.png" width="32%" alt="HOME" />
-<img src="docs/screenshots/tdp4/gallery-20260923/p25-port.png" width="32%" alt="P25" />
+<img src="docs/screenshots/tdp4/gallery-20261007/home-port.png" width="32%" alt="HOME" />
+<img src="docs/screenshots/tdp4/motion/p25-call.gif" width="32%" alt="P25 decoding a call" />
+<img src="docs/screenshots/tdp4/motion/music.gif" width="32%" alt="MUSIC meters and analyzer" />
+<img src="docs/screenshots/tdp4/motion/update.gif" width="32%" alt="UPDATE over WiFi" />
 <img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
+<img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
+<img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
+<img src="docs/screenshots/tdp4/motion/falls-p25.gif" width="32%" alt="FALLS on P25" />
 <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
-<img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
-<img src="docs/screenshots/tdp4/motion/falls-p25.gif" width="32%" alt="FALLS on P25" />
 <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
 <img src="docs/screenshots/tdp4/motion/fm-noaa.gif" width="32%" alt="FM on NOAA weather" />
 <img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
+<img src="docs/screenshots/tdp4/gallery-20261007/experiments-port.png" width="32%" alt="EXPERIMENTS" />
 <img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
 </p>
 
-Recorded on the board: ADS-B traffic on the mini map, FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, COMPASS FIND turning on two channels, MAP following an aircraft, the P25 waterfall, FM on NOAA weather, mesh messages arriving as notices, and the Night theme.
+Recorded on the board: P25 locking on a live call, MUSIC playing through its meters and analyzer, UPDATE waiting for WiFi, ADS-B traffic on the mini map, MAP following an aircraft, COMPASS FIND turning on two channels, the P25 waterfall, FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, FM on NOAA weather, mesh messages arriving as notices, the LR2021 EXPERIMENTS list and the Night theme.
 
 ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map. Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
 
 | App | What it does |
 |---|---|
-| P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning; Phase II `[EXPERIMENTAL]` |
-| FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists and POCSAG pagers |
+| P25 | Phase I trunking and conventional voice; AUTO/manual demodulation, channel-list scanning, a DMR activity view and a CALLS archive of heard calls; Phase II `[EXPERIMENTAL]` |
+| FM | Analog FM/AM listening, stepped-band scan, mixed P25/FM channel lists, POCSAG pagers, CTCSS/DCS tone squelch, APRS, AIS ships and SAME/EAS weather alerts |
 | ADS-B | Aircraft at 1090 MHz, traffic history, offline mini map and remembered home; spoken callouts for new, located and lost aircraft |
 | FALLS | P25, FM or LoRa waterfall; tap-to-mark tuning |
-| MESH | MeshCore messaging and nodes on the onboard SX1262; new messages show as a notice on any screen and can be read aloud |
+| CELL WATCH | Cell band survey |
+| MESH | MeshCore messaging and nodes on the onboard radio; new messages show as a notice on any screen and can be read aloud. INSPECT traces a route, logs in to a node and reads its telemetry |
 | LORA LABS | Direct radio controls, packet plots, received-signal history and a full-screen compass |
 | NOTES | Markdown notes on the SD card with checklists and live GPS, heading and radio lines |
 | COMPASS | Tilt-compensated compass with true north; FIND points to a transmitter on any radio, with channel scanning, two radios at once, a hit log, and RADAR and HEAT views; GO TO and a level |
 | MIX-RF | Keyboard CC1101 energy monitor, nRF24 activity scan and NFC detection |
 | NFC | Classic 4K reads, verified block maps, key entry, hex/ASCII views and manual saves; Mini/1K full reads `[EXPERIMENTAL]` |
-| REC | Shared capture workspace and `.sub` export; 2.2.2 adds file replay, inline power and an animated waveform. |
+| REC | Shared capture workspace and `.sub` export, file replay, inline power and an animated waveform |
 | SUB-GHZ | Six tiles: read, analyzer, saved, read raw, learn and settings; decoded detections and capture archive; OOK/FSK replay `[EXPERIMENTAL]` |
-| EXPERIMENTS | LR2021 trials that may become apps, one at a time `[EXPERIMENTAL]` |
+| EXPERIMENTS | LR2021 trials that may become apps, one at a time, including RS41 sondes and LR433 sensors with history; NOTE saves a readout to NOTES `[EXPERIMENTAL]` |
 | FILES | SD-card browsing, sorting and `.sub` preview; replay opens directly in RECORD |
-| MAP | Offline maps with aircraft trails, Mesh nodes, marks and drawn lines; FOLLOW, GO TO, layers and eight palettes; pixel field view and archive picker `[EXPERIMENTAL]` |
+| MUSIC | SD-card audio player with level meters, octave bands, a scanning analyzer and a waterfall; the meters also follow the microphone |
+| MAP | Offline maps with aircraft trails, Mesh nodes, ships, APRS stations, marks and drawn lines; follow a route or GPX file; FOLLOW, GO TO, layers and eight palettes; pixel field view and archive picker `[EXPERIMENTAL]` |
 | GPS | Position and a track recorder that exports GPX |
 | RADIOS | Radio power, antenna selection, and Wi-Fi/Bluetooth startup toggles |
-| DIAG | Memory, radios, sensors, rebuild counts |
+| DIAG | Memory, radios, sensors, rebuild counts and an error log |
+| TERMINAL | The console on the screen, typed from the keyboard |
+| UPDATE | Checks for a newer signed build over WiFi and installs it with one tap |
 | SET | Brightness, theme (Night keeps everything red), font, sounds, voice and callouts, Daylight mode for the sun |
-| LINK | Wi-Fi and Bluetooth: scan, signal and channel graphs |
+| LINK | Wi-Fi and Bluetooth: scan, signal and channel graphs; LINK SURVEY logs what it hears, with position and best signal, to a CSV per walk |
 
 <img width="900" height="900" alt="keyboard-home" src="https://github.com/user-attachments/assets/dd1bd6fd-4d65-4800-b7c7-abdfebe80094" />
 
