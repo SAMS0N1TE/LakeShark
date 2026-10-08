@@ -224,6 +224,16 @@ void settings_eq_punch_set(int v);
 int  settings_eq_loud_get(void);
 void settings_eq_loud_set(int v);
 
+/* PAGER RECON start preferences. Reads are RAM-only; writes use the safe
+   deferred NVS path. Method: 0 native stream, 1 packet, 2 sign stream. */
+typedef struct {
+    uint32_t hz;
+    uint8_t plan, dwell, method;
+    int8_t probe;
+} settings_pagers_t;
+void settings_get_pagers(settings_pagers_t *out);
+bool settings_set_pagers(const settings_pagers_t *cfg);
+
 void settings_write_stats(uint32_t *done, uint32_t *dropped, uint32_t *commits);
 
 #ifdef __cplusplus

@@ -10,10 +10,13 @@
 
 #include "ls_experiments.h"
 #include "ls_lora.h"
+#include "ls_lora_lr20xx.h"
+#include "p25_state.h"
 #include "pager_recon.h"
 #include "pocsag.h"
 #include "pocsag_gen.h"
 #include "fm_state.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -285,20 +288,52 @@ static bool s_open;
 static ls_fsk_cfg_t s_cfg;
 static int64_t s_opened, s_sent;
 static int s_begins;
+static uint8_t s_stream_fifo[32768];
+static size_t s_stream_n, s_stream_at, s_stream_gap_at;
+static int s_stream_faults, s_retunes;
+static esp_err_t s_retune_result;
 
 int64_t esp_timer_get_time(void);
 
 static uint32_t s_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
+static p25_lr_cfg_t s_gain;
+static lr20xx_gfsk_rx_stats_t s_chip_stats;
+void p25_lr_get_cfg(p25_lr_cfg_t *out) { *out = s_gain; }
+esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out)
+{ *out = s_chip_stats; return ESP_OK; }
 uint32_t ls_lora_caps(void) { return s_caps; }
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
     if (s_open) return ESP_ERR_INVALID_STATE;
-    if (cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) return ESP_ERR_INVALID_ARG;
+    if (!cfg->stream && cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) return ESP_ERR_INVALID_ARG;
     s_cfg = *cfg;
     s_open = true;
     s_opened = s_sent = esp_timer_get_time();
     s_begins++;
+    return ESP_OK;
+}
+int ls_lora_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
+{
+    *restarted = s_stream_at == 0;
+    if (s_stream_faults) { s_stream_faults--; return -1; }
+    if (!s_open || !s_cfg.stream || size < 256) return -1;
+    size_t n = s_stream_n - s_stream_at;
+    const size_t prefix = n && s_cfg.stream_sync_prefix && !s_stream_at ? 4 : 0;
+    if (s_stream_gap_at && s_stream_at < s_stream_gap_at && n > s_stream_gap_at-s_stream_at)
+        n = s_stream_gap_at-s_stream_at;
+    if (s_stream_gap_at && s_stream_at == s_stream_gap_at) { *restarted = true; s_stream_gap_at = 0; }
+    if (n > size-prefix) n = size-prefix;
+    if (prefix) for (int i = 0; i < 4; i++) buf[i] = s_cfg.sync_word >> (24-8*i);
+    memcpy(buf+prefix, s_stream_fifo + s_stream_at, n);
+    s_stream_at += n;
+    return (int)(n+prefix);
+}
+esp_err_t ls_lora_fsk_retune(uint32_t hz)
+{
+    s_retunes++;
+    if (s_retune_result != ESP_OK) return s_retune_result;
+    s_cfg.freq_hz = hz;
     return ESP_OK;
 }
 esp_err_t ls_lora_fsk_end(void) { s_open = false; return ESP_OK; }
@@ -366,6 +401,11 @@ static void fresh(uint32_t hz, uint16_t baud, bool inverted, bool text)
     ls_exp_forget();
     ls_exp_register(&exp_pagers);
     ls_shim_time_set(1000000);
+    s_stream_n = s_stream_at = s_stream_gap_at = 0;
+    s_stream_faults = s_retunes = 0;
+    memset(&s_gain, 0, sizeof(s_gain));
+    memset(&s_chip_stats, 0, sizeof(s_chip_stats));
+    s_retune_result = ESP_OK;
     memset(&TX, 0, sizeof(TX));
     TX.hz = hz;
     TX.baud = baud;
@@ -374,6 +414,8 @@ static void fresh(uint32_t hz, uint16_t baud, bool inverted, bool text)
     TX.len = PGR_BATCH_BYTES;
     /* OPTIONS: the UHF plan, the default dwell, message text as asked. */
     exp_pagers.opts[0].set(&exp_pagers.opts[0], PGR_PLAN_UHF);
+    exp_pagers.opts[4].set(&exp_pagers.opts[4], 0);
+    exp_pagers.opts[5].set(&exp_pagers.opts[5], 1);
     exp_pagers.opts[2].set_num(&exp_pagers.opts[2], 6);
     exp_pagers.opts[3].set(&exp_pagers.opts[3], text ? 1 : 0);
 }
@@ -427,8 +469,8 @@ LS_CASE(one_frequency_from_the_console_steps_through_the_probes_until_one_decode
     LS_CHECK(lines_have("454.1250 POC  2400I"));
     ls_exp_stop();
     ls_exp_settle(100);
-    /* The console's frequency was for that run: OPTIONS still scan. */
-    LS_EQ_INT(exp_pagers.opts[0].get(&exp_pagers.opts[0]), PGR_PLAN_UHF);
+    /* Console starts persist the one-frequency plan in OPTIONS. */
+    LS_EQ_INT(exp_pagers.opts[0].get(&exp_pagers.opts[0]), PGR_PLAN_N);
 }
 
 LS_CASE(the_console_refuses_a_frequency_out_of_range)
@@ -969,4 +1011,170 @@ LS_CASE(a_message_is_not_spliced_across_a_batch_that_was_not_accepted)
     LS_CHECK(!lines_have("LOST-BATCH"));
     ls_exp_stop();
     ls_exp_settle(100);
+}
+
+
+static void start_stream_console(char *method)
+{
+    char *argv[] = { "exp", "pagers", "start", "152.600", method };
+    LS_EQ_INT(ls_exp_console(method ? 5 : 4, argv), 0);
+}
+
+LS_CASE(stream_console_uses_software_sync_and_keeps_text_off)
+{
+    fresh(152600000u, 1200, true, false);
+    const uint32_t caps = s_caps;
+    s_caps |= LS_LORA_CAP_FSK_STREAM;
+    uint8_t bits[BITS_GEN_MAX];
+    const size_t nb = pocsag_build_bits(1234568, 3, "STREAM PRIVATE TEXT", 576, bits, sizeof(bits));
+    memset(s_stream_fifo, 0, sizeof(s_stream_fifo));
+    const size_t samples = PGR_STREAM_RATE / 1200;
+    for (size_t i = 0; i < nb * samples + 128; i++)
+        s_stream_fifo[i / 8] |= (uint8_t)((bits[i / samples < nb ? i / samples : nb - 1] ^ 1) << (7 - i % 8));
+    s_stream_n = nb * samples / 8 + 16;
+    s_gain.rx_gain_step = 13;
+    s_gain.rx_boost_step = 8;
+    s_gain.pulse_shape = 1;
+    s_chip_stats.sync_ok = 65534;
+    s_chip_stats.sync_fail = 100;
+    start_stream_console("sign");
+    ls_exp_service();  /* baseline counters before the new run's events */
+    s_chip_stats.sync_ok = 1;
+    s_chip_stats.sync_fail = 107;
+    run_for(1000000);
+    LS_CHECK(s_cfg.stream);
+    LS_EQ_UINT(s_cfg.bitrate, PGR_STREAM_RATE);
+    LS_EQ_UINT(s_cfg.deviation_hz, 4500);
+    LS_EQ_UINT(s_cfg.bandwidth_hz, PGR_STREAM_BW);
+    LS_EQ_UINT(s_cfg.sync_bits, 8);
+    LS_EQ_UINT(s_cfg.sync_word, 0xCC000000u);
+    LS_EQ_UINT(s_cfg.preamble_detect_bits, 0);
+    LS_EQ_UINT(s_cfg.rx_gain_step, 13);
+    LS_EQ_UINT(s_cfg.rx_boost_step, 8);
+    LS_EQ_UINT(s_cfg.pulse_shape, 1);
+    dump();
+    LS_CHECK(lines_have("152.6000 POC  1200I"));
+    LS_CHECK(lines_have("STREAM frames 2 pages 1 err 0"));
+    char flow[96];
+    snprintf(flow, sizeof(flow), "bytes %llu starts 1 restarts 0", (unsigned long long)s_stream_n);
+    LS_CHECK(lines_have(flow));
+    LS_CHECK(lines_have("chip sync-ok +3 sync-fail +7"));
+    LS_CHECK(!lines_have("STREAM PRIVATE TEXT"));
+    LS_EQ_INT(s_retunes, 0);
+    ls_exp_stop(); ls_exp_settle(100);
+    start_stream_console("packet");
+    run_for(100000);
+    LS_CHECK(!s_cfg.stream);
+    LS_CHECK(lines_have("PACKET frames"));
+    s_caps = caps;
+}
+
+LS_CASE(sign_stream_trim_uses_retune_and_reports_read_errors)
+{
+    fresh(152600000u, 1200, false, false);
+    const uint32_t caps = s_caps;
+    s_caps |= LS_LORA_CAP_FSK_STREAM;
+    exp_pagers.opts[5].set(&exp_pagers.opts[5], 0);
+    start_stream_console("sign");
+    run_for(10000);
+    LS_CHECK(s_cfg.stream);
+    s_stream_faults = 1;
+    run_for(300000);
+    LS_CHECK(lines_have("err 1"));
+    for (int i = 0; i < 32; i++) {
+        s_stream_at = 0; s_stream_n = 4800;
+        memset(s_stream_fifo, 0xEE, s_stream_n);
+        run_for(30000);
+    }
+    LS_EQ_UINT(s_cfg.freq_hz, 152606000u);
+    LS_CHECK(s_retunes >= 24);
+    LS_CHECK(lines_have("trim +6000 Hz"));
+    ls_exp_stop(); ls_exp_settle(100);
+    exp_pagers.opts[5].set(&exp_pagers.opts[5], 1);
+    start_stream_console(NULL);
+    run_for(10000);
+    LS_CHECK(!s_cfg.stream);
+    exp_pagers.opts[5].set(&exp_pagers.opts[5], 0);
+    s_caps = caps;
+}
+
+LS_CASE(stream_discontinuities_and_persistent_faults_keep_data_flow_visible)
+{
+    fresh(152600000u, 1200, false, false);
+    const uint32_t caps = s_caps;
+    s_caps |= LS_LORA_CAP_FSK_STREAM;
+    start_stream_console("sign");
+    run_for(10000);
+    LS_EQ_UINT(s_cfg.rx_gain_step, 0);
+    LS_EQ_UINT(s_cfg.rx_boost_step, 0);
+    memset(s_stream_fifo, 0xAA, 64);
+    s_stream_n = 64;
+    run_for(300000);
+    LS_CHECK(lines_have("bytes 64 starts 1 restarts 0"));
+    s_stream_at = 0;  /* fake driver's first data after another sync */
+    run_for(300000);
+    LS_CHECK(lines_have("bytes 128 starts 1 restarts 1"));
+    const int begins = s_begins;
+    s_stream_faults = 50;
+    run_for(300000);
+    LS_EQ_INT(s_begins, begins + 1);
+    LS_CHECK(s_open);
+    s_stream_at = 0;
+    run_for(300000);
+    LS_CHECK(lines_have("bytes 192 starts 2 restarts 1"));
+    LS_CHECK(lines_have("err 50"));
+    ls_exp_stop(); ls_exp_settle(100);
+    LS_CHECK(lines_have("bytes 192 starts 2 restarts 1"));
+    start_stream_console("sign");
+    run_for(300000);
+    LS_CHECK(lines_have("bytes 0 starts 0 restarts 0"));
+    LS_CHECK(lines_have("chip sync-ok +0 sync-fail +0"));
+    ls_exp_stop(); ls_exp_settle(100);
+    s_caps = caps;
+}
+
+LS_CASE(native_stream_ten_batches_gap_bch_and_saved_start)
+{
+    fresh(152600000u, 1200, true, false);
+    const uint32_t caps = s_caps;
+    s_caps |= LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_FSK_DETECT;
+    exp_pagers.opts[5].set(&exp_pagers.opts[5], 0);
+    exp_pagers.opts[2].set_num(&exp_pagers.opts[2], 12);
+    /* Same measured command, native by default on LR2021. */
+    char *argv[] = { "152.6", "1200I", "11700", "4500", "16" };
+    char why[96];
+    LS_CHECK(exp_pagers.configure(5, argv, why, sizeof(why)));
+    ls_exp_start(&exp_pagers); ls_exp_service();
+    LS_CHECK(s_cfg.stream); LS_CHECK(s_cfg.stream_sync_prefix);
+    LS_EQ_UINT(s_cfg.bitrate, 1200); LS_EQ_UINT(s_cfg.bandwidth_hz, 11700);
+    LS_EQ_UINT(s_cfg.deviation_hz, 4500); LS_EQ_UINT(s_cfg.preamble_detect_bits, 16);
+    LS_EQ_UINT(s_cfg.sync_bits, 32); LS_EQ_UINT(s_cfg.sync_word, ~PGR_POCSAG_FSC);
+    uint8_t batch[64]; page_batch(1234560, 0, NULL, batch);
+    flip(batch, 2*32+9); /* fixed */
+    flip(batch, 3*32+9); flip(batch, 3*32+17); /* lost */
+    size_t at = 0;
+    for (int k = 0; k < 10; k++) {
+        if (k) for (int b = 0; b < 4; b++) s_stream_fifo[at++] = s_cfg.sync_word >> (24-8*b);
+        for (int b = 0; b < 64; b++) s_stream_fifo[at++] = (uint8_t)~batch[b];
+        if (k == 4) s_stream_gap_at = at; /* loss seam, next bytes include genuine sync */
+    }
+    s_stream_n = at;
+    run_for(1000000);
+    LS_CHECK(lines_have("STREAM frames 10 pages 10 err 10"));
+    LS_CHECK(lines_have("BCH ok 140 fixed 10 lost 10"));
+    LS_CHECK(lines_have("bytes 680 starts 1 restarts 1"));
+    LS_EQ_INT(s_retunes, 0);
+    settings_pagers_t saved;
+    settings_get_pagers(&saved);
+    LS_EQ_UINT(saved.hz, 152600000); LS_EQ_INT(saved.plan, PGR_PLAN_N);
+    LS_EQ_INT(saved.probe, 1); LS_EQ_INT(saved.dwell, 12); LS_EQ_INT(saved.method, 0);
+    ls_exp_stop(); ls_exp_settle(100);
+    /* A start restores the settings cache, even if populated by boot NVS. */
+    saved.dwell = 15; LS_CHECK(settings_set_pagers(&saved));
+    s_stream_n = s_stream_at = 0;
+    ls_exp_start(&exp_pagers); ls_exp_service();
+    LS_EQ_UINT(s_cfg.freq_hz, 152600000); LS_EQ_UINT(s_cfg.sync_word, ~PGR_POCSAG_FSC);
+    LS_CHECK(s_cfg.stream); LS_EQ_INT(exp_pagers.opts[2].num(&exp_pagers.opts[2]), 15);
+    ls_exp_stop(); ls_exp_settle(100);
+    s_caps = caps;
 }

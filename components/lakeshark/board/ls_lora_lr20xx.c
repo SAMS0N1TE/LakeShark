@@ -498,7 +498,7 @@ static esp_err_t initialize_locked(void)
         if (err == ESP_OK) err = lr20xx_wait_ready(1200);
         if (err == ESP_OK) err = lr20xx_check_last_ok();
     }
-    const uint8_t reg = s_dcdc ? 1 : 0;
+    const uint8_t reg = s_dcdc ? 2 : 0;   /* SetRegMode: 0 LDO, 2 DCDC */
     if (err == ESP_OK) err = lr20xx_write(LR20XX_OP_SET_REG_MODE, &reg, 1);
     if (err == ESP_OK) err = lr20xx_check_last_ok();
     if (err == ESP_OK) err = lr20xx_set_fallback_standby_rc();
@@ -1153,9 +1153,19 @@ static esp_err_t dcdc_set_locked(void)
     return err;
 }
 
+/* LDO: no switcher to retime, but the frequency is still sent again after
+   the modulation, as the workaround always did before the LDO split. */
+static esp_err_t rf_again_locked(void)
+{
+    if (!s_rf_hz) return ESP_OK;
+    esp_err_t err = lr20xx_set_rf_frequency(s_rf_hz);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    return err;
+}
+
 static esp_err_t dcdc_reset_locked(void)
 {
-    if (!s_dcdc) return ESP_OK;
+    if (!s_dcdc) return rf_again_locked();
     esp_err_t err = dcdc_switcher(15, 15);
     if (err == ESP_OK) err = dcdc_finish(DCDC_FREQ_LF_2M8);
     return err;
@@ -1163,7 +1173,7 @@ static esp_err_t dcdc_reset_locked(void)
 
 esp_err_t lr20xx_dcdc_workaround_set(void)
 {
-    LOCKED_RET(esp_err_t, s_dcdc ? dcdc_set_locked() : ESP_OK);
+    LOCKED_RET(esp_err_t, s_dcdc ? dcdc_set_locked() : rf_again_locked());
 }
 
 esp_err_t lr20xx_dcdc_workaround_reset(void)
@@ -1903,6 +1913,7 @@ static EXT_RAM_BSS_ATTR struct {
        whether the next ones read do not follow the last (a new packet, or
        bytes lost to a full buffer). */
     bool     fsk_stream;
+    bool     fsk_stream_prefix, fsk_stream_trigger;
     bool     fsk_stream_fresh;
     uint16_t fsk_stream_taken;
 
@@ -2370,6 +2381,7 @@ static esp_err_t fsk_arm_rx(void)
     lr.rx_mode = err == ESP_OK;
     /* Whatever a stream had read belongs to the packet just dropped. */
     lr.fsk_stream_taken = 0;
+    lr.fsk_stream_trigger = true;
     lr.fsk_stream_fresh = true;
     return err;
 }
@@ -2448,6 +2460,7 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
         cfg->bandwidth_hz > lr20xx_fsk_rx_bw_table[lr20xx_fsk_rx_bw_table_n - 1].hz ||
         (!cfg->stream && cfg->bitrate + 2 * cfg->deviation_hz > cfg->bandwidth_hz) ||
         (cfg->stream && cfg->rssi_at_sync) ||
+        (cfg->stream_sync_prefix && (!cfg->stream || (cfg->sync_bits && cfg->sync_bits != 32))) ||
         (cfg->preamble_bits && cfg->preamble_bits < 8) ||
         /* 32 at most: sync_word is a uint32_t, as on the SX126x. */
         (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
@@ -2475,6 +2488,7 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     lr.fsk_detect_bits = cfg->preamble_detect_bits;
     lr.fsk_rssi_at_sync = cfg->rssi_at_sync;
     lr.fsk_stream = cfg->stream;
+    lr.fsk_stream_prefix = cfg->stream_sync_prefix;
 
     const esp_err_t err = fsk_program();
     if (err != ESP_OK) {
@@ -2560,11 +2574,15 @@ static int lr_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
             want = len > lr.fsk_stream_taken ? (size_t)(len - lr.fsk_stream_taken) : 0;
         if (want > level) want = level;
     }
-    if (want > size) want = size;
+    const size_t prefix = want && lr.fsk_stream_prefix && lr.fsk_stream_trigger ? 4 : 0;
+    if (want > size - prefix) want = size - prefix;
+    if (prefix) {
+        for (int i = 0; i < 4; i++) buf[i] = (uint8_t)(lr.fsk_cfg.sync_word >> (24 - 8 * i));
+    }
     size_t n = 0;
     while (n < want) {
         const size_t part = want - n > 255 ? 255 : want - n;
-        if (lr20xx_read_rx_fifo(buf + n, part) != ESP_OK) {
+        if (lr20xx_read_rx_fifo(buf + prefix + n, part) != ESP_OK) {
             /* What left the buffer is unknown: start clean. */
             (void)lr20xx_set_standby(false);
             (void)fsk_arm_rx();
@@ -2573,15 +2591,15 @@ static int lr_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
         n += part;
     }
     if (n && restarted) *restarted = lr.fsk_stream_fresh;
-    if (n) lr.fsk_stream_fresh = false;
+    if (n) { lr.fsk_stream_fresh = false; lr.fsk_stream_trigger = false; }
     lr.fsk_stream_taken = (uint16_t)(lr.fsk_stream_taken + n);
     /* A full buffer has dropped what arrived after it filled. */
     if (level >= FSK_FIFO_BYTES) lr.fsk_stream_fresh = true;
     if (done || LR20XX_STAT_MODE(st.stat) != LR20XX_MODE_RX) {
         (void)lr20xx_set_standby(false);
-        if (fsk_arm_rx() != ESP_OK) return n ? (int)n : -1;
+        if (fsk_arm_rx() != ESP_OK) return n ? (int)(n + prefix) : -1;
     }
-    return (int)n;
+    return (int)(n + prefix);
 }
 
 static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)

@@ -11,12 +11,9 @@
    that one. The first pass only measures, so the floor is the median of
    every channel's level rather than a guess.
 
-   A POCSAG batch arrives as the 64 bytes after the hardware matched the
-   frame sync, which it does again at every batch of a transmission. Each
-   batch is checked codeword by codeword with the decoder's BCH; a batch with
-   at least half its codewords good is a frame. The capcodes it addresses go
-   into a per-channel set for a count. With MESSAGE TEXT on, the batches also
-   go through the POCSAG decoder and the last pages are shown. */
+   The native stream uses chip clock recovery at the selected probe baud.
+   The sign stream samples FSK signs and hunts all POCSAG rates in software. The packet method keeps the hardware sync probes available
+   for comparison. Message text is opt-in for either method. */
 #include "../ls_experiments.h"
 
 #include <stdio.h>
@@ -30,8 +27,11 @@
 #include "freertos/FreeRTOS.h"
 #include "fm_state.h"
 #include "ls_lora.h"
+#include "ls_lora_lr20xx.h"
+#include "p25_state.h"
 #include "pager_recon.h"
 #include "pocsag.h"
+#include "settings.h"
 
 #define MHZ_LO 150.0
 #define MHZ_HI 1100.0
@@ -55,10 +55,19 @@ extern const ls_experiment_t exp_pagers;
 /* What the next start uses. The plan PGR_PLAN_N is one frequency. Set from
    OPTIONS or the console, read by start on the worker. */
 static volatile int s_set_plan = PGR_PLAN_UHF;
+/* LR2021 receive gain: step 13 with boost 7 (stored +1) decoded the 152.600
+   pager cleanest; `gain 0 0` returns to the chip's AGC. Not saved. */
+static volatile uint8_t s_gain_step = 13, s_boost_step = 8;
 static volatile uint32_t s_set_hz = 929612500u;
 static volatile int s_set_dwell = 6;
 static volatile bool s_set_text;
-/* A frequency given on the console is for that one run: OPTIONS keep theirs. */
+static volatile int s_set_method;  /* 0 native stream, 1 packet, 2 sign stream */
+static int s_once_method = -1;
+static bool s_stream_on, s_native_on, s_save_failed;
+static int s_native_index;
+static pgr_stream_t s_stream;
+static uint32_t s_stream_frames[3], s_stream_pages[3], s_stream_cw[3], s_stream_fixed[3], s_stream_bad[3];
+/* A console start updates the saved one-frequency choice. */
 static volatile uint32_t s_once_hz;
 /* The probe a ONE FREQ run listens with, from OPTIONS; -1 steps through them
    all, as a scan does. */
@@ -71,6 +80,21 @@ static int s_once_detect = -1, s_rx_detect = -1;
 /* Batches per fixed-length capture: 1 is the ordinary one-batch session. */
 static uint8_t s_once_batches, s_rx_batches = 1;
 
+static void load_settings(void)
+{
+    settings_pagers_t cfg;
+    settings_get_pagers(&cfg);
+    s_set_plan = cfg.plan; s_set_hz = cfg.hz; s_set_dwell = cfg.dwell;
+    s_set_probe = cfg.probe; s_set_method = cfg.method;
+}
+
+static bool save_settings(void)
+{
+    const settings_pagers_t cfg = { .hz = s_set_hz, .plan = s_set_plan,
+        .dwell = s_set_dwell, .probe = s_set_probe, .method = s_set_method };
+    return settings_set_pagers(&cfg);
+}
+
 /* ------------------------------------------------------------- state -- */
 
 typedef struct {
@@ -82,7 +106,7 @@ typedef struct {
     uint8_t  next_probe;           /* the one to try next when unlocked   */
     uint8_t  quiet;                /* loud visits since the last frame    */
     uint8_t  probes_seen;          /* bit per probe that ever decoded     */
-    uint32_t syncs, frames, codewords, fixed, bad;
+    uint32_t syncs, frames, pages, codewords, fixed, bad;
     uint32_t flex;                 /* FLEX syncs with a valid mode code   */
     int8_t   flex_mode;
     int64_t  last_us, last_hot_us;
@@ -101,9 +125,29 @@ static int64_t s_t0, s_dwell_end, s_slice_end, s_now_t, s_view_t, s_last_batch_u
 static float s_chk_max, s_chk_sum, s_floor;
 static int s_chk_n, s_n_levels;
 static bool s_have_floor, s_flex_visit;
-static uint32_t s_visit_frames, s_hop_errors;
+static uint32_t s_visit_frames, s_hop_errors, s_read_errors, s_seams;
+static uint64_t s_stream_bytes;
+static uint32_t s_stream_starts, s_stream_restarts, s_sync_ok, s_sync_fail;
+static unsigned s_stream_faults;
+static bool s_stream_fresh, s_stats_valid;
+static lr20xx_gfsk_rx_stats_t s_stats_prev;
 
-/* The message decoder, only while MESSAGE TEXT is on. */
+/* The chip counters are 16-bit and reset when packet type is programmed.
+   Baseline each session, accumulate modulo deltas, and retain on read faults. */
+static void stream_stats(bool baseline)
+{
+    lr20xx_gfsk_rx_stats_t stats;
+    if (!s_stream_on || (!s_native_on && s_set_method != 2) ||
+        !s_session || lr20xx_get_gfsk_rx_stats(&stats) != ESP_OK) return;
+    if (!baseline && s_stats_valid) {
+        s_sync_ok += (uint16_t)(stats.sync_ok - s_stats_prev.sync_ok);
+        s_sync_fail += (uint16_t)(stats.sync_fail - s_stats_prev.sync_fail);
+    }
+    s_stats_prev = stats;
+    s_stats_valid = true;
+}
+
+/* The packet decoder and the optional message log. */
 static fm_state_t *s_text_state;
 static pocsag_ctx_t *s_text;
 static EXT_RAM_BSS_ATTR uint32_t s_plan_hz[PGR_CH_MAX];
@@ -118,16 +162,16 @@ typedef struct {
     int8_t   lock, flex_mode;
     uint8_t  probes_seen;
     float    peak;
-    uint32_t syncs, frames, codewords, fixed, bad, flex, hot;
+    uint32_t syncs, frames, pages, codewords, fixed, bad, flex, hot;
     uint16_t caps;
     bool     caps_over;
     int64_t  last_us;
 } row_t;
 
-typedef struct { uint32_t hz, cap; char type; char text[44]; } page_t;
+typedef struct { uint32_t hz, cap; char type; char text[44]; } pgr_page_t;
 
 /* The newest pages first, with the channel each came in on. Worker only. */
-static EXT_RAM_BSS_ATTR page_t s_pages[PAGES];
+static EXT_RAM_BSS_ATTR pgr_page_t s_pages[PAGES];
 static int s_n_pages;
 
 typedef struct {
@@ -144,10 +188,15 @@ typedef struct {
     int      n_rows;
     row_t    focus;
     bool     have_focus;
-    page_t   pages[PAGES];
+    pgr_page_t   pages[PAGES];
     int      n_pages;
     bool     text_on;
-    uint32_t hop_errors;
+    uint32_t hop_errors, read_errors, seams, total_frames, total_pages, total_bad, total_cw, total_fixed;
+    bool stream, native;
+    int trim_hz;
+    float bias;
+    uint64_t stream_bytes;
+    uint32_t stream_starts, stream_restarts, sync_ok, sync_fail;
     int64_t  at_us;
 } view_t;
 
@@ -173,6 +222,7 @@ static void row_of(row_t *r, const chan_t *c)
     r->peak = c->peak;
     r->syncs = c->syncs;
     r->frames = c->frames;
+    r->pages = c->pages;
     r->codewords = c->codewords;
     r->fixed = c->fixed;
     r->bad = c->bad;
@@ -194,6 +244,7 @@ static uint64_t rank_of(const chan_t *c)
 
 static void publish(int64_t now)
 {
+    stream_stats(false);
     view_t *v = &s_next;
     memset(v, 0, sizeof(*v));
     v->started = true;
@@ -206,15 +257,33 @@ static void publish(int64_t now)
     v->dwell_s = s_dwell_s;
     v->st = (uint8_t)s_st;
     const pgr_probe_t *p = pgr_probe(s_probe);
-    snprintf(v->tag, sizeof(v->tag), "%s", p ? p->tag : "");
+    snprintf(v->tag, sizeof(v->tag), "%s", s_stream_on && s_set_method == 2 ? "sign" : p ? p->tag : "");
     v->have_floor = s_have_floor;
     v->floor = s_floor;
     v->text_on = s_text_on;
     v->hop_errors = s_hop_errors;
+    v->read_errors = s_read_errors;
+    v->seams = s_seams;
+    v->stream = s_stream_on && (s_set_method == 2 || s_native_on);
+    v->native = s_native_on;
+    v->trim_hz = s_stream.trim_hz;
+    v->bias = s_stream.bias;
+    v->stream_bytes = s_stream_bytes;
+    v->stream_starts = s_stream_starts;
+    v->stream_restarts = s_stream_restarts;
+    v->sync_ok = s_sync_ok;
+    v->sync_fail = s_sync_fail;
     v->at_us = now;
 
     bool used[PGR_CH_MAX] = { 0 };
-    for (int i = 0; i < s_n; i++) v->n_kind[kind_of(&s_ch[i])]++;
+    for (int i = 0; i < s_n; i++) {
+        v->n_kind[kind_of(&s_ch[i])]++;
+        v->total_frames += s_ch[i].frames;
+        v->total_pages += s_ch[i].pages;
+        v->total_bad += s_ch[i].bad;
+        v->total_cw += s_ch[i].codewords;
+        v->total_fixed += s_ch[i].fixed;
+    }
     for (int r = 0; r < ROWS; r++) {
         int best = -1;
         uint64_t best_rank = 0;
@@ -276,8 +345,47 @@ static uint8_t detector_bits(const pgr_probe_t *p)
 
 static esp_err_t open_session(uint32_t hz, int probe)
 {
-    if (s_session) { ls_lora_fsk_end(); s_session = false; }
+    if (s_session) { stream_stats(false); ls_lora_fsk_end(); s_session = false; }
     const pgr_probe_t *p = pgr_probe(probe);
+    s_native_on = s_stream_on && s_set_method == 0 && p->kind == PGR_POCSAG;
+    if (s_stream_on && (s_set_method == 2 || s_native_on)) {
+        s_native_index = p->baud == 512 ? 0 : p->baud == 1200 ? 1 : 2;
+        for (int i = 0; i < 3; i++) pocsag_reset(s_stream.decoder[i]);
+        memset(s_stream.counts, 0, sizeof(s_stream.counts));
+        memset(s_stream.caps, 0, sizeof(s_stream.caps));
+        memset(s_stream_frames, 0, sizeof(s_stream_frames));
+        memset(s_stream_pages, 0, sizeof(s_stream_pages));
+        memset(s_stream_cw, 0, sizeof(s_stream_cw));
+        memset(s_stream_fixed, 0, sizeof(s_stream_fixed));
+        memset(s_stream_bad, 0, sizeof(s_stream_bad));
+        s_stream.trim_hz = s_stream.want_trim_hz = 0;
+        s_stream.bias = 0;
+        pgr_stream_seam(&s_stream);
+        p25_lr_cfg_t gain;
+        p25_lr_get_cfg(&gain);
+        const ls_fsk_cfg_t cfg = {
+            .freq_hz = hz, .bitrate = s_native_on ? p->baud : PGR_STREAM_RATE,
+            .deviation_hz = s_native_on && s_rx_dev ? s_rx_dev : 4500,
+            .bandwidth_hz = ls_lora_fsk_bw_snap(s_native_on ? s_rx_bw : PGR_STREAM_BW),
+            /* Native: clock recovery at the probe baud and its full sync.
+               Sign sampling retains the short trigger without a preamble gate. */
+            .sync_word = s_native_on ? p->sync_word : 0xCC000000u,
+            .sync_bits = s_native_on ? 32 : 8, .stream = true,
+            .stream_sync_prefix = s_native_on,
+            .preamble_detect_bits = s_native_on ? detector_bits(p) : 0,
+            .rx_gain_step = s_native_on ? s_gain_step : gain.rx_gain_step,
+            .rx_boost_step = s_native_on ? s_boost_step : gain.rx_boost_step,
+            .pulse_shape = s_native_on ? 0 : gain.pulse_shape,
+        };
+        const esp_err_t err = ls_lora_fsk_begin(&cfg);
+        s_session = err == ESP_OK;
+        s_stream_fresh = true;
+        s_stream_faults = 0;
+        s_stats_valid = false;
+        stream_stats(true);
+        s_probe = probe;
+        return err;
+    }
     const ls_fsk_cfg_t cfg = {
         .freq_hz = hz,
         .bitrate = p->baud,
@@ -286,6 +394,8 @@ static esp_err_t open_session(uint32_t hz, int probe)
         .sync_word = p->sync_word,
         .payload_bytes = probe_payload(p),
         .preamble_detect_bits = detector_bits(p),
+        .rx_gain_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? s_gain_step : 0,
+        .rx_boost_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? s_boost_step : 0,
     };
     const esp_err_t err = ls_lora_fsk_begin(&cfg);
     s_session = err == ESP_OK;
@@ -348,7 +458,7 @@ static void take_pages(uint32_t hz, uint32_t before)
     for (int i = 0; i < fresh; i++) {
         const int idx = (s_text_state->page_head - 1 - i + 2 * FM_PAGE_LOG_MAX) % FM_PAGE_LOG_MAX;
         const fm_page_t *pg = &s_text_state->pages[idx];
-        page_t *o = &s_pages[i];
+        pgr_page_t *o = &s_pages[i];
         o->hz = hz;
         o->cap = pg->address;
         o->type = pg->type;
@@ -386,7 +496,8 @@ static bool take_batch(int64_t now, chan_t *c, const pgr_probe_t *p, const uint8
         const uint32_t before = pocsag_n_pages(s_text);
         pocsag_set_baud(s_text, p->baud);
         pocsag_process_batch(s_text, data, PGR_BATCH_BYTES, p->inverted, contiguous);
-        take_pages(c->hz, before);
+        c->pages += pocsag_n_pages(s_text) - before;
+        if (s_text_on) take_pages(c->hz, before);
     }
     s_last_batch_us = now;
     return true;
@@ -442,11 +553,25 @@ static void text_free(void)
 
 static bool pagers_start(char *why, size_t n)
 {
+    load_settings();
     const uint32_t caps = ls_lora_caps();
     if (!(caps & LS_LORA_CAP_FSK)) { snprintf(why, n, "No FSK receiver on this chip"); return false; }
     if (!(caps & LS_LORA_CAP_RSSI_INST)) { snprintf(why, n, "This chip gives no RSSI reading"); return false; }
 
+    const int method = s_once_method >= 0 ? s_once_method : s_set_method;
+    s_once_method = -1;
+    s_stream_on = method != 1 && (caps & LS_LORA_CAP_FSK_STREAM);
+    s_native_on = s_stream_on && method == 0;
+    if (method == 2 && !(caps & LS_LORA_CAP_FSK_STREAM)) {
+        snprintf(why, n, "This chip has no FSK stream receiver"); return false;
+    }
+    if (method == 2) s_stream_on = true;
     const uint32_t once = s_once_hz;
+    if (once) {
+        s_set_plan = PGR_PLAN_N; s_set_hz = once; s_set_probe = s_once_probe;
+        s_set_method = method;
+    }
+    if (!save_settings()) { snprintf(why, n, "Start settings could not be saved"); return false; }
     s_once_hz = 0;
     s_fixed_probe = once ? s_once_probe : s_set_plan == PGR_PLAN_N ? s_set_probe : -1;
     s_rx_bw = once && s_once_bw ? s_once_bw : FILTER_HZ;
@@ -482,7 +607,10 @@ static bool pagers_start(char *why, size_t n)
     s_floor = 0;
     s_n_levels = 0;
     s_session = false;
-    s_hop_errors = 0;
+    s_hop_errors = s_read_errors = s_seams = 0;
+    s_stream_bytes = 0;
+    s_stream_starts = s_stream_restarts = s_sync_ok = s_sync_fail = 0;
+    s_stats_valid = false;
     s_retry_at = 0;
     s_last_batch_us = 0;
     s_n_pages = 0;
@@ -492,14 +620,22 @@ static bool pagers_start(char *why, size_t n)
     s_text_on = s_set_text;
     if (s_text_on) {
         s_text_state = heap_caps_calloc(1, sizeof(*s_text_state), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (s_text_state) s_text = pocsag_create(s_text_state, 1200);
-        if (!s_text) { text_free(); snprintf(why, n, "No PSRAM for the paging decoder"); return false; }
+        if (!s_text_state) { snprintf(why, n, "No PSRAM for the paging decoder"); return false; }
+    }
+
+    if (!s_stream_on) {
+        s_text = pocsag_create(s_text_state, 1200);
+        if (!s_text) { text_free(); snprintf(why, n, "No memory for the paging decoder"); return false; }
+    }
+    if (s_stream_on && !pgr_stream_init(&s_stream, s_text_state)) {
+        text_free(); snprintf(why, n, "No memory for the stream decoder"); return false;
     }
 
     /* The first channel is opened here so a chip that refuses the session
        says so now, not as a silent hop error. */
     const esp_err_t err = open_session(s_ch[0].hz, first_probe(&s_ch[0]));
     if (err != ESP_OK) {
+        pgr_stream_free(&s_stream);
         text_free();
         snprintf(why, n, "%.4f MHz refused: %s", s_ch[0].hz / 1e6, esp_err_to_name(err));
         return false;
@@ -519,8 +655,10 @@ static bool pagers_start(char *why, size_t n)
 
 static void pagers_stop(void)
 {
+    publish(esp_timer_get_time());
     if (s_session) ls_lora_fsk_end();
     s_session = false;
+    pgr_stream_free(&s_stream);
     text_free();
     /* What was found stays on screen. */
     portENTER_CRITICAL(&s_lock);
@@ -568,11 +706,94 @@ static void poll_check(int64_t now)
 static void poll_listen(int64_t now)
 {
     chan_t *c = &s_ch[s_cur];
-    float rssi;
-    const int got = ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi);
-    /* Only a read of exactly the configured length is a packet: a short one
-       would be parsed with whatever an earlier packet left in the buffer. */
-    if (got > 0 && got == (int)probe_payload(pgr_probe(s_probe))) on_packet(now, s_buf);
+    if (s_stream_on && (s_set_method == 2 || s_native_on)) {
+        uint8_t data[260];
+        for (;;) {
+            bool restarted = false;
+            const int got = ls_lora_fsk_stream_read(data, sizeof(data), &restarted);
+            if (got < 0) {
+                s_read_errors++;
+                pgr_stream_seam(&s_stream);
+                /* Like P25, allow transient faults; rebuild a session
+                   after 50 consecutive failures. Normal RxDone re-arm
+                   is done inside stream_read after draining the tail. */
+                if (++s_stream_faults >= 50) {
+                    stream_stats(false);
+                    (void)ls_lora_fsk_end();
+                    s_session = false;
+                    s_st = ST_HOP;
+                    s_retry_at = now;
+                    return;
+                }
+                break;
+            }
+            s_stream_faults = 0;
+            if (!got) break;
+            s_stream_bytes += (unsigned)got;
+            if (s_stream_fresh) { s_stream_starts++; s_stream_fresh = false; }
+            else if (restarted) s_stream_restarts++;
+            /* restarted also marks FIFO loss, not just a new packet. */
+            if (restarted) { s_seams++; pgr_stream_seam(&s_stream); }
+            if (s_native_on) {
+                pocsag_process_bits(s_stream.decoder[s_native_index], data, (size_t)got);
+                pgr_stream_count_t *b = &s_stream.counts[s_native_index];
+                for (int k = 0; k < b->n_caps; k++)
+                    pgr_capset_add(&s_stream.caps[s_native_index], b->caps[k]);
+                b->n_caps = 0;
+            } else pgr_stream_feed(&s_stream, data, (size_t)got);
+            const int best = s_native_on ? s_native_index : pgr_stream_best(&s_stream);
+            for (int i = 0; i < 3; i++) {
+                pocsag_ctx_t *d = s_stream.decoder[i];
+                const pgr_stream_count_t *b = &s_stream.counts[i];
+                const uint32_t frames = b->frames, pages = pocsag_n_pages(d);
+                const uint32_t cw = (uint32_t)b->clean + b->fixed + b->bad;
+                if (i == best && frames) {
+                    c->frames += frames - s_stream_frames[i];
+                    c->syncs += frames - s_stream_frames[i];
+                    s_visit_frames += frames - s_stream_frames[i];
+                    c->pages += pages - s_stream_pages[i];
+                    c->codewords += cw - s_stream_cw[i];
+                    c->fixed += b->fixed - s_stream_fixed[i];
+                    c->bad += b->bad - s_stream_bad[i];
+                    if (cw != s_stream_cw[i]) {
+                        c->lock = (int8_t)((i == 0 ? 2 : i == 1 ? 0 : 4) + pocsag_inverted(d));
+                        c->quiet = 0;
+                        c->probes_seen |= (uint8_t)(1u << c->lock);
+                        c->last_us = now;
+                    }
+                    for (int k = 0; k < s_stream.caps[i].n; k++)
+                        pgr_capset_add(&c->caps, s_stream.caps[i].v[k]);
+                    if (s_text_on) {
+                        s_text = d;
+                        take_pages(c->hz, s_stream_pages[i]);
+                        s_text = NULL;
+                    }
+                    s_stream_frames[i] = frames;
+                    s_stream_pages[i] = pages;
+                    s_stream_cw[i] = cw;
+                    s_stream_fixed[i] = b->fixed;
+                    s_stream_bad[i] = b->bad;
+                }
+            }
+            /* Retuning empties the FIFO. Let an acquired batch finish first. */
+            if (!s_native_on && s_stream.want_trim_hz != s_stream.trim_hz &&
+                !pocsag_synced(s_stream.decoder[best])) {
+                const uint32_t hz = (uint32_t)((int64_t)c->hz + s_stream.want_trim_hz);
+                if (ls_lora_fsk_retune(hz) == ESP_OK) {
+                    s_stream.trim_hz = s_stream.want_trim_hz;
+                    pgr_stream_seam(&s_stream);
+                } else s_read_errors++;
+                break;
+            }
+            /* P25 drains again with >=64 bytes; a short read yields so
+               the chip can fill while the experiment worker sleeps. */
+            if (got < 64) break;
+        }
+    } else {
+        float rssi;
+        const int got = ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi);
+        if (got > 0 && got == (int)probe_payload(pgr_probe(s_probe))) on_packet(now, s_buf);
+    }
 
     if (now - s_now_t >= NOW_MS * 1000) {
         s_now_t = now;
@@ -588,6 +809,8 @@ static void poll_listen(int64_t now)
     }
 
     if (!s_single && now >= s_dwell_end) { next_channel(now); return; }
+
+    if (s_stream_on && !s_native_on && s_set_method == 2) return;
 
     /* One frequency, locked, gone quiet for a minute: probe again. */
     if (s_single && s_fixed_probe < 0 && c->lock >= 0 && c->last_us >= 0 && now - c->last_us > SINGLE_QUIET_US) {
@@ -702,8 +925,10 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
     *v = s_view;
     portEXIT_CRITICAL(&s_lock);
     int n = 0;
+    if (s_save_failed && n < max) snprintf(out[n++], LS_EXP_LINE, "Settings not saved; retry OPTIONS");
 
     if (!v->started) {
+        load_settings();
         const int plan = s_set_plan;
         if (n < max) {
             if (plan == PGR_PLAN_N) snprintf(out[n++], LS_EXP_LINE, "ONE FREQ %.4f MHz", s_set_hz / 1e6);
@@ -732,11 +957,30 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
         char lvl[16] = "";
         if (v->have_now) snprintf(lvl, sizeof(lvl), "%.0f dBm", (double)v->now);
         if (v->st == ST_STOPPED) snprintf(out[n++], LS_EXP_LINE, "stopped after pass %d", v->pass);
-        else snprintf(out[n++], LS_EXP_LINE, "NOW %8.4f %-6s%-6s %s", v->cur_hz / 1e6, v->tag, ST[v->st % 4], lvl);
+        else snprintf(out[n++], LS_EXP_LINE, "NOW %8.4f %-6s %-6s %s", v->cur_hz / 1e6, v->tag, ST[v->st % 4], lvl);
     }
     if (n < max)
         snprintf(out[n++], LS_EXP_LINE, "POCSAG %d  FLEX %d  CARRIER %d  QUIET %d",
                  v->n_kind[K_POCSAG], v->n_kind[K_FLEX], v->n_kind[K_CARRIER], v->n_kind[K_QUIET]);
+    if (n < max) {
+        snprintf(out[n++], LS_EXP_LINE, "%s frames %lu pages %lu err %lu",
+                 v->stream ? "STREAM" : "PACKET", (unsigned long)v->total_frames,
+                 (unsigned long)v->total_pages, (unsigned long)(v->read_errors + v->total_bad));
+        if (v->stream && !v->native && n < max)
+            snprintf(out[n++], LS_EXP_LINE, "trim %+d Hz bias %+.2f gaps %lu",
+                     v->trim_hz, (double)v->bias, (unsigned long)v->seams);
+        if (v->stream && n < max)
+            snprintf(out[n++], LS_EXP_LINE, "bytes %llu starts %lu restarts %lu",
+                     (unsigned long long)v->stream_bytes, (unsigned long)v->stream_starts,
+                     (unsigned long)v->stream_restarts);
+        if (v->stream && n < max)
+            snprintf(out[n++], LS_EXP_LINE, "chip sync-ok +%lu sync-fail +%lu",
+                     (unsigned long)v->sync_ok, (unsigned long)v->sync_fail);
+    }
+    if (n < max)
+        snprintf(out[n++], LS_EXP_LINE, "BCH ok %lu fixed %lu lost %lu",
+            (unsigned long)(v->total_cw - v->total_fixed - v->total_bad),
+            (unsigned long)v->total_fixed, (unsigned long)v->total_bad);
     if (v->n_rows && n < max)
         snprintf(out[n++], LS_EXP_LINE, "MHZ      KIND RATE   SYNC   FRM   BER CAP LAST");
     for (int i = 0; i < v->n_rows && n < max; i++) row_line(out[n++], &v->rows[i], v->at_us);
@@ -761,7 +1005,7 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
     }
     if (v->text_on) {
         for (int i = 0; i < v->n_pages && n < max; i++) {
-            const page_t *p = &v->pages[i];
+            const pgr_page_t *p = &v->pages[i];
             snprintf(out[n++], LS_EXP_LINE, "%.4f %7lu %c %s", p->hz / 1e6, (unsigned long)p->cap,
                      p->type ? p->type : '?', p->text);
         }
@@ -784,33 +1028,63 @@ static bool parse_mhz(const char *text, double *mhz)
     return true;
 }
 
-/* `exp pagers start 929.6125` listens to one channel for that run;
-   `... MHz probe BW dev detect` also pins the probe, the filter, the
+/* `exp pagers start 929.6125` saves and listens to one channel;
+   `... MHz stream` selects native baud, `... MHz sign` hunts all rates
+   from sign samples, and `... MHz packet` selects fixed packets. `... MHz probe BW dev detect` also pins the probe, the filter, the
    deviation and the LR2021's preamble detector in bits (0 off, 8/16/24/32;
    left out, detector_bits decides). A sixth
    argument, `batches` 1-3, asks a fixed POCSAG probe for that many batches
    in one capture (132 bytes for 2, 200 for 3, each later batch behind its
    own frame sync, which is checked); nothing is delivered until the whole
    capture has arrived. `exp pagers start uhf` or `onsite` picks the plan.
-   No argument scans the plan OPTIONS has. */
+   No argument restores the saved start. A trailing stream/packet/sign after
+   a fixed probe selects that method; optional batches still select packet. */
 static bool pagers_configure(int argc, char **argv, char *why, size_t n)
 {
+    load_settings();
     double mhz;
     s_once_hz = s_once_bw = s_once_dev = s_once_batches = 0;
     s_once_detect = s_once_probe = -1;
-    if (argc == 1 && !strcmp(argv[0], "uhf")) { s_set_plan = PGR_PLAN_UHF; return true; }
-    if (argc == 1 && !strcmp(argv[0], "onsite")) { s_set_plan = PGR_PLAN_ONSITE; return true; }
+    s_once_method = -1;
+    if (argc > 2) {
+        const char *method = argv[argc - 1];
+        if (!strcmp(method, "stream") || !strcmp(method, "packet") || !strcmp(method, "sign")) {
+            s_once_method = !strcmp(method, "stream") ? 0 : !strcmp(method, "packet") ? 1 : 2;
+            argc--;
+        }
+    }
+    /* `gain G B`: chip gain step 0-13 (0 = AGC) and receive boost 0-7 for the
+       next sessions; not saved. */
+    if (argc == 3 && !strcmp(argv[0], "gain")) {
+        const int g = atoi(argv[1]), b = atoi(argv[2]);
+        if (g < 0 || g > 13 || b < 0 || b > 7) { snprintf(why, n, "gain 0-13 boost 0-7"); return false; }
+        s_gain_step = (uint8_t)g;
+        s_boost_step = (uint8_t)(b ? b + 1 : 0);
+        return true;
+    }
+    if (argc == 1 && (!strcmp(argv[0], "uhf") || !strcmp(argv[0], "onsite"))) {
+        s_set_plan = !strcmp(argv[0], "uhf") ? PGR_PLAN_UHF : PGR_PLAN_ONSITE;
+        if (save_settings()) return true;
+        snprintf(why, n, "Start settings could not be saved"); return false;
+    }
     if (argc < 1 || argc > 6 || !parse_mhz(argv[0], &mhz)) {
-        snprintf(why, n, "%.0f-%.0f MHz [probe [BW [dev [detect 0|8|16|24|32 [batches 1-3]]]]] | uhf | onsite",
+        snprintf(why, n, "%.0f-%.0f MHz [stream|sign|packet|probe [BW [dev [detect 0|8|16|24|32 [batches 1-3]]]]] | uhf | onsite",
                  MHZ_LO, MHZ_HI);
         return false;
     }
+    if (argc == 2 && (!strcmp(argv[1], "stream") || !strcmp(argv[1], "sign") || !strcmp(argv[1], "packet"))) {
+        s_once_method = !strcmp(argv[1], "stream") ? 0 : !strcmp(argv[1], "sign") ? 2 : 1;
+        s_once_hz = (uint32_t)(mhz * 1e6 + 0.5);
+        return true;
+    }
+    /* Fixed probes use the saved method; a batches argument selects packet. */
+    if (argc == 6) s_once_method = 1; /* legacy multi-batch packet capture */
     int probe = -1;
     uint32_t bw = FILTER_HZ, dev = 0;
     if (argc >= 2) {
         for (int i = 0; i < PGR_N_PROBES; i++)
             if (!strcmp(argv[1], pgr_probe(i)->tag)) probe = i;
-        if (probe < 0) { snprintf(why, n, "probe: 512N/I, 1200N/I, 2400N/I, FLEXN/I"); return false; }
+        if (probe < 0) { snprintf(why, n, "method: stream, sign, packet; probe: 512N/I, 1200N/I, 2400N/I, FLEXN/I"); return false; }
         dev = pgr_probe(probe)->deviation_hz;
     }
     for (int i = 2; i < argc && i < 4; i++) {
@@ -856,24 +1130,24 @@ static bool pagers_configure(int argc, char **argv, char *why, size_t n)
 
 /* ------------------------------------------------------------ OPTIONS -- */
 
-static void restart(void) { if (ls_exp_running() == &exp_pagers) ls_exp_start(&exp_pagers); }
+static void restart(void) { s_save_failed = !save_settings(); if (s_save_failed) return; if (ls_exp_running() == &exp_pagers) ls_exp_start(&exp_pagers); }
 
 static const char *const PLAN_NAMES[] = { "UHF PAGING", "ON-SITE", "ONE FREQ" };
-static int o_plan(const ls_opt_t *o) { (void)o; return s_set_plan; }
-static void o_set_plan(const ls_opt_t *o, int v) { (void)o; s_set_plan = v < 0 || v > PGR_PLAN_N ? 0 : v; restart(); }
+static int o_plan(const ls_opt_t *o) { (void)o; load_settings(); return s_set_plan; }
+static void o_set_plan(const ls_opt_t *o, int v) { (void)o; load_settings(); s_set_plan = v < 0 || v > PGR_PLAN_N ? 0 : v; restart(); }
 
-static double o_freq(const ls_opt_t *o) { (void)o; return s_set_hz / 1e6; }
+static double o_freq(const ls_opt_t *o) { (void)o; load_settings(); return s_set_hz / 1e6; }
 static void o_set_freq(const ls_opt_t *o, double v)
 {
-    (void)o;
+    (void)o; load_settings();
     s_set_hz = (uint32_t)(v * 1e6 + 0.5);
     s_set_plan = PGR_PLAN_N;
     restart();
 }
 static void o_show_freq(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%.4f MHz", s_set_hz / 1e6); }
 
-static double o_dwell(const ls_opt_t *o) { (void)o; return s_set_dwell; }
-static void o_set_dwell(const ls_opt_t *o, double v) { (void)o; s_set_dwell = (int)(v + 0.5); restart(); }
+static double o_dwell(const ls_opt_t *o) { (void)o; load_settings(); return s_set_dwell; }
+static void o_set_dwell(const ls_opt_t *o, double v) { (void)o; load_settings(); s_set_dwell = (int)(v + 0.5); restart(); }
 static void o_show_dwell(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%d s", s_set_dwell); }
 
 /* A known channel is heard on its own probe far more often than by
@@ -881,10 +1155,10 @@ static void o_show_dwell(const ls_opt_t *o, char *out, size_t n) { (void)o; snpr
    order of the probe table. */
 static const char *const PROBE_NAMES[PGR_N_PROBES + 1] = {
     "AUTO", "1200N", "1200I", "512N", "512I", "2400N", "2400I", "FLEXN", "FLEXI" };
-static int o_probe(const ls_opt_t *o) { (void)o; return s_set_probe + 1; }
+static int o_probe(const ls_opt_t *o) { (void)o; load_settings(); return s_set_probe + 1; }
 static void o_set_probe(const ls_opt_t *o, int v)
 {
-    (void)o;
+    (void)o; load_settings();
     s_set_probe = v <= 0 || v > PGR_N_PROBES ? -1 : v - 1;
     restart();
 }
@@ -892,6 +1166,10 @@ static void o_set_probe(const ls_opt_t *o, int v)
 static const char *const TEXT_NAMES[] = { "OFF", "SHOWN" };
 static int o_text(const ls_opt_t *o) { (void)o; return s_set_text ? 1 : 0; }
 static void o_set_text(const ls_opt_t *o, int v) { (void)o; s_set_text = v != 0; restart(); }
+
+static const char *const METHOD_NAMES[] = { "NATIVE STREAM", "PACKET", "SIGN STREAM" };
+static int o_method(const ls_opt_t *o) { (void)o; load_settings(); return s_set_method; }
+static void o_set_method(const ls_opt_t *o, int v) { (void)o; load_settings(); s_set_method = v >= 0 && v <= 2 ? v : 0; restart(); }
 
 static const ls_opt_t OPTS[] = {
     { .label = "CHANNELS", .kind = LS_OPT_CYCLE, .names = PLAN_NAMES, .n = 3, .get = o_plan, .set = o_set_plan },
@@ -902,6 +1180,8 @@ static const ls_opt_t OPTS[] = {
     { .label = "MESSAGE TEXT", .kind = LS_OPT_TOGGLE, .names = TEXT_NAMES, .get = o_text, .set = o_set_text },
     { .label = "PROBE", .kind = LS_OPT_CYCLE, .names = PROBE_NAMES, .n = PGR_N_PROBES + 1,
       .get = o_probe, .set = o_set_probe },
+    { .label = "RECEIVE", .kind = LS_OPT_CYCLE, .names = METHOD_NAMES, .n = 3,
+      .get = o_method, .set = o_set_method },
 };
 
 const ls_experiment_t exp_pagers = {

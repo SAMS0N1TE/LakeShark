@@ -24,7 +24,8 @@ static ls_imu_sample_t imu_data;
 static uint32_t mesh_received=42;
 bool ls_lora_present(void) { return !absent; }
 /* An SX1262: sweeps 150-960 MHz. */
-uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST; }
+static uint32_t extra_caps;
+uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST | extra_caps; }
 /* ---- the FSK session and the paging decoder, faked like the radio ------ */
 static bool fsk_on;
 static ls_fsk_cfg_t fsk_cfg;
@@ -126,6 +127,7 @@ static void reset(void)
     ls_test_mkdir("field-test");
     remove("field-test/entries.bin"); remove("field-test/notes.md"); remove("field-test/samples.csv");
     remove("field-test/packets.csv"); inbound_len = 0;
+    extra_caps = 0;
     fsk_on=fsk_refuse=false; fsk_begins=fsk_ends=0; fsk_inbound_len=0;
     pocsag_creates=pocsag_destroys=pocsag_batches=0; pocsag_pages_seen=0;
     remove("field-test/compass-solo0.cal"); remove("field-test/compass-solo1.cal");
@@ -661,4 +663,25 @@ LS_CASE(a_noisy_calibration_is_refused_and_the_saved_one_kept)
     imu_data=(ls_imu_sample_t){.az=1,.mx=85,.my=-80,.mz=100,.mag_valid=true};
     ls_shim_time_advance(100000); ls_field_step(); ls_field_snapshot(&state);
     LS_NEAR(state.sample.heading,180,.01);
+}
+
+void pocsag_seam(pocsag_ctx_t *c) { (void)c; }
+uint32_t pocsag_n_frames(const pocsag_ctx_t *c) { return c ? pocsag_batches : 0; }
+void pocsag_process_bits(pocsag_ctx_t *c, const uint8_t *data, size_t n)
+{ pocsag_process_batch(c, data, (int)n, false, false); }
+uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
+int ls_lora_fsk_stream_read(uint8_t *buf, size_t max, bool *restarted)
+{ float rssi; *restarted = false; return ls_lora_fsk_poll(buf, max, &rssi); }
+
+LS_CASE(lr2021_labs_pocsag_uses_native_stream_and_detector)
+{
+    reset(); extra_caps = LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_FSK_DETECT;
+    LS_CHECK(ls_field_direct(true)); ls_field_step();
+    LS_CHECK(ls_field_mode(LS_LAB_POCSAG)); ls_field_step();
+    LS_CHECK(fsk_cfg.stream); LS_CHECK(fsk_cfg.stream_sync_prefix);
+    LS_EQ_UINT(fsk_cfg.bitrate, 1200); LS_EQ_UINT(fsk_cfg.deviation_hz, 4500);
+    LS_EQ_UINT(fsk_cfg.bandwidth_hz, 11700); LS_EQ_UINT(fsk_cfg.sync_bits, 32);
+    LS_EQ_UINT(fsk_cfg.preamble_detect_bits, 16);
+    LS_CHECK(ls_field_mode(LS_LAB_PACKETS)); ls_field_step();
+    LS_CHECK(!fsk_on); extra_caps = 0;
 }

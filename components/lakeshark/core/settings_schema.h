@@ -14,7 +14,7 @@ extern "C" {
    bumps it - the point is that the version stamp says "this build wrote
    this".  Bump SETTINGS_SCHEMA_MIN_ADDITIVE only when the oldest version this
    build can still read from without wiping crosses a breaking cutover. */
-#define SETTINGS_SCHEMA_VERSION       4U
+#define SETTINGS_SCHEMA_VERSION       5U
 #define SETTINGS_SCHEMA_MIN_ADDITIVE  1U
 
 typedef enum {

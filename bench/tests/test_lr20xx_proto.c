@@ -585,7 +585,7 @@ LS_CASE(a_mode_s_session_programs_exactly_these_frames_and_none_of_them_transmit
     LS_EQ_INT(n, 31);
     CMD(0,  0x01, 0x28, 0x00);                               /* SetStandby, RC            */
     CMD(1, 0x01, 0x11);
-    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x01, 0x48);
+    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x80, 0x00);
     CMD(3, 0x01, 0x21, 0x00);
     CMD(4, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
     CMD(5, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);             /* ClearIrq, all             */
@@ -1441,8 +1441,8 @@ LS_CASE(a_lora_configure_at_22_dbm_programs_exactly_these_frames)
     LS_EQ_INT(n, 37);
     CMD(0,  0x01, 0x28, 0x00);                               /* SetStandby, RC            */
     CMD(1, 0x01, 0x11);
-    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x01, 0x48);
-    CMD(3, 0x01, 0x21, 0x01);
+    CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x80, 0x00);
+    CMD(3, 0x01, 0x21, 0x02);
     CMD(4, 0x02, 0x06, 0x01);                               /* fallback: Standby RC      */
     CMD(5, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);
     CMD(6, 0x01, 0x22, 0x6F);                               /* Calibrate, PA_OFF too    */
@@ -3386,4 +3386,33 @@ LS_CASE(the_experiment_engines_are_not_an_sx126x_thing)
     LS_EQ_INT(lr20xx_exp_begin(LR20XX_ENGINE_LORAMON, 0, 0, 0), ESP_ERR_NOT_SUPPORTED);
     LS_EQ_INT(lr20xx_exp_begin(LR20XX_ENGINE_ZWAVE, 0, 0, 0), ESP_ERR_NOT_SUPPORTED);
     LS_EQ_INT(lr20xx_exp_begin(LR20XX_ENGINE_WISUN, 0, 0, 1), ESP_ERR_NOT_SUPPORTED);
+}
+
+LS_CASE(native_stream_restores_only_hardware_sync_not_fifo_loss)
+{
+    session_up();
+    ls_fsk_cfg_t cfg = FSK_STREAM;
+    cfg.bitrate = 1200; cfg.deviation_hz = 4500; cfg.bandwidth_hz = ls_lora_fsk_bw_snap(11700);
+    cfg.sync_word = ~0x7cd215d8u; cfg.sync_bits = 32;
+    cfg.preamble_detect_bits = 16; cfg.stream_sync_prefix = true;
+    LS_EQ_INT(ls_lora_fsk_begin(&cfg), ESP_OK);
+    uint8_t buf[260]; bool restarted = false;
+    stream_arrives(0x10, 64);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 68);
+    LS_CHECK(restarted);
+    LS_EQ_UINT(buf[0], 0x83); LS_EQ_UINT(buf[1], 0x2d);
+    LS_EQ_UINT(buf[2], 0xea); LS_EQ_UINT(buf[3], 0x27);
+    LS_EQ_UINT(buf[4], 0x10); LS_EQ_UINT(buf[67], 0x4f);
+    stream_arrives(0, 256);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 256);
+    LS_CHECK(!restarted);
+    stream_arrives(0x40, 20);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 20);
+    LS_CHECK(restarted); LS_EQ_UINT(buf[0], 0x40); /* no false sync */
+    fk.rx_pkt_len = 340; fk.irq |= (1u << 18);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 0);
+    stream_arrives(0x50, 16);
+    LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 20);
+    LS_CHECK(restarted); LS_EQ_UINT(buf[0], 0x83); LS_EQ_UINT(buf[4], 0x50);
+    LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
 }

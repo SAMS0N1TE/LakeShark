@@ -20,7 +20,7 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         LS_EQ_INT(ls_lora_start(), ESP_OK);
         const int tcxo = first_op(0x0120), reg = first_op(0x0121), cal = first_op(0x0122);
         LS_CHECK(tcxo >= 0 && reg > tcxo && cal > reg);
-        FK_FRAME(tcxo, 0x01, 0x20, 0x07, 0x00, 0x00, 0x01, 0x48);
+        FK_FRAME(tcxo, 0x01, 0x20, 0x07, 0x00, 0x00, 0x80, 0x00);
         FK_FRAME(reg, 0x01, 0x21, 0x00);
         LS_EQ_INT(fk.violations, 0);
         LS_EQ_INT(fk.bad_args, 0);
@@ -30,7 +30,7 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         LS_EQ_INT(ls_lora_start(), ESP_OK);
         LS_EQ_INT(first_op(0x0120), -1);
         LS_CHECK(first_op(0x0121) < first_op(0x0122));
-        FK_FRAME(first_op(0x0121), 0x01, 0x21, 0x01);
+        FK_FRAME(first_op(0x0121), 0x01, 0x21, 0x02);
         LS_EQ_INT(fk.violations, 0);
     }
     {
@@ -71,7 +71,7 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         char *reg[] = { "lora", "lrreg", "dcdc" };
         LS_EQ_INT(lr20xx_clock_command(3, reg), 0);
         LS_CHECK(fk_lr_dcdc);
-        FK_FRAME(first_op(0x0121), 0x01, 0x21, 0x01);
+        FK_FRAME(first_op(0x0121), 0x01, 0x21, 0x02);
         LS_CHECK(first_op(0x0104) >= 0);
         LS_EQ_INT(fk.mode, LR20XX_MODE_RX);
         char *tcxo[] = { "lora", "lrclk", "tcxo" };

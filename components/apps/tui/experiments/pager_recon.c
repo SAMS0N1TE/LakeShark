@@ -162,3 +162,95 @@ void pgr_age(char *out, size_t n, int64_t age_us)
     else if (s < 86400) snprintf(out, n, "%dh", (int)(s / 3600));
     else                snprintf(out, n, "%dd", (int)(s / 86400));
 }
+
+/* ------------------------------------------------------------- stream -- */
+
+static void stream_cw(void *arg, uint32_t cw, int idx, int result)
+{
+    pgr_stream_count_t *b = arg;
+    if (!idx) b->batch_good = 0;
+    if (result < 0) b->bad++;
+    else b->batch_good++;
+    if (idx == 15 && b->batch_good >= 8) b->frames++;
+    if (result < 0) return;
+    if (result) b->fixed++; else b->clean++;
+    if (cw == PGR_POCSAG_IDLE) return;
+    if (cw & 0x80000000u) { b->message++; return; }
+    b->address++;
+    const uint32_t cap = (((cw >> 13) & 0x3FFFFu) << 3) | (uint32_t)(idx / 2);
+    if (b->n_caps < 16) b->caps[b->n_caps++] = cap;
+}
+
+bool pgr_stream_init(pgr_stream_t *s, fm_state_t *text)
+{
+    static const int BAUD[] = { 512, 1200, 2400 };
+    memset(s, 0, sizeof(*s));
+    for (int i = 0; i < 3; i++) {
+        s->decoder[i] = pocsag_create(text, BAUD[i]);
+        if (!s->decoder[i]) { pgr_stream_free(s); return false; }
+        pocsag_sample_rate(s->decoder[i], PGR_STREAM_RATE);
+        pocsag_observe(s->decoder[i], stream_cw, &s->counts[i]);
+    }
+    return true;
+}
+
+void pgr_stream_free(pgr_stream_t *s)
+{
+    for (int i = 0; i < 3; i++) {
+        pocsag_destroy(s->decoder[i]);
+        s->decoder[i] = NULL;
+    }
+}
+
+void pgr_stream_seam(pgr_stream_t *s)
+{
+    for (int i = 0; i < 3; i++) pocsag_seam(s->decoder[i]);
+    memset(s->lowpass, 0, sizeof(s->lowpass));
+    s->density_n = s->density_ones = 0;
+}
+
+int pgr_stream_best(const pgr_stream_t *s)
+{
+    int best = 0;
+    for (int i = 1; i < 3; i++)
+        if (s->counts[i].frames > s->counts[best].frames ||
+            (s->counts[i].frames == s->counts[best].frames && s->counts[i].clean + s->counts[i].fixed >
+            s->counts[best].clean + s->counts[best].fixed)) best = i;
+    return best;
+}
+
+void pgr_stream_feed(pgr_stream_t *s, const uint8_t *data, size_t n)
+{
+    for (size_t j = 0; j < n; j++) {
+        float samples[8];
+        for (int k = 0; k < 8; k++) {
+            const int bit = (data[j] >> (7 - k)) & 1;
+            samples[k] = bit ? 1.0f : -1.0f;
+            s->density_ones += bit;
+            if (++s->density_n == PGR_STREAM_RATE) {
+                s->bias = 2.0f * s->density_ones / s->density_n - 1.0f;
+                /* Density is also payload dependent. Use small steps, and
+                   ignore a stuck slicer rather than chasing it to a rail. */
+                int step = s->bias > 0.12f ? 250 : s->bias < -0.12f ? -250 : 0;
+                if (s->bias > 0.9f || s->bias < -0.9f) step = 0;
+                s->want_trim_hz = s->trim_hz + step;
+                if (s->want_trim_hz > PGR_STREAM_TRIM_MAX) s->want_trim_hz = PGR_STREAM_TRIM_MAX;
+                if (s->want_trim_hz < -PGR_STREAM_TRIM_MAX) s->want_trim_hz = -PGR_STREAM_TRIM_MAX;
+                s->density_n = s->density_ones = 0;
+            }
+        }
+        for (int i = 0; i < 3; i++) {
+            /* A quarter-symbol low-pass keeps sign chatter out of the PLL. */
+            float filtered[8];
+            const float alpha = 4.0f * pocsag_baud_of(s->decoder[i]) / PGR_STREAM_RATE;
+            for (int k = 0; k < 8; k++) {
+                s->lowpass[i] += alpha * (samples[k] - s->lowpass[i]);
+                filtered[k] = s->lowpass[i];
+            }
+            pocsag_process(s->decoder[i], filtered, 8);
+            pgr_stream_count_t *b = &s->counts[i];
+            for (int k = 0; k < b->n_caps; k++) pgr_capset_add(&s->caps[i], b->caps[k]);
+            b->n_caps = 0;
+        }
+    }
+}

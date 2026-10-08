@@ -472,6 +472,7 @@ static bool restore(void)
 static fm_state_t   *s_pocsag_state;
 static pocsag_ctx_t *s_pocsag;
 static int64_t       s_pocsag_last;
+static bool s_pocsag_stream;
 
 static void pocsag_stop(void)
 {
@@ -506,7 +507,8 @@ static void pocsag_feed(const uint8_t *data, int len, int64_t now)
         llabs(now - s_pocsag_last - period) <= period / 10 + 20000;
     s_pocsag_last = now;
     const uint32_t before = pocsag_n_pages(s_pocsag);
-    pocsag_process_batch(s_pocsag, data, len, s_live.config.invert_iq, contiguous);
+    if (s_pocsag_stream) pocsag_process_bits(s_pocsag, data, (size_t)len);
+    else pocsag_process_batch(s_pocsag, data, len, s_live.config.invert_iq, contiguous);
     const uint32_t after = pocsag_n_pages(s_pocsag);
     s_live.pages = after;
     if (after == before || s_pocsag_state->page_count <= 0) return;
@@ -538,11 +540,18 @@ static void fsk_params(ls_fsk_cfg_t *out)
     *out = s_live.fsk;
     out->freq_hz = s_live.config.freq_hz;   /* BAND moves every mode */
     if (s_live.mode == LS_LAB_POCSAG) {
-        if (out->bitrate != 1200u && out->bitrate != 2400u) out->bitrate = 1200u;
+        if (!(out->bitrate == 512u && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) && out->bitrate != 1200u && out->bitrate != 2400u) out->bitrate = 1200u;
         out->deviation_hz = POCSAG_DEVIATION;
         out->bandwidth_hz = POCSAG_BANDWIDTH;
         out->sync_word = s_live.config.invert_iq ? ~POCSAG_SYNC : POCSAG_SYNC;
         out->payload_bytes = POCSAG_BYTES;
+        out->preamble_detect_bits = (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0;
+        /* LR2021 at VHF: full gain and boost, as PAGER RECON uses. */
+        if (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) { out->rx_gain_step = 13; out->rx_boost_step = 8; }
+        out->stream = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) != 0;
+        out->stream_sync_prefix = out->stream;
+        out->sync_bits = 32;
+        if (out->stream) out->bandwidth_hz = ls_lora_fsk_bw_snap(POCSAG_BANDWIDTH);
     }
 }
 
@@ -559,6 +568,8 @@ static bool configure(void)
         fsk_params(&fsk);
         if (s_live.mode == LS_LAB_POCSAG) {
             if (!pocsag_ready((int)fsk.bitrate)) return false;
+            s_pocsag_stream = fsk.stream;
+            pocsag_seam(s_pocsag);
         } else pocsag_stop();
         return ls_lora_fsk_begin(&fsk) == ESP_OK;
     }
@@ -825,22 +836,29 @@ void ls_field_step(void)
         else if (now > s_tx_deadline) { s_live.transmitting = false; configure(); message("TX timeout; receiver reset"); }
     }
     if (s_live.direct && !s_live.transmitting && s_live.mode != LS_LAB_SPECTRUM) {
-        uint8_t packet[255]; float rssi = NAN, snr = NAN;
+        uint8_t packet[260]; float rssi = NAN, snr = NAN;
         /* The FSK demodulator reports level but not signal-to-noise: it has
            no reference to measure one against. NAN rather than zero, because
            a zero here would be read as a real 0 dB. */
         const bool fsk = LS_LAB_IS_FSK(s_live.mode);
-        int n = fsk ? ls_lora_fsk_poll(packet, sizeof(packet), &rssi)
+        const bool paging_stream = s_live.mode == LS_LAB_POCSAG && s_pocsag_stream;
+        bool restarted = false;
+        int n = paging_stream ? ls_lora_fsk_stream_read(packet, sizeof(packet), &restarted)
+                : fsk ? ls_lora_fsk_poll(packet, sizeof(packet), &rssi)
                     : ls_lora_poll(packet, sizeof(packet), &rssi, &snr);
         if (n > 0) {
-            s_live.rx++; s_live.packet_len = n < 64 ? n : 64;
+            if (paging_stream && restarted) pocsag_seam(s_pocsag);
+            const uint32_t frames_before = pocsag_n_frames(s_pocsag);
+            s_live.rx += paging_stream ? 0 : 1;
+            s_live.packet_len = paging_stream ? 0 : n < 64 ? n : 64;
             memcpy(s_live.packet, packet, s_live.packet_len);
             detected(now,s_live.config.freq_hz,rssi,snr,false);
             if (s_live.mode == LS_LAB_POCSAG) pocsag_feed(packet, n, now);
+            if (paging_stream) s_live.rx += pocsag_n_frames(s_pocsag) - frames_before;
             /* The whole packet, not the 64 bytes the live view keeps. Its
                position comes from the last sample; its radio figures come
                from this reception rather than that heartbeat. */
-            if (s_record) {
+            if (s_record && !paging_stream) {
                 ls_field_sample_t ps = s_live.sample;
                 ps.time_us = now;
                 ps.frequency = s_live.config.freq_hz;
@@ -849,7 +867,7 @@ void ls_field_step(void)
                 if (save_packet(&ps, packet, n)) record_packets++;
                 else { record_errors++; s_record = false; s_live.recording = false; }
             }
-        } else if (n < 0) s_live.bad++;
+        } else if (n < 0) { s_live.bad++; if (paging_stream) pocsag_seam(s_pocsag); }
     }
     if ((watching || s_live.recording || s_live.direct || s_live.calibrating) && now >= s_next_sample) {
         s_next_sample = now + (s_live.direct && s_live.mode==LS_LAB_SPECTRUM?20000:100000);
@@ -1072,7 +1090,10 @@ bool ls_field_start(void)
     s_live.fsk = (ls_fsk_cfg_t){ .freq_hz = s_live.config.freq_hz,
         .bitrate = 1200, .deviation_hz = POCSAG_DEVIATION,
         .bandwidth_hz = POCSAG_BANDWIDTH, .sync_word = POCSAG_SYNC,
-        .payload_bytes = POCSAG_BYTES };
+        .payload_bytes = POCSAG_BYTES,
+        .preamble_detect_bits = (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0,
+        .rx_gain_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? 13 : 0,
+        .rx_boost_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? 8 : 0 };
     for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
     message("Mesh keeps control until DIRECT is enabled");
     storage("Journal ready");

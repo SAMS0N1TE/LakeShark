@@ -36,6 +36,7 @@ serial*.txt
 !/docs/PUBLIC_MAIN_RECONCILED.txt
 !/docs/T_DISPLAY_P4_USB_POWER.md
 !/docs/FIELD_LABS.md
+!/docs/POCSAG_NATIVE_STREAM.md
 !/docs/MIX_RF.md
 !/docs/UI_CONTROLS.md
 !/docs/HACKRF_BRINGUP.md

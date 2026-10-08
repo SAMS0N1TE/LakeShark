@@ -33,6 +33,8 @@ int sx1262_receive_command(int argc, char **argv)
         return 1;
     }
     double mhz = 0, baud = 0, seconds = 30, dev = 4500, bw = 19500, bytes = 64;
+    const bool native = paging && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM);
+    if (native) bw = ls_lora_fsk_bw_snap(11700);
     const int secs_arg = paging ? 4 : 8;
     bool valid = number(argv[2], &mhz) && number(argv[3], &baud);
     if (argc > secs_arg) valid = number(argv[secs_arg], &seconds) && valid;
@@ -45,12 +47,12 @@ int sx1262_receive_command(int argc, char **argv)
     const bool wide = (ls_lora_caps() & LS_LORA_CAP_WIDE_RX_BW) != 0;
     const double max_mhz = wide ? 1100 : 960, max_baud = wide ? 2000000 : 300000;
     const double max_dev = wide ? 500000 : 200000, max_bw = wide ? 3076923 : 467000;
-    if (!valid || mhz < 150 || mhz > max_mhz || baud < 600 || baud > max_baud ||
+    if (!valid || mhz < 150 || mhz > max_mhz || baud < (native ? 512 : 600) || baud > max_baud ||
         floor(baud) != baud || seconds < 1 || seconds > 120 ||
         dev < 600 || dev > max_dev || bw < 4800 || bw > max_bw ||
         bytes < 1 || bytes > 255 || floor(bytes) != bytes ||
-        (paging && baud != 1200 && baud != 2400)) {
-        printf("lora: invalid receive settings; POCSAG supports 1200/2400 baud\n");
+        (paging && !(native && baud == 512) && baud != 1200 && baud != 2400)) {
+        printf("lora: invalid receive settings; POCSAG supports 512/1200/2400 baud\n");
         return 1;
     }
     uint32_t sync = inverted ? ~0x7cd215d8u : 0x7cd215d8u;
@@ -75,8 +77,8 @@ int sx1262_receive_command(int argc, char **argv)
     fm_state_t *state = nullptr;
     pocsag_ctx_t *decoder = nullptr;
     if (paging) {
-        state = (fm_state_t *)heap_caps_calloc(1, sizeof(*state), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (state) decoder = pocsag_create(state, (int)baud);
+        if (!native) state = (fm_state_t *)heap_caps_calloc(1, sizeof(*state), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (native || state) decoder = pocsag_create(state, (int)baud);
         if (!decoder) { heap_caps_free(state); printf("lora: no memory\n"); return 1; }
     }
     const int64_t hold_deadline = esp_timer_get_time() + 1000000;
@@ -90,7 +92,10 @@ int sx1262_receive_command(int argc, char **argv)
     }
     ls_fsk_cfg_t cfg = {(uint32_t)llround(mhz * 1e6), (uint32_t)baud,
                        (uint32_t)dev, (uint32_t)bw, sync, (uint8_t)bytes};
-    cfg.sync_bits = sync_bits;
+    cfg.sync_bits = native ? 32 : sync_bits;
+    cfg.preamble_detect_bits = paging && (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0;
+    cfg.stream = native;
+    cfg.stream_sync_prefix = native;
     esp_err_t err = ls_lora_fsk_begin(&cfg);
     if (err == ESP_OK) {
         printf("lora: experimental %s RX %.6f MHz %u baud, %.0f seconds\n",
@@ -104,7 +109,7 @@ int sx1262_receive_command(int argc, char **argv)
         const int64_t end = esp_timer_get_time() + (int64_t)(seconds * 1e6);
         int64_t previous = 0;
         unsigned packets = 0, errors = 0;
-        uint8_t packet[255];
+        uint8_t packet[260];
         /* What the channel sounded like, decoded or not.
 
            A session that ends "0 packets" cannot tell you whether the band
@@ -116,7 +121,10 @@ int sx1262_receive_command(int argc, char **argv)
         unsigned looks = 0;
         while (esp_timer_get_time() < end) {
             float rssi;
-            int n = ls_lora_fsk_poll(packet, sizeof(packet), &rssi);
+            bool restarted = false;
+            int n = native ? ls_lora_fsk_stream_read(packet, sizeof(packet), &restarted)
+                           : ls_lora_fsk_poll(packet, sizeof(packet), &rssi);
+            if (native && (restarted || n < 0)) pocsag_seam(decoder);
             int64_t now = esp_timer_get_time();
             if (n < 0) { errors++; previous = 0; }
             if (n > 0) {
@@ -125,14 +133,17 @@ int sx1262_receive_command(int argc, char **argv)
                     const int64_t period = 544000000LL / cfg.bitrate;
                     const bool contiguous = previous &&
                         llabs(now - previous - period) <= period / 10 + 20000;
-                    uint32_t before = pocsag_n_pages(decoder);
-                    pocsag_process_batch(decoder, packet, n, inverted, contiguous);
-                    uint32_t count = pocsag_n_pages(decoder) - before;
-                    if (count > FM_PAGE_LOG_MAX) count = FM_PAGE_LOG_MAX;
-                    for (uint32_t i = count; i > 0; i--) {
-                        const fm_page_t *p = &state->pages[(state->page_head + FM_PAGE_LOG_MAX - i) % FM_PAGE_LOG_MAX];
-                        printf("POCSAG %.1f dBm RIC=%lu F=%u %c %s\n", rssi,
-                               (unsigned long)p->address, p->function, p->type, p->text);
+                    if (native) pocsag_process_bits(decoder, packet, (size_t)n);
+                    else {
+                        uint32_t before = pocsag_n_pages(decoder);
+                        pocsag_process_batch(decoder, packet, n, inverted, contiguous);
+                        uint32_t count = pocsag_n_pages(decoder) - before;
+                        if (count > FM_PAGE_LOG_MAX) count = FM_PAGE_LOG_MAX;
+                        for (uint32_t i = count; i > 0; i--) {
+                            const fm_page_t *p = &state->pages[(state->page_head + FM_PAGE_LOG_MAX - i) % FM_PAGE_LOG_MAX];
+                            printf("POCSAG %.1f dBm RIC=%lu F=%u %c %s\n", rssi,
+                                   (unsigned long)p->address, p->function, p->type, p->text);
+                        }
                     }
                 } else {
                     printf("FSK %.1f dBm", rssi);

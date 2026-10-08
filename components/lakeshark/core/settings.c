@@ -48,6 +48,11 @@ static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint64_t s_radio_choice = LS_RSEL_PACKED_NONE;
 static portMUX_TYPE s_radio_choice_lock = portMUX_INITIALIZER_UNLOCKED;
 
+/* One versioned u64 keeps the full start choice atomic in NVS. */
+#define PAGERS_DEFAULT (929612500ULL | (6ULL << 34) | (1ULL << 48))
+static uint64_t s_pagers = PAGERS_DEFAULT;
+static portMUX_TYPE s_pagers_lock = portMUX_INITIALIZER_UNLOCKED;
+
 #define SET_Q_DEPTH     16
 #define SET_PENDING_MAX 16
 #define SET_QUIET_MS    300
@@ -290,6 +295,7 @@ static void settings_drop_sam_voice_keys(void);
 
 bool settings_init(void)
 {
+    s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
     __atomic_store_n(&s_auto_rotate,true,__ATOMIC_RELEASE);
@@ -361,6 +367,16 @@ bool settings_init(void)
     uint64_t last_fix = 0;
     esp_err_t last_fix_err = nvs_get_u64(s_nvs, "lastfix_v1", &last_fix);
     s_last_fix = location_load(last_fix_err == ESP_OK, last_fix, false, 0, 0);
+    uint64_t pagers = PAGERS_DEFAULT;
+    if (nvs_get_u64(s_nvs, "pagers_v1", &pagers) == ESP_OK) {
+        settings_pagers_t cfg = { .hz = (uint32_t)pagers,
+            .plan = (pagers >> 32) & 3, .dwell = (pagers >> 34) & 63,
+            .probe = (int)((pagers >> 40) & 15) - 1, .method = (pagers >> 44) & 3 };
+        if ((pagers >> 48) == 1 && cfg.hz >= 150000000 && cfg.hz <= 1100000000 &&
+            cfg.plan <= 2 && cfg.dwell >= 2 && cfg.dwell <= 60 &&
+            cfg.probe >= -1 && cfg.probe < 8 && cfg.method <= 2)
+            s_pagers = pagers;
+    }
     uint64_t radio_choice = LS_RSEL_PACKED_NONE;
     if (nvs_get_u64(s_nvs, "rsel_v1", &radio_choice) == ESP_OK) {
         portENTER_CRITICAL(&s_radio_choice_lock);
@@ -1351,3 +1367,32 @@ int  settings_eq_punch_get(void)       { return eq_get_i("eq_punch", 30,  0, 100
 void settings_eq_punch_set(int v)      { eq_set_i("eq_punch", v,   0, 100);          }
 int  settings_eq_loud_get(void)        { return eq_get_i("eq_loud",  1,   0,   3);   }
 void settings_eq_loud_set(int v)       { eq_set_i("eq_loud",  v,   0,   3);          }
+
+void settings_get_pagers(settings_pagers_t *out)
+{
+    if (!out) return;
+    portENTER_CRITICAL(&s_pagers_lock);
+    const uint64_t v = s_pagers;
+    portEXIT_CRITICAL(&s_pagers_lock);
+    *out = (settings_pagers_t){ .hz = (uint32_t)v, .plan = (v >> 32) & 3,
+        .dwell = (v >> 34) & 63, .probe = (int)((v >> 40) & 15) - 1,
+        .method = (v >> 44) & 3 };
+}
+
+bool settings_set_pagers(const settings_pagers_t *cfg)
+{
+    if (!cfg || cfg->hz < 150000000 || cfg->hz > 1100000000 || cfg->plan > 2 ||
+        cfg->dwell < 2 || cfg->dwell > 60 || cfg->probe < -1 || cfg->probe >= 8 || cfg->method > 2)
+        return false;
+    const uint64_t v = cfg->hz | ((uint64_t)cfg->plan << 32) | ((uint64_t)cfg->dwell << 34) |
+        ((uint64_t)(cfg->probe + 1) << 40) | ((uint64_t)cfg->method << 44) | (1ULL << 48);
+    portENTER_CRITICAL(&s_pagers_lock);
+    const bool same = v == s_pagers;
+    portEXIT_CRITICAL(&s_pagers_lock);
+    if (same) return true;
+    if (!sput_u64("pagers_v1", v)) return false;
+    portENTER_CRITICAL(&s_pagers_lock);
+    s_pagers = v;
+    portEXIT_CRITICAL(&s_pagers_lock);
+    return true;
+}

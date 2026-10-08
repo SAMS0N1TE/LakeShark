@@ -205,6 +205,7 @@ include_directories(
 add_library(ls_harness STATIC
     harness/ls_test.c
     harness/shim_impl.c
+    shims/pagers_settings_fake.c
     shims/freertos_shim.c
     shims/spi_shim.c
     shims/ls_trail_host.c
@@ -753,6 +754,7 @@ target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
 
 add_executable(lssim
+    shims/pagers_settings_fake.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     tools/lssim_music.c
     ${FW}/components/apps/tui/ls_splash.c
@@ -1227,6 +1229,10 @@ target_compile_definitions(test_tui_render_dump PRIVATE
 target_compile_definitions(test_tui_render_dump PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
 ls_add_test(test_pocsag  ${APP}/fm/pocsag.c)
+ls_add_test(test_pocsag_stream ${APP}/fm/pocsag.c
+    ${FW}/components/apps/tui/experiments/pager_recon.c)
+target_include_directories(test_pocsag_stream PRIVATE
+    ${FW}/components/apps/tui/experiments)
 ls_add_test(test_fm_mode_label ${APP}/fm/fm_mode_label.c)
 ls_add_test(test_fm_mode_handoff ${APP}/fm/fm_mode_handoff.c)
 ls_add_test(test_flipper_fm_command

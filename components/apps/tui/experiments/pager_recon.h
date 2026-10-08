@@ -36,6 +36,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "pocsag.h"
+
+#define PGR_STREAM_RATE 19200u
+#define PGR_STREAM_BW   20000u  /* LR2021 snaps upward to 20833 Hz */
+#define PGR_STREAM_TRIM_MAX 6000
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -117,6 +123,29 @@ float pgr_median(float *v, int n);
 
 /* "12s", "4m", "3h", "2d", or "-" for never (`age_us` < 0). */
 void pgr_age(char *out, size_t n, int64_t age_us);
+
+/* Three timing loops share the sign samples, each using the FM decoder. */
+typedef struct {
+    uint32_t clean, fixed, bad, address, message, frames;
+    uint8_t batch_good, n_caps;
+    uint32_t caps[16];
+} pgr_stream_count_t;
+
+typedef struct {
+    pocsag_ctx_t *decoder[3];
+    pgr_stream_count_t counts[3];
+    pgr_capset_t caps[3];
+    uint32_t density_n, density_ones;
+    float lowpass[3];
+    int trim_hz, want_trim_hz;
+    float bias;
+} pgr_stream_t;
+
+bool pgr_stream_init(pgr_stream_t *s, fm_state_t *text);
+void pgr_stream_free(pgr_stream_t *s);
+void pgr_stream_seam(pgr_stream_t *s);
+void pgr_stream_feed(pgr_stream_t *s, const uint8_t *data, size_t n);
+int pgr_stream_best(const pgr_stream_t *s);
 
 #ifdef __cplusplus
 }

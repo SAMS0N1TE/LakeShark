@@ -149,6 +149,9 @@ typedef struct {
        a send is ESP_ERR_INVALID_STATE. Needs LS_LORA_CAP_FSK_STREAM;
        without it the begin is ESP_ERR_NOT_SUPPORTED. */
     bool stream;
+    /* Restore the stripped 32-bit hardware sync ahead of each new stream.
+       FIFO loss marks a seam but must not fabricate a sync. LR20xx only. */
+    bool stream_sync_prefix;
     /* LR20xx receive tuning, for experiments: the RX path's boost plus one
        (1..8 for boost 0..7; 0 keeps the band's default) and the GFSK pulse
        shape code (0 none). Other parts return NOT_SUPPORTED for either

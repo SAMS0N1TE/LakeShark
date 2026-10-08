@@ -23,6 +23,9 @@ struct pocsag_ctx {
     fm_state_t *out;
     int   baud;
 
+    int sample_rate;
+    pocsag_cw_fn observe;
+    void *observe_arg;
     float inc;
     float acc;
     float thr;
@@ -84,8 +87,6 @@ int pocsag_check_codeword(uint32_t *cwp)
     return -1;
 }
 
-static int bch_fix(uint32_t *cwp) { return pocsag_check_codeword(cwp) >= 0; }
-
 static int popcount32(uint32_t v)
 {
     int n = 0; while (v) { v &= v - 1; n++; } return n;
@@ -144,6 +145,9 @@ static int pocsag_text_score(const char *s, int n)
 static void flush_message(pocsag_ctx_t *c)
 {
     if (!c->have_addr) { c->nbits = 0; return; }
+
+    c->n_pages++;
+    if (!c->out) { c->nbits = 0; c->have_addr = 0; return; }
 
     fm_page_t pg;
     memset(&pg, 0, sizeof(pg));
@@ -215,7 +219,6 @@ static void flush_message(pocsag_ctx_t *c)
     o->pages[o->page_head] = pg;
     o->page_head = (o->page_head + 1) % FM_PAGE_LOG_MAX;
     if (o->page_count < FM_PAGE_LOG_MAX) o->page_count++;
-    c->n_pages++;
     ESP_LOGI(TAG, "page RIC=%lu F=%d %c '%s'",
              (unsigned long)pg.address, pg.function, pg.type, pg.text);
 
@@ -225,7 +228,9 @@ static void flush_message(pocsag_ctx_t *c)
 
 static void process_codeword(pocsag_ctx_t *c, uint32_t cw, int idx)
 {
-    if (!bch_fix(&cw)) { c->n_cwerr++; return; }
+    const int result = pocsag_check_codeword(&cw);
+    if (c->observe) c->observe(c->observe_arg, cw, idx, result);
+    if (result < 0) { c->n_cwerr++; return; }
 
     if (cw == POCSAG_IDLE) { flush_message(c); return; }
 
@@ -254,6 +259,7 @@ pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud)
     pocsag_ctx_t *c = calloc(1, sizeof(*c));
     if (!c) return NULL;
     c->out = out;
+    c->sample_rate = FM_DEMOD_RATE;
     pocsag_set_baud(c, baud);
     pocsag_reset(c);
     return c;
@@ -265,17 +271,36 @@ void pocsag_set_baud(pocsag_ctx_t *c, int baud)
 {
     if (baud != 512 && baud != 1200 && baud != 2400) baud = 1200;
     c->baud = baud;
-    c->inc  = (float)baud / (float)FM_DEMOD_RATE;
+    c->inc  = (float)baud / (float)c->sample_rate;
 }
 
-void pocsag_reset(pocsag_ctx_t *c)
+void pocsag_sample_rate(pocsag_ctx_t *c, int rate)
+{
+    if (rate <= 0) return;
+    c->sample_rate = rate;
+    c->inc = (float)c->baud / (float)rate;
+}
+
+void pocsag_observe(pocsag_ctx_t *c, pocsag_cw_fn fn, void *arg)
+{
+    c->observe = fn;
+    c->observe_arg = arg;
+}
+
+void pocsag_seam(pocsag_ctx_t *c)
 {
     c->acc = 0.0f; c->thr = 0.0f; c->prev_slice = 0;
     c->sum_a = 0.0f; c->sum_b = 0.0f;
     c->sr = 0; c->sr_b = 0; c->st = ST_HUNT; c->invert = 0;
     c->cw = 0; c->cw_bits = 0; c->cw_idx = 0; c->idle_run = 0;
     c->have_addr = 0; c->nbits = 0;
-    c->synced = false; c->n_frames = 0; c->n_pages = 0; c->n_cwerr = 0;
+    c->synced = false;
+}
+
+void pocsag_reset(pocsag_ctx_t *c)
+{
+    pocsag_seam(c);
+    c->n_frames = 0; c->n_pages = 0; c->n_cwerr = 0;
     c->n_addr = 0; c->n_msg = 0;
     c->near_min = 32; c->n_near = 0;
 }
@@ -283,6 +308,7 @@ void pocsag_reset(pocsag_ctx_t *c)
 int      pocsag_near_min(const pocsag_ctx_t *c) { return c ? c->near_min : 32; }
 uint32_t pocsag_n_near(const pocsag_ctx_t *c) { return c ? c->n_near : 0; }
 
+bool     pocsag_inverted(const pocsag_ctx_t *c) { return c && c->invert; }
 bool     pocsag_synced(const pocsag_ctx_t *c) { return c && c->synced; }
 int      pocsag_baud_of(const pocsag_ctx_t *c) { return c ? c->baud : 0; }
 uint32_t pocsag_n_frames(const pocsag_ctx_t *c) { return c ? c->n_frames : 0; }
@@ -337,6 +363,13 @@ static void handle_bit(pocsag_ctx_t *c, int raw_bit)
     }
 }
 
+void pocsag_process_bits(pocsag_ctx_t *c, const uint8_t *data, size_t n)
+{
+    if (!c || !data) return;
+    for (size_t i = 0; i < n; i++)
+        for (int b = 7; b >= 0; b--) handle_bit(c, (data[i] >> b) & 1);
+}
+
 bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
                           bool inverted, bool contiguous)
 {
@@ -364,7 +397,7 @@ void pocsag_process(pocsag_ctx_t *c, const float *demod, int n)
         c->sum_b += dev;
 
         if (slice == c->prev_slice) {
-            if (++c->idle_run > FM_DEMOD_RATE / 4) {
+            if (++c->idle_run > c->sample_rate / 4) {
                 if (c->st == ST_BATCH) { flush_message(c); }
                 c->st = ST_HUNT; c->synced = false; c->idle_run = 0;
             }

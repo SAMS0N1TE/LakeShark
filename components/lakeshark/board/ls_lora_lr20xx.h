@@ -84,7 +84,7 @@ extern "C" {
 #define LR20XX_OP_SET_TCXO_MODE    0x0120
 #define LR20XX_OP_SET_REG_MODE     0x0121
 #define LR20XX_TCXO_3_3V           0x07
-#define LR20XX_TCXO_DELAY_TICKS    328u     /* 10 ms at 32.768 kHz; LilyGO v1 uses 1 s, paid on each RC to XOSC start */
+#define LR20XX_TCXO_DELAY_TICKS    32768u   /* 32 MHz steps: 1.024 ms, LilyGO v1 InitLr2021 */
 #define LR20XX_OP_CALIB_FE         0x0123
 #define LR20XX_OP_SET_STANDBY      0x0128
 #define LR20XX_OP_SET_RF_FREQUENCY 0x0200
