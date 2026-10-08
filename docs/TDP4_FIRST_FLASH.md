@@ -33,13 +33,21 @@ The P4 images use these offsets:
 | `lakeshark.bin` | `0x10000` |
 | `storage.bin` | `0x910000` |
 
-All four images are required for a first installation. Use the generated `build_tdp4/flasher_args.json` to confirm the image layout. Back up existing data before a full installation. For an application-only update on a matching installation, write `lakeshark.bin` at `0x10000`.
+Use the generated `build_tdp4/flasher_args.json` for the complete installation, including OTA data initialization. Back up existing data before a full installation. Do not use a fixed application offset for later updates: the running app can be in either of two slots.
+
+## Updates over WiFi
+
+From 2.8 or earlier, install 2.9.1 once with the web flasher or USB. This installs the two-slot layout. A full install rewrites internal storage; settings and saved Wi-Fi are kept. Back up files first.
+
+After that, open HOME > SYSTEM > UPDATE. Connect to Wi-Fi in LINK, then choose CHECK and INSTALL when a newer build is available. Updates are signed. If the new build fails to start, the board returns to the previous build. SET > DEVICE > Check for updates selects Daily or Off. Daily checks show a NEW tag on SYSTEM and UPDATE.
+
+See [Updates and calls](TDP4_UPDATES_AND_CALLS.md) for the update steps and SD call archive.
 
 ## Flash the C6 co-processor
 
 The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6 over SDIO. The host is pinned to **ESP-Hosted 2.12.9** and the C6 must run the matching `network_adapter` slave. A board straight from LilyGO carries the factory image, which does not speak ESP-Hosted; an older slave enumerates but frames packets differently.
 
-Both fail the same way, and it does not look like a Wi-Fi fault: the link times out and the host restarts before the UI starts. A dark screen plus a reboot loop means this step is needed:
+If the co-processor link fails, check the C6 image and wiring. Current builds can keep running with wireless features unavailable. Older builds may report a transport timeout:
 
 ```
 E (7589) transport: Init event not received within timeout, Resetting myself
@@ -72,8 +80,8 @@ esptool.py -c esp32c6 -p YOUR_ADAPTER_PORT -b 460800 write_flash \
 
 | Image | Offset | Partition |
 | --- | --- | --- |
-| `bootloader.bin` | `0x0` | — |
-| `partition-table.bin` | `0x8000` | — |
+| `bootloader.bin` | `0x0` | bootloader |
+| `partition-table.bin` | `0x8000` | partition table |
 | `ota_data_initial.bin` | `0xd000` | `otadata` |
 | `network_adapter.bin` | `0x10000` | `ota_0` |
 
@@ -85,8 +93,10 @@ I (....) headless: ESP-Hosted co-processor link: up (0)
 
 ## Controls
 
-HOME opens the app list. Touch controls and the detachable keyboard provide navigation. The display rotates automatically; F11 rotates it from the keyboard. SET opens on Volume, Brightness, Mute and Screen lock; its DISPLAY, SOUND and DEVICE menus hold the theme, Daylight mode, font, sounds, voice and keyboard settings.
+HOME opens the app list. Touch controls and the detachable keyboard provide navigation. The display rotates automatically; F11 rotates it from the keyboard. SET opens on Volume, Brightness, Mute, Screen lock and Rotate lock. Its DISPLAY, SOUND and DEVICE menus hold the theme, Daylight mode, font, sounds, voice, keyboard and update settings.
 
 Open LINK to manage Wi-Fi and the Flipper Bluetooth connection. SCAN lists nearby networks, MANUAL accepts a network name, and SAVED reconnects to the saved network. Password entry starts hidden; SHOW PASSWORD and HIDE PASSWORD switch visibility.
 
 Choosing a receiver in the Flipper app opens its corresponding P4 screen. POCSAG uses the FM pager page.
+
+RADIOS > ANTENNA selects internal or MMCX1. The choice is kept after reboot. Attach a suitable antenna before confirming MMCX1. After a reboot, external transmit use needs confirmation again.

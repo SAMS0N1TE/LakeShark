@@ -1,41 +1,55 @@
 # T-Display-P4 screens
 
-LakeShark on the LilyGO T-Display-P4.
+LakeShark 2.9.1 on the LilyGO T-Display-P4.
 
+HOME groups apps under RADIO, FIELD, SYSTEM and USER. Use F1-F4 to choose a
+group, arrows and Enter to open an app, and F5/F6 or PREV/NEXT to change pages.
+The number of tiles per page depends on the screen size.
+
+- RADIO: P25, FM, ADSB, FALLS, CELL WATCH, MESH, LORA LABS, EXPERIMENTS,
+  SUB-GHZ, FILES, MUSIC and MIX-RF.
+- FIELD: NOTES, COMPASS, REC, MAP and GPS.
+- SYSTEM: DIAG, TERMINAL, UPDATE, SET, RADIOS and LINK.
+- USER: apps loaded from the SD card.
+
+P25 has a DECODE / SIGNAL window. SPECTRUM toggles the plot; SCAN, SETTINGS,
+CALLS and DMR open their views. CALLS is also available in FM.
+See [UI controls](UI_CONTROLS.md) and [Updates and calls](TDP4_UPDATES_AND_CALLS.md).
+
+FM > MORE > MODE includes APRS, AIS and SAME/EAS. Their detail pages are STATIONS,
+VESSELS and ALERTS. NFM > OPTIONS > TONE provides CTCSS and DCS tone squelch.
+
+MUSIC plays WAV files, shows levels and spectra, and records microphone input.
+TERMINAL runs console commands with the keyboard or touch keys. CELL WATCH
+surveys cellular signals; it does not read subscriber messages.
+
+EXPERIMENTS includes RS41 SONDES, LR433 and PAGER RECON. NOTE or N saves the
+readout to NOTES. [Field and lab guide](FIELD_LABS.md) covers these receivers.
+MESH node details offer INSPECT for route tracing, login, status and telemetry.
+LINK > SURVEY records a walk's Wi-Fi and BLE observations. MAP > ROUTE follows
+a GPX file or backtracks a recorded walk. See [Field map](map-field.md).
 
 ## Scanning, replay and aircraft
 
-[FILES, RECORD replay, SUB-GHZ and the ADS-B mini map](REPLAY_AND_AIRCRAFT.md) in portrait and landscape.
-
-![SUB-GHZ scanning](screenshots/tdp4/development-20260923/subghz-scan-land.png)
-
-![Wi-Fi and Bluetooth controls](screenshots/tdp4/development-20260923/radios-land.png)
+FILES opens captures in REC for replay. SUB-GHZ watches raw signals. ADSB has a
+mini map with FOLLOW choices for all aircraft, the selected one or the nearest.
+The choice is kept. P25 and FM scan saved channel lists or stepped bands.
+See [Location scanning](LOCATION_SCAN.md).
 
 ## Portrait
 
-<table>
-<tr><td align="center"><img src="screenshots/tdp4/home_port.png" width="180" alt="HOME"><br>HOME</td><td align="center"><img src="screenshots/tdp4/p25_port.png" width="180" alt="P25"><br>P25</td><td align="center"><img src="screenshots/tdp4/fm_port.png" width="180" alt="FM"><br>FM</td><td align="center"><img src="screenshots/tdp4/adsb_port.png" width="180" alt="ADS-B"><br>ADS-B</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/falls_port.png" width="180" alt="FALLS"><br>FALLS</td><td align="center"><img src="screenshots/tdp4/falls_lora_port.png" width="180" alt="FALLS, LoRa sweep"><br>FALLS, LoRa sweep</td><td align="center"><img src="screenshots/tdp4/mesh_port.png" width="180" alt="MESH"><br>MESH</td><td align="center"><img src="screenshots/tdp4/rec_port.png" width="180" alt="REC"><br>REC</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/diag_port.png" width="180" alt="DIAG"><br>DIAG</td><td align="center"><img src="screenshots/tdp4/set_port.png" width="180" alt="SET"><br>SET</td><td align="center"><img src="screenshots/tdp4/map_port.png" width="180" alt="MAP"><br>MAP</td><td align="center"><img src="screenshots/tdp4/gps_port.png" width="180" alt="GPS"><br>GPS</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/radios_port.png" width="180" alt="RADIOS"><br>RADIOS</td></tr>
-</table>
+The app pages stack panels and use several rows of touch controls. HOME pages
+its tiles. P25 keeps its DECODE / SIGNAL readout together, with SPECTRUM, SCAN,
+SETTINGS, CALLS and DMR tiles below. CALLS has PLAY, STOP, DELETE, OPTIONS and
+BACK. NOTES opens touch keys for editing when no keyboard is attached.
 
 ## Landscape
 
-<table>
-<tr><td align="center"><img src="screenshots/tdp4/home_land.png" width="400" alt="HOME"><br>HOME</td><td align="center"><img src="screenshots/tdp4/p25_land.png" width="400" alt="P25"><br>P25</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/fm_land.png" width="400" alt="FM"><br>FM</td><td align="center"><img src="screenshots/tdp4/adsb_land.png" width="400" alt="ADS-B"><br>ADS-B</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/falls_land.png" width="400" alt="FALLS"><br>FALLS</td><td align="center"><img src="screenshots/tdp4/falls_lora_land.png" width="400" alt="FALLS, LoRa sweep"><br>FALLS, LoRa sweep</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/mesh_land.png" width="400" alt="MESH"><br>MESH</td><td align="center"><img src="screenshots/tdp4/rec_land.png" width="400" alt="REC"><br>REC</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/diag_land.png" width="400" alt="DIAG"><br>DIAG</td><td align="center"><img src="screenshots/tdp4/set_land.png" width="400" alt="SET"><br>SET</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/map_land.png" width="400" alt="MAP"><br>MAP</td><td align="center"><img src="screenshots/tdp4/gps_land.png" width="400" alt="GPS"><br>GPS</td></tr>
-<tr><td align="center"><img src="screenshots/tdp4/radios_land.png" width="400" alt="RADIOS"><br>RADIOS</td></tr>
-</table>
+Pages use the wider view for plots, lists and side-by-side panels where space
+allows. Controls adapt to whether a keyboard is attached. The displayed key
+hints show the current bindings. F10 opens help; F11 rotates the screen.
 
 ## Daylight
 
-SET > Daylight: black ink on a white ground, for the sun.
-
-<table>
-<tr><td align="center"><img src="screenshots/tdp4/day_home_port.png" width="180" alt="HOME"><br>HOME</td><td align="center"><img src="screenshots/tdp4/day_set_port.png" width="180" alt="SET"><br>SET</td><td align="center"><img src="screenshots/tdp4/day_falls_port.png" width="180" alt="FALLS, LoRa sweep"><br>FALLS, LoRa sweep</td><td align="center"><img src="screenshots/tdp4/day_home_land.png" width="180" alt="HOME, landscape"><br>HOME, landscape</td></tr>
-</table>
+SET > DISPLAY > Daylight uses black text on a white background. The underlying
+theme choice is kept. SET > Rotate lock holds the current orientation.

@@ -31,6 +31,7 @@ serial*.txt
 !/docs/THIRD_PARTY_NOTICES.md
 !/docs/TDP4_RELEASE_NOTES.md
 !/docs/TDP4_FIRST_FLASH.md
+!/docs/TDP4_UPDATES_AND_CALLS.md
 !/docs/TDP4_SCREENS.md
 !/docs/TDP4_DECODERS.md
 !/docs/PUBLIC_MAIN_RECONCILED.txt

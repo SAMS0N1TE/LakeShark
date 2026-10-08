@@ -2,62 +2,89 @@
 
 Radio controls and waterfall controls use separate shortcuts. In FM and P25,
 T opens tuning, U/J increases/decreases receiver gain, and +/- changes volume.
-On the waterfall, F changes detail, G changes display range, H holds/resumes,
-S changes split, R changes reference, P changes palette, A changes averaging,
-D changes scroll speed, K changes peak hold, and C changes contrast.
-These keys accept either case. The standalone Falls source/band controls use
-V/N; its FM mode, tuning and sweep controls use E/T/W.
+On the LR2021, P25 GAIN selects AUTO or MAX and keeps the choice.
+R opens RADIO and O opens OPTIONS. Inside scanner lists, R is RANGE and O is
+SCAN TYPE instead.
 
-The default spectrum share is one quarter, adjustable with SPLIT. P25 audio
-status occupies a single row below the plot. Waiting for a voice header remains
-a decoder state and does not reserve a panel above the spectrum.
+On the waterfall, F changes DETAIL, G changes RANGE, H holds/resumes, S changes
+SPLIT, I changes REF, P changes COLOR, A changes AVG, D changes SPEED, K changes
+PEAK, and C changes CNTRST. These letter keys accept either case. FALLS uses
+RADIO/R to choose its receiver and BAND/N to choose a band. Its FM controls
+include MODE/E, TUNE/T and SWEEP/W.
 
-Home group keys R/F/S/U work in either case and take priority over app initials.
-Use arrows and Enter for apps whose initial is a group key. ] selects more apps.
-Quick controls and ordinary buttons display their actual shortcut bindings.
-Disabled buttons reject taps. Shared hit areas are cleared when the screen
-changes and before a new frame so hidden controls cannot retain old targets.
+The default spectrum share is one quarter, adjustable with SPLIT. Left/Right
+moves a waterfall marker; Space tunes to it. Tap a signal to mark it, then use
+TUNE MARK/Y (TUNE in landscape). P25/FM tune the receiver feeding the view.
+An FM sweep returns to listening. A LoRa sweep hands the frequency to LORA LABS
+direct receive. Changing the source clears the marker.
 
-Portrait NFC uses larger block targets, Previous/Next pages, and a Back button.
-Tap a block, then VIEW for its bytes. Journal has touch scrolling and Back;
-Sub-GHz has Previous/Next pattern controls. The Radios page on T-Display-P4
-reports CC1101, nRF24 and NFC status from MIX-RF and opens its workbench.
+HOME uses F1-F4 for RADIO, FIELD, SYSTEM and USER. F5/F6 or PREV/NEXT changes
+pages. Arrows select tiles; Enter opens one. Digits 1-9 open tiles on the current
+page. An app's initial selects its tile. The number of tiles depends on the
+screen size. Disabled controls cannot be activated.
 
-Animation is bounded and event-driven: button press/state feedback, live app
-markers, actual packet/save highlights, busy operation indicators, and a brief
-highlight as NFC blocks become verified. The NFC progress bar uses verified
-block counts. Busy indicators represent activity, not percentage completion.
-Animation state uses PSRAM where appropriate; no new task, polling loop, radio
-measurement, automatic transmission or SD logging was added for animation.
-
-Validation covered portrait and landscape renders for all 16 simulator apps,
-37 screen tests, the render-cost tests and the complete host verification gate.
-On-device checks exercised P25 waterfall shortcuts without changing receiver
-gain/tuning, NFC portrait paging to blocks 96 and 192, block selection and hex
-view, and live keyboard-radio status. Simulated RF fixtures are layout checks,
-not reception evidence. A P25 hardware check measured about 3.5 ms UI draw time,
-56 ms frame interval, 16 active USB transfer slots and zero dropped input bytes.
+Portrait NFC has block paging and a Back control. Tap a block, then VIEW for
+its bytes. NOTES supports touch keys and scrolling. SUB-GHZ has pattern paging.
+RADIOS shows keyboard radio status and can open MIX-RF.
 
 ## P25 and FM radio screens
 
-The radio view shows the receiver's effective frequency when available. Pending or failed tunes remain visible. MORE opens the existing decode, waterfall, mode and audio controls; RADIO or 0 returns.
+P25 shows DECODE / SIGNAL in one window. SPECTRUM/2 toggles its plot. SCAN/3,
+SETTINGS/4, CALLS/5 and DMR/6 open the corresponding views. P also opens SETTINGS
+outside the spectrum view. On the spectrum view, P changes COLOR. 1 returns to
+decode. Use RADIO/R to choose the receiver. Without a USB SDR, a fitted LR2021
+can receive P25 Phase 1 from 150 MHz.
+
+FM opens on the radio panel. MORE opens its VFO, data and spectrum views.
+1 opens VFO, 2 opens the current data view, and 3 opens SPECTRUM. SCANNER/0 or
+Escape returns to the radio panel. MODE/E selects NFM, WFM, AM, POCSAG, FLEX,
+ACARS, SAME/EAS, APRS or AIS; SWEEP/W switches the band sweep.
 
 - **TUNE** opens frequency entry. A manual tune or mode change stops channel scanning.
-- **LISTS > SAVE FREQ** saves the current frequency in the selected zone. With all zones selected, new channels go into zone 0. ENABLE includes or excludes the selected channel. Use arrows or the touch page controls for longer lists.
-- **SCAN** opens two choices: **CHANNEL LIST** visits saved frequencies; **BAND SCAN** visits every frequency step in a range. Select the type, then press START. STEP cycles 5, 6.25, 10, 12.5, 15, 20, 25 and 50 kHz. RANGE cycles 150–162 MHz, 144–148 MHz and 420–450 MHz, with the chosen step size (12.5 kHz by default). Existing console band settings are also honored.
-- **START** begins the selected scan type. HOLD pins the channel, including a quiet channel. RESUME/NEXT advances. STOP ends scanning. SKIP excludes a saved channel until scanning restarts; in band mode it advances one step.
-- FM **A/B** swaps the active and standby frequency on one receiver. It does not provide simultaneous reception. **SQUELCH** edits the 0–100 IQ-level threshold; it is a percentage, not dB.
+- **LISTS > SAVE FREQ** saves the frequency in the selected zone. With all zones selected, new channels go into zone 0. ENABLE includes or excludes the selected channel.
+- **SCAN** offers **CHANNEL LIST** and **BAND SCAN**. Select a type, then START. The default band is 150-162.6 MHz at 7.5 kHz. RANGE also offers VHF 136-174, NOAA WX, 2m, 70cm and UHF 450-470. Each preset sets its own step. STEP cycles 5, 6.25, 7.5, 10, 12.5, 15, 20, 25 and 50 kHz.
+- **HOLD** pins a channel, including a quiet one. RESUME releases it; NEXT advances. STOP ends scanning. SKIP excludes a saved channel until scanning restarts; in band mode it advances one step.
+- FM **A / B** swaps active and standby frequencies on one receiver. It does not receive both at once. **SQUELCH** adjusts the 0-100 threshold. NFM uses noise quieting; the percentage is not calibrated dBm.
 
-Channel scanning supports P25 Phase 1 and NFM. WFM, AM and data modes remain available under MORE. Saved-channel scanning and P25 trunked talkgroup following are separate functions.
+CHANNEL LIST supports conventional P25 Phase 1 and NFM, with MIXED AUDIO and
+GPS FILTER. Trunked talkgroup following is separate. See [Location scanning](LOCATION_SCAN.md).
 
-The simulator uses host fixtures, not RF measurements. Host tests cover tuning, sync dwell, hold, next, session skip, receiver loss and tune failure. On-device reception and scan timing still need a connected receiver check.
+P25 SETTINGS exposes demodulation, polarity, AGC, gain, volume, voice gate,
+sync beep, trunking auto-follow, encrypted-call skip, CQPSK tuning, scan
+threshold and scan hang. Select a row with touch or Up/Down. Left/Right changes
+it; CHANGE opens numeric entry where available. Load profiles here or with L.
 
-P25 has a dedicated **SETTINGS (P)** button, also available as page 3 under MORE. It exposes demodulation, polarity, AGC, receiver gain, volume, voice gate, sync beep, trunking auto-follow, encrypted-call skip, CQPSK loop tuning/reset, scan threshold and scan hang. Select a row with touch or UP/DOWN, adjust with the left/right controls, or use CHANGE for numeric entry.
+FM > MORE > MODE selects the newer data receivers. APRS has STATIONS, AIS has
+VESSELS, and SAME/EAS has ALERTS. OPTIONS holds settings for the chosen mode.
+NFM > OPTIONS > TONE > TONE SQUELCH selects OFF, CTCSS or normal/inverted DCS.
+SHOW DETECTED shows the heard tone. A tone gate set for a matching saved NFM
+channel is kept with that channel; an unsaved VFO tone is temporary.
 
-On a waterfall, tap a signal to mark it, then press **TUNE MARK (Y)**. The marked frequency is shown on the button. P25/FM tune the receiver feeding the view; FM band sweeps switch back to listening. LoRa sweeps hand the marked frequency to LoRa Labs direct receive. A missing marker disables tuning, and changing the source clears the old marker.
+CALLS/5 in P25 or FM opens the SD archive. [Updates and calls](TDP4_UPDATES_AND_CALLS.md)
+covers recording, playback, retention and file sizes. DMR/6 in P25 shows Tier II
+call activity. SLOT/S chooses BOTH, 1 or 2; HOLD/H holds a heard destination.
+OPTIONS offers slot, colour-code and talkgroup filters. Voice and DMR recording
+are unavailable. Encrypted calls are marked and muted.
 
-REC and SUB-GHZ use the same capture list. **SOURCE/R** switches RTL/CC1101 while
-WATCH is stopped; **WATCH/W** starts passive capture. **TOOLS/D** opens the old
-RTL capture diagnostics, and **BACK/B** returns. PIN, EXPORT and JOURNAL work
-with either source. OOK24 rows show a repeated decoded payload; RAW rows remain
-unclassified pulse captures. Landscape shows the waveform alongside the list.
+REC and SUB-GHZ share captures. RADIO/R chooses the receiver. Stop WATCH before
+changing capture source. WATCH/W starts capture; TOOLS/D opens RTL capture
+controls in REC. EXPORT and marks keep selected captures or observations.
+LoRa FSK captures and CC1101 raw OOK/FSK captures can be replayed where supported.
+An OOK24 row identifies a repeated pulse pattern, not a verified manufacturer.
+
+MUSIC is in RADIO. TRACKS/L opens WAV files from SD `/music` or internal
+`/music`. Space plays/pauses, I toggles MIC, W toggles microphone recording,
+1-4 or V selects LEVEL, BANDS, SCAN or waterfall, C changes colour, and +/-
+changes volume. Recordings are `/sdcard/music/REC-001.wav` and subsequent free
+numbers. OPTIONS includes player and display settings.
+
+TERMINAL is in SYSTEM. Enter runs a command; Up/Down recalls history; Tab
+completes a command; Left/Right scrolls output. KEYS opens touch input. ERRORS
+runs `crumb log`, HEAP shows memory, and CLEAR clears output. Type `help` for
+the available console commands.
+
+CELL WATCH is in RADIO. BAND/B selects a band, LEARN/L takes three baseline
+passes, LOAD/D loads a baseline, and SITE/G chooses GPS or LOCAL. LTE/E searches
+for LTE carriers. HIGH RATE/P offers a restart into the high-rate capture mode.
+RADIO/R and OPTIONS/O select its receiver and settings. Reports are optional.
+It observes broadcast signals and does not read subscriber messages.

@@ -1,191 +1,151 @@
-# LoRa Labs and Journal
+# LoRa Labs and Notes
 
-The launcher groups apps under Radio, Field, System and User. Radio contains P25,
-FM, ADS-B, Waterfall, Mesh and LoRa Labs. Field contains the recorder, map, GPS and
-Journal. A group pages after six apps; it does not shrink the existing controls.
+The launcher groups apps under RADIO, FIELD, SYSTEM and USER. RADIO includes
+LORA LABS and EXPERIMENTS. FIELD includes REC, MAP, GPS, NOTES and COMPASS.
+Use PREV/NEXT or F5/F6 for more apps. Page size follows the available space.
 
 ## LoRa Labs
 
-DIRECT off leaves Mesh in control. DIRECT on waits for Mesh to finish using the
-SX1262, saves its configuration and receive state, and applies the lab settings.
-Leaving the app requests restoration. A failed restoration keeps the mesh held
-instead of resuming it on the wrong frequency. Console radio commands and
-waterfall acquisition refuse while Labs owns the radio.
+DIRECT off leaves Mesh in control. DIRECT on waits for the LoRa radio, saves
+its configuration and receive state, and applies the lab settings. Leaving
+Labs restores the prior state. RADIO/R chooses the fitted SX1262 or LR2021.
+The chip's tuning range does not establish the antenna's useful coverage.
 
 Modes:
 
-- Packets: live channel RSSI and a bounded hexadecimal preview of received LoRa
-  packets. SF, bandwidth, coding rate, preamble, sync word, CRC and IQ polarity
-  must match the transmitter.
-- Spectrum: RSSI across the selected centre frequency plus/minus 1 MHz. The
-  existing SX1262 scan primitive runs on the field worker.
-- Bearing: measured RSSI in 36 magnetic-heading bins. Hold the board level.
-  This is an experimental polar plot, not a validated direction estimate.
+- PACKETS: channel RSSI and a hexadecimal preview of LoRa packets. Frequency,
+  SF, bandwidth, coding rate, preamble, sync word, CRC and IQ polarity must
+  match the transmitter.
+- SPECTRUM: channel energy across the selected band, or 1 MHz either side of
+  the centre frequency. It is an RSSI sweep, not decoded traffic.
+- BEARING: RSSI in 36 magnetic-heading bins. This is an experimental plot,
+  not a validated transmitter bearing.
+- GFSK: receive-only FSK with bitrate, deviation, bandwidth and sync settings.
+- POCSAG: receive-only paging. OPTIONS selects baud and NORMAL or INVERTED
+  polarity. The BAUD picker offers 1200 and 2400. For a 512 baud channel, use
+  PAGER RECON and its 512N or 512I probe. Keep message text out
+  of shared notes and examples.
 
-SETUP exposes frequency, modulation, power and packet settings. SEND transmits
-one typed packet, only with DIRECT enabled and outside spectrum mode. There is
-no repeating transmitter. MARK saves the observation with GPS and motion data.
-The chip's programmable range does not establish the fitted module's antenna
-and matching-network coverage.
+SETUP/S and OPTIONS/O expose settings for the current mode. BAND/B chooses a
+frequency or spectrum span. SEND/T sends one typed LoRa packet with DIRECT on;
+SPECTRUM, GFSK and POCSAG do not transmit. MARK/J saves an observation to NOTES.
+REC/E controls lab recording. HOLD/H freezes the plot; CLEAR/X clears it.
 
-## Journal
+## Notes
 
-NEW creates a titled note; EDIT changes its text while preserving its original
-sensor attachment. A note can contain up to 767 characters. The recent list holds
-48 entries. Older saved entries remain in the SD archive. MAP centres the map on
-the selected entry when its attached GPS fix was valid.
+NOTES replaces the old Journal launcher app. NEW/N creates a Markdown note on
+the SD card. FIND/F filters the list; OPEN or Enter opens a note. EDIT/E changes
+it. DONE saves the editor. INSERT adds a checklist, GPS, heading, radio, sensors
+or a map picture. A map picture is saved beside the note, including in a newly
+created note.
 
-Open a note, then choose SENSORS / ENTRY to inspect its saved radio, GPS and
-nine-axis attachment. SENSORS / LIVE on the list shows the current readings.
-Sub-GHz WATCH can bookmark a selected capture directly into Journal; its note
-separates historical capture timestamps from the sensors sampled at bookmark time.
+Notes live under `/sdcard/notes`. The editor holds up to 16 KiB of text; the list
+indexes up to 200 notes. Keep an SD card fitted for saved notes and pictures.
+MAP opens the saved place; GO TO opens COMPASS guidance when the note has a
+place. A saved attachment describes the reading at the time it was inserted.
+It does not update as the receiver moves.
 
-Choose an optional radio attachment: Mesh, LoRa Labs, RTL, Wi-Fi or Bluetooth.
-GPS and all nine IMU axes are sampled independently of the radio. The
-CC1101 input observes the receive-energy monitor after opening MIX-RF and
-enabling MONITOR. nRF24 and NFC inputs use the MIX-RF snapshot providers after
-their hardware probes pass and the corresponding observation mode is enabled.
-Selecting an input does not tune it, start a Wi-Fi scan or start transmitting.
-
-RECORD writes a one-second sample stream while other apps are open. Notes remain
-usable without SD; unsaved notes are marked RAM. Editing and saving a RAM note
-after an empty SD journal directory is available persists it. If a card with a
-different existing archive is inserted during the session, that archive stays
-read-only and notes remain in RAM; export or transcribe those notes before
-restarting with the card fitted. Hot-swapping archives is not supported. The bounded RAM list refuses new notes when
-it would evict an unsaved note.
-
-Files under `/sdcard/journal`:
-
-- `entries.bin`: versioned, checksummed recovery records. An incomplete trailing
-  record is discarded before the next append; earlier valid records remain.
-- `notes.md`: readable note history, including edited versions.
-- `samples.csv`: GPS, time, accelerometer, gyro, magnetometer and radio samples.
-
-Recovery and sample logs each stop accepting new data at 16 MiB. Copy archives
-off the card before removing or rotating them. The app never silently deletes
-an archive. GPS, IMU, radio and signal validity flags distinguish unavailable
-measurements from measured zero. Unavailable SNR is `nan` in CSV and omitted
-from Markdown; channel RSSI alone does not measure packet SNR. Heading is magnetic and uncompensated for tilt;
-it is not true north. Without valid GNSS time, entries retain the uptime stamp.
+REC still offers radio metadata and sensor CSV recording. Its older Journal
+view is a recorder page, not the NOTES editor. The recorder's files under
+`/sdcard/journal` include `entries.bin`, `notes.md` and `samples.csv`.
+Radio selection does not tune or start an idle receiver. MIX-RF inputs require
+that receiver's observation mode to be running. Unavailable readings are not
+measured zero. Without valid time, recordings use an uptime stamp.
 
 ## Runtime budget
 
-Labs includes CRC, IQ inversion, public/private sync, plot hold/clear, and
-compass calibration controls. DIRECT gives Labs the SX1262 and pauses Mesh
-reception; the screen marks this in yellow. With DIRECT off, Mesh continues
-in the background and its normal notification banner remains available.
+DIRECT pauses Mesh use of the LoRa radio. With DIRECT off, Mesh can receive
+in the background. P25 and ADSB on the LR2021 yield when a lab or experiment
+needs that chip. P25 shows LR2021 IN USE ELSEWHERE while it waits.
 
-CAL opens a guide with a board picture, animated arrows, and one instruction
-at a time: screen up, USB edge down, right edge down, top edge down, left edge
-down, then screen down. Each position needs twenty consecutive valid readings
-at 10 Hz while the board is steady. A hold bar fills, the guide advances, and
-the final fit/save happens automatically. Sensor interruptions or movement
-reset only the current hold. RESTART clears the run; CANCEL keeps the prior
-calibration. Screen auto-rotation pauses during the run so the guide stays put.
-The initial screen-up hold establishes the board's Z polarity; edge directions
-use the same mounted screen axes as normal auto-rotation.
+CAL/K opens the compass calibration guide. Follow screen up, USB edge down,
+right edge down, top edge down, left edge down, screen down, then figure eight.
+The hold bar advances while the board is steady. Movement or missing readings
+restarts the current hold. RESTART clears the run; CANCEL keeps the prior
+calibration. Rotation pauses during the guide. Follow the save result on screen.
+Recalibrate when the keyboard or nearby magnetic hardware changes.
 
-The fit bounds the contribution from each gravity region so a long pause on
-one side cannot exhaust the sample budget or swamp the other positions.
-Flat-only, stationary, insufficient, and poor-fit data are
-rejected while the previous calibration remains usable. Successful calibration
-uses two versioned, checksummed SD slots so an interrupted newer save preserves
-the prior generation. The screen distinguishes a saved calibration from one
-held only in RAM. Recalibrate when the keyboard or nearby magnetic hardware
-changes. Compass use still requires a level board; tilt compensation and full
-soft-iron correction are not implemented. P4 heading direction was checked
-against user-provided north/east/south references; this is not a precision calibration.
-The fit follows the sphere model in
-[NXP AN4246, section 6](https://www.nxp.com/docs/en/application-note/AN4246.pdf).
+EXPAND/V in BEARING opens the detailed compass. BACK, V or Escape returns to
+Labs. VIEW/B selects signals or sensors. MARK/J keeps the observation. The
+heading is magnetic; COMPASS is the app for true-north and GO TO guidance.
+COMPASS keeps the heading moving smoothly as the board is raised.
+The received-packet dots show the board heading near reception. They are not
+transmitter locations. A mesh peer can be relayed rather than nearby.
 
-The compass dial rotates beneath a fixed yellow physical-board-top marker.
-Red N indicates magnetic north. EXPAND COMPASS at the bottom of Bearing mode,
-or V, opens the detailed view. BACK, V or Escape returns to Labs. VIEW/B
-switches between detected signals and sensors; MARK/J attaches a Journal observation.
-The expanded view displays actual field strength, turn rate, tilt, temperature
-and GPS coordinates/altitude when valid. Opening uses a short ease-out zoom;
-the heading follows the shortest path across north. Global app navigation stays available.
+## Experiments
 
-The signals view shows recent received Mesh/LoRa packets and up to three Mesh
-peers with verified advertisements. A peer may be relayed and is not necessarily
-nearby. Unknown device identities are not inferred. Packet observations use a
-fixed eight-entry RAM ring and do not create SD files. Mesh polling reports
-the latest observation when its receive counter advances; it is not a packet
-sniffer and can coalesce multiple arrivals. On entering observation, old counts
-establish a baseline rather than creating new detections. Cyan dots show board
-heading sampled near packet reception, with radius based on packet RSSI. They
-are not transmitter locations or a direction-finding result. Idle energy samples
-do not add dots. The sensor view hides this overlay.
+Open RADIO > EXPERIMENTS. Select a trial and press Enter. START/S starts or
+stops it. RADIO/R chooses its receiver; OPTIONS/O configures the trial. One
+experiment runs at a time. NOTE/N saves its readout to NOTES on SD.
 
-Top and bottom text uses the rounded-panel geometry, including the Labs and
-Journal status rows. A transient IMU bus collision retains the last coherent
-sample for less than 350 ms; longer failures become unavailable.
+- **RS41 SONDES** receives Vaisala weather balloon signals in 400-406 MHz
+  on the LR2021.
+  OPTIONS > RECEIVER selects FREQ MHz or PRESET MHz. TRACKS sets KEEP HOURS
+  and SHOW ON MAP. SONDES lists heard sondes; open one for its track and
+  RECOVER guidance in COMPASS when it has a position.
+- **LR433** receives supported tire-pressure, weather and meter sensors at
+  315-928 MHz on the LR2021. OPTIONS offers BANDS, DWELL, UNITS and OOK GAIN.
+  SENSORS opens heard devices; open one for reading history and a name.
+  A detected signal does not guarantee a supported sensor decode.
+- **PAGER RECON** looks for POCSAG paging channels on the LR2021 from 150 MHz.
+  OPTIONS > CHANNELS selects a plan or one frequency. FREQUENCY sets that
+  channel; DWELL sets time on a live channel; PROBE sets baud and polarity.
+  AUTO tries probes. N means normal polarity and I means inverted, for example
+  1200N or 1200I. Set ONE FREQ and the matching probe for a known channel.
 
-The UI copies fixed-size snapshots and draws through the same button, panel and
-palette functions as Mesh. It performs no SD access or radio transactions.
-The field worker polls received packets every 25 ms while direct packet/bearing
-mode is active. Sensor and graph snapshots update at at most 10 Hz; a separate,
-lower-priority journal worker writes SD. Both workers use PSRAM stacks on P4;
-they must not call SPI flash or NVS APIs. Notes and command queues have explicit limits. GPS/IMU sampling
-pauses when neither app is visible and recording/direct control are off.
+PAGER RECON > OPTIONS > RECEIVE offers **NATIVE STREAM**, **PACKET** and
+**SIGN STREAM**. NATIVE STREAM is the 2.9.1 default and uses the selected probe's
+baud. PACKET uses sync captures. SIGN STREAM searches streamed FSK signs for
+POCSAG rates. The receiver continues after the first sync and uses full receive
+gain. Frequency, channel plan, dwell, probe and receive method are kept after
+reboot and update. MESSAGE TEXT is off by default. Do not copy message text
+or personal data into shared examples.
 
-Map aircraft ease between received fixes for 750 ms, without extrapolating past
-the latest fix. Only overlays change; tile rasterisation is not invalidated by
-the animation. Node ages use the mesh timestamp clock. Aircraft age follows the
-position timestamp, not unrelated messages from the same aircraft.
+POCSAG is also available in FM and LORA LABS. The LR2021's receiver clock
+settles when receive starts. `lora lrclk` shows the saved clock choice;
+`lora lrclk tcxo` selects the default TCXO and `lora lrclk xtal` selects the
+older crystal setting. `lora lrstat` reports the active clock, regulator,
+chip errors and calibration status. Run these in TERMINAL or a console.
+
+## Mesh INSPECT and LINK SURVEY
+
+In MESH, open a node's details and choose INSPECT. TRACE shows the route;
+STATUS and TELEM request the node's status and telemetry. LOGIN uses the
+password entered in OPTIONS; a blank password is a guest login. A node must
+support and permit the request. OPTIONS also sets timeouts and intervals.
+LakeShark answers telemetry requests according to its peer permissions.
+
+Open LINK > SURVEY, or press V in LINK. If SCAN WI-FI is on, first turn both
+Wi-Fi STA and AP off. In TERMINAL, `wifi leave` stops STA and `wifi off` stops
+the AP. A connected STA also counts as on. START/S begins a walk;
+STOP/S ends it. SORT/R changes ordering; DETAIL/D or Enter opens an observation.
+OPTIONS sets SCAN WI-FI, LISTEN BLE, SCAN INTERVAL, ONLY WITH GPS FIX and KEEP
+SESSIONS. Wi-Fi, BLE and ONLY WITH GPS FIX are on by default, with a 10-second
+interval and 10 kept sessions. Turn ONLY WITH GPS FIX off to record without
+a position. Stop the session before changing options.
+
+Each walk saves a CSV under `/sdcard/lakeshark/survey`. Entries include the
+heard Wi-Fi or BLE device, first and last sighting, best signal and position
+when a fresh GPS fix exists. Best-signal position is where the receiver was,
+not the device's location. Random BLE addresses can change. Keep device names,
+addresses and locations out of public examples.
 
 ## MixRF bring-up with the keyboard attached
 
-1. Install the development image once using the known working USB arrangement
-   with the attachment disconnected. Reconnect the keyboard for actual tests.
-2. Join the device to the local Wi-Fi network in LINK. The existing HTTP server
-   also works in its access-point mode. Poll `http://DEVICE_IP/debug/field` to
-   observe ownership, counters, queue drops and GPS/IMU validity without serial.
-   The endpoint is read-only and returns no note contents or coordinates.
-3. Export journal files through the existing Wi-Fi file browser. Drive the app
-   using the fitted keyboard/touchscreen. This provides configuration, counters
-   and captured evidence without reopening a USB serial port.
-4. Before enabling MixRF pins, compare the fitted keyboard revision against
-   LilyGO's schematic and driver configuration. The commented GPIO placeholders
-   in the LakeShark variant are not a verified pin map. Include expander-controlled
-   selects, CE, RF-switch selection and power in that comparison.
-5. Establish inactive chip selects and nRF CE low before any transfer. Use the
-   shared SPI bus lock across select/transfer/deselect. Probe one device at a time:
-   CC1101 part/version and restored register round-trip; nRF restored address
-   round-trip (STATUS alone is not identification); ST25 identity and an owned
-   tag. All-zero/all-one bus reads are failures.
-6. Verify reception with known signals and retain the evidence in Journal. A
-   successful register probe is not a successful receiver. Test concurrent LoRa,
-   keyboard, touch, Wi-Fi and SD use, then rapid app switching and power cycles.
-   Measure queue drops, packet loss, UI frame time and stack high-water marks.
+1. Install LakeShark through P4U. If the keyboard prevents USB installation,
+   disconnect it for flashing, then reconnect it.
+2. Open RADIO > MIX-RF and choose PROBE. Stop the monitors before retrying a probe.
+3. Choose MONITOR for CC1101 energy, 2.4 SCAN for nRF24 activity, or NFC for
+   NFC-A presence. Use STOP ALL before disconnecting the keyboard.
+4. Use MARK to keep a selected observation in NOTES. Use REC for continuous
+   sensor and radio metadata recording.
 
-The vendor's [board repository](https://github.com/Xinyuan-LilyGO/T-Display-P4)
-and [keyboard examples](https://github.com/Xinyuan-LilyGO/T-Display-P4/tree/main/main/keyboard_examples)
-are the hardware references. The keyboard's USB flashing problem is not yet
-diagnosed; do not assume it is a boot strap or USB routing fault without evidence.
+See [Keyboard radio monitor](MIX_RF.md) for the limits of each mode. A successful
+probe identifies compatible registers; it does not prove useful RF reception.
 
 ### Subsequent firmware updates
 
-Wi-Fi diagnostics do not make the current factory-only flash layout OTA-capable.
-ESP-IDF requires OTA application slots and an OTA data partition for the normal
-update/rollback workflow. See [Espressif's OTA documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32p4/api-reference/system/ota.html).
-
-A candidate 16 MiB layout preserves NVS and the existing SPIFFS offset:
-
-| Partition | Offset | Size |
-| --- | --- | --- |
-| NVS | 0x9000 | 0x6000 |
-| PHY | 0xF000 | 0x1000 |
-| OTA 0 | 0x10000 | 0x480000 |
-| OTA 1 | 0x490000 | 0x480000 |
-| Existing storage | 0x910000 | 0x400000 |
-| Existing coredump | 0xD10000 | 0x10000 |
-| OTA data | 0xD20000 | 0x2000 |
-
-This is a proposal, not an activated partition change. Before installing it:
-back up flash, verify actual flash size and image fit, prepare the updater and
-rollback-enabled bootloader, and prove interrupted-upload recovery. The measured
-existing app is about 2.22 MB; each proposed slot is 4.5 MiB. A running app cannot
-fix a ROM-mode electrical conflict through Wi-Fi. One initial working flash
-arrangement is still needed to install the update path.
+2.9.1 uses two app slots and supports signed updates over WiFi with rollback.
+From 2.8 or earlier, install once through USB or the web flasher. A full install
+rewrites internal storage and keeps settings and saved Wi-Fi. Later updates
+use SYSTEM > UPDATE. See [Updates and calls](TDP4_UPDATES_AND_CALLS.md).
