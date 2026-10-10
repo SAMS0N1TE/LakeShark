@@ -13,10 +13,9 @@
 /* The real panel is portrait and the framebuffer never rotates; landscape is
    entirely the blitter's transpose. Sizing this to the actual panel is what
    makes the landscape branch exercise the same arithmetic it does on glass. */
-#define NATIVE_W 568
-#define NATIVE_H 1232
+static int NATIVE_W = 568, NATIVE_H = 1232;
 
-static uint16_t g_fb[NATIVE_W * NATIVE_H];
+static uint16_t g_fb[568 * 1232];
 static int g_presents;
 
 bool ls_panel_fb(ls_panel_fb_t *out)
@@ -88,30 +87,23 @@ LS_CASE(a_painted_cell_maps_back_to_itself_in_landscape)
     ls_tui_end();
 }
 
-LS_CASE(counter_clockwise_is_refused_rather_than_desyncing_touch)
+LS_CASE(counter_clockwise_pixels_and_touch_agree)
 {
-    /* The blitter has no counter-clockwise path. Accepting the request would
-       invert the touch inverse alone, leaving the picture where it was and
-       every tap mirrored - which is why the setter now refuses. This pins
-       that: after asking for it, the mapping is still the clockwise one. */
+    ls_tui_set_rotation_cw(false);
     LS_CHECK(ls_tui_begin(1232, 568));
-    ls_tui_set_rotation_cw(true);
-
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
-
-    paint_only(0, 0, 'W');
-    int px, py;
-    LS_CHECK(one_lit_pixel(&px, &py));
-
-    ls_tui_set_rotation_cw(false);      /* must not take effect */
-
-    int gc = -1, gr = -1;
-    LS_CHECK_MSG(ls_tui_pixel_to_cell(px, py, &gc, &gr),
-                 "the pixel stopped mapping after a refused flip");
-    LS_CHECK_MSG(gc == 0 && gr == 0,
-                 "a refused flip still moved the mapping to %d,%d", gc, gr);
+    const int C[][2] = { {0,0}, {cols-1,0}, {0,rows-1}, {cols-1,rows-1}, {cols/2,rows/2} };
+    for (unsigned i=0; i<sizeof(C)/sizeof(C[0]); i++) {
+        paint_only(C[i][0], C[i][1], 'W');
+        int px, py, gc=-1, gr=-1;
+        LS_CHECK(one_lit_pixel(&px, &py));
+        LS_CHECK(ls_tui_pixel_to_cell(px, py, &gc, &gr));
+        LS_EQ_INT(C[i][0], gc);
+        LS_EQ_INT(C[i][1], gr);
+    }
     ls_tui_end();
+    ls_tui_set_rotation_cw(true);
 }
 
 LS_CASE(a_painted_cell_maps_back_to_itself_in_portrait)
@@ -407,4 +399,102 @@ LS_CASE(a_trace_cell_paints_its_ground_in_portrait)
 LS_CASE(a_trace_cell_paints_its_ground_in_landscape)
 {
     run_trace_ground_case(1232, 568);
+}
+
+LS_CASE(camera_hole_keeps_the_full_grid_and_touch_agrees)
+{
+    NATIVE_W=540; NATIVE_H=1168;
+    ls_tui_set_corner_radius(40);
+    for (int rotation=-1; rotation<=1; rotation++) {
+        const int w = rotation ? 1168 : 540, h = rotation ? 540 : 1168;
+        ls_tui_set_rotation_cw(rotation > 0);
+        /* The grid without a hole, for comparison. */
+        ls_tui_set_cutout(0, 0, 0);
+        LS_CHECK(ls_tui_begin(w, h));
+        int cols0, rows0;
+        ls_tui_geometry(&cols0, &rows0, NULL, NULL);
+        tui_rect none;
+        LS_CHECK(!ls_tui_cutout(&none));
+        LS_EQ_INT(0, none.w);
+        ls_tui_end();
+
+        ls_tui_set_cutout(270, 38, 28);
+        LS_CHECK(ls_tui_begin(w, h));
+        int cols, rows;
+        ls_tui_geometry(&cols, &rows, NULL, NULL);
+        LS_EQ_INT(cols0, cols);
+        LS_EQ_INT(rows0, rows);
+
+        const int C[][2] = { {0,0}, {cols-1,0}, {0,rows-1}, {cols-1,rows-1}, {cols/2,1} };
+        for (unsigned i=0; i<sizeof(C)/sizeof(C[0]); i++) {
+            paint_only(C[i][0], C[i][1], 'W');
+            int px, py, gc=-1, gr=-1;
+            LS_CHECK(one_lit_pixel(&px, &py));
+            LS_CHECK(ls_tui_pixel_to_cell(px, py, &gc, &gr));
+            LS_EQ_INT(C[i][0], gc);
+            LS_EQ_INT(C[i][1], gr);
+        }
+
+        /* Every native pixel of the hole that lands on a cell lands on one
+           the keep-out names, and the keep-out sits on the right edge. */
+        tui_rect k;
+        LS_CHECK(ls_tui_cutout(&k));
+        LS_CHECK(k.w > 0 && k.w <= 8 && k.h > 0 && k.h <= 6);
+        if (!rotation) LS_EQ_INT(0, k.y);
+        if (rotation > 0) LS_EQ_INT(cols, k.x + k.w);
+        if (rotation < 0) LS_EQ_INT(0, k.x);
+        if (rotation) LS_CHECK(k.y > rows / 3 && k.y + k.h < rows * 2 / 3);
+        else LS_CHECK(k.x > cols / 3 && k.x + k.w < cols * 2 / 3);
+        int seen = 0;
+        for (int y=38-28; y<=38+28; y++)
+            for (int x=270-28; x<=270+28; x++) {
+                if ((x-270)*(x-270)+(y-38)*(y-38) > 28*28) continue;
+                int c, r;
+                if (!ls_tui_pixel_to_cell(x, y, &c, &r)) continue;
+                seen++;
+                LS_CHECK_MSG(c >= k.x && c < k.x + k.w && r >= k.y && r < k.y + k.h,
+                             "hole pixel %d,%d is cell %d,%d outside the keep-out",
+                             x, y, c, r);
+            }
+        LS_CHECK(seen > 0);
+        ls_tui_end();
+    }
+    NATIVE_W=568; NATIVE_H=1232;
+    ls_tui_set_cutout(0,0,0);
+    ls_tui_set_rotation_cw(true);
+}
+
+LS_CASE(counter_clockwise_rotates_every_pixel_path)
+{
+    uint16_t *cw=malloc(sizeof(g_fb));
+    LS_CHECK(cw != NULL);
+    const uint16_t picture[] = {0xf800,0x07e0,0x001f,0xffff};
+    for (int turn=0; turn<2; turn++) {
+        ls_tui_set_rotation_cw(turn==0);
+        LS_CHECK(ls_tui_begin(1232,568));
+        tui_surface *sf=ls_tui_surface();
+        tui_rect all=tui_surface_rect(sf);
+        tui_frame_begin(sf);
+        const int16_t shapes[] = {'W',0x2805,0x85,0xc5,0x90,0xa3};
+        for (unsigned i=0; i<sizeof(shapes)/sizeof(shapes[0]); i++)
+            tui_put_char(sf,all,3+(int)i*2,3,shapes[i],TUI_ATTR(TUI_WHITE,TUI_BLUE));
+        tui_rect image=tui_rect_make(3,6,4,3);
+        ls_tui_image(image,picture,2,2,1);
+        tui_fill(sf,image,LS_TUI_IMAGE_CELL,TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        ls_tui_put_glass(sf,image,4,7,'X',TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        ls_tui_present();
+        tui_rect borrowed=tui_rect_make(15,6,2,2);
+        ls_tui_reserve(borrowed);
+        ls_tui_blit_rgb565(borrowed,picture,2,2);
+        ls_tui_reserve(tui_rect_make(0,0,0,0));
+        if (!turn) memcpy(cw,g_fb,sizeof(g_fb));
+        else {
+            for (size_t i=0; i<sizeof(g_fb)/sizeof(g_fb[0]); i++)
+                LS_CHECK_MSG(cw[i]==g_fb[sizeof(g_fb)/sizeof(g_fb[0])-1-i],
+                             "rotation differs at pixel %zu",i);
+        }
+        ls_tui_end();
+    }
+    free(cw);
+    ls_tui_set_rotation_cw(true);
 }

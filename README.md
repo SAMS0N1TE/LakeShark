@@ -115,7 +115,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 
 **[Install it from your browser](https://terminalbay.com/?m=lakeshark&board=tdp4)** or read the [first flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH).
 
-This port is for the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. The other T-Display-P4 panel SKU needs different timings and a different touch driver. The LCD-4.3 image and its 32 MB layout belong to a different board.
+This port defaults to the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. For the HI8561 TFT (540 x 1168), add `boards/t_display_p4_tft.defaults` after `boards/t_display_p4.defaults`. The LCD-4.3 image and its 32 MB layout belong to a different board.
 
 LINK needs matching ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT will not do.
 Flipper control on the T-Display-P4 uses Bluetooth.
@@ -161,6 +161,7 @@ Use the [pinned ESP-IDF 5.4.3 SDK](sdk/esp-idf-5.4.3/README.md). Give every boar
 
 ```sh
 idf.py -B build_tdp4 -D SDKCONFIG=build_tdp4/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults" build
+idf.py -B build_tdp4_tft -D SDKCONFIG=build_tdp4_tft/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults" build
 idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_headless_ble.defaults" build
 idf.py -B build_lcd43 -D SDKCONFIG=build_lcd43/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui.defaults" build
 ```

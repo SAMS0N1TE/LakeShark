@@ -147,6 +147,7 @@ void ls_tui_invalidate(void) { }
 /* The corner padding the real ls_tui.c works out from the panel's
    pixels. These panes have square corners, so there is nothing to stand off. */
 int ls_tui_corner_pad(int row) { (void)row; return 0; }
+bool ls_tui_cutout(tui_rect *cells) { if (cells) *cells = tui_rect_make(0, 0, 0, 0); return false; }
 
 static void grid_for(tui_rect pane)
 {

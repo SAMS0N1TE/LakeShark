@@ -29,6 +29,14 @@ void ls_tui_invalidate(void) { }
 static int s_corner_pad;
 int ls_tui_corner_pad(int row) { (void)row; return s_corner_pad; }
 
+/* The camera hole's cells; none unless a case sets one. */
+static tui_rect s_hole;
+bool ls_tui_cutout(tui_rect *cells)
+{
+    if (cells) *cells = s_hole;
+    return s_hole.w > 0;
+}
+
 static const ls_tui_theme_t *s_active;
 const ls_tui_theme_t *ls_tui_get_theme(void)
 {
@@ -77,6 +85,7 @@ static void setup(int cols, int rows)
     ls_tui_screen_set_dispatch_cb(NULL);
     s_cols = cols; s_rows = rows;
     s_corner_pad = 0;
+    s_hole = tui_rect_make(0, 0, 0, 0);
     tui_surface_setup(&g_sf, g_back, g_front, cols, rows);
     memset(s_keys_seen, 0, sizeof(s_keys_seen));
     s_consume = false;
@@ -765,4 +774,68 @@ LS_CASE(sweep_views_mute_and_drawn_touch_bounds_in_both_orientations) {
         LS_CHECK(grid_has("address may change"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
         ls_sweep_start(false);ls_scr_sweep.draw(&g_sf,a);ls_sweep_status_t st;ls_sweep_status(&st,esp_timer_get_time());LS_CHECK(!st.requested);
     }
+}
+
+LS_CASE(portrait_chrome_goes_round_the_camera_and_taps_follow_it)
+{
+    /* The TFT portrait grid: 52 columns, the hole over cells 23..28 of the
+       status row and the top of the tab strip. */
+    setup(52, 67);
+    s_corner_pad = 2;
+    s_hole = tui_rect_make(23, 0, 6, 4);
+    ls_tui_status_set_clock("14:32Z");
+    ls_tui_router_draw(&g_sf);
+
+    /* Nothing but blank ground under the hole or its one-cell margin, on
+       the status row and down the whole tab strip. */
+    for (int r = 0; r < 5; r++)
+        for (int c = 22; c <= 29; c++)
+            LS_CHECK_MSG(g_back[(size_t)r * s_cols + c].ch == ' ',
+                         "'%c' drawn at %d,%d beside the camera",
+                         g_back[(size_t)r * s_cols + c].ch, c, r);
+
+    /* Status: clock and [?] left of it, the screen name right of it. */
+    char row[160];
+    status_row(row, sizeof(row));
+    LS_CHECK_MSG(!strncmp(row + 2, "14:32Z [?] LAKESHARK", 20), "'%s'", row);
+    LS_CHECK_MSG(!strncmp(row + 30, "HOME", 4), "'%s'", row);
+
+    /* [?] answers where it is drawn. */
+    ls_tui_router_touch(9, 0);
+    ls_tui_router_draw(&g_sf);
+    LS_CHECK_MSG(ls_tui_router_key(LS_TK_ESC, 0), "help did not open");
+
+    /* Each tab label answers a tap on itself, either side of the hole, and
+       the hole's columns answer nothing. */
+    int found = 0;
+    for (int r = 1; r < 6; r++) {
+        for (int c = 0; c < s_cols; c++) {
+            char word[12]; int n = 0;
+            while (c + n < s_cols && n < 11) {
+                const char ch = (char)g_back[(size_t)r * s_cols + c + n].ch;
+                if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) break;
+                word[n++] = ch;
+            }
+            word[n] = 0;
+            if (n < 2) continue;
+            ls_tui_screen_show(0);
+            ls_tui_router_draw(&g_sf);
+            LS_CHECK(ls_tui_router_touch(c + n / 2, r));
+            const char *now = ls_tui_screen_name(ls_tui_screen_current());
+            LS_CHECK_MSG(now && !strncmp(now, word, (size_t)n),
+                         "tapped '%s' at %d,%d and got %s", word, c, r,
+                         now ? now : "nothing");
+            found++;
+            c += n;
+        }
+    }
+    LS_EQ_INT(4, found);
+    ls_tui_screen_show(1);
+    ls_tui_router_draw(&g_sf);
+    for (int c = 22; c <= 29; c++) {
+        ls_tui_router_touch(c, 2);
+        LS_EQ_INT(1, ls_tui_screen_current());
+    }
+    ls_tui_status_set_clock("");
+    s_hole = tui_rect_make(0, 0, 0, 0);
 }

@@ -53,12 +53,14 @@
 
 /* The real one. Landscape is the blitter's transpose of this, not a second
    buffer, exactly as on the board. */
-#define NATIVE_W 568
-#define NATIVE_H 1232
+/* Read TFT geometry from the firmware variant. The default remains AMOLED. */
+#define CONFIG_LS_TDP4_PANEL_HI8561 1
+#include "variants/t_display_p4.h"
+#undef CONFIG_LS_TDP4_PANEL_HI8561
 
-#define CORNER_R 72
-
-static uint16_t g_fb[NATIVE_W * NATIVE_H];
+static int NATIVE_W = 568, NATIVE_H = 1232, CORNER_R = 72;
+static bool s_tft;
+static uint16_t g_fb[568 * 1232];
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
@@ -126,7 +128,12 @@ static int write_bmp(const char *path)
     for (int y = h - 1; y >= 0; y--) {
         for (int x = 0; x < w; x++) {
             uint8_t r, g, b;
-            if (off_glass(x, y)) {
+            const int dx = x - LS_PANEL_CUTOUT_CX, dy = y - LS_PANEL_CUTOUT_CY;
+            const int rr = LS_PANEL_CUTOUT_R * LS_PANEL_CUTOUT_R;
+            if (s_tft && dx * dx + dy * dy <= rr) {
+                /* Black, with a grey rim so the hole shows on black too. */
+                r = g = b = dx * dx + dy * dy > rr - 2 * LS_PANEL_CUTOUT_R ? 110 : 0;
+            } else if (off_glass(x, y)) {
                 /* Bright magenta, which nothing in any theme draws. It was
                    dim at first and that was useless: on an image whose
                    background is black, a dark corner is exactly what an
@@ -633,7 +640,9 @@ static void usage(void)
     printf("\n");
     printf("  -o FILE   output BMP (default sim.bmp)\n");
     printf("  -r FILE   load a .sub into RECORD replay without transmitting\n");
-    printf("  -l        landscape (default portrait)\n");
+    printf("  -l        clockwise landscape (default portrait)\n");
+    printf("  --ccw     counter-clockwise landscape\n");
+    printf("  --tft     HI8561 panel with camera hole\n");
     printf("  -t NAME   theme by name\n");
     printf("  -D        Daylight: black on white over the theme\n");
     printf("  -k KEYS   feed characters to the screen, one per frame\n");
@@ -781,6 +790,7 @@ int main(int argc, char **argv)
     const char *notice = NULL;
     const char *replay_path = NULL;
     bool landscape = false;
+    bool clockwise = true;
     bool dump = false;
     bool empty = false;
     bool daylight = false;              /* */
@@ -801,6 +811,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) replay_path = argv[++i];
         else if (!strcmp(argv[i], "-f") && i + 1 < argc) settle = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-l")) landscape = true;
+        else if (!strcmp(argv[i], "--ccw")) { landscape = true; clockwise = false; }
+        else if (!strcmp(argv[i], "--tft")) s_tft = true;
         else if (!strcmp(argv[i], "-d")) dump = true;
         else if (!strcmp(argv[i], "-e")) empty = true;
         else if (!strcmp(argv[i], "-C")) census = true;
@@ -837,13 +849,25 @@ int main(int argc, char **argv)
     ls_tui_set_font_index(ls_tui_font_for_view(font, APPS[idx].screen->name, false));
 
     /* The grid the board has, either way round. */
+    if (s_tft) {
+        NATIVE_W = LS_BOARD_LCD_H_RES;
+        NATIVE_H = LS_BOARD_LCD_V_RES;
+        CORNER_R = LS_BOARD_LCD_CORNER_R;
+        ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
+    }
+    ls_tui_set_rotation_cw(clockwise);
     ls_tui_set_corner_radius(CORNER_R);
     if (!ls_tui_begin(landscape ? NATIVE_H : NATIVE_W,
                       landscape ? NATIVE_W : NATIVE_H)) {
         printf("lssim: ls_tui_begin failed\n");
         return 1;
     }
-    ls_tui_set_rotation_cw(true);
+    {
+        tui_rect hole;
+        if (ls_tui_cutout(&hole))
+            printf("lssim: camera covers cells %d,%d %dx%d\n",
+                   hole.x, hole.y, hole.w, hole.h);
+    }
 
     if (theme) {
         char name[48];

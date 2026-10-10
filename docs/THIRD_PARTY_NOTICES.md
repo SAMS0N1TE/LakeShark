@@ -18,6 +18,7 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | Pronouncing dictionary | `components/klatt_tts/LICENSE.CMUdict` | CMU Pronouncing Dictionary BSD-style terms; the notice ships with binaries |
 | DejaVu fonts | `components/apps/tui/DEJAVU-LICENSE.txt` | Bitstream Vera and DejaVu terms |
 | LVGL | `managed_components/lvgl__lvgl/LICENCE.txt` and nested notices | MIT and applicable nested notices |
+| T-Display-P4 panel and touch sequences (RM69A10, HI8561, GT9895, HI8561 touch) | `components/lakeshark/board/ls_panel.c` and `ls_touch.c` headers | GPL-3.0; adapted from LILYGO_L cpp_bus_driver |
 | Espressif and Waveshare components | Their component license files and source headers | Primarily Apache-2.0; retain nested notices |
 | Audio player and file iterator | Their component notices and source headers | Apache-2.0 |
 

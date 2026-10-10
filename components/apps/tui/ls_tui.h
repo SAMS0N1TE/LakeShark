@@ -94,8 +94,13 @@ const ls_font_t *ls_tui_font_at(int index);
 const char *ls_tui_font_label(int index);
 const ls_font_t *ls_tui_font(void);
 
-/* Landscape writes transposed; if the image comes out inverted the panel's
-   handedness is the other way. Default true, toggle to find out. */
+/* A camera hole in the glass, native portrait pixels. Zero radius: none.
+   The grid keeps its full size; chrome lays itself out around the hole. */
+void ls_tui_set_cutout(int cx, int cy, int radius);
+/* The cells the hole covers in the current grid and rotation. False, and a
+   zero rect, when there is no hole or it misses the grid. */
+bool ls_tui_cutout(tui_rect *cells);
+/* Landscape handedness, default clockwise. Apply before begin for safe insets. */
 void ls_tui_set_rotation_cw(bool clockwise);
 
 /* The panel's corner radius in pixels, which is how far the grid has

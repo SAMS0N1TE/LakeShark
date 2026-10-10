@@ -9,7 +9,7 @@
 #define LS_HAS_BATTERY_ADC 0
 #endif
 
-#if defined(LS_BOARD_PANEL_RM69A10)
+#if defined(LS_BOARD_PANEL_RM69A10) || defined(LS_BOARD_PANEL_HI8561)
 #define LS_HAS_COMPACT_UI 1
 #else
 #define LS_HAS_COMPACT_UI 0
