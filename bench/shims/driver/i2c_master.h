@@ -6,6 +6,7 @@ typedef void *i2c_master_bus_handle_t;
 #include "esp_err.h"
 
 typedef void *i2c_master_dev_handle_t;
+esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t dev);
 
 /* The two transfers the register-mapped parts on this board use. Declared
    here and left to the test to define, because what a fake should say back

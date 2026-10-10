@@ -10,10 +10,20 @@ else()
     file(GLOB_RECURSE APPS_CPP_SRCS CONFIGURE_DEPENDS ${APPS_DIR}/*.cpp)
 endif()
 
+if(NOT CONFIG_LS_BOARD_T_DISPLAY_P4)
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_cartocore.c$")
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/scr_tiles.c$")
+endif()
+
 idf_component_register(
     SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
     INCLUDE_DIRS ${APPS_DIR}
     REQUIRES libcarto pmtiles meshcore lvgl__lvgl esp_event esp_wifi esp_netif lwip esp_hw_support esp_app_format nvs_flash esp_mm bsp_extra esp32_p4_wifi6_touch_lcd_4b espressif__esp_lcd_touch_gt911 esp_http_client esp_http_server json vfs lakeshark esp_adc esp_driver_jpeg chmorgan__esp-file-iterator chmorgan__esp-audio-player)
+
+if(CONFIG_LS_BOARD_T_DISPLAY_P4)
+    # CONFIG is available at registration time, not in IDF's early dependency scan.
+    idf_component_optional_requires(PRIVATE cartocore console esp_timer mbedtls)
+endif()
 
 # -Wformat and the two pointer checks are turned back ON here, against the
 # project-wide -Wno-format in the root CMakeLists.  That flag is there for

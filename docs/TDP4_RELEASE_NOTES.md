@@ -1,5 +1,20 @@
 # LakeShark release notes
 
+## 2.10.0
+
+- MAP: a new map engine, CartoCore, draws offline maps in smooth and braille styles alongside FIELD. Place names, aircraft, mesh nodes and marks share the screen cleanly: labels make room for live data and the basemap dims a step under overlays.
+- MAP: range rings and aircraft trails are thin amber lines that stand out in every theme, and the map follows the selected colour theme, Daylight included.
+- TILES: download map regions over WiFi, re-download a newer copy of a map that is open, and resume an interrupted download. Downloads run about 2.6x faster.
+- TILES: whole-state cell maps with place search, and GO TO in MAP.
+- SWEEP (new, FIELD): a passive scanner that lists trackers (Apple Find My, Google, Samsung, Tile), Remote ID drones and camera or bodycam hints, ranked as WITH YOU, NEW and PASSING, with a cold-to-hot HUNT view and a hand-off to FIND. Starts muted.
+- DRONES (new): Remote ID receiver with drone and operator details.
+- WiFi: keeps up to eight saved networks and joins the strongest one in range, and moves to another saved network when one disappears. A `wifi` console command adds, lists and forgets networks.
+- CALLS: a media table with an embedded player and waterfall, keeps 30 days by default and pauses recording when the card runs low.
+- Volume and mute respond instantly again, and mute is remembered after a restart.
+- Faster screens: HOME, P25 and MUSIC switch quicker and idle work in the background is lighter.
+- Steadier: built on ESP-IDF 5.5.4 for both the SX1262 and LR2021 boards, and fixes a rare freeze during flash writes.
+- Flipper app 2.10 shows WiFi, SWEEP and DRONES pages.
+
 ## 2.9.1
 
 - LR2021: the radio clock settles correctly every time receive starts, so pagers and every other receiver on the chip start cleanly after each hop.

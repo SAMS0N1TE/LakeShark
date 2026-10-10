@@ -4,6 +4,8 @@
 
 static unsigned fsk_requests, lora_requests;
 static ls_fsk_cfg_t accepted_fsk;
+static uint32_t radio_caps;
+uint32_t ls_lora_caps(void) { return radio_caps; }
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
 {
     fsk_requests++;
@@ -48,4 +50,20 @@ LS_CASE(fsk_frequency_keeps_fractional_mhz_entry)
     LS_EQ_UINT(lora_requests, 1);
     set_fsk_number(1e100);
     LS_EQ_UINT(lora_requests, 1);
+}
+
+LS_CASE(hf_frequency_entry_is_lr2021_receive_only)
+{
+    lora_requests = 0; s_setting = 0; radio_caps = LS_LORA_CAP_BAND_1G5_2G5;
+    set_number(2400); set_number(2500); set_number(1900); set_number(2200);
+    LS_EQ_UINT(lora_requests, 4);
+    set_number(2300); set_number(1899); set_number(2500.1); set_number(1e100);
+    LS_EQ_UINT(lora_requests, 4);
+    radio_caps = 0;
+    set_number(2400); set_number(959.1);
+    LS_EQ_UINT(lora_requests, 4);
+    set_number(959); LS_EQ_UINT(lora_requests, 5);
+    radio_caps = LS_LORA_CAP_BAND_1G5_2G5; s_fsk_setting = 0;
+    set_fsk_number(2440); LS_EQ_UINT(lora_requests, 6);
+    radio_caps = 0;
 }

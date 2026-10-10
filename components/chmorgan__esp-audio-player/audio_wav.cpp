@@ -34,7 +34,8 @@ bool is_wav(FILE *fp, wav_instance *out) {
             have_fmt=true;
         } else if (!memcmp(chunk,"data",4)) {
             if (!have_fmt || size%out->header.BlockAlign) return false;
-            out->remaining=size;
+            out->remaining=out->data_bytes=size;
+            out->data_offset=start;
             return true;
         }
         if (fseek(fp,(long)next,SEEK_SET)) return false;
@@ -56,4 +57,15 @@ DECODE_STATUS decode_wav(FILE *fp, decode_data *data, wav_instance *wav) {
     data->fmt.bits_per_sample=16; data->fmt.sample_rate=wav->header.SampleRate;
     data->frame_count=bytes/frame;
     return DECODE_STATUS_CONTINUE;
+}
+
+bool seek_wav(FILE *fp, wav_instance *wav, uint32_t ms, uint32_t *actual_ms) {
+    if (!fp || !wav || !wav->header.SampleRate || !wav->header.BlockAlign) return false;
+    uint64_t frames=(uint64_t)ms*wav->header.SampleRate/1000;
+    uint64_t bytes=frames*wav->header.BlockAlign;
+    if (bytes>wav->data_bytes) bytes=wav->data_bytes;
+    if ((uint64_t)wav->data_offset+bytes>LONG_MAX || fseek(fp,wav->data_offset+(long)bytes,SEEK_SET)) return false;
+    wav->remaining=wav->data_bytes-(uint32_t)bytes;
+    if(actual_ms)*actual_ms=bytes*1000/((uint32_t)wav->header.SampleRate*wav->header.BlockAlign);
+    return true;
 }

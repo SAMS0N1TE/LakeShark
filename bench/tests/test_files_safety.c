@@ -71,7 +71,11 @@ static int test_unlink(const char *path) { unlinks++; snprintf(deleted, sizeof(d
 static int test_ferror(FILE *file) { return read_failed || ferror(file); }
 const char *rec_dir(void) { return ROOT "/rec"; }
 bool ls_scr_rec_replay_file(const char *p, const subghz_file_t *f, const int32_t *e) { return false; }
-void ls_tui_screen_show(int id) {}
+static int shown_screen,returned;
+void ls_tui_screen_show(int id) {shown_screen=id;}
+int ls_tui_screen_current(void){return 0;}
+int ls_tui_screen_count(void){return 2;}
+const char *ls_tui_screen_name(int id){return id==1?"FILES":"P25";}
 const char *ls_rsel_name(ls_rsel_radio_t r) { return "LoRa"; }
 void ls_keyboard_open(const char *t, const char *s, int n, ls_keyboard_done_t cb) {}
 void ls_picker_open(const char *t, ls_picker_done_t cb) { picker_cursor = 0; picker_count = 0; picker_done = cb; }
@@ -207,4 +211,13 @@ LS_CASE(capture_decodes_once_per_open_including_no_match)
     LS_EQ_INT(decoder_calls, 3);
     s_view = VIEW_LIST; open_selected();
     LS_EQ_INT(decoder_calls, 6);
+}
+
+static void returned_to_calls(void){returned++;}
+LS_CASE(explicit_archive_file_action_selects_file_and_back_returns_to_caller) {
+    reset();entry_count=1;snprintf(entries[0].d_name,sizeof(entries[0].d_name),"120000_42.wav");
+    returned=0;LS_CHECK(ls_scr_files_show_path("/sdcard/lakeshark/calls/20261007/120000_42.wav",returned_to_calls));
+    LS_EQ_INT(shown_screen,1);LS_EQ_STR(s_path,"/sdcard/lakeshark/calls/20261007");LS_EQ_STR(selected_name(),"120000_42.wav");
+    LS_CHECK(go_up());LS_EQ_INT(shown_screen,0);LS_EQ_INT(returned,1);
+    LS_CHECK(!ls_scr_files_show_path("relative.wav",returned_to_calls));
 }

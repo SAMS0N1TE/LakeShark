@@ -228,6 +228,38 @@ static bool on_screen(const char *text)
     return false;
 }
 
+LS_CASE(saved_network_selection_forgets_one_in_both_orientations)
+{
+    for (int landscape = 0; landscape < 2; ++landscape) {
+        setup(landscape);
+        model.saved_count = 8;
+        for (int i = 0; i < 8; ++i) snprintf(model.saved[i], 33, "Saved%02d", i);
+        model.wifi_connected = true;
+        strcpy(model.ssid, "Saved00");
+        model.aps[0].saved = true;
+        draw();
+        LS_CHECK(on_screen("SAVED / 8"));
+        LS_CHECK(on_screen("* Saved00"));
+        LS_CHECK(on_screen("PASSWORD / SAVED"));
+        LS_CHECK(tap("Saved01"));
+        ls_scr_wireless.key(LS_TK_CHAR, 'f');
+        LS_EQ_INT(operation, LS_WIRELESS_FORGET);
+        LS_CHECK(!strcmp(joined, "Saved01"));
+        for (int i = 0; i < 6; ++i) ls_scr_wireless.key(LS_TK_CHAR, 'k');
+        draw();
+        LS_CHECK(on_screen("Saved07"));
+        ls_scr_wireless.key(LS_TK_CHAR, 'f');
+        LS_CHECK(!strcmp(joined, "Saved07"));
+        /* A vanished/reordered snapshot must not make selection forget a
+         * different SSID at the same numerical index. */
+        model.saved_count = 1;
+        strcpy(model.saved[0], "Saved00");
+        draw();
+        ls_scr_wireless.key(LS_TK_CHAR, 'f');
+        LS_CHECK(!joined[0]); /* falls back to current, never all */
+    }
+}
+
 LS_CASE(survey_list_uses_the_height_and_start_failures_fit_in_both_postures)
 {
     for (int landscape = 0; landscape < 2; landscape++) {
@@ -292,5 +324,19 @@ LS_CASE(survey_touch_and_keys_never_request_join_or_head_scan)
         LS_EQ_INT(recording->n, 2);
         LS_EQ_INT(recording->opt[1].kind, LS_OPT_LEVEL);
         LS_EQ_INT(operation, LS_WIRELESS_NONE);
+    }
+}
+
+const ls_tui_screen_t ls_scr_drones = {.name = "DRONES"};
+int ls_tui_screen_index_of(const ls_tui_screen_t *screen) { return screen==&ls_scr_drones ? 7 : -1; }
+static int shown_screen = -1;
+void ls_tui_screen_show(int index) { shown_screen = index; }
+LS_CASE(drones_navigation_uses_router_for_touch_and_keyboard) {
+    for (int landscape = 0; landscape < 2; ++landscape) {
+        setup(landscape); shown_screen = -1;
+        LS_CHECK(tap("DRONES"));
+        LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));
+        shown_screen = -1; ls_scr_wireless.key(LS_TK_CHAR, 'n');
+        LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));
     }
 }

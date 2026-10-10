@@ -1,5 +1,6 @@
 #include "tui/ls_wireless.h"
 #include "ls_wifi.h"
+#include "tui/ls_sweep_app.h"
 #include "ble_link.h"
 #include "ls_flash_task.h"
 #include "esp_timer.h"
@@ -23,8 +24,8 @@ static DRAM_ATTR StaticTask_t s_worker_tcb;
 static TaskHandle_t s_worker_task;
 static ls_wireless_op_t s_pending;
 static char s_ssid[33], s_pass[65];
-static ls_wireless_snapshot_t s_public, s_model;
-static ls_wifi_scan_ap_t s_scan[LS_WIRELESS_APS];
+static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t s_public, s_model;
+static EXT_RAM_BSS_ATTR ls_wifi_scan_ap_t s_scan[LS_WIRELESS_APS];
 
 static void wipe(char *text, size_t n)
 {
@@ -55,6 +56,13 @@ static void poll_radios(void)
     snprintf(s_model.ssid, sizeof(s_model.ssid), "%s", ap.ssid);
     ls_wifi_sta_ip(s_model.ip, sizeof(s_model.ip));
     ls_wifi_sta_status(s_model.wifi_status, sizeof(s_model.wifi_status));
+    int saved = ls_wifi_saved_list(s_model.saved, 8);
+    if (saved >= 0) s_model.saved_count = saved;
+    for (int i = 0; i < s_model.ap_count; ++i) {
+        s_model.aps[i].saved = false;
+        for (int j = 0; j < s_model.saved_count; ++j)
+            if (!strcmp(s_model.aps[i].ssid, s_model.saved[j])) s_model.aps[i].saved = true;
+    }
     s_model.bt_state = ble_link_state();
     s_model.bt_ready = s_model.bt_state == BLE_LINK_READY;
     snprintf(s_model.bt_status, sizeof(s_model.bt_status), "%s",
@@ -89,7 +97,7 @@ static esp_err_t perform(ls_wireless_op_t op, const char *ssid, const char *pass
     case LS_WIRELESS_JOIN: return ls_wifi_sta_join(ssid, pass);
     case LS_WIRELESS_SAVED: return ls_wifi_sta_autojoin();
     case LS_WIRELESS_LEAVE: return ls_wifi_sta_leave();
-    case LS_WIRELESS_FORGET: return ls_wifi_sta_forget();
+    case LS_WIRELESS_FORGET: return ssid && *ssid ? ls_wifi_sta_forget_ssid(ssid) : ls_wifi_sta_forget();
     case LS_WIRELESS_BT_START: return ble_link_start();
     case LS_WIRELESS_BT_STOP: ble_link_stop(); return ESP_OK;
     case LS_WIRELESS_BT_RESCAN:
@@ -119,7 +127,7 @@ static void worker(void *arg)
         wipe(s_pass, sizeof(s_pass));
         bool stop = !s_active && !s_observer && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
-        if (stop && !ls_survey_pending()) {
+        if (stop && !ls_survey_pending() && !ls_sweep_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             last_poll = 0;
@@ -154,6 +162,7 @@ static void worker(void *arg)
             last_poll = now_ms();
         }
         ls_survey_tick();
+        ls_sweep_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
     }
 }
@@ -185,6 +194,8 @@ static void start_worker(void)
     if (task) xTaskNotifyGive(task);
 }
 
+void ls_wireless_wake(void) { start_worker(); }
+
 void ls_wireless_set_active(bool active)
 {
     portENTER_CRITICAL(&s_mux);
@@ -214,7 +225,7 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
 {
     if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_RESCAN ||
         (ssid && strlen(ssid) > 32) || (pass && strlen(pass) > 64)) return false;
-    if (ls_survey_pending()) return false;
+    if (ls_survey_pending() || ls_sweep_pending()) return false;
     portENTER_CRITICAL(&s_mux);
     bool accept = s_pending == LS_WIRELESS_NONE && !s_public.busy;
     if (accept) {

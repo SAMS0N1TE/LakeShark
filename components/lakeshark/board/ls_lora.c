@@ -15,6 +15,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
@@ -241,8 +242,7 @@ esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
 static const ls_lora_ops_t *s_ops = &ls_lora_sx126x_ops;
 static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
 
-/* SPI wants DMA-capable memory for a transfer this size and DMA cannot reach
-   PSRAM, so this is internal RAM and there is no choice about that. 259 bytes
+/* Reserve one aligned internal DMA buffer before probing. 259 bytes
    carries opcode + offset + a full 255-byte payload in one transaction;
    splitting it would save RAM and put a BUSY wait in the middle of a buffer
    write, which is the more expensive mistake. One buffer, not one per
@@ -251,6 +251,37 @@ static uint8_t *s_pkt;
 
 spi_device_handle_t ls_lora_hw_dev(void) { return s_dev; }
 uint8_t *ls_lora_hw_pkt(void) { return s_pkt; }
+/* The command lock protects the descriptor, inline DMA storage and packet
+   buffer, including copyback. Callers may have external-RAM stacks. */
+static DRAM_ATTR spi_transaction_t s_transfer __attribute__((aligned(4)));
+
+esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
+{
+    if (!s_dev) return ESP_ERR_INVALID_STATE;
+    if (!n || n > 259) return ESP_ERR_INVALID_SIZE;
+    ls_lora_hw_lock();
+    spi_transaction_t *t = &s_transfer;
+    memset(t, 0, sizeof(*t));
+    t->length = n * 8;
+    if (n <= sizeof(t->tx_data)) {
+        t->flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
+        memcpy(t->tx_data, tx, n);
+    } else {
+        if (!s_pkt) {
+            ls_lora_hw_unlock();
+            return ESP_ERR_NO_MEM;
+        }
+        memcpy(s_pkt, tx, n);
+        t->tx_buffer = s_pkt;
+        t->rx_buffer = s_pkt;
+    }
+    const esp_err_t err = ls_lora_hw_transmit(t);
+    if (err == ESP_OK && rx)
+        memcpy(rx, n <= sizeof(t->rx_data) ? t->rx_data : s_pkt, n);
+    ls_lora_hw_unlock();
+    return err;
+}
+
 int ls_lora_hw_busy_level(void) { return gpio_get_level(BUSY_PIN); }
 
 /* The part holds BUSY high while it works and ignores anything clocked in
@@ -285,7 +316,7 @@ static const char *rst_readback(void)
 static bool ensure_pkt(void)
 {
     if (!s_pkt) {
-        s_pkt = heap_caps_malloc(259, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        s_pkt = heap_caps_malloc(260, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         if (!s_pkt) {
             ESP_LOGE(TAG, "no DMA memory for the packet buffer");
             return false;
@@ -415,6 +446,8 @@ static esp_err_t identify_locked(bool last)
 static esp_err_t start_locked(void)
 {
     if (s_present) return ESP_OK;
+
+    if (!ensure_pkt()) return ESP_ERR_NO_MEM;
 
     esp_err_t err = ls_spi_bus(LS_SPI_RADIO);
     if (err != ESP_OK) return err;

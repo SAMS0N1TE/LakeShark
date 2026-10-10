@@ -14,6 +14,7 @@
 #include "esp_cpu.h"
 #include "esp_freertos_hooks.h"
 #include "esp_log.h"
+#include "esp_private/cache_utils.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "riscv/rvruntime-frames.h"
@@ -45,10 +46,18 @@ static void IRAM_ATTR tick_note(void)
 {
     const int core = esp_cpu_get_core_id() & 1;
     tick_crumb_t *t = &s_tick[core];
+    /* Count ticks without touching task state while cache is already off.
+       This check alone is not a safety boundary: the other core can suspend
+       shared cache after it. The P4 build also puts both lookups below in
+       IRAM via ls_freertos_cache_safe.h; TCB names and the fallback are DRAM. */
+    if (!spi_flash_cache_enabled()) {
+        t->ticks++;
+        return;
+    }
     const TaskHandle_t h = xTaskGetCurrentTaskHandleForCore(core);
     if (h != s_tick_task[core] || t->magic != CRUMB_MAGIC) {
         s_tick_task[core] = h;
-        const char *name = h ? pcTaskGetName(h) : "-";
+        const char *name = h ? pcTaskGetName(h) : DRAM_STR("-");
         for (int i = 0; i < CONFIG_FREERTOS_MAX_TASK_NAME_LEN; i++) {
             t->task[i] = name[i];
             if (!name[i]) break;

@@ -138,7 +138,12 @@ void ls_ink_flush(tui_surface *sf, tui_rect skip)
             const int x = s_rect.x + c;
             if (skip.h > 0 && x >= skip.x && x < skip.x + skip.w &&
                 y >= skip.y && y < skip.y + skip.h) continue;
-            ls_tui_put_glass(sf, s_rect, x, y, LS_TUI_SEXT(b), ls_ink_tinted(s_attr[r * INK_COLS + c]));
+            uint16_t glyph=LS_TUI_SEXT(b);
+            if(s_prio[r*INK_COLS+c]<=3) {
+                static const uint8_t dots[6]={1,8,2,16,4,32};
+                glyph=0x2800;for(int k=0;k<6;k++) if(b&(1u<<k)) glyph|=dots[k];
+            }
+            ls_tui_put_glass(sf, s_rect, x, y, glyph, ls_ink_tinted(s_attr[r * INK_COLS + c]));
         }
     }
 }

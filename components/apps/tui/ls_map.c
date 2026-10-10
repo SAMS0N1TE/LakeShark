@@ -303,9 +303,16 @@ void ls_map_end(void)
     s_why = "no map archive loaded";
 }
 
+/* CartoCore borrows the geographic view, without allocating a libcarto framebuffer. */
+static bool s_external_view;
+void ls_map_external_view(int w,int h) {
+    if(!s_external_view || s_pm) ls_map_end();
+    s_external_view=true;s_w=w;s_h=h;
+}
 bool ls_map_begin(int px_w, int px_h)
 {
     if (px_w <= 0 || px_h <= 0) return false;
+    s_external_view=false;
     if (s_pixels && px_w == s_w && px_h == s_h) return true;
     history_free();
     s_cache_valid = false;
@@ -591,8 +598,8 @@ int ls_map_zoom(void) { return s_zoom; }
 
 void ls_map_zoom_limits(int *lo, int *hi)
 {
-    const int max_source = s_pm ? pmtiles_max_zoom(s_pm) : 22;
-    if (lo) *lo = s_pm ? pmtiles_min_zoom(s_pm) : 0;
+    const int max_source = !s_external_view && s_pm ? pmtiles_max_zoom(s_pm) : 22;
+    if (lo) *lo = !s_external_view && s_pm ? pmtiles_min_zoom(s_pm) : 0;
     if (hi) *hi = max_source < 19 ? max_source + 3 : 22;
 }
 
@@ -690,7 +697,7 @@ void ls_map_stats(ls_map_stats_t *out) { if (out) *out = s_st; }
 
 void ls_map_zoom_range(int *lo, int *hi)
 {
-    if (lo) *lo = s_pm ? pmtiles_min_zoom(s_pm) : 0;
+    if (lo) *lo = !s_external_view && s_pm ? pmtiles_min_zoom(s_pm) : 0;
     if (hi) *hi = s_pm ? pmtiles_max_zoom(s_pm) : 0;
 }
 

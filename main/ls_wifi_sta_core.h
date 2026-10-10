@@ -18,6 +18,14 @@ extern "C" {
 #define LS_WIFI_SSID_MAX_LEN 32
 #define LS_WIFI_PASS_MIN_LEN 8
 #define LS_WIFI_PASS_MAX_LEN 63
+#define LS_WIFI_SAVED_MAX 8
+
+typedef struct { char ssid[33]; uint32_t sequence; } ls_wifi_saved_t;
+typedef struct { char ssid[33]; int rssi; } ls_wifi_visible_t;
+/* Slots may be empty (ssid[0]==0). Returns a slot/index, or -1. */
+int ls_wifi_saved_slot(const ls_wifi_saved_t *saved, int count, const char *ssid);
+int ls_wifi_saved_candidate(const ls_wifi_saved_t *saved, int count,
+    const ls_wifi_visible_t *visible, int visible_count, const char *excluded);
 
 /* Reconnect backoff clamps. Kept as macros so both the firmware and the bench
    test see the same numbers. */

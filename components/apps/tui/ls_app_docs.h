@@ -18,6 +18,8 @@
 extern "C" {
 #endif
 
+extern const ls_app_doc_t ls_doc_sweep;
+extern const ls_app_doc_t ls_doc_drones;
 extern const ls_app_doc_t ls_doc_home;
 extern const ls_app_doc_t ls_doc_music;
 extern const ls_app_doc_t ls_doc_p25;
@@ -40,6 +42,7 @@ extern const ls_app_doc_t ls_doc_terminal;
 extern const ls_app_doc_t ls_doc_update;
 extern const ls_app_doc_t ls_doc_settings;
 extern const ls_app_doc_t ls_doc_map;
+extern const ls_app_doc_t ls_doc_tiles;
 extern const ls_app_doc_t ls_doc_gps;
 extern const ls_app_doc_t ls_doc_radios;
 extern const ls_app_doc_t ls_doc_link;

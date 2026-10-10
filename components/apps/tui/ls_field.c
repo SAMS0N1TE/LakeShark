@@ -1150,7 +1150,8 @@ bool ls_field_direct(bool on) { if (!s_started) return false; lock(); s_want = o
 bool ls_field_direct_falls(bool on) { if (!s_started) return false; lock(); s_falls_want = on; if (!on && !s_want) s_stop = true; unlock(); return true; }
 bool ls_field_configure(const ls_lora_cfg_t *cfg)
 {
-    if (!cfg || cfg->freq_hz < 150000000 || cfg->freq_hz > 959000000 || cfg->sf < 5 || cfg->sf > 12 ||
+    if (!cfg || !ls_lora_packet_rx_hz_ok(ls_lora_caps(), cfg->freq_hz) ||
+        (cfg->freq_hz > 959000000u && cfg->freq_hz < 1900000000u) || cfg->sf < 5 || cfg->sf > 12 ||
         cfg->bw_hz < 7810 || cfg->bw_hz > 500000 || cfg->cr < 5 || cfg->cr > 8 || cfg->power_dbm < -9 || cfg->power_dbm > 22 || !cfg->preamble) return false;
     command *c = reserve(); if (!c) return false;
     c->kind = CMD_CONFIG; c->cfg = *cfg; return commit();

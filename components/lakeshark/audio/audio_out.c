@@ -35,6 +35,21 @@ static volatile int      s_volume = 35;
 static volatile bool     s_muted  = false;
 static bool              s_ready  = false;
 static atomic_bool       s_media_request = false, s_media_owned = false;
+/* Selected settings and codec restoration are one transaction. */
+static StaticSemaphore_t s_settings_memory;
+static SemaphoreHandle_t s_settings_lock;
+static unsigned s_settings_once;
+static void settings_lock(void)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_settings_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_settings_lock = xSemaphoreCreateMutexStatic(&s_settings_memory);
+        __atomic_store_n(&s_settings_once, 2, __ATOMIC_RELEASE);
+    } else while (__atomic_load_n(&s_settings_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    xSemaphoreTake(s_settings_lock, portMAX_DELAY);
+}
+static void settings_unlock(void) { xSemaphoreGive(s_settings_lock); }
 #if defined(LS_BOARD_CODEC_I2C_BUS)
 static bool              s_volume_applied = false;
 #endif
@@ -90,6 +105,12 @@ static volatile int32_t    s_speech_gain = AUDIO_SPEECH_UNITY;
    writes: closing the codec under a write in progress is not safe. */
 static volatile uint32_t s_codec_reset_req  = 0;
 static volatile uint32_t s_codec_reset_done = 0;
+/* 0 idle, 1 pending, 2 executing, 3 completed. Timeout can cancel pending
+ * work; a claimed command always acknowledges before its storage is reused. */
+static portMUX_TYPE s_owner_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned s_reinit_state;
+static bool s_reinit_swap;
+static esp_err_t s_reinit_result;
 
 void audio_out_speech_level_set(int pct) { s_speech_gain = audio_speech_gain(pct); }
 
@@ -121,7 +142,7 @@ static inline size_t ring_send_speech_locked(const void *p, size_t want)
     return sent;
 }
 
-void IRAM_ATTR audio_write_mono(const int16_t *samples, int n)
+void audio_write_mono(const int16_t *samples, int n)
 {
     if (s_media_request) return;
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
@@ -281,6 +302,7 @@ static bool audio_prebuffer_ready(size_t available, bool force, int64_t now,
 
 static void __attribute__((noinline)) player_codec_reset(void)
 {
+    settings_lock();
     esp_err_t err = ls_audio_hw_set_fs(AUDIO_RATE_HZ, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) ESP_LOGW(TAG, "reset set_fs: %s", esp_err_to_name(err));
     int set = 0;
@@ -296,6 +318,7 @@ static void __attribute__((noinline)) player_codec_reset(void)
     if (mute_err != ESP_OK) ESP_LOGW(TAG, "reset mute: %s", esp_err_to_name(mute_err));
     ESP_LOGW(TAG, "audio_out_reset: set_fs=%s vol=%d ring_avail=%u",
              esp_err_to_name(err), s_volume, (unsigned)audio_out_ring_avail());
+    settings_unlock();
 }
 
 /* Empties the ring. Producers never block on it, so the reset only fails
@@ -336,7 +359,7 @@ static void __attribute__((noinline)) player_write(const void *buf, size_t bytes
         vTaskDelay(pdMS_TO_TICKS(5));
 }
 
-static void IRAM_ATTR audio_player_task(void *arg)
+static void audio_player_task(void *arg)
 {
     (void)arg;
     int16_t *mono    = s_mono;
@@ -372,6 +395,18 @@ static void IRAM_ATTR audio_player_task(void *arg)
             continue;
         }
         s_media_owned = false;
+        unsigned pending = 1;
+        if (__atomic_compare_exchange_n(&s_reinit_state, &pending, 2, false,
+                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            settings_lock();
+            s_reinit_result = ls_audio_hw_reinit(s_reinit_swap, s_volume, s_muted);
+#if defined(LS_BOARD_CODEC_I2C_BUS)
+            s_volume_applied = s_reinit_result == ESP_OK;
+#endif
+            settings_unlock();
+            __atomic_store_n(&s_reinit_state, 3, __ATOMIC_RELEASE);
+            s_reprime = true;
+        }
         const uint32_t reset_req = s_codec_reset_req;
         if (reset_req != s_codec_reset_done) {
             player_codec_reset();
@@ -433,6 +468,7 @@ esp_err_t audio_out_init(void)
 {
     if (s_ready) return ESP_OK;
 
+    s_muted = settings_get_audio_mute();
     /* Gate here, not at the call sites. */
 
 #if !LS_HAS_AUDIO
@@ -456,6 +492,7 @@ esp_err_t audio_out_init(void)
     if (volume_err != ESP_OK)
         ESP_LOGW(TAG, "codec volume %d not confirmed: %s", s_volume, esp_err_to_name(volume_err));
 
+    ls_audio_hw_mute(s_muted);
     audio_eq_init(AUDIO_RATE_HZ);
 
     s_push_lock = xSemaphoreCreateMutex();
@@ -470,7 +507,7 @@ esp_err_t audio_out_init(void)
     }
     if (!s_ring || !s_push_lock) {
         ESP_LOGE(TAG, "audio ring/lock alloc failed");
-        return ESP_ERR_NO_MEM;
+        goto fail;
     }
 
     BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(audio_player_task, "audio_out",
@@ -479,7 +516,7 @@ esp_err_t audio_out_init(void)
                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (ok != pdTRUE) {
         ESP_LOGE(TAG, "audio task create failed");
-        return ESP_FAIL;
+        goto fail;
     }
 
     snd_test_init();
@@ -492,23 +529,40 @@ esp_err_t audio_out_init(void)
     xTaskCreatePinnedToCore(diag_ringtone_task, "diag_tone", 3072, NULL, 5, NULL, 1);
 #endif
     return ESP_OK;
+fail:
+    if (s_ring) { vStreamBufferDelete(s_ring); s_ring = NULL; }
+    heap_caps_free(s_ring_buf); s_ring_buf = NULL;
+    if (s_push_lock) { vSemaphoreDelete(s_push_lock); s_push_lock = NULL; }
+    ls_audio_hw_deinit();
+    s_task = NULL;
+    return ESP_ERR_NO_MEM;
 #endif /* LS_HAS_AUDIO */
 }
 
-void audio_toggle_mute(void)
+static void audio_mute_change(bool toggle, bool muted)
 {
-    s_muted = !s_muted;
+    settings_lock();
+    bool next = toggle ? !s_muted : muted;
+    if(next == s_muted) {settings_unlock();return;}
+    s_muted = next;
+    settings_set_audio_mute(s_muted);
     if (s_muted) s_reprime = true;
     /* s_ready is false on a board whose codec was never initialised,
        and the handle behind this call is NULL there.  audio_out_ensure_unmuted
        already checked; this one did not, so the console's `mute` command was
        a reachable path into an uninitialised codec. */
     if (s_ready) ls_audio_hw_mute(s_muted);
+    settings_unlock();
 }
+
+void audio_toggle_mute(void) {audio_mute_change(true,false);}
+void audio_mute_set(bool muted) {audio_mute_change(false,muted);}
 
 void audio_out_ensure_unmuted(void)
 {
+    settings_lock();
     if (s_ready && !s_muted) ls_audio_hw_mute(false);
+    settings_unlock();
 }
 
 void audio_out_reprime(void) { s_reprime = true; }
@@ -527,8 +581,13 @@ void audio_out_reset(void)
 
 esp_err_t audio_out_media_acquire(void)
 {
-    if (!s_ready || s_media_request || s_media_owned) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_owner_lock);
+    if (!s_ready || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
+        portEXIT_CRITICAL(&s_owner_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_media_request = true;
+    portEXIT_CRITICAL(&s_owner_lock);
     for (int i = 0; i < 100 && !s_media_owned; ++i) vTaskDelay(pdMS_TO_TICKS(5));
     if (s_media_owned) return ESP_OK;
     s_media_request = false;
@@ -555,25 +614,51 @@ void audio_volume_delta(int d)
 
 void audio_volume_set(int v)
 {
+    settings_lock();
     if (v < 0)   v = 0;
     if (v > 100) v = 100;
 #if defined(LS_BOARD_CODEC_I2C_BUS)
     /* Do not cache a failed codec write as an applied volume, or the
        equal-value shortcut prevents a later retry after the bus recovers. */
-    if (v == s_volume && s_volume_applied) return;
+    if (v == s_volume && s_volume_applied) { settings_unlock(); return; }
     int set = 0;
     esp_err_t err = ls_audio_hw_volume(v, &set);
     s_volume_applied = err == ESP_OK;
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "codec volume %d not confirmed: %s", v, esp_err_to_name(err));
+        settings_unlock();
         return;
     }
     s_volume = v;
 #else
-    if (v == s_volume) return;
+    if (v == s_volume) { settings_unlock(); return; }
     s_volume = v;
     int set = 0;
     ls_audio_hw_volume(s_volume, &set);
 #endif
     settings_set_volume(s_volume);
+    settings_unlock();
+}
+
+esp_err_t audio_out_reinit(bool swap)
+{
+    portENTER_CRITICAL(&s_owner_lock);
+    if (!s_ready || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
+        portEXIT_CRITICAL(&s_owner_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_reinit_swap = swap;
+    __atomic_store_n(&s_reinit_state, 1, __ATOMIC_RELEASE);
+    portEXIT_CRITICAL(&s_owner_lock);
+    for (int i = 0; i < 200; ++i) {
+        if (__atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE) == 3) break;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    unsigned pending = 1;
+    if (__atomic_compare_exchange_n(&s_reinit_state, &pending, 0, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return ESP_ERR_TIMEOUT;
+    while (__atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE) != 3) vTaskDelay(1);
+    esp_err_t result = s_reinit_result;
+    __atomic_store_n(&s_reinit_state, 0, __ATOMIC_RELEASE);
+    return result;
 }

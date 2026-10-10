@@ -13,10 +13,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Working buffers stay in INTERNAL ram: the butterfly is the hot loop and
-   PSRAM is materially slower for scattered access. 512 floats x2 = 4 KB. */
-static float s_re[SPEC_FFT_N];
-static float s_im[SPEC_FFT_N];
+/* CPU-only FFT scratch in PSRAM; callers retain single-task ownership. */
+EXT_RAM_BSS_ATTR static float s_re[SPEC_FFT_N];
+EXT_RAM_BSS_ATTR static float s_im[SPEC_FFT_N];
 
 /* Read-mostly tables and the accumulator go to PSRAM - they are touched
    linearly and there is 32 MB of it, while internal free is around 50 KB

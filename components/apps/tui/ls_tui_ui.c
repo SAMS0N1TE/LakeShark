@@ -95,7 +95,7 @@ static int button_want(const ls_btn_t *b, int row_h)
 }
 
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
-                        int focus, int slot, bool raised, bool stretch)
+                        int focus, int slot, bool raised, bool stretch, bool single_row)
 {
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
@@ -118,7 +118,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         if (bar.w < 3) return;
     }
     int rows = 1;
-    while (bar.h >= rows * 2 && bar.w / per_row < (raised ? 10 : 8) && per_row > 1) {
+    while (!single_row && bar.h >= rows * 2 && bar.w / per_row < (raised ? 10 : 8) && per_row > 1) {
         rows++;
         per_row = (n + rows - 1) / rows;
     }
@@ -335,7 +335,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                      int focus, int slot)
 {
-    button_bar(sf, bar, btn, n, focus, slot, false, false);
+    button_bar(sf, bar, btn, n, focus, slot, false, false, false);
 }
 
 /* Whether a three-row bar can put every label and its value on one line.
@@ -393,18 +393,24 @@ int ls_btn_raised_height(tui_rect area, int n)
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus)
 {
-    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true, false);
+    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true, false, false);
+}
+
+/* A fixed row for screens that budget labels and large touch targets together. */
+void ls_btn_bar_raised_row(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)
+{
+    button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,false,true);
 }
 
 void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)
 {
-    button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,true);
+    button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,true,false);
 }
 
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
                             int n, int focus, int slot)
 {
-    button_bar(sf, bar, btn, n, focus, slot, true, false);
+    button_bar(sf, bar, btn, n, focus, slot, true, false, false);
 }
 
 void ls_btn_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,

@@ -27,7 +27,12 @@ typedef struct {
     int     queue_size;
 } spi_device_interface_config_t;
 
+#define SPI_TRANS_USE_RXDATA (1U << 2)
+#define SPI_TRANS_USE_TXDATA (1U << 3)
+
 typedef struct {
+    unsigned flags;
+    uint8_t tx_data[4], rx_data[4];
     size_t      length;      /* bits */
     const void *tx_buffer;
     void       *rx_buffer;
@@ -61,6 +66,8 @@ void     ls_shim_spi_reset(void);
 void     ls_shim_spi_reset_counters(void);
 void     ls_shim_spi_on_transfer(ls_shim_spi_responder_t fn, void *ctx);
 unsigned ls_shim_spi_transfers(void);
+unsigned ls_shim_spi_inline_transfers(void);
+void ls_shim_spi_fail_next_transfer(esp_err_t err);
 /* The bytes of the most recent transfer, as the driver sent them. */
 const uint8_t *ls_shim_spi_last_tx(size_t *len);
 bool     ls_shim_spi_bus_up(spi_host_device_t host);

@@ -132,8 +132,7 @@ static esp_err_t frame(uint8_t *io, size_t n)
     spi_device_handle_t dev = ls_lora_hw_dev();
     if (!dev) return ESP_ERR_INVALID_STATE;
     const uint16_t op = n >= 2 ? (uint16_t)((io[0] << 8) | io[1]) : 0;
-    spi_transaction_t t = { .length = n * 8, .tx_buffer = io, .rx_buffer = io };
-    esp_err_t err = ls_lora_hw_transmit(&t);
+    esp_err_t err = ls_lora_hw_transfer_bytes(io, io, n);
     if (err == ESP_OK && n >= 2) {
         s_stat = (uint16_t)((io[0] << 8) | io[1]);
         if (lr20xx_stat_plausible(s_stat) && LR20XX_STAT_RESET_SRC(s_stat) != 0) s_reset_seen = true;
@@ -2058,7 +2057,8 @@ static esp_err_t program_lora_once(void)
         err = step_lr(lr20xx_lora_set_packet(c->preamble, 255, false, c->crc_on, c->invert_iq),
                       "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_lora_set_syncword(c->sync_word), "SetLoraSyncword");
-    if (err == ESP_OK) err = lr20xx_set_pa_lf(c->power_dbm);
+    if (err == ESP_OK && c->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
+        err = lr20xx_set_pa_lf(c->power_dbm);
     if (err == ESP_OK) lr.programmed = true;
     else (void)lr20xx_set_standby(false);
     return err;
@@ -2082,9 +2082,9 @@ static esp_err_t configure_lora(const ls_lora_cfg_t *cfg)
         return ESP_ERR_INVALID_ARG;
     if (cfg->cal_min_mhz >= cfg->cal_max_mhz) return ESP_ERR_INVALID_ARG;
     if (cfg->freq_hz < LR20XX_FREQ_MIN_HZ) return ESP_ERR_INVALID_ARG;
-    /* A configuration is the transmitter's too, so it is the LF path or
-       nothing. 1090 MHz Mode S is a receive session of its own. */
-    if (cfg->freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ) return ESP_ERR_NOT_SUPPORTED;
+    /* HF configurations are receive-only. setup_radio tunes/calibrates the
+       RX input; lr_send and the command layer retain their LF-only guards. */
+    if (!ls_lora_packet_rx_hz_ok(lr_caps(), cfg->freq_hz)) return ESP_ERR_NOT_SUPPORTED;
     if (!ls_lora_hw_pkt()) return ESP_ERR_INVALID_STATE;
 
     const lr20xx_lora_bw_t bw = lr20xx_lora_bw_nearest(cfg->bw_hz);

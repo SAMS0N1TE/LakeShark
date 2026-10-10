@@ -84,6 +84,9 @@ bool lssim_is_empty(void);
 static void copy_peer(int rank, ls_mesh_peer_t *out)
 {
     *out = PEERS[rank];
+    extern double lssim_map_scene_coord(double,bool);
+    out->lat_e6=(int32_t)(lssim_map_scene_coord(out->lat_e6/1e6,true)*1e6);
+    out->lon_e6=(int32_t)(lssim_map_scene_coord(out->lon_e6/1e6,false)*1e6);
     out->first_heard += ls_mesh_now() - 44382u;
     out->last_heard += ls_mesh_now() - 44382u;
 }

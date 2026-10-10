@@ -2,12 +2,18 @@
 
 #include "ls_test.h"
 #include "ls_tui.h"
+#include "ls_theme.h"
 #include "ls_tui_screen.h"
 #include "ls_font.h"
 #include "ls_panel.h"
 #include "p25_state.h"
 #include "ls_waterfall.h"
 #include "ls_tui_ui.h"
+#include "ls_sweep_ui.h"
+#include "ls_sweep_app.h"
+#include "ls_sweep_scope.h"
+#include <math.h>
+#include "esp_timer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -288,3 +294,100 @@ int audio_volume_get(void) { return 60; }
 const p25_program_t *p25_program_session(void) { return NULL; }
 bool p25_program_request_reload_path(const char *path)
 { (void)path; return false; }
+
+LS_CASE(sweep_real_contacts_have_zero_settled_frame_cost) {
+    ls_sweep_init();ls_sweep_clear();ls_sweep_defaults();ls_sweep_start(true);
+    int64_t now=esp_timer_get_time();
+    for(unsigned i=0;i<15;i++) {
+        uint8_t mac[6]={1,2,3,4,5,(uint8_t)i};
+        ls_sweep_match_t m={.category=i%4,.label="Receiver contact",.vendor="Unverified"};
+        ls_sweep_observe(mac,0,0,-45-(i*11)%45,&m,now);
+    }
+    uint8_t target[6]={1,2,3,4,5,2};ls_sweep_hunt(target,0,0);
+    for(int wide=0;wide<2;wide++) {
+        LS_CHECK(ls_tui_begin(wide?1232:568,wide?568:1232));
+        ls_sweep_match_t before={.category=SW_DRONE,.label="Receiver contact",.vendor="Unverified"};
+        ls_sweep_observe(target,0,0,-67,&before,now);
+        int cols,rows;ls_tui_geometry(&cols,&rows,NULL,NULL);
+        tui_rect area={1,5,cols-2,rows-6};tui_surface *sf=ls_tui_surface();
+        tui_frame_begin(sf);ls_scr_sweep.draw(sf,area);ls_tui_present();
+        for(int frame=0;frame<5;frame++) {
+            tui_frame_begin(sf);ls_scr_sweep.draw(sf,area);
+            int cells=ls_tui_present();
+            LS_CHECK_MSG(cells==0,"SWEEP wide=%d unchanged frame pushed %d cells",wide,cells);
+        }
+        /* A genuine new reading should affect only a small part of the frame. */
+        ls_sweep_match_t m={.category=SW_DRONE,.label="Receiver contact",.vendor="Unverified"};
+        ls_sweep_observe(target,0,0,-49,&m,now);
+        tui_frame_begin(sf);ls_scr_sweep.draw(sf,area);int cells=ls_tui_present();
+        LS_CHECK_MSG(cells>0 && cells<cols*rows/4,"SWEEP advert pushed %d cells",cells);
+        ls_tui_end();
+    }
+    ls_sweep_clear();
+}
+
+LS_CASE(sweep_category_rows_history_and_hunt_heat_in_both_orientations) {
+    int64_t saved=esp_timer_get_time();ls_shim_time_set(120000000);
+    const uint8_t hues[]={TUI_YELLOW,TUI_MAGENTA,TUI_CYAN,TUI_GREEN,TUI_RED};
+    for(int wide=0;wide<2;wide++) {
+        ls_sweep_init();ls_sweep_clear();ls_sweep_defaults();ls_sweep_start(true);
+        ls_sweep_settings_t settings;ls_sweep_settings_get(&settings);settings.enabled=31;ls_sweep_settings_set(&settings);
+        for(int c=0;c<5;c++) {
+            uint8_t mac[6]={1,2,3,4,5,c};ls_sweep_match_t m={.category=c};
+            snprintf(m.label,sizeof(m.label),"CATEGORY-%d",c);
+            for(int j=0;j<24;j++) ls_sweep_observe(mac,0,0,-95+c*12,&m,120000000-(23-j)*2500000LL);
+        }
+        LS_CHECK(ls_tui_begin(wide?1232:568,wide?568:1232));
+        int cols,rows;ls_tui_geometry(&cols,&rows,NULL,NULL);
+        tui_rect a={1,5,cols-2,rows-6};tui_surface *sf=ls_tui_surface();
+        for(int daylight=0;daylight<2;daylight++) {
+            ls_tui_set_daylight(daylight);tui_frame_begin(sf);ls_scr_sweep.draw(sf,a);ls_tui_present();
+            for(int c=0;c<5;c++) {
+                bool found=false,history=false;
+                for(int y=a.y;y<a.y+a.h;y++) for(int x=a.x;x<a.x+a.w-10;x++) {
+                    int at=y*sf->w+x;
+                    if(sf->back[at].ch!='C' || sf->back[at+8].ch!='-' || sf->back[at+9].ch!='0'+c) continue;
+                    found=true;
+                    for(int k=0;k<10;k++) LS_EQ_INT(sf->back[at+k].attr, TUI_ATTR(hues[c]|TUI_BRIGHT,TUI_BLACK));
+                    /* Category spine in the same hue at the row's left edge. */
+                    bool spine=false;
+                    for(int k=a.x;k<x;k++) {
+                        tui_cell s=sf->back[y*sf->w+k];
+                        spine|=(s.ch==LS_TUI_BLOCK_LEFT || s.ch==LS_TUI_SEXT(0x05)) && s.attr==TUI_ATTR(hues[c]|TUI_BRIGHT,TUI_BLACK);
+                    }
+                    LS_CHECK_MSG(spine,"wide=%d category=%d spine missing",wide,c);
+                    /* History rides beside the row when wide, under its meter otherwise. */
+                    for(int hy=y;hy<=y+1 && !history;hy++) for(int k=0;k<a.w;k++) {
+                        tui_cell cell=sf->back[hy*sf->w+a.x+k];
+                        if(cell.ch>=0x2800 && cell.ch<=0x28ff) {history=true;LS_EQ_INT(cell.attr,TUI_ATTR(hues[c]|TUI_BRIGHT,TUI_BLACK));}
+                    }
+                }
+                LS_CHECK_MSG(found && history,"wide=%d category=%d label/history missing",wide,c);
+            }
+            tui_frame_begin(sf);ls_scr_sweep.draw(sf,a);LS_EQ_INT(ls_tui_present(),0);
+        }
+        ls_tui_set_daylight(false);
+        ls_scr_sweep.key(LS_TK_CHAR,'h');ls_scr_sweep.key(LS_TK_CHAR,'v');
+        tui_frame_begin(sf);ls_scr_sweep.draw(sf,a);ls_tui_present();
+        /* HUNT gauge on the strongest contact (-47 dBm): VFD segments with the
+           cold end lit bright blue, the top still unlit and faint, the scale
+           in all four heat hues, and the house cyan frame around it. */
+        int lit_cold=0,ghost=0;bool scale[4]={0},frame=false;
+        const uint8_t ramp[4]={TUI_BLUE,TUI_CYAN,TUI_YELLOW,TUI_RED};
+        for(int y=a.y;y<a.y+a.h;y++) for(int x=a.x;x<a.x+a.w;x++) {
+            tui_cell cell=sf->back[y*sf->w+x];
+            if(cell.ch==LS_TUI_BLOCK_FULL || cell.ch==LS_TUI_BLOCK_LEFT) {
+                lit_cold+=cell.attr==TUI_ATTR(TUI_BLUE|TUI_BRIGHT,TUI_BLACK);
+                ghost+=cell.attr==TUI_ATTR(TUI_BLACK|TUI_BRIGHT,TUI_BLACK);
+            }
+            if(cell.ch=='-' && x+1<a.x+a.w && sf->back[y*sf->w+x+1].ch>='0' && sf->back[y*sf->w+x+1].ch<='9')
+                for(int z=0;z<4;z++) scale[z]|=cell.attr==TUI_ATTR(ramp[z],TUI_BLACK);
+            frame|=cell.ch=='+' && cell.attr==TUI_ATTR(TUI_CYAN,TUI_BLACK);
+        }
+        LS_CHECK_MSG(lit_cold>0 && ghost>0,"wide=%d gauge lit=%d ghost=%d",wide,lit_cold,ghost);
+        LS_CHECK(scale[0] && scale[1] && scale[2] && scale[3] && frame);
+        tui_frame_begin(sf);ls_scr_sweep.draw(sf,a);LS_EQ_INT(ls_tui_present(),0);
+        ls_scr_sweep.key(LS_TK_CHAR,'v');ls_tui_end();
+    }
+    ls_sweep_clear();ls_shim_time_set(saved);
+}

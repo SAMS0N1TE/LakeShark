@@ -9,8 +9,8 @@ them or re-derive them; do not assume a newer upstream has fixed them.
 
 `carto_fill_polygon` declared `int xints[2048]`, an 8 KB automatic array. The
 FreeRTOS task stacks on this board are 4 to 8 KB, so the first polygon with a
-scanline to fill would have run off the end of one. It is `static` now, sized
-by `CARTO_MAX_CROSSINGS` in `raster.h`.
+scanline to fill would have run off the end of one. It is `static` in PSRAM on
+ESP builds, sized by `CARTO_MAX_CROSSINGS` in `raster.h`.
 
 The size is unchanged. A crossing needs an edge, so a scanline cannot have more
 crossings than the polygon has edges, and 2048 is generous - but the existing
@@ -21,6 +21,10 @@ rendering problem.
 `static` means the fill is not reentrant. The renderer runs on one task. If a
 second one is ever added, this is the thing that breaks first and it will not
 announce itself.
+
+On ESP builds, edge traversal and crossing sorting check the runnable budget
+every 1024 operations and sleep one tick after 2 ms. A pathological polygon
+therefore lets other tasks and idle run within a tile, without changing pixels.
 
 ## 2. `cells.c` is not built
 

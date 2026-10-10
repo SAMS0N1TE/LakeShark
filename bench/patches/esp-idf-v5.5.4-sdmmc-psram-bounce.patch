@@ -1,0 +1,66 @@
+From 9d565702940fa410deabea5a34fcf0bdbd3aa8f1 Mon Sep 17 00:00:00 2001
+From: SAMS0N1TE <115175137+SAMS0N1TE@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:59:44 -0400
+Subject: [PATCH] fix(sdmmc): fall back to aligned PSRAM bounce buffers
+
+---
+ components/sdmmc/sdmmc_cmd.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/components/sdmmc/sdmmc_cmd.c b/components/sdmmc/sdmmc_cmd.c
+index a928dee6d..b03e69ce2 100644
+--- a/components/sdmmc/sdmmc_cmd.c
++++ b/components/sdmmc/sdmmc_cmd.c
+@@ -6,10 +6,25 @@
+ 
+ #include <inttypes.h>
+ #include "esp_private/sdmmc_common.h"
++#include "esp_private/esp_cache_private.h"
+ 
+ static const char* TAG = "sdmmc_cmd";
+ 
+ 
++#if SOC_SDMMC_PSRAM_DMA_CAPABLE
++/* LakeShark: bounce through PSRAM when internal DMA memory is exhausted.
++ * External DMA buffers must start and end on cache-line boundaries. */
++static void *sdmmc_alloc_psram_bounce(size_t size)
++{
++    size_t alignment = 0;
++    if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &alignment) != ESP_OK) {
++        return NULL;
++    }
++    alignment = MAX(alignment, 4);
++    size = (size + alignment - 1) & ~(alignment - 1);
++    return heap_caps_aligned_alloc(alignment, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++}
++#endif
+ esp_err_t sdmmc_send_cmd(sdmmc_card_t* card, sdmmc_command_t* cmd)
+ {
+     if (card->host.command_timeout_ms != 0) {
+@@ -469,6 +484,11 @@ esp_err_t sdmmc_write_sectors(sdmmc_card_t* card, const void* src,
+         // We don't want to force the allocation into SPIRAM, the allocator
+         // will decide based on the buffer size and memory availability.
+         tmp_buf = heap_caps_malloc(block_size, MALLOC_CAP_DMA);
++#if SOC_SDMMC_PSRAM_DMA_CAPABLE
++        if (!tmp_buf) {
++            tmp_buf = sdmmc_alloc_psram_bounce(block_size);
++        }
++#endif
+         if (!tmp_buf) {
+             ESP_LOGE(TAG, "%s: not enough mem, err=0x%x", __func__, ESP_ERR_NO_MEM);
+             return ESP_ERR_NO_MEM;
+@@ -605,6 +625,11 @@ esp_err_t sdmmc_read_sectors(sdmmc_card_t* card, void* dst,
+         void *tmp_buf = NULL;
+         size_t actual_size = 0;
+         tmp_buf = heap_caps_malloc(block_size, MALLOC_CAP_DMA);
++#if SOC_SDMMC_PSRAM_DMA_CAPABLE
++        if (!tmp_buf) {
++            tmp_buf = sdmmc_alloc_psram_bounce(block_size);
++        }
++#endif
+         if (!tmp_buf) {
+             ESP_LOGE(TAG, "%s: not enough mem, err=0x%x", __func__, ESP_ERR_NO_MEM);
+             return ESP_ERR_NO_MEM;
+-- 
+2.45.1.windows.1
+

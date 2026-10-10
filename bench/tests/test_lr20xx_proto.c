@@ -1774,7 +1774,7 @@ LS_CASE(nothing_transmits_at_or_above_1_ghz_and_the_hf_pa_is_never_touched)
 {
     session_up();
     ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
-    cfg.freq_hz = 2440000000u;
+    cfg.freq_hz = 2300000000u; /* gap between the supported HF packet bands */
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_NOT_SUPPORTED);
     cfg.freq_hz = 1000000000u;
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_NOT_SUPPORTED);
@@ -3415,4 +3415,59 @@ LS_CASE(native_stream_restores_only_hardware_sync_not_fifo_loss)
     LS_EQ_INT(ls_lora_fsk_stream_read(buf, sizeof(buf), &restarted), 20);
     LS_CHECK(restarted); LS_EQ_UINT(buf[0], 0x83); LS_EQ_UINT(buf[4], 0x50);
     LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+}
+
+LS_CASE(lr2021_hf_lora_and_fsk_receive_but_every_transmit_layer_refuses)
+{
+    const uint32_t hz[] = {1900000000u, 2200000000u, 2400000000u, 2440000000u, 2500000000u};
+    const uint8_t data[8] = {1};
+    for (unsigned i = 0; i < sizeof(hz) / sizeof(hz[0]); i++) {
+        session_up();
+        ls_lora_cfg_t c; ls_lora_cfg_default(&c); c.freq_hz = hz[i];
+        LS_EQ_INT(ls_lora_configure(&c), ESP_OK);
+        LS_EQ_INT(ls_lora_receive(), ESP_OK);
+        int boost, hf, lf;
+        LS_EQ_INT(last_rx_path(&boost), LR20XX_PATH_HF); LS_EQ_INT(boost, 4);
+        calib_fe_paths(&hf, &lf); LS_CHECK(hf > 0); LS_EQ_INT(lf, 0);
+        LS_EQ_UINT(fk.last_freq_hz, hz[i]); LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+        LS_EQ_INT(count_frames_with(0x02, 0x0F), 0); /* no PA selection */
+        fk.nframes = 0;
+        LS_EQ_INT(ls_lora_send(data, sizeof(data)), ESP_ERR_NOT_SUPPORTED);
+        LS_EQ_INT(lr20xx_set_pa_lf(10), ESP_ERR_NOT_SUPPORTED);
+        LS_EQ_INT(lr20xx_set_tx(), ESP_ERR_NOT_SUPPORTED);
+        LS_EQ_INT(fk.nframes, 0);
+        ls_fsk_cfg_t f = FSK_868; f.freq_hz = hz[i];
+        LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_OK);
+        LS_EQ_INT(last_rx_path(&boost), LR20XX_PATH_HF); LS_EQ_INT(boost, 4);
+        calib_fe_paths(&hf, &lf); LS_CHECK(hf > 0); LS_EQ_INT(lf, 0);
+        float rssi; LS_EQ_INT(ls_lora_rssi_inst(&rssi), ESP_OK);
+        fk.nframes = 0;
+        LS_EQ_INT(ls_lora_fsk_send(data, sizeof(data)), ESP_ERR_NOT_SUPPORTED);
+        LS_EQ_INT(lr20xx_set_tx(), ESP_ERR_NOT_SUPPORTED); LS_EQ_INT(fk.nframes, 0);
+        LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
+        LS_EQ_INT(last_rx_path(NULL), LR20XX_PATH_HF); /* restore HF LoRa RX */
+        LS_CHECK(ls_lora_is_receiving()); LS_EQ_INT(fk.tx_starts, 0);
+        no_hf_transmit(); LS_EQ_INT(fk.bad_mode, 0);
+    }
+}
+
+LS_CASE(hf_lora_band_gaps_and_other_lr_chips_remain_refused)
+{
+    const uint32_t bad[] = {960000001u, 1899999999u, 2200000001u, 2399999999u, 2500000001u};
+    session_up();
+    ls_lora_cfg_t c; ls_lora_cfg_default(&c);
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        c.freq_hz = bad[i];
+        LS_EQ_INT(ls_lora_configure(&c), ESP_ERR_NOT_SUPPORTED);
+    }
+    LS_EQ_INT(fk.nframes, 0);
+    fk_install(FK_LR); fk.fw_major = 2; fk.fw_minor = 0;
+    LS_EQ_INT(ls_lora_start(), ESP_OK); fk.nframes = 0;
+    c.freq_hz = 2400000000u;
+    LS_EQ_INT(ls_lora_configure(&c), ESP_ERR_NOT_SUPPORTED);
+    ls_fsk_cfg_t f = FSK_868; f.freq_hz = c.freq_hz;
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG); LS_EQ_INT(fk.nframes, 0);
+    fk_install(FK_SX_ECHO); LS_EQ_INT(ls_lora_start(), ESP_OK); fk.nframes = 0;
+    LS_CHECK(!ls_lora_packet_rx_hz_ok(ls_lora_caps(), c.freq_hz));
+    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG); LS_EQ_INT(fk.nframes, 0);
 }

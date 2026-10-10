@@ -19,6 +19,13 @@
 #error "include ls_board.h, not ls_caps.h directly"
 #endif
 
+/* CartoCore and cell-map storage are enabled on this board profile. */
+#if defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4
+#define LS_HAS_CARTOCORE 1
+#else
+#define LS_HAS_CARTOCORE 0
+#endif
+
 /* A software-controlled VBUS switch.  This is what lets a wedged RTL dongle
    be power-cycled and re-enumerated without touching the hardware. */
 #if defined(LS_BOARD_VBUS_EN_GPIO) && (LS_BOARD_VBUS_EN_GPIO >= 0)

@@ -229,6 +229,12 @@ const ls_app_doc_t ls_doc_settings = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_tiles = {
+    .purpose = "Install and manage CartoCore map regions on the SD card. Download over WiFi or receive a file from a laptop. OPEN displays the selected map.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_t ls_doc_map = {
     .purpose = "An offline vector map from a .pmtiles archive on the card, "
                "with your position on it and anything the journal recorded a "
@@ -272,7 +278,34 @@ const ls_app_doc_t ls_doc_music = {
     .gps = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_drones = {
+    .purpose = "Passively receive nearby BLE Remote ID broadcasts. Broadcast "
+               "identities and authentication are unverified; RSSI ranks "
+               "signal strength, not bearing or distance.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps = LS_APP_GPS_NAVIGATES,
+    .gps_note = "Your GPS fix provides distance and true bearing to a reported "
+                "drone position. Without both fixes, radar placement is "
+                "illustrative RSSI ranking. Entries expire after 60 seconds.",
+};
+
+const ls_app_doc_t ls_doc_sweep = {
+    .purpose = "Receive nearby BLE and Wi-Fi broadcasts. Signatures and names "
+               "are unverified hints. LIST ranks observed contacts; HUNT "
+               "follows RSSI and hands a selected address to FIND. Mute and "
+               "your selected speaker volume are respected.",
+    .records = LS_APP_RECORDS_MANUAL,
+    .record_note = "Optional SD alert logging: uptime, MAC, category and RSSI; "
+                   "no location or broadcast payload. Off by default.",
+    .gps = LS_APP_GPS_NAVIGATES,
+    .gps_note = "GPS contributes movement counts only, never retained "
+                "coordinates. Remote ID bearing/distance is derived from "
+                "live fixes.",
+};
+
 const ls_app_doc_row_t ls_app_docs_all[] = {
+    { "drones", &ls_doc_drones },
+    { "sweep", &ls_doc_sweep },
     { "music", &ls_doc_music },
     { "home",    &ls_doc_home    },
     { "p25",     &ls_doc_p25     },
@@ -295,6 +328,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "update",  &ls_doc_update   },
     { "set",     &ls_doc_settings},
     { "map",     &ls_doc_map     },
+    { "tiles",   &ls_doc_tiles   },
     { "gps",     &ls_doc_gps     },
     { "radios",  &ls_doc_radios  },
     { "link",    &ls_doc_link    },
@@ -302,3 +336,5 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
 
 const int ls_app_docs_count =
     (int)(sizeof(ls_app_docs_all) / sizeof(ls_app_docs_all[0]));
+
+

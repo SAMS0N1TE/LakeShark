@@ -1096,6 +1096,7 @@ static bool touch(int col, int row)
 }
 
 const ls_tui_screen_t ls_scr_p25 = {
+    .diff_switch = true,
     /* P25 is this screen's whole subject. */
     .radio = "P25",
     .name = "P25",

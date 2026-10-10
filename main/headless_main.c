@@ -1,3 +1,5 @@
+#include "tui/ls_rid.h"
+#include "tui/ls_sweep_app.h"
 #include <string.h>
 #include "ls_trail.h"
 #include <strings.h>
@@ -780,8 +782,10 @@ static int cmd_gain(int argc, char **argv)
 
 static int cmd_mute(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    audio_toggle_mute();
+    if(argc==1) audio_toggle_mute();
+    else if(argc==2 && !strcmp(argv[1],"on")) audio_mute_set(true);
+    else if(argc==2 && !strcmp(argv[1],"off")) audio_mute_set(false);
+    else {printf("usage: mute [on|off]\n");return 1;}
     printf("mute=%d\n", audio_is_muted());
     return 0;
 }
@@ -2066,9 +2070,8 @@ static int cmd_imu(int argc, char **argv)
 void ls_notify_alert_hw(bool ring, bool vibe)
 {
     if (vibe) ls_haptic_play(LS_HAPTIC_ALERT);
-    if (ring) {
+    if (ring && !audio_is_muted() && audio_volume_get() > 0) {
         pa_on();
-        audio_out_ensure_unmuted();
         snd_alert_start();
     }
 }
@@ -2731,16 +2734,81 @@ static int cmd_fl(int argc, char **argv)
     return 0;
 }
 
-/**/
-/* full=false registers only the recovery set. Everything below
-   dereferences the radio backend, the audio path or the BLE link, none of
-   which safe mode started. */
+/* Commands are split by esp_console, including double-quoted SSIDs.
+ * Reply markers let the SSH helper discard serial echo before any output. */
+static int cmd_wifi(int argc, char **argv)
+{
+    printf("wifi: begin\n");
+    const char *op = argc > 1 ? argv[1] : "status";
+    esp_err_t rc = ESP_ERR_INVALID_ARG;
+    if (!strcmp(op, "status") && argc <= 2) {
+        char status[160], ip[20];
+        ls_wifi_sta_status(status, sizeof(status));
+        ls_wifi_sta_ip(ip, sizeof(ip));
+        printf("%s\nIP: %s\n", status, ip[0] ? ip : "none");
+        rc = strstr(status, "busy") ? ESP_ERR_INVALID_STATE :
+             strstr(status, "unavailable:") ? ESP_FAIL : ESP_OK;
+    } else if ((!strcmp(op, "list") || !strcmp(op, "scan")) && argc == 2) {
+        char (*names)[33] = heap_caps_malloc(8 * 33, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ls_wifi_scan_ap_t *connected = heap_caps_calloc(1, sizeof(*connected),
+                                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!names || !connected) rc = ESP_ERR_NO_MEM;
+        else {
+            int saved = ls_wifi_saved_list(names, 8);
+            bool associated = ls_wifi_sta_info(connected) == ESP_OK;
+            if (saved < 0) rc = ESP_ERR_INVALID_STATE;
+            else if (!strcmp(op, "list")) {
+                printf("%d saved networks (* connected)\n", saved);
+                for (int i = 0; i < saved; ++i)
+                    printf("%c %s\n", associated && !strcmp(names[i], connected->ssid) ? '*' : ' ', names[i]);
+                rc = ESP_OK;
+            } else {
+                ls_wifi_scan_ap_t *aps = heap_caps_malloc(16 * sizeof(*aps),
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!aps) rc = ESP_ERR_NO_MEM;
+                else {
+                    int n = ls_wifi_sta_scan(aps, 16);
+                    rc = n < 0 ? ESP_FAIL : ESP_OK;
+                    for (int i = 0; i < n; ++i) {
+                        bool known = false;
+                        for (int j = 0; j < saved; ++j) if (!strcmp(names[j], aps[i].ssid)) known = true;
+                        printf("%s  %d dBm  %s%s\n", aps[i].ssid, aps[i].rssi,
+                               aps[i].secure ? "secure" : "open", known ? "  [saved]" : "");
+                    }
+                    free(aps);
+                }
+            }
+        }
+        free(names); free(connected);
+    } else if ((!strcmp(op, "add") || !strcmp(op, "join")) && (argc == 3 || argc == 4)) {
+        const char *pass = argc == 4 ? argv[3] : "";
+        if (!strcmp(op, "add")) {
+            rc = ls_wifi_sta_save(argv[2], pass);
+            if (rc == ESP_OK && !ls_wifi_sta_connected()) rc = ls_wifi_sta_join(argv[2], pass);
+        } else rc = ls_wifi_sta_join(argv[2], pass);
+    } else if (!strcmp(op, "connect") && argc == 2) rc = ls_wifi_sta_autojoin();
+    else if (!strcmp(op, "leave") && argc == 2) rc = ls_wifi_sta_leave();
+    else if (!strcmp(op, "forget") && argc == 3)
+        rc = !strcmp(argv[2], "all") ? ls_wifi_sta_forget_all() : ls_wifi_sta_forget_ssid(argv[2]);
+    else printf("wifi status|list|scan|add <ssid> [pass]|join <ssid> [pass]|connect|forget <ssid>|all|leave\n"
+                "Example: wifi add \"My Net\" pass\n");
+    if (!strcmp(op, "add") || !strcmp(op, "join")) {
+        for (int i = 3; i < argc; ++i) {
+            volatile char *secret = argv[i];
+            size_t n = strlen(argv[i]); while (n--) *secret++ = 0;
+        }
+    }
+    printf("wifi: %s\n", esp_err_to_name(rc));
+    return rc == ESP_OK ? 0 : 1;
+}
+
+/* full=false registers only the recovery set: safe mode has no radio/audio. */
 static bool console_start(bool full)
 {
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_cfg.prompt = "lakeshark>";
-    repl_cfg.max_cmdline_length = 128;
+    repl_cfg.max_cmdline_length = 256; /* escaped 32-byte SSID + 63-byte password */
 
     esp_console_dev_uart_config_t uart_cfg = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     /* The REPL cannot start without its task stack in one internal block,
@@ -2779,6 +2847,8 @@ static bool console_start(bool full)
        immutable descriptors in flash instead; normal boot subsequently has
        to initialize the complete compact UI on this same task. */
     static const esp_console_cmd_t cmds[] = {
+        { .command="sweep", .help="Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload", .func=ls_sweep_command },
+        { .command="rid", .help="Passive Remote ID: list | detail N | clear", .func=ls_rid_command },
         { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
@@ -2792,6 +2862,7 @@ static bool console_start(bool full)
           .func = &cmd_mode },
         { .command = "fm",     .help = "FM sub-mode (hops into FM)",
           .hint = "listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais", .func = &cmd_fm },
+        { .command = "wifi", .help = "Saved Wi-Fi networks; wifi add \"My Net\" pass", .func = &cmd_wifi },
         { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
           .func = &cmd_vol },
         { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
@@ -2800,7 +2871,7 @@ static bool console_start(bool full)
           .func = &cmd_gain },
         { .command = "feed",   .help = "ADS-B JSON feed to console (CartoTUI)",
           .hint = "on|off", .func = &cmd_feed },
-        { .command = "mute",   .help = "Toggle audio mute", .func = &cmd_mute },
+        { .command = "mute",   .help = "System mute: toggle or on/off", .func = &cmd_mute },
         { .command = "rec",    .help = "OOK recorder - captures to a Flipper SubGhz .sub file",
           .hint = "<freq MHz|gain <dB>|arm|stop|save <name>|list|cat <name>|rm <name>>",
           .func = &cmd_rec },
@@ -2869,6 +2940,10 @@ static bool console_start(bool full)
         ls_ctl_register_recovery_commands();
     }
     panic_crumb_register_command();
+#if LS_HAS_CARTOCORE
+    extern void ls_cartocore_register_command(void);
+    ls_cartocore_register_command();
+#endif
     esp_err_t serr = esp_console_start_repl(repl);
     if (serr != ESP_OK) {
         ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));
@@ -2972,6 +3047,11 @@ void app_main(void)
     if (nvs_worker_err != ESP_OK)
         ESP_LOGE(TAG, "NVS dispatcher init failed: %s",
                  esp_err_to_name(nvs_worker_err));
+
+#if LS_HAS_CARTOCORE
+    extern void ls_cartocore_boot_init(void);
+    ls_cartocore_boot_init();
+#endif
 
     gpio_init();
 

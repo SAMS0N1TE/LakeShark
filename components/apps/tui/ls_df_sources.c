@@ -11,11 +11,13 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include "ls_df.h"
 #include "ls_field.h"
 #include "ls_ble_heard.h"
 #include "ls_wireless.h"
+#include "../../../main/ls_wifi.h"
 #include "ls_value.h"
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
@@ -40,6 +42,7 @@ typedef struct {
     uint32_t freq[LS_DFS_CHANNELS];
     int nch;
     uint32_t dwell_ms;
+    bool address_target;
     int target;                     /* -1: everything the source hears */
     char target_key[40];            /* SSID, BLE address or mesh id */
     char target_name[40];
@@ -54,6 +57,18 @@ typedef struct {
 
 static StaticSemaphore_t s_lock_memory;
 static SemaphoreHandle_t s_lock;
+static unsigned s_lock_once;
+static void lock_init(void)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_lock_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory);
+        __atomic_store_n(&s_lock_once, 2, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(&s_lock_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    }
+}
 EXT_RAM_BSS_ATTR static struct {
     slot_t slot[LS_DFS_SLOTS];
     ls_dfs_reading_t q[QUEUE];
@@ -92,11 +107,12 @@ typedef struct {
     int64_t dwell_until;
     uint32_t tuned_hz;
     int settle;                     /* readings still to drop after a retune */
+    int64_t wifi_address_us;
     int64_t det_us, beacon_us;      /* last packet seen; last beacon packet */
 } work_t;
 static work_t w[LS_DFS_SLOTS] = { { .running = LS_DFS_COUNT }, { .running = LS_DFS_COUNT } };
 
-static void lock(void) { if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory); xSemaphoreTake(s_lock, portMAX_DELAY); }
+static void lock(void) { lock_init(); xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
 static bool slot_ok(int k) { return k >= 0 && k < LS_DFS_SLOTS; }
@@ -412,6 +428,15 @@ bool ls_dfs_target_label(int i, char *label, size_t lcap, char *detail, size_t d
     return false;
 }
 
+bool ls_dfs_target_address(const uint8_t mac[6],const char *label) {
+    if(!mac) return false;
+    lock();slot_t *sl=&s.slot[0];
+    if(sl->source!=LS_DFS_BLE && sl->source!=LS_DFS_WIFI) {unlock();return false;}
+    sl->address_target=true;
+    sl->target=0;memset(sl->target_key,0,sizeof(sl->target_key));memcpy(sl->target_key,mac,6);
+    snprintf(sl->target_name,sizeof(sl->target_name),"%s",label?label:"SWEEP target");sl->level_us=0;unlock();return true;
+}
+
 bool ls_dfs_target_pick(int i)
 {
     char label[40] = "", detail[48];
@@ -425,7 +450,7 @@ bool ls_dfs_target_pick(int i)
     }
     lock();
     slot_t *sl = &s.slot[0];
-    sl->target = i; memcpy(sl->target_key, key, sizeof(key));
+    sl->target = i;sl->address_target=false; memcpy(sl->target_key, key, sizeof(key));
     snprintf(sl->target_name, sizeof(sl->target_name), "%s", label);
     sl->level_us = 0;
     unlock();
@@ -720,6 +745,18 @@ static void step_wifi(int k, const char *ssid, bool targeted)
     status(k, "Network not in the last scan");
 }
 
+static void step_wifi_address(int k,const uint8_t address[6]) {
+    static EXT_RAM_BSS_ATTR ls_wifi_scan_ap_t aps[64];
+    int64_t seen=0;int n=ls_wifi_scan_cached(aps,64,&seen);
+    const int64_t now=esp_timer_get_time();
+    if(seen==w[k].wifi_address_us || now-seen>5000000) return;
+    w[k].wifi_address_us=seen;
+    for(int i=0;i<n;i++) if(!memcmp(aps[i].bssid,address,6)) {
+        publish_at(k,0,0,aps[i].rssi,"dBm",0,seen);status(k,"SWEEP BSSID: one level per scan");return;
+    }
+    status(k,"SWEEP address not in last scan");
+}
+
 static void step_ble(int k, const uint8_t *addr, bool targeted)
 {
     ls_wireless_get(&s_wsnap);
@@ -837,7 +874,7 @@ void ls_dfs_step(void)
         case LS_DFS_HACKRF: step_sdr(k, &c[k], true, retune); break;
         case LS_DFS_CC1101: step_mixrf(k, &c[k], false, retune); break;
         case LS_DFS_NRF24:  step_mixrf(k, &c[k], true, retune); break;
-        case LS_DFS_WIFI:   step_wifi(k, c[k].target_key, targeted); break;
+        case LS_DFS_WIFI:   if(c[k].address_target) step_wifi_address(k,(const uint8_t *)c[k].target_key);else step_wifi(k, c[k].target_key, targeted); break;
         case LS_DFS_BLE:    step_ble(k, (const uint8_t *)c[k].target_key, targeted); break;
         default: break;
         }

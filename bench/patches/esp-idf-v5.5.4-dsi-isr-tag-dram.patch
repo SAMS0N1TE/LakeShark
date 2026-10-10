@@ -1,0 +1,12 @@
+diff --git a/components/esp_lcd/dsi/esp_lcd_panel_dpi.c b/components/esp_lcd/dsi/esp_lcd_panel_dpi.c
+--- a/components/esp_lcd/dsi/esp_lcd_panel_dpi.c
++++ b/components/esp_lcd/dsi/esp_lcd_panel_dpi.c
+@@ -106,7 +106,7 @@
+         // when an underrun happens, the LCD display may already becomes blue
+         // it's too late to recover the display, so we just print an error message
+         // as a hint to the user that he should optimize the memory bandwidth (with AXI-ICM)
+-        ESP_DRAM_LOGE(TAG, "can't fetch data from external memory fast enough, underrun happens");
++        ESP_DRAM_LOGE(DRAM_STR("lcd.dsi"), "can't fetch data from external memory fast enough, underrun happens");
+     }
+     if (intr_status & MIPI_DSI_BRG_LL_EVENT_VSYNC) {
+         if (dpi_panel->on_refresh_done) {

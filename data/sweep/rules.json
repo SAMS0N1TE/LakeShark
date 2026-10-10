@@ -1,0 +1,50 @@
+[
+  {
+    "category": "CAMERA",
+    "label": "Axis vendor hint",
+    "vendor": "Axis",
+    "oui": "00408C"
+  },
+  {
+    "category": "CAMERA",
+    "label": "Axis vendor hint",
+    "vendor": "Axis",
+    "oui": "ACCC8E"
+  },
+  {
+    "category": "TRACKER",
+    "label": "Tile vendor advert",
+    "vendor": "Tile",
+    "company": "067C"
+  },
+  {
+    "category": "TRACKER",
+    "label": "Tile service",
+    "vendor": "Tile",
+    "uuid": "FEED"
+  },
+  {
+    "category": "TRACKER",
+    "label": "Tile service",
+    "vendor": "Tile",
+    "uuid": "FEEC"
+  },
+  {
+    "category": "BODYCAM",
+    "label": "Bodycam name hint",
+    "vendor": "Unverified",
+    "name": "bodycam"
+  },
+  {
+    "category": "ATTACK",
+    "label": "Flipper name hint",
+    "vendor": "Unverified",
+    "name": "Flipper"
+  },
+  {
+    "category": "ATTACK",
+    "label": "Pwnagotchi SSID hint",
+    "vendor": "Unverified",
+    "ssid": "pwnagotchi"
+  }
+]

@@ -12,7 +12,7 @@ extern "C" {
 #include "ls_tui.h"
 
 /* Shared by the app directory and router so every registered app fits. */
-#define LS_TUI_MAX_SCREENS 26
+#define LS_TUI_MAX_SCREENS 32
 
 /* Keys as the screens see them. Characters arrive as themselves; everything
    else is one of these. Deliberately the same vocabulary as tui_key_t in
@@ -53,6 +53,10 @@ typedef struct ls_tui_screen_s {
 
     const char *radio;
     bool hold_auto_rotation; /* Sensor instruments keep their entry orientation. */
+    /* Opt in only when pixels are owned by the cell/image renderer (or a
+       reservation is released on leave). Two such screens can diff across
+       a switch; direct framebuffer writers retain the full repaint. */
+    bool diff_switch;
 } ls_tui_screen_t;
 
 /* Registration is by pointer and the descriptor must outlive the program -

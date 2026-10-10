@@ -844,13 +844,15 @@ static void usb_lib_task(void *arg)
 
 esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
 {
+    if (usb_host_task) return ESP_OK;
     //Install USB Host driver. Should only be called once in entire application
     ESP_LOGI(TAG, "Installing USB Host");
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
     };
-    BSP_ERROR_CHECK_RETURN_ERR(usb_host_install(&host_config));
+    esp_err_t install_error = usb_host_install(&host_config);
+    if (install_error != ESP_OK) return install_error;
 
     /* Create the USB host library task. PATCH (lakeshark): PIN TO CORE 1.
      * It runs at priority 10 and wakes on every USB transfer completion (very
@@ -860,7 +862,9 @@ esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
     if (xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, NULL, 13,
                                 &usb_host_task, 1) != pdTRUE) {
         ESP_LOGE(TAG, "Creating USB host lib task failed");
-        abort();
+        usb_host_uninstall();
+        usb_host_task = NULL;
+        return ESP_ERR_NO_MEM;
     }
 
     return ESP_OK;

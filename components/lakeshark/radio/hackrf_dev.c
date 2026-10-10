@@ -124,12 +124,39 @@ static void note_block(const int8_t *raw, size_t raw_bytes, const uint8_t *out,
 #define HACKRF_AUTO_GAIN_TENTHS 480
 
 typedef struct {
+    unsigned generation;
     uint8_t dev_addr;
     usb_host_client_handle_t client;
 } hackrf_setup_arg_t;
 
 static const char *TAG = "hackrf_dev";
 static hackrf_dev_t *s_dev;
+/* Setup owns its private object until publication. Removal never waits for
+ * setup (the USB client must remain able to deliver control completions). */
+static portMUX_TYPE s_lifecycle = portMUX_INITIALIZER_UNLOCKED;
+static bool s_setup_active, s_cleanup_active;
+static bool s_probe_pending;
+static uint8_t s_probe_addr;
+static usb_host_client_handle_t s_probe_client;
+static unsigned s_probe_generation;
+static unsigned s_remove_generation;
+
+/* Keep at most the latest replacement probe while the old owner drains. */
+static void finish_lifecycle(bool setup)
+{
+    portENTER_CRITICAL(&s_lifecycle);
+    if (setup) s_setup_active = false;
+    else s_cleanup_active = false;
+    bool probe = !s_setup_active && !s_cleanup_active && !s_dev &&
+                 s_probe_pending && s_probe_generation == s_remove_generation;
+    uint8_t addr = s_probe_addr;
+    usb_host_client_handle_t client = s_probe_client;
+    if (probe || s_probe_generation != s_remove_generation) s_probe_pending = false;
+    portEXIT_CRITICAL(&s_lifecycle);
+    if (probe) hackrf_adapter_probe_async(addr, client);
+}
+
+
 static volatile uint32_t s_alloc_fail_count;
 static volatile uint32_t s_alloc_fail_size;
 static volatile uint32_t s_alloc_fail_caps;
@@ -538,11 +565,17 @@ static void close_device(hackrf_dev_t *dev, bool gone)
 
 bool hackrf_adapter_note_removed(usb_device_handle_t device)
 {
+    portENTER_CRITICAL(&s_lifecycle);
+    ++s_remove_generation;
     hackrf_dev_t *dev = s_dev;
-    if (!dev || dev->usb.dev_hdl != device) return false;
+    bool matches = dev && dev->usb.dev_hdl == device;
+    if (matches) { s_dev = NULL; s_cleanup_active = true; }
+    portEXIT_CRITICAL(&s_lifecycle);
+    esp_libusb_note_device_gone(device);
+    if (!matches) return false;
     (void)ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_HACKRF_USB);
-    s_dev = NULL;
     close_device(dev, true);
+    finish_lifecycle(false);
     return true;
 }
 
@@ -582,19 +615,26 @@ static void setup_task(void *arg)
         goto reject;
     }
 
-    init_adsb_dev();
+    if (init_adsb_dev() != ESP_OK) { close_device(dev, false); goto done; }
     dev->ppm = settings_hackrf_ppm_get();
-    s_dev = dev;
     ls_radio_err_t error = LS_RADIO_ERR_BUSY;
     for (int attempt = 0; attempt < 200; ++attempt) {
+        portENTER_CRITICAL(&s_lifecycle);
+        bool cancelled = setup->generation != s_remove_generation;
+        portEXIT_CRITICAL(&s_lifecycle);
+        if (cancelled) break;
         error = register_endpoint(dev);
         if (error != LS_RADIO_ERR_BUSY) break;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    if (error != LS_RADIO_OK) {
+    portENTER_CRITICAL(&s_lifecycle);
+    bool publish = error == LS_RADIO_OK && setup->generation == s_remove_generation;
+    if (publish) s_dev = dev;
+    portEXIT_CRITICAL(&s_lifecycle);
+    if (!publish) {
+        if (error == LS_RADIO_OK) (void)ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_HACKRF_USB);
         ESP_LOGE(TAG, "endpoint registration failed: %s",
                  ls_radio_err_name(error));
-        s_dev = NULL;
         close_device(dev, false);
         goto done;
     }
@@ -607,6 +647,7 @@ reject:
         (void)usb_host_device_close(dev->usb.client_hdl, dev->usb.dev_hdl);
     free(dev);
 done:
+    finish_lifecycle(true);
     vPortFree(setup);
     vTaskDelete(NULL);
 }
@@ -620,11 +661,30 @@ void hackrf_adapter_probe_async(uint8_t dev_addr,
         ESP_LOGE(TAG, "setup arg alloc failed");
         return;
     }
+    portENTER_CRITICAL(&s_lifecycle);
+    if (s_setup_active || s_cleanup_active) {
+        s_probe_pending = true;
+        s_probe_addr = dev_addr;
+        s_probe_client = client;
+        s_probe_generation = s_remove_generation;
+        portEXIT_CRITICAL(&s_lifecycle);
+        vPortFree(setup);
+        return;
+    }
+    if (s_dev) {
+        portEXIT_CRITICAL(&s_lifecycle);
+        vPortFree(setup);
+        return;
+    }
+    s_setup_active = true;
+    setup->generation = s_remove_generation;
+    portEXIT_CRITICAL(&s_lifecycle);
     setup->dev_addr = dev_addr;
     setup->client = client;
     if (xTaskCreatePinnedToCore(setup_task, "hackrf_setup", 4096, setup, 4,
                                 NULL, 0) != pdPASS) {
         ESP_LOGE(TAG, "setup task creation failed");
+        finish_lifecycle(true);
         vPortFree(setup);
     }
 }

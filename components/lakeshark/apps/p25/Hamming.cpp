@@ -1,3 +1,8 @@
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
 /*
  * DSD-derived source, modified for LakeShark.
  * Comparison source: https://github.com/szechyjs/dsd/blob/59423fa46be8b41ef0bd2f3d2b45590600be29f0/src/Hamming.cpp
@@ -24,7 +29,7 @@
 
 Hamming_10_6_3_data Hamming_10_6_3::data;
 
-Hamming_10_6_3_TableImpl_data Hamming_10_6_3_TableImpl::data;
+EXT_RAM_BSS_ATTR Hamming_10_6_3_TableImpl_data Hamming_10_6_3_TableImpl::data;
 
 int Hamming_10_6_3::decode(std::bitset<10>& input)
 {

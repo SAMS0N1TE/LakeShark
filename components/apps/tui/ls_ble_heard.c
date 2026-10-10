@@ -6,15 +6,28 @@
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 EXT_RAM_BSS_ATTR static ls_ble_heard_t s_heard[LS_BLE_HEARD_MAX];
 static int s_count;
 static StaticSemaphore_t s_lock_memory;
 static SemaphoreHandle_t s_lock;
+static unsigned s_lock_once;
+static void lock_init(void)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_lock_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory);
+        __atomic_store_n(&s_lock_once, 2, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(&s_lock_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    }
+}
 
 static bool lock(void)
 {
-    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory);
+    lock_init();
     return s_lock && xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE;
 }
 static void unlock(void) { xSemaphoreGive(s_lock); }

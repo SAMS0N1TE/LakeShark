@@ -1,0 +1,9 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+
+Copyright (C) 2026 SAMS0N1TE
+
+CartoCore is distributed under the GNU General Public License, version 3
+or (at your option) any later version. See LICENSE.
+
+Third-party code retains its own copyright notices and licences; see
+PROVENANCE.txt and third_party/zstd/LICENSE.

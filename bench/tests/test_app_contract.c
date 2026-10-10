@@ -118,6 +118,13 @@ LS_CASE(everything_that_keeps_an_observation_carries_a_position)
     for (int i = 0; i < ls_app_docs_count; i++) {
         const ls_app_doc_row_t *r = &ls_app_docs_all[i];
         if (r->doc->records == LS_APP_RECORDS_NOTHING) continue;
+        /* SWEEP uses live GPS for navigation, but its opt-in alert log
+           forbids location. It writes separately from the journal. */
+        if (!strcmp(r->id,"sweep")) {
+            LS_CHECK(r->doc->gps == LS_APP_GPS_NAVIGATES);
+            LS_CHECK(strstr(r->doc->record_note,"no location") != NULL);
+            continue;
+        }
         LS_CHECK_MSG(r->doc->gps != LS_APP_GPS_UNUSED, r->id);
     }
 }

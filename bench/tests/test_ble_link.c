@@ -629,3 +629,28 @@ LS_CASE(tx_chunk_shortens_the_write_before_it_drops_the_frame)
     LS_EQ_INT(0, ble_link_tx_chunk(64 * 1024, overhead, 0));
     LS_EQ_INT(0, ble_link_tx_chunk(64 * 1024, overhead, -1));
 }
+
+#include "ble_link_scan.h"
+LS_CASE(observer_scan_survives_connection_and_backoff) {
+    LS_EQ_INT(BLE_SCAN_HEAD,ble_scan_wanted(true,false,false,true,false,false));
+    LS_EQ_INT(BLE_SCAN_OFF,ble_scan_wanted(true,false,true,true,false,false));
+    LS_EQ_INT(BLE_SCAN_OBSERVER,ble_scan_wanted(true,true,false,true,false,false));
+    LS_EQ_INT(BLE_SCAN_OBSERVER,ble_scan_wanted(true,false,false,true,false,true));
+    LS_EQ_INT(BLE_SCAN_HEAD,ble_scan_wanted(true,false,false,true,false,false));
+    LS_EQ_INT(BLE_SCAN_OFF,ble_scan_wanted(false,true,false,true,false,false));
+    LS_EQ_INT(BLE_SCAN_OFF,ble_scan_wanted(true,true,false,false,false,false));
+    LS_EQ_INT(BLE_SCAN_OBSERVER,ble_scan_wanted(true,false,false,true,true,false));
+}
+LS_CASE(discovery_start_restart_failure_and_stop) {
+    LS_EQ_INT(BLE_SCAN_START,ble_scan_action(BLE_SCAN_HEAD,BLE_SCAN_OFF,false));
+    LS_EQ_INT(BLE_SCAN_KEEP,ble_scan_action(BLE_SCAN_HEAD,BLE_SCAN_HEAD,true));
+    LS_EQ_INT(BLE_SCAN_START,ble_scan_action(BLE_SCAN_OBSERVER,BLE_SCAN_HEAD,false));
+    LS_EQ_INT(BLE_SCAN_RESTART,ble_scan_action(BLE_SCAN_OBSERVER,BLE_SCAN_HEAD,true));
+    LS_EQ_INT(BLE_SCAN_KEEP,ble_scan_action(BLE_SCAN_OBSERVER,BLE_SCAN_OBSERVER,true));
+    /* Discovery complete or failed start: observed inactive always retries. */
+    LS_EQ_INT(BLE_SCAN_START,ble_scan_action(BLE_SCAN_OBSERVER,BLE_SCAN_OBSERVER,false));
+    LS_EQ_INT(BLE_SCAN_RESTART,ble_scan_action(BLE_SCAN_HEAD,BLE_SCAN_OBSERVER,true));
+    LS_EQ_INT(BLE_SCAN_STOP,ble_scan_action(BLE_SCAN_OFF,BLE_SCAN_OBSERVER,true));
+    LS_EQ_INT(BLE_SCAN_KEEP,ble_scan_action(BLE_SCAN_OFF,BLE_SCAN_OFF,false));
+    LS_EQ_INT(160,BLE_LINK_OBSERVER_INTERVAL);LS_EQ_INT(48,BLE_LINK_OBSERVER_WINDOW);
+}

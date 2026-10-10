@@ -22,6 +22,7 @@ bool ls_audio_hw_output_is_mono(void);
    named. On a board using the vendor BSP there is nothing to release and
    this is a no-op, because the BSP owns its own lifetime. */
 void ls_audio_hw_deinit(void);
+esp_err_t ls_audio_hw_reinit(bool swap, int volume, bool muted);
 esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels);
 esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout);
 

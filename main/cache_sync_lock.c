@@ -17,8 +17,10 @@
 #include <stdint.h>
 
 #include "esp_attr.h"
+#include "esp_idf_version.h"
 #include "freertos/FreeRTOS.h"
 
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 4)
 bool __real_cache_hal_invalidate_addr(uint32_t vaddr, uint32_t size);
 bool __real_cache_hal_writeback_addr(uint32_t vaddr, uint32_t size);
 
@@ -39,3 +41,4 @@ bool IRAM_ATTR __wrap_cache_hal_writeback_addr(uint32_t vaddr, uint32_t size)
     portEXIT_CRITICAL_SAFE(&s_cache_op_lock);
     return ok;
 }
+#endif /* IDF 5.5.4 supplies the shared cache-operation lock itself. */

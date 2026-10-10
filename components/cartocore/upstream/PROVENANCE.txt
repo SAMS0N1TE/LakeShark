@@ -1,0 +1,260 @@
+Source repository: CartoCore (development repository remains authoritative)
+Revision: cd05356045383b0330ff0ffa74f4010962d8209f
+Source branch: work/terrain16-finish-20261009
+Vendored: 2026-10-10
+Local changes to copied upstream files: none (byte-for-byte copies).
+
+Taken: canonical embedded sources.cmake, all public include/cartocore headers,
+its firmware/core/output/media/inflate sources, P4 assembly, private header
+closure, media stream implementation, Zstandard decoder and its supplied
+LICENSE/README, host cellset adapter, cells/decoded-cache tests, cells_fixture.py
+with a LakeShark bench-only CTILE container writer supplied by the fixture wrapper.
+The host deployment builder is excluded; firmware and bench do not need it.
+No production map datasets, generated places databases or personal points copied.
+
+Added packaging files: LICENSE copied verbatim from LakeShark's root LICENSE;
+NOTICE applies GPL-3.0-or-later to CartoCore code as authorized by its owner;
+this provenance records selection and licence/sanitization review.
+
+Third-party inventory:
+- Zstandard 1.5.7 decoder amalgamation: BSD-3-Clause, selected from upstream's
+  BSD/GPLv2 alternative. third_party/zstd/LICENSE retained unchanged.
+- Embedded FSE/HUF (FiniteStateEntropy): BSD-3-Clause under the Zstandard
+  amalgamation's retained per-file notices and supplied LICENSE.
+- Embedded xxHash (Yann Collet / Meta): BSD-3-Clause under the amalgamation's
+  retained notice and supplied LICENSE. Public algorithm constants named
+  "secret" are hashing data, not credentials.
+No GPL-3.0-incompatible terms found in the selected code. GPLv2-only is not the
+selected Zstandard licence. External Python modules are not vendored.
+Compatibility reference: https://www.gnu.org/licenses/license-list.html#ModifiedBSD
+
+Sanitization:
+- No private-surface word-pattern matches, personal filesystem paths, private
+  repo names, private hostnames/IPs/SSIDs, credentials/API keys, or personal home
+  points found in the selected upstream files. No source rewrites needed.
+- 38 network-pattern hits in selected files are public upstream/documentation
+  URLs (all in third_party/zstd); no private network endpoints found.
+- "token" hits in places.h / ctile.c are search/compression terms. Zstandard's
+  "secret" hits are xxHash APIs/constants/documentation, not authentication.
+- The location-pattern hit in zstddeclib.c:7503 is a benchmark value (43.2),
+  not a coordinate. Generic NH place-search examples and synthetic cell fixtures
+  are retained; no personal location record is present.
+- Developer filesystem paths in the excluded files below are omitted wholesale.
+- PLAN.md:177 identifies a testing region as a "home area"; PLAN.md is excluded.
+- Other excluded tests/docs/tools contain generic NH map centres/bboxes and
+  public map-provider URLs. No personal named home point or credentials found.
+- No cf credential files, map deployment scripts or private repo-name matches
+  were present among source files outside the ignored build/.git trees.
+- Entire .git/ and build/ trees are excluded without copying or auditing build
+  binaries. Detailed local scan results: build_host_vendored/vendor-audit.json.
+
+Excluded developer-path findings (path:lines; sensitive path text omitted):
+- docs/builder-cells.md:25,30,32,36,47
+- docs/cells-v7-artifacts/all-tests.log:1,44,48
+- docs/cells-v7-artifacts/baseline-golden.log:1
+- docs/cells-v7-artifacts/tests-final.log:1
+- docs/cells-v7.md:17,18,19,130
+- docs/places.md:46,54
+- docs/size-census-artifacts/tests.log:1
+- tools/census_extra.py:12
+- tools/census_report.py:26
+- tools/census_verify.py:21
+- tools/ctile_census.py:2
+- tools/places/build.py:27
+- tools/places/sources.py:7
+
+Excluded source files (all non-selected files outside .git/build):
+- .gitattributes
+- .gitignore
+- CMakeLists.txt
+- components/cartocore/CMakeLists.txt
+- docs/abi.md
+- docs/builder-cells.md
+- docs/cells-v7-artifacts/all-tests.log
+- docs/cells-v7-artifacts/aws-acquisition.json
+- docs/cells-v7-artifacts/baseline-golden.log
+- docs/cells-v7-artifacts/decode-bench.log
+- docs/cells-v7-artifacts/full-build.log
+- docs/cells-v7-artifacts/incremental.log
+- docs/cells-v7-artifacts/integration.json
+- docs/cells-v7-artifacts/legacy-compatibility.txt
+- docs/cells-v7-artifacts/nh-final.log
+- docs/cells-v7-artifacts/nh-manifest.json
+- docs/cells-v7-artifacts/rv32-zstd-symbols.log
+- docs/cells-v7-artifacts/rv32.log
+- docs/cells-v7-artifacts/tests-final.log
+- docs/cells-v7.md
+- docs/ctile-streaming.md
+- docs/ctile.md
+- docs/deferred-cache.md
+- docs/esp32p4.md
+- docs/franklin.md
+- docs/hot-arena.md
+- docs/looks-storage-p4.md
+- docs/media.md
+- docs/p4-cache-speed.md
+- docs/p4-pie.md
+- docs/places.md
+- docs/size-census-artifacts/aws.json
+- docs/size-census-artifacts/balanced.json
+- docs/size-census-artifacts/census.json
+- docs/size-census-artifacts/combined_compression.json
+- docs/size-census-artifacts/compression.json
+- docs/size-census-artifacts/contours.json
+- docs/size-census-artifacts/contours_build_time.txt
+- docs/size-census-artifacts/contours_z12_braille.png
+- docs/size-census-artifacts/contours_z12_quadrant.png
+- docs/size-census-artifacts/contours_z14_braille.png
+- docs/size-census-artifacts/contours_z14_quadrant.png
+- docs/size-census-artifacts/contours_z16_braille.png
+- docs/size-census-artifacts/contours_z16_quadrant.png
+- docs/size-census-artifacts/gallery.html
+- docs/size-census-artifacts/levers.json
+- docs/size-census-artifacts/nh_build.log
+- docs/size-census-artifacts/nh_build_time.txt
+- docs/size-census-artifacts/provenance.json
+- docs/size-census-artifacts/tests.log
+- docs/size-census-artifacts/verification.json
+- docs/size-census-artifacts/visuals.json
+- docs/size-census-artifacts/visuals.zip
+- docs/size-census-artifacts/z12_braille.png
+- docs/size-census-artifacts/z12_quadrant.png
+- docs/size-census-artifacts/z14_braille.png
+- docs/size-census-artifacts/z14_quadrant.png
+- docs/size-census-artifacts/z15_braille.png
+- docs/size-census-artifacts/z15_quadrant.png
+- docs/size-census-artifacts/z16_braille.png
+- docs/size-census-artifacts/z16_quadrant.png
+- docs/size-census.md
+- docs/speed-cache-tui.md
+- docs/speed-round-v3.md
+- docs/terrain.md
+- docs/tiling.md
+- PLAN.md
+- README.md
+- src/abi/abi.c
+- src/ingest/geotiff.c
+- src/ingest/map_cli.c
+- src/ingest/pack.h
+- src/ingest/pbf.c
+- src/ingest/places_cli.c
+- src/ingest/terrain.c
+- src/ingest/terrain.h
+- src/ingest/tui.c
+- src/media/cli.c
+- src/mvt/mvt.c
+- tests/abi.c
+- tests/arch.c
+- tests/component_contract.py
+- tests/deferred_cache.c
+- tests/golden.c
+- tests/ingest_test.c
+- tests/media.c
+- tests/media_cli.py
+- tests/media_vectors.py
+- tests/mutation.c
+- tests/mutation_support.h
+- tests/palette16.c
+- tests/places.c
+- tests/replay_tui.py
+- tests/simd.c
+- tests/streaming.c
+- tests/terrain.c
+- tests/test.c
+- tools/__pycache__/terrain_qa.cpython-314.pyc
+- tools/__pycache__/terrain_sizes.cpython-314.pyc
+- tools/bench_ansi.c
+- tools/bench_p4.c
+- tools/bench_profiles.py
+- tools/bench_speed.py
+- tools/bench_v7.c
+- tools/capture_looks.ps1
+- tools/capture_media.py
+- tools/capture_terrain.ps1
+- tools/census_codec.c
+- tools/census_extra.py
+- tools/census_report.py
+- tools/census_verify.py
+- tools/census_view.c
+- tools/census_visuals.py
+- tools/build_cells.py
+- tools/check_cells.py
+- tools/check_photos.py
+- tools/cli.c
+- tools/cross_media.ps1
+- tools/cross_terrain.ps1
+- tools/ctile_census.py
+- tools/decoded_sizes.c
+- tools/html_bitmap.py
+- tools/inspect_hot_asm.py
+- tools/inspect_p4_asm.py
+- tools/media_idct.py
+- tools/media_tables.py
+- tools/memory.c
+- tools/places/build.py
+- tools/places/cells.py
+- tools/places/data.py
+- tools/places/fold.py
+- tools/places/pack.py
+- tools/places/sources.py
+- tools/places/verify.py
+- tools/terrain_qa.py
+- tools/terrain_sizes.py
+- tools/terrarium_dem.py
+
+Copied upstream files (SHA-256; packaging additions excluded):
+40a122fa707e29439d22ab08bd1a6fa867812fc11a1cf75a1351c3129bdf04f1  components/cartocore/sources.cmake
+ef76d4d54b6dae1a6727b77c56498bb1ebe3dab19a85f1854d365b15ee049d32  include/cartocore/abi.h
+856f1ed4d1e8abf41ce25a21eaefa7c3fd0b3a8dabb126b22545b68af5c4bd2e  include/cartocore/arch.h
+a17ca56145206487f7dad41675c06dd904c6b0fd7e3df06f92ae85e3f09893a8  include/cartocore/cache.h
+93b15f6105c94660b642c6cf23ecc35bfb6ef048393b506674372c5039ddb846  include/cartocore/cellset.h
+5dd9c659f6668679262c1f339dc5e751cbed20cb50740a076993262ca5b5abc5  include/cartocore/core.h
+5f938b8918ae2224d858a08aa3755e86848c24f54194271baa92823d8bdf7227  include/cartocore/ctile.h
+e1005842e39c31cdb48d617b24e1eac4ccc42f04bccccb76d9fd2878cd860719  include/cartocore/media.h
+9c97b29c3d3606d40b82ac7da9289e43c3a2706b82b4ffcdc3a5cabef2dcb889  include/cartocore/mvt.h
+3389488454e196ed795c08e80bd9ea23b4203e6f8ceb4e1becdb47ec878004a5  include/cartocore/out.h
+46217d62eff9a6c266c11aa697a51b42fc5089b428e2958d0af44a87671d02da  include/cartocore/places.h
+0d6f9fd537aab2820ddb45d442f3df48a810eef71ab924f4fa8132161dcbe1e4  include/cartocore/profile.h
+c9a6aac1149ff181823d31919dbaaa551fcc50536508bd19ba599617ca19e3e1  include/cartocore/render.h
+ab53c22861c22616b76f3939bd4e076f46f79fbc9428063dd010e1ed97550cfa  include/cartocore/simd.h
+34213420369005f3f68500454af3e9f97bf9508681d6dc53cad51fedef31c3e6  include/cartocore/zstd.h
+1ae1c06bfd70146167a620e5f3c1c2ba6f0e03abf68f70f7c3e27facf459a808  src/arch/riscv_esp32p4/kernels.S
+bce687b6e2d68892f560707feaa9251f60a0ebc6c162c720103da6ca65b1e651  src/core/arch.c
+de6af955032bc21dbb01d8025feed824e9b3227ef4e8b28d91669361058d9fb3  src/core/cache.c
+bc5739ee3e93e566bfeba8013a8066be2dc68f17c8e918dd0699009cb81531f4  src/core/cellset.c
+8ccf6b673760e8c6e7a7d445e6535d4cfa9f138133babdfd8b88be5c80f56afb  src/core/cellset_clip.h
+c9a9bb9dfdcb21b620bb5fd518827abed3fe08d14cb6d8155e27e103ec1412eb  src/core/core.c
+8692609a5019b79a7ee288919c7b82fe6aba55a556e59c56e1e0f1927a8534fc  src/core/ctile.c
+b652151c4662a176081ca4092c026b5bf0a57883dd707dd77ab6c810e9239416  src/core/ctile_source.c
+8099e92e4299d62968ec5711d41f13adb183e82ed79e1a3e1a3409a4eef8a9be  src/core/decoded_cache.c
+7120d7170183f9a2e1b78591561262236f8703cac57c31bacb28d9c6d68301db  src/core/overzoom.c
+da4b213857e68c7fa10cf4355a3b66daeb5cedaa90fb5f85c0ba86326ad2ef18  src/core/profile.c
+1a079b33228676310ab6a4cdfc68d786daeeeeb5585cd1cf6245140b5e404d3c  src/core/render.c
+c8bbbbfa5e093d470c08415473d4da4563f9189aaeddda450eda81ecc4773164  src/core/simd.c
+958acd4ab81793056dde756dad24904465dc829b2e9f5ca670549a4ba375dba1  src/core/style.c
+359fef50e5c3346b63844dac9ab4e7a9703d267d42730d2a1c5bdd1aaec2b7c6  src/core/terrain.c
+85f768cf9b271aa523c2441aacbaa9f5d17bba374152418b8856fdeb13e2ef36  src/core/wire.c
+0f2c796fb2d2db9291344717340fa9261c406f3a89ffd784a09c1d1b0bfff6a8  src/core/zstd.c
+9b5c9962c907124c9b3bb255c824ed1d2a5145decfceb3cc97be0dbfe3d20165  src/ingest/host_cellset.c
+0cca2a492bfba4d3be8c4a1d1dd862c3ffc8c0733e77992bf496832b83a71eb2  src/ingest/host_cellset.h
+eb17a0885655b16b83c2692a2765677af807048764eda8024e5782e81d8bed6a  src/ingest/inflate.c
+83741318e0cf7fdc86911abe8529803510144aafcc5d7a554334f68996e8492d  src/ingest/ingest.h
+59da398d91f249ff000cd3262d1aff99488e984bee8f1ea6e823c3b4734fda38  src/media/idct_table.h
+b68a79f4f5d5978d34c1c1faa56460d96fa3bd20803f57c5be4fa1f5d7f707d2  src/media/jpeg.c
+58d53173c0719b5f228e6e44101344cdce514ac840d6dd8371a32014b5e1d437  src/media/png.c
+1241e919cda16bf098c27432e6e52b7f138b44707706926e86e48e066056e2cc  src/media/render.c
+59314d9595ef6f93a5a37549e1e796aa1b2a66006e8fba9afccce57deab3332f  src/media/stream.c
+f1e5c09fa455284dd2e4bce67820e0a8b118e3af992ac6f0956108bcb0a29453  src/media/stream.h
+0419fe65bce23715025e795867bd5eba23138f8e6aa421e28d6cdb80e69f8ecc  src/media/tables.h
+53b01daf1cfa4a41ed1f938a01d39fe1f9ffe06858d004a5b19862fbe06615d9  src/out/out.c
+1839b6e6d8be355b1ffbdfec1711df42ab1f83c6eb68b0db0e00c8dc75377f83  src/places/fold_table.h
+6e502ad37581b20a3493d3f97c48fde30f87c7f49785d4ce37f63292b85b1ef7  src/places/places.c
+4a2d2eb690c77b2134360a3df0e7bacb0add9958813cbf9f30595ba9d8527089  tests/cells.c
+aad02103287b9c99d2669d506b6538b0b5164f77b244877623d0e1c02b3c04a1  tests/cells_fixture.py
+846fb4cdfe2cd6d0921ba1949b452aaf1b2190438fcadb9e4ab7a4f307c03fbb  tests/decoded_cache.c
+fa944cb1b49a01c048d248a3c87637dd0681914c7e0584d6fde495bbfb0490d3  third_party/zstd/README.md
+5eb38abe0a7eea13674b312a006df72002d4192f0f0b4d09e6f03fb927a1f3d0  third_party/zstd/zstddeclib.c
+
+Packaging correction (2026-10-10): removed tools/build_cells.py, which had
+incorrectly contained provenance text rather than Python. No CartoCore engine
+or upstream test source modified; fixture serialization lives in LakeShark bench.

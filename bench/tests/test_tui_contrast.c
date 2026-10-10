@@ -142,6 +142,7 @@ typedef struct {
 static const pair_t CHROME[] = {
     { TUI_WHITE | TUI_BRIGHT,  TUI_BLACK,               "names and headings" },
     { TUI_YELLOW | TUI_BRIGHT, TUI_BLACK,               "values" },
+    { TUI_YELLOW | TUI_BRIGHT, TUI_BLACK,               "map labels" },
     { TUI_CYAN | TUI_BRIGHT,   TUI_BLACK,               "the [?] knob" },
     { TUI_BLACK,               TUI_CYAN,                "the status row" },
     { TUI_BLACK,               TUI_YELLOW | TUI_BRIGHT, "the MSG badge" },
@@ -166,6 +167,21 @@ LS_CASE(the_chrome_pairs_read_in_every_palette)
             LS_CHECK_MSG(c >= 4.5, "theme '%s': %s is %.2f:1",
                          t->name, CHROME[p].where, c);
         }
+    }
+}
+
+LS_CASE(map_labels_are_warm_and_strong_against_their_solid_plate)
+{
+    for(int i=0;i<palette_count();i++) {
+        const ls_tui_theme_t *t=palette_at(i);
+        unsigned fg=TUI_YELLOW|TUI_BRIGHT;
+        double r,g,b;unpack(t->palette[fg],&r,&g,&b);
+        LS_CHECK_MSG(contrast(t->palette[fg],t->palette[TUI_BLACK])>=7.0,
+                     "theme '%s': map labels must exceed 7:1",t->name);
+        if(t==&ls_theme_daylight) continue; /* reversed ink on white */
+        LS_CHECK_MSG(t->palette[TUI_BLACK]==0,"theme '%s': solid black label plate",t->name);
+        LS_CHECK_MSG(r>=0.9 && g>=0.55 && b+0.1<g && r+0.05>=g,
+                     "theme '%s': map label ink must be bright yellow or warm Night ink",t->name);
     }
 }
 

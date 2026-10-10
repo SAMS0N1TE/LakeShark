@@ -7,6 +7,18 @@
 #include "ls_gauge.h"
 #include "ls_wf_source.h"
 #include "ls_userapp.h"
+#include "ls_field.h"
+#include <string.h>
+
+/* DRONES needs a position even in router tests without a field worker.
+ * These targets use an explicitly invalid fix; real provider builds omit it. */
+
+#ifdef LS_FIELD_SAMPLE_STUB
+void ls_field_sample_snapshot(ls_field_sample_t *out)
+{
+    if(out) memset(out,0,sizeof(*out));
+}
+#endif
 
 #ifdef LS_TUI_CORNER_STUB
 int ls_tui_corner_pad(int row) { (void)row; return 0; }

@@ -7,7 +7,8 @@
 
 static bool     s_bus_up[3];
 static unsigned s_devices;
-static unsigned s_transfers;
+static unsigned s_transfers, s_inline_transfers;
+static esp_err_t s_fail_transfer;
 static uint8_t  s_last_tx[MAX_LAST];
 static size_t   s_last_len;
 static esp_err_t s_fail_init = ESP_OK;
@@ -25,7 +26,7 @@ void ls_shim_spi_reset(void)
     memset(s_bus_up, 0, sizeof(s_bus_up));
     s_devices = 0;
     memset(s_used,0,sizeof(s_used));
-    s_transfers = 0;
+    s_transfers = 0; s_inline_transfers = 0; s_fail_transfer = ESP_OK;
     s_last_len = 0;
     s_fail_init = ESP_OK;
     s_fn = NULL;
@@ -34,7 +35,7 @@ void ls_shim_spi_reset(void)
 
 void ls_shim_spi_reset_counters(void)
 {
-    s_transfers = 0;
+    s_transfers = 0; s_inline_transfers = 0; s_fail_transfer = ESP_OK;
     s_last_len = 0;
     s_fn = NULL;
     s_ctx = NULL;
@@ -47,6 +48,8 @@ void ls_shim_spi_on_transfer(ls_shim_spi_responder_t fn, void *ctx)
 }
 
 unsigned ls_shim_spi_transfers(void) { return s_transfers; }
+unsigned ls_shim_spi_inline_transfers(void) { return s_inline_transfers; }
+void ls_shim_spi_fail_next_transfer(esp_err_t err) { s_fail_transfer = err; }
 unsigned ls_shim_spi_devices(void)   { return s_devices; }
 
 const uint8_t *ls_shim_spi_last_tx(size_t *len)
@@ -105,16 +108,28 @@ esp_err_t spi_bus_remove_device(spi_device_handle_t dev)
 esp_err_t spi_device_transmit(spi_device_handle_t dev, spi_transaction_t *t)
 {
     if (!dev || !t) return ESP_ERR_INVALID_ARG;
+    if (s_fail_transfer != ESP_OK) {
+        esp_err_t err = s_fail_transfer; s_fail_transfer = ESP_OK; return err;
+    }
     size_t len = t->length / 8;
+    if (t->flags & (SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA)) {
+        if (len > 4 || t->flags != (SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA))
+            return ESP_ERR_INVALID_ARG;
+        s_inline_transfers++;
+    }
+    /* A full-duplex responder expects the clocked bytes in untouched positions. */
+    if (t->flags & SPI_TRANS_USE_RXDATA) memcpy(t->rx_data, t->tx_data, len);
 
     /* Record what went out before the responder can overwrite it: the drivers
        hand the same buffer as tx and rx, so a responder that writes a reply
        destroys the evidence of what was asked. */
     s_last_len = len < MAX_LAST ? len : MAX_LAST;
-    if (t->tx_buffer) memcpy(s_last_tx, t->tx_buffer, s_last_len);
+    const void *tx = (t->flags & SPI_TRANS_USE_TXDATA) ? t->tx_data : t->tx_buffer;
+    void *rx = (t->flags & SPI_TRANS_USE_RXDATA) ? t->rx_data : t->rx_buffer;
+    if (tx) memcpy(s_last_tx, tx, s_last_len);
 
     if (s_fn)
-        s_fn((const uint8_t *)t->tx_buffer, (uint8_t *)t->rx_buffer, len, s_ctx);
+        s_fn((const uint8_t *)tx, (uint8_t *)rx, len, s_ctx);
     s_transfers++;
     return ESP_OK;
 }

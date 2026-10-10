@@ -116,12 +116,7 @@ static esp_err_t cmd(uint8_t opcode, const uint8_t *tx, size_t tx_len,
     buf[0] = opcode;
     if (tx && tx_len) memcpy(&buf[1], tx, tx_len);
 
-    spi_transaction_t t = {
-        .length = n * 8,
-        .tx_buffer = buf,
-        .rx_buffer = buf,
-    };
-    esp_err_t err = ls_lora_hw_transmit(&t);
+    esp_err_t err = ls_lora_hw_transfer_bytes(buf, buf, n);
     ls_lora_hw_unlock();
     if (err == ESP_OK && rx && rx_len) memcpy(rx, &buf[1 + tx_len], rx_len);
     return err;
@@ -163,10 +158,9 @@ static uint16_t s_fsk_preamble_bits;
 static uint8_t  s_fsk_sync_bits;
 static bool     s_scanning;        /* a sweep owns the synthesiser */
 static bool     s_rx_mode;
-/* A receive that could not be armed. On the P4 every SPI transfer here takes
-   bounce buffers from internal DMA memory, which ADS-B streaming leaves
-   short; a failed one after RX_DONE left the part in standby, so nothing
-   more was ever heard. sx_poll tries again until it takes. */
+/* A receive that could not be armed. Historically DMA bounce allocation
+   could fail after RX_DONE and leave the part in standby. Keep retrying other
+   transient SPI failures too; sx_poll tries again until the rearm takes. */
 static bool     s_rearm;
 static bool     s_tx_busy;
 static int64_t  s_tx_deadline;
@@ -181,10 +175,7 @@ static esp_err_t xfer(const uint8_t *tx, uint8_t *rx, size_t n)
         ls_lora_hw_unlock();
         return ESP_ERR_TIMEOUT;
     }
-    memcpy(ls_lora_hw_pkt(), tx, n);
-    spi_transaction_t t = { .length = n * 8, .tx_buffer = ls_lora_hw_pkt(), .rx_buffer = ls_lora_hw_pkt() };
-    esp_err_t err = ls_lora_hw_transmit(&t);
-    if (err == ESP_OK && rx) memcpy(rx, ls_lora_hw_pkt(), n);
+    esp_err_t err = ls_lora_hw_transfer_bytes(tx, rx, n);
     ls_lora_hw_unlock();
     return err;
 }

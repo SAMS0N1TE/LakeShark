@@ -44,6 +44,7 @@ uint32_t audio_out_tts_yielded(void);
 void audio_write_p25_voice(const int16_t *src8k, int n);
 
 void audio_toggle_mute(void);
+void audio_mute_set(bool muted);
 bool audio_is_muted(void);
 void audio_volume_delta(int d);
 void audio_volume_set(int v);
@@ -52,6 +53,7 @@ int  audio_volume_get(void);
 void audio_out_ensure_unmuted(void);
 
 void audio_out_reset(void);
+esp_err_t audio_out_reinit(bool swap);
 void audio_out_reprime(void);
 
 void audio_out_play_now(void);

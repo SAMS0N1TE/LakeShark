@@ -99,3 +99,28 @@ LS_CASE(sd_open_failure_is_counted_and_queue_still_drains)
     LS_EQ_INT(writer.errors, 1); LS_CHECK(!writer.file);
     call_recorder_end(&r, false); flush(); LS_CHECK(!call_recorder_peek(&r)); cleanup();
 }
+
+LS_CASE(protected_calls_survive_retention_and_can_be_unprotected) {
+    setup();capture(1791374400-10*86400,42,0,false);
+    LS_EQ_INT(call_store_scan(root,entries,12),1);LS_EQ_INT(entries[0].bytes,1644);
+    char path[CALL_PATH_MAX];strcpy(path,entries[0].path);
+    LS_CHECK(call_store_protect(root,path,true));call_store_retain(root,1791374400/86400,7);
+    LS_EQ_INT(call_store_scan(root,entries,12),1);LS_CHECK(entries[0].kept);
+    LS_CHECK(!call_store_protect(root,"../outside.wav",true));
+    LS_CHECK(call_store_protect(root,path,false));call_store_retain(root,1791374400/86400,7);
+    LS_EQ_INT(call_store_scan(root,entries,12),0);rmdir(root);
+}
+
+LS_CASE(playback_lease_defers_retention_and_explicit_delete_until_close)
+{
+    setup(); capture(1791374400 - 10 * 86400, 42, 0, false);
+    LS_EQ_INT(call_store_scan(root, entries, 12), 1);
+    char path[CALL_PATH_MAX]; strcpy(path, entries[0].path);
+    FILE *file = call_store_playback_open(path); LS_CHECK(file);
+    call_store_retain(root, 1791374400 / 86400, 7);
+    LS_EQ_INT(call_store_scan(root, entries, 12), 1);
+    LS_CHECK(!call_store_delete(root, path));
+    call_store_playback_close(file);
+    call_store_retain(root, 1791374400 / 86400, 7);
+    LS_EQ_INT(call_store_scan(root, entries, 12), 0); rmdir(root);
+}

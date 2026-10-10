@@ -1,9 +1,27 @@
-/* See ls_icons.h. Art is 12x12, packed 2x2 into quadrant cells. */
+/* See ls_icons.h. Art is 20x12, packed 2x2 into quadrant cells. */
 #include "ls_icons.h"
 
-/* '#' is ink, anything else is ground. Twelve rows of twelve; the packer
-   asserts nothing about that, so keep them square by hand. */
+/* '#' is ink, anything else is ground. Twelve rows of twenty, matching
+   LS_ICON_ROWS and LS_ICON_COLS after packing. */
 static const char *const ART[LS_ICON__COUNT][12] = {
+/* A quadcopter from above: four rotors, arms and a central body. */
+[LS_ICON_DRONE] = {
+    "....................", "..#####......#####..",
+    "..#.#.#......#.#.#..", "..#.###......###.#..",
+    "......########......", "........####........",
+    "........####........", "......########......",
+    "..#.###......###.#..", "..#.#.#......#.#.#..",
+    "..#####......#####..", "...................." },
+
+/* A radar ring with a sweep beam and an observed contact. */
+[LS_ICON_SWEEP] = {
+    "....................", "......########......",
+    "....##.......###....", "...#........##..#...",
+    "..#........##....#..", "..#......###.....#..",
+    "..#..##..##......#..", "..#..##..........#..",
+    "...#............#...", "....##........##....",
+    "......########......", "...................." },
+
 /* A screen with a prompt and a cursor on it, on its stand. */
 [LS_ICON_TERMINAL] = {
     "####################", "#..................#",
@@ -212,6 +230,13 @@ static const char *const ART[LS_ICON__COUNT][12] = {
     "....................", "..##............##..",
     "..################..", "...................." },
 
+[LS_ICON_TILES] = {
+    "..#######..#######..", "..#.....#..#.....#..",
+    "..#..##.#..#.##..#..", "..#.##..#..#..##.#..",
+    "..#######..#######..", "....................",
+    "..#######..#######..", "..#.....#..#.....#..",
+    "..#.###.#..#.##..#..", "..#...#.#..#..##.#..",
+    "..#######..#######..", "...................." },
 };
 
 static inline int ink(int icon, int row, int col)

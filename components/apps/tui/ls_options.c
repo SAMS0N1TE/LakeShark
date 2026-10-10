@@ -138,7 +138,7 @@ static void fill(const ls_opt_ctx_t *ctx)
         snprintf(title, sizeof(title), "%s OPTIONS", ctx->name);
     }
     ls_picker_open(title, picked);
-    if (s_depth > 0) ls_picker_back(go_up);
+    if (s_depth > 0 || ctx->back_to_screen) ls_picker_back(go_up);
     s_ctx = ctx;
     s_rows = 0;
     char d[LS_PICKER_DETAIL];

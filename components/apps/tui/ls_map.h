@@ -34,6 +34,8 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
 #define LS_MAP_AIR_SHOW_US   (120 * 1000000LL)
 #define LS_MAP_AIR_RECKON_US  (20 * 1000000LL)
 void ls_map_end(void);
+/* Geographic viewport only; closes the libcarto archive and frees all its buffers. */
+void ls_map_external_view(int px_w,int px_h);
 
 /* Failed opens preserve the current archive. */
 bool ls_map_open(const char *path);

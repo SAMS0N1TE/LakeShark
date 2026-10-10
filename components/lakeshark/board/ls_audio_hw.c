@@ -15,6 +15,75 @@
 extern int ls_audio_ws_gpio;
 extern int ls_audio_dout_gpio;
 
+/* Three locks. Control (I2C: volume, mute, gain, register reads) takes only
+ * the control lock; a write takes only the TX lock and a read only the RX
+ * lock. Lifecycle (init, set_fs, reinit, deinit) takes all three, in that
+ * order, so no handle is freed under a transfer. One lock for everything
+ * starved volume and mute: the player sits in the blocking DMA write at
+ * priority 11 and retakes the lock before a waiter runs, so every codec
+ * volume write timed out after 500 ms with the UI blocked behind it.
+ * Bounded waits: reinit leaves the existing hardware intact if a
+ * reader/writer cannot quiesce. */
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+static StaticSemaphore_t s_ctrl_lock_memory, s_tx_lock_memory, s_rx_lock_memory;
+static SemaphoreHandle_t s_ctrl_lock, s_tx_lock, s_rx_lock;
+static unsigned s_hw_once;
+/* Lifecycle callers waiting on a data lock; a data transfer yields once
+   after releasing its lock while this is non-zero. */
+static unsigned s_data_waiters;
+#define HW_LOCK_WAIT pdMS_TO_TICKS(500)
+
+static void hw_locks_once(void)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_hw_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_ctrl_lock = xSemaphoreCreateRecursiveMutexStatic(&s_ctrl_lock_memory);
+        s_tx_lock = xSemaphoreCreateRecursiveMutexStatic(&s_tx_lock_memory);
+        s_rx_lock = xSemaphoreCreateRecursiveMutexStatic(&s_rx_lock_memory);
+        __atomic_store_n(&s_hw_once, 2, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(&s_hw_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    }
+}
+static bool take(SemaphoreHandle_t m)
+{
+    return m && xSemaphoreTakeRecursive(m, HW_LOCK_WAIT) == pdTRUE;
+}
+static bool ctrl_lock(void) { hw_locks_once(); return take(s_ctrl_lock); }
+static void ctrl_unlock(void) { xSemaphoreGiveRecursive(s_ctrl_lock); }
+
+static bool data_lock(SemaphoreHandle_t *m)
+{
+    hw_locks_once();
+    return take(*m);
+}
+static void data_unlock(SemaphoreHandle_t m)
+{
+    xSemaphoreGiveRecursive(m);
+    if (__atomic_load_n(&s_data_waiters, __ATOMIC_ACQUIRE)) vTaskDelay(1);
+}
+
+static bool hw_lock(void)
+{
+    if (!ctrl_lock()) return false;
+    __atomic_add_fetch(&s_data_waiters, 1, __ATOMIC_ACQ_REL);
+    bool tx = take(s_tx_lock);
+    bool rx = tx && take(s_rx_lock);
+    __atomic_sub_fetch(&s_data_waiters, 1, __ATOMIC_ACQ_REL);
+    if (rx) return true;
+    if (tx) xSemaphoreGiveRecursive(s_tx_lock);
+    ctrl_unlock();
+    return false;
+}
+static void hw_unlock(void)
+{
+    xSemaphoreGiveRecursive(s_rx_lock);
+    xSemaphoreGiveRecursive(s_tx_lock);
+    ctrl_unlock();
+}
 static i2s_chan_handle_t s_tx;
 /* The receive half. NULL on a board with no microphone declared, and
    on this one it was NULL for a different reason: nobody had asked for it. */
@@ -59,9 +128,11 @@ static void codec_cleanup(void)
     }
 }
 
-void ls_audio_hw_deinit(void) { codec_cleanup(); }
+void ls_audio_hw_deinit(void) { if (hw_lock()) { codec_cleanup(); hw_unlock(); } }
 
-esp_err_t ls_audio_hw_init(bool speaker_only)
+static esp_err_t hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels);
+
+static esp_err_t hw_init(bool speaker_only)
 {
     (void)speaker_only;
     if (s_dev) return ESP_OK;
@@ -146,7 +217,7 @@ esp_err_t ls_audio_hw_init(bool speaker_only)
     };
     s_dev = esp_codec_dev_new(&dev_cfg);
     if (!s_dev) goto fail;
-    err = ls_audio_hw_set_fs(16000, 16, I2S_SLOT_MODE_STEREO);
+    err = hw_set_fs(16000, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) goto fail;
     return ESP_OK;
 fail:
@@ -154,7 +225,7 @@ fail:
     return err;
 }
 
-esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
+static esp_err_t hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     esp_codec_dev_sample_info_t fs = {
@@ -177,7 +248,7 @@ esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t chann
     return ESP_OK;
 }
 
-esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout)
+static esp_err_t hw_write(void *data, size_t len, size_t *written, uint32_t timeout)
 {
     (void)timeout;
     if (!written) return ESP_ERR_INVALID_ARG;
@@ -188,7 +259,7 @@ esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t ti
     return ESP_OK;
 }
 
-esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
+static esp_err_t hw_read(void *data, size_t len, size_t *got)
 {
     if (!got) return ESP_ERR_INVALID_ARG;
     *got = 0;
@@ -201,7 +272,7 @@ esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
 
 /* Microphone gain in dB. The ES8311's PGA runs 0 to 42 dB in 6 dB steps; an
    electret into a handheld wants most of it. */
-esp_err_t ls_audio_hw_in_gain(float db)
+static esp_err_t hw_in_gain(float db)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     if (!s_rx)  return ESP_ERR_NOT_SUPPORTED;
@@ -209,9 +280,9 @@ esp_err_t ls_audio_hw_in_gain(float db)
            ? ESP_OK : ESP_FAIL;
 }
 
-bool ls_audio_hw_has_mic(void) { return s_rx != NULL; }
+bool ls_audio_hw_has_mic(void) { if (!ctrl_lock()) return false; bool mic = s_rx != NULL; ctrl_unlock(); return mic; }
 
-esp_err_t ls_audio_hw_volume(int volume, int *actual)
+static esp_err_t hw_volume(int volume, int *actual)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     if (volume < 0 || volume > 100) return ESP_ERR_INVALID_ARG;
@@ -230,20 +301,92 @@ esp_err_t ls_audio_hw_volume(int volume, int *actual)
     return ESP_OK;
 }
 
-esp_err_t ls_audio_hw_mute(bool mute)
+static esp_err_t hw_mute(bool mute)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     return esp_codec_dev_set_out_mute(s_dev, mute) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
 
-esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value)
+static esp_err_t hw_reg_read(uint8_t reg, int *value)
 {
     if (!value) return ESP_ERR_INVALID_ARG;
     if (!s_codec || !s_codec->get_reg) return ESP_ERR_INVALID_STATE;
     return s_codec->get_reg(s_codec, reg, value) == ESP_CODEC_DEV_OK
         ? ESP_OK : ESP_FAIL;
 }
+esp_err_t ls_audio_hw_init(bool speaker_only)
+{
+    if (!hw_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_init(speaker_only);
+    hw_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
+{
+    if (!hw_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_set_fs(rate, bits, channels);
+    hw_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout)
+{
+    if (!data_lock(&s_tx_lock)) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_write(data, len, written, timeout);
+    data_unlock(s_tx_lock);
+    return err;
+}
+esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
+{
+    if (!data_lock(&s_rx_lock)) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_read(data, len, got);
+    data_unlock(s_rx_lock);
+    return err;
+}
+esp_err_t ls_audio_hw_in_gain(float db)
+{
+    if (!ctrl_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_in_gain(db);
+    ctrl_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_volume(int volume, int *actual)
+{
+    if (!ctrl_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_volume(volume, actual);
+    ctrl_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_mute(bool mute)
+{
+    if (!ctrl_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_mute(mute);
+    ctrl_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value)
+{
+    if (!ctrl_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = hw_reg_read(reg, value);
+    ctrl_unlock();
+    return err;
+}
+esp_err_t ls_audio_hw_reinit(bool swap, int volume, bool muted)
+{
+    if (!hw_lock()) return ESP_ERR_TIMEOUT;
+    /* No other hardware user can enter until restoration is complete. */
+    codec_cleanup();
+    if (swap) { int pin = ls_audio_ws_gpio; ls_audio_ws_gpio = ls_audio_dout_gpio; ls_audio_dout_gpio = pin; }
+    esp_err_t err = hw_init(false);
+    int actual;
+    if (err == ESP_OK) err = hw_volume(volume, &actual);
+    if (err == ESP_OK) err = hw_mute(muted);
+    if (err != ESP_OK) codec_cleanup();
+    hw_unlock();
+    return err;
+}
+
 #else
+esp_err_t ls_audio_hw_reinit(bool swap, int volume, bool muted) { (void)swap; (void)volume; (void)muted; return ESP_ERR_NOT_SUPPORTED; }
 bool ls_audio_hw_output_is_mono(void) { return false; }
 void ls_audio_hw_deinit(void) { /* the BSP owns its own lifetime */ }
 esp_err_t ls_audio_hw_init(bool speaker_only)

@@ -196,7 +196,7 @@ static bool parse_degrees_e7(const char *text, int32_t limit_deg, int32_t *out)
     return true;
 }
 
-static bool parse_control(p25_profile_t *profile, const char *value,
+static bool parse_control(p25_profile_t *profile, char *value,
                           const p25_profile_parse_config_t *config,
                           p25_profile_diagnostic_t *diagnostic, size_t line)
 {

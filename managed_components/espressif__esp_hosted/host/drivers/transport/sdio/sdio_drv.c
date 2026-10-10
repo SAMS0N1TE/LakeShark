@@ -945,12 +945,10 @@ static uint8_t * sdio_rx_get_buffer(uint32_t len)
 	uint8_t ** buf = &double_buf.buffer[index].buf;
 
 	if (len > double_buf.buffer[index].buf_size) {
-		if (*buf) {
-			// free already allocated memory
-			g_h.funcs->_h_free_align(*buf);
-		}
-		*buf = (uint8_t *)g_h.funcs->_h_malloc_align(len, HOSTED_MEM_ALIGNMENT_64);
-		assert(*buf);
+        uint8_t *replacement = g_h.funcs->_h_malloc_align(len, HOSTED_MEM_ALIGNMENT_64);
+        if (!replacement) return NULL;
+        if (*buf) g_h.funcs->_h_free_align(*buf);
+        *buf = replacement;
 		double_buf.buffer[index].buf_size = len;
 		ESP_LOGD(TAG, "buf %d size: %ld", index, double_buf.buffer[index].buf_size);
 	}
@@ -1124,9 +1122,9 @@ static void sdio_read_task(void const* pvParameters)
 
 
 #if DO_COMBINED_REG_READ
-    if (!reg_buf) {
-	    reg_buf = g_h.funcs->_h_malloc_align(REG_BUF_LEN, HOSTED_MEM_ALIGNMENT_64);
-	    assert(reg_buf);
+    while (!reg_buf) {
+        reg_buf = g_h.funcs->_h_malloc_align(REG_BUF_LEN, HOSTED_MEM_ALIGNMENT_64);
+        if (!reg_buf) g_h.funcs->_h_msleep(100);
     }
 #endif
 
@@ -1235,7 +1233,11 @@ static void sdio_read_task(void const* pvParameters)
 
 		/* Allocate rx buffer */
 		rxbuff = sdio_rx_get_buffer(len_from_slave);
-		assert(rxbuff);
+        if (!rxbuff) {
+            SDIO_DRV_UNLOCK();
+            g_h.funcs->_h_msleep(100);
+            continue;
+        }
 
 		data_left = len_from_slave;
 		pos = rxbuff;

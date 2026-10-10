@@ -1,11 +1,19 @@
+#include "ls_sweep_ui.h"
+#include "ls_sweep_app.h"
+#include "ls_rid_ui.h"
+#include "ls_rid.h"
 #include "ls_splash.h"
 #include "ls_rec_replay.h"
+#include "ls_calls.h"
+#include "call_archive.h"
+#include <direct.h>
 #include "ls_tui_density.h"
 /* The panel, on this machine. */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <assert.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -88,6 +96,7 @@ static bool off_glass(int x, int y)
     return (dx * dx + dy * dy) > (r * r);
 }
 
+static void capture_frame(void);
 static int write_bmp(const char *path)
 {
     const int w = NATIVE_W, h = NATIVE_H;
@@ -157,7 +166,8 @@ static void dump_grid(FILE *f)
     for (int y = 0; y < sf->h; y++) {
         fprintf(f, "%3d ", y);
         for (int x = 0; x < sf->w; x++) {
-            const char c = sf->back[y * sf->w + x].ch;
+            const int16_t cp=sf->back[y*sf->w+x].ch;
+            const char c=cp>=0x2800 && cp<=0x28ff ? '#' : (char)cp;
             /* The shade and block characters are outside ASCII and print as
                mojibake; they are the ones a layout question is usually
                about, so they get names a reader can count. */
@@ -180,12 +190,13 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
                              ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments,
-                             ls_scr_terminal, ls_scr_update;
+                             ls_scr_terminal, ls_scr_update, ls_scr_tiles;
+extern const ls_app_doc_t ls_doc_tiles;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
    index here means what it means on the board. */
-extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview;
+extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview, ls_scr_wireless;
 /* The two design previews exist only in the simulator, so they carry a
    simulator doc rather than one of the real ones. */
 static const ls_app_doc_t sim_preview_doc = {
@@ -219,6 +230,8 @@ static const ls_app_t APPS[] = {
 
     { "map",  "MAP",  "charts",    LS_ICON_MAP,   TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_map, NULL, &ls_doc_map },
+    { "tiles", "TILES", "map regions", LS_ICON_TILES, TUI_CYAN,
+      LS_APP_EXTRA, &ls_scr_tiles, NULL, &ls_doc_tiles },
     { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_falls, NULL, &ls_doc_falls },
     { "mesh", "MESH", "lora",      LS_ICON_MESH,  TUI_MAGENTA,
@@ -236,7 +249,13 @@ static const ls_app_t APPS[] = {
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
     { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
     { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL, &sim_preview_doc },
+    { "link", "LINK", "wireless", LS_ICON_TOWER, TUI_CYAN,
+      LS_APP_EXTRA, &ls_scr_wireless, NULL, &ls_doc_link },
 
+    { "drones", "DRONES", "passive BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
+      LS_APP_EXTRA, &ls_scr_drones, NULL, &ls_doc_drones },
+    { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
+      LS_APP_EXTRA, &ls_scr_sweep, NULL, &ls_doc_sweep },
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
@@ -263,9 +282,18 @@ static void feed_waterfall(void)
    finding any of that out on the board costs a card swap. */
 static const char *s_map_archive = LSSIM_PMTILES;
 
+/* Fixed synthetic fixture, scaled only for the requested still-image scene. */
+double lssim_map_scene_coord(double v,bool latitude) {
+    const char *z=getenv("LSSIM_MAP_ZOOM");
+    if(!z || !getenv("LSSIM_MAP_BUSY")) return v;
+    double centre=latitude?43.4445:-71.6473;
+    double scale=ldexp(1.0,(getenv("LSSIM_CARTOCORE")?11:12)-atoi(z));
+    return centre+(v-centre)*scale;
+}
 static void feed_map(void)
 {
-    if (ls_map_open(s_map_archive))
+    if (getenv("LSSIM_CARTOCORE")) ls_map_center(43.4445,-71.6473);
+    else if (ls_map_open(s_map_archive))
         ls_map_center(43.4445, -71.6473);
     else
         printf("lssim: no map archive at %s\n", s_map_archive);
@@ -276,14 +304,14 @@ static void feed_map(void)
     snprintf(marks, sizeof(marks), "%s/lssim_marks.txt", tmp ? tmp : ".");
     remove(marks);
     ls_marks_use_file(marks);
-    ls_marks_add(43.4520, -71.6620, LS_MARK_CAMP, "BASE CAMP");
-    ls_marks_add(43.4380, -71.6300, LS_MARK_HAZARD, "WASHOUT");
-    ls_marks_add(43.4300, -71.6750, LS_MARK_WATER, NULL);
+    ls_marks_add(lssim_map_scene_coord(43.4520,true), lssim_map_scene_coord(-71.6620,false), LS_MARK_CAMP, "BASE CAMP");
+    ls_marks_add(lssim_map_scene_coord(43.4380,true), lssim_map_scene_coord(-71.6300,false), LS_MARK_HAZARD, "WASHOUT");
+    ls_marks_add(lssim_map_scene_coord(43.4300,true), lssim_map_scene_coord(-71.6750,false), LS_MARK_WATER, NULL);
     ls_sketch_begin();
-    ls_sketch_add_point(43.4520, -71.6620);
-    ls_sketch_add_point(43.4470, -71.6500);
-    ls_sketch_add_point(43.4410, -71.6420);
-    ls_sketch_add_point(43.4380, -71.6300);
+    ls_sketch_add_point(lssim_map_scene_coord(43.4520,true), lssim_map_scene_coord(-71.6620,false));
+    ls_sketch_add_point(lssim_map_scene_coord(43.4470,true), lssim_map_scene_coord(-71.6500,false));
+    ls_sketch_add_point(lssim_map_scene_coord(43.4410,true), lssim_map_scene_coord(-71.6420,false));
+    ls_sketch_add_point(lssim_map_scene_coord(43.4380,true), lssim_map_scene_coord(-71.6300,false));
     ls_sketch_finish();
 }
 
@@ -349,8 +377,8 @@ static void feed_adsb(void)
         a->velocity   = SEED[i].vel;
         a->heading    = SEED[i].hdg;
         a->vert_rate  = SEED[i].vs;
-        a->lat        = SEED[i].lat;
-        a->lon        = SEED[i].lon;
+        a->lat        = lssim_map_scene_coord(SEED[i].lat,true);
+        a->lon        = lssim_map_scene_coord(SEED[i].lon,false);
         a->pos_valid  = SEED[i].pos_valid;
         a->msg_count  = 40 + (int)i * 7;
         a->good_msg_count = a->msg_count - (int)i;
@@ -414,6 +442,11 @@ static void seed_dmr(void)
    since". That is a real layout, but it is the empty one, and -e already
    exists for looking at those. */
 void lssim_tick_state(void);
+#ifdef LS_CARTOCORE_HOST
+void lssim_cartocore_pump(void);
+#else
+static void lssim_cartocore_pump(void) {}
+#endif
 
 /* How far the frozen clock moves between frames, in microseconds.
 
@@ -465,11 +498,52 @@ static const char *sim_notes_copy(void)
     return dir;
 }
 
+static bool calls_fixture;
+static const char *calls_root="bench/build/calls-fixture";
+bool call_archive_card_space(uint64_t *total,uint64_t *free) {
+    *total=8000000000ULL;*free=getenv("LSSIM_CALLS_LOW")?100000000ULL:3900000000ULL;return true;
+}
+static void seed_calls(bool empty) {
+    if(empty)calls_root="bench/build/calls-empty";
+    _mkdir(calls_root);char dir[256];snprintf(dir,sizeof(dir),"%s/20261008",calls_root);_mkdir(dir);
+    call_archive_init();call_archive_set_option(CALL_OPT_DAYS,0);
+    for(int i=0;i<(empty?0:12);i++) {
+        char path[320];snprintf(path,sizeof(path),"%s/1200%02d_%d.wav",dir,i,i+42);
+        FILE *f=fopen(path,"wb");if(!f)continue;
+        uint8_t h[44];unsigned rate=i%3?8000:16000;unsigned bytes=rate*2*(i+12);call_wav_header(h,rate,bytes);fwrite(h,1,44,f);
+        for(unsigned n=0;n<bytes;n++)fputc(0,f);
+        fclose(f);
+        char meta[328];snprintf(meta,sizeof(meta),"%s.meta",path);f=fopen(meta,"w");
+        if(f){fprintf(f,"%lld,%u,%u,%u,%u,%u,0,0,0",(long long)time(NULL)-i*3600,(i+12)*1000,i%3?851012500:162550000,i%3?(i==1?65535:42+i):0,i%3?1234567+i:0,rate);fclose(f);}
+    }
+    for(int i=0;i<3;i++)call_archive_test_pump(calls_root);
+    ls_calls_open("P25");calls_fixture=true;
+}
+/* Capture every presented frame, including worker stalls and failed renders. */
+static void capture_frame(void) {
+#ifdef LS_CARTOCORE_HOST
+    const char *dir=getenv("LSSIM_CAPTURE_FRAMES");if(!dir) return;
+    extern bool lssim_carto_frame_info(tui_rect *,unsigned *,unsigned *,bool *);
+    static unsigned number;char path[1024];tui_rect area;unsigned z,generation;bool fresh;
+    bool ready=lssim_carto_frame_info(&area,&z,&generation,&fresh);
+    snprintf(path,sizeof(path),"%s/%04u.bmp",dir,number);assert(!write_bmp(path));
+    snprintf(path,sizeof(path),"%s/%04u.cells",dir,number++);
+    FILE *f=fopen(path,"wb");assert(f);
+    fprintf(f,"%d %d %u %u %d %d %d %d\n",ready,fresh,z,generation,area.x,area.y,area.w,area.h);
+    tui_surface *sf=ls_tui_surface();
+    if(ready) for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++) {
+        tui_cell c=sf->front[y*sf->w+x];
+        fputc(c.ch&255,f);fputc((c.ch>>8)&255,f);fputc(c.attr,f);
+    }
+    fclose(f);
+#endif
+}
 static void frame(int n)
 {
     tui_surface *sf = ls_tui_surface();
     for (int i = 0; i < n; i++) {
         if (s_step_us) ls_shim_time_advance(s_step_us);
+        lssim_cartocore_pump();
         lssim_tick_state();
         /* The notes store's worker, which on the board is the field I/O task. */
         for (int k = 0; k < 4; k++) ls_notes_io_step();
@@ -477,7 +551,7 @@ static void frame(int n)
         ls_exp_service();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
-        ls_tui_present();
+        ls_tui_present();capture_frame();
     }
 }
 
@@ -491,7 +565,7 @@ static void time_frames(int n, bool moving)
     lssim_tick_state();
     tui_frame_begin(sf);
     ls_tui_router_draw(sf);
-    ls_tui_present();
+    ls_tui_present();capture_frame();
 
     /* The whole batch, not each frame. clock() on Windows advances in steps
        of about sixteen milliseconds, so a per-frame reading of anything
@@ -501,10 +575,11 @@ static void time_frames(int n, bool moving)
     for (int i = 0; i < n; i++) {
 
         if (moving) ls_tui_router_key((i & 1) ? LS_TK_RIGHT : LS_TK_LEFT, 0);
+        lssim_cartocore_pump();
         lssim_tick_state();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
-        ls_tui_present();
+        ls_tui_present();capture_frame();
     }
     const double us = (double)(clock() - t0) * 1e6 / CLOCKS_PER_SEC;
     printf("lssim: %d %s frames  %.0f us/frame  (%.1f ms total)\n",
@@ -541,7 +616,7 @@ static bool named_key(const char *name, ls_tk_t *out)
         { "enter", LS_TK_ENTER }, { "esc",   LS_TK_ESC   },
         { "tab",   LS_TK_TAB   }, { "mic",   LS_TK_MIC   },
         { "backspace", LS_TK_BACKSPACE },
-        { "f1", LS_TK_F1 }, { "f2", LS_TK_F2 }, { "f3", LS_TK_F3 }, { "f4", LS_TK_F4 },
+        { "f1", LS_TK_F1 }, { "f2", LS_TK_F2 }, { "f3", LS_TK_F3 }, { "f4", LS_TK_F4 }, { "f5", LS_TK_F5 },
     };
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
         if (!strcmp(name, NAMES[i].name)) { *out = NAMES[i].key; return true; }
@@ -552,6 +627,7 @@ static void usage(void)
 {
     printf("lssim - render the real TUI to an image\n\n");
     printf("  lssim <app> [options]\n\n");
+    printf("  calls     embedded CALLS with sample recordings (LSSIM_CALLS_LOW=1 for guard)\n");
     printf("  apps      ");
     for (int i = 0; i < N_APPS; i++) printf("%s ", APPS[i].id);
     printf("\n");
@@ -667,7 +743,7 @@ static int play(const char *in, const char *out)
                 ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
             }
         }
-        ls_tui_present();
+        ls_tui_present();capture_frame();
         for (int y = 0; y < NATIVE_H; y++)
             for (int x = 0; x < NATIVE_W; x++) {
                 uint8_t *px = rgb + ((size_t)y * NATIVE_W + x) * 3;
@@ -744,7 +820,7 @@ int main(int argc, char **argv)
     }
 
     const bool splash = !strcmp(want, "splash");
-    const int idx = app_by_id(splash ? "home" : want);
+    const int idx = app_by_id(splash ? "home" : !strcmp(want,"calls")?"p25":want);
     if (idx < 0) { printf("lssim: no app '%s'\n", want); usage(); return 1; }
 
     /* Before begin, which is where the cell size becomes the grid.
@@ -842,8 +918,34 @@ int main(int argc, char **argv)
     ls_value_publish_builtin();
     ls_action_register_builtin();
     void lssim_ota_publish(void);
+    if (getenv("LSSIM_RID")) {
+        for(int i=0;i<5;i++) {
+            uint8_t mac[6]={1,2,3,4,5,(uint8_t)i};
+            uint8_t ad[31]={30,0x16,0xfa,0xff,0x0d,0,0x02,0x12};
+            snprintf((char *)ad+8,20,"LS-DEMO-%03d",i+1);
+            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
+            memset(ad+6,0,25); ad[6]=0x12; ad[7]=0x20; ad[8]=40+i*20; ad[9]=20+i*10;
+            put_u32(ad+11,(uint32_t)(432005000+i*9000));
+            put_u32(ad+15,(uint32_t)(-716499000+i*13000));
+            put_u16(ad+19,2200+i*30); put_u16(ad+21,2220+i*30); put_u16(ad+23,2100+i*30);
+            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
+            memset(ad+6,0,25); ad[6]=0x42; ad[7]=5;
+            put_u32(ad+8,432000000); put_u32(ad+12,(uint32_t)-716500000);
+            put_u16(ad+16,1); ad[18]=10; put_u16(ad+19,2400); put_u16(ad+21,2000); ad[23]=0x12;
+            put_u16(ad+24,2050);
+            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
+        }
+    }
     lssim_ota_publish();          /* what main/ls_ota.c publishes on the board */
-    for (int i = 0; i < N_APPS; i++) ls_app_register(&APPS[i]);
+    _Static_assert(N_APPS <= LS_TUI_MAX_SCREENS, "Simulator apps must fit the registry");
+    for (int i = 0; i < N_APPS; i++) {
+        int rc = ls_app_register(&APPS[i]);
+        if (rc < 0) { fprintf(stderr,"lssim: app %s refused: %s\n",APPS[i].id,ls_app_register_why(rc)); return 1; }
+    }
+    ls_notify_add_probe(ls_rid_notice);
+    ls_sweep_init();
+    void lssim_sweep_seed(void);
+    lssim_sweep_seed();
 
     /* The same four the firmware puts on the strip, by the same ids.
        A simulator whose navigation differs from the board's is a simulator
@@ -876,6 +978,29 @@ int main(int argc, char **argv)
         feed_pages();
     }
 
+#ifdef LS_CARTOCORE_HOST
+    const char *cc_fill=getenv("LSSIM_CARTOCORE");
+    if(cc_fill) {
+        extern uint32_t settings_get_map_layers(uint32_t);
+        extern void settings_set_map_layers(uint32_t);
+        uint32_t layers=settings_get_map_layers(0x7ff7);
+        settings_set_map_layers((layers&0x8fffffffU)|((uint32_t)(!strcmp(cc_fill,"braille")?4:3)<<28));
+        double lat=43.4445,lon=-71.6473;
+        const char *center=getenv("LSSIM_CARTO_CENTER");if(center) sscanf(center,"%lf,%lf",&lat,&lon);
+        ls_map_center(lat,lon);
+        const char *zoom=getenv("LSSIM_CARTO_ZOOM");
+        ls_map_zoom_by((zoom?atoi(zoom):14)-ls_map_zoom());
+    }
+#endif
+    /* Explicit host visual matrix controls; no device settings are changed. */
+    const char *mv=getenv("LSSIM_MAP_VIEW"), *mz=getenv("LSSIM_MAP_ZOOM");
+    if(mv) {
+        extern uint32_t settings_get_map_layers(uint32_t);
+        extern void settings_set_map_layers(uint32_t);
+        uint32_t bits=settings_get_map_layers(0x7ff7);
+        settings_set_map_layers((bits&0x8fffffffU)|((uint32_t)atoi(mv)<<28));
+    }
+    if(mz) ls_map_zoom_by(atoi(mz)-ls_map_zoom());
     /* -C: what the board registers, counted. The built-in sets went in above;
        MAP and P25 add theirs when entered, so every screen is entered once.
        CELL is not linked here and adds 3 values and 2 actions on the board,
@@ -902,7 +1027,9 @@ int main(int argc, char **argv)
             ls_exp_register_builtin(); ls_exp_start(&exp_rs41); ls_exp_service();
         }
     }
-    ls_tui_screen_show(idx);
+    lssim_cartocore_pump();
+    ls_tui_screen_show(ls_tui_screen_index_of(APPS[idx].screen));
+    if(!strcmp(want,"calls"))seed_calls(empty);
     if (replay_path) {
         subghz_file_t file;
         int32_t edges[4096];
@@ -1017,7 +1144,7 @@ int main(int argc, char **argv)
         int cols, rows;
         ls_tui_geometry(&cols, &rows, NULL, NULL);
         ls_splash_draw(ls_tui_surface(), cols, rows, 60, 60);
-        ls_tui_present();
+        ls_tui_present();capture_frame();
     }
     if (write_bmp(out) != 0) {
         printf("lssim: cannot write %s\n", out);
@@ -1032,6 +1159,12 @@ int main(int argc, char **argv)
             int labels = 0;
             const int bad = ls_map_label_audit(&labels);
             printf("label audit: %d labels, %d overlaps\n", labels, bad);
+            extern int ls_map_carto_label_audit(void);
+            int broken=ls_map_carto_label_audit();
+            printf("CartoCore label audit: %d broken cells/plates\n",broken);
+            extern int ls_map_carto_low_masked(void);
+            printf("CartoCore label priority: %d low-priority cells masked\n",ls_map_carto_low_masked());
+            if(broken) return 1;
         }
 #endif
         if (getenv("LSSIM_RS41")) {

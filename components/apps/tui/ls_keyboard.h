@@ -34,6 +34,8 @@ void ls_keyboard_open_secret(const char *title, int max_len,
 
 void ls_keyboard_close(void);
 bool ls_keyboard_active(void);
+/* Read-only live text for typeahead; secret keyboards always return NULL. */
+const char *ls_keyboard_text(void);
 
 /* The router calls these; a screen does not. Both return true when the
    overlay consumed the input, which it does for everything while it is up. */

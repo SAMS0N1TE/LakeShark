@@ -381,7 +381,7 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     rmt_tx_channel_config_t cfg={.gpio_num=LS_BOARD_MIX_CC_GDO0,
         .clk_src=RMT_CLK_SRC_DEFAULT,.resolution_hz=1000000,
         .mem_block_symbols=192,.trans_queue_depth=1,.intr_priority=3};
-    rmt_copy_encoder_config_t enc={0};
+    rmt_copy_encoder_config_t enc={};
     stage="RMT channel";
     if((error=rmt_new_tx_channel(&cfg,&channel))!=ESP_OK)goto cleanup;
     stage="RMT encoder";

@@ -52,6 +52,7 @@ typedef enum {
     AUDIO_PLAYER_REQUEST_PLAY,               /**< initiate playing a new file */
     AUDIO_PLAYER_REQUEST_STOP,               /**< stop playback */
     AUDIO_PLAYER_REQUEST_SHUTDOWN_THREAD,    /**< shutdown audio playback thread */
+    AUDIO_PLAYER_REQUEST_SEEK,
     AUDIO_PLAYER_REQUEST_MAX
 } audio_player_event_type_t;
 
@@ -60,6 +61,7 @@ typedef struct {
 
     // valid if type == AUDIO_PLAYER_EVENT_TYPE_PLAY
     FILE* fp;
+    uint32_t seek_ms;
 } audio_player_event_t;
 
 typedef enum {
@@ -103,6 +105,7 @@ typedef struct audio_instance {
 static audio_instance_t instance;
 static std::atomic<uint32_t> stack_free_bytes;
 static std::atomic<uint32_t> position_ms, duration_ms;
+static std::atomic<bool> seekable;
 uint32_t audio_player_position_ms(void) { return position_ms.load(); }
 uint32_t audio_player_duration_ms(void) { return duration_ms.load(); }
 uint32_t audio_player_stack_free_bytes(void) { return stack_free_bytes.load(); }
@@ -244,6 +247,15 @@ static esp_err_t mono_to_stereo(uint32_t output_bits_per_sample, decode_data &ad
     return ESP_OK;
 }
 
+static void seek_file(audio_instance_t *i, FILE *fp, uint32_t ms, uint64_t &frames) {
+#if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+    uint32_t actual;
+    if (seek_wav(fp,&i->wav_data,ms,&actual)) {
+        frames=(i->wav_data.data_bytes-i->wav_data.remaining)/i->wav_data.header.BlockAlign;
+        position_ms=actual;
+    }
+#endif
+}
 static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
 {
     LOGI_1("start to decode");
@@ -254,7 +266,7 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     esp_err_t ret = ESP_OK;
     audio_player_event_t audio_event = { .type = AUDIO_PLAYER_REQUEST_NONE, .fp = NULL };
     uint64_t played_frames = 0;
-    position_ms=0; duration_ms=0;
+    position_ms=0; duration_ms=0;seekable=false;
 
     FILE_TYPE file_type = FILE_TYPE_UNKNOWN;
 
@@ -276,7 +288,7 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     if(file_type == FILE_TYPE_UNKNOWN)
     {
         if(is_wav(fp, &i->wav_data)) {
-            file_type = FILE_TYPE_WAV;
+            file_type = FILE_TYPE_WAV;seekable=true;
             duration_ms=(uint64_t)i->wav_data.remaining*1000 /
                 ((uint32_t)i->wav_data.header.SampleRate*i->wav_data.header.BlockAlign);
             LOGI_1("file is wav");
@@ -295,6 +307,13 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
         /* Process audio event sent from other task */
         if (pdPASS == xQueuePeek(i->event_queue, &audio_event, 0)) {
             LOGI_2("event in queue");
+            if(audio_event.type==AUDIO_PLAYER_REQUEST_SEEK) {
+                xQueueReceive(i->event_queue,&audio_event,0);
+#if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+                if(file_type==FILE_TYPE_WAV)seek_file(i,fp,audio_event.seek_ms,played_frames);
+#endif
+                continue;
+            }
             if (AUDIO_PLAYER_REQUEST_PAUSE == audio_event.type) {
                 // receive the pause event to take it off of the queue
                 xQueueReceive(i->event_queue, &audio_event, 0);
@@ -306,6 +325,13 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
                 while(1) {
                     xQueuePeek(i->event_queue, &audio_event, portMAX_DELAY);
 
+                    if(audio_event.type==AUDIO_PLAYER_REQUEST_SEEK) {
+                        xQueueReceive(i->event_queue,&audio_event,0);
+#if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+                        if(file_type==FILE_TYPE_WAV)seek_file(i,fp,audio_event.seek_ms,played_frames);
+#endif
+                        continue;
+                    }
                     if((AUDIO_PLAYER_REQUEST_PLAY != audio_event.type) &&
                        (AUDIO_PLAYER_REQUEST_STOP != audio_event.type) &&
                        (AUDIO_PLAYER_REQUEST_RESUME != audio_event.type))
@@ -418,6 +444,7 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     } while (true);
 
 clean_up:
+    seekable=false;
     return ret;
 }
 
@@ -478,7 +505,11 @@ static void audio_task(void *pvParam)
         }
         i->config.mute_fn(AUDIO_PLAYER_MUTE);
 
-        if(audio_event.fp) fclose(audio_event.fp);
+        if(audio_event.fp) {
+            FILE *closed = audio_event.fp;
+            if (i->config.file_close_fn) i->config.file_close_fn(closed);
+            else fclose(closed);
+        }
     }
 }
 
@@ -493,6 +524,13 @@ static esp_err_t audio_send_event(audio_instance_t *i, audio_player_event_t even
         TAG, "The last event has not been processed yet");
 
     return ESP_OK;
+}
+
+esp_err_t audio_player_seek_ms(uint32_t ms) {
+    if(!seekable)return ESP_ERR_NOT_SUPPORTED;
+    if(instance.state!=AUDIO_PLAYER_STATE_PLAYING && instance.state!=AUDIO_PLAYER_STATE_PAUSE)return ESP_ERR_INVALID_STATE;
+    audio_player_event_t event={};event.type=AUDIO_PLAYER_REQUEST_SEEK;event.seek_ms=ms;
+    return audio_send_event(&instance,event);
 }
 
 esp_err_t audio_player_play(FILE *fp)

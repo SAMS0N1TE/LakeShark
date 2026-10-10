@@ -70,7 +70,7 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 <img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/motion/falls-p25.gif" width="32%" alt="FALLS on P25" />
+<img src="docs/screenshots/tdp4/motion/sweep.gif" width="32%" alt="SWEEP finding nearby trackers" />
 <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
@@ -115,7 +115,7 @@ ASCII controls and labels are painted straight onto the panel, with pixel terrai
 
 **[Install it from your browser](https://terminalbay.com/?m=lakeshark&board=tdp4)** or read the [first flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH).
 
-This port is for the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. The TFT SKU (HI8561, 540 x 1168, HI8561 touch) has its own image: add `boards/t_display_p4_tft.defaults` after `boards/t_display_p4.defaults` (see the build commands below). The TFT build follows LilyGO's reference driver and has not had the AMOLED build's field time. The LCD-4.3 image and its 32 MB layout belong to a different board.
+This port defaults to the **568 x 1232 RM69A10 AMOLED with 16 MB flash**. For the HI8561 TFT (540 x 1168), add `boards/t_display_p4_tft.defaults` after `boards/t_display_p4.defaults`. The LCD-4.3 image and its 32 MB layout belong to a different board.
 
 LINK needs matching ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT will not do.
 Flipper control on the T-Display-P4 uses Bluetooth.
@@ -179,7 +179,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.9.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.9.1).** Updates over WiFi from the UPDATE app, with signed builds and rollback; coming from 2.8 or earlier, install once with the web flasher or USB. POCSAG on the LR2021 catches more of every pager transmission. P25 Phase 1 voice from the onboard LR2021 with no SDR, now read by a neural network on the P4 for much clearer audio, with AUTO and MAX gain on the P25 screen. POCSAG on VHF in PAGER RECON, and P25 or ADS-B on the LR2021 sharing the chip with EXPERIMENTS, LoRa Labs and the LoRa waterfall. Experimental radio features remain marked.
+**Current P4 release: [2.10.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.0).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

@@ -1,3 +1,29 @@
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_timer.h"
+#endif
+/* Check between bounded chunks, including crossing sort's inner loop. */
+static void raster_yield(unsigned *work)
+{
+#ifdef ESP_PLATFORM
+    static int64_t last_break;
+    if (++*work >= 1024) {
+        *work = 0;
+        if (esp_timer_get_time() - last_break >= 2000) {
+            vTaskDelay(1);
+            last_break = esp_timer_get_time();
+        }
+    }
+#else
+    (void)work;
+#endif
+}
 #include "carto/raster.h"
 
 uint16_t carto_rgb565(carto_rgb c) {
@@ -110,12 +136,15 @@ void carto_fill_polygon(carto_framebuffer *fb, const carto_ipt *pts, int n, cart
        rather than arena because the fill has no arena parameter and adding
        one would change a public signature; the renderer runs on one task, and
        that is written down in the component's DEVIATIONS.md. */
-    static int xints[CARTO_MAX_CROSSINGS];
+    EXT_RAM_BSS_ATTR static int xints[CARTO_MAX_CROSSINGS];
 
+    unsigned work = 0;
     for (int y = miny; y <= maxy; ++y) {
+        raster_yield(&work);
         float yc = (float)y + 0.5f;
         int cnt = 0;
         for (int i = 0; i < n; ++i) {
+            raster_yield(&work);
             int j = (i + 1) % n;
             float y0 = (float)pts[i].y, y1 = (float)pts[j].y;
             float x0 = (float)pts[i].x, x1 = (float)pts[j].x;
@@ -127,7 +156,7 @@ void carto_fill_polygon(carto_framebuffer *fb, const carto_ipt *pts, int n, cart
         }
         for (int a = 1; a < cnt; ++a) {
             int key = xints[a], b = a - 1;
-            while (b >= 0 && xints[b] > key) { xints[b + 1] = xints[b]; --b; }
+            while (b >= 0 && xints[b] > key) { xints[b + 1] = xints[b]; --b; raster_yield(&work); }
             xints[b + 1] = key;
         }
         for (int k = 0; k + 1 < cnt; k += 2)

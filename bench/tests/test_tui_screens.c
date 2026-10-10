@@ -105,6 +105,9 @@ void settings_set_update_check(bool v) { s_update_check = v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
+static bool s_ant_remember;
+bool settings_get_antenna_remember(void) { return s_ant_remember; }
+void settings_set_antenna_remember(bool v) { s_ant_remember = v; }
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }

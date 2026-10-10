@@ -46,7 +46,7 @@ static bool capture_header;static uint8_t header[44];
 int __wrap_fclose(FILE*f){
     if(capture_header){capture_header=false;memset(header,0,sizeof(header));rewind(f);if(fread(header,1,sizeof(header),f)!=sizeof(header))header[0]=0;}
     closed++;return __real_fclose(f);}
-esp_err_t audio_player_play(FILE*f){if(!play_result){state=AUDIO_PLAYER_STATE_PLAYING;fclose(f);}return play_result;}
+esp_err_t audio_player_play(FILE*f){if(!play_result){state=AUDIO_PLAYER_STATE_PLAYING;if(config.file_close_fn)config.file_close_fn(f);else fclose(f);}return play_result;}
 file_iterator_instance_t *ls_media_playlist_open(const char*root){list.count=1;list.list=names;return &list;}
 void ls_media_playlist_close(file_iterator_instance_t*p){(void)p;}
 size_t file_iterator_get_count(file_iterator_instance_t*p){return p->count;}
@@ -315,3 +315,5 @@ LS_CASE(archive_path_play_preserves_volume_and_mute_and_closes_failed_file)
     LS_EQ_INT(volume, 23); LS_CHECK(muted);
     reset();
 }
+
+esp_err_t audio_player_seek_ms(uint32_t ms){(void)ms;return ESP_OK;}

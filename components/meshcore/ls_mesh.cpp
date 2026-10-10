@@ -1652,7 +1652,7 @@ static void mesh_task(void *arg)
             s_radio_held = true;
             msglog_service();
             peerlog_service();
-            vTaskDelay(pdMS_TO_TICKS(5));
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         s_radio_held = false;
@@ -1696,10 +1696,10 @@ static void mesh_task(void *arg)
         msglog_service();
         peerlog_service();
 
-        /* 5 ms. Below the ~10 ms DIO1 polling floor the expander read
-           dominates and the I2C bus is shared with touch, so going faster
-           costs the interface and buys nothing. */
-        vTaskDelay(pdMS_TO_TICKS(5));
+        /* 10 ms. SX126x reads DIO1 over the expander on touch's I2C bus;
+           LR20xx reads Stat over SPI. The old 5 ms cadence doubled idle
+           command traffic. Keep dispatch, adverts and RSSI on one clock. */
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     s_mesh->inspect_cancel();
     portENTER_CRITICAL(&s_inspect_lock);

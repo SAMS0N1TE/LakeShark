@@ -10,6 +10,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_motion.h"
+#include "../../ls_media_widgets.h"
 #include "../../ls_rec_replay.h"
 #include "../../ls_keyboard.h"
 #include "rec_state.h"
@@ -151,18 +152,8 @@ static void load_dir(void)
         if (!passes_filter(t)) continue;
         /* Retain the first page of the active order across the whole folder,
            including entries encountered after the storage limit. */
-        int lo = 0, hi = s_count;
-        while (lo < hi) {
-            const int mid = lo + (hi - lo) / 2;
-            if (entry_cmp(t, &s_entry[mid]) < 0) hi = mid;
-            else lo = mid + 1;
-        }
         if (s_count == MAX_ENTRIES) s_truncated = true;
-        if (lo >= MAX_ENTRIES) continue;
-        if (s_count < MAX_ENTRIES) s_count++;
-        memmove(&s_entry[lo + 1], &s_entry[lo],
-                (size_t)(s_count - lo - 1) * sizeof(s_entry[0]));
-        s_entry[lo] = candidate;
+        ls_media_insert(s_entry,&s_count,MAX_ENTRIES,sizeof(s_entry[0]),&candidate,entry_cmp);
     }
     closedir(d);
     if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
@@ -192,6 +183,7 @@ static bool at_root(void) { return !strcmp(s_path, ROOT); }
    BROWSE and then having no way back except through the home is how this
    screen was first reported. */
 static int s_return_to = -1;
+static void (*s_on_return)(void);
 void ls_scr_files_return_to(int screen) { s_return_to = screen; }
 
 /* False at the top of the card with nobody to return to, so the router
@@ -199,6 +191,12 @@ void ls_scr_files_return_to(int screen) { s_return_to = screen; }
 static bool go_up(void)
 {
     if (s_view != VIEW_LIST) { s_view = VIEW_LIST; return true; }
+    if(s_on_return) {
+        void (*done)(void)=s_on_return;int to=s_return_to;
+        s_on_return=NULL;s_return_to=-1;
+        if(to>=0)ls_tui_screen_show(to);
+        done();return true;
+    }
     if (at_root()) {
         if (s_return_to < 0) return false;
         const int to = s_return_to;
@@ -769,13 +767,14 @@ static void draw_list(tui_surface *sf, tui_rect p)
         const entry_t *e = &s_entry[first + i];
         const int y = s_list.y + i * rh;
         const bool sel = first + i == s_selected;
-        if (sel) ls_fill_dither(sf, tui_rect_make(s_list.x, y, s_list.w, rh), LS_DITHER_LIGHT, TUI_CYAN);
+
         char full[257], name[80];
         snprintf(full, sizeof(full), "%s%s", e->name, e->dir ? "/" : "");
         fit_name(full, rh == 2 ? s_list.w - 2 : s_list.w - 30, name, sizeof(name));
         const bool sub = !e->dir && !strcasecmp(ext_of(e->name), "sub");
         const uint8_t hue = e->dir ? TUI_YELLOW : sub ? TUI_GREEN : TUI_WHITE;
-        tui_put_str(sf, s_list, s_list.x + 1, y, name, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        const char *columns[]={name}; int widths[]={s_list.w-2};
+        ls_media_row_tinted(sf,tui_rect_make(s_list.x+1,y,s_list.w-2,1),columns,widths,1,sel,hue|TUI_BRIGHT);
         char sz[16] = "", date[24], meta[48];
         if (!e->dir) size_text(e->size, sz, sizeof(sz));
         date_text(e->mtime, date, sizeof(date));
@@ -920,8 +919,19 @@ static bool touch(int col, int row)
 
 /* Leaving by any other route - the home, another app - forgets the caller,
    so opening FILES later from the directory does not jump somewhere odd. */
-static void leave(void) { s_return_to = -1; }
+static void leave(void) { s_return_to = -1; s_on_return=NULL; }
 
 const ls_tui_screen_t ls_scr_files = {
     .name = "FILES", .hint = "ENTER open  BS up  A actions  S sort  M more",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch};
+
+bool ls_scr_files_show_path(const char *path,void (*on_return)(void)) {
+    const char *slash=path?strrchr(path,'/'):NULL;
+    if(!slash || (size_t)(slash-path)>=sizeof(s_path))return false;
+    for(int i=0;i<ls_tui_screen_count();i++)if(!strcmp(ls_tui_screen_name(i),"FILES")) {
+        int from=ls_tui_screen_current();s_depth=0;s_view=VIEW_LIST;
+        snprintf(s_path,sizeof(s_path),"%.*s",(int)(slash-path),path);
+        ls_tui_screen_show(i);s_return_to=from;s_on_return=on_return;reload_keep(slash+1);return true;
+    }
+    return false;
+}

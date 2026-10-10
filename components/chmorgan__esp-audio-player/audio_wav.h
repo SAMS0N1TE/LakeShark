@@ -29,13 +29,15 @@ typedef struct {
 
 typedef struct {
     wav_header_t header;
-    uint32_t remaining;
+    uint32_t remaining, data_bytes;
+    long data_offset;
 } wav_instance;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 bool is_wav(FILE *fp, wav_instance *pInstance);
+bool seek_wav(FILE *fp, wav_instance *wav, uint32_t ms, uint32_t *actual_ms);
 DECODE_STATUS decode_wav(FILE *fp, decode_data *pData, wav_instance *pInstance);
 #ifdef __cplusplus
 }

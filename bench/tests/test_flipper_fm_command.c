@@ -738,3 +738,42 @@ LS_CASE(ais_is_refused_without_selecting_or_changing_the_receiver)
     }
     flipper_link_stop();
 }
+
+/* Status providers are bounded fakes; exercise the actual command router/cache. */
+#include "ls_wifi.h"
+#include "tui/ls_sweep_app.h"
+#include "tui/ls_rid.h"
+#include "tui/ls_field.h"
+#include "esp_timer.h"
+static unsigned aux_reads, mute_saves;
+static bool aux_save_fail;
+static ls_sweep_settings_t aux_settings={.version=3,.alerts_muted=true};
+void ls_wifi_link_status(ls_wifi_link_status_t *out) {
+    aux_reads++;memset(out,0,sizeof(*out));out->saved=8;out->connected=true;
+    strcpy(out->ssid,"Lake House");strcpy(out->ip,"10.0.0.2");
+}
+void ls_sweep_summary(ls_sweep_summary_t *out,int64_t now) {
+    memset(out,0,sizeof(*out));out->running=true;out->counts[0]=2;
+    out->serial[0]=42;out->rssi[0]=-45;
+}
+void ls_field_sample_snapshot(ls_field_sample_t *out) {memset(out,0,sizeof(*out));}
+void ls_rid_summary(ls_rid_summary_t *out,bool gps,double lat,double lon,int64_t now) {
+    memset(out,0,sizeof(*out));out->count=3;out->nearest_m=-1;
+}
+void ls_sweep_settings_get(ls_sweep_settings_t *out) {*out=aux_settings;}
+bool ls_sweep_settings_set(const ls_sweep_settings_t *in) {
+    mute_saves++;aux_settings=*in;return !aux_save_fail;
+}
+LS_CASE(aux_is_opt_in_rate_limited_and_mute_ack_is_immediate) {
+    ls_shim_time_set(100000000);unsigned reads=aux_reads,saves=mute_saves;
+    LS_CHECK(reply_has("AUX","& av=1 wc=1 wn=8 ws=Lake_House wi=10.0.0.2 sr=1 sm=1"));
+    LS_CHECK(reply_has("AUX","c0=C42:-45 c1=- dn=3 dr=-1 di=-"));
+    LS_EQ_UINT(aux_reads,reads+1);
+    LS_CHECK(reply_has("SWEEP MUTE 0","sm=0"));LS_EQ_UINT(mute_saves,saves+1);
+    LS_CHECK(reply_has("SWEEP MUTE 0","sm=0"));LS_EQ_UINT(mute_saves,saves+1);
+    LS_EQ_UINT(aux_reads,reads+1);
+    ls_shim_time_advance(500000);LS_CHECK(reply_has("AUX","av=1"));LS_EQ_UINT(aux_reads,reads+2);
+    LS_CHECK(reply_has("SWEEP MUTE 2","-ERR"));LS_CHECK(reply_has("SWEEP MUTE 1 extra","-ERR"));
+    LS_CHECK(reply_has("SWEEP","-ERR"));LS_CHECK(reply_has("AUX 2","-ERR"));
+    aux_save_fail=true;LS_CHECK(reply_has("SWEEP MUTE 1","-ERR sweep settings"));aux_save_fail=false;
+}
