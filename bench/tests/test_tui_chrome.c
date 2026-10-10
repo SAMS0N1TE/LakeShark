@@ -529,3 +529,188 @@ LS_CASE(a_padded_status_row_is_the_same_row_moved_in)
                          b.help_x + LS_TUI_HELP_W <= x0 + w);
         }
 }
+
+/* ------------------------------------------------------- camera hole -- */
+
+LS_CASE(the_status_row_splits_around_the_hole)
+{
+    /* The 52 column TFT portrait row: span 2..50, hole cells 23..28. */
+    const int x0 = 2, g0 = 22, g1 = 30, x1 = 50;
+    ls_tui_status_layout_t l =
+        ls_tui_status_layout_split(x0, g0, g1, x1, 9, 4, 0, 0, "");
+    /* Clock and [?] where the unsplit row puts them. */
+    const ls_tui_status_layout_t u = ls_tui_status_layout_at(x0, x1 - x0, 9, 4, 0, 0);
+    LS_EQ_INT(u.clock_x, l.clock_x);
+    LS_EQ_INT(u.help_x, l.help_x);
+    /* Wordmark ends before the gap, name starts after it. */
+    LS_CHECK(l.brand_x >= 0 && l.brand_x + 9 <= g0);
+    LS_EQ_INT(g1, l.name_x);
+
+    /* A long left text: the wordmark goes, the name moves left, the text
+       is cut at a word inside the right span, leading spaces dropped. */
+    const char *left = "  OFFLINE z12 9.06 mi across";
+    l = ls_tui_status_layout_split(x0, g0, g1, x1, 9, 3, (int)strlen(left), 0, left);
+    LS_EQ_INT(-1, l.brand_x);
+    LS_CHECK(l.name_x >= 0 && l.name_x + 3 <= g0);
+    LS_EQ_INT(g1 - 2, l.left_x);
+    LS_EQ_INT(2 + (int)strlen("OFFLINE z12 9.06 mi"), l.left_n);
+    LS_CHECK(l.left_x + l.left_n <= x1 - 1);
+
+    /* Every field clear of the gap, at every hole position that leaves
+       room either side. */
+    for (int h0 = 12; h0 <= 34; h0++) {
+        const int a = h0 - 1, b = h0 + 7;
+        l = ls_tui_status_layout_split(x0, a, b, x1, 9, 5, 13, 4, "  ABC DEF GHI");
+        const int xs[] = { l.clock_x, l.help_x, l.brand_x, l.name_x, l.left_x, l.right_x };
+        const int ws[] = { LS_TUI_CLOCK_W, LS_TUI_HELP_W, 9, 5,
+                           l.left_n ? l.left_n : 13, 4 };
+        for (int i = 0; i < 6; i++) {
+            if (xs[i] < 0) continue;
+            int s = xs[i], e = xs[i] + ws[i];
+            if (i == 4) s += 2;                    /* the leading spaces */
+            LS_CHECK_MSG(e <= a || s >= b,
+                         "field %d [%d,%d) under the gap [%d,%d)", i, s, e, a, b);
+        }
+    }
+}
+
+LS_CASE(tabs_split_evenly_either_side_of_the_hole)
+{
+    int x[8], w[8];
+    LS_CHECK(ls_tui_tab_split(52, 4, 22, 30, x, w));
+    /* Two a side, one width per side, flush with the outer edges. */
+    LS_EQ_INT(0, x[0]);
+    LS_EQ_INT(w[0], w[1]);
+    LS_EQ_INT(x[0] + w[0] - 1, x[1]);          /* shared border */
+    LS_CHECK(x[1] + w[1] <= 22);
+    LS_EQ_INT(w[2], w[3]);
+    LS_EQ_INT(x[2] + w[2] - 1, x[3]);
+    LS_EQ_INT(52, x[3] + w[3]);
+    LS_CHECK(x[2] >= 30);
+    /* The gap is centred when the hole is. */
+    LS_EQ_INT(x[0], 52 - (x[3] + w[3]));
+    LS_EQ_INT(w[0], w[3]);
+    /* Odd counts put the extra tab right; too narrow refuses. */
+    LS_CHECK(ls_tui_tab_split(52, 5, 22, 30, x, w));
+    LS_EQ_INT(52, x[4] + w[4]);
+    LS_CHECK(!ls_tui_tab_split(20, 4, 6, 14, x, w));
+}
+
+static tui_cell g_cells[40 * 12];
+static tui_cell g_front[40 * 12];
+
+static tui_surface *grid(const char *const *rows)
+{
+    static tui_surface sf;
+    tui_surface_setup(&sf, g_cells, g_front, 40, 12);
+    tui_frame_begin(&sf);
+    for (int r = 0; r < 12 && rows[r]; r++)
+        tui_put_str(&sf, tui_surface_rect(&sf), 0, r, rows[r], TUI_DEFAULT_ATTR);
+    return &sf;
+}
+
+static void row_text(const tui_surface *sf, int r, char *out)
+{
+    for (int c = 0; c < sf->w; c++) out[c] = (char)sf->back[r * sf->w + c].ch;
+    out[sf->w] = 0;
+}
+
+static void expect(const tui_surface *sf, const char *const *want)
+{
+    char got[64];
+    for (int r = 0; r < 12 && want[r]; r++) {
+        row_text(sf, r, got);
+        char w[64];
+        snprintf(w, sizeof(w), "%-40s", want[r]);
+        LS_CHECK_MSG(!strcmp(got, w), "row %d\n got  '%s'\n want '%s'", r, got, w);
+    }
+}
+
+LS_CASE(a_border_bends_round_a_hole_on_the_right)
+{
+    static const char *const in[] = {
+        "        +------------------------------+",
+        "        | INTERNAL                0 KB |",
+        "        | PSRAM                   0 KB |",
+        "        | UPTIME               0:02:00 |",
+        "        |                              |",
+        "        |                              |",
+        "        |                              |",
+        "        +------------------------------+",
+        NULL };
+    tui_surface *sf = grid(in);
+    ls_tui_cutout_runaround(sf, tui_rect_make(36, 3, 4, 2));
+    static const char *const want[] = {
+        "        +------------------------------+",
+        "        | INTERNAL                0 KB |",
+        "        | PSRAM              0 KB +----+",
+        "        | UPTIME          0:02:00 |",
+        "        |                         |",
+        "        |                         +----+",
+        "        |                              |",
+        "        +------------------------------+",
+        NULL };
+    expect(sf, want);
+}
+
+LS_CASE(text_beside_a_hole_on_the_left_moves_as_one_block)
+{
+    static const char *const in[] = {
+        "+--------------------------------------+",
+        "| MEMORY                               |",
+        "| internal     0 B                     |",
+        "| largest blk  0 B                     |",
+        "| psram        0 B                     |",
+        "| ALERTS                               |",
+        "| haptic       no driver               |",
+        "|                                      |",
+        "+--------------------------------------+",
+        NULL };
+    tui_surface *sf = grid(in);
+    ls_tui_cutout_runaround(sf, tui_rect_make(0, 3, 3, 3));
+    static const char *const want[] = {
+        "+--------------------------------------+",
+        "| MEMORY                               |",
+        "+---+ internal     0 B                 |",
+        "    | largest blk  0 B                 |",
+        "    | psram        0 B                 |",
+        "    | ALERTS                           |",
+        "+---+ haptic       no driver           |",
+        "|                                      |",
+        "+--------------------------------------+",
+        NULL };
+    expect(sf, want);
+}
+
+LS_CASE(a_hole_over_a_picture_or_a_top_bar_only_loses_ink)
+{
+    /* A tile with art in the notch cannot bend: only the covered text and
+       lines go, and the art stays. */
+    static const char *const in[] = {
+        "+-------------+",
+        "|  ab  cd     |",
+        "|  ef  gh     |",
+        "|  ij  kl     |",
+        "+-------------+",
+        NULL };
+    tui_surface *sf = grid(in);
+    sf->back[2 * 40 + 4].ch = (int16_t)0x93;           /* a full block */
+    ls_tui_cutout_runaround(sf, tui_rect_make(0, 2, 2, 1));
+    char got[64];
+    row_text(sf, 2, got);
+    LS_CHECK(!strncmp(got, "  ", 2));                  /* line and nothing else */
+    LS_EQ_INT(0x93, (uint8_t)sf->back[2 * 40 + 4].ch);
+    row_text(sf, 1, got);
+    LS_CHECK(!strncmp(got, "|  ab  cd     |", 15));
+
+    /* Portrait: a top-edge hole only blanks its own cells and keeps the
+       bar's colour under them. */
+    static const char *const bar[] = { "  [?] LAKESHARK  HOME              ", NULL };
+    sf = grid(bar);
+    for (int c = 0; c < 40; c++) sf->back[c].attr = TUI_ATTR(TUI_BLACK, TUI_CYAN);
+    ls_tui_cutout_runaround(sf, tui_rect_make(17, 0, 4, 2));
+    row_text(sf, 0, got);
+    LS_CHECK(!strncmp(got, "  [?] LAKESHARK  ", 17));
+    LS_CHECK(!strncmp(got + 17, "    ", 4));
+    LS_EQ_INT(TUI_ATTR(TUI_BLACK, TUI_CYAN), sf->back[18].attr);
+}

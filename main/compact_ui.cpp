@@ -784,6 +784,10 @@ static bool tui_session(void)
     /* The TUI knows nothing about LVGL now, so hand it the logical size. */
     /* The glass's corner radius, before the grid is laid out against
        it. Board fact in, layout arithmetic inside. */
+#ifdef LS_PANEL_CUTOUT_R
+    ls_tui_set_rotation_cw(s_rotation != 3);
+    ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
+#endif
 #ifdef LS_BOARD_LCD_CORNER_R
     ls_tui_set_corner_radius(LS_BOARD_LCD_CORNER_R);
 #endif

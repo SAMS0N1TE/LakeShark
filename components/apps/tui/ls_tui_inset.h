@@ -35,6 +35,25 @@ int ls_tui_row_inset(int y, int screen_h, int radius);
 int ls_tui_corner_cells(int screen_w, int screen_h, int cell_w, int cell_h,
                         int radius, int ox, int oy, int row);
 
+/* A point in native portrait pixels, in the logical frame of a screen
+   screen_w x screen_h. rotation: 0 portrait, 1 clockwise, -1 counter. */
+void ls_tui_native_to_logical(int nx, int ny, int rotation,
+                              int screen_w, int screen_h, int *lx, int *ly);
+
+/* The grid cells a round hole at logical (cx, cy) of radius r lands in, as
+   a bounding box. Cell (c, row) spans ox + c*cell_w and oy + row*cell_h,
+   with row 0 moved by top_shift and the last row by bottom_shift pixels.
+   Returns 0, and a zero box, when the hole misses the grid. */
+int ls_tui_cutout_cells(int cx, int cy, int r, int ox, int oy,
+                        int cell_w, int cell_h, int cols, int rows,
+                        int top_shift, int bottom_shift,
+                        int *x, int *y, int *w, int *h);
+
+/* Corner padding for an asymmetric grid. */
+int ls_tui_grid_corner_cells(int screen_w, int screen_h, int cell_w, int cell_h,
+                             int radius, int ox, int oy, int cols, int rows,
+                             int row);
+
 #ifdef __cplusplus
 }
 #endif

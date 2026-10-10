@@ -30,6 +30,8 @@ static int          s_cols, s_rows, s_cw, s_ch;
    arc.
    How far in is ls_tui_corner_inset's answer, not the radius. */
 static int          s_ox, s_oy;
+/* The camera hole in native portrait pixels; zero radius is none. */
+static int          s_cutout_cx, s_cutout_cy, s_cutout_r;
 /* The corner radius in pixels. A physical fact of the glass, so whoever
    assembles the interface sets it from the board header; 40 is what this
    file assumed for the panel it was written on. */
@@ -40,6 +42,19 @@ static int          s_corner_r = 40;
 static int          s_grid_r = 40;
 static int          s_screen_w, s_screen_h;      /* logical, landscape aware */
 static bool         s_landscape, s_cw_rotation = true;
+/* Logical pixels to native portrait storage. */
+static inline uint32_t landscape_index(int x, int y, int native_w)
+{
+    return s_cw_rotation ? (uint32_t)(s_screen_w - 1 - x) * native_w + y
+                         : (uint32_t)x * native_w + s_screen_h - 1 - y;
+}
+
+/* The lowest address of a constant-colour logical column. */
+static inline uint32_t landscape_run(int x, int y, int n, int native_w)
+{
+    return landscape_index(x, s_cw_rotation ? y : y + n - 1, native_w);
+}
+
 static uint32_t     s_last_us;
 static int          s_last_cells;
 
@@ -109,7 +124,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
     if(ch>=0x2800 && ch<=0x28ff) {
         for(int y=0;y<s_ch && y0+y<s_screen_h;y++)
             for(int x=0;x<s_cw && x0+x<s_screen_w;x++) {
-                uint32_t idx=s_landscape ? (uint32_t)(s_screen_w-1-x0-x)*native_w+y0+y
+                uint32_t idx=s_landscape ? landscape_index(x0+x,y0+y,native_w)
                                          : (uint32_t)(y0+y)*native_w+x0+x;
                 fb[idx]=ls_braille_pixel(ch,x,y,s_cw,s_ch)?fg:bg;
             }
@@ -128,7 +143,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
                 for (int x = xa; x < xb && x < s_screen_w; x++)
                     for (int y = ya; y < yb && y < s_screen_h; y++) {
                         const uint32_t idx = s_landscape
-                            ? (uint32_t)(s_screen_w - 1 - x) * native_w + y
+                            ? landscape_index(x,y,native_w)
                             : (uint32_t)y * native_w + x;
                         fb[idx] = c;
                     }
@@ -152,7 +167,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
                 int n = s_ch;
                 if (y0 + n > s_screen_h) n = s_screen_h - y0;
                 for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++)
-                    fill_run(fb + (uint32_t)(s_screen_w - 1 - (x0 + x)) * native_w + y0,
+                    fill_run(fb + landscape_run(x0+x,y0,n,native_w),
                              n, bg, bg2);
             } else {
                 int n = s_cw;
@@ -171,7 +186,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
                 int py = y0 + y;
                 if (py < 0 || py >= s_screen_h) continue;
                 uint32_t idx = s_landscape
-                    ? (uint32_t)(s_screen_w - 1 - x) * native_w + py
+                    ? landscape_index(x,py,native_w)
                     : (uint32_t)py * native_w + x;
                 fb[idx] = fg;
             }
@@ -188,7 +203,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
             int n = s_ch;
             if (y0 + n > s_screen_h) n = s_screen_h - y0;
             for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++)
-                fill_run(fb + (uint32_t)(s_screen_w - 1 - (x0 + x)) * native_w + y0,
+                fill_run(fb + landscape_run(x0+x,y0,n,native_w),
                          n, c, c2);
         } else {
             int n = s_cw;
@@ -208,7 +223,7 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
             for (int x = sx; x < x0 + ex && x < s_screen_w; x++) {
                 for (int y = sy; y < y0 + ey && y < s_screen_h; y++) {
                     uint32_t idx = s_landscape
-                        ? (uint32_t)(s_screen_w - 1 - x) * native_w + y
+                        ? landscape_index(x,y,native_w)
                         : (uint32_t)y * native_w + x;
                     fb[idx] = c;
                 }
@@ -459,10 +474,10 @@ static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
             sys[y] = ((row - s_image_rect.y) * s_ch + y) * s_image_h / ih;
         if (s_landscape) {
             for (int x = 0; x < nx && x0 + x < s_screen_w; x++) {
-                uint16_t *run = fb + (uint32_t)(s_screen_w - 1 - x0 - x) * native_w + y0;
+                uint16_t *run = fb + landscape_index(x0+x,y0,native_w);
                 const uint16_t *src = s_image + sxs[x];
                 for (int y = 0; y < ny && y0 + y < s_screen_h; y++)
-                    run[y] = src[(size_t)sys[y] * s_image_w];
+                    run[s_cw_rotation ? y : -y] = src[(size_t)sys[y] * s_image_w];
             }
         } else {
             for (int y = 0; y < ny && y0 + y < s_screen_h; y++) {
@@ -578,7 +593,7 @@ static void blit_glass(uint16_t *fb, int native_w, int col, int row,
                 if (near < 6) continue;
             } else if (!c) continue;
             const uint32_t idx = s_landscape
-                ? (uint32_t)(s_screen_w - 1 - px) * native_w + py
+                ? landscape_index(px,py,native_w)
                 : (uint32_t)py * native_w + px;
             fb[idx] = c ? blend565(fg, fb[idx], (uint8_t)(c * 17))
                         : blend565(bg, fb[idx], 200);
@@ -628,7 +643,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
         for (int x = 0; x < s_cw; x++) {
             int px = x0 + x;
             if (px >= s_screen_w) break;
-            uint16_t *run = fb + (uint32_t)(s_screen_w - 1 - px) * native_w + y0;
+            uint16_t *run = fb + landscape_run(px,y0,n,native_w);
             fill_run(run, n, bg, bg2);
         }
     } else {
@@ -662,7 +677,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
             if(s_draw_crisp)cov=cov>=8?15:0;
             if (!cov) continue;
             uint32_t idx = s_landscape
-                ? (uint32_t)(s_screen_w - 1 - px) * native_w + py
+                ? landscape_index(px,py,native_w)
                 : (uint32_t)py * native_w + px;
             fb[idx] = s_ramp[cov];
         }
@@ -690,7 +705,8 @@ static int s_dirty_lo = INT32_MAX, s_dirty_hi = -1;
 static void dirty_logical(int x, int y, int w, int h)
 {
     int lo, hi;
-    if (s_landscape) { lo = s_screen_w - (x + w); hi = s_screen_w - 1 - x; }
+    if (s_landscape && s_cw_rotation) { lo = s_screen_w - (x + w); hi = s_screen_w - 1 - x; }
+    else if (s_landscape) { lo = x; hi = x + w - 1; }
     else             { lo = y; hi = y + h - 1; }
     if (lo < s_dirty_lo) s_dirty_lo = lo;
     if (hi > s_dirty_hi) s_dirty_hi = hi;
@@ -710,7 +726,7 @@ static void fill_logical(uint16_t *fb, int native_w, int x, int y, int w,
     const uint32_t c2 = ((uint32_t)c << 16) | c;
     if (s_landscape) {
         for (int px = x; px < x + w; px++)
-            fill_run(fb + (uint32_t)(s_screen_w - 1 - px) * native_w + y,
+            fill_run(fb + landscape_run(px,y,h,native_w),
                      h, c, c2);
     } else {
         for (int py = y; py < y + h; py++)
@@ -823,8 +839,6 @@ bool ls_tui_begin(int screen_w, int screen_h)
     s_cw = s_font->cell_w;
     s_ch = s_font->cell_h;
 
-    /* "You made the entire gui too small for the actual screen, its pretty far away from the actual borders." */
-
     ls_tui_corner_inset(s_screen_w, s_screen_h, s_cw, s_ch,
                         s_corner_r, &s_ox, &s_oy);
     s_grid_r = s_corner_r;
@@ -909,8 +923,6 @@ void ls_tui_invalidate(void)
     s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
 }
 
-/* The blitter writes one transform and only one: every framebuffer index it computes is the clockwise `(s_screen_w - 1 - x) * native_w + y` form, inline in the run loops. */
-
 /* Takes effect on the next begin(), like the font, and for the same
    reason: the inset settles the grid dimensions and the buffers are sized
    off those. Exposed so the number can be swept against the actual glass
@@ -927,18 +939,37 @@ int ls_tui_corner_radius(void) { return s_corner_r; }
 int ls_tui_corner_pad(int row)
 {
     if (!s_back) return 0;
-    return ls_tui_corner_cells(s_screen_w, s_screen_h, s_cw, s_ch,
-                               s_grid_r, s_ox, s_oy, row);
+    return ls_tui_grid_corner_cells(s_screen_w, s_screen_h, s_cw, s_ch,
+                                    s_grid_r, s_ox, s_oy, s_cols, s_rows, row);
+}
+
+void ls_tui_set_cutout(int cx, int cy, int radius)
+{
+    s_cutout_cx = cx;
+    s_cutout_cy = cy;
+    s_cutout_r = radius > 0 ? radius : 0;
+}
+
+bool ls_tui_cutout(tui_rect *cells)
+{
+    int x = 0, y = 0, w = 0, h = 0, lx, ly;
+    bool hit = false;
+    if (s_back && s_cutout_r > 0) {
+        ls_tui_native_to_logical(s_cutout_cx, s_cutout_cy,
+                                 s_landscape ? (s_cw_rotation ? 1 : -1) : 0,
+                                 s_screen_w, s_screen_h, &lx, &ly);
+        hit = ls_tui_cutout_cells(lx, ly, s_cutout_r, s_ox, s_oy, s_cw, s_ch,
+                                  s_cols, s_rows, bar_row_offset(0),
+                                  bar_row_offset(s_rows - 1),
+                                  &x, &y, &w, &h);
+    }
+    if (cells) *cells = tui_rect_make(x, y, w, h);
+    return hit;
 }
 
 void ls_tui_set_rotation_cw(bool clockwise)
 {
-    if (!clockwise) {
-        ESP_LOGW(TAG, "counter-clockwise is not implemented in the blitter; "
-                      "staying clockwise so touch matches the picture");
-        return;
-    }
-    s_cw_rotation = true;
+    s_cw_rotation = clockwise;
 }
 
 /* Takes effect on the next begin(): the grid dimensions come from the
@@ -1049,9 +1080,9 @@ void ls_tui_blit_rgb565(tui_rect cells, const uint16_t *src,
         for (int x = 0; x < w; x++) {
             const int px = x0 + x;
             uint16_t *run = fb.pixels +
-                            (uint32_t)(s_screen_w - 1 - px) * fb.width + y0;
+                            landscape_index(px,y0,fb.width);
             const uint16_t *col = src + x;
-            for (int y = 0; y < h; y++) run[y] = col[(size_t)y * src_w];
+            for (int y = 0; y < h; y++) run[s_cw_rotation ? y : -y] = col[(size_t)y * src_w];
         }
     } else {
         for (int y = 0; y < h; y++) {
@@ -1059,7 +1090,8 @@ void ls_tui_blit_rgb565(tui_rect cells, const uint16_t *src,
             memcpy(run, src + (size_t)y * src_w, (size_t)w * sizeof(uint16_t));
         }
     }
-    if (s_landscape) ls_panel_fb_present_rows(s_screen_w - (x0 + w), s_screen_w - x0);
+    if (s_landscape && s_cw_rotation) ls_panel_fb_present_rows(s_screen_w - (x0 + w), s_screen_w - x0);
+    else if (s_landscape) ls_panel_fb_present_rows(x0, x0 + w);
     else             ls_panel_fb_present_rows(y0, y0 + h);
 }
 
@@ -1158,6 +1190,9 @@ int ls_tui_present(void)
 bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row)
 {
     if (!s_back) return false;
+    const int nw = s_landscape ? s_screen_h : s_screen_w;
+    const int nh = s_landscape ? s_screen_w : s_screen_h;
+    if (native_x < 0 || native_y < 0 || native_x >= nw || native_y >= nh) return false;
     int lx, ly;
     if (!s_landscape) {
         lx = native_x;

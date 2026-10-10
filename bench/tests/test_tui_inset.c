@@ -428,3 +428,68 @@ LS_CASE(the_row_inset_refuses_what_it_should_not_get)
         LS_CHECK(2 * inset > W);   /* nothing left of this row to paint */
     }
 }
+
+LS_CASE(the_hole_moves_with_the_rotation)
+{
+    int x, y;
+    ls_tui_native_to_logical(270, 38, 0, 540, 1168, &x, &y);
+    LS_EQ_INT(270, x); LS_EQ_INT(38, y);
+    /* Clockwise: native top is the logical right edge. */
+    ls_tui_native_to_logical(270, 38, 1, 1168, 540, &x, &y);
+    LS_EQ_INT(1168 - 1 - 38, x); LS_EQ_INT(270, y);
+    /* Counter-clockwise: native top is the logical left edge. */
+    ls_tui_native_to_logical(270, 38, -1, 1168, 540, &x, &y);
+    LS_EQ_INT(38, x); LS_EQ_INT(540 - 1 - 270, y);
+}
+
+LS_CASE(the_keep_out_is_the_cells_the_circle_touches)
+{
+    int x, y, w, h;
+    /* 10x10 cells from the origin; a radius 4 hole centred in cell 5,5. */
+    LS_CHECK(ls_tui_cutout_cells(55, 55, 4, 0, 0, 10, 10, 20, 20, 0, 0,
+                                 &x, &y, &w, &h));
+    LS_EQ_INT(5, x); LS_EQ_INT(5, y); LS_EQ_INT(1, w); LS_EQ_INT(1, h);
+    /* Reaching one pixel into each neighbour takes it. */
+    LS_CHECK(ls_tui_cutout_cells(55, 55, 6, 0, 0, 10, 10, 20, 20, 0, 0,
+                                 &x, &y, &w, &h));
+    LS_EQ_INT(4, x); LS_EQ_INT(4, y); LS_EQ_INT(3, w); LS_EQ_INT(3, h);
+    /* A diagonal neighbour the circle misses does not widen the box past
+       the cells it does touch. */
+    LS_CHECK(ls_tui_cutout_cells(50, 50, 3, 0, 0, 10, 10, 20, 20, 0, 0,
+                                 &x, &y, &w, &h));
+    LS_EQ_INT(4, x); LS_EQ_INT(2, w);
+    /* Row 0 drawn 5 px higher is measured where it is drawn. */
+    LS_CHECK(ls_tui_cutout_cells(55, 12, 1, 0, 0, 10, 10, 20, 20, -5, 0,
+                                 &x, &y, &w, &h));
+    LS_EQ_INT(1, y);
+    LS_CHECK(ls_tui_cutout_cells(55, 3, 1, 0, 0, 10, 10, 20, 20, -5, 0,
+                                 &x, &y, &w, &h));
+    LS_EQ_INT(0, y);
+    /* Off the grid, or no radius: nothing. */
+    LS_CHECK(!ls_tui_cutout_cells(500, 500, 10, 0, 0, 10, 10, 20, 20, 0, 0,
+                                  &x, &y, &w, &h));
+    LS_EQ_INT(0, w); LS_EQ_INT(0, h);
+    LS_CHECK(!ls_tui_cutout_cells(55, 55, 0, 0, 0, 10, 10, 20, 20, 0, 0,
+                                  &x, &y, &w, &h));
+}
+
+LS_CASE(the_tft_hole_covers_a_few_cells_in_every_posture)
+{
+    for (unsigned f=0; f<sizeof(FACES)/sizeof(FACES[0]); f++) {
+        const int cw=FACES[f][0], ch=FACES[f][1];
+        for (int rot=-1; rot<=1; rot++) {
+            const int sw=rot?1168:540, sh=rot?540:1168;
+            int ox, oy, lx, ly, x, y, w, h;
+            ls_tui_corner_inset(sw, sh, cw, ch, 40, &ox, &oy);
+            const int cols=(sw-2*ox)/cw, rows=(sh-2*oy)/ch;
+            ls_tui_native_to_logical(270, 38, rot, sw, sh, &lx, &ly);
+            LS_CHECK(ls_tui_cutout_cells(lx, ly, 28, ox, oy, cw, ch, cols,
+                                         rows, -(oy/2), 0, &x, &y, &w, &h));
+            /* Never a band: a handful of cells, on the edge it belongs to. */
+            LS_CHECK(w * cw <= 56 + 2 * cw && h * ch <= 56 + 2 * ch);
+            if (!rot) LS_EQ_INT(0, y);
+            if (rot > 0) LS_EQ_INT(cols, x + w);
+            if (rot < 0) LS_EQ_INT(0, x);
+        }
+    }
+}

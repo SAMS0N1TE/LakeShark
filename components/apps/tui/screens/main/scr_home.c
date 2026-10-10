@@ -192,7 +192,19 @@ static void draw(tui_surface *sf, tui_rect area)
         {"NEXT >",ls_tui_is_wide()?"F6":NULL,0,false,pages<=1}};
     ls_btn_bar_raised_slot(sf,pages>1?tui_rect_make(area.x,area.y+area.h-page_h,area.w,page_h):tui_rect_make(0,0,0,0),pager,pages>1?3:0,-1,LS_BTN_SLOT_QUICK);
     if (status_w) {
+        /* A camera hole on the left edge gets the text panel, which bends
+           round it; a tile under it would lose its picture. */
+        tui_rect hole;
+        const bool hole_left = ls_tui_cutout(&hole) && hole.x == 0 &&
+                               hole.y < body.y + body.h &&
+                               hole.y + hole.h > body.y;
         tui_rect right = tui_rect_make(body.x + body.w, body.y, status_w, body.h);
+        if (hole_left) {
+            /* Mirrored, with the same two columns of air the tiles leave
+               on the other side. */
+            right = tui_rect_make(body.x, body.y, status_w - 2, body.h);
+            body.x += status_w;
+        }
         draw_status(sf, right);
     }
     ls_tile_grid(sf, body, tiles + first, shown, s_sel - first);

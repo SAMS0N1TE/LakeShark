@@ -265,30 +265,60 @@ void ls_tui_status_set_clock(const char *text)
     s_status_clock[LS_TUI_CLOCK_W] = '\0';
 }
 
+/* The columns a camera hole takes out of rows [row, row + n): [*g0, *g1)
+   is the hole plus one clear cell each side. False when it misses them. */
+static bool hole_gap(int row, int n, int *g0, int *g1)
+{
+    tui_rect h;
+    if (!ls_tui_cutout(&h) || h.y >= row + n || h.y + h.h <= row) return false;
+    *g0 = h.x - 1;
+    *g1 = h.x + h.w + 1;
+    return true;
+}
+
+static const char BRAND[] = "LAKESHARK";
+
+/* Where everything on the status row goes. Drawing and touch both ask
+   here, so a tap lands where the label is. */
+static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
+                                           int *batt_x)
+{
+    status_span(cols, x0, x1);
+    const int batt_w = 9;
+    int right_edge = *x1 - 1;
+    *batt_x = -1;
+    if (ls_gauge_present()) {
+        *batt_x = *x1 - batt_w;
+        right_edge = *x1 - batt_w - 1;
+    }
+    const ls_tui_screen_t *s = s_screens[s_current];
+    const char *name = (s && s->name) ? s->name : "";
+    const int brand = (int)sizeof(BRAND) - 1, nl = (int)strlen(name);
+    const int ll = (int)strlen(s_status_left), rl = (int)strlen(s_status_right);
+
+    /* Around the camera: clock and [?] to its left, the rest to its right,
+       the way a phone lays its status bar around a punch hole. */
+    int g0, g1;
+    if (hole_gap(0, 1, &g0, &g1) && g0 - *x0 >= LS_TUI_HELP_W + 2 &&
+        right_edge + 1 - g1 >= 4)
+        return ls_tui_status_layout_split(*x0, g0, g1, right_edge + 1, brand,
+                                          nl, ll, rl, s_status_left);
+    return ls_tui_status_layout_at(*x0, right_edge + 1 - *x0, brand, nl, ll, rl);
+}
+
 static void draw_status(tui_surface *sf, int cols)
 {
     const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
     tui_rect all = tui_surface_rect(sf);
     tui_fill(sf, tui_rect_make(0, 0, cols, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
 
-    int x0, x1;
-    status_span(cols, &x0, &x1);
+    int x0, x1, batt_x;
+    const ls_tui_status_layout_t l = status_place(cols, &x0, &x1, &batt_x);
     tui_fill(sf, tui_rect_make(x0, 0, x1-x0, 1), ' ', bar);
+    if (batt_x >= 0) draw_battery(sf, all, batt_x, bar);
 
-    const int batt_w = 9;
-    int right_edge = x1 - 1;
-    if (ls_gauge_present()) {
-        draw_battery(sf, all, x1 - batt_w, bar);
-        right_edge = x1 - batt_w - 1;
-    }
-
-    static const char BRAND[] = "LAKESHARK";
     const ls_tui_screen_t *s = s_screens[s_current];
     const char *name = (s && s->name) ? s->name : "";
-
-    ls_tui_status_layout_t l = ls_tui_status_layout_at(
-        x0, right_edge + 1 - x0, (int)sizeof(BRAND) - 1, (int)strlen(name),
-        (int)strlen(s_status_left), (int)strlen(s_status_right));
 
     /* The clock where the turn control was (), in the bar's
        own colours because it is information. [?] keeps the inverse because
@@ -302,7 +332,9 @@ static void draw_status(tui_surface *sf, int cols)
 
     if (l.brand_x >= 0) tui_put_str(sf, all, l.brand_x, 0, BRAND, bar);
     if (l.name_x  >= 0) tui_put_str(sf, all, l.name_x,  0, name, bar);
-    if (l.left_x  >= 0) tui_put_str(sf, all, l.left_x,  0, s_status_left, bar);
+    if (l.left_x  >= 0)
+        tui_put_str(sf, tui_rect_make(l.left_x, 0, l.left_n ? l.left_n : cols, 1),
+                    l.left_x, 0, s_status_left, bar);
     if (l.right_x >= 0) tui_put_str(sf, all, l.right_x, 0, s_status_right, bar);
 
     /* The unread count, and it outlives the banner. */
@@ -394,9 +426,15 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
            quick controls do. Drawn a column apart the seam reads as "| |",
            which looks like a gap that means something and does not. */
         const int step = (cols - 1) / ntab;
+        /* A camera hole in the strip splits it: half the tabs either side,
+           an empty slot for the hole between them. */
+        int sx[LS_TUI_MAX_SCREENS], sw[LS_TUI_MAX_SCREENS], g0, g1;
+        const bool split = ntab <= LS_TUI_MAX_SCREENS &&
+                           hole_gap(row, height, &g0, &g1) &&
+                           ls_tui_tab_split(cols, ntab, g0, g1, sx, sw);
         for (int i = 0; i < ntab; i++) {
-            const int x0 = i * step;
-            const int w = (i == ntab - 1) ? cols - x0 : step + 1;
+            const int x0 = split ? sx[i] : i * step;
+            const int w = split ? sw[i] : (i == ntab - 1) ? cols - x0 : step + 1;
             const int scr = tab_screen(i);
 
             char label[8];
@@ -409,8 +447,11 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
                     scr == s_current, label, nm);
 
             s_tab_x0[i] = (int16_t)x0;
-            s_tab_x1[i] = (int16_t)((i == ntab - 1) ? cols - 1
-                                                    : x0 + step - 1);
+            /* A shared border belongs to the tab on its right; the last tab
+               of a side keeps its own. */
+            const bool side_end = split && (i == ntab / 2 - 1);
+            s_tab_x1[i] = (int16_t)((i == ntab - 1 || side_end) ? x0 + w - 1
+                                                                : x0 + w - 2);
         }
         (void)cw;
         (void)all;
@@ -689,6 +730,8 @@ void ls_tui_router_draw(tui_surface *sf)
         tui_put_str(sf, all, x, rows / 2 + 1,
                     s_unlock_step ? "2. Tap RIGHT half to unlock" : "1. Tap LEFT half to begin", ink);
         tui_put_str(sf, all, x, rows / 2 + 3, "Keyboard: LEFT then RIGHT", ink);
+        tui_rect hole;
+        if (ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
         return;
     }
     draw_status(sf, cols);
@@ -700,8 +743,11 @@ void ls_tui_router_draw(tui_surface *sf)
        A screen half-visible behind an animation is worse than either, and
        drawing both doubles the cells the diff has to push in the one frame
        where something is already moving. */
+    tui_rect hole;
+    const bool has_hole = ls_tui_cutout(&hole);
     if (area.h > 0 && ls_anim_draw(sf, area)) {
         if (hint_rows()) draw_hints(sf, cols, rows - 1);
+        if (has_hole) ls_tui_cutout_runaround(sf, hole);
         return;
     }
 
@@ -732,6 +778,8 @@ void ls_tui_router_draw(tui_surface *sf)
        that arrives while somebody is typing one is still a message, and the
        overlays are the screens people spend the longest on. */
     if (area.h > 0) ls_notify_draw(sf, area);
+    /* Last, over everything: nothing is drawn where the glass has a hole. */
+    if (has_hole) ls_tui_cutout_runaround(sf, hole);
 }
 
 static void (*s_rotate_cb)(void);
@@ -795,10 +843,8 @@ static bool router_touch_dispatch(int col, int row)
         /* From the same span the row was drawn in, so on a panel
            with rounded corners the target moves in with its label rather
            than staying at column 0, where there is now only bar. */
-        int x0, x1;
-        status_span(cols, &x0, &x1);
-        const ls_tui_status_layout_t l = ls_tui_status_layout_at(
-            x0, x1 - x0, 9, 0, 0, 0);
+        int x0, x1, batt_x;
+        const ls_tui_status_layout_t l = status_place(cols, &x0, &x1, &batt_x);
 
         if (l.help_x >= 0 && col >= l.help_x &&
             col < l.help_x + LS_TUI_HELP_W) {

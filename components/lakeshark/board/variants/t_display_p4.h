@@ -95,6 +95,11 @@
    secondary bus, so the two do not collide. */
 #define LS_BOARD_LCD_H_RES       540
 #define LS_BOARD_PANEL_HI8561    1
+/* Camera cutout in native portrait pixels, measured from a photo.
+   Confirm centre and radius on hardware. */
+#define LS_PANEL_CUTOUT_CX      270
+#define LS_PANEL_CUTOUT_CY      38
+#define LS_PANEL_CUTOUT_R       28
 #define LS_BOARD_LCD_V_RES       1168
 /* Unmeasured on glass: a smaller margin than the AMOLED's until someone
    checks how far the bezel covers the corners. */

@@ -21,3 +21,13 @@ pwsh -NoProfile -File bench/build.ps1 p4-touch-lcd-43
 ```
 
 Host tests do not verify RF reception or physical hardware.
+
+Preview the HI8561 layout around the camera hole:
+
+```powershell
+bench/build/lssim.exe home --tft -o bench/build/tft-home.bmp
+```
+
+Use `-l` for clockwise landscape or `--ccw` for counter-clockwise landscape.
+The BMP stays in native portrait coordinates. The hole is drawn black with a
+grey rim. Omit `--tft` for AMOLED.
