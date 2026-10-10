@@ -308,7 +308,7 @@ static void fm_apply_freq(uint32_t hz)
 /* Display normalises against FM_SCAN_FLOOR_DB; below it everything reads as
    floor. moved it to fm_state.h, where the readers can see it. */
 
-static float s_spec_db[SPEC_FFT_N];
+EXT_RAM_BSS_ATTR static float s_spec_db[SPEC_FFT_N];
 
 static int scan_tune_count(void)
 {

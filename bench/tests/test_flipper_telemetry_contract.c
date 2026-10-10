@@ -394,3 +394,14 @@ LS_CASE(flipper_telemetry_contract_rec)
     assert_keys(frame, "REC", k_common, sizeof(k_common) / sizeof(k_common[0]), "common");
     assert_keys(frame, "REC", k_rec, sizeof(k_rec) / sizeof(k_rec[0]), "rec-specific");
 }
+
+LS_CASE(fm_telemetry_reports_every_command_name_without_enum_drift) {
+    static const char *const names[]={"listen","scan","pocsag","wfm","acars","flex","unknown","am","same","aprs","ais"};
+    lakeshark_fm_tel_t t={0};ls_telemetry_common_t common={0};char buf[768],value[32];
+    for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);i++) {
+        t.submode=i;ls_telemetry_build_fm(buf,sizeof(buf),&t,&common);
+        LS_CHECK(parse_key_value(buf,"fm",value,sizeof(value)));LS_EQ_STR(value,names[i]);
+    }
+    t.submode=255;ls_telemetry_build_fm(buf,sizeof(buf),&t,&common);
+    LS_CHECK(parse_key_value(buf,"fm",value,sizeof(value)));LS_EQ_STR(value,"unknown");
+}

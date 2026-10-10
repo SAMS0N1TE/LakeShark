@@ -20,6 +20,8 @@
 /* For the auto-dim default below, which is a board capability. */
 #include "ls_board.h"
 #include "ls_nvs_safe.h"
+#include "ls_flash_task.h"
+#include "esp_attr.h"
 
 static const char  *TAG      = "settings";
 static const char  *NS       = "sdr-tool";
@@ -38,6 +40,9 @@ static bool         s_keyboard_light = true;
 /* Settings > DEVICE > Check for updates: Daily (true) or Off. Read by the update
    scheduler's timer, so it is RAM only; loaded once in settings_init. */
 static bool         s_update_check = true;
+static bool s_audio_muted;
+static uint32_t s_map_layers;
+static bool s_map_layers_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
 static uint64_t s_location;
 static uint64_t s_last_fix;   /* COMPASS declination without a live fix */
@@ -70,8 +75,8 @@ typedef struct {
 static QueueHandle_t   s_wq = NULL;
 static StaticQueue_t   s_wq_ctrl;
 static uint8_t         s_wq_store[SET_Q_DEPTH * sizeof(set_write_t)];
-static StackType_t     s_worker_stack[SET_STACK_WORDS];
-static StaticTask_t    s_worker_tcb;
+static DRAM_ATTR StackType_t s_worker_stack[SET_STACK_WORDS] __attribute__((aligned(16)));
+static DRAM_ATTR StaticTask_t s_worker_tcb;
 static uint32_t        s_writes_done = 0, s_writes_dropped = 0, s_commits = 0;
 
 static esp_err_t nvs_apply(const set_write_t *w)
@@ -295,6 +300,8 @@ static void settings_drop_sam_voice_keys(void);
 
 bool settings_init(void)
 {
+    s_audio_muted=false;
+    s_map_layers_valid=false;
     s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
@@ -324,6 +331,7 @@ bool settings_init(void)
 
     /**/  settings_apply_schema();
     settings_drop_sam_voice_keys();
+    s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
     if (nvs_get_u8(s_nvs, "lr_dcdc", &lr_dcdc) != ESP_OK || lr_dcdc > 1) lr_dcdc = 0;
@@ -342,6 +350,9 @@ bool settings_init(void)
     uint8_t upd_check = 1;
     if(nvs_get_u8(s_nvs,"upd_check",&upd_check)==ESP_OK)
         __atomic_store_n(&s_update_check,upd_check!=0,__ATOMIC_RELEASE);
+
+    uint8_t audio_muted=0;
+    if(nvs_get_u8(s_nvs,"audio_mute",&audio_muted)==ESP_OK) s_audio_muted=audio_muted==1;
 
     /* settings_init runs on the cache-safe boot task in both LCD and
      * headless builds.  Load this one byte here, before p25_rx_task starts on
@@ -387,8 +398,12 @@ bool settings_init(void)
     s_wq = xQueueCreateStatic(SET_Q_DEPTH, sizeof(set_write_t),
                               s_wq_store, &s_wq_ctrl);
     if (s_wq) {
-        s_home_write_ready = xTaskCreateStatic(set_worker, "settings_wr",
-            SET_STACK_WORDS, NULL, 2, s_worker_stack, &s_worker_tcb) != NULL;
+        s_home_write_ready = ls_flash_task_create_static(set_worker, "settings_wr",
+            sizeof(s_worker_stack), NULL, 2, s_worker_stack, &s_worker_tcb, tskNO_AFFINITY) != NULL;
+        if(!s_home_write_ready) {
+            s_wq=NULL;
+            ESP_LOGW(TAG,"cache-safe settings worker unavailable");
+        }
     } else {
         ESP_LOGW(TAG, "write queue alloc failed - writes stay synchronous");
     }
@@ -762,6 +777,12 @@ void settings_set_autodim_timeout(int seconds)
     sput_u8("autodim_to", (uint8_t)seconds);
 }
 
+bool settings_get_audio_mute(void) {return s_audio_muted;}
+void settings_set_audio_mute(bool muted) {
+    s_audio_muted=muted;
+    sput_u8("audio_mute",muted?1:0);
+}
+
 int settings_get_volume(void)
 {
     if (!s_nvs_ok) return 35;
@@ -819,6 +840,17 @@ void settings_set_antenna_external(bool external)
 {
     if (!s_nvs_ok) return;
     sput_u8("ant_ext", external ? 1 : 0);
+}
+
+bool settings_get_antenna_remember(void)
+{
+    if (!s_nvs_ok) return false;
+    uint8_t v = 0;
+    return nvs_get_u8(s_nvs, "ant_remember", &v) == ESP_OK && v != 0;
+}
+void settings_set_antenna_remember(bool remember)
+{
+    if (s_nvs_ok) sput_u8("ant_remember", remember ? 1 : 0);
 }
 
 /* The same byte before settings_init(), so the route is set before the
@@ -928,15 +960,15 @@ void settings_set_waterfall(uint32_t value)
 }
 uint32_t settings_get_map_layers(uint32_t fallback)
 {
-    if (!s_nvs_ok) return fallback;
-    uint32_t v = 0;
-    if (nvs_get_u32(s_nvs, "map_layers", &v) != ESP_OK) return fallback;
-    return v;
+    return __atomic_load_n(&s_map_layers_valid,__ATOMIC_ACQUIRE) ?
+        __atomic_load_n(&s_map_layers,__ATOMIC_RELAXED) : fallback;
 }
 void settings_set_map_layers(uint32_t layers)
 {
-    if (!s_nvs_ok) return;
-    sput_u32("map_layers", layers);
+    __atomic_store_n(&s_map_layers,layers,__ATOMIC_RELAXED);
+    __atomic_store_n(&s_map_layers_valid,true,__ATOMIC_RELEASE);
+    if(s_nvs_ok && s_wq) sput_u32("map_layers",layers);
+    else if(s_nvs_ok) ESP_LOGW(TAG,"map style persistence queue unavailable");
 }
 /* ADS-B: the mini map's FOLLOW mode; -1 when unset. */
 int settings_get_adsb_follow(void)

@@ -104,10 +104,12 @@ bool ls_lora_hw_locked_by_me(void);
    zero, because a sequence that reaches here unguarded is one a second task
    can interleave with. */
 esp_err_t ls_lora_hw_transmit(spi_transaction_t *t);
+/* Command lock must cover fill, transfer and reply copy. */
+esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n);
 unsigned  ls_lora_hw_unguarded(void);
-/* SPI wants DMA-capable memory and DMA cannot reach PSRAM, so this 259-byte
-   packet buffer is internal RAM. Allocated once the part has identified;
-   NULL before that. One buffer: the drivers are single-threaded by contract. */
+/* One word-aligned internal DMA buffer, reserved before probing and retained
+   across stop/start. Holds 259 wire bytes plus alignment padding. NULL until
+   allocation succeeds; access is protected by the command lock. */
 uint8_t *ls_lora_hw_pkt(void);
 /* BUSY low within `timeout_ms`, spinning briefly and then yielding. */
 bool ls_lora_hw_wait_not_busy(int timeout_ms);

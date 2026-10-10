@@ -584,3 +584,9 @@ LS_CASE(a_cycle_can_opt_into_wrapping_arrow_steps)
     LS_CHECK(ls_picker_active());
     ls_picker_close();
 }
+
+LS_CASE(embedded_options_root_has_back_to_screen) {
+    fresh(false);static ls_opt_ctx_t embedded;embedded=CTX_TOP;embedded.back_to_screen=true;
+    ls_opt_open(&embedded);draw_picker();LS_CHECK(row_of("< BACK")>=0);
+    ls_picker_key(LS_TK_ESC,0);LS_CHECK(!ls_picker_active());ls_opt_poll();LS_CHECK(!ls_picker_active());
+}

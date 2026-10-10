@@ -46,7 +46,7 @@ typedef struct {
 #define ESP_LIBUSB_ERR_BUSY (-2)
 #define ESP_LIBUSB_ERR_NO_MEM (-3)
 
-void init_adsb_dev(void);
+esp_err_t init_adsb_dev(void);
 void bulk_transfer_read_cb(usb_transfer_t *transfer);
 void transfer_read_cb(usb_transfer_t *transfer);
 int esp_libusb_bulk_transfer(class_driver_t *driver_obj,

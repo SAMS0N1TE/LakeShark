@@ -14,6 +14,43 @@
 
 #include <string.h>
 
+LS_CASE(saved_legacy_single_and_slot_upsert)
+{
+    ls_wifi_saved_t saved[8] = {{"home", 1}};
+    LS_EQ_INT(ls_wifi_saved_slot(saved, 8, "home"), 0);
+    LS_EQ_INT(ls_wifi_saved_slot(saved, 8, "site two"), 1);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, NULL, 0, NULL), 0);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, NULL, 0, "home"), -1);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 0, NULL, 0, NULL), -1);
+}
+
+LS_CASE(eight_full_slots_replace_lru_and_keep_existing)
+{
+    ls_wifi_saved_t saved[8] = {0};
+    for (int i = 0; i < 8; ++i) {
+        snprintf(saved[i].ssid, sizeof(saved[i].ssid), "site%d", i);
+        saved[i].sequence = 20 + i;
+    }
+    saved[4].sequence = 2;
+    LS_EQ_INT(ls_wifi_saved_slot(saved, 8, "new site"), 4);
+    LS_EQ_INT(ls_wifi_saved_slot(saved, 8, "site7"), 7);
+    saved[6].ssid[0] = 0;
+    LS_EQ_INT(ls_wifi_saved_slot(saved, 8, "new site"), 6);
+}
+
+LS_CASE(autojoin_strongest_recent_fallback_and_exclusion)
+{
+    ls_wifi_saved_t saved[8] = {{"home", 10}, {"office", 30}, {"hidden", 20}};
+    ls_wifi_visible_t scan[] = {{"stranger", -10}, {"home", -40}, {"office", -70}, {"home", -60}};
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, scan, 4, NULL), 0);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, scan, 4, "home"), 1);
+    scan[2].rssi = -40;
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, scan, 4, NULL), 1);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, scan, 1, NULL), 1);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, scan, 1, "office"), 2);
+    LS_EQ_INT(ls_wifi_saved_candidate(saved, 8, NULL, 0, "missing"), 1);
+}
+
 LS_CASE(full_length_ssid_reaches_driver_without_truncation)
 {
     uint8_t out[32];

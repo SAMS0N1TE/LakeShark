@@ -50,6 +50,8 @@ serial*.txt
 !/docs/map-field.md
 !/docs/screenshots/
 /tools/*
+!/tools/carto_catalog.py
+!/tools/carto_push.py
 !/tools/cell_console.py
 !/tools/cell_experiment.py
 !/tools/cell_archive.py
@@ -115,3 +117,6 @@ sim.bmp
 
 # Recorded radio traffic for bench/p25_voice_check.py - never published.
 /bench/captures/
+
+# Regenerated every-presentation CartoCore captures (contact sheets are tracked).
+/bench/out/cartomap/frames-*/

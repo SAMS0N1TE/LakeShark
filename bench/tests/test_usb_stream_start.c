@@ -15,6 +15,47 @@ static unsigned s_frees;
 static unsigned s_submits;
 static bool s_fail_transfer_alloc;
 static bool s_hold_completions;
+static unsigned s_fault_stage, s_fault_allocs, s_fault_sems;
+static void *s_fault_ptrs[32];
+void *__real_calloc(size_t, size_t);
+void __real_free(void *);
+SemaphoreHandle_t __real_xSemaphoreCreateBinary(void);
+SemaphoreHandle_t __real_xSemaphoreCreateMutex(void);
+void __real_vSemaphoreDelete(SemaphoreHandle_t);
+void *__wrap_calloc(size_t n, size_t bytes)
+{
+    if (s_fault_stage == 1 && n == 1 && bytes == sizeof(class_adsb_dev)) return NULL;
+    if (s_fault_stage == 2 && n == 256 && bytes == 1) return NULL;
+    void *p = __real_calloc(n, bytes);
+    if (p && s_fault_stage) {
+        for (unsigned i = 0; i < 32; ++i) if (!s_fault_ptrs[i]) { s_fault_ptrs[i] = p; ++s_fault_allocs; break; }
+    }
+    return p;
+}
+void __wrap_free(void *p)
+{
+    for (unsigned i = 0; i < 32; ++i) if (p && s_fault_ptrs[i] == p) { s_fault_ptrs[i] = NULL; --s_fault_allocs; break; }
+    __real_free(p);
+}
+SemaphoreHandle_t __wrap_xSemaphoreCreateBinary(void)
+{
+    if (s_fault_stage == 3) return NULL;
+    SemaphoreHandle_t sem = __real_xSemaphoreCreateBinary();
+    if (sem && s_fault_stage) ++s_fault_sems;
+    return sem;
+}
+SemaphoreHandle_t __wrap_xSemaphoreCreateMutex(void)
+{
+    if (s_fault_stage == 4) return NULL;
+    SemaphoreHandle_t sem = __real_xSemaphoreCreateMutex();
+    if (sem && s_fault_stage) ++s_fault_sems;
+    return sem;
+}
+void __wrap_vSemaphoreDelete(SemaphoreHandle_t sem)
+{
+    if (sem && s_fault_stage) --s_fault_sems;
+    __real_vSemaphoreDelete(sem);
+}
 static usb_transfer_t *s_inflight[32];
 static void complete_usb(void)
 {
@@ -89,6 +130,8 @@ esp_err_t usb_host_endpoint_clear(usb_device_handle_t device, uint8_t endpoint)
     (void)device; (void)endpoint;
     return ESP_OK;
 }
+
+
 
 LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
 {
@@ -230,4 +273,35 @@ LS_CASE(a_timed_out_control_transfer_stays_pending_until_the_host_returns_it)
     /* The host retires it - as it does when the port drops - and it clears. */
     complete_usb();
     LS_CHECK(!esp_libusb_ctrl_pending(drv.dev_hdl));
+}
+
+LS_CASE(old_control_generation_cannot_complete_a_replacement_request)
+{
+    class_driver_t drv = {.dev_hdl = (usb_device_handle_t)(uintptr_t)0x1357};
+    unsigned char data[2] = {0x55, 0xaa};
+    LS_EQ_INT(esp_libusb_control_transfer(&drv, CTRL_IN, 0, 0, 0, data, 1, 0), -1);
+    usb_transfer_t old = {0};
+    for (unsigned i = 0; i < 32; ++i) if (s_inflight[i]) old = *s_inflight[i];
+    complete_usb();
+    LS_EQ_INT(esp_libusb_control_transfer(&drv, CTRL_IN, 0, 0, 0, data, 1, 0), -1);
+    old.status = USB_TRANSFER_STATUS_COMPLETED;
+    old.actual_num_bytes = sizeof(usb_setup_packet_t) + 1;
+    old.callback(&old);
+    LS_CHECK(esp_libusb_ctrl_pending(drv.dev_hdl));
+    LS_EQ_UINT(data[0], 0x55);
+    complete_usb(); LS_CHECK(!esp_libusb_ctrl_pending(drv.dev_hdl));
+    unsigned before = s_submits;
+    LS_EQ_INT(esp_libusb_control_transfer(&drv, CTRL_IN, 0, 0, 0, data, 249, 0), -1);
+    LS_EQ_UINT(s_submits, before); /* oversize never touches the transfer */
+}
+
+LS_CASE(control_initialization_unwinds_every_resource_and_remains_retryable)
+{
+    for (unsigned stage = 1; stage <= 5; ++stage) {
+        s_fault_stage = stage; s_fail_transfer_alloc = stage == 5;
+        LS_EQ_INT(init_adsb_dev(), ESP_ERR_NO_MEM);
+        LS_EQ_UINT(s_fault_allocs, 0); LS_EQ_UINT(s_fault_sems, 0);
+        LS_CHECK(!esp_libusb_ctrl_lock(0));
+    }
+    s_fault_stage = 0; s_fail_transfer_alloc = false;
 }

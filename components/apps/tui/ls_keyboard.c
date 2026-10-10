@@ -439,3 +439,5 @@ bool ls_keyboard_touch(int col, int row)
 
     return true;
 }
+
+const char *ls_keyboard_text(void) { return s_open && !s_secret ? s_buf : NULL; }

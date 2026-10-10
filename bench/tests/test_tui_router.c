@@ -705,3 +705,64 @@ LS_CASE(route_banner_does_not_invoke_audio_or_change_notification_preferences)
     LS_CHECK(ls_notify_ring());LS_CHECK(ls_notify_vibe());LS_EQ_INT(0,ls_notify_unread());
     ls_notify_post(&notice);LS_EQ_INT(1,s_alert_calls);
 }
+
+#include "ls_sweep_ui.h"
+#include "ls_sweep_app.h"
+#include "ls_tui_ui.h"
+#include "esp_timer.h"
+/* The row a drawn text sits on, so taps follow the layout instead of
+   hard-coding it. */
+static int grid_row(const char *needle)
+{
+    char line[160];
+    for (int y = 0; y < s_rows; y++) {
+        int k = 0;
+        for (int x = 0; x < s_cols && k + 1 < (int)sizeof(line); x++) {
+            const char c = g_back[(size_t)y * s_cols + x].ch;
+            line[k++] = (c >= 0x20 && c < 0x7F) ? c : ' ';
+        }
+        line[k] = 0;
+        if (strstr(line, needle)) return y;
+    }
+    return -1;
+}
+LS_CASE(sweep_views_mute_and_drawn_touch_bounds_in_both_orientations) {
+    for(int orientation=0;orientation<2;orientation++) {
+        setup(orientation?118:52,orientation?31:70);s_corner_pad=orientation?2:5;
+        ls_sweep_clear();ls_sweep_settings_t s={.version=2,.enabled=15,.muted=2,.receive_only=true};
+        LS_CHECK(ls_sweep_settings_set(&s));ls_sweep_start(true);
+        tui_rect a=tui_rect_make(0,3,s_cols,s_rows-5);
+        tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));ls_scr_sweep.draw(&g_sf,a);LS_CHECK(grid_has("LIST /"));
+        int64_t now=esp_timer_get_time();
+        for(int i=0;i<16;i++) {uint8_t mac[6]={i+1};ls_sweep_match_t m={.category=SW_CAMERA,.label="Axis camera",.vendor="Axis"};ls_sweep_observe(mac,0,0,-40-i,&m,now);}
+        ls_scr_sweep.draw(&g_sf,a);LS_CHECK(grid_has("Axis camera"));
+        /* Selecting is independent from VIEW; LIST does not start hunt audio. */
+        int contact=grid_row("Axis camera");LS_CHECK(contact>a.y);
+        LS_CHECK(ls_scr_sweep.touch(3,contact));ls_sweep_settings_get(&s);LS_CHECK(!s.hunt);
+        for(int mode=0;mode<2;mode++) {
+            tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+            LS_CHECK(grid_has(mode?"HUNT /":"LIST /"));LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN),5);
+            int previous=-1,bar_y=-1;
+            for(int b=0;b<5;b++) {
+                int x,y,w,h;LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN,b,&x,&y,&w,&h));LS_CHECK(w>=6 && h>=3 && x>previous);previous=x+w-1;
+                if(bar_y<0) bar_y=y;
+                LS_EQ_INT(y,bar_y);
+                LS_EQ_INT(ls_btn_hit(x,y),b);LS_EQ_INT(ls_btn_hit(x+w-1,y+h-1),b);LS_EQ_INT(ls_btn_hit(x+w,y+h/2),-1);
+            }
+            int x,y,w,h;ls_btn_rect_slot(LS_BTN_SLOT_SCREEN,2,&x,&y,&w,&h);
+            LS_CHECK(ls_scr_sweep.touch(x+w/2,y+h/2));ls_sweep_settings_get(&s);LS_CHECK(s.alerts_muted && s.muted==2 && s.enabled==15);
+            ls_scr_sweep.draw(&g_sf,a);LS_CHECK(grid_has("MUTED"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'m'));ls_sweep_settings_get(&s);LS_CHECK(!s.alerts_muted);
+            if(mode) {LS_CHECK(grid_has("COLD"));LS_CHECK(grid_has("HOT"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'b'));}
+            ls_btn_rect_slot(LS_BTN_SLOT_SCREEN,3,&x,&y,&w,&h);LS_CHECK(ls_scr_sweep.touch(x+w-1,y+h-1));
+        }
+        ls_scr_sweep.draw(&g_sf,a);LS_CHECK(grid_has("LIST /"));
+        ls_sweep_clear();ls_sweep_match_t near={.category=SW_TRACKER,.state=SW_STATE_NEAR,.label="near tag"};uint8_t mac[6]={1,2,3,4,5,6};
+        ls_sweep_observe(mac,0,1,-55,&near,now);ls_scr_sweep.draw(&g_sf,a);
+        int footnote=grid_row("owner-nearby tags");LS_CHECK(footnote>a.y);
+        LS_CHECK(ls_scr_sweep.touch(3,footnote));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
+        tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(grid_has("address may change"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
+        ls_sweep_start(false);ls_scr_sweep.draw(&g_sf,a);ls_sweep_status_t st;ls_sweep_status(&st,esp_timer_get_time());LS_CHECK(!st.requested);
+    }
+}

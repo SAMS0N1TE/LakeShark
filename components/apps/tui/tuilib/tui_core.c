@@ -206,7 +206,10 @@ size_t tui_surface_present(tui_surface *s, tui_out_fn out, void *ctx) {
                 emit_sgr(&e, b.attr);
                 cur_attr = b.attr;
             }
-            emit(&e, &b.ch, 1);
+            if(b.ch>=0x2800 && b.ch<=0x28ff) {
+                char utf[3]={(char)(0xe0|(b.ch>>12)),(char)(0x80|((b.ch>>6)&63)),(char)(0x80|(b.ch&63))};
+                emit(&e,utf,3);
+            } else { char byte=(char)b.ch; emit(&e,&byte,1); }
             cx = x + 1;
             cy = y;
             s->front[i] = b;

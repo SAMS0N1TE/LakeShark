@@ -1427,7 +1427,11 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint8_t index, usb_host_client_handle_t 
         return -1;
     }
     dev->driver_obj = driver_obj;
-    init_adsb_dev();
+    if (init_adsb_dev() != ESP_OK) {
+        usb_host_device_close(driver_obj->client_hdl, driver_obj->dev_hdl);
+        free(driver_obj); free(dev);
+        return ESP_LIBUSB_ERR_NO_MEM;
+    }
 
     // ---> CLAIM INTERFACE FIRST <---
     esp_err_t ce = usb_host_interface_claim(dev->driver_obj->client_hdl,

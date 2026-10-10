@@ -805,3 +805,16 @@ LS_CASE(explicit_zero_home_is_a_valid_map_center)
     ls_map_center(NAN,INFINITY);
     ls_map_get_center(&lat,&lon);LS_CHECK(lat==0 && lon==0);
 }
+
+LS_CASE(cartocore_external_view_closes_pmtiles_and_can_return_to_libcarto)
+{
+    ls_map_end();LS_CHECK(ready());LS_CHECK(ls_map_archive()!=NULL);
+    LS_CHECK(render_all(NULL,NULL)!=NULL);
+    int z=ls_map_zoom();
+    ls_map_external_view(104,240);
+    LS_CHECK(ls_map_archive()==NULL);LS_EQ_INT(z,ls_map_zoom());
+    double lat,lon;ls_map_get_center(&lat,&lon);LS_NEAR(LAT,lat,1e-8);LS_NEAR(LON,lon,1e-8);
+    ls_map_pan(2,4);ls_map_get_center(&lat,&lon);LS_CHECK(lat!=LAT && lon!=LON);
+    LS_CHECK(ready());LS_CHECK(ls_map_archive()!=NULL);LS_CHECK(render_all(NULL,NULL)!=NULL);
+    ls_map_end();
+}

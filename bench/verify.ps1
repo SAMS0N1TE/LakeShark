@@ -72,35 +72,14 @@ function Invoke-HostBench {
 
 
 
-    $registered = @()
-    $ctest = & ctest --test-dir $buildDir -N 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        foreach ($l in $ctest) {
-            if ("$l" -match '^\s*Test\s+#\d+:\s+(\S+)\s*$') { $registered += $Matches[1] }
-        }
+    # CTest owns the inventory: commands can be scripts and carry arguments.
+    $inventory = & ctest --test-dir $buildDir --show-only=json-v1 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $script:failures += "ctest inventory failed`n$($inventory -join "`n")"
+        return
     }
-
-    $exes = @(Get-ChildItem $buildDir -Filter 'test_*.exe' -File -ErrorAction SilentlyContinue)
-    if ($registered.Count -gt 0) {
-        $orphans = @($exes | Where-Object { $registered -notcontains $_.BaseName })
-        foreach ($o in $orphans) {
-            Say "    stale  $($o.BaseName)  - not in the current graph, removing" 'Yellow'
-            Remove-Item $o.FullName -Force -ErrorAction SilentlyContinue
-        }
-        $exes = @($exes | Where-Object { $registered -contains $_.BaseName })
-
-
-
-        $missing = @($registered | Where-Object { $n = $_; -not ($exes | Where-Object { $_.BaseName -eq $n }) })
-        if ($missing) {
-            $script:failures += "registered but not built: $($missing -join ', ')"
-            Say "    MISSING  $($missing -join ', ')" 'Red'
-        }
-    } else {
-        Say '    ctest inventory unavailable - falling back to directory scan' 'Yellow'
-    }
-
-    if (-not $exes -or $exes.Count -eq 0) { $script:failures += 'host bench produced no test binaries'; return }
+    $tests = @((($inventory -join "`n") | ConvertFrom-Json).tests)
+    if ($tests.Count -eq 0) { $script:failures += 'host bench registered no tests'; return }
 
     # The compiler's own bin directory goes first for the run. More than one
     # libstdc++-6.dll exists on a machine with both a mingw and an ESP-IDF
@@ -118,36 +97,29 @@ function Invoke-HostBench {
     }
 
     try {
-    foreach ($exe in $exes) {
-        $args = @()
-        if ($Filter) { $args += $Filter }
-        $out = & $exe.FullName @args 2>&1
-        $rc  = $LASTEXITCODE
-
-        # A binary can fail to launch while the build is still writing its
-        # neighbours, and says nothing at all when it does. Every suite that
-        # runs prints, so no output whatsoever means it never started - that,
-        # and only that, is retried, so a suite that ran and failed is
-        # reported the first time.
-        # A suite that runs always prints something, so a silent failure is
-        # the loader refusing the image rather than a case going red. Say
-        # which, because the two read identically in a bare FAIL line.
-        if ($rc -ne 0 -and -not $out) {
-            $out = @(("never started: exit 0x{0:X8}, no output - the loader " +
-                      "refused the image") -f $rc)
-        }
-
-        $tail = ($out | Select-Object -Last 1)
-        if ($rc -eq 0) {
-            Say "    PASS  $($exe.BaseName)  -  $tail" 'Green'
-        } elseif ($rc -eq 3) {
-            Say "    skip  $($exe.BaseName)  (no case matched -Filter)" 'DarkGray'
+        if (-not $Filter) {
+            $out = & ctest --test-dir $buildDir --output-on-failure --no-tests=error 2>&1
+            $rc = $LASTEXITCODE
+            $out | ForEach-Object { Say "    $_" }
+            if ($rc -ne 0) { $script:failures += "host CTest failed`n$($out -join "`n")" }
         } else {
-            Say "    FAIL  $($exe.BaseName)" 'Red'
-            $out | ForEach-Object { Say "      $_" 'Red' }
-            $script:failures += "$($exe.BaseName) failed`n$($out -join "`n")"
+            # Retain case filtering for harness binaries; setup scripts and
+            # argument-taking upstream tests run with their registered argv.
+            $tests = $tests | Sort-Object { if ($_.properties.name -contains 'FIXTURES_SETUP') { 0 } else { 1 } }
+            foreach ($test in $tests) {
+                $command = $test.command[0]
+                $testArgs = @($test.command | Select-Object -Skip 1)
+                if ($testArgs.Count -eq 0 -and $command -match 'test_.*\.exe$') { $testArgs += $Filter }
+                $work = ($test.properties | Where-Object name -eq 'WORKING_DIRECTORY').value
+                if (-not $work) { $work = $buildDir }
+                Push-Location $work
+                try { $out = & $command @testArgs 2>&1; $rc = $LASTEXITCODE }
+                finally { Pop-Location }
+                if ($rc -eq 0) { Say "    PASS  $($test.name)  -  $($out | Select-Object -Last 1)" 'Green' }
+                elseif ($rc -eq 3 -and $out -match 'no cases matched filter') { Say "    skip  $($test.name)  (no case matched -Filter)" 'DarkGray' }
+                else { $script:failures += "$($test.name) failed`n$($out -join "`n")" }
+            }
         }
-    }
     } finally { $env:PATH = $pathWas }
 
     $runnerTest = Join-Path $bench 'tests/test_runner_control.ps1'
@@ -161,6 +133,22 @@ function Invoke-HostBench {
         $script:failures += "test_runner_control failed`n$($runnerOut -join "`n")"
     }
     }
+}
+
+function Invoke-SpiDmaFaultCheck {
+    $profile = $cfg.configs | Where-Object { $_.name -eq 't-display-p4' } | Select-Object -First 1
+    if (-not $profile.idf_export) { return }
+    $sdk = Split-Path -Parent $profile.idf_export
+    if (-not (Test-Path (Join-Path $sdk 'components/esp_driver_spi/src/gpspi/spi_master.c'))) {
+        Say '    SPI DMA SDK fault injection skipped (profile SDK absent)' 'DarkGray'
+        return
+    }
+    Step 'SDK SPI DMA allocation faults'
+    $out = & python (Join-Path $bench 'tests/test_idf_spi_dma.py') --idf $sdk 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $script:failures += "SDK SPI DMA fault injection failed`n$($out -join "`n")"
+    }
+    $out | ForEach-Object { Say "    $_" }
 }
 
 function Invoke-HeaderCxxCheck {
@@ -433,6 +421,7 @@ function Invoke-ModuleShadowCheck {
 $started = Get-Date
 
 Invoke-HostBench
+Invoke-SpiDmaFaultCheck
 Invoke-HeaderCxxCheck
 Invoke-BoardRule
 Invoke-ModuleShadowCheck

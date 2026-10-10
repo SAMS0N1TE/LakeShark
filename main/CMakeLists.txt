@@ -1,5 +1,5 @@
 if(CONFIG_LS_BLE_HEAD)
-    set(LS_BLE_SRC ble_link.c ble_link_core.c ble_link_host_task.c ble_hci_rx_guard.c)
+    set(LS_BLE_SRC ble_link.c ble_link_core.c ble_link_observer.c ble_link_host_task.c ble_hci_rx_guard.c)
     set(LS_BLE_REQ bt)
 else()
     set(LS_BLE_SRC ble_link_stub.c ble_link_core.c)
@@ -16,13 +16,13 @@ endif()
 
 if(CONFIG_LAKESHARK_HEADLESS)
     idf_component_register(
-        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_ota.c flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
+        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
         INCLUDE_DIRS .
         PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted
                       esp_http_client app_update esp_app_format mbedtls nvs_flash ${LS_BLE_REQ})
 else()
     idf_component_register(
-        SRCS main.cpp boot_splash.cpp bsod.c panic_crumb.c cache_sync_lock.c gui_link.cpp flipper_link.c flipper_link_telemetry.c ${LS_BLE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c screenshot.c screenshot_plan.c
+        SRCS main.cpp boot_splash.cpp bsod.c panic_crumb.c cache_sync_lock.c gui_link.cpp flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c screenshot.c screenshot_plan.c
         INCLUDE_DIRS .)
 endif()
 
@@ -46,11 +46,13 @@ target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=panicHandler"
 
 # cache_sync_lock.c serialises every address-range cache operation, as
 # ESP-IDF 5.5.4 does and 5.4.3 does not.
-target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=cache_hal_invalidate_addr"
-    "-Wl,--wrap=cache_hal_writeback_addr")
-# Nothing else names its functions, so the archive member is pulled in by hand.
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_cache_hal_invalidate_addr"
-    "-u __wrap_cache_hal_writeback_addr")
+if("${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH}" VERSION_LESS "5.5.4")
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=cache_hal_invalidate_addr"
+        "-Wl,--wrap=cache_hal_writeback_addr")
+    # Nothing else names its functions, so pull in the archive member by hand.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_cache_hal_invalidate_addr"
+        "-u __wrap_cache_hal_writeback_addr")
+endif()
 
 if(CONFIG_LS_BLE_HEAD)
     target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=hci_rx_handler"

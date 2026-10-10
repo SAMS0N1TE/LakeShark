@@ -66,7 +66,7 @@ const ls_tui_theme_t ls_theme_phosphor = {
         0x2264,  /* BR_BLACK   was 0x1A03, 1.8:1 */
         0x5F0B,  /* BR_RED     */
         0x6FEF,  /* BR_GREEN   */
-        0xA7F1,  /* BR_YELLOW  */
+        0xFE4A,  /* BR_YELLOW  warm map-label accent */
         0x4ECF,  /* BR_BLUE    */
         0x7FF6,  /* BR_MAGENTA */
         0x8FF9,  /* BR_CYAN    */
@@ -89,7 +89,7 @@ const ls_tui_theme_t ls_theme_ice = {
         0x322B,  /* BR_BLACK   was 0x29C9, 1.8:1 */
         0xCC5F,  /* BR_RED     */
         0x6F1B,  /* BR_GREEN   */
-        0x8E5F,  /* BR_YELLOW  */
+        0xFE4A,  /* BR_YELLOW  warm map-label accent */
         0x7E1F,  /* BR_BLUE    */
         0xB51F,  /* BR_MAGENTA */
         0x8F9F,  /* BR_CYAN    */
@@ -190,7 +190,7 @@ const ls_tui_theme_t ls_theme_night = {
         0x80C2,  /* BR_BLACK   furniture   */
         0xF943,  /* BR_RED                 */
         0xFB87,  /* BR_GREEN               */
-        0xFCCC,  /* BR_YELLOW              */
+        0xFCEF,  /* BR_YELLOW  strongest warm ink, preserving Night reds */
         0xF9EB,  /* BR_BLUE                */
         0xFA8F,  /* BR_MAGENTA             */
         0xFBCB,  /* BR_CYAN                */

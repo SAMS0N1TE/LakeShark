@@ -4,6 +4,7 @@
 #include "../media_gui/media_playlist.h"
 #include "audio_player.h"
 #include "audio/audio_out.h"
+#include "audio/call_store.h"
 #include "ls_audio_hw.h"
 #include "lakeshark_backend.h"
 #include <stdio.h>
@@ -20,7 +21,9 @@
 
 static void music_heap_checkpoint(const char *name, int result)
 {
-#ifdef ESP_PLATFORM
+    /* Heap walks and serial output on entry used to run on every switch.
+       Opt in when investigating decoder allocation, rather than taxing UI. */
+#if defined(ESP_PLATFORM) && defined(LS_MUSIC_HEAP_TRACE)
     if (result >= 0) printf("music heap %s result=%d internal=%u/%u dma=%u/%u\n",
         name, result,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -496,7 +499,7 @@ bool ls_music_open(void)
     music_heap_checkpoint("after media acquire", err);
     if (err != ESP_OK) { spectrum_close(); s_error = "Audio busy / unavailable"; return false; }
     audio_player_config_t config = {.mute_fn=mute, .clk_set_fn=clock_set,
-        .write_fn=write_pcm, .priority=5, .coreID=1};
+        .write_fn=write_pcm, .priority=5, .coreID=1, .file_close_fn=call_store_playback_close};
     err = audio_player_new(config);
     music_heap_checkpoint("after player new", err);
     if (err != ESP_OK) {
@@ -566,11 +569,12 @@ bool ls_music_play_path(const char *path)
 {
     if (!s_up || !path) return false;
     ls_music_mic_stop();
-    FILE *fp = fopen(path,"rb");
+    FILE *fp = call_store_playback_open(path);
     if (!fp) { s_error="Track unavailable; rescan card"; return false; }
-    if (audio_player_play(fp) != ESP_OK) { fclose(fp); s_error="Player queue busy"; return false; }
+    if (audio_player_play(fp) != ESP_OK) { call_store_playback_close(fp); s_error="Player queue busy"; return false; }
     s_error=""; atomic_store(&s_bad_format,false); return true;
 }
+bool ls_music_seek_ms(uint32_t ms) { return s_up && audio_player_seek_ms(ms)==ESP_OK; }
 bool ls_music_toggle(void)
 {
     if (!s_up) return false;

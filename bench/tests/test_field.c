@@ -401,6 +401,18 @@ LS_CASE(invalid_controls_never_reach_hardware)
     LS_CHECK(ls_field_transmit("TEST")); ls_field_step(); LS_EQ_UINT(sends,0);
 }
 
+LS_CASE(labs_accepts_hf_rx_only_with_the_lr2021_capability)
+{
+    reset(); ls_lora_cfg_t cfg = radio; cfg.freq_hz = 2440000000u;
+    LS_CHECK(!ls_field_configure(&cfg)); /* SX1262 */
+    extra_caps = LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5;
+    LS_CHECK(ls_field_configure(&cfg)); ls_field_step();
+    ls_field_snapshot(&state); LS_EQ_UINT(state.config.freq_hz, cfg.freq_hz);
+    cfg.freq_hz = 2300000000u; LS_CHECK(!ls_field_configure(&cfg));
+    cfg.freq_hz = 959000001u; LS_CHECK(!ls_field_configure(&cfg));
+    extra_caps = 0;
+}
+
 LS_CASE(a_partial_sd_record_does_not_hide_later_notes)
 {
     reset(); ls_field_note(0,"Before interruption","Retained"); ls_field_step();

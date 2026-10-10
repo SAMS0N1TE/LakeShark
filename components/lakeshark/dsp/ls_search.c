@@ -1,3 +1,8 @@
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
 /* Radio side of the search. See ls_search.h. */
 
 #include "ls_search.h"
@@ -55,7 +60,7 @@ typedef struct {
     char            log_path[96];
 } job_t;
 
-static job_t             s_job;
+EXT_RAM_BSS_ATTR static job_t s_job;
 static SemaphoreHandle_t s_lock;           /* guards s_job.core and the status */
 static TaskHandle_t      s_task;
 static StaticTask_t      s_tcb;
@@ -256,7 +261,7 @@ static void worker(void *unused)
 
 /* ------------------------------------------------------------------ API */
 
-ls_radio_err_t ls_search_run_start(uint64_t lo_hz, uint64_t hi_hz)
+static ls_radio_err_t run_start_serialized(uint64_t lo_hz, uint64_t hi_hz)
 {
     if (s_busy) return LS_RADIO_ERR_EXISTS;
 
@@ -295,8 +300,6 @@ ls_radio_err_t ls_search_run_start(uint64_t lo_hz, uint64_t hi_hz)
     j->core.floor = NULL;
     free(j->dbfs); free(j->last); free(j->mem);
     j->dbfs = NULL; j->last = NULL; j->mem = NULL;
-    xSemaphoreGive(s_lock);
-
     j->plan = plan;
     j->dbfs = big_alloc(plan.n_bins);
     j->last = big_alloc(plan.n_bins);
@@ -304,27 +307,39 @@ ls_radio_err_t ls_search_run_start(uint64_t lo_hz, uint64_t hi_hz)
     if (!j->dbfs || !j->last || !j->mem) {
         free(j->dbfs); free(j->last); free(j->mem);
         j->dbfs = NULL; j->last = NULL; j->mem = NULL;
+        xSemaphoreGive(s_lock);
         return LS_RADIO_ERR_NO_MEMORY;
     }
     memset(j->last, LS_SWEEP_NO_DATA, plan.n_bins);
 
-    xSemaphoreTake(s_lock, portMAX_DELAY);
     ls_search_init(&j->core, plan.start_hz, plan.bin_hz, plan.n_bins, j->mem);
     s_lo_hz = plan.start_hz;
     s_hi_hz = plan.stop_hz;
     s_pass_ms = 0;
     s_why = "";
     s_ever = true;
+    s_stop_req = false;
+    s_busy = true;
     xSemaphoreGive(s_lock);
 
     ESP_LOGI(TAG, "search %.4f-%.4f MHz, %u bins, %u tunes",
              plan.start_hz / 1e6, plan.stop_hz / 1e6,
              (unsigned)plan.n_bins, (unsigned)plan.n_tunes);
 
-    s_stop_req = false;
-    s_busy = true;
     xTaskNotifyGive(s_task);
     return LS_RADIO_OK;
+}
+
+/* Only one starter can initialize the worker or replace retained buffers. */
+ls_radio_err_t ls_search_run_start(uint64_t lo_hz, uint64_t hi_hz)
+{
+    static bool starting;
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(&starting, &expected, true, false,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return LS_RADIO_ERR_EXISTS;
+    ls_radio_err_t result = run_start_serialized(lo_hz, hi_hz);
+    __atomic_store_n(&starting, false, __ATOMIC_RELEASE);
+    return result;
 }
 
 void ls_search_run_stop(void)

@@ -64,6 +64,9 @@ bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
 {
     if (!s_data) return false;
     uint8_t p[18];
+    /* Only a zero status is idle; a ready report with no contacts is a
+       release and must still pass the full checksum and ack path below. */
+    if (read_reg(s_data,p,1) != ESP_OK || !p[0]) return false;
     if (read_reg(s_data,p,sizeof(p)) != ESP_OK || !p[0] || !checksum(p,8)) return false;
     unsigned count=p[2]&15;
     if (count>10) return false;

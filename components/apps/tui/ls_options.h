@@ -107,6 +107,7 @@ struct ls_opt_ctx_s {
     const ls_opt_t *opt;
     int n;
     const char *tag;         /* under OPTIONS on the button; NULL: the name  */
+    bool back_to_screen;    /* root < BACK returns to the embedded screen */
 };
 
 /* A table's rows, for a context's initializer: LS_OPT_ROWS(OPT_NFM). */

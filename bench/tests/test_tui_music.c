@@ -21,6 +21,7 @@ int ls_music_count(void){return tracks;}
 const char *ls_music_name(int i){static const char *names[]={"Night Dive.wav","Neon Reef.wav","Shark After Dark.wav","Coral Radio.wav"};return i>=0&&i<tracks?names[i%4]:"";}
 const char *ls_music_error(void){return "";}
 bool ls_music_play(int i){if(i<0||i>=tracks)return false;last_play=i;state=LS_MUSIC_PLAYING;return true;}
+bool ls_music_seek_ms(uint32_t ms){(void)ms;return true;}
 bool ls_music_toggle(void){state=state==LS_MUSIC_PLAYING?LS_MUSIC_PAUSED:LS_MUSIC_PLAYING;return true;}
 void ls_music_stop(void){state=LS_MUSIC_STOPPED;}
 ls_music_state_t ls_music_state(void){return state;}

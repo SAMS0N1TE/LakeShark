@@ -101,6 +101,7 @@ bool ls_dfs_band_status(ls_dfs_band_status_t *out);
 /* Targets for slot 0, strongest or most recent first. */
 int  ls_dfs_target_count(void);
 bool ls_dfs_target_label(int i, char *label, size_t lcap, char *detail, size_t dcap);
+bool ls_dfs_target_address(const uint8_t mac[6], const char *label);
 bool ls_dfs_target_pick(int i);   /* -1 follows everything the source hears */
 
 /* The field worker runs this; it may block on a radio briefly. */

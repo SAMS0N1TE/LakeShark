@@ -317,7 +317,31 @@ def i_mesh():
     return c
 
 
+def i_drone():
+    """A centered quadcopter viewed from above: four rotors and a body."""
+    c = Canvas()
+    for x, y in ((0.22, 0.22), (0.78, 0.22), (0.22, 0.78), (0.78, 0.78)):
+        c.line(x, y, 0.5, 0.5, 0.035)
+        c.disc(x, y, 0.145, 0.055)
+    c.rect(0.425, 0.35, 0.575, 0.65)
+    return c
+
+
+def i_sweep():
+    """A radar ring with a sweep beam and a separate observed contact."""
+    c = Canvas()
+    c.disc(0.5, 0.5, 0.42, 0.055)
+    c.line(0.5, 0.5, 0.72, 0.22, 0.035)
+    c.disc(0.5, 0.5, 0.065)
+    c.disc(0.29, 0.57, 0.07)
+    return c
+
+
 ICONS = [
+    ("LS_ICON_DRONE", i_drone,
+     "A quadcopter from above: four rotors, arms and a central body."),
+    ("LS_ICON_SWEEP", i_sweep,
+     "A radar ring with a sweep beam and an observed contact."),
     ("LS_ICON_TOWER",  i_tower,
      "A mast with a beam either side. Infrastructure, which is what a\n"
      "   trunked system is, and distinct from the FM tile's signal."),

@@ -243,7 +243,7 @@ void class_driver_task(void *arg)
     usb_host_client_handle_t hdl = NULL;
 
     SemaphoreHandle_t mux = xSemaphoreCreateMutex();
-    if (!mux) { ESP_LOGE(TAG, "mutex fail"); vTaskSuspend(NULL); return; }
+    if (!mux) { ESP_LOGE(TAG, "mutex fail"); vTaskDelete(NULL); return; }
 
     usb_host_client_config_t cfg = {
         .is_synchronous    = false,
@@ -265,7 +265,7 @@ void class_driver_task(void *arg)
         ESP_LOGE(TAG, "client register failed: %s - USB radios unavailable until reboot",
                  esp_err_to_name(reg));
         vSemaphoreDelete(mux);
-        vTaskSuspend(NULL);
+        vTaskDelete(NULL);
         return;
     }
 

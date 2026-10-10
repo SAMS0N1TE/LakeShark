@@ -1,3 +1,9 @@
+#include "../../ls_cells.h"
+#include "../../ls_cartocore_map.h"
+#ifdef LS_MAP_AUDIT
+static size_t s_carto_audit_count;
+static int s_carto_audit_bad,s_carto_low_masked;
+#endif
 /* MAP: vector tiles off the card, drawn in pixels the grid lends it, with
    the live picture over them: aircraft, mesh nodes, this receiver, and the
    markers and lines placed by hand. */
@@ -20,6 +26,7 @@
 #include "../../ls_map.h"
 #include "../../ls_route_live.h"
 #include "../../ls_map_ink.h"
+#include "../../ls_map_label_policy.h"
 #include "../../ls_map_marks.h"
 #include "../../ls_motion.h"
 #include "../../ls_map_motion.h"
@@ -178,6 +185,7 @@ static bool find_archive(char *out, size_t cap)
    this is where it is called. */
 static void register_view_action(void);
 static void rescan(void);
+static bool cartocore_view(void);
 
 /* Likewise: the cell cache is defined with the pass that fills it, and
    leave() is the one place that gives it back. */
@@ -196,6 +204,10 @@ static int archive_order(const void *a, const void *b)
 static void pick_archive(int i)
 {
     if (i < 0 || i >= s_archive_n) return;
+    if(cartocore_view()) {
+        s_file_error=ls_carto_map_select(s_archives[i])?NULL:"cannot open .ctile map";
+        return;
+    }
     if (!ls_map_open(s_archives[i])) {
         s_file_error = ls_map_open_error();
         return;
@@ -224,13 +236,23 @@ static void pick_archive(int i)
 static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
+    if(cartocore_view()) {
+        s_archive_n=(int)ls_carto_map_files(s_archives,LS_PICKER_MAX);
+        qsort(s_archives,s_archive_n,sizeof(s_archives[0]),archive_order);
+        ls_picker_open("CTILE MAPS",pick_archive);
+        for(int i=0;i<s_archive_n;i++) ls_picker_add(s_archives[i]+sizeof(MAP_DIR),"open map");
+        if(!s_archive_n) ls_picker_empty_reason("No cached .ctile list; reopen after map loads");
+        out->kind=LS_VAL_TEXT;out->s="choose a map";return LS_ACT_OK;
+    }
     s_archive_n = 0;
     DIR *d = opendir(MAP_DIR);
     const struct dirent *e;
     if (d) {
         while ((e = readdir(d)) != NULL && s_archive_n < LS_PICKER_MAX) {
             const size_t n = strlen(e->d_name);
-            if (n < 9 || strcasecmp(e->d_name + n - 8, ".pmtiles")) continue;
+            const char *suffix=cartocore_view()?".ctile":".pmtiles";
+            size_t ext=strlen(suffix);
+            if (n<=ext || strcasecmp(e->d_name+n-ext,suffix)) continue;
             if (n + sizeof(MAP_DIR) + 1 > sizeof(s_archives[0])) continue;
             snprintf(s_archives[s_archive_n++], sizeof(s_archives[0]), "%s/%.*s", MAP_DIR, (int)n, e->d_name);
         }
@@ -239,12 +261,12 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
     qsort(s_archives, s_archive_n, sizeof(s_archives[0]), archive_order);
     ls_picker_open("SD MAPS", pick_archive);
     for (int i = 0; i < s_archive_n; i++) {
-        const char *error = ls_map_check_archive(s_archives[i]);
+        const char *error = cartocore_view()?NULL:ls_map_check_archive(s_archives[i]);
         const char *current = ls_map_archive();
         ls_picker_add(s_archives[i] + sizeof(MAP_DIR), error ? "unsupported" :
             current && !strcmp(current, s_archives[i]) ? "current" : "open map");
     }
-    if (!s_archive_n) ls_picker_empty_reason("put .pmtiles files in SD /maps");
+    if (!s_archive_n) ls_picker_empty_reason(cartocore_view()?"put .ctile files in SD /maps":"put .pmtiles files in SD /maps");
     out->kind = LS_VAL_TEXT;
     out->s = "choose a map";
     return LS_ACT_OK;
@@ -257,6 +279,10 @@ static void enter(void)
         s_layers_loaded = true;
         s_layers = settings_get_map_layers(LAYERS_DEFAULT) & LAYER_BITS;
         palette_load();
+    }
+    if(cartocore_view()) {
+        ls_map_external_view(0,0);cells_free();s_have_archive=false;s_opened=false;s_file_error=NULL;
+        return;
     }
     ls_marks_load();
     /* The archive is opened once and kept: pmtiles_open reads and parses the
@@ -280,6 +306,10 @@ static void enter(void)
    card not working. */
 static void rescan(void)
 {
+    if(cartocore_view()) {
+        ls_map_external_view(0,0);s_have_archive=false;s_opened=false;s_file_error=NULL;
+        ls_carto_map_leave();return;
+    }
     char path[128];
     if (!find_archive(path, sizeof(path))) {
         s_file_error = "no compatible map found; choose MAPS";
@@ -291,6 +321,10 @@ static void rescan(void)
 
 static void leave(void)
 {
+    ls_place_search_close();
+#ifdef LS_MAP_AUDIT
+    s_carto_audit_count=0;s_carto_audit_bad=0;s_carto_low_masked=0;
+#endif
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     /* Hand the pixels back, or the map stays on the glass under the next
        screen: the cell renderer only pushes cells that changed, and none of
@@ -300,6 +334,8 @@ static void leave(void)
     s_pad_rect = tui_rect_make(0, -1, 0, 0);
     s_card_rect = tui_rect_make(0, -1, 0, 0);
     cells_free();
+    ls_carto_map_leave();
+    ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
 }
 
 /* --------------------------------------------------------------- draw --- */
@@ -309,16 +345,19 @@ static void draw_placeholder(tui_surface *sf, tui_rect area, const char *why)
     const uint8_t dim = LS_ATTR_DIM;
     ls_panel_box(sf, area, "MAP", TUI_CYAN);
     tui_put_str(sf, area, area.x + 2, area.y + 2, why, dim);
-    tui_put_str(sf, area, area.x + 2, area.y + 4,
-                "put a .pmtiles archive at " MAP_DIR, dim);
+    if(!cartocore_view() || !strcmp(why,"No map installed"))
+        tui_put_str(sf, area, area.x + 2, area.y + 4,
+                cartocore_view()?"Download a region in TILES > SEARCH":"put a .pmtiles archive at " MAP_DIR, dim);
 }
 
 /* Sub-pixels per cell, and why they are not the same in both axes. */
 
-#define SUB_X 3
+#define SUB_X (cartocore_view() ? 2 : 3)
+static bool cartocore_view(void);
 
 static int sub_y(void)
 {
+    if(cartocore_view()) return 4;
     int cw = 10, ch = 17;
     ls_tui_geometry(NULL, NULL, &cw, &ch);
     if (cw < 1) cw = 10;
@@ -343,10 +382,11 @@ static uint8_t ink_attr(ls_map_ink_t k)
     }
 }
 
-typedef enum { MAP_VIEW_FIELD = 0, MAP_VIEW_COLOUR, MAP_VIEW_MONO, MAP_VIEW__COUNT } map_view_t;
+typedef enum { MAP_VIEW_FIELD = 0, MAP_VIEW_COLOUR, MAP_VIEW_MONO, MAP_VIEW_CC_SMOOTH, MAP_VIEW_CC_BRAILLE, MAP_VIEW__COUNT } map_view_t;
 static map_view_t s_view;
+static bool cartocore_view(void) { return s_view>=MAP_VIEW_CC_SMOOTH; }
 
-static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines" };
+static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines", "CartoCore smooth", "CartoCore braille" };
 
 /* The map's colours. Each names what every class libcarto draws becomes,
    whether water and parks are filled or only outlined, which roads are
@@ -396,18 +436,59 @@ enum { PAL_NIGHT = 0, PAL_PAPER = 1 };
 
 static int s_palette;
 
-/* The palette in use: NIGHT follows the interface, turning to PAPER under
-   Daylight and to RED under the Night theme; any other choice is kept,
-   because somebody chose it. */
-enum { PAL_RED = 2 };
-
+/* Class colours derive from every active TUI theme, including Daylight.
+ * Map style choices affect fills/road filtering, never override a live theme. */
+static bool s_basemap_busy, s_map_crowded;
+static int s_palette_key;
+static uint16_t s_map_colours[16];
+static carto_rgb rgb565(uint16_t c) {
+    return (carto_rgb){((c>>11)&31)*255/31,((c>>5)&63)*255/63,(c&31)*255/31};
+}
+static carto_rgb rgb_mix(carto_rgb a,carto_rgb b,int n,int d) {
+    return (carto_rgb){a.r+(b.r-a.r)*n/d,a.g+(b.g-a.g)*n/d,a.b+(b.b-a.b)*n/d};
+}
 static const map_palette_t *palette(void)
 {
-    int i = s_palette;
-    if (i == PAL_NIGHT && ls_tui_daylight()) i = PAL_PAPER;
-    else if (i == PAL_NIGHT && ls_tui_active_theme() == &ls_theme_night) i = PAL_RED;
-    return &PALETTES[i >= 0 && i < N_PALETTES ? i : 0];
+    static map_palette_t p;
+    static const ls_tui_theme_t *previous;
+    static int key=-1;
+    const ls_tui_theme_t *t=ls_tui_active_theme();
+    const int next=s_palette*2+(s_basemap_busy?1:0);
+    if(previous==t && key==next) return &p;
+    previous=t;key=next;s_palette_key++;
+    p=PALETTES[s_palette>=0 && s_palette<N_PALETTES?s_palette:0];
+    p.name=t->name;p.tint=0;
+    carto_rgb ground=rgb565(t->palette[0]), blue=rgb565(t->palette[TUI_BLUE]);
+    carto_rgb green=rgb565(t->palette[TUI_GREEN]), white=rgb565(t->palette[TUI_WHITE]);
+    p.ground=rgb_mix(ground,blue,1,16);
+    p.water=rgb_mix(p.ground,blue,5,8);
+    p.park=rgb_mix(p.ground,green,2,8);
+    p.building=rgb_mix(p.ground,white,2,8);
+    p.road_lo=rgb_mix(p.ground,white,3,8);
+    p.road_hi=rgb_mix(p.ground,white,6,8);
+    p.major=rgb_mix(p.ground,white,7,8);
+    p.edge=p.water;
+    if(s_basemap_busy) {
+        p.water=rgb_mix(p.ground,p.water,3,4);p.park=rgb_mix(p.ground,p.park,3,4);
+        p.building=rgb_mix(p.ground,p.building,3,4);
+        p.road_lo=rgb_mix(p.ground,p.road_lo,3,4);p.road_hi=rgb_mix(p.ground,p.road_hi,3,4);
+        p.major=rgb_mix(p.ground,p.major,3,4);
+    }
+    for(int i=0;i<16;i++) s_map_colours[i]=carto_rgb565(p.ground);
+    s_map_colours[2]=s_map_colours[10]=carto_rgb565(p.park);
+    s_map_colours[4]=s_map_colours[12]=carto_rgb565(p.water);
+    s_map_colours[6]=s_map_colours[14]=carto_rgb565(p.water);
+    s_map_colours[8]=carto_rgb565(p.building);
+    s_map_colours[7]=carto_rgb565(p.road_lo);
+    s_map_colours[15]=carto_rgb565(p.road_hi);
+    s_map_colours[3]=s_map_colours[11]=carto_rgb565(p.major);
+    s_map_colours[5]=s_map_colours[13]=carto_rgb565(p.building);
+    s_map_colours[1]=s_map_colours[9]=carto_rgb565(p.building);
+    return &p;
 }
+/* Warm accent is reserved for data strokes; basemap roads use neutral ink.
+ * In monochrome themes its lightness still clears the muted class range. */
+static uint8_t radar_attr(void) { return TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK); }
 
 static void glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t attr)
 {
@@ -418,6 +499,7 @@ static ls_act_status_t a_map_view(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
     s_view = (map_view_t)((s_view + 1) % MAP_VIEW__COUNT);
+    if(!cartocore_view()) ls_carto_map_leave();
     layers_set(s_layers);
     out->kind = LS_VAL_TEXT;
     out->s = VIEW_NAME[s_view];
@@ -442,9 +524,9 @@ static bool s_field_valid;
 
 static uint8_t s_acc[CELL_COLS_MAX * 4];
 static uint8_t s_ink[CELL_COLS_MAX * 4];
-static EXT_RAM_BSS_ATTR uint8_t s_prev[CELL_COLS_MAX * SUB_X];
+static EXT_RAM_BSS_ATTR uint8_t s_prev[CELL_COLS_MAX * 3];
 
-static uint8_t s_cur[CELL_COLS_MAX * SUB_X];
+static uint8_t s_cur[CELL_COLS_MAX * 3];
 
 /* The one ink mono draws in. White because the point of a single-colour
    mode is contrast; the Flipper's orange is its screen, not its design. */
@@ -497,7 +579,9 @@ static void flush_row(int cy, int w, bool mono)
             const char st = ls_stroke_glyph(b[0], b[1], b[2], b[3]);
             if (!st) { g[cx] = 0; continue; }
             g[cx]  = st;
-            at[cx] = ls_ink_tinted(MONO_ATTR);
+            uint8_t top=s_acc[cx*4];
+            for(int i=1;i<4;i++) if(s_acc[cx*4+i]>top) top=s_acc[cx*4+i];
+            at[cx] = ls_ink_tinted(top==LS_MAP_ROAD?MONO_ATTR:ink_attr((ls_map_ink_t)top));
             continue;
         }
 
@@ -611,7 +695,7 @@ static uint16_t mix565(carto_rgb a, carto_rgb b, int num, int den)
     return carto_rgb565(c);
 }
 
-EXT_RAM_BSS_ATTR static uint8_t s_krow[3][CELL_COLS_MAX * SUB_X];
+EXT_RAM_BSS_ATTR static uint8_t s_krow[3][CELL_COLS_MAX * 3];
 
 static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *out, int pw, int ph)
 {
@@ -630,7 +714,7 @@ static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *
     ink[K_MAJOR] = carto_rgb565(pal->major);
     const uint16_t edge = carto_rgb565(pal->edge);
     const bool edges = (pal->fill & (PF_EDGE_WATER | PF_EDGE_PARK)) != 0;
-    if (pw > CELL_COLS_MAX * SUB_X) pw = CELL_COLS_MAX * SUB_X;
+    if (pw > CELL_COLS_MAX * 3) pw = CELL_COLS_MAX * 3;
 
     /* Row y's names live in s_krow[y % 3]; the row below is named before
        the row is painted, over the one two above that is done with. */
@@ -641,10 +725,9 @@ static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *
         uint8_t *down = s_krow[(y + 1) % 3];
         if (y + 1 < ph) for (int x = 0; x < pw; x++) down[x] = field_kind(px[(size_t)(y + 1) * pw + x]);
         uint16_t *o = out + (size_t)y * pw;
-        const uint16_t *src = px + (size_t)y * pw;
         for (int x = 0; x < pw; x++) {
             const uint8_t k = cur[x];
-            uint16_t c = k == K_OTHER ? src[x] : ink[k];
+            uint16_t c = k == K_OTHER ? ink[K_BUILDING] : ink[k];
             if (edges && ((k == K_WATER && (pal->fill & PF_EDGE_WATER)) ||
                           (k == K_PARK && (pal->fill & PF_EDGE_PARK)))) {
                 const bool rim = (x > 0 && cur[x - 1] != k) || (x + 1 < pw && cur[x + 1] != k) ||
@@ -665,7 +748,7 @@ static void draw_cells(tui_surface *sf, tui_rect a,
     if (s_view == MAP_VIEW_FIELD) {
         const uint32_t serial = ls_map_render_serial();
         const map_palette_t *pal = palette();
-        const int pal_i = (int)(pal - PALETTES);
+        const int pal_i = s_palette_key;
         if (!s_field_pixels || s_field_w != pw || s_field_h != ph) {
             heap_caps_free(s_field_pixels);
             s_field_pixels = heap_caps_malloc((size_t)pw * ph * sizeof(uint16_t),
@@ -691,7 +774,8 @@ static void draw_cells(tui_surface *sf, tui_rect a,
     }
 
     const uint32_t serial = ls_map_render_serial();
-    const int cc_key = (int)s_view * 16 + (int)(palette() - PALETTES);
+    palette();
+    const int cc_key = (int)s_view * 65536 + s_palette_key;
     if (!s_cc_valid || s_cc_serial != serial || s_cc_view != cc_key) {
         const int64_t t0 = esp_timer_get_time();
         build_cells(a, px, pw, ph);
@@ -839,9 +923,42 @@ static void overlay_reset(tui_rect a, tui_rect pad, tui_rect card)
     box_take_rect(a, card);
 }
 
+static EXT_RAM_BSS_ATTR map_label_history s_label_history;
+static bool label_slot_free(void *context,int x,int y,int w,int rows) {
+    const tui_rect *a=context;
+    if(x<0 || y<0 || x+w>a->w || y+rows>a->h) return false;
+    for(int r=0;r<rows;r++) if(!box_free(x,x+w-1,y+r)) return false;
+    return true;
+}
+
+/* Live labels may relax padding, but never overlap an occupied cell.
+ * Keep hysteresis in one choose call so a failed padded slot does not start
+ * the hold timer before the unpadded fallback has been considered. */
+static bool live_label_slot_free(void *context,int x,int y,int w,int rows) {
+    s_tier=1;
+    if(label_slot_free(context,x,y,w,rows)) return true;
+    s_tier=2;
+    bool free=label_slot_free(context,x,y,w,rows);
+    s_tier=1;
+    return free;
+}
+
+static bool basemap_label_slot_free(void *context,int x,int y,int w,int rows) {
+    if(!label_slot_free(context,x,y,w,rows)) return false;
+    for(int r=0;r<rows;r++) for(int c=0;c<w;c++)
+        if(ls_ink_cell_used(x+c,y+r)) return false;
+    return true;
+}
+
 /* ---------------------------------------------------------- place names -- */
 
 #define LABELS_DRAWN_MAX 16
+static int map_label_cap(tui_rect a) {
+    int z=ls_map_zoom();int cap=z<=10?6:z<=13?10:16;
+    int area_cap=a.w*a.h/(s_basemap_busy?180:120);
+    if(cap>area_cap) cap=area_cap;
+    return cap<2?2:cap;
+}
 
 /* Bigger is more important. min_zoom is the cartographer's own answer and
    comes first; rank breaks ties and covers tiles that omit min_zoom. */
@@ -871,11 +988,11 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         order[j] = i;
     }
 
-    const uint8_t attr = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t attr = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const uint8_t dot  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
 
     int drawn = 0;
-    for (int k = 0; k < m && drawn < LABELS_DRAWN_MAX; k++) {
+    for (int k = 0; k < m && drawn < map_label_cap(a); k++) {
         const carto_label *lb = &L[order[k]];
 
         const int cx = lb->x / sx;
@@ -883,12 +1000,12 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         if (cx < 0 || cy < 0 || cx >= a.w || cy >= a.h) continue;
         if (in_rect(avoid, a.x + cx, a.y + cy)) continue;
         s_tier = 1;
-        const bool dot_free = box_free(cx, cx, cy);
+        const bool dot_free = box_free(cx, cx, cy) && !ls_ink_cell_used(cx,cy);
         s_tier = 0;
         if (!dot_free) continue;
 
         int len = (int)strlen(lb->text);
-        const int room = a.w / 3;
+        const int room = a.w / (s_basemap_busy?4:3);
         if (len > room) {
             len = room;
             while (len > 4 && lb->text[len] != ' ' && lb->text[len - 1] != ' ')
@@ -903,18 +1020,10 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         if (top + len > a.w) top = a.w - len;
         const int spot[6][2] = { { top, cy + 1 }, { top, cy - 1 }, { cx + 2, cy },
                                  { cx - 1 - len, cy }, { top, cy + 2 }, { top, cy - 2 } };
-        int x0 = 0, y = -1;
-        for (int tier = 0; tier < 3 && y < 0; tier++) {
-            s_tier = tier;
-            for (int t = 0; t < 6; t++) {
-                if (spot[t][0] < 0 || spot[t][0] + len > a.w || spot[t][1] < 0 || spot[t][1] >= a.h) continue;
-                if (!box_free(spot[t][0], spot[t][0] + len - 1, spot[t][1])) continue;
-                x0 = spot[t][0]; y = spot[t][1];
-                break;
-            }
-        }
-        s_tier = 0;
-        if (y < 0) continue;
+        int x0=0,y=0;s_tier=1;
+        bool placed=map_label_choose(&s_label_history,map_label_key(lb->text,1+s_view),
+            cx,cy,len,1,spot,2,6,esp_timer_get_time(),basemap_label_slot_free,&a,&x0,&y);
+        s_tier=0;if(!placed) continue;
 
         glass(sf, a, a.x + cx, a.y + cy, '.', dot);
         box_take(cx, cx, cy);
@@ -924,6 +1033,68 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         audit_label(x0, y, len);
 #endif
         drawn++;
+    }
+}
+
+/* CartoCore publishes names separately from its clean terrain frame. Keep the
+ * marker/text reservations, relocate whole names, then protect them from ring
+ * scales and the centre reticle. No glass: spaces also get a solid dark plate. */
+static EXT_RAM_BSS_ATTR ls_carto_label s_carto_labels[LS_CARTO_LABEL_MAX];
+#ifdef LS_MAP_AUDIT
+int ls_map_carto_low_masked(void) { return s_carto_low_masked; }
+int ls_map_carto_label_audit(void) { return s_carto_audit_bad; }
+static int carto_audit_cells(const tui_surface *sf) {
+    int bad=0;
+    for(size_t i=0;i<s_carto_audit_count;i++) {
+        const ls_carto_label *l=&s_carto_labels[i];
+        for(int k=0;l->text[k];k++) {
+            tui_cell c=sf->back[l->y*sf->w+l->x+k];
+            if(c.ch!=l->text[k] || c.attr!=l->attr || TUI_ATTR_BG(c.attr)!=TUI_BLACK ||
+               !(TUI_ATTR_FG(c.attr)&TUI_BRIGHT)) bad++;
+        }
+    }
+    return bad;
+}
+#endif
+static void draw_carto_labels(tui_surface *sf,tui_rect a) {
+    size_t n=ls_carto_map_labels(s_carto_labels,LS_CARTO_LABEL_MAX,a.w,a.h);
+#ifdef LS_MAP_AUDIT
+    s_carto_audit_count=n;
+#endif
+    /* Engine classes 1/2 are places, 3 water, 4/5 roads. Stable ordering
+     * keeps place names ahead of minor labels regardless of scanline order. */
+    int order[LS_CARTO_LABEL_MAX];
+    for(size_t i=0;i<n;i++) {
+        int j=i;while(j>0 && s_carto_labels[order[j-1]].label_class>s_carto_labels[i].label_class) {
+            order[j]=order[j-1];j--;
+        }
+        order[j]=i;
+    }
+    int drawn=0,minor=0,cap=map_label_cap(a);
+    for(size_t i=0;i<n;i++) {
+        ls_carto_label *l=&s_carto_labels[order[i]];
+        int len=(int)strlen(l->text),x=0,y=0;
+        if(drawn>=cap || (l->label_class>=3 && minor>=(s_basemap_busy?2:4))) { l->text[0]=0;continue; }
+        int room=a.w/(s_basemap_busy?3:2);
+        if(len>room) { len=room;while(len>4 && l->text[len]!=' ') len--;l->text[len]=0; }
+        int spots[9][2]={{l->x,l->y},{l->x,l->y+1},{l->x,l->y-1},
+            {l->x,l->y+2},{l->x,l->y-2},{l->x+2,l->y},{l->x-2,l->y},
+            {l->x+1,l->y+1},{l->x-1,l->y-1}};
+        s_tier=1;
+        bool placed=map_label_choose(&s_label_history,map_label_key(l->text,1+s_view),
+            l->x,l->y,len,1,spots,2,9,esp_timer_get_time(),basemap_label_slot_free,&a,&x,&y);
+        s_tier=0;if(!placed) { l->text[0]=0;continue; }
+        l->attr=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK);
+        for(int k=0;k<len;k++) {
+#ifdef LS_MAP_AUDIT
+            int prio=ls_ink_cell_prio(x+k,y);if(prio>0 && prio<5) s_carto_low_masked++;
+#endif
+            tui_put_char(sf,a,a.x+x+k,a.y+y,l->text[k],l->attr);
+        }
+        box_take(x,x+len-1,y);drawn++;if(l->label_class>=3) minor++;
+#ifdef LS_MAP_AUDIT
+        audit_label(x,y,len);l->x=a.x+x;l->y=a.y+y;
+#endif
     }
 }
 
@@ -944,7 +1115,7 @@ static double merc_y(double lat)
 static double world_px(void)
 {
     const int tp = ls_map_tile_px() > 0 ? ls_map_tile_px() : 256;
-    return (double)tp * ldexp(1.0, ls_map_zoom());
+    return (double)(cartocore_view()?256:tp) * ldexp(1.0, ls_map_zoom());
 }
 
 /* Where a coordinate lands in the rendered frame, in frame pixels, on or
@@ -983,7 +1154,7 @@ static double frame_mpp(void)
 {
     double lat = 0, lon = 0;
     ls_map_get_center(&lat, &lon);
-    const int tp = ls_map_tile_px();
+    const int tp = cartocore_view()?256:ls_map_tile_px();
     return 156543.03392 * cos(lat * M_PI / 180.0) / ldexp(1.0, ls_map_zoom())
            * (256.0 / (double)(tp > 0 ? tp : 256));
 }
@@ -1424,7 +1595,6 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
         const air_view_t *v = &s_air[slot];
         if (!v->on) continue;
         const adsb_aircraft_t *ac = adsb_state_get(slot);
-        const uint8_t band = air_band(ac->altitude);
         if (layer(L_TRAILS) || ac->icao == sel) {
             const trail_dots_t *t = trail_dots(slot, ac->icao, pw, ph);
             const int n = s_trail_kept[slot];
@@ -1434,8 +1604,7 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
             for (int i = n - 1; i >= 0; i--) {
                 const int qx = t->x[i], qy = t->y[i];
                 const bool recent = now - t->ts[i] < 60000000LL;
-                const uint8_t hue = v->emergency ? TUI_RED
-                                  : recent && v->fresh ? band : (uint8_t)LS_DIM_FG;
+                const uint8_t hue = v->emergency ? TUI_RED|TUI_BRIGHT : TUI_YELLOW|TUI_BRIGHT;
                 ls_ink_line(px, py, qx, qy, TUI_ATTR(hue, TUI_BLACK), 3, recent ? 0 : 1);
                 px = qx; py = qy;
             }
@@ -1458,7 +1627,7 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
                     qx = v->dx + (int)lround((qx - v->dx) * cap / len);
                     qy = v->dy + (int)lround((qy - v->dy) * cap / len);
                 }
-                ls_ink_line(v->dx, v->dy, qx, qy, TUI_ATTR(v->hue, TUI_BLACK), 3, 2);
+                ls_ink_line(v->dx, v->dy, qx, qy, radar_attr(), 3, 2);
             }
         }
     }
@@ -1554,8 +1723,9 @@ static int label_spots(int cx, int cy, int gap, int w, int rows, int a_w, int sp
 /* Put a one or two line label next to a symbol at cell (cx, cy), the nearest
    spot that is clear with air round it, then the nearest at all. Dropped only
    when no spot is free of every symbol and every other label. */
-static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
-                        const char *l1, const char *l2, uint8_t attr, bool solid)
+static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
+                        const char *l1, const char *l2, uint8_t attr, bool solid,
+                        uint32_t key)
 {
     const int n1 = (int)strlen(l1), n2 = l2 ? (int)strlen(l2) : 0;
     const int w = n1 > n2 ? n1 : n2;
@@ -1563,18 +1733,10 @@ static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
     s_label_rect = tui_rect_make(0, -1, 0, 0);
     int spot[LABEL_SPOTS_MAX][3];
     const int ns = label_spots(cx, cy, gap, w, rows, a.w, spot);
-    /* Air all round within a few cells, then a row of air lost, a few cells
-       further; touching, anywhere, is the last resort. */
-    const int plan[3][2] = { { 0, 10 * gap + 30 }, { 1, 10 * gap + 50 }, { 2, 1 << 20 } };
-    for (int pass = 0; pass < 3; pass++) {
-        s_tier = plan[pass][0];
-        for (int t = 0; t < ns; t++) {
-            if (spot[t][2] > plan[pass][1]) break;
-            const int x0 = spot[t][0], y0 = spot[t][1];
-            if (x0 < 0 || x0 + w > a.w || y0 < 0 || y0 + rows > a.h) continue;
-            bool clear = true;
-            for (int r = 0; r < rows && clear; r++) clear = box_free(x0, x0 + w - 1, y0 + r);
-            if (!clear) continue;
+    int x0=0,y0=0;s_tier=1;
+    bool placed=map_label_choose(&s_label_history,key,
+        cx,cy,w,rows,spot,3,ns,esp_timer_get_time(),live_label_slot_free,&a,&x0,&y0);
+    s_tier=0;if(!placed) return false;
             for (int r = 0; r < rows; r++) {
                 const char *s = r ? l2 : l1;
                 const int n = r ? n2 : n1;
@@ -1589,13 +1751,15 @@ static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
                 audit_label(x0, y0 + r, w);
 #endif
             }
-            s_label_rect = tui_rect_make(a.x + x0, a.y + y0, w, rows);
-            s_tier = 0;
-            return true;
-        }
-    }
-    s_tier = 0;
-    return false;
+    s_label_rect=tui_rect_make(a.x+x0,a.y+y0,w,rows);
+    return true;
+}
+
+static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
+                        const char *l1, const char *l2, uint8_t attr, bool solid)
+{
+    return place_label_key(sf,a,cx,cy,gap,l1,l2,attr,solid,
+                           map_label_key(l1,32+s_view));
 }
 
 static void air_text(tui_surface *sf, tui_rect a)
@@ -1611,7 +1775,7 @@ static void air_text(tui_surface *sf, tui_rect a)
             if ((ac->icao == sel) != (pass == 0)) continue;
             char l1[12], l2[12];
             air_block_lines(ac, v, l1, l2, sizeof(l1));
-            const bool full = layer(L_BLOCKS) || ac->icao == sel || v->emergency;
+            const bool full = (layer(L_BLOCKS) && !s_map_crowded) || ac->icao == sel || v->emergency;
             const int cx = v->dx / 2, cy = v->dy / 3;
             const int gap = v->compact ? 2 : 3;
             if (ac->icao == sel || v->emergency) {
@@ -1777,8 +1941,10 @@ static void ais_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
         if (!frame_px(p->lat, p->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
         int dx, dy; px_dot(fx, fy, &dx, &dy); char mmsi[12];
         snprintf(mmsi, sizeof(mmsi), "%09lu", (unsigned long)p->mmsi);
-        place_label(sf, a, dx/2, dy/3, 3, p->name[0] ? p->name : mmsi, NULL,
-                    TUI_ATTR(ais_hue(p, now), TUI_BLACK), false);
+        /* Names are not identities: two vessels may share the same name. */
+        place_label_key(sf, a, dx/2, dy/3, 3, p->name[0] ? p->name : mmsi, NULL,
+                    TUI_ATTR(ais_hue(p, now), TUI_BLACK), false,
+                    map_label_key(mmsi,64+s_view));
     }
 }
 
@@ -1987,7 +2153,7 @@ static void rings_canvas(tui_surface *sf, tui_rect a, int pw, int ph, bool text)
     const double diag = hypot(pw, ph) + hypot(fx - pw / 2.0, fy - ph / 2.0);
     int dx, dy;
     px_dot(fx, fy, &dx, &dy);
-    const uint8_t at = TUI_ATTR(TUI_CYAN, TUI_BLACK);
+    const uint8_t at = radar_attr();
     for (int k = 1; k <= 12; k++) {
         const double r_px = k * step * LS_GEO_M_PER_NM / mpp;
         if (r_px > diag) break;
@@ -2441,6 +2607,7 @@ static void goto_pick(int i)
 {
     if (i < 0 || i >= s_ngoto) return;
     const goto_t *g = &s_goto[i];
+    if(g->kind==255) { ls_place_search_open(true);return; }
     s_track = false;
     switch (g->kind) {
     case HIT_AIR:  select_air(g->id); break;
@@ -2467,6 +2634,7 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
     (void)in;
     s_ngoto = 0;
     ls_picker_open("GO TO", goto_pick);
+    goto_add(255,0,0,0,NULL,"SEARCH PLACES","Country, state or city");
     double clat, clon;
     ls_map_get_center(&clat, &clon);
     double rlat = clat, rlon = clon;
@@ -2702,19 +2870,19 @@ static ls_act_status_t a_map_layers(const ls_args_t *in, ls_val_t *out)
 /* STYLE: the map's palette, and how the picture is filled. */
 static uint32_t style_bits(void)
 {
-    return ((uint32_t)(s_palette & 0x0F) << 24) | ((uint32_t)(s_view & 0x03) << 28);
+    return ((uint32_t)(s_palette & 0x0F) << 24) | ((uint32_t)(s_view & 0x07) << 28);
 }
 
 static void palette_load(void)
 {
     const uint32_t v = settings_get_map_layers(LAYERS_DEFAULT);
-    const int p = (int)((v >> 24) & 0x0F), w = (int)((v >> 28) & 0x03);
+    const int p = (int)((v >> 24) & 0x0F), w = (int)((v >> 28) & 0x07);
     s_palette = p < N_PALETTES ? p : 0;
     s_view = w < MAP_VIEW__COUNT ? (map_view_t)w : MAP_VIEW_FIELD;
 }
 
 static const char *const VIEW_WHAT[MAP_VIEW__COUNT] = {
-    "the picture itself", "coloured blocks of text cells", "outlines drawn in characters" };
+    "the picture itself", "coloured blocks of text cells", "outlines drawn in characters", "active CTILE, smooth quadrants", "active CTILE, smooth braille dots" };
 
 static void style_pick(int i)
 {
@@ -2722,19 +2890,21 @@ static void style_pick(int i)
     if (i >= 0 && i < N_PALETTES) s_palette = i;
     else if (i >= N_PALETTES && i < N_PALETTES + MAP_VIEW__COUNT) s_view = (map_view_t)(i - N_PALETTES);
     else return;
+    if(!cartocore_view()) ls_carto_map_leave();
     layers_set(s_layers);
     say(i < N_PALETTES ? PALETTES[i].what : VIEW_WHAT[s_view]);
 }
 
+static void theme_style_pick(int i) {
+    if(i==0 || i==1) style_pick(i?6:0);
+    else if(i>=2) style_pick(i+N_PALETTES-2);
+}
 static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
-    ls_picker_open("MAP STYLE", style_pick);
-    for (int i = 0; i < N_PALETTES; i++) {
-        char d[LS_PICKER_DETAIL];
-        snprintf(d, sizeof(d), "%s%s", i == s_palette ? "[ON] " : "", PALETTES[i].what);
-        ls_picker_add(PALETTES[i].name, d);
-    }
+    ls_picker_open("MAP STYLE", theme_style_pick);
+    ls_picker_add("Theme fills",s_palette<6?"[ON] follows TUI theme":"follows TUI theme");
+    ls_picker_add("Theme outlines",s_palette>=6?"[ON] PMTiles coast and major roads":"PMTiles coast and major roads");
     for (int i = 0; i < MAP_VIEW__COUNT; i++) {
         char lab[LS_PICKER_TEXT], d[LS_PICKER_DETAIL];
         snprintf(lab, sizeof(lab), "Fill: %s", VIEW_NAME[i]);
@@ -2745,7 +2915,7 @@ static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
     const char *leaf = arch ? strrchr(arch, '/') : NULL;
     ls_picker_add("Map file on the card", leaf ? leaf + 1 : "none open");
     out->kind = LS_VAL_TEXT;
-    out->s = "choose a palette or a fill";
+    out->s = "choose a fill; colours follow TUI theme";
     return LS_ACT_OK;
 }
 
@@ -2903,7 +3073,7 @@ static void register_view_action(void)
     ls_action_register("map.find", "", LS_CAP_UI, a_map_find,
                        "aircraft, nodes, markers and places to go to");
     ls_action_register("map.layers", "", LS_CAP_UI, a_map_layers, "what is drawn over the map");
-    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, "the map's palette and fill");
+    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, "map fill; colours follow TUI theme");
     ls_action_register("map.mark", "", LS_CAP_UI, a_map_mark, "drop a marker at the centre");
     ls_action_register("map.draw", "", LS_CAP_UI, a_map_draw, "draw a line point by point");
     ls_action_register("map.draw_add", "", LS_CAP_UI, a_map_draw_add, "add the centre to the line");
@@ -2922,13 +3092,13 @@ void ls_map_preview_frame(tui_rect area, int *pw, int *ph, int *tile_px)
     ls_tui_geometry(NULL,NULL,&cw,NULL);
     if (pw) *pw=area.w*SUB_X;
     if (ph) *ph=area.h*sub_y();
-    if (tile_px) *tile_px=256*SUB_X/(cw>0?cw:10);
+    if (tile_px) *tile_px=cartocore_view()?256:256*SUB_X/(cw>0?cw:10);
 }
 
 void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
 {
     if (area.w<1 || area.h<1) return;
-    if (!s_opened) { s_opened=true; rescan(); }
+    if (!cartocore_view() && !s_opened) { s_opened=true; rescan(); }
     /* The room the labels over this take starts empty every frame, picture
        or not: with no archive there is nothing to draw, but the aircraft and
        their callsigns still come, and the last frame's list would leave them
@@ -2938,9 +3108,20 @@ void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
     int pw=0,ph=0,tile=256;
     ls_map_preview_frame(area,&pw,&ph,&tile);
     ls_map_set_tile_px(tile);
+    if(cartocore_view()) {
+        ls_map_external_view(pw,ph);s_opened=s_have_archive=false;
+        unsigned z=ls_map_zoom();
+        if(ls_carto_map_prepare(&lat,&lon,&z)) {
+            ls_map_center(lat,lon);ls_map_zoom_by((int)z-ls_map_zoom());
+        }
+        palette();
+        if(ls_carto_map_draw(sf,area,lat,lon,z,s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES)))
+            ls_tui_basemap(sf,area,s_map_colours);
+        return;
+    }
     if (!ls_map_begin(pw,ph)) return;
     const uint16_t *px=ls_map_render(&pw,&ph);
-    if (px) draw_cells(sf,area,px,pw,ph);
+    if (px) { draw_cells(sf,area,px,pw,ph);ls_tui_basemap(sf,area,s_map_colours); }
 }
 
 void ls_map_preview_reserve(tui_rect area,int x,int y,int width)
@@ -2950,7 +3131,7 @@ void ls_map_preview_reserve(tui_rect area,int x,int y,int width)
 
 void ls_map_preview_labels(tui_surface *sf,tui_rect area)
 {
-    draw_labels(sf,area,SUB_X,sub_y(),tui_rect_make(0,0,0,0));
+    if(!cartocore_view()) draw_labels(sf,area,SUB_X,sub_y(),tui_rect_make(0,0,0,0));
 }
 
 bool ls_map_preview_point(double lat,double lon,tui_rect area,int *x,int *y)
@@ -3128,6 +3309,7 @@ static void route_canvas(int pw,int ph)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    if(ls_place_search_active()) { ls_place_search_draw(sf,area);return; }
     const int64_t now = esp_timer_get_time();
     refresh_receiver(now);
     ls_map_follow_fix(s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
@@ -3150,18 +3332,52 @@ static void draw(tui_surface *sf, tui_rect area)
        a fifth of the ground and the map is silently five zoom steps in. */
     int cw = 10;
     ls_tui_geometry(NULL, NULL, &cw, NULL);
-    ls_map_set_tile_px(256 * SUB_X / (cw > 0 ? cw : 10));
-    ls_map_begin(body.w * SUB_X, body.h * sub_y());
+    ls_map_set_tile_px(cartocore_view()?256:256 * SUB_X / (cw > 0 ? cw : 10));
+    bool cc_ready=true;
+    if(cartocore_view()) {
+        ls_map_external_view(body.w*2,body.h*4);
+        s_have_archive=false;s_opened=false;s_file_error=NULL;cells_free();
+        double lat,lon;ls_map_get_center(&lat,&lon);unsigned z=ls_map_zoom();
+        cc_ready=ls_carto_map_prepare(&lat,&lon,&z);
+        if(cc_ready) { ls_map_center(lat,lon);ls_map_zoom_by((int)z-ls_map_zoom()); }
+    } else {
+        if(!s_opened) { rescan();s_opened=true; }
+        ls_map_begin(body.w*SUB_X,body.h*sub_y());
+    }
 
+    nodes_prepare();
+    s_basemap_busy=(layer(L_AIR) && count_air_positions()>0) ||
+        (layer(L_MESH) && s_npeers>0) || (layer(L_MARKS) && ls_marks_count()>0) ||
+        s_receiver_fresh || ls_route_live()->valid;
+    palette();
     /* Render FIRST, then ask what is wrong. The other order asks a map that
        has not been started why it is not drawable. */
     int pw = 0, ph = 0;
-    const uint16_t *px = ls_map_render(&pw, &ph);
-    const char *why = ls_map_status();
+    const bool cc=cartocore_view();
+    const uint16_t *px = cc?NULL:ls_map_render(&pw, &ph);
+    bool cc_ok=false;
+#ifdef LS_MAP_AUDIT
+    s_carto_audit_count=0;s_carto_audit_bad=0;s_carto_low_masked=0;
+#endif
+    if(cc) {
+        double lat,lon; ls_map_get_center(&lat,&lon);
+        pw=body.w*2; ph=body.h*4;
+        ls_tui_reserve(tui_rect_make(0,0,0,0));
+        ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
+        cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES));
+    }
+    const char *why = cc?(cc_ok?NULL:ls_carto_map_status()):ls_map_status();
     s_pw = pw; s_ph = ph;
 
     s_vector_s = vector_seconds();
     air_prepare(body, pw, ph, now);
+    int demand=1;
+    if(layer(L_AIR)) for(int i=0;i<ADSB_MAX_TRACKED;i++) if(s_air[i].inside && s_air[i].on) demand++;
+    if(layer(L_MESH)) demand+=s_npeers;
+    if(layer(L_MARKS)) demand+=ls_marks_count();
+    int capacity=body.w*body.h/160;
+    if(demand>capacity+2) s_map_crowded=true;
+    else if(demand<capacity-2) s_map_crowded=false;
     nodes_prepare();
     cover_update();
     track_selection(pw, ph);
@@ -3200,7 +3416,8 @@ static void draw(tui_surface *sf, tui_rect area)
                 TUI_ATTR(TUI_BLACK, TUI_CYAN));
 
     s_nhits = 0;
-    if (!px) {
+    if (!px && !cc_ok) {
+        ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
@@ -3211,10 +3428,11 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_placeholder(sf, body, why);
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
-    } else {
+    } else if(!cc || ls_carto_map_fresh()) {
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
         s_card_rect = card_rect_for(body);
-        draw_cells(sf, body, px, pw, ph);
+        if(!cc) draw_cells(sf, body, px, pw, ph);
+        ls_tui_basemap(sf,body,s_map_colours);
         overlay_reset(body, s_pad_rect, s_card_rect);
 
         /* Underneath to on top: rings and coverage, lines and trails, then
@@ -3245,36 +3463,39 @@ static void draw(tui_surface *sf, tui_rect area)
         sonde_text(sf, body, pw, ph, now);
         marks_text(sf, body, pw, ph);
         edges_text(sf, body, pw, ph);
+        if(cc && layer(L_PLACES)) draw_carto_labels(sf,body);
         rings_canvas(sf, body, pw, ph, true);
-        if (layer(L_PLACES)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
+        if (!cc && layer(L_PLACES)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
         centre_reticle(sf, body);
         draw_card(sf, s_card_rect);
 
         s_map_cells = body;
 
-        double lat = 0, lon = 0;
-        ls_map_get_center(&lat, &lon);
-        /* A turning mark while tiles are still arriving, so a gap reads as
-           "still drawing" and not as "that is all there is". */
-        const bool busy = ls_map_render_busy();
-        const char pip = busy ? ls_motion_pip(true) : ' ';
-        const double width_m = 40075016.686 * cos(lat * M_PI / 180.0) * pw /
-            (ldexp(1.0, ls_map_zoom()) * ls_map_tile_px());
-        const ls_sketch_t *open = ls_sketch_open();
-        if (open)
-            snprintf(s_note, sizeof(s_note), "DRAW %d pts %.2f mi  tap adds  U undo  O done  C cancel",
-                     open->n, ls_sketch_length_m(open) / LS_GEO_M_PER_MILE);
-        else if (s_toast[0] && now - s_toast_us < 4000000)
-            snprintf(s_note, sizeof(s_note), "%s", s_toast);
-        else
-            snprintf(s_note, sizeof(s_note), "%c %s z%d%s %.2f mi across", pip, busy ? "LOADING" : "OFFLINE",
-                     ls_map_zoom(), ls_map_zoom() > ls_map_source_zoom() ? " MAG" : "", width_m / 1609.344);
-        ls_tui_status_set(s_file_error ? s_file_error : s_note, NULL);
-        if (!ls_tui_is_wide())
-            tui_put_str(sf, area, area.x, area.y + 2, s_file_error ? s_file_error : s_note, LS_ATTR_DIM);
 
         draw_pan_pad(sf, s_pad_rect);
     }
+
+    double lat = 0, lon = 0;
+    ls_map_get_center(&lat, &lon);
+    /* A turning mark while tiles are still arriving, so a gap reads as
+       "still drawing" and not as "that is all there is". */
+    const bool busy = !cc && ls_map_render_busy();
+    const char pip = busy ? ls_motion_pip(true) : ' ';
+    const double width_m = 40075016.686 * cos(lat * M_PI / 180.0) * pw /
+        (ldexp(1.0, ls_map_zoom()) * ls_map_tile_px());
+    const ls_sketch_t *open = ls_sketch_open();
+    if (open)
+        snprintf(s_note, sizeof(s_note), "DRAW %d pts %.2f mi  tap adds  U undo  O done  C cancel",
+                 open->n, ls_sketch_length_m(open) / LS_GEO_M_PER_MILE);
+    else if (s_toast[0] && now - s_toast_us < 4000000)
+        snprintf(s_note, sizeof(s_note), "%s", s_toast);
+    else
+        snprintf(s_note, sizeof(s_note), "%c %s z%d%s %.2f mi across", pip, busy ? "LOADING" : "OFFLINE",
+                 ls_map_zoom(), !cc && ls_map_zoom() > ls_map_source_zoom() ? " MAG" : "", width_m / 1609.344);
+    ls_tui_status_set(s_file_error ? s_file_error : s_note, NULL);
+    if (!ls_tui_is_wide())
+        tui_put_str(sf, area, area.x, area.y + 2, s_file_error ? s_file_error : s_note, LS_ATTR_DIM);
+
 
     if (guidance) {
         char strip[96];ls_route_guidance(strip,sizeof(strip));
@@ -3282,6 +3503,9 @@ static void draw(tui_surface *sf, tui_rect area)
             TUI_ATTR(ls_route_live()->off_route ? TUI_YELLOW|TUI_BRIGHT : TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), quick, nq);
+#ifdef LS_MAP_AUDIT
+    s_carto_audit_bad=carto_audit_cells(sf); /* before an external modal covers MAP */
+#endif
 }
 
 /* --------------------------------------------------------------- input -- */
@@ -3349,6 +3573,7 @@ static bool go_selected(void)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(ls_place_search_active())return ls_place_search_key(k,ch);
     if (k == LS_TK_CHAR && (ch == 'x' || ch == 'X')) {
         s_controls_hidden = !s_controls_hidden;
         ls_tui_invalidate();
@@ -3452,6 +3677,7 @@ static void select_hit(const hit_t *h)
    or, while drawing, adds it to the line. */
 static bool touch(int col, int row)
 {
+    if(ls_place_search_active())return ls_place_search_touch(col,row);
     if (in_rect(s_controls_hit, col, row)) return key(LS_TK_CHAR, 'x');
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {

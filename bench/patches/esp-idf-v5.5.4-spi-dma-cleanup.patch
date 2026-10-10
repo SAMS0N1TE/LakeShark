@@ -1,0 +1,76 @@
+diff --git a/components/esp_driver_spi/src/gpspi/spi_master.c b/components/esp_driver_spi/src/gpspi/spi_master.c
+index 2e53da055..a79b55d26 100644
+--- a/components/esp_driver_spi/src/gpspi/spi_master.c
++++ b/components/esp_driver_spi/src/gpspi/spi_master.c
+@@ -1172,7 +1172,7 @@ static SPI_MASTER_ISR_ATTR void uninstall_priv_desc(spi_trans_priv_t* trans_buf)
+ 
+     // copy data from temporary DMA-capable buffer back to trans_desc buffer and free the temporary one.
+     void *orig_rx_buffer = (trans_desc->flags & SPI_TRANS_USE_RXDATA) ? trans_desc->rx_data : trans_desc->rx_buffer;
+-    if (trans_buf->buffer_to_rcv != orig_rx_buffer) {
++    if (trans_buf->buffer_to_rcv && trans_buf->buffer_to_rcv != orig_rx_buffer) {
+         memcpy(orig_rx_buffer, trans_buf->buffer_to_rcv, (trans_desc->rxlength + 7) / 8);
+         free(trans_buf->buffer_to_rcv);
+     }
+@@ -1199,12 +1199,13 @@ static SPI_MASTER_ISR_ATTR esp_err_t setup_dma_priv_buffer(spi_host_t *host, uin
+             alignment = MAX(host->dma_ctx->dma_align_rx_int, host->bus_attr->cache_align_int);
+         }
+     }
+-    need_malloc |= (((uint32_t)buffer | len) & (alignment - 1));
++    // Only cache synchronization requires an aligned length, not internal DMA.
++    need_malloc |= (use_psram || host->bus_attr->cache_align_int > 1) ? (((uint32_t)buffer | len) & (alignment - 1)) : (((uint32_t)buffer) & (alignment - 1));
+     ESP_EARLY_LOGV(SPI_TAG, "%s %p, len %d, is_ptr_ext %d, use_psram: %d, alignment: %d, need_malloc: %d from %s", is_tx ? "TX" : "RX", buffer, len, is_ptr_ext, use_psram, alignment, need_malloc, (mem_cap & MALLOC_CAP_SPIRAM) ? "psram" : "internal");
++    uint32_t align_len = (len + alignment - 1) & (~(alignment - 1));
+     if (need_malloc) {
+         ESP_RETURN_ON_FALSE_ISR(!(flags & SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL), ESP_ERR_INVALID_ARG, SPI_TAG, "Set flag SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL but %s addr&len not align to %d, or not dma_capable", is_tx ? "TX" : "RX", alignment);
+-        len = (len + alignment - 1) & (~(alignment - 1));   // up align alignment
+-        uint32_t *temp = heap_caps_aligned_alloc(alignment, len, mem_cap);
++        uint32_t *temp = heap_caps_aligned_alloc(alignment, align_len, mem_cap);
+         ESP_RETURN_ON_FALSE_ISR(temp != NULL, ESP_ERR_NO_MEM, SPI_TAG, "Failed to allocate priv %s buffer", is_tx ? "TX" : "RX");
+ 
+         if (is_tx) {
+@@ -1214,7 +1215,7 @@ static SPI_MASTER_ISR_ATTR esp_err_t setup_dma_priv_buffer(spi_host_t *host, uin
+     }
+     *ret_buffer = buffer;
+     if (use_psram || (host->bus_attr->cache_align_int > 1)) {
+-        esp_err_t ret = esp_cache_msync((void *)buffer, len, is_tx ? (ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED) : ESP_CACHE_MSYNC_FLAG_DIR_M2C);
++        esp_err_t ret = esp_cache_msync((void *)buffer, need_malloc ? align_len : len, is_tx ? (ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED) : ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+         ESP_RETURN_ON_FALSE_ISR(ret == ESP_OK, ESP_ERR_INVALID_ARG, SPI_TAG, "sync failed for %s buffer", is_tx ? "TX" : "RX");
+     }
+     return ESP_OK;
+@@ -1230,26 +1231,32 @@ static SPI_MASTER_ISR_ATTR esp_err_t setup_priv_desc(spi_host_t *host, spi_trans
+     // tx memory assign
+     uint32_t *send_ptr = (trans_desc->flags & SPI_TRANS_USE_TXDATA) ? (uint32_t *)trans_desc->tx_data : (uint32_t *)trans_desc->tx_buffer;
+ 
++    // Publish ownership before setup so any partial allocation is freed on error.
++    priv_desc->buffer_to_send = send_ptr;
++    priv_desc->buffer_to_rcv = rcv_ptr;
+     esp_err_t ret = ESP_OK;
+     if (send_ptr && bus_attr->dma_enabled) {
+-        ret = setup_dma_priv_buffer(host, send_ptr, (trans_desc->length + 7) / 8, true, trans_desc->flags, &send_ptr);
++        ret = setup_dma_priv_buffer(host, send_ptr, (trans_desc->length + 7) / 8, true, trans_desc->flags, (uint32_t **)&priv_desc->buffer_to_send);
+         if (ret != ESP_OK) {
+             goto clean_up;
+         }
+     }
+ 
+     if (rcv_ptr && bus_attr->dma_enabled) {
+-        ret = setup_dma_priv_buffer(host, rcv_ptr, (trans_desc->rxlength + 7) / 8, false, trans_desc->flags, &rcv_ptr);
++        ret = setup_dma_priv_buffer(host, rcv_ptr, (trans_desc->rxlength + 7) / 8, false, trans_desc->flags, &priv_desc->buffer_to_rcv);
+         if (ret != ESP_OK) {
+             goto clean_up;
+         }
+     }
+ 
+-    priv_desc->buffer_to_send = send_ptr;
+-    priv_desc->buffer_to_rcv = rcv_ptr;
+     return ESP_OK;
+ 
+ clean_up:
++    // A setup failure has no received data to copy back.
++    if (priv_desc->buffer_to_rcv != rcv_ptr) {
++        free(priv_desc->buffer_to_rcv);
++    }
++    priv_desc->buffer_to_rcv = rcv_ptr;
+     uninstall_priv_desc(priv_desc);
+     return ret;
+ }

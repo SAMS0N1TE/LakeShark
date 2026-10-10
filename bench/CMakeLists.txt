@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
 project(lakeshark_bench C CXX)
 
+add_executable(test_hamming_tables tests/test_hamming_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/lakeshark/apps/p25/Hamming.cpp)
+target_include_directories(test_hamming_tables PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/lakeshark/apps/p25)
+add_test(NAME test_hamming_tables COMMAND test_hamming_tables)
+
 add_compile_definitions(LV_FONT_MONTSERRAT_14=1 LV_FONT_MONTSERRAT_16=1)
 
 set(CMAKE_C_STANDARD 11)
@@ -27,8 +33,14 @@ set(DMR_WATCH_SRCS
     ${APP}/dmr/dmr_lc.c ${APP}/dmr/dmr_burst.c ${APP}/dmr/dmr_framer.c
     ${APP}/dmr/dmr_watch.c ${APP}/dmr/dmr_listen.c)
 set(LS_TUI_APP_SRCS
+    ${FW}/components/apps/tui/ls_sweep.c
+    ${FW}/components/apps/tui/ls_sweep_ui.c
+    ${FW}/components/apps/tui/ls_rid.c
+    ${FW}/components/apps/tui/ls_rid_ui.c
+    ${FW}/bench/shims/ls_music_view_fake.c
     ${DMR_WATCH_SRCS}
     ${FW}/components/apps/tui/experiments/rs41_store.c
+    ${FW}/components/apps/tui/ls_audio_view.c
     ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/lakeshark/audio/call_archive.c
     ${FW}/components/lakeshark/audio/call_recorder.c
@@ -754,6 +766,9 @@ target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
 
 add_executable(lssim
+    tools/lssim_wireless.c
+    ${FW}/components/apps/tui/screens/ext/scr_wireless.c
+    ${FW}/components/apps/tui/ls_wireless_history.c
     shims/pagers_settings_fake.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     tools/lssim_music.c
@@ -882,7 +897,7 @@ target_sources(lssim PRIVATE
     tools/lssim_i2c.c
     harness/shim_impl.c
     shims/freertos_shim.c)
-target_compile_definitions(lssim PRIVATE
+target_compile_definitions(lssim PRIVATE LS_CALLS_HOST_AUDIO=1 CALL_ARCHIVE_HOST_TEST=1
     CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
     LS_MAP_AUDIT
@@ -1237,10 +1252,13 @@ ls_add_test(test_fm_mode_label ${APP}/fm/fm_mode_label.c)
 ls_add_test(test_fm_mode_handoff ${APP}/fm/fm_mode_handoff.c)
 ls_add_test(test_flipper_fm_command
     ${FW}/main/flipper_link.c
+    ${FW}/main/flipper_link_aux.c
     ${APP}/fm/fm_mode_label.c)
 target_compile_options(test_flipper_fm_command PRIVATE
     -include ${CMAKE_CURRENT_SOURCE_DIR}/shims/flipper_link_host.h)
 target_include_directories(test_flipper_fm_command PRIVATE
+    ${FW}/components/apps
+    ${FW}/components/apps/tui
     ${FW}/components/lakeshark
     ${FW}/components/lakeshark/audio
     ${FW}/components/meshcore
@@ -1414,7 +1432,10 @@ target_link_options(test_p25_diag_disabled PRIVATE
 ls_add_test(test_p25_lcw ${APP}/p25/p25_lcw.c)
 ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
 ls_add_test(test_music_transport)
-ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c)
+ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c
+    ${FW}/components/lakeshark/audio/call_store.c
+    ${FW}/components/lakeshark/audio/call_recorder.c
+    ${FW}/components/lakeshark/audio/call_archive.c)
 target_include_directories(test_music_backend BEFORE PRIVATE
     ${FW}/components/chmorgan__esp-audio-player/include
     ${CMAKE_CURRENT_SOURCE_DIR}/shims/music
@@ -1424,6 +1445,7 @@ ls_add_test(test_wav_decoder ${FW}/components/chmorgan__esp-audio-player/audio_w
 target_include_directories(test_wav_decoder PRIVATE ${FW}/components/chmorgan__esp-audio-player)
 target_include_directories(test_music_transport PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_tui_music
+    ${FW}/components/apps/tui/ls_audio_view.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -1489,6 +1511,11 @@ ls_add_test(test_ble_hci_rx_guard ${FW}/main/ble_hci_rx_guard.c
 target_link_options(test_ble_hci_rx_guard PRIVATE -Wl,--wrap=hci_rx_handler
     -Wl,--wrap=transport_drv_reconfigure)
 ls_add_test(test_wifi_operation)
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_flash_polling COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_flash_polling.py")
+endif()
 ls_add_test(test_wifi_file_stream)
 ls_add_test(test_ls_sweep ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
 target_include_directories(test_ls_sweep PRIVATE ${FW}/components/lakeshark/dsp)
@@ -1511,6 +1538,7 @@ ls_add_test(test_ble_link ${FW}/main/ble_link_core.c)
 target_include_directories(test_ble_link PRIVATE ${FW}/main)
 ls_add_test(test_flipper_telemetry_contract
     ${FW}/main/flipper_link_telemetry.c
+    ${APP}/fm/fm_mode_label.c
     ${FW}/main/ble_link_core.c)
 target_include_directories(test_flipper_telemetry_contract PRIVATE ${FW}/main)
 target_include_directories(test_flipper_telemetry_contract PRIVATE
@@ -1583,6 +1611,9 @@ ls_add_test(test_radio_open_retry
     ${FW}/components/lakeshark/radio/radio_open_retry.c)
 ls_add_test(test_usb_stream_start
     ${FW}/components/lakeshark/radio/esp_libusb.c)
+target_link_options(test_usb_stream_start PRIVATE
+    -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=xSemaphoreCreateBinary
+    -Wl,--wrap=xSemaphoreCreateMutex -Wl,--wrap=vSemaphoreDelete)
 ls_add_test(test_receiver_diagnostics
     ${FW}/components/lakeshark/radio/receiver_diagnostics.c)
 ls_add_test(test_iq_control_preemption ${FW}/components/lakeshark/radio/iq_app_control.c)
@@ -1885,6 +1916,8 @@ ls_add_test(test_cell_session ${APP}/cell/cell_session.c)
 target_include_directories(test_cell_session PRIVATE ${APP}/cell)
 ls_add_test(test_panel_id)
 target_include_directories(test_panel_id PRIVATE ${FW}/components/lakeshark/board)
+ls_add_test(test_touch_idle ${FW}/components/lakeshark/board/ls_touch.c)
+target_compile_definitions(test_touch_idle PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 target_sources(lssim PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
 target_sources(test_tui_screens PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
 target_sources(test_tui_render_dump PRIVATE ${APP}/subghz/subghz_pwm.c ${APP}/subghz/subghz_nrz.c)
@@ -2009,8 +2042,13 @@ ls_add_test(test_call_store ${FW}/components/lakeshark/audio/call_recorder.c
 ls_add_test(test_call_archive ${FW}/components/lakeshark/audio/call_archive.c
     ${FW}/components/lakeshark/audio/call_recorder.c ${FW}/components/lakeshark/audio/call_store.c)
 target_compile_definitions(test_call_archive PRIVATE CALL_ARCHIVE_HOST_TEST=1)
+ls_add_test(test_call_archive_idle ${FW}/components/lakeshark/audio/call_archive.c
+    ${FW}/components/lakeshark/audio/call_recorder.c ${FW}/components/lakeshark/audio/call_store.c)
+target_compile_definitions(test_call_archive_idle PRIVATE CALL_ARCHIVE_HOST_TEST=1)
 
 ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
+    ${FW}/components/apps/tui/ls_audio_view.c
+    tools/lssim_music.c
     ${FW}/components/apps/tui/ls_icons.c ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c
     ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_tui_inset.c
@@ -2018,7 +2056,7 @@ ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/apps/tui/ls_font_mono_14.c ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_24.c)
 target_include_directories(test_tui_calls PRIVATE ${LS_TUI_APP_INCLUDES})
-target_compile_definitions(test_tui_calls PRIVATE CALLS_RENDER_TEST=1)
+target_compile_definitions(test_tui_calls PRIVATE CALLS_RENDER_TEST=1 LS_CALLS_HOST_AUDIO=1)
 ls_add_test(test_survey ${FW}/components/apps/tui/ls_survey.c)
 target_include_directories(test_survey PRIVATE ${FW}/components/apps/tui)
 
@@ -2060,6 +2098,8 @@ foreach(merge_test test_map_layers test_notify_policy test_compass_storage)
     set_source_files_properties(tests/${merge_test}.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
 endforeach()
 
+target_sources(test_map_layers PRIVATE ${FW}/components/apps/tui/ls_theme.c ${CARTO}/src/raster.c)
+
 ls_add_test(test_ais ${APP}/fm/ais.c ${APP}/fm/ais_store.c ${APP}/fm/fm_mode_label.c)
 
 ls_add_test(test_lssim_ais)
@@ -2093,3 +2133,149 @@ target_compile_definitions(test_lssim_rs41 PRIVATE
     LSSIM_EXE="$<TARGET_FILE:lssim>"
     RS41_RENDER="${CMAKE_CURRENT_BINARY_DIR}/rs41-test.bmp"
     RS41_ROUTE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/route.gpx")
+
+# TILES uses its production screen with explicit transfer fixtures on the host.
+target_sources(lssim PRIVATE tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c)
+target_compile_definitions(lssim PRIVATE LS_TILES_HOST=1)
+
+# Real CartoCore MAP renderer, pinned in-tree unless overridden for development.
+set(CARTOCORE_DIR "$ENV{CARTOCORE_DIR}" CACHE PATH "CartoCore engine checkout for host MAP (defaults to vendored snapshot)")
+if(NOT CARTOCORE_DIR)
+    set(CARTOCORE_DIR "${FW}/components/cartocore/upstream")
+endif()
+if(CARTOCORE_DIR)
+    set(CC_ROOT "${CARTOCORE_DIR}")
+    include("${CC_ROOT}/components/cartocore/sources.cmake")
+    if(NOT CC_EMBED_API_VERSION EQUAL 2 OR NOT CC_CTILE_FORMAT_MAX EQUAL 7)
+        message(FATAL_ERROR "LakeShark CartoCore version mismatch: requires embedded API 2 and CTILE through v7")
+    endif()
+    add_library(cartocore_host STATIC ${CC_CORE_SRCS} ${CC_OUT_SRCS})
+    target_include_directories(cartocore_host PUBLIC ${CC_PUBLIC_INCLUDE_DIRS})
+    add_executable(test_carto_budget tests/test_carto_budget.c)
+    target_include_directories(test_carto_budget PRIVATE "${FW}/components/apps/tui")
+    add_test(NAME test_carto_budget COMMAND test_carto_budget)
+    add_executable(test_cartocore_cells "${CC_ROOT}/tests/cells.c" "${CC_ROOT}/src/ingest/host_cellset.c")
+    target_link_libraries(test_cartocore_cells cartocore_host m)
+    add_executable(test_cartocore_decoded_cache "${CC_ROOT}/tests/decoded_cache.c")
+    target_link_libraries(test_cartocore_decoded_cache cartocore_host m)
+    add_test(NAME test_cartocore_decoded_cache COMMAND test_cartocore_decoded_cache "${FW}/data/franklin_mini.ctile")
+    file(READ "${FW}/data/franklin_mini.ctile" CC_MINI_HEX HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," CC_MINI_BYTES "${CC_MINI_HEX}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/lssim_carto_mini.h" "static const uint8_t carto_mini[]={${CC_MINI_BYTES}};\n")
+    set(CC_IDF "$ENV{IDF_PATH}")
+    if(NOT CC_IDF)
+        set(CC_IDF "C:/esp/v5.5.4/esp-idf")
+    endif()
+    set(CC_MBED "${CC_IDF}/components/mbedtls/mbedtls" CACHE PATH "Host SHA256 implementation")
+    add_library(cells_sha STATIC "${CC_MBED}/library/sha256.c" "${CC_MBED}/library/platform_util.c" "${CC_MBED}/library/platform.c")
+    target_include_directories(cells_sha PUBLIC "${CC_MBED}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    target_compile_definitions(cells_sha PUBLIC MBEDTLS_CONFIG_FILE="cells_mbedtls_config.h")
+    target_link_libraries(lssim cells_sha)
+    target_sources(lssim PRIVATE ${FW}/components/apps/tui/ls_cartocore.c)
+    target_include_directories(lssim PRIVATE tools "${CMAKE_CURRENT_BINARY_DIR}")
+    set_source_files_properties(${FW}/components/apps/tui/ls_cartocore.c ${FW}/components/apps/tui/tuilib/tui_core.c PROPERTIES COMPILE_OPTIONS "-fstack-usage;-fdump-ipa-cgraph;-fno-inline")
+    target_compile_definitions(lssim PRIVATE LS_CARTOCORE_HOST=1
+        LSSIM_CTILE_DEFAULT="${FW}/data/franklin_mini.ctile")
+    target_link_libraries(lssim cartocore_host)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME test_cartocore_cells_fixture COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/carto_cells_fixture.py" "${CC_ROOT}/tests/cells_fixture.py" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_cartocore_cells_fixture PROPERTIES FIXTURES_SETUP carto_cells_inputs)
+    add_test(NAME test_cartocore_cells COMMAND test_cartocore_cells "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_cartocore_cells PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    add_custom_target(test_carto_sd
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "CARTOCORE_DIR=${CC_ROOT}"
+            "CARTOCORE_LIBRARY=$<TARGET_FILE:cartocore_host>"
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_carto_sd.py"
+        DEPENDS cartocore_host
+        WORKING_DIRECTORY "${FW}"
+        COMMENT "Testing production SD loader and archive re-download transactions")
+    add_custom_target(test_carto_psram
+        COMMAND "${CMAKE_COMMAND}" -E env "CARTOCORE_DIR=${CC_ROOT}"
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_carto_psram.py" "$<TARGET_FILE:lssim>"
+        DEPENDS lssim
+        WORKING_DIRECTORY "${FW}"
+        COMMENT "Testing real MAP renders with board-sized PSRAM")
+    # Stack/boundary audit describes production calls. Sanitizer-generated calls
+    # belong to the separately instrumented lssim runtime, not this call graph.
+    add_library(carto_stack_audit OBJECT
+        ${FW}/components/apps/tui/ls_cartocore.c
+        ${FW}/components/apps/tui/tuilib/tui_core.c)
+    target_include_directories(carto_stack_audit PRIVATE
+        $<TARGET_PROPERTY:lssim,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(carto_stack_audit PRIVATE
+        $<TARGET_PROPERTY:lssim,COMPILE_DEFINITIONS>)
+    target_link_libraries(carto_stack_audit PRIVATE
+        $<TARGET_PROPERTY:lssim,LINK_LIBRARIES>)
+    target_compile_options(carto_stack_audit PRIVATE -fno-sanitize=all)
+    add_dependencies(lssim carto_stack_audit)
+    add_custom_command(TARGET lssim POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_carto_stack.py" "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Checking CartoCore TUI stack and file/flash boundary")
+endif()
+
+ls_add_test(test_map_marks_async ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_map_marks_async PRIVATE ${FW}/components/apps/tui)
+ls_add_test(test_rid ${FW}/components/apps/tui/ls_rid.c)
+target_include_directories(test_rid PRIVATE ${FW}/components/apps/tui)
+
+ls_add_test(test_sweep ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+target_include_directories(test_sweep PRIVATE ${LS_TUI_APP_INCLUDES})
+
+target_sources(lssim PRIVATE tools/lssim_sweep.c)
+ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+ls_add_test(test_ble_link_observer ${FW}/main/ble_link_observer.c ${FW}/components/apps/tui/ls_rid.c)
+target_include_directories(test_ble_link_observer PRIVATE ${FW}/main ${LS_TUI_APP_INCLUDES})
+target_include_directories(test_sweep_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
+
+target_compile_definitions(test_sweep_runtime PRIVATE LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/sweep-runtime")
+
+ls_add_test(test_sweep_nvs ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+target_include_directories(test_sweep_nvs BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sweep_platform)
+target_include_directories(test_sweep_nvs PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_sweep_nvs PRIVATE ESP_PLATFORM=1)
+
+ls_add_test(test_sweep_sound)
+target_compile_options(test_sweep_sound PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_sweep_sound PRIVATE -Wl,--gc-sections)
+
+# Remote ID UI also links in router-only hosts that have no field worker.
+target_compile_definitions(test_tui_router PRIVATE LS_FIELD_SAMPLE_STUB=1)
+
+# SWEEP uses the shared vector canvas in the real TUI render tests.
+foreach(sweep_render_target test_tui_render_cost test_tui_render_dump)
+    target_sources(${sweep_render_target} PRIVATE ${FW}/components/apps/tui/ls_map_ink.c)
+endforeach()
+
+ls_add_test(test_sweep_find)
+target_include_directories(test_sweep_find PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_options(test_sweep_find PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_sweep_find PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_sweep_find.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_ble_scan COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ble_scan.py")
+    add_test(NAME test_audio_reinit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_reinit.py")
+endif()
+
+# Optional round-trip uses the actual, read-only Flipper app parser.
+set(LS_FLIPPER_APP_DIR "${FW}/../ls-flipper-29" CACHE PATH "Flipper v2.10 app checkout for AUX decoder tests")
+if(EXISTS "${LS_FLIPPER_APP_DIR}/ls_link.c")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME test_flipper_aux_roundtrip
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_flipper_aux_roundtrip.py ${LS_FLIPPER_APP_DIR})
+    endif()
+endif()
+
+ls_add_test(test_wifi_store ${FW}/main/ls_wifi_sta_core.c)
+
+# Host fixtures use repo-relative paths, as does verify.ps1's historical runner.
+# Declare the cwd so direct CTest and the release gate exercise the same graph.
+get_property(LS_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+foreach(LS_TEST IN LISTS LS_REGISTERED_TESTS)
+    get_property(LS_TEST_CWD TEST ${LS_TEST} PROPERTY WORKING_DIRECTORY)
+    if(NOT LS_TEST_CWD)
+        set_tests_properties(${LS_TEST} PROPERTIES WORKING_DIRECTORY "${FW}")
+    endif()
+endforeach()

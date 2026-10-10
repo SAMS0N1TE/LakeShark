@@ -28,3 +28,22 @@ LS_CASE(reject_truncated_riff_and_oversized_chunk){
     f=fixture(2,16,1,0,0);fseek(f,40,SEEK_SET);fwrite(x,1,4,f);LS_CHECK(!is_wav(f,&w));fclose(f);
 }
 LS_CASE(short_output_buffer_rejected){FILE*f=fixture(2,16,1,0,0);wav_instance w;LS_CHECK(is_wav(f,&w));uint8_t b[2];decode_data d={.samples=b,.samples_capacity=2};LS_EQ_INT(decode_wav(f,&d,&w),DECODE_STATUS_ERROR);fclose(f);}
+
+LS_CASE(seek_is_frame_aligned_and_bounded_to_data) {
+    FILE *f=fixture(2,16,1,1,1);wav_instance w;uint32_t actual=99;
+    LS_CHECK(is_wav(f,&w));LS_CHECK(seek_wav(f,&w,UINT32_MAX,&actual));
+    LS_EQ_INT(w.remaining,0);LS_EQ_INT(ftell(f),w.data_offset+w.data_bytes);
+    LS_CHECK(seek_wav(f,&w,0,&actual));LS_EQ_INT(w.remaining,8);LS_EQ_INT(actual,0);
+    uint8_t b[4];decode_data d={.samples=b,.samples_capacity=4};
+    LS_EQ_INT(decode_wav(f,&d,&w),DECODE_STATUS_CONTINUE);LS_EQ_INT(b[0],1);fclose(f);
+}
+
+LS_CASE(seek_forward_and_backward_start_at_requested_pcm_frame) {
+    FILE *f=fixture(2,16,1,0,0);unsigned char n[4];u32(n,36+3528);fseek(f,4,SEEK_SET);fwrite(n,1,4,f);
+    u32(n,3528);fseek(f,40,SEEK_SET);fwrite(n,1,4,f);
+    for(int frame=0;frame<882;frame++){int16_t pcm[2]={(int16_t)frame,(int16_t)-frame};fwrite(pcm,2,2,f);}
+    wav_instance w;LS_CHECK(is_wav(f,&w));uint32_t actual;
+    LS_CHECK(seek_wav(f,&w,10,&actual));LS_EQ_INT(actual,10);LS_EQ_INT(w.remaining,1764);
+    int16_t pcm[2];decode_data d={.samples=(uint8_t*)pcm,.samples_capacity=4};decode_wav(f,&d,&w);LS_EQ_INT(pcm[0],441);
+    LS_CHECK(seek_wav(f,&w,1,&actual));decode_wav(f,&d,&w);LS_EQ_INT(pcm[0],44);fclose(f);
+}

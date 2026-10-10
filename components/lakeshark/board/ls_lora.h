@@ -63,6 +63,17 @@ static inline bool ls_lora_rx_range_ok(uint32_t caps, uint32_t min_hz, uint32_t 
            min_hz >= LS_LORA_RX_HF_MIN_HZ && max_hz <= LS_LORA_RX_HF_MAX_HZ;
 }
 
+/* LoRa packet configuration: the existing LF transmit band, plus two
+   receive-only HF bands on the positively identified LR2021. The send
+   backend independently refuses HF; this check grants no transmit access. */
+static inline bool ls_lora_packet_rx_hz_ok(uint32_t caps, uint32_t hz)
+{
+    if (hz >= LS_LORA_RX_MIN_HZ && hz <= LS_LORA_RX_NARROW_MAX_HZ) return true;
+    return (caps & LS_LORA_CAP_BAND_1G5_2G5) &&
+           ((hz >= 1900000000u && hz <= 2200000000u) ||
+            (hz >= 2400000000u && hz <= 2500000000u));
+}
+
 ls_lora_chip_t ls_lora_chip(void);
 const char    *ls_lora_chip_name(void);   /* "none", "SX126x", "LR2021", ... */
 uint32_t       ls_lora_caps(void);        /* 0 until a part has answered      */

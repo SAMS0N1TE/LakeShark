@@ -93,29 +93,10 @@ void ls_audio_diag_report(void)
     printf("  try:  audio swap   audio pa on|off   audio tone\n");
 }
 
-/* Tear the codec down and bring it back with whatever the pins are now. The
-   audio task keeps running; it writes into a device that is briefly absent
-   and gets an error back, which it already handles. */
-esp_err_t ls_audio_diag_reinit(void)
-{
-    ls_audio_hw_deinit();
-    const esp_err_t err = ls_audio_hw_init(false);
-    if (err != ESP_OK) return err;
-    int set = 0;
-    (void)ls_audio_hw_volume(audio_volume_get(), &set);
-    (void)ls_audio_hw_mute(false);
-    return ESP_OK;
-}
-
-esp_err_t ls_audio_diag_swap_pins(void)
-{
-    const int t = ls_audio_ws_gpio;
-    ls_audio_ws_gpio = ls_audio_dout_gpio;
-    ls_audio_dout_gpio = t;
-    printf("audio: ws=%d dout=%d, re-initialising\n",
-           ls_audio_ws_gpio, ls_audio_dout_gpio);
-    return ls_audio_diag_reinit();
-}
+/* Full reinit is an acknowledged owner command. Active media leases reject it;
+ * capture and all remaining hardware users must leave the hardware lock first. */
+esp_err_t ls_audio_diag_reinit(void) { return audio_out_reinit(false); }
+esp_err_t ls_audio_diag_swap_pins(void) { return audio_out_reinit(true); }
 
 esp_err_t ls_audio_diag_pa(bool on)
 {

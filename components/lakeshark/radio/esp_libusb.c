@@ -21,20 +21,42 @@ static class_adsb_dev *adsbdev;
 
 static SemaphoreHandle_t s_ctl_mux;
 
-void init_adsb_dev(void)
+static unsigned s_ctl_init;
+static portMUX_TYPE s_ctrl_state = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_ctrl_generation, s_ctrl_completed;
+
+esp_err_t init_adsb_dev(void)
 {
-    if (adsbdev) return;
-
-    adsbdev = calloc(1, sizeof(class_adsb_dev));
-    adsbdev->is_adsb = true;
-    adsbdev->response_buf = calloc(256, sizeof(uint8_t));
-    adsbdev->done_sem = xSemaphoreCreateBinary();
-    if (!s_ctl_mux) s_ctl_mux = xSemaphoreCreateMutex();
-
-    esp_err_t r = usb_host_transfer_alloc(256, 0, &adsbdev->transfer);
-    if (r != ESP_OK) {
-        ESP_LOGE(TAG_ADSB, "Failed to allocate control transfer");
+    unsigned expected = 0;
+    while (!__atomic_compare_exchange_n(&s_ctl_init, &expected, 1, false,
+                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        if (expected == 2) return ESP_OK;
+        vTaskDelay(1);
+        expected = 0;
     }
+    class_adsb_dev *dev = calloc(1, sizeof(*dev));
+    SemaphoreHandle_t mux = NULL;
+    if (!dev) goto fail;
+    dev->is_adsb = true;
+    dev->response_buf = calloc(256, 1);
+    dev->done_sem = xSemaphoreCreateBinary();
+    mux = xSemaphoreCreateMutex();
+    if (!dev->response_buf || !dev->done_sem || !mux) goto fail;
+    if (usb_host_transfer_alloc(256, 0, &dev->transfer) != ESP_OK) goto fail;
+    s_ctl_mux = mux;
+    adsbdev = dev;
+    __atomic_store_n(&s_ctl_init, 2, __ATOMIC_RELEASE);
+    return ESP_OK;
+fail:
+    if (dev) {
+        if (dev->transfer) usb_host_transfer_free(dev->transfer);
+        if (dev->done_sem) vSemaphoreDelete(dev->done_sem);
+        free(dev->response_buf);
+        free(dev);
+    }
+    if (mux) vSemaphoreDelete(mux);
+    __atomic_store_n(&s_ctl_init, 0, __ATOMIC_RELEASE);
+    return ESP_ERR_NO_MEM;
 }
 
 void bulk_transfer_read_cb(usb_transfer_t *transfer)
@@ -54,13 +76,22 @@ static volatile usb_device_handle_t s_ctrl_pending_hdl;
 
 void transfer_read_cb(usb_transfer_t *transfer)
 {
-    s_ctrl_pending_hdl = NULL;
-    for (int i = 0; i < transfer->actual_num_bytes; i++) {
-        adsbdev->response_buf[i] = transfer->data_buffer[i];
+    portENTER_CRITICAL(&s_ctrl_state);
+    const uint32_t generation = (uint32_t)(uintptr_t)transfer->context;
+    if (s_ctrl_pending_hdl && generation == s_ctrl_generation) {
+        int bytes = transfer->actual_num_bytes;
+        if (bytes < 0) bytes = 0;
+        if (bytes > 256) bytes = 256;
+        memcpy(adsbdev->response_buf, transfer->data_buffer, (size_t)bytes);
+        adsbdev->is_success = transfer->status == 0 && bytes >= (int)sizeof(usb_setup_packet_t);
+        adsbdev->bytes_transferred = bytes >= (int)sizeof(usb_setup_packet_t)
+                                  ? bytes - sizeof(usb_setup_packet_t) : 0;
+        s_ctrl_completed = generation;
+        /* Publish all response state and the wakeup before transfer reuse. */
+        xSemaphoreGive(adsbdev->done_sem);
+        s_ctrl_pending_hdl = NULL;
     }
-    adsbdev->is_success = (transfer->status == 0);
-    adsbdev->bytes_transferred = transfer->actual_num_bytes - sizeof(usb_setup_packet_t);
-    xSemaphoreGive(adsbdev->done_sem);
+    portEXIT_CRITICAL(&s_ctrl_state);
 }
 
 #define BULK_XFER_SLOTS 4
@@ -327,7 +358,7 @@ void esp_libusb_note_device_gone(usb_device_handle_t device)
 }
 
 /**/
-static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
+static void stream_push(const uint8_t *buf, uint32_t len)
 {
     /**/
     s_total_rx += len;
@@ -350,6 +381,7 @@ static void IRAM_ATTR stream_push(const uint8_t *buf, uint32_t len)
 /* A flush queues completions asynchronously. A fixed delay does not prove
  * that the host has returned ownership of every transfer buffer. */
 static uint32_t s_stream_pending;
+static uint32_t s_stream_callbacks;
 static volatile bool s_repriming;
 static bool stream_submit(int slot)
 {
@@ -361,16 +393,20 @@ static bool stream_submit(int slot)
 }
 static bool stream_completions_drained(uint32_t timeout_ms)
 {
-    for(uint32_t waited=0;__atomic_load_n(&s_stream_pending,__ATOMIC_ACQUIRE);waited+=5) {
+    for(uint32_t waited=0;__atomic_load_n(&s_stream_pending,__ATOMIC_ACQUIRE) ||
+                          __atomic_load_n(&s_stream_callbacks,__ATOMIC_ACQUIRE);waited+=5) {
         if(waited>=timeout_ms)return false;
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     return true;
 }
-static void IRAM_ATTR stream_xfer_cb(usb_transfer_t *t)
+static void stream_xfer_cb(usb_transfer_t *t)
 {
+    static unsigned completions;
+    static int64_t budget_start;
     int slot = (int)(intptr_t)t->context;
     if (slot<0 || slot>=STREAM_XFER_NUM)return;
+    __atomic_fetch_or(&s_stream_callbacks, 1u << slot, __ATOMIC_ACQ_REL);
     if (s_streaming && !s_repriming) {
         if(t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes > 0)
             stream_push(t->data_buffer, (uint32_t)t->actual_num_bytes);
@@ -387,6 +423,13 @@ static void IRAM_ATTR stream_xfer_cb(usb_transfer_t *t)
         if(!stream_submit(slot) && s_squeue && xQueueSend(s_squeue,&slot,0)!=pdTRUE)
             s_sdropped+=STREAM_XFER_LEN;
     }
+    int64_t now = esp_timer_get_time();
+    if (++completions >= 32 || now - budget_start >= 2000) {
+        completions = 0;
+        vTaskDelay(1); /* client-task context: a real break lets core 1 idle run */
+        budget_start = esp_timer_get_time();
+    }
+    __atomic_fetch_and(&s_stream_callbacks, ~(1u << slot), __ATOMIC_RELEASE);
 }
 
 static bool stream_reprime(void)
@@ -670,12 +713,18 @@ int esp_libusb_stream_slots(void)
 static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_type, uint8_t b_request, uint16_t wValue, uint16_t wIndex, unsigned char *data, uint16_t wLength, unsigned int timeout)
 {
     if (!adsbdev || !adsbdev->transfer) return -1;
+    if (!driver_obj || !driver_obj->dev_hdl || wLength > 256 - sizeof(usb_setup_packet_t)) return -1;
     if (s_ctrl_dead_hdl && driver_obj->dev_hdl == s_ctrl_dead_hdl) return -1;
     /* The one control transfer object is still the host's from a wait that
        timed out: not a byte of it may change, and submitting it again is not
        allowed. The device it is stuck on is not answering anyway; a root-port
        reset or unplug retires it and clears this. */
-    if (s_ctrl_pending_hdl) return -1;
+    portENTER_CRITICAL(&s_ctrl_state);
+    bool pending = s_ctrl_pending_hdl != NULL;
+    const uint32_t generation = pending ? 0 : ++s_ctrl_generation;
+    if (!pending) s_ctrl_pending_hdl = driver_obj->dev_hdl;
+    portEXIT_CRITICAL(&s_ctrl_state);
+    if (pending) return -1;
 
     size_t sizePacket = sizeof(usb_setup_packet_t) + wLength;
 
@@ -685,21 +734,22 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
     adsbdev->transfer->num_bytes = sizePacket;
     adsbdev->transfer->device_handle = driver_obj->dev_hdl;
     adsbdev->transfer->timeout_ms = timeout;
-    adsbdev->transfer->context = (void *)&driver_obj;
+    adsbdev->transfer->context = (void *)(uintptr_t)generation;
     adsbdev->transfer->callback = transfer_read_cb;
 
     if (bm_req_type == CTRL_OUT && data && wLength > 0) {
-        for (uint8_t i = 0; i < wLength; i++) {
+        for (uint16_t i = 0; i < wLength; i++) {
             adsbdev->transfer->data_buffer[sizeof(usb_setup_packet_t) + i] = data[i];
         }
     }
 
     xSemaphoreTake(adsbdev->done_sem, 0);
 
-    s_ctrl_pending_hdl = driver_obj->dev_hdl;
     esp_err_t r = usb_host_transfer_submit_control(driver_obj->client_hdl, adsbdev->transfer);
     if (r != ESP_OK) {
+        portENTER_CRITICAL(&s_ctrl_state);
         s_ctrl_pending_hdl = NULL;
+        portEXIT_CRITICAL(&s_ctrl_state);
 
         if (r == ESP_ERR_INVALID_STATE && ++s_ctrl_invalid_state >= CTRL_DEAD_AFTER) {
             s_ctrl_dead_hdl = driver_obj->dev_hdl;
@@ -720,14 +770,18 @@ static int control_transfer_locked(class_driver_t *driver_obj, uint8_t bm_req_ty
         return -1;
     }
 
-    if (!adsbdev->is_success) {
+    portENTER_CRITICAL(&s_ctrl_state);
+    bool completed = s_ctrl_completed == generation;
+    portEXIT_CRITICAL(&s_ctrl_state);
+    if (!completed || !adsbdev->is_success) {
         ESP_LOGW(TAG_ADSB, "libusb_control_transfer STALL/Fail");
         vTaskDelay(pdMS_TO_TICKS(50));
         return -1;
     }
 
     if (bm_req_type == CTRL_IN && data && wLength > 0) {
-        for (uint8_t i = 0; i < wLength; i++) {
+        if (wLength > adsbdev->bytes_transferred) wLength = adsbdev->bytes_transferred;
+        for (uint16_t i = 0; i < wLength; i++) {
             data[i] = adsbdev->response_buf[sizeof(usb_setup_packet_t) + i];
         }
     }
@@ -748,7 +802,10 @@ void esp_libusb_ctrl_unlock(void)
 
 bool esp_libusb_ctrl_pending(usb_device_handle_t device)
 {
-    return device && s_ctrl_pending_hdl == device;
+    portENTER_CRITICAL(&s_ctrl_state);
+    bool pending = device && s_ctrl_pending_hdl == device;
+    portEXIT_CRITICAL(&s_ctrl_state);
+    return pending;
 }
 
 void esp_libusb_get_string_descriptor_ascii(const usb_str_desc_t *str_desc, char *str)
@@ -766,9 +823,7 @@ int esp_libusb_control_transfer(class_driver_t *driver_obj, uint8_t bm_req_type,
                                 uint8_t b_request, uint16_t wValue, uint16_t wIndex,
                                 unsigned char *data, uint16_t wLength, unsigned int timeout)
 {
-    if (!s_ctl_mux)
-        return control_transfer_locked(driver_obj, bm_req_type, b_request,
-                                       wValue, wIndex, data, wLength, timeout);
+    if (init_adsb_dev() != ESP_OK) return -1;
 
     if (xSemaphoreTake(s_ctl_mux, pdMS_TO_TICKS(timeout + 1000)) != pdTRUE) {
         ESP_LOGE(TAG_ADSB, "control transfer: mutex timeout, request dropped");

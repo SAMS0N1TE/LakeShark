@@ -1,6 +1,7 @@
 /* Things placed on the map by hand: markers, and lines drawn point by
    point. Kept in RAM, written to the card as plain text so they survive a
-   restart and can be read or edited on a computer. UI task only. */
+   restart and can be read or edited on a computer. Live state is UI-owned;
+   deferred file I/O uses worker-owned PSRAM snapshots. */
 
 #ifndef LS_MAP_MARKS_H
 #define LS_MAP_MARKS_H
@@ -54,8 +55,13 @@ const char *ls_marks_file(void);
 
 /* Read the file once; later calls do nothing until ls_marks_reload. */
 void ls_marks_load(void);
+/* Enable before UI starts; service from the SD worker. Saves become queued. */
+void ls_marks_defer_io(void);
+void ls_marks_io_step(void);
 void ls_marks_reload(void);
-/* Write everything. False when the card is missing or the write failed;
+/* Write everything (queue a snapshot when deferred I/O is enabled).
+   Deferred errors are available from ls_marks_error after the worker runs.
+   False when a synchronous write fails or a snapshot cannot be queued;
    what is in RAM is unchanged either way. */
 bool ls_marks_save(void);
 /* Why the last load or save did not happen, or NULL. */

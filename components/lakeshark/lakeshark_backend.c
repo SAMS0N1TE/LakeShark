@@ -109,10 +109,11 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
-    ESP_ERROR_CHECK(bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, false));
-
-    BaseType_t ok = xTaskCreatePinnedToCore(class_driver_task, "class",
-                                            5 * 1024, NULL, 14, NULL, 1);
+    esp_err_t usb_error = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, false);
+    if (usb_error != ESP_OK) ESP_LOGE(TAG, "USB unavailable: %s", esp_err_to_name(usb_error));
+    BaseType_t ok = usb_error == ESP_OK
+        ? xTaskCreatePinnedToCore(class_driver_task, "class", 5 * 1024, NULL, 14, NULL, 1)
+        : pdFAIL;
     if (ok != pdTRUE) {
         ESP_LOGE(TAG, "failed to start class_driver_task");
     }

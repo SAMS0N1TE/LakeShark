@@ -17,6 +17,7 @@ bool ls_music_play(int index);
 bool ls_music_play_path(const char *path);
 bool ls_music_is_open(void);
 bool ls_music_toggle(void);
+bool ls_music_seek_ms(uint32_t ms);
 void ls_music_stop(void);
 ls_music_state_t ls_music_state(void);
 int ls_music_volume(void);

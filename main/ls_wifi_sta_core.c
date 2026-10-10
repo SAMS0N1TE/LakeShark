@@ -3,6 +3,37 @@
 #include <string.h>
 #include <stdio.h>
 
+int ls_wifi_saved_slot(const ls_wifi_saved_t *saved, int count, const char *ssid)
+{
+    if (!saved || count <= 0 || !ssid) return -1;
+    int free_slot = -1, oldest = -1;
+    for (int i = 0; i < count; ++i) {
+        if (!strcmp(saved[i].ssid, ssid)) return i;
+        if (!saved[i].ssid[0]) { if (free_slot < 0) free_slot = i; }
+        else if (oldest < 0 || saved[i].sequence < saved[oldest].sequence) oldest = i;
+    }
+    return free_slot >= 0 ? free_slot : oldest;
+}
+
+int ls_wifi_saved_candidate(const ls_wifi_saved_t *saved, int count,
+    const ls_wifi_visible_t *visible, int visible_count, const char *excluded)
+{
+    if (!saved) return -1;
+    int recent = -1, best = -1, strength = -1000;
+    for (int i = 0; i < count; ++i) {
+        if (!saved[i].ssid[0] || (excluded && !strcmp(saved[i].ssid, excluded))) continue;
+        if (recent < 0 || saved[i].sequence > saved[recent].sequence) recent = i;
+        for (int j = 0; visible && j < visible_count; ++j) {
+            if (strcmp(saved[i].ssid, visible[j].ssid)) continue;
+            if (best < 0 || visible[j].rssi > strength ||
+                (visible[j].rssi == strength && saved[i].sequence > saved[best].sequence)) {
+                best = i; strength = visible[j].rssi;
+            }
+        }
+    }
+    return best >= 0 ? best : recent;
+}
+
 void ls_wifi_copy_ssid(uint8_t out[32], const char *ssid)
 {
     memset(out, 0, 32);

@@ -45,12 +45,19 @@ static void expand_compass(bool open)
     s_full_compass = open; s_full_open_us = esp_timer_get_time();
     button_focus = -1; button_slot = 0;
 }
+static bool labs_frequency_ok(double mhz)
+{
+    const uint32_t caps = ls_lora_caps();
+    return mhz >= 150 && mhz <= 2500 &&
+           ls_lora_packet_rx_hz_ok(caps, (uint32_t)llround(mhz * 1e6)) &&
+           (mhz <= 959 || mhz >= 1900);
+}
 static void set_number(double n)
 {
     ls_lora_cfg_t cfg = s.config;
     if (!isfinite(n)) { result(false); return; }
     switch (s_setting) {
-    case 0: if (n < 150 || n > 959) { result(false); return; } cfg.freq_hz = (uint32_t)llround(n * 1e6); cfg.cal_min_mhz = (uint16_t)(n / 4) * 4; cfg.cal_max_mhz = cfg.cal_min_mhz + 4; break;
+    case 0: if (!labs_frequency_ok(n)) { result(false); return; } cfg.freq_hz = (uint32_t)llround(n * 1e6); cfg.cal_min_mhz = (uint16_t)(n / 4) * 4; cfg.cal_max_mhz = cfg.cal_min_mhz + 4; break;
     case 1: if (n < 5 || n > 12 || n != floor(n)) { result(false); return; } cfg.sf = (uint8_t)n; break;
     case 3: if (n < 5 || n > 8 || n != floor(n)) { result(false); return; } cfg.cr = (uint8_t)n; break;
     case 4: if (n < -9 || n > 22 || n != floor(n)) { result(false); return; } cfg.power_dbm = (int8_t)n; break;
@@ -83,8 +90,8 @@ static const struct { const char *name; double mhz; } LABS_BANDS[] = {
 
 /* What SPECTRUM can sweep instead of the 2 MHz round the tuned frequency, on
    a part that reaches past 960 MHz (the LR2021, asked rather than assumed).
-   Spans, not points: the LoRa configuration stays below 960 MHz, where it
-   can transmit, and only the sweep moves. */
+   Spans, not points: the sweep can cover more than the LoRa packet bands;
+   only the sweep moves, and these ranges grant no transmit permission. */
 static const struct { const char *name; uint32_t lo, hi; } LABS_SPANS[] = {
     { "aviation",  960000000u, 1100000000u },
     { "GPS L1",   1570000000u, 1581000000u },
@@ -104,8 +111,16 @@ static bool spans_offered(void)
 /* The same move the numeric entry makes for frequency, including the 4 MHz
    calibration window - a retune with a stale window is what makes the part
    come back deaf. */
+static int labs_hf_rows;
 static void set_band(int i)
 {
+    if (i >= LABS_BAND_N && i < LABS_BAND_N + labs_hf_rows) {
+        s_setting = 0;
+        if (s.span_lo_hz) ls_field_spectrum_span(0, 0);
+        set_number(i == LABS_BAND_N ? 1900 : 2400);
+        return;
+    }
+    if (i >= LABS_BAND_N) i -= labs_hf_rows;
     if (i >= LABS_BAND_N && i < LABS_BAND_N + labs_span_rows) {
         const int k = labs_span_row[i - LABS_BAND_N];
         result(ls_field_spectrum_span(LABS_SPANS[k].lo, LABS_SPANS[k].hi));
@@ -131,6 +146,11 @@ static void open_band_picker(void)
         ls_picker_add(LABS_BANDS[i].name, detail);
     }
     labs_span_rows = 0;
+    labs_hf_rows = (ls_lora_caps() & LS_LORA_CAP_BAND_1G5_2G5) ? 2 : 0;
+    if (labs_hf_rows) {
+        ls_picker_add("HF RX 1900-2200 MHz", "1900.0000");
+        ls_picker_add("HF RX 2400-2500 MHz", "2400.0000");
+    }
     if (!spans_offered()) return;
     const uint32_t caps = ls_lora_caps();
     for (int i = 0; i < LABS_SPAN_N; i++) {
@@ -273,7 +293,7 @@ static void set_fsk_number(double n)
     case 0: {
         /* Frequency lives on the LoRa config, so one BAND choice moves every
            mode rather than each carrying its own. */
-        if (n < 150 || n > 959) { result(false); return; }
+        if (!labs_frequency_ok(n)) { result(false); return; }
         ls_lora_cfg_t tuned = s.config;
         tuned.freq_hz = (uint32_t)llround(n * 1e6);
         tuned.cal_min_mhz = (uint16_t)(n / 4) * 4;
@@ -397,7 +417,8 @@ static void action(int i)
     else if (i == 2) { if (LS_LAB_IS_FSK(s.mode)) setup_fsk(); else setup(); }
     else if (i == 3) open_band_picker();
     else if (i == 4) {
-        if (!s.direct || s.transmitting || s.mode == LS_LAB_SPECTRUM) { result(false); return; }
+        if (!s.direct || s.transmitting || s.mode == LS_LAB_SPECTRUM ||
+            s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ) { result(false); return; }
         ls_keyboard_open("SEND ONE LORA PACKET", "", 64, send_text);
     } else if (i == 5) result(ls_field_mark_lora());
     /* The survey log: samples.csv, one row per sample, carrying RSSI, SNR,
@@ -776,7 +797,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_btn_t buttons[] = {{"DIRECT", s.direct ? "ON" : s.requested ? "WAIT" : "OFF", 'd', s.direct, false},
         {"MODE", modes[s.mode], 'm', false, false}, {"SETUP", NULL, 's', false, false},
         {"BAND", band_now(), 'b', false, false},
-        {"SEND", s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || s.mode == LS_LAB_SPECTRUM},
+        {"SEND", s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ ? "RX ONLY" : s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || s.mode == LS_LAB_SPECTRUM || s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ},
         {"MARK", "JOURNAL", 'j', false, false},
         /* REC is E: R is RADIO, as in every app. */
         {"REC", rec_face(), 'e', s.recording, !s.ready},

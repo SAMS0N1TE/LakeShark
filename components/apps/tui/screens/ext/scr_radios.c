@@ -11,6 +11,7 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_motion.h"
 #include "../../ls_quick.h"
+#include "../../ls_options.h"
 
 /* ls_board.h and not ls_caps.h: the caps header has an #error in it saying
    exactly that, which is the right way for a header to be private. */
@@ -58,8 +59,32 @@ typedef struct {
 /* ------------------------------------------------------------------ rows -- */
 
 static const char *s_error;
-static bool s_ant_confirm, s_ant_accept;
-static tui_rect s_ant_yes, s_ant_no;
+static bool s_ant_confirm, s_ant_remember;
+static int s_ant_focus;
+static tui_rect s_ant_yes, s_ant_no, s_ant_toggle, s_options_hit;
+static void ant_confirm(bool accept);
+
+static int warning_get(const ls_opt_t *o)
+{ (void)o; return !settings_get_antenna_remember(); }
+static void warning_set(const ls_opt_t *o, int v)
+{ (void)o; settings_set_antenna_remember(!v); }
+static void options_back(const ls_opt_t *o)
+{ (void)o; ls_opt_close(); }
+static const char *const WARNING_NAMES[] = { "OFF", "ON" };
+static const ls_opt_t RADIO_OPTIONS[] = {
+    { .label = "ANT WARNING", .kind = LS_OPT_TOGGLE,
+      .names = WARNING_NAMES, .get = warning_get, .set = warning_set },
+    { .label = "BACK", .kind = LS_OPT_ACTION, .act = options_back, .leaves = true },
+};
+static const ls_opt_ctx_t RADIO_CONTEXT = {
+    .name = "RADIOS", .job = -1, .radio = LS_RSEL_NONE,
+    LS_OPT_ROWS(RADIO_OPTIONS),
+};
+
+static void options_open(void)
+{
+    ls_opt_open(&RADIO_CONTEXT);
+}
 
 /* A parked endpoint does not establish that its hardware is drawing power. */
 static radio_state_t sdr_endpoint_read(const char *id)
@@ -140,8 +165,10 @@ static radio_state_t ant_read(void)
 static void ant_set(bool external)
 {
     if (external) {
-        s_ant_confirm = true; s_ant_accept = false;
-        s_ant_yes = s_ant_no = tui_rect_make(0, 0, 0, 0);
+        s_ant_remember = false; s_ant_focus = 0;
+        if (settings_get_antenna_remember()) { ant_confirm(true); return; }
+        s_ant_confirm = true;
+        s_ant_yes = s_ant_no = s_ant_toggle = tui_rect_make(0, 0, 0, 0);
         return;
     }
     const esp_err_t err = ls_board_hw_antenna_external(false);
@@ -333,19 +360,6 @@ static void draw(tui_surface *sf, tui_rect area)
     s_hit_n = 0;
     ls_panel_box(sf, area, "RADIOS", TUI_CYAN);
     if (area.h < 8 || area.w < 20) return;
-    if (s_ant_confirm) {
-        const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-        tui_put_str(sf, area, area.x + 2, area.y + 2, "MMCX1 EXTERNAL ANTENNA", warn);
-        tui_put_str(sf, area, area.x + 2, area.y + 4, "TX without an antenna", warn);
-        tui_put_str(sf, area, area.x + 2, area.y + 5, "can damage the radio.", warn);
-        tui_put_str(sf, area, area.x + 2, area.y + 7, "Attach a suitable antenna", dim);
-        tui_put_str(sf, area, area.x + 2, area.y + 8, "before confirming.", dim);
-        s_ant_no = tui_rect_make(area.x + 2, area.y + 10, area.w - 4, 3);
-        s_ant_yes = tui_rect_make(area.x + 2, area.y + 14, area.w - 4, 3);
-        tui_put_str(sf, area, s_ant_no.x, s_ant_no.y, s_ant_accept ? "  CANCEL" : "> CANCEL", dim);
-        tui_put_str(sf, area, s_ant_yes.x, s_ant_yes.y, s_ant_accept ? "> ANTENNA ATTACHED" : "  ANTENNA ATTACHED", warn);
-        return;
-    }
 
     const int live = count_live();
     int loads = 0;
@@ -357,7 +371,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_error) tui_put_str(sf, area, area.x + 2, area.y + 2, s_error, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
 
     tui_rect body = tui_rect_make(area.x + 1, area.y + 3,
-                                  area.w - 2, area.h - 4);
+                                  area.w - 2, area.h - 8);
     if (body.h < 4) return;
 
     /* Two columns when the width is there and the height is not.
@@ -382,7 +396,7 @@ static void draw(tui_surface *sf, tui_rect area)
             if (y + bh > col.y + col.h) break;
             draw_one(sf, tui_rect_make(col.x, y, col.w - 1, bh), i, bh);
         }
-        return;
+        goto overlay;
     }
 
     int bh = (body.h - (N_ROWS - 1)) / N_ROWS;
@@ -399,6 +413,45 @@ static void draw(tui_surface *sf, tui_rect area)
         if (y + bh > body.y + body.h) break;
         draw_one(sf, tui_rect_make(body.x, y, body.w, bh), i, bh);
     }
+overlay:
+    s_options_hit = tui_rect_make(area.x + 2, area.y + area.h - 4, area.w - 4, 3);
+    const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
+    ls_btn_bar_raised(sf, s_options_hit, &opt, 1, s_sel == N_ROWS ? 0 : -1);
+    if (s_ant_confirm) {
+        /* The radios stay behind the centered modal. Animation uses TUI time. */
+        const int w = area.w > 54 ? 54 : area.w - 4;
+        const int h = 21;
+        tui_rect box = tui_rect_make(area.x + (area.w - w) / 2,
+                                    area.y + (area.h - h) / 2, w, h);
+        tui_fill(sf, box, ' ', A(TUI_WHITE, TUI_BLACK));
+        const uint8_t hue = TUI_YELLOW | (ls_motion_phase(2, 1200) ? TUI_BRIGHT : 0);
+        ls_panel_box(sf, box, "MMCX1 ANTENNA", hue);
+        const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+        const char *art[] = { ls_motion_phase(2, 800) ? " )) | (( " : "  ) | (  ",
+                              "    |    ", "   /_\\   " };
+        for (int i = 0; i < 3; i++)
+            tui_put_str(sf, box, box.x + (w - 9) / 2, box.y + 1 + i, art[i], warn);
+        const char *lines[] = { "TX without an antenna", "can damage the radio.",
+                                "Attach a suitable antenna." };
+        for (int i = 0; i < 3; i++)
+            tui_put_str(sf, box, box.x + (w - (int)strlen(lines[i])) / 2,
+                        box.y + 4 + i, lines[i], i < 2 ? warn : dim);
+        ls_btn_t buttons[] = {
+            { .label = "CANCEL" }, { .label = "ANTENNA ATTACHED" },
+            { .label = "DON'T ASK AGAIN", .value = s_ant_remember ? "ON" : "OFF",
+              .on = s_ant_remember },
+        };
+        tui_rect *hits[] = { &s_ant_no, &s_ant_yes, &s_ant_toggle };
+        for (int i = 0; i < 3; i++) {
+            tui_rect bar = tui_rect_make(box.x + 2, box.y + 8 + i * 4, w - 4, 4);
+            ls_btn_bar_transport(sf, bar, &buttons[i], 1, s_ant_focus == i ? 0 : -1);
+            int x, y, bw, bh;
+            *hits[i] = tui_rect_make(0, 0, 0, 0);
+            if (ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 0, &x, &y, &bw, &bh))
+                *hits[i] = tui_rect_make(x, y, bw, bh);
+        }
+    }
+
 }
 
 /* ----------------------------------------------------------------- input -- */
@@ -419,7 +472,10 @@ static void ant_confirm(bool accept)
     if (!accept) return;
     const esp_err_t err = ls_board_hw_antenna_confirm_external();
     s_error = err == ESP_OK ? NULL : "Antenna busy / switch failed";
-    if (err == ESP_OK) settings_set_antenna_external(true);
+    if (err == ESP_OK) {
+        settings_set_antenna_external(true);
+        if (s_ant_remember) settings_set_antenna_remember(true);
+    }
 }
 
 static void enter(void) { s_ant_confirm = false; s_error = NULL; }
@@ -429,16 +485,27 @@ static bool key(ls_tk_t k, char ch)
 {
     (void)ch;
     if (s_ant_confirm) {
-        if (k == LS_TK_UP) s_ant_accept = false;
-        else if (k == LS_TK_DOWN) s_ant_accept = true;
-        else if (k == LS_TK_ENTER) ant_confirm(s_ant_accept);
+        if (k == LS_TK_UP || k == LS_TK_LEFT) s_ant_focus = (s_ant_focus + 2) % 3;
+        else if (k == LS_TK_DOWN || k == LS_TK_RIGHT || k == LS_TK_TAB)
+            s_ant_focus = (s_ant_focus + 1) % 3;
+        else if (k == LS_TK_ENTER) {
+            if (s_ant_focus == 2) s_ant_remember = !s_ant_remember;
+            else ant_confirm(s_ant_focus == 1);
+        }
         else if (k == LS_TK_ESC) ant_confirm(false);
         return true;
     }
+    if (k == LS_TK_CHAR && (ch == LS_OPT_KEY || ch == 'O')) {
+        options_open(); return true;
+    }
     switch (k) {
     case LS_TK_UP:    if (s_sel > 0) s_sel--; return true;
-    case LS_TK_DOWN:  if (s_sel < N_ROWS - 1) s_sel++; return true;
-    case LS_TK_ENTER: toggle(s_sel); return true;
+    case LS_TK_DOWN:  if (s_sel < N_ROWS) s_sel++; return true;
+    case LS_TK_TAB: s_sel = (s_sel + 1) % (N_ROWS + 1); return true;
+    case LS_TK_ENTER:
+        if (s_sel == N_ROWS) options_open();
+        else toggle(s_sel);
+        return true;
     default: return false;
     }
 }
@@ -452,7 +519,14 @@ static bool touch(int col, int row)
         else if (col >= s_ant_no.x && col < s_ant_no.x + s_ant_no.w &&
                  row >= s_ant_no.y && row < s_ant_no.y + s_ant_no.h)
             ant_confirm(false);
+        else if (col >= s_ant_toggle.x && col < s_ant_toggle.x + s_ant_toggle.w &&
+                 row >= s_ant_toggle.y && row < s_ant_toggle.y + s_ant_toggle.h)
+            s_ant_remember = !s_ant_remember;
         return true;
+    }
+    if (col >= s_options_hit.x && col < s_options_hit.x + s_options_hit.w &&
+        row >= s_options_hit.y && row < s_options_hit.y + s_options_hit.h) {
+        options_open(); return true;
     }
     for (int i = 0; i < s_hit_n && i < N_ROWS; i++) {
         const tui_rect r = s_hit[i];

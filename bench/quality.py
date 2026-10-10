@@ -1011,7 +1011,7 @@ class SpeechLevelWiringTests(unittest.TestCase):
 
     def test_the_player_levels_speech_after_the_equalizer(self):
         out = (ROOT/'components/lakeshark/audio/audio_out.c').read_text()
-        player = self._body(out, 'static void IRAM_ATTR audio_player_task(')
+        player = self._body(out, 'static void audio_player_task(')
         eq = player.index('audio_eq_process(')
         level = player.index('audio_speech_level_apply(')
         write = player.index('player_write(stereo')
@@ -1205,7 +1205,17 @@ class TrackedReferenceTests(unittest.TestCase):
                 'components/esp_system/port/soc/esp32p4/system_internal.c',
                 'components/usb/hub.c', 'components/usb/hcd_dwc.c',
                 'components/sdmmc/sdmmc_cmd.c',
+                'components/esp_driver_spi/src/gpspi/spi_master.c',
                 'tools/build_g2p_dict.py'}
+    # These selected upstream files name docs/generators intentionally omitted
+    # from the embedded snapshot (see its provenance). Scope exceptions to
+    # the naming file so LakeShark references to the same paths remain checked.
+    UPSTREAM_ONLY = {
+        ('components/cartocore/upstream/include/cartocore/places.h', 'docs/places.md'),
+        ('components/cartocore/upstream/src/media/tables.h', 'tools/media_tables.py'),
+        ('components/cartocore/upstream/src/places/fold_table.h', 'tools/places/fold.py'),
+        ('components/cartocore/upstream/src/ingest/host_cellset.c', 'tools/build_cells.py'),
+    }
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
     NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')
@@ -1238,7 +1248,10 @@ class TrackedReferenceTests(unittest.TestCase):
         tracked = {f for f in out.split('\0') if f}
         refs = {}
         for name in tracked:
-            if name.startswith(self.SKIP) or name.startswith(self.NOT_READ):
+            # Provenance inventories name excluded files in the upstream tree,
+            # not dependencies or links in this checkout.
+            if (name == 'components/cartocore/upstream/PROVENANCE.txt'
+                    or name.startswith(self.SKIP) or name.startswith(self.NOT_READ)):
                 continue
             try:
                 text = (ROOT / name).read_text(encoding='utf-8')
@@ -1246,7 +1259,8 @@ class TrackedReferenceTests(unittest.TestCase):
                 continue
             base = Path(name).parent
             for ref in self.REF.findall(text):
-                if ref in self.NOT_OURS or '/build/' in '/' + ref:
+                if (ref in self.NOT_OURS or (name, ref) in self.UPSTREAM_ONLY
+                        or '/build/' in '/' + ref):
                     continue
                 if (base / ref).as_posix() in tracked or ref in tracked:
                     continue

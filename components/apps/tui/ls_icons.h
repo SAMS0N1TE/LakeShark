@@ -44,10 +44,13 @@ typedef enum {
     LS_ICON_EXPERIMENT, /* EXPERIMENTS: a magnifier over a wave           */
     LS_ICON_TERMINAL,   /* TERMINAL: a screen with a prompt on it         */
     LS_ICON_UPDATE,     /* UPDATE: an arrow coming down into a tray       */
+    LS_ICON_TILES,      /* four map sheets */
+    LS_ICON_DRONE,      /* DRONES: four rotors around a central body */
+    LS_ICON_SWEEP,      /* SWEEP: a radar ring, beam and contact */
     LS_ICON__COUNT
 } ls_icon_t;
 
-/* 6x6 cells at (x, y), clipped to `clip`. */
+/* 10x6 cells at (x, y), clipped to `clip`. */
 
 void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
                   int icon, uint8_t attr);

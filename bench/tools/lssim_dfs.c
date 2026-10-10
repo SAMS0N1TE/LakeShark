@@ -7,6 +7,7 @@
 #include <string.h>
 #include "esp_timer.h"
 #include "ls_df_sources.h"
+#include "ls_sweep_app.h"
 #include "ls_radio_select.h"
 
 extern float lssim_turn_deg(void);
@@ -17,6 +18,7 @@ static struct {
     uint32_t freq[LS_DFS_CHANNELS];
     int nch;
     uint32_t updates;
+    bool targeted;uint8_t address[6];char target[48];uint32_t consumed;
 } s_slot[LS_DFS_SLOTS] = { { .src = LS_DFS_MESH, .freq = { 915000000 }, .nch = 1 },
                            { .src = LS_DFS_COUNT, .freq = { 433920000 }, .nch = 1 } };
 static int64_t s_last_us;
@@ -83,7 +85,7 @@ void ls_dfs_poll_slot(int k, ls_dfs_status_t *out)
     out->targets = s_slot[k].src == LS_DFS_MESH || s_slot[k].src == LS_DFS_WIFI || s_slot[k].src == LS_DFS_BLE;
     out->channels = out->tunable ? s_slot[k].nch : 1;
     memcpy(out->freqs, s_slot[k].freq, sizeof(out->freqs));
-    snprintf(out->target, sizeof(out->target), "everything heard");
+    snprintf(out->target, sizeof(out->target), "%s",s_slot[k].targeted?s_slot[k].target:"everything heard");
     snprintf(out->status, sizeof(out->status), "Simulated signal");
 }
 void ls_dfs_poll(ls_dfs_status_t *out) { ls_dfs_poll_slot(0, out); }
@@ -115,6 +117,16 @@ int ls_dfs_take(ls_dfs_reading_t *out, int max)
     int n = 0;
     for (int k = 0; k < LS_DFS_SLOTS; k++) {
         if (!s_slot[k].active) continue;
+        if((s_slot[k].src==LS_DFS_BLE || s_slot[k].src==LS_DFS_WIFI) && s_slot[k].targeted) {
+            static ls_sweep_device_t devices[LS_SWEEP_CAP];
+            size_t count=ls_sweep_snapshot(devices,LS_SWEEP_CAP,now);
+            for(size_t j=0;j<count;j++) if(!memcmp(devices[j].mac,s_slot[k].address,6) && devices[j].adverts!=s_slot[k].consumed) {
+                s_slot[k].consumed=devices[j].adverts;
+                if(now-devices[j].seen_us<1500000 && n<max) out[n++]=(ls_dfs_reading_t){.us=devices[j].seen_us,.level=devices[j].rssi,.slot=k};
+                break;
+            }
+            continue;
+        }
         const int nch = tunable(s_slot[k].src) ? s_slot[k].nch : 1;
         for (int ch = 0; ch < nch && n < max; ch++)
             out[n++] = (ls_dfs_reading_t){ .us = now, .freq_hz = s_slot[k].freq[ch],
@@ -129,3 +141,9 @@ bool ls_dfs_target_label(int i, char *l, size_t lc, char *d, size_t dc)
 }
 bool ls_dfs_target_pick(int i) { (void)i; return true; }
 void ls_dfs_step(void) {}
+
+bool ls_dfs_target_address(const uint8_t mac[6],const char *label) {
+    if(!mac || (s_slot[0].src!=LS_DFS_BLE && s_slot[0].src!=LS_DFS_WIFI)) return false;
+    memcpy(s_slot[0].address,mac,6);s_slot[0].targeted=true;
+    snprintf(s_slot[0].target,sizeof(s_slot[0].target),"%s",label);return true;
+}

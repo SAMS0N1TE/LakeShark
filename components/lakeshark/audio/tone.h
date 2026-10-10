@@ -34,6 +34,9 @@ bool        snd_test_busy(void);
 /* Play the notification alert without blocking the caller. False when
    something is already playing. See tone.c. */
 bool        snd_alert_start(void);
+/* Category 0..4; current volume and mute, no unmute or gain changes. */
+bool        snd_sweep_start(int category);
+bool        snd_sweep_click(void);
 
 /* The boot sound, without blocking the caller. */
 

@@ -40,7 +40,7 @@
     {
       "name": "t-display-p4",
       "dir": "build_tdp4",
-      "idf_export": "C:/esp/v5.4.3/esp-idf/export.ps1",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
       "enabled": true,
       "usb_serial": "5C84301528",
@@ -49,8 +49,8 @@
     },
     {
       "name": "t-display-p4-lr2021",
-      "dir": "build_tdp4",
-      "idf_export": "C:/esp/v5.4.3/esp-idf/export.ps1",
+      "dir": "build_tdp4_lr",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
       "enabled": true,
       "usb_serial": "5B91081095",

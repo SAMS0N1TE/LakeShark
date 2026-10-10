@@ -2159,6 +2159,9 @@ static bool touch(int col, int row)
     return true;
 }
 
+static bool sweep_target_pending;
+static uint8_t sweep_target_mac[6],sweep_target_radio;
+static char sweep_target_label[48];
 static void enter(void)
 {
     static bool ready;
@@ -2167,6 +2170,12 @@ static void enter(void)
     const int opt = settings_get_compass_options();
     s_simple = opt & 1; s_magnetic = opt & 2;
     load_find_settings();
+    if(sweep_target_pending) {
+        sweep_target_pending=false;s_dfs_source=sweep_target_radio?LS_DFS_WIFI:LS_DFS_BLE;s_src2=LS_DFS_COUNT;
+        if(s_find_on) find_stop();
+        show_page(P_FIND);
+        if(s_find_on && ls_dfs_target_address(sweep_target_mac,sweep_target_label)) say("SWEEP target: turn slowly for bearing");
+    }
     ls_field_start(); ls_field_watch(true);
     s_spring.started = false; s_last_us = 0;
     /* The board may have turned while COMPASS was closed: the dial starts
@@ -2344,6 +2353,13 @@ static void report_truth(void)
 }
 
 extern const ls_tui_screen_t ls_scr_compass;
+
+bool ls_sweep_find_target(const uint8_t *mac,uint8_t radio,const char *label) {
+    if(!mac || radio>1 || ls_tui_screen_index_of(&ls_scr_compass)<0) return false;
+    sweep_target_radio=radio;memcpy(sweep_target_mac,mac,6);snprintf(sweep_target_label,sizeof(sweep_target_label),"%s",label);
+    sweep_target_pending=true;
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_compass));return true;
+}
 
 /* `find` on the console: what FIND hears, and control of it. */
 bool ls_scr_compass_console(int argc, char **argv)

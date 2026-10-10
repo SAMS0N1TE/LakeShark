@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "ls_nvs_safe.h"
+#include "ls_flash_task.h"
 
 #include "app_registry.h"
 #include "settings.h"
@@ -1194,6 +1195,32 @@ static bool s_save_busy;
 
 static void rec_autosave_run(void);
 
+static void rec_spiffs_save_task(void *arg)
+{
+    rec_save_job_t *job = arg;
+    job->result = rec_save_impl(job->name, job->path, sizeof(job->path));
+    vTaskSuspend(NULL);
+}
+
+static int rec_save_on_worker(void)
+{
+    if (strncmp(rec_dir(), BSP_SD_MOUNT_POINT, strlen(BSP_SD_MOUNT_POINT)) == 0)
+        return rec_save_impl(s_save_job.name, s_save_job.path,
+                             sizeof(s_save_job.path));
+
+    /* Reserve DRAM only for the duration of a SPIFFS save, including the
+       free-space probe, file close/rename and sidecar. Never fall back to
+       writing flash on the external stack if allocation fails. */
+    TaskHandle_t worker = NULL;
+    if (ls_flash_task_create(rec_spiffs_save_task, "rec_spiffs", 8192,
+                             &s_save_job, 5, &worker, 1) != pdPASS)
+        return -2;
+    while (eTaskGetState(worker) != eSuspended) vTaskDelay(1);
+    int result = s_save_job.result;
+    ls_flash_task_delete(worker);
+    return result;
+}
+
 static void rec_save_task(void *arg)
 {
     (void)arg;
@@ -1203,9 +1230,7 @@ static void rec_save_task(void *arg)
             rec_autosave_run();
             continue;
         }
-        s_save_job.result = rec_save_impl(s_save_job.name,
-                                          s_save_job.path,
-                                          sizeof(s_save_job.path));
+        s_save_job.result = rec_save_on_worker();
         s_save_job.done = true;
     }
 }
@@ -1232,8 +1257,7 @@ static void rec_autosave_run(void)
             vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (!resume || (app_parked() && !s_running)) {
-        result = rec_save_impl(s_save_job.name, s_save_job.path,
-                               sizeof(s_save_job.path));
+        result = rec_save_on_worker();
     }
     if (result <= 0)
         ESP_LOGW(TAG, "autosave failed (%d) - capture kept in memory", result);

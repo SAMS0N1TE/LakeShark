@@ -6,6 +6,8 @@ static ls_mixrf_status_t mix;
 static bool external, acknowledged, running;
 static esp_err_t switch_error, stop_error;
 static unsigned switches, saved;
+static bool remembered;
+static tui_rect rendered_button;
 
 ls_radio_err_t ls_radio_endpoint_get(const char *id, ls_radio_endpoint_info_t *out)
 { *out = !strcmp(id, LS_RADIO_ENDPOINT_RTL_USB) ? rtl : hackrf; return LS_RADIO_OK; }
@@ -30,6 +32,18 @@ esp_err_t ls_board_hw_antenna_external(bool ext)
 esp_err_t ls_board_hw_antenna_confirm_external(void)
 { if (switch_error) return switch_error; ++switches; external = acknowledged = true; return ESP_OK; }
 void settings_set_antenna_external(bool ext) { ++saved; }
+bool settings_get_antenna_remember(void) { return remembered; }
+void settings_set_antenna_remember(bool v) { remembered = v; }
+int ls_motion_phase(int steps, int ms) { return 0; }
+ls_btn_t ls_opt_button(const ls_opt_ctx_t *ctx) { return (ls_btn_t){ .label = "OPTIONS" }; }
+void ls_opt_open(const ls_opt_ctx_t *ctx) { }
+void ls_opt_close(void) { }
+void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n, int focus)
+{ rendered_button = bar; }
+void ls_btn_bar_transport(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n, int focus)
+{ rendered_button = bar; }
+bool ls_btn_rect_slot(int slot, int i, int *x, int *y, int *w, int *h)
+{ *x = rendered_button.x; *y = rendered_button.y; *w = rendered_button.w; *h = rendered_button.h; return true; }
 bool settings_get_ble_at_boot(void) { return false; }
 bool settings_get_wifi_at_boot(void) { return false; }
 void settings_set_ble_at_boot(bool on) { }
@@ -84,7 +98,7 @@ LS_CASE(cc1101_replay_is_visible_without_receive)
 
 LS_CASE(antenna_confirmation_defaults_to_cancel_and_reports_switch_failure)
 {
-    external = acknowledged = false; switches = saved = 0; switch_error = ESP_OK;
+    remembered = false; external = acknowledged = false; switches = saved = 0; switch_error = ESP_OK;
     ant_set(true);
     LS_CHECK(s_ant_confirm);
     LS_EQ_INT(switches, 0);
@@ -130,8 +144,34 @@ LS_CASE(antenna_warning_and_touch_confirmation_are_rendered)
     LS_CHECK(!external);
     draw(&sf, tui_surface_rect(&sf));
     const char *warning = "can damage the radio.";
+    const int wx = 2 + (36 - (int)strlen(warning)) / 2;
     for (int i = 0; warning[i]; ++i)
-        LS_EQ_INT(back[5 * 40 + 2 + i].ch, warning[i]);
+        LS_EQ_INT(back[6 * 40 + wx + i].ch, warning[i]);
+    LS_CHECK(s_ant_no.h >= 3 && s_ant_yes.h >= 3 && s_ant_toggle.h >= 3);
+    touch(s_ant_toggle.x, s_ant_toggle.y);
+    LS_CHECK(s_ant_remember && !remembered);
+    touch(s_ant_no.x, s_ant_no.y);
+    LS_CHECK(!external && !s_ant_confirm && !remembered);
+    ant_set(true); draw(&sf, tui_surface_rect(&sf));
+    LS_CHECK(!s_ant_remember);
     touch(s_ant_yes.x, s_ant_yes.y);
-    LS_CHECK(external && acknowledged && !s_ant_confirm);
+    LS_CHECK(external && acknowledged && !s_ant_confirm && !remembered);
+}
+
+LS_CASE(remember_requires_successful_accept_and_warning_can_be_restored)
+{
+    remembered = false; external = acknowledged = false; switch_error = ESP_OK;
+    ant_set(true); key(LS_TK_TAB, 0); key(LS_TK_TAB, 0); key(LS_TK_ENTER, 0);
+    LS_CHECK(s_ant_remember && !remembered);
+    key(LS_TK_ESC, 0); LS_CHECK(!remembered && !external);
+    ant_set(true); LS_CHECK(!s_ant_remember);
+    s_ant_remember = true; switch_error = ESP_FAIL; ant_confirm(true);
+    LS_CHECK(!remembered);
+    switch_error = ESP_OK; ant_set(true); s_ant_remember = true; ant_confirm(true);
+    LS_CHECK(remembered && acknowledged);
+    ant_set(false); unsigned before = switches; ant_set(true);
+    LS_CHECK(!s_ant_confirm && acknowledged); LS_EQ_INT(switches, before + 1);
+    warning_set(NULL, 1); LS_EQ_INT(warning_get(NULL), 1);
+    ant_set(false); ant_set(true); LS_CHECK(s_ant_confirm);
+    ant_confirm(false);
 }

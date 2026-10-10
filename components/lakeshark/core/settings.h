@@ -65,6 +65,8 @@ void settings_set_autodim(bool en);
 int  settings_get_autodim_timeout(void);
 void settings_set_autodim_timeout(int seconds);
 
+bool settings_get_audio_mute(void);
+void settings_set_audio_mute(bool muted);
 int  settings_get_volume(void);
 void settings_set_volume(int pct);
 
@@ -78,6 +80,9 @@ void settings_set_usb_autoreboot(bool en);
 /* Which antenna the SKY13453 is pointing at, across reboots. */
 
 bool settings_get_antenna_external(void);
+/* Explicitly remembered attachment confirmation; warning enabled when unset. */
+bool settings_get_antenna_remember(void);
+void settings_set_antenna_remember(bool remember);
 void settings_set_antenna_external(bool external);
 /* Same value, readable before settings_init(). */
 bool settings_peek_antenna_external(void);

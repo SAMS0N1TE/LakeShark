@@ -29,7 +29,8 @@ int sx1262_receive_command(int argc, char **argv)
     if ((paging && (argc < 4 || argc > 6)) ||
         (!paging && (argc < 8 || argc > 9))) {
         printf("lora pocsag MHz baud [seconds=30] [invert=0]\n"
-               "lora fsk MHz baud deviation_Hz bandwidth_Hz sync_hex bytes [seconds=30]\n");
+               "lora fsk MHz baud deviation_Hz bandwidth_Hz sync_hex bytes [seconds=30]\n"
+               "  RX only; reports channel RSSI floor/peak. LR2021 HF: 1900-2200, 2400-2500 MHz\n");
         return 1;
     }
     double mhz = 0, baud = 0, seconds = 30, dev = 4500, bw = 19500, bytes = 64;
@@ -45,9 +46,11 @@ int sx1262_receive_command(int argc, char **argv)
     /* The wide receiver (the LR2021) hears to 1100 MHz at up to 2 Mbps with a
        3 MHz filter, which is what UAT at 978 MHz needs; the SX1262 does not. */
     const bool wide = (ls_lora_caps() & LS_LORA_CAP_WIDE_RX_BW) != 0;
-    const double max_mhz = wide ? 1100 : 960, max_baud = wide ? 2000000 : 300000;
+    const double max_baud = wide ? 2000000 : 300000;
     const double max_dev = wide ? 500000 : 200000, max_bw = wide ? 3076923 : 467000;
-    if (!valid || mhz < 150 || mhz > max_mhz || baud < (native ? 512 : 600) || baud > max_baud ||
+    if (!valid || mhz < 150 || mhz > 2500 ||
+        !ls_lora_rx_range_ok(ls_lora_caps(), (uint32_t)llround(mhz * 1e6), (uint32_t)llround(mhz * 1e6)) ||
+        baud < (native ? 512 : 600) || baud > max_baud ||
         floor(baud) != baud || seconds < 1 || seconds > 120 ||
         dev < 600 || dev > max_dev || bw < 4800 || bw > max_bw ||
         bytes < 1 || bytes > 255 || floor(bytes) != bytes ||

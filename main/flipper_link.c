@@ -40,6 +40,12 @@
 #include "radio_health.h"
 /**/
 #include "ls_version.h"
+#include "flipper_link_aux.h"
+#include "ls_wifi.h"
+#include "tui/ls_sweep_app.h"
+#include "tui/ls_rid.h"
+#include "tui/ls_field.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "fl_link";
 
@@ -638,6 +644,43 @@ static void psys_reply(char *reply, size_t reply_len)
              (unsigned)P25.sync_unconfirmed_nac);
 }
 
+/* UART and BLE may request concurrently. One small shared cache, at most
+ * 2 Hz collection across both transports; no heap or NVS in this path. */
+static StaticSemaphore_t s_aux_lock_mem;
+static SemaphoreHandle_t s_aux_lock;
+static unsigned s_aux_once;
+static void aux_reply(char *reply,size_t len) {
+    unsigned expected=0;
+    if(__atomic_compare_exchange_n(&s_aux_once,&expected,1,false,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
+        s_aux_lock=xSemaphoreCreateMutexStatic(&s_aux_lock_mem);
+        __atomic_store_n(&s_aux_once,2,__ATOMIC_RELEASE);
+    } else while(__atomic_load_n(&s_aux_once,__ATOMIC_ACQUIRE)!=2) vTaskDelay(1);
+    xSemaphoreTake(s_aux_lock,portMAX_DELAY);
+    static ls_link_aux_t cache;
+    static int64_t next;
+    static bool valid;
+    int64_t now=esp_timer_get_time();
+    if(!valid || now>=next) {
+        ls_wifi_link_status_t wifi;ls_wifi_link_status(&wifi);
+        ls_sweep_summary_t sweep;ls_sweep_summary(&sweep,now);
+        ls_field_sample_t fix;ls_field_sample_snapshot(&fix);
+        ls_rid_summary_t rid;ls_rid_summary(&rid,fix.gps_valid,fix.lat,fix.lon,now);
+        memset(&cache,0,sizeof(cache));
+        cache.connected=wifi.connected;cache.saved=wifi.saved;
+        memcpy(cache.ssid,wifi.ssid,sizeof(cache.ssid));memcpy(cache.ip,wifi.ip,sizeof(cache.ip));
+        cache.running=sweep.running;cache.muted=sweep.muted;
+        memcpy(cache.counts,sweep.counts,sizeof(cache.counts));
+        memcpy(cache.serial,sweep.serial,sizeof(cache.serial));memcpy(cache.rssi,sweep.rssi,sizeof(cache.rssi));
+        memcpy(cache.category,sweep.category,sizeof(cache.category));
+        cache.drones=rid.count;cache.nearest_m=rid.nearest_m;memcpy(cache.drone_id,rid.id,sizeof(cache.drone_id));
+        next=now+500000;valid=true;
+    }
+    /* A mute command must be acknowledged immediately even inside the cache interval. */
+    ls_sweep_settings_t settings;ls_sweep_settings_get(&settings);cache.muted=settings.alerts_muted;
+    if(!ls_link_aux_encode(reply,len,&cache)) snprintf(reply,len,"-ERR aux buffer\n");
+    xSemaphoreGive(s_aux_lock);
+}
+
 static void handle_line(char *line, char *reply, size_t reply_len)
 {
     reply[0] = '\0';
@@ -662,6 +705,20 @@ static void handle_line(char *line, char *reply, size_t reply_len)
        the string here cannot silently drift out of shape.  sanitize()
        swaps whitespace and '=' for '_' so a single reply line survives
        the protocol without needing a special-case parser. */
+    } else if (!strcmp(cmd, "AUX")) {
+        if(argc!=1) snprintf(reply,reply_len,"-ERR aux\n");
+        else aux_reply(reply,reply_len);
+    } else if (!strcmp(cmd, "SWEEP")) {
+        if(argc!=3 || strcasecmp(a1,"MUTE") || (strcmp(argv[2],"0") && strcmp(argv[2],"1"))) {
+            snprintf(reply,reply_len,"-ERR sweep mute <0|1>\n");return;
+        }
+        ls_sweep_settings_t settings;ls_sweep_settings_get(&settings);
+        bool mute=argv[2][0]=='1';
+        if(settings.alerts_muted!=mute) {
+            settings.alerts_muted=mute;
+            if(!ls_sweep_settings_set(&settings)) {snprintf(reply,reply_len,"-ERR sweep settings\n");return;}
+        }
+        aux_reply(reply,reply_len);
     } else if (!strcmp(cmd, "VER")) {
         char v[LS_VERSION_LINE_MAX];
         ls_version_line(v, sizeof(v));

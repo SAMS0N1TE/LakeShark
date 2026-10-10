@@ -1,3 +1,4 @@
+#include "ls_braille.h"
 /* See ls_tui.h for why the TUI bypasses LVGL entirely. */
 #include "ls_tui.h"
 #include "ls_tui_inset.h"
@@ -55,9 +56,18 @@ static bool                  s_draw_crisp;
 static const ls_tui_theme_t *s_draw = &ls_theme_terminal_bay;
 static volatile bool         s_look_dirty;
 #define PALETTE (s_draw->palette)
+/* MAP snapshots only the basemap cells. Overlay replacements use the ordinary
+ * theme. All per-cell storage and both ramp banks live in PSRAM. */
+static uint16_t s_base_palette[16];
+static const uint16_t *s_cell_palette;
+static tui_rect s_base_rect;
+static tui_cell *s_base_rec;
+static uint8_t *s_base_front;
+static bool s_base_dirty;
+#define CELL_PALETTE (s_cell_palette ? s_cell_palette : PALETTE)
 
-static inline uint16_t attr_fg(uint8_t a) { return PALETTE[TUI_ATTR_FG(a) & 0x0F]; }
-static inline uint16_t attr_bg(uint8_t a) { return PALETTE[TUI_ATTR_BG(a) & 0x0F]; }
+static inline uint16_t attr_fg(uint8_t a) { return CELL_PALETTE[TUI_ATTR_FG(a) & 0x0F]; }
+static inline uint16_t attr_bg(uint8_t a) { return CELL_PALETTE[TUI_ATTR_BG(a) & 0x0F]; }
 
 /* Blend fg over bg in RGB565, no division.
 
@@ -93,8 +103,18 @@ static inline void fill_run(uint16_t *run, int n, uint16_t bg, uint32_t bg2)
 }
 
 static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
-                       uint8_t ch, uint16_t fg, uint16_t bg)
+                       uint16_t ch, uint16_t fg, uint16_t bg)
 {
+    if(ch>=0xff00) ch=(uint8_t)ch;
+    if(ch>=0x2800 && ch<=0x28ff) {
+        for(int y=0;y<s_ch && y0+y<s_screen_h;y++)
+            for(int x=0;x<s_cw && x0+x<s_screen_w;x++) {
+                uint32_t idx=s_landscape ? (uint32_t)(s_screen_w-1-x0-x)*native_w+y0+y
+                                         : (uint32_t)(y0+y)*native_w+x0+x;
+                fb[idx]=ls_braille_pixel(ch,x,y,s_cw,s_ch)?fg:bg;
+            }
+        return true;
+    }
     if (ch < 0x80 || (ch > 0xA7 && ch < 0xC0)) return false;
 
     if (ch >= 0xC0) {
@@ -200,9 +220,11 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
 
 /* A coverage ramp instead of a blend per pixel. */
 
-static uint16_t s_ramp[16];
-static uint8_t  s_ramp_attr = 0xFF;
-static bool     s_ramp_valid;
+/* Alternating attributes used to rebuild the same sixteen colours hundreds
+   of times on a screen switch. The table and validity bits live in PSRAM. */
+static EXT_RAM_BSS_ATTR uint16_t s_ramps[2][256][16];
+static EXT_RAM_BSS_ATTR bool s_ramp_valid[2][256];
+static const uint16_t *s_ramp;
 
 /* sRGB decode/encode over the 5- and 6-bit channels, small enough to inline
    and only run sixteen times per attribute. */
@@ -237,17 +259,17 @@ static void ramp_build(uint8_t attr)
         if (r > 0x1F) r = 0x1F;
         if (g > 0x3F) g = 0x3F;
         if (b > 0x1F) b = 0x1F;
-        s_ramp[i] = (uint16_t)((r << 11) | (g << 5) | b);
+        s_ramps[s_cell_palette != NULL][attr][i] = (uint16_t)((r << 11) | (g << 5) | b);
     }
-    s_ramp_attr = attr;
-    s_ramp_valid = true;
+    s_ramp_valid[s_cell_palette != NULL][attr] = true;
 }
 
 static uint32_t s_prof_ramps;
 
 static inline void ramp_for(uint8_t attr)
 {
-    if (!s_ramp_valid || attr != s_ramp_attr) { ramp_build(attr); s_prof_ramps++; }
+    if (!s_ramp_valid[s_cell_palette != NULL][attr]) { ramp_build(attr); s_prof_ramps++; }
+    s_ramp = s_ramps[s_cell_palette != NULL][attr];
 }
 
 static tui_rect s_image_rect;
@@ -276,6 +298,28 @@ static inline void glass_set(uint8_t *bits, size_t i, bool on)
     if (!bits) return;
     if (on) bits[i >> 3] |= (uint8_t)(1u << (i & 7));
     else    bits[i >> 3] &= (uint8_t)~(1u << (i & 7));
+}
+
+void ls_tui_basemap(tui_surface *sf,tui_rect area,const uint16_t palette[16])
+{
+    if(!palette || !sf || !s_base_rec) {
+        if(s_base_rect.w) s_base_dirty=true;
+        s_base_rect=tui_rect_make(0,0,0,0);return;
+    }
+    if(memcmp(s_base_palette,palette,sizeof(s_base_palette)) ||
+       memcmp(&s_base_rect,&area,sizeof(area))) {
+        memcpy(s_base_palette,palette,sizeof(s_base_palette));
+        memset(s_ramp_valid[1],0,sizeof(s_ramp_valid[1]));s_base_dirty=true;
+    }
+    s_base_rect=area;
+    for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++)
+        if(x>=0 && y>=0 && x<s_cols && y<s_rows)
+            s_base_rec[y*s_cols+x]=sf->back[y*sf->w+x];
+}
+static bool basemap_live(int col,int row,size_t i)
+{
+    return s_base_rec && tui_rect_contains(s_base_rect,col,row) &&
+           s_back[i].ch==s_base_rec[i].ch && s_back[i].attr==s_base_rec[i].attr;
 }
 
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
@@ -330,10 +374,11 @@ void ls_tui_glass(int col, int row)
     s_glass_rec[i] = s_back[i];
 }
 
-void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t attr)
+void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, uint8_t attr)
 {
     if (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h) return;
-    tui_put_char(sf, clip, x, y, ch, attr);
+    if(!tui_rect_contains(tui_surface_rect(sf),x,y)) return;
+    sf->back[y*sf->w+x]=(tui_cell){ch,attr};
     ls_tui_glass(x, y);
 }
 
@@ -435,11 +480,17 @@ static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
    can put ink and a halo over whatever the image left there. */
 EXT_RAM_BSS_ATTR static uint8_t s_cov[32 * 32];
 
-static bool glass_coverage(uint8_t ch, bool *halo)
+static bool glass_coverage(uint16_t ch, bool *halo)
 {
     const int cw = s_cw < 32 ? s_cw : 32, chh = s_ch < 32 ? s_ch : 32;
     memset(s_cov, 0, sizeof(s_cov));
     *halo = true;
+    if(ch>=0xff00) ch=(uint8_t)ch;
+    if(ch>=0x2800 && ch<=0x28ff) {
+        for(int y=0;y<chh;y++) for(int x=0;x<cw;x++)
+            s_cov[y*32+x]=ls_braille_pixel(ch,x,y,cw,chh)?15:0;
+        return true;
+    }
     if (ch == ' ') return false;
     if (ch >= 0xC0) {
         const int hw = cw / 2;
@@ -503,7 +554,7 @@ static void blit_glass(uint16_t *fb, int native_w, int col, int row,
 {
     blit_image_cell(fb, native_w, col, row, x0, y0);
     bool halo;
-    if (!glass_coverage((uint8_t)cell->ch, &halo)) return;
+    if (!glass_coverage(cell->ch, &halo)) return;
     const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
     const int cw = s_cw < 32 ? s_cw : 32, chh = s_ch < 32 ? s_ch : 32;
     for (int y = 0; y < chh; y++) {
@@ -543,7 +594,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
     const int y0 = s_oy + row * s_ch + bar_row_offset(row);
     const uint16_t fg = attr_fg(cell->attr), bg = attr_bg(cell->attr);
 
-    if ((uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
+    if (cell->ch < 0x100 && (uint8_t)cell->ch == (uint8_t)LS_TUI_IMAGE_CELL && image_cell(col, row)) {
         blit_image_cell(fb, native_w, col, row, x0, y0);
         return;
     }
@@ -553,7 +604,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
     }
 
     /* Blocks paint the whole cell themselves, background included. */
-    if (blit_block(fb, native_w, x0, y0, (uint8_t)cell->ch, fg, bg)) return;
+    if (blit_block(fb, native_w, x0, y0, cell->ch, fg, bg)) return;
 
     const ls_font_glyph_t *dsc = ls_font_glyph(s_font, (uint8_t)cell->ch);
     const uint8_t *bmp = dsc ? &s_font->bitmap[dsc->bitmap_index] : NULL;
@@ -627,7 +678,7 @@ static void look_apply(void)
     s_look_dirty = false;
     s_draw = ls_tui_theme_effective(s_theme, s_daylight);
     s_draw_crisp = s_crisp_text;
-    s_ramp_valid = false;
+    memset(s_ramp_valid, 0, sizeof(s_ramp_valid));
     ls_tui_invalidate();
 }
 
@@ -788,7 +839,9 @@ bool ls_tui_begin(int screen_w, int screen_h)
     s_glass_back  = heap_caps_calloc((cells + 7) / 8, 1, MALLOC_CAP_SPIRAM);
     s_glass_front = heap_caps_calloc((cells + 7) / 8, 1, MALLOC_CAP_SPIRAM);
     s_glass_rec   = heap_caps_calloc(cells, sizeof(tui_cell), MALLOC_CAP_SPIRAM);
-    if (!s_back || !s_front || !s_glass_back || !s_glass_front || !s_glass_rec) {
+    s_base_rec = heap_caps_calloc(cells,sizeof(tui_cell),MALLOC_CAP_SPIRAM);
+    s_base_front = heap_caps_calloc((cells+7)/8,1,MALLOC_CAP_SPIRAM);
+    if (!s_back || !s_front || !s_glass_back || !s_glass_front || !s_glass_rec || !s_base_rec || !s_base_front) {
         ls_tui_end();
         return false;
     }
@@ -824,6 +877,9 @@ void ls_tui_end(void)
     free(s_glass_back);  s_glass_back = NULL;
     free(s_glass_front); s_glass_front = NULL;
     free(s_glass_rec);   s_glass_rec = NULL;
+    free(s_base_rec); s_base_rec=NULL;
+    free(s_base_front); s_base_front=NULL;
+    s_base_rect=tui_rect_make(0,0,0,0);s_cell_palette=NULL;
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     free(s_back);  s_back = NULL;
     free(s_front); s_front = NULL;
@@ -1048,12 +1104,17 @@ int ls_tui_present(void)
             if (reserved_cell(col, row)) continue;
             size_t i = (size_t)row * s_cols + col;
             const bool glass = glass_live(col, row, i);
+            const bool base=basemap_live(col,row,i);
             if (s_back[i].ch == s_front[i].ch &&
                 s_back[i].attr == s_front[i].attr &&
                 glass == glass_bit(s_glass_front, i) &&
-                !(s_image_dirty && (glass || (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL) &&
+                base == glass_bit(s_base_front,i) && !(s_base_dirty && base) &&
+                !(s_image_dirty && (glass || (s_back[i].ch < 0x100 && (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL)) &&
                   image_changed(col, row))) continue;
+            s_cell_palette=base?s_base_palette:NULL;
             blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
+            s_cell_palette=NULL;
+            glass_set(s_base_front,i,base);
             glass_set(s_glass_front, i, glass);
             dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
                           s_cw, s_ch);
@@ -1068,6 +1129,7 @@ int ls_tui_present(void)
         s_image_previous_valid = true;
     }
     s_image_dirty = false;
+    s_base_dirty = false;
     if (drawn || margin) {
         if (margin) s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
         paint_bar_ends(fb.pixels,fb.width);
@@ -1142,8 +1204,9 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row)
 
 /* A printable stand-in for the procedural glyphs, so a dump of a waterfall
    still looks like one. The ramp runs light to dark the way the shades do. */
-static char printable(char ch)
+static char printable(int16_t ch)
 {
+    if(ch>=0x2800 && ch<=0x28ff) return '#';
     unsigned char c = (unsigned char)ch;
     if (c >= 0x20 && c < 0x7F) return ch;
     if (c >= 0x80 && c <= 0x8F) return '#';        /* quadrant blocks */

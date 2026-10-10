@@ -2,6 +2,8 @@
 
 #include "ls_test.h"
 #include "ls_lora.h"
+#include "ls_lora_priv.h"
+#include "esp_heap_caps.h"
 #include "ls_spi.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -153,6 +155,27 @@ static void respond_rssi(const uint8_t *tx,uint8_t *rx,size_t n,void *ctx)
     uint8_t op=tx[0];respond(tx,rx,n,ctx);
     if(op==0x15 && n==3 && rx){rx[1]=rssi_status;rx[2]=200;}
 }
+LS_CASE(short_radio_frames_use_inline_dma_and_failures_preserve_the_reply)
+{
+    bring_up(0x22, 0x14, 0x24);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    uint8_t tx[5] = {0xC0, 0, 0, 0, 0}, rx[5];
+    const unsigned before = ls_shim_spi_inline_transfers();
+    const unsigned heap_before = ls_shim_heap_call_count();
+    ls_lora_hw_lock();
+    for (size_t n = 1; n <= 4; n++)
+        LS_EQ_INT(ls_lora_hw_transfer_bytes(tx, rx, n), ESP_OK);
+    LS_EQ_UINT(ls_shim_spi_inline_transfers() - before, 4);
+    LS_EQ_INT(ls_lora_hw_transfer_bytes(tx, rx, 5), ESP_OK);
+    LS_EQ_UINT(ls_shim_spi_inline_transfers() - before, 4);
+    LS_EQ_UINT(ls_shim_heap_call_count(), heap_before);
+    memset(rx, 0xA5, sizeof(rx));
+    ls_shim_spi_fail_next_transfer(ESP_ERR_NO_MEM);
+    LS_EQ_INT(ls_lora_hw_transfer_bytes(tx, rx, 3), ESP_ERR_NO_MEM);
+    for (unsigned i = 0; i < sizeof(rx); i++) LS_EQ_UINT(rx[i], 0xA5);
+    ls_lora_hw_unlock();
+}
+
 LS_CASE(rssi_and_spectrum_reject_absent_or_failed_radio_responses)
 {
     bring_up(0x22,0x14,0x24);

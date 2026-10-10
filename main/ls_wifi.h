@@ -20,7 +20,8 @@ bool      ls_wifi_running(void);
 
 /* Operations reject concurrent ownership with ESP_ERR_INVALID_STATE (scan
  * returns -1; status prints busy). No caller waits for another operation.
- * Underlying driver calls still run on the calling task. */
+ * Underlying driver calls run on the calling task; automatic roam and
+ * successful-join persistence use a worker, never the event/timer stacks. */
 typedef struct {
     char    ssid[33];
     int     rssi;
@@ -29,11 +30,22 @@ typedef struct {
     uint8_t bssid[6], auth;
 } ls_wifi_scan_ap_t;
 
+typedef struct { bool connected; int saved; char ssid[33], ip[16]; } ls_wifi_link_status_t;
+/* RAM only; unknown saved count (-1) until a normal credential operation loads it. */
+void ls_wifi_link_status(ls_wifi_link_status_t *out);
 esp_err_t ls_wifi_sta_join(const char *ssid, const char *pass);
 esp_err_t ls_wifi_sta_leave(void);
 esp_err_t ls_wifi_sta_forget(void);
+esp_err_t ls_wifi_sta_forget_ssid(const char *ssid);
+esp_err_t ls_wifi_sta_forget_all(void);
+esp_err_t ls_wifi_sta_save(const char *ssid, const char *pass);
+/* Returns copied count in MRU order, or -1 when busy/unavailable. */
+int       ls_wifi_saved_list(char names[][33], int cap);
 esp_err_t ls_wifi_sta_autojoin(void);
 int       ls_wifi_sta_scan(ls_wifi_scan_ap_t *out, int cap);
+/* Copy recent scan results without touching the driver; preserves their time.
+ * Returns 0 for absent/expired results, -1 when the operation gate is busy. */
+int       ls_wifi_scan_cached(ls_wifi_scan_ap_t *out, int cap, int64_t *seen_us);
 esp_err_t ls_wifi_survey_mode(bool active);
 int       ls_wifi_survey_scan(ls_wifi_scan_ap_t *out, int cap);
 esp_err_t ls_wifi_sta_info(ls_wifi_scan_ap_t *out);

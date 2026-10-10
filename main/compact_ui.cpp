@@ -1,3 +1,6 @@
+#include "tui/ls_sweep_ui.h"
+#include "tui/ls_sweep_app.h"
+#include "tui/ls_rid_ui.h"
 /* T-Display: the TUI shell, the panel it owns, and its console commands. */
 #include "compact_ui.h"
 #include "ls_board.h"
@@ -5,6 +8,7 @@
 #include "ls_panel.h"
 #include "ls_keypad.h"
 #include "tui/ls_map.h"
+#include "tui/ls_cartocore_map.h"
 #include "ls_keymap.h"
 #include "ls_spi.h"
 #include "ls_mixrf.h"
@@ -392,14 +396,23 @@ struct TuiPngJob {
     size_t          n;
     uint32_t        crc;
     TaskHandle_t    waiter;
+    char            name[64];
 };
 
 static void tui_png_task(void *arg)
 {
     TuiPngJob *j = (TuiPngJob *)arg;
+    /* Lock each framed record; encoding never holds the logging FILE lock. */
+    flockfile(stdout);
+    printf("tui: png begin %s %dx%d\n",j->name,j->wide?j->h:j->w,j->wide?j->w:j->h);
+    fflush(stdout); funlockfile(stdout);
     j->n = ls_tui_png_emit(j->snap, j->w, j->h, j->wide,
-        [](const char *line, void *) { printf("~%s\n", line); },
+        [](const char *line, void *) { flockfile(stdout); printf("~%s\n", line); fflush(stdout); funlockfile(stdout); },
         nullptr, &j->crc);
+    flockfile(stdout);
+    printf("tui: png end %s %u bytes crc %08lx\n",j->name,(unsigned)j->n,(unsigned long)j->crc);
+    fflush(stdout);
+    funlockfile(stdout);
     xTaskNotifyGive(j->waiter);
 
     vTaskSuspend(nullptr);
@@ -818,11 +831,12 @@ static bool tui_session(void)
     extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm,
                                  ls_scr_adsb, ls_scr_falls, ls_scr_mesh,
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
-                                 ls_scr_map, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
+                                 ls_scr_map, ls_scr_tiles, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
                                  ls_scr_notes, ls_scr_compass, ls_scr_music,
                                  ls_scr_files, ls_scr_experiments, ls_scr_terminal,
                                  ls_scr_update;
+    extern const ls_app_doc_t ls_doc_tiles;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
         /* Publish the named values before anything can read them: a user app
@@ -886,6 +900,10 @@ static bool tui_session(void)
 
             { "map",  "MAP",  "vector tiles", LS_ICON_MAP, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_map, nullptr, &ls_doc_map },
+#if LS_HAS_CARTOCORE
+            { "tiles", "TILES", "map regions", LS_ICON_TILES, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_tiles, nullptr, &ls_doc_tiles },
+#endif
             { "gps",  "GPS",  "position",  LS_ICON_SAT,   TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_gps, tui_live_gps, &ls_doc_gps },
 
@@ -893,6 +911,10 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_radios, nullptr, &ls_doc_radios },
             { "link", "LINK", "Wi-Fi + BLE", LS_ICON_WIRELESS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
+            { "drones", "DRONES", "passive BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_drones, nullptr, &ls_doc_drones },
+            { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_sweep, nullptr, &ls_doc_sweep },
         };
         /* LINK was the thirteenth app, beyond the router's old
            twelve-screen limit, and vanished without a startup error. */
@@ -922,6 +944,8 @@ static bool tui_session(void)
            the one on screen. Installed here because this is the one place
            that already knows which apps this build has - see ls_notify.h. */
         ls_notify_add_probe(ls_scr_mesh_notice);
+        ls_notify_add_probe(ls_rid_notice);
+        ls_sweep_init();
 
         /* And what a notice is allowed to DO when one arrives.
 
@@ -1921,8 +1945,7 @@ static int tui_cmd(int argc, char **argv)
         job->snap = snap; job->w = fb.width; job->h = fb.height;
         job->wide = wide; job->waiter = xTaskGetCurrentTaskHandle();
 
-        printf("tui: png begin %s %dx%d\n", name,
-               wide ? fb.height : fb.width, wide ? fb.width : fb.height);
+        snprintf(job->name,sizeof(job->name),"%s",name);
         (void)ulTaskNotifyTake(pdTRUE, 0);
         TaskHandle_t enc = xTaskCreateStaticPinnedToCore(
             tui_png_task, "tui_png", stack_bytes / sizeof(StackType_t), job, 3,
@@ -1942,11 +1965,8 @@ static int tui_cmd(int argc, char **argv)
             vTaskDelay(pdMS_TO_TICKS(2));
         vTaskDelete(enc);
         const size_t n = job->n;
-        const uint32_t crc = job->crc;
         heap_caps_free(stack); heap_caps_free(tcb); heap_caps_free(job);
         heap_caps_free(snap);
-        printf("tui: png end %s %u bytes crc %08lx\n", name, (unsigned)n,
-               (unsigned long)crc);
         return n ? 0 : 1;
     }
     if (argc >= 2 && !strcmp(argv[1], "rotate")) {
@@ -2829,6 +2849,7 @@ static int map_cmd(int argc, char **argv)
        exactly when there is a fault has it backwards: the fault is when it
        is needed. The reason is printed, and then everything else is printed
        anyway. */
+    ls_carto_hw_status(false);
     const char *why = ls_map_status();
     if (why) printf("map: %s\n", why);
 

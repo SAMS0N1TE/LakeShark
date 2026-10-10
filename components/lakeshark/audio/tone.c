@@ -325,6 +325,23 @@ static void play_boot_chime(void)
         vTaskDelay(pdMS_TO_TICKS(20));
 }
 
+static void sweep_pattern(unsigned category)
+{
+    static const uint16_t notes[5][3] = {
+        {700, 700, 0}, {900, 600, 0}, {600, 900, 1200},
+        {1400, 0, 0}, {1100, 500, 1100}
+    };
+    for (unsigned i=0; i<3 && notes[category][i]; i++) {
+        if (audio_is_muted() || audio_volume_get() <= 0) return;
+        audio_tone(notes[category][i], 0.035f, 2200.0f);
+        vTaskDelay(pdMS_TO_TICKS(45));
+    }
+}
+
+static void sweep_click_pattern(void) {
+    if(!audio_is_muted() && audio_volume_get()>0) audio_tone(1200.0f,0.008f,1800.0f);
+}
+
 static void test_worker(void *arg)
 {
     (void)arg;
@@ -353,6 +370,11 @@ static void test_worker(void *arg)
             audio_out_ensure_unmuted();
             speech_say("WELCOME.");
             break;
+        case 75:
+            sweep_click_pattern();
+            break;
+        case 70: case 71: case 72: case 73: case 74:
+            sweep_pattern(which-70); break;
         default: break;
         }
         s_test_busy = false;
@@ -378,6 +400,18 @@ bool snd_test_start(int which)
 }
 
 /* The audible half of a notification, and why it is here. */
+
+bool snd_sweep_click(void) {
+    if(!s_test_q || s_test_busy || audio_is_muted() || audio_volume_get()<=0) return false;
+    uint8_t w=75;return xQueueSend(s_test_q,&w,0)==pdTRUE;
+}
+
+bool snd_sweep_start(int category)
+{
+    if (category < 0 || category > 4 || !s_test_q || s_test_busy || audio_is_muted() || audio_volume_get() <= 0) return false;
+    uint8_t w = (uint8_t)(70 + category);
+    return xQueueSend(s_test_q, &w, 0) == pdTRUE;
+}
 
 bool snd_alert_start(void)
 {

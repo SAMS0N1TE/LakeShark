@@ -23,7 +23,7 @@ typedef enum {
 typedef struct {
     char ssid[33];
     int rssi, channel;
-    bool secure;
+    bool secure, saved;
 } ls_wireless_ap_t;
 
 typedef struct {
@@ -44,6 +44,8 @@ typedef struct {
     ls_wireless_op_t operation;
     uint32_t now_ms, scan_ms, scan_revision;
     int ap_count, bt_state;
+    int saved_count;
+    char saved[8][33];
     char message[80], wifi_status[112], ssid[33], ip[20];
     char bt_status[24], peer[40], address[20];
     int wifi_rssi, bt_rssi, channel;

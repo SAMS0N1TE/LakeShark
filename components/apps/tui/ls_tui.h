@@ -67,7 +67,7 @@ void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t se
    been written with anything else, so a panel drawn over the map is solid.
    Outside the image rectangle a marked cell draws normally. */
 void ls_tui_glass(int col, int row);
-void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t attr);
+void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, uint8_t attr);
 
 /* For the screen recorder: the image as it was last handed over (false when
    there is none), and the glass marks as last presented, one bit per cell. */
@@ -123,6 +123,10 @@ void ls_tui_remote_geometry(void);
 /* ---------------------------------------------------- borrowed pixels -- */
 
 /* A rectangle of the grid whose pixels somebody else owns. */
+
+/* Snapshot the clean basemap. Cells replaced by overlays retain the TUI theme.
+ * NULL clears it on leave. Palette changes invalidate only basemap cells. */
+void ls_tui_basemap(tui_surface *sf,tui_rect cells,const uint16_t palette[16]);
 
 void ls_tui_reserve(tui_rect cells);
 tui_rect ls_tui_reserved(void);

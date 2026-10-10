@@ -13,6 +13,53 @@
 #define make_dir(p) mkdir(p, 0775)
 #endif
 
+/* Lease before fopen, release only after decoder fclose, including queued
+ * and paused files. Deletion and lease acquisition share one mutex. */
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
+static StaticSemaphore_t s_lease_memory;
+static SemaphoreHandle_t s_lease_lock;
+static unsigned s_lease_once;
+EXT_RAM_BSS_ATTR static struct { FILE *file; char path[512]; } s_leases[8];
+static void lease_lock(void)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_lease_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_lease_lock = xSemaphoreCreateMutexStatic(&s_lease_memory);
+        __atomic_store_n(&s_lease_once, 2, __ATOMIC_RELEASE);
+    } else while (__atomic_load_n(&s_lease_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    xSemaphoreTake(s_lease_lock, portMAX_DELAY);
+}
+FILE *call_store_playback_open(const char *path)
+{
+    if (!path || strlen(path) >= sizeof(s_leases[0].path)) return NULL;
+    lease_lock();
+    FILE *file = NULL;
+    for (unsigned i = 0; i < 8; ++i) if (!s_leases[i].file) {
+        file = fopen(path, "rb");
+        if (file) { strcpy(s_leases[i].path, path); s_leases[i].file = file; }
+        break;
+    }
+    xSemaphoreGive(s_lease_lock);
+    return file;
+}
+void call_store_playback_close(FILE *file)
+{
+    if (!file) return;
+    lease_lock();
+    fclose(file);
+    for (unsigned i = 0; i < 8; ++i) if (s_leases[i].file == file) {
+        s_leases[i].file = NULL; s_leases[i].path[0] = 0; break;
+    }
+    xSemaphoreGive(s_lease_lock);
+}
 static bool directory(const char *path)
 {
     struct stat st;
@@ -49,6 +96,7 @@ static void finish(call_writer_t *w, bool discard)
     }
     if (!ok) { remove(w->temporary); remove(side); if (!discard) w->errors++; }
 }
+void call_store_close(call_writer_t *w) { finish(w, false); }
 static void begin(call_writer_t *w, const call_meta_t *meta, const char *root)
 {
     finish(w, true); w->meta = *meta; w->bytes = 0; w->failed = false;
@@ -75,8 +123,10 @@ static void begin(call_writer_t *w, const call_meta_t *meta, const char *root)
         if (!stat(w->path, &st) || !stat(w->temporary, &st)) continue;
         w->file = fopen(w->temporary, "wb");
         if (w->file) {
-            /* PCM already waits in PSRAM; stdio needs no internal-RAM buffer. */
-            setvbuf(w->file, NULL, _IONBF, 0);
+            /* Coalesce small vocoder blocks into sector-sized writes without
+               allocating stdio's default buffer from internal RAM. fclose
+               still flushes PCM before the completed call is published. */
+            setvbuf(w->file, w->buffer, _IOFBF, sizeof(w->buffer));
             if (!header(w->file, meta->rate, 0)) w->failed = true;
         }
         if (!w->file) w->errors++;
@@ -121,7 +171,7 @@ static bool wav_name(const char *s)
             (s[i] >= 'a' && s[i] <= 'z'))) return false;
     return true;
 }
-bool call_store_delete(const char *root, const char *path)
+static bool valid_path(const char *root, const char *path)
 {
     size_t n = strlen(root);
     if (strncmp(path, root, n) || path[n] != '/') return false;
@@ -129,8 +179,25 @@ bool call_store_delete(const char *root, const char *path)
     if (!file || file - day != 8) return false;
     char name[9]; memcpy(name, day, 8); name[8] = 0;
     if (!day_name(name) || !wav_name(file + 1)) return false;
-    if (remove(path)) return false;
+    return true;
+}
+bool call_store_protect(const char *root,const char *path,bool protect) {
+    if(!valid_path(root,path))return false;
+    struct stat st;if(stat(path,&st) || !S_ISREG(st.st_mode))return false;
+    char marker[CALL_PATH_MAX+8];snprintf(marker,sizeof(marker),"%s.keep",path);
+    if(!protect)return !remove(marker) || errno==ENOENT;
+    FILE *f=fopen(marker,"wb");return f && fclose(f)==0;
+}
+bool call_store_delete(const char *root,const char *path) {
+    if(!valid_path(root,path))return false;
+    lease_lock();
+    for (unsigned i = 0; i < 8; ++i) if (s_leases[i].file && !strcmp(s_leases[i].path, path)) {
+        xSemaphoreGive(s_lease_lock); return false;
+    }
+    if (remove(path)) { xSemaphoreGive(s_lease_lock); return false; }
     char side[CALL_PATH_MAX + 8]; snprintf(side, sizeof(side), "%s.meta", path); remove(side);
+    snprintf(side,sizeof(side),"%s.keep",path);remove(side);
+    xSemaphoreGive(s_lease_lock);
     return true;
 }
 int call_store_scan(const char *root, call_entry_t *entries, int capacity)
@@ -157,6 +224,8 @@ int call_store_scan(const char *root, call_entry_t *entries, int capacity)
             e.meta.time = stamp; e.meta.hz = hz; e.meta.talkgroup = tg;
             e.meta.source = src; e.meta.rate = rate; e.meta.gps = gps != 0;
             e.duration_ms = ms;
+            snprintf(side,sizeof(side),"%s.keep",e.path);e.kept=access(side,F_OK)==0;
+            struct stat st; if (!stat(e.path,&st) && S_ISREG(st.st_mode)) e.bytes=(uint32_t)st.st_size;
             int at = 0;
             while (at < count && (entries[at].meta.time > stamp ||
                 (entries[at].meta.time == stamp && strcmp(entries[at].path, e.path) > 0))) ++at;
@@ -197,11 +266,37 @@ void call_store_retain(const char *root, int64_t today, unsigned keep)
             if (!wav_name(file->d_name)) continue;
             char path[CALL_PATH_MAX];
             int n = snprintf(path, sizeof(path), "%s/%s", dir, file->d_name);
-            if (n > 0 && n < (int)sizeof(path)) call_store_delete(root, path);
+            if (n > 0 && n < (int)sizeof(path)) {
+                char marker[CALL_PATH_MAX+8];snprintf(marker,sizeof(marker),"%s.keep",path);
+                if(access(marker,F_OK)!=0)call_store_delete(root,path);
+            }
         }
         closedir(files);
         /* Unrelated files and unfinished recordings keep their directory. */
         rmdir(dir);
     }
     closedir(days);
+}
+
+uint64_t call_store_size(const char *root)
+{
+    uint64_t bytes = 0;
+    DIR *days = opendir(root); if (!days) return 0;
+    struct dirent *day;
+    while ((day = readdir(days))) {
+        if (!day_name(day->d_name)) continue;
+        char dir[CALL_PATH_MAX]; snprintf(dir, sizeof(dir), "%s/%.8s", root, day->d_name);
+        DIR *files = opendir(dir); if (!files) continue;
+        struct dirent *file;
+        while ((file = readdir(files))) {
+            if (file->d_name[0] == '.') continue;
+            char path[CALL_PATH_MAX];
+            int n = snprintf(path, sizeof(path), "%s/%s", dir, file->d_name);
+            struct stat st;
+            if (n > 0 && n < (int)sizeof(path) && !stat(path, &st) && S_ISREG(st.st_mode))
+                bytes += (uint64_t)st.st_size;
+        }
+        closedir(files);
+    }
+    closedir(days); return bytes;
 }

@@ -17,6 +17,7 @@ bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; r
 #include "ls_experiments.h"
 #include "experiments/lr433_history.h"
 #include "ls_notify.h"
+#include "esp_timer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -149,6 +150,9 @@ void settings_set_update_check(bool v) { s_update_check = v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
+static bool s_ant_remember;
+bool settings_get_antenna_remember(void) { return s_ant_remember; }
+void settings_set_antenna_remember(bool v) { s_ant_remember = v; }
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
@@ -738,6 +742,34 @@ static bool between565(uint16_t px, uint16_t a, uint16_t b)
     return true;
 }
 
+LS_CASE(alternating_attributes_reuse_ramps_until_the_palette_changes)
+{
+    /* Peak counters are only captured when elapsed time is nonzero. */
+    ls_shim_time_live(1);
+    ls_tui_set_theme(ls_tui_theme_at(0));
+    ls_tui_set_daylight(false);
+    LS_CHECK(ls_tui_begin(568, 1232));
+    tui_surface *sf = ls_tui_surface();
+    tui_rect all = tui_surface_rect(sf);
+    for (int c = 3; c < 30; ++c)
+        tui_put_char(sf, all, c, 5, 'W', TUI_ATTR(c & 1 ? TUI_RED : TUI_GREEN, TUI_BLACK));
+    ls_tui_present();
+    ls_tui_peak_cost(NULL, NULL, NULL, NULL);
+    ls_tui_invalidate();
+    LS_CHECK(ls_tui_present() > 0);
+    uint32_t ramps = UINT32_MAX;
+    ls_tui_peak_cost(NULL, NULL, NULL, &ramps);
+    LS_EQ_UINT(ramps, 0);
+    /* Daylight changes the palette without changing attribute bytes. */
+    ls_tui_set_daylight(true);
+    ls_tui_present();
+    ls_tui_peak_cost(NULL, NULL, NULL, &ramps);
+    LS_CHECK(ramps > 0 && ramps <= 256);
+    ls_tui_set_daylight(false);
+    ls_tui_end();
+    ls_shim_time_live(0);
+}
+
 LS_CASE(a_glyph_blends_toward_its_own_ground_in_either_polarity)
 {
 
@@ -848,6 +880,51 @@ LS_CASE(pixel_map_updates_only_changed_cells_and_text_covers_it)
    full repaint would: one changed cell, then the whole frame compared. */
 static uint16_t g_ref[NATIVE_W * NATIVE_H];
 
+LS_CASE(p25_home_switch_diffs_match_full_repaint_in_both_postures)
+{
+    register_once();
+    int saved_font = ls_tui_font_index(), saved_corner = ls_tui_corner_radius();
+    ls_tui_set_font_index(0);
+    ls_tui_set_corner_radius(72);
+    for (int wide = 0; wide < 2; ++wide) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        ls_tui_set_theme(&ls_theme_terminal_bay);
+        ls_tui_set_daylight(false);
+        for (int signal = 0; signal < 2; ++signal) {
+            ls_tui_screen_show(1);
+            ls_scr_p25.key(LS_TK_CHAR, signal ? '2' : '1');
+            frame(3);
+            ls_tui_screen_show(0);
+            ls_tui_router_draw(ls_tui_surface());
+            int diff = ls_tui_present();
+            int cols, rows;
+            ls_tui_geometry(&cols, &rows, NULL, NULL);
+            LS_CHECK(diff > 0 && diff < cols * rows);
+            memcpy(g_ref, g_fb, sizeof(g_fb));
+            /* Same HOME cell grid, with a forced full rasterization. */
+            ls_tui_invalidate();
+            LS_EQ_INT(ls_tui_present(), cols * rows);
+            LS_CHECK(memcmp(g_fb, g_ref, sizeof(g_fb)) == 0);
+            printf("switch %s P25 %s -> HOME: %d/%d cells, pixels identical\n",
+                   wide ? "landscape" : "portrait", signal ? "signal" : "decode",
+                   diff, cols * rows);
+            sensor_pixels(signal ? "switch-signal-home" : "switch-decode-home", wide);
+            /* Both directions opt in, so also verify the return to P25. */
+            ls_tui_screen_show(1);
+            ls_tui_router_draw(ls_tui_surface());
+            diff = ls_tui_present();
+            LS_CHECK(diff > 0 && diff < cols * rows);
+            memcpy(g_ref, g_fb, sizeof(g_fb));
+            ls_tui_invalidate();
+            LS_EQ_INT(ls_tui_present(), cols * rows);
+            LS_CHECK(memcmp(g_fb, g_ref, sizeof(g_fb)) == 0);
+        }
+        ls_tui_end();
+    }
+    ls_tui_set_font_index(saved_font);
+    ls_tui_set_corner_radius(saved_corner);
+}
+
 LS_CASE(present_writes_back_only_changed_rows_and_matches_a_full_repaint)
 {
     register_once();
@@ -909,3 +986,68 @@ void audio_toggle_mute(void) {}
 const p25_program_t *p25_program_session(void) { return NULL; }
 bool p25_program_request_reload_path(const char *path)
 { (void)path; return false; }
+
+LS_CASE(all_braille_patterns_render_eight_unicode_dots_in_both_postures)
+{
+    /* Independent expected slot bit order and pixel bounds; test the real blitter. */
+    const unsigned bits[4][2]={{1,8},{2,16},{4,32},{64,128}};
+    for(int wide=0;wide<2;wide++) {
+        LS_CHECK(ls_tui_begin(wide?1232:568,wide?568:1232));
+        ls_tui_set_font_index(0); ls_tui_set_theme(&ls_theme_terminal_bay); ls_tui_set_daylight(false);
+        tui_surface *sf=ls_tui_surface();
+        int cols,rows,cw,ch;ls_tui_geometry(&cols,&rows,&cw,&ch);
+        tui_fill(sf,tui_surface_rect(sf),' ',0);
+        for(unsigned pattern=0;pattern<256;pattern++) {
+            int c=3+pattern%16,r=10+pattern/16;
+            sf->back[r*cols+c]=(tui_cell){0x2800+pattern,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK)};
+        }
+        ls_tui_present();
+        const int lw=wide?1232:568,lh=wide?568:1232;
+        int ox=(lw-cols*cw)/2,oy=(lh-rows*ch)/2;
+        uint16_t fg=ls_theme_terminal_bay.palette[TUI_WHITE|TUI_BRIGHT];
+        uint16_t bg=ls_theme_terminal_bay.palette[TUI_BLACK];
+        unsigned bad=0,checked=0;
+        for(unsigned pattern=0;pattern<256;pattern++) for(int y=0;y<ch;y++) for(int x=0;x<cw;x++) {
+            int sx=x*2/cw,sy=y*4/ch;
+            int xa=sx*cw/2,xb=(sx+1)*cw/2,ya=sy*ch/4,yb=(sy+1)*ch/4;
+            int dw=(xb-xa+1)/2,dh=(yb-ya+1)/2;
+            int dx=x-xa-(xb-xa-dw)/2,dy=y-ya-(yb-ya-dh)/2;
+            bool dot=(pattern&bits[sy][sx]) && dx>=0 && dx<dw && dy>=0 && dy<dh;
+            int px=ox+(3+pattern%16)*cw+x,py=oy+(10+pattern/16)*ch+y;
+            size_t i=wide?(size_t)(lw-1-px)*NATIVE_W+py:(size_t)py*NATIVE_W+px;
+            if(g_fb[i]!=(dot?fg:bg)) bad++;
+            checked++;
+        }
+        LS_CHECK(checked>0);LS_EQ_UINT(0,bad);
+        LS_EQ_INT(0,ls_tui_present());
+        ls_tui_end();
+    }
+}
+
+LS_CASE(basemap_palette_switches_preserve_overlays_and_release_cleanly)
+{
+    LS_CHECK(ls_tui_begin(568,1232));
+    ls_tui_set_theme(&ls_theme_terminal_bay);ls_tui_set_daylight(false);
+    tui_surface *sf=ls_tui_surface();tui_rect area={3,10,3,1};
+    uint16_t colours[16]={0};colours[15]=0x1234;
+    tui_fill(sf,tui_surface_rect(sf),' ',0);
+    tui_fill(sf,area,LS_TUI_QUAD(1,1,1,1),TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+    ls_tui_basemap(sf,area,colours);
+    /* An overlay replaces a recorded basemap cell with a distinct symbol. */
+    ls_tui_put_glass(sf,area,4,10,0x28a5,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    LS_EQ_INT(0x28a5,sf->back[10*sf->w+4].ch);
+    ls_tui_present();memcpy(g_ref,g_fb,sizeof(g_fb));
+    LS_EQ_INT(0,ls_tui_present());
+    colours[15]=0x5678;
+    /* Refresh clean base, replace the overlay again, then diff-present. */
+    tui_fill(sf,area,LS_TUI_QUAD(1,1,1,1),TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+    ls_tui_basemap(sf,area,colours);
+    ls_tui_put_glass(sf,area,4,10,0x28a5,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    LS_EQ_INT(2,ls_tui_present());
+    LS_CHECK(memcmp(g_ref,g_fb,sizeof(g_fb))!=0);
+    memcpy(g_ref,g_fb,sizeof(g_fb));ls_tui_invalidate();ls_tui_present();
+    LS_CHECK(memcmp(g_ref,g_fb,sizeof(g_fb))==0);
+    ls_tui_basemap(NULL,(tui_rect){0},NULL);
+    LS_EQ_INT(2,ls_tui_present());
+    ls_tui_end();
+}

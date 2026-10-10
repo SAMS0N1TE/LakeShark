@@ -24,10 +24,37 @@
 
 static const char *TAG = "rtlsdr_dev";
 static rtlsdr_dev_t *s_dev;
+/* Setup owns its private object until publication. Removal never waits for
+ * setup (the USB client must remain able to deliver control completions). */
+static portMUX_TYPE s_lifecycle = portMUX_INITIALIZER_UNLOCKED;
+static bool s_setup_active, s_cleanup_active;
+static bool s_probe_pending;
+static uint8_t s_probe_addr;
+static usb_host_client_handle_t s_probe_client;
+static unsigned s_probe_generation;
+static unsigned s_remove_generation;
+
+/* Keep at most the latest replacement probe while the old owner drains. */
+static void finish_lifecycle(bool setup)
+{
+    portENTER_CRITICAL(&s_lifecycle);
+    if (setup) s_setup_active = false;
+    else s_cleanup_active = false;
+    bool probe = !s_setup_active && !s_cleanup_active && !s_dev &&
+                 s_probe_pending && s_probe_generation == s_remove_generation;
+    uint8_t addr = s_probe_addr;
+    usb_host_client_handle_t client = s_probe_client;
+    if (probe || s_probe_generation != s_remove_generation) s_probe_pending = false;
+    portEXIT_CRITICAL(&s_lifecycle);
+    if (probe) rtl_adapter_probe_async(addr, client);
+}
+
+
 static volatile bool s_read_cancelled;
 static volatile bool s_adapter_streaming;
 
 typedef struct {
+    unsigned generation;
     uint8_t dev_addr;
     usb_host_client_handle_t client;
 } setup_arg_t;
@@ -232,13 +259,19 @@ static void rtl_unregister_endpoint(void)
 
 bool rtl_adapter_note_removed(usb_device_handle_t device)
 {
-    rtlsdr_dev_t *dev = __atomic_load_n(&s_dev, __ATOMIC_ACQUIRE);
-    if (!dev || rtlsdr_usb_device_handle(dev) != device) return false;
-    /* A real unplug must invalidate USB handles before close tries to drain
-     * transfer objects. unregister first wakes and quiesces every session read;
-     * neither step calls an application lifecycle callback. */
+    portENTER_CRITICAL(&s_lifecycle);
+    ++s_remove_generation;
+    rtlsdr_dev_t *dev = s_dev;
+    bool matches = dev && rtlsdr_usb_device_handle(dev) == device;
+    if (matches) { s_dev = NULL; s_cleanup_active = true; }
+    portEXIT_CRITICAL(&s_lifecycle);
     esp_libusb_note_device_gone(device);
-    rtlsdr_dev_teardown();
+    if (!matches) return false;
+    rtl_unregister_endpoint();
+    rtlsdr_stream_stop_for(dev);
+    __atomic_store_n(&s_adapter_streaming, false, __ATOMIC_RELEASE);
+    rtlsdr_close(dev);
+    finish_lifecycle(false);
     return true;
 }
 
@@ -257,7 +290,12 @@ void rtlsdr_dev_teardown(void)
        nothing else: the ops reach the device through their own context
        pointer, and a probe that sees NULL early waits on endpoint
        registration, as it would during an ordinary attach. */
-    rtlsdr_dev_t *dev = __atomic_exchange_n(&s_dev, NULL, __ATOMIC_ACQ_REL);
+    portENTER_CRITICAL(&s_lifecycle);
+    ++s_remove_generation;
+    rtlsdr_dev_t *dev = s_dev;
+    s_dev = NULL;
+    if (dev) s_cleanup_active = true;
+    portEXIT_CRITICAL(&s_lifecycle);
     if (!dev) return;
 
     rtl_unregister_endpoint();
@@ -269,6 +307,7 @@ void rtlsdr_dev_teardown(void)
     __atomic_store_n(&s_adapter_streaming, false, __ATOMIC_RELEASE);
     rtlsdr_close(dev);
     ESP_LOGW(TAG, "device object released");
+    finish_lifecycle(false);
 }
 
 /* The software stand-in for a replug on a board with no VBUS switch.
@@ -298,9 +337,10 @@ usb_port_cycle_result_t rtl_adapter_port_reset(void)
        the transfer as the device leaves (its callback runs before DEV_GONE
        is delivered), and rtl_adapter_note_removed then tears down a device
        with nothing in flight. */
-    rtlsdr_dev_t *dev = __atomic_load_n(&s_dev, __ATOMIC_ACQUIRE);
-    if (dev) {
-        const usb_device_handle_t hdl = rtlsdr_usb_device_handle(dev);
+    portENTER_CRITICAL(&s_lifecycle);
+    const usb_device_handle_t hdl = s_dev ? rtlsdr_usb_device_handle(s_dev) : NULL;
+    portEXIT_CRITICAL(&s_lifecycle);
+    if (hdl) {
         const bool locked = esp_libusb_ctrl_lock(3000);
         const bool stuck = esp_libusb_ctrl_pending(hdl);
         if (locked) esp_libusb_ctrl_unlock();
@@ -322,54 +362,33 @@ bool rtl_adapter_port_reset_possible(void)
 static void rtlsdr_setup_task(void *arg)
 {
     setup_arg_t *setup = (setup_arg_t *)arg;
-    if (s_dev) {
-        ls_radio_endpoint_info_t info;
-        if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK &&
-            info.present) {
-            ESP_LOGI(TAG, "an RTL endpoint is already present - ignoring USB addr %u",
-                     setup->dev_addr);
-            vPortFree(setup);
-            ls_task_retire_self();
-            return;
-        }
-        ESP_LOGW(TAG, "a device object was still open - releasing it before re-opening");
-        rtlsdr_dev_teardown();
-    }
-
-    int error = rtlsdr_open(&s_dev, setup->dev_addr, setup->client);
-    if (error < 0) {
-        ESP_LOGI(TAG, "USB device is not a supported RTL-SDR endpoint");
-        s_dev = NULL;
-        vPortFree(setup);
-        ls_task_retire_self();
-        return;
-    }
-
-    rtlsdr_set_freq_correction(s_dev, 0);
-    rtlsdr_reset_buffer(s_dev);
-    ls_radio_err_t register_error = LS_RADIO_ERR_BUSY;
-    /* a replacement dongle can enumerate before the old app task has
-     * observed DISCONNECTED and released its invalid session. Reusing that
-     * static session slot early would alias the stale handle; wait for the
-     * bounded app read to release it, then publish the new attach. */
+    rtlsdr_dev_t *dev = NULL;
+    bool registered = false;
+    int error = rtlsdr_open(&dev, setup->dev_addr, setup->client);
+    if (error < 0) goto done;
+    rtlsdr_set_freq_correction(dev, 0);
+    rtlsdr_reset_buffer(dev);
     for (int attempt = 0; attempt < 200; ++attempt) {
-        register_error = rtl_register_endpoint(s_dev);
-        if (register_error != LS_RADIO_ERR_BUSY) break;
+        portENTER_CRITICAL(&s_lifecycle);
+        bool cancelled = setup->generation != s_remove_generation;
+        portEXIT_CRITICAL(&s_lifecycle);
+        if (cancelled) break;
+        ls_radio_err_t result = rtl_register_endpoint(dev);
+        if (result == LS_RADIO_OK) { registered = true; break; }
+        if (result != LS_RADIO_ERR_BUSY) break;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    if (register_error != LS_RADIO_OK) {
-        ESP_LOGE(TAG, "endpoint registration failed: %s",
-                 ls_radio_err_name(register_error));
-        rtlsdr_close(s_dev);
-        s_dev = NULL;
-        vPortFree(setup);
-        ls_task_retire_self();
-        return;
+    portENTER_CRITICAL(&s_lifecycle);
+    bool publish = registered && setup->generation == s_remove_generation;
+    if (publish) { s_dev = dev; dev = NULL; }
+    portEXIT_CRITICAL(&s_lifecycle);
+    if (dev) {
+        if (registered) rtl_unregister_endpoint();
+        rtlsdr_close(dev);
     }
-
-    event_bus_publish_simple(EVT_TUNER_LOCKED, "rtlsdr");
-    ESP_LOGI(TAG, "IQ endpoint registered, awaiting app config");
-
+    if (publish) event_bus_publish_simple(EVT_TUNER_LOCKED, "rtlsdr");
+done:
+    finish_lifecycle(true);
     vPortFree(setup);
     ls_task_retire_self();
 }
@@ -382,6 +401,24 @@ void rtl_adapter_probe_async(uint8_t dev_addr,
         ESP_LOGE(TAG, "setup arg alloc failed");
         return;
     }
+    portENTER_CRITICAL(&s_lifecycle);
+    if (s_setup_active || s_cleanup_active) {
+        s_probe_pending = true;
+        s_probe_addr = dev_addr;
+        s_probe_client = client;
+        s_probe_generation = s_remove_generation;
+        portEXIT_CRITICAL(&s_lifecycle);
+        vPortFree(setup);
+        return;
+    }
+    if (s_dev) {
+        portEXIT_CRITICAL(&s_lifecycle);
+        vPortFree(setup);
+        return;
+    }
+    s_setup_active = true;
+    setup->generation = s_remove_generation;
+    portEXIT_CRITICAL(&s_lifecycle);
     setup->dev_addr = dev_addr;
     setup->client = client;
     /* Opening an RTL device is deliberately asynchronous, but its temporary
@@ -398,6 +435,7 @@ void rtl_adapter_probe_async(uint8_t dev_addr,
     if (xTaskCreatePinnedToCoreWithCaps(rtlsdr_setup_task, "rtlsdr_setup", 8192,
             setup, 4, NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "setup task create failed");
+        finish_lifecycle(true);
         vPortFree(setup);
     }
 }

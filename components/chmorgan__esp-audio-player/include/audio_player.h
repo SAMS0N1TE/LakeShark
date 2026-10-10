@@ -47,6 +47,8 @@ audio_player_state_t audio_player_get_state();
 uint32_t audio_player_stack_free_bytes(void);
 /* Decoded PCM accepted by the output; excludes time spent paused. */
 uint32_t audio_player_position_ms(void);
+/* Queue a seek for PCM WAV; preserves pause and never touches the file from UI. */
+esp_err_t audio_player_seek_ms(uint32_t ms);
 uint32_t audio_player_duration_ms(void);
 
 typedef enum {
@@ -137,6 +139,7 @@ typedef struct {
     audio_player_write_fn write_fn;
     UBaseType_t priority; /*< FreeRTOS task priority */
     BaseType_t coreID; /*< ESP32 core ID */
+    void (*file_close_fn)(FILE *file); /* optional file close + lease release; defaults to fclose */
 } audio_player_config_t;
 
 /**

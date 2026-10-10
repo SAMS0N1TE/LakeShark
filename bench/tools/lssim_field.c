@@ -44,6 +44,7 @@ void ls_field_sample_snapshot(ls_field_sample_t *out)
     ls_field_start();
     if (!out) return;
     *out = s.sample; out->time_us = esp_timer_get_time();
+    if (getenv("LSSIM_RID_NOFIX")) out->gps_valid = false;
     const float a = -lssim_turn_deg() * 0.01745329f, c = cosf(a), n = sinf(a);
     const float mx = out->imu.mx, my = out->imu.my;
     out->imu.mx = mx * c - my * n; out->imu.my = mx * n + my * c;

@@ -53,6 +53,8 @@ int ls_btn_raised_height(tui_rect area, int n);
 void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus);
+/* Keep a single raised row; caller must budget enough width for its labels. */
+void ls_btn_bar_raised_row(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
                             int n, int focus, int slot);
 /* Clip and inset one line against the physical corner at its absolute row. */

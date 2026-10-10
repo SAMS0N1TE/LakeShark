@@ -51,7 +51,8 @@ $script = @"
 if (`$idfPy) { `$env:PATH = "`$(`$idfPy.FullName);`$env:PATH" }
 . '$export' | Out-Null
 Set-Location '$root'
-idf.py -B '$dir' -D SDKCONFIG='$dir/sdkconfig' -D SDKCONFIG_DEFAULTS='$($c.defaults)' -D IDF_TARGET='$target' build
+`$buildPython = if (`$env:IDF_PYTHON_ENV_PATH) { Join-Path `$env:IDF_PYTHON_ENV_PATH 'Scripts/python.exe' } else { 'python' }
+& `$buildPython "`$env:IDF_PATH/tools/idf.py" -B '$dir' -D SDKCONFIG='$dir/sdkconfig' -D SDKCONFIG_DEFAULTS='$($c.defaults)' -D IDF_TARGET='$target' build
 exit `$LASTEXITCODE
 "@
 

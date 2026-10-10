@@ -38,7 +38,7 @@ bool tui_rect_empty(tui_rect r);
 
 /* --- cells and surface --- */
 typedef struct {
-    char ch;
+    int16_t ch; /* legacy byte glyph or U+2800..U+28FF; grids live in PSRAM */
     uint8_t attr; /* (bg << 4) | fg, matches vterm_cell_t */
 } tui_cell;
 

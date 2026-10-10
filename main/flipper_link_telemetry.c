@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "ls_board.h"
+#include "fm_mode_label.h"
 /* identity helper lives in ble_link_core so the bench test can drive
    it without pulling in the IDF-facing telemetry frontend. */
 #include "ble_link_core.h"
@@ -65,13 +66,6 @@ int ls_telemetry_build_fm(char *buf, size_t len,
                           const lakeshark_fm_tel_t *t,
                           const ls_telemetry_common_t *common)
 {
-    /* FLEX joined the FM submodes while this was being
-       extracted, and the extraction carried the older list. A short
-       array indexed by mode silently reports the wrong name rather
-       than failing, so it has to be kept in step with fm_state.h. */
-    static const char *sub[] = { "listen", "scan", "pocsag", "wfm",
-                                 "acars", "flex" };
-
     char text[80];
     copy_text(text, sizeof(text), t->pocsag_last_text[0] ? t->pocsag_last_text : "-");
     sanitize(text);
@@ -96,8 +90,7 @@ int ls_telemetry_build_fm(char *buf, size_t len,
                      common->volume, common->muted, t->iq_level,
                      common->rtl_ready, t->read_errors,
                      (unsigned long)t->iq_bytes_sec,
-                     (unsigned)t->submode < sizeof(sub) / sizeof(sub[0])
-                         ? sub[t->submode] : "unknown",
+                     fm_mode_command_name((fm_mode_t)t->submode),
                      t->squelch_tenths, t->squelch_open,
                      t->audio_level, (unsigned long)t->scan_start_hz,
                      (unsigned long)t->scan_stop_hz,

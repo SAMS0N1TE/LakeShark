@@ -51,7 +51,7 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
-CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=24
 CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
 CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
@@ -63,7 +63,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # Scanout must be serviced across flash access and large framebuffer/SD
 # writebacks. No interrupt callback modifies these CPU-owned pixel/IQ buffers.
-CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
+CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
 
@@ -72,3 +72,26 @@ CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
 # internal DMA memory, which ADS-B streaming nearly exhausts; a failed
 # allocation left the mesh radio deaf. Software AES needs no DMA memory.
 # CONFIG_MBEDTLS_HARDWARE_AES is not set
+
+# Task-only FreeRTOS APIs can wait for cache; FromISR/context-switch paths stay in IRAM.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+# PM is disabled; stop the sleep module selecting the optional IRAM latency optimization.
+CONFIG_PM_SLEEP_FUNC_IN_IRAM=n
+# Match 5.4.3: no optional light-sleep latency optimization.
+CONFIG_PM_SLP_IRAM_OPT=n
+# NimBLE host is task-context on the C6 transport; keep its new dynamic pools out of DMA RAM.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# C6 runs the Wi-Fi beacon/TBTT ISR; its P4 proxy needs no sleep IRAM optimization.
+CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+# Disable the Wi-Fi Remote alias too so it cannot reselect PM sleep IRAM placement.
+CONFIG_WIFI_RMT_SLP_IRAM_OPT=n
+
+# Cellset (index + four LRU files), places and a resumable download coexist.
+# Keep the enlarged FAT file table and sector buffers in PSRAM.
+CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y
+CONFIG_FATFS_FS_LOCK=24
+
+# Map downloads ran at ~100 KB/s against the 5760-byte default window.
+# lwIP buffers come from PSRAM here (MALLOC_ALWAYSINTERNAL=0).
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=24

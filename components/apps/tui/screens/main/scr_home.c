@@ -31,8 +31,8 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
 static int group_of(const ls_app_t *a)
 {
     if (a->cat == LS_APP_USER) return 3;
-    if (!strcmp(a->id, "map") || !strcmp(a->id, "gps") || !strcmp(a->id, "notes") ||
-        !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
+    if (!strcmp(a->id, "map") || !strcmp(a->id, "tiles") || !strcmp(a->id, "gps") || !strcmp(a->id, "notes") ||
+        !strcmp(a->id, "sweep") || !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
     if (!strcmp(a->id, "set") || !strcmp(a->id, "diag") || !strcmp(a->id, "radios") || !strcmp(a->id, "link") ||
         !strcmp(a->id, "terminal") || !strcmp(a->id, "update")) return 2;
     return 0;
@@ -65,6 +65,17 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
             out[n].live = a->live ? a->live() : false;
             out[n].badge = !strcmp(a->id, "update") && update_known();
             n++;
+        }
+    }
+    /* Keep the scanner beside COMPASS/FIND regardless of registry order. */
+    if(s_group==1) {
+        int find=-1,sweep=-1;
+        for(int i=0;i<n;i++) {if(!strcmp(apps[i]->id,"compass")) find=i;if(!strcmp(apps[i]->id,"sweep")) sweep=i;}
+        if(find>=0 && sweep>find+1) {
+            ls_tile_t tile=out[sweep];const ls_app_t *app=apps[sweep];
+            memmove(out+find+2,out+find+1,(sweep-find-1)*sizeof(*out));
+            memmove(apps+find+2,apps+find+1,(sweep-find-1)*sizeof(*apps));
+            out[find+1]=tile;apps[find+1]=app;
         }
     }
     return n;
@@ -268,6 +279,7 @@ static bool touch(int col, int row)
 }
 
 const ls_tui_screen_t ls_scr_home = {
+    .diff_switch = true,
     .name = "HOME",
     .hint = "F1-F4 group  1-9 open  F5/F6 page",
     .enter = NULL,

@@ -1,0 +1,52 @@
+diff --git a/components/freertos/linker.lf b/components/freertos/linker.lf
+--- a/components/freertos/linker.lf
++++ b/components/freertos/linker.lf
+@@ -357,10 +357,12 @@
+                 port:pxRetrieveCoprocSaveAreaFromStackPointer (default)
+                 port:uxInitialiseCoprocSaveArea (default)
+                 port:vPortCleanUpCoprocArea (default)
+-                port:pxPortGetCoprocArea (default)
+-                port:pxPortUpdateCoprocOwner (default)
++                # Interrupt entry and HWLP/PIE/FPU context save/restore call these.
++                # Keep their closure in IRAM even with task-only flash placement.
++                port:pxPortGetCoprocArea (noflash_text)
++                port:pxPortUpdateCoprocOwner (noflash_text)
+                 if FREERTOS_UNICORE = n:
+-                    port:vPortTaskPinToCore (default)
++                    port:vPortTaskPinToCore (noflash_text)
+             port:uxInitialiseStackFrame (default)
+             port:pxPortInitialiseStack (default)
+             port:vPortYield (default)
+diff --git a/components/freertos/linker_common.lf b/components/freertos/linker_common.lf
+--- a/components/freertos/linker_common.lf
++++ b/components/freertos/linker_common.lf
+@@ -95,7 +95,7 @@
+         heap_idf:xPortGetMinimumEverFreeHeapSize (default)
+         heap_idf:xPortCheckValidListMem (default)
+         if FREERTOS_SMP = n:
+-            heap_idf:xPortCheckValidTCBMem (default)
++            # vTaskGetSnapshot calls this from cache-safe diagnostic paths.
+             heap_idf:xPortcheckValidStackMem (default)
+ 
+     # ------------------------------------------------------------------------------------------------------------------
+diff --git a/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c b/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
+--- a/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
++++ b/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
+@@ -827,7 +827,7 @@
+              * but in practice, since we are already in an exception handler, this won't work, so let's manually
+              * trigger an exception with the previous coprocessor owner's TCB */
+             g_panic_abort = true;
+-            g_panic_abort_details = (char *) "ERROR: Stack overflow while saving coprocessor context!\n";
++            g_panic_abort_details = (char *) DRAM_STR("ERROR: Stack overflow while saving coprocessor context!\n");
+             xt_unhandled_exception(task_sp);
+         }
+     }
+@@ -877,7 +877,7 @@
+      * as such, it is not possible to trigger another exception as would `abort` do.
+      * Simulate an abort without actually triggering an exception. */
+     g_panic_abort = true;
+-    g_panic_abort_details = (char *) "ERROR: Coprocessors must not be used in ISRs!\n";
++    g_panic_abort_details = (char *) DRAM_STR("ERROR: Coprocessors must not be used in ISRs!\n");
+     xt_unhandled_exception(frame);
+ }
+ 

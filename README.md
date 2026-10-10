@@ -178,7 +178,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.9.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.9.1).** Updates over WiFi from the UPDATE app, with signed builds and rollback; coming from 2.8 or earlier, install once with the web flasher or USB. POCSAG on the LR2021 catches more of every pager transmission. P25 Phase 1 voice from the onboard LR2021 with no SDR, now read by a neural network on the P4 for much clearer audio, with AUTO and MAX gain on the P25 screen. POCSAG on VHF in PAGER RECON, and P25 or ADS-B on the LR2021 sharing the chip with EXPERIMENTS, LoRa Labs and the LoRa waterfall. Experimental radio features remain marked.
+**Current P4 release: [2.10.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.0).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Updates over WiFi from the UPDATE app; coming from 2.8 or earlier, install once with the web flasher or USB. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

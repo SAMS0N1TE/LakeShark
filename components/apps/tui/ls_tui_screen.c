@@ -1,4 +1,8 @@
+#include "ls_board.h"
 /* Router. See ls_tui_screen.h for the contract it enforces. */
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
 #include "ls_tui_screen.h"
 #include "ls_trail.h"
 #include "ls_keyboard.h"
@@ -158,6 +162,7 @@ void ls_tui_screen_show(int index)
     /* A console switch must not release a radio during draw. */
     if (s_dispatch_cb && s_dispatch_cb(index)) return;
     if (index == s_current) return;
+    const ls_tui_screen_t *previous = s_screens[s_current];
     if (s_screens[s_current] && s_screens[s_current]->leave)
         s_screens[s_current]->leave();
     s_current = index;
@@ -174,9 +179,11 @@ void ls_tui_screen_show(int index)
 
     const ls_tui_screen_t *now = s_screens[s_current];
     if (now && now->radio) ls_tui_radio_want(now->radio);
-    /* A screen change replaces everything, so do not let the diff try to be
-       clever about it - the old screen's cells are not a useful baseline. */
-    ls_tui_invalidate();
+    /* Keep the pixel baseline between screens that render through cells.
+       Clearing unchanged background cells is a large part of a full switch
+       repaint, especially while P25 still consumes core/cache bandwidth. */
+    if (!previous || !previous->diff_switch || !now || !now->diff_switch)
+        ls_tui_invalidate();
 }
 
 void ls_tui_screen_next(void) { if (s_count) ls_tui_screen_show((s_current + 1) % s_count); }
@@ -656,6 +663,10 @@ static void draw_help(tui_surface *sf, int cols, int rows)
 void ls_tui_router_draw(tui_surface *sf)
 {
     if (!sf || !s_count) return;
+#if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
+    extern bool ls_cartocore_draw(tui_surface *sf);
+    if (ls_cartocore_draw(sf)) return;
+#endif
     ls_trail(LS_TRAIL_TUI, s_screens[s_current] && s_screens[s_current]->name ? s_screens[s_current]->name : "?");
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
@@ -741,6 +752,10 @@ static bool router_touch_dispatch(int col, int row);
 
 bool ls_tui_router_touch(int col, int row)
 {
+#if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
+    extern bool ls_cartocore_dismiss(void);
+    if (ls_cartocore_dismiss()) return true;
+#endif
     const bool took = router_touch_dispatch(col, row);
     if (took && s_tap_cb) s_tap_cb();
     return took;
@@ -826,6 +841,10 @@ static bool router_touch_dispatch(int col, int row)
 
 bool ls_tui_router_key(ls_tk_t key, char ch)
 {
+#if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
+    extern bool ls_cartocore_dismiss(void);
+    if (key != LS_TK_NONE && ls_cartocore_dismiss()) return true;
+#endif
     if (s_locked) {
         if (key == LS_TK_LEFT) s_unlock_step = 1;
         else if (key == LS_TK_RIGHT && s_unlock_step) ls_tui_set_locked(false);

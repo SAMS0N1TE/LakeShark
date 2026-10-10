@@ -1025,8 +1025,10 @@ static int cmd_say(int argc, char **argv)
 /**/
 static int cmd_mute(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    audio_toggle_mute();
+    if(argc==1) audio_toggle_mute();
+    else if(argc==2 && !strcmp(argv[1],"on")) audio_mute_set(true);
+    else if(argc==2 && !strcmp(argv[1],"off")) audio_mute_set(false);
+    else {printf("usage: mute [on|off]\n");return 1;}
     printf("mute=%d\n", audio_is_muted());
     return 0;
 }
@@ -1251,7 +1253,7 @@ void ls_ctl_register_commands(void)
         /**/
         { .command = "vol",     .help = "Volume 0-100 (or +n / -n)",
           .hint = "<n|+n|-n>", .func = &cmd_vol },
-        { .command = "mute",    .help = "Toggle audio mute",
+        { .command = "mute",    .help = "System mute: toggle or on/off",
           .func = &cmd_mute },
         { .command = "say",     .help = "Speech status, or speak text",
           .hint = "[voice glitch|dark|female | vol 0-100 | stop | test | burst n | mesh [dm] name: text | <text>]", .func = &cmd_say },

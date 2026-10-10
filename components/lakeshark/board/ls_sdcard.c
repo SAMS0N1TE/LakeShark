@@ -9,6 +9,7 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "soc/soc_caps.h"
 
 #include "ls_board.h"
@@ -20,7 +21,26 @@ static const char *TAG = "ls_sdcard";
 static sdmmc_card_t *s_card;
 static char          s_name[24];
 
-#if SOC_SDMMC_PSRAM_DMA_CAPABLE && CONFIG_SPIRAM
+/* Raw read-only verification before any application sees the mount. CRC in
+ * SDMMC catches bus errors; repeated sector samples catch unstable data. */
+static esp_err_t verify_card(sdmmc_card_t *card)
+{
+    uint8_t *buf=heap_caps_aligned_alloc(64,8192,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT);
+    if(!buf) return ESP_ERR_NO_MEM;
+    esp_err_t err=ESP_OK;
+    size_t sectors=card->csd.capacity;
+    if(card->csd.sector_size!=512 || sectors<8) err=ESP_ERR_INVALID_SIZE;
+    for(int i=0;err==ESP_OK && i<3;i++) {
+        size_t sector=i==0?0:i==1?sectors/2:sectors-8;
+        err=sdmmc_read_sectors(card,buf,sector,8);
+        if(err==ESP_OK) err=sdmmc_read_sectors(card,buf+4096,sector,8);
+        if(err==ESP_OK && memcmp(buf,buf+4096,4096)) err=ESP_ERR_INVALID_CRC;
+    }
+    heap_caps_free(buf);
+    return err;
+}
+
+#if SOC_SDMMC_PSRAM_DMA_CAPABLE && CONFIG_SPIRAM && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 4)
 static esp_err_t sdcard_dma_info(int slot, esp_dma_mem_info_t *info)
 {
     esp_err_t err = sdmmc_host_get_dma_info(slot, info);
@@ -43,7 +63,14 @@ esp_err_t ls_sdcard_mount(void)
     /* SLOT 0, WHICH IS THE ONE THIS CARD IS PHYSICALLY WIRED TO. */
 
     host.slot = SDMMC_HOST_SLOT_0;
-#if SOC_SDMMC_PSRAM_DMA_CAPABLE && CONFIG_SPIRAM
+    /* Deinitializing only our slot preserves the live esp_hosted C6 link. */
+    host.flags |= SDMMC_HOST_FLAG_DEINIT_ARG;
+    host.deinit_p = sdmmc_host_deinit_slot;
+    host.flags &= ~SDMMC_HOST_FLAG_DDR; /* 3.3 V SDR, never UHS/DDR */
+#ifdef CONFIG_LS_SD_MAX_FREQ_KHZ
+    host.max_freq_khz = CONFIG_LS_SD_MAX_FREQ_KHZ;
+#endif
+#if SOC_SDMMC_PSRAM_DMA_CAPABLE && CONFIG_SPIRAM && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 4)
     host.get_dma_info = sdcard_dma_info;
 #endif
 
@@ -59,21 +86,34 @@ esp_err_t ls_sdcard_mount(void)
 #else
     slot.width = 1;
 #endif
-    /* The board has the pull-ups; asking the pad for its own on a bus this
-       fast fights them. */
+    /* External 10K pull-ups are fitted; weak internal pulls are unnecessary. */
     slot.flags = 0;
 
     const esp_vfs_fat_mount_config_t mount = {
         /* NEVER true, and this is the line to read twice. */
 
         .format_if_mount_failed = false,
+#if defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4
+        .max_files = 24, /* cellset + places + download, alongside recordings */
+#else
         .max_files = 8,
+#endif
         .allocation_unit_size = 16 * 1024,
     };
 
-    const esp_err_t err = esp_vfs_fat_sdmmc_mount(LS_SDCARD_MOUNT, &host,
-                                                  &slot, &mount, &s_card);
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(LS_SDCARD_MOUNT, &host,
+                                         &slot, &mount, &s_card);
+    if(err==ESP_OK) err=verify_card(s_card);
+    if(err!=ESP_OK && host.max_freq_khz>SDMMC_FREQ_DEFAULT) {
+        ESP_LOGW(TAG,"SD %d kHz init/verify failed (%s); retrying 20 MHz",
+                 host.max_freq_khz,esp_err_to_name(err));
+        if(s_card) { esp_vfs_fat_sdcard_unmount(LS_SDCARD_MOUNT,s_card); s_card=NULL; }
+        host.max_freq_khz=SDMMC_FREQ_DEFAULT;
+        err=esp_vfs_fat_sdmmc_mount(LS_SDCARD_MOUNT,&host,&slot,&mount,&s_card);
+        if(err==ESP_OK) err=verify_card(s_card);
+    }
     if (err != ESP_OK) {
+        if(s_card) esp_vfs_fat_sdcard_unmount(LS_SDCARD_MOUNT,s_card);
         s_card = NULL;
         /* Told apart, because they need different things done about them. */
         if (err == ESP_FAIL)
@@ -92,6 +132,7 @@ esp_err_t ls_sdcard_mount(void)
              ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size
                  / (1024 * 1024),
              slot.width);
+    sdmmc_card_print_info(stdout,s_card);
     return ESP_OK;
 }
 

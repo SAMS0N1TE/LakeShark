@@ -1,6 +1,14 @@
+#include "tui/ls_sweep_app.h"
+#include "tui/ls_rid.h"
 #include "tui/ls_ble_heard.h"
 #include "tui/ls_survey.h"
+#include "tui/ls_ble_ad.h"
 #include "ble_link.h"
+#include "ble_link_observer.h"
+#include "ble_link_scan.h"
+static volatile ble_scan_mode_t s_scan_mode;
+static volatile bool s_scanning, s_scan_connected;
+
 #include "ls_board.h"   /**/
 
 #include <stdio.h>
@@ -19,6 +27,8 @@
 
 #include "os/os_mbuf.h"
 #include "nimble/nimble_port.h"
+static struct ble_npl_event s_scan_event;
+static bool s_scan_event_ready;
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "nimble/nimble_opt.h"
@@ -41,6 +51,69 @@
 #include "ls_nvs_safe.h"
 
 static const char *TAG = "ble_link";
+static EXT_RAM_BSS_ATTR ble_link_observer_t s_adverts;
+static TaskHandle_t s_advert_task;
+
+/* Duplicate filtering is disabled: observers need repeated payloads. */
+void ls_sweep_transport_stats(ls_sweep_transport_stats_t *out)
+{
+    memset(out, 0, sizeof(*out));out->available=true;
+    out->adverts_in=__atomic_load_n(&s_adverts.received,__ATOMIC_RELAXED);
+    out->dispatched=__atomic_load_n(&s_adverts.dispatched,__ATOMIC_RELAXED);
+    out->ring_drops=__atomic_load_n(&s_adverts.dropped,__ATOMIC_RELAXED);
+    out->ring_overflow=__atomic_load_n(&s_adverts.overflow,__ATOMIC_RELAXED);
+    out->invalid_reports=__atomic_load_n(&s_adverts.invalid,__ATOMIC_RELAXED);
+    uint32_t r=__atomic_load_n(&s_adverts.read,__ATOMIC_ACQUIRE);
+    uint32_t w=__atomic_load_n(&s_adverts.write,__ATOMIC_ACQUIRE);
+    out->ring_size=w-r>BLE_LINK_AD_DEPTH?BLE_LINK_AD_DEPTH:w-r;
+    out->ring_capacity=BLE_LINK_AD_DEPTH;
+    out->scanning=s_scanning;out->while_connected=s_scanning && s_scan_connected;
+    if(s_scan_mode==BLE_SCAN_OBSERVER) {out->scan_interval_units=BLE_LINK_OBSERVER_INTERVAL;out->scan_window_units=BLE_LINK_OBSERVER_WINDOW;}
+    out->ring_high_water=__atomic_load_n(&s_adverts.high_water,__ATOMIC_RELAXED);
+}
+
+static void sweep_advert(const ble_link_advert_t *a, void *ctx)
+{
+    (void)ctx;
+    ls_sweep_ble(a->addr, a->addr_type, a->rssi, a->data, a->len, a->seen_us);
+}
+
+static void rid_advert(const ble_link_advert_t *a, void *ctx)
+{
+    (void)ctx;
+    ls_rid_advert(a->addr, a->addr_type, a->rssi, a->data, a->len, a->seen_us);
+}
+
+static void heard_advert(const ble_link_advert_t *a, void *ctx)
+{
+    (void)ctx;
+    /* NimBLE's parser owns shared UUID arrays and is host-task-only.
+     * This worker borrows only bytes owned by the ring; callees copy names.
+     * A malformed AD still counts as a heard device, with no name. */
+    size_t name_len;
+    const uint8_t *name = ls_ble_ad_name(a->data, a->len, &name_len);
+    ls_ble_heard_note(a->addr, (const char *)name, name_len, a->rssi, a->seen_us);
+    ls_survey_ble(a->addr, a->addr_type, (const char *)name, name_len, a->rssi, a->seen_us);
+}
+
+static void advert_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ble_link_observer_dispatch(&s_adverts, BLE_LINK_AD_DEPTH);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static bool advert_worker_start(void)
+{
+    if (s_advert_task) return true;
+    ble_link_observer_subscribe(&s_adverts, sweep_advert, NULL);
+    ble_link_observer_subscribe(&s_adverts, rid_advert, NULL);
+    ble_link_observer_subscribe(&s_adverts, heard_advert, NULL);
+    return xTaskCreateWithCaps(advert_task, "ble_adverts", 4096, NULL, 3,
+        &s_advert_task, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == pdPASS;
+}
 static uint32_t s_heap_max_us, s_snapshot_max_us, s_write_max_us;
 
 static void perf_max(uint32_t *value, int64_t started)
@@ -381,12 +454,7 @@ static void tel_task(void *arg)
     for (;;) {
         if (!s_run) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
 
-        int64_t due = s_rescan_at_us;
-        if (due && esp_timer_get_time() >= due) {
-            s_rescan_at_us = 0;
-            if (s_state != BLE_LINK_READY) start_scan();
-        }
-
+        start_scan(); /* Idempotent recovery if discovery stopped or start failed. */
         /**/
         int hz = s_tel_hz;
         if (hz <= 0 || s_state != BLE_LINK_READY || !s_tel_allowed) {
@@ -687,22 +755,48 @@ static void addr_str(const ble_addr_t *a, char *out, size_t len)
              a->val[5], a->val[4], a->val[3], a->val[2], a->val[1], a->val[0]);
 }
 
+static void scan_refresh(struct ble_npl_event *event)
+{
+    (void)event;
+    if (!ble_hs_synced()) return;
+    if (s_rescan_at_us && esp_timer_get_time() >= s_rescan_at_us) s_rescan_at_us=0;
+    bool connected = s_conn != BLE_HS_CONN_HANDLE_NONE;
+    ble_scan_mode_t want = ble_scan_wanted(s_run, connected,
+        s_state == BLE_LINK_CONNECTING, s_adverts.listener_count != 0,
+        s_passive, s_rescan_at_us != 0);
+    bool active = ble_gap_disc_active();
+    ble_scan_action_t action = ble_scan_action(want, s_scan_mode, active);
+    s_scanning = active;
+    s_scan_connected = connected;
+    if (action == BLE_SCAN_KEEP) return;
+    if (action == BLE_SCAN_STOP || action == BLE_SCAN_RESTART) {
+        ble_gap_disc_cancel();
+        s_scanning = false;
+    }
+    if (want == BLE_SCAN_OFF) {s_scan_mode=want;return;}
+    struct ble_gap_disc_params p = {0};
+    p.passive = want == BLE_SCAN_OBSERVER;
+    if (p.passive) {
+        p.itvl = BLE_LINK_OBSERVER_INTERVAL;
+        p.window = BLE_LINK_OBSERVER_WINDOW;
+    }
+    p.filter_duplicates = 0;
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, gap_event, NULL);
+    s_scanning = rc == 0 || ble_gap_disc_active();
+    if (rc == 0) {
+        s_scan_mode = want;
+        if (!connected && !s_rescan_at_us) s_state = BLE_LINK_SCANNING;
+        ESP_LOGI(TAG, "scanning %s", p.passive ? "passive observers" : "for head");
+    } else if (rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "ble_gap_disc rc=%d; retrying", rc);
+    }
+}
+
+/* Serialize reconciliation with GAP callbacks on NimBLE's host queue. Repeated
+ * requests coalesce; telemetry only requests recovery, never changes scan mode. */
 static void start_scan(void)
 {
-    struct ble_gap_disc_params p = { 0 };
-    p.itvl          = 0;
-    p.window        = 0;
-    p.filter_policy = 0;
-    p.limited       = 0;
-    p.passive       = s_passive;
-
-    /* Rediscover peers on each scan without flooding the host with repeats. */
-    p.filter_duplicates = s_passive ? 0 : 1;
-
-    s_state = BLE_LINK_SCANNING;
-    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, gap_event, NULL);
-    if (rc != 0) ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
-    else ESP_LOGI(TAG, "scanning for a head matching \"%s\"", s_name_filter);
+    if (s_scan_event_ready) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_scan_event);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -711,34 +805,43 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     switch (event->type) {
 
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    case BLE_GAP_EVENT_EXT_DISC:
+        if (s_run && event->ext_disc.data_status == BLE_GAP_EXT_ADV_DATA_STATUS_COMPLETE) {
+            ble_link_observer_push(&s_adverts, event->ext_disc.addr.val,
+                event->ext_disc.addr.type, event->ext_disc.rssi,
+                (event->ext_disc.props & BLE_HCI_ADV_SCAN_RSP_MASK) != 0,
+                event->ext_disc.data, event->ext_disc.length_data, esp_timer_get_time());
+        }
+        return 0;
+#endif
     case BLE_GAP_EVENT_DISC: {
         if (!s_run) return 0;
+        ble_link_observer_push(&s_adverts, event->disc.addr.val, event->disc.addr.type,
+            event->disc.rssi, event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP,
+            event->disc.data, event->disc.length_data, esp_timer_get_time());
+        if (ls_rid_is_advert(event->disc.data, event->disc.length_data)) {
+            return 0; /* Receive only: no connection or packet log, even if malformed. */
+        }
         struct ble_hs_adv_fields f;
+        /* Host GAP callback only: parser UUID storage is not reentrant.
+         * Never call this parser from observer/listener workers. */
         if (ble_hs_adv_parse_fields(&f, event->disc.data,
                                     event->disc.length_data) != 0) {
-            if (s_passive) ls_survey_ble(event->disc.addr.val, event->disc.addr.type,
-                NULL, 0, event->disc.rssi, esp_timer_get_time());
             return 0;
         }
 
         if (s_passive) {
-            ls_survey_ble(event->disc.addr.val, event->disc.addr.type,
-                          (const char *)f.name, f.name_len, event->disc.rssi,
-                          esp_timer_get_time());
             return 0;
         }
         char name[32];
         bool matched = adv_name_matches(&f, &event->disc.addr, name, sizeof(name));
 
-        static int64_t s_last_adv_log_us = 0;
         static uint32_t s_adv_since = 0;
         s_adv_since++;
 
         int64_t now_us = esp_timer_get_time();
-        /* Every advert, heard or matched, for COMPASS to find a device by. */
-        ls_ble_heard_note(event->disc.addr.val, (const char *)f.name, f.name_len,
-                          event->disc.rssi, now_us);
-        bool due = s_verbose || matched || (now_us - s_last_adv_log_us) >= 1000000;
+        bool due = s_verbose;
         if (due) {
             char seen[36] = "(no name)";
             if (f.name && f.name_len > 0) {
@@ -760,7 +863,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "adv: \"%s\" [%s]%s rssi=%d%s (%lu heard)", seen, a,
                      svc, event->disc.rssi, matched ? " *MATCH*" : "",
                      (unsigned long)s_adv_since);
-            s_last_adv_log_us = now_us;
             s_adv_since = 0;
         }
 
@@ -776,7 +878,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             }
         }
 
-        if (!matched) return 0;
+        if (!matched || s_scan_mode != BLE_SCAN_HEAD ||
+            s_conn != BLE_HS_CONN_HANDLE_NONE || s_state != BLE_LINK_SCANNING) return 0;
 
         s_peer_id = event->disc.addr;
         addr_str(&event->disc.addr, s_peer_addr, sizeof(s_peer_addr));
@@ -785,6 +888,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                  s_peer_name, s_peer_addr, event->disc.rssi);
 
         ble_gap_disc_cancel();
+        s_scanning = false;
         /* Connect with OUR parameters, not NimBLE's defaults. */
 
         ble_link_conn_params_t cpc;
@@ -854,6 +958,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "peer not pinned - `ble pin %s` locks this board to it",
                      s_peer_addr);
         }
+        start_scan();
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
@@ -943,6 +1048,12 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "rescanning in %lu ms", (unsigned long)s_backoff_ms);
             s_backoff_ms = ble_link_backoff_next(s_backoff_ms);
         }
+        start_scan();
+        return 0;
+
+    case BLE_GAP_EVENT_DISC_COMPLETE:
+        s_scanning = false;
+        start_scan(); /* Host queue recovery; no connection from observer path. */
         return 0;
 
     /**/
@@ -1102,6 +1213,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     /**/
     case BLE_GAP_EVENT_CONN_UPDATE: {
+        start_scan();
         struct ble_gap_conn_desc d;
         if (event->conn_update.status == 0 &&
             ble_gap_conn_find(s_conn, &d) == 0) {
@@ -1130,6 +1242,8 @@ static void on_reset(int reason)
 {
     ESP_LOGE(TAG, "controller reset, reason=%d", reason);
     s_state = BLE_LINK_SYNCING;
+    s_conn=BLE_HS_CONN_HANDLE_NONE;
+    s_scanning=false;s_scan_connected=false;s_scan_mode=BLE_SCAN_OFF;
 }
 
 static void host_task(void *param)
@@ -1178,6 +1292,8 @@ static bool workers_start(void)
 static esp_err_t link_start(void)
 {
     if (s_run) return ESP_ERR_INVALID_STATE;
+    /* Register listeners and allocate their consumer before NimBLE can publish. */
+    if (!advert_worker_start()) return ESP_ERR_NO_MEM;
 
     if (s_stack_up) {
         s_run   = true;
@@ -1209,6 +1325,8 @@ static esp_err_t link_start(void)
         return err;
     }
 
+    ble_npl_event_init(&s_scan_event, scan_refresh, NULL);
+    s_scan_event_ready=true;
     ble_store_config_init();
     ESP_LOGI(TAG, "NimBLE ready; discarded %lu pre-init HCI packets",
              (unsigned long)ble_hci_rx_early_packets());
@@ -1279,6 +1397,7 @@ void ble_link_stop(void)
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
     }
     ble_gap_disc_cancel();
+    s_scanning=false;s_scan_connected=false;s_scan_mode=BLE_SCAN_OFF;
     /**/
     s_state = ble_link_state_step(s_state, BLE_LINK_EV_STOP);
 }
