@@ -225,7 +225,7 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
 {
     if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_RESCAN ||
         (ssid && strlen(ssid) > 32) || (pass && strlen(pass) > 64)) return false;
-    if (ls_survey_pending() || ls_sweep_pending()) return false;
+    if (ls_survey_pending()) return false;
     portENTER_CRITICAL(&s_mux);
     bool accept = s_pending == LS_WIRELESS_NONE && !s_public.busy;
     if (accept) {
