@@ -10,7 +10,7 @@ flasher or USB: 2.9.0 added the two app slots that updates over WiFi need. A
 full install rewrites internal storage; settings and saved WiFi are kept. Back
 up files first. See [First flash](TDP4_FIRST_FLASH.md).
 
-![UPDATE checking for a new build](screenshots/tdp4/motion/update.gif)
+<img src="screenshots/tdp4/motion/update.gif" width="300" alt="UPDATE checking for a new build">
 
 1. Open LINK and connect to a saved or new WiFi network.
 2. Open HOME > SYSTEM > UPDATE. The page checks for a newer build.

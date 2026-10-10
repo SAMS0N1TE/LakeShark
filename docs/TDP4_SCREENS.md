@@ -12,7 +12,7 @@ The number of tiles per page depends on the screen size.
 - SYSTEM: DIAG, TERMINAL, UPDATE, SET, RADIOS and LINK.
 - USER: apps loaded from the SD card.
 
-![HOME in portrait](screenshots/tdp4/gallery-20261007/home-port.png)
+<img src="screenshots/tdp4/gallery-20261007/home-port.png" width="300" alt="HOME in portrait">
 
 P25 has a DECODE / SIGNAL window. SPECTRUM toggles the plot; SCAN, SETTINGS,
 CALLS and DMR open their views. CALLS is also available in FM.

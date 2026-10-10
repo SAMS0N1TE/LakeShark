@@ -7,7 +7,7 @@ transmits.
 
 Open **HOME > FIELD > SWEEP**. It sits beside COMPASS.
 
-![SWEEP listing two trackers](screenshots/tdp4/motion/sweep.gif)
+<img src="screenshots/tdp4/motion/sweep.gif" width="300" alt="SWEEP listing two trackers">
 
 ## Start
 
