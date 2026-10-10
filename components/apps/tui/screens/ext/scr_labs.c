@@ -1,6 +1,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_field.h"
+#include "../../ls_app.h"
 #include "../../ls_labs_limits.h"
 #include "../../ls_compass.h"
 #include "../../ls_motion.h"
@@ -178,10 +179,16 @@ static const char *rec_face(void)
     return buf;
 }
 
-/* The decoded pages, newest first, the way the FM screen lists them. UP and
-   DOWN walk the selection; the selected message gets its own full-width line
-   underneath, because eighty characters do not fit on a list row. */
-static int s_page_sel;
+/* Pages are newest first. Keys and touch walk the selection; the complete
+   selected message wraps below the list. */
+static int s_page_sel, s_page_top;
+static tui_rect s_page_hit, s_page_nav;
+static void page_move(int delta)
+{
+    s_page_sel += delta;
+    if (s_page_sel >= s.page_log_count) s_page_sel = s.page_log_count ? s.page_log_count - 1 : 0;
+    if (s_page_sel < 0) s_page_sel = 0;
+}
 
 static void pages_list(tui_surface *sf, tui_rect r)
 {
@@ -196,13 +203,18 @@ static void pages_list(tui_surface *sf, tui_rect r)
     if (s_page_sel >= count) s_page_sel = count - 1;
     if (s_page_sel < 0) s_page_sel = 0;
 
-    /* Two rows held back for the selected message and its detail line. */
-    int rows = r.h - 3;
+    const int text_rows = ((int)sizeof(s.page_log[0].text) - 1 + r.w - 1) / r.w;
+    int rows = r.h - text_rows - 2;
     if (rows > count) rows = count;
     if (rows < 1) rows = 1;
     int top = s_page_sel - rows + 1;
     if (top < 0) top = 0;
 
+    s_page_top = top;
+    s_page_hit = tui_rect_make(r.x, r.y, r.w, rows);
+    s_page_nav = tui_rect_make(r.x, r.y + rows, r.w, 1);
+    tui_put_str(sf, s_page_nav, r.x, s_page_nav.y, "< PREVIOUS", LS_ATTR_DIM);
+    tui_put_str(sf, s_page_nav, r.x + r.w / 2, s_page_nav.y, "NEXT >", LS_ATTR_DIM);
     char row[96];
     for (int i = 0; i < rows && top + i < count; i++) {
         const ls_field_page_t *p = &s.page_log[top + i];
@@ -216,9 +228,14 @@ static void pages_list(tui_surface *sf, tui_rect r)
     snprintf(row, sizeof(row), "%d of %d | addr %lu | f%u | %u bd",
              s_page_sel + 1, count, (unsigned long)sel->address,
              sel->function, sel->baud);
-    tui_put_str(sf, r, r.x, r.y + r.h - 2, row, LS_ATTR_DIM);
-    tui_put_str(sf, r, r.x, r.y + r.h - 1, sel->text,
-                TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, r, r.x, r.y + rows + 1, row, LS_ATTR_DIM);
+    for (int i = 0; i < text_rows; i++) {
+        const size_t offset = (size_t)i * r.w;
+        if (offset >= strlen(sel->text)) break;
+        snprintf(row, sizeof(row), "%.*s", r.w, sel->text + offset);
+        tui_put_str(sf, r, r.x, r.y + rows + 2 + i, row,
+                    TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    }
 }
 
 /* The preset the radio is sitting on, or the bare frequency when it is
@@ -316,10 +333,22 @@ static void set_fsk_number(double n)
     result(ls_field_configure_fsk(&cfg));
 }
 
+static void set_pager_baud(int i)
+{
+    ls_fsk_cfg_t cfg = s.fsk;
+    cfg.bitrate = i == 2 ? 512 : i == 1 ? 2400 : 1200;
+    result(ls_field_configure_fsk(&cfg));
+}
 static void edit_fsk_setting(int i)
 {
     if (i < 0 || i >= FSK_SETTING_N) return;
     s_fsk_setting = i;
+    if (s.mode == LS_LAB_POCSAG && i == 1) {
+        ls_picker_open("PAGING BAUD", set_pager_baud);
+        ls_picker_add("1200", "baud"); ls_picker_add("2400", "baud");
+        if (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ls_picker_add("512", "baud");
+        return;
+    }
     const double values[] = { s.config.freq_hz / 1e6, s.fsk.bitrate,
         s.fsk.deviation_hz, s.fsk.bandwidth_hz, s.fsk.sync_word,
         s.fsk.payload_bytes };
@@ -355,19 +384,42 @@ static void setup_fsk(void)
    for POCSAG the two things a pager is wrong about when it hears nothing -
    the rate and the polarity - as choices in place. */
 static void o_lora(const ls_opt_t *o) { edit_setting(o->arg); }
-static void o_lora_show(const ls_opt_t *o, char *out, size_t n) { lora_value(o->arg, out, n); }
-static void o_fsk(const ls_opt_t *o) { edit_fsk_setting(o->arg); }
-static void o_fsk_show(const ls_opt_t *o, char *out, size_t n) { fsk_value(o->arg, out, n); }
+static void o_lora_show(const ls_opt_t *o, char *out, size_t n) { if (!o->arg) snprintf(out, n, "%.4f", s.config.freq_hz / 1e6); else lora_value(o->arg, out, n); }
+static void o_fsk_show(const ls_opt_t *o, char *out, size_t n) { if (!o->arg) snprintf(out, n, "%.4f", s.config.freq_hz / 1e6); else fsk_value(o->arg, out, n); }
+static double o_lora_num(const ls_opt_t *o)
+{
+    const double v[] = { s.config.freq_hz / 1e6, s.config.sf, s.config.bw_hz,
+        s.config.cr, s.config.power_dbm, s.config.preamble, s.config.sync_word };
+    return v[o->arg];
+}
+static void o_lora_set(const ls_opt_t *o, double v) { s_setting = o->arg; set_number(v); }
+static double o_fsk_num(const ls_opt_t *o)
+{
+    const double v[] = { s.config.freq_hz / 1e6, s.fsk.bitrate, s.fsk.deviation_hz,
+        s.fsk.bandwidth_hz, s.fsk.sync_word, s.fsk.payload_bytes };
+    return v[o->arg];
+}
+static void o_fsk_set(const ls_opt_t *o, double v) { s_fsk_setting = o->arg; set_fsk_number(v); }
+static int o_bw(const ls_opt_t *o)
+{
+    (void)o;
+    for (int i = 0; i < 10; i++) if (bandwidths[i] == s.config.bw_hz) return i;
+    return 0;
+}
+static void o_set_bw(const ls_opt_t *o, int v) { (void)o; set_bw(v); }
+static const char *const BW_NAMES[] = { "7.81k", "10.42k", "15.63k", "20.83k", "31.25k", "41.67k", "62.5k", "125k", "250k", "500k" };
 #define LORA_ROW(i, l) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_lora, .show = o_lora_show }
-#define FSK_ROW(i, l)  { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_fsk, .show = o_fsk_show }
+#define LORA_LEVEL(i, l, low, high, inc) { .label = (l), .kind = LS_OPT_LEVEL, .arg = (i), .num = o_lora_num, .set_num = o_lora_set, .lo = (low), .hi = (high), .step = (inc), .unit = (i) == 0 ? "MHz" : "", .show = o_lora_show }
+#define FSK_LEVEL(i, l, low, high, inc) { .label = (l), .kind = LS_OPT_LEVEL, .arg = (i), .num = o_fsk_num, .set_num = o_fsk_set, .lo = (low), .hi = (high), .step = (inc), .unit = (i) == 0 ? "MHz" : (i) == 1 ? "baud" : (i) == 5 ? "bytes" : (i) == 4 ? "decimal" : "Hz", .show = o_fsk_show }
+#define FSK_ROW(i, l) FSK_LEVEL(i, l, 150, 2500, .025)
 
-static const char *const PAGER_BAUD[] = { "1200", "2400" };
-static int o_pager_baud(const ls_opt_t *o) { (void)o; return s.fsk.bitrate == 2400 ? 1 : 0; }
+static const char *const PAGER_BAUD[] = { "1200", "2400", "512" };
+static int o_pager_baud(const ls_opt_t *o) { (void)o; return s.fsk.bitrate == 512 ? 2 : s.fsk.bitrate == 2400 ? 1 : 0; }
 static void o_set_pager_baud(const ls_opt_t *o, int v)
 {
     (void)o;
     ls_fsk_cfg_t cfg = s.fsk;
-    cfg.bitrate = v ? 2400 : 1200;
+    cfg.bitrate = v == 2 ? 512 : v == 1 ? 2400 : 1200;
     result(ls_field_configure_fsk(&cfg));
 }
 static const char *const POLARITY[] = { "NORMAL", "INVERTED" };
@@ -381,11 +433,11 @@ static void o_set_polarity(const ls_opt_t *o, int v)
 }
 
 static const ls_opt_t OPT_LORA[] = {
-    LORA_ROW(0, "FREQUENCY"), LORA_ROW(1, "SPREAD FACTOR"), LORA_ROW(2, "BANDWIDTH"), LORA_ROW(3, "CODING RATE"), LORA_ROW(4, "POWER"),
-    LORA_ROW(5, "PREAMBLE"), LORA_ROW(6, "SYNC WORD"), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ") };
-static const ls_opt_t OPT_SPECTRUM[] = { LORA_ROW(0, "FREQUENCY") };
+    LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025), LORA_LEVEL(1, "SPREAD FACTOR", 5, 12, 1), { .label = "BANDWIDTH", .kind = LS_OPT_CYCLE, .names = BW_NAMES, .n = 10, .get = o_bw, .set = o_set_bw, .step = 1 }, LORA_LEVEL(3, "CODING RATE", 5, 8, 1), LORA_LEVEL(4, "POWER", -9, 22, 1),
+    LORA_LEVEL(5, "PREAMBLE", 1, 65535, 1), LORA_LEVEL(6, "SYNC WORD", 0, 255, 1), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ") };
+static const ls_opt_t OPT_SPECTRUM[] = { LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025) };
 static const ls_opt_t OPT_GFSK[] = {
-    FSK_ROW(0, "FREQUENCY"), FSK_ROW(1, "BITRATE"), FSK_ROW(2, "DEVIATION"), FSK_ROW(3, "BANDWIDTH"), FSK_ROW(4, "SYNC WORD"), FSK_ROW(5, "PAYLOAD"), LORA_ROW(8, "INVERT IQ") };
+    FSK_ROW(0, "FREQUENCY"), FSK_LEVEL(1, "BITRATE", 600, 300000, 100), FSK_LEVEL(2, "DEVIATION", 600, 200000, 100), FSK_LEVEL(3, "BANDWIDTH", 4800, 467000, 100), FSK_LEVEL(4, "SYNC WORD", 0, 4294967295, 1), FSK_LEVEL(5, "PAYLOAD", 1, 255, 1) };
 static const ls_opt_t OPT_POCSAG[] = {
     FSK_ROW(0, "FREQUENCY"),
     { .label = "BAUD", .kind = LS_OPT_CYCLE, .names = PAGER_BAUD, .n = 2,
@@ -393,8 +445,17 @@ static const ls_opt_t OPT_POCSAG[] = {
     { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
       .get = o_polarity, .set = o_set_polarity },
 };
+static const ls_opt_t OPT_POCSAG_STREAM[] = {
+    FSK_ROW(0, "FREQUENCY"),
+    { .label = "BAUD", .kind = LS_OPT_CYCLE, .names = PAGER_BAUD, .n = 3,
+      .get = o_pager_baud, .set = o_set_pager_baud },
+    { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
+      .get = o_polarity, .set = o_set_polarity },
+};
 #undef LORA_ROW
 #undef FSK_ROW
+#undef FSK_LEVEL
+#undef LORA_LEVEL
 static const ls_opt_ctx_t CTX_LABS[] = {
     [LS_LAB_PACKETS]  = { .name = "PACKETS", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_LORA) },
     [LS_LAB_SPECTRUM] = { .name = "SPECTRUM", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_SPECTRUM) },
@@ -402,8 +463,12 @@ static const ls_opt_ctx_t CTX_LABS[] = {
     [LS_LAB_GFSK]     = { .name = "GFSK", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GFSK) },
     [LS_LAB_POCSAG]   = { .name = "POCSAG", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG) },
 };
+static const ls_opt_ctx_t CTX_POCSAG_STREAM = {
+    .name = "POCSAG", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG_STREAM)
+};
 static const ls_opt_ctx_t *labs_options(void)
 {
+    if (s.mode == LS_LAB_POCSAG && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) return &CTX_POCSAG_STREAM;
     const int m = (int)s.mode;
     return m >= 0 && m < (int)(sizeof(CTX_LABS) / sizeof(CTX_LABS[0])) ? &CTX_LABS[m] : NULL;
 }
@@ -417,7 +482,7 @@ static void action(int i)
     else if (i == 2) { if (LS_LAB_IS_FSK(s.mode)) setup_fsk(); else setup(); }
     else if (i == 3) open_band_picker();
     else if (i == 4) {
-        if (!s.direct || s.transmitting || s.mode == LS_LAB_SPECTRUM ||
+        if (!s.direct || s.transmitting || s.mode == LS_LAB_SPECTRUM || LS_LAB_IS_FSK(s.mode) ||
             s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ) { result(false); return; }
         ls_keyboard_open("SEND ONE LORA PACKET", "", 64, send_text);
     } else if (i == 5) result(ls_field_mark_lora());
@@ -426,7 +491,7 @@ static void action(int i)
        BEARING and SPECTRUM are worth keeping - not packet payloads, which
        this writer does not carry. JOURNAL has had this button all along;
        the screen actually doing the measuring did not. */
-    else if (i == 6) result(ls_field_record(!s.recording));
+    else if (i == 6) result(ls_field_record_source(LS_FIELD_LORA, !s.recording));
     /* The same list as every app; Labs works the LoRa chip, and the list
        says so for the others. */
     else if (i == 7) ls_rsel_open(LS_RSEL_LABS, NULL);
@@ -434,6 +499,7 @@ static void action(int i)
 }
 static void switch_action(int i)
 {
+    if (LS_LAB_IS_FSK(s.mode) && (i == 0 || i == 2 || (i == 1 && s.mode != LS_LAB_POCSAG))) return;
     ls_lora_cfg_t cfg = s.config;
     if (i == 0) { cfg.crc_on = !cfg.crc_on; result(ls_field_configure(&cfg)); }
     else if (i == 1) { cfg.invert_iq = !cfg.invert_iq; result(ls_field_configure(&cfg)); }
@@ -783,6 +849,7 @@ static void draw(tui_surface *sf, tui_rect a)
     }
     ls_field_snapshot(&s);
     s_expand_hit = tui_rect_make(0,0,0,0);
+    s_page_hit = s_page_nav = tui_rect_make(0,0,0,0);
     const int64_t now = esp_timer_get_time();
     if (s.calibrating || s_guide_visible) { calibration_draw(sf,a,now); return; }
     if(now<s.sample.time_us || now-s.sample.time_us>350000) s.sample.imu_valid=false;
@@ -797,7 +864,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_btn_t buttons[] = {{"DIRECT", s.direct ? "ON" : s.requested ? "WAIT" : "OFF", 'd', s.direct, false},
         {"MODE", modes[s.mode], 'm', false, false}, {"SETUP", NULL, 's', false, false},
         {"BAND", band_now(), 'b', false, false},
-        {"SEND", s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ ? "RX ONLY" : s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || s.mode == LS_LAB_SPECTRUM || s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ},
+        {"SEND", s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ ? "RX ONLY" : s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || LS_LAB_IS_FSK(s.mode) || s.mode == LS_LAB_SPECTRUM || s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ},
         {"MARK", "JOURNAL", 'j', false, false},
         /* REC is E: R is RADIO, as in every app. */
         {"REC", rec_face(), 'e', s.recording, !s.ready},
@@ -805,9 +872,9 @@ static void draw(tui_surface *sf, tui_rect a)
         ls_opt_button(labs_options())};
     const int bar_h = ls_btn_raised_height(a, 9);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 9, button_slot==0?button_focus:-1);
-    ls_btn_t switches[] = {{"CRC", s.config.crc_on ? "ON" : "OFF", 'c', s.config.crc_on, s.transmitting},
-        {"IQ", s.config.invert_iq ? "INVERT" : "NORMAL", 'i', s.config.invert_iq, s.transmitting},
-        {"SYNC", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM", 'p', s.config.sync_word == 0x34, s.transmitting},
+    ls_btn_t switches[] = {{"CRC", s.config.crc_on ? "ON" : "OFF", 'c', s.config.crc_on, s.transmitting || LS_LAB_IS_FSK(s.mode)},
+        {"IQ", s.config.invert_iq ? "INVERT" : "NORMAL", 'i', s.config.invert_iq, s.transmitting || s.mode == LS_LAB_GFSK},
+        {"SYNC", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM", 'p', s.config.sync_word == 0x34, s.transmitting || LS_LAB_IS_FSK(s.mode)},
         {"HOLD", s_hold ? "ON" : "OFF", 'h', s_hold, false}, {"CLEAR", "PLOT", 'x', false, false},
         {"CAL", s.calibrating ? "FINISH" : s.calibrated ? "AGAIN" : "COMPASS", 'k', s.calibrating, !s.sample.imu_valid}};
     tui_rect controls = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h);
@@ -830,10 +897,9 @@ static void draw(tui_surface *sf, tui_rect a)
                  s.config.freq_hz / 1e6, (unsigned long)s.fsk.bitrate,
                  s.config.invert_iq ? "  INVERTED" : "");
     else if (s.mode == LS_LAB_GFSK)
-        snprintf(line, sizeof(line), "%.4f MHz  %lu bd  dev %.1fk  bw %.1fk%s",
+        snprintf(line, sizeof(line), "%.4f MHz  %lu bd  dev %.1fk  bw %.1fk",
                  s.config.freq_hz / 1e6, (unsigned long)s.fsk.bitrate,
-                 s.fsk.deviation_hz / 1000.0, s.fsk.bandwidth_hz / 1000.0,
-                 s.config.invert_iq ? "  INV" : "");
+                 s.fsk.deviation_hz / 1000.0, s.fsk.bandwidth_hz / 1000.0);
     else
         snprintf(line, sizeof(line), "%.4f MHz  SF%u  %.1fk  4/%u", s.config.freq_hz / 1e6, s.config.sf, s.config.bw_hz / 1000.0, s.config.cr);
     tui_put_str(sf, panel, panel.x + 2, panel.y + 1, line, LS_ATTR_DIM);
@@ -854,14 +920,15 @@ static void draw(tui_surface *sf, tui_rect a)
             tui_put_str(sf,plot,plot.x,plot.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
         }
         else tui_put_str(sf,plot,plot.x+1,plot.y+1,s.direct?"No complete fresh sweep":"Enable DIRECT to scan; Mesh will pause",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-        if(s.span_lo_hz) snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",s.span_lo_hz/1e6,s.span_hi_hz/1e6);
-        else snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",(s.config.freq_hz-1000000)/1e6,(s.config.freq_hz+1000000)/1e6);
+        uint32_t lo = s.span_lo_hz, hi = s.span_hi_hz;
+        ls_labs_span(ls_lora_caps(), s.config.freq_hz, &lo, &hi);
+        snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",lo/1e6,hi/1e6);
         tui_put_str(sf,plot,plot.x,plot.y+plot.h-1,line,LS_ATTR_DIM);
     } else if (s.mode == LS_LAB_POCSAG) pages_list(sf, plot);
     else graph(sf, plot, s_trace);
     const char *caption = s.mode == LS_LAB_BEARING ? "Yellow: board top | Red N: north" :
         s.mode == LS_LAB_SPECTRUM ? "Swept energy: brief packets may fall between looks" :
-        s.mode == LS_LAB_POCSAG ? "UP/DOWN walk the pages | newest first" :
+        s.mode == LS_LAB_POCSAG ? "Tap pages or PREVIOUS/NEXT | UP/DOWN" :
         s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
     panel_note(sf, panel, plot.y + plot.h + 1, caption);
     if (s.mode == LS_LAB_BEARING) {
@@ -880,17 +947,17 @@ static void draw(tui_surface *sf, tui_rect a)
         tui_rect info = tui_rect_make(panel.x + 1, plot.y + plot.h + 3, panel.w - 2, panel.h - plot.h - 11);
         ls_panel_box(sf, info, "LIVE CONTEXT", TUI_CYAN);
         snprintf(line, sizeof(line), "%s", s.direct ? "DIRECT / mesh paused" : "MESH / passive view");
-        ls_kv(sf, info, 2, "OWNER", line, LS_ATTR_DIM);
+        if (info.h > 3) ls_kv(sf, info, 2, "OWNER", line, LS_ATTR_DIM);
         snprintf(line, sizeof(line), "%.1f dBm", s.trace[LS_FIELD_BINS - 1]);
-        ls_kv(sf, info, 4, "RSSI", line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (info.h > 5) ls_kv(sf, info, 4, "RSSI", line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         snprintf(line, sizeof(line), "%s", s.sample.gps_valid ? "fresh fix" : "waiting for fix");
-        ls_kv(sf, info, 6, "GPS", line, LS_ATTR_DIM);
+        if (info.h > 7) ls_kv(sf, info, 6, "GPS", line, LS_ATTR_DIM);
         if (s.sample.imu_valid && s.sample.imu.mag_valid && isfinite(s.sample.heading)) snprintf(line, sizeof(line), "%.0f magnetic", s.sample.heading);
         else snprintf(line, sizeof(line), "unavailable");
-        ls_kv(sf, info, 8, "HEADING", line, LS_ATTR_DIM);
+        if (info.h > 9) ls_kv(sf, info, 8, "HEADING", line, LS_ATTR_DIM);
         snprintf(line, sizeof(line), "%s", s.config.crc_on ? "CRC on" : "CRC off");
-        ls_kv(sf, info, 10, "PACKETS", line, LS_ATTR_DIM);
-        ls_kv(sf, info, 12, "JOURNAL", "MARK attaches this observation", LS_ATTR_DIM);
+        if (info.h > 11) ls_kv(sf, info, 10, "PACKETS", line, LS_ATTR_DIM);
+        if (info.h > 13) ls_kv(sf, info, 12, "JOURNAL", "MARK attaches this observation", LS_ATTR_DIM);
     }
     if (s.mode == LS_LAB_POCSAG) {
         /* The list above carries the messages; this is the running total,
@@ -918,7 +985,32 @@ static void draw(tui_surface *sf, tui_rect a)
 static bool s_calibrate_on_enter;
 void ls_scr_labs_request_calibration(void) { s_calibrate_on_enter = true; }
 static void enter_guide(void) { if (s_calibrate_on_enter) { s_calibrate_on_enter = false; s_guide_visible = ls_field_calibrate(0); } }
-static void enter(void) { expand_compass(false); button_focus=-1;button_slot=0; s_guide_visible = false; s_hold = false; s_heading = NAN; s_heading_us = 0; s_feedback[0] = 0; if (!ls_field_start()) snprintf(s_feedback, sizeof(s_feedback), "Field worker could not start"); ls_field_watch(true); enter_guide(); }
+static uint32_t s_marker_hz;
+bool ls_scr_labs_tune_marker(uint32_t hz)
+{
+    if (!labs_frequency_ok(hz / 1e6) || !ls_field_start()) return false;
+    for (int i = 0; i < ls_app_count(); i++) {
+        const ls_app_t *app = ls_app_at(i);
+        if (app->id && !strcmp(app->id, "labs")) {
+            s_marker_hz = hz;
+            ls_app_open(i);
+            return true;
+        }
+    }
+    return false;
+}
+static void enter_marker(void)
+{
+    if (!s_marker_hz) return;
+    ls_field_snapshot(&s);
+    ls_lora_cfg_t cfg = s.config;
+    cfg.freq_hz = s_marker_hz;
+    cfg.cal_min_mhz = (uint16_t)(s_marker_hz / 1000000u / 4) * 4;
+    cfg.cal_max_mhz = cfg.cal_min_mhz + 4;
+    s_marker_hz = 0;
+    result(ls_field_configure(&cfg) && ls_field_mode(LS_LAB_PACKETS) && ls_field_direct(true));
+}
+static void enter(void) { expand_compass(false); button_focus=-1;button_slot=0; s_guide_visible = false; s_hold = false; s_heading = NAN; s_heading_us = 0; s_feedback[0] = 0; if (!ls_field_start()) snprintf(s_feedback, sizeof(s_feedback), "Field worker could not start"); ls_field_watch(true); enter_guide(); enter_marker(); }
 static void leave(void) { s_guide_visible = false; ls_field_direct(false); ls_field_calibrate(2); ls_field_watch(false); }
 static bool touch(int col, int row) {
     int i = ls_btn_hit(col,row);
@@ -926,6 +1018,15 @@ static bool touch(int col, int row) {
     if (s_full_compass) { if(i==0)expand_compass(false);else if(i==1)s_show_signal=!s_show_signal;else if(i==2)action(5);else if(i==3){expand_compass(false);switch_action(5);}return true; }
     if (col>=s_expand_hit.x && col<s_expand_hit.x+s_expand_hit.w &&
         row>=s_expand_hit.y && row<s_expand_hit.y+s_expand_hit.h) { expand_compass(true);return true; }
+    if (s.mode == LS_LAB_POCSAG) {
+        if (col >= s_page_hit.x && col < s_page_hit.x + s_page_hit.w &&
+            row >= s_page_hit.y && row < s_page_hit.y + s_page_hit.h) {
+            s_page_sel = s_page_top + row - s_page_hit.y; return true;
+        }
+        if (col >= s_page_nav.x && col < s_page_nav.x + s_page_nav.w && row == s_page_nav.y) {
+            page_move(col < s_page_nav.x + s_page_nav.w / 2 ? -1 : 1); return true;
+        }
+    }
     if(i>=0)action(i);else { i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)switch_action(i); }
     return true;
 }
@@ -949,10 +1050,7 @@ static bool key(ls_tk_t k, char ch) {
     /* The page list owns UP/DOWN while it is the view, the way the FM pager
        does. Buttons stay reachable by letter and by thumb. */
     if (s.mode == LS_LAB_POCSAG && (k == LS_TK_UP || k == LS_TK_DOWN)) {
-        const int count = s.page_log_count;
-        s_page_sel += k == LS_TK_DOWN ? 1 : -1;
-        if (s_page_sel >= count) s_page_sel = count ? count - 1 : 0;
-        if (s_page_sel < 0) s_page_sel = 0;
+        page_move(k == LS_TK_DOWN ? 1 : -1);
         return true;
     }
     if (ls_btn_navigate(k,&button_slot,&button_focus,true)) return true;

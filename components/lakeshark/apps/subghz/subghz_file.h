@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define SUBGHZ_FILE_LINE_BYTES 6144
+
 /* Transmit parameters from a CC1101 asynchronous 2-FSK preset.
    RAW timings already contain preamble, sync and payload. */
 typedef struct {
@@ -75,7 +77,7 @@ size_t subghz_ook_symbols(const int32_t *edges, size_t count,
                           uint32_t *out, size_t capacity);
 
 /* Read a whole file. `line` is the caller's scratch, and must hold the
-   longest RAW_Data line - 512 values, about 4 KB. */
+   longest RAW_Data line. App readers use SUBGHZ_FILE_LINE_BYTES. */
 bool subghz_file_load(const char *path, subghz_file_t *f, int32_t *edges,
                       int cap, char *line, size_t line_len);
 

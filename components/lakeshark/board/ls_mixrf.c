@@ -27,10 +27,10 @@ static spi_device_handle_t cc_dev,nrf_dev,nfc_dev;
 static DRAM_ATTR spi_transaction_t transaction;
 static DRAM_ATTR uint8_t nfc_tx[65],nfc_rx[65];
 static esp_err_t transfer_error;
-static bool tx_active,tx_pending,tx_done,tx_ok;
+static bool tx_active,tx_pending,tx_done,tx_ok,tx_cancelled,tx_idle;
 static uint32_t tx_hz;
 static int tx_dbm;
-static const int32_t *tx_pulses;
+static int32_t *tx_pulses;
 static size_t tx_count;
 static bool tx_fsk;
 static subghz_cc_fsk_t tx_mod;
@@ -318,7 +318,7 @@ static bool probe_radios(void)
     if(transfer_error==ESP_ERR_NO_MEM)status_text("SPI needs DMA memory; radio probe incomplete");
     else if(transfer_error!=ESP_OK) {
         char error[80];snprintf(error,sizeof(error),"Radio probe: %s",esp_err_to_name(transfer_error));status_text(error);
-    } else status_text(cc?"Probed; CC1101 receive monitor is off":"Radio IDs unavailable; check power / connection");
+    } else status_text((cc || nr || nf)?"Probe complete; see per-chip status":"No radio answered; check power / connection");
     return true;
 }
 static bool tune(uint32_t hz, bool capture)
@@ -330,14 +330,16 @@ static bool tune(uint32_t hz, bool capture)
     return cc_write(0x0d,word>>16) && cc_write(0x0e,word>>8) && cc_write(0x0f,word) &&
         /* Continuous asynchronous RX keeps packet completion and FIFO traffic
            from stopping or freezing this energy-only monitor. */
-        cc_write(0x02,capture?0x0d:0x2e) && cc_write(0x08,0x32) &&
-        cc_write(0x10,0x17) && cc_write(0x11,0x32) && cc_write(0x12,capture?0x30:0) &&
-        cc_write(0x1b,capture?0x07:0x03) && cc_write(0x1c,0) && cc_write(0x1d,0x91) &&
-        cc_write(0x17,0x3c) && cc_write(0x18,0x18) && cc_strobe(0x34);
+        ls_mixrf_rx_profile(cc_write,capture) && cc_strobe(0x34);
 }
 
 /* TI CC1101 datasheet tables 36/39. OOK uses off/mark in PATABLE[0/1];
    FSK uses continuous power in PATABLE[0]. The antenna is not calibrated. */
+static bool replay_cancelled(void)
+{
+    portENTER_CRITICAL(&lock);bool cancelled=tx_cancelled;portEXIT_CRITICAL(&lock);
+    return cancelled;
+}
 static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
 {
     static const uint8_t pa[4][4]={{0x34,0x51,0x85,0xc2},
@@ -348,7 +350,8 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     uint32_t *symbols=heap_caps_malloc(words*4,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     rmt_channel_handle_t channel=NULL;
     rmt_encoder_handle_t encoder=NULL;
-    bool enabled=false,ok=false;
+    bool enabled=false,ok=false,idle=false,stopped=false;
+    tx_idle=false;
     const char *stage="symbols";
     esp_err_t error=ESP_OK;
     uint8_t marc=0xff;
@@ -390,7 +393,7 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     if((error=rmt_enable(channel))!=ESP_OK)goto cleanup;
     enabled=true;
     stage="STX";
-    if(!cc_strobe(0x35))goto cleanup;
+    if(replay_cancelled() || !cc_strobe(0x35))goto cleanup;
     stage="TX state";
     int64_t deadline=esp_timer_get_time()+100000;
     for(;;) {
@@ -398,22 +401,31 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
         if((marc&31)==19)break;
         /* Check fresh hardware state after waking, even when scheduling
            delayed this low-priority worker beyond the polling deadline. */
-        if(esp_timer_get_time()>=deadline)goto cleanup;
+        if(replay_cancelled() || esp_timer_get_time()>=deadline)goto cleanup;
         vTaskDelay(1);
     }
     rmt_transmit_config_t send={.loop_count=0,.flags.eot_level=0};
     stage="RMT transmit";
     if((error=rmt_transmit(channel,encoder,symbols,words*4,&send))!=ESP_OK)goto cleanup;
     stage="RMT completion";
-    ok=(error=rmt_tx_wait_all_done(channel,11000))==ESP_OK;
+    deadline=esp_timer_get_time()+11000000;
+    do {
+        error=rmt_tx_wait_all_done(channel,20);
+        if(error==ESP_OK){ok=true;break;}
+    } while(error==ESP_ERR_TIMEOUT && !replay_cancelled() && esp_timer_get_time()<deadline);
 cleanup:
     /* Stop the RF carrier on every path before releasing timing memory. */
-    if(!cc_strobe(0x36)){ok=false;stage="SIDLE cleanup";}
-    if(enabled)rmt_disable(channel);
-    if(channel)rmt_del_channel(channel);
-    if(encoder)rmt_del_encoder(encoder);
-    gpio_set_direction(LS_BOARD_MIX_CC_GDO0,GPIO_MODE_INPUT);
-    heap_caps_free(symbols);
+    idle=cc_strobe(0x36);
+    if(!idle){ok=false;stage="SIDLE cleanup";}
+    stopped=!enabled || rmt_disable(channel)==ESP_OK;
+    if(stopped) {
+        if(channel)rmt_del_channel(channel);
+        if(encoder)rmt_del_encoder(encoder);
+        gpio_set_direction(LS_BOARD_MIX_CC_GDO0,GPIO_MODE_INPUT);
+        heap_caps_free(symbols);
+    } else {ok=false;stage="RMT stop";}
+    /* Failed cleanup quarantines the channel and its timing memory. */
+    tx_idle=idle && stopped;
     if(!ok)printf("mixrf: TX failure at %s: error=%s SPI=%s MARCSTATE=%02x\n",stage,esp_err_to_name(error),esp_err_to_name(transfer_error),marc);
     status_text(ok?(tx_fsk?"CC1101 FSK replay complete; idle":"CC1101 OOK replay complete; idle"):"CC1101 replay failed; idle requested");
     printf("mixrf: %s TX %.4f MHz %u edges nominal %d dBm: %s\n",tx_fsk?"FSK":"OOK",hz/1e6,(unsigned)count,dbm,ok?"complete":"FAILED");
@@ -439,8 +451,14 @@ static void worker(void *arg)
         portENTER_CRITICAL(&lock);bool send=tx_pending;tx_pending=false;portEXIT_CRITICAL(&lock);
         if(send) {
             ls_cc_capture_stop();capturing=running=false;
-            bool sent=ls_keypad_present() && transmit_raw(tx_hz,tx_pulses,tx_count,tx_dbm);
-            portENTER_CRITICAL(&lock);tx_ok=sent;tx_done=true;state.receiving=state.capturing=false;portEXIT_CRITICAL(&lock);
+            tx_idle=true;
+            bool sent=!replay_cancelled() && ls_keypad_present() && transmit_raw(tx_hz,tx_pulses,tx_count,tx_dbm);
+            /* The request owns its timings until hardware cleanup completes,
+               even if the caller has timed out and reused its own buffer. */
+            heap_caps_free(tx_pulses);
+            portENTER_CRITICAL(&lock);tx_pulses=NULL;tx_ok=sent;tx_done=true;
+            if(tx_cancelled && tx_idle)tx_active=false;
+            state.receiving=state.capturing=false;portEXIT_CRITICAL(&lock);
         }
         portENTER_CRITICAL(&lock);bool retry=reprobe;reprobe=false;portEXIT_CRITICAL(&lock);
         if(retry) {probe_radios();portENTER_CRITICAL(&lock);ls_mixrf_probe_complete(&state);portEXIT_CRITICAL(&lock);}
@@ -454,8 +472,10 @@ static void worker(void *arg)
         if(ls_nfc_suite_busy()) {
             if(card_scanning || nfc_watching){nfc_watch_stop();card_scanning=nfc_watching=false;}
             portENTER_CRITICAL(&lock);want_card=want_nfc=false;state.card_scanning=state.card_present=state.nfc_watching=false;portEXIT_CRITICAL(&lock);
-            if(!state.nfc)ls_nfc_suite_stop();
+            ls_mixrf_status_t suite_state;ls_mixrf_snapshot(&suite_state);
+            if(!ls_keypad_present() || !ls_mixrf_suite_allowed(&suite_state))ls_nfc_suite_stop();
             ls_nfc_suite_step(&suite_io);
+            if(!ls_nfc_suite_busy())nfc_watch_stop();
             vTaskDelay(pdMS_TO_TICKS(10));continue;
         }
         if(scan && !scanning) {
@@ -557,7 +577,7 @@ void ls_mixrf_snapshot(ls_mixrf_status_t *out)
 bool ls_mixrf_receive_owned(ls_mixrf_owner_t owner,bool on,uint32_t hz)
 {
     portENTER_CRITICAL(&lock);
-    bool ok=ls_mixrf_cc_request(&state,owner,on,hz,tx_active);
+    bool ok=(!on || !ls_nfc_suite_busy()) && ls_mixrf_cc_request(&state,owner,on,hz,tx_active);
     if(ok && on)requested=hz;
     portEXIT_CRITICAL(&lock);return ok;
 }
@@ -580,18 +600,28 @@ static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,co
         if(esp_timer_get_time()>=deadline)return false;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    int32_t *copy=heap_caps_malloc(count*sizeof(*copy),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!copy)return false;
+    memcpy(copy,pulses,count*sizeof(*copy));
     portENTER_CRITICAL(&lock);
-    bool ok=started && state.cc && !state.busy && !reprobe && !tx_active && !state.receive_requested && !state.capture_requested;
-    if(ok){tx_active=tx_pending=true;tx_done=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=pulses;tx_count=count;tx_fsk=mod!=NULL;if(mod)tx_mod=*mod;}
+    bool ok=started && state.cc && !state.busy && !reprobe && !ls_nfc_suite_busy() && !tx_active && !state.receive_requested && !state.capture_requested;
+    if(ok){tx_active=tx_pending=true;tx_done=tx_cancelled=false;tx_hz=hz;tx_dbm=dbm;tx_pulses=copy;tx_count=count;tx_fsk=mod!=NULL;if(mod)tx_mod=*mod;}
     portEXIT_CRITICAL(&lock);
-    if(!ok)return false;
+    if(!ok){heap_caps_free(copy);return false;}
+    deadline=esp_timer_get_time()+13000000;
     for(;;) {
-        portENTER_CRITICAL(&lock);bool done=tx_done;ok=tx_ok;portEXIT_CRITICAL(&lock);
-        if(done)break;
+        portENTER_CRITICAL(&lock);
+        if(tx_done){ok=tx_ok;if(tx_idle)tx_active=false;portEXIT_CRITICAL(&lock);return ok;}
+        if(esp_timer_get_time()>=deadline) {
+            /* Keep admission closed until the worker acknowledges cancellation
+               after SIDLE/RMT cleanup. A stalled worker cannot accept new TX. */
+            tx_cancelled=true;
+            portEXIT_CRITICAL(&lock);
+            return false;
+        }
+        portEXIT_CRITICAL(&lock);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    portENTER_CRITICAL(&lock);tx_active=false;tx_pulses=NULL;portEXIT_CRITICAL(&lock);
-    return ok;
 }
 bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm)
 {return replay_raw(hz,p,n,dbm,NULL);}
@@ -600,7 +630,7 @@ bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const sub
 bool ls_mixrf_scan_owned(ls_mixrf_owner_t owner,bool on)
 {
     portENTER_CRITICAL(&lock);
-    bool ok=(!on || (state.nrf && !state.busy)) && ls_mixrf_claim(&state.scan_owner,owner,on);
+    bool ok=(!on || (state.nrf && !state.busy && !ls_nfc_suite_busy())) && ls_mixrf_claim(&state.scan_owner,owner,on);
     if(ok)state.scan_requested=on;
     portEXIT_CRITICAL(&lock);return ok;
 }

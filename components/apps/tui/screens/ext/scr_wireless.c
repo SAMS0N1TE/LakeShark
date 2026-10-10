@@ -4,6 +4,7 @@
 #include "../../ls_keyboard.h"
 #include "../../ls_wireless.h"
 #include "../../ls_survey_ui.h"
+#include "../../ls_options.h"
 #include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,7 @@ static char s_saved_name[33];
 static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t s_view;
 static char s_join_ssid[33], s_note[80];
 static bool s_join_secure;
+static char s_forget_name[33];
 
 static tui_rect inset(tui_rect a)
 {
@@ -30,7 +32,7 @@ static tui_rect inset(tui_rect a)
 
 static void line(tui_surface *sf, tui_rect a, int row, const char *text, uint8_t attr)
 {
-    tui_put_str(sf, a, a.x + 1, a.y + row, text, attr);
+    tui_put_str(sf, tui_rect_make(a.x + 1, a.y, a.w - 2, a.h), a.x + 1, a.y + row, text, attr);
 }
 
 static void button(tui_surface *sf, tui_rect r, const char *label, char key,
@@ -40,7 +42,9 @@ static void button(tui_surface *sf, tui_rect r, const char *label, char key,
     ls_fill_dither(sf, inset(r), on ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
     ls_panel_box(sf, r, "", hue);
     char text[48];
-    if (ls_tui_keyboard_mode()) snprintf(text, sizeof(text), "[%c] %s", key, label);
+    if (ls_tui_keyboard_mode() && (key == '[' || key == ']'))
+        snprintf(text, sizeof(text), "%s KEY / %s", key == '[' ? "[" : "]", label);
+    else if (ls_tui_keyboard_mode()) snprintf(text, sizeof(text), "[%c] %s", key, label);
     else snprintf(text, sizeof(text), "%s", label);
     ls_dither_label(sf, inset(r), (r.h - 3) / 2,
                     text, dim ? LS_ATTR_DIM : WHITE);
@@ -54,14 +58,40 @@ static void request(ls_wireless_op_t op, const char *ssid, const char *pass)
     else snprintf(s_note, sizeof(s_note), "A connection update is already running");
 }
 
+static void password_open(bool retry);
+
 static void password_done(const char *pass)
 {
     size_t n = strlen(pass);
     if ((s_join_secure && n < 8) || (n && (n < 8 || n > 63))) {
-        ls_keyboard_open_secret("USE 8-63 CHARACTERS", 63, password_done);
+        password_open(true);
         return;
     }
     request(LS_WIRELESS_JOIN, s_join_ssid, pass);
+}
+
+static void password_open(bool retry)
+{
+    char title[96];
+    snprintf(title, sizeof(title), "%s / %s", s_join_ssid,
+        retry ? "USE 8-63 CHARACTERS" : s_join_secure ? "PASSWORD" : "PASSWORD / OPEN: EMPTY");
+    ls_keyboard_open_secret(title, 63, password_done);
+}
+
+static void forget_done(const char *answer)
+{
+    char confirm[4];
+    snprintf(confirm, sizeof(confirm), "%s", answer);
+    for (int i = 0; confirm[i]; ++i)
+        if (confirm[i] >= 'a' && confirm[i] <= 'z') confirm[i] += 'A' - 'a';
+    if (strcmp(confirm, "YES")) return;
+    ls_wireless_get(&s_view);
+    for (int i = 0; i < s_view.saved_count; ++i)
+        if (!strcmp(s_forget_name, s_view.saved[i])) {
+            request(LS_WIRELESS_FORGET, s_forget_name, NULL);
+            return;
+        }
+    snprintf(s_note, sizeof(s_note), "That saved network is no longer present");
 }
 
 static void ssid_done(const char *ssid)
@@ -69,7 +99,7 @@ static void ssid_done(const char *ssid)
     if (!ssid[0]) return;
     snprintf(s_join_ssid, sizeof(s_join_ssid), "%s", ssid);
     s_join_secure = false;
-    ls_keyboard_open_secret("PASSWORD / OPEN: EMPTY", 63, password_done);
+    password_open(false);
 }
 
 static void join_ap(int index)
@@ -79,15 +109,60 @@ static void join_ap(int index)
     const ls_wireless_ap_t *ap = &s_view.aps[index];
     snprintf(s_join_ssid, sizeof(s_join_ssid), "%s", ap->ssid);
     s_join_secure = ap->secure;
-    if (ap->secure) ls_keyboard_open_secret("WI-FI PASSWORD", 63, password_done);
+    if (ap->secure) password_open(false);
     else request(LS_WIRELESS_JOIN, s_join_ssid, "");
 }
 
+static void bt_action(const ls_opt_t *o)
+{
+    request(o->arg ? LS_WIRELESS_BT_UNPIN : LS_WIRELESS_BT_PIN,
+            o->arg ? NULL : s_view.address, NULL);
+}
+static const char *bt_why(const ls_opt_t *o)
+{
+    ls_wireless_get(&s_view);
+    if (s_view.busy) return "Connection update running";
+    if (!s_view.bt_available) return "Bluetooth unavailable";
+    if (!o->arg && !s_view.bt_ready) return "Connect a head first";
+    return NULL;
+}
+static void bt_show(const ls_opt_t *o, char *out, size_t n)
+{
+    ls_wireless_get(&s_view);
+    snprintf(out, n, "%s", o->arg ? s_view.pinned : s_view.peer);
+}
+static const char *bt_text(const ls_opt_t *o)
+{
+    (void)o; ls_wireless_get(&s_view);
+    return s_view.name_filter;
+}
+static void bt_set_text(const ls_opt_t *o, const char *text)
+{
+    (void)o; request(LS_WIRELESS_BT_FILTER, text, NULL);
+}
+static double bt_num(const ls_opt_t *o)
+{
+    (void)o; ls_wireless_get(&s_view); return s_view.tel_hz;
+}
+static void bt_set_num(const ls_opt_t *o, double value)
+{
+    (void)o; char text[8]; snprintf(text, sizeof(text), "%d", (int)value);
+    request(LS_WIRELESS_BT_TELEMETRY, text, NULL);
+}
+static const ls_opt_t BT_OPTIONS[] = {
+    {.label="PIN CONNECTED HEAD", .kind=LS_OPT_ACTION, .act=bt_action, .show=bt_show, .why_not=bt_why},
+    {.label="UNPIN HEAD", .kind=LS_OPT_ACTION, .arg=1, .act=bt_action, .show=bt_show, .why_not=bt_why},
+    {.label="HEAD NAME FILTER", .kind=LS_OPT_TEXT, .arg=2, .text=bt_text, .set_text=bt_set_text, .max=23, .why_not=bt_why},
+    {.label="TELEMETRY RATE", .kind=LS_OPT_LEVEL, .arg=3, .num=bt_num, .set_num=bt_set_num,
+     .lo=0, .hi=20, .step=1, .unit="Hz / 0 off", .why_not=bt_why},
+};
+static const ls_opt_ctx_t BT_CTX = {.name="BLUETOOTH", .job=-1, .radio=LS_RSEL_NONE, LS_OPT_ROWS(BT_OPTIONS)};
+
 static void act(char ch)
 {
-    if (ch == 'n' || ch == 'N') { ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_drones)); return; }
+    if (ch == 'g' || ch == 'G') { ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_drones)); return; }
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    if (ch == 'w' || ch == 'b' || ch == 'v') { s_tab = ch == 'v' ? 2 : ch == 'b'; s_hit_count = 0; return; }
+    if (ch == 'w' || ch == 'b' || ch == 'v') { s_tab = ch == 'v' ? 2 : ch == 'b'; s_hit_count = 0; s_note[0] = 0; return; }
     if (ch == '[' || ch == ']') {
         int p = s_selected / s_page_size + (ch == ']' ? 1 : -1);
         int pages = (s_view.ap_count + s_page_size - 1) / s_page_size;
@@ -97,6 +172,7 @@ static void act(char ch)
     if (s_view.busy) return;
     if (s_tab) {
         if (!s_view.bt_available) return;
+        if (ch == 'o') ls_opt_open(&BT_CTX);
         if (ch == 's') request(LS_WIRELESS_BT_RESCAN, NULL, NULL);
         if (ch == 'd') request(LS_WIRELESS_BT_STOP, NULL, NULL);
         return;
@@ -104,8 +180,8 @@ static void act(char ch)
     if (!s_view.wifi_available) return;
     switch (ch) {
     case 's': request(LS_WIRELESS_SCAN, NULL, NULL); break;
-    case 'r': request(LS_WIRELESS_SAVED, NULL, NULL); break;
-    case 'm': ls_keyboard_open("NETWORK NAME", "", 32, ssid_done); break;
+    case 'r': request(LS_WIRELESS_SAVED, s_saved_selected >= 0 ? s_saved_name : NULL, NULL); break;
+    case 'm': ls_keyboard_open_lower("NETWORK NAME", "", 32, ssid_done); break;
     case 'j': join_ap(s_selected); break;
     case 'd': request(LS_WIRELESS_LEAVE, NULL, NULL); break;
     case 'k':
@@ -123,7 +199,14 @@ static void act(char ch)
             snprintf(s_saved_name, sizeof(s_saved_name), "%s", s_view.saved[s_saved_selected]);
         }
         break;
-    case 'f': request(LS_WIRELESS_FORGET, s_saved_selected >= 0 ? s_saved_name : NULL, NULL); break;
+    case 'f':
+        if (s_saved_selected >= 0) {
+            char title[96];
+            snprintf(s_forget_name, sizeof(s_forget_name), "%s", s_saved_name);
+            snprintf(title, sizeof(title), "FORGET %s / TYPE YES", s_forget_name);
+            ls_keyboard_open(title, "", 3, forget_done);
+        } else snprintf(s_note, sizeof(s_note), "Select a saved network to forget");
+        break;
     }
 }
 
@@ -211,7 +294,7 @@ static void networks(tui_surface *sf, tui_rect a)
     if (s_page_size > 5) s_page_size = 5;
     int start = s_selected / s_page_size * s_page_size;
     if (!s_view.ap_count) {
-        line(sf, a, 3, s_view.busy ? "Scanning..." : "Press SCAN to find networks", WHITE);
+        line(sf, a, 3, (s_view.busy && s_view.operation == LS_WIRELESS_SCAN) ? "Scanning..." : "Press SCAN to find networks", WHITE);
     }
     for (int i = 0; i < s_page_size && start + i < s_view.ap_count; i++) {
         const ls_wireless_ap_t *ap = &s_view.aps[start + i];
@@ -285,29 +368,42 @@ static void draw(tui_surface *sf, tui_rect area)
     button(sf, tui_rect_make(area.x + tab_w * 2, area.y, tab_w, tab_h),
            "SURVEY", 'V', s_tab == 2, false, -1);
     button(sf, tui_rect_make(area.x + tab_w * 3, area.y, area.w - tab_w * 3, tab_h),
-           "DRONES", 'N', false, false, -1);
+           "DRONES", 'G', false, false, -1);
     if (s_tab == 2) {
         ls_survey_draw(sf, tui_rect_make(area.x, area.y + tab_h, area.w, area.h - tab_h));
         return;
     }
-    tui_rect status = tui_rect_make(area.x, area.y + tab_h, area.w, wide ? 4 : 6);
+    tui_rect status = tui_rect_make(area.x, area.y + tab_h, area.w, wide ? 5 : 6);
     ls_panel_box(sf, status, s_tab ? "BLUETOOTH STATUS" : "WI-FI STATUS", TUI_CYAN);
     char text[128];
     if (!s_tab) {
-        line(sf, status, 1, s_view.wifi_available ? s_view.wifi_status : "Wi-Fi unavailable in this build", WHITE);
-        if (s_view.wifi_signal) snprintf(text, sizeof(text), "%d dBm  CH %d  IP %s", s_view.wifi_rssi, s_view.channel, s_view.ip);
-        else snprintf(text, sizeof(text), "Station mode / saved network reconnect");
+        const char *state = s_view.wifi_available ? s_view.wifi_status : "Wi-Fi unavailable in this build";
+        int row = 1, width = status.w - 2;
+        while (*state && row < status.h - 2) {
+            int n = (int)strlen(state);
+            if (n > width) {
+                n = width;
+                while (n > 0 && state[n] != ' ') n--;
+                if (!n) n = width;
+            }
+            snprintf(text, sizeof(text), "%.*s", n, state);
+            line(sf, status, row++, text, WHITE);
+            state += n;
+            while (*state == ' ') state++;
+        }
+        if (s_view.wifi_connected) snprintf(text, sizeof(text), "IP %s  %d dBm  CH %d", s_view.ip, s_view.wifi_rssi, s_view.channel);
+        else snprintf(text, sizeof(text), "Station mode / saved reconnect");
     } else {
-        snprintf(text, sizeof(text), "%s  %s", s_view.bt_available ? s_view.bt_status : "Bluetooth unavailable", s_view.peer);
+        snprintf(text, sizeof(text), "%s  %s", s_view.bt_available ? s_view.bt_status : "Bluetooth unavailable", s_view.bt_state ? s_view.peer : "");
         line(sf, status, 1, text, WHITE);
         if (s_view.bt_signal) snprintf(text, sizeof(text), "%s  %d dBm", s_view.address, s_view.bt_rssi);
         else snprintf(text, sizeof(text), "LakeShark app on Flipper / BLE");
     }
-    line(sf, status, 2, text, INK(TUI_YELLOW | TUI_BRIGHT));
+    line(sf, status, s_tab ? 2 : status.h - 2, text, INK(TUI_YELLOW | TUI_BRIGHT));
     if (s_tab) snprintf(text, sizeof(text), "RX %lu commands  TX %lu frames  drop %lu",
         (unsigned long)s_view.rx, (unsigned long)s_view.tx, (unsigned long)s_view.drops);
     else snprintf(text, sizeof(text), "Tap a network or use MANUAL for a hidden SSID");
-    if (!wide) line(sf, status, 4, text, LS_ATTR_DIM);
+    if (!wide && s_tab) line(sf, status, 4, text, LS_ATTR_DIM);
     tui_rect content = tui_rect_make(area.x, status.y + status.h, area.w,
         area.h - tab_h - status.h - action_h - msg_h);
     tui_rect first, second;
@@ -331,25 +427,27 @@ static void draw(tui_surface *sf, tui_rect area)
         saved_networks(sf, tui_rect_make(second.x, second.y + h, second.w, second.h - h));
     }
     int msg_y = area.y + area.h - action_h - msg_h;
-    const char *message = s_note[0] ? s_note : s_view.message;
-    if (s_view.busy) {
+    bool bt_message = s_view.operation >= LS_WIRELESS_BT_START;
+    const char *message = s_note[0] ? s_note : bt_message == (s_tab == 1) ? s_view.message : "";
+    if (s_view.busy && bt_message == (s_tab == 1)) {
         snprintf(text, sizeof(text), "%c %s", "|/-\\"[(s_view.now_ms / 180) % 4],
             s_view.operation == LS_WIRELESS_SCAN ? "Scanning nearby networks..." : "Updating connection...");
         message = text;
     }
     tui_put_str(sf, area, area.x + 1, msg_y, message, WHITE);
-    static const char *labels[] = {"SCAN", "SAVED", "MANUAL", "JOIN", "LEAVE", "FORGET"};
+    static const char *labels[] = {"SCAN", "AUTO", "MANUAL", "JOIN", "LEAVE", "FORGET"};
     static const char keys[] = {'S', 'R', 'M', 'J', 'D', 'F'};
-    int count = s_tab ? 2 : 6, columns = wide ? count : s_tab ? 2 : 3;
+    int count = s_tab ? 3 : 6, columns = wide ? count : 3;
     int rows = (count + columns - 1) / columns, h = action_h / rows;
     if (h > 5) h = 5;
     int w = area.w / columns;
     for (int i = 0; i < count; i++) {
         bool dim = s_view.busy || (s_tab ? !s_view.bt_available : !s_view.wifi_available);
         if (!s_tab && i == 3 && !s_view.ap_count) dim = true;
+        if (!s_tab && i == 5 && s_saved_selected < 0) dim = true;
         button(sf, tui_rect_make(area.x + i % columns * w, msg_y + msg_h + i / columns * h,
                 i % columns == columns - 1 ? area.w - (columns - 1) * w : w, h),
-               s_tab ? (i ? "STOP" : "SCAN") : labels[i], s_tab ? (i ? 'D' : 'S') : keys[i],
+               s_tab ? (i == 2 ? "OPTIONS" : i ? "STOP" : "SCAN") : i == 1 && s_saved_selected >= 0 ? "CONNECT" : labels[i], s_tab ? (i == 2 ? 'O' : i ? 'D' : 'S') : keys[i],
                false, dim, -1);
     }
 }
@@ -357,14 +455,14 @@ static void draw(tui_surface *sf, tui_rect area)
 static bool key(ls_tk_t k, char ch)
 {
     if (k == LS_TK_TAB) { act(s_tab ? 'w' : 'b'); return true; }
-    if (k == LS_TK_CHAR && ch && strchr("nNvVwWbB", ch)) { act(ch); return true; }
+    if (k == LS_TK_CHAR && ch && strchr("gGvVwWbB", ch)) { act(ch); return true; }
     if (s_tab == 2) return ls_survey_key(k, ch);
     if (!s_tab && (k == LS_TK_UP || k == LS_TK_DOWN)) {
         if (s_view.ap_count) s_selected = (s_selected + s_view.ap_count + (k == LS_TK_UP ? -1 : 1)) % s_view.ap_count;
         return true;
     }
     if (!s_tab && k == LS_TK_ENTER) { join_ap(s_selected); return true; }
-    if (k == LS_TK_CHAR && strchr("wWbBsSrRmMjJdDfFkKpPnN[]", ch) && ch) { act(ch); return true; }
+    if (k == LS_TK_CHAR && strchr("wWbBsSrRmMjJdDfFkKpPnNoO[]", ch) && ch) { act(ch); return true; }
     return false;
 }
 
@@ -391,6 +489,6 @@ static void enter(void) {
 static void leave(void) { s_hit_count = 0; ls_wireless_set_active(false); }
 
 const ls_tui_screen_t ls_scr_wireless = {
-    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey  N Drones",
+    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey  G Drones",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

@@ -306,6 +306,12 @@ bool p25_program_request_card_profile(const char *name);
 /* File name of the loaded profile, or NULL. */
 const char *p25_program_active_name(void);
 
+void p25_program_service_now(void);
+void p25_program_exit_now(void);
+bool p25_program_commit_staged(p25_program_t *program, const p25_program_t *staged,
+                                unsigned generation, unsigned current_generation,
+                                const p25_program_ops_t *ops);
+
 #ifdef __cplusplus
 }
 #endif

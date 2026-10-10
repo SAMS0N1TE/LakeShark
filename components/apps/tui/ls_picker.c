@@ -27,9 +27,11 @@ static EXT_RAM_BSS_ATTR char s_label[LS_PICKER_MAX][LS_PICKER_TEXT];
 static EXT_RAM_BSS_ATTR char s_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_n;
 
+static bool s_keep_open;
 static ls_picker_done_t s_done;
 static void (*s_on_back)(void);
 static void (*s_on_step)(int index, int dir);
+static void (*s_navigate)(int index, int dir);
 static EXT_RAM_BSS_ATTR bool s_stepper[LS_PICKER_MAX];
 
 #define FILTER_MAX 16
@@ -87,9 +89,11 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
     snprintf(s_title, sizeof(s_title), "%s", title ? title : "CHOOSE");
     s_why[0] = 0;
     s_note[0] = 0;
+    s_keep_open=false;
     s_done = on_done;
     s_on_back = NULL;
     s_on_step = NULL;
+    s_navigate = NULL;
     memset(s_stepper, 0, sizeof(s_stepper));
     s_n = 0;
     s_flen = 0;
@@ -141,7 +145,10 @@ void ls_picker_stepper(int index, void (*on_step)(int index, int dir))
     if (on_step) s_on_step = on_step;
 }
 
-void ls_picker_close(void) { s_open = false; s_done = NULL; s_on_back = NULL; s_on_step = NULL; }
+void ls_picker_navigation(void (*navigate)(int index, int dir)) { s_navigate=navigate; }
+
+void ls_picker_close(void) { s_navigate=NULL; s_open = false; s_done = NULL; s_on_back = NULL; s_on_step = NULL; }
+void ls_picker_keep_open(void) { s_keep_open=true; }
 
 static void go_back(void)
 {
@@ -164,7 +171,7 @@ static void accept(void)
     if (s_cur < 0 || s_cur >= s_shown) { ls_picker_close(); return; }
     const int idx = s_order[s_cur];
     const ls_picker_done_t cb = s_done;
-    ls_picker_close();
+    if(!s_keep_open) ls_picker_close();
     if (cb) cb(idx);
 }
 
@@ -447,8 +454,8 @@ bool ls_picker_key(ls_tk_t key, char ch)
     switch (key) {
     case LS_TK_UP:    move(-1); return true;
     case LS_TK_DOWN:  move(1);  return true;
-    case LS_TK_LEFT:  if (level) step(s_cur, -1); else page(-1); return true;
-    case LS_TK_RIGHT: if (level) step(s_cur, 1);  else page(1);  return true;
+    case LS_TK_LEFT:  if (level) step(s_cur, -1); else if(s_navigate) s_navigate(s_order[s_cur],-1); else page(-1); return true;
+    case LS_TK_RIGHT: if (level) step(s_cur, 1);  else if(s_navigate) s_navigate(s_order[s_cur],1); else page(1); return true;
     case LS_TK_ENTER: accept();  return true;
     case LS_TK_ESC:   go_back(); return true;
     case LS_TK_BACKSPACE:

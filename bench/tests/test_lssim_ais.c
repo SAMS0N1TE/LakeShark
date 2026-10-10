@@ -79,6 +79,6 @@ LS_CASE(map_shows_received_vessel_labels_in_both_postures)
 
 LS_CASE(map_layer_toggle_hides_vessels_without_hiding_other_layers)
 {
-    run("map", "-k l -x @down,@down,@down,@down,@down,@down,@down,@enter,@esc", false);
+    run("map", "-k l -x @down,@down,@down,@down,@down,@down,@down,@enter,@esc,@esc", false);
     LS_CHECK(!strstr(output, "SEA TEST")); LS_CHECK(strstr(output, "UAL442"));
 }

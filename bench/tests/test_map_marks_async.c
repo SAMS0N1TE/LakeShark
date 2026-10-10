@@ -2,10 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <string.h>
-static bool worker;
+static bool worker,fail_replace;
 static FILE *guard_open(const char *p,const char *m) { LS_CHECK(worker);return fopen(p,m); }
-static int guard_rename(const char *a,const char *b) { LS_CHECK(worker);return rename(a,b); }
+static int guard_rename(const char *a,const char *b) { LS_CHECK(worker);if(fail_replace && strstr(a,".new")) { errno=EIO;return -1; }return rename(a,b); }
 static int guard_remove(const char *p) { LS_CHECK(worker);return remove(p); }
 #define fopen guard_open
 #define rename guard_rename
@@ -25,6 +26,7 @@ LS_CASE(deferred_marks_load_and_snapshot_save_never_do_ui_io) {
     worker=true;ls_marks_io_step();worker=false;
     LS_EQ_INT(ls_marks_count(),1);LS_EQ_STR(ls_marks_at(0)->name,"SAVED");
     LS_CHECK(ls_marks_rename(0,"QUEUED"));LS_CHECK(ls_marks_save());
+    LS_EQ_STR("MAP SAVING",ls_marks_save_status());
     LS_CHECK(ls_marks_rename(0,"LIVE"));
     worker=true;ls_marks_io_step();worker=false;
     LS_EQ_STR(ls_marks_at(0)->name,"LIVE");
@@ -36,5 +38,15 @@ LS_CASE(deferred_marks_load_and_snapshot_save_never_do_ui_io) {
     LS_CHECK(strstr(text,"LATEST")!=NULL);
     ls_marks_reload();LS_EQ_INT(ls_marks_count(),0);
     worker=true;ls_marks_io_step();worker=false;
-    LS_EQ_STR(ls_marks_at(0)->name,"LATEST");remove(path);
+    LS_EQ_STR(ls_marks_at(0)->name,"LATEST");
+    ls_marks_rename(0,"UNSAVED");LS_CHECK(ls_marks_save());fail_replace=true;
+    worker=true;ls_marks_io_step();worker=false;
+    LS_CHECK(strstr(ls_marks_save_status(),"NOT SAVED"));LS_CHECK(ls_marks_error()!=NULL);
+    ls_marks_reload();LS_EQ_STR("UNSAVED",ls_marks_at(0)->name);
+    fail_replace=false;LS_CHECK(ls_marks_save());
+    worker=true;ls_marks_io_step();worker=false;
+    LS_EQ_STR("MAP SAVED",ls_marks_save_status());
+    ls_marks_reload();worker=true;ls_marks_io_step();worker=false;
+    LS_EQ_STR("UNSAVED",ls_marks_at(0)->name);
+    remove(path);char backup[104];snprintf(backup,sizeof(backup),"%s.bak",path);remove(backup);
 }

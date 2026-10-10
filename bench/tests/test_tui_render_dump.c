@@ -142,6 +142,8 @@ int  settings_get_volume(void) { return s_vol; }
 void settings_set_volume(int v) { s_vol = v; }
 int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
+bool app_usb_autoreboot(void) { return s_usb; }
+void app_set_usb_autoreboot(bool v) { s_usb = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
 static bool s_update_check = true;
@@ -317,6 +319,36 @@ LS_CASE(sensor_history_list_detail_options_and_touch_render)
         ls_scr_experiments.key(LS_TK_ESC, 0);
         ls_tui_end();
     }
+}
+
+LS_CASE(sensor_history_touch_pages_keep_key_selection)
+{
+    extern const ls_tui_screen_t ls_scr_experiments;
+    register_once(); ls_tui_screen_register(&ls_scr_experiments);
+    ls_exp_register_builtin(); lr433_history_start();
+    lr433_msg_t m = { .proto = LR433_P_ACURITE_TOWER, .channel = 1, .battery_ok = 1,
+        .temp_c = 12, .humidity = 62, .kpa = NAN, .rain_mm = NAN, .wind_ms = NAN };
+    for (int i = 0; i < 24; ++i) {
+        snprintf(m.id,sizeof(m.id),"page-%02d",i); lr433_history_receive(&m);
+    }
+    LS_CHECK(ls_tui_begin(1232,568));
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_experiments));
+    ls_scr_experiments.key(LS_TK_ENTER,0); frame(2);
+    ls_scr_experiments.key(LS_TK_CHAR,'h'); frame(2);
+    int cols, rows, page_y = -1; ls_tui_geometry(&cols,&rows,NULL,NULL);
+    for (int y = 0; y < rows; ++y) if (row_has(y,"[PAGE DOWN]")) page_y = y;
+    LS_CHECK(page_y >= 0);
+    if (page_y >= 0) {
+        ls_scr_experiments.touch(cols*3/4,page_y); frame(2);
+        LS_CHECK(!grid_has("page-00")); sensor_pixels("page-two",true);
+        ls_scr_experiments.key(LS_TK_UP,0); frame(2);
+        LS_CHECK(grid_has("page-00"));
+        ls_scr_experiments.touch(cols*3/4,page_y); frame(2);
+        ls_scr_experiments.touch(5,page_y); frame(2);
+        LS_CHECK(grid_has("page-00"));
+    }
+    ls_scr_experiments.key(LS_TK_ESC,0); ls_scr_experiments.key(LS_TK_ESC,0);
+    ls_scr_experiments.key(LS_TK_ESC,0); ls_tui_end();
 }
 
 LS_CASE(sensor_history_threshold_uses_haptics_without_audio_or_volume_change)

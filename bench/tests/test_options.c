@@ -590,3 +590,13 @@ LS_CASE(embedded_options_root_has_back_to_screen) {
     ls_opt_open(&embedded);draw_picker();LS_CHECK(row_of("< BACK")>=0);
     ls_picker_key(LS_TK_ESC,0);LS_CHECK(!ls_picker_active());ls_opt_poll();LS_CHECK(!ls_picker_active());
 }
+
+static bool returned_to_parent;
+static void parent_options(void) { returned_to_parent=true; }
+LS_CASE(options_root_returns_to_its_parent_picker) {
+    fresh(false);returned_to_parent=false;
+    ls_opt_open(&CTX_TOP);ls_opt_back(parent_options);draw_picker();
+    LS_CHECK(row_of("< BACK")>=0);
+    ls_picker_key(LS_TK_ESC,0);LS_CHECK(returned_to_parent);
+    ls_opt_poll();LS_CHECK(!ls_picker_active());
+}

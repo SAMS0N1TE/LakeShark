@@ -6,12 +6,14 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "esp_attr.h"
 
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
-#include "../../ls_motion.h"
 #include "../../ls_quick.h"
 #include "../../ls_options.h"
+#include "../../ls_app.h"
+#include "../../ls_wireless.h"
 
 /* ls_board.h and not ls_caps.h: the caps header has an #error in it saying
    exactly that, which is the right way for a header to be private. */
@@ -20,7 +22,6 @@
 #ifdef LS_BOARD_MIX_CC_CS
 #include "ls_mixrf.h"
 #include "ls_nfc_suite.h"
-#include "../../ls_app.h"
 #endif
 
 /* Presence and activity come from the endpoint that owns each USB radio. */
@@ -59,6 +60,7 @@ typedef struct {
 /* ------------------------------------------------------------------ rows -- */
 
 static const char *s_error;
+static char s_error_text[80];
 static bool s_ant_confirm, s_ant_remember;
 static int s_ant_focus;
 static tui_rect s_ant_yes, s_ant_no, s_ant_toggle, s_options_hit;
@@ -70,10 +72,22 @@ static void warning_set(const ls_opt_t *o, int v)
 { (void)o; settings_set_antenna_remember(!v); }
 static void options_back(const ls_opt_t *o)
 { (void)o; ls_opt_close(); }
+#if LS_HAS_C6
+static int ble_boot_get(const ls_opt_t *o) { (void)o; return settings_get_ble_at_boot(); }
+static void ble_boot_set(const ls_opt_t *o, int v) { (void)o; settings_set_ble_at_boot(v != 0); }
+static int wifi_boot_get(const ls_opt_t *o) { (void)o; return settings_get_wifi_at_boot(); }
+static void wifi_boot_set(const ls_opt_t *o, int v) { (void)o; settings_set_wifi_at_boot(v != 0); }
+#endif
 static const char *const WARNING_NAMES[] = { "OFF", "ON" };
 static const ls_opt_t RADIO_OPTIONS[] = {
     { .label = "ANT WARNING", .kind = LS_OPT_TOGGLE,
       .names = WARNING_NAMES, .get = warning_get, .set = warning_set },
+#if LS_HAS_C6
+    { .label = "BLE AT BOOT", .kind = LS_OPT_TOGGLE,
+      .names = WARNING_NAMES, .get = ble_boot_get, .set = ble_boot_set },
+    { .label = "WI-FI AT BOOT", .kind = LS_OPT_TOGGLE,
+      .names = WARNING_NAMES, .get = wifi_boot_get, .set = wifi_boot_set },
+#endif
     { .label = "BACK", .kind = LS_OPT_ACTION, .act = options_back, .leaves = true },
 };
 static const ls_opt_ctx_t RADIO_CONTEXT = {
@@ -92,11 +106,8 @@ static radio_state_t sdr_endpoint_read(const char *id)
     ls_radio_endpoint_info_t info;
     if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present)
         return RS_ABSENT;
-    /* last_error is the last thing that went wrong in the endpoint and is
-       never cleared by success. A read that ends because the stream was
-       stopped, timed out or found the device busy is an ordinary event, and
-       reading it as failure showed a receiver that was streaming fine, and
-       one just turned off, as failed. Only a real device fault counts. */
+    if (info.paused) return RS_OFF;
+    /* Success clears current faults; ordinary stream events are not faults. */
     if (info.last_error != LS_RADIO_OK && info.last_error != LS_RADIO_ERR_STOPPED &&
         info.last_error != LS_RADIO_ERR_TIMEOUT && info.last_error != LS_RADIO_ERR_BUSY)
         return RS_FAILED;
@@ -110,13 +121,27 @@ static const char *sdr_word(radio_state_t st);
 static const char *rtl_state(void) { return sdr_word(rtl_read()); }
 static const char *hackrf_state(void) { return sdr_word(hackrf_read()); }
 
-static void sdr_set(bool on)
+static void sdr_set_endpoint(const char *id)
 {
-    /* Off is immediate. On hands the decision back to the screen, which
-       asks again on its next change; a screen showing a receiver gets it
-       back the moment it is looked at. */
-    if (!on) ls_tui_radio_want(NULL);
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present) return;
+    const ls_radio_err_t err = ls_radio_endpoint_pause(id, info.owner, !info.paused);
+    if (err != LS_RADIO_OK) {
+        snprintf(s_error_text, sizeof(s_error_text), "%s: %s (%s)",
+                 info.name, ls_radio_err_name(err), info.owner);
+        s_error = s_error_text;
+    }
 }
+static void rtl_set(bool on) { (void)on; sdr_set_endpoint(LS_RADIO_ENDPOINT_RTL_USB); }
+static void hackrf_set(bool on) { (void)on; sdr_set_endpoint(LS_RADIO_ENDPOINT_HACKRF_USB); }
+static const char *sdr_action(const char *id)
+{
+    ls_radio_endpoint_info_t info;
+    if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present) return "unavailable";
+    return info.paused ? "ALLOW RX" : "STOP / BLOCK RX";
+}
+static const char *rtl_action(void) { return sdr_action(LS_RADIO_ENDPOINT_RTL_USB); }
+static const char *hackrf_action(void) { return sdr_action(LS_RADIO_ENDPOINT_HACKRF_USB); }
 
 static radio_state_t gps_read(void)
 {
@@ -127,21 +152,53 @@ static radio_state_t gps_read(void)
     return g.fix ? RS_BUSY : RS_ON;
 }
 
+static const char *gps_state(void)
+{
+    if (!ls_gps_running()) return "off";
+    ls_gps_state_t g;
+    ls_gps_get(&g);
+    return g.fix ? "fix" : "searching";
+}
+
 static void gps_set(bool on)
 {
-    if (on) ls_gps_start();
+    if (on) {
+        const esp_err_t err = ls_gps_start();
+        s_error = err == ESP_OK ? NULL : "GPS start failed (memory / UART)";
+    }
     else    ls_gps_stop();
 }
 
 #if LS_HAS_LORA
 static radio_state_t mesh_read(void)
 {
-    if (!ls_mesh_running()) return RS_OFF;
-    return ls_mesh_tx_enabled() ? RS_BUSY : RS_ON;
+    ls_mesh_socket_t s;
+    ls_mesh_socket_get(&s);
+    if (!s.present && !ls_mesh_running()) return RS_OFF;
+    return s.receiving || s.transmitting ? RS_BUSY : s.present ? RS_ON : RS_OFF;
+}
+
+static const char *mesh_state(void)
+{
+    static char text[64];
+    ls_mesh_socket_t s;
+    ls_mesh_socket_get(&s);
+    snprintf(text, sizeof(text), "%s %s", s.chip,
+             s.transmitting ? "TX" : s.receiving ? "RX" : s.held ? "held" :
+             s.armed ? "armed" : "parked");
+    return text;
 }
 
 static void mesh_set(bool on)
 {
+    ls_mesh_socket_t s;
+    ls_mesh_socket_get(&s);
+    if (s.held) {
+        snprintf(s_error_text, sizeof(s_error_text), "LORA held by %s", s.owner);
+        s_error = s_error_text;
+        return;
+    }
+    on = !ls_mesh_running();
     const esp_err_t err = on ? ls_mesh_start() : ls_mesh_stop();
     s_error = err == ESP_OK ? NULL : on ? "LORA start failed" : "LORA stop failed";
 }
@@ -186,36 +243,37 @@ static const char *ant_action(void)
 }
 
 #if LS_HAS_C6
-/* BLE and Wi-Fi are decided once, at boot, before settings load - so these
-   rows switch the stored preference and say so, the same byte 'radios ble'
-   and 'radios wifi' write on the console. Stopping a running BLE stack from
-   here is a different control with different risks, and is not this one. */
-static radio_state_t ble_read(void)  { return settings_get_ble_at_boot()  ? RS_ON : RS_OFF; }
-static radio_state_t wifi_read(void) { return settings_get_wifi_at_boot() ? RS_ON : RS_OFF; }
-static void ble_set(bool on)  { settings_set_ble_at_boot(on); }
-static void wifi_set(bool on) { settings_set_wifi_at_boot(on); }
-static const char *ble_state(void)  { return settings_get_ble_at_boot()  ? "on at boot" : "off at boot"; }
-static const char *wifi_state(void) { return settings_get_wifi_at_boot() ? "on at boot" : "off at boot"; }
-static const char *ble_action(void)  { return settings_get_ble_at_boot()  ? "OFF AT BOOT" : "ON AT BOOT"; }
-static const char *wifi_action(void) { return settings_get_wifi_at_boot() ? "OFF AT BOOT" : "ON AT BOOT"; }
+/* The worker owns the C6; keep its snapshot off the TUI stack. */
+static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t s_wireless;
+static radio_state_t ble_read(void)
+{ ls_wireless_get(&s_wireless); return !s_wireless.bt_available ? RS_ABSENT : s_wireless.bt_failed ? RS_FAILED : !s_wireless.bt_running ? RS_OFF : s_wireless.bt_ready ? RS_BUSY : RS_ON; }
+static radio_state_t wifi_read(void)
+{ ls_wireless_get(&s_wireless); return !s_wireless.wifi_available ? RS_ABSENT : !s_wireless.wifi_running ? RS_OFF : s_wireless.wifi_connected ? RS_BUSY : RS_ON; }
+static const char *ble_state(void)
+{ ls_wireless_get(&s_wireless); return !s_wireless.bt_available ? "unavailable" : s_wireless.bt_failed ? "failed" : !s_wireless.bt_running ? "off" : s_wireless.bt_status[0] ? s_wireless.bt_status : "starting"; }
+static const char *wifi_state(void)
+{ ls_wireless_get(&s_wireless); return !s_wireless.wifi_available ? "unavailable" : !s_wireless.wifi_running ? "off" : s_wireless.wifi_connected ? "connected" : s_wireless.busy ? "busy" : "disconnected"; }
 #endif
+static void open_link(bool on)
+{ (void)on; for (int i = 0; i < ls_app_count(); i++) { const ls_app_t *a = ls_app_at(i); if (a && !strcmp(a->id, "link")) { ls_app_open(i); return; } } }
+static const char *link_action(void) { return "OPEN LINK"; }
 
 static const radio_row_t ROWS[] = {
-    { "RTL-SDR", "USB receiver endpoint", rtl_read, sdr_set, rtl_state },
-    { "HackRF", "USB receiver endpoint", hackrf_read, sdr_set, hackrf_state },
+    { "RTL-SDR", "ALLOW RX permits owner retry / app start", rtl_read, rtl_set, rtl_state, rtl_action },
+    { "HackRF", "ALLOW RX permits owner retry / app start", hackrf_read, hackrf_set, hackrf_state, hackrf_action },
 #if LS_HAS_LORA
     { "LORA", "MeshCore listens from boot",
-      mesh_read, mesh_set },
+      mesh_read, mesh_set, mesh_state },
 #endif
     { "GPS",  "keeps a receiver fed to hold a fix",
-      gps_read, gps_set },
+      gps_read, gps_set, gps_state },
     { "ANTENNA", "internal, or external through MMCX1",
       ant_read, ant_set, ant_state, ant_action, true },
 #if LS_HAS_C6
-    { "BLE",  "scans for a control head all day; next reboot",
-      ble_read, ble_set, ble_state, ble_action, false, true },
-    { "WI-FI", "rejoins the saved network; next reboot",
-      wifi_read, wifi_set, wifi_state, wifi_action, false, true },
+    { "BLE",  "Live C6 / runtime controls in LINK",
+      ble_read, open_link, ble_state, link_action },
+    { "WI-FI", "Live C6 / runtime controls in LINK",
+      wifi_read, open_link, wifi_state, link_action },
 #endif
 #ifdef LS_BOARD_MIX_CC_CS
     { "CC1101", "Keyboard sub-GHz receive monitor",cc_read,open_mix,cc_state,mix_action },
@@ -276,13 +334,16 @@ static int count_live(void)
 /* Each radio is a box you press, not a row you select. */
 
 static tui_rect s_hit[12];
+static int s_hit_row[12];
+static int s_page_first, s_page_size;
+static tui_rect s_page_prev, s_page_next;
 static int      s_hit_n;
 
 static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
 {
     const uint8_t dim  = A(DIM_FG, TUI_BLACK);
     const radio_state_t st = ROWS[i].read();
-    const bool can = (ROWS[i].set != NULL);
+    const bool can = ROWS[i].set && (st != RS_ABSENT || ROWS[i].set == open_link);
     const bool sel = (i == s_sel);
 
     const uint8_t edge = can ? A(TUI_CYAN, TUI_BLACK) : dim;
@@ -307,17 +368,29 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
         tui_put_str(sf, a, a.x + a.w - wn - 2, a.y, w, val);
         tui_put_char(sf, a, a.x + a.w - 2, a.y, ' ', edge);
 
-        /* A turning mark beside ACTIVE. */
-
-        if (st == RS_BUSY && a.w > wn + 10)
-            tui_put_char(sf, a, a.x + a.w - wn - 4, a.y,
-                         ls_motion_pip(true), val);
     }
 
     int y = a.y + 1;
-    if (bh >= 6) {
-        char what[72];
-        snprintf(what, sizeof(what), "%.*s", a.w - 4, ROWS[i].what);
+    bool detail = false;
+    char what[72];
+#if LS_HAS_LORA
+    if (ROWS[i].set == mesh_set) {
+        ls_mesh_socket_t socket;
+        ls_mesh_socket_get(&socket);
+        snprintf(what, sizeof(what), "%s / %s", socket.owner, socket.mode);
+        detail = true;
+    }
+#endif
+    if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
+        ls_radio_endpoint_info_t info;
+        if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
+                                  LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.leased) {
+            snprintf(what, sizeof(what), "Owner: %s", info.owner);
+            detail = true;
+        }
+    }
+    if (bh >= 6 || detail) {
+        if (!detail) snprintf(what, sizeof(what), "%.*s", a.w - 4, ROWS[i].what);
         tui_put_str(sf, a, a.x + 2, y, what, dim);
         y++;
     }
@@ -349,7 +422,10 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     }
 
     if (s_hit_n < (int)(sizeof(s_hit) / sizeof(s_hit[0])))
+    {
+        s_hit_row[s_hit_n] = i;
         s_hit[s_hit_n++] = a;
+    }
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -358,6 +434,7 @@ static void draw(tui_surface *sf, tui_rect area)
     char buf[64];
 
     s_hit_n = 0;
+    s_options_hit = s_page_prev = s_page_next = tui_rect_make(0, 0, 0, 0);
     ls_panel_box(sf, area, "RADIOS", TUI_CYAN);
     if (area.h < 8 || area.w < 20) return;
 
@@ -374,68 +451,57 @@ static void draw(tui_surface *sf, tui_rect area)
                                   area.w - 2, area.h - 8);
     if (body.h < 4) return;
 
-    /* Two columns when the width is there and the height is not.
-
-       Landscape is 115 columns and about 24 rows: five boxes down it would
-       be four rows each, which is the target size problem again. Beside each
-       other they stay tall. */
-    if (ls_tui_is_wide() && body.w >= 48) {
-        const int ncols = body.w >= 72 && body.h < ((N_ROWS + 1) / 2) * 4 ? 3 : 2;
-        const int per = (N_ROWS + ncols - 1) / ncols;
-        const int gap = body.h >= per * 5 - 1 ? 1 : 0;
-        const int cw = body.w / ncols;
-        const int bh_l = (body.h - (per - 1) * gap) / per;
-        int bh = bh_l;
-        if (bh > 9) bh = 9;
-        if (bh < 4) bh = 4;
-        for (int i = 0; i < N_ROWS; i++) {
-            const tui_rect col = tui_rect_make(body.x + (i / per) * cw,
-                                               body.y, cw, body.h);
-            const int slot = i % per;
-            const int y = col.y + slot * (bh + gap);
-            if (y + bh > col.y + col.h) break;
-            draw_one(sf, tui_rect_make(col.x, y, col.w - 1, bh), i, bh);
-        }
-        goto overlay;
-    }
-
-    int bh = (body.h - (N_ROWS - 1)) / N_ROWS;
-    /* Nine rows is 11.6 mm, which is past generous for a thumb; taller buys
-       nothing and a screen of four enormous slabs reads as a mistake. */
+    const int ncols = ls_tui_is_wide() && body.w >= 48 ?
+        (body.w >= 72 ? 3 : 2) : 1;
+    const int total_per = (N_ROWS + ncols - 1) / ncols;
+    int bh = (body.h - (total_per - 1)) / total_per;
     if (bh > 9) bh = 9;
     if (bh < 4) bh = 4;
-
-    const int used = N_ROWS * bh + (N_ROWS - 1);
-    int top = body.y + (body.h > used ? (body.h - used) / 2 : 0);
-
-    for (int i = 0; i < N_ROWS; i++) {
-        const int y = top + i * (bh + 1);
-        if (y + bh > body.y + body.h) break;
-        draw_one(sf, tui_rect_make(body.x, y, body.w, bh), i, bh);
+    const int gap = body.h >= total_per * bh + total_per - 1 ? 1 : 0;
+    const int per = (body.h + gap) / (bh + gap);
+    s_page_size = per * ncols;
+    if (s_sel < N_ROWS) s_page_first = (s_sel / s_page_size) * s_page_size;
+    const int cw = body.w / ncols;
+    for (int slot = 0; slot < s_page_size && s_page_first + slot < N_ROWS; slot++) {
+        const int i = s_page_first + slot;
+        const int x = body.x + (slot / per) * cw;
+        const int y = body.y + (slot % per) * (bh + gap);
+        draw_one(sf, tui_rect_make(x, y, cw - (ncols > 1), bh), i, bh);
     }
-overlay:
+    s_page_prev = s_page_next = tui_rect_make(0, 0, 0, 0);
+    if (s_page_size < N_ROWS) {
+        const int y = area.y + area.h - 5;
+        snprintf(buf, sizeof(buf), "%d/%d",
+                 s_page_first / s_page_size + 1, (N_ROWS + s_page_size - 1) / s_page_size);
+        tui_put_str(sf, area, area.x + 2, y, "< PREV", A(TUI_CYAN, TUI_BLACK));
+        tui_put_str(sf, area, area.x + (area.w - (int)strlen(buf)) / 2, y, buf, A(TUI_CYAN, TUI_BLACK));
+        tui_put_str(sf, area, area.x + area.w - 8, y, "NEXT >", A(TUI_CYAN, TUI_BLACK));
+        s_page_prev = tui_rect_make(area.x + 1, y, area.w / 2, 1);
+        s_page_next = tui_rect_make(area.x + 1 + area.w / 2, y, area.w / 2 - 1, 1);
+    }
+
     s_options_hit = tui_rect_make(area.x + 2, area.y + area.h - 4, area.w - 4, 3);
     const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
     ls_btn_bar_raised(sf, s_options_hit, &opt, 1, s_sel == N_ROWS ? 0 : -1);
     if (s_ant_confirm) {
-        /* The radios stay behind the centered modal. Animation uses TUI time. */
+        /* The radios stay behind the centered modal. */
         const int w = area.w > 54 ? 54 : area.w - 4;
-        const int h = 21;
+        const int h = area.h >= 23 ? 21 : area.h - 2;
         tui_rect box = tui_rect_make(area.x + (area.w - w) / 2,
                                     area.y + (area.h - h) / 2, w, h);
         tui_fill(sf, box, ' ', A(TUI_WHITE, TUI_BLACK));
-        const uint8_t hue = TUI_YELLOW | (ls_motion_phase(2, 1200) ? TUI_BRIGHT : 0);
+        const uint8_t hue = TUI_YELLOW | TUI_BRIGHT;
         ls_panel_box(sf, box, "MMCX1 ANTENNA", hue);
         const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-        const char *art[] = { ls_motion_phase(2, 800) ? " )) | (( " : "  ) | (  ",
+        const char *art[] = { "  ) | (  ",
                               "    |    ", "   /_\\   " };
-        for (int i = 0; i < 3; i++)
+        if (h >= 21) for (int i = 0; i < 3; i++)
             tui_put_str(sf, box, box.x + (w - 9) / 2, box.y + 1 + i, art[i], warn);
         const char *lines[] = { "TX without an antenna", "can damage the radio.",
                                 "Attach a suitable antenna." };
         for (int i = 0; i < 3; i++)
             tui_put_str(sf, box, box.x + (w - (int)strlen(lines[i])) / 2,
-                        box.y + 4 + i, lines[i], i < 2 ? warn : dim);
+                        box.y + (h >= 21 ? 4 : 1) + i, lines[i], i < 2 ? warn : dim);
         ls_btn_t buttons[] = {
             { .label = "CANCEL" }, { .label = "ANTENNA ATTACHED" },
             { .label = "DON'T ASK AGAIN", .value = s_ant_remember ? "ON" : "OFF",
@@ -443,7 +509,7 @@ overlay:
         };
         tui_rect *hits[] = { &s_ant_no, &s_ant_yes, &s_ant_toggle };
         for (int i = 0; i < 3; i++) {
-            tui_rect bar = tui_rect_make(box.x + 2, box.y + 8 + i * 4, w - 4, 4);
+            tui_rect bar = tui_rect_make(box.x + 2, box.y + (h >= 21 ? 8 : h - 10) + i * (h >= 21 ? 4 : 3), w - 4, h >= 21 ? 4 : 3);
             ls_btn_bar_transport(sf, bar, &buttons[i], 1, s_ant_focus == i ? 0 : -1);
             int x, y, bw, bh;
             *hits[i] = tui_rect_make(0, 0, 0, 0);
@@ -460,6 +526,7 @@ static void toggle(int i)
 {
     if (i < 0 || i >= N_ROWS) return;
     if (!ROWS[i].set) return;
+    if (ROWS[i].read() == RS_ABSENT && ROWS[i].set != open_link) return;
     s_error = NULL;
     if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external() &&
         !ls_board_hw_antenna_tx_allowed()) { ant_set(true); return; }
@@ -478,8 +545,20 @@ static void ant_confirm(bool accept)
     }
 }
 
-static void enter(void) { s_ant_confirm = false; s_error = NULL; }
-static void leave(void) { s_ant_confirm = false; }
+static void enter(void)
+{
+    s_ant_confirm = false; s_error = NULL; s_page_first = 0; s_sel = 0;
+#if LS_HAS_C6
+    ls_wireless_observe(true);
+#endif
+}
+static void leave(void)
+{
+    s_ant_confirm = false;
+#if LS_HAS_C6
+    ls_wireless_observe(false);
+#endif
+}
 
 static bool key(ls_tk_t k, char ch)
 {
@@ -528,12 +607,22 @@ static bool touch(int col, int row)
         row >= s_options_hit.y && row < s_options_hit.y + s_options_hit.h) {
         options_open(); return true;
     }
+    if (s_page_size > 0 && row == s_page_prev.y && s_page_prev.w > 0) {
+        if (col >= s_page_prev.x && col < s_page_prev.x + s_page_prev.w) {
+            s_sel = s_page_first >= s_page_size ? s_page_first - s_page_size : 0;
+            return true;
+        }
+        if (col >= s_page_next.x && col < s_page_next.x + s_page_next.w) {
+            if (s_page_first + s_page_size < N_ROWS) s_sel = s_page_first + s_page_size;
+            return true;
+        }
+    }
     for (int i = 0; i < s_hit_n && i < N_ROWS; i++) {
         const tui_rect r = s_hit[i];
         if (col >= r.x && col < r.x + r.w &&
             row >= r.y && row < r.y + r.h) {
-            s_sel = i;
-            toggle(i);
+            s_sel = s_hit_row[i];
+            toggle(s_sel);
             return true;
         }
     }

@@ -161,6 +161,17 @@ bool ls_sdcard_size(uint64_t *total, uint64_t *free_bytes)
     return true;
 }
 
+esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes)
+{
+    if (!ls_sdcard_size(total, free_bytes)) return ESP_FAIL;
+    uint8_t *buf = heap_caps_aligned_alloc(64, 512,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (!buf) return ESP_ERR_NO_MEM;
+    esp_err_t err = sdmmc_read_sectors(s_card, buf, 0, 1);
+    heap_caps_free(buf);
+    return err;
+}
+
 void ls_sdcard_diagnostics(void)
 {
     if (!s_card) {
@@ -194,6 +205,11 @@ bool ls_sdcard_size(uint64_t *total, uint64_t *free_bytes)
     if (total) *total = 0;
     if (free_bytes) *free_bytes = 0;
     return false;
+}
+esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes)
+{
+    ls_sdcard_size(total, free_bytes);
+    return ESP_ERR_NOT_SUPPORTED;
 }
 void ls_sdcard_diagnostics(void)
 {

@@ -5,6 +5,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 /* The whole reason this is its own function.
 
@@ -32,6 +38,65 @@ static bool write_header(ls_rlog_t *lg, FILE *f)
     return fwrite(&h, sizeof(h), 1, f) == 1;
 }
 
+static bool finish(FILE *f)
+{
+    bool ok = fflush(f) == 0;
+#if defined(LS_RLOG_TEST_SYNC)
+    extern int ls_rlog_test_sync(int fd);
+    if (ok) ok = ls_rlog_test_sync(fileno(f)) == 0;
+#elif defined(_WIN32)
+    if (ok) ok = _commit(_fileno(f)) == 0;
+#else
+    if (ok) ok = fsync(fileno(f)) == 0;
+#endif
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+/* Undo holds the old header and overwritten slot until append is durable. */
+static bool undo(ls_rlog_t *lg, bool save)
+{
+    char path[80];
+    snprintf(path, sizeof(path), "%s.undo", lg->path);
+    char temp[80];
+    snprintf(temp, sizeof(temp), "%s.undo.tmp", lg->path);
+    FILE *j = fopen(save ? temp : path, save ? "wb" : "rb");
+    if (!j) return !save && errno == ENOENT;
+    FILE *f = fopen(lg->path, "r+b");
+    if (!f) { fclose(j); return false; }
+    ls_rlog_header_t h;
+    bool ok = save ? fread(&h, sizeof(h), 1, f) == 1 :
+                     fread(&h, sizeof(h), 1, j) == 1;
+    ok = ok && h.magic == LS_RLOG_MAGIC && h.version == LS_RLOG_VERSION &&
+         h.rec_size == lg->rec_size && h.capacity == lg->capacity &&
+         h.head < h.capacity && h.count <= h.capacity;
+    if (ok && !save) {
+        ok = fseek(j, 0, SEEK_END) == 0 && ftell(j) == (long)sizeof(h) + h.rec_size &&
+             fseek(j, sizeof(h), SEEK_SET) == 0;
+    }
+    if (ok && save) ok = fwrite(&h, sizeof(h), 1, j) == 1;
+    if (ok) ok = fseek(f, (long)sizeof(h) + (long)h.head * h.rec_size, SEEK_SET) == 0;
+    unsigned char buf[64];
+    for (size_t left = ok ? h.rec_size : 0; ok && left;) {
+        size_t n = left < sizeof(buf) ? left : sizeof(buf);
+        ok = fread(buf, 1, n, save ? f : j) == n &&
+             fwrite(buf, 1, n, save ? j : f) == n;
+        left -= n;
+    }
+    if (ok && !save)
+        ok = fseek(f, 0, SEEK_SET) == 0 && fwrite(&h, sizeof(h), 1, f) == 1;
+    if (save) { if (!finish(j)) ok = false; fclose(f); }
+    else { fclose(j); if (!finish(f)) ok = false; }
+    if (ok && save) ok = rename(temp, path) == 0;
+    if (ok && !save) {
+        lg->head = h.head;
+        lg->count = h.count;
+        ok = remove(path) == 0;
+    }
+    if (!ok && save) remove(temp);
+    return ok;
+}
+
 /* Create the file at full size so a later append cannot fail for want of
    space on a card that filled up in between. A log that reserves what it
    needs on the day it is made is one that keeps working on the day the card
@@ -54,7 +119,7 @@ static bool create(ls_rlog_t *lg)
             left -= n;
         }
     }
-    fclose(f);
+    if (!finish(f)) ok = false;
     return ok;
 }
 
@@ -68,6 +133,7 @@ bool ls_rlog_open(ls_rlog_t *lg, const char *path,
     lg->rec_size = rec_size;
     lg->capacity = capacity;
 
+    if (!undo(lg, false)) return false;
     FILE *f = fopen(lg->path, "r+b");
     if (f) {
         ls_rlog_header_t h;
@@ -96,23 +162,28 @@ bool ls_rlog_append(ls_rlog_t *lg, const void *rec)
 {
     if (!lg || !lg->open || !rec) return false;
 
+    if (!undo(lg, false) || !undo(lg, true)) return false;
     FILE *f = fopen(lg->path, "r+b");
     if (!f) return false;
-
+    ls_rlog_t next = *lg;
     const long off = (long)sizeof(ls_rlog_header_t) +
                      (long)lg->head * (long)lg->rec_size;
     bool ok = fseek(f, off, SEEK_SET) == 0 &&
-              fwrite(rec, lg->rec_size, 1, f) == 1;
-
+              fwrite(rec, lg->rec_size, 1, f) == 1 && fflush(f) == 0;
     if (ok) {
-        lg->head = (lg->head + 1) % lg->capacity;
-        if (lg->count < lg->capacity) lg->count++;
-        /* The record lands before the header that points at it. A power cut
-           between the two loses the newest entry and leaves the rest
-           readable, which is the right way round to fail. */
-        ok = write_header(lg, f);
+        next.head = (next.head + 1) % next.capacity;
+        if (next.count < next.capacity) next.count++;
+        ok = write_header(&next, f);
     }
-    fclose(f);
+    if (!finish(f)) ok = false;
+    if (ok) {
+        char path[80];
+        snprintf(path, sizeof(path), "%s.undo", lg->path);
+        ok = remove(path) == 0;
+    }
+    if (ok) *lg = next;
+    else (void)undo(lg, false);
+
     return ok;
 }
 
@@ -196,12 +267,21 @@ int ls_rlog_count(const ls_rlog_t *lg)
 bool ls_rlog_clear(ls_rlog_t *lg)
 {
     if (!lg || !lg->open) return false;
+    if (!undo(lg, false) || !undo(lg, true)) return false;
     FILE *f = fopen(lg->path, "r+b");
     if (!f) return false;
-    lg->count = 0;
-    lg->head = 0;
-    const bool ok = write_header(lg, f);
-    fclose(f);
+    ls_rlog_t next = *lg;
+    next.count = 0;
+    next.head = 0;
+    bool ok = write_header(&next, f);
+    if (!finish(f)) ok = false;
+    if (ok) {
+        char path[80];
+        snprintf(path, sizeof(path), "%s.undo", lg->path);
+        ok = remove(path) == 0;
+    }
+    if (ok) *lg = next;
+    else (void)undo(lg, false);
     return ok;
 }
 

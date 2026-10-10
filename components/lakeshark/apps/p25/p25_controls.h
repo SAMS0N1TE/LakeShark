@@ -21,6 +21,25 @@ extern "C" {
 #define P25_CONTROL_ENCRYPTED_SKIP_MIN_MS        1000UL
 #define P25_CONTROL_ENCRYPTED_SKIP_MAX_MS     3600000UL
 
+typedef void (*p25_owner_fn)(uint32_t arg);
+typedef struct {
+    p25_owner_fn fn;
+    uint32_t arg;
+} p25_owner_command_t;
+typedef struct {
+    p25_owner_command_t commands[32];
+    unsigned read, count, generation;
+    bool active;
+} p25_owner_queue_t;
+void p25_owner_queue_start(p25_owner_queue_t *q);
+void p25_owner_queue_stop(p25_owner_queue_t *q);
+bool p25_owner_queue_push(p25_owner_queue_t *q, p25_owner_fn fn, uint32_t arg);
+bool p25_owner_queue_pop(p25_owner_queue_t *q, p25_owner_command_t *out);
+bool p25_owner_current(void);
+bool p25_owner_active(void);
+void p25_owner_wake(void);
+bool p25_owner_post(p25_owner_fn fn, uint32_t arg);
+
 bool p25_controls_parse_mhz(const char *text, uint32_t *out_hz);
 void p25_controls_format_mhz(char *out, size_t out_size, uint32_t hz);
 uint32_t p25_controls_clamp_encrypted_skip_ms(uint32_t ms);

@@ -231,3 +231,12 @@ LS_CASE(a_network_that_is_not_there_is_not_retried_forever)
     LS_CHECK_MSG(!ls_wifi_should_retry(LS_WIFI_TRIES_OTHER, 9999),
                  "an unknown reason retried forever");
 }
+
+LS_CASE(update_retry_rejoins_only_a_stopped_or_exhausted_station)
+{
+    LS_CHECK(ls_wifi_sta_needs_join(false, false, false));
+    LS_CHECK(ls_wifi_sta_needs_join(true, false, true));
+    LS_CHECK(!ls_wifi_sta_needs_join(true, false, false));
+    LS_CHECK(!ls_wifi_sta_needs_join(true, true, true));
+    LS_CHECK(!ls_wifi_sta_needs_join(true, true, false));
+}

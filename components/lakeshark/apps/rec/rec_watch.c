@@ -1,4 +1,5 @@
 #include "rec_watch.h"
+#include "ls_lora.h"
 #include <stddef.h>
 #include <limits.h>
 #include <string.h>
@@ -8,8 +9,16 @@ int rec_watch_receiver_want(int visible_mode, int rec_mode, bool enabled)
 { return visible_mode < 0 && enabled ? rec_mode : visible_mode; }
 int rec_watch_receiver_want_source(int visible_mode, int rec_mode, bool enabled, rec_source_t source)
 {
-    if(source==REC_SOURCE_CC1101)return visible_mode==rec_mode?-1:visible_mode;
+    if(source!=REC_SOURCE_RTL)return visible_mode==rec_mode?-1:visible_mode;
     return rec_watch_receiver_want(visible_mode,rec_mode,enabled);
+}
+bool rec_watch_frequency_ok(rec_source_t source,bool hackrf,uint32_t caps,uint32_t hz)
+{
+    if(source==REC_SOURCE_SX1262)return ls_lora_rx_range_ok(caps,hz,hz);
+    if(source==REC_SOURCE_CC1101)return (hz>=300000000u && hz<=348000000u) ||
+        (hz>=387000000u && hz<=464000000u) || (hz>=779000000u && hz<=928000000u);
+    if(source!=REC_SOURCE_RTL)return false;
+    return hz>=(hackrf?1000000u:24000000u) && hz<=(hackrf?UINT32_MAX:1766000000u);
 }
 static bool matches(const rec_watch_record_t *r, uint32_t hz, const int32_t *p, int n)
 {

@@ -30,7 +30,7 @@ void ls_music_set_warm(bool b){warm=b;}
 unsigned ls_music_peak(int ch){double t=esp_timer_get_time()/1000000.0;return ls_music_live()?(unsigned)((.12+.8*fabs(sin(t*7+ch*.9))*fabs(sin(t*1.3)))*32768):0;}
 /* A falling tilt with each band breathing at its own rate. */
 int ls_music_spectrum(float lo,float hi,int n,float*db){(void)lo;(void)hi;double t=esp_timer_get_time()/1000000.0;for(int i=0;i<n;i++)db[i]=ls_music_live()?(float)(-10-2.2*i+9*sin(t*(1.7+.37*i)+i)):-INFINITY;return ls_music_live()?n:0;}
-bool ls_music_format(ls_music_format_t*f){f->rate_hz=sample_rate;f->bits=16;f->channels=channels;f->mono_out=true;return true;}
+bool ls_music_format(ls_music_format_t*f){f->epoch=0;f->rate_hz=sample_rate;f->bits=16;f->channels=channels;f->mono_out=true;return true;}
 float ls_music_volume_db(void){return (vol-100)*0.5f;}
 static ls_music_mic_t mic;
 bool ls_music_mic_start(bool record){state=LS_MUSIC_STOPPED;mic=record?LS_MIC_RECORDING:LS_MIC_LIVE;since=esp_timer_get_time();return true;}
@@ -50,3 +50,8 @@ bool ls_music_play_path(const char *path){
  index=0;position=0;since=esp_timer_get_time();state=LS_MUSIC_PLAYING;return true;}
 bool ls_music_is_open(void){return state!=LS_MUSIC_STOPPED;}
 bool ls_music_seek_ms(uint32_t ms){position=ms>ls_music_duration_ms()?ls_music_duration_ms():ms;since=esp_timer_get_time();return true;}
+
+static bool music_muted;
+bool ls_music_muted(void){return music_muted;}
+void ls_music_mute_toggle(void){music_muted=!music_muted;}
+bool ls_music_mic_repair(void){return true;}

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_timer.h"
+#include "esp_attr.h"
 
 #include "ls_waterfall.h"
 
@@ -24,6 +25,15 @@
 
 static ls_wf_src_t s_want = LS_WF_SRC_AUTO;
 static ls_wf_src_t s_active;
+static ls_wf_idle_t s_idle;
+static const char *s_idle_reason;
+ls_wf_idle_t ls_wf_source_idle(void) { return s_idle; }
+const char *ls_wf_source_idle_reason(void) { return s_idle_reason; }
+static bool idle(ls_wf_idle_t status, const char *reason)
+{
+    s_idle = status; s_idle_reason = reason;
+    return false;
+}
 
 /* The measurement each source last pushed, so the same one is never pushed twice. */
 
@@ -39,7 +49,7 @@ static int s_fm_preview_idx = -1;
 
 /* One scratch frame, reused. 256 floats is a kilobyte and it is the widest
    the widget will take, so nothing here has to know the panel width. */
-static float s_bins[LS_WF_BINS_MAX];
+static EXT_RAM_BSS_ATTR float s_bins[LS_WF_BINS_MAX];
 
 void ls_wf_source_select(ls_wf_src_t src)
 {
@@ -375,7 +385,6 @@ bool ls_wf_source_start(ls_wf_src_t src)
         break;
     case LS_WF_SRC_FM:
         ls_tui_radio_want("FM");
-        if (FM.mode == FM_MODE_SCAN) lakeshark_fm_set_mode(FM_MODE_LISTEN);
         break;
     case LS_WF_SRC_LORA:
         /* Nothing to start: the sweep IS this module, and it begins on the
@@ -553,7 +562,7 @@ static bool pump_fm(void)
 const char *ls_wf_source_progress(void)
 {
         static char progress[64];
-    if (s_active != LS_WF_SRC_FM || !fm_sweeping() || FM.scan_tunes <= 0)
+    if (ls_wf_source_get() != LS_WF_SRC_FM || !fm_sweeping() || FM.scan_tunes <= 0)
         return NULL;
     int completed = FM.scan_idx;
     if (completed < 0) completed = 0;
@@ -575,28 +584,29 @@ static bool s_lora_held, s_lora_owned;
 static bool pump_lora(void)
 {
     /* P25 or ADS-B left listening on the chip gives it up when asked below. */
-    if (ls_lora_fsk_active() && !ls_mesh_radio_bg()) return false;
-    if (!ls_lora_present()) return false;
+    if (ls_lora_fsk_active() && !ls_mesh_radio_bg())
+        return idle(LS_WF_IDLE_BUSY, "LoRa busy: stop FSK receiver");
+    if (!ls_lora_present()) return idle(LS_WF_IDLE_FAILED, "No LoRa radio on this board");
 
-    if (ls_field_owned()) return false;
+    if (ls_field_owned()) return idle(LS_WF_IDLE_BUSY, "LoRa busy: stop Labs DIRECT");
     if (!s_lora_held) {
-        if (ls_lora_scanning()) return false;
+        if (ls_lora_scanning()) return idle(LS_WF_IDLE_BUSY, "LoRa busy: another scan");
         ls_mesh_radio_hold(true);
         s_lora_held = true;
     }
-    if (!ls_mesh_radio_held()) return false;
-    s_lora_owned = true;
-
+    if (!ls_mesh_radio_held()) return idle(LS_WF_IDLE_STARTING, "Waiting for mesh release");
     if (ls_lora_scan_begin(s_lora_min_hz, s_lora_max_hz) != ESP_OK)
-        return false;
+        return idle(ls_lora_scanning() ? LS_WF_IDLE_BUSY : LS_WF_IDLE_FAILED,
+                    ls_lora_scanning() ? "LoRa busy: another scan" : "LoRa scan failed; retry RADIO");
+    s_lora_owned = true;
 
     const int n = LS_LORA_SCAN_BINS < LS_WF_BINS_MAX ? LS_LORA_SCAN_BINS
                                                      : LS_WF_BINS_MAX;
-    static float dbm[LS_LORA_SCAN_BINS];
+    static EXT_RAM_BSS_ATTR float dbm[LS_LORA_SCAN_BINS];
     if (!s_lora_row_t0) s_lora_row_t0 = esp_timer_get_time();
     bool row_done = false;
     const int got = ls_lora_scan_pass(dbm, n, &row_done);
-    if (got <= 0) return false;
+    if (got <= 0) return idle(LS_WF_IDLE_FAILED, "LoRa scan read failed");
 
     /* Claimed on the first pass, so a row that takes 26 of them is 26 frames
        of "waiting for the receiver" and not of "no receiver". */
@@ -667,6 +677,8 @@ static void lora_stop(void)
     s_lora_row_t0 = 0;
 }
 
+extern bool ls_scr_labs_tune_marker(uint32_t hz);
+
 static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 {
     if(owner==LS_WF_OWNER_P25) {
@@ -677,27 +689,31 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
     if(owner==LS_WF_OWNER_FM) {
         ls_iq_control_status_t status;fm_get_receiver_status(&status);
         if(!fm_running()||!status.receiver_streaming||hz<24000000||hz>1766000000)return false;
+        if (lakeshark_fm_frequency_locked() && hz != lakeshark_fm_frequency_lock_hz()) return false;
+        if (!lakeshark_fm_set_freq(hz)) return false;
         scan_engine_stop();
         if(FM.mode==FM_MODE_SCAN)ls_wf_fm_sweep(false);
-        /* Report what happened: a locked receiver refuses, and saying it
-           tuned would leave the marker claiming a move that never occurred. */
-        return lakeshark_fm_set_freq(hz);
+        return true;
     }
     if(owner==LS_WF_OWNER_LORA) {
-        if(!ls_lora_present()||hz<150000000||hz>959000000)return false;
-        ls_field_state_t state;ls_field_snapshot(&state);
-        if(!state.ready)return false;
-        ls_lora_cfg_t cfg=state.config;cfg.freq_hz=hz;
-        lora_stop();
-        if(!ls_field_configure(&cfg)||!ls_field_mode(LS_LAB_PACKETS))return false;
-        return ls_field_direct_falls(true);
+        if (!ls_lora_present() || !ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz) ||
+            (hz > 959000000u && hz < 1900000000u)) return false;
+        return ls_scr_labs_tune_marker(hz);
     }
     return false;
 }
 
 void ls_wf_source_pump(void)
 {
-    ls_wf_set_tuner(tune_marker);
+    s_idle = LS_WF_IDLE_WAITING;
+    s_idle_reason = "Waiting for first row";
+    uint32_t marker = ls_wf_marker_hz();
+    bool packet_band = marker ? ls_lora_packet_rx_hz_ok(ls_lora_caps(), marker) &&
+                              (marker <= 959000000u || marker >= 1900000000u) :
+                       s_lora_min_hz <= 959000000u ||
+                       (s_lora_max_hz >= 1900000000u &&
+                        ls_lora_packet_rx_hz_ok(ls_lora_caps(), s_lora_max_hz));
+    ls_wf_set_tuner(ls_wf_source_get() == LS_WF_SRC_LORA && !packet_band ? NULL : tune_marker);
     ls_wf_src_t use = ls_wf_source_get();
     /* AUTO deliberately never picks LORA. The other two are views of
        a receiver that is already running; a sweep STOPS the mesh to take the
@@ -716,8 +732,11 @@ void ls_wf_source_pump(void)
     case LS_WF_SRC_P25:  ok = pump_p25();  break;
     case LS_WF_SRC_FM:   ok = pump_fm();   break;
     case LS_WF_SRC_LORA: ok = pump_lora(); break;
-    default: break;
+    default: idle(LS_WF_IDLE_NONE, "No receiver selected"); break;
     }
+    if ((use == LS_WF_SRC_FM && !fm_running()) ||
+        (use == LS_WF_SRC_P25 && !p25_running()))
+        idle(LS_WF_IDLE_STARTING, "Waiting for receiver startup");
     s_active = ok ? use : LS_WF_SRC_AUTO;
 }
 

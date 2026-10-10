@@ -185,6 +185,7 @@ float ls_haptic_f0_hz(uint8_t f0_h, uint8_t f0_l)
 
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
+static bool s_playing;
 
 #define STACK_WORDS  (2560 / sizeof(StackType_t))
 
@@ -260,6 +261,7 @@ static void drive_start(int strength)
 {
     const uint8_t lvl = ls_haptic_level_code(strength);
     lock();
+    s_playing = true;
     /* DRV1 is the kick and DRV2 the sustain, so DRV1 is never below DRV2 -
        a kick quieter than what follows it is a fade-in, which is the thing
        DRV1 exists to prevent. */
@@ -279,6 +281,7 @@ static void drive_stop(void)
        Read them here or never. */
     rd(R_CONTRD16, &s_f0_h);
     rd(R_CONTRD17, &s_f0_l);
+    s_playing = false;
     unlock();
 }
 
@@ -469,53 +472,63 @@ void ls_haptic_stop(void)
 
 /* --------------------------------------------------------------- diag --- */
 
+bool ls_haptic_busy(void)
+{
+    if (!s_present) return false;
+    if (s_lock && xSemaphoreTake(s_lock, 0) != pdTRUE) return true;
+    const bool playing = s_playing;
+    unlock();
+    return playing;
+}
+
 bool ls_haptic_diag(ls_haptic_diag_t *out)
 {
     if (!s_present || !out) return false;
     memset(out, 0, sizeof(*out));
 
-    lock();
+    if (s_lock && xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
+    if (s_playing) { unlock(); return false; }
 
-    uint8_t st = 0;
-    if (rd(R_SYSST, &st)) {
-        out->over_current  = (st & ST_OCDS) != 0;
-        out->over_temp     = (st & ST_OTS) != 0;
-        out->under_voltage = (st & ST_UVLS) != 0;
+    uint8_t sys1, gain, det1, det2;
+    if (!rd(R_SYSCTRL1, &sys1) || !rd(R_SYSCTRL7, &gain) ||
+        !rd(R_DETCFG1, &det1) || !rd(R_DETCFG2, &det2)) {
+        unlock();
+        return false;
     }
+    bool ok = false;
+    uint8_t st, lo, hi;
+    ls_haptic_diag_t measured = {0};
+    if (!rd(R_SYSST, &st)) goto restore;
+    measured.over_current = (st & ST_OCDS) != 0;
+    measured.over_temp = (st & ST_OTS) != 0;
+    measured.under_voltage = (st & ST_UVLS) != 0;
 
-    /* Supply, per the datasheet's Battery Voltage Detect steps. EN_RAMINIT
-       is the digital clock enable and both measurements need it running. */
-    uint8_t lo = 0, hi = 0;
-    wr(R_SYSCTRL1, SYS1_VBAT_MODE | SYS1_EN_FIR | SYS1_EN_RAMINIT);
-    wr(R_DETCFG2, DET_VBAT_GO);
+    if (!wr(R_SYSCTRL1, sys1 | SYS1_EN_RAMINIT) ||
+        !wr(R_DETCFG2, DET_VBAT_GO)) goto restore;
     vTaskDelay(pdMS_TO_TICKS(3));
-    wr(R_SYSCTRL1, SYS1_VBAT_MODE | SYS1_EN_FIR);
-    if (rd(R_DET_VBAT, &hi) && rd(R_DET_LO, &lo))
-        out->vdd_v = ls_haptic_vbat_volts(hi, lo);
+    if (!wr(R_SYSCTRL1, sys1) || !rd(R_DET_VBAT, &hi) ||
+        !rd(R_DET_LO, &lo)) goto restore;
+    measured.vdd_v = ls_haptic_vbat_volts(hi, lo);
 
-    /* Coil resistance, per LRA Resistance Detect. D2S_GAIN has to suit the
-       coil being measured and then be put back - the datasheet's own steps
-       say save and restore, and leaving it at the diagnostic value would
-       change what every later measurement means. */
-    uint8_t d2s_pre = 0;
-    rd(R_SYSCTRL7, &d2s_pre);
-    wr(R_SYSCTRL7, (uint8_t)((d2s_pre & ~0x07) | D2S_CODE_20));
-    wr(R_SYSCTRL1, SYS1_VBAT_MODE | SYS1_EN_FIR | SYS1_EN_RAMINIT);
-    wr(R_DETCFG1, DET_RL_OS | 0x02);
-    wr(R_DETCFG2, DET_DIAG_GO);
+    if (!wr(R_SYSCTRL7, (uint8_t)((gain & ~0x07) | D2S_CODE_20)) ||
+        !wr(R_SYSCTRL1, sys1 | SYS1_EN_RAMINIT) ||
+        !wr(R_DETCFG1, DET_RL_OS | 0x02) ||
+        !wr(R_DETCFG2, DET_DIAG_GO)) goto restore;
     vTaskDelay(pdMS_TO_TICKS(3));
-    wr(R_SYSCTRL1, SYS1_VBAT_MODE | SYS1_EN_FIR);
-    hi = lo = 0;
-    if (rd(R_DET_RL, &hi) && rd(R_DET_LO, &lo))
-        out->lra_ohms = ls_haptic_rl_ohms(hi, lo, D2S_GAIN_20);
-    wr(R_SYSCTRL7, d2s_pre);
-    wr(R_DETCFG1, 0x02);
-    wr(R_DETCFG2, 0x00);
+    if (!rd(R_DET_RL, &hi) || !rd(R_DET_LO, &lo)) goto restore;
+    measured.lra_ohms = ls_haptic_rl_ohms(hi, lo, D2S_GAIN_20);
+    measured.f0_hz = ls_haptic_f0_hz(s_f0_h, s_f0_l);
+    ok = true;
 
+restore:
+    /* Try every restore even when an earlier transaction failed. */
+    if (!wr(R_SYSCTRL1, sys1)) ok = false;
+    if (!wr(R_SYSCTRL7, gain)) ok = false;
+    if (!wr(R_DETCFG1, det1)) ok = false;
+    if (!wr(R_DETCFG2, det2)) ok = false;
     unlock();
-
-    out->f0_hz = ls_haptic_f0_hz(s_f0_h, s_f0_l);
-    return true;
+    if (ok) *out = measured;
+    return ok;
 }
 
 #else  /* board declares no haptic driver */
@@ -527,5 +540,6 @@ bool ls_haptic_buzz(int ms, int s)        { (void)ms; (void)s; return false; }
 void ls_haptic_stop(void)         { }
 bool ls_haptic_service(int w)     { (void)w; return false; }
 bool ls_haptic_diag(ls_haptic_diag_t *o)  { (void)o; return false; }
+bool ls_haptic_busy(void) { return false; }
 
 #endif

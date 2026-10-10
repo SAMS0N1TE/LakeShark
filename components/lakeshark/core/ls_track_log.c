@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -17,11 +18,48 @@
 #include "ls_rlog.h"
 #include "ls_track.h"
 #include "ls_task_reap.h"
+#include "ls_nvs_safe.h"
+#include "nvs.h"
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+static atomic_bool s_requested;
+
+typedef struct { bool write; uint8_t on; } intent_t;
+static esp_err_t intent_job(void *ctx)
+{
+    intent_t *j = ctx;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("ls_track", j->write ? NVS_READWRITE : NVS_READONLY, &h);
+    if (!j->write && e == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (e != ESP_OK) return e;
+    if (j->write) {
+        e = nvs_set_u8(h, "record", j->on);
+        if (e == ESP_OK) e = nvs_commit(h);
+    } else {
+        e = nvs_get_u8(h, "record", &j->on);
+        if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
+    }
+    nvs_close(h);
+    return e;
+}
+static esp_err_t save_intent(bool on)
+{
+    intent_t j = { .write = true, .on = on };
+    const esp_err_t e=ls_nvs_run(intent_job, &j, 0);
+    if(e==ESP_OK) s_requested=on;
+    return e;
+}
 
 static const char *TAG = "ls_track";
 
+#ifndef TRACK_PATH
 #define TRACK_PATH "/sdcard/lakeshark/track.log"
 #define TRACK_DIR  "/sdcard/lakeshark"
+#endif
 
 static ls_rlog_t       s_log;
 static TaskHandle_t    s_task;
@@ -70,6 +108,7 @@ static ls_track_wpt_fn s_sight_cb;
 
 void ls_track_set_waypoint_source(ls_track_wpt_fn fn) { s_sight_cb = fn; }
 
+bool ls_track_rec_requested(void) { return s_requested; }
 bool ls_track_rec_running(void) { return s_task != NULL; }
 esp_err_t ls_track_rec_error(void) { return s_record_error; }
 int  ls_track_points(void)      { return ls_rlog_count(&s_log); }
@@ -167,7 +206,8 @@ static void track_task(void *arg)
 esp_err_t ls_track_rec_start(void)
 {
     if (s_task) return ESP_OK;
-    s_record_error=ESP_OK;
+    s_record_error=save_intent(true);
+    if (s_record_error != ESP_OK) return s_record_error;
 
     mkdir(TRACK_DIR, 0777);
     if (!s_log.open &&
@@ -202,9 +242,22 @@ esp_err_t ls_track_rec_start(void)
 
 void ls_track_rec_stop(void)
 {
+    const esp_err_t e=save_intent(false);
+    if(e!=ESP_OK) s_record_error=e;
     if (!s_task) return;
     s_stop = true;
     for (int i = 0; i < 100 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
+}
+
+void ls_track_restore(bool mounted)
+{
+    intent_t j = {0};
+    s_record_error = ls_nvs_run(intent_job, &j, 0);
+    if (s_record_error != ESP_OK) return;
+    s_requested=j.on!=0;
+    if (!j.on) return;
+    if (!mounted) { s_record_error = ESP_ERR_NOT_FOUND; return; }
+    (void)ls_track_rec_start();
 }
 
 bool ls_track_clear(void)
@@ -243,35 +296,44 @@ int ls_track_export(const char *path, char *out_path, size_t out_cap)
         if (i >= 100) return LS_TRACK_EXPORT_NO_WRITE;
     }
 
-    FILE *f = fopen(chosen, "wb");
+    char partial[80];
+    snprintf(partial,sizeof(partial),"%s.part",chosen);
+    FILE *f = fopen(partial, "wb");
     if (!f) return LS_TRACK_EXPORT_NO_WRITE;
 
     char line[256];
     int len = ls_track_gpx_header(line, sizeof(line), "LakeShark track");
-    if (len) fwrite(line, 1, (size_t)len, f);
+    bool ok = len > 0 && fwrite(line, 1, (size_t)len, f) == (size_t)len;
 
     if (s_sight_cb) s_sight_cb((void *)f);
 
     len = ls_track_gpx_trk_open(line, sizeof(line), "walk");
-    if (len) fwrite(line, 1, (size_t)len, f);
+    if (len <= 0 || fwrite(line, 1, (size_t)len, f) != (size_t)len) ok = false;
 
     int written = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; ok && i < n; i++) {
         ls_track_pt_t p;
         /* One at a time: 4096 points is 64 KB and this runs on the console
            task, whose stack is under four. */
-        if (ls_rlog_read_at(&s_log, i, &p) != 1) break;
+        if (ls_rlog_read_at(&s_log, i, &p) != 1) { ok = false; break; }
         len = ls_track_gpx_point(line, sizeof(line), &p);
-        if (!len) continue;
-        if (fwrite(line, 1, (size_t)len, f) != (size_t)len) break;
+        if (!len || fwrite(line, 1, (size_t)len, f) != (size_t)len) { ok = false; break; }
         written++;
     }
 
     len = ls_track_gpx_trk_close(line, sizeof(line));
-    if (len) fwrite(line, 1, (size_t)len, f);
+    if (len <= 0 || fwrite(line, 1, (size_t)len, f) != (size_t)len) ok = false;
     len = ls_track_gpx_footer(line, sizeof(line));
-    if (len) fwrite(line, 1, (size_t)len, f);
-    fclose(f);
+    if (len <= 0 || fwrite(line, 1, (size_t)len, f) != (size_t)len) ok = false;
+    if (ferror(f) || fflush(f) != 0) ok = false;
+#ifdef _WIN32
+    if (ok && _commit(_fileno(f)) != 0) ok = false;
+#else
+    if (ok && fsync(fileno(f)) != 0) ok = false;
+#endif
+    if (fclose(f) != 0) ok = false;
+    if (ok && rename(partial,chosen)!=0) ok=false;
+    if (!ok) { remove(partial); return LS_TRACK_EXPORT_NO_WRITE; }
 
     if (out_path && out_cap) snprintf(out_path, out_cap, "%s", chosen);
     return written;

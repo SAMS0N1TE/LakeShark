@@ -19,6 +19,9 @@ void lakeshark_radio_park(void){parks++;}
 esp_err_t audio_out_media_acquire(void){leases++;return acquire_result;}
 void audio_out_media_release(void){releases++;}
 bool audio_is_muted(void){return muted;}
+void audio_toggle_mute(void){muted=!muted;}
+static int stop_result;
+esp_err_t audio_player_stop_wait(uint32_t ms){(void)ms;if(stop_result)return stop_result;state=AUDIO_PLAYER_STATE_IDLE;return ESP_OK;}
 int audio_volume_get(void){return volume;}
 void audio_volume_delta(int d){volume+=d;}
 esp_err_t ls_audio_hw_mute(bool value){hw_muted=value;return ESP_OK;}
@@ -40,12 +43,32 @@ audio_player_state_t __wrap_audio_player_get_state(void){return state;}
 esp_err_t audio_player_stop(void){state=AUDIO_PLAYER_STATE_IDLE;return ESP_OK;}
 esp_err_t audio_player_pause(void){state=AUDIO_PLAYER_STATE_PAUSE;return ESP_OK;}
 esp_err_t audio_player_resume(void){state=AUDIO_PLAYER_STATE_PLAYING;return ESP_OK;}
-FILE *__wrap_fopen(const char*p,const char*m){return missing?NULL:ls_test_tmpfile();}
+static FILE *record_file;
+static unsigned char saved_pcm[16384];static size_t saved_size;
+static int io_fault;
+int __real_fseek(FILE *,long,int);
+size_t __real_fwrite(const void *,size_t,size_t,FILE *);
+int __real_fflush(FILE *);
+int __wrap_fseek(FILE *f,long at,int whence){if(f==record_file && io_fault==1 && whence==SEEK_SET){io_fault=0;return -1;}return __real_fseek(f,at,whence);}
+size_t __wrap_fwrite(const void *p,size_t size,size_t n,FILE *f){if(f==record_file && size*n==44 && io_fault==2){io_fault=0;return 0;}if(f==record_file && size==2 && io_fault==5){io_fault=0;return __real_fwrite(p,size,n-8,f);}return __real_fwrite(p,size,n,f);}
+int __wrap_fflush(FILE *f){if(f==record_file && io_fault==3){io_fault=0;return -1;}return __real_fflush(f);}
+FILE *__wrap_fopen(const char*p,const char*m){
+    if(missing)return NULL;
+    FILE *f=ls_test_tmpfile();
+    if(!strcmp(m,"wb"))record_file=f;
+    if(!strcmp(m,"r+b")){record_file=f;__real_fwrite(saved_pcm,1,saved_size,f);rewind(f);}
+    return f;
+}
 int __real_fclose(FILE*);
 static bool capture_header;static uint8_t header[44];
 int __wrap_fclose(FILE*f){
     if(capture_header){capture_header=false;memset(header,0,sizeof(header));rewind(f);if(fread(header,1,sizeof(header),f)!=sizeof(header))header[0]=0;}
-    closed++;return __real_fclose(f);}
+    bool fail=false;
+    if(f==record_file){
+        __real_fflush(f);rewind(f);saved_size=fread(saved_pcm,1,sizeof(saved_pcm),f);
+        fail=io_fault==4;if(fail)io_fault=0;record_file=NULL;
+    }
+    closed++;int result=__real_fclose(f);return fail?-1:result;}
 esp_err_t audio_player_play(FILE*f){if(!play_result){state=AUDIO_PLAYER_STATE_PLAYING;if(config.file_close_fn)config.file_close_fn(f);else fclose(f);}return play_result;}
 file_iterator_instance_t *ls_media_playlist_open(const char*root){list.count=1;list.list=names;return &list;}
 void ls_media_playlist_close(file_iterator_instance_t*p){(void)p;}
@@ -106,6 +129,7 @@ LS_CASE(volume_db_follows_codec_curve){
 enum { BANDS=13 };
 static const float LO=63.0f,HI=16000.0f;
 static void feed_sine(unsigned rate,double hz,double amplitude,double hz2,double amplitude2,unsigned frames){
+    config.source_format_fn(rate,16,2);
     config.clk_set_fn(rate,16,I2S_SLOT_MODE_STEREO);
     int16_t pcm[256];size_t written;
     for(unsigned done=0;done<frames;done+=128) {
@@ -194,6 +218,7 @@ static int loudest_row(const float *db){int best=0;for(int i=1;i<ROWS;i++)if(db[
 LS_CASE(spectrogram_columns_follow_the_audio_in_order){
     reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;
     ls_music_cursor_t cur={0};float db[ROWS];
+    config.source_format_fn(44100,16,2);
     config.clk_set_fn(44100,16,I2S_SLOT_MODE_STEREO);
     LS_CHECK(!ls_music_spectrogram(&cur,1,ROWS,db));
     /* 1.1 kHz slice rows at 44.1 kHz / 20 rows: 1 kHz is row 0, 5 kHz row 4,
@@ -255,7 +280,7 @@ LS_CASE(microphone_feeds_meters_and_spectrum_at_its_own_rate){
     float db[BANDS];LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),BANDS);
     LS_EQ_INT(loudest(db,BANDS),8);
     ls_music_mic_stop();LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);LS_CHECK(!ls_music_live());
-    mic_feed(1);LS_EQ_INT(ls_music_peak(0),0);
+    LS_EQ_INT(ls_music_peak(0),0);
     LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),0);
     reset();
 }
@@ -290,12 +315,14 @@ LS_CASE(playing_a_track_stops_the_microphone_and_failures_say_why){
 }
 LS_CASE(mono_files_analyse_at_their_true_rate){
     reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;
-    config.clk_set_fn(16000,16,I2S_SLOT_MODE_MONO);
-    int16_t pcm[256];size_t written;
+    config.source_format_fn(16000,16,1);
+    config.clk_set_fn(16000,16,I2S_SLOT_MODE_STEREO);
+    int16_t pcm[512];size_t written;
     for(unsigned done=0;done<4096;done+=256) {
-        for(unsigned j=0;j<256;j++)pcm[j]=(int16_t)(16384*sin(6.28318530718*1600*(done+j)/16000));
+        for(unsigned j=0;j<256;j++)pcm[2*j]=pcm[2*j+1]=(int16_t)(16384*sin(6.28318530718*1600*(done+j)/16000));
         LS_EQ_INT(config.write_fn(pcm,sizeof(pcm),&written,100),ESP_OK);
     }
+    ls_music_format_t f;LS_CHECK(ls_music_format(&f));LS_EQ_INT(f.channels,1);
     float db[BANDS];LS_CHECK(ls_music_spectrum(LO,HI,BANDS,db)>0);
     LS_EQ_INT(loudest(db,10),7);
     LS_EQ_INT(ls_music_peak(0),ls_music_peak(1));
@@ -317,3 +344,61 @@ LS_CASE(archive_path_play_preserves_volume_and_mute_and_closes_failed_file)
 }
 
 esp_err_t audio_player_seek_ms(uint32_t ms){(void)ms;return ESP_OK;}
+
+LS_CASE(read_failure_finalizes_before_off_and_allows_safe_restart){
+    reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_mic_start(true));mic_feed(2);
+    int before=closed;capture_header=true;mic_fail=true;
+    LS_CHECK(!ls_music_mic_step());mic_fail=false;
+    LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);LS_EQ_INT(closed,before+1);
+    LS_EQ_INT(header[40]|header[41]<<8,4096);
+    LS_CHECK(ls_music_mic_start(true));ls_music_stop();
+    LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);reset();
+}
+LS_CASE(decoder_barrier_refuses_mic_scan_and_play_until_acknowledged){
+    reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_scan(0));
+    stop_result=ESP_FAIL;
+    LS_CHECK(!ls_music_mic_start(true));LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);
+    LS_CHECK(!ls_music_scan(1));LS_CHECK(!ls_music_play_path("test.wav"));
+    LS_EQ_INT(closed,0);LS_EQ_INT(releases,0);
+    stop_result=0;LS_CHECK(ls_music_mic_start(true));ls_music_stop();
+    LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);LS_EQ_INT(closed,1);reset();
+}
+LS_CASE(mute_preserves_volume_and_reflects_global_state){
+    reset();volume=23;ls_music_mute_toggle();LS_CHECK(ls_music_muted());LS_EQ_INT(volume,23);
+    ls_music_mute_toggle();LS_CHECK(!ls_music_muted());LS_EQ_INT(volume,23);reset();
+}
+LS_CASE(source_epoch_discards_same_rate_track_and_mic_samples){
+    reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;
+    feed_sine(44100,1000,16384,0,0,4096);
+    ls_music_format_t a,b;ls_music_format(&a);
+    LS_CHECK(ls_music_play_path("next.wav"));feed_sine(44100,5000,16384,0,0,512);
+    ls_music_format(&b);LS_CHECK(b.epoch!=a.epoch);
+    float db[BANDS];LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),0);
+    LS_CHECK(ls_music_mic_start(false));ls_music_format(&a);LS_CHECK(a.epoch!=b.epoch);
+    LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),0);reset();
+}
+LS_CASE(save_failures_keep_path_error_and_repair_retained_pcm){
+    for(int fault=1;fault<=4;fault++) {
+        reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_mic_start(true));mic_feed(3);
+        io_fault=fault;ls_music_stop();LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);
+        LS_CHECK(strstr(ls_music_error(),"Save failed"));LS_CHECK(strstr(ls_music_error(),"REC-001.wav"));
+        LS_CHECK(ls_music_scan(0));LS_CHECK(strstr(ls_music_error(),"Save failed"));
+        LS_CHECK(!ls_music_mic_start(true));
+        capture_header=true;LS_CHECK(ls_music_mic_repair());
+        LS_EQ_INT(header[40]|header[41]<<8,6144);
+        LS_CHECK(!strstr(ls_music_error(),"Save failed"));reset();
+    }
+}
+
+LS_CASE(short_pcm_write_preserves_actual_length_for_repair){
+    reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_mic_start(true));mic_feed(1);
+    io_fault=5;mic_feed(1);LS_EQ_INT(ls_music_mic_state(),LS_MIC_LIVE);
+    LS_CHECK(strstr(ls_music_error(),"Save failed"));ls_music_stop();
+    capture_header=true;LS_CHECK(ls_music_mic_repair());
+    LS_EQ_INT(header[40]|header[41]<<8,4080);reset();
+}
+LS_CASE(repeated_record_start_keeps_the_current_handle){
+    reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_mic_start(true));mic_feed(1);
+    LS_CHECK(ls_music_mic_start(true));LS_EQ_INT(closed,0);LS_EQ_INT(ls_music_mic_ms(),23);
+    capture_header=true;ls_music_stop();LS_EQ_INT(closed,1);LS_EQ_INT(header[40]|header[41]<<8,2048);reset();
+}

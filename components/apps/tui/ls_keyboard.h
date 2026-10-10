@@ -27,6 +27,12 @@ typedef void (*ls_keyboard_done_t)(const char *text);
 void ls_keyboard_open(const char *title, const char *initial, int max_len,
                       ls_keyboard_done_t on_done);
 
+void ls_keyboard_open_lower(const char *title, const char *initial, int max_len,
+                            ls_keyboard_done_t on_done);
+/* Commands and other plain text start lowercase; explicit case is preserved. */
+void ls_keyboard_open_plain(const char *title, const char *initial, int max_len,
+                            ls_keyboard_done_t on_done);
+
 /* Start masked and lowercase, with a SHOW/HIDE control. Visibility resets
  * on every open; the callback receives the original text. */
 void ls_keyboard_open_secret(const char *title, int max_len,

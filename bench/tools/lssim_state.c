@@ -38,6 +38,8 @@ int  settings_get_volume(void) { return s_vol; }
 void settings_set_volume(int v) { s_vol = v; }
 int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
+bool app_usb_autoreboot(void) { return s_usb; }
+void app_set_usb_autoreboot(bool v) { s_usb = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
 static bool s_update_check = true;
@@ -302,7 +304,8 @@ void ls_gps_get(ls_gps_state_t *out) {
     *out=s_gps;
     if(getenv("LSSIM_SWEEP_NO_GPS")) out->fix=false;
     /* The live simulator fixture emits a fresh fix; -e remains unavailable. */
-    if(out->alive) out->last_sentence_us=esp_timer_get_time();
+    if(out->alive) out->last_sentence_us=out->last_gsv_us=esp_timer_get_time();
+    if(out->fix) out->last_fix_us=esp_timer_get_time();
     if(out->fix) out->last_fix_us=esp_timer_get_time();
 }
 
@@ -375,6 +378,8 @@ void lssim_seed_state(void)
 
     memset(&P25, 0, sizeof(P25));
     P25.dsd_nac = 0x293;
+    P25.dsd_nac_valid = true;
+    P25.receive_state = P25_RX_CONTROL_LOCKED;
     P25.dsd_tg = 1041;
     P25.dsd_src = 220158;
     P25.dsd_has_sync = true;
@@ -543,3 +548,13 @@ void settings_set_keyboard_light(bool on) { keyboard_light=on; }
 int ls_keypad_backlight(bool on) { (void)on; return 0; }
 
 bool ls_track_last_time(uint32_t *seconds,bool *epoch) { (void)seconds;(void)epoch;return false; }
+
+/* GPS options use the host fixture, without an SD card. */
+bool ls_track_clear(void) { return false; }
+int ls_track_export(const char *p,char *out,size_t n) { (void)p;(void)out;(void)n;return LS_TRACK_EXPORT_NO_LOG; }
+void ls_track_get_rule(float *m,uint32_t *s) { if(m)*m=10; if(s)*s=30; }
+void ls_track_set_rule(float m,uint32_t s) { (void)m;(void)s; }
+const char *ls_gps_antenna_name(uint8_t a) { return a==LS_GPS_ANT_OK?"OK":a==LS_GPS_ANT_OPEN?"OPEN":a==LS_GPS_ANT_SHORT?"SHORT":"not reported"; }
+const char *ls_gps_sys_name(uint8_t s) { static const char *names[]={"other","GPS","GLONASS","Galileo","BeiDou","QZSS"}; return s<LS_GPS_SYS_COUNT?names[s]:names[0]; }
+
+bool ls_track_rec_requested(void) { return false; }

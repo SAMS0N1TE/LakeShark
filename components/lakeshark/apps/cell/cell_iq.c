@@ -2,6 +2,7 @@
  * Bounded IQ acquisition for validating cellular broadcast reception.
  * Captures are ADC samples, never decoded subscriber traffic. */
 #include "cell_iq.h"
+#include "cell_core.h"
 #include "cell_performance.h"
 #include "lte_sync.h"
 #include "lte_resample.h"
@@ -21,6 +22,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <math.h>
 
 static uint8_t *capture;
 static size_t captured;
@@ -39,7 +41,7 @@ static int ui_phase;
 static cell_iq_status_t ui_status;
 static uint32_t ui_hz,ui_rate,ui_ms;
 static ls_radio_iq_health_t radio_health;
-static ls_radio_err_t radio_health_result, stop_result;
+static ls_radio_err_t radio_health_result, stop_result, acquire_result;
 static ls_radio_iq_config_t capture_config;
 static bool capture_config_valid;
 static bool sync_yield(void *arg)
@@ -80,7 +82,7 @@ static void acquire(uint32_t hz,uint32_t requested_rate,uint32_t ms,bool hackrf)
     ls_radio_session_t *session=NULL;
     bool stream_started=false;
     ls_radio_err_t err=ls_radio_acquire("cell-iq",&req,&session);
-    if(err!=LS_RADIO_OK) {printf("CELLIQ requested_source=%s result=%s\n",endpoint,ls_radio_err_name(err));return;}
+    if(err!=LS_RADIO_OK) {acquire_result=err;printf("CELLIQ requested_source=%s result=%s\n",endpoint,ls_radio_err_name(err));return;}
     free(capture);capture=NULL;captured=0;complete=false;crc=0;duration_us=0;dropped=0;
     timing_rejected=false;
     frequency=hz;rate=requested_rate;replay=false;replay_expected=0;
@@ -108,7 +110,8 @@ static void acquire(uint32_t hz,uint32_t requested_rate,uint32_t ms,bool hackrf)
         if(err!=LS_RADIO_OK) break;
         discard+=n;
     }
-    if(err!=LS_RADIO_OK || discard<65536) goto done;
+    if(err==LS_RADIO_OK && discard<65536)err=LS_RADIO_ERR_TIMEOUT;
+    if(err!=LS_RADIO_OK) goto done;
     /* This legacy-named diagnostic reads the common USB IQ ring counter;
      * it covers both adapters. HackRF also rejects gaps in its read method. */
     int64_t started=esp_timer_get_time();deadline=started+10000000;
@@ -129,7 +132,7 @@ static void acquire(uint32_t hz,uint32_t requested_rate,uint32_t ms,bool hackrf)
 done:
     /* Include startup/discard losses when acquisition fails before the window. */
     if(stream_started)dropped=rtlsdr_stream_dropped();
-    if(dropped)complete=false;
+    if(dropped){complete=false;if(err==LS_RADIO_OK)err=LS_RADIO_ERR_IO;}
     stop_result=ls_radio_iq_stop(session);
     /* Query only after RX stops: no extra control transfers in the RF window.
      * HackRF preserves counts on IDLE; they cover startup through stop, not
@@ -150,6 +153,7 @@ done:
         (unsigned long)radio_health.num_shortfalls,(unsigned long)radio_health.longest_shortfall,
         (unsigned long)radio_health.active_mode,(unsigned long)radio_health.error,ls_radio_err_name(stop_result));
     if(captured) crc=esp_rom_crc32_le(0,capture,captured);
+    acquire_result=err;
     printf("CELLIQ result=%s\n",ls_radio_err_name(err));status();
 }
 static void dump(void)
@@ -229,6 +233,9 @@ static void analyze(cell_iq_status_t *result)
 static bool write_metadata(FILE *f,const cell_iq_status_t *result)
 {
     const ls_radio_iq_health_t *h=&result->radio_health;
+    char lat[32]="null",lon[32]="null",end_lat[32]="null",end_lon[32]="null";
+    if(result->gps_valid) {snprintf(lat,sizeof(lat),"%.7f",result->latitude);snprintf(lon,sizeof(lon),"%.7f",result->longitude);}
+    if(result->end_gps_valid) {snprintf(end_lat,sizeof(end_lat),"%.7f",result->end_latitude);snprintf(end_lon,sizeof(end_lon),"%.7f",result->end_longitude);}
     if(fprintf(f,"{\"profile\":{\"acquire_ms\":%lu,\"resample_ms\":%lu,\"sync_ms\":%lu,\"raw_save_ms\":%lu},"
         "\"receiver_config\":{\"valid\":%s,\"bandwidth_hz\":%lu,\"gain_tenths_db\":%d},"
         "\"raw_stats\":{\"valid\":%s,\"dc_i_codes\":%.4f,\"dc_q_codes\":%.4f,\"ac_power_codes2\":%.4f,\"rail_fraction\":%.8f},"
@@ -238,23 +245,26 @@ static bool write_metadata(FILE *f,const cell_iq_status_t *result)
         result->config_valid?"true":"false",(unsigned long)result->config.bandwidth_hz,result->config.gain_tenths_db,
         result->raw_stats_valid?"true":"false",result->dc_i_codes,result->dc_q_codes,
         result->ac_power_codes2,result->rail_fraction)<0)return false;
+    if(fprintf(f,"\"acquire_result\":\"%s\",\"timing_rejected\":%s,\"device_loss\":%s,\"requested_ms\":%lu,",
+        ls_radio_err_name(result->acquire_result),result->timing_rejected?"true":"false",
+        result->device_loss?"true":"false",(unsigned long)result->requested_ms)<0)return false;
     if(fprintf(f,"\"radio_health\":{\"result\":\"%s\",\"usb_api\":%u,\"phase\":\"post_stop\",\"window\":\"whole_rx_session\",\"stop_result\":\"%s\",\"requested_mode\":%u,\"request_flag\":%u,\"active_mode\":%lu,\"m0_bytes\":%lu,\"m4_bytes\":%lu,\"shortfalls\":%lu,\"longest_shortfall_bytes\":%lu,\"shortfall_limit\":%lu,\"threshold\":%lu,\"next_mode\":%lu,\"error\":%lu},",
         ls_radio_err_name(result->radio_health_result),h->usb_api,ls_radio_err_name(result->stop_result),
         h->requested_mode,h->request_flag,(unsigned long)h->active_mode,
         (unsigned long)h->m0_count,(unsigned long)h->m4_count,(unsigned long)h->num_shortfalls,
         (unsigned long)h->longest_shortfall,(unsigned long)h->shortfall_limit,
         (unsigned long)h->threshold,(unsigned long)h->next_mode,(unsigned long)h->error)<0)return false;
-                bool ok=fprintf(f,"\"schema\":2,\"decoder_version\":\"p4-mib-3\",\"raw_file\":\"%s\",\"unix_time\":%lld,\"started_us\":%llu,\"sequence\":%lu,\"automatic\":%s,\"raw_saved\":%s,\"complete\":%s,\"speed_kts\":%.3f,\"hdop\":%.2f,\"satellites\":%u,\"end_imu_valid\":%s,\"end_accel_g\":[%.5f,%.5f,%.5f],\"end_gyro_dps\":[%.5f,%.5f,%.5f],\"end_gps_valid\":%s,\"end_latitude\":%.7f,\"end_longitude\":%.7f,\"source\":\"HackRF-P4\",\"format\":\"cu8\",\"frequency_hz\":%lu,\"rate\":%lu,\"bytes\":%u,\"crc32\":\"%08lx\",\"dropped\":%llu,\"imu_valid\":%s,\"accel_g\":[%.5f,%.5f,%.5f],\"gyro_dps\":[%.5f,%.5f,%.5f],\"mag_valid\":%s,\"mag_uT\":[%.5f,%.5f,%.5f],\"heading_deg\":%.3f,\"gps_valid\":%s,\"latitude\":%.7f,\"longitude\":%.7f,\"capture_elapsed_us\":%lu,\"lte\":{\"execution\":\"P4\",\"checked\":%s,\"found\":%s,\"pci\":%d,\"hits\":%d,\"pairs\":%d,\"cfo_hz\":%d,\"pss\":%.5f,\"sss\":%.5f,\"analysis_ms\":%lu,\"identity_decoded\":false,\"mib\":{\"checked\":%s,\"found\":%s,\"n_rb\":%d,\"antenna_ports\":%d,\"sfn\":%d,\"crc_frames\":%d,\"first_frame\":%d,\"phich_duration\":%d,\"phich_resource\":%d,\"payload\":%lu,\"elapsed_ms\":%lu}}}\n",
+                bool ok=fprintf(f,"\"schema\":2,\"decoder_version\":\"p4-mib-3\",\"raw_file\":\"%s\",\"unix_time\":%lld,\"started_us\":%llu,\"sequence\":%lu,\"automatic\":%s,\"raw_saved\":%s,\"complete\":%s,\"speed_kts\":%.3f,\"hdop\":%.2f,\"satellites\":%u,\"end_imu_valid\":%s,\"end_accel_g\":[%.5f,%.5f,%.5f],\"end_gyro_dps\":[%.5f,%.5f,%.5f],\"end_gps_valid\":%s,\"end_latitude\":%s,\"end_longitude\":%s,\"source\":\"HackRF-P4\",\"format\":\"cu8\",\"frequency_hz\":%lu,\"rate\":%lu,\"bytes\":%u,\"crc32\":\"%08lx\",\"dropped\":%llu,\"imu_valid\":%s,\"accel_g\":[%.5f,%.5f,%.5f],\"gyro_dps\":[%.5f,%.5f,%.5f],\"mag_valid\":%s,\"mag_uT\":[%.5f,%.5f,%.5f],\"heading_deg\":%.3f,\"gps_valid\":%s,\"latitude\":%s,\"longitude\":%s,\"capture_elapsed_us\":%lu,\"lte\":{\"execution\":\"P4\",\"checked\":%s,\"found\":%s,\"pci\":%d,\"hits\":%d,\"pairs\":%d,\"cfo_hz\":%d,\"pss\":%.5f,\"sss\":%.5f,\"analysis_ms\":%lu,\"identity_decoded\":false,\"mib\":{\"checked\":%s,\"found\":%s,\"n_rb\":%d,\"antenna_ports\":%d,\"sfn\":%d,\"crc_frames\":%d,\"first_frame\":%d,\"phich_duration\":%d,\"phich_resource\":%d,\"payload\":%lu,\"elapsed_ms\":%lu}}}\n",
                     result->raw_file,(long long)result->unix_time,(unsigned long long)result->started_us,(unsigned long)result->sequence,
                     result->automatic?"true":"false",result->raw_saved?"true":"false",result->complete?"true":"false",
                     result->speed_kts,result->hdop,result->satellites,result->end_imu_valid?"true":"false",
                     result->end_imu.ax,result->end_imu.ay,result->end_imu.az,
                     result->end_imu.gx,result->end_imu.gy,result->end_imu.gz,
-                    result->end_gps_valid?"true":"false",result->end_latitude,result->end_longitude,
+                    result->end_gps_valid?"true":"false",end_lat,end_lon,
                     (unsigned long)result->hz,(unsigned long)result->rate,(unsigned)result->bytes,(unsigned long)crc,(unsigned long long)dropped,
                     result->imu_valid?"true":"false",result->imu.ax,result->imu.ay,result->imu.az,result->imu.gx,result->imu.gy,result->imu.gz,
                     result->imu.mag_valid?"true":"false",result->imu.mx,result->imu.my,result->imu.mz,result->heading,
-                    result->gps_valid?"true":"false",result->latitude,result->longitude,(unsigned long)result->elapsed_us,
+                    result->gps_valid?"true":"false",lat,lon,(unsigned long)result->elapsed_us,
                     result->lte_checked?"true":"false",result->lte_found?"true":"false",result->lte.pci,result->lte.hits,result->lte.pairs,result->lte.cfo_hz,
                     (double)result->lte.pss_score,(double)result->lte.sss_score,(unsigned long)result->analysis_ms,
                     result->mib_checked?"true":"false",result->mib_found?"true":"false",result->mib.n_rb,result->mib.antenna_ports,
@@ -270,18 +280,18 @@ static void capture_once(void)
 {
     cell_iq_status_t result={0};
     result.automatic=ui_auto;result.multi=session.multi;
-    result.attempts=ui_auto?session.attempts:0;result.decoded=ui_auto?session.decoded:0;
+    result.attempts=session.attempts;result.decoded=session.decoded;
     result.raw_bytes=ui_auto?session.raw_bytes:0;
     result.sequence=ui_auto?session.attempts+1:1;
     result.started_us=esp_timer_get_time();result.unix_time=time(NULL);
     result.lte.pci=-1;
-    result.hz=ui_hz;result.rate=ui_rate;
+    result.hz=ui_hz;result.rate=ui_rate;result.requested_ms=ui_ms;
     result.imu_valid=ls_imu_read(&result.imu);
     result.heading=result.imu_valid && result.imu.mag_valid?ls_imu_heading():0;
     ls_gps_state_t gps;ls_gps_get(&gps);
-    result.gps_valid=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
+    result.gps_valid=cell_gps_valid(gps.fix,gps.last_fix_us,esp_timer_get_time(),gps.lat_deg,gps.lon_deg,gps.hdop);
     result.latitude=gps.lat_deg;result.longitude=gps.lon_deg;
-    result.speed_kts=gps.speed_kts;result.hdop=gps.hdop;result.satellites=gps.sats_used;
+    result.speed_kts=isfinite(gps.speed_kts)?gps.speed_kts:0;result.hdop=isfinite(gps.hdop)?gps.hdop:0;result.satellites=gps.sats_used;
     if(!ui_auto || !session.attempts)publish_result(&result);
     /* An unavailable endpoint must not leave an older capture marked current. */
     complete=false;captured=0;dropped=0;duration_us=0;timing_rejected=false;crc=0;
@@ -293,8 +303,9 @@ static void capture_once(void)
     result.radio_health=radio_health;result.radio_health_result=radio_health_result;result.stop_result=stop_result;
     result.end_imu_valid=ls_imu_read(&result.end_imu);
     ls_gps_get(&gps);
-    result.end_gps_valid=gps.fix && gps.last_fix_us>0 && esp_timer_get_time()-gps.last_fix_us<5000000;
+    result.end_gps_valid=cell_gps_valid(gps.fix,gps.last_fix_us,esp_timer_get_time(),gps.lat_deg,gps.lon_deg,gps.hdop);
     result.end_latitude=gps.lat_deg;result.end_longitude=gps.lon_deg;
+    result.acquire_result=acquire_result;result.timing_rejected=timing_rejected;result.device_loss=device_loss;
     result.complete=complete;result.bytes=captured;result.elapsed_us=duration_us;result.dropped=dropped;
     snprintf(result.message,sizeof(result.message),complete?"Capture complete / held in RAM":"Capture failed or incomplete / not saved");
     if(timing_rejected)snprintf(result.message,sizeof(result.message),"USB capture too slow / select a lower rate");
@@ -319,7 +330,7 @@ static void capture_once(void)
     vTaskPrioritySet(NULL,2); /* Analysis and file writes yield to interaction. */
     analyze(&result);
     __atomic_store_n(&ui_phase,CELL_IQ_SAVING,__ATOMIC_RELEASE);
-    bool storage_ok=ls_sdcard_mounted();
+    bool storage_ok=ls_sdcard_mounted(),sd_present=storage_ok,log_quota=false;
     char path[112]={0};
     if(storage_ok) {
         mkdir("/sdcard/cell",0775);
@@ -348,7 +359,7 @@ static void capture_once(void)
             /* Never delete old evidence. Raw IQ has a per-session budget;
              * small observation records continue after that budget is used. */
             struct stat st;
-            if(stat(session_path,&st)==0 && st.st_size>=32*1024*1024)storage_ok=false;
+            if(stat(session_path,&st)==0 && st.st_size>=32*1024*1024){storage_ok=false;log_quota=true;}
             FILE *f=storage_ok?fopen(session_path,"a"):NULL;
             bool logged=false;
             if(f){logged=write_metadata(f,&result);if(fclose(f)!=0)logged=false;}
@@ -356,14 +367,18 @@ static void capture_once(void)
             if(!logged)storage_ok=false;
         }
     }
-    if(ui_auto) {
-        cell_session_finish(&session,complete,result.mib_found,result.raw_saved?captured:0);
-        result.attempts=session.attempts;result.decoded=session.decoded;
-        result.raw_bytes=session.raw_bytes;result.wait_ms=session.wait_ms;
-        if(!storage_ok)__atomic_store_n(&ui_stop,true,__ATOMIC_RELEASE);
-    }
-    snprintf(result.message,sizeof(result.message),!storage_ok?"SD unavailable / session stopped":
-        device_loss?"Radio sample loss / decode rejected":!complete?"Capture failed / attempt logged":result.raw_saved?"IQ + evidence saved on SD":"IQ budget used / evidence saved");
+    cell_session_finish(&session,complete,result.mib_found,result.raw_saved?captured:0);
+    result.attempts=session.attempts;result.decoded=session.decoded;
+    result.raw_bytes=session.raw_bytes;result.wait_ms=session.wait_ms;
+    result.storage_result=log_quota?CELL_IQ_STORAGE_QUOTA:storage_ok?CELL_IQ_STORAGE_OK:
+        sd_present?CELL_IQ_STORAGE_WRITE:CELL_IQ_STORAGE_MISSING;
+    if(ui_auto && (!storage_ok || !session.running))__atomic_store_n(&ui_stop,true,__ATOMIC_RELEASE);
+    if(!complete)snprintf(result.message,sizeof(result.message),"%s%s%s",
+        timing_rejected?"USB too slow: lower rate":device_loss || dropped?"Radio sample loss":ls_radio_err_name(acquire_result),
+        ui_auto && !session.running?" / stopped after 3 failures":"",
+        log_quota?" / log quota reached":!storage_ok?(sd_present?" / SD write failed":" / SD missing"):"");
+    else snprintf(result.message,sizeof(result.message),log_quota?"Session log quota reached / stopped":
+        !storage_ok?(sd_present?"SD write failed / evidence held in RAM":"SD missing / evidence held in RAM"):result.raw_saved?"IQ + evidence saved on SD":"IQ budget used / evidence saved");
     publish_result(&result);
 }
 static void capture_worker(void *unused)

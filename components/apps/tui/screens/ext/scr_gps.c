@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -20,9 +21,14 @@
 #include "ls_mesh.h"
 #include "../../ls_skyplot.h"
 #include "../../ls_skyview.h"
+#include "../../ls_options.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 static int s_sky_selected, s_sky_count;
-static bool s_sky_mode=true;
-static tui_rect s_view_hit;
+static bool s_sky_mode=true, s_sky_drawn;
+static tui_rect s_view_hit, s_options_hit;
+static atomic_bool s_busy;
+static char s_result[100];
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -46,6 +52,72 @@ static const ls_quick_t QUICK[] = {
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
+static void storage_task(void *arg)
+{
+    if ((intptr_t)arg==2) {
+        ls_track_rec_stop();
+        snprintf(s_result,sizeof(s_result),"%s",ls_track_rec_requested()?"Could not cancel reboot resume":"Recording stopped; reboot resume cancelled");
+    } else if (arg) snprintf(s_result,sizeof(s_result),"%s",ls_track_clear()?"Track cleared":"Clear failed; stop recording first");
+    else {
+        char path[64] = "";
+        int n=ls_track_export(NULL,path,sizeof(path));
+        if(n<0) snprintf(s_result,sizeof(s_result),"Export failed: %s",n==LS_TRACK_EXPORT_NO_LOG?"no saved track":"SD write/read error");
+        else if(!n) snprintf(s_result,sizeof(s_result),"No points to export");
+        else snprintf(s_result,sizeof(s_result),"%d points: %s",n,path);
+    }
+    s_busy=false;
+    vTaskDelete(NULL);
+}
+static void storage_action(const ls_opt_t *o)
+{
+    if(s_busy) return;
+    snprintf(s_result,sizeof(s_result),"Working on SD card");
+    s_busy=true;
+    if(xTaskCreatePinnedToCore(storage_task,"gps_export",4096,(void *)(intptr_t)o->arg,3,NULL,tskNO_AFFINITY)!=pdPASS) {
+        s_busy=false;
+        snprintf(s_result,sizeof(s_result),"No memory for SD worker");
+    }
+}
+static const char *storage_blocked(const ls_opt_t *o)
+{
+    (void)o;
+    return s_busy?"SD operation in progress":ls_track_rec_running()?"Stop recording first":NULL;
+}
+static const char *storage_busy(const ls_opt_t *o)
+{
+    (void)o;
+    return s_busy?"SD operation in progress":NULL;
+}
+static void storage_show(const ls_opt_t *o,char *out,size_t n)
+{
+    (void)o;
+    snprintf(out,n,"%s",s_busy?"Working on SD card":s_result);
+}
+static double rule_value(const ls_opt_t *o)
+{
+    float move; uint32_t gap;
+    ls_track_get_rule(&move,&gap);
+    return o->arg?gap:move;
+}
+static void rule_set(const ls_opt_t *o,double v)
+{
+    float move; uint32_t gap;
+    ls_track_get_rule(&move,&gap);
+    ls_track_set_rule(o->arg?move:(float)v,o->arg?(uint32_t)v:gap);
+}
+static const ls_opt_t CLEAR_OPT[] = {
+    {.label="YES, clear saved track",.kind=LS_OPT_ACTION,.arg=1,.act=storage_action,.why_not=storage_blocked,.show=storage_show},
+};
+static const ls_opt_ctx_t CLEAR_CTX={.name="CONFIRM CLEAR",.job=-1,.radio=LS_RSEL_NONE,.menu_arrows=true,LS_OPT_ROWS(CLEAR_OPT)};
+static const ls_opt_t GPS_OPT[] = {
+    {.label="Export GPX",.kind=LS_OPT_ACTION,.act=storage_action,.why_not=storage_blocked,.show=storage_show},
+    {.label="Minimum movement",.kind=LS_OPT_LEVEL,.num=rule_value,.set_num=rule_set,.lo=0,.hi=1000,.step=1,.unit="metres; 0 disables"},
+    {.label="Maximum gap",.kind=LS_OPT_LEVEL,.arg=1,.num=rule_value,.set_num=rule_set,.lo=0,.hi=3600,.step=1,.unit="seconds; 0 disables"},
+    {.label="Clear saved track",.kind=LS_OPT_MENU,.sub=&CLEAR_CTX,.why_not=storage_blocked},
+    {.label="Stop recording / cancel resume",.kind=LS_OPT_ACTION,.arg=2,.act=storage_action,.why_not=storage_busy,.show=storage_show},
+};
+static const ls_opt_ctx_t GPS_CTX={.name="GPS",.job=-1,.radio=LS_RSEL_NONE,.menu_arrows=true,LS_OPT_ROWS(GPS_OPT)};
+
 /* ---------------------------------------------------------------- parts -- */
 
 /* What the receiver is doing, in the order each rules out the next: the
@@ -57,7 +129,7 @@ static gps_view_t view_of(const ls_gps_state_t *g)
 {
     if (!ls_gps_running()) return VIEW_OFF;
     if (!g->alive)         return VIEW_LISTENING;
-    return g->fix ? VIEW_FIX : VIEW_NO_FIX;
+    return ls_gps_fix_current(g,esp_timer_get_time()) ? VIEW_FIX : VIEW_NO_FIX;
 }
 
 /* A start can take this long to hear a module left at the wrong rate: the
@@ -105,6 +177,8 @@ static void state_line(char *out, size_t n, const ls_gps_state_t *g)
 
 static const char *diagnosis(const ls_gps_state_t *g)
 {
+    if (g->alive && g->antenna == LS_GPS_ANT_OPEN) return "ANTENNA OPEN - check antenna connection";
+    if (g->alive && g->antenna == LS_GPS_ANT_SHORT) return "ANTENNA SHORT - check antenna feed";
     switch (view_of(g)) {
     case VIEW_FIX:
         return NULL;
@@ -130,32 +204,6 @@ static void field(tui_surface *sf, tui_rect a, int row, const char *label,
     tui_put_str(sf, a, a.x + 13, a.y + row, value, vattr);
 }
 
-/* Satellites as a run of blocks: used solid, visible-but-unused hollow.
-
-   A count says four; a row of four filled blocks beside eleven outlines says
-   four of eleven at a glance, which is the shape of the question - a
-   receiver seeing plenty and using few is a different problem from one
-   seeing none. */
-static void sats_bar(tui_surface *sf, tui_rect a, int row,
-                     const ls_gps_state_t *g)
-{
-    tui_put_str(sf,a,a.x+2,a.y+row,"#used .seen",A(DIM_FG,TUI_BLACK));
-    const int room = a.w - 15;
-    int visible = g->sats_visible;
-    int used = g->sats_used;
-    if (visible > room) visible = room;
-    if (used > visible) used = visible;
-
-    for (int i = 0; i < visible; i++) {
-        const bool on = i < used;
-        tui_put_char(sf, a, a.x + 13 + i, a.y + row,
-                     on ? '#' : '.',
-                     A(on ? (TUI_GREEN | TUI_BRIGHT) : DIM_FG, TUI_BLACK));
-    }
-    if (!visible)
-        tui_put_str(sf, a, a.x + 13, a.y + row, "none", A(DIM_FG, TUI_BLACK));
-}
-
 /* ---------------------------------------------------------------- panels -- */
 
 static void draw_position(tui_surface *sf, tui_rect pos,
@@ -167,6 +215,11 @@ static void draw_position(tui_surface *sf, tui_rect pos,
 
     ls_panel_box(sf, pos, "POSITION", TUI_CYAN);
 
+    field(sf,pos,7,"ANTENNA",ls_gps_antenna_name(g->antenna),g->antenna>=LS_GPS_ANT_OPEN?A(TUI_RED,TUI_BLACK):dim);
+    if(g->year) {
+        snprintf(buf,sizeof(buf),"%04u-%02u-%02u %02u:%02u:%02uZ",g->year,g->month,g->day,g->hour,g->minute,g->second);
+        field(sf,pos,6,"UTC",buf,dim);
+    }
     /* A stopped reader keeps its last fix; it is not a position now. */
     if (view_of(g) != VIEW_FIX) {
         field(sf, pos, 1, "LATITUDE", "--", dim);
@@ -179,7 +232,7 @@ static void draw_position(tui_surface *sf, tui_rect pos,
             const int rows = (pos.y + pos.h - 1) - (pos.y + 4);
             const int n = ls_wrap_text(why, pos.w - 4, (char *)lines,
                                        sizeof(lines[0]),
-                                       rows < 3 ? rows : 3);
+                                       rows < 2 ? rows : 2);
             for (int i = 0; i < n; i++)
                 tui_put_str(sf, pos, pos.x + 2, pos.y + 4 + i, lines[i], dim);
         }
@@ -210,21 +263,26 @@ static void draw_sky(tui_surface *sf, tui_rect sky, const ls_gps_state_t *g)
     snprintf(buf, sizeof(buf), "%u used, %u tracked, %u seen",
              g->sats_used, g->sats_tracked, g->sats_visible);
     field(sf, sky, 1, "SATELLITES", buf, val);
-    sats_bar(sf, sky, 2, g);
-    if (g->year) {
-        snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02uZ",
-                 g->year, g->month, g->day, g->hour, g->minute, g->second);
-        field(sf, sky, 3, "UTC", buf, val);
-    } else {
-        field(sf, sky, 3, "UTC", "--", dim);
+    char systems[100] = "";
+    size_t at=0;
+    for(int i=0;i<LS_GPS_SYS_COUNT;i++) {
+        if(!g->tracked_by_sys[i]) continue;
+        at+=(size_t)snprintf(systems+at,sizeof(systems)-at,"%s%s %u",at?", ":"",ls_gps_sys_name(i),g->tracked_by_sys[i]);
     }
+    char lines[2][64];
+    int n=ls_wrap_text(at?systems:"No constellation tracked",sky.w-4,(char *)lines,sizeof(lines[0]),2);
+    for(int i=0;i<n;i++) tui_put_str(sf,sky,sky.x+2,sky.y+2+i,lines[i],dim);
+    snprintf(buf,sizeof(buf),"C/N0 best %u, top-4 %u dB-Hz",g->cn0_best,g->cn0_top4);
+    tui_put_str(sf,sky,sky.x+2,sky.y+4,buf,val);
 }
 
 /* The sky, as a picture of the sky. */
 
 static void draw_skyview(tui_surface *sf,tui_rect r,const ls_gps_state_t *g)
 {
+    s_sky_drawn=true;
     s_sky_count=g->sat_count<LS_GPS_MAX_SATS?g->sat_count:LS_GPS_MAX_SATS;
+    if(s_sky_selected>=s_sky_count) s_sky_selected=0;
     ls_skyview_draw(sf,r,g,s_sky_selected);
 }
 
@@ -235,11 +293,12 @@ static void draw_track(tui_surface *sf, tui_rect r)
     char buf[48];
 
     const bool on = ls_track_rec_running();
+    const bool failed = ls_track_rec_error()!=ESP_OK;
     ls_panel_box(sf, r, "TRACK", on ? TUI_GREEN : TUI_CYAN);
 
-    snprintf(buf, sizeof(buf), "%s", on ? "RECORDING" : "stopped");
+    snprintf(buf, sizeof(buf), "%s", failed?"FAILED":on ? "RECORDING" : "stopped");
     field(sf, r, 1, "STATE", buf,
-          on ? A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : dim);
+          failed?A(TUI_RED,TUI_BLACK):on ? A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : dim);
 
     const int pts = ls_track_points();
     snprintf(buf, sizeof(buf), "%d of %d", pts, LS_TRACK_CAPACITY);
@@ -259,6 +318,9 @@ static void draw_wire(tui_surface *sf, tui_rect wire, const ls_gps_state_t *g)
     char buf[48];
 
     ls_panel_box(sf, wire, "WIRE", TUI_CYAN);
+    if(g->first_fix_us) snprintf(buf,sizeof(buf),"first fix %lld s",(long long)((g->first_fix_us-g->start_us)/1000000));
+    else snprintf(buf,sizeof(buf),"waiting %lld s",(long long)((esp_timer_get_time()-g->start_us)/1000000));
+    field(sf,wire,4,"FIX TIME",buf,dim);
     snprintf(buf, sizeof(buf), "%lu", (unsigned long)g->bytes);
     field(sf, wire, 1, "BYTES", buf, g->bytes ? val : A(TUI_RED, TUI_BLACK));
     snprintf(buf, sizeof(buf), "%lu", (unsigned long)g->sentences);
@@ -277,6 +339,7 @@ static void draw(tui_surface *sf, tui_rect area)
        this runs on the TUI task's internal-RAM stack. */
     EXT_RAM_BSS_ATTR static ls_gps_state_t g;
     ls_gps_get(&g);
+    s_sky_drawn=false;
 
     /* One pulse per sentence that arrived since the last frame, so the
        indicator moves at the rate the receiver is actually talking rather
@@ -296,9 +359,9 @@ static void draw(tui_surface *sf, tui_rect area)
     const bool framed=ls_tui_is_wide() && body.w>=85 && body.h>=22;
     tui_rect summary=body;
     if(framed) {
-        s_view_hit=tui_rect_make(body.x,body.y,body.w/2-1,4);
+        s_view_hit=tui_rect_make(body.x,body.y,body.w/2-1,5);
         ls_panel_box(sf,s_view_hit,"GPS VIEW",TUI_CYAN);
-        summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,4);
+        summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,5);
         ls_panel_box(sf,summary,"TRACK LOG",TUI_CYAN);
     } else {
         /* Unframed, the receiver's state takes the row under the toggle and
@@ -307,7 +370,11 @@ static void draw(tui_surface *sf, tui_rect area)
         summary=tui_rect_make(body.x,body.y+1,body.w,body.h-1);
     }
     tui_put_str(sf,framed?s_view_hit:body,body.x+2,body.y+(framed?1:0),ls_tui_keyboard_mode()?(s_sky_mode?"[V] SKY / switch to receiver details":"[V] DETAILS / switch to satellite sky"):(s_sky_mode?"[ SKY ]  Tap for receiver details":"[ DETAILS ]  Tap for satellite sky"),A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-    char health[80];snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_error()!=ESP_OK?"FAILED":ls_track_rec_running()?(g.fix?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
+    char health[80];
+    const esp_err_t track_error=ls_track_rec_error();
+    if(track_error!=ESP_OK)
+        snprintf(health,sizeof(health),"TRACK FAILED: %s / resume %s",track_error==ESP_ERR_NOT_FOUND?"no SD card":esp_err_to_name(track_error),ls_track_rec_requested()?"ON":"OFF");
+    else snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_running()?(ls_gps_fix_current(&g,esp_timer_get_time())?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
     tui_put_str(sf,summary,summary.x+2,summary.y+1,health,A(ls_track_rec_running()?TUI_GREEN:TUI_YELLOW,TUI_BLACK));
     uint32_t seconds=0;bool epoch=false;
     char stamp[LS_TIME_STAMP_MAX];
@@ -325,13 +392,15 @@ static void draw(tui_surface *sf, tui_rect area)
         } else ls_time_render_stamp_at(stamp,sizeof(stamp),0,(int64_t)seconds*1000000);
         snprintf(health,sizeof(health),"LAST POINT %s",stamp);
     } else snprintf(health,sizeof(health),"LAST POINT -- / none saved");
-    tui_put_str(sf,summary,summary.x+2,summary.y+2,health,LS_ATTR_DIM);
+    tui_put_str(sf,summary,summary.x+2,summary.y+2,s_busy?"Working on SD card":s_result[0]?s_result:health,LS_ATTR_DIM);
+    s_options_hit=tui_rect_make(summary.x+2,summary.y+3,11,1);
+    tui_put_str(sf,summary,s_options_hit.x,s_options_hit.y,"[ OPTIONS ]",A(TUI_CYAN,TUI_BLACK));
     {
         char state[60];state_line(state,sizeof(state),&g);
         if(framed) tui_put_str(sf,s_view_hit,s_view_hit.x+2,s_view_hit.y+2,state,A(state_hue(&g),TUI_BLACK));
         else tui_put_str(sf,body,body.x+2,body.y+1,state,A(state_hue(&g),TUI_BLACK));
     }
-    const int header_h=4;
+    const int header_h=5;
     body.y+=header_h;body.h-=header_h;
     if(s_sky_mode) {
         draw_skyview(sf,body,&g);
@@ -378,7 +447,7 @@ static void draw(tui_surface *sf, tui_rect area)
             draw_track(sf, tui_rect_make(left.x, left.y + 10, left.w - 1, left.h - 10));
         draw_sky(sf, tui_rect_make(right.x, right.y, right.w, 6), &g);
         if (right.h > 8)
-            draw_wire(sf, tui_rect_make(right.x, right.y + 7, right.w, 5), &g);
+            draw_wire(sf, tui_rect_make(right.x, right.y + 7, right.w, 6), &g);
     } else {
 
         int y = rest.y;
@@ -403,8 +472,8 @@ static void draw(tui_surface *sf, tui_rect area)
             draw_track(sf, tui_rect_make(rest.x, y, rest.w, 6));
             y += 7;
         }
-        if (y + 5 <= rest.y + rest.h)
-            draw_wire(sf, tui_rect_make(rest.x, y, rest.w, 5), &g);
+        if (y + 6 <= rest.y + rest.h)
+            draw_wire(sf, tui_rect_make(rest.x, y, rest.w, 6), &g);
     }
 
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), QUICK, N_QUICK);
@@ -422,9 +491,12 @@ static void enter(void)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if(k==LS_TK_CHAR && ls_opt_key(&GPS_CTX,ch)) return true;
+    if(s_busy && k==LS_TK_CHAR && (ch=='r'||ch=='R')) return true;
     if(k==LS_TK_CHAR && (ch=='v'||ch=='V')) {s_sky_mode=!s_sky_mode;return true;}
-    if(k==LS_TK_CHAR && (ch=='j'||ch=='J'||ch=='k'||ch=='K')) {
-        if(s_sky_count) s_sky_selected=(s_sky_selected+(ch=='j'||ch=='J'?1:s_sky_count-1))%s_sky_count;
+    if(k==LS_TK_DOWN || k==LS_TK_RIGHT || k==LS_TK_UP || k==LS_TK_LEFT ||
+       (k==LS_TK_CHAR && (ch=='j'||ch=='J'||ch=='k'||ch=='K'))) {
+        if(s_sky_count) s_sky_selected=(s_sky_selected+(k==LS_TK_DOWN||k==LS_TK_RIGHT||ch=='j'||ch=='J'?1:s_sky_count-1))%s_sky_count;
         return true;
     }
     if (k == LS_TK_CHAR)
@@ -434,6 +506,16 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if(tui_rect_contains(s_options_hit,col,row)) {ls_opt_open(&GPS_CTX);return true;}
+    if(s_sky_drawn) {
+        int i=ls_skyview_touch(col,row);
+        if(i>=0) {s_sky_selected=i;return true;}
+        if((i==-2 || i==-3) && s_sky_count) {
+            s_sky_selected=(s_sky_selected+(i==-3?1:s_sky_count-1))%s_sky_count;
+            return true;
+        }
+    }
+    if(s_busy && tui_rect_contains(s_quick_rect,col,row)) return true;
     if(tui_rect_contains(s_view_hit,col,row)) {s_sky_mode=!s_sky_mode;return true;}
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h)
@@ -444,7 +526,7 @@ static bool touch(int col, int row)
 
 const ls_tui_screen_t ls_scr_gps = {
     .name = "GPS",
-    .hint = "V sky/details  G receiver  M map  J/K satellite",
+    .hint = "V sky/details  G receiver  M map  Arrows/J/K satellite  O options",
     .enter = enter,
     .leave = NULL,
     .draw = draw,

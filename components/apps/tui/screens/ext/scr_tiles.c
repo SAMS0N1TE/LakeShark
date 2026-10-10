@@ -15,11 +15,12 @@
 
 static EXT_RAM_BSS_ATTR ls_tiles_catalog catalog;
 static ls_carto_transfer transfer;
-static int selected, first, page, focus=-1, slot, confirm, speed=4;
+static int selected, first, page, focus=-1, slot, confirm;
 static int info_scroll,info_max;
-static bool refreshed;
-static int64_t turn_start,seen_transfer;
+static bool refreshed,opening;
+static int64_t seen_transfer;
 static char active_file[128];
+static char hint[96]="UP/DOWN region  ENTER info  O options  BACK";
 static tui_rect list_area,content_area;
 static int visible;
 static const char *const STATES[]={"NOT INSTALLED","INSTALLED","PARTIAL","UPDATE AVAILABLE"};
@@ -63,7 +64,7 @@ static void globe(tui_surface *sf,tui_rect a,float progress) {
     }
     if(search_globe) { incoming.bbox[0]=search_lon-2;incoming.bbox[2]=search_lon+2;incoming.bbox[1]=search_lat-2;incoming.bbox[3]=search_lat+2;r=&incoming; }
     int centre=r?(int)((r->bbox[0]+r->bbox[2])*.5):0;
-    int offset=centre+(int)(((esp_timer_get_time()-turn_start)/80000*speed)%360);
+    int offset=centre;
     static const char ramp[]=" .:-=+#";
     for(int y=0;y<h;y++) for(int x=0;x<w;x++) {
         sphere_cell *p=&sphere[y*w+x]; if(!p->valid) continue;
@@ -91,15 +92,20 @@ static void back(void) {
 }
 static void map_open(void) {
     if(!catalog.count) return;
-    if(ls_tiles_action(2,&catalog.region[selected])) {
-        const ls_app_t *a=ls_app_by_id("map"); if(a) ls_tui_screen_show(ls_tui_screen_index_of(a->screen));
-    }
+    if(!opening && ls_tiles_action(2,&catalog.region[selected])) { opening=true;page=0; }
+}
+static bool map_open_done(bool copied) {
+    if(!opening || !copied || catalog.open_state<2)return false;
+    opening=false;
+    if(catalog.open_state!=2)return false;
+    const ls_app_t *app=ls_app_by_id("map");if(app)ls_tui_screen_show(ls_tui_screen_index_of(app->screen));
+    return true;
 }
 static void action(const ls_opt_t *o) {
     if(catalog.busy) return;
     switch(o->arg) {
-    case 0: if(catalog.count && ls_tiles_action(0,&catalog.region[selected])) { page=2; turn_start=esp_timer_get_time(); refreshed=false; transfer=(ls_carto_transfer){0}; } break;
-    case 1: if(ls_tiles_action(1,NULL)) { page=2; turn_start=esp_timer_get_time(); refreshed=false; transfer=(ls_carto_transfer){0}; } break;
+    case 0: if(catalog.count && ls_tiles_action(0,&catalog.region[selected])) { page=2; refreshed=false; transfer=(ls_carto_transfer){0}; } break;
+    case 1: if(ls_tiles_action(1,NULL)) { page=2; refreshed=false; transfer=(ls_carto_transfer){0}; } break;
     case 2: map_open(); break;
     case 3: if(catalog.count) { page=3; confirm=2; } break;
     case 4: page=1; info_scroll=0; break;
@@ -110,7 +116,7 @@ static void action(const ls_opt_t *o) {
         const ls_app_t *a=ls_app_by_id("map"); if(a) ls_tui_screen_show(ls_tui_screen_index_of(a->screen));
     } break;
     case 7: if(catalog.count && ls_tiles_action(4,&catalog.region[selected])) {
-        page=2; turn_start=esp_timer_get_time(); refreshed=false; transfer=(ls_carto_transfer){0};
+        page=2; refreshed=false; transfer=(ls_carto_transfer){0};
     } break;
     }
 }
@@ -126,8 +132,6 @@ static const char *available(const ls_opt_t *o) {
     if(o->arg==7 && !catalog.region[selected].sha256[0]) return "Refresh catalog for SHA256";
     return NULL;
 }
-static double speed_get(const ls_opt_t *o) { (void)o; return speed; }
-static void speed_set(const ls_opt_t *o,double v) { (void)o; speed=(int)v; }
 static const ls_opt_t region_opts[]={
     {.label="OPEN SELECTED MAP",.kind=LS_OPT_ACTION,.arg=2,.act=action,.why_not=available,.leaves=true},
     {.label="SHOW REGION LOCATION",.kind=LS_OPT_ACTION,.arg=6,.act=action,.why_not=available,.leaves=true},
@@ -142,13 +146,12 @@ static const ls_opt_t options[]={
     {.label="SELECTED REGION",.kind=LS_OPT_MENU,.sub=&region_ctx},
     {.label="REFRESH CATALOG",.kind=LS_OPT_ACTION,.arg=5,.act=action,.why_not=available,.leaves=true},
     {.label="RECEIVE FROM LAPTOP",.kind=LS_OPT_ACTION,.arg=1,.act=action,.why_not=available,.leaves=true},
-    {.label="GLOBE TURN SPEED",.kind=LS_OPT_LEVEL,.num=speed_get,.set_num=speed_set,.lo=1,.hi=6,.step=1,.unit="degrees per frame"},
     {.label="SEARCH PLACES",.kind=LS_OPT_ACTION,.act=search_action,.leaves=true},
     {.label="DOWNLOAD PROGRESS",.kind=LS_OPT_ACTION,.act=search_action,.arg=1,.leaves=true},
 };
 static const ls_opt_ctx_t ctx={.name="TILES",.job=-1,.radio=LS_RSEL_NONE,.back_to_screen=true,LS_OPT_ROWS(options)};
 static void enter(void) {
-    focus=-1; page=0; refreshed=false; turn_start=esp_timer_get_time();
+    focus=-1; page=0; refreshed=false;opening=false;
     ls_tiles_refresh(true);
     ls_carto_transfer_snapshot(&transfer); seen_transfer=transfer.start_us; if(transfer.state==1) page=2;
 #ifdef LS_TILES_HOST
@@ -157,14 +160,14 @@ static void enter(void) {
 }
 static void line(tui_surface *sf,tui_rect a,int y,const char *s,uint8_t at) { ls_safe_line(sf,a,y,s,at); }
 static void draw(tui_surface *sf,tui_rect a) {
-    if(ls_place_search_active()) { ls_place_search_draw(sf,a);return; }
-    bool had_bbox=transfer.has_bbox;
-    ls_tiles_snapshot(&catalog); ls_carto_transfer_snapshot(&transfer);
+    if(ls_place_search_active()) { snprintf(hint,sizeof(hint),"%s",ls_place_search_hint());ls_place_search_draw(sf,a);return; }
+    snprintf(hint,sizeof(hint),"UP/DOWN region  ENTER info  O options  BACK");
+    bool copied=ls_tiles_snapshot(&catalog); ls_carto_transfer_snapshot(&transfer);
+    if(map_open_done(copied))return;
     ls_carto_active_file(active_file,sizeof(active_file));
     if(transfer.state==1 && transfer.start_us!=seen_transfer) {
-        seen_transfer=transfer.start_us; page=2; focus=-1; refreshed=false; turn_start=esp_timer_get_time();
+        seen_transfer=transfer.start_us; page=2; focus=-1; refreshed=false;
     }
-    if(transfer.receiving && transfer.has_bbox && !had_bbox) turn_start=esp_timer_get_time();
     if(selected>=catalog.count) selected=catalog.count?catalog.count-1:0;
     if(page==2 && transfer.state>1 && !catalog.busy && !refreshed) { refreshed=ls_tiles_refresh(false); }
     if(page==2 && transfer.state==2 && refreshed && !catalog.busy) {
@@ -183,7 +186,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     tui_rect body=tui_rect_make(a.x+1,a.y+2,a.w-2,a.h-bh-4);
     content_area=body;
     if(page==0) {
-        line(sf,body,body.y,catalog.busy?"Loading catalog / checking SD...":catalog.message,LS_ATTR_DIM);
+        line(sf,body,body.y,opening?"Opening selected map...":catalog.busy?"Loading catalog / checking SD...":catalog.message,LS_ATTR_DIM);
         tui_rect storage=tui_rect_make(body.x,body.y+body.h-5,body.w,5);
         list_area=tui_rect_make(body.x,body.y+2,body.w,body.h-8); visible=list_area.h/4;
         if(body.w>90) list_area.w=body.w/2;
@@ -324,4 +327,4 @@ static bool touch(int col,int row) {
     if(page==1 && info_max) return key(row<content_area.y+content_area.h/2?LS_TK_UP:LS_TK_DOWN,0);
     return true;
 }
-const ls_tui_screen_t ls_scr_tiles={.name="TILES",.hint="UP/DOWN region  ENTER info  O options  BACK",.enter=enter,.leave=ls_place_search_close,.draw=draw,.key=key,.touch=touch};
+const ls_tui_screen_t ls_scr_tiles={.name="TILES",.hint=hint,.enter=enter,.leave=ls_place_search_close,.draw=draw,.key=key,.touch=touch};

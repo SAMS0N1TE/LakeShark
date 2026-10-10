@@ -66,6 +66,15 @@ uint32_t ls_notes_generation(void);
 bool ls_notes_load(const char *stem, char *buf, size_t cap);
 /* Queued. The text is copied, so the caller may keep editing. */
 bool ls_notes_save(const char *stem, const char *text);
+/* Tracked operations reserve a completion until ls_notes_result consumes it.
+   Result: 0 pending, 1 committed, 2 trash with pictures left, -1 failed. Tickets identify exact snapshots. */
+bool ls_notes_save_tracked(const char *stem, const char *text, uint32_t *ticket);
+bool ls_notes_create_tracked(const char *text, char *stem, size_t cap, uint32_t *ticket);
+bool ls_notes_trash_tracked(const char *stem, uint32_t *ticket);
+bool ls_notes_save_png_tracked(const char *leaf, const uint16_t *px, int w, int h, uint32_t *ticket);
+int ls_notes_result(uint32_t ticket);
+/* Journal I/O worker only: idempotent, confirmed per-entry migration. */
+bool ls_notes_import(uint32_t id, const char *text);
 /* Picks a new stem, reserves it in the index and queues the first save. */
 bool ls_notes_create(const char *text, char *stem_out, size_t cap);
 /* Moves the note, and its pictures, into notes/trash. Nothing is deleted. */

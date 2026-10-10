@@ -12,6 +12,7 @@
 
 static ls_mesh_stats_t s_stats = {
     .running = true,
+    .receiving = true,
     .tx_enabled = false,
     .rx_packets = 412,
     .tx_packets = 37,
@@ -25,8 +26,15 @@ bool ls_mesh_running(void) { return s_stats.running; }
 bool ls_mesh_tx_enabled(void) { return s_stats.tx_enabled; }
 void ls_mesh_set_tx(bool on) { s_stats.tx_enabled = on; }
 esp_err_t ls_mesh_start(void) { s_stats.running = true; return 0; }
-esp_err_t ls_mesh_stop(void) { s_stats.running = false; return ESP_OK; }
-esp_err_t ls_mesh_advertise(void) { s_stats.tx_packets++; return 0; }
+esp_err_t ls_mesh_stop(void) {
+    if (getenv("LSSIM_MESH_STOP_FAIL")) return ESP_ERR_INVALID_STATE;
+    s_stats.running = false; s_stats.tx_enabled = false; s_stats.receiving = false; return ESP_OK;
+}
+esp_err_t ls_mesh_advertise(void) {
+    if (!s_stats.running) return ESP_ERR_INVALID_STATE;
+    if (!s_stats.tx_enabled) return ESP_ERR_NOT_ALLOWED;
+    fprintf(stderr, "mesh-stub advert queued\n"); return ESP_OK;
+}
 void ls_mesh_boot(void) { }
 void ls_mesh_diagnostics(void) { }
 
@@ -186,14 +194,22 @@ int ls_mesh_messages(ls_mesh_msg_t *out, int max)
     if (last && n < max) {
         if (!strcmp(last, "dm"))   out[n++] = LAST_DM;
         if (!strcmp(last, "chan")) out[n++] = LAST_CHAN;
+        if (!strcmp(last, "long")) {
+            ls_mesh_msg_t m = {.t = 44370, .state = LS_MSG_IN};
+            snprintf(m.text, sizeof(m.text), "NORTHFIELD: %s", "A long incoming message keeps every protocol byte in history and wraps across the feed so the end remains readable in both postures. FINALTAIL");
+            out[n++] = m;
+        }
     }
     return n;
 }
 
+uint32_t ls_mesh_incoming_seq(void) { return 0; }
 uint32_t ls_mesh_msg_seq(void) { return 208; }
 
 esp_err_t ls_mesh_send_text_on(int chan, const char *t)
 {
+    if (!s_stats.running) return ESP_ERR_INVALID_STATE;
+    if (!s_stats.tx_enabled) return ESP_ERR_NOT_ALLOWED;
     fprintf(stderr, "mesh-stub send_on %d %s\n", chan, t ? t : "");
     return 0;
 }
@@ -439,4 +455,16 @@ esp_err_t ls_mesh_telem_allow(const char *id, bool allow)
     bool ok = ls_inspect_allow_set(&s_allow, id, allow);
     fprintf(stderr, "mesh-stub telem-allow %s %d\n", id, allow);
     return ok ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+int ls_mesh_forget_peer(const char *id)
+{
+    fprintf(stderr, "mesh-stub forget %s\n", id ? id : "all");
+    return ls_mesh_peer_known(id) ? 1 : 0;
+}
+esp_err_t ls_mesh_radio_default(void)
+{
+    s_radio.freq_hz = 910525000u; s_radio.sf = 7;
+    s_radio.bw_hz = 62500; s_radio.power_dbm = 22;
+    fprintf(stderr, "mesh-stub radio default\n"); return ESP_OK;
 }

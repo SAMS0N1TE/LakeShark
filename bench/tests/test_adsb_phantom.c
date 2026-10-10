@@ -13,9 +13,13 @@
 #include "plane_audio.h"
 
 #include <string.h>
+#include <time.h>
 
 /* mode-s.c defines it; mode-s.h does not declare it. */
 uint32_t mode_s_checksum(unsigned char *msg, int bits);
+uint32_t icao_cache_has_addr(uint32_t addr);
+void add_recently_seen_icao_addr(mode_s_t *self, uint32_t addr);
+int icao_addr_was_recently_seen(mode_s_t *self, uint32_t addr);
 
 /* ---------------------------------------------- what adsb_decode.c reaches -- */
 
@@ -123,6 +127,68 @@ static bool decode(const uint8_t *frame, uint32_t *aa, int *errorbit)
               (uint32_t)mm.aa3;
     if (errorbit) *errorbit = mm.errorbit;
     return mm.crcok != 0;
+}
+
+LS_CASE(colliding_known_addresses_keep_address_parity_replies)
+{
+    uint32_t peer = 1;
+    while (peer == SENDER || icao_cache_has_addr(peer) != icao_cache_has_addr(SENDER)) peer++;
+    mode_s_init(&s_ms);
+    const uint32_t ids[] = {SENDER, peer};
+    uint8_t frame[14];
+    for (int i = 0; i < 2; i++) {
+        df11(frame, ids[i]);
+        LS_CHECK(decode(frame, NULL, NULL));
+    }
+    for (int i = 0; i < 2; i++) {
+        memset(frame, 0, sizeof(frame));
+        frame[0] = 4 << 3;
+        seal(frame, 56, ids[i]);
+        uint32_t aa = 0;
+        LS_CHECK(decode(frame, &aa, NULL));
+        LS_EQ_UINT(aa, ids[i]);
+    }
+}
+
+LS_CASE(known_address_probe_wraps_and_refreshes_past_expired_collision)
+{
+    mode_s_init(&s_ms);
+    uint32_t ids[3], candidate = 1;
+    for (int i = 0; i < 3; i++) {
+        while (icao_cache_has_addr(candidate) != MODE_S_ICAO_CACHE_LEN - 1) candidate++;
+        ids[i] = candidate++;
+        add_recently_seen_icao_addr(&s_ms, ids[i]);
+    }
+    LS_EQ_UINT(s_ms.icao_cache[(MODE_S_ICAO_CACHE_LEN - 1) * 2], ids[0]);
+    LS_EQ_UINT(s_ms.icao_cache[0], ids[1]);
+    s_ms.icao_cache[(MODE_S_ICAO_CACHE_LEN - 1) * 2 + 1] = (uint32_t)time(NULL) - 61;
+    LS_CHECK(!icao_addr_was_recently_seen(&s_ms, ids[0]));
+    add_recently_seen_icao_addr(&s_ms, ids[1]);
+    LS_EQ_UINT(s_ms.icao_cache[0], ids[1]); /* no duplicate in expired predecessor */
+    while (icao_cache_has_addr(candidate) != MODE_S_ICAO_CACHE_LEN - 1) candidate++;
+    add_recently_seen_icao_addr(&s_ms, candidate);
+    LS_CHECK(icao_addr_was_recently_seen(&s_ms, candidate));
+    LS_CHECK(!icao_addr_was_recently_seen(&s_ms, ids[0]));
+    LS_CHECK(icao_addr_was_recently_seen(&s_ms, ids[1]));
+    LS_CHECK(icao_addr_was_recently_seen(&s_ms, ids[2]));
+}
+
+LS_CASE(full_known_address_cache_preserves_every_peer_until_expiry)
+{
+    mode_s_init(&s_ms);
+    for (uint32_t id = 1; id <= MODE_S_ICAO_CACHE_LEN; id++)
+        add_recently_seen_icao_addr(&s_ms, id);
+    for (uint32_t id = 1; id <= MODE_S_ICAO_CACHE_LEN; id++)
+        LS_CHECK(icao_addr_was_recently_seen(&s_ms, id));
+    LS_CHECK(!icao_addr_was_recently_seen(&s_ms, 0xFFFFFF));
+    for (uint32_t slot = 0; slot < MODE_S_ICAO_CACHE_LEN; slot++)
+        if (s_ms.icao_cache[slot * 2] == 1)
+            s_ms.icao_cache[slot * 2 + 1] = (uint32_t)time(NULL) - 61;
+    add_recently_seen_icao_addr(&s_ms, 0xFFFFFF);
+    LS_CHECK(!icao_addr_was_recently_seen(&s_ms, 1));
+    LS_CHECK(icao_addr_was_recently_seen(&s_ms, 0xFFFFFF));
+    for (uint32_t id = 2; id <= MODE_S_ICAO_CACHE_LEN; id++)
+        LS_CHECK(icao_addr_was_recently_seen(&s_ms, id));
 }
 
 LS_CASE(a_repaired_frame_from_an_address_never_heard_clean_is_refused)

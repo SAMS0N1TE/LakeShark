@@ -167,3 +167,35 @@ LS_CASE(skip_off_does_not_authorize_encrypted_or_unknown_synthesis)
     LS_CHECK(!f.leave_on_encrypted);
     LS_EQ_INT(opts.unmute_encrypted_p25, 0);
 }
+
+static unsigned owner_calls;
+static void owner_test_command(uint32_t arg) { owner_calls += arg; }
+LS_CASE(owner_commands_are_bounded_ordered_and_invalidated_on_exit)
+{
+    p25_owner_queue_t q = {0};
+    p25_owner_command_t cmd;
+    owner_calls = 0;
+    LS_CHECK(!p25_owner_queue_push(&q, owner_test_command, 1));
+    p25_owner_queue_start(&q);
+    unsigned generation = q.generation;
+    for (unsigned i = 0; i < 32; i++) LS_CHECK(p25_owner_queue_push(&q, owner_test_command, i));
+    LS_CHECK(!p25_owner_queue_push(&q, owner_test_command, 99));
+    LS_EQ_UINT(owner_calls, 0);
+    LS_CHECK(p25_owner_queue_pop(&q, &cmd)); LS_EQ_UINT(cmd.arg, 0);
+    LS_CHECK(p25_owner_queue_pop(&q, &cmd)); LS_EQ_UINT(cmd.arg, 1);
+    cmd.fn(cmd.arg); LS_EQ_UINT(owner_calls, 1);
+    p25_owner_queue_stop(&q);
+    LS_CHECK(!p25_owner_queue_pop(&q, &cmd));
+    LS_CHECK(!p25_owner_queue_push(&q, owner_test_command, 2));
+    p25_owner_queue_start(&q);
+    LS_CHECK(q.generation != generation);
+    LS_CHECK(!p25_owner_queue_pop(&q, &cmd));
+}
+#include "p25_p2_runtime.h"
+LS_CASE(phase2_requires_an_iq_receiver_even_during_radio_transition)
+{
+    LS_CHECK(p25_p2_receiver_supported(false, false));
+    LS_CHECK(!p25_p2_receiver_supported(true, false));
+    LS_CHECK(!p25_p2_receiver_supported(false, true));
+    LS_CHECK(!p25_p2_receiver_supported(true, true));
+}

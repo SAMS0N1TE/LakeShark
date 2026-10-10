@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 
 #include "ls_board.h"
+#include "ls_uart_claim.h"
 
 static const char *TAG = "ls_gps";
 
@@ -241,15 +242,17 @@ static void parse_sentence(char *s, int len, ls_gps_parser_t *p)
            The remembered GSA PRN set is cleared here too, once this cycle's
            satellites have published: a PRN a GSA marked used belongs only to
            the cycle it arrived in, not to whatever GSV shows up next. */
-        p->st.sats_visible = p->sats_acc;
-        p->sats_acc = 0;
-        if (p->sat_acc_count) {
+        if (p->gsv_seen) {
+            p->st.sats_visible = p->sats_acc;
+            p->st.last_gsv_us = p->gsv_us;
             memcpy(p->st.sats, p->sat_acc,
                    sizeof(p->st.sats[0]) * p->sat_acc_count);
             p->st.sat_count = p->sat_acc_count;
             p->sat_acc_count = 0;
             publish_tracked(&p->st);
         }
+        p->sats_acc = 0;
+        p->gsv_seen = false;
         p->gsa_used_count = 0;
         parse_time(f[1], &p->st);
         p->st.quality   = (uint8_t)atoi(f[6]);
@@ -277,6 +280,7 @@ static void parse_sentence(char *s, int len, ls_gps_parser_t *p)
         if (*f[8]) p->st.course_deg = (float)atof(f[8]);
         parse_date(f[9], &p->st);
     } else if (strcmp(type, "GSV") == 0 && n >= 4) {
+        p->gsv_seen = true;
         /* Each constellation sends its own GSV series and repeats its
            satellite count in every message of that series, so summing only
            the first message of each gives the true total across
@@ -360,7 +364,10 @@ bool ls_gps_feed_line(const char *line, int len, ls_gps_parser_t *p,
         p->st.last_fix_us = now_us;
         if (!p->st.first_fix_us) p->st.first_fix_us = now_us;
     }
+    if (p->gsv_seen && len >= 6 && !memcmp(line + 3, "GSV", 3))
+        p->gsv_us = now_us;
     p->st.alive = true;
+    ls_gps_expire(&p->st, now_us, true);
     return true;
 }
 
@@ -593,7 +600,7 @@ static void gps_task(void *arg)
 /* The task handle is the answer, less a reader that has left its loop and
    waits to be deleted. See the note in the header for what using `alive`
    instead was costing. */
-bool ls_gps_running(void) { return s_task != NULL && !s_retired; }
+bool ls_gps_running(void) { return s_task != NULL && s_run && !s_retired; }
 
 /* With s_ctl held. Deletes a reader that has left its loop; deleting another
    task frees its stack and TCB without allocating anything. */
@@ -638,12 +645,14 @@ static esp_err_t start_locked(void)
     if (s_task) return s_run ? ESP_OK : ESP_ERR_INVALID_STATE;
     if (s_scanning) return ESP_ERR_INVALID_STATE;
 
-    if (!claim_port()) {
-        ESP_LOGE(TAG, "every UART is claimed - nothing left for the GPS");
-        return ESP_ERR_NOT_FOUND;
-    }
-
     if (!s_port_ours) {
+        esp_err_t lease = ls_uart_claim_lock();
+        if (lease != ESP_OK) return lease;
+        if (!claim_port()) {
+            ls_uart_claim_unlock();
+            ESP_LOGE(TAG, "every UART is claimed - nothing left for the GPS");
+            return ESP_ERR_NOT_FOUND;
+        }
         uart_config_t cfg = {
             .baud_rate  = LS_BOARD_GPS_BAUD,
             .data_bits  = UART_DATA_8_BITS,
@@ -653,22 +662,26 @@ static esp_err_t start_locked(void)
             .source_clk = UART_SCLK_DEFAULT,
         };
 
-        /* Order matters: param_config before driver_install leaves the baud
-           rate applied to a port the driver then takes over cleanly.  The
-           reverse order works too but has bitten on other ports when the
-           driver's own reset raced the config write. */
-        esp_err_t err = uart_param_config(GPS_UART, &cfg);
-        if (err != ESP_OK) return err;
-
-        err = uart_set_pin(GPS_UART, LS_BOARD_GPS_TX_GPIO, LS_BOARD_GPS_RX_GPIO,
-                           UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-        if (err != ESP_OK) return err;
-
-        /* 2 KB is about three seconds of 9600 baud, which is more slack than
-           the 200 ms read loop needs and cheap enough not to tune. */
-        err = uart_driver_install(GPS_UART, 2048, 0, 0, NULL, 0);
-        if (err != ESP_OK) return err;
+        /* Installing first reserves the port before baud or pins change. */
+        esp_err_t err = ESP_ERR_NOT_FOUND;
+        for (int tries = 0; tries < SOC_UART_HP_NUM; tries++) {
+            if (!claim_port()) break;
+            err = uart_driver_install(GPS_UART, 2048, 0, 0, NULL, 0);
+            if (err == ESP_OK) break;
+            if (!uart_is_driver_installed(GPS_UART)) break;
+        }
+        if (err != ESP_OK) { ls_uart_claim_unlock(); return err; }
+        err = uart_param_config(GPS_UART, &cfg);
+        if (err == ESP_OK)
+            err = uart_set_pin(GPS_UART, LS_BOARD_GPS_TX_GPIO, LS_BOARD_GPS_RX_GPIO,
+                               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        if (err != ESP_OK) {
+            uart_driver_delete(GPS_UART);
+            ls_uart_claim_unlock();
+            return err;
+        }
         s_port_ours = true;
+        ls_uart_claim_unlock();
     } else {
         /* Ours, still installed: take it back at the board's rate. */
         set_baud(LS_BOARD_GPS_BAUD);
@@ -677,7 +690,14 @@ static esp_err_t start_locked(void)
     s_link = LS_GPS_LINK_PROBE;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_parser.st.alive = false;
+    const double lat = s_parser.st.lat_deg, lon = s_parser.st.lon_deg;
+    const float alt = s_parser.st.alt_m;
+    const int64_t last_fix = s_parser.st.last_fix_us;
+    memset(&s_parser, 0, sizeof(s_parser));
+    s_parser.st.lat_deg = lat;
+    s_parser.st.lon_deg = lon;
+    s_parser.st.alt_m = alt;
+    s_parser.st.last_fix_us = last_fix;
     s_parser.st.start_us = esp_timer_get_time();
     s_parser.st.first_fix_us = 0;
     xSemaphoreGive(s_lock);
@@ -749,6 +769,7 @@ void ls_gps_get(ls_gps_state_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     *out = s_parser.st;
     xSemaphoreGive(s_lock);
+    ls_gps_expire(out, esp_timer_get_time(), s_run);
 }
 
 /* Bytes arriving that never frame into a sentence is the one failure this
@@ -788,13 +809,16 @@ void ls_gps_scan_baud(void)
             .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
             .source_clk = UART_SCLK_DEFAULT,
         };
-        if (uart_driver_install(GPS_UART, 4096, 0, 0, NULL, 0) != ESP_OK) {
+        if (ls_uart_claim_lock() != ESP_OK) break;
+        if (!claim_port() || uart_driver_install(GPS_UART, 4096, 0, 0, NULL, 0) != ESP_OK) {
+            ls_uart_claim_unlock();
             printf("gps: cannot install driver\n");
             break;
         }
         uart_param_config(GPS_UART, &cfg);
         uart_set_pin(GPS_UART, UART_PIN_NO_CHANGE, LS_BOARD_GPS_RX_GPIO,
                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        ls_uart_claim_unlock();
 
         uint8_t buf[512];
         int total = 0, printable = 0, dollars = 0, eol = 0;

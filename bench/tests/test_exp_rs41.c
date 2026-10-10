@@ -8,6 +8,7 @@ void ls_shim_time_advance(int64_t us);
 static ls_fsk_cfg_t cfg;
 static bool active, capable = true;
 static int begins, ends;
+static bool partial;
 const char *ls_exp_hw_radio_busy(void) { return NULL; }
 bool ls_exp_hw_radio_take(void) { return true; }
 void ls_exp_hw_radio_give(void) { }
@@ -18,7 +19,9 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *c) { cfg = *c; active = true; ++
 esp_err_t ls_lora_fsk_end(void) { active = false; ++ends; return ESP_OK; }
 int ls_lora_fsk_stream_read(uint8_t *buf, size_t n, bool *restarted)
 {
-    LS_CHECK(active); LS_CHECK(n >= 256); (void)buf; *restarted = false; return 0;
+    LS_CHECK(active); LS_CHECK(n >= 256); *restarted = partial;
+    if (partial) { partial = false; buf[0] = 0; return 1; }
+    return 0;
 }
 LS_CASE(receive_only_session_and_polarity_search)
 {
@@ -45,4 +48,16 @@ LS_CASE(layered_options_frequency_steps_and_bounds)
     tracks->opt[0].set_num(&tracks->opt[0],3); LS_EQ_INT(rs41_keep_hours(),3);
     tracks->opt[1].set(&tracks->opt[1],0); LS_CHECK(!rs41_show_map());
     tracks->opt[1].set(&tracks->opt[1],1); LS_CHECK(rs41_show_map());
+}
+
+LS_CASE(truncated_sync_expires_and_resumes_polarity_search)
+{
+    ls_exp_forget(); ls_shim_time_set(1000000); capable = true; begins = ends = 0;
+    ls_exp_register(&exp_rs41); ls_exp_start(&exp_rs41); ls_exp_service();
+    ls_shim_time_advance(2500000); partial = true; ls_exp_service();
+    ls_shim_time_advance(1000000); ls_exp_service(); LS_EQ_INT(begins,1);
+    ls_shim_time_advance(500000); ls_exp_service(); LS_EQ_INT(begins,2);
+    for (int i = 0; i < 10; ++i) { ls_shim_time_advance(3000001); ls_exp_service(); }
+    LS_EQ_INT(begins,12);
+    ls_exp_stop(); ls_exp_service();
 }

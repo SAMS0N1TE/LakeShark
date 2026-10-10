@@ -386,6 +386,14 @@ TaskHandle_t xTaskGetCurrentTaskHandle(void)
     return &here;
 }
 
+/* Host threads carry no FreeRTOS name. */
+char *pcTaskGetName(TaskHandle_t task)
+{
+    static char name[] = "host";
+    (void)task;
+    return name;
+}
+
 void vTaskDelay(TickType_t ticks)
 {
     struct timespec delay = {

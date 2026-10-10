@@ -56,7 +56,7 @@ adsb_aircraft_t *adsb_state_find_or_create(uint32_t icao)
         empty->active        = true;
         empty->first_seen_us = esp_timer_get_time();
         for (size_t i = 0; i < sizeof(empty->alt_history) / sizeof(empty->alt_history[0]); i++)
-            empty->alt_history[i] = -1;
+            empty->alt_history[i] = ADSB_ALT_UNKNOWN;
         extra_reset(slot_of(empty), icao);
     }
     return empty;
@@ -103,9 +103,7 @@ void adsb_state_push_altitude(adsb_aircraft_t *a, int alt_ft)
 {
     if (!a) return;
 
-    if (alt_ft >  32000) alt_ft =  32000;
-    if (alt_ft < -32000) alt_ft = -32000;
-    a->alt_history[a->alt_history_head] = (int16_t)alt_ft;
+    a->alt_history[a->alt_history_head] = alt_ft;
     a->alt_history_head = (a->alt_history_head + 1) %
         (sizeof(a->alt_history) / sizeof(a->alt_history[0]));
 }

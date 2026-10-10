@@ -531,7 +531,7 @@ static void replay_play(void)
     replay_poll();
     if(!player.loaded || player.waiting)return;
     if(!rec_watch_request_replay_file(player.path,replay_dbm())) {
-        snprintf(player.result,sizeof(player.result),"Radio busy - stop WATCH / SCAN first");return;
+        snprintf(player.result,sizeof(player.result),"%s",rec_watch_error()[0]?rec_watch_error():"Recorder loading; retry when ready");return;
     }
     player.waiting=true;player.started=esp_timer_get_time();player.finished=0;
     snprintf(player.result,sizeof(player.result),"Queued - waiting for radio worker");
@@ -541,8 +541,9 @@ void ls_scr_files_return_to(int screen) __attribute__((weak));
 static void replay_browse(void)
 {
     for(int i=0;i<ls_tui_screen_count();i++)if(!strcmp(ls_tui_screen_name(i),"FILES")){
+        ls_tui_screen_show(i);
         if(ls_scr_files_return_to)ls_scr_files_return_to(ls_tui_screen_index_of(&ls_scr_rec));
-        ls_tui_screen_show(i);break;
+        break;
     }
 }
 /* Returns 2 when the operator asked to go and pick another file, which the
@@ -686,13 +687,35 @@ static bool replay_touch(int x,int y)
 
 static bool recorder_csv(void) { return recorder_mesh || metadata(recorder_radio); }
 static const ls_tui_screen_t *recorder_child(void) { return recorder_csv() ? &ls_scr_journal : gps_view ? &ls_scr_gps : &ls_scr_subghz; }
-static bool recorder_busy(void) { return rec_watch_enabled() || ls_field_recording() || ls_track_rec_running(); }
+static char recorder_notice[72];
+static int64_t recorder_notice_until;
+static const char *recorder_busy_reason(void)
+{
+    if(rec_watch_enabled())return "Stop WATCH before changing radio";
+    if(rec_watch_scan_busy())return "Stop SCAN before changing radio";
+    if(rec_watch_learn_busy())return "Stop LEARN before changing radio";
+    if(rec_watch_replay_status(NULL,0))return "Wait for replay before changing radio";
+    if(ls_field_recording())return "Stop CSV recording before changing radio";
+    if(ls_track_rec_running())return "Stop GPS track before changing radio";
+    return NULL;
+}
+static bool recorder_busy(void) { return recorder_busy_reason()!=NULL; }
+static void recorder_refusal(const char *why)
+{
+    snprintf(recorder_notice,sizeof(recorder_notice),"%s",why);
+    recorder_notice_until=esp_timer_get_time()+4000000;
+}
 static void recorder_source_done(ls_rsel_radio_t radio)
 {
     const ls_rsel_radio_t was = recorder_in_use();
     if(recorder_busy() ||
        (metadata(radio) && (!ls_field_start() || !ls_field_source(RECORDS[radio].field)))) {
         ls_rsel_set(LS_RSEL_REC, was);
+        return;
+    }
+    if(captures(radio) && !ls_scr_subghz_choose_source(radio)) {
+        ls_rsel_set(LS_RSEL_REC,was);
+        recorder_refusal("Radio selection refused; stop the current operation");
         return;
     }
     /* The hosted screen changes only when the kind of recording does: a
@@ -704,7 +727,6 @@ static void recorder_source_done(ls_rsel_radio_t radio)
     tools_view = false;
     const ls_tui_screen_t *next = recorder_child();
     if(next != old && old->leave) old->leave();
-    if(captures(radio)) ls_scr_subghz_choose_source(radio);
     if(next != old && next->enter) next->enter();
     if(metadata(radio)) ls_scr_journal_rec_view();
 }
@@ -723,7 +745,9 @@ static void recorder_mesh_done(int row)
 }
 static void recorder_sources(void)
 {
-    if(recorder_busy()) return;
+    const char *why=recorder_busy_reason();
+    if(why){recorder_refusal(why);return;}
+    recorder_notice[0]=0;
     MESH_ROW[0].detail = recorder_mesh ? "selected" : "CSV of what MeshCore hears";
     ls_rsel_open_with(LS_RSEL_REC,recorder_source_done,MESH_ROW,1,recorder_mesh_done);
 }
@@ -786,9 +810,9 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     } else memset(rec_tabs,0,sizeof(rec_tabs));
     if(replay_view){snprintf(recorder_hint,sizeof(recorder_hint),"P play once  +/- power  O files  LEFT/RIGHT inspect");player_embedded=false;replay_draw(sf,a);return;}
     if(tools_view) snprintf(recorder_hint,sizeof(recorder_hint),"B recorder  ENTER arm/stop");
-    else if(recorder_csv()) snprintf(recorder_hint,sizeof(recorder_hint),"R radio  C CSV metadata  V sensors");
-    else if(gps_view) snprintf(recorder_hint,sizeof(recorder_hint),"R radio  T GPS track  M map");
-    else snprintf(recorder_hint,sizeof(recorder_hint),"R radio  W watch  E export  D %s tools",ls_rsel_name(LS_RSEL_SDR_RTL));
+    else if(recorder_csv()) snprintf(recorder_hint,sizeof(recorder_hint),"R radio  C CSV  V sensors  O files");
+    else if(gps_view) snprintf(recorder_hint,sizeof(recorder_hint),"R radio  T GPS track  M map  O files");
+    else snprintf(recorder_hint,sizeof(recorder_hint),"R radio  W watch  O files  D %s tools",ls_rsel_name(LS_RSEL_SDR_RTL));
     /* A row taller for thumbs alone, when the pane has the row to give. */
     int h=ls_tui_is_wide()?(!ls_tui_keyboard_mode() && a.h>=26?4:3):5;
     if(tools_view) {
@@ -823,10 +847,15 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     if(h>3) tui_put_str(sf,info,info.x,info.y+3,"CLOCK",LS_ATTR_DIM);
     a.y+=h; a.h-=h;
     recorder_child()->draw(sf,a);
+    if(recorder_notice[0] && esp_timer_get_time()<recorder_notice_until) {
+        tui_fill(sf,tui_rect_make(a.x,a.y+a.h-1,a.w,1),' ',TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,a,a.x,a.y+a.h-1,recorder_notice,TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
+    }
 }
 static bool recorder_key(ls_tk_t k,char c) {
     if(k==LS_TK_TAB){recorder_mode(!replay_view);return true;}
     if(replay_view)return replay_key(k,c);
+    if(!tools_view && k==LS_TK_CHAR && (c=='o'||c=='O')){replay_browse();return true;}
     /* R is RADIO here as everywhere, and U opens it too. The GPS track this
        view embeds is R on its own screen; here it is T. */
     if(k==LS_TK_CHAR && (c=='r'||c=='R'||c=='u'||c=='U')){recorder_sources();return true;}

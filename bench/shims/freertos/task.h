@@ -25,6 +25,7 @@ void vTaskDelay(TickType_t ticks);
 /* The calling host thread, as a handle that is stable for its life. */
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
 TaskHandle_t xTaskGetIdleTaskHandleForCore(BaseType_t core);
+char *pcTaskGetName(TaskHandle_t task);
 void vTaskGetInfo(TaskHandle_t task, TaskStatus_t *info, BaseType_t scan_stack, eTaskState state);
 void ls_shim_idle_runtime(uint32_t core0, uint32_t core1);
 unsigned ls_shim_task_info_calls(void);

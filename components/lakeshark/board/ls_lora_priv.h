@@ -31,6 +31,7 @@ typedef struct {
     const ls_lora_cfg_t *(*cfg)(void);
     esp_err_t (*receive)(void);
     bool      (*is_receiving)(void);
+    bool      (*is_transmitting)(void);
     esp_err_t (*send)(const uint8_t *data, size_t len);
     bool      (*send_done)(void);
     int       (*poll)(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db);

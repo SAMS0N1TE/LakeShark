@@ -83,6 +83,8 @@ static StaticSemaphore_t s_sample_lock_storage;
    matters more. Fifty milliseconds is twenty reads a second, which is far
    more than a screen rotation or a compass needle needs. */
 #define CACHE_US  50000
+#define MAG_HOLD_US 250000
+#define MAG_RETRY_US 1000000
 
 static i2c_master_dev_handle_t s_dev;
 static i2c_master_dev_handle_t s_mag;
@@ -92,6 +94,7 @@ static uint8_t s_bank = 0xFF;          /* unknown until the first select */
 
 static ls_imu_sample_t s_cache;
 static int64_t         s_cache_us;
+static int64_t         s_mag_us, s_mag_retry_us;
 
 /* ------------------------------------------------------------------- bus -- */
 
@@ -301,14 +304,20 @@ static bool sample_locked(ls_imu_sample_t *out)
                              (float)hx * MAG_UT_PER_LSB, &s.mx, &s.my);
                     s.mz = (float)-hz * MAG_UT_PER_LSB;
                     s.mag_valid = true;
+                    s_mag_us = now;
                 }
             }
-        } else if (s_cache_us) {
-            /* No new sample this time round: keep the last good one rather
-               than reporting a field of zero, which reads as "pointing at
-               nothing" instead of "nothing new yet". */
+        }
+        if (!s.mag_valid && s_mag_us && now - s_mag_us <= MAG_HOLD_US) {
             s.mx = s_cache.mx; s.my = s_cache.my; s.mz = s_cache.mz;
             s.mag_valid = s_cache.mag_valid;
+        }
+        if (!s.mag_valid && now - s_mag_retry_us >= MAG_RETRY_US) {
+            s_mag_retry_us = now;
+            ESP_LOGW(TAG, "AK09916 stalled; restarting conversions");
+            mag_wr(MAG_CNTL3, MAG_SRST);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            mag_wr(MAG_CNTL2, MAG_MODE_100HZ);
         }
     }
 

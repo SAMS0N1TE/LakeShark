@@ -20,11 +20,16 @@
 #include "radio/radio_health.h"
 #include "radio/radio_endpoint.h"
 
+extern const ls_tui_screen_t ls_scr_home;
+
 #define MAX_TILES LS_TUI_MAX_SCREENS
 /* Last rendered capacity also drives keyboard and touch page offsets. */
 static int s_page_tiles = 6;
 #define PAGE_TILES s_page_tiles
 static int s_group, s_tile_page;
+static bool s_error_detail;
+static int s_error_page, s_error_pages;
+static tui_rect s_error_banner;
 
 static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
 
@@ -56,7 +61,7 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
             const ls_app_t *a = ls_app_at(i);
             if (!a || !a->id || a->cat != ORDER[c] || group_of(a) != s_group) continue;
             /* HOME is not in its own directory. */
-            if (a->screen && a->id && strcmp(a->id, "home") == 0) continue;
+            if (a->screen == &ls_scr_home) continue;
             apps[n] = a;
             out[n].name = a->name;
             out[n].sub  = a->sub;
@@ -81,17 +86,6 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
     return n;
 }
 
-/* The SDR that is plugged in: the RTL-SDR, else the HackRF. */
-static const char *sdr_endpoint(void)
-{
-    ls_radio_endpoint_info_t info;
-    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &info) == LS_RADIO_OK && info.present)
-        return LS_RADIO_ENDPOINT_RTL_USB;
-    if (ls_radio_endpoint_get(LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.present)
-        return LS_RADIO_ENDPOINT_HACKRF_USB;
-    return LS_RADIO_ENDPOINT_RTL_USB;
-}
-
 static void draw_status(tui_surface *sf, tui_rect a)
 {
     char buf[48];
@@ -104,9 +98,14 @@ static void draw_status(tui_surface *sf, tui_rect a)
 
     int row = 1;
     radio_health_snapshot_t h;
-    const char *sdr = sdr_endpoint();
-    if (radio_health_get(sdr, &h)) {
-        ls_kv(sf, a, row++, !strcmp(sdr, LS_RADIO_ENDPOINT_HACKRF_USB) ? "HACKRF" : "DONGLE",
+    static const char *const SDRS[] = {
+        LS_RADIO_ENDPOINT_RTL_USB, LS_RADIO_ENDPOINT_HACKRF_USB
+    };
+    bool present = false;
+    for (int i = 0; i < 2; i++) {
+        if (!radio_health_get(SDRS[i], &h) || h.state == RH_ABSENT) continue;
+        present = true;
+        ls_kv(sf, a, row++, i ? "HACKRF" : "RTL-SDR",
               radio_health_state_name(h.state), h.state == RH_OK ? good : bad);
         snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)h.bytes_per_second);
         ls_kv(sf, a, row++, "STREAM", buf, h.bytes_per_second ? val : dim);
@@ -114,14 +113,13 @@ static void draw_status(tui_surface *sf, tui_rect a)
             snprintf(buf, sizeof(buf), "%u", (unsigned)h.recoveries);
             ls_kv(sf, a, row++, "RECOVER", buf, bad);
         }
-    } else {
-        ls_kv(sf, a, row++, "DONGLE", "absent", bad);
     }
+    if (!present) ls_kv(sf, a, row++, "SDR", "absent", bad);
 
     snprintf(buf, sizeof(buf), "%d/s", perf_get_msgs_per_sec());
-    ls_kv(sf, a, row++, "DECODE", buf, val);
+    ls_kv(sf, a, row++, "ADS-B RATE", buf, val);
     snprintf(buf, sizeof(buf), "%d err", perf_get_crc_err());
-    ls_kv(sf, a, row++, "CRC", buf, perf_get_crc_err() ? dim : good);
+    ls_kv(sf, a, row++, "ADS-B CRC TOTAL", buf, perf_get_crc_err() ? dim : good);
 
     if (row < a.h - 3) row++;
     const size_t inter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -142,11 +140,39 @@ static void draw_status(tui_surface *sf, tui_rect a)
                     TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
 }
 
+static void draw_error(tui_surface *sf, tui_rect area, const char *error)
+{
+    ls_panel_box(sf, area, "USER APP ERROR", TUI_RED);
+    int width = area.w - 4;
+    if (width > 63) width = 63;
+    const int rows = area.h - 4;
+    const int len = (int)strlen(error), page_chars = width * rows;
+    s_error_pages = (len + page_chars - 1) / page_chars;
+    if (s_error_page >= s_error_pages) s_error_page = 0;
+    int at = s_error_page * page_chars;
+    char line[64];
+    for (int row = 0; row < rows && at < len; row++) {
+        int n = len - at;
+        if (n > width) n = width;
+        if (n >= (int)sizeof(line)) n = sizeof(line) - 1;
+        memcpy(line, error + at, n); line[n] = 0; at += n;
+        tui_put_str(sf, area, area.x + 2, area.y + 2 + row, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    }
+    tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
+                s_error_pages > 1 ? "Tap next / ESC back" : "Tap or ESC to return", LS_ATTR_DIM);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     if(area.w<24 || area.h<12) {
         ls_btn_bar_raised_slot(sf,tui_rect_make(0,0,0,0),NULL,0,-1,LS_BTN_SLOT_QUICK);
         ls_panel_notice(sf,area,"HOME","Enlarge pane","");return;
+    }
+    const char *error = s_group == 3 ? ls_userapp_last_error() : NULL;
+    s_error_banner = tui_rect_make(0,0,0,0);
+    if (s_error_detail && error) {
+        ls_btn_bar_raised_slot(sf,tui_rect_make(0,0,0,0),NULL,0,-1,LS_BTN_SLOT_QUICK);
+        draw_error(sf, area, error); return;
     }
     ls_tile_t tiles[MAX_TILES];
     const ls_app_t *apps[MAX_TILES];
@@ -163,6 +189,13 @@ static void draw(tui_surface *sf, tui_rect area)
     if (ls_tui_is_wide()) {
         status_w = body.w / 3; if (status_w > 34) status_w = 34;
         body.w -= status_w;
+    }
+    if (error) {
+        s_error_banner = tui_rect_make(body.x, body.y, body.w, 3);
+        tui_put_str(sf, s_error_banner, body.x + 1, body.y, "SD app error: tap / E", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, s_error_banner, body.x + 1, body.y + 1, error,
+                    TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        body.y += 3; body.h -= 3;
     }
     /* Preserve the icon, label and comfortable touch area on every tile. */
     int fit_cols = body.w / (LS_ICON_COLS + 5);
@@ -208,12 +241,21 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_status(sf, right);
     }
     ls_tile_grid(sf, body, tiles + first, shown, s_sel - first);
-    if (!shown) ls_panel_notice(sf, body, GROUPS[s_group], "No apps in this group", "User apps load from the SD card");
+    if (!shown) ls_panel_notice(sf, body, GROUPS[s_group], error ? "SD app rejected" : "No apps in this group", error ? "Tap error above for details" : "User apps load from the SD card");
 
 }
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (s_error_detail) {
+        if (k == LS_TK_UP && s_error_page > 0) s_error_page--;
+        else if (k == LS_TK_DOWN && s_error_page + 1 < s_error_pages) s_error_page++;
+        else if (k == LS_TK_ESC || k == LS_TK_ENTER) s_error_detail = false;
+        return true;
+    }
+    if (s_group == 3 && k == LS_TK_CHAR && (ch == 'e' || ch == 'E') && ls_userapp_last_error()) {
+        s_error_detail = true; s_error_page = 0; return true;
+    }
     ls_tile_t tiles[MAX_TILES];
     const ls_app_t *apps[MAX_TILES];
     const int n = build_tiles(tiles, apps, MAX_TILES);
@@ -271,6 +313,15 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (s_error_detail) {
+        if (s_error_page + 1 < s_error_pages) s_error_page++;
+        else s_error_detail = false;
+        return true;
+    }
+    if (s_error_banner.w && col >= s_error_banner.x && col < s_error_banner.x + s_error_banner.w &&
+        row >= s_error_banner.y && row < s_error_banner.y + s_error_banner.h) {
+        s_error_detail = true; s_error_page = 0; return true;
+    }
     const int group = ls_btn_hit(col, row);
     if (group >= 0 && group < 4) { s_group = group; s_tile_page = s_sel = 0; return true; }
     const int page=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);

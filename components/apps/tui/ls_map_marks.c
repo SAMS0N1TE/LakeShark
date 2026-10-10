@@ -8,6 +8,7 @@
 #include "ls_map_marks.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@ EXT_RAM_BSS_ATTR static ls_mark_t   s_marks[LS_MARKS_MAX];
 EXT_RAM_BSS_ATTR static ls_sketch_t s_sketch[LS_SKETCH_MAX];
 EXT_RAM_BSS_ATTR static ls_sketch_t s_open;
 static int  s_nmarks, s_nsketch;
+static uint32_t s_next_id;
 static bool s_drawing;
 static bool s_loaded;
 static int  s_serial = 1;           /* the number the next unnamed marker gets */
@@ -31,15 +33,18 @@ static char s_path[96] = "/sdcard/maps/marks.txt";
 /* UI owns live marks. Worker sees only PSRAM snapshots, never live arrays. */
 typedef struct {
     ls_mark_t marks[LS_MARKS_MAX]; ls_sketch_t sketch[LS_SKETCH_MAX];
-    int nmarks,nsketch,serial; unsigned generation; char path[96]; const char *error;
+    int nmarks,nsketch,serial; unsigned generation,revision; char path[96]; const char *error;
     atomic_int state; /* 0 free, 1 queued, 2 worker-owned, 3 complete */
 } marks_io;
 static EXT_RAM_BSS_ATTR marks_io read_job,write_job[2];
 static bool async_io;
+static unsigned revision, saved_revision, saved_generation;
 static unsigned write_generation; /* UI only */
 static void adopt(const marks_io *j) {
     memcpy(s_marks,j->marks,sizeof(s_marks));memcpy(s_sketch,j->sketch,sizeof(s_sketch));
-    s_nmarks=j->nmarks;s_nsketch=j->nsketch;s_serial=j->serial;s_error=j->error;s_loaded=true;
+    for(int i=0;i<j->nmarks;i++) s_marks[i].id=++s_next_id;
+    for(int i=0;i<j->nsketch;i++) s_sketch[i].id=++s_next_id;
+    s_nmarks=j->nmarks;s_nsketch=j->nsketch;s_serial=j->serial;s_error=j->error;s_loaded=true;revision=saved_revision;
 }
 void ls_marks_defer_io(void) {
     async_io=true;
@@ -65,6 +70,7 @@ const char *ls_mark_icon_name(int icon)
 
 void ls_marks_use_file(const char *path)
 {
+    revision=saved_revision=0;
     snprintf(s_path, sizeof(s_path), "%s", path ? path : "");
     ls_marks_reload();
 }
@@ -108,8 +114,10 @@ static void clear_all(void)
 
 void ls_marks_reload(void)
 {
+    ls_marks_save_status();
     if(async_io && atomic_load(&read_job.state)!=0) return;
     s_loaded = false;
+    if(async_io && revision!=saved_revision) { s_loaded=true;return; }
     clear_all();
     ls_marks_load();
 }
@@ -118,6 +126,10 @@ static void read_marks(marks_io *j) {
     j->nmarks=j->nsketch=0;j->serial=1;
     j->error = NULL;
     FILE *f = j->path[0] ? fopen(j->path, "r") : NULL;
+    if (!f && j->path[0]) {
+        char backup[104];snprintf(backup,sizeof(backup),"%s.bak",j->path);
+        f=fopen(backup,"r");
+    }
     if (!f) return;                 /* nothing saved yet is not an error */
     char line[160];
     ls_sketch_t *cur = NULL;
@@ -167,7 +179,8 @@ void ls_marks_load(void) {
 
 static bool write_marks(marks_io *j) {
     if (!j->path[0]) { j->error = "no file to save to"; return false; }
-    char tmp[104];
+    char tmp[104],backup[104];
+    snprintf(backup,sizeof(backup),"%s.bak",j->path);
     snprintf(tmp, sizeof(tmp), "%s.new", j->path);
     FILE *f = fopen(tmp, "w");
     if (!f) { j->error = "not saved: no SD card or no maps folder"; return false; }
@@ -181,8 +194,13 @@ static bool write_marks(marks_io *j) {
             ok = fprintf(f, "P %.6f %.6f\n", j->sketch[i].lat[k], j->sketch[i].lon[k]) > 0;
     }
     if (fclose(f) != 0) ok = false;
-    if (!ok) { remove(tmp); j->error = "not saved: the card refused the write"; return false; }
-    remove(j->path);
+    if (!ok) { j->error = "not saved: the card refused the write"; return false; }
+    FILE *old=fopen(j->path,"r");
+    if(old) {
+        if(fclose(old)!=0 || (remove(backup)!=0 && errno!=ENOENT) || rename(j->path,backup)!=0) {
+            j->error="not saved: could not keep previous file";return false;
+        }
+    } else if(errno!=ENOENT) { j->error="not saved: could not read previous file";return false; }
     if (rename(tmp, j->path) != 0) { j->error = "not saved: could not replace the file"; return false; }
     j->error = NULL;
     return true;
@@ -194,10 +212,10 @@ bool ls_marks_save(void) {
         marks_io *j=&write_job[i];int state=atomic_load(&j->state);
         if(state==2 || !atomic_compare_exchange_strong(&j->state,&state,2)) continue;
         memcpy(j->marks,s_marks,sizeof(s_marks));memcpy(j->sketch,s_sketch,sizeof(s_sketch));
-        j->nmarks=s_nmarks;j->nsketch=s_nsketch;j->generation=++write_generation;
+        j->nmarks=s_nmarks;j->nsketch=s_nsketch;j->generation=++write_generation;j->revision=revision;
         snprintf(j->path,sizeof(j->path),"%s",s_path);
         if(async_io) { s_error=NULL;atomic_store(&j->state,1);return true; }
-        bool ok=write_marks(j);s_error=j->error;atomic_store(&j->state,0);return ok;
+        bool ok=write_marks(j);if(ok) saved_revision=j->revision;s_error=j->error;atomic_store(&j->state,0);return ok;
     }
     s_error="marks save busy";return false;
 }
@@ -219,6 +237,21 @@ void ls_marks_io_step(void) {
     }
 }
 
+const char *ls_marks_save_status(void) {
+    for(int i=0;i<2;i++) {
+        marks_io *j=&write_job[i];int state=atomic_load(&j->state);
+        if(j->generation!=write_generation || !write_generation) continue;
+        if(state==1 || state==2) return "MAP SAVING";
+        if(state==3 && j->generation>saved_generation) {
+            saved_generation=j->generation;s_error=j->error;
+            if(!j->error) saved_revision=j->revision;
+        }
+    }
+    if(!write_generation && !s_error) return revision!=saved_revision ? "MAP UNSAVED" : NULL;
+    if(revision!=saved_revision || s_error) return "MAP NOT SAVED: retry in OPTIONS";
+    return write_generation ? "MAP SAVED" : NULL;
+}
+
 int ls_marks_count(void) { ls_marks_load(); return s_nmarks; }
 
 const ls_mark_t *ls_marks_at(int i)
@@ -232,6 +265,7 @@ int ls_marks_add(double lat, double lon, int icon, const char *name)
     ls_marks_load();
     if (!s_loaded || s_nmarks >= LS_MARKS_MAX || !valid_place(lat, lon)) return -1;
     ls_mark_t *m = &s_marks[s_nmarks];
+    m->id=++s_next_id;
     m->lat = lat; m->lon = lon;
     m->icon = (uint8_t)((icon >= 0 && icon < LS_MARK__COUNT) ? icon : 0);
     char clean[LS_MARK_NAME];
@@ -239,7 +273,7 @@ int ls_marks_add(double lat, double lon, int icon, const char *name)
     if (clean[0]) snprintf(m->name, sizeof(m->name), "%s", clean);
     else          snprintf(m->name, sizeof(m->name), "MARK %d", s_serial);
     note_serial(m->name);
-    return s_nmarks++;
+    revision++;return s_nmarks++;
 }
 
 bool ls_marks_rename(int i, const char *name)
@@ -248,6 +282,7 @@ bool ls_marks_rename(int i, const char *name)
     char clean[LS_MARK_NAME];
     clean_name(clean, sizeof(clean), name);
     if (!clean[0]) return false;
+    revision++;
     snprintf(s_marks[i].name, sizeof(s_marks[i].name), "%s", clean);
     return true;
 }
@@ -255,6 +290,7 @@ bool ls_marks_rename(int i, const char *name)
 bool ls_marks_set_icon(int i, int icon)
 {
     if (i < 0 || i >= s_nmarks || icon < 0 || icon >= LS_MARK__COUNT) return false;
+    revision++;
     s_marks[i].icon = (uint8_t)icon;
     return true;
 }
@@ -263,7 +299,7 @@ bool ls_marks_delete(int i)
 {
     if (i < 0 || i >= s_nmarks) return false;
     memmove(&s_marks[i], &s_marks[i + 1], (size_t)(s_nmarks - i - 1) * sizeof(s_marks[0]));
-    s_nmarks--;
+    s_nmarks--;revision++;
     return true;
 }
 
@@ -279,7 +315,7 @@ bool ls_sketch_delete(int i)
 {
     if (i < 0 || i >= s_nsketch) return false;
     memmove(&s_sketch[i], &s_sketch[i + 1], (size_t)(s_nsketch - i - 1) * sizeof(s_sketch[0]));
-    s_nsketch--;
+    s_nsketch--;revision++;
     return true;
 }
 
@@ -289,6 +325,7 @@ bool ls_sketch_rename(int i, const char *name)
     char clean[LS_MARK_NAME];
     clean_name(clean, sizeof(clean), name);
     if (!clean[0]) return false;
+    revision++;
     snprintf(s_sketch[i].name, sizeof(s_sketch[i].name), "%s", clean);
     return true;
 }
@@ -328,16 +365,18 @@ const ls_sketch_t *ls_sketch_open(void) { return s_drawing ? &s_open : NULL; }
 int ls_sketch_finish(void)
 {
     if (!s_drawing) return -1;
+    if (s_open.n < 2) return -1;
+    if (s_nsketch >= LS_SKETCH_MAX) return -2;
     s_drawing = false;
-    if (s_open.n < 2 || s_nsketch >= LS_SKETCH_MAX) return -1;
     int k = 1;
     for (int i = 0; i < s_nsketch; i++) {
         int m = 0;
         if (sscanf(s_sketch[i].name, "LINE %d", &m) == 1 && m >= k) k = m + 1;
     }
     snprintf(s_open.name, sizeof(s_open.name), "LINE %d", k);
+    s_open.id=++s_next_id;
     s_sketch[s_nsketch] = s_open;
-    return s_nsketch++;
+    revision++;return s_nsketch++;
 }
 
 void ls_sketch_cancel(void) { s_drawing = false; }

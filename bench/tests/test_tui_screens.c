@@ -10,6 +10,7 @@ void ls_shim_keypad(int present);
 #include "rec_watch.h"
 #include "tui_core.h"
 #include "ls_tui_screen.h"
+#include "ls_keyboard.h"
 #include "ls_app.h"
 #include "ls_app_docs.h"
 #include "ls_anim.h"
@@ -21,6 +22,7 @@ void ls_shim_keypad(int present);
 #include "apps/p25/p25_health.h"
 #include "radio/radio_health.h"
 #include "apps/fm/fm_state.h"
+#include "apps/acars/acars_app.h"
 #include "apps/fm/fm_mode_label.h"
 #include "apps/fm/aprs_store.h"
 #include "screens/main/fm_aprs_view.h"
@@ -33,6 +35,9 @@ void ls_shim_keypad(int present);
 #include "ls_mesh.h"
 #include "ls_lora.h"
 #include "ls_gauge.h"
+#include "ls_errlog.h"
+#include "ls_sdcard.h"
+#include "freertos/task.h"
 #include "ls_imu.h"
 #include "ls_field.h"
 #include "ls_waterfall.h"
@@ -97,6 +102,8 @@ int  settings_get_volume(void) { return s_vol; }
 void settings_set_volume(int v) { s_vol = v; }
 int  settings_get_boot_sound(void) { return s_boot; }
 void settings_set_boot_sound(int v) { s_boot = v; }
+bool app_usb_autoreboot(void) { return s_usb; }
+void app_set_usb_autoreboot(bool v) { s_usb = v; }
 bool settings_get_usb_autoreboot(void) { return s_usb; }
 void settings_set_usb_autoreboot(bool v) { s_usb = v; }
 static bool s_update_check = true;
@@ -211,7 +218,7 @@ void ls_gps_get(ls_gps_state_t *out)
     if (!out) return;
     memset(out, 0, sizeof(*out));
     out->fix = s_gps_fix;
-    if(s_gps_sat_view) { out->last_sentence_us=esp_timer_get_time(); out->sat_count=2; out->sats_visible=2; out->sats[1].prn=9; out->sats[0].prn=7; out->sats[0].snr=38; out->sats[0].azimuth=90; out->sats[0].elevation=45; }
+    if(s_gps_sat_view) { out->last_sentence_us=out->last_gsv_us=esp_timer_get_time(); out->sat_count=2; out->sats_visible=2; out->sats[1].prn=9; out->sats[0].prn=7; out->sats[0].snr=38; out->sats[0].azimuth=90; out->sats[0].elevation=45; }
     out->lat_deg = s_gps_lat;
     out->lon_deg = s_gps_lon;
 }
@@ -221,7 +228,11 @@ void ls_gps_get(ls_gps_state_t *out)
    other LakeShark variant renders. The screen's "not fitted" path is the one
    a test can actually check here; the fitted one belongs to lssim, which
    fakes a T-Display-P4. */
-bool ls_lora_present(void) { return false; }
+static bool s_lora_fitted, s_lora_fg, s_lora_bg;
+static ls_mesh_stats_t s_mesh_stats;
+bool ls_lora_present(void) { return s_lora_fitted; }
+bool ls_mesh_radio_wanted(void) { return s_lora_fg; }
+bool ls_mesh_radio_bg(void) { return s_lora_bg; }
 bool ls_gps_running(void) { return false; }
 /* The IMU is the one part here that is switchable, because the
    health page's sensor detail has two branches worth rendering and they are
@@ -231,6 +242,7 @@ bool ls_gps_running(void) { return false; }
    state of a host with no board, and it is the branch every other LakeShark
    variant renders. A case that wants the axes says so and puts it back. */
 static bool            s_imu_fitted;
+static bool            s_imu_read_ok = true;
 static ls_imu_sample_t s_imu_fake;
 
 bool ls_imu_present(void) { return s_imu_fitted; }
@@ -238,7 +250,7 @@ ls_imu_pose_t ls_imu_pose(void) { return LS_IMU_FLAT; }
 
 bool ls_imu_read(ls_imu_sample_t *out)
 {
-    if (!s_imu_fitted || !out) return false;
+    if (!s_imu_fitted || !s_imu_read_ok || !out) return false;
     *out = s_imu_fake;
     return true;
 }
@@ -258,7 +270,7 @@ static void imu_fitted(bool on)
 }
 /* And the mesh counters on the same page. Zeros, which is what a
    radio that is not fitted has done. */
-void ls_mesh_get_stats(ls_mesh_stats_t *o) { if (o) memset(o, 0, sizeof(*o)); }
+void ls_mesh_get_stats(ls_mesh_stats_t *o) { if (o) *o = s_mesh_stats; }
 /* ls_gauge_get is in bench/shims/tui_hw_stubs.c, which every one of
    these links - and it already answers "no gauge", which is the branch
    worth rendering. */
@@ -335,6 +347,8 @@ extern int ls_test_wf_pumps, ls_test_wf_releases;
 const char *ls_wf_source_label(ls_wf_src_t src) { static const char *names[]={"AUTO","P25","FM","LORA"}; return names[src]; }
 const char *ls_wf_source_blocked(ls_wf_src_t src) { (void)src; return NULL; }
 const char *ls_wf_source_progress(void) { return NULL; }
+ls_wf_idle_t ls_wf_source_idle(void) { return LS_WF_IDLE_WAITING; }
+const char *ls_wf_source_idle_reason(void) { return "Waiting for the first spectrum row"; }
 const char *ls_wf_preset_none(ls_wf_src_t src) { (void)src; return NULL; }
 void ls_wf_fm_sweep(bool on){FM.mode=on?FM_MODE_SCAN:FM_MODE_LISTEN;}
 int ls_wf_preset_count(ls_wf_src_t src){return src==LS_WF_SRC_FM?1:0;}
@@ -362,11 +376,13 @@ void audio_volume_set(int v)
     settings_set_volume(s_audio_vol);
 }
 
+static bool s_adsb_rising_history;
 const uint16_t *perf_history_good(void)
 {
 
     static uint16_t h[64];
-    for (int i = 0; i < 64; i++) h[i] = (uint16_t)(i < 32 ? i * 8 : (63 - i) * 8);
+    for (int i = 0; i < 64; i++) h[i] = (uint16_t)(s_adsb_rising_history ? i :
+        i < 32 ? i * 8 : (63 - i) * 8);
     return h;
 }
 
@@ -415,6 +431,9 @@ static void seed_adsb(void)
             a->alt_history[k] = (int16_t)(300 + k);
     }
 }
+
+void perf_init(void) { }
+int perf_get_bursts_per_sec(void) { return 60; }
 
 uint32_t perf_get_crc_good(void)     { return 48213; }
 uint32_t perf_get_crc_err(void)      { return 91; }
@@ -482,6 +501,39 @@ static const ls_tui_screen_t *const SCREENS[] = {
     &ls_scr_notes, &ls_scr_compass, &ls_scr_experiments, &ls_scr_terminal,
     &ls_scr_update,
 };
+
+LS_CASE(terminal_down_preserves_live_draft_and_history_restores_it)
+{
+    ls_scr_terminal.enter();
+    ls_scr_terminal.key(LS_TK_ESC, 0);
+    const char *cmd = "heap";
+    for (const char *p = cmd; *p; p++) ls_scr_terminal.key(LS_TK_CHAR, *p);
+    ls_scr_terminal.key(LS_TK_ENTER, 0);
+    const char *draft = "date";
+    for (const char *p = draft; *p; p++) ls_scr_terminal.key(LS_TK_CHAR, *p);
+    ls_scr_terminal.key(LS_TK_DOWN, 0);
+    ls_scr_terminal.key(LS_TK_UP, 0);
+    ls_scr_terminal.key(LS_TK_DOWN, 0);
+    ls_scr_terminal.key(LS_TK_DOWN, 0);
+    ls_scr_terminal.key(LS_TK_CHAR, 'X');
+    /* Opening KEYS exposes the actual unsent input without running it. */
+    fresh();
+    ls_scr_terminal.draw(&g_sf, tui_rect_make(0, 0, W, H));
+    int x = -1, y = -1;
+    for (int row = 0; row < H; row++)
+        for (int col = 0; col + 4 < W; col++)
+            if (g_back[row * W + col].ch == 'd' &&
+                g_back[row * W + col + 1].ch == 'a' &&
+                g_back[row * W + col + 2].ch == 't' &&
+                g_back[row * W + col + 3].ch == 'e' &&
+                g_back[row * W + col + 4].ch == 'X') { x = col; y = row; }
+    LS_CHECK(x >= 0);
+    if (x >= 0) ls_scr_terminal.touch(x, y);
+    LS_EQ_STR(ls_keyboard_text(), "dateX");
+    ls_keyboard_close();
+    ls_scr_terminal.key(LS_TK_ESC, 0);
+    ls_scr_terminal.leave();
+}
 #define N_SCREENS ((int)(sizeof(SCREENS) / sizeof(SCREENS[0])))
 
 /* ------------------------------------------------------------ the grid -- */
@@ -1815,6 +1867,8 @@ LS_CASE(rec_level_preserves_colors_and_rescales_after_a_quiet_window)
 LS_CASE(drawing_twice_from_the_same_state_gives_the_same_grid)
 {
     seed_health();
+    /* Pager lists are static; the VFO deliberately animates retunes. */
+    FM.mode = FM_MODE_POCSAG;
     static tui_cell first[W * H];
     for (int s = 0; s < N_SCREENS; s++)
         for (int p = 0; p < N_PANES; p++) {
@@ -2160,10 +2214,8 @@ LS_CASE(esc_closes_an_open_pager_page_before_anything_else)
         LS_CHECK(find_text("OPEN 1/3", &x, &y));
         LS_CHECK(find_text("DECODED PAGES", &x, &y));
 
-        /* With nothing open it does what it always did: leaves the page. */
-        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
-        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
-        LS_CHECK(!find_text("DECODED PAGES", &x, &y));
+        /* Root ESC is left to the shell, which returns HOME. */
+        LS_CHECK(!ls_scr_fm.key(LS_TK_ESC, 0));
     }
 }
 
@@ -2317,10 +2369,10 @@ LS_CASE(the_volume_box_moves_the_volume_the_speaker_uses)
         LS_EQ_INT(audio_volume_get(), 60);
         s_audio_vol = 55;
 
-        /* A muted board unmutes when its volume is turned. */
+        /* Volume edits preserve an explicit mute. */
         s_audio_muted = true;
         LS_CHECK(ls_scr_settings.touch(up, r));
-        LS_CHECK_MSG(!s_audio_muted, "turning the volume left the board muted");
+        LS_CHECK_MSG(s_audio_muted, "turning the volume cleared mute");
         s_audio_vol = 55;
 
         /* It stops at full and at silent. */
@@ -2506,9 +2558,154 @@ static void diag_fresh(void)
        second is harmless - the screen hands an unclaimed ESC back. */
     ls_scr_diag.key(LS_TK_ESC, 0);
     ls_scr_diag.key(LS_TK_ESC, 0);
+    ls_shim_task_execute_on_create(pdTRUE);
     if (ls_scr_diag.enter) ls_scr_diag.enter();
+    ls_shim_task_execute_on_create(pdFALSE);
     fresh();
     draw_pane(&ls_scr_diag, DIAG_PANE);
+}
+
+extern bool ls_test_sd_mounted;
+extern esp_err_t ls_test_sd_result;
+extern unsigned ls_test_sd_mount_calls, ls_test_sd_check_calls;
+
+LS_CASE(diag_sd_worker_rechecks_mounted_media_and_caches_failure)
+{
+    diag_fresh();
+    ls_shim_task_execute_on_create(pdTRUE);
+    ls_test_sd_result = ESP_OK;
+    ls_test_sd_mounted = true;
+    const unsigned mounts = ls_test_sd_mount_calls;
+    const unsigned checks = ls_test_sd_check_calls;
+    ls_scr_diag.key(LS_TK_CHAR, 's');
+    LS_CHECK(strcmp(ls_shim_task_last_name(), "diag_sd") == 0);
+    LS_EQ_INT(3072, ls_shim_task_last_stack_depth());
+    LS_EQ_INT(mounts, ls_test_sd_mount_calls);
+    LS_EQ_INT(checks + 1, ls_test_sd_check_calls);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "ok 0 s ago"));
+    ls_test_sd_result = ESP_FAIL;
+    ls_scr_diag.key(LS_TK_CHAR, 's');
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "failed 0 s ago"));
+    LS_EQ_INT(mounts, ls_test_sd_mount_calls);
+    const unsigned after = ls_test_sd_check_calls;
+    for (int i = 0; i < 5; i++) { fresh(); draw_pane(&ls_scr_diag, DIAG_PANE); }
+    LS_EQ_INT(after, ls_test_sd_check_calls);
+    LS_CHECK(ls_test_sd_mounted);
+    ls_test_sd_mounted = false;
+    ls_test_sd_result = ESP_ERR_NOT_SUPPORTED;
+    ls_shim_task_execute_on_create(pdFALSE);
+}
+
+LS_CASE(diag_sensor_contention_keeps_the_same_sample_and_heading)
+{
+    imu_fitted(true);
+    ls_shim_time_set(1000000);
+    diag_fresh(); ls_scr_diag.key(LS_TK_CHAR, 'r');
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "240 deg"));
+    s_imu_read_ok = false;
+    ls_shim_time_advance(2000000);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "240 deg"));
+    LS_CHECK(diag_has(DIAG_PANE, "2 s ago"));
+    LS_CHECK(!diag_has(DIAG_PANE, "read failed"));
+    s_imu_read_ok = true;
+    imu_fitted(false);
+    ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(diag_p25_distinguishes_stopped_stalled_and_live)
+{
+    seed_health();
+    ls_shim_time_set(2000000);
+    p25_health_set_running(true);
+    diag_fresh();
+    LS_CHECK(diag_has(DIAG_PANE, "running, 1 s ago"));
+    ls_shim_time_advance(5000000);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "stalled, 6 s ago"));
+    p25_health_set_running(false);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "stopped, 6 s ago"));
+    LS_CHECK(diag_has(DIAG_PANE, "1200 ok / 7 bad"));
+    p25_health_init();
+    p25_health_set_running(true);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "awaiting sample"));
+    p25_health_set_running(false);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "not running"));
+}
+
+LS_CASE(diag_landscape_sensors_remain_touch_accessible)
+{
+    const tui_rect pane = {0, 4, 118, 27};
+    diag_fresh();
+    fresh(); draw_pane(&ls_scr_diag, pane);
+    int c, r;
+    LS_CHECK(find_text("R  SENSORS", &c, &r));
+    LS_CHECK(ls_scr_diag.touch(c, r));
+    fresh(); draw_pane(&ls_scr_diag, pane);
+    LS_CHECK(diag_has(pane, "IMU ICM20948"));
+    ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(diag_lora_owner_and_mesh_budget_have_separate_validity)
+{
+    s_lora_fitted = true;
+    s_lora_fg = true;
+    diag_fresh();
+    LS_CHECK(diag_has(DIAG_PANE, "foreground session"));
+    ls_scr_diag.key(LS_TK_CHAR, 'r');
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "foreground session"));
+    LS_CHECK(diag_has(DIAG_PANE, "stopped"));
+    LS_CHECK(diag_has(DIAG_PANE, "unavailable"));
+    s_lora_fg = false; s_lora_bg = true;
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "background session"));
+    s_lora_bg = false; s_mesh_stats.running = true;
+    s_mesh_stats.tx_budget_ms = 250;
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "250 ms left"));
+    s_lora_fitted = false;
+    memset(&s_mesh_stats, 0, sizeof(s_mesh_stats));
+    ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(diag_clear_requires_confirmation_and_reloads_records)
+{
+    diag_fresh();
+    const int before = ls_errlog_count();
+    ls_scr_diag.key(LS_TK_CHAR, 'l');
+    ls_scr_diag.key(LS_TK_CHAR, 'c');
+    LS_EQ_INT(before, ls_errlog_count());
+    ls_scr_diag.key(LS_TK_ESC, 0);
+    LS_EQ_INT(before, ls_errlog_count());
+    ls_scr_diag.key(LS_TK_CHAR, 'c');
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    int c, r;
+    LS_CHECK(find_text("C CONFIRM", &c, &r));
+    LS_CHECK(ls_scr_diag.touch(c, r));
+    LS_EQ_INT(0, ls_errlog_count());
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_CHECK(diag_has(DIAG_PANE, "none since the last clear"));
+    ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(diag_detail_values_preserve_the_portrait_border)
+{
+    seed_health(); imu_fitted(true);
+    const char *keys = "emarl";
+    for (const char *k = keys; *k; k++) {
+        diag_fresh(); ls_scr_diag.key(LS_TK_CHAR, *k);
+        fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+        LS_EQ_INT(0, border_breaks(DIAG_PANE, NULL, NULL, NULL));
+    }
+    imu_fitted(false);
+    ls_scr_diag.key(LS_TK_ESC, 0);
 }
 
 LS_CASE(diag_opens_the_detail_behind_a_block_and_esc_closes_it)
@@ -2718,7 +2915,10 @@ LS_CASE(button_shortcuts_and_disabled_touch_follow_displayed_controls)
         LS_EQ_INT(ls_btn_hit(x,y),-1);
 }
 
-void fm_get_receiver_status(ls_iq_control_status_t *out) { memset(out,0,sizeof(*out)); }
+static ls_iq_control_status_t s_fm_receiver = {
+    .receiver_streaming = true, .tune_state = LS_IQ_RESULT_EFFECTIVE,
+};
+void fm_get_receiver_status(ls_iq_control_status_t *out) { *out = s_fm_receiver; }
 
 #include "ls_radio_panel.h"
 #include "scan_engine.h"
@@ -2992,6 +3192,69 @@ static void subghz_home(void)
     ls_scr_subghz.enter();
 }
 static void subghz_draw(tui_rect pane){fresh();grid_for(pane);ls_scr_subghz.draw(&g_sf,pane);}
+
+void rec_watch_sim_hits(int n);
+void rec_watch_sim_learn_pending(bool pending);
+void rec_watch_sim_result(bool learn,const char *result);
+LS_CASE(subghz_gate_colours_and_legend_follow_the_adjustable_threshold)
+{
+    subghz_home();tui_rect pane={1,2,96,35};int x,y;
+    ls_scr_subghz.key(LS_TK_CHAR,'n');ls_picker_key(LS_TK_ENTER,0);
+    rec_watch_scan_set_threshold(30);subghz_draw(pane);
+    if(!find_text("+25",&x,&y)){ls_scr_subghz.key(LS_TK_CHAR,'v');subghz_draw(pane);}
+    LS_CHECK(find_text("+25",&x,&y));
+    LS_EQ_INT(g_back[y*W+x-1].attr,TUI_ATTR(TUI_BLUE|TUI_BRIGHT,TUI_BLACK));
+    LS_CHECK(find_text("gate",&x,&y));
+    LS_EQ_INT(g_back[y*W+x-1].attr,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    rec_watch_scan_set_threshold(12);subghz_draw(pane);
+    LS_CHECK(find_text("+25",&x,&y));
+    LS_EQ_INT(g_back[y*W+x-1].attr,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    rec_watch_scan_stop();ls_scr_subghz.leave();
+}
+LS_CASE(subghz_keyboard_and_touch_reach_overflow_detections)
+{
+    subghz_home();tui_rect pane={1,2,96,35};int x,y;
+    ls_scr_subghz.key(LS_TK_CHAR,'2');rec_watch_sim_hits(32);subghz_draw(pane);
+    for(int i=0;i<31;i++)ls_scr_subghz.key(LS_TK_DOWN,0);
+    subghz_draw(pane);LS_CHECK(find_text("433.3100",&x,&y));
+    ls_scr_subghz.key(LS_TK_ENTER,0);LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);LS_CHECK(find_text("CAPTURE IT",&x,&y));
+    ls_picker_close();subghz_draw(pane);
+    LS_CHECK(find_text("PREV",&x,&y));ls_scr_subghz.touch(x,y);subghz_draw(pane);
+    LS_CHECK(find_text("433.0000",&x,&y));
+    LS_CHECK(find_text("NEXT",&x,&y));ls_scr_subghz.touch(x,y);subghz_draw(pane);
+    LS_CHECK(find_text("433.3100",&x,&y));ls_scr_subghz.leave();rec_watch_sim_hits(2);
+}
+LS_CASE(subghz_options_gate_has_bounded_arrow_steps)
+{
+    subghz_home();tui_rect pane={1,2,46,63};
+    ls_scr_subghz.key(LS_TK_CHAR,'2');subghz_draw(pane);
+    rec_watch_scan_set_threshold(12);ls_scr_subghz.key(LS_TK_CHAR,'o');
+    ls_picker_select(0);ls_picker_key(LS_TK_RIGHT,0);LS_EQ_INT(rec_watch_scan_threshold(),13);
+    ls_picker_key(LS_TK_LEFT,0);LS_EQ_INT(rec_watch_scan_threshold(),12);
+    rec_watch_scan_set_threshold(REC_SCAN_DETECT_MAX);ls_picker_key(LS_TK_RIGHT,0);
+    LS_EQ_INT(rec_watch_scan_threshold(),REC_SCAN_DETECT_MAX);
+    rec_watch_scan_set_threshold(12);ls_opt_close();ls_scr_subghz.leave();
+}
+LS_CASE(subghz_completion_replaces_start_feedback_and_learn_back_cancels)
+{
+    subghz_home();tui_rect pane={1,2,96,35};int x,y;
+    rec_watch_select_source(REC_SOURCE_SX1262);
+    ls_scr_subghz.key(LS_TK_CHAR,'5');subghz_draw(pane);
+    ls_scr_subghz.key(LS_TK_ENTER,0);subghz_draw(pane);
+    LS_CHECK(!find_text("Learning for 30s",&x,&y));
+    LS_CHECK(find_text("76% confident",&x,&y));
+    rec_watch_sim_learn_pending(true);ls_scr_subghz.key(LS_TK_CHAR,'l');subghz_draw(pane);
+    LS_CHECK(rec_watch_learn_busy());LS_CHECK(find_text("STOP",&x,&y));
+    ls_scr_subghz.key(LS_TK_ESC,0);LS_CHECK(!rec_watch_learn_busy());
+    ls_scr_subghz.key(LS_TK_CHAR,'5');subghz_draw(pane);
+    ls_scr_subghz.key(LS_TK_CHAR,'l');rec_watch_sim_result(true,"Learn: mesh would not release the radio");
+    subghz_draw(pane);LS_CHECK(find_text("mesh would not release",&x,&y));
+    ls_scr_subghz.key(LS_TK_ESC,0);ls_scr_subghz.key(LS_TK_CHAR,'2');
+    rec_watch_sim_result(false,"Scan: the receiver refused that range");subghz_draw(pane);
+    LS_CHECK(find_text("receiver refused",&x,&y));
+    rec_watch_sim_learn_pending(false);ls_scr_subghz.leave();rec_watch_select_source(REC_SOURCE_RTL);
+}
 
 LS_CASE(subghz_opens_on_a_home_of_six_jobs)
 {
@@ -3387,6 +3650,8 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
     ls_scr_rec.key(LS_TK_CHAR,'r');
     LS_CHECK(!ls_picker_active());
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
+    fresh();ls_scr_rec.draw(&g_sf,pane);
+    LS_CHECK(find_text("Stop WATCH before changing radio",&x,&y));
     ls_scr_rec.key(LS_TK_CHAR,'w');
     LS_CHECK(!rec_watch_enabled());
     /* The LoRa chip is on the list now that the archive can describe what
@@ -3472,7 +3737,7 @@ LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_sourc
         LS_EQ_INT(0,escaped(PANES[1]));
         if(i==1) {
             int x,y;
-            LS_CHECK(find_text("No fresh receiver data",&x,&y));
+            LS_CHECK(find_text("No GSV reports received",&x,&y));
             s_gps_sat_view=true;
             fresh();draw_pane(&ls_scr_falls,PANES[1]);
             LS_CHECK(find_text("38 dB-Hz",&x,&y));
@@ -3483,6 +3748,14 @@ LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_sourc
             fresh();draw_pane(&ls_scr_falls,PANES[1]);
             LS_CHECK(find_text("ID 9",&x,&y));
             LS_CHECK(ls_scr_falls.key(LS_TK_CHAR,'k'));
+            fresh();draw_pane(&ls_scr_falls,PANES[1]);
+            LS_CHECK(find_text("ID 7",&x,&y));
+            LS_CHECK(find_text("NEXT",&x,&y));
+            LS_CHECK(ls_scr_falls.touch(x,y));
+            fresh();draw_pane(&ls_scr_falls,PANES[1]);
+            LS_CHECK(find_text("ID 9",&x,&y));
+            LS_CHECK(find_text("PREV",&x,&y));
+            LS_CHECK(ls_scr_falls.touch(x,y));
             fresh();draw_pane(&ls_scr_falls,PANES[1]);
             LS_CHECK(find_text("ID 7",&x,&y));
             for(int pane=0;pane<N_PANES;pane++) {
@@ -3514,7 +3787,7 @@ LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_sourc
 LS_CASE(sky_instrument_has_ascii_references_selection_and_stale_guard)
 {
     int64_t old=esp_timer_get_time();ls_shim_time_set(1000000);
-    ls_gps_state_t g={0};g.last_sentence_us=1000000;g.sat_count=2;
+    ls_gps_state_t g={0};g.last_gsv_us=1000000;g.sat_count=2;
     g.sats[0]=(ls_gps_sat_t){.prn=7,.azimuth=90,.elevation=45,.snr=38,.used=true};
     g.sats[1]=(ls_gps_sat_t){.prn=9};
     fresh();ls_skyview_draw(&g_sf,PANES[1],&g,0);
@@ -3595,7 +3868,7 @@ LS_CASE(home_later_page_returns_and_sky_landscape_has_referenced_table)
     fresh();draw_pane(&ls_scr_home,small);
     LS_CHECK(find_text("PAGE 1/",&x,&y));
     int64_t old=esp_timer_get_time();ls_shim_time_set(1000000);
-    ls_gps_state_t g={0};g.last_sentence_us=1000000;g.sat_count=1;
+    ls_gps_state_t g={0};g.last_gsv_us=1000000;g.sat_count=1;
     g.sats[0]=(ls_gps_sat_t){.prn=7,.azimuth=90,.elevation=45,.snr=38,.used=true};
     fresh();ls_skyview_draw(&g_sf,PANES[0],&g,0);
     LS_CHECK(find_text("NORTH-UP",&x,&y));
@@ -3792,13 +4065,13 @@ LS_CASE(record_replay_loads_without_tx_and_waits_for_real_completion)
 
 /* ---- UPDATE ---------------------------------------------------------------- */
 
-static long s_ota_stage, s_ota_got;
+static long s_ota_stage, s_ota_got, s_ota_trial = 12;
 static int  s_ota_steps;
 static const char *s_ota_failed = "";
 static bool fake_ota_stage(ls_val_t *o)   { o->kind = LS_VAL_INT; o->i = s_ota_stage; return true; }
 static bool fake_ota_got(ls_val_t *o)     { o->kind = LS_VAL_INT; o->i = s_ota_got; return true; }
 static bool fake_ota_size(ls_val_t *o)    { o->kind = LS_VAL_INT; o->i = 3787600; return true; }
-static bool fake_ota_trial(ls_val_t *o)   { o->kind = LS_VAL_INT; o->i = s_ota_stage == 9 ? 12 : 0; return true; }
+static bool fake_ota_trial(ls_val_t *o)   { o->kind = LS_VAL_INT; o->i = s_ota_stage == 9 ? s_ota_trial : 0; return true; }
 static bool fake_ota_build(ls_val_t *o)   { o->kind = LS_VAL_TEXT; o->s = "2.8.4-rc1-g47096733100f"; return true; }
 static bool fake_ota_running(ls_val_t *o) { o->kind = LS_VAL_TEXT; o->s = "2.8.3-gf6007a1684f0"; return true; }
 static bool fake_ota_failed(ls_val_t *o)  { o->kind = LS_VAL_TEXT; o->s = s_ota_failed; return true; }
@@ -3926,83 +4199,76 @@ LS_CASE(the_update_app_draws_every_stage_inside_its_pane_and_its_button_installs
     s_ota_stage = 0;
 }
 
-/* The download's rain and pipe step on drawn frames, not on the clock: with
-   frame times that wander and a transfer rate that changes, the pipe moves
-   one cell a frame and every rain column falls a row on a beat of its own
-   (every 1st, 2nd or 3rd frame) and never jumps. */
-LS_CASE(the_update_download_scrolls_by_frame_not_by_wall_time)
+LS_CASE(update_transfer_motion_stops_without_received_bytes)
 {
     fake_ota_publish();
     const int64_t old_time = esp_timer_get_time();
-    const tui_rect pane = PANES[1];                       /* portrait, roomy: pipe 12 cells */
-    /* the rain is checked above the steps line (row 34), where nothing else is drawn
-       over it, in the columns clear of the scene; a column is in those rows for only part of its fall, so there are
-       plenty of frames and columns */
-    enum { FRAMES = 160, PIPE_X = 24, PIPE_Y = 12, PIPE_LEN = 12, RAIN_COLS = 10, RAIN_Y0 = 6, RAIN_Y1 = 33 };
-    static char pipe_f[FRAMES][PIPE_LEN];
-    static unsigned char rain_f[FRAMES][RAIN_COLS][H];
-    int RAIN_X[RAIN_COLS];
-    for (int c = 0; c < RAIN_COLS; c++) RAIN_X[c] = c < 6 ? 2 + 2 * c : 38 + 2 * (c - 6);   /* clear of the scene */
-    static const int64_t GAP_MS[] = { 66, 66, 31, 120, 66, 90, 45, 66, 200, 66 };
-
+    static tui_cell before[W * H];
     s_ota_stage = 5;
     s_ota_got = 100000;
-    int64_t t = 9000000;
-    ls_scr_update.enter();
-    for (int f = 0; f < FRAMES; f++) {
-        t += GAP_MS[f % 10] * 1000;
-        s_ota_got += (f % 7 == 3) ? 900000 : 20000;       /* the rate estimate keeps changing */
-        if (s_ota_got > 3700000) s_ota_got = 100000 + f;
-        ls_shim_time_set(t);
-        fresh();
-        draw_pane(&ls_scr_update, pane);
-        for (int i = 0; i < PIPE_LEN; i++) pipe_f[f][i] = g_back[(PIPE_Y + i) * W + PIPE_X].ch;
-        for (int c = 0; c < RAIN_COLS; c++)
-            for (int y = RAIN_Y0; y <= RAIN_Y1; y++) rain_f[f][c][y] = g_back[y * W + RAIN_X[c]].attr;
+    for (int p = 1; p <= 2; p++) {
+        ls_shim_time_set(9000000);
+        ls_scr_update.enter();
+        fresh(); draw_pane(&ls_scr_update, PANES[p]);
+        memcpy(before, g_back, sizeof(before));
+        ls_shim_time_advance(100000);
+        fresh(); draw_pane(&ls_scr_update, PANES[p]);
+        LS_CHECK(!memcmp(before, g_back, sizeof(before)));
+        s_ota_got += 4096;
+        fresh(); draw_pane(&ls_scr_update, PANES[p]);
+        LS_CHECK(memcmp(before, g_back, sizeof(before)) != 0);
+        ls_shim_time_advance(3000000);
+        fresh(); draw_pane(&ls_scr_update, PANES[p]);
+        int c, r;
+        LS_CHECK(find_text("waiting for update data", &c, &r));
     }
-
-    /* the pipe: this frame's column is the last one shifted down a cell */
-    int moved = 0;
-    for (int f = 1; f < FRAMES; f++) {
-        for (int i = 1; i < PIPE_LEN; i++)
-            LS_CHECK_MSG(pipe_f[f][i] == pipe_f[f - 1][i - 1], "pipe frame %d cell %d did not step one cell", f, i);
-        moved += memcmp(pipe_f[f], pipe_f[f - 1], PIPE_LEN) != 0;
-    }
-    LS_CHECK(moved > FRAMES / 2);
-
-    /* the rain: a column is the last frame's, down by 0 or 1 row, on a fixed beat */
-    int moving = 0;
-    for (int c = 0; c < RAIN_COLS; c++) {
-        signed char d[FRAMES] = { 0 };                    /* -1 when the column is empty both frames */
-        int seen = 0;
-        for (int f = 1; f < FRAMES; f++) {
-            bool empty = true, same = true, down = true;
-            /* the rain rows, less the first (its tail comes from above the
-               page) and the state line below them */
-            for (int y = RAIN_Y0; y <= RAIN_Y1; y++) {
-                const unsigned char a = rain_f[f][c][y], b = rain_f[f - 1][c][y];
-                if (a != TUI_DEFAULT_ATTR || b != TUI_DEFAULT_ATTR) empty = false;
-                if (a != b) same = false;
-                if (y > RAIN_Y0 && a != rain_f[f - 1][c][y - 1]) down = false;
-            }
-            if (empty) { d[f] = -1; continue; }
-            LS_CHECK_MSG(same || down, "rain column %d frame %d jumped", RAIN_X[c], f);
-            d[f] = same ? 0 : 1;
-            seen += d[f];
-        }
-        moving += seen;
-        bool fits = false;
-        for (int n = 1; n <= 3 && !fits; n++)
-            for (int ph = 0; ph < n && !fits; ph++) {
-                bool ok = true;
-                for (int f = 1; f < FRAMES; f++)
-                    if (d[f] >= 0 && d[f] != ((f + ph) % n == n - 1)) ok = false;
-                fits = ok;
-            }
-        LS_CHECK_MSG(fits, "rain column %d has no steady beat", RAIN_X[c]);
-    }
-    LS_CHECK(moving > RAIN_COLS);
     ls_shim_time_set(old_time);
+    s_ota_stage = 0;
+}
+
+LS_CASE(update_idle_available_and_success_effects_stay_still)
+{
+    fake_ota_publish();
+    const int64_t old_time = esp_timer_get_time();
+    static tui_cell before[W * H];
+    const long stages[] = { 0, 3, 4, 9 };
+    for (int p = 1; p <= 2; p++) {
+        for (unsigned i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
+            s_ota_stage = stages[i];
+            ls_shim_time_set(9000000);
+            fresh(); draw_pane(&ls_scr_update, PANES[p]);
+            ls_shim_time_advance(300000);
+            fresh(); draw_pane(&ls_scr_update, PANES[p]);
+            memcpy(before, g_back, sizeof(before));
+            ls_shim_time_advance(3000000);
+            fresh(); draw_pane(&ls_scr_update, PANES[p]);
+            LS_CHECK(!memcmp(before, g_back, sizeof(before)));
+        }
+    }
+    ls_shim_time_set(old_time);
+    s_ota_stage = 0;
+}
+
+LS_CASE(update_pending_or_failed_validation_blocks_keys_and_touch)
+{
+    fake_ota_publish();
+    s_ota_stage = 9;
+    for (long trial = -2; trial <= -1; trial++) {
+        s_ota_trial = trial;
+        for (int p = 1; p <= 2; p++) {
+            fresh(); draw_pane(&ls_scr_update, PANES[p]);
+            int c, r;
+            LS_CHECK(!find_text("kept", &c, &r));
+            LS_CHECK(find_text(trial == -2 ? "validation failed" : "waiting for health", &c, &r));
+            int before = s_ota_steps;
+            ls_scr_update.key(LS_TK_ENTER, 0);
+            LS_EQ_INT(s_ota_steps, before);
+            LS_CHECK(find_text("WAIT", &c, &r));
+            ls_scr_update.touch(c, r);
+            LS_EQ_INT(s_ota_steps, before);
+        }
+    }
+    s_ota_trial = 12;
     s_ota_stage = 0;
 }
 
@@ -4154,4 +4420,476 @@ LS_CASE(fm_tone_readout_and_layered_arrow_controls)
     LS_CHECK(!find_text("100.0 Hz",&x,&y));
     FM.tone_required=0; FM.tone_detected=(fm_tone_result_t){0};
     ls_scr_fm.leave();
+}
+
+LS_CASE(adsb_detail_labels_unknown_zero_stale_and_receiver_crc)
+{
+    apps_once();
+    ls_shim_time_set(30000000);
+    adsb_state_init();
+    adsb_aircraft_t *a = adsb_state_find_or_create(0x123456);
+    a->last_seen_us = esp_timer_get_time();
+    a->altitude_valid = true;
+    a->altitude_ts_us = 1000000;
+    a->vert_rate_valid = true;
+    a->vert_rate_ts_us = esp_timer_get_time();
+    a->pos_valid = true;
+    a->pos_ts_us = 1000000;
+    adsb_select_set_icao(a->icao);
+    if (ls_scr_adsb.enter) ls_scr_adsb.enter();
+    LS_CHECK(ls_scr_adsb.key(LS_TK_ENTER, 0));
+    fresh();
+    draw_pane(&ls_scr_adsb, PANES[0]);
+    int x, y;
+    LS_CHECK(find_text("0 ft stale", &x, &y));
+    LS_CHECK(find_text("0 ft/min", &x, &y));
+    LS_CHECK(find_text("unknown", &x, &y));
+    LS_CHECK(find_text("29s stale", &x, &y));
+    LS_CHECK(find_text("RX CRC", &x, &y));
+    LS_CHECK(find_text("48213 ok, 91 crc err", &x, &y));
+    if (ls_scr_adsb.leave) ls_scr_adsb.leave();
+}
+
+LS_CASE(adsb_traffic_keeps_newest_on_right_and_figures_on_another_row)
+{
+    apps_once();
+    adsb_state_init();
+    if (ls_scr_adsb.enter) ls_scr_adsb.enter();
+    s_adsb_rising_history = true;
+    fresh();
+    const tui_rect pane = {1, 2, 70, 18};
+    draw_pane(&ls_scr_adsb, pane);
+    int x, y;
+    LS_CHECK(find_text("TRAFFIC", &x, &y));
+    LS_EQ_INT('#', g_back[(y + 1) * W + pane.x + 2].ch);
+    LS_EQ_INT(LS_TUI_TRACE(8), g_back[(y + 1) * W + pane.x + 2 + 59].ch);
+    int figures_y;
+    LS_CHECK(find_text("active", &x, &figures_y));
+    LS_EQ_INT(y + 2, figures_y);
+    s_adsb_rising_history = false;
+    if (ls_scr_adsb.leave) ls_scr_adsb.leave();
+}
+
+
+LS_CASE(fm_evicted_open_page_never_becomes_another_message)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        seed_fm(); FM.mode = FM_MODE_POCSAG;
+        fm_pages_seed(FM_PAGE_LOG_MAX);
+        ls_scr_fm.enter();
+        for (int i = 0; i < FM_PAGE_LOG_MAX; ++i) ls_scr_fm.key(LS_TK_DOWN, 0);
+        LS_CHECK(ls_scr_fm.key(LS_TK_ENTER, 0));
+        fm_page_arrives(999);
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        int x, y;
+        LS_CHECK(find_text("that page is gone", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'r'));
+        ls_picker_close();
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("that page is gone", &x, &y));
+        LS_CHECK(find_text("BACK", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(!find_text("that page is gone", &x, &y));
+        ls_scr_fm.leave();
+    }
+}
+
+LS_CASE(fm_acars_messages_counters_detail_and_eviction)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        acars_app_clear();
+        acars_app_inject("N123ABC", "H1", "FIRST message has a long retained body that should wrap across several rows and remain accessible through the message detail. It exceeds the pager text cap and must retain all of its final words: END OF MESSAGE.");
+        acars_state_t *state = acars_app_state_mut();
+        state->n_synced = 12; state->n_bad_crc = 3;
+        FM.mode = FM_MODE_ACARS; ls_scr_fm.enter();
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        int x, y;
+        LS_CHECK(find_text("MESSAGES", &x, &y));
+        LS_CHECK(find_text("DELIVERED 1", &x, &y));
+        LS_CHECK(find_text("BAD CRC 3", &x, &y));
+        LS_CHECK(find_text("SYNC 12", &x, &y));
+        LS_CHECK(find_text("OPEN 1/1", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("FIRST message", &x, &y));
+        LS_CHECK(find_text("MESSAGE.", &x, &y));
+        for (int i = 0; i < ACARS_MSG_LOG_MAX; ++i) {
+            acars_app_inject("N999ABC", "Q0", "replacement");
+            state->msgs[(state->msg_head + ACARS_MSG_LOG_MAX - 1) % ACARS_MSG_LOG_MAX].ts_us += i + 1;
+        }
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("that message is gone", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        LS_CHECK(!ls_scr_fm.key(LS_TK_ESC, 0));
+        ls_scr_fm.leave();
+    }
+    acars_app_clear();
+}
+
+LS_CASE(fm_vfo_reports_receiver_loss_stall_and_failed_tune)
+{
+    seed_fm(); FM.mode = FM_MODE_LISTEN; FM.noise = 0; FM.squelch_open = true;
+    const ls_radio_err_t errors[] = {LS_RADIO_ERR_DISCONNECTED, LS_RADIO_ERR_TIMEOUT, LS_RADIO_ERR_BUSY};
+    const char *labels[] = {"OFFLINE", "STALLED", "WAITING"};
+    for (int i = 0; i < 3; ++i) {
+        s_fm_receiver.receiver_streaming = false;
+        s_fm_receiver.receiver_error = errors[i];
+        fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+        int x, y;
+        LS_CHECK(find_text(labels[i], &x, &y));
+        LS_EQ_INT(count_char('^'), 0);
+    }
+    s_fm_receiver.receiver_streaming = true;
+    s_fm_receiver.tune_state = LS_IQ_RESULT_FAILED;
+    fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+    int x, y;
+    LS_CHECK(find_text("TUNE FAILED", &x, &y));
+    LS_EQ_INT(count_char('^'), 0);
+    s_fm_receiver = (ls_iq_control_status_t){.receiver_streaming=true, .tune_state=LS_IQ_RESULT_EFFECTIVE};
+    ls_scr_fm.leave();
+}
+
+LS_CASE(fm_mute_touch_and_key_preserve_volume_and_reentry)
+{
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        s_audio_muted = false; s_audio_vol = 37;
+        fm_page_drawn(FM_MODE_LISTEN, 0, PANES[orientation]);
+        int x, y;
+        LS_CHECK(find_text("MUTE", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        LS_CHECK(s_audio_muted); LS_EQ_INT(s_audio_vol, 37);
+        ls_scr_fm.leave(); ls_scr_fm.enter();
+        LS_CHECK(s_audio_muted);
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'b'));
+        LS_CHECK(!s_audio_muted); LS_EQ_INT(s_audio_vol, 37);
+        ls_scr_fm.leave();
+    }
+    s_audio_vol = 60;
+}
+
+
+LS_CASE(fm_chip_auto_searches_both_rates_and_polarities_and_holds_pages)
+{
+    board_usual(); ls_rsel_set(LS_RSEL_PAGER, LS_RSEL_LORA);
+    ls_shim_time_set(1000000);
+    lssim_field_pager(0, 0);
+    FM.mode = FM_MODE_POCSAG; FM.freq_hz = 152600000;
+    FM.pocsag_auto = true; FM.pocsag_lock_baud = 2400;
+    ls_scr_fm.enter();
+    ls_field_state_t state;
+    for (int i = 0; i < 4; ++i) {
+        fresh(); draw_pane(&ls_scr_fm, PANES[0]);
+        ls_field_snapshot(&state);
+        LS_EQ_INT(state.fsk.bitrate, i % 2 ? 2400 : 1200);
+        LS_EQ_INT(state.config.invert_iq, i >= 2);
+        ls_shim_time_set(1000000 + (i + 1) * 5000000LL);
+    }
+    lssim_field_pager(1, 1);
+    fresh(); draw_pane(&ls_scr_fm, PANES[0]);
+    ls_shim_time_set(30000000);
+    fresh(); draw_pane(&ls_scr_fm, PANES[0]);
+    ls_field_state_t held; ls_field_snapshot(&held);
+    LS_EQ_INT(held.fsk.bitrate, state.fsk.bitrate);
+    LS_EQ_INT(held.config.invert_iq, state.config.invert_iq);
+    ls_scr_fm.leave(); board_usual(); lssim_field_pager(0, 0);
+    ls_shim_time_set(120000000);
+}
+
+LS_CASE(fm_options_squelch_arrows_step_in_am_tenths)
+{
+    ls_action_register("fm.sql", "f", LS_CAP_TUNE, fm_test_sql, "Squelch");
+    FM.mode = FM_MODE_AM; FM.squelch_tenths = 30;
+    ls_scr_fm.enter();
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'o'));
+    ls_picker_select(1); /* CALLS, SQUELCH, GAIN */
+    LS_CHECK(ls_picker_key(LS_TK_RIGHT, 0));
+    LS_CHECK(fabsf(s_sql_seen - 31.0f) < 0.001f);
+    FM.squelch_tenths = 31;
+    LS_CHECK(ls_picker_key(LS_TK_LEFT, 0));
+    LS_CHECK(fabsf(s_sql_seen - 30.0f) < 0.001f);
+    ls_picker_close(); ls_scr_fm.leave();
+}
+
+extern bool ls_scr_labs_tune_marker(uint32_t hz);
+LS_CASE(falls_marker_handoff_opens_labs_and_its_direct_control_can_stop)
+{
+    apps_once(); ls_field_direct(false);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    LS_CHECK(ls_scr_labs_tune_marker(915000000));
+    LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_labs),ls_tui_screen_current());
+    ls_field_state_t state; ls_field_snapshot(&state);
+    LS_EQ_UINT(915000000,state.config.freq_hz);
+    LS_EQ_INT(LS_LAB_PACKETS,state.mode); LS_CHECK(state.direct);
+    fresh();draw_pane(&ls_scr_labs,PANES[1]);
+    LS_CHECK(ls_scr_labs.key(LS_TK_CHAR,'d'));
+    ls_field_snapshot(&state); LS_CHECK(!state.direct);
+    LS_CHECK(!ls_scr_labs_tune_marker(1580000000));
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+}
+
+LS_CASE(mixrf_marks_detector_instead_of_opening_cards)
+{
+    board_full();ls_rsel_set(LS_RSEL_MIXRF,LS_RSEL_NFC);ls_scr_mixrf.enter();
+    const tui_rect pane={1,2,46,63};grid_for(pane);fresh();ls_scr_mixrf.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_mixrf.key(LS_TK_CHAR,'n'));LS_CHECK(ls_picker_active());
+    picker_row(1);LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    fresh();ls_scr_mixrf.draw(&g_sf,pane);
+    LS_CHECK(ls_scr_mixrf.key(LS_TK_CHAR,'j'));
+    ls_journal_entry_t note;LS_CHECK(ls_field_entry(0,&note));
+    LS_EQ_STR(note.title,"NFC card observation");
+    int x,y;fresh();ls_scr_mixrf.draw(&g_sf,pane);
+    LS_CHECK(find_text("KEYBOARD RADIOS",&x,&y));
+    LS_CHECK(find_text("MARK",&x,&y));LS_CHECK(ls_scr_mixrf.touch(x,y));
+    LS_CHECK(ls_field_entry(0,&note));LS_EQ_STR(note.title,"NFC card observation");
+    ls_scr_mixrf.key(LS_TK_CHAR,'x');ls_scr_mixrf.leave();board_usual();
+}
+LS_CASE(mixrf_restores_view_and_workbench_back_in_both_layouts)
+{
+    board_full();
+    for(int layout=0;layout<2;layout++) {
+        const tui_rect pane=PANES[layout];grid_for(pane);
+        ls_rsel_set(LS_RSEL_MIXRF,LS_RSEL_NFC);ls_scr_mixrf.enter();
+        LS_CHECK(ls_scr_mixrf.key(LS_TK_CHAR,'c'));
+        fresh();ls_scr_mixrf.draw(&g_sf,pane);
+        int x,y;LS_CHECK(find_text("BACK",&x,&y));LS_CHECK(ls_scr_mixrf.touch(x,y));
+        fresh();ls_scr_mixrf.draw(&g_sf,pane);LS_CHECK(find_text("KEYBOARD RADIOS",&x,&y));
+        ls_scr_mixrf.key(LS_TK_CHAR,'c');ls_scr_mixrf.leave();ls_scr_mixrf.enter();
+        fresh();ls_scr_mixrf.draw(&g_sf,pane);LS_CHECK(find_text("KEYBOARD RADIOS",&x,&y));
+        LS_CHECK(ls_scr_mixrf.key(LS_TK_CHAR,'v'));
+        LS_EQ_INT(ls_rsel_get(LS_RSEL_MIXRF),LS_RSEL_CC1101);ls_scr_mixrf.leave();
+    }
+    board_usual();
+}
+
+static void rec_files_draw(tui_surface *sf,tui_rect a){(void)sf;(void)a;}
+LS_CASE(record_files_shortcut_and_tab_are_reachable)
+{
+    static const ls_tui_screen_t files={.name="FILES",.draw=rec_files_draw};
+    apps_once();int index=ls_tui_screen_register(&files);LS_CHECK(index>=0);
+    ls_scr_rec_tools();LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'b'));
+    const tui_rect pane={1,2,46,63};fresh();grid_for(pane);draw_pane(&ls_scr_rec,pane);
+    LS_CHECK(strstr(ls_scr_rec.hint,"O files")!=NULL);
+    LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'o'));LS_EQ_INT(ls_tui_screen_current(),index);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_rec));
+    fresh();draw_pane(&ls_scr_rec,pane);int x,y;LS_CHECK(find_text("FILES",&x,&y));
+    LS_CHECK(ls_scr_rec.touch(x,y));LS_EQ_INT(ls_tui_screen_current(),index);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+}
+
+LS_CASE(sky_touch_hits_follow_rows_markers_and_gsv_freshness)
+{
+    int64_t old=esp_timer_get_time();ls_shim_time_set(1000000);
+    ls_gps_state_t g={0};g.last_gsv_us=1000000;g.sat_count=2;
+    g.sats[0]=(ls_gps_sat_t){.prn=7,.azimuth=90,.elevation=45,.snr=38};
+    g.sats[1]=(ls_gps_sat_t){.prn=9};
+    fresh();ls_skyview_draw(&g_sf,PANES[1],&g,0);
+    int x,y;LS_CHECK(find_text("[ PREV ] [ NEXT ]",&x,&y));
+    LS_EQ_INT(-2,ls_skyview_touch(x+2,y));LS_EQ_INT(-3,ls_skyview_touch(x+12,y));
+    bool plotted=false;
+    for(int row=PANES[1].y;row<y;row++) for(int col=PANES[1].x;col<PANES[1].x+PANES[1].w;col++)
+        if(g_back[row*W+col].ch=='@') {LS_EQ_INT(0,ls_skyview_touch(col,row));plotted=true;}
+    LS_CHECK(plotted);
+    LS_CHECK(find_text(" B   9",&x,&y));LS_EQ_INT(1,ls_skyview_touch(x+2,y));
+    g.last_sentence_us=5000000;ls_shim_time_set(5000000);
+    fresh();ls_skyview_draw(&g_sf,PANES[1],&g,0);
+    LS_CHECK(find_text("STALE",&x,&y));LS_EQ_INT(-1,ls_skyview_touch(x,y));
+    ls_shim_time_set(old);
+}
+
+LS_CASE(dim_timeout_keys_and_touch_are_bounded_in_both_postures)
+{
+    for (int orientation = 0; orientation < 2; orientation++) {
+        const tui_rect pane = PANES[orientation];
+        s_dimt = 240;
+        settings_open("Display", pane);
+        int c, r;
+        LS_CHECK(find_text("240 s", &c, &r));
+        const int up = find_on_row('>', r, c, 1);
+        const int down = find_on_row('<', r, c, -1);
+        LS_CHECK(up >= 0 && down >= 0);
+        if (up < 0 || down < 0) continue;
+        LS_CHECK(ls_scr_settings.touch(up, r));
+        LS_EQ_INT(240, s_dimt);
+        LS_CHECK(ls_scr_settings.key(LS_TK_ENTER, 0));
+        LS_EQ_INT(240, s_dimt);
+        LS_CHECK(ls_scr_settings.key(LS_TK_LEFT, 0));
+        LS_EQ_INT(120, s_dimt);
+        LS_CHECK(ls_scr_settings.key(LS_TK_RIGHT, 0));
+        LS_EQ_INT(240, s_dimt);
+        LS_CHECK(ls_scr_settings.touch(down, r));
+        LS_EQ_INT(120, s_dimt);
+        s_dimt = 15;
+        LS_CHECK(ls_scr_settings.touch(down, r));
+        LS_EQ_INT(15, s_dimt);
+        LS_CHECK(ls_scr_settings.key(LS_TK_LEFT, 0));
+        LS_EQ_INT(15, s_dimt);
+    }
+    s_dimt = 60;
+}
+
+typedef struct {
+    bool started;
+} home_radio_fake_t;
+
+static ls_radio_err_t iq_configure(void *ctx,
+                                    const ls_radio_iq_config_t *requested,
+                                    ls_radio_iq_config_t *actual)
+{
+    (void)ctx;
+    *actual = *requested;
+    return LS_RADIO_OK;
+}
+
+static ls_radio_err_t iq_gain(void *ctx, ls_radio_gain_mode_t mode,
+                              int gain, int *actual)
+{
+    (void)ctx;
+    (void)mode;
+    *actual = gain;
+    return LS_RADIO_OK;
+}
+
+static ls_radio_err_t stream_start(void *ctx)
+{
+    ((home_radio_fake_t *)ctx)->started = true;
+    return LS_RADIO_OK;
+}
+
+static ls_radio_err_t iq_read(void *ctx, void *dst, size_t bytes,
+                              uint32_t timeout_ms, size_t *read_bytes)
+{
+    (void)ctx;
+    (void)timeout_ms;
+    size_t n = bytes < 4 ? bytes : 4;
+    memset(dst, 0x80, n);
+    *read_bytes = n;
+    return LS_RADIO_OK;
+}
+
+static ls_radio_err_t iq_retune(void *ctx, uint64_t requested, bool fast,
+                                uint64_t *actual)
+{
+    (void)ctx;
+    (void)fast;
+    *actual = requested;
+    return LS_RADIO_OK;
+}
+
+static ls_radio_err_t stream_stop(void *ctx)
+{
+    ((home_radio_fake_t *)ctx)->started = false;
+    return LS_RADIO_OK;
+}
+
+static void cancel_read(void *ctx) { (void)ctx; }
+
+static const ls_radio_driver_ops_t home_iq_ops = {
+    .iq_configure = iq_configure,
+    .iq_set_gain = iq_gain,
+    .iq_start = stream_start,
+    .iq_read = iq_read,
+    .iq_retune = iq_retune,
+    .iq_stop = stream_stop,
+    .cancel_read = cancel_read,
+};
+
+
+extern const char *ls_test_userapp_error;
+
+LS_CASE(home_reports_both_receivers_and_labels_adsb_totals)
+{
+    const int64_t old = esp_timer_get_time();
+    ls_shim_time_set(1000000);
+    radio_health_init(NULL);
+    home_radio_fake_t rtl = {0}, hackrf = {0};
+    static const ls_radio_range_t freq[] = {{24000000, 1766000000}};
+    static const ls_radio_range_t rate[] = {{225001, 3200000}};
+    ls_radio_endpoint_t endpoint = {
+        .endpoint_id = LS_RADIO_ENDPOINT_RTL_USB, .name = "RTL-SDR",
+        .capabilities = LS_RADIO_RX_IQ_U8,
+        .iq_formats = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .frequency_ranges = freq, .frequency_range_count = 1,
+        .sample_rate_ranges = rate, .sample_rate_range_count = 1,
+        .ops = &home_iq_ops, .driver_ctx = &rtl,
+    };
+    LS_EQ_INT(ls_radio_endpoint_register(&endpoint), LS_RADIO_OK);
+    endpoint.endpoint_id = LS_RADIO_ENDPOINT_HACKRF_USB;
+    endpoint.name = "HackRF"; endpoint.driver_ctx = &hackrf;
+    LS_EQ_INT(ls_radio_endpoint_register(&endpoint), LS_RADIO_OK);
+    ls_radio_requirements_t req = {
+        .preferred_endpoint_id = LS_RADIO_ENDPOINT_HACKRF_USB,
+        .sample_rate_hz = 2000000, .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .required_caps = LS_RADIO_RX_IQ_U8,
+    };
+    ls_radio_session_t *session = NULL;
+    LS_EQ_INT(ls_radio_acquire("home-test", &req, &session), LS_RADIO_OK);
+    ls_radio_iq_config_t config = {
+        .center_hz = 1090000000, .sample_rate_hz = 2000000,
+        .gain_mode = LS_RADIO_GAIN_AUTO,
+    }, actual;
+    LS_EQ_INT(ls_radio_iq_configure(session, &config, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_OK);
+    ls_shim_time_set(4000000); radio_health_tick();
+    unsigned char bytes[4]; size_t read_bytes;
+    LS_EQ_INT(ls_radio_iq_read(session, bytes, sizeof(bytes), 0, &read_bytes), LS_RADIO_OK);
+    ls_shim_time_set(5000000); radio_health_tick();
+    ls_scr_home.key(LS_TK_F1,0);
+    fresh(); draw_pane(&ls_scr_home,PANES[0]);
+    int x,y;
+    LS_CHECK(find_text("RTL-SDR",&x,&y));
+    LS_CHECK(find_text("HACKRF",&x,&y));
+    LS_CHECK(find_text("4 B/s",&x,&y));
+    LS_CHECK(find_text("ADS-B RATE",&x,&y));
+    LS_CHECK(find_text("ADS-B CRC TOTAL",&x,&y));
+    radio_health_note_fault(LS_RADIO_ENDPOINT_HACKRF_USB);
+    ls_shim_time_set(6000000); radio_health_tick();
+    radio_health_snapshot_t health;
+    LS_CHECK(radio_health_get(LS_RADIO_ENDPOINT_HACKRF_USB,&health));
+    LS_CHECK(health.state != RH_OK);
+    fresh(); draw_pane(&ls_scr_home,PANES[0]);
+    LS_CHECK(find_text("HACKRF",&x,&y));
+    char line[W+1]; row_text(y,line,sizeof(line));
+    LS_CHECK(strstr(line,radio_health_state_name(health.state)) != NULL);
+    ls_radio_release(session);
+    ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_HACKRF_USB);
+    ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_RTL_USB);
+    ls_shim_time_set(old);
+}
+
+LS_CASE(home_user_named_home_launches_and_error_details_are_reachable)
+{
+    apps_once();
+    ls_test_userapp_error = "bad.lsapp line 3: expected key=value";
+    ls_scr_home.key(LS_TK_F4,0);
+    fresh(); draw_pane(&ls_scr_home,PANES[1]);
+    int x,y;
+    LS_CHECK(find_text("SD app rejected",&x,&y));
+    LS_CHECK(find_text("bad.lsapp line 3",&x,&y));
+    LS_CHECK(ls_scr_home.touch(x,y));
+    fresh(); draw_pane(&ls_scr_home,PANES[1]);
+    LS_CHECK(find_text("expected key=value",&x,&y));
+    LS_CHECK(ls_scr_home.key(LS_TK_ESC,0));
+    const ls_app_t app = {
+        .id = "home", .name = "home", .cat = LS_APP_USER,
+        .screen = &ls_scr_fm, .doc = &k_fixture_doc,
+    };
+    const int screen = ls_app_register(&app);
+    LS_CHECK(screen >= 0);
+    for (int p = 0; p < 2; p++) {
+        ls_scr_home.key(LS_TK_F4,0);
+        fresh(); draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("SD app error",&x,&y));
+        LS_CHECK(ls_scr_home.key(LS_TK_CHAR,'e'));
+        fresh(); draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("expected key=value",&x,&y));
+        LS_CHECK(ls_scr_home.touch(x,y));
+        fresh(); draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(ls_scr_home.key(LS_TK_CHAR,'1'));
+        LS_EQ_INT(ls_tui_screen_current(),screen);
+        ls_anim_cancel();
+        ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    }
+    ls_test_userapp_error = NULL;
+    ls_scr_home.key(LS_TK_F1,0);
 }

@@ -439,3 +439,48 @@ LS_CASE(the_toast_says_where_to_find_it)
     LS_CHECK(!ls_ota_toast_text("2.9.0", t, 10));
     LS_CHECK(!ls_ota_toast_text("2.9.0", NULL, 64));
 }
+
+LS_CASE(manifest_trickle_has_a_total_deadline_and_bounded_reads)
+{
+    const int64_t end = (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
+    for (int64_t now = 0; now < end; now += 100000)
+        LS_CHECK(ls_ota_check_wait_ms(end, now) <= LS_OTA_CHECK_READ_MS);
+    LS_EQ_INT(ls_ota_check_wait_ms(end, end - 500000), 500);
+    LS_EQ_INT(ls_ota_check_wait_ms(end, end), 0);
+    LS_EQ_INT(ls_ota_check_wait_ms(end, end + 1000), 0);
+}
+
+LS_CASE(manifest_http_errors_do_not_mean_current)
+{
+    LS_EQ_INT(ls_ota_manifest_status(200), 1);
+    LS_EQ_INT(ls_ota_manifest_status(404), 0);
+    LS_EQ_INT(ls_ota_manifest_status(410), 0);
+    LS_EQ_INT(ls_ota_manifest_status(403), -1);
+    LS_EQ_INT(ls_ota_manifest_status(500), -1);
+    LS_EQ_INT(ls_ota_manifest_status(-1), -1);
+}
+
+LS_CASE(trial_expiry_waits_for_frames_and_successful_validation)
+{
+    const int64_t end = 20000000;
+    LS_CHECK(!ls_ota_trial_ready(end, end - 1, 50, 0));
+    LS_CHECK(!ls_ota_trial_ready(end, end, 49, 0));
+    LS_EQ_INT(ls_ota_trial_left(LS_OTA_TRIAL_PENDING, end, end), -1);
+    LS_CHECK(ls_ota_trial_ready(end, end, 50, 0));
+    for (unsigned attempts = 1; attempts < LS_OTA_VALID_TRIES; attempts++) {
+        LS_EQ_INT(ls_ota_trial_left(LS_OTA_TRIAL_FAILED, end, end), -2);
+        LS_CHECK(ls_ota_trial_ready(end, end + 3000000, 50, attempts));
+    }
+    LS_CHECK(!ls_ota_trial_ready(end, end + 9000000, 50, LS_OTA_VALID_TRIES));
+    LS_EQ_INT(ls_ota_trial_left(LS_OTA_TRIAL_VALID, end, end), 0);
+}
+
+LS_CASE(trial_poll_preserves_health_checks_without_a_timer)
+{
+    const int64_t end = 20000000;
+    LS_EQ_INT(ls_ota_trial_left(LS_OTA_TRIAL_PENDING, end, 0), 20);
+    LS_CHECK(!ls_ota_trial_ready(end, 15000000, 100, 0));
+    LS_CHECK(!ls_ota_trial_ready(end, 30000000, 0, 0));
+    LS_EQ_INT(ls_ota_trial_left(LS_OTA_TRIAL_PENDING, end, 30000000), -1);
+    LS_CHECK(ls_ota_trial_ready(end, 30000000, 50, 0));
+}

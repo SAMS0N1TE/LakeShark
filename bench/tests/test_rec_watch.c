@@ -1,6 +1,7 @@
 #include "ls_test.h"
 #include "rec_watch.h"
 #include "rec_state.h"
+#include "ls_lora.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,29 @@ LS_CASE(ook24_requires_matching_complete_frames_and_rejects_bad_timing)
     p[1]=INT32_MIN;LS_CHECK(!rec_decode_ook24(p,100,&result));
     for(int i=0;i<100;i++)p[i]=(i&1)?-300:300;
     LS_CHECK(!rec_decode_ook24(p,100,&result));
+}
+LS_CASE(non_sdr_sources_never_request_an_sdr_receiver)
+{
+    const rec_source_t chip[]={REC_SOURCE_CC1101,REC_SOURCE_SX1262};
+    for(unsigned i=0;i<sizeof(chip)/sizeof(chip[0]);i++)for(int enabled=0;enabled<2;enabled++) {
+        LS_EQ_INT(rec_watch_receiver_want_source(-1,3,enabled,chip[i]),-1);
+        LS_EQ_INT(rec_watch_receiver_want_source(3,3,enabled,chip[i]),-1);
+        LS_EQ_INT(rec_watch_receiver_want_source(1,3,enabled,chip[i]),1);
+    }
+    LS_EQ_INT(rec_watch_receiver_want_source(-1,3,false,REC_SOURCE_RTL),-1);
+    LS_EQ_INT(rec_watch_receiver_want_source(3,3,false,REC_SOURCE_RTL),3);
+}
+LS_CASE(receive_frequency_ranges_follow_the_selected_source)
+{
+    uint32_t wide=LS_LORA_CAP_RX_WIDE|LS_LORA_CAP_BAND_1G5_2G5;
+    LS_CHECK(rec_watch_frequency_ok(REC_SOURCE_SX1262,false,wide,2483500000u));
+    LS_CHECK(!rec_watch_frequency_ok(REC_SOURCE_SX1262,false,0,2483500000u));
+    LS_CHECK(!rec_watch_frequency_ok(REC_SOURCE_SX1262,false,wide,1200000000u));
+    LS_CHECK(rec_watch_frequency_ok(REC_SOURCE_SX1262,false,0,433920000u));
+    LS_CHECK(!rec_watch_frequency_ok(REC_SOURCE_RTL,false,0,2400000000u));
+    LS_CHECK(rec_watch_frequency_ok(REC_SOURCE_RTL,true,0,2400000000u));
+    LS_CHECK(rec_watch_frequency_ok(REC_SOURCE_CC1101,false,0,433920000u));
+    LS_CHECK(!rec_watch_frequency_ok(REC_SOURCE_CC1101,false,0,350000000u));
 }
 LS_CASE(receiver_source_is_preserved_without_changing_legacy_record_layout)
 {

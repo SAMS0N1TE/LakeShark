@@ -302,6 +302,12 @@ static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
    lights whenever the stack is running - which is exactly what "live" means
    for a node that spends most of its time listening. */
 static bool tui_live_mesh(void)  { return tui_live_from("mesh.up"); }
+static bool tui_live_sweep(void)
+{
+    ls_sweep_status_t status;
+    ls_sweep_status(&status, esp_timer_get_time());
+    return status.running;
+}
 /* Lit when there is a fix, not when the receiver is merely talking: the tile is a glance and a fix is the thing worth glancing at. */
 
 static bool tui_live_gps(void)   { return tui_live_from("gps.on"); }
@@ -918,7 +924,7 @@ static bool tui_session(void)
             { "drones", "DRONES", "passive BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_drones, nullptr, &ls_doc_drones },
             { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_sweep, nullptr, &ls_doc_sweep },
+              LS_APP_EXTRA, &ls_scr_sweep, tui_live_sweep, &ls_doc_sweep },
         };
         /* LINK was the thirteenth app, beyond the router's old
            twelve-screen limit, and vanished without a startup error. */
@@ -2561,11 +2567,20 @@ static int mesh_cmd(int argc, char **argv)
         ls_mesh_radio_t r; ls_mesh_get_radio(&r);
         if      (!strcmp(argv[2], "off"))    r.share_loc = 0;
         else if (!strcmp(argv[2], "gps"))    r.share_loc = 1;
-        else if (!strcmp(argv[2], "manual")) r.share_loc = 2;
-        else { printf("mesh: loc off|gps|manual\n"); return 1; }
-        ls_mesh_set_radio(&r);
-        printf("mesh: location %s\n", argv[2]);
-        return 0;
+        else if (!strcmp(argv[2], "manual")) {
+            if (argc != 5) { printf("mesh: loc manual <latitude> <longitude>\n"); return 1; }
+            char *lat_end, *lon_end;
+            double lat = strtod(argv[3], &lat_end), lon = strtod(argv[4], &lon_end);
+            if (lat_end == argv[3] || *lat_end || lon_end == argv[4] || *lon_end ||
+                !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {
+                printf("mesh: latitude -90..90, longitude -180..180\n"); return 1;
+            }
+            r.lat_e6 = (int32_t)(lat * 1e6); r.lon_e6 = (int32_t)(lon * 1e6); r.share_loc = 2;
+        }
+        else { printf("mesh: loc off|gps|manual <latitude> <longitude>\n"); return 1; }
+        esp_err_t err = ls_mesh_set_radio(&r);
+        printf("mesh: location %s: %s\n", argv[2], esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
     } else if (argc >= 4 && !strcmp(argv[1], "dm")) {
         /*`mesh dm <peer#> <text...>` - addressed, encrypted, and
            acknowledged by the recipient itself. The index is the row number

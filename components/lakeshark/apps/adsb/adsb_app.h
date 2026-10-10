@@ -21,6 +21,7 @@ void adsb_set_map_follow(int mode);
    socket's chip, or none. The name is for the status line. */
 adsb_source_t adsb_active_source(void);
 const char *adsb_active_source_name(void);
+const char *adsb_receiver_status(void);
 
 #ifdef __cplusplus
 }

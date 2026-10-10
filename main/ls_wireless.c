@@ -7,15 +7,17 @@
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/idf_additions.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 extern bool ls_survey_pending(void);
 extern void ls_survey_tick(void);
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_active, s_worker, s_observer;
+static bool s_find_ble_requested, s_find_ble_owned;
+static bool s_rid_requested, s_rid_owned, s_rid_failed, s_rid_retry;
 /* LINK could not allocate a 6 KiB DRAM stack after the radio and
  * C6 started. Reserve it and keep one sleeping worker across app visits. */
 static DRAM_ATTR StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
@@ -50,6 +52,9 @@ static void poll_radios(void)
 {
     ls_wifi_scan_ap_t ap = {0};
     s_model.wifi_connected = ls_wifi_sta_connected();
+    s_model.wifi_running = ls_wifi_running() || ls_wifi_sta_running();
+    bool scanning;
+    ble_link_receiver(&s_model.bt_running, &scanning, &s_model.bt_failed);
     s_model.wifi_signal = s_model.wifi_connected && ls_wifi_sta_info(&ap) == ESP_OK;
     s_model.wifi_rssi = ap.rssi;
     s_model.channel = ap.channel;
@@ -68,6 +73,9 @@ static void poll_radios(void)
     snprintf(s_model.bt_status, sizeof(s_model.bt_status), "%s",
              ble_link_state_name_of(s_model.bt_state));
     ble_link_peer(s_model.peer, sizeof(s_model.peer), s_model.address, sizeof(s_model.address));
+    ble_link_get_pinned(s_model.pinned, sizeof(s_model.pinned));
+    ble_link_get_name_filter(s_model.name_filter, sizeof(s_model.name_filter));
+    s_model.tel_hz = ble_link_tel_hz();
     ble_link_stats(&s_model.rx, &s_model.tx, &s_model.drops);
     s_model.bt_signal = s_model.bt_ready && ble_link_rssi(&s_model.bt_rssi) == ESP_OK;
     s_model.stock_head_seen = ble_link_stock_head_seen();
@@ -95,28 +103,50 @@ static esp_err_t perform(ls_wireless_op_t op, const char *ssid, const char *pass
         return ESP_OK;
     }
     case LS_WIRELESS_JOIN: return ls_wifi_sta_join(ssid, pass);
-    case LS_WIRELESS_SAVED: return ls_wifi_sta_autojoin();
+    case LS_WIRELESS_SAVED: return ssid && *ssid ? ls_wifi_sta_join_saved(ssid) : ls_wifi_sta_autojoin();
     case LS_WIRELESS_LEAVE: return ls_wifi_sta_leave();
-    case LS_WIRELESS_FORGET: return ssid && *ssid ? ls_wifi_sta_forget_ssid(ssid) : ls_wifi_sta_forget();
+    case LS_WIRELESS_FORGET: return ssid && *ssid ? ls_wifi_sta_forget_ssid(ssid) : ESP_ERR_INVALID_ARG;
     case LS_WIRELESS_BT_START: return ble_link_start();
     case LS_WIRELESS_BT_STOP: ble_link_stop(); return ESP_OK;
     case LS_WIRELESS_BT_RESCAN:
-        if (ble_link_state() == BLE_LINK_OFF) return ble_link_start();
-        ble_link_rescan(); return ESP_OK;
+        return ble_link_start();
+    case LS_WIRELESS_BT_PIN: {
+        char address[20];
+        ble_link_peer(NULL, 0, address, sizeof(address));
+        if (!ssid || !*ssid || strcmp(ssid, address)) return ESP_ERR_NOT_FOUND;
+        return ble_link_pin_peer(NULL);
+    }
+    case LS_WIRELESS_BT_UNPIN: ble_link_unpin_peer(); return ESP_OK;
+    case LS_WIRELESS_BT_FILTER: ble_link_set_name_filter(ssid); return ESP_OK;
+    case LS_WIRELESS_BT_TELEMETRY: ble_link_set_tel_hz(atoi(ssid)); return ESP_OK;
     default: return ESP_ERR_INVALID_ARG;
     }
+}
+
+static void rid_tick(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool requested=s_rid_requested, owned=s_rid_owned, retry=s_rid_retry;
+    s_rid_retry=false;
+    portEXIT_CRITICAL(&s_mux);
+    if(requested==owned && !retry) return;
+    esp_err_t rc=ble_link_rid_observer(requested);
+    portENTER_CRITICAL(&s_mux);
+    s_rid_owned=requested && rc==ESP_OK;
+    s_rid_failed=rc!=ESP_OK;
+    if(s_rid_failed) s_rid_requested=false;
+    portEXIT_CRITICAL(&s_mux);
+}
+static void find_ble_tick(bool want)
+{
+    if (want != s_find_ble_owned && ble_link_find_observer(want) == ESP_OK)
+        s_find_ble_owned = want;
 }
 
 static void worker(void *arg)
 {
     (void)arg;
     uint32_t last_poll = 0;
-#if CONFIG_LS_C6_LINK
-    s_model.wifi_available = true;
-#endif
-#if CONFIG_LS_BLE_HEAD
-    s_model.bt_available = true;
-#endif
     for (;;) {
         char ssid[33], pass[65];
         portENTER_CRITICAL(&s_mux);
@@ -125,8 +155,10 @@ static void worker(void *arg)
         memcpy(ssid, s_ssid, sizeof(ssid));
         memcpy(pass, s_pass, sizeof(pass));
         wipe(s_pass, sizeof(s_pass));
-        bool stop = !s_active && !s_observer && op == LS_WIRELESS_NONE;
+        bool find_ble = s_find_ble_requested;
+        bool stop = find_ble == s_find_ble_owned && !s_active && !s_observer && !s_rid_requested && !s_rid_owned && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
+        find_ble_tick(find_ble);
         if (stop && !ls_survey_pending() && !ls_sweep_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -144,14 +176,18 @@ static void worker(void *arg)
             if (rc == ESP_OK) {
                 const char *done = "Connection updated";
                 if (op == LS_WIRELESS_SCAN) done = "Scan complete; tap a network to join";
-                if (op == LS_WIRELESS_JOIN || op == LS_WIRELESS_SAVED) done = "Joining; saved once it connects";
+                if (op == LS_WIRELESS_JOIN || op == LS_WIRELESS_SAVED) done = "";
                 if (op == LS_WIRELESS_FORGET) done = "Saved network removed";
                 snprintf(s_model.message, sizeof(s_model.message), "%s", done);
             } else {
-                snprintf(s_model.message, sizeof(s_model.message), "Could not complete: %s", esp_err_to_name(rc));
+                snprintf(s_model.message, sizeof(s_model.message), "%s",
+                    rc == ESP_ERR_NO_MEM ? "Not enough memory; stop other work and retry" :
+                    rc == ESP_ERR_NOT_FOUND ? "Selected target is no longer available" :
+                    rc == ESP_ERR_INVALID_STATE ? "Radio busy; stop other work and retry" :
+                    "Connection update failed; retry");
             }
             s_model.busy = false;
-            s_model.operation = LS_WIRELESS_NONE;
+            s_model.operation = op;
             last_poll = 0;
         }
         wipe(pass, sizeof(pass));
@@ -161,6 +197,7 @@ static void worker(void *arg)
             publish();
             last_poll = now_ms();
         }
+        rid_tick();
         ls_survey_tick();
         ls_sweep_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
@@ -212,18 +249,33 @@ void ls_wireless_observe(bool active)
     if (active) start_worker();
 }
 
+void ls_wireless_find_ble(bool active)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool changed = s_find_ble_requested != active;
+    s_find_ble_requested = active;
+    portEXIT_CRITICAL(&s_mux);
+    if (changed || active) start_worker();
+}
+
 void ls_wireless_get(ls_wireless_snapshot_t *out)
 {
     if (!out) return;
     portENTER_CRITICAL(&s_mux);
     *out = s_public;
     portEXIT_CRITICAL(&s_mux);
+#if CONFIG_LS_C6_LINK
+    out->wifi_available = true;
+#endif
+#if CONFIG_LS_BLE_HEAD
+    out->bt_available = true;
+#endif
     out->now_ms = now_ms();
 }
 
 bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass)
 {
-    if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_RESCAN ||
+    if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_TELEMETRY ||
         (ssid && strlen(ssid) > 32) || (pass && strlen(pass) > 64)) return false;
     if (ls_survey_pending()) return false;
     portENTER_CRITICAL(&s_mux);
@@ -238,4 +290,32 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
     portEXIT_CRITICAL(&s_mux);
     if (accept) start_worker();
     return accept;
+}
+
+void ls_wireless_rid_request(bool on)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_rid_requested=on; s_rid_failed=false; s_rid_retry=on;
+    portEXIT_CRITICAL(&s_mux);
+    start_worker();
+    portENTER_CRITICAL(&s_mux);
+    if(!s_worker_task && on) {s_rid_requested=false;s_rid_failed=true;}
+    portEXIT_CRITICAL(&s_mux);
+}
+ls_rid_rx_t ls_wireless_rid_status(void)
+{
+#if !CONFIG_LS_BLE_HEAD
+    return LS_RID_RX_UNAVAILABLE;
+#else
+    portENTER_CRITICAL(&s_mux);
+    bool starting=s_rid_requested && !s_rid_owned, failed=s_rid_failed;
+    portEXIT_CRITICAL(&s_mux);
+    bool running,scanning,scan_failed; ble_link_receiver(&running,&scanning,&scan_failed);
+    if(scanning) return LS_RID_RX_LISTENING;
+    if(starting) return LS_RID_RX_STARTING;
+    if(failed || scan_failed) return LS_RID_RX_FAILED;
+    if(!running) return LS_RID_RX_OFF;
+    if(ble_link_state()==BLE_LINK_SYNCING) return LS_RID_RX_STARTING;
+    return LS_RID_RX_PAUSED;
+#endif
 }

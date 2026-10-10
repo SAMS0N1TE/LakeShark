@@ -25,6 +25,11 @@ typedef enum {
     BLE_LINK_READY,
 } ble_link_state_t;
 
+static inline ble_link_state_t ble_link_reset_state(bool run)
+{
+    return run ? BLE_LINK_SYNCING : BLE_LINK_OFF;
+}
+
 const char *ble_link_state_name_of(ble_link_state_t s);
 
 /* ----------------------------------------------------------------- framing */

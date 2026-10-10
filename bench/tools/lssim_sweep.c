@@ -6,7 +6,7 @@
 static void u32(uint8_t *p,int32_t v) {for(unsigned i=0;i<4;i++) p[i]=(uint32_t)v>>(i*8);}
 void lssim_sweep_seed(void) {
     if(!getenv("LSSIM_SWEEP")) return;
-    ls_sweep_start(true);ls_sweep_runtime_status(true,"BLE + Wi-Fi passive / simulated broadcasts");
+    ls_sweep_start(true);ls_sweep_runtime_status(true,"Simulated BLE adverts / Wi-Fi cache");
     if(getenv("LSSIM_SWEEP_LIST")) ls_shim_time_set(2200000000LL);
     int64_t now=esp_timer_get_time();
     if(getenv("LSSIM_SWEEP_QUIET")) return;

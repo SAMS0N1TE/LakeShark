@@ -58,3 +58,13 @@ LS_CASE(legacy_network_migrates_before_keys_are_removed_and_stale_slots_stay_ign
     LS_EQ_INT(store_job(&load),ESP_FAIL);LS_CHECK(entry("ssid",false) && entry("pass",false));
     fail_commit=false;LS_EQ_INT(store_job(&load),ESP_OK);LS_CHECK(!strcmp(s_saved[0].ssid,"retry"));
 }
+
+LS_CASE(selected_saved_password_is_loaded_by_ssid_not_signal_order) {
+    reset();
+    store_job_t weak={1,"weak network","weakpass",NULL},strong={1,"strong network","strongpass",NULL};
+    LS_EQ_INT(store_job(&weak),ESP_OK); LS_EQ_INT(store_job(&strong),ESP_OK);
+    char pass[64]; store_job_t chosen={3,"weak network",NULL,pass};
+    LS_EQ_INT(store_job(&chosen),ESP_OK); LS_CHECK(!strcmp(pass,"weakpass"));
+    chosen.ssid="strong network";
+    LS_EQ_INT(store_job(&chosen),ESP_OK); LS_CHECK(!strcmp(pass,"strongpass"));
+}

@@ -31,6 +31,8 @@ struct endpoint_slot {
     bool configured;
     uint8_t config_kind;
     bool streaming;
+    bool paused;
+    bool pause_pending;
     bool stopping;
     uint8_t stream_kind;
     unsigned in_flight;
@@ -229,7 +231,7 @@ static ls_radio_err_t session_enter(ls_radio_session_t *session,
         error = LS_RADIO_ERR_DISCONNECTED;
     else if ((slot->capabilities & required_cap) != required_cap)
         error = LS_RADIO_ERR_UNSUPPORTED;
-    else if (require_streaming && !slot->streaming)
+    else if (require_streaming && (slot->paused || !slot->streaming))
         error = LS_RADIO_ERR_STOPPED;
     else {
         ++slot->in_flight;
@@ -254,6 +256,8 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
         slot->bytes_read += bytes_read;
     if (read_call && error == LS_RADIO_OK)
         slot->packets_read += packets_read;
+    if (read_call && error == LS_RADIO_OK)
+        slot->last_error = LS_RADIO_OK;
     if (error != LS_RADIO_OK)
         slot->last_error = error;
     if (slot->in_flight > 0) --slot->in_flight;
@@ -277,7 +281,10 @@ static ls_radio_err_t session_leave_control(endpoint_slot_t *slot,
         if (driver_error == LS_RADIO_ERR_IO)
             ++slot->control_io_errors;
         else if (driver_error == LS_RADIO_OK)
+        {
             slot->control_io_errors = 0;
+            slot->last_error = LS_RADIO_OK;
+        }
     }
     xSemaphoreGive(s_registry_lock);
     return session_leave(slot, driver_error, false, 0, 0);
@@ -303,6 +310,7 @@ static void fill_info(const endpoint_slot_t *slot,
     out->present = slot->present;
     out->leased = slot->leased;
     out->streaming = slot->streaming;
+    out->paused = slot->paused;
     out->configured = slot->configured;
     out->actual_iq = slot->actual_iq;
     out->actual_packet = slot->actual_packet;
@@ -395,6 +403,7 @@ ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
 
     slot->used = true;
     slot->present = true;
+    slot->paused = slot->pause_pending = false;
     slot->removing = false;
     slot->configured = false;
     slot->config_kind = 0;
@@ -628,7 +637,7 @@ ls_radio_err_t ls_radio_acquire(const char *owner,
                    requirements->preferred_endpoint_id) != 0)
             continue;
         if (!endpoint_matches(slot, requirements)) continue;
-        if (slot->leased) {
+        if (slot->leased || slot->paused) {
             matched_busy = true;
             continue;
         }
@@ -791,6 +800,8 @@ ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session)
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
     if (!slot->present)
         error = LS_RADIO_ERR_DISCONNECTED;
+    else if (slot->paused)
+        error = LS_RADIO_ERR_STOPPED;
     else if (!slot->configured || slot->config_kind != 1)
         error = LS_RADIO_ERR_INVALID;
     else if (slot->streaming)
@@ -991,6 +1002,8 @@ ls_radio_err_t ls_radio_packet_rx_start(ls_radio_session_t *session)
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
     if (!slot->present)
         error = LS_RADIO_ERR_DISCONNECTED;
+    else if (slot->paused)
+        error = LS_RADIO_ERR_STOPPED;
     else if (!slot->configured || slot->config_kind != 2)
         error = LS_RADIO_ERR_INVALID;
     else if (slot->streaming)
@@ -1071,6 +1084,51 @@ ls_radio_err_t ls_radio_packet_rx_stop(ls_radio_session_t *session)
         }
         slot->stopping = false;
     }
+    xSemaphoreGive(s_registry_lock);
+    error = session_leave(slot, error, false, 0, 0);
+    xSemaphoreGive(slot->control_lock);
+    return error;
+}
+
+ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
+                                      const char *owner, bool paused)
+{
+    if (!endpoint_id || !owner || ensure_registry() != LS_RADIO_OK)
+        return LS_RADIO_ERR_INVALID;
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    endpoint_slot_t *slot = find_slot_locked(endpoint_id);
+    if (!slot || !slot->present) {
+        xSemaphoreGive(s_registry_lock);
+        return LS_RADIO_ERR_UNAVAILABLE;
+    }
+    if (strcmp(slot->owner, owner) || slot->removing || slot->session.closing || slot->pause_pending) {
+        xSemaphoreGive(s_registry_lock);
+        return LS_RADIO_ERR_BUSY;
+    }
+    ++slot->in_flight;
+    slot->pause_pending = true;
+    slot->paused = paused;
+    xSemaphoreGive(s_registry_lock);
+    xSemaphoreTake(slot->control_lock, portMAX_DELAY);
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    const bool streaming = slot->present && slot->streaming;
+    ls_radio_err_t (*stop)(void *) = slot->stream_kind == 2 ?
+        slot->ops.packet_rx_stop : slot->ops.iq_stop;
+    slot->stopping = paused;
+    xSemaphoreGive(s_registry_lock);
+    ls_radio_err_t error = LS_RADIO_OK;
+    if (paused && streaming) {
+        if (slot->ops.cancel_read) slot->ops.cancel_read(slot->driver_ctx);
+        error = stop ? stop(slot->driver_ctx) : LS_RADIO_ERR_UNSUPPORTED;
+    }
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    if (error == LS_RADIO_OK && paused) {
+        slot->streaming = false;
+        slot->stream_kind = 0;
+    }
+    if (error != LS_RADIO_OK) slot->paused = false;
+    slot->pause_pending = false;
+    slot->stopping = false;
     xSemaphoreGive(s_registry_lock);
     error = session_leave(slot, error, false, 0, 0);
     xSemaphoreGive(slot->control_lock);

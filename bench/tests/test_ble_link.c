@@ -654,3 +654,17 @@ LS_CASE(discovery_start_restart_failure_and_stop) {
     LS_EQ_INT(BLE_SCAN_KEEP,ble_scan_action(BLE_SCAN_OFF,BLE_SCAN_OFF,false));
     LS_EQ_INT(160,BLE_LINK_OBSERVER_INTERVAL);LS_EQ_INT(48,BLE_LINK_OBSERVER_WINDOW);
 }
+
+LS_CASE(reset_preserves_stopped_intent_and_failed_start_can_retry) {
+    LS_EQ_INT(ble_link_reset_state(false), BLE_LINK_OFF);
+    LS_EQ_INT(ble_link_reset_state(true), BLE_LINK_SYNCING);
+    LS_EQ_INT(ble_link_state_step(BLE_LINK_OFF, BLE_LINK_EV_START_UP), BLE_LINK_SCANNING);
+}
+LS_CASE(passive_feed_head_promotion_and_release_reconcile_modes) {
+    LS_EQ_INT(ble_scan_wanted(true,false,false,true,true,false), BLE_SCAN_OBSERVER);
+    LS_EQ_INT(ble_scan_wanted(true,false,false,true,false,false), BLE_SCAN_HEAD);
+    LS_EQ_INT(ble_scan_action(BLE_SCAN_HEAD,BLE_SCAN_OBSERVER,true), BLE_SCAN_RESTART);
+    LS_EQ_INT(ble_scan_wanted(true,false,false,true,true,false), BLE_SCAN_OBSERVER);
+    LS_EQ_INT(ble_scan_action(BLE_SCAN_OBSERVER,BLE_SCAN_HEAD,true), BLE_SCAN_RESTART);
+    LS_EQ_INT(ble_scan_wanted(false,false,false,true,true,false), BLE_SCAN_OFF);
+}

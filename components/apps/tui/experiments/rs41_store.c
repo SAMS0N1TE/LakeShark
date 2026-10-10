@@ -47,15 +47,15 @@ void rs41_store_put(const rs41_report_t *r, int64_t now)
     }
     if (slot < 0) { slot = oldest; memset(&s_sondes[slot],0,sizeof(s_sondes[slot])); }
     rs41_sonde_t *s = &s_sondes[slot];
-    bool duplicate = s->heard_us && s->report.frame == r->frame;
+    bool duplicate = s->fix_us && s->fix_frame == r->frame;
     double lat = s->report.lat, lon = s->report.lon, alt = s->report.alt;
     float climb = s->report.climb;
     s->report = *r; s->heard_us = now;
     if (!r->position || duplicate) {
         s->report.position = s->fix_us != 0;
         s->report.lat = lat; s->report.lon = lon; s->report.alt = alt; s->report.climb = climb;
-    } else if (!duplicate) {
-        s->fix_us = now;
+    } else {
+        s->fix_us = now; s->fix_frame = r->frame;
         if (!s->count || now-s->track[s->count-1].us >= 10000000) {
             /* Thin old history in place to bound RAM while keeping the launch. */
             if (s->count == RS41_POINTS) {

@@ -122,3 +122,8 @@ uint32_t ls_wifi_backoff_next(uint32_t cur, uint32_t min_ms, uint32_t max_ms)
     if (next > max_ms) next = max_ms;
     return next;
 }
+
+bool ls_wifi_sta_needs_join(bool running, bool connected, bool gave_up)
+{
+    return !running || (!connected && gave_up);
+}

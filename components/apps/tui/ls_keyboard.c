@@ -16,7 +16,7 @@ static bool               s_open;
 static bool               s_secret;
 static bool               s_reveal;
 static int                s_flash_slot = -1, s_flash_frames;
-static char               s_title[24];
+static char               s_title[96];
 static char               s_buf[LS_KEYBOARD_MAX + 1];
 static int                s_len;
 static int                s_max;
@@ -80,6 +80,19 @@ void ls_keyboard_open(const char *title, const char *initial, int max_len,
     s_open = true;
 }
 
+void ls_keyboard_open_lower(const char *title, const char *initial, int max_len,
+                            ls_keyboard_done_t on_done)
+{
+    ls_keyboard_open(title, initial, max_len, on_done);
+    s_layer = LAYER_LOWER;
+}
+
+void ls_keyboard_open_plain(const char *title, const char *initial, int max_len,
+                            ls_keyboard_done_t on_done)
+{
+    ls_keyboard_open_lower(title, initial, max_len, on_done);
+}
+
 static void clear_text(char *text, size_t size)
 {
     volatile char *p = text;
@@ -129,8 +142,8 @@ static void backspace(void)
 static void accept(void)
 {
     const ls_keyboard_done_t cb = s_done;
-    char out[LS_KEYBOARD_MAX + 1];
-    snprintf(out, sizeof(out), "%s", s_buf);
+    char out[s_len + 1];
+    memcpy(out, s_buf, sizeof(out));
     ls_keyboard_close();
     if (cb) cb(out);
     clear_text(out, sizeof(out));

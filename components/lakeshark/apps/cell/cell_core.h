@@ -6,6 +6,9 @@
 #define CELL_RATE 256000u
 #define CELL_BIN 25000u
 #define CELL_GAIN 297
+#define CELL_BASELINE_VERSION 2u
+#define CELL_RECEIVER_RTL 1u
+#define CELL_CALIBRATION 1u
 #define CELL_MISSING (-128)
 typedef struct { const char *name; uint32_t low, high; } cell_band_t;
 extern const cell_band_t cell_bands[];
@@ -14,9 +17,12 @@ typedef struct {
     uint32_t magic, version, band, count, rate, gain, passes;
     int32_t lat_tile, lon_tile;
     uint32_t located, antenna, created;
+    uint32_t receiver, calibration;
     int8_t power[CELL_MAX_BINS];
     uint32_t checksum;
 } cell_baseline_t;
+bool cell_gps_valid(bool fix, int64_t timestamp, int64_t now, double lat, double lon, float hdop);
+bool cell_coverage_complete(unsigned planned, unsigned attempted, unsigned usable, unsigned discarded);
 uint32_t cell_checksum(const cell_baseline_t *b);
 bool cell_baseline_valid(const cell_baseline_t *b, unsigned band, int lat, int lon, bool located, bool antenna);
 /* Returns persistent changed-bin count. Missing data and motion reset streaks. */

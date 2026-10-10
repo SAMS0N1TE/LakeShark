@@ -511,6 +511,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_falls.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${APP}/fm/fm_tone.c
+    ${APP}/acars/acars_app.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
     ${FW}/components/apps/tui/screens/main/fm_same_view.c
     ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
@@ -696,6 +697,10 @@ ls_add_test(test_tui_picker
 target_include_directories(test_tui_picker PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_mixrf_control)
+ls_add_test(test_mixrf_field)
+ls_add_test(test_nfc_suite ${FW}/components/lakeshark/nfc/nfc_classic.c)
+target_include_directories(test_nfc_suite PRIVATE
+    ${FW}/components/lakeshark/nfc ${FW}/components/lakeshark/board)
 
 ls_add_test(test_radio_select
     ${FW}/components/apps/tui/ls_radio_select.c
@@ -821,6 +826,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/main/scr_p25.c
     ${APP}/p25/p25_tg_observed.c
     ${APP}/fm/fm_tone.c
+    ${APP}/acars/acars_app.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
     ${FW}/components/apps/tui/screens/main/fm_same_view.c
     ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
@@ -1110,7 +1116,17 @@ ls_add_test(test_track ${FW}/components/lakeshark/core/ls_track.c)
 target_include_directories(test_track PRIVATE
     ${FW}/components/lakeshark/core)
 
+ls_add_test(test_gps_storage ${FW}/components/lakeshark/core/ls_track.c)
+target_include_directories(test_gps_storage PRIVATE
+    ${FW}/bench/tests/gps_shims
+    ${FW}/components/lakeshark/core
+    ${FW}/components/lakeshark/board)
+
 ls_add_test(test_rlog ${FW}/components/lakeshark/core/ls_rlog.c)
+# The 7200-point wrap test checks ordering; fault tests cover durable completion.
+if(WIN32)
+    target_compile_definitions(test_rlog PRIVATE LS_RLOG_TEST_SYNC=1)
+endif()
 target_include_directories(test_rlog PRIVATE
     ${FW}/components/lakeshark/core)
 
@@ -1139,8 +1155,10 @@ target_include_directories(test_haptic PRIVATE
     ${FW}/bench/shims)
 target_compile_definitions(test_haptic PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
-ls_add_test(test_gps_nmea ${FW}/components/lakeshark/board/ls_gps.c)
+ls_add_test(test_gps_nmea ${FW}/components/lakeshark/board/ls_gps.c
+    ${FW}/components/lakeshark/core/ls_uart_claim.c)
 target_include_directories(test_gps_nmea PRIVATE
+    ${FW}/components/lakeshark/core
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 target_compile_definitions(test_gps_nmea PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
@@ -1190,9 +1208,12 @@ ls_add_test(test_adsb_cpr
     ${APP}/adsb/adsb_demo.c
     ${APP}/adsb/mode-s.c
     ${APP}/adsb/adsb_decode.c
-    ${APP}/adsb/adsb_state.c)
+    ${APP}/adsb/adsb_state.c
+    ${FW}/components/apps/tui/ls_follow.c
+    ${FW}/components/apps/tui/ls_map_motion.c)
 target_include_directories(test_adsb_cpr PRIVATE
     ${APP}/adsb
+    ${FW}/components/apps/tui
     ${FW}/components/lakeshark/audio
     ${FW}/bench/shims)
 
@@ -1265,18 +1286,20 @@ target_include_directories(test_flipper_fm_command PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/components/lakeshark/core)
 ls_add_test(test_fm_lifecycle ${APP}/fm/fm_lifecycle.c)
+ls_add_test(test_fm_receive ${APP}/fm/fm_mode_handoff.c)
 ls_add_test(test_fm_rx_worker
     ${APP}/fm/fm_rx_worker.c
     ${FW}/components/lakeshark/core/radio_decode_worker.c)
 ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
-ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c)
+ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c)
 target_include_directories(test_files_safety BEFORE PRIVATE
     ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
 target_compile_options(test_files_safety PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_files_safety PRIVATE -Wl,--gc-sections)
-set_source_files_properties(tests/test_files_safety.c PROPERTIES COMPILE_OPTIONS -fwhole-program)
+
 ls_add_test(test_subghz_nrz_callers ${APP}/subghz/subghz_nrz.c)
 ls_add_test(test_rec_list_format ${APP}/rec/rec_list_format.c)
 ls_add_test(test_rec_sidecar     ${APP}/rec/rec_sidecar.c)
@@ -1440,7 +1463,7 @@ target_include_directories(test_music_backend BEFORE PRIVATE
     ${FW}/components/chmorgan__esp-audio-player/include
     ${CMAKE_CURRENT_SOURCE_DIR}/shims/music
     ${FW}/components/apps/tui ${FW}/components/lakeshark)
-target_link_options(test_music_backend PRIVATE -Wl,--wrap=fopen -Wl,--wrap=fclose -Wl,--wrap=audio_player_get_state)
+target_link_options(test_music_backend PRIVATE -Wl,--wrap=fopen -Wl,--wrap=fclose -Wl,--wrap=fseek -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=audio_player_get_state)
 ls_add_test(test_wav_decoder ${FW}/components/chmorgan__esp-audio-player/audio_wav.cpp)
 target_include_directories(test_wav_decoder PRIVATE ${FW}/components/chmorgan__esp-audio-player)
 target_include_directories(test_music_transport PRIVATE ${FW}/components/apps/tui)
@@ -1523,6 +1546,14 @@ ls_add_test(test_ls_search_core ${FW}/components/lakeshark/dsp/ls_search_core.c 
 target_include_directories(test_ls_search_core PRIVATE ${FW}/components/lakeshark/dsp)
 ls_add_test(test_cell_core ${APP}/cell/cell_core.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
 target_include_directories(test_cell_core PRIVATE ${APP}/cell ${FW}/components/lakeshark/dsp)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_cell_review COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_review.py")
+    add_test(NAME test_cell_worker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_worker.py")
+endif()
+ls_add_test(test_cell_sweep ${FW}/components/lakeshark/dsp/ls_sweep.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
+target_include_directories(test_cell_sweep PRIVATE ${FW}/components/lakeshark/dsp ${FW}/components/lakeshark/radio)
+ls_add_test(test_cell_monitor ${APP}/cell/cell_core.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
+target_include_directories(test_cell_monitor PRIVATE ${APP}/cell ${FW}/components/lakeshark/dsp ${FW}/components/lakeshark/radio ${FW}/components/lakeshark/board)
 ls_add_test(test_cell_report ${APP}/cell/cell_report_core.c)
 target_include_directories(test_cell_report PRIVATE ${APP}/cell)
 ls_add_test(test_lte_sync ${APP}/cell/lte_sync.c)
@@ -1752,6 +1783,11 @@ ls_add_test(test_ls_term
 target_include_directories(test_ls_term PRIVATE
     ${FW}/components/apps/tui)
 
+ls_add_test(test_ls_term_runner ${FW}/components/apps/tui/ls_term_scroll.c)
+target_include_directories(test_ls_term_runner BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/term_shims
+    ${FW}/components/apps/tui)
+
 ls_add_test(test_ls_errlog_esp
     ${FW}/components/lakeshark/core/ls_errlog.c
     ${FW}/components/lakeshark/core/ls_errlog_esp.c)
@@ -1841,6 +1877,9 @@ ls_add_test(test_textbuf ${FW}/components/apps/tui/ls_textbuf.c)
 ls_add_test(test_notes ${FW}/components/apps/tui/ls_notes.c)
 target_include_directories(test_notes PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 target_compile_definitions(test_notes PRIVATE LS_NOTES_TEST=1)
+ls_add_test(test_lssim_notes)
+add_dependencies(test_lssim_notes lssim)
+target_compile_definitions(test_lssim_notes PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
 ls_add_test(test_note_blocks ${FW}/components/apps/tui/ls_note_blocks.c ${FW}/components/apps/tui/ls_notes.c ${FW}/components/apps/tui/ls_value.c)
 target_include_directories(test_note_blocks PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 target_compile_definitions(test_note_blocks PRIVATE LS_NOTES_TEST=1)
@@ -2098,7 +2137,7 @@ foreach(merge_test test_map_layers test_notify_policy test_compass_storage)
     set_source_files_properties(tests/${merge_test}.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
 endforeach()
 
-target_sources(test_map_layers PRIVATE ${FW}/components/apps/tui/ls_theme.c ${CARTO}/src/raster.c)
+target_sources(test_map_layers PRIVATE ${FW}/components/apps/tui/ls_geo.c ${FW}/components/apps/tui/ls_theme.c ${CARTO}/src/raster.c)
 
 ls_add_test(test_ais ${APP}/fm/ais.c ${APP}/fm/ais_store.c ${APP}/fm/fm_mode_label.c)
 
@@ -2255,6 +2294,7 @@ target_link_options(test_sweep_find PRIVATE -Wl,--gc-sections)
 set_source_files_properties(tests/test_sweep_find.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
 
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_compass_regressions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compass_regressions.py")
     add_test(NAME test_ble_scan COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ble_scan.py")
     add_test(NAME test_audio_reinit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_reinit.py")
 endif()
@@ -2280,3 +2320,78 @@ foreach(LS_TEST IN LISTS LS_REGISTERED_TESTS)
         set_tests_properties(${LS_TEST} PROPERTIES WORKING_DIRECTORY "${FW}")
     endif()
 endforeach()
+
+# Identity-based live overlay placement regressions.
+ls_add_test(test_map_label_sticky)
+
+ls_add_test(test_adsb_rx
+    ${APP}/adsb/adsb_source.c
+    ${FW}/components/lakeshark/radio/iq_app_control.c)
+target_include_directories(test_adsb_rx PRIVATE
+    ${APP}/adsb ${FW}/components/lakeshark/core)
+
+ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
+    ${APP}/subghz/subghz_file.c
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
+target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
+target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)
+ls_add_test(test_wireless_backend ${FW}/components/apps/tui/ls_wireless_history.c)
+target_include_directories(test_wireless_backend PRIVATE ${FW}/main ${FW}/components/apps ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_wireless_backend PRIVATE CONFIG_LS_C6_LINK=1 CONFIG_LS_BLE_HEAD=1)
+
+add_test(NAME test_gps_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gps_ui.py $<TARGET_FILE:lssim>)
+
+target_sources(test_flipper_fm_command PRIVATE ${FW}/components/lakeshark/core/ls_uart_claim.c)
+
+ls_add_test(test_set_async)
+target_include_directories(test_set_async PRIVATE
+    tests/set_shims ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
+    ${FW}/components/apps/tui ${FW}/components/lakeshark/board)
+target_compile_options(test_set_async PRIVATE -O2 -fwhole-program -ffunction-sections -fdata-sections)
+target_link_options(test_set_async PRIVATE -Wl,--gc-sections)
+file(GLOB MESH_HOST_ED ${FW}/components/meshcore/upstream/ed25519/*.c)
+# Upstream ref10 ed25519 left-shifts negative values by design (ge.c select).
+if(LS_SANITIZE)
+    set_source_files_properties(${MESH_HOST_ED} PROPERTIES COMPILE_OPTIONS "-fno-sanitize=shift")
+endif()
+add_executable(test_mesh_backend tests/test_mesh_backend.cpp tests/mesh_backend_fakes.cpp
+    ${FW}/components/meshcore/upstream/src/Dispatcher.cpp
+    ${FW}/components/meshcore/upstream/src/Mesh.cpp
+    ${FW}/components/meshcore/upstream/src/Packet.cpp
+    ${FW}/components/meshcore/upstream/src/Identity.cpp
+    ${FW}/components/meshcore/upstream/src/helpers/AdvertDataHelpers.cpp
+    ${FW}/components/meshcore/ls_mesh_inspect.c
+    ${MESH_HOST_ED})
+target_link_libraries(test_mesh_backend ls_harness m)
+target_include_directories(test_mesh_backend BEFORE PRIVATE
+    ${FW}/bench/shims/mesh ${FW}/bench/shims
+    ${FW}/components/meshcore/compat ${FW}/components/meshcore/upstream/src
+    ${FW}/components/meshcore/upstream/ed25519 ${FW}/components/meshcore
+    ${FW}/components/lakeshark ${FW}/components/lakeshark/core
+    ${FW}/components/lakeshark/board ${FW}/components/lakeshark/radio)
+target_compile_definitions(test_mesh_backend PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+target_compile_options(test_mesh_backend PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_mesh_backend PRIVATE -Wl,--gc-sections)
+add_test(NAME test_mesh_backend COMMAND test_mesh_backend)
+
+ls_add_test(test_map_place_search
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_map_place_search PRIVATE ${LS_TUI_APP_INCLUDES} ${CARTO}/include)
+target_compile_definitions(test_map_place_search PRIVATE LS_CARTOCORE_HOST=1)
+target_compile_options(test_map_place_search PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_map_place_search PRIVATE -Wl,--gc-sections)
+ls_add_test(test_tiles_open)
+target_include_directories(test_tiles_open PRIVATE ${LS_TUI_APP_INCLUDES} ${CARTO}/include)
+target_compile_definitions(test_tiles_open PRIVATE LS_CARTOCORE_HOST=1)
+target_compile_options(test_tiles_open PRIVATE -ffunction-sections -fdata-sections -fwhole-program)
+target_link_options(test_tiles_open PRIVATE -Wl,--gc-sections)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_tiles_queue COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tiles_queue.py")
+    add_test(NAME test_tiles_state COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tiles_state.py")
+endif()

@@ -339,6 +339,8 @@ const ls_lora_cfg_t *ls_lora_cfg(void);
 /* Put the part in continuous receive. Idempotent. */
 esp_err_t ls_lora_receive(void);
 bool      ls_lora_is_receiving(void);
+/* Cached driver state; does not poll or clear chip interrupts. */
+bool      ls_lora_is_transmitting(void);
 
 /* Start a transmit; returns immediately. ESP_ERR_INVALID_STATE if a transmit
    is already in flight, ESP_ERR_INVALID_SIZE above 255 bytes. */
@@ -369,6 +371,7 @@ uint32_t  ls_lora_airtime_ms(int len);
 
 /* Take the radio for a sweep of [min_hz, max_hz]. */
 
+/* Only the task that successfully begins a scan may retune, pass or end it. */
 esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz);
 
 /* One complete row. Fills `n` bins with dBm, oldest business first: bin 0 is

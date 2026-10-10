@@ -224,6 +224,21 @@ static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
     return x + (int)strlen(v) + 3;
 }
 
+static const char *receive_label(void)
+{
+    static const char *const names[] = {
+        "CONTROL SEARCH", "CONTROL LOCKED", "GRANT / TRAFFIC WAIT",
+        "TRAFFIC SYNC", "VOICE", "ENCRYPTED", "TUNE FAILED"
+    };
+    if (P25.receive_state == P25_RX_TUNE_FAILED) return "TUNE FAILED";
+    if (!P25.grant_on_traffic && P25.grant_observed.support != P25_CALL_NONE) {
+        if (P25.grant_observed.support == P25_CALL_MISSING_IDEN || P25.grant_observed.support == P25_CALL_INVALID) return "UNRESOLVED GRANT";
+        if (P25.grant_observed.support == P25_CALL_UNSUPPORTED || (P25.grant_observed.support == P25_CALL_PHASE2 && !P25.phase2_follow)) return "UNSUPPORTED GRANT";
+    }
+    unsigned state = (unsigned)P25.receive_state;
+    return state < sizeof(names) / sizeof(names[0]) ? names[state] : "CONTROL SEARCH";
+}
+
 static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
                         const char *mod, bool sync, float level, bool voice,
                         const ls_iq_control_status_t *st)
@@ -239,7 +254,7 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
     const int x0 = r.x + 2;
 
     char n[12], t[12], u[12], iq[32], rx[16];
-    if (nac > 0) snprintf(n, sizeof(n), "%03X", nac); else snprintf(n, sizeof(n), "---");
+    if (p25_nac_valid(&P25)) snprintf(n, sizeof(n), "%03X", nac); else snprintf(n, sizeof(n), "---");
     if (tg > 0) snprintf(t, sizeof(t), "%d", tg); else snprintf(t, sizeof(t), "---");
     if (src > 0) snprintf(u, sizeof(u), "%d", src); else snprintf(u, sizeof(u), "---");
 
@@ -266,7 +281,7 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
     int x;
     #define ROW_OK() (y <= last)
     if (ROW_OK()) {
-        x = kv(sf, r, x0, y, "NAC", n, nac > 0 ? value : idle);
+        x = kv(sf, r, x0, y, "NAC", n, p25_nac_valid(&P25) ? value : idle);
         x = kv(sf, r, x, y, "TG", t, tg > 0 ? value : idle);
         if (voice && ((s_blink / 12) & 1) && x - 2 < r.x + r.w - 2)
             tui_put_char(sf, r, x - 2, y, LS_TUI_SHADE_FULL, good);
@@ -278,7 +293,7 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
         y += step;
     }
     if (ROW_OK()) {
-        kv(sf, r, x0, y, "SYNC", sync ? "LOCKED" : "SEARCHING", sync ? good : idle);
+        kv(sf, r, x0, y, "SYNC", receive_label(), sync ? good : idle);
         y += step;
     }
     if (gauge && ROW_OK()) {
@@ -621,6 +636,7 @@ static void pick_profile(int i)
 
 static ls_act_status_t a_p25_profile(const ls_args_t *in, ls_val_t *out)
 {
+    ls_wf_source_release();
     (void)in;
     s_profile_n = 0;
 
@@ -705,45 +721,64 @@ static void radio_chosen(ls_rsel_radio_t radio)
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
 
-static void open_radio(void) { ls_rsel_open(LS_RSEL_P25, radio_chosen); }
+static void open_radio(void) { ls_wf_source_release(); ls_rsel_open(LS_RSEL_P25, radio_chosen); }
 
-/* OPTIONS: the SETTINGS page's own rows, through its own code, so the two
-   cannot disagree. The CQPSK loop gains step both ways and stay on the page,
-   which has LESS and MORE for them; its last row goes there. */
+/* SETTINGS and OPTIONS share one tree and the same backend callbacks. */
 static void o_p25_act(const ls_opt_t *o)
 {
     ps_selected = o->arg;
     ps_change(1, true);
 }
 static void o_p25_show(const ls_opt_t *o, char *out, size_t n) { ps_value(o->arg, out, n); }
-static void o_p25_page(const ls_opt_t *o) { (void)o; ps_open = true; ls_wf_source_release(); }
-static void o_p25_page_show(const ls_opt_t *o, char *out, size_t n)
+static double o_p25_num(const ls_opt_t *o)
 {
-    (void)o;
-    snprintf(out, n, "%d settings, CQPSK tuning", PS_COUNT);
+    char value[48]; ps_value(o->arg, value, sizeof(value)); return atof(value);
 }
+static void o_p25_set_num(const ls_opt_t *o, double v)
+{
+    ps_selected = o->arg; ps_number(v);
+}
+static const char *o_p25_iq_only(const ls_opt_t *o)
+{
+    (void)o; return ps_lr_receiver() ? "IQ receiver required" : NULL;
+}
+static const ls_opt_t OPT_P25_POLICY[] = {
+    { .label = "Hold current talkgroup", .kind = LS_OPT_ACTION, .arg = 18, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Lockout current talkgroup", .kind = LS_OPT_ACTION, .arg = 19, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Lockout list", .kind = LS_OPT_ACTION, .arg = 25, .act = o_p25_act, .show = o_p25_show, .leaves = true },
+    { .label = "Remove lockout TG", .kind = LS_OPT_NUMBER, .arg = 20, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
+    { .label = "Allow list mode", .kind = LS_OPT_ACTION, .arg = 21, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Allowed list", .kind = LS_OPT_ACTION, .arg = 26, .act = o_p25_act, .show = o_p25_show, .leaves = true },
+    { .label = "Add allowed TG", .kind = LS_OPT_NUMBER, .arg = 22, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
+    { .label = "Remove allowed TG", .kind = LS_OPT_NUMBER, .arg = 23, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
+};
+static const ls_opt_ctx_t CTX_P25_POLICY = { .name = "Talkgroups", .job = LS_RSEL_P25, LS_OPT_ROWS(OPT_P25_POLICY) };
 static const ls_opt_t OPT_P25[] = {
     LS_CALLS_MENU,
+    { .label = "Talkgroup policy", .kind = LS_OPT_MENU, .sub = &CTX_P25_POLICY },
+    { .label = "Control survey", .kind = LS_OPT_ACTION, .arg = 24, .act = o_p25_act, .show = o_p25_show },
     { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Receiver gain (dB)",    .kind = LS_OPT_ACTION, .arg = 3,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Volume",                .kind = LS_OPT_ACTION, .arg = 4,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Voice gate",            .kind = LS_OPT_ACTION, .arg = 5,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Receiver gain (dB)",    .kind = LS_OPT_LEVEL, .arg = 3,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 50, .step = 1, .radios = LS_OPT_SDR, .show = o_p25_show },
+    { .label = "Receiver gain (AUTO/MAX)", .kind = LS_OPT_ACTION, .arg = 3, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_LORA },
+    { .label = "Volume",                .kind = LS_OPT_LEVEL, .arg = 4,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 100, .step = 5, .show = o_p25_show },
+    { .label = "Voice gate",            .kind = LS_OPT_LEVEL, .arg = 5,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 99, .step = 1, .show = o_p25_show },
     { .label = "Sync beep",             .kind = LS_OPT_ACTION, .arg = 6,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Trunking auto-follow",  .kind = LS_OPT_ACTION, .arg = 7,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Leave encrypted calls", .kind = LS_OPT_ACTION, .arg = 8,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Encrypted skip (s)",    .kind = LS_OPT_ACTION, .arg = 9,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Scan threshold (%)",    .kind = LS_OPT_ACTION, .arg = 13, .act = o_p25_act, .show = o_p25_show },
-    { .label = "Scan hang (ms)",        .kind = LS_OPT_ACTION, .arg = 14, .act = o_p25_act, .show = o_p25_show },
-    { .label = "Phase II (exp)",        .kind = LS_OPT_ACTION, .arg = 15, .act = o_p25_act, .show = o_p25_show },
-    { .label = "Phase II follow (exp)", .kind = LS_OPT_ACTION, .arg = 17, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Encrypted skip (s)",    .kind = LS_OPT_LEVEL, .arg = 9,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 3600, .step = 5, .show = o_p25_show },
+    { .label = "Scan threshold (%)",    .kind = LS_OPT_LEVEL, .arg = 13, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 100, .step = 1, .show = o_p25_show },
+    { .label = "Scan hang (ms)",        .kind = LS_OPT_LEVEL, .arg = 14, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 30000, .step = 500, .show = o_p25_show },
+    { .label = "Phase II (exp)",        .kind = LS_OPT_ACTION, .arg = 15, .act = o_p25_act, .show = o_p25_show, .why_not = o_p25_iq_only },
+    { .label = "Phase II follow (exp)", .kind = LS_OPT_ACTION, .arg = 17, .act = o_p25_act, .show = o_p25_show, .why_not = o_p25_iq_only },
     { .label = "Profile from card",     .kind = LS_OPT_ACTION, .arg = 16, .act = o_p25_act, .show = o_p25_show },
-    { .label = "All settings",          .kind = LS_OPT_ACTION, .act = o_p25_page, .show = o_p25_page_show,
-      .leaves = true },
+    { .label = "CQPSK timing gain", .kind = LS_OPT_ACTION, .arg = 10, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
+    { .label = "CQPSK carrier gain", .kind = LS_OPT_ACTION, .arg = 11, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
+    { .label = "Reset CQPSK tuning", .kind = LS_OPT_ACTION, .arg = 12, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
 };
 static const ls_opt_ctx_t CTX_P25 = { .name = "P25", .job = LS_RSEL_P25, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_P25) };
-static void open_options(void) { ls_opt_open(&CTX_P25); }
+static void open_options(void) { ls_wf_source_release(); ls_opt_open(&CTX_P25); }
 
 static void enter(void)
 {
@@ -763,18 +798,23 @@ static const ls_btn_t PAGES[] = {
 };
 #define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
 
+static void set_page(int page)
+{
+    if (page != 1) ls_wf_source_release();
+    s_page = page;
+}
+
 /* A page button's action. */
 static void page_button(int i)
 {
     switch (i) {
     case PB_SPECTRUM:
-        s_page = s_page == 1 ? 0 : 1;
-        if (s_page == 0) ls_wf_source_release();
+        set_page(s_page == 1 ? 0 : 1);
         break;
-    case PB_SCAN: s_page = 2; break;
-    case PB_SETTINGS: ps_open = true; ls_wf_source_release(); break;
+    case PB_SCAN: set_page(2); break;
+    case PB_SETTINGS: open_options(); break;
     case PB_CALLS: ls_calls_open("P25"); ls_wf_source_release(); break;
-    case PB_DMR: s_page = 5; break;
+    case PB_DMR: set_page(5); break;
     }
 }
 
@@ -856,9 +896,9 @@ static void radio_view(void)
     s_view.volume=audio_volume_get();
     p25_get_receiver_status(&s_view.receiver);
     bool sync=s_view.receiver.receiver_streaming && P25.dsd_has_sync;
-    if(sync) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
+    if(sync && p25_nac_valid(&P25)) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
     else snprintf(s_view.detail[0],64,"NAC ---   TG ---   UNIT ---");
-    snprintf(s_view.detail[1],64,"SYNC %s",sync?"LOCKED":"SEARCHING");
+    snprintf(s_view.detail[1],64,"%s",receive_label());
     if(lr_receiver()) {
         const char *g=ls_quick_state(&QUICK_LR[2]);
         snprintf(s_view.detail[2],64,"GAIN %s",g?g:"-");
@@ -873,9 +913,9 @@ static void radio_view(void)
 }
 static void radio_action(char c)
 {
-    if(c=='P') {ps_open=true;ls_wf_source_release();return;}
-    if(c=='W') {s_page=1;return;}
-    if(c=='M'||c=='D') {s_page=0;return;}
+    if(c=='P') {open_options();return;}
+    if(c=='W') {set_page(1);return;}
+    if(c=='M'||c=='D') {set_page(0);return;}
     if(c=='[' || c==']') {
         int64_t hz = (int64_t)s_tune_freq_hz + (c=='[' ? -12500 : 12500);
         if(hz<24000000) hz=24000000;
@@ -895,7 +935,6 @@ static void draw(tui_surface *sf, tui_rect area)
         snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
     }
-    if(ps_open) {snprintf(s_hint,sizeof(s_hint),"P25 SETTINGS  arrows select/change  ENTER edit");ps_draw(sf,area);return;}
     if (s_page == 5) {
         snprintf(s_hint, sizeof(s_hint), "S slot  H hold  O options  1 P25  R radio");
         draw_dmr(sf, area);
@@ -998,8 +1037,7 @@ static bool key(ls_tk_t k, char ch)
     if (ls_calls_active()) return ls_calls_key(k, ch);
     if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("P25"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
-    if(ps_open)return ps_key(k,ch);
-    if (k == LS_TK_CHAR && ch == '6') { s_page = 5; return true; }
+    if (k == LS_TK_CHAR && ch == '6') { set_page(5); return true; }
     if (s_page == 5) {
         if (k == LS_TK_ESC || (k == LS_TK_CHAR && ch == '1')) {
             s_page = 0; ls_wf_source_release(); return true;
@@ -1018,9 +1056,13 @@ static bool key(ls_tk_t k, char ch)
        R is RANGE. */
     if(k==LS_TK_CHAR && (ch=='r'||ch=='R') && !(s_page==2 && (s_radio.lists || s_radio.scan_choice))) {open_radio();return true;}
     /* O is OPTIONS on the same terms: inside the lists it is SCAN TYPE. */
-    if(k==LS_TK_CHAR && !(s_page==2 && (s_radio.lists || s_radio.scan_choice)) && ls_opt_key(&CTX_P25,ch)) return true;
-    if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {ps_open=true;ls_wf_source_release();return true;}
-    if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {s_page=ch-'1';return true;}
+    if(k==LS_TK_CHAR && !(s_page==2 && (s_radio.lists || s_radio.scan_choice)) && (ch=='o'||ch=='O')) {open_options();return true;}
+    if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {open_options();return true;}
+    if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {
+        if (ch == '2') page_button(PB_SPECTRUM);
+        else set_page(ch - '1');
+        return true;
+    }
     /* 'l' for load. The profile chooser gets no quick-bar slot on purpose:
        every control there costs rows the waterfall and the activity table
        need, and choosing a profile is not what a thumb does while watching a
@@ -1064,7 +1106,6 @@ static bool key(ls_tk_t k, char ch)
 static bool touch(int col, int row)
 {
     if (ls_calls_active()) return ls_calls_touch(col, row);
-    if(ps_open)return ps_touch(col,row);
     if (s_page == 5) {
         int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
         static const char keys[] = {'1', 's', 'h', 'r', 'o'};

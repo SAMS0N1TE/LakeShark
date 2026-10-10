@@ -1,5 +1,8 @@
 #include "ls_rid_ui.h"
 #include "ls_rid.h"
+#include "ls_wireless.h"
+#pragma weak ls_wireless_rid_request
+#pragma weak ls_wireless_rid_status
 #include "ls_options.h"
 #include "ls_field.h"
 #include "ls_geo.h"
@@ -17,7 +20,20 @@ static EXT_RAM_BSS_ATTR double ranges[LS_RID_MAX], bearings[LS_RID_MAX];
 static EXT_RAM_BSS_ATTR ls_dot_t dots[160*120];
 static int order[LS_RID_MAX], count, pick, sort, units, alert, rows=1;
 static uint32_t selected_serial, notice_generation;
-static bool detail;
+static bool detail, rx_requested;
+static ls_rid_rx_t receiver(void) {
+    return ls_wireless_rid_status?ls_wireless_rid_status():LS_RID_RX_UNAVAILABLE;
+}
+static const char *receiver_name(void) {
+    static const char *const names[]={"OFF","UNAVAILABLE","STARTING","START FAILED","PAUSED / CONNECTING","LISTENING"};
+    return names[receiver()];
+}
+static void receive_start(const ls_opt_t *o) {
+    (void)o; if(ls_wireless_rid_request) {rx_requested=true;ls_wireless_rid_request(true);}
+}
+static void receive_stop(const ls_opt_t *o) {
+    (void)o; if(ls_wireless_rid_request) ls_wireless_rid_request(false); rx_requested=false;
+}
 static tui_rect list_area;
 static int get(const ls_opt_t *o) { return o->arg==0?sort:o->arg==1?units:alert; }
 static void set(const ls_opt_t *o,int v) {
@@ -40,6 +56,8 @@ static const ls_opt_t OPTIONS[]={
     {.label="DISPLAY",.kind=LS_OPT_MENU,.sub=&DISPLAY_CTX},
     {.label="ALERTS",.kind=LS_OPT_MENU,.sub=&ALERT_CTX},
     {.label="CLEAR TABLE",.kind=LS_OPT_ACTION,.act=clear},
+    {.label="START BLE RX",.kind=LS_OPT_ACTION,.act=receive_start},
+    {.label="RELEASE BLE RX",.kind=LS_OPT_ACTION,.act=receive_stop},
 };
 static const ls_opt_ctx_t CTX={.name="DRONES",.job=-1,.radio=LS_RSEL_NONE,.back_to_screen=true,LS_OPT_ROWS(OPTIONS)};
 static void line(tui_surface *sf,tui_rect a,int r,const char *s,uint8_t ink) {
@@ -60,7 +78,7 @@ static void refresh(int64_t now) {
     ls_field_sample_t fix; ls_field_sample_snapshot(&fix);
     for(int i=0;i<count;i++) {
         ranges[i]=INFINITY; bearings[i]=NAN; order[i]=i;
-        if(fix.gps_valid && view[i].position_valid && now-view[i].location_us<60000000LL)
+        if(fix.gps_valid && view[i].position_valid && ls_rid_fresh(&view[i],1,now))
             ls_geo_bearing_range(fix.lat,fix.lon,view[i].lat,view[i].lon,&bearings[i],&ranges[i]);
     }
     for(int i=1;i<count;i++) { int v=order[i],j=i; while(j>0 && before(v,order[j-1])) {order[j]=order[j-1];j--;} order[j]=v; }
@@ -85,8 +103,11 @@ static void radar(tui_surface *sf,tui_rect a,int64_t now) {
         double t=i*.01745329252;
         dot(w,h,w/2+(int)lround(sin(t)*rx*ring/3),h/2-(int)lround(cos(t)*ry*ring/3),ring==3?TUI_GREEN:TUI_CYAN);
     }
-    double phase=(now%4000000)*6.2831853/4000000;
-    for(int trail=0;trail<16;trail++) for(int r=1;r<=80;r++) {
+    int64_t heard=-1;
+    for(int i=0;i<count;i++) if(view[i].last_us>heard) heard=view[i].last_us;
+    bool pulse=receiver()==LS_RID_RX_LISTENING && heard>=0 && now>=heard && now-heard<1000000;
+    double phase=(now-heard)*6.2831853/1000000;
+    for(int trail=0;pulse && trail<16;trail++) for(int r=1;r<=80;r++) {
         if(trail && (r+trail)%4) continue;
         double t=phase-trail*.025;
         dot(w,h,w/2+(int)lround(sin(t)*rx*r/80),h/2-(int)lround(cos(t)*ry*r/80),trail?TUI_GREEN:TUI_GREEN|TUI_BRIGHT);
@@ -117,24 +138,34 @@ static void detail_line(tui_surface *sf,tui_rect a,int r,const char *s,uint8_t i
 }
 static void show_detail(tui_surface *sf,tui_rect a,int64_t now) {
     ls_rid_drone_t *d=&selected; char s[160],x[24],y[24],z[24];
+    bool flight=ls_rid_fresh(d,1,now), system=ls_rid_fresh(d,4,now), operator=ls_rid_fresh(d,5,now);
+    uint8_t flight_ink=flight?WHITE:LS_ATTR_DIM, system_ink=system?WHITE:LS_ATTR_DIM;
+    const char *history=flight?"":" / STALE";
     ls_panel_box(sf,a,"DRONE DETAIL / UNVERIFIED",TUI_CYAN);
     if(ls_tui_is_wide()) ls_panel_box(sf,tui_rect_make(a.x+a.w/2,a.y,a.w-a.w/2,a.h),"OPERATOR / SYSTEM",TUI_CYAN);
     detail_line(sf,a,2,d->uas_id[0]?d->uas_id:"Awaiting Basic ID",WHITE);
     snprintf(s,sizeof(s),"%02X:%02X:%02X:%02X:%02X:%02X / %d dBm",d->mac[5],d->mac[4],d->mac[3],d->mac[2],d->mac[1],d->mac[0],d->rssi); detail_line(sf,a,4,s,CYAN);
-    snprintf(s,sizeof(s),"Seen %.0fs ago / %s%s",(now-d->last_us)/1e6,status_name(d->status),now-d->last_us>=60000000LL?" / EXPIRED":""); detail_line(sf,a,5,s,WHITE);
-    snprintf(s,sizeof(s),"UA %s %.5f, %.5f",d->position_valid?"GPS":"--",d->lat,d->lon); detail_line(sf,a,7,s,WHITE);
+    snprintf(s,sizeof(s),"Seen %.0fs ago / %s%s",(now-d->last_us)/1e6,(d->messages&2)?(flight?status_name(d->status):"FLIGHT STALE"):"FLIGHT --",now-d->last_us>=60000000LL?" / EXPIRED":""); detail_line(sf,a,5,s,WHITE);
+    snprintf(s,sizeof(s),"UA %s %.5f, %.5f%s",d->position_valid?"GPS":"--",d->lat,d->lon,history); detail_line(sf,a,7,s,flight_ink);
     measure(x,sizeof(x),d->geo_m); measure(y,sizeof(y),d->baro_m);
-    snprintf(s,sizeof(s),"GEO %s / BARO %s",x,y); detail_line(sf,a,8,s,WHITE);
-    measure(x,sizeof(x),d->height_m); snprintf(s,sizeof(s),"HEIGHT %s / %s",x,d->height_agl?"AGL":"ABOVE TAKEOFF"); detail_line(sf,a,9,s,WHITE);
-    snprintf(s,sizeof(s),"Speed %.1f %s / track %.0f deg",d->speed_mps*(units?2.23694:1),units?"mph":"m/s",d->track_deg); detail_line(sf,a,10,s,WHITE);
-    snprintf(s,sizeof(s),"Vertical %.1f %s / fix age %.0fs",d->vertical_mps*(units?3.28084:1),units?"ft/s":"m/s",d->location_us?(now-d->location_us)/1e6:NAN); detail_line(sf,a,11,s,LS_ATTR_DIM);
-    snprintf(s,sizeof(s),"Operator %s %.5f, %.5f",d->operator_valid?"GPS":"--",d->operator_lat,d->operator_lon); detail_line(sf,a,13,s,WHITE);
+    snprintf(s,sizeof(s),"GEO %s / BARO %s%s",x,y,history); detail_line(sf,a,8,s,flight_ink);
+    measure(x,sizeof(x),d->height_m); snprintf(s,sizeof(s),"HEIGHT %s / %s%s",x,d->height_agl?"AGL":"ABOVE TAKEOFF",history); detail_line(sf,a,9,s,flight_ink);
+    snprintf(s,sizeof(s),"Speed %.1f %s / track %.0f deg%s",d->speed_mps*(units?2.23694:1),units?"mph":"m/s",d->track_deg,history); detail_line(sf,a,10,s,flight_ink);
+    snprintf(s,sizeof(s),"Vertical %.1f %s / fix age %.0fs%s",d->vertical_mps*(units?3.28084:1),units?"ft/s":"m/s",(d->messages&2)?(now-d->location_us)/1e6:NAN,history); detail_line(sf,a,11,s,LS_ATTR_DIM);
+    snprintf(s,sizeof(s),"Operator %s %.5f, %.5f%s",d->operator_valid?"GPS":"--",d->operator_lat,d->operator_lon,system?"":" / STALE"); detail_line(sf,a,13,s,system_ink);
     const char *type=d->operator_location_type==0?"TAKEOFF":d->operator_location_type==1?"LIVE GNSS":d->operator_location_type==2?"FIXED":"UNKNOWN";
-    measure(x,sizeof(x),d->operator_geo_m); snprintf(s,sizeof(s),"%s / GEO %s",type,x); detail_line(sf,a,14,s,LS_ATTR_DIM);
-    snprintf(s,sizeof(s),"Operator ID: %s",d->operator_id[0]?d->operator_id:"--"); detail_line(sf,a,15,s,WHITE);
-    measure(x,sizeof(x),d->area_radius_m); snprintf(s,sizeof(s),"Area: %u aircraft / radius %s",d->area_count,x); detail_line(sf,a,17,s,WHITE);
-    measure(y,sizeof(y),d->area_floor_m); measure(z,sizeof(z),d->area_ceiling_m); snprintf(s,sizeof(s),"Floor %s / ceiling %s",y,z); detail_line(sf,a,18,s,WHITE);
-    snprintf(s,sizeof(s),"Class type %u / category %u / class %u",d->classification_type,d->category,d->class_id); detail_line(sf,a,19,s,WHITE);
+    measure(x,sizeof(x),d->operator_geo_m);
+    if(d->messages&16) snprintf(s,sizeof(s),"%s / GEO %s / System %.0fs%s",type,x,(now-d->system_us)/1e6,system?"":" STALE");
+    else snprintf(s,sizeof(s),"System -- / GEO --");
+    detail_line(sf,a,14,s,LS_ATTR_DIM);
+    if(d->messages&32) snprintf(s,sizeof(s),"Operator ID: %s / %.0fs%s",d->operator_id[0]?d->operator_id:"--",(now-d->operator_us)/1e6,operator?"":" STALE");
+    else snprintf(s,sizeof(s),"Operator ID: --");
+    detail_line(sf,a,15,s,operator?WHITE:LS_ATTR_DIM);
+    measure(x,sizeof(x),d->area_radius_m); snprintf(s,sizeof(s),"Area: %u aircraft / radius %s",d->area_count,x); detail_line(sf,a,17,s,system_ink);
+    measure(y,sizeof(y),d->area_floor_m); measure(z,sizeof(z),d->area_ceiling_m); snprintf(s,sizeof(s),"Floor %s / ceiling %s",y,z); detail_line(sf,a,18,s,system_ink);
+    if(d->system_version) snprintf(s,sizeof(s),"Class type %u / category %u / class %u",d->classification_type,d->category,d->class_id);
+    else snprintf(s,sizeof(s),"Class type %u / category -- / class --",d->classification_type);
+    detail_line(sf,a,19,s,system_ink);
     snprintf(s,sizeof(s),"Self ID: %s",d->self_id[0]?d->self_id:"--"); detail_line(sf,a,21,s,WHITE);
     snprintf(s,sizeof(s),"Auth %s / type %u page %u",d->messages&4?"SEEN, UNVERIFIED":"ABSENT",d->auth_type,d->auth_page); detail_line(sf,a,22,s,LS_ATTR_DIM);
 }
@@ -143,13 +174,13 @@ void ls_rid_draw(tui_surface *sf,tui_rect a) {
     if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,"DRONES","More screen space needed","Use a smaller font"); return; }
     int bar_h=ls_tui_is_wide()?3:5;
     ls_btn_t buttons[]={ {detail?"BACK":"DETAIL",detail?"LIST":"SELECTED",detail?'b':'d',false,!detail&&!count,false},
-        {"PREV","DRONE",'[',false,detail||!count,false},
+        {receiver()==LS_RID_RX_LISTENING?"PREV":"RECEIVE",receiver()==LS_RID_RX_LISTENING?"DRONE":"START / R",receiver()==LS_RID_RX_LISTENING?'[':'r',false,detail || (receiver()==LS_RID_RX_LISTENING && !count),false},
         {"NEXT","DRONE",']',false,detail||!count,false},ls_opt_button(&CTX) };
     ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y+a.h-bar_h,a.w,bar_h),buttons,4,-1);
     a.h-=bar_h;
     if(detail) { show_detail(sf,a,now); return; }
-    char s[128]; snprintf(s,sizeof(s),"DRONES / BLE RX / %d active",count); line(sf,a,0,s,CYAN);
-    line(sf,a,1,"Passive broadcasts / expire after 60s",LS_ATTR_DIM);
+    char s[128]; snprintf(s,sizeof(s),"DRONES / ESP32-C6 / %d active",count); line(sf,a,0,s,CYAN);
+    snprintf(s,sizeof(s),"BLE %s / expire after 60s",receiver_name()); line(sf,a,1,s,LS_ATTR_DIM);
     bool wide=ls_tui_is_wide();
     int radar_h=wide?a.h-3:(a.h-3)/2, radar_w=wide?a.w/2:a.w;
     radar(sf,tui_rect_make(a.x,a.y+3,radar_w,radar_h),now);
@@ -157,13 +188,13 @@ void ls_rid_draw(tui_surface *sf,tui_rect a) {
     ls_panel_box(sf,list_area,"HEARD DRONES",TUI_CYAN);
     snprintf(s,sizeof(s),"ID / RANGE / RSSI / AGE  [%s]",SORT[sort]); line(sf,list_area,1,s,LS_ATTR_DIM);
     rows=(list_area.h-3)/3; if(rows<1) rows=1;
-    if(!count) { line(sf,list_area,3,"Listening for Remote ID...",WHITE); line(sf,list_area,5,"Uses the running BLE scanner",LS_ATTR_DIM); return; }
+    if(!count) { line(sf,list_area,3,receiver()==LS_RID_RX_LISTENING?"Listening for Remote ID...":receiver_name(),WHITE); line(sf,list_area,5,"R Receive / O receiver options",LS_ATTR_DIM); return; }
     int start=pick/rows*rows;
     for(int i=start;i<count && i<start+rows;i++) {
         ls_rid_drone_t *d=&view[order[i]]; int r=3+(i-start)*3; char range[24];
         measure(range,sizeof(range),ranges[order[i]]);
         snprintf(s,sizeof(s),"%c %s",i==pick?'>':' ',d->uas_id[0]?d->uas_id:"Awaiting ID"); line(sf,list_area,r,s,i==pick?CYAN:WHITE);
-        snprintf(s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,d->status==3?" / EMERGENCY":""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
+        snprintf(s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,ls_rid_fresh(d,1,now) && d->status==3?" / EMERGENCY":""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
     }
 }
 static void open_detail(void) {
@@ -172,7 +203,12 @@ static void open_detail(void) {
 }
 bool ls_rid_key(ls_tk_t k,char ch) {
     if(ls_opt_key(&CTX,ch)) return true;
-    if(k==LS_TK_ESC || ch=='b' || ch=='B') {detail=false;return true;}
+    if(k==LS_TK_ESC || ch=='b' || ch=='B') {
+        if(detail) {detail=false;return true;}
+        if(k==LS_TK_ESC) return false;
+        ls_tui_screen_show(0);return true;
+    }
+    if(ch=='r' || ch=='R') {receive_start(NULL);return true;}
     if(k==LS_TK_ENTER || ch=='d' || ch=='D') {open_detail();return true;}
     if(!detail && (k==LS_TK_UP || k==LS_TK_DOWN || ch=='[' || ch==']') && count) {
         pick=(pick+count+(k==LS_TK_UP || ch=='['?-1:1))%count; selected_serial=view[order[pick]].serial;return true;
@@ -181,7 +217,7 @@ bool ls_rid_key(ls_tk_t k,char ch) {
 }
 bool ls_rid_touch(int x,int y) {
     int b=ls_btn_hit(x,y); if(b==0) {if(detail) detail=false;else open_detail();return true;}
-    if(b==1 || b==2) {return ls_rid_key(LS_TK_CHAR,b==1?'[':']');}
+    if(b==1 || b==2) {return ls_rid_key(LS_TK_CHAR,b==1?(receiver()==LS_RID_RX_LISTENING?'[':'r'):']');}
     if(b==3) {ls_opt_open(&CTX);return true;}
     if(!detail && x>=list_area.x && x<list_area.x+list_area.w && y>=list_area.y+3 && y<list_area.y+list_area.h) {
         int i=pick/rows*rows+(y-list_area.y-3)/3;
@@ -199,4 +235,5 @@ bool ls_rid_notice(ls_notice_t *out) {
     return true;
 }
 static void enter(void) {detail=false;}
-const ls_tui_screen_t ls_scr_drones={.name="DRONES",.hint="Up/Down select  Enter detail  O Options  B Back",.enter=enter,.draw=ls_rid_draw,.key=ls_rid_key,.touch=ls_rid_touch};
+static void leave(void) {if(rx_requested) receive_stop(NULL);}
+const ls_tui_screen_t ls_scr_drones={.name="DRONES",.hint="Up/Down select  Enter detail  O Options  B Back",.enter=enter,.leave=leave,.draw=ls_rid_draw,.key=ls_rid_key,.touch=ls_rid_touch};

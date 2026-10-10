@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 void adsb_decode_init(void);
+void adsb_decode_reset_stream(void);
 
 void adsb_on_sample(uint8_t *iq, int len);
 

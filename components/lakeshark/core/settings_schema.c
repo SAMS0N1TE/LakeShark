@@ -1,6 +1,7 @@
 /* - see settings_schema.h for what this exists to catch. */
 
 #include "settings_schema.h"
+#include <string.h>
 
 settings_schema_action_t settings_schema_decide(
     settings_schema_read_status_t status,
@@ -57,4 +58,10 @@ const char *settings_schema_read_status_name(settings_schema_read_status_t s)
     case SETTINGS_SCHEMA_READ_UNREADABLE: return "unreadable";
     }
     return "?";
+}
+
+/* ADS-B can also use the HackRF LNA, VGA and amplifier. */
+bool settings_gain_valid(const char *app_name, int gain)
+{
+    return gain >= 0 && gain <= (app_name && strcmp(app_name, "ADS-B") == 0 ? 1130 : 600);
 }

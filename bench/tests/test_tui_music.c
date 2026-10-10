@@ -12,13 +12,14 @@ static bool wide;
 static int rounded_height;
 static int tracks=24, last_play=-1, volume=35, closes;
 static ls_music_state_t state;
+static unsigned format_epoch;
 bool ls_tui_is_wide(void){return wide;}
 int ls_tui_corner_pad(int row){return rounded_height && row>=rounded_height-4?5:0;}
 bool ls_music_open(void){state=LS_MUSIC_STOPPED;return true;}
 void ls_music_close(void){state=LS_MUSIC_STOPPED;closes++;}
 bool ls_music_scan(int source){(void)source;state=LS_MUSIC_STOPPED;return true;}
 int ls_music_count(void){return tracks;}
-const char *ls_music_name(int i){static const char *names[]={"Night Dive.wav","Neon Reef.wav","Shark After Dark.wav","Coral Radio.wav"};return i>=0&&i<tracks?names[i%4]:"";}
+const char *ls_music_name(int i){static const char *names[]={"Night Dive.wav","Neon Reef.wav","Shark After Dark.wav","Coral Radio.wav"};return i==5?"REC-007.wav":i>=0&&i<tracks?names[i%4]:"";}
 const char *ls_music_error(void){return "";}
 bool ls_music_play(int i){if(i<0||i>=tracks)return false;last_play=i;state=LS_MUSIC_PLAYING;return true;}
 bool ls_music_seek_ms(uint32_t ms){(void)ms;return true;}
@@ -38,7 +39,7 @@ static bool keypad;
 static int spectrum_calls;
 bool ls_tui_keyboard_mode(void){return keypad;}
 int ls_music_spectrum(float lo,float hi,int n,float *db){(void)lo;(void)hi;spectrum_calls++;for(int i=0;i<n;i++)db[i]=-12.0f-3*i;return state==LS_MUSIC_PLAYING?n:0;}
-bool ls_music_format(ls_music_format_t *f){f->rate_hz=44100;f->bits=16;f->channels=2;f->mono_out=true;return true;}
+bool ls_music_format(ls_music_format_t *f){f->epoch=format_epoch;f->rate_hz=44100;f->bits=16;f->channels=2;f->mono_out=true;return true;}
 float ls_music_volume_db(void){return (volume-100)*0.5f;}
 static ls_music_mic_t mic;static int mic_starts;
 bool ls_music_mic_start(bool record){mic_starts++;if(state==LS_MUSIC_PLAYING)state=LS_MUSIC_STOPPED;mic=record?LS_MIC_RECORDING:LS_MIC_LIVE;return true;}
@@ -48,8 +49,8 @@ const char *ls_music_mic_file(void){return "/sdcard/music/REC-007.wav";}
 uint32_t ls_music_mic_ms(void){return 12000;}
 bool ls_music_mic_step(void){return true;}
 bool ls_music_live(void){return state==LS_MUSIC_PLAYING||mic!=LS_MIC_OFF;}
-static int gram_calls;
-bool ls_music_spectrogram(ls_music_cursor_t *c,int hops,int rows,float *db){(void)hops;gram_calls++;if(state!=LS_MUSIC_PLAYING||(c->next++ & 1))return false;for(int i=0;i<rows;i++)db[i]=i==rows/2?-30.0f:-110.0f;return true;}
+static int gram_calls,cursor_restarts;
+bool ls_music_spectrogram(ls_music_cursor_t *c,int hops,int rows,float *db){(void)hops;gram_calls++;if(!c->started){cursor_restarts++;c->started=true;}if(state!=LS_MUSIC_PLAYING||(c->next++ & 1))return false;for(int i=0;i<rows;i++)db[i]=i==rows/2?-30.0f:-110.0f;return true;}
 
 static bool locate(tui_cell *cells,int w,int h,const char*text,int*x,int*y) {
     int n=(int)strlen(text);
@@ -64,7 +65,7 @@ static const ls_opt_ctx_t *opened;
 void ls_opt_open(const ls_opt_ctx_t *ctx){opened=ctx;}
 static void paint(tui_surface*sf,int w,int h){tui_frame_begin(sf);ls_scr_music.draw(sf,tui_rect_make(0,0,w,h));}
 static void tap_label(tui_surface*sf,tui_cell*c,int w,int h,const char*text){
-    int x=-1,y=-1;paint(sf,w,h);LS_CHECK_MSG(locate(c,w,h,text,&x,&y),"missing button %s at %dx%d",text,w,h);
+    int x=-1,y=-1;paint(sf,w,h);if(!strcmp(text,"TRACKS") && !locate(c,w,h,text,&x,&y))text="LIST";LS_CHECK_MSG(locate(c,w,h,text,&x,&y),"missing button %s at %dx%d",text,w,h);
     if(x>=0)LS_CHECK(ls_scr_music.touch(x,y));
 }
 static void exercise(int w,int h) {
@@ -74,15 +75,15 @@ static void exercise(int w,int h) {
     ls_scr_music.enter();paint(&sf,w,h);
     /* A button where the row can spell it, and the key everywhere. */
     if(!wide){opened=NULL;tap_label(&sf,back+1,w,h,"OPTIONS");
-        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==5);}
+        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==7);}
     opened=NULL;LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'o'));LS_CHECK(opened!=NULL);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(last_play,0);LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"PAUSE");LS_EQ_INT(state,LS_MUSIC_PAUSED);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"VOL +");LS_EQ_INT(volume,40);
     tap_label(&sf,back+1,w,h,"VOL -");LS_EQ_INT(volume,35);
-    tap_label(&sf,back+1,w,h,"MUTE");LS_EQ_INT(volume,0);
-    tap_label(&sf,back+1,w,h,"UNMUTE");LS_EQ_INT(volume,35);
+    tap_label(&sf,back+1,w,h,"MUTE");LS_EQ_INT(volume,35);LS_CHECK(ls_music_muted());
+    tap_label(&sf,back+1,w,h,"UNMUTE");LS_EQ_INT(volume,35);LS_CHECK(!ls_music_muted());
     tap_label(&sf,back+1,w,h,"TRACKS");
     paint(&sf,w,h);ls_scr_music.key(LS_TK_DOWN,0);ls_scr_music.key(LS_TK_ENTER,0);
     LS_EQ_INT(last_play,1);LS_EQ_INT(state,LS_MUSIC_PLAYING);
@@ -317,3 +318,41 @@ static void microphone(int w,int h){
 LS_CASE(microphone_landscape){microphone(118,28);}
 LS_CASE(microphone_portrait){microphone(52,70);}
 LS_CASE(microphone_compact){microphone(65,20);}
+
+static bool music_muted;
+bool ls_music_muted(void){return music_muted;}
+void ls_music_mute_toggle(void){music_muted=!music_muted;}
+bool ls_music_mic_repair(void){return true;}
+
+LS_CASE(stop_options_and_key_stop_recording_and_playback){
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_CHAR,'d');ls_scr_music.key(LS_TK_CHAR,'w');LS_EQ_INT(mic,LS_MIC_RECORDING);
+    ls_scr_music.key(LS_TK_CHAR,'s');LS_EQ_INT(mic,LS_MIC_OFF);LS_EQ_INT(state,LS_MUSIC_STOPPED);
+    ls_scr_music.key(LS_TK_CHAR,'i');ls_scr_music.key(LS_TK_CHAR,'o');
+    const ls_opt_t *stop=NULL;
+    for(int i=0;i<opened->n;i++)if(!strcmp(opened->opt[i].label,"STOP"))stop=&opened->opt[i];
+    LS_CHECK(stop && stop->act);stop->act(stop);LS_EQ_INT(mic,LS_MIC_OFF);
+    ls_scr_music.key(LS_TK_CHAR,'p');LS_EQ_INT(state,LS_MUSIC_PLAYING);LS_EQ_INT(last_play,5);
+    stop->act(stop);LS_EQ_INT(state,LS_MUSIC_STOPPED);ls_scr_music.leave();
+}
+LS_CASE(options_choices_are_directional_and_span_bounded){
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_CHAR,'o');
+    for(int i=0;i<2;i++){
+        const ls_opt_t *o=&opened->opt[i];LS_EQ_INT(o->kind,LS_OPT_CYCLE);LS_CHECK(o->step>0);
+        o->set(o,0);o->set(o,o->n-1);LS_EQ_INT(o->get(o),o->n-1);
+        o->set(o,1);LS_EQ_INT(o->get(o),1);o->set(o,0);
+    }
+    const ls_opt_t *span=&opened->opt[2];LS_EQ_INT(span->kind,LS_OPT_LEVEL);
+    LS_EQ_INT(span->lo,0);LS_EQ_INT(span->hi,2);LS_EQ_INT(span->step,1);
+    span->set_num(span,2);LS_EQ_INT(span->num(span),2);span->set_num(span,0);LS_EQ_INT(span->num(span),0);
+    ls_scr_music.leave();
+}
+
+LS_CASE(waterfall_history_resets_on_source_epoch){
+    tui_cell *back=calloc(52*70,sizeof(*back)),*front=calloc(52*70,sizeof(*front));
+    tui_surface sf;tui_surface_setup(&sf,back,front,52,70);wide=false;
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_CHAR,'4');ls_scr_music.key(LS_TK_CHAR,'p');
+    paint(&sf,52,70);int before=cursor_restarts;
+    paint(&sf,52,70);LS_EQ_INT(cursor_restarts,before);
+    format_epoch++;paint(&sf,52,70);LS_EQ_INT(cursor_restarts,before+1);
+    ls_scr_music.leave();free(back);free(front);
+}

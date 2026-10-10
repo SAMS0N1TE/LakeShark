@@ -111,6 +111,7 @@ static void stamp(ls_survey_entry_t *o, int64_t us)
     o->epoch = s_epoch;
     o->last_s = s_base_s + (ms - s_start_ms) / 1000;
     ls_survey_note(&s_session, o, &s_fix, us, ms);
+    s_view.activity_revision++;
     s_order_dirty = true;
 }
 
@@ -271,6 +272,7 @@ void ls_survey_tick(void)
         ls_gps_get(&s_gps);
         lock();
         s_fix = (ls_survey_fix_t){s_gps.fix, s_gps.lat_deg, s_gps.lon_deg, s_gps.last_fix_us};
+        if (n >= 0) s_view.activity_revision++;
         if (n < 0) snprintf(s_view.status, sizeof(s_view.status), "Passive Wi-Fi scan unavailable / radio busy");
         for (int i = 0; s_view.running && i < n; i++) {
             ls_survey_entry_t o = {.kind = LS_SURVEY_WIFI, .rssi = s_scan[i].rssi,

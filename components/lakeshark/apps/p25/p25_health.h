@@ -169,6 +169,8 @@ typedef struct {
 } p25_health_snapshot_t;
 
 void p25_health_init(void);
+void p25_health_set_running(bool running);
+bool p25_health_running(void);
 void p25_health_publish(const p25_health_raw_t *raw, uint32_t now_ms);
 bool p25_health_read(p25_health_snapshot_t *out);
 void p25_health_reset_counters(void);

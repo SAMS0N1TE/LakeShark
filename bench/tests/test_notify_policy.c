@@ -102,3 +102,24 @@ LS_CASE(visible_source_override_preserves_haptic_and_quiet_policy)
     LS_EQ_INT(0, ls_notify_unread());
     ls_notify_clear();
 }
+
+static unsigned probed;
+static bool probe0(ls_notice_t *out) { (void)out;probed|=1;return false; }
+static bool probe1(ls_notice_t *out) { (void)out;probed|=2;return false; }
+static bool probe2(ls_notice_t *out) { (void)out;probed|=4;return false; }
+static bool probe3(ls_notice_t *out) { (void)out;probed|=8;return false; }
+static bool probe4(ls_notice_t *out) { (void)out;probed|=16;return false; }
+static bool map_save_probe(ls_notice_t *out) {
+    probed|=32;snprintf(out->title,sizeof(out->title),"MAP");
+    snprintf(out->body,sizeof(out->body),"NOT SAVED: retry in OPTIONS");
+    out->screen=7;out->quiet=true;out->accent=TUI_YELLOW;return true;
+}
+LS_CASE(map_save_notice_survives_other_registered_sources_and_leaving_map) {
+    s_probes=0;probed=0;alerts=0;ls_notify_clear();
+    ls_notify_add_probe(probe0);ls_notify_add_probe(probe1);ls_notify_add_probe(probe2);
+    ls_notify_add_probe(probe3);ls_notify_add_probe(probe4);ls_notify_add_probe(map_save_probe);
+    ls_notify_poll(3);
+    LS_EQ_UINT(63,probed);LS_CHECK(ls_notify_showing());LS_EQ_INT(7,s_now.screen);
+    LS_CHECK(strstr(s_now.body,"NOT SAVED"));LS_EQ_INT(0,alerts);
+    s_probes=0;ls_notify_clear();
+}

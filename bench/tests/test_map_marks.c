@@ -18,8 +18,22 @@ static const char *scratch(void)
 
 static void fresh(void)
 {
+    char backup[540];snprintf(backup,sizeof(backup),"%s.bak",scratch());remove(backup);
+    snprintf(backup,sizeof(backup),"%s.new",scratch());remove(backup);
     remove(scratch());
     ls_marks_use_file(scratch());
+}
+
+LS_CASE(mark_identity_survives_rename_and_list_compaction) {
+    fresh();
+    ls_marks_add(43,-71,LS_MARK_STAR,"same");
+    ls_marks_add(43.1,-71.1,LS_MARK_STAR,"same");
+    uint32_t first=ls_marks_at(0)->id,second=ls_marks_at(1)->id;
+    LS_CHECK(first && second && first!=second);
+    LS_CHECK(ls_marks_rename(1,"renamed"));
+    LS_CHECK(ls_marks_delete(0));LS_EQ_UINT(second,ls_marks_at(0)->id);
+    ls_marks_add(43.2,-71.2,LS_MARK_STAR,"same");
+    LS_CHECK(ls_marks_at(1)->id!=first && ls_marks_at(1)->id!=second);
 }
 
 LS_CASE(unnamed_markers_number_themselves_after_the_highest_so_far)
@@ -47,7 +61,8 @@ LS_CASE(a_line_needs_two_points_and_undo_takes_the_last)
     LS_CHECK(ls_sketch_drawing());
     LS_CHECK(ls_sketch_add_point(43.0, -71.0));
     LS_EQ_INT(ls_sketch_finish(), -1);
-    LS_CHECK(!ls_sketch_drawing());
+    LS_CHECK(ls_sketch_drawing());
+    LS_EQ_INT(ls_sketch_open()->n,1);
     LS_EQ_INT(ls_sketch_count(), 0);
 
     ls_sketch_begin();
@@ -114,4 +129,27 @@ LS_CASE(delete_and_rename_keep_the_list_in_order)
     LS_CHECK(ls_marks_rename(0, "ALPHA"));
     LS_EQ_STR(ls_marks_at(0)->name, "ALPHA");
     LS_CHECK(!ls_marks_set_icon(0, LS_MARK__COUNT));
+}
+
+LS_CASE(full_sketch_list_keeps_unfinished_line) {
+    fresh();
+    for(int i=0;i<LS_SKETCH_MAX;i++) {
+        ls_sketch_begin();ls_sketch_add_point(43,-71);ls_sketch_add_point(44,-71);
+        LS_EQ_INT(i,ls_sketch_finish());
+    }
+    ls_sketch_begin();ls_sketch_add_point(43,-71);ls_sketch_add_point(44,-71);
+    LS_EQ_INT(-2,ls_sketch_finish());LS_CHECK(ls_sketch_drawing());
+    LS_EQ_INT(2,ls_sketch_open()->n);ls_sketch_delete(0);
+    LS_EQ_INT(LS_SKETCH_MAX-1,ls_sketch_finish());
+}
+LS_CASE(interrupted_replacement_recovers_previous_file) {
+    fresh();ls_marks_add(43,-71,0,"PREVIOUS");LS_CHECK(ls_marks_save());
+    char backup[540],tmp[540];snprintf(backup,sizeof(backup),"%s.bak",scratch());
+    snprintf(tmp,sizeof(tmp),"%s.new",scratch());remove(backup);
+    LS_EQ_INT(0,rename(scratch(),backup));
+    FILE *f=fopen(tmp,"w");LS_CHECK(f!=NULL);fputs("M 43 -71",f);fclose(f);
+    ls_marks_reload();LS_EQ_STR("PREVIOUS",ls_marks_at(0)->name);
+    LS_CHECK(ls_marks_rename(0,"RECOVERED"));LS_CHECK(ls_marks_save());
+    ls_marks_reload();LS_EQ_STR("RECOVERED",ls_marks_at(0)->name);
+    remove(backup);remove(tmp);
 }

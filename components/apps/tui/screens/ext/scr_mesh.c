@@ -11,13 +11,17 @@
    and said so. */
 #include <stdlib.h>
 #include <ctype.h>
+#include <math.h>
 #include <string.h>
 
 #include "../../ls_tui_ui.h"
 #include "../../ls_icons.h"
 /* The typed-text overlay. A router concern, opened from here. */
 #include "../../ls_keyboard.h"
+#include "../../ls_numpad.h"
+#include "../../ls_picker.h"
 #include "../../ls_options.h"
+#include "../../ls_radio_select.h"
 #include "../../ls_voice_opts.h"
 /* How far away a node that advertises a position is. */
 #include "../../ls_geo.h"
@@ -57,6 +61,10 @@ static tui_rect s_act_rect[DETAIL_ACTS];
 
 /* Portrait CHAT: where the "write something" target was drawn. */
 static tui_rect s_compose_rect;
+static tui_rect s_feed_rect;
+static int s_feed_back;
+static char s_feed_text[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
+static char s_feed_line[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
 /* Where the destination chip was drawn, for the tap that clears it. */
 static tui_rect s_lock_chip;
 
@@ -102,13 +110,27 @@ static uint32_t s_seen_msg;        /* last message sequence drawn           */
 static uint32_t s_seen_ev;
 static int      s_pulse;
 static int      s_blink;           /* cursor blink, counts frames           */
-static char     s_flash[40];       /* transient result line                 */
+static char     s_flash[128];       /* transient result line                 */
 static int      s_flash_ttl;
 
 static int      s_air_frames;      /* frames of animation left               */
 static int      s_air_total;       /* what it started at, for the bar        */
 
-static void flash(const char *m) { snprintf(s_flash, sizeof(s_flash), "%s", m); s_flash_ttl = 50; }
+static void flash(const char *m)
+{
+    snprintf(s_flash, sizeof(s_flash), "%s", m); s_flash_ttl = 50;
+    if (ls_picker_active()) ls_picker_note(m);
+
+}
+
+static void post_result(void)
+{
+    ls_notice_t note = {.title = "MESH RESULT", .hue = TUI_YELLOW,
+        .screen = -1, .accent = TUI_YELLOW, .quiet = true, .notify_visible = true};
+    snprintf(note.body, sizeof(note.body), "%s", s_flash);
+    ls_notify_post_quiet(&note);
+}
+static void option_flash(const char *m) { flash(m); post_result(); }
 
 /* Scratch buffers, and they are NOT on the stack. */
 
@@ -143,6 +165,7 @@ static void conv_leave(void)
 
 static uint32_t msg_mark(const ls_mesh_msg_t *m)
 {
+    if (m->id) return m->id;
     uint32_t h = (2166136261u ^ m->t) * 16777619u;
     h = (h ^ m->chan ^ (m->direct ? 0x100u : 0u)) * 16777619u;
     for (const char *c = m->peer; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
@@ -220,6 +243,9 @@ static bool mesh_here(double *lat, double *lon)
 static const char *state_word(const ls_mesh_stats_t *st)
 {
     if (!st->running)   return "OFFLINE";
+    if (st->held) return "RADIO HELD";
+    if (st->on_air) return "ON AIR";
+    if (st->rx_fault || !st->receiving) return "RX FAULT";
     if (st->tx_enabled) return "ARMED";
     return "LISTENING";
 }
@@ -336,11 +362,40 @@ static void draw_scope(tui_surface *sf, tui_rect r)
 
 /* ------------------------------------------------------------------- chat */
 
+static const char *message_text(const ls_mesh_msg_t *m)
+{
+    if (m->sender[0]) snprintf(s_feed_text, sizeof(s_feed_text), "%s: %s", m->sender, m->text);
+    else snprintf(s_feed_text, sizeof(s_feed_text), "%s", m->text);
+    return s_feed_text;
+}
+
+static int feed_line(const char *text, int width, int offset)
+{
+    int n = (int)strlen(text + offset);
+    if (n > width) {
+        n = width;
+        int space = n;
+        while (space > 0 && text[offset + space] != ' ') space--;
+        if (space > 0) n = space;
+    }
+    snprintf(s_feed_line, sizeof(s_feed_line), "%.*s", n, text + offset);
+    offset += n;
+    while (text[offset] == ' ') offset++;
+    return offset;
+}
+static int feed_rows(const ls_mesh_msg_t *m, int width)
+{
+    const char *text = message_text(m);
+    int offset = 0, rows = 0;
+    do { offset = feed_line(text, width, offset); rows++; } while (text[offset]);
+    return rows;
+}
+
 /* One message row. Ours and theirs are told apart by colour and by a
    marker in the gutter, not by indentation: at 48 columns in portrait there
    is no room to indent and still read the text. */
 static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
-                    uint32_t now)
+                    uint32_t now, const char *text)
 {
     char age[8];
     age_str(age, sizeof(age), m->t, now);
@@ -351,6 +406,9 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
     uint8_t gut = A(TUI_CYAN, TUI_BLACK);
     if (m->mine) {
         switch (m->state) {
+        case LS_MSG_QUEUED:  mark = ':'; gut = A(TUI_YELLOW, TUI_BLACK); break;
+        case LS_MSG_FAILED:  mark = '!'; gut = A(TUI_RED | TUI_BRIGHT, TUI_BLACK); break;
+        case LS_MSG_ACKED:   mark = '+'; gut = A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK); break;
         case LS_MSG_SENDING: mark = '.'; gut = A(TUI_YELLOW, TUI_BLACK); break;
         case LS_MSG_HEARD:   mark = '*'; gut = A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK); break;
         default:             mark = '>'; gut = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK); break;
@@ -358,6 +416,7 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
     }
     tui_put_str(sf, r, r.x + 1, y, age, A(DIM_FG, TUI_BLACK));
     tui_put_char(sf, r, r.x + 5, y, mark, gut);
+    tui_put_char(sf, r, r.x + 6, y, ' ', gut);
     /* Where it was said: '@' a DM, '#' a private channel, nothing for the
        public one, so a private message never looks public. */
     if (m->direct)
@@ -365,27 +424,17 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
     else if (m->chan)
         tui_put_char(sf, r, r.x + 6, y, '#', A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
-    /* The name is up to the first colon; the rest is what was said. Colouring
-       them differently is the whole reason a chat is readable at a glance. */
-    const char *colon = strchr(m->text, ':');
     const int avail = r.w - 8;
     if (avail <= 0) return;
-
-    if (colon && (colon - m->text) < 20) {
-        const int nlen = (int)(colon - m->text);
+    char body[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
+    snprintf(body, sizeof(body), "%.*s", avail, text);
+    tui_put_str(sf, r, r.x + 7, y, body, A(TUI_WHITE, TUI_BLACK));
+    const char *colon = strchr(text, ':');
+    if (colon && colon - text < 20) {
         char name[24];
-        snprintf(name, sizeof(name), "%.*s", nlen > 20 ? 20 : nlen, m->text);
+        snprintf(name, sizeof(name), "%.*s", (int)(colon - text), text);
         tui_put_str(sf, r, r.x + 7, y, name,
-                    A(m->mine ? (TUI_YELLOW | TUI_BRIGHT) : (TUI_MAGENTA | TUI_BRIGHT),
-                      TUI_BLACK));
-        char body[96];
-        snprintf(body, sizeof(body), "%.*s", avail - nlen - 2, colon + 1);
-        tui_put_str(sf, r, r.x + 7 + nlen + 1, y, body,
-                    A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    } else {
-        char body[96];
-        snprintf(body, sizeof(body), "%.*s", avail, m->text);
-        tui_put_str(sf, r, r.x + 7, y, body, A(TUI_WHITE, TUI_BLACK));
+            A(m->mine ? TUI_YELLOW | TUI_BRIGHT : TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     }
 }
 
@@ -414,10 +463,29 @@ static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
                         A(DIM_FG, TUI_BLACK));
         return;
     }
-    /* Newest at the bottom, like every chat anyone has used. */
-    const int first = n > rows ? n - rows : 0;
-    for (int i = first; i < n; i++)
-        msg_row(sf, r, top + (i - first), &s_msg_buf[i], now);
+    s_feed_rect = r;
+    if (s_feed_back >= n) s_feed_back = n - 1;
+    const int end = n - s_feed_back;
+    const int width = r.w - 8;
+    if (width < 1) return;
+    int first = end, used = 0;
+    while (first > 0) {
+        int lines = feed_rows(&s_msg_buf[first - 1], width);
+        if (lines < 1) lines = 1;
+        if (used + lines > rows && first < end) break;
+        used += lines; first--;
+        if (used >= rows) break;
+    }
+    int y = top;
+    for (int i = first; i < end && y < top + rows; i++) {
+        const char *text = message_text(&s_msg_buf[i]);
+        int off = feed_line(text, width, 0);
+        msg_row(sf, r, y++, &s_msg_buf[i], now, s_feed_line);
+        while (text[off] && y < top + rows) {
+            off = feed_line(text, width, off);
+            tui_put_str(sf, r, r.x + 7, y++, s_feed_line, A(TUI_WHITE, TUI_BLACK));
+        }
+    }
 }
 
 static void draw_compose(tui_surface *sf, tui_rect r, const ls_mesh_stats_t *st)
@@ -565,11 +633,11 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
         if (saved) snprintf(age, sizeof(age), "saved");
 
         if (compact) {
-            /* A peer id is 16 hex characters - eight bytes of the public key - and the rail is 22 columns wide. */
+            /* Leave the age and signal columns clear. */
 
             char who[LS_MESH_PEER_NAME > 9 ? LS_MESH_PEER_NAME : 9];
             if (s_peer_buf[i].name[0])
-                snprintf(who, sizeof(who), "%s", s_peer_buf[i].name);
+                snprintf(who, sizeof(who), "%.*s", r.w > 13 ? r.w - 13 : 1, s_peer_buf[i].name);
             else
                 snprintf(who, sizeof(who), "%.8s", s_peer_buf[i].id);
             tui_put_str(sf, r, r.x + 2, y, who, idc);
@@ -577,7 +645,9 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
             sigmeter(sf, r, r.x + r.w - 6, y, 4, s_peer_buf[i].rssi, TUI_MAGENTA);
             continue;
         }
-        tui_put_str(sf, r, r.x + 2, y, s_peer_buf[i].id, idc);
+        char who[18];
+        snprintf(who, sizeof(who), "%.16s", s_peer_buf[i].name[0] ? s_peer_buf[i].name : s_peer_buf[i].id);
+        tui_put_str(sf, r, r.x + 2, y, who, idc);
         if (rh > 1) {
             /* Tall rows: the name under the id, the numbers beside it. A
                hex id tells you a node is there and a name tells you which.
@@ -1038,6 +1108,11 @@ static const field2_t FIELDS[] = {
     { "auto transmit", NULL,  F_TOGGLE },
     { "advert on boot",NULL,  F_TOGGLE },
     { "advert every",  "s",   F_TEXT   },
+    { "role",          NULL,  F_TOGGLE },
+    { "forwarding",    NULL,  F_TOGGLE },
+    { "location",      NULL,  F_TOGGLE },
+    { "latitude",      "deg", F_TEXT   },
+    { "longitude",     "deg", F_TEXT   },
 };
 #define F_NAME 0
 #define F_BAND 1
@@ -1052,6 +1127,11 @@ static const field2_t FIELDS[] = {
 #define F_ATX  10
 #define F_ABOOT 11
 #define F_AEVERY 12
+#define F_ROLE 13
+#define F_REPEAT 14
+#define F_LOC 15
+#define F_LAT 16
+#define F_LON 17
 #define FIELD_COUNT ((int)(sizeof(FIELDS) / sizeof(FIELDS[0])))
 
 static void field_value(int i, char *out, size_t cap)
@@ -1072,6 +1152,11 @@ static void field_value(int i, char *out, size_t cap)
         case F_ALIS:  snprintf(out, cap, "%s", ls_mesh_auto_listen() ? "on" : "off"); break;
         case F_ATX:   snprintf(out, cap, "%s", ls_mesh_auto_tx() ? "ON" : "off"); break;
         case F_ABOOT: snprintf(out, cap, "%s", r.advert_boot ? "on" : "off"); break;
+        case F_ROLE: snprintf(out, cap, "%s", role_word(r.role ? r.role : LS_MESH_ROLE_CHAT)); break;
+        case F_REPEAT: snprintf(out, cap, "%s", r.repeat ? "on" : "off"); break;
+        case F_LOC: snprintf(out, cap, "%s", r.share_loc == 1 ? "GPS" : r.share_loc == 2 ? "manual" : "off"); break;
+        case F_LAT: snprintf(out, cap, "%.6f", r.lat_e6 / 1e6); break;
+        case F_LON: snprintf(out, cap, "%.6f", r.lon_e6 / 1e6); break;
         case F_AEVERY:
             if (r.advert_secs) snprintf(out, cap, "%u", (unsigned)r.advert_secs);
             else               snprintf(out, cap, "never");
@@ -1080,13 +1165,30 @@ static void field_value(int i, char *out, size_t cap)
     }
 }
 
+static int32_t s_manual_lat;
+static void manual_lon_done(double value)
+{
+    if (!isfinite(value) || value < -180 || value > 180) { option_flash("longitude -180..180; unchanged"); return; }
+    ls_mesh_radio_t r; ls_mesh_get_radio(&r);
+    r.lat_e6 = s_manual_lat; r.lon_e6 = (int32_t)llround(value * 1e6); r.share_loc = 2;
+    option_flash(ls_mesh_set_radio(&r) == ESP_OK ? "manual location saved" : "location failed");
+}
+static void manual_lat_done(double value)
+{
+    if (!isfinite(value) || value < -90 || value > 90) { option_flash("latitude -90..90; unchanged"); return; }
+    s_manual_lat = (int32_t)llround(value * 1e6);
+    ls_mesh_radio_t r; ls_mesh_get_radio(&r);
+    ls_numpad_open("LONGITUDE", "degrees -180..180", r.lon_e6 / 1e6, manual_lon_done);
+}
+
 static const char *toggle_field(int i)
 {
     ls_mesh_radio_t r;
     ls_mesh_get_radio(&r);
     switch (i) {
     case F_BAND: {
-        const int next = (ls_mesh_band_current() + 1) % LS_MESH_BAND__COUNT;
+        const int band = ls_mesh_band_current();
+        const int next = band >= LS_MESH_BAND__COUNT ? LS_MESH_BAND_US915 : (band + 1) % LS_MESH_BAND__COUNT;
         return ls_mesh_set_band(next) == ESP_OK ? "band changed - peers will differ"
                                                 : "band change failed";
     }
@@ -1102,12 +1204,27 @@ static const char *toggle_field(int i)
                ? (r.crc_on == 2 ? "crc on" : "crc OFF - peers will drop us")
                : "crc change failed";
     case F_ALIS:
-        ls_mesh_set_auto(!ls_mesh_auto_listen(), ls_mesh_auto_tx());
+        if (ls_mesh_set_auto(!ls_mesh_auto_listen(), ls_mesh_auto_tx()) != ESP_OK) return "save failed";
         return ls_mesh_auto_listen() ? "will start at boot" : "will not start at boot";
     case F_ATX:
-        ls_mesh_set_auto(ls_mesh_auto_listen(), !ls_mesh_auto_tx());
+        if (ls_mesh_set_auto(ls_mesh_auto_listen(), !ls_mesh_auto_tx()) != ESP_OK) return "save failed";
         return ls_mesh_auto_tx() ? "ARMED FROM BOOT - can emit unattended"
                                  : "will boot disarmed";
+    case F_ROLE:
+        r.role = (r.role ? r.role : LS_MESH_ROLE_CHAT) % LS_MESH_ROLE_SENSOR + 1;
+        if (r.role == LS_MESH_ROLE_REPEATER) r.repeat = 1;
+        return ls_mesh_set_radio(&r) == ESP_OK ? "role saved" : "role failed";
+    case F_REPEAT:
+        if (r.role == LS_MESH_ROLE_REPEATER) return "repeater requires forwarding";
+        r.repeat = !r.repeat;
+        return ls_mesh_set_radio(&r) == ESP_OK ? "forwarding saved" : "forwarding failed";
+    case F_LOC:
+        if (r.share_loc == 1) {
+            ls_numpad_open("LATITUDE", "degrees -90..90", r.lat_e6 / 1e6, manual_lat_done);
+            return NULL;
+        }
+        r.share_loc = r.share_loc == 2 ? 0 : 1;
+        return ls_mesh_set_radio(&r) == ESP_OK ? "location saved" : "location failed";
     case F_ABOOT:
         r.advert_boot = !r.advert_boot;
         return ls_mesh_set_radio(&r) == ESP_OK
@@ -1137,7 +1254,7 @@ static void o_field(const ls_opt_t *o)
 {
     if (FIELDS[o->arg].kind == F_TOGGLE) {
         const char *msg = toggle_field(o->arg);
-        if (msg) flash(msg);
+        if (msg) option_flash(msg);
         return;
     }
     open_field_edit(o->arg);
@@ -1154,16 +1271,44 @@ static void o_field_show(const ls_opt_t *o, char *out, size_t n)
     else snprintf(out, n, "%s %s", v, unit);
 }
 #define MESH_ROW(l, i) { .label = (l), .kind = LS_OPT_ACTION, .arg = (i), .act = o_field, .show = o_field_show }
+static void o_radio_default(const ls_opt_t *o)
+{
+    (void)o; option_flash(ls_mesh_radio_default() == ESP_OK ? "radio defaults saved" : "reset failed");
+}
+static void contact_done(const char *text)
+{
+    option_flash(ls_mesh_add_contact(text, NULL) == ESP_OK ? "contact saved" : "need 64 hex key characters");
+}
+static void o_contact(const ls_opt_t *o)
+{
+    (void)o; ls_keyboard_open("CONTACT PUBLIC KEY", "", 64, contact_done);
+}
+static void o_forget(const ls_opt_t *o)
+{
+    (void)o;
+    if (!s_detail_id[0]) { option_flash("open a node first"); return; }
+    option_flash(ls_mesh_forget_peer(s_detail_id) > 0 ? "contact forgotten" : "contact not found");
+}
+
 static const ls_opt_t OPT_RADIO[] = {
     MESH_ROW("BAND", F_BAND), MESH_ROW("FREQUENCY", F_FREQ), MESH_ROW("SPREADING", F_SF),
     MESH_ROW("BANDWIDTH", F_BW), MESH_ROW("CODING RATE", F_CR), MESH_ROW("POWER", F_PWR),
     MESH_ROW("SYNC WORD", F_SYNC), MESH_ROW("CRC", F_CRC),
+    { .label = "RESET RADIO", .kind = LS_OPT_ACTION, .act = o_radio_default },
 };
 static const ls_opt_ctx_t CTX_RADIO = { .name = "RADIO", .job = -1, .radio = LS_RSEL_LORA,
                                         LS_OPT_ROWS(OPT_RADIO) };
 
+static void mesh_radio_chosen(ls_rsel_radio_t radio)
+{
+    (void)radio; ls_opt_open(&CTX_RADIO);
+}
+static void mesh_radio_open(void) { ls_rsel_open_fixed(LS_RSEL_LORA, mesh_radio_chosen); }
+
 static const ls_opt_t OPT_NODE[] = {
     MESH_ROW("NAME", F_NAME), MESH_ROW("ADVERT EVERY", F_AEVERY),
+    MESH_ROW("ROLE", F_ROLE), MESH_ROW("FORWARDING", F_REPEAT),
+    MESH_ROW("LOCATION", F_LOC), MESH_ROW("LATITUDE", F_LAT), MESH_ROW("LONGITUDE", F_LON),
 };
 static const ls_opt_ctx_t CTX_NODE = { .name = "NODE", .job = -1, .radio = LS_RSEL_NONE,
                                        LS_OPT_ROWS(OPT_NODE) };
@@ -1186,11 +1331,11 @@ static void o_send_on(const ls_opt_t *o)
     for (int step = 1; step <= n; step++) {
         const int i = (now + step) % n;
         if (ls_mesh_set_channel_active(i) == ESP_OK) {
-            flash(i == now ? "only this channel has a key" : "sending on this channel");
+            option_flash(i == now ? "only this channel has a key" : "sending on this channel");
             return;
         }
     }
-    flash("no channel has a key");
+    option_flash("no channel has a key");
 }
 static void o_send_on_show(const ls_opt_t *o, char *out, size_t n)
 {
@@ -1228,13 +1373,13 @@ static const ls_opt_ctx_t CTX_CHAN = { .name = "CHANNELS", .job = -1, .radio = L
                                        LS_OPT_ROWS(OPT_CHAN) };
 
 /* The top: what the node is doing now, then a list per subject. */
-static void o_run(const ls_opt_t *o) { (void)o; ls_mesh_running() ? act_stop() : act_start_on(); }
+static void o_run(const ls_opt_t *o) { (void)o; ls_mesh_running() ? act_stop() : act_start_on(); post_result(); }
 static void o_run_show(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o;
     snprintf(out, n, "%s", ls_mesh_running() ? "RUNNING" : "STOPPED");
 }
-static void o_tx(const ls_opt_t *o) { (void)o; act_set_tx(!ls_mesh_tx_enabled()); }
+static void o_tx(const ls_opt_t *o) { (void)o; act_set_tx(!ls_mesh_tx_enabled()); post_result(); }
 static void o_tx_show(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o;
@@ -1248,7 +1393,7 @@ static const char *o_tx_why(const ls_opt_t *o)
 static void o_advert(const ls_opt_t *o)
 {
     (void)o;
-    flash(ls_mesh_advertise() == ESP_OK ? "advert sent" : "advert failed");
+    option_flash(ls_mesh_advertise() == ESP_OK ? "advert queued" : "advert failed");
 }
 static void o_advert_show(const ls_opt_t *o, char *out, size_t n)
 {
@@ -1320,6 +1465,7 @@ static const ls_opt_t OPT_INSPECT[] = {
       .max = LS_INSPECT_PASSWORD_MAX, .show = o_pw_show },
     { .label = "ANSWER THIS NODE", .kind = LS_OPT_TOGGLE, .names = ANSWER_NAMES, .get = o_answer_get,
       .set = o_answer_set, .why_not = o_answer_why },
+    { .label = "FORGET CONTACT", .kind = LS_OPT_ACTION, .act = o_forget },
 };
 static const ls_opt_ctx_t CTX_INSPECT = { .name = "INSPECT", .job = -1,
     .radio = LS_RSEL_LORA, LS_OPT_ROWS(OPT_INSPECT) };
@@ -1335,6 +1481,7 @@ static const ls_opt_t OPT_MESH[] = {
     { .label = "CHANNELS", .kind = LS_OPT_MENU, .sub = &CTX_CHAN },
     { .label = "AT BOOT", .kind = LS_OPT_MENU, .sub = &CTX_BOOT },
     { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &ls_voice_ctx_mesh },
+    { .label = "ADD CONTACT", .kind = LS_OPT_ACTION, .act = o_contact },
 };
 static const ls_opt_ctx_t CTX_MESH = { .name = "MESH", .job = -1, .radio = LS_RSEL_LORA,
                                        LS_OPT_ROWS(OPT_MESH) };
@@ -1479,7 +1626,13 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
     portrait_tabs(sf, s_page_bar);
 
     const int bottom = area.y + area.h - armed_rows;
-    const int body_y = area.y + bar_h + 1;
+    if (s_flash_ttl > 0) {
+        tui_rect result = tui_rect_make(area.x, area.y + bar_h, area.w, 2);
+        tui_put_str(sf, result, result.x + 1, result.y, s_flash, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        if ((int)strlen(s_flash) > area.w - 2)
+            tui_put_str(sf, result, result.x + 1, result.y + 1, s_flash + area.w - 2, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+    const int body_y = area.y + bar_h + (s_flash_ttl > 0 ? 2 : 1);
     tui_rect body = tui_rect_make(area.x, body_y, area.w, bottom - body_y);
 
     if (body.h < 3) return;
@@ -1640,7 +1793,7 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
         if (!st->running) {
             snprintf(sub, sizeof(sub), "OPTIONS starts the stack");
         } else if (on) {
-            snprintf(sub, sizeof(sub), "this radio is emitting");
+            snprintf(sub, sizeof(sub), "%s", st->on_air ? "radio is transmitting" : "armed - ready to transmit");
         } else {
             ls_mesh_radio_t rc;
             ls_mesh_get_radio(&rc);
@@ -1657,6 +1810,7 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
 static void enter(void)
 {
     s_page = PAGE_CHAT;
+    s_feed_back = 0;
     s_sel = 0; s_field = 0; s_edit_field = -1;
     s_detail = false; s_inspect_page = false; s_detail_id[0] = 0;
     s_compose_len = 0; s_compose[0] = 0;
@@ -1680,12 +1834,14 @@ static void draw(tui_surface *sf, tui_rect area)
 
     s_blink++;
     if (s_flash_ttl > 0) s_flash_ttl--;
-    if (s_air_frames > 0) s_air_frames--;
+    s_air_frames = st.on_air ? 1 : 0;
+    s_air_total = 1;
 
     /* Every touch rect is cleared before the frame that
        fills it: a rect left over from the page you were on last is a
        tap that lands on something no longer drawn. The draw puts back
        whatever it actually put on the screen. */
+    s_feed_rect = tui_rect_make(0, -1, 0, 0);
     s_compose_rect = tui_rect_make(0, -1, 0, 0);
     s_node_rect    = tui_rect_make(0, -1, 0, 0);
     s_tx_rect      = tui_rect_make(0, -1, 0, 0);
@@ -1705,8 +1861,7 @@ static void act_start_on(void)
 
 static void act_stop(void)
 {
-    ls_mesh_stop();
-    flash("stopped");
+    flash(ls_mesh_stop() == ESP_OK ? "stopped" : "stop failed - radio busy");
 }
 
 static void act_set_tx(bool on)
@@ -1719,6 +1874,7 @@ static void act_set_tx(bool on)
 static bool act_send(void)
 {
     if (!s_compose_len) return true;
+    if (!ls_mesh_running()) { flash("not running - /start; draft kept"); return true; }
 
     esp_err_t err;
     if (chat_locked()) {
@@ -1733,12 +1889,7 @@ static bool act_send(void)
     if (err == ESP_ERR_NOT_ALLOWED) { flash("disarmed - type /arm"); return true; }
     if (err == ESP_ERR_NOT_FOUND)   { flash("that node is not in the list"); return true; }
     if (err != ESP_OK)              { flash("send failed"); return true; }
-    ls_mesh_stats_t st;
-    ls_mesh_get_stats(&st);
-    s_air_total = 18;
-    const uint32_t air = ls_lora_airtime_ms((int)strlen(s_compose) + 24);
-    if (air) s_air_total = (int)(air / 40) + 2;
-    s_air_frames = s_air_total;
+    flash("message queued");
     s_compose_len = 0; s_compose[0] = 0;
     return true;
 }
@@ -1838,6 +1989,13 @@ static void setup_edit_done(const char *text)
     apply_field();
 }
 
+static void setup_number_done(double value)
+{
+    char text[32];
+    snprintf(text, sizeof(text), "%.*f", s_edit_field == F_FREQ || s_edit_field == F_BW || s_edit_field == F_LAT || s_edit_field == F_LON ? 6 : 0, value);
+    setup_edit_done(text);
+}
+
 /* Open the overlay on a field, seeded with what the field says now.
 
    Titled with the field name, because the overlay covers the row it came
@@ -1859,7 +2017,9 @@ static void open_field_edit(int field)
             if (*q >= 0x61 && *q <= 0x7A) *q = (char)(*q - 32);
     }
     s_edit_field = field;
-    ls_keyboard_open(title, s_edit, EDIT_MAX - 1, setup_edit_done);
+    if (field < CHAN_FIELD_BASE && field != F_NAME)
+        ls_numpad_open(title, FIELDS[field].unit, strtod(s_edit, NULL), setup_number_done);
+    else ls_keyboard_open(title, s_edit, EDIT_MAX - 1, setup_edit_done);
 }
 
 /* Apply whatever is in the edit buffer to the field being edited. */
@@ -1872,7 +2032,7 @@ static void apply_field(void)
         char name[LS_MESH_CHAN_NAME];
         snprintf(name, sizeof(name), "chan%d", idx);
         const esp_err_t e = ls_mesh_set_channel(idx, name, s_edit);
-        flash(e == ESP_OK ? (s_edit[0] ? "channel key saved" : "channel cleared")
+        option_flash(e == ESP_OK ? (s_edit[0] ? "channel key saved" : "channel cleared")
                           : "key must be base64, 16 or 32 bytes");
         return;
     }
@@ -1882,11 +2042,11 @@ static void apply_field(void)
     char *end;
     switch (s_field) {
     case F_NAME:
-        flash(ls_mesh_set_name(s_edit) == ESP_OK ? "name saved" : "bad name");
+        option_flash(ls_mesh_set_name(s_edit) == ESP_OK ? "name saved" : "bad name");
         return;
     case F_CR: {
         const long cr = strtol(s_edit, &end, 10);
-        if (end == s_edit || cr < 5 || cr > 8) { flash("coding rate 5-8"); return; }
+        if (end == s_edit || *end || cr < 5 || cr > 8) { option_flash("coding rate 5-8"); return; }
         r.cr = (uint8_t)cr;
         break;
     }
@@ -1894,39 +2054,49 @@ static void apply_field(void)
         const long secs = strtol(s_edit, &end, 10);
         /* 0 is off. Below 30 s a node floods its own neighbours with
            adverts and eats the duty cycle it needs for messages. */
-        if (end == s_edit || secs < 0 || secs > 3600) { flash("0-3600 s, 0 = never"); return; }
-        if (secs > 0 && secs < 30) { flash("30 s minimum, or 0"); return; }
+        if (end == s_edit || *end || secs < 0 || secs > 3600) { option_flash("0-3600 s, 0 = never"); return; }
+        if (secs > 0 && secs < 30) { option_flash("30 s minimum, or 0"); return; }
         r.advert_secs = (uint16_t)secs;
         break;
     }
     case F_FREQ: {
         const double mhz = strtod(s_edit, &end);
-        if (end == s_edit || mhz < 137.0 || mhz > 1020.0) { flash("137-1020 MHz"); return; }
+        if (end == s_edit || *end || !isfinite(mhz) || mhz < 137.0 || mhz > 1020.0) { option_flash("137-1020 MHz"); return; }
         r.freq_hz = (uint32_t)(mhz * 1e6 + 0.5);
         break;
     }
     case F_SF: {
         const long sf = strtol(s_edit, &end, 10);
-        if (end == s_edit || sf < 5 || sf > 12) { flash("SF 5-12"); return; }
+        if (end == s_edit || *end || sf < 5 || sf > 12) { option_flash("SF 5-12"); return; }
         r.sf = (uint8_t)sf;
         break;
     }
     case F_BW: {
         const double khz = strtod(s_edit, &end);
-        if (end == s_edit || khz < 7.0 || khz > 500.0) { flash("7.8-500 kHz"); return; }
+        if (end == s_edit || *end || !isfinite(khz) || khz < 7.0 || khz > 500.0) { option_flash("7.8-500 kHz"); return; }
         r.bw_hz = (uint32_t)(khz * 1000.0 + 0.5);
+        break;
+    }
+    case F_LAT: case F_LON: {
+        const double value = strtod(s_edit, &end);
+        const double limit = s_field == F_LAT ? 90 : 180;
+        if (end == s_edit || *end || !isfinite(value) || value < -limit || value > limit) {
+            option_flash("coordinate outside range"); return;
+        }
+        if (s_field == F_LAT) r.lat_e6 = (int32_t)llround(value * 1e6);
+        else r.lon_e6 = (int32_t)llround(value * 1e6);
         break;
     }
     case F_PWR: {
         const long p = strtol(s_edit, &end, 10);
-        if (end == s_edit || p < -9 || p > 22) { flash("-9..22 dBm"); return; }
+        if (end == s_edit || *end || p < -9 || p > 22) { option_flash("-9..22 dBm"); return; }
         r.power_dbm = (int8_t)p;
         break;
     }
     default: return;
     }
 
-    flash(ls_mesh_set_radio(&r) == ESP_OK ? "applied and saved" : "apply failed");
+    option_flash(ls_mesh_set_radio(&r) == ESP_OK ? "applied and saved" : "apply failed");
 }
 
 /* Slash commands, so the chat page needs no key that anything else
@@ -1940,10 +2110,20 @@ static bool slash(const char *text)
     const char *cmd = text + 1;
 
     if (!strncasecmp(cmd, "help", 4)) {
-        flash("/start /stop /arm /disarm /advert /name X /to X /pub");
+        ls_picker_open("MESH HELP", NULL);
+        ls_picker_add("/start", "Start listening, disarmed");
+        ls_picker_add("/stop", "Stop and cancel queued sends");
+        ls_picker_add("/arm /disarm", "Enable or disable transmit");
+        ls_picker_add("/advert", "Queue our node announcement");
+        ls_picker_add("/name X", "Save this node's name");
+        ls_picker_add("/to X", "Reply to node id or name");
+        ls_picker_add("/pub", "Return to the channel");
+        ls_picker_add("/options", "Node, radio and boot settings");
+        ls_picker_add("/radio", "Open radio settings");
         return true;
     }
 
+    if (!strcasecmp(cmd, "radio")) { mesh_radio_open(); return true; }
     if (!strncasecmp(cmd, "pub", 3)) {
         conv_leave();
         flash("back on the channel");
@@ -1979,7 +2159,7 @@ static bool slash(const char *text)
     if (!strncasecmp(cmd, "advert", 6)) {
         const esp_err_t e = ls_mesh_advertise();
         flash(e == ESP_ERR_NOT_ALLOWED ? "arm first: /arm"
-                                       : (e == ESP_OK ? "advert sent" : "advert failed"));
+                                       : (e == ESP_OK ? "advert queued" : "advert failed"));
         return true;
     }
     if (!strncasecmp(cmd, "name", 4)) {
@@ -2090,9 +2270,10 @@ static bool key(ls_tk_t k, char ch)
         /* Letters are free on this page - nothing here is a text field. */
         if (k == LS_TK_CHAR) {
             switch (ch) {
+            case 'r': case 'R': mesh_radio_open(); return true;
             case 's': case 'S': ls_mesh_running() ? act_stop() : act_start_on(); return true;
             case 't': case 'T': act_set_tx(!ls_mesh_tx_enabled()); return true;
-            case 'a': case 'A': ls_mesh_advertise(); flash("advert sent"); return true;
+            case 'a': case 'A': flash(ls_mesh_advertise() == ESP_OK ? "advert queued" : "advert refused"); return true;
             default: break;
             }
         }
@@ -2101,6 +2282,8 @@ static bool key(ls_tk_t k, char ch)
 
     /* CHAT: the compose line has the keyboard. Letters are text. */
     switch (k) {
+    case LS_TK_UP: if (s_feed_back < LS_MESH_MAX_MSGS - 1) s_feed_back++; return true;
+    case LS_TK_DOWN: if (s_feed_back > 0) s_feed_back--; return true;
     case LS_TK_ENTER:
         if (!s_compose_len) return true;
         if (slash(s_compose)) { s_compose_len = 0; s_compose[0] = 0; return true; }
@@ -2130,6 +2313,11 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (s_page == PAGE_CHAT && tui_rect_contains(s_feed_rect, col, row)) {
+        if (row < s_feed_rect.y + s_feed_rect.h / 2) { if (s_feed_back < LS_MESH_MAX_MSGS - 1) s_feed_back++; }
+        else if (s_feed_back > 0) s_feed_back--;
+        return true;
+    }
     if (s_detail && s_inspect_page) {
         int action = ls_btn_hit(col, row);
         if (action >= 0 && action < INSPECT_BTNS && tui_rect_contains(s_inspect_buttons, col, row)) {
@@ -2287,19 +2475,35 @@ static bool touch(int col, int row)
 extern const ls_tui_screen_t ls_scr_mesh;
 static uint32_t s_told_msg;
 static bool     s_told_init;
+static uint32_t s_told_mark;
+
+const char *ls_scr_mesh_tx_status(void)
+{
+    ls_mesh_stats_t st; ls_mesh_get_stats(&st);
+    return st.running && st.tx_enabled ? (st.on_air ? "MESH TX" : "MESH ARM") : NULL;
+}
 
 bool ls_scr_mesh_notice(ls_notice_t *out)
 {
-    const uint32_t seq = ls_mesh_msg_seq();
-    if (!s_told_init) { s_told_init = true; s_told_msg = seq; return false; }
+    const uint32_t seq = ls_mesh_incoming_seq();
+    if (!s_told_init) {
+        s_told_init = true; s_told_msg = seq;
+        int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+        while (n > 0 && s_msg_buf[n - 1].mine) n--;
+        if (n > 0) s_told_mark = msg_mark(&s_msg_buf[n - 1]);
+        return false;
+    }
     if (seq == s_told_msg) return false;
     s_told_msg = seq;
 
-    const int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+    int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+    while (n > 0 && s_msg_buf[n - 1].mine) n--;
     if (n < 1) return false;
     const ls_mesh_msg_t *m = &s_msg_buf[n - 1];
-    if (m->mine) return false;
-    audio_events_mesh_message(m->text, m->direct);
+    uint32_t mark = msg_mark(m);
+    if (mark == s_told_mark) return false;
+    s_told_mark = mark;
+    audio_events_mesh_message(message_text(m), m->direct);
 
     snprintf(out->title, sizeof(out->title), "%s",
              m->direct ? "DIRECT MESSAGE" : "MESH");
@@ -2311,7 +2515,7 @@ bool ls_scr_mesh_notice(ls_notice_t *out)
 
 const ls_tui_screen_t ls_scr_mesh = {
     .name = "MESH",
-    .hint = "MIC arms  hold auto  LEFT/RIGHT page  ENTER sends",
+    .hint = "MIC arms  LEFT/RIGHT page  CHAT: ENTER send  NODES: ENTER open",
     .enter = enter,
     .draw = draw,
     .key = key,

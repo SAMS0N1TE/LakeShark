@@ -18,6 +18,7 @@ typedef struct {
     bool sd, busy;
     char message[96];
     int last_error;
+    int open_state; /* 0 none, 1 pending, 2 opened, 3 failed */
 } ls_tiles_catalog;
 typedef struct {
     uint64_t bytes, total;

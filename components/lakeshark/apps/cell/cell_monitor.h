@@ -6,10 +6,10 @@ extern "C" {
 #endif
 typedef struct {
     bool busy, learning, baseline, located, quiet, sd, external;
-    bool manual_site, compared;
+    bool manual_site, compared, baseline_saved;
     bool receiver_missing, needs_relearn;
     bool lte;
-    unsigned lte_count;
+    unsigned lte_count, lte_attempted, lte_usable, lte_discarded;
     struct {uint32_t hz;int pci,hits,cfo;float pss,sss;} cell[8];
     unsigned band, tune, tunes, passes, changed, rows;
     uint32_t frequency, elapsed_ms;

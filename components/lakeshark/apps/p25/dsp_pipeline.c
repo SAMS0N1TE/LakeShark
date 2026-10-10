@@ -302,56 +302,33 @@ static int cqpsk_sample(dsp_state_t *s, float si, float sq,
     float mi = si;
     float mq = sq;
 
-    /* Phase II uses fractional strobes at 8 samples/symbol. */
-    if (s->phase2) {
-        float before = s->g_clock;
-        s->g_clock += 1.0f;
-        float half = s->g_period * 0.5f;
-        if (before < half && s->g_clock >= half) {
-            float f = half - before;
-            s->g_di[1] = s->p2_prev_i + f * (mi - s->p2_prev_i);
-            s->g_dq[1] = s->p2_prev_q + f * (mq - s->p2_prev_q);
-        }
-        float f = s->g_period - before;
-        float pi = s->p2_prev_i, pq = s->p2_prev_q;
-        s->p2_prev_i = mi; s->p2_prev_q = mq;
-        if (s->g_clock < s->g_period) return 0;
-        mi = pi + f * (mi - pi); mq = pq + f * (mq - pq);
-        s->g_clock -= s->g_period;
-        float te = (mi - s->g_di[0]) * s->g_di[1]
-                 + (mq - s->g_dq[0]) * s->g_dq[1];
-        if (te > 1.0f) te = 1.0f;
-        if (te < -1.0f) te = -1.0f;
-        s->g_period -= s->g_gain_omega * te;
-        s->g_period = fmaxf(7.96f, fminf(8.04f, s->g_period));
-        s->g_clock += s->g_gain_mu * te;
-        s->g_di[0] = mi; s->g_dq[0] = mq;
-    } else {
-    /* Gardner timing */
-    s->g_sample_idx++;
-    if (s->g_sample_idx == s->g_half) {
-        s->g_di[1] = mi; s->g_dq[1] = mq;
-    }
-
+    /* Fractional strobes correct phase as well as period after a warm
+     * mode switch. Integer strobes could keep valid NIDs but corrupt TSBKs. */
+    float before = s->g_clock;
     s->g_clock += 1.0f;
-    if (s->g_clock < s->g_period) return 0;
-
-    s->g_clock -= s->g_period;
-    s->g_sample_idx = 0;
-    s->g_di[2] = mi; s->g_dq[2] = mq;
-
-    float te = (s->g_di[2] - s->g_di[0]) * s->g_di[1]
-             + (s->g_dq[2] - s->g_dq[0]) * s->g_dq[1];
-    /* Positive Gardner error means the strobe is late. This loop moves the
-     * strobe through its period estimate, so late must shorten the period. */
-    s->g_period -= s->g_gain_omega * te;
-    float omin = (float)(s->phase2 ? 8 : DSP_SPS) * (1.0f - s->g_omega_rel);
-    float omax = (float)(s->phase2 ? 8 : DSP_SPS) * (1.0f + s->g_omega_rel);
-    if (s->g_period < omin) s->g_period = omin;
-    if (s->g_period > omax) s->g_period = omax;
-    s->g_half = (int)(s->g_period * 0.5f);
-    s->g_di[0] = s->g_di[2]; s->g_dq[0] = s->g_dq[2];
+    float half = s->g_period * 0.5f;
+    if (before < half && s->g_clock >= half) {
+        float f = half - before;
+        s->g_di[1] = s->p2_prev_i + f * (mi - s->p2_prev_i);
+        s->g_dq[1] = s->p2_prev_q + f * (mq - s->p2_prev_q);
     }
+    float f = s->g_period - before;
+    float pi = s->p2_prev_i, pq = s->p2_prev_q;
+    s->p2_prev_i = mi; s->p2_prev_q = mq;
+    if (s->g_clock < s->g_period) return 0;
+    mi = pi + f * (mi - pi); mq = pq + f * (mq - pq);
+    s->g_clock -= s->g_period;
+    float te = (mi - s->g_di[0]) * s->g_di[1]
+             + (mq - s->g_dq[0]) * s->g_dq[1];
+    if (te > 1.0f) te = 1.0f;
+    if (te < -1.0f) te = -1.0f;
+    s->g_period -= s->g_gain_omega * te;
+    float period = (float)(s->phase2 ? 8 : DSP_SPS);
+    float tolerance = s->phase2 ? 0.005f : s->g_omega_rel;
+    s->g_period = fmaxf(period * (1.0f - tolerance),
+                       fminf(period * (1.0f + tolerance), s->g_period));
+    s->g_clock += s->g_gain_mu * (s->phase2 ? 1.0f : 4.0f) * te;
+    s->g_di[0] = mi; s->g_dq[0] = mq;
 
     /* Differential phasor */
     float di2 = mi * s->diff_prev_i + mq * s->diff_prev_q;

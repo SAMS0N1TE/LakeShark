@@ -1,5 +1,20 @@
 # LakeShark release notes
 
+## 2.11.0
+
+Every app was reviewed and run on both boards for this release: about 250 fixes across 27 apps.
+
+- ADS-B: callsign labels stay on one side of each aircraft, and two aircraft on the same path are both tracked. Speeds use the right units, ground track and zero readings show correctly, and old readings are marked stale.
+- MESH: packets are handled by one owner task, each queued message gets its own delivery status, long messages arrive whole, and restarting MESH starts clean.
+- MUSIC: a failed read still finishes the recording, STOP ends recording and is reachable by touch, and MUTE keeps your volume.
+- NOTES and MAP: saves are confirmed, a failed save keeps your edits, and an interrupted save recovers the previous copy.
+- GPS: an old fix expires everywhere it is used (GPS, MESH, Flipper, TRACK), and GPX exports are checked before they are kept.
+- SWEEP, LINK and COMPASS share Bluetooth, so SWEEP, FIND and a Flipper connection run together.
+- FM: ACARS messages have their own list and detail view, and a stalled receiver clears its readings.
+- UPDATE: checks finish within a set time, RETRY rejoins WiFi, and the rollback guard stays on.
+- P25, CELL, FALLS, SUB-GHZ and REC: radio hand-offs between apps keep each app's settings and no longer stop another app's scan.
+- FILES, TILES, DRONES, LABS and more: touch paging on long lists, BACK works everywhere, and clear messages when a radio is busy or something fails.
+
 ## 2.10.2
 
 - LINK scans and joins WiFi networks while SWEEP is running; before, it said a connection update was already running.

@@ -7,13 +7,15 @@
 #include <string.h>
 
 static ls_field_state_t s;
-static bool s_labs_direct, s_falls_direct;
+static bool s_labs_direct, s_falls_direct, s_record_session;
 static ls_journal_entry_t entry;
 bool ls_field_start(void)
 {
     if (s.ready) return true;
     s.ready = true;
     s.config = (ls_lora_cfg_t){.freq_hz=910525000, .sf=7, .bw_hz=125000, .cr=5, .power_dbm=10, .preamble=16, .sync_word=0x12, .crc_on=true};
+    s.fsk = (ls_fsk_cfg_t){ .freq_hz = s.config.freq_hz, .bitrate = 1200,
+        .deviation_hz = 4500, .bandwidth_hz = 11700, .sync_word = 0x7cd215d8u, .payload_bytes = 64 };
     s.sample = (ls_field_sample_t){.source=LS_FIELD_MESH, .gps_valid=true, .imu_valid=true, .radio_valid=true,
         .lat=43.20, .lon=-71.65, .heading=72, .rssi=-88, .frequency=910525000,
         /* Face up, as ls_imu reports it on the board: x and z reversed. */
@@ -25,6 +27,14 @@ bool ls_field_start(void)
     snprintf(entry.title, sizeof(entry.title), "Ridge trail / north overlook");
     snprintf(entry.text, sizeof(entry.text), "Mesh reception returned near the overlook. Clear sky and a steady GPS fix. Repeat this walk with the same antenna and compare the eastern path.\n\nThe radio sample, my position and all nine motion axes are attached to this note.");
     s.journal_count = 1;
+    if (getenv("LSSIM_LABS_PAGES")) {
+        s.page_log_count = LS_FIELD_PAGES; s.pages = LS_FIELD_PAGES;
+        for (int i = 0; i < LS_FIELD_PAGES; i++) {
+            s.page_log[i].address = 1000 + i; s.page_log[i].baud = 1200;
+            snprintf(s.page_log[i].text, sizeof(s.page_log[i].text),
+                     "CALL THE OFFICE ON ARRIVAL, AND REPORT THE NORTH GATE STATUS TODAY. TAILVISIBLE");
+        }
+    }
     for (int i = 0; i < LS_FIELD_BINS; i++) {
         s.trace[i] = -105 + sinf(i * .32f) * 9 + (i > 36 && i < 44 ? 30 : 0);
         s.spectrum[i] = -120 + 65 * expf(-powf((i - 31) / 4.0f, 2)) + 20 * expf(-powf((i - 49) / 6.0f, 2));
@@ -83,7 +93,8 @@ bool ls_field_transmit(const char *text) { (void)text; s.tx++; return s.direct; 
 bool ls_field_source(ls_field_source_t source) { if(s.recording && source != s.sample.source) return false; s.sample.source = source; s.sample.radio_valid = source > LS_FIELD_NONE && source < LS_FIELD_CC1101; return true; }
 const char *ls_field_source_name(ls_field_source_t source) { static const char *const names[] = {"NOTES ONLY","MESH","LORA LABS","RTL","CC1101","NRF24","NFC","WI-FI","BLUETOOTH","HACKRF"}; return source >= 0 && source < LS_FIELD_SOURCES ? names[source] : "UNKNOWN"; }
 bool ls_field_recording(void) { return s.recording; }
-bool ls_field_record(bool on) { s.recording = on; return true; }
+bool ls_field_record_source(ls_field_source_t source, bool on) { if (s.recording && (!s_record_session || source != s.sample.source)) return false; s.sample.source = source; s.recording = s_record_session = on; return true; }
+bool ls_field_record(bool on) { if (s.recording && s_record_session) return false; s_record_session = false; s.recording = on; return true; }
 void ls_field_watch(bool on) { (void)on; }
 bool ls_field_mark_lora(void) { return true; }
 bool ls_field_mark_radio(const char *title,const char *text,ls_field_source_t source,uint32_t frequency,uint32_t count)

@@ -107,6 +107,7 @@ struct ls_opt_ctx_s {
     const ls_opt_t *opt;
     int n;
     const char *tag;         /* under OPTIONS on the button; NULL: the name  */
+    bool menu_arrows;       /* LEFT parent, RIGHT submenu on non-value rows */
     bool back_to_screen;    /* root < BACK returns to the embedded screen */
 };
 
@@ -132,6 +133,8 @@ ls_btn_t ls_opt_button(const ls_opt_ctx_t *ctx);
    context with nothing to set. ESC or BACK in a list opened from a MENU row
    comes back to that row; at the top they close. */
 void ls_opt_open(const ls_opt_ctx_t *ctx);
+/* Return from a root opened by another picker. */
+void ls_opt_back(void (*on_back)(void));
 
 /* 'o' or 'O' on a screen whose context has something to set: opens the list
    and answers true. Anything else, or nothing to set, answers false and the

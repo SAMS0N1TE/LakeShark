@@ -18,6 +18,7 @@ static tui_rect cells;
 static unsigned columns,page_first;
 static unsigned cell_width=5,cell_height=1,page_size=256;
 static bool portrait;
+static tui_rect back;
 EXT_RAM_BSS_ATTR static uint8_t previous_state[256];
 EXT_RAM_BSS_ATTR static int64_t block_changed[256];
 static void page_move(int direction){int next=(int)selected_block+direction*(int)page_size;if(next<0)next=0;if(next>=card.blocks)next=card.blocks?card.blocks-1:0;selected_block=next;focus=-1;}
@@ -31,7 +32,10 @@ static void action(int i){
  if(i==4||i==5){key_b=i==5;char title[40];if(card.identified)snprintf(title,sizeof(title),"SECTOR %u KEY %c / 12 HEX",ls_classic_sector(selected_block),key_b?'B':'A');else snprintf(title,sizeof(title),"DEFAULT KEY %c / 12 HEX",key_b?'B':'A');ls_keyboard_open(title,"",12,key_done);}
  if(i==6)ok=ls_nfc_suite_save();
  if(i==7){char note[240],uid[32]={0};for(unsigned n=0;n<card.uid_len;n++)snprintf(uid+n*2,sizeof(uid)-n*2,"%02X",card.uid[n]);snprintf(note,sizeof(note),"NFC UID %s ATQA %04X SAK %02X. Verified blocks %u/%u; authentication attempts %lu, successful %lu. Unread bytes remain unknown.",uid,card.atqa,card.sak,card.read_blocks,card.blocks,(unsigned long)card.attempts,(unsigned long)card.auth_ok);ok=ls_field_mark_radio("NFC card survey",note,LS_FIELD_NFC,13560000,card.read_blocks);}
- if(!ok)snprintf(feedback,sizeof(feedback),"Not accepted: finish/stop current operation or identify a card first");
+ if(!ok){
+  if(i==0 || i==1 || i==6){ls_nfc_suite_snapshot(&card);snprintf(feedback,sizeof(feedback),"%s",card.status);}
+  else snprintf(feedback,sizeof(feedback),"Not accepted: finish/stop current operation or identify a card first");
+ }
 }
 static void enter(void){focus=-1;slot=0;selected_block=0;detail=false;feedback[0]=0;}
 static void draw(tui_surface *sf,tui_rect a){
@@ -39,7 +43,9 @@ static void draw(tui_surface *sf,tui_rect a){
  int64_t now=esp_timer_get_time();
  for(unsigned b=0;b<card.blocks;b++)if(previous_state[b]!=card.block_state[b]){previous_state[b]=card.block_state[b];block_changed[b]=now;}
  portrait=a.w<90;
+ back=tui_rect_make(a.x,a.y+a.h-1,6,1);
  if(portrait && a.h>35){
+  back.w=0;
   ls_btn_t nav[]={{"PREV","PAGE",',',false,!card.blocks||selected_block<page_size},{"NEXT","PAGE",'.',false,!card.blocks||page_first+page_size>=card.blocks},{"BACK","RADIOS",0,false,false}};
   int nav_h=5;
   ls_btn_bar_raised_slot(sf,tui_rect_make(a.x,a.y+a.h-nav_h,a.w,nav_h),nav,3,-1,LS_BTN_SLOT_WATERFALL);
@@ -106,7 +112,8 @@ static void draw(tui_surface *sf,tui_rect a){
  }
  snprintf(line,sizeof(line),"%c %s",ls_motion_pip(card.busy),feedback[0]?feedback:card.status);
  ls_safe_line(sf,a,a.y+a.h-2,line,LS_ATTR_DIM);
- ls_safe_line(sf,a,a.y+a.h-1,portrait?"Purple NAK | tap block / VIEW for bytes":"Arrows: blocks | Enter: hex | Tab: controls | Esc: receive history",LS_ATTR_DIM);
+ ls_safe_line(sf,a,a.y+a.h-1,back.w?"[BACK] Arrows: blocks | Enter: hex | Tab: controls":portrait?"Purple NAK | tap block / VIEW for bytes":"Arrows: blocks | Enter: hex | Tab: controls | Esc: receive history",LS_ATTR_DIM);
+
 }
 static bool key(ls_tk_t k,char c){
     if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
@@ -117,5 +124,5 @@ static bool key(ls_tk_t k,char c){
  if(c==','){page_move(-1);return true;}if(c=='.'){page_move(1);return true;}
  const char *p=c?strchr("irxvabsj",c):NULL;if(!p)return false;action(p-"irxvabsj");return true;
 }
-static bool touch(int x,int y){int i=ls_btn_hit(x,y);if(i>=0){action(i);return true;}if(portrait){i=ls_btn_hit_slot(x,y,LS_BTN_SLOT_WATERFALL);if(i==2)return false;if(i>=0){page_move(i?1:-1);return true;}}if(!detail && x>=cells.x && y>=cells.y && x<cells.x+(int)(columns*cell_width) && y<cells.y+(int)(page_size/columns*cell_height)){unsigned b=page_first+(y-cells.y)/cell_height*columns+(x-cells.x)/cell_width;if(b<card.blocks){selected_block=b;focus=-1;}}return true;}
+static bool touch(int x,int y){if(back.w && x>=back.x && x<back.x+back.w && y==back.y)return false;int i=ls_btn_hit(x,y);if(i>=0){action(i);return true;}if(portrait){i=ls_btn_hit_slot(x,y,LS_BTN_SLOT_WATERFALL);if(i==2)return false;if(i>=0){page_move(i?1:-1);return true;}}if(!detail && x>=cells.x && y>=cells.y && x<cells.x+(int)(columns*cell_width) && y<cells.y+(int)(page_size/columns*cell_height)){unsigned b=page_first+(y-cells.y)/cell_height*columns+(x-cells.x)/cell_width;if(b<card.blocks){selected_block=b;focus=-1;}}return true;}
 const ls_tui_screen_t ls_scr_nfc={.name="NFC",.enter=enter,.draw=draw,.key=key,.touch=touch};

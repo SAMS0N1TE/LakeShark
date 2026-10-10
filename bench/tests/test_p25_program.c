@@ -1121,3 +1121,25 @@ LS_CASE(geo_is_off_for_a_profile_without_coordinates)
     p25_program_format_geo(&program, NOW_US, text, sizeof(text));
     LS_EQ_STR(text, "GEO off (no site coordinates)");
 }
+
+LS_CASE(staged_profile_does_not_tune_until_decoder_owner_applies_it)
+{
+    static p25_program_t staged;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_radio_init(&radio, &ops);
+    p25_program_init(&staged);
+    fake_file_t file = {.text = SECOND_PROFILE, .status = P25_PROGRAM_OK};
+    const p25_program_ops_t staging_ops = {0};
+    LS_EQ_INT(load(&staged, &file, &staging_ops, "/sdcard/p25_profile.txt"), P25_PROGRAM_OK);
+    LS_EQ_UINT(radio.tune_requests, 0);
+    LS_CHECK(staged.active_valid);
+    static p25_program_t active;
+    p25_program_init(&active);
+    LS_CHECK(!p25_program_commit_staged(&active, &staged, 1, 2, &ops));
+    LS_CHECK(!active.active_valid); LS_EQ_UINT(radio.tune_requests, 0);
+    LS_CHECK(p25_program_commit_staged(&active, &staged, 2, 2, &ops));
+    LS_EQ_UINT(radio.control_hz, 771031250);
+    LS_EQ_UINT(radio.roster_first_tg, 4001);
+    LS_CHECK(!radio.auto_follow);
+}

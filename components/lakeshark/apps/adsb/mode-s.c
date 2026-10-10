@@ -53,6 +53,7 @@ void mode_s_init(mode_s_t *self)
     self->check_crc = 1;
     self->aggressive = 0;
     self->on_preamble = NULL;
+    self->on_bad_crc = NULL;
 
     memset(&self->icao_cache, 0, sizeof(self->icao_cache));
 
@@ -189,18 +190,43 @@ uint32_t icao_cache_has_addr(uint32_t a)
 
 void add_recently_seen_icao_addr(mode_s_t *self, uint32_t addr)
 {
-    uint32_t h = icao_cache_has_addr(addr);
+    const uint32_t now = (uint32_t)time(NULL);
+    const uint32_t start = icao_cache_has_addr(addr);
+    uint32_t oldest = start, reusable = MODE_S_ICAO_CACHE_LEN;
+    if (!addr) return;
+    /* Open addressing: a clean newcomer must not erase a still-known peer
+       just because its hash collides. Keep searching past expired entries
+       to refresh an existing address rather than insert it twice. */
+    for (uint32_t i = 0; i < MODE_S_ICAO_CACHE_LEN; i++) {
+        const uint32_t h = (start + i) & (MODE_S_ICAO_CACHE_LEN - 1);
+        const uint32_t a = self->icao_cache[h * 2];
+        const uint32_t seen = self->icao_cache[h * 2 + 1];
+        if (a == addr) {
+            self->icao_cache[h * 2 + 1] = now;
+            return;
+        }
+        if (reusable == MODE_S_ICAO_CACHE_LEN &&
+            (!a || now - seen > MODE_S_ICAO_CACHE_TTL)) reusable = h;
+        if (!a) break;
+        if (seen < self->icao_cache[oldest * 2 + 1]) oldest = h;
+    }
+    const uint32_t h = reusable < MODE_S_ICAO_CACHE_LEN ? reusable : oldest;
     self->icao_cache[h * 2] = addr;
-    self->icao_cache[h * 2 + 1] = (uint32_t)time(NULL);
+    self->icao_cache[h * 2 + 1] = now;
 }
 
 int icao_addr_was_recently_seen(mode_s_t *self, uint32_t addr)
 {
-    uint32_t h = icao_cache_has_addr(addr);
-    uint32_t a = self->icao_cache[h * 2];
-    int32_t t = self->icao_cache[h * 2 + 1];
-
-    return a && a == addr && time(NULL) - t <= MODE_S_ICAO_CACHE_TTL;
+    const uint32_t now = (uint32_t)time(NULL);
+    const uint32_t start = icao_cache_has_addr(addr);
+    for (uint32_t i = 0; i < MODE_S_ICAO_CACHE_LEN; i++) {
+        const uint32_t h = (start + i) & (MODE_S_ICAO_CACHE_LEN - 1);
+        const uint32_t a = self->icao_cache[h * 2];
+        if (!a) return 0;
+        if (a == addr)
+            return now - self->icao_cache[h * 2 + 1] <= MODE_S_ICAO_CACHE_TTL;
+    }
+    return 0;
 }
 
 int brute_force_ap(mode_s_t *self, unsigned char *msg, struct mode_s_msg *mm)
@@ -454,6 +480,7 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
         mm->msgtype == 16 || mm->msgtype == 20)
     {
         mm->altitude = decode_ac13_field(msg, &mm->unit);
+        mm->altitude_is_valid = !(msg[3] & 0x40) && (msg[3] & 0x10);
     }
 
     if (mm->me_ok)
@@ -479,6 +506,7 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
             mm->fflag = msg[6] & (1 << 2);
             mm->tflag = msg[6] & (1 << 3);
             mm->altitude = decode_ac12_field(msg, &mm->unit);
+            mm->altitude_is_valid = msg[5] & 1;
             mm->raw_latitude = ((msg[6] & 3) << 15) |
                                (msg[7] << 7) |
                                (msg[8] >> 1);
@@ -489,45 +517,47 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
         else if (mm->metype == 19 && mm->mesub >= 1 && mm->mesub <= 4)
         {
 
-            if (mm->mesub == 1 || mm->mesub == 2)
+            const int scale = (mm->mesub == 2 || mm->mesub == 4) ? 4 : 1;
+            mm->vert_rate_source = (msg[8] & 0x10) >> 4;
+            mm->vert_rate_sign = (msg[8] & 8) >> 3;
+            int raw = ((msg[8] & 7) << 6) | (msg[9] >> 2);
+            mm->vert_rate_is_valid = raw != 0;
+            if (raw) mm->vert_rate = (raw - 1) * 64;
+            if (mm->mesub <= 2)
             {
+                mm->heading_is_track = 1;
                 mm->ew_dir = (msg[5] & 4) >> 2;
-                mm->ew_velocity = ((msg[5] & 3) << 8) | msg[6];
-                mm->ns_dir = (msg[7] & 0x80) >> 7;
-                mm->ns_velocity = ((msg[7] & 0x7f) << 3) | ((msg[8] & 0xe0) >> 5);
-                mm->vert_rate_source = (msg[8] & 0x10) >> 4;
-                mm->vert_rate_sign = (msg[8] & 0x8) >> 3;
-                mm->vert_rate = ((msg[8] & 7) << 6) | ((msg[9] & 0xfc) >> 2);
-
-                mm->velocity = sqrt(mm->ns_velocity * mm->ns_velocity +
-                                    mm->ew_velocity * mm->ew_velocity);
-                if (mm->velocity)
+                raw = ((msg[5] & 3) << 8) | msg[6];
+                mm->ew_is_valid = raw != 0;
+                if (raw) mm->ew_velocity = (raw - 1) * scale;
+                mm->ns_dir = msg[7] >> 7;
+                raw = ((msg[7] & 127) << 3) | (msg[8] >> 5);
+                mm->ns_is_valid = raw != 0;
+                if (raw) mm->ns_velocity = (raw - 1) * scale;
+                mm->velocity_is_valid = mm->ew_is_valid && mm->ns_is_valid;
+                if (mm->velocity_is_valid)
                 {
-                    int ewv = mm->ew_velocity;
-                    int nsv = mm->ns_velocity;
-                    double heading;
-
-                    if (mm->ew_dir)
-                        ewv *= -1;
-                    if (mm->ns_dir)
-                        nsv *= -1;
-                    heading = atan2(ewv, nsv);
-
-                    mm->heading = heading * 360 / (M_PI * 2);
-
-                    if (mm->heading < 0)
-                        mm->heading += 360;
-                }
-                else
-                {
-                    mm->heading = 0;
+                    mm->velocity = sqrt(mm->ns_velocity * mm->ns_velocity +
+                                        mm->ew_velocity * mm->ew_velocity);
+                    if (mm->velocity)
+                    {
+                        int ew = mm->ew_dir ? -mm->ew_velocity : mm->ew_velocity;
+                        int ns = mm->ns_dir ? -mm->ns_velocity : mm->ns_velocity;
+                        double heading = atan2(ew, ns) * 180 / M_PI;
+                        if (heading < 0) heading += 360;
+                        mm->heading = (int)heading;
+                        mm->heading_is_valid = 1;
+                    }
                 }
             }
-            else if (mm->mesub == 3 || mm->mesub == 4)
+            else
             {
-                mm->heading_is_valid = msg[5] & (1 << 2);
-                mm->heading = (360.0 / 128) * (((msg[5] & 3) << 5) |
-                                               (msg[6] >> 3));
+                mm->heading_is_valid = (msg[5] & 4) != 0;
+                mm->heading = (360.0 / 1024) * (((msg[5] & 3) << 8) | msg[6]);
+                mm->airspeed_type = (msg[7] >> 7) & 1;
+                raw = ((msg[7] & 127) << 3) | (msg[8] >> 5);
+                mm->airspeed_is_valid = raw != 0;
+                if (raw) mm->airspeed = (raw - 1) * scale;
             }
         }
     }
@@ -584,7 +614,8 @@ void apply_phase_correction(uint16_t *mag)
     }
 }
 
-void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callback_t cb)
+uint32_t mode_s_detect_from(mode_s_t *self, uint16_t *mag, uint32_t maglen,
+                            uint32_t start, mode_s_callback_t cb)
 {
     unsigned char bits[MODE_S_LONG_MSG_BITS];
     unsigned char msg[MODE_S_LONG_MSG_BITS / 2];
@@ -595,9 +626,9 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
     /**/
     /* maglen is unsigned: a buffer shorter than one full message would make
        maglen - MODE_S_FULL_LEN*2 wrap to ~4e9 and scan far off the end. */
-    if (maglen < (uint32_t)(MODE_S_FULL_LEN * 2)) return;
+    if (maglen < (uint32_t)(MODE_S_FULL_LEN * 2)) return start;
 
-    for (j = 0; j < maglen - MODE_S_FULL_LEN * 2; j++)
+    for (j = start; j <= maglen - MODE_S_FULL_LEN * 2; j++)
     {
         int low, high, delta, i, errors;
         int good_message = 0;
@@ -720,12 +751,14 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
 
             if (mm.crcok)
             {
-                j += (MODE_S_PREAMBLE_US + (msglen * 8)) * 2;
+                j += (MODE_S_PREAMBLE_US + (msglen * 8)) * 2 - 1;
                 good_message = 1;
                 if (use_correction)
                     mm.phase_corrected = 1;
             }
 
+            if (!mm.crcok && self->check_crc && (use_correction || j == 0) && self->on_bad_crc)
+                self->on_bad_crc();
             if (self->check_crc == 0 || mm.crcok)
             {
                 cb(self, &mm);
@@ -744,6 +777,12 @@ void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callba
             use_correction = 0;
         }
     }
+    return j;
+}
+
+void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callback_t cb)
+{
+    (void)mode_s_detect_from(self, mag, maglen, 0, cb);
 }
 
 /* Chips to a message, for a source that has already found the frame.

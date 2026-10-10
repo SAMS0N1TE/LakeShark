@@ -69,6 +69,7 @@ static void history(int dir)
 {
     int at = s_hist_at + dir;
     if (at < 0) at = 0;
+    if (at == s_hist_at) return;
     if (at > 0 && !ls_term_history_get(&s_hist, at)) return;   /* past the oldest */
     if (s_hist_at == 0 && at > 0) snprintf(s_draft, sizeof(s_draft), "%s", s_in);
     s_hist_at = at;
@@ -102,7 +103,7 @@ static void keys_done(const char *text)
 
 static void open_keys(void)
 {
-    ls_keyboard_open("COMMAND", s_in, LS_TERM_INPUT_MAX, keys_done);
+    ls_keyboard_open_plain("COMMAND", s_in, LS_TERM_INPUT_MAX, keys_done);
 }
 
 static void scroll(int rows)

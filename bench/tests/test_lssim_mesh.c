@@ -89,7 +89,7 @@ LS_CASE(landscape_tap_on_the_name_leaves_the_dm)
 
 LS_CASE(a_reply_to_a_dm_goes_back_to_its_sender_and_the_row_says_dm)
 {
-    run("-x ~2,+ok,@enter", "dm");
+    run("-x ~2,@mic,+ok,@enter", "dm");
     LS_CHECK_MSG(said("mesh-stub send_dm 17BC5E90A3D46F82 ok"),
                  "the reply did not go to the DM's sender:\n%s", s_out);
     LS_CHECK_MSG(said("<@KB1QWE"), "the DM row is not marked:\n%s", s_out);
@@ -97,7 +97,7 @@ LS_CASE(a_reply_to_a_dm_goes_back_to_its_sender_and_the_row_says_dm)
 
 LS_CASE(a_reply_on_a_private_channel_stays_on_it_and_the_row_says_so)
 {
-    run("-x ~2,+ok,@enter", "chan");
+    run("-x ~2,@mic,+ok,@enter", "chan");
     LS_CHECK_MSG(said("mesh-stub send_on 1 ok"),
                  "the reply did not stay on the private channel:\n%s", s_out);
     LS_CHECK_MSG(said("<#TILTON ROOM"), "the channel row is not marked:\n%s", s_out);
@@ -106,7 +106,69 @@ LS_CASE(a_reply_on_a_private_channel_stays_on_it_and_the_row_says_so)
 
 LS_CASE(the_public_fixture_still_replies_in_public)
 {
-    run("-x ~2,+ok,@enter", NULL);
+    run("-x ~2,@mic,+ok,@enter", NULL);
     LS_CHECK_MSG(said("mesh-stub send_on 0 ok"), "public reply moved:\n%s", s_out);
     LS_CHECK_MSG(said("PUBLIC CHANNEL"), "the box lost its title:\n%s", s_out);
+}
+
+LS_CASE(portrait_send_refusal_is_visible_and_draft_survives_offline)
+{
+    run("-x ~2,+hello,@enter", NULL);
+    LS_CHECK_MSG(said("disarmed - type /arm"), "refusal invisible:\n%s", s_out);
+    run("-l -x ~2,@mic,+/stop,@enter,+lostdraft,@enter,+/start", NULL);
+    LS_CHECK(!said("mesh-stub send"));
+    LS_CHECK_MSG(said("draft kept"), "offline refusal invisible:\n%s", s_out);
+    /* Start via the node shortcut, return and send the retained draft. */
+    run("-x ~2,@mic,+/stop,@enter,+lostdraft,@enter,@right,+s,+t,@left,@enter", NULL);
+    LS_CHECK_MSG(said("mesh-stub send_on 0 lostdraft"), "draft lost:\n%s", s_out);
+}
+
+LS_CASE(help_lists_commands_without_flash_truncation)
+{
+    run("-x ~2,+/help,@enter", NULL);
+    LS_CHECK(said("MESH HELP")); LS_CHECK(said("/name X")); LS_CHECK(said("/pub"));
+}
+
+LS_CASE(node_advert_refusal_and_stop_failure_are_honest)
+{
+    run("-x ~2,@right,+a", NULL);
+    LS_CHECK_MSG(said("advert refused"), "advert refusal invisible:\n%s", s_out);
+    LS_CHECK(!said("advert queued"));
+#ifdef _WIN32
+    _putenv("LSSIM_MESH_STOP_FAIL=1");
+#else
+    setenv("LSSIM_MESH_STOP_FAIL", "1", 1);
+#endif
+    run("-x ~2,+/stop,@enter", NULL);
+    LS_CHECK_MSG(said("stop failed"), "false STOP result:\n%s", s_out);
+    LS_CHECK(!said("stopped"));
+#ifdef _WIN32
+    _putenv("LSSIM_MESH_STOP_FAIL=");
+#else
+    unsetenv("LSSIM_MESH_STOP_FAIL");
+#endif
+}
+
+LS_CASE(wrapped_feed_keeps_the_end_and_history_scrolls)
+{
+    run("-x ~2,@up", NULL);
+    LS_CHECK_MSG(said("NORTHFIELD"), "history unavailable:\n%s", s_out);
+    LS_CHECK_MSG(said("hill again"), "message tail clipped:\n%s", s_out);
+}
+
+LS_CASE(options_result_is_above_the_list_and_numeric_fields_use_keypad)
+{
+    /* Root MESH run/stop action posts a result over the picker. */
+    run("-x ~2,43:8,@enter", NULL);
+    LS_CHECK_MSG(said("MESH RESULT"), "OPTIONS result invisible:\n%s", s_out);
+    run("-x ~2,+/radio,@enter,@enter,@down,@enter", NULL);
+    LS_CHECK_MSG(said("MHz"), "numeric editor lost its unit:\n%s", s_out);
+    LS_CHECK_MSG(!said("Q W E R T Y"), "numeric field used QWERTY:\n%s", s_out);
+}
+
+LS_CASE(protocol_length_feed_wraps_in_both_postures_and_ack_has_its_own_mark)
+{
+    run("-x ~2", "long"); LS_CHECK_MSG(said("FINALTAIL"), "portrait lost tail:\n%s", s_out);
+    LS_CHECK(said("+@SHARK"));
+    run("-l -x ~2", "long"); LS_CHECK_MSG(said("FINALTAIL"), "landscape lost tail:\n%s", s_out);
 }

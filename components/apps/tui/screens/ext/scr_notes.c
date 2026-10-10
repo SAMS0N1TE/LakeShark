@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -41,6 +42,12 @@ static int button_focus = -1, button_slot;
    the keyboard is not attached, which is checked every frame, so attaching
    it mid-note puts them away and taking it off brings them back. */
 static bool s_dock = true, s_new, s_loaded;
+static uint32_t s_save_ticket, s_png_ticket, s_trash_ticket;
+EXT_RAM_BSS_ATTR static char s_saved[LS_NOTE_TEXT_MAX];
+EXT_RAM_BSS_ATTR static char s_map_line[200];
+static int s_check = -1;
+static bool s_done_requested;
+static tui_rect s_map_area;
 
 static bool dock_shown(void) { return s_dock && !ls_keypad_present(); }
 static int64_t s_last_edit_us, s_trash_armed_us;
@@ -116,42 +123,88 @@ static void open_app(const char *id)
 
 /* -------------------------------------------------------------- saving -- */
 
+static void insert_line(const char *line);
+
+static void poll_saves(void)
+{
+    if (s_save_ticket) {
+        int result = ls_notes_result(s_save_ticket);
+        if (result) {
+            s_save_ticket = 0;
+            if (result > 0 && !strcmp(s_text, s_saved)) {
+                ls_textbuf_mark_clean(&s_tb);
+                if (s_done_requested) { s_view = V_READ; s_read_scroll = 0; }
+            }
+            s_done_requested = false;
+            say(result > 0 ? "Saved to the SD card" : "SAVE FAILED: edits kept. DONE retries");
+        }
+    }
+    if (s_png_ticket) {
+        int result = ls_notes_result(s_png_ticket);
+        if (result) {
+            s_png_ticket = 0;
+            if (result > 0) { insert_line(s_map_line); s_view = V_EDIT; say("Map picture saved beside the note"); }
+            else say("MAP PICTURE FAILED: SAVE to retry");
+        }
+    }
+    if (s_trash_ticket) {
+        int result = ls_notes_result(s_trash_ticket);
+        if (result) {
+            s_trash_ticket = 0;
+            if (result > 0) { s_view = V_LIST; s_loaded = false; }
+            say(result == 2 ? "Note moved; some pictures stayed behind" : result > 0 ? "Moved to notes/trash" : "Could not move the note; try again");
+        }
+    }
+}
+
 static void save_now(void)
 {
-    if (!s_loaded || !s_tb.dirty) return;
+    poll_saves();
+    if (!s_loaded || !s_tb.dirty || s_save_ticket || s_png_ticket) return;
     bool ok;
     if (s_new) {
-        ok = ls_notes_create(s_text, s_info.stem, sizeof(s_info.stem));
+        ok = ls_notes_create_tracked(s_text, s_info.stem, sizeof(s_info.stem), &s_save_ticket);
         if (ok) s_new = false;
-    } else ok = ls_notes_save(s_info.stem, s_text);
-    if (ok) { ls_textbuf_mark_clean(&s_tb); ls_notes_summarize(s_text, &s_info); }
-    say(ok ? "Saving to the SD card" : "Not saved yet: the card is busy, will retry");
+    } else ok = ls_notes_save_tracked(s_info.stem, s_text, &s_save_ticket);
+    if (ok) { snprintf(s_saved, sizeof(s_saved), "%s", s_text); ls_notes_summarize(s_text, &s_info); }
+    s_last_edit_us = esp_timer_get_time();
+    say(ok ? "Saving to the SD card" : "Not saved: edits kept. DONE retries");
+}
+
+static bool can_replace(void)
+{
+    poll_saves();
+    if (s_save_ticket || s_png_ticket || s_trash_ticket || (s_loaded && s_tb.dirty)) {
+        save_now(); say("Unsaved note kept: wait for save or retry DONE"); return false;
+    }
+    return true;
 }
 
 static void open_note(int index)
 {
-    if (!ls_notes_at(index, &s_info)) return;
+    if (!can_replace() || !ls_notes_at(index, &s_info)) return;
     /* The editor owns the buffer; the file is read into it after, because
        starting the editor empties it. */
     ls_textbuf_init(&s_tb, s_text, sizeof(s_text), NULL);
     if (!ls_notes_load(s_info.stem, s_text, sizeof(s_text))) {
         s_text[0] = 0;
-        say("Could not read that note from the card"); return;
+        s_loaded = false; say(ls_notes_status()); return;
     }
     s_tb.len = (int)strlen(s_text);
     s_loaded = true; s_new = false;
-    s_view = V_READ; s_read_scroll = 0; s_trash_armed_us = 0;
+    s_view = V_READ; s_read_scroll = 0; s_trash_armed_us = 0; s_check = -1;
 }
 
 static void new_note(void)
 {
+    if (!can_replace()) return;
     char stamp[LS_TIME_STAMP_MAX], seed[96];
     ls_time_render_stamp(stamp, sizeof(stamp));
     snprintf(seed, sizeof(seed), "# \n%s\n\n", stamp);
     ls_textbuf_init(&s_tb, s_text, sizeof(s_text), seed);
     s_tb.cursor = 2;                   /* type the title first */
     memset(&s_info, 0, sizeof(s_info));
-    s_loaded = true; s_new = true;
+    s_loaded = true; s_new = true; s_tb.dirty = true; s_done_requested = false;
     s_view = V_EDIT;
     s_dock = true;
     ls_keydock_reset(true);
@@ -160,6 +213,7 @@ static void new_note(void)
 
 static void edit_note(void)
 {
+    s_done_requested = false;
     s_view = V_EDIT;
     s_tb.cursor = s_tb.len; s_tb.want_col = -1;
     s_dock = true;
@@ -169,8 +223,9 @@ static void edit_note(void)
 
 static void leave_editor(void)
 {
+    s_done_requested = true;
     save_now();
-    s_view = V_READ; s_read_scroll = 0;
+    if (!s_tb.dirty && !s_save_ticket && !s_png_ticket) { s_done_requested = false; s_view = V_READ; s_read_scroll = 0; }
 }
 
 /* -------------------------------------------------------------- insert -- */
@@ -178,6 +233,7 @@ static void leave_editor(void)
 static void insert_line(const char *line)
 {
     if (!line || !line[0]) { say("Nothing live to insert right now"); return; }
+    s_done_requested = false;
     /* Data lines start on a line of their own. */
     if (s_tb.cursor > 0 && s_text[s_tb.cursor - 1] != '\n') ls_textbuf_insert_char(&s_tb, '\n');
     if (!ls_textbuf_insert(&s_tb, line)) say("The note is full");
@@ -195,7 +251,7 @@ static void begin_map_capture(void)
     s_map_lat = lat; s_map_lon = lon;
     ls_map_center(lat, lon);
     s_view = V_MAP;
-    say("Pan with the arrows, zoom with + and -, then SAVE");
+    say("Arrows/tap edges pan. TAB buttons.");
 }
 
 static void insert_done(int i)
@@ -248,6 +304,7 @@ static void open_insert(void)
 
 static void save_map_picture(void)
 {
+    if (s_png_ticket) { say("Picture saving; please wait"); return; }
     if (ls_map_render_busy()) { say("Map still drawing; SAVE again in a moment"); return; }
     int w = 0, h = 0;
     const uint16_t *px = ls_map_render(&w, &h);
@@ -264,9 +321,9 @@ static void save_map_picture(void)
         ls_notes_picture_leaf(s_info.stem, leaf, sizeof(leaf));
         char file[LS_NOTE_STEM + 24];
         snprintf(file, sizeof(file), "%s.png", leaf);
-        if (!ls_notes_save_png(leaf, px, w, h)) { say("A picture is still being written; try again"); return; }
+        if (!ls_notes_save_png_tracked(leaf, px, w, h, &s_png_ticket)) { say("A picture is still being written; try again"); return; }
         ls_note_fmt_map(line, sizeof(line), lat, lon, ls_map_zoom(), file);
-        s_view = V_EDIT; insert_line(line); say("Map picture saved beside the note");
+        snprintf(s_map_line, sizeof(s_map_line), "%s", line); say("Saving map picture; please wait");
         return;
     }
     /* No frame to save: keep the place, and say why from the map itself. */
@@ -289,46 +346,43 @@ static uint8_t tag_hue(const char *tag)
 }
 
 /* One source line, wrapped, as data where it is data. Returns rows used. */
-static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *line, int n, int max_rows)
+static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *line, int n)
 {
-    char buf[400];
-    int k = n < (int)sizeof(buf) - 1 ? n : (int)sizeof(buf) - 1;
-    memcpy(buf, line, (size_t)k); buf[k] = 0;
     const uint8_t text = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     int indent = 0; uint8_t attr = text;
-    const char *body = buf;
-    if (buf[0] == '#') {
-        int level = 0; while (buf[level] == '#') level++;
-        body = buf + level; while (*body == ' ') body++;
+    const char *body = line;
+    const char *limit = line + n;
+    if (line[0] == '#') {
+        int level = 0; while (line[level] == '#') level++;
+        body = line + level; while (body < limit && *body == ' ') body++;
         attr = TUI_ATTR((level == 1 ? TUI_CYAN : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK);
-    } else if (buf[0] == '>' ) {
-        const char *tag = buf + 1; while (*tag == ' ') tag++;
-        int tl = 0; while (tag[tl] && tag[tl] != ' ') tl++;
+    } else if (line[0] == '>' ) {
+        const char *tag = line + 1; while (tag < limit && *tag == ' ') tag++;
+        int tl = 0; while (tag + tl < limit && tag[tl] != ' ') tl++;
         char chip[16]; snprintf(chip, sizeof(chip), " %.*s ", tl > 10 ? 10 : tl, tag);
         const uint8_t hue = tag_hue(tag);
-        tui_put_str(sf, clip, x, y, chip, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
+        if (sf) tui_put_str(sf, clip, x, y, chip, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
         indent = (int)strlen(chip) + 1;
-        body = tag + tl; while (*body == ' ') body++;
+        body = tag + tl; while (body < limit && *body == ' ') body++;
         attr = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
-    } else if (!strncmp(buf, "- [ ]", 5) || !strncmp(buf, "- [x]", 5) || !strncmp(buf, "- [X]", 5)) {
-        const bool done = buf[3] != ' ';
-        tui_put_str(sf, clip, x, y, done ? "[x]" : "[ ]",
+    } else if (!strncmp(line, "- [ ]", 5) || !strncmp(line, "- [x]", 5) || !strncmp(line, "- [X]", 5)) {
+        const bool done = line[3] != ' ';
+        if (sf) tui_put_str(sf, clip, x, y, done ? "[x]" : "[ ]",
                     TUI_ATTR((done ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
-        indent = 4; body = buf + 5; while (*body == ' ') body++;
+        indent = 4; body = line + 5; while (body < limit && *body == ' ') body++;
         attr = done ? LS_ATTR_DIM : text;
-    } else if (!strcmp(buf, "---")) {
-        for (int i = 0; i < w; i++) tui_put_char(sf, clip, x + i, y, '-', LS_ATTR_DIM);
+    } else if (n == 3 && !strncmp(line, "---", 3)) {
+        for (int i = 0; sf && i < w; i++) tui_put_char(sf, clip, x + i, y, '-', LS_ATTR_DIM);
         return 1;
     }
     const int bw = w - indent;
     if (bw < 4) return 1;
-    int rows = 0, len = (int)strlen(body), start = 0;
+    int rows = 0, len = (int)(limit - body), start = 0;
     if (!len) return 1;
-    while (start < len && rows < max_rows) {
+    while (start < len) {
         int end, next = ls_textbuf_line(body, len, start, bw, &end);
-        char seg[400]; int sl = end - start;
-        memcpy(seg, body + start, (size_t)sl); seg[sl] = 0;
-        tui_put_str(sf, clip, x + indent, y + rows, seg, attr);
+        for (int i = start; sf && i < end; i++)
+            tui_put_char(sf, clip, x + indent + i - start, y + rows, body[i], attr);
         rows++;
         if (next <= start) break;
         start = next;
@@ -348,7 +402,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
     char title[40]; snprintf(title, sizeof(title), "NOTES  %d", ls_notes_count());
     ls_panel_box(sf, panel, title, TUI_CYAN);
-    s_list_area = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 4, panel.h - 3);
+    s_list_area = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 8, panel.h - 3);
     const int per = 3, rows = s_list_area.h / per;
     s_row_count = 0;
     if (!total) {
@@ -383,6 +437,8 @@ static void draw_list(tui_surface *sf, tui_rect a)
             tui_put_str(sf, panel, cx, y, c, TUI_ATTR((n.checks_open ? TUI_YELLOW : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK));
         }
     }
+    tui_put_char(sf, panel, s_list_area.x + s_list_area.w + 2, s_list_area.y, '^', LS_ATTR_DIM);
+    tui_put_char(sf, panel, s_list_area.x + s_list_area.w + 2, s_list_area.y + s_list_area.h - 1, 'v', LS_ATTR_DIM);
     ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_notes_status(), LS_ATTR_DIM);
 }
 
@@ -405,18 +461,11 @@ static void draw_read(tui_surface *sf, tui_rect a)
         const char *eol = strchr(line, '\n');
         const int n = eol ? (int)(eol - line) : (int)strlen(line);
         const int y = s_read_area.y + row;
-        const int space = s_read_area.y + s_read_area.h - y;
-        int used;
-        if (row >= 0 && space > 0) {
-            if (row < (int)(sizeof(s_read_line_at) / sizeof(s_read_line_at[0])))
-                s_read_line_at[row] = (int)(line - s_text);
-            used = draw_line(sf, s_read_area, s_read_area.x, y, s_read_area.w, line, n, space);
-        } else {
-            char tmp[400]; int k = n < 399 ? n : 399; memcpy(tmp, line, (size_t)k); tmp[k] = 0;
-            used = 1; int e, s = 0, bw = s_read_area.w - (tmp[0] == '>' ? 12 : tmp[0] == '-' ? 4 : 0);
-            if (bw < 4) bw = 4;
-            while ((s = ls_textbuf_line(tmp, k, s, bw, &e)) < k) used++;
-        }
+        int used = draw_line(sf, s_read_area, s_read_area.x, y, s_read_area.w, line, n);
+        for (int r = row < 0 ? 0 : row; r < row + used && r < s_read_area.h && r < 120; r++)
+            s_read_line_at[r] = (int)(line - s_text);
+        if (s_check == (int)(line - s_text) && row >= 0 && row < s_read_area.h)
+            tui_put_char(sf, panel, s_read_area.x - 1, y, '>', LS_ATTR_DIM);
         row += used; total += used;
         double lat, lon; int zoom; char file[64];
         if (!map_shown && ls_notes_parse_map(line, &lat, &lon, &zoom, file, sizeof(file))) {
@@ -438,8 +487,8 @@ static void draw_read(tui_surface *sf, tui_rect a)
     s_read_rows = total;
     if (!map_shown) ls_map_preview_leave();
     char foot[160];
-    snprintf(foot, sizeof(foot), "%s%s", s_feedback[0] ? s_feedback : ls_notes_status(),
-             s_info.checks_open ? "  |  tap [ ] to tick" : "");
+    const char *hint = s_info.checks_open + s_info.checks_done ? "Tap pages; SPACE next, ENTER tick" : "Tap top/bottom to page";
+    snprintf(foot, sizeof(foot), "%s", s_feedback[0] ? s_feedback : hint);
     ls_safe_line(sf, a, a.y + a.h - 1, foot, LS_ATTR_DIM);
 }
 
@@ -497,6 +546,7 @@ static void draw_map(tui_surface *sf, tui_rect a)
     const int bar_h = ls_btn_raised_height(a, 5);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_focus);
     tui_rect box = tui_rect_make(a.x + 1, a.y + bar_h + 1, a.w - 2, a.h - bar_h - 3);
+    s_map_area = box;
     double lat, lon; ls_map_get_center(&lat, &lon);
     ls_map_preview(sf, box, lat, lon);
     int px, py;
@@ -513,6 +563,7 @@ static void draw_map(tui_surface *sf, tui_rect a)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    poll_saves();
     if (a.h < 16 || a.w < 30) {
         ls_panel_box(sf, a, "NOTES", TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
@@ -533,6 +584,7 @@ static void filter_done(const char *text) { snprintf(s_filter, sizeof(s_filter),
 
 static void toggle_check_at(int offset)
 {
+    if (s_trash_ticket) { say("Moving note; please wait"); return; }
     if (offset < 0 || offset + 5 > s_tb.len || strncmp(s_text + offset, "- [", 3)) return;
     char *mark = s_text + offset + 3;
     if (*mark == ' ') *mark = 'x'; else if (*mark == 'x' || *mark == 'X') *mark = ' '; else return;
@@ -554,19 +606,20 @@ static void list_action(int i)
 
 static void read_action(int i)
 {
+    if (s_trash_ticket) { say("Moving note; please wait"); return; }
     s_feedback[0] = 0;
     if (i == 0) edit_note();
-    else if (i == 1 && s_info.has_place) { ls_map_center(s_info.lat, s_info.lon); open_app("map"); }
-    else if (i == 2 && s_info.has_place) {
+    else if (i == 1 && s_info.has_place && can_replace()) { ls_map_center(s_info.lat, s_info.lon); open_app("map"); }
+    else if (i == 2 && s_info.has_place && can_replace()) {
         ls_compass_set_target(s_info.lat, s_info.lon, s_info.title);
         open_app("compass");
-    } else if (i == 3) {
+    } else if (i == 3 && can_replace()) {
         const int64_t now = esp_timer_get_time();
         if (s_trash_armed_us && now - s_trash_armed_us < 4000000) {
-            if (ls_notes_trash(s_info.stem)) { s_view = V_LIST; s_loaded = false; say("Moved to notes/trash"); }
+            if (ls_notes_trash_tracked(s_info.stem, &s_trash_ticket)) say("Moving to notes/trash...");
             s_trash_armed_us = 0;
         } else s_trash_armed_us = now;
-    } else if (i == 4) { s_view = V_LIST; s_loaded = false; }
+    } else if (i == 4 && can_replace()) { s_view = V_LIST; s_loaded = false; }
 }
 
 static void edit_action(int i)
@@ -580,6 +633,7 @@ static void edit_action(int i)
 static void map_action(int i)
 {
     s_feedback[0] = 0;
+    if (s_png_ticket) { say("Picture saving; please wait"); return; }
     if (i == 0) save_map_picture();
     else if (i == 1) ls_map_zoom_by(-1);
     else if (i == 2) ls_map_zoom_by(1);
@@ -617,7 +671,7 @@ static bool edit_key(ls_tk_t k, char ch)
     case LS_TK_ESC:       leave_editor(); break;
     default: return false;
     }
-    if (edited) { s_last_edit_us = esp_timer_get_time(); s_feedback[0] = 0; }
+    if (edited) { s_done_requested = false; s_last_edit_us = esp_timer_get_time(); s_feedback[0] = 0; }
     return true;
 }
 
@@ -630,18 +684,46 @@ static bool key(ls_tk_t k, char ch)
             return edit_key(k, ch);
         return false;
     }
+    if (s_view == V_MAP && (k == LS_TK_LEFT || k == LS_TK_RIGHT || k == LS_TK_UP || k == LS_TK_DOWN)) {
+        if (!s_png_ticket) ls_map_pan(k == LS_TK_LEFT ? -40 : k == LS_TK_RIGHT ? 40 : 0,
+                                    k == LS_TK_UP ? -40 : k == LS_TK_DOWN ? 40 : 0);
+        s_feedback[0] = 0; button_focus = -1; return true;
+    }
     if (k == LS_TK_LEFT || k == LS_TK_RIGHT || k == LS_TK_TAB)
         return ls_btn_navigate(k, &button_slot, &button_focus, false);
+    if (s_view == V_READ && k == LS_TK_ENTER && button_focus < 0 && s_check >= 0) {
+        toggle_check_at(s_check); return true;
+    }
     if (k == LS_TK_ENTER && button_focus >= 0) { if (ls_btn_enabled(0, button_focus)) action(button_focus); return true; }
     if (k == LS_TK_UP || k == LS_TK_DOWN) button_focus = -1;
     if (s_view == V_MAP) {
-        if (k == LS_TK_UP) { ls_map_pan(0, -40); return true; }
-        if (k == LS_TK_DOWN) { ls_map_pan(0, 40); return true; }
         if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) { map_action(4); return true; }
         if (k == LS_TK_CHAR) { const char *p = strchr("s-+hx", ch); if (p) { map_action((int)(p - "s-+hx")); return true; } }
         return false;
     }
     if (s_view == V_READ) {
+        if (k == LS_TK_CHAR && ch == ' ') {
+            int next = -1;
+            for (int i = s_check + 1; i + 5 <= s_tb.len; i++)
+                if ((i == 0 || s_text[i - 1] == '\n') && !strncmp(s_text + i, "- [", 3)) { next = i; break; }
+            if (next < 0 && s_check >= 0) { s_check = -1; return key(k, ch); }
+            s_check = next;
+            if (next >= 0) {
+                int rows = 0; bool map = false;
+                for (const char *line = s_text; line < s_text + next;) {
+                    const char *eol = strchr(line, '\n');
+                    int n = eol ? (int)(eol - line) : (int)strlen(line);
+                    rows += draw_line(NULL, s_read_area, 0, 0, s_read_area.w, line, n);
+                    if (!map && !strncmp(line, "> MAP ", 6)) { rows += MAP_ROWS; map = true; }
+                    if (!eol) break;
+                    line = eol + 1;
+                }
+                s_read_scroll = rows;
+                button_focus = -1;
+                say("ENTER ticks selected item; SPACE selects next");
+            }
+            return true;
+        }
         if (k == LS_TK_UP) { if (s_read_scroll) s_read_scroll--; return true; }
         if (k == LS_TK_DOWN) { if (s_read_scroll + s_read_area.h < s_read_rows) s_read_scroll++; return true; }
         if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) { read_action(4); return true; }
@@ -670,11 +752,37 @@ static bool touch(int col, int row)
         }
         return true;
     }
+    if (s_view == V_MAP && !s_png_ticket) {
+        int dx = col - (s_map_area.x + s_map_area.w / 2);
+        int dy = row - (s_map_area.y + s_map_area.h / 2);
+        if (col >= s_map_area.x && col < s_map_area.x + s_map_area.w &&
+            row >= s_map_area.y && row < s_map_area.y + s_map_area.h) {
+            if (abs(dx) * s_map_area.h > abs(dy) * s_map_area.w) ls_map_pan(dx < 0 ? -40 : 40, 0);
+            else ls_map_pan(0, dy < 0 ? -40 : 40);
+            s_feedback[0] = 0;
+        }
+        return true;
+    }
     if (s_view == V_READ) {
         const int r = row - s_read_area.y;
         if (r >= 0 && r < (int)(sizeof(s_read_line_at) / sizeof(s_read_line_at[0])) && s_read_line_at[r] >= 0 &&
             col < s_read_area.x + 4)
             toggle_check_at(s_read_line_at[r]);
+        else if (r >= 0 && r < s_read_area.h) {
+            int step = s_read_area.h > 2 ? s_read_area.h - 2 : 1;
+            int max = s_read_rows > s_read_area.h ? s_read_rows - s_read_area.h : 0;
+            s_read_scroll += r < s_read_area.h / 2 ? -step : step;
+            if (s_read_scroll < 0) s_read_scroll = 0;
+            if (s_read_scroll > max) s_read_scroll = max;
+        }
+        return true;
+    }
+    if (s_view == V_LIST && col >= s_list_area.x + s_list_area.w && col < s_list_area.x + s_list_area.w + 4 && row >= s_list_area.y && row < s_list_area.y + s_list_area.h) {
+        int step = s_row_count > 1 ? s_row_count - 1 : 1;
+        s_sel += row < s_list_area.y + s_list_area.h / 2 ? -step : step;
+        int total = visible_count();
+        if (s_sel < 0) s_sel = 0;
+        if (s_sel >= total) s_sel = total ? total - 1 : 0;
         return true;
     }
     if (s_view == V_LIST && col >= s_list_area.x && col < s_list_area.x + s_list_area.w && row >= s_list_area.y) {
@@ -688,53 +796,12 @@ static bool touch(int col, int row)
     return true;
 }
 
-/* Journal entries from before NOTES become notes, once. The old files stay
-   where they were. */
-static void import_journal(void)
-{
-    char marker[160];
-    snprintf(marker, sizeof(marker), "%s/.journal-imported", ls_notes_directory());
-    struct stat st;
-    if (stat(marker, &st) == 0) return;
-    /* The marker first, in a folder made for it: an import that cannot
-       record itself would run again on the next visit and double every
-       entry. No marker, no import. */
-#ifdef _WIN32
-    mkdir(ls_notes_directory());
-#else
-    mkdir(ls_notes_directory(), 0775);
-#endif
-    FILE *m = fopen(marker, "wb");
-    if (!m) return;
-    fputs("importing\n", m);
-    fclose(m);
-    EXT_RAM_BSS_ATTR static ls_journal_entry_t e;
-    EXT_RAM_BSS_ATTR static char body[LS_JOURNAL_TEXT + 400];
-    int imported = 0;
-    for (int i = LS_JOURNAL_CAP - 1; i >= 0; i--) {
-        if (!ls_field_entry(i, &e)) continue;
-        /* Dated as the entry was, not as the import is. */
-        char when[40];
-        if (e.sample.utc[0]) snprintf(when, sizeof(when), "%s", e.sample.utc);
-        else snprintf(when, sizeof(when), "from JOURNAL, uptime %.0f s", e.sample.time_us / 1e6);
-        int n = snprintf(body, sizeof(body), "# %s\n%s\n\n%s\n", e.title, when, e.text);
-        if (e.sample.gps_valid && n > 0 && (size_t)n < sizeof(body))
-            n += snprintf(body + n, sizeof(body) - (size_t)n, "> GPS %.6f, %.6f  alt %.0f m\n", e.sample.lat, e.sample.lon, e.sample.alt_m);
-        if (e.sample.signal_valid && n > 0 && (size_t)n < sizeof(body))
-            snprintf(body + n, sizeof(body) - (size_t)n, "> RADIO %s  %.4f MHz  %.0f dBm\n",
-                     ls_field_source_name(e.sample.source), e.sample.frequency / 1e6, e.sample.rssi);
-        if (ls_notes_create(body, NULL, 0)) imported++;
-    }
-    FILE *f = fopen(marker, "wb");
-    if (f) { fprintf(f, "%d\n", imported); fclose(f); }
-}
-
 static void enter(void)
 {
     button_focus = -1; button_slot = 0; s_feedback[0] = 0;
     ls_field_start(); ls_field_watch(true);
     ls_notes_start();
-    import_journal();
+    poll_saves();
     if (s_view == V_MAP) s_view = V_EDIT;
 }
 

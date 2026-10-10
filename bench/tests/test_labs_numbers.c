@@ -67,3 +67,19 @@ LS_CASE(hf_frequency_entry_is_lr2021_receive_only)
     set_fsk_number(2440); LS_EQ_UINT(lora_requests, 6);
     radio_caps = 0;
 }
+
+LS_CASE(option_numeric_setters_keep_fractional_frequency_and_integer_validation)
+{
+    lora_requests = fsk_requests = 0; radio_caps = 0;
+    s.config.freq_hz = 910525000;
+    ls_opt_t row = { .arg = 0 };
+    LS_NEAR(o_lora_num(&row), 910.525, .00001);
+    o_lora_set(&row, o_lora_num(&row) + .025);
+    LS_EQ_UINT(lora_requests, 1);
+    row.arg = 1; o_lora_set(&row, 12); o_lora_set(&row, 13);
+    LS_EQ_UINT(lora_requests, 2);
+    s.fsk.payload_bytes = 64; row.arg = 5;
+    o_fsk_set(&row, o_fsk_num(&row) + 1);
+    LS_EQ_UINT(fsk_requests, 1); LS_EQ_UINT(accepted_fsk.payload_bytes, 65);
+    o_fsk_set(&row, 256); LS_EQ_UINT(fsk_requests, 1);
+}

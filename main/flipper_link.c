@@ -14,6 +14,7 @@
 
 #include "ls_mesh.h"
 #include "ls_gps.h"
+#include "ls_uart_claim.h"
 #include "ls_track_log.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -1198,6 +1199,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
     } else if (!strcmp(cmd, "GPS")) {
         ls_gps_state_t g;
         ls_gps_get(&g);
+        ls_gps_expire(&g, esp_timer_get_time(), ls_gps_running());
         /*'s own distinction, carried to the head: bytes climbing with
            sentences flat is a baud rate, both climbing with no fix is the
            antenna, and neither is "the GPS is broken". */
@@ -1572,19 +1574,21 @@ static esp_err_t link_install(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
+    esp_err_t lease = ls_uart_claim_lock();
+    if (lease != ESP_OK) return lease;
     if (uart_is_driver_installed(s_cfg.uart_num)) {
         int found = -1;
         for (int u = SOC_UART_HP_NUM - 1; u >= 1; u--) {
             if (u == CONFIG_ESP_CONSOLE_UART_NUM) continue;
             if (!uart_is_driver_installed(u)) { found = u; break; }
         }
-        if (found < 0) return ESP_ERR_NOT_FOUND;
+        if (found < 0) { ls_uart_claim_unlock(); return ESP_ERR_NOT_FOUND; }
         ESP_LOGW(TAG, "uart%d busy, using uart%d instead", s_cfg.uart_num, found);
         s_cfg.uart_num = found;
     }
 
     esp_err_t err = uart_driver_install(s_cfg.uart_num, RX_BUF_SZ, TX_BUF_SZ, 0, NULL, 0);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) { ls_uart_claim_unlock(); return err; }
     err = uart_param_config(s_cfg.uart_num, &uc);
     if (err != ESP_OK) goto fail;
     err = uart_set_pin(s_cfg.uart_num, s_cfg.tx_gpio, s_cfg.rx_gpio,
@@ -1596,10 +1600,12 @@ static esp_err_t link_install(void)
     gpio_set_pull_mode(s_cfg.rx_gpio, GPIO_PULLUP_ONLY);
 
     s_installed = true;
+    ls_uart_claim_unlock();
     return ESP_OK;
 
 fail:
     uart_driver_delete(s_cfg.uart_num);
+    ls_uart_claim_unlock();
     return err;
 }
 

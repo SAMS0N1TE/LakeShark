@@ -112,6 +112,8 @@ esp_err_t audio_player_resume(void);
  *    - Others: Fail
  */
 esp_err_t audio_player_stop(void);
+/* Wait until the decoder has closed preceding files and consumed STOP. */
+esp_err_t audio_player_stop_wait(uint32_t timeout_ms);
 
 /**
  * @brief Register callback for audio event
@@ -137,6 +139,7 @@ typedef struct {
     audio_player_mute_fn mute_fn;
     audio_reconfig_std_clock clk_set_fn;
     audio_player_write_fn write_fn;
+    void (*source_format_fn)(uint32_t rate, uint32_t bits, unsigned channels);
     UBaseType_t priority; /*< FreeRTOS task priority */
     BaseType_t coreID; /*< ESP32 core ID */
     void (*file_close_fn)(FILE *file); /* optional file close + lease release; defaults to fclose */

@@ -40,6 +40,9 @@ static bool         s_keyboard_light = true;
 /* Settings > DEVICE > Check for updates: Daily (true) or Off. Read by the update
    scheduler's timer, so it is RAM only; loaded once in settings_init. */
 static bool         s_update_check = true;
+/* Accepted choices must be visible before the delayed write reaches NVS. */
+static int s_boot_sound = 1;
+static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
@@ -300,6 +303,9 @@ static void settings_drop_sam_voice_keys(void);
 
 bool settings_init(void)
 {
+    __atomic_store_n(&s_boot_sound,1,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_alert_ring,true,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_alert_vibe,true,__ATOMIC_RELEASE);
     s_audio_muted=false;
     s_map_layers_valid=false;
     s_pagers = PAGERS_DEFAULT;
@@ -350,6 +356,14 @@ bool settings_init(void)
     uint8_t upd_check = 1;
     if(nvs_get_u8(s_nvs,"upd_check",&upd_check)==ESP_OK)
         __atomic_store_n(&s_update_check,upd_check!=0,__ATOMIC_RELEASE);
+
+    uint8_t boot_sound = 1, alert_ring = 1, alert_vibe = 1;
+    if (nvs_get_u8(s_nvs, "boot_snd", &boot_sound) == ESP_OK && boot_sound <= 2)
+        __atomic_store_n(&s_boot_sound,boot_sound,__ATOMIC_RELEASE);
+    if (nvs_get_u8(s_nvs, "alert_ring", &alert_ring) == ESP_OK)
+        __atomic_store_n(&s_alert_ring,alert_ring != 0,__ATOMIC_RELEASE);
+    if (nvs_get_u8(s_nvs, "alert_vibe", &alert_vibe) == ESP_OK)
+        __atomic_store_n(&s_alert_vibe,alert_vibe != 0,__ATOMIC_RELEASE);
 
     uint8_t audio_muted=0;
     if(nvs_get_u8(s_nvs,"audio_mute",&audio_muted)==ESP_OK) s_audio_muted=audio_muted==1;
@@ -531,9 +545,10 @@ int settings_get_gain(const app_t *a)
     if (!s_nvs_ok || !a) return a ? a->default_gain : 0;
     char k[16]; mk_key(k, sizeof(k), a->name, "gain");
     int32_t v = 0;
-    if (nvs_get_i32(s_nvs, k, &v) == ESP_OK && v >= 0 && v <= 600) return (int)v;
+    if (nvs_get_i32(s_nvs, k, &v) == ESP_OK && settings_gain_valid(a->name, v)) return (int)v;
     return a->default_gain;
 }
+
 void settings_set_gain(const app_t *a, int tenths)
 {
     if (!s_nvs_ok || !a) return;
@@ -800,17 +815,14 @@ void settings_set_volume(int pct)
 
 int settings_get_boot_sound(void)
 {
-    if (!s_nvs_ok) return 1;
-    uint8_t v = 1;
-    if (nvs_get_u8(s_nvs, "boot_snd", &v) != ESP_OK || v > 2) return 1;
-    return (int)v;
+    return __atomic_load_n(&s_boot_sound,__ATOMIC_ACQUIRE);
 }
 void settings_set_boot_sound(int mode)
 {
-    if (!s_nvs_ok) return;
     if (mode < 0) mode = 0;
     if (mode > 2) mode = 2;
-    sput_u8("boot_snd", (uint8_t)mode);
+    if (sput_u8("boot_snd", (uint8_t)mode))
+        __atomic_store_n(&s_boot_sound,mode,__ATOMIC_RELEASE);
 }
 
 /**/
@@ -1068,27 +1080,21 @@ void settings_set_subghz_fsk(uint32_t bitrate, uint32_t deviation_hz,
 
 bool settings_get_alert_ring(void)
 {
-    if (!s_nvs_ok) return true;
-    uint8_t v = 1;
-    if (nvs_get_u8(s_nvs, "alert_ring", &v) != ESP_OK) return true;
-    return v != 0;
+    return __atomic_load_n(&s_alert_ring,__ATOMIC_ACQUIRE);
 }
 void settings_set_alert_ring(bool en)
 {
-    if (!s_nvs_ok) return;
-    sput_u8("alert_ring", en ? 1 : 0);
+    if (sput_u8("alert_ring", en ? 1 : 0))
+        __atomic_store_n(&s_alert_ring,en,__ATOMIC_RELEASE);
 }
 bool settings_get_alert_vibe(void)
 {
-    if (!s_nvs_ok) return true;
-    uint8_t v = 1;
-    if (nvs_get_u8(s_nvs, "alert_vibe", &v) != ESP_OK) return true;
-    return v != 0;
+    return __atomic_load_n(&s_alert_vibe,__ATOMIC_ACQUIRE);
 }
 void settings_set_alert_vibe(bool en)
 {
-    if (!s_nvs_ok) return;
-    sput_u8("alert_vibe", en ? 1 : 0);
+    if (sput_u8("alert_vibe", en ? 1 : 0))
+        __atomic_store_n(&s_alert_vibe,en,__ATOMIC_RELEASE);
 }
 
 /**/

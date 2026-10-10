@@ -3117,6 +3117,7 @@ void app_main(void)
             ESP_LOGW(TAG, "no SD card (%s) - running without it",
                      esp_err_to_name(sd));
         }
+        ls_track_restore(sd == ESP_OK);
     }
 #endif
     ls_safe_stage(LS_SAFE_STAGE_CODEC);

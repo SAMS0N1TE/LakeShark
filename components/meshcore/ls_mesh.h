@@ -18,6 +18,7 @@ extern "C" {
 typedef struct {
     bool     running;
     bool     tx_enabled;
+    bool     held, receiving, rx_fault, on_air;
     bool     radio_ready;
     uint32_t rx_packets;      /* raw frames the radio handed up            */
     uint32_t rx_bad;          /* CRC or header errors                      */
@@ -41,7 +42,7 @@ esp_err_t ls_mesh_start(void);
 esp_err_t ls_mesh_stop(void);
 bool      ls_mesh_running(void);
 
-/* Arm or disarm transmit. Off at boot, always. */
+/* Manual starts are disarmed; boot may apply the saved auto TX preference. */
 void ls_mesh_set_tx(bool enabled);
 bool ls_mesh_tx_enabled(void);
 
@@ -119,7 +120,8 @@ typedef struct {
     uint16_t          len;
 } ls_mesh_event_t;
 
-/* Peers, most recently heard first. Returns how many were written.
+/* Peers, most recently heard first. NULL returns the total peer count.
+   Otherwise returns how many were written.
 
    `out` must have room for `max` entries and the caller owns that
    memory. On a small stack, DO NOT ask for LS_MESH_MAX_PEERS - the array is
@@ -150,18 +152,20 @@ uint32_t ls_mesh_now(void);
 uint32_t ls_mesh_event_seq(void);
 
 #define LS_MESH_MAX_MSGS 24
-#define LS_MESH_MSG_LEN  84
+#define LS_MESH_MSG_LEN  185
 
 /* Delivery state, and what it honestly means. */
 
 typedef enum {
     LS_MSG_IN = 0,      /* somebody else's                              */
-    LS_MSG_SENDING,     /* ours, still on the air                       */
+    LS_MSG_SENDING,     /* ours, currently on the air                       */
     LS_MSG_SENT,        /* ours, transmission complete                  */
     LS_MSG_HEARD,       /* ours, and a neighbour relayed it back to us  */
     /* Only a direct message can reach this. It means the recipient
        itself answered with a matching ACK - not that somebody relayed it. */
     LS_MSG_ACKED,
+    LS_MSG_QUEUED,
+    LS_MSG_FAILED,
 } ls_mesh_msg_state_t;
 
 typedef struct {
@@ -173,6 +177,8 @@ typedef struct {
     uint8_t  relays;                /* how many times we heard it back   */
     char     text[LS_MESH_MSG_LEN]; /* "name: message", as it goes on air */
     uint8_t  chan;                  /* channel slot when not direct; 0 is public */
+    uint32_t id;                    /* immutable within this session     */
+    char     sender[LS_MESH_PEER_NAME];
 } ls_mesh_msg_t;
 
 esp_err_t ls_mesh_send_dm_id(const char *id, const char *text);
@@ -202,6 +208,12 @@ bool ls_mesh_radio_held(void);
 bool ls_mesh_radio_hold_bg(bool on);
 bool ls_mesh_radio_wanted(void);
 bool ls_mesh_radio_bg(void);
+/* Socket status, including task lease owners while MeshCore is paused. */
+typedef struct {
+    char chip[12], owner[32], mode[12];
+    bool present, receiving, transmitting, armed, held;
+} ls_mesh_socket_t;
+void ls_mesh_socket_get(ls_mesh_socket_t *out);
 
 int ls_mesh_sightings(void);
 bool ls_mesh_sight_clear(void);
@@ -212,6 +224,8 @@ int ls_mesh_messages(ls_mesh_msg_t *out, int max);
 /* Changes when a message arrives or is sent, so a screen can tell whether to
    scroll without diffing the ring. */
 uint32_t ls_mesh_msg_seq(void);
+/* Live receipt only; history loads and delivery updates do not change it. */
+uint32_t ls_mesh_incoming_seq(void);
 
 /* ---- direct messages --------------------------------------------------- */
 

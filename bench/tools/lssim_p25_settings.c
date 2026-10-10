@@ -121,3 +121,44 @@ void p25_demod_set_preference(int v)
 {
     mode = v;
 }
+
+#include "p25_state.h"
+p25_state_t P25 __attribute__((weak));
+#include "p25_program.h"
+static bool survey;
+bool p25_program_survey_active_now(void) { return survey; }
+bool p25_program_survey_start_now(void) { survey = true; return true; }
+bool p25_program_survey_cancel_now(p25_survey_cancel_t reason)
+{ (void)reason; survey = false; return true; }
+bool p25_ui_hold_toggle(void)
+{
+    P25.hold_tg = P25.hold_tg ? 0 : (uint16_t)P25.dsd_tg;
+    return true;
+}
+bool p25_ui_lockout_current(void)
+{
+    if (!P25.dsd_tg || P25.lockout_count == 64) return false;
+    P25.lockout[P25.lockout_count++] = (uint16_t)P25.dsd_tg;
+    return true;
+}
+bool p25_ui_lockout_remove(uint16_t tg)
+{
+    for (unsigned i = 0; i < P25.lockout_count; i++) {
+        if (P25.lockout[i] != tg) continue;
+        P25.lockout[i] = P25.lockout[--P25.lockout_count]; return true;
+    }
+    return false;
+}
+bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
+{
+    if (kind == P25_UI_LIST_MODE) { P25.list_mode = value; return true; }
+    if (kind == P25_UI_HOLD_SET) { P25.hold_tg = value; return true; }
+    if (kind == P25_UI_ALLOW_ADD && P25.allow_count < 64) {
+        P25.allow[P25.allow_count++] = value; return true;
+    }
+    for (unsigned i = 0; i < P25.allow_count; i++) {
+        if (P25.allow[i] != value) continue;
+        P25.allow[i] = P25.allow[--P25.allow_count]; return true;
+    }
+    return false;
+}

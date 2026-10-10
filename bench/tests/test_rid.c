@@ -130,3 +130,39 @@ LS_CASE(link_summary_nearest_requires_fresh_position_and_valid_fix) {
     ls_rid_summary(&s,true,40.001,-74,62000000);LS_CHECK(s.count==1 && s.nearest_m==-1 && !s.id[0]);
     ls_rid_summary(&s,true,40.001,-74,121000000);LS_CHECK(s.count==0 && s.nearest_m==-1);
 }
+
+LS_CASE(alternate_ids_are_stable_and_keep_location_association) {
+    ls_rid_clear();mac[0]=1;
+    uint8_t basic[25]={2,0x12},reg[25]={2,0x22},loc[25]={0x12,0x20,0,20};
+    memcpy(basic+2,"SERIAL",6);memcpy(reg+2,"REGISTRATION",12);
+    le32(loc+5,400000000);le32(loc+9,-740000000);
+    LS_CHECK(send(basic,25,1000000));one(1000000);uint32_t serial=d[0].serial;
+    LS_CHECK(send(reg,25,2000000));one(2000000);
+    LS_CHECK(d[0].serial==serial && d[0].alias_mask==3 && !strcmp(d[0].uas_id,"SERIAL"));
+    LS_CHECK(send(loc,25,3000000));one(3000000);LS_CHECK(d[0].position_valid && d[0].speed_mps==5);
+    uint8_t pack[78]={0xf2,25,3};memcpy(pack+3,reg,25);memcpy(pack+28,basic,25);memcpy(pack+53,loc,25);
+    LS_CHECK(send(pack,78,4000000));one(4000000);LS_CHECK(d[0].serial==serial && d[0].location_us==4000000);
+    memcpy(pack+3,basic,25);memcpy(pack+28,reg,25);
+    LS_CHECK(send(pack,78,5000000));one(5000000);LS_CHECK(d[0].serial==serial && !strcmp(d[0].uas_id,"SERIAL"));
+    ls_rid_clear();memcpy(pack+3,reg,25);memcpy(pack+28,basic,25);
+    LS_CHECK(send(pack,78,6000000));one(6000000);LS_CHECK(!strcmp(d[0].uas_id,"SERIAL"));
+    basic[2]='X';LS_CHECK(send(basic,25,7000000));LS_CHECK(ls_rid_snapshot(d,32,7000000)==2);
+    LS_CHECK(send(loc,25,8000000));LS_CHECK(ls_rid_snapshot(d,32,8000000)==2);
+    LS_CHECK(d[1].location_us==8000000 && d[0].location_us==6000000);
+}
+LS_CASE(telemetry_groups_age_independently_of_identity) {
+    ls_rid_clear();uint8_t basic[25]={2,0x12},loc[25]={0x12,0x20},sys[25]={0x42},op[25]={0x52};
+    LS_CHECK(send(loc,25,0));LS_CHECK(send(sys,25,1000000));LS_CHECK(send(op,25,2000000));
+    LS_CHECK(send(basic,25,50000000));LS_CHECK(send(basic,25,60000000));one(60000000);
+    LS_CHECK(!ls_rid_fresh(&d[0],1,60000000));LS_CHECK(ls_rid_fresh(&d[0],4,60000000));LS_CHECK(ls_rid_fresh(&d[0],5,60000000));
+    LS_CHECK(!ls_rid_fresh(&d[0],4,61000000));LS_CHECK(!ls_rid_fresh(&d[0],5,62000000));
+    LS_CHECK(!ls_rid_fresh(&d[0],4,0));LS_CHECK(d[0].last_us==60000000 && d[0].status==2);
+}
+LS_CASE(system_version_zero_clears_newer_fields) {
+    ls_rid_clear();uint8_t sys[25]={0x42};sys[17]=0x23;le16(sys+18,2080);
+    LS_CHECK(send(sys,25,1000000));one(1000000);LS_CHECK(d[0].category==2 && d[0].class_id==3 && d[0].operator_geo_m==40);
+    sys[0]=0x40;LS_CHECK(send(sys,25,2000000));one(2000000);
+    LS_CHECK(d[0].system_version==0 && d[0].category==0 && d[0].class_id==0 && isnan(d[0].operator_geo_m));
+    uint8_t basic[25]={2,0x12};LS_CHECK(send(basic,25,3000000));one(3000000);
+    LS_CHECK(d[0].version==2 && d[0].system_version==0 && d[0].system_us==2000000);
+}

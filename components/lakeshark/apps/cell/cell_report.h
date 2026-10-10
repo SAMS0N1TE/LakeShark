@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 /* Wire protocol CW1: 32 explicitly little-endian bytes, standard base64.
- * Coordinate sentinels are INT32_MIN. No subscriber identifiers. */
+ * Coordinate sentinels are INT32_MIN. No subscriber identifiers.
+ * Flag 64 on C/F records: changed is attempted windows, pci is usable windows. */
 typedef struct {
     uint32_t boot,sequence,epoch,frequency_khz;
     int32_t lat_e5,lon_e5;

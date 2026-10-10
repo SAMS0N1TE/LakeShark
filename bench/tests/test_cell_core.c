@@ -19,7 +19,7 @@ LS_CASE(change_requires_three_complete_comparable_passes)
 }
 LS_CASE(baseline_rejects_corruption_wrong_site_band_gain_and_antenna)
 {
-    cell_baseline_t b={0}; b.magic=0x43454c4c;b.version=1;b.band=0;
+    cell_baseline_t b={0}; b.magic=0x43454c4c;b.version=CELL_BASELINE_VERSION;b.receiver=CELL_RECEIVER_RTL;b.calibration=CELL_CALIBRATION;b.band=0;
     b.count=1000;b.rate=CELL_RATE;b.gain=CELL_GAIN;b.passes=3;
     b.located=1;b.lat_tile=43000;b.lon_tile=-71000;
     memset(b.power,-90,sizeof(b.power));b.checksum=cell_checksum(&b);
@@ -67,4 +67,36 @@ LS_CASE(all_band_sweeps_fit_tuner_and_cover_every_bin)
         for(unsigned i=0;i<p.n_tunes;i++)ls_sweep_fold(&p,ls_sweep_tune_center(&p,i),fft,512,bins);
         LS_EQ_INT(ls_sweep_gaps(&p,bins),0);
     }
+}
+
+LS_CASE(gps_evidence_rejects_poor_stale_future_and_invalid_coordinates)
+{
+    LS_CHECK(cell_gps_valid(true,1000000,2000000,43,-71,1));
+    LS_CHECK(!cell_gps_valid(true,1000000,2000000,43,-71,7.5f));
+    LS_CHECK(!cell_gps_valid(true,3000000,2000000,43,-71,1));
+    LS_CHECK(!cell_gps_valid(true,1000000,6000000,43,-71,1));
+    LS_CHECK(!cell_gps_valid(true,1000000,2000000,NAN,-71,1));
+    LS_CHECK(!cell_gps_valid(true,1000000,2000000,91,-71,1));
+    LS_CHECK(!cell_gps_valid(true,1000000,2000000,43,181,1));
+    LS_CHECK(!cell_gps_valid(false,1000000,2000000,43,-71,1));
+}
+LS_CASE(lte_coverage_requires_every_window)
+{
+    LS_CHECK(cell_coverage_complete(10,10,10,0));
+    LS_CHECK(!cell_coverage_complete(10,10,0,10));
+    LS_CHECK(!cell_coverage_complete(10,10,9,1));
+    LS_CHECK(!cell_coverage_complete(10,9,9,0));
+    LS_CHECK(!cell_coverage_complete(0,0,0,0));
+}
+LS_CASE(legacy_and_wrong_receiver_calibration_baselines_are_rejected)
+{
+    cell_baseline_t b={0};b.magic=0x43454c4c;b.version=CELL_BASELINE_VERSION;
+    b.receiver=CELL_RECEIVER_RTL;b.calibration=CELL_CALIBRATION;b.count=1000;
+    b.rate=CELL_RATE;b.gain=CELL_GAIN;b.passes=3;memset(b.power,-90,sizeof(b.power));
+    b.checksum=cell_checksum(&b);LS_CHECK(cell_baseline_valid(&b,0,0,0,false,false));
+    b.version=1;b.checksum=cell_checksum(&b);LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
+    b.version=CELL_BASELINE_VERSION;b.receiver=2;b.checksum=cell_checksum(&b);
+    LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
+    b.receiver=CELL_RECEIVER_RTL;b.calibration++;b.checksum=cell_checksum(&b);
+    LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
 }

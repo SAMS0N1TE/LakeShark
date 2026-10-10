@@ -267,3 +267,25 @@ LS_CASE(a_constant_current_does_not_wedge_the_learner)
     LS_CHECK_MSG(!wedged, "%d of 12 USB steps left the learner using under a quarter of its readings (first at %d deg)",
                  wedged, worst * 30);
 }
+
+LS_CASE(a_constant_current_applies_only_the_identifiable_correction)
+{
+    const ned field = { 15.5, 0, 36.5 };
+    const float usb[3] = { 8, 0, 16 };
+    ls_compass_cal_t cal = plain_cal();
+    cal.radius = 39.6f;
+    ls_compass_learn_t l;
+    ls_compass_learn_reset(&l, cal.radius);
+    for (int i = 0; i < 2400; i++) {
+        ls_imu_sample_t s = pose_in(field, i * 3.0, 0, 0, usb, &cal);
+        feed(&l, &s, &cal, 0.4f);
+    }
+    float corr[3];
+    LS_CHECK(ls_compass_learn_correction(&l, 0.4f, corr));
+    LS_NEAR(corr[0], 8, 1);
+    LS_NEAR(corr[1], 0, 1);
+    LS_CHECK(ls_compass_learn_accuracy(&l, 0.4f) < 10);
+    ls_compass_learn_correction(&l, 0, corr);
+    LS_NEAR(corr[0], 0, 0.001);
+    LS_NEAR(corr[1], 0, 0.001);
+}

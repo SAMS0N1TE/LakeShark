@@ -398,6 +398,7 @@ static esp_err_t sx_receive(void)
 }
 
 static bool sx_is_receiving(void) { return s_rx_mode; }
+static bool sx_is_transmitting(void) { return s_tx_busy; }
 
 static esp_err_t sx_send(const uint8_t *data, size_t len)
 {
@@ -982,6 +983,7 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
     .cfg = sx_cfg,
     .receive = sx_receive,
     .is_receiving = sx_is_receiving,
+    .is_transmitting = sx_is_transmitting,
     .send = sx_send,
     .send_done = sx_send_done,
     .poll = sx_poll,

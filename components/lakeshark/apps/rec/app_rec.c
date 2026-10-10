@@ -23,6 +23,7 @@
 #include "rec_state.h"
 #include "rec_fsk.h"
 #include "rec_watch.h"
+#include "ls_lora.h"
 #include "ls_sub_fsk.h"
 #include "rec_unique_name.h"
 #include "rec_file_open.h"
@@ -592,7 +593,7 @@ static void rec_rx_task(void *arg)
 static void rec_cfg_load(void)
 {
     const uint32_t hz = settings_get_rec("freq", s_freq_hz);
-    if (hz >= 1000000UL && hz <= 2000000000UL) s_freq_hz = hz;
+    if (hz >= 1000000UL) s_freq_hz = hz;
     s_mod = settings_get_rec("mod", (uint32_t)s_mod) == REC_MOD_FSK ? REC_MOD_FSK : REC_MOD_OOK;
     const uint32_t g = settings_get_rec("gain", (uint32_t)s_gain);
     if (g <= LS_RSEL_GAIN_MAX_HACKRF) s_gain = (int)g;
@@ -817,10 +818,12 @@ int rec_edges_copy(int from, int32_t *out, int max)
     return n;
 }
 
-void rec_set_freq(uint32_t hz)
+bool rec_set_freq(uint32_t hz)
 {
-    if (rec_watch_enabled()) return;
-    if (hz < 1000000UL || hz > 2000000000UL) return;
+    if (rec_watch_enabled()) return false;
+    if (!rec_watch_frequency_ok(rec_watch_source(),
+            ls_rsel_saved(LS_RSEL_SUBGHZ_READ)==LS_RSEL_SDR_HACKRF,
+            ls_lora_caps(),hz)) return false;
     s_freq_hz = hz;
     settings_set_rec("freq", hz);
     /* The accumulator reset lives in the rx task (see
@@ -831,6 +834,7 @@ void rec_set_freq(uint32_t hz)
     s_scout_peak_hz  = 0;
     s_scout_peak_lev = 0.0f;
     ls_iq_control_request_tune(&s_radio_control, s_freq_hz, false);
+    return s_freq_hz==hz;
 }
 
 uint32_t rec_get_freq(void) { return s_freq_hz; }

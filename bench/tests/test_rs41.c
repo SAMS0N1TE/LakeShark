@@ -204,3 +204,22 @@ LS_CASE(stream_recovers_bit_alignment)
     rs41_stream_feed(&stream,&decoder,shifted,sizeof(shifted),false,took,NULL);
     LS_EQ_INT(received,1);
 }
+
+LS_CASE(status_only_frame_allows_same_frame_first_and_newer_fix)
+{
+    static rs41_sonde_t s;
+    rs41_store_clear();
+    rs41_report_t r = {.status=true,.lat=45,.lon=-71,.alt=1000,.frame=1};
+    memcpy(r.serial,"N1234567",9);
+    rs41_store_put(&r,1000000); r.position = true; rs41_store_put(&r,2000000);
+    LS_CHECK(rs41_store_copy(0,&s,2000000)); LS_EQ_INT(s.fix_us,2000000);
+    LS_EQ_INT(s.count,1); LS_CHECK(s.report.position); LS_NEAR(s.report.alt,1000,.01);
+    r.position = false; r.frame = 2; rs41_store_put(&r,12000000);
+    r.position = true; r.alt = 2000; rs41_store_put(&r,13000000);
+    LS_CHECK(rs41_store_copy(0,&s,13000000)); LS_EQ_INT(s.fix_us,13000000);
+    LS_EQ_INT(s.count,2); LS_NEAR(s.report.alt,2000,.01);
+    r.position = false; r.frame = 3; rs41_store_put(&r,14000000);
+    r.position = true; r.frame = 2; r.alt = 9999; rs41_store_put(&r,15000000);
+    LS_CHECK(rs41_store_copy(0,&s,15000000)); LS_EQ_INT(s.fix_us,13000000);
+    LS_EQ_INT(s.count,2); LS_NEAR(s.report.alt,2000,.01);
+}

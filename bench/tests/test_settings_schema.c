@@ -104,3 +104,14 @@ LS_CASE(current_version_matches_header)
     LS_CHECK(SETTINGS_SCHEMA_MIN_ADDITIVE >= 1);
     LS_CHECK(SETTINGS_SCHEMA_MIN_ADDITIVE <= SETTINGS_SCHEMA_VERSION);
 }
+
+LS_CASE(adsb_saved_gain_preserves_auto_and_full_hackrf_range)
+{
+    LS_CHECK(settings_gain_valid("ADS-B", 0));
+    LS_CHECK(settings_gain_valid("ADS-B", 496));
+    LS_CHECK(settings_gain_valid("ADS-B", 800));
+    LS_CHECK(settings_gain_valid("ADS-B", 1130));
+    LS_CHECK(!settings_gain_valid("ADS-B", -1));
+    LS_CHECK(!settings_gain_valid("ADS-B", 1131));
+    LS_CHECK(!settings_gain_valid("NFM", 800));
+}

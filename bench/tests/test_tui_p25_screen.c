@@ -8,10 +8,19 @@
 #include "p25_tg_observed.h"
 #include "esp_timer.h"
 #include "ls_waterfall.h"
+#include "ls_wf_source.h"
+#include "p25_spectrum.h"
+extern int ls_test_wf_releases;
 #include "ls_tui.h"
 #include "p25_p2_runtime.h"
 #include "ls_action.h"
 #include "ls_value.h"
+#include "lakeshark_backend.h"
+#include "ls_options.h"
+#include "ls_picker.h"
+#include "radio_choice.h"
+#include "ls_radio_select.h"
+static void filter_option(const char *name);
 
 #include <string.h>
 
@@ -180,6 +189,7 @@ static const tui_rect PANES[] = {
    against the decode page while claiming to test the spectrum. */
 static void show_signal_page(void)
 {
+    ls_scr_p25.key(LS_TK_CHAR, '1');
     ls_scr_p25.key(LS_TK_CHAR, '2');
 }
 
@@ -841,35 +851,19 @@ LS_CASE(held_p25_keeps_a_working_hold_button_in_both_postures)
     s_have_spectrum = saved_spectrum;
 }
 
-LS_CASE(p25_settings_scroll_and_change_backend_controls)
+LS_CASE(settings_and_options_share_the_same_backend_controls)
 {
-    ls_scr_p25.key(LS_TK_CHAR,'0');
-    ls_scr_p25.key(LS_TK_CHAR,'4');
-    /* The panel keeps its cursor and its scroll between openings, so the row
-       is found by its label and touched. Counting keys down from a top the
-       cursor is not on lands on whichever setting happens to sit there, and
-       toggles that one instead. */
-    int row = -1;
-    for (int i = 0; i < 24 && row < 0; i++) {
-        fresh(); draw_pane(&ls_scr_p25, PANES[0]);
-        row = rect_row_of(PANES[0], "auto-follow");
-        if (row < 0) ls_scr_p25.key(LS_TK_DOWN, 0);
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
+    ls_scr_p25.key(LS_TK_CHAR, '4');
+    LS_CHECK(ls_picker_active()); filter_option("Trunking auto-follow");
+    bool before = p25_get_auto_follow();
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(p25_get_auto_follow() != before);
+    for (int p = 0; p < 2; p++) {
+        fresh(); grid_for(PANES[p]); ls_picker_draw(&g_sf, PANES[p]);
+        LS_EQ_INT(escaped(PANES[p]), 0);
     }
-    LS_CHECK_MSG(row >= 0, "no auto-follow row in the settings list");
-    if (row < 0) return;
-    LS_CHECK(ls_scr_p25.touch(PANES[0].x + 2, row));
-    bool before=p25_get_auto_follow();
-    ls_scr_p25.key(LS_TK_ENTER,0);
-    LS_CHECK(p25_get_auto_follow()!=before);
-    for(int i=0;i<20;i++) {
-        fresh();draw_pane(&ls_scr_p25,PANES[0]);
-        LS_EQ_INT(escaped(PANES[0]),0);
-        fresh();draw_pane(&ls_scr_p25,PANES[1]);
-        LS_EQ_INT(escaped(PANES[1]),0);
-        ls_scr_p25.key(LS_TK_DOWN,0);
-    }
-    ls_scr_p25.key(LS_TK_ESC,0);
-    ls_scr_p25.key(LS_TK_CHAR,'1');
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
 }
 
 LS_CASE(waterfall_palette_shortcut_does_not_open_p25_settings)
@@ -882,25 +876,16 @@ LS_CASE(waterfall_palette_shortcut_does_not_open_p25_settings)
 
 LS_CASE(experimental_phase2_setting_is_reachable_in_both_postures)
 {
-    p25_p2_enable(false);
-    ls_scr_p25.key(LS_TK_CHAR, '0');
-    ls_scr_p25.key(LS_TK_CHAR, '4');
-    bool reached = false;
-    for (int i = 0; i < 16; ++i) {
-        fresh(); draw_pane(&ls_scr_p25, PANES[0]);
-        LS_EQ_INT(escaped(PANES[0]), 0);
-        fresh(); draw_pane(&ls_scr_p25, PANES[1]);
-        LS_EQ_INT(escaped(PANES[1]), 0);
-        /* Only the Phase II row can change this flag. */
-        ls_scr_p25.key(LS_TK_CHAR, ']');
-        if (p25_p2_enabled()) { reached = true; break; }
-        ls_scr_p25.key(LS_TK_DOWN, 0);
+    ls_opt_close(); p25_p2_enable(false);
+    ls_scr_p25.key(LS_TK_CHAR, '1'); ls_scr_p25.key(LS_TK_CHAR, '4');
+    filter_option("Phase II (exp)");
+    for (int p = 0; p < 2; p++) {
+        fresh(); grid_for(PANES[p]); ls_picker_draw(&g_sf, PANES[p]);
+        LS_EQ_INT(escaped(PANES[p]), 0);
     }
-    LS_CHECK(reached);
-    ls_scr_p25.key(LS_TK_CHAR, '[');
-    LS_CHECK(!p25_p2_enabled());
-    ls_scr_p25.key(LS_TK_DOWN, 0);
-    ls_scr_p25.key(LS_TK_ESC, 0);
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(p25_p2_enabled());
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!p25_p2_enabled());
+    ls_opt_close();
 }
 
 static uint32_t cursor_committed;
@@ -995,4 +980,118 @@ LS_CASE(dmr_mode_clips_every_small_pane)
         LS_EQ_INT(escaped(PANES[p]), 0);
     }
     ls_scr_p25.key(LS_TK_CHAR, '1');
+}
+
+LS_CASE(spectrum_keyboard_toggle_and_page_exits_release_source)
+{
+    const char exits[] = {'1', '3', '6', '4', 'o', 'r'};
+    for (unsigned i = 0; i < sizeof(exits); i++) {
+        ls_scr_p25.key(LS_TK_CHAR, '1');
+        ls_scr_p25.key(LS_TK_CHAR, '2');
+        fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+        LS_CHECK(!rect_has(PORTRAIT, "DECODE / SIGNAL"));
+        int releases = ls_test_wf_releases;
+        ls_scr_p25.key(LS_TK_CHAR, exits[i]);
+        LS_EQ_INT(ls_test_wf_releases, releases + 1);
+        ls_opt_close(); ls_picker_close();
+    }
+    ls_scr_p25.key(LS_TK_CHAR, '1');
+    ls_scr_p25.key(LS_TK_CHAR, '2');
+    int releases = ls_test_wf_releases;
+    ls_scr_p25.key(LS_TK_CHAR, '2');
+    LS_EQ_INT(ls_test_wf_releases, releases + 1);
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "DECODE / SIGNAL"));
+    LS_CHECK(!strcmp(ls_wf_source_name(), "none"));
+}
+LS_CASE(valid_zero_nac_renders_and_old_channel_identity_is_hidden)
+{
+    ls_scr_p25.key(LS_TK_CHAR, '1');
+    P25.dsd_nac = 0; P25.dsd_nac_valid = true;
+    P25.dsd_nac_generation = P25.channel_generation = 7;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "000"));
+    P25.dsd_nac = 0x293; P25.channel_generation++;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(!rect_has(PORTRAIT, "293"));
+    P25.dsd_nac_valid = false;
+}
+LS_CASE(lr_settings_gain_uses_chip_action_and_phase2_is_refused)
+{
+    ls_value_publish("p25.lrgain", "step", v_fake_lrgain);
+    ls_action_register("p25.lrgain", "i", LS_CAP_TUNE, a_fake_lrgain, "test");
+    P25.lora_rx = true; s_fake_lrgain = 0;
+    ls_scr_p25.enter();
+    ls_rsel_set(LS_RSEL_P25, LS_RSEL_LORA);
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
+    filter_option("Receiver gain");
+    ls_picker_key(LS_TK_ENTER, 0); LS_EQ_INT(s_fake_lrgain, 13);
+    ls_picker_key(LS_TK_ENTER, 0); LS_EQ_INT(s_fake_lrgain, 0);
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
+    filter_option("Phase II (exp)"); p25_p2_enable(false);
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!p25_p2_enabled());
+    ls_opt_close(); P25.lora_rx = false;
+    ls_rsel_set(LS_RSEL_P25, LS_RSEL_SDR_RTL);
+}
+LS_CASE(validated_nonzero_then_zero_nac_updates_the_production_snapshot)
+{
+    static p25_state_t state;
+    memset(&state, 0, sizeof(state)); state.channel_generation = 1;
+    p25_nac_publish(&state, 0x293, 1, 10);
+    LS_CHECK(p25_nac_valid(&state)); LS_EQ_INT(state.dsd_last_ok_nac, 0x293);
+    state.channel_generation = 2;
+    LS_CHECK(!p25_nac_valid(&state));
+    p25_nac_publish(&state, 0, 2, 20);
+    LS_CHECK(p25_nac_valid(&state)); LS_EQ_INT(state.dsd_nac, 0);
+    LS_EQ_INT(state.dsd_last_ok_nac, 0); LS_EQ_UINT(state.nac_seen_us, 20);
+    p25_nac_publish(&state, 0x293, 1, 30);
+    LS_CHECK(!p25_nac_valid(&state));
+}
+
+static void filter_option(const char *name)
+{
+    for (const char *p = name; *p; p++) ls_picker_key(LS_TK_CHAR, *p);
+}
+LS_CASE(options_numeric_levels_step_without_opening_the_keypad)
+{
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Voice gate");
+    int before = lakeshark_p25_voice_gate();
+    ls_picker_key(LS_TK_RIGHT, 0);
+    LS_EQ_INT(lakeshark_p25_voice_gate(), before + 1);
+    LS_CHECK(ls_picker_active());
+    ls_picker_key(LS_TK_LEFT, 0); LS_EQ_INT(lakeshark_p25_voice_gate(), before);
+    ls_opt_close();
+}
+LS_CASE(options_reach_p25_policy_and_survey_controls)
+{
+    ls_scr_p25.key(LS_TK_CHAR, '1'); P25.dsd_tg = 2051; P25.hold_tg = 0;
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Talkgroup policy");
+    ls_picker_key(LS_TK_ENTER, 0); filter_option("Hold current");
+    ls_picker_key(LS_TK_ENTER, 0); LS_EQ_INT(P25.hold_tg, 2051);
+    ls_opt_close();
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Control survey");
+    bool before = p25_program_survey_active_now();
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(p25_program_survey_active_now() != before);
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_INT(p25_program_survey_active_now(), before);
+    ls_opt_close(); P25.hold_tg = 0; P25.dsd_tg = 0;
+}
+LS_CASE(trunking_failure_and_unresolved_grants_are_visible)
+{
+    ls_scr_p25.key(LS_TK_CHAR, '1');
+    P25.receive_state = P25_RX_TUNE_FAILED;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "TUNE FAILED"));
+    P25.receive_state = P25_RX_CONTROL_LOCKED;
+    P25.grant_on_traffic = false;
+    P25.grant_observed.support = P25_CALL_MISSING_IDEN;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "UNRESOLVED GRANT"));
+    P25.grant_observed.support = P25_CALL_UNSUPPORTED;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "UNSUPPORTED GRANT"));
+    P25.grant_observed.support = P25_CALL_NONE;
+    P25.receive_state = P25_RX_CONTROL_SEARCH;
 }

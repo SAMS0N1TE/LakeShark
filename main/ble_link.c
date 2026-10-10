@@ -7,7 +7,7 @@
 #include "ble_link_observer.h"
 #include "ble_link_scan.h"
 static volatile ble_scan_mode_t s_scan_mode;
-static volatile bool s_scanning, s_scan_connected;
+static volatile bool s_scanning, s_scan_connected, s_scan_failed;
 
 #include "ls_board.h"   /**/
 
@@ -234,6 +234,7 @@ static volatile int64_t s_rescan_at_us = 0;
 static bool     s_disc_started = false;
 
 static bool s_passive;
+static volatile bool s_disconnect_requested, s_cancel_connect_requested;
 static bool     s_stack_up     = false;
 
 /* Frame reassembly lives in ble_link_core so the bench can drive it. */
@@ -277,7 +278,7 @@ ble_link_state_t ble_link_state(void) { return s_state; }
 
 void ble_link_set_name_filter(const char *s)
 {
-    if (s && *s) strlcpy(s_name_filter, s, sizeof(s_name_filter));
+    strlcpy(s_name_filter, s ? s : "", sizeof(s_name_filter));
 }
 
 /**/
@@ -294,8 +295,9 @@ void ble_link_get_name_filter(char *out, size_t len)
 
 void ble_link_peer(char *name, size_t nl, char *addr, size_t al)
 {
-    if (name) strlcpy(name, s_peer_name, nl);
-    if (addr) strlcpy(addr, s_peer_addr, al);
+    bool live = s_run && !s_passive && s_state >= BLE_LINK_CONNECTING;
+    if (name) strlcpy(name, live ? s_peer_name : "", nl);
+    if (addr) strlcpy(addr, live ? s_peer_addr : "", al);
 }
 
 void ble_link_stats(uint32_t *rx, uint32_t *tx, uint32_t *drops)
@@ -759,6 +761,16 @@ static void scan_refresh(struct ble_npl_event *event)
 {
     (void)event;
     if (!ble_hs_synced()) return;
+    if (s_disconnect_requested) {
+        s_disconnect_requested = false;
+        if (s_conn != BLE_HS_CONN_HANDLE_NONE)
+            ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+        else if (s_cancel_connect_requested) {
+            ble_gap_conn_cancel();
+            s_state = s_run ? BLE_LINK_SCANNING : BLE_LINK_OFF;
+        }
+    }
+    s_cancel_connect_requested = false;
     if (s_rescan_at_us && esp_timer_get_time() >= s_rescan_at_us) s_rescan_at_us=0;
     bool connected = s_conn != BLE_HS_CONN_HANDLE_NONE;
     ble_scan_mode_t want = ble_scan_wanted(s_run, connected,
@@ -773,7 +785,7 @@ static void scan_refresh(struct ble_npl_event *event)
         ble_gap_disc_cancel();
         s_scanning = false;
     }
-    if (want == BLE_SCAN_OFF) {s_scan_mode=want;return;}
+    if (want == BLE_SCAN_OFF) {s_scan_mode=want;s_scan_failed=false;return;}
     struct ble_gap_disc_params p = {0};
     p.passive = want == BLE_SCAN_OBSERVER;
     if (p.passive) {
@@ -783,6 +795,7 @@ static void scan_refresh(struct ble_npl_event *event)
     p.filter_duplicates = 0;
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &p, gap_event, NULL);
     s_scanning = rc == 0 || ble_gap_disc_active();
+    s_scan_failed=!s_scanning;
     if (rc == 0) {
         s_scan_mode = want;
         if (!connected && !s_rescan_at_us) s_state = BLE_LINK_SCANNING;
@@ -924,6 +937,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             s_state       = ble_link_state_step(s_state, BLE_LINK_EV_CONNECT_FAIL);
             s_backoff_ms  = ble_link_backoff_next(s_backoff_ms);
             return 0;
+        }
+        if (!s_run || s_passive) {
+            ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            start_scan();return 0;
         }
         s_conn    = event->connect.conn_handle;
         s_rx_hnd  = s_tx_hnd = s_tx_cccd = 0;
@@ -1241,7 +1258,7 @@ static void on_sync(void)
 static void on_reset(int reason)
 {
     ESP_LOGE(TAG, "controller reset, reason=%d", reason);
-    s_state = BLE_LINK_SYNCING;
+    s_state = ble_link_reset_state(s_run);
     s_conn=BLE_HS_CONN_HANDLE_NONE;
     s_scanning=false;s_scan_connected=false;s_scan_mode=BLE_SCAN_OFF;
 }
@@ -1304,6 +1321,7 @@ static esp_err_t link_start(void)
 
         if (!workers_start()) {
             s_run = false;
+            s_state = BLE_LINK_OFF;
             return ESP_ERR_NO_MEM;
         }
         start_scan();
@@ -1378,29 +1396,48 @@ static esp_err_t link_start(void)
                                   NIMBLE_CORE)) {
         s_stack_up = false;
         s_run = false;
+        s_state = BLE_LINK_OFF;
         ESP_LOGE(TAG, "NimBLE host task create failed");
         return ESP_ERR_NO_MEM;
     }
 
     if (!workers_start()) {
         s_run = false;
+        s_state = BLE_LINK_OFF;
+        start_scan();
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
 }
 
-void ble_link_stop(void)
+static portMUX_TYPE s_start_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_starting, s_primary, s_sweep_observer, s_rid_observer, s_find_observer;
+
+static void stop_mode(unsigned observer)
 {
-    if (!s_run) return;
-    s_run = false;
-    if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+    portENTER_CRITICAL(&s_start_mux);
+    if (observer==3) s_find_observer = false;
+    else if (observer==2) s_rid_observer = false;
+    else if (observer) s_sweep_observer = false;
+    else s_primary = false;
+    bool keep = s_sweep_observer || s_rid_observer || s_find_observer || s_primary;
+    bool passive = !s_primary;
+    if (!s_run || s_starting || (observer && keep)) {
+        portEXIT_CRITICAL(&s_start_mux);return;
     }
-    ble_gap_disc_cancel();
-    s_scanning=false;s_scan_connected=false;s_scan_mode=BLE_SCAN_OFF;
-    /**/
-    s_state = ble_link_state_step(s_state, BLE_LINK_EV_STOP);
+    s_starting = true;
+    s_run = keep;
+    if (passive) {s_passive = true;s_rescan_at_us = 0;}
+    portEXIT_CRITICAL(&s_start_mux);
+    s_cancel_connect_requested = s_state == BLE_LINK_CONNECTING;
+    s_disconnect_requested = true;
+    if (!keep) s_state = BLE_LINK_OFF;
+    start_scan();
+    portENTER_CRITICAL(&s_start_mux);
+    s_starting = false;
+    portEXIT_CRITICAL(&s_start_mux);
 }
+void ble_link_stop(void) {stop_mode(false);}
 
 bool ble_link_passkey_pending(void) { return s_pk_wait; }
 
@@ -1434,12 +1471,10 @@ esp_err_t ble_link_submit_passkey(uint32_t code)
 void ble_link_rescan(void)
 {
     if (!s_run) return;
-    if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
-    } else {
-        ble_gap_disc_cancel();
-        start_scan();
-    }
+    s_rescan_at_us = 0;
+    s_cancel_connect_requested = s_state == BLE_LINK_CONNECTING;
+    s_disconnect_requested = true;
+    start_scan();
 }
 
 /* Pinned-peer persistence and API. */
@@ -1463,7 +1498,7 @@ static esp_err_t pinned_write_blob(void *ctx)
 
 static void pinned_save_nvs(void)
 {
-    esp_err_t err = ls_nvs_call(pinned_write_blob, NULL, 0);
+    esp_err_t err = ls_nvs_run(pinned_write_blob, NULL, 0);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "pinned peer not saved: %s", esp_err_to_name(err));
 }
@@ -1486,7 +1521,7 @@ static esp_err_t pinned_read_blob(void *ctx)
 static void pinned_load_nvs(void)
 {
     ble_link_peer_addr_t p = { 0 };
-    if (ls_nvs_call(pinned_read_blob, &p, 0) != ESP_OK) return;
+    if (ls_nvs_run(pinned_read_blob, &p, 0) != ESP_OK) return;
     if (!p.valid) return;
 
     s_pinned = p;
@@ -1586,21 +1621,63 @@ bool ble_link_is_connected(void)
     return s_conn != BLE_HS_CONN_HANDLE_NONE;
 }
 
-static portMUX_TYPE s_start_mux = portMUX_INITIALIZER_UNLOCKED;
-static bool s_starting;
-static esp_err_t start_mode(bool passive)
+static esp_err_t start_mode(bool passive, unsigned observer)
 {
     portENTER_CRITICAL(&s_start_mux);
-    bool busy = s_run || s_starting;
-    if (!busy) { s_starting = true; s_passive = passive; }
+    bool busy = s_starting || (!observer && s_primary && (passive || s_passive));
+    bool warm = s_run;
+    if (!busy) {
+        if (observer==3) s_find_observer = true;
+        else if (observer==2) s_rid_observer = true;
+        else if (observer) s_sweep_observer = true;
+        else {s_primary = true;s_passive = passive;}
+        if (!warm) {s_starting = true;s_passive = passive;}
+    }
     portEXIT_CRITICAL(&s_start_mux);
     if (busy) return ESP_ERR_INVALID_STATE;
+    if (warm) {
+        if (!observer && !passive) ble_link_rescan();
+        else start_scan();
+        return ESP_OK;
+    }
     esp_err_t rc = link_start();
     portENTER_CRITICAL(&s_start_mux);
     s_starting = false;
+    if (rc != ESP_OK) {
+        if (observer==3) s_find_observer = false;
+        else if (observer==2) s_rid_observer = false;
+        else if (observer) s_sweep_observer = false;
+        else s_primary = false;
+    }
+    bool abandoned = !s_primary && !s_sweep_observer && !s_rid_observer && !s_find_observer;
     portEXIT_CRITICAL(&s_start_mux);
+    if (rc == ESP_OK && abandoned) stop_mode(true);
     return rc;
 }
 
-esp_err_t ble_link_start(void) { return start_mode(false); }
-esp_err_t ble_link_listen(void) { return start_mode(true); }
+esp_err_t ble_link_start(void) { return start_mode(false, false); }
+esp_err_t ble_link_listen(void) { return start_mode(true, false); }
+esp_err_t ble_link_sweep_observer(bool on)
+{
+    if (on) return start_mode(true, true);
+    stop_mode(true);
+    return ESP_OK;
+}
+
+esp_err_t ble_link_rid_observer(bool on)
+{
+    if (on) return start_mode(true, 2);
+    stop_mode(2);
+    return ESP_OK;
+}
+esp_err_t ble_link_find_observer(bool on)
+{
+    if (on) return start_mode(true, 3);
+    stop_mode(3);
+    return ESP_OK;
+}
+
+void ble_link_receiver(bool *running, bool *scanning, bool *failed)
+{
+    *running=s_run; *scanning=s_run && s_scanning; *failed=s_run && s_scan_failed;
+}

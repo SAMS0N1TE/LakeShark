@@ -609,3 +609,15 @@ LS_CASE(a_frame_without_the_imu_keeps_magnetic_north)
     LS_CHECK_MSG(!isfinite(r.declination), "declination %.1f with no position known", r.declination);
     memset(&ls_stub_field_sample, 0, sizeof(ls_stub_field_sample));
 }
+
+LS_CASE(an_unobserved_gyro_turn_cannot_snap_to_a_lasting_magnetic_step)
+{
+    ls_compass_steady_t s = { 0 };
+    ls_compass_steady_step(&s, 0, 0, 0, 0, 0.04f);
+    for (int i = 0; i < 50; i++) {
+        const float was = s.heading;
+        const float h = ls_compass_steady_step(&s, 60, 0, 0, 0, 0.04f);
+        LS_CHECK(off_deg(h, was) <= LS_COMPASS_PULL_DPS * 0.04f + 0.001f);
+        LS_NEAR(s.agree, 0, 0.001);
+    }
+}

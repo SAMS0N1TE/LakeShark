@@ -37,6 +37,8 @@ const char *adsb_source_name(adsb_source_t source);
    chip's gain step, 1..13 with 13 the most. Automatic is 13: the chip's AGC
    (step 0) is never chosen from the slider. */
 int adsb_lr_gain_step(int gain_tenths_db);
+/* Decide after every bounded IQ read, including timeouts. */
+bool adsb_iq_reopen(adsb_source_t chosen, int64_t now_us, int64_t last_data_us);
 
 /* A frame source as the receive loop sees it. ls_lora_modes_* fills it on
    the board; the bench fills it with a fake. poll() returns the bytes of one

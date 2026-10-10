@@ -5,6 +5,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <unistd.h>
+#endif
 
 static char dir[128];
 static char buf[LS_NOTE_TEXT_MAX];
@@ -177,4 +182,148 @@ LS_CASE(a_note_made_before_the_first_scan_still_numbers_after_the_card)
     ls_note_info_t info;
     LS_CHECK(ls_notes_at(0, &info));
     LS_EQ_STR(info.title, "New");
+}
+
+LS_CASE(save_completion_identifies_the_copied_revision_and_reports_failure)
+{
+    fresh(); drain();
+    uint32_t ticket = 0;
+    snprintf(buf, sizeof(buf), "# copied revision\n");
+    LS_CHECK(ls_notes_save_tracked("revision", buf, &ticket));
+    LS_EQ_INT(ls_notes_result(ticket), 0);
+    snprintf(buf, sizeof(buf), "# later edits\n");
+    drain(); LS_EQ_INT(ls_notes_result(ticket), 1);
+    LS_CHECK(ls_notes_load("revision", buf, sizeof(buf)));
+    LS_EQ_STR(buf, "# copied revision\n");
+    char path[256]; snprintf(path, sizeof(path), "%s/revision.tmp", dir);
+    ls_test_mkdir(path);
+    LS_CHECK(ls_notes_save_tracked("revision", "# retry me\n", &ticket));
+    drain(); LS_EQ_INT(ls_notes_result(ticket), -1);
+    LS_CHECK(ls_notes_load("revision", buf, sizeof(buf)));
+    LS_EQ_STR(buf, "# copied revision\n");
+
+#ifdef _WIN32
+    _rmdir(path);
+#else
+    rmdir(path);
+#endif
+
+    LS_CHECK(ls_notes_save_tracked("revision", "# retry me\n", &ticket));
+    drain(); LS_EQ_INT(ls_notes_result(ticket), 1);
+    LS_CHECK(ls_notes_load("revision", buf, sizeof(buf)));
+    LS_EQ_STR(buf, "# retry me\n");
+}
+
+LS_CASE(queue_pressure_refuses_without_a_ticket_and_completions_survive_other_saves)
+{
+    fresh(); drain();
+    uint32_t a = 0, b = 0, c = 0, refused = 0;
+    LS_CHECK(ls_notes_save_tracked("a", "A", &a));
+    LS_CHECK(ls_notes_save_tracked("b", "B", &b));
+    LS_CHECK(ls_notes_save_tracked("c", "C", &c));
+    LS_CHECK(!ls_notes_save_tracked("d", "D", &refused));
+    LS_EQ_UINT(refused, 0); drain();
+    for (int i = 0; i < 40; i++) { LS_CHECK(ls_notes_save("d", "D")); drain(); }
+    LS_EQ_INT(ls_notes_result(a), 1); LS_EQ_INT(ls_notes_result(b), 1); LS_EQ_INT(ls_notes_result(c), 1);
+}
+
+LS_CASE(png_and_trash_failures_are_acknowledged_without_forgetting_the_note)
+{
+    fresh(); drain(); put("keep.md", "# Keep\n");
+    ls_notes_refresh(); drain();
+    char path[256]; snprintf(path, sizeof(path), "%s/fail.png", dir); ls_test_mkdir(path);
+    static uint16_t px[4]; uint32_t ticket = 0;
+    LS_CHECK(ls_notes_save_png_tracked("fail", px, 2, 2, &ticket)); drain();
+    LS_EQ_INT(ls_notes_result(ticket), -1);
+    snprintf(path, sizeof(path), "%s/trash", dir); put("trash", "blocks directory");
+    LS_CHECK(ls_notes_trash_tracked("keep", &ticket)); drain();
+    LS_EQ_INT(ls_notes_result(ticket), -1);
+    LS_CHECK(ls_notes_find("keep") >= 0); LS_CHECK(ls_notes_load("keep", buf, sizeof(buf)));
+}
+
+LS_CASE(oversized_load_is_refused_but_still_listed_and_the_tail_is_preserved)
+{
+    fresh();
+    char path[256]; snprintf(path, sizeof(path), "%s/large.md", dir);
+    FILE *f = fopen(path, "wb"); LS_CHECK(f != NULL);
+    fputs("# Large\n", f);
+    for (int i = 0; i < LS_NOTE_TEXT_MAX; i++) fputc('a', f);
+    fputs("TAIL_MUST_SURVIVE", f); fclose(f);
+    drain(); LS_CHECK(ls_notes_find("large") >= 0);
+    LS_CHECK(!ls_notes_load("large", buf, sizeof(buf))); LS_EQ_STR(buf, "");
+    LS_CHECK(strstr(ls_notes_status(), "too large") != NULL);
+    f = fopen(path, "rb"); LS_CHECK(f != NULL); fseek(f, -17, SEEK_END);
+    char tail[18] = {0}; fread(tail, 1, 17, f); fclose(f);
+    LS_EQ_STR(tail, "TAIL_MUST_SURVIVE");
+    memset(buf, 'x', sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+    put("limit.md", buf); LS_CHECK(ls_notes_load("limit", buf, sizeof(buf)));
+    LS_EQ_UINT(strlen(buf), LS_NOTE_TEXT_MAX - 1);
+}
+
+LS_CASE(interrupted_replacement_recovers_backup_and_ignores_uncommitted_temp)
+{
+    fresh(); put("old.bak", "# Last good\n"); put("old.tmp", "# Partial");
+    put("done.md", "# Committed\n"); put("done.bak", "# Previous\n");
+    drain(); LS_CHECK(ls_notes_find("old") >= 0);
+    LS_CHECK(ls_notes_load("old", buf, sizeof(buf))); LS_EQ_STR(buf, "# Last good\n");
+    LS_CHECK(ls_notes_load("done", buf, sizeof(buf))); LS_EQ_STR(buf, "# Committed\n");
+    uint32_t ticket;
+    LS_CHECK(ls_notes_save_tracked("old", "# New\n", &ticket)); drain(); LS_EQ_INT(ls_notes_result(ticket), 1);
+    char path[256]; struct stat st; snprintf(path, sizeof(path), "%s/old.bak", dir);
+    LS_CHECK(stat(path, &st) != 0);
+}
+
+LS_CASE(replacement_failure_keeps_the_last_good_file)
+{
+    fresh(); drain(); put("old.md", "# Last good\n");
+    char path[256]; snprintf(path, sizeof(path), "%s/old.bak", dir); ls_test_mkdir(path);
+    uint32_t ticket;
+    LS_CHECK(ls_notes_save_tracked("old", "# New\n", &ticket)); drain(); LS_EQ_INT(ls_notes_result(ticket), -1);
+    LS_CHECK(ls_notes_load("old", buf, sizeof(buf))); LS_EQ_STR(buf, "# Last good\n");
+}
+
+LS_CASE(journal_import_is_confirmed_idempotent_and_retries_failed_entries)
+{
+    fresh(); drain(); char path[256];
+    snprintf(path, sizeof(path), "%s/journal-3.tmp", dir); ls_test_mkdir(path);
+    for (uint32_t id = 1; id <= 8; id++) LS_EQ_INT(ls_notes_import(id, "# Imported\n"), id != 3);
+    LS_EQ_INT(ls_notes_count(), 7);
+#ifdef _WIN32
+    _rmdir(path);
+#else
+    rmdir(path);
+#endif
+
+    LS_CHECK(ls_notes_import(3, "# Imported\n")); LS_EQ_INT(ls_notes_count(), 8);
+    LS_CHECK(ls_notes_save("journal-3", "# User edit\n")); drain();
+    ls_notes_test_reset(dir); LS_CHECK(ls_notes_start()); drain();
+    for (uint32_t id = 1; id <= 8; id++) LS_CHECK(ls_notes_import(id, "# Imported\n"));
+    LS_EQ_INT(ls_notes_count(), 8);
+    LS_CHECK(ls_notes_trash("journal-1")); drain();
+    LS_CHECK(ls_notes_import(1, "# Imported\n"));
+    LS_CHECK(ls_notes_find("journal-1") < 0);
+    LS_CHECK(ls_notes_load("journal-3", buf, sizeof(buf))); LS_EQ_STR(buf, "# User edit\n");
+}
+
+LS_CASE(crlf_is_normalized_in_load_and_summary)
+{
+    fresh(); put("windows.md", "# Windows\r\n- [ ] Task\r\n"); drain();
+    LS_CHECK(ls_notes_load("windows", buf, sizeof(buf)));
+    LS_EQ_STR(buf, "# Windows\n- [ ] Task\n");
+    ls_note_info_t info = {0}; ls_notes_summarize("# Windows\r\n- [ ] Task\r\n", &info);
+    LS_EQ_STR(info.title, "Windows"); LS_EQ_INT(info.checks_open, 1);
+}
+
+LS_CASE(trash_reports_pictures_that_could_not_be_moved)
+{
+    fresh(); drain(); put("keep.md", "# Keep\n"); put("keep-map1.png", "picture");
+    char path[256]; snprintf(path, sizeof(path), "%s/trash", dir); ls_test_mkdir(path);
+    snprintf(path, sizeof(path), "%s/trash/keep-map1.png", dir); ls_test_mkdir(path);
+    snprintf(path, sizeof(path), "%s/trash/keep-map1.png/block", dir);
+    FILE *f = fopen(path, "wb"); LS_CHECK(f != NULL); fputs("block", f); fclose(f);
+    uint32_t ticket; LS_CHECK(ls_notes_trash_tracked("keep", &ticket)); drain();
+    LS_EQ_INT(ls_notes_result(ticket), 2);
+    LS_CHECK(strstr(ls_notes_status(), "pictures stayed behind") != NULL);
+    struct stat st; snprintf(path, sizeof(path), "%s/keep-map1.png", dir);
+    LS_CHECK(stat(path, &st) == 0);
 }

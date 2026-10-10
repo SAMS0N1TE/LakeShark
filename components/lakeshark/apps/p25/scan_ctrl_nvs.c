@@ -51,7 +51,7 @@ void p25_scan_persist_reload(void)
 {
     uint8_t buf[P25_SCAN_NVS_MAX];
     scan_blob_t b = { .buf = buf, .len = sizeof(buf) };
-    esp_err_t err = ls_nvs_call(scan_read, &b, 0);
+    esp_err_t err = ls_nvs_run(scan_read, &b, 0);
     size_t sz = b.out_len;
     if (err != ESP_OK) {
         ESP_LOGI(TAG, "no stored scan blob (%d)", err);
@@ -78,7 +78,7 @@ void p25_scan_persist_save_now(void)
     /* Serialising is pure memory work and stays on the caller. Only the flash
      * access moves - see above. */
     scan_blob_t b = { .buf = buf, .len = n };
-    esp_err_t err = ls_nvs_call(scan_write, &b, 0);
+    esp_err_t err = ls_nvs_run(scan_write, &b, 0);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "scan save failed: %d", err);
 }

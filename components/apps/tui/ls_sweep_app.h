@@ -120,6 +120,7 @@ bool ls_sweep_nearby_target(ls_sweep_device_t *out, int64_t now);
 bool ls_sweep_hunt(const uint8_t mac[6], uint8_t radio, uint8_t type);
 /* Worker consumes at most one category per interval. No audio in scan callback. */
 int ls_sweep_alert(int64_t now);
+void ls_sweep_mac_text(char *out,const ls_sweep_device_t *device);
 int ls_sweep_command(int argc, char **argv);
 void ls_sweep_clear(void);
 /* Platform hooks; host builds have inert defaults. */

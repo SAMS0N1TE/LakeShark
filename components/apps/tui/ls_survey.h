@@ -34,6 +34,7 @@ typedef struct {
 typedef struct {
     bool running, busy, gps_fresh;
     unsigned wifi, ble, new_minute, dropped, elapsed_s;
+    uint32_t activity_revision;
     char status[96], path[128];
     ls_survey_options_t options;
 } ls_survey_view_t;

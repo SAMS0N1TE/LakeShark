@@ -191,7 +191,7 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
         }
     }
     s->gyro_used = isfinite(yaw_dps) && s->agree > -0.5f;
-    const bool trusted = s->gyro_used && s->agree > 0.5f && !(s->sat_s > 0);
+    const bool bounded = s->gyro_used && !(s->sat_s > 0);
     const bool bent = s->mag_tau_s > LS_COMPASS_FUSE_TAU_S;
     const float turn = s->gyro_used ? yaw_dps - trim : 0.0f;
     s->slow_s = fabsf(turn) < LS_COMPASS_LEARN_DPS ? s->slow_s + dt : 0.0f;
@@ -200,8 +200,7 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
     if (far) {
         s->far_s += dt;
         const bool lasting = s->far_s >= LS_COMPASS_JUMP_S;
-        const bool settled = s->still_s >= LS_COMPASS_STILL_S && s->far_s >= LS_COMPASS_STILL_S;
-        if (!bent && (trusted ? settled : lasting)) {
+        if (!bent && !bounded && lasting) {
             s->heading = heading; s->far_s = 0;
             return s->heading;
         }

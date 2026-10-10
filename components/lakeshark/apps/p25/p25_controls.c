@@ -59,3 +59,31 @@ uint32_t p25_controls_clamp_encrypted_skip_ms(uint32_t ms)
         return P25_CONTROL_ENCRYPTED_SKIP_MAX_MS;
     return ms;
 }
+
+void p25_owner_queue_start(p25_owner_queue_t *q)
+{
+    q->read = q->count = 0;
+    q->generation++;
+    q->active = true;
+}
+void p25_owner_queue_stop(p25_owner_queue_t *q)
+{
+    q->active = false;
+    q->generation++;
+    q->read = q->count = 0;
+}
+bool p25_owner_queue_push(p25_owner_queue_t *q, p25_owner_fn fn, uint32_t arg)
+{
+    if (!q->active || !fn || q->count == 32) return false;
+    q->commands[(q->read + q->count) % 32] = (p25_owner_command_t){fn, arg};
+    q->count++;
+    return true;
+}
+bool p25_owner_queue_pop(p25_owner_queue_t *q, p25_owner_command_t *out)
+{
+    if (!q->active || !q->count) return false;
+    *out = q->commands[q->read];
+    q->read = (q->read + 1) % 32;
+    q->count--;
+    return true;
+}

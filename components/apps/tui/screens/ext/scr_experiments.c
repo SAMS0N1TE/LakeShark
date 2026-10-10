@@ -36,6 +36,9 @@ static int s_bar_n;
 /* The list's rows as drawn, for taps: two cells each. */
 static tui_rect s_rows_hit;
 static int s_rows_first;
+static tui_rect s_page_up, s_page_down;
+static int *s_page_sel;
+static int s_page_rows, s_page_count;
 /* OPTIONS keeps a pointer to its context while its list is up. */
 static ls_opt_ctx_t s_ctx;
 static EXT_RAM_BSS_ATTR char s_live[LIVE_MAX][LS_EXP_LINE];
@@ -268,6 +271,25 @@ static int wrap(tui_surface *sf, tui_rect r, int y, int rows, const char *text, 
     return used;
 }
 
+/* All lists page the same selection used by keys and row taps. */
+static int list_pages(tui_surface *sf, tui_rect *in, int height, int count, int *sel)
+{
+    int rows = in->h / height;
+    if (rows < 1) rows = 1;
+    if (in->h < height + 2) return rows;
+    in->h -= 2; rows = in->h / height;
+    s_page_sel = sel; s_page_rows = rows; s_page_count = count;
+    int y = in->y + in->h, w = in->w / 3;
+    s_page_up = tui_rect_make(in->x,y,w,2);
+    s_page_down = tui_rect_make(in->x+in->w-w,y,w,2);
+    char page[40];
+    snprintf(page,sizeof(page),"%d/%d (%d)",*sel/rows+1,count ? (count+rows-1)/rows : 1,count);
+    tui_put_str(sf,s_page_up,s_page_up.x,y,w >= 11 ? "[PAGE UP]" : "UP",*sel >= rows ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    tui_put_str(sf,tui_rect_make(in->x+w,y,in->w-2*w,2),in->x+w,y,page,LS_ATTR_DIM);
+    tui_put_str(sf,s_page_down,s_page_down.x,y,w >= 11 ? "[PAGE DOWN]" : "DOWN",(*sel/rows+1)*rows < count ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    return rows;
+}
+
 /* ------------------------------------------------------------------ list */
 
 static void draw_list(tui_surface *sf, tui_rect a)
@@ -291,10 +313,9 @@ static void draw_list(tui_surface *sf, tui_rect a)
     if (!count) {
         tui_put_str(sf, list, list.x, list.y, "No experiments in this build", LS_ATTR_DIM);
     } else {
-        int rows = list.h / 2;
-        if (rows < 1) rows = 1;
+        int rows = list_pages(sf,&list,2,count,&s_sel);
         const int first = s_sel / rows * rows;
-        s_rows_hit = list;
+        s_rows_hit = list; s_rows_hit.h = rows * 2;
         s_rows_first = first;
         for (int i = 0; i < rows && first + i < count; i++) {
             const ls_experiment_t *e = ls_exp_at(first + i);
@@ -323,7 +344,7 @@ static float graph_value(const sh_reading_t *r, bool fahrenheit)
 {
     float v = s_graph == 0 ? r->temp_c : s_graph == 1 ? r->humidity :
         s_graph == 2 ? r->rain_mm : s_graph == 3 ? r->wind_ms : r->kpa;
-    return s_graph == 0 && fahrenheit ? v * 1.8f + 32 : v;
+    return fahrenheit ? (s_graph == 0 ? v * 1.8f + 32 : s_graph == 4 ? v / 6.894757f : v) : v;
 }
 
 static void draw_history(tui_surface *sf, tui_rect a)
@@ -344,9 +365,9 @@ static void draw_history(tui_surface *sf, tui_rect a)
     if (!detail) {
         s_sensor_count = lr433_history_list(s_sensor_order);
         if (s_sensor_sel >= s_sensor_count) s_sensor_sel = s_sensor_count ? s_sensor_count - 1 : 0;
-        int rows = in.h / 2;
+        int rows = list_pages(sf,&in,2,s_sensor_count,&s_sensor_sel);
         s_sensor_first = s_sensor_sel / rows * rows;
-        s_sensor_hit = in;
+        s_sensor_hit = in; s_sensor_hit.h = rows * 2;
         for (int j = 0; j < rows && s_sensor_first + j < s_sensor_count; j++) {
             int idx = s_sensor_first + j, y = in.y + 2 * j;
             if (!lr433_history_copy(s_sensor_order[idx], &s_sensor)) continue;
@@ -363,7 +384,7 @@ static void draw_history(tui_surface *sf, tui_rect a)
                 bool f = lr433_history_fahrenheit();
                 char value[48];
                 float t = s_sensor.last.temp_c;
-                if (isfinite(s_sensor.last.kpa)) snprintf(value, sizeof(value), "%.1f kPa", (double)s_sensor.last.kpa);
+                if (isfinite(s_sensor.last.kpa)) snprintf(value, sizeof(value), "%.1f %s", (double)(f ? s_sensor.last.kpa / 6.894757f : s_sensor.last.kpa), f ? "psi" : "kPa");
                 else if (isfinite(t)) snprintf(value, sizeof(value), "%.1f%c", (double)(f ? t * 1.8f + 32 : t), f ? 'F' : 'C');
                 else if (isfinite(s_sensor.last.wind_ms)) snprintf(value, sizeof(value), "%.1f m/s", (double)s_sensor.last.wind_ms);
                 else if (isfinite(s_sensor.last.rain_mm)) snprintf(value, sizeof(value), "%.1f mm", (double)s_sensor.last.rain_mm);
@@ -387,7 +408,7 @@ static void draw_history(tui_surface *sf, tui_rect a)
             if (isnan(first)) first = v;
             last = v; if (v < lo) lo = v; if (v > hi) hi = v;
         }
-        snprintf(line, sizeof(line), "%s%s / %u points", field[s_graph], s_graph == 0 ? lr433_history_fahrenheit() ? " F" : " C" : "", s_sensor.count);
+        snprintf(line, sizeof(line), "%s%s / %u points", (s_graph == 4 && fahrenheit ? "PRESSURE psi" : field[s_graph]), s_graph == 0 ? lr433_history_fahrenheit() ? " F" : " C" : "", s_sensor.count);
         tui_put_str(sf, in, in.x, in.y + 1, line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         if (isfinite(last)) {
             snprintf(line, sizeof(line), "MIN %.1f MAX %.1f TREND %+.1f", (double)lo, (double)hi, (double)(last - first));
@@ -562,7 +583,7 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
         s_sonde_count = 0;
         for (int i = 0; i < RS41_SONDES; ++i) if (rs41_store_copy(i,&s_sonde,now)) s_sonde_order[s_sonde_count++] = (uint8_t)i;
         if (s_sonde_sel >= s_sonde_count) s_sonde_sel = s_sonde_count ? s_sonde_count-1 : 0;
-        int rows = in.h/3; s_sonde_first = s_sonde_sel/rows*rows; s_sonde_hit = in;
+        int rows = list_pages(sf,&in,3,s_sonde_count,&s_sonde_sel); s_sonde_first = s_sonde_sel/rows*rows; s_sonde_hit = in; s_sonde_hit.h = rows * 3;
         for (int j = 0; j < rows && s_sonde_first+j < s_sonde_count; ++j) {
             int idx = s_sonde_first+j, y = in.y+3*j;
             if (!rs41_store_copy(s_sonde_order[idx],&s_sonde,now)) continue;
@@ -597,7 +618,7 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
             if ((int)strlen(line)+8 < in.w) tui_put_str(sf,in,in.x+in.w-(int)strlen(line),in.y+in.h-1,line,LS_ATTR_DIM);
         }
     }
-    ls_safe_line(sf,a,a.y+a.h-1,s_feedback[0] ? s_feedback : detail ? "G recover in COMPASS / ESC list" : "ENTER detail / G recover in COMPASS",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-1,s_feedback[0] ? s_feedback : detail ? "G recover in COMPASS / ESC list" : "ENTER detail / ESC back",LS_ATTR_DIM);
 }
 
 static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
@@ -682,10 +703,11 @@ static void enter(void)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    s_page_sel = NULL;
     const ls_experiment_t *e = opened();
     snprintf(s_hint, sizeof(s_hint), "%s", e ? "S start/stop  R radio  O options  N note  ESC back"
                                              : "ENTER open  X stop  N note  ESC home");
-    if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  G recover  ESC back") : "ENTER detail  O options  N name  G graph  ESC back");
+    if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  ESC back") : "ENTER detail  O options  N name  G graph  ESC back");
     if (a.w < 24 || a.h < 12) {
         s_bar_n = 0;
         s_rows_hit = tui_rect_make(0, 0, 0, 0);
@@ -756,6 +778,13 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int x, int y)
 {
+    if (s_page_sel && (tui_rect_contains(s_page_up,x,y) || tui_rect_contains(s_page_down,x,y))) {
+        int first = *s_page_sel / s_page_rows * s_page_rows;
+        int next = first + (tui_rect_contains(s_page_up,x,y) ? -s_page_rows : s_page_rows);
+        if (next >= 0 && next < s_page_count) *s_page_sel = next;
+        s_focus = -1;
+        return true;
+    }
     const int i = ls_btn_hit(x, y);
     if (i >= 0 && i < s_bar_n) { action(s_bar_keys[i]); return true; }
     if (s_history && is_rs41(opened()) && s_sonde_detail < 0 && tui_rect_contains(s_sonde_hit,x,y)) {

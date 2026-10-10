@@ -46,6 +46,16 @@ typedef enum {
     LS_OTA_ST_UPDATED,      /* this boot is a new build, on trial then kept */
 } ls_ota_stage_t;
 
+/* Wire and trial policies shared with the host bench. */
+#define LS_OTA_CHECK_MAX_MS 30000
+#define LS_OTA_CHECK_READ_MS 2000
+#define LS_OTA_VALID_TRIES 3
+typedef enum { LS_OTA_TRIAL_VALID, LS_OTA_TRIAL_PENDING, LS_OTA_TRIAL_FAILED } ls_ota_trial_t;
+int ls_ota_check_wait_ms(int64_t deadline_us, int64_t now_us);
+int ls_ota_manifest_status(int status); /* 1: read, 0: absent, -1: failed */
+bool ls_ota_trial_ready(int64_t end_us, int64_t now_us, unsigned frames, unsigned attempts);
+long ls_ota_trial_left(ls_ota_trial_t state, int64_t end_us, int64_t now_us);
+
 #define LS_OTA_MAGIC    "LAKESHARK-OTA 1"
 #define LS_OTA_MAX_TEXT 4096
 #define LS_OTA_MAX_SIZE (16u * 1024u * 1024u)

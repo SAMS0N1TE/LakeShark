@@ -78,7 +78,7 @@ LS_CASE(sonde_map_labels_and_layer_toggle)
     for (int wide = 0; wide < 2; ++wide) {
         run("map","",wide); LS_CHECK(strstr(output,"N123456")); LS_CHECK(strstr(output,"RS41"));
     }
-    run("map","-k l -x @down,@down,@down,@down,@down,@down,@down,@down,@enter,@esc",false);
+    run("map","-k l -x @down,@down,@down,@down,@down,@down,@down,@down,@enter,@esc,@esc",false);
     LS_CHECK(!strstr(output,"N123456")); LS_CHECK(strstr(output,"UAL442"));
 }
 
@@ -114,9 +114,22 @@ LS_CASE(sonde_detail_shows_its_own_keys)
 {
     for (int wide = 0; wide < 2; ++wide) {
         run("experiments","-k h",wide);
-        LS_CHECK(strstr(output,"ENTER detail / G recover in COMPASS"));
+        LS_CHECK(strstr(output,"ENTER detail / ESC back"));
         run("experiments","-k h -x @enter",wide);
         LS_CHECK(strstr(output,"G recover in COMPASS / ESC list"));
         LS_CHECK(!strstr(output,"ENTER detail / G recover"));
+    }
+}
+
+LS_CASE(experiment_touch_pages_and_list_recovery_hint)
+{
+    run("experiments","-k b -x @up,90:26",true);
+    LS_CHECK(strstr(output,"2/2 (14)")); LS_CHECK(strstr(output,"Z-WAVE SNIFFER"));
+    run("experiments","-k b -x @up,90:26,5:26",true);
+    LS_CHECK(strstr(output,"1/2 (14)")); LS_CHECK(strstr(output,"AVIATION PULSES"));
+    LS_CHECK(!strstr(output,"Z-WAVE SNIFFER"));
+    for (int wide = 0; wide < 2; ++wide) {
+        run("experiments","-k h",wide);
+        LS_CHECK(!strstr(output,"G recover")); LS_CHECK(strstr(output,"ENTER detail"));
     }
 }

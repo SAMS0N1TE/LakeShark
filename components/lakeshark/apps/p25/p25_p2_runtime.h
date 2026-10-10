@@ -6,6 +6,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+static inline bool p25_p2_receiver_supported(bool lr_active, bool lr_selected)
+{
+    return !lr_active && !lr_selected;
+}
 bool p25_p2_enabled(void);
 void p25_p2_enable(bool on);
 bool p25_p2_config(uint32_t wacn, uint16_t system, uint16_t nac, unsigned slot);

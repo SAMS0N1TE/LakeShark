@@ -178,6 +178,7 @@ static bool s_present;
 static StaticSemaphore_t s_lock_buf;
 static SemaphoreHandle_t s_lock;
 static portMUX_TYPE      s_lock_init = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t      s_scan_owner;
 static TaskHandle_t      s_lock_owner;     /* written by the holder only */
 static unsigned          s_lock_depth;     /* ditto */
 static unsigned          s_unguarded;
@@ -537,6 +538,7 @@ void ls_lora_stop(void)
        is not left bound to the wrong backend. */
     ls_lora_hw_lock();
     if (s_ops->stop) s_ops->stop();
+    s_scan_owner = NULL;
     s_present = false;
     s_chip = LS_LORA_CHIP_NONE;
     s_ops = &ls_lora_sx126x_ops;
@@ -601,6 +603,13 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg)
 
 esp_err_t ls_lora_receive(void) { LOCKED_RET(esp_err_t, s_ops->receive()); }
 bool ls_lora_is_receiving(void) { return s_ops->is_receiving(); }
+bool ls_lora_is_transmitting(void)
+{
+    ls_lora_hw_lock();
+    bool tx = s_present && s_ops->is_transmitting && s_ops->is_transmitting();
+    ls_lora_hw_unlock();
+    return tx;
+}
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
 { LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->send(data, len) : ESP_ERR_INVALID_STATE); }
 /* Polls the part's IRQ word and clears it, so it is a bus sequence. */
@@ -639,14 +648,51 @@ int ls_lora_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted)
     return n;
 }
 
+/* A scan belongs to the task that successfully began it, including retunes.
+   The device lock makes acquisition and backend state changes atomic. */
 esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz)
-{ LOCKED_RET(esp_err_t, s_ops->scan_begin(min_hz, max_hz)); }
-/* A sweep is every look of a row: many passes. The backend takes the lock one
-   pass at a time, so the other tasks wait at most a pass, not a sweep. */
-int ls_lora_scan_sweep(float *dbm, int n) { return s_ops->scan_sweep(dbm, n); }
+{
+    ls_lora_hw_lock();
+    TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    if (!s_scan_owner || s_scan_owner == me) {
+        err = s_ops->scan_begin(min_hz, max_hz);
+        if (err == ESP_OK) s_scan_owner = me;
+        else if (!s_ops->scanning()) s_scan_owner = NULL;
+    }
+    ls_lora_hw_unlock();
+    return err;
+}
+int ls_lora_scan_sweep(float *dbm, int n)
+{
+    bool done = false;
+    int got = 0;
+    while (!done) {
+        got = ls_lora_scan_pass(dbm, n, &done);
+        if (got < n || n <= 0) break;
+    }
+    return got;
+}
 int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
-{ LOCKED_RET(int, s_ops->scan_pass(dbm, n, row_done)); }
-esp_err_t ls_lora_scan_end(void) { LOCKED_RET(esp_err_t, s_ops->scan_end()); }
+{
+    if (row_done) *row_done = false;
+    ls_lora_hw_lock();
+    int got = s_scan_owner == xTaskGetCurrentTaskHandle()
+            ? s_ops->scan_pass(dbm, n, row_done) : 0;
+    ls_lora_hw_unlock();
+    return got;
+}
+esp_err_t ls_lora_scan_end(void)
+{
+    ls_lora_hw_lock();
+    esp_err_t err = s_scan_owner ? ESP_ERR_INVALID_STATE : ESP_OK;
+    if (s_scan_owner && s_scan_owner == xTaskGetCurrentTaskHandle()) {
+        err = s_ops->scan_end();
+        if (err == ESP_OK || !s_ops->scanning()) s_scan_owner = NULL;
+    }
+    ls_lora_hw_unlock();
+    return err;
+}
 bool ls_lora_scanning(void) { return s_ops->scanning(); }
 void ls_lora_scan_profile(ls_lora_scan_prof_t *out) { s_ops->scan_profile(out); }
 
@@ -801,6 +847,7 @@ esp_err_t ls_lora_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_is_receiving(void) { return false; }
 esp_err_t ls_lora_send(const uint8_t *d, size_t l) { (void)d; (void)l; return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_send_done(void) { return true; }
+bool ls_lora_is_transmitting(void) { return false; }
 int ls_lora_poll(uint8_t *b, size_t m, float *r, float *n)
 { (void)b; (void)m; (void)r; (void)n; return 0; }
 esp_err_t ls_lora_rssi_inst(float *d) { (void)d; return ESP_ERR_NOT_SUPPORTED; }

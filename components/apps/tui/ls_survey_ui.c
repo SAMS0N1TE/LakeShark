@@ -16,7 +16,8 @@ static ls_survey_view_t s_view;
 static ls_survey_entry_t s_detail;
 static unsigned s_pick;
 static int s_sort, s_rows = 1, s_top = 3, s_pitch = 3;
-static bool s_details;
+static bool s_details, s_activity;
+static uint32_t s_activity_revision;
 static tui_rect s_list;
 static EXT_RAM_BSS_ATTR ls_dot_t s_dots[160 * 120];
 
@@ -80,7 +81,7 @@ static void sweep(tui_surface *sf, tui_rect a)
     if (cw < 1) cw = 10;
     if (ch < 1) ch = 17;
     float radius = fminf(pic.w * cw, pic.h * ch) * 0.46f;
-    float phase = s_view.running ? ls_motion_phase(72, 5000) * 0.08726646f : 0;
+    float phase = (s_view.activity_revision % 72) * 0.08726646f;
     int w = pic.w * 2, h = pic.h * 3;
     for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
         float dx = ((x + 0.5f) * cw / 2 - pic.w * cw / 2.0f) / radius;
@@ -94,13 +95,13 @@ static void sweep(tui_surface *sf, tui_rect a)
         if (fabsf(r - 1) < width * 0.6f) *d = (ls_dot_t){TUI_GREEN, true};
         else if ((fabsf(r - 0.33f) < width * 0.4f || fabsf(r - 0.67f) < width * 0.4f) && (x + y) % 2)
             *d = (ls_dot_t){TUI_CYAN, true};
-        else if (s_view.running && r < 1 && off < 0.07f)
+        else if (s_activity && r < 1 && off < 0.07f)
             *d = (ls_dot_t){TUI_GREEN | TUI_BRIGHT, true};
-        else if (s_view.running && r < 1 && off < 0.65f && (x + 2 * y) % 4 == 0)
+        else if (s_activity && r < 1 && off < 0.65f && (x + 2 * y) % 4 == 0)
             *d = (ls_dot_t){TUI_GREEN, true};
     }
     ls_dots_blit(sf, pic, s_dots, w);
-    text(sf, a, a.h - 2, "Activity animation / no bearings", LS_ATTR_DIM);
+    text(sf, a, a.h - 2, s_activity ? "Observation / no bearings" : "WAIT / no bearings", LS_ATTR_DIM);
 }
 
 static void action(int i)
@@ -123,11 +124,13 @@ static void action(int i)
 void ls_survey_draw(tui_surface *sf, tui_rect a)
 {
     ls_survey_view(&s_view);
+    s_activity = s_view.running && s_view.activity_revision != s_activity_revision;
+    s_activity_revision = s_view.activity_revision;
     char line[160], name[33];
     const unsigned count = s_view.wifi + s_view.ble;
     if (s_pick >= count) s_pick = 0;
     ls_panel_box(sf, tui_rect_make(a.x, a.y, a.w, 5), s_view.running ? "SURVEY / WALK" : s_view.path[0] ? "SURVEY / SESSION SUMMARY" : "SURVEY / READY", TUI_CYAN);
-    snprintf(line, sizeof(line), "%c Wi-Fi %u  BLE %u  New/min %u", ls_motion_pip(s_view.running), s_view.wifi, s_view.ble, s_view.new_minute);
+    snprintf(line, sizeof(line), "%c Wi-Fi %u  BLE %u  New/min %u", s_activity ? "+*"[s_view.activity_revision % 2] : '.', s_view.wifi, s_view.ble, s_view.new_minute);
     text(sf, a, 1, line, WHITE);
     snprintf(line, sizeof(line), "%us  %u/%u  Drop %u  GPS %s", s_view.elapsed_s, count, LS_SURVEY_CAP, s_view.dropped, s_view.gps_fresh ? "FRESH" : "WAIT");
     text(sf, a, 2, line, CYAN);

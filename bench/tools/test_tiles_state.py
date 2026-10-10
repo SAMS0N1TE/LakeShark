@@ -81,7 +81,8 @@ static bool catalog_download(ls_tiles_catalog *d) {
 void ls_cartocore_register_command(void) {}
 void ls_carto_recover(void) {}
 int ls_carto_unlink(const char *path) { return unlink(path); }
-int ls_cartocore_command(int n,char **args) { (void)n; (void)args; return 0; }
+static bool open_fail;
+int ls_cartocore_command(int n,char **args) { (void)n;return open_fail && !strcmp(args[1],"open"); }
 int ls_cartocore_fetch(const char *u,const char *f,const char *s,uint64_t b) {
     (void)u; (void)f; (void)s; (void)b; return 0;
 }
@@ -128,6 +129,14 @@ int main(void) {
     assert(ls_tiles_snapshot(&snapshot) && !snapshot.busy);
     assert(strstr(snapshot.message,"state allocation") && snapshot.last_error==ESP_ERR_NO_MEM);
     assert(ls_tiles_refresh(true)); complete();
+    ls_tile_region region={.file="corrupt.ctile",.zmin=8,.zmax=16};
+    open_fail=true;assert(ls_tiles_action(2,&region));
+    assert(ls_tiles_snapshot(&snapshot) && snapshot.open_state==1 && snapshot.busy);
+    complete();assert(ls_tiles_snapshot(&snapshot) && snapshot.open_state==3 && snapshot.last_error==ESP_FAIL);
+    open_fail=false;assert(ls_tiles_action(2,&region));complete();
+    assert(ls_tiles_snapshot(&snapshot) && snapshot.open_state==2 && snapshot.last_error==ESP_OK);
+    assert(ls_tiles_action(2,&region));alloc_fail=true;complete();alloc_fail=false;
+    assert(ls_tiles_snapshot(&snapshot) && snapshot.open_state==3);
     puts("PASS: pre-init snapshot, allocation/task failures, single worker, completion contention, transfer guard, retry");
 }
 """

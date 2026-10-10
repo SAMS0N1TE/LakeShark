@@ -129,7 +129,7 @@ int ls_dfs_take(ls_dfs_reading_t *out, int max)
         }
         const int nch = tunable(s_slot[k].src) ? s_slot[k].nch : 1;
         for (int ch = 0; ch < nch && n < max; ch++)
-            out[n++] = (ls_dfs_reading_t){ .us = now, .freq_hz = s_slot[k].freq[ch],
+            out[n++] = (ls_dfs_reading_t){ .us = now, .freq_hz = tunable(s_slot[k].src) ? s_slot[k].freq[ch] : 0,
                                            .level = level_for(k, ch, facing), .slot = (uint8_t)k, .channel = (uint8_t)ch };
     }
     return n;

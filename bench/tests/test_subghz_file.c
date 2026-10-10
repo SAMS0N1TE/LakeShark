@@ -445,3 +445,19 @@ LS_CASE(an_undersized_capture_buffer_is_rejected_for_cc_fsk_not_silently_replaye
     LS_CHECK_MSG(!subghz_file_is_cc_fsk(&f),
                  "a truncated edge buffer must not pass as a complete capture");
 }
+
+LS_CASE(shared_app_scratch_accepts_1024_raw_edges_on_one_line)
+{
+    const char *path="rec-long-line.sub";
+    FILE *fp=fopen(path,"w");LS_CHECK(fp!=NULL);
+    fputs("Filetype: Flipper SubGhz RAW File\nFrequency: 433920000\n"
+          "Preset: FuriHalSubGhzPresetOok650Async\nProtocol: RAW\nRAW_Data:",fp);
+    for(int i=0;i<1024;i++)fprintf(fp," %d",i%2?-300:300);
+    fputc('\n',fp);fclose(fp);
+    static char line[SUBGHZ_FILE_LINE_BYTES];static int32_t edges[1024];
+    subghz_file_t f;
+    LS_CHECK(subghz_file_load(path,&f,edges,1024,line,sizeof(line)));
+    remove(path);
+    LS_CHECK(!f.invalid);LS_EQ_INT(f.edges,1024);
+    LS_EQ_UINT(f.span_us,307200);LS_CHECK(subghz_file_is_ook(&f));
+}

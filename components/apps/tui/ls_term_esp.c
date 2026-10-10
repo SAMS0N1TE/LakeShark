@@ -77,11 +77,15 @@ static void term_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         xSemaphoreTake(s_lock, portMAX_DELAY);
         const bool quit = s_quit;
-        if (quit) s_task = NULL;          /* decided with the lock held: a start
-                                             after this makes a new runner */
+        if (quit) {
+            s_busy = false;
+            s_line[0] = '\0';            /* cancel work that never started */
+            s_task = NULL;               /* a start now makes a new runner */
+        }
+        const bool busy = s_busy;
         xSemaphoreGive(s_lock);
         if (quit) break;
-        if (!s_busy) continue;
+        if (!busy) continue;
         int rc = 0;
         esp_err_t e = ESP_FAIL;
         if (cap) {
@@ -94,7 +98,9 @@ static void term_task(void *arg)
             stderr = err;
         }
         report(e, rc);
+        xSemaphoreTake(s_lock, portMAX_DELAY);
         s_busy = false;
+        xSemaphoreGive(s_lock);
     }
     if (cap) fclose(cap);
     vTaskDelete(NULL);
@@ -133,10 +139,10 @@ bool ls_term_running(void)
 
 bool ls_term_submit(const char *line)
 {
-    if (!line || s_busy) return false;
+    if (!line) return false;
     lock_init();
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    const bool ok = s_task != NULL && !s_quit;
+    const bool ok = s_task != NULL && !s_quit && !s_busy;
     if (ok) {
         snprintf(s_line, sizeof(s_line), "%s", line);
         s_busy = true;

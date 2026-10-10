@@ -42,12 +42,14 @@ enum {
   PAGEUP,
   PAGEDOWN,
   OPTIONS,
+  STOP,
+  REPAIR,
   ACTIONS
 };
 /* The key each control answers to, drawn on it while a keyboard is fitted. */
 static const char *const KEYS[ACTIONS] = {
     "B", "P", "N", "-", "M", "+", "L", "I", "W", "1", "2", "3",
-    "4", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O"};
+    "4", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", ""};
 enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEWS };
 static const char *const VIEW_NAME[VIEWS] = {"LEVEL", "BANDS", "SCAN",
                                              "WATERFALL"};
@@ -61,7 +63,7 @@ EXT_RAM_BSS_ATTR static bool enabled[ACTIONS];
 static tui_rect rows_rect, progress_rect;
 static bool ready, library;
 static int selected, current = -1, top, source, focus = -1, row_height = 3,
-                     visible_rows, restore_volume = 1;
+                     visible_rows;
 /* Kept across visits and rotations: the panel is a preference. */
 static int view = VIEW_LEVEL, palette, span_step;
 static unsigned frame;
@@ -91,18 +93,21 @@ static void start(int index) {
 }
 /* Stop listening. A recording that just ended is rescanned into the SD
    list and selected, so PLAY replays it with the plots. */
-static void mic_stopped(void) {
-  bool recorded = ls_music_mic_state() == LS_MIC_RECORDING;
-  ls_music_mic_stop();
-  if (!recorded || !ready || source != 0)
-    return;
+static void select_recording(void) {
+  if(!ready)return;
   const char *path = ls_music_mic_file(), *name = strrchr(path, '/');
   name = name ? name + 1 : path;
-  ls_music_scan(source);
+  if(!ls_music_scan(0))return;
+  source=0;
   current = -1;
   for (int i = 0; i < ls_music_count(); i++)
     if (!strcmp(ls_music_name(i), name))
       selected = i;
+}
+static void mic_stopped(void) {
+  bool recorded=ls_music_mic_state()==LS_MIC_RECORDING;
+  ls_music_mic_stop();
+  if(recorded && ls_music_mic_state()==LS_MIC_OFF)select_recording();
 }
 /* OPTIONS: how the player looks and sounds, each row doing what its own
    control does - the view and colour tabs, SPAN, TONE and SOURCE. */
@@ -135,12 +140,25 @@ static void o_show(const ls_opt_t *o, char *out, size_t n) {
     break;
   }
 }
+static int o_get(const ls_opt_t *o) {
+  return o->arg==TAB_LEVEL?view:o->arg==COLOUR?palette:span_step;
+}
+static void o_set(const ls_opt_t *o,int v) {
+  if(o->arg==TAB_LEVEL)view=v;
+  else if(o->arg==COLOUR)palette=v;
+  else {span_step=v;ls_audio_view_reset();}
+}
+static double o_num(const ls_opt_t *o) { return o_get(o); }
+static void o_set_num(const ls_opt_t *o,double v) { o_set(o,(int)v); }
 #define MUSIC_ROW(l, id)                                                       \
   { .label = (l), .kind = LS_OPT_ACTION, .arg = (id), .act = o_act, .show = o_show }
 static const ls_opt_t OPT_MUSIC[] = {
-    MUSIC_ROW("VIEW", TAB_LEVEL), MUSIC_ROW("COLOUR", COLOUR),
-    MUSIC_ROW("SPAN", SPAN),      MUSIC_ROW("TONE", TONE),
-    MUSIC_ROW("SOURCE", SOURCE),
+    {.label="VIEW",.kind=LS_OPT_CYCLE,.arg=TAB_LEVEL,.names=VIEW_NAME,.n=VIEWS,.step=1,.get=o_get,.set=o_set},
+    {.label="COLOUR",.kind=LS_OPT_CYCLE,.arg=COLOUR,.names=PALETTE_NAME,.n=PALETTES,.step=1,.get=o_get,.set=o_set},
+    {.label="SPAN",.kind=LS_OPT_LEVEL,.arg=SPAN,.lo=0,.hi=2,.step=1,.num=o_num,.set_num=o_set_num,.show=o_show},
+    MUSIC_ROW("TONE", TONE),
+    MUSIC_ROW("SOURCE", SOURCE), MUSIC_ROW("STOP", STOP),
+    MUSIC_ROW("REPAIR WAV", REPAIR),
 };
 #undef MUSIC_ROW
 static const ls_opt_ctx_t CTX_MUSIC = {.name = "MUSIC", .job = -1,
@@ -167,11 +185,15 @@ static void act(int id) {
     volume_to_step(1);
     break;
   case SILENCE:
-    if (ls_music_volume() > 0) {
-      restore_volume = ls_music_volume();
-      ls_music_volume_step(-restore_volume);
-    } else
-      ls_music_volume_step(restore_volume);
+    ls_music_mute_toggle();
+    break;
+  case STOP:
+    mic_stopped();
+    ls_music_stop();
+    current=-1;
+    break;
+  case REPAIR:
+    if(ls_music_mic_repair())select_recording();
     break;
   case MIC:
     if (ls_music_mic_state() != LS_MIC_OFF)
@@ -210,14 +232,16 @@ static void act(int id) {
     ls_music_set_warm(!ls_music_warm());
     break;
   case SOURCE:
-    source = 1 - source; /* fall through */
-  case RESCAN:
+  case RESCAN: {
+    int target=id==SOURCE?1-source:source;
     ready = ls_music_open();
-    if (ready)
-      ls_music_scan(source);
-    selected = top = 0;
-    current = -1;
+    if (ready && ls_music_scan(target)) {
+      source=target;
+      selected = top = 0;
+      current = -1;
+    }
     break;
+  }
   case PAGEUP:
     selected -= visible_rows;
     if (selected < 0)
@@ -371,7 +395,7 @@ static void panel(tui_surface *sf, tui_rect p, bool playing) {
     tabs_w = VIEWS * 12;
   tabs(sf, tui_rect_make(in.x + in.w - tabs_w, in.y, tabs_w, 3));
   int info_y = beside ? in.y : in.y + 3;
-  ls_music_format_t f;
+  ls_music_format_t f={0};
   char line[80];
   if (ls_music_format(&f)) {
     snprintf(line, sizeof(line), "%u.%u kHz %u-BIT %s", f.rate_hz / 1000,
@@ -455,10 +479,10 @@ static void title(tui_surface *sf, tui_rect r) {
 /* Status, title, clock and progress: eight rows. */
 static void info(tui_surface *sf, tui_rect r, bool playing) {
   ls_music_mic_t mic = ls_music_mic_state();
-  /* OPTIONS makes four where the row is wide enough to spell it; a narrower
-     pane keeps three, and its view, colour and span keys are on the panel. */
-  const int keys = (r.w - 3) / 4 >= 9 ? 4 : 3;
-  int bw = keys == 4 ? 9 : (r.w - 2) / 3 > 10 ? 10 : (r.w - 2) / 3;
+  /* Keep OPTIONS reachable by touch in the narrow side pane too. */
+  const int keys=4;
+  int bw=(r.w-3)/4;
+  if(bw>9)bw=9;
   int x = r.x + r.w - keys * bw - (keys - 1);
   ls_safe_line(sf, tui_rect_make(r.x, r.y, x - r.x, r.h), r.y + 1,
                mic == LS_MIC_RECORDING               ? "RECORDING"
@@ -473,10 +497,10 @@ static void info(tui_surface *sf, tui_rect r, bool playing) {
          ready);
   button(sf, REC, tui_rect_make(x + bw + 1, r.y, bw, 3), "REC",
          mic == LS_MIC_RECORDING, ready);
-  button(sf, LIBRARY, tui_rect_make(x + 2 * (bw + 1), r.y, bw, 3), "TRACKS",
+  button(sf, LIBRARY, tui_rect_make(x + 2 * (bw + 1), r.y, bw, 3), bw>=8?"TRACKS":"LIST",
          false, true);
   if (keys == 4)
-    button(sf, OPTIONS, tui_rect_make(x + 3 * (bw + 1), r.y, bw, 3), "OPTIONS",
+    button(sf, OPTIONS, tui_rect_make(x + 3 * (bw + 1), r.y, bw, 3), bw>=9?"OPTIONS":"OPT",
            false, true);
   unsigned elapsed, total;
   if (mic != LS_MIC_OFF) {
@@ -513,7 +537,9 @@ static void info(tui_surface *sf, tui_rect r, bool playing) {
 }
 /* Transport, volume readout and volume buttons: 2h+3 rows. */
 static void transport_button(tui_surface *sf,void *ctx,int id,tui_rect r,const char *label,bool on,bool can) {
-  (void)ctx; button(sf,PREV+id,r,label,on,can);
+  (void)ctx;
+  if(id==4)label=ls_music_muted()?"UNMUTE":"MUTE";
+  button(sf,PREV+id,r,label,on,can);
 }
 static void controls(tui_surface *sf,tui_rect r,bool playing,int h) {
   ls_media_transport(sf,r,playing,h,ready&&ls_music_count()>0,ls_music_volume(),ls_music_volume_db(),transport_button,NULL);
@@ -716,8 +742,7 @@ static bool key(ls_tk_t key, char ch) {
     act(OPTIONS);
     break;
   case 's':
-    ls_music_stop();
-    current = -1;
+    act(STOP);
     break;
   default:
     return false;

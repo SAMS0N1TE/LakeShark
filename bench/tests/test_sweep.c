@@ -335,3 +335,20 @@ LS_CASE(link_summary_matches_filtered_snapshot_and_expires_without_heap) {
     LS_CHECK(summary.category[0]==SW_TRACKER && !summary.serial[1]);
     ls_sweep_summary(&summary,61000000);LS_CHECK(!summary.serial[0] && !summary.counts[SW_TRACKER]);
 }
+
+LS_CASE(canonical_addresses_preserve_radio_order) {
+    ls_sweep_device_t d={.mac={7,2,3,4,5,6}};char text[18];
+    ls_sweep_mac_text(text,&d);LS_CHECK(!strcmp(text,"06:05:04:03:02:07"));
+    d.radio=1;ls_sweep_mac_text(text,&d);LS_CHECK(!strcmp(text,"07:02:03:04:05:06"));
+}
+LS_CASE(nearby_adverts_are_per_target_and_clicks_survive_rotation) {
+    reset();ls_sweep_match_t m={.category=SW_TRACKER,.state=SW_STATE_NEAR};ls_sweep_device_t d;
+    for(int i=0;i<6;i++) {uint8_t a[6]={i};ls_sweep_observe(a,0,1,-50,&m,1000000+i);}
+    LS_CHECK(ls_sweep_nearby_target(&d,1000010));LS_EQ_UINT(d.adverts,1);LS_EQ_UINT(d.samples,1);
+    LS_CHECK(ls_sweep_hunt(d.mac,0,1));LS_EQ_INT(ls_sweep_alert(1000010),-1);
+    uint8_t other[6]={99};ls_sweep_observe(other,0,1,-55,&m,1000020);
+    ls_sweep_observe(d.mac,0,1,-50,&m,1000030);LS_EQ_INT(ls_sweep_alert(1000030),SW_TRACKER);LS_EQ_INT(ls_sweep_alert(1000040),-1);
+    LS_CHECK(ls_sweep_nearby_target(&d,1000040));LS_EQ_UINT(d.adverts,1);
+    ls_sweep_start(false);ls_sweep_start(true);ls_sweep_observe(d.mac,0,1,-50,&m,2000000);
+    LS_CHECK(ls_sweep_nearby_target(&d,2000000));LS_EQ_UINT(d.adverts,1);
+}

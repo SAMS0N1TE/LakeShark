@@ -65,8 +65,10 @@ typedef struct {
 } ls_haptic_diag_t;
 
 /* Measure the above. Takes about 10 ms and talks to the part, so it is not
-   for the draw path. Returns false when the part is absent. */
+   for the draw path. Returns false if absent, busy or any transaction fails.
+   Measurements and fault flags are valid only on success. */
 bool ls_haptic_diag(ls_haptic_diag_t *out);
+bool ls_haptic_busy(void);
 
 /* CONTCFG2 F_PRE: the part derives F0 = 24000 / code. */
 uint8_t ls_haptic_f_pre_code(int f0_hz);

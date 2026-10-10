@@ -31,6 +31,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_motion.h"
 #include "../../ls_map_motion.h"
 #include "../../ls_notes.h"
+#include "../../ls_notify.h"
 #include "../../ls_picker.h"
 #include "../../ls_quick.h"
 #include "../../ls_theme.h"
@@ -54,6 +55,9 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #define MAP_DIR "/sdcard/maps"
 
 static bool     s_opened;
+static int s_notice_screen=-1;
+static bool s_have_covered_view;
+static double s_covered_lat,s_covered_lon;
 static tui_rect s_map_cells;      /* the rectangle the grid lent us */
 static tui_rect s_quick_rect;
 static tui_rect s_pad_rect;
@@ -78,7 +82,7 @@ enum {
     L_AIR     = 1u << 0,
     L_TRAILS  = 1u << 1,
     L_BLOCKS  = 1u << 2,    /* two line data blocks; otherwise callsign only */
-    L_NOLABEL = 1u << 3,    /* no aircraft labels at all                     */
+    L_NOLABEL = 1u << 3,    /* symbols only                                  */
     L_MESH    = 1u << 4,
     L_MARKS   = 1u << 5,
     L_RINGS   = 1u << 6,
@@ -185,6 +189,9 @@ static bool find_archive(char *out, size_t cap)
    this is where it is called. */
 static void register_view_action(void);
 static void rescan(void);
+static void open_options(void);
+static void open_style(void);
+static bool marks_notice(ls_notice_t *out);
 static bool cartocore_view(void);
 
 /* Likewise: the cell cache is defined with the pass that fills it, and
@@ -201,23 +208,12 @@ static int archive_order(const void *a, const void *b)
     return strcasecmp((const char *)a, (const char *)b);
 }
 
-static void pick_archive(int i)
+static void archive_view(const char *path)
 {
-    if (i < 0 || i >= s_archive_n) return;
-    if(cartocore_view()) {
-        s_file_error=ls_carto_map_select(s_archives[i])?NULL:"cannot open .ctile map";
-        return;
-    }
-    if (!ls_map_open(s_archives[i])) {
-        s_file_error = ls_map_open_error();
-        return;
-    }
-    s_file_error = NULL;
-    s_have_archive = true;
     double lat, lon;
     ls_map_get_center(&lat, &lon);
     if (ls_map_zoom_covering(lat, lon) < 0) {
-        FILE *f = fopen(s_archives[i], "rb");
+        FILE *f = fopen(path, "rb");
         uint8_t h[127];
         if (f) {
             if (fread(h, 1, sizeof(h), f) == sizeof(h)) {
@@ -231,6 +227,22 @@ static void pick_archive(int i)
             fclose(f);
         }
     }
+}
+
+static void pick_archive(int i)
+{
+    if (i < 0 || i >= s_archive_n) return;
+    if(cartocore_view()) {
+        s_file_error=ls_carto_map_select(s_archives[i])?NULL:"cannot open .ctile map";
+        return;
+    }
+    if (!ls_map_open(s_archives[i])) {
+        s_file_error = ls_map_open_error();
+        return;
+    }
+    s_file_error = NULL;
+    s_have_archive = true;
+    archive_view(s_archives[i]);
 }
 
 static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
@@ -275,6 +287,8 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
 static void enter(void)
 {
     register_view_action();
+    s_notice_screen=ls_tui_screen_current();
+    ls_notify_add_probe(marks_notice);
     if (!s_layers_loaded) {
         s_layers_loaded = true;
         s_layers = settings_get_map_layers(LAYERS_DEFAULT) & LAYER_BITS;
@@ -291,8 +305,10 @@ static void enter(void)
     if (!s_opened) {
         s_opened = true;
         char path[128];
-        if (find_archive(path, sizeof(path)))
+        if (find_archive(path, sizeof(path))) {
             s_have_archive = ls_map_open(path);
+            if(s_have_archive) archive_view(path);
+        }
         return;
     }
     /* Nothing open means look again, every time this screen is entered: the
@@ -317,6 +333,7 @@ static void rescan(void)
     }
     s_file_error = ls_map_open(path) ? NULL : ls_map_open_error();
     s_have_archive = ls_map_archive() != NULL;
+    if(!s_file_error && s_have_archive) archive_view(path);
 }
 
 static void leave(void)
@@ -924,6 +941,8 @@ static void overlay_reset(tui_rect a, tui_rect pad, tui_rect card)
 }
 
 static EXT_RAM_BSS_ATTR map_label_history s_label_history;
+static EXT_RAM_BSS_ATTR map_sticky_history s_live_labels, s_preview_labels;
+static map_sticky_history *s_live_history = &s_live_labels;
 static bool label_slot_free(void *context,int x,int y,int w,int rows) {
     const tui_rect *a=context;
     if(x<0 || y<0 || x+w>a->w || y+rows>a->h) return false;
@@ -1259,6 +1278,7 @@ static void select_mark(sel_kind_t kind, int index)
 /* Go there: centre on it, and start the lock-on so the eye finds it. */
 static void jump_to(double lat, double lon)
 {
+    s_track=false;
     ls_map_follow_set(false);
     ls_map_center(lat, lon);
     s_lock_us = esp_timer_get_time();
@@ -1725,8 +1745,10 @@ static int label_spots(int cx, int cy, int gap, int w, int rows, int a_w, int sp
    when no spot is free of every symbol and every other label. */
 static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
                         const char *l1, const char *l2, uint8_t attr, bool solid,
-                        uint32_t key)
+                        uint64_t key, int preferred)
 {
+    s_label_rect=tui_rect_make(0,-1,0,0);
+    if(layer(L_NOLABEL)) return false;
     const int n1 = (int)strlen(l1), n2 = l2 ? (int)strlen(l2) : 0;
     const int w = n1 > n2 ? n1 : n2;
     const int rows = n2 ? 2 : 1;
@@ -1734,8 +1756,8 @@ static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap
     int spot[LABEL_SPOTS_MAX][3];
     const int ns = label_spots(cx, cy, gap, w, rows, a.w, spot);
     int x0=0,y0=0;s_tier=1;
-    bool placed=map_label_choose(&s_label_history,key,
-        cx,cy,w,rows,spot,3,ns,esp_timer_get_time(),live_label_slot_free,&a,&x0,&y0);
+    bool placed=map_sticky_choose(s_live_history,key,preferred,
+        cx,cy,w,rows,a.w,a.h,spot,3,ns,esp_timer_get_time(),live_label_slot_free,&a,&x0,&y0);
     s_tier=0;if(!placed) return false;
             for (int r = 0; r < rows; r++) {
                 const char *s = r ? l2 : l1;
@@ -1755,13 +1777,18 @@ static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap
     return true;
 }
 
-static bool place_label(tui_surface *sf, tui_rect a, int cx, int cy, int gap,
-                        const char *l1, const char *l2, uint8_t attr, bool solid)
-{
-    return place_label_key(sf,a,cx,cy,gap,l1,l2,attr,solid,
-                           map_label_key(l1,32+s_view));
+#ifdef LS_MAP_AUDIT
+static int s_air_label_audit[ADSB_MAX_TRACKED][6];
+bool ls_map_air_label_trace(uint32_t icao,int out[6]) {
+    for(int i=0;i<ADSB_MAX_TRACKED;i++) {
+        const adsb_aircraft_t *ac=adsb_state_get(i);
+        if(ac && ac->icao==icao && s_air[i].on) {
+            memcpy(out,s_air_label_audit[i],sizeof(s_air_label_audit[i]));return true;
+        }
+    }
+    return false;
 }
-
+#endif
 static void air_text(tui_surface *sf, tui_rect a)
 {
     if (!layer(L_AIR) || layer(L_NOLABEL)) return;
@@ -1781,11 +1808,19 @@ static void air_text(tui_surface *sf, tui_rect a)
             if (ac->icao == sel || v->emergency) {
                 const uint8_t tag = v->emergency ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)
                                                  : TUI_ATTR(TUI_BLACK, air_band(ac->altitude) | TUI_BRIGHT);
-                place_label(sf, a, cx, cy, gap, l1, full ? l2 : NULL, tag, true);
+                place_label_key(sf, a, cx, cy, gap, l1, full ? l2 : NULL, tag, true,
+                    map_object_key(1,ac->icao),map_air_label_side(ac->heading));
             } else {
-                place_label(sf, a, cx, cy, gap, l1, full ? l2 : NULL, TUI_ATTR(v->hue, TUI_BLACK), false);
+                place_label_key(sf, a, cx, cy, gap, l1, full ? l2 : NULL, TUI_ATTR(v->hue, TUI_BLACK), false,
+                    map_object_key(1,ac->icao),map_air_label_side(ac->heading));
             }
             hit_label(HIT_AIR, ac->icao, v->lat, v->lon);
+#ifdef LS_MAP_AUDIT
+            int *trace=s_air_label_audit[slot];
+            trace[0]=a.x+cx;trace[1]=a.y+cy;
+            trace[2]=s_label_rect.x;trace[3]=s_label_rect.y;
+            trace[4]=s_label_rect.w;trace[5]=s_label_rect.h;
+#endif
         }
     }
 }
@@ -1835,7 +1870,8 @@ static void aprs_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
         int dx, dy; px_dot(fx, fy, &dx, &dy);
         uint8_t attr = TUI_ATTR(aprs_hue(p, now), TUI_BLACK);
         tui_put_char(sf, a, a.x+dx/2, a.y+dy/3, p->symbol, attr);
-        place_label(sf, a, dx/2, dy/3, 2, p->call, p->name[0] ? p->name : NULL, attr, false);
+        place_label_key(sf, a, dx/2, dy/3, 2, p->call, p->name[0] ? p->name : NULL, attr, false,
+            map_object_key(3,map_label_key(p->call,0)),MAP_LABEL_RIGHT);
     }
 }
 
@@ -1880,8 +1916,9 @@ static void sonde_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
         double fx,fy; int dx,dy;
         if (!frame_px(s_sonde_labels[i].lat,s_sonde_labels[i].lon,pw,ph,&fx,&fy)) continue;
         px_dot(fx,fy,&dx,&dy);
-        place_label(sf,a,dx/2,dy/3,3,s_sonde_labels[i].serial,"RS41",
-            TUI_ATTR(now-s_sonde_labels[i].us < 300000000 ? TUI_YELLOW|TUI_BRIGHT : LS_DIM_FG,TUI_BLACK),false);
+        place_label_key(sf,a,dx/2,dy/3,3,s_sonde_labels[i].serial,"RS41",
+            TUI_ATTR(now-s_sonde_labels[i].us < 300000000 ? TUI_YELLOW|TUI_BRIGHT : LS_DIM_FG,TUI_BLACK),false,
+            map_object_key(5,map_label_key(s_sonde_labels[i].serial,0)),MAP_LABEL_RIGHT);
     }
 }
 
@@ -1944,7 +1981,7 @@ static void ais_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
         /* Names are not identities: two vessels may share the same name. */
         place_label_key(sf, a, dx/2, dy/3, 3, p->name[0] ? p->name : mmsi, NULL,
                     TUI_ATTR(ais_hue(p, now), TUI_BLACK), false,
-                    map_label_key(mmsi,64+s_view));
+                    map_object_key(4,p->mmsi),MAP_LABEL_RIGHT);
     }
 }
 
@@ -1967,6 +2004,7 @@ static uint8_t node_hue(uint32_t age, bool selected)
 
 static uint32_t node_age(const ls_mesh_peer_t *p)
 {
+    if(!p->last_heard) return UINT32_MAX;
     const uint32_t now = ls_mesh_now();
     return now > p->last_heard ? now - p->last_heard : 0;
 }
@@ -2064,13 +2102,16 @@ static void nodes_text(tui_surface *sf, tui_rect a, int pw, int ph)
         if (p->name[0]) snprintf(l1, sizeof(l1), "%.12s", p->name);
         else snprintf(l1, sizeof(l1), "%.8s", p->id);
         age_words(ago, sizeof(ago), age);
-        snprintf(l2, sizeof(l2), "%s %.0fdB", ago, (double)p->rssi);
+        if(p->last_heard) snprintf(l2, sizeof(l2), "%s %.0fdB", ago, (double)p->rssi);
+        else snprintf(l2,sizeof(l2),"saved contact");
         const int gap = s_node_compact[i] ? 2 : 3;
         if (selected)
-            place_label(sf, a, dx / 2, dy / 3, gap, l1, l2, TUI_ATTR(TUI_BLACK, TUI_MAGENTA | TUI_BRIGHT), true);
+            place_label_key(sf, a, dx / 2, dy / 3, gap, l1, l2, TUI_ATTR(TUI_BLACK, TUI_MAGENTA | TUI_BRIGHT), true,
+                map_object_key(2,map_label_key(p->id,0)),MAP_LABEL_RIGHT);
         else
-            place_label(sf, a, dx / 2, dy / 3, gap, l1, layer(L_BLOCKS) ? l2 : NULL,
-                        TUI_ATTR(node_hue(age, false), TUI_BLACK), false);
+            place_label_key(sf, a, dx / 2, dy / 3, gap, l1, layer(L_BLOCKS) ? l2 : NULL,
+                        TUI_ATTR(node_hue(age, false), TUI_BLACK), false,
+                map_object_key(2,map_label_key(p->id,0)),MAP_LABEL_RIGHT);
         hit_label(HIT_NODE, (uint32_t)i, p->lat_e6 / 1e6, p->lon_e6 / 1e6);
     }
 }
@@ -2123,13 +2164,15 @@ static void receiver_text(tui_surface *sf, tui_rect a, int pw, int ph)
 {
     int hx, hy;
     if (home_apart(a, pw, ph, &hx, &hy))
-        place_label(sf, a, hx, hy, 3, "HOME", NULL, TUI_ATTR(TUI_CYAN, TUI_BLACK), false);
+        place_label_key(sf, a, hx, hy, 3, "HOME", NULL, TUI_ATTR(TUI_CYAN, TUI_BLACK), false,
+            map_object_key(8,1),MAP_LABEL_RIGHT);
     double lat, lon;
     bool live = false;
     if (!receiver_at(&lat, &lon, &live)) return;
     int cx, cy;
     if (!map_cell_of(lat, lon, a, pw, ph, &cx, &cy)) return;
-    place_label(sf, a, cx, cy, 3, live ? "GPS" : "HOME", NULL, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK), false);
+    place_label_key(sf, a, cx, cy, 3, live ? "GPS" : "HOME", NULL, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK), false,
+        map_object_key(8,2),MAP_LABEL_RIGHT);
 }
 
 static double s_ring_nm;
@@ -2137,6 +2180,7 @@ static double s_ring_nm;
 static void rings_canvas(tui_surface *sf, tui_rect a, int pw, int ph, bool text)
 {
     s_ring_nm = 0;
+    if(text && layer(L_NOLABEL)) return;
     if (!layer(L_RINGS)) return;
     double lat, lon;
     if (!receiver_at(&lat, &lon, NULL)) return;
@@ -2180,9 +2224,11 @@ static void rings_canvas(tui_surface *sf, tui_rect a, int pw, int ph, bool text)
 EXT_RAM_BSS_ATTR static float s_cover_nm[COVER_SECTORS];
 static double s_cover_lat = 999, s_cover_lon;
 static float  s_cover_max;
+static int64_t s_cover_epoch;
 
 static void cover_update(void)
 {
+    const int64_t now=esp_timer_get_time();
     double lat, lon;
     if (!receiver_at(&lat, &lon, NULL)) return;
     /* A receiver that moved more than a mile starts a new outline. */
@@ -2191,11 +2237,15 @@ static void cover_update(void)
     else ls_geo_bearing_range(s_cover_lat, s_cover_lon, lat, lon, &b, &m);
     if (m > LS_GEO_M_PER_MILE) {
         memset(s_cover_nm, 0, sizeof(s_cover_nm));
+        s_cover_epoch=now;
         s_cover_lat = lat; s_cover_lon = lon; s_cover_max = 0;
+        say("Coverage reset: fresh direct positions from now");
     }
     for (int slot = 0; slot < ADSB_MAX_TRACKED; slot++) {
         const adsb_aircraft_t *ac = adsb_state_get(slot);
-        if (!ac || !ac->active || !ac->pos_valid) continue;
+        if (!ac || !ac->active || !ac->pos_valid || ac->rebroadcast ||
+            ac->pos_ts_us<=s_cover_epoch || ac->pos_ts_us>now ||
+            now-ac->pos_ts_us>AIRCRAFT_SHOW_US) continue;
         ls_geo_bearing_range(s_cover_lat, s_cover_lon, ac->lat, ac->lon, &b, &m);
         const float nm = (float)(m / LS_GEO_M_PER_NM);
         if (nm > 400) continue;
@@ -2332,8 +2382,8 @@ static void marks_text(tui_surface *sf, tui_rect a, int pw, int ph)
         const uint8_t hue = mark_hue(m->icon);
         glass(sf, a, a.x + cx, a.y + cy, ls_mark_icon_char(m->icon), TUI_ATTR(hue, TUI_BLACK));
         const bool sel = s_sel == SEL_MARK && s_sel_index == i;
-        place_label(sf, a, cx, cy, 3, m->name, NULL,
-                    sel ? TUI_ATTR(TUI_BLACK, hue) : TUI_ATTR(hue, TUI_BLACK), sel);
+        place_label_key(sf, a, cx, cy, 3, m->name, NULL,
+                    sel ? TUI_ATTR(TUI_BLACK, hue) : TUI_ATTR(hue, TUI_BLACK), sel,map_object_key(6,m->id),MAP_LABEL_RIGHT);
         hit_label(HIT_MARK, (uint32_t)i, m->lat, m->lon);
     }
     for (int i = 0; i < ls_sketch_count(); i++) {
@@ -2344,8 +2394,8 @@ static void marks_text(tui_surface *sf, tui_rect a, int pw, int ph)
         char len[24];
         snprintf(len, sizeof(len), "%.2fmi", ls_sketch_length_m(s) / LS_GEO_M_PER_MILE);
         const bool sel = s_sel == SEL_LINE && s_sel_index == i;
-        place_label(sf, a, cx, cy, 2, s->name, len,
-                    sel ? TUI_ATTR(TUI_BLACK, s->hue | TUI_BRIGHT) : TUI_ATTR(s->hue | TUI_BRIGHT, TUI_BLACK), sel);
+        place_label_key(sf, a, cx, cy, 2, s->name, len,
+                    sel ? TUI_ATTR(TUI_BLACK, s->hue | TUI_BRIGHT) : TUI_ATTR(s->hue | TUI_BRIGHT, TUI_BLACK), sel,map_object_key(7,s->id),MAP_LABEL_RIGHT);
         hit_label(HIT_LINE, (uint32_t)i, s->lat[s->n - 1], s->lon[s->n - 1]);
     }
     double tlat, tlon;
@@ -2355,7 +2405,8 @@ static void marks_text(tui_surface *sf, tui_rect a, int pw, int ph)
         if (map_cell_of(tlat, tlon, a, pw, ph, &cx, &cy)) {
             char l1[32];
             snprintf(l1, sizeof(l1), "GO TO %.18s", tname);
-            place_label(sf, a, cx, cy, 3, l1, NULL, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK), false);
+            place_label_key(sf, a, cx, cy, 3, l1, NULL, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK), false,
+                map_object_key(8,3),MAP_LABEL_RIGHT);
         }
     }
 }
@@ -2482,9 +2533,44 @@ static void edges_text(tui_surface *sf, tui_rect a, int pw, int ph)
         range_words(dist, sizeof(dist), have_rx ? rlat : clat, have_rx ? rlon : clon, e->lat, e->lon);
         char *sp = strchr(dist, ' ');
         if (sp && strchr(sp + 1, ' ')) *strchr(sp + 1, ' ') = 0;   /* "12nm NE" */
-        place_label(sf, a, cx, cy, 3, e->name, dist, TUI_ATTR(e->hue, TUI_BLACK), false);
+        uint32_t identity=e->id;
+        if(e->kind==HIT_NODE && e->id<(uint32_t)s_npeers)
+            identity=map_label_key(s_map_peers[e->id].id,0);
+        place_label_key(sf, a, cx, cy, 3, e->name, dist, TUI_ATTR(e->hue, TUI_BLACK), false,
+            map_object_key(16+e->kind,identity),MAP_LABEL_RIGHT);
         hit_label((uint8_t)(e->kind | HIT_EDGE), e->id, e->lat, e->lon);
     }
+}
+
+/* Retain tracked objects even outside the viewport or with labels hidden.
+ * Only absent identities are evicted; changing a view cannot reset dwell. */
+static void live_labels_begin(bool preview) {
+    map_sticky_begin(s_live_history);
+    const int64_t now=esp_timer_get_time();
+    for(int i=0;i<ADSB_MAX_TRACKED;i++) {
+        const adsb_aircraft_t *ac=adsb_state_get(i);
+        if(!ac || !ac->active || !ac->pos_valid || ac->pos_ts_us<=0 ||
+           now<ac->pos_ts_us || now-ac->pos_ts_us>AIRCRAFT_SHOW_US) continue;
+        uint32_t id=ac->icao;
+        map_sticky_retain(s_live_history,map_object_key(1,id));
+        map_sticky_retain(s_live_history,map_object_key(16+HIT_AIR,id));
+    }
+    if(preview) return;
+    for(int i=0;i<s_npeers;i++) {
+        uint32_t id=map_label_key(s_map_peers[i].id,0);
+        map_sticky_retain(s_live_history,map_object_key(2,id));
+        map_sticky_retain(s_live_history,map_object_key(16+HIT_NODE,id));
+    }
+    for(int i=0;i<s_aprs_count;i++)
+        map_sticky_retain(s_live_history,map_object_key(3,map_label_key(s_aprs_points[i].call,0)));
+    for(int i=0;i<s_ais_count;i++)
+        map_sticky_retain(s_live_history,map_object_key(4,s_ais_points[i].mmsi));
+    for(int i=0;i<s_sonde_labels_n;i++)
+        map_sticky_retain(s_live_history,map_object_key(5,map_label_key(s_sonde_labels[i].serial,0)));
+    for(int i=0;i<ls_marks_count();i++)
+        map_sticky_retain(s_live_history,map_object_key(6,ls_marks_at(i)->id));
+    for(int i=0;i<ls_sketch_count();i++)
+        map_sticky_retain(s_live_history,map_object_key(7,ls_sketch_at(i)->id));
 }
 
 /* ---------------------------------------------------------------- card -- */
@@ -2527,8 +2613,8 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
         snprintf(lines[n++], 40, "ID   %.8s %s", p->id, TYPES[p->type <= 4 ? p->type : 0]);
         char ago[12];
         age_words(ago, sizeof(ago), node_age(p));
-        snprintf(lines[n++], 40, "HEARD %s ago", ago);
-        snprintf(lines[n++], 40, "SIG  %.0f dBm  SNR %.1f", (double)p->rssi, (double)p->snr);
+        snprintf(lines[n++], 40, p->last_heard ? "HEARD %s ago" : "saved contact", ago);
+        if(p->last_heard) snprintf(lines[n++], 40, "SIG  %.0f dBm  SNR %.1f", (double)p->rssi, (double)p->snr);
         if (p->has_loc && have_rx) {
             range_words(rng, sizeof(rng), rlat, rlon, p->lat_e6 / 1e6, p->lon_e6 / 1e6);
             snprintf(lines[n++], 40, "RNG  %s", rng);
@@ -2603,11 +2689,21 @@ EXT_RAM_BSS_ATTR static goto_t s_goto[LS_PICKER_MAX];
 static int s_ngoto;
 static int s_find_pw, s_find_ph;
 
+static void coordinates_done(const char *text) {
+    double lat,lon;char tail;
+    if(sscanf(text," %lf , %lf %c",&lat,&lon,&tail)!=2 ||
+        !isfinite(lat) || !isfinite(lon) || fabs(lat)>85 || fabs(lon)>180) {
+        say("Use latitude, longitude (lat +/-85, lon +/-180)");return;
+    }
+    select_none();jump_to(lat,lon);
+}
+
 static void goto_pick(int i)
 {
     if (i < 0 || i >= s_ngoto) return;
     const goto_t *g = &s_goto[i];
-    if(g->kind==255) { ls_place_search_open(true);return; }
+    if(g->kind==255) { ls_place_search_goto(jump_to);return; }
+    if(g->kind==254) { ls_keyboard_open("LATITUDE, LONGITUDE","",63,coordinates_done);return; }
     s_track = false;
     switch (g->kind) {
     case HIT_AIR:  select_air(g->id); break;
@@ -2635,6 +2731,14 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
     s_ngoto = 0;
     ls_picker_open("GO TO", goto_pick);
     goto_add(255,0,0,0,NULL,"SEARCH PLACES","Country, state or city");
+    goto_add(254,0,0,0,NULL,"COORDINATES","Temporary latitude, longitude");
+    if(s_receiver_fresh) goto_add(0,0,s_receiver.lat_deg,s_receiver.lon_deg,NULL,"RECEIVER","live GPS position");
+    float hl,ho;
+    if(settings_get_home(&hl,&ho)) goto_add(0,0,hl,ho,NULL,"HOME","saved home");
+    double good_lat,good_lon;
+    if(s_have_covered_view) { good_lat=s_covered_lat;good_lon=s_covered_lon; }
+    if(s_have_covered_view || ls_map_last_good(&good_lat,&good_lon,NULL))
+        goto_add(0,0,good_lat,good_lon,NULL,"LAST COVERED VIEW","last map view with tiles");
     double clat, clon;
     ls_map_get_center(&clat, &clon);
     double rlat = clat, rlon = clon;
@@ -2670,7 +2774,8 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
         range_words(rng, sizeof(rng), rlat, rlon, p.lat_e6 / 1e6, p.lon_e6 / 1e6);
         char ago[12];
         age_words(ago, sizeof(ago), node_age(&p));
-        snprintf(detail, sizeof(detail), "%s  %s ago", rng, ago);
+        if(p.last_heard) snprintf(detail, sizeof(detail), "%.20s  %.11s ago", rng, ago);
+        else snprintf(detail,sizeof(detail),"%.24s saved contact",rng);
         goto_add(HIT_NODE, 0, p.lat_e6 / 1e6, p.lon_e6 / 1e6, p.id, label, detail);
     }
     for (int i = 0; i < ls_marks_count(); i++) {
@@ -2726,22 +2831,36 @@ static void open_app(const char *id)
     if (idx >= 0) ls_tui_screen_show(idx);
 }
 
-static void save_or_say(const char *done)
+static bool marks_notice(ls_notice_t *out) {
+    static const char *previous;
+    const char *status=ls_marks_save_status();
+    bool failed=status && strstr(status,"NOT SAVED") && ls_marks_error();
+    bool changed=status!=previous;previous=status;
+    if(!failed || !changed) return false;
+    snprintf(out->title,sizeof(out->title),"MAP");
+    snprintf(out->body,sizeof(out->body),"%s. %s",status,ls_marks_error()?ls_marks_error():"");
+    out->accent=TUI_YELLOW;out->quiet=true;
+    out->screen=s_notice_screen;out->notify_visible=true;
+    return true;
+}
+
+static const char *save_or_say(void)
 {
-    if (ls_marks_save()) say(done);
-    else say(ls_marks_error() ? ls_marks_error() : "not saved");
+    const char *status=ls_marks_save() ? ls_marks_save_status() : ls_marks_error();
+    if(!status) status="not saved";
+    say(status);return status;
 }
 
 static void rename_done(const char *text)
 {
     const bool ok = s_edit_kind == SEL_MARK ? ls_marks_rename(s_edit_index, text)
                                             : ls_sketch_rename(s_edit_index, text);
-    if (ok) save_or_say("renamed");
+    if (ok) save_or_say();
 }
 
 static void icon_done(int i)
 {
-    if (ls_marks_set_icon(s_edit_index, i)) save_or_say("symbol changed");
+    if (ls_marks_set_icon(s_edit_index, i)) save_or_say();
 }
 
 static void edit_done(int i)
@@ -2773,7 +2892,7 @@ static void edit_done(int i)
         case 5:
             ls_marks_delete(s_edit_index);
             select_none();
-            save_or_say("marker deleted");
+            save_or_say();
             break;
         default: break;
         }
@@ -2794,7 +2913,7 @@ static void edit_done(int i)
     case 3:
         ls_sketch_delete(s_edit_index);
         select_none();
-        save_or_say("line deleted");
+        save_or_say();
         break;
     default: break;
     }
@@ -2849,14 +2968,16 @@ static void layer_pick(int i)
 {
     if (i < 0 || i >= N_LAYER_ROWS) return;
     layers_set(s_layers ^ LAYER_ROWS[i].bit);
-    ls_val_t out;
-    a_map_layers(NULL, &out);
+    char d[LS_PICKER_DETAIL];
+    snprintf(d,sizeof(d),"%s  %s",layer(LAYER_ROWS[i].bit)?"[ON] ":"[off]",LAYER_ROWS[i].what);
+    ls_picker_set_detail(i,d);
 }
 
 static ls_act_status_t a_map_layers(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
     ls_picker_open("LAYERS", layer_pick);
+    ls_picker_keep_open();ls_picker_back(open_options);
     for (int i = 0; i < N_LAYER_ROWS; i++) {
         char d[LS_PICKER_DETAIL];
         snprintf(d, sizeof(d), "%s  %s", layer(LAYER_ROWS[i].bit) ? "[ON] " : "[off]", LAYER_ROWS[i].what);
@@ -2886,7 +3007,7 @@ static const char *const VIEW_WHAT[MAP_VIEW__COUNT] = {
 
 static void style_pick(int i)
 {
-    if (i == N_PALETTES + MAP_VIEW__COUNT) { ls_val_t out; a_map_files(NULL, &out); return; }
+    if (i == N_PALETTES + MAP_VIEW__COUNT) { ls_val_t out; a_map_files(NULL, &out);ls_picker_back(open_style); return; }
     if (i >= 0 && i < N_PALETTES) s_palette = i;
     else if (i >= N_PALETTES && i < N_PALETTES + MAP_VIEW__COUNT) s_view = (map_view_t)(i - N_PALETTES);
     else return;
@@ -2903,6 +3024,7 @@ static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
     ls_picker_open("MAP STYLE", theme_style_pick);
+    ls_picker_back(open_options);
     ls_picker_add("Theme fills",s_palette<6?"[ON] follows TUI theme":"follows TUI theme");
     ls_picker_add("Theme outlines",s_palette>=6?"[ON] PMTiles coast and major roads":"PMTiles coast and major roads");
     for (int i = 0; i < MAP_VIEW__COUNT; i++) {
@@ -2934,7 +3056,7 @@ static ls_act_status_t a_map_mark(const ls_args_t *in, ls_val_t *out)
     select_mark(SEL_MARK, i);
     if (!layer(L_MARKS)) layers_set(s_layers | L_MARKS);
     static char msg[48];
-    if (ls_marks_save()) snprintf(msg, sizeof(msg), "%s dropped; E edits it", ls_marks_at(i)->name);
+    if (ls_marks_save()) snprintf(msg, sizeof(msg), "%s", ls_marks_save_status());
     else snprintf(msg, sizeof(msg), "%s", ls_marks_error() ? ls_marks_error() : "not saved");
     say(msg);
     out->s = msg;
@@ -2975,10 +3097,9 @@ static ls_act_status_t a_map_draw_done(const ls_args_t *in, ls_val_t *out)
     (void)in;
     const int i = ls_sketch_finish();
     out->kind = LS_VAL_TEXT;
-    if (i < 0) { out->s = "a line needs two points"; say(out->s); return LS_ACT_OK; }
+    if (i < 0) { out->s = i==-2 ? "line list is full; drawing kept" : "a line needs two points"; say(out->s); return LS_ACT_OK; }
     select_mark(SEL_LINE, i);
-    save_or_say("line kept");
-    out->s = "line kept";
+    out->s = save_or_say();
     return LS_ACT_OK;
 }
 
@@ -3055,10 +3176,29 @@ static ls_act_status_t a_map_route(const ls_args_t *in, ls_val_t *out)
     out->kind=LS_VAL_TEXT;out->s="GPX: SD /lakeshark/routes; or BACKTRACK";
     return LS_ACT_OK;
 }
+static void open_style(void) { ls_val_t out;a_map_style(NULL,&out); }
+static void options_pick(int i) {
+    ls_val_t out;
+    if(i==0) a_map_layers(NULL,&out);
+    if(i==1) open_style();
+    if(i==2) { a_map_files(NULL,&out);ls_picker_back(open_options); }
+    if(i==3) { ls_opt_open(ls_route_options());ls_opt_back(open_options); }
+    if(i==4) save_or_say();
+    if(i==5) { s_cover_lat=999;cover_update();open_options(); }
+}
+static void open_options(void) {
+    ls_picker_open("MAP OPTIONS",options_pick);
+    ls_picker_add("Layers","overlay switches");
+    ls_picker_add("Style","map rendering");
+    ls_picker_add("Map files","SD archives");
+    ls_picker_add("Guidance","route settings");
+    ls_picker_add("Retry saving marks",ls_marks_save_status());
+    ls_picker_add("Reset coverage","fresh direct receptions from now");
+}
 static ls_act_status_t a_route_options(const ls_args_t *in, ls_val_t *out)
 {
-    (void)in;ls_opt_open(ls_route_options());
-    out->kind=LS_VAL_TEXT;out->s="route options";return LS_ACT_OK;
+    (void)in;open_options();
+    out->kind=LS_VAL_TEXT;out->s="map options";return LS_ACT_OK;
 }
 
 static void register_view_action(void)
@@ -3115,7 +3255,7 @@ void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
             ls_map_center(lat,lon);ls_map_zoom_by((int)z-ls_map_zoom());
         }
         palette();
-        if(ls_carto_map_draw(sf,area,lat,lon,z,s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES)))
+        if(ls_carto_map_draw(sf,area,lat,lon,z,s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL)))
             ls_tui_basemap(sf,area,s_map_colours);
         return;
     }
@@ -3172,8 +3312,10 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
     ls_ink_flush(sf, tui_rect_make(0, -1, 0, 0));
     claim_ink(area);
     receiver_text(sf, area, pw, ph);
+    s_live_history=&s_preview_labels;live_labels_begin(true);
     air_text(sf, area);
     edges_text(sf, area, pw, ph);
+    map_sticky_end(s_live_history);s_live_history=&s_live_labels;
     int n = 0;
     for (int i = 0; i < s_nhits && n < max; i++)
         if (s_hits[i].kind == HIT_AIR) plots[n++] = (ls_map_plot_t){ s_hits[i].x, s_hits[i].y, s_hits[i].id };
@@ -3215,12 +3357,18 @@ static void draw_pan_pad(tui_surface *sf, tui_rect r)
    third, so a render is not thrown away every frame. */
 static void track_selection(int pw, int ph)
 {
-    if (!s_track || ls_map_render_busy()) return;
+    if (!s_track || ls_map_render_busy() || pw<=0 || ph<=0) return;
     double lat = 0, lon = 0, fx, fy;
     bool have = false;
     if (s_sel == SEL_AIR) {
         for (int s = 0; s < ADSB_MAX_TRACKED; s++)
-            if (s_air[s].on && adsb_state_get(s)->icao == s_sel_icao) { lat = s_air[s].lat; lon = s_air[s].lon; have = true; }
+            {
+                const adsb_aircraft_t *ac=adsb_state_get(s);
+                if(ac && ac->active && ac->pos_valid && ac->icao==s_sel_icao &&
+                    esp_timer_get_time()-ac->pos_ts_us<=AIRCRAFT_SHOW_US) {
+                    lat=ac->lat;lon=ac->lon;have=true;
+                }
+            }
     } else if (s_sel == SEL_NODE) {
         for (int i = 0; i < s_npeers; i++)
             if (s_map_peers[i].has_loc && !strcmp(s_map_peers[i].id, s_sel_node)) {
@@ -3309,6 +3457,10 @@ static void route_canvas(int pw,int ph)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    static const char *previous_save;
+    const char *save_status=ls_marks_save_status();
+    if(save_status && (save_status!=previous_save || strstr(save_status,"NOT SAVED"))) say(save_status);
+    previous_save=save_status;
     if(ls_place_search_active()) { ls_place_search_draw(sf,area);return; }
     const int64_t now = esp_timer_get_time();
     refresh_receiver(now);
@@ -3346,6 +3498,8 @@ static void draw(tui_surface *sf, tui_rect area)
     }
 
     nodes_prepare();
+    track_selection(cartocore_view()?body.w*2:body.w*SUB_X,
+                    cartocore_view()?body.h*4:body.h*sub_y());
     s_basemap_busy=(layer(L_AIR) && count_air_positions()>0) ||
         (layer(L_MESH) && s_npeers>0) || (layer(L_MARKS) && ls_marks_count()>0) ||
         s_receiver_fresh || ls_route_live()->valid;
@@ -3364,9 +3518,12 @@ static void draw(tui_surface *sf, tui_rect area)
         pw=body.w*2; ph=body.h*4;
         ls_tui_reserve(tui_rect_make(0,0,0,0));
         ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
-        cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES));
+        cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL));
     }
     const char *why = cc?(cc_ok?NULL:ls_carto_map_status()):ls_map_status();
+    if(!why && (cc ? cc_ok && ls_carto_map_fresh() : px && !ls_map_render_busy())) {
+        ls_map_get_center(&s_covered_lat,&s_covered_lon);s_have_covered_view=true;
+    }
     s_pw = pw; s_ph = ph;
 
     s_vector_s = vector_seconds();
@@ -3380,7 +3537,6 @@ static void draw(tui_surface *sf, tui_rect area)
     else if(demand<capacity-2) s_map_crowded=false;
     nodes_prepare();
     cover_update();
-    track_selection(pw, ph);
 
     /* The header: what is on the map and what the marks mean. */
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
@@ -3455,6 +3611,7 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_ink_flush(sf, s_card_rect);
         claim_ink(body);
 
+        s_live_history=&s_live_labels;live_labels_begin(false);
         receiver_text(sf, body, pw, ph);
         air_text(sf, body);
         nodes_text(sf, body, pw, ph);
@@ -3463,9 +3620,10 @@ static void draw(tui_surface *sf, tui_rect area)
         sonde_text(sf, body, pw, ph, now);
         marks_text(sf, body, pw, ph);
         edges_text(sf, body, pw, ph);
-        if(cc && layer(L_PLACES)) draw_carto_labels(sf,body);
+        map_sticky_end(s_live_history);
+        if(cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_carto_labels(sf,body);
         rings_canvas(sf, body, pw, ph, true);
-        if (!cc && layer(L_PLACES)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
+        if (!cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
         centre_reticle(sf, body);
         draw_card(sf, s_card_rect);
 

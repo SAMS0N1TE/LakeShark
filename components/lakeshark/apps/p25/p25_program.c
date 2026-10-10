@@ -690,3 +690,15 @@ void p25_program_restore_roster(p25_scan_ctrl_t *scan,
                                         talkgroups[i].priority);
     }
 }
+
+bool p25_program_commit_staged(p25_program_t *program, const p25_program_t *staged,
+                                unsigned generation, unsigned current_generation,
+                                const p25_program_ops_t *ops)
+{
+    if (!program || !staged || !ops || generation != current_generation) return false;
+    *program = *staged;
+    if (program->last_result == P25_PROGRAM_OK && program->active_valid)
+        apply_profile(&program->active, p25_program_selected_control_hz(program),
+                      ops, false);
+    return true;
+}

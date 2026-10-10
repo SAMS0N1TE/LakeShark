@@ -306,6 +306,8 @@ static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
     return ls_tui_status_layout_at(*x0, right_edge + 1 - *x0, brand, nl, ll, rl);
 }
 
+extern const char *ls_scr_mesh_tx_status(void) __attribute__((weak));
+
 static void draw_status(tui_surface *sf, int cols)
 {
     const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
@@ -337,10 +339,16 @@ static void draw_status(tui_surface *sf, int cols)
                     l.left_x, 0, s_status_left, bar);
     if (l.right_x >= 0) tui_put_str(sf, all, l.right_x, 0, s_status_right, bar);
 
+    const char *mesh_tx = ls_scr_mesh_tx_status ? ls_scr_mesh_tx_status() : NULL;
+    if (mesh_tx && l.brand_x >= 0) {
+        tui_fill(sf, tui_rect_make(l.brand_x, 0, (int)sizeof(BRAND) - 1, 1), ' ', bar);
+        tui_put_str(sf, all, l.brand_x, 0, mesh_tx, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+    }
+
     /* The unread count, and it outlives the banner. */
 
     const int unread = ls_notify_unread();
-    if (unread > 0 && l.brand_x >= 0) {
+    if (unread > 0 && !mesh_tx && l.brand_x >= 0) {
         char badge[12];
         snprintf(badge, sizeof(badge), "%d MSG", unread > 99 ? 99 : unread);
         for (int i = 0; i < (int)sizeof(BRAND) - 1; i++)

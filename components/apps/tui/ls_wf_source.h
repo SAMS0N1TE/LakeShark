@@ -58,6 +58,13 @@ const char *ls_wf_preset_none(ls_wf_src_t src);
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz);
 void ls_wf_source_lora_band_get(uint32_t *min_hz, uint32_t *max_hz);
 
+typedef enum {
+    LS_WF_IDLE_NONE, LS_WF_IDLE_STARTING, LS_WF_IDLE_BUSY,
+    LS_WF_IDLE_WAITING, LS_WF_IDLE_FAILED
+} ls_wf_idle_t;
+ls_wf_idle_t ls_wf_source_idle(void);
+const char *ls_wf_source_idle_reason(void);
+
 /* Name of the source actually feeding right now, which under AUTO is not
    necessarily the one that was selected. "none" when nothing is. */
 const char *ls_wf_source_name(void);

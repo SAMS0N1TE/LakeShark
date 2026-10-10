@@ -319,9 +319,10 @@ void ls_userapp_draw(const ls_ua_model_t *m, tui_surface *sf, tui_rect area)
 
 EXT_RAM_BSS_ATTR static ls_ua_model_t s_model[LS_UA_MAX_APPS];
 static ls_tui_screen_t s_screen[LS_UA_MAX_APPS];
+static char           s_id[LS_UA_MAX_APPS][16];
 static char           s_hint[LS_UA_MAX_APPS][40];
 static int            s_loaded;
-static char           s_last_err[96];
+static char           s_last_err[384];
 
 /* The contract answers, the same for every user app: a described screen
    reads published values and draws them. Only the purpose line differs,
@@ -377,6 +378,7 @@ static bool load_one(const char *path, const char *fname)
     }
 
     const int slot = s_loaded;
+    snprintf(s_id[slot], sizeof(s_id[slot]), "user.%d", slot);
     snprintf(s_hint[slot], sizeof(s_hint[slot]), "user app  ESC  directory");
     snprintf(s_purpose[slot], sizeof(s_purpose[slot]),
              "A user app, described by %s on the card. It shows the values "
@@ -398,7 +400,7 @@ static bool load_one(const char *path, const char *fname)
     s_screen[slot].touch = NULL;
 
     ls_app_t app = {
-        .id     = s_model[slot].name,
+        .id     = s_id[slot],
         .name   = s_model[slot].name,
         .sub    = s_model[slot].sub[0] ? s_model[slot].sub : "user app",
         .icon   = s_model[slot].icon,

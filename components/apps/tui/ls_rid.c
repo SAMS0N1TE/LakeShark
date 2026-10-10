@@ -55,36 +55,55 @@ static bool valid(const uint8_t *p,size_t n) {
     if(type==0 && ((p[1]>>4)==0 || (p[1]>>4)>4)) return false;
     return true;
 }
-static ls_rid_drone_t *entry(const uint8_t *mac,uint8_t at,const uint8_t *basic,int64_t now) {
-    ls_rid_drone_t *empty=NULL,*old=&drones[0],*active=NULL,*pending=NULL;
+static ls_rid_drone_t *entry(const uint8_t *mac,uint8_t at,const uint8_t *first,unsigned count,int64_t now) {
+    ls_rid_drone_t *empty=NULL,*old=&drones[0],*active=NULL,*candidate=NULL;
+    unsigned candidates=0; bool has_basic=false;
+    for(unsigned j=0;j<count;j++) if((first[j*25]>>4)==0) has_basic=true;
     for(unsigned i=0;i<LS_RID_MAX;i++) {
         ls_rid_drone_t *d=&drones[i];
         if(!d->serial) { if(!empty) empty=d; continue; }
         if(d->last_us<old->last_us) old=d;
         if(d->address_type!=at || memcmp(d->mac,mac,6)) continue;
-        if(basic && d->id_type==(basic[1]>>4) && !memcmp(d->uas_raw,basic+2,20)) return d;
-        if(!d->id_type) pending=d;
+        bool match=false,conflict=false;
+        for(unsigned j=0;j<count;j++) {
+            const uint8_t *m=first+j*25; if((m[0]>>4)!=0) continue;
+            unsigned id=(m[1]>>4)-1;
+            if(d->alias_mask&(1u<<id)) {
+                if(!memcmp(d->aliases[id],m+2,20)) match=true;
+                else conflict=true;
+            }
+        }
+        if(match && !conflict) return d;
+        if(!conflict) {candidate=d;candidates++;}
         if(!active || d->basic_us>active->basic_us) active=d;
     }
-    if(!basic && active) return active;
-    ls_rid_drone_t *d=basic && pending ? pending : empty ? empty : old;
-    if(!(basic && pending)) {
-        memset(d,0,sizeof(*d)); memcpy(d->mac,mac,6); d->address_type=at;
-        d->serial=++generation; if(!d->serial) d->serial=++generation;
-        d->last_us=now;
-        d->geo_m=d->baro_m=d->height_m=d->speed_mps=d->vertical_mps=d->track_deg=NAN;
-        d->area_ceiling_m=d->area_floor_m=d->operator_geo_m=NAN;
-    }
+    if(!has_basic && active) return active;
+    if(has_basic && candidates==1) return candidate;
+    ls_rid_drone_t *d=empty ? empty : old;
+    memset(d,0,sizeof(*d)); memcpy(d->mac,mac,6); d->address_type=at;
+    d->serial=++generation; if(!d->serial) d->serial=++generation;
+    d->last_us=now;
+    d->geo_m=d->baro_m=d->height_m=d->speed_mps=d->vertical_mps=d->track_deg=NAN;
+    d->area_ceiling_m=d->area_floor_m=d->operator_geo_m=NAN;
     return d;
+}
+bool ls_rid_fresh(const ls_rid_drone_t *d,unsigned group,int64_t now) {
+    if(group!=1 && group!=4 && group!=5) return false;
+    int64_t seen=group==1?d->location_us:group==4?d->system_us:d->operator_us;
+    return (d->messages&(1u<<group)) && now>=seen && now-seen<60000000LL;
 }
 static void decode(ls_rid_drone_t *d,const uint8_t *p,int64_t now) {
     unsigned t=p[0]>>4; d->messages|=(uint16_t)(1u<<t); d->version=p[0]&15;
     switch(t) {
-    case 0:
-        d->id_type=p[1]>>4; d->ua_type=p[1]&15; memcpy(d->uas_raw,p+2,20); d->basic_us=now;
+    case 0: {
+        unsigned id=p[1]>>4;
+        memcpy(d->aliases[id-1],p+2,20); d->alias_mask|=1u<<(id-1); d->basic_us=now;
+        if(d->id_type && d->id_type<id) break;
+        d->id_type=p[1]>>4; d->ua_type=p[1]&15; memcpy(d->uas_raw,p+2,20);
         if(d->id_type>=3) { for(unsigned i=0;i<20;i++) snprintf(d->uas_id+i*2,3,"%02X",p[i+2]); }
         else text(d->uas_id,p+2,20);
         break;
+    }
     case 1:
         d->status=p[1]>>4; d->height_agl=(p[1]>>2)&1;
         d->track_deg=p[2]<180 ? p[2]+((p[1]&2)?180:0) : NAN;
@@ -98,29 +117,24 @@ static void decode(ls_rid_drone_t *d,const uint8_t *p,int64_t now) {
     case 2: d->auth_type=p[1]>>4; d->auth_page=p[1]&15; break;
     case 3: d->description_type=p[1]; text(d->self_id,p+2,23); break;
     case 4:
+        d->system_us=now; d->system_version=p[0]&15;
+        d->category=d->class_id=0; d->operator_geo_m=NAN;
         d->operator_location_type=p[1]&3; d->classification_type=(p[1]>>2)&7;
         d->operator_lat=i32(p+2)*1e-7; d->operator_lon=i32(p+6)*1e-7;
         d->operator_valid=position(d->operator_lat,d->operator_lon);
         d->area_count=u16(p+10); d->area_radius_m=p[12]*10;
         d->area_ceiling_m=altitude(p+13); d->area_floor_m=altitude(p+15);
-        if(d->version) { d->category=p[17]>>4; d->class_id=p[17]&15; d->operator_geo_m=altitude(p+18); }
+        if(d->system_version) { d->category=p[17]>>4; d->class_id=p[17]&15; d->operator_geo_m=altitude(p+18); }
         break;
-    case 5: d->operator_id_type=p[1]; text(d->operator_id,p+2,20); break;
+    case 5: d->operator_us=now; d->operator_id_type=p[1]; text(d->operator_id,p+2,20); break;
     }
 }
 static void receive(const uint8_t *mac,uint8_t at,int rssi,uint8_t counter,const uint8_t *p,size_t n,int64_t now) {
     (void)n;
-    const uint8_t *basic=NULL;
     unsigned count=1; const uint8_t *first=p;
     if((p[0]>>4)==15) { count=p[2]; first=p+3; }
-    for(unsigned i=0;i<count;i++) if((first[i*25]>>4)==0) { basic=first+i*25; break; }
-    ls_rid_drone_t *d=entry(mac,at,basic,now);
-    /* Packs describe one aircraft; select its first Basic ID as identity.
-       Other Basic IDs are alternate identifiers, not extra aircraft. */
-    for(unsigned i=0;i<count;i++) {
-        const uint8_t *m=first+i*25;
-        if((m[0]>>4)!=0 || m==basic) decode(d,m,now);
-    }
+    ls_rid_drone_t *d=entry(mac,at,first,count,now);
+    for(unsigned i=0;i<count;i++) decode(d,first+i*25,now);
     d->rssi=(int8_t)rssi; d->last_us=now; d->counter=counter;
 }
 bool ls_rid_is_advert(const uint8_t *data,size_t len) {

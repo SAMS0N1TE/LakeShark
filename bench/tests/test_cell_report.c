@@ -14,3 +14,10 @@ LS_CASE(report_wire_is_bounded_and_has_known_encoding)
     r.pci=504;LS_CHECK(!cell_report_encode(&r,b,sizeof(b)));
     r.pci=-1;r.kind='X';LS_CHECK(!cell_report_encode(&r,b,sizeof(b)));
 }
+
+LS_CASE(coverage_counts_fit_the_existing_bounded_wire_record)
+{
+    cell_report_record_t r={.pci=7,.changed=10,.lat_e5=INT32_MIN,.lon_e5=INT32_MIN,.kind='F',.flags=64};
+    char text[49];LS_CHECK(cell_report_encode(&r,text,sizeof(text)));
+    LS_CHECK(!strcmp(text,"CW1:AAAAAAAAAAAAAAAAAAAAAAAAAIAAAACACgAHAAAARkA="));
+}

@@ -87,7 +87,7 @@ typedef int nvs_handle_t;
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"%d: %s\n",__LINE__,#x);exit(1);}} while(0)
 typedef struct {char ssid[33];uint32_t sequence;} saved_t;
 static saved_t s_saved[8], disk[8];
-static bool s_survey,s_sta_running=true,s_ap_running,s_sta_connected=true;
+static bool s_survey,s_sta_running=true,s_ap_running,s_sta_connected=true,s_sta_gave_up;
 static int opens,reads,writes,commits,jobs,drains,legacy,fail_open;
 static int s_link_saved_count = -1;
 typedef struct {int op;const char *ssid,*pass;char *password;} store_job_t;
@@ -112,7 +112,8 @@ static char s_sta_ssid[33]="joined";
 static int sta_join_locked(const char *s,const char *p){return 0;}
 static int sta_leave_locked(void){return 0;}
 static int sta_forget_locked(const char *s){return store_run(2,s,NULL,NULL);}
-static int sta_autojoin_locked(void){return 0;}
+static int autojoins;
+static int sta_autojoin_locked(void){autojoins++;return 0;}
 static int sta_scan_locked(void *p,int cap,bool passive){return 0;}
 static void sta_status_locked(void *p,int cap){store_run(0,NULL,NULL,NULL);}
 static void status_locked(void *p,int cap){sta_status_locked(p,cap);}
@@ -120,7 +121,7 @@ typedef struct {char ssid[33];int rssi,authmode,primary;uint8_t bssid[6];} wifi_
 typedef struct {char ssid[33];int rssi,channel,auth;bool secure;uint8_t bssid[6];} ls_wifi_scan_ap_t;
 #define WIFI_AUTH_OPEN 0
 static int esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap){memset(ap,0,sizeof(*ap));return 0;}
-''' + source[enum_start:enum_end] + '\n' + source[request_start:request_end] + '\n' + function(source, 'static int dispatch_operation(') + r'''
+''' + function((ROOT / 'main/ls_wifi_sta_core.c').read_text(), 'bool ls_wifi_sta_needs_join(') + '\n' + source[enum_start:enum_end] + '\n' + source[request_start:request_end] + '\n' + function(source, 'static int dispatch_operation(') + r'''
 int main(int argc,char **argv){
     bool migrating=!strcmp(argv[1],"migration");legacy=migrating;fail_open=!strcmp(argv[1],"failure");
     char names[8][33];char status[96];ls_wifi_scan_ap_t ap;
@@ -144,6 +145,17 @@ int main(int argc,char **argv){
         before_jobs=jobs;CHECK(saved_list_locked(names,8)==1 && !strcmp(names[0],"new"));CHECK(jobs==before_jobs);
         CHECK(store_run(2,"new",NULL,NULL)==0);CHECK(saved_list_locked(names,8)==0);
     }
+    r.kind=WIFI_OP_AUTOJOIN;r.capacity=1;
+    s_sta_running=true;s_sta_connected=true;s_sta_gave_up=true;
+    CHECK(dispatch_operation(&r)==ESP_OK && autojoins==0);
+    s_sta_connected=false;s_sta_gave_up=false;
+    CHECK(dispatch_operation(&r)==ESP_OK && autojoins==0);
+    s_sta_gave_up=true;
+    CHECK(dispatch_operation(&r)==ESP_OK && autojoins==1);
+    s_survey=true;
+    CHECK(dispatch_operation(&r)==ESP_ERR_INVALID_STATE && autojoins==1);
+    s_survey=false;s_sta_running=false;
+    CHECK(dispatch_operation(&r)==ESP_OK && autojoins==2);
     return 0;
 }
 '''

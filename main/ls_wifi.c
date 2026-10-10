@@ -1173,16 +1173,16 @@ static void sta_status_locked(char *buf, int cap)
         for (int i = 0; i < LS_WIFI_SAVED_MAX; ++i)
             if (s_saved[i].ssid[0]) { n++; single = i; }
         if (error != ESP_OK)
-            snprintf(buf, cap, "Saved networks unavailable: %s", esp_err_to_name(error));
+            snprintf(buf, cap, "Saved networks unavailable; retry");
         else if (n == 1) snprintf(buf, cap, "Disconnected; saved \"%s\"", s_saved[single].ssid);
         else snprintf(buf, cap, "Disconnected; %d saved", n);
         return;
     }
     if (s_sta_connected) {
-        snprintf(buf, cap, "Connected: %s  IP %s", s_sta_ssid, s_ip_sta);
+        snprintf(buf, cap, "Connected: %s", s_sta_ssid);
     } else if (s_sta_gave_up) {
         const char *why = ls_wifi_reason_text(s_sta_reason);
-        snprintf(buf, cap, "Stopped trying \"%s\"; %s - join again to retry",
+        snprintf(buf, cap, "Failed \"%s\": %s; JOIN to retry",
                  s_sta_ssid, why ? why : "unknown reason");
     } else {
         ls_wifi_connecting_status(buf, (size_t)cap, s_sta_ssid, s_sta_reason, s_reconnect_ms);
@@ -1207,7 +1207,7 @@ static _Atomic bool s_survey;
 
 typedef enum {
     WIFI_OP_AP_START, WIFI_OP_AP_STOP, WIFI_OP_JOIN, WIFI_OP_LEAVE,
-    WIFI_OP_FORGET, WIFI_OP_FORGET_ALL, WIFI_OP_SAVE, WIFI_OP_LIST, WIFI_OP_AUTOJOIN, WIFI_OP_SCAN, WIFI_OP_STA_STATUS,
+    WIFI_OP_FORGET, WIFI_OP_FORGET_ALL, WIFI_OP_SAVE, WIFI_OP_LIST, WIFI_OP_JOIN_SAVED, WIFI_OP_AUTOJOIN, WIFI_OP_SCAN, WIFI_OP_STA_STATUS,
     WIFI_OP_STATUS, WIFI_OP_STA_INFO, WIFI_OP_SURVEY, WIFI_OP_SURVEY_BEGIN,
 } wifi_operation_kind_t;
 
@@ -1228,10 +1228,10 @@ static int dispatch_operation(void *context)
     if (r->kind == WIFI_OP_AP_START || r->kind == WIFI_OP_AP_STOP ||
         r->kind == WIFI_OP_JOIN || r->kind == WIFI_OP_LEAVE ||
         r->kind == WIFI_OP_FORGET || r->kind == WIFI_OP_FORGET_ALL ||
-        r->kind == WIFI_OP_SAVE || r->kind == WIFI_OP_AUTOJOIN)
+        r->kind == WIFI_OP_SAVE || r->kind == WIFI_OP_JOIN_SAVED || r->kind == WIFI_OP_AUTOJOIN)
         pending_commit_locked();
     if (s_survey && (r->kind == WIFI_OP_AP_START || r->kind == WIFI_OP_JOIN ||
-                     r->kind == WIFI_OP_AUTOJOIN || r->kind == WIFI_OP_SCAN))
+                     r->kind == WIFI_OP_JOIN_SAVED || r->kind == WIFI_OP_AUTOJOIN || r->kind == WIFI_OP_SCAN))
         return ESP_ERR_INVALID_STATE;
     switch (r->kind) {
     case WIFI_OP_SURVEY_BEGIN:
@@ -1254,7 +1254,19 @@ static int dispatch_operation(void *context)
             return ESP_ERR_INVALID_ARG;
         return store_run(1, r->ssid, r->password ? r->password : "", NULL);
     case WIFI_OP_LIST: return saved_list_locked(r->out, r->capacity);
+    case WIFI_OP_JOIN_SAVED: {
+        if (!ls_wifi_ssid_valid(r->ssid)) return ESP_ERR_INVALID_ARG;
+        char pass[64] = {0};
+        esp_err_t rc = store_run(3, r->ssid, NULL, pass);
+        if (rc == ESP_OK) {
+            s_roam_used = true; s_roam_pending = false;
+            rc = sta_join_locked(r->ssid, pass);
+        }
+        wipe(pass, sizeof(pass));
+        return rc;
+    }
     case WIFI_OP_AUTOJOIN:
+        if (r->capacity && !ls_wifi_sta_needs_join(s_sta_running, s_sta_connected, s_sta_gave_up)) return ESP_OK;
         s_roam_used = false; s_roam_pending = false;
         return sta_autojoin_locked();
     case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity, false);
@@ -1336,6 +1348,11 @@ int ls_wifi_saved_list(char names[][33], int cap)
     return rc >= 0 && rc <= LS_WIFI_SAVED_MAX ? rc : -1;
 }
 
+esp_err_t ls_wifi_sta_join_saved(const char *ssid)
+{
+    return perform(WIFI_OP_JOIN_SAVED, ssid, NULL, NULL, 0);
+}
+
 esp_err_t ls_wifi_sta_autojoin(void)
 {
     return perform(WIFI_OP_AUTOJOIN, NULL, NULL, NULL, 0);
@@ -1406,3 +1423,10 @@ void ls_wifi_link_status(ls_wifi_link_status_t *out)
     }
     ls_wifi_operation_end(&s_operation);
 }
+
+esp_err_t ls_wifi_sta_ensure(void)
+{
+    return perform(WIFI_OP_AUTOJOIN, NULL, NULL, NULL, 1);
+}
+
+bool ls_wifi_sta_gave_up(void) { return s_sta_gave_up; }

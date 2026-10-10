@@ -6,11 +6,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+int ls_rlog_test_sync(int fd) { (void)fd; return 0; }
+#endif
+
 typedef struct { uint32_t n; char tag[12]; } rec_t;
 
 static const char *PATH = "test_rlog.bin";
 
-static void scrub(void) { remove(PATH); }
+static void scrub(void) { remove(PATH); remove("test_rlog.bin.undo"); remove("test_rlog.bin.undo.tmp"); }
 
 static rec_t mk(uint32_t n)
 {

@@ -58,22 +58,19 @@ static void dim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_autod
 static void dim_next(void) { display_ctl_set_autodim(!display_ctl_autodim_enabled()); }
 
 static void dimt_show(char *b, size_t n) { snprintf(b, n, "%d s", display_ctl_autodim_timeout()); }
-static void dimt_next(void)
+static void dimt_step(int dir)
 {
-    /* Only steps the store keeps. This list had 300 and 0 on it and
-       the store clamps to 5..240, so 120 stepped to a stored 240 that was not
-       on the list and the next press fell back to 15 - two entries of the
-       cycle could never be shown, and "never" could never be set. */
     static const int STEPS[] = { 15, 30, 60, 120, 240 };
-    int cur = display_ctl_autodim_timeout();
-    for (unsigned i = 0; i < sizeof(STEPS) / sizeof(STEPS[0]); i++) {
-        if (STEPS[i] == cur) {
-            display_ctl_set_autodim_timeout(STEPS[(i + 1) % (sizeof(STEPS) / sizeof(STEPS[0]))]);
-            return;
-        }
+    const int cur = display_ctl_autodim_timeout();
+    if (dir > 0) {
+        for (unsigned i = 0; i < sizeof(STEPS) / sizeof(STEPS[0]); i++)
+            if (STEPS[i] > cur) { display_ctl_set_autodim_timeout(STEPS[i]); return; }
+    } else {
+        for (int i = (int)(sizeof(STEPS) / sizeof(STEPS[0])) - 1; i >= 0; i--)
+            if (STEPS[i] < cur) { display_ctl_set_autodim_timeout(STEPS[i]); return; }
     }
-    display_ctl_set_autodim_timeout(STEPS[0]);
 }
+static void dimt_next(void) { dimt_step(+1); }
 
 /* ---- volume ------------------------------------------------------------ */
 /* The live volume, not the stored one: this used to write only the saved
@@ -84,8 +81,6 @@ static void vol_step(int dir)
 {
     const int v = audio_volume_get() + dir * 5;
     audio_volume_set(v < 0 ? 0 : v > 100 ? 100 : v);
-    /* Turning the volume is asking to hear it. */
-    if (audio_is_muted()) audio_toggle_mute();
 }
 static void vol_next(void) { vol_step(+1); }
 
@@ -121,8 +116,8 @@ static void day_next(void)
 }
 
 /* ---- misc booleans ----------------------------------------------------- */
-static void usb_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_usb_autoreboot() ? "on" : "off"); }
-static void usb_next(void) { settings_set_usb_autoreboot(!settings_get_usb_autoreboot()); }
+static void usb_show(char *b, size_t n) { snprintf(b, n, "%s", app_usb_autoreboot() ? "on" : "off"); }
+static void usb_next(void) { app_set_usb_autoreboot(!app_usb_autoreboot()); }
 static void keylight_show(char *b,size_t n) { snprintf(b,n,"%s",settings_get_keyboard_light()?"on":"off"); }
 static void keylight_next(void)
 {
@@ -186,14 +181,14 @@ static void ring_next(void)
 {
     const bool en = !settings_get_alert_ring();
     settings_set_alert_ring(en);
-    ls_notify_set_alerts(en, settings_get_alert_vibe());
+    ls_notify_set_alerts(settings_get_alert_ring(), ls_notify_vibe());
 }
 static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_vibe() ? "on" : "off"); }
 static void vibe_next(void)
 {
     const bool en = !settings_get_alert_vibe();
     settings_set_alert_vibe(en);
-    ls_notify_set_alerts(settings_get_alert_ring(), en);
+    ls_notify_set_alerts(ls_notify_ring(), settings_get_alert_vibe());
 }
 
 /* ---- update ------------------------------------------------------------- */
@@ -275,7 +270,7 @@ static void sound_next(void) { page_open(SETP_SOUND); }
 static void device_show(char *b, size_t n)
 {
     snprintf(b, n, "keys %s, USB %s  >", settings_get_keyboard_light() ? "on" : "off",
-             settings_get_usb_autoreboot() ? "on" : "off");
+             app_usb_autoreboot() ? "on" : "off");
 }
 static void device_next(void) { page_open(SETP_DEVICE); }
 
@@ -295,7 +290,7 @@ static const item_t DISPLAY_ITEMS[] = {
     { "Daylight",       day_show,   day_next, NULL },
     { "Font",           font_show,  font_next, NULL },
     { "Auto dim",       dim_show,   dim_next, NULL },
-    { "Dim after",      dimt_show,  dimt_next, NULL },
+    { "Dim after",      dimt_show,  dimt_next, dimt_step },
 };
 static const item_t SOUND_ITEMS[] = {
     { "BACK",           back_show,  back_next, NULL },

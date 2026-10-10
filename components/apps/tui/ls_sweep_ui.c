@@ -284,12 +284,11 @@ static int header(tui_surface *sf,tui_rect a,const cols_t *c,const ls_sweep_sett
     /* View and sound on the bottom edge, left; receiver chips on the right. */
     snprintf(t,sizeof(t)," %s / %s ",view_names[screen_view],s->alerts_muted?"MUTED":"SOUND");
     if(box.x+2+(int)strlen(t)<jx) str(sf,a,box.x+2,box.y+3,(int)strlen(t),t,NOTE);
-    int xr=box.x+box.w-2;
+    int view_end=box.x+2+(int)strlen(t),xr=box.x+box.w-2;
     if(st->flood) {xr-=7;str(sf,a,xr,box.y+3,7," FLOOD ",ALERT);xr-=1;}
-    if(now-st->last_advert_us>=FRESH_US && (count || st->owner_nearby)) {
-        snprintf(t,sizeof(t)," QUIET %lds ",(long)((now-st->last_advert_us)/1000000));
-        int l=(int)strlen(t);str(sf,a,xr-l,box.y+3,l,t,NOTE);
-    }
+    snprintf(t,sizeof(t)," BLE %s / WiFi CACHE ",st->running?"RX":st->requested?"WAIT":"OFF");
+    if(xr-(int)strlen(t)<=view_end) snprintf(t,sizeof(t)," BLE %s CACHE ",st->running?"RX":st->requested?"WAIT":"OFF");
+    int rl=(int)strlen(t);str(sf,a,xr-rl,box.y+3,rl,t,NOTE);
     return box.y+box.h;
 }
 
@@ -371,8 +370,8 @@ static void rings(tui_surface *sf,tui_rect clip,int cx,int y,int cols,int rows,b
     }
 }
 static void quiet(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_sweep_status_t *st,int64_t now) {
-    bool live=st->requested;
-    const char *word=live?"QUIET":"OFF";
+    bool live=st->running;
+    const char *word=live?"QUIET":st->requested?"WAIT":"OFF";
     char t[64];
     int room=a.y+a.h-y,ring_rows=room>=34?9:room>=24?7:5,body=ring_rows+1+5+2+1+1,box_h=body+4;
     int box_w=c->w<38?c->w:38;
@@ -383,9 +382,9 @@ static void quiet(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_swee
     if(ring_rows) {rings(sf,a,cx,yy,ring_rows*2+3,ring_rows,live);yy+=ring_rows+1;}
     big(sf,a,cx-big_width(word,1)/2,yy,word,1,1,live?VALUE:NOTE);yy+=6;
     if(live) snprintf(t,sizeof(t),"no adverts for %lds",(long)((now-st->last_advert_us)/1000000));
-    else snprintf(t,sizeof(t),"receiver stopped");
+    else snprintf(t,sizeof(t),st->requested?"BLE starting / waiting":"receiver stopped");
     centre(sf,a,box.x+1,box.w-2,yy,t,VALUE);
-    centre(sf,a,box.x+1,box.w-2,yy+2,live?"BLE + Wi-Fi  passive receive":"START to listen",NOTE);
+    centre(sf,a,box.x+1,box.w-2,yy+2,st->requested?"Wi-Fi cached / no scan":"START to listen",NOTE);
 }
 static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_sweep_status_t *st,bool fix,int64_t now) {
     if(!count && !st->owner_nearby) {quiet(sf,a,c,y,st,now);return;}
@@ -399,7 +398,7 @@ static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     unsigned in[3]={0};bool alarm=false;
     for(unsigned i=0;i<count;i++) {unsigned s=ls_sweep_section(&view[i],now,fix);in[s]++;if(s==SW_WITH_YOU && ls_sweep_alarm(&view[i],fix)) alarm=true;}
     /* A page starts at the selected rank when the list cannot fit. */
-    unsigned start=0;if(selected && !owner_selected && pick>3) start=pick-3;
+    unsigned start=0;if(selected && pick>3) start=pick-3;
     int bottom=a.y+a.h;
     /* Breathing room between sections only when everything fits; a page
        that cannot show it all keeps its last line for the count. */
@@ -408,6 +407,7 @@ static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     int gap=need+2<=bottom-y?1:0;
     bool paged=start>0 || need>bottom-y;
     if(paged) bottom--;
+    if(st->owner_nearby) bottom--;
     for(unsigned section=0;section<3 && y<bottom;section++) {
         rule(sf,a,c->x,c->w,y++,sections[section],in[section],section==SW_WITH_YOU && alarm);
         for(unsigned i=start;i<count && y<bottom;i++) {
@@ -418,16 +418,15 @@ static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
             for(int r=0;r<used;r++) if(y+r-a.y>=0 && y+r-a.y<128) row_device[y+r-a.y]=(int)i;
             list_shown++;y+=used;
         }
-        if(section==SW_PASSING && st->owner_nearby && y+1<bottom) {
-            /* A footnote: one quiet line set apart from the rows above it. */
-            char t[64];snprintf(t,sizeof(t),"owner-nearby tags: %u (rotating, not tracked)",st->owner_nearby);
-            if(in[SW_PASSING] && gap) y++;
-            if(owner_selected) tui_put_char(sf,a,c->x,y,'>',VALUE);
-            str(sf,a,c->id,y,c->x+c->w-c->id,t,NOTE);
-            if(y-a.y>=0 && y-a.y<128) row_device[y-a.y]=-2;
-            y++;
-        }
         if(section<2) y+=gap;
+    }
+    if(st->owner_nearby) {
+        if(y>bottom) y=bottom;
+        char t[64];snprintf(t,sizeof(t),"owner-nearby tags: %u (rotating, not tracked)",st->owner_nearby);
+        if(owner_selected) tui_put_char(sf,a,c->x,y,'>',VALUE);
+        str(sf,a,c->id,y,c->x+c->w-c->id,t,NOTE);
+        if(y-a.y>=0 && y-a.y<128) row_device[y-a.y]=-2;
+        bottom++;
     }
     if(paged && bottom>=a.y) {
         /* The page footer is a rule like the section heads, naming what is
@@ -557,8 +556,8 @@ static void draw_hunt(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     int fx=facts.x+3,fw=facts.w-5,fy=facts.y+2,fb=facts.y+facts.h-1;
     const char *v=*d->match.vendor?d->match.vendor:ls_sweep_category(d->match.category);
     if(fy<fb) fact(sf,a,fx,fw,fy++,"VENDOR",v);
-    snprintf(t,sizeof(t),"%02X:%02X:%02X:%02X:%02X:%02X  %s",d->mac[0],d->mac[1],d->mac[2],d->mac[3],d->mac[4],d->mac[5],
-             d->radio?"Wi-Fi":d->address_type&1?"BLE random":"BLE public");
+    char address[18];ls_sweep_mac_text(address,d);
+    snprintf(t,sizeof(t),"%s  %s",address,d->radio?"Wi-Fi":d->address_type&1?"BLE random":"BLE public");
     if(fy<fb) fact(sf,a,fx,fw,fy++,d->radio?"BSSID":"ADDRESS",t);
     if(fy<fb) fact(sf,a,fx,fw,fy++,"STATE",d->match.state==SW_STATE_SEPARATED?"separated from owner":d->match.state==SW_STATE_NEAR?"near its owner":"not reported");
     snprintf(t,sizeof(t),"%lu  (%.1f/s)",(unsigned long)d->adverts,ls_sweep_rate(d,now));
@@ -587,6 +586,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     /* Stable IDs survive rank changes; a target that expires returns to LIST. */
     bool found=owner_selected && st.requested && st.owner_nearby && now-near_target.seen_us<60000000;
     if(owner_selected) {
+        pick=count;
         ls_sweep_device_t latest;
         if(ls_sweep_nearby_target(&latest,now) && !memcmp(latest.mac,near_target.mac,6) && latest.address_type==near_target.address_type) near_target=latest;
     }
@@ -598,7 +598,8 @@ static void draw(tui_surface *sf,tui_rect a) {
         {screen_view==VIEW_HUNT?"FIND":"SELECT",screen_view==VIEW_HUNT?"TURN FOR BEARING":"DEVICE",screen_view==VIEW_HUNT?'f':'h',false,!count && !st.owner_nearby,false},
         {s.alerts_muted?"MUTED":"MUTE","SOUND",'m',s.alerts_muted,false,false},
         {"VIEW",view_names[screen_view],'v',false,false,false},ls_opt_button(&ctx)};
-    ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),b,5,-1);a.h-=bh+1;
+    ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),b,5,-1);
+    str(sf,a,a.x+1,a.y+a.h-bh-1,a.w-2,st.status[0]?st.status:"Wi-Fi cached / no scan",VALUE);a.h-=bh+1;
     ls_gps_state_t gps;ls_gps_get(&gps);bool fix=gps.fix && now-gps.last_fix_us<5000000;
     cols_t c=layout(a);
     list_area=a;list_shown=0;mode_row=-1;for(unsigned i=0;i<128;i++) row_device[i]=-1;
@@ -610,8 +611,8 @@ static void draw(tui_surface *sf,tui_rect a) {
     draw_list(sf,a,&c,y,&st,fix,now);
 }
 static void choose(void) {
-    if(count) {owner_selected=false;selected=view[pick].serial;if(screen_view==VIEW_HUNT) ls_sweep_hunt(view[pick].mac,view[pick].radio,view[pick].address_type);}
-    else if(ls_sweep_nearby_target(&near_target,esp_timer_get_time())) {owner_selected=true;selected=UINT32_MAX;}
+    if((owner_selected || !count) && ls_sweep_nearby_target(&near_target,esp_timer_get_time())) {owner_selected=true;pick=count;selected=UINT32_MAX;if(screen_view==VIEW_HUNT) ls_sweep_hunt(near_target.mac,near_target.radio,near_target.address_type);}
+    else if(count) {owner_selected=false;if(pick>=count) pick=0;selected=view[pick].serial;if(screen_view==VIEW_HUNT) ls_sweep_hunt(view[pick].mac,view[pick].radio,view[pick].address_type);}
 }
 static bool key(ls_tk_t k,char c) {
     if(ls_opt_key(&ctx,c)) return true;
@@ -621,7 +622,14 @@ static bool key(ls_tk_t k,char c) {
     if(c=='f' || c=='F') {if(selected && (count || owner_selected)) {ls_sweep_device_t *d=owner_selected?&near_target:&view[pick];ls_sweep_find_target(d->mac,d->radio,d->match.label);}return true;}
     if(c=='s' || c=='S') {ls_sweep_status_t s;ls_sweep_status(&s,esp_timer_get_time());ls_sweep_start(!s.requested);return true;}
     if(c=='h' || c=='H' || k==LS_TK_ENTER) {choose();return true;}
-    if(count && (k==LS_TK_UP || k==LS_TK_DOWN || c=='[' || c==']')) {owner_selected=false;pick=(pick+count+(k==LS_TK_UP || c=='['?-1:1))%count;selected=view[pick].serial;if(screen_view==VIEW_HUNT) choose();return true;}
+    if(k==LS_TK_UP || k==LS_TK_DOWN || c=='[' || c==']') {
+        ls_sweep_status_t st;ls_sweep_status(&st,esp_timer_get_time());
+        unsigned ranks=count+(st.owner_nearby?1:0);
+        if(!ranks) return false;
+        unsigned rank=owner_selected?count:pick;
+        pick=(rank+ranks+(k==LS_TK_UP || c=='['?-1:1))%ranks;
+        owner_selected=pick==count;choose();return true;
+    }
     return false;
 }
 static bool touch(int x,int y) {
@@ -630,7 +638,7 @@ static bool touch(int x,int y) {
     int row=y-list_area.y;
     if(screen_view==VIEW_LIST && x>=list_area.x && x<list_area.x+list_area.w && row>=0 && row<128 && row_device[row]!=-1) {
         if(row_device[row]==-2) {if(ls_sweep_nearby_target(&near_target,esp_timer_get_time())) {owner_selected=true;selected=UINT32_MAX;}}
-        else {pick=row_device[row];choose();}return true;
+        else {owner_selected=false;pick=row_device[row];choose();}return true;
     }return false;
 }
 const ls_tui_screen_t ls_scr_sweep={.name="SWEEP",.hint="M Mute  V List/Hunt  B Fast/Slow  F Find  Up/Down select",.draw=draw,.key=key,.touch=touch};

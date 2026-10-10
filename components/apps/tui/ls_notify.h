@@ -38,7 +38,7 @@ typedef struct {
    frame from the draw path, so it must be cheap and must not block. */
 typedef bool (*ls_notify_probe_t)(ls_notice_t *out);
 
-/* Up to four sources. Installing the same probe twice is ignored, so a
+/* Up to six sources. Installing the same probe twice is ignored, so a
    caller that runs its setup more than once cannot double up the notices. */
 void ls_notify_add_probe(ls_notify_probe_t probe);
 

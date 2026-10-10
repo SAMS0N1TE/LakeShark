@@ -5,6 +5,15 @@
 #include "p25_p2_runtime.h"
 #include "ls_numpad.h"
 #include "p25_program.h"
+static bool ps_lr_receiver(void)
+{
+    return P25.lora_rx || ls_rsel_effective(LS_RSEL_P25) == LS_RSEL_LORA;
+}
+static int ps_lr_gain(void)
+{
+    ls_val_t v;
+    return ls_value_read("p25.lrgain", &v, NULL) ? (int)v.i : 0;
+}
 static int ps_volume(void)
 {
     ls_val_t v;
@@ -22,9 +31,7 @@ static bool ps_set_action(const char *name, double value, bool integer)
     return ls_action_call(name, &args, &result, ls_quick_grant_builtin()) == LS_ACT_OK;
 }
 
-static bool ps_open;
-static int ps_selected, ps_first, ps_rows, ps_row_height;
-static tui_rect ps_area;
+static int ps_selected;
 static char ps_status[64];
 static const char *const ps_names[] = {"Demodulation",
                                        "Polarity",
@@ -43,12 +50,16 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Scan hang (ms)",
                                        "Phase II (experimental)",
                                        "Profile from card",
-                                       "Phase II follow (exp)"};
-#define PS_COUNT ((int)(sizeof(ps_names) / sizeof(ps_names[0])))
-static const ls_btn_t ps_buttons[] = {
-    {"UP", NULL, 'U', false, false},     {"DOWN", NULL, 'D', false, false},
-    {"LESS", NULL, '[', false, false},   {"MORE", NULL, ']', false, false},
-    {"CHANGE", NULL, 'E', false, false}, {"BACK", NULL, 'M', false, false}};
+                                       "Phase II follow (exp)",
+                                       "Hold current talkgroup",
+                                       "Lockout current talkgroup",
+                                       "Remove lockout TG",
+                                       "Allow list mode",
+                                       "Add allowed TG",
+                                       "Remove allowed TG",
+                                       "Control survey",
+                                       "Lockout list",
+                                       "Allowed list"};
 static void ps_value(int i, char *out, size_t n)
 {
     p25_cqpsk_config_t cfg;
@@ -61,10 +72,11 @@ static void ps_value(int i, char *out, size_t n)
         snprintf(out, n, "%s", lakeshark_p25_polarity_inverted() ? "INVERTED" : "NORMAL");
         break;
     case 2:
-        snprintf(out, n, "%s", lakeshark_p25_agc_enabled() ? "ON" : "OFF");
+        snprintf(out, n, "%s", (ps_lr_receiver() ? ps_lr_gain() == 0 : lakeshark_p25_agc_enabled()) ? "ON" : "OFF");
         break;
     case 3:
-        snprintf(out, n, "%.1f", lakeshark_p25_gain_tenths() / 10.0);
+        if (ps_lr_receiver()) snprintf(out, n, "%s", ps_lr_gain() ? "MAX" : "AUTO");
+        else snprintf(out, n, "%.1f", lakeshark_p25_gain_tenths() / 10.0);
         break;
     case 4:
         snprintf(out, n, "%d", ps_volume());
@@ -100,11 +112,17 @@ static void ps_value(int i, char *out, size_t n)
         snprintf(out, n, "%d", scan_engine_get_hang_ms());
         break;
     case 15:
-        snprintf(out,n,"%s",p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
+        snprintf(out,n,"%s",ps_lr_receiver()?"IQ receiver required":p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
         break;
     case 17:
-        snprintf(out, n, "%s", p25_get_phase2_follow() ? "ON" : "OFF");
+        snprintf(out, n, "%s", ps_lr_receiver() ? "IQ receiver required" : p25_get_phase2_follow() ? "ON" : "OFF");
         break;
+    case 18: snprintf(out, n, "TG %u%s", P25.hold_tg, P25.hold_tg ? " / HELD" : " / OFF"); break;
+    case 19: snprintf(out, n, "TG %u", P25.grant_on_traffic ? P25.grant_talkgroup : (unsigned)P25.dsd_tg); break;
+    case 20: case 22: case 23: snprintf(out, n, "ENTER talkgroup number"); break;
+    case 21: snprintf(out, n, "%s", P25.list_mode == 1 ? "ALLOW ONLY" : P25.list_mode == 2 ? "FOLLOW NONE" : "ALL"); break;
+    case 24: snprintf(out, n, "%s", p25_program_survey_active_now() ? "RUNNING / ENTER cancels" : "ENTER starts"); break;
+    case 25: case 26: snprintf(out, n, "%u entries / ENTER to view", i == 25 ? P25.lockout_count : P25.allow_count); break;
     case 16: {
         /* The system name is what the operator recognises; the path is what
            they chose. Neither is useful before a profile has ever loaded, so
@@ -125,6 +143,7 @@ static void ps_number(double v)
     bool ok = true;
     switch (ps_selected) {
     case 3:
+        if (ps_lr_receiver()) { ok = ps_set_action("p25.lrgain", v > 0 ? 13 : 0, true); break; }
         if (!(v >= 0 && v <= 50))
             ok = false;
         else
@@ -148,6 +167,11 @@ static void ps_number(double v)
         else
             ok = p25_set_encrypted_skip_ms((unsigned)(v * 1000));
         break;
+    case 20: case 22: case 23:
+        if (!(v >= 1 && v <= 65535) || v != (unsigned)v) ok = false;
+        else if (ps_selected == 20) ok = p25_ui_lockout_remove((uint16_t)v);
+        else ok = p25_ui_policy(ps_selected == 22 ? P25_UI_ALLOW_ADD : P25_UI_ALLOW_REMOVE, (uint16_t)v);
+        break;
     case 13:
         if (!(v >= 1 && v <= 100))
             ok = false;
@@ -164,10 +188,46 @@ static void ps_number(double v)
     snprintf(ps_status, sizeof(ps_status), "%s",
              ok ? "Change requested" : "Invalid value or save failed");
 }
+static bool ps_list_allow;
+static unsigned ps_list_first;
+static void ps_list_page(void);
+static void ps_list_done(int index)
+{
+    if (index == LS_PICKER_MAX - 1) {
+        ps_list_first = ps_list_first ? 0 : LS_PICKER_MAX - 1;
+        ps_list_page();
+    }
+}
+static void ps_list_page(void)
+{
+    ls_picker_open(ps_list_allow ? "P25 ALLOWED TALKGROUPS" : "P25 LOCKED OUT TALKGROUPS", ps_list_done);
+    const uint16_t *list = ps_list_allow ? P25.allow : P25.lockout;
+    unsigned count = ps_list_allow ? P25.allow_count : P25.lockout_count;
+    unsigned last = ps_list_first + LS_PICKER_MAX - 1;
+    for (unsigned i = ps_list_first; i < count && i < last && i < 64; i++) {
+        char label[32]; snprintf(label, sizeof(label), "TG %u", list[i]);
+        ls_picker_add(label, "Use Remove TG to edit");
+    }
+    if (!ps_list_first && count > last) ls_picker_add("MORE", "Remaining talkgroups");
+    ls_picker_empty_reason("No talkgroups in this list");
+}
+static void ps_list(bool allow)
+{
+    ps_list_allow = allow; ps_list_first = 0; ps_list_page();
+}
 static void ps_change(int direction, bool edit)
 {
     char value[48];
     ps_value(ps_selected, value, sizeof(value));
+    if (ps_selected == 3 && ps_lr_receiver()) {
+        bool max = edit ? ps_lr_gain() == 0 : direction > 0;
+        (void)ps_set_action("p25.lrgain", max ? 13 : 0, true);
+        return;
+    }
+    if (ps_selected == 20 || ps_selected == 22 || ps_selected == 23) {
+        if (edit) ls_numpad_open(ps_names[ps_selected], "TG 1..65535", 1, ps_number);
+        return;
+    }
     if (ps_selected == 3 || ps_selected == 4 || ps_selected == 5 || ps_selected == 9 ||
         (ps_selected >= 13 && ps_selected <= 14)) {
         double v = atof(value);
@@ -193,7 +253,10 @@ static void ps_change(int direction, bool edit)
         if(edit || lakeshark_p25_polarity_inverted()!=(direction>0)) lakeshark_p25_toggle_polarity();
         break;
     case 2:
-        if(edit || lakeshark_p25_agc_enabled()!=(direction>0)) lakeshark_p25_agc();
+        if (ps_lr_receiver()) {
+            bool agc = edit ? ps_lr_gain() != 0 : direction > 0;
+            ok = ps_set_action("p25.lrgain", agc ? 0 : 13, true);
+        } else if(edit || lakeshark_p25_agc_enabled()!=(direction>0)) lakeshark_p25_agc();
         break;
     case 6:
         if(edit || lakeshark_p25_beep_enabled()!=(direction>0)) lakeshark_p25_beep_toggle();
@@ -229,7 +292,17 @@ static void ps_change(int direction, bool edit)
         if (!ok) snprintf(ps_status, sizeof(ps_status), "%s",
                           "No profile chooser on this build");
         return;
+    case 18: if (edit) ok = p25_ui_hold_toggle(); break;
+    case 19: if (edit) ok = p25_ui_lockout_current(); break;
+    case 21: ok = p25_ui_policy(P25_UI_LIST_MODE, (uint16_t)((P25.list_mode + (direction > 0 ? 1 : 2)) % 3)); break;
+    case 24:
+        if (edit) ok = p25_program_survey_active_now()
+            ? p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE)
+            : p25_program_survey_start_now();
+        break;
+    case 25: case 26: if (edit) ps_list(ps_selected == 26); return;
     case 17:
+        if (ps_lr_receiver()) { snprintf(ps_status, sizeof(ps_status), "Phase II needs an IQ receiver"); return; }
         p25_set_phase2_follow(edit ? !p25_get_phase2_follow() : direction > 0);
         snprintf(ps_status, sizeof(ps_status), "%s",
                  p25_get_phase2_follow()
@@ -237,6 +310,7 @@ static void ps_change(int direction, bool edit)
                      : "TDMA grants observed only");
         return;
     case 15:
+        if (ps_lr_receiver()) { snprintf(ps_status, sizeof(ps_status), "Phase II needs an IQ receiver"); return; }
         scan_engine_stop();
         p25_p2_enable(edit?!p25_p2_enabled():direction>0);
         snprintf(ps_status,sizeof(ps_status),"%s",p25_p2_enabled()?"EXP: manual voice; IDs from control or p2 config":"Phase I restored");
@@ -244,84 +318,5 @@ static void ps_change(int direction, bool edit)
     }
     snprintf(ps_status, sizeof(ps_status), "%s",
              ok ? "Change requested" : "Could not save setting");
-}
-static void ps_draw(tui_surface *sf, tui_rect a)
-{
-    bool wide = a.w > 72;
-    if (a.h < 16 || a.w < 30) {
-        ls_panel_notice(sf, a, "P25 SETTINGS", "Larger view required", "M: back");
-        return;
-    }
-    a.x++;
-    a.w -= 2;
-    const bool short_view = wide && a.h < 22;
-    int bh = wide ? (short_view ? 4 : 5) : 10;
-    tui_rect b = tui_rect_make(a.x, a.y + a.h - bh - (short_view ? 0 : 3), a.w, bh);
-    ps_area = tui_rect_make(a.x, a.y + 1, a.w, b.y - a.y - 2);
-    ps_row_height = wide ? 2 : 5;
-    ps_rows = (ps_area.h - 4) / ps_row_height;
-    if (ps_rows < 1)
-        ps_rows = 1;
-    ps_first = (ps_selected / ps_rows) * ps_rows;
-    char title[48];
-    int last = ps_first + ps_rows;
-    if (last > PS_COUNT) last = PS_COUNT;
-    snprintf(title, sizeof(title), "P25 SETTINGS / %d-%d OF %d", ps_first + 1, last, PS_COUNT);
-    tui_box(sf, ps_area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    tui_rect content = tui_rect_make(ps_area.x + 1, ps_area.y + 1,
-                                     ps_area.w - 2, ps_area.h - 2);
-    for (int r = 0; r < ps_rows && ps_first + r < PS_COUNT; r++) {
-        int i = ps_first + r;
-        char value[48], text[100];
-        ps_value(i, value, sizeof(value));
-        snprintf(text, sizeof(text), "%c %s", i == ps_selected ? '>' : ' ', ps_names[i]);
-        int y = ps_area.y + 2 + r * ps_row_height;
-        uint8_t attr = TUI_ATTR(i == ps_selected ? TUI_YELLOW | TUI_BRIGHT : TUI_WHITE, TUI_BLACK);
-        tui_put_str(sf, content, ps_area.x + 2, y, text, attr);
-        tui_put_str(sf, content, wide ? ps_area.x + ps_area.w / 2 : ps_area.x + 4, wide ? y : y + 2,
-                    value, attr);
-    }
-    tui_put_str(sf, content, ps_area.x + 2, ps_area.y + ps_area.h - 2, ps_status, LS_ATTR_DIM);
-    ls_btn_t controls[6];memcpy(controls,ps_buttons,sizeof(controls));
-    controls[2].dim = controls[3].dim = ps_selected == 12;
-    if (ps_selected == 12) controls[4].label = "RESET";
-    if(ps_selected==1||ps_selected==2||ps_selected==6||ps_selected==7||ps_selected==8||ps_selected==15) {
-        controls[2].label=ps_selected==1?"NORMAL":"OFF";
-        controls[3].label=ps_selected==1?"INVERTED":"ON";
-    }
-    ls_btn_bar_raised(sf, b, controls, 6, -1);
-}
-static bool ps_key(ls_tk_t k, char c)
-{
-    if (c >= 'a' && c <= 'z')
-        c -= 32;
-    if (k == LS_TK_ESC || c == 'M' || c == '0') {
-        ps_open = false;
-        return true;
-    }
-    if (k == LS_TK_UP || c == 'U')
-        ps_selected = (ps_selected + PS_COUNT - 1) % PS_COUNT;
-    else if (k == LS_TK_DOWN || c == 'D')
-        ps_selected = (ps_selected + 1) % PS_COUNT;
-    else if (k == LS_TK_LEFT || c == '[')
-        ps_change(-1, false);
-    else if (k == LS_TK_RIGHT || c == ']')
-        ps_change(1, false);
-    else if (k == LS_TK_ENTER || c == 'E')
-        ps_change(1, true);
-    return true;
-}
-static bool ps_touch(int x, int y)
-{
-    if (tui_rect_contains(ps_area, x, y) && y >= ps_area.y + 2) {
-        int i = ps_first + (y - ps_area.y - 2) / ps_row_height;
-        if (i < PS_COUNT && i < ps_first + ps_rows)
-            ps_selected = i;
-        return true;
-    }
-    int hit = ls_btn_hit(x, y);
-    if (hit >= 0 && hit < 6)
-        return ps_key(LS_TK_CHAR, ps_buttons[hit].key);
-    return false;
 }
 #endif

@@ -42,6 +42,9 @@ LS_CASE(transmitting_socket_refuses_route_changes)
     LS_EQ_INT(ls_board_hw_antenna_confirm_external(), ESP_OK);
     uint8_t data = 1;
     LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+    int frames = fk.nframes;
+    LS_CHECK(ls_lora_is_transmitting());
+    LS_EQ_INT(fk.nframes, frames);
     int writes = fk_xl_log_n;
     LS_EQ_INT(ls_board_hw_antenna_external(false), ESP_ERR_INVALID_STATE);
     LS_EQ_INT(fk_xl_log_n, writes);
@@ -49,6 +52,7 @@ LS_CASE(transmitting_socket_refuses_route_changes)
     fk.irq |= LR20XX_IRQ_TX_DONE;
     LS_EQ_INT(ls_board_hw_antenna_external(false), ESP_OK);
     LS_CHECK(!ls_board_hw_antenna_is_external());
+    LS_CHECK(!ls_lora_is_transmitting());
 }
 
 LS_CASE(parking_stops_receiver_and_preserves_state_on_reset_failure)
@@ -87,5 +91,25 @@ LS_CASE(reinit_keeps_external_route_and_never_drives_internal)
                 if (fk_xl_log[i].pin == LS_BOARD_XL_RF_SW_VCTL)
                     LS_CHECK(!fk_xl_log[i].level);
         }
+    }
+}
+
+LS_CASE(cached_transmit_status_distinguishes_rx_and_tx_on_both_chips)
+{
+    for (int kind = FK_LR; kind <= FK_SX_STATUS; kind++) {
+        radio_up((fk_kind_t)kind);
+        LS_CHECK(!ls_lora_is_transmitting());
+        LS_EQ_INT(ls_lora_receive(), ESP_OK);
+        LS_CHECK(ls_lora_is_receiving() && !ls_lora_is_transmitting());
+        uint8_t data = 1;
+        LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+        int frames = fk.nframes;
+        LS_CHECK(ls_lora_is_transmitting() && !ls_lora_is_receiving());
+        LS_EQ_INT(fk.nframes, frames);
+        ls_shim_time_advance(9000000);
+        LS_CHECK(ls_lora_send_done());
+        LS_CHECK(!ls_lora_is_transmitting());
+        LS_EQ_INT(ls_lora_park(), ESP_OK);
+        LS_CHECK(!ls_lora_is_transmitting());
     }
 }

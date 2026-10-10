@@ -41,7 +41,11 @@ esp_err_t ls_wifi_sta_forget_all(void);
 esp_err_t ls_wifi_sta_save(const char *ssid, const char *pass);
 /* Returns copied count in MRU order, or -1 when busy/unavailable. */
 int       ls_wifi_saved_list(char names[][33], int cap);
+esp_err_t ls_wifi_sta_join_saved(const char *ssid);
 esp_err_t ls_wifi_sta_autojoin(void);
+/* Rejoin saved networks only when stopped or exhausted; preserve an active join. */
+esp_err_t ls_wifi_sta_ensure(void);
+bool      ls_wifi_sta_gave_up(void);
 int       ls_wifi_sta_scan(ls_wifi_scan_ap_t *out, int cap);
 /* Copy recent scan results without touching the driver; preserves their time.
  * Returns 0 for absent/expired results, -1 when the operation gate is busy. */

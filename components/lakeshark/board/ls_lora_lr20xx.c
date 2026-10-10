@@ -2175,6 +2175,7 @@ static esp_err_t lr_receive(void)
 }
 
 static bool lr_is_receiving(void) { return lr.rx_mode; }
+static bool lr_is_transmitting(void) { return lr.tx_busy; }
 
 /* After the payload is in the Tx FIFO: SetTx, which refuses anything but the
    LF PA below 1 GHz, then the bookkeeping the SX126x backend keeps. */
@@ -3313,6 +3314,7 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
     .cfg = lr_cfg,
     .receive = lr_receive,
     .is_receiving = lr_is_receiving,
+    .is_transmitting = lr_is_transmitting,
     .send = lr_send,
     .send_done = lr_send_done,
     .poll = lr_poll,

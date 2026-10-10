@@ -71,7 +71,8 @@ LS_CASE(cartocore_fills_roundtrip_settings_without_changing_layers_or_legacy_fil
 int ls_map_tile_px(void) { return 256; }
 static int test_zoom=14;
 int ls_map_zoom(void) { return test_zoom; }
-void ls_map_get_center(double *lat,double *lon) { *lat=43.4445;*lon=-71.6473; }
+static double test_lat=43.4445,test_lon=-71.6473;
+void ls_map_get_center(double *lat,double *lon) { *lat=test_lat;*lon=test_lon; }
 LS_CASE(cartocore_projection_keeps_overlay_centres_and_inverse_touch_coordinates)
 {
     s_view=MAP_VIEW_CC_BRAILLE;
@@ -157,4 +158,56 @@ LS_CASE(labels_keep_their_slot_and_wait_after_an_overlay_collision)
     test_blocked=false;
     LS_CHECK(map_label_choose(&h,1,4,3,3,1,spots,2,2,500000,test_free,NULL,&x,&y));
     LS_EQ_INT(9,x); /* Anchor-relative placement follows a one-cell pan. */
+}
+
+void ls_picker_set_detail(int i,const char *text) { (void)i;(void)text; }
+static int64_t test_now=1000000000;
+int64_t esp_timer_get_time(void) { return test_now; }
+uint32_t ls_mesh_now(void) { return (uint32_t)(test_now/1000000); }
+bool settings_get_home(float *lat,float *lon) { (void)lat;(void)lon;return false; }
+static adsb_aircraft_t test_ac;
+const adsb_aircraft_t *adsb_state_get(int i) { return i==0 ? &test_ac : NULL; }
+bool ls_map_render_busy(void) { return false; }
+void ls_map_center(double lat,double lon) { test_lat=lat;test_lon=lon; }
+static bool test_follow;
+void ls_map_follow_set(bool enabled) { test_follow=enabled; }
+LS_CASE(saved_mesh_contacts_are_never_fresh) {
+    ls_mesh_peer_t peer={0};
+    LS_EQ_UINT(UINT32_MAX,node_age(&peer));
+    LS_EQ_INT(LS_DIM_FG,node_hue(node_age(&peer),false));
+    peer.last_heard=ls_mesh_now()-2;LS_EQ_UINT(2,node_age(&peer));
+    LS_EQ_INT(TUI_MAGENTA|TUI_BRIGHT,node_hue(node_age(&peer),false));
+}
+LS_CASE(coverage_rejects_stale_relayed_and_pre_move_positions) {
+    s_receiver_fresh=true;s_receiver.lat_deg=43;s_receiver.lon_deg=-71;
+    s_cover_lat=999;memset(&test_ac,0,sizeof(test_ac));cover_update();
+    test_ac.active=test_ac.pos_valid=true;test_ac.lat=43.1;test_ac.lon=-71;
+    test_ac.pos_ts_us=test_now-1;cover_update();LS_NEAR(0,s_cover_max,0.001);
+    test_now+=1000000;test_ac.pos_ts_us=test_now;test_ac.rebroadcast=true;
+    cover_update();LS_NEAR(0,s_cover_max,0.001);
+    test_ac.rebroadcast=false;test_ac.pos_ts_us=test_now-AIRCRAFT_SHOW_US-1;
+    cover_update();LS_NEAR(0,s_cover_max,0.001);
+    test_ac.pos_ts_us=test_now;cover_update();LS_CHECK(s_cover_max>0);
+    s_receiver.lat_deg=43.05;cover_update();LS_NEAR(0,s_cover_max,0.001);
+    test_now+=1000000;test_ac.pos_ts_us=test_now;cover_update();LS_CHECK(s_cover_max>0);
+}
+LS_CASE(target_follow_recentres_before_layer_projection) {
+    s_view=MAP_VIEW_FIELD;test_zoom=14;test_lat=43.4445;test_lon=-71.6473;
+    memset(&test_ac,0,sizeof(test_ac));test_ac.active=test_ac.pos_valid=true;
+    test_ac.icao=1;test_ac.lat=44;test_ac.lon=-72;test_ac.pos_ts_us=test_now;
+    s_sel=SEL_AIR;s_sel_icao=1;s_track=true;
+    track_selection(200,200);
+    double x,y;LS_CHECK(frame_px(44,-72,200,200,&x,&y));
+    LS_NEAR(100,x,0.001);LS_NEAR(100,y,0.001);
+    s_track=true;test_follow=true;jump_to(42,-70);
+    LS_CHECK(!s_track && !test_follow);LS_NEAR(42,test_lat,0.001);
+    test_lat=43.4445;test_lon=-71.6473;s_sel=SEL_NONE;
+}
+
+LS_CASE(coordinate_navigation_is_temporary_and_validated) {
+    test_lat=43.4445;test_lon=-71.6473;s_track=true;test_follow=true;
+    coordinates_done("91, 0");LS_NEAR(43.4445,test_lat,0.0001);LS_CHECK(s_track);
+    coordinates_done("42, -70 trailing");LS_CHECK(s_track);
+    coordinates_done("42, -70");LS_NEAR(42,test_lat,0.001);LS_NEAR(-70,test_lon,0.001);
+    LS_CHECK(!s_track && !test_follow);test_lat=43.4445;test_lon=-71.6473;
 }

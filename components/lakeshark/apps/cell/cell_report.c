@@ -17,7 +17,7 @@ static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static char target[17],last_text[49];
 static uint32_t boot,sequence;
 static int64_t last_attempt;
-static bool initialized,queued;
+static bool initialized,queued,persist_failed;
 static unsigned last_pass;
 static char last_kind;
 static uint32_t last_lte_hz;
@@ -42,6 +42,10 @@ bool cell_report_target(const char *peer)
 {
     if(!peer || (*peer && (!valid_peer(peer) || !cell_report_transport_known(peer))))return false;
     cell_report_init();
+    portENTER_CRITICAL(&lock);
+    snprintf(target,sizeof(target),"%s",peer);last_text[0]=0;queued=false;last_attempt=0;last_pass=0;last_kind=0;
+    last_lte_hz=0;last_lte_pci=-1;persist_failed=true;
+    portEXIT_CRITICAL(&lock);
     if(!ls_sdcard_mounted())return false;
     mkdir("/sdcard/cell",0775);
     const char *path="/sdcard/cell/report.txt",*tmp="/sdcard/cell/report.new";
@@ -54,8 +58,7 @@ bool cell_report_target(const char *peer)
     if(ok){remove(bak);rename(path,bak);ok=rename(tmp,path)==0;if(!ok)rename(bak,path);}
     if(!ok){remove(tmp);return false;}
     portENTER_CRITICAL(&lock);
-    snprintf(target,sizeof(target),"%s",peer);last_text[0]=0;queued=false;last_attempt=0;last_pass=0;last_kind=0;
-    last_lte_hz=0;last_lte_pci=-1;
+    persist_failed=false;
     portEXIT_CRITICAL(&lock);return true;
 }
 static void emit(const cell_status_t *s,char kind,bool force)
@@ -81,9 +84,11 @@ static void emit(const cell_status_t *s,char kind,bool force)
     portEXIT_CRITICAL(&lock);
     time_t epoch=time(NULL);if(epoch>1735689600){record.epoch=(uint32_t)epoch;record.flags|=2;}
     ls_gps_state_t gps;ls_gps_get(&gps);
-    if(gps.fix && gps.last_fix_us>0 && now-gps.last_fix_us>=0 && now-gps.last_fix_us<5000000 &&
-       gps.hdop>0 && gps.hdop<=5 && isfinite(gps.lat_deg) && isfinite(gps.lon_deg) && fabs(gps.lat_deg)<=90 && fabs(gps.lon_deg)<=180) {
+    if(cell_gps_valid(gps.fix,gps.last_fix_us,now,gps.lat_deg,gps.lon_deg,gps.hdop)) {
         record.lat_e5=(int32_t)llround(gps.lat_deg*100000);record.lon_e5=(int32_t)llround(gps.lon_deg*100000);record.flags|=1;
+    }
+    if(s->lte && (kind=='C' || kind=='F')) {
+        record.flags|=64;record.changed=s->lte_attempted;record.pci=s->lte_usable;
     }
     if(s->compared)record.flags|=4;
     if(s->quiet)record.flags|=8;
@@ -108,19 +113,19 @@ void cell_report_activity(const cell_status_t *s,char kind)
 }
 void cell_report_status(char *text,size_t size)
 {
-    char peer[17],payload[49];bool accepted;int64_t when;
+    char peer[17],payload[49];bool accepted,unsaved;int64_t when;
     portENTER_CRITICAL(&lock);
-    memcpy(peer,target,sizeof(peer));memcpy(payload,last_text,sizeof(payload));accepted=queued;when=last_attempt;
+    memcpy(peer,target,sizeof(peer));memcpy(payload,last_text,sizeof(payload));accepted=queued;when=last_attempt;unsaved=persist_failed;
     portEXIT_CRITICAL(&lock);
-    const char *state="waiting for a complete pass";
-    if(!peer[0])state="off; choose REPORT destination";
+    const char *state="waiting";
+    if(!peer[0])state="off";
     else if(payload[0]) {
         int delivery=accepted?cell_report_transport_state(peer,payload):-1;
-        state=!accepted?"blocked: check Mesh TX and receiver":delivery==4?"recipient ACK received":
-              delivery==2 || delivery==3?"sent; awaiting recipient ACK":
-              esp_timer_get_time()-when>30000000?"no delivery confirmation":"queued for MeshCore";
+        state=!accepted?"TX blocked":delivery==4?"ACK received":
+              delivery==2 || delivery==3?"sent; wait ACK":
+              esp_timer_get_time()-when>30000000?"no ACK":"queued";
     }
-    snprintf(text,size,"LoRa: %s",state);
+    snprintf(text,size,"LoRa: %s%s",state,unsaved?" / SD unsaved":"");
 }
 int cell_report_command(int argc,char **argv)
 {

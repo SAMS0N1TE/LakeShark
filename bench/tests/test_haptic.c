@@ -35,11 +35,13 @@
 
 static uint8_t s_reg[0x80];
 static bool    s_bus_ok;
+static int     s_fail_at, s_transactions;
 static uint8_t s_chipid;
 
 static uint8_t s_log[128][2];
 static int     s_log_n;
 
+static bool s_probe_diag, s_probe_busy, s_probe_ok;
 static int s_go_count;
 static int s_stop_count;
 
@@ -58,7 +60,7 @@ esp_err_t i2c_master_transmit(i2c_master_dev_handle_t dev, const uint8_t *buf,
                               size_t len, int timeout)
 {
     (void)dev; (void)timeout;
-    if (!s_bus_ok) return ESP_FAIL;
+    if (!s_bus_ok || (++s_transactions == s_fail_at)) return ESP_FAIL;
     if (len != 2) return ESP_ERR_INVALID_ARG;
 
     if (buf[0] == R_SRST && buf[1] == 0xAA) {
@@ -72,7 +74,14 @@ esp_err_t i2c_master_transmit(i2c_master_dev_handle_t dev, const uint8_t *buf,
         return ESP_OK;
     }
     if (buf[0] == R_PLAYCFG4) {
-        if (buf[1] & 0x01) s_go_count++;
+        if (buf[1] & 0x01) {
+            s_go_count++;
+            if (s_probe_diag) {
+                ls_haptic_diag_t d;
+                s_probe_busy = ls_haptic_busy();
+                s_probe_ok = ls_haptic_diag(&d);
+            }
+        }
         if (buf[1] & 0x02) {
             s_stop_count++;
             /* The tracking loop reports what it locked onto during the
@@ -96,7 +105,7 @@ esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t dev,
                                       uint8_t *rx, size_t rx_len, int timeout)
 {
     (void)dev; (void)timeout;
-    if (!s_bus_ok) return ESP_FAIL;
+    if (!s_bus_ok || (++s_transactions == s_fail_at)) return ESP_FAIL;
     if (tx_len != 1 || rx_len != 1) return ESP_ERR_INVALID_ARG;
     *rx = tx[0] == R_CHIPID ? s_chipid
         : (tx[0] < sizeof(s_reg) ? s_reg[tx[0]] : 0);
@@ -120,7 +129,7 @@ esp_err_t ls_i2c_device(ls_i2c_bus_id_t id, uint8_t addr, uint32_t hz,
        so this would ACK nothing and look like absent hardware. */
     LS_CHECK(id == LS_I2C_SECONDARY);
     LS_CHECK(addr == LS_BOARD_HAPTIC_I2C_ADDR);
-    if (!s_bus_ok) return ESP_FAIL;
+    if (!s_bus_ok || (++s_transactions == s_fail_at)) return ESP_FAIL;
     if (out) *out = (i2c_master_dev_handle_t)&s_fake_dev;
     return ESP_OK;
 }
@@ -499,4 +508,64 @@ LS_CASE(resonance_is_read_at_the_stop_because_that_is_when_it_exists)
     ls_haptic_diag_t after;
     LS_CHECK(ls_haptic_diag(&after));
     LS_CHECK(after.f0_hz > 150.0f && after.f0_hz < 190.0f);
+}
+
+LS_CASE(diag_rejects_bus_failure_and_recovers)
+{
+    ensure_up();
+    s_bus_ok = false;
+    ls_haptic_diag_t d;
+    memset(&d, 0xAA, sizeof(d));
+    LS_CHECK(!ls_haptic_diag(&d));
+    LS_CHECK(d.lra_ohms == 0.0f && d.vdd_v == 0.0f);
+    s_bus_ok = true;
+    LS_CHECK(ls_haptic_diag(&d));
+    LS_CHECK(d.lra_ohms > 0.0f && d.vdd_v > 0.0f);
+}
+
+LS_CASE(diag_rejects_each_failed_transaction_and_attempts_restoration)
+{
+    ensure_up();
+    s_transactions = 0;
+    ls_haptic_diag_t d;
+    LS_CHECK(ls_haptic_diag(&d));
+    const int transactions = s_transactions;
+    for (int fail = 1; fail <= transactions; fail++) {
+        s_reg[R_SYSCTRL1] = 0x84;
+        s_reg[R_SYSCTRL7] = 0x14;
+        s_reg[R_DETCFG1] = 0x02;
+        s_reg[R_DETCFG2] = 0;
+        s_transactions = 0; s_fail_at = fail;
+        LS_CHECK(!ls_haptic_diag(&d));
+        LS_CHECK(d.lra_ohms == 0.0f && d.vdd_v == 0.0f);
+        if (fail <= transactions - 4) {
+            LS_EQ_INT(0x84, s_reg[R_SYSCTRL1]);
+            LS_EQ_INT(0x14, s_reg[R_SYSCTRL7]);
+            LS_EQ_INT(0x02, s_reg[R_DETCFG1]);
+            LS_EQ_INT(0, s_reg[R_DETCFG2]);
+        }
+        s_fail_at = 0;
+    }
+    s_reg[R_SYSCTRL1] = 0x84;
+    s_reg[R_SYSCTRL7] = 0x14;
+    s_reg[R_DETCFG1] = 0x02;
+    s_reg[R_DETCFG2] = 0;
+    LS_CHECK(ls_haptic_diag(&d));
+}
+
+LS_CASE(diag_cannot_interrupt_a_pulse_start)
+{
+    ensure_up();
+    LS_CHECK(!ls_haptic_busy());
+    s_probe_diag = true;
+    s_probe_ok = true;
+    s_probe_busy = false;
+    LS_CHECK(ls_haptic_buzz(20, 40));
+    LS_CHECK(ls_haptic_service(0));
+    s_probe_diag = false;
+    LS_CHECK(s_probe_busy);
+    LS_CHECK(!s_probe_ok);
+    LS_CHECK(!ls_haptic_busy());
+    ls_haptic_diag_t d;
+    LS_CHECK(ls_haptic_diag(&d));
 }

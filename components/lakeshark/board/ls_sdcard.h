@@ -22,6 +22,8 @@ bool ls_sdcard_mounted(void);
 /* Capacity and free space in bytes, both zero when nothing is mounted.
    Cheap enough to call from a diagnostics screen, not from a frame. */
 bool ls_sdcard_size(uint64_t *total, uint64_t *free_bytes);
+/* Bounded read-only media and space check; run outside the UI task. */
+esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes);
 
 const char *ls_sdcard_name(void);
 

@@ -87,6 +87,10 @@ void adsb_demo_tick(void)
         adsb_state_push_position(a);
         a->msg_count += 1;
         a->last_seen_us = esp_timer_get_time();
+        a->altitude_valid = a->velocity_valid = a->heading_valid = a->vert_rate_valid = true;
+        a->heading_is_track = true;
+        a->altitude_ts_us = a->velocity_ts_us = a->heading_ts_us =
+            a->vert_rate_ts_us = a->last_seen_us;
         a->active    = true;
     }
 }

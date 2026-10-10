@@ -22,6 +22,8 @@ esp_err_t ls_track_rec_start(void);
 void ls_track_rec_stop(void);
 
 bool ls_track_rec_running(void);
+/* Saved intent survives temporary failures until an explicit stop succeeds. */
+bool ls_track_rec_requested(void);
 /* Sticky until the next start attempt; ESP_OK means no recorded writer error. */
 esp_err_t ls_track_rec_error(void);
 
@@ -34,6 +36,8 @@ bool ls_track_last_time(uint32_t *seconds, bool *epoch);
 /* OPEN A TRACK THAT IS ALREADY ON THE CARD, without recording. */
 
 int  ls_track_attach(void);
+/* Restore recording intent after the optional SD mount attempt. */
+void ls_track_restore(bool mounted);
 
 /* Throw the track away. Refused while recording, because "clear" during a
    walk is almost always a mis-tap and the recording is the thing that cannot

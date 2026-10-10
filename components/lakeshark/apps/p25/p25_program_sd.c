@@ -33,6 +33,9 @@ static const char *TAG = "p25prog";
 static p25_program_t *s_program;
 static portMUX_TYPE   s_program_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool  s_worker_live;
+static p25_program_t *s_pending;
+static unsigned s_generation, s_worker_generation, s_pending_generation;
+
 
 static const ls_radio_range_t s_tune_ranges[] = {
     { P25_CONTROL_TUNER_MIN_HZ, P25_CONTROL_TUNER_MAX_HZ },
@@ -187,7 +190,7 @@ static void p25_program_worker(void *arg)
     } else {
         p25_program_result_t result =
             p25_program_reload(program, sd_read, NULL, staging,
-                               &s_parse_config, &s_ops);
+                               &s_parse_config, &(p25_program_ops_t){0});
         heap_caps_free(staging);
 
         if (result == P25_PROGRAM_OK) {
@@ -201,7 +204,13 @@ static void p25_program_worker(void *arg)
         }
     }
 
+    portENTER_CRITICAL(&s_program_lock);
+    bool keep = s_worker_generation == s_generation;
+    if (keep) { s_pending = program; s_pending_generation = s_worker_generation; }
     s_worker_live = false;
+    portEXIT_CRITICAL(&s_program_lock);
+    if (!keep) heap_caps_free(program);
+    else p25_owner_wake();
     vTaskDelete(NULL);
 }
 
@@ -219,28 +228,82 @@ static bool profile_path_on_card(const char *path)
     return strstr(path, "..") == NULL;
 }
 
+static char s_requested_path[P25_PROGRAM_PATH_MAX];
+static bool s_request_pending;
 static bool request_reload_path(const char *path)
 {
+    if (!p25_owner_current()) {
+        if (!p25_owner_active()) return false;
+        portENTER_CRITICAL(&s_program_lock);
+        bool ok = !s_request_pending && !s_worker_live && !s_pending &&
+                  path && strlen(path) < sizeof(s_requested_path);
+        if (ok) {
+            strcpy(s_requested_path, path);
+            s_request_pending = true;
+        }
+        portEXIT_CRITICAL(&s_program_lock);
+        if (ok) p25_owner_wake();
+        return ok;
+    }
     p25_program_t *program = program_session();
     if (!program) return false;
     if (s_worker_live) return false;
-    /* A reload request starts a profile ownership transaction even when the
-     * file later proves invalid.  Stop survey tuning before the SD worker can
-     * overlap it; failure still retains the same active profile/control. */
+    if (s_pending || !p25_owner_current()) return false;
     (void)p25_program_survey_cancel(program,
                                     P25_SURVEY_CANCEL_PROFILE_CHANGE, &s_ops);
-    if (!p25_program_claim(program, path)) return false;
+    p25_program_t *copy = heap_caps_malloc(sizeof(*copy), MALLOC_CAP_SPIRAM);
+    if (!copy) return false;
+    if (!p25_program_claim(program, path)) { heap_caps_free(copy); return false; }
+    *copy = *program;
+    s_worker_generation = s_generation;
 
     s_worker_live = true;
     if (xTaskCreate(p25_program_worker, "p25_prog",
-                    P25_PROGRAM_WORKER_STACK_BYTES, program,
+                    P25_PROGRAM_WORKER_STACK_BYTES, copy,
                     P25_PROGRAM_WORKER_PRIORITY, NULL) != pdPASS) {
         s_worker_live = false;
+        heap_caps_free(copy);
         (void)p25_program_abandon(program, P25_PROGRAM_ERR_NO_MEMORY);
         ESP_LOGE(TAG, "PROGRAM worker task could not be created");
         return false;
     }
     return true;
+}
+
+void p25_program_service_now(void)
+{
+    portENTER_CRITICAL(&s_program_lock);
+    p25_program_t *pending = s_pending;
+    s_pending = NULL;
+    unsigned generation = s_generation, pending_generation = s_pending_generation;
+    bool requested = s_request_pending;
+    char path[P25_PROGRAM_PATH_MAX];
+    if (requested) strcpy(path, s_requested_path);
+    s_request_pending = false;
+    portEXIT_CRITICAL(&s_program_lock);
+    if (pending) {
+        (void)p25_program_commit_staged(s_program, pending, pending_generation,
+                                        generation, &s_ops);
+        heap_caps_free(pending);
+    }
+    if (requested) (void)request_reload_path(path);
+}
+
+void p25_program_exit_now(void)
+{
+    portENTER_CRITICAL(&s_program_lock);
+    s_generation++;
+    s_request_pending = false;
+    p25_program_t *pending = s_pending;
+    s_pending = NULL;
+    portEXIT_CRITICAL(&s_program_lock);
+    if (pending) heap_caps_free(pending);
+    if (s_program) {
+        /* Exit never issues a tune into the next app's scan session. */
+        (void)p25_program_survey_cancel(s_program, P25_SURVEY_CANCEL_APP_EXIT,
+                                        &(p25_program_ops_t){0});
+        (void)p25_program_abandon(s_program, P25_PROGRAM_ERR_BUSY);
+    }
 }
 
 bool p25_program_request_reload(void)
@@ -258,20 +321,28 @@ bool p25_program_request_reload_path(const char *path)
     return request_reload_path(path);
 }
 
+static void program_step(uint32_t arg) { (void)p25_program_step_control_now((int32_t)arg); }
 bool p25_program_step_control_now(int delta)
 {
+    if (!p25_owner_current()) return p25_owner_post(program_step, (uint32_t)delta);
     if (!s_program) return false;
     return p25_program_step_control(s_program, delta, &s_ops);
 }
 
+static void program_reapply(uint32_t arg);
 bool p25_program_reapply_now(void)
 {
+    if (!p25_owner_current()) return p25_owner_post(program_reapply, 0);
     if (!s_program) return false;
     return p25_program_reapply(s_program, &s_ops);
 }
 
+static void program_reapply(uint32_t arg) { (void)arg; (void)p25_program_reapply_now(); }
+
+static void program_survey(uint32_t arg) { (void)arg; (void)p25_program_survey_start_now(); }
 bool p25_program_survey_start_now(void)
 {
+    if (!p25_owner_current()) return p25_owner_post(program_survey, 0);
     if (!s_program) return false;
     return p25_program_survey_start(
         s_program, (uint32_t)(esp_timer_get_time() / 1000LL),
@@ -286,8 +357,10 @@ bool p25_program_survey_poll_now(uint32_t now_ms, uint32_t valid_nids,
                                    &s_ops);
 }
 
+static void program_cancel(uint32_t arg) { (void)p25_program_survey_cancel_now((p25_survey_cancel_t)arg); }
 bool p25_program_survey_cancel_now(p25_survey_cancel_t reason)
 {
+    if (!p25_owner_current()) return p25_owner_post(program_cancel, reason);
     if (!s_program) return false;
     return p25_program_survey_cancel(s_program, reason, &s_ops);
 }

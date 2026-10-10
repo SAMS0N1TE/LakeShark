@@ -29,6 +29,7 @@ static int s_edit = -1;
 static const ls_opt_ctx_t *s_up[DEPTH];
 static int s_up_row[DEPTH];
 static int s_depth;
+static void (*s_root_back)(void);
 
 /* ------------------------------------------------------------ the rows -- */
 
@@ -120,6 +121,7 @@ static void detail(const ls_opt_t *o, char *out, size_t n)
 static void picked(int row);
 static void stepped(int row, int dir);
 static void go_up(void);
+static void navigate(int row,int dir);
 
 static void fill(const ls_opt_ctx_t *ctx)
 {
@@ -138,8 +140,9 @@ static void fill(const ls_opt_ctx_t *ctx)
         snprintf(title, sizeof(title), "%s OPTIONS", ctx->name);
     }
     ls_picker_open(title, picked);
-    if (s_depth > 0 || ctx->back_to_screen) ls_picker_back(go_up);
+    if (s_depth > 0 || ctx->back_to_screen || s_root_back) ls_picker_back(go_up);
     s_ctx = ctx;
+    if(ctx->menu_arrows) ls_picker_navigation(navigate);
     s_rows = 0;
     char d[LS_PICKER_DETAIL];
     for (int i = 0; i < ctx->n && s_rows < LS_PICKER_MAX; i++) {
@@ -157,13 +160,22 @@ static void fill(const ls_opt_ctx_t *ctx)
 /* BACK: the list above, on the row that opened this one. */
 static void go_up(void)
 {
-    if (s_depth <= 0) return;
+    if (s_depth <= 0) {
+        void (*cb)(void)=s_root_back;ls_opt_close();if(cb) cb();return;
+    }
     s_depth--;
     const ls_opt_ctx_t *ctx = s_up[s_depth];
     const int row = s_up_row[s_depth];
     s_back = -1;
     fill(ctx);
     ls_picker_select(row);
+}
+
+static void navigate(int row,int dir)
+{
+    if(dir<0) { go_up(); return; }
+    if(row>=0 && row<s_rows && s_ctx->opt[s_row_opt[row]].kind==LS_OPT_MENU)
+        picked(row);
 }
 
 /* The list again, on the row that was chosen, saying `note` when there is
@@ -305,10 +317,12 @@ void ls_opt_open(const ls_opt_ctx_t *ctx)
     if (ls_opt_count(ctx) <= 0) return;
     s_back = -1;
     s_edit = -1;
-    s_depth = 0;
+    s_depth = 0;s_root_back=NULL;
     s_screen = ls_tui_screen_current();
     fill(ctx);
 }
+
+void ls_opt_back(void (*on_back)(void)) { s_root_back=on_back;if(s_ctx) fill(s_ctx); }
 
 bool ls_opt_key(const ls_opt_ctx_t *ctx, char ch)
 {
@@ -329,7 +343,7 @@ void ls_opt_close(void)
     s_back = -1;
     s_edit = -1;
     s_depth = 0;
-    s_ctx = NULL;
+    s_ctx = NULL;s_root_back=NULL;
 }
 
 void ls_opt_poll(void)

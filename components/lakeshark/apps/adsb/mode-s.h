@@ -53,6 +53,7 @@ typedef struct
     int check_crc;
 
     void (*on_preamble)(void);
+    void (*on_bad_crc)(void);
 } mode_s_t;
 
 struct mode_s_msg
@@ -100,6 +101,10 @@ struct mode_s_msg
     int vert_rate_sign;
     int vert_rate;
     int velocity;
+    int altitude_is_valid, velocity_is_valid, vert_rate_is_valid;
+    int ew_is_valid, ns_is_valid;
+    int airspeed, airspeed_is_valid, airspeed_type;
+    int heading_is_track;
 
     int fs;
     int dr;
@@ -115,6 +120,9 @@ void mode_s_init(mode_s_t *self);
 void mode_s_compute_magnitude_vector(unsigned char *data, uint16_t *mag, uint32_t size);
 void mode_s_detect(mode_s_t *self, uint16_t *mag, uint32_t maglen, mode_s_callback_t);
 void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg);
+/* Returns the first unscanned start; retain its preceding sample for phase correction. */
+uint32_t mode_s_detect_from(mode_s_t *self, uint16_t *mag, uint32_t maglen,
+                            uint32_t start, mode_s_callback_t cb);
 void runme();
 int mode_s_msg_len_by_type(int type);
 

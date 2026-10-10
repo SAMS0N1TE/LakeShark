@@ -25,6 +25,14 @@ static const char *TAG = "adsb_decode";
 static EXT_RAM_BSS_ATTR mode_s_t s_state;
 static uint16_t *s_mag_buf     = NULL;
 static int       s_mag_buf_len = 0;
+/* One long frame plus the sample phase correction looks behind. */
+#define ADSB_MAG_TAIL 241
+static int s_mag_carry, s_mag_start;
+
+void adsb_decode_reset_stream(void)
+{
+    s_mag_carry = s_mag_start = 0;
+}
 
 static int cpr_nl(double lat)
 {
@@ -352,13 +360,15 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
         }
     }
 
-    if (mm->altitude) {
+    if (mm->altitude_is_valid) {
         int v = mm->altitude;
         if (v >= -1000 && v <= 60000) {
             int prev = a->altitude;
             int delta = v > prev ? v - prev : prev - v;
-            if (prev == 0 || delta < 5000 || a->pending_alt == v) {
+            if (!a->altitude_valid || delta < 5000 || a->pending_alt == v) {
                 a->altitude = v;
+                a->altitude_valid = true;
+                a->altitude_ts_us = now;
                 a->pending_alt = 0;
 
                 adsb_state_push_altitude(a, v);
@@ -373,48 +383,62 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             int prev = a->heading;
             int delta = v > prev ? v - prev : prev - v;
             if (delta > 180) delta = 360 - delta;
-            if (prev == 0 || delta < 90 || a->pending_hdg == v) {
+            if (!a->heading_valid || delta < 90 || a->pending_hdg == v) {
                 a->heading = v;
+                a->heading_valid = true;
+                a->heading_is_track = mm->heading_is_track;
+                a->heading_ts_us = now;
                 a->pending_hdg = 0;
             } else {
                 a->pending_hdg = v;
             }
         }
     }
-    if (mm->velocity) {
+    if (mm->velocity_is_valid) {
         int v = mm->velocity;
-        if (v > 0 && v <= 1500) {
+        if (v >= 0 && v <= 6000) {
             int prev = a->velocity;
             int delta = v > prev ? v - prev : prev - v;
-            if (prev == 0 || delta < 200 || a->pending_vel == v) {
+            if (!a->velocity_valid || delta < 200 || a->pending_vel == v) {
                 a->velocity = v;
+                a->velocity_valid = true;
+                a->velocity_ts_us = now;
                 a->pending_vel = 0;
             } else {
                 a->pending_vel = v;
             }
         }
     }
-    if (mm->ew_velocity) {
+    if (mm->ew_is_valid) {
         int v = mm->ew_dir ? -mm->ew_velocity : mm->ew_velocity;
-        if (v >= -1500 && v <= 1500) a->ew_velocity = v;
+        if (v >= -6000 && v <= 6000) a->ew_velocity = v;
     }
-    if (mm->ns_velocity) {
+    if (mm->ns_is_valid) {
         int v = mm->ns_dir ? -mm->ns_velocity : mm->ns_velocity;
-        if (v >= -1500 && v <= 1500) a->ns_velocity = v;
+        if (v >= -6000 && v <= 6000) a->ns_velocity = v;
     }
-    if (mm->vert_rate) {
+    if (mm->vert_rate_is_valid) {
         int v = mm->vert_rate_sign ? -mm->vert_rate : mm->vert_rate;
 
         if (v >= -10000 && v <= 10000) {
             int prev = a->vert_rate;
             int delta = v > prev ? v - prev : prev - v;
-            if (prev == 0 || delta < 2000 || a->pending_vs == v) {
+            if (!a->vert_rate_valid || delta < 2000 || a->pending_vs == v) {
                 a->vert_rate = v;
+                a->vert_rate_valid = true;
+                a->vert_rate_ts_us = now;
                 a->pending_vs = 0;
             } else {
                 a->pending_vs = v;
             }
         }
+    }
+
+    if (mm->airspeed_is_valid) {
+        a->airspeed = mm->airspeed;
+        a->airspeed_type = mm->airspeed_type;
+        a->airspeed_valid = true;
+        a->airspeed_ts_us = now;
     }
 
     if (!a->announced) {
@@ -445,11 +469,13 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             a->cpr_even = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
         else
             a->cpr_odd  = (adsb_cpr_frame_t){ mm->raw_latitude, mm->raw_longitude, ts, true };
-        /* Prefer a valid pair to correct an ambiguous local reference. */
+        /* Track from this aircraft's own recent fix first. Motion between
+           even/odd reports can make a mathematically valid pair alias to
+           another CPR cell. A pair acquires/reacquires when local fails. */
         bool was_valid = a->pos_valid;
-        bool got = cpr_decode(a);
-        if (!got && was_valid && ts >= a->pos_ts_us &&
-            ts - a->pos_ts_us <= CPR_LOCAL_MAX_AGE_US) {
+        bool got = false;
+        if (was_valid && ts >= a->pos_ts_us &&
+            ts - a->pos_ts_us < CPR_LOCAL_MAX_AGE_US) {
             double llat, llon;
             if (cpr_decode_local(a->lat, a->lon,
                                  mm->raw_latitude, mm->raw_longitude,
@@ -461,6 +487,7 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
                 got = true;
             }
         }
+        if (!got) got = cpr_decode(a);
         if (got) adsb_state_push_position(a);
         if (got && !was_valid) {
             if (a->announced) {
@@ -471,9 +498,9 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
     }
 
     if (mm->me_ok) {
-        if (mm->metype >= 9  && mm->metype <= 18 && mm->altitude)
+        if (mm->metype >= 9  && mm->metype <= 18 && mm->altitude_is_valid)
             emit_contact_event(EVT_CONTACT_ALTITUDE, a, false);
-        else if (mm->metype >= 19 && mm->metype <= 22 && mm->velocity)
+        else if (mm->metype >= 19 && mm->metype <= 22 && mm->velocity_is_valid)
             emit_contact_event(EVT_CONTACT_VELOCITY, a, false);
     }
 
@@ -484,37 +511,45 @@ void adsb_on_sample(uint8_t *iq, int len)
 {
     if (!iq || len <= 0) return;
     int mag_len = len / 2;
+    int total = s_mag_carry + mag_len;
 
-    if (!s_mag_buf || s_mag_buf_len < mag_len) {
-        if (s_mag_buf) { heap_caps_free(s_mag_buf); s_mag_buf = NULL; }
-        s_mag_buf = heap_caps_malloc(mag_len * sizeof(uint16_t),
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_mag_buf) s_mag_buf = malloc(mag_len * sizeof(uint16_t));
-        if (!s_mag_buf) {
-            ESP_LOGE(TAG, "OOM mag buffer (%d bytes)", mag_len * 2);
+    if (!s_mag_buf || s_mag_buf_len < total) {
+        uint16_t *next = heap_caps_malloc((mag_len + ADSB_MAG_TAIL) * sizeof(uint16_t),
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!next) next = malloc((mag_len + ADSB_MAG_TAIL) * sizeof(uint16_t));
+        if (!next) {
+            ESP_LOGE(TAG, "OOM mag buffer");
+            adsb_decode_reset_stream();
             return;
         }
-        s_mag_buf_len = mag_len;
+        if (s_mag_carry) memcpy(next, s_mag_buf, s_mag_carry * sizeof(uint16_t));
+        heap_caps_free(s_mag_buf);
+        s_mag_buf = next;
+        s_mag_buf_len = mag_len + ADSB_MAG_TAIL;
     }
 
-    mode_s_compute_magnitude_vector(iq, s_mag_buf, len);
+    mode_s_compute_magnitude_vector(iq, s_mag_buf + s_mag_carry, mag_len * 2);
 
     uint32_t sum = 0, peak = 0;
-    int samples = mag_len / 16;
+    int samples = (mag_len + 15) / 16;
     if (samples > 0) {
         for (int i = 0; i < mag_len; i += 16) {
-            sum += s_mag_buf[i];
-            if (s_mag_buf[i] > peak) peak = s_mag_buf[i];
+            sum += s_mag_buf[s_mag_carry + i];
+            if (s_mag_buf[s_mag_carry + i] > peak) peak = s_mag_buf[s_mag_carry + i];
         }
         perf_set_mag((int)(sum / samples), (int)peak);
     }
 
 #ifdef CONFIG_ENABLE_TUI
     extern void tui_waterfall_push(const uint16_t *mag, int mag_len);
-    tui_waterfall_push(s_mag_buf, mag_len);
+    tui_waterfall_push(s_mag_buf + s_mag_carry, mag_len);
 #endif
 
-    mode_s_detect(&s_state, s_mag_buf, mag_len, on_msg);
+    uint32_t next = mode_s_detect_from(&s_state, s_mag_buf, total, s_mag_start, on_msg);
+    int keep = next > 0 ? (int)next - 1 : 0;
+    s_mag_carry = total - keep;
+    s_mag_start = next > 0 ? 1 : 0;
+    memmove(s_mag_buf, s_mag_buf + keep, s_mag_carry * sizeof(uint16_t));
 }
 
 static int s_last_rssi = ADSB_RSSI_NONE;
@@ -538,9 +573,8 @@ adsb_frame_result_t adsb_on_frame(const uint8_t *msg, int nbytes,
 
     mode_s_decode(&s_state, &mm, buf);
 
-    /* The same gate mode_s_detect applies before its callback. */
-    if (s_state.check_crc == 0 || mm.crcok)
-        adsb_decode_on_message(&mm);
+    /* Count rejected CRCs at receiver level before any aircraft lookup. */
+    adsb_decode_on_message(&mm);
     return mm.crcok ? ADSB_FRAME_OK : ADSB_FRAME_BAD_CRC;
 }
 
@@ -590,9 +624,11 @@ int adsb_last_rssi_tenths_dbm(void)
 void adsb_decode_init(void)
 {
     mode_s_init(&s_state);
+    adsb_decode_reset_stream();
     s_last_rssi = ADSB_RSSI_NONE;
 
     s_state.on_preamble = perf_count_burst;
+    s_state.on_bad_crc = perf_count_msg_bad;
     adsb_state_init();
 }
 
@@ -634,6 +670,9 @@ void adsb_inject_fake_aircraft(void)
     a->velocity  = 200 + ((s_test_seq * 13) % 200);
     a->heading   = (s_test_seq * 23) % 360;
     a->vert_rate = -1500 + ((s_test_seq * 137) % 3000);
+    a->altitude_valid = a->velocity_valid = a->heading_valid = a->vert_rate_valid = true;
+    a->heading_is_track = true;
+    a->altitude_ts_us = a->velocity_ts_us = a->heading_ts_us = a->vert_rate_ts_us = now;
     adsb_state_push_altitude(a, a->altitude);
 
     if (first_msg) {

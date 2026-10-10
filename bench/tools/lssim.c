@@ -43,6 +43,7 @@
 #include "ls_experiments.h"
 #include "apps/adsb/adsb_state.h"
 #include "apps/fm/fm_state.h"
+#include "apps/acars/acars_app.h"
 #include "apps/fm/same_store.h"
 #include "apps/fm/aprs_store.h"
 #include "apps/fm/ais_store.h"
@@ -393,8 +394,12 @@ static void feed_adsb(void)
         a->last_seen_us   = now - (int64_t)SEED[i].age_s * 1000000LL;
         a->pos_ts_us      = a->pos_valid ? a->last_seen_us : 0;
         a->first_seen_us  = a->last_seen_us - 120 * 1000000LL;
+        a->altitude_valid = a->velocity_valid = a->heading_valid = a->vert_rate_valid = true;
+        a->heading_is_track = true;
+        a->altitude_ts_us = a->velocity_ts_us = a->heading_ts_us =
+            a->vert_rate_ts_us = a->last_seen_us;
         for (int k = 0; k < 32; k++)
-            a->alt_history[k] = (int16_t)(SEED[i].alt - 400 + k * 25);
+            a->alt_history[k] = SEED[i].alt - 400 + k * 25;
         for (unsigned c = 0; c < sizeof(CAT) / sizeof(CAT[0]); c++)
             if (CAT[c].icao == a->icao) { a->emitter_tc = CAT[c].tc; a->emitter_ca = CAT[c].ca; }
         /* Where it has been: back along a gently turning track, a report
@@ -466,6 +471,25 @@ static void lssim_cartocore_pump(void) {}
    (ls_anim, ls_notify, the keyboard cursor) never needed it. */
 static int64_t s_step_us;
 
+/* Reproducible 1 Hz moving-label regression, using the production ADS-B
+ * store, projection, symbol/trail renderer and both map screens. */
+static void label_track_tick(void) {
+    if(!getenv("LSSIM_LABEL_TRACK")) return;
+    static int64_t last;
+    int64_t now=esp_timer_get_time();
+    if(last && now-last<1000000) return;
+    static unsigned step;
+    if(!last) { adsb_state_init();adsb_select_set_icao(0); }
+    last=now;
+    adsb_aircraft_t *a=adsb_state_find_or_create(0xABC123);
+    snprintf(a->callsign,sizeof(a->callsign),"STICKY1");
+    a->lat=43.449f;a->lon=-71.638f-step*0.0005f;
+    a->heading=260+(step%21);a->velocity=80;a->altitude=3000;
+    a->pos_valid=true;a->pos_ts_us=a->last_seen_us=now;
+    adsb_state_push_position(a);
+    step++;
+}
+
 /* NOTES works on a scratch copy of the fixture notes, so whatever a run
    types, imports or trashes never reaches the fixtures themselves. */
 static const char *sim_notes_copy(void)
@@ -530,9 +554,24 @@ static void seed_calls(bool empty) {
 static void capture_frame(void) {
 #ifdef LS_CARTOCORE_HOST
     const char *dir=getenv("LSSIM_CAPTURE_FRAMES");if(!dir) return;
+    const char *every=getenv("LSSIM_CAPTURE_EVERY");
+    static unsigned presented;
+    unsigned period=every?(unsigned)atoi(every):1;
+    if(period<1) period=1;
+    if(++presented%period) return;
     extern bool lssim_carto_frame_info(tui_rect *,unsigned *,unsigned *,bool *);
     static unsigned number;char path[1024];tui_rect area;unsigned z,generation;bool fresh;
     bool ready=lssim_carto_frame_info(&area,&z,&generation,&fresh);
+    if(getenv("LSSIM_LABEL_TRACK")) {
+        extern bool ls_map_air_label_trace(uint32_t,int [6]);
+        int trace[6];
+        if(ls_map_air_label_trace(0xABC123,trace)) {
+            snprintf(path,sizeof(path),"%s/%04u.track",dir,number);
+            FILE *t=fopen(path,"w");assert(t);
+            fprintf(t,"%d %d %d %d %d %d\n",trace[0],trace[1],trace[2],trace[3],trace[4],trace[5]);
+            fclose(t);
+        }
+    }
     snprintf(path,sizeof(path),"%s/%04u.bmp",dir,number);assert(!write_bmp(path));
     snprintf(path,sizeof(path),"%s/%04u.cells",dir,number++);
     FILE *f=fopen(path,"wb");assert(f);
@@ -552,6 +591,7 @@ static void frame(int n)
         if (s_step_us) ls_shim_time_advance(s_step_us);
         lssim_cartocore_pump();
         lssim_tick_state();
+        label_track_tick();
         /* The notes store's worker, which on the board is the field I/O task. */
         for (int k = 0; k < 4; k++) ls_notes_io_step();
         /* The experiments worker, which on the board is its own task. */
@@ -665,6 +705,7 @@ static void usage(void)
     printf("            animation moves (default 0: one frozen instant)\n");
     printf("  -C        census: enter every screen, count the value and\n");
     printf("            action tables, exit 1 on a refusal or too little room\n");
+    printf("  LSSIM_ACARS=1 seeds FM with decoded ACARS messages\n");
     printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
     printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
     printf("  LSSIM_TONE=1..258 seeds a detected receive tone in FM\n");
@@ -907,6 +948,16 @@ int main(int argc, char **argv)
             ais_store_receive(&v, NULL);
         }
     }
+    if (getenv("LSSIM_ACARS")) {
+        FM.mode = FM_MODE_ACARS;
+        FM.freq_hz = FM_FREQ_ACARS;
+        acars_app_clear();
+        acars_app_inject("N123ABC", "H1", "FIRST message from the ACARS decoder log");
+        acars_app_inject("N456DEF", "Q0", "Flight AB1234 reports position and weather. This retained message exercises the full detail text beyond the pager's eighty character preview. The final words remain readable at both orientations: END OF MESSAGE.");
+        acars_state_t *state = acars_app_state_mut();
+        state->n_synced = 5;
+        state->n_bad_crc = 3;
+    }
     if (getenv("LSSIM_APRS")) {
         static aprs_packet_t p;
         static const char *const packets[] = {
@@ -952,12 +1003,18 @@ int main(int argc, char **argv)
             put_u32(ad+11,(uint32_t)(432005000+i*9000));
             put_u32(ad+15,(uint32_t)(-716499000+i*13000));
             put_u16(ad+19,2200+i*30); put_u16(ad+21,2220+i*30); put_u16(ad+23,2100+i*30);
-            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
-            memset(ad+6,0,25); ad[6]=0x42; ad[7]=5;
+            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time()-(getenv("LSSIM_RID_STALE")?61000000:0));
+            memset(ad+6,0,25); ad[6]=getenv("LSSIM_RID_V0")?0x40:0x42; ad[7]=5;
             put_u32(ad+8,432000000); put_u32(ad+12,(uint32_t)-716500000);
             put_u16(ad+16,1); ad[18]=10; put_u16(ad+19,2400); put_u16(ad+21,2000); ad[23]=0x12;
             put_u16(ad+24,2050);
-            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
+            ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time()-(getenv("LSSIM_RID_STALE")?61000000:0));
+            if(getenv("LSSIM_RID_STALE")) {
+                memset(ad+6,0,25);ad[6]=2;ad[7]=0x12;
+                snprintf((char *)ad+8,20,"LS-DEMO-%03d",i+1);
+                ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time()-11000000);
+                ls_rid_advert(mac,0,-42-i*9,ad,sizeof(ad),esp_timer_get_time());
+            }
         }
     }
     lssim_ota_publish();          /* what main/ls_ota.c publishes on the board */

@@ -65,6 +65,7 @@ typedef struct {
     uint32_t address;
     uint16_t baud;
     uint8_t  function;
+    char     type;
     char     text[80];
 } ls_field_page_t;
 
@@ -97,8 +98,7 @@ typedef struct {
     char record_saved_utc[24];
     uint32_t spectrum_sweeps, spectrum_errors;
     int64_t spectrum_us;
-    /* The band SPECTRUM sweeps when one was set (ls_field_spectrum_span);
-       0 when it sweeps round the tuned frequency. */
+    /* Actual SPECTRUM endpoints, including the bounded default span. */
     uint32_t span_lo_hz, span_hi_hz;
     bool calibration_keyboard; /* Active automatic attachment profile. */
     uint8_t calibration_faces;
@@ -155,6 +155,8 @@ bool ls_field_transmit(const char *text);
 bool ls_field_source(ls_field_source_t source);
 const char *ls_field_source_name(ls_field_source_t source);
 bool ls_field_record(bool enabled);
+/* An explicit source session cannot replace or stop the journal recorder. */
+bool ls_field_record_source(ls_field_source_t source, bool enabled);
 bool ls_field_recording(void);
 void ls_field_watch(bool enabled);
 bool ls_field_note(uint32_t id, const char *title, const char *text);

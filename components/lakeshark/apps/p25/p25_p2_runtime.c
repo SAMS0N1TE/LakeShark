@@ -1,4 +1,6 @@
 #include "call_archive.h"
+#include "p25_state.h"
+#include "radio_choice.h"
 #include "p25_p2_runtime.h"
 #include "p25_p2_runtime_status.h"
 #include "esp_attr.h"
@@ -27,7 +29,11 @@ static EXT_RAM_BSS_ATTR uint8_t symbols[1024];
 extern void audio_write_p25_voice(const int16_t *, int);
 
 bool p25_p2_enabled(void) { return __atomic_load_n(&wanted, __ATOMIC_ACQUIRE); }
-void p25_p2_enable(bool on) { __atomic_store_n(&wanted, on, __ATOMIC_RELEASE); }
+void p25_p2_enable(bool on) {
+  if (on && !p25_p2_receiver_supported(P25.lora_rx,
+      ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA)) return;
+  __atomic_store_n(&wanted, on, __ATOMIC_RELEASE);
+}
 bool p25_p2_config(uint32_t wacn, uint16_t system, uint16_t nac,
                    unsigned slot) {
   if (wacn > 0xfffff || system > 0xfff || nac > 0xfff || slot > 1)

@@ -56,6 +56,9 @@ typedef struct {
     int      dsd_sync_count;
     int      dsd_voice_count;
     int      dsd_nac;
+    bool     dsd_nac_valid;
+    uint32_t dsd_nac_generation, channel_generation;
+    bool     phase2_follow;
     int      dsd_tg;
     int      dsd_src;
     char     dsd_ftype[16];
@@ -118,6 +121,10 @@ typedef struct {
     uint64_t grant_freq_hz;
     uint32_t grant_followed_count;
     bool     grant_auto_follow;
+    uint64_t control_hz;
+    uint16_t hold_tg, lockout_count, allow_count;
+    uint16_t lockout[64], allow[64];
+    int list_mode;
     /* observed grant != active call != decoded PCM. GUI may show
      * unsupported observations on control, but only RX_AUDIO claims audio. */
     p25_call_info_t grant_observed;
@@ -191,6 +198,19 @@ typedef struct {
     uint32_t p25_lcw_fec_reject_count;
 } p25_state_t;
 
+static inline bool p25_nac_valid(const p25_state_t *state)
+{
+    return state->dsd_nac_valid && state->dsd_nac_generation == state->channel_generation;
+}
+static inline void p25_nac_publish(p25_state_t *state, uint16_t nac,
+                                    uint32_t generation, int64_t seen_us)
+{
+    state->dsd_nac = state->dsd_last_ok_nac = nac;
+    state->dsd_nac_generation = generation;
+    state->nac_seen_us = seen_us;
+    state->dsd_nac_valid = true;
+}
+
 extern p25_state_t      P25;
 extern scan_state_t     SCAN;
 extern uint32_t         s_tune_freq_hz;
@@ -216,6 +236,10 @@ void p25_p2_follow_describe(char *text, unsigned capacity);
 /* one-press hold/lockout actions the P25 main screen calls. Both
  * key on the currently-followed grant TG, falling back to the last-decoded
  * dsd_tg when the follower is on control. Return true on success. */
+typedef enum {
+    P25_UI_ALLOW_ADD, P25_UI_ALLOW_REMOVE, P25_UI_LIST_MODE, P25_UI_HOLD_SET
+} p25_ui_policy_t;
+bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value);
 bool p25_ui_hold_toggle(void);
 bool p25_ui_lockout_current(void);
 bool p25_ui_lockout_remove(uint16_t tg);

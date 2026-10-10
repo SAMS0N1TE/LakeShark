@@ -101,3 +101,44 @@ LS_CASE(sonde_fixture_survives_with_dmr_and_fm_tone_enabled)
         LS_CHECK(strstr(output, "UAL442"));
     }
 }
+
+LS_CASE(labs_options_step_frequency_and_fsk_send_stays_on_the_screen)
+{
+    run("labs", "-k o -x @right", false, "13");
+    LS_CHECK(strstr(output, "910.5500"));
+    for (int wide = 0; wide < 2; wide++) {
+        run("labs", "-k mmmdt", wide, "13");
+        LS_CHECK(strstr(output, "GFSK"));
+        LS_CHECK(strstr(output, "SEND ONE LORA PACKET") == NULL);
+        run("labs", "-k mmmo", wide, "13");
+        LS_CHECK(strstr(output, "SYNC WORD"));
+        LS_CHECK(strstr(output, "INVERT IQ") == NULL);
+    }
+}
+LS_CASE(labs_page_history_wraps_the_suffix_and_touch_reaches_oldest_page)
+{
+#ifdef _WIN32
+    _putenv_s("LSSIM_LABS_PAGES", "1");
+#else
+    setenv("LSSIM_LABS_PAGES", "1", 1);
+#endif
+    for (int wide = 0; wide < 2; wide++) {
+        run("labs", "-k mmmm", wide, "13");
+        LS_CHECK(strstr(output, "TAILVISIBLE"));
+        LS_CHECK(strstr(output, "1 of 8"));
+        run("labs", "-k mmmm -x @down,@down,@down,@down,@down,@down,@down", wide, "13");
+        LS_CHECK(strstr(output, "8 of 8"));
+        LS_CHECK(strstr(output, "TAILVISIBLE"));
+    }
+    run("labs", "-k mmmm -x 30:42,30:42,30:42,30:42,30:42,30:42,30:42", false, "13");
+    LS_CHECK(strstr(output, "8 of 8"));
+    run("labs", "-k mmmm -x 80:20,80:20,80:20,80:20,80:20,80:20,80:20", true, "13");
+    LS_CHECK(strstr(output, "8 of 8"));
+    run("labs", "-k mmmm -x 5:35", false, "13");
+    LS_CHECK(strstr(output, "2 of 8"));
+#ifdef _WIN32
+    _putenv_s("LSSIM_LABS_PAGES", "");
+#else
+    unsetenv("LSSIM_LABS_PAGES");
+#endif
+}

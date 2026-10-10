@@ -1,6 +1,7 @@
 /* Production LINK renderer, simulated worker snapshot; no radio or audio. */
 #include "ls_wireless.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static ls_wireless_snapshot_t s_model;
@@ -36,6 +37,7 @@ static void seed(void)
 
 void ls_wireless_get(ls_wireless_snapshot_t *out) { seed(); *out = s_model; }
 void ls_wireless_set_active(bool active) { (void)active; seed(); }
+void ls_wireless_find_ble(bool active) { (void)active; }
 void ls_wireless_observe(bool active) { (void)active; }
 bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass)
 {
@@ -53,4 +55,12 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
     snprintf(s_model.message, sizeof(s_model.message), "Simulated request %d%s%s",
              op, ssid ? ": " : "", ssid ? ssid : "");
     return true;
+}
+
+static bool rid_started;
+void ls_wireless_rid_request(bool on) { rid_started=on; }
+ls_rid_rx_t ls_wireless_rid_status(void) {
+    const char *state=getenv("LSSIM_RID_RX");
+    if(state) return (ls_rid_rx_t)atoi(state);
+    return rid_started || getenv("LSSIM_RID")?LS_RID_RX_LISTENING:LS_RID_RX_OFF;
 }

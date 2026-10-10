@@ -1,4 +1,4 @@
-/* LS_TEST_SOURCES: ${APP}/adsb/mode-s.c ${APP}/adsb/adsb_decode.c ${APP}/adsb/adsb_state.c */
+/* LS_TEST_SOURCES: ${APP}/adsb/adsb_demo.c ${APP}/adsb/mode-s.c ${APP}/adsb/adsb_decode.c ${APP}/adsb/adsb_state.c ${FW}/components/apps/tui/ls_follow.c ${FW}/components/apps/tui/ls_map_motion.c */
 
 
 #include "ls_test.h"
@@ -7,6 +7,8 @@
 #include "adsb_state.h"
 #include "adsb_demo.h"
 #include "mode-s.h"
+#include "ls_follow.h"
+#include "ls_map_motion.h"
 
 #include "audio_events.h"
 #include "event_bus.h"
@@ -18,6 +20,7 @@
 #include <string.h>
 
 uint32_t mode_s_checksum(unsigned char *msg, int bits);
+uint32_t icao_cache_has_addr(uint32_t addr);
 
 
 
@@ -110,8 +113,8 @@ static void df17_position(uint8_t m[14], uint32_t aa, int odd,
     m[2] = (uint8_t)(aa >> 8);
     m[3] = (uint8_t)aa;
     m[4] = (11 << 3);                                  /* TC 11, SS 0, NICsb 0 */
-    m[5] = 0x30;                                       /* altitude, not read here */
-    m[6] = (uint8_t)(((odd ? 1u : 0u) << 2) | ((lat17 >> 15) & 3u));
+    m[5] = 0xc3;                                       /* Q=1, 38000 ft */
+    m[6] = (uint8_t)(0x80 | ((odd ? 1u : 0u) << 2) | ((lat17 >> 15) & 3u));
     m[7] = (uint8_t)((lat17 >> 7) & 0xFFu);
     m[8] = (uint8_t)(((lat17 & 0x7Fu) << 1) | ((lon17 >> 16) & 1u));
     m[9] = (uint8_t)((lon17 >> 8) & 0xFFu);
@@ -279,7 +282,7 @@ LS_CASE(one_frame_alone_is_not_a_position)
                  a->lat, a->lon);
 }
 
-LS_CASE(a_fresh_pair_corrects_a_wrong_local_anchor)
+LS_CASE(a_fresh_pair_reacquires_after_the_local_anchor_expires)
 {
     reset();
     ls_shim_time_set(1000000);
@@ -288,6 +291,7 @@ LS_CASE(a_fresh_pair_corrects_a_wrong_local_anchor)
     a->pos_ts_us = esp_timer_get_time();
     a->lat = 43.20f;
     a->lon = -71.50f + 360.0f / 43.0f;
+    ls_shim_time_advance(60000000);
     send_pair(43.20, -71.50);
     LS_CHECK_MSG(nm_apart(a->lat, a->lon, 43.20, -71.50) < 0.1,
                  "valid pair retained alias %.5f, %.5f", a->lat, a->lon);
@@ -398,4 +402,178 @@ LS_CASE(global_positions_cover_both_parities_and_hemispheres)
             }
         }
     }
+}
+
+/* Exercise both production entrances, including the RTL preamble detector.
+   Frame CRCs are real; damage is a single RF bit error, not a fake message. */
+static void receive_frame(uint8_t frame[14], bool rtl)
+{
+    if (rtl) {
+        uint8_t iq[512];
+        memset(iq, 127, sizeof(iq));
+        const int preamble[] = { 0, 2, 7, 9 };
+        for (unsigned i = 0; i < sizeof(preamble) / sizeof(preamble[0]); i++)
+            iq[2 * preamble[i]] = 255;
+        for (int bit = 0; bit < 112; bit++) {
+            int one = (frame[bit / 8] >> (7 - bit % 8)) & 1;
+            iq[2 * (16 + 2 * bit + !one)] = 255;
+        }
+        adsb_on_sample(iq, sizeof(iq));
+    } else {
+        uint8_t chips[28] = {0};
+        for (int bit = 0; bit < 112; bit++) {
+            int one = (frame[bit / 8] >> (7 - bit % 8)) & 1;
+            int high = 2 * bit + !one;
+            chips[high / 8] |= (uint8_t)(0x80 >> (high % 8));
+        }
+        LS_EQ_INT(adsb_on_chips(chips, sizeof(chips), ADSB_CHIPS_FULL,
+                              ADSB_RSSI_NONE), ADSB_FRAME_OK);
+    }
+}
+
+static void receive_position(uint32_t id, double lat, double lon, int odd,
+                             bool damage, bool rtl)
+{
+    uint8_t frame[14];
+    uint32_t y, x;
+    cpr_encode(lat, lon, odd, &y, &x);
+    df17_position(frame, id, odd, y, x);
+    if (damage) frame[10] ^= 1; /* repair a position bit */
+    receive_frame(frame, rtl);
+}
+
+static void receive_motion(uint32_t id, int aircraft, bool rtl)
+{
+    uint8_t frame[14] = {0x8d, (uint8_t)(id >> 16), (uint8_t)(id >> 8), (uint8_t)id};
+    /* TC19 subtype 3 supplies a valid heading. Subtype 1 then supplies
+       distinct north/east ground velocities for dead reckoning. */
+    const int heading = 25 + aircraft;
+    frame[4] = (19 << 3) | 3;
+    frame[5] = (uint8_t)(4 | (heading >> 5));
+    frame[6] = (uint8_t)((heading & 31) << 3);
+    seal(frame, 112, 0);
+    receive_frame(frame, rtl);
+    const int ew = 471 + aircraft * 20, ns = 156 + aircraft * 7;
+    frame[4] = (19 << 3) | 1;
+    frame[5] = (uint8_t)(ew >> 8);
+    frame[6] = (uint8_t)ew;
+    frame[7] = (uint8_t)(ns >> 3);
+    frame[8] = (uint8_t)((ns & 7) << 5);
+    seal(frame, 112, 0);
+    receive_frame(frame, rtl);
+}
+
+static uint32_t colliding_sender(void)
+{
+    for (uint32_t id = 1; id < 0xFFFFFF; id++)
+        if (id != SENDER && icao_cache_has_addr(id) == icao_cache_has_addr(SENDER))
+            return id;
+    return 0;
+}
+
+static void two_tracks(bool rtl, double base_lat)
+{
+    reset(); ls_shim_time_set(1000000);
+    const uint32_t ids[] = { SENDER, colliding_sender() };
+    LS_CHECK(ids[1] != 0);
+    LS_EQ_UINT(icao_cache_has_addr(ids[0]), icao_cache_has_addr(ids[1]));
+    receive_position(ids[0], base_lat, -71.50, 0, false, rtl);
+    receive_position(ids[0], base_lat, -71.50, 1, false, rtl);
+    adsb_select_set_icao(ids[0]);
+    ls_follow_view_t selected, all;
+    ls_follow_clear(&selected); ls_follow_clear(&all);
+    ls_map_glide_t glide[2] = {0};
+    int64_t previous[2] = {0};
+    int trail_count[2] = {0};
+    for (int step = 0; step < 70; step++) {
+        ls_shim_time_set(1000000LL + step * 5000000LL);
+        const int n = step >= 6 ? 2 : 1; /* newcomer starts exactly 30 s later */
+        for (int i = 0; i < n; i++) {
+            const double lat = base_lat + step * 0.002 - i * 0.03;
+            const double lon = -71.50 + step * 0.008 - i * 0.03;
+            adsb_aircraft_t peer = *adsb_state_get(1 - i);
+            /* Do not refresh A's clean-address evidence after B arrives:
+               its weak position reports must stand on its earlier evidence. */
+            if (i == 1 || step <= 6) receive_motion(ids[i], i, rtl);
+            /* The first receiver is weaker: subsequent frames require repair.
+               Each aircraft alternates parity, with opposite parity to its peer. */
+            receive_position(ids[i], lat, lon, (step + i) & 1,
+                             i == 0 && step > 6, rtl);
+            LS_CHECK(memcmp(&peer, adsb_state_get(1 - i), sizeof(peer)) == 0);
+        }
+        adsb_periodic_age(esp_timer_get_time());
+        LS_EQ_INT(adsb_state_active_count(), n);
+        LS_EQ_UINT(adsb_select_get()->icao, ids[0]);
+        /* MAP/ADS-B read these exact slot records, rather than a packed or
+           double-buffered aircraft snapshot. Copy all slots as the UI does. */
+        adsb_aircraft_t snapshot[ADSB_MAX_TRACKED];
+        ls_follow_pt_t points[2];
+        int positioned = 0;
+        for (int slot = 0; slot < ADSB_MAX_TRACKED; slot++) {
+            snapshot[slot] = *adsb_state_get(slot);
+            const adsb_aircraft_t *a = &snapshot[slot];
+            if (!a->active || !a->pos_valid) continue;
+            LS_CHECK(positioned < n);
+            int i = a->icao == ids[0] ? 0 : 1;
+            LS_EQ_UINT(a->icao, ids[i]);
+            LS_EQ_INT(a->altitude, 38000);
+            /* The later subtype 1 now publishes ground track, about 71.7 degrees. */
+            LS_EQ_INT(a->heading, 71);
+            LS_CHECK(a->heading_valid && a->heading_is_track);
+            LS_EQ_INT(a->ew_velocity, 470 + i * 20);
+            LS_EQ_INT(a->ns_velocity, 155 + i * 7);
+            LS_CHECK(a->velocity > 400);
+            LS_CHECK(a->ns_velocity > 0 && a->ew_velocity > 0);
+            if (step > 0 && (i == 0 || step > 6)) {
+                LS_CHECK(a->pos_ts_us > previous[i]);
+                LS_NEAR(a->lat, base_lat + step * 0.002 - i * 0.03, 0.0001);
+                LS_NEAR(a->lon, -71.50 + step * 0.008 - i * 0.03, 0.001);
+            }
+            previous[i] = a->pos_ts_us;
+            adsb_trail_pt_t trail[ADSB_TRAIL_N];
+            int count = adsb_state_trail(slot, trail, ADSB_TRAIL_N);
+            LS_CHECK(count >= trail_count[i]);
+            if (i == 0 ? step > 0 : step > 7) LS_CHECK(count > 0);
+            if (count) {
+                LS_EQ_INT(trail[count - 1].ts_us, a->pos_ts_us);
+                LS_NEAR(trail[count - 1].lat, a->lat, 0.00001);
+                for (int k = 1; k < count; k++)
+                    LS_CHECK(trail[k].ts_us > trail[k - 1].ts_us);
+            }
+            trail_count[i] = count;
+            double lat, lon;
+            ls_map_glide(&glide[i], a->icao, a->pos_ts_us, a->lat, a->lon,
+                         esp_timer_get_time() + 900000, &lat, &lon);
+            points[positioned++] = (ls_follow_pt_t){a->icao, lat, lon};
+        }
+        LS_EQ_INT(positioned, step == 6 ? 1 : n); /* B needs its own pair */
+        ls_follow_in_t in = { .mode = LS_FOLLOW_SELECTED, .pw = 480, .ph = 640,
+            .tile_px = 256, .zoom = 11, .zoom_lo = 0, .zoom_hi = 15,
+            .air = points, .n = positioned, .selected = ids[0],
+            .now_us = esp_timer_get_time() };
+        ls_follow_step(&selected, &in);
+        LS_EQ_UINT(selected.target, ids[0]);
+        in.mode = LS_FOLLOW_ALL;
+        ls_follow_step(&all, &in);
+        LS_EQ_INT(all.count, positioned);
+    }
+    LS_EQ_INT(trail_count[0], ADSB_TRAIL_N);
+    LS_EQ_INT(trail_count[1], ADSB_TRAIL_N);
+}
+
+LS_CASE(lr_chip_interleaved_colliding_aircraft_keep_both_tracks) { two_tracks(false, 43.20); }
+LS_CASE(rtl_interleaved_colliding_aircraft_keep_both_tracks) { two_tracks(true, 43.20); }
+/* Both cross NL=44/43 at 42.80914012, starting a few km apart. */
+LS_CASE(lr_chip_two_tracks_cross_cpr_zone_boundary) { two_tracks(false, 42.792); }
+LS_CASE(rtl_two_tracks_cross_cpr_zone_boundary) { two_tracks(true, 42.792); }
+
+LS_CASE(recent_own_fix_precedes_a_motion_aliased_pair)
+{
+    reset(); ls_shim_time_set(1000000);
+    send_pair(42.36, -71.06);
+    ls_shim_time_advance(9000000);
+    send_one(42.42, -71.06, 0);
+    const adsb_aircraft_t *a = adsb_state_get(0);
+    LS_NEAR(a->lat, 42.42, 0.0001);
+    LS_NEAR(a->lon, -71.06, 0.001);
 }

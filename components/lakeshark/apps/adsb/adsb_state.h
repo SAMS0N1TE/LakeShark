@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 #define ADSB_MAX_TRACKED 16
+#define ADSB_ALT_UNKNOWN INT32_MIN
+#define ADSB_FIELD_STALE_US (15 * 1000000LL)
 
 typedef struct {
     int     raw_lat;
@@ -33,6 +35,11 @@ typedef struct {
     int              ew_velocity;
     int              ns_velocity;
     int              vert_rate;
+    bool             altitude_valid, velocity_valid, heading_valid, vert_rate_valid;
+    bool             heading_is_track, airspeed_valid;
+    int              airspeed, airspeed_type;
+    int64_t          altitude_ts_us, velocity_ts_us, heading_ts_us, vert_rate_ts_us;
+    int64_t          airspeed_ts_us;
     int              msg_count;
     int64_t          last_seen_us;
     bool             active;
@@ -65,7 +72,7 @@ typedef struct {
     uint16_t         mt_surv;
     uint16_t         mt_other;
 
-    int16_t          alt_history[32];
+    int32_t          alt_history[32];
     uint8_t          alt_history_head;
 
     adsb_cpr_frame_t cpr_even;

@@ -102,6 +102,51 @@ static atomic_uint s_decode_tune_generation;
 static portMUX_TYPE s_acquisition_lock = portMUX_INITIALIZER_UNLOCKED;
 static p25_acquisition_status_t s_acquisition_status;
 
+static TaskHandle_t s_owner_task;
+static TaskHandle_t s_setup_task;
+static p25_owner_queue_t s_owner_queue;
+static atomic_uint s_retuned_hz;
+static atomic_bool s_owner_wake;
+static bool s_owner_interrupted;
+static void owner_retuned(uint32_t f);
+static void p25_grant_publish_ui(void);
+static portMUX_TYPE s_owner_lock = portMUX_INITIALIZER_UNLOCKED;
+
+bool p25_owner_current(void)
+{
+    TaskHandle_t task = xTaskGetCurrentTaskHandle();
+    return task == s_setup_task || task == s_owner_task;
+}
+bool p25_owner_active(void) { return s_app_active; }
+void p25_owner_wake(void)
+{
+    atomic_store_explicit(&s_owner_wake, true, memory_order_release);
+}
+bool p25_owner_post(p25_owner_fn fn, uint32_t arg)
+{
+    portENTER_CRITICAL(&s_owner_lock);
+    bool ok = p25_owner_queue_push(&s_owner_queue, fn, arg);
+    if (ok) p25_owner_wake();
+    portEXIT_CRITICAL(&s_owner_lock);
+    return ok;
+}
+static void p25_owner_service(void)
+{
+    atomic_store_explicit(&s_owner_wake, false, memory_order_release);
+    p25_owner_command_t cmd;
+    for (;;) {
+        portENTER_CRITICAL(&s_owner_lock);
+        bool have = p25_owner_queue_pop(&s_owner_queue, &cmd);
+        portEXIT_CRITICAL(&s_owner_lock);
+        if (!have) break;
+        cmd.fn(cmd.arg);
+    }
+    p25_program_service_now();
+    uint32_t f = atomic_exchange_explicit(&s_retuned_hz, 0, memory_order_acq_rel);
+    if (f) owner_retuned(f);
+    p25_grant_publish_ui();
+}
+
 void p25_get_acquisition_status(p25_acquisition_status_t *out)
 {
     if (!out) return;
@@ -156,7 +201,7 @@ static void p25_health_publish_ui(uint32_t now_ms)
     raw->rfss = s_dsd_state.p25_rfss_id;
     raw->site = s_dsd_state.p25_rfss_site_id;
     raw->control_channel = s_dsd_state.p25_rfss_ch_t;
-    raw->control_hz = s_grant_follower.control_hz;
+    raw->control_hz = P25.control_hz;
     raw->sccb_rfss = s_dsd_state.p25_sccb_rfss_id;
     raw->sccb_site = s_dsd_state.p25_sccb_site_id;
     raw->sccb_channel_1 = s_dsd_state.p25_sccb_ch1;
@@ -323,8 +368,9 @@ static void p25_apply_cqpsk_request(void)
     if (s_demod_control.active == DEMOD_CQPSK) {
         p25_iq_capture_interrupt(P25_IQ_CAPTURE_CONFIG_CHANGED);
         s_ring.read_idx = s_ring.write_idx;
-        atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
-                                  memory_order_release);
+        P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                                  memory_order_release) + 1;
+        P25.dsd_nac_valid = false;
         P25.dsd_has_sync = false;
         P25.sync_active_until_us = 0;
         dsp_has_signal_lock = 0;
@@ -344,9 +390,10 @@ static void p25_apply_demod_mode(demod_mode_t mode)
     s_ring.read_idx = s_ring.write_idx;
     /* A decoder already inside sync/NID must discard the crossed result and
      * reset itself before consuming a differently sliced sample stream. */
-    atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
-                              memory_order_release);
+    P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                              memory_order_release) + 1;
     P25.dsd_has_sync = false;
+    P25.dsd_nac_valid = false;
     P25.sync_active_until_us = 0;
     dsp_has_signal_lock = 0;
     p25_publish_demod();
@@ -416,9 +463,17 @@ static void p25_grant_retune_cb(void *user, uint64_t center_hz, bool to_traffic)
 
 static void p25_grant_publish_ui(void)
 {
+    P25.control_hz = s_grant_follower.control_hz;
     P25.grant_observed = s_grant_follower.observed_grant;
     P25.grant_active = s_grant_follower.active_call;
+    P25.hold_tg = g_p25_scan.hold_tg;
+    P25.list_mode = g_p25_scan.list_mode;
+    P25.lockout_count = g_p25_scan.lockout_count;
+    P25.allow_count = g_p25_scan.allow_count;
+    memcpy(P25.lockout, g_p25_scan.lockout, sizeof(P25.lockout));
+    memcpy(P25.allow, g_p25_scan.allow, sizeof(P25.allow));
     P25.receive_state = s_grant_follower.receive_state;
+    P25.phase2_follow = s_grant_follower.phase2_follow;
     P25.grant_unsupported_count = s_grant_follower.unsupported_grants;
     P25.grant_unresolved_count = s_grant_follower.unresolved_grants;
     P25.control_relock_count = s_grant_follower.control_relocks;
@@ -519,7 +574,9 @@ static void p25_grant_publish_ui(void)
 void p25_request_tune(uint32_t center_hz, bool fast)
 {
     ls_iq_control_request_tune(&s_radio_control, center_hz, fast);
-    atomic_fetch_add_explicit(&s_decode_tune_generation, 1, memory_order_release);
+    P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                              memory_order_release) + 1;
+    P25.dsd_nac_valid = false;
 }
 
 void p25_request_gain(int gain_tenths_db)
@@ -542,8 +599,11 @@ void p25_get_receiver_status(ls_iq_control_status_t *out)
     ls_iq_control_status(&s_radio_control, out);
 }
 
+static void owner_auto_follow(uint32_t arg) { (void)p25_set_auto_follow(arg != 0); }
+
 bool p25_set_auto_follow(bool enabled)
 {
+    if (!p25_owner_current()) return p25_owner_post(owner_auto_follow, enabled);
     bool returned = p25_scan_set_auto_follow(&g_p25_scan, &s_grant_follower,
                                              enabled);
     bool saved = settings_set_p25_auto_follow(enabled);
@@ -554,19 +614,25 @@ bool p25_set_auto_follow(bool enabled)
 
 bool p25_get_auto_follow(void)
 {
-    return p25_scan_get_auto_follow(&g_p25_scan);
+    return P25.grant_auto_follow;
 }
+
+static void owner_encrypted(uint32_t arg) { (void)p25_set_leave_on_encrypted(arg != 0); }
 
 bool p25_set_leave_on_encrypted(bool enabled)
 {
+    if (!p25_owner_current()) return p25_owner_post(owner_encrypted, enabled);
     p25_grant_set_leave_on_encrypted(&s_grant_follower, enabled);
     bool saved = settings_set_p25_skip_encrypted(enabled);
     if (!saved) sys_log(4, "Encrypted-skip changed but preference was not saved");
     return saved;
 }
 
+static void owner_skip(uint32_t arg) { (void)p25_set_encrypted_skip_ms(arg); }
+
 bool p25_set_encrypted_skip_ms(unsigned int ms)
 {
+    if (!p25_owner_current()) return p25_owner_post(owner_skip, ms);
     uint32_t bounded = p25_controls_clamp_encrypted_skip_ms(ms);
     p25_grant_set_encrypted_skip_ms(&s_grant_follower, bounded);
     bool saved = settings_set_p25_encrypted_skip_ms(bounded);
@@ -576,12 +642,16 @@ bool p25_set_encrypted_skip_ms(unsigned int ms)
 
 bool p25_get_leave_on_encrypted(void)
 {
-    return s_grant_follower.leave_on_encrypted;
+    return P25.p25_leave_on_encrypted;
 }
 
 /* off after restart, not saved */
+static void owner_phase2(uint32_t arg) { p25_set_phase2_follow(arg != 0); }
+
 void p25_set_phase2_follow(bool enabled)
 {
+    if (!p25_owner_current()) { (void)p25_owner_post(owner_phase2, enabled); return; }
+    if (enabled && (P25.lora_rx || ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA)) return;
     p25_grant_set_phase2_follow(&s_grant_follower, enabled);
     if (!enabled && s_p2_owned)
         (void)p25_grant_force_return_to_control(&s_grant_follower);
@@ -589,7 +659,7 @@ void p25_set_phase2_follow(bool enabled)
 
 bool p25_get_phase2_follow(void)
 {
-    return s_grant_follower.phase2_follow;
+    return P25.phase2_follow;
 }
 
 void p25_p2_follow_describe(char *text, unsigned capacity)
@@ -669,19 +739,25 @@ static void p25_p2_follow_service(void)
 
 unsigned int p25_get_encrypted_skip_ms(void)
 {
-    return (unsigned int)(s_grant_follower.encrypted_skip_us / 1000LL);
+    return P25.p25_encrypted_skip_ms;
 }
 
 /* the two operations a PROGRAM profile apply needs from the decoder
  * owner. Both go through the follower and the same tune latch every other
  * retune uses, so the profile does not become a second thing that tunes. */
+static void owner_release(uint32_t arg) { (void)arg; p25_return_to_control(); }
+
 void p25_return_to_control(void)
 {
+    if (!p25_owner_current()) { (void)p25_owner_post(owner_release, 0); return; }
     (void)p25_grant_force_return_to_control(&s_grant_follower);
 }
 
+static void owner_control(uint32_t arg) { p25_set_control_channel(arg); }
+
 void p25_set_control_channel(uint64_t control_hz)
 {
+    if (!p25_owner_current()) { if (control_hz <= UINT32_MAX) (void)p25_owner_post(owner_control, (uint32_t)control_hz); return; }
     if (control_hz == 0 || control_hz > UINT32_MAX) return;
     /* selecting/applying a profile control is distinct from carrier
      * scan and takes the tuner from it explicitly. This also covers PROGRAM
@@ -702,45 +778,75 @@ void p25_set_control_channel(uint64_t control_hz)
  * signal does not corrupt state. */
 static uint16_t p25_ui_current_tg(void)
 {
-    if (s_grant_follower.state == P25_GRANT_ON_TRAFFIC &&
-        s_grant_follower.talkgroup) {
-        return s_grant_follower.talkgroup;
+    if (P25.grant_on_traffic && P25.grant_talkgroup) {
+        return P25.grant_talkgroup;
     }
     return (uint16_t)P25.dsd_tg;
 }
 
-bool p25_ui_hold_toggle(void)
+static void owner_policy(uint32_t arg)
 {
-    uint16_t tg = p25_ui_current_tg();
-    if (p25_scan_hold_active(&g_p25_scan)) {
-        p25_scan_hold_set(&g_p25_scan, 0);
-        sys_log(1, "Hold cleared");
-        p25_scan_persist_save_now();
-        return false;
-    }
-    if (tg == 0) return false;
-    p25_scan_hold_set(&g_p25_scan, tg);
-    sys_log(1, "Hold TG %u", (unsigned)tg);
-    p25_scan_persist_save_now();
-    return true;
+    (void)p25_ui_policy((p25_ui_policy_t)(arg >> 16), (uint16_t)arg);
 }
-
-bool p25_ui_lockout_current(void)
+bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
 {
-    uint16_t tg = p25_ui_current_tg();
-    if (tg == 0) return false;
-    bool ok = p25_scan_lockout_add(&g_p25_scan, tg);
+    if (!p25_owner_current())
+        return p25_owner_post(owner_policy, ((uint32_t)kind << 16) | value);
+    bool ok = true;
+    switch (kind) {
+    case P25_UI_ALLOW_ADD: ok = value && p25_scan_allow_add(&g_p25_scan, value); break;
+    case P25_UI_ALLOW_REMOVE: ok = p25_scan_allow_remove(&g_p25_scan, value); break;
+    case P25_UI_LIST_MODE:
+        if (value > P25_SCAN_LIST_NONE) return false;
+        p25_scan_list_set_mode(&g_p25_scan, (p25_scan_list_mode_t)value); break;
+    case P25_UI_HOLD_SET: p25_scan_hold_set(&g_p25_scan, value); break;
+    default: return false;
+    }
     if (ok) {
-
-        (void)p25_grant_force_return_to_control(&s_grant_follower);
-        sys_log(1, "Lockout TG %u", (unsigned)tg);
+        if (s_grant_follower.state == P25_GRANT_ON_TRAFFIC &&
+            !p25_scan_is_allowed(&g_p25_scan, s_grant_follower.talkgroup))
+            (void)p25_grant_force_return_to_control(&s_grant_follower);
         p25_scan_persist_save_now();
     }
     return ok;
 }
 
+static void owner_hold(uint32_t arg)
+{
+    p25_scan_hold_set(&g_p25_scan, p25_scan_hold_active(&g_p25_scan) ? 0 : (uint16_t)arg);
+    p25_scan_persist_save_now();
+}
+bool p25_ui_hold_toggle(void)
+{
+    uint16_t tg = p25_ui_current_tg();
+    if (!tg && !P25.hold_tg) return false;
+    if (!p25_owner_current()) return p25_owner_post(owner_hold, tg);
+    owner_hold(tg);
+    return true;
+}
+
+static void owner_lockout(uint32_t arg)
+{
+    uint16_t tg = (uint16_t)arg;
+    if (!tg || !p25_scan_lockout_add(&g_p25_scan, tg)) return;
+    if (s_grant_follower.talkgroup == tg)
+        (void)p25_grant_force_return_to_control(&s_grant_follower);
+    p25_scan_persist_save_now();
+}
+bool p25_ui_lockout_current(void)
+{
+    uint16_t tg = p25_ui_current_tg();
+    if (!tg) return false;
+    if (!p25_owner_current()) return p25_owner_post(owner_lockout, tg);
+    owner_lockout(tg);
+    return true;
+}
+
+static void owner_unlock(uint32_t arg) { (void)p25_ui_lockout_remove((uint16_t)arg); }
+
 bool p25_ui_lockout_remove(uint16_t tg)
 {
+    if (!p25_owner_current()) return p25_owner_post(owner_unlock, tg);
     bool ok = p25_scan_lockout_remove(&g_p25_scan, tg);
     if (ok) p25_scan_persist_save_now();
     return ok;
@@ -765,7 +871,19 @@ void sys_log(uint8_t color, const char *fmt, ...)
     event_bus_publish(&e);
 }
 
-void dsd_yield(void) { vTaskDelay(1); }
+void dsd_yield(void)
+{
+    if (xTaskGetCurrentTaskHandle() == s_owner_task && !s_owner_interrupted &&
+        atomic_load_explicit(&s_owner_wake, memory_order_acquire)) {
+        /* Interrupt a silent hunt or partial frame, then drain between frames. */
+        s_owner_interrupted = true;
+        dsd_abort = exitflag = 1;
+        P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation,
+                                  1, memory_order_release) + 1;
+        P25.dsd_nac_valid = false;
+    }
+    vTaskDelay(1);
+}
 
 void audio_beep_request(int kind)
 {
@@ -871,7 +989,17 @@ static void dsd_decoder_task(void *arg)
     uint64_t decode_control_hz = s_grant_follower.control_hz;
     p25_sync_confirm_reset(&s_sync_confirm);
     int64_t geo_next_us = 0;
+    s_owner_task = xTaskGetCurrentTaskHandle();
     while (s_app_active) {
+        if (s_owner_interrupted) {
+            dsd_abort = exitflag = 0;
+            s_owner_interrupted = false;
+        }
+        p25_owner_service();
+        if (P25.lora_rx || ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) {
+            p25_set_phase2_follow(false);
+            p25_p2_enable(false);
+        }
         esp_task_wdt_reset();
         if (s_p2_owned) p25_p2_follow_service();
         if (p25_p2_enabled()) {
@@ -912,6 +1040,8 @@ static void dsd_decoder_task(void *arg)
             p25_voice_hold_end_call(&s_voice_hold);
             P25.voice_active_until_us = 0;
             P25.dsd_tg = P25.dsd_src = 0;
+            P25.dsd_nac_valid = false;
+            P25.dsd_nac = P25.dsd_last_ok_nac = 0;
         }
         if (decode_control_hz != s_grant_follower.control_hz) {
             p25_tsbk_reset_system(&s_dsd_state);
@@ -989,10 +1119,8 @@ static void dsd_decoder_task(void *arg)
                 P25.dsd_has_sync = true;
                 P25.sync_active_until_us = esp_timer_get_time() + 500000LL;
                 dsp_has_signal_lock = 1;
-                if (s_dsd_state.nac != 0) {
-                    P25.dsd_nac = s_dsd_state.nac;
-                    P25.nac_seen_us = esp_timer_get_time();
-                }
+                p25_nac_publish(&P25, (uint16_t)s_dsd_state.nac,
+                                acquisition.generation, esp_timer_get_time());
                 snprintf(P25.dsd_ftype, sizeof(P25.dsd_ftype), "%s", s_dsd_state.ftype);
                 if (s_dsd_state.rf_mod == 0) strcpy(P25.dsd_modulation, "C4FM");
                 else if (s_dsd_state.rf_mod == 1) strcpy(P25.dsd_modulation, "QPSK");
@@ -1014,7 +1142,6 @@ static void dsd_decoder_task(void *arg)
             snprintf(P25.dsd_fsubtype, sizeof(P25.dsd_fsubtype), "%s", s_dsd_state.fsubtype);
             snprintf(P25.dsd_err_str, sizeof(P25.dsd_err_str), "%s", s_dsd_state.err_str);
 
-            if (frame_ok && s_dsd_state.nac != 0) P25.dsd_last_ok_nac = s_dsd_state.nac;
 
             if (frame_ok) {
                 int64_t q_now = esp_timer_get_time();
@@ -1280,17 +1407,26 @@ static bool p25_lora_wanted(void)
 
 /* What a retune does to the decoder, whichever radio made it: the ring is
    emptied and the decoder starts its search again. */
+static void owner_retuned(uint32_t f)
+{
+    ls_iq_control_status_t tune;
+    ls_iq_control_status(&s_radio_control, &tune);
+    if (s_grant_follower.state == P25_GRANT_ON_CONTROL &&
+        tune.requested_center_hz == f && tune.tune_state == LS_IQ_RESULT_EFFECTIVE)
+        p25_grant_set_control(&s_grant_follower, f);
+}
 static void p25_decoder_retuned(uint32_t f)
 {
     s_tune_freq_hz = f;
     p25_spectrum_invalidate();
     s_ring.write_idx = s_ring.read_idx;
-    atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
-                              memory_order_release);
+    P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                              memory_order_release) + 1;
     P25.dsd_has_sync = false;
+    P25.dsd_nac_valid = false;
     P25.sync_active_until_us = 0;
-    if (s_grant_follower.state == P25_GRANT_ON_CONTROL)
-        p25_grant_set_control(&s_grant_follower, (uint64_t)f);
+    atomic_store_explicit(&s_retuned_hz, f, memory_order_release);
+    p25_owner_wake();
 }
 
 /* P25 Phase 1 on the LR2021. Its FSK engine samples C4FM at four bits a
@@ -1673,6 +1809,7 @@ static void p25_lora_run(void)
     }
     P25.lora_wait = false;
     P25.lora_rx = true;
+    p25_p2_enable(false);
     /* The chip cannot say whether a call is encrypted as often as an SDR
        can, so voice plays until a call is shown encrypted. */
     s_dsd_opts.play_unproven = 1;
@@ -1903,6 +2040,7 @@ static void p25_rx_task(void *arg)
     if (!s_iq_buf) {
         sys_log(4, "OOM rx buffer");
         s_rx_running = false;
+        p25_health_set_running(false);
 
         s_app_active = false;
         vTaskDelete(NULL);
@@ -1963,6 +2101,7 @@ static void p25_rx_task(void *arg)
         heap_caps_free(s_iq_buf);
         s_iq_buf = NULL;
         s_rx_running = false;
+        p25_health_set_running(false);
         vTaskDelete(NULL);
         return;
     }
@@ -2245,20 +2384,24 @@ static void p25_rx_task(void *arg)
                 s_radio_sample_rate_hz ? s_radio_sample_rate_hz
                                        : RTL_SAMPLE_RATE,
                 s_radio_bandwidth_hz,
-                s_grant_follower.state == P25_GRANT_ON_TRAFFIC,
+                P25.grant_on_traffic,
                 (uint32_t)(esp_timer_get_time() / 1000LL));
 
             bool p2_now=p25_p2_enabled();
             if(p2_now!=p2_was_enabled) {
                 s_ring.read_idx=s_ring.write_idx;
-                atomic_fetch_add_explicit(&s_decode_tune_generation,1,memory_order_release);
+                P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                                          memory_order_release) + 1;
+                P25.dsd_nac_valid = false;
                 p2_was_enabled=p2_now;
             }
             if (!p2_now && s_dsp.phase2) {
                 s_dsp.phase2=false;
                 dsp_set_mode(&s_dsp,s_demod_control.active);
                 p25_apply_demod_mode(s_demod_control.active);
-                atomic_fetch_add_explicit(&s_decode_tune_generation,1,memory_order_release);
+                P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                                          memory_order_release) + 1;
+                P25.dsd_nac_valid = false;
                 p25_p2_stop();
             }
             int na = 0;
@@ -2384,6 +2527,7 @@ static void p25_rx_task(void *arg)
     p25_p2_stop();
     p25_p2_enable(false);
     s_rx_running = false;
+    p25_health_set_running(false);
     vTaskDelete(NULL);
 }
 
@@ -2410,6 +2554,11 @@ static void p25_on_enter(void)
         s_radio_freq_hz = 0;
     }
 
+    s_setup_task = xTaskGetCurrentTaskHandle();
+    s_owner_task = NULL;
+    atomic_store_explicit(&s_retuned_hz, 0, memory_order_release);
+    atomic_store_explicit(&s_owner_wake, false, memory_order_release);
+    s_owner_interrupted = false;
     const app_t *cur = app_current();
     p25_entry_settings_t entry_settings;
     esp_err_t entry_settings_err = p25_entry_settings_load(
@@ -2433,6 +2582,7 @@ static void p25_on_enter(void)
 
     P25.dsd_has_sync       = false;
     P25.dsd_nac            = 0;
+    P25.dsd_nac_valid      = false;
     P25.dsd_tg             = 0;
     P25.dsd_src            = 0;
     P25.nac_seen_us        = 0;
@@ -2568,10 +2718,16 @@ static void p25_on_enter(void)
     P25.p25_lcw_ok_count        = 0;
     P25.p25_lcw_fec_reject_count = 0;
 
+    p25_grant_publish_ui();
+    portENTER_CRITICAL(&s_owner_lock);
+    p25_owner_queue_start(&s_owner_queue);
+    portEXIT_CRITICAL(&s_owner_lock);
+    s_setup_task = NULL;
     s_app_active = true;
     /* Reserve the PSRAM RX owner before creation, closing the same
      * create-to-task-entry window that FM's checked lifecycle closes. */
     s_rx_running = true;
+    p25_health_set_running(true);
     TaskHandle_t rx_task = xTaskCreateStaticPinnedToCore(
         p25_rx_task, "p25_rx", P25RX_STACK_WORDS, NULL, 10,
         s_p25rx_stack, &s_p25rx_tcb, 1);
@@ -2579,6 +2735,7 @@ static void p25_on_enter(void)
 
         s_app_active = false;
         s_rx_running = false;
+        p25_health_set_running(false);
         ls_iq_control_receiver_lost(&s_radio_control,
                                     LS_RADIO_ERR_NO_MEMORY);
         sys_log(4, "P25 RX task could not be created");
@@ -2587,8 +2744,10 @@ static void p25_on_enter(void)
 
 static bool p25_on_stop(void)
 {
-    (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_APP_EXIT);
     s_app_active = false;
+    portENTER_CRITICAL(&s_owner_lock);
+    p25_owner_queue_stop(&s_owner_queue);
+    portEXIT_CRITICAL(&s_owner_lock);
     p25_iq_capture_receiver(false);
 
     dsd_abort = 1;
@@ -2601,6 +2760,8 @@ static bool p25_on_stop(void)
                  s_rx_running, s_dsd_running);
         return false;
     }
+    p25_program_exit_now();
+    s_owner_task = NULL;
     if (!ls_radio_decode_worker_release(300, 10)) {
         ESP_LOGW(TAG, "decoder worker quiesce timeout - retaining P25 ownership");
         return false;

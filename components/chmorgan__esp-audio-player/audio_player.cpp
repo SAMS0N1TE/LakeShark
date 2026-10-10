@@ -106,6 +106,7 @@ static audio_instance_t instance;
 static std::atomic<uint32_t> stack_free_bytes;
 static std::atomic<uint32_t> position_ms, duration_ms;
 static std::atomic<bool> seekable;
+static std::atomic<uint32_t> stop_serial, stop_done;
 uint32_t audio_player_position_ms(void) { return position_ms.load(); }
 uint32_t audio_player_duration_ms(void) { return duration_ms.load(); }
 uint32_t audio_player_stack_free_bytes(void) { return stack_free_bytes.load(); }
@@ -388,6 +389,9 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
         // break out and exit if we aren't supposed to continue decoding
         if(decode_status == DECODE_STATUS_CONTINUE)
         {
+            if(i->config.source_format_fn)
+                i->config.source_format_fn(i->output.fmt.sample_rate,
+                    i->output.fmt.bits_per_sample, i->output.fmt.channels);
             // if mono, convert to stereo as es8311 requires stereo input
             // even though it is mono output
             if(i->output.fmt.channels ==  1) {
@@ -485,6 +489,10 @@ static void audio_task(void *pvParam)
                     while (true) {
                         vTaskSuspend(NULL);
                     }
+                } else if(AUDIO_PLAYER_REQUEST_STOP == audio_event.type) {
+                    set_state(i, AUDIO_PLAYER_STATE_IDLE);
+                    position_ms=0;
+                    if(audio_event.seek_ms)stop_done=audio_event.seek_ms;
                 } else {
                     // ignore other events when not playing
                 }
@@ -559,6 +567,20 @@ esp_err_t audio_player_stop(void)
     LOGI_1("%s", __FUNCTION__);
     audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_STOP, .fp = NULL };
     return audio_send_event(&instance, event);
+}
+
+esp_err_t audio_player_stop_wait(uint32_t timeout_ms)
+{
+    uint32_t serial=++stop_serial;
+    audio_player_event_t event={};
+    event.type=AUDIO_PLAYER_REQUEST_STOP;event.seek_ms=serial;
+    esp_err_t err=audio_send_event(&instance,event);
+    if(err!=ESP_OK)return err;
+    for(uint32_t waited=0;stop_done.load()!=serial;waited+=5) {
+        if(waited>=timeout_ms)return ESP_FAIL;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return ESP_OK;
 }
 
 /**

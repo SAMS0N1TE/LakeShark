@@ -461,3 +461,34 @@ LS_CASE(a_status_read_by_the_console_does_not_hide_a_chip_reset_from_the_session
     LS_EQ_UINT(ms.resets, 1);                     /* the poll still saw it, and reprogrammed */
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
 }
+
+static esp_err_t other_begin, other_end;
+static int other_pass, other_sweep;
+static void *try_other_scan(void *unused)
+{
+    (void)unused;
+    float bins[LS_LORA_SCAN_BINS]; bool done = true;
+    other_begin = ls_lora_scan_begin(902000000u, 928000000u);
+    other_pass = ls_lora_scan_pass(bins, LS_LORA_SCAN_BINS, &done);
+    other_sweep = ls_lora_scan_sweep(bins, LS_LORA_SCAN_BINS);
+    other_end = ls_lora_scan_end();
+    return NULL;
+}
+LS_CASE(a_scan_owner_excludes_other_tasks_until_successful_end)
+{
+    fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_scan_begin(433050000u, 434790000u), ESP_OK);
+    pthread_t other;
+    LS_EQ_INT(pthread_create(&other, NULL, try_other_scan, NULL), 0);
+    LS_EQ_INT(pthread_join(other, NULL), 0);
+    LS_EQ_INT(other_begin, ESP_ERR_INVALID_STATE);
+    LS_EQ_INT(other_pass, 0); LS_EQ_INT(other_sweep, 0);
+    LS_EQ_INT(other_end, ESP_ERR_INVALID_STATE); LS_CHECK(ls_lora_scanning());
+    LS_EQ_INT(ls_lora_scan_begin(434000000u, 435000000u), ESP_OK);
+    LS_EQ_INT(ls_lora_scan_end(), ESP_OK);
+    LS_EQ_INT(pthread_create(&other, NULL, try_other_scan, NULL), 0);
+    LS_EQ_INT(pthread_join(other, NULL), 0);
+    LS_EQ_INT(other_begin, ESP_OK); LS_EQ_INT(other_end, ESP_OK);
+}

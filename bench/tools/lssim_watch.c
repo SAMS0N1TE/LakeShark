@@ -33,7 +33,7 @@ void rec_set_max_span(uint32_t n){max_span=n;}
 int rec_get_min_edges(void){return minimum_edges;}
 void rec_set_min_edges(int n){minimum_edges=n;}
 uint32_t rec_get_freq(void){return frequency;}
-void rec_set_freq(uint32_t hz){frequency=hz;}
+bool rec_set_freq(uint32_t hz){if(state.enabled)return false;frequency=hz;return true;}
 const char *rec_end_reason_name(int reason){return reason==1?"gap":"limit";}
 bool rec_watch_start(void)
 {
@@ -90,11 +90,12 @@ void rec_watch_fsk_get(rec_fsk_mod_t *out){if(out)*out=sim_fsk;}
    property a caller can check without knowing what the bench made up. */
 static bool sim_sweeping;
 static int  sim_found;
-static rec_scan_bin_t sim_bin[2];
+static rec_scan_bin_t sim_bin[REC_SCAN_BINS];
+static bool sim_learning,sim_learn_pending;
 bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
 {
     (void)secs;(void)bins;
-    if(state.enabled)return false;   /* the radio is busy watching */
+    if(state.enabled || sim_sweeping || sim_learning)return false;
     if(hi<=lo)return false;
     sim_sweeping=true;
     sim_found=2;
@@ -124,7 +125,10 @@ int rec_watch_scan_live(rec_scan_bin_t *o,int m)
 }
 float rec_watch_scan_live_floor(void){return -120.0f;}
 int rec_watch_scan_hits(void){return sim_found;}
-void rec_watch_scan_stop(void){sim_sweeping=false;}
+void rec_watch_scan_stop(void){
+    if(sim_sweeping){sim_sweeping=false;state.scan_generation++;strcpy(state.scan_result,"Scan stopped");}
+    if(sim_learning){sim_learning=false;state.learn_generation++;strcpy(state.learn_result,"Learn stopped");}
+}
 static rec_scan_on_hit_t sim_on_hit=REC_SCAN_ON_HIT_BUZZ;
 void rec_watch_scan_on_hit(rec_scan_on_hit_t m){sim_on_hit=m;}
 rec_scan_on_hit_t rec_watch_scan_on_hit_get(void){return sim_on_hit;}
@@ -152,8 +156,8 @@ float rec_watch_scan_floor(void){return -120.0f;}
    never returns anything. */
 static bool sim_learned;
 bool rec_watch_request_learn(uint32_t secs)
-{(void)secs;if(state.enabled)return false;sim_learned=true;return true;}
-bool rec_watch_learn_busy(void){return false;}
+{(void)secs;if(state.enabled || sim_sweeping)return false;sim_learned=true;if(sim_learn_pending){sim_learning=true;return true;}state.learn_generation++;strcpy(state.learn_result,"Learn: 2400 baud, sync D391D391, 76% confident");return true;}
+bool rec_watch_learn_busy(void){return sim_learning;}
 bool rec_watch_learn_result(rec_learn_t *out)
 {
     if(!sim_learned)return false;
@@ -202,3 +206,19 @@ void rec_watch_sim_file_done(const char *result)
 {file_replay_busy=false;snprintf(file_replay_result,sizeof(file_replay_result),"%s",result);}
 int rec_watch_sim_file_count(void){return file_replay_count;}
 int rec_watch_sim_file_dbm(void){return file_replay_dbm;}
+
+void rec_watch_sim_hits(int n)
+{
+    if(n<0)n=0;if(n>REC_SCAN_BINS)n=REC_SCAN_BINS;
+    sim_found=n;
+    for(int i=0;i<n;i++) {
+        sim_bin[i].hz=433000000u+(uint32_t)i*10000u;
+        sim_bin[i].dbm=-60.0f-i;sim_bin[i].seen=1;
+    }
+}
+void rec_watch_sim_learn_pending(bool pending){sim_learn_pending=pending;}
+void rec_watch_sim_result(bool learn,const char *result)
+{
+    if(learn){sim_learning=false;state.learn_generation++;snprintf(state.learn_result,sizeof(state.learn_result),"%s",result);}
+    else {sim_sweeping=false;state.scan_generation++;snprintf(state.scan_result,sizeof(state.scan_result),"%s",result);}
+}

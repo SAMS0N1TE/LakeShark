@@ -772,6 +772,22 @@ LS_CASE(sweep_views_mute_and_drawn_touch_bounds_in_both_orientations) {
         LS_CHECK(ls_scr_sweep.touch(3,footnote));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
         tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
         LS_CHECK(grid_has("address may change"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
+        for(int i=0;i<24;i++) {uint8_t normal[6]={30+i};ls_sweep_match_t m={.category=SW_CAMERA,.label="mixed camera"};ls_sweep_observe(normal,0,0,-50,&m,now);}
+        ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'h'));
+        for(int i=0;i<24;i++) {ls_scr_sweep.draw(&g_sf,a);LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));}
+        tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(grid_row("owner-nearby tags")>a.y);
+        LS_CHECK(ls_scr_sweep.key(LS_TK_ENTER,0));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
+        tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(grid_has("near-owner") && grid_has("06:05:04:03:02:01"));
+        ls_sweep_settings_get(&s);LS_CHECK(s.hunt && !memcmp(s.hunt_mac,mac,6));
+        LS_CHECK(ls_scr_sweep.key(LS_TK_UP,0));ls_sweep_settings_get(&s);LS_CHECK(memcmp(s.hunt_mac,mac,6));
+        LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));ls_sweep_settings_get(&s);LS_CHECK(!memcmp(s.hunt_mac,mac,6));
+        LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
+        ls_sweep_runtime_status(false,"Settings active / NVS save failed");
+        tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
+        LS_CHECK(grid_has("NVS save failed") && grid_has("BLE WAIT"));
         ls_sweep_start(false);ls_scr_sweep.draw(&g_sf,a);ls_sweep_status_t st;ls_sweep_status(&st,esp_timer_get_time());LS_CHECK(!st.requested);
     }
 }

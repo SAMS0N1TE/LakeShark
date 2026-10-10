@@ -33,7 +33,7 @@ static int8_t measured[CELL_MAX_BINS];
 static uint8_t streak[CELL_MAX_BINS];
 static ls_sweep_plan_t plan;
 static int tile_lat,tile_lon;
-static bool located, external, context_ok, quiet;
+static bool located, external, context_ok, quiet, baseline_saved;
 static const char *context_reason;
 static int64_t last_motion;
 static int64_t last_imu_sample;
@@ -49,11 +49,11 @@ static void invalidate_locked(void)
 static void receiver_event(const ls_radio_endpoint_event_t *event,void *arg)
 {
     (void)arg;
-    if(!(event->capabilities&LS_RADIO_RX_IQ_U8))return;
+    if(strcmp(event->endpoint_id,LS_RADIO_ENDPOINT_RTL_USB))return;
     portENTER_CRITICAL(&lock);
     if(event->kind==LS_RADIO_ENDPOINT_DETACHED) {
         receiver_epoch++;state.receiver_missing=true;state.needs_relearn=true;
-        state.baseline=false;invalidate_locked();
+        state.baseline=false;state.baseline_saved=false;invalidate_locked();
         snprintf(state.message,sizeof(state.message),"Receiver removed; comparison invalidated");
     } else if(state.receiver_missing) {
         state.receiver_missing=false;
@@ -87,9 +87,7 @@ static bool position(int *lat,int *lon)
 {
     if(manual) {*lat=0;*lon=0;return false;}
     ls_gps_state_t g; ls_gps_get(&g);
-    int64_t age=esp_timer_get_time()-g.last_fix_us;
-    bool valid=g.fix && g.last_fix_us>0 && age>=0 && age<5000000 &&
-        isfinite(g.lat_deg) && isfinite(g.lon_deg) && g.hdop>0 && g.hdop<=5;
+    bool valid=cell_gps_valid(g.fix,g.last_fix_us,esp_timer_get_time(),g.lat_deg,g.lon_deg,g.hdop);
     *lat=valid?(int)floor(g.lat_deg*1000):0;
     *lon=valid?(int)floor(g.lon_deg*1000):0;
     return valid;
@@ -133,7 +131,7 @@ static bool read_baseline(unsigned band)
         bool ok=fread(&disk,1,sizeof(disk),f)==sizeof(disk) && fgetc(f)==EOF;
         fclose(f);
         if(ok && cell_baseline_valid(&disk,band,tile_lat,tile_lon,located,external)) {
-            baseline=disk; return true;
+            baseline=disk; baseline_saved=true; return true;
         }
     }
     return false;
@@ -189,6 +187,7 @@ static void publish_rows(bool comparable,unsigned changed,uint32_t elapsed)
     if(receiver_epoch==job_epoch) {
         state.rows=next.rows;state.changed=next.changed;state.elapsed_ms=next.elapsed_ms;
         state.compared=next.compared;state.baseline=next.baseline;state.quiet=next.quiet;
+        state.baseline_saved=next.baseline && baseline_saved;
         memcpy(state.row,next.row,sizeof(state.row));
         state.spectrum_count=next.spectrum_count;
         memcpy(state.spectrum,next.spectrum,sizeof(state.spectrum));
@@ -202,19 +201,23 @@ static bool lte_yield(void *arg)
     if(now-*last>20000){vTaskDelay(1);*last=now;}
     return cancel(NULL);
 }
-static void log_lte(uint32_t hz,const lte_sync_result_t *r)
+static FILE *lte_journal(void)
 {
-    if(!ls_sdcard_mounted())return;
+    if(!ls_sdcard_mounted())return NULL;
     mkdir("/sdcard/cell",0775);
     const char *path="/sdcard/cell/lte.jsonl";struct stat st;
     if(stat(path,&st)==0 && st.st_size>1024*1024) {
-        if(remove("/sdcard/cell/lte.previous.jsonl")!=0 && errno!=ENOENT)return;
-        if(rename(path,"/sdcard/cell/lte.previous.jsonl")!=0)return;
+        if(remove("/sdcard/cell/lte.previous.jsonl")!=0 && errno!=ENOENT)return NULL;
+        if(rename(path,"/sdcard/cell/lte.previous.jsonl")!=0)return NULL;
     }
-    FILE *f=fopen(path,"ab");if(!f){message("LTE found; SD journal unavailable");return;}
-    ls_gps_state_t g;ls_gps_get(&g);int64_t age=esp_timer_get_time()-g.last_fix_us;
-    bool fix=g.fix && g.last_fix_us>0 && age>=0 && age<5000000 && g.hdop>0 && g.hdop<=5 &&
-        isfinite(g.lat_deg) && isfinite(g.lon_deg);
+    return fopen(path,"ab");
+}
+static void log_lte(uint32_t hz,const lte_sync_result_t *r)
+{
+    if(!ls_sdcard_mounted())return;
+    FILE *f=lte_journal();if(!f){message("LTE found; SD journal unavailable");return;}
+    ls_gps_state_t g;ls_gps_get(&g);
+    bool fix=cell_gps_valid(g.fix,g.last_fix_us,esp_timer_get_time(),g.lat_deg,g.lon_deg,g.hdop);
     time_t epoch=time(NULL);char gps[96]="null";
     if(fix)snprintf(gps,sizeof(gps),"[%.6f,%.6f]",g.lat_deg,g.lon_deg);
     int written=fprintf(f,"{\"kind\":\"LTE_SYNC\",\"epoch\":%llu,\"hz\":%lu,\"pci\":%d,\"hits\":%d,\"pairs\":%d,\"cfo_hz\":%d,\"pss\":%.3f,\"sss\":%.3f,\"gps\":%s}\n",
@@ -229,6 +232,7 @@ static bool lte_scan(unsigned band)
     void *ws=heap_caps_malloc(lte_sync_workspace_size(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     ls_radio_session_t *session=NULL;
     ls_radio_err_t error=LS_RADIO_ERR_NO_MEMORY;
+    unsigned tunes=0,attempted=0,usable_count=0,discarded_count=0;
     if(!iq || !ws){message("LTE allocation failed");goto done;}
     ls_radio_requirements_t req={.required_caps=LS_RADIO_RX_IQ_U8,
         .min_hz=cell_bands[band].low,.max_hz=cell_bands[band].high,
@@ -241,9 +245,10 @@ static bool lte_scan(unsigned band)
     }
     if(error!=LS_RADIO_OK)goto done;
     uint32_t first=cell_bands[band].low+700000,last=cell_bands[band].high-700000;
-    unsigned tunes=(last-first)/100000+1;
+    tunes=(last-first)/100000+1;
     for(uint32_t hz=first;hz<=last && !cancel(NULL);hz+=100000) {
         portENTER_CRITICAL(&lock);
+        state.lte_attempted=++attempted;
         state.frequency=hz;state.tune=(hz-first)/100000+1;state.tunes=tunes;
         portEXIT_CRITICAL(&lock);
         cell_status_t activity;cell_monitor_get(&activity);cell_report_activity(&activity,'P');
@@ -272,8 +277,12 @@ static bool lte_scan(unsigned band)
             esp_timer_get_time()-start<60000;
         ls_radio_iq_stop(session);
         if(cancel(NULL))break;
-        if(error!=LS_RADIO_OK)break;
-        if(!usable){message("LTE IQ gap / slow capture: discarded");continue;}
+        if(!usable) {
+            portENTER_CRITICAL(&lock);state.lte_discarded=++discarded_count;portEXIT_CRITICAL(&lock);
+            if(error!=LS_RADIO_OK)break;
+            message("LTE IQ gap / slow capture: discarded");continue;
+        }
+        portENTER_CRITICAL(&lock);state.lte_usable=++usable_count;portEXIT_CRITICAL(&lock);
         message("LTE: matching repeated PSS and SSS");
         lte_sync_result_t result;int64_t yielded=esp_timer_get_time();
         bool found=lte_sync_find(iq,total/2,ws,&result,lte_yield,&yielded);
@@ -294,13 +303,26 @@ static bool lte_scan(unsigned band)
         }
     }
     if(cancel(NULL))message("LTE search stopped; previous cell rows are history");
-    else if(error==LS_RADIO_OK)message("LTE pass complete; no simulator verdict");
+    else if(error==LS_RADIO_OK)message(cell_coverage_complete(tunes,attempted,usable_count,discarded_count)?
+        "LTE pass complete; no simulator verdict":usable_count?"LTE partial coverage; windows discarded":"LTE failed; no usable windows");
 done:
     if(session){ls_radio_iq_stop(session);ls_radio_release(session);}
     free(iq);free(ws);
     if(cancel(NULL))message("LTE search stopped; previous cell rows are history");
     else if(error!=LS_RADIO_OK){char text[80];snprintf(text,sizeof(text),"LTE receiver: %s",ls_radio_err_name(error));message(text);}
-    return !cancel(NULL) && error==LS_RADIO_OK;
+    if(ls_sdcard_mounted()) {
+        FILE *f=lte_journal();
+        bool ok=false;
+        if(f) {
+            ok=fprintf(f,"{\"kind\":\"LTE_COVERAGE\",\"band\":%u,\"planned\":%u,\"attempted\":%u,\"usable\":%u,\"discarded\":%u,\"complete\":%s}\n",
+                band,tunes,attempted,usable_count,discarded_count,
+                !cancel(NULL) && error==LS_RADIO_OK && cell_coverage_complete(tunes,attempted,usable_count,discarded_count)?"true":"false")>0;
+            if(fflush(f) || fsync(fileno(f)))ok=false;
+            if(fclose(f))ok=false;
+        }
+        if(!ok)message("LTE coverage journal write failed");
+    }
+    return !cancel(NULL) && error==LS_RADIO_OK && cell_coverage_complete(tunes,attempted,usable_count,discarded_count);
 }
 static void task(void *arg)
 {
@@ -309,18 +331,19 @@ static void task(void *arg)
         ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
         cell_status_t initial;cell_monitor_get(&initial);
         unsigned band=initial.band; int job=command;bool complete_lte=false;
-        if(initial.needs_relearn) memset(&baseline,0,sizeof(baseline));
+        if(initial.needs_relearn) {memset(&baseline,0,sizeof(baseline));baseline_saved=false;}
         located=position(&tile_lat,&tile_lon);external=ls_board_hw_antenna_is_external();
         portENTER_CRITICAL(&lock);
         state.located=located;state.external=external;state.sd=ls_sdcard_mounted();
         portEXIT_CRITICAL(&lock);
         if(job==CELL_LTE){complete_lte=lte_scan(band);goto finished;}
+        if(!manual && !located) {invalidate();message("GPS NO FIX: wait or select SITE: LOCAL");goto finished;}
         memset(streak,0,sizeof(streak));
-        if(!cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external)) memset(&baseline,0,sizeof(baseline));
+        if(!cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external)) {memset(&baseline,0,sizeof(baseline));baseline_saved=false;}
         if(job==CELL_LOAD && initial.needs_relearn) {
             message("Receiver changed: LEARN a fresh antenna baseline");goto finished;
         }
-        if(job==CELL_LOAD || (located && job==CELL_WATCH && !initial.needs_relearn)) {
+        if(job==CELL_LOAD || (located && job==CELL_WATCH && !initial.needs_relearn && baseline.passes!=3)) {
             bool loaded=read_baseline(band);
             if(job==CELL_LOAD) {
                 message(loaded?(located?"GPS baseline loaded from SD":"Local baseline loaded: verify same site"):
@@ -330,7 +353,9 @@ static void task(void *arg)
         }
         if(job==CELL_LEARN) {
             memset(&baseline,0,sizeof(baseline));
-            baseline.magic=0x43454c4c;baseline.version=1;baseline.band=band;
+            baseline_saved=false;
+            baseline.magic=0x43454c4c;baseline.version=CELL_BASELINE_VERSION;baseline.band=band;
+            baseline.receiver=CELL_RECEIVER_RTL;baseline.calibration=CELL_CALIBRATION;
             baseline.rate=CELL_RATE;baseline.gain=CELL_GAIN;
             baseline.lat_tile=tile_lat;baseline.lon_tile=tile_lon;baseline.located=located;
             baseline.antenna=external;baseline.created=(uint32_t)time(NULL);
@@ -358,12 +383,12 @@ static void task(void *arg)
             int64_t started=esp_timer_get_time();
             message(job==CELL_LEARN?"Learning: keep antenna and device still":"Sweeping cellular downlink spectrum");
             portENTER_CRITICAL(&lock);state.tune=0;state.tunes=plan.n_tunes;portEXIT_CRITICAL(&lock);
-            ls_radio_err_t result=ls_sweep_run_cancelable(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL);
+            ls_radio_err_t result=ls_sweep_run_endpoint(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB);
             if(result==LS_RADIO_ERR_BUSY && passes==0 && esp_timer_get_time()-started<1000000) {
                 message("Waiting for receiver to park");vTaskDelay(pdMS_TO_TICKS(300));
                 /* Bounded retry; a different owner may legitimately hold it. */
                 for(int retry=0;retry<10 && result==LS_RADIO_ERR_BUSY && !cancel(NULL);retry++) {
-                    result=ls_sweep_run_cancelable(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL);
+                    result=ls_sweep_run_endpoint(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB);
                     if(result==LS_RADIO_ERR_BUSY) vTaskDelay(pdMS_TO_TICKS(300));
                 }
             }
@@ -392,11 +417,14 @@ static void task(void *arg)
             publish_rows(comparable,changed,(uint32_t)((esp_timer_get_time()-started)/1000));
             if(job!=CELL_LEARN) {cell_status_t report;cell_monitor_get(&report);cell_report_observe(&report);}
             if(job==CELL_LEARN && baseline.passes==3) {
+                check_context();
+                if(!context_ok) {baseline.passes=0;invalidate();message(context_reason);break;}
                 baseline.checksum=cell_checksum(&baseline);
                 portENTER_CRITICAL(&lock);
                 if(receiver_epoch==job_epoch)state.needs_relearn=false;
                 portEXIT_CRITICAL(&lock);
-                message(save_baseline(band)?"Baseline saved to SD; START to compare":"Baseline ready in RAM; SD save failed");break;
+                baseline_saved=save_baseline(band);
+                message(baseline_saved?"Baseline saved to SD; START to compare":"Baseline ready in RAM; SD save failed");break;
             }
             if(!context_ok) {message(context_reason);break;}
             message(!quiet?"Motion detected: comparison suppressed":!valid_base?"No baseline: LEARN captures three passes":changed?"Persistent RF change; identity unknown":"No persistent rise above threshold");
@@ -405,7 +433,8 @@ static void task(void *arg)
 finished:
         if(cancel(NULL))invalidate();
         portENTER_CRITICAL(&lock);
-        state.baseline=!state.needs_relearn && cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external);
+        state.baseline=(manual || located) && !state.needs_relearn && cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external);
+        state.baseline_saved=state.baseline && baseline_saved;
         state.busy=false;state.learning=false;
         portEXIT_CRITICAL(&lock);
         cell_status_t report;cell_monitor_get(&report);

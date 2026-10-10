@@ -11,6 +11,8 @@
 
 typedef enum { CELL_IQ_IDLE, CELL_IQ_RECEIVING, CELL_IQ_FILTERING,
                CELL_IQ_SYNCHRONIZING, CELL_IQ_DECODING_MIB, CELL_IQ_SAVING, CELL_IQ_WAITING } cell_iq_phase_t;
+typedef enum { CELL_IQ_STORAGE_OK, CELL_IQ_STORAGE_MISSING, CELL_IQ_STORAGE_WRITE,
+               CELL_IQ_STORAGE_QUOTA } cell_iq_storage_t;
 typedef struct {
     bool busy,complete,imu_valid,gps_valid;
     bool automatic, stopping, raw_saved, metadata_saved, multi;
@@ -25,7 +27,7 @@ typedef struct {
     bool lte_checked,lte_found;
     bool mib_checked,mib_found;
     cell_iq_phase_t phase;
-    uint32_t hz,rate,bytes,elapsed_us,active_hz;
+    uint32_t hz,rate,bytes,elapsed_us,active_hz,requested_ms;
     uint32_t analysis_ms;
     uint32_t acquire_ms,resample_ms,sync_ms,raw_save_ms;
     bool config_valid,raw_stats_valid;
@@ -36,7 +38,9 @@ typedef struct {
     uint32_t mib_ms;
     uint64_t dropped;
     ls_radio_iq_health_t radio_health;
-    ls_radio_err_t radio_health_result, stop_result;
+    ls_radio_err_t radio_health_result, stop_result, acquire_result;
+    bool timing_rejected, device_loss;
+    cell_iq_storage_t storage_result;
     ls_imu_sample_t imu;
     float heading;
     double latitude,longitude;

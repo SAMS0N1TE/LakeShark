@@ -57,7 +57,8 @@ static bool s_magnetic, s_simple;
    just heard, and the direction letters' colour. */
 static int s_fill = LS_COMPASS_FILL_LIGHT;
 static bool s_trail = true, s_white_letters;
-static float s_lock = NAN;            /* in the dial's reference */
+static float s_lock = NAN;            /* true bearing once declination is known */
+static bool s_lock_true;
 EXT_RAM_BSS_ATTR static char s_feedback[96];
 /* Direction finding: the shown track's lobe and answer. */
 EXT_RAM_BSS_ATTR static float s_lobe[LS_DF_BINS];
@@ -165,6 +166,16 @@ static float to_true(float d)
     if (true_mode()) return d;
     return isfinite(s_r.declination) ? fmodf(d + s_r.declination + 720.0f, 360.0f) : d;
 }
+static float locked_heading(void)
+{
+    if (!isfinite(s_lock)) return NAN;
+    if (!s_lock_true && isfinite(s_r.declination)) {
+        s_lock = fmodf(s_lock + s_r.declination + 720.0f, 360.0f);
+        s_lock_true = true;
+    }
+    return s_lock_true ? to_dial(s_lock) : s_lock;
+}
+
 static const char *ref(void) { return true_mode() ? "T" : "M"; }
 
 static const char *cardinal(float deg)
@@ -241,7 +252,7 @@ static void scene(ls_compass_scene_t *sc, bool with_df)
     double b;
     sc->target = target_nav(&b, NULL, NULL, 0) ? to_dial((float)b) : NAN;
     sc->sun = to_dial(sun_azimuth(NULL));
-    sc->lock = s_lock;
+    sc->lock = locked_heading();
     sc->df = sc->df_spread = NAN;
     if (with_df) {
         for (int i = 0; i < LS_DF_BINS && !sc->lobe; i++) if (s_lobe[i] > 0) sc->lobe = s_lobe;
@@ -314,8 +325,8 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     snprintf(line, sizeof(line), "BACK %03.0f  TILT %.0f", isfinite(h) ? fmodf(h + 180.0f, 360.0f) : 0.0f, s_r.tilt);
     LINE(LS_ATTR_DIM);
     if (isfinite(s_lock) && isfinite(h)) {
-        const float off = fmodf(s_lock - h + 540.0f, 360.0f) - 180.0f;
-        snprintf(line, sizeof(line), "LOCK %03.0f  steer %s %.0f", s_lock, off >= 0 ? "right" : "left", fabsf(off));
+        const float off = fmodf(locked_heading() - h + 540.0f, 360.0f) - 180.0f;
+        snprintf(line, sizeof(line), "LOCK %03.0f  steer %s %.0f", locked_heading(), off >= 0 ? "right" : "left", fabsf(off));
         LINE(TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     }
     double tb, tm; char tn[40];
@@ -561,7 +572,8 @@ static void find_start(void)
     { EXT_RAM_BSS_ATTR static ls_dfs_reading_t junk[16]; while (ls_dfs_take(junk, 16) > 0) {} }
     s_find_on = !ls_dfs_unavailable(s_dfs_source) && ls_dfs_select_slot(0, s_dfs_source, s_ch[0][0]);
     if (s_find_on) ls_dfs_set_channels(0, s_ch[0], s_nch[0], (uint32_t)OPTV(O_DWELL));
-    if (s_src2 < LS_DFS_COUNT && s_cal.phase == LS_DF_CAL_OFF && !ls_dfs_unavailable(s_src2) &&
+    else ls_dfs_stop_slot(0);
+    if (s_find_on && s_src2 < LS_DFS_COUNT && s_cal.phase == LS_DF_CAL_OFF && !ls_dfs_unavailable(s_src2) &&
         ls_dfs_select_slot(1, s_src2, s_ch[1][0]))
         ls_dfs_set_channels(1, s_ch[1], s_nch[1], (uint32_t)OPTV(O_DWELL));
     else ls_dfs_stop_slot(1);
@@ -672,7 +684,7 @@ __attribute__((noinline)) static void update_find(void)
     const int n = s_find_on ? ls_dfs_take(rd, 32) : 0;
     for (int i = 0; i < n; i++) {
         const int t = rd[i].slot * LS_DFS_CHANNELS + rd[i].channel;
-        if (t < 0 || t >= TRACKS || (cal && t)) continue;
+        if (t < 0 || t >= TRACKS || (cal && t) || rd[i].freq_hz != track_freq(t)) continue;
         const float level = cal ? beacon_hold(rd[i].level, rd[i].us) : rd[i].level;
         /* A clipped reading says only "loud": the converter flattened
            the very difference between directions being looked for. It is
@@ -1459,7 +1471,7 @@ static void mark_note(void)
     ls_note_live_gps(line, sizeof(line));
     n += (size_t)snprintf(body + n, sizeof(body) - n, "%s", line);
     if (isfinite(s_lock) && n < sizeof(body))
-        n += (size_t)snprintf(body + n, sizeof(body) - n, "Locked bearing %03.0f %s\n", s_lock, ref());
+        n += (size_t)snprintf(body + n, sizeof(body) - n, "Locked bearing %03.0f %s\n", locked_heading(), ref());
     say(ls_notes_mark("Compass mark", body) ? "Saved to NOTES" : "NOTES is busy; try again");
 }
 
@@ -1669,7 +1681,7 @@ static void o_more_show(const ls_opt_t *o, char *out, size_t n)
     case M_STYLE: snprintf(out, n, "%s", s_simple ? "simple" : "3D"); break;
     case M_CAL: snprintf(out, n, "in LORA LABS"); break;
     case M_LOCK:
-        if (isfinite(s_lock)) snprintf(out, n, "%03.0f %s", s_lock, ref());
+        if (isfinite(s_lock)) snprintf(out, n, "%03.0f %s", locked_heading(), ref());
         else snprintf(out, n, "none set");
         break;
     case M_TARGET: snprintf(out, n, "%s", ls_compass_target(NULL, NULL, NULL, 0) ? "following one" : "none set"); break;
@@ -1753,7 +1765,7 @@ static void apply_channels(int k)
 static void channel_freq_done(double mhz)
 {
     const int k = s_edit_slot;
-    if (!(mhz > 1 && mhz < 6000)) { say("Out of range"); return; }
+    if (!(mhz > 1 && mhz <= UINT32_MAX / 1e6)) { say("Range: above 1, up to 4294.967295 MHz"); return; }
     const uint32_t hz = (uint32_t)llround(mhz * 1e6);
     if (!ls_dfs_in_range(slot_source(k), hz)) {
         char t[64]; snprintf(t, sizeof(t), "%s cannot tune to %.4f MHz", ls_dfs_name(slot_source(k)), mhz);
@@ -1951,14 +1963,14 @@ static void save_bearing(void)
     if (f) snprintf(b.source, sizeof(b.source), "%.6s %.3f", ls_dfs_name(st->source), f / 1e6);
     else snprintf(b.source, sizeof(b.source), "%s", ls_dfs_name(st->source));
     const bool placed = position(&b.lat, &b.lon);
+    EXT_RAM_BSS_ATTR static char line[200], title[48];
+    ls_note_fmt_bearing(line, sizeof(line), bearing, spread, b.source, sw->top, st->unit, b.lat, b.lon, placed);
+    snprintf(title, sizeof(title), "Bearing: %s %.10s", b.source, st->tunable ? "" : st->target);
+    if (!ls_notes_mark(title, line)) { say("NOTES is busy; bearing kept, try again"); return; }
     if (placed) {
         if (s_bearing_count == LS_DF_BEARINGS) { memmove(s_bearings, s_bearings + 1, sizeof(s_bearings[0]) * (LS_DF_BEARINGS - 1)); s_bearing_count--; }
         s_bearings[s_bearing_count++] = b;
     }
-    EXT_RAM_BSS_ATTR static char line[200], title[48];
-    ls_note_fmt_bearing(line, sizeof(line), bearing, spread, b.source, sw->top, st->unit, b.lat, b.lon, placed);
-    snprintf(title, sizeof(title), "Bearing: %s %.10s", b.source, st->tunable ? "" : st->target);
-    ls_notes_mark(title, line);
     say(placed ? "Bearing saved. Move somewhere else and take another." : "Saved to NOTES, but no GPS: it cannot join a fix");
     clear_track(s_sel); memset(&s_est, 0, sizeof(s_est));
 }
@@ -1971,7 +1983,9 @@ static void make_fix(void)
     ls_compass_set_target(s_fix.lat, s_fix.lon, "DF fix");
     char body[200];
     snprintf(body, sizeof(body), "> FIX %.6f, %.6f  +/-%.0f m  from %d bearings\n", s_fix.lat, s_fix.lon, s_fix.radius_m, s_fix.used);
-    ls_notes_mark("Transmitter fix", body);
+    if (!ls_notes_mark("Transmitter fix", body)) {
+        say("GO TO target set; NOTES is busy, retry FIX"); return;
+    }
     say("Fix saved to NOTES and set as the GO TO target");
 }
 
@@ -2062,7 +2076,10 @@ static void action(int i)
 {
     s_feedback[0] = 0;
     if (s_page == P_DIAL) {
-        if (i == 0) { if (isfinite(s_lock)) s_lock = NAN; else s_lock = shown_heading(); }
+        if (i == 0) {
+            if (isfinite(s_lock)) s_lock = NAN;
+            else { s_lock = to_true(shown_heading()); s_lock_true = isfinite(s_r.declination); }
+        }
         else if (i == 1) mark_note();
         else if (i == 2) more_done(M_CAL);
     } else if (s_page == P_FIND) {
@@ -2107,7 +2124,7 @@ static void show_page(int p)
 {
     s_page = p; button_focus = -1; s_feedback[0] = 0;
     if (p == P_FIND && !s_find_on) find_start();
-    if (p != P_FIND && s_find_on) { find_stop(); cal_end(); }
+    if (p != P_FIND) { find_stop(); cal_end(); }
     if (p != P_FIND) s_logmode = false;
 }
 
@@ -2187,7 +2204,7 @@ static void enter(void)
 
 static void leave(void)
 {
-    if (s_find_on) find_stop();
+    find_stop();
     cal_end();
     s_logmode = false;
     ls_field_watch(false);
@@ -2438,8 +2455,14 @@ bool ls_scr_compass_console(int argc, char **argv)
     } else if (!strcmp(verb, "ch") && argc > 2) {
         s_rq_n = 0;
         char list[96]; snprintf(list, sizeof(list), "%s", argv[2]);
-        for (char *tok = strtok(list, ","); tok && s_rq_n < LS_DFS_CHANNELS; tok = strtok(NULL, ","))
-            s_rq_hz[s_rq_n++] = (uint32_t)llround(atof(tok) * 1e6);
+        for (char *tok = strtok(list, ","); tok && s_rq_n < LS_DFS_CHANNELS; tok = strtok(NULL, ",")) {
+            char *end;
+            const double mhz = strtod(tok, &end);
+            if (*end || !(mhz > 1 && mhz <= UINT32_MAX / 1e6)) {
+                printf("find: frequency must be above 1, up to 4294.967295 MHz\n"); return false;
+            }
+            s_rq_hz[s_rq_n++] = (uint32_t)llround(mhz * 1e6);
+        }
         if (!s_rq_n) return false;
         s_rq_slot = slot; s_rq_kind = RQ_CH;
     } else if (!strcmp(verb, "clear")) s_rq_kind = RQ_CLEAR;

@@ -108,10 +108,12 @@ static void chan_build(int i)
     s_chan_ready[i] = true;
 }
 
-static ls_mesh_msg_t   s_msgs[LS_MESH_MAX_MSGS];
+EXT_RAM_BSS_ATTR static ls_mesh_msg_t s_msgs[LS_MESH_MAX_MSGS];
 static int             s_msg_count;      /* how many slots are filled  */
 static int             s_msg_head;       /* next slot to write         */
 static volatile uint32_t s_msg_seq;
+static uint32_t s_msg_id;
+static volatile uint32_t s_incoming_seq;
 
 /* The message history, on the card. */
 
@@ -208,6 +210,7 @@ static bool            s_auto_tx     = false;  /* , never on by default */
 
 static char            s_name[LS_MESH_NAME_MAX + 1];
 static ls_mesh_radio_t s_radio_cfg;
+static bool s_radio_stored;
 
 static float    s_scope[LS_MESH_SCOPE_N];
 static int      s_scope_head;
@@ -264,7 +267,10 @@ static esp_err_t save_setting_blob(const char *key, const void *val, size_t n);
 static int note_msg(const char *text, bool mine, uint8_t chan, const char *peer)
 {
     const int slot = s_msg_head;
+    for (auto &a : s_ack) if (a.used && a.slot == slot) a.used = false;
+    for (auto &a : s_sent) if (a.used && a.slot == slot) a.used = false;
     ls_mesh_msg_t *m = &s_msgs[slot];
+    m->id = ++s_msg_id;
     /* The slot is reused round the ring: every field is written. */
     m->direct = peer != NULL;
     if (peer) { memcpy(m->peer, peer, 16); m->peer[16] = 0; }
@@ -272,13 +278,47 @@ static int note_msg(const char *text, bool mine, uint8_t chan, const char *peer)
     m->chan   = peer ? 0 : chan;
     m->t      = mesh_now();
     m->mine   = mine;
-    m->state  = mine ? LS_MSG_SENDING : LS_MSG_IN;
+    m->state  = mine ? LS_MSG_QUEUED : LS_MSG_IN;
+    m->sender[0] = 0;
     m->relays = 0;
     snprintf(m->text, sizeof(m->text), "%s", text ? text : "");
     s_msg_head = (s_msg_head + 1) % LS_MESH_MAX_MSGS;
     if (s_msg_count < LS_MESH_MAX_MSGS) s_msg_count++;
     s_msg_seq++;
+    if (!mine) s_incoming_seq++;
     return slot;
+}
+
+static struct { mesh::Packet *packet; uint32_t id; int slot; } s_delivery[LS_MESH_MAX_MSGS];
+static mesh::Packet *s_outbound_packet;
+static bool s_on_air, s_rx_fault;
+static int64_t s_rx_retry_us;
+
+static void delivery_bind(mesh::Packet *packet, int slot)
+{
+    s_delivery[slot] = { packet, s_msgs[slot].id, slot };
+}
+static void delivery_state(mesh::Packet *packet, ls_mesh_msg_state_t state)
+{
+    for (auto &d : s_delivery) if (d.packet == packet) {
+        auto &m = s_msgs[d.slot];
+        if (m.id == d.id && m.mine &&
+            (m.state == LS_MSG_QUEUED || m.state == LS_MSG_SENDING)) {
+            m.state = state; s_msg_seq++;
+        }
+    }
+}
+static void delivery_free(mesh::Packet *packet)
+{
+    delivery_state(packet, LS_MSG_FAILED);
+    for (auto &d : s_delivery) if (d.packet == packet) d.packet = nullptr;
+}
+static esp_err_t mesh_receive()
+{
+    esp_err_t err = ls_lora_receive();
+    s_rx_fault = err != ESP_OK;
+    s_rx_retry_us = esp_timer_get_time() + 1000000;
+    return err;
 }
 
 /* Did this packet start here? Compares against the hashes of our
@@ -537,7 +577,7 @@ public:
 
     bool startSendRaw(const uint8_t *bytes, int len) override
     {
-        if (!_tx_enabled) return false;
+        if (!_tx_enabled || s_radio_hold || s_radio_held) return false;
         bool probe = false;
         if (s_inspect_tx_packet && len >= 2) {
             int path_offset = ((bytes[0] & PH_ROUTE_MASK) == ROUTE_TYPE_TRANSPORT_FLOOD ||
@@ -563,28 +603,15 @@ public:
             ls_inspect_transmitted(&s_inspect, inspect_ms());
             portEXIT_CRITICAL(&s_inspect_lock);
         }
+        s_on_air = true;
+        delivery_state(s_outbound_packet, LS_MSG_SENDING);
         _tx++;
         note_event(LS_MESH_EV_TX, NULL, 0, 0, (uint16_t)len);
         return true;
     }
 
-    bool isSendComplete() override
-    {
-        const bool done = ls_lora_send_done();
-        /* The transition the chip actually tells us about. Anything
-           of ours still marked SENDING when the radio goes idle has left the
-           antenna, so it is SENT - no more and no less. */
-        if (done) {
-            for (int i = 0; i < LS_MESH_MAX_MSGS; i++)
-                if (s_msgs[i].mine && s_msgs[i].state == LS_MSG_SENDING) {
-                    s_msgs[i].state = LS_MSG_SENT;
-                    s_msg_seq++;
-                }
-        }
-        return done;
-    }
-
-    void onSendFinished() override { ls_lora_receive(); }
+    bool isSendComplete() override { return ls_lora_send_done(); }
+    void onSendFinished() override { s_on_air = false; mesh_receive(); }
 
     bool isInRecvMode() const override { return ls_lora_is_receiving(); }
 
@@ -809,10 +836,9 @@ public:
         memcpy(text, &data[5], n);
         text[n] = 0;
 
-        char line[LS_MESH_MSG_LEN];
-        snprintf(line, sizeof(line), "%s: %s",
-                 s_peers[pi].name[0] ? s_peers[pi].name : s_peers[pi].id, text);
-        note_msg(line, false, 0, s_peers[pi].id);
+        const int slot = note_msg(text, false, 0, s_peers[pi].id);
+        snprintf(s_msgs[slot].sender, sizeof(s_msgs[slot].sender), "%s",
+                 s_peers[pi].name[0] ? s_peers[pi].name : s_peers[pi].id);
 
         /* Acknowledge it, exactly as BaseChatMesh.cpp:229 does:
            four bytes of sha256 over the payload and the SENDER's public key,
@@ -902,8 +928,8 @@ public:
         portEXIT_CRITICAL(&s_inspect_lock);
     }
 
-    void logTx(mesh::Packet *p, int len) override { inspect_packet_done(p, false); }
-    void logTxFail(mesh::Packet *p, int len) override { inspect_packet_done(p, true); }
+    void logTx(mesh::Packet *p, int len) override { delivery_state(p, LS_MSG_SENT); inspect_packet_done(p, false); }
+    void logTxFail(mesh::Packet *p, int len) override { delivery_state(p, LS_MSG_FAILED); inspect_packet_done(p, true); }
     mesh::Packet *inspect_packet = nullptr;
     void inspect_packet_done(mesh::Packet *p, bool failed)
     {
@@ -1020,6 +1046,7 @@ template <class T, class... A> static T *psram_new(A &&...a)
 class LsPoolManager : public mesh::PacketManager {
     struct Q { mesh::Packet **pkt; uint8_t *pri; uint32_t *when; int size, num; };
     Q _unused, _send, _rx;
+    uint8_t *_storage = nullptr;
 
     static void qinit(Q &q, uint8_t *&blk, int n)
     {
@@ -1067,16 +1094,22 @@ public:
         uint8_t *blk = static_cast<uint8_t *>(heap_caps_malloc(
             qbytes * 3 + 16 + sizeof(mesh::Packet) * (size_t)pool, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (!blk) return;
+        _storage = blk;
         qinit(_unused, blk, pool); qinit(_send, blk, pool); qinit(_rx, blk, pool);
         mesh::Packet *pk = reinterpret_cast<mesh::Packet *>(((uintptr_t)blk + 7) & ~(uintptr_t)7);
         for (int i = 0; i < pool; i++) qadd(_unused, new (&pk[i]) mesh::Packet(), 0, 0);
         ok = true;
     }
+    ~LsPoolManager() { heap_caps_free(_storage); }
+    void drain() {
+        while (_send.num) free(qremove(_send, 0));
+        while (_rx.num) free(qremove(_rx, 0));
+    }
     mesh::Packet *allocNew() override { return qremove(_unused, 0); }
-    void free(mesh::Packet *p) override { qadd(_unused, p, 0, 0); }
+    void free(mesh::Packet *p) override { delivery_free(p); qadd(_unused, p, 0, 0); }
     void queueOutbound(mesh::Packet *p, uint8_t pri, uint32_t at) override
     { if (!qadd(_send, p, pri, at)) free(p); }
-    mesh::Packet *getNextOutbound(uint32_t now) override { return qget(_send, now); }
+    mesh::Packet *getNextOutbound(uint32_t now) override { return s_outbound_packet = qget(_send, now); }
     int getOutboundCount(uint32_t now) const override { return qbefore(_send, now); }
     int getOutboundTotal() const override { return _send.num; }
     int getFreeCount() const override { return _unused.num; }
@@ -1093,6 +1126,64 @@ static TaskHandle_t s_task;
 static volatile bool s_stop;
 static volatile uint32_t s_loops;
 static char s_self_id[17];
+
+template <class T> static void psram_delete(T *&p)
+{
+    if (p) { p->~T(); heap_caps_free(p); p = nullptr; }
+}
+static void mesh_objects_free()
+{
+    psram_delete(s_mesh); psram_delete(s_tables); psram_delete(s_mgr);
+    psram_delete(s_radio); psram_delete(s_board); psram_delete(s_rng);
+    psram_delete(s_rtc); psram_delete(s_ms);
+}
+
+/* Callers wait with small argument captures; only the owner touches packets. */
+static portMUX_TYPE s_call_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct MeshCall {
+    void (*run)(void *);
+    void *arg;
+    bool busy, done;
+} s_calls[4];
+
+template <class F> static int mesh_call(F fn, int refused = ESP_ERR_INVALID_STATE)
+{
+    if (!s_task || xTaskGetCurrentTaskHandle() == s_task) return fn();
+    struct Request { F *fn; int result; } req = { &fn, 0 };
+    int slot = -1;
+    portENTER_CRITICAL(&s_call_lock);
+    if (!s_stop) for (int i = 0; i < 4; i++) if (!s_calls[i].busy) {
+        slot = i;
+        s_calls[i] = { [](void *arg) {
+            auto *r = static_cast<Request *>(arg); r->result = (*r->fn)();
+        }, &req, true, false };
+        break;
+    }
+    portEXIT_CRITICAL(&s_call_lock);
+    if (slot < 0) return refused;
+    for (;;) {
+        portENTER_CRITICAL(&s_call_lock);
+        bool done = s_calls[slot].done;
+        if (done) s_calls[slot].busy = false;
+        portEXIT_CRITICAL(&s_call_lock);
+        if (done) return req.result;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+static void mesh_calls_service()
+{
+    for (auto &call : s_calls) {
+        portENTER_CRITICAL(&s_call_lock);
+        bool pending = call.busy && !call.done;
+        portEXIT_CRITICAL(&s_call_lock);
+        if (!pending) continue;
+        call.run(call.arg);
+        portENTER_CRITICAL(&s_call_lock);
+        call.done = true;
+        portEXIT_CRITICAL(&s_call_lock);
+    }
+}
 
 extern "C" void ls_mesh_inspect_get(ls_inspect_tracker_t *out)
 {
@@ -1112,6 +1203,10 @@ extern "C" void ls_mesh_inspect_set_options(ls_inspect_options_t o)
 static ls_inspect_state_t inspect_request(const char *id, ls_inspect_kind_t kind,
     const uint8_t *route, uint8_t count, uint8_t width, const char *password)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return (ls_inspect_state_t)mesh_call([&]() -> int {
+            return inspect_request(id, kind, route, count, width, password);
+        }, LS_INSPECT_NOT_PERMITTED);
     int pi = id ? peer_index(id) : -1;
     if (pi < 0 || count > 24 || (route && (width < 1 || width > 3 || count * width > MAX_PATH_SIZE))) return LS_INSPECT_REFUSED;
     if ((kind == LS_INSPECT_TRACE || kind == LS_INSPECT_STATUS) && s_peers[pi].type != LS_MESH_ROLE_REPEATER)
@@ -1209,7 +1304,8 @@ static void inspect_service()
         return;
     }
     if (!waiting || !ls_mesh_tx_enabled() || s_radio_hold || s_radio_held || ls_lora_fsk_active()) {
-        s_mesh->inspect_cancel();
+        mesh_calls_service();
+    s_mesh->inspect_cancel();
         if (waiting) {
             portENTER_CRITICAL(&s_inspect_lock);
             ls_inspect_finish(&s_inspect, inspect_ms(), LS_INSPECT_NOT_PERMITTED);
@@ -1305,6 +1401,10 @@ static void load_settings(void)
 
         memset(&s_radio_cfg, 0, sizeof(s_radio_cfg));
     }
+    s_radio_stored = s_radio_cfg.freq_hz || s_radio_cfg.sf || s_radio_cfg.bw_hz ||
+        s_radio_cfg.power_dbm || s_radio_cfg.cr || s_radio_cfg.sync_word || s_radio_cfg.crc_on;
+    uint8_t radio_valid;
+    if (nvs_get_u8(h, "radiovalid", &radio_valid) == ESP_OK) s_radio_stored = radio_valid != 0;
     for (int i = 1; i < LS_MESH_MAX_CHANNELS; i++) {
         char key[12];
         snprintf(key, sizeof(key), "chname%d", i);
@@ -1411,7 +1511,7 @@ static bool our_position(int32_t *lat_e7, int32_t *lon_e7,
 {
     ls_gps_state_t g;
     ls_gps_get(&g);
-    if (!g.fix) return false;
+    if (!ls_gps_fix_current(&g, esp_timer_get_time())) return false;
     *lat_e7 = (int32_t)(g.lat_deg * 1e7);
     *lon_e7 = (int32_t)(g.lon_deg * 1e7);
     if (g.year >= 2020) {
@@ -1546,7 +1646,9 @@ static void peerlog_open(void)
         ls_mesh_peer_rec_t r;
         /* One at a time, for the stack reason above. */
         if (ls_rlog_read_at(&s_peerlog, i, &r) != 1) break;
-        if (!r.id[0]) continue;
+        r.id[16] = 0;
+        r.name[sizeof(r.name) - 1] = 0;
+        if (!r.id[0] || peer_index(r.id) >= 0) continue;
         ls_mesh_peer_t *p = &s_peers[s_peer_count];
         memset(p, 0, sizeof(*p));
         snprintf(p->id, sizeof(p->id), "%s", r.id);
@@ -1600,20 +1702,70 @@ static void msglog_service(void)
    A card that is not there, or a file whose geometry no longer matches this
    build's ls_mesh_msg_t, leaves the ring empty and every later call a no-op -
    which is what the firmware did before this existed. */
+typedef struct {
+    uint32_t t;
+    bool mine, direct;
+    char peer[17];
+    ls_mesh_msg_state_t state;
+    uint8_t relays;
+    char text[84];
+    uint8_t chan;
+} mesh_legacy_msg_t;
+
+static int msglog_restore_legacy(FILE *f)
+{
+    ls_rlog_header_t h;
+    if (fread(&h, sizeof(h), 1, f) != 1 || h.magic != LS_RLOG_MAGIC ||
+        h.version != LS_RLOG_VERSION || h.rec_size != sizeof(mesh_legacy_msg_t) ||
+        h.capacity != LS_MESH_MAX_MSGS || h.count > h.capacity || h.head >= h.capacity)
+        return false;
+    if (!s_msglog_buf) s_msglog_buf = (ls_mesh_msg_t *)heap_caps_malloc(
+        sizeof(ls_mesh_msg_t) * LS_MESH_MAX_MSGS, MALLOC_CAP_SPIRAM);
+    if (!s_msglog_buf) return -1;
+    for (uint32_t i = 0; i < h.count; i++) {
+        mesh_legacy_msg_t old;
+        uint32_t slot = (h.head + h.capacity - h.count + i) % h.capacity;
+        if (fseek(f, sizeof(h) + slot * sizeof(old), SEEK_SET) != 0 ||
+            fread(&old, sizeof(old), 1, f) != 1) return -1;
+        auto &m = s_msglog_buf[i]; memset(&m, 0, sizeof(m));
+        m.t = old.t; m.mine = old.mine; m.direct = old.direct;
+        memcpy(m.peer, old.peer, 16); m.peer[16] = 0;
+        m.state = old.state == LS_MSG_SENDING ? LS_MSG_FAILED : old.state;
+        m.relays = old.relays; m.chan = old.chan;
+        memcpy(m.text, old.text, sizeof(old.text)); m.text[sizeof(old.text) - 1] = 0;
+    }
+    memcpy(s_msgs, s_msglog_buf, h.count * sizeof(*s_msgs));
+    s_msg_count = h.count; s_msg_head = h.count % LS_MESH_MAX_MSGS;
+    return true;
+}
+
 static void msglog_open(void)
 {
     mkdir("/sdcard/lakeshark", 0777);      /* already-exists is the normal case */
+    FILE *history = fopen(MSGLOG_PATH, "rb");
+    int legacy = history ? msglog_restore_legacy(history) : 0;
+    if (history) fclose(history);
+    if (legacy < 0) { ESP_LOGW(TAG, "history upgrade deferred"); return; }
     if (!ls_rlog_open(&s_msglog, MSGLOG_PATH,
                       sizeof(ls_mesh_msg_t), LS_MESH_MAX_MSGS)) {
         ESP_LOGI(TAG, "no message history (no card)");
         return;
     }
-    const int n = ls_rlog_read(&s_msglog, s_msgs, LS_MESH_MAX_MSGS);
+    const int n = legacy ? s_msg_count : ls_rlog_read(&s_msglog, s_msgs, LS_MESH_MAX_MSGS);
     if (n > 0) {
+        for (int i = 0; i < n; i++) {
+            s_msgs[i].id = ++s_msg_id;
+            s_msgs[i].peer[16] = 0;
+            s_msgs[i].sender[LS_MESH_PEER_NAME - 1] = 0;
+            s_msgs[i].text[LS_MESH_MSG_LEN - 1] = 0;
+            if (s_msgs[i].mine && (s_msgs[i].state == LS_MSG_QUEUED || s_msgs[i].state == LS_MSG_SENDING))
+                s_msgs[i].state = LS_MSG_FAILED;
+        }
         s_msg_count = n;
         s_msg_head  = n % LS_MESH_MAX_MSGS;
         s_msg_seq++;
     }
+    if (legacy) msglog_flush();
     s_msglog_seq    = s_msg_seq;
     s_msglog_due_us = 0;
     ESP_LOGI(TAG, "message history: %d restored", n);
@@ -1628,7 +1780,8 @@ extern "C" bool ls_mesh_queue_dm(const char *id, const char *text)
         !ls_mesh_running() || !ls_mesh_tx_enabled() || s_radio_hold || s_radio_held) return false;
     portENTER_CRITICAL(&s_outbox_lock);
     const int64_t now=esp_timer_get_time();
-    bool ok=s_outbox.expires<=now;
+    bool ok=ls_mesh_running() && ls_mesh_tx_enabled() && !s_radio_hold &&
+            !s_radio_held && s_outbox.expires<=now;
     if(ok) {
         snprintf(s_outbox.id,sizeof(s_outbox.id),"%s",id);
         snprintf(s_outbox.text,sizeof(s_outbox.text),"%s",text);
@@ -1647,6 +1800,7 @@ static void mesh_task(void *arg)
            touches it is skipped - the dispatcher, the advert timer and the
            RSSI sample - and nothing else is: the message log still settles
            and still writes, because that is a card and not a radio. */
+        mesh_calls_service();
         inspect_service();
         if (s_radio_hold || ls_lora_fsk_active()) {
             s_radio_held = true;
@@ -1657,6 +1811,8 @@ static void mesh_task(void *arg)
         }
         s_radio_held = false;
 
+        if (!s_on_air && !ls_lora_is_receiving() && esp_timer_get_time() >= s_rx_retry_us)
+            mesh_receive();
         s_mesh->loop();
         decltype(s_outbox) outgoing;
         portENTER_CRITICAL(&s_outbox_lock);
@@ -1740,7 +1896,7 @@ extern "C" esp_err_t ls_mesh_start(void)
     if (s_radio_cfg.sf)      { cfg.sf        = s_radio_cfg.sf;
                                cfg.preamble  = (cfg.sf <= 8) ? 32 : 16; }
     if (s_radio_cfg.bw_hz)     cfg.bw_hz     = s_radio_cfg.bw_hz;
-    if (s_radio_cfg.power_dbm) cfg.power_dbm = s_radio_cfg.power_dbm;
+    if (ls_mesh_radio_stored()) cfg.power_dbm = s_radio_cfg.power_dbm;
     if (s_radio_cfg.cr)        cfg.cr        = s_radio_cfg.cr;
     if (s_radio_cfg.sync_word) cfg.sync_word = s_radio_cfg.sync_word;
     if (s_radio_cfg.freq_hz) {
@@ -1756,25 +1912,29 @@ extern "C" esp_err_t ls_mesh_start(void)
     esp_err_t err = ls_lora_configure(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "radio not configured: %s", esp_err_to_name(err));
+        ls_lora_park();
         return err;
     }
 
-    s_ms     = psram_new<LsMillis>();
-    s_rtc    = psram_new<LsRtcClock>();
-    s_rng    = psram_new<LsRng>();
-    s_board  = psram_new<LsBoard>();
-    s_radio  = psram_new<LsRadio>();
-    s_mgr    = psram_new<LsPoolManager>(MESH_POOL);
-    s_tables = psram_new<SimpleMeshTables>();
-    if (!s_ms || !s_rtc || !s_rng || !s_board || !s_radio || !s_mgr || !s_mgr->ok || !s_tables)
-        return ESP_ERR_NO_MEM;
+    if (!s_mesh) {
+        s_ms     = psram_new<LsMillis>();
+        s_rtc    = psram_new<LsRtcClock>();
+        s_rng    = psram_new<LsRng>();
+        s_board  = psram_new<LsBoard>();
+        s_radio  = psram_new<LsRadio>();
+        s_mgr    = psram_new<LsPoolManager>(MESH_POOL);
+        s_tables = psram_new<SimpleMeshTables>();
+        if (!s_ms || !s_rtc || !s_rng || !s_board || !s_radio || !s_mgr || !s_mgr->ok || !s_tables)
+            { mesh_objects_free(); ls_lora_park(); return ESP_ERR_NO_MEM; }
 
-    s_mesh = psram_new<LsMesh>(*s_radio, *s_ms, *s_rng, *s_rtc, *s_mgr, *s_tables);
-    if (!s_mesh) return ESP_ERR_NO_MEM;
+        s_mesh = psram_new<LsMesh>(*s_radio, *s_ms, *s_rng, *s_rtc, *s_mgr, *s_tables);
+        if (!s_mesh) { mesh_objects_free(); ls_lora_park(); return ESP_ERR_NO_MEM; }
 
-    if (!load_or_create_identity(s_mesh->self_id, *s_rng)) return ESP_FAIL;
-    for (int i = 0; i < 8; i++)
-        sprintf(&s_self_id[i * 2], "%02X", s_mesh->self_id.pub_key[i]);
+        if (!load_or_create_identity(s_mesh->self_id, *s_rng)) { mesh_objects_free(); ls_lora_park(); return ESP_FAIL; }
+        for (int i = 0; i < 8; i++)
+            sprintf(&s_self_id[i * 2], "%02X", s_mesh->self_id.pub_key[i]);
+
+    }
 
     /* The public channel: hash is the first PATH_HASH_SIZE bytes of
        SHA256(secret), which is what upstream's addChannel does. */
@@ -1784,16 +1944,18 @@ extern "C" esp_err_t ls_mesh_start(void)
         !s_chan_ready[s_chan_active])
         s_chan_active = 0;
 
+    s_radio->setTxEnabled(false);
     s_mesh->begin();
-    ls_lora_receive();
+    err = mesh_receive();
+    if (err != ESP_OK) { mesh_objects_free(); ls_lora_park(); return err; }
 
     /* Before the task exists, because the task is the only other thing that
        touches the ring. */
-    msglog_open();
-    peerlog_open();
+    if (!s_msglog.open) msglog_open();
+    if (!s_peerlog.open) peerlog_open();
     /* And the sighting log, plus the registration that puts its
        waypoints into an exported track. */
-    if (ls_rlog_open(&s_sightlog, SIGHTLOG_PATH, sizeof(ls_sight_rec_t),
+    if (!s_sightlog.open && ls_rlog_open(&s_sightlog, SIGHTLOG_PATH, sizeof(ls_sight_rec_t),
                      SIGHT_MAX))
         ls_track_set_waypoint_source(sight_waypoints);
 
@@ -1802,27 +1964,19 @@ extern "C" esp_err_t ls_mesh_start(void)
         nullptr, 4, s_mesh_stack, &s_mesh_tcb, tskNO_AFFINITY);
     if (!s_task) {
         ESP_LOGE(TAG, "could not create the task");
+        ls_lora_park();
+        mesh_objects_free();
         return ESP_ERR_NO_MEM;
     }
-    /* The one place auto transmit takes effect. Deliberately AFTER
-       everything else has succeeded, so a board that failed to bring the
-       radio up never ends up armed. */
-    if (s_auto_tx) s_radio->setTxEnabled(true);
-
-    /* Announce ourselves once on start, if asked. Only meaningful
-       when the transmitter is armed, and silently skipped otherwise rather
-       than pretending. */
+    /* Manual starts always listen disarmed; boot applies its TX preference. */
     s_advert_next_us = 0;
-    if (s_radio_cfg.advert_boot && ls_mesh_tx_enabled()) ls_mesh_advertise();
-
-    ESP_LOGI(TAG, "MeshCore up as %s, transmit %s", s_self_id,
-             s_auto_tx ? "ARMED (auto)" : "DISARMED");
+    ESP_LOGI(TAG, "MeshCore up as %s, transmit DISARMED", s_self_id);
     return ESP_OK;
 }
 
 extern "C" esp_err_t ls_mesh_stop(void)
 {
-    if (s_radio_hold) return ESP_ERR_INVALID_STATE;
+    if (s_radio_hold || s_radio_held || ls_lora_fsk_active()) return ESP_ERR_INVALID_STATE;
     if (!s_task) return ESP_OK;
     s_stop = true;
     for (int i = 0; i < 100 && eTaskGetState(s_task) != eSuspended; i++)
@@ -1837,16 +1991,28 @@ extern "C" esp_err_t ls_mesh_stop(void)
     const esp_err_t err = ls_lora_park();
     if (err != ESP_OK) return err;
     vTaskDelete(s_task);
-    s_task = nullptr;
+    s_on_air = false;
+    s_radio->setTxEnabled(false);
+    s_mgr->drain();
+    memset(s_ack, 0, sizeof(s_ack));
+    memset(s_sent, 0, sizeof(s_sent));
+    portENTER_CRITICAL(&s_outbox_lock);
+    s_outbox.expires = 0;
+    portEXIT_CRITICAL(&s_outbox_lock);
+    for (auto &m : s_msgs) if (m.mine && (m.state == LS_MSG_QUEUED || m.state == LS_MSG_SENDING))
+        { m.state = LS_MSG_FAILED; s_msg_seq++; }
     /* The task is gone, so nothing else is writing s_msgs: a last write here
        is what keeps the tail of a conversation the debounce had not got
        round to yet. */
     msglog_flush();
     peerlog_flush();
+    mesh_objects_free();
+    memset(s_delivery, 0, sizeof(s_delivery));
+    s_task = nullptr;
     return ESP_OK;
 }
 
-extern "C" bool ls_mesh_running(void) { return s_task != nullptr; }
+extern "C" bool ls_mesh_running(void) { return s_task != nullptr && !s_stop; }
 
 static bool mesh_paused(void)
 {
@@ -1897,9 +2063,34 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
 extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg; }
 extern "C" bool ls_mesh_radio_bg(void) { return s_hold_bg; }
 
+extern "C" void ls_mesh_socket_get(ls_mesh_socket_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->chip, sizeof(out->chip), "%s", ls_lora_chip_name());
+    out->present = ls_lora_present();
+    portENTER_CRITICAL(&s_hold_lock);
+    uintptr_t owner = s_bg_holders.count ? s_bg_holders.task[0] :
+                      s_fg_holders.count ? s_fg_holders.task[0] : 0;
+    out->held = s_radio_hold;
+    snprintf(out->owner, sizeof(out->owner), "%s", owner ?
+        pcTaskGetName((TaskHandle_t)owner) : s_task ? "MeshCore" : "none");
+    portEXIT_CRITICAL(&s_hold_lock);
+    out->receiving = ls_lora_is_receiving();
+    out->transmitting = ls_lora_is_transmitting();
+    out->armed = !out->held && s_task && ls_mesh_tx_enabled();
+    snprintf(out->mode, sizeof(out->mode), "%s", ls_lora_modes_active() ? "Mode S" :
+        ls_lora_ook_active() ? "OOK" : ls_lora_fsk_active() ? "FSK" :
+        ls_lora_scanning() ? "scan" : "LoRa");
+}
+
 extern "C" void ls_mesh_set_tx(bool on)
 {
-    if (s_radio) s_radio->setTxEnabled(on);
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_call([&]() -> int { ls_mesh_set_tx(on); return 0; });
+        return;
+    }
+    if (s_radio) s_radio->setTxEnabled(on && !s_stop);
 }
 
 extern "C" bool ls_mesh_tx_enabled(void)
@@ -1909,9 +2100,19 @@ extern "C" bool ls_mesh_tx_enabled(void)
 
 extern "C" void ls_mesh_get_stats(ls_mesh_stats_t *out)
 {
+    if (out) memset(out, 0, sizeof(*out));
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_call([&]() -> int { ls_mesh_get_stats(out); return 0; });
+        return;
+    }
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    out->running     = s_task != nullptr;
+    out->running     = s_task != nullptr && !s_stop;
+    out->held        = s_radio_hold || s_radio_held;
+    out->on_air      = s_on_air;
+    out->receiving   = out->running && !out->held && ls_lora_is_receiving();
+    out->rx_fault    = s_rx_fault;
     out->radio_ready = ls_lora_cfg() != nullptr;
     out->loops       = s_loops;
     if (s_radio) {
@@ -1931,7 +2132,9 @@ extern "C" void ls_mesh_get_stats(ls_mesh_stats_t *out)
 
 extern "C" esp_err_t ls_mesh_advertise(void)
 {
-    if (!s_mesh) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_advertise(); });
+    if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
     /* With app_data now, not bare. A bare advert verifies and relays
        but carries no name and no type, so peers cannot name us and a
@@ -1948,7 +2151,7 @@ extern "C" esp_err_t ls_mesh_advertise(void)
     if (s_radio_cfg.share_loc == 1) {
         ls_gps_state_t g;
         ls_gps_get(&g);
-        if (g.fix) { have_loc = true; lat = g.lat_deg; lon = g.lon_deg; }
+        if (ls_gps_fix_current(&g, esp_timer_get_time())) { have_loc = true; lat = g.lat_deg; lon = g.lon_deg; }
     } else if (s_radio_cfg.share_loc == 2) {
         have_loc = true;
         lat = s_radio_cfg.lat_e6 / 1e6;
@@ -1988,6 +2191,8 @@ extern "C" int ls_mesh_channel_active(void) { return s_chan_active; }
 
 extern "C" esp_err_t ls_mesh_set_channel_active(int idx)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_set_channel_active(idx); });
     if (idx < 0 || idx >= LS_MESH_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
 
     if (!s_chan_ready[idx]) return ESP_ERR_INVALID_STATE;
@@ -1997,6 +2202,8 @@ extern "C" esp_err_t ls_mesh_set_channel_active(int idx)
 
 extern "C" esp_err_t ls_mesh_set_channel(int idx, const char *name, const char *psk_b64)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_set_channel(idx, name, psk_b64); });
     if (idx < 1 || idx >= LS_MESH_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
 
     if (psk_b64) {
@@ -2060,13 +2267,15 @@ extern "C" bool ls_mesh_auto_tx(void)     { return s_auto_tx; }
 
 extern "C" esp_err_t ls_mesh_set_auto(bool listen, bool tx)
 {
-    s_auto_listen = listen;
-    s_auto_tx     = tx;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_set_auto(listen, tx); });
+    const bool tx_changed = tx != s_auto_tx;
     esp_err_t err = save_setting_u8("autolisten", listen ? 1 : 0);
     if (err == ESP_OK) err = save_setting_u8("autotx", tx ? 1 : 0);
+    if (err == ESP_OK) { s_auto_listen = listen; s_auto_tx = tx; }
     /* Apply immediately to a stack that is already up, so the setting and
        the state never disagree while you are looking at them. */
-    if (s_task && s_radio) s_radio->setTxEnabled(tx);
+    if (tx_changed && err == ESP_OK && s_task && s_radio) s_radio->setTxEnabled(tx);
     return err;
 }
 
@@ -2075,6 +2284,10 @@ extern "C" void ls_mesh_boot(void)
     load_settings();
     if (!s_auto_listen) return;
     const esp_err_t err = ls_mesh_start();
+    if (err == ESP_OK) {
+        ls_mesh_set_tx(s_auto_tx);
+        if (s_auto_tx && s_radio_cfg.advert_boot) ls_mesh_advertise();
+    }
     if (err != ESP_OK) {
         /* A radio that is absent or busy at boot is not a reason to stop
            booting. Say so once and carry on. */
@@ -2084,6 +2297,9 @@ extern "C" void ls_mesh_boot(void)
 
 extern "C" int ls_mesh_scope(float *out, int max)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return 0;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_scope(out, max); }, 0);
     if (!out || max <= 0) return 0;
     int n = max < LS_MESH_SCOPE_N ? max : LS_MESH_SCOPE_N;
     /* Oldest first, so the caller draws left to right and time runs the way
@@ -2095,6 +2311,8 @@ extern "C" int ls_mesh_scope(float *out, int max)
 
 extern "C" esp_err_t ls_mesh_add_contact(const char *hex, const char *name)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_add_contact(hex, name); });
     if (!hex) return ESP_ERR_INVALID_ARG;
     /* 64 hex characters, nothing else. A short key would address a
        different node, silently. */
@@ -2145,6 +2363,9 @@ extern "C" esp_err_t ls_mesh_add_contact(const char *hex, const char *name)
 
 extern "C" bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return false;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_peer_at(rank, out); }, 0);
     if (!out || rank < 0 || rank >= s_peer_count) return false;
     /* Same ranking ls_mesh_peers() produces, without building the list.
        Ties - every peer restored at boot has last_heard 0 - go by table
@@ -2163,6 +2384,9 @@ extern "C" bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 
 extern "C" int ls_mesh_messages(ls_mesh_msg_t *out, int max)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return 0;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_messages(out, max); }, 0);
     if (!out || max <= 0) return 0;
     /* Oldest first: a chat is read downward, and a screen that shows the
        last N wants the last N in order, not reversed. */
@@ -2174,6 +2398,7 @@ extern "C" int ls_mesh_messages(ls_mesh_msg_t *out, int max)
 }
 
 extern "C" uint32_t ls_mesh_msg_seq(void) { return s_msg_seq; }
+extern "C" uint32_t ls_mesh_incoming_seq(void) { return s_incoming_seq; }
 
 extern "C" const char *ls_mesh_name(void)
 {
@@ -2184,6 +2409,8 @@ extern "C" const char *ls_mesh_name(void)
 
 extern "C" esp_err_t ls_mesh_set_name(const char *name)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_set_name(name); });
     if (!name || !*name) return ESP_ERR_INVALID_ARG;
 
     size_t j = 0;
@@ -2199,6 +2426,12 @@ extern "C" esp_err_t ls_mesh_set_name(const char *name)
 
 extern "C" void ls_mesh_get_radio(ls_mesh_radio_t *out)
 {
+    if (out) memset(out, 0, sizeof(*out));
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_call([&]() -> int { ls_mesh_get_radio(out); return 0; });
+        return;
+    }
     if (!out) return;
     /* The behaviour fields live only in the stored settings; the radio ones
        are read back from the radio when it is up, because that is what is
@@ -2218,8 +2451,13 @@ extern "C" void ls_mesh_get_radio(ls_mesh_radio_t *out)
 
 extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *cfg)
 {
-    if (s_radio_hold) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_set_radio(cfg); });
+    if (s_radio_hold || s_radio_held || s_on_air) return ESP_ERR_INVALID_STATE;
     if (!cfg) return ESP_ERR_INVALID_ARG;
+    if (cfg->role > LS_MESH_ROLE_SENSOR || cfg->share_loc > 2 ||
+        cfg->lat_e6 < -90000000 || cfg->lat_e6 > 90000000 ||
+        cfg->lon_e6 < -180000000 || cfg->lon_e6 > 180000000) return ESP_ERR_INVALID_ARG;
     ls_lora_cfg_t lc;
     ls_lora_cfg_default(&lc);
     lc.freq_hz   = cfg->freq_hz;
@@ -2239,10 +2477,14 @@ extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *cfg)
 
     esp_err_t err = ls_lora_configure(&lc);
     if (err != ESP_OK) return err;
-    ls_lora_receive();
+    esp_err_t rx_err = mesh_receive();
 
     s_radio_cfg = *cfg;
-    return save_setting_blob("radio", &s_radio_cfg, sizeof(s_radio_cfg));
+    if (s_radio_cfg.role == LS_MESH_ROLE_REPEATER) s_radio_cfg.repeat = 1;
+    err = save_setting_blob("radio", &s_radio_cfg, sizeof(s_radio_cfg));
+    if (err == ESP_OK) err = save_setting_u8("radiovalid", 1);
+    if (err == ESP_OK) s_radio_stored = true;
+    return err == ESP_OK ? rx_err : err;
 }
 
 /* Everything after the peer has been identified, which is the same
@@ -2264,7 +2506,8 @@ static esp_err_t send_dm_to(int pi, const char *text)
     memcpy(temp, &ts, 4);
     temp[4] = 0;
     int tlen = (int)strlen(text);
-    if (tlen > LS_MESH_MSG_LEN - 8) tlen = LS_MESH_MSG_LEN - 8;
+    if (5 + tlen + CIPHER_MAC_SIZE + CIPHER_BLOCK_SIZE - 1 > MAX_PACKET_PAYLOAD)
+        return ESP_ERR_INVALID_SIZE;
     memcpy(&temp[5], text, (size_t)tlen);
     temp[5 + tlen] = 0;
 
@@ -2279,13 +2522,10 @@ static esp_err_t send_dm_to(int pi, const char *text)
     mesh::Packet *pkt = s_mesh->createDatagram(PAYLOAD_TYPE_TXT_MSG, dest, secret,
                                                temp, (size_t)(5 + tlen));
     if (!pkt) return ESP_ERR_NO_MEM;
+    const int slot = note_msg(text, true, 0, s_peers[pi].id);
+    snprintf(s_msgs[slot].sender, sizeof(s_msgs[slot].sender), "%s", ls_mesh_name());
+    delivery_bind(pkt, slot);
     s_mesh->sendFlood(pkt);
-
-    /* One buffer, not two - see above. */
-    char full[LS_MESH_MSG_LEN];
-    snprintf(full, sizeof(full), "%s -> %.12s: %s", ls_mesh_name(),
-             s_peers[pi].name[0] ? s_peers[pi].name : s_peers[pi].id, text);
-    const int slot = note_msg(full, true, 0, s_peers[pi].id);
 
     s_ack[s_ack_head].expect = expect;
     s_ack[s_ack_head].slot   = slot;
@@ -2298,7 +2538,9 @@ static esp_err_t send_dm_to(int pi, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 {
-    if (!s_mesh) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_send_dm(peer_index, text); });
+    if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
     if (peer_index < 0 || peer_index >= s_peer_count) return ESP_ERR_NOT_FOUND;
@@ -2319,7 +2561,9 @@ extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm_id(const char *id, const char *text)
 {
-    if (!s_mesh) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_send_dm_id(id, text); });
+    if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
     /* No rank, no row, no sort. The id IS the peer, so nothing that
@@ -2330,22 +2574,31 @@ extern "C" esp_err_t ls_mesh_send_dm_id(const char *id, const char *text)
 
 extern "C" bool ls_mesh_peer_known(const char *id)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return false;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_peer_known(id); }, 0);
     return peer_index(id) >= 0;
 }
 
 extern "C" int ls_mesh_dm_state(const char *id,const char *text)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return -1;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_dm_state(id, text); }, -1);
     if(!id || !text || !*text)return -1;
     for(int i=0;i<s_msg_count;i++) {
         const int slot=(s_msg_head-1-i+LS_MESH_MAX_MSGS)%LS_MESH_MAX_MSGS;
         const ls_mesh_msg_t &m=s_msgs[slot];
-        if(m.mine && m.direct && !strcasecmp(m.peer,id) && strstr(m.text,text))return m.state;
+        if(m.mine && m.direct && !strcasecmp(m.peer,id) && !strcmp(m.text,text))return m.state;
     }
     return -1;
 }
 
 extern "C" int ls_mesh_forget_peer(const char *id)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return 0;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_forget_peer(id); }, 0);
     const bool every = !id || !*id || !strcasecmp(id, "all");
     portENTER_CRITICAL(&s_inspect_lock);
     ls_inspect_session_drop(&s_inspect, id);
@@ -2384,7 +2637,9 @@ extern "C" esp_err_t ls_mesh_send_text(const char *text)
 
 extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
 {
-    if (!s_mesh) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_send_text_on(chan, text); });
+    if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (chan < 0 || chan >= LS_MESH_MAX_CHANNELS || !s_chan_ready[chan])
         return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
@@ -2406,7 +2661,8 @@ extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
     int room = LS_MESH_MSG_LEN - 1 - prefix;
     if (room <= 0) return ESP_ERR_INVALID_SIZE;
     int tlen = (int)strlen(text);
-    if (tlen > room) tlen = room;
+    if (tlen > room || 5 + prefix + tlen + 1 + CIPHER_BLOCK_SIZE - 1 > MAX_PACKET_PAYLOAD)
+        return ESP_ERR_INVALID_SIZE;
     memcpy(&temp[5 + prefix], text, (size_t)tlen);
     temp[5 + prefix + tlen] = 0;
 
@@ -2420,9 +2676,9 @@ extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
     uint8_t h[MAX_HASH_SIZE];
     pkt->calculatePacketHash(h);
 
-    s_mesh->sendFlood(pkt);
-
     const int slot = note_msg((const char *)&temp[5], true, (uint8_t)chan, NULL);
+    delivery_bind(pkt, slot);
+    s_mesh->sendFlood(pkt);
     memcpy(s_sent[s_sent_head].hash, h, MAX_HASH_SIZE);
     s_sent[s_sent_head].slot = slot;
     s_sent[s_sent_head].used = true;
@@ -2432,7 +2688,11 @@ extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
 
 extern "C" int ls_mesh_peers(ls_mesh_peer_t *out, int max)
 {
-    if (!out || max <= 0) return 0;
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return 0;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_peers(out, max); }, 0);
+    if (!out) return s_peer_count;
+    if (max <= 0) return 0;
     int n = s_peer_count < max ? s_peer_count : max;
     memcpy(out, s_peers, (size_t)n * sizeof(*out));
     /* Most recently heard first: a screen that shows three of twelve should
@@ -2448,6 +2708,9 @@ extern "C" int ls_mesh_peers(ls_mesh_peer_t *out, int max)
 
 extern "C" int ls_mesh_events(ls_mesh_event_t *out, int max)
 {
+    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return 0;
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_events(out, max); }, 0);
     if (!out || max <= 0) return 0;
     int n = 0;
     for (int i = 1; i <= LS_MESH_MAX_EVENTS && n < max; i++) {
@@ -2536,22 +2799,26 @@ extern "C" void ls_mesh_diagnostics(void)
    ls_mesh_start prefer it over the compiled default. */
 extern "C" bool ls_mesh_radio_stored(void)
 {
-    return s_radio_cfg.freq_hz || s_radio_cfg.sf || s_radio_cfg.bw_hz ||
-           s_radio_cfg.power_dbm || s_radio_cfg.cr || s_radio_cfg.sync_word ||
-           s_radio_cfg.crc_on;
+    return s_radio_stored;
 }
 
 extern "C" esp_err_t ls_mesh_radio_default(void)
 {
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+        return mesh_call([&]() -> int { return ls_mesh_radio_default(); });
+    if (s_radio_hold || s_radio_held || s_on_air || ls_lora_fsk_active())
+        return ESP_ERR_INVALID_STATE;
     memset(&s_radio_cfg, 0, sizeof(s_radio_cfg));
     esp_err_t err = save_setting_blob("radio", &s_radio_cfg,
                                       sizeof(s_radio_cfg));
+    if (err == ESP_OK) err = save_setting_u8("radiovalid", 0);
     if (err != ESP_OK) return err;
+    s_radio_stored = false;
 
     ls_lora_cfg_t lc;
     ls_lora_cfg_default(&lc);
     err = ls_lora_configure(&lc);
-    if (err == ESP_OK) ls_lora_receive();
+    if (err == ESP_OK) err = mesh_receive();
     return err;
 }
 
@@ -2593,6 +2860,7 @@ extern "C" bool ls_mesh_auto_tx(void) { return false; }
 extern "C" esp_err_t ls_mesh_set_auto(bool l, bool t) { (void)l; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" void ls_mesh_boot(void) {}
 extern "C" uint32_t ls_mesh_msg_seq(void) { return 0; }
+extern "C" uint32_t ls_mesh_incoming_seq(void) { return 0; }
 extern "C" const char *ls_mesh_name(void) { return "LakeShark"; }
 extern "C" esp_err_t ls_mesh_set_name(const char *n) { (void)n; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" void ls_mesh_get_radio(ls_mesh_radio_t *o) { if (o) memset(o, 0, sizeof(*o)); }

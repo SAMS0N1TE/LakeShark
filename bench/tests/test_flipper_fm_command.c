@@ -1,5 +1,6 @@
 /* LS_TEST_SOURCES: ${FW}/main/flipper_link.c ${APP}/fm/fm_mode_label.c */
 #include "ls_test.h"
+#include "esp_timer.h"
 
 #include "audio_eq.h"
 #include "audio_out.h"
@@ -298,7 +299,7 @@ int lakeshark_receiver_status(char *out, size_t len)
 void lakeshark_adsb_telemetry(lakeshark_adsb_tel_t *out) { memset(out, 0, sizeof(*out)); }
 
 void rec_get_status(rec_status_t *out) { memset(out, 0, sizeof(*out)); }
-void rec_set_freq(uint32_t hz) { (void)hz; }
+bool rec_set_freq(uint32_t hz) { (void)hz; return true; }
 /* REC SCAN's sweep, which these tests do not exercise. */
 bool rec_watch_scan_busy(void) { return false; }
 void rec_watch_scan_stop(void) { }
@@ -530,6 +531,7 @@ LS_CASE(the_head_can_tell_a_gps_that_is_off_from_one_that_is_searching)
     g_gps.alive = true;
     g_gps.sentences = 120;
     g_gps.fix = true;
+    g_gps.last_fix_us = g_gps.last_sentence_us = esp_timer_get_time();
     g_gps.sats_used = 7;
     g_gps.lat_deg = 43.4445;
     g_gps.lon_deg = -71.6473;
@@ -776,4 +778,16 @@ LS_CASE(aux_is_opt_in_rate_limited_and_mute_ack_is_immediate) {
     LS_CHECK(reply_has("SWEEP MUTE 2","-ERR"));LS_CHECK(reply_has("SWEEP MUTE 1 extra","-ERR"));
     LS_CHECK(reply_has("SWEEP","-ERR"));LS_CHECK(reply_has("AUX 2","-ERR"));
     aux_save_fail=true;LS_CHECK(reply_has("SWEEP MUTE 1","-ERR sweep settings"));aux_save_fail=false;
+}
+
+LS_CASE(gps_reply_rejects_stale_and_stopped_fixes)
+{
+    int64_t old=esp_timer_get_time();ls_shim_time_set(10000000);
+    memset(&g_gps,0,sizeof(g_gps));g_gps_on=true;
+    g_gps.fix=g_gps.alive=true;g_gps.lat_deg=43.4445;g_gps.lon_deg=-71.6473;
+    g_gps.last_fix_us=1000000;g_gps.last_sentence_us=10000000;
+    LS_CHECK(reply_has("GPS","fix=0"));LS_CHECK(!reply_has("GPS","43.444"));
+    g_gps.last_fix_us=10000000;g_gps_on=false;
+    LS_CHECK(reply_has("GPS","fix=0"));LS_CHECK(reply_has("GPS","alive=0"));
+    ls_shim_time_set(old);
 }

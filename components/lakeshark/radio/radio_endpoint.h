@@ -197,6 +197,7 @@ typedef struct {
     bool present;
     bool leased;
     bool streaming;
+    bool paused;
     char owner[LS_RADIO_OWNER_MAX];
     bool configured;
     ls_radio_iq_config_t actual_iq;
@@ -224,6 +225,10 @@ bool ls_radio_endpoint_available(
 int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,
                                 void *user);
 ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id);
+/* A dashboard stop retains the lease, but blocks watch/retry starts until
+ * explicitly allowed again. Refuse a changed owner instead of stopping it. */
+ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
+                                      const char *owner, bool paused);
 /* Bumped on every attach and every detach. An app that has stopped
    retrying a receiver that will not answer watches this to learn that
    something changed, without touching the device it has given up on. */

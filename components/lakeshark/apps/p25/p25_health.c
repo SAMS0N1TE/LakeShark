@@ -30,6 +30,17 @@ typedef struct {
 } p25_health_store_t;
 
 static P25_HEALTH_EXT_BSS p25_health_store_t s_store;
+static bool s_running;
+
+void p25_health_set_running(bool running)
+{
+    __atomic_store_n(&s_running, running, __ATOMIC_RELEASE);
+}
+
+bool p25_health_running(void)
+{
+    return __atomic_load_n(&s_running, __ATOMIC_ACQUIRE);
+}
 
 static void writer_lock(void)
 {
@@ -73,6 +84,7 @@ static size_t append(char *out, size_t size, size_t used,
 
 void p25_health_init(void)
 {
+    p25_health_set_running(false);
     writer_lock();
     uint32_t next = s_store.sequence + 2U;
     memset(&s_store.raw, 0, sizeof(s_store.raw));
@@ -218,11 +230,10 @@ bool p25_health_read(p25_health_snapshot_t *out)
     for (int attempt = 0; attempt < 8; ++attempt) {
         uint32_t before = __atomic_load_n(&s_store.sequence, __ATOMIC_ACQUIRE);
         if (before & 1U) continue;
-        p25_health_snapshot_t copy = s_store.snapshot;
+        *out = s_store.snapshot;
         uint32_t after = __atomic_load_n(&s_store.sequence, __ATOMIC_ACQUIRE);
         if (before == after && !(after & 1U)) {
-            if (copy.sequence == 0) return false;
-            *out = copy;
+            if (out->sequence == 0) return false;
             return true;
         }
     }

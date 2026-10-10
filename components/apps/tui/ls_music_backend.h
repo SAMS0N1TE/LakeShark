@@ -21,6 +21,8 @@ bool ls_music_seek_ms(uint32_t ms);
 void ls_music_stop(void);
 ls_music_state_t ls_music_state(void);
 int ls_music_volume(void);
+bool ls_music_muted(void);
+void ls_music_mute_toggle(void);
 uint32_t ls_music_position_ms(void);
 uint32_t ls_music_duration_ms(void);
 /* Decoded source peak per channel since the last call, 0..32768, before the
@@ -41,13 +43,13 @@ int ls_music_spectrum(float lo_hz, float hi_hz, int bands, float *db);
    Zero-initialise the cursor; it restarts on its own after a sample-rate
    change or when the reader falls too far behind. */
 typedef struct {
-    uint32_t next, rate;
+    uint32_t next, rate, epoch;
     bool started;
 } ls_music_cursor_t;
 bool ls_music_spectrogram(ls_music_cursor_t *cursor, int hops, int rows,
                           float *db);
 typedef struct {
-    unsigned rate_hz, bits, channels;
+    unsigned rate_hz, bits, channels, epoch;
     bool mono_out; /* the board plays both source channels as one */
 } ls_music_format_t;
 bool ls_music_format(ls_music_format_t *out);
@@ -57,6 +59,7 @@ bool ls_music_format(ls_music_format_t *out);
 typedef enum { LS_MIC_OFF, LS_MIC_LIVE, LS_MIC_RECORDING } ls_music_mic_t;
 bool ls_music_mic_start(bool record);
 void ls_music_mic_stop(void);
+bool ls_music_mic_repair(void);
 ls_music_mic_t ls_music_mic_state(void);
 const char *ls_music_mic_file(void);
 uint32_t ls_music_mic_ms(void);

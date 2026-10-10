@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include "adsb_source.h"
 
 
 #include <stdbool.h>
@@ -33,7 +34,7 @@ bool ls_tui_keyboard_mode(void) { return ls_keypad_present(); }
 
 /* adsb_source_t is an enum whose ADSB_SRC_NONE is 0; the header is not on
    every stub user's include path. */
-int adsb_active_source(void) { return 0; }
+adsb_source_t adsb_active_source(void) { return 0; }
 
 /* The gain setting, kept here as the back end keeps it: tenths of a dB, 0
    automatic. */
@@ -142,7 +143,9 @@ const char *ls_tui_radio_claimed(void) { return ls_test_radio_claimed; }
 
 int ls_userapp_load_dir(const char *dir) { (void)dir; return 0; }
 
-const char *ls_userapp_last_error(void) { return NULL; }
+const char *ls_test_userapp_error;
+const char *ls_userapp_last_error(void)
+{ return ls_test_userapp_error ? ls_test_userapp_error : getenv("LSSIM_USERAPP_ERROR"); }
 
 /* ---- the card, the build and the last crash -------------------------- */
 
@@ -150,18 +153,33 @@ const char *ls_userapp_last_error(void) { return NULL; }
 #include "ls_crash.h"
 #include "ls_version.h"
 
-esp_err_t ls_sdcard_mount(void)   { return ESP_ERR_NOT_SUPPORTED; }
-void      ls_sdcard_unmount(void) { }
-bool      ls_sdcard_mounted(void) { return false; }
+bool ls_test_sd_mounted;
+esp_err_t ls_test_sd_result = ESP_ERR_NOT_SUPPORTED;
+unsigned ls_test_sd_mount_calls, ls_test_sd_check_calls;
+esp_err_t ls_sdcard_mount(void)
+{
+    ls_test_sd_mount_calls++;
+    if (ls_test_sd_result == ESP_OK) ls_test_sd_mounted = true;
+    return ls_test_sd_result;
+}
+void ls_sdcard_unmount(void) { ls_test_sd_mounted = false; }
+bool ls_sdcard_mounted(void) { return ls_test_sd_mounted; }
 
 bool ls_sdcard_size(uint64_t *total, uint64_t *free_bytes)
 {
-    if (total) *total = 0;
-    if (free_bytes) *free_bytes = 0;
-    return false;
+    if (total) *total = ls_test_sd_mounted ? 1024 * 1024 : 0;
+    if (free_bytes) *free_bytes = ls_test_sd_mounted ? 512 * 1024 : 0;
+    return ls_test_sd_mounted && ls_test_sd_result == ESP_OK;
 }
 
-const char *ls_sdcard_name(void) { return NULL; }
+esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes)
+{
+    ls_test_sd_check_calls++;
+    ls_sdcard_size(total, free_bytes);
+    return ls_test_sd_result;
+}
+
+const char *ls_sdcard_name(void) { return ls_test_sd_mounted ? "bench" : NULL; }
 void        ls_sdcard_diagnostics(void) { }
 
 bool ls_crash_present(void) { return false; }
@@ -261,3 +279,12 @@ void display_ctl_set_keyboard_dim(bool on) { s_key_dim = on; }
 uint32_t settings_get_waterfall(uint32_t fallback) { return fallback; }
 void settings_set_waterfall(uint32_t value) { (void)value; }
 #endif
+
+const char *adsb_receiver_status(void) { return "no receiver: attach radio"; }
+const char *adsb_active_source_name(void) { return "none"; }
+void adsb_chip_diag_reset(void) { }
+void adsb_chip_diag_snapshot(adsb_chip_diag_t *out) { if (out) memset(out, 0, sizeof(*out)); }
+#include "ls_mesh.h"
+void ls_mesh_socket_get(ls_mesh_socket_t *out)
+{ if (out) { memset(out, 0, sizeof(*out)); strcpy(out->chip, "none");
+    strcpy(out->owner, "none"); strcpy(out->mode, "LoRa"); } }

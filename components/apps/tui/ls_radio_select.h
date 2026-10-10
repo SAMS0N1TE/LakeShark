@@ -63,6 +63,8 @@ void ls_rsel_track(ls_rsel_job_t job, ls_rsel_radio_t (*in_use)(void));
    only when it can be used. Choosing one that cannot leaves the list open
    with the reason written above it, and changes nothing. */
 void ls_rsel_open(ls_rsel_job_t job, void (*done)(ls_rsel_radio_t chosen));
+/* A fixed protocol radio: other devices stay visible with a refusal reason. */
+void ls_rsel_open_fixed(ls_rsel_radio_t radio, void (*done)(ls_rsel_radio_t chosen));
 /* The same picker with rows of the app's own below the radios, for a choice
    that is not a radio (REC's mesh traffic log). `extra_done` gets the row's
    index among the extras; the saved radio is left alone. */

@@ -9,6 +9,16 @@ const cell_band_t cell_bands[] = {
     {"800 DL / B20",791000000,821000000},
 };
 const unsigned cell_band_count = sizeof(cell_bands)/sizeof(cell_bands[0]);
+bool cell_gps_valid(bool fix,int64_t timestamp,int64_t now,double lat,double lon,float hdop)
+{
+    return fix && timestamp>0 && now>=timestamp && now-timestamp<5000000 &&
+        isfinite(lat) && isfinite(lon) && fabs(lat)<=90 && fabs(lon)<=180 &&
+        isfinite(hdop) && hdop>0 && hdop<=5;
+}
+bool cell_coverage_complete(unsigned planned,unsigned attempted,unsigned usable,unsigned discarded)
+{
+    return planned && attempted==planned && usable==planned && !discarded;
+}
 uint32_t cell_checksum(const cell_baseline_t *b)
 {
     const uint8_t *p=(const uint8_t *)b;
@@ -18,7 +28,8 @@ uint32_t cell_checksum(const cell_baseline_t *b)
 }
 bool cell_baseline_valid(const cell_baseline_t *b,unsigned band,int lat,int lon,bool located,bool antenna)
 {
-    if(band>=cell_band_count || b->magic!=0x43454c4c || b->version!=1 ||
+    if(band>=cell_band_count || b->magic!=0x43454c4c || b->version!=CELL_BASELINE_VERSION ||
+       b->receiver!=CELL_RECEIVER_RTL || b->calibration!=CELL_CALIBRATION ||
        b->band!=band || b->rate!=CELL_RATE || b->gain!=CELL_GAIN || b->passes!=3 ||
        b->count!=(cell_bands[band].high-cell_bands[band].low)/CELL_BIN ||
        b->count>CELL_MAX_BINS || b->located!=located || b->antenna!=antenna ||

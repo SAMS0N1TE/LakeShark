@@ -60,6 +60,7 @@ typedef struct {
   ls_music_cursor_t cursor;
 } vis_t;
 static vis_t *vis;
+static unsigned source_epoch;
 static void *vis_alloc(void) {
 #ifdef ESP_PLATFORM
   return heap_caps_calloc(1, sizeof(vis_t),
@@ -587,6 +588,9 @@ void ls_audio_view_draw(tui_surface *sf, tui_rect r, int mode, int scheme,
                         int span, bool live) {
   if (r.w < 12 || r.h < 3)
     return;
+  ls_music_format_t format={0};
+  ls_music_format(&format);
+  if(source_epoch!=format.epoch){ls_audio_view_reset();source_epoch=format.epoch;}
   view = mode;
   palette = scheme % PALETTES;
   span_step = span % 3;

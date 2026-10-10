@@ -12,7 +12,7 @@ LS_CASE(retries_back_off_and_recover_without_stalling)
 {
     cell_session_t s; cell_session_begin(&s,false);
     for (int i=0;i<100;i++) cell_session_finish(&s,false,false,0);
-    LS_CHECK(s.wait_ms==30000 && s.channel==0);
+    LS_CHECK(s.wait_ms==30000 && s.channel==0 && !s.running);
     cell_session_finish(&s,true,false,0);
     LS_CHECK(s.wait_ms==1000 && s.failures==0 && s.decoded==0);
 }
@@ -35,3 +35,14 @@ LS_CASE(new_session_resets_counters)
     LS_CHECK(s.running && !s.multi && !s.attempts && !s.raw_bytes);
 }
 
+
+LS_CASE(once_counts_decode_and_auto_stops_after_three_failures)
+{
+    cell_session_t s;cell_session_begin(&s,false);
+    cell_session_finish(&s,true,true,100);
+    LS_CHECK(s.attempts==1 && s.decoded==1 && s.raw_bytes==100);
+    cell_session_begin(&s,false);
+    cell_session_finish(&s,false,false,0);LS_CHECK(s.running);
+    cell_session_finish(&s,false,false,0);LS_CHECK(s.running);
+    cell_session_finish(&s,false,false,0);LS_CHECK(!s.running && s.attempts==3);
+}

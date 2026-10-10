@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/radio/radio_endpoint.c */
 #include "ls_test.h"
 #include "radio_endpoint.h"
+#include "fm_receive.h"
 
 #include <pthread.h>
 #include <string.h>
@@ -447,6 +448,20 @@ LS_CASE(actual_values_and_driver_errors_propagate)
     fake.read_error = LS_RADIO_ERR_IO;
     LS_EQ_INT(ls_radio_iq_read(session, samples, sizeof(samples), 10,
                                &read_bytes), LS_RADIO_ERR_IO);
+    ls_radio_endpoint_info_t recovered;
+    LS_EQ_INT(ls_radio_endpoint_get("test.iq.errors", &recovered), LS_RADIO_OK);
+    LS_EQ_INT(recovered.last_error, LS_RADIO_ERR_IO);
+    fake.read_error = LS_RADIO_OK;
+    LS_EQ_INT(ls_radio_iq_read(session, samples, sizeof(samples), 10, &read_bytes), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get("test.iq.errors", &recovered), LS_RADIO_OK);
+    LS_EQ_INT(recovered.last_error, LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_stop(session), LS_RADIO_OK);
+    fake.start_error = LS_RADIO_ERR_IO;
+    LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_ERR_IO);
+    fake.start_error = LS_RADIO_OK;
+    LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get("test.iq.errors", &recovered), LS_RADIO_OK);
+    LS_CHECK(recovered.streaming && recovered.last_error == LS_RADIO_OK);
     fake.read_error = LS_RADIO_OK;
     LS_EQ_INT(ls_radio_iq_stop(session), LS_RADIO_OK);
 
@@ -459,7 +474,7 @@ LS_CASE(actual_values_and_driver_errors_propagate)
     ls_radio_endpoint_info_t info;
     LS_EQ_INT(ls_radio_endpoint_get("test.iq.errors", &info), LS_RADIO_OK);
     LS_EQ_INT(info.last_error, LS_RADIO_ERR_TIMEOUT);
-    LS_EQ_UINT(info.bytes_read, 4);
+    LS_EQ_UINT(info.bytes_read, 8);
     LS_EQ_STR(ls_radio_err_name(info.last_error), "timeout");
 
     ls_radio_release(session);
@@ -587,5 +602,108 @@ LS_CASE(stop_cancels_blocked_read)
     LS_EQ_INT(read_arg.result, LS_RADIO_ERR_STOPPED);
     ls_radio_release(session);
     LS_EQ_INT(ls_radio_endpoint_unregister("test.iq.stop"), LS_RADIO_OK);
+    fake_destroy(&fake);
+}
+
+
+LS_CASE(fm_saved_endpoint_handoff_drains_and_respects_a_busy_target)
+{
+    fake_radio_t rtl, hackrf;
+    fake_init(&rtl); fake_init(&hackrf);
+    const char *ids[] = {"fm.handoff.rtl", "fm.handoff.hackrf"};
+    LS_EQ_INT(register_iq(ids[0], &rtl), LS_RADIO_OK);
+    LS_EQ_INT(register_iq(ids[1], &hackrf), LS_RADIO_OK);
+    ls_radio_requirements_t requirements = iq_requirements(256000);
+    ls_radio_session_t *session = NULL;
+    requirements.preferred_endpoint_id = ids[0];
+    LS_EQ_INT(ls_radio_acquire("fm", &requirements, &session), LS_RADIO_OK);
+    const ls_radio_iq_config_t requested = {.center_hz=152600000, .sample_rate_hz=256000};
+    ls_radio_iq_config_t actual;
+    LS_EQ_INT(ls_radio_iq_configure(session, &requested, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_OK);
+    ls_radio_session_t *other = NULL;
+    requirements.preferred_endpoint_id = ids[1];
+    LS_EQ_INT(ls_radio_acquire("other", &requirements, &other), LS_RADIO_OK);
+    LS_CHECK(fm_receive_switch(&session, ids[0], ids[1]));
+    LS_CHECK(!rtl.started); LS_CHECK(session == NULL);
+    LS_EQ_INT(ls_radio_acquire("fm", &requirements, &session), LS_RADIO_ERR_BUSY);
+    LS_CHECK(session == NULL);
+    ls_radio_endpoint_info_t info;
+    LS_EQ_INT(ls_radio_endpoint_get(ids[1], &info), LS_RADIO_OK);
+    LS_EQ_STR(info.owner, "other");
+    ls_radio_release(other);
+    LS_EQ_INT(ls_radio_acquire("fm", &requirements, &session), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_configure(session, &requested, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_OK);
+    LS_CHECK(fm_receive_switch(&session, ids[1], ids[0]));
+    LS_CHECK(!hackrf.started); LS_CHECK(session == NULL);
+    requirements.preferred_endpoint_id = ids[0];
+    LS_EQ_INT(ls_radio_acquire("fm", &requirements, &session), LS_RADIO_OK);
+    ls_radio_release(session);
+    LS_EQ_INT(ls_radio_endpoint_unregister(ids[0]), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_unregister(ids[1]), LS_RADIO_OK);
+    fake_destroy(&rtl); fake_destroy(&hackrf);
+}
+
+LS_CASE(dashboard_stop_blocks_watch_retry_and_is_owner_endpoint_scoped)
+{
+    fake_radio_t a, b; fake_init(&a); fake_init(&b);
+    LS_EQ_INT(register_iq("test.pause.a", &a), LS_RADIO_OK);
+    LS_EQ_INT(register_iq("test.pause.b", &b), LS_RADIO_OK);
+    ls_radio_requirements_t req = iq_requirements(2000000);
+    req.preferred_endpoint_id = "test.pause.a";
+    ls_radio_session_t *sa, *sb;
+    LS_EQ_INT(ls_radio_acquire("rec", &req, &sa), LS_RADIO_OK);
+    req.preferred_endpoint_id = "test.pause.b";
+    LS_EQ_INT(ls_radio_acquire("adsb", &req, &sb), LS_RADIO_OK);
+    ls_radio_iq_config_t cfg = { .center_hz = 1090000000, .sample_rate_hz = 2000000 }, actual;
+    LS_EQ_INT(ls_radio_iq_configure(sa, &cfg, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_configure(sb, &cfg, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(sa), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(sb), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_pause("test.pause.a", "adsb", true), LS_RADIO_ERR_BUSY);
+    LS_CHECK(a.started && b.started);
+    a.stop_error = LS_RADIO_ERR_IO;
+    LS_EQ_INT(ls_radio_endpoint_pause("test.pause.a", "rec", true), LS_RADIO_ERR_IO);
+    ls_radio_endpoint_info_t info;
+    LS_EQ_INT(ls_radio_endpoint_get("test.pause.a", &info), LS_RADIO_OK);
+    LS_CHECK(!info.paused && info.streaming);
+    a.stop_error = LS_RADIO_OK;
+    LS_EQ_INT(ls_radio_endpoint_pause("test.pause.a", "rec", true), LS_RADIO_OK);
+    LS_CHECK(!a.started && b.started);
+    LS_EQ_INT(ls_radio_iq_start(sa), LS_RADIO_ERR_STOPPED);
+    ls_radio_release(sa);
+    req.preferred_endpoint_id = "test.pause.a";
+    LS_EQ_INT(ls_radio_acquire("rec", &req, &sa), LS_RADIO_ERR_BUSY);
+    LS_EQ_INT(ls_radio_endpoint_pause("test.pause.a", "", false), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_acquire("rec", &req, &sa), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_configure(sa, &cfg, &actual), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(sa), LS_RADIO_OK);
+    LS_CHECK(a.started && b.started);
+    ls_radio_release(sa); ls_radio_release(sb);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.pause.a"), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.pause.b"), LS_RADIO_OK);
+    fake_destroy(&a); fake_destroy(&b);
+}
+LS_CASE(dashboard_stop_cancels_blocked_read)
+{
+    fake_radio_t fake;
+    fake_init(&fake);
+    fake.blocking = true;
+    LS_EQ_INT(register_iq("test.iq.dashboard", &fake), LS_RADIO_OK);
+    ls_radio_requirements_t requirements = iq_requirements(2000000);
+    ls_radio_session_t *session = NULL;
+    LS_EQ_INT(ls_radio_acquire("adsb", &requirements, &session), LS_RADIO_OK);
+    configure_and_start(session);
+
+    read_thread_arg_t read_arg = {.session = session};
+    pthread_t thread;
+    pthread_create(&thread, NULL, read_thread, &read_arg);
+    wait_for_read(&fake);
+    LS_EQ_INT(ls_radio_endpoint_pause("test.iq.dashboard", "adsb", true), LS_RADIO_OK);
+    pthread_join(thread, NULL);
+    LS_EQ_INT(read_arg.result, LS_RADIO_ERR_STOPPED);
+    ls_radio_release(session);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.iq.dashboard"), LS_RADIO_OK);
     fake_destroy(&fake);
 }

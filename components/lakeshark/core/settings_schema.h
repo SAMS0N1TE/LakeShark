@@ -4,6 +4,7 @@
 /* - Every value in the `sdr-tool` NVS namespace is written key-per- field, so a new key added by the firmware does not physically overwrite an older key. */
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,8 @@ settings_schema_action_t settings_schema_decide(
     uint32_t stored,
     uint32_t current,
     uint32_t min_additive);
+
+bool settings_gain_valid(const char *app_name, int gain);
 
 const char *settings_schema_action_name(settings_schema_action_t a);
 const char *settings_schema_read_status_name(settings_schema_read_status_t s);

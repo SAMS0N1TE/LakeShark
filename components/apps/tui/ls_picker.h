@@ -66,6 +66,10 @@ void ls_picker_back(void (*on_back)(void));
    list stays up; `on_step` is handed the row and -1 or +1. ls_picker_open
    clears every row's. */
 void ls_picker_stepper(int index, void (*on_step)(int index, int dir));
+/* Optional menu navigation for LEFT/RIGHT on rows without value steppers. */
+void ls_picker_navigation(void (*navigate)(int index, int dir));
+/* Keep cursor, page and filter while a switch callback updates details. */
+void ls_picker_keep_open(void);
 void ls_picker_close(void);
 bool ls_picker_active(void);
 /* Whether the list up now is the one opened with `on_done`. */

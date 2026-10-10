@@ -15,7 +15,7 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_hz = 403000000;
 static uint32_t s_run_hz;
 static bool s_inverted, s_listening, s_pol_locked;
-static int64_t s_tune_us, s_good_us;
+static int64_t s_tune_us, s_good_us, s_progress_us;
 static EXT_RAM_BSS_ATTR rs41_decoder_t s_decoder;
 static EXT_RAM_BSS_ATTR rs41_stream_t s_stream;
 static EXT_RAM_BSS_ATTR uint8_t s_rx[256];
@@ -36,7 +36,7 @@ static esp_err_t listen(bool inverted)
     };
     esp_err_t err = ls_lora_fsk_begin(&c);
     s_listening = err == ESP_OK; s_inverted = inverted;
-    s_tune_us = esp_timer_get_time(); rs41_stream_reset(&s_stream,false);
+    s_progress_us = 0; s_tune_us = esp_timer_get_time(); rs41_stream_reset(&s_stream,false);
     return err;
 }
 static bool start(char *why, size_t n)
@@ -60,14 +60,19 @@ static void frame(const rs41_report_t *r, void *arg)
 }
 static void poll(void)
 {
+    int64_t now = esp_timer_get_time();
+    /* 518 bytes at 4800 bps take 864 ms; allow FIFO/poll margin before expiring stalled collection. */
+    if (s_stream.collecting && now-s_progress_us >= 1500000) {
+        rs41_stream_reset(&s_stream,false); s_progress_us = 0;
+    }
     bool restarted = false;
     int got = ls_lora_fsk_stream_read(s_rx,sizeof(s_rx),&restarted);
     if (got < 0) rs41_stream_reset(&s_stream,false);
+    else if (restarted) { rs41_stream_reset(&s_stream,true); s_progress_us = now; }
     if (got > 0) {
-        if (restarted) rs41_stream_reset(&s_stream,true);
         rs41_stream_feed(&s_stream,&s_decoder,s_rx,(size_t)got,s_inverted,frame,NULL);
+        if (s_stream.collecting) s_progress_us = now;
     }
-    int64_t now = esp_timer_get_time();
     /* The receiver's polarity is fixed, so it is searched for only until the first good
        frame; after that a quiet spell never restarts the listener (and never hands the
        3 s that follow to the wrong polarity). Never mid-frame either. */

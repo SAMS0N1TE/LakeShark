@@ -5,23 +5,31 @@
 #include "ls_gps.h"
 
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
+#include "ls_uart_claim.h"
 
 /* The reader half is not under test: it is a UART, a task and a ring buffer,
    and the parser was separated from it precisely so this file does not need
    any of that. These exist so the object links. */
 #include "driver/uart.h"
 
-bool uart_is_driver_installed(int p) { (void)p; return false; }
+static bool installed[4];
+static int collision = -1, configured, deleted;
+bool uart_is_driver_installed(int p) { return installed[p]; }
 esp_err_t uart_driver_install(int p, int rx, int tx, int q,
                               void *qh, int flags)
-{ (void)p; (void)rx; (void)tx; (void)q; (void)qh; (void)flags; return ESP_OK; }
-esp_err_t uart_driver_delete(int p) { (void)p; return ESP_OK; }
+{ (void)rx; (void)tx; (void)q; (void)qh; (void)flags;
+  if(p==collision) {installed[p]=true;collision=-1;return ESP_FAIL;}
+  if(installed[p]) return ESP_FAIL;
+  installed[p]=true;return ESP_OK; }
+esp_err_t uart_driver_delete(int p) { installed[p]=false; deleted=p; return ESP_OK; }
 esp_err_t uart_set_pin(int p, int tx, int rx, int rts, int cts)
 { (void)p; (void)tx; (void)rx; (void)rts; (void)cts; return ESP_OK; }
 int uart_read_bytes(int p, void *buf, uint32_t len, uint32_t ticks)
 { (void)p; (void)buf; (void)len; (void)ticks; return 0; }
 esp_err_t uart_param_config(int p, const uart_config_t *c)
-{ (void)p; (void)c; return ESP_OK; }
+{ (void)c; configured=p; LS_CHECK(installed[p]);return ESP_OK; }
 int uart_write_bytes(int p, const void *src, size_t len)
 { (void)p; (void)src; return (int)len; }
 esp_err_t uart_set_baudrate(int p, uint32_t baud)
@@ -38,7 +46,7 @@ BaseType_t xTaskCreate(TaskFunction_t task, const char *name,
 {
     (void)task; (void)name; (void)stack; (void)arg; (void)prio;
     if (out) *out = NULL;
-    return pdPASS;
+    return pdFAIL;
 }
 
 /* Sentence, without the terminator. */
@@ -883,4 +891,73 @@ LS_CASE(the_casic_commands_carry_their_own_checksums)
     LS_EQ_STR("$PCAS02,1000*2E\r\n", LS_GPS_CMD_RATE_1HZ);
     LS_EQ_STR("$PCAS01,5*19\r\n", LS_GPS_CMD_115200);
     LS_EQ_STR("$PCAS00*01\r\n", LS_GPS_CMD_SAVE);
+}
+
+LS_CASE(txt_does_not_keep_a_position_current)
+{
+    ls_gps_parser_t p={0};char line[90];
+    LS_CHECK(ls_gps_feed_line(GGA_FIX,strlen(GGA_FIX),&p,1000000));
+    double lat=p.st.lat_deg;
+    checksum_line(line,sizeof(line),"GPTXT,01,01,02,ANTENNA OK");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,56000000));
+    LS_CHECK(p.st.alive); LS_CHECK(!p.st.fix); LS_CHECK(p.st.lat_deg==lat);
+    ls_gps_expire(&p.st,56000000,false);
+    LS_CHECK(!p.st.alive); LS_CHECK(!p.st.fix);
+    p.st.fix=true;p.st.last_fix_us=56000000;p.st.lat_deg=91;
+    LS_CHECK(!ls_gps_fix_current(&p.st,56000000));
+    p.st.lat_deg=lat;
+    LS_CHECK(ls_gps_fix_current(&p.st,56000000));
+    ls_gps_expire(&p.st,59000000,true);
+    LS_CHECK(!p.st.alive);LS_CHECK(!p.st.fix);
+}
+LS_CASE(empty_gsv_clears_table_and_has_its_own_clock)
+{
+    ls_gps_parser_t p={0};char line[90];
+    gsv_line(line,sizeof(line),"04",45,90,35);
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,1000000));
+    LS_CHECK(ls_gps_feed_line(GGA_FIX,strlen(GGA_FIX),&p,1100000));
+    LS_EQ_INT(1,p.st.sat_count);LS_EQ_INT(35,p.st.cn0_best);
+    checksum_line(line,sizeof(line),"GPGSV,1,1,00");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,2000000));
+    LS_CHECK(ls_gps_feed_line(GGA_FIX,strlen(GGA_FIX),&p,2100000));
+    LS_EQ_INT(0,p.st.sat_count);LS_EQ_INT(0,p.st.sats_tracked);LS_EQ_INT(0,p.st.cn0_best);
+    LS_EQ_INT(2000000,p.st.last_gsv_us);
+    LS_CHECK(ls_gps_feed_line(GGA_FIX,strlen(GGA_FIX),&p,6000000));
+    LS_CHECK(!ls_gps_recent(p.st.last_gsv_us,6000000));
+    LS_EQ_INT(0,p.st.sat_count);LS_EQ_INT(0,p.st.cn0_top4);
+    LS_CHECK(p.st.alive);
+}
+LS_CASE(uart_collision_does_not_configure_or_delete_the_other_owner)
+{
+    collision=2; configured=deleted=-1;
+    LS_EQ_INT(ESP_ERR_NO_MEM,ls_gps_start());
+    LS_CHECK(installed[2]);LS_CHECK(configured!=2);LS_EQ_INT(configured,deleted);
+    memset(installed,0,sizeof(installed));
+}
+
+static int lease_owner[2], lease_config[2];
+static void *lease_start(void *arg)
+{
+    if(ls_uart_claim_lock()!=ESP_OK) return (void *)1;
+    int port=lease_owner[1]?0:1;
+    if(lease_owner[port]) {ls_uart_claim_unlock();return (void *)1;}
+    sched_yield();
+    lease_owner[port]=*(int *)arg;
+    sched_yield();
+    lease_config[port]=*(int *)arg;
+    ls_uart_claim_unlock();
+    return NULL;
+}
+LS_CASE(uart_lease_serializes_simultaneous_client_startup)
+{
+    LS_EQ_INT(ESP_OK,ls_uart_claim_lock());ls_uart_claim_unlock();
+    for(int i=0;i<50;i++) {
+        memset(lease_owner,0,sizeof(lease_owner));memset(lease_config,0,sizeof(lease_config));
+        int gps=1,flipper=2;pthread_t a,b;void *ra,*rb;
+        LS_EQ_INT(0,pthread_create(&a,NULL,lease_start,&gps));
+        LS_EQ_INT(0,pthread_create(&b,NULL,lease_start,&flipper));
+        LS_EQ_INT(0,pthread_join(a,&ra));LS_EQ_INT(0,pthread_join(b,&rb));
+        LS_CHECK(!ra && !rb);LS_CHECK(lease_owner[0]!=lease_owner[1]);
+        LS_EQ_INT(lease_owner[0],lease_config[0]);LS_EQ_INT(lease_owner[1],lease_config[1]);
+    }
 }

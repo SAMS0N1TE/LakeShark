@@ -201,3 +201,12 @@ LS_CASE(a_short_list_does_not_claim_a_position)
     LS_CHECK_MSG(strstr(top, " of ") == NULL,
                  "a list that fits printed a position: '%s'", top);
 }
+
+LS_CASE(switch_picker_keeps_filter_and_cursor_after_accept) {
+    open_with(19);ls_picker_keep_open();
+    ls_picker_key(LS_TK_CHAR,'1');ls_picker_key(LS_TK_DOWN,0);
+    ls_picker_key(LS_TK_ENTER,0);LS_CHECK(ls_picker_active());
+    int first=s_chosen;ls_picker_key(LS_TK_ENTER,0);
+    LS_EQ_INT(first,s_chosen);LS_EQ_INT(2,s_done_calls);
+    ls_picker_key(LS_TK_ESC,0);LS_CHECK(!ls_picker_active());
+}

@@ -72,3 +72,38 @@ LS_CASE(unavailable_receiver_cannot_claim)
     LS_CHECK(!ls_mixrf_cc_request(&s,LS_MIXRF_OWNER_FIND,true,100000000,false));
     LS_EQ_INT(s.cc_owner,LS_MIXRF_OWNER_NONE);
 }
+
+LS_CASE(nfc_work_refuses_active_radios)
+{
+    ls_mixrf_status_t s={.nfc=true,.cc=true};
+    LS_CHECK(ls_mixrf_suite_allowed(&s));
+    LS_CHECK(ls_mixrf_cc_request(&s,LS_MIXRF_OWNER_REC,true,433920000,false));
+    LS_CHECK(!ls_mixrf_suite_allowed(&s));
+    LS_CHECK(ls_mixrf_cc_request(&s,LS_MIXRF_OWNER_REC,false,0,false));
+    s.capturing=true;LS_CHECK(!ls_mixrf_suite_allowed(&s));s.capturing=false;
+    s.scanning=true;LS_CHECK(!ls_mixrf_suite_allowed(&s));s.scanning=false;
+    s.scan_requested=true;LS_CHECK(!ls_mixrf_suite_allowed(&s));s.scan_requested=false;
+    s.transmitting=true;LS_CHECK(!ls_mixrf_suite_allowed(&s));
+}
+static uint8_t registers[64];
+static bool write_register(uint8_t reg,uint8_t value){registers[reg]=value;return true;}
+LS_CASE(receive_clears_replay_frequency_offset)
+{
+    for(int capture=0;capture<2;capture++) {
+        registers[0x0c]=0x7f;
+        LS_CHECK(ls_mixrf_rx_profile(write_register,capture));
+        LS_EQ_INT(registers[0x0c],0);
+        LS_EQ_INT(registers[0x12],capture?0x30:0);
+    }
+}
+LS_CASE(nrf_only_surveys_publish_each_completed_sweep)
+{
+    ls_mixrf_status_t s={.scanning=true,.samples=0};
+    LS_CHECK(!ls_mixrf_survey_fresh(&s,0));
+    for(uint32_t heard=0;heard<3;heard++) {
+        s.sweeps=heard+1;
+        LS_CHECK(ls_mixrf_survey_fresh(&s,heard));
+        LS_CHECK(!ls_mixrf_survey_fresh(&s,s.sweeps));
+    }
+    s.scanning=false;LS_CHECK(!ls_mixrf_survey_fresh(&s,0));
+}

@@ -18,6 +18,7 @@ void cell_session_finish(cell_session_t *s, bool complete, bool mib,
     s->attempts++;
     if (complete && mib) s->decoded++;
     s->failures = complete ? 0 : s->failures + (s->failures < 6);
+    if(s->failures>=3)s->running=false;
     s->raw_bytes += saved_bytes;
     s->wait_ms = complete ? 1000 : 1000u << s->failures;
     if (s->wait_ms > 30000) s->wait_ms = 30000;

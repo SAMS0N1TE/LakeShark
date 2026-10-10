@@ -52,15 +52,15 @@ LS_CASE(compass_go_to_page_follows_route_without_a_manual_target)
 }
 LS_CASE(route_options_touch_and_keyboard_step_the_off_route_distance)
 {
-    run("map","-k o -x @enter,45:11",false);
+    run("map","-k o -x @down,@down,@down,@enter,@enter,45:11",false);
     LS_CHECK(strstr(output,"ROUTE > GUIDANCE")!=NULL);
     LS_CHECK(strstr(output,"45")!=NULL);LS_CHECK(strstr(output,"RTL-SDR")==NULL);
-    run("map","-k o -x @enter,@right",true);
+    run("map","-k o -x @down,@down,@down,@enter,@enter,@right",true);
     LS_CHECK(strstr(output,"45")!=NULL);
 }
 LS_CASE(clear_route_removes_guidance_through_options)
 {
-    run("map","-k o -x @down,@down,@enter,@esc",false);
+    run("map","-k o -x @down,@down,@down,@enter,@down,@down,@enter,@esc,@esc",false);
     LS_CHECK(strstr(output,"223m left")==NULL);
 }
 LS_CASE(map_labels_sit_on_no_symbol_and_no_other_label)

@@ -8,6 +8,8 @@
 #include <string.h>
 static bool external_wifi,external_ble,owned_wifi,owned_ble,ble_fail,wifi_fail,muted,busy;
 static int scans,cached,starts,stops,sounds,volume=23;
+static bool leased;
+static int64_t cache_us;
 static ls_gps_state_t gps;
 void ls_gps_get(ls_gps_state_t *out) {*out=gps;}
 void ls_wireless_wake(void) {}
@@ -15,14 +17,18 @@ bool ls_wifi_sta_running(void) {return external_wifi;}
 bool ls_wifi_running(void) {return false;}
 esp_err_t ls_wifi_survey_mode(bool on) {if(on && wifi_fail) return ESP_ERR_INVALID_STATE;owned_wifi=on;return ESP_OK;}
 ble_link_state_t ble_link_state(void) {return external_ble || owned_ble?BLE_LINK_SCANNING:BLE_LINK_OFF;}
-esp_err_t ble_link_listen(void) {starts++;if(ble_fail) return ESP_FAIL;owned_ble=true;return ESP_OK;}
-void ble_link_stop(void) {stops++;owned_ble=false;}
+esp_err_t ble_link_sweep_observer(bool on) {
+    if(!on) {if(owned_ble && !external_ble) {stops++;owned_ble=false;}leased=false;return ESP_OK;}
+    if(!external_ble && !owned_ble) {starts++;if(ble_fail) return ESP_FAIL;owned_ble=true;}
+    leased=true;return ESP_OK;
+}
+void ls_sweep_transport_stats(ls_sweep_transport_stats_t *out) {memset(out,0,sizeof(*out));out->scanning=external_ble || owned_ble;}
 int ls_wifi_survey_scan(ls_wifi_scan_ap_t *out,int cap) {
     LS_CHECK(!external_wifi && cap>=1);if(!owned_wifi) return -1;
     scans++;*out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;
 }
 int ls_wifi_scan_cached(ls_wifi_scan_ap_t *out,int cap,int64_t *us) {
-    LS_CHECK(cap>=1);cached++;if(wifi_fail) return -1;*us=esp_timer_get_time();
+    LS_CHECK(cap>=1);cached++;if(wifi_fail) return -1;*us=cache_us?cache_us:esp_timer_get_time();
     *out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;
 }
 bool audio_is_muted(void) {return muted;}
@@ -42,7 +48,7 @@ LS_CASE(runtime_cached_only_ownership_rollback_and_global_mute) {
     external_wifi=false;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==0 && cached==2 && scans==0);
     ls_sweep_start(false);ls_sweep_tick();LS_CHECK(stops==0);
     external_ble=false;ble_fail=true;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==1 && cached==2);
-    ble_fail=false;ls_sweep_clear();
+    ls_sweep_start(false);ls_sweep_tick();ble_fail=false;ls_sweep_clear();
     ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && owned_ble && cached==3 && sounds==0);
     ls_shim_time_set(2000000);muted=false;ls_sweep_tick();LS_CHECK(cached==3 && sounds==0);
     ls_shim_time_set(6000000);ls_sweep_tick();LS_CHECK(cached==4 && sounds==0);
@@ -106,4 +112,35 @@ LS_CASE(gps_movement_uses_fresh_measured_speed_and_no_stale_intervals) {
     gps.last_fix_us=601000000;ls_shim_time_set(620000000);ls_sweep_tick();
     n=ls_sweep_snapshot(d,LS_SWEEP_CAP,620000000);for(size_t i=0;i<n;i++) if(!memcmp(d[i].mac,tracker,6)) LS_CHECK(d[i].moved_m==moved);
     ls_sweep_start(false);ls_sweep_tick();memset(&gps,0,sizeof(gps));busy=false;
+}
+
+LS_CASE(shared_feed_owner_departure_recovers_and_release_preserves_replacement) {
+    ls_sweep_clear();ls_sweep_defaults();external_ble=true;owned_ble=false;ble_fail=false;muted=true;
+    ls_shim_time_set(10000000);ls_sweep_start(true);ls_sweep_tick();LS_CHECK(leased && !owned_ble);
+    external_ble=false;int before=starts;ls_sweep_tick();LS_CHECK(owned_ble && starts==before+1);
+    owned_ble=false;ble_fail=true;before=starts;ls_sweep_tick();LS_CHECK(starts==before+1);
+    ls_shim_time_set(14000000);ls_sweep_tick();LS_CHECK(starts==before+1);
+    ble_fail=false;ls_shim_time_set(15000000);ls_sweep_tick();LS_CHECK(owned_ble && starts==before+2);
+    external_ble=true;before=stops;ls_sweep_start(false);ls_sweep_tick();LS_CHECK(external_ble && stops==before && !leased);
+    owned_ble=false;external_ble=false;ble_fail=true;
+    ls_shim_time_set(10000000);ls_sweep_start(true);ls_sweep_tick();ls_sweep_status_t st;ls_sweep_status(&st,10000000);
+    LS_CHECK(st.requested && !st.running && strstr(st.status,"failed"));
+    ble_fail=false;ls_shim_time_set(15000000);ls_sweep_tick();ls_sweep_status(&st,15000000);LS_CHECK(st.running);
+    ls_sweep_start(false);ls_sweep_tick();
+}
+LS_CASE(identical_cache_timestamp_is_consumed_once_and_busy_does_not_consume) {
+    ls_sweep_clear();ls_sweep_defaults();external_ble=true;owned_ble=false;muted=true;wifi_fail=false;cache_us=10000000;
+    ls_shim_time_set(10000000);ls_sweep_start(true);ls_sweep_tick();
+    ls_sweep_device_t d;LS_EQ_UINT(ls_sweep_snapshot(&d,1,10000000),1);LS_EQ_UINT(d.adverts,1);
+    LS_CHECK(ls_sweep_hunt(d.mac,d.radio,d.address_type));
+    ls_shim_time_set(15000000);ls_sweep_tick();ls_shim_time_set(20000000);ls_sweep_tick();
+    LS_EQ_UINT(ls_sweep_snapshot(&d,1,20000000),1);LS_EQ_UINT(d.adverts,1);LS_EQ_INT(ls_sweep_alert(20000000),-1);
+    ls_sweep_runtime_status(true,"Settings active / NVS save failed");ls_shim_time_set(25000000);ls_sweep_tick();
+    ls_sweep_status_t st;ls_sweep_status(&st,25000000);LS_CHECK(strstr(st.status,"NVS save failed"));
+    wifi_fail=true;cache_us=30000000;ls_shim_time_set(30000000);ls_sweep_tick();
+    wifi_fail=false;cache_us=90000000;ls_shim_time_set(90000000);ls_sweep_tick();
+    LS_EQ_UINT(ls_sweep_snapshot(&d,1,90000000),1);LS_EQ_UINT(d.adverts,1);LS_CHECK(d.seen_us==90000000);
+    ls_sweep_start(false);ls_sweep_tick();ls_sweep_start(true);ls_sweep_tick();
+    LS_EQ_UINT(ls_sweep_snapshot(&d,1,90000000),1);LS_EQ_UINT(d.adverts,1);
+    ls_sweep_start(false);ls_sweep_tick();cache_us=0;
 }

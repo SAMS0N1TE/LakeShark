@@ -1,5 +1,6 @@
 #include "ls_test.h"
 #include "ls_field.h"
+#include "ls_notes.h"
 #include "ls_compass_live.h"
 #include "ls_gps.h"
 #include "core/ls_time.h"
@@ -18,6 +19,7 @@ static unsigned configurations, sends, polls;
 static ls_gps_state_t gps;
 static ls_field_state_t state;
 static bool imu_busy, keyboard_attached;
+static uint32_t scan_lo, scan_hi;
 static bool scan_complete=true;static int scan_bins=64;
 bool ls_keypad_present(void) { return keyboard_attached; }
 static ls_imu_sample_t imu_data;
@@ -55,6 +57,7 @@ static struct pocsag_ctx fake_pocsag;
 static fm_state_t *fake_pocsag_state;
 static unsigned pocsag_creates, pocsag_destroys, pocsag_batches;
 static uint32_t pocsag_pages_seen;
+static bool last_contiguous;
 pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud)
 {
     fake_pocsag_state = out; fake_pocsag.baud = baud; pocsag_creates++;
@@ -67,7 +70,8 @@ uint32_t pocsag_n_pages(const pocsag_ctx_t *c) { (void)c; return pocsag_pages_se
 bool pocsag_process_batch(pocsag_ctx_t *c, const uint8_t *data, int len,
                           bool inverted, bool contiguous)
 {
-    (void)c; (void)data; (void)len; (void)inverted; (void)contiguous;
+    (void)c; (void)data; (void)len; (void)inverted;
+    last_contiguous = contiguous;
     pocsag_batches++;
     if (!fake_pocsag_state) return false;
     fm_page_t *p = &fake_pocsag_state->pages[fake_pocsag_state->page_head];
@@ -88,7 +92,7 @@ const ls_lora_cfg_t *ls_lora_cfg(void) { return &radio; }
 void ls_lora_cfg_default(ls_lora_cfg_t *out) { *out = (ls_lora_cfg_t){.freq_hz=910525000,.sf=7,.bw_hz=125000,.cr=5,.preamble=16}; }
 esp_err_t ls_lora_configure(const ls_lora_cfg_t *cfg) { configurations++; if (fail_config) return ESP_FAIL; radio = *cfg; receiving = false; return ESP_OK; }
 esp_err_t ls_lora_receive(void) { receiving = true; return ESP_OK; }
-esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi) { (void)lo; (void)hi; scan = true; return ESP_OK; }
+esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi) { if (!ls_lora_rx_range_ok(ls_lora_caps(), lo, hi)) return ESP_FAIL; scan_lo = lo; scan_hi = hi; scan = true; return ESP_OK; }
 esp_err_t ls_lora_scan_end(void) { scan = false; return ESP_OK; }
 int ls_lora_scan_pass(float *dbm, int n, bool *done) { for (int i=0;i<n;i++) dbm[i] = -110; *done = scan_complete; return scan_bins; }
 bool ls_lora_send_done(void) { return tx_done; }
@@ -563,6 +567,7 @@ LS_CASE(a_received_payload_is_written_to_packets_csv)
     fclose(f);
     LS_CHECK(got > 0);
     LS_CHECK(strstr(text, "uptime_us,utc,source,hz,rssi,snr,gps_valid,lat,lon,len,hex") != NULL);
+    LS_CHECK(strstr(text, ",LORA LABS,") != NULL);
     /* The bytes, as hex, and the length that says how many to read. */
     LS_CHECK(strstr(text, "DEADBEEF") != NULL);
     LS_CHECK(strstr(text, ",4,DEADBEEF") != NULL);
@@ -694,6 +699,99 @@ LS_CASE(lr2021_labs_pocsag_uses_native_stream_and_detector)
     LS_EQ_UINT(fsk_cfg.bitrate, 1200); LS_EQ_UINT(fsk_cfg.deviation_hz, 4500);
     LS_EQ_UINT(fsk_cfg.bandwidth_hz, 11700); LS_EQ_UINT(fsk_cfg.sync_bits, 32);
     LS_EQ_UINT(fsk_cfg.preamble_detect_bits, 16);
+    ls_field_snapshot(&state); ls_fsk_cfg_t cfg = state.fsk; cfg.bitrate = 512;
+    LS_CHECK(ls_field_configure_fsk(&cfg)); ls_field_step(); ls_field_snapshot(&state);
+    LS_EQ_UINT(state.fsk.bitrate, 512); LS_EQ_UINT(fsk_cfg.bitrate, 512);
+    LS_CHECK(ls_field_mode(LS_LAB_GFSK)); ls_field_step();
+    LS_CHECK(!fsk_cfg.stream); LS_CHECK(!fsk_cfg.stream_sync_prefix);
     LS_CHECK(ls_field_mode(LS_LAB_PACKETS)); ls_field_step();
     LS_CHECK(!fsk_on); extra_caps = 0;
+}
+
+LS_CASE(labs_recording_selects_its_source_and_rejects_foreign_recording)
+{
+    reset();
+    LS_CHECK(ls_field_record(true));
+    LS_CHECK(!ls_field_record_source(LS_FIELD_LORA, true));
+    LS_CHECK(!ls_field_record_source(LS_FIELD_LORA, false));
+    LS_CHECK(ls_field_recording());
+    LS_CHECK(ls_field_record(false));
+    LS_CHECK(ls_field_source(LS_FIELD_LORA));
+    LS_CHECK(ls_field_record(true));
+    LS_CHECK(!ls_field_record_source(LS_FIELD_LORA, true));
+    LS_CHECK(ls_field_record(false));
+    LS_CHECK(ls_field_record_source(LS_FIELD_LORA, true));
+    LS_CHECK(!ls_field_record(false));
+    ls_field_direct(true); ls_shim_time_advance(100000); ls_field_step();
+    ls_field_snapshot(&state);
+    LS_EQ_UINT(state.sample.source, LS_FIELD_LORA);
+    LS_CHECK(state.sample.radio_valid); LS_EQ_UINT(state.sample.frequency, radio.freq_hz);
+    char text[2048] = {0};
+    FILE *f = fopen("field-test/samples.csv", "rb"); LS_CHECK(f != NULL);
+    fread(text, 1, sizeof(text)-1, f); fclose(f);
+    LS_CHECK(strstr(text, ",LORA LABS,") != NULL);
+    LS_CHECK(strstr(text, ",MESH,") == NULL);
+}
+LS_CASE(paging_publishes_effective_parameters_and_uses_effective_batch_period)
+{
+    reset(); ls_field_snapshot(&state);
+    ls_fsk_cfg_t cfg = state.fsk;
+    cfg.bitrate = 600; cfg.deviation_hz = 600; cfg.bandwidth_hz = 4800;
+    LS_CHECK(ls_field_mode(LS_LAB_GFSK)); ls_field_step();
+    LS_CHECK(ls_field_configure_fsk(&cfg)); ls_field_step();
+    LS_CHECK(ls_field_mode(LS_LAB_POCSAG)); ls_field_step();
+    ls_field_snapshot(&state); LS_EQ_UINT(state.fsk.bitrate, 1200);
+    LS_EQ_UINT(state.fsk.deviation_hz, 4500); LS_EQ_UINT(state.fsk.bandwidth_hz, 11700);
+    LS_CHECK(!ls_field_configure_fsk(&cfg));
+    cfg.bitrate = 2400;
+    LS_CHECK(ls_field_configure_fsk(&cfg)); ls_field_step();
+    LS_CHECK(ls_field_direct(true)); ls_field_step(); ls_field_snapshot(&state);
+    LS_EQ_UINT(fsk_cfg.bitrate, state.fsk.bitrate); LS_EQ_UINT(fake_pocsag.baud, 2400);
+    fsk_inbound_len = 1; ls_field_step(); LS_CHECK(!last_contiguous);
+    ls_shim_time_advance(544000000 / 2400);
+    fsk_inbound_len = 1; ls_field_step(); LS_CHECK(last_contiguous);
+    LS_CHECK(ls_field_mode(LS_LAB_GFSK)); ls_field_step(); ls_field_snapshot(&state);
+    LS_EQ_UINT(state.fsk.bitrate, 600); LS_EQ_UINT(state.fsk.bandwidth_hz, 4800);
+    LS_CHECK(!state.fsk.stream); LS_EQ_UINT(fsk_cfg.bitrate, 600);
+}
+LS_CASE(default_spectrum_spans_stay_within_the_selected_radio_band)
+{
+    const uint32_t frequencies[] = {150000000u, 959000000u, 2500000000u};
+    for (unsigned i = 0; i < 3; i++) {
+        reset();
+        if (i == 2) extra_caps = LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5;
+        ls_lora_cfg_t cfg = radio; cfg.freq_hz = frequencies[i];
+        LS_CHECK(ls_field_configure(&cfg)); ls_field_step();
+        LS_CHECK(ls_field_mode(LS_LAB_SPECTRUM)); ls_field_step();
+        LS_CHECK(ls_field_direct(true)); ls_field_step(); ls_field_snapshot(&state);
+        LS_CHECK(state.direct); LS_CHECK(scan);
+        LS_CHECK(ls_lora_rx_range_ok(ls_lora_caps(), scan_lo, scan_hi));
+        LS_EQ_UINT(scan_hi - scan_lo, 2000000u);
+        LS_EQ_UINT(state.span_lo_hz, scan_lo); LS_EQ_UINT(state.span_hi_hz, scan_hi);
+        LS_CHECK(!ls_field_spectrum_span(frequencies[i] - 1000000u, frequencies[i] + 1000000u) || i == 1);
+    }
+}
+
+LS_CASE(notes_import_waits_for_cold_load_and_covers_entries_beyond_the_ram_window)
+{
+    reset();
+    for (int i = 0; i < 55; i++) {
+        char title[32]; snprintf(title, sizeof(title), "Cold note %d", i);
+        LS_CHECK(ls_field_note(0, title, "Journal body")); ls_field_step();
+    }
+    LS_CHECK(ls_field_note(55, "Cold revised", "Latest archived revision")); ls_field_step();
+    ls_test_mkdir("field-import-test");
+    for (int i = 1; i <= 55; i++) {
+        char path[128]; snprintf(path, sizeof(path), "field-import-test/journal-%d.md", i); remove(path);
+    }
+    ls_notes_use_directory("field-import-test"); LS_CHECK(ls_notes_start());
+    ls_field_test_reset("field-test");
+    for (int i = 0; i < 65; i++) { ls_field_step(); ls_notes_io_step(); }
+    static char text[LS_NOTE_TEXT_MAX];
+    for (int i = 1; i <= 55; i++) {
+        char stem[40], title[32]; snprintf(stem, sizeof(stem), "journal-%d", i);
+        if (i == 55) snprintf(title, sizeof(title), "Cold revised");
+        else snprintf(title, sizeof(title), "Cold note %d", i - 1);
+        LS_CHECK(ls_notes_load(stem, text, sizeof(text))); LS_CHECK(strstr(text, title) != NULL);
+    }
 }

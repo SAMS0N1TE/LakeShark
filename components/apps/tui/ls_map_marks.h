@@ -37,12 +37,14 @@ char        ls_mark_icon_char(int icon);
 const char *ls_mark_icon_name(int icon);
 
 typedef struct {
+    uint32_t id;               /* runtime identity, survives rename/compaction */
     double  lat, lon;
     uint8_t icon;
     char    name[LS_MARK_NAME];
 } ls_mark_t;
 
 typedef struct {
+    uint32_t id;
     int     n;
     float   lat[LS_SKETCH_PTS], lon[LS_SKETCH_PTS];
     uint8_t hue;               /* TUI colour, without the bright bit */
@@ -66,6 +68,7 @@ void ls_marks_reload(void);
 bool ls_marks_save(void);
 /* Why the last load or save did not happen, or NULL. */
 const char *ls_marks_error(void);
+const char *ls_marks_save_status(void);
 
 int              ls_marks_count(void);
 const ls_mark_t *ls_marks_at(int i);
@@ -87,8 +90,8 @@ bool               ls_sketch_drawing(void);
 bool               ls_sketch_add_point(double lat, double lon);
 bool               ls_sketch_undo(void);
 const ls_sketch_t *ls_sketch_open(void);
-/* Keeps a line of two or more points and returns its index, -1 otherwise.
-   Either way drawing stops. */
+/* Returns its index, -1 for too few points, -2 for a full list.
+   Failed finishes keep the drawing open. */
 int                ls_sketch_finish(void);
 void               ls_sketch_cancel(void);
 

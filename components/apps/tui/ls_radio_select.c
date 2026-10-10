@@ -350,3 +350,28 @@ void ls_rsel_open_with(ls_rsel_job_t job, void (*done)(ls_rsel_radio_t chosen),
     fill(job);
     for (int i = 0; i < s_extra_n; i++) ls_picker_add(extra[i].label, extra[i].detail);
 }
+
+static ls_rsel_radio_t s_fixed_radio;
+static void (*s_fixed_done)(ls_rsel_radio_t);
+static void fixed_picked(int index)
+{
+    if (index == (int)s_fixed_radio && !ls_rsel_absent(s_fixed_radio)) {
+        if (s_fixed_done) s_fixed_done(s_fixed_radio);
+        return;
+    }
+    ls_rsel_open_fixed(s_fixed_radio, s_fixed_done);
+    ls_picker_select(index);
+    ls_picker_note(index == (int)s_fixed_radio ? ls_rsel_absent(s_fixed_radio) : "This app uses the protocol radio");
+}
+void ls_rsel_open_fixed(ls_rsel_radio_t radio, void (*done)(ls_rsel_radio_t))
+{
+    if (radio >= LS_RSEL_RADIOS) return;
+    s_fixed_radio = radio; s_fixed_done = done;
+    ls_picker_open("RADIO", fixed_picked);
+    for (int i = 0; i < LS_RSEL_RADIOS; i++) {
+        const char *why = ls_rsel_absent((ls_rsel_radio_t)i);
+        ls_picker_add(ls_rsel_name((ls_rsel_radio_t)i), why ? why :
+            i == (int)radio ? "protocol radio" : "not used by this protocol");
+    }
+    ls_picker_select((int)radio);
+}

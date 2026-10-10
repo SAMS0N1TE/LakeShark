@@ -110,7 +110,7 @@ int  rec_app_register(void);
 void rec_get_status(rec_status_t *out);
 void rec_get_hub_status(rec_hub_status_t *out);
 void rec_get_receiver_status(ls_iq_control_status_t *out);
-void rec_set_freq(uint32_t hz);
+bool rec_set_freq(uint32_t hz);
 uint32_t rec_get_freq(void);
 void rec_set_gain(int tenths);
 /**/

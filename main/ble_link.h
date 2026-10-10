@@ -17,6 +17,12 @@ esp_err_t ble_link_start(void);
 /* Owns an idle link for passive adverts; never connects to an advertiser. */
 esp_err_t ble_link_listen(void);
 void      ble_link_stop(void);
+/* Idempotent SWEEP lease, independent of the LINK/SURVEY owner. */
+esp_err_t ble_link_sweep_observer(bool on);
+/* Independent DRONES lease on the same passive receiver. */
+esp_err_t ble_link_rid_observer(bool on);
+esp_err_t ble_link_find_observer(bool on);
+void ble_link_receiver(bool *running, bool *scanning, bool *failed);
 
 ble_link_state_t ble_link_state(void);
 const char      *ble_link_state_name(void);

@@ -18,7 +18,7 @@
    in the way of the screen it is covering. */
 #define SHOW_FRAMES 150
 
-#define MAX_PROBES 4
+#define MAX_PROBES 6
 static ls_notify_probe_t s_probe[MAX_PROBES];
 static int               s_probes;
 

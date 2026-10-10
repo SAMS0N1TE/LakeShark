@@ -297,3 +297,27 @@ bool ls_ota_toast_text(const char *version, char *out, size_t cap)
     const int n = snprintf(out, cap, "%s available: SYSTEM > UPDATE", version);
     return n > 0 && (size_t)n < cap;
 }
+
+int ls_ota_check_wait_ms(int64_t deadline_us, int64_t now_us)
+{
+    const int64_t left = (deadline_us - now_us) / 1000;
+    return left <= 0 ? 0 : left < LS_OTA_CHECK_READ_MS ? (int)left : LS_OTA_CHECK_READ_MS;
+}
+
+int ls_ota_manifest_status(int status)
+{
+    return status == 200 ? 1 : status == 404 || status == 410 ? 0 : -1;
+}
+
+bool ls_ota_trial_ready(int64_t end_us, int64_t now_us, unsigned frames, unsigned attempts)
+{
+    return end_us > 0 && now_us >= end_us && frames >= 50 && attempts < LS_OTA_VALID_TRIES;
+}
+
+long ls_ota_trial_left(ls_ota_trial_t state, int64_t end_us, int64_t now_us)
+{
+    if (state == LS_OTA_TRIAL_VALID) return 0;
+    if (state == LS_OTA_TRIAL_FAILED) return -2;
+    const int64_t left = end_us - now_us;
+    return left > 0 ? (long)((left + 999999) / 1000000) : -1;
+}

@@ -22,6 +22,7 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
+#include "ls_sdcard.h"
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -71,9 +72,24 @@ static char s_decode[64];
 
 static EXT_RAM_BSS_ATTR int32_t s_edges[MAX_EDGES];
 static EXT_RAM_BSS_ATTR subghz_file_t s_sub;
-static EXT_RAM_BSS_ATTR char s_line[6144];
+static EXT_RAM_BSS_ATTR char s_line[SUBGHZ_FILE_LINE_BYTES];
 static EXT_RAM_BSS_ATTR char s_text[TEXT_MAX + 1];
 static int s_scroll, s_scroll_max;
+static size_t s_text_len;
+static long s_text_offset, s_text_total;
+static int s_text_rows = 1;
+#define JOB_MAX_BYTES (1024 * 1024)
+typedef enum { JOB_NONE, JOB_DIR, JOB_SUB, JOB_COPY } job_t;
+static job_t s_job;
+static DIR *s_dir;
+static FILE *s_in, *s_out;
+static EXT_RAM_BSS_ATTR char s_copy_path[PATH_MAX_LEN];
+static char s_keep[256];
+static unsigned long s_job_bytes;
+static bool s_replay_menu;
+static int s_copy_suffix;
+static void job_cancel(void);
+static void job_step(void);
 /* ---------------------------------------------------------------- listing */
 
 static const char *ext_of(const char *name);
@@ -125,38 +141,16 @@ static bool passes_filter(const entry_t *e)
 
 static void load_dir(void)
 {
+    job_cancel();
     s_count = 0;
     s_truncated = false;
     s_read_failed = false;
     DIR *d = opendir(s_path);
     if (!d) { s_read_failed = true; return; }
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        entry_t candidate = {0};
-        entry_t *t = &candidate;
-        if (strlen(e->d_name) >= sizeof(t->name)) continue;
-        strcpy(t->name, e->d_name);
-        char full[PATH_MAX_LEN];
-        if (!join_path(full, sizeof(full), s_path, e->d_name)) continue;
-        struct stat st;
-        if (stat(full, &st) == 0) {
-            t->dir = S_ISDIR(st.st_mode);
-            t->size = (uint32_t)st.st_size;
-            t->mtime = st.st_mtime;
-        } else {
-            t->dir = e->d_type == DT_DIR;
-            t->size = 0;
-            t->mtime = 0;
-        }
-        if (!passes_filter(t)) continue;
-        /* Retain the first page of the active order across the whole folder,
-           including entries encountered after the storage limit. */
-        if (s_count == MAX_ENTRIES) s_truncated = true;
-        ls_media_insert(s_entry,&s_count,MAX_ENTRIES,sizeof(s_entry[0]),&candidate,entry_cmp);
-    }
-    closedir(d);
-    if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
+    s_dir = d;
+    s_job = JOB_DIR;
+    s_job_bytes = 0;
+    s_keep[0] = 0;
 }
 
 /* Reload, keeping the cursor on the entry it was on - after a sort, a
@@ -167,9 +161,7 @@ static void reload_keep(const char *keep)
     char name[256];
     snprintf(name, sizeof(name), "%s", keep ? keep : "");
     load_dir();
-    if (!name[0]) return;
-    for (int i = 0; i < s_count; i++)
-        if (!strcmp(s_entry[i].name, name)) { s_selected = i; return; }
+    snprintf(s_keep, sizeof(s_keep), "%s", name);
 }
 static const char *selected_name(void)
 {
@@ -185,6 +177,10 @@ static bool at_root(void) { return !strcmp(s_path, ROOT); }
 static int s_return_to = -1;
 static void (*s_on_return)(void);
 void ls_scr_files_return_to(int screen) { s_return_to = screen; }
+static bool can_go_up(void)
+{
+    return s_view != VIEW_LIST || !at_root() || s_return_to >= 0 || s_on_return;
+}
 
 /* False at the top of the card with nobody to return to, so the router
    takes ESC home as it does on every other screen. */
@@ -208,7 +204,6 @@ static bool go_up(void)
     if (slash && slash != s_path) *slash = 0;
     load_dir();
     s_selected = s_depth > 0 ? s_sel_stack[--s_depth] : 0;
-    if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
     return true;
 }
 
@@ -271,15 +266,29 @@ static void decode_sub(void)
         snprintf(s_decode, sizeof(s_decode), "OOK24 %06lX x%u", (unsigned long)ook.value, ook.repeats);
 }
 
-static void open_text(void)
+static bool text_read(long offset)
 {
-    s_text[0] = 0;
-    FILE *f = fopen(s_open_path, "r");
-    if (!f) { snprintf(s_feedback, sizeof(s_feedback), "Could not open the file"); return; }
+    FILE *f = fopen(s_open_path, "rb");
+    if (!f) { snprintf(s_feedback, sizeof(s_feedback), "Could not open the file"); return false; }
+    long total;
+    if (fseek(f, 0, SEEK_END) != 0 || (total = ftell(f)) < 0 || fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f); snprintf(s_feedback, sizeof(s_feedback), "Could not seek in the file"); return false;
+    }
     const size_t n = fread(s_text, 1, TEXT_MAX, f);
+    const bool ok = !ferror(f);
     fclose(f);
+    if (!ok) { s_text_len = 0; snprintf(s_feedback, sizeof(s_feedback), "Text read failed"); return false; }
+    s_text_total = total;
+    s_text_len = n;
+    s_text_offset = offset;
     s_text[n] = 0;
     s_scroll = 0;
+    s_scroll_max = 0;
+    return true;
+}
+static void open_text(void)
+{
+    if (!text_read(0)) return;
     s_view = VIEW_TEXT;
 }
 
@@ -288,11 +297,15 @@ static void open_selected(void)
     if (s_selected >= s_count) return;
     const entry_t *e = &s_entry[s_selected];
     if (e->dir) {
+        if (s_depth == DEPTH_MAX) {
+            snprintf(s_feedback, sizeof(s_feedback), "Folder depth limit reached");
+            return;
+        }
         if (strlen(s_path) + strlen(e->name) + 2 >= sizeof(s_path)) {
             snprintf(s_feedback, sizeof(s_feedback), "Path too long");
             return;
         }
-        if (s_depth < DEPTH_MAX) s_sel_stack[s_depth++] = s_selected;
+        s_sel_stack[s_depth++] = s_selected;
         strcat(s_path, "/");
         strcat(s_path, e->name);
         s_selected = 0;
@@ -302,13 +315,16 @@ static void open_selected(void)
     if (!join_path(s_open_path, sizeof(s_open_path), s_path, e->name)) return;
     s_feedback[0] = 0;
     if (!strcasecmp(ext_of(e->name), "sub")) {
-        if (subghz_file_load(s_open_path, &s_sub, s_edges, MAX_EDGES, s_line, sizeof(s_line))) {
-            decode_sub();
-            s_scroll = 0;
-            s_view = VIEW_SUB;
-            return;
+        struct stat st;
+        if (stat(s_open_path, &st) != 0 || st.st_size > JOB_MAX_BYTES) {
+            snprintf(s_feedback, sizeof(s_feedback), "Capture too large or unreadable (limit 1 MB)"); return;
         }
-        snprintf(s_feedback, sizeof(s_feedback), "Not a SubGhz file - showing it as text");
+        s_in = fopen(s_open_path, "r");
+        if (!s_in) { snprintf(s_feedback, sizeof(s_feedback), "Could not open capture"); return; }
+        subghz_file_begin(&s_sub);
+        s_job = JOB_SUB;
+        s_job_bytes = 0;
+        return;
     }
     if (is_text(e->name)) { open_text(); return; }
     char sz[16];
@@ -339,33 +355,18 @@ static void send_to_flipper(void)
         snprintf(s_feedback, sizeof(s_feedback), "Already there: Flipper > LakeShark > FILES");
         return;
     }
+    struct stat st;
+    if (stat(s_open_path, &st) != 0 || st.st_size > JOB_MAX_BYTES) {
+        snprintf(s_feedback, sizeof(s_feedback), "Copy too large or unreadable (limit 1 MB)"); return;
+    }
     FILE *in = fopen(s_open_path, "rb");
     if (!in) { snprintf(s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
-    /* Exclusive creation preserves captures even when another writer wins
-       the same name between attempts. Suffixes keep the .sub extension. */
-    FILE *out = NULL;
-    for (int suffix = 0; suffix <= 999; suffix++) {
-        if (suffix) {
-            char name[256];
-            const char *base = open_name(), *dot = strrchr(base, '.');
-            const int stem = dot ? (int)(dot - base) : (int)strlen(base);
-            const int n = snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, suffix, dot ? dot : "");
-            if (n < 0 || (size_t)n >= sizeof(name) || !join_path(to, sizeof(to), dir, name)) break;
-        }
-        out = rec_file_open_new(to);
-        if (out || errno != EEXIST) break;
-    }
-    if (!out) { fclose(in); snprintf(s_feedback, sizeof(s_feedback), "Could not write %s", dir); return; }
-    bool ok = true;
-    size_t n;
-    while ((n = fread(s_line, 1, sizeof(s_line), in)) > 0)
-        if (fwrite(s_line, 1, n, out) != n) { ok = false; break; }
-    if (ferror(in)) ok = false;
-    fclose(in);
-    if (fclose(out) != 0) ok = false;
-    if (!ok) unlink(to);
-    snprintf(s_feedback, sizeof(s_feedback), "%s",
-             ok ? "Copied. On the Flipper: LakeShark > FILES" : "Copy failed - card full?");
+    s_in = in;
+    s_out = NULL;
+    s_copy_suffix = 0;
+    snprintf(s_copy_path, sizeof(s_copy_path), "%s", to);
+    s_job_bytes = 0;
+    s_job = JOB_COPY;
 }
 
 static void replay_open(void)
@@ -400,15 +401,46 @@ static EXT_RAM_BSS_ATTR char s_rename_from[PATH_MAX_LEN];
 static void rename_done(const char *name)
 {
     if (!name || !name[0]) return;
-    if (strchr(name, '/') || !strcmp(name, ".") || !strcmp(name, "..")) {
-        snprintf(s_feedback, sizeof(s_feedback), "A name cannot contain /");
+    const size_t len = strlen(name);
+    if (len > 255 || strpbrk(name, "\\/:*?\"<>|") || name[len - 1] == '.' || name[len - 1] == ' ') {
+        snprintf(s_feedback, sizeof(s_feedback), "Invalid FAT filename (1-255 characters)");
         return;
     }
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++)
+        if (*p < 32 || *p == 127) { snprintf(s_feedback, sizeof(s_feedback), "Invalid filename character"); return; }
     char to[PATH_MAX_LEN];
     if (!join_path(to, sizeof(to), s_path, name)) return;
+    if (!strcmp(to, s_rename_from)) return;
     struct stat st;
-    if (stat(to, &st) == 0) { snprintf(s_feedback, sizeof(s_feedback), "%s already exists", name); return; }
-    if (rename(s_rename_from, to) == 0) {
+    int result;
+    if (!strcasecmp(to, s_rename_from)) {
+        char temp[PATH_MAX_LEN];
+        int suffix;
+        for (suffix = 0; suffix < 1000; suffix++) {
+            snprintf(temp, sizeof(temp), "%s/.ls-rename-%d.tmp", s_path, suffix);
+            FILE *reserved = rec_file_open_new(temp);
+            if (reserved) {
+                if (fclose(reserved) != 0) { unlink(temp); snprintf(s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
+                break;
+            }
+            if (errno != EEXIST) { snprintf(s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
+        }
+        if (suffix == 1000) { snprintf(s_feedback, sizeof(s_feedback), "No free rename path"); return; }
+        /* The reserved destination belongs to this rename, never another file. */
+        if (rename(s_rename_from, temp) != 0) {
+            unlink(temp); snprintf(s_feedback, sizeof(s_feedback), "Could not stage case rename"); return;
+        }
+        result = rename(temp, to);
+        if (result != 0 && rename(temp, s_rename_from) != 0) {
+            snprintf(s_feedback, sizeof(s_feedback), "Rename recovery file: .ls-rename-%d.tmp", suffix); return;
+        }
+    } else {
+        if (stat(to, &st) == 0 || errno != ENOENT) {
+            snprintf(s_feedback, sizeof(s_feedback), "Destination exists or cannot be checked"); return;
+        }
+        result = rename(s_rename_from, to);
+    }
+    if (result == 0) {
         snprintf(s_feedback, sizeof(s_feedback), "Renamed to %s", name);
         s_view = VIEW_LIST;
         reload_keep(name);
@@ -437,6 +469,8 @@ static void info_open(void)
 
 static char s_menu[8];
 static int s_menu_n;
+static void actions_open(void);
+static void more_open(void);
 static void menu_add(char id, const char *label, const char *detail)
 {
     if (s_menu_n < (int)sizeof(s_menu) && ls_picker_add(label, detail)) s_menu[s_menu_n++] = id;
@@ -445,13 +479,14 @@ static void actions_done(int i)
 {
     if (i < 0 || i >= s_menu_n) return;
     switch (s_menu[i]) {
+    case 'O': s_replay_menu = true; open_selected(); break;
     case 'F': send_to_flipper(); break;
     case 'R': replay_open(); break;
     case 'T': open_text(); break;
     case 'I': info_open(); break;
     case 'N':
         snprintf(s_rename_from, sizeof(s_rename_from), "%s", s_open_path);
-        ls_keyboard_open("RENAME", open_name(), 63, rename_done);
+        ls_keyboard_open("RENAME", open_name(), 255, rename_done);
         break;
     case 'D': {
         char title[48];
@@ -483,6 +518,7 @@ static void actions_open(void)
     ls_picker_open(title, actions_done);
     if (sub) {
         menu_add('F', "SEND TO FLIPPER", "Copy where the Flipper app reads");
+        if (s_view == VIEW_LIST) menu_add('O', "OPEN CAPTURE / REPLAY", "Load and validate before replay");
         if (s_view == VIEW_SUB && subghz_file_is_cc_fsk(&s_sub))
             menu_add('R', "REPLAY", "Open in RECORD / CC1101 FSK");
         else if (s_view == VIEW_SUB && subghz_file_is_fsk(&s_sub)) {
@@ -508,8 +544,14 @@ static void actions_open(void)
 static void sort_done(int i)
 {
     if (i < 0 || i >= SORT__COUNT) return;
+    char keep[256];
+    snprintf(keep, sizeof(keep), "%s", selected_name() ? selected_name() : "");
     s_sort = (sort_t)i;
-    reload_keep(selected_name());
+    if (!s_truncated && !s_read_failed) {
+        qsort(s_entry, s_count, sizeof(s_entry[0]), entry_cmp);
+        for (int k = 0; k < s_count; k++)
+            if (!strcmp(s_entry[k].name, keep)) { s_selected = k; break; }
+    } else reload_keep(keep);
     snprintf(s_feedback, sizeof(s_feedback), "Sorted by %s", SORT_NAME_TEXT[i]);
 }
 static void sort_open(void)
@@ -517,6 +559,7 @@ static void sort_open(void)
     static const char *const WHY[SORT__COUNT] = {"A to Z", "Most recent at the top",
         "Oldest at the top", "Biggest at the top", "Grouped by extension"};
     ls_picker_open("SORT", sort_done);
+    ls_picker_back(more_open);
     for (int i = 0; i < SORT__COUNT; i++)
         ls_picker_add(SORT_NAME_TEXT[i], i == (int)s_sort ? "in use" : WHY[i]);
 }
@@ -540,16 +583,25 @@ static void more_done(int i)
 {
     if (i < 0 || i >= s_menu_n) return;
     const char id = s_menu[i];
+    if (id == 'S') { sort_open(); return; }
     if (id >= '0' && id <= '4') { goto_path(GOTO_PATH[id - '0']); return; }
     if (id == 'F') {
         ls_picker_open("SHOW", filter_done);
+        ls_picker_back(more_open);
         static const char *const WHY[FILTER__COUNT] = {"Everything", "Sub-GHz captures",
-            "Screenshots and pictures", "Notes, logs, tracks"};
+            "Image files (no preview)", "Notes, logs, tracks"};
         for (int k = 0; k < FILTER__COUNT; k++)
             ls_picker_add(FILTER_LABEL[k], k == (int)s_filter ? "in use" : WHY[k]);
         return;
     }
-    if (id == 'R') { s_view = VIEW_LIST; reload_keep(selected_name()); snprintf(s_feedback, sizeof(s_feedback), "Refreshed"); return; }
+    if (id == 'R') {
+        s_view = VIEW_LIST;
+        if (!ls_sdcard_mounted() && ls_sdcard_mount() != ESP_OK) {
+            snprintf(s_feedback, sizeof(s_feedback), "Card mount failed"); return;
+        }
+        reload_keep(selected_name());
+        snprintf(s_feedback, sizeof(s_feedback), "%s", s_read_failed ? "Refresh failed - card or folder unreadable" : "Refreshing"); return;
+    }
     if (id == 'C') {
         uint64_t total = 0, free_b = 0;
         if (esp_vfs_fat_info(ROOT, &total, &free_b) == ESP_OK)
@@ -558,15 +610,29 @@ static void more_done(int i)
         else snprintf(s_feedback, sizeof(s_feedback), "No card mounted");
     }
 }
+static void option_step(int i, int dir)
+{
+    if (i < 0 || i >= s_menu_n) return;
+    if (s_menu[i] == 'S') {
+        sort_done((s_sort + dir + SORT__COUNT) % SORT__COUNT);
+        ls_picker_set_detail(i, SORT_NAME_TEXT[s_sort]);
+    } else if (s_menu[i] == 'F') {
+        filter_done((s_filter + dir + FILTER__COUNT) % FILTER__COUNT);
+        ls_picker_set_detail(i, FILTER_LABEL[s_filter]);
+    }
+}
 static void more_open(void)
 {
     s_menu_n = 0;
-    ls_picker_open("MORE", more_done);
+    ls_picker_open("OPTIONS", more_done);
+    menu_add('S', "SORT", SORT_NAME_TEXT[s_sort]);
+    ls_picker_stepper(0, option_step);
     menu_add('1', "CAPTURES", "REC recordings - what the Flipper reads");
     menu_add('2', "SUB-GHZ", "Watch exports and archives");
     menu_add('3', "JOURNAL", "Field notes and tracks");
     menu_add('0', "CARD ROOT", ROOT);
     menu_add('F', "SHOW", FILTER_LABEL[s_filter]);
+    ls_picker_stepper(s_menu_n - 1, option_step);
     menu_add('R', "REFRESH", "Read the folder again");
     menu_add('C', "CARD SPACE", "How full it is");
 }
@@ -581,6 +647,108 @@ static void action(char c)
     case 's': sort_open(); break;
     case 'm': more_open(); break;
     default: break;
+    }
+}
+
+/* One bounded batch per frame leaves input available between card reads. */
+static void job_cancel(void)
+{
+    if (s_dir) { closedir(s_dir); s_dir = NULL; s_count = 0; s_read_failed = true; }
+    if (s_in) { fclose(s_in); s_in = NULL; }
+    if (s_out) { fclose(s_out); s_out = NULL; unlink(s_copy_path); }
+    s_job = JOB_NONE;
+    s_replay_menu = false;
+}
+static void job_step(void)
+{
+    if (s_job == JOB_DIR) {
+        for (int n = 0; n < 8; n++) {
+            errno = 0;
+            struct dirent *e = readdir(s_dir);
+            if (!e) {
+                s_read_failed = errno != 0;
+                closedir(s_dir); s_dir = NULL; s_job = JOB_NONE;
+                if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
+                for (int i = 0; i < s_count; i++)
+                    if (!strcmp(s_entry[i].name, s_keep)) { s_selected = i; break; }
+                if (s_read_failed) snprintf(s_feedback, sizeof(s_feedback), "Folder read failed");
+                else if (!strcmp(s_feedback, "Refreshing")) snprintf(s_feedback, sizeof(s_feedback), "Refreshed");
+                return;
+            }
+            s_job_bytes++;
+            if (e->d_name[0] == '.') continue;
+            entry_t candidate = {0};
+            entry_t *t = &candidate;
+            if (strlen(e->d_name) >= sizeof(t->name)) continue;
+            strcpy(t->name, e->d_name);
+            char full[PATH_MAX_LEN];
+            if (!join_path(full, sizeof(full), s_path, e->d_name)) continue;
+            struct stat st;
+            if (stat(full, &st) == 0) {
+                t->dir = S_ISDIR(st.st_mode);
+                t->size = (uint32_t)st.st_size;
+                t->mtime = st.st_mtime;
+            } else {
+                t->dir = e->d_type == DT_DIR;
+                t->size = 0;
+                t->mtime = 0;
+            }
+            if (!passes_filter(t)) continue;
+            /* Retain the first page of the active order across the whole folder,
+               including entries encountered after the storage limit. */
+            if (s_count == MAX_ENTRIES) s_truncated = true;
+            ls_media_insert(s_entry,&s_count,MAX_ENTRIES,sizeof(s_entry[0]),&candidate,entry_cmp);
+        }
+    } else if (s_job == JOB_SUB) {
+        for (int n = 0; n < 4; n++) {
+            if (!fgets(s_line, sizeof(s_line), s_in)) {
+                const bool ok = !ferror(s_in) && s_sub.filetype_ok;
+                fclose(s_in); s_in = NULL; s_job = JOB_NONE;
+                if (ok) {
+                    decode_sub(); s_scroll = 0; s_view = VIEW_SUB;
+                    if (s_replay_menu) actions_open();
+                } else snprintf(s_feedback, sizeof(s_feedback), "Not a readable SubGhz file - use VIEW AS TEXT");
+                s_replay_menu = false;
+                return;
+            }
+            s_job_bytes += strlen(s_line);
+            if (s_job_bytes > JOB_MAX_BYTES) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Capture exceeds 1 MB limit"); return; }
+            if (!strchr(s_line, '\n') && !feof(s_in)) s_sub.invalid = true;
+            subghz_file_line(&s_sub, s_line, s_edges, MAX_EDGES);
+        }
+    } else if (s_job == JOB_COPY) {
+        if (!s_out) {
+            for (int attempt = 0; attempt < 8 && s_copy_suffix <= 999; attempt++, s_copy_suffix++) {
+                if (s_copy_suffix) {
+                    char name[256];
+                    const char *base = open_name(), *dot = strrchr(base, '.');
+                    const int stem = dot ? (int)(dot - base) : (int)strlen(base);
+                    const int n = snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, s_copy_suffix, dot ? dot : "");
+                    if (n < 0 || (size_t)n >= sizeof(name) || !join_path(s_copy_path, sizeof(s_copy_path), rec_dir(), name)) {
+                        job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Copy name too long"); return;
+                    }
+                }
+                /* Reserve only a new name, including against concurrent writers. */
+                s_out = rec_file_open_new(s_copy_path);
+                if (s_out) break;
+                if (errno != EEXIST) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Could not create copy"); return; }
+            }
+            if (!s_out) {
+                if (s_copy_suffix > 999) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "No free copy name"); }
+                return;
+            }
+        }
+        const size_t n = fread(s_line, 1, sizeof(s_line), s_in);
+        s_job_bytes += n;
+        if (ferror(s_in) || s_job_bytes > JOB_MAX_BYTES || (n && fwrite(s_line, 1, n, s_out) != n)) {
+            job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Copy failed"); return;
+        }
+        if (!n) {
+            fclose(s_in); s_in = NULL;
+            const bool ok = fclose(s_out) == 0; s_out = NULL; s_job = JOB_NONE;
+            if (!ok) unlink(s_copy_path);
+            snprintf(s_feedback, sizeof(s_feedback), "%s", ok ? "Copied. On the Flipper: LakeShark > FILES" : "Copy failed");
+        }
     }
 }
 
@@ -705,26 +873,40 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     sub_histogram(sf, tui_rect_make(x, y, w, p.y + p.h - 1 - y));
 }
 
-static void draw_text(tui_surface *sf, tui_rect a)
+static int text_rows(tui_surface *sf, tui_rect a)
 {
     int row = 0, col = 0;
     const int width = a.w;
-    if (width < 1) return;
-    int lines = 1, used = 0;
-    for (const char *p = s_text; *p; p++) {
-        if (*p == '\n' || used >= width) { lines++; used = 0; if (*p == '\n') continue; }
-        used++;
+    if (width < 1) return 0;
+    for (size_t i = 0; i < s_text_len; i++) {
+        unsigned char ch = (unsigned char)s_text[i];
+        if (ch == '\r') continue;
+        if (ch == '\n') { row++; col = 0; continue; }
+        int repeat = ch == '\t' ? 4 - col % 4 : 1;
+        if (ch >= 0xc2 && ch <= 0xf4) {
+            int bytes = ch < 0xe0 ? 2 : ch < 0xf0 ? 3 : 4;
+            int n = 1;
+            while (n < bytes && i + n < s_text_len && ((unsigned char)s_text[i+n] & 0xc0) == 0x80) n++;
+            if (n == bytes) i += bytes - 1;
+            ch = '?';
+        }
+        while (repeat--) {
+            if (col >= width) { row++; col = 0; }
+            if (sf && row >= s_scroll && row < s_scroll + a.h)
+                tui_put_char(sf, a, a.x + col, a.y + row - s_scroll,
+                             ch == '\t' ? ' ' : ch >= 32 && ch < 127 ? (char)ch : '.', LS_ATTR_DIM);
+            col++;
+        }
     }
+    return row + 1;
+}
+static void draw_text(tui_surface *sf, tui_rect a)
+{
+    s_text_rows = a.h > 0 ? a.h : 1;
+    const int lines = text_rows(NULL, a);
     s_scroll_max = lines > a.h ? lines - a.h : 0;
     if (s_scroll > s_scroll_max) s_scroll = s_scroll_max;
-    for (const char *p = s_text; *p; p++) {
-        if (*p == '\r') continue;
-        if (*p == '\n' || col >= width) { row++; col = 0; if (*p == '\n') continue; }
-        if (row >= s_scroll && row < s_scroll + a.h)
-            tui_put_char(sf, a, a.x + col, a.y + row - s_scroll,
-                         (*p >= 32 && *p < 127) ? *p : '.', LS_ATTR_DIM);
-        col++;
-    }
+    text_rows(sf, a);
 }
 
 /* Portrait rows are two lines: the name on its own line has room, the
@@ -748,8 +930,8 @@ static void draw_list(tui_surface *sf, tui_rect p)
         snprintf(how, sizeof(how), "%s%s%s", SORT_NAME_TEXT[s_sort],
                  s_filter ? "  " : "", s_filter ? FILTER_LABEL[s_filter] : "");
         const int n = (int)strlen(how);
-        if ((int)strlen(s_path) + n + 4 < p.w)
-            tui_put_str(sf, p, p.x + p.w - n - 2, p.y + 1, how, LS_ATTR_DIM);
+        tui_fill(sf, tui_rect_make(p.x + p.w - n - 3, p.y + 1, n + 1, 1), ' ', LS_ATTR_DIM);
+        tui_put_str(sf, p, p.x + p.w - n - 2, p.y + 1, how, LS_ATTR_DIM);
     }
     if (s_read_failed) {
         tui_put_str(sf, p, s_list.x, s_list.y + 1, "No card, or this folder cannot be read.", LS_ATTR_DIM);
@@ -757,7 +939,9 @@ static void draw_list(tui_surface *sf, tui_rect p)
         return;
     }
     if (!s_count) {
-        tui_put_str(sf, p, s_list.x, s_list.y + 1, "Empty folder.", LS_ATTR_DIM);
+        char empty[64];
+        snprintf(empty, sizeof(empty), s_filter ? "No matches for %s. OPTIONS > SHOW ALL" : "Empty folder.", FILTER_LABEL[s_filter]);
+        tui_put_str(sf, p, s_list.x, s_list.y + 1, empty, LS_ATTR_DIM);
         return;
     }
     const int rows = list_rows();
@@ -797,20 +981,30 @@ static void draw_list(tui_surface *sf, tui_rect p)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    if (s_job != JOB_NONE) {
+        char progress[80];
+        snprintf(progress, sizeof(progress), "%s %lu %s - BACK or tap to cancel",
+                 s_job == JOB_DIR ? "Reading folder" : s_job == JOB_SUB ? "Loading capture" : "Copying",
+                 s_job_bytes, s_job == JOB_DIR ? "entries" : "bytes");
+        ls_panel_box(sf, a, "FILES", TUI_CYAN);
+        tui_put_str(sf, a, a.x + 1, a.y + 2, progress, LS_ATTR_DIM);
+        job_step();
+        return;
+    }
     if (a.h < 14 || a.w < 24) {
         ls_panel_box(sf, a, "FILES", TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }
-    s_touch_nav = a.w < 90 && a.h > 35;
+    s_touch_nav = s_view == VIEW_TEXT || (a.w < 90 && a.h > 35);
     if (s_touch_nav) {
         const bool list = s_view == VIEW_LIST;
         const int rows = list_rows();
         ls_btn_t nav[] = {
-            {"PREV", "PAGE", 0, false, list ? s_selected < rows : s_scroll == 0},
+            {"PREV", "PAGE", 0, false, list ? s_selected < rows : s_scroll == 0 && !s_text_offset},
             {"NEXT", "PAGE", 0, false, list ? s_selected / rows * rows + rows >= s_count
-                                            : s_scroll >= s_scroll_max},
-            {"BACK", list ? "FOLDER" : "LIST", 0, false, list && at_root()}};
+                                            : s_scroll >= s_scroll_max && s_text_offset + (long)s_text_len >= s_text_total},
+            {"BACK", list ? "FOLDER" : "LIST", 0, false, !can_go_up()}};
         ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y + a.h - 5, a.w, 5), nav, 3, -1,
                                LS_BTN_SLOT_WATERFALL);
         a.h -= 5;
@@ -818,20 +1012,21 @@ static void draw(tui_surface *sf, tui_rect a)
     const bool list = s_view == VIEW_LIST;
     const bool sel_file = list && s_selected < s_count && !s_entry[s_selected].dir;
     ls_btn_t btn[] = {
-        {"UP", list ? "FOLDER" : "LIST", 'u', false, list && at_root()},
+        {list && at_root() ? "BACK" : "UP", list ? "FOLDER" : "LIST", 'u', false, !can_go_up()},
         {"OPEN", list && s_selected < s_count && s_entry[s_selected].dir ? "FOLDER" : "FILE", 'o', false,
          !list || s_selected >= s_count},
         {"ACTIONS", list && s_selected < s_count && s_entry[s_selected].dir ? "FOLDER" : "FILE", 'a',
          false, list && s_selected >= s_count},
         {"SORT", SORT_NAME_TEXT[s_sort], 's', false, !list},
-        {"MORE", "GO TO", 'm', false, false}};
+        {"OPTIONS", "SHOW / GO TO", 'm', false, false}};
     (void)sel_file;
     const int bar_h = ls_btn_raised_height(a, 5);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), btn, 5, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
-    char title[40];
+    char title[80];
     if (list) snprintf(title, sizeof(title), "FILES  %s%d", s_truncated ? "first " : "", s_count);
-    else snprintf(title, sizeof(title), "%s", s_view == VIEW_SUB ? "CAPTURE" : "TEXT");
+    else if (s_view == VIEW_TEXT) snprintf(title, sizeof(title), "TEXT %ld-%ld/%ld bytes", s_text_offset, s_text_offset + (long)s_text_len, s_text_total);
+    else snprintf(title, sizeof(title), "CAPTURE");
     ls_panel_box(sf, panel, title, TUI_CYAN);
     if (s_view == VIEW_SUB) draw_sub(sf, panel);
     else if (s_view == VIEW_TEXT)
@@ -839,7 +1034,7 @@ static void draw(tui_surface *sf, tui_rect a)
     else draw_list(sf, panel);
     ls_safe_line(sf, a, a.y + a.h - 1,
                  s_feedback[0] ? s_feedback :
-                 list ? "Tap to select, tap again to open" : "ACTIONS: send, replay, delete",
+                 list ? "Tap to select, tap again to open" : s_view == VIEW_TEXT ? "ASCII / UTF-8: unsupported glyphs shown as ?" : "ACTIONS: send, replay, delete",
                  LS_ATTR_DIM);
 }
 
@@ -850,13 +1045,21 @@ static void enter(void)
     button_focus = -1;
     button_slot = 0;
     s_feedback[0] = 0;
-    if (s_view == VIEW_LIST) load_dir();
+    s_view = VIEW_LIST;
+    load_dir();
 }
 
 static void page(int dir)
 {
     if (s_view != VIEW_LIST) {
-        const int step = 10;
+        if (s_view == VIEW_TEXT && dir > 0 && s_scroll >= s_scroll_max && s_text_offset + (long)s_text_len < s_text_total) {
+            text_read(s_text_offset + TEXT_MAX); return;
+        }
+        if (s_view == VIEW_TEXT && dir < 0 && !s_scroll && s_text_offset) {
+            if (text_read(s_text_offset - TEXT_MAX)) s_scroll = TEXT_MAX;
+            return;
+        }
+        const int step = s_text_rows;
         s_scroll += dir * step;
         if (s_scroll < 0) s_scroll = 0;
         if (s_scroll > s_scroll_max) s_scroll = s_scroll_max;
@@ -870,6 +1073,10 @@ static void page(int dir)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (s_job != JOB_NONE) {
+        if (k == LS_TK_ESC || k == LS_TK_BACKSPACE) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Cancelled"); }
+        return true;
+    }
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
     if (k == LS_TK_LEFT || k == LS_TK_RIGHT || k == LS_TK_TAB)
         return ls_btn_navigate(k, &button_slot, &button_focus, false);
@@ -881,11 +1088,13 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) return go_up();
     if (k == LS_TK_UP) {
         if (s_view == VIEW_LIST) { if (s_selected) s_selected--; }
+        else if (s_view == VIEW_TEXT && !s_scroll) page(-1);
         else if (s_scroll) s_scroll--;
         return true;
     }
     if (k == LS_TK_DOWN) {
         if (s_view == VIEW_LIST) { if (s_selected + 1 < s_count) s_selected++; }
+        else if (s_view == VIEW_TEXT && s_scroll >= s_scroll_max) page(1);
         else if (s_scroll < s_scroll_max) s_scroll++;
         return true;
     }
@@ -897,6 +1106,7 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (s_job != JOB_NONE) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Cancelled"); return true; }
     if (s_touch_nav) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_WATERFALL);
         if (i == 0) { page(-1); return true; }
@@ -919,10 +1129,10 @@ static bool touch(int col, int row)
 
 /* Leaving by any other route - the home, another app - forgets the caller,
    so opening FILES later from the directory does not jump somewhere odd. */
-static void leave(void) { s_return_to = -1; s_on_return=NULL; }
+static void leave(void) { job_cancel(); s_return_to = -1; s_on_return=NULL; }
 
 const ls_tui_screen_t ls_scr_files = {
-    .name = "FILES", .hint = "ENTER open  BS up  A actions  S sort  M more",
+    .name = "FILES", .hint = "ENTER open  BS up  A actions  S sort  M options",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch};
 
 bool ls_scr_files_show_path(const char *path,void (*on_return)(void)) {

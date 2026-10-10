@@ -97,6 +97,7 @@ static void error(ls_tiles_catalog *d,int code,const char *message) {
 static void publish_error(int code,const char *message) {
     stage(S_LOCK,"catalog-lock",""); xSemaphoreTake(lock,portMAX_DELAY);
     error(&data,code,message);
+    if(data.open_state==1)data.open_state=3;
     xSemaphoreGive(lock);
     stage(S_LOG,"error-log","");
     ESP_LOGE("tiles","%s (%s)",message,esp_err_to_name(code));
@@ -338,6 +339,7 @@ static void work(void *arg) {
         }
     }
 publish:
+    if(q->action==2)d->open_state=d->last_error==ESP_OK?2:3;
     stage(S_PUBLISH,"publish",""); xSemaphoreTake(lock,portMAX_DELAY); data=*d; xSemaphoreGive(lock); free(d);
 done:
     stage(S_LOG,"completion-log","");
@@ -347,6 +349,7 @@ done:
 static bool queue(int action,bool online,const ls_tile_region *r) {
     ensure_lock();
     if(atomic_exchange(&busy,true)) return false;
+    if(action==2) { xSemaphoreTake(lock,portMAX_DELAY);data.open_state=1;xSemaphoreGive(lock); }
     if(action==0 || action==1 || action==4) {
         ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
         if(t.state==1) { publish_error(ESP_ERR_INVALID_STATE,"Transfer active; finish or cancel first"); atomic_store(&busy,false); return false; }

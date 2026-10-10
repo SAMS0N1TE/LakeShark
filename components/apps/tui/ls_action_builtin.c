@@ -471,7 +471,7 @@ static ls_act_status_t a_audio_volume(const ls_args_t *in, ls_val_t *out)
 static ls_act_status_t a_mesh_start(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
-    if (ls_mesh_running()) { out->kind = LS_VAL_BOOL; out->i = 1; return LS_ACT_OK; }
+    if (ls_mesh_running()) { ls_mesh_set_tx(false); out->kind = LS_VAL_BOOL; out->i = 1; return LS_ACT_OK; }
     esp_err_t err = ls_mesh_start();
     if (err == ESP_ERR_NOT_SUPPORTED) return LS_ACT_UNAVAILABLE;
     if (err != ESP_OK) return LS_ACT_FAILED;

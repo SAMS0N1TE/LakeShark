@@ -122,6 +122,22 @@ static bool tap_label(const char *word)
 
 /* ----------------------------------------------------------------- cases -- */
 
+LS_CASE(plain_commands_start_lowercase_and_preserve_explicit_case)
+{
+    ls_keyboard_open_plain("COMMAND", "", 127, on_done);
+    redraw();
+    tap_key('h'); tap_key('e'); tap_key('l'); tap_key('p');
+    LS_CHECK(tap_label("OK"));
+    LS_EQ_STR(s_got, "help");
+
+    ls_keyboard_open_plain("COMMAND", "echo MiXeD ", 127, on_done);
+    redraw();
+    LS_CHECK(tap_label("shf"));
+    tap_key('a'); tap_key('b');
+    LS_CHECK(tap_label("OK"));
+    LS_EQ_STR(s_got, "echo MiXeD Ab");
+}
+
 LS_CASE(a_tapped_letter_lands_in_the_buffer)
 {
 
@@ -422,4 +438,25 @@ LS_CASE(every_letter_has_a_figure_of_its_own)
             LS_CHECK_MSG(strcmp(shot[i], shot[j]) != 0,
                          "'%c' and '%c' draw the same figure: %s",
                          'A' + i, 'A' + j, shot[i]);
+}
+
+LS_CASE(lowercase_network_input_and_nested_dialog_preserve_accepted_text) {
+    ls_keyboard_open_lower("NETWORK NAME", "", 32, on_done);
+    redraw(); int x, y;
+    LS_CHECK(find_exact('q', &x, &y));
+    ls_keyboard_touch(x,y);
+    LS_CHECK(!strcmp(ls_keyboard_text(),"q"));
+    ls_keyboard_key(LS_TK_ENTER,0);
+    LS_CHECK(!strcmp(s_got,"q"));
+}
+static void next_dialog(const char *text) {
+    ls_keyboard_open_secret("NEXT PASSWORD",63,on_done);
+    LS_CHECK(!strcmp(text,"first network"));
+}
+LS_CASE(accepted_text_survives_callback_opening_next_dialog) {
+    ls_keyboard_open_lower("NETWORK", "first network",32,next_dialog);
+    ls_keyboard_key(LS_TK_ENTER,0);
+    LS_CHECK(ls_keyboard_active());
+    LS_CHECK(ls_keyboard_text()==NULL);
+    ls_keyboard_close();
 }

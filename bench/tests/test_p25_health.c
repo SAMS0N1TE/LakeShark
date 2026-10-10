@@ -206,3 +206,20 @@ LS_CASE(reset_starts_counter_epoch_but_retains_live_state)
     LS_EQ_UINT(s.usb_dropped_bytes, 512);
     LS_EQ_UINT(s.audio_underruns, 3);
 }
+
+LS_CASE(receiver_activity_is_independent_of_retained_counters)
+{
+    p25_health_init();
+    LS_CHECK(!p25_health_running());
+    p25_health_raw_t raw = {0};
+    raw.nid_valid = 12;
+    p25_health_set_running(true);
+    p25_health_publish(&raw, 1000);
+    p25_health_set_running(false);
+    p25_health_snapshot_t snapshot;
+    LS_CHECK(p25_health_read(&snapshot));
+    LS_EQ_INT(12, snapshot.nid_valid);
+    LS_CHECK(!p25_health_running());
+    p25_health_init();
+    LS_CHECK(!p25_health_read(&snapshot));
+}

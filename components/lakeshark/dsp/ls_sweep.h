@@ -21,6 +21,12 @@ ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan,
     int gain_tenths, uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
     ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user);
 
+/* Explicit receiver constraint; NULL retains automatic broker selection. */
+ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan,
+    int gain_tenths, uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+    ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user,
+    const char *endpoint_id);
+
 /* How many 512-point transforms to average per tune.
 
    Cheap: one transform covers 512 complex samples, which at 2.4 MS/s is

@@ -5,6 +5,7 @@
 #include "fm_dsp.h"
 #include "fm_lifecycle.h"
 #include "fm_rx_worker.h"
+#include "fm_receive.h"
 #include "pocsag.h"
 #include "acars.h"
 #include "fm_spectrum.h"
@@ -42,7 +43,6 @@
 static const char *TAG = "fm";
 
 #define FM_IQ_BLOCK_BYTES   16384
-#define FM_READ_TIMEOUT_MS  20
 
 #define FM_SCAN_SETTLE      2
 /**/ /* FM_SCAN_DWELL retired - see FM_SPEC_AVG. */
@@ -53,6 +53,8 @@ static uint32_t s_mode_freq[FM_MODE_COUNT];
 static bool     s_frequency_locked;
 static uint32_t s_frequency_lock_hz;
 
+/* An accepted manual tune during SCAN wins the return to a live mode. */
+static uint32_t s_scan_tune_hz;
 static fm_mode_handoff_t s_mode_handoff = FM_MODE_HANDOFF_INITIALIZER;
 /* Has anyone actually asked for a gain, or are we still on the
    built-in default? POCSAG entry only overrides the latter. */
@@ -466,6 +468,7 @@ static void fm_receiver_lost(ls_radio_err_t error)
     FM.iq_bytes_sec = 0;
     FM.iq_level = 0.0f;
     FM.audio_level = 0.0f;
+    FM.noise = 1.0f;
     FM.squelch_open = false;
     FM.tone_detected = (fm_tone_result_t){0};
     FM.pocsag_sync = false;
@@ -481,6 +484,8 @@ static ls_rsel_job_t fm_radio_job(void)
     if (FM.mode == FM_MODE_ACARS) return LS_RSEL_ACARS;
     return LS_RSEL_FM;
 }
+
+static const char *s_session_endpoint;
 
 static ls_radio_err_t fm_radio_open(void)
 {
@@ -498,6 +503,7 @@ static ls_radio_err_t fm_radio_open(void)
         return error;
     }
 
+    s_session_endpoint = requirements.preferred_endpoint_id;
     uint32_t center_hz = FM.mode == FM_MODE_SCAN
                            ? scan_tune_center(FM.scan_idx) : FM.freq_hz;
     const ls_radio_iq_config_t requested = {
@@ -519,7 +525,7 @@ static ls_radio_err_t fm_radio_open(void)
         s_session = NULL;
         return error;
     }
-    ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
+    ls_iq_control_set_streaming(&s_radio_control, false, LS_RADIO_OK);
     ESP_LOGI(TAG, "radio: %.4f MHz %lukSPS gain=%d",
              actual.center_hz / 1e6,
              (unsigned long)(actual.sample_rate_hz / 1000),
@@ -552,7 +558,6 @@ static void fm_rx_run_once(void)
     ESP_LOGI(TAG, "rx task up: mode=%d freq=%lu gain=%d",
              FM.mode, (unsigned long)FM.freq_hz, FM.gain_tenths);
 
-    int read_errors = 0;
     uint32_t iq_bucket = 0;
     int64_t stats_ts = esp_timer_get_time();
     int64_t last_yield = stats_ts;
@@ -560,29 +565,6 @@ static void fm_rx_run_once(void)
     radio_open_retry_t open_retry;
     radio_open_retry_reset(&open_retry);
     while (fm_lifecycle_active()) {
-        if (!s_session) {
-            /* Bounded for io; see radio_open_retry.c. Holding costs
-               one atomic read every quarter second and never touches the
-               dongle; the next attach or detach lifts it. */
-            const uint32_t generation = ls_radio_endpoint_generation();
-            if (!radio_open_retry_may_try(&open_retry, generation)) {
-                vTaskDelay(pdMS_TO_TICKS(250));
-                continue;
-            }
-            const ls_radio_err_t open_error = fm_radio_open();
-            if (open_error != LS_RADIO_OK) {
-                if (radio_open_retry_failed(&open_retry, open_error,
-                                            generation) ==
-                    RADIO_OPEN_RETRY_HOLD)
-                    ESP_LOGE(TAG, "radio open failed with io %u times in a row - "
-                                  "not retrying until a receiver attaches or "
-                                  "detaches (replug, 'rtl reset', or re-enter FM)",
-                             (unsigned)RADIO_OPEN_IO_ATTEMPTS);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
-            radio_open_retry_succeeded(&open_retry);
-        }
 
         fm_mode_t requested_mode;
         if (fm_mode_handoff_take(&s_mode_handoff, &requested_mode)) {
@@ -590,7 +572,18 @@ static void fm_rx_run_once(void)
             int m = (int)requested_mode;
 
             if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
+            const uint32_t scan_tune = FM.mode == FM_MODE_SCAN ? s_scan_tune_hz : 0;
+            s_scan_tune_hz = 0;
+            const ls_rsel_job_t previous_job = fm_radio_job();
             FM.mode = (fm_mode_t)m;
+            if (previous_job != fm_radio_job()) radio_open_retry_reset(&open_retry);
+            if (fm_receive_switch(&s_session, s_session_endpoint,
+                                  ls_rsel_sdr_endpoint(fm_radio_job()))) {
+                fm_receiver_lost(LS_RADIO_ERR_UNAVAILABLE);
+                radio_open_retry_reset(&open_retry);
+                iq_bucket = 0;
+                stats_ts = esp_timer_get_time();
+            }
             fm_dsp_init(&s_dsp);
             fm_tone_init(&s_tone);
             FM.tone_detected = s_tone.result;
@@ -598,7 +591,7 @@ static void fm_rx_run_once(void)
                 scan_begin(true);
             } else {
                 uint32_t f = s_frequency_locked ? s_frequency_lock_hz
-                                                : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : s_mode_freq[FM.mode]);
+                                                : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : scan_tune ? scan_tune : s_mode_freq[FM.mode]);
                 FM.freq_hz = FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : (f >= 1000000UL) ? f : fm_mode_default_freq(FM.mode);
                 fm_apply_freq(FM.freq_hz);
             }
@@ -637,6 +630,30 @@ static void fm_rx_run_once(void)
             }
             if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM || FM.mode == FM_MODE_AM) audio_out_ensure_unmuted();
         }
+        if (!s_session) {
+            /* Bounded for io; see radio_open_retry.c. Holding costs
+               one atomic read every quarter second and never touches the
+               dongle; the next attach or detach lifts it. */
+            const uint32_t generation = ls_radio_endpoint_generation();
+            if (!radio_open_retry_may_try(&open_retry, generation)) {
+                vTaskDelay(pdMS_TO_TICKS(250));
+                continue;
+            }
+            const ls_radio_err_t open_error = fm_radio_open();
+            if (open_error != LS_RADIO_OK) {
+                if (radio_open_retry_failed(&open_retry, open_error,
+                                            generation) ==
+                    RADIO_OPEN_RETRY_HOLD)
+                    ESP_LOGE(TAG, "radio open failed with io %u times in a row - "
+                                  "not retrying until a receiver attaches or "
+                                  "detaches (replug, 'rtl reset', or re-enter FM)",
+                             (unsigned)RADIO_OPEN_IO_ATTEMPTS);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+            radio_open_retry_succeeded(&open_retry);
+        }
+
         ls_iq_control_request_t radio_request;
         if (ls_iq_control_take(&s_radio_control, &radio_request)) {
             if (radio_request.flags & LS_IQ_CONTROL_TUNE) {
@@ -678,37 +695,23 @@ static void fm_rx_run_once(void)
         }
 
         if (!fm_lifecycle_active()) break;
-        int got = 0; bool full = true;
-        while (got < FM_IQ_BLOCK_BYTES) {
-            if (!fm_lifecycle_active() || !s_session) { full = false; break; }
-            size_t part = 0;
-            ls_radio_err_t error = ls_radio_iq_read(
-                s_session, &iq[got], FM_IQ_BLOCK_BYTES - got,
-                FM_READ_TIMEOUT_MS, &part);
-            if (error == LS_RADIO_OK) { got += (int)part; continue; }
-            if (error == LS_RADIO_ERR_TIMEOUT) {
-                call_archive_gate(CALL_FM, FM.freq_hz, false);
-                continue;
+        const ls_radio_err_t read_error = fm_receive_block(s_session, iq,
+            FM_IQ_BLOCK_BYTES, fm_lifecycle_active, esp_timer_get_time);
+        if (read_error != LS_RADIO_OK) {
+            if (read_error == LS_RADIO_ERR_STOPPED) break;
+            call_archive_gate(CALL_FM, FM.freq_hz, false);
+            FM.read_errors++;
+            fm_receiver_lost(read_error);
+            iq_bucket = 0;
+            stats_ts = esp_timer_get_time();
+            if (read_error != LS_RADIO_ERR_TIMEOUT) {
+                ls_radio_release(s_session);
+                s_session = NULL;
             }
-            if (++read_errors > 50 || error == LS_RADIO_ERR_DISCONNECTED) {
-                full = false;
-                read_errors = 0;
-                if (error == LS_RADIO_ERR_DISCONNECTED) {
-                    /* The two-second rate window only advanced after
-                       a full block, so detach left the previous DEV/rate and
-                       decoder activity visible forever. Clear every live
-                       derivative before releasing the dead session. */
-                    fm_receiver_lost(LS_RADIO_ERR_DISCONNECTED);
-                    iq_bucket = 0;
-                    stats_ts = esp_timer_get_time();
-                    ls_radio_release(s_session);
-                    s_session = NULL;
-                }
-                break;
-            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
-        if (!full || got < FM_IQ_BLOCK_BYTES) { continue; }
-        read_errors = 0;
+        ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
         iq_bucket += FM_IQ_BLOCK_BYTES;
 
         if (FM.mode != FM_MODE_SCAN && s_radio_control.effective_center_known)
@@ -805,7 +808,6 @@ static void fm_rx_run_once(void)
         int64_t now = esp_timer_get_time();
         if (now - stats_ts > 2000000LL) {
             FM.iq_bytes_sec = iq_bucket; iq_bucket = 0; stats_ts = now;
-            FM.read_errors = read_errors;
 
             if (FM.mode == FM_MODE_SCAN) {
                 ESP_LOGI(TAG, "SCAN now=%.4f peak=%.4f (%d%%) sweeps=%lu iq=%d%%",
@@ -1131,8 +1133,10 @@ void lakeshark_fm_set_mode(int mode)
        later takes the same request and lands in the same place. */
     if (!s_session && mode != FM_MODE_SCAN) {
         if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
+        const uint32_t scan_tune = FM.mode == FM_MODE_SCAN ? s_scan_tune_hz : 0;
+        s_scan_tune_hz = 0;
         FM.mode = (fm_mode_t)mode;
-        const uint32_t f = s_frequency_locked ? s_frequency_lock_hz : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : s_mode_freq[FM.mode]);
+        const uint32_t f = s_frequency_locked ? s_frequency_lock_hz : (FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : FM.mode == FM_MODE_APRS ? aprs_frequency() : scan_tune ? scan_tune : s_mode_freq[FM.mode]);
         FM.freq_hz = FM.mode == FM_MODE_AIS ? AIS_CENTER_HZ : f >= 1000000UL ? f : fm_mode_default_freq(FM.mode);
     }
 }
@@ -1177,6 +1181,7 @@ bool lakeshark_fm_set_freq(uint32_t hz)
     FM.freq_hz = hz;
     ls_iq_control_request_tune(&s_radio_control, hz, false);
     if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = hz;
+    else s_scan_tune_hz = hz;
     const app_t *a = app_current();
     if (a) settings_set_freq_mode(a, FM.mode, hz);
     return true;

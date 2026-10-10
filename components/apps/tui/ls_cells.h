@@ -9,7 +9,7 @@ typedef struct { char name[64],parent[64]; double lat,lon; unsigned kind; } ls_p
 typedef struct {
     char query[64],server[256],message[128],credit[160],queue_name[64];
     ls_place_row hits[LS_CELLS_HITS],picked;double queue_lat,queue_lon;
-    unsigned count,radius,cells,installed,unavailable,preview_count,generation;
+    unsigned count,radius,cells,installed,unavailable,preview_count,generation,action_done;
     uint16_t preview[LS_CELLS_PREVIEW];uint8_t present[LS_CELLS_PREVIEW];
     uint64_t bytes,free,done,total;bool busy,ready,downloading,queued;
     char library[LS_CELLS_PLACES][64];uint32_t keys[LS_CELLS_PLACES];unsigned library_count;
@@ -28,9 +28,11 @@ static inline bool ls_cells_action(unsigned a,uint32_t k) { (void)a;(void)k;retu
 static inline bool ls_cells_server(const char *s) { (void)s;return false; }
 #endif
 void ls_place_search_open(bool jump);
+void ls_place_search_goto(void (*go)(double lat,double lon));
 void ls_place_search_progress(void);
 void ls_place_search_close(void);
 bool ls_place_search_active(void);
+const char *ls_place_search_hint(void);
 bool ls_place_search_key(ls_tk_t key,char ch);
 bool ls_place_search_touch(int x,int y);
 void ls_place_search_draw(tui_surface *sf,tui_rect area);

@@ -494,3 +494,18 @@ LS_CASE(a_scaled_feed_is_not_stretched_again)
                  st.level_hi, st.level_lo);
     ls_wf_claim(LS_WF_OWNER_NONE, NULL);
 }
+
+LS_CASE(back_exits_with_an_automatic_marker_and_m_clears_it)
+{
+    tui_surface sf;
+    tui_surface_setup(&sf, g_back, g_front, 64, 24);
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    ls_wf_claim(LS_WF_OWNER_FM, "FM");
+    float bins[64]; band(bins,64,32);
+    ls_wf_push(LS_WF_OWNER_FM,bins,64,&FEED);
+    tui_frame_begin(&sf); ls_wf_draw_mini(&sf,tui_rect_make(0,0,64,24));
+    LS_CHECK(ls_wf_marker_hz() != 0);
+    LS_CHECK(!ls_wf_key(LS_TK_ESC,0));
+    LS_CHECK(ls_wf_key(LS_TK_CHAR,'m'));
+    LS_EQ_UINT(0,ls_wf_marker_hz());
+}

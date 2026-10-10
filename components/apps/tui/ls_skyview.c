@@ -2,18 +2,36 @@
 #include "ls_skyplot.h"
 #include "ls_tui_ui.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 #include <stdio.h>
+
+static EXT_RAM_BSS_ATTR tui_rect s_hits[LS_GPS_MAX_SATS * 2 + 2];
+static EXT_RAM_BSS_ATTR int s_ids[LS_GPS_MAX_SATS * 2 + 2];
+static int s_nhits;
+static void hit(tui_rect r, int id)
+{
+    if (s_nhits >= (int)(sizeof(s_hits) / sizeof(s_hits[0]))) return;
+    s_hits[s_nhits] = r;
+    s_ids[s_nhits++] = id;
+}
+int ls_skyview_touch(int col, int row)
+{
+    for (int i = s_nhits - 1; i >= 0; i--)
+        if (tui_rect_contains(s_hits[i], col, row)) return s_ids[i];
+    return -1;
+}
 
 void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int selected)
 {
+    s_nhits = 0;
     if(!g || a.w<12 || a.h<5) return;
     char text[100];
     const uint8_t cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
     const uint8_t green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK);
     const uint8_t amber=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
     int64_t now=esp_timer_get_time();
-    bool fresh=g->last_sentence_us>0 && now>=g->last_sentence_us && now-g->last_sentence_us<3000000;
-    snprintf(text,sizeof(text),"SKY / GSV  RX age %s",fresh?"<3s":"STALE");
+    bool fresh=ls_gps_recent(g->last_gsv_us,now);
+    snprintf(text,sizeof(text),"SKY / GSV  RX age %s",fresh?"<3s":g->last_gsv_us?"STALE":"MISSING");
     tui_put_str(sf,a,a.x,a.y,text,fresh?cyan:amber);
     tui_put_str(sf,a,a.x,a.y+1,"N=true north; rim=0 mid=45 +=90 deg",LS_ATTR_DIM);
     int count=g->sat_count<LS_GPS_MAX_SATS?g->sat_count:LS_GPS_MAX_SATS;
@@ -30,7 +48,7 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
         ls_panel_box(sf,detail_frame,"SELECTED",TUI_CYAN);
     }
     if(!fresh) {
-        tui_put_str(sf,a,a.x+2,a.y+4,"No fresh receiver data",LS_ATTR_DIM);
+        tui_put_str(sf,a,a.x+2,a.y+4,g->last_gsv_us?"GSV table is stale":"No GSV reports received",LS_ATTR_DIM);
         if(framed) {
             tui_put_str(sf,table_frame,table_frame.x+2,table_frame.y+2,"Waiting for current GSV reports",LS_ATTR_DIM);
             tui_put_str(sf,detail_frame,detail_frame.x+2,detail_frame.y+1,"No current selection",LS_ATTR_DIM);
@@ -60,6 +78,7 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
             const ls_gps_sat_t *s=&g->sats[i];
             if(!s->prn || s->azimuth>=360 || s->elevation>90 || !ls_sky_located(s->azimuth,s->elevation)) continue;
             if(!ls_sky_project(s->azimuth,s->elevation,p.h,p.w,cw,ch,&rows[i],&cols[i])) continue;
+            hit(tui_rect_make(p.x+cols[i]-1,p.y+rows[i],3,1),i);
             char mark=i<26?'A'+i:'a'+i-26;
             for(int j=0;j<i;j++) if(rows[j]==rows[i] && cols[j]==cols[i]) mark='*';
             tui_put_char(sf,p,p.x+cols[i],p.y+rows[i],mark,s->used?green:amber);
@@ -82,6 +101,7 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
             else {snprintf(az,sizeof(az),"---");snprintf(el,sizeof(el),"--");}
             if(sat->snr)snprintf(cn,sizeof(cn),"%u",sat->snr);else snprintf(cn,sizeof(cn),"--");
             snprintf(text,sizeof(text),"%c %c %3u    %s    %s     %2s   %s",i==selected?'>':' ',i<26?'A'+i:'a'+i-26,sat->prn,az,el,cn,sat->used?"USED":"seen");
+            hit(tui_rect_make(table.x,table.y+2+i-first,table.w,1),i);
             tui_put_str(sf,table,table.x,table.y+2+i-first,text,i==selected?cyan:sat->used?green:amber);
         }
         tui_put_str(sf,table,table.x,table.y+table.h-2,"Green USED / amber seen / cyan selected",LS_ATTR_DIM);
@@ -92,8 +112,10 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
         a=tui_rect_make(detail_frame.x+2,detail_frame.y+1,detail_frame.w-4,detail_frame.h-2);
         y=0;
     }
-    tui_put_str(sf,a,a.x,a.y+y,"@ selected  * overlap  J/K select",LS_ATTR_DIM);
-    if(!count) { tui_put_str(sf,a,a.x,a.y+y+1,"Waiting for satellite reports",LS_ATTR_DIM);return; }
+    tui_put_str(sf,a,a.x,a.y+y,"[ PREV ] [ NEXT ]  @ selected * overlap",LS_ATTR_DIM);
+    hit(tui_rect_make(a.x,a.y+y,8,1),-2);
+    hit(tui_rect_make(a.x+9,a.y+y,8,1),-3);
+    if(!count) { tui_put_str(sf,a,a.x,a.y+y+1,"GSV reports an empty sky",LS_ATTR_DIM);return; }
     const ls_gps_sat_t *s=&g->sats[selected];
     snprintf(text,sizeof(text),"%c ID %u  %d/%d  %s",selected<26?'A'+selected:'a'+selected-26,s->prn,selected+1,count,s->used?"USED in fix":"NOT used in fix");
     tui_put_str(sf,a,a.x,a.y+y+1,text,s->used?green:amber);
@@ -124,6 +146,7 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
             else snprintf(cn,sizeof(cn),"--");
             snprintf(text,sizeof(text),"%c%c %3u   %s    %s     %2s   %s",
                      i==selected?'>':' ',i<26?'A'+i:'a'+i-26,sat->prn,az,el,cn,sat->used?"USED":"seen");
+            hit(tui_rect_make(a.x,a.y+table_y+1+i-first,a.w,1),i);
             tui_put_str(sf,a,a.x,a.y+table_y+1+i-first,text,
                         i==selected?cyan:sat->used?green:amber);
         }

@@ -21,6 +21,7 @@
 
 /* ---- the widget ------------------------------------------------------- */
 
+uint32_t ls_wf_marker_hz(void) { return 0; }
 static ls_wf_owner_t g_owner;
 static int           g_claims_none;
 static int           g_pushes;
@@ -57,9 +58,10 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 
 /* ---- the SX1262 sweep -------------------------------------------------- */
 
-static bool     g_scanning;
+static bool     g_scanning, g_scan_ours;
 static uint32_t g_scan_lo, g_scan_hi;
 static int      g_begins, g_retunes, g_ends;
+static int g_scan_stops;
 static int      g_looks = 1, g_look;
 
 bool ls_field_owned(void) { return false; }
@@ -77,6 +79,8 @@ bool ls_lora_scanning(void) { return g_scanning; }
 
 esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi)
 {
+    if (g_scanning && !g_scan_ours) return ESP_ERR_INVALID_STATE;
+    g_scan_ours = true;
     if (g_scanning && lo == g_scan_lo && hi == g_scan_hi) return ESP_OK;
     if (g_scanning) g_retunes++;
     else            g_begins++;
@@ -102,7 +106,7 @@ int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
 esp_err_t ls_lora_scan_end(void)
 {
     if (g_scanning) g_ends++;
-    g_scanning = false;
+    g_scanning = g_scan_ours = false;
     return ESP_OK;
 }
 
@@ -207,7 +211,7 @@ static void fresh(void)
     g_owner = LS_WF_OWNER_NONE;
     g_claims_none = g_pushes = g_row_n = 0;
     memset(&g_feed, 0, sizeof(g_feed));
-    g_scanning = false;
+    g_scanning = g_scan_ours = false;
     g_begins = g_retunes = g_ends = 0;
     g_looks = 1;
     g_look = 0;
@@ -217,7 +221,7 @@ static void fresh(void)
     g_fm_streaming = false;
     g_p25_streaming=false;
     g_p25_ready=false;
-    g_field_ready=false;
+    g_field_ready=false; g_scan_stops=0;
     g_fm_mode_asked = -1;
     g_scan_restarts = 0;
     g_radio_asked = NULL;
@@ -569,7 +573,7 @@ LS_CASE(am_presets_keep_live_mode_and_publish_the_selected_range)
 
 static ls_wf_tune_fn test_tuner;
 void ls_wf_set_tuner(ls_wf_tune_fn fn){test_tuner=fn;}
-void scan_engine_stop(void){}
+void scan_engine_stop(void){g_scan_stops++;}
 void lakeshark_p25_set_freq(uint32_t hz){g_p25_tuned=hz;}
 void ls_field_snapshot(ls_field_state_t *out){memset(out,0,sizeof(*out));out->ready=g_field_ready;}
 bool ls_field_configure(const ls_lora_cfg_t *cfg){g_field_frequency=cfg->freq_hz;return true;}
@@ -615,26 +619,54 @@ LS_CASE(a_locked_receiver_refuses_a_marker_tune)
     LS_EQ_INT(FM.freq_hz,91000000);
 }
 
+static int g_labs_handoffs;
+bool ls_scr_labs_tune_marker(uint32_t hz)
+{
+    g_labs_handoffs++; g_field_frequency = hz;
+    ls_wf_source_release();
+    return true;
+}
 LS_CASE(marker_tune_routes_p25_and_lora_to_their_receivers)
 {
     fresh();ls_wf_source_pump();g_p25_streaming=true;
     LS_CHECK(test_tuner(LS_WF_OWNER_P25,154785000));LS_EQ_INT(g_p25_tuned,154785000);
-    LS_CHECK(!test_tuner(LS_WF_OWNER_P25,1000000));LS_EQ_INT(g_p25_tuned,154785000);
-    g_field_ready=true;g_scanning=true;g_field_direct=false;
+    LS_CHECK(!test_tuner(LS_WF_OWNER_P25,1000000));
+    ls_wf_source_select(LS_WF_SRC_LORA); ls_wf_source_pump();
+    int handoffs = g_labs_handoffs;
+    LS_CHECK(!g_field_ready);
     LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000));
-    LS_EQ_INT(g_field_frequency,915000000);LS_CHECK(g_field_direct);
+    LS_EQ_INT(g_labs_handoffs, handoffs + 1);
+    LS_EQ_INT(g_field_frequency,915000000);
+    LS_CHECK(!g_scanning); LS_CHECK(!g_hold_asked); LS_CHECK(!g_field_direct);
     LS_CHECK(!test_tuner(LS_WF_OWNER_LORA,1000000000));
-    ls_wf_source_release(); LS_CHECK(!g_field_direct);
-    LS_CHECK(test_tuner(LS_WF_OWNER_LORA,915000000)); LS_CHECK(g_field_direct);
-    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump(); LS_CHECK(!g_field_direct);
+    g_caps = LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5;
+    ls_wf_source_lora_band(1570000000,1581000000);
+    ls_wf_source_pump(); LS_CHECK(test_tuner == NULL);
+}
+LS_CASE(reselecting_fm_preserves_a_running_sweep)
+{
+    fresh(); fm_sweeping_with_one_carrier();
+    LS_CHECK(ls_wf_source_start(LS_WF_SRC_FM));
+    LS_EQ_INT(FM_MODE_SCAN, FM.mode); LS_EQ_INT(-1, g_fm_mode_asked);
+}
+LS_CASE(refused_locked_marker_preserves_sweep_and_scanner)
+{
+    fresh(); fm_sweeping_with_one_carrier(); FM.freq_hz = 155000000;
+    lakeshark_fm_frequency_lock(true); ls_wf_source_pump();
+    int clears = g_claims_none;
+    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,156000000));
+    LS_EQ_INT(FM_MODE_SCAN, FM.mode); LS_EQ_INT(0, g_scan_stops);
+    LS_EQ_INT(clears, g_claims_none); LS_EQ_UINT(155000000, FM.freq_hz);
 }
 LS_CASE(a_waiting_waterfall_cannot_end_another_owners_scan)
 {
     fresh(); g_mesh_parks = false;
     ls_wf_source_select(LS_WF_SRC_LORA); ls_wf_source_pump();
     LS_CHECK(g_hold_asked);
-    g_scanning = true;
-    ls_wf_source_pump(); LS_EQ_INT(g_begins, 0); LS_EQ_INT(g_retunes, 0);
+    g_scanning = true; g_mesh_parks = true;
+    ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_IDLE_BUSY, ls_wf_source_idle());
+    LS_EQ_INT(g_begins, 0); LS_EQ_INT(g_retunes, 0);
     ls_wf_source_release(); LS_CHECK(g_scanning); LS_EQ_INT(g_ends, 0);
     LS_CHECK(!g_hold_asked);
 }

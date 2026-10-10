@@ -101,7 +101,6 @@ static bool sel_has(int sel, const plan_t *p)
    while the worker reads them. */
 static volatile int s_sel = SEL_ALL;
 static volatile int s_dwell_s = 10;
-static volatile int s_metric;
 /* The OOK sessions' gain: the fixed top step, as the Mode S session runs it
    on air, or the part's AGC. */
 static volatile int s_agc;
@@ -442,7 +441,7 @@ static void fmt_id(char *out, size_t n, const heard_t *d)
 static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
 {
     const int64_t now = esp_timer_get_time();
-    const bool metric = s_metric != 0;
+    const bool metric = !lr433_history_fahrenheit();
     int cur;
     int64_t since;
     bool on[N_PLAN], refused[N_PLAN];
@@ -594,8 +593,8 @@ static void o_set_dwell(const ls_opt_t *o, double v)
 static void o_show_dwell(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%d s", s_dwell_s); }
 
 static const char *const UNIT_NAMES[] = { "PSI / F", "KPA / C" };
-static int o_get_units(const ls_opt_t *o) { (void)o; return s_metric ? 1 : 0; }
-static void o_set_units(const ls_opt_t *o, int v) { (void)o; s_metric = v ? 1 : 0; }
+static int o_get_units(const ls_opt_t *o) { (void)o; return lr433_history_fahrenheit() ? 0 : 1; }
+static void o_set_units(const ls_opt_t *o, int v) { (void)o; lr433_history_set_fahrenheit(!v); }
 
 static const char *const GAIN_NAMES[] = { "TOP STEP", "AGC" };
 static int o_get_gain(const ls_opt_t *o) { (void)o; return s_agc ? 1 : 0; }
@@ -624,6 +623,7 @@ static const ls_opt_t OPTS[] = {
       .hi = DWELL_MAX, .unit = "seconds a session, 2 to 600", .show = o_show_dwell },
     { .label = "UNITS", .kind = LS_OPT_CYCLE, .names = UNIT_NAMES, .n = 2, .get = o_get_units, .set = o_set_units },
     { .label = "OOK GAIN", .kind = LS_OPT_CYCLE, .names = GAIN_NAMES, .n = 2, .get = o_get_gain, .set = o_set_gain },
+    { .label = "HISTORY", .kind = LS_OPT_MENU, .sub = &lr433_history_ctx },
     { .label = "CLEAR", .kind = LS_OPT_ACTION, .act = o_clear, .show = o_show_clear },
 };
 

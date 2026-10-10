@@ -58,9 +58,10 @@ const ls_app_doc_t ls_doc_falls = {
 };
 
 const ls_app_doc_t ls_doc_cell = {
-    .purpose = "Survey the cellular bands: find LTE carriers, decode what "
-               "they broadcast about themselves, and compare that against a "
-               "baseline learned from the same area.",
+    .purpose = "Compare cellular downlink power with a learned site baseline. "
+               "LTE search reports PCI; HIGH RATE separately checks MIB. "
+               "Network identity and SIB are not decoded; RF changes do not "
+               "identify a simulator.",
     .records = LS_APP_RECORDS_AUTOMATIC,
     /* Named exactly, because it is the one app that keeps a lot and none of
        it reaches the JOURNAL screen or notes.md. */
@@ -185,7 +186,8 @@ const ls_app_doc_t ls_doc_subghz = {
 const ls_app_doc_t ls_doc_mixrf = {
     .purpose = "The short-range radios on the keyboard board: NFC at "
                "13.56 MHz, a 2.4 GHz survey, and the sub-GHz transceiver, "
-               "each read-only.",
+               "for observation. NFC SCAN sends active card requests; "
+               "FIELD passively watches external reader fields.",
     .records     = LS_APP_RECORDS_MANUAL,
     .record_note = "one observation per radio - a card seen, a field "
                    "detected, a 2.4 GHz sweep with its busiest channel, or "
@@ -196,7 +198,7 @@ const ls_app_doc_t ls_doc_mixrf = {
 };
 
 const ls_app_doc_t ls_doc_diag = {
-    .purpose = "What the hardware is doing: memory, tasks, temperature, the "
+    .purpose = "What the hardware is doing: memory, temperature, the "
                "SD card, the health of every radio including the GPS "
                "receiver's own wire counters, and the error log: each crash, "
                "watchdog or brownout, saved at the next boot with the last "
@@ -266,10 +268,14 @@ const ls_app_doc_t ls_doc_radios = {
 };
 
 const ls_app_doc_t ls_doc_link = {
-    .purpose = "Wi-Fi and Bluetooth: join a network, serve the status page, "
-               "and pair the control head.",
-    .records = LS_APP_RECORDS_NOTHING,
-    .gps     = LS_APP_GPS_UNUSED,
+    .purpose = "Join Wi-Fi networks, connect a Flipper running LakeShark, "
+               "or record a passive Wi-Fi/BLE Survey. Bluetooth OPTIONS sets "
+               "the head pin, name filter and telemetry rate.",
+    .records = LS_APP_RECORDS_MANUAL,
+    .record_note = "Survey saves observed Wi-Fi/BLE identities and signal "
+                   "strength to SD CSV, with positions when a fresh fix is available.",
+    .gps = LS_APP_GPS_NAVIGATES,
+    .gps_note = "Survey can require a fresh GPS fix before recording observations.",
 };
 
 const ls_app_doc_t ls_doc_music = {

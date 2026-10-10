@@ -56,14 +56,14 @@ static int s_rows;
 
 /* The rows draw_list spends on something other than a contact: the
    box's top border, the column header and its bottom border, and the
-   three-row TRAFFIC strip under it. ADSB_MAX_TRACKED plus these is the whole
+   four-row TRAFFIC strip under it. ADSB_MAX_TRACKED plus these is the whole
    table with nothing scrolled off. */
-#define LIST_CHROME_ROWS 6
+#define LIST_CHROME_ROWS 7
 /* Below this the radar is a frame and a scale legend with no room to plot. */
 #define RADAR_MIN_ROWS   14
 
 /* Plot the model's 32 altitude samples using eighth-cell bars. */
-#define ALT_SENTINEL (-1)   /* adsb_state_init's "never written" mark */
+#define ALT_SENTINEL ADSB_ALT_UNKNOWN   /* adsb_state_init's "never written" mark */
 
 static void draw_altitude_trend(tui_surface *sf, tui_rect r,
                                 const adsb_aircraft_t *a)
@@ -93,7 +93,7 @@ static void draw_altitude_trend(tui_surface *sf, tui_rect r,
            lands, which makes it the OLDEST one still in the ring - see
            adsb_state_push_altitude. */
         const int idx = (a->alt_history_head + (32 - n) + x) % 32;
-        const int16_t v = a->alt_history[idx];
+        const int32_t v = a->alt_history[idx];
         if (v == ALT_SENTINEL) continue;
 
         const int eighths = ((int)(v - lo) * (r.h * 8)) / span;
@@ -123,6 +123,14 @@ static const char *emitter_word(int tc, int ca)
     if (ca < 0 || ca > 7) return NULL;
     return tc == 4 ? SET_A[ca] : tc == 3 ? SET_B[ca]
          : tc == 2 ? SET_C[ca] : NULL;
+}
+
+static void reading(char *out, size_t n, int value, const char *unit,
+                    bool valid, int64_t ts, int64_t now)
+{
+    if (!valid) snprintf(out, n, "unknown");
+    else snprintf(out, n, "%d %s%s", value, unit,
+                  now - ts > ADSB_FIELD_STALE_US ? " stale" : "");
 }
 
 /* ENTER opens the selected aircraft's details. */
@@ -174,22 +182,27 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     ls_kv(sf, area, row++, "SQUAWK", buf,
           emergency ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : squawk ? val : dim);
 
-    snprintf(buf, sizeof(buf), "%d ft", a->altitude);
+    reading(buf, sizeof(buf), a->altitude, "ft", a->altitude_valid, a->altitude_ts_us, now);
     ls_kv(sf, area, row++, "ALTITUDE", buf, val);
 
     const uint8_t vs_at = a->vert_rate > 100 ? good
                         : a->vert_rate < -100 ? warn : val;
-    snprintf(buf, sizeof(buf), "%+d ft/min", a->vert_rate);
+    reading(buf, sizeof(buf), a->vert_rate, "ft/min", a->vert_rate_valid, a->vert_rate_ts_us, now);
     ls_kv(sf, area, row++, "V/S", buf, vs_at);
 
-    snprintf(buf, sizeof(buf), "%d kt", a->velocity);
+    if (a->airspeed_valid && (!a->velocity_valid || a->airspeed_ts_us > a->velocity_ts_us))
+        reading(buf, sizeof(buf), a->airspeed, a->airspeed_type ? "kt TAS" : "kt IAS",
+                true, a->airspeed_ts_us, now);
+    else reading(buf, sizeof(buf), a->velocity, "kt ground", a->velocity_valid, a->velocity_ts_us, now);
     ls_kv(sf, area, row++, "SPEED", buf, val);
 
-    snprintf(buf, sizeof(buf), "%03d deg", a->heading);
-    ls_kv(sf, area, row++, "HEADING", buf, val);
+    reading(buf, sizeof(buf), a->heading, "deg", a->heading_valid, a->heading_ts_us, now);
+    ls_kv(sf, area, row++, a->heading_is_track ? "TRACK" : "HEADING", buf, val);
 
     if (a->pos_valid)
-        snprintf(buf, sizeof(buf), "%.4f, %.4f", (double)a->lat, (double)a->lon);
+        snprintf(buf, sizeof(buf), "%.4f, %.4f %llds%s", (double)a->lat, (double)a->lon,
+                 (long long)((now - a->pos_ts_us) / 1000000),
+                 now - a->pos_ts_us > ADSB_FIELD_STALE_US ? " stale" : "");
     else
         snprintf(buf, sizeof(buf), "not reported yet");
     ls_kv(sf, area, row++, "POSITION", buf, a->pos_valid ? val : dim);
@@ -202,8 +215,8 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     ls_kv(sf, area, row++, "LAST SEEN", buf, age > 15 ? warn : val);
 
     snprintf(buf, sizeof(buf), "%d ok, %d crc err",
-             a->good_msg_count, a->crc_err_count);
-    ls_kv(sf, area, row++, "MESSAGES", buf, a->crc_err_count ? warn : val);
+             perf_get_crc_good(), perf_get_crc_err());
+    ls_kv(sf, area, row++, "RX CRC", buf, perf_get_crc_err() ? warn : val);
 
     row += 1;
     if (row < area.h - 4) {
@@ -565,13 +578,13 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
        footer above the pane's own top - area.h - 3 goes negative - and
        tui_box drew its border on a row belonging to whatever was above.
        The renderer only pushes changed cells, so that border stayed there. */
-    int foot_h = area.h < 3 ? (area.h < 0 ? 0 : area.h) : 3;
+    int foot_h = area.h < 4 ? (area.h < 0 ? 0 : area.h) : 4;
     int list_hh = area.h - foot_h;
     if (list_hh < 0) list_hh = 0;
 
     int list_h = list_hh - 2;
     tui_rect list = tui_rect_make(area.x, area.y, area.w, list_hh);
-    tui_box(sf, list, "AIRCRAFT", frame);
+    tui_box(sf, list, "AIRCRAFT (* stale)", frame);
 
     /* Two column sets, because one of them does not fit portrait. */
 
@@ -580,7 +593,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
     tui_fill(sf, tui_rect_make(list.x + 1, list.y + 1, list.w - 2, 1), ' ', head);
     tui_put_str(sf, list, list.x + 2, list.y + 1,
                 narrow ? "ICAO    CALLSIGN   ALT     AGE"
-                       : "ICAO    CALLSIGN   ALT     SPD  HDG   AGE  MSGS",
+                       : "ICAO    CALLSIGN   ALT     SPD  DIR   AGE  MSGS",
                 head);
 
     int sel_index = 0, total = 0;
@@ -603,13 +616,23 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         if (age < 0) age = 0;
         char call[10];
         snprintf(call, sizeof(call), "%.8s", a->callsign[0] ? a->callsign : "-");
+        char alt[12], speed[12], hdg[12];
+        if (a->altitude_valid) snprintf(alt, sizeof(alt), "%d%s", a->altitude,
+            now - a->altitude_ts_us > ADSB_FIELD_STALE_US ? "*" : "");
+        else strcpy(alt, "?");
+        if (a->velocity_valid) snprintf(speed, sizeof(speed), "%d%s", a->velocity,
+            now - a->velocity_ts_us > ADSB_FIELD_STALE_US ? "*" : "");
+        else strcpy(speed, "?");
+        if (a->heading_valid) snprintf(hdg, sizeof(hdg), "%d%s", a->heading,
+            now - a->heading_ts_us > ADSB_FIELD_STALE_US ? "*" : "");
+        else strcpy(hdg, "?");
         if (narrow)
-            snprintf(buf, sizeof(buf), "%06lX  %-9s %6d  %4d",
-                     (unsigned long)a->icao, call, a->altitude, age);
+            snprintf(buf, sizeof(buf), "%06lX  %-9s %6s  %4d",
+                     (unsigned long)a->icao, call, alt, age);
         else
-            snprintf(buf, sizeof(buf), "%06lX  %-9s %6d  %4d  %3d  %4d  %5lu",
-                     (unsigned long)a->icao, call, a->altitude, a->velocity,
-                     a->heading, age, (unsigned long)a->msg_count);
+            snprintf(buf, sizeof(buf), "%06lX  %-9s %6s  %4s  %3s  %4d  %5lu",
+                     (unsigned long)a->icao, call, alt, speed,
+                     hdg, age, (unsigned long)a->msg_count);
         uint8_t at = (shown - 1 == sel_index) ? sel
                    : a->pos_valid            ? body : stale;
         tui_put_str(sf, list, list.x + 2, list.y + 2 + row, buf, at);
@@ -617,7 +640,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         row++;
     }
     if (!active)
-        tui_put_str(sf, list, list.x + 2, list.y + 3, "no aircraft heard yet",
+        tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
                     stale);
 
     /* A sparkline of message rate, from the model's own 60-sample ring - the
@@ -627,10 +650,11 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
     const uint16_t *hist = perf_history_good();
     if (hist) {
         int w = foot.w - 4;
+        if (w > 60) w = 60;
         uint16_t peak = 1;
         for (int i = 0; i < 60; i++) if (hist[i] > peak) peak = hist[i];
         for (int x = 0; x < w && x < 60; x++) {
-            uint16_t v = hist[59 - (x * 60 / (w ? w : 1))];
+            uint16_t v = hist[x * 59 / (w > 1 ? w - 1 : 1)];
             int eighths = (int)((uint32_t)v * 8u / peak);
             if (v && !eighths) eighths = 1;
             if (eighths)
@@ -641,7 +665,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
     }
     snprintf(buf, sizeof(buf), "%d active   %d msg/s   %d crc err",
              active, perf_get_msgs_per_sec(), perf_get_crc_err());
-    tui_put_str(sf, foot, foot.x + foot.w - 2 - (int)strlen(buf), foot.y + 1,
+    tui_put_str(sf, foot, foot.x + 2, foot.y + 2,
                 buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
 }
 
@@ -800,10 +824,43 @@ static const ls_opt_t OPT_DISPLAY[] = {
 };
 static const ls_opt_ctx_t CTX_DISPLAY = { .name = "DISPLAY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_DISPLAY) };
 
+static void o_quality(const ls_opt_t *o, char *out, size_t n)
+{
+    static EXT_RAM_BSS_ATTR adsb_chip_diag_t d;
+    if (o->arg == 0) snprintf(out, n, "%s", adsb_receiver_status());
+    else if (o->arg == 1) snprintf(out, n, "%s", adsb_active_source_name());
+    else if (adsb_active_source() == ADSB_SRC_LORA) {
+        adsb_chip_diag_snapshot(&d);
+        if (o->arg == 2) snprintf(out, n, "%.1f trig/s %.1f ok/s",
+                                  (double)d.trigger_per_s, (double)d.decoded_per_s);
+        else snprintf(out, n, "%lu chips %lu CRC %lu IO",
+                      (unsigned long)d.bad_chips, (unsigned long)d.bad_crc,
+                      (unsigned long)d.errors);
+    } else if (o->arg == 2) snprintf(out, n, "%d trig/s %d ok/s",
+                                    perf_get_bursts_per_sec(), perf_get_msgs_per_sec());
+    else snprintf(out, n, "%d ok %d CRC", perf_get_crc_good(), perf_get_crc_err());
+}
+static void o_reset_quality(const ls_opt_t *o)
+{
+    (void)o;
+    adsb_chip_diag_reset();
+    perf_init();
+}
+static const ls_opt_t OPT_QUALITY[] = {
+    { .label = "STATUS", .kind = LS_OPT_ACTION, .show = o_quality, .arg = 0 },
+    { .label = "SOURCE", .kind = LS_OPT_ACTION, .show = o_quality, .arg = 1 },
+    { .label = "RATES", .kind = LS_OPT_ACTION, .show = o_quality, .arg = 2 },
+    { .label = "VERDICTS", .kind = LS_OPT_ACTION, .show = o_quality, .arg = 3 },
+    { .label = "RESET QUALITY", .kind = LS_OPT_ACTION, .act = o_reset_quality },
+};
+static const ls_opt_ctx_t CTX_QUALITY = { .name = "QUALITY", .job = -1,
+    .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_QUALITY) };
+
 static const ls_opt_t OPT_TOP[] = {
     { .label = "RECEIVER", .kind = LS_OPT_MENU, .sub = &CTX_RX },
     { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &ls_voice_ctx_adsb },
     { .label = "DISPLAY", .kind = LS_OPT_MENU, .sub = &CTX_DISPLAY },
+    { .label = "QUALITY", .kind = LS_OPT_MENU, .sub = &CTX_QUALITY },
 };
 static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_TOP) };
 

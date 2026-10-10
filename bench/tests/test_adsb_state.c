@@ -258,8 +258,8 @@ LS_CASE(a_new_aircraft_starts_with_an_empty_altitude_history)
     adsb_aircraft_t *a = seen(0x555555);
     LS_CHECK(a != NULL);
     for (unsigned i = 0; i < sizeof(a->alt_history) / sizeof(a->alt_history[0]); i++)
-        LS_CHECK_MSG(a->alt_history[i] == -1,
-                     "altitude history slot %u started at %d instead of -1",
+        LS_CHECK_MSG(a->alt_history[i] == ADSB_ALT_UNKNOWN,
+                     "altitude history slot %u started at %d instead of unknown",
                      i, a->alt_history[i]);
 }
 
@@ -318,4 +318,18 @@ LS_CASE(squawk_needs_two_agreeing_replies)
     LS_EQ_INT(adsb_state_squawk(0), 1200);
     adsb_state_set_squawk(a, 1200);
     LS_EQ_INT(adsb_state_squawk(0), 1200);
+}
+
+LS_CASE(cruise_climbs_keep_full_altitudes)
+{
+    fresh();
+    adsb_aircraft_t *a = seen(0x555555);
+    adsb_state_push_altitude(a, 33000);
+    adsb_state_push_altitude(a, 34000);
+    adsb_state_push_altitude(a, 35000);
+    adsb_state_push_altitude(a, -1);
+    LS_EQ_INT(33000, a->alt_history[0]);
+    LS_EQ_INT(34000, a->alt_history[1]);
+    LS_EQ_INT(35000, a->alt_history[2]);
+    LS_EQ_INT(-1, a->alt_history[3]);
 }

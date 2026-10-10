@@ -14,6 +14,7 @@
 #include "core/ls_time.h"
 #ifdef ESP_PLATFORM
 #include "ls_tui_png.h"
+#include <unistd.h>
 #endif
 
 #define QUEUE_CAP   6
@@ -25,6 +26,7 @@ typedef struct {
     char stem[LS_NOTE_STEM];
     int slot;
     int w, h;
+    uint32_t ticket;
 } op_t;
 
 EXT_RAM_BSS_ATTR static ls_note_info_t s_index[LS_NOTES_MAX];
@@ -36,6 +38,8 @@ static bool s_slot_busy[TEXT_SLOTS], s_png_busy;
 static int s_count, s_qhead, s_qcount;
 static uint32_t s_next_seq = 1, s_generation;
 static bool s_started, s_scanning;
+static uint32_t s_ticket;
+static struct { uint32_t ticket; int result; } s_results[QUEUE_CAP + 2];
 EXT_RAM_BSS_ATTR static char s_status[80];
 EXT_RAM_BSS_ATTR static char s_dir[96];
 static StaticSemaphore_t s_lock_memory;
@@ -128,6 +132,7 @@ void ls_notes_summarize(const char *text, ls_note_info_t *info)
         const char *eol = strchr(line, '\n');
         size_t n = eol ? (size_t)(eol - line) : strlen(line);
         char buf[160];
+        if (n && line[n - 1] == '\r') n--;
         size_t k = n < sizeof(buf) - 1 ? n : sizeof(buf) - 1;
         memcpy(buf, line, k); buf[k] = 0;
         const char *s = skip_space(buf);
@@ -241,36 +246,90 @@ static void ensure_dir(const char *dir)
 
 static bool read_file(const char *path, char *buf, size_t cap)
 {
+    buf[0] = 0;
     FILE *f = fopen(path, "rb");
     if (!f) return false;
     size_t n = fread(buf, 1, cap - 1, f);
-    fclose(f);
+    int extra = fgetc(f);
+    bool ok = extra == EOF && !ferror(f);
+    if (fclose(f) != 0) ok = false;
     buf[n] = 0;
-    return true;
+    /* Windows text files use CRLF; the editor and reader use LF. */
+    size_t out = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (buf[i] == '\r' && i + 1 < n && buf[i + 1] == '\n') continue;
+        buf[out++] = buf[i];
+    }
+    buf[out] = 0;
+    return ok;
 }
 
 bool ls_notes_load(const char *stem, char *buf, size_t cap)
 {
     char path[160];
     if (!stem || !buf || cap < 2 || !path_of(path, sizeof(path), stem, ".md")) return false;
-    return read_file(path, buf, cap);
+    bool ok = read_file(path, buf, cap);
+    if (!ok) { buf[0] = 0; status("Cannot open: note too large or SD read failed"); }
+    return ok;
 }
 
-/* Written beside the note and renamed over it, so a pulled card or a flat
-   battery mid-save leaves the previous version, never half of the new one. */
+/* Keep a backup until the replacement has a committed name. On restart,
+   a backup with no .md is the last good version, never a partial .tmp. */
+static bool recover_note(const char *stem)
+{
+    char path[160], backup[160]; struct stat st;
+    if (!path_of(path, sizeof(path), stem, ".md") ||
+        !path_of(backup, sizeof(backup), stem, ".bak")) return false;
+    if (stat(backup, &st) != 0) return true;
+    if (!S_ISREG(st.st_mode)) return false;
+    if (stat(path, &st) == 0) return S_ISREG(st.st_mode) && remove(backup) == 0;
+    return rename(backup, path) == 0;
+}
+
 static bool write_note(const char *stem, const char *text)
 {
-    char path[160], temp[160];
-    if (!path_of(path, sizeof(path), stem, ".md") || !path_of(temp, sizeof(temp), stem, ".tmp")) return false;
+    char path[160], temp[160], backup[160]; struct stat st;
+    if (!path_of(path, sizeof(path), stem, ".md") || !path_of(temp, sizeof(temp), stem, ".tmp") ||
+        !path_of(backup, sizeof(backup), stem, ".bak")) return false;
     ensure_dir(s_dir);
+    if (!recover_note(stem)) return false;
     FILE *f = fopen(temp, "wb");
     if (!f) return false;
     size_t n = strlen(text);
     bool ok = fwrite(text, 1, n, f) == n;
+#ifdef ESP_PLATFORM
+    ok = fflush(f) == 0 && ok;
+    if (ok) ok = fsync(fileno(f)) == 0;
+#endif
     ok = fclose(f) == 0 && ok;
     if (!ok) { remove(temp); return false; }
-    remove(path);
-    return rename(temp, path) == 0;
+    bool had = stat(path, &st) == 0;
+    if (had && !S_ISREG(st.st_mode)) return false;
+    if (had && rename(path, backup) != 0) return false;
+    if (rename(temp, path) != 0) {
+        if (had) rename(backup, path);
+        return false;
+    }
+    if (had) remove(backup);
+    return true;
+}
+
+/* Called only by the journal I/O worker, after its disk load. Stable IDs
+   make each confirmed file the migration cursor, including after reset. */
+bool ls_notes_import(uint32_t id, const char *text)
+{
+    if (!s_started || !id || !text || strlen(text) >= LS_NOTE_TEXT_MAX) return false;
+    char stem[LS_NOTE_STEM], path[160]; struct stat st;
+    snprintf(stem, sizeof(stem), "journal-%lu", (unsigned long)id);
+    if (!recover_note(stem) || !path_of(path, sizeof(path), stem, ".md")) return false;
+    if (stat(path, &st) == 0) return S_ISREG(st.st_mode);
+    snprintf(path, sizeof(path), "%s/trash/%s.md", s_dir, stem);
+    if (stat(path, &st) == 0) return S_ISREG(st.st_mode);
+    if (!write_note(stem, text)) return false;
+    ls_note_info_t info = {0};
+    snprintf(info.stem, sizeof(info.stem), "%s", stem);
+    ls_notes_summarize(text, &info); upsert(&info);
+    return true;
 }
 
 static void scan(void)
@@ -279,6 +338,15 @@ static void scan(void)
     ensure_dir(s_dir);
     DIR *d = opendir(s_dir);
     if (!d) { status("No SD card or notes folder"); lock(); s_scanning = false; unlock(); return; }
+    struct dirent *entry;
+    while ((entry = readdir(d))) {
+        size_t n = strlen(entry->d_name);
+        if (n > 4 && n - 4 < LS_NOTE_STEM && !strcmp(entry->d_name + n - 4, ".bak")) {
+            char stem[LS_NOTE_STEM]; memcpy(stem, entry->d_name, n - 4); stem[n - 4] = 0;
+            recover_note(stem);
+        }
+    }
+    rewinddir(d);
     int found = 0;
     lock(); s_count = 0; unlock();
     struct dirent *e;
@@ -289,7 +357,8 @@ static void scan(void)
         memcpy(info.stem, e->d_name, n - 3); info.stem[n - 3] = 0;
         info.seq = seq_of(info.stem);
         char path[160];
-        if (!path_of(path, sizeof(path), info.stem, ".md") || !read_file(path, s_scan_buf, sizeof(s_scan_buf))) continue;
+        if (!path_of(path, sizeof(path), info.stem, ".md")) continue;
+        if (!read_file(path, s_scan_buf, sizeof(s_scan_buf)) && !s_scan_buf[0]) continue;
         ls_notes_summarize(s_scan_buf, &info);
         upsert(&info);
         found++;
@@ -301,42 +370,79 @@ static void scan(void)
     lock(); s_scanning = false; s_generation++; unlock();
 }
 
-static void trash(const char *stem)
+static int trash(const char *stem)
 {
     char from[160], dir[128], to[200];
     snprintf(dir, sizeof(dir), "%s/trash", s_dir);
     ensure_dir(dir);
-    if (!path_of(from, sizeof(from), stem, ".md")) return;
+    if (!path_of(from, sizeof(from), stem, ".md")) return -1;
     snprintf(to, sizeof(to), "%s/%s.md", dir, stem);
     remove(to);
-    bool ok = rename(from, to) == 0;
+    bool ok = rename(from, to) == 0, pictures = true;
     /* Its pictures go with it: they are named after the note. */
     DIR *d = opendir(s_dir);
-    if (d) {
+    if (d && ok) {
         struct dirent *e; size_t sn = strlen(stem);
         while ((e = readdir(d)))
             if (!strncmp(e->d_name, stem, sn) && e->d_name[sn] == '-' && strstr(e->d_name, ".png")) {
                 char a[400], b[480];
                 snprintf(a, sizeof(a), "%s/%s", s_dir, e->d_name);
                 snprintf(b, sizeof(b), "%s/%s", dir, e->d_name);
-                remove(b); rename(a, b);
+                remove(b); if (rename(a, b) != 0) pictures = false;
             }
         closedir(d);
     }
+    if (d && !ok) closedir(d);
     if (ok) forget(stem);
-    status(ok ? "Moved to notes/trash" : "Could not move the note");
+    status(ok ? pictures ? "Moved to notes/trash" : "Note moved; some pictures stayed behind" : "Could not move the note");
+    return ok ? pictures ? 1 : 2 : -1;
 }
 
 /* ---------------------------------------------------------------- queue -- */
 
-static bool enqueue(const op_t *op)
+static bool enqueue_tracked(op_t *op, uint32_t *ticket)
 {
     if (!s_started) return false;
     lock();
     bool ok = s_qcount < QUEUE_CAP;
+    int result = -1;
+    if (ticket) {
+        for (int i = 0; i < QUEUE_CAP + 2; i++) if (!s_results[i].ticket) { result = i; break; }
+        ok = ok && result >= 0;
+        if (ok) {
+            op->ticket = ++s_ticket; if (!op->ticket) op->ticket = ++s_ticket;
+            s_results[result].ticket = op->ticket; s_results[result].result = 0;
+            *ticket = op->ticket;
+        }
+    }
     if (ok) s_queue[(s_qhead + s_qcount++) % QUEUE_CAP] = *op;
     unlock();
     return ok;
+}
+
+static bool enqueue(const op_t *op)
+{
+    op_t copy = *op; return enqueue_tracked(&copy, NULL);
+}
+
+/* Pending is zero. Reading a completed result releases its reserved slot. */
+int ls_notes_result(uint32_t ticket)
+{
+    lock(); int result = -1;
+    for (int i = 0; i < QUEUE_CAP + 2; i++) if (s_results[i].ticket == ticket) {
+        result = s_results[i].result;
+        if (result) s_results[i].ticket = 0;
+        break;
+    }
+    unlock(); return result;
+}
+
+static void completed(uint32_t ticket, int result)
+{
+    if (!ticket) return;
+    lock();
+    for (int i = 0; i < QUEUE_CAP + 2; i++) if (s_results[i].ticket == ticket) s_results[i].result = result;
+    unlock();
 }
 
 static int take_slot(const char *text)
@@ -370,9 +476,10 @@ void ls_notes_io_step(void)
             ls_notes_summarize(s_slots[op.slot], &info);
             upsert(&info);
         }
+        completed(op.ticket, ok ? 1 : -1);
         give_slot(op.slot);
         status(ok ? "Saved to the SD card" : "SAVE FAILED: check the SD card");
-    } else if (op.kind == OP_TRASH) trash(op.stem);
+    } else if (op.kind == OP_TRASH) completed(op.ticket, trash(op.stem));
     else if (op.kind == OP_PNG) {
         char path[160];
         bool ok = false;
@@ -381,8 +488,9 @@ void ls_notes_io_step(void)
         ok = path_of(path, sizeof(path), op.stem, ".png") && ls_tui_png_write(s_png, op.w, op.h, path) > 0;
 #else
         FILE *f = path_of(path, sizeof(path), op.stem, ".png") ? fopen(path, "wb") : NULL;
-        if (f) { ok = fwrite(s_png, 2, (size_t)op.w * (size_t)op.h, f) == (size_t)op.w * (size_t)op.h; fclose(f); }
+        if (f) { ok = fwrite(s_png, 2, (size_t)op.w * (size_t)op.h, f) == (size_t)op.w * (size_t)op.h; if (fclose(f) != 0) ok = false; }
 #endif
+        completed(op.ticket, ok ? 1 : -1);
         lock(); s_png_busy = false; unlock();
         status(ok ? "Map picture saved" : "MAP PICTURE FAILED: check the SD card");
     }
@@ -409,14 +517,14 @@ void ls_notes_refresh(void)
     enqueue(&op);
 }
 
-bool ls_notes_save(const char *stem, const char *text)
+bool ls_notes_save_tracked(const char *stem, const char *text, uint32_t *ticket)
 {
-    if (!s_started || !stem || !stem[0] || !text) return false;
+    if (!s_started || !stem || !stem[0] || !text || strlen(text) >= LS_NOTE_TEXT_MAX) return false;
     int slot = take_slot(text);
     if (slot < 0) { status("Still saving; try again in a moment"); return false; }
     op_t op = { .kind = OP_SAVE, .slot = slot };
     snprintf(op.stem, sizeof(op.stem), "%s", stem);
-    if (!enqueue(&op)) { give_slot(slot); return false; }
+    if (!enqueue_tracked(&op, ticket)) { give_slot(slot); return false; }
     status("Saving...");
     return true;
 }
@@ -438,7 +546,7 @@ static void learn_sequence(void)
     s_seq_known = true;
 }
 
-bool ls_notes_create(const char *text, char *stem_out, size_t cap)
+bool ls_notes_create_tracked(const char *text, char *stem_out, size_t cap, uint32_t *ticket)
 {
     if (!s_started || !text) return false;
     learn_sequence();
@@ -452,18 +560,18 @@ bool ls_notes_create(const char *text, char *stem_out, size_t cap)
     snprintf(info.stem, sizeof(info.stem), "%s", stem);
     info.seq = seq;
     ls_notes_summarize(text, &info);
-    if (!ls_notes_save(stem, text)) { lock(); if (s_next_seq == seq + 1) s_next_seq = seq; unlock(); return false; }
+    if (!ls_notes_save_tracked(stem, text, ticket)) { lock(); if (s_next_seq == seq + 1) s_next_seq = seq; unlock(); return false; }
     upsert(&info);
     if (stem_out && cap) snprintf(stem_out, cap, "%s", stem);
     return true;
 }
 
-bool ls_notes_trash(const char *stem)
+bool ls_notes_trash_tracked(const char *stem, uint32_t *ticket)
 {
     if (!stem || !stem[0]) return false;
     op_t op = { .kind = OP_TRASH };
     snprintf(op.stem, sizeof(op.stem), "%s", stem);
-    return enqueue(&op);
+    return enqueue_tracked(&op, ticket);
 }
 
 bool ls_notes_mark(const char *title, const char *body)
@@ -489,7 +597,7 @@ void ls_notes_picture_leaf(const char *stem, char *out, size_t cap)
     }
 }
 
-bool ls_notes_save_png(const char *leaf, const uint16_t *px, int w, int h)
+bool ls_notes_save_png_tracked(const char *leaf, const uint16_t *px, int w, int h, uint32_t *ticket)
 {
     if (!s_started || !leaf || !px || w <= 0 || h <= 0 || (long)w * h > LS_NOTE_PNG_MAX_PX) return false;
     lock(); bool busy = s_png_busy; if (!busy) s_png_busy = true; unlock();
@@ -497,9 +605,14 @@ bool ls_notes_save_png(const char *leaf, const uint16_t *px, int w, int h)
     memcpy(s_png, px, (size_t)w * (size_t)h * sizeof(uint16_t));
     op_t op = { .kind = OP_PNG, .w = w, .h = h };
     snprintf(op.stem, sizeof(op.stem), "%s", leaf);
-    if (!enqueue(&op)) { lock(); s_png_busy = false; unlock(); return false; }
+    if (!enqueue_tracked(&op, ticket)) { lock(); s_png_busy = false; unlock(); return false; }
     return true;
 }
+
+bool ls_notes_save(const char *stem, const char *text) { return ls_notes_save_tracked(stem, text, NULL); }
+bool ls_notes_create(const char *text, char *stem, size_t cap) { return ls_notes_create_tracked(text, stem, cap, NULL); }
+bool ls_notes_trash(const char *stem) { return ls_notes_trash_tracked(stem, NULL); }
+bool ls_notes_save_png(const char *leaf, const uint16_t *px, int w, int h) { return ls_notes_save_png_tracked(leaf, px, w, h, NULL); }
 
 #ifdef LS_NOTES_TEST
 void ls_notes_test_reset(const char *directory)
@@ -508,6 +621,7 @@ void ls_notes_test_reset(const char *directory)
     snprintf(s_dir, sizeof(s_dir), "%s", directory);
     s_count = s_qhead = s_qcount = 0; s_next_seq = 1; s_generation = 0;
     memset(s_slot_busy, 0, sizeof(s_slot_busy)); s_png_busy = false;
+    memset(s_results, 0, sizeof(s_results)); s_ticket = 0;
     s_started = false; s_scanning = false; s_seq_known = false;
 }
 #endif

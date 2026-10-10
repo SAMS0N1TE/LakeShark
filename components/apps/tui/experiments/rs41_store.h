@@ -7,6 +7,7 @@ typedef struct { double lat, lon; float alt; int64_t us; } rs41_point_t;
 typedef struct {
     rs41_report_t report;
     int64_t heard_us, fix_us;
+    uint16_t fix_frame;
     unsigned count;
     rs41_point_t track[RS41_POINTS];
 } rs41_sonde_t;

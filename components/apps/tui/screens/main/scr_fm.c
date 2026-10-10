@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "apps/fm/fm_state.h"
+#include "apps/acars/acars_app.h"
 #include "apps/fm/aprs_store.h"
 #include "apps/fm/fm_mode_label.h"
 #include "audio/audio_out.h"
@@ -85,6 +86,7 @@ static ls_lab_mode_t s_lora_was;
 #define LORA_FLIP_US  5000000
 #define LORA_HOLD_US 30000000
 static bool s_lora_inv;
+static int s_lora_search_baud = 1200;
 /* What OPTIONS asked for: 0 both in turn, 1 normal, 2 inverted. */
 static int s_lora_pol;
 static int64_t s_lora_flip_at;
@@ -128,7 +130,8 @@ static void lora_pager_sync(void)
         s_lora_hz = 0;
         s_lora_baud = 0;
         s_lora_inv = false;
-        s_lora_rx = s_field.rx;
+        s_lora_search_baud = 1200;
+        s_lora_rx = s_field.pages;
         s_lora_flip_at = esp_timer_get_time() + LORA_FLIP_US;
         ls_field_mode(LS_LAB_POCSAG);
         ls_field_direct(true);
@@ -138,24 +141,27 @@ static void lora_pager_sync(void)
     }
     if (!s_lora_pager) return;
     ls_field_snapshot(&s_field);
-    /* The chip decodes 1200 and 2400 baud, one at a time: the rate the
-       receiver is set to, or the one its search last locked. */
-    const int asked = FM.pocsag_auto ? FM.pocsag_lock_baud : FM.pocsag_baud;
-    const int baud = asked == 2400 ? 2400 : 1200;
+    /* AUTO visits both rates in each allowed polarity. */
     const int64_t now = esp_timer_get_time();
-    if (s_field.rx != s_lora_rx) {
-        s_lora_rx = s_field.rx;
+    if (s_field.pages > s_lora_rx) {
+        s_lora_rx = s_field.pages;
         s_lora_flip_at = now + LORA_HOLD_US;
-    } else if (!s_lora_pol && now >= s_lora_flip_at) {
-        s_lora_inv = !s_lora_inv;
+    } else if ((!s_lora_pol || FM.pocsag_auto) && now >= s_lora_flip_at) {
+        if (FM.pocsag_auto) {
+            s_lora_search_baud = s_lora_search_baud == 1200 ? 2400 : 1200;
+            if (!s_lora_pol && s_lora_search_baud == 1200) s_lora_inv = !s_lora_inv;
+        } else s_lora_inv = !s_lora_inv;
         s_lora_flip_at = now + LORA_FLIP_US;
         s_lora_hz = 0;
     }
+    s_lora_rx = s_field.pages;
     /* A polarity chosen in OPTIONS is held, and taking it is a retune. */
     if (s_lora_pol && s_lora_inv != (s_lora_pol == 2)) {
         s_lora_inv = s_lora_pol == 2;
         s_lora_hz = 0;
     }
+    const int asked = FM.pocsag_auto ? s_lora_search_baud : FM.pocsag_baud;
+    const int baud = asked == 2400 ? 2400 : 1200;
     if (FM.freq_hz == s_lora_hz && baud == s_lora_baud) return;
     ls_lora_cfg_t cfg = s_field.config;
     cfg.freq_hz = FM.freq_hz;
@@ -185,7 +191,7 @@ static int mode_page(fm_mode_t mode)
 {
     if (mode == FM_MODE_SCAN) return 2;
     if (mode == FM_MODE_POCSAG || mode == FM_MODE_FLEX ||
-        mode == FM_MODE_SAME || mode == FM_MODE_APRS || mode == FM_MODE_AIS) return 1;
+        mode == FM_MODE_SAME || mode == FM_MODE_APRS || mode == FM_MODE_AIS || mode == FM_MODE_ACARS) return 1;
     return 0;
 }
 
@@ -302,8 +308,24 @@ static void field(tui_surface *sf, tui_rect a, int row, const char *l,
    are whatever NFM last left behind: those modes show "--" instead. */
 typedef enum { SIG_NONE, SIG_QUIETING, SIG_CARRIER } sig_kind_t;
 
+static const char *receiver_text(void)
+{
+    ls_iq_control_status_t status;
+    fm_get_receiver_status(&status);
+    if (status.tune_state == LS_IQ_RESULT_FAILED) return "TUNE FAILED";
+    if (status.tune_state == LS_IQ_RESULT_PENDING) return "WAITING";
+    if (status.receiver_streaming) return NULL;
+    if (status.receiver_error == LS_RADIO_ERR_TIMEOUT) return "STALLED";
+    if (status.receiver_error == LS_RADIO_OK || status.receiver_error == LS_RADIO_ERR_BUSY)
+        return "WAITING";
+    if (status.receiver_error == LS_RADIO_ERR_DISCONNECTED ||
+        status.receiver_error == LS_RADIO_ERR_UNAVAILABLE) return "OFFLINE";
+    return "FAILED";
+}
+
 static sig_kind_t sig_kind(void)
 {
+    if (!s_lora_pager && receiver_text()) return SIG_NONE;
     if (FM.mode == FM_MODE_LISTEN) return SIG_QUIETING;
     if (FM.mode == FM_MODE_AM)     return SIG_CARRIER;
     return SIG_NONE;
@@ -388,6 +410,7 @@ static int      s_wipe_mode = -1;
 
 static void draw_vfo(tui_surface *sf, tui_rect area)
 {
+    const char *receiver = s_lora_pager ? NULL : receiver_text();
     const uint32_t hz    = FM.freq_hz;
     const int      sq    = FM.squelch_tenths;
     const sig_kind_t kind = sig_kind();
@@ -453,7 +476,7 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     squelch_text(buf, sizeof(buf));
     field(sf, left, 5, "SQUELCH", buf, lab, kind == SIG_NONE ? dim : val);
     field(sf, left, 4, "CARRIER",
-          kind == SIG_NONE ? "--" : open ? "OPEN" : "closed", lab,
+          receiver ? receiver : kind == SIG_NONE ? "--" : open ? "OPEN" : "closed", lab,
           open ? good : dim);
 
     if (open && ((s_blink / 12) & 1))
@@ -491,6 +514,7 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
        That also puts the squelch on this scale, so the gate can be drawn as
        a mark on the bar and set by eye. */
     const int bw = right.w - 4;
+    if (receiver) s_sig_hold = 0.0f;
     if (kind != s_sig_kind) { s_sig_hold = 0.0f; s_sig_kind = kind; }
 
     if (kind == SIG_NONE) {
@@ -704,8 +728,23 @@ static tui_rect s_pager_hit[3];
 
 /* Newest first, which is the order the list shows and the order a selection
    index means. */
+static const acars_msg_out_t *acars_at(int i)
+{
+    const acars_state_t *state = acars_app_state();
+    if (i < 0 || i >= state->msg_count || i >= ACARS_MSG_LOG_MAX) return NULL;
+    return &state->msgs[(state->msg_head - 1 - i + 2 * ACARS_MSG_LOG_MAX) % ACARS_MSG_LOG_MAX];
+}
+
 static const fm_page_t *page_at(int i)
 {
+    if (FM.mode == FM_MODE_ACARS) {
+        static EXT_RAM_BSS_ATTR fm_page_t one;
+        const acars_msg_out_t *msg = acars_at(i);
+        if (!msg) return NULL;
+        memset(&one, 0, sizeof(one));
+        one.ts_us = msg->ts_us;
+        return &one;
+    }
     if (s_lora_pager) {
         /* The chip's pages, newest first already, in the receiver's shape.
            One at a time: every caller is done with a page before the next. */
@@ -717,7 +756,7 @@ static const fm_page_t *page_at(int i)
         one.address = p->address;
         one.function = p->function;
         one.protocol = FM_PAGE_PROTOCOL_POCSAG;
-        one.type = p->text[0] ? 'A' : 'T';
+        one.type = p->type;
         one.baud = p->baud;
         snprintf(one.text, sizeof(one.text), "%s", p->text);
         return &one;
@@ -729,6 +768,7 @@ static const fm_page_t *page_at(int i)
 
 static int page_count(void)
 {
+    if (FM.mode == FM_MODE_ACARS) return acars_app_state()->msg_count;
     if (s_lora_pager) return s_field.page_log_count;
     int n = (int)FM.page_count;
     if (n > FM_PAGE_LOG_MAX) n = FM_PAGE_LOG_MAX;
@@ -743,21 +783,24 @@ static int page_count(void)
    While anything but the newest is selected, or a page is open, the message's
    own time and address are kept as well, and found again before the next
    draw, key or tap. Messages only move down the list, so the search starts
-   where the selection was; one that has left the list altogether keeps its
-   index. */
+   where the selection was; an open message that has left the list shows
+   an expired state until explicit navigation. */
 static int64_t  s_sel_ts;
 static uint32_t s_sel_addr;
 static bool     s_sel_held;
+static bool     s_sel_missing;
 
 static void pager_refind(void)
 {
     if (!s_sel_held) return;
+    s_sel_missing = true;
     const int count = page_count();
     for (int i = s_page_sel; i < count; i++) {
         const fm_page_t *p = page_at(i);
         if (p && p->ts_us == s_sel_ts && p->address == s_sel_addr) {
             s_page_top += i - s_page_sel;
             s_page_sel = i;
+            s_sel_missing = false;
             return;
         }
     }
@@ -765,14 +808,17 @@ static void pager_refind(void)
 
 static void pager_remember(void)
 {
+    if (s_page_open && s_sel_missing) return;
     const fm_page_t *p = (s_page_sel > 0 || s_page_open) ? page_at(s_page_sel)
                                                          : NULL;
+    s_sel_missing = false;
     s_sel_held = p != NULL;
     if (p) { s_sel_ts = p->ts_us; s_sel_addr = p->address; }
 }
 
 static void pager_move(int delta)
 {
+    if (delta) s_sel_missing = false;
     const int count = page_count();
     s_page_sel += delta;
     if (s_page_sel >= count) s_page_sel = count - 1;
@@ -848,10 +894,12 @@ static void draw_page_detail(tui_surface *sf, tui_rect pane)
 
     s_page_back = tui_rect_make(0, -1, 0, 0);
 
-    const fm_page_t *pg = page_at(s_page_sel);
+    const fm_page_t *pg = s_sel_missing ? NULL : page_at(s_page_sel);
     if (!pg) {
         ls_panel_box(sf, pane, "PAGE", TUI_CYAN);
         tui_put_str(sf, pane, pane.x + 2, pane.y + 2, "that page is gone", dim);
+        s_page_back = tui_rect_make(pane.x + 1, pane.y + 4, pane.w - 2, 3);
+        tui_box(sf, s_page_back, "BACK", lab);
         return;
     }
 
@@ -1071,6 +1119,55 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
     ls_wf_draw(sf, area);
 }
 
+static void draw_acars(tui_surface *sf, tui_rect area)
+{
+    pager_refind();
+    const uint8_t val = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    char buf[96];
+    const acars_state_t *state = acars_app_state();
+    s_page_rect = s_page_back = tui_rect_make(0, -1, 0, 0);
+    area.h -= draw_pager_controls(sf, area);
+    ls_panel_box(sf, area, "MESSAGES", TUI_CYAN);
+    snprintf(buf, sizeof(buf), "DELIVERED %lu  BAD CRC %lu",
+             (unsigned long)state->n_delivered, (unsigned long)state->n_bad_crc);
+    tui_put_str(sf, area, area.x + 2, area.y + 1, buf, lab);
+    snprintf(buf, sizeof(buf), "SYNC %lu", (unsigned long)state->n_synced);
+    tui_put_str(sf, area, area.x + 2, area.y + 2, buf, lab);
+    if (s_page_open) {
+        const acars_msg_out_t *msg = s_sel_missing ? NULL : acars_at(s_page_sel);
+        s_page_back = tui_rect_make(area.x + 1, area.y + area.h - 4, area.w - 2, 3);
+        tui_box(sf, s_page_back, "BACK", lab);
+        if (!msg) {
+            tui_put_str(sf, area, area.x + 2, area.y + 4, "that message is gone", val);
+            return;
+        }
+        snprintf(buf, sizeof(buf), "%s  LABEL %s  BLOCK %c", msg->reg, msg->label, msg->block_id);
+        tui_put_str(sf, area, area.x + 2, area.y + 4, buf, lab);
+        static EXT_RAM_BSS_ATTR char wrap[16][96];
+        int width = area.w - 4;
+        if (width > 95) width = 95;
+        const int lines = ls_wrap_text(msg->text, width, (char *)wrap, 96, 16);
+        for (int i = 0; i < lines && area.y + 6 + i < s_page_back.y; ++i)
+            tui_put_str(sf, area, area.x + 2, area.y + 6 + i, wrap[i], val);
+        return;
+    }
+    s_page_rect = tui_rect_make(area.x, area.y + 3, area.w, area.h - 3);
+    const int rows = (s_page_rect.h - 2) / page_row_h();
+    if (s_page_sel < s_page_top) s_page_top = s_page_sel;
+    if (s_page_sel >= s_page_top + rows) s_page_top = s_page_sel - rows + 1;
+    if (s_page_top < 0) s_page_top = 0;
+    if (!page_count()) tui_put_str(sf, area, area.x + 2, area.y + 4, "no messages yet", val);
+    for (int row = 0; row < rows; ++row) {
+        const int index = s_page_top + row;
+        const acars_msg_out_t *msg = acars_at(index);
+        if (!msg) break;
+        snprintf(buf, sizeof(buf), "%s %s %s", msg->reg, msg->label, msg->text);
+        tui_put_str(sf, area, area.x + 2, s_page_rect.y + 1 + row * page_row_h(),
+                    buf, index == s_page_sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : val);
+    }
+}
+
 /* SCANNER is the stored-channel scanner panel. RADIO is the radio itself,
    the button every app carries, on the control row above. */
 static const ls_btn_t PAGES[] = {
@@ -1086,7 +1183,7 @@ static const ls_btn_t PAGES[] = {
    bigger than it is. */
 static bool pager_mode(void)
 {
-    return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX || FM.mode == FM_MODE_SAME || FM.mode == FM_MODE_APRS || FM.mode == FM_MODE_AIS;
+    return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX || FM.mode == FM_MODE_SAME || FM.mode == FM_MODE_APRS || FM.mode == FM_MODE_AIS || FM.mode == FM_MODE_ACARS;
 }
 
 static tui_rect s_bar;
@@ -1157,6 +1254,12 @@ static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
 
 static double o_squelch(const ls_opt_t *o) { (void)o; return FM.squelch_tenths; }
 static void o_set_squelch(const ls_opt_t *o, double v) { (void)o; set_squelch(v); }
+static void o_show_squelch(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (FM.mode == FM_MODE_AM) snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10, FM.squelch_tenths % 10);
+    else snprintf(out, n, "%d%%", FM.squelch_tenths);
+}
 
 /* The SDR's decoders run 512, 1200 and 2400 at once on AUTO; the chip hears
    one of 1200 and 2400 at a time. arg 1 is the chip's row. */
@@ -1228,7 +1331,7 @@ static void o_show_acars(const ls_opt_t *o, char *out, size_t n)
     else snprintf(out, n, "%.3f MHz", FM.freq_hz / 1e6);
 }
 
-#define OPT_GAIN { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_SDR, \
+#define OPT_GAIN { .label = "GAIN", .kind = LS_OPT_LEVEL, .step = 2, .radios = LS_OPT_SDR, \
                    .num = o_gain, .set_num = o_set_gain, .lo = 0, .hi = 49.6, \
                    .unit = "dB, 0 is automatic", .show = o_show_gain }
 
@@ -1267,13 +1370,13 @@ static const ls_opt_ctx_t CTX_TONE = {
 static const ls_opt_t OPT_NFM[] = {
     { .label = "TONE", .kind = LS_OPT_MENU, .sub = &CTX_TONE, .show = o_show_tone },
     LS_CALLS_MENU,
-    { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
+    { .label = "SQUELCH", .kind = LS_OPT_LEVEL, .step = 1, .show = o_show_squelch, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "0 opens on anything, 100 on nothing" },
     OPT_GAIN,
 };
 static const ls_opt_t OPT_AM[] = {
     LS_CALLS_MENU,
-    { .label = "SQUELCH", .kind = LS_OPT_NUMBER, .num = o_squelch, .set_num = o_set_squelch,
+    { .label = "SQUELCH", .kind = LS_OPT_LEVEL, .step = 1, .show = o_show_squelch, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "carrier level, tenths of a percent" },
     OPT_GAIN,
 };
@@ -1337,17 +1440,18 @@ static int draw_controls(tui_surface *sf, tui_rect area)
     ls_btn_t buttons[] = {
         {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false},
         {"BAND", band, 'n', false, false},
-        {"VOLUME", vol, 'v', false, false},
-        {"SQUELCH", sql, 'q', sig_kind() != SIG_NONE && FM.squelch_open, false},
+        {ls_tui_is_wide() ? "VOL" : "VOLUME", vol, 'v', false, false},
+        {ls_tui_is_wide() ? "SQL" : "SQUELCH", sql, 'q', sig_kind() != SIG_NONE && FM.squelch_open, false},
         {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
         ls_rsel_button(fm_job()),
         ls_opt_button(fm_options()),
         {"CALLS", NULL, '5', false, false},
+        {"MUTE", audio_is_muted() ? "ON" : "OFF", 'b', audio_is_muted(), false},
     };
-    if (!ls_opt_count(fm_options())) buttons[6] = buttons[7];
+    if (!ls_opt_count(fm_options())) { buttons[6] = buttons[7]; buttons[7] = buttons[8]; }
     const int h = area.h;
     s_controls = area;
-    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 8 : 7, -1);
+    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 9 : 8, -1);
     return h;
 }
 
@@ -1373,7 +1477,8 @@ static bool control_action(int index)
     case 4: toggle_frequency_lock(); return true;
     case 5: open_radio(); return true;
     case 6: if (ls_opt_count(fm_options())) ls_opt_open(fm_options()); else ls_calls_open("FM"); return true;
-    case 7: ls_calls_open("FM"); ls_wf_source_release(); return true;
+    case 8: audio_toggle_mute(); return true;
+    case 7: if (!ls_opt_count(fm_options())) { audio_toggle_mute(); return true; } ls_calls_open("FM"); ls_wf_source_release(); return true;
     default: return false;
     }
 }
@@ -1552,7 +1657,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (body.h <= 0) return;
     /* Landscape keeps the compact bar even without a keyboard: the VFO
        page's waterfall is only a few rows tall there already. */
-    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 8 : 7);
+    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 9 : 8);
     if (wide && control_rows > 3) control_rows = 3;
     body.y += control_rows;
     body.h -= control_rows;
@@ -1569,7 +1674,8 @@ static void draw(tui_surface *sf, tui_rect area)
         body.h -= ctl_h;
     } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
 
-    if (s_page == 1 && FM.mode == FM_MODE_AIS) fm_ais_draw(sf, body);
+    if (s_page == 1 && FM.mode == FM_MODE_ACARS) draw_acars(sf, body);
+    else if (s_page == 1 && FM.mode == FM_MODE_AIS) fm_ais_draw(sf, body);
     else if (s_page == 1 && FM.mode == FM_MODE_APRS) fm_aprs_draw(sf, body);
     else if (s_page == 1 && FM.mode == FM_MODE_SAME) fm_same_draw(sf, body);
     else if (s_page == 1) draw_pages(sf, body);
@@ -1585,6 +1691,7 @@ static void draw(tui_surface *sf, tui_rect area)
     for (int i = 0; i < N_PAGES; i++) {
         if (i == 1 && !pager_mode()) continue;   /* PAGER decodes or it hides */
         b[nb] = PAGES[i];
+        if (i == 1 && FM.mode == FM_MODE_ACARS) b[nb].label = "MESSAGES";
         if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
         if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
         if (i == 1 && FM.mode == FM_MODE_AIS) b[nb].label = "VESSELS";
@@ -1617,11 +1724,13 @@ static void enter(void)
     s_last_mode = (int)FM.mode;
     s_page = mode_page(FM.mode);
     s_page_open = false;
+    s_sel_held = s_sel_missing = false;
 }
 
 static bool key_in(ls_tk_t k, char ch)
 {
     if (ls_calls_active()) return ls_calls_key(k, ch);
+    if (k == LS_TK_CHAR && (ch == 'b' || ch == 'B')) { audio_toggle_mute(); return true; }
     if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("FM"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
     if(k==LS_TK_CHAR && ch>='1' && ch<='3') {s_details=true;show_page(ch-'1');return true;}
@@ -1634,7 +1743,13 @@ static bool key_in(ls_tk_t k, char ch)
        lists it is SCAN TYPE. */
     if (k==LS_TK_CHAR && (s_details || (!s_radio.lists && !s_radio.scan_choice)) &&
         ls_opt_key(fm_options(), ch)) return true;
-    if (!s_details) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
+    if (!s_details) {
+        if (k == LS_TK_ESC && !s_radio.lists && !s_radio.scan_choice) {
+            s_details = true;
+            return true;
+        }
+        radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true;
+    }
     if (s_page == 1 && FM.mode == FM_MODE_AIS) {
         if (fm_ais_key(k)) return true;
         if (k == LS_TK_CHAR && (ch == 'u' || ch == 'a' || ch == 'd'))
@@ -1652,7 +1767,8 @@ static bool key_in(ls_tk_t k, char ch)
     }
     /* An open page is closed before ESC does anything else. */
     if (k==LS_TK_ESC && s_page==1 && s_page_open) { s_page_open=false; return true; }
-    if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_details=false; ls_wf_source_release(); return true; }
+    if (k==LS_TK_ESC) return false;
+    if (k==LS_TK_CHAR && ch=='0') { s_details=false; ls_wf_source_release(); return true; }
     if ((s_page==0 || s_page==2) &&
         (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
         return ls_wf_key(k,ch);

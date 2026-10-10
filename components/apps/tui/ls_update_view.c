@@ -8,15 +8,11 @@
    server, the pipe and the board (stacked in portrait, side by side in
    landscape), the percentage in figures as tall as a thumb, the steps, the
    bar, and what is being installed. When there is something to do, a big
-   button breathing under the word says what: INSTALL, RETRY, CHECK, or
+   button under the word says what: INSTALL, RETRY, CHECK, or
    RESTART once the new build is written and counting down to its restart.
 
-   Every effect is worked out from the clock and the cell, with no state
-   kept between frames, so nothing drifts and nothing needs resetting. The
-   one exception is the download: its rain and pipe scroll by counting
-   drawn frames (s_frame), not by the clock, because the frames arrive at an
-   even rate near any wall-time step and a clock step would give them none
-   or two cells at a time.
+   Download motion follows received bytes. Idle, available and success
+   treatments stay still; pending network operations keep their feedback.
    Everything about the update itself comes from the ota.* values
    main/ls_ota.c publishes, and ENTER steps it with ota.step. */
 
@@ -44,8 +40,9 @@ static const char HEX[] = "0123456789abcdef";
 static long    s_got_prev = -1;
 static int64_t s_got_us;
 static float   s_rate;                  /* bytes a second, smoothed */
-static uint32_t s_frame;                /* frames drawn while downloading: the
-                                           rain and the pipe step on this */
+static uint32_t s_frame;                /* received-byte steps for rain and pipe */
+static long    s_motion_got;
+static int64_t s_motion_us;
 
 /* Where a tap does the same as the button, as last drawn: the big button,
    and READY itself. */
@@ -210,10 +207,7 @@ static void bg_sparkle(tui_surface *sf, tui_rect r, int cx, int cy, int64_t t)
     }
 }
 
-/* Hex raining down the page while the image streams in. Each column falls
-   one row every `every` frames (1 to 3, fixed for the column), so it keeps a
-   steady beat whatever the frame time or the transfer rate; the glyphs
-   change every second frame. */
+/* Hex rain advances in received-byte steps, stopping with the transfer. */
 static void bg_rain(tui_surface *sf, tui_rect r, uint32_t frame)
 {
     for (int c = 0; c < r.w; c += 2) {
@@ -612,7 +606,7 @@ static tui_rect cta(tui_surface *sf, tui_rect clip, int y, int room, const char 
 
     /* the breath: half rows and the plain colour, then whole rows and the
        bright one, a little over once a second */
-    const int breath = ls_motion_phase(4, 1400);
+    const int breath = (int)(t / 350) % 4;
     const bool swell = breath == 1 || breath == 2;
     const uint8_t body = swell ? BR(hue & 7) : (uint8_t)(hue & 7);
     const int glare = (int)(t / 28) % (w + h * 2 + 24) - h * 2;
@@ -657,7 +651,7 @@ static tui_rect cta(tui_surface *sf, tui_rect clip, int y, int room, const char 
     if (chevrons) {
         /* the lit chevron moving in toward the button; a lone one blinks */
         const int mid = y + h / 2 - (big ? 1 : 0), tall = big ? 1 : 0;
-        const int lit = chevrons - 1 - ls_motion_phase(2, 500);
+        const int lit = chevrons - 1 - (int)(t / 250) % 2;
         for (int k = 0; k < chevrons; k++) {
             const uint8_t at = k == lit ? A(BR(TUI_WHITE), TUI_BLACK) : A(hue, TUI_BLACK);
             const int lx = x - 3 - k * 3, rx = x + w + 1 + k * 3;
@@ -805,6 +799,8 @@ static void details(tui_surface *sf, tui_rect r, long st, long trial, const char
             for (int i = 0; i < n; i++) fuse[i] = i == n - 1 && ((t / 200) & 1) ? '*' : '=';
             fuse[n] = 0;
             snprintf(line, sizeof(line), "%s %ld s", fuse, trial);
+        } else if (trial < 0) {
+            snprintf(line, sizeof(line), trial == -2 ? "validation failed; still pending" : "waiting for health checks");
         } else {
             snprintf(line, sizeof(line), "kept");
         }
@@ -818,7 +814,7 @@ static void details(tui_surface *sf, tui_rect r, long st, long trial, const char
    build is proving itself, where a check would hide the trial. */
 static bool pressable(long st, long trial)
 {
-    return !working(st) && !(st == LS_OTA_ST_UPDATED && trial > 0);
+    return !working(st) && !(st == LS_OTA_ST_UPDATED && trial != 0);
 }
 
 /* A press: check, or install what the check found. */
@@ -835,6 +831,8 @@ static void step(void)
 
 void ls_update_view_enter(void)
 {
+    s_motion_got = -1;
+    s_motion_us = esp_timer_get_time();
     s_got_prev = -1;
     s_rate = 0;
     s_cta_on = s_hero_on = false;
@@ -857,7 +855,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         ls_panel_notice(sf, a, "UPDATE", "Enlarge the pane", "ESC goes back");
         return;
     }
-    const int64_t t = esp_timer_get_time() / 1000;
+    int64_t t = esp_timer_get_time() / 1000;
     long got = 0, size = 0, trial = 0;
     get_int("ota.got", &got);
     get_int("ota.size", &size);
@@ -878,9 +876,17 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
             s_got_prev = got;
             s_got_us = now;
         }
-        s_frame++;                       /* once a drawn frame of the page */
+        if (got != s_motion_got) { s_motion_got = got; s_motion_us = now; }
+        s_frame = (uint32_t)got / 512;
+        t = (int64_t)s_frame * 90;
+        if (now - s_motion_us >= 2000000) {
+            s_rate = 0;
+            snprintf(state, sizeof(state), "waiting for update data");
+        }
     }
 
+    if (st == LS_OTA_ST_IDLE || st == LS_OTA_ST_CURRENT || st == LS_OTA_ST_AVAILABLE
+        || st == LS_OTA_ST_UPDATED || ready_to_restart(st)) t = 0;
     const bool busy = working(st);
     const bool ready = ready_to_restart(st);
     const long left = ready ? restart_left() : 0;
@@ -919,7 +925,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
     const tui_rect body = tui_rect_make(a.x, a.y + 3, a.w, a.h - 3);
     const uint8_t hue = hue_of(st);
     ls_panel_box(sf, body, "SYSTEM UPDATE", hue);
-    ls_motion_busy(sf, body, busy);
+    ls_motion_busy(sf, body, busy && st != LS_OTA_ST_DOWNLOADING);
     const tui_rect in = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
     const int pct = size > 0 ? (int)((int64_t)got * 100 / size) : 0;
 

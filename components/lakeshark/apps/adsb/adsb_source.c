@@ -298,3 +298,8 @@ int adsb_modes_pump(const adsb_modes_ops_t *ops, adsb_modes_stats_t *stats,
     }
     return handled;
 }
+
+bool adsb_iq_reopen(adsb_source_t chosen, int64_t now_us, int64_t last_data_us)
+{
+    return chosen != ADSB_SRC_IQ || now_us - last_data_us >= 2000000;
+}

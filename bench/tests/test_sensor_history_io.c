@@ -36,7 +36,7 @@ LS_CASE(sd_snapshot_replacement_restores_names_options_and_rings)
     const ls_opt_ctx_t *ctx = lr433_history_options(-1);
     ctx->opt[0].set(&ctx->opt[0], 0);
     ctx->opt[1].set_num(&ctx->opt[1], 3);
-    ctx->opt[2].set(&ctx->opt[2], 1); drain();
+    lr433_history_set_fahrenheit(true); drain();
     LS_EQ_STR(lr433_history_status(), "History: SD saved");
     lr433_history_test_reset(); lr433_history_start();
     LS_EQ_INT(lr433_history_list(order), 1);

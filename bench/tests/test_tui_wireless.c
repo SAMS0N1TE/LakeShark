@@ -4,6 +4,7 @@
 #include "ls_keyboard.h"
 #include "ls_options.h"
 #include "ls_survey.h"
+#include "esp_timer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,9 +90,10 @@ LS_CASE(wifi_and_bluetooth_buttons_work_in_both_orientations)
         setup(landscape);
         LS_CHECK(active);
         LS_CHECK(tap("[S] SCAN")); LS_EQ_INT(operation, LS_WIRELESS_SCAN);
-        LS_CHECK(tap("[R] SAVED")); LS_EQ_INT(operation, LS_WIRELESS_SAVED);
+        LS_CHECK(tap("[R] AUTO")); LS_EQ_INT(operation, LS_WIRELESS_SAVED);
         LS_CHECK(tap("[D] LEAVE")); LS_EQ_INT(operation, LS_WIRELESS_LEAVE);
-        LS_CHECK(tap("[F] FORGET")); LS_EQ_INT(operation, LS_WIRELESS_FORGET);
+        operation = LS_WIRELESS_NONE;
+        ls_scr_wireless.key(LS_TK_CHAR, 'f'); LS_EQ_INT(operation, LS_WIRELESS_NONE);
         LS_CHECK(tap("[B] BLUETOOTH")); draw();
         LS_CHECK(tap("[S] SCAN")); LS_EQ_INT(operation, LS_WIRELESS_BT_RESCAN);
         LS_CHECK(tap("[D] STOP")); LS_EQ_INT(operation, LS_WIRELESS_BT_STOP);
@@ -243,20 +245,26 @@ LS_CASE(saved_network_selection_forgets_one_in_both_orientations)
         LS_CHECK(on_screen("PASSWORD / SAVED"));
         LS_CHECK(tap("Saved01"));
         ls_scr_wireless.key(LS_TK_CHAR, 'f');
+        LS_EQ_INT(operation, LS_WIRELESS_NONE);
+        for (const char *p = "Yes"; *p; ++p) ls_keyboard_key(LS_TK_CHAR, *p);
+        ls_keyboard_key(LS_TK_ENTER, 0);
         LS_EQ_INT(operation, LS_WIRELESS_FORGET);
         LS_CHECK(!strcmp(joined, "Saved01"));
         for (int i = 0; i < 6; ++i) ls_scr_wireless.key(LS_TK_CHAR, 'k');
         draw();
         LS_CHECK(on_screen("Saved07"));
         ls_scr_wireless.key(LS_TK_CHAR, 'f');
+        for (const char *p = "Yes"; *p; ++p) ls_keyboard_key(LS_TK_CHAR, *p);
+        ls_keyboard_key(LS_TK_ENTER, 0);
         LS_CHECK(!strcmp(joined, "Saved07"));
         /* A vanished/reordered snapshot must not make selection forget a
          * different SSID at the same numerical index. */
         model.saved_count = 1;
         strcpy(model.saved[0], "Saved00");
         draw();
+        operation = LS_WIRELESS_NONE;
         ls_scr_wireless.key(LS_TK_CHAR, 'f');
-        LS_CHECK(!joined[0]); /* falls back to current, never all */
+        LS_EQ_INT(operation, LS_WIRELESS_NONE); /* no implicit current target */
     }
 }
 
@@ -336,7 +344,80 @@ LS_CASE(drones_navigation_uses_router_for_touch_and_keyboard) {
         setup(landscape); shown_screen = -1;
         LS_CHECK(tap("DRONES"));
         LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));
-        shown_screen = -1; ls_scr_wireless.key(LS_TK_CHAR, 'n');
+        shown_screen = -1; ls_scr_wireless.key(LS_TK_CHAR, 'g');
         LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));
     }
+}
+
+LS_CASE(saved_next_touch_connect_and_forget_cancel_keep_named_target) {
+    for (int landscape = 0; landscape < 2; ++landscape) {
+        setup(landscape); if (!landscape) height=52; model.saved_count=8;
+        for(int i=0;i<8;++i) snprintf(model.saved[i],33,"Saved%02d",i);
+        shown_screen=-1; draw();
+        LS_CHECK(tap("NEXT saved")); draw();
+        LS_EQ_INT(shown_screen,-1);
+        ls_scr_wireless.key(LS_TK_CHAR,'r');
+        LS_EQ_INT(operation,LS_WIRELESS_SAVED);
+        LS_CHECK(joined[0] && strcmp(joined,"Saved00"));
+        char selected[33]; strcpy(selected,joined);
+        operation=LS_WIRELESS_NONE;
+        ls_scr_wireless.key(LS_TK_CHAR,'f');
+        LS_CHECK(ls_keyboard_active());
+        ls_keyboard_key(LS_TK_ESC,0);
+        LS_EQ_INT(operation,LS_WIRELESS_NONE);
+        ls_scr_wireless.key(LS_TK_CHAR,'f');
+        for(const char *p="Yes";*p;++p) ls_keyboard_key(LS_TK_CHAR,*p);
+        ls_keyboard_key(LS_TK_ENTER,0);
+        LS_CHECK(!strcmp(joined,selected));
+    }
+}
+LS_CASE(bluetooth_options_queue_named_pin_filter_and_telemetry) {
+    setup(false); ls_scr_wireless.key(LS_TK_CHAR,'b'); draw();
+    LS_CHECK(tap("OPTIONS")); LS_CHECK(opened_options);
+    LS_EQ_INT(opened_options->n,4);
+    LS_CHECK(opened_options->opt[0].why_not(&opened_options->opt[0]) != NULL);
+    model.bt_ready=true; strcpy(model.address,"aa:bb:cc:dd:ee:ff");
+    LS_CHECK(opened_options->opt[0].why_not(&opened_options->opt[0]) == NULL);
+    opened_options->opt[0].act(&opened_options->opt[0]);
+    LS_EQ_INT(operation,LS_WIRELESS_BT_PIN); LS_CHECK(!strcmp(joined,model.address));
+    opened_options->opt[2].set_text(&opened_options->opt[2],"my head");
+    LS_EQ_INT(operation,LS_WIRELESS_BT_FILTER); LS_CHECK(!strcmp(joined,"my head"));
+    opened_options->opt[3].set_num(&opened_options->opt[3],0);
+    LS_EQ_INT(operation,LS_WIRELESS_BT_TELEMETRY); LS_CHECK(!strcmp(joined,"0"));
+}
+LS_CASE(survey_idle_is_static_until_an_observation_arrives) {
+    setup(false); memset(&survey,0,sizeof(survey)); survey.running=true;
+    ls_scr_wireless.key(LS_TK_CHAR,'v'); draw();
+    static tui_cell copy[128*72]; memcpy(copy,back,sizeof(copy));
+    ls_shim_time_set(123000000); draw();
+    LS_CHECK(!memcmp(copy,back,width*height*sizeof(back[0])));
+    LS_CHECK(on_screen("WAIT / no bearings"));
+    survey.activity_revision++; draw();
+    LS_CHECK(on_screen("Observation / no bearings"));
+}
+
+LS_CASE(long_status_wraps_inside_border_and_notes_stay_on_their_tab) {
+    for(int landscape=0;landscape<2;++landscape) {
+        setup(landscape); model.ap_count=0;
+        strcpy(model.wifi_status,"Failed \"12345678901234567890123456789012\": authentication mode rejected; JOIN to retry");
+        model.operation=LS_WIRELESS_JOIN; model.busy=true;
+        draw(); LS_CHECK(!on_screen("Scanning..."));
+        LS_CHECK(on_screen("JOIN to retry"));
+        for(int y=(landscape?3:4)+1;y<(landscape?3:4)+(landscape?5:6)-1;++y)
+            LS_CHECK(back[y*width+width-1].ch!='y');
+        model.busy=false; strcpy(model.message,"Saved network removed");
+        ls_scr_wireless.key(LS_TK_CHAR,'b'); draw();
+        LS_CHECK(!on_screen("Saved network removed"));
+        strcpy(model.peer,"Old head"); model.bt_state=0; draw();
+        LS_CHECK(!on_screen("Old head"));
+    }
+}
+LS_CASE(password_title_keeps_ssid_through_validation_retry) {
+    setup(false); LS_CHECK(tap("Network00")); draw();
+    ls_keyboard_draw(&surface,tui_rect_make(0,0,width,height));
+    LS_CHECK(on_screen("Network00 / PASSWORD"));
+    ls_keyboard_key(LS_TK_ENTER,0); draw();
+    ls_keyboard_draw(&surface,tui_rect_make(0,0,width,height));
+    LS_CHECK(on_screen("Network00 / USE 8-63 CHARACTERS"));
+    ls_keyboard_key(LS_TK_ESC,0);
 }

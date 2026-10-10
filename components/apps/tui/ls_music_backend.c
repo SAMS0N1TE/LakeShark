@@ -44,7 +44,7 @@ static const char *const roots[] = {"/sdcard/music", "/spiffs/music"};
 static file_iterator_instance_t *s_list;
 static bool s_up;
 static int s_source;
-static const char *s_error = "";
+static _Atomic(const char *) s_error = "";
 static atomic_bool s_bad_format;
 static atomic_uint s_peak[2];
 static bool s_mono_output;
@@ -71,7 +71,14 @@ typedef struct {
 } spectrum_t;
 static spectrum_t *s_spectrum;
 static atomic_uint s_ring_end, s_ring_fill;
-static atomic_uint s_rate, s_bits, s_channels;
+static atomic_uint s_rate, s_bits, s_channels, s_slots, s_epoch;
+static bool s_new_source;
+static void analysis_reset(void)
+{
+    atomic_store(&s_ring_fill,0);atomic_store(&s_ring_end,0);
+    atomic_store(&s_peak[0],0);atomic_store(&s_peak[1],0);
+    atomic_fetch_add(&s_epoch,1);
+}
 static bool analysing(void);
 static void *spectrum_alloc(void)
 {
@@ -194,8 +201,8 @@ bool ls_music_spectrogram(ls_music_cursor_t *cursor,int hops,int rows,float *db)
     unsigned need=(unsigned)hops*FFT_N,lag=end-cursor->next;
     /* Unstarted, or the decoder has lapped the reader: resume at the newest
        complete column rather than read samples being overwritten. */
-    if(!cursor->started || cursor->rate!=rate || lag>fill || lag>RING_N-FFT_N) {
-        cursor->started=true;cursor->rate=rate;
+    if(!cursor->started || cursor->rate!=rate || cursor->epoch!=atomic_load(&s_epoch) || lag>fill || lag>RING_N-FFT_N) {
+        cursor->started=true;cursor->rate=rate;cursor->epoch=atomic_load(&s_epoch);
         if(fill<need){cursor->next=end;return false;}
         cursor->next=end-need;lag=need;
     }
@@ -222,7 +229,7 @@ bool ls_music_format(ls_music_format_t *out)
 {
     if(!out)return false;
     out->rate_hz=atomic_load(&s_rate);out->bits=atomic_load(&s_bits);
-    out->channels=atomic_load(&s_channels);out->mono_out=s_mono_output;
+    out->epoch=atomic_load(&s_epoch);out->channels=atomic_load(&s_channels);out->mono_out=s_mono_output;
     return s_up && out->rate_hz;
 }
 /* The board's codec curve is -50..0 dB in 0.5 dB volume steps. */
@@ -259,7 +266,7 @@ static int16_t tone(int ch,int32_t x)
 static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeout)
 {
     int16_t *pcm=data;
-    const bool mono=atomic_load(&s_channels)==1;
+    const bool mono=atomic_load(&s_slots)==1;
     const size_t step=mono?1:2,count=len/sizeof(*pcm);
     unsigned peaks[2]={0,0};
     bool warm=atomic_load(&s_warm);
@@ -297,8 +304,19 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
 #define MIC_FRAMES 1024
 #define MIC_GAIN_DB 30.0f
 static atomic_bool s_mic_run, s_mic_busy;
-static FILE *s_mic_file;
-static uint32_t s_mic_bytes;
+static _Atomic(FILE *) s_mic_file;
+static atomic_bool s_save_failed;
+static void mic_close_file(void);
+
+#ifdef ESP_PLATFORM
+static void mic_finish(void)
+{
+    atomic_store(&s_mic_run,false);
+    mic_close_file();
+    atomic_store(&s_mic_busy,false);
+}
+#endif
+static atomic_uint s_mic_bytes;
 EXT_RAM_BSS_ATTR static char s_mic_path[48];
 static int16_t *s_mic_buf;
 #ifdef ESP_PLATFORM
@@ -312,10 +330,9 @@ static void mic_worker(void *arg)
         ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
         while(atomic_load(&s_mic_run))
             if(!ls_music_mic_step()) {
-                s_error="Microphone read failed";
                 atomic_store(&s_mic_run,false);
             }
-        atomic_store(&s_mic_busy,false);
+        mic_finish();
     }
 }
 #endif
@@ -323,7 +340,7 @@ static bool analysing(void)
 {
     return ls_music_state()==LS_MUSIC_PLAYING || atomic_load(&s_mic_busy);
 }
-static void wav_header(FILE *f,uint32_t data_bytes)
+static bool wav_header(FILE *f,uint32_t data_bytes)
 {
     uint8_t h[44]={'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,1,0,1,0,
                    0,0,0,0,0,0,0,0,2,0,16,0,'d','a','t','a'};
@@ -332,18 +349,19 @@ static void wav_header(FILE *f,uint32_t data_bytes)
         h[4+i]=(uint8_t)(riff>>(8*i));h[24+i]=(uint8_t)(rate>>(8*i));
         h[28+i]=(uint8_t)(byte_rate>>(8*i));h[40+i]=(uint8_t)(data_bytes>>(8*i));
     }
-    fwrite(h,1,sizeof(h),f);
+    return fwrite(h,1,sizeof(h),f)==sizeof(h);
 }
 static bool mic_open_file(void)
 {
+    if(s_mic_file || atomic_load(&s_save_failed))return false;
     for(int n=1;n<1000;n++) {
         snprintf(s_mic_path,sizeof(s_mic_path),"%s/REC-%03d.wav",roots[0],n);
         struct stat st;
         if(stat(s_mic_path,&st)==0)continue;
         s_mic_file=fopen(s_mic_path,"wb");
         if(!s_mic_file)break;
-        wav_header(s_mic_file,0);
         s_mic_bytes=0;
+        if(!wav_header(s_mic_file,0)){atomic_store(&s_save_failed,true);mic_close_file();return false;}
         return true;
     }
     s_mic_path[0]=0;
@@ -352,16 +370,25 @@ static bool mic_open_file(void)
 static void mic_close_file(void)
 {
     if(!s_mic_file)return;
-    if(fseek(s_mic_file,0,SEEK_SET)==0)wav_header(s_mic_file,s_mic_bytes);
-    fclose(s_mic_file);
+    bool ok=fflush(s_mic_file)==0;
+    if(fseek(s_mic_file,0,SEEK_SET)!=0 || !wav_header(s_mic_file,s_mic_bytes))ok=false;
+    if(fflush(s_mic_file)!=0)ok=false;
+    if(fclose(s_mic_file)!=0)ok=false;
     s_mic_file=NULL;
+    if(!ok)atomic_store(&s_save_failed,true);
 }
 bool ls_music_mic_step(void)
 {
     int16_t *buf=s_mic_buf;
     if(!buf)return false;
     size_t got=0;
-    if(ls_audio_hw_read(buf,MIC_FRAMES*2*sizeof(*buf),&got)!=ESP_OK || !got)return false;
+    if(ls_audio_hw_read(buf,MIC_FRAMES*2*sizeof(*buf),&got)!=ESP_OK || !got) {
+        s_error="Microphone read failed";atomic_store(&s_mic_run,false);mic_close_file();
+#ifndef ESP_PLATFORM
+        atomic_store(&s_mic_busy,false);
+#endif
+        return false;
+    }
     size_t frames=got/(2*sizeof(*buf));
     unsigned peaks[2]={0,0};
     for(size_t i=0;i<frames;i++) {
@@ -376,7 +403,7 @@ bool ls_music_mic_step(void)
     if(s_mic_file) {
         size_t wrote=fwrite(buf,sizeof(*buf),frames,s_mic_file);
         s_mic_bytes+=(uint32_t)(wrote*sizeof(*buf));
-        if(wrote!=frames){s_error="Card write failed; recording stopped";mic_close_file();}
+        if(wrote!=frames){s_error="Card write failed; recording stopped";atomic_store(&s_save_failed,true);mic_close_file();}
     }
     return true;
 }
@@ -388,16 +415,19 @@ void ls_music_mic_stop(void)
 #else
     atomic_store(&s_mic_busy,false);
 #endif
+    if(atomic_load(&s_mic_busy)){s_error="Microphone busy: audio retained";return;}
     mic_close_file();
 }
 bool ls_music_mic_start(bool record)
 {
     if(!s_up || !s_spectrum)return false;
     if(atomic_load(&s_mic_busy)) {
-        if(record && !s_mic_file && !mic_open_file()){s_error="Cannot create a file on the card";return false;}
-        return true;
+        if(!atomic_load(&s_mic_run)){s_error="Microphone busy: audio retained";return false;}
+        if(!record || s_mic_file)return true;
+        ls_music_mic_stop();
+        if(atomic_load(&s_mic_busy))return false;
     }
-    ls_music_stop();
+    if(audio_player_stop_wait(500)!=ESP_OK){s_error="Decoder busy: audio retained";return false;}
     if(!s_mic_buf) {
 #ifdef ESP_PLATFORM
         s_mic_buf=heap_caps_malloc(MIC_FRAMES*2*sizeof(int16_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -409,8 +439,8 @@ bool ls_music_mic_start(bool record)
     if(!ls_audio_hw_has_mic()){s_error="No microphone on this board";return false;}
     if(ls_audio_hw_set_fs(MIC_RATE,16,I2S_SLOT_MODE_STEREO)!=ESP_OK){s_error="Microphone clock failed";return false;}
     ls_audio_hw_in_gain(MIC_GAIN_DB);
-    if(atomic_load(&s_rate)!=MIC_RATE)atomic_store(&s_ring_fill,0);
-    atomic_store(&s_rate,MIC_RATE);atomic_store(&s_bits,16);atomic_store(&s_channels,1);
+    analysis_reset();
+    atomic_store(&s_rate,MIC_RATE);atomic_store(&s_bits,16);atomic_store(&s_channels,1);atomic_store(&s_slots,2);
     if(record && !mic_open_file()){s_error="Cannot create a file on the card";return false;}
 #ifdef ESP_PLATFORM
     if(!s_mic_task) {
@@ -475,12 +505,18 @@ static esp_err_t clock_set(uint32_t rate, uint32_t bits, i2s_slot_mode_t channel
 {
     s_alpha=4096u*1885u/(rate+1885u); /* approximately 300 Hz */
     s_low[0]=s_low[1]=0;
-    if(rate!=atomic_load(&s_rate))atomic_store(&s_ring_fill,0);
+    if(rate!=atomic_load(&s_rate))analysis_reset();
     atomic_store(&s_rate,rate);atomic_store(&s_bits,bits);
-    atomic_store(&s_channels,channels==I2S_SLOT_MODE_MONO?1u:2u);
+    atomic_store(&s_slots,channels==I2S_SLOT_MODE_MONO?1u:2u);
     esp_err_t err = ls_audio_hw_set_fs(rate, bits, channels);
     if (err == ESP_OK) { int actual; err = ls_audio_hw_volume(audio_volume_get(), &actual); }
     return err;
+}
+static void source_format(uint32_t rate,uint32_t bits,unsigned channels)
+{
+    if(s_new_source || rate!=atomic_load(&s_rate))analysis_reset();
+    s_new_source=false;
+    atomic_store(&s_rate,rate);atomic_store(&s_bits,bits);atomic_store(&s_channels,channels);
 }
 static void event(audio_player_cb_ctx_t *ctx)
 {
@@ -490,7 +526,7 @@ static void event(audio_player_cb_ctx_t *ctx)
 bool ls_music_open(void)
 {
     if (s_up) return true;
-    s_low[0]=s_low[1]=0;s_tone_mix=0;
+    s_low[0]=s_low[1]=0;s_tone_mix=0;s_new_source=true;
     s_mono_output=ls_audio_hw_output_is_mono();
     spectrum_open();
     lakeshark_radio_park();
@@ -499,7 +535,7 @@ bool ls_music_open(void)
     music_heap_checkpoint("after media acquire", err);
     if (err != ESP_OK) { spectrum_close(); s_error = "Audio busy / unavailable"; return false; }
     audio_player_config_t config = {.mute_fn=mute, .clk_set_fn=clock_set,
-        .write_fn=write_pcm, .priority=5, .coreID=1, .file_close_fn=call_store_playback_close};
+        .write_fn=write_pcm, .source_format_fn=source_format, .priority=5, .coreID=1, .file_close_fn=call_store_playback_close};
     err = audio_player_new(config);
     music_heap_checkpoint("after player new", err);
     if (err != ESP_OK) {
@@ -517,6 +553,7 @@ bool ls_music_open(void)
 void ls_music_close(void)
 {
     mic_release();
+    if(atomic_load(&s_mic_busy)){s_error="Microphone busy: audio retained";return;}
     if (s_up) {
         music_heap_checkpoint("before player delete", -1);
         esp_err_t err = audio_player_delete();
@@ -537,8 +574,10 @@ bool ls_music_scan(int source)
 {
     if (source < 0 || source > 1) return false;
     if (!s_up && !ls_music_open()) return false;
-    ls_music_mic_stop();
     ls_music_stop();
+    if(atomic_load(&s_mic_busy) || (s_up && audio_player_stop_wait(500)!=ESP_OK)) {
+        s_error="Audio busy: rescan deferred";return false;
+    }
     music_heap_checkpoint("before playlist close", -1);
     ls_media_playlist_close(s_list);
     music_heap_checkpoint("after playlist close", -1);
@@ -554,7 +593,10 @@ const char *ls_music_name(int index)
 {
     return index >= 0 && index < ls_music_count() ? file_iterator_get_name_from_index(s_list,index) : "";
 }
-const char *ls_music_error(void) { return atomic_load(&s_bad_format) ? "Unsupported or damaged audio file" : s_error; }
+const char *ls_music_error(void) {
+    static char save_error[112];
+    if(atomic_load(&s_save_failed)){snprintf(save_error,sizeof(save_error),"Save failed: %s; OPTIONS > REPAIR WAV",s_mic_path);return save_error;}
+    return atomic_load(&s_bad_format) ? "Unsupported or damaged audio file" : s_error; }
 bool ls_music_play(int index)
 {
     if (!s_up || index < 0 || index >= ls_music_count()) return false;
@@ -569,6 +611,9 @@ bool ls_music_play_path(const char *path)
 {
     if (!s_up || !path) return false;
     ls_music_mic_stop();
+    if(atomic_load(&s_mic_busy))return false;
+    if(audio_player_stop_wait(500)!=ESP_OK){s_error="Decoder busy: audio retained";return false;}
+    s_new_source=true;
     FILE *fp = call_store_playback_open(path);
     if (!fp) { s_error="Track unavailable; rescan card"; return false; }
     if (audio_player_play(fp) != ESP_OK) { call_store_playback_close(fp); s_error="Player queue busy"; return false; }
@@ -580,7 +625,7 @@ bool ls_music_toggle(void)
     if (!s_up) return false;
     return (audio_player_get_state() == AUDIO_PLAYER_STATE_PAUSE ? audio_player_resume() : audio_player_pause()) == ESP_OK;
 }
-void ls_music_stop(void) { if (s_up) audio_player_stop(); }
+void ls_music_stop(void) { ls_music_mic_stop(); if (s_up) audio_player_stop(); }
 ls_music_state_t ls_music_state(void)
 {
     if (!s_up) return LS_MUSIC_STOPPED;
@@ -593,3 +638,20 @@ uint32_t ls_music_duration_ms(void) { return s_up ? audio_player_duration_ms() :
 void ls_music_volume_step(int delta) { audio_volume_delta(delta); }
 const char *ls_music_output(void) { return audio_is_muted() ? "MUTED" : "BOARD AUDIO"; }
 bool ls_music_live(void) { return analysing(); }
+
+bool ls_music_muted(void){return audio_is_muted();}
+void ls_music_mute_toggle(void){audio_toggle_mute();}
+bool ls_music_mic_repair(void)
+{
+    if(atomic_load(&s_mic_busy) || !atomic_load(&s_save_failed) || !*s_mic_path)return false;
+    FILE *f=fopen(s_mic_path,"r+b");
+    if(!f)return false;
+    bool ok=fseek(f,0,SEEK_END)==0;
+    long size=ok?ftell(f):-1;
+    if(size<44 || (uint64_t)size>UINT32_MAX)ok=false;
+    if(ok)ok=fseek(f,0,SEEK_SET)==0 && wav_header(f,((uint32_t)size-44)&~1u);
+    if(fflush(f)!=0)ok=false;
+    if(fclose(f)!=0)ok=false;
+    if(ok){atomic_store(&s_save_failed,false);s_error="WAV repaired";}
+    return ok;
+}

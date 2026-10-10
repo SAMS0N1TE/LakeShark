@@ -350,7 +350,7 @@ static void set_text(const ls_opt_t *o, const char *v)
     portEXIT_CRITICAL(&s_lock);
     ls_exp_hw_wake();
 }
-static const char *const UNITS[] = { "C", "F" };
+static const char *const UNITS[] = { "KPA / C", "PSI / F" };
 static void show_tpms(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o; snprintf(out, n, "MY IDS ONLY");
@@ -383,14 +383,14 @@ static const ls_opt_t GLOBAL[] = {
     { .label = "TPMS HISTORY", .kind = LS_OPT_ACTION, .show = show_tpms },
     { .label = "UNHIDE SENSORS", .kind = LS_OPT_ACTION, .act = unhide },
 };
-static const ls_opt_ctx_t GLOBAL_CTX = { .name = "HISTORY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(GLOBAL) };
+const ls_opt_ctx_t lr433_history_ctx = { .name = "HISTORY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(GLOBAL) };
 static const ls_opt_t SENSOR[] = {
     { .label = "NAME", .kind = LS_OPT_TEXT, .text = text, .set_text = set_text, .max = SH_NAME - 1 },
     { .label = "HIDE", .kind = LS_OPT_TOGGLE, .arg = 2, .get = get, .set = set },
     { .label = "MY TPMS ID", .kind = LS_OPT_TOGGLE, .arg = 3, .get = get, .set = set, .why_not = sensor_why },
     { .label = "ALERT ABOVE", .kind = LS_OPT_TOGGLE, .arg = 4, .get = get, .set = set, .why_not = sensor_why },
     { .label = "THRESHOLD", .kind = LS_OPT_LEVEL, .arg = 1, .num = number, .set_num = set_number, .lo = -100, .hi = 250, .step = 1 },
-    { .label = "HISTORY", .kind = LS_OPT_MENU, .sub = &GLOBAL_CTX },
+    { .label = "HISTORY", .kind = LS_OPT_MENU, .sub = &lr433_history_ctx },
 };
 static const ls_opt_ctx_t SENSOR_CTX = { .name = "SENSOR", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(SENSOR) };
 const ls_opt_ctx_t *lr433_history_options(int slot)
@@ -403,7 +403,7 @@ const ls_opt_ctx_t *lr433_history_options(int slot)
         s_selected_proto = d->proto; s_selected_channel = d->channel;
     }
     portEXIT_CRITICAL(&s_lock);
-    return s_selected >= 0 ? &SENSOR_CTX : &GLOBAL_CTX;
+    return s_selected >= 0 ? &SENSOR_CTX : &lr433_history_ctx;
 }
 
 void lr433_history_name(const char *name) { set_text(NULL, name); }
@@ -459,3 +459,9 @@ void lr433_history_test_reset(void)
     s_selected = -1;
 }
 #endif
+
+void lr433_history_set_fahrenheit(bool v)
+{
+    const ls_opt_t units = { .arg = 1 };
+    set(&units, v);
+}

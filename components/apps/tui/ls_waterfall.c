@@ -9,6 +9,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 
 #include "ls_tui_ui.h"
 /* ls_tui_daylight: which way round the ground is. */
@@ -30,16 +31,16 @@ static char          s_label[16];
 
 static ls_wf_feed_t  s_feed;
 static bool          s_have_feed;
-static uint8_t s_preview[LS_WF_BINS_MAX];
+static EXT_RAM_BSS_ATTR uint8_t s_preview[LS_WF_BINS_MAX];
 static bool s_have_preview;
 
 /* Averaging is a RUNNING average, and it does not slow the scroll. */
 
-static uint16_t s_acc[LS_WF_BINS_MAX];
+static EXT_RAM_BSS_ATTR uint16_t s_acc[LS_WF_BINS_MAX];
 static bool     s_acc_primed;
 static uint8_t  s_decim_n;
 
-static uint8_t  s_peak[LS_WF_BINS_MAX];
+static EXT_RAM_BSS_ATTR uint8_t  s_peak[LS_WF_BINS_MAX];
 
 static bool     s_marker_initial;
 static int      s_marker = -1;           /* display column, -1 for none     */
@@ -174,7 +175,7 @@ static bool s_auto_seeded;     /* the first row sets these outright */
 
 /* Each row keeps the automatic window it was written with. */
 
-static uint8_t s_row_lo[LS_WF_ROWS_MAX], s_row_hi[LS_WF_ROWS_MAX];
+static EXT_RAM_BSS_ATTR uint8_t s_row_lo[LS_WF_ROWS_MAX], s_row_hi[LS_WF_ROWS_MAX];
 
 static inline int level_between(uint8_t raw, int lo, int hi)
 {
@@ -890,7 +891,8 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
 
     b[9] = (ls_btn_t){ "CNTRST", v[9], 'c', false, false };
     uint32_t hz=ls_wf_marker_hz();
-    snprintf(v[10],12,hz?"%.4f":"tap mark",hz/1e6);
+    if (hz) fmt_mhz(v[10],12,hz);
+    else snprintf(v[10],12,"tap mark");
     b[10]=(ls_btn_t){ls_tui_is_wide()?"TUNE":"TUNE MARK",v[10],'y',false,!hz||!s_tuner};
 }
 
@@ -913,7 +915,7 @@ static void act(int i)
         uint32_t hz=ls_wf_marker_hz();
         if(!hz||!s_tuner)break;
         bool ok=s_tuner(s_owner,hz);
-        snprintf(s_tune_note,sizeof(s_tune_note),ok?"Tune requested: %.4f MHz":"Tune unavailable: %.4f MHz",hz/1e6);
+        snprintf(s_tune_note,sizeof(s_tune_note),ok?"Tune requested: %.3f MHz":"Tune unavailable: %.3f MHz",hz/1e6);
         s_tune_note_until=esp_timer_get_time()+2500000;
         if(ok){s_cfg.paused=false;s_marker=s_plot_rect.w/2;}
         break;
@@ -1040,7 +1042,7 @@ bool ls_wf_key(ls_tk_t key, char ch)
     case LS_TK_UP:    s_cfg.ref = (int8_t)(s_cfg.ref < 8 ? s_cfg.ref + 1 : 8); cfg_save(); return true;
     case LS_TK_DOWN:  s_cfg.ref = (int8_t)(s_cfg.ref > -8 ? s_cfg.ref - 1 : -8); cfg_save(); return true;
     case LS_TK_ENTER: s_cfg.paused = !s_cfg.paused; cfg_save(); return true;
-    case LS_TK_ESC:   if (s_marker >= 0) { s_marker = -1; return true; } return false;
+    case LS_TK_ESC:   return false;
     default: return false;
     }
 }

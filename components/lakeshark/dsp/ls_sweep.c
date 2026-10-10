@@ -22,10 +22,10 @@ static const char *TAG = "ls_sweep";
 #define LS_SWEEP_SETTLE_MS        4
 #define LS_SWEEP_DISCARD_BUFFERS  2
 
-ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_tenths,
+ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenths,
                             uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
                             ls_sweep_progress_fn progress,
-                            ls_sweep_cancel_fn cancel, void *user)
+                            ls_sweep_cancel_fn cancel, void *user, const char *endpoint_id)
 {
     if (!plan || !dbfs || plan->n_bins == 0) return LS_RADIO_ERR_INVALID;
     if (dwell_ffts == 0) dwell_ffts = LS_SWEEP_DEFAULT_DWELL_FFTS;
@@ -37,6 +37,7 @@ ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_ten
         .max_hz          = plan->stop_hz + plan->half_span_hz,
         .sample_rate_hz  = plan->sample_rate_hz,
         .iq_format       = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .preferred_endpoint_id = endpoint_id,
     };
 
     ls_radio_session_t *session = NULL;
@@ -142,6 +143,14 @@ ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_ten
     if (error != LS_RADIO_OK)
         ESP_LOGW(TAG, "sweep stopped: %s", ls_radio_err_name(error));
     return error;
+}
+
+ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_tenths,
+    uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+    ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user)
+{
+    return ls_sweep_run_endpoint(plan,gain_tenths,dwell_ffts,fast_retune,
+                                dbfs,progress,cancel,user,NULL);
 }
 
 ls_radio_err_t ls_sweep_run(const ls_sweep_plan_t *plan, int gain_tenths,

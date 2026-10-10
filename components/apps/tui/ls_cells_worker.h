@@ -12,6 +12,10 @@ static EXT_RAM_BSS_ATTR struct {
     char query[64],url[256];unsigned serial,pick,radius,action;uint32_t key;
 } cells_mail,cells_request;
 static EXT_RAM_BSS_ATTR ls_cells_view cells_pub,cells_work;
+#define CELLS_ACTIONS 4
+typedef struct { unsigned action;uint32_t key;char name[64];uint8_t cover[CELLS_BITS]; } cells_command;
+static EXT_RAM_BSS_ATTR cells_command cells_actions[CELLS_ACTIONS],cells_command_work,cells_preview_mail;
+static unsigned cells_action_head,cells_action_count;
 static atomic_flag cells_guard=ATOMIC_FLAG_INIT;
 static bool cells_take(void) { return !atomic_flag_test_and_set(&cells_guard); }
 static void cells_give(void) { atomic_flag_clear(&cells_guard); }
@@ -32,7 +36,11 @@ bool ls_cells_pick(unsigned i,unsigned radius) {
 bool ls_cells_action(unsigned action,uint32_t key) {
     if(action<1 || action>4 || !cells_take()) return false;
     if(action==1 && (!cells_pub.ready || cells_pub.busy)) { cells_give();return false; }
-    cells_mail.action=action;cells_mail.key=key;cells_mail.serial++;cells_give();return true;
+    if(cells_action_count==CELLS_ACTIONS) { cells_give();return false; }
+    cells_command *q=&cells_actions[(cells_action_head+cells_action_count)%CELLS_ACTIONS];
+    q->action=action;q->key=key;
+    if(action==1) { q->key=cells_preview_mail.key;memcpy(q->name,cells_preview_mail.name,64);memcpy(q->cover,cells_preview_mail.cover,CELLS_BITS); }
+    cells_action_count++;cells_give();return true;
 }
 bool ls_cells_server(const char *url) {
     size_t n=strlen(url);if(n<8 || n>=sizeof(cells_mail.url) || !cells_take()) return false;
@@ -61,6 +69,7 @@ static void cells_publish(void) {
     snprintf(cells_work.queue_name,sizeof(cells_work.queue_name),"%s",cw.queue_loaded?cw.queue_name:"");
     while(!cells_take()) vTaskDelay(1);
     cells_pub=cells_work;
+    if(cells_work.ready) { cells_preview_mail.key=cw.selected_key;memcpy(cells_preview_mail.name,cells_work.picked.name,64);memcpy(cells_preview_mail.cover,cw.cover,CELLS_BITS); }
     if(cells_mail.serial!=cw.serial) { cells_pub.busy=true;cells_pub.ready=false;cells_pub.count=0; }
     cells_give();
 }
@@ -136,6 +145,7 @@ static bool cells_install(const char *part,const char *path) {
 /* Header: CCMAPS1\0, count, index size/hash, base size/hash, edition, padding.
  * Sorted 40-byte entries: cell id (0 overview), size, SHA256. Bounded paging. */
 static bool cells_catalog(void) {
+    cw.next_cell=0; /* Every catalog replacement revalidates queued ownership. */
     if(cw.catalog>=0) { close(cw.catalog);cw.catalog=-1; }
     cw.catalog=open(CELLS_ROOT "cells/catalog.ccm",O_RDONLY);struct stat st;
     if(cw.catalog<0)return false;
@@ -510,12 +520,16 @@ static void cells_queue_step(void) {
     if(!cells_entry(0,&size,sha)) { cells_message("Catalog has no overview");return; }
     if(!cells_present(0,size)) { cells_download(5,"cells/overview.ctile","cells/overview.ctile",size,sha);return; }
     while(cw.next_cell<65536) {
-        unsigned at=cw.next_cell++;
-        if(!(cw.queued[at/8]&(1u<<(at&7))))continue;
-        if(!cells_entry(at+1,&size,sha)) { cells_message("Queued cell absent from catalog");return; }
-        if(cells_present(at+1,size))continue;
+        unsigned at=cw.next_cell;
+        if(!(cw.queued[at/8]&(1u<<(at&7)))) { cw.next_cell++;continue; }
+        if(!cells_entry(at+1,&size,sha)) { cells_work.downloading=false;cells_message("Blocked: queued cell absent from catalog");return; }
+        if(cells_present(at+1,size)) { cw.next_cell++;continue; }
         char remote[64],local[64];cells_name(at+1,remote,sizeof(remote),true);cells_name(at+1,local,sizeof(local),false);
         cw.next_cell=at;cells_download(6,remote,local,size,sha);return;
+    }
+    /* Recheck the entire ownership set before making the completion durable. */
+    for(unsigned at=0;at<65536;at++)if(cw.queued[at/8]&(1u<<(at&7))) {
+        if(!cells_entry(at+1,&size,sha) || !cells_present(at+1,size)) { cw.next_cell=at;cells_work.downloading=false;cells_message("Blocked: queued cells need revalidation");return; }
     }
     if(!cells_record(cw.queue_key,cw.queue_name,cw.queued,false)) { cells_message("Cannot save place installation");return; }
     cw.queue_loaded=false;cells_work.downloading=false;cells_library();
@@ -601,7 +615,30 @@ static void cells_step(void) {
     cells_init();
     if(upload.active && esp_timer_get_time()-upload.last_us>60000000)upload.active=false;
     if(!cw.initialized || upload.active)return;
-    if(cells_take()) { cells_request=cells_mail;cells_give(); }
+    bool command=false;
+    if(cells_take()) {
+        cells_request=cells_mail;
+        if(cells_action_count && !(cells_actions[cells_action_head].action==2 && dl.active)) { cells_command_work=cells_actions[cells_action_head];cells_action_head=(cells_action_head+1)%CELLS_ACTIONS;cells_action_count--;command=true; }
+        cells_give();
+    }
+    if(command) {
+        cells_command *q=&cells_command_work;
+        if(q->action==1) {
+            bool known=false;for(unsigned i=0;i<cells_work.library_count;i++)if(cells_work.keys[i]==q->key)known=true;
+            if(!known && cells_work.library_count>=LS_CELLS_PLACES)cells_message("32 places limit; delete a place first");
+            else if(cells_record(q->key,q->name,q->cover,true)) {
+                if(cw.queue_loaded && cw.queue_key==q->key) { memcpy(cw.queued,q->cover,CELLS_BITS);memcpy(cw.queue_name,q->name,64);cw.next_cell=0; }
+                cells_library();cells_message("Queued; safe to leave TILES");
+            }
+            else cells_message("Cannot save download queue; retry");
+        } else if(q->action==2) { cells_work.ready=false;cw.preview_active=false;if(!dl.active) { if(!cells_delete(q->key))cells_message("Delete failed; retry"); }else cells_message("Wait for the current cell before deleting"); }
+        else if(q->action==3) {
+            char name[64];bool queued;snprintf(cw.path,sizeof(cw.path),CELLS_ROOT "installed/%08lx.ccpi",(unsigned long)q->key);
+            if(!cells_record_read(cw.path,cw.scratch,name,&queued) || !cells_record(q->key,name,cw.scratch,true))cells_message("Cannot save update queue; retry");
+            else { cells_library();cw.catalog_refresh=true; }
+        } else if(q->action==4)cw.catalog_refresh=true;
+        cells_work.action_done++;cells_publish();return; /* Publish the acknowledgement before consuming queries. */
+    }
     if(cells_request.serial!=cw.serial) {
         cw.serial=cells_request.serial;
         if(cells_request.action==6 && cells_url_valid(cells_request.url)) {
@@ -611,18 +648,6 @@ static void cells_step(void) {
             snprintf(cells_work.query,sizeof(cells_work.query),"%s",cells_request.query);
             cells_work.ready=false;cw.hint_attempts=0;cw.query_pending=strlen(cells_work.query)>=2;cells_work.busy=cw.query_pending;cells_work.count=0;
         } else if(cells_request.action==5) { cw.preview_active=true;cw.picked=cells_request.pick;cw.radius=cells_request.radius;cells_preview(); }
-        else if(cells_request.action==1 && cells_work.ready) {
-            bool known=false;for(unsigned i=0;i<cells_work.library_count;i++)if(cells_work.keys[i]==cw.selected_key)known=true;
-            if(!known && cells_work.library_count>=LS_CELLS_PLACES)cells_message("32 places limit; delete a place first");
-            else if(cells_record(cw.selected_key,cells_work.picked.name,cw.cover,true)) { cells_library();cells_message("Queued; safe to leave TILES"); }
-        } else if(cells_request.action==2) { if(!dl.active)cells_delete(cells_request.key);else cells_message("Wait for the current cell before deleting"); }
-        else if(cells_request.action==3) {
-            char name[64];bool queued;snprintf(cw.path,sizeof(cw.path),CELLS_ROOT "installed/%08lx.ccpi",(unsigned long)cells_request.key);
-            if(cells_record_read(cw.path,cw.cover,name,&queued))cells_record(cells_request.key,name,cw.cover,true);
-            cells_library();cw.catalog_refresh=true;
-        } else if(cells_request.action==4) {
-            cw.catalog_refresh=true;
-        }
     }
     if(dl.active) {
         unsigned done=cells_download_step();

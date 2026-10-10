@@ -97,7 +97,7 @@ static void write_file(const char *name, const char *text)
 
 static const char APP_ONE[] =
     "version=1\n"
-    "name=meter\n"
+    "name=home\n"
     "sub=bench\n"
     "icon=wave\n"
     "color=cyan\n"
@@ -106,7 +106,7 @@ static const char APP_ONE[] =
 
 static const char APP_TWO[] =
     "version=1\n"
-    "name=probe\n"
+    "name=home\n"
     "panel=TEMP\n"
     "bar=LEVEL|env.level\n";
 
@@ -141,10 +141,12 @@ LS_CASE(the_apps_on_the_card_actually_register)
     LS_EQ_INT(s_loaded, 2);
     LS_EQ_INT(ls_app_count(), 2);
 
-    const ls_app_t *a = ls_app_by_id("meter");
+    const ls_app_t *a = ls_app_by_id("user.0");
     LS_CHECK_MSG(a != NULL, "the loaded app is not in the directory");
     if (!a) return;
     LS_CHECK(a->cat == LS_APP_USER);
+    LS_EQ_STR(a->name, "home");
+    LS_CHECK(ls_app_by_id("home") == NULL);
     LS_CHECK_MSG(ls_userapp_last_error() == NULL,
                  "a good card reported an error");
 }
@@ -152,7 +154,7 @@ LS_CASE(the_apps_on_the_card_actually_register)
 LS_CASE(a_loaded_app_carries_a_complete_doc)
 {
     card_once();
-    const ls_app_t *a = ls_app_by_id("meter");
+    const ls_app_t *a = ls_app_by_id("user.0");
     LS_CHECK_MSG(a != NULL, "the loaded app is not in the directory");
     if (!a) return;
     LS_CHECK_MSG(a->doc != NULL, "a user app registered without a doc");
@@ -172,10 +174,12 @@ LS_CASE(a_loaded_app_carries_a_complete_doc)
 LS_CASE(each_app_keeps_its_own_purpose_line)
 {
     card_once();
-    const ls_app_t *one = ls_app_by_id("meter");
-    const ls_app_t *two = ls_app_by_id("probe");
+    const ls_app_t *one = ls_app_by_id("user.0");
+    const ls_app_t *two = ls_app_by_id("user.1");
     LS_CHECK_MSG(one && two, "both apps should be in the directory");
     if (!one || !two || !one->doc || !two->doc) return;
+    LS_EQ_STR(one->name, two->name);
+    LS_CHECK(strcmp(one->id, two->id) != 0);
     LS_CHECK_MSG(one->doc != two->doc, "two apps share one doc");
     LS_CHECK_MSG(strstr(two->doc->purpose, "two.lsapp") != NULL,
                  two->doc->purpose);

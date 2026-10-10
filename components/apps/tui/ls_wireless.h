@@ -17,7 +17,8 @@ extern "C" {
 typedef enum {
     LS_WIRELESS_NONE, LS_WIRELESS_SCAN, LS_WIRELESS_JOIN,
     LS_WIRELESS_SAVED, LS_WIRELESS_LEAVE, LS_WIRELESS_FORGET,
-    LS_WIRELESS_BT_START, LS_WIRELESS_BT_STOP, LS_WIRELESS_BT_RESCAN
+    LS_WIRELESS_BT_START, LS_WIRELESS_BT_STOP, LS_WIRELESS_BT_RESCAN,
+    LS_WIRELESS_BT_PIN, LS_WIRELESS_BT_UNPIN, LS_WIRELESS_BT_FILTER, LS_WIRELESS_BT_TELEMETRY
 } ls_wireless_op_t;
 
 typedef struct {
@@ -41,13 +42,15 @@ typedef struct {
 
 typedef struct {
     bool wifi_available, bt_available, busy, wifi_connected, bt_ready;
+    bool wifi_running, bt_running, bt_failed;
     ls_wireless_op_t operation;
     uint32_t now_ms, scan_ms, scan_revision;
     int ap_count, bt_state;
     int saved_count;
     char saved[8][33];
     char message[80], wifi_status[112], ssid[33], ip[20];
-    char bt_status[24], peer[40], address[20];
+    char bt_status[24], peer[40], address[20], pinned[20], name_filter[24];
+    int tel_hz;
     int wifi_rssi, bt_rssi, channel;
     bool wifi_signal, bt_signal, stock_head_seen;
     uint32_t rx, tx, drops;
@@ -55,9 +58,14 @@ typedef struct {
     ls_wireless_history_t history;
 } ls_wireless_snapshot_t;
 
+typedef enum { LS_RID_RX_OFF, LS_RID_RX_UNAVAILABLE, LS_RID_RX_STARTING,
+    LS_RID_RX_FAILED, LS_RID_RX_PAUSED, LS_RID_RX_LISTENING } ls_rid_rx_t;
+void ls_wireless_rid_request(bool on);
+ls_rid_rx_t ls_wireless_rid_status(void);
 /* only the worker talks to the radios; draw reads one snapshot. */
 void ls_wireless_set_active(bool active);
 void ls_wireless_observe(bool active);
+void ls_wireless_find_ble(bool active);
 void ls_wireless_get(ls_wireless_snapshot_t *out);
 bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass);
 void ls_wireless_history_push(ls_wireless_history_t *h, uint32_t now_ms,

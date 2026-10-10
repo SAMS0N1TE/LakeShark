@@ -158,6 +158,7 @@ int rec_watch_observe_mod(rec_watch_catalog_t *c, rec_source_t source, uint32_t 
     int peak, int reason, const rec_fsk_mod_t *mod, bool *novel);
 bool rec_watch_pin(rec_watch_catalog_t *c, uint32_t id, bool pin);
 uint32_t rec_watch_crc(const void *data, size_t len);
+bool rec_watch_frequency_ok(rec_source_t source,bool hackrf,uint32_t caps,uint32_t hz);
 int rec_watch_receiver_want(int visible_mode, int rec_mode, bool enabled);
 int rec_watch_receiver_want_source(int visible_mode, int rec_mode, bool enabled, rec_source_t source);
 bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes);
@@ -179,6 +180,8 @@ typedef struct {
     int count;
     char storage[64], peer[17];
     char export_status[112];
+    uint32_t scan_generation,learn_generation;
+    char scan_result[112],learn_result[112];
     rec_watch_event_t event[REC_WATCH_SLOTS];
     int32_t preview[REC_WATCH_SLOTS][48];
     rec_ook24_t decoded[REC_WATCH_SLOTS];

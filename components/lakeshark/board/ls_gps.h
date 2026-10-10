@@ -52,9 +52,9 @@ typedef struct {
 
 typedef struct {
     /* Sentences are arriving and passing checksum.  True well before `fix`.
-       Cleared when the reader starts. */
+       Expires after three seconds without a sentence. */
     bool     alive;
-    /* The position fields are populated and the receiver claims validity. */
+    /* A valid position updated in the last three seconds, while reading. */
     bool     fix;
     uint8_t  quality;        /* GGA field 6: 0 none, 1 GPS, 2 DGPS          */
     uint8_t  sats_used;      /* GGA field 7                                  */
@@ -91,10 +91,33 @@ typedef struct {
     uint32_t checksum_errors;
     int64_t  last_sentence_us;  /* esp_timer clock, 0 if never               */
     int64_t  last_fix_us;
+    int64_t  last_gsv_us;    /* latest published GSV cycle, not other traffic */
     int64_t  start_us;          /* when the reader last started              */
     int64_t  first_fix_us;      /* first position since then, 0 until one    */
     uint32_t position_updates;
 } ls_gps_state_t;
+
+/* Coordinates remain last-known; only fix/alive describe current data. */
+static inline bool ls_gps_recent(int64_t stamp, int64_t now)
+{
+    return stamp > 0 && now >= stamp && now - stamp < 3000000;
+}
+static inline bool ls_gps_fix_current(const ls_gps_state_t *g, int64_t now)
+{
+    return g && g->fix && ls_gps_recent(g->last_fix_us, now) &&
+           g->lat_deg >= -90 && g->lat_deg <= 90 &&
+           g->lon_deg >= -180 && g->lon_deg <= 180;
+}
+static inline void ls_gps_expire(ls_gps_state_t *g, int64_t now, bool running)
+{
+    g->alive = running && g->alive && ls_gps_recent(g->last_sentence_us, now);
+    g->fix = running && ls_gps_fix_current(g, now);
+    if (!running || !ls_gps_recent(g->last_gsv_us, now)) {
+        g->sat_count = g->sats_visible = g->sats_tracked = 0;
+        g->cn0_best = g->cn0_top4 = 0;
+        for (int i = 0; i < LS_GPS_SYS_COUNT; i++) g->tracked_by_sys[i] = 0;
+    }
+}
 
 /* The parser's context: the published state and the working tables behind it.
    ls_gps_get copies only `st`, so a snapshot on a task's stack does not carry
@@ -107,6 +130,8 @@ typedef struct {
        a cycle is bounded by the GGA that opens it. Exposed only because the
        parser is pure and has nowhere else to keep it. */
     uint8_t  sats_acc;
+    bool     gsv_seen;
+    int64_t  gsv_us;
 
     /* Internal: GSV fills this and the GGA that ends a cycle publishes it
        into `st.sats`, so a half-received sweep never reaches a drawing path. */

@@ -33,7 +33,7 @@
 #define LOG_LIMIT (16u * 1024u * 1024u)
 #define QUEUE_CAP 4
 typedef enum { CMD_CONFIG, CMD_MODE, CMD_TX, CMD_NOTE, CMD_CAL, CMD_CLEAR,
-               CMD_FSK } command_kind;
+               CMD_FSK, CMD_SPAN } command_kind;
 typedef struct {
     command_kind kind;
     ls_lora_cfg_t cfg;
@@ -41,6 +41,7 @@ typedef struct {
     ls_lab_mode_t mode;
     ls_journal_entry_t entry;
     int value;
+    uint32_t span_lo, span_hi;
 } command;
 
 static SemaphoreHandle_t s_lock;
@@ -55,7 +56,7 @@ static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb, s_find_tcb;
 static TaskHandle_t s_find_task;
 #endif
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
-static bool s_watch;
+static bool s_watch, s_record_session;
 static bool s_falls_want, s_hold_acquired, s_radio_owned;
 static EXT_RAM_BSS_ATTR ls_labs_tx_budget_t s_tx_budget;
 static bool s_wireless_watch;
@@ -65,6 +66,7 @@ EXT_RAM_BSS_ATTR static ls_wireless_snapshot_t s_wireless;
 static ls_field_source_t s_source = LS_FIELD_MESH;
 static ls_field_provider_t s_providers[LS_FIELD_SOURCES];
 static ls_lora_cfg_t s_saved;
+static ls_fsk_cfg_t s_gfsk_saved;
 EXT_RAM_BSS_ATTR static ls_field_state_t s_live, s_public;
 EXT_RAM_BSS_ATTR static command s_queue[QUEUE_CAP], s_command;
 EXT_RAM_BSS_ATTR static ls_journal_entry_t s_entries[LS_JOURNAL_CAP], s_disk;
@@ -93,6 +95,7 @@ static compass_profile s_profiles[2]; /* standalone, keyboard attached */
 static int s_profile; /* field worker owns selection; I/O addresses both by index */
 typedef struct { uint32_t magic, generation; ls_compass_cal_t cal; uint32_t sum; } compass_record;
 static long s_valid_bytes;
+static long s_import_offset;
 /* The calibration's drift and the battery current's part in it, learnt
    from every reading (ls_compass_learn.h). Worker-owned; `s_learn_pub` is
    the copy other tasks read under the lock. The saved record carries the
@@ -221,7 +224,7 @@ static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t
 
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
-static void publish(void) { lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; s_live.span_lo_hz = s_span_lo; s_live.span_hi_hz = s_span_hi; memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
+static void publish(void) { const uint32_t caps = ls_lora_caps(); lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; s_live.span_lo_hz = s_span_lo; s_live.span_hi_hz = s_span_hi; ls_labs_span(caps, s_live.config.freq_hz, &s_live.span_lo_hz, &s_live.span_hi_hz); memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
 
 static void detected(int64_t now, uint32_t frequency, float rssi, float snr, bool mesh)
 {
@@ -528,6 +531,7 @@ static void pocsag_feed(const uint8_t *data, int len, int64_t now)
         out->address = p->address;
         out->baud = p->baud;
         out->function = p->function;
+        out->type = p->type;
         snprintf(out->text, sizeof(out->text), "%s", p->text);
     }
     s_live.page_log_count = (uint8_t)held;
@@ -535,15 +539,14 @@ static void pocsag_feed(const uint8_t *data, int len, int64_t now)
 _Static_assert(sizeof(((ls_field_page_t *)0)->text) == FM_PAGE_TEXT_MAX,
                "ls_field_page_t.text must match FM_PAGE_TEXT_MAX");
 
-static void fsk_params(ls_fsk_cfg_t *out)
+static void fsk_params(ls_fsk_cfg_t *out, ls_lab_mode_t mode, const ls_lora_cfg_t *cfg)
 {
-    *out = s_live.fsk;
-    out->freq_hz = s_live.config.freq_hz;   /* BAND moves every mode */
-    if (s_live.mode == LS_LAB_POCSAG) {
+    out->freq_hz = cfg->freq_hz;   /* BAND moves every mode */
+    if (mode == LS_LAB_POCSAG) {
         if (!(out->bitrate == 512u && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) && out->bitrate != 1200u && out->bitrate != 2400u) out->bitrate = 1200u;
         out->deviation_hz = POCSAG_DEVIATION;
         out->bandwidth_hz = POCSAG_BANDWIDTH;
-        out->sync_word = s_live.config.invert_iq ? ~POCSAG_SYNC : POCSAG_SYNC;
+        out->sync_word = cfg->invert_iq ? ~POCSAG_SYNC : POCSAG_SYNC;
         out->payload_bytes = POCSAG_BYTES;
         out->preamble_detect_bits = (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0;
         /* LR2021 at VHF: full gain and boost, as PAGER RECON uses. */
@@ -564,8 +567,9 @@ static bool configure(void)
         /* The FSK session configures the part itself, so there is no
            ls_lora_configure first - that would set LoRa modulation and then
            immediately be replaced. */
-        ls_fsk_cfg_t fsk;
-        fsk_params(&fsk);
+        ls_fsk_cfg_t fsk = s_live.fsk;
+        fsk_params(&fsk, s_live.mode, &s_live.config);
+        s_live.fsk = fsk;
         if (s_live.mode == LS_LAB_POCSAG) {
             if (!pocsag_ready((int)fsk.bitrate)) return false;
             s_pocsag_stream = fsk.stream;
@@ -578,8 +582,9 @@ static bool configure(void)
     if (s_live.mode == LS_LAB_SPECTRUM) {
         uint32_t hz = s_live.config.freq_hz;
         lock(); const uint32_t lo = s_span_lo, hi = s_span_hi; unlock();
-        if (lo && hi > lo) return ls_lora_scan_begin(lo, hi) == ESP_OK;
-        return ls_lora_scan_begin(hz - 1000000u, hz + 1000000u) == ESP_OK;
+        uint32_t actual_lo = lo, actual_hi = hi;
+        if (!ls_labs_span(ls_lora_caps(), hz, &actual_lo, &actual_hi)) return false;
+        return ls_lora_scan_begin(actual_lo, actual_hi) == ESP_OK;
     }
     return ls_lora_receive() == ESP_OK;
 }
@@ -791,15 +796,25 @@ void ls_field_step(void)
             for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
             s_live.spectrum_us=0;message("Plot cleared; radio counters retained");
         } else if (s_live.transmitting) message("Transmission in progress; control unchanged");
-        else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE || c->kind == CMD_FSK) {
+        else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE || c->kind == CMD_FSK || c->kind == CMD_SPAN) {
             ls_lora_cfg_t old = s_live.config; ls_lab_mode_t mode = s_live.mode;
-            ls_fsk_cfg_t old_fsk = s_live.fsk;
+            ls_fsk_cfg_t old_fsk = s_live.fsk, old_gfsk = s_gfsk_saved;
+            const uint32_t old_lo = s_span_lo, old_hi = s_span_hi;
             if (c->kind == CMD_CONFIG) s_live.config = c->cfg;
             else if (c->kind == CMD_FSK) s_live.fsk = c->fsk;
-            else s_live.mode = c->mode;
-            if (s_live.direct && !configure()) {
-                s_live.config = old; s_live.mode = mode; s_live.fsk = old_fsk;
-                if (!configure()) { lock(); s_want = s_falls_want = false; unlock(); restore(); }
+            else if (c->kind == CMD_SPAN) { s_span_lo = c->span_lo; s_span_hi = c->span_hi; }
+            else {
+                if (mode != LS_LAB_POCSAG && c->mode == LS_LAB_POCSAG) s_gfsk_saved = s_live.fsk;
+                if (mode == LS_LAB_POCSAG && c->mode != LS_LAB_POCSAG) s_live.fsk = s_gfsk_saved;
+                s_live.mode = c->mode;
+            }
+            fsk_params(&s_live.fsk, s_live.mode, &s_live.config);
+            uint32_t lo = s_span_lo, hi = s_span_hi;
+            if ((s_live.mode == LS_LAB_SPECTRUM && !ls_labs_span(ls_lora_caps(), s_live.config.freq_hz, &lo, &hi)) ||
+                (s_live.direct && !configure())) {
+                s_live.config = old; s_live.mode = mode; s_live.fsk = old_fsk; s_gfsk_saved = old_gfsk;
+                s_span_lo = old_lo; s_span_hi = old_hi;
+                if (s_live.direct && !configure()) { lock(); s_want = s_falls_want = false; unlock(); restore(); }
                 message("Setting rejected; previous configuration retained");
             } else {
                 memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
@@ -860,6 +875,7 @@ void ls_field_step(void)
                from this reception rather than that heartbeat. */
             if (s_record && !paging_stream) {
                 ls_field_sample_t ps = s_live.sample;
+                ps.source = LS_FIELD_LORA;
                 ps.time_us = now;
                 ps.frequency = s_live.config.freq_hz;
                 ps.rssi = rssi; ps.snr = snr;
@@ -914,17 +930,12 @@ void ls_field_step(void)
 #endif
 }
 
-/* A mark kept by another app is a note too. Before NOTES has imported the
-   journal once, the import will carry it; after, it is written here. */
-static void mirror_to_notes(const ls_journal_entry_t *e)
+/* The I/O worker mirrors loaded journal entries by their stable IDs. */
+static bool mirror_to_notes(const ls_journal_entry_t *e)
 {
-    char marker[160];
-    struct stat st;
-    snprintf(marker, sizeof(marker), "%s/.journal-imported", ls_notes_directory());
-    if (stat(marker, &st) != 0) return;
     EXT_RAM_BSS_ATTR static char body[LS_JOURNAL_TEXT + 400];
     const ls_field_sample_t *p = &e->sample;
-    int n = snprintf(body, sizeof(body), "%s\n", e->text);
+    int n = snprintf(body, sizeof(body), "# %s\n%s\n\n%s\n", e->title, p->utc[0] ? p->utc : "from JOURNAL", e->text);
     if (p->gps_valid && n > 0 && (size_t)n < sizeof(body))
         n += snprintf(body + n, sizeof(body) - (size_t)n, "> GPS %.6f, %.6f  alt %.0f m\n", p->lat, p->lon, p->alt_m);
     if (p->radio_valid && n > 0 && (size_t)n < sizeof(body)) {
@@ -935,7 +946,7 @@ static void mirror_to_notes(const ls_journal_entry_t *e)
     }
     if (p->imu_valid && isfinite(p->heading) && n > 0 && (size_t)n < sizeof(body))
         snprintf(body + n, sizeof(body) - (size_t)n, "> HEADING %03.0f M\n", p->heading);
-    ls_notes_mark(e->title, body);
+    return ls_notes_import(e->id, body);
 }
 
 static void io_step(void)
@@ -974,6 +985,33 @@ static void io_step(void)
            Records before 0x43414c10 are hard iron only, with an unchecked
            magnetic basis, and are left unread for the same reason. */
         s_loaded=true;
+    }
+    /* Read the archive, not just the bounded RAM window. A confirmed file
+       is its own durable cursor; failed writes retry this record next turn.
+       Wait for the notes index before doing import I/O for other field apps. */
+    if (ls_notes_generation() && s_import_offset < s_valid_bytes) {
+        char name[160];
+        EXT_RAM_BSS_ATTR static ls_journal_entry_t imported, later;
+        if (path(name, sizeof(name), "entries.bin")) {
+            FILE *f = fopen(name, "rb"); uint32_t header[3];
+            bool ok = f && fseek(f, s_import_offset, SEEK_SET) == 0 &&
+                fread(header, sizeof(header), 1, f) == 1 && header[0] == 0x4a4c5301u &&
+                header[1] == sizeof(imported) && fread(&imported, sizeof(imported), 1, f) == 1 &&
+                checksum(&imported, sizeof(imported)) == header[2];
+            long next = ok ? ftell(f) : s_import_offset;
+            bool superseded = false;
+            /* Only the latest archived revision of this ID is eligible. */
+            while (ok && ftell(f) < s_valid_bytes) {
+                ok = fread(header, sizeof(header), 1, f) == 1 && header[0] == 0x4a4c5301u &&
+                    header[1] == sizeof(later) && fread(&later, sizeof(later), 1, f) == 1 &&
+                    checksum(&later, sizeof(later)) == header[2];
+                if (ok && later.id == imported.id) superseded = true;
+            }
+            if (f) fclose(f);
+            imported.title[sizeof(imported.title) - 1] = 0;
+            imported.text[sizeof(imported.text) - 1] = 0;
+            if (ok && (superseded || mirror_to_notes(&imported))) s_import_offset = next;
+        }
     }
     for(int profile=0;profile<2;profile++) {
         lock();compass_profile c=s_profiles[profile];unlock();
@@ -1019,8 +1057,8 @@ static void io_step(void)
     }
     lock(); bool have_note = s_note_count > 0;
     if (have_note) { s_disk = s_notes[s_note_head]; s_note_head = (s_note_head + 1) % QUEUE_CAP; s_note_count--; }
-    bool record = s_record;
     ls_field_sample_t current = s_public.sample;
+    bool record = s_record && current.source == s_source;
     bool full = s_count == LS_JOURNAL_CAP && !s_entries[0].saved;
     unlock();
     if (have_note) {
@@ -1094,6 +1132,7 @@ bool ls_field_start(void)
         .preamble_detect_bits = (ls_lora_caps() & LS_LORA_CAP_FSK_DETECT) ? 16 : 0,
         .rx_gain_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? 13 : 0,
         .rx_boost_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? 8 : 0 };
+    s_gfsk_saved = s_live.fsk;
     for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
     message("Mesh keeps control until DIRECT is enabled");
     storage("Journal ready");
@@ -1159,11 +1198,9 @@ bool ls_field_configure(const ls_lora_cfg_t *cfg)
 bool ls_field_spectrum_span(uint32_t lo_hz, uint32_t hi_hz)
 {
     if (!s_lock || (lo_hz && (hi_hz <= lo_hz || !ls_lora_rx_range_ok(ls_lora_caps(), lo_hz, hi_hz)))) return false;
-    lock(); s_span_lo = lo_hz; s_span_hi = lo_hz ? hi_hz : 0;
-    s_public.span_lo_hz = s_span_lo; s_public.span_hi_hz = s_span_hi;
-    const ls_lora_cfg_t cfg = s_public.config; unlock();
-    /* A configure restarts the sweep on the new band. */
-    return ls_field_configure(&cfg);
+    command *c = reserve(); if (!c) return false;
+    c->kind = CMD_SPAN; c->span_lo = lo_hz; c->span_hi = lo_hz ? hi_hz : 0;
+    return commit();
 }
 bool ls_field_mode(ls_lab_mode_t mode) { if (mode < LS_LAB_PACKETS || mode > LS_LAB_POCSAG) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_MODE; c->mode = mode; return commit(); }
 bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
@@ -1171,7 +1208,14 @@ bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
     /* The same limits ls_lora_fsk_begin enforces, checked here so a bad set
        is refused at the button instead of by a session that will not start.
        The bandwidth rule is the demodulator's: the signal has to fit in it. */
-    if (!cfg || cfg->bitrate < 600 || cfg->bitrate > 300000 ||
+    if (!cfg || !s_lock) return false;
+    ls_fsk_cfg_t effective = *cfg;
+    lock(); const ls_lab_mode_t mode = s_public.mode; const ls_lora_cfg_t tuned = s_public.config; unlock();
+    if (mode == LS_LAB_POCSAG && cfg->bitrate != 1200 && cfg->bitrate != 2400 &&
+        !(cfg->bitrate == 512 && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM))) return false;
+    fsk_params(&effective, mode, &tuned);
+    cfg = &effective;
+    if (cfg->bitrate < (mode == LS_LAB_POCSAG ? 512u : 600u) || cfg->bitrate > 300000 ||
         cfg->deviation_hz < 600 || cfg->deviation_hz > 200000 ||
         cfg->bandwidth_hz < 4800 || cfg->bandwidth_hz > 467000 ||
         !cfg->payload_bytes ||
@@ -1282,7 +1326,19 @@ bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active
 bool ls_field_clear_plot(void) { command *c = reserve(); if (!c) return false; c->kind = CMD_CLEAR; return commit(); }
 bool ls_field_transmit(const char *text) { if (!text || !*text || strlen(text) > 64) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_TX; snprintf(c->entry.text, sizeof(c->entry.text), "%s", text); return commit(); }
 bool ls_field_source(ls_field_source_t source) { if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false; lock(); if(s_record && source != s_source) { unlock(); return false; } s_source = source; unlock(); return true; }
-bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(on && !s_record){record_rows=record_errors=record_packets=0;record_saved_us=0;}s_record = on; unlock(); return true; }
+bool ls_field_record_source(ls_field_source_t source, bool on)
+{
+    if (!s_started || source < 0 || source >= LS_FIELD_SOURCES) return false;
+    lock();
+    if (s_record && (!s_record_session || source != s_source)) { unlock(); return false; }
+    if (on && !s_record) {
+        s_source = source;
+        record_rows = record_errors = record_packets = 0; record_saved_us = 0;
+    }
+    s_record = on; s_record_session = on;
+    unlock(); return true;
+}
+bool ls_field_record(bool on) { if (!s_started) return false; lock(); if(s_record && s_record_session) { unlock(); return false; } if(on && !s_record){record_rows=record_errors=record_packets=0;record_saved_us=0;}s_record = on; s_record_session = false; unlock(); return true; }
 bool ls_field_recording(void) { if(!s_lock) return false; lock(); bool active=s_record; unlock(); return active; }
 void ls_field_watch(bool on) { if (!s_lock) return; lock(); s_watch = on; unlock(); }
 bool ls_field_note(uint32_t id, const char *title, const char *text)
@@ -1367,8 +1423,11 @@ void ls_field_test_reset(const char *directory)
 {
     s_falls_want = s_hold_acquired = s_radio_owned = false;
     memset(&s_tx_budget, 0, sizeof(s_tx_budget));
+    s_source = LS_FIELD_MESH; s_record_session = false;
+    s_span_lo = s_span_hi = 0;
     s_directory = directory; s_started = s_loaded = s_stop = s_want = s_record = s_have_saved = false;
     s_qhead = s_qcount = s_count = s_note_head = s_note_count = 0; s_next_id = 1; s_next_sample = s_next_record = 0;
+    s_import_offset = 0;
     s_valid_bytes = 0; s_damaged = s_incompatible = false;
     s_wireless_watch = false;record_rows=record_errors=record_packets=0;record_saved_us=0;
     s_last_imu_us = 0;

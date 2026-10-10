@@ -234,7 +234,7 @@ bool ls_dfs_in_range(ls_dfs_t src, uint32_t hz)
     case LS_DFS_LORA:   return hz >= 150000000u && hz <= 960000000u;
     case LS_DFS_BAND:   return hz >= 150000000u && hz <= 960000000u;
     case LS_DFS_RTL:    return hz >= 24000000u + SDR_OFFSET && hz <= 1766000000u;
-    case LS_DFS_HACKRF: return hz >= 1000000u + SDR_OFFSET && hz <= 6000000000u;
+    case LS_DFS_HACKRF: return hz >= 1000000u + SDR_OFFSET && hz <= UINT32_MAX;
     case LS_DFS_CC1101: return (hz >= 300000000u && hz <= 348000000u) || (hz >= 387000000u && hz <= 464000000u) ||
                                (hz >= 779000000u && hz <= 928000000u);
     case LS_DFS_NRF24:  return hz >= 2400000000u && hz < 2400000000u + LS_MIXRF_CHANNELS * 1000000u;
@@ -252,11 +252,14 @@ static bool tunable(ls_dfs_t src)
 static void wireless_refresh(void)
 {
     lock();
-    bool want = false;
-    for (int k = 0; k < LS_DFS_SLOTS; k++)
+    bool want = false, ble = false;
+    for (int k = 0; k < LS_DFS_SLOTS; k++) {
+        ble |= s.slot[k].active && s.slot[k].source == LS_DFS_BLE;
         want |= s.slot[k].active && (s.slot[k].source == LS_DFS_WIFI || s.slot[k].source == LS_DFS_BLE);
+    }
     unlock();
     ls_wireless_observe(want);
+    ls_wireless_find_ble(ble);
 }
 
 /* ------------------------------------------------------------ selection -- */
@@ -291,9 +294,8 @@ bool ls_dfs_select_slot(int k, ls_dfs_t src, uint32_t freq_hz)
         }
         sl->nch = n ? n : 1;
     }
-    if (changed) { sl->target = -1; sl->target_key[0] = sl->target_name[0] = 0; sl->level_us = 0; sl->status[0] = 0; sl->cur = 0; }
+    if (changed) { sl->address_target = false; sl->target = -1; sl->target_key[0] = sl->target_name[0] = 0; sl->level_us = 0; sl->status[0] = 0; sl->cur = 0; }
     unlock();
-    if (src == LS_DFS_BLE) ls_wireless_request(LS_WIRELESS_BT_RESCAN, NULL, NULL);
     wireless_refresh();
     return true;
 }
@@ -586,8 +588,8 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
             s_session = NULL;
             float level; uint32_t f;
             const char *app = borrowed_value(&level, &f);
-            if (app) {
-                publish(k, 0, f, level, "dB", 0);
+            if (app && f == first) {
+                publish(k, w[k].cur, f, level, "dB", 0);
                 char line[96]; snprintf(line, sizeof(line), "%s has the SDR: following its level at %.4f MHz", app, f / 1e6);
                 status(k, line);
             } else {
@@ -692,8 +694,8 @@ static void step_mixrf(int k, const slot_t *c, bool nrf, bool retune)
             status(k,m.scan_owner!=LS_MIXRF_OWNER_NONE?why:"nRF24 unavailable");return;
         }
         ls_mixrf_snapshot(&m);
-        if (m.samples == w[k].heard) return;
-        w[k].heard = m.samples;
+        if (!ls_mixrf_survey_fresh(&m,w[k].heard)) return;
+        w[k].heard = m.sweeps;
         /* One sweep hears every channel. */
         for (int i = 0; i < c->nch; i++) {
             const uint32_t hz = c->freq[i];
@@ -747,8 +749,17 @@ static void step_wifi(int k, const char *ssid, bool targeted)
 
 static void step_wifi_address(int k,const uint8_t address[6]) {
     static EXT_RAM_BSS_ATTR ls_wifi_scan_ap_t aps[64];
-    int64_t seen=0;int n=ls_wifi_scan_cached(aps,64,&seen);
     const int64_t now=esp_timer_get_time();
+    ls_wireless_get(&s_wsnap);
+    if(now-s_wifi_scan_us>WIFI_SCAN_US) {
+        if(s_wsnap.busy) status(k,"Wi-Fi busy / waiting to scan");
+        else {
+            s_wifi_scan_us=now;
+            status(k,ls_wireless_request(LS_WIRELESS_SCAN,NULL,NULL)?"Wi-Fi scan requested / turn slowly":"Wi-Fi scan unavailable / retrying");
+        }
+    }
+    int64_t seen=0;int n=ls_wifi_scan_cached(aps,64,&seen);
+    if(n<0) {status(k,"Wi-Fi cache busy / waiting");return;}
     if(seen==w[k].wifi_address_us || now-seen>5000000) return;
     w[k].wifi_address_us=seen;
     for(int i=0;i<n;i++) if(!memcmp(aps[i].bssid,address,6)) {

@@ -25,9 +25,9 @@
    passive data views until their spectrum adapters are available. */
 typedef struct { ls_rsel_radio_t radio; const char *detail; ls_field_source_t field; } data_source_t;
 static const data_source_t data_sources[] = {
-    {LS_RSEL_CC1101, "Receiver data; spectrum pending", LS_FIELD_CC1101},
+    {LS_RSEL_CC1101, "Passive receiver data", LS_FIELD_CC1101},
     {LS_RSEL_GPS, "Satellite signal levels", LS_FIELD_NONE},
-    {LS_RSEL_NRF24, "Survey data; spectrum pending", LS_FIELD_NRF24},
+    {LS_RSEL_NRF24, "Passive survey data", LS_FIELD_NRF24},
     {LS_RSEL_NFC, "Field data", LS_FIELD_NFC},
     {LS_RSEL_WIFI, "Link data", LS_FIELD_WIFI},
     {LS_RSEL_BLE, "Link data", LS_FIELD_BLE},
@@ -35,6 +35,7 @@ static const data_source_t data_sources[] = {
 #define DATA_COUNT ((int)(sizeof(data_sources)/sizeof(data_sources[0])))
 static int s_data = -1;
 static int s_satellite;
+static char s_hint[96] = "R radio";
 static EXT_RAM_BSS_ATTR ls_gps_state_t s_gps;
 /* The SDR last chosen here, for the button while no receiver holds one. */
 static ls_rsel_radio_t s_sdr = LS_RSEL_SDR_RTL;
@@ -189,6 +190,7 @@ static void pick_sdr(ls_rsel_radio_t radio)
     const ls_rsel_job_t job = p25 ? LS_RSEL_P25 :
         FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX ? LS_RSEL_PAGER :
         FM.mode == FM_MODE_ACARS ? LS_RSEL_ACARS : LS_RSEL_FM;
+    if (s_data < 0 && ls_rsel_sdr_held_by(p25 ? "p25" : "fm") == radio) return;
     s_sdr = radio;
     ls_rsel_set(job, radio);
     const ls_rsel_radio_t held = ls_rsel_sdr_held_by(p25 ? "p25" : "fm");
@@ -243,7 +245,7 @@ static void open_radio_picker(void) { ls_rsel_open(LS_RSEL_WATERFALL, picked); }
    for a spectrum, MODE for an SDR, and FM's TUNE and SWEEP when FM is it. */
 static int button_count(void)
 {
-    if (s_data >= 0) return 1;
+    if (s_data >= 0) return data_sources[s_data].field == LS_FIELD_NONE ? 3 : 1;
     if (ls_wf_source_get() == LS_WF_SRC_FM) return 5;
     return sdr_view() ? 3 : 2;
 }
@@ -266,6 +268,10 @@ static void draw_buttons(tui_surface *sf, tui_rect r)
         {"SWEEP", FM.mode == FM_MODE_SCAN ? "ON" : "OFF", 'w', FM.mode == FM_MODE_SCAN, false},
         {0},
     };
+    if (s_data >= 0 && data_sources[s_data].field == LS_FIELD_NONE) {
+        buttons[1] = (ls_btn_t){"PREV", "satellite", 'k', false, false};
+        buttons[2] = (ls_btn_t){"NEXT", "satellite", 'j', false, false};
+    }
     const int n = button_count();
     buttons[n] = ls_opt_button(falls_options());
     ls_btn_bar_raised(sf, r, buttons, bar_count(), -1);
@@ -284,6 +290,27 @@ static void signal_meter(tui_surface *sf, tui_rect area, int row, int x, int wid
             i<filled?TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
 }
 
+static int draw_wrapped(tui_surface *sf, tui_rect area, int row, const char *text)
+{
+    char line[96];
+    int width = area.w - 2;
+    if (width < 1) return row;
+    if (width >= (int)sizeof(line)) width = sizeof(line) - 1;
+    while (*text && row < area.h) {
+        int n = strlen(text);
+        if (n > width) {
+            n = width;
+            while (n > 0 && text[n] != ' ') n--;
+            if (!n) n = width;
+        }
+        memcpy(line, text, n); line[n] = 0;
+        tui_put_str(sf,area,area.x+1,area.y+row++,line,LS_ATTR_DIM);
+        text += n;
+        while (*text == ' ') text++;
+    }
+    return row;
+}
+
 static void draw_data(tui_surface *sf, tui_rect area)
 {
     char line[96];
@@ -299,7 +326,13 @@ static void draw_data(tui_surface *sf, tui_rect area)
     const int64_t now=esp_timer_get_time();
     bool fresh=sample.source==source->field && sample.time_us>0 && now>=sample.time_us && now-sample.time_us<1000000;
     if(!fresh || !sample.radio_valid) {
-        ls_kv(sf,area,3,"SOURCE","No fresh data; receiver or adapter unavailable",LS_ATTR_DIM);
+        const char *provider = source->field == LS_FIELD_CC1101 ? "Run the CC1101 monitor in MIX-RF" :
+                               source->field == LS_FIELD_NRF24 ? "Run the nRF24 survey in MIX-RF" :
+                               source->field == LS_FIELD_NFC ? "Run the NFC adapter in MIX-RF" :
+                               "Start the radio link provider in MIX-RF";
+        tui_put_str(sf,area,area.x+1,area.y+3,"No fresh receiver data",LS_ATTR_DIM);
+        int row = draw_wrapped(sf,area,5,provider);
+        draw_wrapped(sf,area,row,"Then return here for passive readings");
         return;
     }
     ls_kv(sf,area,3,"SOURCE",ls_rsel_name(source->radio),LS_ATTR_DIM);
@@ -319,6 +352,10 @@ static void draw_data(tui_surface *sf, tui_rect area)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    snprintf(s_hint, sizeof(s_hint), "%s", s_data >= 0 ?
+             (data_sources[s_data].field == LS_FIELD_NONE ? "R radio  J next sat  K prev sat" : "R radio") :
+             ls_wf_source_get() == LS_WF_SRC_FM ? "R radio  E mode  T tune  N band  W sweep  O options" :
+             sdr_view() ? "R radio  E mode  N band  O options" : "R radio  N band  O options");
     if(s_data<0) ls_wf_source_pump();
 
     int want = ls_btn_raised_height(area, bar_count());
@@ -342,13 +379,16 @@ static void draw(tui_surface *sf, tui_rect area)
         return;
     }
     /* Keep HOLD reachable while the shared display is paused. */
-    if (why && !ls_wf_cfg()->paused) {
-        ls_wf_stats_t stats;
-        ls_wf_stats(&stats);
-        const char *progress = stats.ready ? ls_wf_source_progress() : NULL;
-        ls_panel_notice(sf, body, "WATERFALL", progress ? progress : why,
-                        progress ? "First row appears after this sweep"
-                                 : "tap RADIO above to pick one and start it");
+    ls_wf_idle_t status_kind = ls_wf_source_idle();
+    if ((why || status_kind == LS_WF_IDLE_BUSY || status_kind == LS_WF_IDLE_FAILED ||
+         status_kind == LS_WF_IDLE_STARTING) && !ls_wf_cfg()->paused) {
+        const char *progress = ls_wf_source_progress();
+        const char *status = ls_wf_source_idle_reason();
+        ls_panel_notice(sf, body, "WATERFALL", progress ? progress : status ? status : why,
+                        ls_wf_source_idle() == LS_WF_IDLE_NONE ? "Tap RADIO to pick a receiver" :
+                        ls_wf_source_idle() == LS_WF_IDLE_BUSY ? "Stop owner or change RADIO" :
+                        ls_wf_source_idle() == LS_WF_IDLE_FAILED ? "Choose another RADIO or retry" :
+                        "First row after acquisition");
         return;
     }
 
@@ -398,7 +438,11 @@ static bool key(ls_tk_t k, char ch)
 static bool touch(int col, int row)
 {
     int i = ls_btn_hit(col, row);
-    if (i >= 0 && i < button_count()) return key(LS_TK_CHAR, "rnetw"[i]);
+    if (i >= 0 && i < button_count()) {
+        if (s_data >= 0 && data_sources[s_data].field == LS_FIELD_NONE)
+            return key(LS_TK_CHAR, "rkj"[i]);
+        return key(LS_TK_CHAR, "rnetw"[i]);
+    }
     if (i >= 0 && i == button_count()) { ls_opt_open(falls_options()); return true; }
     return s_data<0 && ls_wf_touch(col, row);
 }
@@ -411,7 +455,7 @@ const ls_tui_screen_t ls_scr_falls = {
        is a surprise worth avoiding. It says so instead, and says which
        screen to open. */
     .name = "FALLS",
-    .hint = "R radio  E mode  T tune  N band  W sweep  O options",
+    .hint = s_hint,
     .enter = enter,
     .leave = leave,
     .draw = draw,

@@ -5,7 +5,7 @@
    only when it is later than the one running. Installing streams the image
    into the other app slot, hashes it on the way, and switches slots only
    when the hash is the manifest's and IDF accepts the image. The new build
-   must run for VALID_AFTER_S and have drawn MIN_FRAMES screens before it marks
+   must run for VALID_AFTER_S and have drawn 50 screens before it marks
    itself good; until both are true it keeps checking. A crash, a reset or a
    power cut sooner and the bootloader goes back to the build before it.
 
@@ -82,7 +82,6 @@ static const char *TAG = "ota";
 #define OLD_DEFAULT_URL "https://" LS_OTA_HOST_FALLBACK "/tdp4/stable.txt"
 #define BOARD_NAME    "T-Display-P4"
 #define VALID_AFTER_S 20
-#define MIN_FRAMES    50        /* screens drawn since boot before a trial build is kept */
 #define RECHECK_S     3         /* how often a trial that is not healthy yet looks again */
 #define DOWNLOAD_MAX_S 900      /* the whole image, 15 min */
 #define STALL_S       30        /* no bytes for this long ends the download */
@@ -98,7 +97,10 @@ enum { JOB_CHECK, JOB_INSTALL, JOB_FORCE, JOB_BG };
 static volatile ls_ota_stage_t s_state = LS_OTA_ST_IDLE;
 static volatile int     s_percent;
 static volatile uint32_t s_got;              /* bytes of the image so far */
-static int64_t          s_trial_end_us;    /* when this boot's trial ends, 0 when none */
+static int64_t          s_trial_end_us;    /* earliest health check for this boot */
+static volatile int     s_trial_state = LS_OTA_TRIAL_VALID;
+static unsigned         s_valid_attempts;
+static int64_t          s_trial_next_us;
 static volatile bool    s_busy;
 static volatile bool    s_restart_now;     /* a tap or ENTER: restart without waiting */
 static volatile int64_t s_restart_at_us;   /* when the wait ends, 0 once it has */
@@ -198,8 +200,8 @@ static bool wifi_ready(void)
     ls_wifi_sta_ip(ip, sizeof(ip));
     if (ls_wifi_sta_connected() && ip[0]) return true;
     s_state = LS_OTA_ST_WIFI;
-    if (!ls_wifi_sta_running()) {
-        const esp_err_t e = ls_wifi_sta_autojoin();
+    if (!ls_wifi_sta_running() || ls_wifi_sta_gave_up()) {
+        const esp_err_t e = ls_wifi_sta_ensure();
         if (e == ESP_ERR_NOT_FOUND) { fail("join WiFi first"); return false; }
         if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) { fail("WiFi would not start"); return false; }
     }
@@ -214,8 +216,8 @@ static bool wifi_ready(void)
 
 /* Opened and past the headers, following up to three redirects, every one
    of them to https. *status is -1 when the server could not be reached and
-   -2 for a redirect that leaves https; the handle is NULL for both. */
-static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t *length, int *status)
+   -2 for a redirect that leaves https, -3 for the total deadline; all return NULL. */
+static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status)
 {
     esp_http_client_config_t cfg = {
         .url = url,
@@ -228,9 +230,15 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { *status = bad; return NULL; }
     for (int hop = 0; hop < 4; hop++) {
+        if (deadline) {
+            const int wait = ls_ota_check_wait_ms(deadline, esp_timer_get_time());
+            if (!wait) { bad = -3; break; }
+            esp_http_client_set_timeout_ms(c, wait);
+        }
         if (esp_http_client_open(c, 0) != ESP_OK) break;
         *length = esp_http_client_fetch_headers(c);
         *status = esp_http_client_get_status_code(c);
+        if (deadline && !ls_ota_check_wait_ms(deadline, esp_timer_get_time())) { bad = -3; break; }
         if (*status < 300 || *status >= 400) return c;
         if (hop == 3 || esp_http_client_set_redirection(c) != ESP_OK) break;
         char next[sizeof(s_url)];
@@ -249,20 +257,20 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
    other when the first cannot be reached or does not answer 200. A redirect
    off https is final. When both fail the first's *status is reported with a
    NULL handle, so the caller can tell unreachable (< 0) from a plain 404. */
-static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t *length, int *status)
+static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status)
 {
-    esp_http_client_handle_t c = open_url(url, timeout_ms, length, status);
+    esp_http_client_handle_t c = open_url(url, timeout_ms, deadline, length, status);
     char alt[sizeof(s_url)];
-    if ((c && *status == 200) || *status == -2 || !ls_ota_other_host(url, alt, sizeof(alt))) return c;
+    if ((c && *status == 200) || *status == -2 || *status == -3 || !ls_ota_other_host(url, alt, sizeof(alt))) return c;
     const int first = *status;
     if (c) { esp_http_client_close(c); esp_http_client_cleanup(c); }
     ESP_LOGW(TAG, "%s failed (%d), trying %s", url, first, alt);
     int64_t len2 = 0;
     int st2 = 0;
-    esp_http_client_handle_t c2 = open_url(alt, timeout_ms, &len2, &st2);
+    esp_http_client_handle_t c2 = open_url(alt, timeout_ms, deadline, &len2, &st2);
     if (c2 && st2 == 200) { *length = len2; *status = st2; return c2; }
     if (c2) { esp_http_client_close(c2); esp_http_client_cleanup(c2); }
-    *status = first;
+    *status = st2 == -3 ? st2 : first;
     return NULL;
 }
 
@@ -344,20 +352,33 @@ static bool do_check(void)
 
     int64_t length = 0;
     int status = 0;
-    esp_http_client_handle_t c = open_url_fallback(s_url, 20000, &length, &status);
-    if (!c) {
-        if (status == 404 || status == 410) return nothing_published();
+    const int64_t deadline = esp_timer_get_time() + (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
+    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status);
+    const int response = ls_ota_manifest_status(status);
+    if (!c || response != 1) {
+        if (c) shut(c);
+        if (response == 0) return nothing_published();
         char w[32];
         snprintf(w, sizeof(w), "update server answered %d", status);
-        fail(status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server" : w);
+        fail(status == -3 ? "manifest timed out: retry" : status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server" : w);
         return false;
     }
     char *text = malloc(LS_OTA_MAX_TEXT + 1);
     if (!text) { shut(c); fail("no memory"); return false; }
     size_t n = 0;
     int r = 0;
-    while (n < LS_OTA_MAX_TEXT && (r = esp_http_client_read(c, text + n, LS_OTA_MAX_TEXT - n)) > 0)
+    bool timed_out = false;
+    while (n < LS_OTA_MAX_TEXT) {
+        const int wait = ls_ota_check_wait_ms(deadline, esp_timer_get_time());
+        if (!wait) { timed_out = true; break; }
+        esp_http_client_set_timeout_ms(c, wait);
+        /* IDF fills the requested count before returning. One byte keeps a
+           trickling peer from hiding inside a single read past the deadline. */
+        r = esp_http_client_read(c, text + n, 1);
+        if (!ls_ota_check_wait_ms(deadline, esp_timer_get_time())) { timed_out = true; break; }
+        if (r <= 0) break;
         n += (size_t)r;
+    }
     /* The image's relative URL is beside the manifest as it was finally
        served, which a redirect may have moved. */
     char base[sizeof(s_url)];
@@ -368,7 +389,8 @@ static bool do_check(void)
     ls_ota_manifest_t m;
     ls_ota_err_t e = LS_OTA_ERR_MAGIC;
     bool ok = false, none = false;
-    if (r < 0)                                   fail("can't reach the update server");
+    if (timed_out)                              fail("manifest timed out: retry");
+    else if (r < 0)                              fail("can't reach the update server");
     else if ((e = ls_ota_parse(text, n, base, &m)) != LS_OTA_OK) {
         /* The site's own page where a manifest should be is no manifest. */
         char w[48];
@@ -458,7 +480,7 @@ static void do_install(bool force)
 
     int64_t length = 0;
     int status = 0;
-    esp_http_client_handle_t c = open_url_fallback(s_man.url, 8000, &length, &status);
+    esp_http_client_handle_t c = open_url_fallback(s_man.url, 8000, 0, &length, &status);
     if (!c) {
         fail(status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server"
                                                                   : "image not on the server");
@@ -580,6 +602,7 @@ typedef enum { JOB_STARTED, JOB_BUSY, JOB_NO_MEMORY } start_t;
    ls_nvs_run. */
 static start_t start_job(int job)
 {
+    if (__atomic_load_n(&s_trial_state, __ATOMIC_ACQUIRE) != LS_OTA_TRIAL_VALID) return JOB_BUSY;
     if (__atomic_exchange_n(&s_busy, true, __ATOMIC_ACQ_REL)) return JOB_BUSY;
     if (xTaskCreatePinnedToCoreWithCaps(ota_worker, "ota", TASK_STACK, (void *)(intptr_t)job, 3, NULL,
                                         tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
@@ -613,9 +636,12 @@ static bool rf_busy(void)
    it only ever starts the ordinary check job. */
 #define BG_TICK_S 15
 
+static void valid_timer(void *arg);
+
 static void bg_tick(void *arg)
 {
     (void)arg;
+    valid_timer(NULL);
     s_sched.enabled = settings_get_update_check();
     if (!s_sched.enabled) return;                       /* off: nothing at all */
     const int64_t now_s = esp_timer_get_time() / 1000000;
@@ -664,7 +690,7 @@ static esp_err_t mark_valid(void *ctx)
 
 /* A build on its first boot after an update proves itself by running: it is
    marked good only when VALID_AFTER_S has passed and the screen has drawn
-   MIN_FRAMES since boot. A build that is up but not drawing is looked at
+   50 frames since boot. A build that is up but not drawing is looked at
    again every RECHECK_S, never kept on time alone. ls_nvs_call's worker has
    its own DRAM stack, so keeping it needs no stack of its own. */
 static esp_timer_handle_t s_valid_timer;
@@ -672,18 +698,22 @@ static esp_timer_handle_t s_valid_timer;
 static void valid_timer(void *arg)
 {
     (void)arg;
-    if (ls_tui_present_count() < MIN_FRAMES) {
-        ESP_LOGW(TAG, "%s has drawn %u frames: still on trial", running_build(),
-                 (unsigned)ls_tui_present_count());
-        /* If the timer cannot be re-armed the build stays on trial, and the
-           next reset rolls it back. */
-        esp_timer_start_once(s_valid_timer, (uint64_t)RECHECK_S * 1000000u);
-        return;
+    if (__atomic_load_n(&s_trial_state, __ATOMIC_ACQUIRE) == LS_OTA_TRIAL_VALID
+        || s_valid_attempts >= LS_OTA_VALID_TRIES || esp_timer_get_time() < s_trial_next_us) return;
+    if (ls_ota_trial_ready(s_trial_end_us, esp_timer_get_time(), ls_tui_present_count(), s_valid_attempts)) {
+        s_valid_attempts++;
+        const esp_err_t e = ls_nvs_call(mark_valid, NULL, 3072);
+        __atomic_store_n(&s_trial_state, e == ESP_OK ? LS_OTA_TRIAL_VALID : LS_OTA_TRIAL_FAILED, __ATOMIC_RELEASE);
+        if (e == ESP_OK) {
+            ESP_LOGI(TAG, "%s: kept", running_build());
+            return;
+        }
+        ESP_LOGW(TAG, "validation failed (%s), attempt %u", esp_err_to_name(e), s_valid_attempts);
     }
-    s_trial_end_us = 0;
-    if (ls_nvs_call(mark_valid, NULL, 3072) == ESP_OK)
-        ESP_LOGI(TAG, "%s ran %d s, drew %u frames: kept", running_build(), VALID_AFTER_S,
-                 (unsigned)ls_tui_present_count());
+    s_trial_next_us = esp_timer_get_time() + (int64_t)RECHECK_S * 1000000;
+    /* The background poll also retries if this timer cannot be armed. */
+    if (s_valid_timer && s_valid_attempts < LS_OTA_VALID_TRIES)
+        esp_timer_start_once(s_valid_timer, (uint64_t)RECHECK_S * 1000000u);
 }
 
 static esp_err_t boot_state(void *ctx)
@@ -752,9 +782,9 @@ static bool v_failed(ls_val_t *o)  { o->kind = LS_VAL_TEXT; o->s = s_failed; ret
 static bool v_restart(ls_val_t *o) { o->kind = LS_VAL_INT; o->i = restart_left(); return true; }
 static bool v_trial(ls_val_t *o)
 {
-    const int64_t left = s_trial_end_us - esp_timer_get_time();
     o->kind = LS_VAL_INT;
-    o->i = s_trial_end_us && left > 0 ? (long)((left + 999999) / 1000000) : 0;
+    o->i = ls_ota_trial_left(__atomic_load_n(&s_trial_state, __ATOMIC_ACQUIRE),
+                             s_trial_end_us, esp_timer_get_time());
     return true;
 }
 
@@ -806,13 +836,13 @@ void ls_ota_publish(void)
     if (!trial) return;
     s_state = LS_OTA_ST_UPDATED;
     s_trial_end_us = esp_timer_get_time() + (int64_t)VALID_AFTER_S * 1000000;
+    s_trial_next_us = s_trial_end_us;
+    __atomic_store_n(&s_trial_state, LS_OTA_TRIAL_PENDING, __ATOMIC_RELEASE);
     const esp_timer_create_args_t args = { .callback = valid_timer, .name = "ota_valid" };
     if (esp_timer_create(&args, &s_valid_timer) != ESP_OK
         || esp_timer_start_once(s_valid_timer, (uint64_t)VALID_AFTER_S * 1000000u) != ESP_OK) {
-        s_trial_end_us = 0;
-        /* Without the timer the trial could never end, and the next restart
-           would throw away a build that got this far: keep it now. */
-        ls_nvs_run(mark_valid, NULL, 3072);
+        /* Keep rollback protection; the existing background timer polls health. */
+        ESP_LOGW(TAG, "trial timer unavailable: still on trial");
     }
 }
 
@@ -914,6 +944,7 @@ static int ota_cmd(int argc, char **argv)
     }
     if (!strcmp(sub, "valid")) {
         const esp_err_t e = ls_nvs_run(mark_valid, NULL, 3072);
+        if (e == ESP_OK) __atomic_store_n(&s_trial_state, LS_OTA_TRIAL_VALID, __ATOMIC_RELEASE);
         printf("ota: mark valid: %s\n", esp_err_to_name(e));
         return e != ESP_OK;
     }

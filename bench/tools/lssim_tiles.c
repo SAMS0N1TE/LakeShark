@@ -42,6 +42,7 @@ bool ls_tiles_snapshot(ls_tiles_catalog *out) { *out=catalog; return true; }
 bool ls_tiles_action(int action,const ls_tile_region *r) {
     (void)r;
     if(action==0 || action==1 || action==4) { transfer.state=1; transfer.total=action==1?0:18000000; transfer.bytes=0; transfer.start_us=esp_timer_get_time(); transfer.verifying=action==4; }
+    if(action==2) { catalog.open_state=2;catalog.last_error=0;strcpy(catalog.message,"Map opened"); }
     if(action==3) catalog.region[0].status=0;
     return true;
 }

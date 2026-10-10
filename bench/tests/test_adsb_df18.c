@@ -51,7 +51,8 @@ plane_category_t plane_classify(uint32_t icao, const char *callsign)
 }
 
 void perf_count_msg_good(void) { }
-void perf_count_msg_bad(void) { }
+static int s_bad;
+void perf_count_msg_bad(void) { s_bad++; }
 void perf_count_burst(void) { }
 void perf_mark_good_msg(int64_t now_us) { (void)now_us; }
 void perf_mark_position(int64_t now_us) { (void)now_us; }
@@ -432,4 +433,176 @@ LS_CASE(mode_s_decode_does_not_depend_on_what_the_struct_held)
     LS_EQ_INT(0, mm.flight[0]);
     LS_EQ_INT(0, mm.velocity);
     LS_EQ_INT(0, mm.heading_is_valid);
+}
+
+LS_CASE(published_ground_velocity_has_physical_units_and_valid_track)
+{
+    uint8_t m[14];
+    from_hex(m, "8D485020994409940838175B284F");
+    adsb_decode_init();
+    ls_shim_time_set(1000000);
+    struct mode_s_msg mm;
+    mode_s_decode(&s_ms, &mm, m);
+    LS_CHECK(mm.crcok);
+    LS_EQ_INT(8, mm.ew_velocity);
+    LS_EQ_INT(159, mm.ns_velocity);
+    LS_EQ_INT(832, mm.vert_rate);
+    LS_CHECK(mm.heading_is_valid && mm.heading_is_track);
+    adsb_decode_on_message(&mm);
+    const adsb_aircraft_t *a = tracked(0x485020);
+    LS_CHECK(a && a->heading_valid);
+    LS_EQ_INT(182, a->heading);
+    LS_EQ_INT(-832, a->vert_rate);
+    LS_EQ_INT(159, a->velocity);
+    m[4] = (19 << 3) | 2;
+    seal(m, 112);
+    mode_s_decode(&s_ms, &mm, m);
+    LS_EQ_INT(32, mm.ew_velocity);
+    LS_EQ_INT(636, mm.ns_velocity);
+    LS_EQ_INT(832, mm.vert_rate);
+}
+
+LS_CASE(velocity_zero_and_unavailable_are_distinct)
+{
+    uint8_t m[14] = {0x8D, 0x48, 0x50, 0x20, 0x99, 0, 1, 0, 0x20, 4};
+    adsb_decode_init();
+    ls_shim_time_set(1000000);
+    seal(m, 112);
+    adsb_on_frame(m, 14, ADSB_RSSI_NONE);
+    const adsb_aircraft_t *a = tracked(0x485020);
+    LS_CHECK(a && a->velocity_valid && a->vert_rate_valid);
+    LS_EQ_INT(0, a->velocity);
+    LS_EQ_INT(0, a->vert_rate);
+    LS_CHECK(!a->heading_valid);
+    m[6] = m[8] = m[9] = 0;
+    seal(m, 112);
+    struct mode_s_msg mm;
+    mode_s_decode(&s_ms, &mm, m);
+    LS_CHECK(!mm.velocity_is_valid && !mm.vert_rate_is_valid);
+    ls_shim_time_advance(20000000);
+    adsb_decode_on_message(&mm);
+    LS_EQ_INT(1000000, a->velocity_ts_us);
+    LS_CHECK(a->last_seen_us > a->velocity_ts_us + ADSB_FIELD_STALE_US);
+}
+
+LS_CASE(airspeed_heading_and_vertical_rate_decode_for_both_subtypes)
+{
+    uint8_t m[14];
+    from_hex(m, "8DA05F219B06B6AF189400CBC33F");
+    struct mode_s_msg mm;
+    mode_s_init(&s_ms);
+    mode_s_decode(&s_ms, &mm, m);
+    LS_CHECK(mm.crcok);
+    LS_CHECK(mm.heading_is_valid && !mm.heading_is_track);
+    LS_EQ_INT(243, mm.heading);
+    LS_EQ_INT(375, mm.airspeed);
+    LS_EQ_INT(1, mm.airspeed_type);
+    LS_EQ_INT(2304, mm.vert_rate);
+    LS_CHECK(mm.vert_rate_sign);
+    m[4] = (19 << 3) | 4;
+    seal(m, 112);
+    mode_s_decode(&s_ms, &mm, m);
+    LS_EQ_INT(1500, mm.airspeed);
+    m[7] = 0; m[8] &= 31;
+    seal(m, 112);
+    mode_s_decode(&s_ms, &mm, m);
+    LS_CHECK(!mm.airspeed_is_valid);
+}
+
+LS_CASE(zero_altitude_and_level_flight_update_without_refreshing_position)
+{
+    adsb_decode_init();
+    ls_shim_time_set(1000000);
+    struct mode_s_msg mm = {0};
+    mm.crcok = 1; mm.aa1 = 0xAA;
+    mm.altitude_is_valid = mm.vert_rate_is_valid = 1;
+    mm.altitude = 100; mm.vert_rate = 128;
+    adsb_decode_on_message(&mm);
+    const adsb_aircraft_t *a = tracked(0xAA0000);
+    mm.altitude = mm.vert_rate = 0;
+    ls_shim_time_advance(1000000);
+    adsb_decode_on_message(&mm);
+    LS_EQ_INT(0, a->altitude);
+    LS_EQ_INT(0, a->vert_rate);
+    LS_EQ_INT(2000000, a->altitude_ts_us);
+    adsb_aircraft_t *w = adsb_state_find_or_create(0xAA0000);
+    w->pos_valid = true; w->pos_ts_us = 2000000;
+    mm.altitude_is_valid = mm.vert_rate_is_valid = 0;
+    mm.me_ok = 1; mm.metype = 4;
+    strcpy(mm.flight, "TEST123");
+    ls_shim_time_advance(20000000);
+    adsb_decode_on_message(&mm);
+    LS_EQ_INT(2000000, a->pos_ts_us);
+    LS_EQ_INT(2000000, a->vert_rate_ts_us);
+    LS_EQ_INT(22000000, a->last_seen_us);
+}
+
+LS_CASE(corrupt_addresses_only_increment_receiver_quality)
+{
+    adsb_decode_init();
+    struct mode_s_msg mm = {0};
+    mm.aa1 = 0xFF;
+    int before = s_bad;
+    adsb_decode_on_message(&mm);
+    LS_EQ_INT(before + 1, s_bad);
+    LS_EQ_INT(0, adsb_state_active_count());
+}
+
+LS_CASE(stream_retains_every_frame_split_and_decodes_adjacent_frames_once)
+{
+    uint8_t m[14];
+    from_hex(m, ID_17);
+    build_iq(m, 112);
+    /* Two immediately adjacent frames. */
+    memcpy(s_iq + 2 * (LEAD + 240), s_iq + 2 * LEAD, 480);
+    for (int split = 1; split < IQ_SAMPLES; split++) {
+        adsb_decode_init();
+        adsb_on_sample(s_iq, split * 2);
+        adsb_on_sample(s_iq + split * 2, (IQ_SAMPLES - split) * 2);
+        const adsb_aircraft_t *a = tracked(0x4840D6);
+        LS_CHECK_MSG(a && a->msg_count == 2, "split %d count %d",
+                     split, a ? a->msg_count : 0);
+    }
+}
+
+LS_CASE(stream_reset_discards_old_partial_frame)
+{
+    uint8_t m[14];
+    from_hex(m, ID_17);
+    build_iq(m, 112);
+    adsb_decode_init();
+    adsb_on_sample(s_iq, (LEAD + 120) * 2);
+    adsb_decode_reset_stream();
+    adsb_on_sample(s_iq + (LEAD + 120) * 2,
+                   (IQ_SAMPLES - LEAD - 120) * 2);
+    LS_EQ_INT(0, adsb_state_active_count());
+}
+
+LS_CASE(rejected_frame_counts_receiver_crc_without_creating_aircraft)
+{
+    uint8_t m[14];
+    from_hex(m, ID_17);
+    adsb_decode_init();
+    m[1] ^= 0x55; m[2] ^= 0xAA; m[3] ^= 0x33;
+    int before = s_bad;
+    LS_EQ_INT(ADSB_FRAME_BAD_CRC, adsb_on_frame(m, 14, ADSB_RSSI_NONE));
+    LS_EQ_INT(before + 1, s_bad);
+    LS_EQ_INT(0, adsb_state_active_count());
+}
+
+LS_CASE(production_iq_boundary_preserves_a_long_frame)
+{
+    static uint8_t iq[16384];
+    uint8_t m[14];
+    from_hex(m, ID_17);
+    build_iq(m, 112);
+    memset(iq, 127, sizeof(iq));
+    memcpy(iq + 3980 * 2, s_iq + LEAD * 2, 480);
+    adsb_decode_init();
+    adsb_on_sample(iq, 8192);
+    LS_EQ_INT(0, adsb_state_active_count());
+    adsb_on_sample(iq + 8192, 8192);
+    const adsb_aircraft_t *a = tracked(0x4840D6);
+    LS_CHECK(a);
+    LS_EQ_INT(1, a->msg_count);
 }

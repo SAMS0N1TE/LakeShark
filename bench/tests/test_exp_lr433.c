@@ -8,6 +8,7 @@
 #include "ls_test.h"
 
 #include "experiments/lr433_dec.h"
+#include "experiments/lr433_history.h"
 #include "ls_experiments.h"
 #include "ls_lora.h"
 #include "esp_timer.h"
@@ -289,6 +290,7 @@ static const ls_experiment_t *lr433(void)
 /* Empty the table and counters; units back to PSI / F. */
 static void clean(const ls_experiment_t *e)
 {
+    lr433_history_start();
     for (int i = 0; i < e->n_opts; i++) {
         if (!strcmp(e->opts[i].label, "CLEAR")) e->opts[i].act(&e->opts[i]);
         if (!strcmp(e->opts[i].label, "UNITS")) e->opts[i].set(&e->opts[i], 0);
@@ -344,7 +346,7 @@ LS_CASE(lr433_is_built_in_as_a_trying_experiment_with_its_options)
     LS_EQ_STR(e->name, "LR433");
     LS_EQ_INT(e->maturity, LS_EXP_TRYING);
     LS_CHECK(e->configure != NULL);
-    LS_EQ_INT(e->n_opts, 5);
+    LS_EQ_INT(e->n_opts, 6);
     LS_CHECK(strlen(e->sub) <= 41);           /* what the list shows of it */
 }
 
@@ -568,4 +570,16 @@ LS_CASE(a_session_the_chip_refuses_is_skipped_and_marked_in_the_plan)
     dump(l, n);
     LS_CHECK(has_line(l, n, "PLAN [315o] 315f 315p!", NULL));
     LS_EQ_INT(run_console("exp lr433 stop"), 0);
+}
+
+LS_CASE(main_and_history_share_units_and_options)
+{
+    const ls_experiment_t *e = lr433(); clean(e);
+    const ls_opt_t *units = &e->opts[2];
+    const ls_opt_ctx_t *history = e->opts[4].sub;
+    LS_CHECK(history == lr433_history_options(-1));
+    units->set(units,1); LS_CHECK(!lr433_history_fahrenheit());
+    LS_EQ_INT(history->opt[2].get(&history->opt[2]),0);
+    history->opt[2].set(&history->opt[2],1);
+    LS_EQ_INT(units->get(units),0); LS_CHECK(lr433_history_fahrenheit());
 }

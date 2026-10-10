@@ -39,6 +39,8 @@ static ls_iq_control_t s_radio_control;
 /* Which receiver is feeding the decoder right now. Written by the rx task,
    read by whatever reports radio status. */
 static volatile adsb_source_t s_source = ADSB_SRC_NONE;
+static const char *volatile s_status = "stopped";
+const char *adsb_receiver_status(void) { return s_status; }
 
 adsb_source_t adsb_active_source(void) { return s_source; }
 const char *adsb_active_source_name(void) { return adsb_source_name(s_source); }
@@ -151,7 +153,11 @@ static bool adsb_radio_open(void)
     requirements.preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_ADSB);
     ls_radio_err_t error = ls_radio_acquire("adsb", &requirements,
                                             &s_session);
-    if (error != LS_RADIO_OK) return false;
+    if (error != LS_RADIO_OK) {
+        s_status = error == LS_RADIO_ERR_BUSY ? "radio busy: retrying" :
+                   adsb_iq_present() ? "open failed: retrying" : "no receiver: attach radio";
+        return false;
+    }
 
     const ls_radio_iq_config_t requested = {
         .center_hz = s_cfg_freq,
@@ -165,6 +171,7 @@ static bool adsb_radio_open(void)
     error = ls_radio_iq_configure(s_session, &requested, &actual);
     if (error == LS_RADIO_OK) error = ls_radio_iq_start(s_session);
     if (error != LS_RADIO_OK) {
+        s_status = "start failed: retrying";
         ESP_LOGE(TAG, "radio open failed: %s", ls_radio_err_name(error));
         ls_radio_release(s_session);
         s_session = NULL;
@@ -197,10 +204,12 @@ static bool adsb_lora_hold(void)
 static void adsb_lora_run(void)
 {
     if (ls_mesh_radio_wanted()) {
+        s_status = "radio busy: retrying";
         vTaskDelay(pdMS_TO_TICKS(200));
         return;
     }
     if (!adsb_lora_hold()) {
+        s_status = "radio busy: retrying";
         if (!ls_mesh_radio_wanted()) ESP_LOGW(TAG, "mesh would not release the LoRa radio");
         vTaskDelay(pdMS_TO_TICKS(500));
         return;
@@ -209,12 +218,15 @@ static void adsb_lora_run(void)
     int step = adsb_lr_gain_step(adsb_requested_gain());
     const esp_err_t error = LORA_OPS.begin(s_cfg_freq, step);
     if (error != ESP_OK) {
+        s_status = "chip failed: retrying";
         ESP_LOGE(TAG, "Mode S session on the LoRa chip failed: %s", esp_err_to_name(error));
         ls_mesh_radio_hold_bg(false);
         vTaskDelay(pdMS_TO_TICKS(1000));
         return;
     }
+    adsb_decode_reset_stream();
     s_source = ADSB_SRC_LORA;
+    s_status = "receiving: lr-chip";
     adsb_chip_diag_mark_start();     /* the rates in `adsb chips` run from here */
     ESP_LOGI(TAG, "source: %s, %.3f MHz gain step %d", adsb_source_name(ADSB_SRC_LORA),
              s_cfg_freq / 1e6, step);
@@ -243,6 +255,7 @@ static void adsb_lora_run(void)
         const int n = adsb_modes_pump(&LORA_OPS, &stats, 9);
         if (n < 0) {
             if (++failed_in_a_row >= 20) {
+                s_status = "chip stalled: retrying";
                 ESP_LOGE(TAG, "LoRa chip stopped answering, restarting the session");
                 break;
             }
@@ -280,6 +293,7 @@ static void adsb_rx_task(void *arg)
                                        MALLOC_CAP_SPIRAM);
     if (!buffer) buffer = malloc(ADSB_IQ_READ_BYTES);
     if (!buffer) {
+        s_status = "out of memory: re-enter";
         ESP_LOGE(TAG, "OOM IQ buffer");
         s_rx_running = false;
         return;
@@ -288,7 +302,8 @@ static void adsb_rx_task(void *arg)
     uint64_t loops = 0, fulls = 0, shorts = 0, errors = 0;
     int64_t last_report_us = esp_timer_get_time();
     int64_t last_yield = last_report_us;
-    int64_t next_choice_check = last_report_us + 500000;
+    int64_t last_data_us = last_report_us;
+    size_t got = 0;
     s_rx_running = true;
 
     while (s_rx_should_run) {
@@ -305,7 +320,11 @@ static void adsb_rx_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
+            adsb_decode_reset_stream();
+            got = 0;
+            last_data_us = esp_timer_get_time();
             s_source = ADSB_SRC_IQ;
+            s_status = "waiting for IQ data";
         }
 
         ls_iq_control_request_t control;
@@ -323,34 +342,29 @@ static void adsb_rx_task(void *arg)
         }
 
         loops++;
-        size_t got = 0;
-        bool full = true;
-        while (got < ADSB_IQ_READ_BYTES && s_rx_should_run) {
-            size_t part = 0;
-            ls_radio_err_t error = ls_radio_iq_read(
-                s_session, buffer + got, ADSB_IQ_READ_BYTES - got,
-                ADSB_READ_TIMEOUT_MS, &part);
-            if (error == LS_RADIO_OK) {
-                got += part;
-                continue;
-            }
-            if (error == LS_RADIO_ERR_TIMEOUT) continue;
-            full = false;
+        size_t part = 0;
+        ls_radio_err_t error = ls_radio_iq_read(
+            s_session, buffer + got, ADSB_IQ_READ_BYTES - got,
+            ADSB_READ_TIMEOUT_MS, &part);
+        if (error == LS_RADIO_OK && part) {
+            s_status = "receiving: iq";
+            got += part;
+            last_data_us = esp_timer_get_time();
+        } else if (error != LS_RADIO_OK && error != LS_RADIO_ERR_TIMEOUT) {
             ++errors;
-            if (error == LS_RADIO_ERR_DISCONNECTED) {
-                ls_radio_release(s_session);
-                s_session = NULL;
-                s_source = ADSB_SRC_NONE;
-            }
-            break;
+            s_status = "read failed: retrying";
+            (void)ls_radio_iq_stop(s_session);
+            ls_radio_release(s_session);
+            s_session = NULL;
+            s_source = ADSB_SRC_NONE;
+            adsb_decode_reset_stream();
+            got = 0;
         }
-
-        if (full && got == ADSB_IQ_READ_BYTES) {
+        if (got == ADSB_IQ_READ_BYTES) {
             ++fulls;
-            perf_count_bytes(ADSB_IQ_READ_BYTES);
-            adsb_on_sample(buffer, ADSB_IQ_READ_BYTES);
-        } else if (got > 0) {
-            ++shorts;
+            perf_count_bytes(got);
+            adsb_on_sample(buffer, got);
+            got = 0;
         }
 
         int64_t now = esp_timer_get_time();
@@ -361,10 +375,13 @@ static void adsb_rx_task(void *arg)
         }
         /* The LoRa chip chosen while the IQ receiver runs: give the dongle
            back and let the top of the loop start the chip's session. */
-        if (s_session && now >= next_choice_check) {
-            next_choice_check = now + 500000;
-            if (adsb_choose() == ADSB_SRC_LORA) {
-                ESP_LOGI(TAG, "LoRa chip chosen, leaving the IQ receiver");
+        if (s_session) {
+            if (adsb_iq_reopen(adsb_choose(), now, last_data_us)) {
+                s_status = adsb_choose() == ADSB_SRC_LORA ? "switching receiver" :
+                           "IQ stalled: retrying";
+                adsb_decode_reset_stream();
+                got = 0;
+                ESP_LOGI(TAG, "IQ receiver released: %s", s_status);
                 (void)ls_radio_iq_stop(s_session);
                 ls_radio_release(s_session);
                 s_session = NULL;
@@ -382,6 +399,8 @@ static void adsb_rx_task(void *arg)
         (void)ls_radio_iq_stop(s_session);
     }
     s_source = ADSB_SRC_NONE;
+    s_status = "stopped";
+    adsb_decode_reset_stream();
     heap_caps_free(buffer);
     s_rx_running = false;
 }
@@ -396,7 +415,7 @@ static void adsb_cache_settings(const app_t *a)
         freq = 1090000000UL;
         settings_set_freq(a, freq);
     }
-    if (gain <= 0) {
+    if (gain < 0 || gain > 1130) {
         gain = 496;
         settings_set_gain(a, gain);
     }
@@ -434,6 +453,7 @@ static void adsb_on_enter(void)
     if (!ls_radio_decode_worker_start(adsb_rx_task, "adsb_rx", 5, 1)) {
         s_rx_should_run = false;
         s_rx_running = false;
+        s_status = "decoder busy: re-enter";
         ESP_LOGE(TAG, "shared radio decoder is unavailable");
         return;
     }

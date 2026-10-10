@@ -710,3 +710,15 @@ LS_CASE(marking_the_session_start_restarts_the_clock_and_keeps_the_counts)
     LS_NEAR(d.trigger_per_s, 4.0 / 3.0, 0.001);
     LS_EQ_UINT(4, d.elapsed_s);
 }
+
+LS_CASE(iq_timeouts_allow_choice_changes_and_reopen_after_deadline)
+{
+    int64_t last = 1000000;
+    for (int i = 1; i < 100; i++)
+        LS_CHECK(!adsb_iq_reopen(ADSB_SRC_IQ, last + i * 20000, last));
+    LS_CHECK(adsb_iq_reopen(ADSB_SRC_LORA, last + 20000, last));
+    LS_CHECK(adsb_iq_reopen(ADSB_SRC_NONE, last + 20000, last));
+    LS_CHECK(adsb_iq_reopen(ADSB_SRC_IQ, last + 2000000, last));
+    last += 2000000;
+    LS_CHECK(!adsb_iq_reopen(ADSB_SRC_IQ, last + 20000, last));
+}

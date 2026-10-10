@@ -35,6 +35,8 @@ int ls_wifi_saved_candidate(const ls_wifi_saved_t *saved, int count,
 /* SSID must be 1..32 bytes, no NUL in the middle. Non-printable bytes are
    allowed by 802.11 but we reject control characters below 0x20 so a stray
    line ending from the console cannot make a saved SSID unrecognisable. */
+bool ls_wifi_sta_needs_join(bool running, bool connected, bool gave_up);
+
 bool ls_wifi_ssid_valid(const char *ssid);
 
 /* Passphrase must be either empty (open network) or 8..63 chars. */

@@ -97,6 +97,12 @@ static bool residuals(const ls_compass_learn_t *l, const float f[3], const float
     return true;
 }
 
+static float correction_var(const ls_compass_learn_t *l, int i, float a)
+{
+    return fmaxf(0, l->P[D0 + i][D0 + i] + a * a * l->P[K0 + i][K0 + i]
+                    + a * (l->P[D0 + i][K0 + i] + l->P[K0 + i][D0 + i]));
+}
+
 ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], const float up[3],
                                      float gyro_dps, float amps, float dt)
 {
@@ -163,7 +169,7 @@ ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], co
     const float az = atan2f(f[1], f[0]);
     l->sectors |= (uint8_t)(1u << (((int)floorf((az + 3.14159265f) / 0.78539816f)) & 7));
     for (int i = 0; i < 3; i++) {
-        const float var = l->P[D0 + i][D0 + i];
+        const float var = correction_var(l, i, a);
         if (var > LS_CL_DROP_UT * LS_CL_DROP_UT) l->applied &= (uint8_t)~(1u << i);
         else if (var <= LS_CL_APPLY_UT * LS_CL_APPLY_UT && l->used >= MIN_USED && bits8(l->sectors) >= LS_CL_SECTORS)
             l->applied |= (uint8_t)(1u << i);
@@ -185,7 +191,7 @@ bool ls_compass_learn_correction(const ls_compass_learn_t *l, float amps, float 
     const float a = isfinite(amps) ? amps : 0.0f;
     float c[3], n2 = 0;
     for (int i = 0; i < 3; i++) {
-        c[i] = l->applied & (1u << i) ? l->x[D0 + i] + l->x[K0 + i] * a : 0.0f;
+        c[i] = (l->applied & (1u << i)) && correction_var(l, i, a) <= LS_CL_DROP_UT * LS_CL_DROP_UT ? l->x[D0 + i] + l->x[K0 + i] * a : 0.0f;
         if (!isfinite(c[i])) return false;
         n2 += c[i] * c[i];
     }
@@ -204,7 +210,7 @@ float ls_compass_learn_accuracy(const ls_compass_learn_t *l, float amps)
     /* Two of the offset's three axes lie across the horizontal field on
        average; the current term's doubt scales with the current. */
     float var = 0;
-    for (int i = 0; i < 3; i++) var += l->P[D0 + i][D0 + i] + a * a * l->P[K0 + i][K0 + i];
+    for (int i = 0; i < 3; i++) var += correction_var(l, i, a);
     var = var * (2.0f / 3.0f) + l->res2;
     return atanf(sqrtf(var / h2)) * 57.29578f;
 }
