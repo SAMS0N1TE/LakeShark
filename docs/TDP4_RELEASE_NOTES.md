@@ -12,7 +12,7 @@
 - CALLS: a media table with an embedded player and waterfall, keeps 30 days by default and pauses recording when the card runs low.
 - Volume and mute respond instantly again, and mute is remembered after a restart.
 - Faster screens: HOME, P25 and MUSIC switch quicker and idle work in the background is lighter.
-- Steadier: fixes a rare freeze during flash writes, and the LR2021 runs on ESP-IDF 5.5.4.
+- Steadier: built on ESP-IDF 5.5.4 for both the SX1262 and LR2021 boards, and fixes a rare freeze during flash writes.
 - Flipper app 2.10 shows WiFi, SWEEP and DRONES pages.
 
 ## 2.9.1
