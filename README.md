@@ -70,7 +70,7 @@ The primary development target: 4.1-inch 568 x 1232 AMOLED, 16 MB flash, onboard
 <img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/motion/falls-p25.gif" width="32%" alt="FALLS on P25" />
+<img src="docs/screenshots/tdp4/motion/sweep.gif" width="32%" alt="SWEEP finding nearby trackers" />
 <img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-flipper.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
@@ -178,7 +178,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.10.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.0).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Updates over WiFi from the UPDATE app; coming from 2.8 or earlier, install once with the web flasher or USB. Experimental radio features remain marked.
+**Current P4 release: [2.10.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.0).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 
