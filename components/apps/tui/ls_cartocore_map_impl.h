@@ -27,7 +27,19 @@ static void map_collect_labels(render_state *state) {
         if(!n || n>=128 || map_label_count>=LS_CARTO_LABEL_MAX) continue;
         ls_carto_label *l=&map_labels[map_label_count++];
         l->x=start;l->y=y;l->attr=carto_attr(*c);
-        for(int k=0;k<n;k++) { uint32_t cp=cells[y*cols+start+k].codepoint;l->text[k]=cp<127?(char)cp:'?'; }
+        /* Shown folded to ASCII (the fonts have nothing else); matched against
+         * the engine's names in the UTF-8 they are stored in, so a name with
+         * Polish letters still finds its class. */
+        static EXT_RAM_BSS_ATTR char utf8[128*4];
+        size_t u=0;
+        for(int k=0;k<n;k++) {
+            uint32_t cp=cells[y*cols+start+k].codepoint;
+            l->text[k]=cp!=127?tui_fold_codepoint(cp):'?';
+            if(cp<0x80) utf8[u++]=(char)cp;
+            else if(cp<0x800) { utf8[u++]=(char)(0xC0|cp>>6);utf8[u++]=(char)(0x80|(cp&63)); }
+            else if(cp<0x10000) { utf8[u++]=(char)(0xE0|cp>>12);utf8[u++]=(char)(0x80|((cp>>6)&63));utf8[u++]=(char)(0x80|(cp&63)); }
+            else { utf8[u++]=(char)(0xF0|cp>>18);utf8[u++]=(char)(0x80|((cp>>12)&63));utf8[u++]=(char)(0x80|((cp>>6)&63));utf8[u++]=(char)(0x80|(cp&63)); }
+        }
         l->text[n]=0;
         unsigned index=cc_index16(c->fg);
         l->label_class=index==14?3:index==11?4:2;
@@ -36,11 +48,11 @@ static void map_collect_labels(render_state *state) {
         const cc_planes *p=&state->renderer.planes;
         for(unsigned rank=1;rank<=5 && p->label_capacity;rank++) {
             uint64_t h=UINT64_C(14695981039346656037)^rank;
-            for(int k=0;k<n;k++) h=(h^(uint8_t)l->text[k])*UINT64_C(1099511628211);
+            for(size_t k=0;k<u;k++) h=(h^(uint8_t)utf8[k])*UINT64_C(1099511628211);
             size_t slot=(size_t)h&(p->label_capacity-1);
             for(size_t tries=0;tries<p->label_capacity && p->label_seen[slot];tries++) {
                 const cc_feature *f=p->label_seen[slot];
-                if(f->label_class==rank && f->name.size==(size_t)n && !memcmp(f->name.data,l->text,n)) {
+                if(f->label_class==rank && f->name.size==u && !memcmp(f->name.data,utf8,u)) {
                     l->label_class=rank;break;
                 }
                 slot=(slot+1)&(p->label_capacity-1);

@@ -1004,13 +1004,18 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         s_tier = 0;
         if (!dot_free) continue;
 
-        int len = (int)strlen(lb->text);
+        /* Names in the tiles are UTF-8; everything below measures and cuts
+           by bytes, so it works on the name folded to one byte a cell. */
+        char text[CARTO_LABEL_MAX_TEXT];
+        snprintf(text, sizeof(text), "%s", lb->text);
+        tui_utf8_fold_str(text);
+        int len = (int)strlen(text);
         const int room = a.w / (s_basemap_busy?4:3);
         if (len > room) {
             len = room;
-            while (len > 4 && lb->text[len] != ' ' && lb->text[len - 1] != ' ')
+            while (len > 4 && text[len] != ' ' && text[len - 1] != ' ')
                 len--;
-            while (len > 1 && lb->text[len - 1] == ' ') len--;
+            while (len > 1 && text[len - 1] == ' ') len--;
         }
         if (len > a.w) continue;
 
@@ -1021,13 +1026,13 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         const int spot[6][2] = { { top, cy + 1 }, { top, cy - 1 }, { cx + 2, cy },
                                  { cx - 1 - len, cy }, { top, cy + 2 }, { top, cy - 2 } };
         int x0=0,y=0;s_tier=1;
-        bool placed=map_label_choose(&s_label_history,map_label_key(lb->text,1+s_view),
+        bool placed=map_label_choose(&s_label_history,map_label_key(text,1+s_view),
             cx,cy,len,1,spot,2,6,esp_timer_get_time(),basemap_label_slot_free,&a,&x0,&y);
         s_tier=0;if(!placed) continue;
 
         glass(sf, a, a.x + cx, a.y + cy, '.', dot);
         box_take(cx, cx, cy);
-        ls_ink_text(sf, a, a.x + x0, a.y + y, lb->text, len, attr);
+        ls_ink_text(sf, a, a.x + x0, a.y + y, text, len, attr);
         box_take(x0, x0 + len - 1, y);
 #ifdef LS_MAP_AUDIT
         audit_label(x0, y, len);
@@ -1727,6 +1732,17 @@ static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap
                         const char *l1, const char *l2, uint8_t attr, bool solid,
                         uint32_t key)
 {
+    /* Node names and marks can be UTF-8; placement measures in bytes, so it
+       works on the names folded to one byte a cell. */
+    char b1[64], b2[64];
+    snprintf(b1, sizeof(b1), "%s", l1);
+    tui_utf8_fold_str(b1);
+    l1 = b1;
+    if (l2) {
+        snprintf(b2, sizeof(b2), "%s", l2);
+        tui_utf8_fold_str(b2);
+        l2 = b2;
+    }
     const int n1 = (int)strlen(l1), n2 = l2 ? (int)strlen(l2) : 0;
     const int w = n1 > n2 ? n1 : n2;
     const int rows = n2 ? 2 : 1;

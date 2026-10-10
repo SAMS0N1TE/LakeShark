@@ -195,3 +195,121 @@ LS_CASE(two_adjacent_panes_cannot_touch_each_other)
         for (int x = right.x; x < W; x++)
             LS_EQ_INT(SENTINEL, g_back[y * W + x].ch);
 }
+
+/* Row `y` from column `x`, `n` cells, as a string. */
+static const char *row_text(int x, int y, int n)
+{
+    static char out[W + 1];
+    for (int i = 0; i < n; i++) out[i] = (char)g_back[y * W + x + i].ch;
+    out[n] = 0;
+    return out;
+}
+
+LS_CASE(put_str_folds_utf8_letters_to_one_ascii_cell_each)
+{
+    /* Mesh messages and node names arrive as UTF-8 and the fonts are ASCII.
+       Each letter is one cell, its base letter; before, each byte took a
+       cell of its own and drew nothing. Literals are split where a hex
+       escape would otherwise swallow the next letter. */
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 0,
+                "Za\xC5\xBC\xC3\xB3\xC5\x82\xC4\x87 g\xC4\x99\xC5\x9B" "l"
+                "\xC4\x85 ja\xC5\xBA\xC5\x84", TUI_DEFAULT_ATTR);
+    LS_EQ_STR("Zazolc gesla jazn", row_text(0, 0, 17));
+    LS_EQ_INT(SENTINEL, g_back[17].ch);
+
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 1,
+                "ZA\xC5\xBB\xC3\x93\xC5\x81\xC4\x86 G\xC4\x98\xC5\x9A" "L"
+                "\xC4\x84 JA\xC5\xB9\xC5\x83", TUI_DEFAULT_ATTR);
+    LS_EQ_STR("ZAZOLC GESLA JAZN", row_text(0, 1, 17));
+
+    /* Outside the folded range: one '?' per character, whatever its length. */
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 2,
+                "a\xE2\x82\xAC" "b\xF0\x9F\x98\x80" "c", TUI_DEFAULT_ATTR);
+    LS_EQ_STR("a?b?c", row_text(0, 2, 5));
+    LS_EQ_INT(SENTINEL, g_back[2 * W + 5].ch);
+}
+
+LS_CASE(put_str_clips_utf8_by_cells_not_bytes)
+{
+    /* Ten two-byte letters in a five-cell clip: five cells, not two and a
+       half, and nothing past the clip. */
+    tui_rect clip = tui_rect_make(2, 4, 5, 1);
+    fresh();
+    tui_put_str(&g_sf, clip, 2, 4,
+                "\xC4\x99\xC4\x99\xC4\x99\xC4\x99\xC4\x99"
+                "\xC4\x99\xC4\x99\xC4\x99\xC4\x99\xC4\x99", TUI_DEFAULT_ATTR);
+    LS_EQ_STR("eeeee", row_text(2, 4, 5));
+    LS_EQ_INT(0, escaped(clip));
+
+    /* Started left of the clip, the leading letters are lost, not shifted. */
+    fresh();
+    tui_put_str(&g_sf, clip, 0, 4, "\xC4\x85\xC4\x87\xC4\x99\xC5\x82\xC5\x84",
+                TUI_DEFAULT_ATTR);
+    LS_EQ_STR("eln", row_text(2, 4, 3));
+    LS_EQ_INT(0, escaped(clip));
+}
+
+LS_CASE(broken_utf8_never_reads_past_the_terminator)
+{
+    /* A message cut mid-letter, a stray continuation byte and a lead byte
+       UTF-8 never uses: each becomes one '?' and the scan stops at the NUL.
+       The bytes after the NUL are a trap: reading them would draw 'X'. */
+    static const char cut[] = "ab\xC5\0XXXX";
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 5, cut, TUI_DEFAULT_ATTR);
+    LS_EQ_STR("ab?", row_text(0, 5, 3));
+    LS_EQ_INT(SENTINEL, g_back[5 * W + 3].ch);
+
+    static const char cut3[] = "\xE2\x82\0XXXX";
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 6, cut3, TUI_DEFAULT_ATTR);
+    LS_EQ_STR("?", row_text(0, 6, 1));
+    LS_EQ_INT(SENTINEL, g_back[6 * W + 1].ch);
+
+    fresh();
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 7, "a\x80" "b\xFF" "c",
+                TUI_DEFAULT_ATTR);
+    LS_EQ_STR("a?b?c", row_text(0, 7, 5));
+}
+
+LS_CASE(utf8_cells_counts_letters_in_a_byte_prefix)
+{
+    /* What a layout uses to place text after a UTF-8 name. */
+    LS_EQ_INT(4, tui_utf8_cells("Ko\xC5\x82o", 5));
+    LS_EQ_INT(2, tui_utf8_cells("Ko\xC5\x82o", 2));
+    LS_EQ_INT(2, tui_utf8_cells("ab\0cd", 5));
+}
+
+LS_CASE(fold_str_makes_one_byte_per_letter_for_byte_measured_labels)
+{
+    /* Map labels are measured, cut and boxed by bytes; folded in place they
+       line up with the cells. */
+    char s[] = "Bydgoszcz \xC5\x81\xC3\xB3" "d\xC5\xBA";
+    tui_utf8_fold_str(s);
+    LS_EQ_STR("Bydgoszcz Lodz", s);
+
+    /* A name cut by a fixed-size buffer upstream loses the broken letter,
+       not gains a '?'. */
+    char cut[] = "Gda\xC5\x84sk \xC5";
+    tui_utf8_fold_str(cut);
+    LS_EQ_STR("Gdansk ", cut);
+
+    /* A broken byte in the middle is still one '?', as tui_put_str draws it. */
+    char mid[] = "a\x80" "b";
+    tui_utf8_fold_str(mid);
+    LS_EQ_STR("a?b", mid);
+}
+
+LS_CASE(fold_codepoint_matches_the_utf8_fold)
+{
+    /* CartoCore hands over decoded codepoints; they must fold the same way. */
+    LS_EQ_INT('A', tui_fold_codepoint(0x41));
+    LS_EQ_INT('L', tui_fold_codepoint(0x141));
+    LS_EQ_INT('z', tui_fold_codepoint(0x17C));
+    LS_EQ_INT('?', tui_fold_codepoint(0x0416));
+    const char *p = "\xC5\x81";
+    LS_EQ_INT(tui_fold_codepoint(0x141), tui_utf8_fold(&p));
+}

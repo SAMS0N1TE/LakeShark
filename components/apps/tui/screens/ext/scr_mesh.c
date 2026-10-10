@@ -371,21 +371,22 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
     const int avail = r.w - 8;
     if (avail <= 0) return;
 
+    /* Widths are in cells, not bytes: UTF-8 text (Polish, say) has more
+       bytes than cells, and cutting it by bytes would split a letter. The
+       clip does the cutting instead. */
     if (colon && (colon - m->text) < 20) {
         const int nlen = (int)(colon - m->text);
+        const int ncells = tui_utf8_cells(m->text, (size_t)nlen);
         char name[24];
-        snprintf(name, sizeof(name), "%.*s", nlen > 20 ? 20 : nlen, m->text);
+        snprintf(name, sizeof(name), "%.*s", nlen, m->text);
         tui_put_str(sf, r, r.x + 7, y, name,
                     A(m->mine ? (TUI_YELLOW | TUI_BRIGHT) : (TUI_MAGENTA | TUI_BRIGHT),
                       TUI_BLACK));
-        char body[96];
-        snprintf(body, sizeof(body), "%.*s", avail - nlen - 2, colon + 1);
-        tui_put_str(sf, r, r.x + 7 + nlen + 1, y, body,
-                    A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, tui_rect_make(r.x, y, r.w - 2, 1), r.x + 7 + ncells + 1, y,
+                    colon + 1, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     } else {
-        char body[96];
-        snprintf(body, sizeof(body), "%.*s", avail, m->text);
-        tui_put_str(sf, r, r.x + 7, y, body, A(TUI_WHITE, TUI_BLACK));
+        tui_put_str(sf, tui_rect_make(r.x, y, r.w - 1, 1), r.x + 7, y,
+                    m->text, A(TUI_WHITE, TUI_BLACK));
     }
 }
 

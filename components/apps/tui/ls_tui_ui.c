@@ -706,15 +706,17 @@ void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
                      uint8_t attr)
 {
     if (!text || !*text) return;
-    int n = (int)strlen(text);
+    /* Measured in cells: UTF-8 names have more bytes than letters. */
+    int n = tui_utf8_cells(text, strlen(text));
     if (n > r.w) n = r.w;
     const int x = r.x + (r.w - n) / 2;
     const int y = r.y + row;
 
     if (x - 1 >= r.x) tui_put_char(sf, r, x - 1, y, ' ', attr);
     if (x + n < r.x + r.w) tui_put_char(sf, r, x + n, y, ' ', attr);
-    for (int i = 0; i < n; i++)
-        tui_put_char(sf, r, x + i, y, text[i], attr);
+    const char *p = text;
+    for (int i = 0; i < n && *p; i++)
+        tui_put_char(sf, r, x + i, y, tui_utf8_fold(&p), attr);
 }
 
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
