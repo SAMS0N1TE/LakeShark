@@ -48,6 +48,10 @@ serial*.txt
 !/docs/CELL_WATCH.md
 !/docs/CELL_DETECTOR_FOCUS.md
 !/docs/map-field.md
+!/docs/MAP_TILES.md
+!/docs/SWEEP.md
+!/docs/DRONES.md
+!/docs/REPLAY_AND_AIRCRAFT.md
 !/docs/screenshots/
 /tools/*
 !/tools/carto_catalog.py

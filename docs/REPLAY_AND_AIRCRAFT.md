@@ -5,7 +5,7 @@ Browse recordings, replay captures and follow aircraft on the T-Display-P4.
 ## Open a recording from FILES
 
 1. Open **FILES**, browse the SD card and select a supported `.sub` file.
-2. Open its preview, then **ACTIONS → REPLAY**. RECORD opens with the file loaded. Loading does not transmit.
+2. Open its preview, then **ACTIONS → REPLAY**. REC opens with the file loaded. Loading does not transmit.
 3. Check the destination radio, format, frequency, duration and nominal power.
 4. Use **POWER− / POWER+**, then **PLAY ONCE**. On the keyboard, **P** plays once and **+/−** changes power.
 
@@ -17,7 +17,7 @@ RAW OOK files use CC1101. Compatible FSK recordings use SX1262.
 
 ## Replay controls and the moving line
 
-RECORD has **RECORD**, **REPLAY** and **FILES** tabs. Tap a pulse in the replay preview to see its HIGH/LOW duration. Yellow marks the selected pulse.
+REC has **RECORD**, **REPLAY** and **FILES** tabs. Tap a pulse in the replay preview to see its HIGH/LOW duration. Yellow marks the selected pulse.
 
 A white line with a blue/cyan trail shows playback activity. Read the status line for completion or errors.
 

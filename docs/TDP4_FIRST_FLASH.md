@@ -4,12 +4,20 @@ Use the LilyGO T-Display-P4 with the 4.1-inch RM69A10 AMOLED, 568 x 1232 resolut
 
 Both radio variants, SX1262 and LR2021, use this image and build. The firmware identifies the chip at start.
 
+The easiest install is the browser installer at [terminalbay.com](https://terminalbay.com/?m=lakeshark&board=tdp4) in Chrome or Edge. It also updates a board by USB at any time.
+
 ## Build
 
-Use ESP-IDF 5.4.3 in an exported IDF shell:
+T-Display-P4 builds use ESP-IDF 5.5.4 with the patches checked by `bench/patch-idf.ps1` (see `bench/IDF554.md`). In an exported IDF shell:
 
 ```sh
 idf.py -B build_tdp4 -D SDKCONFIG=build_tdp4/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults" build
+```
+
+For the TFT version (HI8561, 540 x 1168), add the TFT profile after the AMOLED one. The screen is laid out around the front camera:
+
+```sh
+idf.py -B build_tdp4_tft -D SDKCONFIG=build_tdp4_tft/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults" build
 ```
 
 The Wi-Fi and Bluetooth configuration requires matching ESP-Hosted 2.12.9 firmware on the C6. See [Flash the C6 co-processor](#flash-the-c6-co-processor) below: the images ship in `c6_firmware/` and must be written before the P4 wireless features work. C6 firmware uses a separate flash layout.
@@ -37,9 +45,9 @@ Use the generated `build_tdp4/flasher_args.json` for the complete installation, 
 
 ## Updates over WiFi
 
-From 2.8 or earlier, install 2.9.1 once with the web flasher or USB. This installs the two-slot layout. A full install rewrites internal storage; settings and saved Wi-Fi are kept. Back up files first.
+From 2.8 or earlier, install the current release once with the web flasher or USB. This installs the two-slot layout added in 2.9.0. A full install rewrites internal storage; settings and saved Wi-Fi are kept. Back up files first.
 
-After that, open HOME > SYSTEM > UPDATE. Connect to Wi-Fi in LINK, then choose CHECK and INSTALL when a newer build is available. Updates are signed. If the new build fails to start, the board returns to the previous build. SET > DEVICE > Check for updates selects Daily or Off. Daily checks show a NEW tag on SYSTEM and UPDATE.
+After that, open HOME > SYSTEM > UPDATE, or keep using the web flasher over USB. Connect to Wi-Fi in LINK, then choose CHECK and INSTALL when a newer build is available. Updates are signed. If the new build fails to start, the board returns to the previous build. SET > DEVICE > Check for updates selects Daily or Off. Daily checks show a NEW tag on SYSTEM and UPDATE.
 
 See [Updates and calls](TDP4_UPDATES_AND_CALLS.md) for the update steps and SD call archive.
 
@@ -95,7 +103,11 @@ I (....) headless: ESP-Hosted co-processor link: up (0)
 
 HOME opens the app list. Touch controls and the detachable keyboard provide navigation. The display rotates automatically; F11 rotates it from the keyboard. SET opens on Volume, Brightness, Mute, Screen lock and Rotate lock. Its DISPLAY, SOUND and DEVICE menus hold the theme, Daylight mode, font, sounds, voice, keyboard and update settings.
 
-Open LINK to manage Wi-Fi and the Flipper Bluetooth connection. SCAN lists nearby networks, MANUAL accepts a network name, and SAVED reconnects to the saved network. Password entry starts hidden; SHOW PASSWORD and HIDE PASSWORD switch visibility.
+Open LINK to manage Wi-Fi and the Flipper Bluetooth connection. It has WI-FI, BLUETOOTH, SURVEY and DRONES tabs. On WI-FI, SCAN lists nearby networks, JOIN connects to the selected one, MANUAL accepts a network name, and SAVED joins the strongest saved network in range. Password entry starts hidden; SHOW PASSWORD and HIDE PASSWORD switch visibility. A network is saved once it connects.
+
+LakeShark keeps up to eight saved networks and moves to another saved network when one disappears. K selects a saved network, FORGET removes it and LEAVE disconnects. On BLUETOOTH, SCAN searches for a LakeShark Flipper head.
+
+The `wifi` console command does the same from TERMINAL or USB: `wifi status|list|scan|add <ssid> [pass]|join <ssid> [pass]|connect|forget <ssid>|all|leave`. From a PC, `python bench/lswifi.py --port COM7 add "My Net"` prompts for the password, so it never appears on the command line.
 
 Choosing a receiver in the Flipper app opens its corresponding P4 screen. POCSAG uses the FM pager page.
 

@@ -1,7 +1,8 @@
 # LoRa Labs and Notes
 
 The launcher groups apps under RADIO, FIELD, SYSTEM and USER. RADIO includes
-LORA LABS and EXPERIMENTS. FIELD includes REC, MAP, GPS, NOTES and COMPASS.
+LORA LABS and EXPERIMENTS. FIELD includes NOTES, COMPASS, SWEEP, REC, MAP,
+TILES and GPS.
 Use PREV/NEXT or F5/F6 for more apps. Page size follows the available space.
 
 ## LoRa Labs
@@ -94,7 +95,7 @@ experiment runs at a time. NOTE/N saves its readout to NOTES on SD.
   1200N or 1200I. Set ONE FREQ and the matching probe for a known channel.
 
 PAGER RECON > OPTIONS > RECEIVE offers **NATIVE STREAM**, **PACKET** and
-**SIGN STREAM**. NATIVE STREAM is the 2.9.1 default and uses the selected probe's
+**SIGN STREAM**. NATIVE STREAM is the default and uses the selected probe's
 baud. PACKET uses sync captures. SIGN STREAM searches streamed FSK signs for
 POCSAG rates. The receiver continues after the first sync and uses full receive
 gain. Frequency, channel plan, dwell, probe and receive method are kept after
@@ -115,9 +116,9 @@ password entered in OPTIONS; a blank password is a guest login. A node must
 support and permit the request. OPTIONS also sets timeouts and intervals.
 LakeShark answers telemetry requests according to its peer permissions.
 
-Open LINK > SURVEY, or press V in LINK. If SCAN WI-FI is on, first turn both
-Wi-Fi STA and AP off. In TERMINAL, `wifi leave` stops STA and `wifi off` stops
-the AP. A connected STA also counts as on. START/S begins a walk;
+Open LINK > SURVEY, or press V in LINK. With SCAN WI-FI on, leave the Wi-Fi
+network first: LEAVE on the WI-FI tab, or `wifi leave` in TERMINAL. The
+screen says so if Wi-Fi is still on. START/S begins a walk;
 STOP/S ends it. SORT/R changes ordering; DETAIL/D or Enter opens an observation.
 OPTIONS sets SCAN WI-FI, LISTEN BLE, SCAN INTERVAL, ONLY WITH GPS FIX and KEEP
 SESSIONS. Wi-Fi, BLE and ONLY WITH GPS FIX are on by default, with a 10-second
@@ -145,7 +146,8 @@ probe identifies compatible registers; it does not prove useful RF reception.
 
 ### Subsequent firmware updates
 
-2.9.1 uses two app slots and supports signed updates over WiFi with rollback.
-From 2.8 or earlier, install once through USB or the web flasher. A full install
-rewrites internal storage and keeps settings and saved Wi-Fi. Later updates
-use SYSTEM > UPDATE. See [Updates and calls](TDP4_UPDATES_AND_CALLS.md).
+Since 2.9.0 the board has two app slots and takes signed updates over WiFi with
+rollback. From 2.8 or earlier, install once through USB or the web flasher. A
+full install rewrites internal storage and keeps settings and saved Wi-Fi.
+Later updates use SYSTEM > UPDATE, or the web flasher over USB at any time.
+See [Updates and calls](TDP4_UPDATES_AND_CALLS.md).

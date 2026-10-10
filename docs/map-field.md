@@ -2,15 +2,16 @@
 
 - Terrain, place names, aircraft, Mesh nodes and saved marks share the map.
 - A fresh GPS fix adds the receiver marker. Old or missing fixes stay hidden.
-- STYLE/S chooses a palette and field, blocks or lines fill. V cycles the fill.
-- MAPS/M chooses a PMTiles archive from SD `/maps`. A failed open keeps the current map.
+- STYLE/S chooses the fill: field, blocks, lines, CartoCore smooth or CartoCore braille. V cycles the fill.
+- M chooses a map from SD `/maps`: `.ctile` for CartoCore, `.pmtiles` for the others. A failed open keeps the current map.
 - The header shows north, loading state and ground distance across the view.
 - LAYERS/L selects overlays, including APRS, AIS, sondes and routes.
-- MARK/K saves a place; DRAW/D starts a line. GO TO/F finds a place.
+- MARK/K saves a place; DRAW/D starts a line. GO TO/F jumps to an aircraft, node, mark or searched place.
 
-PMTiles v3 with uncompressed MVT tiles is supported. Unsupported compression
-or image tiles produces an explanation. Copy compatible `.pmtiles` files to
-`/sdcard/maps`. The map uses SD archives; it does not download missing terrain.
+TILES downloads CartoCore maps over WiFi, including whole-state cell maps with
+place search. See [MAP and TILES](MAP_TILES.md). For the other fills, copy
+PMTiles v3 archives with uncompressed MVT tiles to `/sdcard/maps`; other
+compression or image tiles produce an explanation.
 
 ROUTE/U opens a GPX picker. Put `.gpx` files under `/sdcard/lakeshark/routes`.
 Choose one to follow it, or BACKTRACK to reverse the current or last recorded
