@@ -105,6 +105,10 @@ bool ls_picker_add(const char *label, const char *detail)
     if (s_n >= LS_PICKER_MAX) return false;
     snprintf(s_label[s_n], LS_PICKER_TEXT, "%s", label ? label : "");
     snprintf(s_detail[s_n], LS_PICKER_DETAIL, "%s", detail ? detail : "");
+    /* Place and node names can be UTF-8. Folded once here, the rows line up
+       and typing "Lodz" on the keyboard finds Łódź. */
+    tui_utf8_fold_str(s_label[s_n]);
+    tui_utf8_fold_str(s_detail[s_n]);
     s_n++;
     refilter();
     return true;

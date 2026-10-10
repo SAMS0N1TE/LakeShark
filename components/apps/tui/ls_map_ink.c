@@ -151,13 +151,11 @@ void ls_ink_flush(tui_surface *sf, tui_rect skip)
 void ls_ink_text(tui_surface *sf, tui_rect clip, int x, int y, const char *s, int n, uint8_t attr)
 {
     attr = ls_ink_tinted(attr);
-    for (int i = 0; i < n && s[i]; i++) {
-        if (s[i] == ' ') {
-            /* A see-through space: the cell is left to the picture, which
-               also clears anything the canvas put there. */
-            ls_tui_put_glass(sf, clip, x + i, y, ' ', attr);
-            continue;
-        }
-        ls_tui_put_glass(sf, clip, x + i, y, s[i], attr);
+    /* `n` is bytes of UTF-8; each character takes one cell, folded to ASCII. */
+    const char *p = s, *end = s + n;
+    for (int i = 0; p < end && *p; i++) {
+        /* A space is see-through: the cell is left to the picture, which
+           also clears anything the canvas put there. */
+        ls_tui_put_glass(sf, clip, x + i, y, tui_utf8_fold(&p), attr);
     }
 }
