@@ -2224,6 +2224,7 @@ target_include_directories(test_sweep PRIVATE ${LS_TUI_APP_INCLUDES})
 
 target_sources(lssim PRIVATE tools/lssim_sweep.c)
 ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+ls_add_test(test_sdio_rx_watchdog)
 ls_add_test(test_ble_link_observer ${FW}/main/ble_link_observer.c ${FW}/components/apps/tui/ls_rid.c)
 target_include_directories(test_ble_link_observer PRIVATE ${FW}/main ${LS_TUI_APP_INCLUDES})
 target_include_directories(test_sweep_runtime PRIVATE ${LS_TUI_APP_INCLUDES})

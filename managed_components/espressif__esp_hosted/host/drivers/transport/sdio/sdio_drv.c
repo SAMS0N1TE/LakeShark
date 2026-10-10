@@ -91,8 +91,13 @@
 
 #include "mempool.h"
 #include "transport_util.h"
+#include "esp_timer.h"
+#include "sdio_rx_watchdog.h"
 
 static const char TAG[] = "H_SDIO_DRV";
+/* Diagnostics only: never reset live NimBLE/netif/RPC owners from RX. */
+static int rx_enqueue_if = -1, rx_dispatch_if = -1;
+static uint32_t rx_buf_progress;
 
 /* when enabled, read all required SDIO slave registers in a single
  * read into a buffer, instead of reading individual SDIO slave
@@ -874,7 +879,9 @@ static esp_err_t sdio_push_pkt_to_queue(uint8_t * rxbuff, uint16_t len, uint16_t
 		return ESP_FAIL;
 	}
 
+	__atomic_store_n(&rx_enqueue_if, buf_handle.if_type, __ATOMIC_RELAXED);
 	g_h.funcs->_h_queue_item(from_slave_queue[pkt_prio], &buf_handle, HOSTED_BLOCK_MAX);
+	__atomic_store_n(&rx_enqueue_if, -1, __ATOMIC_RELAXED);
 	g_h.funcs->_h_post_semaphore(sem_from_slave_queue);
 
 	return ESP_OK;
@@ -1046,6 +1053,7 @@ static void sdio_data_to_rx_buf_task(void const* pvParameters)
 
 		// finished sending data: reset read_index
 		double_buf.read_index = -1;
+		__atomic_fetch_add(&rx_buf_progress, 1, __ATOMIC_RELAXED);
 	}
 }
 
@@ -1093,6 +1101,7 @@ static esp_err_t create_static_netif(void)
 
 static void sdio_read_task(void const* pvParameters)
 {
+	sdio_rx_watchdog_t rx_watchdog = {0};
 	esp_err_t res = ESP_OK;
 	uint8_t *rxbuff = NULL;
 	int ret;
@@ -1280,6 +1289,8 @@ static void sdio_read_task(void const* pvParameters)
 			continue;
 
 		if (double_buf.read_index < 0) {
+			sdio_rx_watchdog_poll(&rx_watchdog, false,
+				__atomic_load_n(&rx_buf_progress, __ATOMIC_RELAXED), esp_timer_get_time());
 			double_buf.read_index = double_buf.write_index;
 			double_buf.read_data_len = len_from_slave;
 			double_buf.write_index = (double_buf.write_index) ? 0 : 1;
@@ -1288,7 +1299,15 @@ static void sdio_read_task(void const* pvParameters)
 		} else {
 			// error: task to copy data to queue still running
 			sdio_rx_free_buffer(rxbuff);
-			ESP_LOGE(TAG, "task still writing Rx data to queue!");
+			int notice = sdio_rx_watchdog_poll(&rx_watchdog, true,
+				__atomic_load_n(&rx_buf_progress, __ATOMIC_RELAXED), esp_timer_get_time());
+			if (notice != SDIO_RX_QUIET) {
+				ESP_LOGE(TAG, "RX %s: enqueue_if=%d dispatch_if=%d dropped_reads=%lu",
+					notice == SDIO_RX_STALLED ? "STALLED >=5s; shared BLE/Wi-Fi/RPC link unavailable; reset required" : "backpressure",
+					__atomic_load_n(&rx_enqueue_if, __ATOMIC_RELAXED),
+					__atomic_load_n(&rx_dispatch_if, __ATOMIC_RELAXED),
+					(unsigned long)rx_watchdog.dropped);
+			}
 			// don't send data to task, or update write_index
 		}
 	}
@@ -1321,6 +1340,7 @@ static void sdio_process_rx_task(void const* pvParameters)
 				}
 
 		buf_handle = &buf_handle_l;
+		__atomic_store_n(&rx_dispatch_if, buf_handle->if_type, __ATOMIC_RELAXED);
 
 		ESP_LOGV(TAG, "bus_rx: iftype:%d", (int)buf_handle->if_type);
 		ESP_HEXLOGV("bus_rx", buf_handle->priv_buffer_handle,
@@ -1393,6 +1413,7 @@ static void sdio_process_rx_task(void const* pvParameters)
 		}
 
 		/* Free buffer handle */
+		__atomic_store_n(&rx_dispatch_if, -1, __ATOMIC_RELAXED);
 		/* When buffer offloaded to other module, that module is
 		 * responsible for freeing buffer. In case not offloaded or
 		 * failed to offload, buffer should be freed here.

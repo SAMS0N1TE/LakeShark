@@ -179,7 +179,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.10.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.0).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
+**Current P4 release: [2.10.1](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.10.1).** A new offline map engine with whole-state cell maps, place search and map downloads over WiFi; live aircraft, mesh nodes and marks stay readable on the map in every colour theme. SWEEP finds nearby trackers, Remote ID drones and camera hints, and DRONES reads Remote ID. WiFi keeps up to eight saved networks. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

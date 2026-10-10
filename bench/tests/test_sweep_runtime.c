@@ -22,7 +22,7 @@ int ls_wifi_survey_scan(ls_wifi_scan_ap_t *out,int cap) {
     scans++;*out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;
 }
 int ls_wifi_scan_cached(ls_wifi_scan_ap_t *out,int cap,int64_t *us) {
-    LS_CHECK(external_wifi && cap>=1);cached++;*us=esp_timer_get_time();
+    LS_CHECK(cap>=1);cached++;if(wifi_fail) return -1;*us=esp_timer_get_time();
     *out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;
 }
 bool audio_is_muted(void) {return muted;}
@@ -30,7 +30,7 @@ int audio_volume_get(void) {return volume;}
 bool snd_test_busy(void) {return busy;}
 bool snd_sweep_click(void) {LS_CHECK(!muted && volume==23);sounds++;return true;}
 bool snd_sweep_start(int category) {LS_CHECK(!muted && volume==23 && category<SW_CATS);sounds++;return true;}
-LS_CASE(runtime_ownership_rollback_scan_rate_and_global_mute) {
+LS_CASE(runtime_cached_only_ownership_rollback_and_global_mute) {
     scans=cached=starts=stops=sounds=0;volume=23;
     external_wifi=external_ble=owned_wifi=owned_ble=ble_fail=wifi_fail=muted=busy=false;
     ls_sweep_init();ls_sweep_clear();
@@ -38,24 +38,29 @@ LS_CASE(runtime_ownership_rollback_scan_rate_and_global_mute) {
     ls_shim_time_set(1000000);
     external_wifi=true;external_ble=true;muted=true;
     ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==0 && cached==1 && scans==0);
-    ls_sweep_status_t status;ls_sweep_status(&status,esp_timer_get_time());LS_CHECK(status.requested);
     ls_sweep_start(false);ls_sweep_tick();LS_CHECK(stops==0 && external_ble && external_wifi);
-    external_wifi=false;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(owned_wifi && !owned_ble && starts==0 && scans==1);
-    ls_sweep_start(false);ls_sweep_tick();LS_CHECK(!owned_wifi && stops==0);
-    wifi_fail=true;ls_sweep_start(true);ls_sweep_tick();
-    ls_sweep_status(&status,esp_timer_get_time());LS_CHECK(status.running && !owned_wifi && !owned_ble);
+    external_wifi=false;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==0 && cached==2 && scans==0);
     ls_sweep_start(false);ls_sweep_tick();LS_CHECK(stops==0);
-    wifi_fail=false;
-    external_ble=false;ble_fail=true;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==1 && stops==0);
-    ble_fail=false;wifi_fail=true;external_wifi=true;
-    ls_sweep_start(true);ls_sweep_tick();LS_CHECK(owned_ble && !owned_wifi && cached==2);
-    ls_sweep_start(false);ls_sweep_tick();LS_CHECK(stops==1 && external_wifi);
-    ls_sweep_clear();
-    external_wifi=false;wifi_fail=false;muted=true;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(owned_wifi && owned_ble && scans==2 && sounds==0);
-    ls_shim_time_set(2000000);muted=false;ls_sweep_tick();LS_CHECK(scans==2 && sounds==0); /* no mute backlog */
-    ls_shim_time_set(6000000);ls_sweep_tick();LS_CHECK(scans==3 && sounds==0);
-    ls_shim_time_set(32000000);ls_sweep_tick();LS_CHECK(scans==4 && sounds==1 && volume==23);
-    ls_sweep_start(false);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && stops==2 && !ls_sweep_pending());
+    external_ble=false;ble_fail=true;ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && starts==1 && cached==2);
+    ble_fail=false;ls_sweep_clear();
+    ls_sweep_start(true);ls_sweep_tick();LS_CHECK(!owned_wifi && owned_ble && cached==3 && sounds==0);
+    ls_shim_time_set(2000000);muted=false;ls_sweep_tick();LS_CHECK(cached==3 && sounds==0);
+    ls_shim_time_set(6000000);ls_sweep_tick();LS_CHECK(cached==4 && sounds==0);
+    ls_shim_time_set(32000000);ls_sweep_tick();LS_CHECK(cached==5 && sounds==1 && volume==23 && scans==0);
+    ls_sweep_start(false);ls_sweep_tick();LS_CHECK(!owned_wifi && !owned_ble && stops==1 && !ls_sweep_pending());
+}
+LS_CASE(cache_failure_backs_off_and_idle_sweep_never_scans_for_45_minutes) {
+    ls_sweep_clear();ls_sweep_defaults();external_wifi=false;external_ble=true;
+    wifi_fail=true;muted=true;scans=cached=0;
+    ls_shim_time_set(1000000);ls_sweep_start(true);ls_sweep_tick();LS_CHECK(cached==1);
+    for(int i=1;i<60;i++) {ls_shim_time_set(1000000+i*1000000LL);ls_sweep_tick();}
+    LS_CHECK(cached==1 && scans==0 && !owned_wifi);
+    wifi_fail=false;ls_shim_time_set(61000000);ls_sweep_tick();LS_CHECK(cached==2);
+    for(int i=1;i<=540;i++) {ls_shim_time_set(61000000+i*5000000LL);ls_sweep_tick();}
+    LS_CHECK(cached==542 && scans==0 && !owned_wifi && volume==23);
+    ls_sweep_start(false);ls_sweep_tick();
+    for(int i=1;i<=480;i++) {ls_shim_time_set(2761000000LL+i*5000000LL);ls_sweep_tick();}
+    LS_CHECK(cached==542 && scans==0 && !owned_wifi); /* 40 minutes OFF */
 }
 LS_CASE(logging_is_opt_in_and_rules_reload_retains_previous_on_error) {
     ls_sweep_defaults();ls_sweep_clear();ls_sweep_start(true);
