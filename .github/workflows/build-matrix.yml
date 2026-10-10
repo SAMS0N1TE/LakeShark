@@ -23,6 +23,8 @@ jobs:
             defaults: boards/nano_headless_nobt.defaults
           - name: t-display-p4
             defaults: boards/t_display_p4.defaults
+          - name: t-display-p4-tft
+            defaults: boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults
 
     name: ${{ matrix.name }}
     steps:

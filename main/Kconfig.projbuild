@@ -28,6 +28,22 @@ menu "LakeShark"
                 board profile in components/lakeshark/board/variants/.
     endchoice
 
+    choice LS_TDP4_PANEL
+        prompt "T-Display-P4 display SKU"
+        depends on LS_BOARD_T_DISPLAY_P4
+        default LS_TDP4_PANEL_RM69A10
+        help
+            The T-Display-P4 ships with one of two MIPI-DSI panels. They differ
+            in resolution, timings, brightness control and touch controller,
+            so the image must be built for the one fitted.
+
+        config LS_TDP4_PANEL_RM69A10
+            bool "4.1\" AMOLED, RM69A10 568x1232, GT9895 touch"
+
+        config LS_TDP4_PANEL_HI8561
+            bool "TFT, HI8561 540x1168, HI8561 touch, PT4103 backlight"
+    endchoice
+
     config LS_VBUS_EN_GPIO
         int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
         default 46 if LS_BOARD_P4_NANO

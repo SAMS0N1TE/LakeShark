@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 
-/* Boot-only RM69A10 ID read. The caller owns DSI bus 0 and includes the IDF
+/* Boot-only panel ID read. The caller owns DSI bus 0 and includes the IDF
  * DSI LL, timer and FreeRTOS headers. IDF 5.4's generic read spins forever
  * when the panel never supplies data; every wait here shares a 250 ms bound.
  * Keep this separate so the no-response paths can run against fake registers.
@@ -13,7 +13,9 @@ static bool ls_panel_id_wait(int64_t deadline)
     return true;
 }
 
-static bool ls_panel_read_id(uint8_t *id)
+/* One byte from a DCS read command: 0xA1 on the RM69A10, 0xDA/0xDB on the
+   HI8561. */
+static bool ls_panel_read_dcs(uint8_t cmd, uint8_t *id)
 {
     const int64_t deadline = esp_timer_get_time() + 250000;
     dsi_host_dev_t *host = MIPI_DSI_LL_GET_HOST(0);
@@ -27,7 +29,7 @@ static bool ls_panel_read_id(uint8_t *id)
     mipi_dsi_host_ll_gen_set_rx_vcid(host, 0);
     while (mipi_dsi_host_ll_gen_is_cmd_fifo_full(host))
         if (!ls_panel_id_wait(deadline)) return false;
-    mipi_dsi_host_ll_gen_set_packet_header(host, 0, MIPI_DSI_DT_DCS_READ_0, 0, 0xA1);
+    mipi_dsi_host_ll_gen_set_packet_header(host, 0, MIPI_DSI_DT_DCS_READ_0, 0, cmd);
     while (mipi_dsi_host_ll_gen_is_read_cmd_busy(host))
         if (!ls_panel_id_wait(deadline)) return false;
     while (mipi_dsi_host_ll_gen_is_read_fifo_empty(host))
@@ -39,4 +41,10 @@ static bool ls_panel_read_id(uint8_t *id)
     }
     *id = response;
     return true;
+}
+
+/* The RM69A10's ID register. */
+static inline bool ls_panel_read_id(uint8_t *id)
+{
+    return ls_panel_read_dcs(0xA1, id);
 }

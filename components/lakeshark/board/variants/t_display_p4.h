@@ -85,7 +85,36 @@
    so LS_BOARD_LCD_RST_GPIO / LS_BOARD_TOUCH_*_GPIO cannot be defined here at
    all.  Bringing a panel up on this board needs the expander driver first. */
 
-/* SKU settled: the unit in hand is the 4.1" AMOLED. */
+/* Two SKUs, chosen in menuconfig (LS_TDP4_PANEL). The panel and its touch
+   share the 2-lane DSI bus, the XL9535 resets and I2C port 1 either way. */
+
+#if defined(CONFIG_LS_TDP4_PANEL_HI8561)
+/* TFT SKU. Vendor lilygo_device_driver t_display_p4/config.h, hi8561:
+   540x1168, hsync 28 hbp 26 hfp 20, vsync 2 vbp 22 vfp 200, 2 lanes at
+   1000 Mbps, touch (same die) at 0x68 on port 1. The IMU's 0x68 is on the
+   secondary bus, so the two do not collide. */
+#define LS_BOARD_LCD_H_RES       540
+#define LS_BOARD_PANEL_HI8561    1
+#define LS_BOARD_LCD_V_RES       1168
+/* Unmeasured on glass: a smaller margin than the AMOLED's until someone
+   checks how far the bezel covers the corners. */
+#define LS_BOARD_LCD_CORNER_R    40
+#define LS_BOARD_LCD_DSI_LANES   2
+#define LS_BOARD_LCD_DSI_MBPS    1000
+/* The vendor runs 60 MHz (~70 Hz). Scanout competes with capture for PSRAM
+   the same way it does on the AMOLED, so start from the clocks that proved
+   out there: 48 MHz is ~56 Hz here, 40 MHz ~47 Hz. */
+#define LS_BOARD_LCD_DPI_CLK_MHZ 48
+#define LS_BOARD_LCD_DPI_PERF_CLK_MHZ 40
+#define LS_BOARD_LCD_HSYNC       28
+#define LS_BOARD_LCD_HBP         26
+#define LS_BOARD_LCD_HFP         20
+#define LS_BOARD_LCD_VSYNC       2
+#define LS_BOARD_LCD_VBP         22
+#define LS_BOARD_LCD_VFP         200
+#define LS_BOARD_TOUCH_I2C_ADDR  0x68
+#else
+/* 4.1" AMOLED SKU. */
 
 #define LS_BOARD_LCD_H_RES       568
 #define LS_BOARD_PANEL_RM69A10   1
@@ -108,6 +137,7 @@
 #define LS_BOARD_LCD_VBP         120
 #define LS_BOARD_LCD_VFP         80
 #define LS_BOARD_TOUCH_I2C_ADDR  0x5D
+#endif
 
 /* Neither SKU is 480x800.  's waterfall ring buffer and the refresh counters are sized off LS_BOARD_LCD_*, and this is a 1232-line
    panel in portrait - both want re-checking before anyone trusts a

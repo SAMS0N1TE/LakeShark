@@ -1,0 +1,4 @@
+# T-Display-P4, TFT SKU (HI8561 540x1168, HI8561 touch, PT4103 backlight).
+# Layer on top of the AMOLED profile, which carries everything else:
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults"
+CONFIG_LS_TDP4_PANEL_HI8561=y
