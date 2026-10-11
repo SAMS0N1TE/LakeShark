@@ -53,6 +53,7 @@ serial*.txt
 !/docs/DRONES.md
 !/docs/REPLAY_AND_AIRCRAFT.md
 !/docs/screenshots/
+!/docs/apps/
 /tools/*
 !/tools/carto_catalog.py
 !/tools/carto_push.py
