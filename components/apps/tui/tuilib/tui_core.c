@@ -159,11 +159,34 @@ void tui_utf8_fold_str(char *s) {
     *w = 0;
 }
 
+/* The cell tui_put_str draws at *p. A complete UTF-8 sequence folds to one
+   cell; any other byte is drawn as it is, because the TUI's own glyphs
+   (quadrants, shades, traces, sextants: see ls_tui.h) are the bytes
+   0x80..0xFF. Never reads past a NUL. */
+static char put_str_cell(const char **p) {
+    const unsigned char *s = (const unsigned char *)*p;
+    const unsigned char b = s[0];
+    int n = (b >= 0xC2 && b <= 0xDF) ? 1
+          : (b >= 0xE0 && b <= 0xEF) ? 2
+          : (b >= 0xF0 && b <= 0xF4) ? 3 : 0;
+    for (int i = 1; i <= n; i++) {
+        if ((s[i] & 0xC0) != 0x80) {
+            n = 0;
+            break;
+        }
+    }
+    if (!n) {
+        *p += 1;
+        return (char)b;
+    }
+    return tui_utf8_fold(p);
+}
+
 int tui_utf8_cells(const char *str, size_t n) {
     const char *end = str + n;
     int cells = 0;
     while (str < end && *str) {
-        (void)tui_utf8_fold(&str);
+        (void)put_str_cell(&str);
         cells++;
     }
     return cells;
@@ -177,7 +200,7 @@ void tui_put_str(tui_surface *s, tui_rect clip, int x, int y, const char *str,
     for (int cx = x; *str; cx++) {
         if (cx >= c.x + c.w)
             break;
-        const char ch = tui_utf8_fold(&str);
+        const char ch = put_str_cell(&str);
         if (cx < c.x)
             continue;
         tui_cell *cell = &s->back[y * s->w + cx];

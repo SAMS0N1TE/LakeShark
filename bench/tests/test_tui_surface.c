@@ -254,25 +254,33 @@ LS_CASE(put_str_clips_utf8_by_cells_not_bytes)
 
 LS_CASE(broken_utf8_never_reads_past_the_terminator)
 {
-    /* A message cut mid-letter, a stray continuation byte and a lead byte
-       UTF-8 never uses: each becomes one '?' and the scan stops at the NUL.
-       The bytes after the NUL are a trap: reading them would draw 'X'. */
+    /* A message cut mid-letter: the bytes that are not a complete letter
+       are drawn one cell each and the scan stops at the NUL. The bytes after
+       the NUL are a trap: reading them would draw 'X'. */
     static const char cut[] = "ab\xC5\0XXXX";
     fresh();
     tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 5, cut, TUI_DEFAULT_ATTR);
-    LS_EQ_STR("ab?", row_text(0, 5, 3));
+    LS_EQ_STR("ab\xC5", row_text(0, 5, 3));
     LS_EQ_INT(SENTINEL, g_back[5 * W + 3].ch);
 
     static const char cut3[] = "\xE2\x82\0XXXX";
     fresh();
     tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 6, cut3, TUI_DEFAULT_ATTR);
-    LS_EQ_STR("?", row_text(0, 6, 1));
-    LS_EQ_INT(SENTINEL, g_back[6 * W + 1].ch);
+    LS_EQ_STR("\xE2\x82", row_text(0, 6, 2));
+    LS_EQ_INT(SENTINEL, g_back[6 * W + 2].ch);
+}
 
+LS_CASE(put_str_keeps_the_tuis_own_glyph_bytes)
+{
+    /* Quadrants (0x80..0x8F), shades (0x90..), traces (0xA0..), the image
+       cell (0xB0) and sextants (0xC0..0xFF) are drawn through tui_put_str
+       too, e.g. FALLS' landscape legend; they are not UTF-8 and stay as
+       they are. */
     fresh();
-    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 7, "a\x80" "b\xFF" "c",
+    tui_put_str(&g_sf, tui_surface_rect(&g_sf), 0, 7, "a\x80" "b\xFF" "c\xA7 P25\x93",
                 TUI_DEFAULT_ATTR);
-    LS_EQ_STR("a?b?c", row_text(0, 7, 5));
+    LS_EQ_STR("a\x80" "b\xFF" "c\xA7 P25\x93", row_text(0, 7, 11));
+    LS_EQ_INT(11, tui_utf8_cells("a\x80" "b\xFF" "c\xA7 P25\x93", 64));
 }
 
 LS_CASE(utf8_cells_counts_letters_in_a_byte_prefix)

@@ -69,8 +69,10 @@ void tui_put_char(tui_surface *s, tui_rect clip, int x, int y, char ch,
                   uint8_t attr);
 /* `str` is UTF-8. The fonts are ASCII, so each character takes one cell:
    Latin letters with diacritics show as their base letter (ę -> e, Ł -> L),
-   anything else as '?'. Text from the air (mesh messages, node and network
-   names) arrives this way. */
+   other complete UTF-8 characters as '?'. A byte that is not part of a
+   complete sequence is drawn as it is: the TUI's own glyphs (ls_tui.h) use
+   0x80..0xFF. Text from the air (mesh messages, node and network names)
+   arrives as UTF-8. */
 void tui_put_str(tui_surface *s, tui_rect clip, int x, int y, const char *str,
                  uint8_t attr);
 /* The cell tui_put_str draws for the character at *p, advancing *p past it.
