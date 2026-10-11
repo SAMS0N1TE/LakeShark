@@ -179,7 +179,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.11.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.11.0).** Every app reviewed and run on both boards, with about 250 fixes: steadier MESH, ADS-B labels and tracking that hold steady, saves that keep your edits when something fails, and radios that hand off cleanly between apps. Offline maps with map downloads over WiFi, SWEEP for nearby trackers and Remote ID drones, and up to eight saved WiFi networks. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
+**Current P4 release: [2.12.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.12.0).** Raw I/Q P25 on the LR2021: the radio streams complex samples continuously and LakeShark demodulates C4FM itself (experimental, Phase 1). Also new: ADS-B on 1090 and UAT 978 at once, P25 split with the LR2021 on control and the RTL on calls, CATCH burst hand-off, and pixel waterfalls across the radio apps. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

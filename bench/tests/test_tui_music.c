@@ -3,6 +3,10 @@
 #include "ls_tui_ui.h"
 #include "ls_music_backend.h"
 #include "ls_options.h"
+#include "ls_audio_view.h"
+#include "ls_spectro.h"
+#include "esp_timer.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -29,7 +33,8 @@ ls_music_state_t ls_music_state(void){return state;}
 int ls_music_volume(void){return volume;}
 uint32_t ls_music_position_ms(void){return 73000;}
 uint32_t ls_music_duration_ms(void){return 594000;}
-unsigned ls_music_peak(int ch){static unsigned phase;return (phase++*997+ch*401)%32769;}
+static unsigned fixed_peak;
+unsigned ls_music_peak(int ch){static unsigned phase;if(fixed_peak)return state==LS_MUSIC_PLAYING?fixed_peak:0;return (phase++*997+ch*401)%32769;}
 static bool warm;
 bool ls_music_warm(void){return warm;}
 void ls_music_set_warm(bool enabled){warm=enabled;}
@@ -49,8 +54,18 @@ const char *ls_music_mic_file(void){return "/sdcard/music/REC-007.wav";}
 uint32_t ls_music_mic_ms(void){return 12000;}
 bool ls_music_mic_step(void){return true;}
 bool ls_music_live(void){return state==LS_MUSIC_PLAYING||mic!=LS_MIC_OFF;}
-static int gram_calls,cursor_restarts;
-bool ls_music_spectrogram(ls_music_cursor_t *c,int hops,int rows,float *db){(void)hops;gram_calls++;if(!c->started){cursor_restarts++;c->started=true;}if(state!=LS_MUSIC_PLAYING||(c->next++ & 1))return false;for(int i=0;i<rows;i++)db[i]=i==rows/2?-30.0f:-110.0f;return true;}
+static int gram_calls,cursor_restarts;static unsigned last_hop;
+/* One line in two, a 1 kHz tone at -30 dB over a -110 dB floor. */
+bool ls_music_spectrogram_line(ls_music_cursor_t *c,unsigned hop,float *p){gram_calls++;last_hop=hop;if(!c->started){cursor_restarts++;c->started=true;}if(state!=LS_MUSIC_PLAYING||(c->next++ & 1))return false;for(int i=0;i<LS_MUSIC_FFT_SIZE/2;i++)p[i]=i==46?1e-3f:1e-11f;return true;}
+/* The panel's image cells: what the waterfall last handed over. */
+static tui_rect image_cells;static const uint16_t *image_px;static int image_w,image_h;static uint32_t image_serial;
+void ls_tui_geometry(int *cols,int *rows,int *cw,int *ch){if(cols)*cols=0;if(rows)*rows=0;if(cw)*cw=10;if(ch)*ch=17;}
+static int image_x0,image_moved;
+void ls_tui_image(tui_rect cells,const uint16_t *src,int w,int h,uint32_t serial){image_cells=cells;image_px=src;image_w=w;image_h=h;image_serial=serial;image_x0=0;}
+void ls_tui_image_ring(tui_rect cells,const uint16_t *src,int w,int h,int x0,int y0,int dx,int dy,uint32_t serial){(void)y0;(void)dy;ls_tui_image(cells,src,w,h,serial);image_x0=x0;image_moved=dx;}
+/* The picture as seen: column x of the ring starts at x0. */
+static uint16_t seen(int row,int col){return image_px[(size_t)row*image_w+(col+image_x0)%image_w];}
+bool ls_tui_image_now(tui_rect *cells,const uint16_t **src,int *w,int *h,uint32_t *serial){if(!image_px)return false;if(cells)*cells=image_cells;if(src)*src=image_px;if(w)*w=image_w;if(h)*h=image_h;if(serial)*serial=image_serial;return true;}
 
 static bool locate(tui_cell *cells,int w,int h,const char*text,int*x,int*y) {
     int n=(int)strlen(text);
@@ -75,7 +90,7 @@ static void exercise(int w,int h) {
     ls_scr_music.enter();paint(&sf,w,h);
     /* A button where the row can spell it, and the key everywhere. */
     if(!wide){opened=NULL;tap_label(&sf,back+1,w,h,"OPTIONS");
-        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==7);}
+        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==8);}
     opened=NULL;LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'o'));LS_CHECK(opened!=NULL);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(last_play,0);LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"PAUSE");LS_EQ_INT(state,LS_MUSIC_PAUSED);
@@ -237,9 +252,12 @@ static void view_switch(int w,int h,int w2,int h2){
     spectrum_calls=gram_calls=0;
     LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'v'));paint(&sf,w,h);paint(&sf,w,h);
     LS_CHECK(contains(back,w,h," WATERFALL "));LS_CHECK(gram_calls>0);LS_EQ_INT(spectrum_calls,0);
-    LS_CHECK(contains(back,w,h,"46 ms/COL"));
-    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'z'));paint(&sf,w,h);LS_CHECK(contains(back,w,h,"92 ms/COL"));
-    LS_CHECK(contains(back,w,h,"NOW"));LS_CHECK(contains(back,w,h,"22k"));
+    /* SPAN is the audio in one pixel column: 512, 1024, 2048 samples. */
+    LS_CHECK(contains(back,w,h,"11.6 ms"));LS_EQ_INT(last_hop,512);
+    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'z'));paint(&sf,w,h);LS_CHECK(contains(back,w,h,"23.2 ms"));
+    LS_EQ_INT(last_hop,1024);
+    LS_CHECK(contains(back,w,h,"NOW"));LS_CHECK(contains(back,w,h,"10k"));
+    LS_CHECK(contains(back,w,h,"Hz/BIN"));LS_CHECK(contains(back,w,h,"HOLD"));
     wide=w2>h2;tui_surface_setup(&sf,back,front,w2,h2);paint(&sf,w2,h2);
     LS_CHECK(contains(back,w2,h2," WATERFALL "));
     ls_scr_music.leave();ls_scr_music.enter();paint(&sf,w2,h2);
@@ -355,4 +373,114 @@ LS_CASE(waterfall_history_resets_on_source_epoch){
     paint(&sf,52,70);LS_EQ_INT(cursor_restarts,before);
     format_epoch++;paint(&sf,52,70);LS_EQ_INT(cursor_restarts,before+1);
     ls_scr_music.leave();free(back);free(front);
+}
+
+/* LEVEL is what is heard: the same source peak reads lower as the volume
+   comes down, nothing while muted, and the source mark stays where it was. */
+LS_CASE(output_db_follows_volume_and_mute){
+    LS_CHECK(fabsf(ls_audio_view_output_db(16384,100,0.0f,false)-(-6.02f))<0.01f);
+    LS_CHECK(fabsf(ls_audio_view_output_db(16384,50,-25.0f,false)-(-31.02f))<0.01f);
+    LS_CHECK(fabsf(ls_audio_view_output_db(32768,20,-40.0f,false)-(-40.0f))<0.01f);
+    LS_CHECK(isinf(ls_audio_view_output_db(16384,50,-25.0f,true)));
+    LS_CHECK(isinf(ls_audio_view_output_db(16384,0,-50.0f,false)));
+    LS_CHECK(isinf(ls_audio_view_output_db(0,100,0.0f,false)));
+}
+static bool over_lit(tui_cell *cells,int w,int h){
+    for(int y=0;y<h;y++)for(int x=0;x+4<=w;x++)
+        if(cells[y*w+x].ch=='O'&&cells[y*w+x+1].ch=='V'&&cells[y*w+x+2].ch=='E'&&cells[y*w+x+3].ch=='R'&&
+           TUI_ATTR_BG(cells[y*w+x].attr)==(TUI_RED|TUI_BRIGHT))return true;
+    return false;
+}
+static void level_follows_volume(int w,int h){
+    tui_cell *back=calloc((size_t)w*h,sizeof(*back)),*front=calloc((size_t)w*h,sizeof(*front));
+    LS_CHECK(back&&front);if(!back||!front){free(back);free(front);return;}
+    tui_surface sf;tui_surface_setup(&sf,back,front,w,h);wide=w>h;rounded_height=0;keypad=false;music_muted=false;
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_CHAR,'1');ls_scr_music.key(LS_TK_CHAR,'p');
+    fixed_peak=16384;volume=50;paint(&sf,w,h);
+    LS_CHECK_MSG(contains(back,w,h,"-31.0"),"output at volume 50 at %dx%d",w,h);
+    LS_CHECK(contains(back,w,h,"SOURCE  L  -6.0  R  -6.0"));
+    LS_CHECK(contains(back,w,h,"OUTPUT dBFS"));
+    /* Turned up, the bars follow at once. */
+    volume=100;paint(&sf,w,h);
+    LS_CHECK(contains(back,w,h,"-6.0"));LS_CHECK(!contains(back,w,h,"-31.0"));
+    /* Muted, they fall to nothing; the source mark does not. */
+    music_muted=true;
+    for(int i=0;i<16;i++){ls_shim_time_advance(250000);paint(&sf,w,h);}
+    LS_CHECK(contains(back,w,h,"L   -- "));
+    LS_CHECK(contains(back,w,h,"SOURCE  L  -6.0"));
+    /* A clipped file is OVER only when it is heard at full scale. */
+    music_muted=false;fixed_peak=32768;volume=50;paint(&sf,w,h);
+    for(int i=0;i<12;i++){ls_shim_time_advance(250000);paint(&sf,w,h);}
+    LS_CHECK(!over_lit(back,w,h));
+    volume=100;paint(&sf,w,h);LS_CHECK(over_lit(back,w,h));
+    fixed_peak=0;volume=35;ls_scr_music.key(LS_TK_CHAR,'s');ls_scr_music.leave();free(back);free(front);
+}
+LS_CASE(level_follows_volume_portrait){level_follows_volume(52,70);}
+LS_CASE(level_follows_volume_landscape){level_follows_volume(118,28);}
+
+/* WATERFALL is drawn in panel pixels behind image cells, one image pixel to
+   one panel pixel, and HOLD freezes it while the audio plays on. */
+static void waterfall_pixels(int w,int h){
+    tui_cell *back=calloc((size_t)w*h,sizeof(*back)),*front=calloc((size_t)w*h,sizeof(*front));
+    LS_CHECK(back&&front);if(!back||!front){free(back);free(front);return;}
+    tui_surface sf;tui_surface_setup(&sf,back,front,w,h);wide=w>h;rounded_height=0;keypad=false;
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_CHAR,'4');ls_scr_music.key(LS_TK_CHAR,'p');
+    /* A frame every 40 ms, the board's idle cadence. */
+    for(int i=0;i<6;i++){ls_shim_time_advance(40000);paint(&sf,w,h);}
+    LS_CHECK(image_px!=NULL);if(!image_px){ls_scr_music.leave();free(back);free(front);return;}
+    LS_EQ_INT(image_w,image_cells.w*10);LS_EQ_INT(image_h,image_cells.h*17);
+    LS_CHECK(image_cells.w>=30 && image_cells.h>=10);
+    int cells=0;
+    for(int y=image_cells.y;y<image_cells.y+image_cells.h;y++)for(int x=image_cells.x;x<image_cells.x+image_cells.w;x++)
+        cells+=(uint8_t)back[y*w+x].ch==(uint8_t)LS_TUI_IMAGE_CELL;
+    LS_EQ_INT(cells,image_cells.w*image_cells.h);
+    /* The 990 Hz line shows at the right edge, at its row on a linear axis;
+       far from it, and to the left where nothing has arrived yet, is black. */
+    int tone=ls_spectro_hz_row(46*44100.0f/LS_MUSIC_FFT_SIZE,image_h,false,22050.0f);
+    int quiet=ls_spectro_hz_row(15000.0f,image_h,false,22050.0f);
+    LS_CHECK(tone>0 && quiet>=0);
+    LS_CHECK(seen(tone,image_w-1)!=0);
+    LS_EQ_INT(seen(quiet,image_w-1),0);
+    LS_EQ_INT(seen(tone,image_w/2),0);
+    /* HOLD: no more lines read, the picture unchanged, and it says so. */
+    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'h'));paint(&sf,w,h);
+    uint32_t serial=image_serial;int calls=gram_calls;
+    for(int i=0;i<4;i++)paint(&sf,w,h);
+    LS_EQ_INT(gram_calls,calls);LS_EQ_INT(image_serial,serial);
+    LS_CHECK(contains(back,w,h," HOLD "));LS_CHECK(contains(back,w,h,"HELD"));
+    /* Held, the reading can still change: a log axis redraws the history. */
+    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'a'));paint(&sf,w,h);
+    LS_CHECK(image_serial!=serial);LS_EQ_INT(gram_calls,calls);
+    int tone_log=ls_spectro_hz_row(46*44100.0f/LS_MUSIC_FFT_SIZE,image_h,true,22050.0f);
+    LS_CHECK(seen(tone_log,image_w-1)!=0);
+    ls_scr_music.key(LS_TK_CHAR,'a');
+    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'h'));for(int i=0;i<3;i++)paint(&sf,w,h);LS_CHECK(gram_calls>calls);
+    /* Another view, or leaving, hands the cells back. */
+    ls_scr_music.key(LS_TK_CHAR,'1');paint(&sf,w,h);LS_CHECK(image_px==NULL);
+    ls_scr_music.key(LS_TK_CHAR,'4');paint(&sf,w,h);LS_CHECK(image_px!=NULL);
+    ls_scr_music.key(LS_TK_CHAR,'s');ls_scr_music.leave();LS_CHECK(image_px==NULL);
+    ls_scr_music.key(LS_TK_CHAR,'1');free(back);free(front);
+}
+LS_CASE(waterfall_pixels_portrait){waterfall_pixels(52,70);}
+LS_CASE(waterfall_pixels_landscape){waterfall_pixels(118,28);}
+
+LS_CASE(waterfall_options_are_one_level_down){
+    ls_scr_music.enter();opened=NULL;ls_scr_music.key(LS_TK_CHAR,'o');LS_CHECK(opened!=NULL);
+    const ls_opt_t *menu=NULL;
+    for(int i=0;i<opened->n;i++)if(opened->opt[i].kind==LS_OPT_MENU)menu=&opened->opt[i];
+    LS_CHECK(menu && !strcmp(menu->label,"WATERFALL") && menu->sub);
+    if(menu && menu->sub){
+        const ls_opt_ctx_t *wf=menu->sub;
+        for(int i=0;i<wf->n;i++){
+            const ls_opt_t *o=&wf->opt[i];
+            if(o->kind==LS_OPT_LEVEL){
+                /* Floor and range step by 5 dB and hold to their range. */
+                double was=o->num(o);
+                LS_CHECK(o->step==5);o->set_num(o,o->hi+50);LS_CHECK(o->num(o)==o->hi);
+                o->set_num(o,o->lo-50);LS_CHECK(o->num(o)==o->lo);
+                o->set_num(o,was);LS_CHECK(o->num(o)==was);
+            }
+        }
+    }
+    ls_scr_music.leave();
 }

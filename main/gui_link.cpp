@@ -1,3 +1,4 @@
+#include "adsb_app.h"
 #include "gui_link.h"
 
 #include <string.h>
@@ -825,6 +826,7 @@ static void gui_link_register_commands(void)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         esp_console_cmd_register(&cmds[i]);
+    uat_console_register();
 }
 
 /**/

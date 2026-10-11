@@ -13,6 +13,9 @@ typedef uint32_t TickType_t;
 typedef int      BaseType_t;
 typedef unsigned UBaseType_t;
 typedef void *   TaskHandle_t;
+#ifndef configMAX_PRIORITIES
+#define configMAX_PRIORITIES 25
+#endif
 typedef void   (*TaskFunction_t)(void *);
 typedef uint8_t  StackType_t;
 typedef struct { uintptr_t opaque[48]; } StaticTask_t;

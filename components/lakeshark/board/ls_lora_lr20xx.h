@@ -233,6 +233,72 @@ esp_err_t lr20xx_initialize(void);
 /* Returns -1 for other subcommands. */
 int       lr20xx_clock_command(int argc, char **argv);
 
+/* Experimental FW 1.24 source-2 capture. Blocking/task-context only, owns the
+   radio lock until recovery finishes. Captures exactly 256 little-endian words
+   at the current LoRa frequency. Rejects other radio owners and active PRAM
+   patches. Interrupts RX; resets the radio, verifies saved SRAM, restores LoRa
+   and prior RX state before returning. No TX. No heap allocation in this API.
+   Supply two distinct, non-overlapping arrays of at least 256 uint32_t words.
+   Output is usable ONLY on ESP_OK (including successful cleanup). Repeated
+   calls have gaps: neither a continuous stream nor a calibrated IQ source.
+   For RF-tested profiles, low halfword is I and high halfword Q (I+jQ).
+   Nominal sample rate is zero outside tested profiles; crystal tolerance
+   and receiver frequency error are not calibrated. */
+#define LR20XX_CAPTURE_WORDS 256u
+typedef struct {
+    uint32_t frequency_hz, status;
+    uint32_t bandwidth_hz, sample_rate_hz;
+    unsigned bytes, words;
+    int64_t elapsed_us;
+    const char *phase;
+    esp_err_t capture_error, restore_error, recovery_error;
+} lr20xx_capture_result_t;
+esp_err_t lr20xx_capture_source2(uint32_t *words, uint32_t *scratch,
+                               size_t capacity, lr20xx_capture_result_t *result);
+
+/* Streaming source 2 through RX FIFO, currently restricted to LoRa BW31.25k.
+   Synchronous, allocates 1536 bytes before locking, IDF >=5.5. Holds radio lock,
+   uses 16 MHz polling SPI,
+   restores 2 MHz and prior LoRa/RX state on exit. duration_ms: 1..250.
+   Callback runs under the lock; copy/process promptly, no blocking, logging,
+   allocation or radio calls. Return false to stop normally. Bytes are IQ16 LE.
+   Blocks are provisional until ESP_OK: FIFO loss invalidates continuity.
+   Separate invocations have gaps. For sustained use, call from a dedicated
+   appropriately prioritized task; other device work can cause overruns. */
+typedef bool (*lr20xx_iq_sink_t)(void *context, const uint8_t *iq_le,
+                                 size_t bytes, uint64_t first_pair);
+typedef struct {
+    uint64_t bytes;
+    uint32_t polls, max_fifo_level, sample_rate_hz;
+    int64_t elapsed_us;
+    uint8_t fifo_flags;
+    bool stopped_by_sink;
+    esp_err_t capture_error, recovery_error;
+    uint32_t fifo_capacity; /* Effective raw-IQ configuration, not read chunk size. */
+    uint64_t validated_bytes;
+    int64_t max_service_gap_us;
+} lr20xx_stream_result_t;
+esp_err_t lr20xx_stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
+                              void *context, lr20xx_stream_result_t *result);
+/* Experimental continuous-session API, 1..60000 ms. No periodic resets.
+   Publishes ~1 KiB blocks after checking FIFO error flags; a later failure
+   discards only the unpublished tail. false REJECTS a block and ends capture.
+   Only true-accepted blocks count toward validated_bytes. The sink must only
+   copy to a bounded queue, never run DSP, block, allocate or call radio APIs.
+   Reset downstream acquisition between sessions. Scheduling/FIFO throughput
+   and long-session watchdog behavior still require hardware validation.
+   Used by bounded diagnostic captures. */
+esp_err_t lr20xx_stream_source2_checked(unsigned duration_ms, lr20xx_iq_sink_t sink,
+                                      void *context, lr20xx_stream_result_t *result);
+
+/* Checked blocks until the sink rejects a block. Requires extended 1024-byte
+   FIFO and a dedicated task; periodically yields one tick for other workers.
+   Caller must stop/join this owner before retuning or freeing sink storage. */
+esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
+                                    lr20xx_stream_result_t *result);
+/* Advisory ownership flag: direct diagnostics must not wait on a live owner. */
+bool lr20xx_stream_source2_active(void);
+
 esp_err_t lr20xx_set_standby(bool xosc);
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz);
 esp_err_t lr20xx_set_rx_path(lr20xx_rx_path_t path, uint8_t boost);

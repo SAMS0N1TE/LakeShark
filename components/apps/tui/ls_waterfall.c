@@ -14,6 +14,7 @@
 #include "ls_tui_ui.h"
 /* ls_tui_daylight: which way round the ground is. */
 #include "ls_theme.h"
+#include "ls_pixel_wf.h"
 
 /* ------------------------------------------------------------------ state */
 
@@ -822,7 +823,7 @@ static const char *split_name(void)
 }
 
 static const char *const GRAIN_NAME[LS_WF_GRAIN__COUNT] = {
-    "shade", "ascii", "dense", "bars"
+    "pixel", "ascii", "dense", "bars"
 };
 
 /* One knob for contrast, because it was already there twice and named neither time. */
@@ -1068,6 +1069,113 @@ bool ls_wf_touch(int col, int row)
 
 /* --------------------------------------------------------------- assembling */
 
+/* THE HISTORY IN PANEL PIXELS.
+
+   The cell history above is the data; this draws it through the shared pixel
+   renderer: one bin to a pixel across (the panel has more pixels than the
+   widest source has bins), newest row at the top, a few pixel rows to each
+   history row so the picture still moves at a readable pace. Each row is
+   coded through the window it was written under, and ref and range ride in
+   the colour table, so CONTRAST redraws the whole history as the cells did.
+
+   Rows are copied in on the UI task at draw time; ls_wf_push can run on a
+   radio task and never touches the pixels. The panel moves what it shows by
+   the new rows only (ls_tui_image_ring), so a frame costs a few rows, not a
+   screen. */
+static EXT_RAM_BSS_ATTR ls_pwf_t s_pix;
+static uint32_t s_pix_pushes;
+static ls_wf_owner_t s_pix_owner;
+static int s_pix_bins = -1;
+
+/* Pixel rows per history row: a band sweep is a row every second or more
+   and gets a thick one, a fast FFT feed thin ones, and never so thin that the
+   rows the history holds would leave the picture part empty. */
+static int pix_rows_per_row(void)
+{
+    int k = s_have_feed && s_feed.period_ms >= 1000 ? 8
+          : s_st.row_ms && s_st.row_ms < 120 ? 2 : 4;
+    const int fill = (s_pix.h + LS_WF_ROWS_MAX - 1) / LS_WF_ROWS_MAX;
+    return k > fill ? k : fill;
+}
+
+static void pix_colours(void)
+{
+    const ls_tui_theme_t *th = ls_tui_active_theme();
+    ls_pwf_stop_t stops[16];
+    for (int l = 0; l < 16; l++) {
+        /* Levels 0 and 1 are the floor's floor, drawn as nothing. */
+        const uint16_t c = th->palette[level_colour(s_cfg.palette, l < 2 ? 0 : l, s_light) & 15];
+        stops[l] = (ls_pwf_stop_t){(uint8_t)(l * 17), (uint8_t)((c >> 11) * 255 / 31),
+                                   (uint8_t)(((c >> 5) & 63) * 255 / 63), (uint8_t)((c & 31) * 255 / 31)};
+    }
+    /* level = (code / 17 - ref) * 16 / range, as level_between has it. */
+    const int span = s_cfg.range ? s_cfg.range : 16;
+    const float lo = 17.0f * s_cfg.ref, hi = 17.0f * (s_cfg.ref + 15.0f * span / 16.0f);
+    ls_pwf_colours(&s_pix, stops, 16, lo, hi);
+}
+
+/* The rows accepted since the last draw, oldest first. */
+static void pix_sync(bool fresh)
+{
+    if (fresh || s_owner != s_pix_owner || s_nbins != s_pix_bins || s_st.pushes < s_pix_pushes) {
+        ls_pwf_clear(&s_pix);
+        ls_pwf_axis_even(&s_pix, 0, s_nbins > 0 ? s_nbins - 1 : 0);
+        s_pix_owner = s_owner;
+        s_pix_bins = s_nbins;
+        /* Start from what the history already holds. */
+        s_pix_pushes = s_st.pushes > (uint32_t)s_filled ? s_st.pushes - (uint32_t)s_filled : 0;
+    }
+    uint32_t n = s_st.pushes - s_pix_pushes;
+    if (n > (uint32_t)s_filled) n = (uint32_t)s_filled;
+    const int k = pix_rows_per_row();
+    for (int back = (int)n - 1; back >= 0; back--) {
+        const int idx = (s_head - back + LS_WF_ROWS_MAX * 2) % LS_WF_ROWS_MAX;
+        int lo = s_row_lo[idx], hi = s_row_hi[idx];
+        if (hi - lo < 8) hi = lo + 8;
+        const uint8_t *row = s_hist[idx];
+        uint8_t *first = ls_pwf_push(&s_pix);
+        if (!first) break;
+        for (int i = 0; i < s_nbins && i < LS_WF_BINS_MAX; i++) {
+            int c = ((int)row[i] - lo) * 255 / (hi - lo);
+            first[i] = (uint8_t)(c < 0 ? 0 : c > 255 ? 255 : c);
+        }
+        for (int r = 1; r < k; r++) {
+            uint8_t *line = ls_pwf_push(&s_pix);
+            if (line) memcpy(line, first, LS_WF_BINS_MAX);
+            first = line ? line : first;
+        }
+    }
+    s_pix_pushes = s_st.pushes;
+}
+
+/* The history in pixels, or false to draw it in cells: a cell look chosen,
+   no PSRAM, or the panel's image cells taken by another picture. */
+static bool draw_pixels(tui_surface *sf, tui_rect r)
+{
+    if (s_cfg.grain != LS_WF_GRAIN_PIXEL || !s_hist || r.w < 4 || r.h < 2 ||
+        !ls_tui_has_images()) return false;
+    const uint16_t *src = NULL;
+    if (ls_tui_image_now(NULL, &src, NULL, NULL, NULL) && src && src != s_pix.img) return false;
+    int cw = 0, ch = 0;
+    ls_tui_geometry(NULL, NULL, &cw, &ch);
+    if (cw <= 0 || ch <= 0) return false;
+    const bool same = s_pix.img && s_pix.w == r.w * cw && s_pix.h == r.h * ch;
+    if (!ls_pwf_size(&s_pix, LS_PWF_DOWN, r.w * cw, r.h * ch, LS_WF_BINS_MAX)) return false;
+    pix_colours();
+    pix_sync(!same);
+    const uint16_t white = ls_tui_active_theme()->palette[TUI_WHITE | TUI_BRIGHT];
+    ls_pwf_mark(&s_pix, s_marker >= 0 && s_marker < r.w ? s_marker * cw + cw / 2 - 1 : -1, white);
+    ls_pwf_compose(&s_pix, esp_timer_get_time(), 33000);
+    ls_pwf_show(&s_pix, sf, r);
+    /* A panel that does not keep the picture (a bench without one) gets
+       the cells instead, on a cleared rectangle. */
+    if (!ls_tui_image_now(NULL, &src, NULL, NULL, NULL) || src != s_pix.img) {
+        tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        return false;
+    }
+    return true;
+}
+
 static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
 {
     const int64_t t0 = esp_timer_get_time();
@@ -1141,7 +1249,7 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     if (fall_h > 0) {
         const tui_rect fr = tui_rect_make(s_plot_rect.x, body.y + spec_h,
                                           s_plot_rect.w, fall_h);
-        draw_falls(sf, fr);
+        if (!draw_pixels(sf, fr)) draw_falls(sf, fr);
         draw_stall(sf, fr);
     }
 

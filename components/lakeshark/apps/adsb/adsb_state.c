@@ -3,6 +3,8 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
 
 #define GATE_WINDOW_US (10 * 1000000LL)
 
@@ -43,9 +45,30 @@ void adsb_state_init(void)
 
 adsb_aircraft_t *adsb_state_find_or_create(uint32_t icao)
 {
+    return adsb_state_find_address(icao, 0);
+}
+
+const char *adsb_state_source_label(const adsb_aircraft_t *a, int64_t now)
+{
+    if (!a) return "--";
+    bool modes = (a->sources & 1) && now - a->source_seen_us[0] <= ADSB_FIELD_STALE_US;
+    bool uat = (a->sources & 2) && now - a->source_seen_us[1] <= ADSB_FIELD_STALE_US;
+    if (modes && uat) return "BOTH";
+    if (uat) return "UAT";
+    if (modes) return "1090";
+    return a->sources == 3 ? "BOTH*" : a->sources == 2 ? "UAT*" : "1090*";
+}
+
+adsb_aircraft_t *adsb_state_find_address(uint32_t icao, uint8_t qualifier)
+{
+    if (icao > 0xFFFFFF || qualifier > 5) return NULL;
+    /* ADS-B and TIS-B ICAO addresses share an identity. Other address
+       namespaces must never alias a 1090 ICAO target with the same bits. */
+    if (qualifier == 2) qualifier = 0;
     adsb_aircraft_t *empty = NULL;
     for (int i = 0; i < ADSB_MAX_TRACKED; i++) {
-        if (s_aircraft[i].active && s_aircraft[i].icao == icao)
+        if (s_aircraft[i].active && s_aircraft[i].icao == icao &&
+            s_aircraft[i].address_qualifier == qualifier)
             return &s_aircraft[i];
         if (!s_aircraft[i].active && !empty)
             empty = &s_aircraft[i];
@@ -53,6 +76,7 @@ adsb_aircraft_t *adsb_state_find_or_create(uint32_t icao)
     if (empty) {
         memset(empty, 0, sizeof(*empty));
         empty->icao          = icao;
+        empty->address_qualifier = qualifier;
         empty->active        = true;
         empty->first_seen_us = esp_timer_get_time();
         for (size_t i = 0; i < sizeof(empty->alt_history) / sizeof(empty->alt_history[0]); i++)
@@ -60,6 +84,72 @@ adsb_aircraft_t *adsb_state_find_or_create(uint32_t icao)
         extra_reset(slot_of(empty), icao);
     }
     return empty;
+}
+
+adsb_aircraft_t *adsb_state_update_uat(const uat_fix_t *fix, int64_t now)
+{
+    if (!fix) return NULL;
+    adsb_aircraft_t *a = adsb_state_find_address(fix->address, fix->qualifier);
+    if (!a) return NULL;
+    if (fix->callsign[0]) memcpy(a->callsign, fix->callsign, sizeof(a->callsign));
+    a->uat_qualifier = fix->qualifier;
+    a->sources |= 2;
+    a->source_seen_us[1] = now;
+    a->last_seen_us = now;
+    a->msg_count++;
+    a->good_msg_count++;
+    a->rebroadcast = fix->qualifier == 2 || fix->qualifier == 3;
+    if (fix->altitude_valid) {
+        int delta = abs(fix->altitude - a->altitude);
+        if (!a->altitude_valid || delta < 5000 || a->pending_alt == fix->altitude) {
+            a->altitude = fix->altitude;
+            a->altitude_valid = true;
+            a->altitude_ts_us = now;
+            a->pending_alt = 0;
+            adsb_state_push_altitude(a, a->altitude);
+        } else a->pending_alt = fix->altitude;
+    }
+    if (fix->velocity_valid) {
+        a->ns_velocity = fix->ns_velocity;
+        a->ew_velocity = fix->ew_velocity;
+        int speed = (int)lround(hypot(fix->ns_velocity, fix->ew_velocity));
+        if (!a->velocity_valid || abs(speed - a->velocity) < 200 || a->pending_vel == speed) {
+            a->velocity = speed;
+            a->velocity_valid = true;
+            a->velocity_ts_us = now;
+            a->pending_vel = 0;
+        } else a->pending_vel = speed;
+        if (speed) {
+            int heading = (int)lround(atan2(fix->ew_velocity, fix->ns_velocity) * (180.0 / 3.141592653589793));
+            if (heading < 0) heading += 360;
+            if (heading >= 360) heading -= 360;
+            int delta = abs(heading - a->heading);
+            if (delta > 180) delta = 360 - delta;
+            if (!a->heading_valid || delta < 90 || a->pending_hdg == heading) {
+                a->heading = heading;
+                a->heading_valid = a->heading_is_track = true;
+                a->heading_ts_us = now;
+                a->pending_hdg = 0;
+            } else a->pending_hdg = heading;
+        }
+    }
+    if (fix->vert_rate_valid) {
+        if (!a->vert_rate_valid || abs(fix->vert_rate - a->vert_rate) < 2000 || a->pending_vs == fix->vert_rate) {
+            a->vert_rate = fix->vert_rate;
+            a->vert_rate_valid = true;
+            a->vert_rate_ts_us = now;
+            a->pending_vs = 0;
+        } else a->pending_vs = fix->vert_rate;
+    }
+    if (fix->position && isfinite(fix->lat) && isfinite(fix->lon) &&
+        fix->lat >= -90 && fix->lat <= 90 && fix->lon >= -180 && fix->lon <= 180) {
+        a->lat = fix->lat;
+        a->lon = fix->lon;
+        a->pos_valid = true;
+        a->pos_ts_us = now;
+        adsb_state_push_position(a);
+    }
+    return a;
 }
 
 const adsb_aircraft_t *adsb_state_get(int slot)
@@ -94,7 +184,7 @@ void adsb_state_age_out(int64_t now_us, int64_t timeout_us,
             if (on_lost) on_lost(a);
             a->active = false;
 
-            if (s_selected_icao == a->icao) s_selected_icao = 0;
+            if (s_selected_icao == adsb_state_key(a)) s_selected_icao = 0;
         }
     }
 }
@@ -112,7 +202,7 @@ static int find_selected_slot(void)
 {
     if (s_selected_icao == 0) return -1;
     for (int i = 0; i < ADSB_MAX_TRACKED; i++) {
-        if (s_aircraft[i].active && s_aircraft[i].icao == s_selected_icao)
+        if (s_aircraft[i].active && adsb_state_key(&s_aircraft[i]) == s_selected_icao)
             return i;
     }
     return -1;
@@ -144,7 +234,7 @@ const adsb_aircraft_t *adsb_select_get(void)
 
         slot = find_first_active();
         if (slot < 0) return NULL;
-        s_selected_icao = s_aircraft[slot].icao;
+        s_selected_icao = adsb_state_key(&s_aircraft[slot]);
     }
     return &s_aircraft[slot];
 }
@@ -159,7 +249,7 @@ static void select_step(int direction)
     for (int n = 0; n < ADSB_MAX_TRACKED; n++) {
         cur = (cur + direction + ADSB_MAX_TRACKED) % ADSB_MAX_TRACKED;
         if (s_aircraft[cur].active) {
-            s_selected_icao = s_aircraft[cur].icao;
+            s_selected_icao = adsb_state_key(&s_aircraft[cur]);
             return;
         }
     }

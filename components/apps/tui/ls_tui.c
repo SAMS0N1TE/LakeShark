@@ -294,6 +294,19 @@ static uint32_t s_image_serial;
 static bool s_image_dirty;
 static uint16_t *s_image_previous;
 static bool s_image_previous_valid;
+/* A scrolling picture kept as a ring (ls_tui_image_ring): column x0 / row y0
+   of the source is the picture's left / top edge, and dx / dy is how far it
+   has moved left / down since the last present. What was on the glass when
+   that present finished, so the next one can tell whether moving those
+   pixels is enough. */
+static bool s_image_ring;
+static int s_image_x0, s_image_y0, s_image_dx, s_image_dy;
+static bool s_image_shown;
+static tui_rect s_image_shown_rect;
+static const uint16_t *s_image_shown_src;
+static int s_image_shown_w, s_image_shown_h;
+/* This present moved the pixels: only the cells the new lines land in draw. */
+static bool s_image_shifted;
 
 /* Glass: cells whose glyph is drawn over the image instead of on a solid
    ground. The mark records the cell as it was written, and a present honours
@@ -337,10 +350,48 @@ static bool basemap_live(int col,int row,size_t i)
            s_back[i].ch==s_base_rec[i].ch && s_back[i].attr==s_base_rec[i].attr;
 }
 
+static void image_set(tui_rect cells, const uint16_t *src, int w, int h,
+                      uint32_t serial, bool ring);
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
 {
+    image_set(cells, src, w, h, serial, false);
+    s_image_x0 = s_image_y0 = s_image_dx = s_image_dy = 0;
+}
+
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h,
+                       int x0, int y0, int dx, int dy, uint32_t serial)
+{
+    const bool same = s_image_ring && src == s_image && w == s_image_w && h == s_image_h &&
+                      !memcmp(&cells, &s_image_rect, sizeof(cells));
+    image_set(cells, src, w, h, serial, true);
+    /* A negative move says the whole picture changed: draw every cell. */
+    if (!same || dx < 0 || dy < 0) s_image_dx = s_image_dy = 0, s_image_shown = false;
+    /* Moves since the last present add up; a present uses them once. */
+    s_image_dx += dx > 0 ? dx : 0;
+    s_image_dy += dy > 0 ? dy : 0;
+    s_image_x0 = w > 0 ? ((x0 % w) + w) % w : 0;
+    s_image_y0 = h > 0 ? ((y0 % h) + h) % h : 0;
+}
+
+bool ls_tui_has_images(void) { return s_back != NULL; }
+
+void ls_tui_image_ring_offset(int *x0, int *y0)
+{
+    if (x0) *x0 = s_image_ring ? s_image_x0 : 0;
+    if (y0) *y0 = s_image_ring ? s_image_y0 : 0;
+}
+
+static void image_set(tui_rect cells, const uint16_t *src, int w, int h,
+                      uint32_t serial, bool ring)
+{
     if (s_glass_back) memset(s_glass_back, 0, ((size_t)s_cols * s_rows + 7) / 8);
-    if (!src || s_image_w != w || s_image_h != h ||
+    if (ring) {
+        /* A ring is never compared against a copy of itself: the moves say
+           what changed, and the copy would cost a full image every frame. */
+        heap_caps_free(s_image_previous);
+        s_image_previous = NULL;
+        s_image_previous_valid = false;
+    } else if (!src || s_image_ring || s_image_w != w || s_image_h != h ||
         memcmp(&s_image_rect, &cells, sizeof(cells))) {
         heap_caps_free(s_image_previous);
         s_image_previous = NULL;
@@ -350,11 +401,12 @@ void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t se
                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
     if (s_image != src || s_image_w != w || s_image_h != h || s_image_serial != serial ||
-        memcmp(&s_image_rect, &cells, sizeof(cells))) s_image_dirty = true;
+        memcmp(&s_image_rect, &cells, sizeof(cells)) || s_image_ring != ring) s_image_dirty = true;
     s_image_rect = cells;
     s_image = src;
     s_image_w = w; s_image_h = h;
     s_image_serial = serial;
+    s_image_ring = ring;
 }
 
 bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial)
@@ -405,7 +457,14 @@ static bool glass_live(int col, int row, size_t i)
 
 static bool image_changed(int col, int row)
 {
-    if (!s_image_previous_valid || !image_cell(col, row)) return true;
+    if (s_image_shifted && image_cell(col, row)) {
+        /* The pixels already moved: only the cells holding the new lines
+           (the right edge after a move left, the top after a move down)
+           need drawing from the picture. */
+        if (s_image_dx) return (col - s_image_rect.x + 1) * s_cw > s_image_rect.w * s_cw - s_image_dx;
+        return (row - s_image_rect.y) * s_ch < s_image_dy;
+    }
+    if (s_image_ring || !s_image_previous_valid || !image_cell(col, row)) return true;
     const int x = col - s_image_rect.x, y = row - s_image_rect.y;
     const int x0 = x * s_image_w / s_image_rect.w;
     const int x1 = ((x + 1) * s_image_w + s_image_rect.w - 1) / s_image_rect.w;
@@ -468,10 +527,13 @@ static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
            face's cell is 15x26. */
         uint16_t sxs[32], sys[32];
         const int nx = s_cw < 32 ? s_cw : 32, ny = s_ch < 32 ? s_ch : 32;
+        /* A ring's picture starts at column x0, row y0 of the source. */
         for (int x = 0; x < nx; x++)
-            sxs[x] = ((col - s_image_rect.x) * s_cw + x) * s_image_w / iw;
+            sxs[x] = (uint16_t)((((col - s_image_rect.x) * s_cw + x) * s_image_w / iw +
+                                 s_image_x0) % s_image_w);
         for (int y = 0; y < ny; y++)
-            sys[y] = ((row - s_image_rect.y) * s_ch + y) * s_image_h / ih;
+            sys[y] = (uint16_t)((((row - s_image_rect.y) * s_ch + y) * s_image_h / ih +
+                                 s_image_y0) % s_image_h);
         if (s_landscape) {
             for (int x = 0; x < nx && x0 + x < s_screen_w; x++) {
                 uint16_t *run = fb + landscape_index(x0+x,y0,native_w);
@@ -1109,6 +1171,67 @@ void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ram
     memset(&s_peak, 0, sizeof(s_peak));
 }
 
+/* A RING PICTURE THAT MOVED IS MOVED ON THE GLASS, NOT DRAWN AGAIN.
+
+   A scrolling waterfall changes every pixel of its picture every frame, and
+   drawing all of its cells from the source cost 27 ms a present on the P4.
+   Moving the pixels already in the framebuffer is one copy per line of the
+   picture; then only the cells the new lines land in are drawn. That is
+   only right when the glass holds exactly the last picture: same source,
+   size and cells, every cell of it an image cell now and at the last
+   present, 1:1 pixels, and nothing reserved or painted over it. Anything
+   else draws every cell, as before. */
+static bool image_can_shift(void)
+{
+    if (!s_image_ring || !s_image || (!s_image_dx && !s_image_dy) || (s_image_dx && s_image_dy)) return false;
+    const tui_rect r = s_image_rect;
+    if (!s_image_shown || s_image_shown_src != s_image || s_image_shown_w != s_image_w ||
+        s_image_shown_h != s_image_h || memcmp(&s_image_shown_rect, &r, sizeof(r))) return false;
+    if (s_image_w != r.w * s_cw || s_image_h != r.h * s_ch) return false;
+    if (s_image_dx >= s_image_w || s_image_dy >= s_image_h) return false;
+    if (r.x < 0 || r.y < 1 || r.x + r.w > s_cols || r.y + r.h > s_rows - 1) return false;
+    for (int row = r.y; row < r.y + r.h; row++)
+        for (int col = r.x; col < r.x + r.w; col++) {
+            const size_t i = (size_t)row * s_cols + col;
+            if (reserved_cell(col, row) || glass_bit(s_glass_back, i) || glass_bit(s_glass_front, i))
+                return false;
+            if (s_back[i].ch >= 0x100 || (uint8_t)s_back[i].ch != (uint8_t)LS_TUI_IMAGE_CELL ||
+                s_front[i].ch >= 0x100 || (uint8_t)s_front[i].ch != (uint8_t)LS_TUI_IMAGE_CELL)
+                return false;
+        }
+    return true;
+}
+
+static void image_shift(uint16_t *fb, int native_w)
+{
+    const int X0 = s_ox + s_image_rect.x * s_cw, Y0 = s_oy + s_image_rect.y * s_ch;
+    const int W = s_image_w, H = s_image_h, dx = s_image_dx, dy = s_image_dy;
+    if (dx) {
+        if (s_landscape) {
+            /* A logical column is a native row: whole runs, oldest first. */
+            for (int x = X0; x < X0 + W - dx; x++)
+                memcpy(fb + landscape_run(x, Y0, H, native_w),
+                       fb + landscape_run(x + dx, Y0, H, native_w), (size_t)H * sizeof(uint16_t));
+        } else {
+            for (int y = Y0; y < Y0 + H; y++)
+                memmove(fb + (size_t)y * native_w + X0, fb + (size_t)y * native_w + X0 + dx,
+                        (size_t)(W - dx) * sizeof(uint16_t));
+        }
+    } else if (s_landscape) {
+        /* Down the picture is along a native row: a move inside each run. */
+        for (int x = X0; x < X0 + W; x++) {
+            uint16_t *run = fb + landscape_run(x, Y0, H, native_w);
+            if (s_cw_rotation) memmove(run + dy, run, (size_t)(H - dy) * sizeof(uint16_t));
+            else               memmove(run, run + dy, (size_t)(H - dy) * sizeof(uint16_t));
+        }
+    } else {
+        for (int y = Y0 + H - 1; y >= Y0 + dy; y--)
+            memcpy(fb + (size_t)y * native_w + X0, fb + (size_t)(y - dy) * native_w + X0,
+                   (size_t)W * sizeof(uint16_t));
+    }
+    dirty_logical(X0, Y0, W, H);
+}
+
 static volatile uint32_t s_present_count;
 
 uint32_t ls_tui_present_count(void) { return s_present_count; }
@@ -1130,6 +1253,8 @@ int ls_tui_present(void)
         paint_margin(fb.pixels, fb.width);
         margin = true;
     }
+    s_image_shifted = !margin && s_image_dirty && image_can_shift();
+    if (s_image_shifted) image_shift(fb.pixels, fb.width);
     int drawn = 0;
     for (int row = 0; row < s_rows; row++) {
         for (int col = 0; col < s_cols; col++) {
@@ -1160,6 +1285,24 @@ int ls_tui_present(void)
         memcpy(s_image_previous, s_image, (size_t)s_image_w * s_image_h * sizeof(uint16_t));
         s_image_previous_valid = true;
     }
+    /* What the glass holds now, for the next present's move. */
+    if (s_image_ring) {
+        bool all = s_image != NULL;
+        const tui_rect r = s_image_rect;
+        for (int row = r.y; all && row < r.y + r.h; row++)
+            for (int col = r.x; all && col < r.x + r.w; col++) {
+                if (col < 0 || row < 0 || col >= s_cols || row >= s_rows) { all = false; break; }
+                const tui_cell c = s_front[(size_t)row * s_cols + col];
+                all = c.ch < 0x100 && (uint8_t)c.ch == (uint8_t)LS_TUI_IMAGE_CELL;
+            }
+        s_image_shown = all;
+        s_image_shown_rect = r;
+        s_image_shown_src = s_image;
+        s_image_shown_w = s_image_w;
+        s_image_shown_h = s_image_h;
+    } else s_image_shown = false;
+    s_image_dx = s_image_dy = 0;
+    s_image_shifted = false;
     s_image_dirty = false;
     s_base_dirty = false;
     if (drawn || margin) {

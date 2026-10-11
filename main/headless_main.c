@@ -1,3 +1,4 @@
+#include "adsb_app.h"
 #include "tui/ls_rid.h"
 #include "tui/ls_sweep_app.h"
 #include <string.h>
@@ -2926,6 +2927,7 @@ static bool console_start(bool full)
           .hint = "<0-8>", .func = &cmd_adsbdemo },
     };
     esp_console_register_help_command();
+    uat_console_register();
     if (full) {
         for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
             esp_err_t rerr = esp_console_cmd_register(&cmds[i]);

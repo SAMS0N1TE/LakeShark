@@ -7,6 +7,8 @@
 #include "esp_attr.h"
 #include "../../ls_motion.h"
 #include "../../ls_rec_replay.h"
+#include "../../ls_catch_ui.h"
+#include "apps/rec/rec_catch.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -26,7 +28,7 @@ extern const ls_tui_screen_t ls_scr_rec;
 extern const ls_tui_screen_t ls_scr_gps;
 extern const ls_tui_screen_t ls_scr_journal;
 extern void ls_scr_journal_rec_view(void);
-static bool tools_view, gps_view;
+static bool tools_view, gps_view, catch_view;
 /* What each radio records, by the RADIO picker's numbers. Three capture raw
    signal through SUB-GHZ - pulses from the RTL-SDR and the CC1101, FSK from
    the LoRa chip - the GPS keeps a track, and the rest write their readings
@@ -512,7 +514,7 @@ static EXT_RAM_BSS_ATTR struct {
 } player;
 static bool replay_view;
 static bool rec_child_active;
-static tui_rect rec_tabs[3], replay_trace;
+static tui_rect rec_tabs[4], replay_trace;
 static ls_fresh_t replay_flash;
 static const int replay_ook_power[]={-10,0,5,10};
 static const int replay_fsk_power[]={-9,0,5,10}; /* +10 dBm replay ceiling */
@@ -763,13 +765,13 @@ static void recorder_enter(void)
             recorder_radio = LS_RSEL_SDR_RTL;
     }
     ls_rsel_track(LS_RSEL_REC,recorder_in_use);
-    tools_view=false; replay_poll(); if(replay_view){rec_child_active=false;return;} rec_child_active=true; const ls_tui_screen_t *c=recorder_child(); if(c->enter)c->enter(); if(recorder_csv())ls_scr_journal_rec_view();
+    tools_view=false; if(catch_view){rec_child_active=false;return;} replay_poll(); if(replay_view){rec_child_active=false;return;} rec_child_active=true; const ls_tui_screen_t *c=recorder_child(); if(c->enter)c->enter(); if(recorder_csv())ls_scr_journal_rec_view();
 }
-static void recorder_leave(void) { if(rec_child_active){const ls_tui_screen_t *c=recorder_child(); if(c->leave)c->leave();}rec_child_active=false; }
+static void recorder_leave(void) { if(catch_view){rec_catch_stop();catch_view=false;} if(rec_child_active){const ls_tui_screen_t *c=recorder_child(); if(c->leave)c->leave();}rec_child_active=false; }
 static void recorder_mode(bool replay)
 {
-    if(replay_view==replay)return;
-    recorder_leave();replay_view=replay;recorder_enter();
+    if(replay_view==replay && !catch_view)return;
+    recorder_leave();catch_view=false;replay_view=replay;recorder_enter();
 }
 bool ls_rec_player_load(const char *path,const subghz_file_t *f,const int32_t *edges)
 {
@@ -788,7 +790,7 @@ bool ls_scr_rec_replay_file(const char *path,const subghz_file_t *f,const int32_
     int i=ls_tui_screen_index_of(&ls_scr_rec);if(i<0)return false;
     if(!ls_rec_player_load(path,f,edges))return false;
     if(ls_tui_screen_current()==i)recorder_mode(true);
-    else {replay_view=true;ls_tui_screen_show(i);}
+    else {catch_view=false;replay_view=true;ls_tui_screen_show(i);}
     return true;
 }
 void ls_rec_player_draw(tui_surface *sf,tui_rect a){player_embedded=true;replay_draw(sf,a);}
@@ -799,15 +801,16 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     if(a.w<24 || a.h<12) { source_bar=tui_rect_make(0,0,0,0); ls_panel_notice(sf,a,"REC","Enlarge pane",""); return; }
     if(!tools_view) {
     const int tab_h=ls_tui_is_wide()?3:5;
-    const char *tabs[]={"RECORD","REPLAY","FILES"};
-    for(int i=0;i<3;i++) {
-        int left=a.x+i*a.w/3,right=a.x+(i+1)*a.w/3;
+    const char *tabs[]={"RECORD","REPLAY","CATCH","FILES"};
+    for(int i=0;i<4;i++) {
+        int left=a.x+i*a.w/4,right=a.x+(i+1)*a.w/4;
         rec_tabs[i]=tui_rect_make(left,a.y,right-left-1,tab_h);
-        ls_panel_box(sf,rec_tabs[i],NULL,(i==0&&!replay_view)||(i==1&&replay_view)?TUI_GREEN:TUI_CYAN);
+        ls_panel_box(sf,rec_tabs[i],NULL,(i==0&&!replay_view&&!catch_view)||(i==1&&replay_view)||(i==2&&catch_view)?TUI_GREEN:TUI_CYAN);
         tui_put_str(sf,rec_tabs[i],left+2,a.y+tab_h/2,tabs[i],TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     a.y+=tab_h;a.h-=tab_h;
     } else memset(rec_tabs,0,sizeof(rec_tabs));
+    if(catch_view){source_bar=tui_rect_make(0,0,0,0);snprintf(recorder_hint,sizeof(recorder_hint),"C start/stop  O options  R radio  E save  BACK recorder");ls_catch_draw(sf,a);return;}
     if(replay_view){snprintf(recorder_hint,sizeof(recorder_hint),"P play once  +/- power  O files  LEFT/RIGHT inspect");player_embedded=false;replay_draw(sf,a);return;}
     if(tools_view) snprintf(recorder_hint,sizeof(recorder_hint),"B recorder  ENTER arm/stop");
     else if(recorder_csv()) snprintf(recorder_hint,sizeof(recorder_hint),"R radio  C CSV  V sensors  O files");
@@ -853,7 +856,8 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
     }
 }
 static bool recorder_key(ls_tk_t k,char c) {
-    if(k==LS_TK_TAB){recorder_mode(!replay_view);return true;}
+    if(k==LS_TK_TAB){if(catch_view)recorder_mode(false);else if(replay_view){recorder_leave();catch_view=true;replay_view=false;recorder_enter();}else recorder_mode(true);return true;}
+    if(catch_view){if(k==LS_TK_ESC || c=='b'||c=='B'){recorder_mode(false);return true;}return ls_catch_key(k,c);}
     if(replay_view)return replay_key(k,c);
     if(!tools_view && k==LS_TK_CHAR && (c=='o'||c=='O')){replay_browse();return true;}
     /* R is RADIO here as everywhere, and U opens it too. The GPS track this
@@ -865,9 +869,10 @@ static bool recorder_key(ls_tk_t k,char c) {
     return key(k,c);
 }
 static bool recorder_touch(int x,int y) {
-    for(int i=0;i<3;i++)if(tui_rect_contains(rec_tabs[i],x,y)) {
-        if(i==2)replay_browse();else recorder_mode(i==1);return true;
+    for(int i=0;i<4;i++)if(tui_rect_contains(rec_tabs[i],x,y)) {
+        if(i==3)replay_browse();else if(i==2){if(!catch_view){recorder_leave();catch_view=true;replay_view=false;recorder_enter();}}else recorder_mode(i==1);return true;
     }
+    if(catch_view){int handled=ls_catch_touch(x,y);if(handled==2)recorder_mode(false);return handled!=0;}
     if(replay_view)return replay_touch(x,y);
     if(x>=source_bar.x && x<source_bar.x+source_bar.w && y>=source_bar.y && y<source_bar.y+source_bar.h){recorder_sources();return true;}
     if(!tools_view)return recorder_child()->touch(x,y);
@@ -881,7 +886,7 @@ bool ls_rec_tools_key(ls_tk_t k,char c){return key(k,c);}
 bool ls_rec_tools_touch(int x,int y){return touch(x,y);}
 
 void ls_scr_rec_tools(void) {
-    replay_view=false;
+    catch_view=false;replay_view=false;
     int index=ls_tui_screen_index_of(&ls_scr_rec);
     if(index>=0)ls_tui_screen_show(index);
     recorder_radio=LS_RSEL_SDR_RTL;recorder_loaded=true;recorder_mesh=false;gps_view=false;tools_view=true;ls_tui_radio_want("REC");on_enter();

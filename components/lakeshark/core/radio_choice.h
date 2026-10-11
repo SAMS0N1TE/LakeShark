@@ -25,6 +25,8 @@ typedef enum {
     LS_RSEL_WIFI,
     LS_RSEL_BLE,
     LS_RSEL_GPS,
+    LS_RSEL_P25_SPLIT,     /* LR2021 control plus RTL voice */
+    LS_RSEL_ADSB_DUAL,     /* 1090 LR2021 plus 978 RTL, ADS-B only */
     LS_RSEL_RADIOS
 } ls_rsel_radio_t;
 

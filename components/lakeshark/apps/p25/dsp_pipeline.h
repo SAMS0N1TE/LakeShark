@@ -121,6 +121,11 @@ int  dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                     int16_t *audio_out, int audio_max);
 
 float dsp_fsk4_get_fine_freq_hz(const dsp_state_t *s);
+/* Interleaved finite float I/Q at 240 kHz, nominal range [-1,1]. Same DSP and
+ * output-capacity contract as U8 input; pairs counts complex samples, not bytes.
+ * Retains source precision for LR IQ16 instead of requantizing to U8. */
+int dsp_process_float_iq(dsp_state_t *s, const float *iq, int pairs,
+                         int16_t *audio_out, int audio_max);
 void  dsp_fsk4_clear_fine_freq(dsp_state_t *s);
 void  dsp_fsk4_reset_tracker(dsp_state_t *s);
 

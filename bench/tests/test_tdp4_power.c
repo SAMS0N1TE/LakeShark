@@ -4,6 +4,10 @@
 #include "ls_xl9535.h"
 #include "ls_board.h"
 #include "freertos/task.h"
+#include <stdbool.h>
+
+/* No IQ stream on the host: the power path never sees one running. */
+bool lr20xx_stream_source2_active(void) { return false; }
 
 static bool levels[16], outputs[16], ready;
 static unsigned low_delay, high_delay;

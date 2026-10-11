@@ -14,6 +14,10 @@
 
 static int s_cols = 115, s_rows = 27;
 
+/* The music waterfall's image cells; nothing in this test draws pixels. */
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; }
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; return false; }
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial; }
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = s_cols;

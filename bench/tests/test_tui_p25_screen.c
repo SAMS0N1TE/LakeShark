@@ -144,6 +144,10 @@ bool ls_tui_daylight(void) { return false; }
 
 static int s_grid_cols = 115, s_grid_rows = 27;
 
+/* The music waterfall's image cells; nothing in this test draws pixels. */
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; }
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; return false; }
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial; }
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = s_grid_cols;
@@ -454,6 +458,31 @@ static void draw_decode_now(tui_rect pane)
     show_decode_page();
     fresh();
     draw_pane(&ls_scr_p25, pane);
+}
+
+LS_CASE(split_roles_and_fallback_fit_the_decode_pane)
+{
+    no_traffic();
+    P25.split_enabled = true;
+    P25.split_active = true;
+    P25.split_crc_percent = 80;
+    P25.split_site = 2;
+    P25.split_rfss = 1;
+    P25.grant_on_traffic = true;
+    P25.grant_talkgroup = 42;
+    P25.grant_freq_hz = 851200000;
+    snprintf(P25.split_reason, sizeof(P25.split_reason), "busy: lower/equal priority");
+    draw_decode_now(PORTRAIT);
+    LS_CHECK(escaped(PORTRAIT) == 0);
+    LS_CHECK(rect_has(PORTRAIT, "CC: LR2021 site 1/2 CRC 80%"));
+    LS_CHECK(rect_has(PORTRAIT, "VOICE: RTL TG 42 851.2000 MHz"));
+    LS_CHECK(rect_has(PORTRAIT, "busy: lower/equal priority"));
+    P25.split_active = false;
+    P25.grant_on_traffic = false;
+    draw_decode_now(PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "CC: RTL fallback"));
+    LS_CHECK(rect_has(PORTRAIT, "VOICE: RTL idle"));
+    P25.split_enabled = false;
 }
 
 LS_CASE(the_decode_page_lists_talkgroups_the_decoder_already_recorded)
@@ -1094,4 +1123,26 @@ LS_CASE(trunking_failure_and_unresolved_grants_are_visible)
     LS_CHECK(rect_has(PORTRAIT, "UNSUPPORTED GRANT"));
     P25.grant_observed.support = P25_CALL_NONE;
     P25.receive_state = P25_RX_CONTROL_SEARCH;
+}
+
+static ls_act_status_t a_fake_lriq(const ls_args_t *in, ls_val_t *out)
+{
+    P25.lr_iq_requested = in->v[0].i != 0;
+    out->kind = LS_VAL_INT; out->i = P25.lr_iq_requested;
+    return LS_ACT_OK;
+}
+LS_CASE(raw_iq_option_can_be_enabled_and_returned_to_fsk)
+{
+    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_fake_lriq, "test");
+    P25.lr_iq_requested = false;
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("LR2021 receive path");
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(P25.lr_iq_requested);
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!P25.lr_iq_requested);
+    ls_opt_close();
+    P25.lr_iq_active = true; P25.lr_iq_good = 3; P25.lr_iq_bad = 2;
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "IQ blocks 3"));
+    LS_CHECK(rect_has(PORTRAIT, "I/Q"));
+    P25.lr_iq_active = false;
 }

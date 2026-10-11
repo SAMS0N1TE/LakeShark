@@ -541,3 +541,6 @@ eTaskState eTaskGetState(TaskHandle_t task)
     if (s_task_state==eSuspended && s_suspend_lag) { --s_suspend_lag; return eRunning; }
     return s_task_state;
 }
+
+UBaseType_t uxTaskPriorityGet(TaskHandle_t task) { (void)task; return 1; }
+void vTaskPrioritySet(TaskHandle_t task, UBaseType_t priority) { (void)task; (void)priority; }

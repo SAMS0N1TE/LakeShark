@@ -8,13 +8,17 @@
 #include "ls_lora_lr20xx.h"
 
 #include <math.h>
+#include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -1955,7 +1959,10 @@ static esp_err_t recover_locked(const char *why)
     if (s_recovered && now - s_recover_at_us < s_recover_gap_us) return ESP_ERR_INVALID_STATE;
     s_recovered = true;
     s_recover_at_us = now;
-    ESP_LOGW(TAG, "%s: resetting the part (last stat 0x%04X)", why, (unsigned)s_stat);
+    if (!strcmp(why, "IQ stream finished"))
+        ESP_LOGD(TAG, "%s: resetting the part (last stat 0x%04X)", why, (unsigned)s_stat);
+    else
+        ESP_LOGW(TAG, "%s: resetting the part (last stat 0x%04X)", why, (unsigned)s_stat);
 
     esp_err_t err = ls_lora_hw_reset();
     lr20xx_info_t info;
@@ -3218,8 +3225,566 @@ static void lr_diagnostics(void)
     }
 }
 
+/* Strict unsigned parsing: reject signs, whitespace, overflow and trailing text. */
+static bool probe_number(const char *s, uint32_t limit, uint32_t *out)
+{
+    if (!s || *s < '0' || *s > '9') return false;
+    char *end;
+    errno = 0;
+    unsigned long v = strtoul(s, &end, 0);
+    if (errno || end == s || *end || v > limit) return false;
+    *out = (uint32_t)v;
+    return true;
+}
+
+static int memory_probe_command(int argc, char **argv)
+{
+    uint32_t addr = 0, count = 1;
+    if (argc < 3 || argc > 4 || !probe_number(argv[2], 0xFFFFFCu, &addr) ||
+        (addr & 3u) || (argc == 4 && !probe_number(argv[3], 16, &count)) ||
+        count == 0 || addr > 0x1000000u - count * 4u) {
+        puts("usage: lora lrmem <aligned address, e.g. 0x800FF8> [words 1..16]");
+        return 1;
+    }
+    /* One command/response pair per word, holding the bus across the bounded
+       snapshot. No reset, standby, memory write, or automatic retry. Printing
+       happens after unlock. These sequential words are not an atomic IQ capture. */
+    uint32_t words[16];
+    unsigned done = 0;
+    ls_lora_hw_lock();
+    esp_err_t err = s_bound ? ESP_OK : ESP_ERR_INVALID_STATE;
+    while (err == ESP_OK && done < count) {
+        err = lr20xx_read_reg32(addr + done * 4u, &words[done]);
+        if (err == ESP_OK) done++;
+    }
+    ls_lora_hw_unlock();
+    for (unsigned i = 0; i < done; i++)
+        printf("lrmem: 0x%06lX 0x%08lX\n", (unsigned long)(addr + i * 4u), (unsigned long)words[i]);
+    printf("lrmem: words=%u requested=%lu result=%s\n", done, (unsigned long)count, esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
+}
+
+/* Assembled from a small ARC test routine. The result word starts at zero;
+   only the ARC routine computes and writes 0x373F373F there. */
+static const uint32_t pram_proof[25] = {
+    0x600DB002u, 0x00000001u, 0x00101010u, 0x00000000u,
+    0x0F80200Au, 0x10600010u, 0x0F80210Au, 0x9BDF1357u,
+    0x0F80220Au, 0xACE02468u, 0x00812107u, 0x00401800u,
+    0x0080204Au, 0x07C02020u
+};
+
+static esp_err_t proof_write(uint32_t addr, uint32_t value)
+{
+    esp_err_t err = lr20xx_write_reg32(addr, value);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    return err;
+}
+
+static int pram_proof_command(int argc)
+{
+    if (argc != 2) { puts("usage: lora lrproof"); return 1; }
+    uint32_t saved[25], marker = 0, observed = 0, recovered_signature = 0;
+    const char *phase = "preflight";
+    esp_err_t restore = ESP_OK, recovery = ESP_OK;
+    ls_lora_hw_lock();
+    /* This proof is tied to the inspected 1.24 ROM and the ordinary LoRa
+       owner. Never disturb a transmit, scanner, or alternate modem session. */
+    esp_err_t err = s_bound && s_info.lr2021 && s_info.fw_major == 1 &&
+        s_info.fw_minor == 24 && lr.cfg_valid && !lr.tx_busy && !lr.scanning &&
+        !lr.fsk_active && !ms.active && !s_exp_active ? ESP_OK : ESP_ERR_INVALID_STATE;
+    const bool rx = lr.rx_mode || lr.rearm;
+    if (err == ESP_OK) err = lr20xx_read_reg32(0x800FF8u, &marker);
+    if (err == ESP_OK && marker == 0x600DB002u) err = ESP_ERR_INVALID_STATE;
+    /* Also refuse a live uploaded header even if it did not set vendor magic. */
+    for (unsigned i = 0; err == ESP_OK && i < 25; i++)
+        err = lr20xx_read_reg32(0x801000u + 4u * i, &saved[i]);
+    if (err == ESP_OK && saved[0] == 0x600DB002u) err = ESP_ERR_INVALID_STATE;
+    bool touched = false, mapped = false;
+    if (err == ESP_OK) {
+        touched = true;
+        err = step_ok(lr20xx_set_standby(false), "PRAM proof standby");
+    }
+    phase = "upload";
+    for (unsigned i = 0; err == ESP_OK && i < 25; i++)
+        err = proof_write(0x801000u + 4u * i, pram_proof[i]);
+    if (err == ESP_OK) phase = "verify";
+    for (unsigned i = 0; err == ESP_OK && i < 25; i++) {
+        uint32_t value = 0;
+        err = lr20xx_read_reg32(0x801000u + 4u * i, &value);
+        if (err == ESP_OK && value != pram_proof[i]) err = ESP_ERR_INVALID_RESPONSE;
+    }
+    if (err == ESP_OK) {
+        phase = "execute";
+        const uint8_t enable = 0;
+        err = lr20xx_write(0x012D, &enable, 1);
+        mapped = err == ESP_OK;
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+    }
+    if (err == ESP_OK) { phase = "result"; err = lr20xx_read_reg32(0x101060u, &observed); }
+    if (err == ESP_OK && observed != 0x373F373Fu) err = ESP_ERR_INVALID_RESPONSE;
+    if (touched) {
+        /* Remove the executable header first, then restore every saved word.
+           Reset clears the ROM's patch pointers and instruction mapping. */
+        for (unsigned i = 0; restore == ESP_OK && i < 25; i++)
+            restore = proof_write((mapped ? 0x101000u : 0x801000u) + 4u * i, saved[i]);
+        s_recovered = false;
+        recovery = recover_locked("PRAM execution proof finished");
+        /* A wedged core may only accept the rollback after NRESET. */
+        if (recovery == ESP_OK) {
+            if (restore != ESP_OK) (void)lr20xx_read_reg32(0x801060u, &recovered_signature);
+            /* NRESET does not retain this SRAM reliably. Restore again using
+               the reset mapping, then verify the final byte-for-byte state. */
+            restore = ESP_OK;
+            for (unsigned i = 0; restore == ESP_OK && i < 25; i++)
+                restore = proof_write(0x801000u + 4u * i, saved[i]);
+            for (unsigned i = 0; restore == ESP_OK && i < 25; i++) {
+                uint32_t value = 0;
+                restore = lr20xx_read_reg32(0x801000u + 4u * i, &value);
+                if (restore == ESP_OK && value != saved[i]) restore = ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+        if (recovery == ESP_OK) {
+            lr.rearm = false;
+            recovery = program_lora();
+            if (recovery == ESP_OK && rx) recovery = lr_receive();
+        }
+    }
+    ls_lora_hw_unlock();
+    printf("lrproof: signature=0x%08lX expected=0x373F373F result=%s restore=%s recovery=%s\n",
+           (unsigned long)observed, esp_err_to_name(err), esp_err_to_name(restore), esp_err_to_name(recovery));
+    printf("lrproof: phase=%s post-reset-signature=0x%08lX\n", phase, (unsigned long)recovered_signature);
+    return err == ESP_OK && restore == ESP_OK && recovery == ESP_OK ? 0 : 1;
+}
+
+/* FW 1.24's 0x0290 group configures a finite internal signal capture.
+   Source 2 is consumed as signed halfword pairs by ROM routine 0x6E50.
+   Its signal meaning and sample clock still require RF validation. */
+esp_err_t lr20xx_capture_source2(uint32_t *captured, uint32_t *saved,
+                               size_t capacity, lr20xx_capture_result_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    out->phase = "arguments";
+    out->capture_error = ESP_ERR_INVALID_ARG;
+    const uintptr_t a = (uintptr_t)captured, b = (uintptr_t)saved;
+    if (!captured || !saved || capacity < LR20XX_CAPTURE_WORDS ||
+        (a > b ? a - b : b - a) < LR20XX_CAPTURE_WORDS * sizeof(uint32_t))
+        return ESP_ERR_INVALID_ARG;
+    const int64_t started = esp_timer_get_time();
+    uint32_t status = 0, magic = 0;
+    unsigned done = 0, count = 0;
+    esp_err_t restore = ESP_OK, recovery = ESP_OK;
+    const char *phase = "preflight";
+    ls_lora_hw_lock();
+    esp_err_t err = s_bound && s_info.lr2021 && s_info.fw_major == 1 &&
+        s_info.fw_minor == 24 && lr.cfg_valid && !lr.tx_busy && !lr.scanning &&
+        !lr.fsk_active && !ms.active && !s_exp_active ? ESP_OK : ESP_ERR_INVALID_STATE;
+    const bool rx = lr.rx_mode || lr.rearm;
+    const uint32_t hz = lr.cfg.freq_hz;
+    const uint32_t bw = lr.cfg.bw_hz;
+    /* HackRF tone sweeps established 4*BW and positive spectral orientation
+       for these profiles on FW1.24. Do not extrapolate unknown settings. */
+    const uint32_t rate = hz == 910525000u && lr.cfg.sf == 7 &&
+        (bw == 31250 || bw == 62500 || bw == 125000 || bw == 250000) ? bw * 4 : 0;
+    if (err == ESP_OK) err = lr20xx_read_reg32(0x800FF8u, &magic);
+    if (err == ESP_OK && magic == 0x600DB002u) err = ESP_ERR_INVALID_STATE;
+    for (unsigned i = 0; err == ESP_OK && i < 256; i++)
+        err = lr20xx_read_reg32(0x802000u + 4u * i, &saved[i]);
+    bool touched = false;
+    if (err == ESP_OK) {
+        touched = true;
+        phase = "standby";
+        err = step_ok(lr20xx_set_standby(false), "capture standby");
+    }
+    if (err == ESP_OK) {
+        /* Keep current modem settings (FF), mode=2, source=2, bank=4
+           (offset 0x2000), no delay, last word index=255, no extra IRQ. */
+        const uint8_t args[] = {0xFF, 0, 0, 0, 0, 0x92, 0, 0, 0, 0xFF, 0};
+        phase = "configure";
+        err = step_ok(lr20xx_write(0x0290, args, sizeof(args)), "capture configuration");
+    }
+    if (err == ESP_OK) { phase = "trigger"; err = arm_lora_rx(); }
+    if (err == ESP_OK) {
+        phase = "completion";
+        const int64_t deadline = esp_timer_get_time() + 100000;
+        do {
+            err = lr20xx_read_reg32(0xF30054u, &status);
+            if (err != ESP_OK || (status & 0x03000000u) == 0x03000000u) break;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } while (esp_timer_get_time() < deadline);
+        if (err == ESP_OK && (status & 0x03000000u) != 0x03000000u) err = ESP_ERR_TIMEOUT;
+    }
+    if (err == ESP_OK) { phase = "stop"; err = step_ok(lr20xx_set_standby(false), "capture stop"); }
+    if (err == ESP_OK) {
+        uint8_t bytes[2] = {0};
+        phase = "length";
+        err = lr20xx_read(0x0291, NULL, 0, bytes, sizeof(bytes));
+        if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+        count = ((unsigned)bytes[0] << 8) | bytes[1];
+        if (err == ESP_OK && count != 1024) err = ESP_ERR_INVALID_SIZE;
+    }
+    if (err == ESP_OK) phase = "readback";
+    while (err == ESP_OK && done < 256) {
+        err = lr20xx_read_reg32(0x802000u + 4u * done, &captured[done]);
+        if (err == ESP_OK) done++;
+    }
+    if (touched) {
+        s_recovered = false;
+        recovery = recover_locked("finite capture finished");
+        if (recovery == ESP_OK) {
+            for (unsigned i = 0; restore == ESP_OK && i < 256; i++)
+                restore = proof_write(0x802000u + 4u * i, saved[i]);
+            for (unsigned i = 0; restore == ESP_OK && i < 256; i++) {
+                uint32_t check = 0;
+                restore = lr20xx_read_reg32(0x802000u + 4u * i, &check);
+                if (restore == ESP_OK && check != saved[i]) restore = ESP_ERR_INVALID_RESPONSE;
+            }
+            lr.rearm = false;
+            recovery = program_lora();
+            if (recovery == ESP_OK && rx) recovery = lr_receive();
+        } else restore = ESP_ERR_INVALID_STATE;
+    }
+    ls_lora_hw_unlock();
+    *out = (lr20xx_capture_result_t) {
+        .frequency_hz = hz, .status = status, .bytes = count, .words = done,
+        .bandwidth_hz = bw, .sample_rate_hz = rate,
+        .elapsed_us = esp_timer_get_time() - started, .phase = phase,
+        .capture_error = err, .restore_error = restore, .recovery_error = recovery
+    };
+    return err != ESP_OK ? err : restore != ESP_OK ? restore : recovery;
+}
+
+static int capture_probe_command(int argc)
+{
+    if (argc != 2) { puts("usage: lora lrcap"); return 1; }
+    uint32_t *saved = malloc(2u * 1024u);
+    if (!saved) { puts("lrcap: allocation failed"); return 1; }
+    uint32_t *captured = saved + 256;
+    lr20xx_capture_result_t result;
+    const esp_err_t err = lr20xx_capture_source2(captured, saved, 256, &result);
+    printf("lrcap-meta: bw=%lu sample_rate=%lu iq=%u\n", (unsigned long)result.bandwidth_hz,
+           (unsigned long)result.sample_rate_hz, result.sample_rate_hz ? 1u : 0u);
+    for (unsigned i = 0; i < result.words; i++)
+        printf("lrcap: %03u 0x%08lX\n", i, (unsigned long)captured[i]);
+    printf("lrcap: source=2 hz=%lu status=0x%08lX bytes=%u words=%u phase=%s result=%s restore=%s recovery=%s\n",
+           (unsigned long)result.frequency_hz, (unsigned long)result.status,
+           result.bytes, result.words, result.phase, esp_err_to_name(result.capture_error),
+           esp_err_to_name(result.restore_error), esp_err_to_name(result.recovery_error));
+    free(saved);
+    return err == ESP_OK ? 0 : 1;
+}
+
+/* Experimental session setting. No register changes outside exclusive capture. */
+static unsigned s_iq_fifo_capacity = 1024;
+static esp_err_t iq_fifo_verify(void)
+{
+    uint32_t base = 0, size = 0;
+    esp_err_t e = lr20xx_read_reg32(0xF30028u, &base);
+    if (e == ESP_OK) e = lr20xx_read_reg32(0xF30030u, &size);
+    /* ROM 1.24 reads the base back as a RAM offset, dropping bit 23. */
+    if (e == ESP_OK && ((base != 0x804400u && base != 0x4400u) || size != 0x3E8u))
+        e = ESP_ERR_INVALID_RESPONSE;
+    return e;
+}
+
+/* Mode 1 directs raw source samples into the ordinary RX FIFO. */
+static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
+                               void *context, lr20xx_stream_result_t *out, bool checked, bool live)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    out->capture_error = ESP_ERR_INVALID_ARG;
+    if (!sink || (!duration_ms && !live) || duration_ms > (checked ? 60000u : 250u)) return ESP_ERR_INVALID_ARG;
+    /* Console callers have a small stack. Keep acquisition buffers in internal
+       RAM, allocated once before taking the radio lock, never in the sink. */
+    uint8_t *data = heap_caps_malloc(256u + 1280u, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!data) { out->capture_error = ESP_ERR_NO_MEM; return ESP_ERR_NO_MEM; }
+    uint8_t *pending = data + 256;
+    ls_lora_hw_lock();
+    esp_err_t err = s_bound && s_info.lr2021 && s_info.fw_major == 1 &&
+        s_info.fw_minor == 24 && lr.cfg_valid && !lr.tx_busy && !lr.scanning &&
+        !lr.fsk_active && !ms.active && !s_exp_active ? ESP_OK : ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK && lr.cfg.bw_hz != 31250) err = ESP_ERR_NOT_SUPPORTED;
+    const bool rx = lr.rx_mode || lr.rearm;
+    uint32_t magic = 0;
+    if (err == ESP_OK) err = lr20xx_read_reg32(0x800FF8u, &magic);
+    if (err == ESP_OK && magic == 0x600DB002u) err = ESP_ERR_INVALID_STATE;
+    const unsigned capacity = s_iq_fifo_capacity;
+    out->fifo_capacity = capacity;
+    if (live && capacity != 1024) err = ESP_ERR_NOT_SUPPORTED;
+    const bool touched = err == ESP_OK;
+    if (err == ESP_OK) err = ls_lora_hw_capture_fast(true);
+    if (err == ESP_OK) err = step_ok(lr20xx_set_standby(false), "IQ stream standby");
+    const uint8_t args[] = {0xFF, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 1};
+    if (err == ESP_OK) err = step_ok(lr20xx_write(0x0290, args, sizeof(args)), "IQ stream configuration");
+    /* CalibFE and SRAM capture must not run during this locked session.
+       Recovery resets the FIFO mapping and reinitializes calibration. */
+    if (err == ESP_OK && capacity == 1024) err = proof_write(0xF30028u, 0x804400u);
+    if (err == ESP_OK && capacity == 1024) err = proof_write(0xF30030u, 0x3E8u);
+    if (err == ESP_OK && capacity == 1024) err = iq_fifo_verify();
+    /* Flags latch independently of IRQ enables. Clear stale state here;
+       the acquisition boundary below discards startup data and flags. */
+    const uint8_t clear_flags[] = {0x3F, 0x3F};
+    if (err == ESP_OK) err = step_ok(lr20xx_write(0x0114, clear_flags, 2), "clear FIFO flags");
+    if (err == ESP_OK) err = arm_lora_rx();
+    if (err == ESP_OK && capacity == 1024) err = iq_fifo_verify();
+    /* RX startup can already fill the tiny FIFO while the ROM is returning
+       SetRx/GetStatus. Define the stream after discarding that startup data. */
+    if (err == ESP_OK) err = lr20xx_clear_rx_fifo();
+    if (err == ESP_OK) err = lr20xx_write(0x0114, clear_flags, 2);
+    const int64_t started = esp_timer_get_time();
+    int64_t previous_poll = started, last_yield = started;
+    size_t pending_bytes = 0;
+    while (err == ESP_OK && !out->stopped_by_sink &&
+           (live || esp_timer_get_time() - started < (int64_t)duration_ms * 1000)) {
+        int64_t now = esp_timer_get_time(), gap = now - previous_poll;
+        if (gap > out->max_service_gap_us) out->max_service_gap_us = gap;
+        previous_poll = now;
+        uint16_t level = 0;
+        err = lr20xx_get_rx_fifo_level(&level);
+        out->polls++;
+        if (level > out->max_fifo_level) out->max_fifo_level = level;
+        /* Full is conservatively treated as loss even before reading flags. */
+        if (err == ESP_OK && level >= capacity) err = ESP_ERR_INVALID_SIZE;
+        size_t remaining = level & ~3u;
+        /* Drain the observed backlog without another two-frame level query
+           between chunks. Every SPI read stays within the transport buffer. */
+        while (err == ESP_OK && remaining) {
+            size_t n = remaining > 256u ? 256u : remaining;
+            err = lr20xx_read_rx_fifo(data, n);
+            if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+            if (err == ESP_OK) {
+                const uint64_t first_pair = out->bytes / 4;
+                out->bytes += n;
+                if (checked) {
+                    memcpy(pending + pending_bytes, data, n); pending_bytes += n;
+                    if (pending_bytes >= 1024) {
+                        uint8_t flags[2] = {0};
+                        err = lr20xx_read(0x011B, NULL, 0, flags, 2);
+                        if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+                        out->fifo_flags |= flags[0];
+                        if (err == ESP_OK && (flags[0] & 0x30)) err = ESP_ERR_INVALID_RESPONSE;
+                        if (err == ESP_OK) {
+                            bool more = sink(context, pending, pending_bytes, out->validated_bytes / 4);
+                            if (more) out->validated_bytes += pending_bytes;
+                            pending_bytes = 0;
+                            if (!more) { out->stopped_by_sink = true; break; }
+                        }
+                    }
+                } else if (!sink(context, data, n, first_pair)) { out->stopped_by_sink = true; break; }
+            }
+            remaining -= n;
+        }
+        /* A sustained producer must let the decoder and idle watchdog run.
+           Only the extended FIFO has room for a tick. Check sticky loss flags
+           before publishing the next block; never hide an excessive delay. */
+        if (live && err == ESP_OK && !out->stopped_by_sink && level <= 512 &&
+            now - last_yield >= 250) {
+            vTaskDelay(1);
+            last_yield = esp_timer_get_time();
+        }
+    }
+    out->elapsed_us = esp_timer_get_time() - started;
+    if (touched) {
+        /* Check sticky flags after the last delivered block, before stopping.
+           SetStandby can leave the producer running during its transition;
+           overflow of that unread tail does not invalidate preceding data.
+           No further samples are delivered after this continuity check. */
+        uint8_t flags[2] = {0};
+        esp_err_t flags_err = lr20xx_read(0x011B, NULL, 0, flags, 2);
+        if (flags_err == ESP_OK && !read_stat_ok()) flags_err = ESP_ERR_INVALID_RESPONSE;
+        out->fifo_flags |= flags[0];
+        if (checked && err == ESP_OK && flags_err == ESP_OK && !(flags[0] & 0x30) && pending_bytes) {
+            if (sink(context, pending, pending_bytes, out->validated_bytes / 4))
+                out->validated_bytes += pending_bytes;
+            else out->stopped_by_sink = true;
+        }
+        esp_err_t stop_err = step_ok(lr20xx_set_standby(false), "IQ stream stop");
+        if (err == ESP_OK) err = stop_err != ESP_OK ? stop_err : flags_err;
+        if (err == ESP_OK && (flags[0] & 0x30u)) err = ESP_ERR_INVALID_RESPONSE;
+        if (err == ESP_OK && !out->bytes) err = ESP_ERR_TIMEOUT;
+        (void)ls_lora_hw_capture_fast(false);
+        s_recovered = false;
+        out->recovery_error = recover_locked("IQ stream finished");
+        if (out->recovery_error == ESP_OK) {
+            lr.rearm = false;
+            out->recovery_error = program_lora();
+            if (out->recovery_error == ESP_OK && rx) out->recovery_error = lr_receive();
+        }
+    }
+    out->capture_error = err;
+    out->sample_rate_hz = 125000; /* source2 at BW31.25k; nominal, not ppm-calibrated */
+    ls_lora_hw_unlock();
+    heap_caps_free(data);
+    return err != ESP_OK ? err : out->recovery_error;
+}
+
+esp_err_t lr20xx_stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
+                              void *context, lr20xx_stream_result_t *out)
+{ return stream_source2(duration_ms, sink, context, out, false, false); }
+
+esp_err_t lr20xx_stream_source2_checked(unsigned duration_ms, lr20xx_iq_sink_t sink,
+                                      void *context, lr20xx_stream_result_t *out)
+{ return stream_source2(duration_ms, sink, context, out, true, false); }
+
+static atomic_bool s_iq_live_active;
+bool lr20xx_stream_source2_active(void) { return atomic_load(&s_iq_live_active); }
+
+esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
+                                    lr20xx_stream_result_t *out)
+{
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&s_iq_live_active, &expected, true)) {
+        if (out) { memset(out, 0, sizeof(*out)); out->capture_error = ESP_ERR_INVALID_STATE; }
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = stream_source2(0, sink, context, out, true, true);
+    atomic_store(&s_iq_live_active, false);
+    return err;
+}
+
+
+typedef struct { uint8_t *data; size_t bytes, capacity; } iq_collect_t;
+static bool iq_collect(void *context, const uint8_t *data, size_t bytes, uint64_t first_pair)
+{
+    iq_collect_t *c = context;
+    (void)first_pair;
+    size_t n = bytes < c->capacity - c->bytes ? bytes : c->capacity - c->bytes;
+    memcpy(c->data + c->bytes, data, n);
+    c->bytes += n;
+    return c->bytes < c->capacity;
+}
+static bool iq_discard(void *context, const uint8_t *data, size_t bytes, uint64_t first_pair)
+{ (void)context; (void)data; (void)bytes; (void)first_pair; return true; }
+
+typedef struct { uint32_t bytes, blocks; } iq_checked_probe_t;
+static bool iq_checked_probe_sink(void *context, const uint8_t *data, size_t bytes, uint64_t first)
+{
+    iq_checked_probe_t *p = context;
+    (void)data;
+    if (first != p->bytes / 4) return false;
+    p->bytes += bytes; p->blocks++;
+    return true;
+}
+static int checked_fifo_probe_command(int argc, char **argv)
+{
+    uint32_t duration = 1000;
+    if (argc > 3 || (argc == 3 && (!probe_number(argv[2], 3000, &duration) || !duration))) {
+        puts("usage: lora lrfifo-check [duration_ms:1..3000]"); return 1;
+    }
+    iq_checked_probe_t p = {0}; lr20xx_stream_result_t r;
+    UBaseType_t priority = uxTaskPriorityGet(NULL);
+    vTaskDelay(1);
+    vTaskPrioritySet(NULL, configMAX_PRIORITIES - 2);
+    esp_err_t e = lr20xx_stream_source2_checked(duration, iq_checked_probe_sink, &p, &r);
+    vTaskPrioritySet(NULL, priority);
+    printf("lrfifo-check: read=%lu validated=%lu blocks=%lu elapsed_us=%lld max_level=%lu max_service_gap_us=%lld flags=0x%02X result=%s recovery=%s\n",
+        (unsigned long)r.bytes, (unsigned long)r.validated_bytes, (unsigned long)p.blocks,
+        (long long)r.elapsed_us, (unsigned long)r.max_fifo_level, (long long)r.max_service_gap_us,
+        r.fifo_flags, esp_err_to_name(e), esp_err_to_name(r.recovery_error));
+    return e == ESP_OK && !r.stopped_by_sink && r.validated_bytes ? 0 : 1;
+}
+
+static int capture_fifo_probe_command(int argc, char **argv)
+{
+    uint32_t duration = 100;
+    uint32_t wait_ms = 0;
+    long threshold = 0;
+    if (argc == 6) {
+        char *end;
+        threshold = strtol(argv[4], &end, 10);
+        if (!*argv[4] || *end || threshold < -130 || threshold > -20 ||
+            !probe_number(argv[5], 60000, &wait_ms) || !wait_ms) return 1;
+    }
+    if ((argc > 4 && argc != 6) || (argc >= 3 && (!probe_number(argv[2], 250, &duration) || !duration)) ||
+        (argc >= 4 && strcmp(argv[3], "dump") && strcmp(argv[3], "hex"))) {
+        puts("usage: lora lrfifo [duration_ms:1..250 [dump|hex [trigger_dBm wait_ms:1..60000]]]"); return 1;
+    }
+    /* Buffer acquisition before printing: console traffic cannot meet FIFO timing. */
+    size_t capacity = argc == 2 ? 4096 : argc >= 4 ? duration * 500u + 512u : 0;
+    /* Cache misses while copying a long window to PSRAM can stall FIFO service. */
+#ifdef ESP_PLATFORM
+    uint8_t *data = capacity ? heap_caps_malloc(capacity, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : NULL;
+    if (capacity && !data) {
+        data = malloc(capacity);
+        if (data) puts("lrfifo: internal buffer unavailable; using general heap, continuity checks remain enabled");
+    }
+#else
+    uint8_t *data = capacity ? malloc(capacity) : NULL;
+#endif
+    if (capacity && !data) { puts("lrfifo: insufficient capture memory"); return 1; }
+    if (wait_ms) {
+        float peak = -200.0f, rssi = -200.0f;
+        bool triggered = false;
+        esp_err_t trigger_err = ESP_OK;
+        const int64_t deadline = esp_timer_get_time() + (int64_t)wait_ms * 1000;
+        while (esp_timer_get_time() < deadline) {
+            trigger_err = lr20xx_get_rssi_inst(&rssi);
+            if (trigger_err != ESP_OK) break;
+            if (rssi > peak) peak = rssi;
+            if (rssi >= threshold) { triggered = true; break; }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        printf("lrfifo-trigger: fired=%u peak=%.1f threshold=%ld result=%s\n",
+               (unsigned)triggered, (double)peak, threshold, esp_err_to_name(trigger_err));
+        if (!triggered) { free(data); return 1; }
+    }
+    iq_collect_t collected = {data, 0, capacity};
+    lr20xx_stream_result_t result;
+#ifdef ESP_PLATFORM
+    const UBaseType_t priority = uxTaskPriorityGet(NULL);
+    if (priority < 18) vTaskPrioritySet(NULL, 18);
+#endif
+    const esp_err_t err = lr20xx_stream_source2(duration, data ? iq_collect : iq_discard, &collected, &result);
+#ifdef ESP_PLATFORM
+    vTaskPrioritySet(NULL, priority);
+#endif
+    if (argc >= 4 && !strcmp(argv[3], "hex")) {
+        uint32_t crc = 0xFFFFFFFFu;
+        const char digits[] = "0123456789ABCDEF";
+        for (size_t i = 0; i < collected.bytes; i += 64) {
+            char line[129];
+            size_t n = collected.bytes-i < 64 ? collected.bytes-i : 64;
+            for (size_t j=0; j<n; j++) {
+                uint8_t byte=data[i+j];
+                line[2*j]=digits[byte>>4]; line[2*j+1]=digits[byte&15];
+                crc ^= byte;
+                for (unsigned bit=0; bit<8; bit++) crc=(crc>>1) ^ ((crc&1) ? 0xEDB88320u : 0);
+            }
+            line[2*n]=0;
+            printf("lrfifo-hex: %06u %s\n", (unsigned)i, line);
+        }
+        printf("lrfifo-crc32: %08lX bytes=%u encoding=iq16le\n", (unsigned long)~crc, (unsigned)collected.bytes);
+    } else for (size_t i = 0; i < collected.bytes; i += 4)
+        printf("lrfifo: %04u 0x%02X%02X%02X%02X\n", (unsigned)(i/4),
+               data[i+3], data[i+2], data[i+1], data[i]);
+    printf("lrfifo: bytes=%lu max_level=%lu polls=%lu elapsed_us=%lld flags=0x%02X result=%s recovery=%s\n",
+           (unsigned long)result.bytes, (unsigned long)result.max_fifo_level,
+           (unsigned long)result.polls, (long long)result.elapsed_us, result.fifo_flags,
+           esp_err_to_name(result.capture_error), esp_err_to_name(result.recovery_error));
+    free(data);
+    return err == ESP_OK ? 0 : 1;
+}
+
 int lr20xx_clock_command(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "lrfifo-size")) {
+        uint32_t n = 0;
+        if (argc != 2 && (argc != 3 || !probe_number(argv[2], 1024, &n) ||
+                         (n != 256 && n != 1024))) {
+            puts("usage: lora lrfifo-size [256|1024]"); return 1;
+        }
+        ls_lora_hw_lock();
+        if (argc == 3) s_iq_fifo_capacity = n;
+        printf("lrfifo-size: %u (next raw-IQ session)\n", s_iq_fifo_capacity);
+        ls_lora_hw_unlock();
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "lrfifo")) return capture_fifo_probe_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrfifo-check")) return checked_fifo_probe_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrmem")) return memory_probe_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrproof")) return pram_proof_command(argc);
+    if (argc > 1 && !strcmp(argv[1], "lrcap")) return capture_probe_command(argc);
     const bool clock = argc > 1 && !strcmp(argv[1], "lrclk");
     const bool reg = argc > 1 && !strcmp(argv[1], "lrreg");
     if (!clock && !reg && !(argc > 1 && !strcmp(argv[1], "lrstat"))) return -1;

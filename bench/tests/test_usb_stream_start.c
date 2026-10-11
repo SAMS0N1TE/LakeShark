@@ -133,6 +133,29 @@ esp_err_t usb_host_endpoint_clear(usb_device_handle_t device, uint8_t endpoint)
 
 
 
+LS_CASE(stream_loss_counts_ring_full_and_failed_transfers)
+{
+    ls_shim_task_fail_create(pdFALSE);s_fail_transfer_alloc=false;s_hold_completions=false;
+    class_driver_t driver={.dev_hdl=(usb_device_handle_t)0x1973};
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    /* 16 transfers fill the 256 KiB ring, then four are discarded. */
+    for(unsigned n=0;n<21;n++) {
+        usb_transfer_t *t=NULL;
+        for(unsigned i=0;i<32;i++)if(s_inflight[i]) {t=s_inflight[i];s_inflight[i]=NULL;break;}
+        LS_CHECK(t!=NULL);if(!t)break;
+        t->actual_num_bytes=n==20?0:16384;
+        t->status=n==20?USB_TRANSFER_STATUS_CANCELED:USB_TRANSFER_STATUS_COMPLETED;
+        t->callback(t);
+    }
+    LS_EQ_UINT(esp_libusb_stream_avail(),256*1024);
+    LS_EQ_UINT(esp_libusb_stream_dropped(),5*16384);
+    LS_EQ_UINT(esp_libusb_stream_dropped(),5*16384); /* Snapshot, not consumption. */
+    ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
+    LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    LS_EQ_UINT(esp_libusb_stream_dropped(),0);
+    ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
+}
+
 LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
 {
     ls_shim_task_fail_create(pdFALSE);s_fail_transfer_alloc=false;s_hold_completions=false;

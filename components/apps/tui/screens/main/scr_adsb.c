@@ -26,6 +26,7 @@
 #include "ls_lora.h"
 #include "apps/adsb/adsb_app.h"
 #include "apps/adsb/adsb_state.h"
+#include "apps/adsb/uat_weather.h"
 #include "core/perf.h"
 #include "core/settings.h"
 #include "ls_gps.h"
@@ -33,6 +34,10 @@
 static bool s_radar_only;
 static tui_rect s_tools;
 static int  s_top;      /* first visible row of the list                  */
+static bool s_weather;
+static int s_weather_slot;
+static int s_weather_line;
+static EXT_RAM_BSS_ATTR uat_weather_text_t s_weather_text;
 static bool s_detail;   /* the list, or the selected aircraft's own page   */
 
 /* Where draw() last put the list, the radar and the contacts on the
@@ -147,14 +152,17 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     char title[16];
     snprintf(title, sizeof(title), "%06lX", (unsigned long)a->icao);
     tui_box(sf, area, title, frame);
-    /* Nine fields now, rows 1 to 9, so the box needs eleven rows to
-       keep them inside its borders. The old floor of eight let the last two
-       of the eight it had land on the bottom border and past it. */
-    if (area.w < 20 || area.h < 12) return;
+    /* Source ages add one row; keep every field within the box. */
+    if (area.w < 20 || area.h < 13) return;
 
     int row = 1;
     snprintf(buf, sizeof(buf), "%.8s", a->callsign[0] ? a->callsign : "unknown");
     ls_kv(sf, area, row++, "CALLSIGN", buf, val);
+    snprintf(buf, sizeof(buf), "%s q%u 1090:%llds UAT:%llds",
+        adsb_state_source_label(a, now), a->uat_qualifier,
+        (long long)((a->sources & 1) ? (now - a->source_seen_us[0]) / 1000000 : -1),
+        (long long)((a->sources & 2) ? (now - a->source_seen_us[1]) / 1000000 : -1));
+    ls_kv(sf, area, row++, "SOURCE", buf, val);
 
     /* Right under the name, because "what is it" is the next
        question. Dim until an identification has said. */
@@ -267,6 +275,7 @@ static bool radar_center(double *lat, double *lon, bool *live)
    dongle the receiver holds, or - before either is running - the choice. */
 static ls_rsel_radio_t adsb_in_use(void)
 {
+    if (adsb_active_source() == ADSB_SRC_DUAL) return LS_RSEL_ADSB_DUAL;
     if (adsb_active_source() == ADSB_SRC_LORA) return LS_RSEL_LORA;
     return ls_rsel_sdr_held_by("adsb");
 }
@@ -275,6 +284,7 @@ static ls_rsel_radio_t adsb_in_use(void)
    Between the chip and a dongle the receive task moves by itself. */
 static void radio_chosen(ls_rsel_radio_t radio)
 {
+    adsb_uat_use_picker();
     const ls_rsel_radio_t held = ls_rsel_sdr_held_by("adsb");
     if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
@@ -330,7 +340,7 @@ static int follow_points(ls_follow_pt_t *out, int64_t now)
         double lat, lon;
         ls_map_dead_reckon(a->lat, a->lon, ns, ew, a->pos_ts_us, now,
                            LS_MAP_AIR_RECKON_US, &lat, &lon);
-        out[n++] = (ls_follow_pt_t){ a->icao, lat, lon };
+        out[n++] = (ls_follow_pt_t){ adsb_state_key(a), lat, lon };
     }
     return n;
 }
@@ -373,7 +383,7 @@ static void follow_label(char *out, size_t n, double rx_lat, double rx_lon)
     const adsb_aircraft_t *t = NULL;
     for (int s = 0; s < ADSB_MAX_TRACKED && s_follow.target; s++) {
         const adsb_aircraft_t *a = adsb_state_get(s);
-        if (a && a->active && a->icao == s_follow.target) t = a;
+        if (a && a->active && adsb_state_key(a) == s_follow.target) t = a;
     }
     char who[12] = "";
     if (t && t->callsign[0]) snprintf(who, sizeof(who), "%.8s", t->callsign);
@@ -592,8 +602,8 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 
     tui_fill(sf, tui_rect_make(list.x + 1, list.y + 1, list.w - 2, 1), ' ', head);
     tui_put_str(sf, list, list.x + 2, list.y + 1,
-                narrow ? "ICAO    CALLSIGN   ALT     AGE"
-                       : "ICAO    CALLSIGN   ALT     SPD  DIR   AGE  MSGS",
+                narrow ? "ICAO   CALLSIGN S    ALT  AGE"
+                       : "ICAO   CALLSIGN S    ALT  SPD DIR  AGE  MSGS",
                 head);
 
     int sel_index = 0, total = 0;
@@ -627,16 +637,16 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
             now - a->heading_ts_us > ADSB_FIELD_STALE_US ? "*" : "");
         else strcpy(hdg, "?");
         if (narrow)
-            snprintf(buf, sizeof(buf), "%06lX  %-9s %6s  %4d",
-                     (unsigned long)a->icao, call, alt, age);
+            snprintf(buf, sizeof(buf), "%06lX %-8s %.1s %6s %4d",
+                     (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, age);
         else
-            snprintf(buf, sizeof(buf), "%06lX  %-9s %6s  %4s  %3s  %4d  %5lu",
-                     (unsigned long)a->icao, call, alt, speed,
+            snprintf(buf, sizeof(buf), "%06lX %-8s %.1s %6s %4s %3s %4d %5lu",
+                     (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, speed,
                      hdg, age, (unsigned long)a->msg_count);
         uint8_t at = (shown - 1 == sel_index) ? sel
                    : a->pos_valid            ? body : stale;
         tui_put_str(sf, list, list.x + 2, list.y + 2 + row, buf, at);
-        if (s_rows < ADSB_MAX_TRACKED) s_row_icao[s_rows++] = a->icao;
+        if (s_rows < ADSB_MAX_TRACKED) s_row_icao[s_rows++] = adsb_state_key(a);
         row++;
     }
     if (!active)
@@ -780,20 +790,20 @@ static const char *o_level_why(const ls_opt_t *o)
 }
 
 static const ls_opt_t OPT_ADSB[] = {
-    { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = LS_OPT_RADIO(LS_RSEL_SDR_RTL), .num = o_gain,
+    { .label = "GAIN", .kind = LS_OPT_NUMBER, .radios = (LS_OPT_RADIO(LS_RSEL_SDR_RTL) | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_gain,
       .set_num = o_set_gain, .lo = 0, .hi = 49.6, .unit = "dB, 0 is automatic", .show = o_show_gain },
     { .label = "GAIN", .kind = LS_OPT_LEVEL, .radios = LS_OPT_RADIO(LS_RSEL_SDR_HACKRF), .num = o_gain,
       .set_num = o_set_gain, .lo = 0, .hi = 113, .step = 2,
       .unit = "dB, LNA + VGA, amp above 102; 0 is 48", .show = o_show_hackrf_gain },
-    { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_step, .set_num = o_set_step,
+    { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_step, .set_num = o_set_step,
       .lo = 0, .hi = LS_LORA_MODES_GAIN_MAX, .unit = "1 to 13, 0 is automatic (13)", .show = o_show_step },
-    { .label = "BOOST", .kind = LS_OPT_LEVEL, .radios = LS_OPT_LORA, .num = o_boost, .set_num = o_set_boost,
+    { .label = "BOOST", .kind = LS_OPT_LEVEL, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_boost, .set_num = o_set_boost,
       .lo = 0, .hi = 7, .step = 1, .unit = "receive boost, 0 to 7", .why_not = o_live },
-    { .label = "RX BANDWIDTH", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_bw, .set_num = o_set_bw,
+    { .label = "RX BANDWIDTH", .kind = LS_OPT_NUMBER, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_bw, .set_num = o_set_bw,
       .lo = 500, .hi = 3100, .unit = "kHz, nearest of 513 to 3077", .show = o_show_bw, .why_not = o_live },
-    { .label = "DETECTION", .kind = LS_OPT_TOGGLE, .radios = LS_OPT_LORA, .names = DETECT,
+    { .label = "DETECTION", .kind = LS_OPT_TOGGLE, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .names = DETECT,
       .get = o_detect, .set = o_set_detect, .why_not = o_live },
-    { .label = "DETECT LEVEL", .kind = LS_OPT_NUMBER, .radios = LS_OPT_LORA, .num = o_level, .set_num = o_set_level,
+    { .label = "DETECT LEVEL", .kind = LS_OPT_NUMBER, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_level, .set_num = o_set_level,
       .lo = -64, .hi = 63, .unit = "dB, -64 to 63", .show = o_show_level, .why_not = o_level_why },
 };
 static const ls_opt_ctx_t CTX_RX = { .name = "RECEIVER", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ADSB) };
@@ -856,13 +866,77 @@ static const ls_opt_t OPT_QUALITY[] = {
 static const ls_opt_ctx_t CTX_QUALITY = { .name = "QUALITY", .job = -1,
     .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_QUALITY) };
 
+static void o_weather(const ls_opt_t *o)
+{
+    (void)o;
+    s_weather = true;
+    s_weather_line = 0;
+    s_detail = false;
+}
+
+static void o_uat_quality(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    uat_stats_t stats;
+    adsb_uat_stats(&stats);
+    snprintf(out, n, "%lu DN %lu UP %lu bad", (unsigned long)(stats.short_frames + stats.long_frames),
+        (unsigned long)stats.uplink_frames, (unsigned long)stats.bad_frames);
+}
+static const ls_opt_t OPT_WEATHER[] = {
+    { .label = "TEXT PRODUCTS", .kind = LS_OPT_ACTION, .act = o_weather, .leaves = true },
+    { .label = "UAT FRAMES", .kind = LS_OPT_ACTION, .show = o_uat_quality },
+};
+static const ls_opt_ctx_t CTX_WEATHER = { .name = "FIS-B WEATHER", .job = -1,
+    .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_WEATHER) };
+
 static const ls_opt_t OPT_TOP[] = {
     { .label = "RECEIVER", .kind = LS_OPT_MENU, .sub = &CTX_RX },
     { .label = "VOICE", .kind = LS_OPT_MENU, .sub = &ls_voice_ctx_adsb },
     { .label = "DISPLAY", .kind = LS_OPT_MENU, .sub = &CTX_DISPLAY },
     { .label = "QUALITY", .kind = LS_OPT_MENU, .sub = &CTX_QUALITY },
+    { .label = "FIS-B WEATHER", .kind = LS_OPT_MENU, .sub = &CTX_WEATHER },
 };
 static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_TOP) };
+
+static void draw_weather(tui_surface *sf, tui_rect area, int64_t now)
+{
+    tui_box(sf, area, "FIS-B TEXT / W aircraft / LEFT RIGHT scroll", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_rect inside = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2);
+    if (inside.w < 8 || inside.h < 2) return;
+    bool have = false;
+    for (int i = 0; i < UAT_WX_TEXT_SLOTS; i++) {
+        int slot = (s_weather_slot + i) % UAT_WX_TEXT_SLOTS;
+        if (uat_weather_text_get(slot, now, &s_weather_text)) {
+            s_weather_slot = slot;
+            have = true;
+            break;
+        }
+    }
+    if (!have) {
+        tui_put_str(sf, inside, inside.x, inside.y, "No fresh FIS-B text received", LS_ATTR_DIM);
+        tui_put_str(sf, inside, inside.x, inside.y + 1, adsb_receiver_status(), LS_ATTR_DIM);
+        return;
+    }
+    char line[80];
+    snprintf(line, sizeof(line), "%s %s issued %s / received %llds ago",
+        s_weather_text.type, s_weather_text.location, s_weather_text.issued,
+        (long long)((now - s_weather_text.received_us) / 1000000));
+    tui_put_str(sf, inside, inside.x, inside.y, line, TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    int width = inside.w < (int)sizeof(line) - 1 ? inside.w : (int)sizeof(line) - 1;
+    const char *p = s_weather_text.text;
+    for (int row = 0; *p && row < s_weather_line; row++) {
+        int n = 0;
+        while (*p && *p != '\n' && n++ < width) p++;
+        if (*p == '\n') p++;
+    }
+    for (int row = 2; *p && row < inside.h; row++) {
+        int n = 0;
+        while (*p && *p != '\n' && n < width) line[n++] = *p++;
+        if (*p == '\n') p++;
+        line[n] = 0;
+        tui_put_str(sf, inside, inside.x, inside.y + row, line, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    }
+}
 
 static void draw(tui_surface *sf, tui_rect area)
 {
@@ -906,7 +980,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (area.h >= 18 && area.w >= 42) {
         const int nav_h = ls_tui_is_wide() ? 3 : 5;
         const bool wide=ls_tui_is_wide();
-        const char *labels[] = {wide ? "UP prev" : "PREVIOUS", s_detail ? "BACK" :
+        const char *labels[] = {wide ? "UP prev" : "PREVIOUS", (s_detail || s_weather) ? "BACK" :
                                wide ? "ENTER info" : "DETAILS", wide ? "DOWN next" : "NEXT"};
         const int step = (area.w - 1) / 3;
         for (int i = 0; i < 3; i++) {
@@ -924,6 +998,7 @@ static void draw(tui_surface *sf, tui_rect area)
         area.h -= nav_h;
     }
 
+    if (s_weather) { draw_weather(sf, area, now); return; }
     if (s_detail && sel) { draw_detail(sf, area, sel, now); return; }
 
     if (s_radar_only) {draw_radar(sf,area);s_radar_rect=area;return;}
@@ -986,6 +1061,33 @@ static bool key(ls_tk_t k, char ch)
             }
         }
         return true;
+    }
+    if (k == LS_TK_CHAR && (ch == 'w' || ch == 'W')) {
+        s_weather = !s_weather;
+        s_weather_line = 0;
+        s_detail = false;
+        return true;
+    }
+    if (s_weather) {
+        if (k == LS_TK_ESC || k == LS_TK_ENTER) { s_weather = false; return true; }
+        if (k == LS_TK_LEFT || k == LS_TK_RIGHT) {
+            s_weather_line += k == LS_TK_LEFT ? -1 : 1;
+            if (s_weather_line < 0) s_weather_line = 0;
+            if (s_weather_line > UAT_WX_TEXT_MAX / 8) s_weather_line = UAT_WX_TEXT_MAX / 8;
+            return true;
+        }
+        if (k == LS_TK_UP || k == LS_TK_DOWN) {
+            int direction = k == LS_TK_UP ? -1 : 1;
+            for (int i = 1; i <= UAT_WX_TEXT_SLOTS; i++) {
+                int slot = (s_weather_slot + direction * i + UAT_WX_TEXT_SLOTS) % UAT_WX_TEXT_SLOTS;
+                if (uat_weather_text_get(slot, esp_timer_get_time(), &s_weather_text)) {
+                    s_weather_slot = slot;
+                    s_weather_line = 0;
+                    break;
+                }
+            }
+            return true;
+        }
     }
     /* UP/DOWN keep working in DETAIL - moving through contacts is the more
        useful reading of "next" while looking at one, and it is one selection
@@ -1069,7 +1171,7 @@ static void enter(void)
     ls_follow_reset(&s_follow);
     ls_rsel_track(LS_RSEL_ADSB,adsb_in_use);
 }
-static void leave(void) { s_detail = false; ls_map_preview_leave(); }
+static void leave(void) { s_detail = s_weather = false; ls_map_preview_leave(); }
 
 const ls_tui_screen_t ls_scr_adsb = {
     /* an aircraft list with no receiver behind it is an empty table. */

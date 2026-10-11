@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "esp_timer.h"
 #include "ls_theme.h"
@@ -389,6 +391,25 @@ void lssim_seed_state(void)
     /* Keep the static fixture inside a decoded call. */
     P25.voice_active_until_us = esp_timer_get_time() + 5000000;
     snprintf(P25.dsd_modulation, sizeof(P25.dsd_modulation), "C4FM");
+    /* Static layout fixtures, opt-in; the firmware screen uses live state. */
+    const char *split = getenv("LSSIM_P25_SPLIT");
+    if (split) {
+        P25.split_enabled = true;
+        P25.split_active = strcmp(split, "fallback") != 0;
+        P25.split_available = P25.split_active;
+        P25.split_crc_percent = P25.split_active ? 80 : 0;
+        P25.split_rfss = 1;
+        P25.split_site = 2;
+        P25.grant_on_traffic = P25.split_active;
+        P25.grant_talkgroup = 42;
+        P25.grant_freq_hz = 851200000;
+        P25.dsd_tg = P25.split_active ? 42 : 0;
+        P25.receive_state = P25.split_active ? P25_RX_AUDIO : P25_RX_CONTROL_SEARCH;
+        P25.voice_active_until_us = P25.split_active ? esp_timer_get_time() + 5000000 : 0;
+        s_tune_freq_hz = P25.split_active ? 851200000 : 851012500;
+        snprintf(P25.split_reason, sizeof(P25.split_reason), "%s",
+            P25.split_active ? "busy: lower/equal priority" : "LR unavailable/busy/out of range");
+    }
 }
 
 /* -------------------------------------------------------------- tick ---- */

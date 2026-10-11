@@ -171,9 +171,10 @@ const ls_app_doc_t ls_doc_files = {
 };
 
 const ls_app_doc_t ls_doc_subghz = {
-    .purpose = "Watch the licence-free sub-GHz bands without transmitting: "
+    .purpose = "Watch the licence-free sub-GHz bands: "
                "recognise a pattern that repeats, count how often it is "
-               "heard, and decode it where the encoding is known.",
+               "heard, decode it where the encoding is known, and replay a "
+               "capture within the transmit limits.",
     .records     = LS_APP_RECORDS_MANUAL,
     .record_note = "one selected pattern - its edges, span, how many times it "
                    "was seen, when it was first and last heard, and the "

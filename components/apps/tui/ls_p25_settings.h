@@ -59,12 +59,16 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Remove allowed TG",
                                        "Control survey",
                                        "Lockout list",
-                                       "Allowed list"};
+                                       "Allowed list",
+                                       "LR2021 receive path"};
 static void ps_value(int i, char *out, size_t n)
 {
     p25_cqpsk_config_t cfg;
     bool pending;
     switch (i) {
+    case 27:
+        snprintf(out, n, "%s", P25.lr_iq_requested ? "Raw I/Q (experimental)" : "FSK (normal)");
+        break;
     case 0:
         snprintf(out, n, "%s", lakeshark_p25_mode_name());
         break;
@@ -241,6 +245,11 @@ static void ps_change(int direction, bool edit)
     }
     bool ok = true;
     switch (ps_selected) {
+    case 27:
+        ok = ps_set_action("p25.lriq", edit ? !P25.lr_iq_requested : direction > 0, true);
+        snprintf(ps_status, sizeof(ps_status), "%s", !ok ? "Requires LR2021" :
+                 P25.lr_iq_requested ? "EXP: C4FM bursts; capture gaps; voice unverified" : "Normal FSK receive selected");
+        return;
     case 0: {
         p25_p2_enable(false);
         int pref = p25_demod_get_preference();

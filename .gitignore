@@ -38,6 +38,7 @@ serial*.txt
 !/docs/T_DISPLAY_P4_USB_POWER.md
 !/docs/FIELD_LABS.md
 !/docs/POCSAG_NATIVE_STREAM.md
+!/docs/LR2021_IQ_PROBE.md
 !/docs/MIX_RF.md
 !/docs/UI_CONTROLS.md
 !/docs/HACKRF_BRINGUP.md
@@ -53,7 +54,6 @@ serial*.txt
 !/docs/DRONES.md
 !/docs/REPLAY_AND_AIRCRAFT.md
 !/docs/screenshots/
-!/docs/apps/
 /tools/*
 !/tools/carto_catalog.py
 !/tools/carto_push.py
@@ -73,6 +73,8 @@ serial*.txt
 !/tools/test_check_board_identity.py
 !/tools/check_module_shadow.py
 !/tools/ls_console.py
+!/tools/lr2021_dump.py
+!/tools/lr2021_capture.py
 !/tools/ls_remote.py
 !/tools/ls_record.py
 !/tools/ls_record_gui.py
@@ -90,6 +92,7 @@ serial*.txt
 __pycache__/
 *.pyc
 bench/build/
+bench/build-lriq/
 bench/build-asan/
 bench/logs/
 

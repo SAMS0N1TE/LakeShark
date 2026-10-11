@@ -19,6 +19,8 @@ typedef enum {
     ADSB_SRC_NONE = 0,   /* nothing that can receive 1090 MHz            */
     ADSB_SRC_IQ,         /* an IQ receiver (RTL-SDR, HackRF): everything */
     ADSB_SRC_LORA,       /* the LoRa-socket chip's Mode S frame source   */
+    ADSB_SRC_DUAL,       /* LR2021 Mode S and RTL-SDR UAT together       */
+    ADSB_SRC_UAT,        /* console UAT receiver on the RTL-SDR          */
 } adsb_source_t;
 
 /* The receiver the RADIO picker's choice comes to. `want_lora` is that

@@ -24,6 +24,7 @@
 #include "ls_crash.h"
 /**/
 #include "ls_search.h"
+#include "rec_catch.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_app_desc.h"
@@ -626,8 +627,25 @@ static bool p25_lr_trim_arg(int argc, char **argv, int at, int16_t *trim)
    the stream format the bench tools read (OS4STRM/OS4SPKT/OS4SDATA). */
 static int p25_lr_command(int argc, char **argv)
 {
+    if (argc >= 1 && !strcmp(argv[0], "record"))
+        return p25_lr_iq_record_command(argc - 1, argv + 1);
     p25_lr_cfg_t cfg;
     p25_lr_get_cfg(&cfg);
+    if (argc >= 1 && !strcmp(argv[0], "mode")) {
+        if (argc == 2) {
+            if (strcmp(argv[1], "iq") && strcmp(argv[1], "fsk")) {
+                puts("usage: p25 lr mode [fsk|iq]"); return 1;
+            }
+            if (!p25_lr_iq_select(!strcmp(argv[1], "iq"))) {
+                puts("raw IQ requires LR2021"); return 1;
+            }
+        }
+        printf("P25LRIQ selected=%s active=%u blocks=%lu rejected=%lu gaps=%lu fifo_loss=%lu rate=%lu; select LR2021 in RADIO; IQ is experimental queued C4FM\n",
+               P25.lr_iq_requested ? "iq" : "fsk", P25.lr_iq_active,
+               (unsigned long)P25.lr_iq_good, (unsigned long)P25.lr_iq_bad,
+               (unsigned long)P25.lr_iq_gaps, (unsigned long)P25.lr_iq_fifo_overruns, (unsigned long)P25.lr_iq_sample_rate);
+        return 0;
+    }
     if (argc >= 4 && !strcmp(argv[0], "cfg")) {
         cfg.bitrate = (uint32_t)strtoul(argv[1], NULL, 10);
         cfg.deviation_hz = (uint32_t)strtoul(argv[2], NULL, 10);
@@ -740,7 +758,7 @@ static int p25_lr_command(int argc, char **argv)
                alt.rx_boost_step ? "" : "default/", alt.rx_boost_step ? (int)alt.rx_boost_step - 1 : 0,
                (unsigned)alt.pulse_shape, (unsigned)alt.rx_gain_step, (int)alt.freq_trim_hz);
     if (argc == 0)
-        puts("usage: p25 lr [cfg <bitrate> <dev> <bw> [boost 0-7|-] [pulse] [gain 0-13] [trim -5000..5000 Hz] | alt <same>|off | lut on|off | nn on|off | cap start|stop | dump [from] [count]]");
+        puts("usage: p25 lr [mode fsk|iq | cfg <bitrate> <dev> <bw> [boost 0-7|-] [pulse] [gain 0-13] [trim -5000..5000 Hz] | alt <same>|off | lut on|off | nn on|off | cap start|stop | dump [from] [count]]");
     return 0;
 }
 
@@ -836,6 +854,26 @@ static int p25_imbe_command(int argc, char **argv)
 
 static int cmd_p25(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "split")) {
+        if (argc != 3 || (strcmp(argv[2], "on") && strcmp(argv[2], "off") &&
+                          strcmp(argv[2], "stats"))) {
+            puts("usage: p25 split on|off|stats");
+            return 1;
+        }
+        if (strcmp(argv[2], "stats")) {
+            p25_set_split(!strcmp(argv[2], "on"));
+            printf("P25 split requested %s; p25 split stats shows owner state\n", argv[2]);
+            return 0;
+        }
+        printf("P25 split=%s CC=%s site=%u/%u CRC=%u%% fallback=%u recovery=%u skips=%u drops=%u VOICE=RTL tg=%u hz=%llu reason=%s\n",
+            P25.split_enabled ? "on" : "off", P25.split_active ? "LR2021" : "RTL fallback",
+            P25.split_rfss, P25.split_site, P25.split_crc_percent,
+            P25.split_fallbacks, P25.split_recoveries, P25.split_skipped, P25.split_drops,
+            P25.grant_on_traffic ? P25.grant_talkgroup : 0,
+            (unsigned long long)(P25.grant_on_traffic ? P25.grant_freq_hz : 0),
+            P25.split_reason);
+        return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "lr"))
         return p25_lr_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "sym"))
@@ -1293,6 +1331,8 @@ void ls_ctl_register_commands(void)
         /**/
         { .command = "search", .help = "Repeating wideband search on the RTL: what keeps showing up",
           .hint = "[start [lo_MHz hi_MHz] | stop | clear | dump]", .func = &ls_search_command },
+        { .command = "catch", .help = "RTL burst spotting with LR2021 repeat decode",
+          .hint = "start <MHz>|stop|list|stats|peaks", .func = &rec_catch_command },
         /**/
         { .command = "date", .help = "Print the wall-clock time (or uptime marker if unsynced)",
           .func = &cmd_date },

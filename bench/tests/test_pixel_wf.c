@@ -1,0 +1,169 @@
+/* LS_TEST_SOURCES: ls_pixel_wf.c and ls_tui.c with the panel stubbed.
+
+   The pixel waterfall's per-frame work is bounded, and the cheap path is
+   exact: after any number of frames that moved the picture on the glass,
+   the framebuffer is pixel for pixel what drawing every cell from the
+   source gives. */
+#include "ls_test.h"
+#include "ls_tui.h"
+#include "ls_panel.h"
+#include "ls_pixel_wf.h"
+#include "esp_timer.h"
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+static uint16_t g_fb[568 * 1232];
+bool ls_panel_fb(ls_panel_fb_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->pixels = g_fb;
+    out->width = 568;
+    out->height = 1232;
+    return true;
+}
+void ls_panel_fb_present(void) {}
+void ls_panel_fb_present_rows(int y0, int y1) { (void)y0; (void)y1; }
+
+static const ls_pwf_stop_t STOPS[] = {{0, 0, 0, 0}, {80, 0, 40, 200}, {160, 0, 220, 90},
+                                      {220, 250, 220, 0}, {255, 255, 255, 255}};
+static uint32_t s_line;
+/* A line that differs from every other: a moving tone over a textured floor. */
+static void push(ls_pwf_t *p)
+{
+    uint8_t *line = ls_pwf_push(p);
+    for (int k = 0; k < p->bins; k++)
+        line[k] = (uint8_t)((k * 7 + s_line * 13) % 90);
+    line[(s_line * 3) % p->bins] = 250;
+    s_line++;
+}
+static void frame(ls_pwf_t *p, tui_rect cells, int lines, int64_t *now)
+{
+    tui_surface *sf = ls_tui_surface();
+    for (int i = 0; i < lines; i++) push(p);
+    *now += 40000;
+    ls_pwf_compose(p, *now, 33000);
+    tui_frame_begin(sf);
+    ls_pwf_show(p, sf, cells);
+    ls_tui_present();
+}
+static uint16_t *snapshot(void)
+{
+    uint16_t *copy = malloc(sizeof(g_fb));
+    if (copy) memcpy(copy, g_fb, sizeof(g_fb));
+    return copy;
+}
+
+/* Run `frames` frames of `lines` new lines each in one orientation and
+   flow, and hold the moved glass to a full redraw. */
+static void exact_and_bounded(bool landscape, bool cw, ls_pwf_flow_t flow, int lines)
+{
+    ls_tui_set_rotation_cw(cw);
+    LS_CHECK(landscape ? ls_tui_begin(1232, 568) : ls_tui_begin(568, 1232));
+    int cols, rows, cwid, chgt;
+    ls_tui_geometry(&cols, &rows, &cwid, &chgt);
+    const tui_rect cells = landscape ? tui_rect_make(6, 3, cols - 40, rows - 8)
+                                     : tui_rect_make(4, 10, cols - 8, 30);
+    ls_pwf_t p;
+    memset(&p, 0, sizeof(p));
+    LS_CHECK(ls_pwf_size(&p, flow, cells.w * cwid, cells.h * chgt, 300));
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    int64_t now = 0;
+    s_line = 0;
+    for (int i = 0; i < 4; i++) frame(&p, cells, lines, &now);
+    /* Steady state: only the cells the new lines land in are drawn, and only
+       the new lines are turned into pixels. */
+    const int per_line = flow == LS_PWF_LEFT ? cwid : chgt;
+    const int edge = flow == LS_PWF_LEFT ? cells.h : cells.w;
+    const int want = edge * ((lines + per_line - 1) / per_line + 1);
+    int worst = 0;
+    for (int i = 0; i < 40; i++) {
+        frame(&p, cells, lines, &now);
+        uint32_t us; int drawn;
+        ls_tui_last_cost(&us, &drawn);
+        if (drawn > worst) worst = drawn;
+        LS_EQ_INT((int)p.stat_px, lines * p.freq_px);
+    }
+    LS_CHECK_MSG(worst <= want, "%s %s: %d cells drawn a frame, bound %d of %d",
+                 landscape ? (cw ? "landscape cw" : "landscape ccw") : "portrait",
+                 flow == LS_PWF_LEFT ? "LEFT" : "DOWN", worst, want, cells.w * cells.h);
+    uint16_t *moved = snapshot();
+    ls_tui_invalidate();
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    ls_tui_present();
+    LS_CHECK(moved && !memcmp(moved, g_fb, sizeof(g_fb)));
+    free(moved);
+    ls_pwf_free(&p);
+    ls_tui_end();
+    ls_tui_set_rotation_cw(true);
+}
+LS_CASE(left_portrait_moves_exactly){exact_and_bounded(false, true, LS_PWF_LEFT, 4);}
+LS_CASE(left_landscape_cw_moves_exactly){exact_and_bounded(true, true, LS_PWF_LEFT, 4);}
+LS_CASE(left_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_LEFT, 3);}
+LS_CASE(down_portrait_moves_exactly){exact_and_bounded(false, true, LS_PWF_DOWN, 2);}
+LS_CASE(down_landscape_cw_moves_exactly){exact_and_bounded(true, true, LS_PWF_DOWN, 1);}
+LS_CASE(down_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_DOWN, 5);}
+
+/* A change of colours redraws everything, and is still exact afterwards. */
+LS_CASE(new_colours_draw_every_cell_then_move_again){
+    LS_CHECK(ls_tui_begin(568, 1232));
+    int cols, rows, cwid, chgt;
+    ls_tui_geometry(&cols, &rows, &cwid, &chgt);
+    const tui_rect cells = tui_rect_make(4, 10, cols - 8, 30);
+    ls_pwf_t p;
+    memset(&p, 0, sizeof(p));
+    LS_CHECK(ls_pwf_size(&p, LS_PWF_LEFT, cells.w * cwid, cells.h * chgt, 300));
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    int64_t now = 0;
+    for (int i = 0; i < 5; i++) frame(&p, cells, 4, &now);
+    ls_pwf_colours(&p, STOPS, 5, 40, 200);
+    frame(&p, cells, 4, &now);
+    uint32_t us; int drawn;
+    ls_tui_last_cost(&us, &drawn);
+    LS_CHECK(drawn >= cells.w * cells.h);
+    for (int i = 0; i < 3; i++) frame(&p, cells, 4, &now);
+    ls_tui_last_cost(&us, &drawn);
+    LS_CHECK(drawn <= cells.h * 2);
+    uint16_t *moved = snapshot();
+    ls_tui_invalidate();
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    ls_tui_present();
+    LS_CHECK(moved && !memcmp(moved, g_fb, sizeof(g_fb)));
+    free(moved);
+    ls_pwf_free(&p);
+    ls_tui_end();
+}
+
+/* The time a frame takes, against the old way of drawing every cell of the
+   picture from the source. The board's 27 ms present was the full draw. */
+static double frames_ms(bool full, int n)
+{
+    LS_CHECK(ls_tui_begin(568, 1232));
+    int cols, rows, cwid, chgt;
+    ls_tui_geometry(&cols, &rows, &cwid, &chgt);
+    const tui_rect cells = tui_rect_make(3, 10, 46, 30);
+    ls_pwf_t p;
+    memset(&p, 0, sizeof(p));
+    ls_pwf_size(&p, LS_PWF_LEFT, cells.w * cwid, cells.h * chgt, 1024);
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    int64_t now = 0;
+    for (int i = 0; i < 3; i++) frame(&p, cells, 4, &now);
+    const clock_t t0 = clock();
+    for (int i = 0; i < n; i++) {
+        if (full) ls_pwf_axis_changed(&p);
+        frame(&p, cells, 4, &now);
+    }
+    const double ms = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC / n;
+    ls_pwf_free(&p);
+    ls_tui_end();
+    return ms;
+}
+LS_CASE(a_moving_frame_costs_a_fraction_of_a_full_draw){
+    const double moving = frames_ms(false, 200), full = frames_ms(true, 200);
+    printf("    460x510 waterfall, 4 lines a frame: %.3f ms moving, %.3f ms full\n",
+           moving, full);
+    LS_CHECK_MSG(moving * 3.0 < full, "moving %.3f ms vs full %.3f ms", moving, full);
+}

@@ -6,6 +6,9 @@
 #include "adsb_app.h"
 #include "adsb_demo.h"   /**/
 #include "adsb_source.h"
+#include "uat_stream.h"
+#include "uat_weather.h"
+#include <string.h>
 #include "iq_app_control.h"
 #include "radio_endpoint.h"
 #include "radio_choice.h"
@@ -16,6 +19,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "ls_lora.h"
 #include "sdkconfig.h"
 #include <stdlib.h>
@@ -35,6 +39,51 @@ static volatile bool s_rx_should_run = false;
 static volatile bool s_rx_running    = false;
 static ls_radio_session_t *s_session;
 static ls_iq_control_t s_radio_control;
+static bool s_dual_chip;
+static volatile bool s_console_uat;
+static int s_app_index = -1;
+static EXT_RAM_BSS_ATTR uat_stream_t s_uat;
+static uat_stats_t s_uat_stats;
+static portMUX_TYPE s_uat_lock = portMUX_INITIALIZER_UNLOCKED;
+
+void adsb_uat_stats(uat_stats_t *out)
+{
+    if (!out) return;
+    portENTER_CRITICAL(&s_uat_lock);
+    *out = s_uat_stats;
+    portEXIT_CRITICAL(&s_uat_lock);
+}
+
+bool adsb_uat_start(void)
+{
+    if (s_app_index < 0) return false;
+    s_console_uat = true;
+    app_switch_to(s_app_index);
+    return true;
+}
+
+void adsb_uat_stop(void)
+{
+    s_console_uat = false;
+    if (app_current_index() == s_app_index) {
+        s_rx_should_run = false;
+        app_park();
+    }
+}
+
+void adsb_uat_use_picker(void) { s_console_uat = false; }
+
+static void uat_down(const uat_fix_t *fix, void *user)
+{
+    (void)user;
+    adsb_decode_on_uat(fix);
+}
+
+static void uat_up(const uint8_t *payload, void *user)
+{
+    (void)user;
+    uat_weather_uplink(payload, esp_timer_get_time());
+}
 
 /* Which receiver is feeding the decoder right now. Written by the rx task,
    read by whatever reports radio status. */
@@ -143,25 +192,41 @@ static bool adsb_iq_present(void)
    receive task. */
 static adsb_source_t adsb_choose(void)
 {
+    if (ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_ADSB_DUAL &&
+        (ls_lora_caps() & LS_LORA_CAP_MODES_RX)) {
+        ls_radio_requirements_t uat = IQ_REQUIREMENTS;
+        uat.min_hz = uat.max_hz = 978000000;
+        uat.sample_rate_hz = UAT_SAMPLE_RATE;
+        uat.preferred_endpoint_id = LS_RADIO_ENDPOINT_RTL_USB;
+        if (ls_radio_endpoint_available(&uat)) return ADSB_SRC_DUAL;
+        return ADSB_SRC_LORA;
+    }
+    if (s_console_uat) return ADSB_SRC_UAT;
     return adsb_source_choose(ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_LORA,
                               adsb_iq_present(), ls_lora_caps());
 }
 
-static bool adsb_radio_open(void)
+static bool adsb_radio_open(adsb_source_t source)
 {
     ls_radio_requirements_t requirements = IQ_REQUIREMENTS;
-    requirements.preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_ADSB);
+    bool uat = source == ADSB_SRC_DUAL || source == ADSB_SRC_UAT;
+    if (uat) {
+        requirements.min_hz = requirements.max_hz = 978000000;
+        requirements.sample_rate_hz = UAT_SAMPLE_RATE;
+    }
+    requirements.preferred_endpoint_id = uat ? LS_RADIO_ENDPOINT_RTL_USB : ls_rsel_sdr_endpoint(LS_RSEL_ADSB);
     ls_radio_err_t error = ls_radio_acquire("adsb", &requirements,
                                             &s_session);
     if (error != LS_RADIO_OK) {
         s_status = error == LS_RADIO_ERR_BUSY ? "radio busy: retrying" :
+                   uat && !ls_radio_endpoint_available(&requirements) ? "UAT needs RTL-SDR at 978 MHz" :
                    adsb_iq_present() ? "open failed: retrying" : "no receiver: attach radio";
         return false;
     }
 
     const ls_radio_iq_config_t requested = {
-        .center_hz = s_cfg_freq,
-        .sample_rate_hz = 2000000,
+        .center_hz = uat ? 978000000 : s_cfg_freq,
+        .sample_rate_hz = uat ? UAT_SAMPLE_RATE : 2000000,
         .bandwidth_hz = 0,
         .gain_mode = s_cfg_gain == 0 ? LS_RADIO_GAIN_AUTO
                                      : LS_RADIO_GAIN_MANUAL,
@@ -169,6 +234,10 @@ static bool adsb_radio_open(void)
     };
     ls_radio_iq_config_t actual;
     error = ls_radio_iq_configure(s_session, &requested, &actual);
+    if (error == LS_RADIO_OK && uat &&
+        (actual.sample_rate_hz < UAT_SAMPLE_RATE - 2 || actual.sample_rate_hz > UAT_SAMPLE_RATE + 2 ||
+         actual.center_hz != 978000000))
+        error = LS_RADIO_ERR_UNSUPPORTED;
     if (error == LS_RADIO_OK) error = ls_radio_iq_start(s_session);
     if (error != LS_RADIO_OK) {
         s_status = "start failed: retrying";
@@ -226,7 +295,8 @@ static void adsb_lora_run(void)
     }
     adsb_decode_reset_stream();
     s_source = ADSB_SRC_LORA;
-    s_status = "receiving: lr-chip";
+    s_status = ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_ADSB_DUAL ?
+        "1090 LR; dual needs RTL-SDR" : "receiving: lr-chip";
     adsb_chip_diag_mark_start();     /* the rates in `adsb chips` run from here */
     ESP_LOGI(TAG, "source: %s, %.3f MHz gain step %d", adsb_source_name(ADSB_SRC_LORA),
              s_cfg_freq / 1e6, step);
@@ -286,6 +356,21 @@ static void adsb_lora_run(void)
     s_source = ADSB_SRC_NONE;
 }
 
+static void adsb_rx_close(void)
+{
+    if (s_session) {
+        (void)ls_radio_iq_stop(s_session);
+        ls_radio_release(s_session);
+        s_session = NULL;
+    }
+    if (s_dual_chip) {
+        (void)LORA_OPS.end();
+        ls_mesh_radio_hold_bg(false);
+        s_dual_chip = false;
+    }
+    s_source = ADSB_SRC_NONE;
+}
+
 static void adsb_rx_task(void *arg)
 {
     (void)arg;
@@ -305,17 +390,44 @@ static void adsb_rx_task(void *arg)
     int64_t last_data_us = last_report_us;
     size_t got = 0;
     s_rx_running = true;
+    adsb_modes_stats_t dual_stats = {0};
+    int dual_errors = 0, dual_gain = 0;
+    uat_stream_init(&s_uat, uat_down, uat_up, NULL);
+    portENTER_CRITICAL(&s_uat_lock);
+    memset(&s_uat_stats, 0, sizeof(s_uat_stats));
+    portEXIT_CRITICAL(&s_uat_lock);
 
     while (s_rx_should_run) {
         if (!s_session) {
             /* The chosen receiver, falling back to whichever of an IQ
                receiver and the LoRa socket's chip can do Mode S. With
                neither, the IQ open below keeps retrying, as it always has. */
-            if (adsb_choose() == ADSB_SRC_LORA) {
+            adsb_source_t chosen = adsb_choose();
+            if (chosen == ADSB_SRC_LORA) {
                 adsb_lora_run();
                 continue;
             }
-            if (!adsb_radio_open()) {
+            if (chosen == ADSB_SRC_DUAL) {
+                if (ls_mesh_radio_wanted() || !adsb_lora_hold()) {
+                    s_status = "LR2021 busy: retrying dual";
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    continue;
+                }
+                dual_gain = adsb_lr_gain_step(adsb_requested_gain());
+                if (LORA_OPS.begin(1090000000, dual_gain) != ESP_OK) {
+                    (void)LORA_OPS.end();
+                    ls_mesh_radio_hold_bg(false);
+                    s_status = "LR2021 failed: retrying dual";
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    continue;
+                }
+                s_dual_chip = true;
+                dual_errors = 0;
+                memset(&dual_stats, 0, sizeof(dual_stats));
+                adsb_chip_diag_mark_start();
+            }
+            if (!adsb_radio_open(chosen)) {
+                adsb_rx_close();
                 s_source = ADSB_SRC_NONE;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -323,10 +435,36 @@ static void adsb_rx_task(void *arg)
             adsb_decode_reset_stream();
             got = 0;
             last_data_us = esp_timer_get_time();
-            s_source = ADSB_SRC_IQ;
-            s_status = "waiting for IQ data";
+            s_source = chosen;
+            if (chosen == ADSB_SRC_DUAL || chosen == ADSB_SRC_UAT) {
+                /* A gap or retune invalidates phase, byte carry and partial
+                   frames. Counters continue for this app entry. */
+                uat_stats_t saved = s_uat.stats;
+                uat_stream_init(&s_uat, uat_down, uat_up, NULL);
+                s_uat.stats = saved;
+            }
+            s_status = chosen == ADSB_SRC_IQ && ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_ADSB_DUAL ?
+                "dual needs LR2021; waiting 1090 IQ" : "waiting for IQ data";
         }
 
+        if (s_dual_chip) {
+            if (ls_mesh_radio_wanted()) {
+                s_status = "LR2021 requested elsewhere";
+                adsb_rx_close();
+                got = 0;
+                continue;
+            }
+            int want = adsb_lr_gain_step(adsb_requested_gain());
+            if (want != dual_gain && LORA_OPS.set_gain(want) == ESP_OK) dual_gain = want;
+            if (adsb_modes_pump(&LORA_OPS, &dual_stats, 9) < 0) dual_errors++;
+            else dual_errors = 0;
+            if (dual_errors >= 20) {
+                s_status = "LR2021 stalled: retrying dual";
+                adsb_rx_close();
+                got = 0;
+                continue;
+            }
+        }
         ls_iq_control_request_t control;
         if (ls_iq_control_take(&s_radio_control, &control) &&
             (control.flags & LS_IQ_CONTROL_GAIN)) {
@@ -345,25 +483,36 @@ static void adsb_rx_task(void *arg)
         size_t part = 0;
         ls_radio_err_t error = ls_radio_iq_read(
             s_session, buffer + got, ADSB_IQ_READ_BYTES - got,
-            ADSB_READ_TIMEOUT_MS, &part);
+            s_dual_chip ? 1 : ADSB_READ_TIMEOUT_MS, &part);
         if (error == LS_RADIO_OK && part) {
-            s_status = "receiving: iq";
+            s_status = s_source == ADSB_SRC_DUAL ? "1090 LR + 978 RTL receiving" :
+                       s_source == ADSB_SRC_UAT ? "978 RTL receiving" :
+                       ls_rsel_saved(LS_RSEL_ADSB) == LS_RSEL_ADSB_DUAL ?
+                       "1090 IQ; dual needs LR2021" : "receiving: iq";
             got += part;
             last_data_us = esp_timer_get_time();
         } else if (error != LS_RADIO_OK && error != LS_RADIO_ERR_TIMEOUT) {
             ++errors;
             s_status = "read failed: retrying";
-            (void)ls_radio_iq_stop(s_session);
-            ls_radio_release(s_session);
-            s_session = NULL;
-            s_source = ADSB_SRC_NONE;
+            adsb_rx_close();
             adsb_decode_reset_stream();
             got = 0;
         }
         if (got == ADSB_IQ_READ_BYTES) {
             ++fulls;
             perf_count_bytes(got);
-            adsb_on_sample(buffer, got);
+            if (s_source == ADSB_SRC_DUAL || s_source == ADSB_SRC_UAT) {
+                /* Drain Mode S between bounded UAT slices. Even a full USB
+                   transfer must not defer the chip's nine-frame FIFO. */
+                for (size_t at = 0; at < got; at += 2048) {
+                    size_t bytes = got - at < 2048 ? got - at : 2048;
+                    uat_stream_feed(&s_uat, buffer + at, bytes);
+                    if (s_dual_chip) adsb_modes_pump(&LORA_OPS, &dual_stats, 9);
+                }
+                portENTER_CRITICAL(&s_uat_lock);
+                s_uat_stats = s_uat.stats;
+                portEXIT_CRITICAL(&s_uat_lock);
+            } else adsb_on_sample(buffer, got);
             got = 0;
         }
 
@@ -376,16 +525,13 @@ static void adsb_rx_task(void *arg)
         /* The LoRa chip chosen while the IQ receiver runs: give the dongle
            back and let the top of the loop start the chip's session. */
         if (s_session) {
-            if (adsb_iq_reopen(adsb_choose(), now, last_data_us)) {
+            if (adsb_choose() != s_source || now - last_data_us >= 2000000) {
                 s_status = adsb_choose() == ADSB_SRC_LORA ? "switching receiver" :
                            "IQ stalled: retrying";
                 adsb_decode_reset_stream();
                 got = 0;
                 ESP_LOGI(TAG, "IQ receiver released: %s", s_status);
-                (void)ls_radio_iq_stop(s_session);
-                ls_radio_release(s_session);
-                s_session = NULL;
-                s_source = ADSB_SRC_NONE;
+                adsb_rx_close();
                 continue;
             }
         }
@@ -395,9 +541,7 @@ static void adsb_rx_task(void *arg)
         }
     }
 
-    if (s_session) {
-        (void)ls_radio_iq_stop(s_session);
-    }
+    adsb_rx_close();
     s_source = ADSB_SRC_NONE;
     s_status = "stopped";
     adsb_decode_reset_stream();
@@ -476,6 +620,7 @@ static void adsb_on_enter(void)
 static bool adsb_on_stop(void)
 {
     s_rx_should_run = false;
+    s_console_uat = false;
     s_age_should_run   = false;
 
     int waited;
@@ -572,6 +717,7 @@ int adsb_app_register(void)
 {
     adsb_decode_init();
     int idx = app_register(&ADSB_APP);
+    s_app_index = idx;
 
     adsb_cache_settings(&ADSB_APP);
     return idx;

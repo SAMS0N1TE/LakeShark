@@ -63,10 +63,14 @@ typedef enum {
     LS_WF_PAL__COUNT
 } ls_wf_palette_t;
 
-/* How a history cell is filled. */
+/* How the history is drawn. PIXEL is the panel's own pixels behind image
+   cells (ls_pixel_wf.h), one bin to a pixel across and a few pixel rows to a
+   history row; where a screen cannot host image cells (another picture owns
+   them) it draws as SHADE, the shaded cells. The others are cell looks. */
 
 typedef enum {
-    LS_WF_GRAIN_SHADE = 0,
+    LS_WF_GRAIN_PIXEL = 0,
+    LS_WF_GRAIN_SHADE = LS_WF_GRAIN_PIXEL,
     LS_WF_GRAIN_ASCII,
     LS_WF_GRAIN_DENSE,
     LS_WF_GRAIN_BARS,

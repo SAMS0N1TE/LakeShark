@@ -2,6 +2,8 @@
  * path and account for every voice frame on the air.
  *
  *     p25_voice_replay <u8-iq.bin> <demod-gain> [out.wav] [--frames]
+ *     p25_voice_replay <lr.iq16> -9000 [out.wav] --lr-iq16 --unproven
+ * --lr-iq16 uses the live LR2021 frontend at nominal 125 ksample/s.
  *
  * The input is what 'p25 capture' on the board records: unsigned 8-bit IQ at
  * 240000 Hz, demod gain from 'p25 capture status' (demod_gain_bits is the
@@ -29,6 +31,7 @@
 #include "imbe_shim.h"
 #include "p25_voice_hold.h"
 #include "p25_symbol_synth.h"
+#include "p25_lr_frontend.h"
 #include <errno.h>
 #include <math.h>
 #include <stdarg.h>
@@ -59,6 +62,8 @@ static struct {
     const uint8_t *iq;
     size_t iq_bytes, offset, chunk;
     int dibits_in;
+    int lr_iq16;
+    p25_lr_frontend_t frontend;
     int sym_bytes;          /* --sym: a byte a symbol, 0..3 dibits and 4 erased */
 } r;
 
@@ -84,7 +89,13 @@ void dsd_yield(void)
     int16_t out[4096];
     size_t n = r.iq_bytes - r.offset;
     if (n > r.chunk) n = r.chunk;
-    int got = dsp_process_iq(&r.dsp, r.iq + r.offset, (int)n, out, 4096);
+    int got;
+    if (r.lr_iq16) {
+        float iq[1280];
+        size_t pairs = p25_lr_frontend_process(&r.frontend, r.iq + r.offset, n, iq, 640);
+        if (pairs == SIZE_MAX) { exitflag = 1; dsd_abort = 1; return; }
+        got = dsp_process_float_iq(&r.dsp, iq, (int)pairs, out, 4096);
+    } else got = dsp_process_iq(&r.dsp, r.iq + r.offset, (int)n, out, 4096);
     r.offset += n;
     for (int i = 0; i < got; i++) {
         int next = (r.ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
@@ -101,6 +112,7 @@ static double air_seconds(void)
     int queued = (r.ring.write_idx - r.ring.read_idx + DSD_SAMPLE_RING_SIZE)
                  % DSD_SAMPLE_RING_SIZE;
     if (r.dibits_in) return (double)r.offset / 4800.0 - queued / 48000.0;
+    if (r.lr_iq16) return (double)r.offset / 500000.0 - queued / 48000.0;
     return (double)r.offset / 2.0 / 240000.0 - queued / 48000.0;
 }
 
@@ -183,13 +195,14 @@ static void count_imbe_frames(void)
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin | dibits.bin> <demod-gain> [out.wav] [--frames] [--symbols out.txt] [--dibits] [--sym] [--soft] [--no-erase] [--unproven] [--imbe out.txt]\n");
+        fprintf(stderr, "usage: p25_voice_replay <u8-iq.bin | lr.iq16 | dibits.bin> <demod-gain> [out.wav] [--lr-iq16] [--frames] [--symbols out.txt] [--dibits] [--sym] [--soft] [--no-erase] [--unproven] [--imbe out.txt]\n");
         return 2;
     }
     const char *wav = NULL;
     int list = 0, unproven = 0, repair = 1, no_repeat = 0, erase = 1, soft = 0;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--frames")) list = 1;
+        else if (!strcmp(argv[i], "--lr-iq16")) r.lr_iq16 = 1;
         else if (!strcmp(argv[i], "--dibits")) r.dibits_in = 1;
         else if (!strcmp(argv[i], "--sym")) r.dibits_in = r.sym_bytes = 1;
         else if (!strcmp(argv[i], "--no-erase")) erase = 0;
@@ -232,10 +245,13 @@ int main(int argc, char **argv)
     if (!iq || fread(iq, 1, (size_t)bytes, f) != (size_t)bytes) { fputs("read failed\n", stderr); return 2; }
     fclose(f);
 
-    const int dibits_in = r.dibits_in, sym_bytes = r.sym_bytes;
+    if (r.lr_iq16 && (r.dibits_in || (bytes & 3))) { free(iq); return 2; }
+    const int dibits_in = r.dibits_in, sym_bytes = r.sym_bytes, lr_iq16 = r.lr_iq16;
     memset(&r, 0, sizeof(r));
     r.dibits_in = dibits_in;
     r.sym_bytes = sym_bytes;
+    r.lr_iq16 = lr_iq16;
+    if (lr_iq16 && !p25_lr_frontend_init(&r.frontend, 0, false)) { free(iq); return 2; }
     r.state.dibit_buf = r.dibits;
     r.state.audio_out_buf = r.audio;
     r.state.audio_out_float_buf = r.audio_float;
@@ -257,10 +273,11 @@ int main(int argc, char **argv)
     dsp_set_mode(&r.dsp, DEMOD_C4FM);
     dsp_set_gain(&r.dsp, gain);
     r.iq = iq; r.iq_bytes = r.sym_bytes ? (size_t)bytes : r.dibits_in ? (size_t)bytes * 4 : (size_t)bytes; r.chunk = 2048;
+    if (r.lr_iq16) r.chunk = 1024;
     imbe_shim_init();
     p25_voice_hold_reset(&r.hold);
 
-    const double dur = r.sym_bytes ? (double)bytes / 4800.0 : r.dibits_in ? (double)bytes * 4 / 4800.0 : (double)bytes / 2.0 / 240000.0;
+    const double dur = r.lr_iq16 ? (double)bytes / 500000.0 : r.sym_bytes ? (double)bytes / 4800.0 : r.dibits_in ? (double)bytes * 4 / 4800.0 : (double)bytes / 2.0 / 240000.0;
     const size_t timeline_n = (size_t)(dur * 8000.0) + 8000;
     int16_t *timeline = calloc(timeline_n, sizeof(int16_t));
 

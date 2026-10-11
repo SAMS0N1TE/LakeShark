@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "uat_decode.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +23,8 @@ typedef struct {
 
 typedef struct {
     uint32_t         icao;
+    uint8_t          address_qualifier, uat_qualifier, sources;
+    int64_t          source_seen_us[2]; /* 0: 1090, 1: UAT */
     char             callsign[9];
     int              altitude;
     int              velocity;
@@ -81,6 +84,13 @@ typedef struct {
 
 void                   adsb_state_init(void);
 adsb_aircraft_t       *adsb_state_find_or_create(uint32_t icao);
+adsb_aircraft_t       *adsb_state_find_address(uint32_t address, uint8_t qualifier);
+adsb_aircraft_t       *adsb_state_update_uat(const uat_fix_t *, int64_t now_us);
+static inline uint32_t adsb_state_key(const adsb_aircraft_t *a)
+{
+    return a ? a->icao | ((uint32_t)a->address_qualifier << 24) : 0;
+}
+const char            *adsb_state_source_label(const adsb_aircraft_t *, int64_t now_us);
 const adsb_aircraft_t *adsb_state_get(int slot);
 int                    adsb_state_active_count(void);
 void                   adsb_state_age_out(int64_t now_us, int64_t timeout_us,

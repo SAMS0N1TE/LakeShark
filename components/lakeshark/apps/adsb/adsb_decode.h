@@ -3,6 +3,7 @@
 #define ADSB_DECODE_H
 
 #include <stdint.h>
+#include "uat_decode.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,7 @@ extern "C" {
 void adsb_decode_init(void);
 void adsb_decode_reset_stream(void);
 
+void adsb_decode_on_uat(const uat_fix_t *fix);
 void adsb_on_sample(uint8_t *iq, int len);
 
 void adsb_periodic_age(int64_t now_us);

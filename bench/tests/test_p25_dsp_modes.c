@@ -23,6 +23,19 @@ void sys_log(unsigned char color, const char *fmt, ...) { (void)color; (void)fmt
 #define P25_DEV_INNER_HZ  600.0
 #define P25_DEV_OUTER_HZ  1800.0
 
+LS_CASE(float_input_matches_u8_without_changing_existing_demodulation)
+{
+    uint8_t iq[2000]; float fiq[2000]; int16_t a[256],b[256];
+    for(unsigned k=0;k<2000;k++) { iq[k]=(uint8_t)(k*37); fiq[k]=(iq[k]-127.5f)/127.5f; }
+    for(int mode=DEMOD_C4FM;mode<=DEMOD_FSK4_TRACKING;mode++) {
+        dsp_state_t x,y; dsp_init(&x); dsp_set_mode(&x,(demod_mode_t)mode); y=x;
+        int na=dsp_process_iq(&x,iq,sizeof(iq),a,256);
+        int nb=dsp_process_float_iq(&y,fiq,1000,b,256);
+        LS_EQ_INT(na,nb); LS_CHECK(memcmp(a,b,na*sizeof(*a))==0);
+        LS_CHECK(memcmp(&x,&y,sizeof(x))==0);
+    }
+}
+
 /*
  * Half-cosine transition between adjacent symbol targets. Not a true RRC
  * pulse but close enough that the dsp_pipeline LPF sees a bandlimited

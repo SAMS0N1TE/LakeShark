@@ -59,6 +59,20 @@ void ls_tui_invalidate(void);
 #define LS_TUI_IMAGE_CELL   ((char)0xB0)
 /* Caller-owned image behind IMAGE_CELL cells; normal text can cover it. */
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial);
+/* A scrolling picture kept as a ring, for a waterfall. Column x0 and row y0
+   of `src` are the picture's left and top edges, and since the last call it
+   has moved dx pixels left or dy pixels down (one or the other) with the new
+   lines written where the ring starts over. With the same src, size and
+   cells, and the picture 1:1 on the glass, a present moves the pixels already
+   there and draws only the cells the new lines land in; otherwise it draws
+   every image cell. */
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h,
+                       int x0, int y0, int dx, int dy, uint32_t serial);
+/* Whether this build draws image cells at all (false on a bench without a
+   panel), so a renderer can choose cells before doing any pixel work. */
+bool ls_tui_has_images(void);
+/* Where the current ring picture starts in its source; 0, 0 for a plain one. */
+void ls_tui_image_ring_offset(int *x0, int *y0);
 
 /* Glass: draw this cell's glyph over the image instead of on its own
    ground. The glyph is inked in the attribute's foreground with a one pixel

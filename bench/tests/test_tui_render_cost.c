@@ -100,8 +100,19 @@ static int cells_for_pane(int pane_h)
     return last;
 }
 
+/* These cases measure the cell renderer's diff, so they draw the history in
+   cells (ASCII skips the floor the way the shaded cells did); the pixel
+   history has its own case below. */
+static void pin_grain(int grain)
+{
+    ls_wf_cfg_t cfg = *ls_wf_cfg();
+    cfg.grain = (uint8_t)grain;
+    ls_wf_cfg_set(&cfg);
+}
+
 static void to_signal_page(void)
 {
+    pin_grain(LS_WF_GRAIN_ASCII);
     ls_scr_p25.key(LS_TK_CHAR, '2');
 }
 
@@ -390,4 +401,37 @@ LS_CASE(sweep_category_rows_history_and_hunt_heat_in_both_orientations) {
         ls_scr_sweep.key(LS_TK_CHAR,'v');ls_tui_end();
     }
     ls_sweep_clear();ls_shim_time_set(saved);
+}
+
+/* The same busiest page with the history in panel pixels, a row a frame and
+   the clock moving at the board's 40 ms cadence: the panel moves what it
+   shows, so a frame pushes the new rows' cells and the chrome that changed,
+   a fraction of the 1701 the cells cost. */
+LS_CASE(the_landscape_signal_page_in_pixels_pushes_a_fraction)
+{
+    LS_CHECK(ls_tui_begin(1232, 568));
+    ls_scr_p25.key(LS_TK_CHAR, '2');
+    pin_grain(LS_WF_GRAIN_PIXEL);
+    tui_surface *sf = ls_tui_surface();
+    int cols, rows;
+    ls_tui_geometry(&cols, &rows, NULL, NULL);
+    tui_rect area = { 1, 2, cols - 2, rows - 3 };
+    int worst = 0;
+    uint32_t serial0 = 0, serial = 0;
+    for (int i = 0; i < 60; i++) {
+        feed_row();
+        ls_shim_time_advance(40000);
+        tui_frame_begin(sf);
+        ls_scr_p25.draw(sf, area);
+        const int cells = ls_tui_present();
+        if (i >= 10 && cells > worst) worst = cells;
+        const uint16_t *src = NULL;
+        LS_CHECK(ls_tui_image_now(NULL, &src, NULL, NULL, i == 10 ? &serial0 : &serial));
+    }
+    printf("    landscape signal page in pixels: worst %d cells a frame\n", worst);
+    LS_CHECK_MSG(serial != serial0, "the pixel history did not move");
+    LS_CHECK_MSG(worst > 0 && worst < 600, "pushed %d cells a frame", worst);
+    pin_grain(LS_WF_GRAIN_ASCII);
+    ls_scr_p25.key(LS_TK_CHAR, '2'); /* SPECTRUM toggles: put it back */
+    ls_tui_end();
 }

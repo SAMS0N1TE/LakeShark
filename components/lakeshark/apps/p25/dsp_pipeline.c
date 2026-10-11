@@ -799,13 +799,29 @@ const float nco_sin_lut[256] = {
 };
 
 /* ── Main entry ── */
+static int process_iq(dsp_state_t *s, const uint8_t *iq_data, const float *float_iq,
+                      int n_iq, int16_t *audio_out, int audio_max);
+
 int dsp_process_iq(dsp_state_t *s, const uint8_t *iq_data, int iq_len,
                    int16_t *audio_out, int audio_max)
 {
-    int n_out = 0, n_iq = iq_len / 2;
+    return process_iq(s, iq_data, NULL, iq_len / 2, audio_out, audio_max);
+}
+
+int dsp_process_float_iq(dsp_state_t *s, const float *iq, int pairs,
+                         int16_t *audio_out, int audio_max)
+{
+    if (!s || !iq || !audio_out || pairs < 0 || audio_max < 0) return 0;
+    return process_iq(s, NULL, iq, pairs, audio_out, audio_max);
+}
+
+static int process_iq(dsp_state_t *s, const uint8_t *iq_data, const float *float_iq,
+                      int n_iq, int16_t *audio_out, int audio_max)
+{
+    int n_out = 0;
     for (int k = 0; k < n_iq; k++) {
-        float fi = ((float)iq_data[k * 2] - 127.5f) / 127.5f;
-        float fq = ((float)iq_data[k * 2 + 1] - 127.5f) / 127.5f;
+        float fi = float_iq ? float_iq[k * 2] : ((float)iq_data[k * 2] - 127.5f) / 127.5f;
+        float fq = float_iq ? float_iq[k * 2 + 1] : ((float)iq_data[k * 2 + 1] - 127.5f) / 127.5f;
 
         /*
          * CIC pre-decimation: average every DSP_PRE_DECIM (4) IQ samples.

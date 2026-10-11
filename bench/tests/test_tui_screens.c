@@ -17,6 +17,7 @@ void ls_shim_keypad(int present);
 #include "ls_icons.h"
 /* ls_tile_grid and ls_tile_shape: the layout under test. */
 #include "ls_tui_ui.h"
+#include "ls_numpad.h"
 #include "ls_theme.h"
 #include "apps/rec/rec_state.h"
 #include "apps/p25/p25_health.h"
@@ -540,6 +541,11 @@ LS_CASE(terminal_down_preserves_live_draft_and_history_restores_it)
 
 static int s_grid_cols = 115, s_grid_rows = 27;
 
+/* The music waterfall's image cells; nothing in this test draws pixels. */
+bool ls_tui_has_images(void) { return false; }
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; }
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; return false; }
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial; }
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = s_grid_cols;
@@ -2006,21 +2012,32 @@ LS_CASE(pager_touch_and_arrow_navigation_work_in_list_and_detail)
 
 extern void lssim_field_pager(uint32_t rx, uint32_t pages);
 
-/* The value of a drawn row sits ten cells after its label. `dy` reads the
-   row below the label, for a label the controls bar also carries. */
-static bool row_value_at(const char *label, int dy, char *out, int n)
+/* The value of a label/value pair in a combined panel sits one cell after
+   its label, the way P25's DECODE / SIGNAL draws them. */
+static bool pair_value(const char *label, char *out, int n)
 {
     int x, y;
     if (!find_text(label, &x, &y)) return false;
-    y += dy;
+    x += (int)strlen(label) + 1;
     for (int i = 0; i < n - 1; i++)
-        out[i] = x + 10 + i < W ? (char)g_back[y * W + x + 10 + i].ch : ' ';
+        out[i] = x + i < W ? (char)g_back[y * W + x + i].ch : ' ';
     out[n - 1] = 0;
     return true;
 }
-static bool row_value(const char *label, char *out, int n)
+/* What a stepper box shows between its minus and its plus: the printable
+   value on its middle row, read from under the name in its top edge. */
+static bool stepper_value(const char *label, char *out, int n)
 {
-    return row_value_at(label, 0, out, n);
+    int x, y;
+    if (!find_text(label, &x, &y)) return false;
+    int len = 0;
+    for (int c = x - 2; c < x + 18 && c < W && len < n - 1; c++) {
+        const char ch = (char)g_back[(y + 2) * W + c].ch;
+        if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '%' || ch == '-' ||
+            (ch >= 'A' && ch <= 'Z')) out[len++] = ch;
+    }
+    out[len] = 0;
+    return len > 0;
 }
 static bool is_digit_cell(char c) { return c >= '0' && c <= '9'; }
 
@@ -2048,18 +2065,20 @@ LS_CASE(fm_vfo_shows_squelch_and_signal_only_in_the_modes_that_have_them)
     FM.iq_level = 0.05f;
     char v[8];
 
-    /* NFM gates on quieting, in percent. */
+    /* NFM gates on quieting, in percent. The squelch is drawn once, in the
+       SQUELCH stepper that sets it; the panel carries the carrier and the
+       gate mark under the level bar. */
     fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
-    LS_CHECK(row_value_at("CARRIER", 1, v, 4));
-    LS_CHECK_MSG(!strncmp(v, "30%", 3), "NFM squelch reads '%s'", v);
-    LS_CHECK(row_value("CARRIER", v, 5));
+    LS_CHECK(stepper_value("SQUELCH", v, 8));
+    LS_CHECK_MSG(!strcmp(v, "30%"), "NFM squelch reads '%s'", v);
+    LS_CHECK(pair_value("CARRIER", v, 5));
     LS_CHECK_MSG(!strncmp(v, "OPEN", 4), "NFM carrier reads '%s'", v);
     LS_CHECK(count_char('^') >= 1);
 
     /* AM gates on carrier level in tenths of a percent, so 30 is 3.0%. */
     fm_page_drawn(FM_MODE_AM, 0, PANES[1]);
-    LS_CHECK(row_value_at("CARRIER", 1, v, 5));
-    LS_CHECK_MSG(!strncmp(v, "3.0%", 4), "AM squelch reads '%s'", v);
+    LS_CHECK(stepper_value("SQUELCH", v, 8));
+    LS_CHECK_MSG(!strcmp(v, "3.0%"), "AM squelch reads '%s'", v);
     LS_CHECK(count_char('^') >= 1);
 
     /* WFM and the decoders write neither, so they show neither. */
@@ -2067,11 +2086,51 @@ LS_CASE(fm_vfo_shows_squelch_and_signal_only_in_the_modes_that_have_them)
     for (unsigned i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
         FM.squelch_open = true;
         fm_page_drawn(none[i], 0, PANES[1]);
-        LS_CHECK(row_value_at("CARRIER", 1, v, 3));
-        LS_CHECK_MSG(!strncmp(v, "--", 2), "mode %d squelch reads '%s'", (int)none[i], v);
-        LS_CHECK(row_value("CARRIER", v, 3));
+        LS_CHECK(stepper_value("SQUELCH", v, 8));
+        LS_CHECK_MSG(!strcmp(v, "--"), "mode %d squelch reads '%s'", (int)none[i], v);
+        LS_CHECK(pair_value("CARRIER", v, 3));
         LS_CHECK_MSG(!strncmp(v, "--", 2), "mode %d carrier reads '%s'", (int)none[i], v);
         LS_EQ_INT(0, count_char('^'));
+    }
+}
+
+/* The VFO page: TUNE is a button in the bar like its neighbours, and
+   VOLUME, GAIN and SQUELCH are steppers with their value drawn once, inside
+   them. Left third down, right third up, the value in the middle opens exact
+   entry. Both postures, by touch alone. */
+LS_CASE(fm_vfo_tune_button_and_steppers_answer_touch_in_both_postures)
+{
+    ls_action_register("fm.sql", "f", LS_CAP_TUNE, fm_test_sql, "squelch");
+    ls_value_publish("fm.sql", "%", fm_test_sql_value);
+    ls_action_register("fm.tune", "", LS_CAP_TUNE, fm_test_keypad, "Tune");
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        FM.squelch_tenths = 40;
+        int x, y, right = -1;
+        fm_page_drawn(FM_MODE_LISTEN, 0, PANES[orientation]);
+        /* The squelch is not repeated in the bar above or in the panel. */
+        LS_CHECK(!find_text("SQL 40%", &x, &y));
+        LS_CHECK(find_text("SQUELCH", &x, &y));
+        for (int c = x + 7; c < W; c++)
+            if (g_back[y * W + c].ch == '+') { right = c; break; }
+        LS_CHECK(right > x);
+
+        s_sql_calls = 0; s_sql_seen = -1.0f;
+        LS_CHECK(ls_scr_fm.touch(x - 1, y + 1));
+        LS_EQ_INT(1, s_sql_calls);
+        LS_CHECK_MSG(s_sql_seen < 40.0f, "minus asked for %.1f", (double)s_sql_seen);
+        LS_CHECK(ls_scr_fm.touch(right - 1, y + 1));
+        LS_EQ_INT(2, s_sql_calls);
+        LS_CHECK_MSG(s_sql_seen > 40.0f, "plus asked for %.1f", (double)s_sql_seen);
+        LS_CHECK(ls_scr_fm.touch((x - 2 + right) / 2, y + 1));
+        LS_CHECK(ls_numpad_active());
+        ls_numpad_close();
+
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        s_fm_keypad_opens = 0;
+        LS_CHECK(find_text("TUNE", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
+        LS_EQ_INT(1, s_fm_keypad_opens);
+        ls_scr_fm.leave();
     }
 }
 
@@ -2092,9 +2151,9 @@ LS_CASE(fm_pager_counters_come_from_the_decoder_that_is_running)
 
     /* FLEX has its own counters. */
     fm_page_drawn(FM_MODE_FLEX, 0, PANES[1]);
-    LS_CHECK(row_value("PAGES", v, 3));
+    LS_CHECK(pair_value("PAGES", v, 3));
     LS_CHECK_MSG(v[0] == '7' && !is_digit_cell(v[1]), "FLEX VFO pages reads '%s'", v);
-    LS_CHECK(row_value("SYNC", v, 8));
+    LS_CHECK(pair_value("SYNC", v, 8));
     LS_CHECK_MSG(!strncmp(v, "hunting", 7), "FLEX VFO sync reads '%s'", v);
     fm_page_drawn(FM_MODE_FLEX, 1, PANES[1]);
     LS_CHECK(find_text("7 pg", &x, &y));
@@ -2120,7 +2179,7 @@ LS_CASE(fm_pager_counters_come_from_the_decoder_that_is_running)
     LS_CHECK(find_text("5 rx", &x, &y));
     LS_CHECK(!find_text("12 pg", &x, &y));
     fm_page_drawn(FM_MODE_POCSAG, 0, PANES[1]);
-    LS_CHECK(row_value("PAGES", v, 3));
+    LS_CHECK(pair_value("PAGES", v, 3));
     LS_CHECK_MSG(v[0] == '3' && !is_digit_cell(v[1]), "chip VFO pages reads '%s'", v);
     ls_scr_fm.leave();
     lssim_field_pager(0, 0);

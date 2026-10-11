@@ -41,6 +41,7 @@ set(LS_TUI_APP_SRCS
     ${DMR_WATCH_SRCS}
     ${FW}/components/apps/tui/experiments/rs41_store.c
     ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/lakeshark/audio/call_archive.c
     ${FW}/components/lakeshark/audio/call_recorder.c
@@ -67,6 +68,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_skyview.c
     ${FW}/components/apps/tui/ls_text.c
     ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_quick.c
     ${FW}/components/apps/tui/ls_numpad.c
@@ -103,8 +105,9 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/ls_experiments_builtin.c
     ${FW}/components/apps/tui/experiments/exp_aviation.c
     ${FW}/components/apps/tui/experiments/aviation_decode.c
+    ${APP}/adsb/uat_weather.c
     ${FW}/components/apps/tui/experiments/exp_uat.c
-    ${FW}/components/apps/tui/experiments/uat_decode.c
+    ${APP}/adsb/uat_decode.c
     ${FW}/components/apps/tui/experiments/exp_carrier.c
     ${FW}/components/apps/tui/experiments/exp_rs41.c
     ${FW}/components/apps/tui/experiments/rs41_decode.c
@@ -637,6 +640,7 @@ target_include_directories(test_tui_p25_screen PRIVATE
 
 ls_add_test(test_tui_waterfall_claim
     ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -647,6 +651,7 @@ target_include_directories(test_tui_waterfall_claim PRIVATE
 
 ls_add_test(test_falls_display
     ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -660,6 +665,7 @@ target_compile_definitions(test_falls_display PRIVATE LS_TUI_CORNER_STUB=1 LS_WF
 
 ls_add_test(test_tui_waterfall_scale
     ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -671,6 +677,7 @@ target_include_directories(test_tui_waterfall_scale PRIVATE
 
 ls_add_test(test_tui_waterfall_stall
     ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -1355,6 +1362,19 @@ ls_add_test(test_p25_cqpsk_baseline
     ${APP}/p25/p25_cqpsk_controls.c
     ${APP}/p25/p25_tsbk.c
     fixtures/lsm_gen.c)
+ls_add_test(test_p25_lr_iq ${APP}/p25/p25_lr_iq.c)
+ls_add_test(test_p25_lr_frontend ${APP}/p25/p25_lr_frontend.c)
+add_executable(lr2021_lab tools/lr2021_lab.c)
+target_link_libraries(lr2021_lab PRIVATE m)
+add_test(NAME lr2021_offline_lab COMMAND lr2021_lab selftest)
+add_executable(test_lr2021_iq_queue tests/test_lr2021_iq_queue.c ${APP}/p25/lr2021_iq_queue.c)
+target_include_directories(test_lr2021_iq_queue PRIVATE ${APP}/p25)
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_lr2021_iq_queue PRIVATE Threads::Threads)
+endif()
+add_test(NAME lr2021_stream_queue COMMAND test_lr2021_iq_queue)
+set_tests_properties(lr2021_stream_queue PROPERTIES TIMEOUT 20)
 ls_add_test(test_p25_nid)
 ls_add_test(test_p25_iq_capture ${APP}/p25/p25_iq_capture_command.c)
 ls_add_test(test_p25_acquisition
@@ -1386,11 +1406,23 @@ target_link_libraries(p25_iq_replay ls_harness m)
 target_include_directories(p25_iq_replay PRIVATE ${FW}/components/imbe_vocoder)
 target_compile_options(p25_iq_replay PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(p25_iq_replay PRIVATE -Wl,--gc-sections)
+add_executable(lr2021_p25_replay tools/lr2021_p25_replay.c ${APP}/p25/p25_lr_iq.c ${APP}/p25/p25_lr_frontend.c ${_p25_replay_sources})
+target_link_libraries(lr2021_p25_replay ls_harness m)
+target_include_directories(lr2021_p25_replay PRIVATE ${FW}/components/imbe_vocoder)
+target_compile_options(lr2021_p25_replay PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(lr2021_p25_replay PRIVATE -Wl,--gc-sections)
+add_test(NAME lr2021_p25_rate_bridge COMMAND lr2021_p25_replay selftest)
+set_tests_properties(lr2021_p25_rate_bridge PROPERTIES TIMEOUT 30)
+add_test(NAME lr2021_p25_frontend_benchmark COMMAND lr2021_p25_replay benchmark)
+set_tests_properties(lr2021_p25_frontend_benchmark PROPERTIES TIMEOUT 60)
 ls_add_test(test_p25_tsdu ${APP}/p25/dsd_frame.c ${APP}/p25/p25_tsbk.c
     ${APP}/p25/p25_ess.c ${APP}/p25/p25_lcw.c)
 ls_add_test(test_p25_tsbk ${APP}/p25/p25_tsbk.c
     ${APP}/p25/grant_follower.c ${APP}/p25/p25_ess.c
     ${APP}/p25/p25_controls.c)
+ls_add_test(test_p25_split ${APP}/p25/p25_split.c ${APP}/p25/p25_tsbk.c
+    ${APP}/p25/scan_ctrl.c ${APP}/p25/grant_follower.c
+    ${APP}/p25/p25_ess.c ${APP}/p25/p25_controls.c)
 ls_add_test(test_p25_ess ${APP}/p25/p25_ess.c)
 ls_add_test(test_p25_voice_hold ${APP}/p25/p25_voice_hold.c)
 ls_add_test(test_p25_sync_confirm ${APP}/p25/p25_sync_confirm.c)
@@ -1455,6 +1487,24 @@ target_link_options(test_p25_diag_disabled PRIVATE
 ls_add_test(test_p25_lcw ${APP}/p25/p25_lcw.c)
 ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
 ls_add_test(test_music_transport)
+ls_add_test(test_pixel_wf
+    ${FW}/components/apps/tui/ls_pixel_wf.c
+    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui_inset.c
+    ${FW}/components/apps/tui/ls_font_list.c
+    ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
+    ${FW}/components/apps/tui/ls_font_mono_16.c
+    ${FW}/components/apps/tui/ls_font_mono_14.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_pixel_wf PRIVATE
+    ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_link_libraries(test_pixel_wf lvgl)
+ls_add_test(test_music_spectro)
+target_include_directories(test_music_spectro PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c
     ${FW}/components/lakeshark/audio/call_store.c
     ${FW}/components/lakeshark/audio/call_recorder.c
@@ -1469,6 +1519,7 @@ target_include_directories(test_wav_decoder PRIVATE ${FW}/components/chmorgan__e
 target_include_directories(test_music_transport PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_tui_music
     ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
@@ -1999,7 +2050,7 @@ set(P25_VOICE_REPLAY_SOURCES
     ${FW}/components/mbelib/imbe7200x4400.c
     ${P25_IMBE_TEST_SOURCES}
     ${FW}/components/imbe_vocoder/imbe_shim.cpp)
-add_executable(p25_voice_replay tools/p25_voice_replay.c ${P25_VOICE_REPLAY_SOURCES})
+add_executable(p25_voice_replay tools/p25_voice_replay.c ${APP}/p25/p25_lr_frontend.c ${P25_VOICE_REPLAY_SOURCES})
 ls_add_test(test_mbe_hamming ${FW}/components/mbelib/ecc.c)
 ls_add_test(test_imbe_chase ${APP}/p25/imbe_chase.c ${FW}/components/mbelib/ecc.c)
 target_include_directories(p25_voice_replay PRIVATE ${FW}/components/imbe_vocoder)
@@ -2044,7 +2095,7 @@ target_link_libraries(test_speech_level klatt_tts_host)
 
 foreach(exp_id aviation uat)
     ls_add_test(test_exp_${exp_id}
-        ${FW}/components/apps/tui/experiments/${exp_id}_decode.c
+        $<IF:$<STREQUAL:${exp_id},uat>,${APP}/adsb/uat_decode.c,${FW}/components/apps/tui/experiments/${exp_id}_decode.c>
         ${FW}/components/apps/tui/experiments/exp_${exp_id}.c
         ${FW}/components/apps/tui/ls_experiments.c)
     target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES}
@@ -2087,6 +2138,7 @@ target_compile_definitions(test_call_archive_idle PRIVATE CALL_ARCHIVE_HOST_TEST
 
 ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
     tools/lssim_music.c
     ${FW}/components/apps/tui/ls_icons.c ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c
@@ -2325,6 +2377,7 @@ endforeach()
 ls_add_test(test_map_label_sticky)
 
 ls_add_test(test_adsb_rx
+    ${APP}/adsb/uat_decode.c ${APP}/adsb/uat_stream.c ${APP}/adsb/uat_weather.c
     ${APP}/adsb/adsb_source.c
     ${FW}/components/lakeshark/radio/iq_app_control.c)
 target_include_directories(test_adsb_rx PRIVATE
@@ -2394,4 +2447,58 @@ target_link_options(test_tiles_open PRIVATE -Wl,--gc-sections)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_tiles_queue COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tiles_queue.py")
     add_test(NAME test_tiles_state COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tiles_state.py")
+endif()
+
+ls_add_test(test_rec_catch_core ${APP}/rec/rec_catch_core.c ${APP}/subghz/subghz_file.c
+    ${FW}/components/lakeshark/radio/ls_sub_fsk.c)
+add_test(NAME test_rec_catch_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rec_catch_ui.py $<TARGET_FILE:lssim>)
+ls_add_test(test_rec_catch_runtime ${APP}/rec/rec_catch_core.c
+    ${APP}/subghz/subghz_file.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_rec_catch_runtime PRIVATE ${FW}/components/lakeshark)
+target_compile_options(test_rec_catch_runtime PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_rec_catch_runtime PRIVATE -Wl,--gc-sections)
+get_property(_catch_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_target IN LISTS _catch_targets)
+    get_target_property(_sources ${_target} SOURCES)
+    if("${_sources}" MATCHES "scr_rec\\.c")
+        target_sources(${_target} PRIVATE
+            ${FW}/components/apps/tui/ls_catch_ui.c
+            ${FW}/bench/shims/rec_catch_unavailable.c)
+    endif()
+endforeach()
+set(UAT_CORE ${APP}/adsb/uat_decode.c ${APP}/adsb/uat_stream.c ${APP}/adsb/uat_weather.c)
+target_sources(lssim PRIVATE ${APP}/adsb/uat_stream.c)
+ls_add_test(test_uat ${UAT_CORE} ${APP}/adsb/adsb_state.c)
+add_executable(uat_replay uat_replay.c ${UAT_CORE} ${APP}/adsb/adsb_state.c)
+target_link_libraries(uat_replay m)
+
+ls_add_test(test_rec_catch_budget ${APP}/rec/rec_catch_core.c)
+
+ls_add_test(test_rec_catch_fsk ${APP}/rec/rec_catch_core.c)
+ls_add_test(test_rec_catch_spurs ${APP}/rec/rec_catch_core.c)
+# The waterfall without a panel: its history draws in cells.
+foreach(wf_cells test_tui_waterfall_claim test_falls_display test_tui_waterfall_scale test_tui_waterfall_stall)
+    target_compile_definitions(${wf_cells} PRIVATE LS_TUI_IMAGE_STUB=1)
+endforeach()
+foreach(wf_cells test_tui_router test_tui_p25_screen)
+    target_compile_definitions(${wf_cells} PRIVATE LS_TUI_THEME_STUB=1)
+endforeach()
+
+# Optional read-only historical adapter comparison, using the same finite producer.
+set(CATCH_BASELINE_DIR "" CACHE PATH "CATCH adapter/core snapshot for cadence regression")
+if(CATCH_BASELINE_DIR)
+    add_executable(test_rec_catch_baseline tests/test_rec_catch_runtime.c
+        ${CATCH_BASELINE_DIR}/rec_catch_core.c ${APP}/subghz/subghz_file.c
+        ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+        ${FW}/components/apps/tui/experiments/lr433_dec.c)
+    target_link_libraries(test_rec_catch_baseline ls_harness m)
+    target_include_directories(test_rec_catch_baseline PRIVATE
+        ${FW}/components/lakeshark ${APP}/rec)
+    target_compile_definitions(test_rec_catch_baseline PRIVATE
+        CATCH_ADAPTER_SOURCE="${CATCH_BASELINE_DIR}/rec_catch.c")
+    target_compile_options(test_rec_catch_baseline PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(test_rec_catch_baseline PRIVATE -Wl,--gc-sections)
+    add_test(NAME test_rec_catch_baseline COMMAND test_rec_catch_baseline finite_producer_board_cost)
 endif()

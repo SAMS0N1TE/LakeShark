@@ -212,47 +212,56 @@ LS_CASE(warm_tilt_preserves_bass_without_boosting_peaks){
     LS_CHECK(low>.85 && low<=1.01);LS_CHECK(high>.40 && high<.55);reset();
 }
 
-/* The spectrogram reads every sample once, in order, with no gaps. */
-enum { ROWS=20 };
-static int loudest_row(const float *db){int best=0;for(int i=1;i<ROWS;i++)if(db[i]>db[best])best=i;return best;}
-LS_CASE(spectrogram_columns_follow_the_audio_in_order){
+/* Spectrogram lines: full FFT resolution, overlapping windows, in order. */
+enum { BINS=LS_MUSIC_FFT_SIZE/2 };
+static float line_power[BINS];
+static int loudest_bin(void){int best=1;for(int i=2;i<BINS;i++)if(line_power[i]>line_power[best])best=i;return best;}
+static float bin_db(int k){return 10.0f*log10f(line_power[k]);}
+LS_CASE(spectrogram_lines_resolve_bins_and_overlap){
     reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;
-    ls_music_cursor_t cur={0};float db[ROWS];
+    ls_music_cursor_t cur={0};
     config.source_format_fn(44100,16,2);
     config.clk_set_fn(44100,16,I2S_SLOT_MODE_STEREO);
-    LS_CHECK(!ls_music_spectrogram(&cur,1,ROWS,db));
-    /* 1.1 kHz slice rows at 44.1 kHz / 20 rows: 1 kHz is row 0, 5 kHz row 4,
-       12 kHz row 10. One window of each, back to back. */
+    LS_CHECK(!ls_music_spectrogram_line(&cur,512,line_power));
+    /* 21.5 Hz a bin: 5 kHz is bin 232.2, and 65 Hz higher is three bins up,
+       a peak of its own rather than the same smear. */
     feed_sine(44100,5000,16384,0,0,2048);
-    feed_sine(44100,12000,16384,0,0,2048);
-    feed_sine(44100,1500,16384,0,0,2048);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));LS_EQ_INT(loudest_row(db),4);
-    printf("    5 kHz column peak %.2f dB\n",db[4]);
-    LS_CHECK(db[4]>-7.5f && db[4]<-4.5f);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));LS_EQ_INT(loudest_row(db),10);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));LS_EQ_INT(loudest_row(db),1);
-    LS_CHECK(!ls_music_spectrogram(&cur,1,ROWS,db));
-    /* Two hops per column wait for both windows. */
-    feed_sine(44100,5000,16384,0,0,2048);
-    LS_CHECK(!ls_music_spectrogram(&cur,2,ROWS,db));
-    feed_sine(44100,5000,16384,0,0,2048);
-    LS_CHECK(ls_music_spectrogram(&cur,2,ROWS,db));LS_EQ_INT(loudest_row(db),4);
+    LS_CHECK(ls_music_spectrogram_line(&cur,512,line_power));
+    LS_EQ_INT(loudest_bin(),232);
+    printf("    5 kHz at -6 dBFS: bin 232 reads %.2f dB\n",bin_db(232));
+    LS_CHECK(bin_db(232)>-9.0f && bin_db(232)<-7.0f);
+    LS_CHECK(bin_db(200)<-60.0f && bin_db(300)<-60.0f);
+    /* The next window starts 512 samples on: three quarters overlap. Half a
+       window of 1.5 kHz makes it a line with both tones in it. */
+    LS_CHECK(!ls_music_spectrogram_line(&cur,512,line_power));
+    feed_sine(44100,1500,16384,0,0,512);
+    LS_CHECK(ls_music_spectrogram_line(&cur,512,line_power));
+    LS_CHECK(bin_db(232)>-20.0f);LS_CHECK(bin_db(69)>-35.0f || bin_db(70)>-35.0f);
+    LS_CHECK(!ls_music_spectrogram_line(&cur,512,line_power));
+    feed_sine(44100,5065,16384,0,0,4096);
+    while(ls_music_spectrogram_line(&cur,512,line_power)){}
+    LS_EQ_INT(loudest_bin(),235);
     reset();
 }
-LS_CASE(spectrogram_skips_ahead_when_lapped_and_restarts_on_rate_change){
+LS_CASE(spectrogram_lines_skip_ahead_when_lapped_and_restart_on_rate_change){
     reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;
-    ls_music_cursor_t cur={0};float db[ROWS];
+    ls_music_cursor_t cur={0};
     feed_sine(44100,5000,16384,0,0,2048);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));
-    /* Far more than the ring holds: the reader resumes at the newest column. */
+    LS_CHECK(ls_music_spectrogram_line(&cur,2048,line_power));
+    /* Far more than half the history: the reader resumes at the newest
+       window instead of reading samples about to be overwritten. */
     feed_sine(44100,5000,16384,0,0,8*2048*3);
     feed_sine(44100,12000,16384,0,0,2048);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));LS_EQ_INT(loudest_row(db),10);
-    LS_CHECK(!ls_music_spectrogram(&cur,1,ROWS,db));
-    /* 16 kHz: 400 Hz slices, so 2.5 kHz is row 6. */
+    LS_CHECK(ls_music_spectrogram_line(&cur,2048,line_power));
+    LS_EQ_INT(loudest_bin(),557);
+    LS_CHECK(!ls_music_spectrogram_line(&cur,2048,line_power));
+    /* 16 kHz: 7.8 Hz a bin, so 2.5 kHz is bin 320. */
     feed_sine(16000,2500,16384,0,0,2048);
-    LS_CHECK(ls_music_spectrogram(&cur,1,ROWS,db));LS_EQ_INT(loudest_row(db),6);
-    LS_CHECK(!ls_music_spectrogram(NULL,1,ROWS,db));LS_CHECK(!ls_music_spectrogram(&cur,5,ROWS,db));
+    LS_CHECK(ls_music_spectrogram_line(&cur,1024,line_power));LS_EQ_INT(loudest_bin(),320);
+    LS_CHECK(!ls_music_spectrogram_line(NULL,512,line_power));
+    LS_CHECK(!ls_music_spectrogram_line(&cur,LS_MUSIC_HOP_MIN-1,line_power));
+    LS_CHECK(!ls_music_spectrogram_line(&cur,LS_MUSIC_FFT_SIZE+1,line_power));
+    LS_CHECK(!ls_music_spectrogram_line(&cur,512,NULL));
     reset();
 }
 LS_CASE(narrow_bands_interpolate_instead_of_repeating_a_bin){

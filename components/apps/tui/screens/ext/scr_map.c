@@ -1591,7 +1591,7 @@ static void air_prepare(tui_rect a, int pw, int ph, int64_t now)
         }
         double rlat, rlon;
         ls_map_dead_reckon(lat, lon, ns, ew, ac->pos_ts_us, now, AIRCRAFT_RECKON_US, &rlat, &rlon);
-        ls_map_glide(&s_air_glide[slot], ac->icao, ac->pos_ts_us, rlat, rlon, now, &v->lat, &v->lon);
+        ls_map_glide(&s_air_glide[slot], adsb_state_key(ac), ac->pos_ts_us, rlat, rlon, now, &v->lat, &v->lon);
 
         if (!frame_px(v->lat, v->lon, pw, ph, &v->fx, &v->fy)) continue;
         v->on = true;
@@ -1603,7 +1603,7 @@ static void air_prepare(tui_rect a, int pw, int ph, int64_t now)
         v->emergency = squawk_emergency(v->squawk);
         const uint8_t band = air_band(ac->altitude);
         v->hue = v->emergency ? (uint8_t)(TUI_RED | TUI_BRIGHT)
-               : ac->icao == sel ? (uint8_t)(TUI_WHITE | TUI_BRIGHT)
+               : adsb_state_key(ac) == sel ? (uint8_t)(TUI_WHITE | TUI_BRIGHT)
                : v->fresh ? (uint8_t)(band | TUI_BRIGHT) : LS_DIM_FG;
     }
     (void)a;
@@ -1620,8 +1620,8 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
         const air_view_t *v = &s_air[slot];
         if (!v->on) continue;
         const adsb_aircraft_t *ac = adsb_state_get(slot);
-        if (layer(L_TRAILS) || ac->icao == sel) {
-            const trail_dots_t *t = trail_dots(slot, ac->icao, pw, ph);
+        if (layer(L_TRAILS) || adsb_state_key(ac) == sel) {
+            const trail_dots_t *t = trail_dots(slot, adsb_state_key(ac), pw, ph);
             const int n = s_trail_kept[slot];
             int px = v->dx, py = v->dy;
             /* Newest to oldest, from the symbol backwards; the last minute
@@ -1667,8 +1667,8 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
             if (!v->on || !v->inside) continue;
             const adsb_aircraft_t *ac = adsb_state_get(slot);
             /* The selection last, so it is on top of anything it crosses. */
-            if ((ac->icao == sel) != (pass == 1)) continue;
-            v->compact = ac->icao != sel && (wide || crowded_at(v->dx, v->dy));
+            if ((adsb_state_key(ac) == sel) != (pass == 1)) continue;
+            v->compact = adsb_state_key(ac) != sel && (wide || crowded_at(v->dx, v->dy));
             const bool blink_off = v->emergency && ls_motion_phase(2, 500) == 1;
             uint8_t hue = blink_off ? (uint8_t)TUI_RED : v->hue;
             /* A ring for a contact just heard for the first time, and for an
@@ -1677,10 +1677,10 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
                 ping_ring(v->dx, v->dy, TUI_ATTR(air_band(ac->altitude), TUI_BLACK), 1500);
             if (v->emergency) ping_ring(v->dx, v->dy, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK), 900);
             air_symbol(v->dx, v->dy, sym_for(ac), ac->heading, TUI_ATTR(hue, TUI_BLACK),
-                       ac->icao == sel ? 8 : 7, v->compact ? 0.75 : 1.0);
+                       adsb_state_key(ac) == sel ? 8 : 7, v->compact ? 0.75 : 1.0);
             claim_dots(v->dx, v->dy, v->compact ? 2 : 4, a.w, a.h);
-            if (ac->icao == sel) lock_brackets(v->dx, v->dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
-            hit_add(a.x + v->dx / 2, a.y + v->dy / 3, HIT_AIR, ac->icao, v->lat, v->lon);
+            if (adsb_state_key(ac) == sel) lock_brackets(v->dx, v->dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
+            hit_add(a.x + v->dx / 2, a.y + v->dy / 3, HIT_AIR, adsb_state_key(ac), v->lat, v->lon);
         }
     }
 }
@@ -1690,8 +1690,8 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
    controller's screen writes it. */
 static void air_block_lines(const adsb_aircraft_t *ac, const air_view_t *v, char *l1, char *l2, size_t cap)
 {
-    if (ac->callsign[0]) snprintf(l1, cap, "%.8s", ac->callsign);
-    else snprintf(l1, cap, "%06lX", (unsigned long)ac->icao);
+    if (ac->callsign[0]) snprintf(l1, cap, "%.8s%s", ac->callsign, (ac->sources & 2) ? " U" : "");
+    else snprintf(l1, cap, "%06lX%s", (unsigned long)ac->icao, (ac->sources & 2) ? " U" : "");
     if (v->emergency) { snprintf(l2, cap, "SQ%04d", v->squawk); return; }
     const char climb = ac->vert_rate > 300 ? '^' : ac->vert_rate < -300 ? 'v' : '-';
     int hundreds = (ac->altitude + 50) / 100;
@@ -1815,22 +1815,22 @@ static void air_text(tui_surface *sf, tui_rect a)
             if (!v->on || !v->inside) continue;
             const adsb_aircraft_t *ac = adsb_state_get(slot);
             /* The selection first this time, so its label gets the best spot. */
-            if ((ac->icao == sel) != (pass == 0)) continue;
+            if ((adsb_state_key(ac) == sel) != (pass == 0)) continue;
             char l1[12], l2[12];
             air_block_lines(ac, v, l1, l2, sizeof(l1));
-            const bool full = (layer(L_BLOCKS) && !s_map_crowded) || ac->icao == sel || v->emergency;
+            const bool full = (layer(L_BLOCKS) && !s_map_crowded) || adsb_state_key(ac) == sel || v->emergency;
             const int cx = v->dx / 2, cy = v->dy / 3;
             const int gap = v->compact ? 2 : 3;
-            if (ac->icao == sel || v->emergency) {
+            if (adsb_state_key(ac) == sel || v->emergency) {
                 const uint8_t tag = v->emergency ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)
                                                  : TUI_ATTR(TUI_BLACK, air_band(ac->altitude) | TUI_BRIGHT);
                 place_label_key(sf, a, cx, cy, gap, l1, full ? l2 : NULL, tag, true,
-                    map_object_key(1,ac->icao),map_air_label_side(ac->heading));
+                    map_object_key(1,adsb_state_key(ac)),map_air_label_side(ac->heading));
             } else {
                 place_label_key(sf, a, cx, cy, gap, l1, full ? l2 : NULL, TUI_ATTR(v->hue, TUI_BLACK), false,
-                    map_object_key(1,ac->icao),map_air_label_side(ac->heading));
+                    map_object_key(1,adsb_state_key(ac)),map_air_label_side(ac->heading));
             }
-            hit_label(HIT_AIR, ac->icao, v->lat, v->lon);
+            hit_label(HIT_AIR, adsb_state_key(ac), v->lat, v->lon);
 #ifdef LS_MAP_AUDIT
             int *trace=s_air_label_audit[slot];
             trace[0]=a.x+cx;trace[1]=a.y+cy;
@@ -2454,8 +2454,8 @@ static void edges_collect(int pw, int ph)
         for (int s = 0; s < ADSB_MAX_TRACKED; s++) {
             const air_view_t *v = &s_air[s];
             const adsb_aircraft_t *ac = adsb_state_get(s);
-            if (v->on && !v->inside && ac->icao == s_sel_icao)
-                edge_add(v->fx, v->fy, v->lat, v->lon, HIT_AIR, ac->icao,
+            if (v->on && !v->inside && adsb_state_key(ac) == s_sel_icao)
+                edge_add(v->fx, v->fy, v->lat, v->lon, HIT_AIR, adsb_state_key(ac),
                          ac->callsign[0] ? ac->callsign : "selected", TUI_WHITE | TUI_BRIGHT);
         }
     } else if (s_sel == SEL_MARK) {
@@ -2483,7 +2483,7 @@ static void edges_collect(int pw, int ph)
             if (!v->on || v->inside || !v->fresh) continue;
             const adsb_aircraft_t *ac = adsb_state_get(s);
             bool dup = false;
-            for (int e = 0; e < s_nedges; e++) if (s_edges[e].kind == HIT_AIR && s_edges[e].id == ac->icao) dup = true;
+            for (int e = 0; e < s_nedges; e++) if (s_edges[e].kind == HIT_AIR && s_edges[e].id == adsb_state_key(ac)) dup = true;
             if (dup) continue;
             const double d = hypot(v->fx - pw / 2.0, v->fy - ph / 2.0);
             if (best < 0 || d < best_d) { best = s; best_d = d; }
@@ -2493,7 +2493,7 @@ static void edges_collect(int pw, int ph)
         char name[12];
         if (ac->callsign[0]) snprintf(name, sizeof(name), "%.8s", ac->callsign);
         else snprintf(name, sizeof(name), "%06lX", (unsigned long)ac->icao);
-        edge_add(s_air[best].fx, s_air[best].fy, s_air[best].lat, s_air[best].lon, HIT_AIR, ac->icao,
+        edge_add(s_air[best].fx, s_air[best].fy, s_air[best].lat, s_air[best].lon, HIT_AIR, adsb_state_key(ac),
                  name, air_band(ac->altitude) | TUI_BRIGHT);
     }
 }
@@ -2567,7 +2567,7 @@ static void live_labels_begin(bool preview) {
         const adsb_aircraft_t *ac=adsb_state_get(i);
         if(!ac || !ac->active || !ac->pos_valid || ac->pos_ts_us<=0 ||
            now<ac->pos_ts_us || now-ac->pos_ts_us>AIRCRAFT_SHOW_US) continue;
-        uint32_t id=ac->icao;
+        uint32_t id=adsb_state_key(ac);
         map_sticky_retain(s_live_history,map_object_key(1,id));
         map_sticky_retain(s_live_history,map_object_key(16+HIT_AIR,id));
     }
@@ -2603,11 +2603,11 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
         int slot = -1;
         for (int s = 0; s < ADSB_MAX_TRACKED; s++) {
             const adsb_aircraft_t *c = adsb_state_get(s);
-            if (c && c->active && c->icao == s_sel_icao) { ac = c; slot = s; }
+            if (c && c->active && adsb_state_key(c) == s_sel_icao) { ac = c; slot = s; }
         }
         if (!ac) return 0;
         snprintf(title, tcap, "%.8s", ac->callsign[0] ? ac->callsign : "AIRCRAFT");
-        snprintf(lines[n++], 40, "ICAO %06lX", (unsigned long)ac->icao);
+        snprintf(lines[n++], 40, "%06lX q%u %s", (unsigned long)ac->icao, ac->address_qualifier, adsb_state_source_label(ac, esp_timer_get_time()));
         snprintf(lines[n++], 40, "ALT  %d ft %+d", ac->altitude, ac->vert_rate);
         snprintf(lines[n++], 40, "SPD  %d kt  HDG %03d", ac->velocity, ac->heading);
         const int sq = adsb_state_squawk(slot);
@@ -2781,7 +2781,7 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
         else snprintf(label, sizeof(label), "AIR %06lX", (unsigned long)ac->icao);
         range_words(rng, sizeof(rng), rlat, rlon, ac->lat, ac->lon);
         snprintf(detail, sizeof(detail), "%s  %dft", rng, ac->altitude);
-        goto_add(HIT_AIR, ac->icao, ac->lat, ac->lon, NULL, label, detail);
+        goto_add(HIT_AIR, adsb_state_key(ac), ac->lat, ac->lon, NULL, label, detail);
     }
     ls_mesh_peer_t p;
     for (int r = 0; r < LS_MESH_MAX_PEERS && ls_mesh_peer_at(r, &p); r++) {
@@ -3380,7 +3380,7 @@ static void track_selection(int pw, int ph)
         for (int s = 0; s < ADSB_MAX_TRACKED; s++)
             {
                 const adsb_aircraft_t *ac=adsb_state_get(s);
-                if(ac && ac->active && ac->pos_valid && ac->icao==s_sel_icao &&
+                if(ac && ac->active && ac->pos_valid && adsb_state_key(ac)==s_sel_icao &&
                     esp_timer_get_time()-ac->pos_ts_us<=AIRCRAFT_SHOW_US) {
                     lat=ac->lat;lon=ac->lon;have=true;
                 }
@@ -3403,7 +3403,7 @@ static void check_selection(void)
         bool found = false;
         for (int s = 0; s < ADSB_MAX_TRACKED; s++) {
             const adsb_aircraft_t *ac = adsb_state_get(s);
-            if (ac && ac->active && ac->icao == s_sel_icao) found = true;
+            if (ac && ac->active && adsb_state_key(ac) == s_sel_icao) found = true;
         }
         if (!found) select_none();
     } else if (s_sel == SEL_MARK && !ls_marks_at(s_sel_index)) select_none();
@@ -3716,10 +3716,10 @@ static void cycle_air(int dir)
     }
     if (!m) { say("no aircraft with a position"); return; }
     int at = -1;
-    for (int k = 0; k < m; k++) if (s_sel == SEL_AIR && adsb_state_get(order[k])->icao == s_sel_icao) at = k;
+    for (int k = 0; k < m; k++) if (s_sel == SEL_AIR && adsb_state_key(adsb_state_get(order[k])) == s_sel_icao) at = k;
     const int next = at < 0 ? (dir > 0 ? 0 : m - 1) : (at + dir + m) % m;
     const int s = order[next];
-    select_air(adsb_state_get(s)->icao);
+    select_air(adsb_state_key(adsb_state_get(s)));
     jump_to(s_air[s].lat, s_air[s].lon);
 }
 
@@ -3728,7 +3728,7 @@ static bool go_selected(void)
 {
     if (s_sel == SEL_AIR) {
         for (int s = 0; s < ADSB_MAX_TRACKED; s++)
-            if (s_air[s].on && adsb_state_get(s)->icao == s_sel_icao) { jump_to(s_air[s].lat, s_air[s].lon); return true; }
+            if (s_air[s].on && adsb_state_key(adsb_state_get(s)) == s_sel_icao) { jump_to(s_air[s].lat, s_air[s].lon); return true; }
     } else if (s_sel == SEL_NODE) {
         for (int i = 0; i < s_npeers; i++)
             if (s_map_peers[i].has_loc && !strcmp(s_map_peers[i].id, s_sel_node)) {

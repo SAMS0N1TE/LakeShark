@@ -116,18 +116,20 @@ static void spectrum_close(void)
 {
     spectrum_free(s_spectrum);s_spectrum=NULL;
 }
-static void fft(spectrum_t *sp)
+/* An n-point complex FFT in place, n a power of two up to FFT_N, on the
+   FFT_N twiddle tables. */
+static void fft(spectrum_t *sp,unsigned n)
 {
     float *re=sp->re,*im=sp->im;
-    for(unsigned i=1,j=0;i<FFT_N;i++) {
-        unsigned bit=FFT_N>>1;
+    for(unsigned i=1,j=0;i<n;i++) {
+        unsigned bit=n>>1;
         for(;j&bit;bit>>=1)j^=bit;
         j^=bit;
         if(i<j){float t=re[i];re[i]=re[j];re[j]=t;t=im[i];im[i]=im[j];im[j]=t;}
     }
-    for(unsigned len=2;len<=FFT_N;len<<=1) {
+    for(unsigned len=2;len<=n;len<<=1) {
         unsigned half=len/2,step=FFT_N/len;
-        for(unsigned i=0;i<FFT_N;i+=len)
+        for(unsigned i=0;i<n;i+=len)
             for(unsigned k=0;k<half;k++) {
                 float wr=sp->cos_t[k*step],wi=sp->sin_t[k*step];
                 unsigned a=i+k,b=a+half;
@@ -136,14 +138,35 @@ static void fft(spectrum_t *sp)
             }
     }
 }
-/* Window and transform FFT_N samples starting at ring position `start`. */
+/* Window and transform FFT_N samples starting at ring position `start`,
+   leaving bins 0..FFT_N/2 in re/im. The input is real, so it goes in as an
+   FFT_N/2-point complex transform (even samples real, odd imaginary) and is
+   pulled apart after: half the work of the full transform, the same bins. */
 static void analyse(spectrum_t *sp,unsigned start)
 {
-    for(unsigned n=0;n<FFT_N;n++) {
-        sp->re[n]=sp->ring[(start+n)&(RING_N-1)]*sp->window[n];
-        sp->im[n]=0;
+    const unsigned M=FFT_N/2;
+    float *re=sp->re,*im=sp->im;
+    for(unsigned n=0;n<M;n++) {
+        re[n]=sp->ring[(start+2*n)&(RING_N-1)]*sp->window[2*n];
+        im[n]=sp->ring[(start+2*n+1)&(RING_N-1)]*sp->window[2*n+1];
     }
-    fft(sp);
+    fft(sp,M);
+    /* X[k] = E[k] + W^k O[k], E and O the even and odd halves' spectra,
+       found from Z[k] and Z[M-k] together; X[M-k] is conj(E - W^k O). */
+    const float z0r=re[0],z0i=im[0];
+    re[0]=z0r+z0i;im[0]=0;
+    re[M]=z0r-z0i;im[M]=0;
+    for(unsigned k=1;k<=M/2;k++) {
+        const unsigned m=M-k;
+        const float ar=re[k],ai=im[k],br=re[m],bi=-im[m];
+        const float er=(ar+br)*0.5f,ei=(ai+bi)*0.5f;
+        /* O = -i (A - B) / 2 */
+        const float or_=(ai-bi)*0.5f,oi=-(ar-br)*0.5f;
+        const float wr=sp->cos_t[k],wi=sp->sin_t[k];
+        const float tr=wr*or_-wi*oi,ti=wr*oi+wi*or_;
+        re[k]=er+tr;im[k]=ei+ti;
+        if(m!=k){re[m]=er-tr;im[m]=-(ei-ti);}
+    }
 }
 static float bin_power(const spectrum_t *sp,int k)
 {
@@ -192,37 +215,28 @@ int ls_music_spectrum(float lo_hz,float hi_hz,int bands,float *db)
     }
     return measured;
 }
-bool ls_music_spectrogram(ls_music_cursor_t *cursor,int hops,int rows,float *db)
+/* Runs on the UI task, below the decoder's priority, and never blocks it:
+   the ring is read without a lock, and a reader that falls behind skips
+   ahead instead of holding anything up. Half the history is the limit, so
+   the decoder's next blocks can never land inside the window being read. */
+bool ls_music_spectrogram_line(ls_music_cursor_t *cursor,unsigned hop,float *power)
 {
     spectrum_t *sp=s_spectrum;
     unsigned rate=atomic_load(&s_rate);
-    if(!cursor || !db || rows<1 || hops<1 || hops>4 || !sp || !rate)return false;
+    if(!cursor || !power || hop<LS_MUSIC_HOP_MIN || hop>FFT_N || !sp || !rate)return false;
     unsigned end=atomic_load(&s_ring_end),fill=atomic_load(&s_ring_fill);
-    unsigned need=(unsigned)hops*FFT_N,lag=end-cursor->next;
-    /* Unstarted, or the decoder has lapped the reader: resume at the newest
-       complete column rather than read samples being overwritten. */
-    if(!cursor->started || cursor->rate!=rate || cursor->epoch!=atomic_load(&s_epoch) || lag>fill || lag>RING_N-FFT_N) {
+    unsigned lag=end-cursor->next;
+    if(!cursor->started || cursor->rate!=rate || cursor->epoch!=atomic_load(&s_epoch) ||
+       lag>fill || lag>RING_N/2) {
         cursor->started=true;cursor->rate=rate;cursor->epoch=atomic_load(&s_epoch);
-        if(fill<need){cursor->next=end;return false;}
-        cursor->next=end-need;lag=need;
+        if(fill<FFT_N){cursor->next=end;return false;}
+        cursor->next=end-FFT_N;lag=FFT_N;
     }
-    if(lag<need)return false;
-    for(int r=0;r<rows;r++)db[r]=0;
-    const int half=FFT_N/2;
-    for(int h=0;h<hops;h++) {
-        analyse(sp,cursor->next+(unsigned)h*FFT_N);
-        for(int r=0;r<rows;r++) {
-            int lo=r*half/rows,hi=(r+1)*half/rows;
-            if(lo<1)lo=1;
-            if(hi<=lo)hi=lo+1;
-            double power=0;
-            for(int k=lo;k<hi && k<half;k++)power+=bin_power(sp,k);
-            db[r]+=(float)power;
-        }
-    }
-    const float scale=power_scale(sp)/hops;
-    for(int r=0;r<rows;r++)db[r]=to_db((double)db[r]*scale);
-    cursor->next+=need;
+    if(lag<FFT_N)return false;
+    analyse(sp,cursor->next);
+    const float scale=power_scale(sp);
+    for(int k=0;k<FFT_N/2;k++)power[k]=bin_power(sp,k)*scale;
+    cursor->next+=hop;
     return true;
 }
 bool ls_music_format(ls_music_format_t *out)

@@ -1,3 +1,4 @@
+#include "adsb_app.h"
 #include "tui/ls_sweep_ui.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid_ui.h"
@@ -886,7 +887,7 @@ static bool tui_session(void)
 
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
-            { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN,
+            { "subghz", "SUB-GHZ", "watch + replay", LS_ICON_RECORD, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
@@ -1203,7 +1204,17 @@ static bool tui_session(void)
                         }
                         s_rec_img_on = has && s_rec_img;
                         if (s_rec_img_on) {
-                            memcpy(s_rec_img, isrc, bytes);
+                            /* A ring picture (a waterfall) is copied in the
+                               order it is seen, from where it starts. */
+                            int rx0 = 0, ry0 = 0;
+                            ls_tui_image_ring_offset(&rx0, &ry0);
+                            if (!rx0 && !ry0) memcpy(s_rec_img, isrc, bytes);
+                            else for (int y = 0; y < ih; y++) {
+                                const uint16_t *line = isrc + (size_t)((y + ry0) % ih) * iw;
+                                uint16_t *out = s_rec_img + (size_t)y * iw;
+                                memcpy(out, line + rx0, (size_t)(iw - rx0) * sizeof(uint16_t));
+                                memcpy(out + iw - rx0, line, (size_t)rx0 * sizeof(uint16_t));
+                            }
                             s_rec_img_rect = ir;
                             s_rec_img_w = iw; s_rec_img_h = ih;
                             s_rec_img_src = isrc; s_rec_img_serial = iser;
@@ -2124,6 +2135,10 @@ static int labs_cmd(int argc, char **argv)
 static int lora_cmd(int argc, char **argv)
 {
 #if LS_HAS_LORA_LR20XX_PROBE
+    if (lr20xx_stream_source2_active()) {
+        puts("lora: live IQ owns the radio; 'p25 lr mode fsk' first");
+        return 1;
+    }
     const int lr_clock = lr20xx_clock_command(argc, argv);
     if (lr_clock >= 0) return lr_clock;
 #endif
@@ -3113,6 +3128,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
               "the running session, runtime only",
         .hint=nullptr,.func=adsb_cmd,.argtable=nullptr};
     esp_console_cmd_register(&adsbc);
+    uat_console_register();
     /* Anything proprietary registers itself and is reached only through the
        include guard, so removing it is deleting files and nothing else;
        the list of what goes is kept with those files. */

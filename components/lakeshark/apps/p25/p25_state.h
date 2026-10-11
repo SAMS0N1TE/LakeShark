@@ -52,6 +52,11 @@ typedef struct {
     float    lora_rssi_dbm;
     /* The LR2021 is the receiver but something else is using it now. */
     bool     lora_wait;
+    bool     split_enabled, split_active, split_available;
+    unsigned split_crc_percent, split_fallbacks, split_recoveries;
+    unsigned split_skipped, split_drops;
+    uint8_t  split_site, split_rfss;
+    char     split_reason[40];
 
     int      dsd_sync_count;
     int      dsd_voice_count;
@@ -196,6 +201,8 @@ typedef struct {
     char     p25_lcw_alias[32];
     uint32_t p25_lcw_ok_count;
     uint32_t p25_lcw_fec_reject_count;
+    bool lr_iq_requested, lr_iq_active;
+    uint32_t lr_iq_good, lr_iq_bad, lr_iq_gaps, lr_iq_fifo_overruns, lr_iq_sample_rate;
 } p25_state_t;
 
 static inline bool p25_nac_valid(const p25_state_t *state)
@@ -267,6 +274,8 @@ typedef struct {
     uint32_t freq_hz;
     p25_lr_cfg_t cfg;             /* the settings now */
 } p25_lr_capture_info_t;
+bool p25_lr_iq_select(bool enabled);
+int p25_lr_iq_record_command(int argc, char **argv);
 void p25_lr_get_cfg(p25_lr_cfg_t *out);
 void p25_lr_set_cfg(const p25_lr_cfg_t *cfg);
 /* The receive gain the P25 screen offers: 0 the chip's AGC, 1..13 a held step
@@ -331,6 +340,7 @@ void p25_imbe_capture_info(p25_imbe_capture_info_t *out);
 bool p25_imbe_capture_read(uint32_t at, uint8_t *out, uint32_t n);
 
 void p25_return_to_control(void);
+void p25_set_split(bool enabled);
 void p25_set_control_channel(uint64_t control_hz);
 void p25_demod_set_preference(int preference);
 int p25_demod_get_preference(void);

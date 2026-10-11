@@ -187,7 +187,11 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     const int step = r.h >= 11 ? 2 : 1;
     char line[80];
     uint8_t first = ink;
-    if (P25.lora_rx)
+    if (P25.lr_iq_active)
+        snprintf(line, sizeof(line), "IQ blocks %lu  bad %lu  gaps %lu",
+                 (unsigned long)P25.lr_iq_good, (unsigned long)P25.lr_iq_bad,
+                 (unsigned long)P25.lr_iq_gaps);
+    else if (P25.lora_rx)
         snprintf(line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
                  (unsigned long)P25.iq_bytes_sec, (double)P25.lora_rssi_dbm);
     else if (P25.lora_wait) {
@@ -262,12 +266,15 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
     p25_get_acquisition_status(&acq);
     const uint32_t comps = acq.iq.sampled_pairs * 2u;
     const int clip_pct = comps ? (int)((acq.iq.clipped_components * 100u) / comps) : 0;
-    const char *iqk = P25.lora_rx ? "RSSI" : "IQ";
-    if (P25.lora_rx) snprintf(iq, sizeof(iq), "%.0f dBm", (double)P25.lora_rssi_dbm);
+    const bool fsk_rx = P25.lora_rx && !P25.lr_iq_active;
+    const char *iqk = fsk_rx ? "RSSI" : "IQ";
+    if (fsk_rx) snprintf(iq, sizeof(iq), "%.0f dBm", (double)P25.lora_rssi_dbm);
     else if (clip_pct >= P25_CLIP_SHOW_PCT)
         snprintf(iq, sizeof(iq), "%.3f CLIP %d%%", (double)level, clip_pct);
     else snprintf(iq, sizeof(iq), "%.3f", (double)level);
-    snprintf(rx, sizeof(rx), "%s", st->receiver_streaming ? "STREAMING" : "STOPPED");
+    snprintf(rx, sizeof(rx), "%s", P25.lr_iq_active
+             ? (st->receiver_streaming ? "STREAM I/Q" : "I/Q WAIT")
+             : st->receiver_streaming ? "STREAMING" : "STOPPED");
     const char *vs = voice_status();
     const uint8_t iqattr = clip_pct >= P25_CLIP_SHOW_PCT ? warn : value;
 
@@ -337,6 +344,24 @@ static void draw_decode(tui_surface *sf, tui_rect area)
 
     if (area.w < 20 || area.h < 3) return;
 
+    if (P25.split_enabled && area.h >= 9) {
+        tui_rect roles = tui_rect_make(area.x, area.y, area.w, 5);
+        tui_box(sf, roles, "P25 SPLIT", frame);
+        char roles_line[80];
+        snprintf(roles_line, sizeof(roles_line), "CC: %s site %u/%u CRC %u%%",
+            P25.split_active ? "LR2021" : "RTL fallback",
+            P25.split_rfss, P25.split_site, P25.split_crc_percent);
+        tui_put_str(sf, roles, roles.x + 1, roles.y + 1, roles_line, label);
+        if (P25.grant_on_traffic)
+            snprintf(roles_line, sizeof(roles_line), "VOICE: RTL TG %u %.4f MHz",
+                P25.grant_talkgroup, (double)P25.grant_freq_hz / 1e6);
+        else snprintf(roles_line, sizeof(roles_line), "VOICE: RTL idle");
+        tui_put_str(sf, roles, roles.x + 1, roles.y + 2, roles_line, value);
+        tui_put_str(sf, roles, roles.x + 1, roles.y + 3, P25.split_reason, idle);
+        area.y += 5;
+        area.h -= 5;
+    }
+
     tg_refresh(esp_timer_get_time());
     const int held = (s_tg_have && s_tg.count) ? (int)s_tg.count : 0;
     const int fits = held ? 3 + held : 3;
@@ -370,6 +395,8 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     }
     if (dial.h >= 10) {
         if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
+        else if (P25.lr_iq_active)
+            snprintf(buf, sizeof(buf), "EXPERIMENTAL I/Q / CAPTURE GAPS");
         else if (P25.lora_rx && st.receiver_streaming)
             snprintf(buf, sizeof(buf), "MANUAL / %s ONLINE", ls_rsel_name(LS_RSEL_LORA));
         else if (P25.lora_wait && !st.receiver_streaming)
@@ -717,7 +744,8 @@ static ls_rsel_radio_t p25_in_use(void)
 static void radio_chosen(ls_rsel_radio_t radio)
 {
     const ls_rsel_radio_t held = ls_rsel_sdr_held_by("p25");
-    if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
+    if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF ||
+         radio == LS_RSEL_P25_SPLIT) &&
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
 
@@ -754,6 +782,7 @@ static const ls_opt_t OPT_P25_POLICY[] = {
 };
 static const ls_opt_ctx_t CTX_P25_POLICY = { .name = "Talkgroups", .job = LS_RSEL_P25, LS_OPT_ROWS(OPT_P25_POLICY) };
 static const ls_opt_t OPT_P25[] = {
+    { .label = "LR2021 receive path", .kind = LS_OPT_ACTION, .arg = 27, .act = o_p25_act, .show = o_p25_show },
     LS_CALLS_MENU,
     { .label = "Talkgroup policy", .kind = LS_OPT_MENU, .sub = &CTX_P25_POLICY },
     { .label = "Control survey", .kind = LS_OPT_ACTION, .arg = 24, .act = o_p25_act, .show = o_p25_show },

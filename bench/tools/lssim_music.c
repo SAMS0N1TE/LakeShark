@@ -3,6 +3,7 @@
 #include "esp_timer.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 static ls_music_state_t state;
 static bool warm;
 static int vol=43,index;
@@ -40,8 +41,35 @@ const char*ls_music_mic_file(void){return "/sdcard/music/REC-001.wav";}
 uint32_t ls_music_mic_ms(void){return mic==LS_MIC_RECORDING?(uint32_t)((esp_timer_get_time()-since)/1000):0;}
 bool ls_music_mic_step(void){return true;}
 bool ls_music_live(void){return state==LS_MUSIC_PLAYING||mic!=LS_MIC_OFF;}
-/* A slow sweep with two harmonics over a noise floor, one column per 46 ms. */
-bool ls_music_spectrogram(ls_music_cursor_t*c,int hops,int rows,float*db){if(!ls_music_live())return false;uint32_t due=(uint32_t)(esp_timer_get_time()/((uint64_t)LS_MUSIC_FFT_SIZE*1000000*hops/sample_rate));if(!c->started){c->started=true;c->next=due>120?due-120:0;}if(c->next>=due)return false;double t=c->next++*(double)LS_MUSIC_FFT_SIZE/sample_rate*hops;double f=0.12+0.1*sin(t*0.9);for(int i=0;i<rows;i++){double x=(double)i/rows,d=-104+8*sin(i*1.7+t*3)-18*x;for(int h=1;h<=3;h++){double e=fabs(x-f*h)*rows;if(e<1.5)d=fmax(d,-25-8*h-6*e);}db[i]=(float)d;}return true;}
+/* A scene to read in the waterfall: a little tune with harmonics and a kick
+   drum, a sweep, CQ in Morse at 2 kHz and a word written in the 12-19 kHz
+   band, the way messages are hidden in audio. The cursor counts lines here. */
+static const uint8_t WORD[][5]={{0x7F,0x40,0x40,0x40,0x40},{0x7E,0x09,0x09,0x09,0x7E},{0x7F,0x08,0x14,0x22,0x41},
+ {0x7F,0x49,0x49,0x49,0x41},{0x26,0x49,0x49,0x49,0x32},{0x7F,0x08,0x08,0x08,0x7F},{0x7E,0x09,0x09,0x09,0x7E},
+ {0x7F,0x09,0x19,0x29,0x46},{0x7F,0x08,0x14,0x22,0x41}}; /* LAKESHARK, 5x7 columns */
+static const char MORSE[]="-.-. --.-  .-.. ...   ";
+static double noise(uint32_t a,uint32_t b){uint32_t h=a*2654435761u^b*2246822519u;h^=h>>15;h*=2654435761u;h^=h>>13;return (h&0xFFFF)/65535.0;}
+static void tone(float*p,double hz,double power){double at=hz*LS_MUSIC_FFT_SIZE/sample_rate;int k=(int)(at+0.5);
+ static const double lobe[3]={.16,.66,.16};for(int d=-1;d<=1;d++)if(k+d>0&&k+d<LS_MUSIC_FFT_SIZE/2)p[k+d]+=(float)(power*lobe[d+1]);}
+static bool morse_on(double t){double dot=.06;int i=(int)(t/dot);int n=0,len=(int)strlen(MORSE);
+ for(int c=0;;c=(c+1)%len){int units=MORSE[c]=='-'?4:MORSE[c]=='.'?2:2;if(i<n+units){return MORSE[c]!=' '&&i<n+units-1;}n+=units;if(n>100000)return false;}}
+bool ls_music_spectrogram_line(ls_music_cursor_t*c,unsigned hop,float*p){
+ if(!ls_music_live()||hop<LS_MUSIC_HOP_MIN)return false;
+ uint32_t due=(uint32_t)((uint64_t)esp_timer_get_time()*sample_rate/hop/1000000);
+ if(!c->started||c->rate!=hop){c->started=true;c->rate=hop;c->next=due>900?due-900:0;}
+ if(c->next>=due)return false;
+ uint32_t line=c->next++;double t=line*(double)hop/sample_rate;
+ for(int k=0;k<LS_MUSIC_FFT_SIZE/2;k++)p[k]=(float)(2e-11*(0.3+noise(line,k))*(1+30.0/(1+k)));
+ static const double notes[]={220,262,330,392,330,262};double beat=fmod(t,.5);int n=(int)(t/.5)%6;
+ for(int h=1;h<=10;h++)tone(p,notes[n]*h,3e-3/(h*h)*exp(-beat*2));
+ if(beat<.12)for(int k=1;k<12;k++)p[k]+=(float)(2e-2*exp(-beat*30)*noise(line,k+7000));
+ tone(p,6000+2000*fmod(t,2),1e-5);
+ if(morse_on(t))tone(p,2000,4e-4);
+ double phase=fmod(t,7.0);int column=(int)(phase/.07);
+ if(column<9*6){int g=column/6,cx=column%6;uint8_t bits=cx<5?WORD[g][cx]:0;
+  for(int r=0;r<7;r++)if(bits&(1<<r)){double lo=19000-(r+1)*1000,hi=lo+900;
+   for(int k=(int)(lo*LS_MUSIC_FFT_SIZE/sample_rate);k<(int)(hi*LS_MUSIC_FFT_SIZE/sample_rate)&&k<LS_MUSIC_FFT_SIZE/2;k++)p[k]+=(float)(3e-5*(0.6+0.4*noise(line,k)));}}
+ return true;}
 
 static unsigned le32(const unsigned char *b){return b[0]|b[1]<<8|b[2]<<16|(unsigned)b[3]<<24;}
 bool ls_music_play_path(const char *path){

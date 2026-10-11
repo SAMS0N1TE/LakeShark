@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include "adsb_source.h"
+#include "uat_stream.h"
 
 
 #include <stdbool.h>
@@ -21,6 +22,21 @@ void ls_field_sample_snapshot(ls_field_sample_t *out)
 }
 #endif
 
+/* Benches that link the waterfall without ls_tui.c: no image cells, so it
+   draws its history in cells and never asks for a theme. */
+#if defined(LS_TUI_IMAGE_STUB) || defined(LS_TUI_THEME_STUB)
+#include "ls_theme.h"
+bool ls_tui_has_images(void) { return false; }
+const ls_tui_theme_t *ls_tui_active_theme(void) { return NULL; }
+#endif
+#ifdef LS_TUI_IMAGE_STUB
+#include "ls_tui.h"
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; }
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; return false; }
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial; }
+void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch) { if (cols) *cols = 0; if (rows) *rows = 0; if (cw) *cw = 0; if (ch) *ch = 0; }
+#endif
+
 #ifdef LS_TUI_CORNER_STUB
 int ls_tui_corner_pad(int row) { (void)row; return 0; }
 #endif
@@ -35,6 +51,8 @@ bool ls_tui_keyboard_mode(void) { return ls_keypad_present(); }
 /* adsb_source_t is an enum whose ADSB_SRC_NONE is 0; the header is not on
    every stub user's include path. */
 adsb_source_t adsb_active_source(void) { return 0; }
+void adsb_uat_use_picker(void) { }
+void adsb_uat_stats(uat_stats_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 
 /* The gain setting, kept here as the back end keeps it: tenths of a dB, 0
    automatic. */

@@ -47,6 +47,9 @@ typedef struct {
 } subghz_file_t;
 
 void subghz_file_begin(subghz_file_t *f);
+/* Exclusive creation; caller runs this on a storage worker. */
+bool subghz_file_save(const char *path, const subghz_file_t *settings,
+                      const int32_t *edges, int count, const char *preset_lines);
 
 /* One line of the file, without or with its newline. RAW_Data values go into
    `edges` up to `cap`; zeros, which a .sub may not contain, are skipped. */

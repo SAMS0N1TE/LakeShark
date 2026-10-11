@@ -131,6 +131,7 @@ typedef struct {
     uint32_t read_addr;            /* ReadRegMem32 address of the pending read */
     /* The one register the Mode S tuning touches: the OOK detection threshold. */
     uint32_t thr_reg;
+    uint32_t iq_fifo_base, iq_fifo_size;  /* raw-IQ FIFO mapping registers */
     int      thr_writes;
     int      bad_reg;              /* register accesses to any other address    */
 
@@ -151,7 +152,7 @@ typedef struct {
     int      tx_frames;            /* any transmit-path opcode: Tx FIFO, PA, SetTx */
     int      rx_arms;              /* SetRx accepted                            */
     /* The Rx FIFO. fk_push_frame() appends and raises RxDone. */
-    uint8_t  fifo[512];
+    uint8_t  fifo[1024];
     int      fifo_n;
     uint8_t  ook_rssi_high, ook_rssi_avg, ook_rssi_flags, ook_lqi;
 
@@ -177,6 +178,13 @@ typedef struct {
     /* The DC-DC workaround's registers. */
     uint32_t dcdc_adc, dcdc_sw, dcdc_freq_lf;
     int      dcdc_writes;
+    uint32_t proof_ram[25], proof_magic;
+    bool proof_fail_result, proof_mapped;
+    uint32_t capture_ram[256];
+    bool capture_enabled, capture_timeout;
+    bool capture_fifo, capture_fifo_full, capture_tail_overflow;
+    uint8_t capture_fifo_error_flags;
+    unsigned capture_flag_reads, capture_overflow_at;
 
     /* SX126x */
     uint8_t  sx_status;
@@ -195,6 +203,9 @@ static void fk_reset_pin(bool level)
     fk.mode = 1; fk.reset_src = 2; fk.cmd_status = 2; fk.irq = 0;
     fk.packet_type = 0xFF;
     fk.read_pending = false;
+    fk.proof_mapped = false;
+    fk.capture_enabled = false;
+    fk.capture_fifo = false;
     fk.wedged = false;
     fk.silent = fk.dead_resets > 0;
     if (fk.dead_resets > 0) fk.dead_resets--;
@@ -235,19 +246,51 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         case 0x0101: d[0] = fk.fw_major; d[1] = fk.fw_minor; n = 2; break;
         case 0x0110: d[0] = (uint8_t)(fk.errors >> 8); d[1] = (uint8_t)fk.errors; n = 2; break;
         case 0x020B: d[0] = fk.rssi_hi; d[1] = fk.rssi_lo; n = 2; break;
-        case 0x011C: d[0] = (uint8_t)(fk.fifo_n >> 8); d[1] = (uint8_t)fk.fifo_n; n = 2; break;
+        case 0x011C:
+            if (fk.capture_fifo && fk.mode == 4 && !fk.capture_timeout) {
+                fk.fifo_n = fk.capture_fifo_full ? (fk.iq_fifo_size == 0x3E8u ? 1024 : 256) : 128;
+                for (int i = 0; i < fk.fifo_n; i++) fk.fifo[i] = (uint8_t)i;
+            }
+            d[0] = (uint8_t)(fk.fifo_n >> 8); d[1] = (uint8_t)fk.fifo_n; n = 2; break;
+        case 0x011B:
+            fk.capture_flag_reads++;
+            if (fk.capture_overflow_at && fk.capture_flag_reads >= fk.capture_overflow_at)
+                fk.capture_fifo_error_flags |= 0x10;
+            d[0] = fk.capture_fifo_error_flags; n = 2; break;
         case 0x0287: d[0] = 0; d[1] = 28; d[2] = fk.ook_rssi_avg; d[3] = fk.ook_rssi_high;
                      d[4] = fk.ook_rssi_flags; d[5] = fk.ook_lqi; n = 6; break;
         case 0x0106:
-            if (fk.read_addr == 0xF30E14u) {
+            if (fk.read_addr == 0xF30054u) {
+                uint32_t value = fk.capture_timeout ? 0x02002000u : 0x030023FCu;
+                if (!fk.capture_enabled || fk.mode != 4) fk.bad_mode++;
+                if (!fk.capture_timeout)
+                    for (unsigned i = 0; i < 256; i++) fk.capture_ram[i] = 0x12340000u + i;
+                d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
+            } else if (fk.read_addr >= 0x802000u && fk.read_addr <= 0x8023FCu) {
+                if (fk.capture_enabled && fk.mode == 4) fk.bad_mode++;
+                uint32_t value = fk.capture_ram[(fk.read_addr - 0x802000u) / 4];
+                d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
+            } else if (fk.read_addr == 0xF30028u || fk.read_addr == 0xF30030u) {
+                uint32_t value = fk.read_addr == 0xF30028u ? fk.iq_fifo_base : fk.iq_fifo_size;
+                d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
+            } else if (fk.read_addr == 0xF30E14u) {
                 d[0] = (uint8_t)(fk.thr_reg >> 24); d[1] = (uint8_t)(fk.thr_reg >> 16);
                 d[2] = (uint8_t)(fk.thr_reg >> 8);  d[3] = (uint8_t)fk.thr_reg;
             } else if (fk.read_addr == 0xF40200u) {
                 d[0] = (uint8_t)(fk.dcdc_adc >> 24); d[1] = (uint8_t)(fk.dcdc_adc >> 16);
                 d[2] = (uint8_t)(fk.dcdc_adc >> 8);  d[3] = (uint8_t)fk.dcdc_adc;
+            } else if (fk.read_addr == 0x800FF8u ||
+                       (fk.read_addr >= 0x801000u && fk.read_addr <= 0x801060u) ||
+                       (fk.read_addr >= 0x101000u && fk.read_addr <= 0x101060u)) {
+                if (fk.read_addr != 0x800FF8u &&
+                    ((fk.read_addr < 0x800000u) != fk.proof_mapped)) fk.bad_reg++;
+                uint32_t value = fk.read_addr == 0x800FF8u ? fk.proof_magic :
+                    fk.proof_ram[(fk.read_addr & 0xFFu) / 4];
+                d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
             } else fk.bad_reg++;
             n = 4;
             break;
+        case 0x0291: d[0] = 4; d[1] = 0; n = 2; break;
         case 0x0212: d[0] = (uint8_t)(fk.rx_pkt_len >> 8); d[1] = (uint8_t)fk.rx_pkt_len; n = 2; break;
         case 0x022A: d[0] = 0x11; d[1] = (uint8_t)fk.rx_pkt_len; d[2] = (uint8_t)fk.lora_snr_q;
                      d[3] = fk.lora_rssi_hi; d[4] = fk.lora_rssi_hi; d[5] = fk.lora_rssi_flags; d[6] = (uint32_t)fk.lora_fei >> 16; d[7] = (uint32_t)fk.lora_fei >> 8; d[8] = fk.lora_fei; n = 9; break;
@@ -304,7 +347,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         fk.cmd_status = LS_FK_OK_;
         if (fk.has_next_mode) { fk.mode = fk.next_mode; fk.has_next_mode = false; }
         return;
-    case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x0287: case 0x0106:
+    case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x011B: case 0x0287: case 0x0106: case 0x0291:
     case 0x0212: case 0x022A: case 0x0246: case 0x0247: case 0x0272: case 0x0273: case 0x0299: case 0x029A:
         fk.read_pending = true;
         fk.read_op = op;
@@ -337,7 +380,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     /* The arguments each write takes (datasheet command tables, and RadioLib's
        LR2021 module for the packet and transmit commands). */
     static const struct { uint16_t op; uint8_t n; } nargs_of[] = {
-        { 0x0104, 7 }, { 0x0105, 11 }, { 0x0111, 0 }, { 0x0112, 2 }, { 0x0113, 2 }, { 0x0115, 5 },
+        { 0x0104, 7 }, { 0x0105, 11 }, { 0x012D, 1 }, { 0x0290, 11 }, { 0x0111, 0 }, { 0x0112, 2 }, { 0x0113, 2 }, { 0x0114, 2 }, { 0x0115, 5 },
         { 0x0116, 4 }, { 0x011E, 0 }, { 0x011F, 0 }, { 0x0120, 5 }, { 0x0121, 1 }, { 0x0122, 1 }, { 0x0123, 6 }, { 0x0128, 1 },
         { 0x0200, 4 }, { 0x0201, 2 }, { 0x0202, 3 }, { 0x0203, 2 }, { 0x0206, 1 }, { 0x0207, 1 },
         { 0x020C, 3 }, { 0x020D, 3 }, { 0x020F, 1 }, { 0x021A, 1 },
@@ -366,7 +409,10 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     switch (op) {
     case 0x0120: fk.errors |= fk_tcxo_errors; break;
     case 0x0121: break;
-    case 0x0128: fk.mode = t[2] ? 2 : 1; break;
+    case 0x0128:
+        if (fk.capture_fifo && fk.mode == 4 && fk.capture_tail_overflow)
+            fk.capture_fifo_error_flags |= 0x10;
+        fk.mode = t[2] ? 2 : 1; break;
     case 0x0105: {                      /* WriteRegMemMask32: Addr(3) Mask(4) Data(4) */
         const uint32_t addr = ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 8) | t[4];
         const uint32_t mask = ((uint32_t)t[5] << 24) | ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
@@ -379,12 +425,47 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     }
     case 0x0104: {                      /* WriteRegMem32: Addr(3) Data(4) */
         const uint32_t addr = ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 8) | t[4];
+        if (addr == 0xF30028u || addr == 0xF30030u) {
+            uint32_t v = ((uint32_t)t[5] << 24) | ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
+            if (addr == 0xF30028u) fk.iq_fifo_base = v; else fk.iq_fifo_size = v;
+            break;
+        }
+        if (addr >= 0x802000u && addr <= 0x8023FCu) {
+            fk.capture_ram[(addr - 0x802000u) / 4] = ((uint32_t)t[5] << 24) |
+                ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
+            break;
+        }
+        if ((addr >= 0x801000u && addr <= 0x801060u) ||
+            (addr >= 0x101000u && addr <= 0x101060u)) {
+            if ((addr < 0x800000u) != fk.proof_mapped) { fk.bad_reg++; fk.cmd_status = 1; break; }
+            fk.proof_ram[(addr & 0xFFu) / 4] = ((uint32_t)t[5] << 24) |
+                ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
+            break;
+        }
         if (addr != 0x80004Cu) { fk.bad_reg++; fk.cmd_status = 1; break; }
         fk.dcdc_freq_lf = ((uint32_t)t[5] << 24) | ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
         fk.dcdc_writes++;
         break;
     }
+    case 0x012D:
+        /* Model the proof's result, not an ARC emulator. Real execution is
+           established separately on hardware. */
+        if (fk.mode != 1 || t[2] != 0 || fk.proof_ram[0] != 0x600DB002u ||
+            fk.proof_ram[2] != 0x101010u) { fk.cmd_status = 1; break; }
+        fk.proof_mapped = true;
+        if (!fk.proof_fail_result) fk.proof_ram[24] = 0x373F373Fu;
+        break;
+    case 0x0290:
+        if (fk.mode == 1 && t[2] == 0xFF && t[7] == 0x0A && t[12] == 1) {
+            fk.capture_fifo = true; break;
+        }
+        if (fk.mode != 1 || t[2] != 0xFF || t[7] != 0x92 || t[11] != 0xFF) {
+            fk.bad_args++; fk.cmd_status = 1; break;
+        }
+        fk.capture_enabled = true;
+        break;
     case 0x011F: fk.txfifo_n = 0; break;
+    case 0x0114: break;
     case 0x020F:                        /* SelPa: 0 is the LF PA */
         fk.pa_sel = t[2]; fk.pa_sel_n++;
         if (t[2] != 0) fk.hf_pa++;

@@ -6,6 +6,33 @@
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+bool subghz_file_save(const char *path,const subghz_file_t *f,const int32_t *edges,int count,const char *preset_lines)
+{
+    if(!path || !f || !edges || count<1 || count>4096 || !f->freq_hz) return false;
+    for(int i=0;i<count;i++) if(!edges[i] || edges[i]==INT32_MIN ||
+        (i && (edges[i]>0)==(edges[i-1]>0))) return false;
+    int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0664);
+    if(fd<0) return false;
+    FILE *out=fdopen(fd,"w");
+    if(!out) {close(fd);unlink(path);return false;}
+    bool ok=fprintf(out,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n",
+        (unsigned long)f->freq_hz)>=0;
+    if(ok) ok=preset_lines?fputs(preset_lines,out)>=0:fprintf(out,"Preset: %s\n",f->preset)>=0;
+    if(ok) ok=fputs("Protocol: RAW\n",out)>=0;
+    if(f->bitrate && f->deviation_hz) ok=ok && fprintf(out,"# %lu baud, %lu Hz deviation, sync %08lX, %u-bit preamble\n",
+        (unsigned long)f->bitrate,(unsigned long)f->deviation_hz,(unsigned long)f->sync_word,f->preamble_bits)>=0;
+    for(int i=0;ok && i<count;i++) {
+        if(i%64==0) ok=fputs("RAW_Data:",out)>=0;
+        if(ok) ok=fprintf(out," %ld",(long)edges[i])>=0;
+        if(ok && (i%64==63 || i==count-1)) ok=fputc('\n',out)!=EOF;
+    }
+    if(fclose(out)!=0) ok=false;
+    if(!ok) unlink(path);
+    return ok;
+}
 
 void subghz_file_begin(subghz_file_t *f)
 {

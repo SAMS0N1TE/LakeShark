@@ -105,6 +105,10 @@ bool ls_lora_hw_locked_by_me(void);
    zero, because a sequence that reaches here unguarded is one a second task
    can interleave with. */
 esp_err_t ls_lora_hw_transmit(spi_transaction_t *t);
+/* Capture-only 16 MHz polling transfers (IDF >=5.5). Caller must hold the
+   radio lock throughout and disable before unlocking. The next transfer
+   after disabling restores the normal 2 MHz device clock. */
+esp_err_t ls_lora_hw_capture_fast(bool enable);
 /* Command lock must cover fill, transfer and reply copy. */
 esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n);
 unsigned  ls_lora_hw_unguarded(void);

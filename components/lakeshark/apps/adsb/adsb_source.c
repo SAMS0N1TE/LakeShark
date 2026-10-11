@@ -238,6 +238,8 @@ const char *adsb_source_name(adsb_source_t source)
     switch (source) {
     case ADSB_SRC_IQ:   return "iq";
     case ADSB_SRC_LORA: return "lr-chip";
+    case ADSB_SRC_DUAL: return "1090 LR + 978 RTL";
+    case ADSB_SRC_UAT:  return "978 RTL";
     case ADSB_SRC_NONE: break;
     }
     return "none";

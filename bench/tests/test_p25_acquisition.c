@@ -43,6 +43,7 @@ static struct {
     float audio_float[2000];
     mbe_parms cur, prev, enhanced;
     const uint8_t *iq;
+    const float *float_iq; /* Optional precision-preserving offline LR bridge. */
     size_t iq_bytes;
     size_t offset;
     size_t chunk;
@@ -53,7 +54,7 @@ static struct {
 
 void dsd_yield(void)
 {
-    if (!replay.iq || replay.offset >= replay.iq_bytes) {
+    if ((!replay.iq && !replay.float_iq) || replay.offset >= replay.iq_bytes) {
         exitflag = 1;
         dsd_abort = 1;
         return;
@@ -72,8 +73,11 @@ void dsd_yield(void)
     int16_t audio[2048];
     size_t bytes = replay.iq_bytes - replay.offset;
     if (bytes > replay.chunk) bytes = replay.chunk;
-    int n = dsp_process_iq(&replay.dsp, replay.iq + replay.offset,
-                            (int)bytes, audio, 2048);
+    int n = replay.float_iq
+        ? dsp_process_float_iq(&replay.dsp, replay.float_iq + replay.offset,
+                               (int)bytes / 2, audio, 2048)
+        : dsp_process_iq(&replay.dsp, replay.iq + replay.offset,
+                         (int)bytes, audio, 2048);
     replay.offset += bytes;
     for (int i = 0; i < n; i++) {
         int next = (replay.ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;

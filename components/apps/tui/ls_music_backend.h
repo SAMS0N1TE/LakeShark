@@ -26,7 +26,8 @@ void ls_music_mute_toggle(void);
 uint32_t ls_music_position_ms(void);
 uint32_t ls_music_duration_ms(void);
 /* Decoded source peak per channel since the last call, 0..32768, before the
-   mono downmix, tone and codec volume. Zero unless playing. */
+   mono downmix, tone and codec volume. Zero unless playing. The LEVEL view
+   turns it into what is heard with ls_music_volume_db and ls_music_muted. */
 unsigned ls_music_peak(int channel);
 /* Power in `bands` logarithmic bands centred from lo_hz to hi_hz, in dB
    relative to a full-scale sine, from the last LS_MUSIC_FFT_SIZE samples
@@ -36,18 +37,26 @@ unsigned ls_music_peak(int channel);
    playing with a full window of samples. */
 #define LS_MUSIC_FFT_SIZE 2048
 int ls_music_spectrum(float lo_hz, float hi_hz, int bands, float *db);
-/* Spectrogram columns, gapless: each call that returns true consumes the
-   next `hops` (1..4) back-to-back FFT windows after the cursor and gives
-   their average power in `rows` equal linear slices from 0 Hz to Nyquist,
-   in dB as above. False when those samples have not been decoded yet.
-   Zero-initialise the cursor; it restarts on its own after a sample-rate
-   change or when the reader falls too far behind. */
+/* Spectrogram lines at full FFT resolution. Each call that returns true
+   transforms the LS_MUSIC_FFT_SIZE-sample Hann window that starts at the
+   cursor and writes its one-sided power for bins 0 .. LS_MUSIC_FFT_SIZE/2-1
+   into `power`, linear and relative to a full-scale sine (1.0 is 0 dB on
+   the spectrum's scale), then moves the cursor on by `hop` samples
+   (LS_MUSIC_HOP_MIN .. LS_MUSIC_FFT_SIZE), so a hop under the window size
+   overlaps the windows. Bin k is centred on k * rate / LS_MUSIC_FFT_SIZE Hz.
+   Same samples as the spectrum: L+R after tone, before codec volume and
+   mute, so what a recording carries reads the same at any volume.
+   False when that window has not been decoded yet. Zero-initialise the
+   cursor; it restarts at the newest window after a source or sample-rate
+   change, and skips ahead rather than read samples about to be overwritten
+   when the reader falls more than half the history behind. */
+#define LS_MUSIC_HOP_MIN 128
 typedef struct {
     uint32_t next, rate, epoch;
     bool started;
 } ls_music_cursor_t;
-bool ls_music_spectrogram(ls_music_cursor_t *cursor, int hops, int rows,
-                          float *db);
+bool ls_music_spectrogram_line(ls_music_cursor_t *cursor, unsigned hop,
+                               float *power);
 typedef struct {
     unsigned rate_hz, bits, channels, epoch;
     bool mono_out; /* the board plays both source channels as one */

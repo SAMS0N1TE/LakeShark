@@ -42,6 +42,8 @@
 #include "ls_notes.h"
 #include "ls_experiments.h"
 #include "apps/adsb/adsb_state.h"
+#include "apps/adsb/uat_stream.h"
+#include "apps/adsb/uat_weather.h"
 #include "apps/fm/fm_state.h"
 #include "apps/acars/acars_app.h"
 #include "apps/fm/same_store.h"
@@ -350,6 +352,38 @@ static void feed_pages(void)
         FM.page_head = (FM.page_head + 1) % FM_PAGE_LOG_MAX;
         if (FM.page_count < FM_PAGE_LOG_MAX) FM.page_count++;
     }
+}
+
+/* Read the same wire IQ as the standalone replay, so weather screenshots
+   exercise CPFSK, sync, RS and APDU parsing before they reach the screen. */
+static uat_stream_t s_uat_replay;
+static void replay_uat_down(const uat_fix_t *fix, void *user)
+{
+    (void)user;
+    adsb_state_update_uat(fix, esp_timer_get_time());
+}
+static void replay_uat_up(const uint8_t *p, void *user)
+{
+    (void)user;
+    uat_weather_uplink(p, esp_timer_get_time());
+}
+static void replay_uat(void)
+{
+    const char *path = getenv("LSSIM_UAT_IQ");
+    if (!path || !path[0]) return;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror(path); exit(1); }
+    uint8_t buffer[8192];
+    uat_weather_reset();
+    uat_stream_init(&s_uat_replay, replay_uat_down, replay_uat_up, NULL);
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), fp))) uat_stream_feed(&s_uat_replay, buffer, n);
+    bool failed = ferror(fp) || s_uat_replay.have_i;
+    fclose(fp);
+    if (failed) { fprintf(stderr, "UAT IQ replay truncated or unreadable\n"); exit(1); }
+    fprintf(stderr, "UAT replay: %lu down %lu up\n",
+        (unsigned long)(s_uat_replay.stats.short_frames + s_uat_replay.stats.long_frames),
+        (unsigned long)s_uat_replay.stats.uplink_frames);
 }
 
 static void feed_adsb(void)
@@ -709,6 +743,7 @@ static void usage(void)
     printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
     printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
     printf("  LSSIM_TONE=1..258 seeds a detected receive tone in FM\n");
+    printf("  LSSIM_UAT_IQ=FILE.cu8 decodes recorded/synthetic 978 IQ before rendering\n");
     printf("  LSSIM_RS41=1 seeds EXPERIMENTS and MAP with sonde flight tracks\n");
     printf("  LSSIM_AIS=1 seeds FM and MAP with receive-only vessels\n");
     printf("  LSSIM_APRS=1 seeds FM and MAP with stations, weather and messages\n");
@@ -1056,6 +1091,7 @@ int main(int argc, char **argv)
         feed_waterfall();
         feed_map();
         feed_adsb();
+        replay_uat();
         feed_pages();
     }
 

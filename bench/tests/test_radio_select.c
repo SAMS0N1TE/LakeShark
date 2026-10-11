@@ -136,6 +136,19 @@ LS_CASE(p25_on_the_lora_chip_is_the_lr2021s)
     LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
 }
 
+LS_CASE(p25_split_requires_both_rtl_and_stream_capable_lr)
+{
+    fresh(true, false, 2);
+    LS_EQ_STR(ls_rsel_name(LS_RSEL_P25_SPLIT), "split");
+    LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) == NULL);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_P25_SPLIT) == NULL);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_P25_SPLIT) != NULL);
+    fresh(true, false, 1);
+    LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) != NULL);
+    fresh(false, true, 2);
+    LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) != NULL);
+}
+
 LS_CASE(mode_s_is_the_lr2021s_and_not_the_sx1262s)
 {
     fresh(false, false, 1);
@@ -171,7 +184,7 @@ LS_CASE(each_job_takes_only_the_radios_that_can_run_it)
     LS_EQ_STR(ls_rsel_cant(LS_RSEL_FIND, LS_RSEL_NFC), "NFC reaches a few centimetres: hold the board to the tag");
     LS_CHECK(ls_rsel_cant(LS_RSEL_FIND2, LS_RSEL_GPS) != NULL);
     /* Everything records something and shows something. */
-    for (int r = 0; r < LS_RSEL_RADIOS; r++) {
+    for (int r = 0; r < LS_RSEL_P25_SPLIT; r++) {
         LS_CHECK(ls_rsel_cant(LS_RSEL_REC, (ls_rsel_radio_t)r) == NULL);
         LS_CHECK(ls_rsel_cant(LS_RSEL_WATERFALL, (ls_rsel_radio_t)r) == NULL);
     }
@@ -361,4 +374,22 @@ LS_CASE(the_lr2021_is_ready_for_ads_b_in_the_same_list)
     choose(LS_RSEL_LORA);
     LS_EQ_INT(s_done_calls, 1);
     LS_EQ_INT(ls_rsel_saved(LS_RSEL_ADSB), LS_RSEL_LORA);
+}
+
+LS_CASE(dual_aircraft_picker_requires_both_rtl_and_lr2021)
+{
+    fresh(true, false, 2);
+    LS_CHECK(ls_rsel_absent(LS_RSEL_ADSB_DUAL) == NULL);
+    ls_rsel_open(LS_RSEL_ADSB, on_done);
+    draw_picker();
+    LS_CHECK(row_of("1090 LR + 978 RTL") >= 0);
+    choose(LS_RSEL_ADSB_DUAL);
+    LS_EQ_INT(ls_rsel_saved(LS_RSEL_ADSB), LS_RSEL_ADSB_DUAL);
+    fresh(true, false, 1);
+    LS_CHECK(ls_rsel_absent(LS_RSEL_ADSB_DUAL) != NULL);
+    ls_rsel_open(LS_RSEL_ADSB, on_done);
+    draw_picker();
+    LS_CHECK(row_of("1090 LR + 978 RTL") < 0);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_ADSB), LS_RSEL_SDR_RTL);
+    ls_picker_close();
 }

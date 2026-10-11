@@ -275,6 +275,8 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
         emit_contact_event(EVT_CONTACT_NEW, a, false);
 
     a->last_seen_us = now;
+    a->sources |= 1;
+    a->source_seen_us[0] = now;
     a->msg_count++;
     a->good_msg_count++;
 
@@ -504,6 +506,23 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
             emit_contact_event(EVT_CONTACT_VELOCITY, a, false);
     }
 
+    perf_set_active_count(adsb_state_active_count());
+}
+
+void adsb_decode_on_uat(const uat_fix_t *fix)
+{
+    int64_t now = esp_timer_get_time();
+    adsb_aircraft_t *a = adsb_state_update_uat(fix, now);
+    if (!a) return;
+    perf_count_msg_good();
+    perf_mark_good_msg(now);
+    if (a->msg_count == 1) emit_contact_event(EVT_CONTACT_NEW, a, false);
+    if (!a->announced && a->good_msg_count >= GATE_MIN_MSGS) {
+        a->announced = true;
+        audio_events_publish(AUDIO_EVT_NEW_CONTACT, a->icao, a->callsign, false);
+        emit_contact_event(EVT_CONTACT_CONFIRMED, a, false);
+    }
+    if (fix->position) perf_mark_position(now);
     perf_set_active_count(adsb_state_active_count());
 }
 

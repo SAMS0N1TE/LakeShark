@@ -8,6 +8,9 @@
 #include "freertos/task.h"
 #include "ls_board.h"
 #include "ls_caps.h"
+#if LS_HAS_LORA_LR20XX_PROBE
+#include "ls_lora_lr20xx.h"
+#endif
 #if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
 #include "ls_lora_priv.h"
 #define ANT_LOCK() ls_lora_hw_lock()
@@ -113,6 +116,9 @@ static bool s_ant_confirmed;
 static esp_err_t antenna_select(bool external, bool confirmed)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
+#if LS_HAS_LORA_LR20XX_PROBE
+    if (lr20xx_stream_source2_active()) return ESP_ERR_INVALID_STATE;
+#endif
     /* The socket lock excludes a transmit start between the idle check and
        the switch write. A busy transmitter keeps its existing route. */
     ANT_LOCK();

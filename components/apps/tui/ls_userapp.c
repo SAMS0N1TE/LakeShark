@@ -365,7 +365,7 @@ static bool load_one(const char *path, const char *fname)
     const bool over = !feof(f);
     fclose(f);
     if (over) {
-        snprintf(s_last_err, sizeof(s_last_err), "%s: larger than 4 KB", fname);
+        snprintf(s_last_err, sizeof(s_last_err), "%s: larger than %d KB", fname, LS_UA_MAX_BYTES / 1024);
         return false;
     }
     buf[n] = 0;

@@ -21,6 +21,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#ifdef ESP_PLATFORM
+#include "esp_idf_version.h"
+#endif
 
 #include "ls_board.h"
 #include "ls_spi.h"
@@ -221,6 +224,26 @@ void ls_lora_hw_unlock(void)
 
 unsigned ls_lora_hw_unguarded(void) { return __atomic_load_n(&s_unguarded, __ATOMIC_RELAXED); }
 
+static bool s_capture_fast;
+static uint32_t s_capture_clock_pending;
+esp_err_t ls_lora_hw_capture_fast(bool enable)
+{
+    if (!ls_lora_hw_locked_by_me()) return ESP_ERR_INVALID_STATE;
+#ifdef ESP_PLATFORM
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 0)
+    if (enable) return ESP_ERR_NOT_SUPPORTED;
+#endif
+#endif
+    if (enable) {
+        if (s_capture_fast) return ESP_ERR_INVALID_STATE;
+        const esp_err_t err = spi_device_acquire_bus(s_dev, portMAX_DELAY);
+        if (err != ESP_OK) return err;
+    } else if (s_capture_fast) spi_device_release_bus(s_dev);
+    s_capture_fast = enable;
+    s_capture_clock_pending = enable ? 16000000u : 2000000u;
+    return ESP_OK;
+}
+
 esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
 {
     if (!ls_lora_hw_locked_by_me()) {
@@ -228,7 +251,19 @@ esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
             ESP_LOGW(TAG, "SPI transaction outside a locked sequence");
     }
     ls_lora_hw_lock();
-    const esp_err_t err = spi_device_transmit(s_dev, t);
+    esp_err_t err;
+#ifdef ESP_PLATFORM
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+    t->override_freq_hz = s_capture_clock_pending;
+    err = s_capture_fast ? spi_device_polling_transmit(s_dev, t) : spi_device_transmit(s_dev, t);
+    if (err == ESP_OK) s_capture_clock_pending = 0;
+#else
+    err = spi_device_transmit(s_dev, t);
+#endif
+#else
+    err = spi_device_transmit(s_dev, t);
+    if (err == ESP_OK) s_capture_clock_pending = 0;
+#endif
     ls_lora_hw_unlock();
     return err;
 }
@@ -292,6 +327,18 @@ int ls_lora_hw_busy_level(void) { return gpio_get_level(BUSY_PIN); }
 /* Spin briefly, then yield. */
 bool ls_lora_hw_wait_not_busy(int timeout_ms)
 {
+    if (ls_lora_hw_locked_by_me() && s_capture_fast) {
+        /* The raw FIFO holds only 512 us at 125 ksample/s. A tick sleep after
+         * the normal 256 us spin can overflow it. Keep interrupts enabled and
+         * poll within the caller's timeout while the capture owns the bus.
+         * This removes our own tick delay, not scheduler/cache/BUSY stalls. */
+        int64_t deadline = esp_timer_get_time() + (int64_t)(timeout_ms > 0 ? timeout_ms : 0) * 1000;
+        for (;;) {
+            if (!gpio_get_level(BUSY_PIN)) return true;
+            if (esp_timer_get_time() >= deadline) return false;
+            esp_rom_delay_us(1);
+        }
+    }
     for (int i = 0; i < 256; i++) {
         if (!gpio_get_level(BUSY_PIN)) return true;
         esp_rom_delay_us(1);

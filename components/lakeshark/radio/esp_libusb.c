@@ -313,6 +313,13 @@ static usb_device_handle_t s_sdev;
 static unsigned char      s_sep;
 static volatile bool      s_streaming;
 static uint64_t           s_sdropped;
+static portMUX_TYPE s_drop_lock = portMUX_INITIALIZER_UNLOCKED;
+static void stream_drop(uint32_t bytes)
+{
+    portENTER_CRITICAL(&s_drop_lock);
+    s_sdropped+=bytes;
+    portEXIT_CRITICAL(&s_drop_lock);
+}
 static QueueHandle_t      s_squeue;
 static DRAM_ATTR StaticQueue_t s_squeue_ctrl;
 static DRAM_ATTR uint8_t s_squeue_store[STREAM_QUEUE_LEN * sizeof(int)];
@@ -366,7 +373,7 @@ static void stream_push(const uint8_t *buf, uint32_t len)
     uint32_t head  = s_shead;
     uint32_t tail  = __atomic_load_n(&s_stail, __ATOMIC_ACQUIRE);
     uint32_t space = STREAM_RING_SIZE - (head - tail);
-    if (len > space) { s_sdropped += len; return; }
+    if (len > space) { stream_drop(len); return; }
     uint32_t off   = head % STREAM_RING_SIZE;
     uint32_t first = STREAM_RING_SIZE - off;
     if (first >= len) {
@@ -411,7 +418,7 @@ static void stream_xfer_cb(usb_transfer_t *t)
         if(t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes > 0)
             stream_push(t->data_buffer, (uint32_t)t->actual_num_bytes);
         else if(t->status != USB_TRANSFER_STATUS_COMPLETED)
-            s_sdropped += STREAM_XFER_LEN;
+            stream_drop(STREAM_XFER_LEN);
     }
     __atomic_fetch_and(&s_stream_pending,~(1u<<slot),__ATOMIC_RELEASE);
     if (s_streaming && !s_repriming) {
@@ -421,7 +428,7 @@ static void stream_xfer_cb(usb_transfer_t *t)
          * usb_host_inflight before invoking this callback; async submission
          * is permitted here. A queued retry is only needed on failure. */
         if(!stream_submit(slot) && s_squeue && xQueueSend(s_squeue,&slot,0)!=pdTRUE)
-            s_sdropped+=STREAM_XFER_LEN;
+            stream_drop(STREAM_XFER_LEN);
     }
     int64_t now = esp_timer_get_time();
     if (++completions >= 32 || now - budget_start >= 2000) {
@@ -481,12 +488,12 @@ static void stream_pump_task(void *arg)
                 /**/
                 stall_secs++;
                 ESP_LOGW(TAG_ADSB, "stream stalled %ds, re-priming pipe (dropped=%llu, usb errors=%lu)",
-                         stall_secs, (unsigned long long)s_sdropped, (unsigned long)hcd_dwc_desc_errors);
+                         stall_secs, (unsigned long long)esp_libusb_stream_dropped(), (unsigned long)hcd_dwc_desc_errors);
                 stream_reprime();
             } else {
                 stall_secs = 0;
                 ESP_LOGW(TAG_ADSB, "stream throughput: %u B/s (%.2f MB/s), dropped=%llu, usb errors=%lu",
-                         (unsigned)bytes, bytes / 1e6, (unsigned long long)s_sdropped,
+                         (unsigned)bytes, bytes / 1e6, (unsigned long long)esp_libusb_stream_dropped(),
                          (unsigned long)hcd_dwc_desc_errors);
             }
             last_head = s_shead; last_log = now;
@@ -560,7 +567,8 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     }
 
     xQueueReset(s_squeue);
-    s_shead = s_stail = 0; s_sdropped = 0;
+    s_shead = s_stail = 0;
+    portENTER_CRITICAL(&s_drop_lock);s_sdropped=0;portEXIT_CRITICAL(&s_drop_lock);
     s_repriming=false;
     s_sdev = driver_obj->dev_hdl; s_sep = endpoint;
     s_streaming = true;
@@ -699,7 +707,13 @@ uint32_t esp_libusb_stream_avail(void)
     return __atomic_load_n(&s_shead, __ATOMIC_ACQUIRE) - s_stail;
 }
 
-uint64_t esp_libusb_stream_dropped(void) { return s_sdropped; }
+uint64_t esp_libusb_stream_dropped(void)
+{
+    portENTER_CRITICAL(&s_drop_lock);
+    uint64_t bytes=s_sdropped;
+    portEXIT_CRITICAL(&s_drop_lock);
+    return bytes;
+}
 
 int esp_libusb_stream_slots(void)
 {

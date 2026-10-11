@@ -2,6 +2,8 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "ls_music_backend.h"
+#include "ls_pixel_wf.h"
+#include "ls_spectro.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,23 +43,15 @@ static uint8_t ramp(int level) {
   return RAMP[palette][level < 0 ? 0 : level > 15 ? 15 : level];
 }
 
-/* The scan and the spectrogram keep their history in PSRAM while the app
-   is open; internal RAM is too scarce for it. */
+/* The scan keeps its history in PSRAM while the app is open; internal RAM
+   is too scarce for it. The waterfall's much larger buffers are below. */
 #define SCAN_MAX 128
-#define WF_COLS 128
-#define WF_ROWS 96
 #define SCAN_TOP_DB (-12.0f)
 #define SCAN_FLOOR_DB (-84.0f)
-#define WF_TOP_DB (-20.0f)
-#define WF_FLOOR_DB (-100.0f)
-static const int SPAN_HOPS[3] = {1, 2, 4};
 typedef struct {
   float scan[SCAN_MAX], scan_cap[SCAN_MAX], now[SCAN_MAX];
   int64_t scan_until[SCAN_MAX];
-  float column[WF_ROWS];
-  uint8_t wf[WF_COLS][WF_ROWS];
-  int wf_head, wf_filled, scan_n;
-  ls_music_cursor_t cursor;
+  int scan_n;
 } vis_t;
 static vis_t *vis;
 static unsigned source_epoch;
@@ -81,15 +75,17 @@ static const uint8_t white = TUI_ATTR(TUI_WHITE, TUI_BLACK),
                      cyan = TUI_ATTR(TUI_CYAN, TUI_BLACK),
                      ghost = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
 
-/* Meter segments light at these source levels, dBFS. Finer near the top,
-   where program material spends its time. */
+/* Meter segments light at these output levels, dBFS after the volume.
+   Sixty dB deep, because the volume takes up to fifty of them: at a usual
+   listening setting a loud track reads in the -40s and -30s, and full
+   volume still has the fine steps near the top. */
 #define SEGS 20
-static const float SEG[SEGS] = {-40, -34, -28,   -24, -20,   -17, -14,
-                                -12, -10, -8,    -7,  -6,    -5,  -4,
-                                -3,  -2,  -1.5f, -1,  -0.5f, 0};
+static const float SEG[SEGS] = {-60, -54, -48, -44, -40, -36, -32,
+                                -28, -24, -20, -17, -14, -12, -10,
+                                -8,  -6,  -4,  -3,  -2,  0};
 static const char *const SEG_NAME[SEGS] = {
-    "-40", "-34", "-28", "-24", "-20", "-17", "-14", "-12", "-10", "-8",
-    "-7",  "-6",  "-5",  "-4",  "-3",  "-2",  "",    "-1",  "",    "0"};
+    "-60", "-54", "-48", "-44", "-40", "-36", "-32", "-28", "-24", "-20",
+    "-17", "-14", "-12", "-10", "-8",  "-6",  "-4",  "-3",  "-2",  "0"};
 /* ISO 2/3-octave centres, 63 Hz to 16 kHz. */
 #define BANDS 13
 #define LO_HZ 63.0f
@@ -104,14 +100,18 @@ static const char *const BAND_NAME[BANDS] = {
 #define HOLD_US 1500000
 #define CAP_US 800000
 #define OVER_US 2000000
-EXT_RAM_BSS_ATTR static float meter_db[2], hold_db[2], band_db[BANDS],
-    cap_db[BANDS];
-EXT_RAM_BSS_ATTR static int64_t hold_until[2], over_until[2], cap_until[BANDS];
+/* meter_db and hold_db are the output, what the bars and PEAK HOLD show;
+   source_db is the decoded file before the volume, for the small marker. */
+EXT_RAM_BSS_ATTR static float meter_db[2], hold_db[2], source_db[2],
+    source_hold[2], band_db[BANDS], cap_db[BANDS];
+EXT_RAM_BSS_ATTR static int64_t hold_until[2], over_until[2], source_until[2],
+    cap_until[BANDS];
 static int64_t last_us;
 static int usable_bands = BANDS;
 static void reset_levels(void) {
   for (int ch = 0; ch < 2; ch++)
-    meter_db[ch] = hold_db[ch] = FLOOR_DB - 1, over_until[ch] = 0;
+    meter_db[ch] = hold_db[ch] = source_db[ch] = source_hold[ch] = FLOOR_DB - 1,
+    over_until[ch] = 0;
   for (int b = 0; b < BANDS; b++)
     band_db[b] = cap_db[b] = FLOOR_DB - 1;
   last_us = 0;
@@ -155,25 +155,6 @@ static void update_scan(bool playing, int n, int64_t now, float dt) {
               i < measured ? vis->now[i] : SCAN_FLOOR_DB - 1, 60.0f, 24.0f,
               350000, now, dt);
 }
-static uint8_t wf_level(float db) {
-  int l = (int)((db - WF_FLOOR_DB) * 16 / (WF_TOP_DB - WF_FLOOR_DB));
-  return (uint8_t)(l < 0 ? 0 : l > 15 ? 15 : l);
-}
-/* Every column the decoder has produced since the last frame, in order. */
-static void update_waterfall(void) {
-  if (!vis)
-    return;
-  for (int n = 0;
-       n < 16 && ls_music_spectrogram(&vis->cursor, SPAN_HOPS[span_step],
-                                      WF_ROWS, vis->column);
-       n++) {
-    vis->wf_head = (vis->wf_head + 1) % WF_COLS;
-    for (int r = 0; r < WF_ROWS; r++)
-      vis->wf[vis->wf_head][r] = wf_level(vis->column[r]);
-    if (vis->wf_filled < WF_COLS)
-      vis->wf_filled++;
-  }
-}
 /* This frame's clock, for the views that settle while they draw. */
 static int64_t frame_now;
 static float frame_dt;
@@ -185,13 +166,23 @@ static void update_levels(bool playing) {
   last_us = now;
   frame_now = now;
   frame_dt = dt;
+  const int volume = ls_music_volume();
+  const float volume_db = ls_music_volume_db();
+  const bool muted = ls_music_muted();
   for (int ch = 0; ch < 2; ch++) {
     unsigned peak = ls_music_peak(ch);
-    float db = peak ? 20.0f * log10f(peak / 32768.0f) : FLOOR_DB - 1;
-    if (peak >= 32767)
+    float src = peak ? 20.0f * log10f(peak / 32768.0f) : FLOOR_DB - 1;
+    float out = ls_audio_view_output_db(peak, volume, volume_db, muted);
+    if (!(out > FLOOR_DB - 1))
+      out = FLOOR_DB - 1;
+    /* OVER is the output reaching full scale: a clipped source at full
+       volume. A clip turned down is not heard as one. */
+    if (out >= -0.05f)
       over_until[ch] = now + OVER_US;
-    settle(&meter_db[ch], &hold_db[ch], &hold_until[ch], db, METER_FALL_DB_S,
+    settle(&meter_db[ch], &hold_db[ch], &hold_until[ch], out, METER_FALL_DB_S,
            METER_FALL_DB_S, HOLD_US, now, dt);
+    settle(&source_db[ch], &source_hold[ch], &source_until[ch], src,
+           METER_FALL_DB_S, METER_FALL_DB_S, HOLD_US, now, dt);
   }
   float db[BANDS];
   int measured = playing && view == VIEW_BANDS
@@ -217,7 +208,7 @@ static void center(tui_surface *sf, tui_rect r, int y, const char *text,
   tui_put_str(sf, r, r.x + (r.w - n) / 2, y, cut, attr);
 }
 static uint8_t seg_hue(float db) {
-  return db >= -1.0f   ? TUI_RED | TUI_BRIGHT
+  return db >= -2.0f   ? TUI_RED | TUI_BRIGHT
          : db >= -6.0f ? TUI_YELLOW | TUI_BRIGHT
                        : TUI_CYAN | TUI_BRIGHT;
 }
@@ -277,6 +268,24 @@ static void balance(tui_surface *sf, tui_rect a, int y) {
   tui_put_str(sf, a, x + w * 2, y, "R", LS_ATTR_DIM);
 }
 
+/* The file's own level before the volume: a small mark beside each bar and
+   this line, so turning the volume down shows how far below the source the
+   output now sits. x < 0 centres it. */
+static const uint8_t source_mark = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK);
+static void source_line(tui_surface *sf, tui_rect a, int x, int y,
+                        const char *marks) {
+  char l[16], r[16], line[48];
+  db_text(l, sizeof(l), source_db[0]);
+  db_text(r, sizeof(r), source_db[1]);
+  int n = snprintf(line, sizeof(line), "%s SOURCE  L %s  R %s", marks, l, r);
+  if (n > a.w - 2)
+    return;
+  if (x < 0)
+    x = a.x + (a.w - n) / 2;
+  tui_put_str(sf, a, x, y, line, LS_ATTR_DIM);
+  tui_put_str(sf, a, x, y, marks, source_mark);
+}
+
 /* Landscape: two long horizontal bars with the scale between them. */
 static void meters_across(tui_surface *sf, tui_rect a) {
   const int label = 3, readout = 13;
@@ -319,9 +328,18 @@ static void meters_across(tui_surface *sf, tui_rect a) {
     if (!n || x <= last)
       continue;
     tui_put_str(sf, a, x, scale, SEG_NAME[s],
-                SEG[s] >= -1.0f ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
+                SEG[s] >= -2.0f ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
                                 : LS_ATTR_DIM);
     last = x + n;
+  }
+  /* The source marks: L's above its bar, R's below, each over the segment
+     the file itself reaches before the volume. */
+  for (int ch = 0; ch < 2; ch++) {
+    int s = hold_segment(source_db[ch]);
+    int y = ch ? y0 + 2 * thick + 1 : y0 - 1;
+    if (s >= 0 && y >= a.y && y < a.y + a.h)
+      tui_put_char(sf, a, x0 + s * pitch + (pitch - 1) / 2, y, ch ? '^' : 'v',
+                   source_mark);
   }
   if (block == 2 * thick + 1)
     return;
@@ -331,6 +349,7 @@ static void meters_across(tui_surface *sf, tui_rect a) {
   db_text(r, sizeof(r), hold_db[1]);
   snprintf(line, sizeof(line), "PEAK HOLD   L %s   R %s", l, r);
   tui_put_str(sf, a, x0, y, line, white);
+  source_line(sf, a, x0, y + 1, "v^");
   balance(sf, a, y + 2);
 }
 
@@ -376,9 +395,19 @@ static void meters_up(tui_surface *sf, tui_rect a) {
     char text[8];
     snprintf(text, sizeof(text), "%4s", SEG_NAME[s]);
     tui_put_str(sf, a, x0 + bar + 1, y, text,
-                SEG[s] >= -1.0f ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
+                SEG[s] >= -2.0f ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
                                 : LS_ATTR_DIM);
     last = y;
+  }
+  /* The source marks sit in the gutter beside each bar, pointing at it. */
+  for (int ch = 0; ch < 2; ch++) {
+    int s = hold_segment(source_db[ch]), top = -1;
+    for (int i = 0; i < height; i++)
+      if (i * SEGS / step_num == s)
+        top = i;
+    if (top >= 0)
+      tui_put_char(sf, a, ch ? x0 + bar + mid - 1 : x0 + bar, base - top,
+                   ch ? '>' : '<', source_mark);
   }
   char l[16], r[16], line[48];
   db_text(l, sizeof(l), hold_db[0]);
@@ -386,6 +415,7 @@ static void meters_up(tui_surface *sf, tui_rect a) {
   snprintf(line, sizeof(line), "PEAK HOLD  L %s  R %s", l, r);
   center(sf, a, base + 2, line, LS_ATTR_DIM);
   balance(sf, a, base + 3);
+  source_line(sf, a, -1, base + 4, "<>");
 }
 
 static void spectrum(tui_surface *sf, tui_rect a) {
@@ -511,65 +541,232 @@ static void scan_view(tui_surface *sf, tui_rect a, bool playing) {
     last = x + len;
   }
 }
-/* Time runs left to right, newest at the right edge; frequency is linear
-   from 0 at the bottom to Nyquist at the top, which is how a message hidden
-   in audio is drawn and so how it reads. Each cell carries two slices. */
-static void waterfall_view(tui_surface *sf, tui_rect a) {
-  const int scale = 5;
-  tui_rect plot = tui_rect_make(a.x + scale, a.y, a.w - scale - 1, a.h - 1);
-  if (!vis || plot.w < 8 || plot.h < 4)
-    return;
+/* THE WATERFALL, IN PANEL PIXELS.
 
-  if (plot.w > WF_COLS)
-    plot.w = WF_COLS;
-  const int halves = plot.h * 2;
-  for (int c = 0; c < plot.w; c++) {
-    int age = plot.w - 1 - c;
-    if (age >= vis->wf_filled)
-      continue;
-    const uint8_t *col = vis->wf[(vis->wf_head - age + WF_COLS) % WF_COLS];
-    for (int y = 0; y < plot.h; y++) {
-      int level[2];
-      for (int half = 0; half < 2; half++) {
-        int from_bottom = halves - 1 - (2 * y + half);
-        int lo = from_bottom * WF_ROWS / halves,
-            hi = (from_bottom + 1) * WF_ROWS / halves;
-        if (hi <= lo)
-          hi = lo + 1;
-        int best = 0;
-        for (int r = lo; r < hi && r < WF_ROWS; r++)
-          if (col[r] > best)
-            best = col[r];
-        level[half] = best;
-      }
-      tui_put_char(sf, plot, plot.x + c, plot.y + y, LS_TUI_BLOCK_UPPER,
-                   TUI_ATTR(ramp(level[0]), ramp(level[1])));
-    }
-  }
-  ls_music_format_t f;
-  if (ls_music_format(&f)) {
-    float nyquist = f.rate_hz / 2.0f;
-    for (int i = 0; i <= 4; i++) {
-      char text[8];
-      freq_text(text, sizeof(text), nyquist * (4 - i) / 4);
-      int y = plot.y + i * (plot.h - 1) / 4;
-      tui_put_str(sf, a, a.x + scale - 1 - (int)strlen(text), y, text,
-                  LS_ATTR_DIM);
-    }
-    char text[24];
-    float seconds =
-        (float)plot.w * SPAN_HOPS[span_step] * LS_MUSIC_FFT_SIZE / f.rate_hz;
-    snprintf(text, sizeof(text), "-%.1fs", (double)seconds);
-    tui_put_str(sf, a, plot.x, plot.y + plot.h, text, LS_ATTR_DIM);
-  }
-  tui_put_str(sf, a, plot.x + plot.w - 3, plot.y + plot.h, "NOW", cyan);
-  if (!vis->wf_filled)
-    center(sf, plot, plot.y + plot.h / 2, "Waiting for audio", LS_ATTR_DIM);
+   Time runs left to right, one pixel column per FFT line with the newest at
+   the right edge; frequency runs up, 0 Hz at the bottom, which is how a
+   picture or a message hidden in audio is drawn and so how it reads. The
+   picture sits behind image cells at the panel's own resolution, one image
+   pixel to one panel pixel.
+
+   Each line is a 2048-point Hann window, a new one every hop (512 samples
+   at the fastest span, so windows overlap by three quarters). The lines are
+   kept at full FFT resolution, 1024 bins of half-dB codes, so the colour
+   map, the axis and the zoom can all change while the picture is held and
+   the whole history redraws in the new reading.
+
+   The work runs on the UI task, below the decoder's priority, in at most a
+   few milliseconds a frame: lines that cannot be done in time are dropped
+   (the backend's cursor skips ahead), and the audio path is never waited on.
+   All of it is PSRAM; nothing here is on the UI task's 6 KB stack. */
+#define WF_BINS (LS_MUSIC_FFT_SIZE / 2)
+#define WF_LINES_PER_FRAME 24
+#define WF_BUDGET_US 6000
+#define WF_GUTTER 5
+/* The picture is drawn and handed over at most this often; lines that
+   arrive between go into the history and land together. */
+#define WF_COMPOSE_US 33000
+static const unsigned WF_HOPS[3] = {512, 1024, 2048};
+static ls_audio_wf_opts_t wf_opts = {-100.0f, 80.0f, false, false, 1};
+typedef struct {
+  float power[WF_BINS];
+  ls_music_cursor_t cursor;
+  ls_pwf_t pwf; /* the pixels: history, ring picture, colours, axis */
+  unsigned rows_rate;
+  bool rows_log;
+  int rows_div;
+} wf_t;
+static wf_t *wf;
+static void wf_release_image(void) {
+  if (wf)
+    ls_pwf_release(&wf->pwf);
 }
-/* The colour key and the controls that belong to the plots, three rows. */
+static void wf_clear(void) {
+  if (!wf)
+    return;
+  memset(&wf->cursor, 0, sizeof(wf->cursor));
+  ls_pwf_clear(&wf->pwf);
+}
+static bool wf_size(int w, int h) {
+  if (!wf) {
+#ifdef ESP_PLATFORM
+    wf = heap_caps_calloc(1, sizeof(*wf), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    wf = calloc(1, sizeof(*wf));
+#endif
+  }
+  if (!wf)
+    return false;
+  const bool fresh = !wf->pwf.img || wf->pwf.w != w || wf->pwf.h != h;
+  if (!ls_pwf_size(&wf->pwf, LS_PWF_LEFT, w, h, WF_BINS))
+    return false;
+  if (fresh) {
+    memset(&wf->cursor, 0, sizeof(wf->cursor));
+    wf->rows_rate = 0;
+  }
+  return true;
+}
+/* Smooth colour maps for real pixels, after the cell palettes' hues. */
+static const ls_pwf_stop_t WF_STOPS[PALETTES][8] = {
+    {{0, 0, 0, 0}, {36, 12, 20, 140}, {73, 0, 140, 230}, {109, 30, 200, 100},
+     {146, 240, 220, 40}, {182, 245, 80, 40}, {219, 230, 70, 210},
+     {255, 255, 255, 255}},
+    {{0, 0, 0, 0}, {60, 110, 0, 0}, {120, 220, 40, 0}, {175, 255, 140, 0},
+     {220, 255, 225, 70}, {255, 255, 255, 235}},
+    {{0, 0, 0, 0}, {50, 60, 0, 90}, {100, 200, 0, 200}, {150, 70, 90, 255},
+     {190, 0, 225, 255}, {225, 130, 255, 90}, {255, 255, 255, 210}},
+    {{0, 0, 0, 0}, {70, 0, 12, 95}, {140, 20, 95, 225}, {200, 70, 210, 255},
+     {255, 255, 255, 255}},
+    {{0, 0, 0, 0}, {80, 0, 60, 12}, {160, 20, 180, 45}, {220, 130, 255, 90},
+     {255, 235, 255, 205}}};
+static const int WF_NSTOPS[PALETTES] = {8, 6, 7, 5, 5};
+static void wf_settings(unsigned rate) {
+  /* The codes are half-dB steps up from LS_SPECTRO_CODE_FLOOR_DB. */
+  const float lo = (wf_opts.floor_db - LS_SPECTRO_CODE_FLOOR_DB) * 2.0f;
+  ls_pwf_colours(&wf->pwf, WF_STOPS[palette], WF_NSTOPS[palette], lo,
+                 lo + wf_opts.range_db * 2.0f);
+  if (wf->rows_rate != rate || wf->rows_log != wf_opts.log_axis ||
+      wf->rows_div != wf_opts.top_div) {
+    ls_spectro_rows(wf->pwf.h, LS_MUSIC_FFT_SIZE, rate, wf_opts.log_axis,
+                    rate / 2.0f / wf_opts.top_div, wf->pwf.first, wf->pwf.last);
+    ls_pwf_axis_changed(&wf->pwf);
+    wf->rows_rate = rate;
+    wf->rows_log = wf_opts.log_axis;
+    wf->rows_div = wf_opts.top_div;
+  }
+}
+/* Every line decoded since the last frame, in order, within the budget. */
+static void wf_pull(unsigned hop) {
+  const int64_t t0 = esp_timer_get_time();
+  for (int n = 0; n < WF_LINES_PER_FRAME; n++) {
+    if (n && esp_timer_get_time() - t0 > WF_BUDGET_US)
+      break;
+    if (!ls_music_spectrogram_line(&wf->cursor, hop, wf->power))
+      break;
+    uint8_t *col = ls_pwf_push(&wf->pwf);
+    for (int k = 0; k < WF_BINS; k++)
+      col[k] = ls_spectro_code(ls_spectro_db(wf->power[k]));
+  }
+}
+/* The frequency marks, low to high: on a linear axis a round step that
+   keeps labels two text rows apart, on a log axis 1-2-5. */
+static int wf_ticks(float top, float *out, int max) {
+  int n = 0;
+  if (wf_opts.log_axis) {
+    static const float LOG_MARKS[] = {50,   100,  200,   500,   1000,
+                                      2000, 5000, 10000, 20000, 50000};
+    for (unsigned i = 0; i < sizeof(LOG_MARKS) / sizeof(*LOG_MARKS); i++)
+      if (LOG_MARKS[i] <= top && n < max)
+        out[n++] = LOG_MARKS[i];
+    return n;
+  }
+  int cw = 0, ch = 0;
+  ls_tui_geometry(NULL, NULL, &cw, &ch);
+  float step = ls_spectro_tick_hz(top, wf->pwf.h, 2 * (ch > 0 ? ch : 17));
+  for (float hz = 0; hz <= top + 1 && n < max; hz += step)
+    out[n++] = hz;
+  return n;
+}
+static void waterfall_view(tui_surface *sf, tui_rect a, bool live) {
+  tui_rect plot =
+      tui_rect_make(a.x + WF_GUTTER, a.y, a.w - WF_GUTTER, a.h - 1);
+  if (plot.w < 8 || plot.h < 3)
+    return;
+  int cw = 0, ch = 0;
+  ls_tui_geometry(NULL, NULL, &cw, &ch);
+  if (cw <= 0 || ch <= 0)
+    cw = 10, ch = 17;
+  ls_music_format_t f = {0};
+  ls_music_format(&f);
+  const unsigned rate = f.rate_hz ? f.rate_hz : 44100;
+  if (!wf_size(plot.w * cw, plot.h * ch)) {
+    ls_safe_line(sf, a, a.y + a.h / 2, "Not enough PSRAM for this view",
+                 LS_ATTR_DIM);
+    return;
+  }
+  const unsigned hop = WF_HOPS[span_step];
+  const float top = rate / 2.0f / wf_opts.top_div;
+  wf_settings(rate);
+  if (live && !wf_opts.hold)
+    wf_pull(hop);
+  ls_pwf_compose(&wf->pwf, frame_now, WF_COMPOSE_US);
+  ls_pwf_show(&wf->pwf, sf, plot);
+
+  /* Frequency labels in kHz, on the cell row of each tick. */
+  float ticks[16];
+  const int nt = wf_ticks(top, ticks, 16);
+  int last_row = -10;
+  for (int i = nt - 1; i >= 0; i--) {
+    int px = ls_spectro_hz_row(ticks[i], wf->pwf.h, wf_opts.log_axis, top);
+    if (px < 0)
+      continue;
+    int row = plot.y + px / ch;
+    if (row - last_row < 2)
+      continue;
+    char text[8];
+    ls_spectro_khz(text, sizeof(text), ticks[i]);
+    int n = (int)strlen(text);
+    if (n > WF_GUTTER - 1)
+      n = WF_GUTTER - 1;
+    tui_put_str(sf, a, plot.x - 1 - n, row, text, LS_ATTR_DIM);
+    tui_put_char(sf, a, plot.x - 1, row, '-', cyan);
+    last_row = row;
+  }
+
+  /* Time along the bottom: seconds back from the right edge. */
+  const int axis = plot.y + plot.h;
+  const float px_s = (float)rate / hop; /* pixel columns a second */
+  static const float STEPS[] = {0.25f, 0.5f, 1, 2, 5, 10, 20, 30, 60};
+  float step = 60;
+  for (unsigned i = 0; i < sizeof(STEPS) / sizeof(*STEPS); i++)
+    if (STEPS[i] * px_s >= 8.0f * cw) {
+      step = STEPS[i];
+      break;
+    }
+  const char *now = wf_opts.hold ? " HOLD " : "NOW";
+  const int now_n = (int)strlen(now), now_x = plot.x + plot.w - now_n;
+  int free_from = plot.x;
+  for (int k = (int)((wf->pwf.w - 1) / (step * px_s)); k >= 1; k--) {
+    /* A tick under the column, its label just right of it. */
+    int x = plot.x + (int)((wf->pwf.w - 1 - k * step * px_s) / cw);
+    char text[12];
+    int n = snprintf(text, sizeof(text), step < 1 ? "-%.2gs" : "-%.0fs",
+                     (double)(k * step));
+    if (x < free_from || x + 1 + n >= now_x)
+      continue;
+    tui_put_char(sf, a, x, axis, '\'', cyan);
+    tui_put_str(sf, a, x + 1, axis, text, LS_ATTR_DIM);
+    free_from = x + n + 2;
+  }
+  tui_put_str(sf, a, now_x, axis, now,
+              wf_opts.hold ? TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT)
+                           : cyan);
+  if (!wf->pwf.filled)
+    center(sf, plot, plot.y + plot.h / 2,
+           live ? "Listening for the first window" : "Waiting for audio",
+           LS_ATTR_DIM);
+}
+
+void ls_audio_view_waterfall(const ls_audio_wf_opts_t *opts) {
+  if (!opts)
+    return;
+  wf_opts = *opts;
+  if (!(wf_opts.range_db >= 10.0f))
+    wf_opts.range_db = 10.0f;
+  if (wf_opts.top_div != 2 && wf_opts.top_div != 4 && wf_opts.top_div != 8)
+    wf_opts.top_div = 1;
+}
+unsigned ls_audio_view_hop(int span) { return WF_HOPS[(span % 3 + 3) % 3]; }
+float ls_audio_view_output_db(unsigned peak, int volume, float volume_db,
+                              bool muted) {
+  if (!peak || muted || volume <= 0)
+    return -INFINITY;
+  return 20.0f * log10f(peak / 32768.0f) + volume_db;
+}
 
 void ls_audio_view_open(void) {
   reset_levels();
+  wf_clear();
   if (!vis)
     vis = vis_alloc();
   if (vis) {
@@ -578,7 +775,20 @@ void ls_audio_view_open(void) {
       vis->scan[i] = vis->scan_cap[i] = SCAN_FLOOR_DB - 1;
   }
 }
-void ls_audio_view_close(void) { vis_free(); }
+void ls_audio_view_close(void) {
+  vis_free();
+  /* The next owner (CALLS embeds this view) starts from the defaults. */
+  wf_opts = (ls_audio_wf_opts_t){-100.0f, 80.0f, false, false, 1};
+  if (wf) {
+    ls_pwf_free(&wf->pwf);
+#ifdef ESP_PLATFORM
+    heap_caps_free(wf);
+#else
+    free(wf);
+#endif
+    wf = NULL;
+  }
+}
 void ls_audio_view_reset(void) { ls_audio_view_open(); }
 uint8_t ls_audio_view_color(int scheme, int level) {
   palette = scheme % PALETTES;
@@ -609,12 +819,12 @@ void ls_audio_view_draw(tui_surface *sf, tui_rect r, int mode, int scheme,
     scan_view(sf, r, live);
     break;
   default:
-    if (live)
-      update_waterfall();
-    waterfall_view(sf, r);
+    waterfall_view(sf, r, live);
     break;
   }
-  if (!vis && view >= VIEW_SCAN)
+  if (view != VIEW_WATERFALL)
+    wf_release_image();
+  if (!vis && view == VIEW_SCAN)
     ls_safe_line(sf, r, r.y + r.h / 2, "Not enough PSRAM for this view",
                  LS_ATTR_DIM);
 }

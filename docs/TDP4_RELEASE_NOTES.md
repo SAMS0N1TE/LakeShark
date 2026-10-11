@@ -1,5 +1,18 @@
 # LakeShark release notes
 
+## 2.12.0
+
+- P25 on the LR2021 board: a raw I/Q receive path. The LR2021 streams 125 kS/s complex samples continuously and LakeShark demodulates C4FM from them. Choose it in P25 OPTIONS > LR2021 receive path > Raw I/Q (experimental). Phase 1 only; FSK stays the default.
+- The P25 screen shows the I/Q stream state, block counts and any measured gaps. Lost samples are counted, never hidden.
+- ADS-B dual band (experimental): the LR2021 takes 1090 MHz while the RTL takes UAT on 978 MHz, merged into one list and map. UAT weather text is under OPTIONS.
+- P25 split (experimental): the LR2021 holds the trunked control channel while the RTL follows each call, and falls back to RTL only if control is lost.
+- CATCH in REC (experimental): the RTL watches a 2.4 MHz slice and the LR2021 jumps to each burst to decode it.
+- Waterfalls in FALLS, FM, P25, SUB-GHZ and user apps draw in pixels at about 40 ms a frame. DETAIL > ascii keeps the old look.
+- MUSIC: restyled screen, a pixel spectrogram with HOLD, axis and zoom, and LEVEL follows volume and mute.
+- FM VFO: one RECEIVER / SIGNAL panel and a larger spectrum. Tap either side of a stepper to step, or the middle to type a value.
+- Speech stays smooth while heavy radio work runs.
+- Accented text (Polish and more) shows as plain letters in MESH, MAP and pickers. Thanks to @zenobik.
+
 ## 2.11.0
 
 Every app was reviewed and run on both boards for this release: about 250 fixes across 27 apps.

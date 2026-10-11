@@ -22,8 +22,13 @@ static const char *TAG = "speech";
    prints what is left. PSRAM: the worker never touches flash or NVS. */
 #define SPEECH_STACK_BYTES 8192
 #define SPEECH_QUEUE_LEN   4
-#define SPEECH_PRIO        3
-#define SPEECH_CORE        1
+/* Lowest working priority: under load (dual-band ADS-B plus UAT on this core)
+   synthesis ran slower than real time and, never blocking, starved IDLE1
+   into the task watchdog. Speech slows down; the receivers do not. */
+#define SPEECH_PRIO        1
+#define SPEECH_CORE        tskNO_AFFINITY   /* takes whichever core has room */
+/* Synthesis gives the core away at least this often. */
+#define SPEECH_YIELD_US    10000
 
 typedef struct {
     char     text[SPEECH_TEXT_MAX];
@@ -34,6 +39,7 @@ typedef struct {
 typedef struct {
     int64_t first_us;
     int64_t sink_us;
+    int64_t yield_us;
     bool    stopped;
     uint32_t gen;
 } speech_job_t;
@@ -65,6 +71,13 @@ static bool speech_sink(const int16_t *pcm, int n, void *ctx)
     j->sink_us += t1 - t0;
     if (!ok) { j->stopped = true; return false; }
     if (!j->first_us) j->first_us = t1;
+    /* The engine only stops here, between chunks; a full ring already
+       sleeps in audio_write_speech, an empty one never does. */
+    if (!j->yield_us) j->yield_us = t1;
+    else if (t1 - j->yield_us >= SPEECH_YIELD_US) {
+        vTaskDelay(1);
+        j->yield_us = esp_timer_get_time();
+    }
     return true;
 }
 

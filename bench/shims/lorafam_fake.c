@@ -5,6 +5,8 @@
 
 /* Simulator has no chip counters or running P25 front-end configuration. */
 void p25_lr_get_cfg(p25_lr_cfg_t *out) { memset(out, 0, sizeof(*out)); }
+/* No LR2021 here: the raw IQ option is refused. */
+bool p25_lr_iq_select(bool enabled) { (void)enabled; return false; }
 esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out)
 { (void)out; return ESP_ERR_NOT_SUPPORTED; }
 static bool active;

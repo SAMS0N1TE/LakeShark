@@ -48,7 +48,8 @@ static bool job_ok(ls_rsel_job_t j) { return j >= 0 && j < LS_RSEL_JOBS; }
 const char *ls_rsel_name(ls_rsel_radio_t r)
 {
     static const char *const NAME[LS_RSEL_RADIOS] = {
-        "RTL-SDR", "HackRF", NULL, "CC1101", "nRF24", "NFC", "Wi-Fi", "Bluetooth", "GPS" };
+        "RTL-SDR", "HackRF", NULL, "CC1101", "nRF24", "NFC", "Wi-Fi", "Bluetooth", "GPS", "split",
+        "1090 LR + 978 RTL" };
     if (!radio_ok(r)) return "none";
     if (r != LS_RSEL_LORA) return NAME[r];
     /* The socket takes either part, and the name on the button should be
@@ -64,6 +65,15 @@ const char *ls_rsel_absent(ls_rsel_radio_t r)
 {
     if (!radio_ok(r)) return "No such radio";
     const ls_rsel_hw_t *h = hw();
+    if (r == LS_RSEL_P25_SPLIT)
+        return h->present[LS_RSEL_SDR_RTL] && h->present[LS_RSEL_LORA] &&
+               (h->lora_caps & LS_LORA_CAP_FSK_STREAM) ? NULL : "Split needs RTL-SDR and LR2021";
+    if (r == LS_RSEL_ADSB_DUAL) {
+        if (!h->present[LS_RSEL_SDR_RTL]) return "Dual mode needs an RTL-SDR";
+        if (!h->present[LS_RSEL_LORA] || !(h->lora_caps & LS_LORA_CAP_MODES_RX))
+            return "Dual mode needs LR2021; SX1262 has no Mode S stream";
+        return NULL;
+    }
     if (h->present[r]) return NULL;
     /* The keyboard board is probed when something first asks for one of
        its radios, so before that answer they count as there: choosing one
@@ -112,6 +122,8 @@ static bool lora_has(uint32_t cap)
 const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
 {
     if (!job_ok(job) || !radio_ok(r)) return "Not a radio for this";
+    if (r == LS_RSEL_P25_SPLIT) return job == LS_RSEL_P25 ? NULL : "P25 control and voice only";
+    if (r == LS_RSEL_ADSB_DUAL) return job == LS_RSEL_ADSB ? NULL : "Dual mode is for ADS-B";
     const char *kind = not_a_receiver(r);
     switch (job) {
     case LS_RSEL_FM:
@@ -201,7 +213,7 @@ static const order_t ORDER[LS_RSEL_JOBS] = {
     [LS_RSEL_FM]           = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
     [LS_RSEL_PAGER]        = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ACARS]        = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
-    [LS_RSEL_P25]          = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
+    [LS_RSEL_P25]          = { 4, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA, LS_RSEL_P25_SPLIT } },
     [LS_RSEL_ADSB]         = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_READ]  = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_CC1101, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_SWEEP] = { 1, { LS_RSEL_LORA } },
@@ -296,12 +308,18 @@ static void (*s_open_done)(ls_rsel_radio_t);
 static const ls_rsel_extra_t *s_extra;
 static int s_extra_n;
 static void (*s_extra_done)(int);
+static int s_visible_radios;
 
 static void fill(ls_rsel_job_t job)
 {
     const ls_rsel_radio_t now = ls_rsel_effective(job);
+    s_visible_radios = LS_RSEL_ADSB_DUAL;
     for (int i = 0; i < LS_RSEL_RADIOS; i++) {
         const ls_rsel_radio_t r = (ls_rsel_radio_t)i;
+        if (r == LS_RSEL_ADSB_DUAL) {
+            if (job != LS_RSEL_ADSB || ls_rsel_absent(r)) continue;
+            s_visible_radios++;
+        }
         const char *why = why_not(job, r);
         ls_picker_add(ls_rsel_name(r), why ? why : r == now ? "selected" : "ready");
     }
@@ -311,11 +329,11 @@ static void picked(int index)
 {
     const ls_rsel_job_t job = s_open_job;
     void (*done)(ls_rsel_radio_t) = s_open_done;
-    if (index >= LS_RSEL_RADIOS && index < LS_RSEL_RADIOS + s_extra_n) {
-        if (s_extra_done) s_extra_done(index - LS_RSEL_RADIOS);
+    if (index >= s_visible_radios && index < s_visible_radios + s_extra_n) {
+        if (s_extra_done) s_extra_done(index - s_visible_radios);
         return;
     }
-    if (index < 0 || index >= LS_RSEL_RADIOS) return;
+    if (index < 0 || index >= s_visible_radios) return;
     const ls_rsel_radio_t r = (ls_rsel_radio_t)index;
     const char *why = why_not(job, r);
     if (why) {
@@ -369,6 +387,7 @@ void ls_rsel_open_fixed(ls_rsel_radio_t radio, void (*done)(ls_rsel_radio_t))
     s_fixed_radio = radio; s_fixed_done = done;
     ls_picker_open("RADIO", fixed_picked);
     for (int i = 0; i < LS_RSEL_RADIOS; i++) {
+        if (i == LS_RSEL_ADSB_DUAL) continue;
         const char *why = ls_rsel_absent((ls_rsel_radio_t)i);
         ls_picker_add(ls_rsel_name((ls_rsel_radio_t)i), why ? why :
             i == (int)radio ? "protocol radio" : "not used by this protocol");

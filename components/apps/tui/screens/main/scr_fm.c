@@ -286,12 +286,22 @@ static bool tune_step(int direction)
     return ok;
 }
 
-/* draw_vfo splits its rect in two, so in portrait it draws a VFO box above a
-   SIGNAL box and needs room for both: six fields and a border, then a bar and
-   three readouts and a border. Nine was the first guess and it clipped the
-   pair into each other on the panel - two titles landed on the borders below
-   them and read as a corrupt frame. */
-#define VFO_ROWS 18
+/* RECEIVER and SIGNAL used to be two boxes, eighteen rows in portrait, and
+   carried squelch, volume and gain a second time on top of the buttons that
+   set them. They are one panel now, the way P25's DECODE / SIGNAL is: the
+   readouts a thumb watches, in label/value pairs, with the level bar inline.
+   What is set somewhere shows its value where it is set and nowhere else. */
+#define STATUS_ROWS      8      /* portrait: frequency, readouts, bar, gate */
+#define STATUS_ROWS_WIDE 5      /* landscape: one line, the bar, the gate   */
+
+static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
+              const char *v, uint8_t vattr)
+{
+    tui_put_str(sf, box, x, y, k, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    x += (int)strlen(k) + 1;
+    tui_put_str(sf, box, x, y, v, vattr);
+    return x + (int)strlen(v) + 3;
+}
 
 static void field(tui_surface *sf, tui_rect a, int row, const char *l,
                   const char *v, uint8_t la, uint8_t va)
@@ -408,28 +418,78 @@ static int      s_dial_frames;   /* frames left in the spin                 */
 static int      s_mode_wipe;     /* frames left in the mode change wipe     */
 static int      s_wipe_mode = -1;
 
-static void draw_vfo(tui_surface *sf, tui_rect area)
+/* The level meter and the squelch gate under it, one row each.
+
+   QUIETING, NOT LEVEL. This bar used to read FM.iq_level, the carrier level
+   across the whole IQ block, and it barely moved: measured on hardware, dead
+   air 3% and the strongest local broadcast 5%. An FM receiver measures signal
+   by how much a carrier quietens the discriminator, so the bar reads the
+   inverse of the noise the squelch is already measuring. Same bench:
+   broadcast 0.46 of full hiss, dead air 0.81 to 0.97, which is most of the
+   bar's travel. That also puts the squelch on this scale, so the gate is a
+   mark under the bar and can be set by eye. */
+static void draw_level(tui_surface *sf, tui_rect box, int x0, int y, int w,
+                       sig_kind_t kind, bool open, bool gate_row)
 {
-    const char *receiver = s_lora_pager ? NULL : receiver_text();
-    const uint32_t hz    = FM.freq_hz;
-    const int      sq    = FM.squelch_tenths;
-    const sig_kind_t kind = sig_kind();
-    const bool     open  = kind != SIG_NONE && FM.squelch_open;
-    const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t lab   = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
-    char buf[48];
+    const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    tui_put_str(sf, box, x0, y, "SIG", lab);
+    const int bx = x0 + 4;
+    const int bw = w - 9;
+    if (bw < 4) return;
+    if (kind == SIG_NONE) {
+        /* No reading in this mode, so no bar and no gate to mark on it. */
+        tui_put_str(sf, box, bx, y, "--", LS_ATTR_DIM);
+        return;
+    }
+    const float sig = sig_level(kind);
+    /* Peak hold, decaying, so a burst between two looks still registers. */
+    if (sig >= s_sig_hold) s_sig_hold = sig;
+    else                   s_sig_hold -= (s_sig_hold - sig) * 0.06f;
 
-    tui_rect left, right;
-    ls_tui_split(area, &left, &right);
+    const int lit  = (int)(sig * (float)bw);
+    const int hold = (int)(s_sig_hold * (float)bw);
+    for (int i = 0; i < bw; i++) {
+        const bool on = i < lit;
+        uint8_t c = on ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
+                        : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
+                                         : TUI_GREEN | TUI_BRIGHT)
+                       : (TUI_BLACK | TUI_BRIGHT);
+        char g = on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25;
+        if (!on && i == hold && hold > lit) {
+            g = LS_TUI_SHADE_50;
+            c = TUI_WHITE | TUI_BRIGHT;
+        }
+        tui_put_char(sf, box, bx + i, y, g, TUI_ATTR(c, TUI_BLACK));
+    }
+    char pct[6];
+    snprintf(pct, sizeof(pct), "%3d%%", (int)(sig * 100.0f + 0.5f));
+    tui_put_str(sf, box, bx + bw + 1, y, pct,
+                TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    if (!gate_row) return;
 
-    tui_box(sf, left, "RECEIVER", frame);
+    /* Where the squelch opens, on the same travel as the bar. Above it the
+       squelch is open, below it the audio is muted. */
+    int gate = (int)((float)(100 - FM.squelch_tenths) * 0.01f * (float)bw);
+    if (gate < 0) gate = 0;
+    if (gate >= bw) gate = bw - 1;
+    gate = bw - gate;
+    if (gate >= bw) gate = bw - 1;
+    tui_put_char(sf, box, bx + gate, y + 1, '^',
+                 TUI_ATTR(open ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN | TUI_BRIGHT,
+                          TUI_BLACK));
+    tui_put_str(sf, box, x0, y + 1, "SQL",
+                TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
+}
 
-    /* A retune is not instant, so neither is the readout. The dial runs from
-       where it was to where it is going over the settle, and the digits that
-       are still moving are the ones drawn bright. */
+/* The frequency, spinning over a retune. A retune is not instant, so neither
+   is the readout: the dial runs from where it was to where it is going over
+   the settle, and the digits still moving are the ones drawn bright. */
+static int draw_dial(tui_surface *sf, tui_rect box, int x, int y, bool centre)
+{
+    const uint32_t hz = FM.freq_hz;
+    const uint8_t val = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t moving = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    char buf[24], settled[24];
     if (hz != s_dial_target) {
         s_dial_target = hz;
         s_dial_frames = 10;
@@ -446,132 +506,115 @@ static void draw_vfo(tui_surface *sf, tui_rect area)
     const uint32_t shown = s_dial_hz ? s_dial_hz : hz;
     snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(shown / 1000000u),
              (unsigned)((shown % 1000000u) / 100u));
-    {
-        char settled[48];
-        snprintf(settled, sizeof(settled), "%u.%04u MHz",
-                 (unsigned)(hz / 1000000u), (unsigned)((hz % 1000000u) / 100u));
-        const int x0 = left.x + (left.w - (int)strlen(buf)) / 2;
-        const uint8_t moving = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-        for (int i = 0; buf[i]; i++) {
-            const bool differs = settled[i] && buf[i] != settled[i];
-            char one[2] = { buf[i], 0 };
-            tui_put_str(sf, left, x0 + i, left.y + 2, one, differs ? moving : val);
-        }
+    snprintf(settled, sizeof(settled), "%u.%04u MHz",
+             (unsigned)(hz / 1000000u), (unsigned)((hz % 1000000u) / 100u));
+    const int n = (int)strlen(buf);
+    if (centre) x = box.x + (box.w - n) / 2;
+    for (int i = 0; buf[i]; i++) {
+        const bool differs = settled[i] && buf[i] != settled[i];
+        tui_put_char(sf, box, x + i, y, buf[i], differs ? moving : val);
     }
+    return x + n + 3;
+}
+
+/* What the decoder or the tone gate adds, after the carrier. */
+static int draw_extra(tui_surface *sf, tui_rect box, int x, int y)
+{
+    const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t dim  = LS_ATTR_DIM;
+    char buf[24];
+    const pager_counts_t pc = pager_counts();
+    if (pc.on) {
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.pages);
+        x = kv(sf, box, x, y, "PAGES", buf, pc.pages ? good : dim);
+        if (pc.chip) {
+            snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.heard);
+            x = kv(sf, box, x, y, "HEARD", buf, pc.heard ? good : dim);
+        } else {
+            x = kv(sf, box, x, y, "SYNC", pc.sync ? "LOCKED" : "hunting",
+                   pc.sync ? good : dim);
+        }
+    } else if (FM.mode == FM_MODE_LISTEN && FM.tone_show) {
+        const bool lock = FM.tone_detected.selection != 0;
+        fm_tone_label(FM.tone_detected.selection, buf, sizeof(buf));
+        tui_put_char(sf, box, x, y, ls_motion_pip(lock), good);
+        x = kv(sf, box, x + 2, y, lock ? "TONE LOCK" : "TONE", lock ? buf : "--",
+               lock ? good : dim);
+    }
+    /* The step [ and ] move by: nowhere else says it. */
+    if (FM.mode != FM_MODE_SCAN && x + 12 <= box.x + box.w - 2) {
+        const uint32_t step = tune_step_hz();
+        if (step % 1000u) snprintf(buf, sizeof(buf), "%u.%uk", (unsigned)(step / 1000u),
+                                   (unsigned)(step % 1000u / 100u));
+        else snprintf(buf, sizeof(buf), "%uk", (unsigned)(step / 1000u));
+        x = kv(sf, box, x, y, "STEP", buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+    return x;
+}
+
+static void draw_vfo(tui_surface *sf, tui_rect r)
+{
+    const char *receiver = s_lora_pager ? NULL : receiver_text();
+    const sig_kind_t kind = sig_kind();
+    const bool     open  = kind != SIG_NONE && FM.squelch_open;
+    const bool     wide  = ls_tui_is_wide();
+    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    const uint8_t warn  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    char buf[24];
+
+    tui_box(sf, r, "RECEIVER / SIGNAL", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    const int inner = r.h - 2;
+    const int iw = r.w - 4;
+    if (inner < 1 || iw < 16) return;
+    const int x0 = r.x + 2;
+    const int last = r.y + r.h - 2;
+    int y = r.y + 1;
+
+    if (receiver) s_sig_hold = 0.0f;
+    if (kind != s_sig_kind) { s_sig_hold = 0.0f; s_sig_kind = kind; }
+
+    /* Landscape puts the frequency and the readouts on one line; portrait
+       gives the frequency its own, centred, with air under it when there is
+       room. */
+    int x = draw_dial(sf, r, x0, y, !wide);
 
     /* A mode change tears the receiver down and brings it back. The wipe is
-       that gap, made visible, rather than the readout simply changing. */
+       that gap, made visible, across the frequency line. */
     if (s_wipe_mode != (int)FM.mode) {
         if (s_wipe_mode >= 0) s_mode_wipe = 12;
         s_wipe_mode = (int)FM.mode;
     }
     if (s_mode_wipe > 0) {
-        const int col = (12 - s_mode_wipe) * (left.w - 2) / 12;
-        for (int y = 1; y < left.h - 1 && y < 4; y++)
-            tui_put_char(sf, left, left.x + 1 + col, left.y + y,
-                         LS_TUI_SHADE_50,
-                         TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        const int col = (12 - s_mode_wipe) * (r.w - 2) / 12;
+        tui_put_char(sf, r, r.x + 1 + col, y, LS_TUI_SHADE_50,
+                     TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         s_mode_wipe--;
     }
-    squelch_text(buf, sizeof(buf));
-    field(sf, left, 5, "SQUELCH", buf, lab, kind == SIG_NONE ? dim : val);
-    field(sf, left, 4, "CARRIER",
-          receiver ? receiver : kind == SIG_NONE ? "--" : open ? "OPEN" : "closed", lab,
-          open ? good : dim);
+    if (!wide) {
+        x = x0;
+        y += inner >= 6 ? 2 : 1;
+    }
+    if (y > last) return;
 
+    /* CARRIER blinks while open, so a burst and a held carrier differ. */
+    const char *carrier = receiver ? receiver : kind == SIG_NONE ? "--"
+                        : open ? "OPEN" : "closed";
+    x = kv(sf, r, x, y, "CARRIER", carrier, receiver ? warn : open ? good : dim);
     if (open && ((s_blink / 12) & 1))
-        tui_put_char(sf, left, left.x + 17, left.y + 4, LS_TUI_SHADE_FULL,
-                    good);
-    snprintf(buf, sizeof(buf), "%d %%", audio_volume_get());
-    field(sf, left, 6, "VOLUME", buf, lab, val);
-    snprintf(buf, sizeof(buf), "%d.%d dB", FM.gain_tenths / 10,
-             FM.gain_tenths % 10);
-    if (left.h > 8) field(sf, left, 7, "GAIN", buf, lab, val);
-    else {
-        snprintf(buf, sizeof(buf), "%d%%  %.1f dB", audio_volume_get(), FM.gain_tenths / 10.0);
-        field(sf, left, 6, "VOL/GAIN", buf, lab, val);
-    }
-    if (FM.mode == FM_MODE_LISTEN && FM.tone_show) {
-        fm_tone_label(FM.tone_detected.selection, buf, sizeof(buf));
-        field(sf, left, 3, FM.tone_detected.selection ? "TONE LOCK" : "TONE",
-              FM.tone_detected.selection ? buf : "--", lab,
-              FM.tone_detected.selection ? good : dim);
-        tui_put_char(sf, left, left.x + 1, left.y + 3,
-                     ls_motion_pip(FM.tone_detected.selection != 0), good);
-    }
-
-    tui_box(sf, right, "SIGNAL", frame);
-    /* QUIETING, NOT LEVEL.
-
-       This bar used to read FM.iq_level, the carrier level across the whole
-       IQ block, and it barely moved: measured on hardware, dead air 3% and
-       the strongest local broadcast 5%, so the meter sat near empty whatever
-       the radio heard. An FM receiver measures signal by how much a carrier
-       quietens the discriminator, so the bar reads the inverse of the noise
-       the squelch is already measuring. Same bench: broadcast 0.46 of full
-       hiss, dead air 0.81 to 0.97, which is most of the bar's travel.
-
-       That also puts the squelch on this scale, so the gate can be drawn as
-       a mark on the bar and set by eye. */
-    const int bw = right.w - 4;
-    if (receiver) s_sig_hold = 0.0f;
-    if (kind != s_sig_kind) { s_sig_hold = 0.0f; s_sig_kind = kind; }
-
-    if (kind == SIG_NONE) {
-        /* No reading in this mode, so no bar and no gate to mark on it. */
-        tui_put_str(sf, right, right.x + 2, right.y + 2, "--", dim);
-    } else {
-        const float sig = sig_level(kind);
-
-        /* Peak hold, decaying, so a burst between two looks still registers. */
-        if (sig >= s_sig_hold) s_sig_hold = sig;
-        else                   s_sig_hold -= (s_sig_hold - sig) * 0.06f;
-
-        const int lit  = (int)(sig * (float)bw);
-        const int hold = (int)(s_sig_hold * (float)bw);
-        /* Where the squelch opens, on the same travel as the bar. */
-        int gate = (int)((float)(100 - sq) * 0.01f * (float)bw);
-        if (gate < 0) gate = 0;
-        if (gate >= bw) gate = bw - 1;
-        gate = bw - gate;
-
-        for (int i = 0; i < bw; i++) {
-            const bool on = i < lit;
-            uint8_t c = on ? (i > bw * 3 / 4 ? TUI_RED | TUI_BRIGHT
-                            : i > bw / 2     ? TUI_YELLOW | TUI_BRIGHT
-                                             : TUI_GREEN | TUI_BRIGHT)
-                           : (TUI_BLACK | TUI_BRIGHT);
-            char g = on ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25;
-            if (!on && i == hold && hold > lit) {
-                g = LS_TUI_SHADE_50;
-                c = TUI_WHITE | TUI_BRIGHT;
-            }
-            tui_put_char(sf, right, right.x + 2 + i, right.y + 2, g,
-                         TUI_ATTR(c, TUI_BLACK));
-        }
-        /* The gate marker sits under the bar so it never covers the reading.
-           Above it the squelch is open, below it the audio is muted. */
-        for (int i = 0; i < bw; i++)
-            tui_put_char(sf, right, right.x + 2 + i, right.y + 3,
-                         i == gate ? '^' : ' ',
-                         TUI_ATTR(i == gate ? (open ? TUI_GREEN | TUI_BRIGHT
-                                                    : TUI_CYAN | TUI_BRIGHT)
-                                            : TUI_BLACK, TUI_BLACK));
-    }
+        tui_put_char(sf, r, x - 2, y, LS_TUI_SHADE_FULL, good);
     snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
-    field(sf, right, 4, "IQ RATE", buf, lab, val);
-    const pager_counts_t pc = pager_counts();
-    if (pc.on) {
-        snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.pages);
-        field(sf, right, 5, "PAGES", buf, lab, pc.pages ? good : dim);
-        if (pc.chip) {
-            snprintf(buf, sizeof(buf), "%lu", (unsigned long)pc.heard);
-            field(sf, right, 6, "HEARD", buf, lab, pc.heard ? good : dim);
-        } else {
-            field(sf, right, 6, "SYNC", pc.sync ? "LOCKED" : "hunting", lab,
-                  pc.sync ? good : dim);
-        }
+    x = kv(sf, r, x, y, "IQ", buf, val);
+    if (wide) draw_extra(sf, r, x, y);
+    y++;
+
+    /* The bar, then the gate under it while there is a row for it. */
+    if (y <= last) {
+        draw_level(sf, r, x0, y, iw, kind, open, y + 1 <= last);
+        y += 2;
     }
+    if (!wide && y <= last) draw_extra(sf, r, x0, y);
 }
 
 /* The codeword tape. */
@@ -1193,11 +1236,19 @@ static tui_rect s_bar;
 static int      s_tab_page[N_PAGES];
 static int      s_tab_count;
 static tui_rect s_controls;
-/* Where VOLUME, GAIN and SQUELCH landed. They were defined in QUICK all
-   along but only ls_quick_key ever reached them, so they existed on the
-   keyboard and nowhere on the screen - unreachable on a handheld whose
-   keyboard detaches. GPS, MAP and P25 all draw theirs; this one did not. */
+/* What each drawn control button does, in the order the bar drew them: the
+   bar drops OPTIONS for a mode with nothing to set, so a slot is not an
+   action until this says which. */
+enum { CTL_MODE, CTL_BAND, CTL_TUNE, CTL_VOLUME, CTL_SQUELCH, CTL_LOCK,
+       CTL_RADIO, CTL_OPTIONS, CTL_CALLS, CTL_MUTE, CTL__COUNT };
+static uint8_t  s_ctl_id[CTL__COUNT];
+static int      s_ctl_n;
+/* The VFO page's VOLUME, GAIN and SQUELCH steppers: one row, each value
+   drawn once, inside the control that sets it. A tap on the left third steps
+   down, the right third up, and the value in the middle opens exact entry. */
+#define N_STEP 3
 static tui_rect s_quick_rect;
+static tui_rect s_step_box[N_STEP];
 
 static void band_picked(int index)
 {
@@ -1420,39 +1471,54 @@ static const ls_opt_ctx_t *fm_options(void)
     }
 }
 
-static int draw_controls(tui_surface *sf, tui_rect area)
+/* MODE, BAND, TUNE and LOCK, then the four every app carries.
+
+   On the VFO page VOLUME and SQUELCH were buttons here as well as steppers
+   below and readouts in the panel: three places for one number. There they
+   are steppers only, with the value inside, and TUNE takes the slot as a
+   button the size of its neighbours instead of a slab across the pane. The
+   other pages have no steppers, so they keep VOLUME and SQUELCH here. */
+static int ctl_count(bool vfo)
+{
+    const int opts = ls_opt_count(fm_options()) ? 1 : 0;
+    return vfo ? 7 + opts : 8 + opts;
+}
+
+static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
 {
     char locked[20];
     const uint32_t lock_hz = lakeshark_fm_frequency_lock_hz();
     if (lock_hz) snprintf(locked, sizeof(locked), "%.4f", lock_hz / 1e6);
     else snprintf(locked, sizeof(locked), "OFF");
-    /* SWEEP is a mode, so it lives in the mode picker with the rest and not
-       in a button of its own; TUNE was this row and the quick bar calling the
-       same action twice. The two slots that frees are the two controls a
-       receiver actually needs to hand and that this screen did not offer
-       without going through the quick bar: how loud, and when to open. */
-    char vol[12], sql[12], band[16];
+    char band[16], vol[12], sql[16];
+    snprintf(vol, sizeof(vol), "%d%%", audio_volume_get());
+    squelch_text(sql, sizeof(sql));
+    const bool wide = ls_tui_is_wide();
     /* APRS sits on one channel, so name it; the sweep presets are for the rest. */
     if (FM.mode == FM_MODE_APRS) snprintf(band, sizeof(band), "%.2f", aprs_frequency() / 1e6);
     else snprintf(band, sizeof(band), "%s", FM.mode == FM_MODE_AIS ? "87B/88B" : ls_wf_preset_current(LS_WF_SRC_FM));
-    snprintf(vol, sizeof(vol), "%d%%", audio_volume_get());
-    squelch_text(sql, sizeof(sql));
-    ls_btn_t buttons[] = {
-        {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false},
-        {"BAND", band, 'n', false, false},
-        {ls_tui_is_wide() ? "VOL" : "VOLUME", vol, 'v', false, false},
-        {ls_tui_is_wide() ? "SQL" : "SQUELCH", sql, 'q', sig_kind() != SIG_NONE && FM.squelch_open, false},
-        {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false},
-        ls_rsel_button(fm_job()),
-        ls_opt_button(fm_options()),
-        {"CALLS", NULL, '5', false, false},
-        {"MUTE", audio_is_muted() ? "ON" : "OFF", 'b', audio_is_muted(), false},
-    };
-    if (!ls_opt_count(fm_options())) { buttons[6] = buttons[7]; buttons[7] = buttons[8]; }
-    const int h = area.h;
+    const bool opts = ls_opt_count(fm_options()) > 0;
+    ls_btn_t buttons[CTL__COUNT];
+    s_ctl_n = 0;
+#define CTL(id, ...) do { buttons[s_ctl_n] = (ls_btn_t)__VA_ARGS__; \
+                          s_ctl_id[s_ctl_n++] = (uint8_t)(id); } while (0)
+    CTL(CTL_MODE, {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false, false});
+    CTL(CTL_BAND, {"BAND", band, 'n', false, false, false});
+    if (vfo) CTL(CTL_TUNE, {"TUNE", NULL, 't', false, false, false});
+    else {
+        CTL(CTL_VOLUME, {wide ? "VOL" : "VOLUME", vol, 'v', false, false, false});
+        CTL(CTL_SQUELCH, {wide ? "SQL" : "SQUELCH", sql, 'q',
+                          sig_kind() != SIG_NONE && FM.squelch_open, false, false});
+    }
+    CTL(CTL_LOCK, {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false, false});
+    buttons[s_ctl_n] = ls_rsel_button(fm_job()); s_ctl_id[s_ctl_n++] = CTL_RADIO;
+    if (opts) { buttons[s_ctl_n] = ls_opt_button(fm_options()); s_ctl_id[s_ctl_n++] = CTL_OPTIONS; }
+    CTL(CTL_CALLS, {"CALLS", NULL, '5', false, false, false});
+    CTL(CTL_MUTE, {"MUTE", audio_is_muted() ? "ON" : "OFF", 'b', audio_is_muted(), false, false});
+#undef CTL
     s_controls = area;
-    ls_btn_bar_raised(sf, s_controls, buttons, ls_opt_count(fm_options()) ? 9 : 8, -1);
-    return h;
+    ls_btn_bar_raised(sf, s_controls, buttons, s_ctl_n, -1);
+    return area.h;
 }
 
 static void set_squelch(double value);
@@ -1465,22 +1531,170 @@ static void set_volume(double value)
     ls_action_call("audio.volume", &args, &out, ls_quick_grant_builtin());
 }
 
-static bool control_action(int index)
+static void set_gain(double db)
 {
-    switch (index) {
-    case 0: open_mode_picker(); return true;
-    case 1: open_band_picker(); return true;
-    case 2: ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(),
-                           set_volume); return true;
-    case 3: ls_numpad_open("SQUELCH", squelch_hint(),
-                           FM.squelch_tenths, set_squelch); return true;
-    case 4: toggle_frequency_lock(); return true;
-    case 5: open_radio(); return true;
-    case 6: if (ls_opt_count(fm_options())) ls_opt_open(fm_options()); else ls_calls_open("FM"); return true;
-    case 8: audio_toggle_mute(); return true;
-    case 7: if (!ls_opt_count(fm_options())) { audio_toggle_mute(); return true; } ls_calls_open("FM"); ls_wf_source_release(); return true;
-    default: return false;
+    if (!(db >= 0 && db <= 49.6)) return;
+    o_set_gain(NULL, db);
+}
+
+static void open_volume_entry(void)
+{
+    ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(), set_volume);
+}
+
+static void open_squelch_entry(void)
+{
+    ls_numpad_open("SQUELCH", squelch_hint(), FM.squelch_tenths, set_squelch);
+}
+
+static void open_gain_entry(void)
+{
+    ls_numpad_open("GAIN", "dB, 0 is automatic", FM.gain_tenths / 10.0, set_gain);
+}
+
+static bool control_action(int slot)
+{
+    if (slot < 0 || slot >= s_ctl_n) return false;
+    switch (s_ctl_id[slot]) {
+    case CTL_MODE:    open_mode_picker(); return true;
+    case CTL_BAND:    open_band_picker(); return true;
+    case CTL_TUNE:    scan_engine_stop();
+                      ls_quick_fire(&QUICK[0], ls_quick_grant_builtin()); return true;
+    case CTL_VOLUME:  open_volume_entry(); return true;
+    case CTL_SQUELCH: open_squelch_entry(); return true;
+    case CTL_LOCK:    toggle_frequency_lock(); return true;
+    case CTL_RADIO:   open_radio(); return true;
+    case CTL_OPTIONS: ls_opt_open(fm_options()); return true;
+    case CTL_CALLS:   ls_calls_open("FM"); ls_wf_source_release(); return true;
+    case CTL_MUTE:    audio_toggle_mute(); return true;
+    default:          return false;
     }
+}
+
+/* ------------------------------------------------------------ steppers -- */
+
+/* Squelch as the mode reads it: NFM in percent of quieting, AM in tenths of
+   a percent of carrier, and nothing where the mode has no squelch. Unlike the
+   panel's readings this does not wait on the receiver: it is a setting, and
+   a setting is true whether or not the dongle is streaming. */
+static bool mode_has_squelch(void)
+{
+    return FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM;
+}
+
+static void step_value(int i, char *out, size_t n)
+{
+    switch (i) {
+    case 0: snprintf(out, n, "%d%%", audio_volume_get()); break;
+    case 1:
+        if (FM.gain_tenths <= 0) snprintf(out, n, "AUTO");
+        else snprintf(out, n, "%d.%d", FM.gain_tenths / 10, FM.gain_tenths % 10);
+        break;
+    default:
+        if (FM.mode == FM_MODE_AM)
+            snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10, FM.squelch_tenths % 10);
+        else if (mode_has_squelch()) snprintf(out, n, "%d%%", FM.squelch_tenths);
+        else snprintf(out, n, "--");
+        break;
+    }
+}
+
+/* A minus or a plus, drawn as solid cells across the middle of its zone. */
+static void step_sign(tui_surface *sf, tui_rect z, bool plus, uint8_t at)
+{
+    const int cy = z.y + (z.h - 1) / 2;
+    /* Odd, so the plus has a true middle column for its upright. */
+    int len = z.w >= 5 ? z.w - 2 : z.w;
+    if (len > 5) len = 5;
+    if (!(len & 1)) len--;
+    if (len < 1) len = 1;
+    if (z.h < 3) {
+        tui_put_char(sf, z, z.x + (z.w - 1) / 2, cy, plus ? '+' : '-', at);
+        return;
+    }
+    const int x = z.x + (z.w - len) / 2;
+    for (int c = 0; c < len; c++) tui_put_char(sf, z, x + c, cy, LS_TUI_SHADE_FULL, at);
+    if (plus)
+        for (int r = cy - 1; r <= cy + 1; r++)
+            tui_put_char(sf, z, x + len / 2, r, LS_TUI_SHADE_FULL, at);
+}
+
+static void draw_stepper(tui_surface *sf, tui_rect b, int i, uint8_t hue)
+{
+    static const char *const NAME[N_STEP] = { "VOLUME", "GAIN dB", "SQUELCH" };
+    static const int ITEM[N_STEP] = { 1, 2, 3 };       /* QUICK rows */
+    const bool live = i != 2 || mode_has_squelch();
+    const uint8_t h = live ? hue : (TUI_BLACK | TUI_BRIGHT);
+    const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
+    const uint8_t sign = TUI_ATTR(live ? (hue | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
+    char v[16];
+
+    tui_box(sf, b, NULL, edge);
+    /* The name in the top edge, in the control's own colour. */
+    if ((int)strlen(NAME[i]) + 4 <= b.w) {
+        tui_put_char(sf, b, b.x + 1, b.y, ' ', edge);
+        tui_put_str(sf, b, b.x + 2, b.y, NAME[i], sign);
+        tui_put_char(sf, b, b.x + 2 + (int)strlen(NAME[i]), b.y, ' ', edge);
+    }
+    const int iw = b.w - 2, ih = b.h - 2;
+    if (iw < 7 || ih < 1) return;
+    step_value(i, v, sizeof(v));
+    /* The signs get the width and the value the four columns its longest
+       reading needs ("28.0", "AUTO", "100%"), from the box and not the
+       value, so the three controls match. Each sign zone is odd so its
+       figure sits on a true middle column. */
+    int zw = (iw - 4) / 2;
+    if (zw > 3 && !(zw & 1)) zw--;
+    if (zw < 1) zw = 1;
+    const tui_rect lo = tui_rect_make(b.x + 1, b.y + 1, zw, ih);
+    const tui_rect hi = tui_rect_make(b.x + 1 + iw - zw, b.y + 1, zw, ih);
+    ls_fill_dither(sf, lo, LS_DITHER_LIGHT, h);
+    ls_fill_dither(sf, hi, LS_DITHER_LIGHT, h);
+    step_sign(sf, lo, false, sign);
+    step_sign(sf, hi, true, sign);
+    const int cx = lo.x + zw + (iw - 2 * zw - (int)strlen(v)) / 2;
+    tui_put_str(sf, b, cx, b.y + 1 + (ih - 1) / 2, v,
+                live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    if (ls_tui_keyboard_mode() && b.w >= 12) {
+        const ls_quick_t *q = &QUICK[ITEM[i]];
+        const char down[] = { '[', q->key_down, ']', 0 };
+        const char up[]   = { '[', q->key, ']', 0 };
+        tui_put_str(sf, b, b.x + 1, b.y + b.h - 1, down, sign);
+        tui_put_str(sf, b, b.x + b.w - 4, b.y + b.h - 1, up, sign);
+    }
+}
+
+static void draw_steppers(tui_surface *sf, tui_rect row)
+{
+    /* Colour by role: loudness green, the front end magenta, the gate cyan. */
+    static const uint8_t HUE[N_STEP] = { TUI_GREEN, TUI_MAGENTA, TUI_CYAN };
+    for (int i = 0; i < N_STEP; i++) {
+        const int x0 = row.x + row.w * i / N_STEP;
+        const int x1 = row.x + row.w * (i + 1) / N_STEP;
+        s_step_box[i] = tui_rect_make(x0, row.y, x1 - x0 - (i < N_STEP - 1), row.h);
+        draw_stepper(sf, s_step_box[i], i, HUE[i]);
+    }
+}
+
+static bool step_touch(int col, int row)
+{
+    for (int i = 0; i < N_STEP; i++) {
+        const tui_rect b = s_step_box[i];
+        if (b.h <= 0 || row < b.y || row >= b.y + b.h ||
+            col < b.x || col > b.x + b.w) continue;
+        const int third = (col - b.x) * 3 / (b.w + 1);
+        if (third == 1) {
+            if (i == 0) open_volume_entry();
+            else if (i == 1) open_gain_entry();
+            else open_squelch_entry();
+            return true;
+        }
+        ls_quick_t item = QUICK[i + 1];
+        if (third == 0) item.delta = -item.delta;
+        ls_quick_fire(&item, ls_quick_grant_builtin());
+        return true;
+    }
+    return false;
 }
 
 /* Turning to SWEEP starts the sweep, which is what its own idle text always said it did. */
@@ -1596,7 +1810,7 @@ static bool s_vfo_sweep;
 
 static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
 {
-    const int vfo_h = ls_tui_is_wide() ? 9 : VFO_ROWS;
+    const int vfo_h = ls_tui_is_wide() ? STATUS_ROWS_WIDE : STATUS_ROWS;
     if (body.h < vfo_h + 6) {
         s_vfo_sweep = false;
         draw_vfo(sf, body);
@@ -1604,6 +1818,9 @@ static void draw_vfo_waterfall(tui_surface *sf, tui_rect body)
     }
     s_vfo_sweep = true;
     draw_vfo(sf, tui_rect_make(body.x, body.y, body.w, vfo_h));
+    /* Everything under the panel is the spectrum: its plot, its scale and
+       its own two rows of controls get the height the TUNE slab and the
+       second box used to take. */
     draw_sweep(sf, tui_rect_make(body.x, body.y + vfo_h, body.w,
                                  body.h - vfo_h));
 }
@@ -1657,21 +1874,25 @@ static void draw(tui_surface *sf, tui_rect area)
     if (body.h <= 0) return;
     /* Landscape keeps the compact bar even without a keyboard: the VFO
        page's waterfall is only a few rows tall there already. */
-    int control_rows = ls_btn_raised_height(body, ls_opt_count(fm_options()) ? 9 : 8);
+    const bool vfo = s_page == 0;
+    int control_rows = ls_btn_raised_height(body, ctl_count(vfo));
+    /* The VFO page in portrait: two rows of four-row keys, the height the
+       spectrum's own keys are, so the label and the value each get a line
+       and the spectrum gets the rest. */
+    if (vfo && !wide && body.h >= 40) control_rows = 8;
     if (wide && control_rows > 3) control_rows = 3;
     body.y += control_rows;
     body.h -= control_rows;
 
     /* The VFO page only. The pager page owns its bottom rows with UP/OPEN/
-       DOWN, and the spectrum page already carries the waterfall's own two
-       rows of controls; a third bar on either would be a screen that wants
-       splitting rather than one more strip. */
-    const int want = s_page == 0 ? ls_quick_rows(QUICK, N_QUICK, area.w, wide) : 0;
-    const int ctl_h = (want && body.h > want + 12) ? want : 0;
-    if (ctl_h) {
-        s_quick_rect = tui_rect_make(body.x, body.y + body.h - ctl_h,
-                                     body.w, ctl_h);
-        body.h -= ctl_h;
+       DOWN, and the spectrum page already carries the waterfall's own rows
+       of controls; both keep VOLUME and SQUELCH in the bar above instead. */
+    const int step_h = wide ? 3 : (body.h >= 40 ? 5 : 3);
+    memset(s_step_box, 0, sizeof(s_step_box));
+    if (vfo && body.h > step_h + 12) {
+        s_quick_rect = tui_rect_make(body.x, body.y + body.h - step_h,
+                                     body.w, step_h);
+        body.h -= step_h;
     } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
 
     if (s_page == 1 && FM.mode == FM_MODE_ACARS) draw_acars(sf, body);
@@ -1681,8 +1902,7 @@ static void draw(tui_surface *sf, tui_rect area)
     else if (s_page == 1) draw_pages(sf, body);
     else if (s_page == 2) draw_sweep(sf, body);
     else draw_vfo_waterfall(sf, body);
-    if (s_quick_rect.h > 0)
-        ls_quick_draw_posture(sf, s_quick_rect, wide, QUICK, N_QUICK);
+    if (s_quick_rect.h > 0) draw_steppers(sf, s_quick_rect);
 
     /* Draw navigation after the waterfall so each bar keeps a distinct hit
        slot and cannot steal the other's touch targets. */
@@ -1702,7 +1922,7 @@ static void draw(tui_surface *sf, tui_rect area)
     s_tab_count = nb;
     ls_btn_bar_slot(sf, s_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
     (void)draw_controls(sf, tui_rect_make(area.x, wide ? area.y + bar_h : area.y,
-                                          area.w, control_rows));
+                                          area.w, control_rows), vfo);
 }
 
 static void leave(void) { ls_calls_leave(); ls_wf_source_release(); lora_pager_stop(false); }
@@ -1780,8 +2000,8 @@ static bool key_in(ls_tk_t k, char ch)
         }
         if (ch == 'k' || ch == 'K') { toggle_frequency_lock(); return true; }
         if (ch == 'n' || ch == 'N') { open_band_picker(); return true; }
-        if (ch == 'v' || ch == 'V') { control_action(2); return true; }
-        if (ch == 'q' || ch == 'Q') { control_action(3); return true; }
+        if (ch == 'v' || ch == 'V') { open_volume_entry(); return true; }
+        if (ch == 'q' || ch == 'Q') { open_squelch_entry(); return true; }
         if (ch == 'w' || ch == 'W') { toggle_sweep(); return true; }
         if (ch == 't' || ch == 'T') {
             ls_quick_fire(&QUICK[0], ls_quick_grant_builtin()); return true;
@@ -1836,7 +2056,7 @@ static bool touch_in(int col, int row)
     }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h) {
-        ls_quick_touch(col, row, QUICK, N_QUICK, ls_quick_grant_builtin(), NULL);
+        step_touch(col, row);
         return true;
     }
     /* The VFO page draws the same waterfall page 2 does, under the VFO box,

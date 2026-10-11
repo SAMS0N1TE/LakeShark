@@ -52,7 +52,10 @@
 #include "p25_sync_confirm.h"
 #include "p25_os4_decode.h"
 #include "p25_symbol_synth.h"
+#include "p25_split.h"
 #include "ls_lora.h"
+#include "ls_lora_lr20xx.h"
+#include "p25_lr_iq.h"
 #include "rtl-sdr.h"
 
 p25_state_t       P25 = {0};
@@ -85,6 +88,7 @@ typedef enum {
 static atomic_int s_dsd_start = ATOMIC_VAR_INIT(P25_DSD_START_IDLE);
 static uint8_t      *s_iq_buf      = NULL;
 static ls_radio_session_t *s_session;
+static bool s_radio_is_rtl;
 static ls_iq_control_t s_radio_control;
 static p25_cqpsk_control_t s_cqpsk_control;
 static uint32_t s_radio_freq_hz;
@@ -92,6 +96,34 @@ static uint32_t s_radio_sample_rate_hz;
 static uint32_t s_radio_bandwidth_hz;
 static p25_demod_control_t s_demod_control;
 static p25_grant_follower_t s_grant_follower;
+static EXT_RAM_BSS_ATTR p25_split_t s_split;
+static atomic_bool s_split_active, s_split_available;
+static atomic_bool s_split_voice_idle;
+static bool s_split_iq_stopped;
+static atomic_int s_split_override = ATOMIC_VAR_INIT(-1);
+static int s_split_selection = -1;
+static atomic_uint s_split_control_hz;
+static EXT_RAM_BSS_ATTR uint8_t s_split_queue[8192];
+static EXT_RAM_BSS_ATTR uint8_t s_split_stage[512];
+static size_t s_split_head, s_split_n;
+static unsigned s_split_drops;
+static portMUX_TYPE s_split_lock = portMUX_INITIALIZER_UNLOCKED;
+static void p25_split_owner_service(void);
+static void p25_split_radio_service(void);
+static void p25_split_radio_stop(void);
+
+void p25_set_split(bool enabled)
+{
+    atomic_store(&s_split_override, enabled ? 1 : 0);
+    p25_owner_wake();
+}
+
+static bool p25_split_wanted(void)
+{
+    int override = atomic_load(&s_split_override);
+    return override < 0 ? ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_P25_SPLIT
+                        : override != 0;
+}
 /* Phase II following. Owned: the follower enabled Phase II and will disable
  * it; manual Phase II is left alone. Runs on the decode task. */
 static p25_p2_follow_t s_p2_follow;
@@ -453,6 +485,12 @@ static void p25_grant_retune_cb(void *user, uint64_t center_hz, bool to_traffic)
         p25_p2_follow_stop(&s_p2_follow);
         p25_p2_enable(false);
     }
+    if (!to_traffic && s_split.active) {
+        atomic_store(&s_split_voice_idle, true);
+        sys_log(1, "Split VOICE: RTL idle");
+        return;
+    }
+    atomic_store(&s_split_voice_idle, false);
     p25_request_tune((uint32_t)center_hz, /* fast=*/to_traffic);
     sys_log(1, "Grant %s %.4f MHz tg=%u%s",
             to_traffic ? "->traffic" : "->control",
@@ -996,6 +1034,7 @@ static void dsd_decoder_task(void *arg)
             s_owner_interrupted = false;
         }
         p25_owner_service();
+        p25_split_owner_service();
         if (P25.lora_rx || ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) {
             p25_set_phase2_follow(false);
             p25_p2_enable(false);
@@ -1006,6 +1045,16 @@ static void dsd_decoder_task(void *arg)
             call_archive_end(CALL_P25, false);
             p25_grant_publish_ui();
             vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (atomic_load(&s_split_active) &&
+            s_grant_follower.state == P25_GRANT_ON_CONTROL) {
+            s_ring.read_idx = s_ring.write_idx;
+            s_grant_follower.receive_state = P25_RX_CONTROL_LOCKED;
+            P25.dsd_has_sync = false;
+            P25.voice_active_until_us = 0;
+            p25_grant_publish_ui();
+            vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
         diag_emit_periodic();
@@ -1184,7 +1233,8 @@ static void dsd_decoder_task(void *arg)
                 call_archive_audio(CALL_P25, 0, 0, 0, false, NULL, 0);
             if (p25_receive_frame(&g_p25_scan, &s_grant_follower,
                 &s_dsd_state, now_grant, p25_tune_policy_allows_grant(
-                    scan_engine_active(), p25_program_survey_active_now())))
+                    scan_engine_active(), p25_program_survey_active_now()) &&
+                    !atomic_load(&s_split_active)))
                 call_archive_end(CALL_P25, false);
 
             int decoded = s_dsd_state.pcm_out_write;
@@ -1341,13 +1391,16 @@ static ls_radio_err_t p25_radio_open(void)
         .max_hz = P25_CONTROL_TUNER_MAX_HZ,
         .sample_rate_hz = RTL_SAMPLE_RATE,
         .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
-        .preferred_endpoint_id = ls_rsel_sdr_endpoint(LS_RSEL_P25),
+        .preferred_endpoint_id = p25_split_wanted() ? LS_RADIO_ENDPOINT_RTL_USB
+                                                    : ls_rsel_sdr_endpoint(LS_RSEL_P25),
     };
     ls_radio_err_t error = ls_radio_acquire("p25", &requirements, &s_session);
     if (error != LS_RADIO_OK) {
         ls_iq_control_receiver_lost(&s_radio_control, error);
         return error;
     }
+    s_radio_is_rtl = requirements.preferred_endpoint_id &&
+        !strcmp(requirements.preferred_endpoint_id, LS_RADIO_ENDPOINT_RTL_USB);
 
     const ls_radio_iq_config_t requested = {
         .center_hz = s_tune_freq_hz,
@@ -1400,6 +1453,7 @@ static bool p25_iq_present(void)
    or when nothing else is, as the RADIO button falls back. RAM reads only. */
 static bool p25_lora_wanted(void)
 {
+    if (p25_split_wanted()) return false;
     if (!(ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) return false;
     if (ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) return true;
     return !p25_iq_present();
@@ -1456,6 +1510,168 @@ static EXT_RAM_BSS_ATTR uint8_t s_lora_dibits[P25_LORA_OUT];
    sends up to P25_OS4_GAP_MAX + P25_OS4_HOLD at once, more than it holds. */
 static EXT_RAM_BSS_ATTR uint8_t s_lora_queue[P25_LORA_QUEUE];
 static size_t s_lora_q_head, s_lora_q_n;
+
+/* RX owns the socket session and OS4. The decode owner consumes a bounded
+ * dibit queue; no SPI/USB operation runs under the queue lock. */
+static bool s_split_held, s_split_requested, s_split_streaming;
+static uint32_t s_split_lr_hz;
+static int64_t s_split_retry_us;
+
+static void p25_split_radio_stop(void)
+{
+    atomic_store(&s_split_available, false);
+    if (s_split_streaming) {
+        portENTER_CRITICAL(&s_split_lock);
+        s_split_head = 0;
+        s_split_n = 1;
+        s_split_queue[0] = P25_OS4_FILL;
+        portEXIT_CRITICAL(&s_split_lock);
+    }
+    if (s_split_streaming) (void)ls_lora_fsk_end();
+    if (s_split_requested) (void)ls_mesh_radio_hold_bg(false);
+    s_split_streaming = s_split_held = s_split_requested = false;
+    s_split_lr_hz = 0;
+}
+
+static void p25_split_radio_service(void)
+{
+    uint32_t hz = atomic_load(&s_split_control_hz);
+    bool wanted = p25_split_wanted();
+    ls_radio_endpoint_info_t rtl;
+    bool available = wanted && s_session && s_radio_is_rtl &&
+        (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) &&
+        ls_lora_rx_range_ok(ls_lora_caps(), hz, hz) && !ls_mesh_radio_wanted() &&
+        ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &rtl) == LS_RADIO_OK &&
+        rtl.present;
+    if (!available || (s_split_streaming && hz != s_split_lr_hz)) {
+        p25_split_radio_stop();
+        return;
+    }
+    if (!s_split_streaming) {
+        int64_t now = esp_timer_get_time();
+        if (now < s_split_retry_us) return;
+        s_split_retry_us = now + 1000000LL;
+        s_split_requested = true;
+        s_split_held = ls_mesh_radio_hold_bg(true);
+        if (!s_split_held) return;
+        const ls_fsk_cfg_t cfg = {
+            .freq_hz = hz, .bitrate = P25_LORA_BITRATE,
+            .deviation_hz = P25_LORA_DEV_HZ,
+            .bandwidth_hz = ls_lora_fsk_bw_snap(P25_LORA_FILTER_HZ),
+            .sync_word = P25_LORA_TRIGGER, .sync_bits = 8, .stream = true,
+        };
+        if (ls_lora_fsk_begin(&cfg) != ESP_OK) {
+            p25_split_radio_stop();
+            return;
+        }
+        p25_os4_reset(&s_os4);
+        s_split_streaming = true;
+        s_split_lr_hz = hz;
+    }
+    atomic_store(&s_split_available, true);
+    for (unsigned pass = 0; pass < 4; ++pass) {
+        bool restarted = false;
+        int n = ls_lora_fsk_stream_read(s_lora_bytes, sizeof(s_lora_bytes), &restarted);
+        if (n < 0) { p25_split_radio_stop(); break; }
+        if (!n) break;
+        if (restarted) p25_os4_seam(&s_os4);
+        s_os4.nn_off = n >= P25_LORA_BEHIND;
+        size_t k = p25_os4_decode(&s_os4, s_lora_bytes, (size_t)n,
+                                  s_lora_dibits, sizeof(s_lora_dibits));
+        portENTER_CRITICAL(&s_split_lock);
+        for (size_t i = 0; i < k; ++i) {
+            if (s_split_n == sizeof(s_split_queue)) { s_split_drops++; continue; }
+            s_split_queue[(s_split_head + s_split_n) % sizeof(s_split_queue)] =
+                P25_OS4_DIBIT(s_lora_dibits[i]);
+            s_split_n++;
+        }
+        portEXIT_CRITICAL(&s_split_lock);
+        p25_owner_wake();
+        if (n < P25_LORA_READ_AGAIN) break;
+    }
+}
+
+static void p25_split_owner_service(void)
+{
+    int64_t now = esp_timer_get_time();
+    uint64_t hz = s_grant_follower.control_hz;
+    if (hz != s_split.control_hz) {
+        p25_split_init(&s_split, hz, now);
+        atomic_store(&s_split_active, false);
+        s_grant_follower.consumed_grant_valid = false;
+        portENTER_CRITICAL(&s_split_lock);
+        s_split_n = 0;
+        portEXIT_CRITICAL(&s_split_lock);
+    }
+    atomic_store(&s_split_control_hz, (uint32_t)hz);
+    int selection = ls_rsel_saved(LS_RSEL_P25);
+    if (selection != s_split_selection) {
+        if (s_split_selection >= 0) atomic_store(&s_split_override, -1);
+        s_split_selection = selection;
+    }
+    bool was_active = s_split.active;
+    bool available = atomic_load(&s_split_available);
+    bool enabled = p25_split_wanted();
+    bool changed = p25_split_service(&s_split, &s_grant_follower,
+                                      enabled, available, now);
+    atomic_store(&s_split_active, s_split.active);
+    atomic_store(&s_split_voice_idle, s_split.active &&
+        s_grant_follower.state == P25_GRANT_ON_CONTROL);
+    if (changed) {
+        s_grant_follower.consumed_grant_valid = false;
+        sys_log(1, s_split.active ? "Split CC: LR2021 solid; VOICE: RTL"
+                                 : "Split CC lost/unavailable; fallback to single RTL");
+        if (was_active) {
+            p25_receive_call_reset(&s_dsd_state);
+            p25_tsbk_reset_system(&s_dsd_state);
+            memcpy(s_dsd_state.p25_iden_table, s_split.cc.p25_iden_table,
+                   sizeof(s_dsd_state.p25_iden_table));
+            s_dsd_state.p25_net_valid = s_split.cc.p25_net_valid;
+            s_dsd_state.p25_tsbk_wacn = s_split.cc.p25_tsbk_wacn;
+            s_dsd_state.p25_tsbk_sysid = s_split.cc.p25_tsbk_sysid;
+            s_dsd_state.p25_control_nac_valid = s_split.cc.p25_control_nac_valid;
+            s_dsd_state.p25_control_nac = s_split.cc.p25_control_nac;
+        }
+    }
+    unsigned transitions = s_grant_follower.followed_count + s_grant_follower.returned_count;
+    for (;;) {
+        size_t n;
+        portENTER_CRITICAL(&s_split_lock);
+        n = s_split_n < sizeof(s_split_stage) ? s_split_n : sizeof(s_split_stage);
+        for (size_t i = 0; i < n; ++i) {
+            s_split_stage[i] = s_split_queue[s_split_head];
+            s_split_head = (s_split_head + 1) % sizeof(s_split_queue);
+        }
+        s_split_n -= n;
+        if (P25.split_drops != s_split_drops) {
+            s_split.collecting = false;
+            s_split.sync = 0;
+        }
+        P25.split_drops = s_split_drops;
+        portEXIT_CRITICAL(&s_split_lock);
+        for (size_t i = 0; i < n; ++i)
+            (void)p25_split_feed(&s_split, &g_p25_scan, &s_grant_follower,
+                                  s_split_stage[i], now);
+        if (!n) break;
+    }
+    if (transitions != s_grant_follower.followed_count + s_grant_follower.returned_count) {
+        p25_receive_call_reset(&s_dsd_state);
+        p25_voice_hold_end_call(&s_voice_hold);
+        call_archive_end(CALL_P25, false);
+    }
+    P25.split_enabled = enabled;
+    P25.split_available = available;
+    P25.split_active = s_split.active;
+    P25.split_crc_percent = s_split.crc_percent;
+    P25.split_fallbacks = s_split.fallbacks;
+    P25.split_recoveries = s_split.recoveries;
+    P25.split_skipped = s_split.skipped;
+    P25.split_site = s_split.cc.p25_rfss_site_id;
+    P25.split_rfss = s_split.cc.p25_rfss_id;
+    snprintf(P25.split_reason, sizeof(P25.split_reason), "%s",
+        !available ? "LR unavailable/busy/out of range" :
+        !s_split.active ? "LR2021 CC weak/acquiring" : p25_split_reason(s_split.reason));
+}
 
 static p25_lr_cfg_t s_lr_cfg = { P25_LORA_BITRATE, P25_LORA_DEV_HZ, P25_LORA_FILTER_HZ, 0, 0 };
 static volatile bool s_lr_restart;
@@ -1783,6 +1999,15 @@ static int p25_lora_feed(void)
    experiment, a sweep, LoRa Labs), or the chip keeps failing. Tunes and
    grants arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ
    and are not done here. Returns with the chip handed back to the mesh. */
+static atomic_bool s_lr_iq_requested;
+bool p25_lr_iq_select(bool enabled)
+{
+    if (enabled && strcmp(ls_lora_chip_name(), "LR2021")) return false;
+    atomic_store(&s_lr_iq_requested, enabled);
+    P25.lr_iq_requested = enabled;
+    return true;
+}
+
 static void p25_lora_run(void)
 {
     if (ls_mesh_radio_wanted()) {
@@ -1828,7 +2053,7 @@ static void p25_lora_run(void)
     int64_t now = esp_timer_get_time();
     int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
 
-    while (s_app_active && !ls_mesh_radio_wanted()) {
+    while (s_app_active && !ls_mesh_radio_wanted() && !atomic_load(&s_lr_iq_requested)) {
         const int64_t t_iter = esp_timer_get_time();
         uint32_t want_hz = 0;
         ls_iq_control_request_t request = {0};
@@ -2007,6 +2232,8 @@ static void p25_lora_run(void)
     p25_decoder_retuned(s_tune_freq_hz);
 }
 
+#include "p25_lr_iq_run.inc"
+
 static void p25_rx_task(void *arg)
 {
     (void)arg;
@@ -2119,8 +2346,17 @@ static void p25_rx_task(void *arg)
         /* UI and profile workers only publish commands.  The RX owner drains
          * this latch here, between complete input blocks. */
         p25_apply_cqpsk_request();
+        if (s_session && p25_split_wanted() && !s_radio_is_rtl) {
+            (void)ls_radio_iq_stop(s_session);
+            ls_radio_release(s_session);
+            s_session = NULL;
+            s_radio_freq_hz = 0;
+            ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_STOPPED);
+        }
+        p25_split_radio_service();
         if (!s_session && p25_lora_wanted()) {
-            p25_lora_run();
+            if (atomic_load(&s_lr_iq_requested)) p25_lr_iq_run();
+            else p25_lora_run();
             continue;
         }
         P25.lora_wait = false;
@@ -2239,6 +2475,35 @@ static void p25_rx_task(void *arg)
         }
 
         if (!s_app_active) break;
+
+        /* Keep the endpoint leased for the next grant, but stop USB IQ and
+         * DSP work between calls. The LR control stream keeps running above. */
+        if (atomic_load(&s_split_voice_idle)) {
+            if (!s_split_iq_stopped) {
+                ls_radio_err_t e = ls_radio_iq_stop(s_session);
+                if (e == LS_RADIO_OK) {
+                    s_split_iq_stopped = true;
+                    ls_iq_control_set_streaming(&s_radio_control, false, e);
+                    P25.iq_bytes_sec = P25.audio_samples_sec = 0;
+                    P25.iq_level = 0;
+                    iq_bucket = audio_bucket = 0;
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+        if (s_split_iq_stopped) {
+            ls_radio_err_t e = ls_radio_iq_start(s_session);
+            ls_iq_control_set_streaming(&s_radio_control, e == LS_RADIO_OK, e);
+            if (e != LS_RADIO_OK) {
+                ls_radio_release(s_session);
+                s_session = NULL;
+                s_radio_freq_hz = 0;
+                atomic_store(&s_split_available, false);
+            }
+            s_split_iq_stopped = false;
+            if (e != LS_RADIO_OK) continue;
+        }
 
         bool full = true;
         int got = 0;
@@ -2511,6 +2776,7 @@ static void p25_rx_task(void *arg)
         if (now - last_yield > 25000) { last_yield = now; vTaskDelay(1); }
     }
 
+    p25_split_radio_stop();
     p25_iq_capture_receiver(false);
     P25.lora_wait = false;
     if (s_session) {
@@ -2652,6 +2918,17 @@ static void p25_on_enter(void)
     bool phase2_follow = s_grant_follower.phase2_follow;
     p25_grant_init(&s_grant_follower, (uint64_t)s_tune_freq_hz,
                    p25_grant_retune_cb, NULL);
+    p25_split_init(&s_split, s_tune_freq_hz, esp_timer_get_time());
+    atomic_store(&s_split_active, false);
+    atomic_store(&s_split_available, false);
+    atomic_store(&s_split_voice_idle, false);
+    s_split_iq_stopped = false;
+    atomic_store(&s_split_control_hz, s_tune_freq_hz);
+    s_split_head = s_split_n = s_split_drops = 0;
+    int split_selection = ls_rsel_saved(LS_RSEL_P25);
+    if (s_split_selection >= 0 && s_split_selection != split_selection)
+        atomic_store(&s_split_override, -1);
+    s_split_selection = split_selection;
     p25_grant_set_phase2_follow(&s_grant_follower, phase2_follow);
     p25_p2_follow_init(&s_p2_follow);
     s_p2_owned = false;
