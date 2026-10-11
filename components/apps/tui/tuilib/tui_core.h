@@ -67,8 +67,23 @@ tui_rect tui_surface_rect(const tui_surface *s);
 /* --- drawing primitives, all clipped to `clip` ∩ surface --- */
 void tui_put_char(tui_surface *s, tui_rect clip, int x, int y, char ch,
                   uint8_t attr);
+/* `str` is UTF-8. The fonts are ASCII, so each character takes one cell:
+   Latin letters with diacritics show as their base letter (ę -> e, Ł -> L),
+   anything else as '?'. Text from the air (mesh messages, node and network
+   names) arrives this way. */
 void tui_put_str(tui_surface *s, tui_rect clip, int x, int y, const char *str,
                  uint8_t attr);
+/* The cell tui_put_str draws for the character at *p, advancing *p past it.
+   Never reads past a NUL. */
+char tui_utf8_fold(const char **p);
+/* Cells tui_put_str uses for the first `n` bytes of `str` (stops at NUL). */
+int tui_utf8_cells(const char *str, size_t n);
+/* The same fold for one decoded codepoint; below U+0080 it is unchanged. */
+char tui_fold_codepoint(uint32_t cp);
+/* Fold a UTF-8 string to one ASCII byte per character, in place, so code
+   that measures and cuts text by bytes (map labels) lines up with the cells.
+   A sequence cut off at the end of the string is dropped. */
+void tui_utf8_fold_str(char *s);
 void tui_fill(tui_surface *s, tui_rect r, char ch, uint8_t attr);
 void tui_hline(tui_surface *s, tui_rect clip, int x, int y, int len, char ch,
                uint8_t attr);

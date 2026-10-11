@@ -371,11 +371,14 @@ static const char *message_text(const ls_mesh_msg_t *m)
 
 static int feed_line(const char *text, int width, int offset)
 {
-    int n = (int)strlen(text + offset);
-    if (n > width) {
-        n = width;
+    /* Width is in cells: UTF-8 text has more bytes than cells, so walk
+       characters, never splitting one. */
+    const char *s = text + offset, *p = s;
+    for (int cells = 0; *p && cells < width; cells++) (void)tui_utf8_fold(&p);
+    int n = (int)(p - s);
+    if (*p) {
         int space = n;
-        while (space > 0 && text[offset + space] != ' ') space--;
+        while (space > 0 && s[space] != ' ') space--;
         if (space > 0) n = space;
     }
     snprintf(s_feed_line, sizeof(s_feed_line), "%.*s", n, text + offset);
@@ -426,14 +429,14 @@ static void msg_row(tui_surface *sf, tui_rect r, int y, const ls_mesh_msg_t *m,
 
     const int avail = r.w - 8;
     if (avail <= 0) return;
-    char body[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
-    snprintf(body, sizeof(body), "%.*s", avail, text);
-    tui_put_str(sf, r, r.x + 7, y, body, A(TUI_WHITE, TUI_BLACK));
+    /* Clip by cells, not bytes, so a UTF-8 letter is never cut in half. */
+    const tui_rect line = tui_rect_make(r.x + 7, y, avail, 1);
+    tui_put_str(sf, line, r.x + 7, y, text, A(TUI_WHITE, TUI_BLACK));
     const char *colon = strchr(text, ':');
     if (colon && colon - text < 20) {
         char name[24];
         snprintf(name, sizeof(name), "%.*s", (int)(colon - text), text);
-        tui_put_str(sf, r, r.x + 7, y, name,
+        tui_put_str(sf, line, r.x + 7, y, name,
             A(m->mine ? TUI_YELLOW | TUI_BRIGHT : TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     }
 }

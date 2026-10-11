@@ -76,19 +76,112 @@ void tui_put_char(tui_surface *s, tui_rect clip, int x, int y, char ch,
     cell->attr = attr;
 }
 
+/* Base letters for U+00C0..U+017F (Latin-1 letters and Latin Extended-A),
+   which covers Polish and most European alphabets in one cell each. */
+static const char FOLD_C0_17F[] =
+    "AAAAAAACEEEEIIII" "DNOOOOOxOUUUUYTs"   /* U+00C0 */
+    "aaaaaaaceeeeiiii" "dnooooo/ouuuuyty"   /* U+00E0 */
+    "AaAaAaCcCcCcCcDd" "DdEeEeEeEeEeGgGg"   /* U+0100 */
+    "GgGgHhHhIiIiIiIi" "IiIiJjKkkLlLlLlL"   /* U+0120 */
+    "lLlNnNnNnnNnOoOo" "OoOoRrRrRrSsSsSs"   /* U+0140 */
+    "SsTtTtTtUuUuUuUu" "UuUuWwYyYZzZzZzs";  /* U+0160 */
+
+char tui_fold_codepoint(uint32_t cp) {
+    if (cp < 0x80)
+        return (char)cp;
+    if (cp >= 0xC0 && cp <= 0x17F)
+        return FOLD_C0_17F[cp - 0xC0];
+    switch (cp) {
+    case 0xA0:                       return ' ';  /* no-break space */
+    case 0xB0:                       return 'o';  /* degree */
+    case 0x2010: case 0x2011:
+    case 0x2012: case 0x2013:
+    case 0x2014: case 0x2212:        return '-';
+    case 0x2018: case 0x2019:
+    case 0x201A: case 0x2032:        return '\'';
+    case 0x201C: case 0x201D:
+    case 0x201E: case 0x2033:        return '"';
+    case 0x2022: case 0x00B7:        return '*';
+    case 0x2026:                     return '.';
+    default:                         return '?';
+    }
+}
+
+char tui_utf8_fold(const char **p) {
+    const unsigned char *s = (const unsigned char *)*p;
+    const unsigned char b = s[0];
+    if (b < 0x80) {
+        *p += 1;
+        return (char)b;
+    }
+    int n;
+    uint32_t cp;
+    if (b >= 0xC2 && b <= 0xDF)      { n = 1; cp = b & 0x1F; }
+    else if (b >= 0xE0 && b <= 0xEF) { n = 2; cp = b & 0x0F; }
+    else if (b >= 0xF0 && b <= 0xF4) { n = 3; cp = b & 0x07; }
+    else {
+        /* A stray continuation byte, or not UTF-8 at all. */
+        *p += 1;
+        return '?';
+    }
+    for (int i = 1; i <= n; i++) {
+        /* A NUL is not a continuation byte, so a cut-off sequence stops
+           here instead of running past the end of the string. */
+        if ((s[i] & 0xC0) != 0x80) {
+            *p += i;
+            return '?';
+        }
+        cp = (cp << 6) | (s[i] & 0x3F);
+    }
+    *p += n + 1;
+    return tui_fold_codepoint(cp);
+}
+
+void tui_utf8_fold_str(char *s) {
+    const char *r = s;
+    char *w = s;
+    while (*r) {
+        /* A letter cut off by a fixed-size buffer upstream (map labels are
+           truncated by bytes) is dropped rather than shown as '?'. */
+        const unsigned char b = (unsigned char)*r;
+        const int need = (b >= 0xF0 && b <= 0xF4) ? 3
+                       : (b >= 0xE0 && b <= 0xEF) ? 2
+                       : (b >= 0xC2 && b <= 0xDF) ? 1 : 0;
+        int k = 1;
+        while (k <= need && ((unsigned char)r[k] & 0xC0) == 0x80)
+            k++;
+        if (k <= need && r[k] == 0)
+            break;
+        /* One byte out for at least one in, so the write never overtakes
+           the read. */
+        *w++ = tui_utf8_fold(&r);
+    }
+    *w = 0;
+}
+
+int tui_utf8_cells(const char *str, size_t n) {
+    const char *end = str + n;
+    int cells = 0;
+    while (str < end && *str) {
+        (void)tui_utf8_fold(&str);
+        cells++;
+    }
+    return cells;
+}
+
 void tui_put_str(tui_surface *s, tui_rect clip, int x, int y, const char *str,
                  uint8_t attr) {
     tui_rect c = clip_to_surface(s, clip);
     if (tui_rect_empty(c) || y < c.y || y >= c.y + c.h)
         return;
-    for (int i = 0; str[i]; i++) {
-        int cx = x + i;
+    for (int cx = x; *str; cx++) {
         if (cx >= c.x + c.w)
             break;
+        const char ch = tui_utf8_fold(&str);
         if (cx < c.x)
             continue;
         tui_cell *cell = &s->back[y * s->w + cx];
-        cell->ch = str[i];
+        cell->ch = ch;
         cell->attr = attr;
     }
 }

@@ -33,7 +33,9 @@ static int16_t glyph(uint32_t cp)
     static const uint32_t quadrants[]={0x20,0x2598,0x259d,0x2580,0x2596,0x258c,0x259e,0x259b,
                                      0x2597,0x259a,0x2590,0x259c,0x2584,0x2599,0x259f,0x2588};
     for (unsigned q=0;q<16;q++) if (cp==quadrants[q]) return (char)LS_TUI_QUAD(q&1,q&2,q&4,q&8);
-    return cp>=32 && cp<127?(char)cp:'?';
+    /* Place names arrive as codepoints and the fonts are ASCII: a letter
+       with a diacritic shows as its base letter (Bydgoszcz's "ł" as "l"). */
+    return cp>=32 && cp!=127?tui_fold_codepoint(cp):'?';
 }
 #endif
 
