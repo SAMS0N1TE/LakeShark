@@ -1,27 +1,53 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
-<p align="center"><a href="https://terminalbay.com/?m=lakeshark-showcase">Terminalbay.com</a></p>
+<p align="center"><strong>Your radio world. In your hand.</strong><br>
+Listen to local radio, watch aircraft, follow Mesh nodes and explore the airwaves.</p>
 
-> [!IMPORTANT]
-> **Updates over WiFi.** UPDATE checks for a newer build and installs it with one tap. Builds are signed, and one that does not start rolls back. Install 2.9.0 once by USB or the web flasher; later releases arrive over WiFi. New in 2.9.0.
->
-> **More to listen to.** RS41 weather balloon sondes, AIS ships, APRS and SAME/EAS weather alerts, a DMR activity view, CTCSS/DCS tone squelch and an archive of heard calls. New in 2.9.0.
->
-> **P25 voice with no SDR.** On the LR2021 version of the T-Display P4, the onboard LR2021 radio decodes P25 Phase 1 voice by itself and plays it on the speaker. Fit a VHF antenna on its MMCX connector, open P25 and tune the channel; no dongle needed. New in 2.8.0.
->
-> **POCSAG on VHF.** PAGER RECON hears pagers on the LR2021 from 150 MHz up. New in 2.8.0.
->
-> **ADS-B with no RTL-SDR.** The LR2021 also decodes aircraft by itself. New in 2.7.0.
+<p align="center">
+  <a href="https://terminalbay.com/?m=lakeshark"><strong>Install LakeShark</strong></a> &nbsp; · &nbsp;
+  <a href="https://terminalbay.com/?m=wiki"><strong>Explore the guides</strong></a> &nbsp; · &nbsp;
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/latest"><strong>Latest release</strong></a>
+</p>
 
-| T-Display P4 | Onboard radio does | P25 and ADS-B |
-|---|---|---|
-| **SX1262** | MeshCore, LoRa Labs, POCSAG on the LoRa chip | need an RTL-SDR |
-| **LR2021** | MeshCore, LoRa Labs, VHF and UHF POCSAG, FSK and sweeps from 150 to 1100 MHz and 1500 to 2500 MHz | built in, or an RTL-SDR |
+LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4)** into a handheld scanner and radio workbench, with animated ASCII displays, touch controls and an optional keyboard.
 
-LakeShark is a handheld SDR scanner and radio workbench built around the [**LilyGO T-Display P4**:](https://lilygo.cc/en-us/products/t-display-p4) a 4.1-inch AMOLED, touch controls, detachable keyboard, GPS and a nine-axis motion sensor. Scan radios, follow aircraft and Mesh nodes on offline maps, experiment with LoRa, and keep field notes.
+<table>
+  <tr>
+    <th width="33%">Listen in</th>
+    <th width="33%">Watch the sky</th>
+    <th width="33%">Take it outside</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/tdp4/motion/p25-decode.gif" alt="LakeShark decoding a P25 radio call" width="260"></td>
+    <td><img src="docs/screenshots/tdp4/motion/adsb.gif" alt="Aircraft positions on LakeShark" width="260"></td>
+    <td><img src="docs/screenshots/tdp4/motion/map.gif" alt="LakeShark following an aircraft on an offline map" width="260"></td>
+  </tr>
+  <tr>
+    <td>Local FM, P25 digital voice, pagers and weather alerts.</td>
+    <td>Aircraft positions, trails and spoken callouts.</td>
+    <td>Offline maps, Mesh messaging, GPS tracks and field notes.</td>
+  </tr>
+</table>
 
-Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p4429486.m3561.l161211) for P25 Phase 1 trunking, FM, POCSAG, ADS-B and sub-GHz capture. The onboard SX1262 (or the LR2021 on that variant) runs MeshCore or LoRa Labs; the LR2021 also decodes P25 voice and ADS-B on its own. The optional MIX-RF keyboard adds CC1101, nRF24 and NFC tools.
+### New in 2.13
+
+- **A radio that feels like a radio.** FM gets a handheld display, animated VFD meters and an inline frequency keypad.
+- **More from the onboard LR2021.** Listen to narrowband FM, see live signal waterfalls and switch faster between FM and P25.
+- **Build your own signals.** Experimental [waveform playback](docs/LR2021_IQ_TX.md) adds short custom transmissions that preserve amplitude and phase.
+
+[See everything in 2.13.0 →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0)
+
+### Choose your setup
+
+**Have the LR2021 board?** FM, P25 Phase 1 voice, VHF/UHF pagers and aircraft reception work with its onboard radio. Connect an antenna suited to what you want to hear and start exploring.
+
+| Your hardware | What it opens up |
+| --- | --- |
+| **T-Display P4 · LR2021** | Onboard FM, P25 voice, pagers, ADS-B, MeshCore and LoRa tools. |
+| **T-Display P4 · SX1262** | Onboard MeshCore, LoRa tools and POCSAG. Add an RTL-SDR for FM, P25 and ADS-B. |
+| **RTL-SDR Blog V3 or V4** | An external receiver for either board, including P25 Phase 1 trunking and sub-GHz capture. |
+| **Optional MIX-RF keyboard** | Physical keys plus CC1101, nRF24 and NFC tools. |
 
 ## Start here
 
@@ -29,7 +55,9 @@ Plug in an [RTL-SDR Blog V3 or V4](https://www.ebay.com/str/rtlsdrblog?_trksid=p
 
 1. **Check your board:** the primary build is for the **LilyGO T-Display P4 with the 4.1-inch 568 × 1232 AMOLED and 16 MB flash**. The SX1262 and LR2021 radio variants run the same firmware. Other display variants need different firmware. The keyboard is optional.
 2. **Flash from Chrome or Edge on a computer:** open the browser flasher and select your exact board. Follow the first flash guide for setup.
-3. **Choose your radio:** add an RTL-SDR Blog V3 or V4 for P25 Phase I, FM, POCSAG and ADS-B reception, or use the onboard SX1262 or LR2021 for MeshCore and LoRa tools. On the LR2021, P25 and ADS-B work without the RTL-SDR.
+3. **Tune in:** open FM, P25, ADS-B or MESH, choose your radio and connect an antenna suited to what you want to hear.
+
+**Already running LakeShark?** Open **UPDATE** for one-tap Wi-Fi updates. If you are coming from 2.8 or earlier, install by USB once.
 
 **[Wiki and setup guides](https://terminalbay.com/?m=wiki)** · **[Project overview](https://terminalbay.com/?m=lakeshark-showcase)**
 
