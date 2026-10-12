@@ -10,7 +10,7 @@ Listen to local radio, watch aircraft, follow Mesh nodes and explore the airwave
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/latest"><strong>Latest release</strong></a>
 </p>
 
-LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4)** into a handheld scanner and radio workbench, with animated ASCII displays, touch controls and an optional keyboard.
+LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4)** into a handheld scanner and radio workbench, with animated ASCII displays, touch controls and an [optional keyboard](https://lilygo.cc/products/t-display-p4-keyboard).
 
 <table>
   <tr>
