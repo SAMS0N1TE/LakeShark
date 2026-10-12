@@ -707,3 +707,32 @@ LS_CASE(dashboard_stop_cancels_blocked_read)
     LS_EQ_INT(ls_radio_endpoint_unregister("test.iq.dashboard"), LS_RADIO_OK);
     fake_destroy(&fake);
 }
+
+#include "freertos/semphr.h"
+static bool ui_try_test;
+static unsigned ui_try_calls;
+BaseType_t __real_xSemaphoreTake(SemaphoreHandle_t, TickType_t);
+BaseType_t __wrap_xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
+{
+    if (ui_try_test) {
+        ++ui_try_calls;
+        LS_EQ_UINT(ticks, 0);
+        return pdFALSE; /* Registry held by an RX task. */
+    }
+    return __real_xSemaphoreTake(sem, ticks);
+}
+LS_CASE(ui_metadata_never_waits_for_registry_and_retains_snapshot)
+{
+    (void)ls_radio_endpoint_count(); /* Initialize outside the UI path. */
+    ls_radio_endpoint_info_t info;
+    memset(&info, 0x5a, sizeof(info));
+    ls_radio_endpoint_info_t before = info;
+    ui_try_calls = 0; ui_try_test = true;
+    ls_radio_err_t err = ls_radio_endpoint_try_get("test.iq.select", &info);
+    ui_try_test = false;
+    LS_EQ_INT(err, LS_RADIO_ERR_BUSY);
+    LS_EQ_UINT(ui_try_calls, 1);
+    LS_CHECK(!memcmp(&info, &before, sizeof(info)));
+    LS_EQ_INT(ls_radio_endpoint_try_get("no.such.endpoint", &info), LS_RADIO_ERR_UNAVAILABLE);
+    LS_CHECK(!info.present);
+}

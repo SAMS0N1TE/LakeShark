@@ -1000,6 +1000,7 @@ void ls_tui_radio_want(const char *mode_name)
         }
     }
     if (want == s_radio_want && want >= 0) return;
+    if (want < 0 || want != s_radio_want) ls_lora_tx_cancel_request();
     s_radio_want = want;
     defer_post(DEFER_RADIO_WANT);
 }
@@ -2462,8 +2463,9 @@ static int top_irq(void)
         p[core].waiter = xTaskGetCurrentTaskHandle();
         p[core].psram  = psram;
         (void)ulTaskNotifyTake(pdTRUE, 0);
+        /* Leave the highest application priority exclusively to live IQ. */
         if (xTaskCreatePinnedToCore(top_probe_task, "top_probe", 2048, &p[core],
-                                    configMAX_PRIORITIES - 1, NULL,
+                                    configMAX_PRIORITIES - 2, NULL,
                                     core) != pdPASS) {
             printf("top: could not start the probe on core %d\n", core);
             continue;
@@ -2519,13 +2521,27 @@ static int cmd_top(int argc, char **argv)
     }
 
     configRUN_TIME_COUNTER_TYPE t0 = 0, t1 = 0;
+    if (!ls_lora_diagnostic_try_begin()) {
+        /* A live LR20xx capture owns the radio; never wait behind it or scan
+           every task stack while its FIFO service deadline is running. */
+        printf("top: task snapshot deferred during radio capture\n");
+        free(ts); free(seen); free(rows);
+        return 0;
+    }
     const UBaseType_t n0 = uxTaskGetSystemState(ts, cap, &t0);
+    ls_lora_diagnostic_try_end();
     for (UBaseType_t i = 0; i < n0; i++) {
         seen[i].h  = ts[i].xHandle;
         seen[i].rt = (uint32_t)ts[i].ulRunTimeCounter;
     }
     vTaskDelay(pdMS_TO_TICKS(ms));
+    if (!ls_lora_diagnostic_try_begin()) {
+        printf("top: second task snapshot deferred during radio capture\n");
+        free(ts); free(seen); free(rows);
+        return 0;
+    }
     const UBaseType_t n1 = uxTaskGetSystemState(ts, cap, &t1);
+    ls_lora_diagnostic_try_end();
     const uint32_t span = (uint32_t)(t1 - t0);
 
     int nr = 0;
@@ -2689,8 +2705,9 @@ static int cmd_heap(int argc, char **argv)
 
     UBaseType_t n = uxTaskGetNumberOfTasks();
     TaskStatus_t *ts = calloc(n, sizeof(TaskStatus_t));
-    if (ts) {
+    if (ts && ls_lora_diagnostic_try_begin()) {
         n = uxTaskGetSystemState(ts, n, NULL);
+        ls_lora_diagnostic_try_end();
         printf("tasks    : %-16s %-8s %-10s %s\n", "name", "stack", "base", "free-hi-water");
         for (UBaseType_t i = 0; i < n; i++) {
             bool ext = esp_ptr_external_ram(ts[i].pxStackBase);
@@ -2702,6 +2719,9 @@ static int cmd_heap(int argc, char **argv)
                    ext ? "   <- must not write flash" : "");
         }
         free(ts);
+    } else if (ts) {
+        free(ts);
+        printf("tasks    : stack details busy; retry when radio is idle\n");
     }
     return 0;
 }
@@ -3318,7 +3338,7 @@ void app_main(void)
 
        Nothing did. draw_status asks ls_gauge_present() before it reserves a
        cell for the meter, and that only reports what a previous start found -
-       it never starts one. ls_gauge_get() does start the gauge lazily, but
+       it never starts one. ls_gauge_read() can start the gauge lazily, but
        the only path to it in the status bar is inside draw_battery, which
        draw_status will not call until ls_gauge_present() is already true. So
        the meter could not appear on its own, and did appear once something

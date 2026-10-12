@@ -3,6 +3,65 @@
 #include "ls_lora_lr20xx.h"
 #include "ls_test.h"
 #include "ls_lora_priv.h"
+#include "esp_attr.h"
+#include "esp_heap_caps.h"
+
+static bool s_test_field_owned;
+bool ls_field_owned(void) { return s_test_field_owned; }
+
+/* Exercise the production CPU transport against register operations on host.
+   The protocol fake below separately checks the LR FIFO command boundaries. */
+typedef struct {
+    uint8_t data[64];
+    bool rx_dma, tx_dma, mosi, miso, keep_cs, done;
+    size_t tx_bits, rx_bits;
+    unsigned starts;
+} spi_dev_t;
+static spi_dev_t cpu_hw;
+#define SPI_LL_GET_HW(host) (&cpu_hw)
+#define CPU_SET(name, field, type) static void name(spi_dev_t *h, type v) { h->field = v; }
+CPU_SET(spi_ll_dma_rx_enable, rx_dma, bool)
+CPU_SET(spi_ll_dma_tx_enable, tx_dma, bool)
+CPU_SET(spi_ll_enable_mosi, mosi, bool)
+CPU_SET(spi_ll_enable_miso, miso, bool)
+CPU_SET(spi_ll_set_mosi_bitlen, tx_bits, size_t)
+CPU_SET(spi_ll_set_miso_bitlen, rx_bits, size_t)
+CPU_SET(spi_ll_master_keep_cs, keep_cs, bool)
+static void spi_ll_clear_int_stat(spi_dev_t *h) { h->done = false; }
+static void spi_ll_write_buffer(spi_dev_t *h, const uint8_t *p, size_t bits)
+{ LS_CHECK(bits <= 512); memcpy(h->data, p, bits / 8); }
+static void spi_ll_apply_config(spi_dev_t *h) { (void)h; }
+static void spi_ll_user_start(spi_dev_t *h)
+{
+    LS_CHECK(!h->rx_dma && !h->tx_dma && h->mosi && h->miso && !h->keep_cs);
+    LS_EQ_UINT(h->rx_bits, h->tx_bits);
+    for (size_t i = 0; i < h->rx_bits / 8; ++i) h->data[i] ^= 0xA5;
+    h->done = true; h->starts++;
+}
+static bool spi_ll_usr_is_done(spi_dev_t *h) { return h->done; }
+static void spi_ll_read_buffer(spi_dev_t *h, uint8_t *p, size_t bits)
+{ LS_CHECK(h->done); memcpy(p, h->data, bits / 8); }
+#include "ls_lora_spi_cpu.h"
+
+LS_CASE(cpu_transport_disables_dma_for_inline_and_full_fifo_transactions)
+{
+    for (size_t n = 1; n <= 64; ++n) {
+        uint8_t data[68]; memset(data, 0x39, sizeof(data));
+        spi_transaction_t t = { .length = n * 8, .tx_buffer = data, .rx_buffer = data };
+        if (n <= 4) {
+            t.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
+            memset(t.tx_data, 0x39, sizeof(t.tx_data));
+        }
+        cpu_hw.rx_dma = cpu_hw.tx_dma = true;
+        LS_EQ_INT(capture_cpu_transmit(&t), ESP_OK);
+        for (size_t i = 0; i < n; ++i) LS_EQ_INT(n <= 4 ? t.rx_data[i] : data[i], 0x9C);
+        LS_EQ_INT(data[n], 0x39);
+    }
+    unsigned before = cpu_hw.starts;
+    spi_transaction_t t = { .length = 65 * 8 };
+    LS_EQ_INT(capture_cpu_transmit(&t), ESP_ERR_INVALID_SIZE);
+    LS_EQ_UINT(cpu_hw.starts, before);
+}
 
 LS_CASE(fast_capture_busy_wait_has_a_bounded_deadline_without_clocking_the_part)
 {
@@ -357,4 +416,440 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         LS_EQ_INT(first_op(0x0120), -1);
         LS_CHECK(fk_lr_tcxo);
     }
+}
+
+static unsigned live_waits;
+static bool live_snapshot_guard_checked;
+static void live_wait_observe(void)
+{
+    fk_capture_advance();
+    LS_CHECK((unsigned)fk.fifo_n <= LR20XX_LIVE_SLEEP_LEVEL);
+    ++live_waits;
+}
+static bool live_timed_sink(void *context, const uint8_t *bytes, size_t n, uint64_t first)
+{
+    unsigned *total = context;
+    (void)bytes;
+    if (!live_snapshot_guard_checked) {
+        live_snapshot_guard_checked = true;
+        LS_CHECK(lr20xx_stream_source2_active());
+        LS_CHECK(!ls_lora_diagnostic_try_begin());
+        LS_CHECK(ls_lora_hw_locked_by_me()); /* rejection must preserve stream ownership */
+    }
+    LS_EQ_UINT(first, *total / 4);
+    *total += n;
+    return *total < 50000;
+}
+LS_CASE(live_stream_subtick_wait_drains_continuous_fifo_despite_scheduling_delay)
+{
+    /* 256-byte sleep threshold: (1024-256)/500 B/ms = 1536 us of headroom, less the
+       400 us sleep, so a wake up to ~1100 us late survives; 2500 us does not. */
+    const unsigned delays[] = {0, 1000, 2500};
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        const unsigned late = delays[scenario];
+        fk_install(FK_LR); fk.model_reset = true;
+        LS_EQ_INT(ls_lora_start(), ESP_OK);
+        ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg); cfg.bw_hz = 31250;
+        LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+        LS_EQ_INT(ls_lora_receive(), ESP_OK);
+        fk.capture_timed = true; fk_busy_step_us = 1;
+        fk.capture_updated = esp_timer_get_time();
+        live_waits = 0;
+        live_snapshot_guard_checked = false;
+        ls_shim_timer_wait_hook(live_wait_observe, late);
+        unsigned total = 0; lr20xx_stream_result_t r;
+        esp_err_t err = lr20xx_stream_source2_live(live_timed_sink, &total, &r);
+        ls_shim_timer_wait_hook(NULL, 0);
+        LS_EQ_UINT(ls_shim_timer_count(), 0);
+        LS_CHECK(!lr20xx_stream_source2_active());
+        LS_CHECK(ls_lora_diagnostic_try_begin());
+        ls_lora_diagnostic_try_end();
+        LS_CHECK(!ls_lora_hw_locked_by_me());
+        if (late > 1100) {
+            LS_EQ_INT(err, ESP_ERR_INVALID_SIZE);
+            LS_CHECK(r.fifo_flags & 0x30);
+            LS_CHECK(r.max_fifo_level >= r.fifo_capacity);
+            LS_EQ_UINT(r.validated_bytes, 0);
+            LS_EQ_UINT(r.max_wake_latency_us, late);
+            continue;
+        }
+        LS_EQ_INT(err, ESP_OK);
+        LS_CHECK(r.stopped_by_sink);
+        LS_CHECK(r.max_drain_us > 0 && r.max_drain_us < r.max_service_gap_us);
+        LS_CHECK(r.worst_drain_spi_bytes >= 6);
+        LS_CHECK(r.max_drain_spi_bytes >= r.worst_drain_spi_bytes);
+        LS_CHECK(r.max_drain_spi_bytes < 1050); /* FIFO payload + wire headers/flags. */
+        LS_EQ_UINT(r.wakes, live_waits);
+        LS_CHECK(r.wakes > 20);
+        LS_CHECK(r.max_wake_fifo_level > 0);
+        LS_EQ_UINT(r.max_wake_latency_us, late);
+        LS_CHECK(fk.capture_peak < 1024);
+        LS_EQ_UINT(r.fifo_flags, 0);
+        LS_CHECK(fk.capture_high_residual_polls > r.wakes);
+        /* Blocking gives lower-priority tasks/idle an opportunity every cycle;
+           normal simulated acquisition spends more than half its time asleep. */
+        if (!late) LS_CHECK((uint64_t)r.wakes * LR20XX_LIVE_WAKE_US > (uint64_t)r.elapsed_us / 2);
+        LS_EQ_UINT(ls_shim_timer_count(), 0);
+        LS_CHECK(!lr20xx_stream_source2_active());
+        if (late <= 1100) LS_CHECK(live_snapshot_guard_checked);
+        ls_shim_timer_wait_hook(NULL, 0);
+    }
+}
+
+LS_CASE(capture_fifo_chunks_preserve_bytes_and_wire_counters_then_restore_packets)
+{
+    fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);
+    uint8_t expected[500], actual[500];
+    for (unsigned i = 0; i < sizeof(expected); ++i) expected[i] = (uint8_t)(i * 73 + 9);
+    ls_lora_hw_lock();
+    for (int capture = 1; capture >= 0; --capture) {
+        if (capture) LS_EQ_INT(ls_lora_hw_capture_fast(true), ESP_OK);
+        memcpy(fk.fifo, expected, sizeof(expected)); fk.fifo_n = sizeof(expected);
+        int before = fk.nframes;
+        uint32_t bytes = ls_lora_hw_spi_bytes();
+        LS_EQ_INT(lr20xx_read_rx_fifo(actual, 256), ESP_OK);
+        LS_EQ_INT(lr20xx_read_rx_fifo(actual + 256, 244), ESP_OK);
+        LS_CHECK(memcmp(actual, expected, sizeof(actual)) == 0);
+        LS_EQ_INT(fk.fifo_n, 0);
+        LS_EQ_INT(fk.nframes - before, capture ? 9 : 2);
+        LS_EQ_UINT(ls_lora_hw_spi_bytes() - bytes, capture ? 518 : 504);
+        for (int i = before; i < fk.nframes; ++i) {
+            LS_CHECK(fk.frames[i].full <= (capture ? 64u : 258u));
+            LS_EQ_INT(fk.frames[i].b[0], 0);
+            LS_EQ_INT(fk.frames[i].b[1], 1);
+        }
+        if (capture) LS_EQ_INT(ls_lora_hw_capture_fast(false), ESP_OK);
+    }
+    ls_lora_hw_unlock();
+}
+
+/* Keep the upload exercised through the public command dispatcher: this links
+   the same include and radio-lock path that ships in the board driver. */
+static int tx_upload_call(int argc, char **argv)
+{
+    return lr20xx_clock_command(argc, argv);
+}
+
+static uint32_t tx_test_crc32(const uint8_t *data, size_t size)
+{
+    uint32_t crc = UINT32_MAX;
+    while (size--) {
+        crc ^= *data++;
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ ((0u - (crc & 1u)) & 0xEDB88320u);
+    }
+    return ~crc;
+}
+
+LS_CASE(tx_upload_is_lazy_rejects_allocation_failure_and_abort_releases_buffer)
+{
+    extern void ls_shim_heap_reset(void);
+    extern void ls_shim_heap_fail_from(unsigned call_index);
+    extern unsigned ls_shim_heap_call_count(void);
+    extern unsigned ls_shim_heap_outstanding(void);
+    extern unsigned ls_shim_heap_call_caps(unsigned call_index);
+    extern size_t ls_shim_heap_call_size(unsigned call_index);
+    fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_shim_heap_reset();
+    char *status[] = {"lora", "lrtx-upload", "status"};
+    LS_EQ_INT(tx_upload_call(3, status), 0);
+    LS_EQ_UINT(ls_shim_heap_call_count(), 0); /* status is allocation-free */
+
+    char *begin[] = {"lora", "lrtx-upload", "begin", "2", "0x41D912FF"};
+    ls_shim_heap_fail_from(1);
+    LS_EQ_INT(tx_upload_call(5, begin), 1);
+    LS_EQ_UINT(ls_shim_heap_outstanding(), 0);
+    ls_shim_heap_reset();
+    LS_EQ_INT(tx_upload_call(5, begin), 0);
+    LS_EQ_UINT(ls_shim_heap_call_count(), 1);
+    LS_EQ_UINT(ls_shim_heap_call_caps(1), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    LS_EQ_UINT(ls_shim_heap_call_size(1), 2); /* allocate the requested waveform only */
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(tx_upload_call(3, abort), 0);
+    LS_EQ_UINT(ls_shim_heap_outstanding(), 0);
+}
+
+LS_CASE(tx_upload_rejects_bad_order_hex_crc_and_amplitude_then_commits_valid_iq)
+{
+    fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);
+    char *begin[] = {"lora", "lrtx-upload", "begin", "2", "0x41D912FF"}; /* CRC32(00 00) */
+    char *wrong_offset[] = {"lora", "lrtx-upload", "chunk", "2", "0000"};
+    char *bad_hex[] = {"lora", "lrtx-upload", "chunk", "0", "00xz"};
+    char *chunk[] = {"lora", "lrtx-upload", "chunk", "0", "0000"};
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(tx_upload_call(5, begin), 0);
+    LS_EQ_INT(tx_upload_call(5, wrong_offset), 1);
+    LS_EQ_INT(tx_upload_call(5, bad_hex), 1);
+    LS_EQ_INT(tx_upload_call(3, commit), 1); /* no bytes accepted */
+    LS_EQ_INT(tx_upload_call(5, chunk), 0);
+    LS_EQ_INT(tx_upload_call(3, commit), 0);
+    LS_EQ_INT(tx_upload_call(5, chunk), 1); /* committed uploads are immutable */
+
+    /* A structurally valid transfer with a wrong CRC cannot be committed. */
+    char *bad_crc_begin[] = {"lora", "lrtx-upload", "begin", "2", "0"};
+    LS_EQ_INT(tx_upload_call(5, bad_crc_begin), 0);
+    LS_EQ_INT(tx_upload_call(5, chunk), 0);
+    LS_EQ_INT(tx_upload_call(3, commit), 1);
+
+    /* CRC-valid but over-limit magnitude is rejected at commit. */
+    char *large_begin[] = {"lora", "lrtx-upload", "begin", "2", "0x4F5D9F45"}; /* 57,0 */
+    char *large_chunk[] = {"lora", "lrtx-upload", "chunk", "0", "3900"};
+    LS_EQ_INT(tx_upload_call(5, large_begin), 0);
+    LS_EQ_INT(tx_upload_call(5, large_chunk), 0);
+    LS_EQ_INT(tx_upload_call(3, commit), 1);
+    LS_EQ_INT(tx_upload_call(3, abort), 0);
+}
+
+LS_CASE(tx_send_without_a_committed_upload_refuses_before_touching_radio)
+{
+    fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);
+    const int before = fk.tx_frames;
+    char *send[] = {"lora", "lrtx-send", "9600"};
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    LS_EQ_INT(fk.tx_frames, before);
+    LS_EQ_INT(fk.bad_mode, 0);
+}
+
+LS_CASE(tx_send_commits_exact_waveform_and_respects_fast_spi_fifo_frame_bound)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    LS_CHECK(!ls_lora_hw_capture_active());
+    ls_lora_hw_lock();
+    LS_CHECK(ls_lora_hw_locked_by_me());
+    LS_EQ_INT(ls_lora_hw_capture_fast(true), ESP_OK);
+    LS_EQ_INT(ls_lora_hw_capture_fast(false), ESP_OK);
+    ls_lora_hw_unlock();
+    LS_CHECK(!ls_lora_hw_capture_active());
+    uint8_t wave[70];
+    for (unsigned sample = 0; sample < sizeof(wave) / 2; ++sample) {
+        wave[2 * sample] = (uint8_t)(int8_t)((int)(sample % 31u) - 15);
+        wave[2 * sample + 1] = (uint8_t)(int8_t)((int)((sample * 3u) % 21u) - 10);
+    }
+    char size_arg[8], crc_arg[16];
+    snprintf(size_arg, sizeof(size_arg), "%u", (unsigned)sizeof(wave));
+    snprintf(crc_arg, sizeof(crc_arg), "0x%08lX", (unsigned long)tx_test_crc32(wave, sizeof(wave)));
+    char *begin[] = {"lora", "lrtx-upload", "begin", size_arg, crc_arg};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    for (unsigned offset = 0; offset < sizeof(wave);) {
+        char offset_arg[16], hex[65];
+        const unsigned amount = sizeof(wave) - offset > 32u ? 32u : (unsigned)sizeof(wave) - offset;
+        snprintf(offset_arg, sizeof(offset_arg), "%u", offset);
+        for (unsigned i = 0; i < amount; ++i)
+            snprintf(hex + 2u * i, sizeof(hex) - 2u * i, "%02X", wave[offset + i]);
+        char *chunk[] = {"lora", "lrtx-upload", "chunk", offset_arg, hex};
+        LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+        offset += amount;
+    }
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800", "3"};
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    fk.tx_auto_done = true;
+    const int frame_start = fk.nframes;
+    extern unsigned ls_shim_heap_call_count(void);
+    const unsigned heap_calls_before_send = ls_shim_heap_call_count();
+    LS_EQ_INT(lr20xx_clock_command(4, send), 0);
+    LS_EQ_UINT(ls_shim_heap_call_count(), heap_calls_before_send); /* sending reuses the uploaded waveform */
+    LS_EQ_UINT(fk.tx_starts, 1);
+    LS_EQ_UINT(fk.tx_hf, 0);
+    LS_EQ_UINT(fk.tx_samples, 105);
+    LS_EQ_UINT(fk.tx_rate, 4800);
+    LS_EQ_UINT(fk.tx_fifo_base, 0x804000u);
+    LS_EQ_UINT(fk.tx_fifo_size, 0x3FCu);
+    LS_EQ_UINT(fk.txfifo_n, 210);
+    for (int i = 0; i < fk.txfifo_n; ++i) LS_EQ_UINT(fk.txfifo[i], wave[i % sizeof(wave)]);
+    unsigned fifo_writes = 0;
+    for (int i = frame_start; i < fk.nframes; ++i) {
+        const fk_frame_t *frame = &fk.frames[i];
+        if (frame->len >= 2 && frame->b[0] == 0 && frame->b[1] == 2) {
+            fifo_writes++;
+            LS_CHECK(frame->full <= 64u);
+            LS_CHECK(frame->full > 2u);
+        }
+    }
+    LS_EQ_UINT(fifo_writes, 6); /* periodic boundary plus 62-byte CPU transport limit */
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX); /* recovered to the caller's prior RX mode */
+    LS_EQ_INT(fk.violations, 0);
+}
+
+LS_CASE(tx_send_cancellation_uses_recovery_and_does_not_poison_next_send)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    uint8_t wave[1024] = {0};
+    char size_arg[8], crc_arg[16];
+    snprintf(size_arg, sizeof(size_arg), "%u", (unsigned)sizeof(wave));
+    snprintf(crc_arg, sizeof(crc_arg), "0x%08lX", (unsigned long)tx_test_crc32(wave, sizeof(wave)));
+    char *begin[] = {"lora", "lrtx-upload", "begin", size_arg, crc_arg};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    for (unsigned offset = 0; offset < sizeof(wave);) {
+        char offset_arg[16], hex[65];
+        const unsigned amount = sizeof(wave) - offset > 32u ? 32u : (unsigned)sizeof(wave) - offset;
+        snprintf(offset_arg, sizeof(offset_arg), "%u", offset);
+        for (unsigned i = 0; i < amount; ++i)
+            snprintf(hex + 2u * i, sizeof(hex) - 2u * i, "%02X", wave[offset + i]);
+        char *chunk[] = {"lora", "lrtx-upload", "chunk", offset_arg, hex};
+        LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+        offset += amount;
+    }
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800"};
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    fk.tx_auto_done = true;
+
+    /* A stop request arriving during the initial FIFO fill must prevent SetTx
+       and take the ordinary recovery path. */
+    fk.tx_cancel_on_fifo_write = 1;
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    LS_EQ_UINT(fk.tx_fifo_write_count, 1);
+    LS_EQ_INT(fk.tx_starts, 0);
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.violations, 0);
+
+    /* A generation observed by a later send is current, not a stale cancel. */
+    fk.tx_cancel_on_fifo_write = 0;
+    fk.tx_fifo_write_count = fk.tx_fifo_total_written = 0;
+    fk.irq = 0;
+    LS_EQ_INT(lr20xx_clock_command(3, send), 0);
+    LS_EQ_INT(fk.tx_starts, 1);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+
+    /* Cancel on the first refill chunk after SetTx. The next FIFO chunk must
+       not be queued, and recovery must leave a subsequent send usable. */
+    fk.tx_fifo_write_count = fk.tx_fifo_total_written = 0;
+    fk.irq = 0;
+    fk.tx_cancel_on_fifo_write = 16; /* 15 chunks prime 896 bytes; #16 is refill */
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    LS_EQ_UINT(fk.tx_fifo_write_count, 16);
+    LS_EQ_INT(fk.tx_starts, 2);
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.violations, 0);
+
+    fk.tx_cancel_on_fifo_write = 0;
+    fk.tx_fifo_write_count = fk.tx_fifo_total_written = 0;
+    fk.irq = 0;
+    LS_EQ_INT(lr20xx_clock_command(3, send), 0);
+    LS_EQ_INT(fk.tx_starts, 3);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(lr20xx_clock_command(3, abort), 0);
+}
+
+LS_CASE(tx_send_setup_failure_releases_radio_lock_and_recovers_receive)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    char *begin[] = {"lora", "lrtx-upload", "begin", "2", "0x41D912FF"};
+    char *chunk[] = {"lora", "lrtx-upload", "chunk", "0", "0000"};
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800"};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    fk.fail_op = 0x0293; /* packet-rate programming fails before FIFO/TX setup */
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    fk.fail_op = 0;
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.tx_starts, 0);
+    LS_EQ_INT(fk.violations, 0);
+    /* A new public receive operation proves the bus lock was released. */
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+}
+
+LS_CASE(tx_send_refuses_when_field_owner_holds_radio_without_touching_tx)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    char *begin[] = {"lora", "lrtx-upload", "begin", "2", "0x41D912FF"};
+    char *chunk[] = {"lora", "lrtx-upload", "chunk", "0", "0000"};
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800"};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    const int frames = fk.nframes;
+    const int tx_frames = fk.tx_frames;
+    s_test_field_owned = true;
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    s_test_field_owned = false;
+    LS_EQ_INT(fk.nframes, frames);
+    LS_EQ_INT(fk.tx_frames, tx_frames);
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(lr20xx_clock_command(3, abort), 0);
+}
+
+LS_CASE(tx_send_start_failure_after_fifo_load_releases_fast_mode_and_recovers_rx)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    char *begin[] = {"lora", "lrtx-upload", "begin", "2", "0x41D912FF"};
+    char *chunk[] = {"lora", "lrtx-upload", "chunk", "0", "0000"};
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800"};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    fk.fail_op = 0x020D; /* SetTx is refused after the initial FIFO load */
+    LS_EQ_INT(lr20xx_clock_command(3, send), 1);
+    fk.fail_op = 0;
+    LS_EQ_INT(fk.tx_starts, 0);
+    LS_EQ_UINT(fk.txfifo_n, 2);
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.violations, 0);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(lr20xx_clock_command(3, abort), 0);
+}
+
+LS_CASE(tx_send_refill_status_failure_restores_radio_and_releases_fast_spi)
+{
+    fk_install(FK_LR); fk_busy_step_us = 1; LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    uint8_t wave[1024] = {0};
+    char size_arg[8], crc_arg[16];
+    snprintf(size_arg, sizeof(size_arg), "%u", (unsigned)sizeof(wave));
+    snprintf(crc_arg, sizeof(crc_arg), "0x%08lX", (unsigned long)tx_test_crc32(wave, sizeof(wave)));
+    char *begin[] = {"lora", "lrtx-upload", "begin", size_arg, crc_arg};
+    LS_EQ_INT(lr20xx_clock_command(5, begin), 0);
+    for (unsigned offset = 0; offset < sizeof(wave);) {
+        char offset_arg[16], hex[65];
+        const unsigned amount = sizeof(wave) - offset > 32u ? 32u : (unsigned)sizeof(wave) - offset;
+        snprintf(offset_arg, sizeof(offset_arg), "%u", offset);
+        for (unsigned i = 0; i < amount; ++i)
+            snprintf(hex + 2u * i, sizeof(hex) - 2u * i, "%02X", wave[offset + i]);
+        char *chunk[] = {"lora", "lrtx-upload", "chunk", offset_arg, hex};
+        LS_EQ_INT(lr20xx_clock_command(5, chunk), 0);
+        offset += amount;
+    }
+    char *commit[] = {"lora", "lrtx-upload", "commit"};
+    char *send[] = {"lora", "lrtx-send", "4800", "2"};
+    LS_EQ_INT(lr20xx_clock_command(3, commit), 0);
+    fk.tx_auto_done = true;
+    fk.tx_fifo_fail_on_write = 16; /* inject CMD_PERR on the first refill after 896 primed bytes */
+    LS_EQ_INT(lr20xx_clock_command(4, send), 1);
+    LS_EQ_UINT(fk.tx_fifo_write_count, 17); /* Stat returns on the next SPI frame */
+    LS_EQ_UINT(fk.tx_starts, 1);
+    LS_CHECK(!ls_lora_hw_capture_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(fk.violations, 0);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    char *abort[] = {"lora", "lrtx-upload", "abort"};
+    LS_EQ_INT(lr20xx_clock_command(3, abort), 0);
 }

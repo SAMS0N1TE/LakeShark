@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 #include "lr2021_iq_queue.h"
 #include <string.h>
 bool lr2021_iq_queue_init(lr2021_iq_queue *q)
@@ -6,7 +7,7 @@ bool lr2021_iq_queue_init(lr2021_iq_queue *q)
     atomic_init(&q->write_index,0);atomic_init(&q->read_index,0);
     return atomic_is_lock_free(&q->write_index) && atomic_is_lock_free(&q->read_index);
 }
-bool lr2021_iq_queue_push(lr2021_iq_queue *q,const uint8_t *data,size_t bytes,
+bool IRAM_ATTR lr2021_iq_queue_push(lr2021_iq_queue *q,const uint8_t *data,size_t bytes,
                          uint64_t first_pair,uint32_t generation)
 {
     if(!q || !data || !bytes || bytes>LR2021_IQ_BLOCK_BYTES || bytes%4)return false;

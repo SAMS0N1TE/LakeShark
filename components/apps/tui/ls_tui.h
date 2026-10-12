@@ -132,6 +132,11 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row);
 
 /* Microseconds spent inside the last present, and cells drawn. */
 void ls_tui_last_cost(uint32_t *us, int *cells);
+/* Last present: image destination bytes (including moves), requested native
+   row writeback bytes. Excludes cache-line rounding and panel scan traffic. */
+void ls_tui_last_traffic(uint32_t *image_bytes, uint32_t *flush_bytes);
+/* Slowest frame since the last call, then reset (console `display`). */
+uint32_t ls_tui_max_cost_take(void);
 /* The costliest present since the last call (which resets it): total time,
    cells drawn, the cache writeback's share, and coverage ramps rebuilt. */
 void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ramps);

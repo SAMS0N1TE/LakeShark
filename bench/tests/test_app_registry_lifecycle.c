@@ -17,7 +17,10 @@ static event_t s_event;
 static unsigned s_events;
 static bool s_autoreboot;
 static bool s_fm_stop_ok = true;
+static unsigned s_tx_cancel_requests;
 static void check_ui_fence(void);
+
+void ls_lora_tx_cancel_request(void) { ++s_tx_cancel_requests; }
 
 static void trace(char c)
 {
@@ -85,6 +88,7 @@ LS_CASE(acars_to_p25_transition_and_worker_failure_fallback)
     app_switch_to(1);       /* AppP25 resume -> lakeshark_select_p25. */
 
     LS_EQ_STR(s_trace, "FfP");
+    LS_EQ_UINT(s_tx_cancel_requests, 3); /* app switch, park, and app switch */
     LS_EQ_INT(app_current_index(), 1);
     LS_CHECK(!app_parked());
     LS_EQ_INT(s_events, 2);
@@ -153,6 +157,9 @@ static void check_ui_fence(void)
     unsigned before=s_trace_len;
     LS_EQ_UINT(app_ui_park_request(),0);
     app_switch_to(0); app_unpark();
+    unsigned cancels_before=s_tx_cancel_requests;
+    app_park(); /* RF stop bypasses the UI park fence; lifecycle stays fenced. */
+    LS_EQ_UINT(s_tx_cancel_requests,cancels_before+1);
     LS_EQ_UINT(s_trace_len,before);
     app_ui_park_release();
     ls_shim_task_reset(); ls_shim_queue_reset();
@@ -165,6 +172,11 @@ static void check_ui_fence(void)
     app_switch_to(0); app_unpark();
     LS_CHECK(app_switch_service(0));
     LS_EQ_INT(app_ui_park_status(latest),1); LS_CHECK(app_parked());
+    unsigned parked_cancels=s_tx_cancel_requests;
+    unsigned parked_trace=s_trace_len;
+    app_park(); /* A radio TX can run while the app state is already parked. */
+    LS_EQ_UINT(s_tx_cancel_requests,parked_cancels+1);
+    LS_EQ_UINT(s_trace_len,parked_trace);
     LS_EQ_INT(app_current_index(),1);
     LS_CHECK(!app_switch_service(0));
     app_ui_park_release(); app_switch_to(0); LS_CHECK(app_switch_service(0));

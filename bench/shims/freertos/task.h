@@ -61,6 +61,7 @@ TaskHandle_t xTaskCreateStaticPinnedToCore(TaskFunction_t task,
                                            StaticTask_t *tcb,
                                            BaseType_t core_id);
 BaseType_t xTaskNotifyGive(TaskHandle_t task);
+void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *woken);
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t wait_ticks);
 void vTaskDelete(TaskHandle_t task);
 void vTaskDeleteWithCaps(TaskHandle_t task);

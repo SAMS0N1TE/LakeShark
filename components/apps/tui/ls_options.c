@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_timer.h"
 #include "ls_keyboard.h"
 #include "ls_numpad.h"
 #include "ls_picker.h"
@@ -16,6 +17,8 @@
 static const ls_opt_ctx_t *s_ctx;
 static EXT_RAM_BSS_ATTR uint8_t s_row_opt[LS_PICKER_MAX];
 static int s_rows;
+/* Settings are telemetry, not a frame clock. Edits still update immediately. */
+static int64_t s_values_us;
 /* The list row a keypad, keyboard or list of the app's own was opened from,
    for the list to come back on when that closes; -1 when nothing waits. */
 static int s_back = -1;
@@ -142,6 +145,7 @@ static void fill(const ls_opt_ctx_t *ctx)
     ls_picker_open(title, picked);
     if (s_depth > 0 || ctx->back_to_screen || s_root_back) ls_picker_back(go_up);
     s_ctx = ctx;
+    s_values_us = esp_timer_get_time();
     if(ctx->menu_arrows) ls_picker_navigation(navigate);
     s_rows = 0;
     char d[LS_PICKER_DETAIL];
@@ -346,10 +350,20 @@ void ls_opt_close(void)
     s_ctx = NULL;s_root_back=NULL;
 }
 
+bool ls_opt_covers_screen(void)
+{
+    const ls_opt_ctx_t *root = s_depth > 0 ? s_up[0] : s_ctx;
+    return root && root->covers_screen && ls_picker_is(picked);
+}
+
 void ls_opt_poll(void)
 {
     if (!s_ctx) return;
     if (ls_picker_is(picked)) {
+        const int64_t now = esp_timer_get_time();
+        const ls_opt_ctx_t *root = s_depth > 0 ? s_up[0] : s_ctx;
+        if (now >= s_values_us && now - s_values_us < (int64_t)root->refresh_ms * 1000) return;
+        s_values_us = now;
         /* The values follow the settings while the list is up: most of these
            are requests a worker takes a moment to carry out. */
         char d[LS_PICKER_DETAIL];

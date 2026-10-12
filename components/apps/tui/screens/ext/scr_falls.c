@@ -19,6 +19,7 @@
 #include "esp_attr.h"
 #include "../../ls_quick.h"
 #include "apps/fm/fm_state.h"
+#include "p25_state.h"
 #include "apps/fm/fm_mode_label.h"
 
 /* The SDRs and the LoRa chip draw a spectrum; the other radios use honest
@@ -52,9 +53,10 @@ static ls_rsel_radio_t in_use(void)
 {
     if (s_data >= 0) return data_sources[s_data].radio;
     if (ls_wf_source_get() == LS_WF_SRC_LORA) return LS_RSEL_LORA;
-    const char *claimed = ls_tui_radio_claimed();
-    if (ls_wf_source_get() == LS_WF_SRC_P25 && claimed && !strcmp(claimed, "P25"))
+    if (ls_wf_source_get() == LS_WF_SRC_P25)
         return ls_rsel_effective(LS_RSEL_P25);
+    if (ls_wf_source_get() == LS_WF_SRC_FM)
+        return ls_rsel_effective(LS_RSEL_FM);
     ls_rsel_radio_t r = ls_rsel_sdr_held_by("fm");
     if (r == LS_RSEL_NONE) r = ls_rsel_sdr_held_by("p25");
     return r != LS_RSEL_NONE ? r : s_sdr;
@@ -373,9 +375,10 @@ static void draw(tui_surface *sf, tui_rect area)
     if(s_data>=0) { draw_data(sf,body); return; }
 
     const char *why = ls_wf_idle_reason();
-    if (ls_wf_source_get() == LS_WF_SRC_P25 && in_use() == LS_RSEL_LORA) {
+    if (ls_wf_source_get() == LS_WF_SRC_P25 && in_use() == LS_RSEL_LORA &&
+        !P25.lr_iq_active) {
         ls_panel_notice(sf, body, "P25 / LR2021",
-                        "LR2021 gives no P25 spectrum", "P25 receiver is selected");
+                        "LR FSK: no IQ", "select LR IQ to see the band");
         return;
     }
     /* Keep HOLD reachable while the shared display is paused. */

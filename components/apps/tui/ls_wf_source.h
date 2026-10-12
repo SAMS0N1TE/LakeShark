@@ -14,15 +14,14 @@ typedef enum {
     LS_WF_SRC_AUTO = 0,   /* whichever receiver is actually running     */
     LS_WF_SRC_P25,
     LS_WF_SRC_FM,
-    /* The LoRa radio as a swept spectrum analyser. Not the dongle:
-       this one is soldered to the board and works with nothing plugged in.
-       See ls_lora.h for what a swept measurement can and cannot show. */
+    /* LR IQ for a narrow view or an existing IQ owner; swept RSSI for wide
+       spans and radios without raw IQ. Works without a USB receiver. */
     LS_WF_SRC_LORA,
     LS_WF_SRC__COUNT
 } ls_wf_src_t;
 
 void        ls_wf_source_select(ls_wf_src_t src);
-/* AUTO resolves to the running receiver, without starting or retuning it. */
+/* AUTO follows a running receiver, or LR IQ when no SDR is fitted. */
 ls_wf_src_t ls_wf_source_get(void);
 
 /* The short name of a source, for a chip or a label. Never NULL. */
@@ -55,6 +54,8 @@ const char *ls_wf_preset_none(ls_wf_src_t src);
 /* The band a LoRa sweep covers. Defaults to the 902-928 MHz ISM
    band this board's mesh lives in; the console can move it anywhere the part
    tunes, which is 150 to 960 MHz. */
+/* App-specific narrow view; cleared on release. Zero follows the radio. */
+void ls_wf_source_view(uint32_t center_hz);
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz);
 void ls_wf_source_lora_band_get(uint32_t *min_hz, uint32_t *max_hz);
 

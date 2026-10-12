@@ -1,0 +1,64 @@
+#include "fm_lr_dsp.h"
+#include <math.h>
+#include <string.h>
+#define PI 3.14159265358979323846f
+void fm_lr_reset(fm_lr_dsp_t *s)
+{
+    memset((char *)s + offsetof(fm_lr_dsp_t, i), 0,
+           sizeof(*s) - offsetof(fm_lr_dsp_t, i));
+}
+void fm_lr_init(fm_lr_dsp_t *s, unsigned channel_hz)
+{
+    memset(s, 0, sizeof(*s));
+    /* Narrow channel filtering also quietens uncorrelated noise. Normalize
+       its measured discriminator hiss to the shared squelch's 0..1 scale. */
+    s->noise_scale = channel_hz == 12500 ? 1.9f : 1.2f;
+    float fc = (channel_hz == 12500 ? 6000.0f : 11000.0f) / 125000.0f;
+    float sum = 0;
+    for (int k=0; k<FM_LR_TAPS; ++k) {
+        int n = k - FM_LR_TAPS/2;
+        float v = n ? sinf(2*PI*fc*n)/(PI*n) : 2*fc;
+        s->taps[k] = v * (0.54f - 0.46f*cosf(2*PI*k/(FM_LR_TAPS-1)));
+        sum += s->taps[k];
+    }
+    for (int k=0; k<FM_LR_TAPS; ++k) s->taps[k] /= sum;
+}
+int fm_lr_demod(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
+                size_t bytes, float *out, int capacity)
+{
+    int count = 0; float peak = 0;
+    for (size_t b=0; b+3<bytes; b+=4) {
+        float re = (int16_t)((unsigned)iq[b] | ((unsigned)iq[b+1]<<8));
+        float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
+        float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
+        if (level > peak) peak = level;
+        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
+        s->pos = (s->pos+1)%FM_LR_TAPS;
+        if (++s->decim < 4) continue;
+        s->decim = 0; re = im = 0;
+        unsigned j = s->pos;
+        for (int k=0; k<FM_LR_TAPS; ++k) {
+            if (!j) j = FM_LR_TAPS;
+            --j; re += s->taps[k]*s->i[j]; im += s->taps[k]*s->q[j];
+        }
+        float d = s->have ? atan2f(im*s->prev_i-re*s->prev_q,
+                                     re*s->prev_i+im*s->prev_q) : 0;
+        /* Normalize angle to the existing 32 kHz discriminator scale. */
+        d *= 31250.0f/32000.0f;
+        s->prev_i = re; s->prev_q = im; s->have = true;
+        /* Rational 128/125 interpolation with one input sample latency. */
+        while (s->phase < 128) {
+            float v = s->prev_d + (d-s->prev_d)*(float)s->phase/128.0f;
+            fm->noise_hp += 0.25f*(v-fm->noise_hp);
+            float hp = v-fm->noise_hp;
+            /* 20 ms noise power averaging, independent of block boundaries. */
+            s->noise_power += (hp*hp-s->noise_power)/640.0f;
+            if (count < capacity) out[count++] = v;
+            s->phase += 125;
+        }
+        s->phase -= 128; s->prev_d = d;
+    }
+    fm->iq_block_peak = peak;
+    if (count) fm->demod_noise = sqrtf(s->noise_power)*s->noise_scale;
+    return count;
+}

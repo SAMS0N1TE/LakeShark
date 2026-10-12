@@ -490,10 +490,8 @@ static void draw_signal(tui_surface *sf, tui_rect area)
         area.h--;
     }
 
-    if (P25.lora_rx) {
-        char text[48];
-        snprintf(text, sizeof(text), "The %s hands over symbols, not a spectrum", ls_rsel_name(LS_RSEL_LORA));
-        ls_panel_notice(sf, area, "SPECTRUM", text, "plug in an SDR to see the band");
+    if (P25.lora_rx && !P25.lr_iq_active) {
+        ls_panel_notice(sf, area, "SPECTRUM", "LR FSK: no IQ", "select LR IQ to see the band");
         return;
     }
     const char *why = ls_wf_idle_reason();
@@ -806,7 +804,8 @@ static const ls_opt_t OPT_P25[] = {
     { .label = "CQPSK carrier gain", .kind = LS_OPT_ACTION, .arg = 11, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "Reset CQPSK tuning", .kind = LS_OPT_ACTION, .arg = 12, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
 };
-static const ls_opt_ctx_t CTX_P25 = { .name = "P25", .job = LS_RSEL_P25, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_P25) };
+static const ls_opt_ctx_t CTX_P25 = { .name = "P25", .job = LS_RSEL_P25, .radio = LS_RSEL_NONE,
+    .refresh_ms = 250, .covers_screen = true, LS_OPT_ROWS(OPT_P25) };
 static void open_options(void) { ls_wf_source_release(); ls_opt_open(&CTX_P25); }
 
 static void enter(void)

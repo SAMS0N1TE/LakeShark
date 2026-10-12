@@ -14,6 +14,11 @@
 #include <ctype.h>
 #include <string.h>
 
+/* A global app park can be issued while the LR2021 owns the shared bus.
+   This request is deliberately lock-free; the TX loop observes it and runs
+   its ordinary stop/recovery path before the app switch worker tears down RX. */
+extern void ls_lora_tx_cancel_request(void);
+
 static const char *TAG = "app";
 
 #define MAX_APPS 4
@@ -336,6 +341,7 @@ void app_switch_to(int idx)
     if (idx < 0 || idx >= s_app_count) return;
 
     if (idx == s_current_app && !s_switch_in_flight && !s_parked) return;
+    ls_lora_tx_cancel_request();
     if (!s_switch_q) {
 
         do_switch(idx);
@@ -381,6 +387,10 @@ bool app_parked(void) { return s_parked; }
 
 void app_park(void)
 {
+    /* The RF stop request must bypass app/UI serialization and the parked
+       fast path: a synchronous LR2021 TX may have started while no app owns
+       the receiver. */
+    ls_lora_tx_cancel_request();
     if (__atomic_load_n(&s_ui_held, __ATOMIC_ACQUIRE)) return;
     if (s_parked) return;
     if (!s_switch_q) { do_park(); return; }

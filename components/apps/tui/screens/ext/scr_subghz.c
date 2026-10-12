@@ -12,6 +12,7 @@
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
 #include "../../ls_waterfall.h"
+#include "../../ls_wf_source.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_icons.h"
 #include "../../ls_rec_replay.h"
@@ -354,6 +355,10 @@ static const char *disabled_reason(char c)
 }
 
 /* The menus call straight into it, and it is defined below them. */
+static bool s_iq_view;
+static void iq_view_stop(void)
+{ if (s_iq_view) { ls_wf_source_release(); s_iq_view = false; } }
+
 static void action(char c);
 
 /* A picker returns the index it was added at, and these lists are built
@@ -1055,6 +1060,7 @@ static EXT_RAM_BSS_ATTR int scan_at_row[SCAN_AT_N];
 static int scan_at_rows;
 static void scan_range_done(int index)
 {
+    iq_view_stop();
     if(index<0 || index>=scan_at_rows)return;
     index=scan_at_row[index];
     uint32_t lo=SCAN_AT[index].lo,hi=SCAN_AT[index].hi;
@@ -1385,6 +1391,7 @@ static const ls_opt_ctx_t *subghz_options(void);
 
 static void action(char c)
 {
+    iq_view_stop();
     feedback[0]=0;
     /* Say why, then stop. Every branch below also guards itself, so this is
        about telling the operator rather than about safety. */
@@ -1524,6 +1531,7 @@ static void action(char c)
 static void go(sg_page_t p)
 {
     if(p!=page) {
+        iq_view_stop();
         if(page==PG_LEARN && rec_watch_learn_busy())rec_watch_scan_stop();
         feedback[0]=0;
     }
@@ -1545,7 +1553,7 @@ static void enter(void)
     ls_rsel_track(LS_RSEL_SUBGHZ_READ,source_radio);
     feedback[0]=0;page=PG_HOME;
 }
-static void leave(void) {if(rec_watch_learn_busy())rec_watch_scan_stop();ls_field_watch(false);}
+static void leave(void) {iq_view_stop();if(rec_watch_learn_busy())rec_watch_scan_stop();ls_field_watch(false);}
 
 static void waveform(tui_surface *sf,tui_rect a)
 {
@@ -1775,6 +1783,11 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
 static void draw_analyze(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,uint8_t fresh)
 {
     const bool sweeping=rec_watch_scan_busy();
+    ls_rsel_hw_t hw; ls_rsel_hw(&hw);
+    bool iq = !sweeping && !rec_watch_enabled() && hw.lora_lr20xx &&
+              hw.present[LS_RSEL_LORA] && !hw.present[LS_RSEL_SDR_RTL] &&
+              !hw.present[LS_RSEL_SDR_HACKRF];
+    if (!iq) iq_view_stop();
     const int found=rec_watch_scan_result(NULL,0);
     char thr[16];snprintf(thr,sizeof(thr),"%.0f dB",(double)rec_watch_scan_threshold());
     ls_btn_t btn[]={
@@ -1791,6 +1804,16 @@ static void draw_analyze(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,u
     banner(sf,&a,rx,fresh);
     page_bar(sf,&a,btn,7);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
+    if (iq && !sweep_hits) {
+        s_iq_view = true;
+        ls_wf_source_select(LS_WF_SRC_LORA);
+        ls_wf_source_view(rec_get_freq());
+        ls_wf_source_pump();
+        ls_wf_draw_mini(sf, body);
+        ls_safe_line(sf,a,a.y+a.h-1, "LR IQ / 125 kHz   SCAN for wide sweep", LS_ATTR_DIM);
+        return;
+    }
+    iq_view_stop();
     char title[40];
     if(sweep_hits) snprintf(title,sizeof(title),"ANALYZER / DETECTIONS");
     else snprintf(title,sizeof(title),"ANALYZER / %s SWEEP",ls_rsel_name(LS_RSEL_LORA));

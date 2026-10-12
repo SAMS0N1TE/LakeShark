@@ -277,6 +277,12 @@ typedef struct {
     uint32_t fifo_capacity; /* Effective raw-IQ configuration, not read chunk size. */
     uint64_t validated_bytes;
     int64_t max_service_gap_us;
+    int64_t max_drain_us; /* Before level query through last sink/copy, excludes sleep. */
+    uint32_t max_drain_spi_bytes, worst_drain_spi_bytes;
+    int64_t max_wake_latency_us; /* Actual task resume minus requested alarm deadline. */
+    int64_t max_wake_isr_lateness_us; /* Timer callback timestamp minus requested deadline. */
+    int64_t max_wake_resume_us; /* Task resume timestamp minus timer callback timestamp. */
+    uint32_t max_wake_fifo_level, wakes; /* First poll after each blocking wait. */
 } lr20xx_stream_result_t;
 esp_err_t lr20xx_stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
                               void *context, lr20xx_stream_result_t *result);
@@ -291,8 +297,12 @@ esp_err_t lr20xx_stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
 esp_err_t lr20xx_stream_source2_checked(unsigned duration_ms, lr20xx_iq_sink_t sink,
                                       void *context, lr20xx_stream_result_t *result);
 
+#define LR20XX_LIVE_WAKE_US 400u
+#define LR20XX_LIVE_SLEEP_LEVEL 256u
+
 /* Checked blocks until the sink rejects a block. Requires extended 1024-byte
-   FIFO and a dedicated task; periodically yields one tick for other workers.
+   FIFO and a dedicated internal-RAM task; reserves notification index 0.
+   Sleeps on a 400 us ISR alarm only after measuring a small residual.
    Caller must stop/join this owner before retuning or freeing sink storage. */
 esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
                                     lr20xx_stream_result_t *result);
@@ -666,6 +676,9 @@ typedef struct {
 esp_err_t lr20xx_ook_rx_begin(const lr20xx_ook_rx_cfg_t *cfg);
 /* True while the OOK session, not Mode S, holds the part. */
 bool      lr20xx_ook_rx_active(void);
+
+/* Lock-free request used by global radio-park paths while IQ TX owns the bus. */
+void      ls_lora_lr20xx_tx_cancel_request(void);
 
 #ifdef __cplusplus
 }

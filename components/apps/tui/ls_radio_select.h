@@ -35,6 +35,7 @@ const char *ls_rsel_absent(ls_rsel_radio_t r);
 
 /* NULL when the radio can do the job in this firmware, else why not. Says
    nothing about whether it is fitted: that is ls_rsel_absent. */
+void ls_rsel_fm_context(uint32_t hz, bool nfm);
 const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r);
 
 /* The saved choice, or the job's default when nothing is saved. */

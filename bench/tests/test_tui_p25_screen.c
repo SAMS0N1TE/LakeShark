@@ -20,9 +20,42 @@ extern int ls_test_wf_releases;
 #include "ls_picker.h"
 #include "radio_choice.h"
 #include "ls_radio_select.h"
+#include "ls_lora.h"
 static void filter_option(const char *name);
 
 #include <string.h>
+
+/* Link-time tripwires at the hardware/flash and command boundaries. */
+static unsigned option_locks, option_spi, option_nvs, option_actions, option_reads;
+void __wrap_ls_lora_hw_lock(void) { option_locks++; }
+int __wrap_spi_device_transmit(void *dev, void *transaction)
+{ (void)dev; (void)transaction; option_spi++; return -1; }
+int __wrap_spi_device_polling_transmit(void *dev, void *transaction)
+{ (void)dev; (void)transaction; option_spi++; return -1; }
+#define NVS_TRIPWIRE(type, value_type) \
+    int __wrap_nvs_set_##type(unsigned handle, const char *key, value_type value) \
+    { (void)handle; (void)key; (void)value; option_nvs++; return -1; }
+NVS_TRIPWIRE(u8, uint8_t)
+NVS_TRIPWIRE(i8, int8_t)
+NVS_TRIPWIRE(u32, uint32_t)
+NVS_TRIPWIRE(i32, int32_t)
+NVS_TRIPWIRE(u64, uint64_t)
+#define NVS_READ_TRIPWIRE(type, value_type) \
+    int __wrap_nvs_get_##type(unsigned handle, const char *key, value_type *value) \
+    { (void)handle; (void)key; (void)value; option_nvs++; return -1; }
+NVS_READ_TRIPWIRE(u8, uint8_t)
+NVS_READ_TRIPWIRE(i8, int8_t)
+NVS_READ_TRIPWIRE(u32, uint32_t)
+NVS_READ_TRIPWIRE(i32, int32_t)
+NVS_READ_TRIPWIRE(u64, uint64_t)
+int __wrap_nvs_commit(unsigned handle) { (void)handle; option_nvs++; return -1; }
+ls_act_status_t __real_ls_action_call(const char *, const ls_args_t *, ls_val_t *, ls_cap_t);
+ls_act_status_t __wrap_ls_action_call(const char *name, const ls_args_t *in, ls_val_t *out, ls_cap_t cap)
+{ option_actions++; return __real_ls_action_call(name, in, out, cap); }
+/* Count actual row getter work even when the formatted value is unchanged. */
+const char *__real_lakeshark_p25_mode_name(void);
+const char *__wrap_lakeshark_p25_mode_name(void)
+{ option_reads++; return __real_lakeshark_p25_mode_name(); }
 
 /* ---------------------------------------------------------------- fakes -- */
 
@@ -1146,3 +1179,77 @@ LS_CASE(raw_iq_option_can_be_enabled_and_returned_to_fsk)
     LS_CHECK(rect_has(PORTRAIT, "I/Q"));
     P25.lr_iq_active = false;
 }
+
+LS_CASE(lr_signal_page_draws_iq_and_explains_fsk)
+{
+    show_signal_page(); pin_grain_to_shade(); s_shape = 1;
+    tui_rect pane = {1, 2, 46, 40};
+    P25.lora_rx = true; P25.lr_iq_active = false;
+    fresh(); draw_pane(&ls_scr_p25, pane);
+    LS_CHECK(rect_has(pane, "LR FSK: no IQ"));
+    P25.lr_iq_active = true;
+    prime(pane, 60);
+    LS_CHECK(!rect_has(pane, "LR FSK: no IQ"));
+    LS_CHECK(history_rows(pane) > 0);
+    P25.lr_iq_active = P25.lora_rx = false;
+}
+
+LS_CASE(lr_iq_options_open_scroll_and_idle_are_read_only_and_bounded)
+{
+    extern void lssim_rsel_board(const ls_rsel_hw_t *);
+    extern int lssim_rsel_writes;
+    ls_rsel_hw_t hw = {0};
+    hw.present[LS_RSEL_LORA] = true;
+    hw.lora_lr20xx = true; hw.lora_name = "LR2021";
+    hw.lora_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK_STREAM;
+    lssim_rsel_board(&hw);
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
+    P25.lr_iq_active = P25.lr_iq_requested = P25.lora_rx = true;
+    int screen = ls_tui_screen_register(&ls_scr_p25);
+    ls_tui_screen_show(screen);
+    ls_shim_time_set(100000000);
+    option_locks = option_spi = option_nvs = option_actions = option_reads = 0;
+    const int writes = lssim_rsel_writes;
+    LS_CHECK(ls_tui_router_key(LS_TK_CHAR, 'o'));
+    LS_CHECK(ls_picker_active());
+    const unsigned open_reads = option_reads;
+    LS_CHECK(open_reads > 0);
+    for (int orientation = 0; orientation < 2; orientation++) {
+        s_grid_cols = orientation ? 115 : 48;
+        s_grid_rows = orientation ? 27 : 66;
+        for (int frame = 0; frame < 100; frame++) {
+            fresh();
+            ls_tui_router_key(frame < 50 ? LS_TK_DOWN : LS_TK_UP, 0);
+            ls_tui_router_draw(&g_sf);
+            ls_shim_time_advance(10000);
+        }
+    }
+    LS_CHECK(option_reads <= open_reads + 8); /* at most four refreshes/second */
+    LS_EQ_INT(0, option_locks); LS_EQ_INT(0, option_spi);
+    LS_EQ_INT(0, option_nvs); LS_EQ_INT(0, option_actions);
+    LS_EQ_INT(writes, lssim_rsel_writes);
+    LS_CHECK(P25.lr_iq_active && P25.lr_iq_requested);
+    ls_opt_close(); P25.lr_iq_active = P25.lora_rx = false;
+    hw.present[LS_RSEL_SDR_RTL] = true;
+    lssim_rsel_board(&hw);
+}
+
+#include "switch_budget.h"
+#include "ls_calls.h"
+LS_CASE(p25_enter_leave_has_zero_allocation_budget)
+{
+    ls_calls_leave(); ls_opt_close();
+    ls_scr_p25.key(LS_TK_CHAR, '1'); pin_grain_to_shade();
+    option_locks = option_spi = option_nvs = option_actions = 0;
+    for (int visit = 0; visit < 4; ++visit) {
+        switch_budget_begin();
+        ls_scr_p25.enter();
+        fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+        ls_scr_p25.leave();
+        LS_EQ_UINT(switch_budget_end(), 0); /* N = 0 bytes */
+        LS_EQ_UINT(option_locks + option_spi + option_nvs + option_actions, 0);
+    }
+}
+
+void ls_tui_last_cost(uint32_t *us, int *cells)
+{ if (us) *us = 0; if (cells) *cells = 0; }

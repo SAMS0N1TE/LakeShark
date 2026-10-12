@@ -161,21 +161,16 @@ LS_CASE(no_tap_on_the_status_row_turns_the_screen)
 
     const ls_tui_status_layout_t l = ls_tui_status_layout(115, 9, 0, 0, 0);
     LS_CHECK_MSG(l.clock_x >= 0, "no room for the clock at 115");
-    LS_CHECK_MSG(l.help_x >= 0, "no room for help at 115");
+    LS_EQ_INT(-1, l.help_x);
 
-    /* [?] is skipped here because it opens an overlay the next tap would
-       close; the help cases below tap it on purpose. */
     for (int c = 0; c < 115; c++) {
-        if (c >= l.help_x && c < l.help_x + LS_TUI_HELP_W) continue;
         LS_CHECK_MSG(ls_tui_router_touch(c, 0),
                      "column %d of the status row let its tap through", c);
     }
     LS_CHECK_MSG(s_rotates == 0,
                  "the status row turned the screen %d times", s_rotates);
 
-    LS_CHECK(ls_tui_router_touch(l.help_x, 0));
-    LS_CHECK_MSG(s_rotates == 0, "[?] turned the screen");
-    ls_tui_router_touch(1, 1);          /* close the key list */
+
 }
 
 LS_CASE(f11_rotates_too)
@@ -533,47 +528,48 @@ LS_CASE(the_status_rows_words_start_where_the_corner_padding_ends)
     }
     char row[160];
     status_row(row, sizeof(row));
-    /* The clock where [R] was, a space, then [?]. */
-    LS_CHECK_MSG(strncmp(row + 3, "14:32Z [?]", 10) == 0,
-                 "the clock and help are not where the padding ends: '%s'",
+    /* No hidden help slot between the clock and the wordmark. */
+    LS_CHECK_MSG(strncmp(row + 3, "14:32Z  LAKESHARK", 17) == 0,
+                 "the clock is not where the padding ends: '%s'",
                  row);
     ls_tui_status_set_clock("");        /* the router keeps it in a static */
 }
 
-LS_CASE(the_help_control_is_tapped_where_it_moved_to)
+LS_CASE(status_taps_do_not_open_help_and_titles_follow_every_switch)
 {
-    /* A label that moves and a target that does not is the worst of
-       both: a control drawn in from the corner and answering from column 0
-       would make the bar's corner a hidden control and the label a dead one.
-       The corner cells swallow a tap and do nothing; [?] answers where it is
-       drawn.
-       The clock took [R]'s slot, so [?] is one clock and one space
-       in from the padding, and the clock's cells answer nothing. */
-    setup(54, 71);
-    s_corner_pad = 3;
-    ls_tui_router_draw(&g_sf);
-
-    for (int c = 0; c < 3; c++) {
-        LS_CHECK(ls_tui_router_touch(c, 0));
-        LS_CHECK(ls_tui_router_touch(s_cols - 1 - c, 0));
+    const int geom[][2] = { {54, 67}, {120, 32} };
+    const int order[] = {0, 1, 2, 3, 2, 0, 3, 1};
+    for (int g = 0; g < 2; g++) for (int hole = 0; hole < 2; hole++) {
+        setup(geom[g][0], geom[g][1]);
+        s_corner_pad = 3;
+        if (hole) s_hole = tui_rect_make(s_cols / 2 - 3, 0, 6, 4);
+        ls_tui_status_set("", "");
+        ls_tui_status_set_clock("14:32Z");
+        for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+            ls_tui_screen_show(order[i]);
+            ls_tui_router_draw(&g_sf);
+            char row[160];
+            status_row(row, sizeof(row));
+            LS_CHECK_MSG(!strncmp(row + 3, "14:32Z  LAKESHARK", 17), "%s", row);
+            LS_CHECK(strstr(row, "[?") == NULL && strchr(row, ']') == NULL);
+            LS_CHECK_MSG(strstr(row, ls_tui_screen_name(order[i])),
+                         "screen %d has stale title: %s", order[i], row);
+            for (int c = 0; c < s_cols; c++) {
+                LS_CHECK(ls_tui_router_touch(c, 0));
+                ls_tui_router_draw(&g_sf);
+                LS_CHECK_MSG(!grid_has("KEYS"), "status tap %d opened help", c);
+                LS_EQ_INT(order[i], ls_tui_screen_current());
+            }
+        }
+        LS_EQ_INT(0, s_rotates);
+        LS_CHECK(ls_tui_router_key(LS_TK_F10, 0));
+        ls_tui_router_draw(&g_sf);
+        LS_CHECK(grid_has("KEYS"));
+        LS_CHECK(ls_tui_router_key(LS_TK_ESC, 0));
+        ls_tui_router_draw(&g_sf);
+        LS_CHECK(!grid_has("KEYS"));
+        ls_tui_status_set_clock("");
     }
-    ls_tui_router_draw(&g_sf);
-    LS_CHECK_MSG(s_rotates == 0 && !grid_has("KEYS"),
-                 "a corner cell of the status row acted as a control "
-                 "(%d turns)", s_rotates);
-
-    for (int c = 3; c < 3 + LS_TUI_CLOCK_W + 1; c++)
-        LS_CHECK(ls_tui_router_touch(c, 0));
-    ls_tui_router_draw(&g_sf);
-    LS_CHECK_MSG(s_rotates == 0 && !grid_has("KEYS"),
-                 "a tap on the clock acted as a control (%d turns)",
-                 s_rotates);
-
-    LS_CHECK(ls_tui_router_touch(3 + LS_TUI_CLOCK_W + 1, 0));
-    ls_tui_router_draw(&g_sf);
-    LS_CHECK_MSG(s_rotates == 0 && grid_has("KEYS"),
-                 "[?] after the clock did not open the key list");
-    ls_tui_router_touch(1, 1);          /* close it */
 }
 
 LS_CASE(the_hint_row_keeps_its_words_off_the_bottom_corners)
@@ -814,16 +810,16 @@ LS_CASE(portrait_chrome_goes_round_the_camera_and_taps_follow_it)
                          "'%c' drawn at %d,%d beside the camera",
                          g_back[(size_t)r * s_cols + c].ch, c, r);
 
-    /* Status: clock and [?] left of it, the screen name right of it. */
+    /* Status: clock left of it, the current screen name right of it. */
     char row[160];
     status_row(row, sizeof(row));
-    LS_CHECK_MSG(!strncmp(row + 2, "14:32Z [?] LAKESHARK", 20), "'%s'", row);
+    LS_CHECK_MSG(!strncmp(row + 2, "14:32Z  LAKESHARK", 17), "'%s'", row);
     LS_CHECK_MSG(!strncmp(row + 30, "HOME", 4), "'%s'", row);
 
-    /* [?] answers where it is drawn. */
+    /* The former help target is inert. */
     ls_tui_router_touch(9, 0);
     ls_tui_router_draw(&g_sf);
-    LS_CHECK_MSG(ls_tui_router_key(LS_TK_ESC, 0), "help did not open");
+    LS_CHECK_MSG(!grid_has("KEYS"), "the removed help target opened help");
 
     /* Each tab label answers a tap on itself, either side of the hole, and
        the hole's columns answer nothing. */
@@ -859,3 +855,6 @@ LS_CASE(portrait_chrome_goes_round_the_camera_and_taps_follow_it)
     ls_tui_status_set_clock("");
     s_hole = tui_rect_make(0, 0, 0, 0);
 }
+
+void ls_tui_last_cost(uint32_t *us, int *cells)
+{ if (us) *us = 0; if (cells) *cells = 0; }

@@ -23,6 +23,7 @@ extern "C" {
 
 #define LS_WF_BINS_MAX  256
 #define LS_WF_ROWS_MAX  128
+void ls_wf_prepare(int width, int height);
 
 typedef enum {
     LS_WF_OWNER_NONE = 0,
@@ -53,6 +54,8 @@ typedef struct {
        them to be seen, so the waterfall draws them through a fixed window
        instead of stretching its own around them. */
     bool     scaled;
+    bool     iq;        /* LR IQ levels are dBFS, not swept RSSI in dBm. */
+    bool     gap;       /* Retain a capture-gap marker in this history row. */
 } ls_wf_feed_t;
 
 typedef enum {

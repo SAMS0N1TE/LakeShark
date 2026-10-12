@@ -109,6 +109,10 @@ struct ls_opt_ctx_s {
     const char *tag;         /* under OPTIONS on the button; NULL: the name  */
     bool menu_arrows;       /* LEFT parent, RIGHT submenu on non-value rows */
     bool back_to_screen;    /* root < BACK returns to the embedded screen */
+    /* Opt in when values come from the backend, not the covered draw callback.
+       Inherited by submenus. Zero preserves per-frame refresh for other apps. */
+    unsigned refresh_ms;
+    bool covers_screen;
 };
 
 /* A table's rows, for a context's initializer: LS_OPT_ROWS(OPT_NFM). */
@@ -154,6 +158,7 @@ bool ls_opt_returning(void);
    the list is up, and the list comes back when a keypad or list opened from
    it closes. */
 void ls_opt_poll(void);
+bool ls_opt_covers_screen(void);
 
 /* Drop the list and anything waiting to bring it back. */
 void ls_opt_close(void);

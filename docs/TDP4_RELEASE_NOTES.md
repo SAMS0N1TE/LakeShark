@@ -1,5 +1,14 @@
 # LakeShark release notes
 
+## 2.13.0
+
+- Listen to analog narrowband FM through the onboard LR2021, with live I/Q waterfalls and quicker FM/P25 screen switches.
+- FM VFO feels like a handheld radio: a large frequency display, animated VFD-style signal lines, and filled touch controls for volume, gain, and squelch. KEYBOARD replaces the lower controls with an inline frequency keypad; CONTROLS switches back. Spectrum combines the receiver panel with the detailed signal plot.
+- LR2021 waveform playback preserves amplitude and phase for short custom radio bursts. Upload once and replay through the console; P25 and amplitude-coded examples are included in the [waveform guide](LR2021_IQ_TX.md).
+- Waveform uploads use PSRAM only while loaded, leaving the receiver's internal RAM available. Abort releases the buffer.
+- Memory diagnostics keep their quick summaries during LR2021 IQ reception and defer task-stack scans until the radio is idle. This avoids interrupting reception while inspecting memory.
+- Stopping or changing the receiver through the UI cancels an in-progress waveform burst and restores the radio through the normal cleanup path.
+
 ## 2.12.0
 
 - P25 on the LR2021 board: a raw I/Q receive path. The LR2021 streams 125 kS/s complex samples continuously and LakeShark demodulates C4FM from them. Choose it in P25 OPTIONS > LR2021 receive path > Raw I/Q (experimental). Phase 1 only; FSK stays the default.

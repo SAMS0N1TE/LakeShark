@@ -19,12 +19,12 @@ extern "C" {
    A clock takes its place: UTC as "HH:MMZ", six columns. */
 #define LS_TUI_CLOCK_W 6
 
-#define LS_TUI_HELP_W 3
+#define LS_TUI_HELP_W 0  /* the [?] control was removed; the layout keeps its slot at zero width */
 
 /* -1 means "no room, do not draw this". */
 typedef struct {
-    int clock_x;   /* the UTC clock, dropped before help     */
-    int help_x;    /* the help control, the row's one control */
+    int clock_x;   /* the UTC clock     */
+    int help_x;    /* reserved help slot; -1 at zero width */
     int brand_x;   /* the LAKESHARK wordmark, dropped first  */
     int name_x;    /* the active screen's name               */
     int left_x;    /* caller's left status text              */
@@ -46,7 +46,7 @@ ls_tui_status_layout_t ls_tui_status_layout_at(int x0, int width,
                                                int left_len, int right_len);
 
 /* The same fields laid out either side of a camera hole: [x0, g0) left of
-   it, [g1, x1) right of it. Clock and [?] stay left. The wordmark goes left
+   it, [g1, x1) right of it. The clock stays left. The wordmark goes left
    and the name right when everything fits; otherwise the wordmark is dropped,
    the name moves left and the left text gets the right span, cut at a word. */
 ls_tui_status_layout_t ls_tui_status_layout_split(int x0, int g0, int g1,

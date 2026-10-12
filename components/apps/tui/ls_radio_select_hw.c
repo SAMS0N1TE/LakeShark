@@ -17,9 +17,12 @@
 /* Whether the endpoint is plugged in, and who holds it. */
 static bool endpoint_present(const char *id, char *owner, size_t cap)
 {
-    ls_radio_endpoint_info_t info;
-    if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present) return false;
-    if (info.leased) snprintf(owner, cap, "%s", info.owner);
+    static ls_radio_endpoint_info_t cached[2];
+    ls_radio_endpoint_info_t *info = &cached[!strcmp(id, LS_RADIO_ENDPOINT_HACKRF_USB)];
+    /* Radio owners may hold the registry while doing IO. Never wait in draw. */
+    ls_radio_endpoint_try_get(id, info);
+    if (!info->present) return false;
+    if (info->leased) snprintf(owner, cap, "%s", info->owner);
     return true;
 }
 

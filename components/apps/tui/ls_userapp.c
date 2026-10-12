@@ -14,6 +14,7 @@
 #include "ls_tui_ui.h"
 #include "ls_value.h"
 #include "ls_waterfall.h"
+#include "ls_wf_source.h"
 
 /* --------------------------------------------------------------- parsing */
 
@@ -303,7 +304,11 @@ void ls_userapp_draw(const ls_ua_model_t *m, tui_surface *sf, tui_rect area)
         case LS_UA_WATERFALL: {
             tui_rect wf = tui_rect_make(cur.x + 1, cur.y + row,
                                         cur.w - 2, cur.h - row - 1);
-            if (wf.h >= 3) ls_wf_draw_mini(sf, wf);
+            if (wf.h >= 3) {
+                ls_wf_source_select(LS_WF_SRC_AUTO);
+                ls_wf_source_pump();
+                ls_wf_draw_mini(sf, wf);
+            }
             row = cur.h;
             break;
         }
@@ -395,7 +400,7 @@ static bool load_one(const char *path, const char *fname)
     s_screen[slot].hint  = s_hint[slot];
     s_screen[slot].draw  = UA_DRAW[slot];
     s_screen[slot].enter = NULL;
-    s_screen[slot].leave = NULL;
+    s_screen[slot].leave = ls_wf_source_release;
     s_screen[slot].key   = NULL;
     s_screen[slot].touch = NULL;
 

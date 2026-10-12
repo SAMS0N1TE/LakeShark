@@ -5,8 +5,12 @@
 #include <string.h>
 
 #include "ls_icons.h"
+#include "esp_timer.h"
 
 #define FRAMES 12
+#define BUDGET_US 250000
+static int64_t s_started, s_last_draw, s_frame_cost;
+static bool s_cost_observed;
 
 static int      s_frame = -1;
 static int      s_icon;
@@ -28,20 +32,26 @@ static int isin(int deg)          /* deg 0..359 -> -64..64 */
 void ls_anim_start(int icon, const char *name, uint8_t hue)
 {
     s_frame = 0;
+    s_started = s_last_draw = esp_timer_get_time();
+    uint32_t last_us = 0;
+    ls_tui_last_cost(&last_us, NULL);
+    s_frame_cost = last_us > 40000 ? last_us : 40000;
+    s_cost_observed = false;
     s_icon  = icon;
     s_hue   = hue ? hue : (uint8_t)TUI_CYAN;
     snprintf(s_name, sizeof(s_name), "%s", name ? name : "");
 }
 
-bool ls_anim_active(void) { return s_frame >= 0; }
-/* A skipped opening hands over exactly like a finished one, so it
-   owes the screen the same full repaint. Only when there was something to
-   skip: cancelling nothing must not cost a repaint. */
+bool ls_anim_active(void) {
+    if (s_frame >= 0 && esp_timer_get_time() - s_started >= BUDGET_US) s_frame = -1;
+    return s_frame >= 0;
+}
+/* Both cancellation and completion keep the pixel baseline for a cell diff. */
 void ls_anim_cancel(void)
 {
     if (s_frame < 0) return;
     s_frame = -1;
-    ls_tui_invalidate();
+    /* Cells already retain the animation pixels; hand over by diff. */
 }
 
 /* Rings expanding from a point: the tower, and the default for anything
@@ -164,10 +174,21 @@ static void constellation(tui_surface *sf, tui_rect a, int cx, int cy, int f)
 
 bool ls_anim_draw(tui_surface *sf, tui_rect area)
 {
-    if (s_frame < 0) return false;
+    if (!ls_anim_active()) return false;
+    const int64_t now = esp_timer_get_time();
+    const int64_t elapsed = now - s_started;
+    if (s_frame) {
+        const int64_t cost = now - s_last_draw;
+        if (!s_cost_observed || cost > s_frame_cost) s_frame_cost = cost;
+        s_cost_observed = true;
+    }
+    /* Skip decoration when another splash plus the real screen would miss
+       the deadline at the observed cadence. Never queue catch-up frames. */
+    if (elapsed + 2 * s_frame_cost > BUDGET_US) { s_frame = -1; return false; }
+    s_last_draw = now;
     if (!sf || area.w < 12 || area.h < 6) { s_frame = -1; return false; }
 
-    const int f = s_frame;
+    const int f = (int)(elapsed * FRAMES / BUDGET_US);
     const int cx = area.x + area.w / 2;
     const int cy = area.y + area.h / 2;
 
@@ -200,11 +221,6 @@ bool ls_anim_draw(tui_surface *sf, tui_rect area)
                         TUI_ATTR(s_hue | TUI_BRIGHT, TUI_BLACK));
     }
 
-    /* The handover back to the screen is a full repaint, not a diff. */
-
-    if (++s_frame >= FRAMES) {
-        s_frame = -1;
-        ls_tui_invalidate();
-    }
+    s_frame = f + 1;
     return true;
 }

@@ -31,6 +31,7 @@
 /**/
 #include "ls_wifi.h"
 #include "lakeshark_backend.h"
+#include "ls_lora.h"
 #include "radio_health.h"
 #include "audio_out.h"
 #include "ls_board.h"
@@ -776,7 +777,16 @@ static int cmd_mem(int argc, char **argv)
         n * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!st) { printf("task snapshot unavailable\n"); return 0; }
 
+    /* uxTaskGetSystemState walks every task's stack under the SMP kernel
+       lock. Keep that diagnostic away from the time-critical live IQ FIFO. */
+    if (!ls_lora_diagnostic_try_begin()) {
+        heap_caps_free(st);
+        printf("task stack details deferred while radio is busy\n");
+        return 0;
+    }
+
     UBaseType_t got = uxTaskGetSystemState(st, n, NULL);
+    ls_lora_diagnostic_try_end();
     printf("%-18s %6s %6s\n", "task", "unused", "prio");
     for (UBaseType_t i = 0; i < got; i++) {
         printf("%-18s %6u %6u\n",

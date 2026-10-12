@@ -3,6 +3,12 @@
 #include "ls_test.h"
 #include "ls_lora.h"
 
+LS_CASE(no_lora_board_admits_diagnostic_snapshot_as_a_noop)
+{
+    LS_CHECK(ls_lora_diagnostic_try_begin());
+    ls_lora_diagnostic_try_end();
+}
+
 LS_CASE(the_ends_of_a_sweep_land_on_the_numbers_printed_under_it)
 {
     /* The waterfall prints min and max under the plot. A bin grid that put

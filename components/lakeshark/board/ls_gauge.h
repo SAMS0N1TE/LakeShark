@@ -23,17 +23,17 @@ typedef struct {
     bool     charging;      /* current is positive                        */
 } ls_gauge_t;
 
-/* Probe the part. Safe to call more than once. */
+/* Probe and start a low-priority 30-second sampler. Idempotent; call at boot. */
 esp_err_t ls_gauge_start(void);
 bool      ls_gauge_present(void);
 
 /* One read of everything. Cheap enough to call once a second; do NOT call
-   it per frame - it is seven I2C transactions on a bus the touch controller
+   it per frame - it is six I2C transactions on a bus the touch controller
    also wants. */
 esp_err_t ls_gauge_read(ls_gauge_t *out);
 
-/* Cached, refreshed at most once a second by the reader itself. This is what
-   a drawing path should call. Returns false when there is no gauge. */
+/* Cache-only, no I2C and no waits. Updated by the background sampler every
+   30 seconds, independent of UI/charger activity. False before first sample. */
 bool ls_gauge_get(ls_gauge_t *out);
 
 /* The cached current and how old it is, with no bus traffic, so a task

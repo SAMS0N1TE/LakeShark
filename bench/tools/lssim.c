@@ -36,6 +36,7 @@
 #include "ls_panel.h"
 #include "ls_waterfall.h"
 #include "ls_wf_source.h"
+#include "lr_iq_spectrum.h"
 #include "ls_map.h"
 #include "ls_map_marks.h"
 #include <math.h>
@@ -45,6 +46,7 @@
 #include "apps/adsb/uat_stream.h"
 #include "apps/adsb/uat_weather.h"
 #include "apps/fm/fm_state.h"
+#include "ls_radio_select.h"
 #include "apps/acars/acars_app.h"
 #include "apps/fm/same_store.h"
 #include "apps/fm/aprs_store.h"
@@ -275,6 +277,39 @@ static const ls_app_t APPS[] = {
 
 static void feed_waterfall(void)
 {
+    if (getenv("LSSIM_LR_IQ")) {
+        /* Synthetic IQ passes through the real FFT and source, including a gap. */
+        uint8_t raw[1280]; uint64_t pair = 0; uint32_t noise = 1;
+        uint32_t center = 433920000;
+        if (getenv("LSSIM_FM_LR")) {
+            center = 162550000;
+            FM.mode = FM_MODE_LISTEN; FM.freq_hz = center;
+            FM.lr_iq_active = true; FM.lr_channel_hz = 25000;
+            FM.lr_lost_pairs = 2000; FM.lr_gaps = 1; FM.lr_audio_drops = 3;
+            FM.squelch_open = true;
+            ls_rsel_set(LS_RSEL_FM, LS_RSEL_LORA);
+            ls_wf_source_select(LS_WF_SRC_FM);
+        }
+        lr_spec_enable(true); lr_spec_begin(center);
+        for (int row = 0; row < 100; ++row) {
+            if (row == 75) pair += 2000;
+            for (int block = 0; block < 45; ++block) {
+                for (int k = 0; k < 320; ++k) {
+                    noise = noise * 1664525u + 1013904223u;
+                    double a = 6.283185307179586 * (40 + row/5) * (double)(pair+k)/512;
+                    int16_t i = (int16_t)(12000*cos(a) + (int)(noise & 255)-128);
+                    int16_t q = (int16_t)(12000*sin(a) + (int)((noise>>8)&255)-128);
+                    raw[4*k]=i; raw[4*k+1]=(uint16_t)i>>8;
+                    raw[4*k+2]=q; raw[4*k+3]=(uint16_t)q>>8;
+                }
+                lr_spec_feed(raw, sizeof(raw), pair, 1,
+                             (uint32_t)(esp_timer_get_time()/1000), true);
+                pair += 320; ls_shim_time_advance(3000);
+            }
+            ls_wf_source_pump();
+        }
+        return;
+    }
     for (int i = 0; i < LS_WF_ROWS_MAX + 8; i++)
         ls_wf_source_pump();
 }
@@ -586,6 +621,19 @@ static void seed_calls(bool empty) {
 }
 /* Capture every presented frame, including worker stalls and failed renders. */
 static void capture_frame(void) {
+    /* Opt-in invariant for every presented frame, including app openings and
+       OPTIONS. Spaces are painted cells too: check background, not text. */
+    if (getenv("LSSIM_STATUS_AUDIT")) {
+        tui_surface *sf = ls_tui_surface();
+        const int pad = ls_tui_corner_pad(0);
+        for (int x = pad; x < sf->w - pad; x++) {
+            if (!sf->front[x].ch || TUI_ATTR_BG(sf->front[x].attr) != TUI_CYAN) {
+                fprintf(stderr, "unpainted status cell %d on %s\n", x,
+                        ls_tui_screen_name(ls_tui_screen_current()));
+                exit(2);
+            }
+        }
+    }
 #ifdef LS_CARTOCORE_HOST
     const char *dir=getenv("LSSIM_CAPTURE_FRAMES");if(!dir) return;
     const char *every=getenv("LSSIM_CAPTURE_EVERY");
@@ -1159,6 +1207,10 @@ int main(int argc, char **argv)
     }
     ls_tui_invalidate();
     frame(settle);
+    if (getenv("LSSIM_FM_LR") && getenv("LSSIM_LR_IQ")) {
+        /* Feed after the real panel has allocated its pixel history too. */
+        feed_waterfall(); frame(1);
+    }
 
     /* Keys after the screen has settled, so a control's before and after are
        both reachable by rendering twice with different -k. */
@@ -1184,6 +1236,12 @@ int main(int argc, char **argv)
             frame(1);
         }
         frame(settle);
+    }
+
+    /* The signal page may have enabled the tap only after navigation. */
+    if (!empty && getenv("LSSIM_LR_IQ")) {
+        feed_waterfall();
+        frame(1);
     }
 
     /* An ordered script, because -K and -k each run as a block and the thing

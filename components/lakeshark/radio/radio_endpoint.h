@@ -220,6 +220,10 @@ ls_radio_err_t ls_radio_endpoint_info(size_t index,
                                       ls_radio_endpoint_info_t *out);
 ls_radio_err_t ls_radio_endpoint_get(const char *endpoint_id,
                                      ls_radio_endpoint_info_t *out);
+/* Nonblocking metadata read for UI. No registry allocation; BUSY leaves out
+   untouched so callers can retain their last snapshot. */
+ls_radio_err_t ls_radio_endpoint_try_get(const char *endpoint_id,
+                                         ls_radio_endpoint_info_t *out);
 bool ls_radio_endpoint_available(
     const ls_radio_requirements_t *requirements);
 int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,

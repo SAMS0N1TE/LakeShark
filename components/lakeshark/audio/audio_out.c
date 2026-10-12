@@ -66,7 +66,7 @@ static int16_t s_mono[CHUNK_FRAMES];
 static int16_t s_stereo[CHUNK_FRAMES * 2];
 static int16_t s_silence[CHUNK_FRAMES * 2];
 
-static volatile uint32_t s_audio_drops = 0;
+static _Atomic uint32_t s_audio_drops = 0;
 static volatile uint32_t s_underruns   = 0;
 static volatile bool     s_reprime     = false;
 static volatile bool     s_play_now    = false;
@@ -151,7 +151,10 @@ void audio_write_mono(const int16_t *samples, int n)
     s_live_tick = AUDIO_NOW_TICK();
     s_live_seen = true;
 
-    if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
+    if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) {
+        s_audio_drops++;
+        return;
+    }
     /* Speech not yet played would make this transmission wait behind it. */
     if ((int32_t)(s_speech_end - s_rd_bytes) > 0 &&
         (int32_t)(s_speech_end - s_skip_to) > 0) {
@@ -355,8 +358,10 @@ static size_t __attribute__((noinline)) player_skip(int16_t *mono, size_t got,
 static void __attribute__((noinline)) player_write(const void *buf, size_t bytes)
 {
     size_t wr = 0;
-    if (ls_audio_hw_write((void *)buf, bytes, &wr, portMAX_DELAY) != ESP_OK)
+    if (ls_audio_hw_write((void *)buf, bytes, &wr, portMAX_DELAY) != ESP_OK) {
+        s_audio_drops++;
         vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 static void audio_player_task(void *arg)

@@ -6,12 +6,12 @@
 #include "esp_heap_caps.h"
 #endif
 
-static void *ps_calloc(size_t n, size_t size)
+static void *ps_alloc(size_t bytes)
 {
 #ifdef ESP_PLATFORM
-    return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
-    return calloc(n, size);
+    return malloc(bytes);
 #endif
 }
 static void ps_free(void *q)
@@ -42,6 +42,7 @@ void ls_pwf_free(ls_pwf_t *p)
     p->img = NULL;
     p->first = p->last = NULL;
     p->w = p->h = p->bins = p->lines = p->freq_px = 0;
+    p->hist_capacity = p->pixel_capacity = p->axis_capacity = 0;
 }
 
 void ls_pwf_clear(ls_pwf_t *p)
@@ -51,21 +52,35 @@ void ls_pwf_clear(ls_pwf_t *p)
     p->redraw = true;
 }
 
+bool ls_pwf_reserve(ls_pwf_t *p, size_t pixels, size_t history, size_t axis)
+{
+    if (!p || !pixels || !history || !axis) return false;
+    if (p->pixel_capacity >= pixels && p->hist_capacity >= history && p->axis_capacity >= axis) return true;
+    if (pixels < p->pixel_capacity) pixels = p->pixel_capacity;
+    if (history < p->hist_capacity) history = p->hist_capacity;
+    if (axis < p->axis_capacity) axis = p->axis_capacity;
+    uint8_t *hist = ps_alloc(history);
+    uint16_t *img = ps_alloc(pixels * sizeof(*img));
+    int16_t *first = ps_alloc(axis * sizeof(*first)), *last = ps_alloc(axis * sizeof(*last));
+    if (!hist || !img || !first || !last) {
+        ps_free(hist); ps_free(img); ps_free(first); ps_free(last);
+        return false;
+    }
+    ls_pwf_free(p);
+    p->hist = hist; p->img = img; p->first = first; p->last = last;
+    p->hist_capacity = history; p->pixel_capacity = pixels; p->axis_capacity = axis;
+    /* No clearing: compose writes every pixel before show, and filled gates history. */
+    return true;
+}
+
 bool ls_pwf_size(ls_pwf_t *p, ls_pwf_flow_t flow, int w, int h, int bins)
 {
     if (!p || w < 1 || h < 1 || bins < 1) return false;
     if (p->img && p->flow == flow && p->w == w && p->h == h && p->bins == bins) return true;
-    ls_pwf_free(p);
-    p->flow = flow;
     const int lines = flow == LS_PWF_LEFT ? w : h, freq = flow == LS_PWF_LEFT ? h : w;
-    p->hist = ps_calloc((size_t)lines, (size_t)bins);
-    p->img = ps_calloc((size_t)w * h, sizeof(uint16_t));
-    p->first = ps_calloc((size_t)freq, sizeof(int16_t));
-    p->last = ps_calloc((size_t)freq, sizeof(int16_t));
-    if (!p->hist || !p->img || !p->first || !p->last) {
-        ls_pwf_free(p);
-        return false;
-    }
+    if (!ls_pwf_reserve(p, (size_t)w * h, (size_t)lines * bins, (size_t)freq)) return false;
+    ls_pwf_release(p);
+    p->flow = flow;
     p->w = w;
     p->h = h;
     p->bins = bins;
@@ -177,6 +192,9 @@ void ls_pwf_compose(ls_pwf_t *p, int64_t now_us, int64_t min_us)
     if (!p || !p->img) return;
     p->stat_px = 0;
     const int lines = p->lines;
+    /* Coalesce even a full ring of pending lines until the next deadline.
+       Explicit appearance changes still repaint immediately. */
+    if (!p->redraw && now_us - p->composed_us < min_us) return;
     if (p->redraw || p->fresh >= lines) {
         /* Everything again, the ring started where it stands. */
         if (p->flow == LS_PWF_LEFT) {

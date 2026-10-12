@@ -2,6 +2,8 @@
 
 #include "ls_test.h"
 #include "ls_field.h"
+#include "ls_radio_select.h"
+#include "lr_iq_spectrum.h"
 
 #include <string.h>
 
@@ -58,6 +60,7 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 
 /* ---- the SX1262 sweep -------------------------------------------------- */
 
+static unsigned g_radio_calls;
 static bool     g_scanning, g_scan_ours;
 static uint32_t g_scan_lo, g_scan_hi;
 static int      g_begins, g_retunes, g_ends;
@@ -79,6 +82,7 @@ bool ls_lora_scanning(void) { return g_scanning; }
 
 esp_err_t ls_lora_scan_begin(uint32_t lo, uint32_t hi)
 {
+    ++g_radio_calls;
     if (g_scanning && !g_scan_ours) return ESP_ERR_INVALID_STATE;
     g_scan_ours = true;
     if (g_scanning && lo == g_scan_lo && hi == g_scan_hi) return ESP_OK;
@@ -105,6 +109,7 @@ int ls_lora_scan_pass(float *dbm, int n, bool *row_done)
 
 esp_err_t ls_lora_scan_end(void)
 {
+    ++g_radio_calls;
     if (g_scanning) g_ends++;
     g_scanning = g_scan_ours = false;
     return ESP_OK;
@@ -119,6 +124,7 @@ bool ls_mesh_radio_held(void) { return g_hold_asked && g_mesh_parks; }
 
 bool ls_mesh_radio_hold(bool on)
 {
+    ++g_radio_calls;
     g_hold_asked = on;
     return on ? ls_mesh_radio_held() : true;
 }
@@ -201,9 +207,36 @@ bool p25_program_request_reload_path(const char *path)
 /* The module under test keeps its state in statics, as it does on the board,
    so every case starts by leaving the way a screen does and then clearing the
    fakes - in that order, because leaving is what gives a held radio back. */
+p25_state_t P25;
+uint32_t s_tune_freq_hz;
+static bool g_lr, g_rtl;
+static ls_rsel_radio_t g_p25_radio, g_fm_radio;
+ls_rsel_radio_t ls_rsel_effective(ls_rsel_job_t job)
+{ return job == LS_RSEL_P25 ? g_p25_radio : g_fm_radio; }
+static int g_iq_starts, g_iq_stops;
+static uint32_t g_iq_hz;
+void ls_rsel_hw(ls_rsel_hw_t *out)
+{
+    memset(out, 0, sizeof(*out)); out->present[LS_RSEL_LORA] = true;
+    out->lora_lr20xx = g_lr; out->present[LS_RSEL_SDR_RTL] = g_rtl;
+}
+const ls_lora_cfg_t *ls_lora_cfg(void)
+{
+    static const ls_lora_cfg_t cfg = {.freq_hz = 433920000}; return &cfg;
+}
+esp_err_t lr_wf_start(uint32_t hz)
+{
+    ++g_radio_calls;
+    if (g_iq_hz != hz) { ++g_iq_starts; g_iq_hz = hz; lr_spec_begin(hz); }
+    return ESP_OK;
+}
+void lr_wf_stop(void) { ++g_radio_calls; ++g_iq_stops; g_iq_hz = 0; lr_spec_end(); }
 static void fresh(void)
 {
     ls_wf_source_release();
+    lr_spec_end(); g_lr = g_rtl = false; g_iq_starts = g_iq_stops = 0; g_iq_hz = 0;
+    P25.lr_iq_active = false;
+    g_p25_radio = g_fm_radio = LS_RSEL_SDR_RTL;
     ls_wf_source_select(LS_WF_SRC_AUTO);
     ls_wf_source_lora_band(902000000u, 928000000u);
     memset(&FM, 0, sizeof(FM));
@@ -480,7 +513,7 @@ LS_CASE(a_wide_band_row_goes_in_once_every_look_is_in)
     }
     LS_EQ_INT(0, g_pushes);
     LS_EQ_INT(LS_WF_OWNER_LORA, g_owner);
-    LS_EQ_STR("LORA", ls_wf_source_name());
+    LS_EQ_STR("LR SWEEP", ls_wf_source_name());
 
     ls_wf_source_pump();
     LS_EQ_INT(1, g_pushes);
@@ -579,7 +612,7 @@ void ls_field_snapshot(ls_field_state_t *out){memset(out,0,sizeof(*out));out->re
 bool ls_field_configure(const ls_lora_cfg_t *cfg){g_field_frequency=cfg->freq_hz;return true;}
 bool ls_field_mode(ls_lab_mode_t mode){return true;}
 bool ls_field_direct(bool on){g_field_direct=on;return true;}
-bool ls_field_direct_falls(bool on) { return ls_field_direct(on); }
+bool ls_field_direct_falls(bool on) { ++g_radio_calls; return ls_field_direct(on); }
 
 LS_CASE(marker_tune_stops_fm_sweep_and_uses_mark_frequency)
 {
@@ -746,4 +779,234 @@ LS_CASE(auto_controls_follow_the_running_source_without_starting_it)
     LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
     ls_wf_source_select(LS_WF_SRC_LORA);
     LS_EQ_INT(LS_WF_SRC_LORA, ls_wf_source_get());
+}
+
+LS_CASE(lr_only_nfm_waits_for_fm_owner)
+{
+    fresh(); g_lr = true; g_fm_radio = LS_RSEL_LORA; FM.freq_hz = 152600000;
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump();
+    LS_EQ_UINT(0, g_iq_hz); LS_EQ_INT(0, g_iq_starts);
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    LS_EQ_INT(0, g_begins);
+    FM.lr_iq_active = true; lr_spec_begin(FM.freq_hz);
+    ls_wf_source_pump(); LS_EQ_INT(0, g_iq_starts);
+    ls_wf_source_release(); LS_EQ_INT(0, g_iq_stops);
+    LS_EQ_UINT(FM.freq_hz, lr_spec_center());
+}
+LS_CASE(lr_narrow_band_is_iq_wide_band_is_sweep)
+{
+    fresh(); g_lr = true;
+    ls_wf_source_lora_band(433857500, 433982500); ls_wf_source_pump();
+    LS_EQ_UINT(433920000, g_iq_hz); LS_EQ_INT(0, g_begins);
+    ls_wf_source_lora_band(433000000, 434000000); ls_wf_source_pump();
+    LS_EQ_INT(1, g_iq_stops); LS_EQ_INT(1, g_begins);
+    LS_EQ_STR("LR SWEEP", ls_wf_source_name());
+}
+LS_CASE(lr_session_tap_never_starts_or_stops_decoder_capture)
+{
+    fresh(); g_lr = true; lr_spec_begin(929000000);
+    ls_wf_source_pump(); LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+    uint8_t iq[1280] = {0};
+    for (int k = 0; k < 80; ++k)
+        lr_spec_feed(iq, sizeof(iq), (uint64_t)k*320, 1, 5000 + k*3, true);
+    ls_shim_time_set(5240000); ls_wf_source_pump();
+    LS_EQ_INT(1, g_pushes); LS_EQ_UINT(125000, g_feed.span_hz);
+    LS_EQ_UINT(929000000, g_feed.center_hz); LS_EQ_STR("LR IQ", ls_wf_source_name());
+    ls_wf_source_pump(); LS_EQ_INT(1, g_pushes);
+    ls_wf_source_release(); LS_EQ_INT(0, g_iq_stops); LS_EQ_UINT(929000000, lr_spec_center());
+}
+LS_CASE(rtl_presence_and_out_of_range_do_not_start_lr_iq)
+{
+    fresh(); g_lr = g_rtl = true;
+    ls_wf_source_pump(); LS_EQ_INT(0, g_iq_starts); LS_EQ_INT(0, g_begins);
+    g_rtl = false; FM.freq_hz = 98000000;
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump();
+    LS_EQ_INT(0, g_iq_starts); LS_EQ_INT(LS_WF_IDLE_STARTING, ls_wf_source_idle());
+}
+
+LS_CASE(lr_iq_view_accepts_tuning_limits_and_p25_frequency)
+{
+    fresh(); g_lr = true;
+    const uint32_t frequencies[] = {150000000, 960000000};
+    for (int i = 0; i < 2; ++i) {
+        ls_wf_source_view(frequencies[i]); ls_wf_source_pump();
+        LS_EQ_UINT(frequencies[i], g_iq_hz);
+        LS_EQ_STR("LR IQ 125k", ls_wf_preset_current(LS_WF_SRC_LORA));
+        ls_wf_source_release();
+    }
+    s_tune_freq_hz = 851000000;
+    ls_wf_source_select(LS_WF_SRC_P25); ls_wf_source_pump();
+    LS_EQ_UINT(0, g_iq_hz); /* Opening a decoder cannot own another capture. */
+    ls_wf_source_release();
+}
+
+LS_CASE(p25_iq_recovery_gap_does_not_start_a_competing_session)
+{
+    fresh(); g_lr = true; P25.lr_iq_active = true;
+    g_p25_radio = LS_RSEL_LORA;
+    ls_wf_source_select(LS_WF_SRC_P25); ls_wf_source_pump();
+    LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+    LS_EQ_INT(LS_WF_IDLE_WAITING, ls_wf_source_idle());
+}
+
+LS_CASE(lr_fm_live_with_rtl_present_only_taps_the_fm_session)
+{
+    fresh(); g_lr = g_rtl = true; g_fm_streaming = true;
+    FM.mode = FM_MODE_LISTEN; FM.freq_hz = 162550000; FM.lr_iq_active = true;
+    ls_wf_source_select(LS_WF_SRC_FM);
+    ls_wf_source_pump(); LS_EQ_INT(0, g_iq_starts);
+    lr_spec_enable(true); lr_spec_begin(FM.freq_hz);
+    uint8_t iq[1280] = {0};
+    for (int k=0;k<100;k++) {
+        ls_shim_time_advance(3000);
+        lr_spec_feed(iq, sizeof(iq), (uint64_t)k*320, 1,
+                     (uint32_t)(esp_timer_get_time()/1000), true);
+        ls_wf_source_pump();
+    }
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    LS_EQ_UINT(FM.freq_hz, g_feed.center_hz);
+    LS_EQ_STR("LR IQ", ls_wf_source_name());
+    LS_EQ_INT(0, g_iq_starts);
+    ls_wf_source_release(); LS_EQ_INT(0, g_iq_stops);
+    LS_EQ_UINT(FM.freq_hz, lr_spec_center());
+}
+LS_CASE(noaa_presets_select_all_seven_nfm_channels)
+{
+    fresh();
+    int found = 0;
+    for (int i=0;i<ls_wf_preset_count(LS_WF_SRC_FM);i++) {
+        if (strncmp(ls_wf_preset_label(LS_WF_SRC_FM,i), "NOAA ",5)) continue;
+        FM.mode = FM_MODE_WFM;
+        LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM,i));
+        ls_wf_source_pump();
+        LS_EQ_INT(FM_MODE_LISTEN,FM.mode);
+        LS_EQ_UINT(162400000u+25000u*found,FM.freq_hz);
+        found++;
+    }
+    LS_EQ_INT(7,found);
+}
+static bool lr_tap_enabled(void)
+{
+    bool on; uint32_t center, lines, gaps, skipped;
+    lr_spec_stats(&on, &center, &lines, &gaps, &skipped);
+    return on;
+}
+static void publish_lr_row(void)
+{
+    uint8_t iq[1280] = {0};
+    for (int k = 0; k < 80; ++k)
+        lr_spec_feed(iq, sizeof(iq), (uint64_t)k * 320, 1, 5000 + k * 3, true);
+    ls_shim_time_set(5240000);
+}
+LS_CASE(p25_lr_iq_explicit_and_auto_enable_and_keep_the_tap)
+{
+    const ls_wf_src_t sources[] = {LS_WF_SRC_P25, LS_WF_SRC_AUTO};
+    for (int i = 0; i < 2; ++i) {
+        fresh(); g_lr = g_rtl = true; g_p25_radio = LS_RSEL_LORA;
+        g_p25_streaming = P25.lr_iq_active = true;
+        lr_spec_begin(154785000);
+        ls_wf_source_select(sources[i]);
+        LS_EQ_INT(LS_WF_SRC_P25, ls_wf_source_get());
+        ls_wf_source_pump(); LS_CHECK(lr_tap_enabled()); LS_CHECK(!g_p25_feed);
+        publish_lr_row(); ls_wf_source_pump();
+        LS_EQ_INT(1, g_pushes); LS_CHECK(g_feed.iq);
+        LS_EQ_UINT(154785000, g_feed.center_hz); LS_EQ_UINT(125000, g_feed.span_hz);
+        ls_wf_source_pump(); LS_EQ_INT(1, g_pushes);
+        LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+        ls_wf_source_release(); LS_CHECK(!lr_tap_enabled());
+        LS_EQ_INT(0, g_iq_stops); LS_EQ_UINT(154785000, lr_spec_center());
+        LS_CHECK(g_p25_streaming); LS_CHECK(P25.lr_iq_active);
+    }
+}
+LS_CASE(fm_lr_active_keeps_its_source_and_session_with_or_without_rtl)
+{
+    const ls_wf_src_t sources[] = {LS_WF_SRC_FM, LS_WF_SRC_AUTO};
+    for (int rtl = 0; rtl < 2; ++rtl) {
+        for (int streaming = 0; streaming < 2; ++streaming) {
+            for (int i = 0; i < 2; ++i) {
+                fresh(); g_lr = true; g_rtl = rtl; g_fm_streaming = streaming;
+                FM.mode = FM_MODE_LISTEN; FM.freq_hz = 162550000;
+                FM.lr_iq_active = true;
+                ls_wf_source_select(sources[i]);
+                LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+                ls_wf_source_pump(); LS_CHECK(lr_tap_enabled());
+                LS_EQ_INT(LS_WF_IDLE_WAITING, ls_wf_source_idle());
+                lr_spec_begin(FM.freq_hz); publish_lr_row(); ls_wf_source_pump();
+                LS_EQ_INT(1, g_pushes); LS_CHECK(g_feed.iq);
+                LS_EQ_UINT(FM.freq_hz, g_feed.center_hz);
+                LS_EQ_STR("LR IQ", ls_wf_source_name());
+                ls_wf_source_pump(); LS_EQ_INT(1, g_pushes);
+                LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+                ls_wf_source_release(); LS_CHECK(!lr_tap_enabled());
+                LS_EQ_INT(0, g_iq_stops); LS_CHECK(FM.lr_iq_active);
+                LS_EQ_UINT(FM.freq_hz, lr_spec_center());
+            }
+        }
+    }
+}
+LS_CASE(p25_lr_fsk_reports_no_iq)
+{
+    fresh(); g_lr = true; g_p25_radio = LS_RSEL_LORA; g_p25_streaming = true;
+    ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_SRC_P25, ls_wf_source_get());
+    LS_EQ_STR("LR FSK: no IQ", ls_wf_source_idle_reason());
+    LS_CHECK(!lr_tap_enabled()); LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+}
+LS_CASE(fm_lr_uses_selected_receiver_tap_even_in_scan_mode)
+{
+    fresh(); g_lr = g_rtl = true; g_fm_radio = LS_RSEL_LORA;
+    g_fm_streaming = true; FM.mode = FM_MODE_SCAN;
+    ls_wf_source_select(LS_WF_SRC_FM);
+    ls_wf_source_pump(); LS_CHECK(lr_tap_enabled());
+    LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+    lr_spec_begin(152600000); publish_lr_row(); ls_wf_source_pump();
+    LS_EQ_INT(1, g_pushes); LS_CHECK(g_feed.iq); LS_CHECK(!g_fm_spectrum_enabled);
+    ls_wf_source_pump(); LS_EQ_INT(1, g_pushes);
+    ls_wf_source_release(); LS_CHECK(!lr_tap_enabled()); LS_EQ_INT(0, g_iq_stops);
+    LS_EQ_UINT(152600000, lr_spec_center()); LS_CHECK(g_fm_streaming);
+}
+LS_CASE(auto_lr_only_idle_starts_view_session_and_releases_it_once)
+{
+    fresh(); g_lr = true; ls_wf_source_view(154785000);
+    LS_EQ_INT(LS_WF_SRC_LORA, ls_wf_source_get()); ls_wf_source_pump();
+    LS_CHECK(lr_tap_enabled()); LS_EQ_UINT(154785000, g_iq_hz);
+    LS_EQ_INT(1, g_iq_starts); LS_CHECK(g_hold_asked);
+    ls_wf_source_release(); LS_CHECK(!lr_tap_enabled()); LS_CHECK(!g_hold_asked);
+    LS_EQ_INT(1, g_iq_stops); ls_wf_source_release(); LS_EQ_INT(1, g_iq_stops);
+}
+LS_CASE(rtl_app_receivers_ignore_an_unrelated_lr_capture)
+{
+    fresh(); g_lr = g_rtl = true; lr_spec_begin(154785000);
+    g_p25_streaming = g_p25_ready = true;
+    g_p25_snap = (p25_spectrum_snapshot_t){.center_hz = 851000000, .span_hz = 240000, .sequence = 1};
+    ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_SRC_P25, ls_wf_source_get()); LS_EQ_INT(1, g_pushes);
+    LS_CHECK(!lr_tap_enabled()); LS_EQ_UINT(851000000, g_feed.center_hz);
+    g_p25_streaming = false; g_fm_streaming = g_fm_spectrum_ready = true;
+    FM.mode = FM_MODE_WFM; ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get()); LS_EQ_INT(2, g_pushes);
+    LS_CHECK(!lr_tap_enabled()); LS_EQ_UINT(100000000, g_feed.center_hz);
+    g_fm_spectrum_ready = false;
+}
+
+#include "switch_budget.h"
+LS_CASE(decoder_switches_have_no_allocations_or_radio_commands)
+{
+    for (int app = 0; app < 2; ++app) for (int live = 0; live < 2; ++live) {
+        fresh(); g_lr = true; g_rtl = false;
+        g_p25_radio = g_fm_radio = LS_RSEL_LORA;
+        P25.lr_iq_active = app == 0 && live;
+        FM.lr_iq_active = app == 1 && live;
+        g_p25_streaming = P25.lr_iq_active;
+        g_fm_streaming = FM.lr_iq_active;
+        unsigned calls = g_radio_calls;
+        switch_budget_begin();
+        for (int visit = 0; visit < 4; ++visit) {
+            ls_wf_source_select(app ? LS_WF_SRC_FM : LS_WF_SRC_P25);
+            ls_wf_source_pump();
+            ls_wf_source_release();
+        }
+        LS_EQ_UINT(switch_budget_end(), 0);
+        LS_EQ_UINT(g_radio_calls, calls);
+    }
 }

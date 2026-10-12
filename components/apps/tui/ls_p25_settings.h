@@ -7,6 +7,8 @@
 #include "p25_program.h"
 static bool ps_lr_receiver(void)
 {
+    /* RX publishes lora_rx; the fallback selector reads cached board identity.
+       These display paths must never query live LoRa status (capture owns SPI). */
     return P25.lora_rx || ls_rsel_effective(LS_RSEL_P25) == LS_RSEL_LORA;
 }
 static int ps_lr_gain(void)

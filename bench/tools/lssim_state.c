@@ -8,6 +8,8 @@
 
 #include "esp_timer.h"
 #include "ls_theme.h"
+#include "ls_radio_select.h"
+#include "ls_lora.h"
 #include "ls_gps.h"
 
 #include "apps/rec/rec_state.h"
@@ -392,6 +394,20 @@ void lssim_seed_state(void)
     P25.voice_active_until_us = esp_timer_get_time() + 5000000;
     snprintf(P25.dsd_modulation, sizeof(P25.dsd_modulation), "C4FM");
     /* Static layout fixtures, opt-in; the firmware screen uses live state. */
+    const char *lr = getenv("LSSIM_P25_LR");
+    if (lr) {
+        ls_rsel_hw_t hw;
+        ls_rsel_hw(&hw);
+        hw.present[LS_RSEL_SDR_RTL] = false;
+        hw.present[LS_RSEL_LORA] = hw.lora_lr20xx = true;
+        hw.lora_name = "LR2021";
+        hw.lora_caps |= LS_LORA_CAP_FSK_STREAM;
+        extern void lssim_rsel_board(const ls_rsel_hw_t *hw);
+        lssim_rsel_board(&hw);
+        P25.lora_rx = true;
+        P25.lr_iq_active = !strcmp(lr, "iq");
+        ls_rsel_set(LS_RSEL_P25, LS_RSEL_LORA);
+    }
     const char *split = getenv("LSSIM_P25_SPLIT");
     if (split) {
         P25.split_enabled = true;

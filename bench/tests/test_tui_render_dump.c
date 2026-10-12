@@ -17,6 +17,10 @@ bool ls_mesh_peer_at(int index, ls_mesh_peer_t *out) { (void)index; (void)out; r
 #include "ls_experiments.h"
 #include "experiments/lr433_history.h"
 #include "ls_notify.h"
+#include "ls_anim.h"
+#include "ls_icons.h"
+#include "ls_gauge.h"
+void ls_shim_gauge(const ls_gauge_t *g);
 #include "esp_timer.h"
 
 #include <stdio.h>
@@ -446,13 +450,11 @@ LS_CASE(portrait_renders_without_the_chrome_colliding)
     LS_CHECK_MSG(strstr(last, "F10") == NULL && strstr(last, "F11") == NULL,
                  "portrait still draws a key legend: '%s'", last);
 
-    /* And the control that replaced it is on the status row.
-       Help only: the turn control went, because the sensor turns
-       the screen and F11 does it from the keyboard. */
+    /* The status row has no turn or help controls. */
     LS_CHECK_MSG(!row_has(0, "[R]"),
                  "portrait still draws a turn control in its status row");
-    LS_CHECK_MSG(row_has(0, "[?]"),
-                 "portrait has no help control in its status row");
+    LS_CHECK_MSG(!row_has(0, "[?]"),
+                 "portrait still draws a help control in its status row");
 
     /* And not in the corner cells, which is where the row's first
        control began before the report that the top bar's words ran into the
@@ -466,11 +468,13 @@ LS_CASE(portrait_renders_without_the_chrome_colliding)
         LS_CHECK_MSG(top[x] == ' ' && top[cols - 1 - x] == ' ',
                      "a word in corner cell %d of the status row: '%s'",
                      x, top);
-    /* The clock's slot first - blank here, where nothing has set
-       the time - then [?]. */
-    LS_CHECK_MSG(strncmp(top + pad + LS_TUI_CLOCK_W + 1, "[?]", 3) == 0,
-                 "[?] is not one clock in from the corner padding: '%s'",
-                 top);
+    ls_tui_status_set_clock("14:32Z");
+    frame(1);
+    row_text(0, top, sizeof(top));
+    LS_CHECK_MSG(!strncmp(top + pad, "14:32Z  ", 8),
+                 "clock is not at the corner padding: '%s'", top);
+    LS_CHECK(strstr(top, "[?") == NULL);
+    ls_tui_status_set_clock("");
     ls_tui_end();
 }
 
@@ -567,6 +571,32 @@ LS_CASE(every_screen_renders_something)
     ls_tui_end();
 }
 
+LS_CASE(the_status_title_changes_on_every_screen_switch)
+{
+    const int sizes[][2] = {{568, 1232}, {1232, 568}};
+    for (int g = 0; g < 2; g++) {
+        LS_CHECK(ls_tui_begin(sizes[g][0], sizes[g][1]));
+        register_once();
+        ls_tui_status_set("", "");
+        ls_tui_status_set_clock("14:32Z");
+        const int count = ls_tui_screen_count();
+        for (int step = 0; step < count * 2; step++) {
+            const int i = step < count ? step : count * 2 - 1 - step;
+            ls_tui_screen_show(i);
+            frame(1);
+            char top[200];
+            row_text(0, top, sizeof(top));
+            LS_CHECK_MSG(row_has(0, ls_tui_screen_name(i)),
+                         "screen %d has stale title: '%s'", i, top);
+            LS_CHECK_MSG(!strncmp(top + ls_tui_corner_pad(0), "14:32Z  ", 8),
+                         "clock moved from corner padding: '%s'", top);
+            LS_CHECK(!row_has(0, "[?") && !row_has(0, "KEYS"));
+        }
+        ls_tui_status_set_clock("");
+        ls_tui_end();
+    }
+}
+
 LS_CASE(the_help_overlay_fits_the_screen_it_is_drawn_on)
 {
     /* A fixed 46 columns against portrait's 48. Seeing it is the point. */
@@ -577,7 +607,7 @@ LS_CASE(the_help_overlay_fits_the_screen_it_is_drawn_on)
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
 
-    ls_tui_router_touch(ls_tui_corner_pad(0) + LS_TUI_CLOCK_W + 1, 0);
+    LS_CHECK(ls_tui_router_key(LS_TK_F10, 0));
     frame(2);
 
     printf("\n===== PORTRAIT, KEY LIST =====\n");
@@ -1081,5 +1111,163 @@ LS_CASE(basemap_palette_switches_preserve_overlays_and_release_cleanly)
     LS_CHECK(memcmp(g_ref,g_fb,sizeof(g_fb))==0);
     ls_tui_basemap(NULL,(tui_rect){0},NULL);
     LS_EQ_INT(2,ls_tui_present());
+    ls_tui_end();
+}
+
+LS_CASE(switch_frames_keep_the_entire_status_band_painted)
+{
+    const ls_gauge_t battery = {.present=true, .percent=95, .millivolts=4145};
+    ls_shim_gauge(&battery);
+    register_once();
+    const int targets[] = {0, 1, 2, 3};
+    int saved_font = ls_tui_font_index(), saved_corner = ls_tui_corner_radius();
+    ls_tui_set_font_index(0);
+    ls_tui_set_corner_radius(72);
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        ls_tui_status_set_clock("12:34Z");
+        ls_tui_status_set("", "");
+        ls_tui_set_theme(&ls_theme_terminal_bay);
+        ls_tui_set_daylight(false);
+        for (int d = 0; d < 4; d++) {
+            const int dest = targets[d];
+            ls_tui_screen_show(targets[(d + 1) % 4]);
+            frame(1);
+            ls_tui_screen_show(dest);
+            ls_anim_start(LS_ICON_WAVE, ls_tui_screen_name(dest), TUI_CYAN);
+            for (int f = 0; f < 14; f++) {
+                ls_shim_time_advance(20000);
+                frame(1);
+                tui_surface *sf = ls_tui_surface();
+                const int pad = ls_tui_corner_pad(0);
+                for (int x = pad; x < sf->w - pad; x++) {
+                    LS_EQ_INT(TUI_ATTR_BG(sf->back[x].attr), TUI_CYAN);
+                    LS_CHECK(sf->back[x].ch != 0);
+                }
+                LS_CHECK(row_has(0, "12:34Z"));
+                check_bar_ends();
+                /* A diff must render every pixel just as a fresh full raster. */
+                memcpy(g_ref, g_fb, sizeof(g_fb));
+                ls_tui_invalidate();
+                ls_tui_present();
+                LS_CHECK(memcmp(g_ref, g_fb, sizeof(g_fb)) == 0);
+                if (dest == 1 && (f == 0 || f == 12))
+                    sensor_pixels(f == 0 ? "transition-first" : "transition-done", wide);
+            }
+        }
+        ls_tui_end();
+    }
+    ls_tui_status_set_clock("");
+    ls_shim_gauge(NULL);
+    ls_tui_set_font_index(saved_font);
+    ls_tui_set_corner_radius(saved_corner);
+}
+
+LS_CASE(transition_ring_times_animation_handover_and_wraps)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    ls_anim_cancel();
+    ls_tui_screen_show(0);
+    frame(1);
+    ls_shim_time_live(0);
+    for (int i = 0; i < 10; i++) {
+        ls_shim_time_set(1000000 + i * 1000000);
+        ls_tui_screen_show(i % 2 ? 0 : 1);
+        ls_anim_start(LS_ICON_WAVE, "TEST", TUI_CYAN);
+        for (int f = 0; f < 7; f++) {
+            ls_tui_router_draw(ls_tui_surface());
+            ls_shim_time_advance(40000);
+            ls_tui_transition_present(40000, 100 + f, 300);
+        }
+    }
+    ls_tui_transition_t t[8];
+    LS_EQ_INT(ls_tui_transitions(t), 8);
+    for (int i = 0; i < 8; i++) {
+        LS_EQ_INT(t[i].from, i % 2 ? 1 : 0);
+        LS_EQ_INT(t[i].to, i % 2 ? 0 : 1);
+        LS_EQ_INT(t[i].first_us, 40000);
+        LS_EQ_INT(t[i].last_us, 240000);
+        LS_EQ_INT(t[i].frames, 6); /* Dropped splash frames, then the real body. */
+        LS_EQ_INT(t[i].worst_us, 40000);
+        LS_EQ_INT(t[i].worst_cells, 105);
+        LS_EQ_INT(t[i].writeback_us, 1800);
+        LS_EQ_INT(t[i].worst_writeback_us, 300);
+        LS_EQ_INT(t[i].worst_draw_us, 0);
+        LS_EQ_INT(t[i].worst_raster_us, 39700);
+        LS_CHECK(t[i].complete);
+    }
+    ls_shim_time_live(0);
+    ls_tui_end();
+}
+
+static bool defer_transition_test(int index) { (void)index; return true; }
+LS_CASE(transition_deferred_request_and_cancel_keep_request_timestamp)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    ls_anim_cancel();
+    ls_tui_screen_show(0);
+    frame(1);
+    ls_shim_time_live(0);
+    ls_shim_time_set(1000000);
+    ls_tui_screen_set_dispatch_cb(defer_transition_test);
+    ls_tui_screen_show(1);
+    LS_EQ_INT(ls_tui_screen_current(), 0);
+    ls_shim_time_advance(50000);
+    ls_tui_screen_set_dispatch_cb(NULL);
+    ls_tui_screen_show(1);
+    ls_anim_start(LS_ICON_WAVE, "TEST", TUI_CYAN);
+    ls_tui_router_draw(ls_tui_surface());
+    ls_shim_time_advance(2000);
+    ls_tui_transition_present(1000, 123, 200);
+    ls_anim_cancel();
+    ls_shim_time_advance(10000);
+    ls_tui_router_draw(ls_tui_surface());
+    ls_shim_time_advance(3000);
+    ls_tui_transition_present(1000, 456, 400);
+    ls_tui_transition_t t[8];
+    const int n = ls_tui_transitions(t);
+    LS_CHECK(n > 0);
+    LS_EQ_INT(t[n-1].first_us, 52000);
+    LS_EQ_INT(t[n-1].last_us, 65000);
+    LS_EQ_INT(t[n-1].frames, 2);
+    LS_EQ_INT(t[n-1].worst_us, 3000);
+    LS_EQ_INT(t[n-1].worst_cells, 456);
+    LS_CHECK(t[n-1].complete);
+    /* Same-screen requests do not consume a ring slot. */
+    ls_tui_screen_show(1);
+    ls_tui_transitions(t);
+    LS_EQ_INT(t[n-1].frames, 2);
+    ls_shim_time_live(0);
+    ls_tui_end();
+}
+
+LS_CASE(animation_drops_slow_frames_and_hands_over_within_budget)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    const int costs[] = {10000, 40000, 65000, 93000};
+    ls_shim_time_live(0);
+    for (unsigned k = 0; k < sizeof(costs)/sizeof(costs[0]); ++k) {
+        ls_shim_time_set(1000000);
+        ls_anim_start(LS_ICON_WAVE, "FM", TUI_CYAN);
+        int frames = 0;
+        while (ls_anim_draw(ls_tui_surface(), tui_rect_make(0, 2, 40, 50))) {
+            ls_shim_time_advance(costs[k]);
+            LS_CHECK(esp_timer_get_time() - 1000000 <= 250000);
+            LS_CHECK(++frames <= 25);
+        }
+        /* Once draw returns false the same router frame draws the real app. */
+        ls_shim_time_advance(costs[k]);
+        LS_CHECK(esp_timer_get_time() - 1000000 <= 250000);
+        LS_CHECK(!ls_anim_active());
+        if (costs[k] >= 40000) LS_CHECK(frames < 12);
+    }
+    ls_shim_time_set(2000000);
+    ls_anim_start(LS_ICON_WAVE, "P25", TUI_CYAN);
+    ls_shim_time_advance(500000); /* UI stalled: no overdue splash on resume. */
+    LS_CHECK(!ls_anim_active());
+    LS_CHECK(!ls_anim_draw(ls_tui_surface(), tui_rect_make(0, 2, 40, 50)));
     ls_tui_end();
 }

@@ -538,6 +538,20 @@ ls_radio_err_t ls_radio_endpoint_get(const char *endpoint_id,
     return slot ? LS_RADIO_OK : LS_RADIO_ERR_UNAVAILABLE;
 }
 
+ls_radio_err_t ls_radio_endpoint_try_get(const char *endpoint_id,
+                                         ls_radio_endpoint_info_t *out)
+{
+    if (!endpoint_id || !out) return LS_RADIO_ERR_INVALID;
+    if (__atomic_load_n(&s_registry_init, __ATOMIC_ACQUIRE) != 2)
+        return LS_RADIO_ERR_BUSY;
+    if (xSemaphoreTake(s_registry_lock, 0) != pdTRUE) return LS_RADIO_ERR_BUSY;
+    endpoint_slot_t *slot = find_slot_locked(endpoint_id);
+    if (slot) fill_info(slot, out);
+    else memset(out, 0, sizeof(*out));
+    xSemaphoreGive(s_registry_lock);
+    return slot ? LS_RADIO_OK : LS_RADIO_ERR_UNAVAILABLE;
+}
+
 bool ls_radio_endpoint_available(
     const ls_radio_requirements_t *requirements)
 {

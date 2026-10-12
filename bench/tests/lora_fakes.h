@@ -72,6 +72,8 @@ esp_err_t ls_xl9535_get(int pin, bool *level)
 /* BUSY: high for this many reads, then low. */
 static int fk_busy_for;
 static int fk_busy_reads;
+static unsigned fk_busy_step_us = 200;
+static void fk_capture_advance(void);
 
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) { (void)pin; (void)level; return ESP_OK; }
@@ -79,7 +81,8 @@ int gpio_get_level(gpio_num_t pin)
 {
     (void)pin;
     fk_busy_reads++;
-    ls_shim_time_advance(200);
+    ls_shim_time_advance(fk_busy_step_us);
+    fk_capture_advance();
     if (fk_busy_for > 0) { fk_busy_for--; return 1; }
     return 0;
 }
@@ -132,6 +135,11 @@ typedef struct {
     /* The one register the Mode S tuning touches: the OOK detection threshold. */
     uint32_t thr_reg;
     uint32_t iq_fifo_base, iq_fifo_size;  /* raw-IQ FIFO mapping registers */
+    uint32_t tx_fifo_base, tx_fifo_size;
+    uint16_t tx_samples;
+    uint32_t tx_rate;
+    unsigned tx_fifo_write_count, tx_fifo_fail_on_write, tx_fifo_total_written;
+    unsigned tx_cancel_on_fifo_write;
     int      thr_writes;
     int      bad_reg;              /* register accesses to any other address    */
 
@@ -172,6 +180,7 @@ typedef struct {
     uint8_t  pa_sel, pa_cfg[3], tx_params[2];
     int      pa_sel_n, pa_cfg_n, tx_params_n;
     int      hf_pa, tx_hf, tx_starts;
+    bool     tx_auto_done;
     uint32_t tx_freq_hz;
     uint8_t  txfifo[300];
     int      txfifo_n;
@@ -185,6 +194,9 @@ typedef struct {
     bool capture_fifo, capture_fifo_full, capture_tail_overflow;
     uint8_t capture_fifo_error_flags;
     unsigned capture_flag_reads, capture_overflow_at;
+    bool capture_timed;
+    int64_t capture_updated;
+    unsigned capture_peak, capture_high_residual_polls;
 
     /* SX126x */
     uint8_t  sx_status;
@@ -227,6 +239,22 @@ static uint16_t fk_stat(void)
                       ((unsigned)fk.reset_src << 4) | (fk.mode & 7u));
 }
 
+/* Continuous 500 bytes/ms producer, including time spent blocked and in SPI.
+   Overflow latches instead of wrapping or silently dropping the evidence. */
+static void fk_capture_advance(void)
+{
+    if (!fk.capture_timed) return;
+    int64_t now = esp_timer_get_time();
+    if (!fk.capture_fifo || fk.mode != 4) { fk.capture_updated = now; return; }
+    unsigned arrived = (unsigned)((now - fk.capture_updated) / 2);
+    fk.capture_updated += arrived * 2;
+    unsigned level = (unsigned)fk.fifo_n + arrived;
+    if (level > fk.capture_peak) fk.capture_peak = level;
+    if (level >= 1024) fk.capture_fifo_error_flags |= 0x10;
+    if (level > sizeof(fk.fifo)) level = sizeof(fk.fifo);
+    while ((unsigned)fk.fifo_n < level) fk.fifo[fk.fifo_n++] = 0;
+}
+
 static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
 {
     if (fk.silent) {                    /* still starting: a byte of nonsense, nothing done */
@@ -247,16 +275,18 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         case 0x0110: d[0] = (uint8_t)(fk.errors >> 8); d[1] = (uint8_t)fk.errors; n = 2; break;
         case 0x020B: d[0] = fk.rssi_hi; d[1] = fk.rssi_lo; n = 2; break;
         case 0x011C:
-            if (fk.capture_fifo && fk.mode == 4 && !fk.capture_timeout) {
+            if (fk.capture_fifo && fk.mode == 4 && !fk.capture_timeout && !fk.capture_timed) {
                 fk.fifo_n = fk.capture_fifo_full ? (fk.iq_fifo_size == 0x3E8u ? 1024 : 256) : 128;
                 for (int i = 0; i < fk.fifo_n; i++) fk.fifo[i] = (uint8_t)i;
             }
+            if (fk.capture_timed && fk.fifo_n > 32) fk.capture_high_residual_polls++;
             d[0] = (uint8_t)(fk.fifo_n >> 8); d[1] = (uint8_t)fk.fifo_n; n = 2; break;
         case 0x011B:
             fk.capture_flag_reads++;
             if (fk.capture_overflow_at && fk.capture_flag_reads >= fk.capture_overflow_at)
                 fk.capture_fifo_error_flags |= 0x10;
             d[0] = fk.capture_fifo_error_flags; n = 2; break;
+        case 0x011D: d[0] = 0; d[1] = 0; n = 2; break; /* TX FIFO level is consumed */
         case 0x0287: d[0] = 0; d[1] = 28; d[2] = fk.ook_rssi_avg; d[3] = fk.ook_rssi_high;
                      d[4] = fk.ook_rssi_flags; d[5] = fk.ook_lqi; n = 6; break;
         case 0x0106:
@@ -270,8 +300,11 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
                 if (fk.capture_enabled && fk.mode == 4) fk.bad_mode++;
                 uint32_t value = fk.capture_ram[(fk.read_addr - 0x802000u) / 4];
                 d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
-            } else if (fk.read_addr == 0xF30028u || fk.read_addr == 0xF30030u) {
-                uint32_t value = fk.read_addr == 0xF30028u ? fk.iq_fifo_base : fk.iq_fifo_size;
+            } else if (fk.read_addr == 0xF30028u || fk.read_addr == 0xF30030u ||
+                       fk.read_addr == 0xF3002Cu || fk.read_addr == 0xF30034u) {
+                uint32_t value = fk.read_addr == 0xF30028u ? fk.iq_fifo_base :
+                                 fk.read_addr == 0xF30030u ? fk.iq_fifo_size :
+                                 fk.read_addr == 0xF3002Cu ? fk.tx_fifo_base : fk.tx_fifo_size;
                 d[0] = value >> 24; d[1] = value >> 16; d[2] = value >> 8; d[3] = value;
             } else if (fk.read_addr == 0xF30E14u) {
                 d[0] = (uint8_t)(fk.thr_reg >> 24); d[1] = (uint8_t)(fk.thr_reg >> 16);
@@ -329,9 +362,12 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     const uint16_t stat_before = fk_stat();
     /* The Tx FIFO bytes are taken before the reply overwrites them: the driver
        sends and receives through the one buffer. */
-    if (op == 0x0002 && !violated)
+    if (op == 0x0002 && !violated) {
+        fk.tx_fifo_write_count++;
         for (size_t i = 2; i < len && fk.txfifo_n < (int)sizeof(fk.txfifo); i++)
             fk.txfifo[fk.txfifo_n++] = tx[i];
+        fk.tx_fifo_total_written += len > 2 ? (unsigned)(len - 2) : 0;
+    }
 
     memset(rx, 0, len);
     if (len >= 2) { rx[0] = (uint8_t)(stat_before >> 8); rx[1] = (uint8_t)stat_before; }
@@ -347,7 +383,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         fk.cmd_status = LS_FK_OK_;
         if (fk.has_next_mode) { fk.mode = fk.next_mode; fk.has_next_mode = false; }
         return;
-    case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x011B: case 0x0287: case 0x0106: case 0x0291:
+    case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x011B: case 0x011D: case 0x0287: case 0x0106: case 0x0291:
     case 0x0212: case 0x022A: case 0x0246: case 0x0247: case 0x0272: case 0x0273: case 0x0299: case 0x029A:
         fk.read_pending = true;
         fk.read_op = op;
@@ -365,6 +401,14 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     }
     case 0x0002:                        /* WriteRadioTxFifo, one frame: the bytes joined the Tx FIFO above */
         fk.tx_frames++;
+        if (fk.tx_cancel_on_fifo_write &&
+            fk.tx_fifo_write_count == fk.tx_cancel_on_fifo_write)
+            ls_lora_tx_cancel_request();
+        if (fk.fail_op == 0x0002 || fk.tx_fifo_fail_on_write == fk.tx_fifo_write_count) {
+            fk.cmd_status = 0; return;
+        }
+        if (fk.tx_auto_done && fk.tx_fifo_total_written >= (unsigned)fk.tx_samples * 2u)
+            fk.irq |= (1u << 19);
         fk.cmd_status = LS_FK_OK_;
         return;
     default: break;
@@ -385,7 +429,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         { 0x0200, 4 }, { 0x0201, 2 }, { 0x0202, 3 }, { 0x0203, 2 }, { 0x0206, 1 }, { 0x0207, 1 },
         { 0x020C, 3 }, { 0x020D, 3 }, { 0x020F, 1 }, { 0x021A, 1 },
         { 0x0220, 2 }, { 0x0221, 4 }, { 0x0223, 1 }, { 0x0240, 9 }, { 0x0241, 7 }, { 0x0244, 9 },
-        { 0x0281, 7 }, { 0x0282, 6 }, { 0x0284, 5 }, { 0x0288, 5 },
+        { 0x0281, 7 }, { 0x0282, 6 }, { 0x0284, 5 }, { 0x0288, 5 }, { 0x0293, 7 },
     };
     const size_t nargs = len > 2 ? len - 2 : 0;
     if (op == 0x0224 || op == 0x0225) {
@@ -425,9 +469,13 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     }
     case 0x0104: {                      /* WriteRegMem32: Addr(3) Data(4) */
         const uint32_t addr = ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 8) | t[4];
-        if (addr == 0xF30028u || addr == 0xF30030u) {
+        if (addr == 0xF30028u || addr == 0xF30030u ||
+            addr == 0xF3002Cu || addr == 0xF30034u) {
             uint32_t v = ((uint32_t)t[5] << 24) | ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
-            if (addr == 0xF30028u) fk.iq_fifo_base = v; else fk.iq_fifo_size = v;
+            if (addr == 0xF30028u) fk.iq_fifo_base = v;
+            if (addr == 0xF30030u) fk.iq_fifo_size = v;
+            if (addr == 0xF3002Cu) fk.tx_fifo_base = v;
+            if (addr == 0xF30034u) fk.tx_fifo_size = v;
             break;
         }
         if (addr >= 0x802000u && addr <= 0x8023FCu) {
@@ -464,7 +512,10 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         }
         fk.capture_enabled = true;
         break;
-    case 0x011F: fk.txfifo_n = 0; break;
+    case 0x011F:
+        fk.txfifo_n = 0;
+        /* Keep cumulative write evidence across FIFO clears/refills. */
+        break;
     case 0x0114: break;
     case 0x020F:                        /* SelPa: 0 is the LF PA */
         fk.pa_sel = t[2]; fk.pa_sel_n++;
@@ -475,12 +526,19 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         if (t[2] & 0x80) fk.hf_pa++;
         break;
     case 0x0203: memcpy(fk.tx_params, &t[2], 2); fk.tx_params_n++; break;
+    case 0x0293:                        /* Configure raw-IQ playback mode */
+        if (fk.packet_type != 0x0A || t[8] != 0) { fk.bad_args++; fk.cmd_status = 1; break; }
+        fk.tx_samples = (uint16_t)((t[2] << 8) | t[3]);
+        fk.tx_rate = ((uint32_t)t[4] << 24) | ((uint32_t)t[5] << 16) |
+                     ((uint32_t)t[6] << 8) | t[7];
+        break;
     case 0x020D:                        /* SetTx: from standby or FS */
         if (fk.mode == 4 || fk.mode == 5) { fk.cmd_status = 0; fk.bad_mode++; break; }
         fk.tx_starts++;
         fk.tx_freq_hz = fk.last_freq_hz;
         if (fk.last_freq_hz >= 1000000000u || fk.pa_sel != 0 || (fk.pa_cfg[0] & 0x80)) fk.tx_hf++;
         fk.mode = 5;
+        if (fk.tx_auto_done && (unsigned)fk.tx_samples * 2u <= 896u) fk.irq |= (1u << 19);
         break;
     case 0x029D: fk.mode = 4; fk.rx_arms++; break;
     case 0x0224: case 0x0225: break;
@@ -593,11 +651,27 @@ static void fk_respond_sx(const uint8_t *tx, uint8_t *rx, size_t len)
 static void fk_respond(const uint8_t *tx, uint8_t *rx, size_t len, void *ctx)
 {
     (void)ctx;
+    /* Direct reads drain while clocking, faster than the producer. Charge
+       command/CS time before removing bytes, then accrue arrivals during the
+       data phase afterwards. Charging the whole transfer before draining
+       would incorrectly model an atomic FIFO pop at CS deassertion. */
+    const bool timed_read = fk.capture_timed && len >= 2 && tx &&
+                            tx[0] == 0 && tx[1] == 1;
+    if (fk.capture_timed) {
+        ls_shim_time_advance(timed_read ? 3 : (len + 1) / 2 + 2);
+        fk_capture_advance();
+    }
     if (!rx || !len) return;
     switch (fk.kind) {
     case FK_ALL_00: memset(rx, 0x00, len); fk_log(tx, len, false); fk_busy_for = 2; break;
     case FK_ALL_FF: memset(rx, 0xFF, len); fk_log(tx, len, false); fk_busy_for = 2; break;
-    case FK_LR: fk_respond_lr(tx, rx, len); break;
+    case FK_LR:
+        fk_respond_lr(tx, rx, len);
+        if (timed_read) {
+            ls_shim_time_advance((len - 1) / 2);
+            fk_capture_advance();
+        }
+        break;
     case FK_SX_ECHO: case FK_SX_STATUS: fk_respond_sx(tx, rx, len); break;
     }
 }
@@ -606,6 +680,7 @@ static void fk_respond(const uint8_t *tx, uint8_t *rx, size_t len, void *ctx)
    or a fresh boot would. */
 static void fk_install(fk_kind_t kind)
 {
+    fk_busy_step_us = 200;
     ls_shim_spi_reset_counters();
     memset(&fk, 0, sizeof(fk));
     fk.kind = kind;

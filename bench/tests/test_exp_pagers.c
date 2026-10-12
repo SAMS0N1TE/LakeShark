@@ -13,6 +13,7 @@
 #include "ls_lora_lr20xx.h"
 #include "p25_state.h"
 #include "pager_recon.h"
+#include "pager_iq_radio.h"
 #include "pocsag.h"
 #include "pocsag_gen.h"
 #include "fm_state.h"
@@ -1177,4 +1178,59 @@ LS_CASE(native_stream_ten_batches_gap_bch_and_saved_start)
     LS_CHECK(s_cfg.stream); LS_EQ_INT(exp_pagers.opts[2].num(&exp_pagers.opts[2]), 15);
     ls_exp_stop(); ls_exp_settle(100);
     s_caps = caps;
+}
+
+/* IQ radio fake supplies continuous discriminator samples; frontend waveform
+   and chunk behavior are separately checked by test_pocsag_iq. */
+static bool iq_open, iq_fault;
+static unsigned iq_begins, iq_ends;
+static uint32_t iq_hz;
+static uint8_t iq_bits[BITS_GEN_MAX];
+static size_t iq_bits_n, iq_at;
+esp_err_t pgr_iq_radio_begin(uint32_t hz)
+{
+    if (iq_open) return ESP_ERR_INVALID_STATE;
+    iq_open = true; iq_begins++; iq_hz = hz; return ESP_OK;
+}
+void pgr_iq_radio_end(void) { if (iq_open) iq_ends++; iq_open = false; }
+int pgr_iq_radio_read(float *out, size_t cap)
+{
+    if (iq_fault) { iq_fault = false; return -1; }
+    size_t n = 0;
+    while (n < cap && iq_at * 1200u / 25000u < iq_bits_n) {
+        out[n++] = iq_bits[iq_at * 1200u / 25000u] ? -0.22f : 0.22f;
+        iq_at++;
+    }
+    return (int)n;
+}
+LS_CASE(iq_decodes_inverted_pages_and_recovers_without_fsk_radio_calls)
+{
+    fresh(152600000u, 1200, true, false);
+    char *argv[] = { "152.600", "iq" }; char why[96];
+    iq_at = 0;
+    iq_bits_n = pocsag_build_bits(1234560, 3, "IQ TEST PAGE", 576, iq_bits, sizeof(iq_bits));
+    LS_CHECK(exp_pagers.configure(2, argv, why, sizeof(why)));
+    const int fsk_begins = s_begins, retunes = s_retunes;
+    ls_exp_start(&exp_pagers); ls_exp_service(); run_for(1500000);
+    LS_CHECK(iq_open); LS_EQ_UINT(iq_hz, 152600000);
+    LS_EQ_INT(s_begins, fsk_begins); LS_EQ_INT(s_retunes, retunes);
+    LS_CHECK(lines_have("IQ frames 1 pages 1 err 0"));
+    LS_CHECK(lines_have("heard as 1200I, I/Q"));
+    LS_CHECK(!lines_have("peak 0 dBm"));
+    LS_CHECK(lines_have("1200I"));
+    LS_CHECK(lines_have("gaps 0"));
+    const unsigned begins = iq_begins, ends = iq_ends;
+    iq_fault = true; run_for(1500000);
+    LS_EQ_UINT(iq_begins, begins + 1); LS_EQ_UINT(iq_ends, ends + 1);
+    LS_CHECK(lines_have("gaps 1"));
+    LS_CHECK(lines_have("IQ frames 1 pages 1 err 1"));
+    ls_exp_stop(); ls_exp_settle(100); LS_CHECK(!iq_open);
+    settings_pagers_t cfg; settings_get_pagers(&cfg);
+    LS_EQ_INT(cfg.method, 3); LS_EQ_UINT(cfg.hz, 152600000);
+    /* IQ must reject a scan or FLEX rather than silently changing methods. */
+    cfg.plan = PGR_PLAN_UHF; settings_set_pagers(&cfg);
+    LS_CHECK(!exp_pagers.start(why, sizeof(why)));
+    cfg.plan = PGR_PLAN_N; cfg.probe = 6; settings_set_pagers(&cfg);
+    LS_CHECK(!exp_pagers.start(why, sizeof(why)));
+    cfg.probe = -1; cfg.method = 0; settings_set_pagers(&cfg);
 }

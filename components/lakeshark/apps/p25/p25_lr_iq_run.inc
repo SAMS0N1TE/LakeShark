@@ -1,5 +1,7 @@
+#include "esp_attr.h"
 /* Capture yields between batches on core 0; RX owner runs IQ DSP on core 1. */
 #include "lr2021_iq_queue.h"
+#include "lr_iq_spectrum.h"
 #include "p25_lr_frontend.h"
 #include "p25_lr_iq_record.inc"
 typedef struct {
@@ -10,7 +12,7 @@ typedef struct {
     uint32_t generation;
 } p25_lr_capture_t;
 
-static bool p25_lr_iq_collect(void *context, const uint8_t *data, size_t bytes,
+static bool IRAM_ATTR p25_lr_iq_collect(void *context, const uint8_t *data, size_t bytes,
                               uint64_t first_pair)
 {
     p25_lr_capture_t *c = context;
@@ -105,11 +107,12 @@ static void p25_lr_iq_run(void)
         if (!p25_lr_frontend_init(&frontend, 0, false) || !lr2021_iq_queue_init(&c->queue)) break;
         atomic_store(&c->stop, false); atomic_store(&c->done, false); atomic_store(&c->full, false);
         if (xTaskCreatePinnedToCore(p25_lr_capture_task, "lr_iq_rx", 4096, c,
-                                  configMAX_PRIORITIES - 2, NULL, 0) != pdPASS) {
+                                  configMAX_PRIORITIES - 1, NULL, 0) != pdPASS) {
             atomic_store(&c->done, true);
             sys_log(4, "LR raw IQ: capture task allocation failed");
             break;
         }
+        lr_spec_begin(configured_hz);
         uint64_t expected = 0, received = 0, audio_received = 0;
         int64_t rate_start = esp_timer_get_time();
         bool consumer_bad = false, retune = false;
@@ -124,6 +127,9 @@ static void p25_lr_iq_run(void)
             const lr2021_iq_block *b = lr2021_iq_queue_peek(&c->queue);
             if (!b) { vTaskDelay(1); continue; }
             if (b->generation != c->generation || b->first_pair != expected) { consumer_bad = true; break; }
+            lr_spec_feed(b->data, b->bytes, b->first_pair, b->generation,
+                         (uint32_t)(esp_timer_get_time() / 1000),
+                         atomic_load(&c->queue.write_index) - atomic_load(&c->queue.read_index) <= 1);
             p25_lr_record_feed(b);
             size_t pairs = p25_lr_frontend_process(&frontend, b->data, b->bytes, iq, 640);
             if (pairs == SIZE_MAX) { consumer_bad = true; break; }
@@ -157,13 +163,31 @@ static void p25_lr_iq_run(void)
             }
         }
         atomic_store(&c->stop, true);
+        lr_spec_end();
         p25_lr_record_gap();
         while (!atomic_load_explicit(&c->done, memory_order_acquire)) vTaskDelay(1);
         lr20xx_stream_result_t *result = &c->result;
         bool bad = consumer_bad || atomic_load(&c->full) || c->error != ESP_OK;
-        ESP_LOGI("LRIQ", "session: %lu ms, %lu KiB, maxfifo=%lu gap=%lu us flags=%02x queuefull=%u consumer=%u",
+        /* WARN when bad: release builds compile INFO out, and this line names the cause. */
+        if (bad) ESP_LOGW("LRIQ", "bad session: %lu ms, %lu KiB, maxfifo=%lu gap=%lu us wake_us=%lu isr_late=%lu resume=%lu wakefifo=%lu wakes=%lu drain_us=%lu drain_spi=%lu max_drain_spi=%lu flags=%02x queuefull=%u consumer=%u err=%d",
                 (unsigned long)(result->elapsed_us / 1000), (unsigned long)(result->validated_bytes / 1024),
                 (unsigned long)result->max_fifo_level, (unsigned long)result->max_service_gap_us,
+                (unsigned long)result->max_wake_latency_us,
+                (unsigned long)result->max_wake_isr_lateness_us,
+                (unsigned long)result->max_wake_resume_us,
+                (unsigned long)result->max_wake_fifo_level,
+                (unsigned long)result->wakes, (unsigned long)result->max_drain_us,
+                (unsigned long)result->worst_drain_spi_bytes, (unsigned long)result->max_drain_spi_bytes,
+                result->fifo_flags, atomic_load(&c->full), consumer_bad, (int)c->error);
+        else ESP_LOGI("LRIQ", "session: %lu ms, %lu KiB, maxfifo=%lu gap=%lu us wake_us=%lu isr_late=%lu resume=%lu wakefifo=%lu wakes=%lu drain_us=%lu drain_spi=%lu max_drain_spi=%lu flags=%02x queuefull=%u consumer=%u",
+                (unsigned long)(result->elapsed_us / 1000), (unsigned long)(result->validated_bytes / 1024),
+                (unsigned long)result->max_fifo_level, (unsigned long)result->max_service_gap_us,
+                (unsigned long)result->max_wake_latency_us,
+                (unsigned long)result->max_wake_isr_lateness_us,
+                (unsigned long)result->max_wake_resume_us,
+                (unsigned long)result->max_wake_fifo_level,
+                (unsigned long)result->wakes, (unsigned long)result->max_drain_us,
+                (unsigned long)result->worst_drain_spi_bytes, (unsigned long)result->max_drain_spi_bytes,
                 result->fifo_flags, atomic_load(&c->full), consumer_bad);
         if (bad) {
             P25.lr_iq_bad++;

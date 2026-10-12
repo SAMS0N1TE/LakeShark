@@ -23,6 +23,9 @@
 #include "freertos/semphr.h"
 #ifdef ESP_PLATFORM
 #include "esp_idf_version.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "hal/spi_ll.h"
+#endif
 #endif
 
 #include "ls_board.h"
@@ -186,7 +189,7 @@ static TaskHandle_t      s_lock_owner;     /* written by the holder only */
 static unsigned          s_lock_depth;     /* ditto */
 static unsigned          s_unguarded;
 
-static SemaphoreHandle_t lock_handle(void)
+static SemaphoreHandle_t IRAM_ATTR lock_handle(void)
 {
     SemaphoreHandle_t h = __atomic_load_n(&s_lock, __ATOMIC_ACQUIRE);
     if (!h) {
@@ -201,24 +204,54 @@ static SemaphoreHandle_t lock_handle(void)
     return h;
 }
 
-bool ls_lora_hw_locked_by_me(void)
+bool IRAM_ATTR ls_lora_hw_locked_by_me(void)
 {
     return __atomic_load_n(&s_lock_owner, __ATOMIC_ACQUIRE) == xTaskGetCurrentTaskHandle();
 }
 
-void ls_lora_hw_lock(void)
+void IRAM_ATTR ls_lora_hw_lock(void)
 {
+    /* Capture owns the mutex for the whole session. Nested command/frame
+       calls only change owner-local depth, avoiding kernel queue locks on
+       every SPI transaction. */
+    if (ls_lora_hw_locked_by_me()) { s_lock_depth++; return; }
     SemaphoreHandle_t h = lock_handle();
     if (xSemaphoreTakeRecursive(h, portMAX_DELAY) != pdTRUE) return;
     s_lock_depth++;
     __atomic_store_n(&s_lock_owner, xTaskGetCurrentTaskHandle(), __ATOMIC_RELEASE);
 }
 
-void ls_lora_hw_unlock(void)
+bool ls_lora_hw_try_lock(void)
+{
+    if (ls_lora_hw_locked_by_me()) { s_lock_depth++; return true; }
+    SemaphoreHandle_t h = lock_handle();
+    if (xSemaphoreTakeRecursive(h, 0) != pdTRUE) return false;
+    s_lock_depth = 1;
+    __atomic_store_n(&s_lock_owner, xTaskGetCurrentTaskHandle(), __ATOMIC_RELEASE);
+    return true;
+}
+
+bool ls_lora_diagnostic_try_begin(void)
+{
+    if (!ls_lora_hw_try_lock()) return false;
+#if LR20XX_BACKEND_BUILT
+    /* The live owner publishes this before it waits for the same mutex. Once
+       admitted here, a new stream cannot enter until the snapshot completes. */
+    if (lr20xx_stream_source2_active()) {
+        ls_lora_hw_unlock();
+        return false;
+    }
+#endif
+    return true;
+}
+
+void ls_lora_diagnostic_try_end(void) { ls_lora_hw_unlock(); }
+
+void IRAM_ATTR ls_lora_hw_unlock(void)
 {
     if (!ls_lora_hw_locked_by_me()) return;      /* not ours to give */
-    if (--s_lock_depth == 0)
-        __atomic_store_n(&s_lock_owner, (TaskHandle_t)NULL, __ATOMIC_RELEASE);
+    if (--s_lock_depth != 0) return;
+    __atomic_store_n(&s_lock_owner, (TaskHandle_t)NULL, __ATOMIC_RELEASE);
     xSemaphoreGiveRecursive(lock_handle());
 }
 
@@ -238,13 +271,32 @@ esp_err_t ls_lora_hw_capture_fast(bool enable)
         if (s_capture_fast) return ESP_ERR_INVALID_STATE;
         const esp_err_t err = spi_device_acquire_bus(s_dev, portMAX_DELAY);
         if (err != ESP_OK) return err;
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+        /* Let IDF select this device, clock source, CS and timing once. No
+           buffers/data phases: setup_priv_desc cannot enter DMA cache sync.
+           The acquired bus excludes the ISR and every other device until exit. */
+        spi_transaction_t prime = { .override_freq_hz = 16000000u };
+        esp_err_t prime_err = spi_device_polling_transmit(s_dev, &prime);
+        if (prime_err != ESP_OK) {
+            spi_device_release_bus(s_dev);
+            return prime_err;
+        }
+#endif
     } else if (s_capture_fast) spi_device_release_bus(s_dev);
     s_capture_fast = enable;
     s_capture_clock_pending = enable ? 16000000u : 2000000u;
     return ESP_OK;
 }
 
-esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
+static uint32_t s_spi_bytes;
+uint32_t IRAM_ATTR ls_lora_hw_spi_bytes(void) { return s_spi_bytes; }
+bool IRAM_ATTR ls_lora_hw_capture_active(void) { return s_capture_fast; }
+
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+#include "ls_lora_spi_cpu.h"
+#endif
+
+esp_err_t IRAM_ATTR ls_lora_hw_transmit(spi_transaction_t *t)
 {
     if (!ls_lora_hw_locked_by_me()) {
         if (__atomic_fetch_add(&s_unguarded, 1, __ATOMIC_RELAXED) == 0)
@@ -252,10 +304,15 @@ esp_err_t ls_lora_hw_transmit(spi_transaction_t *t)
     }
     ls_lora_hw_lock();
     esp_err_t err;
+    s_spi_bytes += (t->length + 7) / 8;
 #ifdef ESP_PLATFORM
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
     t->override_freq_hz = s_capture_clock_pending;
+#if CONFIG_IDF_TARGET_ESP32P4
+    err = s_capture_fast ? capture_cpu_transmit(t) : spi_device_transmit(s_dev, t);
+#else
     err = s_capture_fast ? spi_device_polling_transmit(s_dev, t) : spi_device_transmit(s_dev, t);
+#endif
     if (err == ESP_OK) s_capture_clock_pending = 0;
 #else
     err = spi_device_transmit(s_dev, t);
@@ -285,13 +342,13 @@ static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
    direction: the driver is single-threaded by contract. */
 static uint8_t *s_pkt;
 
-spi_device_handle_t ls_lora_hw_dev(void) { return s_dev; }
-uint8_t *ls_lora_hw_pkt(void) { return s_pkt; }
+spi_device_handle_t IRAM_ATTR ls_lora_hw_dev(void) { return s_dev; }
+uint8_t * IRAM_ATTR ls_lora_hw_pkt(void) { return s_pkt; }
 /* The command lock protects the descriptor, inline DMA storage and packet
    buffer, including copyback. Callers may have external-RAM stacks. */
 static DRAM_ATTR spi_transaction_t s_transfer __attribute__((aligned(4)));
 
-esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
+esp_err_t IRAM_ATTR ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     if (!n || n > 259) return ESP_ERR_INVALID_SIZE;
@@ -325,7 +382,7 @@ int ls_lora_hw_busy_level(void) { return gpio_get_level(BUSY_PIN); }
    worst case is the crystal start after a cold reset, which is handled
    separately below with a longer budget. */
 /* Spin briefly, then yield. */
-bool ls_lora_hw_wait_not_busy(int timeout_ms)
+bool IRAM_ATTR ls_lora_hw_wait_not_busy(int timeout_ms)
 {
     if (ls_lora_hw_locked_by_me() && s_capture_fast) {
         /* The raw FIFO holds only 512 us at 125 ksample/s. A tick sleep after
@@ -590,6 +647,13 @@ void ls_lora_stop(void)
     s_chip = LS_LORA_CHIP_NONE;
     s_ops = &ls_lora_sx126x_ops;
     ls_lora_hw_unlock();
+}
+
+void ls_lora_tx_cancel_request(void)
+{
+#if LR20XX_BACKEND_BUILT
+    ls_lora_lr20xx_tx_cancel_request();
+#endif
 }
 
 ls_lora_chip_t ls_lora_chip(void) { return s_chip; }
@@ -878,6 +942,7 @@ void ls_lora_diagnostics(void)
 
 esp_err_t ls_lora_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 void      ls_lora_stop(void) { }
+void      ls_lora_tx_cancel_request(void) { }
 esp_err_t ls_lora_park(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool      ls_lora_present(void) { return false; }
 ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_NONE; }
@@ -887,6 +952,8 @@ esp_err_t ls_lora_status(uint8_t *out) { (void)out; return ESP_ERR_NOT_SUPPORTED
 esp_err_t ls_lora_read_reg(uint16_t a, uint8_t *b, size_t l)
 { (void)a; (void)b; (void)l; return ESP_ERR_NOT_SUPPORTED; }
 void ls_lora_diagnostics(void) { printf("lora: board declares none\n"); }
+bool ls_lora_diagnostic_try_begin(void) { return true; }
+void ls_lora_diagnostic_try_end(void) { }
 void ls_lora_cfg_default(ls_lora_cfg_t *o) { if (o) memset(o, 0, sizeof(*o)); }
 esp_err_t ls_lora_configure(const ls_lora_cfg_t *c) { (void)c; return ESP_ERR_NOT_SUPPORTED; }
 const ls_lora_cfg_t *ls_lora_cfg(void) { return NULL; }

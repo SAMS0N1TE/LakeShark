@@ -109,3 +109,19 @@ LS_CASE(a_slow_source_reports_its_row_rate_from_the_second_row)
     ls_wf_stats(&st);
     LS_EQ_INT(19000, (int)st.row_ms);
 }
+
+LS_CASE(lr_gap_marker_survives_later_rows_and_display_decimation)
+{
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL); ls_wf_claim(LS_WF_OWNER_LORA, "LR IQ");
+    ls_wf_cfg_t cfg = *ls_wf_cfg(); cfg.avg = 1; cfg.decim = 2;
+    cfg.grain = LS_WF_GRAIN_ASCII; cfg.split_pct = 0; cfg.paused = false;
+    ls_wf_cfg_set(&cfg);
+    float bins[256] = {0};
+    ls_wf_feed_t feed = {.center_hz=433920000, .span_hz=125000,
+        .floor_db=-100, .top_db=0, .live=true, .iq=true, .gap=true, .period_ms=100};
+    ls_wf_push(LS_WF_OWNER_LORA, bins, 256, &feed);
+    feed.gap = false;
+    for (int i=0; i<3; ++i) ls_wf_push(LS_WF_OWNER_LORA, bins, 256, &feed);
+    LS_CHECK(pane_says("!"));
+    cfg.decim = 1; ls_wf_cfg_set(&cfg);
+}

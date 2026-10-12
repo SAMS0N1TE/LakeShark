@@ -19,6 +19,7 @@
 #define LS_PIXEL_WF_H
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "ls_tui.h"
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,7 @@ typedef struct {
     int bins;             /* codes per line                                  */
     int lines;            /* history held: the picture's extent along time   */
     int freq_px;          /* the picture's extent along frequency            */
+    size_t hist_capacity, pixel_capacity, axis_capacity;
     uint8_t *hist;        /* lines x bins                                    */
     uint16_t *img;        /* w x h RGB565, a ring along time                 */
     /* Bins read by each pixel along frequency, both inclusive, in picture
@@ -58,6 +60,8 @@ typedef struct {
 
 /* (Re)size: a new size or bin count starts an empty history. False when
    PSRAM is short; the renderer is then empty and draws nothing. */
+/* Reserve once at display initialization; sizing reuses these capacities. */
+bool ls_pwf_reserve(ls_pwf_t *p, size_t pixels, size_t history, size_t axis);
 bool ls_pwf_size(ls_pwf_t *p, ls_pwf_flow_t flow, int w, int h, int bins);
 /* Give the pixels and the panel's cells back. */
 void ls_pwf_free(ls_pwf_t *p);

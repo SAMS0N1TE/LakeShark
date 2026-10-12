@@ -1325,9 +1325,7 @@ static void dsd_decoder_task(void *arg)
                    ESP_LOGW is what headless-p25-wifi6 used, and "P25QUAL" is
                    not in LOG_QUIET_TAGS, so it shows without a `log` command. */
                 /* rel/disc/muted are IMBE frames: voice held for proof and
-                   then played, held and dropped, and muted as encrypted. A
-                   choppy call with muted=0 and disc=0 lost its voice before
-                   the decoder - sync, not policy. */
+                   then played, held and dropped, and muted as encrypted. */
                 /* imbe/clean/rough: IMBE frames decoded and how many had 0-2
                    or 6+ bits corrected; rpt/emute what the repeat rule did;
                    nidfix the NIDs taken from the call's NAC; erase the frames
@@ -1999,10 +1997,11 @@ static int p25_lora_feed(void)
    experiment, a sweep, LoRa Labs), or the chip keeps failing. Tunes and
    grants arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ
    and are not done here. Returns with the chip handed back to the mesh. */
-static atomic_bool s_lr_iq_requested;
+static atomic_bool s_lr_iq_requested = true;
 bool p25_lr_iq_select(bool enabled)
 {
     if (enabled && strcmp(ls_lora_chip_name(), "LR2021")) return false;
+    if (!settings_set_p25_lr_iq(enabled)) return false;
     atomic_store(&s_lr_iq_requested, enabled);
     P25.lr_iq_requested = enabled;
     return true;
@@ -2053,7 +2052,8 @@ static void p25_lora_run(void)
     int64_t now = esp_timer_get_time();
     int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
 
-    while (s_app_active && !ls_mesh_radio_wanted() && !atomic_load(&s_lr_iq_requested)) {
+    while (s_app_active && !ls_mesh_radio_wanted() &&
+           (!atomic_load(&s_lr_iq_requested) || strcmp(ls_lora_chip_name(), "LR2021"))) {
         const int64_t t_iter = esp_timer_get_time();
         uint32_t want_hz = 0;
         ls_iq_control_request_t request = {0};
@@ -2293,8 +2293,11 @@ static void p25_rx_task(void *arg)
     P25.dsd_buffers_ok = false;
     atomic_store_explicit(&s_dsd_start, P25_DSD_START_PENDING,
                           memory_order_release);
+    /* LR2021 raw IQ keeps its capture on core 0 at the top priority, waking every
+       400 us; there the decoder fell behind and its ring overflowed every ~2 s. */
     bool decoder_created = !s_dsd_running && ls_radio_decode_worker_start(
-        dsd_decoder_task, "dsd_decode", 10, 0);
+        dsd_decoder_task, "dsd_decode", 10,
+        atomic_load(&s_lr_iq_requested) && !strcmp(ls_lora_chip_name(), "LR2021") ? 1 : 0);
     if (!decoder_created) {
         atomic_store_explicit(&s_dsd_start, P25_DSD_START_FAILED,
                               memory_order_release);
@@ -2355,7 +2358,7 @@ static void p25_rx_task(void *arg)
         }
         p25_split_radio_service();
         if (!s_session && p25_lora_wanted()) {
-            if (atomic_load(&s_lr_iq_requested)) p25_lr_iq_run();
+            if (atomic_load(&s_lr_iq_requested) && !strcmp(ls_lora_chip_name(), "LR2021")) p25_lr_iq_run();
             else p25_lora_run();
             continue;
         }
@@ -3087,5 +3090,8 @@ int p25_app_register(void)
     /* Here, on the boot task: the P25 tasks' stacks are in PSRAM, where a
        flash read asserts. */
     p25_lr_gain_put((uint8_t)settings_get_p25_lr_gain());
+    const bool iq = settings_get_p25_lr_iq();
+    atomic_store(&s_lr_iq_requested, iq);
+    P25.lr_iq_requested = iq;
     return app_register(&P25_APP);
 }

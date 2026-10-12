@@ -1253,6 +1253,9 @@ class TrackedReferenceTests(unittest.TestCase):
             if (name == 'components/cartocore/upstream/PROVENANCE.txt'
                     or name.startswith(self.SKIP) or name.startswith(self.NOT_READ)):
                 continue
+            # Private notes never ship, so what they name is not a tree dependency.
+            if _under_private_surface(ROOT / name):
+                continue
             try:
                 text = (ROOT / name).read_text(encoding='utf-8')
             except (UnicodeDecodeError, OSError):

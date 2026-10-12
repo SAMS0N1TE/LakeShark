@@ -24,6 +24,10 @@
 #include "ls_tui_ui.h"
 #include "ls_value.h"
 #include "ls_waterfall.h"
+#include "ls_wf_source.h"
+void ls_wf_source_select(ls_wf_src_t src) { (void)src; }
+void ls_wf_source_pump(void) {}
+void ls_wf_source_release(void) {}
 #include "ls_anim.h"
 #include "tui_core.h"
 

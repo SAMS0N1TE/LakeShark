@@ -44,6 +44,7 @@ static bool         s_update_check = true;
 static int s_boot_sound = 1;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
+static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
@@ -308,6 +309,7 @@ bool settings_init(void)
     __atomic_store_n(&s_alert_vibe,true,__ATOMIC_RELEASE);
     s_audio_muted=false;
     s_map_layers_valid=false;
+    s_wf_display=UINT32_MAX;
     s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
@@ -337,6 +339,7 @@ bool settings_init(void)
 
     /**/  settings_apply_schema();
     settings_drop_sam_voice_keys();
+    nvs_get_u32(s_nvs, "wf_display", &s_wf_display);
     s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
@@ -399,7 +402,7 @@ bool settings_init(void)
             .probe = (int)((pagers >> 40) & 15) - 1, .method = (pagers >> 44) & 3 };
         if ((pagers >> 48) == 1 && cfg.hz >= 150000000 && cfg.hz <= 1100000000 &&
             cfg.plan <= 2 && cfg.dwell >= 2 && cfg.dwell <= 60 &&
-            cfg.probe >= -1 && cfg.probe < 8 && cfg.method <= 2)
+            cfg.probe >= -1 && cfg.probe < 8 && cfg.method <= 3)
             s_pagers = pagers;
     }
     uint64_t radio_choice = LS_RSEL_PACKED_NONE;
@@ -884,6 +887,19 @@ int settings_get_p25_lr_gain(void)
     if (nvs_get_u8(s_nvs, "p25_lrgain", &v) != ESP_OK || v > 13) return 0;
     return (int)v;
 }
+bool settings_get_p25_lr_iq(void)
+{
+    uint8_t v = 1;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "p25_lriq", &v) != ESP_OK || v > 1)
+        return true;
+    return v != 0;
+}
+
+bool settings_set_p25_lr_iq(bool enabled)
+{
+    return sput_u8("p25_lriq", enabled ? 1 : 0);
+}
+
 void settings_set_p25_lr_gain(int step)
 {
     if (!s_nvs_ok) return;
@@ -962,12 +978,12 @@ void settings_set_compass_options(int options)
 /* MAP: which overlay layers are shown, as bits; `fallback` when unset. */
 uint32_t settings_get_waterfall(uint32_t fallback)
 {
-    if (!s_nvs_ok) return fallback;
-    uint32_t v;
-    return nvs_get_u32(s_nvs, "wf_display", &v) == ESP_OK ? v : fallback;
+    const uint32_t v = __atomic_load_n(&s_wf_display, __ATOMIC_ACQUIRE);
+    return v == UINT32_MAX ? fallback : v;
 }
 void settings_set_waterfall(uint32_t value)
 {
+    __atomic_store_n(&s_wf_display, value, __ATOMIC_RELEASE);
     (void)sput_u32("wf_display", value);
 }
 uint32_t settings_get_map_layers(uint32_t fallback)
@@ -1420,7 +1436,7 @@ void settings_get_pagers(settings_pagers_t *out)
 bool settings_set_pagers(const settings_pagers_t *cfg)
 {
     if (!cfg || cfg->hz < 150000000 || cfg->hz > 1100000000 || cfg->plan > 2 ||
-        cfg->dwell < 2 || cfg->dwell > 60 || cfg->probe < -1 || cfg->probe >= 8 || cfg->method > 2)
+        cfg->dwell < 2 || cfg->dwell > 60 || cfg->probe < -1 || cfg->probe >= 8 || cfg->method > 3)
         return false;
     const uint64_t v = cfg->hz | ((uint64_t)cfg->plan << 32) | ((uint64_t)cfg->dwell << 34) |
         ((uint64_t)(cfg->probe + 1) << 40) | ((uint64_t)cfg->method << 44) | (1ULL << 48);

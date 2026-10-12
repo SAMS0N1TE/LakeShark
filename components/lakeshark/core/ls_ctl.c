@@ -42,6 +42,7 @@
 #include "cell_iq.h"
 #include "cell_report.h"
 #include "esp_timer.h"
+#include "lr_iq_spectrum.h"
 #include "esp_console.h"
 #include "esp_system.h"
 #include "driver/uart.h"
@@ -387,6 +388,25 @@ static const char *dmr_class_name(dmr_sync_class_t c)
     case DMR_SYNC_MS_DATA:  return "MS data";
     default:                return "none";
     }
+}
+
+static int cmd_fmlr(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    printf("FMLR active=%d hz=%lu ch=%lu sql=%d lost=%lu gaps=%lu drops=%lu\n", FM.lr_iq_active,
+           (unsigned long)FM.freq_hz, (unsigned long)FM.lr_channel_hz, FM.squelch_open,
+           (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps, (unsigned long)FM.lr_audio_drops);
+    return 0;
+}
+
+static int cmd_wf(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    bool on; uint32_t hz, lines, gaps, skipped;
+    lr_spec_stats(&on, &hz, &lines, &gaps, &skipped);
+    printf("LRWF on=%d center=%lu lines=%lu gaps=%lu skipped=%lu\n", on, (unsigned long)hz,
+           (unsigned long)lines, (unsigned long)gaps, (unsigned long)skipped);
+    return 0;
 }
 
 static int cmd_dmr(int argc, char **argv)
@@ -1298,6 +1318,10 @@ void ls_ctl_register_commands(void)
         { .command = "p25gate", .help = "P25 voice error gate (lower=mute weak frames)",
           .hint = "<0-99>", .func = &cmd_p25gate },
         /**/
+        { .command = "fmlr", .help = "FM on the LR2021: active, frequency, squelch, losses",
+          .func = &cmd_fmlr },
+        { .command = "wf", .help = "LR2021 IQ waterfall: on, centre, lines, gaps, skipped",
+          .func = &cmd_wf },
         { .command = "p25tsbk",
           .help = "P25 control-channel state: IDEN, neighbours, unhandled opcodes",
           .func = &cmd_p25tsbk },

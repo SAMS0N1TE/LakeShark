@@ -207,3 +207,52 @@ static audio_player_state_t s_audio_state = AUDIO_PLAYER_STATE_IDLE;
 
 audio_player_state_t audio_player_get_state(void)         { return s_audio_state; }
 void ls_shim_audio_state_set(audio_player_state_t state)  { s_audio_state = state; }
+
+/* Host one-shot timer model; tests run synchronously with virtual time. */
+struct ls_shim_timer {
+    esp_timer_create_args_t args;
+    int64_t due;
+    bool armed;
+};
+static esp_timer_handle_t s_wait_timer;
+static void (*s_wait_hook)(void);
+static int64_t s_wait_late;
+static unsigned s_timer_count;
+void ls_shim_timer_wait_hook(void (*hook)(void), int64_t late_us)
+{ s_wait_hook = hook; s_wait_late = late_us; }
+unsigned ls_shim_timer_count(void) { return s_timer_count; }
+esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *out)
+{
+    *out = calloc(1, sizeof(**out));
+    if (!*out) return ESP_ERR_NO_MEM;
+    (*out)->args = *args; ++s_timer_count;
+    return ESP_OK;
+}
+esp_err_t esp_timer_start_once(esp_timer_handle_t t, uint64_t us)
+{
+    if (!t || t->armed || s_wait_timer) return ESP_ERR_INVALID_STATE;
+    t->due = esp_timer_get_time() + us; t->armed = true; s_wait_timer = t;
+    return ESP_OK;
+}
+esp_err_t esp_timer_stop(esp_timer_handle_t t)
+{
+    if (!t) return ESP_ERR_INVALID_ARG;
+    t->armed = false;
+    if (s_wait_timer == t) s_wait_timer = NULL;
+    return ESP_OK;
+}
+esp_err_t esp_timer_delete(esp_timer_handle_t t)
+{ esp_timer_stop(t); free(t); --s_timer_count; return ESP_OK; }
+void esp_timer_isr_dispatch_need_yield(void) {}
+bool ls_shim_timer_notify_wait(void)
+{
+    esp_timer_handle_t t = s_wait_timer;
+    if (!t) return false;
+    if (s_wait_hook) s_wait_hook();
+    int64_t delta = t->due - esp_timer_get_time();
+    if (delta > 0) ls_shim_time_advance(delta);
+    t->armed = false; s_wait_timer = NULL;
+    t->args.callback(t->args.arg);
+    ls_shim_time_advance(s_wait_late);
+    return true;
+}

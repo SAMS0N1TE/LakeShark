@@ -69,6 +69,20 @@ bool ls_tui_screen_holds_rotation(void);
    range. Exists so the console can say which screen an injected key
    reached - driving this board blind over serial is the normal case. */
 const char *ls_tui_screen_name(int index);
+/* Last eight requests, oldest first. Completion is the first presented frame
+   containing the destination body after its opening animation. Superseded
+   requests remain visible with complete=false. All times are monotonic. */
+typedef struct {
+    int from, to;
+    uint32_t first_us, last_us, frames, worst_us, worst_cells;
+    uint32_t writeback_us, worst_writeback_us;
+    /* Same worst frame: app composition and raster/diff (excluding sync). */
+    uint32_t worst_draw_us, worst_raster_us;
+    bool complete;
+} ls_tui_transition_t;
+int ls_tui_transitions(ls_tui_transition_t out[8]);
+void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us);
+
 void ls_tui_screen_show(int index);
 
 /* "Run this receiver", or NULL for "nothing here needs one". */

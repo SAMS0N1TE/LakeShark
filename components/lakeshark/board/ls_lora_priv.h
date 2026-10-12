@@ -96,6 +96,9 @@ spi_device_handle_t ls_lora_hw_dev(void);
    hold it several times over. Task context only. Keep a hold to one command
    sequence; never across a wait that is not a single command's BUSY wait. */
 void ls_lora_hw_lock(void);
+/* Cold-path admission for experimental TX control; never block behind an
+   existing capture or radio owner. Nested calls by the current owner succeed. */
+bool ls_lora_hw_try_lock(void);
 void ls_lora_hw_unlock(void);
 /* Whether the calling task holds it. */
 bool ls_lora_hw_locked_by_me(void);
@@ -105,10 +108,13 @@ bool ls_lora_hw_locked_by_me(void);
    zero, because a sequence that reaches here unguarded is one a second task
    can interleave with. */
 esp_err_t ls_lora_hw_transmit(spi_transaction_t *t);
-/* Capture-only 16 MHz polling transfers (IDF >=5.5). Caller must hold the
+/* Modulo byte count of attempted wire transfers; caller holds radio lock. */
+uint32_t ls_lora_hw_spi_bytes(void);
+/* Capture-only 16 MHz transfers (IDF >=5.5), CPU FIFO on P4. Caller must hold the
    radio lock throughout and disable before unlocking. The next transfer
    after disabling restores the normal 2 MHz device clock. */
 esp_err_t ls_lora_hw_capture_fast(bool enable);
+bool ls_lora_hw_capture_active(void);
 /* Command lock must cover fill, transfer and reply copy. */
 esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n);
 unsigned  ls_lora_hw_unguarded(void);

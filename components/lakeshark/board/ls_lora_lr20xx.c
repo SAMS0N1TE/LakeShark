@@ -56,7 +56,7 @@ static unsigned s_exp_preset, s_exp_channel, s_exp_fec;
 
 /* ------------------------------------------------------------------ pure -- */
 
-bool lr20xx_stat_plausible(uint16_t stat)
+bool IRAM_ATTR lr20xx_stat_plausible(uint16_t stat)
 {
     if (stat & 0xF000u) return false;           /* bits 15:12 are defined 0 */
     if (stat & 0x0008u) return false;           /* rfu */
@@ -89,7 +89,7 @@ float lr20xx_rssi_dbm(uint8_t b0, uint8_t b1)
 
 /* ---------------------------------------------------------------- frames -- */
 
-uint16_t lr20xx_last_stat(void) { return s_stat; }
+uint16_t IRAM_ATTR lr20xx_last_stat(void) { return s_stat; }
 uint32_t lr20xx_last_irq(void)  { return s_irq; }
 
 /* The last few frames, opcode and the Stat each one clocked back: Stat in a
@@ -131,7 +131,7 @@ static bool take_reset(uint16_t stat)
     return r;
 }
 
-static esp_err_t frame(uint8_t *io, size_t n)
+static esp_err_t IRAM_ATTR frame(uint8_t *io, size_t n)
 {
     spi_device_handle_t dev = ls_lora_hw_dev();
     if (!dev) return ESP_ERR_INVALID_STATE;
@@ -179,7 +179,7 @@ esp_err_t lr20xx_write(uint16_t op, const uint8_t *args, size_t n)
     LOCKED_RET(esp_err_t, write_locked(op, args, n));
 }
 
-static esp_err_t read_locked(uint16_t op, const uint8_t *args, size_t n,
+static esp_err_t IRAM_ATTR read_locked(uint16_t op, const uint8_t *args, size_t n,
                              uint8_t *out, size_t m)
 {
     if (2 + n > FRAME_MAX || 2 + m > FRAME_MAX || m > 14 || (n && !args))
@@ -554,10 +554,10 @@ esp_err_t lr20xx_clear_rx_fifo(void)
     return lr20xx_write(LR20XX_OP_CLEAR_RX_FIFO, NULL, 0);
 }
 
-static esp_err_t get_rx_fifo_level_locked(uint16_t *level)
+static esp_err_t IRAM_ATTR get_rx_fifo_level_locked(uint16_t *level)
 {
     uint8_t d[2] = { 0, 0 };
-    esp_err_t err = lr20xx_read(LR20XX_OP_GET_RX_FIFO_LVL, NULL, 0, d, sizeof(d));
+    esp_err_t err = read_locked(LR20XX_OP_GET_RX_FIFO_LVL, NULL, 0, d, sizeof(d));
     if (err != ESP_OK) return err;
     const uint16_t s = lr20xx_last_stat();
     if (!lr20xx_stat_plausible(s) || s == 0x0000 || LR20XX_STAT_CMD(s) < LR20XX_CMD_OK)
@@ -571,24 +571,36 @@ esp_err_t lr20xx_get_rx_fifo_level(uint16_t *level)
     LOCKED_RET(esp_err_t, get_rx_fifo_level_locked(level));
 }
 
+static bool IRAM_ATTR read_stat_ok(void);
+
 #define FIFO_READ_MAX 257   /* the 259-byte packet buffer less the two Stat bytes */
 
-static esp_err_t read_rx_fifo_locked(uint8_t *dst, size_t n)
+static esp_err_t IRAM_ATTR read_rx_fifo_locked(uint8_t *dst, size_t n)
 {
     uint8_t *pkt = ls_lora_hw_pkt();
     if (!pkt) return ESP_ERR_INVALID_STATE;
     if (!dst || n == 0 || n > FIFO_READ_MAX) return ESP_ERR_INVALID_ARG;
-    if (!ls_lora_hw_wait_not_busy(20)) {
-        ESP_LOGW(TAG, "busy stuck high before the FIFO read");
-        s_fail_run++;
-        return ESP_ERR_TIMEOUT;
+    /* Two opcode/status bytes leave 62 payload bytes in the CPU SPI FIFO.
+       Keep caller/sink block sizes and continuity accounting unchanged. */
+    const size_t max_payload = ls_lora_hw_capture_active() ? 62u : FIFO_READ_MAX;
+    while (n) {
+        const size_t part = n > max_payload ? max_payload : n;
+        if (!ls_lora_hw_wait_not_busy(20)) {
+            ESP_LOGW(TAG, "busy stuck high before the FIFO read");
+            s_fail_run++;
+            return ESP_ERR_TIMEOUT;
+        }
+        memset(pkt, 0, 2 + part);
+        pkt[0] = (uint8_t)(LR20XX_OP_READ_RX_FIFO >> 8);
+        pkt[1] = (uint8_t)LR20XX_OP_READ_RX_FIFO;
+        esp_err_t err = frame(pkt, 2 + part);
+        if (err != ESP_OK) return err;
+        /* Do not let a later chunk hide an error in an earlier status. */
+        if (ls_lora_hw_capture_active() && !read_stat_ok()) return ESP_ERR_INVALID_RESPONSE;
+        memcpy(dst, &pkt[2], part);
+        dst += part;
+        n -= part;
     }
-    memset(pkt, 0, 2 + n);
-    pkt[0] = (uint8_t)(LR20XX_OP_READ_RX_FIFO >> 8);
-    pkt[1] = (uint8_t)LR20XX_OP_READ_RX_FIFO;
-    esp_err_t err = frame(pkt, 2 + n);
-    if (err != ESP_OK) return err;
-    memcpy(dst, &pkt[2], n);
     return ESP_OK;
 }
 
@@ -829,7 +841,7 @@ esp_err_t lr20xx_lora_set_syncword(uint8_t sync_word)
 }
 
 /* A read whose Stat says it was answered. */
-static bool read_stat_ok(void)
+static bool IRAM_ATTR read_stat_ok(void)
 {
     const uint16_t s = lr20xx_last_stat();
     return lr20xx_stat_plausible(s) && s != 0x0000 && LR20XX_STAT_CMD(s) >= LR20XX_CMD_OK;
@@ -3487,6 +3499,123 @@ static esp_err_t iq_fifo_verify(void)
     return e;
 }
 
+/* The dedicated capture task reserves notification index 0 for this one-shot
+   timer. Keep both timer-deadline and ISR-fire timestamps so field logs can
+   distinguish a late timer interrupt from delayed task scheduling. */
+typedef struct {
+    TaskHandle_t task;
+    volatile int64_t deadline_us;
+    volatile int64_t fired_us;
+} iq_wake_context_t;
+
+static void IRAM_ATTR iq_wake(void *arg)
+{
+    iq_wake_context_t *wake = arg;
+    wake->fired_us = esp_timer_get_time();
+    BaseType_t woken = pdFALSE;
+    vTaskNotifyGiveFromISR(wake->task, &woken);
+    if (woken) esp_timer_isr_dispatch_need_yield();
+}
+
+static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, lr20xx_iq_sink_t sink,
+        void *context, lr20xx_stream_result_t *out, bool checked, bool live,
+        unsigned capacity, uint8_t *data, uint8_t *pending, size_t *tail_bytes,
+        esp_timer_handle_t wake_timer, iq_wake_context_t *wake)
+{
+    const int64_t started = esp_timer_get_time();
+    int64_t previous_poll = started;
+    bool woke = false;
+    size_t pending_bytes = *tail_bytes;
+    esp_err_t err = ESP_OK;
+    while (err == ESP_OK && !out->stopped_by_sink &&
+           (live || esp_timer_get_time() - started < (int64_t)duration_ms * 1000)) {
+        int64_t now = esp_timer_get_time(), gap = now - previous_poll;
+        if (gap > out->max_service_gap_us) out->max_service_gap_us = gap;
+        previous_poll = now;
+        const uint32_t spi_start = ls_lora_hw_spi_bytes();
+        uint16_t level = 0;
+        err = get_rx_fifo_level_locked(&level);
+        out->polls++;
+        if (woke && level > out->max_wake_fifo_level) out->max_wake_fifo_level = level;
+        woke = false;
+        if (level > out->max_fifo_level) out->max_fifo_level = level;
+        /* Full is conservatively treated as loss even before reading flags. */
+        if (err == ESP_OK && level >= capacity) err = ESP_ERR_INVALID_SIZE;
+        size_t remaining = level & ~3u;
+        /* Drain the observed backlog without another two-frame level query
+           between chunks. Every SPI read stays within the transport buffer. */
+        while (err == ESP_OK && remaining) {
+            size_t n = remaining > 256u ? 256u : remaining;
+            err = read_rx_fifo_locked(data, n);
+            if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+            if (err == ESP_OK) {
+                const uint64_t first_pair = out->bytes / 4;
+                out->bytes += n;
+                if (checked) {
+                    memcpy(pending + pending_bytes, data, n); pending_bytes += n;
+                    if (pending_bytes >= 1024) {
+                        uint8_t flags[2] = {0};
+                        err = read_locked(0x011B, NULL, 0, flags, 2);
+                        if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+                        out->fifo_flags |= flags[0];
+                        if (err == ESP_OK && (flags[0] & 0x30)) err = ESP_ERR_INVALID_RESPONSE;
+                        if (err == ESP_OK) {
+                            bool more = sink(context, pending, pending_bytes, out->validated_bytes / 4);
+                            if (more) out->validated_bytes += pending_bytes;
+                            pending_bytes = 0;
+                            if (!more) { out->stopped_by_sink = true; break; }
+                        }
+                    }
+                } else if (!sink(context, data, n, first_pair)) { out->stopped_by_sink = true; break; }
+            }
+            remaining -= n;
+        }
+        const int64_t drain_us = esp_timer_get_time() - now;
+        const uint32_t spi_bytes = ls_lora_hw_spi_bytes() - spi_start;
+        if (drain_us > out->max_drain_us) {
+            out->max_drain_us = drain_us;
+            out->worst_drain_spi_bytes = spi_bytes;
+        }
+        if (spi_bytes > out->max_drain_spi_bytes) out->max_drain_spi_bytes = spi_bytes;
+        /* Re-measure after SPI and sink work: the pre-drain level says nothing
+           about the remaining headroom. At 500 bytes/ms, 256 bytes leaves
+           1536 us before full, well over the 400 us sleep and wake-to-read.
+           A drain lasts long enough that the residual is never 32 bytes:
+           at that threshold the loop never slept and starved core 0.
+           A high residual goes straight back to draining, never to sleep. */
+        if (live && err == ESP_OK && !out->stopped_by_sink) {
+            uint16_t residual = 0;
+            err = get_rx_fifo_level_locked(&residual);
+            out->polls++;
+            if (residual > out->max_fifo_level) out->max_fifo_level = residual;
+            if (err == ESP_OK && residual >= capacity) err = ESP_ERR_INVALID_SIZE;
+            if (err == ESP_OK && residual <= LR20XX_LIVE_SLEEP_LEVEL) {
+                wake->deadline_us = esp_timer_get_time() + LR20XX_LIVE_WAKE_US;
+                wake->fired_us = 0;
+                err = esp_timer_start_once(wake_timer, LR20XX_LIVE_WAKE_US);
+                if (err == ESP_OK) {
+                    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                    const int64_t resumed = esp_timer_get_time();
+                    const int64_t fired = wake->fired_us;
+                    const int64_t isr_late = fired - wake->deadline_us;
+                    const int64_t resume_late = resumed - fired;
+                    const int64_t late = resumed - wake->deadline_us;
+                    if (late > out->max_wake_latency_us) out->max_wake_latency_us = late;
+                    if (isr_late > out->max_wake_isr_lateness_us)
+                        out->max_wake_isr_lateness_us = isr_late;
+                    if (resume_late > out->max_wake_resume_us)
+                        out->max_wake_resume_us = resume_late;
+                    out->wakes++;
+                    woke = true;
+                }
+            }
+        }
+    }
+    out->elapsed_us = esp_timer_get_time() - started;
+    *tail_bytes = pending_bytes;
+    return err;
+}
+
 /* Mode 1 directs raw source samples into the ordinary RX FIFO. */
 static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
                                void *context, lr20xx_stream_result_t *out, bool checked, bool live)
@@ -3499,6 +3628,25 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
        RAM, allocated once before taking the radio lock, never in the sink. */
     uint8_t *data = heap_caps_malloc(256u + 1280u, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!data) { out->capture_error = ESP_ERR_NO_MEM; return ESP_ERR_NO_MEM; }
+    esp_timer_handle_t wake_timer = NULL;
+    iq_wake_context_t wake_context = {
+        .task = xTaskGetCurrentTaskHandle(),
+        .deadline_us = 0,
+        .fired_us = 0,
+    };
+    if (live) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = iq_wake, .arg = &wake_context,
+            .dispatch_method = ESP_TIMER_ISR, .name = "lr_iq_wake",
+        };
+        esp_err_t timer_err = esp_timer_create(&timer_args, &wake_timer);
+        if (timer_err != ESP_OK) {
+            heap_caps_free(data);
+            out->capture_error = timer_err;
+            return timer_err;
+        }
+        (void)ulTaskNotifyTake(pdTRUE, 0);
+    }
     uint8_t *pending = data + 256;
     ls_lora_hw_lock();
     esp_err_t err = s_bound && s_info.lr2021 && s_info.fw_major == 1 &&
@@ -3532,59 +3680,9 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
        SetRx/GetStatus. Define the stream after discarding that startup data. */
     if (err == ESP_OK) err = lr20xx_clear_rx_fifo();
     if (err == ESP_OK) err = lr20xx_write(0x0114, clear_flags, 2);
-    const int64_t started = esp_timer_get_time();
-    int64_t previous_poll = started, last_yield = started;
     size_t pending_bytes = 0;
-    while (err == ESP_OK && !out->stopped_by_sink &&
-           (live || esp_timer_get_time() - started < (int64_t)duration_ms * 1000)) {
-        int64_t now = esp_timer_get_time(), gap = now - previous_poll;
-        if (gap > out->max_service_gap_us) out->max_service_gap_us = gap;
-        previous_poll = now;
-        uint16_t level = 0;
-        err = lr20xx_get_rx_fifo_level(&level);
-        out->polls++;
-        if (level > out->max_fifo_level) out->max_fifo_level = level;
-        /* Full is conservatively treated as loss even before reading flags. */
-        if (err == ESP_OK && level >= capacity) err = ESP_ERR_INVALID_SIZE;
-        size_t remaining = level & ~3u;
-        /* Drain the observed backlog without another two-frame level query
-           between chunks. Every SPI read stays within the transport buffer. */
-        while (err == ESP_OK && remaining) {
-            size_t n = remaining > 256u ? 256u : remaining;
-            err = lr20xx_read_rx_fifo(data, n);
-            if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
-            if (err == ESP_OK) {
-                const uint64_t first_pair = out->bytes / 4;
-                out->bytes += n;
-                if (checked) {
-                    memcpy(pending + pending_bytes, data, n); pending_bytes += n;
-                    if (pending_bytes >= 1024) {
-                        uint8_t flags[2] = {0};
-                        err = lr20xx_read(0x011B, NULL, 0, flags, 2);
-                        if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
-                        out->fifo_flags |= flags[0];
-                        if (err == ESP_OK && (flags[0] & 0x30)) err = ESP_ERR_INVALID_RESPONSE;
-                        if (err == ESP_OK) {
-                            bool more = sink(context, pending, pending_bytes, out->validated_bytes / 4);
-                            if (more) out->validated_bytes += pending_bytes;
-                            pending_bytes = 0;
-                            if (!more) { out->stopped_by_sink = true; break; }
-                        }
-                    }
-                } else if (!sink(context, data, n, first_pair)) { out->stopped_by_sink = true; break; }
-            }
-            remaining -= n;
-        }
-        /* A sustained producer must let the decoder and idle watchdog run.
-           Only the extended FIFO has room for a tick. Check sticky loss flags
-           before publishing the next block; never hide an excessive delay. */
-        if (live && err == ESP_OK && !out->stopped_by_sink && level <= 512 &&
-            now - last_yield >= 250) {
-            vTaskDelay(1);
-            last_yield = esp_timer_get_time();
-        }
-    }
-    out->elapsed_us = esp_timer_get_time() - started;
+    if (err == ESP_OK) err = iq_stream_loop(duration_ms, sink, context, out, checked,
+            live, capacity, data, pending, &pending_bytes, wake_timer, &wake_context);
     if (touched) {
         /* Check sticky flags after the last delivered block, before stopping.
            SetStandby can leave the producer running during its transition;
@@ -3615,6 +3713,10 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
     out->capture_error = err;
     out->sample_rate_hz = 125000; /* source2 at BW31.25k; nominal, not ppm-calibrated */
     ls_lora_hw_unlock();
+    if (wake_timer) {
+        (void)esp_timer_stop(wake_timer);
+        (void)esp_timer_delete(wake_timer);
+    }
     heap_caps_free(data);
     return err != ESP_OK ? err : out->recovery_error;
 }
@@ -3766,8 +3868,12 @@ static int capture_fifo_probe_command(int argc, char **argv)
     return err == ESP_OK ? 0 : 1;
 }
 
+#include "lr2021_tx_upload.inc"
+
 int lr20xx_clock_command(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "lrtx-upload")) return lrtx_upload_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrtx-send")) return lrtx_send_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrfifo-size")) {
         uint32_t n = 0;
         if (argc != 2 && (argc != 3 || !probe_number(argv[2], 1024, &n) ||

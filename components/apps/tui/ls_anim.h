@@ -17,10 +17,11 @@ extern "C" {
    second one, not queue the first. */
 void ls_anim_start(int icon, const char *name, uint8_t hue);
 
-/* True while there are frames left. */
+/* True while the opening is within its 250 ms wall-clock budget. */
 bool ls_anim_active(void);
 
-/* Draw the current frame and advance. Call once per frame from the router,
+/* Select the original frame by elapsed time, dropping missed frames.
+   Reserve the observed frame cost for the real screen. Call from the router,
    before the screen draws, and skip the screen while it returns true. */
 bool ls_anim_draw(tui_surface *sf, tui_rect area);
 

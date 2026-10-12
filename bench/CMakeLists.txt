@@ -119,6 +119,8 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/p25_sitefind.c
     ${FW}/components/apps/tui/experiments/exp_pagers.c
     ${FW}/components/apps/tui/experiments/pager_recon.c
+    ${FW}/components/apps/tui/experiments/pager_iq.c
+    ${FW}/components/apps/tui/experiments/pager_iq_radio.c
     ${APP}/fm/pocsag.c
     ${FW}/components/apps/tui/experiments/exp_burst.c
     ${FW}/components/apps/tui/experiments/exp_iridium.c
@@ -637,6 +639,11 @@ target_include_directories(test_tui_p25_screen PRIVATE
     ${FW}/components/lakeshark
     ${APP}/p25
     ${FW}/bench/shims)
+foreach(boundary ls_lora_hw_lock spi_device_transmit spi_device_polling_transmit
+        nvs_set_u8 nvs_set_i8 nvs_set_u32 nvs_set_i32 nvs_set_u64 nvs_commit
+        ls_action_call lakeshark_p25_mode_name)
+    target_link_options(test_tui_p25_screen PRIVATE "-Wl,--wrap=${boundary}")
+endforeach()
 
 ls_add_test(test_tui_waterfall_claim
     ${FW}/components/apps/tui/ls_waterfall.c
@@ -686,7 +693,14 @@ ls_add_test(test_tui_waterfall_stall
 target_include_directories(test_tui_waterfall_stall PRIVATE
     ${LS_TUI_APP_INCLUDES})
 
-ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c)
+ls_add_test(test_lr_wf_session
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c
+    ${APP}/p25/lr2021_iq_queue.c)
+ls_add_test(test_lr_iq_spectrum ${FW}/components/lakeshark/dsp/spectrum.c)
+ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
 target_include_directories(test_wf_source PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark
@@ -915,7 +929,9 @@ target_compile_definitions(lssim PRIVATE LS_CALLS_HOST_AUDIO=1 CALL_ARCHIVE_HOST
     LS_WF_SOURCE_REAL
     LS_MAP_AUDIT
     LSSIM_PMTILES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/carto/franklin_z12.pmtiles")
-target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c)
+target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim lvgl m)
 
@@ -2349,6 +2365,7 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_compass_regressions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compass_regressions.py")
     add_test(NAME test_ble_scan COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ble_scan.py")
     add_test(NAME test_audio_reinit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_reinit.py")
+    add_test(NAME test_audio_drop_accounting COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_drop_accounting.py")
 endif()
 
 # Optional round-trip uses the actual, read-only Flipper app parser.
@@ -2502,3 +2519,75 @@ if(CATCH_BASELINE_DIR)
     target_link_options(test_rec_catch_baseline PRIVATE -Wl,--gc-sections)
     add_test(NAME test_rec_catch_baseline COMMAND test_rec_catch_baseline finite_producer_board_cost)
 endif()
+
+ls_add_test(test_pocsag_iq ${APP}/fm/pocsag.c
+    ${FW}/components/apps/tui/experiments/pager_iq.c)
+target_include_directories(test_pocsag_iq PRIVATE
+    ${FW}/components/apps/tui/experiments)
+
+# Compile the real ESP capture adapter with a controlled host producer task.
+add_executable(test_pager_iq_radio tests/test_pager_iq_radio.c
+    ${FW}/components/apps/tui/experiments/pager_iq_radio.c
+    ${FW}/components/apps/tui/experiments/pager_iq.c
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
+target_include_directories(test_pager_iq_radio PRIVATE
+    ${FW}/components/apps/tui/experiments ${FW}/components/lakeshark/dsp)
+target_compile_definitions(test_pager_iq_radio PRIVATE ESP_PLATFORM=1)
+target_link_libraries(test_pager_iq_radio PRIVATE Threads::Threads m)
+add_test(NAME test_pager_iq_radio COMMAND test_pager_iq_radio)
+set_tests_properties(test_pager_iq_radio PROPERTIES TIMEOUT 30)
+
+ls_add_test(test_fm_lr ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c)
+
+add_library(fm_lr_backend_compile OBJECT ${APP}/fm/app_fm.c)
+target_include_directories(fm_lr_backend_compile PRIVATE
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
+    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore)
+
+ls_add_test(test_fm_lr_runtime ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c
+    ${APP}/fm/fm_tone.c)
+target_include_directories(test_fm_lr_runtime PRIVATE
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
+    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore)
+target_compile_options(test_fm_lr_runtime PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_fm_lr_runtime PRIVATE -Wl,--gc-sections)
+
+set_source_files_properties(tests/test_fm_lr_runtime.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+# Existing pager adapter now taps checked IQ; link that dependency on host too.
+target_sources(test_pager_iq_radio PRIVATE
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
+
+ls_add_test(test_gauge_refresh ${FW}/components/lakeshark/board/ls_gauge.c)
+target_compile_definitions(test_gauge_refresh PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+foreach(posture portrait landscape)
+    set(status_rotation)
+    if(posture STREQUAL "landscape")
+        set(status_rotation -l)
+    endif()
+    add_test(NAME test_switch_status_${posture}
+        COMMAND ${CMAKE_COMMAND} -E env LSSIM_STATUS_AUDIT=1
+        $<TARGET_FILE:lssim> fm ${status_rotation} -f 15
+        -x "+o,@esc,@esc,@tab,~15,@tab,~15"
+        -o "${CMAKE_CURRENT_BINARY_DIR}/switch-status-${posture}.bmp")
+endforeach()
+
+# Link-time allocation interception includes libc and heap_caps shim allocations.
+foreach(switch_target test_tui_screens test_tui_p25_screen test_wf_source test_pixel_wf test_lr_iq_spectrum)
+    target_sources(${switch_target} PRIVATE tests/switch_budget.c)
+    target_link_options(${switch_target} PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+endforeach()
+
+target_link_options(test_radio_endpoint PRIVATE -Wl,--wrap=xSemaphoreTake)
+
+foreach(boundary nvs_get_u8 nvs_get_i8 nvs_get_u32 nvs_get_i32 nvs_get_u64)
+    target_link_options(test_tui_p25_screen PRIVATE "-Wl,--wrap=${boundary}")
+endforeach()
+
+foreach(boundary ls_lora_hw_lock spi_device_transmit spi_device_polling_transmit
+        nvs_set_u8 nvs_set_i8 nvs_set_u32 nvs_set_i32 nvs_set_u64 nvs_commit
+        nvs_get_u8 nvs_get_i8 nvs_get_u32 nvs_get_i32 nvs_get_u64)
+    target_link_options(test_tui_screens PRIVATE "-Wl,--wrap=${boundary}")
+endforeach()

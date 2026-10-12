@@ -1,3 +1,4 @@
+#include "esp_timer.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -509,10 +510,13 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
     return pdPASS;
 }
 
+void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *woken)
+{ xTaskNotifyGive(task); if (woken) *woken = pdTRUE; }
+
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t wait_ticks)
 {
     (void)clear_on_exit;
-    (void)wait_ticks;
+    if (wait_ticks) ls_shim_timer_notify_wait();
     return 1;
 }
 

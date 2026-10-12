@@ -21,6 +21,8 @@ void ls_shim_keypad(int present);
 #include "ls_theme.h"
 #include "apps/rec/rec_state.h"
 #include "apps/p25/p25_health.h"
+#include "p25_state.h"
+p25_state_t P25;
 #include "radio/radio_health.h"
 #include "apps/fm/fm_state.h"
 #include "apps/acars/acars_app.h"
@@ -887,7 +889,7 @@ LS_CASE(fm_sweep_can_be_left_by_touch_and_remote_pager_selection)
 
 static float s_fm_tuned_mhz;
 static int32_t s_fm_tuned_hz;
-static int s_fm_keypad_opens;
+static void draw_pane(const ls_tui_screen_t *scr, tui_rect pane);
 
 static ls_act_status_t fm_test_freq(const ls_args_t *args, ls_val_t *out)
 {
@@ -897,30 +899,26 @@ static ls_act_status_t fm_test_freq(const ls_args_t *args, ls_val_t *out)
     return LS_ACT_OK;
 }
 
-static ls_act_status_t fm_test_keypad(const ls_args_t *args, ls_val_t *out)
-{
-    (void)args;
-    (void)out;
-    ++s_fm_keypad_opens;
-    return LS_ACT_OK;
-}
-
-LS_CASE(fm_tune_split_steps_frequency_and_opens_keypad)
+LS_CASE(fm_tune_split_steps_frequency_and_opens_inline_keypad)
 {
     fresh();
     const tui_rect pane = {1, 2, 46, 63};
     grid_for(pane);
     ls_action_register("fm.freq_hz", "i", LS_CAP_TUNE, fm_test_freq, "Frequency");
-    ls_action_register("fm.tune", "", LS_CAP_TUNE, fm_test_keypad, "Tune");
     FM.mode = FM_MODE_LISTEN;
     FM.freq_hz = 100000000;
-    s_fm_keypad_opens = 0;
     ls_scr_fm.enter();
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'm'));
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
     LS_CHECK(fabsf(s_fm_tuned_mhz - 99.9875f) < 0.0001f);
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
-    LS_EQ_INT(s_fm_keypad_opens, 1);
+    LS_CHECK(!ls_numpad_active());
+    int x, y;
+    fresh(); draw_pane(&ls_scr_fm, pane);
+    LS_CHECK(find_text("FREQUENCY", &x, &y));
+    LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+    fresh(); draw_pane(&ls_scr_fm, pane);
+    LS_CHECK(!find_text("FREQUENCY", &x, &y));
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, ']'));
     LS_CHECK(fabsf(s_fm_tuned_mhz - 100.0125f) < 0.0001f);
     FM.mode = FM_MODE_WFM;
@@ -2019,25 +2017,67 @@ static bool pair_value(const char *label, char *out, int n)
     int x, y;
     if (!find_text(label, &x, &y)) return false;
     x += (int)strlen(label) + 1;
-    for (int i = 0; i < n - 1; i++)
-        out[i] = x + i < W ? (char)g_back[y * W + x + i].ch : ' ';
-    out[n - 1] = 0;
-    return true;
+    while (x < W && (g_back[y * W + x].ch == ' ' || g_back[y * W + x].ch == '#')) x++;
+    int i = 0;
+    while (x < W && i < n - 1) {
+        char ch = (char)g_back[y * W + x++].ch;
+        if (ch == ' ' || ch == '#') break;
+        out[i++] = ch;
+    }
+    out[i] = 0;
+    return i > 0;
 }
-/* What a stepper box shows between its minus and its plus: the printable
-   value on its middle row, read from under the name in its top edge. */
+/* Compact VFO controls align their value immediately after the label. */
 static bool stepper_value(const char *label, char *out, int n)
 {
     int x, y;
     if (!find_text(label, &x, &y)) return false;
+    int c = x + (int)strlen(label) + 1;
+    while (c < s_grid_cols && !((g_back[y * W + c].ch >= '0' && g_back[y * W + c].ch <= '9') ||
+                                g_back[y * W + c].ch == '-' || g_back[y * W + c].ch == '.')) c++;
     int len = 0;
-    for (int c = x - 2; c < x + 18 && c < W && len < n - 1; c++) {
-        const char ch = (char)g_back[(y + 2) * W + c].ch;
-        if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '%' || ch == '-' ||
-            (ch >= 'A' && ch <= 'Z')) out[len++] = ch;
+    while (c < s_grid_cols && len < n - 1) {
+        const char ch = (char)g_back[y * W + c++].ch;
+        if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '%' || ch == '-')
+            out[len++] = ch;
+        else break;
     }
     out[len] = 0;
     return len > 0;
+}
+static bool stepper_button(const char *label, char sign, int *tx, int *ty)
+{
+    int x, y;
+    *tx = -1;
+    *ty = -1;
+    if (!find_text(label, &x, &y)) return false;
+    const int first = x + (int)strlen(label) + 1;
+    /* The label is on the card's first content row and the minus and plus
+       keys stand to its right, under it, as tall as the card allows - so the
+       caption is centred somewhere in the rows below the label rather than at
+       a fixed one. Nothing else on a card can be mistaken for a caption: the
+       card and the keys are ruled with '=' and '|' and have no '+' corners,
+       and the travel bar beside them is drawn in trace cells, so the only
+       '-' and the only '+' are the two a thumb is meant to press. */
+    for (int row = y + 1; row < y + 9 && row < H; row++)
+        for (int col = first; col < s_grid_cols; col++)
+            if (g_back[row * W + col].ch == (unsigned char)sign) {
+                *tx = col; *ty = row;
+                return true;
+            }
+    return false;
+}
+static bool keypad_char_after_header(char ch, const char *header, tui_rect pane,
+                                    int *tx, int *ty)
+{
+    int hx, hy;
+    if (!find_text(header, &hx, &hy)) return false;
+    for (int row = hy + 2; row < pane.y + pane.h && row < H; row++)
+        for (int col = pane.x; col < pane.x + pane.w && col < s_grid_cols; col++)
+            if (g_back[row * W + col].ch == (unsigned char)ch) {
+                *tx = col; *ty = row; return true;
+            }
+    return false;
 }
 static bool is_digit_cell(char c) { return c >= '0' && c <= '9'; }
 
@@ -2098,40 +2138,170 @@ LS_CASE(fm_vfo_shows_squelch_and_signal_only_in_the_modes_that_have_them)
    VOLUME, GAIN and SQUELCH are steppers with their value drawn once, inside
    them. Left third down, right third up, the value in the middle opens exact
    entry. Both postures, by touch alone. */
-LS_CASE(fm_vfo_tune_button_and_steppers_answer_touch_in_both_postures)
+LS_CASE(fm_vfo_steppers_and_keyboard_toggle_answer_touch_in_both_postures)
 {
     ls_action_register("fm.sql", "f", LS_CAP_TUNE, fm_test_sql, "squelch");
     ls_value_publish("fm.sql", "%", fm_test_sql_value);
-    ls_action_register("fm.tune", "", LS_CAP_TUNE, fm_test_keypad, "Tune");
     for (int orientation = 0; orientation < 2; ++orientation) {
         FM.squelch_tenths = 40;
-        int x, y, right = -1;
+        int x, y, minus_x = -1, minus_y = -1, plus_x = -1, plus_y = -1;
         fm_page_drawn(FM_MODE_LISTEN, 0, PANES[orientation]);
         /* The squelch is not repeated in the bar above or in the panel. */
         LS_CHECK(!find_text("SQL 40%", &x, &y));
         LS_CHECK(find_text("SQUELCH", &x, &y));
-        for (int c = x + 7; c < W; c++)
-            if (g_back[y * W + c].ch == '+') { right = c; break; }
-        LS_CHECK(right > x);
+        LS_CHECK(stepper_button("SQUELCH", '-', &minus_x, &minus_y));
+        LS_CHECK(stepper_button("SQUELCH", '+', &plus_x, &plus_y));
 
         s_sql_calls = 0; s_sql_seen = -1.0f;
-        LS_CHECK(ls_scr_fm.touch(x - 1, y + 1));
+        LS_CHECK(ls_scr_fm.touch(minus_x, minus_y));
         LS_EQ_INT(1, s_sql_calls);
         LS_CHECK_MSG(s_sql_seen < 40.0f, "minus asked for %.1f", (double)s_sql_seen);
-        LS_CHECK(ls_scr_fm.touch(right - 1, y + 1));
+        LS_CHECK(ls_scr_fm.touch(plus_x, plus_y));
         LS_EQ_INT(2, s_sql_calls);
         LS_CHECK_MSG(s_sql_seen > 40.0f, "plus asked for %.1f", (double)s_sql_seen);
-        LS_CHECK(ls_scr_fm.touch((x - 2 + right) / 2, y + 1));
+        LS_CHECK(ls_scr_fm.touch(x + (int)strlen("SQUELCH") + 2, y));
         LS_CHECK(ls_numpad_active());
         ls_numpad_close();
 
         fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
-        s_fm_keypad_opens = 0;
-        LS_CHECK(find_text("TUNE", &x, &y));
+        LS_CHECK(find_text("KEYBOARD", &x, &y));
         LS_CHECK(ls_scr_fm.touch(x, y));
-        LS_EQ_INT(1, s_fm_keypad_opens);
+        LS_CHECK(!ls_numpad_active());
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(find_text("FREQUENCY / MHz", &x, &y));
+        LS_CHECK(find_text("CANCEL", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
+        LS_CHECK(!find_text("FREQUENCY / MHz", &x, &y));
         ls_scr_fm.leave();
     }
+}
+
+static int s_fm_freq_apply_calls;
+static ls_act_status_t fm_test_freq_apply(const ls_args_t *args, ls_val_t *out)
+{
+    (void)out;
+    s_fm_tuned_hz = args->v[0].i;
+    s_fm_tuned_mhz = (float)s_fm_tuned_hz / 1000000.0f;
+    FM.freq_hz = (uint32_t)s_fm_tuned_hz;
+    ++s_fm_freq_apply_calls;
+    return LS_ACT_OK;
+}
+
+LS_CASE(fm_vfo_inline_frequency_entry_applies_cancels_and_obeys_lock)
+{
+    ls_action_register("fm.freq_hz", "i", LS_CAP_TUNE, fm_test_freq_apply,
+                       "Frequency");
+    const char *const digits = "146.52";
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        const tui_rect pane = PANES[orientation];
+        FM.mode = FM_MODE_LISTEN;
+        FM.freq_hz = orientation ? 160000000u : 145000000u;
+        lakeshark_fm_frequency_lock(orientation != 0);
+        const uint32_t original = FM.freq_hz;
+        const uint32_t old_lock = lakeshark_fm_frequency_lock_hz();
+        const bool was_locked = lakeshark_fm_frequency_locked();
+        s_fm_freq_apply_calls = 0;
+        fm_page_drawn(FM_MODE_LISTEN, 0, pane);
+
+        if (orientation == 0) {
+            LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
+        } else {
+            int x, y;
+            LS_CHECK(find_text("KEYBOARD", &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+        }
+        LS_CHECK(!ls_numpad_active());
+        fresh(); draw_pane(&ls_scr_fm, pane);
+        int x, y;
+        LS_CHECK(find_text("FREQUENCY / MHz", &x, &y));
+
+        /* Muting stays immediate even while the inline editor owns digits. */
+        s_audio_vol = 37; s_audio_muted = false;
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'b'));
+        LS_CHECK(s_audio_muted); LS_EQ_INT(s_audio_vol, 37);
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'b'));
+        LS_CHECK(!s_audio_muted); LS_EQ_INT(s_audio_vol, 37);
+
+        if (orientation == 0) {
+            /* A keypad tap followed by CANCEL is a non-committing edit. */
+            LS_CHECK(keypad_char_after_header('1', "FREQUENCY / MHz", pane, &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+            fresh(); draw_pane(&ls_scr_fm, pane);
+            LS_CHECK(find_text("CANCEL", &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+            LS_EQ_INT(FM.freq_hz, original);
+            LS_EQ_INT(lakeshark_fm_frequency_locked(), was_locked);
+            LS_EQ_INT(lakeshark_fm_frequency_lock_hz(), old_lock);
+            LS_EQ_INT(s_fm_freq_apply_calls, 0);
+            LS_CHECK(!ls_numpad_active());
+            LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
+            fresh(); draw_pane(&ls_scr_fm, pane);
+        }
+
+        /* An out-of-band value stays in the editor and never calls the tune
+           action; lock and carrier survive both the error and cancellation. */
+        for (const char *p = "9.9"; *p; ++p)
+            LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, *p));
+        LS_CHECK(ls_scr_fm.key(LS_TK_ENTER, 0));
+        LS_EQ_INT(s_fm_freq_apply_calls, 0);
+        LS_EQ_INT(FM.freq_hz, original);
+        LS_EQ_INT(lakeshark_fm_frequency_locked(), was_locked);
+        LS_EQ_INT(lakeshark_fm_frequency_lock_hz(), old_lock);
+        LS_CHECK(!ls_numpad_active());
+        fresh(); draw_pane(&ls_scr_fm, pane);
+        LS_CHECK(find_text("INVALID RANGE", &x, &y));
+        if (orientation == 0) {
+            LS_CHECK(ls_scr_fm.key(LS_TK_ESC, 0));
+        } else {
+            LS_CHECK(find_text("CANCEL", &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+        }
+        LS_EQ_INT(FM.freq_hz, original);
+        LS_EQ_INT(lakeshark_fm_frequency_locked(), was_locked);
+        LS_EQ_INT(lakeshark_fm_frequency_lock_hz(), old_lock);
+
+        /* Reopen cleanly, enter a valid carrier, and apply. One posture
+           commits from the visible TUNE button; the other uses Enter. */
+        if (orientation == 0) {
+            LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
+        } else {
+            fresh(); draw_pane(&ls_scr_fm, pane);
+            LS_CHECK(find_text("KEYBOARD", &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+        }
+        LS_CHECK(!ls_numpad_active());
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '1'));
+        for (const char *p = digits + 1; *p; ++p)
+            LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, *p));
+        LS_EQ_INT(FM.freq_hz, original);
+        fresh(); draw_pane(&ls_scr_fm, pane);
+        LS_CHECK(find_text("146.52", &x, &y));
+        if (orientation == 0) {
+            LS_CHECK(find_text("TUNE", &x, &y));
+            LS_CHECK(ls_scr_fm.touch(x, y));
+        } else {
+            LS_CHECK(ls_scr_fm.key(LS_TK_ENTER, 0));
+        }
+        LS_EQ_INT(s_fm_freq_apply_calls, 1);
+        LS_EQ_INT(FM.freq_hz, 146520000u);
+        LS_CHECK(lakeshark_fm_frequency_locked());
+        LS_EQ_INT(lakeshark_fm_frequency_lock_hz(), 146520000u);
+        LS_CHECK(!ls_numpad_active());
+
+        /* Leaving mid-edit must not carry stale digits into the next visit. */
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '1'));
+        ls_scr_fm.leave(); ls_scr_fm.enter();
+        fresh(); draw_pane(&ls_scr_fm, pane);
+        LS_CHECK(!find_text("FREQUENCY / MHz", &x, &y));
+        LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
+        fresh(); draw_pane(&ls_scr_fm, pane);
+        LS_CHECK(find_text("FREQUENCY / MHz", &x, &y));
+        LS_CHECK(!find_text("1_", &x, &y));
+        ls_scr_fm.leave();
+    }
+    s_audio_vol = 60;
 }
 
 LS_CASE(fm_pager_counters_come_from_the_decoder_that_is_running)
@@ -4023,24 +4193,41 @@ static bool cursor_tuner(ls_wf_owner_t owner,uint32_t hz)
 { (void)owner;cursor_committed=hz;return true; }
 LS_CASE(fm_waterfall_arrows_select_space_commits)
 {
-    const ls_tui_screen_t *screens[]={&ls_scr_fm};
-    for(int i=0;i<1;i++) {
-        fresh();FM.mode=FM_MODE_LISTEN;
-        if(screens[i]->enter)screens[i]->enter();
-        screens[i]->key(LS_TK_CHAR,i?'2':'1');
-        ls_wf_owner_t owner=i?LS_WF_OWNER_P25:LS_WF_OWNER_FM;
-        ls_wf_claim(LS_WF_OWNER_NONE,NULL);ls_wf_claim(owner,"test");
-        ls_wf_feed_t feed={.center_hz=100000000,.span_hz=240000,.live=true};
-        float bins[64]={0};ls_wf_preview(owner,bins,64,&feed);
-        ls_wf_draw(&g_sf,tui_rect_make(1,2,46,24));
-        ls_wf_set_tuner(cursor_tuner);cursor_committed=0;
-        uint32_t start=ls_wf_marker_hz();LS_CHECK(start>0);
-        screens[i]->key(LS_TK_RIGHT,0);
-        LS_CHECK(ls_wf_marker_hz()>start);LS_EQ_INT(cursor_committed,0);
-        uint32_t selected=ls_wf_marker_hz();screens[i]->key(LS_TK_CHAR,' ');
-        LS_EQ_INT(cursor_committed,selected);
-        ls_wf_set_tuner(NULL);if(screens[i]->leave)screens[i]->leave();
-    }
+    const tui_rect pane=PANES[1];
+    fresh();FM.mode=FM_MODE_LISTEN;
+    ls_scr_fm.enter();
+    ls_wf_claim(LS_WF_OWNER_NONE,NULL);
+    ls_wf_claim(LS_WF_OWNER_FM,"test");
+    ls_wf_feed_t feed={.center_hz=100000000,.span_hz=240000,.live=true};
+    float bins[64]={0};ls_wf_preview(LS_WF_OWNER_FM,bins,64,&feed);
+    ls_wf_set_tuner(cursor_tuner);cursor_committed=0;
+
+    /* Establish the spectrum plot and marker first, then prove that the VFO
+       page's signal panel is not a hidden waterfall hit target. */
+    ls_scr_fm.key(LS_TK_CHAR,'3');
+    fresh();grid_for(pane);draw_pane(&ls_scr_fm,pane);
+    ls_scr_fm.key(LS_TK_LEFT,0); /* normalize a stale/disabled marker */
+    uint32_t start=ls_wf_marker_hz();LS_CHECK(start>0);
+    ls_scr_fm.key(LS_TK_RIGHT,0);
+    uint32_t moved=ls_wf_marker_hz();LS_CHECK(moved>start);
+    LS_EQ_INT(cursor_committed,0);
+    start=moved;
+    const uint32_t tuned=FM.freq_hz;
+    ls_scr_fm.key(LS_TK_CHAR,'1');
+    fresh();grid_for(pane);draw_pane(&ls_scr_fm,pane);
+    (void)ls_scr_fm.touch(pane.x+5,pane.y+9);
+    LS_EQ_INT(ls_wf_marker_hz(),start);
+    LS_EQ_INT(FM.freq_hz,tuned);
+
+    /* On Spectrum, a tap in the plot selects its bin and Space commits it. */
+    ls_scr_fm.key(LS_TK_CHAR,'3');
+    fresh();grid_for(pane);draw_pane(&ls_scr_fm,pane);
+    LS_CHECK(ls_scr_fm.touch(pane.x+3,pane.y+19));
+    uint32_t selected=ls_wf_marker_hz();
+    LS_CHECK(selected>0);LS_CHECK(selected!=start);LS_EQ_INT(cursor_committed,0);
+    ls_scr_fm.key(LS_TK_CHAR,' ');
+    LS_EQ_INT(cursor_committed,selected);
+    ls_wf_set_tuner(NULL);ls_scr_fm.leave();
 }
 
 void rec_watch_sim_file_done(const char *result);
@@ -4356,6 +4543,7 @@ extern const char *ls_test_radio_claimed;
 
 LS_CASE(falls_p25_lr2021_names_the_radio_and_explains_missing_spectrum)
 {
+    P25.lr_iq_active = false;
     ls_rsel_hw_t hw = {0};
     hw.present[LS_RSEL_LORA] = true;
     hw.lora_lr20xx = true;
@@ -4375,11 +4563,17 @@ LS_CASE(falls_p25_lr2021_names_the_radio_and_explains_missing_spectrum)
         fresh();
         draw_pane(&ls_scr_falls, PANES[pane]);
         LS_CHECK(find_text("LR2021", &x, &y));
-        LS_CHECK(find_text("LR2021 gives no P25 spectrum", &x, &y));
+        LS_CHECK(find_text("LR FSK: no IQ", &x, &y));
         LS_CHECK(!find_text("no receiver is producing a spectrum", &x, &y));
         LS_CHECK(!find_text("RTL-SDR", &x, &y));
         LS_EQ_INT(LS_RSEL_LORA, ls_rsel_effective(LS_RSEL_WATERFALL));
         LS_EQ_INT(0, escaped(PANES[pane]));
+        P25.lr_iq_active = true;
+        fresh();
+        draw_pane(&ls_scr_falls, PANES[pane]);
+        LS_CHECK(!find_text("LR FSK: no IQ", &x, &y));
+        LS_CHECK(!find_text("LR2021 gives no P25 spectrum", &x, &y));
+        P25.lr_iq_active = false;
     }
     ls_scr_falls.leave();
     ls_test_radio_claimed = NULL;
@@ -4951,4 +5145,45 @@ LS_CASE(home_user_named_home_launches_and_error_details_are_reachable)
     }
     ls_test_userapp_error = NULL;
     ls_scr_home.key(LS_TK_F1,0);
+}
+
+static unsigned switch_locks, switch_spi, switch_nvs;
+void __wrap_ls_lora_hw_lock(void) { switch_locks++; }
+int __wrap_spi_device_transmit(void *dev, void *transaction)
+{ (void)dev; (void)transaction; switch_spi++; return -1; }
+int __wrap_spi_device_polling_transmit(void *dev, void *transaction)
+{ (void)dev; (void)transaction; switch_spi++; return -1; }
+#define NVS_TRIPWIRE(type, value_type) \
+    int __wrap_nvs_set_##type(unsigned handle, const char *key, value_type value) \
+    { (void)handle; (void)key; (void)value; switch_nvs++; return -1; }
+NVS_TRIPWIRE(u8, uint8_t)
+NVS_TRIPWIRE(i8, int8_t)
+NVS_TRIPWIRE(u32, uint32_t)
+NVS_TRIPWIRE(i32, int32_t)
+NVS_TRIPWIRE(u64, uint64_t)
+#define NVS_READ_TRIPWIRE(type, value_type) \
+    int __wrap_nvs_get_##type(unsigned handle, const char *key, value_type *value) \
+    { (void)handle; (void)key; (void)value; switch_nvs++; return -1; }
+NVS_READ_TRIPWIRE(u8, uint8_t)
+NVS_READ_TRIPWIRE(i8, int8_t)
+NVS_READ_TRIPWIRE(u32, uint32_t)
+NVS_READ_TRIPWIRE(i32, int32_t)
+NVS_READ_TRIPWIRE(u64, uint64_t)
+int __wrap_nvs_commit(unsigned handle) { (void)handle; switch_nvs++; return -1; }
+
+#include "switch_budget.h"
+#include "ls_calls.h"
+LS_CASE(fm_enter_leave_has_zero_allocation_budget)
+{
+    ls_calls_leave();
+    FM.mode = FM_MODE_LISTEN; ls_opt_close();
+    switch_locks = switch_spi = switch_nvs = 0;
+    for (int visit = 0; visit < 4; ++visit) {
+        switch_budget_begin();
+        ls_scr_fm.enter();
+        fresh(); ls_scr_fm.draw(&g_sf, PANES[1]);
+        ls_scr_fm.leave();
+        LS_EQ_UINT(switch_budget_end(), 0); /* N = 0 bytes */
+        LS_EQ_UINT(switch_locks + switch_spi + switch_nvs, 0);
+    }
 }

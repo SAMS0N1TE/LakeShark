@@ -7,6 +7,8 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "ls_board.h"
 #include "ls_i2c.h"
@@ -23,15 +25,32 @@ static const char *TAG = "ls_gauge";
 #define REG_FULL         0x12
 #define REG_SOC          0x2C
 
-/* One second. The gauge updates about that often and the bus is shared with
-   the touch controller, which is polled at 10 ms and matters more. */
-#define CACHE_US  1000000
-
+/* A low-priority worker owns cache refresh; drawing never touches I2C. */
+#define SAMPLE_MS 30000
 static i2c_master_dev_handle_t s_dev;
-static bool       s_present;
+static bool s_present;
 static ls_gauge_t s_cache;
-static int64_t    s_cache_us;
-static float      s_smoothed = -1;
+static int64_t s_cache_us;
+static TaskHandle_t s_sampler;
+static portMUX_TYPE s_cache_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void gauge_sampler(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ls_gauge_t next;
+        if (ls_gauge_read(&next) == ESP_OK) {
+            portENTER_CRITICAL(&s_cache_mux);
+            s_cache = next;
+            s_cache_us = esp_timer_get_time();
+            portEXIT_CRITICAL(&s_cache_mux);
+        }
+        /* Keep the last good sample on a transient bus error. A 30 s
+           sample already suppresses rapid load flicker; do not add the old
+           per-frame EMA, which would now take minutes to follow discharge. */
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));
+    }
+}
 
 static bool rd16(uint8_t reg, uint16_t *out)
 {
@@ -46,7 +65,11 @@ static bool rd16(uint8_t reg, uint16_t *out)
 
 esp_err_t ls_gauge_start(void)
 {
-    if (s_present) return ESP_OK;
+    if (s_present) {
+        if (!s_sampler && xTaskCreate(gauge_sampler, "gauge", 3072, NULL, 1,
+                                     &s_sampler) != pdPASS) return ESP_ERR_NO_MEM;
+        return ESP_OK;
+    }
 
     esp_err_t err = ls_i2c_device(LS_I2C_PRIMARY, LS_BOARD_GAUGE_I2C_ADDR,
                                   100 * 1000, &s_dev);
@@ -67,7 +90,7 @@ esp_err_t ls_gauge_start(void)
 
     s_present = true;
     ESP_LOGI(TAG, "BQ27220 up, %u mV", (unsigned)mv);
-    return ESP_OK;
+    return ls_gauge_start();
 }
 
 bool ls_gauge_present(void) { return s_present; }
@@ -102,25 +125,20 @@ esp_err_t ls_gauge_read(ls_gauge_t *out)
 bool ls_gauge_get(ls_gauge_t *out)
 {
     if (!out) return false;
-    const int64_t now = esp_timer_get_time();
-    if (!s_cache.present || now - s_cache_us > CACHE_US) {
-        if (ls_gauge_read(&s_cache) != ESP_OK) { s_cache.present = false; return false; }
-        s_cache_us = now;
-        /* The load moves with the radio and the backlight; a few seconds
-           of averaging keeps the number from twitching. */
-        const float pct = s_cache.percent;
-        s_smoothed = s_smoothed < 0 ? pct : s_smoothed + .15f * (pct - s_smoothed);
-        if (s_smoothed >= 0) s_cache.percent = (uint8_t)(s_smoothed + .5f);
-    }
+    portENTER_CRITICAL(&s_cache_mux);
     *out = s_cache;
-    return s_cache.present;
+    portEXIT_CRITICAL(&s_cache_mux);
+    return out->present;
 }
 
 bool ls_gauge_peek(int16_t *milliamps, int64_t *age_us)
 {
+    portENTER_CRITICAL(&s_cache_mux);
+    const ls_gauge_t cache = s_cache;
     const int64_t at = s_cache_us;
-    if (!s_cache.present || !at) return false;
-    if (milliamps) *milliamps = s_cache.milliamps;
+    portEXIT_CRITICAL(&s_cache_mux);
+    if (!cache.present) return false;
+    if (milliamps) *milliamps = cache.milliamps;
     if (age_us) *age_us = esp_timer_get_time() - at;
     return true;
 }

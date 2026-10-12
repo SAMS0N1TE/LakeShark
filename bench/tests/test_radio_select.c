@@ -393,3 +393,22 @@ LS_CASE(dual_aircraft_picker_requires_both_rtl_and_lr2021)
     LS_EQ_INT(ls_rsel_effective(LS_RSEL_ADSB), LS_RSEL_SDR_RTL);
     ls_picker_close();
 }
+
+LS_CASE(lr_fm_picker_range_modes_and_no_dongle)
+{
+    fresh(false, false, 2);
+    ls_rsel_fm_context(162550000, true);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) == NULL);
+    LS_EQ_INT(ls_rsel_resolved(LS_RSEL_FM), LS_RSEL_LORA);
+    board(true, false, 2);
+    ls_rsel_set(LS_RSEL_FM, LS_RSEL_LORA);
+    LS_EQ_INT(ls_rsel_resolved(LS_RSEL_FM), LS_RSEL_LORA);
+    ls_rsel_fm_context(144000000, true);
+    LS_CHECK(strstr(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA), "150-960") != NULL);
+    LS_EQ_INT(ls_rsel_resolved(LS_RSEL_FM), LS_RSEL_SDR_RTL);
+    ls_rsel_fm_context(91000000, false);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) != NULL);
+    ls_rsel_fm_context(162550000, false);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) != NULL);
+    ls_rsel_fm_context(154785000, true);
+}

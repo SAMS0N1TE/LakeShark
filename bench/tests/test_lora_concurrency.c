@@ -474,6 +474,39 @@ static void *try_other_scan(void *unused)
     other_end = ls_lora_scan_end();
     return NULL;
 }
+
+static atomic_bool snapshot_lock_ready, snapshot_lock_release;
+static void *hold_radio_for_snapshot_test(void *unused)
+{
+    (void)unused;
+    ls_lora_hw_lock();
+    atomic_store_explicit(&snapshot_lock_ready, true, memory_order_release);
+    while (!atomic_load_explicit(&snapshot_lock_release, memory_order_acquire)) sched_yield();
+    ls_lora_hw_unlock();
+    return NULL;
+}
+LS_CASE(diagnostic_snapshot_admission_is_bounded_and_releases_radio_lock)
+{
+    fk_install(FK_LR);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    LS_CHECK(ls_lora_diagnostic_try_begin()); /* idle radio admits a short snapshot */
+    LS_CHECK(ls_lora_hw_locked_by_me());
+    ls_lora_diagnostic_try_end();
+    LS_CHECK(!ls_lora_hw_locked_by_me());
+
+    atomic_store(&snapshot_lock_ready, false);
+    atomic_store(&snapshot_lock_release, false);
+    pthread_t owner;
+    LS_EQ_INT(pthread_create(&owner, NULL, hold_radio_for_snapshot_test, NULL), 0);
+    while (!atomic_load_explicit(&snapshot_lock_ready, memory_order_acquire)) sched_yield();
+    LS_CHECK(!ls_lora_diagnostic_try_begin()); /* another owner must never block this caller */
+    atomic_store_explicit(&snapshot_lock_release, true, memory_order_release);
+    LS_EQ_INT(pthread_join(owner, NULL), 0);
+    LS_CHECK(ls_lora_diagnostic_try_begin()); /* rejected admission left no stale ownership */
+    ls_lora_diagnostic_try_end();
+    LS_CHECK(!ls_lora_hw_locked_by_me());
+}
+
 LS_CASE(a_scan_owner_excludes_other_tasks_until_successful_end)
 {
     fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);

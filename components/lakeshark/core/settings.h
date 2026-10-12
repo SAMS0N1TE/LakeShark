@@ -88,6 +88,9 @@ void settings_set_antenna_external(bool external);
 bool settings_peek_antenna_external(void);
 /* P25 on the LR2021: its receive gain, 0 the chip's AGC, 1..13 a fixed step. */
 int  settings_get_p25_lr_gain(void);
+/* Boot-only read. Missing choice defaults to IQ; UI reads P25's RAM state. */
+bool settings_get_p25_lr_iq(void);
+bool settings_set_p25_lr_iq(bool enabled);
 bool settings_get_lr_tcxo(void);
 bool settings_set_lr_tcxo(bool tcxo);
 bool settings_get_lr_dcdc(void);
@@ -230,7 +233,7 @@ int  settings_eq_loud_get(void);
 void settings_eq_loud_set(int v);
 
 /* PAGER RECON start preferences. Reads are RAM-only; writes use the safe
-   deferred NVS path. Method: 0 native stream, 1 packet, 2 sign stream. */
+   deferred NVS path. Method: 0 native stream, 1 packet, 2 sign stream, 3 raw IQ. */
 typedef struct {
     uint32_t hz;
     uint8_t plan, dwell, method;

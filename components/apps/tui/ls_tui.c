@@ -55,7 +55,7 @@ static inline uint32_t landscape_run(int x, int y, int n, int native_w)
     return landscape_index(x, s_cw_rotation ? y : y + n - 1, native_w);
 }
 
-static uint32_t     s_last_us;
+static uint32_t     s_last_us, s_max_us;
 static int          s_last_cells;
 
 static const ls_tui_theme_t *s_theme = &ls_theme_terminal_bay;
@@ -307,6 +307,13 @@ static const uint16_t *s_image_shown_src;
 static int s_image_shown_w, s_image_shown_h;
 /* This present moved the pixels: only the cells the new lines land in draw. */
 static bool s_image_shifted;
+static uint32_t s_image_copy_bytes, s_present_flush_bytes;
+
+void ls_tui_last_traffic(uint32_t *image_bytes, uint32_t *flush_bytes)
+{
+    if (image_bytes) *image_bytes = s_image_copy_bytes;
+    if (flush_bytes) *flush_bytes = s_present_flush_bytes;
+}
 
 /* Glass: cells whose glyph is drawn over the image instead of on a solid
    ground. The mark records the cell as it was written, and a present honours
@@ -458,11 +465,8 @@ static bool glass_live(int col, int row, size_t i)
 static bool image_changed(int col, int row)
 {
     if (s_image_shifted && image_cell(col, row)) {
-        /* The pixels already moved: only the cells holding the new lines
-           (the right edge after a move left, the top after a move down)
-           need drawing from the picture. */
-        if (s_image_dx) return (col - s_image_rect.x + 1) * s_cw > s_image_rect.w * s_cw - s_image_dx;
-        return (row - s_image_rect.y) * s_ch < s_image_dy;
+        /* image_shift also copied the exact new pixel band. */
+        return false;
     }
     if (s_image_ring || !s_image_previous_valid || !image_cell(col, row)) return true;
     const int x = col - s_image_rect.x, y = row - s_image_rect.y;
@@ -519,6 +523,7 @@ static void bar_text_span(int row, int *top, int *bottom)
 static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
                             int x0, int y0)
 {
+    s_image_copy_bytes += (uint32_t)s_cw * s_ch * sizeof(uint16_t);
     {
         const int iw = s_image_rect.w * s_cw, ih = s_image_rect.h * s_ch;
         /* Source coordinates once per cell, not a divide per pixel, and the
@@ -763,6 +768,9 @@ static void look_apply(void)
    pixels visible costs in proportion to the rows handed to it, so a present
    hands over only these. In landscape a native row is a logical column. */
 static int s_dirty_lo = INT32_MAX, s_dirty_hi = -1;
+/* Native rows, including both rotations. Oversized hosts use the range
+   fallback; the P4 needs only 1232 bits. No per-frame allocation. */
+static uint8_t s_dirty_rows[2048 / 8];
 
 static void dirty_logical(int x, int y, int w, int h)
 {
@@ -772,6 +780,8 @@ static void dirty_logical(int x, int y, int w, int h)
     else             { lo = y; hi = y + h - 1; }
     if (lo < s_dirty_lo) s_dirty_lo = lo;
     if (hi > s_dirty_hi) s_dirty_hi = hi;
+    for (int r = lo < 0 ? 0 : lo; r <= hi && r < 2048; r++)
+        s_dirty_rows[r >> 3] |= (uint8_t)(1u << (r & 7));
 }
 
 /* Everything on the glass that is not a cell. */
@@ -939,6 +949,9 @@ bool ls_tui_begin(int screen_w, int screen_h)
     }
     ls_panel_fb_present();
 
+    /* Optional in renderer-only builds. Retain waterfall storage across visits. */
+    extern void ls_wf_prepare(int, int) __attribute__((weak));
+    if (ls_wf_prepare) ls_wf_prepare(screen_w, screen_h);
     tui_surface_setup(&s_surface, s_back, s_front, s_cols, s_rows);
     ESP_LOGI(TAG, "grid %dx%d cells, %s at %dx%d px, inset %d,%d, %s",
              s_cols, s_rows, s_font->name, s_cw, s_ch, s_ox, s_oy,
@@ -1176,7 +1189,7 @@ void ls_tui_peak_cost(uint32_t *us, int *cells, uint32_t *sync_us, uint32_t *ram
    A scrolling waterfall changes every pixel of its picture every frame, and
    drawing all of its cells from the source cost 27 ms a present on the P4.
    Moving the pixels already in the framebuffer is one copy per line of the
-   picture; then only the cells the new lines land in are drawn. That is
+   picture; then only the new pixel band is copied from the source. That is
    only right when the glass holds exactly the last picture: same source,
    size and cells, every cell of it an image cell now and at the last
    present, 1:1 pixels, and nothing reserved or painted over it. Anything
@@ -1188,7 +1201,8 @@ static bool image_can_shift(void)
     if (!s_image_shown || s_image_shown_src != s_image || s_image_shown_w != s_image_w ||
         s_image_shown_h != s_image_h || memcmp(&s_image_shown_rect, &r, sizeof(r))) return false;
     if (s_image_w != r.w * s_cw || s_image_h != r.h * s_ch) return false;
-    if (s_image_dx >= s_image_w || s_image_dy >= s_image_h) return false;
+    if (s_image_dx < 0 || s_image_dy < 0 ||
+        s_image_dx >= s_image_w || s_image_dy >= s_image_h) return false;
     if (r.x < 0 || r.y < 1 || r.x + r.w > s_cols || r.y + r.h > s_rows - 1) return false;
     for (int row = r.y; row < r.y + r.h; row++)
         for (int col = r.x; col < r.x + r.w; col++) {
@@ -1202,6 +1216,13 @@ static bool image_can_shift(void)
     return true;
 }
 
+/* Account at each actual copy site, so traffic tests catch extra copies. */
+static inline void image_copy_run(uint16_t *dst, const uint16_t *src, size_t bytes)
+{
+    memmove(dst, src, bytes);
+    s_image_copy_bytes += (uint32_t)bytes;
+}
+
 static void image_shift(uint16_t *fb, int native_w)
 {
     const int X0 = s_ox + s_image_rect.x * s_cw, Y0 = s_oy + s_image_rect.y * s_ch;
@@ -1210,24 +1231,47 @@ static void image_shift(uint16_t *fb, int native_w)
         if (s_landscape) {
             /* A logical column is a native row: whole runs, oldest first. */
             for (int x = X0; x < X0 + W - dx; x++)
-                memcpy(fb + landscape_run(x, Y0, H, native_w),
+                image_copy_run(fb + landscape_run(x, Y0, H, native_w),
                        fb + landscape_run(x + dx, Y0, H, native_w), (size_t)H * sizeof(uint16_t));
         } else {
             for (int y = Y0; y < Y0 + H; y++)
-                memmove(fb + (size_t)y * native_w + X0, fb + (size_t)y * native_w + X0 + dx,
+                image_copy_run(fb + (size_t)y * native_w + X0, fb + (size_t)y * native_w + X0 + dx,
                         (size_t)(W - dx) * sizeof(uint16_t));
         }
     } else if (s_landscape) {
         /* Down the picture is along a native row: a move inside each run. */
         for (int x = X0; x < X0 + W; x++) {
             uint16_t *run = fb + landscape_run(x, Y0, H, native_w);
-            if (s_cw_rotation) memmove(run + dy, run, (size_t)(H - dy) * sizeof(uint16_t));
-            else               memmove(run, run + dy, (size_t)(H - dy) * sizeof(uint16_t));
+            if (s_cw_rotation) image_copy_run(run + dy, run, (size_t)(H - dy) * sizeof(uint16_t));
+            else               image_copy_run(run, run + dy, (size_t)(H - dy) * sizeof(uint16_t));
         }
     } else {
         for (int y = Y0 + H - 1; y >= Y0 + dy; y--)
-            memcpy(fb + (size_t)y * native_w + X0, fb + (size_t)(y - dy) * native_w + X0,
+            image_copy_run(fb + (size_t)y * native_w + X0, fb + (size_t)(y - dy) * native_w + X0,
                    (size_t)W * sizeof(uint16_t));
+    }
+    /* The retained band moved once above. Copy only the new pixels, not
+       whole cells (a two-row update formerly recopied a 17-row cell). */
+    const int nx = dx ? W - dx : 0, ny = 0;
+    const int nw = dx ? dx : W, nh = dx ? H : dy;
+    if (s_landscape) {
+        for (int x = nx; x < nx + nw; x++) {
+            uint16_t *dst = fb + landscape_index(X0 + x, Y0 + ny, native_w);
+            const int sx = (x + s_image_x0) % W;
+            for (int y = ny; y < ny + nh; y++)
+                dst[s_cw_rotation ? y - ny : ny - y] =
+                    s_image[(size_t)((y + s_image_y0) % H) * W + sx];
+            s_image_copy_bytes += (uint32_t)nh * sizeof(uint16_t);
+        }
+    } else {
+        for (int y = ny; y < ny + nh; y++) {
+            uint16_t *dst = fb + (size_t)(Y0 + y) * native_w + X0 + nx;
+            const uint16_t *src = s_image + (size_t)((y + s_image_y0) % H) * W;
+            const int sx = (nx + s_image_x0) % W;
+            const int first = nw < W - sx ? nw : W - sx;
+            image_copy_run(dst, src + sx, (size_t)first * sizeof(uint16_t));
+            if (first < nw) image_copy_run(dst + first, src, (size_t)(nw - first) * sizeof(uint16_t));
+        }
     }
     dirty_logical(X0, Y0, W, H);
 }
@@ -1243,6 +1287,7 @@ int ls_tui_present(void)
     if (!ls_panel_fb(&fb)) return 0;
 
     uint64_t t0 = esp_timer_get_time();
+    s_image_copy_bytes = s_present_flush_bytes = 0;
     uint32_t sync_us = 0;
     const uint32_t ramps0 = s_prof_ramps;
     /* A theme or Daylight change lands here, where the palette, the
@@ -1311,12 +1356,23 @@ int ls_tui_present(void)
     }
     if (s_dirty_hi >= s_dirty_lo) {
         const int64_t ts = esp_timer_get_time();
-        ls_panel_fb_present_rows(s_dirty_lo, s_dirty_hi + 1);
+        if (s_dirty_lo < 0 || s_dirty_hi >= 2048) {
+            ls_panel_fb_present_rows(s_dirty_lo, s_dirty_hi + 1);
+            s_present_flush_bytes = (uint32_t)(s_dirty_hi - s_dirty_lo + 1) * fb.width * 2;
+        } else for (int y = s_dirty_lo; y <= s_dirty_hi;) {
+            if (!(s_dirty_rows[y >> 3] & (1u << (y & 7)))) { y++; continue; }
+            const int start = y++;
+            while (y <= s_dirty_hi && (s_dirty_rows[y >> 3] & (1u << (y & 7)))) y++;
+            ls_panel_fb_present_rows(start, y);
+            s_present_flush_bytes += (uint32_t)(y - start) * fb.width * 2;
+        }
+        memset(s_dirty_rows, 0, sizeof(s_dirty_rows));
         sync_us = (uint32_t)(esp_timer_get_time() - ts);
         s_dirty_lo = INT32_MAX;
         s_dirty_hi = -1;
     }
     s_last_us = (uint32_t)(esp_timer_get_time() - t0);
+    if (s_last_us > s_max_us) s_max_us = s_last_us;
     s_last_cells = drawn;
     if (s_last_us > s_peak.us) {
         s_peak.us = s_last_us;
@@ -1324,6 +1380,10 @@ int ls_tui_present(void)
         s_peak.sync_us = sync_us;
         s_peak.ramps = s_prof_ramps - ramps0;
     }
+    /* The renderer also builds without the app router in low-level tests. */
+    extern void ls_tui_transition_present(uint32_t, int, uint32_t) __attribute__((weak));
+    if (ls_tui_transition_present)
+        ls_tui_transition_present(s_last_us, drawn, sync_us);
     s_present_count++;
     return drawn;
 }
@@ -1419,6 +1479,11 @@ void ls_tui_dump(void)
             putchar(printable(s_back[(size_t)y * s_cols + x].ch));
         putchar('\n');
     }
+}
+
+uint32_t ls_tui_max_cost_take(void)
+{
+    uint32_t m = s_max_us; s_max_us = 0; return m;
 }
 
 void ls_tui_last_cost(uint32_t *us, int *cells)

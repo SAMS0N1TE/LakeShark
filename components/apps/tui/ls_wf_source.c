@@ -1,6 +1,9 @@
 /* See ls_wf_source.h. The glue between a receiver and the widget. */
 #include "ls_wf_source.h"
 #include "ls_field.h"
+#include "ls_radio_select.h"
+#include "lr_iq_spectrum.h"
+#include "lr_wf_session.h"
 #include "scan_engine.h"
 
 #include <string.h>
@@ -25,6 +28,18 @@
 
 static ls_wf_src_t s_want = LS_WF_SRC_AUTO;
 static ls_wf_src_t s_active;
+static uint32_t s_noaa_pending;
+static bool s_lr_mode, s_lr_owned, s_lora_band_set;
+static uint32_t s_live_seq, s_live_center, s_live_span, s_view_hz;
+static ls_wf_owner_t s_live_owner;
+void ls_wf_source_view(uint32_t hz) { s_view_hz = hz; }
+static bool lr_only(void)
+{
+    ls_rsel_hw_t hw;
+    ls_rsel_hw(&hw);
+    return hw.present[LS_RSEL_LORA] && hw.lora_lr20xx &&
+           !hw.present[LS_RSEL_SDR_RTL] && !hw.present[LS_RSEL_SDR_HACKRF];
+}
 static ls_wf_idle_t s_idle;
 static const char *s_idle_reason;
 ls_wf_idle_t ls_wf_source_idle(void) { return s_idle; }
@@ -37,13 +52,8 @@ static bool idle(ls_wf_idle_t status, const char *reason)
 
 /* The measurement each source last pushed, so the same one is never pushed twice. */
 
-static uint32_t s_p25_seq;
-static uint32_t s_p25_center, s_p25_span;
-static bool     s_p25_seq_have;
 static uint32_t s_fm_sweeps;
 static bool     s_fm_seq_have;
-static uint32_t s_fm_live_seq;
-static uint32_t s_fm_live_center, s_fm_live_span;
 static bool s_fm_was_live;
 static int s_fm_preview_idx = -1;
 
@@ -56,6 +66,7 @@ void ls_wf_source_select(ls_wf_src_t src)
     if (src >= LS_WF_SRC__COUNT) src = LS_WF_SRC_AUTO;
     if (src == s_want) return;
     s_want = src;
+    s_live_owner = LS_WF_OWNER_NONE;
 
     ls_wf_claim(LS_WF_OWNER_NONE, NULL);
     /* And FM's place in its sweep count goes with it, so the first
@@ -66,21 +77,41 @@ void ls_wf_source_select(ls_wf_src_t src)
 
 static bool p25_running(void);
 static bool fm_running(void);
+static bool app_uses_lr(ls_rsel_job_t job)
+{
+    ls_rsel_hw_t hw;
+    ls_rsel_hw(&hw);
+    return hw.present[LS_RSEL_LORA] && hw.lora_lr20xx &&
+           ls_rsel_effective(job) == LS_RSEL_LORA;
+}
+static bool fm_lr_tapping(void)
+{
+    return FM.lr_iq_active || (app_uses_lr(LS_RSEL_FM) && fm_running());
+}
 ls_wf_src_t ls_wf_source_get(void)
 {
+    /* Keep the app identity: its effective receiver decides which IQ feed to tap. */
+    if (s_want == LS_WF_SRC_AUTO) {
+        if (p25_running() || P25.lr_iq_active) return LS_WF_SRC_P25;
+        if (fm_running() || FM.lr_iq_active) return LS_WF_SRC_FM;
+        if (lr_spec_center()) return LS_WF_SRC_LORA;
+    }
+    if (s_want == LS_WF_SRC_P25 && P25.lr_iq_active) return LS_WF_SRC_P25;
+    if (s_want == LS_WF_SRC_FM && FM.lr_iq_active) return LS_WF_SRC_FM;
+    /* An explicit decoder view must never start a standalone LoRa scan
+       while its receiver is starting or recovering. AUTO may own a view. */
     if (s_want != LS_WF_SRC_AUTO) return s_want;
+    if (lr_only() && !p25_running() && !fm_running()) return LS_WF_SRC_LORA;
     return p25_running() ? LS_WF_SRC_P25
          : fm_running() ? LS_WF_SRC_FM : LS_WF_SRC_AUTO;
 }
 
 const char *ls_wf_source_name(void)
 {
-    switch (s_active) {
-    case LS_WF_SRC_P25:  return "P25";
-    case LS_WF_SRC_FM:   return "FM";
-    case LS_WF_SRC_LORA: return "LORA";
-    default:             return "none";
-    }
+    if (s_active == LS_WF_SRC_AUTO) return "none";
+    if (s_active == LS_WF_SRC_FM && s_lr_mode && s_live_owner == LS_WF_OWNER_LORA)
+        return "LR IQ";
+    return ls_wf_source_label(s_active);
 }
 
 const char *ls_wf_source_label(ls_wf_src_t src)
@@ -88,7 +119,7 @@ const char *ls_wf_source_label(ls_wf_src_t src)
     switch (src) {
     case LS_WF_SRC_P25:  return "P25";
     case LS_WF_SRC_FM:   return "FM";
-    case LS_WF_SRC_LORA: return "LORA";
+    case LS_WF_SRC_LORA: return s_lr_mode ? "LR IQ" : "LR SWEEP";
     default:             return "AUTO";
     }
 }
@@ -127,6 +158,7 @@ void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz)
 {
     if (max_hz <= min_hz) return;
     if (!ls_lora_rx_range_ok(ls_lora_caps(), min_hz, max_hz)) return;
+    s_lora_band_set = true;
     s_lora_min_hz = min_hz;
     s_lora_max_hz = max_hz;
 }
@@ -189,6 +221,14 @@ static const wf_band_t FM_BANDS[] = {
     { "Mil air AM",  225000000u, 400000000u },
     { "CB AM",        26965000u,  27405000u },
     { "10m AM",       29000000u,  29200000u },
+    { "NOAA 162.400", 162400000u, 162400000u },
+    { "NOAA 162.425", 162425000u, 162425000u },
+    { "NOAA 162.450", 162450000u, 162450000u },
+    { "NOAA 162.475", 162475000u, 162475000u },
+    { "NOAA 162.500", 162500000u, 162500000u },
+    { "NOAA 162.525", 162525000u, 162525000u },
+    { "NOAA 162.550", 162550000u, 162550000u },
+
 };
 #define FM_BAND_N ((int)(sizeof(FM_BANDS) / sizeof(FM_BANDS[0])))
 
@@ -283,6 +323,14 @@ bool ls_wf_preset_apply(ls_wf_src_t src, int i)
             s_lora_window_seeded = false;
             return true;
         }
+        if (t[i].lo_hz == t[i].hi_hz) {
+            if (FM.mode != FM_MODE_LISTEN) {
+                s_noaa_pending = t[i].lo_hz;
+                lakeshark_fm_set_mode(FM_MODE_LISTEN);
+                return true;
+            }
+            if (!lakeshark_fm_set_freq(t[i].lo_hz)) return false;
+        }
         FM.scan_start_hz = t[i].lo_hz;
         FM.scan_stop_hz  = t[i].hi_hz;
         if (FM.mode == FM_MODE_SCAN) {
@@ -334,6 +382,7 @@ void ls_wf_fm_sweep(bool on)
 const char *ls_wf_preset_current(ls_wf_src_t src)
 {
     if (src == LS_WF_SRC_LORA) {
+        if (s_lr_mode && lr_spec_center()) return "LR IQ 125k";
         uint32_t lo = 0, hi = 0;
         ls_wf_source_lora_band_get(&lo, &hi);
         for (int i = 0; i < LORA_BAND_N; i++)
@@ -405,7 +454,7 @@ static void p25_feed(bool on)
     /* Turning the feed off invalidates the generation, so the first
        frame after it comes back is a new measurement even if its sequence
        number happens to match the one before. */
-    s_p25_seq_have = false;
+    s_live_owner = LS_WF_OWNER_NONE;
     p25_spectrum_enable(on);
 }
 
@@ -417,8 +466,29 @@ static bool p25_running(void)
     return st.receiver_streaming;
 }
 
+static bool push_live(ls_wf_owner_t owner, uint32_t sequence, const ls_wf_feed_t *feed)
+{
+    if (s_live_owner == owner && s_live_seq == sequence) return true;
+    if (s_live_owner != owner || s_live_center != feed->center_hz || s_live_span != feed->span_hz)
+        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    s_live_seq = sequence; s_live_owner = owner;
+    s_live_center = feed->center_hz; s_live_span = feed->span_hz;
+    ls_wf_claim(owner, owner == LS_WF_OWNER_LORA ? "LR IQ" : owner == LS_WF_OWNER_P25 ? "P25" : "FM");
+    ls_wf_push(owner, s_bins, LS_WF_BINS_MAX, feed);
+    return true;
+}
+
+static bool pump_lr_tap(void);
 static bool pump_p25(void)
 {
+    if (app_uses_lr(LS_RSEL_P25)) {
+        p25_feed(false);
+        if (!P25.lr_iq_active) {
+            lr_spec_enable(false);
+            return idle(LS_WF_IDLE_NONE, "LR FSK: no IQ");
+        }
+        return pump_lr_tap();
+    }
     p25_feed(true);
 
     p25_spectrum_snapshot_t snap;
@@ -426,18 +496,6 @@ static bool pump_p25(void)
     if (!p25_spectrum_read(s_bins, LS_WF_BINS_MAX, now, 500, &snap))
         return false;
 
-    /* The same measurement, read again. The source is working - say
-       so - but there is no new row to write. */
-    if (s_p25_seq_have && snap.sequence == s_p25_seq) return true;
-    s_p25_seq      = snap.sequence;
-    s_p25_seq_have = true;
-
-    /* A retune changes every bin's frequency, so restart the picture. */
-    if (snap.center_hz != s_p25_center || snap.span_hz != s_p25_span) {
-        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
-        s_p25_center = snap.center_hz;
-        s_p25_span = snap.span_hz;
-    }
     ls_wf_feed_t f = {
         .center_hz = snap.center_hz,
         .span_hz   = snap.span_hz,
@@ -446,9 +504,7 @@ static bool pump_p25(void)
         .live      = true,
         .note      = snap.following_voice ? "following voice" : "control",
     };
-    ls_wf_claim(LS_WF_OWNER_P25, "P25");
-    ls_wf_push(LS_WF_OWNER_P25, s_bins, LS_WF_BINS_MAX, &f);
-    return true;
+    return push_live(LS_WF_OWNER_P25, snap.sequence, &f);
 }
 
 static bool fm_sweeping(void)
@@ -474,29 +530,24 @@ static bool pump_fm_live(void)
     if (!fm_spectrum_read(s_bins, LS_WF_BINS_MAX,
                           (uint32_t)(esp_timer_get_time() / 1000), &snap))
         return false;
-    if (snap.sequence == s_fm_live_seq) return true;
-    s_fm_live_seq = snap.sequence;
-    if (snap.center_hz != s_fm_live_center || snap.span_hz != s_fm_live_span) {
-        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
-        s_fm_live_center = snap.center_hz;
-        s_fm_live_span = snap.span_hz;
-    }
-    ls_wf_claim(LS_WF_OWNER_FM, "FM");
     ls_wf_feed_t feed = {
         .center_hz = snap.center_hz, .span_hz = snap.span_hz,
         .floor_db = FM_SPECTRUM_FLOOR_DB, .top_db = FM_SPECTRUM_TOP_DB,
         .live = true, .note = "live IQ", .period_ms = FM_SPECTRUM_PERIOD_MS,
     };
-    ls_wf_push(LS_WF_OWNER_FM, s_bins, LS_WF_BINS_MAX, &feed);
-    return true;
+    return push_live(LS_WF_OWNER_FM, snap.sequence, &feed);
 }
 
 static bool pump_fm(void)
 {
+    if (app_uses_lr(LS_RSEL_FM) || FM.lr_iq_active) {
+        fm_spectrum_enable(false);
+        return fm_lr_tapping() && pump_lr_tap();
+    }
     const bool live = FM.mode != FM_MODE_SCAN;
     if (live != s_fm_was_live) {
         ls_wf_claim(LS_WF_OWNER_NONE, NULL);
-        s_fm_live_seq = 0;
+        s_live_owner = LS_WF_OWNER_NONE;
         s_fm_seq_have = false;
         s_fm_was_live = live;
     }
@@ -581,7 +632,29 @@ static bool s_lora_held, s_lora_owned;
    and says when it is complete. In between, the source is working and has
    nothing new to write - the same answer P25 gives between measurements. */
 
-static bool pump_lora(void)
+static void lora_stop(void);
+static bool pump_lr_line(void)
+{
+    lr_spec_line snap;
+    if (!lr_spec_read(s_bins, &snap, (uint32_t)(esp_timer_get_time() / 1000)))
+        return idle(LS_WF_IDLE_WAITING, "Waiting for LR IQ");
+    ls_wf_feed_t f = {
+        .center_hz = snap.center_hz, .span_hz = 125000,
+        .floor_db = -100, .top_db = 0, .live = true,
+        .note = snap.gap ? "IQ gap" : "live IQ", .period_ms = LR_SPEC_PERIOD_MS,
+        .iq = true, .gap = snap.gap,
+    };
+    return push_live(LS_WF_OWNER_LORA, snap.sequence, &f);
+}
+
+static bool pump_lr_tap(void)
+{
+    s_lr_mode = true;
+    if (!lr_spec_enable(true)) return idle(LS_WF_IDLE_FAILED, "LR IQ memory unavailable");
+    return pump_lr_line();
+}
+
+static bool lora_hold(void)
 {
     /* P25 or ADS-B left listening on the chip gives it up when asked below. */
     if (ls_lora_fsk_active() && !ls_mesh_radio_bg())
@@ -595,6 +668,53 @@ static bool pump_lora(void)
         s_lora_held = true;
     }
     if (!ls_mesh_radio_held()) return idle(LS_WF_IDLE_STARTING, "Waiting for mesh release");
+    return true;
+}
+
+static bool pump_lora_iq(uint32_t hz)
+{
+    s_lr_mode = true;
+    if (!lr_spec_enable(true)) return idle(LS_WF_IDLE_FAILED, "LR IQ memory unavailable");
+    /* An existing decoder owns capture and tuning. Only tap its checked blocks. */
+    if (lr_spec_center() && !s_lr_owned) return pump_lr_line();
+    if ((P25.lr_iq_active || FM.lr_iq_active) && !s_lr_owned)
+        return idle(LS_WF_IDLE_WAITING, "Waiting for LR IQ");
+    if (hz < 150000000u || hz > 960000000u) {
+        lora_stop(); return idle(LS_WF_IDLE_FAILED, "LR tunes 150-960 MHz");
+    }
+    if (s_want == LS_WF_SRC_FM && FM.mode == FM_MODE_LISTEN && lr_only() && !s_lr_owned)
+        return idle(LS_WF_IDLE_WAITING, "Waiting for FM LR IQ");
+    if (!lora_hold()) return false;
+    if (lr_wf_start(hz) != ESP_OK) return idle(LS_WF_IDLE_FAILED, "LR IQ session failed");
+    s_lr_owned = true;
+    return pump_lr_line();
+}
+
+static bool pump_lora(void)
+{
+    uint32_t hz = 0, span = 125000;
+    const ls_lora_cfg_t *cfg = ls_lora_cfg();
+    if (s_want == LS_WF_SRC_FM) {
+        hz = FM.freq_hz;
+        if (FM.mode == FM_MODE_SCAN && FM.scan_stop_hz > FM.scan_start_hz) {
+            span = FM.scan_stop_hz - FM.scan_start_hz;
+            s_lora_min_hz = FM.scan_start_hz; s_lora_max_hz = FM.scan_stop_hz;
+        }
+    } else if (s_want == LS_WF_SRC_P25) hz = s_tune_freq_hz;
+    else if (s_view_hz) hz = s_view_hz;
+    else if (s_lora_band_set) {
+        span = s_lora_max_hz - s_lora_min_hz;
+        hz = s_lora_min_hz + span / 2;
+    } else if (cfg) hz = cfg->freq_hz;
+    ls_rsel_hw_t hw; ls_rsel_hw(&hw);
+    if (lr_spec_center() && !s_lr_owned) return pump_lora_iq(lr_spec_center());
+    const bool iq = hw.lora_lr20xx && span <= 125000;
+    if (iq != s_lr_mode) { lora_stop(); ls_wf_claim(LS_WF_OWNER_NONE, NULL); }
+    if (iq) return pump_lora_iq(hz);
+    s_lr_mode = false; lr_spec_enable(false);
+    if (hw.lora_lr20xx && (s_lora_min_hz < 150000000u || s_lora_max_hz > 960000000u))
+        return idle(LS_WF_IDLE_FAILED, "LR tunes 150-960 MHz");
+    if (!lora_hold()) return false;
     if (ls_lora_scan_begin(s_lora_min_hz, s_lora_max_hz) != ESP_OK)
         return idle(ls_lora_scanning() ? LS_WF_IDLE_BUSY : LS_WF_IDLE_FAILED,
                     ls_lora_scanning() ? "LoRa busy: another scan" : "LoRa scan failed; retry RADIO");
@@ -610,7 +730,7 @@ static bool pump_lora(void)
 
     /* Claimed on the first pass, so a row that takes 26 of them is 26 frames
        of "waiting for the receiver" and not of "no receiver". */
-    ls_wf_claim(LS_WF_OWNER_LORA, "LORA");
+    ls_wf_claim(LS_WF_OWNER_LORA, "LR SWEEP");
     if (!row_done) return true;
 
     /* How long this row took, passes and frames between them
@@ -668,6 +788,8 @@ static bool pump_lora(void)
 
 static void lora_stop(void)
 {
+    if (s_lr_owned) { lr_wf_stop(); s_lr_owned = false; }
+    if (s_live_owner == LS_WF_OWNER_LORA) s_live_owner = LS_WF_OWNER_NONE;
     if (s_lora_owned && ls_lora_scanning()) ls_lora_scan_end();
     if (s_lora_held) {
         ls_mesh_radio_hold(false);
@@ -696,6 +818,17 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
         return true;
     }
     if(owner==LS_WF_OWNER_LORA) {
+        if (s_lr_mode) {
+            /* Decoder-owned sessions keep their own tuner; never hand them to Labs. */
+            if (hz < 150000000u || hz > 960000000u) return false;
+            if (FM.lr_iq_active && s_want == LS_WF_SRC_FM)
+                return lakeshark_fm_set_freq(hz);
+            if (!s_lr_owned) return false;
+            if (s_want == LS_WF_SRC_FM) return lakeshark_fm_set_freq(hz);
+            if (s_want == LS_WF_SRC_P25) lakeshark_p25_set_freq(hz);
+            else s_view_hz = hz;
+            return true;
+        }
         if (!ls_lora_present() || !ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz) ||
             (hz > 959000000u && hz < 1900000000u)) return false;
         return ls_scr_labs_tune_marker(hz);
@@ -705,6 +838,10 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 
 void ls_wf_source_pump(void)
 {
+    if (s_noaa_pending && FM.mode == FM_MODE_LISTEN) {
+        uint32_t hz = s_noaa_pending; s_noaa_pending = 0;
+        lakeshark_fm_set_freq(hz);
+    }
     s_idle = LS_WF_IDLE_WAITING;
     s_idle_reason = "Waiting for first row";
     uint32_t marker = ls_wf_marker_hz();
@@ -715,17 +852,18 @@ void ls_wf_source_pump(void)
                         ls_lora_packet_rx_hz_ok(ls_lora_caps(), s_lora_max_hz));
     ls_wf_set_tuner(ls_wf_source_get() == LS_WF_SRC_LORA && !packet_band ? NULL : tune_marker);
     ls_wf_src_t use = ls_wf_source_get();
-    /* AUTO deliberately never picks LORA. The other two are views of
-       a receiver that is already running; a sweep STOPS the mesh to take the
-       radio, and a screen that did that on its own would knock a node off
-       the air because somebody opened the waterfall. It is chosen by hand or
-       not at all. */
 
     if (use != LS_WF_SRC_P25)  p25_feed(false);
     if (use != LS_WF_SRC_FM) fm_spectrum_enable(false);
     /* And gives the radio back, which matters more than turning a
        feed off: a mesh left parked is a node that has stopped answering. */
-    if (use != LS_WF_SRC_LORA) { lora_stop(); ls_field_direct_falls(false); }
+    if (use != LS_WF_SRC_LORA) {
+        const bool lr_app = (use == LS_WF_SRC_P25 && app_uses_lr(LS_RSEL_P25) && P25.lr_iq_active) ||
+                            (use == LS_WF_SRC_FM && fm_lr_tapping());
+        if (!lr_app) lr_spec_enable(false);
+        if (!lr_app || s_lr_owned || s_lora_held || s_lora_owned) lora_stop();
+        /* Decoder taps do not own field DIRECT. */
+    }
 
     bool ok = false;
     switch (use) {
@@ -734,17 +872,19 @@ void ls_wf_source_pump(void)
     case LS_WF_SRC_LORA: ok = pump_lora(); break;
     default: idle(LS_WF_IDLE_NONE, "No receiver selected"); break;
     }
-    if ((use == LS_WF_SRC_FM && !fm_running()) ||
-        (use == LS_WF_SRC_P25 && !p25_running()))
+    if ((use == LS_WF_SRC_FM && !fm_running() && !FM.lr_iq_active) ||
+        (use == LS_WF_SRC_P25 && !p25_running() && !P25.lr_iq_active))
         idle(LS_WF_IDLE_STARTING, "Waiting for receiver startup");
     s_active = ok ? use : LS_WF_SRC_AUTO;
 }
 
 void ls_wf_source_release(void)
 {
-    ls_field_direct_falls(false);
+    s_view_hz = 0; s_lr_mode = false;
+    lr_spec_enable(false);
+    /* No field DIRECT ownership was acquired here. */
     fm_spectrum_enable(false);
-    s_fm_live_seq = 0;
+    s_live_owner = LS_WF_OWNER_NONE;
     p25_feed(false);
     lora_stop();
     s_fm_seq_have = false;

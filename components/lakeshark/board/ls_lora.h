@@ -96,6 +96,11 @@ bool      ls_lora_present(void);
    reports success. Call this when the part's power or reset is touched by
    anything other than this driver. */
 void      ls_lora_stop(void);
+/* Request interruption of a bounded LR2021 IQ TX without waiting for the
+   shared radio lock. A request made after send starts is observed at FIFO
+   chunk/poll boundaries; a synchronous console send cannot process another
+   console command while it runs. */
+void      ls_lora_tx_cancel_request(void);
 /* Hold reset after TX completes; return failures without claiming shutdown. */
 esp_err_t ls_lora_park(void);
 
@@ -446,6 +451,12 @@ uint32_t ls_lora_freq_steps(uint32_t hz);
 
 /* Console helper: bring it up if needed and describe what answered. */
 void ls_lora_diagnostics(void);
+
+/* Protect a cold diagnostic task-stack snapshot from the time-critical live
+   LR20xx IQ capture. Non-LoRa boards admit the snapshot as a no-op. Always
+   pair a successful begin with end; do not hold across waits or output. */
+bool ls_lora_diagnostic_try_begin(void);
+void ls_lora_diagnostic_try_end(void);
 
 #ifdef __cplusplus
 }

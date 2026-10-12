@@ -10,6 +10,8 @@ static set_write_t queued[SET_Q_DEPTH];
 static int queued_n, queued_read, commit_count;
 static bool reject_write, live_ring, live_vibe, muted;
 static int boot_saved, ring_saved, vibe_saved, volume, timeout;
+static int lr_iq_saved = -1;
+static int nvs_reads;
 static jmp_buf worker_done;
 
 BaseType_t xQueueSend(QueueHandle_t q, const void *item, TickType_t ticks)
@@ -36,6 +38,7 @@ esp_err_t nvs_set_u8(nvs_handle_t h, const char *key, uint8_t value)
     if (!strcmp(key, "boot_snd")) boot_saved = value;
     if (!strcmp(key, "alert_ring")) ring_saved = value;
     if (!strcmp(key, "alert_vibe")) vibe_saved = value;
+    if (!strcmp(key, "p25_lriq")) lr_iq_saved = value;
     return ESP_OK;
 }
 #define UNUSED_SET(t, c) \
@@ -45,6 +48,20 @@ UNUSED_SET(i8, int8_t)
 UNUSED_SET(u32, uint32_t)
 UNUSED_SET(i32, int32_t)
 UNUSED_SET(u64, uint64_t)
+esp_err_t (nvs_get_u8)(nvs_handle_t h, const char *key, uint8_t *out)
+{
+    (void)h; nvs_reads++;
+    if (strcmp(key, "p25_lriq") || lr_iq_saved < 0) return ESP_ERR_NVS_NOT_FOUND;
+    *out = (uint8_t)lr_iq_saved;
+    return ESP_OK;
+}
+#define UNUSED_GET(t, c) \
+    esp_err_t (nvs_get_##t)(nvs_handle_t h, const char *k, c *v) \
+    { (void)h; (void)k; (void)v; return ESP_ERR_NVS_NOT_FOUND; }
+UNUSED_GET(i8, int8_t)
+UNUSED_GET(u32, uint32_t)
+UNUSED_GET(i32, int32_t)
+UNUSED_GET(u64, uint64_t)
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h; commit_count++; return ESP_OK; }
 esp_err_t ls_nvs_run(ls_nvs_fn_t fn, void *ctx, unsigned bytes)
 { (void)bytes; return fn(ctx); }
@@ -75,6 +92,29 @@ static void prepare(void)
 static void flush(void)
 {
     if (!setjmp(worker_done)) set_worker(NULL);
+}
+
+LS_CASE(p25_lr_iq_defaults_and_persists_both_explicit_choices)
+{
+    prepare(); lr_iq_saved = -1; nvs_reads = 0;
+    LS_CHECK(settings_get_p25_lr_iq());
+    LS_EQ_INT(0, queued_n); LS_EQ_INT(0, commit_count);
+    for (int choice = 0; choice <= 1; choice++) {
+        prepare();
+        LS_CHECK(settings_set_p25_lr_iq(choice != 0));
+        LS_EQ_INT(0, commit_count);
+        flush();
+        LS_EQ_INT(choice, lr_iq_saved);
+        /* A new boot reads persisted NVS, not the previous session's flag. */
+        LS_EQ_INT(choice, settings_get_p25_lr_iq());
+        LS_EQ_INT(1, boot_saved); LS_EQ_INT(1, ring_saved);
+    }
+    prepare(); reject_write = true;
+    LS_CHECK(!settings_set_p25_lr_iq(false));
+    LS_CHECK(settings_get_p25_lr_iq());
+    lr_iq_saved = 7; LS_CHECK(settings_get_p25_lr_iq());
+    s_nvs_ok = false; LS_CHECK(settings_get_p25_lr_iq());
+    prepare();
 }
 
 LS_CASE(rapid_alert_edits_preserve_live_flags_before_delayed_commit)
@@ -155,4 +195,14 @@ LS_CASE(dim_timeout_steps_clamp_and_handle_intermediate_saved_values)
     timeout = 45; dimt_step(-1); LS_EQ_INT(30, timeout);
     timeout = 45; dimt_step(1); LS_EQ_INT(60, timeout);
     LS_CHECK(DISPLAY_ITEMS[5].step == dimt_step);
+}
+
+LS_CASE(waterfall_preferences_are_ram_only_on_the_ui_path)
+{
+    const int before = nvs_reads;
+    s_wf_display = UINT32_MAX;
+    LS_EQ_UINT(settings_get_waterfall(123), 123);
+    s_wf_display = 456; /* boot-loaded value */
+    for (int visit = 0; visit < 20; ++visit) LS_EQ_UINT(settings_get_waterfall(123), 456);
+    LS_EQ_INT(nvs_reads, before);
 }

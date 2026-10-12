@@ -113,15 +113,14 @@ esp_err_t ls_lora_modes_read_threshold(int *raw)
 
 /* ---- fuel gauge ---------------------------------------------------- */
 
-bool ls_gauge_present(void) { return false; }
-
+static ls_gauge_t s_test_gauge;
+void ls_shim_gauge(const ls_gauge_t *g)
+{ s_test_gauge = g ? *g : (ls_gauge_t){0}; }
+bool ls_gauge_present(void) { return s_test_gauge.present; }
 bool ls_gauge_get(ls_gauge_t *out)
 {
-    if (out) {
-        const ls_gauge_t empty = { 0 };
-        *out = empty;
-    }
-    return false;
+    if (out) *out = s_test_gauge;
+    return s_test_gauge.present;
 }
 
 /* ---- what feeds the waterfall --------------------------------------- */
@@ -136,6 +135,7 @@ int ls_test_wf_pumps, ls_test_wf_releases;
 void        ls_wf_source_select(ls_wf_src_t src) { s_src = src; }
 ls_wf_src_t ls_wf_source_get(void)               { return s_src; }
 const char *ls_wf_source_name(void)              { return "none"; }
+void ls_wf_source_view(uint32_t hz) { (void)hz; }
 void        ls_wf_source_pump(void)              { ls_test_wf_pumps++; }
 void        ls_wf_source_release(void)           { ls_test_wf_releases++; }
 /* FM's SWEEP page starts the sweep through this, so the screen tests
@@ -306,3 +306,12 @@ void adsb_chip_diag_snapshot(adsb_chip_diag_t *out) { if (out) memset(out, 0, si
 void ls_mesh_socket_get(ls_mesh_socket_t *out)
 { if (out) { memset(out, 0, sizeof(*out)); strcpy(out->chip, "none");
     strcpy(out->owner, "none"); strcpy(out->mode, "LoRa"); } }
+
+#ifdef LS_WF_SOURCE_REAL
+/* Simulator has no raw hardware FIFO. */
+esp_err_t lr_wf_start(uint32_t hz) { (void)hz; return ESP_ERR_NOT_SUPPORTED; }
+void lr_wf_stop(void) {}
+#endif
+
+__attribute__((weak)) void ls_tui_last_cost(uint32_t *us, int *cells)
+{ if (us) *us = 0; if (cells) *cells = 0; }

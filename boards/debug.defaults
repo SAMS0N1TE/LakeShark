@@ -1,0 +1,5 @@
+# Debug overlay: add after the board defaults. INFO logs on the console
+# (LRIQ session stats, radio configure lines). Asserts with file and line no
+# longer fit the 0x480000 slot next to INFO; swap the lines below to trade.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y

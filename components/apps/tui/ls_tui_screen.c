@@ -16,6 +16,17 @@
 #include "ls_gauge.h"
 #include "ls_tui_ui.h"
 
+#include "esp_timer.h"
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+static portMUX_TYPE s_trans_mux = portMUX_INITIALIZER_UNLOCKED;
+#define TRANS_LOCK() portENTER_CRITICAL(&s_trans_mux)
+#define TRANS_UNLOCK() portEXIT_CRITICAL(&s_trans_mux)
+#else
+#define TRANS_LOCK() ((void)0)
+#define TRANS_UNLOCK() ((void)0)
+#endif
+
 #include <stdio.h>
 #include <string.h>
 
@@ -156,9 +167,70 @@ static bool (*s_dispatch_cb)(int);
 
 void ls_tui_screen_set_dispatch_cb(bool (*cb)(int)) { s_dispatch_cb = cb; }
 
+static ls_tui_transition_t s_trans[8];
+static unsigned s_trans_next, s_trans_count;
+static int s_trans_active = -1;
+static int64_t s_trans_requested, s_trans_draw_started;
+static bool s_trans_body;
+
+static void transition_request(int index)
+{
+    TRANS_LOCK();
+    /* The UI consuming a deferred console request must retain its timestamp. */
+    if (s_trans_active < 0 || s_trans[s_trans_active].to != index) {
+        s_trans_active = (int)s_trans_next;
+        s_trans_next = (s_trans_next + 1) % 8;
+        if (s_trans_count < 8) s_trans_count++;
+        s_trans[s_trans_active] = (ls_tui_transition_t){.from=s_current, .to=index};
+        s_trans_requested = esp_timer_get_time();
+        s_trans_draw_started = 0;
+        s_trans_body = false;
+    }
+    TRANS_UNLOCK();
+}
+
+int ls_tui_transitions(ls_tui_transition_t out[8])
+{
+    if (!out) return 0;
+    TRANS_LOCK();
+    int n = (int)s_trans_count;
+    for (int i = 0; i < n; i++)
+        out[i] = s_trans[(s_trans_next + 8 - s_trans_count + i) % 8];
+    TRANS_UNLOCK();
+    return n;
+}
+
+void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us)
+{
+    const int64_t now = esp_timer_get_time();
+    TRANS_LOCK();
+    if (s_trans_active >= 0 && s_trans[s_trans_active].to == s_current &&
+        s_trans_draw_started) {
+        ls_tui_transition_t *t = &s_trans[s_trans_active];
+        const uint32_t elapsed = (uint32_t)(now - s_trans_requested);
+        const uint32_t frame_us = (uint32_t)(now - s_trans_draw_started);
+        if (!t->frames) t->first_us = elapsed;
+        t->frames++;
+        t->last_us = elapsed;
+        if (frame_us >= t->worst_us) {
+            t->worst_us = frame_us;
+            t->worst_cells = cells;
+            t->worst_writeback_us = sync_us;
+            t->worst_draw_us = frame_us > present_us ? frame_us - present_us : 0;
+            t->worst_raster_us = present_us > sync_us ? present_us - sync_us : 0;
+        }
+        t->writeback_us += sync_us;
+        t->complete = s_trans_body;
+        if (t->complete) s_trans_active = -1;
+        s_trans_draw_started = 0;
+    }
+    TRANS_UNLOCK();
+}
+
 void ls_tui_screen_show(int index)
 {
     if (index < 0 || index >= s_count) return;
+    if (index != s_current) transition_request(index);
     /* A console switch must not release a radio during draw. */
     if (s_dispatch_cb && s_dispatch_cb(index)) return;
     if (index == s_current) return;
@@ -216,13 +288,13 @@ static void draw_battery(tui_surface *sf, tui_rect all, int x, uint8_t bar)
     ls_gauge_t g;
     if (!ls_gauge_get(&g) || !g.present) return;
 
-    uint8_t hue;
-    if (g.charging)        hue = TUI_CYAN   | TUI_BRIGHT;
-    else if (g.percent > 40) hue = TUI_GREEN  | TUI_BRIGHT;
-    else if (g.percent > 15) hue = TUI_YELLOW | TUI_BRIGHT;
-    else                     hue = TUI_RED    | TUI_BRIGHT;
-
-    const uint8_t fill = TUI_ATTR(hue, TUI_BLACK);
+    /* Partial blocks used to expose black rectangular grounds in the cyan
+       status band, just like the inverted help control beside the clock. */
+    const uint8_t hue = g.charging ? (TUI_CYAN | TUI_BRIGHT) :
+                        g.percent > 40 ? (TUI_GREEN | TUI_BRIGHT) :
+                        g.percent > 15 ? (TUI_YELLOW | TUI_BRIGHT) :
+                                         (TUI_RED | TUI_BRIGHT);
+    const uint8_t fill = TUI_ATTR(hue, TUI_CYAN);
 
     tui_put_char(sf, all, x, 0, '[', bar);
     /* Two cells, four quadrants each, so eight steps across 0..100. */
@@ -278,8 +350,7 @@ static bool hole_gap(int row, int n, int *g0, int *g1)
 
 static const char BRAND[] = "LAKESHARK";
 
-/* Where everything on the status row goes. Drawing and touch both ask
-   here, so a tap lands where the label is. */
+/* Where everything on the status row goes. */
 static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
                                            int *batt_x)
 {
@@ -296,7 +367,7 @@ static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
     const int brand = (int)sizeof(BRAND) - 1, nl = (int)strlen(name);
     const int ll = (int)strlen(s_status_left), rl = (int)strlen(s_status_right);
 
-    /* Around the camera: clock and [?] to its left, the rest to its right,
+    /* Around the camera: clock to its left, the rest to its right,
        the way a phone lays its status bar around a punch hole. */
     int g0, g1;
     if (hole_gap(0, 1, &g0, &g1) && g0 - *x0 >= LS_TUI_HELP_W + 2 &&
@@ -322,15 +393,9 @@ static void draw_status(tui_surface *sf, int cols)
     const ls_tui_screen_t *s = s_screens[s_current];
     const char *name = (s && s->name) ? s->name : "";
 
-    /* The clock where the turn control was (), in the bar's
-       own colours because it is information. [?] keeps the inverse because
-       it is still a control, and a control should look like one. */
+    /* The clock uses the status band's own colours. */
     if (l.clock_x >= 0 && s_status_clock[0])
         tui_put_str(sf, all, l.clock_x, 0, s_status_clock, bar);
-    if (l.help_x >= 0) {
-        const uint8_t knob = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-        tui_put_str(sf, all, l.help_x, 0, "[?]", knob);
-    }
 
     if (l.brand_x >= 0) tui_put_str(sf, all, l.brand_x, 0, BRAND, bar);
     if (l.name_x  >= 0) tui_put_str(sf, all, l.name_x,  0, name, bar);
@@ -712,6 +777,10 @@ static void draw_help(tui_surface *sf, int cols, int rows)
 void ls_tui_router_draw(tui_surface *sf)
 {
     if (!sf || !s_count) return;
+    TRANS_LOCK();
+    s_trans_draw_started = esp_timer_get_time();
+    s_trans_body = false;
+    TRANS_UNLOCK();
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
     extern bool ls_cartocore_draw(tui_surface *sf);
     if (ls_cartocore_draw(sf)) return;
@@ -759,7 +828,9 @@ void ls_tui_router_draw(tui_surface *sf)
         return;
     }
 
-    if (area.h > 0 && s_screens[s_current] && s_screens[s_current]->draw)
+    /* The picker covers the entire app area. Rendering the receiver behind
+       OPTIONS wastes CPU/PSRAM bandwidth and can re-enable its spectrum feed. */
+    if (!ls_opt_covers_screen() && area.h > 0 && s_screens[s_current] && s_screens[s_current]->draw)
         s_screens[s_current]->draw(sf, area);
 
     if (hint_rows()) draw_hints(sf, cols, rows - 1);
@@ -786,6 +857,9 @@ void ls_tui_router_draw(tui_surface *sf)
        that arrives while somebody is typing one is still a message, and the
        overlays are the screens people spend the longest on. */
     if (area.h > 0) ls_notify_draw(sf, area);
+    TRANS_LOCK();
+    s_trans_body = true;
+    TRANS_UNLOCK();
     /* Last, over everything: nothing is drawn where the glass has a hole. */
     if (has_hole) ls_tui_cutout_runaround(sf, hole);
 }
@@ -846,22 +920,7 @@ static bool router_touch_dispatch(int col, int row)
     ls_tui_geometry(&cols, &rows, NULL, NULL);
     const int th = tab_rows();
 
-    if (row == 0) {
-
-        /* From the same span the row was drawn in, so on a panel
-           with rounded corners the target moves in with its label rather
-           than staying at column 0, where there is now only bar. */
-        int x0, x1, batt_x;
-        const ls_tui_status_layout_t l = status_place(cols, &x0, &x1, &batt_x);
-
-        if (l.help_x >= 0 && col >= l.help_x &&
-            col < l.help_x + LS_TUI_HELP_W) {
-            /* Portrait drew a hint row for the sole purpose of being
-               tapped for help. This is that gesture, without the row. */
-            s_help_open = true;
-        }
-        return true;
-    }
+    if (row == 0) return true; /* The status row has no touch controls. */
     if (row >= 1 && row < 1 + th) {
         for (int i = 0; i < tab_count(); i++)
             if (col >= s_tab_x0[i] && col <= s_tab_x1[i]) {

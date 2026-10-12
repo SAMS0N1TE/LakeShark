@@ -119,6 +119,9 @@ static bool lora_has(uint32_t cap)
     return !h->present[LS_RSEL_LORA] || (h->lora_caps & cap);
 }
 
+static uint32_t s_fm_hz = 154785000;
+static bool s_fm_nfm = true;
+void ls_rsel_fm_context(uint32_t hz, bool nfm) { s_fm_hz = hz; s_fm_nfm = nfm; }
 const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
 {
     if (!job_ok(job) || !radio_ok(r)) return "Not a radio for this";
@@ -128,6 +131,12 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
     switch (job) {
     case LS_RSEL_FM:
         if (is_sdr(r)) return NULL;
+        if (r == LS_RSEL_LORA) {
+            if (s_fm_hz < 150000000u || s_fm_hz > 960000000u)
+                return "LR tunes 150-960 MHz; no broadcast FM / 2 m";
+            if (!s_fm_nfm) return "LR IQ supports NFM only (12.5 / 25 kHz)";
+            return hw()->lora_lr20xx ? NULL : "NFM IQ needs LR2021";
+        }
         return kind ? kind : "No IQ stream to demodulate audio";
     case LS_RSEL_PAGER:
         /* The LoRa chip's FSK demodulator with the paging decoder behind
@@ -210,7 +219,7 @@ static bool usable(ls_rsel_job_t job, ls_rsel_radio_t r)
 typedef struct { uint8_t n; uint8_t r[ORDER_MAX]; } order_t;
 
 static const order_t ORDER[LS_RSEL_JOBS] = {
-    [LS_RSEL_FM]           = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
+    [LS_RSEL_FM]           = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_PAGER]        = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ACARS]        = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
     [LS_RSEL_P25]          = { 4, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA, LS_RSEL_P25_SPLIT } },

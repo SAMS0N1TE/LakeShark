@@ -264,6 +264,8 @@ static bool stop(bool resume) {
   return true;
 }
 void ls_calls_leave(void) {
+  /* An unopened CALLS view owns no audio buffers to reset or release. */
+  if (!opened && !replay) return;
   if (stop(false)) {
     opened = false;
     ls_audio_view_close();

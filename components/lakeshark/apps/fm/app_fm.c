@@ -3,6 +3,14 @@
 #include "fm_state.h"
 #include "fm_mode_handoff.h"
 #include "fm_dsp.h"
+#include "fm_lr_dsp.h"
+#include "lr_wf_session.h"
+#include "lr_iq_spectrum.h"
+#include "ls_lora.h"
+/* Declared, not included (meshcore is not a dependency here); app_p25.c
+   carries the weak fallbacks for builds without a mesh. */
+bool ls_mesh_radio_hold_bg(bool hold);
+bool ls_mesh_radio_wanted(void);
 #include "fm_lifecycle.h"
 #include "fm_rx_worker.h"
 #include "fm_receive.h"
@@ -533,6 +541,114 @@ static ls_radio_err_t fm_radio_open(void)
     return LS_RADIO_OK;
 }
 
+static EXT_RAM_BSS_ATTR fm_lr_dsp_t s_lr_dsp;
+static bool s_lr_session;
+static uint32_t s_lr_hz, s_lr_channel, s_lr_lost, s_lr_gaps, s_lr_bytes;
+static int64_t s_lr_stats_us;
+
+static void fm_lr_reset_chain(void)
+{
+    fm_lr_reset(&s_lr_dsp);
+    fm_dsp_init(&s_dsp);
+    fm_tone_init(&s_tone);
+    FM.squelch_open = false;
+    FM.iq_level = 0; FM.noise = 1;
+    FM.tone_detected = s_tone.result;
+}
+static void fm_lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spare)
+{
+    (void)ctx;
+    if (!data) { fm_lr_reset_chain(); return; }
+    s_lr_bytes += bytes;
+    int64_t now = esp_timer_get_time();
+    if (now - s_lr_stats_us >= 1000000) {
+        FM.iq_bytes_sec = (uint32_t)((uint64_t)s_lr_bytes * 1000000 / (now-s_lr_stats_us));
+        s_lr_bytes = 0; s_lr_stats_us = now;
+    }
+    /* At most 320 pairs per checked block, 83 demod samples. PSRAM state;
+       bounded stack scratch. Catch up by dropping audio, never waiting. */
+    float demod[84]; int16_t pcm[44];
+    if (!spare) {
+        FM.lr_audio_drops++;
+        fm_lr_reset_chain();
+        return;
+    }
+    int nd = fm_lr_demod(&s_lr_dsp, &s_dsp, data, bytes, demod, 84);
+    int gate = FM.squelch_tenths == 0 ? 1 : FM.squelch_tenths >= 100 ? 0 :
+        fm_nfm_squelch(&s_dsp, FM.squelch_tenths, nd);
+    gate = fm_tone_receive(&s_tone, demod, nd, gate, FM.tone_required);
+    FM.tone_detected = s_tone.result;
+    FM.noise = s_dsp.demod_noise; FM.iq_level = s_dsp.iq_block_peak;
+    FM.squelch_open = gate;
+    int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 44);
+    /* No make-up AGC: existing fixed scale, with a conservative peak cap. */
+    for (int i=0; i<na; ++i) {
+        if (!gate) pcm[i] = 0;
+        else if (pcm[i] > 6000) pcm[i] = 6000;
+        else if (pcm[i] < -6000) pcm[i] = -6000;
+    }
+    if (scan_engine_audio_open()) {
+        uint32_t before = audio_drops_get();
+        audio_write_mono(pcm, na);
+        FM.lr_audio_drops += audio_drops_get() - before;
+    }
+    ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
+    ls_iq_control_note_tune_result(&s_radio_control, s_lr_hz, LS_RADIO_OK, s_lr_hz);
+}
+static void fm_lr_stop(void)
+{
+    if (!s_lr_session) return;
+    lr_wf_stats st;
+    lr_wf_stop_stats(&st);
+    FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
+    FM.lr_gaps = s_lr_gaps + st.gaps;
+    s_lr_session = FM.lr_iq_active = false;
+    ls_mesh_radio_hold_bg(false);
+    fm_receiver_lost(LS_RADIO_ERR_STOPPED);
+}
+static bool fm_lr_wanted(void)
+{
+    return fm_lr_supported(FM.freq_hz, FM.mode) &&
+        ls_lora_chip() == LS_LORA_CHIP_LR20XX &&
+        (ls_rsel_saved(LS_RSEL_FM) == LS_RSEL_LORA ||
+         !ls_rsel_sdr_endpoint(LS_RSEL_FM));
+}
+static void fm_lr_step(void)
+{
+    if (s_session) { ls_radio_iq_stop(s_session); ls_radio_release(s_session); s_session = NULL; }
+    uint32_t channel = FM.lr_channel_hz == 12500 ? 12500 : 25000;
+    if (s_lr_session) {
+        lr_wf_stats st; lr_wf_get_stats(&st);
+        FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
+        FM.lr_gaps = s_lr_gaps + st.gaps;
+        if (st.done || s_lr_hz != FM.freq_hz || s_lr_channel != channel || ls_mesh_radio_wanted()) {
+            fm_lr_stop();
+            if (st.done) { FM.read_errors++; vTaskDelay(pdMS_TO_TICKS(100)); }
+        }
+    }
+    if (!s_lr_session) {
+        if (ls_mesh_radio_wanted() || !ls_mesh_radio_hold_bg(true)) {
+            fm_receiver_lost(LS_RADIO_ERR_BUSY); vTaskDelay(pdMS_TO_TICKS(100)); return;
+        }
+        s_lr_hz = FM.freq_hz; s_lr_channel = channel;
+        s_lr_bytes = 0; s_lr_stats_us = esp_timer_get_time();
+        s_lr_lost = FM.lr_lost_pairs; s_lr_gaps = FM.lr_gaps;
+        fm_lr_init(&s_lr_dsp, s_lr_channel);
+        fm_lr_reset_chain();
+        /* Mark ownership before launch so the waterfall never creates a second capture. */
+        FM.lr_iq_active = true;
+        if (lr_wf_start_consumer(s_lr_hz, fm_lr_consume, NULL) != ESP_OK) {
+            FM.lr_iq_active = false; ls_mesh_radio_hold_bg(false);
+            fm_receiver_lost(LS_RADIO_ERR_BUSY); vTaskDelay(pdMS_TO_TICKS(100)); return;
+        }
+        s_lr_session = true;
+    }
+    if (s_squelch_req >= 0) { FM.squelch_tenths = s_squelch_req; s_squelch_req = -1; }
+    ls_iq_control_request_t request;
+    (void)ls_iq_control_take(&s_radio_control, &request);
+    vTaskDelay(1);
+}
+
 static void fm_fail_receiver_start(void);
 
 static void fm_rx_run_once(void)
@@ -568,6 +684,7 @@ static void fm_rx_run_once(void)
 
         fm_mode_t requested_mode;
         if (fm_mode_handoff_take(&s_mode_handoff, &requested_mode)) {
+            fm_lr_stop();
             call_archive_end(CALL_FM, false);
             int m = (int)requested_mode;
 
@@ -630,6 +747,8 @@ static void fm_rx_run_once(void)
             }
             if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_WFM || FM.mode == FM_MODE_AM) audio_out_ensure_unmuted();
         }
+        if (fm_lr_wanted()) { fm_lr_step(); continue; }
+        fm_lr_stop();
         if (!s_session) {
             /* Bounded for io; see radio_open_retry.c. Holding costs
                one atomic read every quarter second and never touches the
@@ -866,6 +985,7 @@ static void fm_rx_run_once(void)
         if (now - last_yield > 25000) { last_yield = now; vTaskDelay(1); }
     }
 
+    fm_lr_stop();
     if (s_session) {
         (void)ls_radio_iq_stop(s_session);
     }
@@ -1131,7 +1251,7 @@ void lakeshark_fm_set_mode(int mode)
        screen - and a pager on the LoRa chip, which needs no receiver at all -
        would keep the old mode. It is applied here; a receiver that opens
        later takes the same request and lands in the same place. */
-    if (!s_session && mode != FM_MODE_SCAN) {
+    if (!s_session && !s_lr_session && mode != FM_MODE_SCAN) {
         if (FM.mode != FM_MODE_SCAN) s_mode_freq[FM.mode] = FM.freq_hz;
         const uint32_t scan_tune = FM.mode == FM_MODE_SCAN ? s_scan_tune_hz : 0;
         s_scan_tune_hz = 0;

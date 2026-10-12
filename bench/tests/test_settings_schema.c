@@ -26,6 +26,8 @@ LS_CASE(same_version_keeps)
 
 LS_CASE(older_additive_migrates)
 {
+    LS_EQ_INT(settings_schema_decide(OK, 5, SETTINGS_SCHEMA_VERSION,
+                                    SETTINGS_SCHEMA_MIN_ADDITIVE), MIGRATE);
     /* Stored is older but inside the additive window the current build
        still knows how to read from.  Keys stay; version is bumped. */
     LS_EQ_INT(settings_schema_decide(OK, 1, 2, 1), MIGRATE);

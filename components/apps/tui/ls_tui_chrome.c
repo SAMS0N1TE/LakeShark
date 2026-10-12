@@ -11,14 +11,15 @@ ls_tui_status_layout_t ls_tui_status_layout(int cols, int brand_len,
     ls_tui_status_layout_t l = { -1, -1, -1, -1, -1, -1, 0 };
     if (cols < 4) return l;
 
-    int first = 1;
-    if (cols >= LS_TUI_CLOCK_W + 1 + LS_TUI_HELP_W + 6) {
+    int first = 0;
+    if (cols >= LS_TUI_CLOCK_W + GAP + 4) {
         l.clock_x = 0;
-        l.help_x  = LS_TUI_CLOCK_W + 1;
-        first = LS_TUI_CLOCK_W + 1 + LS_TUI_HELP_W + 1;
-    } else if (cols >= LS_TUI_HELP_W + 4) {
-        l.help_x = 0;
-        first = LS_TUI_HELP_W + 1;
+        first = LS_TUI_CLOCK_W + GAP;
+    }
+    /* A zero-width help slot reserves neither a position nor a separator. */
+    if (LS_TUI_HELP_W > 0 && cols >= first + LS_TUI_HELP_W + 4) {
+        l.help_x = first;
+        first += LS_TUI_HELP_W + GAP;
     }
 
     /* The right field is placed first because it is anchored to the right
@@ -80,9 +81,10 @@ ls_tui_status_layout_t ls_tui_status_layout_split(int x0, int g0, int g1,
                                                   int right_len,
                                                   const char *left)
 {
-    /* Clock and [?] exactly where the unsplit row puts them. */
+    /* The clock exactly where the unsplit row puts it. */
     ls_tui_status_layout_t l = ls_tui_status_layout_at(x0, g0 - x0, 0, 0, 0, 0);
-    const int first = l.help_x >= 0 ? l.help_x + LS_TUI_HELP_W + 1 : x0 + 1;
+    const int first = l.help_x >= 0 ? l.help_x + LS_TUI_HELP_W + GAP
+                    : l.clock_x >= 0 ? l.clock_x + LS_TUI_CLOCK_W + GAP : x0;
 
     /* The right field is anchored to the right edge, as before. */
     int limit = x1 - 1;

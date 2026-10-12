@@ -66,6 +66,16 @@
       "usb_serial": "5B91081095",
       "flash_mb": 16,
       "board": "T-Display-P4"
+    },
+    {
+      "name": "t-display-p4-debug",
+      "dir": "build_tdp4_debug",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/debug.defaults",
+      "enabled": false,
+      "usb_serial": "5B91081095",
+      "flash_mb": 16,
+      "board": "T-Display-P4"
     }
   ],
   "smoke": "t-display-p4",

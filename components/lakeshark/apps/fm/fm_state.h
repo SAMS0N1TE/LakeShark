@@ -93,6 +93,9 @@ typedef struct {
     int       squelch_tenths;
     uint32_t  iq_bytes_sec;
     uint32_t  read_errors;
+    bool      lr_iq_active;
+    uint32_t  lr_channel_hz; /* 12500 or 25000; zero defaults to 25000 */
+    uint32_t  lr_lost_pairs, lr_gaps, lr_audio_drops;
 
     uint32_t  scan_start_hz;
     uint32_t  scan_stop_hz;

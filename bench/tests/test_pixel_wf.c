@@ -14,6 +14,7 @@
 #include <time.h>
 
 static uint16_t g_fb[568 * 1232];
+static unsigned flushed_rows, flush_calls;
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
     if (!out) return false;
@@ -24,7 +25,10 @@ bool ls_panel_fb(ls_panel_fb_t *out)
     return true;
 }
 void ls_panel_fb_present(void) {}
-void ls_panel_fb_present_rows(int y0, int y1) { (void)y0; (void)y1; }
+void ls_panel_fb_present_rows(int y0, int y1) {
+    LS_CHECK(y0 >= 0 && y1 <= 1232 && y1 > y0);
+    flushed_rows += y1 - y0; flush_calls++;
+}
 
 static const ls_pwf_stop_t STOPS[] = {{0, 0, 0, 0}, {80, 0, 40, 200}, {160, 0, 220, 90},
                                       {220, 250, 220, 0}, {255, 255, 255, 255}};
@@ -84,6 +88,15 @@ static void exact_and_bounded(bool landscape, bool cw, ls_pwf_flow_t flow, int l
         ls_tui_last_cost(&us, &drawn);
         if (drawn > worst) worst = drawn;
         LS_EQ_INT((int)p.stat_px, lines * p.freq_px);
+        uint32_t copied, flushed;
+        ls_tui_last_traffic(&copied, &flushed);
+        LS_EQ_UINT(copied, (uint32_t)p.w * p.h * 2);
+        LS_EQ_UINT(flushed, (uint32_t)(landscape ? p.w : p.h) * 568 * 2);
+        if (i == 0 && flow == LS_PWF_DOWN)
+            printf("    %s %dx%d, %d new rows: compose=%lu B copy=%lu B flush=%lu B; at 10 Hz copy=%lu B/s flush=%lu B/s\n",
+                   landscape ? (cw ? "CW" : "CCW") : "portrait", p.w, p.h, lines,
+                   (unsigned long)p.stat_px * 2, (unsigned long)copied, (unsigned long)flushed,
+                   (unsigned long)copied * 10, (unsigned long)flushed * 10);
     }
     LS_CHECK_MSG(worst <= want, "%s %s: %d cells drawn a frame, bound %d of %d",
                  landscape ? (cw ? "landscape cw" : "landscape ccw") : "portrait",
@@ -105,6 +118,40 @@ LS_CASE(left_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_
 LS_CASE(down_portrait_moves_exactly){exact_and_bounded(false, true, LS_PWF_DOWN, 2);}
 LS_CASE(down_landscape_cw_moves_exactly){exact_and_bounded(true, true, LS_PWF_DOWN, 1);}
 LS_CASE(down_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_DOWN, 5);}
+
+LS_CASE(iq_cadence_coalesces_even_more_than_a_ring){
+    ls_pwf_t p = {0};
+    LS_CHECK(ls_pwf_size(&p, LS_PWF_DOWN, 40, 12, 30));
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    ls_pwf_compose(&p, 100000, 100000);
+    const uint32_t serial = p.serial;
+    for (int i = 0; i < 30; i++) push(&p);
+    ls_pwf_compose(&p, 199999, 100000);
+    LS_EQ_UINT(p.serial, serial); LS_EQ_UINT(p.stat_px, 0);
+    ls_pwf_compose(&p, 200000, 100000);
+    LS_EQ_UINT(p.serial, serial + 1); LS_EQ_UINT(p.stat_px, 40 * 12);
+    uint16_t expected[40 * 12]; memcpy(expected, p.img, sizeof(expected));
+    p.redraw = true;
+    ls_pwf_compose(&p, 200001, 100000);
+    LS_CHECK(!memcmp(expected, p.img, sizeof(expected)));
+    ls_pwf_free(&p);
+}
+
+LS_CASE(present_skips_clean_rows_between_changes){
+    LS_CHECK(ls_tui_begin(568, 1232));
+    tui_surface *sf = ls_tui_surface();
+    tui_frame_begin(sf); ls_tui_present();
+    int cols, rows, cw, ch; ls_tui_geometry(&cols, &rows, &cw, &ch);
+    tui_frame_begin(sf);
+    tui_put_char(sf, tui_surface_rect(sf), 8, 8, 'A', 7);
+    tui_put_char(sf, tui_surface_rect(sf), 8, 38, 'B', 7);
+    flushed_rows = flush_calls = 0;
+    ls_tui_present();
+    LS_EQ_UINT(flush_calls, 2); LS_EQ_UINT(flushed_rows, 2 * ch);
+    uint32_t copied, flushed; ls_tui_last_traffic(&copied, &flushed);
+    LS_EQ_UINT(flushed, 2 * ch * 568 * 2);
+    ls_tui_end();
+}
 
 /* A change of colours redraws everything, and is still exact afterwards. */
 LS_CASE(new_colours_draw_every_cell_then_move_again){
@@ -166,4 +213,23 @@ LS_CASE(a_moving_frame_costs_a_fraction_of_a_full_draw){
     printf("    460x510 waterfall, 4 lines a frame: %.3f ms moving, %.3f ms full\n",
            moving, full);
     LS_CHECK_MSG(moving * 3.0 < full, "moving %.3f ms vs full %.3f ms", moving, full);
+}
+
+#include "switch_budget.h"
+LS_CASE(reserved_waterfall_resizes_without_allocating_or_showing_old_rows)
+{
+    ls_pwf_t p = {0};
+    LS_CHECK(ls_pwf_reserve(&p, 568u * 1232, 1232u * 256, 1232));
+    uint16_t *image = p.img;
+    switch_budget_begin();
+    for (int i = 0; i < 4; ++i) {
+        LS_CHECK(ls_pwf_size(&p, LS_PWF_DOWN, i & 1 ? 1100 : 520, i & 1 ? 400 : 1000, 256));
+        memset(p.hist, 255, p.hist_capacity);
+        LS_EQ_INT(p.filled, 0);
+        ls_pwf_compose(&p, 1000000 + i * 100000, 0);
+        LS_CHECK(p.img == image);
+        for (int k = 0; k < p.w * p.h; ++k) LS_EQ_INT(p.img[k], p.lut[0]);
+    }
+    LS_EQ_UINT(switch_budget_end(), 0);
+    ls_pwf_free(&p);
 }

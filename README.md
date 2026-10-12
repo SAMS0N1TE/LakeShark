@@ -179,7 +179,7 @@ CSV/JSON imports work without RadioReference. The optional RadioReference adapte
 `[EXPERIMENTAL]` needs an approved application key and the user's Premium account;
 live account authentication has not been validated.
 
-**Current P4 release: [2.12.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.12.0).** Raw I/Q P25 on the LR2021: the radio streams complex samples continuously and LakeShark demodulates C4FM itself (experimental, Phase 1). Also new: ADS-B on 1090 and UAT 978 at once, P25 split with the LR2021 on control and the RTL on calls, CATCH burst hand-off, and pixel waterfalls across the radio apps. Update over WiFi from the UPDATE app, or by USB with the web flasher at any time; coming from 2.8 or earlier, use USB once. Experimental radio features remain marked.
+**Current P4 release: [2.13.0](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0).** Analog narrowband FM now runs on the onboard LR2021 with live I/Q waterfalls and faster FM/P25 switching. FM VFO has a handheld-radio display, animated VFD-style signal lines and an inline frequency keypad. Experimental LR2021 waveform playback preserves amplitude and phase for short custom bursts. Update over WiFi from UPDATE, or use the browser flasher by USB; coming from 2.8 or earlier, use USB once.
 
 Older changes are in the [release history](https://github.com/SAMS0N1TE/LakeShark/releases).
 

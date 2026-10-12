@@ -1045,7 +1045,6 @@ static bool tui_session(void)
     while (!s_tui_stop) {
         /* The frame's start, for the phase split. */
         const int64_t ph_start = esp_timer_get_time();
-        const int previous_screen = ls_tui_screen_current();
         {
             const int64_t now = ph_start;
             if (s_loop_last_us) {
@@ -1321,11 +1320,6 @@ static bool tui_session(void)
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         ls_tui_present();
         const int64_t ph_sleep = esp_timer_get_time();
-        if (previous_screen != ls_tui_screen_current())
-            printf("tui switch: %s -> %s input=%lld draw=%lld present=%lld total=%lld us\n",
-                   ls_tui_screen_name(previous_screen), ls_tui_screen_name(ls_tui_screen_current()),
-                   (long long)(ph_draw - ph_start), (long long)(ph_present - ph_draw),
-                   (long long)(ph_sleep - ph_present), (long long)(ph_sleep - ph_start));
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
         s_ph_core_frames[esp_cpu_get_core_id() ? 1 : 0]++;
 
@@ -1420,9 +1414,11 @@ static bool tui_start_session(void)
 
     s_tui_stop = false;
     if (!s_tui_worker) {
+        /* Core 1: the LR2021 IQ capture (prio 23) and the P25 decoder busy core 0;
+           unpinned, the TUI landed there and frames took up to 324 ms (1.4 ms here). */
         s_tui_worker = ls_flash_task_create_static(tui_task, "ls_tui",
             sizeof(s_tui_stack), nullptr, 4, s_tui_stack, &s_tui_tcb,
-            tskNO_AFFINITY);
+            1);
         if (!s_tui_worker) return false;
     }
     s_tui_task = s_tui_worker;
@@ -1843,6 +1839,21 @@ static int tui_cmd(int argc, char **argv)
                set_us ? (long long)(bytes / set_us) : 0LL, (long long)rd_us, (long long)wb_us);
         (void)sum;
         ls_tui_invalidate();
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "trans")) {
+        ls_tui_transition_t t[8];
+        const int n = ls_tui_transitions(t);
+        printf("tui trans: request -> presented frame (first includes splash); worst includes draw+present\n");
+        for (int i = 0; i < n; i++) {
+            printf("%s -> %s first=%.3f ms last=%.3f ms frames=%u worst=%u us cells=%u writeback=%u us total_writeback=%u us draw=%u us raster_diff=%u us %s\n",
+                   ls_tui_screen_name(t[i].from), ls_tui_screen_name(t[i].to),
+                   t[i].first_us / 1000.0, t[i].last_us / 1000.0,
+                   (unsigned)t[i].frames, (unsigned)t[i].worst_us,
+                   (unsigned)t[i].worst_cells, (unsigned)t[i].worst_writeback_us,
+                   (unsigned)t[i].writeback_us, (unsigned)t[i].worst_draw_us,
+                   (unsigned)t[i].worst_raster_us, t[i].complete ? "done" : "pending/superseded");
+        }
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "cost")) {
@@ -3008,6 +3019,9 @@ static int display_cmd(int argc,char **argv)
     printf("autorotate=%s imu=%s keyboard=%s pose=%d held=%d\n",
            settings_get_auto_rotate()?"on":"off",s_imu_ok?"ready":"unavailable",
            ls_keypad_present()?"present":"absent",(int)ls_imu_pose(),s_manual_held);
+    { uint32_t us = 0; int cells = 0; ls_tui_last_cost(&us, &cells);
+      printf("tui: last %d cells %lu us, max %lu us\n", cells, (unsigned long)us,
+             (unsigned long)ls_tui_max_cost_take()); }
     ls_panel_diagnostics();
     return 0;
 }
@@ -3100,7 +3114,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
+        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t sd={.command="sd",

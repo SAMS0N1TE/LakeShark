@@ -25,6 +25,10 @@ CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
 CONFIG_ESP_HOSTED_SPI_HOST_INTERFACE=n
+# Disable the vendor raw task-dump console: uxTaskGetSystemState walks every
+# task stack while the SMP kernel is locked and bypasses LakeShark's radio guard.
+# Use the guarded `heap`/`top` commands for task diagnostics instead.
+CONFIG_ESP_HOSTED_CLI_ENABLED=n
 CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=18
 CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=19
@@ -65,6 +69,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # writebacks. No interrupt callback modifies these CPU-owned pixel/IQ buffers.
 CONFIG_LCD_DSI_ISR_CACHE_SAFE=y
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
+# Bound each shared-cache writeback operation during live IQ drains.
 CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
 
 # MeshCore decrypts a 16-byte block at a time. The P4 AES unit runs every
@@ -73,8 +78,14 @@ CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
 # allocation left the mesh radio deaf. Software AES needs no DMA memory.
 # CONFIG_MBEDTLS_HARDWARE_AES is not set
 
-# Task-only FreeRTOS APIs can wait for cache; FromISR/context-switch paths stay in IRAM.
-CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+# LR IQ polling SPI and notification waits must not fetch code from flash.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=n
+CONFIG_SPI_MASTER_IN_IRAM=y
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+CONFIG_ESP_TIMER_IN_IRAM=y
+CONFIG_ESP_TIMER_ISR_AFFINITY_CPU0=y
+CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
 # PM is disabled; stop the sleep module selecting the optional IRAM latency optimization.
 CONFIG_PM_SLEEP_FUNC_IN_IRAM=n
 # Match 5.4.3: no optional light-sleep latency optimization.
@@ -95,3 +106,8 @@ CONFIG_FATFS_FS_LOCK=24
 # lwIP buffers come from PSRAM here (MALLOC_ALWAYSINTERNAL=0).
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=24
+
+# Release size: silent asserts and WARN logs free about 160 KB of the 0x480000
+# app slot. boards/debug.defaults puts both back (config t-display-p4-debug).
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y

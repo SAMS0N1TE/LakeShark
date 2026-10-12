@@ -18,6 +18,9 @@
 
 /* ------------------------------------------------------------------ state */
 
+static bool s_pending_gap;
+static EXT_RAM_BSS_ATTR bool s_row_gap[LS_WF_ROWS_MAX];
+static EXT_RAM_BSS_ATTR uint8_t s_history[LS_WF_ROWS_MAX][LS_WF_BINS_MAX];
 static uint8_t (*s_hist)[LS_WF_BINS_MAX];
 static int      s_head;                  /* newest row index                */
 static int      s_filled;                /* rows written since the claim    */
@@ -313,10 +316,7 @@ static inline uint8_t colour_of(int level)
 static bool ensure_hist(void)
 {
     if (s_hist) { s_st.ready = true; return true; }
-    s_hist = heap_caps_malloc(sizeof(*s_hist) * LS_WF_ROWS_MAX,
-                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_hist) return false;
-    memset(s_hist, 0, sizeof(*s_hist) * LS_WF_ROWS_MAX);
+    s_hist = s_history; /* Filled rows alone are readable; no bulk clear. */
     s_st.ready = true;
     return true;
 }
@@ -342,9 +342,10 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
     s_marker_initial = owner == LS_WF_OWNER_FM || owner == LS_WF_OWNER_P25;
     memset(s_peak, 0, sizeof(s_peak));
     memset(&s_st, 0, sizeof(s_st));
+    s_pending_gap = false;
     s_row_ms_n = 0;
     s_last_push_us = 0;
-    if (s_hist) memset(s_hist, 0, sizeof(*s_hist) * LS_WF_ROWS_MAX);
+    /* s_filled invalidates the history in O(1). */
 
     if (owner != LS_WF_OWNER_NONE) ensure_hist();
     s_st.ready = (s_hist != NULL);
@@ -372,6 +373,7 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
     s_have_preview = false;
 
     if (feed) { s_feed = *feed; s_have_feed = true; }
+    if (feed && feed->gap) { s_pending_gap = true; s_acc_primed = false; }
 
     /* Counted AFTER the refusals above, so it means "a row was
        accepted" and not "somebody called this". A paused waterfall or a
@@ -423,6 +425,7 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
     s_decim_n = 0;
 
     s_head = (s_head + 1) % LS_WF_ROWS_MAX;
+    s_row_gap[s_head] = s_pending_gap; s_pending_gap = false;
     uint8_t *row = s_hist[s_head];
     for (int i = 0; i < dst_n; i++) {
         const uint8_t v = (uint8_t)(s_acc[i] >> 8);
@@ -509,6 +512,7 @@ void ls_wf_preview(ls_wf_owner_t owner, const float *bins, int n,
     s_nbins = n;
     s_have_preview = true;
     if (feed) { s_feed = *feed; s_have_feed = true; }
+    if (feed && feed->gap) { s_pending_gap = true; s_acc_primed = false; }
     track_scale(s_preview, n);
 }
 
@@ -529,7 +533,7 @@ static void draw_power_axis(tui_surface *sf, tui_rect r)
             tui_put_str(sf, axis, axis.x, axis.y + y, label, attr);
         }
         tui_put_str(sf, axis, axis.x, axis.y + 1,
-                    s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS", attr);
+                    s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS", attr);
     }
 }
 
@@ -652,6 +656,14 @@ static void draw_falls(tui_surface *sf, tui_rect r)
 
     for (int y = 0; y < r.h; y++) {
         for (int x = 0; x < r.w; x++) {
+            int back = y * per_cell;
+            if (x == 0 && back < s_filled &&
+                (s_row_gap[(s_head - back + LS_WF_ROWS_MAX) % LS_WF_ROWS_MAX] ||
+                 (per_cell == 2 && back + 1 < s_filled &&
+                  s_row_gap[(s_head - back - 1 + LS_WF_ROWS_MAX) % LS_WF_ROWS_MAX]))) {
+                tui_put_char(sf, r, r.x, r.y + y, '!', TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+                continue;
+            }
             if (per_cell == 2) {
                 const int a = level_in_row(sample(y * 2,     x, r.w), y * 2);
                 const int b = level_in_row(sample(y * 2 + 1, x, r.w), y * 2 + 1);
@@ -733,7 +745,7 @@ static int draw_level_meter(tui_surface *sf, tui_rect r, int x)
     if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
         const float db = s_feed.floor_db +
             (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-        snprintf(val, sizeof(val), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS");
+        snprintf(val, sizeof(val), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
     } else {
         snprintf(val, sizeof(val), "%d%%", raw * 100 / 255);
     }
@@ -777,7 +789,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
             const float db = s_feed.floor_db +
                 (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-            snprintf(lvl, sizeof(lvl), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA ? "dBm" : "dBFS");
+            snprintf(lvl, sizeof(lvl), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
         } else {
             snprintf(lvl, sizeof(lvl), "%d%%", raw * 100 / 255);
         }
@@ -1080,9 +1092,20 @@ bool ls_wf_touch(int col, int row)
 
    Rows are copied in on the UI task at draw time; ls_wf_push can run on a
    radio task and never touches the pixels. The panel moves what it shows by
-   the new rows only (ls_tui_image_ring), so a frame costs a few rows, not a
-   screen. */
+   the new rows only (ls_tui_image_ring). Composition costs a few rows;
+   presenting a scrolling image still copies the retained framebuffer band. */
 static EXT_RAM_BSS_ATTR ls_pwf_t s_pix;
+/* Called at display initialization, outside app switching. Portrait and
+   landscape share the same pixel budget and the larger axis capacity. */
+void ls_wf_prepare(int width, int height)
+{
+    if (width <= 0 || height <= 0) return;
+    const int axis = width > height ? width : height;
+    ensure_hist();
+    ls_pwf_reserve(&s_pix, (size_t)width * height,
+                   (size_t)axis * LS_WF_BINS_MAX, (size_t)axis);
+}
+
 static uint32_t s_pix_pushes;
 static ls_wf_owner_t s_pix_owner;
 static int s_pix_bins = -1;
@@ -1137,7 +1160,8 @@ static void pix_sync(bool fresh)
         if (!first) break;
         for (int i = 0; i < s_nbins && i < LS_WF_BINS_MAX; i++) {
             int c = ((int)row[i] - lo) * 255 / (hi - lo);
-            first[i] = (uint8_t)(c < 0 ? 0 : c > 255 ? 255 : c);
+            first[i] = s_row_gap[idx] && i < 8 ? ((i & 1) ? 0 : 255) :
+                       (uint8_t)(c < 0 ? 0 : c > 255 ? 255 : c);
         }
         for (int r = 1; r < k; r++) {
             uint8_t *line = ls_pwf_push(&s_pix);
@@ -1159,13 +1183,18 @@ static bool draw_pixels(tui_surface *sf, tui_rect r)
     int cw = 0, ch = 0;
     ls_tui_geometry(NULL, NULL, &cw, &ch);
     if (cw <= 0 || ch <= 0) return false;
+    /* A failed boot reservation uses cells; never retry a large allocation
+       from a decoder's first frame. Rotation also fits the reserved budget. */
+    if (s_pix.pixel_capacity < (size_t)r.w * cw * r.h * ch ||
+        s_pix.hist_capacity < (size_t)r.h * ch * LS_WF_BINS_MAX ||
+        s_pix.axis_capacity < (size_t)r.w * cw) return false;
     const bool same = s_pix.img && s_pix.w == r.w * cw && s_pix.h == r.h * ch;
     if (!ls_pwf_size(&s_pix, LS_PWF_DOWN, r.w * cw, r.h * ch, LS_WF_BINS_MAX)) return false;
     pix_colours();
     pix_sync(!same);
     const uint16_t white = ls_tui_active_theme()->palette[TUI_WHITE | TUI_BRIGHT];
     ls_pwf_mark(&s_pix, s_marker >= 0 && s_marker < r.w ? s_marker * cw + cw / 2 - 1 : -1, white);
-    ls_pwf_compose(&s_pix, esp_timer_get_time(), 33000);
+    ls_pwf_compose(&s_pix, esp_timer_get_time(), s_have_feed && s_feed.iq ? 100000 : 33000);
     ls_pwf_show(&s_pix, sf, r);
     /* A panel that does not keep the picture (a bench without one) gets
        the cells instead, on a cleared rectangle. */
