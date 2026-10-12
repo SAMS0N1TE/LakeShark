@@ -30,29 +30,54 @@ LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-d
   </tr>
 </table>
 
-## A LoRa chip. A whole new radio.
+## <°)))>< A LoRa chip. A whole new radio.
 
-**P25 digital voice. Analog FM. Pagers. Aircraft. All through the onboard LR2021—no SDR dongle needed.**
+> **Your onboard LR2021 does more than LoRa.**<br>
+> P25 voice, FM, pagers and aircraft. No SDR dongle needed.
 
-LakeShark reaches inside the LR2021's raw signal path and lets software do the decoding. The LoRa radio already on your board becomes a receiver for signals far beyond LoRa, with live waterfalls to see what you hear.
+**Listen** — P25 Phase 1 voice, narrowband FM and VHF/UHF pagers.
 
-| Listen and decode | See the signal | Create a signal |
-| --- | --- | --- |
-| Hear **P25 Phase 1 voice** and **narrowband FM**, decode **VHF/UHF pagers**, and track **ADS-B aircraft**. | Watch **live I/Q waterfalls** while tuning. Explore raw signal capture and decoder tools in the companion project. | Upload a custom waveform for **experimental short-burst transmission**, preserving both amplitude and phase. Examples include P25 test tones and temperature packets. |
+**Explore** — Track ADS-B aircraft and watch live signal waterfalls.
 
-**The research is open.** [**LR2021-SDR →**](https://github.com/SAMS0N1TE/lr2021-sdr) contains the receive library, capture firmware, waveform generators and measurements behind this work. Use LakeShark as a handheld, or use those tools to build something of your own.
+**Create** — Transmit custom waveforms with amplitude and phase preserved. [Experimental TX →](docs/LR2021_IQ_TX.md)
 
-[P25 in action](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/p25.md) · [Signal recording](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/voice-capture.md) · [Try waveform playback in LakeShark](docs/LR2021_IQ_TX.md)
+---
 
-### New in 2.13
+**[Explore LR2021-SDR →](https://github.com/SAMS0N1TE/lr2021-sdr)**<br>
+The open research and tools behind the radio.
 
-- **A radio that feels like a radio.** FM gets a handheld display, animated VFD meters and an inline frequency keypad.
-- **More from the onboard LR2021.** Listen to narrowband FM, see live signal waterfalls and switch faster between FM and P25.
-- **Build your own signals.** Experimental [waveform playback](docs/LR2021_IQ_TX.md) adds short custom transmissions that preserve amplitude and phase.
+<details>
+<summary>How it works · recordings · build your own</summary>
 
-[See everything in 2.13.0 →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0)
+LakeShark accesses the LR2021's raw signal path so software can decode signals beyond LoRa. The companion project includes a receive library, capture firmware, waveform generators and measurements.
 
-### Choose your setup
+- [**P25 in action**](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/p25.md) — digital voice on a LoRa chip.
+- [**Signal recording**](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/voice-capture.md) — save raw signals and decode them again.
+- [**Waveform playback**](docs/LR2021_IQ_TX.md) — short transmit bursts, including P25 test tones and temperature packets.
+
+</details>
+
+### ><)))°> New in 2.13
+
+**Handheld FM controls · Animated VFD meters · Inline keypad**
+
+<details>
+<summary>More in this release</summary>
+
+- Onboard LR2021 narrowband FM and live I/Q waterfalls.
+- Faster switching between FM and P25.
+- Experimental custom waveform transmission.
+
+[Full release notes →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0)
+
+</details>
+
+### }<((((-- Choose your setup
+
+**LR2021 or SX1262?** Both run LakeShark. The LR2021 unlocks the onboard receivers above.
+
+<details>
+<summary>Compare boards and add-ons</summary>
 
 | Your hardware | What it opens up |
 | --- | --- |
@@ -61,7 +86,9 @@ LakeShark reaches inside the LR2021's raw signal path and lets software do the d
 | **RTL-SDR Blog V3 or V4** | An external receiver for either board, including P25 Phase 1 trunking and sub-GHz capture. |
 | **Optional MIX-RF keyboard** | Physical keys plus CC1101, nRF24 and NFC tools. |
 
-## Start here
+</details>
+
+## <°)))>< Start here
 
 **[Flash LakeShark from your browser](https://terminalbay.com/?m=lakeshark)** · **[First flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH)** · **[Download the latest release](https://github.com/SAMS0N1TE/LakeShark/releases/latest)**
 
