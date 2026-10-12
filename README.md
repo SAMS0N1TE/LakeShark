@@ -30,6 +30,20 @@ LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-d
   </tr>
 </table>
 
+## A LoRa chip. A whole new radio.
+
+**P25 digital voice. Analog FM. Pagers. Aircraft. All through the onboard LR2021—no SDR dongle needed.**
+
+LakeShark reaches inside the LR2021's raw signal path and lets software do the decoding. The LoRa radio already on your board becomes a receiver for signals far beyond LoRa, with live waterfalls to see what you hear.
+
+| Listen and decode | See the signal | Create a signal |
+| --- | --- | --- |
+| Hear **P25 Phase 1 voice** and **narrowband FM**, decode **VHF/UHF pagers**, and track **ADS-B aircraft**. | Watch **live I/Q waterfalls** while tuning. Explore raw signal capture and decoder tools in the companion project. | Upload a custom waveform for **experimental short-burst transmission**, preserving both amplitude and phase. Examples include P25 test tones and temperature packets. |
+
+**The research is open.** [**LR2021-SDR →**](https://github.com/SAMS0N1TE/lr2021-sdr) contains the receive library, capture firmware, waveform generators and measurements behind this work. Use LakeShark as a handheld, or use those tools to build something of your own.
+
+[P25 in action](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/p25.md) · [Signal recording](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/voice-capture.md) · [Try waveform playback in LakeShark](docs/LR2021_IQ_TX.md)
+
 ### New in 2.13
 
 - **A radio that feels like a radio.** FM gets a handheld display, animated VFD meters and an inline frequency keypad.
@@ -39,8 +53,6 @@ LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-d
 [See everything in 2.13.0 →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0)
 
 ### Choose your setup
-
-**Have the LR2021 board?** FM, P25 Phase 1 voice, VHF/UHF pagers and aircraft reception work with its onboard radio. Connect an antenna suited to what you want to hear and start exploring.
 
 | Your hardware | What it opens up |
 | --- | --- |
