@@ -81,16 +81,11 @@ The open research and tools behind the radio.
 
 **Handheld FM controls · Animated VFD meters · Inline keypad**
 
-Analog narrowband FM runs on the onboard LR2021, with live I/Q waterfalls.<br>
-Faster switching between FM and P25.<br>
-FM VFO has a handheld-radio display, animated VFD-style signal lines and an inline frequency keypad.<br>
-Experimental LR2021 waveform playback preserves amplitude and phase for short custom bursts.<br>
-Update over WiFi from UPDATE, or use the browser flasher by USB. Coming from 2.8 or earlier, use USB once.
+Narrowband FM now runs on the onboard LR2021, with live I/Q waterfalls and faster switching between FM and P25.
 
 [Full release notes →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0) &nbsp;•&nbsp; [Release history](https://github.com/SAMS0N1TE/LakeShark/releases)
 
 </div>
-
 <h2 align="center">Choose your setup</h2>
 
 <div align="center">
