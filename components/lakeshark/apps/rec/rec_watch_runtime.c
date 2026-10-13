@@ -51,6 +51,9 @@ static uint32_t s_scan_min,s_scan_max,s_scan_secs;
 static int s_scan_bins=REC_SCAN_BINS;
 static TaskHandle_t s_worker_task;
 static bool s_watch_pending, s_watch_waiting, s_watch_on, s_watch_result;
+/* Set while the worker is acting on a request: it then finishes, and the
+   caller waits for it rather than withdrawing a request already underway. */
+static bool s_watch_taken;
 static bool rec_watch_enable_owned(bool on);
 static volatile bool s_scan_busy;
 static rec_source_t s_scan_source;
@@ -252,11 +255,12 @@ static void worker(void *arg)
     for(;;) {
         portENTER_CRITICAL(&s_lock);
         bool watch_pending=s_watch_pending,watch_on=s_watch_on;
+        if(watch_pending)s_watch_taken=true;
         portEXIT_CRITICAL(&s_lock);
         if(watch_pending) {
             bool ok=rec_watch_enable_owned(watch_on);
             portENTER_CRITICAL(&s_lock);
-            s_watch_result=ok;s_watch_pending=false;
+            s_watch_result=ok;s_watch_pending=false;s_watch_taken=false;
             portEXIT_CRITICAL(&s_lock);
         }
         sync_cc_watch();
@@ -675,12 +679,14 @@ bool rec_watch_enable(bool on)
     if(!ok)return false;
     /* The worker answers between jobs, and a sweep can hold it for minutes.
        Never wait that long on the caller's task (the UI): an OFF is left
-       queued for the worker and reported done, an ON is withdrawn. */
+       queued for the worker and reported done, an ON is withdrawn. Once the
+       worker has taken it, the request runs to its own bounded end (the mesh
+       release waits a second at most) and the caller waits for the answer. */
     const int64_t deadline=esp_timer_get_time()+1500000;
     for(;;) {
         portENTER_CRITICAL(&s_lock);
         bool pending=s_watch_pending,result=s_watch_result;
-        if(pending && esp_timer_get_time()>deadline) {
+        if(pending && !s_watch_taken && esp_timer_get_time()>deadline) {
             if(on)s_watch_pending=false;
             else s_status.enabled=false;
             s_watch_waiting=false;
