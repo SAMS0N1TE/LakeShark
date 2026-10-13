@@ -317,6 +317,55 @@ static bool tui_live_exp(void)   { return ls_exp_running() != nullptr; }
 /* The TUI holds the screen until it is told to stop. */
 
 static TaskHandle_t     s_tui_task;
+#if defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS) && \
+    CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS && \
+    defined(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER)
+/* A low-frequency, on-demand measure of time actually scheduled for the TUI.
+   Runtime stats are charged at task switches, so this is intended for windows
+   of seconds, not individual frame timing. */
+static void tui_print_runtime_share(void)
+{
+    static TaskHandle_t s_sample_task;
+    static uint32_t s_sample_runtime;
+    static int64_t s_sample_wall_us;
+    static bool s_have_sample;
+
+    const TaskHandle_t task = s_tui_task;
+    if (!task) {
+        printf("tui: task runtime unavailable (not running)\n");
+        s_have_sample = false;
+        return;
+    }
+
+    TaskStatus_t status;
+    vTaskGetInfo(task, &status, pdFALSE, eInvalid);
+    const int64_t now_us = esp_timer_get_time();
+    if (s_have_sample && s_sample_task == task &&
+        now_us > s_sample_wall_us) {
+        const uint64_t elapsed_us = (uint64_t)(now_us - s_sample_wall_us);
+        /* ESP Timer's 32-bit runtime clock wraps after about 71 minutes.
+           Limit the interval so unsigned subtraction is unambiguous. */
+        if (elapsed_us <= UINT64_C(4290000000)) {
+            const uint32_t runtime_delta =
+                (uint32_t)status.ulRunTimeCounter - s_sample_runtime;
+            const uint64_t pct = (uint64_t)runtime_delta * 100u / elapsed_us;
+            printf("tui: task ran %lu%% of one core over %lu.%03lu s\n",
+                   (unsigned long)(pct > 100u ? 100u : pct),
+                   (unsigned long)(elapsed_us / 1000000u),
+                   (unsigned long)((elapsed_us / 1000u) % 1000u));
+        } else {
+            printf("tui: runtime sample interval exceeded ESP Timer wrap window; baseline reset\n");
+        }
+    } else {
+        printf("tui: runtime baseline captured; run tui cost again in a few seconds\n");
+    }
+
+    s_sample_task = task;
+    s_sample_runtime = (uint32_t)status.ulRunTimeCounter;
+    s_sample_wall_us = now_us;
+    s_have_sample = true;
+}
+#endif
 static volatile bool    s_tui_stop;
 static volatile int     s_tui_lock_req = -1;
 /* A rotation the running session has been asked for. The session cannot turn
@@ -1887,6 +1936,13 @@ static int tui_cmd(int argc, char **argv)
                (unsigned long)s_ph_core_frames[0],
                (unsigned long)s_ph_core_frames[1]);
         s_ph_core_frames[0] = s_ph_core_frames[1] = 0;
+#if defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS) && \
+    CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS && \
+    defined(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER)
+        tui_print_runtime_share();
+#else
+        printf("tui: task runtime stats unavailable in this build\n");
+#endif
         if (ls_lora_scanning()) {
             ls_lora_scan_prof_t p;
             ls_lora_scan_profile(&p);

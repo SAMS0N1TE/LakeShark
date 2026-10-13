@@ -18,6 +18,10 @@ extern int ls_test_wf_releases;
 #include "lakeshark_backend.h"
 #include "ls_options.h"
 #include "ls_picker.h"
+/* The deck's parts, and the keypad it must not open by accident. */
+#include "ls_radio_panel.h"
+#include "ls_numpad.h"
+#include "audio/audio_out.h"
 #include "radio_choice.h"
 #include "ls_radio_select.h"
 #include "ls_lora.h"
@@ -809,6 +813,191 @@ LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
     LS_CHECK(rect_has(large_font, "GAIN-"));
     LS_CHECK(rect_has(large_font, "GAIN+"));
     LS_CHECK(escaped(large_font) == 0);
+}
+
+/* ------------------------------------------------------- the P25 deck -- */
+
+/* The decode page carries the scanner's deck: a travel that sets where it is
+   pressed, and a bracketed number that is the only way to the keypad. Both
+   drive the real actions - nothing here is decoration. */
+extern bool ls_scr_p25_control_rect(int card, int part, int *x, int *y, int *w, int *h);
+
+static long s_deck_vol = -1;
+static ls_act_status_t a_deck_volume(const ls_args_t *in, ls_val_t *out)
+{
+    s_deck_vol = in->v[0].i;
+    out->kind = LS_VAL_INT;
+    out->i = s_deck_vol;
+    return LS_ACT_OK;
+}
+/* The step keys read the value before they move it, the same as the keyboard
+   does, so the reading has to exist for the key to reach the action. */
+static long s_deck_vol_state = 40;
+static bool v_deck_volume(ls_val_t *v)
+{
+    v->kind = LS_VAL_INT;
+    v->i = s_deck_vol_state;
+    return true;
+}
+
+LS_CASE(the_p25_deck_travel_sets_volume_and_the_number_types)
+{
+    no_traffic();
+    P25.lora_rx = false;
+    ls_action_register("audio.volume", "i", LS_CAP_TUNE, a_deck_volume, "test volume");
+    ls_value_publish("sys.volume", "percent", v_deck_volume);
+    draw_decode_now(PORTRAIT);
+    ls_numpad_close();
+
+    int bx, by, bw, bh, vx, vy, vw, vh;
+    LS_CHECK_MSG(ls_scr_p25_control_rect(0, LS_RADIO_PART_BAR, &bx, &by, &bw, &bh),
+                 "the P25 volume card has no travel");
+    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_VALUE, &vx, &vy, &vw, &vh));
+    LS_EQ_INT(vh, 1);
+    LS_CHECK_MSG(by > vy, "the travel sits on the number's row");
+
+    s_deck_vol = -1;
+    LS_CHECK(ls_scr_p25.touch(bx, by + bh / 2));
+    LS_EQ_INT((int)s_deck_vol, 0);
+    LS_CHECK_MSG(!ls_numpad_active(), "the travel opened the keypad");
+    LS_CHECK(ls_scr_p25.touch(bx + bw - 1, by + bh / 2));
+    LS_EQ_INT((int)s_deck_vol, 100);
+    LS_CHECK(ls_scr_p25.touch(bx + (bw - 1) / 2, by + bh / 2));
+    LS_CHECK_MSG(s_deck_vol > 10 && s_deck_vol < 90,
+                 "the middle of the travel gave %d", (int)s_deck_vol);
+    LS_CHECK(!ls_numpad_active());
+
+    LS_CHECK(ls_scr_p25.touch(vx + vw / 2, vy));
+    LS_CHECK_MSG(ls_numpad_active(), "the P25 volume number did not open exact entry");
+    ls_numpad_close();
+
+    /* The keys step through the quick control, which is the same path the
+       keyboard's + and - take. */
+    int kx, ky, kw, kh;
+    s_deck_vol = -1;
+    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_UP, &kx, &ky, &kw, &kh));
+    LS_CHECK(ls_scr_p25.touch(kx + kw / 2, ky + kh / 2));
+    LS_CHECK_MSG(s_deck_vol >= 0, "the volume key reached no action");
+    LS_CHECK(!ls_numpad_active());
+}
+
+/* TUNE IS STILL ON THE SCREEN, AND IT TYPES IN PLACE.
+
+   The deck must not cost the one control this radio cannot do without. The
+   toggle in the bottom right corner swaps the controls for the frequency
+   keyboard, the keyboard types where the controls were - not over the decode
+   - and TUNE applies it through the same action every other retune uses. */
+static double s_tuned_mhz = -1;
+static ls_act_status_t a_deck_freq(const ls_args_t *in, ls_val_t *out)
+{
+    s_tuned_mhz = in->v[0].f;
+    out->kind = LS_VAL_FLOAT;
+    out->f = in->v[0].f;
+    return LS_ACT_OK;
+}
+
+/* Draw the page again without pressing '1' to get back to it: with the
+   frequency keyboard up a digit IS a digit, the same rule the VFO's inline
+   keypad follows, so a redraw must not type one. */
+static void redraw(tui_rect pane)
+{
+    fresh();
+    draw_pane(&ls_scr_p25, pane);
+}
+
+/* Press the first cell of a word the screen actually drew. */
+static bool press_text(tui_rect r, const char *needle)
+{
+    const int len = (int)strlen(needle);
+    for (int y = r.y; y < r.y + r.h && y < H; y++)
+        for (int x = r.x; x + len <= r.x + r.w && x + len <= W; x++) {
+            int n = 0;
+            while (n < len && g_back[y * W + x + n].ch == needle[n]) n++;
+            if (n == len) return ls_scr_p25.touch(x, y);
+        }
+    return false;
+}
+
+LS_CASE(the_frequency_keyboard_takes_the_decks_place_and_tunes)
+{
+    /* The deck, where the keys are: a digit printed in the decode above must
+       never be mistaken for a key a thumb can press. */
+    const tui_rect DECK = { PORTRAIT.x, PORTRAIT.y + PORTRAIT.h * 2 / 3,
+                            PORTRAIT.w, PORTRAIT.h / 3 };
+    no_traffic();
+    P25.lora_rx = false;
+    ls_action_register("p25.freq", "f", LS_CAP_TUNE, a_deck_freq, "test freq");
+    draw_decode_now(PORTRAIT);
+    ls_numpad_close();
+
+    /* The controls are showing, and the way to the keyboard is a labelled
+       target in the corner - not a popup and not a hidden key. */
+    LS_CHECK_MSG(rect_has(PORTRAIT, "KEYBOARD"), "no way into the frequency keyboard");
+    LS_CHECK(rect_has(PORTRAIT, "VOLUME"));
+    LS_CHECK(press_text(DECK, "KEYBOARD"));
+    redraw(PORTRAIT);
+
+    /* It took the deck's place: the keys are where the cards were, and the
+       decode above them is untouched. */
+    LS_CHECK_MSG(rect_has(PORTRAIT, "FREQUENCY"), "the keyboard did not open in place");
+    LS_CHECK_MSG(!rect_has(PORTRAIT, "VOLUME"), "the deck is still under the keyboard");
+    LS_CHECK_MSG(rect_has(PORTRAIT, "CONTROLS"), "no way back to the controls");
+    LS_CHECK_MSG(rect_has(PORTRAIT, "DECODE / SIGNAL"), "the keyboard covered the decode");
+    LS_CHECK_MSG(!ls_numpad_active(), "the inline keyboard opened a window as well");
+    LS_EQ_INT(escaped(PORTRAIT), 0);
+
+    /* Type 851.3 and apply it. */
+    s_tuned_mhz = -1;
+    const char *digits = "851.3";
+    for (const char *p = digits; *p; ++p) {
+        char cap[2] = { *p, 0 };
+        LS_CHECK_MSG(press_text(DECK, cap), "no key for '%c'", *p);
+        redraw(PORTRAIT);
+    }
+    LS_CHECK_MSG(rect_has(PORTRAIT, "851.3"), "the keyboard did not show what was typed");
+    LS_CHECK(press_text(DECK, "TUNE"));
+    LS_CHECK_MSG(s_tuned_mhz > 851.29 && s_tuned_mhz < 851.31,
+                 "TUNE asked for %.4f MHz", s_tuned_mhz);
+    redraw(PORTRAIT);
+    LS_CHECK_MSG(rect_has(PORTRAIT, "VOLUME"), "tuning did not put the controls back");
+
+    /* A frequency this radio does not have is refused, and refusing it does
+       not retune anything. */
+    LS_CHECK(press_text(DECK, "KEYBOARD"));
+    redraw(PORTRAIT);
+    s_tuned_mhz = -1;
+    for (const char *p = "9999"; *p; ++p) {
+        char cap[2] = { *p, 0 };
+        LS_CHECK(press_text(DECK, cap));
+        redraw(PORTRAIT);
+    }
+    LS_CHECK(press_text(DECK, "TUNE"));
+    LS_EQ_INT((int)s_tuned_mhz, -1);
+    redraw(PORTRAIT);
+    LS_CHECK_MSG(rect_has(PORTRAIT, "OUT OF RANGE"), "a bad frequency was taken quietly");
+
+    /* CANCEL puts the controls back and keeps the carrier where it was. */
+    LS_CHECK(press_text(DECK, "CANCEL"));
+    redraw(PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "VOLUME"));
+    LS_EQ_INT((int)s_tuned_mhz, -1);
+
+    /* And the keyboard shortcut still reaches it: T opens, ESC closes. */
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 't'));
+    redraw(PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "FREQUENCY"));
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, '8'));
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, '5'));
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, '2'));
+    LS_CHECK(ls_scr_p25.key(LS_TK_ENTER, 0));
+    LS_CHECK_MSG(s_tuned_mhz > 851.9 && s_tuned_mhz < 852.1,
+                 "ENTER asked for %.4f MHz", s_tuned_mhz);
+    redraw(PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "VOLUME"));
+    LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 't'));
+    LS_CHECK(ls_scr_p25.key(LS_TK_ESC, 0));
+    redraw(PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "VOLUME"));
 }
 
 static long s_fake_lrgain;

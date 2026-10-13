@@ -1245,6 +1245,12 @@ static bool pager_mode(void)
 }
 
 static tui_rect s_bar;
+/* The keyboard/keypad toggle, beside the view tabs at the screen's own
+   bottom-right rather than up with MODE/BAND/LOCK: portrait's tab strip
+   already lives there, and landscape's deck is the lowest thing FM draws
+   even though its tabs sit at the top (see draw()). VFO only; empty,
+   and untappable, on the other pages. */
+static tui_rect s_kbd_btn;
 /* Which page each drawn tab belongs to. The strip hides PAGER outside a pager
    mode, so the slot a thumb lands on is not the page index; without this map
    tapping RADIO acted on SPECTRUM and SPECTRUM acted on a hidden tab. */
@@ -1254,7 +1260,7 @@ static tui_rect s_controls;
 /* What each drawn control button does, in the order the bar drew them: the
    bar drops OPTIONS for a mode with nothing to set, so a slot is not an
    action until this says which. */
-enum { CTL_MODE, CTL_BAND, CTL_TUNE, CTL_VOLUME, CTL_SQUELCH, CTL_LOCK,
+enum { CTL_MODE, CTL_BAND, CTL_VOLUME, CTL_SQUELCH, CTL_LOCK,
        CTL_RADIO, CTL_OPTIONS, CTL_CALLS, CTL_MUTE, CTL__COUNT };
 static uint8_t  s_ctl_id[CTL__COUNT];
 static int      s_ctl_n;
@@ -1265,6 +1271,18 @@ static int      s_ctl_n;
 static tui_rect s_quick_rect;
 static tui_rect s_step_box[N_STEP];
 static tui_rect s_step_down[N_STEP], s_step_value[N_STEP], s_step_up[N_STEP];
+/* The bar itself, live cards only - set by draw_step_card and read by a tap.
+   Empty while a card is disabled, so a tap cannot promise an unavailable
+   adjustment. */
+static tui_rect s_step_bar[N_STEP];
+/* A tap on a +/- key lights it for a few frames, the same acknowledgement
+   ls_quick's own panel gives: the value changing is the real answer, but it
+   lands a frame or two later, and a key that looks the same before and after
+   the touch is a key a thumb cannot tell it reached. */
+#define STEP_FLASH_FRAMES 6
+static int  s_step_flash = -1;      /* which of N_STEP, -1 none       */
+static bool s_step_flash_up;        /* that one's '+' key, not '-'    */
+static int  s_step_flash_ttl;
 /* The VFO's frequency editor lives in the quick-control panel.  It is fixed
    storage: drawing and editing the keypad never allocate. */
 static bool s_freq_keyboard;
@@ -1395,6 +1413,10 @@ static void toggle_frequency_lock(void)
 
 static void toggle_sweep(void)
 {
+    /* A span sweep and the saved-channel scan both own the tuner. Starting a
+       sweep is an explicit radio change, so release the channel scanner here;
+       merely opening the Spectrum view remains a view-only operation. */
+    if (FM.mode != FM_MODE_SCAN) scan_engine_stop();
     ls_wf_fm_sweep(FM.mode != FM_MODE_SCAN);
     s_page = FM.mode == FM_MODE_SCAN ? 2 : 0;
 }
@@ -1606,7 +1628,9 @@ static const ls_opt_ctx_t *fm_options(void)
 static int ctl_count(bool vfo)
 {
     const int opts = ls_opt_count(fm_options()) ? 1 : 0;
-    return vfo ? 7 + opts : 8 + opts;
+    /* The keyboard/keypad toggle moved to its own button beside the view
+       tabs (see draw_kbd_toggle); it no longer takes a slot here. */
+    return vfo ? 6 + opts : 8 + opts;
 }
 
 static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
@@ -1629,10 +1653,7 @@ static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
                           s_ctl_id[s_ctl_n++] = (uint8_t)(id); } while (0)
     CTL(CTL_MODE, {"MODE", FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false, false});
     CTL(CTL_BAND, {"BAND", band, 'n', false, false, false});
-    if (vfo) CTL(CTL_TUNE, {s_freq_keyboard ? "CONTROLS" : "KEYBOARD",
-                            s_freq_keyboard ? "EDIT" : "TUNE", 't',
-                            s_freq_keyboard, false, false});
-    else {
+    if (!vfo) {
         CTL(CTL_VOLUME, {wide ? "VOL" : "VOLUME", vol, 'v', false, false, false});
         CTL(CTL_SQUELCH, {wide ? "SQL" : "SQUELCH", sql, 'q',
                           sig_kind() != SIG_NONE && FM.squelch_open, false, false});
@@ -1658,6 +1679,16 @@ static void set_volume(double value)
     ls_action_call("audio.volume", &args, &out, ls_quick_grant_builtin());
 }
 
+static void panel_set_volume_pct(int pct)
+{
+    set_volume((double)pct);
+}
+
+static void panel_set_squelch_pct(int pct)
+{
+    set_squelch((double)pct);
+}
+
 static void set_gain(double db)
 {
     if (!(db >= 0 && db <= 49.6)) return;
@@ -1679,16 +1710,20 @@ static void open_gain_entry(void)
     ls_numpad_open("GAIN", "dB, 0 is automatic", FM.gain_tenths / 10.0, set_gain);
 }
 
+/* Shared by the relocated keyboard/keypad button and nothing else now -
+   draw_controls() no longer carries a CTL_TUNE slot. */
+static void toggle_freq_keyboard(void)
+{
+    if (s_freq_keyboard) s_freq_keyboard = false;
+    else { scan_engine_stop(); freq_entry_clear(); s_freq_invalid = false; s_freq_keyboard = true; }
+}
+
 static bool control_action(int slot)
 {
     if (slot < 0 || slot >= s_ctl_n) return false;
     switch (s_ctl_id[slot]) {
     case CTL_MODE:    open_mode_picker(); return true;
     case CTL_BAND:    open_band_picker(); return true;
-    case CTL_TUNE:
-        if (s_freq_keyboard) s_freq_keyboard = false;
-        else { scan_engine_stop(); freq_entry_clear(); s_freq_invalid = false; s_freq_keyboard = true; }
-        return true;
     case CTL_VOLUME:  open_volume_entry(); return true;
     case CTL_SQUELCH: open_squelch_entry(); return true;
     case CTL_LOCK:    toggle_frequency_lock(); return true;
@@ -1711,12 +1746,32 @@ static bool mode_has_squelch(void)
     return FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM;
 }
 
+/* The LR2021 path takes the chip's own gain as lr_wf_session copied it at
+   open, not a live setting this screen can read or move: fm_lr_step()
+   (app_fm.c) throws away the generic gain request it is handed, so a dial
+   that still read like a setting here would be promising an adjustment that
+   never reaches the receiver. There is no FM-specific manual gain on that
+   path yet - p25.lrgain is P25's own state and would not move FM - so until
+   one exists this control goes inert instead of lying about what it does.
+   LR is "selected" from the moment the radio picker says so, not only once
+   lr_iq_active catches up a frame or two later: a dial that is briefly live
+   while the session comes up would still be the thing this disables. */
+static bool fm_gain_live(void)
+{
+    return !FM.lr_iq_active && ls_rsel_saved(LS_RSEL_FM) != LS_RSEL_LORA;
+}
+
 static void step_value(int i, char *out, size_t n)
 {
     switch (i) {
     case 0: snprintf(out, n, "%d%%", audio_volume_get()); break;
     case 1:
-        if (FM.gain_tenths <= 0) snprintf(out, n, "AUTO");
+        /* Not "AUTO": that is a known state (0 dB, the chip's own AGC) and
+           this screen cannot read what the chip was actually opened with -
+           lr_wf_session keeps its own copy of the gain step. Unavailable,
+           not guessed. */
+        if (!fm_gain_live()) snprintf(out, n, "LR N/A");
+        else if (FM.gain_tenths <= 0) snprintf(out, n, "AUTO");
         else snprintf(out, n, "%d.%d", FM.gain_tenths / 10, FM.gain_tenths % 10);
         break;
     default:
@@ -2177,14 +2232,19 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
     const int meter_rows = (last - y) >= 5 ? 2 : 1;
     int meter_y = last - meter_rows;
     if (meter_y < y) meter_y = y;
-    int trace_h = meter_y - y - 2;
+    /* One row of breathing room before the meter below, none before this:
+       `y` is the row right after the readouts, and the trace starts there
+       rather than leaving it as a blank line nothing else claims. */
+    int trace_h = meter_y - y - 1;
     if (trace_h > 6) trace_h = 6;
     if (trace_h >= 2 && iw > 26) {
         int tw = iw - 10;
         if (tw > TRACE_N) tw = TRACE_N;
-        const int ty = y + 1;
-        tui_put_str(sf, r, x0, ty + trace_h - 1, "ACT",
+        const int ty = y;
+        tui_put_str(sf, r, x0, ty, "ACT",
                     TUI_ATTR(TUI_CYAN, TUI_BLACK));
+        for (int x = 0; x < tw; ++x)
+            tui_put_char(sf, r, x0 + 4 + x, ty + trace_h - 1, '-', LS_ATTR_DIM);
         draw_trace(sf, r, x0 + 4, ty, tw, trace_h);
     }
     if (meter_y + meter_rows <= last)
@@ -2210,7 +2270,7 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
     static const int ITEM[N_STEP] = { 1, 2, 3 };       /* QUICK rows */
     static const float LO[N_STEP] = { 0.0f, 0.0f, 0.0f };
     static const float HI[N_STEP] = { 100.0f, 49.6f, 100.0f };
-    const bool live = i != 2 || mode_has_squelch();
+    const bool live = i == 2 ? mode_has_squelch() : i == 1 ? fm_gain_live() : true;
     const uint8_t h = live ? hue : (TUI_BLACK | TUI_BRIGHT);
     const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
     const uint8_t face = TUI_ATTR(live ? (h | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
@@ -2235,7 +2295,9 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
     char v[16];
     step_value(i, v, sizeof(v));
     tui_put_str(sf, b, b.x + 2, label_y, NAME[i], face);
-    tui_put_str(sf, b, b.x + 12, label_y, v,
+    char edit[20];
+    snprintf(edit, sizeof(edit), "[%s]", v);
+    tui_put_str(sf, b, b.x + 12, label_y, edit,
                 live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     if (ls_tui_keyboard_mode() && b.w >= 30) {
         const ls_quick_t *q = &QUICK[ITEM[i]];
@@ -2245,17 +2307,21 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
 
     s_step_up[i]   = tui_rect_make(right - key_w + 1, inner_y, key_w, inner_h);
     s_step_down[i] = tui_rect_make(right - 2 * key_w, inner_y, key_w, inner_h);
-    /* The bar is also the way to exact entry, so the whole readout answers a
-       tap: label, value and the travel underneath. */
+    /* The name and its value, on their own row: tapping it is the way to
+       exact entry, a target the bar underneath does not share. A bar that
+       opened a keypad instead of moving under the finger was the whole
+       complaint this split answers. */
     s_step_value[i] = tui_rect_make(b.x + 1, label_y,
-                                    s_step_down[i].x - b.x - 2, inner_h + 1);
+                                    s_step_down[i].x - b.x - 2, 1);
 
     /* Where the value sits in its range: the same filaments the meter uses,
        every other column, so the travel is a row of lit lines rather than a
-       block of colour the eye reads as a filled shape. */
+       block of colour the eye reads as a filled shape. A tap sets it to the
+       proportional value under the finger; paint never changes the value. */
     const int bar_x = b.x + 2;
     const int bar_w = s_step_down[i].x - 2 - bar_x;
     const int segs = bar_w / 2;
+    s_step_bar[i] = tui_rect_make(0, -1, 0, 0);
     if (segs >= 2) {
         float frac = 0.0f;
         if (i == 0) frac = (float)audio_volume_get() / 100.0f;
@@ -2268,6 +2334,7 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
         for (int s = 0; s < segs; ++s)
             vfd_bar(sf, b, bar_x + s * 2, inner_y, inner_h,
                     live && s < lit ? (h | TUI_BRIGHT) : (TUI_BLACK | TUI_BRIGHT));
+        if (live) s_step_bar[i] = tui_rect_make(bar_x, inner_y, bar_w, inner_h);
     }
 
     /* The keys: a lit field, a rule top and bottom, and the sign in the
@@ -2275,16 +2342,18 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
        thumb is meant to press. */
     for (int k = 0; k < 2; ++k) {
         const tui_rect key = k ? s_step_up[i] : s_step_down[i];
-        ls_fill_dither(sf, key, live ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT,
-                       live ? h : (TUI_BLACK | TUI_BRIGHT));
+        const bool flash = live && s_step_flash == i && s_step_flash_up == (k != 0) &&
+                           s_step_flash_ttl > 0;
+        ls_fill_dither(sf, key, flash ? LS_DITHER_HEAVY : live ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT,
+                       flash ? (TUI_WHITE | TUI_BRIGHT) : live ? h : (TUI_BLACK | TUI_BRIGHT));
         for (int x = 0; x < key.w; ++x) {
             tui_put_char(sf, b, key.x + x, key.y, '=', edge);
             tui_put_char(sf, b, key.x + x, key.y + key.h - 1, '=', edge);
         }
         const char sign[2] = { k ? '+' : '-', 0 };
         tui_put_str(sf, b, key.x + (key.w - 1) / 2, key.y + (key.h - 1) / 2,
-                    sign, TUI_ATTR(live ? (TUI_WHITE | TUI_BRIGHT) : LS_DIM_FG,
-                                   TUI_BLACK));
+                    sign, TUI_ATTR(flash ? TUI_BLACK : live ? (TUI_WHITE | TUI_BRIGHT) : LS_DIM_FG,
+                                   flash ? (TUI_WHITE | TUI_BRIGHT) : TUI_BLACK));
     }
 }
 
@@ -2323,6 +2392,19 @@ static void draw_key(tui_surface *sf, tui_rect k, const char *cap, char badge,
     }
     if (badge && k.w >= 5)
         tui_put_char(sf, k, k.x + 1, k.y, badge, edge);
+}
+
+/* The relocated keyboard/keypad toggle: a key like any other, filled and
+   bordered the same way, in its own colour so it is not mistaken for a view
+   tab or a control. CONTROLS, heavier-filled, is the active state - the way
+   back, the same visual weight the keypad's own TUNE key uses. */
+static void draw_kbd_toggle(tui_surface *sf, tui_rect r)
+{
+    if (r.w < 4 || r.h < 1) { s_kbd_btn = tui_rect_make(0, -1, 0, 0); return; }
+    s_kbd_btn = r;
+    const bool active = s_freq_keyboard;
+    const char *label = active ? "CONTROLS" : r.w >= 10 ? "KEYBOARD" : "KEYPAD";
+    draw_key(sf, r, label, 0, active ? TUI_GREEN : TUI_MAGENTA, active);
 }
 
 static void draw_keypad(tui_surface *sf, tui_rect area)
@@ -2410,10 +2492,12 @@ static void draw_keypad(tui_surface *sf, tui_rect area)
 static void draw_quick_controls(tui_surface *sf, tui_rect area)
 {
     static const uint8_t HUE[N_STEP] = { TUI_GREEN, TUI_MAGENTA, TUI_CYAN };
+    if (s_step_flash_ttl > 0 && --s_step_flash_ttl == 0) s_step_flash = -1;
     memset(s_step_box, 0, sizeof(s_step_box));
     memset(s_step_down, 0, sizeof(s_step_down));
     memset(s_step_up, 0, sizeof(s_step_up));
     memset(s_step_value, 0, sizeof(s_step_value));
+    memset(s_step_bar, 0, sizeof(s_step_bar));
     if (s_freq_keyboard) { draw_keypad(sf, area); return; }
     memset(s_freq_key, 0, sizeof(s_freq_key));
     memset(s_freq_action, 0, sizeof(s_freq_action));
@@ -2436,18 +2520,32 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     if (area.h < 15) {
         static const char *const NAME[N_STEP] = { "VOLUME", "GAIN", "SQUELCH" };
         for (int i = 0; i < N_STEP; ++i) {
+            const bool live = i == 2 ? mode_has_squelch() : i == 1 ? fm_gain_live() : true;
             char v[16]; step_value(i, v, sizeof(v));
             const int y = area.y + i * area.h / N_STEP;
+            /* The slot has rows this single line never uses; the tap target
+               takes all of them instead of leaving the rest dead. */
+            const int y1 = area.y + (i + 1) * area.h / N_STEP;
+            const int slot_h = y1 > y ? y1 - y : 1;
             const int right = area.x + area.w - 2;
-            s_step_box[i] = tui_rect_make(area.x + 1, y, area.w - 2, 1);
-            s_step_down[i] = tui_rect_make(right - 7, y, 3, 1);
-            s_step_up[i] = tui_rect_make(right - 3, y, 3, 1);
-            s_step_value[i] = tui_rect_make(area.x + 1, y, right - 8 - area.x, 1);
-            tui_put_str(sf, area, area.x + 1, y, NAME[i], TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, area, area.x + 2 + (int)strlen(NAME[i]), y, v,
-                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, area, s_step_down[i].x, y, "[-]", TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, area, s_step_up[i].x, y, "[+]", TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK));
+            s_step_box[i] = tui_rect_make(area.x + 1, y, area.w - 2, slot_h);
+            s_step_down[i] = tui_rect_make(right - 7, y, 3, slot_h);
+            s_step_up[i] = tui_rect_make(right - 3, y, 3, slot_h);
+            s_step_value[i] = tui_rect_make(area.x + 1, y, right - 8 - area.x, slot_h);
+            const bool flash_dn = live && s_step_flash == i && !s_step_flash_up && s_step_flash_ttl > 0;
+            const bool flash_up = live && s_step_flash == i && s_step_flash_up && s_step_flash_ttl > 0;
+            char edit[20];
+            snprintf(edit, sizeof(edit), "[%s]", v);
+            tui_put_str(sf, area, area.x + 1, y, NAME[i],
+                        live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+            tui_put_str(sf, area, area.x + 2 + (int)strlen(NAME[i]), y, edit,
+                        live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+            tui_put_str(sf, area, s_step_down[i].x, y, "[-]",
+                        flash_dn ? TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT)
+                                 : live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+            tui_put_str(sf, area, s_step_up[i].x, y, "[+]",
+                        flash_up ? TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT)
+                                 : live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
         }
         return;
     }
@@ -2462,25 +2560,60 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     }
 }
 
+/* The bar's travel as a fraction, clamped, for one proportional tap. */
+static float step_bar_frac(tui_rect bar, int col)
+{
+    if (bar.w <= 1) return 0.0f;
+    float frac = (float)(col - bar.x) / (float)(bar.w - 1);
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    return frac;
+}
+
+/* Commit a single tap through the same real setter as numeric entry. */
+static void step_bar_set(int i, float frac)
+{
+    switch (i) {
+    case 0: set_volume((double)(frac * 100.0f)); break;
+    case 1: set_gain((double)(frac * 49.6f)); break;
+    default: set_squelch((double)(frac * 100.0f)); break;
+    }
+}
+
 static bool step_touch(int col, int row)
 {
     for (int i = 0; i < N_STEP; i++) {
         const tui_rect b = s_step_box[i];
         if (b.h <= 0 || row < b.y || row >= b.y + b.h ||
-            col < b.x || col > b.x + b.w) continue;
+            col < b.x || col >= b.x + b.w) continue;
+        /* GAIN on LR2021 and SQUELCH in a mode with none: the card already
+           reads as disabled and nothing tapped on it would reach the
+           receiver (fm_gain_live(), mode_has_squelch()), so the whole card
+           is a no-op and not a disguised one. */
+        if (i == 1 && !fm_gain_live()) return true;
+        if (i == 2 && !mode_has_squelch()) return true;
         if (tui_rect_contains(s_step_down[i], col, row)) {
             ls_quick_t item = QUICK[i + 1]; item.delta = -item.delta;
             ls_quick_fire(&item, ls_quick_grant_builtin());
+            s_step_flash = i; s_step_flash_up = false; s_step_flash_ttl = STEP_FLASH_FRAMES;
             return true;
         }
         if (tui_rect_contains(s_step_up[i], col, row)) {
             ls_quick_fire(&QUICK[i + 1], ls_quick_grant_builtin());
+            s_step_flash = i; s_step_flash_up = true; s_step_flash_ttl = STEP_FLASH_FRAMES;
             return true;
         }
         if (tui_rect_contains(s_step_value[i], col, row)) {
             if (i == 0) open_volume_entry();
             else if (i == 1) open_gain_entry();
             else open_squelch_entry();
+            return true;
+        }
+        /* The bar: a tap sets the value to where the finger landed, the
+           slider behaviour the meter-styled travel always looked like it
+           should have. Exact entry lives on the label above instead. */
+        if (tui_rect_contains(s_step_bar[i], col, row)) {
+            step_bar_set(i, step_bar_frac(s_step_bar[i], col));
             return true;
         }
     }
@@ -2499,7 +2632,6 @@ static void show_page(int i)
        change exists to remove. */
     if (i == 1 && !pager_mode()) return;
     if (i==3) {s_details=false;ls_wf_source_release();return;}
-    scan_engine_stop();
     s_page = i;
     s_last_mode = (int)FM.mode;
     if (i == 2) {
@@ -2544,7 +2676,9 @@ static void radio_view(void)
     s_view.power=FM.iq_level;
     {
         const sig_kind_t kind = sig_kind();
-        s_view.volume = audio_volume_get();
+    s_view.volume = audio_volume_get();
+    s_view.set_volume_pct = panel_set_volume_pct;
+    s_view.set_squelch_pct = panel_set_squelch_pct;
         s_view.signal = kind == SIG_NONE ? 0.0f : sig_level(kind);
         s_view.gate = (float)FM.squelch_tenths * 0.01f;
         s_view.squelch_open = kind != SIG_NONE && FM.squelch_open;
@@ -2598,6 +2732,8 @@ static void radio_action(char c)
     }
     if(c=='['||c==']') {scan_engine_stop();tune_step(c=='['?-1:1);return;}
     if(c=='T') scan_engine_stop();
+    /* GAIN's nudge keys: a no-op on LR2021, same as the card's own +/-. */
+    if((c=='u'||c=='U'||c=='j'||c=='J') && !fm_gain_live()) return;
     if(c) ls_quick_key(c,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL);
 }
 
@@ -2694,6 +2830,7 @@ static void draw(tui_surface *sf, tui_rect area)
        the pane and the controls stay on the bar above - which is the only
        posture where nothing is lost by it. */
     memset(s_step_box, 0, sizeof(s_step_box));
+    s_kbd_btn = tui_rect_make(0, -1, 0, 0);
     if (vfo) {
         const int lcd_min  = wide ? 8 : 12;
         const int deck_min = wide ? 8 : 12;
@@ -2708,6 +2845,19 @@ static void draw(tui_surface *sf, tui_rect area)
             s_quick_rect = tui_rect_make(body.x, body.y + lcd_h,
                                          body.w, body.h - lcd_h);
             body.h = lcd_h;
+            /* Landscape's view tabs sit at the top (see below); its deck is
+               the actual bottom of the screen, so the toggle's corner comes
+               out of the deck instead of the tab strip. */
+            if (wide) {
+                int kw = s_quick_rect.w / 8;
+                if (kw < 10) kw = 10;
+                if (kw > 14) kw = 14;
+                if (s_quick_rect.w - kw >= 40) {
+                    s_kbd_btn = tui_rect_make(s_quick_rect.x + s_quick_rect.w - kw,
+                                              s_quick_rect.y, kw, s_quick_rect.h);
+                    s_quick_rect.w -= kw;
+                }
+            }
         } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
     } else s_quick_rect = tui_rect_make(0, -1, 0, 0);
 
@@ -2719,6 +2869,7 @@ static void draw(tui_surface *sf, tui_rect area)
     else if (s_page == 2) draw_spectrum_page(sf, body);
     else draw_lcd(sf, body);
     if (s_quick_rect.h > 0) draw_quick_controls(sf, s_quick_rect);
+    if (wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
 
     /* Draw navigation after the waterfall so each bar keeps a distinct hit
        slot and cannot steal the other's touch targets. */
@@ -2736,7 +2887,22 @@ static void draw(tui_surface *sf, tui_rect area)
         nb++;
     }
     s_tab_count = nb;
-    ls_btn_bar_slot(sf, s_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
+    tui_rect tabs_bar = s_bar;
+    /* Portrait's view tabs already sit at the screen's bottom - the toggle's
+       corner comes out of their bar instead, right where "beside the view
+       controls" and "screen bottom-right" are the same place. */
+    if (!wide && vfo) {
+        int kw = tabs_bar.w / 5;
+        if (kw < 8) kw = 8;
+        if (kw > 14) kw = 14;
+        if (tabs_bar.w - kw >= 24) {
+            tabs_bar.w -= kw;
+            s_kbd_btn = tui_rect_make(tabs_bar.x + tabs_bar.w, tabs_bar.y,
+                                      kw, tabs_bar.h);
+        }
+    }
+    ls_btn_bar_slot(sf, tabs_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
+    if (!wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
     (void)draw_controls(sf, tui_rect_make(area.x, wide ? area.y + bar_h : area.y,
                                           area.w, control_rows), vfo);
 }
@@ -2822,8 +2988,10 @@ static bool key_in(ls_tk_t k, char ch)
     if (s_page == 2 &&
         (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
         return ls_wf_key(k,ch);
-    if (s_page == 0 && (k == LS_TK_LEFT || k == LS_TK_RIGHT))
+    if (s_page == 0 && (k == LS_TK_LEFT || k == LS_TK_RIGHT)) {
+        scan_engine_stop();
         return tune_step(k == LS_TK_LEFT ? -1 : 1);
+    }
     if (s_page == 2 && k == LS_TK_CHAR && (ch == 'm' || ch == 'M'))
         return ls_wf_key(k, ch);
     if (k == LS_TK_CHAR) {
@@ -2842,10 +3010,16 @@ static bool key_in(ls_tk_t k, char ch)
             } else ls_quick_fire(&QUICK[0], ls_quick_grant_builtin());
             return true;
         }
-        if (ch == '[') return tune_step(-1);
-        if (ch == ']') return tune_step(1);
+        if (ch == '[' || ch == ']') {
+            scan_engine_stop();
+            return tune_step(ch == '[' ? -1 : 1);
+        }
         const int i = ls_btn_key(ch, PAGES, N_PAGES);
         if (i >= 0) { show_page(i); return true; }
+        /* GAIN's nudge keys: a no-op on LR2021, same as the card's own +/-
+           and the bar beneath it (fm_gain_live()). */
+        if ((ch == 'u' || ch == 'U' || ch == 'j' || ch == 'J') &&
+            !fm_gain_live()) return true;
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path and cannot drift apart. Checked after the page
            keys so a digit still turns the page. */
@@ -2883,6 +3057,13 @@ static bool touch_in(int col, int row)
 {
     if (ls_calls_active()) return ls_calls_touch(col, row);
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
+    /* Checked first: it shares a row band with s_bar in portrait and with
+       s_quick_rect in landscape, and both of those claim their whole band
+       regardless of column. */
+    if (s_page == 0 && tui_rect_contains(s_kbd_btn, col, row)) {
+        toggle_freq_keyboard();
+        return true;
+    }
     if (tui_rect_contains(s_controls, col, row))
         return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {

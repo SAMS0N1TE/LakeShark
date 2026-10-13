@@ -17,6 +17,7 @@ void ls_shim_keypad(int present);
 #include "ls_icons.h"
 /* ls_tile_grid and ls_tile_shape: the layout under test. */
 #include "ls_tui_ui.h"
+#include "ls_radio_panel.h"
 #include "ls_numpad.h"
 #include "ls_theme.h"
 #include "apps/rec/rec_state.h"
@@ -47,6 +48,10 @@ p25_state_t P25;
 #include "ls_wf_source.h"
 #include "ls_skyview.h"
 #include "ls_picker.h"
+#include "ls_options.h"
+/* The scanner panel, up here because cases either side of the file press its
+   controls through ls_radio_panel_control_rect. */
+#include "ls_radio_panel.h"
 #include "ls_radio_select.h"
 #include "scan_engine.h"
 
@@ -543,11 +548,27 @@ LS_CASE(terminal_down_preserves_live_draft_and_history_restores_it)
 
 static int s_grid_cols = 115, s_grid_rows = 27;
 
-/* The music waterfall's image cells; nothing in this test draws pixels. */
-bool ls_tui_has_images(void) { return false; }
-void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; }
-bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial) { (void)cells; (void)src; (void)w; (void)h; (void)serial; return false; }
-void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) { (void)cells; (void)src; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial; }
+/* The image-cell stubs stay inert by default. The zoom regression enables
+   this small capture so it can inspect the shared pixel renderer's output. */
+static bool s_fake_images;
+static tui_rect s_fake_image_cells;
+static const uint16_t *s_fake_image_src;
+static int s_fake_image_w, s_fake_image_h;
+static uint32_t s_fake_image_serial;
+bool ls_tui_has_images(void) { return s_fake_images; }
+void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
+{ s_fake_image_cells=cells; s_fake_image_src=src; s_fake_image_w=w; s_fake_image_h=h; s_fake_image_serial=serial; }
+bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial)
+{
+    if (!s_fake_images || !s_fake_image_src) return false;
+    if (cells) *cells=s_fake_image_cells; if (src) *src=s_fake_image_src;
+    if (w) *w=s_fake_image_w; if (h) *h=s_fake_image_h;
+    if (serial) *serial=s_fake_image_serial;
+    return true;
+}
+void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h,
+                       int x0, int y0, int dx, int dy, uint32_t serial)
+{ (void)x0; (void)y0; (void)dx; (void)dy; ls_tui_image(cells,src,w,h,serial); }
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = s_grid_cols;
@@ -833,6 +854,76 @@ LS_CASE(waterfall_ref_is_i_and_o_is_not_the_waterfalls)
     LS_EQ_INT(ls_wf_cfg()->ref, after - 1);
     while (ls_wf_cfg()->ref > ref) ls_wf_key(LS_TK_DOWN, 0);
     while (ls_wf_cfg()->ref < ref) ls_wf_key(LS_TK_UP, 0);
+}
+
+LS_CASE(shared_waterfall_zoom_remaps_retained_rows_and_marker_band)
+{
+    const tui_rect pane = {1, 2, 113, 24};
+    fresh(); grid_for(pane);
+    const ls_wf_cfg_t saved = *ls_wf_cfg();
+    const uint8_t saved_zoom = ls_wf_zoom();
+    ls_wf_cfg_t cfg = saved;
+    cfg.grain = LS_WF_GRAIN_PIXEL;
+    cfg.paused = false;
+    ls_wf_cfg_set(&cfg);
+    while (ls_wf_zoom() != 1) LS_CHECK(ls_wf_key(LS_TK_CHAR, 'z'));
+
+    float bins[120];
+    for (int i = 0; i < 120; ++i) bins[i] = (float)(i % 8) / 7.0f;
+    const ls_wf_feed_t feed = {
+        .center_hz = 851000000u, .span_hz = 240000u,
+        .floor_db = -110.0f, .top_db = -20.0f, .live = true,
+    };
+    ls_wf_claim(LS_WF_OWNER_P25, "P25");
+    ls_wf_push(LS_WF_OWNER_P25, bins, 120, &feed);
+    const uint32_t seq = ls_wf_seq();
+    ls_wf_prepare(1300, 700);
+    s_fake_images = true;
+
+    tui_frame_begin(&g_sf);
+    ls_wf_draw(&g_sf, pane);
+    LS_EQ_INT(12, ls_btn_count_slot(LS_BTN_SLOT_WATERFALL));
+    int bx, by, bw, bh;
+    LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_WATERFALL, 11, &bx, &by, &bw, &bh));
+    LS_CHECK(bw > 0 && bh > 0);
+    LS_CHECK(ls_wf_touch(2, 2)); /* select the left edge of the plotted band */
+    const uint32_t hz_1x = ls_wf_marker_hz();
+    LS_CHECK(s_fake_image_src != NULL);
+    const int image_pixels = s_fake_image_w * s_fake_image_h;
+    uint16_t *old_pixels = malloc((size_t)image_pixels * sizeof(*old_pixels));
+    LS_CHECK(old_pixels != NULL);
+    if (old_pixels) memcpy(old_pixels, s_fake_image_src,
+                           (size_t)image_pixels * sizeof(*old_pixels));
+
+    LS_CHECK(ls_wf_key(LS_TK_CHAR, 'z'));
+    LS_EQ_INT(2, ls_wf_zoom());
+    tui_frame_begin(&g_sf);
+    ls_wf_draw(&g_sf, pane);
+    const uint32_t hz_2x = ls_wf_marker_hz();
+    LS_CHECK(hz_2x > hz_1x + 25000u);
+    LS_CHECK(s_fake_image_src != NULL);
+    LS_CHECK_MSG(old_pixels && memcmp(old_pixels, s_fake_image_src,
+                                      (size_t)image_pixels * sizeof(*old_pixels)) != 0,
+                 "pixel waterfall did not remap retained history after zoom changed");
+    LS_EQ_UINT(seq, ls_wf_seq());
+    ls_wf_stats_t stats;
+    ls_wf_stats(&stats);
+    LS_EQ_INT(1, stats.hist_rows);
+
+    LS_CHECK(ls_wf_key(LS_TK_CHAR, 'z'));
+    LS_EQ_INT(4, ls_wf_zoom());
+    tui_frame_begin(&g_sf);
+    ls_wf_draw(&g_sf, pane);
+    const uint32_t hz_4x = ls_wf_marker_hz();
+    LS_CHECK(hz_4x > hz_2x + 10000u);
+    LS_EQ_UINT(seq, ls_wf_seq());
+
+    while (ls_wf_zoom() != saved_zoom) LS_CHECK(ls_wf_key(LS_TK_CHAR, 'z'));
+    free(old_pixels);
+    s_fake_images = false;
+    s_fake_image_src = NULL;
+    ls_wf_cfg_set(&saved);
+    ls_wf_claim(LS_WF_OWNER_NONE, NULL);
 }
 
 /* OPENING THE SPECTRUM MUST NOT HIJACK THE RECEIVER.
@@ -2164,7 +2255,7 @@ LS_CASE(fm_vfo_steppers_and_keyboard_toggle_answer_touch_in_both_postures)
         ls_numpad_close();
 
         fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
-        LS_CHECK(find_text("KEYBOARD", &x, &y));
+        LS_CHECK(find_text("KEYBOARD", &x, &y) || find_text("KEYPAD", &x, &y));
         LS_CHECK(ls_scr_fm.touch(x, y));
         LS_CHECK(!ls_numpad_active());
         fresh(); draw_pane(&ls_scr_fm, PANES[orientation]);
@@ -2175,6 +2266,84 @@ LS_CASE(fm_vfo_steppers_and_keyboard_toggle_answer_touch_in_both_postures)
         LS_CHECK(!find_text("FREQUENCY / MHz", &x, &y));
         ls_scr_fm.leave();
     }
+}
+
+static ls_act_status_t fm_test_volume_action(const ls_args_t *args, ls_val_t *out)
+{
+    if (!args || args->n != 1 || args->v[0].kind != LS_VAL_INT) return LS_ACT_BADARG;
+    audio_volume_set(args->v[0].i);
+    if (out) { out->kind = LS_VAL_INT; out->i = audio_volume_get(); }
+    return LS_ACT_OK;
+}
+
+LS_CASE(fm_vfo_volume_slider_is_a_one_tap_edit_and_paint_is_read_only)
+{
+    LS_CHECK(ls_action_register("audio.volume", "i", LS_CAP_TUNE,
+                                fm_test_volume_action, "test volume"));
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        const tui_rect pane = PANES[orientation];
+        s_audio_vol = 25;
+        s_audio_vol_calls = 0;
+        fm_page_drawn(FM_MODE_LISTEN, 0, pane);
+
+        int label_x, label_y, x, y;
+        LS_CHECK(find_text("VOLUME", &label_x, &label_y));
+        LS_CHECK(find_text("[25%]", &x, &y));
+        /* The bar starts below the label; one tap commits the proportional
+           position exactly once. Later paints must only render that value. */
+        LS_CHECK(ls_scr_fm.touch(label_x + 4, label_y + 1));
+        LS_EQ_INT(s_audio_vol_calls, 1);
+        const int tapped_volume = audio_volume_get();
+        LS_CHECK_MSG(tapped_volume != 25, "slider tap left volume at %d", tapped_volume);
+        for (int frame = 0; frame < 3; ++frame) {
+            fresh(); draw_pane(&ls_scr_fm, pane);
+            LS_EQ_INT(s_audio_vol_calls, 1);
+            LS_EQ_INT(audio_volume_get(), tapped_volume);
+        }
+
+        /* The bracketed value, rather than the bar, is the explicit-entry
+           target. It remains available after the slider has changed it. */
+        LS_CHECK(find_text("VOLUME", &label_x, &label_y));
+        LS_CHECK(ls_scr_fm.touch(label_x + 11, label_y));
+        LS_CHECK(ls_numpad_active());
+        LS_EQ_INT(s_audio_vol_calls, 1);
+        ls_numpad_close();
+        ls_scr_fm.leave();
+    }
+    s_audio_vol = 60;
+}
+
+LS_CASE(fm_radio_panel_volume_key_reaches_the_audio_volume_action)
+{
+    LS_CHECK(ls_action_register("audio.volume", "i", LS_CAP_TUNE,
+                                fm_test_volume_action, "test volume"));
+    s_audio_vol = 25;
+    s_audio_vol_calls = 0;
+    fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '0'));
+    fresh(); draw_pane(&ls_scr_fm, PANES[1]);
+
+    int x, y, w, h;
+    LS_CHECK(ls_radio_panel_control_rect(0, LS_RADIO_PART_UP, &x, &y, &w, &h));
+    LS_CHECK_MSG(ls_scr_fm.touch(x + w / 2, y + h / 2), "FM panel volume key was not handled");
+    LS_EQ_INT(s_audio_vol_calls, 1);
+    LS_EQ_INT(audio_volume_get(), 30);
+    ls_scr_fm.leave();
+    s_audio_vol = 60;
+}
+
+LS_CASE(fm_lcd_activity_trace_has_a_heading_and_quiet_baseline)
+{
+    fm_page_drawn(FM_MODE_LISTEN, 0, PANES[1]);
+    int ax, ay, sx, sy;
+    LS_CHECK(find_text("ACT", &ax, &ay));
+    LS_CHECK(find_text("SIG", &sx, &sy));
+    LS_CHECK_MSG(ay < sy, "ACT heading at row %d should precede signal meter row %d", ay, sy);
+    bool baseline = false;
+    for (int row = ay + 1; row < sy; ++row)
+        for (int col = ax; col < PANES[1].x + PANES[1].w; ++col)
+            if (g_back[row * W + col].ch == '-') baseline = true;
+    LS_CHECK_MSG(baseline, "activity trace has no visible baseline between ACT and SIG");
 }
 
 static int s_fm_freq_apply_calls;
@@ -2208,7 +2377,7 @@ LS_CASE(fm_vfo_inline_frequency_entry_applies_cancels_and_obeys_lock)
             LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
         } else {
             int x, y;
-            LS_CHECK(find_text("KEYBOARD", &x, &y));
+            LS_CHECK(find_text("KEYBOARD", &x, &y) || find_text("KEYPAD", &x, &y));
             LS_CHECK(ls_scr_fm.touch(x, y));
         }
         LS_CHECK(!ls_numpad_active());
@@ -2267,7 +2436,7 @@ LS_CASE(fm_vfo_inline_frequency_entry_applies_cancels_and_obeys_lock)
             LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 't'));
         } else {
             fresh(); draw_pane(&ls_scr_fm, pane);
-            LS_CHECK(find_text("KEYBOARD", &x, &y));
+            LS_CHECK(find_text("KEYBOARD", &x, &y) || find_text("KEYPAD", &x, &y));
             LS_CHECK(ls_scr_fm.touch(x, y));
         }
         LS_CHECK(!ls_numpad_active());
@@ -3274,6 +3443,43 @@ LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
     scan_channels_clear();
 }
 
+LS_CASE(fm_spectrum_tab_preserves_the_running_held_channel_scan)
+{
+    const tui_rect pane = PANES[1];
+    scan_engine_stop();
+    scan_channels_clear();
+    scan_engine_set_source(SCAN_SRC_CHANNELS);
+    LS_CHECK(scan_channel_add("held", 154785000, SCAN_MODE_NFM, 0) >= 0);
+    fm_page_drawn(FM_MODE_LISTEN, 0, pane);
+    scan_engine_start();
+    scan_engine_hold(true);
+    LS_CHECK(scan_engine_active());
+    LS_CHECK(scan_engine_manual_hold());
+
+    int x, y;
+    LS_CHECK(find_text("SPECTRUM", &x, &y));
+    LS_CHECK(ls_scr_fm.touch(x, y));
+    LS_CHECK_MSG(scan_engine_active(), "opening FM Spectrum stopped the scan engine");
+    LS_CHECK_MSG(scan_engine_manual_hold(), "opening FM Spectrum cleared manual hold");
+
+    /* A deliberate manual retune still takes control from the scanner. */
+    ls_action_register("fm.freq_hz", "i", LS_CAP_TUNE, fm_test_freq, "test frequency");
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, '['));
+    LS_CHECK(!scan_engine_active());
+
+    /* Starting an actual waterfall sweep takes tuner ownership from the
+       channel scanner; only opening the Spectrum view is view-only. */
+    FM.mode = FM_MODE_LISTEN;
+    ls_scr_fm_show_page(0);
+    scan_engine_start();
+    scan_engine_hold(true);
+    LS_CHECK(scan_engine_active());
+    LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'w'));
+    LS_CHECK_MSG(!scan_engine_active(), "starting FM sweep left channel scanning active");
+    scan_channels_clear();
+    ls_scr_fm.leave();
+}
+
 LS_CASE(gps_and_mixed_scan_buttons_match_touch_and_keyboard)
 {
     scan_engine_set_source(SCAN_SRC_CHANNELS);
@@ -3312,6 +3518,380 @@ LS_CASE(saved_channel_list_blank_space_does_not_select_an_unseen_row)
     LS_EQ_INT(panel.selected, 0);
     ls_radio_panel_touch(&panel, &view, panel.list_area.x + 3, panel.list_area.y + 5);
     LS_EQ_INT(panel.selected, 1);
+    scan_channels_clear();
+}
+
+/* ---------------------------------------------------- the scanner's deck -- */
+
+/* The two controls the screen owns, as a screen hands them over. */
+static int s_deck_vol = -1, s_deck_sql = -1;
+static void deck_set_vol(int pct) { s_deck_vol = pct; }
+static void deck_set_sql(int pct) { s_deck_sql = pct; }
+
+static ls_radio_view_t deck_view(bool hooks)
+{
+    ls_radio_view_t v = {.fm = true, .frequency = 154785000, .mode = "NFM",
+                         .volume = 50, .gate = 0.30f, .signal = 0.5f,
+                         .has_squelch = true};
+    v.receiver.receiver_streaming = true;
+    if (hooks) { v.set_volume_pct = deck_set_vol; v.set_squelch_pct = deck_set_sql; }
+    return v;
+}
+
+/* Press the middle of a control the panel says it drew. */
+static bool deck_press(ls_radio_panel_t *p, const ls_radio_view_t *v, int card, int part,
+                       char *key)
+{
+    int x, y, w, h;
+    if (!ls_radio_panel_control_rect(card, part, &x, &y, &w, &h)) return false;
+    const char out = ls_radio_panel_touch(p, v, x + w / 2, y + h / 2);
+    if (key) *key = out;
+    return true;
+}
+
+/* Volume and squelch are on the scanner itself, as targets a thumb can hit,
+   in every posture the panel has - that is the whole point of the deck. */
+LS_CASE(the_scanner_deck_sets_volume_and_squelch_in_every_posture)
+{
+    const tui_rect panes[] = {{1, 2, 46, 63}, {0, 5, 34, 41}, {0, 2, 79, 17}};
+    for (unsigned i = 0; i < sizeof(panes) / sizeof(panes[0]); i++) {
+        scan_engine_stop();
+        scan_channels_clear();
+        ls_radio_panel_t panel = {.focus = -1};
+        ls_radio_view_t view = deck_view(true);
+        fresh();
+        grid_for(panes[i]);
+        ls_radio_panel_draw(&panel, &view, &g_sf, panes[i]);
+        LS_CHECK_MSG(escaped(panes[i]) == 0, "the deck drew outside %dx%d",
+                     panes[i].w, panes[i].h);
+
+        int x, y, w, h;
+        LS_CHECK_MSG(ls_radio_panel_control_rect(0, LS_RADIO_PART_UP, &x, &y, &w, &h),
+                     "no volume key at %dx%d", panes[i].w, panes[i].h);
+        LS_CHECK_MSG(w >= 3, "volume key only %d cells wide at %dx%d", w, panes[i].w,
+                     panes[i].h);
+
+        s_deck_vol = -1;
+        LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_UP, NULL));
+        LS_EQ_INT(s_deck_vol, 55);
+        LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_DOWN, NULL));
+        LS_EQ_INT(s_deck_vol, 45);
+
+        s_deck_sql = -1;
+        LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_UP, NULL));
+        LS_EQ_INT(s_deck_sql, 32);
+        LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_DOWN, NULL));
+        LS_EQ_INT(s_deck_sql, 28);
+
+        /* And a tap on a card is never a tap on the bar underneath it. */
+        LS_CHECK(!panel.lists && !panel.scan_choice);
+    }
+    ls_numpad_close();
+}
+
+/* THE TRAVEL SETS AND THE HEADER TYPES, AND THEY DO NOT OVERLAP.
+
+   The first cut handed the value field the bar's rows as well, so a tap meant
+   for the slider opened the keypad - exactly what separate targets exist to
+   prevent. Press each card's travel at its left end, its middle and its right
+   end and check the value that lands, in the card's own range; then press the
+   header and check that THAT is what types. */
+LS_CASE(each_card_travel_sets_its_own_range_and_never_opens_the_keypad)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    scan_engine_set_hang_ms(3000);
+    scan_engine_set_threshold_pct(50);
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(true);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+    ls_numpad_close();
+
+    for (int card = 0; card < 4; card++) {
+        int bx, by, bw, bh, vx, vy, vw, vh;
+        LS_CHECK_MSG(ls_radio_panel_control_rect(card, LS_RADIO_PART_BAR,
+                                                 &bx, &by, &bw, &bh),
+                     "card %d has no travel to press", card);
+        LS_CHECK_MSG(ls_radio_panel_control_rect(card, LS_RADIO_PART_VALUE,
+                                                 &vx, &vy, &vw, &vh),
+                     "card %d has no number to type", card);
+        LS_EQ_INT(vh, 1);
+        LS_CHECK_MSG(by > vy, "card %d: the travel is on the header row", card);
+        LS_CHECK_MSG(bh >= 1 && bw >= 8, "card %d travel is %dx%d", card, bw, bh);
+
+        const int at[3] = {bx, bx + (bw - 1) / 2, bx + bw - 1};
+        const char *where[3] = {"left", "middle", "right"};
+        int seen[3];
+        for (int i = 0; i < 3; i++) {
+            s_deck_vol = s_deck_sql = -1;
+            ls_radio_panel_touch(&panel, &view, at[i], by + bh / 2);
+            LS_CHECK_MSG(!ls_numpad_active(), "card %d: the %s of the travel typed",
+                         card, where[i]);
+            seen[i] = card == 0 ? s_deck_vol
+                    : card == 1 ? s_deck_sql
+                    : card == 2 ? scan_engine_get_hang_ms()
+                                : scan_engine_get_threshold_pct();
+        }
+        const int lo = card == 3 ? 1 : 0;
+        const int hi = card == 2 ? 30000 : 100;
+        LS_CHECK_MSG(seen[0] == lo, "card %d left gave %d, want %d", card, seen[0], lo);
+        LS_CHECK_MSG(seen[2] == hi, "card %d right gave %d, want %d", card, seen[2], hi);
+        LS_CHECK_MSG(seen[1] > lo && seen[1] < hi, "card %d middle gave %d", card,
+                     seen[1]);
+        if (card == 2)
+            LS_CHECK_MSG(seen[1] % 500 == 0, "hang landed off its half second: %d",
+                         seen[1]);
+
+        ls_radio_panel_touch(&panel, &view, vx + vw / 2, vy);
+        LS_CHECK_MSG(ls_numpad_active(), "card %d header did not open exact entry", card);
+        ls_numpad_close();
+    }
+}
+
+/* A control the screen cannot set has no travel to press and no number to
+   type: it is drawn unavailable and it stays that way under a thumb. */
+LS_CASE(a_card_without_a_setter_offers_no_slider_and_no_entry)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(false);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+    ls_numpad_close();
+
+    LS_CHECK(!ls_radio_panel_control_rect(0, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
+    LS_CHECK(!ls_radio_panel_control_rect(1, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
+    LS_CHECK(ls_radio_panel_control_rect(2, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
+    LS_CHECK(ls_radio_panel_control_rect(3, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
+
+    ls_radio_view_t mute = deck_view(true);
+    mute.has_squelch = false;
+    mute.set_squelch_pct = NULL;
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &mute, &g_sf, pane);
+    LS_CHECK(!ls_radio_panel_control_rect(1, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
+    LS_CHECK(!ls_radio_panel_control_rect(1, LS_RADIO_PART_VALUE, NULL, NULL, NULL, NULL));
+    int x, y, w, h;
+    LS_CHECK(ls_radio_panel_control_rect(1, LS_RADIO_PART_UP, &x, &y, &w, &h));
+    s_deck_sql = -1;
+    ls_radio_panel_touch(&panel, &mute, x + w / 2, y + h / 2);
+    LS_EQ_INT(s_deck_sql, -1);
+    LS_CHECK(!ls_numpad_active());
+}
+
+/* The same two targets, in the panes where the deck has least room. */
+LS_CASE(the_compact_and_landscape_decks_keep_the_targets_apart)
+{
+    const tui_rect panes[] = {{0, 5, 34, 41}, {0, 2, 79, 17}};
+    for (unsigned i = 0; i < sizeof(panes) / sizeof(panes[0]); i++) {
+        scan_engine_stop();
+        scan_channels_clear();
+        ls_radio_panel_t panel = {.focus = -1};
+        ls_radio_view_t view = deck_view(true);
+        fresh();
+        grid_for(panes[i]);
+        ls_radio_panel_draw(&panel, &view, &g_sf, panes[i]);
+        ls_numpad_close();
+        LS_EQ_INT(escaped(panes[i]), 0);
+
+        for (int card = 0; card < 2; card++) {
+            int vx, vy, vw, vh;
+            LS_CHECK_MSG(ls_radio_panel_control_rect(card, LS_RADIO_PART_VALUE,
+                                                     &vx, &vy, &vw, &vh),
+                         "no number on card %d at %dx%d", card, panes[i].w, panes[i].h);
+            LS_EQ_INT(vh, 1);
+            int bx, by, bw, bh;
+            if (ls_radio_panel_control_rect(card, LS_RADIO_PART_BAR, &bx, &by, &bw, &bh)) {
+                LS_CHECK_MSG(by > vy || bx >= vx + vw,
+                             "card %d travel overlaps its number at %dx%d", card,
+                             panes[i].w, panes[i].h);
+                s_deck_vol = s_deck_sql = -1;
+                ls_radio_panel_touch(&panel, &view, bx, by + bh / 2);
+                LS_CHECK_MSG(!ls_numpad_active(), "the travel typed at %dx%d",
+                             panes[i].w, panes[i].h);
+                LS_EQ_INT(card == 0 ? s_deck_vol : s_deck_sql, 0);
+            }
+            ls_radio_panel_touch(&panel, &view, vx + vw / 2, vy);
+            LS_CHECK_MSG(ls_numpad_active(), "card %d number did not type at %dx%d",
+                         card, panes[i].w, panes[i].h);
+            ls_numpad_close();
+            int kx, ky, kw, kh;
+            LS_CHECK(ls_radio_panel_control_rect(card, LS_RADIO_PART_UP, &kx, &ky, &kw, &kh));
+            s_deck_vol = s_deck_sql = -1;
+            ls_radio_panel_touch(&panel, &view, kx + kw / 2, ky + kh / 2);
+            LS_CHECK(card == 0 ? s_deck_vol >= 0 : s_deck_sql >= 0);
+        }
+    }
+}
+
+/* The meter's gate row is a slider; the value field is exact entry. They are
+   different targets on purpose, so setting a number never happens by accident
+   and dragging never opens a keypad. */
+LS_CASE(the_gate_row_slides_and_the_value_field_types)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(true);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+
+    int x, y, w, h;
+    LS_CHECK(ls_radio_panel_control_rect(LS_RADIO_CARD_GATE, LS_RADIO_PART_DOWN,
+                                         &x, &y, &w, &h));
+    LS_CHECK_MSG(w >= 8, "the gate slider is only %d cells wide", w);
+    s_deck_sql = -1;
+    ls_numpad_close();
+    ls_radio_panel_touch(&panel, &view, x, y);
+    LS_EQ_INT(s_deck_sql, 0);
+    LS_CHECK_MSG(!ls_numpad_active(), "the slider opened a keypad");
+    ls_radio_panel_touch(&panel, &view, x + w - 1, y);
+    LS_EQ_INT(s_deck_sql, 100);
+    ls_radio_panel_touch(&panel, &view, x + (w - 1) / 2, y);
+    LS_CHECK_MSG(s_deck_sql > 40 && s_deck_sql < 60, "the middle of the slider gave %d",
+                 s_deck_sql);
+    LS_CHECK(!ls_numpad_active());
+
+    /* The value field, which is a different place, types one instead. */
+    LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_VALUE, NULL));
+    LS_CHECK_MSG(ls_numpad_active(), "the squelch value did not open exact entry");
+    ls_numpad_close();
+    LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_VALUE, NULL));
+    LS_CHECK(ls_numpad_active());
+    ls_numpad_close();
+}
+
+/* The scanner's own settings are on the deck too, and they reach the engine
+   without going through any screen. */
+LS_CASE(the_deck_sets_the_hang_time_and_the_threshold_on_the_engine)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    scan_engine_set_hang_ms(3000);
+    scan_engine_set_threshold_pct(10);
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(true);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+
+    LS_CHECK(deck_press(&panel, &view, 2, LS_RADIO_PART_UP, NULL));
+    LS_EQ_INT(scan_engine_get_hang_ms(), 3500);
+    LS_CHECK(deck_press(&panel, &view, 2, LS_RADIO_PART_DOWN, NULL));
+    LS_EQ_INT(scan_engine_get_hang_ms(), 3000);
+    LS_CHECK(deck_press(&panel, &view, 3, LS_RADIO_PART_UP, NULL));
+    LS_EQ_INT(scan_engine_get_threshold_pct(), 12);
+    LS_CHECK(deck_press(&panel, &view, 3, LS_RADIO_PART_VALUE, NULL));
+    LS_CHECK(ls_numpad_active());
+    ls_numpad_close();
+}
+
+/* A screen that has not handed over its setters is still driven by the deck,
+   through the quick controls it already answers. The panel never ends up with
+   a key a thumb can press and nothing behind it. */
+LS_CASE(a_deck_without_setters_falls_back_to_the_screens_own_keys)
+{
+    scan_engine_stop();
+    scan_channels_clear();
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(false);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+
+    char key = 0;
+    LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_UP, &key));
+    LS_EQ_INT(key, '+');
+    LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_DOWN, &key));
+    LS_EQ_INT(key, '-');
+    LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_UP, &key));
+    LS_EQ_INT(key, 's');
+    LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_DOWN, &key));
+    LS_EQ_INT(key, 'a');
+    LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_VALUE, &key));
+    LS_EQ_INT(key, 'Q');
+    LS_CHECK_MSG(!ls_numpad_active(), "the panel typed into a receiver it cannot set");
+}
+
+/* SETUP is where the rest of the scanner lives, and it is on the bar in both
+   postures with the primary verbs still beside it. */
+LS_CASE(setup_opens_the_scanner_options_and_the_primary_verbs_stay)
+{
+    const tui_rect panes[] = {{1, 2, 46, 63}, {0, 5, 34, 41}, {0, 2, 79, 17}};
+    for (unsigned i = 0; i < sizeof(panes) / sizeof(panes[0]); i++) {
+        scan_engine_stop();
+        scan_channels_clear();
+        ls_radio_panel_t panel = {.focus = -1};
+        ls_radio_view_t view = deck_view(true);
+        fresh();
+        grid_for(panes[i]);
+        ls_radio_panel_draw(&panel, &view, &g_sf, panes[i]);
+
+        int x, y;
+        LS_CHECK_MSG(find_text("SCAN", &x, &y), "no SCAN at %dx%d", panes[i].w,
+                     panes[i].h);
+        LS_CHECK_MSG(find_text("LISTS", &x, &y), "no LISTS at %dx%d", panes[i].w,
+                     panes[i].h);
+        LS_CHECK_MSG(find_text("SETUP", &x, &y), "no SETUP at %dx%d", panes[i].w,
+                     panes[i].h);
+        ls_picker_close();
+        ls_opt_close();
+        LS_CHECK(!ls_picker_active());
+        ls_radio_panel_touch(&panel, &view, x, y);
+        LS_CHECK_MSG(ls_picker_active(), "SETUP opened nothing at %dx%d", panes[i].w,
+                     panes[i].h);
+        ls_opt_close();
+
+        /* And the keyboard reaches it by the letter the button wears. */
+        ls_radio_panel_key(&panel, &view, LS_TK_CHAR, 'c');
+        LS_CHECK(ls_picker_active());
+        ls_opt_close();
+    }
+}
+
+/* While a scan runs the list stays in view and the deck keeps the controls a
+   scan needs; the primary verbs are still the bar. */
+LS_CASE(a_running_scan_keeps_its_list_its_volume_and_its_squelch_on_screen)
+{
+    scan_channels_clear();
+    scan_engine_set_source(SCAN_SRC_CHANNELS);
+    scan_channel_add("WX1", 162550000, SCAN_MODE_NFM, 0);
+    scan_channel_add("WX2", 162400000, SCAN_MODE_NFM, 0);
+    scan_engine_start();
+    ls_radio_panel_t panel = {.focus = -1};
+    ls_radio_view_t view = deck_view(true);
+    const tui_rect pane = {1, 2, 46, 63};
+    fresh();
+    grid_for(pane);
+    ls_radio_panel_draw(&panel, &view, &g_sf, pane);
+    LS_EQ_INT(escaped(pane), 0);
+
+    int x, y;
+    LS_CHECK(find_text("SCAN LIST", &x, &y));
+    LS_CHECK(find_text("162.5500", &x, &y));
+    LS_CHECK(find_text("STOP", &x, &y));
+    LS_CHECK(find_text("HOLD", &x, &y));
+    s_deck_vol = -1;
+    LS_CHECK(deck_press(&panel, &view, 0, LS_RADIO_PART_UP, NULL));
+    LS_EQ_INT(s_deck_vol, 55);
+    LS_CHECK_MSG(scan_engine_active(), "turning the volume up stopped the scan");
+
+    s_deck_sql = -1;
+    LS_CHECK(deck_press(&panel, &view, 1, LS_RADIO_PART_DOWN, NULL));
+    LS_EQ_INT(s_deck_sql, 28);
+    LS_CHECK_MSG(scan_engine_active(), "moving the squelch stopped the scan");
+    scan_engine_stop();
     scan_channels_clear();
 }
 

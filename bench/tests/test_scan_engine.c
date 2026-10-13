@@ -15,7 +15,8 @@ p25_state_t P25;
 fm_state_t FM;
 volatile float p25_rx_power;
 static app_t foreground = {.name = "FM"};
-static scan_channel_t channels[3];
+static scan_channel_t channels[128];
+static int s_channel_count = 3;
 static ls_iq_control_status_t receiver;
 static jmp_buf done;
 static int tune_count, scenario, phase;
@@ -23,6 +24,58 @@ static uint32_t tuned[32];
 static int64_t deadline;
 static bool phase2_enabled;
 static int switched;
+static bool mock_lr_radio;
+static bool mock_sdr_present;
+static bool mock_sdr_owned;
+static bool mock_sdr_lora_range;
+static bool mock_endpoint_metadata_unknown;
+static ls_rsel_radio_t mock_saved_radio = LS_RSEL_NONE;
+static int mock_endpoint_count_calls, mock_endpoint_info_calls;
+
+ls_lora_chip_t ls_lora_chip(void)
+{
+    return mock_lr_radio ? LS_LORA_CHIP_LR20XX : LS_LORA_CHIP_SX126X;
+}
+uint32_t ls_lora_caps(void)
+{
+    return LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5;
+}
+size_t ls_radio_endpoint_count(void)
+{
+    mock_endpoint_count_calls++;
+    return mock_sdr_present ? 1 : 0;
+}
+ls_radio_err_t ls_radio_endpoint_info(size_t index, ls_radio_endpoint_info_t *out)
+{
+    mock_endpoint_info_calls++;
+    if (mock_endpoint_metadata_unknown) return LS_RADIO_ERR_IO;
+    if (!mock_sdr_present || index != 0 || !out) return LS_RADIO_ERR_UNAVAILABLE;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->endpoint_id, sizeof(out->endpoint_id), "%s", LS_RADIO_ENDPOINT_RTL_USB);
+    out->present = true;
+    out->leased = mock_sdr_owned;
+    if (mock_sdr_owned) snprintf(out->owner, sizeof(out->owner), "fm");
+    out->frequency_range_count = 1;
+    out->frequency_ranges[0].min_hz = mock_sdr_lora_range ? 150000000u : 24000000u;
+    out->frequency_ranges[0].max_hz = mock_sdr_lora_range ? 960000000u : 1766000000u;
+    return LS_RADIO_OK;
+}
+ls_radio_err_t ls_radio_endpoint_try_get(const char *id, ls_radio_endpoint_info_t *out)
+{
+    (void)id;
+    return ls_radio_endpoint_info(0, out);
+}
+ls_rsel_radio_t ls_rsel_saved(ls_rsel_job_t job)
+{
+    (void)job;
+    return mock_saved_radio;
+}
+const char *ls_rsel_sdr_endpoint(ls_rsel_job_t job)
+{
+    (void)job;
+    return mock_sdr_present && mock_saved_radio != LS_RSEL_LORA
+        ? LS_RADIO_ENDPOINT_RTL_USB : NULL;
+}
 /* The NFM receiver as the FM app presents it. The squelch is a noise gate that
    re-arms on every retune and cannot open for 128 ms after one (64 ms settle,
    64 ms of quiet), and the IQ level is the peak of a wideband block: about 3%
@@ -65,11 +118,11 @@ void settings_set_scan_zone(int z)
 }
 int scan_channels_count(void)
 {
-    return 3;
+    return s_channel_count;
 }
 const scan_channel_t *scan_channel_get(int i)
 {
-    return i >= 0 && i < 3 ? &channels[i] : NULL;
+    return i >= 0 && i < s_channel_count ? &channels[i] : NULL;
 }
 bool lakeshark_iq_receiver_ready(void)
 {
@@ -101,8 +154,12 @@ void lakeshark_fm_tune_transient(uint32_t hz)
     receiver.requested_center_hz = hz;
     receiver.effective_center_hz = hz;
     receiver.effective_center_known = true;
-    receiver.tune_state = scenario == 5 ? LS_IQ_RESULT_FAILED : LS_IQ_RESULT_EFFECTIVE;
-    receiver.tune_error = scenario == 5 ? LS_RADIO_ERR_IO : LS_RADIO_OK;
+    const bool explicitly_unsupported = (scenario == 22 || scenario == 23) &&
+                                         hz == channels[0].freq_hz;
+    receiver.tune_state = (scenario == 5 || explicitly_unsupported)
+        ? LS_IQ_RESULT_FAILED : LS_IQ_RESULT_EFFECTIVE;
+    receiver.tune_error = scenario == 5 ? LS_RADIO_ERR_IO
+        : explicitly_unsupported ? LS_RADIO_ERR_UNSUPPORTED : LS_RADIO_OK;
 }
 void p25_request_tune(uint32_t hz, bool fast)
 {
@@ -133,7 +190,7 @@ void vTaskDelay(TickType_t ticks)
         FM.squelch_open = true;
     if (scenario == 13 && now >= 700000)
         nfm_open_hz = channels[0].freq_hz;
-    if (tune_count && !phase) {
+    if (tune_count && !phase && scenario != 20) {
         if (scenario == 1 || scenario == 2 || scenario == 4)
             scan_engine_hold(true);
         if (scenario == 3)
@@ -152,11 +209,16 @@ void vTaskDelay(TickType_t ticks)
         scan_engine_skip();
         phase = 2;
     }
+    if (scenario == 20 && tune_count > 0 && phase == 0) {
+        scan_engine_set_source(SCAN_SRC_BAND);
+        phase = 1;
+    }
     if (now >= deadline)
         longjmp(done, 1);
 }
 static void run(int which, int ms)
 {
+    s_channel_count = 3;
     s_mixed = s_location = false;
     scan_engine_stop();
     memset(&FM, 0, sizeof(FM));
@@ -174,10 +236,56 @@ static void run(int which, int ms)
         channels[i].flags = SCAN_FLAG_ENABLED;
         snprintf(channels[i].name, 16, "CH%d", i);
     }
+    mock_lr_radio = false;
+    mock_sdr_present = false;
+    mock_sdr_owned = false;
+    mock_sdr_lora_range = false;
+    mock_endpoint_metadata_unknown = false;
+    mock_saved_radio = LS_RSEL_NONE;
+    mock_endpoint_count_calls = mock_endpoint_info_calls = 0;
+    if (which >= 15 && which <= 20) {
+        mock_lr_radio = true;
+        mock_saved_radio = LS_RSEL_LORA;
+        mock_sdr_owned = which == 18;
+        mock_sdr_present = mock_sdr_owned;
+        if (which == 18) mock_saved_radio = LS_RSEL_SDR_RTL;
+        channels[0].freq_hz = 144000000;
+        channels[1].freq_hz = 162550000;
+        channels[2].freq_hz = 450000000;
+        if (which == 16) channels[1].freq_hz = 961000000;
+        if (which == 16) channels[2].freq_hz = 100000000;
+        if (which == 19) {
+            channels[1].freq_hz = 1550000000;
+            channels[2].freq_hz = 1200000000;
+        }
+    }
+    if (which == 21) {
+        mock_lr_radio = mock_sdr_present = mock_sdr_lora_range = true;
+        mock_saved_radio = LS_RSEL_SDR_RTL;
+        channels[0].freq_hz = 144000000;
+        channels[1].freq_hz = 162550000;
+        channels[2].freq_hz = 450000000;
+    }
+    if (which == 23) {
+        /* A selected SDR with unknown frequency metadata remains eligible;
+           the driver result must still skip a specifically unsupported tune. */
+        mock_lr_radio = mock_sdr_present = mock_endpoint_metadata_unknown = true;
+        mock_saved_radio = LS_RSEL_SDR_RTL;
+        channels[0].freq_hz = 140000000u;
+    }
+    if (which == 24) {
+        /* An explicit LR selection needs no unrelated endpoint metadata to
+           reject these frequencies before the app falls through to SDR open. */
+        mock_lr_radio = mock_sdr_present = mock_endpoint_metadata_unknown = true;
+        mock_saved_radio = LS_RSEL_LORA;
+        channels[0].freq_hz = 140000000u;
+        channels[1].freq_hz = 961000000u;
+        channels[2].freq_hz = 100000000u;
+    }
     s_fg_mode = -1;
     s_order_n = 0;
     s_cur = -1;
-    const bool p25 = which >= 6 && which < 11;
+    const bool p25 = (which >= 6 && which < 11) || which == 19;
     foreground.name = p25 ? "P25" : "FM";
     p25_rx_power = p25 ? 0.5f : 0.0f;
     P25.dsd_has_sync = which == 7;
@@ -257,6 +365,149 @@ LS_CASE(scan_failed_tune_never_becomes_a_signal_hold)
     run(5, 800);
     LS_EQ_INT(scan_engine_current(), -1);
     LS_EQ_INT(scan_engine_phase(), SCAN_PHASE_ERROR);
+}
+
+LS_CASE(lr_scan_skips_first_unsupported_frequency_and_wraps_supported_list)
+{
+    run(15, 900);
+    LS_CHECK(tune_count >= 3);
+    LS_EQ_INT(tuned[0], 162550000);
+    LS_EQ_INT(tuned[1], 450000000);
+    LS_EQ_INT(tuned[2], 162550000);
+    for (int i = 0; i < tune_count && i < 32; ++i)
+        LS_CHECK(tuned[i] != 144000000);
+    LS_CHECK(scan_engine_active());
+}
+
+LS_CASE(lr_scan_mixed_list_continues_after_unsupported_entry)
+{
+    run(17, 650);
+    LS_CHECK(tune_count >= 2);
+    LS_EQ_INT(tuned[0], 162550000);
+    LS_CHECK(tuned[1] == 450000000 || tuned[1] == 162550000);
+    for (int i = 0; i < tune_count && i < 32; ++i)
+        LS_CHECK(tuned[i] != 144000000);
+}
+
+LS_CASE(lr_scan_all_unsupported_idles_with_reason_and_no_tunes)
+{
+    run(16, 900);
+    LS_EQ_INT(tune_count, 0);
+    LS_CHECK(scan_engine_active());
+    LS_EQ_INT(candidate_count(), 0);
+    char status[96];
+    scan_engine_status(status, sizeof(status));
+    LS_CHECK(strstr(status, "unsupported") != NULL);
+}
+
+LS_CASE(sdr_scan_does_not_apply_lr_frequency_restrictions)
+{
+    /* With an SDR held by the active app, the LR2021's narrower FM path does
+       not reject the channel. */
+    run(18, 350);
+    LS_CHECK(tune_count > 0);
+    LS_EQ_INT(tuned[0], 144000000);
+}
+
+LS_CASE(sdr_scan_skips_channels_outside_its_advertised_ranges)
+{
+    run(21, 600);
+    LS_CHECK(tune_count >= 2);
+    LS_EQ_INT(tuned[0], 162550000);
+    for (int i = 0; i < tune_count && i < 32; ++i)
+        LS_CHECK(tuned[i] != 144000000);
+}
+
+LS_CASE(channel_capability_snapshot_reads_registry_once_per_list_pass)
+{
+    s_channel_count = 96;
+    mock_lr_radio = true;
+    mock_sdr_present = true;
+    mock_sdr_owned = false;
+    mock_sdr_lora_range = false;
+    mock_saved_radio = LS_RSEL_SDR_RTL;
+    mock_endpoint_count_calls = mock_endpoint_info_calls = 0;
+    s_src = SCAN_SRC_CHANNELS;
+    s_fg_mode = SCAN_MODE_NFM;
+    s_mixed = s_location = false;
+    s_zone = -1;
+    memset(s_session_skip, 0, sizeof(s_session_skip));
+    for (int i = 0; i < s_channel_count; ++i) {
+        channels[i].freq_hz = 155000000u + (uint32_t)i * 12500u;
+        channels[i].mode = SCAN_MODE_NFM;
+        channels[i].flags = SCAN_FLAG_ENABLED;
+    }
+
+    LS_EQ_INT(candidate_count(), s_channel_count);
+    LS_EQ_INT(mock_endpoint_count_calls, 1);
+    LS_EQ_INT(mock_endpoint_info_calls, 1);
+
+    s_channel_count = 3;
+    mock_lr_radio = false;
+    mock_sdr_present = false;
+    mock_saved_radio = LS_RSEL_NONE;
+}
+
+LS_CASE(lr_p25_scan_uses_the_noncontiguous_receiver_ranges)
+{
+    run(19, 500);
+    LS_CHECK(tune_count > 0);
+    LS_EQ_INT(tuned[0], 1550000000);
+    for (int i = 0; i < tune_count && i < 32; ++i) {
+        LS_CHECK(tuned[i] != 144000000);
+        LS_CHECK(tuned[i] != 1200000000);
+    }
+}
+
+LS_CASE(switching_to_band_source_rebuilds_after_lr_channel_filtering)
+{
+    run(20, 650);
+    LS_CHECK(tune_count >= 2);
+    LS_EQ_INT(scan_engine_get_source(), SCAN_SRC_BAND);
+    LS_CHECK(tuned[0] != 144000000);
+}
+
+LS_CASE(explicit_unsupported_tune_skips_only_that_channel_for_the_session)
+{
+    run(22, 1000);
+    LS_CHECK(tune_count >= 3);
+    LS_EQ_INT(tuned[0], 150000000);
+    LS_EQ_INT(tuned[1], 150012500);
+    LS_CHECK(sess_skipped(0));
+    for (int i = 1; i < tune_count && i < 32; ++i)
+        LS_CHECK(tuned[i] != 150000000);
+    LS_CHECK(scan_engine_phase() != SCAN_PHASE_ERROR);
+}
+
+LS_CASE(unknown_endpoint_metadata_still_skips_driver_reported_unsupported_tune)
+{
+    run(23, 1000);
+    LS_CHECK(tune_count >= 2);
+    LS_EQ_INT(tuned[0], 140000000u);
+    LS_EQ_INT(tuned[1], 150012500u);
+    LS_CHECK(sess_skipped(0));
+    LS_CHECK(scan_engine_phase() != SCAN_PHASE_ERROR);
+}
+
+LS_CASE(explicit_lr_selection_filters_unsupported_fm_when_other_metadata_is_unknown)
+{
+    run(24, 800);
+    LS_EQ_INT(tune_count, 0);
+    LS_EQ_INT(candidate_count(), 0);
+    char status[96];
+    scan_engine_status(status, sizeof(status));
+    LS_CHECK(strstr(status, "unsupported") != NULL);
+}
+
+LS_CASE(mixed_p25_mode_honors_saved_sdr_while_it_is_unleased)
+{
+    scan_channel_t channel = {.freq_hz = 1550000000u, .mode = SCAN_MODE_P25,
+                              .flags = SCAN_FLAG_ENABLED};
+    mock_lr_radio = mock_sdr_present = true;
+    mock_sdr_owned = false;
+    mock_saved_radio = LS_RSEL_SDR_RTL;
+    radio_snapshot_refresh();
+    LS_CHECK(channel_radio_supported(&channel));
 }
 
 LS_CASE(p25_scan_waits_for_sync_before_holding)

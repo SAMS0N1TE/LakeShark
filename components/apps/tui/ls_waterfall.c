@@ -48,6 +48,9 @@ static EXT_RAM_BSS_ATTR uint8_t  s_peak[LS_WF_BINS_MAX];
 
 static bool     s_marker_initial;
 static int      s_marker = -1;           /* display column, -1 for none     */
+/* Display-only crop. This survives source claims so the shared instrument
+   presents one consistent zoom across FM, P25, and swept sources. */
+static uint8_t  s_zoom = 1;
 
 static ls_wf_cfg_t s_cfg = {
     .split_pct = 25, .ref = 0, .range = 16, .palette = LS_WF_PAL_HEAT,
@@ -475,6 +478,45 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 
 /* -------------------------------------------------------------------- draw */
 
+uint8_t ls_wf_zoom(void) { return s_zoom; }
+
+static void zoom_step(void)
+{
+    s_zoom = s_zoom == 1 ? 2 : s_zoom == 2 ? 4 : 1;
+}
+
+/* Return the centered source-bin window and its actual frequency span. */
+static void visible_bins(int *first, int *count)
+{
+    int n = s_nbins;
+    if (n < 1) n = 1;
+    int factor = s_zoom ? s_zoom : 1;
+    if (factor > n) factor = n;
+    int visible = n / factor;
+    if (visible < 1) visible = 1;
+    *first = (n - visible) / 2;
+    *count = visible;
+}
+
+static void visible_band(uint32_t *center_hz, uint32_t *span_hz)
+{
+    if (!s_have_feed) {
+        if (center_hz) *center_hz = 0;
+        if (span_hz) *span_hz = 0;
+        return;
+    }
+    int first, count;
+    visible_bins(&first, &count);
+    const int n = s_nbins > 0 ? s_nbins : 1;
+    const int64_t center_delta = (int64_t)s_feed.span_hz *
+        (2LL * first + count - n) / (2LL * n);
+    int64_t center = (int64_t)s_feed.center_hz + center_delta;
+    if (center < 0) center = 0;
+    if (center > UINT32_MAX) center = UINT32_MAX;
+    if (center_hz) *center_hz = (uint32_t)center;
+    if (span_hz) *span_hz = (uint32_t)((uint64_t)s_feed.span_hz * count / n);
+}
+
 /* Display column to history bin. The history holds whatever the source gave
    us; the panel has whatever columns it has. One mapping, used by the
    spectrum, the waterfall and the marker readout, so the three cannot
@@ -482,8 +524,11 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 static inline int bin_for_col(int x, int w)
 {
     if (w <= 1 || s_nbins <= 0) return 0;
-    int b = x * s_nbins / w;
-    return b < s_nbins ? b : s_nbins - 1;
+    int first, count;
+    visible_bins(&first, &count);
+    int b = first + x * count / w;
+    const int end = first + count;
+    return b < end ? b : end - 1;
 }
 
 static uint8_t sample(int row_back, int col, int w)
@@ -695,11 +740,13 @@ static void fmt_mhz(char *buf, size_t cap, uint32_t hz)
 static void draw_scale(tui_surface *sf, tui_rect r)
 {
     if (!s_have_feed || !s_feed.span_hz || r.w < 24) return;
-    const uint32_t half = s_feed.span_hz / 2;
+    uint32_t center, span;
+    visible_band(&center, &span);
+    const uint32_t half = span / 2;
     char lo[16], mid[16], hi[16];
-    fmt_mhz(lo,  sizeof(lo),  s_feed.center_hz > half ? s_feed.center_hz - half : 0);
-    fmt_mhz(mid, sizeof(mid), s_feed.center_hz);
-    fmt_mhz(hi,  sizeof(hi),  s_feed.center_hz + half);
+    fmt_mhz(lo,  sizeof(lo),  center > half ? center - half : 0);
+    fmt_mhz(mid, sizeof(mid), center);
+    fmt_mhz(hi,  sizeof(hi),  center + half);
     const uint8_t a = LS_ATTR_DIM;
     tui_put_str(sf, r, r.x, r.y, lo, a);
     tui_put_str(sf, r, r.x + (r.w - (int)strlen(mid)) / 2, r.y, mid,
@@ -711,8 +758,10 @@ uint32_t ls_wf_marker_hz(void)
 {
     if (s_marker < 0 || s_marker >= s_plot_rect.w || !s_have_feed || !s_feed.span_hz) return 0;
     const int w = s_plot_rect.w > 0 ? s_plot_rect.w : 1;
-    const int64_t off = (int64_t)s_feed.span_hz * (s_marker * 2 + 1) / (2 * w);
-    const int64_t hz = (int64_t)s_feed.center_hz - s_feed.span_hz / 2 + off;
+    uint32_t center, span;
+    visible_band(&center, &span);
+    const int64_t off = (int64_t)span * (s_marker * 2 + 1) / (2 * w);
+    const int64_t hz = (int64_t)center - span / 2 + off;
     return hz > 0 && hz <= UINT32_MAX ? (uint32_t)hz : 0;
 }
 
@@ -907,11 +956,14 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
     if (hz) fmt_mhz(v[10],12,hz);
     else snprintf(v[10],12,"tap mark");
     b[10]=(ls_btn_t){ls_tui_is_wide()?"TUNE":"TUNE MARK",v[10],'y',false,!hz||!s_tuner};
+    snprintf(v[11], 12, "%ux", s_zoom);
+    b[11] = (ls_btn_t){ "ZOOM", v[11], 'z', false, false };
 }
 
 static void act(int i)
 {
     cfg_load();
+    bool save = true;
     switch (i) {
     case 0: s_cfg.split_pct = (uint8_t)((s_cfg.split_pct + 25) % 125); break;
     case 1: s_cfg.ref = (int8_t)(s_cfg.ref >= 8 ? -8 : s_cfg.ref + 2);  break;
@@ -933,15 +985,20 @@ static void act(int i)
         if(ok){s_cfg.paused=false;s_marker=s_plot_rect.w/2;}
         break;
     }
+    case 11: zoom_step(); save = false; break;
     default: break;
     }
-    cfg_save();
+    if (save) cfg_save();
 }
 
 /* OPTIONS: the buttons above as rows. TUNE MARK is not a setting and stays
    on the strip. */
 static void o_wf_show(const ls_opt_t *o, char *out, size_t n)
 {
+    if (o->arg == 10) {
+        snprintf(out, n, "%ux", s_zoom);
+        return;
+    }
     ls_btn_t b[LS_WF_BTNS];
     char v[LS_WF_BTNS][12];
     build_buttons(b, v);
@@ -978,6 +1035,7 @@ static int o_get(const ls_opt_t *o)
     case 6: return s_cfg.peak_hold;
     case 7: return s_cfg.paused;
     case 8: return s_cfg.grain;
+    case 10: return s_zoom == 4 ? 2 : s_zoom == 2 ? 1 : 0;
     default:
         for (int i = 0; i < N_CONTRAST; i++)
             if (s_cfg.ref == CONTRAST[i].ref && s_cfg.range == CONTRAST[i].range) return i;
@@ -992,10 +1050,12 @@ static void o_set(const ls_opt_t *o, int v)
     case 7: s_cfg.paused = v; break;
     case 8: s_cfg.grain = v; break;
     case 9: s_cfg.ref = CONTRAST[v].ref; s_cfg.range = CONTRAST[v].range; break;
+    case 10: s_zoom = v == 2 ? 4 : v == 1 ? 2 : 1; return;
     }
     cfg_save();
 }
 static const char *const CONTRAST_NAME[] = {"soft", "norm", "hard", "max"};
+static const char *const ZOOM_NAME[] = {"1x", "2x", "4x"};
 #define WF_LEVEL(l, i, low, high, inc) { .label = (l), .kind = LS_OPT_LEVEL, .arg = (i), \
     .num = o_num, .set_num = o_set_num, .lo = (low), .hi = (high), .step = (inc), .show = o_wf_show }
 #define WF_CHOICE(l, i, k, labels, count) { .label = (l), .kind = (k), .arg = (i), \
@@ -1008,6 +1068,7 @@ static const ls_opt_t OPT_WF[] = {
     WF_LEVEL("AVG", 4, 0, 3, 1), WF_LEVEL("SPEED", 5, 0, 3, 1),
     WF_CHOICE("PEAK", 6, LS_OPT_TOGGLE, NULL, 2), WF_LEVEL("SPLIT", 0, 0, 100, 25),
     WF_CHOICE("HOLD", 7, LS_OPT_TOGGLE, NULL, 2),
+    WF_CHOICE("ZOOM", 10, LS_OPT_CYCLE, ZOOM_NAME, 3),
 };
 #undef WF_LEVEL
 #undef WF_CHOICE
@@ -1109,6 +1170,7 @@ void ls_wf_prepare(int width, int height)
 static uint32_t s_pix_pushes;
 static ls_wf_owner_t s_pix_owner;
 static int s_pix_bins = -1;
+static uint8_t s_pix_zoom;
 
 /* Pixel rows per history row: a band sweep is a row every second or more
    and gets a thick one, a fast FFT feed thin ones, and never so thin that the
@@ -1140,11 +1202,15 @@ static void pix_colours(void)
 /* The rows accepted since the last draw, oldest first. */
 static void pix_sync(bool fresh)
 {
-    if (fresh || s_owner != s_pix_owner || s_nbins != s_pix_bins || s_st.pushes < s_pix_pushes) {
+    if (fresh || s_owner != s_pix_owner || s_nbins != s_pix_bins ||
+        s_zoom != s_pix_zoom || s_st.pushes < s_pix_pushes) {
         ls_pwf_clear(&s_pix);
-        ls_pwf_axis_even(&s_pix, 0, s_nbins > 0 ? s_nbins - 1 : 0);
+        int first, count;
+        visible_bins(&first, &count);
+        ls_pwf_axis_even(&s_pix, first, first + count - 1);
         s_pix_owner = s_owner;
         s_pix_bins = s_nbins;
+        s_pix_zoom = s_zoom;
         /* Start from what the history already holds. */
         s_pix_pushes = s_st.pushes > (uint32_t)s_filled ? s_st.pushes - (uint32_t)s_filled : 0;
     }
@@ -1293,6 +1359,15 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
         ? (uint32_t)((esp_timer_get_time() - s_last_push_us) / 1000) : 0;
     s_st.draw_us = (uint32_t)(esp_timer_get_time() - t0);
     if (s_st.draw_us > s_st.worst_us) s_st.worst_us = s_st.draw_us;
+
+    /* Embedded panes have no controls or frequency scale of their own, so
+       keep the active display crop legible without changing their layout. */
+    if (!chrome && s_zoom > 1) {
+        char zoom[8];
+        snprintf(zoom, sizeof(zoom), "%ux", s_zoom);
+        const int x = area.x + area.w - (int)strlen(zoom) - 1;
+        tui_put_str(sf, area, x, area.y, zoom, LS_ATTR_DIM);
+    }
 }
 
 static uint32_t s_full_draw_sequence;

@@ -52,6 +52,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/bench/tools/lssim_p25_settings.c
     ${FW}/components/apps/tui/ls_radio_panel.c
+    ${FW}/components/apps/tui/ls_scan_options.c
+    ${FW}/components/apps/tui/ls_scan_view.c
     ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/tools/lssim_watch.c
     ${APP}/subghz/subghz_file.c
@@ -748,6 +750,24 @@ ls_add_test(test_options
     ${FW}/components/apps/tui/tuilib/tui_core.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_options PRIVATE ${LS_TUI_APP_INCLUDES})
+
+ls_add_test(test_scan_shell
+    ${FW}/components/apps/tui/ls_scan_view.c
+    ${FW}/components/apps/tui/ls_scan_options.c
+    ${FW}/components/apps/tui/ls_options.c
+    ${FW}/components/apps/tui/ls_radio_select.c
+    ${FW}/components/lakeshark/core/radio_choice.c
+    ${FW}/components/apps/tui/ls_picker.c
+    ${FW}/components/apps/tui/ls_numpad.c
+    ${FW}/components/apps/tui/ls_keyboard.c
+    ${FW}/components/apps/tui/ls_glyph.c
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/bench/tools/lssim_scan.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_scan_shell PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_tui_keyboard
     ${FW}/components/apps/tui/ls_keyboard.c
@@ -1978,10 +1998,11 @@ target_compile_definitions(test_p25_phase2_dsp PRIVATE LSM_GEN_BAUD=6000)
 
 foreach(target test_tui_picker test_radio_select test_options test_tui_wireless test_tui_waterfall_claim
                test_tui_waterfall_scale test_tui_quick test_tui_waterfall_stall
-               test_tui_keyboard)
+               test_tui_keyboard test_scan_shell)
     target_compile_definitions(${target} PRIVATE LS_TUI_CORNER_STUB=1)
 endforeach()
-foreach(target test_tui_picker test_radio_select test_options test_tui_quick test_tui_keyboard)
+foreach(target test_tui_picker test_radio_select test_options test_tui_quick test_tui_keyboard
+               test_scan_shell)
     target_compile_definitions(${target} PRIVATE LS_TUI_WIDE_STUB=1)
 endforeach()
 target_include_directories(test_nfc_classic PRIVATE ${FW}/components/lakeshark/nfc)

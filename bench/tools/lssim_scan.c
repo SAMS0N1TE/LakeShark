@@ -55,6 +55,27 @@ bool scan_channel_set_enabled(int i, bool enabled)
         channels[i].flags &= ~SCAN_FLAG_ENABLED;
     return true;
 }
+static bool set_flag(int i, uint8_t flag, bool on)
+{
+    if (i < 0 || i >= count)
+        return false;
+    if (on)
+        channels[i].flags |= flag;
+    else
+        channels[i].flags &= (uint8_t)~flag;
+    return true;
+}
+bool scan_channel_set_lockout(int i, bool on)  { return set_flag(i, SCAN_FLAG_LOCKOUT, on); }
+bool scan_channel_set_priority(int i, bool on) { return set_flag(i, SCAN_FLAG_PRIORITY, on); }
+bool scan_channel_remove(int i)
+{
+    if (i < 0 || i >= count)
+        return false;
+    for (int n = i; n + 1 < count; n++)
+        channels[n] = channels[n + 1];
+    count--;
+    return true;
+}
 bool scan_channel_set_tone(int i, uint16_t selection)
 {
     if (i < 0 || i >= count || selection > 258 || channels[i].mode != SCAN_MODE_NFM)
@@ -150,5 +171,23 @@ void scan_channels_clear(void)
 }
 
 int scan_engine_get_threshold_pct(void){return threshold;}
-void scan_engine_set_threshold_pct(int v){threshold=v;}
-void scan_engine_set_hang_ms(int v){hang=v;}
+void scan_engine_set_threshold_pct(int v){threshold=v<1?1:v>100?100:v;}
+void scan_engine_set_hang_ms(int v){hang=v<0?0:v>30000?30000:v;}
+/* The clamping the engine itself applies, so the UI is exercised against the
+   same refusals on the host as on the board. */
+static int priority_ms, autosq_floor, autosq_margin = 4;
+void scan_engine_set_priority_ms(int ms)
+{
+    if (ms > 0 && ms < 500) ms = 500;
+    if (ms > 60000) ms = 60000;
+    priority_ms = ms > 0 ? ms : 0;
+}
+int  scan_engine_get_priority_ms(void) { return priority_ms; }
+void scan_engine_autosquelch(int margin)
+{
+    if (margin >= 0) autosq_margin = margin;
+    /* No receiver here, so the sweep cannot run; report a plausible floor so
+       the row that shows it has something to show. */
+    autosq_floor = 12;
+}
+int scan_engine_autosquelch_floor(void) { return autosq_floor; }

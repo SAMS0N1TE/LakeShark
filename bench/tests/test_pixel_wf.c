@@ -76,6 +76,12 @@ static void exact_and_bounded(bool landscape, bool cw, ls_pwf_flow_t flow, int l
     int64_t now = 0;
     s_line = 0;
     for (int i = 0; i < 4; i++) frame(&p, cells, lines, &now);
+    /* A clean present between new rows must preserve the ring's shown-state,
+       so the next row can still use the exact framebuffer shift path. */
+    now += 40000;
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    LS_EQ_INT(ls_tui_present(), 0);
     /* Steady state: only the cells the new lines land in are drawn, and only
        the new lines are turned into pixels. */
     const int per_line = flow == LS_PWF_LEFT ? cwid : chgt;
@@ -118,6 +124,62 @@ LS_CASE(left_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_
 LS_CASE(down_portrait_moves_exactly){exact_and_bounded(false, true, LS_PWF_DOWN, 2);}
 LS_CASE(down_landscape_cw_moves_exactly){exact_and_bounded(true, true, LS_PWF_DOWN, 1);}
 LS_CASE(down_landscape_ccw_moves_exactly){exact_and_bounded(true, false, LS_PWF_DOWN, 5);}
+
+LS_CASE(clean_present_preserves_ring_and_overlay_forces_repaint)
+{
+    LS_CHECK(ls_tui_begin(568, 1232));
+    int cols, rows, cw, ch;
+    ls_tui_geometry(&cols, &rows, &cw, &ch);
+    const tui_rect cells = tui_rect_make(4, 10, cols - 8, 30);
+    ls_pwf_t p = {0};
+    LS_CHECK(ls_pwf_size(&p, LS_PWF_DOWN, cells.w * cw, cells.h * ch, 300));
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    int64_t now = 0;
+    for (int i = 0; i < 4; i++) frame(&p, cells, 2, &now);
+
+    /* Holding the same serial is an inactive/clean waterfall present. */
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    LS_EQ_INT(ls_tui_present(), 0);
+
+    /* Leaving the waterfall clears its cell region; reentering with the same
+       image serial restores the baseline without requiring a new IQ row. */
+    tui_frame_begin(ls_tui_surface());
+    tui_put_char(ls_tui_surface(), tui_surface_rect(ls_tui_surface()), 2, 2, 'H', 7);
+    LS_CHECK(ls_tui_present() >= cells.w * cells.h);
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    LS_CHECK(ls_tui_present() >= cells.w * cells.h);
+
+    /* A cell drawn over the ring invalidates its shift baseline. */
+    push(&p); now += 40000; ls_pwf_compose(&p, now, 33000);
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    tui_put_char(ls_tui_surface(), cells, cells.x + 2, cells.y + 2, 'X', 7);
+    ls_tui_present();
+
+    /* The next new row restores image cells but must repaint before shifting. */
+    push(&p); now += 40000; ls_pwf_compose(&p, now, 33000);
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    ls_tui_present();
+    uint32_t copied, flushed; ls_tui_last_traffic(&copied, &flushed);
+    uint32_t us; int drawn; ls_tui_last_cost(&us, &drawn);
+    LS_CHECK(drawn >= cells.w * cells.h);
+
+    /* Once the complete image is back, the following row may shift exactly. */
+    push(&p); now += 40000; ls_pwf_compose(&p, now, 33000);
+    tui_frame_begin(ls_tui_surface());
+    ls_pwf_show(&p, ls_tui_surface(), cells);
+    ls_tui_present();
+    ls_tui_last_traffic(&copied, &flushed);
+    ls_tui_last_cost(&us, &drawn);
+    LS_CHECK(drawn < cells.w * cells.h / 4);
+    LS_EQ_UINT(copied, (uint32_t)p.w * p.h * 2);
+
+    ls_pwf_free(&p);
+    ls_tui_end();
+}
 
 LS_CASE(iq_cadence_coalesces_even_more_than_a_ring){
     ls_pwf_t p = {0};

@@ -25,6 +25,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_numpad.h"
 #include "../../ls_field.h"
 #include "../../ls_notify.h"
 #include "p25_program.h"
@@ -381,9 +382,30 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     p25_get_receiver_status(&st);
     const uint32_t shown = st.effective_center_known
                          ? (uint32_t)st.effective_center_hz : freq;
-    tui_box(sf, dial, p25_p2_enabled() ? "P25 II EXP / RECEIVER"
-                                       : "P25 / RECEIVER", frame);
+    /* THE GLASS. The scanner's bezel and its rail of lit annunciators, so the
+       two pages of one radio read as one instrument. The title keeps its
+       words - they are what a test and a thumb both look for. */
+    ls_radio_bezel(sf, dial, p25_p2_enabled() ? "P25 II EXP / RECEIVER"
+                                              : "P25 / RECEIVER");
     char buf[64];
+    if (dial.h >= 7) {
+        int cx = dial.x + 1;
+        cx = ls_radio_chip(sf, dial, cx, dial.y + 1,
+                           p25_p2_enabled() ? "P2" : "P1", true,
+                           p25_p2_enabled() ? TUI_MAGENTA : TUI_BLUE);
+        cx = ls_radio_chip(sf, dial, cx, dial.y + 1, sync ? "SYNC" : "NO SYNC", sync,
+                           TUI_GREEN);
+        if (P25.p25_enc_muted)
+            cx = ls_radio_chip(sf, dial, cx, dial.y + 1, "ENC", true, TUI_RED);
+        if (scan_engine_active())
+            cx = ls_radio_chip(sf, dial, cx, dial.y + 1,
+                               scan_engine_manual_hold() ? "HOLD" : "SCAN", true,
+                               TUI_YELLOW);
+        if (P25.split_enabled)
+            cx = ls_radio_chip(sf, dial, cx, dial.y + 1, "TRUNK", P25.split_active,
+                               TUI_CYAN);
+        (void)cx;
+    }
     if (dial.h >= 8) {
         ls_radio_frequency_draw(sf, dial, 2, shown, value);
         if (dial.h >= 9)
@@ -455,22 +477,14 @@ static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level)
     tui_put_str(sf, r, r.x + r.w - 4, r.y, pct,
                 TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
 
-    /* Rising eighth-height traces, the same reading MESH's signal meter uses
-       (scr_mesh.c, sigmeter) - each cell's own threshold so the bar fills
-       left to right and grows taller as it goes, just driven by a fraction
-       here instead of a dBm span. */
-    const int cells = r.w - 9;
-    for (int i = 0; i < cells; i++) {
-        const float t = (float)(i + 1) / (float)cells;
-        const int   h = 2 + (i * 6) / (cells > 1 ? cells - 1 : 1);
-        const bool  lit = level >= t - (0.5f / (float)cells);
-        const uint8_t hue = i > cells * 3 / 4 ? TUI_RED
-                           : i > cells / 2     ? TUI_YELLOW
-                                                : TUI_GREEN;
-        tui_put_char(sf, r, r.x + 4 + i, r.y, LS_TUI_TRACE(h),
-                     TUI_ATTR(lit ? (hue | TUI_BRIGHT) : (TUI_BLACK | TUI_BRIGHT),
-                              TUI_BLACK));
-    }
+    /* The scanner's VFD bargraph, with the peak it just held decaying behind
+       the reading - the only animation on this row, and it costs one float.
+       Filaments, not a filled block: a hundred readings must not run together
+       into one coloured shape. */
+    static float peak;
+    if (level >= peak) peak = level;
+    else               peak -= (peak - level) * 0.06f;
+    ls_radio_bargraph(sf, r, r.x + 4, r.y, r.w - 9, 1, level, peak);
 }
 
 static void draw_signal(tui_surface *sf, tui_rect area)
@@ -906,6 +920,329 @@ static ls_btn_t s_compact_lr[] = {
 static bool lr_receiver(void) { return P25.lora_rx; }
 static const ls_quick_t *quick(void) { return lr_receiver() ? QUICK_LR : QUICK; }
 
+/* ------------------------------------------------------------- the deck -- */
+
+/* The same controls the scanner grew, because it is the same radio: a card
+   with a travel a thumb can press and a bracketed number that is the only way
+   to the keypad. Volume, and the gain the receiver in use actually has - the
+   LR2021's own thirteen steps, AUTO at the bottom and MAX at the top, or the
+   SDR's dB. No dial is drawn for a gain the path does not take. */
+enum { P25_CARD_VOL, P25_CARD_GAIN, P25_N_CARD };
+static ls_radio_card_t s_deck[P25_N_CARD];
+static int  s_deck_n;
+static int  s_deck_flash = -1;
+static bool s_deck_flash_up;
+static int  s_deck_flash_ttl;
+#define P25_FLASH_FRAMES 6
+
+static bool gain_is_step(void) { return lr_receiver(); }
+
+/* What the gain reads now, in the units of the receiver in use: steps on the
+   chip, tenths of a dB on an SDR. */
+static int gain_now(void)
+{
+    const char *s = ls_quick_state(&quick()[2]);
+    if (!s) return 0;
+    if (!strcmp(s, "AUTO")) return 0;
+    if (!strcmp(s, "MAX")) return 13;
+    return (int)(atof(s) * (gain_is_step() ? 1.0 : 10.0) + 0.5);
+}
+
+static void gain_apply(double value)
+{
+    ls_args_t a = {.n = 1};
+    ls_val_t out;
+    if (gain_is_step()) {
+        int step = (int)(value + 0.5);
+        if (step < 0) step = 0;
+        if (step > 13) step = 13;
+        a.v[0].kind = LS_VAL_INT;
+        a.v[0].i = step;
+        ls_action_call("p25.lrgain", &a, &out, ls_quick_grant_builtin());
+        return;
+    }
+    if (value < 0) value = 0;
+    if (value > 50) value = 50;
+    a.v[0].kind = LS_VAL_FLOAT;
+    a.v[0].f = (float)value;
+    ls_action_call("p25.gain", &a, &out, ls_quick_grant_builtin());
+}
+
+static void volume_apply(double value)
+{
+    if (!(value >= 0 && value <= 100)) return;
+    ls_args_t a = {.n = 1};
+    ls_val_t out;
+    a.v[0].kind = LS_VAL_INT;
+    a.v[0].i = (int)(value + 0.5);
+    ls_action_call("audio.volume", &a, &out, ls_quick_grant_builtin());
+}
+
+static void deck_fill(void)
+{
+    static char vol_text[12], gain_text[12];
+    const int vol = audio_volume_get() < 0 ? 0
+                  : audio_volume_get() > 100 ? 100 : audio_volume_get();
+    snprintf(vol_text, sizeof(vol_text), "%d%%", vol);
+    s_deck[P25_CARD_VOL] = (ls_radio_card_t){
+        .label = "VOLUME", .value = vol_text, .frac = vol / 100.0f,
+        .hue = TUI_GREEN, .live = true, .settable = true };
+
+    const char *state = ls_quick_state(&quick()[2]);
+    const int g = gain_now();
+    if (gain_is_step())
+        snprintf(gain_text, sizeof(gain_text), "%s",
+                 g <= 0 ? "AUTO" : g >= 13 ? "MAX" : state ? state : "-");
+    else
+        snprintf(gain_text, sizeof(gain_text), "%s", g <= 0 ? "AUTO" : state ? state : "-");
+    s_deck[P25_CARD_GAIN] = (ls_radio_card_t){
+        .label = "GAIN", .value = gain_text,
+        .frac = gain_is_step() ? g / 13.0f : (float)g / 500.0f,
+        .hue = TUI_MAGENTA, .live = true, .settable = true };
+
+    const bool lit = s_deck_flash_ttl > 0;
+    for (int i = 0; i < P25_N_CARD; i++) {
+        s_deck[i].flash_down = lit && s_deck_flash == i && !s_deck_flash_up;
+        s_deck[i].flash_up   = lit && s_deck_flash == i && s_deck_flash_up;
+    }
+}
+
+static void deck_draw(tui_surface *sf, tui_rect area)
+{
+    s_deck_n = 0;
+    if (area.h < 5 || area.w < 20) return;
+    if (s_deck_flash_ttl > 0 && --s_deck_flash_ttl == 0) s_deck_flash = -1;
+    deck_fill();
+    const int cols = area.w >= 56 ? 2 : 1;
+    const int rows = (P25_N_CARD + cols - 1) / cols;
+    const int card_h = area.h >= rows * 7 - 1 ? 6 : 5;
+    if (area.h < rows * card_h + (rows - 1)) return;
+    const int cw = area.w / cols;
+    for (int i = 0; i < P25_N_CARD; i++) {
+        const tui_rect box = tui_rect_make(area.x + (i % cols) * cw,
+                                           area.y + (i / cols) * (card_h + 1),
+                                           cols > 1 ? cw - 1 : area.w, card_h);
+        ls_radio_card_draw(sf, box, &s_deck[i]);
+        s_deck_n = i + 1;
+    }
+}
+
+/* ------------------------------------------------ the frequency keyboard -- */
+
+/* TYPING A FREQUENCY HAPPENS WHERE THE CONTROLS ARE, NOT OVER THEM.
+
+   p25.tune opens the house keypad as a window over the screen. That is fine
+   from a console and wrong under a thumb: the decode you are tuning away from
+   disappears behind it. The keyboard here takes the deck's place instead, the
+   way the VFO's does, and the toggle that swaps them sits in the bottom right
+   corner in its own colour so the two views are one press apart.
+
+   Fixed storage: fifteen key rects and sixteen bytes of digits. Drawing or
+   editing it allocates nothing. */
+static bool s_keypad;
+static bool s_entry_bad;
+static char s_entry[16];
+#define P25_KEYS 15
+static tui_rect s_key[P25_KEYS];
+static tui_rect s_toggle;
+
+static void entry_clear(void) { s_entry[0] = 0; s_entry_bad = false; }
+
+static void entry_add(char c)
+{
+    const size_t n = strlen(s_entry);
+    if (n + 1 >= sizeof(s_entry)) return;
+    if (c == '.' && strchr(s_entry, '.')) return;
+    /* Four places after the point is the raster the radio tunes on. */
+    const char *dot = strchr(s_entry, '.');
+    if (dot && c != '.' && strlen(dot) > 4) return;
+    s_entry[n] = c;
+    s_entry[n + 1] = 0;
+    s_entry_bad = false;
+}
+
+static void entry_del(void)
+{
+    const size_t n = strlen(s_entry);
+    if (n) s_entry[n - 1] = 0;
+    s_entry_bad = false;
+}
+
+/* MHz as typed, in Hz, or false when it is not a frequency this radio has. */
+static bool entry_hz(uint32_t *out)
+{
+    if (!s_entry[0]) return false;
+    const double mhz = atof(s_entry);
+    if (!(mhz >= 24.0 && mhz <= 1766.0)) return false;
+    *out = (uint32_t)(mhz * 1e6 + 0.5);
+    return true;
+}
+
+/* Typing a frequency is an operator retune: it ends a stored-channel scan,
+   the same as every other way of moving the carrier on this screen. */
+static void entry_tune(void)
+{
+    uint32_t hz;
+    if (!entry_hz(&hz)) { s_entry_bad = true; return; }
+    scan_engine_stop();
+    ls_args_t a = {.n = 1};
+    ls_val_t out;
+    a.v[0].kind = LS_VAL_FLOAT;
+    a.v[0].f = (float)(hz / 1e6);
+    if (ls_action_call("p25.freq", &a, &out, ls_quick_grant_builtin()) != LS_ACT_OK) {
+        s_entry_bad = true;
+        return;
+    }
+    entry_clear();
+    s_keypad = false;
+}
+
+static bool entry_key_char(char c)
+{
+    if ((c >= '0' && c <= '9') || c == '.') { entry_add(c); return true; }
+    return false;
+}
+
+/* A key: the dithered field every button on this firmware has, ruled top and
+   bottom, with its cap in the middle. */
+static void key_draw(tui_surface *sf, tui_rect k, const char *cap, uint8_t hue,
+                     bool strong)
+{
+    if (k.w < 3 || k.h < 1) return;
+    /* A key with no surface is not a key: the digits carry the same field the
+       verbs do, one step lighter so the three that act stand out. */
+    ls_fill_dither(sf, k, strong ? LS_DITHER_HEAVY : LS_DITHER_MEDIUM, hue);
+    const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
+    if (k.h >= 3)
+        for (int x = 0; x < k.w; ++x) {
+            tui_put_char(sf, k, k.x + x, k.y, '=', edge);
+            tui_put_char(sf, k, k.x + x, k.y + k.h - 1, '=', edge);
+        }
+    const int n = (int)strlen(cap);
+    const int x = k.x + (k.w - n) / 2, y = k.y + (k.h - 1) / 2;
+    tui_put_str(sf, k, x, y, cap, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+}
+
+/* The toggle, bottom right, in a colour nothing else on the page wears, so
+   the way back to the controls is never hunted for. */
+static void toggle_draw(tui_surface *sf, tui_rect strip)
+{
+    const int w = strip.w >= 12 ? 11 : strip.w;
+    s_toggle = tui_rect_make(strip.x + strip.w - w, strip.y, w, strip.h);
+    key_draw(sf, s_toggle, s_keypad ? "CONTROLS" : "KEYBOARD", TUI_YELLOW, true);
+}
+
+static void keypad_draw(tui_surface *sf, tui_rect area)
+{
+    static const char *const CAP[P25_KEYS] = { "1", "2", "3", "4", "5", "6",
+                                               "7", "8", "9", ".", "0", "DEL",
+                                               "CLEAR", "CANCEL", "TUNE" };
+    memset(s_key, 0, sizeof(s_key));
+    const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    char line[40];
+    snprintf(line, sizeof(line), "FREQUENCY  %s%s", s_entry[0] ? s_entry : "___.____",
+             s_entry_bad ? "  OUT OF RANGE" : " MHz");
+    tui_put_str(sf, area, area.x + 1, area.y, line,
+                s_entry_bad ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : lab);
+
+    tui_rect grid = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+    if (grid.h < 2 || grid.w < 16) return;
+    /* Every key fits or none do: a row of keys the pane cut off is a row of
+       controls that cannot be pressed, and CLEAR, CANCEL and TUNE live on the
+       last one. */
+    const int cols = grid.w >= 56 ? 8 : 4;
+    const int rows = (P25_KEYS + cols - 1) / cols;
+    int kh = grid.h / rows;
+    if (kh < 1) return;
+    if (kh > 4) kh = 4;
+    const int kw = grid.w / cols;
+    for (int i = 0; i < P25_KEYS; ++i) {
+        const int cx = grid.x + (i % cols) * kw;
+        const int cy = grid.y + (i / cols) * kh;
+        s_key[i] = tui_rect_make(cx, cy, kw - 1, kh - (kh >= 3 ? 1 : 0));
+        /* The three verbs wear the colour of what they do. */
+        const uint8_t hue = i == 14 ? TUI_GREEN : i >= 12 ? TUI_RED : TUI_CYAN;
+        key_draw(sf, s_key[i], CAP[i], hue, i >= 12);
+    }
+}
+
+static bool keypad_touch(int col, int row)
+{
+    for (int i = 0; i < P25_KEYS; ++i) {
+        if (s_key[i].h <= 0 || !tui_rect_contains(s_key[i], col, row)) continue;
+        if (i < 9) entry_add((char)('1' + i));
+        else if (i == 9) entry_add('.');
+        else if (i == 10) entry_add('0');
+        else if (i == 11) entry_del();
+        else if (i == 12) entry_clear();
+        else if (i == 13) { entry_clear(); s_keypad = false; }
+        else entry_tune();
+        return true;
+    }
+    return false;
+}
+
+/* Where the deck's controls landed, so a test presses the real thing instead
+   of guessing at a screenshot - the service ls_radio_panel_control_rect gives
+   for the scanner's deck, with the same part numbers. */
+bool ls_scr_p25_control_rect(int card, int part, int *x, int *y, int *w, int *h)
+{
+    if (card < 0 || card >= s_deck_n) return false;
+    const ls_radio_card_t *c = &s_deck[card];
+    const tui_rect r = part == LS_RADIO_PART_UP    ? c->up
+                     : part == LS_RADIO_PART_VALUE ? c->value_rect
+                     : part == LS_RADIO_PART_BAR   ? c->bar
+                                                   : c->down;
+    if (r.h <= 0 || r.w <= 0) return false;
+    if (x) *x = r.x;
+    if (y) *y = r.y;
+    if (w) *w = r.w;
+    if (h) *h = r.h;
+    return true;
+}
+
+/* One write per tap, in the control's own range, and the travel never types. */
+static bool deck_touch(int col, int row)
+{
+    for (int i = 0; i < s_deck_n; i++) {
+        const ls_radio_card_t *c = &s_deck[i];
+        const bool down = c->down.h > 0 && tui_rect_contains(c->down, col, row);
+        const bool up   = c->up.h > 0 && tui_rect_contains(c->up, col, row);
+        const bool bar  = c->bar.h > 0 && tui_rect_contains(c->bar, col, row);
+        const bool val  = c->value_rect.h > 0 && tui_rect_contains(c->value_rect, col, row);
+        if (!down && !up && !bar && !val) continue;
+        if (bar) {
+            const int span = c->bar.w > 1 ? c->bar.w - 1 : 1;
+            int pos = col - c->bar.x;
+            if (pos < 0) pos = 0;
+            if (pos > span) pos = span;
+            if (i == P25_CARD_VOL) volume_apply(pos * 100.0 / span);
+            else gain_apply(gain_is_step() ? pos * 13.0 / span : pos * 50.0 / span);
+            return true;
+        }
+        if (down || up) {
+            /* The keys are the quick controls' own, so a thumb and the
+               keyboard move one value by one step. */
+            const ls_quick_t *q = &quick()[i == P25_CARD_VOL ? 1 : 2];
+            ls_quick_key(up ? q->key : q->key_down, quick(), N_QUICK,
+                         ls_quick_grant_builtin(), NULL);
+            s_deck_flash = i;
+            s_deck_flash_up = up;
+            s_deck_flash_ttl = P25_FLASH_FRAMES;
+            return true;
+        }
+        if (i == P25_CARD_VOL)
+            ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(), volume_apply);
+        else if (gain_is_step())
+            ls_numpad_open("GAIN", "LR2021 step, 0 is AUTO and 13 is MAX",
+                           gain_now(), gain_apply);
+        else
+            ls_numpad_open("GAIN", "dB, 0 is automatic", gain_now() / 10.0, gain_apply);
+        return true;
+    }
+    return false;
+}
+
 static const ls_btn_t *compact_quick(void)
 {
     if (!lr_receiver()) return COMPACT_QUICK;
@@ -1000,7 +1337,14 @@ static void draw(tui_surface *sf, tui_rect area)
     if (wide) {
         /* LANDSCAPE HAS THE CONTROLS TOO. */
 
-        const int want = ls_quick_rows(quick(), N_QUICK, area.w, true);
+        /* Five rows buys the deck: two cards side by side, which is the same
+           control a thumb learns on the scanner. Narrower or shorter than
+           that and the quick row stays what it was. */
+        const int plain = ls_quick_rows(quick(), N_QUICK, area.w, true);
+        /* Only the decode page buys the deck its rows: the spectrum needs
+           every row it has for history, and taking two for a second set of
+           controls is how a waterfall ends up with nothing to show. */
+        const int want = (area.w >= 56 && area.h >= 24 && s_page == 0) ? 5 : plain;
         const int ctl_h = (area.h > want + 8) ? want : 0;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         s_quick_rect = ctl_h
@@ -1048,11 +1392,45 @@ static void draw(tui_surface *sf, tui_rect area)
         } else draw_decode(sf, body);
     }
 
-    if (s_quick_rect.h > 0) {
-        if (s_quick_compact)
-            ls_btn_bar(sf, s_quick_rect, compact_quick(), N_COMPACT_QUICK, -1);
-        else
-            ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
+    /* The deck, which is what the quick row became: the same cards the
+       scanner carries, on the page a thumb watches a decode from. The
+       scanner page keeps its own deck inside the panel, so this one stands
+       down there rather than offering the volume twice. */
+    /* The deck and the keyboard belong to the decode page. The spectrum needs
+       its rows for history and the scanner has a deck of its own, so neither
+       is given a second set of controls. */
+    if (s_quick_rect.h > 0 && s_page == 0) {
+        s_deck_n = 0;
+        s_toggle = tui_rect_make(0, -1, 0, 0);
+        /* One strip at the bottom for the toggle, so KEYBOARD and CONTROLS
+           are the same press in the same corner whichever is showing. */
+        tui_rect pane = s_quick_rect;
+        const int strip_h = pane.h >= 12 ? 2 : 1;
+        tui_rect strip = tui_rect_make(pane.x, pane.y + pane.h - strip_h,
+                                       pane.w, strip_h);
+        pane.h -= strip_h;
+        if (s_keypad) keypad_draw(sf, pane);
+        else {
+            deck_draw(sf, pane);
+            if (!s_deck_n) {
+                if (s_quick_compact)
+                    ls_btn_bar(sf, pane, compact_quick(), N_COMPACT_QUICK, -1);
+                else
+                    ls_quick_draw_posture(sf, pane, wide, quick(), N_QUICK);
+            }
+        }
+        toggle_draw(sf, strip);
+    } else {
+        s_deck_n = 0;
+        s_keypad = false;
+        s_toggle = tui_rect_make(0, -1, 0, 0);
+        memset(s_key, 0, sizeof(s_key));
+        if (s_quick_rect.h > 0 && s_page != 2) {
+            if (s_quick_compact)
+                ls_btn_bar(sf, s_quick_rect, compact_quick(), N_COMPACT_QUICK, -1);
+            else
+                ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
+        }
     }
 }
 
@@ -1063,6 +1441,19 @@ static void leave(void) { ls_calls_leave(); ls_wf_source_release(); }
 static bool key(ls_tk_t k, char ch)
 {
     if (ls_calls_active()) return ls_calls_key(k, ch);
+    /* THE FREQUENCY KEYBOARD OWNS THE KEYS WHILE IT IS UP.
+
+       A digit is a digit when a frequency is half typed - the pages, CALLS
+       and DMR all answer to digits and would otherwise eat them - with ENTER
+       to tune and ESC to put the controls back. This is the rule the VFO's
+       inline keypad follows, and it has to be checked before anything else
+       claims a number. */
+    if (s_keypad && s_page != 2) {
+        if (k == LS_TK_ESC) { entry_clear(); s_keypad = false; return true; }
+        if (k == LS_TK_ENTER) { entry_tune(); return true; }
+        if (k == LS_TK_BACKSPACE) { entry_del(); return true; }
+        if (k == LS_TK_CHAR && entry_key_char(ch)) return true;
+    }
     if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("P25"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
     if (k == LS_TK_CHAR && ch == '6') { set_page(5); return true; }
@@ -1101,6 +1492,15 @@ static bool key(ls_tk_t k, char ch)
        is gain-down on this screen and moving it would break a binding that is
        in the hint line and in muscle memory. */
     if(k==LS_TK_CHAR && ch=='n') { mark_observation(); return true; }
+    /* T is still TUNE, and on a page that has room for it that now means the
+       keyboard in place of the controls rather than a window over the decode.
+       The scanner page keeps the house keypad, which is what it always had. */
+    if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') && s_page != 2 &&
+        s_quick_rect.h > 0) {
+        s_keypad = !s_keypad;
+        if (s_keypad) entry_clear();
+        return true;
+    }
     if(k==LS_TK_CHAR && ch=='l') {
         ls_args_t a={.n=0}; ls_val_t out;
         ls_action_call("p25.profile",&a,&out,ls_quick_grant_builtin());
@@ -1147,8 +1547,15 @@ static bool touch(int col, int row)
         if (i >= 0) { page_button(i); return true; }
         return true;
     }
+    if (s_toggle.h > 0 && tui_rect_contains(s_toggle, col, row)) {
+        s_keypad = !s_keypad;
+        if (s_keypad) entry_clear();
+        return true;
+    }
     if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
         row < s_quick_rect.y + s_quick_rect.h) {
+        if (s_keypad) { keypad_touch(col, row); return true; }
+        if (s_deck_n) { deck_touch(col, row); return true; }
         if (s_quick_compact) {
             const int i = ls_btn_hit(col, row);
             if (i >= 0 && i < N_COMPACT_QUICK)

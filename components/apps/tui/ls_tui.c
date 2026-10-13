@@ -1301,6 +1301,8 @@ int ls_tui_present(void)
     s_image_shifted = !margin && s_image_dirty && image_can_shift();
     if (s_image_shifted) image_shift(fb.pixels, fb.width);
     int drawn = 0;
+    bool image_cell_invalidated = false;
+    bool image_area_touched = false;
     for (int row = 0; row < s_rows; row++) {
         for (int col = 0; col < s_cols; col++) {
             if (reserved_cell(col, row)) continue;
@@ -1316,6 +1318,17 @@ int ls_tui_present(void)
             s_cell_palette=base?s_base_palette:NULL;
             blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
             s_cell_palette=NULL;
+            /* Once the ring was shown, only a changed cell inside it can
+               invalidate that fact between image updates. Avoid rescanning
+               the whole waterfall on every otherwise-idle present. */
+            if (s_image_ring && tui_rect_contains(s_image_rect, col, row)) {
+                image_area_touched = true;
+                if (s_image_shown && (glass || s_back[i].ch >= 0x100 ||
+                    (uint8_t)s_back[i].ch != (uint8_t)LS_TUI_IMAGE_CELL)) {
+                    s_image_shown = false;
+                    image_cell_invalidated = true;
+                }
+            }
             glass_set(s_base_front,i,base);
             glass_set(s_glass_front, i, glass);
             dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
@@ -1331,21 +1344,25 @@ int ls_tui_present(void)
         s_image_previous_valid = true;
     }
     /* What the glass holds now, for the next present's move. */
-    if (s_image_ring) {
-        bool all = s_image != NULL;
+    if (s_image_ring && (s_image_dirty || s_image_shifted || image_area_touched)) {
+        bool all = s_image != NULL && !image_cell_invalidated;
         const tui_rect r = s_image_rect;
-        for (int row = r.y; all && row < r.y + r.h; row++)
-            for (int col = r.x; all && col < r.x + r.w; col++) {
-                if (col < 0 || row < 0 || col >= s_cols || row >= s_rows) { all = false; break; }
-                const tui_cell c = s_front[(size_t)row * s_cols + col];
-                all = c.ch < 0x100 && (uint8_t)c.ch == (uint8_t)LS_TUI_IMAGE_CELL;
-            }
+        /* image_can_shift already checked every cell before a successful
+           move. Otherwise validate only when a new image state is presented,
+           not on every clean frame while the ring remains installed. */
+        if (!s_image_shifted)
+            for (int row = r.y; all && row < r.y + r.h; row++)
+                for (int col = r.x; col < r.x + r.w; col++) {
+                    if (col < 0 || row < 0 || col >= s_cols || row >= s_rows) { all = false; break; }
+                    const tui_cell c = s_front[(size_t)row * s_cols + col];
+                    all = c.ch < 0x100 && (uint8_t)c.ch == (uint8_t)LS_TUI_IMAGE_CELL;
+                }
         s_image_shown = all;
         s_image_shown_rect = r;
         s_image_shown_src = s_image;
         s_image_shown_w = s_image_w;
         s_image_shown_h = s_image_h;
-    } else s_image_shown = false;
+    } else if (!s_image_ring) s_image_shown = false;
     s_image_dx = s_image_dy = 0;
     s_image_shifted = false;
     s_image_dirty = false;

@@ -19,7 +19,7 @@ extern "C" {
 /* How many controls the instrument's own bar carries. Named because three
    places size arrays from it and a mismatch between them is a stack write
    past the end, not a layout bug. */
-#define LS_WF_BTNS      11
+#define LS_WF_BTNS      12
 
 #define LS_WF_BINS_MAX  256
 #define LS_WF_ROWS_MAX  128
@@ -177,6 +177,10 @@ bool ls_wf_touch(int col, int row);
 
 /* Marker frequency, or 0 when there is no marker or no known span. */
 uint32_t ls_wf_marker_hz(void);
+
+/* Session-local display zoom. It only remaps existing bins/history; it does
+   not change the receiver bandwidth or restart a source. */
+uint8_t ls_wf_zoom(void); /* 1, 2, or 4 */
 
 /* How many rows have ever been accepted. */
 

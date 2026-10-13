@@ -54,10 +54,13 @@ void lr_spec_feed(const uint8_t *data, size_t bytes, uint64_t first,
     /* Only this owner touches the FFT. UI contention never delays it. */
     if (seen_epoch != e || discontinuity) {
         spectrum_context_reset(&s->fft); fill = 0;
-        seen_epoch = e; line_start = now; last_fft = now - 20;
+        seen_epoch = e; line_start = now; last_fft = now;
     }
     if (!data || bytes % 4 || !spare) { fill = 0; atomic_fetch_add(&n_skipped, 1); return; }
-    if (!fill && (uint32_t)(now - last_fft) < 20) return;
+    /* One FFT window is enough for each 100 ms waterfall row. Running one
+       every 20 ms only averaged five windows into a row the UI cannot display
+       any sooner; it spent RX-owner time without increasing row cadence. */
+    if (!fill && (uint32_t)(now - last_fft) < LR_SPEC_PERIOD_MS) return;
     for (size_t k = 0; k < bytes && fill < SPEC_FFT_N; k += 4) {
         const int16_t i = (int16_t)((uint16_t)data[k] | (uint16_t)data[k+1] << 8);
         const int16_t q = (int16_t)((uint16_t)data[k+2] | (uint16_t)data[k+3] << 8);
