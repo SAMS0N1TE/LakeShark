@@ -1626,6 +1626,7 @@ static void waveform(tui_surface *sf,tui_rect a)
    otherwise - so no page spends more on buttons than the old screen did. */
 static tui_rect tabs;
 static int tab_w;
+static rec_hub_status_t bar_rx_now;
 static const rec_hub_status_t *bar_rx;
 static uint8_t bar_fresh;
 static void banner(tui_surface *sf,tui_rect *a,const rec_hub_status_t *rx,uint8_t fresh);
@@ -2134,7 +2135,7 @@ static void draw(tui_surface *sf,tui_rect a)
             a.h-=th;
         }
     }
-    bar_rx=&rx;bar_fresh=fresh;
+    bar_rx_now=rx;bar_rx=&bar_rx_now;bar_fresh=fresh;
     switch(page) {
     case PG_READ:     draw_read(sf,a,&rx,&cc,fresh); break;
     case PG_ANALYZE:  draw_analyze(sf,a,&rx,fresh); break;
