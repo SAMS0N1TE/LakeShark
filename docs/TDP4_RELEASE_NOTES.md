@@ -2,6 +2,11 @@
 
 ## 2.13.1
 
+- REC and SUB-GHZ share one layout: RADIO, the page's controls and OPTIONS on filled keys across the top, and READ, SCAN, SAVED, RAW, LEARN and CATCH tabs along the bottom.
+- One RADIO choice drives the whole app. Every setting is under OPTIONS.
+- The LR2021 now reads OOK remotes from its I/Q stream, and sends OOK captures and OOK .sub files. FSK packet receive is under OPTIONS > LR2021 receive.
+- SCAN on the LR2021 shows a live I/Q waterfall and sweeps without freezing the screen.
+- Retuning or changing capture settings during a sweep asks to stop the sweep first.
 - P25 now matches the FM VFO: VFO, WATERFALL and SCANNER tabs on every view, so the way back from the waterfall is one tap.
 - P25 volume and gain are tall cards with large minus and plus keys that fill the screen down to the tabs.
 - P25 uses the same inline frequency keypad as FM, opened from a full-size KEYBOARD key in the bottom-right corner.
