@@ -197,7 +197,16 @@ typedef struct {
 /* One copy per radio role, refreshed once at the start of a candidate-count
    pass (and once for standalone autosquelch). Eligibility can then test a
    whole channel list without taking the registry mutex for every entry. */
-static scan_radio_snapshot_t s_radio_snapshot;
+/* Two buffers: a refresh builds the one not being read and publishes it with
+   a pointer store, so the scan task never reads a half-rebuilt copy. One
+   writer at a time; the status path (the UI, every frame) refreshes at most
+   every SNAP_STATUS_US and skips when the scan task is mid-refresh. */
+static scan_radio_snapshot_t s_snap_buf[2];
+static const scan_radio_snapshot_t *volatile s_snap = &s_snap_buf[0];
+static portMUX_TYPE s_snap_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_snap_busy;
+static int64_t s_snap_at;
+#define SNAP_STATUS_US 500000
 
 static scan_sdr_snapshot_t endpoint_snapshot(
     const ls_radio_endpoint_info_t *info)
@@ -213,65 +222,87 @@ static scan_sdr_snapshot_t endpoint_snapshot(
     return out;
 }
 
-static void radio_snapshot_refresh(void)
+static void radio_snapshot_refresh_now(void)
 {
-    memset(&s_radio_snapshot, 0, sizeof(s_radio_snapshot));
-    s_radio_snapshot.saved_fm = ls_rsel_saved(LS_RSEL_FM);
-    s_radio_snapshot.saved_p25 = ls_rsel_saved(LS_RSEL_P25);
-    s_radio_snapshot.lora_chip = ls_lora_chip();
-    s_radio_snapshot.lora_caps = ls_lora_caps();
-    s_radio_snapshot.leased_fm.state = SCAN_SDR_ABSENT;
-    s_radio_snapshot.leased_p25.state = SCAN_SDR_ABSENT;
-    s_radio_snapshot.rtl.state = SCAN_SDR_ABSENT;
-    s_radio_snapshot.hackrf.state = SCAN_SDR_ABSENT;
+    scan_radio_snapshot_t *n = s_snap == &s_snap_buf[0] ? &s_snap_buf[1] : &s_snap_buf[0];
+    memset(n, 0, sizeof(*n));
+    n->saved_fm = ls_rsel_saved(LS_RSEL_FM);
+    n->saved_p25 = ls_rsel_saved(LS_RSEL_P25);
+    n->lora_chip = ls_lora_chip();
+    n->lora_caps = ls_lora_caps();
+    n->leased_fm.state = SCAN_SDR_ABSENT;
+    n->leased_p25.state = SCAN_SDR_ABSENT;
+    n->rtl.state = SCAN_SDR_ABSENT;
+    n->hackrf.state = SCAN_SDR_ABSENT;
 
     const size_t endpoints = ls_radio_endpoint_count();
     for (size_t i = 0; i < endpoints; ++i) {
         ls_radio_endpoint_info_t info;
         if (ls_radio_endpoint_info(i, &info) != LS_RADIO_OK) {
-            s_radio_snapshot.metadata_unknown = true;
+            n->metadata_unknown = true;
             continue;
         }
         if (info.leased && strcmp(info.owner, "fm") == 0)
-            s_radio_snapshot.leased_fm = endpoint_snapshot(&info);
+            n->leased_fm = endpoint_snapshot(&info);
         else if (info.leased && strcmp(info.owner, "p25") == 0)
-            s_radio_snapshot.leased_p25 = endpoint_snapshot(&info);
+            n->leased_p25 = endpoint_snapshot(&info);
         if (strcmp(info.endpoint_id, LS_RADIO_ENDPOINT_RTL_USB) == 0 && info.present)
-            s_radio_snapshot.rtl = endpoint_snapshot(&info);
+            n->rtl = endpoint_snapshot(&info);
         else if (strcmp(info.endpoint_id, LS_RADIO_ENDPOINT_HACKRF_USB) == 0 && info.present)
-            s_radio_snapshot.hackrf = endpoint_snapshot(&info);
+            n->hackrf = endpoint_snapshot(&info);
     }
 
     /* Resolve the same selected-SDR/fallback order as ls_rsel_sdr_endpoint,
        using this pass's snapshot instead of doing more registry reads per
        channel. An active owner lease remains authoritative above. */
-    if (s_radio_snapshot.leased_fm.state == SCAN_SDR_ABSENT &&
-        s_radio_snapshot.saved_fm != LS_RSEL_LORA) {
-        if (s_radio_snapshot.saved_fm == LS_RSEL_SDR_RTL &&
-            s_radio_snapshot.rtl.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_fm = s_radio_snapshot.rtl;
-        else if (s_radio_snapshot.saved_fm == LS_RSEL_SDR_HACKRF &&
-                 s_radio_snapshot.hackrf.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_fm = s_radio_snapshot.hackrf;
-        else if (s_radio_snapshot.rtl.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_fm = s_radio_snapshot.rtl;
-        else if (s_radio_snapshot.hackrf.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_fm = s_radio_snapshot.hackrf;
+    if (n->leased_fm.state == SCAN_SDR_ABSENT &&
+        n->saved_fm != LS_RSEL_LORA) {
+        if (n->saved_fm == LS_RSEL_SDR_RTL &&
+            n->rtl.state != SCAN_SDR_ABSENT)
+            n->leased_fm = n->rtl;
+        else if (n->saved_fm == LS_RSEL_SDR_HACKRF &&
+                 n->hackrf.state != SCAN_SDR_ABSENT)
+            n->leased_fm = n->hackrf;
+        else if (n->rtl.state != SCAN_SDR_ABSENT)
+            n->leased_fm = n->rtl;
+        else if (n->hackrf.state != SCAN_SDR_ABSENT)
+            n->leased_fm = n->hackrf;
     }
-    if (s_radio_snapshot.leased_p25.state == SCAN_SDR_ABSENT &&
-        s_radio_snapshot.saved_p25 != LS_RSEL_LORA) {
-        if (s_radio_snapshot.saved_p25 == LS_RSEL_SDR_RTL &&
-            s_radio_snapshot.rtl.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_p25 = s_radio_snapshot.rtl;
-        else if (s_radio_snapshot.saved_p25 == LS_RSEL_SDR_HACKRF &&
-                 s_radio_snapshot.hackrf.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_p25 = s_radio_snapshot.hackrf;
-        else if (s_radio_snapshot.rtl.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_p25 = s_radio_snapshot.rtl;
-        else if (s_radio_snapshot.hackrf.state != SCAN_SDR_ABSENT)
-            s_radio_snapshot.leased_p25 = s_radio_snapshot.hackrf;
+    if (n->leased_p25.state == SCAN_SDR_ABSENT &&
+        n->saved_p25 != LS_RSEL_LORA) {
+        if (n->saved_p25 == LS_RSEL_SDR_RTL &&
+            n->rtl.state != SCAN_SDR_ABSENT)
+            n->leased_p25 = n->rtl;
+        else if (n->saved_p25 == LS_RSEL_SDR_HACKRF &&
+                 n->hackrf.state != SCAN_SDR_ABSENT)
+            n->leased_p25 = n->hackrf;
+        else if (n->rtl.state != SCAN_SDR_ABSENT)
+            n->leased_p25 = n->rtl;
+        else if (n->hackrf.state != SCAN_SDR_ABSENT)
+            n->leased_p25 = n->hackrf;
     }
+    s_snap = n;
+    s_snap_at = esp_timer_get_time();
 }
+
+/* `force` is the scan task at the start of a pass; otherwise this is the
+   status path, which only needs a snapshot that is not stale. */
+static void radio_snapshot_refresh_if(bool force)
+{
+    if (!force && s_snap_at && esp_timer_get_time() - s_snap_at < SNAP_STATUS_US)
+        return;
+    bool mine = false;
+    portENTER_CRITICAL(&s_snap_lock);
+    if (!s_snap_busy) { s_snap_busy = true; mine = true; }
+    portEXIT_CRITICAL(&s_snap_lock);
+    if (!mine) return;
+    radio_snapshot_refresh_now();
+    portENTER_CRITICAL(&s_snap_lock);
+    s_snap_busy = false;
+    portEXIT_CRITICAL(&s_snap_lock);
+}
+
+static void radio_snapshot_refresh(void) { radio_snapshot_refresh_if(true); }
 
 static scan_sdr_support_t snapshot_frequency_support(
     const scan_sdr_snapshot_t *source, bool metadata_unknown, uint32_t hz)
@@ -289,10 +320,11 @@ static scan_sdr_support_t snapshot_frequency_support(
 static bool channel_radio_supported(const scan_channel_t *c)
 {
     if (!c) return false;
+    const scan_radio_snapshot_t *snap = s_snap;
     const bool p25 = c->mode == SCAN_MODE_P25;
-    const ls_rsel_radio_t saved = p25 ? s_radio_snapshot.saved_p25 : s_radio_snapshot.saved_fm;
-    const scan_sdr_snapshot_t *source = p25 ? &s_radio_snapshot.leased_p25
-                                             : &s_radio_snapshot.leased_fm;
+    const ls_rsel_radio_t saved = p25 ? snap->saved_p25 : snap->saved_fm;
+    const scan_sdr_snapshot_t *source = p25 ? &snap->leased_p25
+                                             : &snap->leased_fm;
     /* Explicit LoRa selection with no observed owner lease resolves to the
        onboard chip even when an unrelated endpoint's metadata read failed.
        An observed active lease (including one with unknown ranges) still
@@ -301,18 +333,18 @@ static bool channel_radio_supported(const scan_channel_t *c)
     const bool explicit_lr = saved == LS_RSEL_LORA &&
                              source->state == SCAN_SDR_ABSENT;
     const scan_sdr_support_t sdr = explicit_lr ? SCAN_SDR_ABSENT
-        : snapshot_frequency_support(source, s_radio_snapshot.metadata_unknown,
+        : snapshot_frequency_support(source, snap->metadata_unknown,
                                      c->freq_hz);
     if (sdr == SCAN_SDR_SUPPORTS || sdr == SCAN_SDR_UNKNOWN) return true;
     if (sdr == SCAN_SDR_REJECTS) return false;
-    if (saved != LS_RSEL_LORA || s_radio_snapshot.lora_chip != LS_LORA_CHIP_LR20XX)
+    if (saved != LS_RSEL_LORA || snap->lora_chip != LS_LORA_CHIP_LR20XX)
         return true;
 
     if (c->mode == SCAN_MODE_NFM)
         return fm_lr_supported(c->freq_hz, FM_MODE_LISTEN);
     if (c->mode == SCAN_MODE_P25) {
-        return (s_radio_snapshot.lora_caps & LS_LORA_CAP_FSK_STREAM) != 0 &&
-               ls_lora_rx_range_ok(s_radio_snapshot.lora_caps, c->freq_hz, c->freq_hz);
+        return (snap->lora_caps & LS_LORA_CAP_FSK_STREAM) != 0 &&
+               ls_lora_rx_range_ok(snap->lora_caps, c->freq_hz, c->freq_hz);
     }
     return true;
 }
@@ -774,10 +806,10 @@ static bool channel_eligible(const scan_channel_t *c)
     return zone_admits(c);
 }
 
-static int candidate_count(void)
+static int candidate_count_if(bool force)
 {
     if (s_src == SCAN_SRC_BAND) return band_steps();
-    radio_snapshot_refresh();
+    radio_snapshot_refresh_if(force);
     int eligible = 0;
     int total = scan_channels_count();
     for (int i = 0; i < total; ++i) {
@@ -786,6 +818,8 @@ static int candidate_count(void)
     }
     return eligible;
 }
+
+static int candidate_count(void) { return candidate_count_if(true); }
 
 /**/
 static void empty_reason(char *buf, size_t n)
@@ -1392,7 +1426,7 @@ static void feedback_input(scan_feedback_input_t *input)
     input->started = s_started;
     input->holding = s_cur >= 0;
     input->candidates = mode >= 0 && mode == s_fg_mode
-                            ? candidate_count() : -1;
+                            ? candidate_count_if(false) : -1;
     input->scan_error = s_scan_error;
     receiver_status_for(mode, &input->receiver);
 }

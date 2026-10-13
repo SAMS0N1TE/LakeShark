@@ -1293,49 +1293,18 @@ static tui_rect s_freq_key[12], s_freq_action[3];
 static void freq_entry_clear(void) { s_freq_entry[0] = '\0'; }
 static void freq_entry_add(char c)
 {
-    size_t n = strlen(s_freq_entry);
-    if (n + 1 >= sizeof(s_freq_entry)) return;
-    if (c >= '0' && c <= '9' && strchr(s_freq_entry, '.') &&
-        strlen(strchr(s_freq_entry, '.') + 1) >= 6) return;
-    if (c == '.') {
-        if (strchr(s_freq_entry, '.')) return;
-        if (!n) s_freq_entry[n++] = '0';
-    }
-    s_freq_entry[n] = c;
-    s_freq_entry[n + 1] = '\0';
+    ls_freq_entry_add(s_freq_entry, sizeof(s_freq_entry), c);
 }
 
 static void freq_entry_delete(void)
 {
-    size_t n = strlen(s_freq_entry);
-    if (n) s_freq_entry[n - 1] = '\0';
+    ls_freq_entry_delete(s_freq_entry);
 }
 
 /* Parse MHz as integer Hz, with at most six fractional places. */
 static bool freq_entry_hz(uint32_t *out)
 {
-    uint64_t whole = 0, frac = 0;
-    bool dot = false, digit = false;
-    unsigned places = 0;
-    for (const char *p = s_freq_entry; *p; ++p) {
-        if (*p == '.') { if (dot) return false; dot = true; continue; }
-        if (*p < '0' || *p > '9') return false;
-        digit = true;
-        if (!dot) {
-            if (whole > 1766) return false;
-            whole = whole * 10 + (unsigned)(*p - '0');
-            if (whole > 1766) return false;
-        } else {
-            if (++places > 6) return false;
-            frac = frac * 10 + (unsigned)(*p - '0');
-        }
-    }
-    if (!digit) return false;
-    while (places++ < 6) { frac *= 10; }
-    const uint64_t hz = whole * 1000000u + frac;
-    if (hz < 24000000u || hz > 1766000000u) return false;
-    *out = (uint32_t)hz;
-    return true;
+    return ls_freq_entry_hz(s_freq_entry, out);
 }
 
 static void freq_entry_tune(void)
@@ -1375,16 +1344,8 @@ static bool freq_key_char(char c)
 
 static bool freq_keyboard_touch(int col, int row)
 {
-    static const char KEY[12] = { '1','2','3','4','5','6','7','8','9','.','0','d' };
-    for (int i = 0; i < 12; ++i) {
-        if (tui_rect_contains(s_freq_key[i], col, row)) return freq_key_char(KEY[i]);
-    }
-    for (int i = 0; i < 3; ++i) {
-        if (!tui_rect_contains(s_freq_action[i], col, row)) continue;
-        if (i == 0) return freq_key_char('c');
-        if (i == 1) return freq_key_char('x');
-        freq_entry_tune(); return true;
-    }
+    const char c = ls_freq_pad_hit(s_freq_key, s_freq_action, col, row);
+    if (c) return freq_key_char(c);
     return true;
 }
 
@@ -2365,33 +2326,7 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
 static void draw_key(tui_surface *sf, tui_rect k, const char *cap, char badge,
                      uint8_t hue, bool strong)
 {
-    if (k.w < 3 || k.h < 1) return;
-    ls_fill_dither(sf, k, strong ? LS_DITHER_HEAVY : LS_DITHER_LIGHT, hue);
-    const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
-    const uint8_t face = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    if (k.h >= 3) {
-        for (int x = 0; x < k.w; ++x) {
-            tui_put_char(sf, k, k.x + x, k.y, '=', edge);
-            tui_put_char(sf, k, k.x + x, k.y + k.h - 1, '=', edge);
-        }
-    }
-    const int n = (int)strlen(cap);
-    if (n == 1 && k.h >= 5 && k.w >= 9 && ls_glyph_has(cap[0])) {
-        ls_glyph_draw(sf, k, cap[0], face);
-    } else if (n == 1 && cap[0] == '.' && k.h >= 5) {
-        /* A point the size of the point on the figures beside it. */
-        const int px = k.x + (k.w - 3) / 2, py = k.y + k.h - 3;
-        for (int yy = 0; yy < 2; ++yy)
-            for (int xx = 0; xx < 3; ++xx)
-                tui_put_char(sf, k, px + xx, py + yy, LS_TUI_SHADE_FULL, face);
-    } else {
-        const int x = k.x + (k.w - n) / 2, y = k.y + (k.h - 1) / 2;
-        if (x - 1 > k.x) tui_put_char(sf, k, x - 1, y, ' ', face);
-        if (x + n < k.x + k.w - 1) tui_put_char(sf, k, x + n, y, ' ', face);
-        tui_put_str(sf, k, x, y, cap, face);
-    }
-    if (badge && k.w >= 5)
-        tui_put_char(sf, k, k.x + 1, k.y, badge, edge);
+    ls_freq_key_draw(sf, k, cap, badge, hue, strong);
 }
 
 /* The relocated keyboard/keypad toggle: a key like any other, filled and
@@ -2409,84 +2344,8 @@ static void draw_kbd_toggle(tui_surface *sf, tui_rect r)
 
 static void draw_keypad(tui_surface *sf, tui_rect area)
 {
-    static const char *const KEY[12] = { "1", "2", "3", "4", "5", "6",
-                                         "7", "8", "9", ".", "0", "DEL" };
-    static const char BADGE[12] = { '1','2','3','4','5','6','7','8','9','.','0',0 };
-    static const char *const ACT[3] = { "CLEAR", "CANCEL", "TUNE" };
-    const uint8_t edge = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    memset(s_freq_key, 0, sizeof(s_freq_key));
-    memset(s_freq_action, 0, sizeof(s_freq_action));
-
-    tui_put_str(sf, area, area.x + 2, area.y, "FREQUENCY / MHz", edge);
-    char edit[20];
-    snprintf(edit, sizeof(edit), "%s%s", s_freq_entry,
-             ((s_blink / 8) & 1) ? "|" : "_");
-    tui_put_str(sf, area, area.x + 2, area.y + 1, "MHz", edge);
-    tui_put_str(sf, area, area.x + 6, area.y + 1, edit,
-                TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-    if (s_freq_invalid && area.w >= 32)
-        tui_put_str(sf, area, area.x + area.w - 15, area.y + 1, "INVALID RANGE",
-                    TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
-
-    const int top = area.y + 2;
-    const int avail = area.y + area.h - top;
-    if (avail < 4 || area.w < 18) return;
-
-    /* Landscape has width and no height, so the three actions stand in a
-       fourth column with TUNE across the last two rows. Portrait keeps the
-       familiar pad with the actions on a row of their own underneath. */
-    /* A key is only a key if the figure on it is the size of a fingertip,
-       and the figure wants five rows. Portrait has the height for four rows
-       of three; landscape has none and all the width in the world, so the
-       same twelve go two deep and six across with the actions beside them,
-       which keeps every digit legible instead of shrinking all of them to a
-       single letter adrift in a wide slab. */
-    const bool flat = ls_tui_is_wide() && area.w >= 72;
-    const int rows = flat ? 2 : 4;
-    const int cols = flat ? 6 : 3;
-    /* Row-major slot for each key, so '.' and '0' keep a sane order. */
-    static const int FLAT_SLOT[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 9, 11 };
-    const int act_w = flat ? area.w / 4 : 0;
-    const int grid_w = area.w - act_w;
-    const int key_h = flat ? avail / rows
-                           : (avail - (avail / 5 < 3 ? 3 : avail / 5)) / rows;
-    const int pad_h = key_h * rows;
-    if (key_h < 1) return;
-
-    for (int i = 0; i < 12; ++i) {
-        const int slot = flat ? FLAT_SLOT[i] : i;
-        const int row = slot / cols, col = slot % cols;
-        const int x0 = area.x + grid_w * col / cols;
-        const int x1 = area.x + grid_w * (col + 1) / cols;
-        tui_rect k = tui_rect_make(x0, top + row * key_h, x1 - x0 - 1, key_h);
-        s_freq_key[i] = k;
-        draw_key(sf, k, KEY[i], BADGE[i], TUI_CYAN, false);
-    }
-
-    if (flat) {
-        const int ax = area.x + grid_w;
-        const int half = act_w / 2;
-        const tui_rect act[3] = {
-            tui_rect_make(ax, top, half - 1, key_h),
-            tui_rect_make(ax + half, top, act_w - half - 1, key_h),
-            tui_rect_make(ax, top + key_h, act_w - 1, pad_h - key_h),
-        };
-        for (int i = 0; i < 3; ++i) {
-            s_freq_action[i] = act[i];
-            draw_key(sf, act[i], ACT[i], 0, i == 2 ? TUI_GREEN : TUI_CYAN, i == 2);
-        }
-        return;
-    }
-    const int act_y = top + pad_h;
-    const int act_h = area.y + area.h - act_y;
-    if (act_h < 1) return;
-    for (int i = 0; i < 3; ++i) {
-        const int x0 = area.x + area.w * i / 3;
-        const int x1 = area.x + area.w * (i + 1) / 3;
-        tui_rect k = tui_rect_make(x0, act_y, x1 - x0 - 1, act_h);
-        s_freq_action[i] = k;
-        draw_key(sf, k, ACT[i], 0, i == 2 ? TUI_GREEN : TUI_CYAN, i == 2);
-    }
+    ls_freq_pad_draw(sf, area, s_freq_entry, s_freq_invalid, s_blink,
+                     s_freq_key, s_freq_action);
 }
 
 static void draw_quick_controls(tui_surface *sf, tui_rect area)

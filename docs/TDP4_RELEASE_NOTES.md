@@ -2,8 +2,13 @@
 
 ## 2.13.1
 
+- P25 now matches the FM VFO: VFO, WATERFALL and SCANNER tabs on every view, so the way back from the waterfall is one tap.
+- P25 volume and gain are tall cards with large minus and plus keys that fill the screen down to the tabs.
+- P25 uses the same inline frequency keypad as FM, opened from a full-size KEYBOARD key in the bottom-right corner.
+- The scanner's MORE button is now BACK.
+- Scanner status and waterfall zoom use less CPU per frame.
 - FM and P25 view changes preserve active stored-channel scans; explicit tuning, mode changes and starting a sweep stop the scan. Unsupported saved channels are skipped when the selected LR2021 cannot receive them.
-- Scanner controls add filled radio-style cards, direct level-bar adjustment, separate numeric entry, larger step targets, and accessible squelch and settings. The P25 screen adds an inline frequency keypad.
+- Scanner controls add filled radio-style cards, direct level-bar adjustment, separate numeric entry, larger step targets, and accessible squelch and settings.
 - FM, P25 and sweep waterfalls share a session-local 1x/2x/4x display zoom. Waterfall updates avoid redundant FFT windows and pixel renders.
 - ASCII opening animations advance with presented frames, so they do not skip ahead or end early when rendering falls behind.
 

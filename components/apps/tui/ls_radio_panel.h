@@ -100,4 +100,19 @@ void ls_radio_card_draw(tui_surface *sf, tui_rect box, ls_radio_card_t *card);
 enum { LS_RADIO_PART_DOWN = 0, LS_RADIO_PART_UP, LS_RADIO_PART_VALUE,
        LS_RADIO_PART_BAR };
 bool ls_radio_panel_control_rect(int card, int part, int *x, int *y, int *w, int *h);
+
+/* THE FREQUENCY KEYPAD: FM's VFO keypad, shared so every receiver that tunes
+   inline draws the same keys. It replaces the caller's controls area (never a
+   popup); the caller owns the entry text and the rects handed back. */
+void ls_freq_key_draw(tui_surface *sf, tui_rect k, const char *cap, char badge,
+                      uint8_t hue, bool strong);
+void ls_freq_pad_draw(tui_surface *sf, tui_rect area, const char *entry,
+                      bool invalid, uint32_t blink, tui_rect keys[12],
+                      tui_rect actions[3]);
+/* '0'-'9' '.', 'd' delete, 'c' clear, 'x' cancel, 't' tune; 0 for a miss. */
+char ls_freq_pad_hit(const tui_rect keys[12], const tui_rect actions[3],
+                     int col, int row);
+void ls_freq_entry_add(char *entry, size_t cap, char c);
+void ls_freq_entry_delete(char *entry);
+bool ls_freq_entry_hz(const char *entry, uint32_t *out);
 #endif

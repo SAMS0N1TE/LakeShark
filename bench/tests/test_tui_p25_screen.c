@@ -672,7 +672,7 @@ LS_CASE(the_panels_above_the_table_keep_their_own_rows)
     /* One window, not two tabs: DECODE and SIGNAL are a single frame, and
        no page button carries either name any more. */
     LS_CHECK(rect_has(PORTRAIT, "DECODE / SIGNAL"));
-    LS_CHECK(rect_has(PORTRAIT, "SPECTRUM"));
+    LS_CHECK(rect_has(PORTRAIT, "WATERFALL"));
     LS_CHECK(rect_has(PORTRAIT, "ACTIVITY"));
 
     /* SYNC is the decode half's last field and AUDIO the signal half's: if
@@ -690,39 +690,41 @@ LS_CASE(the_panels_above_the_table_keep_their_own_rows)
                  "are drawn over each other", activity, rx);
 }
 
-static bool find_spectrum_tile(int *sx, int *sy)
+static bool find_word(const char *word, int *sx, int *sy)
 {
+    const int n = (int)strlen(word);
     *sx = *sy = -1;
     for (int y = PORTRAIT.y; y < PORTRAIT.y + PORTRAIT.h && y < H; y++)
-        for (int x = PORTRAIT.x; x + 8 < W && x < PORTRAIT.x + PORTRAIT.w; x++) {
-            char w[9];
-            for (int i = 0; i < 8; i++) w[i] = g_back[y * W + x + i].ch;
-            w[8] = 0;
-            if (!strcmp(w, "SPECTRUM")) { *sx = x; *sy = y; }
+        for (int x = PORTRAIT.x; x + n < W && x < PORTRAIT.x + PORTRAIT.w; x++) {
+            int i = 0;
+            while (i < n && g_back[y * W + x + i].ch == word[i]) i++;
+            if (i == n) { *sx = x; *sy = y; }
         }
     return *sx >= 0;
 }
 
-LS_CASE(spectrum_is_a_toggle_tile_on_the_merged_screen)
+LS_CASE(the_views_are_tabs_and_vfo_is_the_way_back)
 {
-    /* The SIGNAL tab is gone; the spectrum is reached by the SPECTRUM tile
-       and left by the same tile. */
+    /* VFO, WATERFALL and SCANNER are tabs on every view: the way back from
+       the waterfall is the tab that says VFO, not a toggle pressed twice. */
     show_decode_page();
     no_traffic();
     draw_decode_now(PORTRAIT);
     int sx, sy;
-    LS_CHECK_MSG(find_spectrum_tile(&sx, &sy), "no SPECTRUM tile on the merged screen");
+    LS_CHECK_MSG(find_word("WATERFALL", &sx, &sy), "no WATERFALL tab on the VFO view");
     if (sx < 0) return;
     LS_CHECK(ls_scr_p25.touch(sx + 2, sy));
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
     LS_CHECK_MSG(!rect_has(PORTRAIT, "DECODE / SIGNAL"),
-                 "SPECTRUM did not leave the merged window");
-    LS_CHECK_MSG(find_spectrum_tile(&sx, &sy), "no SPECTRUM tile on the spectrum page");
+                 "WATERFALL did not leave the VFO view");
+    LS_CHECK_MSG(find_word("VFO", &sx, &sy), "no VFO tab on the waterfall");
+    LS_CHECK_MSG(find_word("SCANNER", &sx, &sy), "no SCANNER tab on the waterfall");
+    LS_CHECK(find_word("VFO", &sx, &sy));
     if (sx < 0) return;
-    LS_CHECK(ls_scr_p25.touch(sx + 2, sy));
+    LS_CHECK(ls_scr_p25.touch(sx + 1, sy));
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
     LS_CHECK_MSG(rect_has(PORTRAIT, "DECODE / SIGNAL"),
-                 "SPECTRUM again did not come back to the merged window");
+                 "the VFO tab did not come back to the VFO view");
 }
 
 LS_CASE(landscape_gets_the_table_too)
@@ -790,7 +792,8 @@ LS_CASE(the_merged_decode_page_has_the_large_dial_and_receive_history)
     LS_CHECK(rect_has(PORTRAIT, "SCAN"));
 
     int blocks = 0;
-    for (int y = PORTRAIT.y; y < PORTRAIT.y + 8; ++y)
+    /* Under the control row, as FM's VFO puts its own. */
+    for (int y = PORTRAIT.y; y < PORTRAIT.y + 14; ++y)
         for (int x = PORTRAIT.x; x < PORTRAIT.x + PORTRAIT.w; ++x)
             if (g_back[y * W + x].ch == LS_TUI_BLOCK_FULL) blocks++;
     LS_CHECK_MSG(blocks >= 20, "merged decode dial used only %d large blocks", blocks);
@@ -807,11 +810,8 @@ LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
     LS_CHECK(rect_has(large_font, "P25 / RECEIVER"));
     LS_CHECK(rect_has(large_font, "ACTIVITY"));
     LS_CHECK(rect_has(large_font, "2468"));
-    LS_CHECK(rect_has(large_font, "TUNE"));
-    LS_CHECK(rect_has(large_font, "VOL-"));
-    LS_CHECK(rect_has(large_font, "VOL+"));
-    LS_CHECK(rect_has(large_font, "GAIN-"));
-    LS_CHECK(rect_has(large_font, "GAIN+"));
+    LS_CHECK(rect_has(large_font, "VOLUME"));
+    LS_CHECK(rect_has(large_font, "GAIN"));
     LS_CHECK(escaped(large_font) == 0);
 }
 
@@ -821,6 +821,12 @@ LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
    pressed, and a bracketed number that is the only way to the keypad. Both
    drive the real actions - nothing here is decoration. */
 extern bool ls_scr_p25_control_rect(int card, int part, int *x, int *y, int *w, int *h);
+extern bool ls_scr_p25_pad_rect(char c, int *x, int *y);
+static bool press_pad(char c)
+{
+    int x, y;
+    return ls_scr_p25_pad_rect(c, &x, &y) && ls_scr_p25.touch(x, y);
+}
 
 static long s_deck_vol = -1;
 static ls_act_status_t a_deck_volume(const ls_args_t *in, ls_val_t *out)
@@ -950,8 +956,7 @@ LS_CASE(the_frequency_keyboard_takes_the_decks_place_and_tunes)
     s_tuned_mhz = -1;
     const char *digits = "851.3";
     for (const char *p = digits; *p; ++p) {
-        char cap[2] = { *p, 0 };
-        LS_CHECK_MSG(press_text(DECK, cap), "no key for '%c'", *p);
+        LS_CHECK_MSG(press_pad(*p), "no key for '%c'", *p);
         redraw(PORTRAIT);
     }
     LS_CHECK_MSG(rect_has(PORTRAIT, "851.3"), "the keyboard did not show what was typed");
@@ -967,14 +972,13 @@ LS_CASE(the_frequency_keyboard_takes_the_decks_place_and_tunes)
     redraw(PORTRAIT);
     s_tuned_mhz = -1;
     for (const char *p = "9999"; *p; ++p) {
-        char cap[2] = { *p, 0 };
-        LS_CHECK(press_text(DECK, cap));
+        LS_CHECK(press_pad(*p));
         redraw(PORTRAIT);
     }
     LS_CHECK(press_text(DECK, "TUNE"));
     LS_EQ_INT((int)s_tuned_mhz, -1);
     redraw(PORTRAIT);
-    LS_CHECK_MSG(rect_has(PORTRAIT, "OUT OF RANGE"), "a bad frequency was taken quietly");
+    LS_CHECK_MSG(rect_has(PORTRAIT, "INVALID RANGE"), "a bad frequency was taken quietly");
 
     /* CANCEL puts the controls back and keeps the carrier where it was. */
     LS_CHECK(press_text(DECK, "CANCEL"));
@@ -1018,9 +1022,8 @@ LS_CASE(on_the_lr2021_the_gain_keys_choose_auto_or_max)
     s_fake_lrgain = 0;
     P25.lora_rx = true;
     draw_decode_now(large_font);
-    LS_CHECK_MSG(rect_has(large_font, "AUTO") && rect_has(large_font, "MAX"),
-                 "the LR2021 gain choice is not where the gain keys were");
-    LS_CHECK(!rect_has(large_font, "GAIN-"));
+    LS_CHECK_MSG(rect_has(large_font, "[AUTO]"),
+                 "the LR2021 gain card does not read AUTO at step 0");
 
     ls_scr_p25.key(LS_TK_CHAR, 'u');
     LS_EQ_INT((int)s_fake_lrgain, 13);
@@ -1032,7 +1035,7 @@ LS_CASE(on_the_lr2021_the_gain_keys_choose_auto_or_max)
 
     P25.lora_rx = false;
     draw_decode_now(large_font);
-    LS_CHECK(rect_has(large_font, "GAIN-") && rect_has(large_font, "GAIN+"));
+    LS_CHECK(rect_has(large_font, "GAIN"));
 }
 
 LS_CASE(the_scanner_workflow_remains_reachable_from_the_merged_screen)
@@ -1249,7 +1252,7 @@ LS_CASE(spectrum_keyboard_toggle_and_page_exits_release_source)
     ls_scr_p25.key(LS_TK_CHAR, '1');
     ls_scr_p25.key(LS_TK_CHAR, '2');
     int releases = ls_test_wf_releases;
-    ls_scr_p25.key(LS_TK_CHAR, '2');
+    ls_scr_p25.key(LS_TK_CHAR, '1');
     LS_EQ_INT(ls_test_wf_releases, releases + 1);
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
     LS_CHECK(rect_has(PORTRAIT, "DECODE / SIGNAL"));

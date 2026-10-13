@@ -828,41 +828,28 @@ static void enter(void)
     ls_rsel_track(LS_RSEL_P25, p25_in_use);
 }
 
-/* DECODE and SIGNAL are one window now (page 0). The spectrum is a toggle on
-   top of it, not a sibling tab: SPECTRUM turns it on, and again to return. */
-enum { PB_SPECTRUM, PB_SCAN, PB_SETTINGS, PB_CALLS, PB_DMR };
-static const ls_btn_t PAGES[] = {
-    { "SPECTRUM", "OFF", '2', false, false },
-    { "SCAN", NULL, '3', false, false },
-    { "SETTINGS", NULL, '4', false, false },
-    { "CALLS", NULL, '5', false, false },
-    { "DMR", NULL, '6', false, false },
+/* VFO, WATERFALL and SCANNER are views of one receiver, carried as tabs the
+   way FM carries its own: at the bottom of portrait, under the thumb, and on
+   every view, so the way back from the waterfall is the tab that says VFO
+   rather than a toggle that has to be pressed again. */
+enum { PV_VFO, PV_WATERFALL, PV_SCANNER, N_VIEWS };
+static const ls_btn_t VIEWS[N_VIEWS] = {
+    { "VFO", NULL, '1', false, false },
+    { "WATERFALL", NULL, '2', false, false },
+    { "SCANNER", NULL, '3', false, false },
 };
-#define N_PAGES ((int)(sizeof(PAGES) / sizeof(PAGES[0])))
+/* Everything else P25 is told, on FM's control row. */
+enum { PC_CALLS, PC_DMR, PC_RADIO, PC_OPTIONS, N_CTLS };
 
 static void set_page(int page)
 {
-    if (page != 1) ls_wf_source_release();
+    if (page != PV_WATERFALL) ls_wf_source_release();
     s_page = page;
 }
 
-/* A page button's action. */
-static void page_button(int i)
-{
-    switch (i) {
-    case PB_SPECTRUM:
-        set_page(s_page == 1 ? 0 : 1);
-        break;
-    case PB_SCAN: set_page(2); break;
-    case PB_SETTINGS: open_options(); break;
-    case PB_CALLS: ls_calls_open("P25"); ls_wf_source_release(); break;
-    case PB_DMR: set_page(5); break;
-    }
-}
-
-static tui_rect s_bar;
-static tui_rect s_quick_rect;
-static bool s_quick_compact;
+static tui_rect s_bar;          /* the view tabs                         */
+static tui_rect s_ctl_rect;     /* CALLS DMR RADIO OPTIONS, portrait     */
+static tui_rect s_quick_rect;   /* the deck, or the keypad in its place  */
 
 /* The controls a thumb reaches for while watching a decode.
 
@@ -883,18 +870,6 @@ static const ls_quick_t QUICK[] = {
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
-/* The large face has only 46 rows.  The full pictorial sliders use 21 of
-   them, hiding ACTIVITY on the very screen where the history matters.  Keep
-   every action as a compact decode-style button when rows are scarce. */
-static const ls_btn_t COMPACT_QUICK[] = {
-    { "TUNE",  NULL, 't', false, false },
-    { "VOL-",  NULL, '-', false, false },
-    { "VOL+",  NULL, '+', false, false },
-    { "GAIN-", NULL, 'j', false, false },
-    { "GAIN+", NULL, 'u', false, false },
-};
-#define N_COMPACT_QUICK ((int)(sizeof(COMPACT_QUICK) / sizeof(COMPACT_QUICK[0])))
-
 /* On the LR2021 the gain keys choose the chip's gain instead: its AGC, or
    held at the most, which a weak site wants and a strong one does not. */
 static const ls_quick_t QUICK_LR[] = {
@@ -908,14 +883,6 @@ static const ls_quick_t QUICK_LR[] = {
       .lo_text = "AUTO", .hi_text = "MAX", .key = 'u', .key_down = 'j' },
 };
 _Static_assert(sizeof(QUICK_LR) / sizeof(QUICK_LR[0]) == N_QUICK, "one row each");
-
-static ls_btn_t s_compact_lr[] = {
-    { "TUNE", NULL, 't', false, false },
-    { "VOL-", NULL, '-', false, false },
-    { "VOL+", NULL, '+', false, false },
-    { "AUTO", NULL, 'j', false, false },
-    { "MAX",  NULL, 'u', false, false },
-};
 
 static bool lr_receiver(void) { return P25.lora_rx; }
 static const ls_quick_t *quick(void) { return lr_receiver() ? QUICK_LR : QUICK; }
@@ -1013,15 +980,23 @@ static void deck_draw(tui_surface *sf, tui_rect area)
     if (area.h < 5 || area.w < 20) return;
     if (s_deck_flash_ttl > 0 && --s_deck_flash_ttl == 0) s_deck_flash = -1;
     deck_fill();
+    /* FM's step cards: stacked and as tall as the pane allows, up to the nine
+       rows that give the keys a thumb's height, centred so nothing is left
+       hanging under them. Landscape puts the two side by side. */
     const int cols = area.w >= 56 ? 2 : 1;
     const int rows = (P25_N_CARD + cols - 1) / cols;
-    const int card_h = area.h >= rows * 7 - 1 ? 6 : 5;
-    if (area.h < rows * card_h + (rows - 1)) return;
-    const int cw = area.w / cols;
+    int card_h = (area.h - (rows - 1)) / rows;
+    if (card_h > 9) card_h = 9;
+    if (card_h < 5) return;
+    const int group_h = rows * card_h + (rows - 1);
+    const int y0 = area.y + (area.h - group_h) / 2;
+    const int x0 = cols > 1 ? area.x : area.x + 1;
+    const int w0 = cols > 1 ? area.w : area.w - 2;
+    const int cw = w0 / cols;
     for (int i = 0; i < P25_N_CARD; i++) {
-        const tui_rect box = tui_rect_make(area.x + (i % cols) * cw,
-                                           area.y + (i / cols) * (card_h + 1),
-                                           cols > 1 ? cw - 1 : area.w, card_h);
+        const tui_rect box = tui_rect_make(x0 + (i % cols) * cw,
+                                           y0 + (i / cols) * (card_h + 1),
+                                           cols > 1 ? cw - 1 : w0, card_h);
         ls_radio_card_draw(sf, box, &s_deck[i]);
         s_deck_n = i + 1;
     }
@@ -1031,51 +1006,21 @@ static void deck_draw(tui_surface *sf, tui_rect area)
 
 /* TYPING A FREQUENCY HAPPENS WHERE THE CONTROLS ARE, NOT OVER THEM.
 
-   p25.tune opens the house keypad as a window over the screen. That is fine
-   from a console and wrong under a thumb: the decode you are tuning away from
-   disappears behind it. The keyboard here takes the deck's place instead, the
-   way the VFO's does, and the toggle that swaps them sits in the bottom right
-   corner in its own colour so the two views are one press apart.
-
-   Fixed storage: fifteen key rects and sixteen bytes of digits. Drawing or
-   editing it allocates nothing. */
+   The keypad is FM's own (ls_freq_pad_draw), taking the deck's place the way
+   the VFO's does, with the KEYBOARD / CONTROLS toggle in the bottom right
+   corner. Fixed storage: drawing or editing it allocates nothing. */
 static bool s_keypad;
 static bool s_entry_bad;
 static char s_entry[16];
-#define P25_KEYS 15
-static tui_rect s_key[P25_KEYS];
-static tui_rect s_toggle;
+static tui_rect s_key[12], s_key_act[3];
+static tui_rect s_kbd_btn;
 
 static void entry_clear(void) { s_entry[0] = 0; s_entry_bad = false; }
 
-static void entry_add(char c)
+static void keypad_set(bool on)
 {
-    const size_t n = strlen(s_entry);
-    if (n + 1 >= sizeof(s_entry)) return;
-    if (c == '.' && strchr(s_entry, '.')) return;
-    /* Four places after the point is the raster the radio tunes on. */
-    const char *dot = strchr(s_entry, '.');
-    if (dot && c != '.' && strlen(dot) > 4) return;
-    s_entry[n] = c;
-    s_entry[n + 1] = 0;
-    s_entry_bad = false;
-}
-
-static void entry_del(void)
-{
-    const size_t n = strlen(s_entry);
-    if (n) s_entry[n - 1] = 0;
-    s_entry_bad = false;
-}
-
-/* MHz as typed, in Hz, or false when it is not a frequency this radio has. */
-static bool entry_hz(uint32_t *out)
-{
-    if (!s_entry[0]) return false;
-    const double mhz = atof(s_entry);
-    if (!(mhz >= 24.0 && mhz <= 1766.0)) return false;
-    *out = (uint32_t)(mhz * 1e6 + 0.5);
-    return true;
+    s_keypad = on;
+    entry_clear();
 }
 
 /* Typing a frequency is an operator retune: it ends a stored-channel scan,
@@ -1083,7 +1028,7 @@ static bool entry_hz(uint32_t *out)
 static void entry_tune(void)
 {
     uint32_t hz;
-    if (!entry_hz(&hz)) { s_entry_bad = true; return; }
+    if (!ls_freq_entry_hz(s_entry, &hz)) { s_entry_bad = true; return; }
     scan_engine_stop();
     ls_args_t a = {.n = 1};
     ls_val_t out;
@@ -1093,93 +1038,30 @@ static void entry_tune(void)
         s_entry_bad = true;
         return;
     }
-    entry_clear();
-    s_keypad = false;
+    keypad_set(false);
 }
 
-static bool entry_key_char(char c)
+/* One character from the pad or the keyboard, in ls_freq_pad_hit's terms. */
+static bool entry_char(char c)
 {
-    if ((c >= '0' && c <= '9') || c == '.') { entry_add(c); return true; }
-    return false;
-}
-
-/* A key: the dithered field every button on this firmware has, ruled top and
-   bottom, with its cap in the middle. */
-static void key_draw(tui_surface *sf, tui_rect k, const char *cap, uint8_t hue,
-                     bool strong)
-{
-    if (k.w < 3 || k.h < 1) return;
-    /* A key with no surface is not a key: the digits carry the same field the
-       verbs do, one step lighter so the three that act stand out. */
-    ls_fill_dither(sf, k, strong ? LS_DITHER_HEAVY : LS_DITHER_MEDIUM, hue);
-    const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
-    if (k.h >= 3)
-        for (int x = 0; x < k.w; ++x) {
-            tui_put_char(sf, k, k.x + x, k.y, '=', edge);
-            tui_put_char(sf, k, k.x + x, k.y + k.h - 1, '=', edge);
-        }
-    const int n = (int)strlen(cap);
-    const int x = k.x + (k.w - n) / 2, y = k.y + (k.h - 1) / 2;
-    tui_put_str(sf, k, x, y, cap, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-}
-
-/* The toggle, bottom right, in a colour nothing else on the page wears, so
-   the way back to the controls is never hunted for. */
-static void toggle_draw(tui_surface *sf, tui_rect strip)
-{
-    const int w = strip.w >= 12 ? 11 : strip.w;
-    s_toggle = tui_rect_make(strip.x + strip.w - w, strip.y, w, strip.h);
-    key_draw(sf, s_toggle, s_keypad ? "CONTROLS" : "KEYBOARD", TUI_YELLOW, true);
-}
-
-static void keypad_draw(tui_surface *sf, tui_rect area)
-{
-    static const char *const CAP[P25_KEYS] = { "1", "2", "3", "4", "5", "6",
-                                               "7", "8", "9", ".", "0", "DEL",
-                                               "CLEAR", "CANCEL", "TUNE" };
-    memset(s_key, 0, sizeof(s_key));
-    const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    char line[40];
-    snprintf(line, sizeof(line), "FREQUENCY  %s%s", s_entry[0] ? s_entry : "___.____",
-             s_entry_bad ? "  OUT OF RANGE" : " MHz");
-    tui_put_str(sf, area, area.x + 1, area.y, line,
-                s_entry_bad ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : lab);
-
-    tui_rect grid = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
-    if (grid.h < 2 || grid.w < 16) return;
-    /* Every key fits or none do: a row of keys the pane cut off is a row of
-       controls that cannot be pressed, and CLEAR, CANCEL and TUNE live on the
-       last one. */
-    const int cols = grid.w >= 56 ? 8 : 4;
-    const int rows = (P25_KEYS + cols - 1) / cols;
-    int kh = grid.h / rows;
-    if (kh < 1) return;
-    if (kh > 4) kh = 4;
-    const int kw = grid.w / cols;
-    for (int i = 0; i < P25_KEYS; ++i) {
-        const int cx = grid.x + (i % cols) * kw;
-        const int cy = grid.y + (i / cols) * kh;
-        s_key[i] = tui_rect_make(cx, cy, kw - 1, kh - (kh >= 3 ? 1 : 0));
-        /* The three verbs wear the colour of what they do. */
-        const uint8_t hue = i == 14 ? TUI_GREEN : i >= 12 ? TUI_RED : TUI_CYAN;
-        key_draw(sf, s_key[i], CAP[i], hue, i >= 12);
-    }
-}
-
-static bool keypad_touch(int col, int row)
-{
-    for (int i = 0; i < P25_KEYS; ++i) {
-        if (s_key[i].h <= 0 || !tui_rect_contains(s_key[i], col, row)) continue;
-        if (i < 9) entry_add((char)('1' + i));
-        else if (i == 9) entry_add('.');
-        else if (i == 10) entry_add('0');
-        else if (i == 11) entry_del();
-        else if (i == 12) entry_clear();
-        else if (i == 13) { entry_clear(); s_keypad = false; }
-        else entry_tune();
+    if ((c >= '0' && c <= '9') || c == '.') {
+        ls_freq_entry_add(s_entry, sizeof(s_entry), c);
+        s_entry_bad = false;
         return true;
     }
+    if (c == 'd') { ls_freq_entry_delete(s_entry); s_entry_bad = false; return true; }
+    if (c == 'c') { entry_clear(); return true; }
+    if (c == 'x') { keypad_set(false); return true; }
+    if (c == 't') { entry_tune(); return true; }
     return false;
+}
+
+static void kbd_toggle_draw(tui_surface *sf, tui_rect r)
+{
+    if (r.w < 4 || r.h < 1) { s_kbd_btn = tui_rect_make(0, -1, 0, 0); return; }
+    s_kbd_btn = r;
+    const char *label = s_keypad ? "CONTROLS" : r.w >= 10 ? "KEYBOARD" : "KEYPAD";
+    ls_freq_key_draw(sf, r, label, 0, s_keypad ? TUI_GREEN : TUI_MAGENTA, s_keypad);
 }
 
 /* Where the deck's controls landed, so a test presses the real thing instead
@@ -1199,6 +1081,22 @@ bool ls_scr_p25_control_rect(int card, int part, int *x, int *y, int *w, int *h)
     if (w) *w = r.w;
     if (h) *h = r.h;
     return true;
+}
+
+/* Where the keypad's key for `c` landed ('d' DEL, 'c' CLEAR, 'x' CANCEL,
+   't' TUNE), for a test to press it as a thumb would. */
+bool ls_scr_p25_pad_rect(char c, int *x, int *y)
+{
+    static const char KEY[15] = "123456789.0dcxt";
+    for (int i = 0; i < 15; i++) {
+        if (KEY[i] != c) continue;
+        const tui_rect r = i < 12 ? s_key[i] : s_key_act[i - 12];
+        if (r.h <= 0 || r.w <= 0) return false;
+        if (x) *x = r.x + r.w / 2;
+        if (y) *y = r.y + r.h / 2;
+        return true;
+    }
+    return false;
 }
 
 /* One write per tap, in the control's own range, and the travel never types. */
@@ -1241,15 +1139,6 @@ static bool deck_touch(int col, int row)
         return true;
     }
     return false;
-}
-
-static const ls_btn_t *compact_quick(void)
-{
-    if (!lr_receiver()) return COMPACT_QUICK;
-    const char *g = ls_quick_state(&QUICK_LR[2]);
-    s_compact_lr[3].on = g && !strcmp(g, "AUTO");
-    s_compact_lr[4].on = g && !strcmp(g, "MAX");
-    return s_compact_lr;
 }
 
 static void radio_view(void)
@@ -1305,133 +1194,117 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_dmr(sf, area);
         return;
     }
-    snprintf(s_hint,sizeof(s_hint),"%s",s_page==1 ? "LEFT/RIGHT select  SPACE tune  1 back  R radio  O options" : "LEFT/RIGHT tune  2 spectrum  3 scan  +/- volume  R radio  O options");
+    snprintf(s_hint, sizeof(s_hint), "%s",
+             s_keypad && s_page == PV_VFO ? "0-9 . type  ENTER tune  BACKSPACE delete  ESC controls"
+             : s_page == PV_WATERFALL ? "LEFT/RIGHT select  SPACE tune  1 VFO  3 scanner  R radio"
+             : "LEFT/RIGHT tune  T keyboard  1/2/3 views  +/- volume  R radio  O options");
     s_blink++;
     const bool wide = ls_tui_is_wide();
-    /* Three rows in portrait, not two. */
 
-    /* Portrait takes the six as two rows of three: one row of six leaves a
-       button five letters, and DECODE, SIGNAL and OPTIONS lose theirs. */
-    /* Landscape: a four-row thumb row unless a keyboard is attached and every
-       label fits the three-row form. Portrait: two rows of full tiles, label
-       over value, as FM draws them. */
-    int bar_h;
-    if (wide) {
-        const tui_rect probe = tui_rect_make(area.x, area.y, area.w, 3);
-        ls_btn_t pb[N_PAGES + 2];
-        for (int i = 0; i < N_PAGES; i++) pb[i] = PAGES[i];
-        pb[N_PAGES] = ls_rsel_button(LS_RSEL_P25);
-        pb[N_PAGES + 1] = ls_opt_button(&CTX_P25);
-        const bool fits = ls_btn_compact_fits(probe, pb, N_PAGES + 2);
-        bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 ? 3 : 4;
-    } else {
-        /* The spectrum and the scanner carry controls of their own and want
-           the rows, so their tiles are a size down. */
-        int tile = area.h >= 62 ? 6 : area.h >= 50 ? 5 : 4;
-        if (s_page != 0 && tile > 4) tile = 4;
-        bar_h = 2 * tile;
+    ls_btn_t ctl[N_CTLS] = {
+        { "CALLS", NULL, '5', false, false },
+        { "DMR",   NULL, '6', false, false },
+        ls_rsel_button(LS_RSEL_P25),
+        ls_opt_button(&CTX_P25),
+    };
+    ls_btn_t tabs[N_VIEWS + N_CTLS];
+    for (int i = 0; i < N_VIEWS; i++) {
+        tabs[i] = VIEWS[i];
+        tabs[i].on = s_page == i;
     }
+    if (!(s_page == PV_VFO)) s_keypad = false;
 
+    s_ctl_rect = s_quick_rect = s_kbd_btn = tui_rect_make(0, -1, 0, 0);
     tui_rect body;
-    s_quick_compact = !wide && area.h < 55 && s_page == 0;
+    int ntabs = N_VIEWS;
     if (wide) {
-        /* LANDSCAPE HAS THE CONTROLS TOO. */
-
-        /* Five rows buys the deck: two cards side by side, which is the same
-           control a thumb learns on the scanner. Narrower or shorter than
-           that and the quick row stays what it was. */
-        const int plain = ls_quick_rows(quick(), N_QUICK, area.w, true);
-        /* Only the decode page buys the deck its rows: the spectrum needs
-           every row it has for history, and taking two for a second set of
-           controls is how a waterfall ends up with nothing to show. */
-        const int want = (area.w >= 56 && area.h >= 24 && s_page == 0) ? 5 : plain;
-        const int ctl_h = (area.h > want + 8) ? want : 0;
+        /* LANDSCAPE: one bar along the top, views first, as FM's is. The
+           deck is the bottom of the screen, and the keyboard toggle comes
+           out of its right end. */
+        for (int i = 0; i < N_CTLS; i++) tabs[N_VIEWS + i] = ctl[i];
+        ntabs = N_VIEWS + N_CTLS;
+        const tui_rect probe = tui_rect_make(area.x, area.y, area.w, 3);
+        const bool fits = ls_btn_compact_fits(probe, tabs, ntabs);
+        const int bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 ? 3 : 4;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
-        s_quick_rect = ctl_h
-            ? tui_rect_make(area.x, area.y + area.h - ctl_h, area.w, ctl_h)
-            : tui_rect_make(0, -1, 0, 0);
-        body = tui_rect_make(area.x, area.y + bar_h, area.w,
-                             area.h - bar_h - ctl_h);
+        body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
+        if (s_page == PV_VFO && area.w >= 56) {
+            int deck_h = s_keypad ? body.h - 8 : 5;
+            if (body.h - deck_h < 8) deck_h = 0;
+            if (deck_h >= 5) {
+                s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
+                                             body.w, deck_h);
+                body.h -= deck_h;
+                int kw = s_quick_rect.w / 8;
+                if (kw < 10) kw = 10;
+                if (kw > 14) kw = 14;
+                s_kbd_btn = tui_rect_make(s_quick_rect.x + s_quick_rect.w - kw,
+                                          s_quick_rect.y, kw, s_quick_rect.h);
+                s_quick_rect.w -= kw + 1;
+            }
+        }
     } else {
-        /* Page bar above the settings. Choosing a page and changing a
-           setting are different kinds of thing, and the page bar was under
-           the settings where it read as one more of them. */
-        const int want = s_quick_compact ? 5
-            : (s_page == 0 ? ls_quick_rows(quick(), N_QUICK, area.w, false) : 0);
-        const int ctl_h = (area.h > want + 12) ? want : 0;
-        s_quick_rect = ctl_h
-            ? tui_rect_make(area.x, area.y + area.h - ctl_h, area.w, ctl_h)
-            : tui_rect_make(0, -1, 0, 0);
-        /* The blank row goes ABOVE the page bar.
-
-           The arithmetic reserved one and then put the bar directly under
-           the page content, so the row of air ended up between the bar and
-           the quick controls - where nothing needed separating - and the
-           page's bottom border sat flush on the buttons. */
-        const int used = bar_h + 1 + ctl_h;
-        body = tui_rect_make(area.x, area.y, area.w, area.h - used);
-        s_bar = tui_rect_make(area.x, body.y + body.h + 1, area.w, bar_h);
+        /* PORTRAIT, laid out as FM's VFO: the control row on top, the
+           receiver's glass, the deck of tall cards under it, and the view
+           tabs at the very bottom with KEYBOARD in the corner. The scanner
+           draws its own control row, so it is not given a second. */
+        const int tabs_h = 5;
+        const int ctl_h = s_page == PV_SCANNER ? 0 : area.h >= 55 ? 5 : 4;
+        if (ctl_h) s_ctl_rect = tui_rect_make(area.x, area.y, area.w, ctl_h);
+        s_bar = tui_rect_make(area.x, area.y + area.h - tabs_h, area.w, tabs_h);
+        body = tui_rect_make(area.x, area.y + ctl_h, area.w,
+                             area.h - ctl_h - tabs_h);
+        if (s_page == PV_VFO) {
+            /* Two cards of nine rows and the row between them. The decode
+               keeps the rest; the keypad takes all but FM's fourteen. */
+            int deck_h = s_keypad ? body.h - (body.h >= 40 ? 14 : 12) : 19;
+            if (!s_keypad && body.h - deck_h < 21) deck_h = body.h - 21;
+            if (deck_h >= 11) {
+                s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
+                                             body.w, deck_h);
+                body.h -= deck_h;
+            }
+            int kw = s_bar.w / 5;
+            if (kw < 10) kw = 10;
+            if (kw > 14) kw = 14;
+            if (s_quick_rect.h > 0 && s_bar.w - kw >= 24) {
+                s_bar.w -= kw;
+                s_kbd_btn = tui_rect_make(s_bar.x + s_bar.w, s_bar.y, kw, tabs_h);
+            }
+        }
     }
-
-    /* The pages, then RADIO and OPTIONS: the same controls every app
-       carries, on the bar a thumb already reaches. */
-    ls_btn_t b[N_PAGES + 2];
-    for (int i = 0; i < N_PAGES; i++) b[i] = PAGES[i];
-    b[PB_SPECTRUM].on = s_page == 1;
-    b[PB_SPECTRUM].value = s_page == 1 ? "ON" : "OFF";
-    b[PB_SCAN].on = s_page == 2;
-    b[N_PAGES] = ls_rsel_button(LS_RSEL_P25);
-    b[N_PAGES + 1] = ls_opt_button(&CTX_P25);
-    ls_btn_bar_raised_slot(sf, s_bar, b, N_PAGES + 2, -1, LS_BTN_SLOT_QUICK);
+    if (s_quick_rect.h <= 0) s_keypad = false;
 
     if (body.h > 0) {
-        if (s_page == 1) draw_signal(sf, body);
-        else if (s_page == 2) {
+        if (s_page == PV_WATERFALL) draw_signal(sf, body);
+        else if (s_page == PV_SCANNER) {
             radio_view();
             ls_radio_panel_draw(&s_radio, &s_view, sf, body);
         } else draw_decode(sf, body);
     }
 
-    /* The deck, which is what the quick row became: the same cards the
-       scanner carries, on the page a thumb watches a decode from. The
-       scanner page keeps its own deck inside the panel, so this one stands
-       down there rather than offering the volume twice. */
-    /* The deck and the keyboard belong to the decode page. The spectrum needs
-       its rows for history and the scanner has a deck of its own, so neither
-       is given a second set of controls. */
-    if (s_quick_rect.h > 0 && s_page == 0) {
-        s_deck_n = 0;
-        s_toggle = tui_rect_make(0, -1, 0, 0);
-        /* One strip at the bottom for the toggle, so KEYBOARD and CONTROLS
-           are the same press in the same corner whichever is showing. */
-        tui_rect pane = s_quick_rect;
-        const int strip_h = pane.h >= 12 ? 2 : 1;
-        tui_rect strip = tui_rect_make(pane.x, pane.y + pane.h - strip_h,
-                                       pane.w, strip_h);
-        pane.h -= strip_h;
-        if (s_keypad) keypad_draw(sf, pane);
+    /* The deck and the keyboard belong to the VFO view. The waterfall needs
+       its rows for history and the scanner has a deck of its own. */
+    s_deck_n = 0;
+    memset(s_key, 0, sizeof(s_key));
+    memset(s_key_act, 0, sizeof(s_key_act));
+    if (s_quick_rect.h > 0) {
+        if (s_keypad)
+            ls_freq_pad_draw(sf, s_quick_rect, s_entry, s_entry_bad, s_blink,
+                             s_key, s_key_act);
         else {
-            deck_draw(sf, pane);
-            if (!s_deck_n) {
-                if (s_quick_compact)
-                    ls_btn_bar(sf, pane, compact_quick(), N_COMPACT_QUICK, -1);
-                else
-                    ls_quick_draw_posture(sf, pane, wide, quick(), N_QUICK);
-            }
-        }
-        toggle_draw(sf, strip);
-    } else {
-        s_deck_n = 0;
-        s_keypad = false;
-        s_toggle = tui_rect_make(0, -1, 0, 0);
-        memset(s_key, 0, sizeof(s_key));
-        if (s_quick_rect.h > 0 && s_page != 2) {
-            if (s_quick_compact)
-                ls_btn_bar(sf, s_quick_rect, compact_quick(), N_COMPACT_QUICK, -1);
-            else
-                ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
+            deck_draw(sf, s_quick_rect);
+            if (!s_deck_n) ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
         }
     }
+
+    /* Bars after the panes, so each keeps its own hit slot: the scanner
+       panel clears every slot when it is too small to draw. */
+    if (s_ctl_rect.h > 0)
+        ls_btn_bar_raised_slot(sf, s_ctl_rect, ctl, N_CTLS, -1, LS_BTN_SLOT_SCREEN);
+    if (wide) ls_btn_bar_raised_slot(sf, s_bar, tabs, ntabs, -1, LS_BTN_SLOT_QUICK);
+    else ls_btn_bar_slot(sf, s_bar, tabs, ntabs, -1, LS_BTN_SLOT_QUICK);
+    if (s_kbd_btn.h > 0) kbd_toggle_draw(sf, s_kbd_btn);
 }
 
 /* The feed follows the page, and leaving the app releases it whichever page
@@ -1448,11 +1321,12 @@ static bool key(ls_tk_t k, char ch)
        to tune and ESC to put the controls back. This is the rule the VFO's
        inline keypad follows, and it has to be checked before anything else
        claims a number. */
-    if (s_keypad && s_page != 2) {
-        if (k == LS_TK_ESC) { entry_clear(); s_keypad = false; return true; }
+    if (s_keypad && s_page == PV_VFO) {
+        if (k == LS_TK_ESC) { keypad_set(false); return true; }
         if (k == LS_TK_ENTER) { entry_tune(); return true; }
-        if (k == LS_TK_BACKSPACE) { entry_del(); return true; }
-        if (k == LS_TK_CHAR && entry_key_char(ch)) return true;
+        if (k == LS_TK_BACKSPACE) return entry_char('d');
+        if (k == LS_TK_CHAR && ((ch >= '0' && ch <= '9') || ch == '.'))
+            return entry_char(ch);
     }
     if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("P25"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
@@ -1477,11 +1351,7 @@ static bool key(ls_tk_t k, char ch)
     /* O is OPTIONS on the same terms: inside the lists it is SCAN TYPE. */
     if(k==LS_TK_CHAR && !(s_page==2 && (s_radio.lists || s_radio.scan_choice)) && (ch=='o'||ch=='O')) {open_options();return true;}
     if(k==LS_TK_CHAR && (ch=='4'||((ch=='p'||ch=='P')&&s_page!=1))) {open_options();return true;}
-    if(k==LS_TK_CHAR && ch>='1'&&ch<='3') {
-        if (ch == '2') page_button(PB_SPECTRUM);
-        else set_page(ch - '1');
-        return true;
-    }
+    if(k==LS_TK_CHAR && ch>='1'&&ch<='3') { set_page(ch - '1'); return true; }
     /* 'l' for load. The profile chooser gets no quick-bar slot on purpose:
        every control there costs rows the waterfall and the activity table
        need, and choosing a profile is not what a thumb does while watching a
@@ -1495,10 +1365,9 @@ static bool key(ls_tk_t k, char ch)
     /* T is still TUNE, and on a page that has room for it that now means the
        keyboard in place of the controls rather than a window over the decode.
        The scanner page keeps the house keypad, which is what it always had. */
-    if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') && s_page != 2 &&
+    if (k == LS_TK_CHAR && (ch == 't' || ch == 'T') && s_page == PV_VFO &&
         s_quick_rect.h > 0) {
-        s_keypad = !s_keypad;
-        if (s_keypad) entry_clear();
+        keypad_set(!s_keypad);
         return true;
     }
     if(k==LS_TK_CHAR && ch=='l') {
@@ -1514,8 +1383,6 @@ static bool key(ls_tk_t k, char ch)
     if (s_page==2) { radio_view(); radio_action(ls_radio_panel_key(&s_radio,&s_view,k,ch)); return true; }
     if (k==LS_TK_ESC || (k==LS_TK_CHAR && ch=='0')) { s_page=0; ls_wf_source_release(); return true; }
     if (k == LS_TK_CHAR) {
-        const int i = ls_btn_key(ch, PAGES, N_PAGES);
-        if (i >= 0) { page_button(i); return true; }
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
         if (ls_quick_key(ch, quick(), N_QUICK,
@@ -1540,34 +1407,42 @@ static bool touch(int col, int row)
         if (i >= 0 && i < 5) return key(LS_TK_CHAR, keys[i]);
         return false;
     }
+    /* First: it shares a row band with the tabs in portrait and with the
+       deck in landscape, and both of those claim their whole band. */
+    if (s_kbd_btn.h > 0 && tui_rect_contains(s_kbd_btn, col, row)) {
+        keypad_set(!s_keypad);
+        return true;
+    }
+    if (s_ctl_rect.h > 0 && tui_rect_contains(s_ctl_rect, col, row)) {
+        const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN);
+        if (i == PC_CALLS) { ls_calls_open("P25"); ls_wf_source_release(); }
+        else if (i == PC_DMR) set_page(5);
+        else if (i == PC_RADIO) open_radio();
+        else if (i == PC_OPTIONS) open_options();
+        return true;
+    }
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
-        if (i == N_PAGES) { open_radio(); return true; }
-        if (i == N_PAGES + 1) { open_options(); return true; }
-        if (i >= 0) { page_button(i); return true; }
+        if (i >= 0 && i < N_VIEWS) { set_page(i); return true; }
+        /* Landscape carries the controls on the same bar, after the views. */
+        if (i == N_VIEWS + PC_CALLS) { ls_calls_open("P25"); ls_wf_source_release(); }
+        else if (i == N_VIEWS + PC_DMR) set_page(5);
+        else if (i == N_VIEWS + PC_RADIO) open_radio();
+        else if (i == N_VIEWS + PC_OPTIONS) open_options();
         return true;
     }
-    if (s_toggle.h > 0 && tui_rect_contains(s_toggle, col, row)) {
-        s_keypad = !s_keypad;
-        if (s_keypad) entry_clear();
-        return true;
-    }
-    if (s_quick_rect.h > 0 && row >= s_quick_rect.y &&
-        row < s_quick_rect.y + s_quick_rect.h) {
-        if (s_keypad) { keypad_touch(col, row); return true; }
-        if (s_deck_n) { deck_touch(col, row); return true; }
-        if (s_quick_compact) {
-            const int i = ls_btn_hit(col, row);
-            if (i >= 0 && i < N_COMPACT_QUICK)
-                ls_quick_key(compact_quick()[i].key, quick(), N_QUICK,
-                             ls_quick_grant_builtin(), NULL);
+    if (s_quick_rect.h > 0 && tui_rect_contains(s_quick_rect, col, row)) {
+        if (s_keypad) {
+            entry_char(ls_freq_pad_hit(s_key, s_key_act, col, row));
             return true;
         }
+        if (s_deck_n) { deck_touch(col, row); return true; }
         if (ls_quick_touch(col, row, quick(), N_QUICK,
                            ls_quick_grant_builtin(), NULL)) return true;
+        return true;
     }
-    if (s_page == 1) return ls_wf_touch(col, row);
-    if (s_page == 2) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
+    if (s_page == PV_WATERFALL) return ls_wf_touch(col, row);
+    if (s_page == PV_SCANNER) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     return false;
 }
 

@@ -486,16 +486,25 @@ static void zoom_step(void)
 }
 
 /* Return the centered source-bin window and its actual frequency span. */
+/* Called per cell and per column, so the window is remembered for the
+   (bins, zoom) it was worked out for rather than divided out every time. */
 static void visible_bins(int *first, int *count)
 {
-    int n = s_nbins;
-    if (n < 1) n = 1;
-    int factor = s_zoom ? s_zoom : 1;
-    if (factor > n) factor = n;
-    int visible = n / factor;
-    if (visible < 1) visible = 1;
-    *first = (n - visible) / 2;
-    *count = visible;
+    static int c_bins = -1, c_zoom = -1, c_first, c_count;
+    if (s_nbins != c_bins || s_zoom != c_zoom) {
+        int n = s_nbins;
+        if (n < 1) n = 1;
+        int factor = s_zoom ? s_zoom : 1;
+        if (factor > n) factor = n;
+        int visible = n / factor;
+        if (visible < 1) visible = 1;
+        c_first = (n - visible) / 2;
+        c_count = visible;
+        c_bins = s_nbins;
+        c_zoom = s_zoom;
+    }
+    *first = c_first;
+    *count = c_count;
 }
 
 static void visible_band(uint32_t *center_hz, uint32_t *span_hz)
