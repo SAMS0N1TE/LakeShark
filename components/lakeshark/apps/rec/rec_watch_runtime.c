@@ -799,6 +799,9 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
                      uint32_t deviation_hz,uint32_t sync_word,
                      uint16_t preamble_bits,const int32_t *pulse,int edges,
                      int dbm,char *result,size_t len);
+static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int edges,
+                     int dbm,char *result,size_t len);
+static bool ook_on_lr(void);
 /* Every replay, CC1101 or LoRa chip, passes subghz_tx_refusal here before
    either radio is touched, so a refusal reads as a reason on screen. */
 static bool replay_refused(uint32_t hz,int dbm,size_t edges,uint64_t span_us,
@@ -814,7 +817,9 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
     for(int i=0;i<REC_WATCH_SLOTS;i++)
         if(s_catalog->record[i].event.id==id) r=&s_catalog->record[i];
     if(!r){snprintf(result,len,"Replay: no capture #%lu",(unsigned long)id);return;}
-    if(!rec_source_can_replay((rec_source_t)r->event.source)) {
+    /* An OOK pattern is timings, so any radio's capture can be sent by a
+       radio that keys OOK; only an FSK one needs the LoRa chip that made it. */
+    if(r->event.bitrate && !rec_source_can_replay((rec_source_t)r->event.source)) {
         snprintf(result,len,"Replay: %s cannot transmit",
                  rec_source_name((rec_source_t)r->event.source));
         return;
@@ -828,12 +833,16 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
         snprintf(result,len,sent?"Sent #%lu on CC1101":"Replay: CC1101 failed/busy; check MIX-RF",(unsigned long)id);
         return;
     }
-    if(!r->event.bitrate) {
-        snprintf(result,len,"Replay: capture has no modulation recorded");
-        return;
-    }
     char what[16];
     snprintf(what,sizeof(what),"#%lu",(unsigned long)id);
+    if(!r->event.bitrate) {
+        if(ook_on_lr()) send_ook(what,r->event.frequency,r->pulse,r->event.edges,dbm,result,len);
+        else {
+            bool sent=ls_mixrf_replay(r->event.frequency,r->pulse,r->event.edges,dbm);
+            snprintf(result,len,sent?"Sent %s on CC1101":"Replay: no CC1101 or LR2021 to send OOK",what);
+        }
+        return;
+    }
     send_fsk(what,r->event.frequency,r->event.bitrate,r->event.deviation_hz,
              r->event.sync_word,r->event.preamble_bits,r->pulse,r->event.edges,
              dbm,result,len);
@@ -887,6 +896,93 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
         "Replay timed out; check radio connection":"Replay failed; check FSK settings and radio connection");
 }
 
+
+/* OOK on the LR2021. The chip sends an OOK packet of fixed-rate chips, so
+   the edges become 20 us chips (50 kbps), one packet per burst: a quiet
+   stretch of 4 ms or more ends a packet, and the gap is waited out between
+   them, so frame repeats keep their spacing. A packet holds 2040 chips,
+   about 41 ms, which covers a remote's frame; a longer burst runs on into
+   the next packet. */
+#define OOK_CHIP_US   20u
+#define OOK_SPLIT_US  4000u
+static esp_err_t lr_ook_edges(const int32_t *pulse,int edges)
+{
+    static EXT_RAM_BSS_ATTR uint8_t chips[255];
+    const size_t cap=sizeof(chips)*8u;
+    int i=0;
+    while(i<edges) {
+        memset(chips,0,sizeof(chips));
+        size_t bit=0;
+        uint32_t gap_us=0;
+        while(i<edges) {
+            const bool hi=pulse[i]>0;
+            const uint32_t us=hi?(uint32_t)pulse[i]:(uint32_t)-pulse[i];
+            if(!hi && us>=OOK_SPLIT_US && bit) { gap_us=us; i++; break; }
+            size_t n=(us+OOK_CHIP_US/2)/OOK_CHIP_US;
+            if(!n)n=1;
+            if(bit+n>cap) {
+                if(!bit)n=cap;        /* one pulse longer than a packet */
+                else break;
+            }
+            if(hi) for(size_t k=0;k<n;k++) chips[(bit+k)>>3]|=(uint8_t)(0x80u>>((bit+k)&7u));
+            bit+=n;
+            i++;
+        }
+        if(bit) {
+            esp_err_t err=ls_lora_ook_send(chips,(bit+7)/8,1000000u/OOK_CHIP_US);
+            if(err!=ESP_OK)return err;
+            const int64_t end=esp_timer_get_time()+1000000;
+            while(!ls_lora_send_done() && esp_timer_get_time()<end) vTaskDelay(1);
+            if(!ls_lora_send_done())return ESP_ERR_TIMEOUT;
+        }
+        if(gap_us) {
+            const int64_t until=esp_timer_get_time()+gap_us;
+            while(esp_timer_get_time()+1000<until) vTaskDelay(1);
+            while(esp_timer_get_time()<until) { }
+        }
+    }
+    return ESP_OK;
+}
+static bool ook_on_lr(void)
+{
+    ls_mixrf_status_t mix;ls_mixrf_snapshot(&mix);
+    return !mix.cc && ls_lora_chip()==LS_LORA_CHIP_LR20XX;
+}
+static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int edges,
+                     int dbm,char *result,size_t len)
+{
+    const int64_t deadline=esp_timer_get_time()+1000000;
+    while(!ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if(!ls_mesh_radio_held()) {
+        ls_mesh_radio_hold(false);
+        snprintf(result,len,"Replay: mesh would not release the radio");
+        return;
+    }
+    /* The FSK session only places the frequency and the power; the burst
+       itself goes out as OOK. */
+    ls_fsk_cfg_t cfg={0};
+    cfg.freq_hz=freq_hz;
+    cfg.bitrate=50000;
+    cfg.deviation_hz=25000;
+    cfg.bandwidth_hz=ls_lora_fsk_bw_snap(100000);
+    cfg.sync_word=0x2DD4;
+    cfg.preamble_bits=16;
+    cfg.payload_bytes=8;
+    cfg.power_dbm=(int8_t)dbm;
+    esp_err_t err=ls_lora_fsk_begin(&cfg);
+    if(err==ESP_OK) {
+        err=lr_ook_edges(pulse,edges);
+        const esp_err_t ended=ls_lora_fsk_end();
+        if(err==ESP_OK)err=ended;
+    }
+    ls_mesh_radio_hold(false);
+    if(err==ESP_OK) snprintf(result,len,"Sent %s once on LR2021 OOK at %d dBm",what,dbm);
+    else snprintf(result,len,"%s",err==ESP_ERR_INVALID_STATE?
+        "Replay: LoRa session busy; stop its receiver first":err==ESP_ERR_TIMEOUT?
+        "Replay timed out; check radio connection":"Replay on LR2021 failed");
+}
+
 static void replay_file(const char *path,int dbm,char *result,size_t len)
 {
     static EXT_RAM_BSS_ATTR int32_t edges[REC_WATCH_EDGES];
@@ -901,6 +997,11 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
     if(subghz_file_is_cc_fsk(&f)) {
         bool sent=ls_mixrf_replay_fsk(f.freq_hz,edges,f.edges,dbm,&f.cc_fsk);
         snprintf(result,len,"%s",sent?"Sent FSK file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");
+        return;
+    }
+    if(subghz_file_is_ook(&f) && ook_on_lr()) {
+        const char *name=strrchr(path,'/');
+        send_ook(name?name+1:path,f.freq_hz,edges,f.edges,dbm,result,len);
         return;
     }
     if(subghz_file_is_ook(&f)) {

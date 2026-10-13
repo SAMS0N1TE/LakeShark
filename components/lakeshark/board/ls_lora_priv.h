@@ -40,6 +40,8 @@ typedef struct {
     esp_err_t (*fsk_begin)(const ls_fsk_cfg_t *cfg);
     int       (*fsk_poll)(uint8_t *buf, size_t size, float *rssi_dbm);
     esp_err_t (*fsk_send)(const uint8_t *data, size_t len);
+    /* NULL where the part has no OOK transmitter. */
+    esp_err_t (*ook_send)(const uint8_t *chips, size_t len, uint32_t chip_bps);
     esp_err_t (*fsk_receive)(void);
     esp_err_t (*fsk_end)(void);
     bool      (*fsk_active)(void);

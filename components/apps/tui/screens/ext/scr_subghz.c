@@ -1435,7 +1435,7 @@ static void action(char c)
         /* Offered only when it can actually be done. A capture from a
            receiver that cannot transmit, or one with no modulation recorded,
            has nothing to send it under. */
-        if(rec_source_can_replay((rec_source_t)e->source) && (e->source==REC_SOURCE_CC1101 || e->bitrate))
+        if(!e->bitrate || rec_source_can_replay((rec_source_t)e->source))
             menu_add('R',"REPLAY","Send it again - pick the power");
         menu_add('S',"SAVE .SUB","Flipper file on the card");
         menu_add('P',e->pinned?"UNPIN":"PIN",e->pinned?"Allow eviction":"Keep it");

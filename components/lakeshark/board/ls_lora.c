@@ -738,6 +738,9 @@ int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
 { LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->fsk_send(data, len) : ESP_ERR_INVALID_STATE); }
+esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
+{ LOCKED_RET(esp_err_t, !s_ops->ook_send ? ESP_ERR_NOT_SUPPORTED :
+             ls_board_hw_antenna_tx_allowed() ? s_ops->ook_send(chips, len, chip_bps) : ESP_ERR_INVALID_STATE); }
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
 bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
@@ -974,6 +977,8 @@ int ls_lora_fsk_poll(uint8_t *b, size_t n, float *r)
 { (void)b; (void)n; (void)r; return -1; }
 esp_err_t ls_lora_fsk_send(const uint8_t *d, size_t l)
 { (void)d; (void)l; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_ook_send(const uint8_t *c, size_t l, uint32_t r)
+{ (void)c; (void)l; (void)r; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_fsk_active(void) { return false; }

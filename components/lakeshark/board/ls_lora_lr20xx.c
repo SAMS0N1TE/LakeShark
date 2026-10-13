@@ -2647,6 +2647,38 @@ static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)
     return err;
 }
 
+/* One OOK burst from inside an FSK session: the session has put the
+   frequency and the PA where they belong, so only the packet type, the
+   modulation and the packet change. The session is marked stale, and the
+   next FSK call puts GFSK back. */
+static esp_err_t lr_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
+{
+    if (!lr.fsk_active || !ls_lora_hw_pkt() || lr.fsk_stream) return ESP_ERR_INVALID_STATE;
+    if (!chips || len == 0)         return ESP_ERR_INVALID_ARG;
+    if (len > 255)                  return ESP_ERR_INVALID_SIZE;
+    if (chip_bps < LR20XX_OOK_BITRATE_MIN || chip_bps > LR20XX_FSK_BITRATE_MAX)
+        return ESP_ERR_INVALID_ARG;
+    if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
+    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ) return ESP_ERR_NOT_SUPPORTED;
+
+    esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
+    if (err != ESP_OK) return err;
+    lr.rx_mode = false;
+    lr.fsk_stale = true;
+    if ((err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq")) != ESP_OK) return err;
+    const lr20xx_rx_bw_t bw = lr20xx_fsk_rx_bw(chip_bps * 2u);
+    if ((err = step_lr(lr20xx_set_packet_type_ook(), "SetPacketType")) != ESP_OK) return err;
+    if ((err = step_lr(lr20xx_ook_set_modulation(chip_bps, 0, bw.index, 0),
+                       "SetOokModulationParams")) != ESP_OK) return err;
+    /* No preamble and no sync: the chips are the whole signal. */
+    if ((err = step_lr(lr20xx_ook_set_packet_fixed(0, (uint16_t)len, 0),
+                       "SetOokPacketParams")) != ESP_OK) return err;
+    if ((err = step_lr(lr20xx_ook_set_sync_none(), "SetOokSyncword")) != ESP_OK) return err;
+    if ((err = lr20xx_set_pa_lf(lr.fsk_power)) != ESP_OK) return err;
+    if ((err = load_tx_fifo(chips, len)) != ESP_OK) return err;
+    return start_tx(len, lr.fsk_power, "OOK TX");
+}
+
 /* A session the part has lost (it restarted, or the driver reset it) is put
    back before the call that found it out does its own work. */
 static esp_err_t fsk_refresh(void)
@@ -3994,6 +4026,7 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
     .fsk_begin = lr_fsk_begin,
     .fsk_poll = lr_fsk_poll,
     .fsk_send = lr_fsk_send,
+    .ook_send = lr_ook_send,
     .fsk_receive = lr_fsk_receive,
     .fsk_end = lr_fsk_end,
     .fsk_active = lr_fsk_active,

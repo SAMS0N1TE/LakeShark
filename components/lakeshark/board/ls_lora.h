@@ -214,6 +214,10 @@ int       ls_lora_fsk_stream_read(uint8_t *buf, size_t size, bool *restarted);
    The part is left in standby afterwards; ls_lora_fsk_receive() listens
    again. */
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len);
+/* On/off keying, once, inside an FSK session (which set the frequency and
+   the power): `chips` MSB first, one bit per chip at `chip_bps`, 1 is
+   carrier. LR20xx only; completion is ls_lora_send_done(). */
+esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps);
 
 /* Re-arm continuous receive, restoring the session's payload length. */
 esp_err_t ls_lora_fsk_receive(void);
