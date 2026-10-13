@@ -148,15 +148,6 @@ Use touch alone or add the detachable keyboard with its MIX-RF radios.
 <img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
 </p>
 
-<div align="center">
-
-Recorded on the board: P25 locking on a live call, MUSIC playing through its analyzer and waterfall, UPDATE waiting for WiFi, ADS-B traffic on the mini map, MAP following an aircraft, COMPASS FIND turning on two channels, the P25 waterfall, FALLS and SUB-GHZ catching a Flipper's 433.92 MHz remote bursts, FM on NOAA weather, mesh messages arriving as notices, the LR2021 EXPERIMENTS list and the Night theme.
-
-ASCII controls and labels are painted straight onto the panel, with pixel terrain in the new field map.<br>
-Every control answers a tap and a key. The screen follows the way you hold the board, and F11 turns it by hand.
-
-</div>
-
 <h3 align="center">Apps</h3>
 
 <h4 align="center">Radio</h4>
