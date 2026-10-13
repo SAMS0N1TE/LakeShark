@@ -330,12 +330,14 @@ static const char *disabled_reason(char c)
     case 'w': return !s.ready?"Still loading capture history from the card":
                      !watching && rec_watch_scan_busy()?"Stop SCAN before WATCH":NULL;
     case 'f': return watching?"Stop WATCH before retuning":
+                     rec_watch_scan_busy()?"Stop SCAN before retuning":
                      rec_watch_learn_busy()?"Stop LEARN before retuning":NULL;
     /* Stopping a sweep must never be refused, and a sweep cannot be running
        while WATCH is, so the guard is only about starting one. */
     case 'n': return rec_watch_scan_busy()?NULL:
                      watching?"Stop WATCH before sweeping":NULL;
     case 's': return watching?"Stop WATCH before changing capture settings":
+                     rec_watch_scan_busy()?"Stop SCAN before changing capture settings":
                      rec_watch_source()==REC_SOURCE_CC1101?
                      "CC1101 capture settings are fixed":
                      NULL;

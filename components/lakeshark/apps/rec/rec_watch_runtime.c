@@ -601,15 +601,27 @@ bool rec_watch_enable(bool on)
     if(ok){s_watch_on=on;s_watch_waiting=true;s_watch_pending=true;}
     portEXIT_CRITICAL(&s_lock);
     if(!ok)return false;
+    /* The worker answers between jobs, and a sweep can hold it for minutes.
+       Never wait that long on the caller's task (the UI): an OFF is left
+       queued for the worker and reported done, an ON is withdrawn. */
+    const int64_t deadline=esp_timer_get_time()+1500000;
     for(;;) {
         portENTER_CRITICAL(&s_lock);
         bool pending=s_watch_pending,result=s_watch_result;
+        if(pending && esp_timer_get_time()>deadline) {
+            if(on)s_watch_pending=false;
+            else s_status.enabled=false;
+            s_watch_waiting=false;
+            portEXIT_CRITICAL(&s_lock);
+            if(on)snprintf(s_fsk_error,sizeof(s_fsk_error),"Radio busy - try again");
+            return !on;
+        }
         portEXIT_CRITICAL(&s_lock);
         if(!pending) {
             portENTER_CRITICAL(&s_lock);s_watch_waiting=false;portEXIT_CRITICAL(&s_lock);
             return result;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 /* Synchronize a stopped hardware request before reporting or using WATCH state. */
