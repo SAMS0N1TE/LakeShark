@@ -35,18 +35,18 @@ The LR2021 version of the T-Display P4 receives Phase 1 C4FM through a
 continuous raw-IQ stream. P25 always uses this path, including when an older
 saved preference selected FSK.
 
-`
+```
 LR2021 IQ16 --SPI--> capture task (core 0)
 125,000 complex pairs/s -> checked eight-block queue
-                       -> p25_rx frontend (core 1):125 to240 kHz float IQ
-                       -> C4FM DSP:48 kHz samples
+                       -> p25_rx frontend (core 1): 125 to 240 kHz float IQ
+                       -> C4FM DSP: 48 kHz samples
                        -> sample ring -> dsd_decode (core 1)
                        -> IMBE voice -> audio output
-`
+```
 
 The FIFO is serviced continuously while demodulation and voice decoding run.
 A real loss or retune resets acquisition; ordinary block boundaries do not.
-p25 lr mode reports accepted blocks, rejected sessions, gaps and FIFO loss.
+`p25 lr mode` reports accepted blocks, rejected sessions, gaps and FIFO loss.
 The waterfall uses the same IQ stream. Band scanning and Phase II are not
 supported on this receiver.
 
@@ -60,11 +60,11 @@ Legacy P25 FSK configuration, classifier and capture commands are retired.
 The former LR control-channel/RTL voice split selection falls back to RTL.
 FSK used by other apps and standalone research benches remains separate.
 
-P25 holds the radio through ls_mesh_radio_hold_bg while capturing. UI status
+P25 holds the radio through `ls_mesh_radio_hold_bg` while capturing. UI status
 queries must read cached state without waiting for its hardware mutex. Select
 another source in RADIO before direct radio diagnostics or antenna changes.
-Tests include 	est_p25_lr_frontend, 	est_p25_lr_iq,
-	est_p25_lr_demod_guard.py, and 	est_lora_concurrency.
+*Tests:* `test_p25_lr_frontend`, `test_p25_lr_iq`,
+`test_p25_lr_demod_guard.py`, `test_lora_concurrency`.
 
 ## What must stay true
 
