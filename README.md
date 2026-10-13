@@ -3,7 +3,7 @@
 ![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
 ![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
 
-### Your radio world. In your hand.
+### RTL-SDR or LR2021
 
 Listen to local radio, watch aircraft, follow Mesh nodes and explore the airwaves.
 
