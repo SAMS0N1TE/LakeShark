@@ -7,10 +7,45 @@
 #include "ls_icons.h"
 #include "esp_timer.h"
 
-#define FRAMES 12
-#define BUDGET_US 250000
-static int64_t s_started, s_last_draw, s_frame_cost;
-static bool s_cost_observed;
+/* PACING.
+
+   The phase advances per PRESENTED frame, not by elapsed time. The old
+   f = elapsed * FRAMES / 250 ms skipped phases whenever frames were slow (at
+   65 ms spacing: 0, 3, 6) and aborted on `elapsed + 2 * last frame cost >
+   250 ms`, so a loaded UI showed one or two phases. Frame cost is no longer
+   read at all: one slow frame does not predict the next.
+
+   Rules:
+     - one phase per presented frame before the cap, so progress is
+       monotonic without ordinary timing-based phase skips;
+     - a phase is held PHASE_US before the next, so a fast UI does not blur
+       through the opening. Idle that is 12 x 20 ms = 240 ms, the cadence the
+       250 ms budget was tuned for; at 65 ms spacing it is ~780 ms;
+     - a DRAW IS NOT A PRESENTATION. ls_anim_draw() only draws and records a
+       pending phase; ls_anim_presented() commits it. The app loop discards a
+       drawn frame when a font change forces a regrid (compact_ui.cpp
+       continues before ls_tui_present), and a discarded frame must not
+       advance the phase or the stall clock;
+     - duplicate draws before a presentation redraw the same phase; duplicate
+       presentations after one draw commit once.
+
+   Bounds, exactly:
+     - the opening ends on the first frame presented at or after CAP_US, and
+       that frame shows the final phase, so it ends on the finished picture.
+       Worst case on screen is CAP_US plus one frame interval;
+     - if nothing is presented for STALL_US it is dropped where it stands,
+       which also covers an opening started and never drawn. */
+#define FRAMES    12
+#define PHASE_US  20000      /* a phase holds this long before the next     */
+#define CAP_US    1000000    /* ends on the first presented frame past this */
+#define STALL_US  300000     /* nothing presented for this long: drop it    */
+
+static int64_t s_started;    /* when the opening began                      */
+static int64_t s_phase_at;   /* when the phase on screen was drawn          */
+static int64_t s_pending_at; /* when the pending phase was drawn            */
+static int     s_pending = -1;  /* drawn, awaiting presentation             */
+static bool    s_shown;      /* at least one phase has been presented       */
+static bool    s_handed_over;/* the final phase was presented               */
 
 static int      s_frame = -1;
 static int      s_icon;
@@ -32,26 +67,49 @@ static int isin(int deg)          /* deg 0..359 -> -64..64 */
 void ls_anim_start(int icon, const char *name, uint8_t hue)
 {
     s_frame = 0;
-    s_started = s_last_draw = esp_timer_get_time();
-    uint32_t last_us = 0;
-    ls_tui_last_cost(&last_us, NULL);
-    s_frame_cost = last_us > 40000 ? last_us : 40000;
-    s_cost_observed = false;
+    s_started = s_phase_at = s_pending_at = esp_timer_get_time();
+    s_pending = -1;
+    s_shown = s_handed_over = false;
     s_icon  = icon;
     s_hue   = hue ? hue : (uint8_t)TUI_CYAN;
     snprintf(s_name, sizeof(s_name), "%s", name ? name : "");
 }
 
 bool ls_anim_active(void) {
-    if (s_frame >= 0 && esp_timer_get_time() - s_started >= BUDGET_US) s_frame = -1;
-    return s_frame >= 0;
+    if (s_frame < 0) return false;
+    /* The only unconditional kill: nothing has reached the panel for
+       STALL_US. CAP_US is served by the next presented frame, in draw, so
+       the opening always gets to show its last phase. */
+    if (esp_timer_get_time() - s_phase_at >= STALL_US) {
+        s_frame = s_pending = -1;
+        return false;
+    }
+    return true;
 }
 /* Both cancellation and completion keep the pixel baseline for a cell diff. */
 void ls_anim_cancel(void)
 {
     if (s_frame < 0) return;
-    s_frame = -1;
+    s_frame = s_pending = -1;
     /* Cells already retain the animation pixels; hand over by diff. */
+}
+
+/* The frame that was drawn reached the panel. Called from ls_tui_present()
+   after the raster, which is the only place that knows a frame was actually
+   shown rather than drawn and thrown away. */
+void ls_anim_presented(void)
+{
+    if (s_frame < 0 || s_pending < 0) return;
+    const bool moved = !s_shown || s_pending != s_frame;
+    s_frame = s_pending;
+    s_pending = -1;
+    s_shown = true;
+    /* The hold runs from when the phase was DRAWN, not from now: presentation
+       can lag the draw by a whole frame, and timing the hold from here would
+       cost a frame per phase at a steady cadence. Re-presenting the same
+       phase must not restart it either, or a fast UI would never advance. */
+    if (moved) s_phase_at = s_pending_at;
+    if (s_frame >= FRAMES - 1) s_handed_over = true;
 }
 
 /* Rings expanding from a point: the tower, and the default for anything
@@ -175,20 +233,18 @@ static void constellation(tui_surface *sf, tui_rect a, int cx, int cy, int f)
 bool ls_anim_draw(tui_surface *sf, tui_rect area)
 {
     if (!ls_anim_active()) return false;
+    /* The final phase has been on the panel: hand the pane to the screen. */
+    if (s_handed_over) { s_frame = s_pending = -1; return false; }
     const int64_t now = esp_timer_get_time();
-    const int64_t elapsed = now - s_started;
-    if (s_frame) {
-        const int64_t cost = now - s_last_draw;
-        if (!s_cost_observed || cost > s_frame_cost) s_frame_cost = cost;
-        s_cost_observed = true;
-    }
-    /* Skip decoration when another splash plus the real screen would miss
-       the deadline at the observed cadence. Never queue catch-up frames. */
-    if (elapsed + 2 * s_frame_cost > BUDGET_US) { s_frame = -1; return false; }
-    s_last_draw = now;
-    if (!sf || area.w < 12 || area.h < 6) { s_frame = -1; return false; }
+    if (!sf || area.w < 12 || area.h < 6) { s_frame = s_pending = -1; return false; }
 
-    const int f = (int)(elapsed * FRAMES / BUDGET_US);
+    /* The phase to draw: the one on screen until it has had its hold, then
+       the next; or the last one outright once the opening is out of wall
+       clock, so it ends on its finished picture. Nothing is committed here -
+       this frame may never be presented. */
+    int f = s_frame;
+    if (now - s_started >= CAP_US) f = FRAMES - 1;
+    else if (s_shown && now - s_phase_at >= PHASE_US && f + 1 < FRAMES) f++;
     const int cx = area.x + area.w / 2;
     const int cy = area.y + area.h / 2;
 
@@ -221,6 +277,8 @@ bool ls_anim_draw(tui_surface *sf, tui_rect area)
                         TUI_ATTR(s_hue | TUI_BRIGHT, TUI_BLACK));
     }
 
-    s_frame = f + 1;
+    /* Drawn, not shown. ls_anim_presented() turns this into progress. */
+    s_pending = f;
+    s_pending_at = now;
     return true;
 }

@@ -5,6 +5,7 @@
 - FM and P25 view changes preserve active stored-channel scans; explicit tuning, mode changes and starting a sweep stop the scan. Unsupported saved channels are skipped when the selected LR2021 cannot receive them.
 - Scanner controls add filled radio-style cards, direct level-bar adjustment, separate numeric entry, larger step targets, and accessible squelch and settings. The P25 screen adds an inline frequency keypad.
 - FM, P25 and sweep waterfalls share a session-local 1x/2x/4x display zoom. Waterfall updates avoid redundant FFT windows and pixel renders.
+- ASCII opening animations advance with presented frames, so they do not skip ahead or end early when rendering falls behind.
 
 ## 2.13.0
 

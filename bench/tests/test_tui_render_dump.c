@@ -1175,10 +1175,16 @@ LS_CASE(transition_ring_times_animation_handover_and_wraps)
         ls_shim_time_set(1000000 + i * 1000000);
         ls_tui_screen_show(i % 2 ? 0 : 1);
         ls_anim_start(LS_ICON_WAVE, "TEST", TUI_CYAN);
-        for (int f = 0; f < 7; f++) {
+        /* Thirteen frames: the opening presents each of its twelve phases -
+           it no longer drops them to meet a deadline - and the thirteenth
+           frame is the real body, which is what completes the transition. */
+        for (int f = 0; f < 13; f++) {
             ls_tui_router_draw(ls_tui_surface());
             ls_shim_time_advance(40000);
+            /* This loop stands in for ls_tui_present(), so it owes the same
+               two acknowledgements the real one makes. */
             ls_tui_transition_present(40000, 100 + f, 300);
+            ls_anim_presented();
         }
     }
     ls_tui_transition_t t[8];
@@ -1187,11 +1193,11 @@ LS_CASE(transition_ring_times_animation_handover_and_wraps)
         LS_EQ_INT(t[i].from, i % 2 ? 1 : 0);
         LS_EQ_INT(t[i].to, i % 2 ? 0 : 1);
         LS_EQ_INT(t[i].first_us, 40000);
-        LS_EQ_INT(t[i].last_us, 240000);
-        LS_EQ_INT(t[i].frames, 6); /* Dropped splash frames, then the real body. */
+        LS_EQ_INT(t[i].last_us, 520000);
+        LS_EQ_INT(t[i].frames, 13);
         LS_EQ_INT(t[i].worst_us, 40000);
-        LS_EQ_INT(t[i].worst_cells, 105);
-        LS_EQ_INT(t[i].writeback_us, 1800);
+        LS_EQ_INT(t[i].worst_cells, 112);
+        LS_EQ_INT(t[i].writeback_us, 3900);
         LS_EQ_INT(t[i].worst_writeback_us, 300);
         LS_EQ_INT(t[i].worst_draw_us, 0);
         LS_EQ_INT(t[i].worst_raster_us, 39700);
@@ -1243,31 +1249,234 @@ LS_CASE(transition_deferred_request_and_cancel_keep_request_timestamp)
     ls_tui_end();
 }
 
-LS_CASE(animation_drops_slow_frames_and_hands_over_within_budget)
+/* THE OPENING MUST MOVE, NOT JUMP.
+
+   The sweep opening puts one bright column across the pane at
+   x = (w - 1) * phase / 11, so the column IS the phase and a reader of the
+   screen can see what the animation did. A phase skipped shows up as a column
+   that moved twice as far in one frame, which is what the old wall-clock
+   pacing did under load and what the user was calling stuttery. */
+static int sweep_column(tui_rect a)
+{
+    /* The top row only: the icon and the name sit in the middle of the pane
+       and would otherwise be mistaken for the line. */
+    tui_surface *sf = ls_tui_surface();
+    int found = -1;
+    for (int y = a.y; y < a.y + 2 && y < sf->h; y++)
+        for (int x = a.x; x < a.x + a.w && x < sf->w; x++)
+            if (sf->back[y * sf->w + x].ch == LS_TUI_BLOCK_LEFT && x > found)
+                found = x;
+    return found;
+}
+
+/* One drawn frame that reaches the panel. */
+static int present_frame(tui_rect area)
+{
+    if (!ls_anim_draw(ls_tui_surface(), area)) return -2;
+    ls_anim_presented();
+    return sweep_column(area);
+}
+
+/* Where the sweep stands at phase f, as ls_anim draws it. */
+static int col_for(tui_rect a, int f) { return a.x + (a.w - 1) * f / 11; }
+
+LS_CASE(the_opening_advances_one_phase_a_presented_frame_at_every_rate)
 {
     register_once();
     LS_CHECK(ls_tui_begin(568, 1232));
-    const int costs[] = {10000, 40000, 65000, 93000};
+    const tui_rect area = tui_rect_make(0, 2, 40, 50);
+    /* Idle, a comfortable rate, a loaded P25 decode, and irregular. */
+    const int costs[] = {4000, 20000, 65000, 0};
+    const int step_max = (area.w - 1) / (12 - 1) + 1;   /* one phase of travel */
     ls_shim_time_live(0);
-    for (unsigned k = 0; k < sizeof(costs)/sizeof(costs[0]); ++k) {
+    for (unsigned k = 0; k < sizeof(costs) / sizeof(costs[0]); ++k) {
         ls_shim_time_set(1000000);
-        ls_anim_start(LS_ICON_WAVE, "FM", TUI_CYAN);
-        int frames = 0;
-        while (ls_anim_draw(ls_tui_surface(), tui_rect_make(0, 2, 40, 50))) {
-            ls_shim_time_advance(costs[k]);
-            LS_CHECK(esp_timer_get_time() - 1000000 <= 250000);
-            LS_CHECK(++frames <= 25);
+        ls_anim_start(LS_ICON_PLANE, "FM", TUI_CYAN);
+        int frames = 0, phases = 0, prev = -1;
+        for (;;) {
+            const int col = present_frame(area);
+            if (col == -2) break;
+            LS_CHECK_MSG(col >= 0, "cost %d: the opening drew no sweep", costs[k]);
+            if (col != prev) {
+                LS_CHECK_MSG(col > prev, "cost %d: the sweep went backwards, %d to %d",
+                             costs[k], prev, col);
+                /* One phase a frame, except the frame that ends the opening
+                   at the cap, which goes to the last phase by policy. */
+                if (prev >= 0 && col != col_for(area, 11))
+                    LS_CHECK_MSG(col - prev <= step_max,
+                                 "cost %d: the sweep jumped %d cells, one phase is %d",
+                                 costs[k], col - prev, step_max);
+                prev = col;
+                phases++;
+            }
+            /* Irregular: a long frame, a short one, a long one. */
+            ls_shim_time_advance(costs[k] ? costs[k]
+                                          : (frames % 3 == 0 ? 90000 : 8000));
+            LS_CHECK_MSG(++frames <= 400, "cost %d: the opening never ended", costs[k]);
         }
-        /* Once draw returns false the same router frame draws the real app. */
-        ls_shim_time_advance(costs[k]);
-        LS_CHECK(esp_timer_get_time() - 1000000 <= 250000);
+        LS_CHECK_MSG(phases >= 11, "cost %d showed %d of 12 phases", costs[k], phases);
         LS_CHECK(!ls_anim_active());
-        if (costs[k] >= 40000) LS_CHECK(frames < 12);
+        /* CAP_US plus the frame that carries the last phase. */
+        LS_CHECK_MSG(esp_timer_get_time() - 1000000 <= 1000000 + 90000,
+                     "cost %d ran for %lld us", costs[k],
+                     (long long)(esp_timer_get_time() - 1000000));
     }
+    ls_tui_end();
+}
+
+/* The first phase is held like any other: a 5 ms and a 10 ms frame show
+   phase 0 again, and only the frame at 20 ms moves. */
+LS_CASE(the_opening_holds_each_phase_including_the_first)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    const tui_rect area = tui_rect_make(0, 2, 40, 50);
+    ls_shim_time_live(0);
+    ls_shim_time_set(1000000);
+    ls_anim_start(LS_ICON_PLANE, "FM", TUI_CYAN);
+
+    const int at0 = present_frame(area);
+    LS_CHECK(at0 >= 0);
+    ls_shim_time_advance(5000);
+    LS_EQ_INT(present_frame(area), at0);     /* 5 ms: still phase 0 */
+    ls_shim_time_advance(5000);
+    LS_EQ_INT(present_frame(area), at0);     /* 10 ms: still phase 0 */
+    ls_shim_time_advance(10000);
+    const int at20 = present_frame(area);    /* 20 ms: phase 1 */
+    LS_CHECK_MSG(at20 > at0, "the first phase was not held: %d then %d", at0, at20);
+    ls_shim_time_advance(5000);
+    LS_EQ_INT(present_frame(area), at20);    /* and phase 1 is held in turn */
+    ls_anim_cancel();
+    ls_tui_end();
+}
+
+/* A frame the app loop draws and then throws away - compact_ui.cpp continues
+   past ls_tui_present when a font change forces a regrid - must not advance
+   the opening or refresh its stall clock. */
+LS_CASE(a_drawn_frame_that_is_never_presented_changes_nothing)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    const tui_rect area = tui_rect_make(0, 2, 40, 50);
+    ls_shim_time_live(0);
+    ls_shim_time_set(1000000);
+    ls_anim_start(LS_ICON_PLANE, "FM", TUI_CYAN);
+    const int at0 = present_frame(area);
+    LS_CHECK(at0 >= 0);
+
+    /* Four discarded frames across more than a phase's hold. */
+    for (int i = 0; i < 4; i++) {
+        ls_shim_time_advance(30000);
+        LS_CHECK(ls_anim_draw(ls_tui_surface(), area));
+        LS_EQ_INT(sweep_column(area), col_for(area, 1));
+    }
+    /* None of them counted: the next presented frame is still phase 1. */
+    LS_EQ_INT(present_frame(area), col_for(area, 1));
+    /* Two draws before one presentation commit one phase, not two. */
+    ls_shim_time_advance(30000);
+    LS_CHECK(ls_anim_draw(ls_tui_surface(), area));
+    LS_CHECK(ls_anim_draw(ls_tui_surface(), area));
+    ls_anim_presented();
+    const int at2 = sweep_column(area);
+    LS_EQ_INT(at2, col_for(area, 2));
+    /* A second presentation with nothing drawn since commits nothing. */
+    ls_shim_time_advance(30000);
+    ls_anim_presented();
+    ls_anim_presented();
+    LS_EQ_INT(sweep_column(area), at2);
+    ls_anim_cancel();
+    ls_tui_end();
+}
+
+/* A real frame sequence of an opening, through the router and the raster, at
+   the frame spacing a P25 decode actually leaves for the UI. Every file is one
+   presented frame, so flicking through them is the animation as the panel
+   would show it. */
+LS_CASE(the_opening_renders_a_frame_sequence_at_p25_frame_spacing)
+{
+    register_once();
+    int saved_font = ls_tui_font_index();
+    ls_tui_set_font_index(0);
+    LS_CHECK(ls_tui_begin(568, 1232));
+    ls_tui_status_set_clock("12:34Z");
+    ls_tui_set_theme(&ls_theme_terminal_bay);
+    ls_shim_time_live(0);
+    ls_shim_time_set(1000000);
+    ls_tui_screen_show(1);
+    frame(1);
+    ls_anim_start(LS_ICON_WAVE, ls_tui_screen_name(1), TUI_CYAN);
+    int shown = 0;
+    while (ls_anim_active() && shown < 16) {
+        frame(1);
+        char name[32];
+        snprintf(name, sizeof(name), "opening-%02d", shown++);
+        sensor_pixels(name, false);
+        ls_shim_time_advance(65000);   /* P25 under load */
+    }
+    LS_CHECK_MSG(shown >= 11, "the opening only presented %d frames", shown);
+    LS_CHECK(!ls_anim_active());
+    ls_tui_status_set_clock("");
+    ls_tui_end();
+    ls_tui_set_font_index(saved_font);
+}
+
+/* Bounded under a stall, and cancellable at any point. */
+LS_CASE(the_opening_is_bounded_and_always_interruptible)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    const tui_rect area = tui_rect_make(0, 2, 40, 50);
+    ls_shim_time_live(0);
+
+    /* A frame that never comes: the opening is overdue and does not replay. */
     ls_shim_time_set(2000000);
     ls_anim_start(LS_ICON_WAVE, "P25", TUI_CYAN);
-    ls_shim_time_advance(500000); /* UI stalled: no overdue splash on resume. */
+    ls_shim_time_advance(500000);
     LS_CHECK(!ls_anim_active());
-    LS_CHECK(!ls_anim_draw(ls_tui_surface(), tui_rect_make(0, 2, 40, 50)));
+    LS_CHECK(!ls_anim_draw(ls_tui_surface(), area));
+
+    /* A UI that goes away mid-opening drops the rest rather than catching up. */
+    ls_shim_time_set(3000000);
+    ls_anim_start(LS_ICON_WAVE, "P25", TUI_CYAN);
+    LS_CHECK(present_frame(area) >= -1);
+    ls_shim_time_advance(400000);
+    LS_CHECK(!ls_anim_active());
+    LS_CHECK(!ls_anim_draw(ls_tui_surface(), area));
+
+    /* Frames so slow the opening cannot finish on phases alone: it ends on
+       the first presented frame past the cap, and that frame carries the last
+       phase - the sweep at the far side of the pane, not halfway across. A
+       cadence that steps over the cap must still show it. */
+    const int slow[] = {250000, 67000};
+    for (unsigned k = 0; k < sizeof(slow) / sizeof(slow[0]); ++k) {
+        ls_shim_time_set(4000000);
+        ls_anim_start(LS_ICON_PLANE, "P25", TUI_CYAN);
+        int frames = 0, last_col = -1;
+        for (;;) {
+            const int col = present_frame(area);
+            if (col == -2) break;
+            last_col = col;
+            ls_shim_time_advance(slow[k]);
+            LS_CHECK(++frames <= 40);
+        }
+        LS_CHECK(!ls_anim_active());
+        LS_CHECK_MSG(esp_timer_get_time() - 4000000 <= 1000000 + slow[k] + 1,
+                     "the capped opening ran for %lld us at %d us a frame",
+                     (long long)(esp_timer_get_time() - 4000000), slow[k]);
+        LS_CHECK_MSG(last_col == area.x + area.w - 1,
+                     "at %d us a frame it ended on column %d, not the last",
+                     slow[k], last_col);
+    }
+
+    /* A key press stops it immediately, from any phase. */
+    ls_shim_time_set(6000000);
+    ls_anim_start(LS_ICON_WAVE, "FM", TUI_CYAN);
+    LS_CHECK(present_frame(area) >= -1);
+    ls_shim_time_advance(30000);
+    LS_CHECK(present_frame(area) >= -1);
+    LS_CHECK(ls_anim_active());
+    ls_anim_cancel();
+    LS_CHECK(!ls_anim_active());
+    LS_CHECK(!ls_anim_draw(ls_tui_surface(), area));
     ls_tui_end();
 }

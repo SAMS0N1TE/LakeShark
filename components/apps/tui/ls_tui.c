@@ -1401,6 +1401,11 @@ int ls_tui_present(void)
     extern void ls_tui_transition_present(uint32_t, int, uint32_t) __attribute__((weak));
     if (ls_tui_transition_present)
         ls_tui_transition_present(s_last_us, drawn, sync_us);
+    /* The opening animation advances per frame that actually reached the
+       panel, not per frame drawn: the app loop discards a drawn frame when a
+       font change forces a regrid. This is the only place that knows. */
+    extern void ls_anim_presented(void) __attribute__((weak));
+    if (ls_anim_presented) ls_anim_presented();
     s_present_count++;
     return drawn;
 }
