@@ -14,23 +14,17 @@ Listen to local radio, watch aircraft, follow Mesh nodes and explore the airwave
 LakeShark turns the **[LilyGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4)** into a handheld scanner and radio workbench,<br>
 with animated ASCII displays, touch controls and an [optional keyboard](https://lilygo.cc/products/t-display-p4-keyboard).
 
-<table>
-  <tr>
-    <th width="33%">Listen in</th>
-    <th width="33%">Watch the sky</th>
-    <th width="33%">Take it outside</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/screenshots/tdp4/motion/p25-decode.gif" alt="LakeShark decoding a P25 radio call" width="260"></td>
-    <td align="center"><img src="docs/screenshots/tdp4/motion/adsb.gif" alt="Aircraft positions on LakeShark" width="260"></td>
-    <td align="center"><img src="docs/screenshots/tdp4/motion/map.gif" alt="LakeShark following an aircraft on an offline map" width="260"></td>
-  </tr>
-  <tr>
-    <td align="center">Local FM, P25 digital voice, pagers and weather alerts.</td>
-    <td align="center">Aircraft positions, trails and spoken callouts.</td>
-    <td align="center">Offline maps, Mesh messaging, GPS tracks and field notes.</td>
-  </tr>
-</table>
+</div>
+
+<h2 align="center">New in 2.13</h2>
+
+<div align="center">
+
+**Handheld FM controls · Animated VFD meters · Inline keypad**
+
+Narrowband FM now runs on the onboard LR2021, with live I/Q waterfalls and faster switching between FM and P25.
+
+[Full release notes →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0) &nbsp;•&nbsp; [Release history](https://github.com/SAMS0N1TE/LakeShark/releases)
 
 </div>
 
@@ -75,17 +69,7 @@ The open research and tools behind the radio.
 
 </div>
 
-<h2 align="center">New in 2.13</h2>
 
-<div align="center">
-
-**Handheld FM controls · Animated VFD meters · Inline keypad**
-
-Narrowband FM now runs on the onboard LR2021, with live I/Q waterfalls and faster switching between FM and P25.
-
-[Full release notes →](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0) &nbsp;•&nbsp; [Release history](https://github.com/SAMS0N1TE/LakeShark/releases)
-
-</div>
 <h2 align="center">Choose your setup</h2>
 
 <div align="center">
