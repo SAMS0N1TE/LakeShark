@@ -9,6 +9,10 @@ else()
         apps/*/*.c apps/*/*.cpp apps/*/*.S)
 endif()
 
+# P25 uses IQ only. Retain OS4 research sources for explicit host benches;
+# their learned classifiers and assembly model do not belong in firmware.
+list(FILTER LS_SRCS EXCLUDE REGEX "/apps/p25/p25_os4_(decode|lut|nn|nn_model|nn_pie)\\.(c|S)$")
+
 file(GLOB LS_APP_DIR_CANDIDATES ${CMAKE_CURRENT_SOURCE_DIR}/apps/*)
 set(LS_APP_INCLUDES "")
 foreach(d ${LS_APP_DIR_CANDIDATES})

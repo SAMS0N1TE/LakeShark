@@ -8,11 +8,16 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+def host_cpp_compiler():
+    compiler = shutil.which('g++')
+    if not compiler:
+        raise RuntimeError('Host C++ compiler required')
+    return compiler
+
+
 class PlayerShutdownTest(unittest.TestCase):
     def test_shutdown_ownership(self):
-        compiler = shutil.which('g++')
-        if not compiler:
-            self.skipTest('Host C++ compiler required')
+        compiler = host_cpp_compiler()
         source = (ROOT / 'components/chmorgan__esp-audio-player/audio_player.cpp').read_text()
         start = source.index('esp_err_t audio_player_delete()')
         opening = source.index('{', start)
@@ -116,7 +121,7 @@ int main(){
         with tempfile.TemporaryDirectory() as directory:
             work = pathlib.Path(directory)
             (work / 'mic.cpp').write_text(harness)
-            subprocess.run(['C:/mingw64/bin/g++.exe', '-std=c++17', str(work / 'mic.cpp'), '-o', str(work / 'mic.exe')], check=True)
+            subprocess.run([host_cpp_compiler(), '-std=c++17', str(work / 'mic.cpp'), '-o', str(work / 'mic.exe')], check=True)
             subprocess.run([str(work / 'mic.exe')], check=True)
 
     def test_stop_barrier_requires_matching_completion(self):
@@ -151,7 +156,7 @@ int main(){
         with tempfile.TemporaryDirectory() as directory:
             work = pathlib.Path(directory)
             (work / 'stop.cpp').write_text(harness)
-            subprocess.run(['C:/mingw64/bin/g++.exe', '-std=c++17', str(work / 'stop.cpp'), '-o', str(work / 'stop.exe')], check=True)
+            subprocess.run([host_cpp_compiler(), '-std=c++17', str(work / 'stop.cpp'), '-o', str(work / 'stop.exe')], check=True)
             subprocess.run([str(work / 'stop.exe')], check=True)
 
 

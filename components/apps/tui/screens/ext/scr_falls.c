@@ -378,7 +378,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (ls_wf_source_get() == LS_WF_SRC_P25 && in_use() == LS_RSEL_LORA &&
         !P25.lr_iq_active) {
         ls_panel_notice(sf, body, "P25 / LR2021",
-                        "LR FSK: no IQ", "select LR IQ to see the band");
+                        "LR IQ acquiring", "waiting for the IQ stream");
         return;
     }
     /* Keep HOLD reachable while the shared display is paused. */

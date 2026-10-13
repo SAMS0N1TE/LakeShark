@@ -19,8 +19,8 @@
      - one phase per presented frame before the cap, so progress is
        monotonic without ordinary timing-based phase skips;
      - a phase is held PHASE_US before the next, so a fast UI does not blur
-       through the opening. Idle that is 12 x 20 ms = 240 ms, the cadence the
-       250 ms budget was tuned for; at 65 ms spacing it is ~780 ms;
+       through the opening; slow frames may show fewer phases so decoration
+       never holds the controls behind twelve frame intervals;
      - a DRAW IS NOT A PRESENTATION. ls_anim_draw() only draws and records a
        pending phase; ls_anim_presented() commits it. The app loop discards a
        drawn frame when a font change forces a regrid (compact_ui.cpp
@@ -30,14 +30,13 @@
        presentations after one draw commit once.
 
    Bounds, exactly:
-     - the opening ends on the first frame presented at or after CAP_US, and
-       that frame shows the final phase, so it ends on the finished picture.
-       Worst case on screen is CAP_US plus one frame interval;
+     - at CAP_US the next draw belongs to the real screen. A loaded UI does
+       not owe a final decorative frame before its controls can appear;
      - if nothing is presented for STALL_US it is dropped where it stands,
        which also covers an opening started and never drawn. */
 #define FRAMES    12
 #define PHASE_US  20000      /* a phase holds this long before the next     */
-#define CAP_US    1000000    /* ends on the first presented frame past this */
+#define CAP_US    250000     /* controls take over on the next draw          */
 #define STALL_US  300000     /* nothing presented for this long: drop it    */
 
 static int64_t s_started;    /* when the opening began                      */
@@ -77,10 +76,9 @@ void ls_anim_start(int icon, const char *name, uint8_t hue)
 
 bool ls_anim_active(void) {
     if (s_frame < 0) return false;
-    /* The only unconditional kill: nothing has reached the panel for
-       STALL_US. CAP_US is served by the next presented frame, in draw, so
-       the opening always gets to show its last phase. */
-    if (esp_timer_get_time() - s_phase_at >= STALL_US) {
+    const int64_t now = esp_timer_get_time();
+    /* Decoration has a wall-clock budget even if frames are still arriving. */
+    if (now - s_started >= CAP_US || now - s_phase_at >= STALL_US) {
         s_frame = s_pending = -1;
         return false;
     }
@@ -238,13 +236,9 @@ bool ls_anim_draw(tui_surface *sf, tui_rect area)
     const int64_t now = esp_timer_get_time();
     if (!sf || area.w < 12 || area.h < 6) { s_frame = s_pending = -1; return false; }
 
-    /* The phase to draw: the one on screen until it has had its hold, then
-       the next; or the last one outright once the opening is out of wall
-       clock, so it ends on its finished picture. Nothing is committed here -
-       this frame may never be presented. */
+    /* Nothing is committed here: this frame may never be presented. */
     int f = s_frame;
-    if (now - s_started >= CAP_US) f = FRAMES - 1;
-    else if (s_shown && now - s_phase_at >= PHASE_US && f + 1 < FRAMES) f++;
+    if (s_shown && now - s_phase_at >= PHASE_US && f + 1 < FRAMES) f++;
     const int cx = area.x + area.w / 2;
     const int cy = area.y + area.h / 2;
 

@@ -134,3 +134,6 @@ sim.bmp
 
 # Regenerated every-presentation CartoCore captures (contact sheets are tracked).
 /bench/out/cartomap/frames-*/
+
+# Generated cellular preview harness, compiler objects and simulator captures.
+/bench/out/cell/

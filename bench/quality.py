@@ -322,6 +322,8 @@ def main():
         suite.addTests(unittest.defaultTestLoader.discover(
             str(ROOT / "bench/tests"), pattern="test_p25_scan_read.py"))
         suite.addTests(unittest.defaultTestLoader.discover(
+            str(ROOT / "bench/tests"), pattern="test_p25_lr_demod_guard.py"))
+        suite.addTests(unittest.defaultTestLoader.discover(
             str(ROOT / "bench/tests"), pattern="test_cell_worker.py"))
         suite.addTests(unittest.defaultTestLoader.discover(
             str(ROOT / "bench/tests"), pattern="test_player_shutdown.py"))
@@ -1215,6 +1217,10 @@ class TrackedReferenceTests(unittest.TestCase):
         ('components/cartocore/upstream/src/media/tables.h', 'tools/media_tables.py'),
         ('components/cartocore/upstream/src/places/fold_table.h', 'tools/places/fold.py'),
         ('components/cartocore/upstream/src/ingest/host_cellset.c', 'tools/build_cells.py'),
+        # This document explicitly runs these tools from the companion
+        # LR2021-SDR checkout linked immediately before the commands.
+        ('docs/LR2021_IQ_TX.md', 'tools/lr2021_make_p25.py'),
+        ('docs/LR2021_IQ_TX.md', 'tools/lr2021_tx_upload.py'),
     }
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.

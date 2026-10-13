@@ -505,7 +505,7 @@ static void draw_signal(tui_surface *sf, tui_rect area)
     }
 
     if (P25.lora_rx && !P25.lr_iq_active) {
-        ls_panel_notice(sf, area, "SPECTRUM", "LR FSK: no IQ", "select LR IQ to see the band");
+        ls_panel_notice(sf, area, "SPECTRUM", "LR IQ acquiring", "waiting for the IQ stream");
         return;
     }
     const char *why = ls_wf_idle_reason();
@@ -794,15 +794,13 @@ static const ls_opt_t OPT_P25_POLICY[] = {
 };
 static const ls_opt_ctx_t CTX_P25_POLICY = { .name = "Talkgroups", .job = LS_RSEL_P25, LS_OPT_ROWS(OPT_P25_POLICY) };
 static const ls_opt_t OPT_P25[] = {
-    { .label = "LR2021 receive path", .kind = LS_OPT_ACTION, .arg = 27, .act = o_p25_act, .show = o_p25_show },
     LS_CALLS_MENU,
     { .label = "Talkgroup policy", .kind = LS_OPT_MENU, .sub = &CTX_P25_POLICY },
     { .label = "Control survey", .kind = LS_OPT_ACTION, .arg = 24, .act = o_p25_act, .show = o_p25_show },
-    { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
-    { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "Receiver gain (dB)",    .kind = LS_OPT_LEVEL, .arg = 3,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 50, .step = 1, .radios = LS_OPT_SDR, .show = o_p25_show },
-    { .label = "Receiver gain (AUTO/MAX)", .kind = LS_OPT_ACTION, .arg = 3, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_LORA },
     { .label = "Volume",                .kind = LS_OPT_LEVEL, .arg = 4,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 100, .step = 5, .show = o_p25_show },
     { .label = "Voice gate",            .kind = LS_OPT_LEVEL, .arg = 5,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 99, .step = 1, .show = o_p25_show },
     { .label = "Sync beep",             .kind = LS_OPT_ACTION, .arg = 6,  .act = o_p25_act, .show = o_p25_show },
@@ -870,30 +868,24 @@ static const ls_quick_t QUICK[] = {
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
-/* On the LR2021 the gain keys choose the chip's gain instead: its AGC, or
-   held at the most, which a weak site wants and a strong one does not. */
+/* LR IQ does not use the FSK gain setting. Offer only controls that apply. */
 static const ls_quick_t QUICK_LR[] = {
-    { .label = "TUNE", .kind = LS_QUICK_ACTION, .action = "p25.tune",
-      .key = 't' },
+    { .label = "TUNE", .kind = LS_QUICK_ACTION, .action = "p25.tune", .key = 't' },
     { .label = "VOLUME", .kind = LS_QUICK_STEP, .action = "audio.volume",
       .value = "sys.volume", .delta = 5, .lo = 0, .hi = 100,
       .key = '+', .key_down = '-' },
-    { .label = "GAIN", .kind = LS_QUICK_STEP, .action = "p25.lrgain",
-      .value = "p25.lrgain", .delta = 13, .lo = 0, .hi = 13,
-      .lo_text = "AUTO", .hi_text = "MAX", .key = 'u', .key_down = 'j' },
 };
-_Static_assert(sizeof(QUICK_LR) / sizeof(QUICK_LR[0]) == N_QUICK, "one row each");
 
 static bool lr_receiver(void) { return P25.lora_rx; }
 static const ls_quick_t *quick(void) { return lr_receiver() ? QUICK_LR : QUICK; }
+static int quick_count(void) { return lr_receiver() ? 2 : N_QUICK; }
 
 /* ------------------------------------------------------------- the deck -- */
 
 /* The same controls the scanner grew, because it is the same radio: a card
    with a travel a thumb can press and a bracketed number that is the only way
-   to the keypad. Volume, and the gain the receiver in use actually has - the
-   LR2021's own thirteen steps, AUTO at the bottom and MAX at the top, or the
-   SDR's dB. No dial is drawn for a gain the path does not take. */
+   to the keypad. Volume is available on both receivers; only the SDR has
+   an editable gain dial. */
 enum { P25_CARD_VOL, P25_CARD_GAIN, P25_N_CARD };
 static ls_radio_card_t s_deck[P25_N_CARD];
 static int  s_deck_n;
@@ -902,32 +894,18 @@ static bool s_deck_flash_up;
 static int  s_deck_flash_ttl;
 #define P25_FLASH_FRAMES 6
 
-static bool gain_is_step(void) { return lr_receiver(); }
-
-/* What the gain reads now, in the units of the receiver in use: steps on the
-   chip, tenths of a dB on an SDR. */
+/* RTL gain is in tenths of a dB. LR IQ has no editable gain control. */
 static int gain_now(void)
 {
-    const char *s = ls_quick_state(&quick()[2]);
-    if (!s) return 0;
-    if (!strcmp(s, "AUTO")) return 0;
-    if (!strcmp(s, "MAX")) return 13;
-    return (int)(atof(s) * (gain_is_step() ? 1.0 : 10.0) + 0.5);
+    const char *s = ls_quick_state(&QUICK[2]);
+    return !s || !strcmp(s, "AUTO") ? 0 : (int)(atof(s) * 10.0 + 0.5);
 }
 
 static void gain_apply(double value)
 {
+    if (lr_receiver()) return;
     ls_args_t a = {.n = 1};
     ls_val_t out;
-    if (gain_is_step()) {
-        int step = (int)(value + 0.5);
-        if (step < 0) step = 0;
-        if (step > 13) step = 13;
-        a.v[0].kind = LS_VAL_INT;
-        a.v[0].i = step;
-        ls_action_call("p25.lrgain", &a, &out, ls_quick_grant_builtin());
-        return;
-    }
     if (value < 0) value = 0;
     if (value > 50) value = 50;
     a.v[0].kind = LS_VAL_FLOAT;
@@ -955,16 +933,11 @@ static void deck_fill(void)
         .label = "VOLUME", .value = vol_text, .frac = vol / 100.0f,
         .hue = TUI_GREEN, .live = true, .settable = true };
 
-    const char *state = ls_quick_state(&quick()[2]);
+    const char *state = ls_quick_state(&QUICK[2]);
     const int g = gain_now();
-    if (gain_is_step())
-        snprintf(gain_text, sizeof(gain_text), "%s",
-                 g <= 0 ? "AUTO" : g >= 13 ? "MAX" : state ? state : "-");
-    else
-        snprintf(gain_text, sizeof(gain_text), "%s", g <= 0 ? "AUTO" : state ? state : "-");
+    snprintf(gain_text, sizeof(gain_text), "%s", g <= 0 ? "AUTO" : state ? state : "-");
     s_deck[P25_CARD_GAIN] = (ls_radio_card_t){
-        .label = "GAIN", .value = gain_text,
-        .frac = gain_is_step() ? g / 13.0f : (float)g / 500.0f,
+        .label = "GAIN", .value = gain_text, .frac = (float)g / 500.0f,
         .hue = TUI_MAGENTA, .live = true, .settable = true };
 
     const bool lit = s_deck_flash_ttl > 0;
@@ -983,8 +956,9 @@ static void deck_draw(tui_surface *sf, tui_rect area)
     /* FM's step cards: stacked and as tall as the pane allows, up to the nine
        rows that give the keys a thumb's height, centred so nothing is left
        hanging under them. Landscape puts the two side by side. */
-    const int cols = area.w >= 56 ? 2 : 1;
-    const int rows = (P25_N_CARD + cols - 1) / cols;
+    const int n_cards = lr_receiver() ? 1 : P25_N_CARD;
+    const int cols = area.w >= 56 && n_cards > 1 ? 2 : 1;
+    const int rows = (n_cards + cols - 1) / cols;
     int card_h = (area.h - (rows - 1)) / rows;
     if (card_h > 9) card_h = 9;
     if (card_h < 5) return;
@@ -993,7 +967,7 @@ static void deck_draw(tui_surface *sf, tui_rect area)
     const int x0 = cols > 1 ? area.x : area.x + 1;
     const int w0 = cols > 1 ? area.w : area.w - 2;
     const int cw = w0 / cols;
-    for (int i = 0; i < P25_N_CARD; i++) {
+    for (int i = 0; i < n_cards; i++) {
         const tui_rect box = tui_rect_make(x0 + (i % cols) * cw,
                                            y0 + (i / cols) * (card_h + 1),
                                            cols > 1 ? cw - 1 : w0, card_h);
@@ -1115,14 +1089,14 @@ static bool deck_touch(int col, int row)
             if (pos < 0) pos = 0;
             if (pos > span) pos = span;
             if (i == P25_CARD_VOL) volume_apply(pos * 100.0 / span);
-            else gain_apply(gain_is_step() ? pos * 13.0 / span : pos * 50.0 / span);
+            else gain_apply(pos * 50.0 / span);
             return true;
         }
         if (down || up) {
             /* The keys are the quick controls' own, so a thumb and the
                keyboard move one value by one step. */
             const ls_quick_t *q = &quick()[i == P25_CARD_VOL ? 1 : 2];
-            ls_quick_key(up ? q->key : q->key_down, quick(), N_QUICK,
+            ls_quick_key(up ? q->key : q->key_down, quick(), quick_count(),
                          ls_quick_grant_builtin(), NULL);
             s_deck_flash = i;
             s_deck_flash_up = up;
@@ -1131,9 +1105,6 @@ static bool deck_touch(int col, int row)
         }
         if (i == P25_CARD_VOL)
             ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(), volume_apply);
-        else if (gain_is_step())
-            ls_numpad_open("GAIN", "LR2021 step, 0 is AUTO and 13 is MAX",
-                           gain_now(), gain_apply);
         else
             ls_numpad_open("GAIN", "dB, 0 is automatic", gain_now() / 10.0, gain_apply);
         return true;
@@ -1154,8 +1125,7 @@ static void radio_view(void)
     else snprintf(s_view.detail[0],64,"NAC ---   TG ---   UNIT ---");
     snprintf(s_view.detail[1],64,"%s",receive_label());
     if(lr_receiver()) {
-        const char *g=ls_quick_state(&QUICK_LR[2]);
-        snprintf(s_view.detail[2],64,"GAIN %s",g?g:"-");
+        snprintf(s_view.detail[2],64,"LR IQ receive");
     } else snprintf(s_view.detail[2],64,"GAIN %.1f dB",P25.rtl_gain_tenths/10.0);
     snprintf(s_view.detail[3],64,"AUDIO %s",s_view.receiver.receiver_streaming?voice_status():"OFFLINE");
     if(p25_p2_enabled()) {
@@ -1180,7 +1150,7 @@ static void radio_action(char c)
         return;
     }
     if(c=='T') scan_engine_stop();
-    if(c) ls_quick_key(c,quick(),N_QUICK,ls_quick_grant_builtin(),NULL);
+    if(c) ls_quick_key(c,quick(),quick_count(),ls_quick_grant_builtin(),NULL);
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -1294,7 +1264,7 @@ static void draw(tui_surface *sf, tui_rect area)
                              s_key, s_key_act);
         else {
             deck_draw(sf, s_quick_rect);
-            if (!s_deck_n) ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), N_QUICK);
+            if (!s_deck_n) ls_quick_draw_posture(sf, s_quick_rect, wide, quick(), quick_count());
         }
     }
 
@@ -1342,7 +1312,7 @@ static bool key(ls_tk_t k, char ch)
         if (k == LS_TK_CHAR && (ch == 'h' || ch == 'H')) { dmr_hold(); return true; }
         if (k == LS_TK_CHAR && (ch == 'r' || ch == 'R')) { open_radio(); return true; }
         if (k == LS_TK_CHAR && (ch == '+' || ch == '-'))
-            return ls_quick_key(ch, quick(), N_QUICK, ls_quick_grant_builtin(), NULL);
+            return ls_quick_key(ch, quick(), quick_count(), ls_quick_grant_builtin(), NULL);
         return false;
     }
     /* R is RADIO on every page, except inside the scanner's lists, where
@@ -1385,7 +1355,7 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_CHAR) {
         /* The same controls the panel draws, so a keyboard and a thumb reach
            them by one path. After the page keys, so a digit still pages. */
-        if (ls_quick_key(ch, quick(), N_QUICK,
+        if (ls_quick_key(ch, quick(), quick_count(),
                          ls_quick_grant_builtin(), NULL)) return true;
     }
     /* SIGNAL hands its keys to the waterfall: it is the waterfall, and a
@@ -1437,7 +1407,7 @@ static bool touch(int col, int row)
             return true;
         }
         if (s_deck_n) { deck_touch(col, row); return true; }
-        if (ls_quick_touch(col, row, quick(), N_QUICK,
+        if (ls_quick_touch(col, row, quick(), quick_count(),
                            ls_quick_grant_builtin(), NULL)) return true;
         return true;
     }

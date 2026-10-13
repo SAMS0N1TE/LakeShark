@@ -50,7 +50,6 @@
 #include "p25_p2_follow.h"
 #include "p25_voice_hold.h"
 #include "p25_sync_confirm.h"
-#include "p25_os4_decode.h"
 #include "p25_symbol_synth.h"
 #include "p25_split.h"
 #include "ls_lora.h"
@@ -413,6 +412,8 @@ static void p25_apply_cqpsk_request(void)
 
 static void p25_apply_demod_mode(demod_mode_t mode)
 {
+    /* The LR source owns its fixed C4FM DSP until it releases the stream. */
+    if (P25.lr_iq_active) return;
     P25.demod_gain = p25_demod_output_gain(mode, P25.demod_invert);
     if (!dsp_select_mode(&s_dsp, mode, P25.demod_gain)) {
         p25_publish_demod();
@@ -433,6 +434,9 @@ static void p25_apply_demod_mode(demod_mode_t mode)
 
 void p25_demod_set_preference(int preference)
 {
+    /* Preserve the SDR preference and its settings while LR IQ owns DSP.
+       Refuse before changing Phase II, acquisition, or the shared pipeline. */
+    if (P25.lr_iq_active) return;
     p25_p2_enable(false);
     int normalized = p25_demod_preference_normalize(preference);
     p25_demod_control_init(&s_demod_control, normalized,
@@ -445,7 +449,10 @@ void p25_demod_set_preference(int preference)
 }
 
 int p25_demod_get_preference(void) { return s_demod_control.preference; }
-demod_mode_t p25_demod_get_active(void) { return s_demod_control.active; }
+demod_mode_t p25_demod_get_active(void)
+{
+    return P25.lr_iq_active ? DEMOD_C4FM : s_demod_control.active;
+}
 const char *p25_demod_get_name(void)
 {
     /* The LR2021's stream is C4FM only, whatever the SDR's hunt last said. */
@@ -1452,7 +1459,7 @@ static bool p25_iq_present(void)
 static bool p25_lora_wanted(void)
 {
     if (p25_split_wanted()) return false;
-    if (!(ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) return false;
+    if (strcmp(ls_lora_chip_name(), "LR2021")) return false;
     if (ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) return true;
     return !p25_iq_present();
 }
@@ -1481,112 +1488,15 @@ static void p25_decoder_retuned(uint32_t f)
     p25_owner_wake();
 }
 
-/* P25 Phase 1 on the LR2021. Its FSK engine samples C4FM at four bits a
-   symbol, 19200 bps, as a stream; p25_os4_decode turns the bits into
-   symbols, and those reach the decoder's ring as the demodulator's samples
-   would. The 8-bit trigger word matches within milliseconds of each packet
-   ending, so the stream is close to continuous; the decoder finds the frame
-   syncs itself. The engine set for 2400 Hz of deviation, not C4FM's 1800,
-   tells the inner levels from the outer ones better: on the same calls,
-   packet for packet against 1800, it gave 12-14% more voice frames exact
-   (p25_os4_lut is learned at this setting). At 3600 the trigger seldom
-   fires. */
-#define P25_LORA_BITRATE   19200u
-#define P25_LORA_DEV_HZ    2400u
-#define P25_LORA_FILTER_HZ 12019u
-#define P25_LORA_TRIGGER   0xCC000000u
-#define P25_LORA_READ      512
-#define P25_LORA_BEHIND    128   /* bytes waiting at a read that send it to the lookup */
-#define P25_LORA_READ_AGAIN 64   /* a read of fewer bytes ends the pass: 27 ms of air */
-#define P25_LORA_OUT       (P25_LORA_READ * 2 + 24 + P25_OS4_GAP_MAX + P25_OS4_HOLD)
-#define P25_LORA_QUEUE     4096
-
-static EXT_RAM_BSS_ATTR p25_os4_decoder_t s_os4;
-static EXT_RAM_BSS_ATTR uint8_t s_lora_bytes[P25_LORA_READ];
-static EXT_RAM_BSS_ATTR uint8_t s_lora_dibits[P25_LORA_OUT];
-/* Symbols waiting for room in the decoder's ring: a bridged packet seam
-   sends up to P25_OS4_GAP_MAX + P25_OS4_HOLD at once, more than it holds. */
-static EXT_RAM_BSS_ATTR uint8_t s_lora_queue[P25_LORA_QUEUE];
-static size_t s_lora_q_head, s_lora_q_n;
-
-/* RX owns the socket session and OS4. The decode owner consumes a bounded
- * dibit queue; no SPI/USB operation runs under the queue lock. */
-static bool s_split_held, s_split_requested, s_split_streaming;
-static uint32_t s_split_lr_hz;
-static int64_t s_split_retry_us;
-
+/* The former LR FSK control-channel helper is disabled. Keep the existing
+ * single-SDR fallback until a separate IQ control-channel owner exists. */
 static void p25_split_radio_stop(void)
 {
     atomic_store(&s_split_available, false);
-    if (s_split_streaming) {
-        portENTER_CRITICAL(&s_split_lock);
-        s_split_head = 0;
-        s_split_n = 1;
-        s_split_queue[0] = P25_OS4_FILL;
-        portEXIT_CRITICAL(&s_split_lock);
-    }
-    if (s_split_streaming) (void)ls_lora_fsk_end();
-    if (s_split_requested) (void)ls_mesh_radio_hold_bg(false);
-    s_split_streaming = s_split_held = s_split_requested = false;
-    s_split_lr_hz = 0;
 }
-
 static void p25_split_radio_service(void)
 {
-    uint32_t hz = atomic_load(&s_split_control_hz);
-    bool wanted = p25_split_wanted();
-    ls_radio_endpoint_info_t rtl;
-    bool available = wanted && s_session && s_radio_is_rtl &&
-        (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) &&
-        ls_lora_rx_range_ok(ls_lora_caps(), hz, hz) && !ls_mesh_radio_wanted() &&
-        ls_radio_endpoint_get(LS_RADIO_ENDPOINT_RTL_USB, &rtl) == LS_RADIO_OK &&
-        rtl.present;
-    if (!available || (s_split_streaming && hz != s_split_lr_hz)) {
-        p25_split_radio_stop();
-        return;
-    }
-    if (!s_split_streaming) {
-        int64_t now = esp_timer_get_time();
-        if (now < s_split_retry_us) return;
-        s_split_retry_us = now + 1000000LL;
-        s_split_requested = true;
-        s_split_held = ls_mesh_radio_hold_bg(true);
-        if (!s_split_held) return;
-        const ls_fsk_cfg_t cfg = {
-            .freq_hz = hz, .bitrate = P25_LORA_BITRATE,
-            .deviation_hz = P25_LORA_DEV_HZ,
-            .bandwidth_hz = ls_lora_fsk_bw_snap(P25_LORA_FILTER_HZ),
-            .sync_word = P25_LORA_TRIGGER, .sync_bits = 8, .stream = true,
-        };
-        if (ls_lora_fsk_begin(&cfg) != ESP_OK) {
-            p25_split_radio_stop();
-            return;
-        }
-        p25_os4_reset(&s_os4);
-        s_split_streaming = true;
-        s_split_lr_hz = hz;
-    }
-    atomic_store(&s_split_available, true);
-    for (unsigned pass = 0; pass < 4; ++pass) {
-        bool restarted = false;
-        int n = ls_lora_fsk_stream_read(s_lora_bytes, sizeof(s_lora_bytes), &restarted);
-        if (n < 0) { p25_split_radio_stop(); break; }
-        if (!n) break;
-        if (restarted) p25_os4_seam(&s_os4);
-        s_os4.nn_off = n >= P25_LORA_BEHIND;
-        size_t k = p25_os4_decode(&s_os4, s_lora_bytes, (size_t)n,
-                                  s_lora_dibits, sizeof(s_lora_dibits));
-        portENTER_CRITICAL(&s_split_lock);
-        for (size_t i = 0; i < k; ++i) {
-            if (s_split_n == sizeof(s_split_queue)) { s_split_drops++; continue; }
-            s_split_queue[(s_split_head + s_split_n) % sizeof(s_split_queue)] =
-                P25_OS4_DIBIT(s_lora_dibits[i]);
-            s_split_n++;
-        }
-        portEXIT_CRITICAL(&s_split_lock);
-        p25_owner_wake();
-        if (n < P25_LORA_READ_AGAIN) break;
-    }
+    p25_split_radio_stop();
 }
 
 static void p25_split_owner_service(void)
@@ -1670,27 +1580,6 @@ static void p25_split_owner_service(void)
         !available ? "LR unavailable/busy/out of range" :
         !s_split.active ? "LR2021 CC weak/acquiring" : p25_split_reason(s_split.reason));
 }
-
-static p25_lr_cfg_t s_lr_cfg = { P25_LORA_BITRATE, P25_LORA_DEV_HZ, P25_LORA_FILTER_HZ, 0, 0 };
-static volatile bool s_lr_restart;
-static p25_lr_cfg_t s_lr_alt;
-static volatile bool s_lr_alt_on;
-static bool s_lr_on_alt;                 /* this session runs the alternate */
-
-static const p25_lr_cfg_t *p25_lr_now(void) { return s_lr_on_alt ? &s_lr_alt : &s_lr_cfg; }
-
-/* The raw capture: a ring of the stream's bytes as the chip hands them over,
-   and where each packet began, with its time from the capture's start. A
-   reader keeps SAFE bytes away from the writer, as a dump takes a minute. */
-#define P25_LR_CAP_BYTES (2u * 1024u * 1024u)
-#define P25_LR_CAP_SAFE  (P25_LR_CAP_BYTES - 512u * 1024u)
-#define P25_LR_CAP_PKTS  1024u
-static EXT_RAM_BSS_ATTR uint8_t s_lr_cap[P25_LR_CAP_BYTES];
-static EXT_RAM_BSS_ATTR uint32_t s_lr_cap_off[P25_LR_CAP_PKTS], s_lr_cap_ms[P25_LR_CAP_PKTS];
-static EXT_RAM_BSS_ATTR uint8_t s_lr_cap_alt[P25_LR_CAP_PKTS];
-static volatile uint32_t s_lr_cap_n, s_lr_cap_pkts;
-static volatile bool s_lr_cap_on, s_lr_cap_fresh;
-static int64_t s_lr_cap_t0;
 
 /* The symbol capture: four dibits to a byte, a ring counted in symbols. */
 #define P25_SYM_CAP_BYTES (1024u * 1024u)
@@ -1785,451 +1674,18 @@ bool p25_sym_capture_read(uint32_t at, uint8_t *out, uint32_t n)
     return true;
 }
 
-void p25_lr_get_cfg(p25_lr_cfg_t *out) { *out = s_lr_cfg; }
-
-void p25_lr_set_cfg(const p25_lr_cfg_t *cfg)
-{
-    s_lr_cfg = *cfg;
-    s_lr_restart = true;
-}
-
-/* The gain chosen on the P25 screen, kept across boots: 0 is the chip's AGC,
-   any other step is held with RX boost 7. Near the transmitters the AGC read
-   a quarter more frames than step 13; at a weak site step 13 read several
-   times the AGC's. */
-static void p25_lr_gain_put(uint8_t step)
-{
-    s_lr_cfg.rx_gain_step = step;
-    s_lr_cfg.rx_boost_step = step ? 7 + 1 : 0;
-}
-
-uint8_t p25_lr_gain_step(void) { return s_lr_cfg.rx_gain_step; }
-
-void p25_lr_choose_gain(uint8_t step)
-{
-    if (step > 13) step = 13;
-    p25_lr_gain_put(step);
-    s_lr_restart = true;
-    settings_set_p25_lr_gain(step);
-}
-
-/* The lookup's doubts are what the soft FEC works from: without them every
-   bit reads as sure, so the FEC goes hard with the lookup. */
-void p25_lr_set_lut(bool on)
-{
-    p25_os4_lut_on = on;
-    if (!s_lr_on_alt) s_os4.use_lut = on;
-    if (P25.lora_rx) s_dsd_opts.soft_symbols = s_os4.use_lut || s_os4.use_nn;
-}
-bool p25_lr_lut(void) { return p25_os4_lut_on != 0; }
-
-/* The network decides later than the lookup (its window reaches further
-   ahead), so it takes effect at the stream's next reset rather than in the
-   middle of one. */
-void p25_lr_set_nn(bool on)
-{
-    p25_os4_nn_on = on;
-    s_lr_restart = true;
-}
-bool p25_lr_nn(void) { return p25_os4_nn_on != 0; }
-
-void p25_lr_set_alt(const p25_lr_cfg_t *alt)
-{
-    if (alt) s_lr_alt = *alt;
-    s_lr_alt_on = alt != NULL;
-    s_lr_restart = true;
-}
-
-bool p25_lr_get_alt(p25_lr_cfg_t *out)
-{
-    *out = s_lr_alt;
-    return s_lr_alt_on;
-}
-
-void p25_lr_capture_start(void)
-{
-    s_lr_cap_on = false;
-    s_lr_cap_n = s_lr_cap_pkts = 0;
-    s_lr_cap_t0 = esp_timer_get_time();
-    s_lr_cap_fresh = true;
-    s_lr_cap_on = true;
-}
-
-void p25_lr_capture_stop(void) { s_lr_cap_on = false; }
-
-void p25_lr_capture_info(p25_lr_capture_info_t *out)
-{
-    out->on = s_lr_cap_on;
-    out->bytes = s_lr_cap_n;
-    out->packets = s_lr_cap_pkts;
-    out->oldest = out->bytes > P25_LR_CAP_SAFE ? out->bytes - P25_LR_CAP_SAFE : 0;
-    out->freq_hz = s_tune_freq_hz;
-    out->cfg = s_lr_cfg;
-}
-
-bool p25_lr_capture_read(uint32_t at, uint8_t *out, uint32_t n)
-{
-    const uint32_t end = s_lr_cap_n;
-    if (at > end || n > end - at || end - at > P25_LR_CAP_SAFE) return false;
-    for (uint32_t i = 0; i < n;) {
-        const uint32_t pos = (at + i) % P25_LR_CAP_BYTES;
-        uint32_t run = P25_LR_CAP_BYTES - pos;
-        if (run > n - i) run = n - i;
-        memcpy(out + i, &s_lr_cap[pos], run);
-        i += run;
-    }
-    return true;
-}
-
-bool p25_lr_capture_packet(uint32_t i, uint32_t *offset, uint32_t *ms, bool *alt)
-{
-    const uint32_t n = s_lr_cap_pkts;
-    if (i >= n || n - i > P25_LR_CAP_PKTS) return false;
-    *offset = s_lr_cap_off[i % P25_LR_CAP_PKTS];
-    *ms = s_lr_cap_ms[i % P25_LR_CAP_PKTS];
-    if (alt) *alt = s_lr_cap_alt[i % P25_LR_CAP_PKTS] != 0;
-    return true;
-}
-
-static void p25_lr_capture_put(const uint8_t *b, size_t n, bool restarted)
-{
-    const uint32_t at = s_lr_cap_n;
-    if (restarted || s_lr_cap_fresh) {
-        const uint32_t k = s_lr_cap_pkts % P25_LR_CAP_PKTS;
-        s_lr_cap_off[k] = at;
-        s_lr_cap_ms[k] = (uint32_t)((esp_timer_get_time() - s_lr_cap_t0) / 1000);
-        s_lr_cap_alt[k] = s_lr_on_alt;
-        s_lr_cap_pkts++;
-    }
-    s_lr_cap_fresh = false;
-    for (size_t i = 0; i < n;) {
-        const uint32_t pos = (at + (uint32_t)i) % P25_LR_CAP_BYTES;
-        size_t run = P25_LR_CAP_BYTES - pos;
-        if (run > n - i) run = n - i;
-        memcpy(&s_lr_cap[pos], b + i, run);
-        i += run;
-    }
-    s_lr_cap_n = at + (uint32_t)n;
-}
-
-static esp_err_t p25_lora_begin(uint32_t hz)
-{
-    const p25_lr_cfg_t *now = p25_lr_now();
-    const ls_fsk_cfg_t cfg = {
-        .freq_hz = p25_lr_tuned_hz(hz, now),
-        .bitrate = now->bitrate,
-        .deviation_hz = now->deviation_hz,
-        .bandwidth_hz = ls_lora_fsk_bw_snap(now->bandwidth_hz),
-        .sync_word = P25_LORA_TRIGGER,
-        .sync_bits = 8,
-        .stream = true,
-        .rx_boost_step = now->rx_boost_step,
-        .pulse_shape = now->pulse_shape,
-        .rx_gain_step = now->rx_gain_step,
-    };
-    p25_os4_reset(&s_os4);
-    /* the lookup, the network and their doubts are learned for the main
-       setting's bitrate, deviation, filter and pulse; an alternate that only
-       moves the front end (boost, gain, trim) keeps them */
-    if (s_lr_on_alt && (s_lr_alt.bitrate != s_lr_cfg.bitrate ||
-                        s_lr_alt.deviation_hz != s_lr_cfg.deviation_hz ||
-                        s_lr_alt.bandwidth_hz != s_lr_cfg.bandwidth_hz ||
-                        s_lr_alt.pulse_shape != s_lr_cfg.pulse_shape))
-        s_os4.use_lut = s_os4.use_nn = 0;
-    s_dsd_opts.soft_symbols = s_os4.use_lut || s_os4.use_nn;
-    s_lora_q_n = 0;
-    s_lr_cap_fresh = true;
-    return ls_lora_fsk_begin(&cfg);
-}
-
-static p25_lr_flow_t s_lr_flow;
-static uint64_t s_lr_dec_us, s_lr_dec_bytes;
-
-void p25_lr_get_flow(p25_lr_flow_t *out)
-{
-    *out = s_lr_flow;
-    out->us_per_kb = s_lr_dec_bytes ? (uint32_t)(s_lr_dec_us * 1024u / s_lr_dec_bytes) : 0;
-}
-
-static void p25_lora_queue(const uint8_t *dibits, size_t n)
-{
-    uint32_t drops = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (s_lora_q_n == P25_LORA_QUEUE) { drops++; continue; }
-        s_lora_queue[(s_lora_q_head + s_lora_q_n) % P25_LORA_QUEUE] = dibits[i];
-        s_lora_q_n++;
-    }
-    if (s_lora_q_n > s_lr_flow.q_max) s_lr_flow.q_max = (uint32_t)s_lora_q_n;
-    s_lr_flow.dropped += drops;
-    if (drops) {
-        portENTER_CRITICAL(&s_acquisition_lock);
-        s_acquisition_status.ring_drops += drops * P25_SYNTH_SAMPLES_PER_SYMBOL;
-        portEXIT_CRITICAL(&s_acquisition_lock);
-    }
-}
-
-/* Queued symbols into the decoder's ring, as the demodulator's samples, as
-   far as it has room; the rest wait for the next pass. */
-static int p25_lora_feed(void)
-{
-    int fed = 0;
-    while (s_lora_q_n) {
-        const int read_idx = s_ring.read_idx;
-        const int room = (read_idx - s_ring.write_idx - 1 + DSD_SAMPLE_RING_SIZE) % DSD_SAMPLE_RING_SIZE;
-        if (room < P25_SYNTH_SAMPLES_PER_SYMBOL) break;
-        int16_t samples[P25_SYNTH_SAMPLES_PER_SYMBOL];
-        const uint8_t sym = s_lora_queue[s_lora_q_head];
-        p25_symbol_synth(P25_OS4_DIBIT(sym), samples);
-        for (int k = 0; k < P25_SYNTH_SAMPLES_PER_SYMBOL; k++) {
-            s_ring.buf[s_ring.write_idx] = samples[k];
-            s_ring.aux[s_ring.write_idx] = P25_OS4_DOUBTS(sym);
-            s_ring.write_idx = (s_ring.write_idx + 1) % DSD_SAMPLE_RING_SIZE;
-        }
-        s_lora_q_head = (s_lora_q_head + 1) % P25_LORA_QUEUE;
-        s_lora_q_n--;
-        fed += P25_SYNTH_SAMPLES_PER_SYMBOL;
-    }
-    return fed;
-}
-
-/* Until the app stops, the choice moves to an SDR (one plugged in is taken
-   unless the chip was chosen), something else asks for the chip (an
-   experiment, a sweep, LoRa Labs), or the chip keeps failing. Tunes and
-   grants arrive as they do for an SDR; a scan, a gain and Phase 2 need IQ
-   and are not done here. Returns with the chip handed back to the mesh. */
+/* LR2021 P25 has one receive path: sustained raw IQ. Legacy false requests
+ * are rejected; saved FSK preferences are ignored at registration. */
 static atomic_bool s_lr_iq_requested = true;
+/* Pager's legacy sign-stream probe shared these cached gain settings. Preserve
+ * that probe without retaining any P25 FSK receiver or classifier. */
+static p25_lr_cfg_t s_pager_legacy_gain;
+void p25_lr_get_cfg(p25_lr_cfg_t *out) { *out = s_pager_legacy_gain; }
 bool p25_lr_iq_select(bool enabled)
 {
-    if (enabled && strcmp(ls_lora_chip_name(), "LR2021")) return false;
-    if (!settings_set_p25_lr_iq(enabled)) return false;
-    atomic_store(&s_lr_iq_requested, enabled);
-    P25.lr_iq_requested = enabled;
+    if (!enabled || strcmp(ls_lora_chip_name(), "LR2021")) return false;
+    P25.lr_iq_requested = true;
     return true;
-}
-
-static void p25_lora_run(void)
-{
-    if (ls_mesh_radio_wanted()) {
-        if (!P25.lora_wait) {
-            P25.lora_wait = true;
-            ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_BUSY);
-            sys_log(1, "The %s is in use elsewhere; P25 listens again when it is free",
-                    ls_lora_chip_name());
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
-        return;
-    }
-    bool held = false;
-    const int64_t give_up = esp_timer_get_time() + 1000000;
-    while (!(held = ls_mesh_radio_hold_bg(true)) && !ls_mesh_radio_wanted() &&
-           esp_timer_get_time() < give_up)
-        vTaskDelay(pdMS_TO_TICKS(10));
-    if (!held) {
-        ls_mesh_radio_hold_bg(false);
-        if (!ls_mesh_radio_wanted())
-            sys_log(4, "The mesh would not release the %s", ls_lora_chip_name());
-        vTaskDelay(pdMS_TO_TICKS(500));
-        return;
-    }
-    P25.lora_wait = false;
-    P25.lora_rx = true;
-    p25_p2_enable(false);
-    /* The chip cannot say whether a call is encrypted as often as an SDR
-       can, so voice plays until a call is shown encrypted. */
-    s_dsd_opts.play_unproven = 1;
-    /* a symbol lost at a packet seam reaches the decoder marked as such, and
-       the lookup's doubts reach the IMBE FEC */
-    s_dsd_opts.erasure_marks = 1;
-    s_dsd_opts.soft_symbols = p25_os4_lut_on != 0 || p25_os4_nn_on != 0;
-    p25_decoder_retuned(s_tune_freq_hz);
-    s_lora_q_n = 0;
-
-    bool running = false;
-    uint32_t told_hz = 0;
-    unsigned session_packets = 0;        /* packets begun in this session */
-    int failures = 0, read_faults = 0;
-    uint32_t byte_bucket = 0, sample_bucket = 0;
-    int64_t now = esp_timer_get_time();
-    int64_t next_choice = now + 500000, next_rssi = now, stats_ts = now, next_begin = now;
-
-    while (s_app_active && !ls_mesh_radio_wanted() &&
-           (!atomic_load(&s_lr_iq_requested) || strcmp(ls_lora_chip_name(), "LR2021"))) {
-        const int64_t t_iter = esp_timer_get_time();
-        uint32_t want_hz = 0;
-        ls_iq_control_request_t request = {0};
-        if (ls_iq_control_take(&s_radio_control, &request) &&
-            (request.flags & LS_IQ_CONTROL_TUNE))
-            want_hz = request.center_hz;
-        if (SCAN.request_tune && SCAN.peak_freq > 0) {
-            SCAN.request_tune = false;
-            want_hz = SCAN.peak_freq;
-        }
-        if (SCAN.request_scan) {
-            SCAN.request_scan = false;
-            sys_log(4, "A band scan needs an SDR; the %s listens to one channel",
-                    ls_lora_chip_name());
-        }
-        if (want_hz) {
-            if (want_hz != s_tune_freq_hz || !running) {
-                p25_decoder_retuned(want_hz);
-                s_lora_q_n = 0;
-                if (running && ls_lora_fsk_retune(want_hz) == ESP_OK) {
-                    s_radio_freq_hz = want_hz;
-                    p25_os4_reset(&s_os4);
-                } else if (running) {
-                    (void)ls_lora_fsk_end();
-                    running = false;
-                }
-                sys_log(1, "Tuned: %.4f MHz", want_hz / 1e6);
-            }
-            const bool reach = ls_lora_rx_range_ok(ls_lora_caps(), want_hz, want_hz);
-            ls_iq_control_note_tune_result(&s_radio_control, want_hz,
-                                           reach ? LS_RADIO_OK : LS_RADIO_ERR_UNSUPPORTED,
-                                           want_hz);
-        }
-
-        if (s_lr_restart) {
-            /* new receive settings: a new session */
-            s_lr_restart = false;
-            s_lr_on_alt = false;
-            if (running) { (void)ls_lora_fsk_end(); running = false; }
-            next_begin = esp_timer_get_time();
-        }
-        if (!running && esp_timer_get_time() >= next_begin) {
-            const uint32_t hz = s_tune_freq_hz;
-            if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) {
-                if (told_hz != hz) {
-                    told_hz = hz;
-                    sys_log(4, "The %s tunes %u MHz and up, not %.4f MHz",
-                            ls_lora_chip_name(), (unsigned)(LS_LORA_RX_MIN_HZ / 1000000u), hz / 1e6);
-                    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_UNSUPPORTED);
-                }
-            } else {
-                const esp_err_t e = p25_lora_begin(hz);
-                if (e == ESP_OK) {
-                    running = true;
-                    session_packets = 0;
-                    failures = read_faults = 0;
-                    s_radio_freq_hz = hz;
-                    ls_iq_control_note_tune_result(&s_radio_control, hz, LS_RADIO_OK, hz);
-                    ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
-                    sys_log(1, "Radio: %s %.4f MHz", ls_lora_chip_name(), hz / 1e6);
-                } else {
-                    sys_log(4, "%s receive did not start: %s", ls_lora_chip_name(), esp_err_to_name(e));
-                    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_IO);
-                    failures++;
-                    next_begin = esp_timer_get_time() + (failures < 5 ? 1000000 : 5000000);
-                }
-            }
-        }
-
-        if (running) {
-            for (;;) {
-                bool restarted = false;
-                const int n = ls_lora_fsk_stream_read(s_lora_bytes, sizeof(s_lora_bytes), &restarted);
-                if (n < 0) {
-                    P25.read_errors_total++;
-                    if (++read_faults >= 50) {
-                        sys_log(4, "%s stopped answering, starting again", ls_lora_chip_name());
-                        (void)ls_lora_fsk_end();
-                        running = false;
-                    }
-                    break;
-                }
-                read_faults = 0;
-                if (n == 0) break;
-                if (s_lr_cap_on) p25_lr_capture_put(s_lora_bytes, (size_t)n, restarted);
-                byte_bucket += (uint32_t)n;
-                if (restarted && s_lr_alt_on && ++session_packets >= 2) {
-                    /* a whole packet on this setting: the other one next */
-                    s_lr_on_alt = !s_lr_on_alt;
-                    (void)ls_lora_fsk_end();
-                    running = false;
-                    next_begin = esp_timer_get_time();
-                    break;
-                }
-                if (p25_lr_now()->bitrate != P25_LORA_BITRATE) {
-                    if (n < P25_LORA_READ_AGAIN) break;
-                    continue;
-                }
-                /* a new packet: bits were lost before it */
-                if (restarted) p25_os4_seam(&s_os4);
-                /* Half the chip's 256-byte buffer waiting: the reader is 53 ms
-                   behind, so this read goes by the lookup, a few microseconds
-                   a symbol where the network takes 27 (190 from PSRAM with
-                   its tables out of the cache). */
-                s_os4.nn_off = n >= P25_LORA_BEHIND;
-                s_lr_flow.lookup_reads += s_os4.nn_off && s_os4.use_nn;
-                s_lr_flow.reads++;
-                const int64_t t_dec = esp_timer_get_time();
-                const size_t k = p25_os4_decode(&s_os4, s_lora_bytes, (size_t)n,
-                                                s_lora_dibits, sizeof(s_lora_dibits));
-                const uint32_t dec_us = (uint32_t)(esp_timer_get_time() - t_dec);
-                if (dec_us > s_lr_flow.chunk_us_max) s_lr_flow.chunk_us_max = dec_us;
-                s_lr_dec_us += dec_us;
-                s_lr_dec_bytes += (uint64_t)n;
-                p25_lora_queue(s_lora_dibits, k);
-                /* each read on to the frame decoder at once: fed only when a
-                   read came back empty, and with the network deciding, the
-                   next read always found a few bytes, so the frame decoder
-                   got each 3.4 s packet at once, past the queue (04:15 call,
-                   2026-10-05, 69 of the RTL's 189 frames) */
-                sample_bucket += (uint32_t)p25_lora_feed();
-                /* little waiting: the chip fills while this task sleeps.
-                   Reading on until a read came back empty polled the chip
-                   1800 times a second through every packet. */
-                if (n < P25_LORA_READ_AGAIN) break;
-            }
-        }
-        sample_bucket += (uint32_t)p25_lora_feed();
-
-        now = esp_timer_get_time();
-        if (running && now >= next_rssi) {
-            /* The channel scanner's stop gate reads this level too, and
-               samples it faster than a person watches it. */
-            next_rssi = now + (scan_engine_active() ? 50000 : 250000);
-            float dbm;
-            if (ls_lora_rssi_inst(&dbm) == ESP_OK) {
-                P25.lora_rssi_dbm = dbm;
-                float level = (dbm + 120.0f) / 70.0f;
-                level = level < 0.0f ? 0.0f : level > 1.0f ? 1.0f : level;
-                P25.iq_level = level;
-                p25_rx_power = level;
-            }
-        }
-        P25.ring_fill = dsd_ring_available(&s_ring);
-        if (now - stats_ts > 1000000LL) {
-            P25.iq_bytes_sec = byte_bucket;
-            P25.audio_samples_sec = sample_bucket;
-            P25.iq_bytes_total += byte_bucket;
-            byte_bucket = sample_bucket = 0;
-            stats_ts = now;
-        }
-        if (now >= next_choice) {
-            next_choice = now + 500000;
-            if (!p25_lora_wanted()) {
-                sys_log(1, "SDR attached or chosen, leaving the %s", ls_lora_chip_name());
-                break;
-            }
-        }
-        if ((uint32_t)(now - t_iter) > s_lr_flow.iter_us_max) s_lr_flow.iter_us_max = (uint32_t)(now - t_iter);
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    if (running) (void)ls_lora_fsk_end();
-    ls_mesh_radio_hold_bg(false);
-    s_lora_q_n = 0;
-    s_dsd_opts.play_unproven = 0;
-    s_dsd_opts.erasure_marks = 0;
-    s_dsd_opts.soft_symbols = 0;
-    s_radio_freq_hz = 0;
-    P25.lora_rx = false;
-    P25.iq_level = 0.0f;
-    P25.iq_bytes_sec = 0;
-    P25.audio_samples_sec = 0;
-    p25_rx_power = 0.0f;
-    ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_STOPPED);
-    p25_decoder_retuned(s_tune_freq_hz);
 }
 
 #include "p25_lr_iq_run.inc"
@@ -2297,7 +1753,7 @@ static void p25_rx_task(void *arg)
        400 us; there the decoder fell behind and its ring overflowed every ~2 s. */
     bool decoder_created = !s_dsd_running && ls_radio_decode_worker_start(
         dsd_decoder_task, "dsd_decode", 10,
-        atomic_load(&s_lr_iq_requested) && !strcmp(ls_lora_chip_name(), "LR2021") ? 1 : 0);
+        !strcmp(ls_lora_chip_name(), "LR2021") ? 1 : 0);
     if (!decoder_created) {
         atomic_store_explicit(&s_dsd_start, P25_DSD_START_FAILED,
                               memory_order_release);
@@ -2358,8 +1814,7 @@ static void p25_rx_task(void *arg)
         }
         p25_split_radio_service();
         if (!s_session && p25_lora_wanted()) {
-            if (atomic_load(&s_lr_iq_requested) && !strcmp(ls_lora_chip_name(), "LR2021")) p25_lr_iq_run();
-            else p25_lora_run();
+            p25_lr_iq_run();
             continue;
         }
         P25.lora_wait = false;
@@ -3089,9 +2544,11 @@ int p25_app_register(void)
 {
     /* Here, on the boot task: the P25 tasks' stacks are in PSRAM, where a
        flash read asserts. */
-    p25_lr_gain_put((uint8_t)settings_get_p25_lr_gain());
-    const bool iq = settings_get_p25_lr_iq();
-    atomic_store(&s_lr_iq_requested, iq);
-    P25.lr_iq_requested = iq;
+    /* Registration runs on the internal-stack boot task. Ignore the retired
+       saved FSK preference without flash writes from a receive owner. */
+    s_pager_legacy_gain.rx_gain_step = (uint8_t)settings_get_p25_lr_gain();
+    s_pager_legacy_gain.rx_boost_step = s_pager_legacy_gain.rx_gain_step ? 8 : 0;
+    atomic_store(&s_lr_iq_requested, true);
+    P25.lr_iq_requested = true;
     return app_register(&P25_APP);
 }

@@ -31,40 +31,40 @@ carries the ESS), alternates LDU1/LDU2, and closes with a TDU or TDULC.
 
 ## On the LR2021, with no SDR
 
-The LR2021 version of the T-Display P4 decodes Phase 1 by itself. Its FSK
-engine has no four-level demodulator, so it samples C4FM as a bit stream,
-four bits a symbol, and the symbols are rebuilt on the board:
+The LR2021 version of the T-Display P4 receives Phase 1 C4FM through a
+continuous raw-IQ stream. P25 always uses this path, including when an older
+saved preference selected FSK.
 
-```
-LR2021 FSK stream  --SPI-->  p25_rx task (core 1)
-19200 bps, 12 kHz filter     ls_lora_fsk_stream_read every 10 ms
-8-bit trigger word           p25_os4_decode     bits -> symbols
-                             p25_symbol_synth   symbol -> 10 samples
-                             -> sample ring ---------------->  dsd_decode, as above
-```
+`
+LR2021 IQ16 --SPI--> capture task (core 0)
+125,000 complex pairs/s -> checked eight-block queue
+                       -> p25_rx frontend (core 1):125 to240 kHz float IQ
+                       -> C4FM DSP:48 kHz samples
+                       -> sample ring -> dsd_decode (core 1)
+                       -> IMBE voice -> audio output
+`
 
-- The engine's detector tracks the frequency rather than slicing it, so a
-  symbol's level is in its middle three bits: three ones +3, two +1, one -1,
-  none -3.
-- Where a symbol starts is decided by the frame syncs: all four bit phases
-  are decoded side by side, and the one that reproduces a 24-symbol frame
-  sync is used until another sync says otherwise. *Test:*
-  `test_p25_os4_decode`.
-- The part ends a packet every 8191 bytes (3.4 s) and the next starts at the
-  following match of the trigger word, within milliseconds. Each seam
-  resets the symbol decoder, and the frame-sync hunt picks the call up again
-  at the next frame.
-- Voice plays until a valid ESS shows the call encrypted
-  (`dsd_opts.play_unproven`): the hold would wait on an ESS the chip often
-  cannot deliver.
-- RADIO chooses the LR2021, and P25 takes it whenever no SDR is plugged in.
-  It listens from 150 MHz up. There is no spectrum, band scan or Phase 2
-  from it: those need IQ.
-- P25 keeps the chip as a background holder (`ls_mesh_radio_hold_bg`).
-  Anything that asks for it with `ls_mesh_radio_hold` (an experiment, LoRa
-  Labs, the LoRa waterfall, `lora`) gets it once P25 has ended its session,
-  and P25 starts again when it is let go. ADS-B on the chip does the same.
-  *Tests:* `test_wf_source`, `test_field`.
+The FIFO is serviced continuously while demodulation and voice decoding run.
+A real loss or retune resets acquisition; ordinary block boundaries do not.
+p25 lr mode reports accepted blocks, rejected sessions, gaps and FIFO loss.
+The waterfall uses the same IQ stream. Band scanning and Phase II are not
+supported on this receiver.
+
+RADIO selects the LR2021. Choose the connected antenna under RADIOS > ANTENNA:
+MMCX1 selects that external connector. Receiving through the wrong antenna
+route can give poor voice despite perfect FIFO and queue continuity.
+
+C4FM is fixed while LR IQ is active; changing the stored SDR demodulation
+preference cannot change the live LR decoder. Polarity remains available.
+Legacy P25 FSK configuration, classifier and capture commands are retired.
+The former LR control-channel/RTL voice split selection falls back to RTL.
+FSK used by other apps and standalone research benches remains separate.
+
+P25 holds the radio through ls_mesh_radio_hold_bg while capturing. UI status
+queries must read cached state without waiting for its hardware mutex. Select
+another source in RADIO before direct radio diagnostics or antenna changes.
+Tests include 	est_p25_lr_frontend, 	est_p25_lr_iq,
+	est_p25_lr_demod_guard.py, and 	est_lora_concurrency.
 
 ## What must stay true
 

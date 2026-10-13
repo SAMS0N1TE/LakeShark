@@ -276,41 +276,8 @@ typedef struct {
 } p25_lr_capture_info_t;
 bool p25_lr_iq_select(bool enabled);
 int p25_lr_iq_record_command(int argc, char **argv);
+/* Compatibility for the pager sign-stream probe; no P25 FSK runtime exists. */
 void p25_lr_get_cfg(p25_lr_cfg_t *out);
-void p25_lr_set_cfg(const p25_lr_cfg_t *cfg);
-/* The receive gain the P25 screen offers: 0 the chip's AGC, 1..13 a held step
-   (13 the most). Choosing one saves it and restarts the receive; call it from
-   a task whose stack is in internal RAM. */
-uint8_t p25_lr_gain_step(void);
-void p25_lr_choose_gain(uint8_t step);
-/* the symbol decoder's learned lookup (p25_os4_decode.h) on or off */
-void p25_lr_set_lut(bool on);
-void p25_lr_set_nn(bool on);
-bool p25_lr_nn(void);
-bool p25_lr_lut(void);
-/* For comparing two receive settings on the same calls: with an alternate set,
-   the receive takes each in turn for a whole packet (~3.4 s). The alternate's
-   packets are decoded with the middle-three rule and hard FEC, as the lookup
-   is learned for the main setting; the capture says which packet had which. */
-void p25_lr_set_alt(const p25_lr_cfg_t *alt);     /* NULL: off */
-bool p25_lr_get_alt(p25_lr_cfg_t *out);
-void p25_lr_capture_start(void);
-void p25_lr_capture_stop(void);
-void p25_lr_capture_info(p25_lr_capture_info_t *out);
-/* How the symbols kept up on their way to the frame decoder, since boot. */
-typedef struct {
-    uint32_t q_max;          /* most symbols ever waiting for the decoder's ring */
-    uint32_t dropped;        /* symbols turned away by a full queue             */
-    uint32_t chunk_us_max;   /* the longest one read of bits took to decode     */
-    uint32_t us_per_kb;      /* decode time per 1024 bytes of bits, on average  */
-    uint32_t iter_us_max;    /* the longest pass of the receive loop            */
-    uint32_t lookup_reads;   /* reads decoded by the lookup, the reader behind  */
-    uint32_t reads;          /* reads decoded                                   */
-} p25_lr_flow_t;
-void p25_lr_get_flow(p25_lr_flow_t *out);
-bool p25_lr_capture_read(uint32_t at, uint8_t *out, uint32_t n);
-bool p25_lr_capture_packet(uint32_t i, uint32_t *offset, uint32_t *ms, bool *alt);
-
 /* The decoder's own symbols as it reads them, whatever the radio: each one's
    dibit by the decoder's thresholds of the moment (1 = +3, 0 = +1, 2 = -1,
    3 = -3, before any inversion), counted from the capture's start, for

@@ -455,16 +455,6 @@ static ls_act_status_t a_p25_lriq(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
-static ls_act_status_t a_p25_lrgain(const ls_args_t *in, ls_val_t *out)
-{
-    const long step = in->v[0].i;
-    if (step < 0 || step > 13) return LS_ACT_BADARG;
-    p25_lr_choose_gain((uint8_t)step);
-    out->kind = LS_VAL_INT;
-    out->i = p25_lr_gain_step();
-    return LS_ACT_OK;
-}
-
 static ls_act_status_t a_audio_volume(const ls_args_t *in, ls_val_t *out)
 {
     int v = (int)in->v[0].i;
@@ -576,9 +566,7 @@ void ls_action_register_builtin(void)
                        "open the keypad to type an FM frequency");
     ls_action_register("p25.gain",       "f", LS_CAP_TUNE, a_p25_gain,
                        "front end gain, dB");
-    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_p25_lriq, "LR2021 raw IQ bursts (experimental)");
-    ls_action_register("p25.lrgain",     "i", LS_CAP_TUNE, a_p25_lrgain,
-                       "LR2021 receive gain: 0 the chip's AGC, 13 the most");
+    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_p25_lriq, "LR2021 P25 IQ receive (enabled only)");
     ls_action_register("fm.gain",        "f", LS_CAP_TUNE, a_fm_gain,
                        "front end gain, dB");
     ls_action_register("fm.sql",         "f", LS_CAP_TUNE, a_fm_sql,

@@ -2203,7 +2203,7 @@ static int lora_cmd(int argc, char **argv)
 {
 #if LS_HAS_LORA_LR20XX_PROBE
     if (lr20xx_stream_source2_active()) {
-        puts("lora: live IQ owns the radio; 'p25 lr mode fsk' first");
+        puts("lora: live IQ owns the radio; switch away from LR2021 in RADIO first");
         return 1;
     }
     const int lr_clock = lr20xx_clock_command(argc, argv);

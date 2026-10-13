@@ -94,19 +94,21 @@ static void flush(void)
     if (!setjmp(worker_done)) set_worker(NULL);
 }
 
-LS_CASE(p25_lr_iq_defaults_and_persists_both_explicit_choices)
+LS_CASE(p25_lr_iq_ignores_legacy_fsk_without_nvs_access_or_writes)
 {
     prepare(); lr_iq_saved = -1; nvs_reads = 0;
     LS_CHECK(settings_get_p25_lr_iq());
     LS_EQ_INT(0, queued_n); LS_EQ_INT(0, commit_count);
     for (int choice = 0; choice <= 1; choice++) {
         prepare();
-        LS_CHECK(settings_set_p25_lr_iq(choice != 0));
+        lr_iq_saved = choice; /* A boot after either legacy saved mode. */
+        LS_CHECK(settings_get_p25_lr_iq());
+        LS_CHECK(!settings_set_p25_lr_iq(false));
+        LS_CHECK(settings_set_p25_lr_iq(true));
+        LS_EQ_INT(0, nvs_reads); LS_EQ_INT(0, queued_n);
         LS_EQ_INT(0, commit_count);
-        flush();
         LS_EQ_INT(choice, lr_iq_saved);
-        /* A new boot reads persisted NVS, not the previous session's flag. */
-        LS_EQ_INT(choice, settings_get_p25_lr_iq());
+        LS_CHECK(settings_get_p25_lr_iq());
         LS_EQ_INT(1, boot_saved); LS_EQ_INT(1, ring_saved);
     }
     prepare(); reject_write = true;

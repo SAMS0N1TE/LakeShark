@@ -1175,10 +1175,9 @@ LS_CASE(transition_ring_times_animation_handover_and_wraps)
         ls_shim_time_set(1000000 + i * 1000000);
         ls_tui_screen_show(i % 2 ? 0 : 1);
         ls_anim_start(LS_ICON_WAVE, "TEST", TUI_CYAN);
-        /* Thirteen frames: the opening presents each of its twelve phases -
-           it no longer drops them to meet a deadline - and the thirteenth
-           frame is the real body, which is what completes the transition. */
-        for (int f = 0; f < 13; f++) {
+        /* Seven decoration frames at 40 ms, then the real body at 280 ms.
+           Presentation accounting must stop at the first body frame. */
+        for (int f = 0; f < 8; f++) {
             ls_tui_router_draw(ls_tui_surface());
             ls_shim_time_advance(40000);
             /* This loop stands in for ls_tui_present(), so it owes the same
@@ -1193,11 +1192,11 @@ LS_CASE(transition_ring_times_animation_handover_and_wraps)
         LS_EQ_INT(t[i].from, i % 2 ? 1 : 0);
         LS_EQ_INT(t[i].to, i % 2 ? 0 : 1);
         LS_EQ_INT(t[i].first_us, 40000);
-        LS_EQ_INT(t[i].last_us, 520000);
-        LS_EQ_INT(t[i].frames, 13);
+        LS_EQ_INT(t[i].last_us, 320000);
+        LS_EQ_INT(t[i].frames, 8);
         LS_EQ_INT(t[i].worst_us, 40000);
-        LS_EQ_INT(t[i].worst_cells, 112);
-        LS_EQ_INT(t[i].writeback_us, 3900);
+        LS_EQ_INT(t[i].worst_cells, 107);
+        LS_EQ_INT(t[i].writeback_us, 2400);
         LS_EQ_INT(t[i].worst_writeback_us, 300);
         LS_EQ_INT(t[i].worst_draw_us, 0);
         LS_EQ_INT(t[i].worst_raster_us, 39700);
@@ -1300,8 +1299,7 @@ LS_CASE(the_opening_advances_one_phase_a_presented_frame_at_every_rate)
             if (col != prev) {
                 LS_CHECK_MSG(col > prev, "cost %d: the sweep went backwards, %d to %d",
                              costs[k], prev, col);
-                /* One phase a frame, except the frame that ends the opening
-                   at the cap, which goes to the last phase by policy. */
+                /* Each presented decoration advances by at most one phase. */
                 if (prev >= 0 && col != col_for(area, 11))
                     LS_CHECK_MSG(col - prev <= step_max,
                                  "cost %d: the sweep jumped %d cells, one phase is %d",
@@ -1314,13 +1312,34 @@ LS_CASE(the_opening_advances_one_phase_a_presented_frame_at_every_rate)
                                           : (frames % 3 == 0 ? 90000 : 8000));
             LS_CHECK_MSG(++frames <= 400, "cost %d: the opening never ended", costs[k]);
         }
-        LS_CHECK_MSG(phases >= 11, "cost %d showed %d of 12 phases", costs[k], phases);
+        LS_CHECK_MSG(phases >= 3, "cost %d showed only %d phases", costs[k], phases);
+        if (costs[k] == 4000 || costs[k] == 20000) LS_EQ_INT(phases, 12);
         LS_CHECK(!ls_anim_active());
-        /* CAP_US plus the frame that carries the last phase. */
-        LS_CHECK_MSG(esp_timer_get_time() - 1000000 <= 1000000 + 90000,
+        /* The first draw after the deadline belongs to the controls. */
+        LS_CHECK_MSG(esp_timer_get_time() - 1000000 <= 250000 + 90000,
                      "cost %d ran for %lld us", costs[k],
                      (long long)(esp_timer_get_time() - 1000000));
     }
+    ls_tui_end();
+}
+
+LS_CASE(opening_budget_expires_even_without_a_presented_frame)
+{
+    register_once();
+    LS_CHECK(ls_tui_begin(568, 1232));
+    const tui_rect area = tui_rect_make(0, 2, 40, 50);
+    ls_shim_time_live(0);
+    ls_shim_time_set(1000000);
+    ls_anim_start(LS_ICON_PLANE, "FM", TUI_CYAN);
+    LS_CHECK(ls_anim_draw(ls_tui_surface(), area));
+    ls_shim_time_advance(249999);
+    LS_CHECK(ls_anim_active());
+    ls_shim_time_advance(1);
+    LS_CHECK(!ls_anim_active());
+    LS_CHECK(!ls_anim_draw(ls_tui_surface(), area));
+    /* A late acknowledgement cannot revive decoration past its budget. */
+    ls_anim_presented();
+    LS_CHECK(!ls_anim_active());
     ls_tui_end();
 }
 
@@ -1413,7 +1432,7 @@ LS_CASE(the_opening_renders_a_frame_sequence_at_p25_frame_spacing)
         sensor_pixels(name, false);
         ls_shim_time_advance(65000);   /* P25 under load */
     }
-    LS_CHECK_MSG(shown >= 11, "the opening only presented %d frames", shown);
+    LS_EQ_INT(shown, 4); /* 0, 65, 130, 195 ms; body due at 260 ms */
     LS_CHECK(!ls_anim_active());
     ls_tui_status_set_clock("");
     ls_tui_end();
@@ -1443,29 +1462,23 @@ LS_CASE(the_opening_is_bounded_and_always_interruptible)
     LS_CHECK(!ls_anim_active());
     LS_CHECK(!ls_anim_draw(ls_tui_surface(), area));
 
-    /* Frames so slow the opening cannot finish on phases alone: it ends on
-       the first presented frame past the cap, and that frame carries the last
-       phase - the sweep at the far side of the pane, not halfway across. A
-       cadence that steps over the cap must still show it. */
+    /* Slow frames do not extend the deadline to finish decoration. */
     const int slow[] = {250000, 67000};
     for (unsigned k = 0; k < sizeof(slow) / sizeof(slow[0]); ++k) {
         ls_shim_time_set(4000000);
         ls_anim_start(LS_ICON_PLANE, "P25", TUI_CYAN);
-        int frames = 0, last_col = -1;
+        int frames = 0;
         for (;;) {
             const int col = present_frame(area);
             if (col == -2) break;
-            last_col = col;
             ls_shim_time_advance(slow[k]);
             LS_CHECK(++frames <= 40);
         }
         LS_CHECK(!ls_anim_active());
-        LS_CHECK_MSG(esp_timer_get_time() - 4000000 <= 1000000 + slow[k] + 1,
+        LS_CHECK_MSG(esp_timer_get_time() - 4000000 <= 250000 + slow[k],
                      "the capped opening ran for %lld us at %d us a frame",
                      (long long)(esp_timer_get_time() - 4000000), slow[k]);
-        LS_CHECK_MSG(last_col == area.x + area.w - 1,
-                     "at %d us a frame it ended on column %d, not the last",
-                     slow[k], last_col);
+        LS_CHECK(frames <= 4);
     }
 
     /* A key press stops it immediately, from any phase. */

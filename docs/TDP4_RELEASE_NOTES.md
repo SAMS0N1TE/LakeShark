@@ -1,5 +1,14 @@
 # LakeShark release notes
 
+## 2.13.2
+
+- Opening animations finish within a 250 ms decoration budget. Navigation and OPTIONS presses cancel the animation and proceed immediately.
+- RADIOS stays responsive during continuous LR2021 IQ reception. Reading transmit status no longer waits for the capture session to release the radio.
+- LR2021 P25 reception now always uses raw IQ. The retired P25 FSK receiver and classifier models are excluded from firmware; FSK used by other apps remains available.
+- Older saved P25 FSK selections use IQ automatically. The former LR control-channel/RTL voice split option falls back to RTL reception.
+- LR IQ stays on C4FM. Its OPTIONS menu no longer exposes incompatible demodulation modes or ineffective FSK gain/path controls; SDR demodulation and gain settings remain available.
+- Select the antenna connected to the board under RADIOS > ANTENNA. MMCX1 must be selected to use that external connector.
+
 ## 2.13.1
 
 - REC and SUB-GHZ share one layout: RADIO, the page's controls and OPTIONS on filled keys across the top, and READ, SCAN, SAVED, RAW, LEARN and CATCH tabs along the bottom.

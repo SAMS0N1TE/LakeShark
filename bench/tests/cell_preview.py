@@ -1,4 +1,4 @@
-import pathlib, re, subprocess
+import pathlib, re, shutil, subprocess
 root=pathlib.Path(__file__).resolve().parents[2]
 out=root/'bench/out/cell'
 out.mkdir(parents=True,exist_ok=True)
@@ -43,7 +43,18 @@ void cell_iq_stop(void){iq.busy=false;}
 void cell_iq_get_status(cell_iq_status_t *s){*s=iq;}
 '''
 (out/'cell_stub.c').write_text(stub)
-gcc='C:/mingw64/bin/gcc.exe'
+cache = build/'CMakeCache.txt'
+if cache.exists():
+    compiler = re.search(r'^CMAKE_C_COMPILER:[^=]+=(.+)$', cache.read_text(), re.M)
+    if not compiler:
+        raise RuntimeError(f'{cache} has no configured CMAKE_C_COMPILER')
+    gcc = compiler.group(1).strip()
+    if not pathlib.Path(gcc).is_file():
+        raise RuntimeError(f'Configured host C compiler is unavailable: {gcc}')
+else:
+    gcc = shutil.which('gcc')
+    if not gcc:
+        raise RuntimeError('Host gcc required when no CMake cache is available')
 objects=[]
 for src in [out/'lssim_cell.c',root/'components/apps/tui/screens/ext/scr_cell.c',root/'components/lakeshark/apps/cell/cell_core.c',out/'cell_stub.c']:
     obj=out/(src.stem+'.obj')

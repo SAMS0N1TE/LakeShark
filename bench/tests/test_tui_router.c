@@ -7,6 +7,7 @@
 #include "ls_notify.h"
 #include "ls_tui_chrome.h"
 #include "ls_theme.h"
+#include "ls_anim.h"
 
 #include <string.h>
 
@@ -153,6 +154,51 @@ LS_CASE(deferred_switch_waits_before_releasing_the_current_screen)
 }
 
 /* ---------------------------------------------------------------- cases -- */
+
+LS_CASE(opening_allows_first_navigation_and_options_key)
+{
+    setup(115, 27);
+    ls_anim_start(0, "TEST", TUI_CYAN);
+    LS_CHECK(ls_tui_router_key(LS_TK_F3, 0));
+    LS_EQ_INT(ls_tui_screen_current(), 2);
+    LS_CHECK(!ls_anim_active());
+
+    ls_anim_start(0, "TEST", TUI_CYAN);
+    s_consume = true;
+    const int before = s_keys_seen[2];
+    LS_CHECK(ls_tui_router_key(LS_TK_CHAR, 'o'));
+    LS_EQ_INT(s_keys_seen[2], before + 1);
+    LS_EQ_INT(s_last_key[2], LS_TK_CHAR);
+    LS_CHECK(!ls_anim_active());
+    s_consume = false;
+}
+
+LS_CASE(opening_keeps_body_input_dismiss_only_but_allows_tab_touch)
+{
+    setup(115, 27);
+    ls_anim_start(0, "TEST", TUI_CYAN);
+    const int before = s_keys_seen[0];
+    LS_CHECK(ls_tui_router_touch(20, 10));
+    LS_EQ_INT(s_keys_seen[0], before);
+    LS_CHECK(!ls_anim_active());
+
+    ls_anim_start(0, "TEST", TUI_CYAN);
+    LS_CHECK(ls_tui_router_key(LS_TK_ENTER, 0));
+    LS_EQ_INT(s_keys_seen[0], before);
+    LS_CHECK(!ls_anim_active());
+
+    ls_anim_start(0, "TEST", TUI_CYAN);
+    ls_tui_router_draw(&g_sf);
+    /* Find a column that belongs to another visible tab. */
+    bool switched = false;
+    for (int col = 0; col < 115 && !switched; col++) {
+        ls_anim_start(0, "TEST", TUI_CYAN);
+        LS_CHECK(ls_tui_router_touch(col, 1));
+        switched = ls_tui_screen_current() != 0;
+    }
+    LS_CHECK(switched);
+    LS_CHECK(!ls_anim_active());
+}
 
 LS_CASE(no_tap_on_the_status_row_turns_the_screen)
 {

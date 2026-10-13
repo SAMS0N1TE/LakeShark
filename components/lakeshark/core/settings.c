@@ -889,15 +889,14 @@ int settings_get_p25_lr_gain(void)
 }
 bool settings_get_p25_lr_iq(void)
 {
-    uint8_t v = 1;
-    if (!s_nvs_ok || nvs_get_u8(s_nvs, "p25_lriq", &v) != ESP_OK || v > 1)
-        return true;
-    return v != 0;
+    /* Legacy saved FSK selections migrate in memory. IQ is now mandatory. */
+    return true;
 }
 
 bool settings_set_p25_lr_iq(bool enabled)
 {
-    return sput_u8("p25_lriq", enabled ? 1 : 0);
+    /* Compatibility API: reject the retired path without touching flash. */
+    return enabled;
 }
 
 void settings_set_p25_lr_gain(int step)

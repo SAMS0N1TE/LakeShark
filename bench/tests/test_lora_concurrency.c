@@ -70,6 +70,51 @@ static void conc_reset(void)
     atomic_store(&go, 0);
 }
 
+static atomic_bool status_reader_done;
+static bool status_reader_tx;
+static void *status_reader(void *arg)
+{
+    (void)arg;
+    status_reader_tx = false;
+    for (int i = 0; i < 100; i++) status_reader_tx |= ls_lora_is_transmitting();
+    atomic_store(&status_reader_done, true);
+    return NULL;
+}
+
+LS_CASE(tx_status_returns_while_another_task_owns_the_capture_lock)
+{
+    fk_install(FK_LR);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    atomic_store(&status_reader_done, false);
+    /* Raw IQ holds this mutex continuously, not just for each transfer.
+       A RADIOS status reader runs on a different task throughout that hold. */
+    ls_lora_hw_lock();
+    const int frames_before = fk.nframes;
+    pthread_t reader;
+    const int created = pthread_create(&reader, NULL, status_reader, NULL);
+    LS_EQ_INT(created, 0);
+    bool completed_while_held = false;
+    if (!created) {
+        struct timespec start, now;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        do {
+            completed_while_held = atomic_load(&status_reader_done);
+            if (completed_while_held) break;
+            const struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+        } while ((now.tv_sec - start.tv_sec) * 1000000000LL +
+                 now.tv_nsec - start.tv_nsec < 1000000000LL);
+    }
+    /* Release before joining even on failure, so the old blocking behavior
+       fails the assertion instead of hanging the host test runner. */
+    ls_lora_hw_unlock();
+    if (!created) pthread_join(reader, NULL);
+    LS_CHECK_MSG(completed_while_held, "TX status waited for capture lock release");
+    LS_CHECK(!status_reader_tx);
+    LS_EQ_INT(fk.nframes, frames_before); /* snapshot issues no radio commands */
+}
+
 static void wait_go(void)
 {
     while (!atomic_load(&go)) sched_yield();

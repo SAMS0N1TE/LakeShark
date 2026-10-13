@@ -66,8 +66,7 @@ const char *ls_rsel_absent(ls_rsel_radio_t r)
     if (!radio_ok(r)) return "No such radio";
     const ls_rsel_hw_t *h = hw();
     if (r == LS_RSEL_P25_SPLIT)
-        return h->present[LS_RSEL_SDR_RTL] && h->present[LS_RSEL_LORA] &&
-               (h->lora_caps & LS_LORA_CAP_FSK_STREAM) ? NULL : "Split needs RTL-SDR and LR2021";
+        return "LR IQ control-channel helper unavailable; use RTL-SDR";
     if (r == LS_RSEL_ADSB_DUAL) {
         if (!h->present[LS_RSEL_SDR_RTL]) return "Dual mode needs an RTL-SDR";
         if (!h->present[LS_RSEL_LORA] || !(h->lora_caps & LS_LORA_CAP_MODES_RX))
@@ -125,7 +124,7 @@ void ls_rsel_fm_context(uint32_t hz, bool nfm) { s_fm_hz = hz; s_fm_nfm = nfm; }
 const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
 {
     if (!job_ok(job) || !radio_ok(r)) return "Not a radio for this";
-    if (r == LS_RSEL_P25_SPLIT) return job == LS_RSEL_P25 ? NULL : "P25 control and voice only";
+    if (r == LS_RSEL_P25_SPLIT) return "LR IQ control-channel helper unavailable; use RTL-SDR";
     if (r == LS_RSEL_ADSB_DUAL) return job == LS_RSEL_ADSB ? NULL : "Dual mode is for ADS-B";
     const char *kind = not_a_receiver(r);
     switch (job) {
@@ -148,9 +147,9 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
         if (is_sdr(r)) return NULL;
         return kind ? kind : "No AM receiver for 131 MHz";
     case LS_RSEL_P25:
-        /* The LR2021 samples C4FM as a bit stream: Phase 1 voice. */
+        /* Only the LR2021 has the continuous raw IQ source used for P25. */
         if (is_sdr(r)) return NULL;
-        if (r == LS_RSEL_LORA) return lora_has(LS_LORA_CAP_FSK_STREAM) ? NULL : "P25 needs the LR2021";
+        if (r == LS_RSEL_LORA) return !strcmp(ls_rsel_name(LS_RSEL_LORA), "LR2021") ? NULL : "P25 IQ needs the LR2021";
         return kind ? kind : "No IQ stream to decode P25";
     case LS_RSEL_ADSB:
         if (is_sdr(r)) return NULL;
@@ -222,7 +221,7 @@ static const order_t ORDER[LS_RSEL_JOBS] = {
     [LS_RSEL_FM]           = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_PAGER]        = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ACARS]        = { 2, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF } },
-    [LS_RSEL_P25]          = { 4, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA, LS_RSEL_P25_SPLIT } },
+    [LS_RSEL_P25]          = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_ADSB]         = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_SDR_HACKRF, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_READ]  = { 3, { LS_RSEL_SDR_RTL, LS_RSEL_CC1101, LS_RSEL_LORA } },
     [LS_RSEL_SUBGHZ_SWEEP] = { 1, { LS_RSEL_LORA } },

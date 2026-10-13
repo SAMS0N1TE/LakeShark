@@ -136,12 +136,12 @@ LS_CASE(p25_on_the_lora_chip_is_the_lr2021s)
     LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
 }
 
-LS_CASE(p25_split_requires_both_rtl_and_stream_capable_lr)
+LS_CASE(retired_fsk_split_is_unavailable_even_with_both_radios)
 {
     fresh(true, false, 2);
     LS_EQ_STR(ls_rsel_name(LS_RSEL_P25_SPLIT), "split");
-    LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) == NULL);
-    LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_P25_SPLIT) == NULL);
+    LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) != NULL);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_P25, LS_RSEL_P25_SPLIT) != NULL);
     LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_P25_SPLIT) != NULL);
     fresh(true, false, 1);
     LS_CHECK(ls_rsel_absent(LS_RSEL_P25_SPLIT) != NULL);

@@ -912,13 +912,15 @@ static bool router_touch_dispatch(int col, int row)
     if (ls_picker_active()) return ls_picker_touch(col, row);
 
     if (s_help_open) { s_help_open = false; return true; }
-    /* A tap during an opening skips it. Anything that cannot be interrupted
-       is in the way. */
-    if (ls_anim_active()) { ls_anim_cancel(); return true; }
-
     int cols, rows;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
     const int th = tab_rows();
+    if (ls_anim_active()) {
+        ls_anim_cancel();
+        /* The chrome was drawn during the opening. Body hit rectangles have
+           not been drawn yet, so a body tap only dismisses decoration. */
+        if (row >= 1 + th && (!hint_rows() || row != rows - 1)) return true;
+    }
 
     if (row == 0) return true; /* The status row has no touch controls. */
     if (row >= 1 && row < 1 + th) {
@@ -976,7 +978,14 @@ bool ls_tui_router_key(ls_tk_t key, char ch)
             s_help_open = false;
         return true;
     }
-    if (ls_anim_active()) { ls_anim_cancel(); return true; }
+    if (ls_anim_active()) {
+        ls_anim_cancel();
+        /* Navigation and OPTIONS do not depend on body hit rectangles. Keep
+           ordinary control keys as dismiss-only until the screen is drawn. */
+        if (!((key >= LS_TK_F1 && key <= LS_TK_F11) ||
+              key == LS_TK_TAB || key == LS_TK_ESC ||
+              (key == LS_TK_CHAR && ch == 'o'))) return true;
+    }
 
     /* The screen gets first refusal. Only what it does not want reaches the
        global bindings, so a screen with a text field can keep TAB. */

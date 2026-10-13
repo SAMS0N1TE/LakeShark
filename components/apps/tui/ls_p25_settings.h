@@ -11,11 +11,6 @@ static bool ps_lr_receiver(void)
        These display paths must never query live LoRa status (capture owns SPI). */
     return P25.lora_rx || ls_rsel_effective(LS_RSEL_P25) == LS_RSEL_LORA;
 }
-static int ps_lr_gain(void)
-{
-    ls_val_t v;
-    return ls_value_read("p25.lrgain", &v, NULL) ? (int)v.i : 0;
-}
 static int ps_volume(void)
 {
     ls_val_t v;
@@ -61,16 +56,12 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Remove allowed TG",
                                        "Control survey",
                                        "Lockout list",
-                                       "Allowed list",
-                                       "LR2021 receive path"};
+                                       "Allowed list"};
 static void ps_value(int i, char *out, size_t n)
 {
     p25_cqpsk_config_t cfg;
     bool pending;
     switch (i) {
-    case 27:
-        snprintf(out, n, "%s", P25.lr_iq_requested ? "Raw I/Q (experimental)" : "FSK (normal)");
-        break;
     case 0:
         snprintf(out, n, "%s", lakeshark_p25_mode_name());
         break;
@@ -78,10 +69,10 @@ static void ps_value(int i, char *out, size_t n)
         snprintf(out, n, "%s", lakeshark_p25_polarity_inverted() ? "INVERTED" : "NORMAL");
         break;
     case 2:
-        snprintf(out, n, "%s", (ps_lr_receiver() ? ps_lr_gain() == 0 : lakeshark_p25_agc_enabled()) ? "ON" : "OFF");
+        snprintf(out, n, "%s", (ps_lr_receiver() || lakeshark_p25_agc_enabled()) ? "ON" : "OFF");
         break;
     case 3:
-        if (ps_lr_receiver()) snprintf(out, n, "%s", ps_lr_gain() ? "MAX" : "AUTO");
+        if (ps_lr_receiver()) snprintf(out, n, "AUTO (fixed IQ path)");
         else snprintf(out, n, "%.1f", lakeshark_p25_gain_tenths() / 10.0);
         break;
     case 4:
@@ -149,7 +140,7 @@ static void ps_number(double v)
     bool ok = true;
     switch (ps_selected) {
     case 3:
-        if (ps_lr_receiver()) { ok = ps_set_action("p25.lrgain", v > 0 ? 13 : 0, true); break; }
+        if (ps_lr_receiver()) { ok = false; break; }
         if (!(v >= 0 && v <= 50))
             ok = false;
         else
@@ -225,9 +216,8 @@ static void ps_change(int direction, bool edit)
 {
     char value[48];
     ps_value(ps_selected, value, sizeof(value));
-    if (ps_selected == 3 && ps_lr_receiver()) {
-        bool max = edit ? ps_lr_gain() == 0 : direction > 0;
-        (void)ps_set_action("p25.lrgain", max ? 13 : 0, true);
+    if ((ps_selected == 2 || ps_selected == 3) && ps_lr_receiver()) {
+        snprintf(ps_status, sizeof(ps_status), "IQ receive gain is automatic");
         return;
     }
     if (ps_selected == 20 || ps_selected == 22 || ps_selected == 23) {
@@ -247,11 +237,6 @@ static void ps_change(int direction, bool edit)
     }
     bool ok = true;
     switch (ps_selected) {
-    case 27:
-        ok = ps_set_action("p25.lriq", edit ? !P25.lr_iq_requested : direction > 0, true);
-        snprintf(ps_status, sizeof(ps_status), "%s", !ok ? "Requires LR2021" :
-                 P25.lr_iq_requested ? "EXP: C4FM bursts; capture gaps; voice unverified" : "Normal FSK receive selected");
-        return;
     case 0: {
         p25_p2_enable(false);
         int pref = p25_demod_get_preference();
@@ -264,10 +249,7 @@ static void ps_change(int direction, bool edit)
         if(edit || lakeshark_p25_polarity_inverted()!=(direction>0)) lakeshark_p25_toggle_polarity();
         break;
     case 2:
-        if (ps_lr_receiver()) {
-            bool agc = edit ? ps_lr_gain() != 0 : direction > 0;
-            ok = ps_set_action("p25.lrgain", agc ? 0 : 13, true);
-        } else if(edit || lakeshark_p25_agc_enabled()!=(direction>0)) lakeshark_p25_agc();
+        if(edit || lakeshark_p25_agc_enabled()!=(direction>0)) lakeshark_p25_agc();
         break;
     case 6:
         if(edit || lakeshark_p25_beep_enabled()!=(direction>0)) lakeshark_p25_beep_toggle();

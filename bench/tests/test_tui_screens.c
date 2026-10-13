@@ -5138,7 +5138,9 @@ LS_CASE(falls_p25_lr2021_names_the_radio_and_explains_missing_spectrum)
         fresh();
         draw_pane(&ls_scr_falls, PANES[pane]);
         LS_CHECK(find_text("LR2021", &x, &y));
-        LS_CHECK(find_text("LR FSK: no IQ", &x, &y));
+        LS_CHECK(find_text("LR IQ acquiring", &x, &y));
+        LS_CHECK(!find_text("LR FSK: no IQ", &x, &y));
+        LS_CHECK(!find_text("select LR IQ", &x, &y));
         LS_CHECK(!find_text("no receiver is producing a spectrum", &x, &y));
         LS_CHECK(!find_text("RTL-SDR", &x, &y));
         LS_EQ_INT(LS_RSEL_LORA, ls_rsel_effective(LS_RSEL_WATERFALL));
@@ -5146,7 +5148,7 @@ LS_CASE(falls_p25_lr2021_names_the_radio_and_explains_missing_spectrum)
         P25.lr_iq_active = true;
         fresh();
         draw_pane(&ls_scr_falls, PANES[pane]);
-        LS_CHECK(!find_text("LR FSK: no IQ", &x, &y));
+        LS_CHECK(!find_text("LR IQ acquiring", &x, &y));
         LS_CHECK(!find_text("LR2021 gives no P25 spectrum", &x, &y));
         P25.lr_iq_active = false;
     }

@@ -485,7 +485,7 @@ static bool pump_p25(void)
         p25_feed(false);
         if (!P25.lr_iq_active) {
             lr_spec_enable(false);
-            return idle(LS_WF_IDLE_NONE, "LR FSK: no IQ");
+            return idle(LS_WF_IDLE_NONE, "LR IQ acquiring");
         }
         return pump_lr_tap();
     }

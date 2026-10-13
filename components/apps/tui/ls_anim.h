@@ -22,8 +22,8 @@ bool ls_anim_active(void);
 
 /* Draw the phase due now. Call from the router, before the screen draws, and
    skip the screen while it returns true. The phase advances one per PRESENTED
-   frame during normal playback. A one-second cap may jump to the final phase;
-   an unpresented opening is dropped after a 300 ms stall. */
+   frame during normal playback. After 250 ms the real screen takes over,
+   even if slow presentation left decorative phases unshown. */
 bool ls_anim_draw(tui_surface *sf, tui_rect area);
 
 /* The drawn frame reached the panel. Called from ls_tui_present(); a frame

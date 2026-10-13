@@ -944,12 +944,12 @@ LS_CASE(fm_lr_active_keeps_its_source_and_session_with_or_without_rtl)
         }
     }
 }
-LS_CASE(p25_lr_fsk_reports_no_iq)
+LS_CASE(p25_lr_acquiring_waits_without_starting_competing_capture)
 {
     fresh(); g_lr = true; g_p25_radio = LS_RSEL_LORA; g_p25_streaming = true;
     ls_wf_source_pump();
     LS_EQ_INT(LS_WF_SRC_P25, ls_wf_source_get());
-    LS_EQ_STR("LR FSK: no IQ", ls_wf_source_idle_reason());
+    LS_EQ_STR("LR IQ acquiring", ls_wf_source_idle_reason());
     LS_CHECK(!lr_tap_enabled()); LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
 }
 LS_CASE(fm_lr_uses_selected_receiver_tap_even_in_scan_mode)

@@ -364,11 +364,12 @@ int main(int argc, char **argv)
             timeline_put(timeline, timeline_n, t, r.pcm, decoded);
         if (list)
             printf("%8.3f  %s  decoded=%d played=%d muted=%d held=%d ess=%s algid=%02X "
-                   "hdr_fixed=%d hdr_critical=%d\n",
+                   "hdr_fixed=%d hdr_critical=%d nac=%03X\n",
                    t, d, decoded / 160, played, muted, r.hold.n / 160,
                    r.state.p25_ess_valid ? "valid" : "unknown", r.state.p25_algid,
                    r.state.debug_header_errors - hdr0,
-                   r.state.debug_header_critical_errors - crit0);
+                   r.state.debug_header_critical_errors - crit0,
+                   (unsigned)r.state.nac);
     }
 
     /* Voice slots on the air: LDUs arrive every 180 ms inside a call. A gap

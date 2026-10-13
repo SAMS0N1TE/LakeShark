@@ -7,8 +7,8 @@
    one status symbol, and the nearest NID to them is the answer
    (p25_sitefind.h has the code and why it is enough). Which way the chip
    counts a positive deviation is not known, so both sync words are tried
-   until one decodes, and the channel keeps that one. Voice is the P25 app's,
-   which samples four bits a symbol on the LR2021.
+   until one decodes, and the channel keeps that one. This experiment only
+   identifies sites; the P25 app receives voice through continuous raw IQ.
 
    The channels come from the P25 profile on the card - its control= lines,
    with the NAC its comments say each should carry - or one frequency, 150 to

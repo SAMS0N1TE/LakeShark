@@ -1013,7 +1013,7 @@ static ls_act_status_t a_fake_lrgain(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
-LS_CASE(on_the_lr2021_the_gain_keys_choose_auto_or_max)
+LS_CASE(lr_iq_gain_keys_cannot_dispatch_retired_fsk_gain)
 {
     const tui_rect large_font = {1, 2, 32, 41};
     ls_value_publish("p25.lrgain", "step", v_fake_lrgain);
@@ -1022,13 +1022,13 @@ LS_CASE(on_the_lr2021_the_gain_keys_choose_auto_or_max)
     s_fake_lrgain = 0;
     P25.lora_rx = true;
     draw_decode_now(large_font);
-    LS_CHECK_MSG(rect_has(large_font, "[AUTO]"),
-                 "the LR2021 gain card does not read AUTO at step 0");
+    LS_CHECK_MSG(!rect_has(large_font, "GAIN"),
+                 "IQ path must not offer the retired FSK gain card");
 
     ls_scr_p25.key(LS_TK_CHAR, 'u');
-    LS_EQ_INT((int)s_fake_lrgain, 13);
+    LS_EQ_INT((int)s_fake_lrgain, 0);
     ls_scr_p25.key(LS_TK_CHAR, 'u');
-    LS_EQ_INT((int)s_fake_lrgain, 13);
+    LS_EQ_INT((int)s_fake_lrgain, 0);
     ls_scr_p25.key(LS_TK_CHAR, 'j');
     LS_EQ_INT((int)s_fake_lrgain, 0);
     LS_CHECK(escaped(large_font) == 0);
@@ -1270,7 +1270,7 @@ LS_CASE(valid_zero_nac_renders_and_old_channel_identity_is_hidden)
     LS_CHECK(!rect_has(PORTRAIT, "293"));
     P25.dsd_nac_valid = false;
 }
-LS_CASE(lr_settings_gain_uses_chip_action_and_phase2_is_refused)
+LS_CASE(lr_iq_settings_omit_fsk_gain_and_refuse_phase2)
 {
     ls_value_publish("p25.lrgain", "step", v_fake_lrgain);
     ls_action_register("p25.lrgain", "i", LS_CAP_TUNE, a_fake_lrgain, "test");
@@ -1278,9 +1278,28 @@ LS_CASE(lr_settings_gain_uses_chip_action_and_phase2_is_refused)
     ls_scr_p25.enter();
     ls_rsel_set(LS_RSEL_P25, LS_RSEL_LORA);
     ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
-    filter_option("Receiver gain");
-    ls_picker_key(LS_TK_ENTER, 0); LS_EQ_INT(s_fake_lrgain, 13);
-    ls_picker_key(LS_TK_ENTER, 0); LS_EQ_INT(s_fake_lrgain, 0);
+    /* Inspect the real options picker while scrolling: the screen callback
+       itself draws the app underneath the overlay, not its options rows. */
+    bool saw_polarity = false;
+    for (unsigned row = 0; row < LS_PICKER_MAX; ++row) {
+        fresh(); grid_for(PORTRAIT); ls_picker_draw(&g_sf, PORTRAIT);
+        saw_polarity |= rect_has(PORTRAIT, "Polarity");
+        LS_CHECK(!rect_has(PORTRAIT, "Receiver gain"));
+        LS_CHECK(!rect_has(PORTRAIT, "Automatic gain"));
+        LS_CHECK(!rect_has(PORTRAIT, "Demodulation"));
+        ls_picker_key(LS_TK_DOWN, 0);
+    }
+    LS_CHECK(saw_polarity);
+    /* The visible control must also dispatch its callback and remain usable
+       after a toggle. Restore the simulated setting for subsequent tests. */
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
+    filter_option("Polarity");
+    bool before_polarity = lakeshark_p25_polarity_inverted();
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(lakeshark_p25_polarity_inverted() != before_polarity);
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(lakeshark_p25_polarity_inverted() == before_polarity);
+    LS_EQ_INT(s_fake_lrgain, 0);
     ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
     filter_option("Phase II (exp)"); p25_p2_enable(false);
     ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!p25_p2_enabled());
@@ -1350,20 +1369,14 @@ LS_CASE(trunking_failure_and_unresolved_grants_are_visible)
     P25.receive_state = P25_RX_CONTROL_SEARCH;
 }
 
-static ls_act_status_t a_fake_lriq(const ls_args_t *in, ls_val_t *out)
+LS_CASE(lr_iq_options_do_not_offer_a_retired_receive_path)
 {
-    P25.lr_iq_requested = in->v[0].i != 0;
-    out->kind = LS_VAL_INT; out->i = P25.lr_iq_requested;
-    return LS_ACT_OK;
-}
-LS_CASE(raw_iq_option_can_be_enabled_and_returned_to_fsk)
-{
-    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_fake_lriq, "test");
-    P25.lr_iq_requested = false;
+    P25.lr_iq_requested = true;
     ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
-    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("LR2021 receive path");
-    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(P25.lr_iq_requested);
-    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!P25.lr_iq_requested);
+    ls_scr_p25.key(LS_TK_CHAR, 'o');
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(!rect_has(PORTRAIT, "LR2021 receive path"));
+    LS_CHECK(P25.lr_iq_requested);
     ls_opt_close();
     P25.lr_iq_active = true; P25.lr_iq_good = 3; P25.lr_iq_bad = 2;
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
@@ -1372,16 +1385,16 @@ LS_CASE(raw_iq_option_can_be_enabled_and_returned_to_fsk)
     P25.lr_iq_active = false;
 }
 
-LS_CASE(lr_signal_page_draws_iq_and_explains_fsk)
+LS_CASE(lr_signal_page_draws_iq_and_explains_acquisition)
 {
     show_signal_page(); pin_grain_to_shade(); s_shape = 1;
     tui_rect pane = {1, 2, 46, 40};
     P25.lora_rx = true; P25.lr_iq_active = false;
     fresh(); draw_pane(&ls_scr_p25, pane);
-    LS_CHECK(rect_has(pane, "LR FSK: no IQ"));
+    LS_CHECK(rect_has(pane, "LR IQ acquiring"));
     P25.lr_iq_active = true;
     prime(pane, 60);
-    LS_CHECK(!rect_has(pane, "LR FSK: no IQ"));
+    LS_CHECK(!rect_has(pane, "LR IQ acquiring"));
     LS_CHECK(history_rows(pane) > 0);
     P25.lr_iq_active = P25.lora_rx = false;
 }
@@ -1405,7 +1418,9 @@ LS_CASE(lr_iq_options_open_scroll_and_idle_are_read_only_and_bounded)
     LS_CHECK(ls_tui_router_key(LS_TK_CHAR, 'o'));
     LS_CHECK(ls_picker_active());
     const unsigned open_reads = option_reads;
-    LS_CHECK(open_reads > 0);
+    /* This tripwire counts the Demodulation getter specifically. Its row is
+       absent for LR, so opening its options must not read that preference. */
+    LS_EQ_INT(0, open_reads);
     for (int orientation = 0; orientation < 2; orientation++) {
         s_grid_cols = orientation ? 115 : 48;
         s_grid_rows = orientation ? 27 : 66;

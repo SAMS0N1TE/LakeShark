@@ -88,7 +88,8 @@ void settings_set_antenna_external(bool external);
 bool settings_peek_antenna_external(void);
 /* P25 on the LR2021: its receive gain, 0 the chip's AGC, 1..13 a fixed step. */
 int  settings_get_p25_lr_gain(void);
-/* Boot-only read. Missing choice defaults to IQ; UI reads P25's RAM state. */
+/* Retired mode preference: reads always return IQ, false writes are rejected.
+ * Compatibility calls never access NVS. */
 bool settings_get_p25_lr_iq(void);
 bool settings_set_p25_lr_iq(bool enabled);
 bool settings_get_lr_tcxo(void);

@@ -716,10 +716,10 @@ esp_err_t ls_lora_receive(void) { LOCKED_RET(esp_err_t, s_ops->receive()); }
 bool ls_lora_is_receiving(void) { return s_ops->is_receiving(); }
 bool ls_lora_is_transmitting(void)
 {
-    ls_lora_hw_lock();
-    bool tx = s_present && s_ops->is_transmitting && s_ops->is_transmitting();
-    ls_lora_hw_unlock();
-    return tx;
+    /* Both backends only read their RAM tx_busy flag here, just like RX and
+       FSK activity. Capture owns the SPI mutex for its whole IQ session;
+       a status reader (RADIOS) must never wait for that session to end. */
+    return s_present && s_ops->is_transmitting && s_ops->is_transmitting();
 }
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
 { LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->send(data, len) : ESP_ERR_INVALID_STATE); }
