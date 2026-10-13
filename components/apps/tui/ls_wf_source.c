@@ -677,6 +677,14 @@ static bool pump_lora_iq(uint32_t hz)
     if (!lr_spec_enable(true)) return idle(LS_WF_IDLE_FAILED, "LR IQ memory unavailable");
     /* An existing decoder owns capture and tuning. Only tap its checked blocks. */
     if (lr_spec_center() && !s_lr_owned) return pump_lr_line();
+    /* Ours already: the capture holds the chip's SPI lock for its whole
+       session, so asking the chip anything here (lora_hold's FSK check)
+       would wait on this very stream forever. Same frequency is a no-op;
+       a new one restarts the session without touching the chip first. */
+    if (s_lr_owned) {
+        if (lr_wf_start(hz) != ESP_OK) { lora_stop(); return idle(LS_WF_IDLE_FAILED, "LR IQ session failed"); }
+        return pump_lr_line();
+    }
     if ((P25.lr_iq_active || FM.lr_iq_active) && !s_lr_owned)
         return idle(LS_WF_IDLE_WAITING, "Waiting for LR IQ");
     if (hz < 150000000u || hz > 960000000u) {
