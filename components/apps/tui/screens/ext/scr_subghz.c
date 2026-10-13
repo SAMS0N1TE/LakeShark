@@ -72,6 +72,11 @@ static int setup_item;
 static uint32_t source_frequency[REC_SOURCE_COUNT]={433920000,433920000,433920000};
 /* The capture source as the RADIO picker counts it, and its name there. */
 static ls_rsel_radio_t source_radio(void) { return rec_source_radio(rec_watch_source()); }
+static bool lr_ook(void)
+{
+    return rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX &&
+           !rec_watch_lr_fsk();
+}
 static const char *source_name(void) { return ls_rsel_name(source_radio()); }
 
 /* When WATCH last started, so the banner can show a session running rather
@@ -1704,7 +1709,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     tui_rect content=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
     char panel_title[48];
     snprintf(panel_title,sizeof(panel_title),"READ / %s %s",source_name(),
-             rec_watch_source()==REC_SOURCE_SX1262?"2-FSK":"OOK");
+             rec_watch_source()==REC_SOURCE_SX1262 && !lr_ook()?"2-FSK":"OOK");
     ls_panel_box(sf,body,panel_title,TUI_CYAN);
     ls_motion_busy(sf,body,s.exporting || (s.enabled && rx->receiver_streaming));
     char line[110];
@@ -1749,7 +1754,8 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
         tui_put_str(sf,info,info.x+2,info.y+4,"[SD] earlier boot / [RX] this boot",LS_ATTR_DIM);
         tui_put_str(sf,info,info.x+2,info.y+5,"Pattern match is not a device identity.",LS_ATTR_DIM);
         if(cc_source) snprintf(line,sizeof(line),"CC: 650kHz OOK / 40us filter / 30ms gap");
-        else if(rec_watch_source()==REC_SOURCE_SX1262) snprintf(line,sizeof(line),"%s: 2-FSK, rate and deviation in SETTINGS",source_name());
+        else if(lr_ook()) snprintf(line,sizeof(line),"%s: OOK from its I/Q stream / 30ms gap",source_name());
+        else if(rec_watch_source()==REC_SOURCE_SX1262) snprintf(line,sizeof(line),"%s: 2-FSK, rate and deviation in OPTIONS",source_name());
         else snprintf(line,sizeof(line),"%s: configurable OOK pulse capture",source_name());
         tui_put_str(sf,info,info.x+2,info.y+6,line,LS_ATTR_DIM);
         snprintf(line,sizeof(line),"DM queued %lu / refused %lu / limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
@@ -2022,15 +2028,29 @@ static double o_gate(const ls_opt_t *o) { (void)o;return rec_watch_scan_threshol
 static void o_gate_set(const ls_opt_t *o,double v) { (void)o;scan_threshold_set(v); }
 #define SG_ROW(name,row) { .label=(name), .kind=LS_OPT_ACTION, .arg=(row), .act=o_row, \
                            .show=o_row_show, .why_not=o_row_why }
+/* The LR2021 reads OOK from its I/Q stream by default; FSK packets once
+   LEARN has measured a rate and sync. */
+static const char *const LR_RX_NAMES[]={"OOK (I/Q)","FSK packet"};
+static int o_lr_rx(const ls_opt_t *o){(void)o;return rec_watch_lr_fsk()?1:0;}
+static void o_lr_rx_set(const ls_opt_t *o,int v){(void)o;(void)rec_watch_set_lr_fsk(v!=0);}
+static const char *o_lr_rx_why(const ls_opt_t *o)
+{
+    (void)o;
+    if(ls_lora_chip()!=LS_LORA_CHIP_LR20XX)return "LR2021 only";
+    return rec_watch_enabled()?"Stop WATCH first":NULL;
+}
 static const ls_opt_t OPT_SUBGHZ[]={
     SG_ROW("Frequency",0),SG_ROW("Radio",1),SG_ROW("Capture setup",2),
     {.label="Detect threshold",.kind=LS_OPT_LEVEL,.arg=3,.num=o_gate,.set_num=o_gate_set,
      .lo=REC_SCAN_DETECT_MIN,.hi=REC_SCAN_DETECT_MAX,.step=1,.unit="dB over floor",
      .show=o_row_show,.why_not=o_row_why},
     SG_ROW("On detection",4),SG_ROW("Mesh alerts",5),SG_ROW("Spectrum style",6),
-    SG_ROW("Spectrum colour",7),SG_ROW("List legend",8)};
+    SG_ROW("Spectrum colour",7),SG_ROW("List legend",8),
+    {.label="LR2021 receive",.kind=LS_OPT_CYCLE,.names=LR_RX_NAMES,.n=2,.get=o_lr_rx,
+     .set=o_lr_rx_set,.why_not=o_lr_rx_why}};
 #undef SG_ROW
-static ls_opt_t page_options[SETTING_ROWS];
+#define OPT_ROWS (SETTING_ROWS+1)
+static ls_opt_t page_options[OPT_ROWS];
 static ls_opt_ctx_t option_ctx={.name="SUB-GHZ",.radio=LS_RSEL_NONE};
 static const ls_opt_ctx_t *subghz_options(void)
 {
@@ -2038,14 +2058,14 @@ static const ls_opt_ctx_t *subghz_options(void)
     if(page==PG_CATCH)return ls_catch_options();
     option_ctx.job=LS_RSEL_SUBGHZ_READ;option_ctx.tag=NULL;
     switch(page) {
-    case PG_READ: mask=(1u<<0)|(1u<<2)|(1u<<5)|(1u<<8);break;
+    case PG_READ: mask=(1u<<0)|(1u<<2)|(1u<<5)|(1u<<8)|(1u<<9);break;
     case PG_ANALYZE: mask=(1u<<3)|(1u<<4)|(1u<<6)|(1u<<7);
         option_ctx.job=LS_RSEL_SUBGHZ_SWEEP;option_ctx.tag="SWEEP";break;
     case PG_LEARN: mask=1u<<0;break;
-    default: mask=(1u<<SETTING_ROWS)-1;break;
+    default: mask=(1u<<OPT_ROWS)-1;break;
     }
     option_ctx.opt=page_options;option_ctx.n=0;
-    for(int i=0;i<SETTING_ROWS;i++)if(mask&(1u<<i))page_options[option_ctx.n++]=OPT_SUBGHZ[i];
+    for(int i=0;i<OPT_ROWS;i++)if(mask&(1u<<i))page_options[option_ctx.n++]=OPT_SUBGHZ[i];
     return &option_ctx;
 }
 /* ------------------------------------------------------------------ draw */

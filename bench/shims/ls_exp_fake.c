@@ -55,3 +55,6 @@ esp_err_t ls_lora_rssi_inst(float *dbm)
     *dbm = -101.0f + WOBBLE[s_reads++ % 8];
     return ESP_OK;
 }
+
+/* The simulator's LoRa chip is the SX1262. */
+ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }

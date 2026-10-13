@@ -1367,6 +1367,8 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
+ls_add_test(test_rec_lr_ook ${APP}/rec/rec_lr_ook.c)
+target_include_directories(test_rec_lr_ook PRIVATE ${APP}/rec)
 ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
     ${FW}/components/lakeshark/radio/ls_sub_fsk.c
     ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
@@ -2423,7 +2425,7 @@ target_include_directories(test_adsb_rx PRIVATE
 
 ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
     ${APP}/subghz/subghz_file.c
-    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
 target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)

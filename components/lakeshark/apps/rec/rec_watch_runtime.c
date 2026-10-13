@@ -4,6 +4,8 @@
 #include "ls_mixrf_control.h"
 #include "ls_lora.h"
 #include "ls_fsk_capture.h"
+#include "rec_lr_ook.h"
+#include "lr_wf_session.h"
 #include "ls_haptic.h"
 #include "settings.h"
 #include "ls_sub_fsk.h"
@@ -567,6 +569,76 @@ static bool fsk_session(bool on)
     return true;
 }
 
+
+/* READ on the LR2021: its raw I/Q stream through an OOK slicer, so it hears
+   any on/off keyed remote the way the SDRs do. The FSK packet receiver
+   above stays for a signal LEARN has measured (rec_watch_lr_fsk). */
+static EXT_RAM_BSS_ATTR rec_lr_ook_t s_lr_ook;
+static bool s_lr_run;
+static bool s_lr_fsk;
+bool rec_watch_lr_fsk(void){return s_lr_fsk;}
+bool rec_watch_set_lr_fsk(bool fsk)
+{
+    if(rec_watch_enabled())return false;
+    s_lr_fsk=fsk;
+    return true;
+}
+static void lr_ook_emit(void *ctx,const int32_t *edge,int edges,int peak)
+{
+    (void)ctx;
+    if(edges>REC_WATCH_EDGES)edges=REC_WATCH_EDGES;
+    /* The stream is 16-bit; the archive's peak is the RTL's 8-bit scale. */
+    peak/=16;if(peak>255)peak=255;
+    rec_watch_submit_mod(REC_SOURCE_SX1262,rec_get_freq(),edge,edges,peak,REC_END_GAP,NULL);
+}
+static void lr_ook_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
+{
+    (void)ctx;(void)spare;
+    if(!data){rec_lr_ook_reset(&s_lr_ook);return;}
+    rec_lr_ook_feed(&s_lr_ook,data,bytes,lr_ook_emit,NULL);
+}
+static bool lr_ook_wanted(void)
+{
+    const uint32_t hz=rec_get_freq();
+    return !s_lr_fsk && ls_lora_chip()==LS_LORA_CHIP_LR20XX && hz>=150000000u && hz<=960000000u;
+}
+static bool lr_ook_session(bool on)
+{
+    if(on) {
+        if(s_lr_run)return true;
+        s_fsk_error[0]=0;
+        const int64_t deadline=esp_timer_get_time()+1000000;
+        while((!s_scan_busy || s_catch_armed) && !ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()) {
+            ls_mesh_radio_hold(false);
+            snprintf(s_fsk_error,sizeof(s_fsk_error),"Mesh would not release the radio");
+            return false;
+        }
+        const rec_lr_ook_cfg_t cfg={.min_pulse_us=60,.gap_us=30000,.min_edges=6};
+        rec_lr_ook_init(&s_lr_ook,&cfg);
+        if(lr_wf_start_consumer(rec_get_freq(),lr_ook_consume,NULL)!=ESP_OK) {
+            ls_mesh_radio_hold(false);
+            snprintf(s_fsk_error,sizeof(s_fsk_error),"LR2021 stream busy; close its waterfall first");
+            return false;
+        }
+        s_lr_run=true;
+        return true;
+    }
+    if(!s_lr_run)return true;
+    lr_wf_stop();
+    s_lr_run=false;
+    ls_mesh_radio_hold(false);
+    return true;
+}
+/* The LoRa chip's WATCH: the OOK stream on an LR2021, FSK packets otherwise. */
+static bool lora_session(bool on)
+{
+    if(on)return lr_ook_wanted()?lr_ook_session(true):fsk_session(true);
+    const bool ook=lr_ook_session(false);
+    return fsk_session(false) && ook;
+}
+
 static bool rec_watch_enable_owned(bool on)
 {
     portENTER_CRITICAL(&s_lock);bool ready=s_status.ready;portEXIT_CRITICAL(&s_lock);
@@ -582,7 +654,7 @@ static bool rec_watch_enable_owned(bool on)
         ls_mixrf_status_t mix;ls_mixrf_snapshot(&mix);
         snprintf(s_fsk_error,sizeof(s_fsk_error),"%s",ls_mixrf_cc_refusal(&mix));return false;
     }
-    if (rec_watch_source() == REC_SOURCE_SX1262 && !fsk_session(on))
+    if (rec_watch_source() == REC_SOURCE_SX1262 && !lora_session(on))
         return false;
     portENTER_CRITICAL(&s_lock);
     bool ok=!on || s_status.ready;

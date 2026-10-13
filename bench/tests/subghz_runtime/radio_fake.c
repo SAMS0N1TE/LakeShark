@@ -11,3 +11,11 @@ bool ls_mesh_radio_hold(bool on)
     subghz_lease=subghz_task;return true;
 }
 bool ls_mesh_radio_held(void){return subghz_lease==subghz_task;}
+
+/* REC's LR2021 OOK path: no stream on the bench. */
+#include "ls_lora.h"
+#include "lr_wf_session.h"
+ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }
+esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
+{ (void)hz; (void)consume; (void)ctx; return ESP_ERR_NOT_SUPPORTED; }
+void lr_wf_stop(void) {}

@@ -79,6 +79,9 @@ bool rec_watch_request_replay(uint32_t id,int dbm)
    screen reads them back to draw the setup list. */
 static rec_fsk_mod_t sim_fsk={4800,25000,0x2DD42DD4u,32,59};
 void rec_watch_fsk_get(rec_fsk_mod_t *out){if(out)*out=sim_fsk;}
+static bool sim_lr_fsk;
+bool rec_watch_lr_fsk(void){return sim_lr_fsk;}
+bool rec_watch_set_lr_fsk(bool fsk){sim_lr_fsk=fsk;return true;}
 /* No radio to sweep, but the sweep is a state machine as far as the screen
    is concerned - busy or not, with or without findings - and every control
    that acts on a running sweep was unreachable from the bench while this

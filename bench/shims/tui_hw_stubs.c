@@ -315,3 +315,7 @@ void lr_wf_stop(void) {}
 
 __attribute__((weak)) void ls_tui_last_cost(uint32_t *us, int *cells)
 { if (us) *us = 0; if (cells) *cells = 0; }
+
+/* The screens ask which LoRa chip is fitted; the simulator has the SX1262. */
+#include "ls_lora.h"
+__attribute__((weak)) ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }

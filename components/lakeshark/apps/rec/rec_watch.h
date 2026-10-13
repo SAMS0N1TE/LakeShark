@@ -195,6 +195,10 @@ typedef struct {
 } rec_watch_status_t;
 bool rec_watch_start(void);
 bool rec_watch_enable(bool on);
+/* LR2021 READ: false slices OOK from its I/Q stream, true uses the FSK
+   packet receiver with the rate and sync LEARN measured. */
+bool rec_watch_lr_fsk(void);
+bool rec_watch_set_lr_fsk(bool fsk);
 bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);
 /* The copy rec_watch_snapshot makes while it holds the lock, on its own so it
