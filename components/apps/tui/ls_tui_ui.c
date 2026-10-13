@@ -94,6 +94,7 @@ static int button_want(const ls_btn_t *b, int row_h)
     return text + (row_h >= 3 ? 3 : 1);
 }
 
+static int s_force_rows;
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch, bool single_row)
 {
@@ -122,6 +123,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         rows++;
         per_row = (n + rows - 1) / rows;
     }
+    if (s_force_rows > 0) rows = s_force_rows;
     if (rows > bar.h) rows = bar.h;
     if (rows < 1) rows = 1;
     per_row = (n + rows - 1) / rows;
@@ -400,6 +402,13 @@ void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
 void ls_btn_bar_raised_row(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)
 {
     button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,false,true);
+}
+
+void ls_btn_bar_rows_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot,int rows)
+{
+    s_force_rows=rows;
+    button_bar(sf,bar,btn,n,focus,slot,false,false,false);
+    s_force_rows=0;
 }
 
 void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)

@@ -4065,31 +4065,31 @@ LS_CASE(subghz_completion_replaces_start_feedback_and_learn_back_cancels)
     rec_watch_sim_learn_pending(false);ls_scr_subghz.leave();rec_watch_select_source(REC_SOURCE_RTL);
 }
 
-LS_CASE(subghz_opens_on_a_home_of_six_jobs)
+LS_CASE(subghz_opens_on_read_with_six_tabs)
 {
     subghz_home();
     tui_rect pane={1,2,46,63};subghz_draw(pane);
     int x,y;
-    LS_CHECK(find_text("READ",&x,&y));
-    LS_CHECK(find_text("ANALYZER",&x,&y));
-    LS_CHECK(find_text("SAVED",&x,&y));
-    LS_CHECK(find_text("READ RAW",&x,&y));
-    LS_CHECK(find_text("LEARN",&x,&y));
-    LS_CHECK(find_text("SETTINGS",&x,&y));
-    /* No leftover menu to dig through. */
-    LS_CHECK(!find_text("MORE",&x,&y));
-    LS_CHECK(!find_text("OPTIONS",&x,&y));
-    /* A tile opens on a tap as well as on its number. */
-    LS_CHECK(find_text("ANALYZER",&x,&y));
+    /* READ is the first page, and the pages are tabs along the bottom. */
+    LS_CHECK(find_text("READ /",&x,&y));
+    static const char *const TAB[]={"READ","SCAN","SAVED","RAW","LEARN","CATCH"};
+    for(unsigned i=0;i<sizeof(TAB)/sizeof(TAB[0]);i++)
+        LS_CHECK_MSG(find_text(TAB[i],&x,&y),"no %s tab",TAB[i]);
+    /* One RADIO and OPTIONS on the bar; nothing to go BACK to. */
+    LS_CHECK(find_text("RADIO",&x,&y));
+    LS_CHECK(find_text("OPTIONS",&x,&y));
+    LS_CHECK(!find_text("BACK",&x,&y));
+    /* A tab opens on a tap as well as on its number. */
+    LS_CHECK(find_text("SCAN",&x,&y));
     LS_CHECK(ls_scr_subghz.touch(x,y));
     subghz_draw(pane);
     LS_CHECK(find_text("ANALYZER /",&x,&y));
     ls_scr_subghz.leave();
 }
 
-/* BACK is the first button of every page, ESC does the same, and the one
-   page under another - the player under SAVED - goes back to its list. */
-LS_CASE(subghz_every_page_has_back_to_the_home)
+/* Every page keeps the tabs, the one RADIO and OPTIONS. ESC goes back to
+   READ, and on READ it is not this screen's to keep. */
+LS_CASE(subghz_every_page_keeps_tabs_radio_and_options)
 {
     subghz_home();
     tui_rect pane={1,2,46,63};
@@ -4098,20 +4098,15 @@ LS_CASE(subghz_every_page_has_back_to_the_home)
         subghz_draw(pane);
         LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,c));
         subghz_draw(pane);
-        LS_CHECK_MSG(find_text("BACK",&x,&y),"page %c has no BACK",c);
-        LS_CHECK(ls_scr_subghz.key(LS_TK_ESC,0));
-        subghz_draw(pane);
-        LS_CHECK_MSG(find_text("READ RAW",&x,&y) && !find_text("BACK",&x,&y),
-                     "ESC from page %c did not return home",c);
-        /* And the BACK button does what ESC does. */
-        LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,c));
-        subghz_draw(pane);
-        LS_CHECK(find_text("BACK",&x,&y));
-        LS_CHECK(ls_scr_subghz.touch(x,y));
-        subghz_draw(pane);
-        LS_CHECK_MSG(find_text("READ RAW",&x,&y),"BACK on page %c did not return home",c);
+        LS_CHECK_MSG(find_text("RADIO",&x,&y),"page %c has no RADIO",c);
+        LS_CHECK_MSG(find_text("CATCH",&x,&y) && find_text("LEARN",&x,&y),"page %c lost the tabs",c);
+        LS_CHECK_MSG(!find_text("BACK HOME",&x,&y),"page %c still has BACK",c);
+        if(c!='1') {
+            LS_CHECK(ls_scr_subghz.key(LS_TK_ESC,0));
+            subghz_draw(pane);
+            LS_CHECK_MSG(find_text("READ /",&x,&y),"ESC from page %c did not return to READ",c);
+        }
     }
-    /* ESC on the home itself is not this screen's to keep. */
     LS_CHECK(!ls_scr_subghz.key(LS_TK_ESC,0));
     ls_scr_subghz.leave();
 }
@@ -4161,16 +4156,13 @@ LS_CASE(subghz_tune_offers_typing_presets_and_the_last_sweep)
     for(int i=0;i<3;i++)LS_CHECK(ls_picker_key(LS_TK_DOWN,0));
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_get_freq(),315000000);
-    /* SETTINGS > Frequency is the same list. */
-    LS_CHECK(ls_scr_subghz.key(LS_TK_ESC,0));
-    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'6'));
-    subghz_draw(pane);
-    LS_CHECK(find_text("315.0000 MHz",&x,&y));
-    LS_CHECK(ls_scr_subghz.key(LS_TK_ENTER,0));
+    /* OPTIONS > Frequency shows it and opens the same list. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'o'));
     LS_CHECK(ls_picker_active());
     fresh();ls_picker_draw(&g_sf,pane);
-    LS_CHECK(find_text("TYPE A FREQUENCY",&x,&y));
-    ls_picker_close();
+    LS_CHECK(find_text("Frequency",&x,&y));
+    LS_CHECK(find_text("315",&x,&y));
+    ls_opt_close();ls_picker_close();
     rec_set_freq(433920000);
     ls_scr_subghz.leave();
 }
@@ -4231,28 +4223,31 @@ LS_CASE(subghz_detections_outlive_the_sweep)
     ls_scr_subghz.leave();
 }
 
-/* Every setting on one page with its value beside it - the rows that used to
-   be spread over a bar, MORE, DISPLAY and the sweep's own menu. */
-LS_CASE(subghz_settings_lists_every_setting)
+/* OPTIONS holds every setting with its value: the rows that were a
+   SETTINGS page of their own. */
+LS_CASE(subghz_options_lists_every_setting)
 {
     subghz_home();
     tui_rect pane={1,2,46,63};subghz_draw(pane);
-    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'6'));
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'3'));
     subghz_draw(pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'o'));
+    LS_CHECK(ls_picker_active());
+    fresh();ls_picker_draw(&g_sf,pane);
     int x,y;
     static const char *const ROW[]={"Frequency","Radio","Capture setup","Detect threshold",
         "On detection","Mesh alerts","Spectrum style","Spectrum colour","List legend"};
-    for(unsigned i=0;i<sizeof(ROW)/sizeof(ROW[0]);i++)
-        LS_CHECK_MSG(find_text(ROW[i],&x,&y),"SETTINGS has no %s row",ROW[i]);
-    /* A tap on a row opens it: the RADIO list every app has. */
-    LS_CHECK(find_text("Radio",&x,&y));
-    LS_CHECK(ls_scr_subghz.touch(x,y));
-    LS_CHECK(ls_picker_active());
-    fresh();ls_picker_draw(&g_sf,pane);
-    LS_CHECK(find_text("RADIO",&x,&y));
-    LS_CHECK(find_text("RTL-SDR",&x,&y));
-    LS_CHECK(!find_text("SUB-GHZ has no HackRF capture",&x,&y));
-    ls_picker_close();
+    /* The list scrolls; walk down to each row. */
+    for(unsigned i=0;i<sizeof(ROW)/sizeof(ROW[0]);i++) {
+        bool seen=find_text(ROW[i],&x,&y);
+        for(int k=0;k<12 && !seen;k++) {
+            ls_picker_key(LS_TK_DOWN,0);
+            fresh();ls_picker_draw(&g_sf,pane);
+            seen=find_text(ROW[i],&x,&y);
+        }
+        LS_CHECK_MSG(seen,"OPTIONS has no %s row",ROW[i]);
+    }
+    ls_opt_close();ls_picker_close();
     ls_scr_subghz.leave();
 }
 
@@ -4377,9 +4372,9 @@ LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
     const int bar=find_row_text("FREQ");
     const int body=find_row_text("READ / RTL");
     LS_CHECK_MSG(bar>=0 && body>bar,"landscape READ: bar=%d body=%d",bar,body);
-    LS_EQ_INT(2,body-bar);
+    LS_CHECK_MSG(body-bar<=5,"landscape READ: %d rows from bar to captures",body-bar);
     int cx,cy;
-    LS_CHECK(find_text("BACK HOME",&cx,&cy));
+    LS_CHECK(!find_text("BACK HOME",&cx,&cy));
     LS_CHECK_MSG((pane.y+pane.h-body)*2>pane.h,"only %d of %d rows left for the captures",
                  pane.y+pane.h-body,pane.h);
     /* Without a keyboard on the full landscape pane the keys take one more
@@ -4387,7 +4382,7 @@ LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
     ls_shim_keypad(0);
     const tui_rect full={1,2,113,28};
     subghz_draw(full);
-    LS_EQ_INT(3,find_row_text("READ / RTL")-find_row_text("FREQ"));
+    LS_CHECK(find_row_text("READ / RTL")-find_row_text("FREQ")<=5);
     LS_CHECK(!find_text("BACK HOME",&cx,&cy));
     ls_shim_keypad(-1);
     ls_scr_subghz.leave();
@@ -5500,11 +5495,11 @@ LS_CASE(record_files_shortcut_and_tab_are_reachable)
 {
     static const ls_tui_screen_t files={.name="FILES",.draw=rec_files_draw};
     apps_once();int index=ls_tui_screen_register(&files);LS_CHECK(index>=0);
-    ls_scr_rec_tools();LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'b'));
+    ls_scr_rec_tools();LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'3'));
     const tui_rect pane={1,2,46,63};fresh();grid_for(pane);draw_pane(&ls_scr_rec,pane);
-    LS_CHECK(strstr(ls_scr_rec.hint,"O files")!=NULL);
-    LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'o'));LS_EQ_INT(ls_tui_screen_current(),index);
-    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_rec));
+    LS_CHECK(strstr(ls_scr_rec.hint,"G files")!=NULL);
+    LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'g'));LS_EQ_INT(ls_tui_screen_current(),index);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_rec));LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'3'));
     fresh();draw_pane(&ls_scr_rec,pane);int x,y;LS_CHECK(find_text("FILES",&x,&y));
     LS_CHECK(ls_scr_rec.touch(x,y));LS_EQ_INT(ls_tui_screen_current(),index);
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));

@@ -1,8 +1,15 @@
 #ifndef LS_CATCH_UI_H
 #define LS_CATCH_UI_H
 #include "ls_tui_screen.h"
-void ls_catch_draw(tui_surface *,tui_rect);
+#include "ls_options.h"
+/* CATCH as a page of REC: the body only. The shared bar carries its
+   actions, OPTIONS carries the band. */
+void ls_catch_body_draw(tui_surface *,tui_rect);
+bool ls_catch_body_touch(int,int);
 bool ls_catch_key(ls_tk_t,char);
-/* 2 requests BACK to REC, 1 consumed, 0 unhandled. */
-int ls_catch_touch(int,int);
+void ls_catch_toggle(void);
+void ls_catch_save_selected(void);
+void ls_catch_stop(void);
+bool ls_catch_running(void);
+const ls_opt_ctx_t *ls_catch_options(void);
 #endif

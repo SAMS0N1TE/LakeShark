@@ -16,6 +16,7 @@
 #include "../../ls_tui_touch.h"
 #include "../../ls_icons.h"
 #include "../../ls_rec_replay.h"
+#include "../../ls_catch_ui.h"
 #include "settings.h"
 #include "ls_lora.h"
 #include "esp_attr.h"
@@ -1240,14 +1241,6 @@ static void source_open(void) { ls_rsel_open(LS_RSEL_SUBGHZ_READ,source_done); }
 
 /* ANALYZER's radio. Only the LoRa chip sweeps here, so the list is there to
    say so for the rest; choosing it changes nothing. */
-static void sweep_done(ls_rsel_radio_t radio)
-{
-    snprintf(feedback,sizeof(feedback),"Sweeps on the %s",ls_rsel_name(radio));
-}
-
-/* Where to point it. A typed frequency, a preset and a peak from the last
-   sweep are three ways of answering one question, and they were three
-   separate controls - two on the bar and one buried in MORE. */
 static void tune_menu_done(int index)
 {
     if(index<0 || index>=menu_n)return;
@@ -1283,17 +1276,15 @@ static void tune_open(void)
    six tiles, one per job, the way a Flipper's Sub-GHz menu does, and every
    page has BACK to here. Nothing moved out of the app to get there. */
 typedef enum {
-    PG_HOME,
     PG_READ,       /* listen on one frequency, keep what is heard        */
     PG_ANALYZE,    /* sweep a band to find the frequency                 */
     PG_SAVED,      /* what was caught, and the .sub files on the card    */
     PG_PLAYER,     /* one file, its pulses, and PLAY ONCE                */
     PG_RAW,        /* REC's level meter and ARM, one capture to a file   */
     PG_LEARN,      /* measure rate, deviation and sync                   */
-    PG_SETTINGS,   /* every setting, as rows with their values           */
+    PG_CATCH,      /* the SDR spots a burst, the LoRa chip decodes it    */
 } sg_page_t;
 static sg_page_t page;
-static int home_sel, settings_sel;
 static char hint_text[80];
 /* What each button on the current page's bar does, set while drawing, so a
    tap and ENTER on a focused button act on what was on the screen. */
@@ -1301,6 +1292,13 @@ static char bar_keys[8];
 static int bar_n;
 
 static void go(sg_page_t p);
+
+/* REC hosts this screen and owns the radio list (it also records GPS and
+   mesh metadata) and FILES. Standalone SUB-GHZ leaves both NULL. */
+static void (*host_radio)(void);
+static void (*host_files)(void);
+void ls_scr_subghz_host(void (*radio)(void), void (*files)(void))
+{ host_radio = radio; host_files = files; }
 
 /* SAVED: the caught patterns first, then the .sub files on the card. */
 #define SAVED_FILES_MAX 48
@@ -1388,7 +1386,6 @@ static void saved_open(void)
     go(PG_PLAYER);
 }
 
-static void settings_open_row(int row);
 static const ls_opt_ctx_t *subghz_options(void);
 
 static void action(char c)
@@ -1402,7 +1399,7 @@ static void action(char c)
         if(no){snprintf(feedback,sizeof(feedback),"%s",no);return;}
     }
     if(c=='b') {
-        go(page==PG_PLAYER?PG_SAVED:PG_HOME);
+        go(page==PG_PLAYER?PG_SAVED:PG_READ);
     } else if(c=='w') {
         bool on=!rec_watch_enabled();
         if(rec_watch_enable(on)) {
@@ -1438,9 +1435,7 @@ static void action(char c)
         menu_add('S',"SAVE .SUB","Flipper file on the card");
         menu_add('P',e->pinned?"UNPIN":"PIN",e->pinned?"Allow eviction":"Keep it");
         menu_add('J',"JOURNAL","Mark with GPS and time");
-    } else if(c=='m') {
-        go(PG_SETTINGS);
-    } else if(c=='o') {
+    } else if(c=='m' || c=='o') {
         ls_opt_open(subghz_options());
     } else if(c=='i') {notes=!notes;
     } else if(c=='n') {
@@ -1514,10 +1509,16 @@ static void action(char c)
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy; try again shortly");
     } else if(c=='d') {
         go(PG_RAW);
-    } else if(c=='r') {
-        source_open();
-    } else if(c=='R') {
-        ls_rsel_open(LS_RSEL_SUBGHZ_SWEEP,sweep_done);
+    } else if(c=='r' || c=='R') {
+        /* One radio for the whole app. SCAN sweeps with the LoRa chip
+           whichever radio READ uses, and says so on its page. */
+        if(host_radio)host_radio();else source_open();
+    } else if(c=='g') {
+        if(host_files)host_files();
+    } else if(c=='x') {
+        ls_catch_toggle();
+    } else if(c=='E') {
+        ls_catch_save_selected();
     } else if(c=='s') {
         if(rec_watch_source()==REC_SOURCE_SX1262){fsk_setup_open();return;}
         ls_picker_open("CAPTURE SETUP",setup_done);
@@ -1534,13 +1535,13 @@ static void go(sg_page_t p)
 {
     if(p!=page) {
         iq_view_stop();
+        if(page==PG_CATCH)ls_catch_stop();
         if(page==PG_LEARN && rec_watch_learn_busy())rec_watch_scan_stop();
         feedback[0]=0;
     }
     button_focus=-1;button_slot=0;
     if(p==PG_SAVED && page!=PG_PLAYER){saved_reload();saved_sel=0;}
     if(p==PG_RAW)ls_rec_tools_enter();
-    if(p==PG_SETTINGS)settings_sel=0;
     page=p;
     if(p==PG_ANALYZE && !rec_watch_scan_busy() && s.scan_result[0])
         snprintf(feedback,sizeof(feedback),"%s",s.scan_result);
@@ -1553,9 +1554,9 @@ static void enter(void)
     button_focus=-1;button_slot=0;rec_watch_start();ls_field_start();ls_field_watch(true);
     /* The capture source is the truth for READ's RADIO button. */
     ls_rsel_track(LS_RSEL_SUBGHZ_READ,source_radio);
-    feedback[0]=0;page=PG_HOME;
+    feedback[0]=0;page=PG_READ;
 }
-static void leave(void) {iq_view_stop();if(rec_watch_learn_busy())rec_watch_scan_stop();ls_field_watch(false);}
+static void leave(void) {iq_view_stop();ls_catch_stop();if(rec_watch_learn_busy())rec_watch_scan_stop();ls_field_watch(false);}
 
 static void waveform(tui_surface *sf,tui_rect a)
 {
@@ -1618,20 +1619,47 @@ static void waveform(tui_surface *sf,tui_rect a)
    place, then that page's own controls. Sized by the shared rule - three rows
    in a wide pane when the labels fit the compact form, the fat form
    otherwise - so no page spends more on buttons than the old screen did. */
+static tui_rect tabs;
+static int tab_w;
+static const rec_hub_status_t *bar_rx;
+static uint8_t bar_fresh;
+static void banner(tui_surface *sf,tui_rect *a,const rec_hub_status_t *rx,uint8_t fresh);
 static void page_bar(tui_surface *sf,tui_rect *a,const ls_btn_t *btn,int n)
 {
+    /* Every page: the one RADIO, then that page's controls, then OPTIONS,
+       on one filled row. No BACK - the tabs along the bottom are the way
+       between pages, the way FM and P25 work. */
+    ls_btn_t row[8];
+    int m=0;
+    row[m++]=ls_rsel_button(LS_RSEL_SUBGHZ_READ);
+    row[0].key='r';
+    row[0].dim=rec_watch_enabled() || rec_watch_scan_busy() || rec_watch_learn_busy();
+    for(int i=0;i<n && m<7;i++) {
+        const char k=btn[i].key;
+        if(k=='b' || k=='r' || k=='R' || k=='o')continue;
+        row[m++]=btn[i];
+    }
+    const ls_opt_ctx_t *opt=subghz_options();
+    if(opt && m<8)row[m++]=ls_opt_button(opt);
     const bool wide=a->w>a->h*2;
-    const bool thumbs=!ls_tui_keyboard_mode() && a->h>=22;
-    int h=wide?(!thumbs && ls_btn_compact_fits(tui_rect_make(a->x,a->y,a->w,3),btn,n)?3:4)
-              :ls_btn_raised_height(*a,n);
-    /* A tall narrow split: two columns of buttons, so it needs the rows. */
-    if(a->w>=32 && a->w<38 && a->h>=36 && n>=5) h=16;
+    /* Portrait is driven by a thumb: more than four controls take two rows
+       rather than shrinking every key to a sliver. */
+    const bool two=!wide && m>4 && a->h>=40;
+    /* Landscape takes the three-row form only when every label still fits
+       on its one line; a cut word is worse than a row. */
+    const int bw=wide && tab_w>0 && a->w-tab_w>=40?a->w-tab_w:a->w;
+    int h=wide?(ls_btn_compact_fits(tui_rect_make(a->x,a->y,bw,3),row,m)?3:4):two?10:5;
     if(h>a->h-6)h=a->h>9?3:0;
     if(h<=0)return;
-    ls_btn_bar_raised(sf,tui_rect_make(a->x,a->y,a->w,h),btn,n,button_focus);
-    bar_n=n<(int)sizeof(bar_keys)?n:(int)sizeof(bar_keys);
-    for(int i=0;i<bar_n;i++)bar_keys[i]=btn[i].key;
+    if(two)ls_btn_bar_raised(sf,tui_rect_make(a->x,a->y,a->w,h),row,m,button_focus);
+    else ls_btn_bar_raised_row(sf,tui_rect_make(a->x,a->y,bw,h),row,m,button_focus);
+    if(bw<a->w)tabs=tui_rect_make(a->x+bw+1,a->y,a->w-bw-1,h);
+    bar_n=m<(int)sizeof(bar_keys)?m:(int)sizeof(bar_keys);
+    for(int i=0;i<bar_n;i++)bar_keys[i]=row[i].key;
     a->y+=h;a->h-=h;
+    /* The receiver's state under the bar, on every page but the player. */
+    /* RAW and CATCH carry their own capture state. */
+    if(page!=PG_PLAYER && page!=PG_RAW && page!=PG_CATCH && bar_rx)banner(sf,a,bar_rx,bar_fresh);
 }
 
 static void banner(tui_surface *sf,tui_rect *a,const rec_hub_status_t *rx,uint8_t fresh)
@@ -1643,54 +1671,6 @@ static void banner(tui_surface *sf,tui_rect *a,const rec_hub_status_t *rx,uint8_
        frame around the screen. */
     state_banner(sf,tui_rect_make(a->x+1,a->y,a->w-2,2),&s,rx,esp_timer_get_time(),fresh);
     a->y+=2;a->h-=2;
-}
-
-/* ------------------------------------------------------------------ HOME */
-
-#define HOME_TILES 6
-static const char *const HOME_NAME[HOME_TILES]={"READ","ANALYZER","SAVED","READ RAW","LEARN","SETTINGS"};
-static const sg_page_t HOME_PAGE[HOME_TILES]={PG_READ,PG_ANALYZE,PG_SAVED,PG_RAW,PG_LEARN,PG_SETTINGS};
-
-static void draw_home(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,uint8_t fresh)
-{
-    banner(sf,&a,rx,fresh);
-    static char sub[HOME_TILES][32];
-    /* Twelve characters: three tiles across a portrait pane leave that. */
-    snprintf(sub[0],sizeof(sub[0]),s.enabled?"ON, %d caught":"Catch signals",s.count);
-    snprintf(sub[1],sizeof(sub[1]),"%s",rec_watch_scan_busy()?"Sweeping":"Find freq");
-    snprintf(sub[2],sizeof(sub[2]),"Replay files");
-    char rtl_only[16];
-    snprintf(rtl_only,sizeof(rtl_only),"%s only",ls_rsel_name(LS_RSEL_SDR_RTL));
-    snprintf(sub[3],sizeof(sub[3]),"%s",rec_watch_source()==REC_SOURCE_RTL?"One to file":rtl_only);
-    snprintf(sub[4],sizeof(sub[4]),"%s",rec_watch_learn_busy()?"Listening":"Rate & sync");
-    snprintf(sub[5],sizeof(sub[5]),"%.3f MHz",rec_get_freq()/1e6);
-    const ls_tile_t tiles[HOME_TILES]={
-        {HOME_NAME[0],sub[0],LS_ICON_WAVE,   TUI_GREEN, s.enabled},
-        {HOME_NAME[1],sub[1],LS_ICON_FALLS,  TUI_BLUE,  rec_watch_scan_busy()},
-        {HOME_NAME[2],sub[2],LS_ICON_FILES,  TUI_YELLOW,false},
-        {HOME_NAME[3],sub[3],LS_ICON_RECORD, TUI_RED,   false},
-        {HOME_NAME[4],sub[4],LS_ICON_LABS,   TUI_CYAN,  rec_watch_learn_busy()},
-        {HOME_NAME[5],sub[5],LS_ICON_GEAR,   TUI_WHITE, false}};
-    tui_rect grid=tui_rect_make(a.x,a.y+1,a.w,a.h-2);
-    if(home_sel<0 || home_sel>=HOME_TILES)home_sel=0;
-    ls_tile_grid(sf,grid,tiles,HOME_TILES,home_sel);
-    bar_n=0;
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"Tap a tile or press 1-6",LS_ATTR_DIM);
-}
-
-static bool key_home(ls_tk_t k,char ch)
-{
-    int cols=1,rows=1;ls_tile_shape(&cols,&rows);if(cols<1)cols=1;
-    switch(k) {
-    case LS_TK_LEFT:  if(home_sel>0)home_sel--;return true;
-    case LS_TK_RIGHT: if(home_sel+1<HOME_TILES)home_sel++;return true;
-    case LS_TK_UP:    if(home_sel-cols>=0)home_sel-=cols;return true;
-    case LS_TK_DOWN:  if(home_sel+cols<HOME_TILES)home_sel+=cols;return true;
-    case LS_TK_ENTER: go(HOME_PAGE[home_sel]);return true;
-    default: break;
-    }
-    if(k==LS_TK_CHAR && ch>='1' && ch<'1'+HOME_TILES){home_sel=ch-'1';go(HOME_PAGE[home_sel]);return true;}
-    return false;
 }
 
 /* ------------------------------------------------------------------ READ */
@@ -1719,7 +1699,6 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
         }
     }
     btn[3].dim=s.enabled;
-    banner(sf,&a,rx,fresh);
     page_bar(sf,&a,btn,6);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     tui_rect content=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
@@ -1803,7 +1782,6 @@ static void draw_analyze(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,u
     /* Its own letter on this bar, so R opens the sweep's list here and the
        capture source's everywhere else. */
     btn[5].key='R';
-    banner(sf,&a,rx,fresh);
     page_bar(sf,&a,btn,7);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     if (iq && !sweep_hits) {
@@ -1853,8 +1831,9 @@ static void draw_saved(tui_surface *sf,tui_rect a)
     ls_btn_t btn[]={
         {"BACK","HOME",'b',false,false},
         {"OPEN",!total?"NONE":on_file?"PLAYER":"CAPTURE",'O',false,!total},
-        {"RELOAD","CARD",'U',false,false}};
-    page_bar(sf,&a,btn,3);
+        {"RELOAD","CARD",'U',false,false},
+        {"FILES","BROWSE",'g',false,false}};
+    page_bar(sf,&a,btn,host_files?4:3);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     ls_panel_box(sf,body,"SAVED",TUI_YELLOW);
     saved_list=tui_rect_make(body.x+2,body.y+1,body.w-4,body.h-2);
@@ -1933,11 +1912,23 @@ static void draw_raw(tui_surface *sf,tui_rect a)
     const char *no=disabled_reason('d');
     if(no) {
         char how[48];
-        snprintf(how,sizeof(how),"RADIO in READ picks the SDR");
+        snprintf(how,sizeof(how),"Tap RADIO and pick the SDR");
         ls_panel_notice(sf,a,"READ RAW",no,how);
         return;
     }
     ls_rec_tools_draw(sf,a);
+}
+
+/* ----------------------------------------------------------------- CATCH */
+
+static void draw_catch(tui_surface *sf,tui_rect a)
+{
+    const bool running=ls_catch_running();
+    ls_btn_t btn[]={
+        {"CATCH",running?"STOP":"START",'x',running,false},
+        {"RAW","SAVE",'E',false,false}};
+    page_bar(sf,&a,btn,2);
+    ls_catch_body_draw(sf,a);
 }
 
 /* ----------------------------------------------------------------- LEARN */
@@ -1952,7 +1943,6 @@ static void draw_learn(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,uin
         {learning?"STOP":"LISTEN",learning?"CANCEL":"30 S",'L',learning,false},
         {"APPLY",have?"THESE":"NONE",'A',false,!have || learning},
         ls_opt_button(subghz_options())};
-    banner(sf,&a,rx,fresh);
     page_bar(sf,&a,btn,4);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     ls_panel_box(sf,body,"LEARN SIGNAL",TUI_CYAN);
@@ -2001,7 +1991,6 @@ static void draw_learn(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,uin
    same list or keypad it always did; what changed is that they are all here
    instead of spread over a bar, a MORE menu and two sub-menus. */
 #define SETTING_ROWS 9
-static tui_rect settings_list;
 static const char SETTING_KEY[SETTING_ROWS]={'f','r','s','T','H','a','Y','K','i'};
 static void settings_value(int row,char *out,size_t len)
 {
@@ -2022,15 +2011,6 @@ static void settings_value(int row,char *out,size_t len)
     default: snprintf(out,len,"%s",notes?"shown":"hidden"); break;
     }
 }
-static void settings_open_row(int row)
-{
-    if(row<0 || row>=SETTING_ROWS)return;
-    action(SETTING_KEY[row]);
-}
-
-/* OPTIONS: the SETTINGS rows that belong to the page in front of you, each
-   doing what its row on SETTINGS does, and greyed for the same reasons. arg
-   is the SETTINGS row. */
 static void o_row(const ls_opt_t *o) { action(SETTING_KEY[o->arg]); }
 static void o_row_show(const ls_opt_t *o,char *out,size_t n)
 {
@@ -2055,47 +2035,33 @@ static ls_opt_ctx_t option_ctx={.name="SUB-GHZ",.radio=LS_RSEL_NONE};
 static const ls_opt_ctx_t *subghz_options(void)
 {
     unsigned mask=0;
+    if(page==PG_CATCH)return ls_catch_options();
     option_ctx.job=LS_RSEL_SUBGHZ_READ;option_ctx.tag=NULL;
     switch(page) {
     case PG_READ: mask=(1u<<0)|(1u<<2)|(1u<<5)|(1u<<8);break;
     case PG_ANALYZE: mask=(1u<<3)|(1u<<4)|(1u<<6)|(1u<<7);
         option_ctx.job=LS_RSEL_SUBGHZ_SWEEP;option_ctx.tag="SWEEP";break;
     case PG_LEARN: mask=1u<<0;break;
-    case PG_SETTINGS: mask=(1u<<SETTING_ROWS)-1;break;
-    default:return NULL;
+    default: mask=(1u<<SETTING_ROWS)-1;break;
     }
     option_ctx.opt=page_options;option_ctx.n=0;
     for(int i=0;i<SETTING_ROWS;i++)if(mask&(1u<<i))page_options[option_ctx.n++]=OPT_SUBGHZ[i];
     return &option_ctx;
 }
-static void draw_settings(tui_surface *sf,tui_rect a)
-{
-    ls_btn_t btn[]={{"BACK","HOME",'b',false,false}};
-    page_bar(sf,&a,btn,1);
-    tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
-    ls_panel_box(sf,body,"SETTINGS",TUI_WHITE);
-    settings_list=tui_rect_make(body.x+2,body.y+1,body.w-4,body.h-2);
-    /* Two lines a row where there is room - label over value - and one,
-       value at the right, where there is not. */
-    const int per=settings_list.h>=SETTING_ROWS*2?2:1;
-    if(settings_sel<0 || settings_sel>=SETTING_ROWS)settings_sel=0;
-    char v[48];
-    for(int i=0;i<SETTING_ROWS;i++) {
-        const int y=settings_list.y+i*per;
-        if(y+per>settings_list.y+settings_list.h)break;
-        if(i==settings_sel)ls_fill_dither(sf,tui_rect_make(settings_list.x,y,settings_list.w,per),LS_DITHER_LIGHT,TUI_CYAN);
-        settings_value(i,v,sizeof(v));
-        tui_put_str(sf,settings_list,settings_list.x,y,OPT_SUBGHZ[i].label,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        if(per==2) tui_put_str(sf,settings_list,settings_list.x+2,y+1,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-        else {
-            const int x=settings_list.x+settings_list.w-(int)strlen(v);
-            tui_put_str(sf,settings_list,x>settings_list.x+18?x:settings_list.x+18,y,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-        }
-    }
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"UP/DOWN pick, ENTER changes it",LS_ATTR_DIM);
-}
-
 /* ------------------------------------------------------------------ draw */
+
+#define N_TABS 6
+static const char *const TAB_NAME[N_TABS]={"READ","SCAN","SAVED","RAW","LEARN","CATCH"};
+static const sg_page_t TAB_PAGE[N_TABS]={PG_READ,PG_ANALYZE,PG_SAVED,PG_RAW,PG_LEARN,PG_CATCH};
+
+/* REC opens a loaded file in the player, or CATCH, from outside. */
+void ls_scr_subghz_show(int which)
+{
+    if(which==0)go(PG_PLAYER);
+    else if(which==1)go(PG_CATCH);
+    else if(which==2)go(PG_RAW);
+    else go(PG_SAVED);
+}
 
 static void draw(tui_surface *sf,tui_rect a)
 {
@@ -2127,25 +2093,47 @@ static void draw(tui_surface *sf,tui_rect a)
        drag can follow the finger; anywhere else it is not on the screen. */
     if(page!=PG_ANALYZE || !rec_watch_scan_busy())gate_hit=tui_rect_make(0,0,0,0);
     static const char *const HINT[]={
-        "1-6 open  ESC leaves SUB-GHZ",
-        "W watch  F freq  R radio  O options  ENTER open  ESC back",
-        "N scan/stop  R radio  O options  ESC back",
-        "ENTER open  ESC back",
-        "P play  +/- power  ESC back",
-        "ENTER arm/stop  ESC back",
-        "O options  ESC back",
-        "ENTER change  ESC back"};
+        "W watch  F freq  R radio  O options  1-6 pages",
+        "N scan/stop  R radio  O options  1-6 pages",
+        "ENTER open  G files  R radio  O options",
+        "P play  +/- power  ESC saved",
+        "ENTER arm/stop  R radio  1-6 pages",
+        "L listen  A apply  O options  1-6 pages",
+        "X start/stop  E save  1-6 pages"};
     snprintf(hint_text,sizeof(hint_text),"%s",HINT[page]);
+    /* The pages, along the bottom where the thumb is - FM's tabs. */
+    {
+        /* Two rows of three in portrait: six across the rounded bottom
+           corners leaves four letters a tab. */
+        if(a.w>a.h*2) {
+            /* Landscape: beside the page's bar, on the same rows. */
+            tab_w=a.w*9/20;tabs=tui_rect_make(0,0,0,0);
+        } else {
+            const int th=a.h>=50?8:6;
+            tab_w=0;tabs=tui_rect_make(a.x,a.y+a.h-th,a.w,th);
+            a.h-=th;
+        }
+    }
+    bar_rx=&rx;bar_fresh=fresh;
     switch(page) {
-    case PG_HOME:     draw_home(sf,a,&rx,fresh); break;
     case PG_READ:     draw_read(sf,a,&rx,&cc,fresh); break;
     case PG_ANALYZE:  draw_analyze(sf,a,&rx,fresh); break;
     case PG_SAVED:    draw_saved(sf,a); break;
     case PG_PLAYER:   draw_player(sf,a); break;
     case PG_RAW:      draw_raw(sf,a); break;
     case PG_LEARN:    draw_learn(sf,a,&rx,fresh); break;
-    case PG_SETTINGS: draw_settings(sf,a); break;
+    case PG_CATCH:    draw_catch(sf,a); break;
     }
+    ls_btn_t tab[N_TABS];
+    for(int i=0;i<N_TABS;i++) {
+        tab[i]=(ls_btn_t){TAB_NAME[i],NULL,(char)('1'+i),
+                          TAB_PAGE[i]==page || (TAB_PAGE[i]==PG_SAVED && page==PG_PLAYER),false};
+    }
+    tab[0].on=tab[0].on || s.enabled;
+    tab[1].on=tab[1].on || rec_watch_scan_busy();
+    tab[4].on=tab[4].on || rec_watch_learn_busy();
+    tab[5].on=tab[5].on || ls_catch_running();
+    if(tabs.h>0)ls_btn_bar_rows_slot(sf,tabs,tab,N_TABS,-1,LS_BTN_SLOT_QUICK,tabs.h>=8?2:1);
 }
 
 /* ------------------------------------------------------------ keys, taps */
@@ -2158,16 +2146,25 @@ static bool back_key(ls_tk_t k,char ch)
 static bool key(ls_tk_t k,char ch)
 {
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    if(page==PG_HOME) {
-        if(key_home(k,ch))return true;
-    } else if(back_key(k,ch)) {
-        go(page==PG_PLAYER?PG_SAVED:PG_HOME);
+    if(k==LS_TK_CHAR && ch>='1' && ch<'1'+N_TABS && page!=PG_PLAYER) {
+        go(TAB_PAGE[ch-'1']);
         return true;
+    }
+    if(back_key(k,ch)) {
+        if(page==PG_PLAYER){go(PG_SAVED);return true;}
+        if(page!=PG_READ){go(PG_READ);return true;}
+        return false;
+    }
+    /* The player owns ENTER, LEFT/RIGHT and +/- : it is the page. */
+    if(page==PG_PLAYER && k!=LS_TK_TAB) {
+        const int r=ls_rec_player_key(k,ch);
+        if(r==2){go(PG_SAVED);return true;}
+        if(r==1)return true;
     }
     /* A focused button on the bar first, so ENTER on BACK goes back. LEFT
        and RIGHT walk the bar, except in the player, where they walk the
        pulses. */
-    if(page!=PG_HOME && (k==LS_TK_TAB ||
+    if((k==LS_TK_TAB ||
        (page!=PG_PLAYER && (k==LS_TK_LEFT || k==LS_TK_RIGHT))))
         return ls_btn_navigate(k,&button_slot,&button_focus,false);
     if(k==LS_TK_ENTER && button_focus>=0 && button_focus<bar_n) {
@@ -2175,11 +2172,6 @@ static bool key(ls_tk_t k,char ch)
         return true;
     }
     /* Then the page's own keys, before the shortcuts every page shares. */
-    if(page==PG_PLAYER) {
-        const int r=ls_rec_player_key(k,ch);
-        if(r==2){go(PG_SAVED);return true;}
-        if(r==1)return true;
-    }
     if(page==PG_RAW && !disabled_reason('d') && ls_rec_tools_key(k,ch))return true;
     if(k==LS_TK_UP || k==LS_TK_DOWN)button_focus=-1;
     switch(page) {
@@ -2193,10 +2185,8 @@ static bool key(ls_tk_t k,char ch)
         if(k==LS_TK_DOWN){if(saved_sel+1<saved_total())saved_sel++;return true;}
         if(k==LS_TK_ENTER){action('O');return true;}
         break;
-    case PG_SETTINGS:
-        if(k==LS_TK_UP){if(settings_sel)settings_sel--;return true;}
-        if(k==LS_TK_DOWN){if(settings_sel+1<SETTING_ROWS)settings_sel++;return true;}
-        if(k==LS_TK_ENTER){settings_open_row(settings_sel);return true;}
+    case PG_CATCH:
+        if(k==LS_TK_UP || k==LS_TK_DOWN)return ls_catch_key(k,0);
         break;
     case PG_ANALYZE:
         if(k==LS_TK_UP || k==LS_TK_DOWN || k==LS_TK_ENTER) {
@@ -2220,6 +2210,9 @@ static bool key(ls_tk_t k,char ch)
     if(k!=LS_TK_CHAR || !ch)return false;
     /* The letter printed on a button of this page's bar wins over the shared
        shortcut with the same letter - on LEARN, A is APPLY, not ALERTS. */
+    /* An exact letter first, so o is OPTIONS even beside OPEN's O. */
+    for(int i=0;i<bar_n;i++)
+        if(bar_keys[i]==ch){action(bar_keys[i]);return true;}
     for(int i=0;i<bar_n;i++) {
         char b=bar_keys[i];
         if(b>='A' && b<='Z')b+='a'-'A';
@@ -2232,15 +2225,15 @@ static bool key(ls_tk_t k,char ch)
     /* Every action keeps its letter on every page - a shortcut that stopped
        working because its button moved would be a worse trade than the
        crowding it fixed. */
-    if(!strchr("fswncmpejadirl",ch))return false;
+    if(!strchr("fswncmpejadirlg",ch))return false;
     action(ch);return true;
 }
 
 static bool touch(int x,int y)
 {
-    if(page==PG_HOME) {
-        const int t=ls_tile_hit(x,y);
-        if(t>=0 && t<HOME_TILES){home_sel=t;go(HOME_PAGE[t]);}
+    if(tabs.h>0 && tui_rect_contains(tabs,x,y)) {
+        const int t=ls_btn_hit_slot(x,y,LS_BTN_SLOT_QUICK);
+        if(t>=0 && t<N_TABS)go(TAB_PAGE[t]);
         return true;
     }
     {
@@ -2256,12 +2249,8 @@ static bool touch(int x,int y)
     case PG_RAW:
         if(!disabled_reason('d'))return ls_rec_tools_touch(x,y);
         return true;
-    case PG_SETTINGS:
-        if(tui_rect_contains(settings_list,x,y)) {
-            const int per=settings_list.h>=SETTING_ROWS*2?2:1;
-            const int row=(y-settings_list.y)/per;
-            if(row>=0 && row<SETTING_ROWS){settings_sel=row;settings_open_row(row);}
-        }
+    case PG_CATCH:
+        ls_catch_body_touch(x,y);
         return true;
     case PG_SAVED:
         if(tui_rect_contains(saved_list,x,y)) {

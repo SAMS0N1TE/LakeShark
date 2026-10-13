@@ -41,19 +41,24 @@ static void toggle(void)
 }
 static void save(void)
 { snprintf(notice,sizeof(notice),"%s",rec_catch_save(selected)?"Save queued":"No raw capture to save, or save already queued"); }
-void ls_catch_draw(tui_surface *sf,tui_rect a)
+void ls_catch_toggle(void){toggle();}
+void ls_catch_save_selected(void){save();}
+bool ls_catch_running(void){catch_status_t *s=&status;rec_catch_status(s);return s->running;}
+void ls_catch_stop(void){if(ls_catch_running())rec_catch_stop();}
+const ls_opt_ctx_t *ls_catch_options(void){return &OPTION_MENU;}
+/* The body under REC's shared bar: CATCH START/STOP and RAW SAVE live on
+   that bar, the band under OPTIONS. */
+void ls_catch_body_draw(tui_surface *sf,tui_rect a)
 {
-    if(a.w<32 || a.h<18) {
-        buttons=list_area=tui_rect_make(0,0,0,0);
-        ls_panel_notice(sf,a,"CATCH","Enlarge pane","BACK returns to REC");return;
+    buttons=tui_rect_make(0,0,0,0);
+    if(a.w<32 || a.h<14) {
+        list_area=tui_rect_make(0,0,0,0);
+        ls_panel_notice(sf,a,"CATCH","Enlarge pane","");return;
     }
     catch_status_t *s=&status;rec_catch_status(s);
-    char line[160];int h=ls_tui_is_wide()?3:5;
-    ls_btn_t b[]={ {.label="CATCH",.value=s->running?"STOP":"START",.key='c',.dim=s->stopping},
-        {.label="RADIO",.value="RTL/LR",.key='r'},ls_opt_button(&OPTION_MENU),
-        {.label="RAW",.value="SAVE",.key='e'},{.label="BACK",.value="REC",.key='b'} };
-    buttons=tui_rect_make(a.x,a.y,a.w,h);ls_btn_bar_raised(sf,buttons,b,5,-1);
-    a.y+=h;a.h-=h;
+    char line[160];
+    ls_panel_box(sf,a,"CATCH",s->running?TUI_GREEN:TUI_CYAN);
+    a=tui_rect_make(a.x+2,a.y+1,a.w-4,a.h-2);
     snprintf(line,sizeof(line),"%s %.6f MHz / 2.4 MHz",s->running?"LISTEN":s->stopping?"STOPPING":"STOPPED",(s->running?s->center:center)/1e6);
     tui_put_str(sf,a,a.x,a.y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     tui_put_str(sf,a,a.x,a.y+1,s->rtl_status[0]?s->rtl_status:"RTL-SDR spots; LR2021 decodes repeats",LS_ATTR_DIM);
@@ -87,7 +92,7 @@ void ls_catch_draw(tui_surface *sf,tui_rect a)
         tui_put_str(sf,a,a.x,a.y+a.h-3,line,LS_ATTR_DIM);
     }
     tui_put_str(sf,a,a.x,a.y+a.h-2,s->save_status[0]?s->save_status:notice,LS_ATTR_DIM);
-    tui_put_str(sf,a,a.x,a.y+a.h-1,"UP/DOWN select  BACK leaves CATCH",LS_ATTR_DIM);
+    tui_put_str(sf,a,a.x,a.y+a.h-1,"UP/DOWN select a burst",LS_ATTR_DIM);
 }
 bool ls_catch_key(ls_tk_t key,char c)
 {
@@ -95,18 +100,12 @@ bool ls_catch_key(ls_tk_t key,char c)
     if(key==LS_TK_DOWN){catch_status_t *s=&status;rec_catch_status(s);if(selected+1<s->count)selected++;return true;}
     if(key==LS_TK_ENTER || c=='c'||c=='C'){toggle();return true;}
     if(c=='e'||c=='E'){save();return true;}
-    if(c=='r'||c=='R'){ls_rsel_open_fixed(LS_RSEL_SDR_RTL,NULL);return true;}
     if(key==LS_TK_CHAR && ls_opt_key(&OPTION_MENU,c))return true;
     return false;
 }
-int ls_catch_touch(int x,int y)
+bool ls_catch_body_touch(int x,int y)
 {
-    if(tui_rect_contains(buttons,x,y)) {
-        int n=ls_btn_hit(x,y);
-        if(n==0)toggle();else if(n==1)ls_rsel_open_fixed(LS_RSEL_SDR_RTL,NULL);
-        else if(n==2)ls_opt_open(&OPTION_MENU);else if(n==3)save();else if(n==4)return 2;
-        return true;
-    }
     if(tui_rect_contains(list_area,x,y)){selected=first_visible+(y-list_area.y)/3;return true;}
     return false;
 }
+
