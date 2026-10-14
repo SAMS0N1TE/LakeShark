@@ -12,7 +12,7 @@ The host gate runs decoder and UI tests, C++ header checks and source guards. Th
 
 Use `-Filter pocsag` to select tests or `-Sanitize` for address and undefined-behavior checks with a supported compiler.
 
-Firmware builds require ESP-IDF 5.4.3. Set `IDF_PATH` to the local installation.
+Firmware builds require ESP-IDF 5.5.4 with the patches in `bench/patches/` (`bench/patch-idf.ps1 -IdfPath <esp-idf> -Apply`). Set `IDF_PATH` to the local installation.
 
 ```powershell
 pwsh -NoProfile -File bench/build.ps1 t-display-p4

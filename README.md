@@ -285,9 +285,11 @@ The following features are still being developed or require additional live-RF v
 
 ## Build from source
 
-LakeShark uses the pinned **ESP-IDF 5.4.3** SDK.
+LakeShark builds with **ESP-IDF 5.5.4** plus six small fixes in [`bench/patches/`](bench/patches). Apply them once to your ESP-IDF checkout:
 
-**[SDK setup →](sdk/esp-idf-5.4.3/README.md)**
+```powershell
+pwsh -File bench/patch-idf.ps1 -IdfPath /path/to/esp-idf -Apply
+```
 
 Use a separate build directory for each target.
 
