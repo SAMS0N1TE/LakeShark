@@ -169,8 +169,10 @@ static ls_act_status_t a_step(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+static void c6_publish(void);
 void lssim_ota_publish(void)
 {
+    c6_publish();
     ls_value_publish("ota.state", NULL, v_state);
     ls_value_publish("ota.stage", NULL, v_stage);
     ls_value_publish("ota.got", "B", v_got);
@@ -183,4 +185,40 @@ void lssim_ota_publish(void)
     ls_value_publish("ota.trial", "s", v_trial);
     ls_value_publish("ota.restart", "s", v_restart);
     ls_action_register("ota.step", "", LS_CAP_STORE | LS_CAP_POWER, a_step, "lssim: nothing to update");
+}
+
+/* Read-only C6 render fixtures: no updater or transport is linked here. */
+static long c6_num(const char *name, long fallback)
+{
+    const char *s = getenv(name); return s ? atol(s) : fallback;
+}
+static bool c6_state(ls_val_t *o) { o->kind=LS_VAL_TEXT; o->s=getenv("LSSIM_C6_MESSAGE"); if(!o->s) o->s="Ready: SD image, provisioned C6 layout required"; return true; }
+static bool c6_busy(ls_val_t *o) { o->kind=LS_VAL_BOOL; o->i=c6_num("LSSIM_C6_BUSY",0); return true; }
+static bool c6_pct(ls_val_t *o) { o->kind=LS_VAL_INT; o->i=c6_num("LSSIM_C6_PCT",0); return true; }
+static bool c6_stage(ls_val_t *o) { o->kind=LS_VAL_INT; o->i=c6_num("LSSIM_C6_STAGE",-1); return true; }
+static bool c6_sent(ls_val_t *o) { o->kind=LS_VAL_INT; o->i=c6_num("LSSIM_C6_PCT",0)*12000; return true; }
+static bool c6_size(ls_val_t *o) { o->kind=LS_VAL_INT; o->i=1200000; return true; }
+static bool c6_old(ls_val_t *o) { o->kind=LS_VAL_TEXT; o->s="2.12.8"; return true; }
+static bool c6_new(ls_val_t *o) { o->kind=LS_VAL_TEXT; o->s=c6_num("LSSIM_C6_STAGE",-1)==7?"2.12.9":""; return true; }
+static bool c6_image(ls_val_t *o) { o->kind=LS_VAL_TEXT; o->s="2.12.9"; return true; }
+static bool c6_boot(ls_val_t *o) { o->kind=LS_VAL_INT; o->i=c6_num("LSSIM_C6_BOOT",0); return true; }
+static ls_act_status_t c6_no_write(const ls_args_t *in, ls_val_t *out)
+{
+    (void)out; printf("C6 FIXTURE: confirmed action (no transport) force=%ld\n", in->v[1].i); return LS_ACT_OK;
+}
+static void c6_publish(void)
+{
+    if (!getenv("LSSIM_C6")) return;
+    ls_value_publish("c6.state",NULL,c6_state);
+    ls_value_publish("c6.busy",NULL,c6_busy);
+    ls_value_publish("c6.percent",NULL,c6_pct);
+    ls_value_publish("c6.stage",NULL,c6_stage);
+    ls_value_publish("c6.sent","B",c6_sent);
+    ls_value_publish("c6.size","B",c6_size);
+    ls_value_publish("c6.old",NULL,c6_old);
+    ls_value_publish("c6.new",NULL,c6_new);
+    ls_value_publish("c6.image",NULL,c6_image);
+    ls_value_publish("c6.boot",NULL,c6_boot);
+    ls_action_register("c6.inspect","s",LS_CAP_STORE|LS_CAP_POWER,a_step,"Read-only fixture");
+    ls_action_register("c6.update","sb",LS_CAP_STORE|LS_CAP_POWER,c6_no_write,"Read-only fixture");
 }

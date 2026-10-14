@@ -17,6 +17,8 @@ esp_err_t ble_link_start(void);
 /* Owns an idle link for passive adverts; never connects to an advertiser. */
 esp_err_t ble_link_listen(void);
 void      ble_link_stop(void);
+/* Worker only; all owners are inhibited until P4 reboot. */
+esp_err_t ble_link_c6_quiesce(void);
 /* Idempotent SWEEP lease, independent of the LINK/SURVEY owner. */
 esp_err_t ble_link_sweep_observer(bool on);
 /* Independent DRONES lease on the same passive receiver. */

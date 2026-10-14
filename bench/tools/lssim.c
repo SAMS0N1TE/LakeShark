@@ -1,4 +1,7 @@
+#include "ls_map_share_ui.h"
+#include "apps/example_app.h"
 #include "ls_sweep_ui.h"
+#include "ls_detector_ui.h"
 #include "ls_sweep_app.h"
 #include "ls_rid_ui.h"
 #include "ls_rid.h"
@@ -264,10 +267,15 @@ static const ls_app_t APPS[] = {
     { "link", "LINK", "wireless", LS_ICON_TOWER, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_wireless, NULL, &ls_doc_link },
 
-    { "drones", "DRONES", "passive BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
+    { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_drones, NULL, &ls_doc_drones },
     { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_sweep, NULL, &ls_doc_sweep },
+    { "detector", "DETECTOR", "rule matches", LS_ICON_DETECTOR, TUI_CYAN,
+      LS_APP_EXTRA, &ls_scr_detector, NULL, &ls_doc_detector },
+#if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
+    LS_EXAMPLE_APP_ENTRY,
+#endif
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
@@ -604,6 +612,9 @@ bool call_archive_card_space(uint64_t *total,uint64_t *free) {
     *total=8000000000ULL;*free=getenv("LSSIM_CALLS_LOW")?100000000ULL:3900000000ULL;return true;
 }
 static void seed_calls(bool empty) {
+    /* Optional fixed epoch for reproducible before/after pixel comparisons. */
+    const char *epoch=getenv("LSSIM_CALLS_TIME");
+    const time_t fixture_time=epoch?(time_t)strtoll(epoch,NULL,10):time(NULL);
     if(empty)calls_root="bench/build/calls-empty";
     _mkdir(calls_root);char dir[256];snprintf(dir,sizeof(dir),"%s/20261008",calls_root);_mkdir(dir);
     call_archive_init();call_archive_set_option(CALL_OPT_DAYS,0);
@@ -614,7 +625,7 @@ static void seed_calls(bool empty) {
         for(unsigned n=0;n<bytes;n++)fputc(0,f);
         fclose(f);
         char meta[328];snprintf(meta,sizeof(meta),"%s.meta",path);f=fopen(meta,"w");
-        if(f){fprintf(f,"%lld,%u,%u,%u,%u,%u,0,0,0",(long long)time(NULL)-i*3600,(i+12)*1000,i%3?851012500:162550000,i%3?(i==1?65535:42+i):0,i%3?1234567+i:0,rate);fclose(f);}
+        if(f){fprintf(f,"%lld,%u,%u,%u,%u,%u,0,0,0",(long long)fixture_time-i*3600,(i+12)*1000,i%3?851012500:162550000,i%3?(i==1?65535:42+i):0,i%3?1234567+i:0,rate);fclose(f);}
     }
     for(int i=0;i<3;i++)call_archive_test_pump(calls_root);
     ls_calls_open("P25");calls_fixture=true;
@@ -673,6 +684,8 @@ static void frame(int n)
         if (s_step_us) ls_shim_time_advance(s_step_us);
         lssim_cartocore_pump();
         lssim_tick_state();
+        void lssim_detector_work(void);
+        lssim_detector_work();
         label_track_tick();
         /* The notes store's worker, which on the board is the field I/O task. */
         for (int k = 0; k < 4; k++) ls_notes_io_step();
@@ -703,9 +716,12 @@ static void time_frames(int n, bool moving)
     const clock_t t0 = clock();
     for (int i = 0; i < n; i++) {
 
+        if (s_step_us) ls_shim_time_advance(s_step_us);
         if (moving) ls_tui_router_key((i & 1) ? LS_TK_RIGHT : LS_TK_LEFT, 0);
         lssim_cartocore_pump();
         lssim_tick_state();
+        void lssim_detector_work(void);
+        lssim_detector_work();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
         ls_tui_present();capture_frame();
@@ -967,7 +983,7 @@ int main(int argc, char **argv)
        the interface at once, and the cheapest place to find out what that
        breaks is here. */
 
-    if (timed > 0) ls_shim_time_live(1);
+    if (timed > 0 && !s_step_us) ls_shim_time_live(1);
     else           ls_shim_time_set(120000000);
 
     ls_tui_set_font_index(ls_tui_font_for_view(font, APPS[idx].screen->name, false));
@@ -1110,6 +1126,8 @@ int main(int argc, char **argv)
     ls_sweep_init();
     void lssim_sweep_seed(void);
     lssim_sweep_seed();
+    void lssim_detector_seed(void);
+    lssim_detector_seed();
 
     /* The same four the firmware puts on the strip, by the same ids.
        A simulator whose navigation differs from the board's is a simulator
@@ -1194,6 +1212,13 @@ int main(int argc, char **argv)
     }
     lssim_cartocore_pump();
     ls_tui_screen_show(ls_tui_screen_index_of(APPS[idx].screen));
+    if(!strcmp(want,"map") && getenv("LSSIM_MAP_RECEIVED")) {
+        ls_mesh_msg_t msg={.direct=true};ls_notice_t notice={0};
+        snprintf(msg.peer,sizeof(msg.peer),"1234567890abcdef");
+        snprintf(msg.sender,sizeof(msg.sender),"KB1QWE");
+        snprintf(msg.text,sizeof(msg.text),"WPT RECEIVED CAMP [LS1 1234abcd 1/1] 43.44450,-71.64730");
+        if(ls_scr_map_receive(&msg,&notice) && notice.open) notice.open(notice.item);
+    }
     if(!strcmp(want,"calls"))seed_calls(empty);
     if (replay_path) {
         subghz_file_t file;
@@ -1326,8 +1351,27 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (getenv("LSSIM_C6_AUDIT")) {
+        for (int i = 0; i < ls_btn_count_slot(LS_BTN_SLOT_SCREEN); ++i) {
+            int x, y, w, h;
+            if (ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, i, &x, &y, &w, &h)) {
+                printf("C6 KEY %d %d %d %d %d\n", i, x, y, w, h);
+                if (w < 8 || h < 3) return 2;
+            }
+        }
+    }
     if (dump) {
         dump_grid(stdout);
+#if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
+        if (!strcmp(want, "example")) {
+            for (int i = 0; i < ls_btn_count_slot(LS_BTN_SLOT_SCREEN); ++i) {
+                int x, y, w, h;
+                if (ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, i, &x, &y, &w, &h))
+                    printf("example-button %d %d %d %d %d\n", i, x, y, w, h);
+            }
+        }
+#endif
+
 #ifdef LS_MAP_AUDIT
         if (!strcmp(want, "map")) {
             extern int ls_map_label_audit(int *labels);

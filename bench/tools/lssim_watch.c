@@ -225,3 +225,7 @@ void rec_watch_sim_result(bool learn,const char *result)
     if(learn){sim_learning=false;state.learn_generation++;snprintf(state.learn_result,sizeof(state.learn_result),"%s",result);}
     else {sim_sweeping=false;state.scan_generation++;snprintf(state.scan_result,sizeof(state.scan_result),"%s",result);}
 }
+
+bool rec_watch_iq_record(uint32_t hz){(void)hz;return false;}
+void rec_watch_iq_stop(void){}
+bool rec_watch_iq_status(char *out,size_t len){if(out && len)out[0]=0;return false;}

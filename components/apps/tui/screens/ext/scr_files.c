@@ -519,7 +519,9 @@ static void actions_open(void)
     if (sub) {
         menu_add('F', "SEND TO FLIPPER", "Copy where the Flipper app reads");
         if (s_view == VIEW_LIST) menu_add('O', "OPEN CAPTURE / REPLAY", "Load and validate before replay");
-        if (s_view == VIEW_SUB && subghz_file_is_cc_fsk(&s_sub))
+        if (s_view == VIEW_SUB && subghz_file_is_iq(&s_sub))
+            menu_add('R', "REPLAY", "Open in REC / LR2021 I/Q");
+        else if (s_view == VIEW_SUB && subghz_file_is_cc_fsk(&s_sub))
             menu_add('R', "REPLAY", "Open in RECORD / CC1101 FSK");
         else if (s_view == VIEW_SUB && subghz_file_is_fsk(&s_sub)) {
             char where[40];
@@ -838,6 +840,13 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     snprintf(line, sizeof(line), "%.4f MHz   %s", s_sub.freq_hz / 1e6,
              s_sub.protocol[0] ? s_sub.protocol : "?");
     tui_put_str(sf, in, x, y++, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    if(!strcmp(s_sub.protocol,"LR2021_IQ")) {
+        snprintf(line,sizeof(line),"IQ16LE / %lu S/s / %lu pairs / %.2f ms",
+            (unsigned long)s_sub.iq_rate,(unsigned long)s_sub.iq_samples,s_sub.iq_samples*0.008);
+        tui_put_str(sf,in,x,y++,line,LS_ATTR_DIM);
+        tui_put_str(sf,in,x,y++,subghz_file_is_iq(&s_sub)?"LR2021 I/Q replay; requires matching sidecar":"Invalid or truncated I/Q recording",LS_ATTR_DIM);
+        return;
+    }
     /* What the file is, whether or not it may be replayed. */
     if (s_sub.bitrate && s_sub.deviation_hz && !strstr(s_sub.preset, "Ook"))
         snprintf(line, sizeof(line), "2-FSK %lu baud, %.1f kHz dev, sync %08lX",

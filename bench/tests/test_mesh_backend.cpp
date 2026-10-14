@@ -261,3 +261,88 @@ LS_CASE(failed_task_creation_unwinds_and_retry_can_start)
     ls_shim_task_fail_create(pdFALSE);
     LS_EQ_INT(ls_mesh_start(), ESP_OK); stop_port(); reset_port();
 }
+
+LS_CASE(listener_pacing_tracks_modulation_and_bounds_bad_config)
+{
+    LS_EQ_UINT(ls_mesh_poll_ms(7, 62500, 32), 47);
+    LS_EQ_UINT(ls_mesh_poll_ms(8, 62500, 32), 96);
+    LS_EQ_UINT(ls_mesh_poll_ms(9, 62500, 16), 63);
+    LS_EQ_UINT(ls_mesh_poll_ms(12, 62500, 16), 100);
+    LS_EQ_UINT(ls_mesh_poll_ms(7, 500000, 32), 4);
+    LS_EQ_UINT(ls_mesh_poll_ms(7, 0, 32), 1);
+    LS_EQ_UINT(ls_mesh_poll_ms(255, 62500, 32), 1);
+    LS_EQ_UINT(ls_mesh_poll_ms(7, 62500, 8), 1);
+    for (unsigned sf = 5; sf <= 12; ++sf) {
+        for (unsigned bw = 62500; bw <= 500000; bw *= 2) {
+            unsigned pre = sf <= 8 ? 32 : 16;
+            uint32_t ms = ls_mesh_poll_ms(sf, bw, pre);
+            LS_CHECK(ms >= 1 && ms <= 100);
+            if (ms > 1) LS_CHECK((uint64_t)(ms + 2) * bw <=
+                                (uint64_t)(pre - 8) * (1u << sf) * 1000);
+        }
+    }
+}
+
+extern unsigned mesh_fake_polls;
+extern int mesh_fake_packet;
+LS_CASE(packet_pending_between_polls_is_collected_at_deadline)
+{
+    reset_port(); ls_shim_time_set(1000000);
+    LS_EQ_INT(ls_mesh_start(), ESP_OK); owner_here();
+    uint8_t byte = 0;
+    LS_EQ_INT(s_radio->recvRaw(&byte, 1), 0);
+    mesh_fake_packet = 1;
+    ls_shim_time_advance(46999);
+    LS_EQ_INT(s_radio->recvRaw(&byte, 1), 0);
+    LS_EQ_INT(mesh_fake_packet, 1);
+    ls_shim_time_advance(1);
+    LS_EQ_INT(s_radio->recvRaw(&byte, 1), 1);
+    LS_EQ_INT(byte, 0x5a); LS_EQ_UINT(s_radio->rx(), 1);
+    ls_shim_time_advance(47000); mesh_fake_packet = -1;
+    LS_EQ_INT(s_radio->recvRaw(&byte, 1), 0);
+    LS_EQ_UINT(s_radio->bad(), 1);
+    stop_port(); reset_port();
+}
+
+LS_CASE(idle_dispatcher_wakes_do_not_multiply_radio_bus_polls)
+{
+    reset_port(); ls_shim_time_set(1000000);
+    LS_EQ_INT(ls_mesh_start(), ESP_OK);
+    LS_EQ_INT(ls_shim_task_last_core_id(), 0);
+    LS_EQ_INT(ls_shim_task_last_priority(), 4);
+    owner_here(); mesh_fake_polls = 0;
+    unsigned heap = ls_shim_heap_outstanding();
+    /* Model frequent stats/command wakes for one second, using real Dispatcher. */
+    for (int i = 0; i < 1000; ++i) {
+        s_mesh->loop(); ls_shim_time_advance(1000);
+    }
+    LS_EQ_UINT(mesh_fake_polls, 22);
+    LS_EQ_UINT(ls_shim_heap_outstanding(), heap);
+    LS_CHECK(mesh_wait_ticks() > pdMS_TO_TICKS(10));
+    s_on_air = true; LS_EQ_UINT(mesh_wait_ticks(), pdMS_TO_TICKS(10));
+    s_on_air = false;
+    mesh::Packet *p = s_mgr->allocNew();
+    s_mgr->queueInbound(p, UINT32_MAX / 2);
+    LS_EQ_UINT(mesh_wait_ticks(), pdMS_TO_TICKS(10));
+    s_mgr->drain();
+    /* Retuning from slow to fast must invalidate the previous RX deadline. */
+    ls_lora_cfg_t cfg = *ls_lora_cfg(); cfg.bw_hz = 500000;
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    s_mesh->loop(); LS_EQ_UINT(mesh_fake_polls, 23);
+    LS_CHECK(mesh_wait_ticks() <= pdMS_TO_TICKS(4));
+    stop_port(); reset_port();
+}
+
+LS_CASE(outbox_and_leases_notify_sleeping_mesh_owner)
+{
+    reset_port(); LS_EQ_INT(ls_mesh_start(), ESP_OK); owner_here();
+    ls_mesh_set_tx(true);
+    unsigned before = ls_shim_task_notify_count();
+    LS_CHECK(ls_mesh_queue_dm("0123456789ABCDEF", "wake"));
+    LS_EQ_UINT(ls_shim_task_notify_count(), before + 1);
+    (void)ls_mesh_radio_hold(true);
+    LS_EQ_UINT(ls_shim_task_notify_count(), before + 2);
+    LS_CHECK(ls_mesh_radio_hold(false));
+    LS_EQ_UINT(ls_shim_task_notify_count(), before + 3);
+    stop_port(); reset_port();
+}

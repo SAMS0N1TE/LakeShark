@@ -19,15 +19,12 @@ static void line(tui_surface *sf, tui_rect a, int row, const char *text, uint8_t
     tui_put_str(sf, clip, a.x + 2, a.y + row, text, attr);
 }
 
-void ls_radio_frequency_draw(tui_surface *sf, tui_rect a, int row, uint32_t hz,
-                             uint8_t attr)
+void ls_radio_digits_draw(tui_surface *sf, tui_rect a, int row, const char *text,
+                          uint8_t attr)
 {
     static const uint8_t digits[10][5] = {
         {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
         {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 1, 1}, {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7}};
-    char text[20];
-    snprintf(text, sizeof(text), "%lu.%04lu", (unsigned long)(hz / 1000000),
-             (unsigned long)((hz % 1000000) / 100));
     int width = (int)strlen(text) * 4 - 2;
     if (a.w < width + 2) {
         line(sf, a, row, text, attr);
@@ -46,6 +43,15 @@ void ls_radio_frequency_draw(tui_surface *sf, tui_rect a, int row, uint32_t hz,
             x += 4;
         }
     }
+}
+
+void ls_radio_frequency_draw(tui_surface *sf, tui_rect a, int row, uint32_t hz,
+                             uint8_t attr)
+{
+    char text[20];
+    snprintf(text,sizeof(text),"%lu.%04lu",(unsigned long)(hz/1000000),
+             (unsigned long)((hz%1000000)/100));
+    ls_radio_digits_draw(sf,a,row,text,attr);
 }
 
 /* ===================================================================== */

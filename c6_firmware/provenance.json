@@ -1,0 +1,22 @@
+{
+  "hosted_version": "2.12.9",
+  "shipped_idf": "v5.4.3",
+  "shipped_files": {
+    "bootloader.bin": {
+      "bytes": 23760,
+      "sha256": "8a1259ac0885ace2aa8197d930f9b7e7f41e272310bab705922f8c90947084c1"
+    },
+    "network_adapter.bin": {
+      "bytes": 1185312,
+      "sha256": "e27231545b8fe220c573321dfbfd10b79de88cd42e7f01169f0bca967c45197b"
+    },
+    "ota_data_initial.bin": {
+      "bytes": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    "partition-table.bin": {
+      "bytes": 3072,
+      "sha256": "dbbebb5ee220599f4b12fb5c43c01c38b59b2720b5df0d14f7d1b857f6524c92"
+    }
+  }
+}

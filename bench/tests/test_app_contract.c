@@ -125,6 +125,13 @@ LS_CASE(everything_that_keeps_an_observation_carries_a_position)
             LS_CHECK(strstr(r->doc->record_note,"no location") != NULL);
             continue;
         }
+        /* DETECTOR's optional metadata log deliberately excludes location
+           and does not consume GPS, independently of the journal. */
+        if (!strcmp(r->id,"detector")) {
+            LS_CHECK(r->doc->gps == LS_APP_GPS_UNUSED);
+            LS_CHECK(strstr(r->doc->record_note,"No raw MAC or location") != NULL);
+            continue;
+        }
         LS_CHECK_MSG(r->doc->gps != LS_APP_GPS_UNUSED, r->id);
     }
 }

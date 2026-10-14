@@ -114,6 +114,7 @@ bool subghz_file_load(const char *p, subghz_file_t *f, int32_t *e, int n, char *
 bool subghz_file_is_fsk(const subghz_file_t *f) { return false; }
 bool subghz_file_is_cc_fsk(const subghz_file_t *f) { return false; }
 bool subghz_file_is_ook(const subghz_file_t *f) { return false; }
+bool subghz_file_is_iq(const subghz_file_t *f) { return false; }
 const char *subghz_tx_refusal(uint32_t hz, int dbm, size_t edges, uint64_t span_us)
 { (void)hz; (void)dbm; (void)edges; (void)span_us; return NULL; }
 bool subghz_pwm_decode(const int32_t *p, int n, subghz_pwm_t *o) { decoder_calls++; return false; }

@@ -4,6 +4,7 @@
    accommodation for this hardware lives here. */
 #include "ls_mesh.h"
 #include "ls_radio_holders.h"
+#include "ls_mesh_pacing.h"
 
 #include <string.h>
 #include <new>
@@ -550,6 +551,12 @@ class LsRadio : public mesh::Radio {
 public:
     int recvRaw(uint8_t *bytes, int sz) override
     {
+        const int64_t now = esp_timer_get_time();
+        const ls_lora_cfg_t *cfg = ls_lora_cfg();
+        const uint32_t ms = cfg ? ls_mesh_poll_ms(cfg->sf, cfg->bw_hz, cfg->preamble) : 1;
+        if (ms != _poll_ms) { _poll_ms = ms; _poll_due = 0; }
+        if (now < _poll_due) return 0;
+        _poll_due = now + (int64_t)ms * 1000;
         float rssi = 0, snr = 0;
         int n = ls_lora_poll(bytes, (size_t)sz, &rssi, &snr);
         if (n > 0) {
@@ -611,7 +618,13 @@ public:
     }
 
     bool isSendComplete() override { return ls_lora_send_done(); }
-    void onSendFinished() override { s_on_air = false; mesh_receive(); }
+    void onSendFinished() override { s_on_air = false; mesh_receive(); _poll_due = 0; }
+
+    uint32_t pollWaitMs() const {
+        const int64_t left = _poll_due - esp_timer_get_time();
+        return left > 1000 ? (uint32_t)(left / 1000) : 1;
+    }
+    void pollNow() { _poll_due = 0; }
 
     bool isInRecvMode() const override { return ls_lora_is_receiving(); }
 
@@ -633,6 +646,8 @@ public:
     uint32_t tx() const { return _tx; }
 
 private:
+    int64_t _poll_due = 0;
+    uint32_t _poll_ms = 0;
     float _rssi = 0, _snr = 0;
     /* Off until armed. A stack that starts advertising the instant it boots
        is a stack that transmits without anyone having said so. */
@@ -1113,6 +1128,7 @@ public:
     int getOutboundCount(uint32_t now) const override { return qbefore(_send, now); }
     int getOutboundTotal() const override { return _send.num; }
     int getFreeCount() const override { return _unused.num; }
+    bool pending() const { return _send.num || _rx.num; }
     mesh::Packet *getOutboundByIdx(int i) override { return (i >= 0 && i < _send.num) ? _send.pkt[i] : nullptr; }
     mesh::Packet *removeOutboundByIdx(int i) override { return qremove(_send, i); }
     void queueInbound(mesh::Packet *p, uint32_t at) override { if (!qadd(_rx, p, 0, at)) free(p); }
@@ -1161,6 +1177,7 @@ template <class F> static int mesh_call(F fn, int refused = ESP_ERR_INVALID_STAT
     }
     portEXIT_CRITICAL(&s_call_lock);
     if (slot < 0) return refused;
+    xTaskNotifyGive(s_task);
     for (;;) {
         portENTER_CRITICAL(&s_call_lock);
         bool done = s_calls[slot].done;
@@ -1788,7 +1805,18 @@ extern "C" bool ls_mesh_queue_dm(const char *id, const char *text)
         s_outbox.expires=now+5000000;
     }
     portEXIT_CRITICAL(&s_outbox_lock);
+    if (ok) xTaskNotifyGive(s_task);
     return ok;
+}
+
+static TickType_t mesh_wait_ticks()
+{
+    uint32_t ms = s_on_air ? 10 : s_radio->pollWaitMs();
+    /* Keep the existing TX completion/budget and delayed-queue cadence.
+       Notifications service commands without forcing another bus poll. */
+    if ((s_on_air || s_mgr->pending()) && ms > 10) ms = 10;
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    return ticks ? ticks : 1;
 }
 
 static void mesh_task(void *arg)
@@ -1806,13 +1834,14 @@ static void mesh_task(void *arg)
             s_radio_held = true;
             msglog_service();
             peerlog_service();
-            vTaskDelay(pdMS_TO_TICKS(10));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
             continue;
         }
         s_radio_held = false;
 
         if (!s_on_air && !ls_lora_is_receiving() && esp_timer_get_time() >= s_rx_retry_us)
             mesh_receive();
+        if (s_mgr->pending()) s_radio->pollNow();
         s_mesh->loop();
         decltype(s_outbox) outgoing;
         portENTER_CRITICAL(&s_outbox_lock);
@@ -1852,10 +1881,9 @@ static void mesh_task(void *arg)
         msglog_service();
         peerlog_service();
 
-        /* 10 ms. SX126x reads DIO1 over the expander on touch's I2C bus;
-           LR20xx reads Stat over SPI. The old 5 ms cadence doubled idle
-           command traffic. Keep dispatch, adverts and RSSI on one clock. */
-        vTaskDelay(pdMS_TO_TICKS(10));
+        /* Neither backend has a direct P4 IRQ wake path. Block until work
+           arrives or the configuration-derived RX polling budget expires. */
+        ulTaskNotifyTake(pdTRUE, mesh_wait_ticks());
     }
     s_mesh->inspect_cancel();
     portENTER_CRITICAL(&s_inspect_lock);
@@ -1961,7 +1989,7 @@ extern "C" esp_err_t ls_mesh_start(void)
 
     s_stop = false;
     s_task = xTaskCreateStaticPinnedToCore(mesh_task, "meshcore", MESH_TASK_STACK,
-        nullptr, 4, s_mesh_stack, &s_mesh_tcb, tskNO_AFFINITY);
+        nullptr, 4, s_mesh_stack, &s_mesh_tcb, 0);
     if (!s_task) {
         ESP_LOGE(TAG, "could not create the task");
         ls_lora_park();
@@ -1979,6 +2007,7 @@ extern "C" esp_err_t ls_mesh_stop(void)
     if (s_radio_hold || s_radio_held || ls_lora_fsk_active()) return ESP_ERR_INVALID_STATE;
     if (!s_task) return ESP_OK;
     s_stop = true;
+    xTaskNotifyGive(s_task);
     for (int i = 0; i < 100 && eTaskGetState(s_task) != eSuspended; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (eTaskGetState(s_task) != eSuspended) {
@@ -2042,6 +2071,7 @@ extern "C" bool ls_mesh_radio_hold(bool on)
     s_radio_hold = s_hold_fg || s_hold_bg;
     if (!s_radio_hold) s_radio_held = false;
     portEXIT_CRITICAL(&s_hold_lock);
+    if (s_task) xTaskNotifyGive(s_task);
     return accepted && (!on || ls_mesh_radio_held());
 }
 
@@ -2057,6 +2087,7 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
     if (!s_radio_hold) s_radio_held = false;
     const bool owns = take && ls_radio_holders_owns(&s_bg_holders, task);
     portEXIT_CRITICAL(&s_hold_lock);
+    if (s_task) xTaskNotifyGive(s_task);
     return accepted && (!on || (owns && mesh_paused()));
 }
 

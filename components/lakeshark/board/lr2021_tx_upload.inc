@@ -7,6 +7,7 @@
 /* The mesh component depends on this board component, so keep the ownership
  * query weak and avoid introducing a reverse build dependency. */
 extern bool ls_mesh_radio_wanted(void) __attribute__((weak));
+extern bool ls_mesh_radio_held(void) __attribute__((weak));
 extern bool ls_mesh_radio_bg(void) __attribute__((weak));
 extern bool ls_field_owned(void) __attribute__((weak));
 
@@ -203,16 +204,17 @@ static bool lrtx_rate_supported(uint32_t rate)
            rate == 76800 || rate == 125000;
 }
 
-static int lrtx_send_command(int argc, char **argv)
+static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
+                            uint32_t repeats, uint32_t hz, int dbm, const char **reason)
 {
-    uint32_t rate = 0, repeats = 1;
-    if (argc < 3 || argc > 4 || !probe_number(argv[2], 125000, &rate) ||
-        !lrtx_rate_supported(rate) || (argc == 4 &&
-        (!probe_number(argv[3], 16, &repeats) || repeats == 0))) {
-        puts("usage: lora lrtx-send 4800|9600|19200|38400|76800|125000 [repeats 1..16]");
-        return 1;
-    }
-
+    const char *why = NULL;
+    if (reason) *reason = NULL;
+#define REFUSE(code, message) do { if (reason) *reason = (message); puts("lrtx-send: " message); return (code); } while (0)
+    if (!lrtx_rate_supported(rate)) REFUSE(ESP_ERR_INVALID_ARG, "unsupported sample rate");
+    if (!repeats || repeats>16) REFUSE(ESP_ERR_INVALID_ARG, "repeat count outside 1..16");
+    if (hz<150000000u || hz>960000000u) REFUSE(ESP_ERR_INVALID_ARG, "frequency outside LF TX band");
+    if (dbm<-9 || dbm>10) REFUSE(ESP_ERR_INVALID_ARG, "power outside -9..10 dBm");
+    const bool leased = data && ls_mesh_radio_held && ls_mesh_radio_held();
     const uint32_t cancel_generation = __atomic_load_n(&s_lrtx_cancel_generation,
                                                         __ATOMIC_ACQUIRE);
     unsigned total_bytes = 0, sample_count = 0, queued = 0, min_level = LRTX_FIFO_BYTES;
@@ -227,35 +229,63 @@ static int lrtx_send_command(int argc, char **argv)
     const UBaseType_t original_priority = uxTaskPriorityGet(NULL);
 
     if (!ls_lora_hw_try_lock()) {
-        puts("lrtx-send: busy");
-        return 1;
+        REFUSE(ESP_ERR_INVALID_STATE, "radio lock busy");
+    }
+    if (!ls_board_hw_antenna_tx_allowed()) {
+        ls_lora_hw_unlock();
+        REFUSE(ESP_ERR_INVALID_STATE, "MMCX1 antenna unconfirmed; use ant ext confirm");
     }
     if (lrtx_cancelled(cancel_generation)) {
         ls_lora_hw_unlock();
-        puts("lrtx-send: canceled before radio setup");
-        return 1;
+        REFUSE(ESP_ERR_INVALID_STATE, "cancelled before radio setup");
     }
-    err = s_lrtx_ready && s_lrtx_data && s_bound && s_info.lr2021 &&
-          s_info.fw_major == 1 && s_info.fw_minor == 24 && lr.cfg_valid &&
-          !lrtx_radio_owned() ? ESP_OK : ESP_ERR_INVALID_STATE;
+    if (!data && s_lrtx_ready) { data=s_lrtx_data; size=s_lrtx_size; }
+    if (!data || !size || (size & 1u) || size>LRTX_MAX_SAMPLES*2u) why="invalid I/Q buffer";
+    else if (!s_bound) why="radio not bound";
+    else if (!s_info.lr2021) why="LR2021 required";
+    else if (s_info.fw_major != 1 || s_info.fw_minor != 24) why="LR2021 ROM 1.24 required";
+    else if (!lr.cfg_valid) why="LoRa configuration invalid";
+    else if (lrtx_radio_owned()) {
+        if (lr.tx_busy) why="radio transmitting";
+        else if (lr.scanning) why="scanner holds the radio";
+        else if (lr.fsk_active) why="FSK session holds the radio";
+        else if (ms.active || lr20xx_modes_active()) why="modem session holds the radio";
+        else if (s_exp_active) why="experiment holds the radio";
+        else if (lr20xx_stream_source2_active()) why="I/Q stream holds the radio";
+        else why="I/Q transmitter holds the radio";
+    }
+    err = why ? ESP_ERR_INVALID_STATE : ESP_OK;
     if (err == ESP_OK) {
-        const uint64_t samples = (uint64_t)(s_lrtx_size / 2u) * repeats;
+        const uint64_t samples = (uint64_t)(size / 2u) * repeats;
         duration_us = (int64_t)((samples * 1000000u + rate - 1u) / rate);
         if (!samples || samples > LRTX_MAX_SAMPLES || duration_us > 900000)
-            err = ESP_ERR_INVALID_ARG;
+            { err = ESP_ERR_INVALID_ARG; why="sample/duration limit exceeded"; }
         else {
-            total_bytes = s_lrtx_size * repeats;
+            total_bytes = size * repeats;
             sample_count = (unsigned)samples;
         }
     }
-    if (err == ESP_OK && ((ls_mesh_radio_wanted && ls_mesh_radio_wanted()) ||
-                          (ls_mesh_radio_bg && ls_mesh_radio_bg()) ||
-                          (ls_field_owned && ls_field_owned())))
-        err = ESP_ERR_INVALID_STATE;
+    for (uint32_t i=0; err==ESP_OK && i<size; i+=2) {
+        int si=(int8_t)data[i], sq=(int8_t)data[i+1];
+        if (si*si+sq*sq>56*56) { err=ESP_ERR_INVALID_ARG; why="I/Q magnitude exceeds 56"; }
+    }
+    if (err == ESP_OK) {
+        if (ls_mesh_radio_wanted && ls_mesh_radio_wanted() && !leased) why="foreground listener holds the radio";
+        else if (ls_mesh_radio_bg && ls_mesh_radio_bg()) why="background listener holds the radio";
+        else if (ls_field_owned && ls_field_owned()) why="field session holds the radio";
+        if (why) err=ESP_ERR_INVALID_STATE;
+    }
     if (err == ESP_OK) {
         uint32_t marker = 0;
         err = lr20xx_read_reg32(0x800FF8u, &marker);
-        if (err == ESP_OK && marker == 0x600DB002u) err = ESP_ERR_INVALID_STATE;
+        if (err != ESP_OK) why="ROM marker read failed";
+        else if (marker == 0x600DB002u) { err=ESP_ERR_INVALID_STATE; why="ROM patch marker present"; }
+    }
+    if (why) {
+        ls_lora_hw_unlock();
+        if (reason) *reason=why;
+        printf("lrtx-send: %s\n",why);
+        return err;
     }
     if (err == ESP_OK) {
         rx = lr.rx_mode || lr.rearm;
@@ -267,13 +297,13 @@ static int lrtx_send_command(int argc, char **argv)
         err = ESP_ERR_INVALID_STATE; phase = "cancelled";
     }
     if (err == ESP_OK) err = step_ok(lr20xx_set_standby(false), "TX standby");
-    if (err == ESP_OK) err = setup_radio(LR20XX_PKT_TYPE_OOK, 915000000u);
+    if (err == ESP_OK) err = setup_radio(LR20XX_PKT_TYPE_OOK, hz);
     if (err == ESP_OK) err = step_ok(lr20xx_ook_set_modulation(rate, 0,
                                      lr20xx_fsk_rx_bw(100000).index, 0), "TX modulation");
     if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
     if (err == ESP_OK) err = step_ok(lr20xx_ook_set_packet_fixed(32, total_bytes, 0), "TX packet");
     if (err == ESP_OK) err = step_ok(lr20xx_ook_set_sync_none(), "TX sync");
-    if (err == ESP_OK) err = lr20xx_set_pa_lf(-9);
+    if (err == ESP_OK) err = lr20xx_set_pa_lf(dbm);
     if (err == ESP_OK) err = step_ok(lr20xx_set_fallback_standby_rc(), "TX fallback");
     if (err == ESP_OK) {
         const uint32_t base = 0x804000u, size = 0x3FCu;
@@ -314,7 +344,7 @@ static int lrtx_send_command(int argc, char **argv)
     if (err == ESP_OK && lrtx_cancelled(cancel_generation)) {
         err = ESP_ERR_INVALID_STATE; phase = "cancelled";
     }
-    if (err == ESP_OK) err = lrtx_enqueue(s_lrtx_data, s_lrtx_size, total_bytes,
+    if (err == ESP_OK) err = lrtx_enqueue(data, size, total_bytes,
                                            &queued, 896u, cancel_generation);
     if (err == ESP_ERR_INVALID_STATE && lrtx_cancelled(cancel_generation))
         phase = "cancelled";
@@ -347,7 +377,7 @@ static int lrtx_send_command(int argc, char **argv)
                 if (err == ESP_OK && fill > LRTX_FIFO_BYTES) err = ESP_ERR_INVALID_RESPONSE;
                 if (err == ESP_OK && fill < min_level) min_level = fill;
                 if (err == ESP_OK && fill <= 768u)
-                    err = lrtx_enqueue(s_lrtx_data, s_lrtx_size, total_bytes,
+                    err = lrtx_enqueue(data, size, total_bytes,
                                        &queued, (896u - fill) & ~1u,
                                        cancel_generation), refills++;
                 if (err != ESP_OK) {
@@ -398,19 +428,50 @@ static int lrtx_send_command(int argc, char **argv)
     }
     const int64_t elapsed = started_at ? esp_timer_get_time() - started_at : 0;
     ls_lora_hw_unlock();
-    if (!sample_count) {
-        puts("lrtx-send: error upload not ready, radio busy, or sample/duration limit exceeded");
-        return 1;
-    }
     const unsigned tx_level = (unsigned)((level[0] << 8) | level[1]);
     if (err == ESP_OK && tx_level != 0) err = ESP_FAIL;
     printf("lrtx-stream: fifo=%u samples=%u bytes=%u queued=%u repeats=%lu refills=%u min_level=%u max_poll_gap_us=%lld\n",
            LRTX_FIFO_BYTES, sample_count, total_bytes, queued, (unsigned long)repeats,
            refills, min_level, (long long)max_poll_gap);
-    printf("lrtx: mode=upload rate=%lu samples=%u bytes=%u queued=%u repeats=%lu hz=915000000 dbm=-9 elapsed_us=%lld irq=%08lX txflags=%02X txlevel=%u errors=%04X final_errors=%04X phase=%s result=%s stop=%s recovery=%s\n",
+    printf("lrtx: mode=upload rate=%lu samples=%u bytes=%u queued=%u repeats=%lu hz=%lu dbm=%d elapsed_us=%lld irq=%08lX txflags=%02X txlevel=%u errors=%04X final_errors=%04X phase=%s result=%s stop=%s recovery=%s\n",
            (unsigned long)rate, sample_count, total_bytes, queued, (unsigned long)repeats,
-           (long long)elapsed, (unsigned long)irq, flags[1], tx_level, errors,
+           (unsigned long)hz, dbm, (long long)elapsed, (unsigned long)irq, flags[1], tx_level, errors,
            final_errors, phase, esp_err_to_name(err), esp_err_to_name(stop),
            esp_err_to_name(recovery));
-    return err == ESP_OK && stop == ESP_OK && recovery == ESP_OK && !final_errors && tx_level == 0 ? 0 : 1;
+    if (reason && !strcmp(phase,"cancelled")) *reason="transmit cancelled";
+#undef REFUSE
+    return err!=ESP_OK?err:stop!=ESP_OK?stop:recovery!=ESP_OK?recovery:final_errors || tx_level?ESP_FAIL:ESP_OK;
+}
+
+esp_err_t lr20xx_iq_send(const uint8_t *data, size_t bytes, uint32_t hz, int dbm)
+{
+    return lr20xx_iq_send_reason(data,bytes,hz,dbm,NULL);
+}
+
+esp_err_t lr20xx_iq_send_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, const char **reason)
+{
+    return lr20xx_iq_send_rate_reason(data,bytes,hz,dbm,125000,reason);
+}
+
+esp_err_t lr20xx_iq_send_rate_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, uint32_t rate, const char **reason)
+{
+    if (reason) *reason=NULL;
+    if (!data || bytes>LRTX_MAX_SAMPLES*2u) {
+        if (reason) *reason="invalid I/Q buffer";
+        return ESP_ERR_INVALID_ARG;
+    }
+    return lrtx_send(data, (uint32_t)bytes, rate, 1, hz, dbm, reason);
+}
+
+static int lrtx_send_command(int argc, char **argv)
+{
+    uint32_t rate = 0, repeats = 1;
+    if (argc < 3 || argc > 4 || !probe_number(argv[2], 125000, &rate) ||
+        !lrtx_rate_supported(rate) || (argc == 4 &&
+        (!probe_number(argv[3], 16, &repeats) || repeats == 0))) {
+        puts("usage: lora lrtx-send 4800|9600|19200|38400|76800|125000 [repeats 1..16]");
+        return 1;
+    }
+
+    return lrtx_send(NULL, 0, rate, repeats, 915000000u, -9, NULL)==ESP_OK?0:1;
 }

@@ -149,3 +149,56 @@ LS_CASE(replay_policy_allows_fixed_bounds_and_refuses_outside_them)
     LS_CHECK(strstr(result,"refused"));
     LS_EQ_INT(fsk_begins,0);LS_EQ_INT(subghz_hold_attempts,0);
 }
+
+LS_CASE(iq_recording_excludes_other_rec_radio_requests)
+{
+    reset();s_iq_busy=true;
+    LS_CHECK(!rec_watch_request_scan(433000000,434000000,30,8));
+    LS_CHECK(!rec_watch_request_learn(30));
+    LS_CHECK(!rec_watch_request_replay(1,0));
+    LS_CHECK(!rec_watch_select_source(REC_SOURCE_RTL));
+    LS_CHECK(!rec_watch_enable_owned(true));
+    s_iq_busy=false;
+}
+LS_CASE(iq_consumer_trigger_and_bound)
+{
+    s_iq_used=s_iq_warm=0;s_iq_floor=s_iq_power=0;s_iq_triggered=false;
+    s_iq_rise=s_iq_ring_at=s_iq_ring_count=0;
+    atomic_store(&s_iq_full,false);
+    uint8_t quiet[4]={0},signal[4]={0,32,0,0};
+    for(int i=0;i<2500;i++)iq_consume(NULL,quiet,4,false);
+    LS_EQ_UINT(s_iq_used,0);
+    for(unsigned i=0;i<REC_LR_IQ_SAMPLES+20;i++)iq_consume(NULL,signal,4,false);
+    LS_CHECK(atomic_load(&s_iq_full));LS_EQ_UINT(s_iq_used,REC_LR_IQ_BYTES);
+    LS_CHECK(!memcmp(s_iq_data,quiet,4));
+    LS_CHECK(!memcmp(s_iq_data+REC_LR_IQ_BYTES-4,signal,4));
+}
+
+static int iq_sends;
+esp_err_t ls_lora_iq_send_rate_reason(const uint8_t *data,size_t bytes,uint32_t hz,int dbm,uint32_t rate,const char **reason)
+{
+    *reason=NULL;
+    LS_CHECK(ls_mesh_radio_held());LS_EQ_UINT(bytes,306);LS_EQ_UINT(rate,REC_LR_IQ_TX_RATE);LS_EQ_UINT(hz,433920000);LS_EQ_INT(dbm,-9);
+    LS_EQ_INT((int8_t)data[0],0);iq_sends++;return ESP_OK;
+}
+LS_CASE(iq_replay_requires_matching_sidecar_and_tx_gate_before_radio)
+{
+    reset();iq_sends=0;char result[112];
+    const char *path="test-runtime-iq.sub";unlink(path);unlink("test-runtime-iq.json");
+    uint8_t data[4000]={0};
+    for(unsigned j=500;j<1000;j++)data[j*4+1]=32;
+    LS_CHECK(rec_lr_iq_save(path,433920000,data,sizeof(data)));
+    iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,0);LS_EQ_INT(subghz_hold_attempts,0);
+    LS_CHECK(strstr(result,"sidecar"));
+    rec_sidecar_t sc={.freq_hz=433920000,.sample_rate=125000};strcpy(sc.radio,"LR2021");
+    LS_EQ_INT(rec_sidecar_write(".","test-runtime-iq",&sc),0);
+    iq_replay(path,11,result,sizeof(result));LS_EQ_INT(iq_sends,0);LS_EQ_INT(subghz_hold_attempts,0);
+    iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,1);LS_EQ_INT(subghz_lease,0);
+    LS_CHECK(strstr(result,"Sent LR2021 I/Q"));
+    unlink(path);unlink("test-runtime-iq.json");
+    sc.freq_hz=406050000;LS_CHECK(rec_lr_iq_save(path,sc.freq_hz,data,sizeof(data)));
+    LS_EQ_INT(rec_sidecar_write(".","test-runtime-iq",&sc),0);
+    int held=subghz_hold_attempts;
+    iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,1);LS_EQ_INT(subghz_hold_attempts,held);
+    LS_CHECK(strstr(result,"distress"));unlink(path);unlink("test-runtime-iq.json");
+}

@@ -381,8 +381,17 @@ static bool capture_running(void)
     return st.phase == REC_ARMED || st.phase == REC_CAPTURING;
 }
 
+static bool lr_raw(void)
+{ return rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX; }
+static char iq_notice[112];
 static void capture_toggle(void)
 {
+    if(lr_raw()) {
+        if(rec_watch_iq_status(NULL,0))rec_watch_iq_stop();
+        else if(!rec_watch_iq_record(rec_get_freq()))snprintf(iq_notice,sizeof(iq_notice),"I/Q: receiver busy/loading or frequency outside 150-1000 MHz");
+        else iq_notice[0]=0;
+        return;
+    }
     if (capture_running()) rec_disarm();
     else                   rec_arm_request();
 }
@@ -580,7 +589,8 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     a.y+=h;a.h-=h;
     const bool ook=subghz_file_is_ook(&player.file);
     char title[40];
-    if(ook) snprintf(title,sizeof(title),"REPLAY / CC1101 OOK");
+    if(subghz_file_is_iq(&player.file)) snprintf(title,sizeof(title),"REPLAY / LR2021 I/Q");
+    else if(ook) snprintf(title,sizeof(title),"REPLAY / CC1101 OOK");
     else if(subghz_file_is_cc_fsk(&player.file)) snprintf(title,sizeof(title),"REPLAY / CC1101 FSK");
     else snprintf(title,sizeof(title),"REPLAY / %s FSK",ls_rsel_name(LS_RSEL_LORA));
     ls_panel_box(sf,a,title,TUI_CYAN);
@@ -589,9 +599,10 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     const char *name=strrchr(player.path,'/');name=name?name+1:player.path;
     char text[112];
     tui_put_str(sf,a,a.x+2,a.y+1,name,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-    snprintf(text,sizeof(text),"%.4f MHz  |  %s  |  %+.0f dBm nominal",player.file.freq_hz/1e6,ook?"RAW OOK":"RAW FSK",(double)replay_dbm());
+    snprintf(text,sizeof(text),"%.4f MHz  |  %s  |  %+.0f dBm nominal",player.file.freq_hz/1e6,subghz_file_is_iq(&player.file)?"I/Q 125 kS/s":ook?"RAW OOK":"RAW FSK",(double)replay_dbm());
     tui_put_str(sf,a,a.x+2,a.y+2,text,ink);
-    snprintf(text,sizeof(text),"%.2f ms  |  %d edges  |  one transmission",player.file.span_us/1000.,player.file.edges);
+    if(subghz_file_is_iq(&player.file))snprintf(text,sizeof(text),"%.2f ms | %lu I/Q pairs | auto replay rate",player.file.span_us/1000.,(unsigned long)player.file.iq_samples);
+    else snprintf(text,sizeof(text),"%.2f ms  |  %d edges  |  one transmission",player.file.span_us/1000.,player.file.edges);
     tui_put_str(sf,a,a.x+2,a.y+3,text,LS_ATTR_DIM);
     if(a.h>=15 && player.n && player.preview_us) {
         replay_trace=tui_rect_make(a.x+3,a.y+6,a.w-6,a.h-12);
@@ -652,7 +663,15 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     uint8_t result_color=player.waiting || !player.result[0]?TUI_CYAN:
                          !strncmp(player.result,"Sent",4)?TUI_GREEN:TUI_RED;
     tui_put_str(sf,a,a.x+2,a.y+a.h-3,text,ls_fresh_attr(level,TUI_WHITE,result_color,TUI_BLACK));
-    tui_put_str(sf,a,a.x+2,a.y+a.h-2,player.waiting?"White line = activity, not RF progress":"Yellow = selected pulse; stored preview",LS_ATTR_DIM);
+    const char *hint=player.waiting?"White line = activity, not RF progress":"Yellow = selected pulse; stored preview";
+    if(subghz_file_is_iq(&player.file)) {
+        unsigned long rate=0;const char *at=strstr(player.result,"rate=");
+        if(strstr(player.result,"path=OOK-regen"))hint="OOK rebuilt from edges";
+        else if(at && sscanf(at,"rate=%lu",&rate)==1) {
+            snprintf(text,sizeof(text),"I/Q at %lu S/s; carrier centered, gaps zeroed",rate);hint=text;
+        } else hint="OOK from edges or I/Q at auto rate";
+    }
+    tui_put_str(sf,a,a.x+2,a.y+a.h-2,hint,LS_ATTR_DIM);
 }
 /* 0 not handled, 1 handled, 2 the operator wants another file. */
 static int replay_key_result(ls_tk_t k,char c)
@@ -681,6 +700,7 @@ static char recorder_notice[72];
 static int64_t recorder_notice_until;
 static const char *recorder_busy_reason(void)
 {
+    if(rec_watch_iq_status(NULL,0))return "Stop I/Q recording before changing radio";
     if(rec_watch_enabled())return "Stop WATCH before changing radio";
     if(rec_watch_scan_busy())return "Stop SCAN before changing radio";
     if(rec_watch_learn_busy())return "Stop LEARN before changing radio";
@@ -775,11 +795,12 @@ bool ls_rec_player_load(const char *path,const subghz_file_t *f,const int32_t *e
 {
     replay_poll();
     if(player.waiting || !path || strlen(path)>=sizeof(player.path) || !f || !edges ||
-       (!subghz_file_is_ook(f) && !subghz_file_is_cc_fsk(f) && !subghz_file_is_fsk(f)))return false;
+       (!subghz_file_is_ook(f) && !subghz_file_is_cc_fsk(f) && !subghz_file_is_fsk(f) && !subghz_file_is_iq(f)))return false;
     snprintf(player.path,sizeof(player.path),"%s",path);player.file=*f;
     player.n=f->edges<REPLAY_PREVIEW?f->edges:REPLAY_PREVIEW;
     player.preview_us=0;player.selected=0;player.power=0;player.result[0]=0;player.finished=0;
     for(int n=0;n<player.n;n++){player.edges[n]=edges[n];player.preview_us+=edges[n]<0?-(int64_t)edges[n]:edges[n];}
+    if(subghz_file_is_iq(f))player.file.span_us=(uint64_t)f->iq_samples*8;
     player.loaded=true;
     ls_fresh_bump(&replay_flash);return true;
 }
@@ -845,8 +866,15 @@ static bool recorder_touch(int x,int y) {
     return recorder_child()->touch(x,y);
 }
 /* The level meter and ARM, for SUB-GHZ to show as its own READ RAW page. */
-void ls_rec_tools_enter(void){ls_tui_radio_want("REC");on_enter();}
-void ls_rec_tools_draw(tui_surface *sf,tui_rect a){draw(sf,a);}
+void ls_rec_tools_enter(void){if(!lr_raw())ls_tui_radio_want("REC");on_enter();}
+void ls_rec_tools_draw(tui_surface *sf,tui_rect a)
+{
+    if(!lr_raw()){draw(sf,a);return;}
+    char result[112],freq[64];bool busy=rec_watch_iq_status(result,sizeof(result));
+    snprintf(freq,sizeof(freq),"%.4f MHz / IQ16LE / 125 kS/s / AGC",rec_get_freq()/1e6);
+    ls_panel_notice(sf,a,"LR2021 RAW I/Q",freq,iq_notice[0]?iq_notice:result[0]?result:"ARM: waits for signal, saves up to 262 ms to SD");
+    draw_button(sf,tui_rect_make(a.x,a.y+a.h-REC_BTN_H,a.w,REC_BTN_H),busy);
+}
 bool ls_rec_tools_key(ls_tk_t k,char c){return key(k,c);}
 bool ls_rec_tools_touch(int x,int y){return touch(x,y);}
 

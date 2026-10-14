@@ -88,6 +88,7 @@ typedef int nvs_handle_t;
 typedef struct {char ssid[33];uint32_t sequence;} saved_t;
 static saved_t s_saved[8], disk[8];
 static bool s_survey,s_sta_running=true,s_ap_running,s_sta_connected=true,s_sta_gave_up;
+static bool s_c6_update;
 static int opens,reads,writes,commits,jobs,drains,legacy,fail_open;
 static int s_link_saved_count = -1;
 typedef struct {int op;const char *ssid,*pass;char *password;} store_job_t;

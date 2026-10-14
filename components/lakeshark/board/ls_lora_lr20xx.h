@@ -679,6 +679,11 @@ bool      lr20xx_ook_rx_active(void);
 
 /* Lock-free request used by global radio-park paths while IQ TX owns the bus. */
 void      ls_lora_lr20xx_tx_cancel_request(void);
+esp_err_t lr20xx_iq_send(const uint8_t *data, size_t bytes, uint32_t hz, int dbm);
+/* Optional call-local refusal reason; static string, NULL on success. */
+esp_err_t lr20xx_iq_send_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, const char **reason);
+/* Same bounded send and safety gates, caller-selected sample rate. */
+esp_err_t lr20xx_iq_send_rate_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, uint32_t rate, const char **reason);
 
 #ifdef __cplusplus
 }

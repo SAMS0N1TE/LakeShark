@@ -1,6 +1,7 @@
 #include "adsb_app.h"
 #include "tui/ls_rid.h"
 #include "tui/ls_sweep_app.h"
+#include "tui/ls_detector.h"
 #include <string.h>
 #include "ls_trail.h"
 #include <strings.h>
@@ -62,6 +63,7 @@
 /**/
 #include "rec_state.h"
 #include "rec_watch.h"
+#include "rec_lr_iq.h"
 #include "p25_p2_runtime.h"
 #include "p25_p2_bench.h"
 #include "p25_state.h"
@@ -92,6 +94,7 @@
 /**/
 #include "ls_version.h"
 #include "ls_cpu_busy.h"
+#include "ls_c6_update.h"
 
 #include "tui/ls_tui_screen.h"
 #include "tui/ls_field.h"
@@ -1356,6 +1359,49 @@ static void rec_emit_console(const char *line, void *ctx)
 
 static int cmd_rec(int argc, char **argv)
 {
+    if(argc>=2 && !strcmp(argv[1],"iq")) {
+        char result[256];
+        if(argc==4 && !strcmp(argv[2],"arm")) {
+            char *end;double mhz=strtod(argv[3],&end);
+            if(*end || !(mhz>=150 && mhz<1000))return 1;
+            bool ok=rec_watch_iq_record((uint32_t)(mhz*1e6+0.5));
+            puts(ok?"I/Q armed; transmit within 30 s":"I/Q refused: busy/loading; retry when ready");return ok?0:1;
+        }
+        if(argc==4 && !strcmp(argv[2],"dump")) {
+            bool ok=rec_watch_iq_dump(argv[3]);
+            puts(ok?"I/Q dump queued":"I/Q refused: busy/loading or invalid path");return ok?0:1;
+        }
+        if(argc==4 && !strcmp(argv[2],"info")) {
+            bool ok=rec_watch_iq_info(argv[3]);
+            puts(ok?"I/Q info queued; rec iq status for result":"I/Q refused: busy/loading or invalid path");return ok?0:1;
+        }
+        if(argc>=5 && argc<=7 && !strcmp(argv[2],"test")) {
+            char *end;double mhz=strtod(argv[3],&end);
+            if(end==argv[3] || *end || !(mhz>=150 && mhz<1000))return 1;
+            long dbm=strtol(argv[4],&end,10);
+            if(end==argv[4] || *end || dbm<-9 || dbm>10)return 1;
+            bool fsk=argc>=6 && !strcmp(argv[argc-1],"fsk");
+            int args=argc-(fsk?1:0);
+            if(args>6)return 1;
+            long rate=fsk?125000:19200;
+            if(args==6){rate=strtol(argv[5],&end,10);if(end==argv[5] || *end || !rec_lr_iq_rate_supported((uint32_t)rate) || rate>125000 || rate<4800)return 1;}
+            bool ok=fsk?rec_watch_iq_test_fsk((uint32_t)(mhz*1e6+0.5),(int)dbm,(uint32_t)rate):
+                rec_watch_iq_test((uint32_t)(mhz*1e6+0.5),(int)dbm,(uint32_t)rate);
+            puts(ok?"I/Q test queued: 0xA53C96, 5 repeats; rec iq status for result":"I/Q refused: busy/loading");return ok?0:1;
+        }
+        if(argc==3 && !strcmp(argv[2],"stop"))rec_watch_iq_stop();
+        if((argc==5 || argc==6) && !strcmp(argv[2],"replay")) {
+            char *end;long dbm=strtol(argv[4],&end,10);
+            if(*end || dbm<-9 || dbm>10)return 1;
+            long rate=19200;
+            if(argc==6){rate=strtol(argv[5],&end,10);if(end==argv[5] || *end || !rec_lr_iq_rate_supported((uint32_t)rate) || rate>125000 || rate<4800)return 1;}
+            bool ok=rec_watch_iq_replay(argv[3],(int)dbm,(uint32_t)rate);
+            puts(ok?"Replay queued":"Replay refused: busy/loading");return ok?0:1;
+        }
+        bool busy=rec_watch_iq_status(result,sizeof(result));printf("I/Q busy=%d %s\n",busy,result);
+        busy=rec_watch_replay_status(result,sizeof(result));printf("Replay busy=%d %s\n",busy,result);
+        puts("rec iq arm <MHz> | stop | status | info <path.sub> | dump <path.sub> | test <MHz> <-9..10 dBm> [rate] [fsk] | replay <path.sub> <-9..10 dBm> [rate]\nrates: 4800|9600|19200|38400|76800|125000; replay IQ rate rises to fit bandwidth");return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "watch")) {
         rec_watch_status_t *watch=heap_caps_malloc(sizeof(*watch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         if(!watch) {printf("watch: snapshot allocation failed\n");return 1;}
@@ -1610,16 +1656,20 @@ static int cmd_c6(int argc, char **argv)
         printf("c6 en=%d (this board declares no enable line)\n", c6_read_en());
 #endif
         c6_print_versions();
-        printf("usage: c6 <0|1|up [force]|ver|reset|release>\n"
+        printf("usage: c6 <0|1|up [force]|ver|reset|release|update [path] [force]|status>\n"
                "  0/1      drive EN low/high and hold it\n"
                "  up       connect ESP-Hosted (matching slave firmware required)\n"
                "  ver      host vs co-processor firmware versions\n"
                "  reset    pulse EN low 200ms then high, rebooting the C6\n"
-               "  release  stop driving; let the board pull-up hold it\n");
+               "  release  stop driving; let the board pull-up hold it\n"
+               "  update   install a C6 application image from the SD card\n"
+               "  status   progress and result of the last update\n");
         return 0;
     }
 
-    if (!strcmp(argv[1], "ver")) {
+    if (!strcmp(argv[1], "update") || !strcmp(argv[1], "status")) {
+        return ls_c6_update_command(argc, argv);
+    } else if (!strcmp(argv[1], "ver")) {
         c6_print_versions();
     } else if (!strcmp(argv[1], "up")) {
 #if !CONFIG_LS_C6_LINK
@@ -1675,6 +1725,8 @@ static int cmd_ble(int argc, char **argv)
                ble_link_tel_hz(),
                (unsigned long)rx, (unsigned long)tx, (unsigned long)drops);
 #if CONFIG_LS_BLE_HEAD
+        ls_sweep_transport_stats_t scan;ls_sweep_transport_stats(&scan);
+        printf("ble scan=%s\n",!scan.scanning?"off":scan.coded_phy?"extended 1M+Coded":"legacy 1M");
         printf("ble discovery: pressure_drops=%lu\n",
                (unsigned long)ble_hci_rx_advertisement_drops());
 #endif
@@ -1966,6 +2018,14 @@ static int cmd_trail(int argc, char **argv)
    belongs to the TUI task. */
 static int cmd_compass(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "still")) {
+        char *end = NULL;
+        const long seconds = argc > 2 ? strtol(argv[2], &end, 10) : 60;
+        if (argc > 3 || seconds < 1 || seconds > 600 || (end && *end)) {
+            printf("usage: compass still [1..600 seconds], default 60\n"); return 1;
+        }
+        ls_field_compass_still((unsigned)seconds); return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "trace")) {
         ls_field_imu_trace(argc > 2 ? (float)atof(argv[2]) : 5.0f);
         return 0;
@@ -1998,6 +2058,10 @@ static int cmd_compass(int argc, char **argv)
         printf("compass: heading %.0f M  dip %.1f  field %.1f uT  tilt %.0f\n",
                r.magnetic, r.dip, r.field_ut, r.tilt);
     else printf("compass: no heading from this sample\n");
+    ls_compass_live(&r);
+    printf("compass: FIELD %s  corrected %.1f / cal %.1f uT  dip %.1f / expected %.1f deg%s\n",
+           ls_compass_quality_name(r.quality), r.field_ut, r.cal_ut, r.dip, r.expected_dip,
+           r.quality == LS_COMPASS_DISTURBED ? "  magnet or metal nearby, or recalibrate" : "");
     /* What FIND is listening to, and where the LoRa radio really is. */
     ls_dfs_status_t d;
     ls_dfs_poll(&d);
@@ -2142,9 +2206,13 @@ static int cmd_ant(int argc, char **argv)
         bool ext;
         if      (!strcmp(argv[1], "ext") || !strcmp(argv[1], "mmcx1")) ext = true;
         else if (!strcmp(argv[1], "int") || !strcmp(argv[1], "internal")) ext = false;
-        else { printf("usage: ant [int|ext]\n"); return 1; }
+        else { printf("usage: ant [int|ext [confirm]]\n"); return 1; }
 
-        const esp_err_t e = ls_board_hw_antenna_external(ext);
+        if (argc > 3 || (argc == 3 && (!ext || strcmp(argv[2], "confirm")))) {
+            puts("usage: ant [int|ext [confirm]]"); return 1;
+        }
+        const esp_err_t e = ext && argc == 3 ? ls_board_hw_antenna_confirm_external()
+                                                       : ls_board_hw_antenna_external(ext);
         if (e != ESP_OK) {
             printf("ant: switch refused: %s\n", esp_err_to_name(e));
             return 1;
@@ -2155,6 +2223,8 @@ static int cmd_ant(int argc, char **argv)
     const bool ext = ls_board_hw_antenna_is_external();
     printf("ant: %s\n", ext ? "EXTERNAL - MMCX1" : "internal");
     printf("ant: stored, so it comes back this way after a reboot\n");
+    if (ext) printf("ant: TX %s; ant ext confirm acknowledges an attached antenna\n",
+                    ls_board_hw_antenna_tx_allowed() ? "confirmed" : "unconfirmed");
     if (ext)
         printf("ant: MMCX1 must have an antenna on it before transmitting - "
                "the vendor warns that transmitting into an open port may "
@@ -2868,6 +2938,7 @@ static bool console_start(bool full)
        immutable descriptors in flash instead; normal boot subsequently has
        to initialize the complete compact UI on this same task. */
     static const esp_console_cmd_t cmds[] = {
+        { .command="detector", .help="Detector: status|start|stop|reload|test", .func=ls_detector_command },
         { .command="sweep", .help="Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload", .func=ls_sweep_command },
         { .command="rid", .help="Passive Remote ID: list | detail N | clear", .func=ls_rid_command },
         { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
@@ -2902,8 +2973,8 @@ static bool console_start(bool full)
           .hint = "<on|off|rescan|passkey <code>|name <s>|tel <hz>|"
                   "verbose <0|1>|pin [addr]|unpin|forget|show>",
           .func = &cmd_ble },
-        { .command = "c6",     .help = "ESP32-C6 co-processor: enable line, transport, firmware versions",
-          .hint = "<0|1|up|ver|reset|release>", .func = &cmd_c6 },
+        { .command = "c6",     .help = "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update",
+          .hint = "<0|1|up|ver|reset|release|update [path] [force]|status>", .func = &cmd_c6 },
         { .command = "link",   .help = "Flipper serial head control",
           .hint = "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]",
           .func = &cmd_link },
@@ -2927,7 +2998,7 @@ static bool console_start(bool full)
           .func = &cmd_track },
         { .command = "imu",    .help = "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats",
           .func = &cmd_imu },
-        { .command = "compass", .help = "Compass calibration in use and what it reads from the sensor now",
+        { .command = "compass", .help = "Compass state; still [secs] stability test (default 60), trace [secs], learn [on|off|forget]",
           .func = &cmd_compass },
         { .command = "trail",  .help = "Where each busy task last was: this run, and the run a watchdog reset ended",
           .func = &cmd_trail },

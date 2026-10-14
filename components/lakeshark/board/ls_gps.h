@@ -78,6 +78,8 @@ typedef struct {
     uint8_t  hour, minute, second;
     uint8_t  day, month;
     uint16_t year;
+    /* Atomic RMC date/time snapshot; GGA must not combine a new time with an old date. */
+    uint32_t utc_s, utc_ms; /* Unix seconds, and esp_timer milliseconds at RMC receipt. */
 
     /* Counters, useful for telling a wiring fault from a sky problem: bytes
        climbing with sentences flat means the baud rate is wrong, and both

@@ -31,6 +31,14 @@ EXT_RAM_BSS_ATTR static struct blip_px s_blip_px[LS_COMPASS_BLIPS];
 #define MAX_DOTS (160 * 120)
 EXT_RAM_BSS_ATTR static dot_t s_dots[MAX_DOTS];
 
+/* Geometry and metal lighting depend on pose, not yaw. Compute expensive
+   atan/sin/cos only on a pose change; lazy entries also support FIND overlays. */
+typedef struct { float bezel_phi, bezel_light, card_phi; } shade_cache_t;
+EXT_RAM_BSS_ATTR static shade_cache_t s_shade[MAX_DOTS];
+static bool s_pose_valid, s_pose_rebuild;
+static int s_pose_w, s_pose_h, s_pose_cw, s_pose_ch;
+static float s_pose_pitch, s_pose_roll;
+
 static float wrap180(float a) { a = fmodf(a + 540.0f, 360.0f) - 180.0f; return a; }
 
 float ls_compass_spring_step(ls_compass_spring_t *s, float target, float dt)
@@ -108,8 +116,9 @@ static uint8_t metal(float b, int x, int y)
 }
 
 /* What one dot sees, front to back. */
-static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d)
+static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d, shade_cache_t *cache)
 {
+    if (s_pose_rebuild) cache->bezel_phi = cache->bezel_light = cache->card_phi = NAN;
     const ls_compass_scene_t *sc = v->sc;
     d->set = false;
     const uint8_t white = TUI_WHITE | TUI_BRIGHT, grey = TUI_WHITE, dark = TUI_BLACK | TUI_BRIGHT;
@@ -141,7 +150,9 @@ static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d)
                 d->set = true;
                 /* Two facets per half catch the light differently: a ridge. */
                 const bool lit = q < 0;
-                if (p > 0) d->colour = lit ? (TUI_RED | TUI_BRIGHT) : TUI_RED;
+                if (sc->degraded) d->colour = p > 0 ? (lit ? (TUI_YELLOW | TUI_BRIGHT) : TUI_YELLOW)
+                                                    : (lit ? grey : dark);
+                else if (p > 0) d->colour = lit ? (TUI_RED | TUI_BRIGHT) : TUI_RED;
                 else d->colour = lit ? white : grey;
                 return;
             }
@@ -149,7 +160,8 @@ static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d)
         }
         const float r = sqrtf(r2);
         if (r >= BEZEL_IN && r < BEZEL_OUT) {
-            const float phi = atan2f(X, y) / RAD;           /* clockwise from the board's top */
+            if (!isfinite(cache->bezel_phi)) cache->bezel_phi = atan2f(X, y) / RAD;
+            const float phi = cache->bezel_phi;
             const float az = phi + sc->heading;              /* the card's own bearing */
             d->set = true;
             /* Markers are wedges cut into the bezel. */
@@ -165,11 +177,14 @@ static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d)
                in, through up, to facing out. Lambert against the light, and
                a narrow travelling glint for the polish. */
             const float t01 = (r - BEZEL_IN) / (BEZEL_OUT - BEZEL_IN);
-            const float tilt = (t01 - 0.5f) * 2.4f;          /* radians of turn */
-            const float nr = sinf(tilt), nz = cosf(tilt);
-            const float ux = X / r, uy = y / r;
-            const float lambert = fmaxf(0.0f, nr * (ux * Lx + uy * Ly) + nz * Lz);
-            float b = 0.12f + 0.95f * lambert * lambert;
+            if (!isfinite(cache->bezel_light)) {
+                const float tilt = (t01 - 0.5f) * 2.4f;
+                const float nr = sinf(tilt), nz = cosf(tilt);
+                const float ux = X / r, uy = y / r;
+                const float lambert = fmaxf(0.0f, nr * (ux * Lx + uy * Ly) + nz * Lz);
+                cache->bezel_light = 0.12f + 0.95f * lambert * lambert;
+            }
+            float b = cache->bezel_light;
             /* Notches every 10 degrees of the card's own scale. */
             float m10 = fmodf(az + 360.0f, 10.0f);
             if (m10 > 5.0f) m10 -= 10.0f;
@@ -187,7 +202,8 @@ static void shade(const view_t *v, float X, float Y, int dx, int dy, dot_t *d)
             /* Ticks start at 0.80; inside that only the lobe and the
                estimate need to know which way a dot lies. */
             const bool need_az = r > 0.80f || sc->lobe || isfinite(sc->df) || sc->recent || sc->facing || sc->peak_count;
-            const float phi = need_az ? atan2f(X, y) / RAD : 0.0f;
+            if (need_az && !isfinite(cache->card_phi)) cache->card_phi = atan2f(X, y) / RAD;
+            const float phi = need_az ? cache->card_phi : 0.0f;
             const float az = phi + sc->heading;
             if (r > 0.80f) {
                 float m = fmodf(az + 360.0f, 5.0f); if (m > 2.5f) m -= 5.0f;
@@ -388,7 +404,7 @@ void ls_dots_blit(tui_surface *sf, tui_rect area, const ls_dot_t *dots, int dots
         }
 }
 
-void ls_compass_art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *sc)
+static void art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *sc)
 {
     if (!sf || !sc || area.w < 12 || area.h < 6) return;
     int cw = 10, ch = 17;
@@ -449,12 +465,17 @@ void ls_compass_art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_
         }
     }
 
+    s_pose_rebuild = !s_pose_valid || s_pose_w != area.w || s_pose_h != area.h ||
+        s_pose_cw != cw || s_pose_ch != ch || s_pose_pitch != sc->pitch || s_pose_roll != sc->roll;
+    s_pose_valid = true; s_pose_w = area.w; s_pose_h = area.h;
+    s_pose_cw = cw; s_pose_ch = ch; s_pose_pitch = sc->pitch; s_pose_roll = sc->roll;
+
     for (int j = 0; j < dots_h; j++)
         for (int i = 0; i < dots_w; i++) {
             const float px = (i + 0.5f) * v.sub_w, py = (j + 0.5f) * v.sub_h;
             float X = (px - v.cx) / v.rpx, Y = (v.cy - py) / v.rpx;
             const float Xu = X * v.roll_c + Y * v.roll_s, Yu = -X * v.roll_s + Y * v.roll_c;
-            shade(&v, Xu, Yu, i, j, &s_dots[j * dots_w + i]);
+            shade(&v, Xu, Yu, i, j, &s_dots[j * dots_w + i], &s_shade[j * dots_w + i]);
         }
 
     ls_dots_blit(sf, area, s_dots, dots_w);
@@ -493,5 +514,43 @@ void ls_compass_art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_
         project(&v, sc->heading, BEZEL_OUT + 0.08f, H_BEZEL, &px, &py);
         tui_put_char(sf, area, area.x + (int)(px / cw), area.y + (int)(py / ch), 'v',
                      TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+}
+
+/* Cache the completed character art, including the static bezel and labels.
+   The shell clears its back buffer each frame, so replay cached rows into it;
+   the existing front/back diff sends only changed cells to the display.
+   Pointer-backed FIND overlays are deliberately not cached. */
+EXT_RAM_BSS_ATTR static tui_cell s_art_cells[MAX_DOTS / 6];
+EXT_RAM_BSS_ATTR static ls_compass_scene_t s_art_scene;
+static int s_art_w, s_art_h, s_art_cw, s_art_ch;
+static bool s_art_valid;
+
+void ls_compass_art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *sc)
+{
+    if (!sf || !sc || area.w < 12 || area.h < 6) return;
+    if (area.w * area.h > MAX_DOTS / 6 || sc->lobe || sc->recent || sc->blips ||
+        sc->marks || sc->peaks || area.x < 0 || area.y < 0 ||
+        area.x + area.w > sf->w || area.y + area.h > sf->h) {
+        art_draw(sf, area, sc); return;
+    }
+    ls_compass_scene_t key = *sc;
+    key.seconds = 0; /* art has no clock-driven motion */
+    key.heading = roundf(key.heading * 2) * 0.5f;
+    key.pitch = roundf(key.pitch * 2) * 0.5f;
+    key.roll = roundf(key.roll * 2) * 0.5f;
+    int cw, ch; ls_tui_geometry(NULL, NULL, &cw, &ch);
+    if (!s_art_valid || s_art_w != area.w || s_art_h != area.h ||
+        s_art_cw != cw || s_art_ch != ch || memcmp(&key, &s_art_scene, sizeof(key))) {
+        tui_surface cached = { .w=area.w, .h=area.h, .back=s_art_cells };
+        tui_fill(&cached, tui_surface_rect(&cached), ' ', TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        art_draw(&cached, tui_surface_rect(&cached), &key);
+        s_art_scene = key; s_art_w = area.w; s_art_h = area.h;
+        s_art_cw = cw; s_art_ch = ch; s_art_valid = true;
+    }
+    for (int row=0; row<area.h; row++) {
+        tui_cell *dst = sf->back + (area.y+row)*sf->w + area.x;
+        const tui_cell *src = s_art_cells + row*area.w;
+        if (memcmp(dst, src, area.w*sizeof(*src))) memcpy(dst, src, area.w*sizeof(*src));
     }
 }

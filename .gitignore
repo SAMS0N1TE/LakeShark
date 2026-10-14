@@ -96,6 +96,8 @@ __pycache__/
 bench/build/
 bench/build-lriq/
 bench/build-asan/
+/bench/build-*/
+/bench/build-blocks/
 bench/logs/
 
 
@@ -137,3 +139,19 @@ sim.bmp
 
 # Generated cellular preview harness, compiler objects and simulator captures.
 /bench/out/cell/
+/bench/out/c6/
+
+# Local evidence from the C6 and COMPASS work: screenshots, objects, notes.
+/bench/out/c6-*
+/bench/out/c6-ui-size/
+/bench/out/c6-ui-test/
+/bench/compass-quality/
+/bench/MESH_IDLE.md
+/bench/DETECTOR_RANGE.md
+/bench/tests/COMPASS_ACCURACY.md
+
+# C6 engineering notes and the unproven rebuild recipe stay local.
+/c6_firmware/INTERNAL_NOTES.md
+/c6_firmware/sdkconfig.defaults
+/c6_firmware/idf_component.yml
+/bench/build-c6.ps1

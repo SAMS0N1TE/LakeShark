@@ -51,6 +51,7 @@ EXT_RAM_BSS_ATTR static ls_compass_reading_t s_r;
 static ls_compass_spring_t s_spring;
 /* The heading and tilt as shown: held steady at rest (ls_compass_steady_step). */
 static ls_compass_steady_t s_steady;
+static float s_display_heading = NAN;
 static int64_t s_last_us;
 static bool s_magnetic, s_simple;
 /* LOOKS: the lobe's fill (LS_COMPASS_FILL_*), the green trail of directions
@@ -114,7 +115,9 @@ static float shown_heading(void)
     /* A frame that could not be solved keeps what the filter holds; the
        gyro carries it meanwhile (ls_compass_steady_step). */
     if (!s_steady.started) return raw_heading();
-    return s_steady.heading;
+    if (!isfinite(s_display_heading) || fabsf(fmodf(s_steady.heading-s_display_heading+540,360)-180) > 0.3f)
+        s_display_heading = s_steady.heading;
+    return s_display_heading;
 }
 /* The shown heading, true, frame by frame, so a FIND reading is filed at
    the heading it was MEASURED at. 2.5.0 moved the radios to their own task
@@ -242,6 +245,7 @@ static void scene(ls_compass_scene_t *sc, bool with_df)
 {
     memset(sc, 0, sizeof(*sc));
     sc->valid = s_r.valid;
+    sc->degraded = s_r.valid && s_r.quality != LS_COMPASS_GOOD;
     sc->heading = s_spring.started && isfinite(s_spring.angle) ? s_spring.angle : 0;
     sc->pitch = s_r.back_axis ? 0 : s_steady.started ? s_steady.pitch : s_r.pitch;
     sc->roll = s_r.back_axis ? 0 : s_steady.started ? s_steady.roll : s_r.roll;
@@ -260,18 +264,18 @@ static void scene(ls_compass_scene_t *sc, bool with_df)
     }
 }
 
-/* The interference warning, as an instrument's caution light: a small
-   steady lamp in the dial's corner rather than anything laid over the
-   compass. It lights after the field has been off for two seconds and
-   stays lit three (ls_compass_bend_step), so it never blinks. */
+/* Immediate field-quality lamp. Fusion keeps its separate debounced bend
+   state, but navigation must not present a known bad field as trustworthy. */
 #define MAG_LAMP_W 9
 static void mag_lamp(tui_surface *sf, tui_rect a, int x, int y)
 {
-    const uint8_t rim = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t lamp = TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT);
+    const uint8_t colour = s_r.quality == LS_COMPASS_GOOD ? TUI_GREEN :
+                           s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW;
+    const uint8_t rim = TUI_ATTR(colour | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t lamp = rim;
     tui_put_str(sf, a, x, y, "+-------+", rim);
     tui_put_str(sf, a, x, y + 1, "|", rim);
-    tui_put_str(sf, a, x + 1, y + 1, " ! MAG ", lamp);
+    tui_put_str(sf, a, x + 1, y + 1, s_r.quality == LS_COMPASS_GOOD ? "MAG OK " : s_r.quality == LS_COMPASS_DISTURBED ? "MAG BAD" : "MAG CAL", lamp);
     tui_put_str(sf, a, x + 8, y + 1, "|", rim);
     tui_put_str(sf, a, x, y + 2, "+-------+", rim);
 }
@@ -279,7 +283,7 @@ static void mag_lamp(tui_surface *sf, tui_rect a, int x, int y)
 /* Pages without the big readout carry the lamp in the dial's corner. */
 static void mag_caution(tui_surface *sf, tui_rect dial)
 {
-    if (s_r.interference && dial.w >= 12 && dial.h >= 5) mag_lamp(sf, dial, dial.x, dial.y);
+    if (dial.w >= 12 && dial.h >= 5) mag_lamp(sf, dial, dial.x, dial.y);
 }
 
 /* The heading readout: three big digits, T or M, and where that is. */
@@ -290,7 +294,7 @@ static void readout(tui_surface *sf, tui_rect a, int y)
     const int x = a.x + (a.w - w - 5) / 2;
     big_number(sf, a, x, y, h, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     /* Beside the number it qualifies. */
-    if (s_r.interference && x - a.x >= MAG_LAMP_W + 2) mag_lamp(sf, a, x - MAG_LAMP_W - 2, y + 1);
+    if (x - a.x >= MAG_LAMP_W + 2) mag_lamp(sf, a, x - MAG_LAMP_W - 2, y + 1);
     tui_put_str(sf, a, x + w + 1, y, ref(), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     tui_put_str(sf, a, x + w + 1, y + 2, cardinal(h), TUI_ATTR(ls_compass_letter_ink(false, s_white_letters), TUI_BLACK));
 }
@@ -304,11 +308,15 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     const float h = shown_heading();
     int n = 0;
 #define LINE(attr) do { if (n < rows) ls_safe_line(sf, a, y + n++, line, (attr)); } while (0)
-    if (!s_r.calibrated)
-        { snprintf(line, sizeof(line), "NOT CALIBRATED: OPTIONS > CALIBRATE"); LINE(TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
-    else if (s_r.interference)
-        { snprintf(line, sizeof(line), "MAG CAUTION  field %+.0f%%  dip %+.0f", s_r.strength_off * 100, s_r.dip_off);
-          LINE(TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
+    const uint8_t quality_ink = TUI_ATTR((s_r.quality == LS_COMPASS_GOOD ? TUI_GREEN :
+        s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK);
+    snprintf(line, sizeof(line), "FIELD %s", ls_compass_quality_name(s_r.quality)); LINE(quality_ink);
+    if (s_r.quality == LS_COMPASS_DISTURBED) {
+        snprintf(line, sizeof(line), "magnet or metal nearby,"); LINE(quality_ink);
+        snprintf(line, sizeof(line), "or recalibrate (K)"); LINE(quality_ink);
+    } else if (s_r.quality == LS_COMPASS_UNCALIBRATED) {
+        snprintf(line, sizeof(line), "K RECALIBRATE before navigating"); LINE(quality_ink);
+    }
     snprintf(line, sizeof(line), "%s NORTH  %s%s", true_mode() ? "TRUE" : "MAGNETIC",
              !s_r.valid ? "waiting for a heading" : s_r.back_axis ? "sighting the back" : "board top",
              true_mode() && s_r.position_saved ? "  (saved position)" : "");
@@ -355,7 +363,7 @@ __attribute__((noinline)) static void draw_dial(tui_surface *sf, tui_rect body)
     ls_compass_scene_t sc; scene(&sc, false);
     ls_btn_t buttons[] = { { "LOCK", isfinite(s_lock) ? "CLEAR" : "HERE", 'l', isfinite(s_lock), !s_r.valid },
                            { "MARK", "NOTE", 'm', false, false },
-                           { "CAL", "SETUP", 'k', !s_r.calibrated, false } };
+                           { s_r.quality == LS_COMPASS_GOOD ? "CAL" : "RECALIBRATE", "K SETUP", 'k', s_r.quality != LS_COMPASS_GOOD, false } };
     tui_rect side;
     const int bar_h = ls_btn_raised_height(body, 3);
     if (s_simple) {
@@ -1391,6 +1399,7 @@ __attribute__((noinline)) static void draw_level(tui_surface *sf, tui_rect body)
 }
 
 static bool s_steady_true;
+static int64_t s_fusion_sample_us;
 static float s_rate = NAN, s_yaw = NAN;
 static void find_requests(void);
 
@@ -1408,15 +1417,18 @@ static void draw(tui_surface *sf, tui_rect a)
     {
         /* The fusion takes the gyro's rest reading off the whole vector and
            learns it whenever the board lies still (ls_compass_steady_imu). */
-        ls_field_sample_t p; ls_field_sample_snapshot(&p);
+        ls_field_sample_t p; ls_imu_sample_t raw; ls_field_compass_snapshot(&p, &raw);
         const float g[3] = { p.imu.gx, p.imu.gy, p.imu.gz };
-        const float acc[3] = { p.imu.ax, p.imu.ay, p.imu.az };
         /* A switch between true and magnetic is a jump, not a turn. */
-        if (s_steady.started && s_steady_true != true_mode()) s_steady.started = false;
+        if (s_steady.started && s_steady_true != true_mode()) { s_steady.started = false; s_display_heading = NAN; }
         s_steady_true = true_mode();
         s_steady.mag_tau_s = s_r.interference ? 8.0f : LS_COMPASS_FUSE_TAU_S;
-        ls_compass_steady_imu(&s_steady, raw_heading(), s_r.pitch, s_r.roll,
-                              p.imu_valid ? g : NULL, p.imu_valid ? acc : NULL, dt);
+        if (p.time_us != s_fusion_sample_us) {
+            const float sensor_dt = s_fusion_sample_us ? (p.time_us-s_fusion_sample_us)/1e6f : dt;
+            s_fusion_sample_us = p.time_us;
+            ls_compass_steady_sample(&s_steady, raw_heading(), s_r.pitch, s_r.roll,
+                                    p.imu_valid ? &raw : NULL, sensor_dt);
+        }
         /* For the console: how fast it is turning, whichever way it is
            held, less what the gyro reads at rest. */
         float r2 = 0;
@@ -2197,7 +2209,7 @@ static void enter(void)
     s_spring.started = false; s_last_us = 0;
     /* The board may have turned while COMPASS was closed: the dial starts
        from the next reading, and keeps what it knows of the gyro. */
-    s_steady.started = false;
+    s_steady.started = false; s_display_heading = NAN; s_fusion_sample_us = 0;
     load_df_offset();
     show_page(s_page);
 }
@@ -2415,7 +2427,7 @@ bool ls_scr_compass_console(int argc, char **argv)
                s_steady.agree <= -0.5f ? "  GYRO TURNS AGAINST THE MAGNETOMETER: axis fault, gyro left out" : "");
         printf("find: gyro at rest %+.2f %+.2f %+.2f deg/s%s  still %.1f s%s\n",
                s_steady.rest[0], s_steady.rest[1], s_steady.rest[2],
-               s_steady.rest_known ? "" : " (not learnt: lay it still for a second)",
+               s_steady.rest_known ? "" : " (unqualified: hold still >=3 s; gyro SD must be <=1 dps)",
                s_steady.resting ? s_steady.still_s : 0.0f, s_steady.sat_s > 0 ? "  GYRO AT FULL SCALE" : "");
         printf("find: hold %.0f s  fall %.1f dB/s  forget %.0f s  hit %.0f dB over  sure at %.0f  dwell %.0f ms\n",
                OPTV(O_HOLD), OPTV(O_DECAY), OPTV(O_FORGET), OPTV(O_THRESH), OPTV(O_SPIKE), OPTV(O_DWELL));
@@ -2500,7 +2512,7 @@ bool ls_scr_compass_console(int argc, char **argv)
 }
 
 const ls_tui_screen_t ls_scr_compass = {
-    .name = "COMPASS", .hint = "1-4 page  O options  [ ] channel",
+    .name = "COMPASS", .hint = "1-4 page  O options  K recalibrate",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
     .hold_auto_rotation = true,
 };

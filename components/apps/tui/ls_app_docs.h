@@ -18,6 +18,7 @@
 extern "C" {
 #endif
 
+extern const ls_app_doc_t ls_doc_detector;
 extern const ls_app_doc_t ls_doc_sweep;
 extern const ls_app_doc_t ls_doc_drones;
 extern const ls_app_doc_t ls_doc_home;

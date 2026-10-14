@@ -201,3 +201,25 @@ LS_CASE(listener_registration_is_bounded_and_idempotent)
     LS_CHECK(ble_link_observer_dispatch(&ring,1)==1);
     for(unsigned i=0;i<BLE_LINK_AD_LISTENERS;i++) LS_CHECK(counts[i]==1);
 }
+
+LS_CASE(extended_chains_preserve_rid_and_reject_incomplete) {
+    memset(&ring,0,sizeof(ring));
+    uint8_t ad[31]={30,0x16,0xfa,0xff,0x0d,42,0x02,0x12};
+    memcpy(ad+8,"CODED-RID",10);
+    LS_CHECK(!ble_link_observer_ext(&ring,mac,1,2,-70,false,1,ad,9,100));
+    LS_CHECK(ring.write==0);
+    LS_CHECK(ble_link_observer_ext(&ring,mac,1,2,-70,false,0,ad+9,22,200));
+    LS_CHECK(ring.write==1 && ring.records[0].len==31);
+    LS_CHECK(!memcmp(ring.records[0].data,ad,31));
+    LS_CHECK(ls_rid_advert(mac,1,-70,ring.records[0].data,31,200));
+    LS_CHECK(!ble_link_observer_ext(&ring,mac,1,2,-70,false,1,ad,9,300));
+    LS_CHECK(!ble_link_observer_ext(&ring,mac,1,2,-70,false,2,ad+9,22,400));
+    LS_CHECK(ring.write==1 && ring.invalid==1);
+    uint8_t full[BLE_LINK_AD_MAX]={0};
+    ble_link_observer_ext(&ring,mac,1,2,-70,false,1,full,sizeof(full),500);
+    LS_CHECK(!ble_link_observer_ext(&ring,mac,1,2,-70,false,0,ad,31,600));
+    LS_CHECK(ring.write==1);
+    for(unsigned sid=0;sid<5;sid++)ble_link_observer_ext(&ring,mac,1,sid,-70,false,1,ad,9,700);
+    LS_CHECK(!ble_link_observer_ext(&ring,mac,1,4,-70,false,0,ad+9,22,800));
+    LS_CHECK(ring.write==1);
+}

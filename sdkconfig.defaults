@@ -92,3 +92,9 @@ CONFIG_FATFS_ALLOC_PREFER_EXTRAM=n
 # A blank or damaged storage partition reformats instead of failing the mount.
 CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL=y
 CONFIG_FATFS_FS_LOCK=16
+
+# Dual-PHY observer, with runtime legacy HCI fallback for older Hosted slaves.
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY=y
+CONFIG_BT_NIMBLE_EXT_ADV=y
+CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n

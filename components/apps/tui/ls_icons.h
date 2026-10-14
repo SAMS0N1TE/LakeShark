@@ -47,6 +47,7 @@ typedef enum {
     LS_ICON_TILES,      /* four map sheets */
     LS_ICON_DRONE,      /* DRONES: four rotors around a central body */
     LS_ICON_SWEEP,      /* SWEEP: a radar ring, beam and contact */
+    LS_ICON_DETECTOR,   /* DETECTOR: a warning triangle */
     LS_ICON__COUNT
 } ls_icon_t;
 

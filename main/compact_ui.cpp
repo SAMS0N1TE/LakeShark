@@ -1,5 +1,7 @@
+#include "tui/apps/example_app.h"
 #include "adsb_app.h"
 #include "tui/ls_sweep_ui.h"
+#include "tui/ls_detector_ui.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid_ui.h"
 /* T-Display: the TUI shell, the panel it owns, and its console commands. */
@@ -37,6 +39,7 @@
 #include "ls_haptic.h"
 #include "ls_mesh.h"
 #include "tui/ls_tui.h"
+#include "tui/ls_ui_perf.h"
 #include "tui/ls_theme.h"
 #include "tui/ls_tui_screen.h"
 /* Notices from apps that are not the one on screen. */
@@ -84,6 +87,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "nvs.h"
 #include "ls_wifi.h"
 #include "ls_ota.h"
+#include "ls_c6_update.h"
 #include "tui/ls_wireless.h"
 /* No LVGL shell headers: see compact_ui_start. */
 extern "C" {
@@ -105,6 +109,27 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+/* Single writer: the TUI owns the rings. The console's existing command lock
+ * serializes requests; release/acquire transfers ownership of the snapshot.
+ * No new lock, allocation, sorting or waiting on the frame path. */
+static EXT_RAM_BSS_ATTR ls_ui_perf_t s_perf;
+static EXT_RAM_BSS_ATTR ls_ui_perf_snapshot_t s_perf_snapshot;
+static EXT_RAM_BSS_ATTR char s_perf_screen[64];
+static unsigned s_perf_request; /* 0 idle, 1 snapshot, 2 reset + snapshot */
+
+static void tui_perf_service()
+{
+    const unsigned request = __atomic_load_n(&s_perf_request, __ATOMIC_ACQUIRE);
+    if (!request) return;
+    if (request == 2) ls_ui_perf_reset(&s_perf);
+    ls_ui_perf_snapshot(&s_perf, esp_timer_get_time(), &s_perf_snapshot);
+    const char *name = ls_tui_screen_name(ls_tui_screen_current());
+    snprintf(s_perf_screen, sizeof(s_perf_screen), "%s", name ? name : "none");
+    for (char *c = s_perf_screen; *c; ++c)
+        if ((unsigned char)*c <= ' ' || *c == '=') *c = '_';
+    __atomic_store_n(&s_perf_request, 0, __ATOMIC_RELEASE);
+}
 
 static int s_rotation;
 static bool s_touch_ok;
@@ -172,10 +197,17 @@ static bool touch_edge_pending()
 static bool tui_touch_source(int *x, int *y, bool *pressed)
 {
     TouchSample sample;
+    bool edge;
     portENTER_CRITICAL(&s_touch_lock);
-    if (s_edge_head != s_edge_tail) sample = s_edge[s_edge_tail++ % TOUCH_EDGES];
+    edge = s_edge_head != s_edge_tail;
+    if (edge) sample = s_edge[s_edge_tail++ % TOUCH_EDGES];
     else sample = s_touch;
     portEXIT_CRITICAL(&s_touch_lock);
+    static TouchSample previous = {};
+    if (edge || (sample.pressed &&
+                 (sample.x != previous.x || sample.y != previous.y)))
+        ls_ui_perf_input(&s_perf, sample.received);
+    previous = sample;
     *x = sample.x; *y = sample.y;
     /* A finger on the glass is the auto-dim clock's input. */
     if (sample.pressed) display_ctl_activity();
@@ -971,10 +1003,15 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_radios, nullptr, &ls_doc_radios },
             { "link", "LINK", "Wi-Fi + BLE", LS_ICON_WIRELESS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
-            { "drones", "DRONES", "passive BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
+            { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_drones, nullptr, &ls_doc_drones },
+            { "detector", "DETECTOR", "rule matches", LS_ICON_DETECTOR, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_detector, nullptr, &ls_doc_detector },
             { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_sweep, tui_live_sweep, &ls_doc_sweep },
+#if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
+            LS_EXAMPLE_APP_ENTRY,
+#endif
         };
         /* LINK was the thirteenth app, beyond the router's old
            twelve-screen limit, and vanished without a startup error. */
@@ -1039,14 +1076,20 @@ static bool tui_session(void)
     const bool rebuilt = s_tui_rebuilding;
     s_tui_rebuilding = false;
     if (rebuilt) {
+        const int64_t start = esp_timer_get_time();
         ls_tui_router_draw(sf);
         ls_tui_present();
+        ls_ui_perf_frame(&s_perf, start, esp_timer_get_time());
+        tui_perf_service();
         display_ctl_reapply();
     }
 
     for (int frame = 0; !rebuilt && frame <= SPLASH_FRAMES; frame++) {
+        const int64_t start = esp_timer_get_time();
         ls_splash_draw(sf, cols, rows, frame, SPLASH_FRAMES);
         ls_tui_present();
+        ls_ui_perf_frame(&s_perf, start, esp_timer_get_time());
+        tui_perf_service();
         if (frame == 0) {
             /* First frame is on the glass; safe to light it now. */
             display_ctl_reapply();
@@ -1073,8 +1116,11 @@ static bool tui_session(void)
     if (!rebuilt) vTaskDelay(pdMS_TO_TICKS(SPLASH_HOLD_MS));
 
     ls_tui_invalidate();
+    const int64_t first_start = esp_timer_get_time();
     ls_tui_router_draw(sf);
     int full = ls_tui_present();
+    ls_ui_perf_frame(&s_perf, first_start, esp_timer_get_time());
+    tui_perf_service();
     ls_tui_last_cost(&us, &drawn);
     printf("tui: %dx%d cells at %dx%d px\n", cols, rows, cw, ch);
     printf("tui: first paint  %d cells  %lu us\n", full, (unsigned long)us);
@@ -1092,6 +1138,7 @@ static bool tui_session(void)
     s_ph_sleep_us = 0;
     s_ph_core_frames[0] = s_ph_core_frames[1] = 0;
     while (!s_tui_stop) {
+        tui_perf_service();
         /* The frame's start, for the phase split. */
         const int64_t ph_start = esp_timer_get_time();
         {
@@ -1181,6 +1228,8 @@ static bool tui_session(void)
         }
         ls_keypad_event_t ev;
         while (ls_keypad_read(&ev)) {
+            /* The hardware FIFO has no timestamps: first software receipt. */
+            ls_ui_perf_input(&s_perf, esp_timer_get_time());
             display_ctl_activity();
             const ls_keymap_entry_t *k = ls_keymap_lookup(ev.row, ev.col);
             if (!k) continue;
@@ -1294,6 +1343,7 @@ static bool tui_session(void)
         /* Injected taps go through the same router entry as real ones, so a
            console tap and a thumb cannot disagree about what a cell does. */
         while (s_tui_tap_r != s_tui_tap_w) {
+            ls_ui_perf_input(&s_perf, esp_timer_get_time());
             display_ctl_activity();
             const int c = s_tui_tap[s_tui_tap_r].col;
             const int r = s_tui_tap[s_tui_tap_r].row;
@@ -1302,6 +1352,7 @@ static bool tui_session(void)
         }
 
         while (s_tui_inject_r != s_tui_inject_w) {
+            ls_ui_perf_input(&s_perf, esp_timer_get_time());
             display_ctl_activity();
             ls_tk_t k  = s_tui_inject[s_tui_inject_r].k;
             char    ch = s_tui_inject[s_tui_inject_r].ch;
@@ -1369,6 +1420,7 @@ static bool tui_session(void)
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         ls_tui_present();
         const int64_t ph_sleep = esp_timer_get_time();
+        ls_ui_perf_frame(&s_perf, ph_draw, ph_sleep);
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
         s_ph_core_frames[esp_cpu_get_core_id() ? 1 : 0]++;
 
@@ -1448,9 +1500,52 @@ static void tui_task(void *arg)
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        tui_perf_service();
+        if (!s_tui_task) continue; /* A perf request can wake a stopped UI. */
         while (tui_session()) {}
         s_tui_task = nullptr;
+        tui_perf_service();
     }
+}
+
+static int perf_cmd(int argc, char **argv)
+{
+    const bool reset = argc == 2 && !strcmp(argv[1], "reset");
+    if (argc != 1 && !reset) { printf("usage: perf [reset]\n"); return 1; }
+    if (__atomic_load_n(&s_perf_request, __ATOMIC_ACQUIRE)) {
+        printf("perf_error=ui_busy\n");
+        return 1;
+    }
+    /* Sample the existing panel counter on the console task, just like
+     * diagnostics. Nothing waits on or adds work to the panel ISR. */
+    const int64_t start = esp_timer_get_time();
+    const uint32_t before = ls_panel_refresh_count();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    const uint32_t refreshes = ls_panel_refresh_count() - before;
+    const int64_t elapsed = esp_timer_get_time() - start;
+    __atomic_store_n(&s_perf_request, reset ? 2u : 1u, __ATOMIC_RELEASE);
+    if (!s_tui_worker) tui_perf_service();
+    else xTaskNotifyGive(s_tui_worker);
+    /* A stalled UI must not wedge the console. A timed-out request is left
+     * owned by the UI; another command cannot reuse its snapshot until done. */
+    const int64_t deadline = esp_timer_get_time() + 1000000;
+    while (__atomic_load_n(&s_perf_request, __ATOMIC_ACQUIRE)) {
+        if (esp_timer_get_time() >= deadline) {
+            printf("perf_error=ui_timeout\n");
+            return 1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    const uint16_t p50 = ls_ui_perf_percentile(&s_perf_snapshot.frame, 50);
+    const uint16_t p95 = ls_ui_perf_percentile(&s_perf_snapshot.frame, 95);
+    const uint16_t max = ls_ui_perf_percentile(&s_perf_snapshot.frame, 100);
+    const uint16_t input = ls_ui_perf_percentile(&s_perf_snapshot.input, 95);
+    printf("fps=%.1f frame_ms_p50=%.1f frame_ms_p95=%.1f frame_ms_max=%.1f "
+           "panel_hz=%.1f input_ms_p95=%.1f late_frames=%lu screen=%s\n",
+           s_perf_snapshot.fps_x10 / 10.0, p50 / 10.0, p95 / 10.0, max / 10.0,
+           elapsed > 0 ? refreshes * 1000000.0 / elapsed : 0.0, input / 10.0,
+           (unsigned long)s_perf_snapshot.late_frames, s_perf_screen);
+    return 0;
 }
 
 static bool tui_start_session(void)
@@ -1888,6 +1983,18 @@ static int tui_cmd(int argc, char **argv)
                set_us ? (long long)(bytes / set_us) : 0LL, (long long)rd_us, (long long)wb_us);
         (void)sum;
         ls_tui_invalidate();
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "touch")) {
+        ls_tui_touch_event_t e[16];
+        const int n = ls_tui_touch_history(e, 16);
+        printf("tui touch: last %d, oldest first; a tap must come up within 32 px of where it went down\n", n);
+        for (int i = 0; i < n; i++) {
+            const int dx = e[i].x1 - e[i].x0, dy = e[i].y1 - e[i].y0;
+            printf("  down %4d,%4d  up %4d,%4d  moved %+4d,%+4d  cell %3d,%3d  %s\n",
+                   e[i].x0, e[i].y0, e[i].x1, e[i].y1, dx, dy, e[i].col, e[i].row,
+                   e[i].tap ? "TAP" : e[i].col < 0 ? "off grid" : "refused: moved");
+        }
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "trans")) {
@@ -3170,9 +3277,13 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
+        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
+    static const esp_console_cmd_t perf={.command="perf",
+        .help="TUI/panel performance windows; perf reset clears samples",
+        .hint=nullptr,.func=perf_cmd,.argtable=nullptr};
+    esp_console_cmd_register(&perf);
     static const esp_console_cmd_t sd={.command="sd",
         .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, "
               "'sd put [dir/]<name> [base64]' writes (no payload truncates)",

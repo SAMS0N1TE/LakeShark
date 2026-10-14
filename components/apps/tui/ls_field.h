@@ -139,6 +139,9 @@ bool ls_field_compass_cal(ls_compass_cal_t *out);
 /* Console: both profiles and every calibration file, and why each is or is
    not in use. Reads the card from the caller's task. */
 void ls_field_compass_report(void);
+void ls_field_compass_reference(float ut, float dip);
+void ls_field_compass_still(unsigned seconds);
+void ls_field_compass_snapshot(ls_field_sample_t *out, ls_imu_sample_t *raw);
 /* `compass trace [s]`: the last seconds of IMU samples the field worker used,
    each solved as a heading, field strength, dip and tilt. */
 void ls_field_imu_trace(float seconds);

@@ -14,6 +14,8 @@ extern "C" {
 
 esp_err_t ls_wifi_start(void);
 esp_err_t ls_wifi_stop(void);
+/* Worker only. Permanently inhibits all radio operations until P4 reboot. */
+esp_err_t ls_wifi_c6_quiesce(void);
 bool      ls_wifi_running(void);
 
 /* Station-mode API. */

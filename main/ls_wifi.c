@@ -82,6 +82,7 @@ static char           s_sta_ssid[LS_WIFI_SSID_MAX_LEN + 1] = "";
 static esp_timer_handle_t s_reconnect_timer = NULL;
 static uint32_t           s_reconnect_ms    = LS_WIFI_BACKOFF_MIN_MS;
 static ls_wifi_operation_t s_operation;
+static _Atomic bool s_c6_update;
 
 static esp_err_t sta_leave_locked(void);
 static esp_err_t sta_autojoin_excluding_locked(const char *excluded);
@@ -386,6 +387,7 @@ static int saved_list_locked(char names[][33], int cap)
 static void reconnect_cb(void *arg)
 {
     (void)arg;
+    if (s_c6_update) return;
     if (!ls_wifi_operation_try(&s_operation)) {
         /* The timer already exists; retry without blocking its task or
          * racing a scan/join. A concurrent scheduled retry is sufficient. */
@@ -485,6 +487,7 @@ static void schedule_reconnect(void)
 static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
+    if (s_c6_update) return;
     if (base == WIFI_EVENT) {
         switch (id) {
         case WIFI_EVENT_STA_START:
@@ -1221,6 +1224,7 @@ typedef struct {
 
 static int dispatch_operation(void *context)
 {
+    if (s_c6_update) return ESP_ERR_INVALID_STATE;
     const wifi_operation_request_t *r = context;
     /* Read-only updates never perform a deferred credential write. GOT_IP's
      * existing deferred worker owns it; mutating commands drain it before
@@ -1430,3 +1434,31 @@ esp_err_t ls_wifi_sta_ensure(void)
 }
 
 bool ls_wifi_sta_gave_up(void) { return s_sta_gave_up; }
+
+esp_err_t ls_wifi_c6_quiesce(void)
+{
+    s_c6_update = true;
+    int64_t until = esp_timer_get_time() + 15000000;
+    while (!ls_wifi_operation_try(&s_operation)) {
+        if (esp_timer_get_time() >= until) return ESP_ERR_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    /* Keep the operation lease: no scans, reconnects, deferred jobs or
+     * console operations may touch this driver after the C6 restarts. */
+    if (s_reconnect_timer) esp_timer_stop(s_reconnect_timer);
+    s_roam_pending = s_cleanup_pending = false;
+    s_sta_running = s_sta_connected = s_ap_running = false;
+    s_sta_gave_up = true;
+    s_survey = false;
+    s_ip_sta[0] = 0;
+    esp_err_t error = ESP_OK;
+    if (s_httpd) {
+        error = httpd_stop(s_httpd);
+        if (error == ESP_OK) s_httpd = NULL;
+    }
+    if (s_stack_up) {
+        esp_err_t stopped = esp_wifi_stop();
+        if (stopped != ESP_OK && stopped != ESP_ERR_WIFI_NOT_STARTED) return stopped;
+    }
+    return error;
+}

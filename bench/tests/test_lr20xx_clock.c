@@ -6,7 +6,9 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 
-static bool s_test_field_owned;
+static bool s_test_field_owned, s_test_mesh_wanted, s_test_mesh_held;
+bool ls_mesh_radio_wanted(void) {return s_test_mesh_wanted;}
+bool ls_mesh_radio_held(void) {return s_test_mesh_held;}
 bool ls_field_owned(void) { return s_test_field_owned; }
 
 /* Exercise the production CPU transport against register operations on host.
@@ -852,4 +854,31 @@ LS_CASE(tx_send_refill_status_failure_restores_radio_and_releases_fast_spi)
     LS_EQ_INT(ls_lora_receive(), ESP_OK);
     char *abort[] = {"lora", "lrtx-upload", "abort"};
     LS_EQ_INT(lr20xx_clock_command(3, abort), 0);
+}
+
+LS_CASE(rec_iq_sender_accepts_own_lease_and_rejects_competing_owner)
+{
+    fk_install(FK_LR);fk_busy_step_us=1;LS_EQ_INT(ls_lora_start(),ESP_OK);
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);
+    uint8_t wave[]={20,0,0,20};int frames=fk.nframes;
+    s_test_mesh_wanted=true;s_test_mesh_held=false;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,-9),ESP_ERR_INVALID_STATE);
+    LS_EQ_INT(fk.nframes,frames);
+    s_test_mesh_held=true;fk.tx_auto_done=true;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,-9),ESP_OK);
+    LS_EQ_UINT(fk.tx_freq_hz,433920000);
+    s_test_mesh_wanted=s_test_mesh_held=false;
+}
+
+LS_CASE(rec_iq_maximum_recording_streams_all_pairs)
+{
+    static uint8_t wave[32767*2];
+    for(unsigned i=0;i<sizeof(wave);i+=2){wave[i]=20;wave[i+1]=0;}
+    fk_install(FK_LR);fk_busy_step_us=1;LS_EQ_INT(ls_lora_start(),ESP_OK);
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);
+    fk.tx_auto_done=true;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,10),ESP_OK);
+    LS_EQ_UINT(fk.tx_samples,32767);LS_EQ_UINT(fk.tx_rate,125000);
+    LS_EQ_UINT(fk.tx_fifo_total_written,sizeof(wave));LS_EQ_UINT(fk.tx_hf,0);
+    LS_CHECK(!ls_lora_hw_capture_active());LS_CHECK(!ls_lora_hw_locked_by_me());
 }

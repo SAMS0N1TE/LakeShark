@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <time.h>
 
 #include "esp_attr.h"
 
@@ -133,30 +134,37 @@ static void read_marks(marks_io *j) {
     if (!f) return;                 /* nothing saved yet is not an error */
     char line[160];
     ls_sketch_t *cur = NULL;
+    ls_mark_origin_t *origin = NULL;
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         double lat, lon;
         int icon, hue, used = 0;
         if (line[0] == 'M' && sscanf(line + 1, "%lf %lf %d %n", &lat, &lon, &icon, &used) == 3) {
-            cur = NULL;
+            cur = NULL;origin = NULL;
             if (j->nmarks >= LS_MARKS_MAX || !valid_place(lat, lon)) continue;
             ls_mark_t *m = &j->marks[j->nmarks++];
+            memset(m,0,sizeof(*m));origin=&m->origin;
             m->lat = lat; m->lon = lon;
             m->icon = (uint8_t)((icon >= 0 && icon < LS_MARK__COUNT) ? icon : 0);
             clean_name(m->name, sizeof(m->name), line + 1 + used);
             if (!m->name[0]) snprintf(m->name, sizeof(m->name), "MARK %d", j->serial);
             int serial=0; if(sscanf(m->name,"MARK %d",&serial)==1 && serial>=j->serial) j->serial=serial+1;
         } else if (line[0] == 'S' && sscanf(line + 1, "%d %n", &hue, &used) == 1) {
-            cur = NULL;
+            cur = NULL;origin = NULL;
             if (j->nsketch >= LS_SKETCH_MAX) continue;
             cur = &j->sketch[j->nsketch++];
-            memset(cur, 0, sizeof(*cur));
+            memset(cur, 0, sizeof(*cur));origin=&cur->origin;
             cur->hue = (uint8_t)(hue & 7);
             clean_name(cur->name, sizeof(cur->name), line + 1 + used);
+        } else if (line[0] == 'T' && origin) {
+            unsigned stamp=0;
+            if(sscanf(line+1,"%u %n",&stamp,&used)==1) {
+                origin->created=stamp;clean_name(origin->sender,sizeof(origin->sender),line+1+used);
+            }
         } else if (line[0] == 'P' && cur && sscanf(line + 1, "%lf %lf", &lat, &lon) == 2) {
             if (cur->n < LS_SKETCH_PTS && valid_place(lat, lon)) {
-                cur->lat[cur->n] = (float)lat;
-                cur->lon[cur->n] = (float)lon;
+                cur->lat[cur->n] = lat;
+                cur->lon[cur->n] = lon;
                 cur->n++;
             }
         }
@@ -185,11 +193,16 @@ static bool write_marks(marks_io *j) {
     FILE *f = fopen(tmp, "w");
     if (!f) { j->error = "not saved: no SD card or no maps folder"; return false; }
     bool ok = fprintf(f, "# LakeShark map marks\n") > 0;
-    for (int i = 0; i < j->nmarks && ok; i++)
+    for (int i = 0; i < j->nmarks && ok; i++) {
+        if(j->marks[i].origin.received) continue;
         ok = fprintf(f, "M %.6f %.6f %d %s\n", j->marks[i].lat, j->marks[i].lon,
                      j->marks[i].icon, j->marks[i].name) > 0;
+        if(ok) ok=fprintf(f,"T %u %s\n",(unsigned)j->marks[i].origin.created,j->marks[i].origin.sender)>0;
+    }
     for (int i = 0; i < j->nsketch && ok; i++) {
+        if(j->sketch[i].origin.received) continue;
         ok = fprintf(f, "S %d %s\n", j->sketch[i].hue, j->sketch[i].name) > 0;
+        if(ok) ok=fprintf(f,"T %u %s\n",(unsigned)j->sketch[i].origin.created,j->sketch[i].origin.sender)>0;
         for (int k = 0; k < j->sketch[i].n && ok; k++)
             ok = fprintf(f, "P %.6f %.6f\n", j->sketch[i].lat[k], j->sketch[i].lon[k]) > 0;
     }
@@ -265,6 +278,9 @@ int ls_marks_add(double lat, double lon, int icon, const char *name)
     ls_marks_load();
     if (!s_loaded || s_nmarks >= LS_MARKS_MAX || !valid_place(lat, lon)) return -1;
     ls_mark_t *m = &s_marks[s_nmarks];
+    memset(m,0,sizeof(*m));
+    time_t now=time(NULL);
+    m->origin.created=now>=1577836800 ? (uint32_t)now : 0;
     m->id=++s_next_id;
     m->lat = lat; m->lon = lon;
     m->icon = (uint8_t)((icon >= 0 && icon < LS_MARK__COUNT) ? icon : 0);
@@ -347,8 +363,8 @@ bool ls_sketch_drawing(void) { return s_drawing; }
 bool ls_sketch_add_point(double lat, double lon)
 {
     if (!s_drawing || s_open.n >= LS_SKETCH_PTS || !valid_place(lat, lon)) return false;
-    s_open.lat[s_open.n] = (float)lat;
-    s_open.lon[s_open.n] = (float)lon;
+    s_open.lat[s_open.n] = lat;
+    s_open.lon[s_open.n] = lon;
     s_open.n++;
     return true;
 }
@@ -374,6 +390,8 @@ int ls_sketch_finish(void)
         if (sscanf(s_sketch[i].name, "LINE %d", &m) == 1 && m >= k) k = m + 1;
     }
     snprintf(s_open.name, sizeof(s_open.name), "LINE %d", k);
+    time_t now=time(NULL);
+    s_open.origin.created=now>=1577836800 ? (uint32_t)now : 0;
     s_open.id=++s_next_id;
     s_sketch[s_nsketch] = s_open;
     revision++;return s_nsketch++;
@@ -391,4 +409,46 @@ double ls_sketch_length_m(const ls_sketch_t *s)
         m += d;
     }
     return m;
+}
+
+/* All editing goes through the same revision and snapshot path. */
+bool ls_marks_move(int i, double lat, double lon)
+{
+    if(!ls_marks_at(i) || !valid_place(lat,lon)) return false;
+    s_marks[i].lat=lat;s_marks[i].lon=lon;revision++;return true;
+}
+int ls_marks_next(uint32_t id)
+{
+    if(!ls_marks_count()) return -1;
+    for(int i=0;i<s_nmarks;i++) if(s_marks[i].id==id) return (i+1)%s_nmarks;
+    return 0;
+}
+void ls_marks_clear(void) { ls_marks_load();s_nmarks=0;revision++; }
+bool ls_marks_received(bool line, int i, const char *sender)
+{
+    ls_mark_origin_t *o=NULL;
+    if(line && ls_sketch_at(i)) o=&s_sketch[i].origin;
+    if(!line && ls_marks_at(i)) o=&s_marks[i].origin;
+    if(!o) return false;
+    o->received=true;clean_name(o->sender,sizeof(o->sender),sender);revision++;return true;
+}
+bool ls_marks_accept(bool line, int i)
+{
+    ls_mark_origin_t *o=NULL;
+    if(line && ls_sketch_at(i)) o=&s_sketch[i].origin;
+    if(!line && ls_marks_at(i)) o=&s_marks[i].origin;
+    if(!o) return false;
+    o->received=false;revision++;return true;
+}
+
+int ls_sketch_import(const double *lat,const double *lon,int n,const char *name)
+{
+    ls_marks_load();
+    if(!s_loaded || !lat || !lon || n<2 || n>LS_SKETCH_PTS || s_nsketch>=LS_SKETCH_MAX) return -1;
+    for(int i=0;i<n;i++) if(!valid_place(lat[i],lon[i])) return -1;
+    ls_sketch_t *s=&s_sketch[s_nsketch];memset(s,0,sizeof(*s));
+    s->id=++s_next_id;s->n=n;s->hue=3;clean_name(s->name,sizeof(s->name),name);
+    memcpy(s->lat,lat,(size_t)n*sizeof(*lat));memcpy(s->lon,lon,(size_t)n*sizeof(*lon));
+    time_t now=time(NULL);s->origin.created=now>=1577836800 ? (uint32_t)now : 0;
+    revision++;return s_nsketch++;
 }

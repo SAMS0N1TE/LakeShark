@@ -337,7 +337,21 @@ def i_sweep():
     return c
 
 
+def i_detector():
+    """A warning triangle with an exclamation mark: a rule matched."""
+    c = Canvas()
+    top, left, right, base = (0.5, 0.04), (0.10, 0.96), (0.90, 0.96), 0.96
+    c.line(*top, *left, 0.042)
+    c.line(*top, *right, 0.042)
+    c.line(left[0], base, right[0], base, 0.042)
+    c.poly([(0.47, 0.34), (0.53, 0.34), (0.52, 0.62), (0.48, 0.62)])
+    c.rect(0.465, 0.72, 0.535, 0.84)
+    return c
+
+
 ICONS = [
+    ("LS_ICON_DETECTOR", i_detector,
+     "A warning triangle with an exclamation mark: a rule matched."),
     ("LS_ICON_DRONE", i_drone,
      "A quadcopter from above: four rotors, arms and a central body."),
     ("LS_ICON_SWEEP", i_sweep,

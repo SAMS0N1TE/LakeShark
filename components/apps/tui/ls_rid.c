@@ -1,6 +1,8 @@
 /* Independently written from public ASTM F3411 byte-layout tables.
  * Sources and receiver limitations: bench/REMOTE_ID.md. */
 #include "ls_rid.h"
+#include "ls_detector.h"
+#pragma weak ls_detector_observe
 #include "ls_ble_ad.h"
 #include "esp_attr.h"
 #include <math.h>
@@ -161,7 +163,9 @@ bool ls_rid_advert(const uint8_t mac[6],uint8_t at,int rssi,const uint8_t *data,
             receive(mac,at,rssi,p[3],p+4,n-4,now); heard=true;
         }
     }
-    unlock(); return heard;
+    unlock();
+    if(heard && ls_detector_observe) ls_detector_observe(mac,at,DET_RID,2,rssi,true,false,255,now);
+    return heard;
 }
 size_t ls_rid_snapshot(ls_rid_drone_t *out,size_t cap,int64_t now) {
     size_t n=0; lock(); expire(now);

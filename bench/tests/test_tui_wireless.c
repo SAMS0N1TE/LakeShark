@@ -28,6 +28,11 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
     return true;
 }
 bool ls_tui_is_wide(void) { return wide; }
+/* SURVEY's panel frame and chips, without the radio panel and its scanner. */
+void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
+{ tui_box(sf, r, title, TUI_ATTR(TUI_CYAN, TUI_BLACK)); }
+int ls_radio_chip(tui_surface *sf, tui_rect r, int x, int y, const char *t, bool on, uint8_t hue)
+{ (void)on; tui_put_str(sf, r, x, y, t, TUI_ATTR(hue, TUI_BLACK)); return x + (int)strlen(t) + 3; }
 static bool keyboard;
 bool ls_tui_keyboard_mode(void) { return keyboard; }
 void ls_tui_split(tui_rect a, tui_rect *first, tui_rect *second)
@@ -273,7 +278,7 @@ LS_CASE(survey_list_uses_the_height_and_start_failures_fit_in_both_postures)
     for (int landscape = 0; landscape < 2; landscape++) {
         setup(landscape);
         memset(&survey, 0, sizeof(survey));
-        survey.wifi = 6; survey.ble = 6; survey.gps_fresh = true;
+        survey.wifi = 6; survey.ble = 6; survey.cached = 12; survey.gps_fresh = true;
         for (int i = 0; i < 12; i++) {
             survey_entries[i] = (ls_survey_entry_t){.kind = LS_SURVEY_WIFI, .rssi = -40 - i};
             snprintf(survey_entries[i].name, 33, "Survey%02d", i);
@@ -287,8 +292,10 @@ LS_CASE(survey_list_uses_the_height_and_start_failures_fit_in_both_postures)
             snprintf(survey.status, sizeof(survey.status), "%s", WHY[i]);
             draw(); LS_CHECK_MSG(on_screen(WHY[i]), "cut: %s", WHY[i]);
         }
-        if (landscape) { draw(); LS_CHECK(on_screen("Survey03")); }
-        else LS_CHECK(on_screen("Survey03"));
+        survey_dump("list");
+        /* Three-row touch targets: five fit in portrait, one in this short landscape. */
+        LS_CHECK(on_screen(landscape ? "Survey00" : "Survey04"));
+        LS_CHECK(on_screen(landscape ? "1-1 / 12" : "1-5 / 12"));
         snprintf(survey.status, sizeof(survey.status), "%s", WHY[0]);
         draw(); survey_dump("fail");
     }
@@ -299,7 +306,7 @@ LS_CASE(survey_touch_and_keys_never_request_join_or_head_scan)
     for (int landscape = 0; landscape < 2; landscape++) {
         setup(landscape);
         memset(&survey, 0, sizeof(survey));
-        survey.wifi = 6; survey.ble = 6; survey.gps_fresh = true;
+        survey.wifi = 6; survey.ble = 6; survey.cached = 12; survey.gps_fresh = true;
         strcpy(survey.status, "Passive survey / GPS fresh");
         for (int i = 0; i < 12; i++) {
             survey_entries[i] = (ls_survey_entry_t){.kind=i < 6 ? LS_SURVEY_WIFI : LS_SURVEY_BLE, .rssi=-40-i};
@@ -389,11 +396,11 @@ LS_CASE(survey_idle_is_static_until_an_observation_arrives) {
     setup(false); memset(&survey,0,sizeof(survey)); survey.running=true;
     ls_scr_wireless.key(LS_TK_CHAR,'v'); draw();
     static tui_cell copy[128*72]; memcpy(copy,back,sizeof(copy));
-    ls_shim_time_set(123000000); draw();
+    ls_shim_time_set(123000000); draw(); survey_dump("idle");
     LS_CHECK(!memcmp(copy,back,width*height*sizeof(back[0])));
-    LS_CHECK(on_screen("WAIT / no bearings"));
+    LS_CHECK(on_screen("SURVEY / LIVE"));
     survey.activity_revision++; draw();
-    LS_CHECK(on_screen("Observation / no bearings"));
+    LS_CHECK(memcmp(copy,back,width*height*sizeof(back[0])));   /* the observation pulses */
 }
 
 LS_CASE(long_status_wraps_inside_border_and_notes_stay_on_their_tab) {
@@ -420,4 +427,32 @@ LS_CASE(password_title_keeps_ssid_through_validation_retry) {
     ls_keyboard_draw(&surface,tui_rect_make(0,0,width,height));
     LS_CHECK(on_screen("Network00 / USE 8-63 CHARACTERS"));
     ls_keyboard_key(LS_TK_ESC,0);
+}
+
+LS_CASE(survey_stats_show_real_counts_file_and_space_in_both_postures)
+{
+    for (int landscape=0; landscape<2; landscape++) {
+        setup(landscape); memset(&survey,0,sizeof(survey));
+        survey.wifi=100; survey.ble=20; survey.wifi_minute=7; survey.ble_minute=3;
+        survey.security[0]=2; survey.security[1]=1; survey.security[2]=4;
+        survey.security[3]=80; survey.security[4]=13;
+        survey.top_channel[0]=6; survey.top_count[0]=30;
+        survey.top_channel[1]=1; survey.top_count[1]=20;
+        survey.top_channel[2]=11; survey.top_count[2]=10;
+        survey.rows=125; survey.free_bytes=512*1024*1024; survey.sd_known=true;
+        survey.gps_fresh=survey.utc_valid=true;
+        strcpy(survey.path,"/sdcard/lakeshark/survey/20261007_120000.csv");
+        ls_scr_wireless.key(LS_TK_CHAR,'v'); draw(); survey_dump("stats");
+        LS_CHECK(on_screen("Wi-Fi 100 +7/min | BLE 20 +3/min"));
+        LS_CHECK(on_screen("OPEN      2")); LS_CHECK(on_screen("WEP       1"));
+        LS_CHECK(on_screen("WPA       4")); LS_CHECK(on_screen("WPA2     80"));
+        LS_CHECK(on_screen("WPA3     13"));
+        if (!landscape) {   /* the short landscape panel has no room for channels */
+            LS_CHECK(on_screen("CH 6     30")); LS_CHECK(on_screen("CH 1     20"));
+            LS_CHECK(on_screen("CH 11    10"));
+        }
+        LS_CHECK(on_screen("SD 512 MiB free | 125 rows"));
+        LS_CHECK(on_screen("GPS FIX")); LS_CHECK(on_screen("UTC OK"));
+        LS_CHECK(on_screen("File: 20261007_120000.csv"));
+    }
 }

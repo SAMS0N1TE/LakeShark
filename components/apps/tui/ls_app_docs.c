@@ -310,9 +310,17 @@ const ls_app_doc_t ls_doc_sweep = {
                 "live fixes.",
 };
 
+const ls_app_doc_t ls_doc_detector = {
+    .purpose="Background BLE Remote ID and SWEEP category detection. Wi-Fi uses cached scans only; RID layouts are validated, identities are unverified.",
+    .records=LS_APP_RECORDS_AUTOMATIC,
+    .record_note="Optional SD JSONL metadata, off by default: per-boot pseudonyms, rules and sink outcomes. No raw MAC or location. SWEEP recording is separate.",
+    .gps=LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_row_t ls_app_docs_all[] = {
     { "drones", &ls_doc_drones },
     { "sweep", &ls_doc_sweep },
+    { "detector", &ls_doc_detector },
     { "music", &ls_doc_music },
     { "home",    &ls_doc_home    },
     { "p25",     &ls_doc_p25     },

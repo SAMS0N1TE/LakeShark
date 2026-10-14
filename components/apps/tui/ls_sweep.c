@@ -1,6 +1,10 @@
 /* Clean-room implementation from public specifications: Bluetooth SIG company IDs, IEEE OUIs, ASTM F3411. */
 #include "ls_sweep_app.h"
 #include "ls_rid.h"
+#include "ls_detector.h"
+#pragma weak ls_detector_running
+#pragma weak ls_detector_observe
+static bool detector(void) {return ls_detector_running && ls_detector_running();}
 #include "ls_ble_ad.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -382,7 +386,7 @@ void ls_sweep_start(bool on) {
     if(changed) (void)settings_save(&value);
     ls_sweep_wake();
 }
-bool ls_sweep_pending(void) {lock();bool b=status.requested || status.running || reload_requested;unlock();return b;}
+bool ls_sweep_pending(void) {lock();bool b=status.requested || status.running || reload_requested || detector();unlock();return b;}
 void ls_sweep_runtime_status(bool on,const char *s) {lock();status.running=on;if(s) snprintf(status.status,sizeof(status.status),"%s",s);unlock();}
 static void recover(int64_t now) {
     if(storm && now>=flood_until) {
@@ -441,7 +445,7 @@ bool ls_sweep_nearby_target(ls_sweep_device_t *out,int64_t now) {
 void ls_sweep_observe(const uint8_t mac[6],uint8_t radio,uint8_t type,int rssi,const ls_sweep_match_t *m,int64_t now) {
     if(!mac || !m || m->category>=SW_CATS || now<0 || radio>1 || type>3) return;
     lock();recover(now);
-    if(!status.requested || !(settings.enabled&(1u<<m->category))) {unlock();return;}
+    if(!detector() && (!status.requested || !(settings.enabled&(1u<<m->category)))) {unlock();return;}
     stats.accepted[m->category]++;
     if(m->category==SW_TRACKER && m->state==SW_STATE_NEAR) {
         recent_t *slot=&nearby[0];
@@ -457,6 +461,8 @@ void ls_sweep_observe(const uint8_t mac[6],uint8_t radio,uint8_t type,int rssi,c
         memcpy(near_signal.mac,mac,6);near_signal.radio=radio;near_signal.address_type=type;
         near_signal.match=*m;near_signal.rssi=rssi<-127?-127:rssi>0?0:rssi;near_signal.seen_us=now;
         signal_sample(&near_signal,now,dt);near_sequence++;
+        if(detector() && settings.hunt && radio==settings.hunt_radio && type==settings.hunt_type && !memcmp(mac,settings.hunt_mac,6)) hunt_consumed=near_sequence;
+        if(ls_detector_observe) ls_detector_observe(mac,type,radio?DET_WIFI:DET_BLE,m->category,rssi,false,storm,SW_PASSING,now);
         unlock();return;
     }
     /* A crowded room is not evidence of spoofing. Quiet audio only. */
@@ -481,11 +487,13 @@ void ls_sweep_observe(const uint8_t mac[6],uint8_t radio,uint8_t type,int rssi,c
     int64_t dt=now-slot->seen_us;
     slot->match=*m;slot->rssi=rssi<-127?-127:rssi>0?0:rssi;slot->seen_us=now;
     signal_sample(slot,now,dt);
+    if(detector() && settings.hunt && slot->radio==settings.hunt_radio && slot->address_type==settings.hunt_type && !memcmp(slot->mac,settings.hunt_mac,6)) hunt_consumed=slot->adverts;
     if(ls_sweep_section(slot,now,status.gps_fix)==SW_WITH_YOU) slot->with_you=true;
+    if(ls_detector_observe) ls_detector_observe(mac,type,radio?DET_WIFI:DET_BLE,m->category,rssi,false,storm,ls_sweep_section(slot,now,status.gps_fix),now);
     if(!slot->alerted_us || now-slot->alerted_us>=30000000) {
-        if(settings.logging && log_count<8) log_queue[log_count++]=*slot;
+        if(status.requested && settings.logging && log_count<8) log_queue[log_count++]=*slot;
         if(!storm && now-tracker_window>=3000000) {tracker_window=now;tracker_beeps=0;}
-        if(!settings.alerts_muted && queued<3 && (m->category!=SW_TRACKER || (!storm && tracker_beeps<3))) {queue[queued++]=m->category;if(m->category==SW_TRACKER) tracker_beeps++;}
+        if(!detector() && !settings.alerts_muted && queued<3 && (m->category!=SW_TRACKER || (!storm && tracker_beeps<3))) {queue[queued++]=m->category;if(m->category==SW_TRACKER) tracker_beeps++;}
         else {status.dropped++;stats.alerts_suppressed++;}
         slot->alerted_us=now?now:1;
     }
@@ -556,7 +564,7 @@ bool ls_sweep_hunt(const uint8_t mac[6],uint8_t radio,uint8_t type) {
 }
 int ls_sweep_alert(int64_t now) {
     lock();recover(now);int c=-1;
-    if(!status.requested || settings.alerts_muted) {
+    if(detector() || !status.requested || settings.alerts_muted) {
         queued=0;
         if(settings.hunt && near_signal.adverts && !memcmp(near_signal.mac,settings.hunt_mac,6)) hunt_consumed=near_sequence;
         for(unsigned i=0;i<LS_SWEEP_CAP;i++) if(settings.hunt && table[i].serial && table[i].radio==settings.hunt_radio && table[i].address_type==settings.hunt_type && !memcmp(table[i].mac,settings.hunt_mac,6)) hunt_consumed=table[i].adverts;

@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "sweep_rules": "/sdcard/sweep/rules.json",
+  "defaults": {
+    "enabled": false,
+    "cooldown_s": 60,
+    "dedupe": "rule_entity",
+    "rule_cooldown_s": 120
+  },
+  "rules": [
+    {
+      "id": "remote-id",
+      "enabled": true,
+      "sources": [
+        "rid.ble"
+      ],
+      "match": {
+        "validated_message": true
+      },
+      "sinks": [
+        "vibrate",
+        "banner",
+        "sd"
+      ]
+    },
+    {
+      "id": "with-you-trackers",
+      "enabled": true,
+      "sources": [
+        "sweep.ble",
+        "sweep.wifi"
+      ],
+      "match": {
+        "category_in": [
+          "TRACKER"
+        ],
+        "section_in": [
+          "with_you"
+        ]
+      },
+      "sinks": [
+        "vibrate",
+        "banner"
+      ]
+    },
+    {
+      "id": "cameras",
+      "enabled": true,
+      "sources": [
+        "sweep.ble",
+        "sweep.wifi"
+      ],
+      "match": {
+        "category_in": [
+          "CAMERA"
+        ]
+      },
+      "sinks": [
+        "banner"
+      ]
+    },
+    {
+      "id": "bodycam-example",
+      "sources": [
+        "sweep.ble"
+      ],
+      "match": {
+        "category_in": [
+          "BODYCAM"
+        ]
+      },
+      "sinks": [
+        "banner"
+      ]
+    },
+    {
+      "id": "wifi-example",
+      "sources": [
+        "sweep.wifi"
+      ],
+      "match": {
+        "category_in": [
+          "CAMERA"
+        ]
+      },
+      "sinks": [
+        "sd"
+      ]
+    },
+    {
+      "id": "drone-link-example",
+      "enabled": false,
+      "sources": [
+        "lora.dronelink"
+      ],
+      "match": {
+        "band_in": [
+          "868",
+          "915"
+        ],
+        "min_rssi_dbm": -100,
+        "min_hits_per_min": 3
+      },
+      "sinks": [
+        "banner",
+        "sd"
+      ]
+    }
+  ]
+}

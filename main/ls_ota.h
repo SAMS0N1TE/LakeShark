@@ -13,6 +13,11 @@ void ls_ota_publish(void);
 /* The `ota` console command. */
 void ls_ota_console_register(void);
 
+/* Share the updater lease with C6: a P4 install/restart and a C6 transfer
+ * must never overlap. A P4 image still on trial also refuses the lease. */
+int ls_ota_c6_acquire(void);
+void ls_ota_c6_release(void);
+
 #ifdef __cplusplus
 }
 #endif

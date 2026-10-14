@@ -33,6 +33,7 @@ enum { LS_COMPASS_FILL_FULL, LS_COMPASS_FILL_LIGHT, LS_COMPASS_FILL_EDGE, LS_COM
 
 typedef struct {
     bool valid;                 /* false draws the card dimmed and still */
+    bool degraded;              /* field not trusted: needle drawn in warning colours */
     float heading;              /* degrees the card is turned: 0 is north up */
     float pitch, roll;          /* board tilt, degrees */
     float target;               /* true bearings, NAN when absent */
@@ -61,6 +62,9 @@ typedef struct { uint8_t colour; bool set; } ls_dot_t;
    as a sextant's ink and paper. */
 void ls_dots_blit(tui_surface *sf, tui_rect area, const ls_dot_t *dots, int dots_w);
 
+/* UI-task only. PSRAM caches retain character rows and pose-only lighting;
+   heading/tilt are displayed at half-degree resolution. Pointer-backed FIND
+   overlays bypass the character cache. No allocation or I/O. */
 void ls_compass_art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *sc);
 
 /* A damped spring: the card swings a little past and settles, the way a

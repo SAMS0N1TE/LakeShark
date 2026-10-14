@@ -26,6 +26,8 @@ esp_err_t ls_panel_blank(unsigned fade_ms);
 /* The refresh count, and how many the scan managed in the last second. Takes
    a second to answer. */
 void ls_panel_diagnostics(void);
+/* Nonblocking snapshot of the existing ISR refresh counter. */
+uint32_t ls_panel_refresh_count(void);
 
 /* Direct framebuffer access for the TUI backend. */
 

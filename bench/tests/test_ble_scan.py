@@ -9,6 +9,12 @@ class BleScanTest(unittest.TestCase):
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#define MYNEWT_VAL(x) 1
+#define BLE_HS_ENOTSUP 55
+static bool s_scan_coded,s_ext_rejected;
+static bool s_c6_inhibit;
+static uint64_t s_le_features;
 #include "BLE_SCAN_HEADER"
 struct ble_gap_event {int type;};
 struct ble_npl_event {int unused;};
@@ -21,7 +27,7 @@ static bool s_disconnect_requested,s_cancel_connect_requested;
 static bool s_scan_event_ready=true,s_run=true,s_passive,s_scanning,s_scan_connected,s_scan_failed,active,synced=true,queued;
 static int s_conn=BLE_HS_CONN_HANDLE_NONE,s_state=BLE_LINK_SYNCING,starts,cancels,fail;
 static int64_t s_rescan_at_us,now;
-static struct {int listener_count;} s_adverts={3};
+static struct {int listener_count; char chains[4];int64_t chain_quarantine;} s_adverts={3};
 static ble_scan_mode_t s_scan_mode;
 static struct ble_gap_disc_params params;
 static bool ble_hs_synced(void){return synced;}
@@ -34,6 +40,17 @@ static void ble_gap_conn_cancel(void){}
 static int gap_event(struct ble_gap_event*e,void*p){(void)e;(void)p;return 0;}
 static int ble_gap_disc(int addr,int duration,struct ble_gap_disc_params*p,int(*cb)(struct ble_gap_event*,void*),void*arg){
  (void)addr;(void)duration;(void)cb;(void)arg;starts++;params=*p;if(fail)return fail;active=true;return 0;
+}
+struct ble_gap_ext_disc_params {uint16_t itvl,window;bool passive;};
+static int ext_starts,ext_fail;static bool legacy_mode;
+static void ble_link_legacy_scan(bool legacy){legacy_mode=legacy;}
+static int ble_gap_ext_disc(int own,int duration,int period,int dup,int filter,int limited,
+ const struct ble_gap_ext_disc_params *one,const struct ble_gap_ext_disc_params *coded,
+ int(*cb)(struct ble_gap_event*,void*),void *arg){
+ (void)own;(void)cb;(void)arg;ext_starts++;
+ if(duration || period || dup || filter || limited || !coded || !coded->passive || one->itvl!=(one->passive?160:48) ||
+    one->window!=24 || coded->window!=24)__builtin_trap();
+ if(ext_fail)return ext_fail;active=true;return 0;
 }
 static void* nimble_port_get_dflt_eventq(void){return NULL;}
 static void ble_npl_eventq_put(void*q,struct ble_npl_event*e){(void)q;(void)e;queued=true;}
@@ -55,10 +72,42 @@ int main(void){
  s_run=false;start_scan();pump();CHECK(!active && !s_scanning);
  s_run=true;s_conn=1;s_state=BLE_LINK_READY;s_adverts.listener_count=0;start_scan();pump();CHECK(!active);
  synced=false;s_adverts.listener_count=3;start_scan();pump();CHECK(!active);
+ synced=true;s_le_features=0x1800;start_scan();pump();CHECK(active && s_scan_coded && !legacy_mode && ext_starts==1);
+ active=false;ext_fail=5;start_scan();pump();CHECK(active && !s_scan_coded && legacy_mode && s_ext_rejected && ext_starts==2);
+ active=false;ext_fail=0;start_scan();pump();CHECK(active && !s_scan_coded && ext_starts==2);
+ s_ext_rejected=false;s_le_features=0x1000;active=false;start_scan();pump();CHECK(active && !s_scan_coded && ext_starts==2);
+ s_le_features=0x1800;s_conn=BLE_HS_CONN_HANDLE_NONE;s_state=BLE_LINK_SCANNING;
+ start_scan();pump();CHECK(active && s_scan_coded && ext_starts==3);
  return 0;
 }
 '''
         harness = harness.replace('BLE_SCAN_HEADER', (ROOT / 'main/ble_link_scan.h').as_posix())
+        run_c(harness)
+
+    def test_legacy_reports_in_extended_host_preserve_descriptor(self):
+        source = (ROOT / 'main/ble_link.c').read_text()
+        harness = r'''
+#include <stdint.h>
+#include <string.h>
+#define MYNEWT_VAL(x) 1
+#define BLE_HCI_ADV_LEGACY_MASK 16
+#define BLE_HCI_ADV_SCAN_RSP_MASK 8
+#define BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP 4
+#define BLE_GAP_EXT_ADV_DATA_STATUS_COMPLETE 0
+struct addr {uint8_t type,val[6];};
+struct ble_gap_disc_desc {uint8_t event_type;struct addr addr;int8_t rssi;uint8_t length_data;const uint8_t *data;};
+struct ble_gap_ext_disc_desc {uint8_t props,data_status,legacy_event_type;struct addr addr;int8_t rssi;const uint8_t *data;uint16_t length_data;};
+static struct ble_gap_ext_disc_desc got;
+void ble_gap_rx_ext_adv_report(struct ble_gap_ext_disc_desc *d){got=*d;}
+''' + body(source, 'void __wrap_ble_gap_rx_adv_report(') + r'''
+int main(void){
+ uint8_t data[]={2,1,6};
+ struct ble_gap_disc_desc d={.event_type=4,.addr={1,{1,2,3,4,5,6}},.rssi=-55,.length_data=3,.data=data};
+ __wrap_ble_gap_rx_adv_report(&d);
+ return got.props!=24 || got.rssi!=-55 || got.length_data!=3 || got.data!=data ||
+        got.legacy_event_type!=4 || got.data_status || memcmp(&got.addr,&d.addr,sizeof(d.addr));
+}
+'''
         run_c(harness)
 
     def test_sweep_lease_survives_primary_stop_and_allows_link_upgrade(self):
@@ -67,6 +116,12 @@ int main(void){
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#define MYNEWT_VAL(x) 1
+#define BLE_HS_ENOTSUP 55
+static bool s_scan_coded,s_ext_rejected;
+static bool s_c6_inhibit;
+static uint64_t s_le_features;
 #include "BLE_SCAN_HEADER"
 #include "BLE_CORE_HEADER"
 typedef int esp_err_t;
@@ -88,7 +143,7 @@ static bool s_starting,s_primary,s_sweep_observer,s_rid_observer,s_find_observer
 static bool s_disconnect_requested,s_cancel_connect_requested,s_stack_up=true;
 static int64_t s_rescan_at_us;
 static int s_backoff_ms;
-static struct {int listener_count;} s_adverts={3};
+static struct {int listener_count; char chains[4];int64_t chain_quarantine;} s_adverts={3};
 static int starts,refreshes,terminates,cancels,connect_cancels,fail;
 static bool ble_hs_synced(void){return true;}
 static int64_t esp_timer_get_time(void){return 1000;}
@@ -99,6 +154,17 @@ static int ble_gap_disc_cancel(void){if(locked)__builtin_trap();cancels++;active
 static int gap_event(struct ble_gap_event*e,void*p){(void)e;(void)p;return 0;}
 static int ble_gap_disc(int addr,int duration,struct ble_gap_disc_params*p,int(*cb)(struct ble_gap_event*,void*),void*arg){
  (void)addr;(void)duration;(void)p;(void)cb;(void)arg;if(locked)__builtin_trap();active=true;return 0;
+}
+struct ble_gap_ext_disc_params {uint16_t itvl,window;bool passive;};
+static int ext_starts,ext_fail;static bool legacy_mode;
+static void ble_link_legacy_scan(bool legacy){legacy_mode=legacy;}
+static int ble_gap_ext_disc(int own,int duration,int period,int dup,int filter,int limited,
+ const struct ble_gap_ext_disc_params *one,const struct ble_gap_ext_disc_params *coded,
+ int(*cb)(struct ble_gap_event*,void*),void *arg){
+ (void)own;(void)cb;(void)arg;ext_starts++;
+ if(duration || period || dup || filter || limited || !coded || !coded->passive || one->itvl!=(one->passive?160:48) ||
+    one->window!=24 || coded->window!=24)__builtin_trap();
+ if(ext_fail)return ext_fail;active=true;return 0;
 }
 static void* nimble_port_get_dflt_eventq(void){return NULL;}
 static void ble_npl_eventq_put(void*q,struct ble_npl_event*e){(void)q;(void)e;if(locked)__builtin_trap();queued=true;refreshes++;}

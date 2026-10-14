@@ -332,6 +332,7 @@ static void setup_done(int i)
 static const char *disabled_reason(char c)
 {
     const bool watching=rec_watch_enabled();
+    if(rec_watch_iq_status(NULL,0) && (c=='f' || c=='r' || c=='s' || c=='n' || c=='w'))return "Stop I/Q recording first";
     switch(c) {
     case 'w': return !s.ready?"Still loading capture history from the card":
                      !watching && rec_watch_scan_busy()?"Stop SCAN before WATCH":NULL;
@@ -355,7 +356,7 @@ static const char *disabled_reason(char c)
     case 'd': {
         EXT_RAM_BSS_ATTR static char rtl_only[48];
         snprintf(rtl_only,sizeof(rtl_only),"READ RAW records with the %s or %s",ls_rsel_name(LS_RSEL_SDR_RTL),ls_rsel_name(LS_RSEL_SDR_HACKRF));
-        return rec_watch_source()!=REC_SOURCE_RTL?rtl_only:
+        return rec_watch_source()!=REC_SOURCE_RTL && !(rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX)?rtl_only:
                watching?"Stop WATCH in READ first":NULL;
     }
     default:  return NULL;

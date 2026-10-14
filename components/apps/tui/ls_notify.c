@@ -86,8 +86,11 @@ static void post(const ls_notice_t *n, bool alert)
 void ls_notify_post(const ls_notice_t *n) { post(n, true); }
 void ls_notify_post_quiet(const ls_notice_t *n) { post(n, false); }
 
+void ls_detector_banner_poll(void);
+#pragma weak ls_detector_banner_poll
 void ls_notify_poll(int visible)
 {
+    if(ls_detector_banner_poll) ls_detector_banner_poll();
     s_frame++;
     if (s_ttl > 0) {
         s_ttl--;
@@ -161,6 +164,23 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
     s_close = tui_rect_make(0, -1, 0, 0);
     if (s_ttl <= 0 || area.w < 20 || area.h < 5) return;
 
+    if(s_now.steady) {
+        /* One event, one stationary card. No scrolling or perimeter chase. */
+        tui_rect r=tui_rect_make(area.x,area.y,area.w,5);
+        s_rect=r;
+        uint8_t hue=s_now.accent?s_now.accent:TUI_CYAN;
+        tui_fill(sf,r,' ',A(TUI_WHITE,TUI_BLACK));
+        ls_panel_box(sf,r,NULL,hue);
+        s_close=tui_rect_make(r.x+r.w-9,r.y+1,8,3);
+        tui_fill(sf,s_close,' ',A(TUI_BLACK,hue|TUI_BRIGHT));
+        tui_put_str(sf,s_close,s_close.x+1,s_close.y+1,"ESC / X",A(TUI_BLACK,hue|TUI_BRIGHT));
+        tui_rect body=tui_rect_make(r.x+1,r.y+1,r.w-11,3);
+        tui_fill(sf,body,' ',A(TUI_WHITE,TUI_BLUE));
+        tui_put_str(sf,body,body.x+1,body.y,s_now.title,A(TUI_YELLOW|TUI_BRIGHT,TUI_BLUE));
+        tui_put_str(sf,body,body.x+1,body.y+1,s_now.body,A(TUI_WHITE|TUI_BRIGHT,TUI_BLUE));
+        tui_put_str(sf,body,body.x+1,body.y+2,"Tap to inspect",A(TUI_CYAN|TUI_BRIGHT,TUI_BLUE));
+        return;
+    }
     /* Four rows at the TOP of the screen's area, under the chrome: that is
        where every device anyone has held puts one, and the bottom of this
        interface is where the controls are. Small, and made to stand out by
@@ -261,6 +281,7 @@ bool ls_notify_touch(int col, int row)
     if (!close && go >= 0 && go < ls_tui_screen_count()) {
         if (!s_now.accent) s_unread = 0;
         ls_tui_screen_show(go);
+        if(s_now.open) s_now.open(s_now.item);
     }
     return true;
 }

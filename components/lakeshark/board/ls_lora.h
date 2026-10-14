@@ -63,12 +63,13 @@ static inline bool ls_lora_rx_range_ok(uint32_t caps, uint32_t min_hz, uint32_t 
            min_hz >= LS_LORA_RX_HF_MIN_HZ && max_hz <= LS_LORA_RX_HF_MAX_HZ;
 }
 
-/* LoRa packet configuration: the existing LF transmit band, plus two
+/* LoRa packet configuration: sub-GHz LF receive, plus two
    receive-only HF bands on the positively identified LR2021. The send
    backend independently refuses HF; this check grants no transmit access. */
 static inline bool ls_lora_packet_rx_hz_ok(uint32_t caps, uint32_t hz)
 {
     if (hz >= LS_LORA_RX_MIN_HZ && hz <= LS_LORA_RX_NARROW_MAX_HZ) return true;
+    if ((caps & LS_LORA_CAP_BAND_1G5_2G5) && hz>LS_LORA_RX_NARROW_MAX_HZ && hz<1000000000u) return true;
     return (caps & LS_LORA_CAP_BAND_1G5_2G5) &&
            ((hz >= 1900000000u && hz <= 2200000000u) ||
             (hz >= 2400000000u && hz <= 2500000000u));
@@ -101,6 +102,12 @@ void      ls_lora_stop(void);
    chunk/poll boundaries; a synchronous console send cannot process another
    console command while it runs. */
 void      ls_lora_tx_cancel_request(void);
+/* Bounded signed IQ8, 125 kS/s, <=32767 pairs; LR2021 ROM 1.24 only. */
+esp_err_t ls_lora_iq_send(const uint8_t *data, size_t bytes, uint32_t hz, int dbm);
+/* Optional call-local refusal reason; static string, NULL on success. */
+esp_err_t ls_lora_iq_send_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, const char **reason);
+/* Same bounded send and safety gates, caller-selected sample rate. */
+esp_err_t ls_lora_iq_send_rate_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, uint32_t rate, const char **reason);
 /* Hold reset after TX completes; return failures without claiming shutdown. */
 esp_err_t ls_lora_park(void);
 
@@ -332,6 +339,7 @@ typedef struct {
     uint8_t  sync_word;   /* 0x12 private, 0x34 public                      */
     bool     crc_on;
     bool     invert_iq;
+    uint8_t  implicit_rx_bytes; /* 0 explicit; nonzero fixed-length RX only */
     uint16_t cal_min_mhz; /* image calibration band, 902/928 for US915      */
     uint16_t cal_max_mhz;
 } ls_lora_cfg_t;
@@ -368,6 +376,10 @@ bool      ls_lora_send_done(void);
    from an ISR - it does I2C or SPI. */
 int       ls_lora_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db);
 
+/* Receive-only activity poll. Caller holds the radio lease. No payload or TX.
+ * Latched IRQ observations are lower bounds, not decoded/identified drones. */
+enum { LS_LORA_PREAMBLE=1, LS_LORA_HEADER=2, LS_LORA_END=4 };
+int ls_lora_activity(float *rssi_dbm); /* flags, 0 quiet, -1 bus/session failure */
 /* Instantaneous channel RSSI while receiving, for a noise floor estimate. */
 esp_err_t ls_lora_rssi_inst(float *dbm);
 

@@ -8,6 +8,21 @@
 #include "esp_timer.h"
 #include "esp_attr.h"
 
+/* Shared out of line: avoid duplicating corner clipping at every label. */
+void ls_safe_line(tui_surface *sf, tui_rect area, int row,
+                  const char *text, uint8_t attr)
+{
+    if (!sf || !text || row < area.y || row >= area.y + area.h) return;
+    const int cols = tui_surface_rect(sf).w;
+    const int pad = ls_tui_corner_pad(row) + 1;
+    int left = area.x + 1, right = area.x + area.w - 1;
+    if (left < pad) left = pad;
+    if (right > cols - pad) right = cols - pad;
+    if (right <= left) return;
+    tui_rect line = tui_rect_make(left, row, right - left, 1);
+    tui_put_str(sf, line, left, row, text, attr);
+}
+
 #define MAX_HITS 24
 
 typedef struct { int16_t x0, y0, x1, y1; } hit_t;
@@ -785,6 +800,24 @@ void ls_kv(tui_surface *sf, tui_rect r, int row, const char *label,
     int min_x = r.x + 2 + (int)strlen(label) + 1;
     if (x < min_x) x = min_x;
     tui_put_str(sf, r, x, r.y + row, value, vattr);
+}
+
+void ls_meter_ascii(tui_surface *sf, tui_rect clip, int x, int y, int w,
+                    float fraction, uint8_t hue)
+{
+    if (w < 3) return;
+    if (!(fraction > 0)) fraction = 0;
+    if (fraction > 1) fraction = 1;
+    const int span = w - 2, lit = (int)(fraction * span);
+    const uint8_t ink = TUI_ATTR(hue, TUI_BLACK);
+    tui_put_char(sf, clip, x, y, '[', ink);
+    for (int i = 0; i < span; ++i) {
+        bool tick = i == span/4 || i == span/2 || i == span*3/4;
+        char ch = i < lit ? (tick ? '|' : '=') : (tick ? '+' : '-');
+        if (i == lit-1 && lit < span) ch = '>';
+        tui_put_char(sf, clip, x+1+i, y, ch, i < lit ? ink : LS_ATTR_FAINT);
+    }
+    tui_put_char(sf, clip, x+w-1, y, ']', ink);
 }
 
 void ls_bar(tui_surface *sf, tui_rect r, int row, int x, int w, float v)

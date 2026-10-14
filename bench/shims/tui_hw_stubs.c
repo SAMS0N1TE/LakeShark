@@ -39,6 +39,9 @@ void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch) { if (cols) *cols =
 
 #ifdef LS_TUI_CORNER_STUB
 int ls_tui_corner_pad(int row) { (void)row; return 0; }
+/* No camera hole without ls_tui.c, so pickers have nothing to skirt. */
+#include "ls_tui.h"
+bool ls_tui_cutout(tui_rect *cells) { if (cells) *cells = tui_rect_make(0, 0, 0, 0); return false; }
 #endif
 #ifdef LS_TUI_WIDE_STUB
 bool ls_tui_is_wide(void) { return true; }

@@ -23,6 +23,8 @@ typedef struct {
     uint8_t hue;                     /* the source app's colour         */
     /* Which screen to open when the banner is tapped, or -1 for none.
        A notice you cannot act on is a notice you have to remember. */
+    void (*open)(uint32_t item); /* optional action after screen opens */
+    uint32_t item;
     int     screen;
     /* A system notice, not a message: a TUI_* colour the banner is drawn in
        instead of the mesh red, and its body is shown whole, not split into
@@ -31,6 +33,7 @@ typedef struct {
     uint8_t accent;
     bool quiet;                    /* banner only, such as a routine test */
     bool haptic_only;              /* vibrate without speaker output */
+    bool steady;                   /* event banner: no decorative motion; 3x8 dismiss */
     bool notify_visible;           /* alert even while its source is open */
 } ls_notice_t;
 

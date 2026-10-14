@@ -6,6 +6,7 @@
 #include "ls_touch.h"
 
 #include <stdint.h>
+#include "esp_attr.h"
 
 static bool s_down;
 static int  s_start_col, s_start_row;
@@ -48,6 +49,29 @@ void ls_tui_touch_stats(uint32_t *reads, uint32_t *taps,
     if (last_row) *last_row = s_last_row;
 }
 
+/* The last few touches as they were judged, for 'tui touch'. A key that
+   "does not work" is either missed by the grid or refused as a drag, and
+   only the press and release positions tell which. */
+#define TOUCH_LOG 16
+EXT_RAM_BSS_ATTR static ls_tui_touch_event_t s_log[TOUCH_LOG];
+static unsigned s_log_n;
+
+static void log_touch(int x, int y, bool tap)
+{
+    ls_tui_touch_event_t *e = &s_log[s_log_n++ % TOUCH_LOG];
+    e->x0 = s_start_x; e->y0 = s_start_y; e->x1 = x; e->y1 = y;
+    e->col = s_start_col; e->row = s_start_row; e->tap = tap;
+}
+
+int ls_tui_touch_history(ls_tui_touch_event_t *out, int max)
+{
+    int n = s_log_n < TOUCH_LOG ? (int)s_log_n : TOUCH_LOG;
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++)               /* oldest first */
+        out[i] = s_log[(s_log_n - n + i) % TOUCH_LOG];
+    return n;
+}
+
 bool ls_tui_touch_poll(ls_tui_touch_t *out)
 {
     int x = s_last_x, y = s_last_y;
@@ -81,7 +105,9 @@ bool ls_tui_touch_poll(ls_tui_touch_t *out)
 
         const int dx = x > s_start_x ? x - s_start_x : s_start_x - x;
         const int dy = y > s_start_y ? y - s_start_y : s_start_y - y;
-        if (s_start_col >= 0 && dx <= TAP_SLOP_PX && dy <= TAP_SLOP_PX) {
+        const bool tap = s_start_col >= 0 && dx <= TAP_SLOP_PX && dy <= TAP_SLOP_PX;
+        log_touch(x, y, tap);
+        if (tap) {
             s_taps++;
             s_last_col = s_start_col;
             s_last_row = s_start_row;

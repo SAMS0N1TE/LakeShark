@@ -70,7 +70,7 @@ typedef struct {
 typedef struct {
     uint32_t adverts_in, dispatched, ring_drops, ring_overflow, invalid_reports;
     unsigned ring_size, ring_capacity, ring_high_water;
-    bool available, filter_duplicates, scanning, while_connected;
+    bool available, filter_duplicates, scanning, while_connected, coded_phy;
     unsigned scan_interval_units, scan_window_units;
 } ls_sweep_transport_stats_t;
 typedef enum { SW_WITH_YOU, SW_NEW, SW_PASSING } ls_sweep_section_t;

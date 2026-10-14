@@ -30,6 +30,7 @@
 /* Where a node with a location goes when you ask to see it. */
 #include "../../ls_app.h"
 #include "../../ls_map.h"
+#include "../../ls_map_share_ui.h"
 
 #include "core/settings.h"
 #include "audio/audio_events.h"
@@ -2479,6 +2480,7 @@ extern const ls_tui_screen_t ls_scr_mesh;
 static uint32_t s_told_msg;
 static bool     s_told_init;
 static uint32_t s_told_mark;
+static uint32_t s_share_seen;
 
 const char *ls_scr_mesh_tx_status(void)
 {
@@ -2488,10 +2490,12 @@ const char *ls_scr_mesh_tx_status(void)
 
 bool ls_scr_mesh_notice(ls_notice_t *out)
 {
+    ls_scr_map_share_poll();
     const uint32_t seq = ls_mesh_incoming_seq();
     if (!s_told_init) {
         s_told_init = true; s_told_msg = seq;
         int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+        if(n>0) s_share_seen=s_msg_buf[n-1].id;
         while (n > 0 && s_msg_buf[n - 1].mine) n--;
         if (n > 0) s_told_mark = msg_mark(&s_msg_buf[n - 1]);
         return false;
@@ -2500,6 +2504,13 @@ bool ls_scr_mesh_notice(ls_notice_t *out)
     s_told_msg = seq;
 
     int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
+    bool shared=false;
+    for(int i=0;i<n;i++) {
+        if((int32_t)(s_msg_buf[i].id-s_share_seen)<=0) continue;
+        s_share_seen=s_msg_buf[i].id;
+        if(!s_msg_buf[i].mine && ls_scr_map_receive(&s_msg_buf[i],out)) shared=true;
+    }
+    if(shared) return true;
     while (n > 0 && s_msg_buf[n - 1].mine) n--;
     if (n < 1) return false;
     const ls_mesh_msg_t *m = &s_msg_buf[n - 1];

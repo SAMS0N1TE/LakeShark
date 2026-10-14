@@ -5,6 +5,7 @@
 
 esp_err_t ble_link_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 void      ble_link_stop(void)  { }
+esp_err_t ble_link_c6_quiesce(void) { return ESP_OK; }
 
 ble_link_state_t ble_link_state(void)      { return BLE_LINK_OFF; }
 const char      *ble_link_state_name(void) { return "DISABLED (built without CONFIG_LS_BLE_HEAD)"; }

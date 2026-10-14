@@ -35,6 +35,7 @@ typedef struct {
        sidecar written before SNTP never looks like a wrong date. */
     char        time[REC_SIDECAR_TIME_MAX];
 
+    char        radio[16];    /* Empty in legacy captures. */
     uint32_t    freq_hz;
     int         gain_tenths;
     uint32_t    bw_hz;          /* 0 == auto, matches rec_get_bw() */

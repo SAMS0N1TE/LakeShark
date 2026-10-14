@@ -11,7 +11,7 @@
 static const char *scratch(void)
 {
     static char path[512];
-    const char *tmp = getenv("TEMP");
+    const char *tmp = ".";
     snprintf(path, sizeof(path), "%s/test_map_marks.txt", tmp ? tmp : ".");
     return path;
 }
@@ -152,4 +152,20 @@ LS_CASE(interrupted_replacement_recovers_previous_file) {
     LS_CHECK(ls_marks_rename(0,"RECOVERED"));LS_CHECK(ls_marks_save());
     ls_marks_reload();LS_EQ_STR("RECOVERED",ls_marks_at(0)->name);
     remove(backup);remove(tmp);
+}
+
+LS_CASE(selection_move_rename_delete_persist) {
+    fresh();
+    ls_marks_add(43,-71,0,"A");ls_marks_add(44,-72,0,"B");
+    uint32_t a=ls_marks_at(0)->id,b=ls_marks_at(1)->id;
+    LS_EQ_INT(ls_marks_next(0),0);LS_EQ_INT(ls_marks_next(a),1);LS_EQ_INT(ls_marks_next(b),0);
+    LS_CHECK(ls_marks_move(1,45.12345,-73.54321));
+    LS_CHECK(!ls_marks_move(1,NAN,0));LS_CHECK(!ls_marks_move(1,86,0));
+    LS_CHECK(ls_marks_rename(1,"CAMP"));LS_CHECK(ls_marks_delete(0));
+    LS_EQ_UINT(ls_marks_at(0)->id,b);LS_EQ_INT(ls_marks_next(a),0);
+    LS_CHECK(ls_marks_save());ls_marks_reload();
+    LS_EQ_INT(ls_marks_count(),1);LS_EQ_STR(ls_marks_at(0)->name,"CAMP");
+    LS_NEAR(ls_marks_at(0)->lat,45.12345,1e-6);LS_NEAR(ls_marks_at(0)->lon,-73.54321,1e-6);
+    ls_marks_clear();LS_CHECK(ls_marks_save());ls_marks_reload();LS_EQ_INT(ls_marks_count(),0);
+    fresh();
 }

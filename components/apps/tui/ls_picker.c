@@ -12,6 +12,10 @@
 #define DIM_FG LS_DIM_FG
 
 static bool s_open;
+static void (*s_header)(tui_surface *, tui_rect);
+void ls_picker_header(void (*draw)(tui_surface *, tui_rect)) {s_header=draw;}
+static void (*s_preview)(tui_surface *, tui_rect);
+void ls_picker_preview(void (*draw)(tui_surface *, tui_rect)) { s_preview = draw; }
 /* Long enough for a list named for what it is about and the radio doing
    it: "WATERFALL OPTIONS / RTL-SDR". */
 static EXT_RAM_BSS_ATTR char s_title[40];
@@ -91,7 +95,9 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
     s_note[0] = 0;
     s_keep_open=false;
     s_done = on_done;
+    s_preview = NULL;
     s_on_back = NULL;
+    s_header = NULL;
     s_on_step = NULL;
     s_navigate = NULL;
     memset(s_stepper, 0, sizeof(s_stepper));
@@ -189,7 +195,7 @@ static void accept(void)
 
 static int rows_visible(int body_h)
 {
-    int n = (body_h - 1) / ROW_STEP;
+    int n = (body_h - 1) / (s_header ? 6 : ROW_STEP);
     if (n > ROWS_MAX) n = ROWS_MAX;
     return n > 0 ? n : 0;
 }
@@ -211,6 +217,10 @@ static void put_over(tui_surface *sf, tui_rect r, int x, int y,
 
 static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
 {
+    tui_rect hole;
+    if(s_header && ls_tui_cutout(&hole) && hole.x>a.x+a.w/2 &&
+       a.y<hole.y+hole.h && a.y+a.h>hole.y && a.x+a.w>hole.x)
+        a.w=hole.x-a.x-1;
     const int idx = s_order[oi];
     const uint8_t hue = sel ? (TUI_GREEN | TUI_BRIGHT) : TUI_CYAN;
     const uint8_t text = A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
@@ -220,25 +230,29 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     if (f.w <= 0 || f.h <= 0) return;
     ls_fill_dither(sf, f, sel ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, hue);
 
-    const int mid = (f.h - 1) / 2;
-    put_over(sf, f, f.x + 1, f.y + mid, s_label[idx], text);
+    if(s_header && s_stepper[idx]) {
+        put_over(sf,f,f.x+1,f.y,s_label[idx],text);
+        f.y++;f.h--; /* label above, three full rows of filled level keys */
+    } else put_over(sf, f, f.x + 1, f.y + (f.h-1)/2, s_label[idx], text);
 
     /* A level: < and > as two solid keys the full height of the row at its
        right end, the value between them. */
     if (slot < ROWS_MAX) s_hit_dec[slot].w = s_hit_inc[slot].w = 0;
     if (s_stepper[idx] && f.w >= 30) {
-        const int kw = 5, vw = 12;
+        /* Both art modes use large keys; headers need wider numeric values. */
+        const int kw = (s_header || s_preview) ? 8 : 5;
+        const int vw = s_header ? 10 : s_preview ? 6 : 12;
         const uint8_t key = A(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
         const tui_rect inc = tui_rect_make(f.x + f.w - kw, f.y, kw, f.h);
         const tui_rect dec = tui_rect_make(inc.x - vw - kw, f.y, kw, f.h);
         tui_fill(sf, inc, ' ', key);
         tui_fill(sf, dec, ' ', key);
-        tui_put_char(sf, f, inc.x + kw / 2, f.y + mid, '>', key);
-        tui_put_char(sf, f, dec.x + kw / 2, f.y + mid, '<', key);
+        tui_put_char(sf, f, inc.x + kw / 2, f.y + (f.h-1)/2, '>', key);
+        tui_put_char(sf, f, dec.x + kw / 2, f.y + (f.h-1)/2, '<', key);
         tui_fill(sf, tui_rect_make(dec.x + kw, f.y, vw, f.h), ' ', A(TUI_WHITE, TUI_BLACK));
         char v[16];
         snprintf(v, sizeof(v), "%.*s", vw - 2, s_detail[idx]);
-        tui_put_str(sf, f, dec.x + kw + (vw - (int)strlen(v)) / 2, f.y + mid, v,
+        tui_put_str(sf, f, dec.x + kw + (vw - (int)strlen(v)) / 2, f.y + (f.h-1)/2, v,
                     A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         if (slot < ROWS_MAX) {
             /* The whole row's height, a column either side: a thumb, not a cell. */
@@ -269,7 +283,7 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     }
     if (dn > 0) {
         cut[dn] = 0;
-        put_over(sf, f, f.x + f.w - 1 - dn, f.y + mid, cut,
+        put_over(sf, f, f.x + f.w - 1 - dn, f.y + (f.h-1)/2, cut,
                  A(TUI_WHITE, TUI_BLACK));
     }
 
@@ -305,8 +319,20 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
     tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, area, s_title, TUI_CYAN);
 
+    bool side_header=s_header && area.w>=90 && s_shown>1;
+    if(side_header) {
+        s_header(sf,tui_rect_make(area.x+1,area.y+2,36,area.h-3));
+        area.x+=38;area.w-=38;
+    }
     /* --- what is being filtered on, when anything is ------------------- */
     int y = area.y + 1;
+    if(s_header && !side_header && area.h>=24) {
+        int hh=area.h-8-s_shown*8;
+        if(hh<7)hh=7;
+        if(hh>area.h-18)hh=area.h-18;
+        s_header(sf,tui_rect_make(area.x+1,y,area.w-2,hh));
+        y+=hh+1;
+    }
     if (s_flen > 0) {
         char line[FILTER_MAX + 8];
         snprintf(line, sizeof(line), "/%s", s_filter);
@@ -344,6 +370,20 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
     const int btn_y = area.y + area.h - 1 - btn_h;
     tui_rect body = tui_rect_make(area.x + 1, y, area.w - 2, btn_y - y - 1);
 
+    if (s_preview) {
+        tui_rect preview = body;
+        if (body.w >= 90) {
+            body.w -= 44;
+            preview.x = body.x + body.w + 1;
+            preview.w = 43;
+            s_preview(sf, preview);
+        } else if (body.h >= 40) {
+            body.h -= 24;
+            preview.y = body.y + body.h + 1;
+            preview.h = 23;
+            s_preview(sf, preview);
+        }
+    }
     const int nvis = rows_visible(body.h);
     if (nvis <= 0) return;
     s_nvis = nvis;              /* what a page is worth, see page() */
@@ -358,11 +398,11 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
                         s_why[0] ? s_why : "nothing here",
                         s_flen > 0 ? "BKSP clears the filter" : NULL);
     } else {
-        int step = ROW_STEP;
+        int step = s_header ? 6 : ROW_STEP;
         if (s_shown < nvis) {
             step = (body.h - 1) / s_shown;
             if (step > 8) step = 8;
-            if (step < ROW_STEP) step = ROW_STEP;
+            if (step < (s_header?6:ROW_STEP)) step = s_header?6:ROW_STEP;
         }
         for (int i = 0; i < nvis && s_top + i < s_shown; i++)
             draw_row(sf, tui_rect_make(body.x, body.y + i * step,

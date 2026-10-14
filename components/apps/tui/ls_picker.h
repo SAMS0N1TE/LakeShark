@@ -77,7 +77,12 @@ bool ls_picker_is(ls_picker_done_t on_done);
 
 bool ls_picker_key(ls_tk_t key, char ch);
 bool ls_picker_touch(int col, int row);
+/* Optional instrument header; reset on open. Enables generous level keys. */
+void ls_picker_header(void (*draw)(tui_surface *, tui_rect));
 void ls_picker_draw(tui_surface *sf, tui_rect area);
+/* Optional read-only context art beside/below the rows; reset by open.
+ * Never receives a touch target and must not perform I/O or allocate. */
+void ls_picker_preview(void (*draw)(tui_surface *, tui_rect));
 
 #ifdef __cplusplus
 }

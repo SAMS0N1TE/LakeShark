@@ -12,12 +12,12 @@ static void event(const catch_burst_t *b,bool start,void *ctx)
 {(void)ctx;if(start){starts++;burst=*b;}else stops++;}
 static uint64_t replay_us, block_wall_us;
 static uint64_t wall_us(void)
-{struct timespec t;timespec_get(&t,TIME_UTC);return (uint64_t)t.tv_sec*1000000+t.tv_nsec/1000;}
+{struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000+t.tv_nsec/1000;}
 static uint64_t clock_us(void *ctx)
 {(void)ctx;return replay_us+wall_us()-block_wall_us;}
 static double seconds(void)
 {
-    struct timespec t;timespec_get(&t,TIME_UTC);
+    struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
     return (double)t.tv_sec+(double)t.tv_nsec/1e9;
 }
 int main(void)

@@ -961,3 +961,24 @@ LS_CASE(uart_lease_serializes_simultaneous_client_startup)
         LS_EQ_INT(lease_owner[0],lease_config[0]);LS_EQ_INT(lease_owner[1],lease_config[1]);
     }
 }
+
+LS_CASE(survey_utc_is_a_fresh_atomic_rmc_snapshot)
+{
+    ls_gps_parser_t p = {0}; char line[128];
+    checksum_line(line,sizeof(line),"GPRMC,235959,A,4807.038,N,01131.000,E,0,0,311226,,,A");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,1000000));
+    LS_EQ_UINT(p.st.utc_s,1798761599); LS_EQ_UINT(p.st.utc_ms,1000);
+    checksum_line(line,sizeof(line),"GPGGA,000000,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,2000000));
+    LS_EQ_UINT(p.st.utc_s,1798761599); LS_EQ_UINT(p.st.utc_ms,1000);
+    checksum_line(line,sizeof(line),"GPRMC,000000,A,4807.038,N,01131.000,E,0,0,010127,,,A");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,2100000));
+    LS_EQ_UINT(p.st.utc_s,1798761600);
+    LS_CHECK(5200-p.st.utc_ms >= 3000);
+    checksum_line(line,sizeof(line),"GPRMC,000001,V,,,,,,,010127,,,N");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,3000000));
+    LS_EQ_UINT(p.st.utc_s,0);
+    checksum_line(line,sizeof(line),"GPRMC,000002");
+    LS_CHECK(ls_gps_feed_line(line,strlen(line),&p,4000000));
+    LS_EQ_UINT(p.st.utc_s,0);
+}

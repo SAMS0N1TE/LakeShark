@@ -40,6 +40,7 @@
    UPDATE pop-up per build; installing stays a tap on the UPDATE page. */
 
 #include "ls_ota.h"
+#include "ls_c6_update.h"
 #include "ls_ota_key.h"
 #include "ls_ota_core.h"
 #include "ls_wifi.h"
@@ -595,6 +596,14 @@ static void ota_worker(void *arg)
 
 typedef enum { JOB_STARTED, JOB_BUSY, JOB_NO_MEMORY } start_t;
 
+int ls_ota_c6_acquire(void)
+{
+    if (__atomic_load_n(&s_trial_state, __ATOMIC_ACQUIRE) != LS_OTA_TRIAL_VALID) return 0;
+    return !__atomic_exchange_n(&s_busy, true, __ATOMIC_ACQ_REL);
+}
+
+void ls_ota_c6_release(void) { __atomic_store_n(&s_busy, false, __ATOMIC_RELEASE); }
+
 /* One job at a time, claimed in one step: the Settings row and the console
    can ask at the same moment. The worker's stack is PSRAM: WiFi, TLS and
    hashing never touch flash, and the board has no 8 KB of DMA-capable DRAM
@@ -812,6 +821,7 @@ void ls_ota_publish(void)
     static bool done;
     if (done) return;
     done = true;
+    ls_c6_publish();
     ls_value_publish("ota.state", NULL, v_state);
     ls_value_publish("ota.stage", NULL, v_stage);
     ls_value_publish("ota.got", "B", v_got);

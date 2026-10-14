@@ -3453,7 +3453,7 @@ LS_CASE(lr2021_hf_lora_and_fsk_receive_but_every_transmit_layer_refuses)
 
 LS_CASE(hf_lora_band_gaps_and_other_lr_chips_remain_refused)
 {
-    const uint32_t bad[] = {960000001u, 1899999999u, 2200000001u, 2399999999u, 2500000001u};
+    const uint32_t bad[] = {1000000000u, 1899999999u, 2200000001u, 2399999999u, 2500000001u};
     session_up();
     ls_lora_cfg_t c; ls_lora_cfg_default(&c);
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -3470,4 +3470,48 @@ LS_CASE(hf_lora_band_gaps_and_other_lr_chips_remain_refused)
     fk_install(FK_SX_ECHO); LS_EQ_INT(ls_lora_start(), ESP_OK); fk.nframes = 0;
     LS_CHECK(!ls_lora_packet_rx_hz_ok(ls_lora_caps(), c.freq_hz));
     LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG); LS_EQ_INT(fk.nframes, 0);
+}
+
+LS_CASE(detector_activity_lr2021_irq_and_no_transmit) {
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);cfg.implicit_rx_bytes=8;cfg.crc_on=false;
+    lora_up(&cfg);uint8_t payload=0;LS_EQ_INT(ls_lora_send(&payload,1),ESP_ERR_INVALID_STATE);
+    fk.irq=LR20XX_IRQ_PREAMBLE_DETECTED|(1u<<6);
+    fk.rssi_hi=100;fk.rssi_lo=0;float dbm=0;
+    LS_EQ_INT(ls_lora_activity(&dbm),LS_LORA_PREAMBLE|LS_LORA_HEADER);
+    LS_CHECK(dbm<0);LS_EQ_INT(fk.irq,0);LS_CHECK(!ls_lora_is_transmitting());
+    LS_EQ_INT(ls_lora_activity(&dbm),0);
+    fk.irq=LR20XX_IRQ_RX_DONE;LS_EQ_INT(ls_lora_activity(&dbm),LS_LORA_END|LS_LORA_HEADER);
+    LS_EQ_INT(fk.mode,LR20XX_MODE_RX);
+    fk.irq=LR20XX_IRQ_CMD_ERROR;LS_EQ_INT(ls_lora_activity(&dbm),-1);
+}
+
+LS_CASE(rec_iq_send_lf_bounds_are_checked_before_spi)
+{
+    uint8_t wave[]={20,0,0,20,236,0,0,236};
+    fk_install(FK_LR);LS_EQ_INT(ls_lora_start(),ESP_OK);
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);cfg.freq_hz=433920000;
+    LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);
+    int frames=fk.nframes;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),1500000000,0),ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,11),ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_iq_send(wave,65536,433920000,0),ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.nframes,frames);
+    wave[0]=57;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,0),ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.nframes,frames);
+    wave[0]=20;fk.tx_auto_done=true;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),433920000,-9),ESP_OK);
+    LS_EQ_UINT(fk.tx_freq_hz,433920000);
+}
+
+LS_CASE(rec_iq_above_960mhz_remains_receive_only)
+{
+    fk_install(FK_LR);LS_EQ_INT(ls_lora_start(),ESP_OK);
+    ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);cfg.freq_hz=990000000;
+    LS_CHECK(ls_lora_packet_rx_hz_ok(ls_lora_caps(),cfg.freq_hz));
+    LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);
+    uint8_t wave[]={20,0};
+    int frames=fk.nframes;
+    LS_EQ_INT(ls_lora_iq_send(wave,sizeof(wave),cfg.freq_hz,0),ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.nframes,frames);
 }

@@ -64,6 +64,9 @@ bool ls_compass_finish(const ls_compass_fit_t *fit, ls_compass_cal_t *cal);
 bool ls_compass_cal_valid(const ls_compass_cal_t *cal);
 /* What makes a calibration unusable, or NULL when it is fine. */
 const char *ls_compass_cal_problem(const ls_compass_cal_t *cal);
+/* NULL means acceptable. A known local field takes priority over the old radius. */
+const char *ls_compass_cal_upgrade(const ls_compass_cal_t *candidate,
+                                  const ls_compass_cal_t *previous, float expected_ut);
 /* The accelerometer in true screen axes. ls_imu's accelerometer has x and z
    reversed on the T-Display-P4 (flat face up reads z -1, right edge down
    reads x +1); auto-rotation is built on that, so it is corrected here, for

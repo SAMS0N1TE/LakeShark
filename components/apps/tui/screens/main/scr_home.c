@@ -37,7 +37,7 @@ static int group_of(const ls_app_t *a)
 {
     if (a->cat == LS_APP_USER) return 3;
     if (!strcmp(a->id, "map") || !strcmp(a->id, "tiles") || !strcmp(a->id, "gps") || !strcmp(a->id, "notes") ||
-        !strcmp(a->id, "sweep") || !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
+        !strcmp(a->id, "detector") || !strcmp(a->id, "sweep") || !strcmp(a->id, "compass") || !strcmp(a->id, "rec")) return 1;
     if (!strcmp(a->id, "set") || !strcmp(a->id, "diag") || !strcmp(a->id, "radios") || !strcmp(a->id, "link") ||
         !strcmp(a->id, "terminal") || !strcmp(a->id, "update")) return 2;
     return 0;

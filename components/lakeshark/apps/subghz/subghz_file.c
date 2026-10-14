@@ -140,6 +140,18 @@ void subghz_file_line(subghz_file_t *f, const char *line,
         copy_value(f->protocol, sizeof(f->protocol), line + 9);
     } else if (line[0] == '#') {
         comment(f, line);
+    } else if (!strncmp(line, "SampleRate:", 11) || !strncmp(line, "Samples:", 8)) {
+        bool rate=!strncmp(line,"SampleRate:",11);
+        char *end; errno=0;
+        unsigned long n=strtoul(line+(rate?11:8),&end,10);
+        while(isspace((unsigned char)*end))end++;
+        if(errno || *end || !n || n>(rate?125000u:32767u))f->invalid=true;
+        if(rate)f->iq_rate=(uint32_t)n;else f->iq_samples=(uint32_t)n;
+    } else if (!strncmp(line, "IQ_Data: ", 9)) {
+        size_t n=strcspn(line+9,"\r\n");
+        if(!n || n%8 || n>128 || f->iq_bytes+n/2>32767u*4u)f->invalid=true;
+        else f->iq_bytes+=(uint32_t)(n/2);
+        for(size_t i=0;i<n;i++)if(!isxdigit((unsigned char)line[9+i]))f->invalid=true;
     } else if (!strncmp(line, "RAW_Data:", 9)) {
         const char *p = line + 9;
         char *end;
@@ -167,8 +179,7 @@ void subghz_file_line(subghz_file_t *f, const char *line,
     }
 }
 
-const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges,
-                              uint64_t span_us)
+const char *subghz_tx_radio_refusal(uint32_t freq_hz, int dbm)
 {
     /* 406.0-406.1 MHz is COSPAS-SARSAT distress beacons, inside 387-464. */
     if (!((freq_hz>=300000000 && freq_hz<=348000000) ||
@@ -178,6 +189,13 @@ const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges,
     if (freq_hz>=406000000 && freq_hz<=406100000)
         return "406 MHz distress band";
     if (dbm < -10 || dbm > 10) return "power outside -10 to +10 dBm";
+    return NULL;
+}
+
+const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges, uint64_t span_us)
+{
+    const char *why=subghz_tx_radio_refusal(freq_hz,dbm);
+    if(why)return why;
     if (edges < 6 || edges > 4096) return "not 6-4096 edges";
     if (span_us > 10000000) return "longer than 10 s";
     return NULL;
@@ -278,4 +296,11 @@ bool subghz_file_load(const char *path, subghz_file_t *f, int32_t *edges,
     if (ferror(fp)) f->invalid=true;
     fclose(fp);
     return f->filetype_ok;
+}
+
+bool subghz_file_is_iq(const subghz_file_t *f)
+{
+    return f && f->filetype_ok && !f->invalid && !strcmp(f->protocol,"LR2021_IQ") &&
+        !f->edges_total && f->iq_rate==125000 && f->iq_samples && f->iq_samples<=32767 &&
+        f->iq_bytes==f->iq_samples*4u && f->freq_hz>=150000000u && f->freq_hz<=999999999u;
 }

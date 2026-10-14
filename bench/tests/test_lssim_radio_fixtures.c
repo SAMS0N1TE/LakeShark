@@ -98,7 +98,8 @@ LS_CASE(sonde_fixture_survives_with_dmr_and_fm_tone_enabled)
         run("map", "", wide, "13");
         LS_CHECK(strstr(output, "N123456"));
         LS_CHECK(strstr(output, "RS41"));
-        LS_CHECK(strstr(output, "UAL442"));
+        /* An aircraft inside the view; the touch keys narrow it in landscape. */
+        LS_CHECK(strstr(output, "FDX903"));
     }
 }
 

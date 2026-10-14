@@ -820,7 +820,7 @@ int rec_edges_copy(int from, int32_t *out, int max)
 
 bool rec_set_freq(uint32_t hz)
 {
-    if (rec_watch_enabled()) return false;
+    if (rec_watch_enabled() || rec_watch_iq_status(NULL,0)) return false;
     if (!rec_watch_frequency_ok(rec_watch_source(),
             ls_rsel_saved(LS_RSEL_SUBGHZ_READ)==LS_RSEL_SDR_HACKRF,
             ls_lora_caps(),hz)) return false;

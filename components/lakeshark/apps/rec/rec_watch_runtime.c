@@ -41,6 +41,7 @@ static uint32_t s_export_id;
 /* Queued the same way a pin or an export is: the catalog belongs to the
    storage worker, so the UI asks and the worker acts. */
 static bool s_replay_busy;
+static bool s_iq_busy,s_iq_pending;
 static char s_replay_result[112];
 static uint32_t s_replay_id; static int s_replay_dbm;
 static void replay(uint32_t id,int dbm,char *result,size_t len);
@@ -239,6 +240,8 @@ static void pump_capture(void *context)
         consume_capture(cap,(capture_flow_t *)context);
 }
 static void sync_cc_watch(void);
+#include "rec_lr_iq_runtime.inc"
+
 static void worker(void *arg)
 {
     (void)arg;
@@ -269,6 +272,8 @@ static void worker(void *arg)
             consume_capture(cap,&flow);
         }
         portENTER_CRITICAL(&s_lock);
+        bool iq_pending=s_iq_pending;s_iq_pending=false;
+        uint32_t iq_hz=s_iq_hz;
         uint32_t pin=s_pin_id;bool value=s_pin_value;s_pin_id=0;
         uint32_t export_id=s_export_id;s_export_id=0;
         uint32_t replay_id=s_replay_id;int replay_dbm=s_replay_dbm;s_replay_id=0;
@@ -280,6 +285,14 @@ static void worker(void *arg)
         uint32_t learn_secs=s_learn_secs,learn_hz=s_learn_hz;s_learn_secs=0;
         bool enabled=s_status.enabled;
         portEXIT_CRITICAL(&s_lock);
+        if(iq_pending) {
+            char result[sizeof(s_iq_result)];
+            if(s_iq_mode)iq_diagnostic(result,sizeof(result));
+            else iq_record(iq_hz,result,sizeof(result));
+            portENTER_CRITICAL(&s_lock);
+            snprintf(s_iq_result,sizeof(s_iq_result),"%s",result);s_iq_busy=false;
+            portEXIT_CRITICAL(&s_lock);
+        }
         if(pin) { rec_watch_pin(s_catalog,pin,value);portENTER_CRITICAL(&s_lock);s_status.pending_save=true;portEXIT_CRITICAL(&s_lock);publish(); }
         if(learn_secs) {
             char result[112];
@@ -650,7 +663,7 @@ static bool rec_watch_enable_owned(bool on)
     if(on)s_fsk_error[0]=0;
     /* A sweep or a LEARN run owns the SX1262 until it ends; starting a
        receive session under it would be two tasks driving one radio. */
-    if(on && ((s_scan_busy && !s_catch_armed) || s_learn_busy || s_scan_min || s_learn_secs || s_replay_busy || s_replay_id || s_replay_path[0])) {
+    if(on && ((s_scan_busy && !s_catch_armed) || s_learn_busy || s_scan_min || s_learn_secs || s_iq_busy || s_replay_busy || s_replay_id || s_replay_path[0])) {
         snprintf(s_fsk_error,sizeof(s_fsk_error),"Stop SCAN before WATCH");
         return false;
     }
@@ -673,7 +686,7 @@ bool rec_watch_enable(bool on)
         return rec_watch_enable_owned(on);
     portENTER_CRITICAL(&s_lock);
     bool ok=s_status.ready && !s_watch_waiting &&
-        (!on || (!s_scan_busy && !s_learn_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0]));
+        (!on || (!s_scan_busy && !s_learn_busy && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0]));
     if(ok){s_watch_on=on;s_watch_waiting=true;s_watch_pending=true;}
     portEXIT_CRITICAL(&s_lock);
     if(!ok)return false;
@@ -779,7 +792,7 @@ bool rec_watch_select_source(rec_source_t source)
     if (source >= REC_SOURCE_COUNT) return false;
     portENTER_CRITICAL(&s_lock);
     bool ok = !s_status.enabled && !s_watch_waiting && !s_scan_busy && !s_learn_busy &&
-        !s_replay_busy && !s_replay_id && !s_replay_path[0];
+        !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0];
     if (ok) s_source = source;
     portEXIT_CRITICAL(&s_lock);
     if (ok && source == REC_SOURCE_CC1101) ls_mixrf_start();
@@ -789,7 +802,7 @@ bool rec_watch_request_replay(uint32_t id,int dbm)
 {
     if(!id || dbm<-10 || dbm>22)return false;
     portENTER_CRITICAL(&s_lock);
-    bool ok=!s_watch_waiting && !s_replay_busy && !s_replay_id && !s_replay_path[0] && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
+    bool ok=!s_watch_waiting && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0] && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
     if(ok){s_replay_id=id;s_replay_dbm=dbm;
         snprintf(s_replay_result,sizeof(s_replay_result),"Replay queued");
         snprintf(s_status.export_status,sizeof(s_status.export_status),"Replay queued");}
@@ -909,33 +922,16 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
    them, so frame repeats keep their spacing. A packet holds 2040 chips,
    about 41 ms, which covers a remote's frame; a longer burst runs on into
    the next packet. */
-#define OOK_CHIP_US   20u
-#define OOK_SPLIT_US  4000u
+#include "rec_ook_packet.h"
 static esp_err_t lr_ook_edges(const int32_t *pulse,int edges)
 {
     static EXT_RAM_BSS_ATTR uint8_t chips[255];
-    const size_t cap=sizeof(chips)*8u;
-    int i=0;
-    while(i<edges) {
-        memset(chips,0,sizeof(chips));
-        size_t bit=0;
+    rec_ook_packet_t packet={0};
+    while(packet.edge<(size_t)edges) {
         uint32_t gap_us=0;
-        while(i<edges) {
-            const bool hi=pulse[i]>0;
-            const uint32_t us=hi?(uint32_t)pulse[i]:(uint32_t)-pulse[i];
-            if(!hi && us>=OOK_SPLIT_US && bit) { gap_us=us; i++; break; }
-            size_t n=(us+OOK_CHIP_US/2)/OOK_CHIP_US;
-            if(!n)n=1;
-            if(bit+n>cap) {
-                if(!bit)n=cap;        /* one pulse longer than a packet */
-                else break;
-            }
-            if(hi) for(size_t k=0;k<n;k++) chips[(bit+k)>>3]|=(uint8_t)(0x80u>>((bit+k)&7u));
-            bit+=n;
-            i++;
-        }
+        size_t bit=rec_ook_packet(&packet,pulse,(size_t)edges,chips,sizeof(chips),&gap_us);
         if(bit) {
-            esp_err_t err=ls_lora_ook_send(chips,(bit+7)/8,1000000u/OOK_CHIP_US);
+            esp_err_t err=ls_lora_ook_send(chips,(bit+7)/8,50000);
             if(err!=ESP_OK)return err;
             const int64_t end=esp_timer_get_time()+1000000;
             while(!ls_lora_send_done() && esp_timer_get_time()<end) vTaskDelay(1);
@@ -998,6 +994,7 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
         snprintf(result,len,"Replay: not a readable .sub file");
         return;
     }
+    if(!strcmp(f.protocol,"LR2021_IQ")) {iq_replay(path,dbm,result,len);return;}
     if(replay_refused(f.freq_hz,dbm,(size_t)f.edges_total,f.span_us,result,len))
         return;
     if(subghz_file_is_cc_fsk(&f)) {
@@ -1036,7 +1033,7 @@ bool rec_watch_request_replay_file(const char *path,int dbm)
         return false;
     }
     portENTER_CRITICAL(&s_lock);
-    bool ok=s_status.ready && !s_watch_waiting && !s_replay_busy && !s_replay_path[0] && !s_replay_id && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
+    bool ok=s_status.ready && !s_watch_waiting && !s_iq_busy && !s_replay_busy && !s_replay_path[0] && !s_replay_id && !s_status.enabled && !s_scan_busy && !s_scan_min && !s_learn_busy && !s_learn_secs;
     if(ok){memcpy(s_replay_path,path,strlen(path)+1);s_replay_dbm=dbm;
         snprintf(s_replay_result,sizeof(s_replay_result),"Replay queued");
         snprintf(s_status.export_status,sizeof(s_status.export_status),"Replay queued");}
@@ -1059,7 +1056,7 @@ bool rec_watch_request_scan(uint32_t min_hz,uint32_t max_hz,uint32_t seconds,
     if(seconds>180)return false;
     if(bins<4 || bins>REC_SCAN_BINS)bins=REC_SCAN_BINS;
     portENTER_CRITICAL(&s_lock);
-    bool ok=s_status.ready && !s_scan_busy && !s_learn_busy && !s_watch_waiting && !s_status.enabled && !s_replay_busy && !s_replay_id && !s_replay_path[0];
+    bool ok=s_status.ready && !s_scan_busy && !s_learn_busy && !s_watch_waiting && !s_status.enabled && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0];
     if(ok){s_scan_stop_req=false;s_catch_armed=false;s_scan_busy=true;
         s_scan_source=s_source;s_scan_min=min_hz;s_scan_max=max_hz;s_scan_secs=seconds;s_scan_bins=bins;}
     portEXIT_CRITICAL(&s_lock);
@@ -1284,7 +1281,7 @@ bool rec_watch_request_learn(uint32_t seconds)
 {
     if(seconds<5 || seconds>90)return false;
     portENTER_CRITICAL(&s_lock);
-    bool ok=s_status.ready && !s_scan_busy && !s_learn_busy && !s_watch_waiting && !s_status.enabled && !s_replay_busy && !s_replay_id && !s_replay_path[0];
+    bool ok=s_status.ready && !s_scan_busy && !s_learn_busy && !s_watch_waiting && !s_status.enabled && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0];
     if(ok){s_scan_stop_req=false;s_catch_armed=false;s_learn_busy=true;
         s_learn_secs=seconds;s_learn_hz=rec_get_freq();}
     portEXIT_CRITICAL(&s_lock);

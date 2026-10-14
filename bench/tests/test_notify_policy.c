@@ -123,3 +123,16 @@ LS_CASE(map_save_notice_survives_other_registered_sources_and_leaving_map) {
     LS_CHECK(strstr(s_now.body,"NOT SAVED"));LS_EQ_INT(0,alerts);
     s_probes=0;ls_notify_clear();
 }
+
+static int opened_screen;
+static uint32_t opened_item;
+int ls_tui_screen_count(void) { return 10; }
+void ls_tui_screen_show(int i) { opened_screen=i; }
+static void open_received(uint32_t item) { LS_EQ_INT(opened_screen,5);opened_item=item; }
+LS_CASE(map_notice_opens_exact_item_only_when_banner_is_accepted) {
+    ls_notice_t n={.screen=5,.open=open_received,.item=123,.quiet=true};
+    s_rect=(tui_rect){0,0,40,4};s_close=(tui_rect){38,0,2,4};
+    opened_item=0;ls_notify_post(&n);LS_CHECK(ls_notify_touch(38,1));LS_EQ_UINT(opened_item,0);
+    ls_notify_post(&n);LS_CHECK(ls_notify_key(LS_TK_ESC));LS_EQ_UINT(opened_item,0);
+    ls_notify_post(&n);LS_CHECK(ls_notify_touch(5,1));LS_EQ_UINT(opened_item,123);
+}

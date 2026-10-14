@@ -15,6 +15,8 @@ extern "C" {
 #include "ls_track_log.h"
 }
 int mesh_fake_rx_error;
+unsigned mesh_fake_polls;
+int mesh_fake_packet;
 bool mesh_fake_send_done = true;
 int mesh_fake_send_error;
 static bool receiving;
@@ -42,6 +44,7 @@ esp_err_t nvs_commit(nvs_handle_t) { return ESP_OK; }
 void ls_lora_cfg_default(ls_lora_cfg_t *out) {
     memset(out, 0, sizeof(*out)); out->freq_hz = 910525000; out->sf = 7;
     out->bw_hz = 62500; out->power_dbm = 22; out->cr = 5; out->sync_word = 0x12;
+    out->preamble = 32;
 }
 esp_err_t ls_lora_configure(const ls_lora_cfg_t *c) { config = *c; receiving = false; return ESP_OK; }
 const ls_lora_cfg_t *ls_lora_cfg(void) { return &config; }
@@ -50,7 +53,13 @@ bool ls_lora_is_receiving(void) { return receiving; }
 esp_err_t ls_lora_park(void) { receiving = false; return ESP_OK; }
 esp_err_t ls_lora_send(const uint8_t *, size_t) { receiving = false; return mesh_fake_send_error; }
 bool ls_lora_send_done(void) { return mesh_fake_send_done; }
-int ls_lora_poll(uint8_t *, size_t, float *, float *) { return 0; }
+int ls_lora_poll(uint8_t *out, size_t size, float *, float *) {
+    ++mesh_fake_polls;
+    if (mesh_fake_packet && size) {
+        out[0] = 0x5a; int result = mesh_fake_packet; mesh_fake_packet = 0; return result;
+    }
+    return 0;
+}
 esp_err_t ls_lora_rssi_inst(float *out) { *out = -100; return ESP_OK; }
 uint32_t ls_lora_airtime_ms(int) { return 10; }
 bool ls_lora_fsk_active(void) { return false; }

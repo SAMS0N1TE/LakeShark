@@ -1222,6 +1222,8 @@ class TrackedReferenceTests(unittest.TestCase):
         ('docs/LR2021_IQ_TX.md', 'tools/lr2021_make_p25.py'),
         ('docs/LR2021_IQ_TX.md', 'tools/lr2021_tx_upload.py'),
     }
+    # Build output directories: bench/build, bench/build-asan, build_tdp4...
+    BUILD_DIR = re.compile(r'(?:^|/)build(?:[-_][\w-]*)?/')
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
     NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')
@@ -1269,7 +1271,7 @@ class TrackedReferenceTests(unittest.TestCase):
             base = Path(name).parent
             for ref in self.REF.findall(text):
                 if (ref in self.NOT_OURS or (name, ref) in self.UPSTREAM_ONLY
-                        or '/build/' in '/' + ref):
+                        or self.BUILD_DIR.search(ref)):
                     continue
                 if (base / ref).as_posix() in tracked or ref in tracked:
                     continue

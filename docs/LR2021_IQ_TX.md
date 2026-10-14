@@ -58,6 +58,56 @@ The current P4 build uses ESP-IDF 5.5.4 and the existing `build_tdp4` configurat
 
 Scale the whole waveform consistently. Normalizing every sample to the same radius removes the amplitude information. RX IQ16 recordings need conversion and resampling before use here.
 
+## REC diagnostics
+
+`rec iq info <path.sub>` queues raw IQ16 statistics: sample count, rate,
+frequency, Euclidean magnitude peak/median, and fraction strictly above their
+midpoint. It also runs `rec_lr_ook` (60 us glitch filter, 4 ms frame gap),
+reporting high pulse count, minimum/maximum high widths, and the first 24 PWM
+bits (400 us = 0, 1200 us = 1, +/-100 us tolerance; otherwise `?`). EOF is
+flushed with silence; the padding does not enter the magnitude statistics.
+
+`rec iq test 433.92 -9 [rate]` queues five MSB-first `0xA53C96`
+repeats: 400/1200 us high in a 1600 us bit, with 10 ms between frames.
+Default 19,200 samples/s, I=48/Q=0 on, zero off; absolute edges are rounded to
+sample times (232 ms nominal). Test and file replay share all existing bounded
+TX, radio ownership, policy, antenna, ROM, FIFO and recovery gates.
+
+Supported rates are 4800, 9600, 19200, 38400, 76800 and 125000.
+`rec iq test 433.92 -9 [rate] fsk` defaults to 125000 and sends five
+4800-baud, +/-20 kHz continuous-phase FSK frames: 32 alternating bits starting
+with 1, MSB-first `0xA53C96`, then `1010`. Each frame is 12.5 ms with a 10 ms
+zero-I/Q gap between frames. Explicit low diagnostic rates are accepted but
+alias tones outside their Nyquist bandwidth; use 125000 for this RF test.
+
+Recording remains IQ16 at 125 kS/s. ARM measures mean noise power for 20 ms,
+then requires three consecutive 1 ms windows at least 10 dB above that floor.
+A 10 ms ring retains roughly 7 ms before the confirming rise. No rise within
+30 seconds reports "no signal" without saving. A carrier already present
+throughout calibration needs a subsequent rise to trigger.
+
+File replay classifies the envelope and pulse widths, requiring on-segment
+phase coherence of at least 0.90 even for clustered pulses. OOK is rebuilt
+from sliced edges at the requested rate (default 19200), I=48/Q=0 on and zero
+off. FSK/other signals retain I/Q, with carrier offset removed using adjacent
+on-sample frequency, median on magnitude mapped to 48, and gaps zeroed.
+Windowed FFTs measure the centered 99%-energy bandwidth. With two FFT bins
+of guard inside the resampler passband, replay chooses 38400 or 76800;
+broad or uncertain signals use 125000 without resampling. A requested rate
+is a minimum for I/Q replay. Decimation uses a 129-tap Hann-windowed sinc
+(cutoff 0.4 times output rate). Magnitudes are limited to 55 before rounding
+to keep IQ8 within the driver's radius-56 gate. Status reports the selected
+path and actual rate.
+The slicer summary is the first status line, so legacy 112-byte readers
+retain pulse count, widths and first bits; full console status also includes
+raw magnitude statistics.
+
+OOK replay was HackRF-verified with three complete exact `0xA53C96` frames.
+The new FSK classification and bandwidth selection have host coverage;
+RF verification of the updated FSK replay remains outstanding. The earlier
+125 kS/s amplitude/edge-only observation was a carrier-centered HackRF
+measurement artifact and is not a reason to avoid native-rate replay.
+
 ## Reference
 
 [Upload protocol and examples](https://github.com/SAMS0N1TE/lr2021-sdr/blob/main/docs/tx-playback.md) · [P25 RF evidence](https://github.com/SAMS0N1TE/lr2021-sdr/tree/main/research/tx-p25) · [Amplitude and phase payload tests](https://github.com/SAMS0N1TE/lr2021-sdr/tree/main/research/tx-payload)

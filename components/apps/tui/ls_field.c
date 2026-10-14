@@ -4,6 +4,7 @@
 #include "ls_compass.h"
 #include "ls_compass_live.h"
 #include "ls_compass_learn.h"
+#include "ls_compass_still.h"
 #include "ls_gauge.h"
 #include "ls_notes.h"
 #include "ls_df_sources.h"
@@ -79,7 +80,8 @@ static void pocsag_stop(void);
 static uint32_t s_next_id = 1;
 static int64_t s_next_sample, s_next_record, s_hold_since, s_tx_deadline;
 static ls_imu_sample_t s_last_imu;
-static int64_t s_last_imu_us;
+static int64_t s_last_imu_us, s_public_imu_us;
+static ls_imu_sample_t s_public_raw_imu;
 static uint32_t s_mesh_seen;
 static bool s_mesh_baseline;
 static int64_t s_next_peers;
@@ -98,8 +100,8 @@ static long s_valid_bytes;
 static long s_import_offset;
 /* The calibration's drift and the battery current's part in it, learnt
    from every reading (ls_compass_learn.h). Worker-owned; `s_learn_pub` is
-   the copy other tasks read under the lock. The saved record carries the
-   learning across a restart for the calibration it was made against. */
+   the copy other tasks read under the lock. Experimental learning is OFF
+   at boot and session-only: old records lacked physical validation evidence. */
 EXT_RAM_BSS_ATTR static ls_compass_learn_t s_learn, s_learn_pub;
 /* What is taken off now: it follows the learner at LEARN_SLEW_UT a second,
    so a correction arriving or going never steps the dial. */
@@ -111,14 +113,24 @@ static int64_t s_learn_us;
 static float s_learn_amps = NAN;
 /* The spectrum sweep's band; zero is 1 MHz either side of the tuned frequency. */
 static uint32_t s_span_lo, s_span_hi;
-static bool s_learn_off, s_learn_reset;
-typedef struct { uint32_t magic, cal_version; float d[3], k[3], amps_lo, amps_hi; uint32_t used, sum; } learn_record;
-EXT_RAM_BSS_ATTR static struct { bool loaded[2], have[2]; learn_record rec[2]; uint32_t written_used[2]; } s_learn_disk;
+static bool s_learn_off = true, s_learn_reset;
+static float s_expected_ut = NAN, s_expected_dip = NAN;
+static bool s_learn_discarded[2], s_reference_dirty;
+
 static bool s_damaged, s_incompatible;
 static const char *s_directory = "/sdcard/journal";
 
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
+
+void ls_field_compass_reference(float ut, float dip)
+{
+    if (!s_lock || !isfinite(ut) || ut <= 0 || !isfinite(dip)) return;
+    lock();
+    if (!isfinite(s_expected_ut) || fabsf(ut-s_expected_ut) > 0.01f) s_reference_dirty = true;
+    s_expected_ut = ut; s_expected_dip = dip;
+    unlock();
+}
 
 /* The last IMU_TRACE samples exactly as the field worker used them, for
    `compass trace`. Added 2026-09-28: turning the board by hand, the magnetic
@@ -173,6 +185,55 @@ void ls_field_imu_trace(float seconds)
         if ((k & 31) == 31) vTaskDelay(1);   /* let the console drain */
     }
 }
+/* Console-only acquisition; field worker remains the sole sensor owner. */
+void ls_field_compass_still(unsigned seconds)
+{
+    if (!s_lock) { printf("compass still: open COMPASS first\n"); return; }
+    ls_compass_steady_t fusion = {0};
+    ls_compass_still_t stats = {0};
+    int64_t previous = 0, first_sample = 0, last_sample = 0;
+    bool back = false;
+    const int64_t start = esp_timer_get_time(), measure = start + 4000000;
+    const int64_t end = measure + (int64_t)seconds*1000000;
+    printf("compass still: keep board still; 4 s acquisition, then %u s (60 s required for PASS)\n", seconds);
+    /* Include the endpoint observation. A stale stream has a bounded timeout
+       and cannot borrow the requested duration to claim 60 s of data. */
+    while (esp_timer_get_time() < end + 350000) {
+        ls_field_sample_t p; ls_imu_sample_t raw; ls_field_compass_snapshot(&p, &raw);
+        const int64_t now = esp_timer_get_time();
+        if (p.time_us != previous && now >= p.time_us && now-p.time_us < 350000) {
+            const float dt = previous ? (p.time_us-previous)/1e6f : 0.1f;
+            previous = p.time_us;
+            ls_compass_reading_t r; ls_compass_cal_t cal;
+            const bool have_cal = ls_field_compass_cal(&cal);
+            ls_compass_solve(p.imu_valid ? &p.imu : NULL, have_cal ? &cal : NULL, &back, &r);
+            const float h = ls_compass_steady_sample(&fusion, r.valid ? r.magnetic : NAN,
+                r.pitch, r.roll, p.imu_valid ? &raw : NULL, dt);
+            if (now >= measure) {
+                const float v[5] = {p.imu.gx,p.imu.gy,p.imu.gz,r.field_ut,r.dip};
+                if (!first_sample) first_sample = p.time_us;
+                last_sample = p.time_us;
+                ls_compass_still_add(&stats, r.valid && p.imu_valid ? h : NAN, v, fusion.stationary);
+                if (last_sample-first_sample >= (int64_t)seconds*1000000) break;
+            }
+        } else if (now >= measure && now-p.time_us >= 350000) stats.missing++;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    const float elapsed = first_sample ? (last_sample-first_sample)/1e6f : 0;
+    printf("compass still: %s span=%.2f s n=%lu moving=%lu missing=%lu range=%.2f net=%+.2f deg\n",
+        ls_compass_still_pass(&stats, elapsed) ? "PASS" : "FAIL", elapsed,
+        (unsigned long)stats.n,(unsigned long)stats.moving,(unsigned long)stats.missing,
+        stats.hi-stats.lo,stats.angle-stats.first);
+    printf("compass still: gyro mean/sd %.2f/%.2f %.2f/%.2f %.2f/%.2f dps; field %.2f/%.2f uT; dip %.2f/%.2f deg\n",
+        stats.mean[0],sqrt(stats.m2[0]/fmax(1,stats.n)),
+        stats.mean[1],sqrt(stats.m2[1]/fmax(1,stats.n)),
+        stats.mean[2],sqrt(stats.m2[2]/fmax(1,stats.n)),
+        stats.mean[3],sqrt(stats.m2[3]/fmax(1,stats.n)),
+        stats.mean[4],sqrt(stats.m2[4]/fmax(1,stats.n)));
+    printf("compass still: gyro %s; bias %.2f %.2f %.2f dps (heading stability is not absolute accuracy)\n",
+        fusion.gyro_healthy ? "qualified" : "rejected/unconverged",fusion.rest[0],fusion.rest[1],fusion.rest[2]);
+}
+
 /* Feeds one sample to the learner and takes what it has learnt off the
    sample every reader of it gets. The trace keeps the raw reading. */
 static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t *cal,
@@ -181,19 +242,15 @@ static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t
     lock();
     const bool off = s_learn_off, reset = s_learn_reset;
     s_learn_reset = false;
-    const bool have = s_learn_disk.have[s_profile] && s_learn_disk.rec[s_profile].cal_version == version;
-    const learn_record rec = s_learn_disk.rec[s_profile];
+    const float expected = s_expected_ut, dip = s_expected_dip;
     unlock();
     if (reset || s_learn_profile != s_profile || s_learn_version != version) {
         ls_compass_learn_reset(&s_learn, cal->radius);
         if (s_learn_profile != s_profile || s_learn_version != version)
             s_learn_applied[0] = s_learn_applied[1] = s_learn_applied[2] = 0;
-        if (have && !reset) {
-            ls_compass_learn_seed(&s_learn, rec.d, rec.k, 3.0f, 15.0f);
-            s_learn.amps_lo = rec.amps_lo; s_learn.amps_hi = rec.amps_hi;
-        }
         s_learn_profile = s_profile; s_learn_version = version; s_learn_us = 0;
     }
+    s_learn.expected_ut = expected; s_learn.expected_dip = dip;
     int16_t ma; int64_t age;
     const float amps = ls_gauge_peek(&ma, &age) && age < 3000000 ? ma / 1000.0f : NAN;
     if (fresh && !off) {
@@ -208,13 +265,32 @@ static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t
         s_learn_us = now;
     }
     float corr[3], raw[3];
-    if (off || !ls_compass_learn_correction(&s_learn, amps, corr)) corr[0] = corr[1] = corr[2] = 0;
+    const bool candidate = !off && ls_compass_learn_correction(&s_learn, amps, corr);
+    if (!candidate) {
+        corr[0] = corr[1] = corr[2] = 0;
+        /* A failed physical gate revokes the state, not just this frame. */
+        if (!off && s_learn.applied) {
+            ls_compass_learn_reset(&s_learn, cal->radius);
+            s_learn.expected_ut = expected; s_learn.expected_dip = dip;
+        }
+        memset(s_learn_applied, 0, sizeof(s_learn_applied));
+    }
     if (fresh) {
         const float step = LEARN_SLEW_UT * 0.1f;
         for (int i = 0; i < 3; i++) {
             const float d = corr[i] - s_learn_applied[i];
             s_learn_applied[i] += d > step ? step : d < -step ? -step : d;
         }
+    }
+    float field[3], up[3];
+    ls_compass_gravity(&p->imu, up);
+    if (!ls_compass_field(&p->imu, cal, field) ||
+        !ls_compass_learn_plausible(field, up, s_learn_applied,
+                                  isfinite(expected) ? expected : cal->radius, dip)) {
+        /* Slewing a safe endpoint can pass through an unsafe field. Roll
+           back immediately to the saved calibration, never slew the fault. */
+        memset(s_learn_applied, 0, sizeof(s_learn_applied));
+        ls_compass_learn_reset(&s_learn, cal->radius);
     }
     if (ls_compass_unfield(cal, s_learn_applied, raw)) {
         p->imu.mx -= raw[0]; p->imu.my -= raw[1]; p->imu.mz -= raw[2];
@@ -224,7 +300,7 @@ static void learn_step(int64_t now, ls_field_sample_t *p, const ls_compass_cal_t
 
 static void message(const char *text) { snprintf(s_live.status, sizeof(s_live.status), "%s", text); }
 static void storage(const char *text) { lock(); snprintf(s_storage, sizeof(s_storage), "%s", text); unlock(); }
-static void publish(void) { const uint32_t caps = ls_lora_caps(); lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; s_live.span_lo_hz = s_span_lo; s_live.span_hi_hz = s_span_hi; ls_labs_span(caps, s_live.config.freq_hz, &s_live.span_lo_hz, &s_live.span_hi_hz); memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; unlock(); }
+static void publish(void) { const uint32_t caps = ls_lora_caps(); lock(); s_live.record_rows=record_rows;s_live.record_errors=record_errors;s_live.record_packets=record_packets;s_live.record_saved_us=record_saved_us;s_live.journal_count = (int)s_count; s_live.span_lo_hz = s_span_lo; s_live.span_hi_hz = s_span_hi; ls_labs_span(caps, s_live.config.freq_hz, &s_live.span_lo_hz, &s_live.span_hi_hz); memcpy(s_live.storage, s_storage, sizeof(s_storage)); s_public = s_live; s_public_raw_imu = s_last_imu; s_public_imu_us = s_last_imu_us; unlock(); }
 
 static void detected(int64_t now, uint32_t frequency, float rssi, float snr, bool mesh)
 {
@@ -598,18 +674,11 @@ static void finish_calibration(void)
        accepted, replaced a 4 % fit only because it was newer, and left the
        interference check almost no margin. Refuse it, and never trade a
        saved fit for a clearly worse one. */
-    lock(); const compass_profile prev = s_profiles[s_profile]; unlock();
-    if (fitted && (cal.error > LS_FIELD_CAL_ERROR_MAX ||
-                   (prev.valid && cal.error > prev.cal.error + .02f))) {
+    lock(); const compass_profile prev = s_profiles[s_profile]; const float expected = s_expected_ut; unlock();
+    const char *rejected = fitted ? ls_compass_cal_upgrade(&cal, prev.valid ? &prev.cal : NULL, expected) : NULL;
+    if (rejected) {
         s_live.calibration_failed = true;
-        if (prev.valid && cal.error > prev.cal.error + .02f)
-            snprintf(s_live.compass_status, sizeof(s_live.compass_status),
-                     "Fit %.0f%%, worse than the saved %.0f%%; kept the saved one",
-                     cal.error * 100, prev.cal.error * 100);
-        else
-            snprintf(s_live.compass_status, sizeof(s_live.compass_status),
-                     "Fit %.0f%%: the field moved while turning. Retry off chargers and metal",
-                     cal.error * 100);
+        snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration refused: %s", rejected);
         return;
     }
     if (fitted) {
@@ -951,8 +1020,19 @@ static bool mirror_to_notes(const ls_journal_entry_t *e)
 
 static void io_step(void)
 {
-    if (!s_loaded) {
-        load_notes();
+    lock(); const bool reload = s_reference_dirty; s_reference_dirty = false;
+    const float expected = s_expected_ut; unlock();
+    if (!s_loaded || reload) {
+        if (!s_loaded) load_notes();
+        /* WMM may arrive after the SD read. Reconsider both slots then;
+           a low residual cannot rescue a physically impossible radius. */
+        lock();
+        for (int i=0;i<2;i++) {
+            compass_profile *c=&s_profiles[i];
+            if (c->version==c->written && c->valid && ls_compass_cal_upgrade(&c->cal,NULL,expected))
+                c->valid=false;
+        }
+        unlock();
         for(int profile=0;profile<2;profile++) for(int slot=0;slot<2;slot++) {
             char name[160],leaf[40];
             snprintf(leaf,sizeof(leaf),"compass-%s%d.cal",profile?"kbd":"solo",slot);
@@ -960,25 +1040,31 @@ static void io_step(void)
             FILE *f=fopen(name,"rb"); compass_record record;
             bool valid=f && fread(&record,sizeof(record),1,f)==1 &&
                 record.magic==0x43414c10u+(unsigned)profile && record.generation>0 &&
-                record.sum==checksum(&record,sizeof(record)-sizeof(record.sum)) && ls_compass_cal_valid(&record.cal);
+                record.sum==checksum(&record,sizeof(record)-sizeof(record.sum)) && !ls_compass_cal_upgrade(&record.cal, NULL, expected);
             if(f)fclose(f);
             if(valid) {
                 lock();compass_profile *c=&s_profiles[profile];
-                if(c->version==c->written && (!c->valid || (int32_t)(record.generation-c->version)>0)) {
+                if(c->version==c->written && (!c->valid || record.cal.error < c->cal.error ||
+                    (record.cal.error == c->cal.error && (int32_t)(record.generation-c->version)>0))) {
                     c->cal=record.cal;c->valid=c->saved=true;c->version=c->written=record.generation;
                 }
                 unlock();
             }
         }
-        for(int profile=0;profile<2;profile++) {
+        if (!s_loaded) for(int profile=0;profile<2;profile++) {
             char name[160],leaf[40];
             snprintf(leaf,sizeof(leaf),"compass-%s.learn",profile?"kbd":"solo");
             if(!path(name,sizeof(name),leaf))continue;
-            FILE *f=fopen(name,"rb"); learn_record r;
-            const bool ok=f && fread(&r,sizeof(r),1,f)==1 && r.magic==0x4c524e01u+(unsigned)profile &&
-                r.sum==checksum(&r,sizeof(r)-sizeof(r.sum));
-            if(f)fclose(f);
-            lock(); if(ok){s_learn_disk.rec[profile]=r;s_learn_disk.have[profile]=true;s_learn_disk.written_used[profile]=0;} unlock();
+            /* Legacy records contain no independent field/dip observations.
+               Covariance and checksums do not establish physical validity.
+               Retire them at boot; experimental learning is session-only. */
+            FILE *f=fopen(name,"rb");
+            if(f) {
+                fclose(f);
+                const bool removed = remove(name) == 0;
+                lock(); s_learn_discarded[profile] = removed; unlock();
+            }
+
         }
         /* Old compass0/1 files lack attachment identity. Preserve them without
            guessing which setup they describe. New profiles require calibration.
@@ -1036,24 +1122,6 @@ static void io_step(void)
         if(c.version==s_profiles[profile].version)s_profiles[profile].saved=saved;
         s_profiles[profile].written=c.version;
         unlock();
-    }
-    /* What the learner found, every few minutes of use, for the profile it
-       is running: a restart then starts from it instead of from nothing. */
-    lock();
-    const int lp=s_learn_profile; const ls_compass_learn_t lc=s_learn_pub; const uint32_t lv=s_learn_version;
-    /* Only what a turn has confirmed: an offset learnt holding still is
-       half a guess, and seeding the next start with it is worse than none. */
-    const bool due=lp>=0 && lc.started && lc.applied && lc.used>=s_learn_disk.written_used[lp]+3000;
-    unlock();
-    if(due) {
-        char name[160],leaf[40];
-        snprintf(leaf,sizeof(leaf),"compass-%s.learn",lp?"kbd":"solo");
-        learn_record r={.magic=0x4c524e01u+(unsigned)lp,.cal_version=lv,.amps_lo=lc.amps_lo,.amps_hi=lc.amps_hi,.used=lc.used};
-        for(int i=0;i<3;i++){r.d[i]=lc.x[i];r.k[i]=lc.x[3+i];}
-        r.sum=checksum(&r,sizeof(r)-sizeof(r.sum));
-        bool ok=false;
-        if(path(name,sizeof(name),leaf)){FILE *f=fopen(name,"wb");if(f){ok=fwrite(&r,sizeof(r),1,f)==1;if(fclose(f)!=0)ok=false;}}
-        lock(); s_learn_disk.written_used[lp]=lc.used; if(ok){s_learn_disk.rec[lp]=r;s_learn_disk.have[lp]=true;} unlock();
     }
     lock(); bool have_note = s_note_count > 0;
     if (have_note) { s_disk = s_notes[s_note_head]; s_note_head = (s_note_head + 1) % QUEUE_CAP; s_note_count--; }
@@ -1183,6 +1251,14 @@ static command *reserve(void)
 static bool commit(void) { s_qcount++; unlock(); return true; }
 
 void ls_field_sample_snapshot(ls_field_sample_t *out) { if(!out) return; if(!s_lock) { memset(out,0,sizeof(*out)); return; } lock(); *out=s_public.sample; unlock(); }
+/* Coherent corrected sample + raw sensor observation, with sensor time rather
+   than worker publication time. Cached fallback readings never count twice. */
+void ls_field_compass_snapshot(ls_field_sample_t *out, ls_imu_sample_t *raw)
+{
+    if (!out || !raw) return;
+    if (!s_lock) { memset(out,0,sizeof(*out)); memset(raw,0,sizeof(*raw)); return; }
+    lock(); *out=s_public.sample; *raw=s_public_raw_imu; out->time_us=s_public_imu_us; unlock();
+}
 void ls_field_snapshot(ls_field_state_t *out) { if (!out) return; if (!s_lock) { memset(out, 0, sizeof(*out)); return; } lock(); *out = s_public; unlock(); }
 bool ls_field_owned(void) { if (!s_lock) return false; lock(); bool owned = s_want || s_falls_want || s_public.direct || s_public.busy; unlock(); return owned; }
 bool ls_field_direct(bool on) { if (!s_started) return false; lock(); s_want = on; if (!on) { s_falls_want = false; s_stop = true; } unlock(); return true; }
@@ -1228,9 +1304,13 @@ void ls_field_compass_report(void)
 {
     if (!s_lock) { printf("compass: field worker not started (open COMPASS)\n"); return; }
     lock(); const int active = s_profile; compass_profile pr[2]; memcpy(pr, s_profiles, sizeof(pr));
-    const bool loaded = s_loaded; unlock();
+    const bool loaded = s_loaded; const float expected = s_expected_ut;
+    const bool discarded[2] = {s_learn_discarded[0], s_learn_discarded[1]}; unlock();
     printf("compass: active profile %s, files %s\n", active ? "keyboard" : "standalone",
            loaded ? "read" : "NOT read yet");
+    printf("compass: selection = lowest fit error within 20%% of reference; generation breaks ties\n");
+    printf("compass: learner defaults OFF, session-only; legacy records ignored, removed %d/%d\n",
+           discarded[0], discarded[1]);
     for (int profile = 0; profile < 2; profile++) {
         printf("compass: %-10s valid %d saved %d version %u written %u\n", profile ? "keyboard" : "standalone",
                pr[profile].valid, pr[profile].saved, (unsigned)pr[profile].version, (unsigned)pr[profile].written);
@@ -1243,7 +1323,8 @@ void ls_field_compass_report(void)
             const bool whole = fread(&record, sizeof(record), 1, f) == 1;
             fclose(f);
             if (!whole) { printf("compass:   %s: short\n", leaf); continue; }
-            const char *problem = ls_compass_cal_problem(&record.cal);
+            const char *problem = ls_compass_cal_upgrade(&record.cal,
+                pr[profile].valid ? &pr[profile].cal : NULL, expected);
             printf("compass:   %s: magic %s gen %u sum %s cal %s  radius %.1f error %.3f basis %d %d %d\n", leaf,
                    record.magic == 0x43414c10u + (unsigned)profile ? "ok" : "OLD",
                    (unsigned)record.generation,
@@ -1293,8 +1374,6 @@ void ls_field_compass_learn_report(void)
     lock();
     const ls_compass_learn_t l = s_learn_pub;
     const bool off = s_learn_off; const float amps = s_learn_amps; const int prof = s_learn_profile;
-    const bool have = prof >= 0 && s_learn_disk.have[prof];
-    const learn_record rec = have ? s_learn_disk.rec[prof] : (learn_record){0};
     unlock();
     float corr[3];
     lock(); memcpy(corr, s_learn_applied, sizeof(corr)); unlock();
@@ -1318,8 +1397,7 @@ void ls_field_compass_learn_report(void)
     printf("compass learn: field seen from %d of 8 directions (%d needed), axes applied %c%c%c\n", sec, LS_CL_SECTORS,
            l.applied & 1 ? 'x' : '-', l.applied & 2 ? 'y' : '-', l.applied & 4 ? 'z' : '-');
     if (ok) printf("compass learn: taking off %+.1f %+.1f %+.1f uT now\n", corr[0], corr[1], corr[2]);
-    if (have) printf("compass learn: saved record from %lu readings, drift %+.1f %+.1f %+.1f, per amp %+.1f %+.1f %+.1f\n",
-                     (unsigned long)rec.used, rec.d[0], rec.d[1], rec.d[2], rec.k[0], rec.k[1], rec.k[2]);
+    printf("compass learn: session-only; physical limits +/-20%% field, +/-15 deg known dip\n");
 }
 
 bool ls_field_calibrating(void) { if (!s_lock) return false; lock(); bool active = s_public.calibrating; unlock(); return active; }

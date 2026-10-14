@@ -56,3 +56,52 @@ unsigned ble_link_observer_dispatch(ble_link_observer_t *q, unsigned budget)
     }
     return n;
 }
+
+bool ble_link_observer_ext(ble_link_observer_t *q,const uint8_t addr[6],
+    uint8_t type,uint8_t sid,int rssi,bool response,uint8_t status,
+    const uint8_t *data,size_t len,int64_t us)
+{
+    if(!q || !addr || (!data && len))return false;
+    if(us<q->chain_quarantine) {__atomic_fetch_add(&q->dropped,1,__ATOMIC_RELAXED);return false;}
+    int slot=-1,free_slot=-1;
+    for(unsigned i=0;i<4;i++) {
+        if(q->chains[i].used && us-q->chains[i].at>2000000) {
+            /* A late tail has no chain-start marker. Quarantine rather than
+             * parse it as a new complete advertisement. */
+            memset(q->chains,0,sizeof(q->chains));q->chain_quarantine=us+2000000;
+            __atomic_fetch_add(&q->dropped,1,__ATOMIC_RELAXED);return false;
+        }
+        if(!q->chains[i].used)free_slot=i;
+        else if(q->chains[i].type==type && q->chains[i].sid==sid &&
+            q->chains[i].response==response && !memcmp(q->chains[i].addr,addr,6))slot=i;
+    }
+    if(status>=2) {
+        if(slot>=0)q->chains[slot].used=false;
+        __atomic_fetch_add(&q->invalid,1,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&q->dropped,1,__ATOMIC_RELAXED);return false;
+    }
+    if(slot<0 && status==0)return ble_link_observer_push(q,addr,type,rssi,response,data,len,us);
+    if(slot<0) {
+        if(free_slot<0) {
+            /* Fail closed while tails of untracked chains can still arrive. */
+            memset(q->chains,0,sizeof(q->chains));q->chain_quarantine=us+2000000;
+            __atomic_fetch_add(&q->dropped,1,__ATOMIC_RELAXED);return false;
+        }
+        slot=free_slot;memset(&q->chains[slot],0,sizeof(q->chains[slot]));
+        q->chains[slot].used=true;q->chains[slot].type=type;q->chains[slot].sid=sid;
+        q->chains[slot].response=response;memcpy(q->chains[slot].addr,addr,6);
+    }
+    q->chains[slot].at=us;
+    if(len>(size_t)(BLE_LINK_AD_MAX-q->chains[slot].len))q->chains[slot].discard=true;
+    if(!q->chains[slot].discard) {
+        if(len)memcpy(q->chains[slot].data+q->chains[slot].len,data,len);
+        q->chains[slot].len+=len;
+    }
+    if(status==1)return false;
+    q->chains[slot].used=false;
+    if(q->chains[slot].discard) {
+        __atomic_fetch_add(&q->invalid,1,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&q->dropped,1,__ATOMIC_RELAXED);return false;
+    }
+    return ble_link_observer_push(q,addr,type,rssi,response,q->chains[slot].data,q->chains[slot].len,us);
+}

@@ -212,8 +212,8 @@ static esp_err_t set_packet_params(uint8_t payload_len)
     uint8_t tx[7] = {
         OP_SET_PKT_PARAMS,
         (uint8_t)(s_cfg.preamble >> 8), (uint8_t)s_cfg.preamble,
-        0x00,                                   /* explicit, variable length */
-        payload_len,
+        (uint8_t)(s_cfg.implicit_rx_bytes != 0),
+        s_cfg.implicit_rx_bytes ? s_cfg.implicit_rx_bytes : payload_len,
         (uint8_t)(s_cfg.crc_on ? 1 : 0),
         (uint8_t)(s_cfg.invert_iq ? 1 : 0),
     };
@@ -343,6 +343,7 @@ static esp_err_t configure_lora(const ls_lora_cfg_t *cfg)
            same mask because it is the only line brought out on this board. */
         uint16_t mask = IRQ_TX_DONE | IRQ_RX_DONE | IRQ_CRC_ERR |
                         IRQ_HEADER_ERR | IRQ_TIMEOUT;
+        if(s_cfg.implicit_rx_bytes)mask|=4|16; /* Preamble/header activity source. */
         uint8_t tx[9] = { OP_SET_DIO_IRQ,
                           (uint8_t)(mask >> 8), (uint8_t)mask,
                           (uint8_t)(mask >> 8), (uint8_t)mask,
@@ -402,6 +403,7 @@ static bool sx_is_transmitting(void) { return s_tx_busy; }
 
 static esp_err_t sx_send(const uint8_t *data, size_t len)
 {
+    if(s_cfg.implicit_rx_bytes)return ESP_ERR_INVALID_STATE;
     if (!s_cfg_valid || s_fsk_active) return ESP_ERR_INVALID_STATE;
     if (!data || len == 0) return ESP_ERR_INVALID_ARG;
     if (len > 255) return ESP_ERR_INVALID_SIZE;
@@ -905,6 +907,31 @@ static esp_err_t sx_scan_end(void)
     return sx_receive();
 }
 
+/* SX126x datasheet table 13-29: preamble bit 2, valid header bit 4.
+ * Read IRQ directly: activity need not be mapped onto the board's DIO. */
+static int sx_activity(float *dbm)
+{
+    if(!s_cfg_valid || !s_rx_mode || s_fsk_active || s_scanning || s_tx_busy)return -1;
+    uint16_t irq=0;
+    if(get_irq(&irq)!=ESP_OK)return -1;
+    int flags=((irq&4)?LS_LORA_PREAMBLE:0)|((irq&16)?LS_LORA_HEADER:0);
+    uint16_t end=IRQ_RX_DONE|IRQ_CRC_ERR|IRQ_HEADER_ERR|IRQ_TIMEOUT;
+    if(irq&end)flags|=LS_LORA_END;
+    if((irq&IRQ_RX_DONE) && !(irq&(IRQ_CRC_ERR|IRQ_HEADER_ERR))) {
+        flags|=LS_LORA_HEADER;
+        uint8_t r[5]={OP_GET_PKT_STATUS,0,0,0,0};
+        if(xfer(r,r,sizeof(r))!=ESP_OK)return -1;
+        if(dbm)*dbm=-(float)r[2]/2;
+    } else if(flags&3) {
+        uint8_t r[3]={OP_GET_RSSI_INST,0,0};
+        if(xfer(r,r,sizeof(r))!=ESP_OK || !rssi_status_valid(r[1]))return -1;
+        if(dbm)*dbm=-(float)r[2]/2;
+    }
+    if(clear_irq(irq)!=ESP_OK)return -1;
+    if((irq&end) && sx_receive()!=ESP_OK)return -1;
+    return flags;
+}
+
 static esp_err_t sx_rssi_inst(float *dbm)
 {
     if (!s_cfg_valid || !s_rx_mode) return ESP_ERR_INVALID_STATE;
@@ -987,6 +1014,7 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
     .send = sx_send,
     .send_done = sx_send_done,
     .poll = sx_poll,
+    .activity = sx_activity,
     .rssi_inst = sx_rssi_inst,
     .airtime_ms = sx_airtime_ms,
     .fsk_begin = sx_fsk_begin,

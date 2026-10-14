@@ -13,16 +13,18 @@ static double dot3(ned a, ned b) { return a.n * b.n + a.e * b.e + a.d * b.d; }
 /* A field of 20 uT north and 45 uT down: about New England's dip. */
 static const ned FIELD = { 20, 0, 45 };
 
-/* The board with its top at azimuth `yaw`, raised by `pitch`, rolled about
-   the top by `roll`, all degrees, in `field`. Fills a sample the way ls_imu
-   does. */
+/* Independent world-frame fixture: yaw in NED, pitch about world right,
+   roll about the horizontal viewing direction (not the top edge, which
+   becomes a yaw axis at upright). */
 static ls_imu_sample_t pose_in(ned field, double yaw, double pitch, double roll, const float offset[3])
 {
     const double y = yaw * RAD, p = pitch * RAD, r = roll * RAD;
-    const ned top = { cos(y) * cos(p), sin(y) * cos(p), -sin(p) };
+    const ned forward = { cos(y), sin(y), 0 };
     const ned r0 = { -sin(y), cos(y), 0 };
-    const ned tr = cross3(top, r0);
-    const ned right = { r0.n * cos(r) + tr.n * sin(r), r0.e * cos(r) + tr.e * sin(r), r0.d * cos(r) + tr.d * sin(r) };
+    const ned right = { r0.n*cos(r), r0.e*cos(r), sin(r) };
+    const ned up = cross3(right, forward);
+    const ned top = { forward.n*cos(p)+up.n*sin(p),
+                      forward.e*cos(p)+up.e*sin(p), up.d*sin(p) };
     const ned out = cross3(right, top);
     const ned upward = { 0, 0, -1 };
     ls_imu_sample_t s;
@@ -102,18 +104,21 @@ LS_CASE(rising_from_flat_to_upright_never_jumps)
             bool back = false;
             double last = NAN, worst = 0;
             int at = 0;
-            for (int i = 0; i <= 170; i++) {
-                const int pitch = i <= 85 ? i : 170 - i;     /* up to 85 and back down */
+            for (int i = 0; i <= 190; i++) {
+                const int pitch = i <= 95 ? i : 190 - i;     /* up to 95 and back down */
                 ls_imu_sample_t s = pose(yaw, pitch, roll, NULL);
                 ls_compass_reading_t r;
                 LS_CHECK(ls_compass_solve(&s, NULL, &back, &r));
+                LS_CHECK_MSG(angle_error(r.magnetic, yaw) < 2.0,
+                             "pitch %d roll %d heading %.3f expected %d", pitch, roll, r.magnetic, yaw);
+                LS_CHECK(!r.low_confidence);
                 if (isfinite(last) && angle_error(r.magnetic, last) > worst) {
                     worst = angle_error(r.magnetic, last);
                     at = pitch;
                 }
                 last = r.magnetic;
             }
-            LS_CHECK_MSG(worst < 4.0, "roll %d yaw %d: the heading stepped %.1f degrees at pitch %d",
+            LS_CHECK_MSG(worst < 3.0, "roll %d yaw %d: the heading stepped %.1f degrees at pitch %d",
                          roll, yaw, worst, at);
         }
 }
@@ -206,7 +211,8 @@ LS_CASE(board_poses_read_flat_as_flat_and_agree_on_the_dip)
     for (int i = 0; i < 5; i++) {
         ls_imu_sample_t s = {.ax=p[i][0],.ay=p[i][1],.az=p[i][2],.mx=p[i][3],.my=p[i][4],.mz=p[i][5],.mag_valid=true};
         ls_compass_reading_t r; bool back = false;
-        LS_CHECK(ls_compass_solve(&s, &cal, &back, &r));
+        const bool solved = ls_compass_solve(&s, &cal, &back, &r);
+        LS_CHECK(i == 2 ? !solved && r.low_confidence : solved);
         LS_CHECK(r.dip > 45 && r.dip < 72);
         if (i == 0 || i == 1 || i == 4) LS_CHECK(r.tilt < 10);
     }
@@ -383,6 +389,7 @@ typedef struct {
     ls_rng_t rng;
     double next;
     float heading, g[3], a[3];
+    ls_imu_sample_t sample;   /* the last sample whole, as scr_compass passes it */
     bool back;
 } bench_t;
 
@@ -426,9 +433,12 @@ static float bench_frame(bench_t *b, ls_compass_steady_t *s, double t, double ya
         b->a[0] = m.ax + 0.01f * n * ls_rng_noise(&b->rng);
         b->a[1] = m.ay + 0.01f * n * ls_rng_noise(&b->rng);
         b->a[2] = m.az + 0.01f * n * ls_rng_noise(&b->rng);
+        b->sample = m; b->sample.mag_valid = true;
+        b->sample.ax = b->a[0]; b->sample.ay = b->a[1]; b->sample.az = b->a[2];
+        b->sample.gx = b->g[0]; b->sample.gy = b->g[1]; b->sample.gz = b->g[2];
     }
     if (b->loop_only) return ls_compass_steady_step(s, b->heading, 0, 0, ls_compass_yaw_rate(b->g, b->a), 0.04f);
-    return ls_compass_steady_imu(s, b->heading, 0, 0, b->g, b->a, 0.04f);
+    return ls_compass_steady_sample(s, b->heading, 0, 0, &b->sample, 0.04f);
 }
 
 /* A turn of `deg` over `secs` from t0, as a hand makes one: from rest to
@@ -620,4 +630,102 @@ LS_CASE(an_unobserved_gyro_turn_cannot_snap_to_a_lasting_magnetic_step)
         LS_CHECK(off_deg(h, was) <= LS_COMPASS_PULL_DPS * 0.04f + 0.001f);
         LS_NEAR(s.agree, 0, 0.001);
     }
+}
+
+LS_CASE(view_roll_and_gyro_share_one_heading)
+{
+    for (int pitch = 0; pitch <= 95; pitch += 5) {
+        bool back = false;
+        ls_compass_steady_t steady = {0};
+        steady.rest_known = steady.gyro_healthy = true;
+        for (int roll = -30; roll <= 30; roll++) {
+            ls_imu_sample_t p = pose(137, pitch, roll, NULL);
+            ls_compass_reading_t r;
+            LS_CHECK(ls_compass_solve(&p, NULL, &back, &r));
+            /* 10 dps about world forward, projected into sensor axes. */
+            const float g[] = {0, 10*cosf(pitch*RAD), 10*sinf(pitch*RAD)};
+            const float a[] = {p.ax,p.ay,p.az};
+            LS_NEAR(ls_compass_yaw_rate(g,a),0,.001);
+            const float h = ls_compass_steady_imu(&steady,r.magnetic,r.pitch,r.roll,g,a,.1f);
+            LS_CHECK(angle_error(h,137)<2);
+            LS_CHECK(steady.started);
+        }
+    }
+}
+LS_CASE(indeterminate_view_holds_without_restarting)
+{
+    bool back = false; ls_compass_reading_t r;
+    ls_compass_steady_t steady = {0};
+    ls_compass_steady_step(&steady,137,0,0,0,.1f);
+    for (int i=0;i<50;i++) {
+        ls_imu_sample_t p=pose(137,45,85,NULL);
+        LS_CHECK(!ls_compass_solve(&p,NULL,&back,&r));
+        LS_CHECK(r.low_confidence);
+        float h=ls_compass_steady_sample(&steady,r.magnetic,r.pitch,r.roll,&p,.1f);
+        LS_NEAR(h,137,.001); LS_CHECK(steady.started);
+    }
+    ls_imu_sample_t p=pose(137,0,0,NULL);
+    LS_CHECK(ls_compass_solve(&p,NULL,&back,&r));
+    LS_NEAR(ls_compass_steady_sample(&steady,r.magnetic,r.pitch,r.roll,&p,.1f),137,.001);
+}
+
+LS_CASE(pitch_sweep_fusion_keeps_reference_and_gyro_bias)
+{
+    for(int yaw=0;yaw<360;yaw+=30) {
+        ls_compass_steady_t steady={0}; bool back=false;
+        steady.rest_known=steady.gyro_healthy=true;
+        for(int i=0;i<=190;i++) {
+            int pitch=i<=95 ? i : 190-i;
+            ls_imu_sample_t p=pose(yaw,pitch,0,NULL);
+            ls_compass_reading_t r;
+            LS_CHECK(ls_compass_solve(&p,NULL,&back,&r));
+            const float a[]={p.ax,p.ay,p.az};
+            const float g[]={i<=95 ? -10 : 10,0,0};
+            const float before=steady.heading;
+            float h=ls_compass_steady_imu(&steady,r.magnetic,r.pitch,r.roll,g,a,.1f);
+            LS_CHECK(steady.started); LS_CHECK(steady.rest_known);
+            LS_CHECK(angle_error(h,yaw)<2);
+            if(i) LS_CHECK(angle_error(h,before)<3);
+            LS_NEAR(steady.bias,0,.001);
+        }
+    }
+}
+
+LS_CASE(field_quality_boundaries_and_missing_reference)
+{
+    LS_CHECK(ls_compass_quality(false, 52, 52, 66, 66) == LS_COMPASS_UNCALIBRATED);
+    LS_CHECK(ls_compass_quality(true, 52, NAN, 66, 66) == LS_COMPASS_UNCALIBRATED);
+    LS_CHECK(ls_compass_quality(true, 52, 0, 66, 66) == LS_COMPASS_UNCALIBRATED);
+    LS_CHECK(ls_compass_quality(true, 40, 50, 51, 66) == LS_COMPASS_GOOD);
+    LS_CHECK(ls_compass_quality(true, 60, 50, 81, 66) == LS_COMPASS_GOOD);
+    LS_CHECK(ls_compass_quality(true, 39.99f, 50, 66, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 60.01f, 50, 66, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 50, 50, 50.99f, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 50, 50, 81.01f, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 50, 50, 4, NAN) == LS_COMPASS_GOOD);
+    LS_CHECK(ls_compass_quality(true, 16.5f, 52.6f, 4, NAN) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 16.5f, 52.6f, 4, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, NAN, 52, 66, 66) == LS_COMPASS_DISTURBED);
+    LS_CHECK(ls_compass_quality(true, 52, 52, NAN, 66) == LS_COMPASS_DISTURBED);
+}
+
+LS_CASE(field_quality_without_gps_and_after_model)
+{
+    ls_compass_cal_t cal = { .radius=52.6f };
+    ls_imu_sample_t sample = pose_in((ned){16.46,0,1.15}, 0, 0, 0, NULL);
+    ls_compass_reading_t r; bool back=false;
+    LS_CHECK(!ls_compass_solve(NULL, &cal, &back, &r));
+    LS_CHECK(r.quality == LS_COMPASS_DISTURBED);
+    LS_CHECK(!ls_compass_solve(NULL, NULL, &back, &r));
+    LS_CHECK(r.quality == LS_COMPASS_UNCALIBRATED);
+    LS_CHECK(ls_compass_solve(&sample, &cal, &back, &r));
+    LS_CHECK(r.quality == LS_COMPASS_DISTURBED);
+    LS_CHECK(!r.model && r.interference);
+    sample = pose_in((ned){21.394,0,48.051}, 0, 0, 0, NULL);
+    LS_CHECK(ls_compass_solve(&sample, &cal, &back, &r));
+    LS_CHECK(r.quality == LS_COMPASS_GOOD);
+    ls_compass_apply_model(&r, -14, 52, 4);
+    LS_CHECK(r.quality == LS_COMPASS_DISTURBED);
+    ls_compass_apply_model(&r, -14, 52, 66);
+    LS_CHECK(r.quality == LS_COMPASS_GOOD);
 }

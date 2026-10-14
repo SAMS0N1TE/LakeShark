@@ -1,5 +1,18 @@
 # LakeShark release notes
 
+## 2.14.0
+
+- DETECTOR: a new app that watches BLE Remote ID and SWEEP in the background and raises a notice when a rule matches. Built-in rules are used when the card has no rules file. The optional log on the card is off by default and stores no MAC addresses or locations.
+- SURVEY under LINK: Wi-Fi war driving that writes WiGLE CSV files, estimates access point positions and shows a live dashboard.
+- MAP: add, move and delete markers by touch, draw routes, and share markers with other nodes over MeshCore.
+- REC on the LR2021: record I/Q at 125 kS/s and replay it. OOK captures are rebuilt from their edges; FSK and other signals replay as I/Q.
+- COMPASS (still experimental): a steadier heading when the device is still, tilt from the viewing direction, and a warning when the magnetic field is disturbed.
+- MeshCore listening uses about half the CPU it did, and the UI stays smoother while it runs.
+- Meters and graphs in DETECTOR, SURVEY and SWEEP draw in ASCII and braille.
+- UPDATE > C6 FIRMWARE installs a C6 co-processor image from the card. The `c6` console command adds `update` and `status`.
+- The `perf` console command reports UI frame time, frame rate and input latency. `tui touch` lists recent touches and whether each one counted as a tap.
+- [APP_FRAMEWORK.md](../bench/APP_FRAMEWORK.md) explains how to write an app, with an example app that is off by default.
+
 ## 2.13.2
 
 - Opening animations finish within a 250 ms decoration budget. Navigation and OPTIONS presses cancel the animation and proceed immediately.

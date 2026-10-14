@@ -143,6 +143,9 @@ static void fill(const ls_opt_ctx_t *ctx)
         snprintf(title, sizeof(title), "%s OPTIONS", ctx->name);
     }
     ls_picker_open(title, picked);
+    const ls_opt_ctx_t *root=s_depth?s_up[0]:ctx;
+    ls_picker_header(root->draw_header);
+    ls_picker_preview(ctx->preview ? ctx->preview : root->preview);
     if (s_depth > 0 || ctx->back_to_screen || s_root_back) ls_picker_back(go_up);
     s_ctx = ctx;
     s_values_us = esp_timer_get_time();

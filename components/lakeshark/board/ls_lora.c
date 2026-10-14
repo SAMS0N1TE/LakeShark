@@ -695,6 +695,7 @@ void ls_lora_cfg_default(ls_lora_cfg_t *out)
     out->sync_word   = 0x12;
     out->crc_on      = true;
     out->invert_iq   = false;
+    out->implicit_rx_bytes = 0;
     out->cal_min_mhz = 902;
     out->cal_max_mhz = 928;
 }
@@ -724,11 +725,19 @@ bool ls_lora_is_transmitting(void)
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
 { LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->send(data, len) : ESP_ERR_INVALID_STATE); }
 /* Polls the part's IRQ word and clears it, so it is a bus sequence. */
-bool ls_lora_send_done(void) { LOCKED_RET(bool, s_ops->send_done()); }
+bool ls_lora_send_done(void)
+{
+    if (!ls_lora_hw_try_lock()) return false;
+    const bool done = s_ops->send_done();
+    ls_lora_hw_unlock();
+    return done;
+}
 
 int ls_lora_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 { LOCKED_RET(int, s_ops->poll(buf, max, rssi_dbm, snr_db)); }
 
+int ls_lora_activity(float *dbm)
+{ LOCKED_RET(int, s_present && s_ops->activity ? s_ops->activity(dbm) : -1); }
 esp_err_t ls_lora_rssi_inst(float *dbm) { LOCKED_RET(esp_err_t, s_ops->rssi_inst(dbm)); }
 uint32_t ls_lora_airtime_ms(int len) { return s_ops->airtime_ms(len); }
 
@@ -967,6 +976,7 @@ bool ls_lora_send_done(void) { return true; }
 bool ls_lora_is_transmitting(void) { return false; }
 int ls_lora_poll(uint8_t *b, size_t m, float *r, float *n)
 { (void)b; (void)m; (void)r; (void)n; return 0; }
+int ls_lora_activity(float *d) { (void)d; return -1; }
 esp_err_t ls_lora_rssi_inst(float *d) { (void)d; return ESP_ERR_NOT_SUPPORTED; }
 uint32_t ls_lora_airtime_ms(int len) { (void)len; return 0; }
 
@@ -1010,3 +1020,23 @@ void ls_lora_scan_profile(ls_lora_scan_prof_t *o)
 { if (o) { const ls_lora_scan_prof_t z = { 0, 0, 0, 0, 0 }; *o = z; } }
 
 #endif
+
+esp_err_t ls_lora_iq_send(const uint8_t *data, size_t bytes, uint32_t hz, int dbm)
+{
+    return ls_lora_iq_send_reason(data,bytes,hz,dbm,NULL);
+}
+
+esp_err_t ls_lora_iq_send_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, const char **reason)
+{
+    return ls_lora_iq_send_rate_reason(data,bytes,hz,dbm,125000,reason);
+}
+
+esp_err_t ls_lora_iq_send_rate_reason(const uint8_t *data, size_t bytes, uint32_t hz, int dbm, uint32_t rate, const char **reason)
+{
+    if (reason) *reason="LR2021 required";
+#if LR20XX_BACKEND_BUILT
+    if (ls_lora_chip()==LS_LORA_CHIP_LR20XX) return lr20xx_iq_send_rate_reason(data,bytes,hz,dbm,rate,reason);
+#endif
+    (void)data; (void)bytes; (void)hz; (void)dbm; (void)rate;
+    return ESP_ERR_NOT_SUPPORTED;
+}

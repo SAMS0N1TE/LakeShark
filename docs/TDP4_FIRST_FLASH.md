@@ -53,7 +53,7 @@ See [Updates and calls](TDP4_UPDATES_AND_CALLS.md) for the update steps and SD c
 
 ## Flash the C6 co-processor
 
-The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6 over SDIO. The host is pinned to **ESP-Hosted 2.12.9** and the C6 must run the matching `network_adapter` slave. A board straight from LilyGO carries the factory image, which does not speak ESP-Hosted; an older slave enumerates but frames packets differently.
+The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6. The C6 must run **ESP-Hosted 2.12.9**, the `network_adapter` firmware in `c6_firmware/`. A board straight from LilyGO has factory firmware that LakeShark cannot talk to, and other ESP-Hosted versions do not work either.
 
 If the co-processor link fails, check the C6 image and wiring. Current builds can keep running with wireless features unavailable. Older builds may report a transport timeout:
 
@@ -61,9 +61,11 @@ If the co-processor link fails, check the C6 image and wiring. Current builds ca
 E (7589) transport: Init event not received within timeout, Resetting myself
 ```
 
-The matching images ship in `c6_firmware/`. The C6 is not on a USB port: the left-hand USB-C is charge only, and the C6 has a dedicated UART header. You need a **3.3 V USB-to-UART adapter**, and the P4 has to be holding the C6 in download mode while you write it.
+The matching images ship in `c6_firmware/`. The C6 is not on a USB port: the left-hand USB-C is charge only, and the C6 has a dedicated UART header. You need a **3.3 V USB-to-UART adapter**. The C6's own BOOT and RESET buttons put it into download mode.
 
-**1. Put the P4 into co-processor download mode.** Flash LilyGO's `coprocessor_download_mode` program over P4U and watch the serial output until it prints `Coprocessor preparation completed`. Source is in [lilygo_device_driver_example](https://github.com/Xinyuan-LilyGO/lilygo_device_driver_example/tree/main/main/examples/coprocessor_download_mode); prebuilt images are in the [T-Display-P4 repo](https://github.com/Xinyuan-LilyGO/T-Display-P4). This overwrites LakeShark on the P4, which step 4 puts back.
+After this first install, later C6 firmware updates can be installed from the SD card without the adapter. See [C6 firmware](../c6_firmware/README.md). If Wi-Fi and Bluetooth stop working altogether, use the steps below again.
+
+**1. Prepare the P4.** Flash LilyGO's `coprocessor_download_mode` program over P4U and watch the serial output until it prints `Coprocessor preparation completed`. Source is in [lilygo_device_driver_example](https://github.com/Xinyuan-LilyGO/lilygo_device_driver_example/tree/main/main/examples/coprocessor_download_mode); prebuilt images are in the [T-Display-P4 repo](https://github.com/Xinyuan-LilyGO/T-Display-P4). This lets the C6 start so that its buttons can put it into download mode in step 3. It overwrites LakeShark on the P4, which step 4 puts back.
 
 **2. Wire the adapter to the C6 UART header**, RX and TX crossed:
 

@@ -126,6 +126,11 @@ bool ls_gauge_peek(int16_t *milliamps, int64_t *age_us) { (void)milliamps; (void
 bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal, bool *back, ls_compass_reading_t *out)
 { (void)s; (void)cal; (void)back; memset(out, 0, sizeof(*out)); return false; }
 
+/* The field suite does not exercise console fusion; accuracy tests link it. */
+float ls_compass_steady_sample(ls_compass_steady_t *s,float h,float pitch,float roll,
+                               const ls_imu_sample_t *p,float dt)
+{ (void)s;(void)pitch;(void)roll;(void)p;(void)dt;return h; }
+
 static void reset(void)
 {
     ls_test_mkdir("field-test");
@@ -794,4 +799,19 @@ LS_CASE(notes_import_waits_for_cold_load_and_covers_entries_beyond_the_ram_windo
         else snprintf(title, sizeof(title), "Cold note %d", i - 1);
         LS_CHECK(ls_notes_load(stem, text, sizeof(text))); LS_CHECK(strstr(text, title) != NULL);
     }
+}
+
+LS_CASE(compass_cached_fallback_preserves_sensor_timestamp_and_raw_vector)
+{
+    reset();
+    ls_field_sample_t first, cached; ls_imu_sample_t raw, raw_cached;
+    ls_field_compass_snapshot(&first,&raw);
+    LS_CHECK(first.imu_valid); LS_CHECK(first.time_us>0);
+    imu_busy=true;ls_shim_time_advance(100000);ls_field_step();
+    ls_field_compass_snapshot(&cached,&raw_cached);
+    LS_CHECK(cached.imu_valid);LS_CHECK(cached.time_us==first.time_us);
+    LS_NEAR(raw_cached.mx,raw.mx,.001);LS_NEAR(raw_cached.my,raw.my,.001);
+    ls_shim_time_advance(400000);ls_field_step();
+    ls_field_compass_snapshot(&cached,&raw_cached);
+    LS_CHECK(!cached.imu_valid);LS_CHECK(cached.time_us==first.time_us);
 }

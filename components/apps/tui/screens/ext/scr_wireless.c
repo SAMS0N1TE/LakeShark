@@ -355,7 +355,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     if (s_selected >= s_view.ap_count) s_selected = 0;
     s_hit_count = 0;
-    if (area.w < 28 || area.h < 22) {
+    if (area.w < 32 || area.h < 22) {
         ls_panel_notice(sf, area, "LINK", "More screen space needed", "Use a smaller display font");
         return;
     }

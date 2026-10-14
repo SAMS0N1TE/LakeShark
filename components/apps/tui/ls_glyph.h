@@ -20,6 +20,8 @@ extern "C" {
 bool ls_glyph_has(char c);
 
 void ls_glyph_draw(tui_surface *sf, tui_rect a, char c, uint8_t at);
+/* The same figure and sizing, with ASCII strokes instead of solid cells. */
+void ls_glyph_draw_line(tui_surface *sf, tui_rect a, char c, uint8_t at);
 
 #ifdef __cplusplus
 }

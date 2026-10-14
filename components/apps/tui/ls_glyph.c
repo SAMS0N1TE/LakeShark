@@ -56,14 +56,14 @@ static const char *const *figure(char c)
 
 bool ls_glyph_has(char c) { return figure(c) != NULL; }
 
-void ls_glyph_draw(tui_surface *sf, tui_rect a, char c, uint8_t at)
+static void draw(tui_surface *sf, tui_rect a, char c, uint8_t at, bool lines)
 {
     if (a.w <= 0 || a.h <= 0) return;
 
     if (c == '.') {
         const int x = a.x + (a.w - 2) / 2, y = a.y + a.h - 2;
-        tui_put_char(sf, a, x, y, LS_TUI_SHADE_FULL, at);
-        tui_put_char(sf, a, x + 1, y, LS_TUI_SHADE_FULL, at);
+        tui_put_char(sf, a, x, y, lines ? '.' : LS_TUI_SHADE_FULL, at);
+        tui_put_char(sf, a, x + 1, y, lines ? '.' : LS_TUI_SHADE_FULL, at);
         return;
     }
     const char *const *fig = figure(c);
@@ -80,6 +80,21 @@ void ls_glyph_draw(tui_surface *sf, tui_rect a, char c, uint8_t at)
     const int ox = a.x + (a.w - fw) / 2, oy = a.y + (a.h - fh) / 2;
     for (int r = 0; r < fh; r++)
         for (int c2 = 0; c2 < fw; c2++)
-            if (fig[r / sy][c2 / sx] == 'X')
-                tui_put_char(sf, a, ox + c2, oy + r, LS_TUI_SHADE_FULL, at);
+            if (fig[r / sy][c2 / sx] == 'X') {
+                char stroke = LS_TUI_SHADE_FULL;
+                if (lines) {
+                    int row = r / sy, col = c2 / sx;
+                    bool horizontal = (col && fig[row][col-1] == 'X') ||
+                                  (col+1 < LS_GLYPH_COLS && fig[row][col+1] == 'X');
+                    bool vertical = (row && fig[row-1][col] == 'X') ||
+                                (row+1 < LS_GLYPH_ROWS && fig[row+1][col] == 'X');
+                    stroke = horizontal ? (vertical ? '+' : '-') : '|';
+                }
+                tui_put_char(sf, a, ox + c2, oy + r, stroke, at);
+            }
 }
+
+void ls_glyph_draw(tui_surface *sf, tui_rect a, char c, uint8_t at)
+{ draw(sf, a, c, at, false); }
+void ls_glyph_draw_line(tui_surface *sf, tui_rect a, char c, uint8_t at)
+{ draw(sf, a, c, at, true); }

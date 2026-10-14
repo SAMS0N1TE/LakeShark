@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.18)
 project(lakeshark_bench C CXX)
 
+add_executable(test_character_mix_helpers tests/test_character_mix_helpers.c
+    ../components/apps/tui/ls_tui_ui.c ../components/apps/tui/ls_glyph.c ../components/apps/tui/ls_icons.c
+    ../components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_character_mix_helpers PRIVATE
+    shims ../components/apps/tui ../components/apps ../components/lakeshark)
+target_compile_options(test_character_mix_helpers PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_character_mix_helpers PRIVATE -Wl,--gc-sections)
+add_test(NAME test_character_mix_helpers COMMAND test_character_mix_helpers)
+
+add_executable(test_ui_perf tests/test_ui_perf.c
+    ../components/apps/tui/ls_ui_perf.c)
+target_include_directories(test_ui_perf PRIVATE ../components/apps/tui)
+add_test(NAME test_ui_perf COMMAND test_ui_perf)
+
 add_executable(test_hamming_tables tests/test_hamming_tables.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/lakeshark/apps/p25/Hamming.cpp)
 target_include_directories(test_hamming_tables PRIVATE
@@ -66,6 +80,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_update_view.c
+    ${FW}/components/apps/tui/ls_c6_view.c
     ${FW}/components/apps/tui/ls_skyplot.c
     ${FW}/components/apps/tui/ls_skyview.c
     ${FW}/components/apps/tui/ls_text.c
@@ -812,6 +827,10 @@ target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
 
 add_executable(lssim
+    tools/lssim_detector.c
+    ${FW}/components/apps/tui/ls_detector.c
+    ${FW}/components/apps/tui/ls_detector_sinks.c
+    ${FW}/components/apps/tui/ls_detector_ui.c
     tools/lssim_wireless.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
     ${FW}/components/apps/tui/ls_wireless_history.c
@@ -897,6 +916,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_map.c
     ${FW}/components/apps/tui/ls_map_ink.c
     ${FW}/components/apps/tui/ls_map_marks.c
+    ${FW}/components/apps/tui/ls_map_share.c
     ${FW}/components/apps/tui/ls_stroke.c
     ${FW}/components/apps/tui/screens/ext/scr_falls.c
     ${FW}/components/apps/tui/ls_wf_source.c
@@ -1367,6 +1387,14 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
+ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c
+    ${APP}/rec/rec_ook_packet.c ${APP}/rec/rec_sidecar.c ${APP}/subghz/subghz_file.c
+    ${APP}/rec/rec_unique_name.c
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_compile_definitions(test_rec_lr_iq PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 ls_add_test(test_rec_lr_ook ${APP}/rec/rec_lr_ook.c)
 target_include_directories(test_rec_lr_ook PRIVATE ${APP}/rec)
 ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
@@ -1625,6 +1653,9 @@ target_link_options(test_ble_hci_rx_guard PRIVATE -Wl,--wrap=hci_rx_handler
 ls_add_test(test_wifi_operation)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_compass_quality_ui COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compass_quality_ui.py" "$<TARGET_FILE:lssim>")
+    add_test(NAME test_compass_accuracy_io COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compass_accuracy_io.py")
     add_test(NAME test_flash_polling COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_flash_polling.py")
 endif()
@@ -1952,9 +1983,16 @@ target_link_options(test_labs_numbers PRIVATE -Wl,--gc-sections)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_wmm ${FW}/components/apps/tui/ls_wmm.c)
 target_include_directories(test_wmm PRIVATE ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_compass_art ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(test_compass_art PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_compass_live ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
 target_include_directories(test_compass_live PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_compass_learn ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_compass.c)
+ls_add_test(test_compass_accuracy ${FW}/components/apps/tui/ls_compass_live.c
+    ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c
+    ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
+target_include_directories(test_compass_accuracy PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_definitions(test_compass_accuracy PRIVATE COMPASS_TRACE="${FW}/bench/tests/data/compass_trace_lr.txt")
 target_include_directories(test_compass_learn PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_df ${FW}/components/apps/tui/ls_df.c ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
 target_include_directories(test_df PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
@@ -2424,6 +2462,7 @@ target_include_directories(test_adsb_rx PRIVATE
     ${APP}/adsb ${FW}/components/lakeshark/core)
 
 ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
+    ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
     ${APP}/subghz/subghz_file.c
     ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
@@ -2614,3 +2653,82 @@ foreach(boundary ls_lora_hw_lock spi_device_transmit spi_device_polling_transmit
         nvs_get_u8 nvs_get_i8 nvs_get_u32 nvs_get_i32 nvs_get_u64)
     target_link_options(test_tui_screens PRIVATE "-Wl,--wrap=${boundary}")
 endforeach()
+
+# Phase 1 DETECTOR: real parser/policy, adapters and sinks, no radio hardware.
+ls_add_test(test_detector
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/ls_detector.c
+    ${FW}/components/apps/tui/ls_detector_sinks.c
+    ${FW}/components/apps/tui/ls_detector_ui.c
+    ${FW}/components/apps/tui/ls_notify.c
+    ${FW}/components/apps/tui/ls_sweep.c
+    ${FW}/components/apps/tui/ls_rid.c)
+target_include_directories(test_detector PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_detector PRIVATE
+    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-test"
+    LS_DETECTOR_ROTATE=4096
+    LS_NOTIFY_EXTERNAL_ALERT_HW=1)
+target_compile_options(test_detector PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_detector PRIVATE -Wl,--gc-sections)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_detector_json COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_detector_json.py"
+        "${CMAKE_CURRENT_BINARY_DIR}/detector-test/events")
+    set_tests_properties(test_detector_json PROPERTIES DEPENDS test_detector)
+    add_test(NAME test_detector_ui_sim COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_detector_ui_sim.py" "$<TARGET_FILE:lssim>")
+endif()
+
+ls_add_test(test_detector_runtime
+    ${FW}/components/apps/tui/ls_detector.c
+    ${FW}/components/apps/tui/ls_sweep.c
+    ${FW}/components/apps/tui/ls_rid.c
+    ${FW}/main/ls_sweep_runtime.c)
+target_include_directories(test_detector_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_detector_runtime PRIVATE
+    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-runtime"
+    LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-sweep-runtime")
+
+ls_add_test(test_ble_range ${FW}/main/ble_link_legacy.c)
+target_include_directories(test_ble_range PRIVATE ${FW}/main)
+
+ls_add_test(test_dronelink ${FW}/components/apps/tui/ls_dronelink.c)
+target_include_directories(test_dronelink PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark ${FW}/components/meshcore)
+set_tests_properties(test_detector test_ble_range test_dronelink PROPERTIES WORKING_DIRECTORY "${FW}")
+ls_add_test(test_map_share
+    ${FW}/components/apps/tui/ls_map_share.c
+    ${FW}/components/apps/tui/ls_map_marks.c
+    ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_map_share PRIVATE ${FW}/components/apps/tui)
+
+ls_add_test(test_map_share_ui ${FW}/components/apps/tui/ls_map_share.c
+    ${FW}/components/apps/tui/ls_map_marks.c ${FW}/components/apps/tui/ls_geo.c)
+target_include_directories(test_map_share_ui PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${CARTO}/include)
+target_compile_options(test_map_share_ui PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_map_share_ui PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_map_share_ui.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+
+ls_add_test(test_map_share_mesh)
+target_include_directories(test_map_share_mesh PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${CARTO}/include)
+target_compile_options(test_map_share_mesh PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_map_share_mesh PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_map_share_mesh.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+
+# Production MAP touch journeys and portrait/landscape review stills.
+add_test(NAME test_map_touch COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_touch.py" "$<TARGET_FILE:lssim>")
+
+# Opt-in example: normal simulator builds keep the production directory.
+option(LS_EXAMPLE_APP "Enable the native example in lssim" OFF)
+if(LS_EXAMPLE_APP)
+    target_sources(lssim PRIVATE ${FW}/components/apps/tui/apps/example_app.c)
+    target_compile_definitions(lssim PRIVATE CONFIG_LS_EXAMPLE_APP=1)
+    add_test(NAME test_example_app COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_example_app.py
+        $<TARGET_FILE:lssim> ${CMAKE_CURRENT_BINARY_DIR}/example-renders
+        ${CMAKE_C_COMPILER} ${CMAKE_CXX_COMPILER} ${CMAKE_NM})
+endif()

@@ -32,6 +32,8 @@ int rec_sidecar_format(char *out, size_t len, const rec_sidecar_t *s)
     out[0] = '\0';
     if (!s) return 0;
 
+    char radio_s[16];
+    copy_safe(radio_s, sizeof(radio_s), s->radio);
     char time_s[REC_SIDECAR_TIME_MAX];
     char board_s[REC_SIDECAR_ID_MAX];
     char fw_s[REC_SIDECAR_ID_MAX];
@@ -41,6 +43,7 @@ int rec_sidecar_format(char *out, size_t len, const rec_sidecar_t *s)
 
     int n = snprintf(out, len,
         "{\n"
+        "  \"radio\": \"%s\",\n"
         "  \"time\": \"%s\",\n"
         "  \"freq_hz\": %lu,\n"
         "  \"gain_tenths\": %d,\n"
@@ -53,7 +56,7 @@ int rec_sidecar_format(char *out, size_t len, const rec_sidecar_t *s)
         "  \"board\": \"%s\",\n"
         "  \"firmware\": \"%s\"\n"
         "}\n",
-        time_s,
+        radio_s, time_s,
         (unsigned long)s->freq_hz,
         s->gain_tenths,
         (unsigned long)s->bw_hz,
@@ -145,6 +148,7 @@ bool rec_sidecar_parse(const char *in, rec_sidecar_t *out)
     const char *brace = strchr(in, '{');
     if (!brace) return false;
 
+    read_string(find_value(in, "radio"), out->radio, sizeof(out->radio));
     read_string(find_value(in, "time"),     out->time,     sizeof(out->time));
     read_string(find_value(in, "board"),    out->board,    sizeof(out->board));
     read_string(find_value(in, "firmware"), out->firmware, sizeof(out->firmware));

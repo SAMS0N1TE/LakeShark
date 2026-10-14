@@ -16,7 +16,7 @@ static int guard_remove(const char *p) { LS_CHECK(worker);return remove(p); }
 #undef rename
 #undef remove
 LS_CASE(deferred_marks_load_and_snapshot_save_never_do_ui_io) {
-    char path[96];snprintf(path,sizeof(path),"%s/marks-async.txt",getenv("TEMP")?getenv("TEMP"):".");
+    char path[96];snprintf(path,sizeof(path),"%s/marks-async.txt",".");
     FILE *f=fopen(path,"w");LS_CHECK(f!=NULL);fputs("M 43 -71 0 SAVED\n",f);fclose(f);
     /* Enable before any UI getter. Loading remains pending until worker pumps. */
     ls_marks_defer_io();
@@ -48,5 +48,13 @@ LS_CASE(deferred_marks_load_and_snapshot_save_never_do_ui_io) {
     LS_EQ_STR("MAP SAVED",ls_marks_save_status());
     ls_marks_reload();worker=true;ls_marks_io_step();worker=false;
     LS_EQ_STR("UNSAVED",ls_marks_at(0)->name);
+    LS_CHECK(ls_marks_move(0,44.12345,-72.54321));LS_CHECK(ls_marks_save());
+    worker=true;ls_marks_io_step();worker=false;ls_marks_save_status();
+    ls_marks_reload();worker=true;ls_marks_io_step();worker=false;
+    LS_NEAR(ls_marks_at(0)->lat,44.12345,1e-6);
+    LS_CHECK(ls_marks_delete(0));LS_CHECK(ls_marks_save());
+    worker=true;ls_marks_io_step();worker=false;ls_marks_save_status();
+    ls_marks_reload();worker=true;ls_marks_io_step();worker=false;
+    LS_EQ_INT(ls_marks_count(),0);
     remove(path);char backup[104];snprintf(backup,sizeof(backup),"%s.bak",path);remove(backup);
 }

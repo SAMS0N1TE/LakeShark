@@ -210,3 +210,38 @@ LS_CASE(switch_picker_keeps_filter_and_cursor_after_accept) {
     LS_EQ_INT(first,s_chosen);LS_EQ_INT(2,s_done_calls);
     ls_picker_key(LS_TK_ESC,0);LS_CHECK(!ls_picker_active());
 }
+
+static int preview_calls, stepped_value;
+static tui_rect preview_area;
+static void preview_draw(tui_surface *sf, tui_rect r)
+{
+    preview_calls++; preview_area=r;
+    tui_put_str(sf,r,r.x,r.y,"CONTEXT",0);
+}
+static void preview_step(int index, int dir) { (void)index; stepped_value+=dir; }
+LS_CASE(context_preview_preserves_taps_and_resets_on_open)
+{
+    static tui_cell back[115*67], front[115*67];
+    tui_surface sf;
+    const int widths[]={52,115}, heights[]={60,27};
+    for(int mode=0;mode<2;mode++) {
+        int w=widths[mode],h=heights[mode];
+        tui_surface_setup(&sf,back,front,w,h); tui_frame_begin(&sf);
+        ls_picker_open("SURVEY",on_done); ls_picker_add("SCAN INTERVAL","10");
+        ls_picker_stepper(0,preview_step); ls_picker_preview(preview_draw);
+        preview_calls=0; stepped_value=0;
+        ls_picker_draw(&sf,tui_rect_make(0,0,w,h));
+        LS_EQ_INT(preview_calls,1);
+        LS_CHECK(preview_area.w>=40 && preview_area.h>=15);
+        int right=mode?w-46:w-2;
+        /* All eight filled columns of the increment key are tappable. */
+        for(int x=right-8;x<right;x++) ls_picker_touch(x,3);
+        LS_EQ_INT(stepped_value,8);
+        int before=s_done_calls;
+        ls_picker_touch(preview_area.x+2,preview_area.y+2);
+        LS_EQ_INT(s_done_calls,before);
+        ls_picker_open("PLACES",on_done); ls_picker_add("one","");
+        ls_picker_draw(&sf,tui_rect_make(0,0,w,h));
+        LS_EQ_INT(preview_calls,1);
+    }
+}

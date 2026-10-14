@@ -41,6 +41,8 @@ static StaticSemaphore_t s_sample_lock_storage;
 #define B2_GYRO_SMPLRT   0x00
 #define B2_GYRO_CONFIG_1 0x01
 #define B2_ACCEL_CFG     0x14
+#define B2_ACCEL_SMPLRT_H 0x10
+#define B2_ACCEL_SMPLRT_L 0x11
 
 #define WHO_AM_I_ICM20948 0xEA
 
@@ -109,6 +111,12 @@ static bool rd(uint8_t reg, uint8_t *out, size_t n)
 {
     if (!s_dev) return false;
     return i2c_master_transmit_receive(s_dev, &reg, 1, out, n, 100) == ESP_OK;
+}
+
+static bool checked_wr(uint8_t reg, uint8_t value)
+{
+    uint8_t actual;
+    return wr(reg, value) && rd(reg, &actual, 1) && actual == value;
 }
 
 static bool bank(uint8_t n)
@@ -200,26 +208,27 @@ esp_err_t ls_imu_start(void)
     /* Reset, then wake. The datasheet asks for 100 ms after a device reset
        and the part answers its address long before it is ready to be
        configured, so this delay is not optional. */
-    wr(B0_PWR_MGMT_1, PWR1_DEVICE_RESET);
+    if (!wr(B0_PWR_MGMT_1, PWR1_DEVICE_RESET)) return ESP_ERR_INVALID_STATE;
     vTaskDelay(pdMS_TO_TICKS(100));
     s_bank = 0xFF;
     if (!bank(0)) return ESP_ERR_INVALID_STATE;
 
-    wr(B0_PWR_MGMT_1, PWR1_CLK_AUTO);   /* clears SLEEP, best clock source */
+    if (!checked_wr(B0_PWR_MGMT_1, PWR1_CLK_AUTO)) return ESP_ERR_INVALID_STATE;
     vTaskDelay(pdMS_TO_TICKS(10));
-    wr(B0_PWR_MGMT_2, 0x00);            /* accelerometer and gyroscope on */
-
-    /* Bank 2: leave both at their reset full scales and let the internal low
-       pass filters run. Nothing here is measuring a transient. */
-    if (bank(2)) {
-        wr(B2_GYRO_SMPLRT, 10);         /* about 100 Hz */
-        wr(B2_GYRO_CONFIG_1, 0x01);     /* +-250 dps, filter on */
-        wr(B2_ACCEL_CFG, 0x01);         /* +-2 g, filter on */
-    }
-    bank(0);
+    /* DS-000189 tables 16/18: 1125/11 = 102.27 Hz, +/-250 dps,
+       gyro DLPF 6: 5.7 Hz (8.9 Hz noise BW); accel DLPF 6: 5.7 Hz.
+       The former 196.6 Hz filter aliased into our 20 Hz consumer. Never
+       claim the scale is configured if a write/readback failed. */
+    if (!checked_wr(B0_PWR_MGMT_2, 0x00) || !bank(2) ||
+        !checked_wr(B2_GYRO_SMPLRT, 10) ||
+        !checked_wr(B2_GYRO_CONFIG_1, 0x31) ||
+        !checked_wr(B2_ACCEL_SMPLRT_H, 0) ||
+        !checked_wr(B2_ACCEL_SMPLRT_L, 10) ||
+        !checked_wr(B2_ACCEL_CFG, 0x31) || !bank(0))
+        return ESP_ERR_INVALID_STATE;
 
     s_present = true;
-    ESP_LOGI(TAG, "ICM20948 up at 0x%02X", LS_BOARD_IMU_I2C_ADDR);
+    ESP_LOGI(TAG, "ICM20948 verified at 0x%02X: 102.27 Hz, +/-250 dps, +/-2 g, 5.7 Hz LPF", LS_BOARD_IMU_I2C_ADDR);
 
     mag_start();
 

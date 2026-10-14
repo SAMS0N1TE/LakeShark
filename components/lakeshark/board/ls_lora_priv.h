@@ -35,6 +35,7 @@ typedef struct {
     esp_err_t (*send)(const uint8_t *data, size_t len);
     bool      (*send_done)(void);
     int       (*poll)(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db);
+    int       (*activity)(float *rssi_dbm);
     esp_err_t (*rssi_inst)(float *dbm);
     uint32_t  (*airtime_ms)(int len);
     esp_err_t (*fsk_begin)(const ls_fsk_cfg_t *cfg);

@@ -19,3 +19,5 @@ bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
     if (sigma_deg) *sigma_deg = 0.0f / 0.0f;
     return false;
 }
+
+void ls_field_compass_reference(float ut, float dip) { (void)ut; (void)dip; }

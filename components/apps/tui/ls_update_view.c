@@ -13,10 +13,12 @@
 
    Download motion follows received bytes. Idle, available and success
    treatments stay still; pending network operations keep their feedback.
+   Non-transfer scenes remain still until their stage changes.
    Everything about the update itself comes from the ota.* values
    main/ls_ota.c publishes, and ENTER steps it with ota.step. */
 
 #include "ls_update_view.h"
+#include "ls_c6_view.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -27,7 +29,6 @@
 #include "esp_timer.h"
 #include "ls_action.h"
 #include "ls_glyph.h"
-#include "ls_motion.h"
 #include "ls_tui_ui.h"
 #include "ls_value.h"
 #include "ls_ota_core.h"
@@ -48,6 +49,7 @@ static int64_t s_motion_us;
    and READY itself. */
 static tui_rect s_cta, s_hero;
 static bool     s_cta_on, s_hero_on;
+static bool     s_c6_page;
 
 /* --------------------------------------------------------------- values -- */
 
@@ -831,6 +833,7 @@ static void step(void)
 
 void ls_update_view_enter(void)
 {
+    s_c6_page = false;
     s_motion_got = -1;
     s_motion_us = esp_timer_get_time();
     s_got_prev = -1;
@@ -846,6 +849,7 @@ void ls_update_view_enter(void)
 
 void ls_update_view_draw(tui_surface *sf, tui_rect a)
 {
+    if (s_c6_page) { ls_c6_view_draw(sf, a); return; }
     long st = -1;
     if (!get_int("ota.stage", &st)) {
         ls_panel_notice(sf, a, "UPDATE", "Updates over WiFi are not in this build", "ESC goes back");
@@ -855,7 +859,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         ls_panel_notice(sf, a, "UPDATE", "Enlarge the pane", "ESC goes back");
         return;
     }
-    int64_t t = esp_timer_get_time() / 1000;
+    int64_t t = 0; /* Only byte acknowledgements advance scene motion. */
     long got = 0, size = 0, trial = 0;
     get_int("ota.got", &got);
     get_int("ota.size", &size);
@@ -916,16 +920,17 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
     else
         snprintf(csub, sizeof(csub), "ask the server again");
     const ls_btn_t btn[] = {
-        { "BACK", "HOME", 0, false, false },
+        { "BACK", "HOME", 0, false, false, false },
         { press ? press : "WAIT", busy ? DOING[st] : !press ? "trial" : ready ? bsub : st == LS_OTA_ST_AVAILABLE ? sub : "again",
-          0, tappable, !press },
+          0, tappable, !press, false },
+        { "C6 FIRMWARE", "SD CARD", 'c', false, false, false },
     };
-    ls_btn_bar(sf, tui_rect_make(a.x, a.y, a.w, 3), btn, 2, -1);
+    ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 3, -1);
 
-    const tui_rect body = tui_rect_make(a.x, a.y + 3, a.w, a.h - 3);
+    const tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, a.h - 5);
     const uint8_t hue = hue_of(st);
     ls_panel_box(sf, body, "SYSTEM UPDATE", hue);
-    ls_motion_busy(sf, body, busy && st != LS_OTA_ST_DOWNLOADING);
+    /* No synthetic busy sweep; stage and received bytes are the feedback. */
     const tui_rect in = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
     const int pct = size > 0 ? (int)((int64_t)got * 100 / size) : 0;
 
@@ -934,7 +939,10 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
            the details on the right. */
         const int lw = in.w * 55 / 100;
         const tui_rect L = tui_rect_make(in.x + 1, in.y, lw - 2, in.h - 1);
-        const tui_rect R = tui_rect_make(in.x + lw + 1, in.y, in.w - lw - 2, in.h - 1);
+        tui_rect R = tui_rect_make(in.x + lw + 1, in.y, in.w - lw - 2, in.h - 1);
+        tui_rect hole;
+        if (ls_tui_cutout(&hole) && hole.x > R.x && hole.x < R.x + R.w)
+            R.w = hole.x - R.x - 2; /* Only this pane skirts the camera. */
         const int bx = L.x + 1, by = L.y + 1, cx = L.x + L.w - CLOUD_W - 1, cy = L.y + 1;
         background(sf, in, vis, bx + BOARD_W / 2, by + 3, cx + CLOUD_W / 2, cy + 2, t);
         board(sf, L, bx, by, vis, pct, run, t);
@@ -1012,7 +1020,14 @@ static bool inside(bool on, tui_rect r, int col, int row)
 
 bool ls_update_view_key(ls_tk_t k, char ch)
 {
-    (void)ch;
+    if (s_c6_page) {
+        if (k == LS_TK_ESC) {
+            if (ls_c6_view_key(k, ch)) return true;
+            ls_c6_view_leave(); s_c6_page = false; return true;
+        }
+        return ls_c6_view_key(k, ch);
+    }
+    if (ch == 'c' || ch == 'C') { s_c6_page = true; ls_c6_view_enter(); return true; }
     if (k != LS_TK_ENTER) return false;      /* ESC home, F-keys switch apps: the router's */
     step();
     return true;
@@ -1020,8 +1035,18 @@ bool ls_update_view_key(ls_tk_t k, char ch)
 
 bool ls_update_view_touch(int col, int row)
 {
+    if (s_c6_page) {
+        if (ls_c6_view_touch(col, row)) s_c6_page = false;
+        return false;
+    }
     const int i = ls_btn_hit(col, row);
+    if (i == 2) { s_c6_page = true; ls_c6_view_enter(); return false; }
     if (i == 0) return true;
     if (i == 1 || inside(s_cta_on, s_cta, col, row) || inside(s_hero_on, s_hero, col, row)) step();
     return false;
+}
+
+const char *ls_update_view_hint(void)
+{
+    return s_c6_page ? ls_c6_view_hint() : "ENTER action  C C6 firmware  ESC home  TAP filled keys";
 }

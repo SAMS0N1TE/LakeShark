@@ -55,6 +55,13 @@ void ls_field_sample_snapshot(ls_field_sample_t *out)
     if (!out) return;
     *out = s.sample; out->time_us = esp_timer_get_time();
     if (getenv("LSSIM_RID_NOFIX")) out->gps_valid = false;
+    const char *quality = getenv("LSSIM_COMPASS_QUALITY");
+    if (quality) {
+        const bool disturbed = !strcmp(quality, "DISTURBED");
+        const float ut = disturbed ? 16.5f : 52.6f, dip = (disturbed ? 4 : 66)*0.017453293f;
+        out->imu = (ls_imu_sample_t){ .az=-1, .mx=-ut*cosf(dip), .mz=ut*sinf(dip), .mag_valid=true };
+        out->time_us = out->time_us / 50000 * 50000;
+    }
     const float a = -lssim_turn_deg() * 0.01745329f, c = cosf(a), n = sinf(a);
     const float mx = out->imu.mx, my = out->imu.my;
     out->imu.mx = mx * c - my * n; out->imu.my = mx * n + my * c;
@@ -122,7 +129,13 @@ void p25_get_acquisition_status(p25_acquisition_status_t *out)
     out->iq.sampled_pairs      = s_acq_pairs;
     out->iq.clipped_components = s_acq_clipped;
 }
-bool ls_field_compass_cal(ls_compass_cal_t *out) { (void)out; return false; }
+bool ls_field_compass_cal(ls_compass_cal_t *out)
+{
+    const char *quality = getenv("LSSIM_COMPASS_QUALITY");
+    if (!quality || !strcmp(quality, "UNCALIBRATED")) return false;
+    if (out) *out = (ls_compass_cal_t){ .radius=52.6f };
+    return true;
+}
 bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
 {
     if (corr) corr[0] = corr[1] = corr[2] = 0;
@@ -131,3 +144,9 @@ bool ls_field_compass_learnt(float corr[3], float *sigma_deg)
 }
 void ls_field_compass_learn(int action) { (void)action; }
 void ls_field_compass_learn_report(void) {}
+
+void ls_field_compass_snapshot(ls_field_sample_t *out, ls_imu_sample_t *raw)
+{
+    ls_field_sample_snapshot(out); if (raw) *raw = out->imu;
+}
+void ls_field_compass_reference(float ut, float dip) { (void)ut; (void)dip; }

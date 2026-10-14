@@ -1,4 +1,5 @@
 #include "ls_sweep_ui.h"
+#include "ls_braille.h"
 #include "ls_sweep_app.h"
 #include "ls_rid.h"
 #include "ls_options.h"
@@ -117,8 +118,7 @@ static uint8_t zone_ink(int z,bool lit) {
 /* -------------------------------------------------------------- cells -- */
 
 static void put(tui_surface *sf,tui_rect clip,int x,int y,int16_t ch,uint8_t at) {
-    clip=tui_rect_intersect(clip,tui_surface_rect(sf));
-    if(tui_rect_contains(clip,x,y)) sf->back[y*sf->w+x]=(tui_cell){ch,at};
+    ls_braille_put(sf,clip,x,y,ch,at);
 }
 static void str(tui_surface *sf,tui_rect clip,int x,int y,int w,const char *s,uint8_t at) {
     if(w>0) tui_put_str(sf,tui_rect_intersect(clip,tui_rect_make(x,y,w,1)),x,y,s,at);
@@ -204,7 +204,6 @@ static void meter(tui_surface *sf,tui_rect clip,int x,int y,int segs,int rssi,in
         tui_put_char(sf,clip,x+k,y,k<lit?LS_TUI_TRACE(e):LS_TUI_TRACE(1),k<lit?at:GHOST);
     }
 }
-static const uint8_t dot_l[4]={0x40,0x04,0x02,0x01},dot_r[4]={0x80,0x20,0x10,0x08};
 static int bucket_level(int r,int levels) {
     int v=1+(r+100)*(levels-1)/65;return v<1?1:v>levels?levels:v;
 }
@@ -216,7 +215,7 @@ static void strip(tui_surface *sf,tui_rect clip,int x,int y,const ls_sweep_devic
         for(int half=0;half<2;half++) {
             int r=ls_sweep_bucket(d,now,23-(cell*2+half));
             if(r==-128) continue;
-            for(int k=0,lv=bucket_level(r,4);k<lv;k++) bits|=half?dot_r[k]:dot_l[k];
+            bits |= ls_braille_column(bucket_level(r,4),half);
         }
         put(sf,clip,x+cell,y,bits?(int16_t)(0x2800|bits):' ',at);
     }
@@ -226,7 +225,7 @@ static void strip_tall(tui_surface *sf,tui_rect clip,int x,int y,int pitch,const
     for(int b=0;b<24;b++) {
         int r=ls_sweep_bucket(d,now,23-b);
         unsigned lo=0,hi=0;
-        if(r!=-128) for(int k=0,lv=bucket_level(r,8);k<lv;k++) {if(k<4) lo|=dot_l[k]|dot_r[k];else hi|=dot_l[k-4]|dot_r[k-4];}
+        if(r!=-128) for(int k=0,lv=bucket_level(r,8);k<lv;k++) {if(k<4) lo|=ls_braille_dot(k,0)|ls_braille_dot(k,1);else hi|=ls_braille_dot(k-4,0)|ls_braille_dot(k-4,1);}
         for(int p=0;p<pitch;p++) {
             put(sf,clip,x+b*pitch+p,y,hi?(int16_t)(0x2800|hi):' ',at);
             put(sf,clip,x+b*pitch+p,y+1,lo?(int16_t)(0x2800|lo):' ',at);

@@ -15,7 +15,7 @@ static void event(const catch_burst_t *b,bool start,void *ctx)
     assert(index<8);seen[index]++;detected++;
 }
 static double seconds(void)
-{struct timespec t;timespec_get(&t,TIME_UTC);return t.tv_sec+t.tv_nsec/1e9;}
+{struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
 int main(void)
 {
     const float snrs[]={-6,0,6,20,32};

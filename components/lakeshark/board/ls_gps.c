@@ -279,6 +279,23 @@ static void parse_sentence(char *s, int len, ls_gps_parser_t *p)
         if (*f[7]) p->st.speed_kts  = (float)atof(f[7]);
         if (*f[8]) p->st.course_deg = (float)atof(f[8]);
         parse_date(f[9], &p->st);
+        p->st.utc_s = 0;
+        if (valid && strlen(f[1]) >= 6 && strlen(f[9]) == 6 &&
+            strspn(f[1], "0123456789") >= 6 && strspn(f[9], "0123456789") == 6 &&
+            p->st.year >= 2020 && p->st.year <= 2099 && p->st.month >= 1 && p->st.month <= 12 &&
+            p->st.day >= 1 && p->st.hour <= 23 && p->st.minute <= 59 && p->st.second <= 59) {
+            static const unsigned month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+            unsigned y = p->st.year, m = p->st.month;
+            /* The supported RMC years end before the non-leap century 2100. */
+            if (p->st.day <= month_days[m - 1] + (m == 2 && y % 4 == 0)) {
+                unsigned days = 0;
+                for (unsigned year = 1970; year < y; year++) days += 365 + (year % 4 == 0);
+                for (unsigned month = 1; month < m; month++)
+                    days += month_days[month - 1] + (month == 2 && y % 4 == 0);
+                p->st.utc_s = (days + p->st.day - 1) * 86400u +
+                    p->st.hour * 3600u + p->st.minute * 60u + p->st.second;
+            }
+        }
     } else if (strcmp(type, "GSV") == 0 && n >= 4) {
         p->gsv_seen = true;
         /* Each constellation sends its own GSV series and repeats its
@@ -360,6 +377,10 @@ bool ls_gps_feed_line(const char *line, int len, ls_gps_parser_t *p,
     }
     p->st.sentences++;
     p->st.last_sentence_us = now_us;
+    if (len >= 6 && !memcmp(line + 3, "RMC", 3)) {
+        if (p->st.position_updates == position_updates) p->st.utc_s = 0;
+        p->st.utc_ms = (uint32_t)(now_us / 1000);
+    }
     if (p->st.position_updates != position_updates) {
         p->st.last_fix_us = now_us;
         if (!p->st.first_fix_us) p->st.first_fix_us = now_us;

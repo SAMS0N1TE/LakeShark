@@ -1,6 +1,7 @@
 #include "tui/ls_wireless.h"
 #include "ls_wifi.h"
 #include "tui/ls_sweep_app.h"
+#include "tui/ls_detector.h"
 #include "ble_link.h"
 #include "ls_flash_task.h"
 #include "esp_timer.h"
@@ -159,7 +160,7 @@ static void worker(void *arg)
         bool stop = find_ble == s_find_ble_owned && !s_active && !s_observer && !s_rid_requested && !s_rid_owned && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
         find_ble_tick(find_ble);
-        if (stop && !ls_survey_pending() && !ls_sweep_pending()) {
+        if (stop && !ls_survey_pending() && !ls_sweep_pending() && !ls_detector_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             last_poll = 0;
@@ -200,6 +201,7 @@ static void worker(void *arg)
         rid_tick();
         ls_survey_tick();
         ls_sweep_tick();
+        ls_detector_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
     }
 }

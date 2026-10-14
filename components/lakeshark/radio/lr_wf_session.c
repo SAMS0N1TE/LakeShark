@@ -46,6 +46,7 @@ static void owner(void *arg)
     ls_lora_cfg_t cfg = saved;
     cfg.freq_hz = s->hz; cfg.sf = 7; cfg.bw_hz = 31250; cfg.invert_iq = false;
     s->error = ls_lora_configure(&cfg);
+    if (s->error == ESP_OK) s->error = lr20xx_set_agc_gain(0);
     if (s->error == ESP_OK) s->error = ls_lora_receive();
     bool confirmed = false;
     if (s->error != ESP_OK) goto restore;
@@ -125,7 +126,7 @@ esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
     if (session && session->hz != hz) lr_wf_stop();
     if (session) return atomic_load_explicit(&session->done, memory_order_acquire)
                          ? session->error : ESP_OK;
-    if (hz < 150000000u || hz > 960000000u ||
+    if (hz < 150000000u || hz >= 1000000000u ||
         !ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz)) return ESP_ERR_INVALID_ARG;
     if (ls_lora_chip() != LS_LORA_CHIP_LR20XX) return ESP_ERR_NOT_SUPPORTED;
     if (lr20xx_stream_source2_active() || ls_lora_fsk_active() || ls_lora_scanning())

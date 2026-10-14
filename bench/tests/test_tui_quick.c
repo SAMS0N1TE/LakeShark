@@ -503,3 +503,27 @@ LS_CASE(a_name_too_long_for_the_key_stays_in_the_border)
                      "a label wider than its key was drawn anyway, on row %d",
                      y);
 }
+
+LS_CASE(map_height_and_column_limits_keep_three_filled_rows_and_red_confirmation)
+{
+    setup_once();
+    ls_quick_t keys[7];
+    for(int i=0;i<7;i++) {
+        keys[i]=NAMED[0];keys[i].min_rows=5;keys[i].max_columns=5;
+    }
+    keys[4].label="SURE?";keys[4].danger=true;
+    for(int posture=0;posture<2;posture++) {
+        q_fresh(52,40);
+        int rows=ls_quick_rows(keys,7,52,posture!=0);
+        LS_EQ_INT(rows,posture ? 10 : 14);
+        ls_quick_draw_posture(&q_sf,tui_rect_make(0,0,52,rows),posture!=0,keys,7);
+        int height=rows/2;
+        for(int y=1;y<=3;y++) {
+            LS_EQ_INT(q_back[y*52+42].attr>>4,TUI_RED);
+            int before=s_calls;
+            LS_CHECK(ls_quick_touch(42,y,keys,7,ls_quick_grant_builtin(),NULL));
+            LS_EQ_INT(s_calls,before+1);
+        }
+        LS_CHECK(row_has(52,height/2,"SURE?"));
+    }
+}

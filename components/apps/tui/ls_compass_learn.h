@@ -61,6 +61,8 @@ typedef struct {
     uint8_t sectors;              /* which eighths of the circle the field has been
                                      seen from, in the board's own frame */
     uint8_t applied;              /* offset axes known well enough to take off */
+    float field[3], up[3];        /* last independent observation */
+    float expected_ut, expected_dip; /* NAN when no independent model */
 } ls_compass_learn_t;
 
 typedef enum { LS_CL_SKIPPED, LS_CL_USED, LS_CL_REFUSED } ls_cl_result_t;
@@ -94,6 +96,8 @@ ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], co
 #define LS_CL_DROP_UT  3.5f
 bool ls_compass_learn_ready(const ls_compass_learn_t *l);
 bool ls_compass_learn_correction(const ls_compass_learn_t *l, float amps, float out[3]);
+bool ls_compass_learn_plausible(const float field[3], const float up[3],
+                                const float correction[3], float radius, float dip);
 
 /* The heading's 1-sigma, degrees, from what the filter still does not know
    and how well recent readings fit. NAN before it has started. */

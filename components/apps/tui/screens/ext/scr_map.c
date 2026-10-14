@@ -28,6 +28,9 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_map_ink.h"
 #include "../../ls_map_label_policy.h"
 #include "../../ls_map_marks.h"
+#include "../../ls_map_share.h"
+#include "../../ls_map_share_ui.h"
+#include <time.h>
 #include "../../ls_motion.h"
 #include "../../ls_map_motion.h"
 #include "../../ls_notes.h"
@@ -123,7 +126,7 @@ static void say(const char *text)
 /* --------------------------------------------------------------- quick -- */
 
 static const ls_quick_t QUICK[] = {
-    { .label = "ZOOM+", .kind = LS_QUICK_ACTION, .action = "map.zoom",
+    { .label = "ZOOM+", .min_rows=5, .max_columns=5, .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "1" }, .nchoices = 1, .key = '=' },
     { .label = "ZOOM-", .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "-1" }, .nchoices = 1, .key = '-' },
@@ -141,23 +144,18 @@ static const ls_quick_t QUICK[] = {
 
 /* While a line is being drawn the row is about the line. */
 static const ls_quick_t QUICK_DRAW[] = {
-    { .label = "ADD POINT", .kind = LS_QUICK_ACTION, .action = "map.draw_add", .key = 'a' },
+    { .label = "ADD POINT", .min_rows=5, .max_columns=5, .kind = LS_QUICK_ACTION, .action = "map.draw_add", .key = 'a' },
     { .label = "UNDO", .kind = LS_QUICK_ACTION, .action = "map.draw_undo", .key = 'u' },
-    { .label = "DONE", .kind = LS_QUICK_ACTION, .action = "map.draw_done", .key = 'o' },
+    { .label = "FINISH", .kind = LS_QUICK_ACTION, .action = "map.draw_done", .key = 'o' },
     { .label = "CANCEL", .kind = LS_QUICK_ACTION, .action = "map.draw_cancel", .key = 'c' },
-    { .label = "ZOOM+", .kind = LS_QUICK_ACTION, .action = "map.zoom",
+    { .label = "ZOOM+", .min_rows=5, .max_columns=5, .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "1" }, .nchoices = 1, .key = '=' },
     { .label = "ZOOM-", .kind = LS_QUICK_ACTION, .action = "map.zoom",
       .choices = (const char *const[]){ "-1" }, .nchoices = 1, .key = '-' },
 };
 #define N_QUICK_DRAW ((int)(sizeof(QUICK_DRAW) / sizeof(QUICK_DRAW[0])))
 
-static const ls_quick_t *quick_table(int *n)
-{
-    if (ls_sketch_drawing()) { *n = N_QUICK_DRAW; return QUICK_DRAW; }
-    *n = N_QUICK;
-    return QUICK;
-}
+static const ls_quick_t *quick_table(int *n);
 
 /* ---------------------------------------------------------------- entry -- */
 
@@ -187,6 +185,8 @@ static bool find_archive(char *out, size_t cap)
 
 /* Defined with the action it registers, further down; declared here because
    this is where it is called. */
+static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out);
+
 static void register_view_action(void);
 static void rescan(void);
 static void open_options(void);
@@ -1251,15 +1251,22 @@ static int        s_sel_index;          /* marker or line */
 static int64_t    s_lock_us;            /* when the lock-on began */
 static bool       s_track;              /* keep the selection in view */
 static bool       s_card_hidden;
+static bool s_delete_armed;
+static uint32_t s_arrival_id;
+static int64_t s_arrival_us;
 
 static void select_none(void)
 {
+    s_delete_armed=false;
+    s_controls_hidden=false;
     s_sel = SEL_NONE;
     s_track = false;
 }
 
 static void select_air(uint32_t icao)
 {
+    s_delete_armed=false;
+    s_controls_hidden=false;
     s_sel = SEL_AIR;
     s_sel_icao = icao;
     adsb_select_set_icao(icao);
@@ -1268,6 +1275,8 @@ static void select_air(uint32_t icao)
 
 static void select_node(const char *id)
 {
+    s_delete_armed=false;
+    s_controls_hidden=false;
     s_sel = SEL_NODE;
     snprintf(s_sel_node, sizeof(s_sel_node), "%s", id);
     s_lock_us = esp_timer_get_time();
@@ -1275,9 +1284,54 @@ static void select_node(const char *id)
 
 static void select_mark(sel_kind_t kind, int index)
 {
+    s_delete_armed=false;
+    s_controls_hidden=false;
     s_sel = kind;
     s_sel_index = index;
     s_lock_us = esp_timer_get_time();
+}
+
+/* The existing MAP key bar owns both tap and shortcut dispatch. Only the
+ * current context is materialised; no extra screen or persistent UI table. */
+static EXT_RAM_BSS_ATTR ls_quick_t s_context[14];
+static EXT_RAM_BSS_ATTR const char *s_context_args[14];
+static int s_context_n;
+static void context_add(const char *label,const char *command,char shortcut)
+{
+    int i=s_context_n++;
+    s_context_args[i]=command;
+    s_context[i]=(ls_quick_t){.label=label,.kind=LS_QUICK_ACTION,
+        .min_rows=5,.max_columns=5,.action="map.context",.choices=&s_context_args[i],.nchoices=1,.key=shortcut,
+        .danger=s_delete_armed && command[0]=='v'};
+}
+static bool selected_received(void)
+{
+    const ls_mark_t *m=s_sel==SEL_MARK ? ls_marks_at(s_sel_index) : NULL;
+    const ls_sketch_t *l=s_sel==SEL_LINE ? ls_sketch_at(s_sel_index) : NULL;
+    return (m && m->origin.received) || (l && l->origin.received);
+}
+static const ls_quick_t *quick_table(int *n)
+{
+    if(ls_sketch_drawing()) { *n=N_QUICK_DRAW;return QUICK_DRAW; }
+    s_context_n=0;
+    if(s_sel==SEL_MARK || s_sel==SEL_LINE) {
+        if(selected_received()) context_add("SAVE","w",'w');
+        else {
+            context_add("PREV","p",'p');context_add("NEXT","j",'j');
+            context_add("RENAME","e",'e');
+            if(s_sel==SEL_MARK) context_add("MOVE HERE","m",'m');
+        }
+        context_add(s_delete_armed ? "SURE?" : "DELETE","v",'v');
+        if(!selected_received()) context_add("SEND","s",'s');
+        context_add("DONE","q",'q');
+    } else if(s_sel==SEL_NODE) {
+        context_add("CENTRE","z",'z');context_add("MESSAGE","c",'c');
+        context_add("DONE","q",'q');
+    } else {
+        memcpy(s_context,QUICK,sizeof(QUICK));s_context_n=N_QUICK;
+        context_add("SELECT","j",'j');
+    }
+    *n=s_context_n;return s_context;
 }
 
 /* Go there: centre on it, and start the lock-on so the eye finds it. */
@@ -2312,7 +2366,7 @@ static uint8_t mark_hue(int icon)
 static void sketch_canvas(const ls_sketch_t *s, int pw, int ph, bool open)
 {
     if (!s || s->n <= 0) return;
-    const uint8_t at = TUI_ATTR(s->hue | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t at = TUI_ATTR(s->origin.received ? TUI_MAGENTA|TUI_BRIGHT : s->hue | TUI_BRIGHT, TUI_BLACK);
     int px = 0, py = 0;
     for (int i = 0; i < s->n; i++) {
         double fx, fy;
@@ -2333,6 +2387,15 @@ static void sketch_canvas(const ls_sketch_t *s, int pw, int ph, bool open)
     }
 }
 
+/* A single expanding outline, driven only by a completed receipt. */
+static void arrival_outline(uint32_t id,int x,int y,int64_t now)
+{
+    int64_t age=now-s_arrival_us;
+    if(!s_arrival_id || id!=s_arrival_id || age<0 || age>=750000) return;
+    int r=4+(int)(age/125000);
+    ls_ink_ellipse(x,y,r,r,TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK),6,0);
+}
+
 static void marks_canvas(tui_rect a, int pw, int ph, int64_t now)
 {
     if (!layer(L_MARKS)) return;
@@ -2346,6 +2409,7 @@ static void marks_canvas(tui_rect a, int pw, int ph, int64_t now)
                 int dx, dy;
                 px_dot(fx, fy, &dx, &dy);
                 hit_add(a.x + dx / 2, a.y + dy / 3, HIT_LINE, (uint32_t)i, s->lat[s->n - 1], s->lon[s->n - 1]);
+                arrival_outline(s->id,dx,dy,now);
                 if (s_sel == SEL_LINE && s_sel_index == i)
                     lock_brackets(dx, dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
             }
@@ -2359,15 +2423,16 @@ static void marks_canvas(tui_rect a, int pw, int ph, int64_t now)
         px_dot(fx, fy, &dx, &dy);
         /* A pin: a ring about the cell the symbol letter sits in. */
         const int cdx = (dx / 2) * 2 + 1, cdy = (dy / 3) * 3 + 1;
-        const uint8_t at = TUI_ATTR(mark_hue(m->icon), TUI_BLACK);
+        const uint8_t at = TUI_ATTR((m->origin.received ? TUI_MAGENTA|TUI_BRIGHT : mark_hue(m->icon)), TUI_BLACK);
         ls_ink_line(cdx - 3, cdy - 2, cdx + 3, cdy - 2, at, 5, 0);
         ls_ink_line(cdx - 3, cdy + 2, cdx + 3, cdy + 2, at, 5, 0);
         ls_ink_line(cdx - 3, cdy - 2, cdx - 3, cdy + 2, at, 5, 0);
         ls_ink_line(cdx + 3, cdy - 2, cdx + 3, cdy + 2, at, 5, 0);
         ls_ink_line(cdx, cdy + 2, cdx, cdy + 4, at, 5, 0);
         claim_dots(cdx, cdy, 3, a.w, a.h);
+        arrival_outline(m->id,cdx,cdy,now);
         const bool sel = s_sel == SEL_MARK && s_sel_index == i;
-        if (sel) lock_brackets(cdx, cdy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
+        if (sel && (now / 250000) % 2 == 0) lock_brackets(cdx, cdy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
         hit_add(a.x + dx / 2, a.y + dy / 3, HIT_MARK, (uint32_t)i, m->lat, m->lon);
     }
     /* The compass's GO TO target, so the map and the compass agree. */
@@ -2395,7 +2460,7 @@ static void marks_text(tui_surface *sf, tui_rect a, int pw, int ph)
         const ls_mark_t *m = ls_marks_at(i);
         int cx, cy;
         if (!map_cell_of(m->lat, m->lon, a, pw, ph, &cx, &cy)) continue;
-        const uint8_t hue = mark_hue(m->icon);
+        const uint8_t hue = (m->origin.received ? TUI_MAGENTA|TUI_BRIGHT : mark_hue(m->icon));
         glass(sf, a, a.x + cx, a.y + cy, ls_mark_icon_char(m->icon), TUI_ATTR(hue, TUI_BLACK));
         const bool sel = s_sel == SEL_MARK && s_sel_index == i;
         place_label_key(sf, a, cx, cy, 3, m->name, NULL,
@@ -2411,7 +2476,7 @@ static void marks_text(tui_surface *sf, tui_rect a, int pw, int ph)
         snprintf(len, sizeof(len), "%.2fmi", ls_sketch_length_m(s) / LS_GEO_M_PER_MILE);
         const bool sel = s_sel == SEL_LINE && s_sel_index == i;
         place_label_key(sf, a, cx, cy, 2, s->name, len,
-                    sel ? TUI_ATTR(TUI_BLACK, s->hue | TUI_BRIGHT) : TUI_ATTR(s->hue | TUI_BRIGHT, TUI_BLACK), sel,map_object_key(7,s->id),MAP_LABEL_RIGHT);
+                    sel ? TUI_ATTR(TUI_BLACK, s->hue | TUI_BRIGHT) : TUI_ATTR(s->origin.received ? TUI_MAGENTA|TUI_BRIGHT : s->hue | TUI_BRIGHT, TUI_BLACK), sel,map_object_key(7,s->id),MAP_LABEL_RIGHT);
         hit_label(HIT_LINE, (uint32_t)i, s->lat[s->n - 1], s->lon[s->n - 1]);
     }
     double tlat, tlon;
@@ -2462,7 +2527,7 @@ static void edges_collect(int pw, int ph)
         const ls_mark_t *m = ls_marks_at(s_sel_index);
         double fx, fy;
         if (m && frame_px(m->lat, m->lon, pw, ph, &fx, &fy) && (fx < 0 || fy < 0 || fx >= pw || fy >= ph))
-            edge_add(fx, fy, m->lat, m->lon, HIT_MARK, (uint32_t)s_sel_index, m->name, mark_hue(m->icon));
+            edge_add(fx, fy, m->lat, m->lon, HIT_MARK, (uint32_t)s_sel_index, m->name, (m->origin.received ? TUI_MAGENTA|TUI_BRIGHT : mark_hue(m->icon)));
     } else if (s_sel == SEL_NODE) {
         for (int i = 0; i < s_npeers; i++) {
             const ls_mesh_peer_t *p = &s_map_peers[i];
@@ -2635,7 +2700,8 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
             range_words(rng, sizeof(rng), rlat, rlon, p->lat_e6 / 1e6, p->lon_e6 / 1e6);
             snprintf(lines[n++], 40, "RNG  %s", rng);
         }
-        snprintf(lines[n++], 40, "%s", s_track ? "FOLLOWING  G stops" : "ENTER go  G follow");
+        snprintf(lines[n++],40,"%.5f,%.5f",p->lat_e6/1e6,p->lon_e6/1e6);
+        snprintf(lines[n++], 40, "%s",ls_mesh_tx_enabled() ? "ENTER centre  C DM" : "C DM: TRANSMIT disarmed");
     } else if (s_sel == SEL_MARK) {
         const ls_mark_t *m = ls_marks_at(s_sel_index);
         if (!m) return 0;
@@ -2646,7 +2712,11 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
             range_words(rng, sizeof(rng), rlat, rlon, m->lat, m->lon);
             snprintf(lines[n++], 40, "RNG  %s", rng);
         }
-        snprintf(lines[n++], 40, "ENTER go  E edit");
+        if(m->origin.sender[0]) snprintf(lines[n++],40,"FROM %.23s%s",m->origin.sender,m->origin.received ? " (RX)" : "");
+        time_t stamp=time(NULL);
+        if(m->origin.created && stamp>=m->origin.created) snprintf(lines[n++],40,"AGE %lus%s",(unsigned long)(stamp-m->origin.created),m->origin.received ? " UNSAVED" : "");
+        else snprintf(lines[n++],40,"AGE unknown%s",m->origin.received ? " UNSAVED" : "");
+        snprintf(lines[n++], 40, "%s", selected_received() ? "W SAVE  V DELETE  Q DONE" : "E RENAME  S SEND  Q DONE");
     } else if (s_sel == SEL_LINE) {
         const ls_sketch_t *s = ls_sketch_at(s_sel_index);
         if (!s) return 0;
@@ -2654,7 +2724,9 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
         snprintf(lines[n++], 40, "%d points", s->n);
         snprintf(lines[n++], 40, "%.2f mi  %.2f km", ls_sketch_length_m(s) / LS_GEO_M_PER_MILE,
                  ls_sketch_length_m(s) / 1000.0);
-        snprintf(lines[n++], 40, "ENTER go  E edit");
+        if(s->origin.sender[0]) snprintf(lines[n++],40,"FROM %.23s",s->origin.sender);
+        snprintf(lines[n++],40,"%s",s->origin.received ? "RECEIVED / UNSAVED" : "saved line");
+        snprintf(lines[n++], 40, "%s", selected_received() ? "W SAVE  V DELETE  Q DONE" : "E RENAME  S SEND  Q DONE");
     }
     return n < max ? n : max;
 }
@@ -2879,6 +2951,157 @@ static void icon_done(int i)
     if (ls_marks_set_icon(s_edit_index, i)) save_or_say();
 }
 
+static void open_edit(void);
+static void open_marks(void);
+static void open_lines(void);
+static bool s_clear_marks;
+static void delete_confirm(int i)
+{
+    if(i!=0) return;
+    if(s_clear_marks) ls_marks_clear();
+    else if(s_edit_kind==SEL_MARK) ls_marks_delete(s_edit_index);
+    else ls_sketch_delete(s_edit_index);
+    select_none();save_or_say();open_options();
+}
+static void confirm_nav(int i,int dir) { if(dir<0) { if(s_clear_marks) open_options();else open_edit(); } else delete_confirm(i); }
+static void confirm_delete(bool all)
+{
+    s_clear_marks=all;
+    ls_picker_open(all ? "CLEAR ALL MARKERS?" : "DELETE SELECTED ITEM?",delete_confirm);
+    ls_picker_add("YES, DELETE",all ? "all markers; lines kept" : "remove this item");
+    ls_picker_back(all ? open_options : open_edit);ls_picker_navigation(confirm_nav);
+}
+
+static EXT_RAM_BSS_ATTR ls_share_rx_t s_share_rx;
+static EXT_RAM_BSS_ATTR ls_share_item_t s_share_in,s_share_out;
+static EXT_RAM_BSS_ATTR struct { char id[17];int chan; } s_dest[LS_MESH_MAX_PEERS+LS_MESH_MAX_CHANNELS];
+static int s_ndest,s_send_dest,s_send_part,s_send_total;
+static int64_t s_send_after;
+static char s_dm_id[17];
+
+static void received_open(uint32_t id)
+{
+    for(int i=0;i<ls_marks_count();i++) {
+        const ls_mark_t *m=ls_marks_at(i);
+        if(m->id==id) { select_mark(SEL_MARK,i);jump_to(m->lat,m->lon);goto shown; }
+    }
+    for(int i=0;i<ls_sketch_count();i++) {
+        const ls_sketch_t *l=ls_sketch_at(i);
+        if(l->id==id) { select_mark(SEL_LINE,i);jump_to(l->lat[0],l->lon[0]);goto shown; }
+    }
+    say("received item was deleted");return;
+shown:
+    layers_set(s_layers|L_MARKS);s_card_hidden=false;
+}
+bool ls_scr_map_receive(const ls_mesh_msg_t *m,ls_notice_t *out)
+{
+    if(!m || m->mine || !out) return false;
+    const char *text=m->text;char sender[24],source[48];
+    if(m->direct) {
+        snprintf(sender,sizeof(sender),"%s",m->sender[0] ? m->sender : m->peer);
+        snprintf(source,sizeof(source),"D:%s",m->peer);
+    } else {
+        const char *colon=strstr(text,": ");
+        if(!colon || colon==text || colon-text>=24) return false;
+        snprintf(sender,sizeof(sender),"%.*s",(int)(colon-text),text);
+        text=colon+2;snprintf(source,sizeof(source),"C%u:%s",m->chan,sender);
+    }
+    if(ls_share_receive(&s_share_rx,source,text,(uint32_t)(esp_timer_get_time()/1000000),&s_share_in)!=1) return false;
+    int i=ls_share_import(&s_share_in,sender);
+    if(i<0) {
+        memset(out,0,sizeof(*out));
+        snprintf(out->title,sizeof(out->title),"MAP FULL");
+        snprintf(out->body,sizeof(out->body),"%s sent a %s; no room. Free space and ask for a resend.",sender,s_share_in.line ? "route" : "marker");
+        out->accent=TUI_YELLOW;out->screen=-1;return true;
+    }
+    memset(out,0,sizeof(*out));
+    extern const ls_tui_screen_t ls_scr_map;
+    out->screen=ls_tui_screen_index_of(&ls_scr_map);
+    out->open=received_open;
+    out->item=s_share_in.line ? ls_sketch_at(i)->id : ls_marks_at(i)->id;
+    s_arrival_id=out->item;s_arrival_us=esp_timer_get_time();
+    out->accent=TUI_MAGENTA;out->notify_visible=true;
+    snprintf(out->title,sizeof(out->title),"MAP RECEIVED");
+    snprintf(out->body,sizeof(out->body),"%s sent a %s: %s",sender,s_share_in.line ? "route" : "marker",s_share_in.name);
+    return true;
+}
+/* Serviced from MESH's global notice probe, including while MAP is closed. */
+void ls_scr_map_share_poll(void)
+{
+    int64_t now=esp_timer_get_time();
+    ls_share_expire(&s_share_rx,(uint32_t)(now/1000000));
+    if(!s_send_part || now<s_send_after) return;
+    static EXT_RAM_BSS_ATTR char text[LS_SHARE_TEXT+1];
+    esp_err_t err=ESP_ERR_NOT_ALLOWED;
+    if(ls_mesh_tx_enabled() && ls_share_encode(&s_share_out,s_send_part,text,sizeof(text)))
+        err=s_dest[s_send_dest].chan<0 ? ls_mesh_send_dm_id(s_dest[s_send_dest].id,text) :
+            ls_mesh_send_text_on(s_dest[s_send_dest].chan,text);
+    if(err!=ESP_OK || s_send_part==s_send_total) {
+        ls_notice_t n={.title="MAP SEND",.screen=-1,.accent=TUI_MAGENTA,.notify_visible=true};
+        if(err==ESP_OK) snprintf(n.body,sizeof(n.body),"Queued %d/%d parts. See MESH for delivery status.",s_send_part,s_send_total);
+        else snprintf(n.body,sizeof(n.body),"Stopped: %d/%d queued. %s",s_send_part-1,s_send_total,
+            !ls_mesh_tx_enabled() ? "TRANSMIT disarmed" : esp_err_to_name(err));
+        ls_notify_post(&n);s_send_part=0;
+    } else { s_send_part++;s_send_after=now+1000000; }
+}
+static void destination_nav(int i,int dir);
+static void destination_pick(int i)
+{
+    if(i<0 || i>=s_ndest) return;
+    if(!ls_mesh_tx_enabled()) { ls_picker_note("TRANSMIT disarmed; arm in MESH");return; }
+    ls_picker_close();
+    s_send_dest=i;s_send_part=1;s_send_after=0;
+    say("Sharing queued; MESH reports delivery");
+}
+static void destination_nav(int i,int dir) { if(dir<0) open_edit();else destination_pick(i); }
+static void send_selected(void)
+{
+    if(s_send_part) { say("a share is already being sent");return; }
+    memset(&s_share_out,0,sizeof(s_share_out));
+    static uint32_t serial;
+    s_share_out.id=(uint32_t)esp_timer_get_time() ^ ++serial;
+    if(s_sel==SEL_MARK) {
+        const ls_mark_t *m=ls_marks_at(s_sel_index);if(!m) return;
+        s_share_out.n=1;s_share_out.lat[0]=m->lat;s_share_out.lon[0]=m->lon;
+        snprintf(s_share_out.name,sizeof(s_share_out.name),"%s",m->name);
+    } else if(s_sel==SEL_LINE) {
+        const ls_sketch_t *l=ls_sketch_at(s_sel_index);if(!l) return;
+        s_share_out.line=true;s_share_out.n=l->n;
+        memcpy(s_share_out.lat,l->lat,sizeof(l->lat));memcpy(s_share_out.lon,l->lon,sizeof(l->lon));
+        snprintf(s_share_out.name,sizeof(s_share_out.name),"%s",l->name);
+    } else return;
+    /* Brackets are protocol delimiters; preserve a readable display name. */
+    for(char *p=s_share_out.name;*p;p++) if(*p=='[' || *p==']') *p='-';
+    s_send_total=ls_share_parts(&s_share_out);if(!s_send_total) { say("item cannot be encoded");return; }
+    ls_picker_open("SEND TO",destination_pick);ls_picker_keep_open();ls_picker_back(open_edit);ls_picker_navigation(destination_nav);s_ndest=0;
+    char detail[40];snprintf(detail,sizeof(detail),"send %d part%s",s_send_total,s_send_total==1 ? "" : "s");
+    ls_picker_note(ls_mesh_tx_enabled() ? detail : "TRANSMIT disarmed; arm in MESH");
+    ls_mesh_peer_t peer;
+    for(int i=0;ls_mesh_peer_at(i,&peer) && i<LS_MESH_MAX_PEERS;i++) {
+        snprintf(s_dest[s_ndest].id,sizeof(s_dest[0].id),"%s",peer.id);
+        s_dest[s_ndest++].chan=-1;ls_picker_add(peer.name[0] ? peer.name : peer.id,"DM");
+    }
+    static EXT_RAM_BSS_ATTR ls_mesh_chan_t channels[LS_MESH_MAX_CHANNELS];
+    int n=ls_mesh_channels(channels,LS_MESH_MAX_CHANNELS);
+    for(int i=0;i<n;i++) if(channels[i].fixed || channels[i].psk[0]) {
+        s_dest[s_ndest++].chan=i;ls_picker_add(channels[i].name,"CHANNEL");
+    }
+    ls_picker_empty_reason("no contacts or configured channels");
+}
+static void dm_done(const char *text)
+{
+    if(!text || !*text) return;
+    if(!ls_mesh_tx_enabled()) { say("TRANSMIT disarmed; nothing sent");return; }
+    esp_err_t err=ls_mesh_send_dm_id(s_dm_id,text);
+    say(err==ESP_OK ? "DM queued; see MESH for delivery" : esp_err_to_name(err));
+}
+static void dm_selected(void)
+{
+    if(s_sel!=SEL_NODE) { say("B selects a mesh peer first");return; }
+    snprintf(s_dm_id,sizeof(s_dm_id),"%s",s_sel_node);
+    ls_keyboard_open("MESH DM", "",LS_SHARE_TEXT,dm_done);
+}
+
 static void edit_done(int i)
 {
     if (s_edit_kind == SEL_MARK) {
@@ -2905,11 +3128,14 @@ static void edit_done(int i)
             say(ls_notes_mark(m->name, body) ? "saved to NOTES" : "NOTES could not take it");
             break;
         }
-        case 5:
-            ls_marks_delete(s_edit_index);
-            select_none();
-            save_or_say();
+        case 5: confirm_delete(false);break;
+        case 6: {
+            double lat,lon;ls_map_get_center(&lat,&lon);
+            if(ls_marks_move(s_edit_index,lat,lon)) save_or_say();
             break;
+        }
+        case 7: send_selected();break;
+        case 8: if(ls_marks_accept(false,s_edit_index)) save_or_say();break;
         default: break;
         }
         return;
@@ -2926,15 +3152,14 @@ static void edit_done(int i)
         say(ls_notes_mark(s->name, body) ? "saved to NOTES" : "NOTES could not take it");
         break;
     }
-    case 3:
-        ls_sketch_delete(s_edit_index);
-        select_none();
-        save_or_say();
-        break;
+    case 3: confirm_delete(false);break;
+    case 4: send_selected();break;
+    case 5: if(ls_marks_accept(true,s_edit_index)) save_or_say();break;
     default: break;
     }
 }
 
+static void edit_nav(int i,int dir) { if(dir>0) edit_done(i);else if(s_edit_kind==SEL_MARK) open_marks();else open_lines(); }
 static void open_edit(void)
 {
     if (s_sel == SEL_MARK && ls_marks_at(s_sel_index)) {
@@ -2946,7 +3171,11 @@ static void open_edit(void)
         ls_picker_add("Rename", "");
         ls_picker_add("Change symbol", ls_mark_icon_name(ls_marks_at(s_sel_index)->icon));
         ls_picker_add("Save to NOTES", "as a MAP line");
-        ls_picker_add("Delete", "");
+        ls_picker_add("DELETE", "confirm once");
+        ls_picker_add("MOVE HERE", "to the crosshair");
+        ls_picker_add("SEND over MeshCore",ls_mesh_tx_enabled() ? "choose DM or channel" : "TRANSMIT disarmed");
+        ls_picker_add("SAVE received item",ls_marks_at(s_sel_index)->origin.received ? "keep on SD" : "already local");
+        ls_picker_back(open_marks);ls_picker_navigation(edit_nav);
     } else if (s_sel == SEL_LINE && ls_sketch_at(s_sel_index)) {
         s_edit_kind = SEL_LINE;
         s_edit_index = s_sel_index;
@@ -2954,7 +3183,10 @@ static void open_edit(void)
         ls_picker_add("Go to its start", "centre the map");
         ls_picker_add("Rename", "");
         ls_picker_add("Save to NOTES", "start point and length");
-        ls_picker_add("Delete", "");
+        ls_picker_add("DELETE", "confirm once");
+        ls_picker_add("SEND over MeshCore",ls_mesh_tx_enabled() ? "choose DM or channel" : "TRANSMIT disarmed");
+        ls_picker_add("SAVE received item",ls_sketch_at(s_sel_index)->origin.received ? "keep on SD" : "already local");
+        ls_picker_back(open_lines);ls_picker_navigation(edit_nav);
     }
 }
 
@@ -3084,7 +3316,7 @@ static ls_act_status_t a_map_draw(const ls_args_t *in, ls_val_t *out)
     (void)in;
     ls_sketch_begin();
     if (!layer(L_MARKS)) layers_set(s_layers | L_MARKS);
-    say("DRAW: tap the map or ADD POINT; DONE keeps it");
+    say("DRAW: tap map or A ADD POINT; O FINISH; C CANCEL");
     out->kind = LS_VAL_TEXT;
     out->s = "drawing a line";
     return LS_ACT_OK;
@@ -3193,6 +3425,26 @@ static ls_act_status_t a_map_route(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 static void open_style(void) { ls_val_t out;a_map_style(NULL,&out); }
+static void mark_pick(int i) { if(ls_marks_at(i)) { select_mark(SEL_MARK,i);open_edit(); } }
+static void line_pick(int i) { if(ls_sketch_at(i)) { select_mark(SEL_LINE,i);open_edit(); } }
+static void marks_nav(int i,int dir) { if(dir<0) open_options();else mark_pick(i); }
+static void lines_nav(int i,int dir) { if(dir<0) open_options();else line_pick(i); }
+static void open_marks(void) {
+    ls_picker_open("MARKERS",mark_pick);ls_picker_back(open_options);ls_picker_navigation(marks_nav);
+    for(int i=0;i<ls_marks_count();i++) {
+        const ls_mark_t *m=ls_marks_at(i);
+        ls_picker_add(m->name,m->origin.received ? "RECEIVED / unsaved" : "edit / send");
+    }
+    ls_picker_empty_reason("K places a marker at the crosshair");
+}
+static void open_lines(void) {
+    ls_picker_open("LINES / ROUTES",line_pick);ls_picker_back(open_options);ls_picker_navigation(lines_nav);
+    for(int i=0;i<ls_sketch_count();i++) {
+        const ls_sketch_t *l=ls_sketch_at(i);
+        ls_picker_add(l->name,l->origin.received ? "RECEIVED / unsaved" : "edit / send");
+    }
+    ls_picker_empty_reason("D draws a line; ENTER adds points; O finishes");
+}
 static void options_pick(int i) {
     ls_val_t out;
     if(i==0) a_map_layers(NULL,&out);
@@ -3201,7 +3453,11 @@ static void options_pick(int i) {
     if(i==3) { ls_opt_open(ls_route_options());ls_opt_back(open_options); }
     if(i==4) save_or_say();
     if(i==5) { s_cover_lat=999;cover_update();open_options(); }
+    if(i==6) open_marks();
+    if(i==7) open_lines();
+    if(i==8) confirm_delete(true);
 }
+static void options_nav(int i,int dir) { if(dir>0) options_pick(i);else ls_picker_close(); }
 static void open_options(void) {
     ls_picker_open("MAP OPTIONS",options_pick);
     ls_picker_add("Layers","overlay switches");
@@ -3210,6 +3466,10 @@ static void open_options(void) {
     ls_picker_add("Guidance","route settings");
     ls_picker_add("Retry saving marks",ls_marks_save_status());
     ls_picker_add("Reset coverage","fresh direct receptions from now");
+    ls_picker_add("Markers", "select / edit / send");
+    ls_picker_add("Lines / routes", "select / send");
+    ls_picker_add("Clear all markers", "confirm once; lines kept");
+    ls_picker_navigation(options_nav);
 }
 static ls_act_status_t a_route_options(const ls_args_t *in, ls_val_t *out)
 {
@@ -3217,12 +3477,15 @@ static ls_act_status_t a_route_options(const ls_args_t *in, ls_val_t *out)
     out->kind=LS_VAL_TEXT;out->s="map options";return LS_ACT_OK;
 }
 
+static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out);
+
 static void register_view_action(void)
 {
     static bool done;
     if (done) return;
     done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view,
                               "field, blocks, or line art");
+    ls_action_register("map.context", "s", LS_CAP_UI, a_map_context, "selected map item controls");
     ls_action_register("map.route", "", LS_CAP_UI, a_map_route, "follow GPX or backtrack a walk");
     ls_action_register("map.route_options", "", LS_CAP_UI, a_route_options, "route guidance settings");
     ls_action_register("map.files", "", LS_CAP_UI, a_map_files, "choose an SD map");
@@ -3412,11 +3675,13 @@ static void check_selection(void)
 
 static void centre_reticle(tui_surface *sf, tui_rect body)
 {
-    if (s_controls_hidden && !ls_sketch_drawing()) return;
-    const int cx = body.w / 2, cy = body.h / 2;
-    if (!box_free(cx, cx, cy)) return;
-    glass(sf, body, body.x + cx, body.y + cy, '+',
-                     ls_sketch_drawing() ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    const int x=body.x+body.w/2,y=body.y+body.h/2;
+    /* Opaque backing keeps the target legible over every basemap/theme. */
+    for(int dy=-1;dy<=1;dy++) for(int dx=-2;dx<=2;dx++)
+        tui_put_char(sf,body,x+dx,y+dy,
+            dy==0 ? (dx==0 ? '+' : '-') : (dx==0 ? '|' : ' '),
+            dx==0 && dy==0 ? TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT) :
+                TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
 }
 
 static int count_air_positions(void)
@@ -3489,7 +3754,7 @@ static void draw(tui_surface *sf, tui_rect area)
     const int want = ls_quick_rows(quick, nq, area.w, ls_tui_is_wide());
     const int ctl_h = (!s_controls_hidden && area.h > want + 10) ? want : 0;
     const bool guidance=ls_route_live()->valid;
-    s_header_h = (ls_tui_is_wide() ? 1 : 3)+(guidance ? 1 : 0);
+    s_header_h = (ls_tui_is_wide() ? 3 : 4)+(guidance ? 1 : 0);
     tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
 
     s_quick_rect = ctl_h
@@ -3640,7 +3905,6 @@ static void draw(tui_surface *sf, tui_rect area)
         if(cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_carto_labels(sf,body);
         rings_canvas(sf, body, pw, ph, true);
         if (!cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
-        centre_reticle(sf, body);
         draw_card(sf, s_card_rect);
 
         s_map_cells = body;
@@ -3649,26 +3913,21 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_pan_pad(sf, s_pad_rect);
     }
 
+    centre_reticle(sf,body);
     double lat = 0, lon = 0;
     ls_map_get_center(&lat, &lon);
-    /* A turning mark while tiles are still arriving, so a gap reads as
-       "still drawing" and not as "that is all there is". */
-    const bool busy = !cc && ls_map_render_busy();
-    const char pip = busy ? ls_motion_pip(true) : ' ';
-    const double width_m = 40075016.686 * cos(lat * M_PI / 180.0) * pw /
-        (ldexp(1.0, ls_map_zoom()) * ls_map_tile_px());
     const ls_sketch_t *open = ls_sketch_open();
-    if (open)
-        snprintf(s_note, sizeof(s_note), "DRAW %d pts %.2f mi  tap adds  U undo  O done  C cancel",
-                 open->n, ls_sketch_length_m(open) / LS_GEO_M_PER_MILE);
-    else if (s_toast[0] && now - s_toast_us < 4000000)
-        snprintf(s_note, sizeof(s_note), "%s", s_toast);
-    else
-        snprintf(s_note, sizeof(s_note), "%c %s z%d%s %.2f mi across", pip, busy ? "LOADING" : "OFFLINE",
-                 ls_map_zoom(), !cc && ls_map_zoom() > ls_map_source_zoom() ? " MAG" : "", width_m / 1609.344);
-    ls_tui_status_set(s_file_error ? s_file_error : s_note, NULL);
-    if (!ls_tui_is_wide())
-        tui_put_str(sf, area, area.x, area.y + 2, s_file_error ? s_file_error : s_note, LS_ATTR_DIM);
+    snprintf(s_note,sizeof(s_note),"MARK HERE %.5f,%.5f",lat,lon);
+    if(open) snprintf(s_note+strlen(s_note),sizeof(s_note)-strlen(s_note),"  %d POINTS",open->n);
+    ls_tui_status_set(s_toast[0] && now-s_toast_us<4000000 ? s_toast : s_note, NULL);
+    int coord_row=area.y+(ls_tui_is_wide() ? 1 : 2);
+    tui_put_str(sf,area,area.x,coord_row,s_note,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    const char *hint=ls_sketch_drawing() ? "A ADD  U UNDO  O FINISH  C CANCEL  +/- ZOOM" :
+        selected_received() ? "W SAVE  V DELETE  Q DONE" :
+        s_sel==SEL_MARK ? "P PREV J NEXT E NAME M MOVE V DEL S SEND Q DONE" :
+        s_sel==SEL_LINE ? "P PREV J NEXT E RENAME V DELETE S SEND Q DONE" :
+        s_sel==SEL_NODE ? "Z CENTRE  C MESSAGE  Q DONE" : "K MARK  J SELECT  D DRAW  B PEER  O OPTIONS";
+    tui_put_str(sf,area,area.x,coord_row+1,hint,LS_ATTR_DIM);
 
 
     if (guidance) {
@@ -3692,6 +3951,7 @@ static int pan_step(void)
 
 static void pan(int dx, int dy)
 {
+    s_delete_armed=false;
     s_track = false;
     ls_map_pan(dx, dy);
 }
@@ -3745,6 +4005,44 @@ static bool go_selected(void)
     return false;
 }
 
+static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out)
+{
+    (void)out;
+    const char cmd=in->v[0].s[0];
+    const bool confirmed=s_delete_armed;
+    s_delete_armed=false;
+    if(cmd=='q') { select_none();return LS_ACT_OK; }
+    if(cmd=='z') { go_selected();return LS_ACT_OK; }
+    if(cmd=='c') { dm_selected();return LS_ACT_OK; }
+    if(cmd=='j' || cmd=='p') {
+        int count=ls_marks_count()+ls_sketch_count();
+        if(!count) { say("no items; MARK places one");return LS_ACT_OK; }
+        int at=s_sel==SEL_MARK ? s_sel_index : s_sel==SEL_LINE ? ls_marks_count()+s_sel_index : -1;
+        at=at<0 ? 0 : (at+(cmd=='p' ? count-1 : 1))%count;
+        select_mark(at<ls_marks_count() ? SEL_MARK : SEL_LINE,
+                    at<ls_marks_count() ? at : at-ls_marks_count());
+        s_card_hidden=false;layers_set(s_layers|L_MARKS);return LS_ACT_OK;
+    }
+    if(s_sel!=SEL_MARK && s_sel!=SEL_LINE) return LS_ACT_UNAVAILABLE;
+    s_edit_kind=s_sel;s_edit_index=s_sel_index;
+    if(cmd=='v') {
+        if(!confirmed) s_delete_armed=true;
+        else {
+            if(s_sel==SEL_MARK) ls_marks_delete(s_sel_index);else ls_sketch_delete(s_sel_index);
+            select_none();save_or_say();
+        }
+    } else if(cmd=='e') {
+        const char *name=s_sel==SEL_MARK ? ls_marks_at(s_sel_index)->name : ls_sketch_at(s_sel_index)->name;
+        ls_keyboard_open("RENAME",name,LS_MARK_NAME-1,rename_done);
+    } else if(cmd=='m' && s_sel==SEL_MARK) {
+        double lat,lon;ls_map_get_center(&lat,&lon);
+        if(ls_marks_move(s_sel_index,lat,lon)) save_or_say();
+    } else if(cmd=='w') {
+        if(ls_marks_accept(s_sel==SEL_LINE,s_sel_index)) save_or_say();
+    } else if(cmd=='s') send_selected();
+    ls_tui_invalidate();return LS_ACT_OK;
+}
+
 static bool key(ls_tk_t k, char ch)
 {
     if(ls_place_search_active())return ls_place_search_key(k,ch);
@@ -3758,13 +4056,33 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_CHAR && ls_quick_key(ch, quick, nq, ls_quick_grant_builtin(), NULL))
         return true;
 
+    if(!ls_sketch_drawing() && k==LS_TK_CHAR &&
+       ls_quick_key(ch,QUICK,N_QUICK,ls_quick_grant_builtin(),NULL)) return true;
     if (ls_sketch_drawing()) {
         ls_val_t out;
         if (k == LS_TK_ENTER) { a_map_draw_add(NULL, &out); return true; }
         if (k == LS_TK_ESC) { a_map_draw_cancel(NULL, &out); return true; }
     }
 
-    if (k == LS_TK_CHAR && (ch == 'n' || ch == 'N')) {
+    if(k==LS_TK_CHAR && (ch=='j' || ch=='J')) {
+        const ls_mark_t *m=s_sel==SEL_MARK ? ls_marks_at(s_sel_index) : NULL;
+        int i=ls_marks_next(m ? m->id : 0);
+        if(i<0) say("no markers; K places one");
+        else { select_mark(SEL_MARK,i);s_card_hidden=false;layers_set(s_layers|L_MARKS); }
+        return true;
+    }
+    if(k==LS_TK_CHAR && (ch=='b' || ch=='B')) {
+        int at=-1;
+        for(int i=0;i<s_npeers;i++) if(s_sel==SEL_NODE && !strcmp(s_sel_node,s_map_peers[i].id)) at=i;
+        for(int k=1;k<=s_npeers;k++) {
+            int i=(at+k)%s_npeers;if(!s_map_peers[i].has_loc) continue;
+            select_node(s_map_peers[i].id);jump_to(s_map_peers[i].lat_e6/1e6,s_map_peers[i].lon_e6/1e6);
+            layers_set(s_layers|L_MESH);s_card_hidden=false;return true;
+        }
+        say("no mesh peers advertising a location");return true;
+    }
+    if(k==LS_TK_CHAR && (ch=='c' || ch=='C')) { dm_selected();return true; }
+    if (k == LS_TK_CHAR && (ch == 'n'  || ch == 'N')) {
         layers_set(s_layers ^ L_MESH);
         say(layer(L_MESH) ? "mesh nodes shown" : "mesh nodes hidden");
         return true;
@@ -3886,6 +4204,7 @@ static bool touch(int col, int row)
 
     if (!in_rect(s_map_cells, col, row)) return false;
 
+    s_delete_armed=false;
     const double fx = (col - s_map_cells.x + 0.5) * SUB_X;
     const double fy = (row - s_map_cells.y + 0.5) * sub_y();
     if (ls_sketch_drawing()) {
@@ -3921,7 +4240,7 @@ const char *ls_scr_map_reload(void) { rescan(); return s_file_error; }
 
 const ls_tui_screen_t ls_scr_map = {
     .name = "MAP",
-    .hint = "TAP select/centre  TAB next plane  ENTER go  F go to  K mark  D draw  L layers  S style",
+    .hint = "K MARK  J SELECT  D DRAW  O OPTIONS  B PEER  C DM",
     .enter = enter,
     .leave = leave,
     .draw = draw,

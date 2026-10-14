@@ -25,6 +25,7 @@ extern "C" {
 #endif
 
 typedef struct {
+    uint32_t iq_samples, iq_bytes, iq_rate;
     uint32_t freq_hz;
     char     preset[48];     /* e.g. FuriHalSubGhzPresetOok650Async */
     char     protocol[24];   /* RAW, Princeton, ... */
@@ -57,6 +58,8 @@ void subghz_file_line(subghz_file_t *f, const char *line,
                       int32_t *edges, int cap);
 
 /* True when the file carries what the SX1262 needs to send it again. */
+bool subghz_file_is_iq(const subghz_file_t *f);
+const char *subghz_tx_radio_refusal(uint32_t hz, int dbm);
 bool subghz_file_is_fsk(const subghz_file_t *f);
 bool subghz_file_is_ook(const subghz_file_t *f);
 /* Stock 2FSKDev238/476Async or a complete CC1101 custom 2-FSK preset. */

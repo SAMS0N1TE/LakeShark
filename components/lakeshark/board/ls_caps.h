@@ -82,6 +82,15 @@
 #define LS_HAS_C6            0
 #endif
 
+/* The C6 runs the shipped two-slot ESP-Hosted image and can take an
+   application update over SDIO. Only this profile ships that layout. */
+#if LS_HAS_C6 && defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4 && \
+    defined(CONFIG_LS_C6_LINK) && CONFIG_LS_C6_LINK
+#define LS_HAS_C6_OTA        1
+#else
+#define LS_HAS_C6_OTA        0
+#endif
+
 /* SDIO bus to the C6 / SD card. */
 #if defined(LS_BOARD_SDIO_CLK_GPIO)
 #define LS_HAS_SDIO          1

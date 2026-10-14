@@ -26,6 +26,7 @@ void ls_compass_learn_reset(ls_compass_learn_t *l, float radius_ut)
 {
     memset(l, 0, sizeof(*l));
     l->radius = radius_ut;
+    l->expected_ut = l->expected_dip = NAN;
     for (int i = 0; i < 3; i++) {
         l->P[D0 + i][D0 + i] = D_SIGMA0 * D_SIGMA0;
         l->P[K0 + i][K0 + i] = K_SIGMA0 * K_SIGMA0;
@@ -111,6 +112,8 @@ ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], co
     const float g = sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
     /* Gravity is only down while the board is not being swung. */
     if (!(g > 0.92f && g < 1.08f)) return LS_CL_SKIPPED;
+    memcpy(l->field, f, sizeof(l->field));
+    memcpy(l->up, up, sizeof(l->up));
     if (isfinite(gyro_dps) && gyro_dps > 90.0f) return LS_CL_SKIPPED;
     const float down[3] = { -up[0] / g, -up[1] / g, -up[2] / g };
     /* An unknown current is none: k then learns nothing and adds nothing. */
@@ -184,6 +187,21 @@ ls_cl_result_t ls_compass_learn_step(ls_compass_learn_t *l, const float f[3], co
 
 bool ls_compass_learn_ready(const ls_compass_learn_t *l) { return l && l->started && l->applied; }
 
+bool ls_compass_learn_plausible(const float f[3], const float up[3],
+                                const float c[3], float radius, float dip)
+{
+    float n2 = 0, a2 = 0, vertical = 0;
+    for (int i = 0; i < 3; i++) {
+        const float v = f[i] - c[i];
+        n2 += v * v; a2 += up[i] * up[i]; vertical -= v * up[i];
+    }
+    const float n = sqrtf(n2), a = sqrtf(a2);
+    if (!isfinite(n) || !(radius > 0) || !(a > 0.9f && a < 1.1f) ||
+        fabsf(n / radius - 1) > 0.20f) return false;
+    const float measured = asinf(fmaxf(-1, fminf(1, vertical / (n * a)))) * 57.29578f;
+    return !isfinite(dip) || fabsf(measured - dip) <= 15.0f;
+}
+
 bool ls_compass_learn_correction(const ls_compass_learn_t *l, float amps, float out[3])
 {
     out[0] = out[1] = out[2] = 0;
@@ -196,6 +214,8 @@ bool ls_compass_learn_correction(const ls_compass_learn_t *l, float amps, float 
         n2 += c[i] * c[i];
     }
     if (n2 > LS_CL_MAX_UT * LS_CL_MAX_UT) return false;
+    if (!ls_compass_learn_plausible(l->field, l->up, c,
+            isfinite(l->expected_ut) ? l->expected_ut : l->radius, l->expected_dip)) return false;
     memcpy(out, c, sizeof(c));
     return true;
 }

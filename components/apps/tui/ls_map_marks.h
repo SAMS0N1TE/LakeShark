@@ -37,7 +37,14 @@ char        ls_mark_icon_char(int icon);
 const char *ls_mark_icon_name(int icon);
 
 typedef struct {
+    bool received;             /* excluded from SD snapshots until accepted */
+    uint32_t created;          /* epoch seconds, 0 when clock is unknown */
+    char sender[24];
+} ls_mark_origin_t;
+
+typedef struct {
     uint32_t id;               /* runtime identity, survives rename/compaction */
+    ls_mark_origin_t origin;
     double  lat, lon;
     uint8_t icon;
     char    name[LS_MARK_NAME];
@@ -45,8 +52,9 @@ typedef struct {
 
 typedef struct {
     uint32_t id;
+    ls_mark_origin_t origin;
     int     n;
-    float   lat[LS_SKETCH_PTS], lon[LS_SKETCH_PTS];
+    double  lat[LS_SKETCH_PTS], lon[LS_SKETCH_PTS];
     uint8_t hue;               /* TUI colour, without the bright bit */
     char    name[LS_MARK_NAME];
 } ls_sketch_t;
@@ -78,11 +86,18 @@ int  ls_marks_add(double lat, double lon, int icon, const char *name);
 bool ls_marks_rename(int i, const char *name);
 bool ls_marks_set_icon(int i, int icon);
 bool ls_marks_delete(int i);
+bool ls_marks_move(int i, double lat, double lon);
+/* Cycle by stable identity; 0 means no selection. */
+int ls_marks_next(uint32_t id);
+void ls_marks_clear(void);
+bool ls_marks_accept(bool line, int i);
+bool ls_marks_received(bool line, int i, const char *sender);
 
 int                ls_sketch_count(void);
 const ls_sketch_t *ls_sketch_at(int i);
 bool ls_sketch_delete(int i);
 bool ls_sketch_rename(int i, const char *name);
+int ls_sketch_import(const double *lat,const double *lon,int n,const char *name);
 
 /* The line being drawn, which is not in the list until it is finished. */
 void               ls_sketch_begin(void);

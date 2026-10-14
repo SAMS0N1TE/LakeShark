@@ -36,11 +36,11 @@ LakeShark pushes the LR2021 beyond conventional LoRa, using its raw signal path 
 
 ---
 
-**NEW IN v2.13**
+**NEW IN v2.14**
 
-Onboard narrowband FM · Animated VFD meters · Inline keypad · Live I/Q waterfalls
+DETECTOR alerts · Wi-Fi war driving · Map sharing over MeshCore · LR2021 I/Q replay
 
-[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.13.0) &nbsp;•&nbsp;
+[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.14.0) &nbsp;•&nbsp;
 [All releases](https://github.com/SAMS0N1TE/LakeShark/releases)
 
 </div>
@@ -153,17 +153,18 @@ Everything runs on the handheld. No separate computer is required for normal ope
 | App | Features |
 | --- | --- |
 | **SUB-GHZ** | Read, analyzer, saved captures, raw recording, learning and settings. OOK/FSK replay `[EXPERIMENTAL]` |
-| **REC** | Signal capture, `.sub` export, playback, inline power and animated waveforms |
+| **REC** | Signal capture, `.sub` export, playback, inline power and animated waveforms. LR2021 I/Q recording and replay |
 | **MIX-RF** | Keyboard CC1101 energy monitoring, nRF24 activity scans and NFC detection |
 | **NFC** | MIFARE Classic 4K reads, block maps, key entry, hex/ASCII viewing and saved dumps. Mini/1K full reads `[EXPERIMENTAL]` |
+| **DETECTOR** | Background alerts for drones broadcasting Remote ID and for SWEEP categories. Built-in rules, or your own rules file on the SD card |
 | **EXPERIMENTS** | LR2021 radio experiments including RS41 sondes and LR433 sensors with history and saved readouts `[EXPERIMENTAL]` |
 
 ### Mapping and navigation
 
 | App | Features |
 | --- | --- |
-| **MAP** | Offline maps, aircraft trails, Mesh nodes, ships, APRS, GPX routes, layers, markers and eight palettes. Pixel field view `[EXPERIMENTAL]` |
-| **COMPASS** | Tilt-compensated heading, true north, transmitter finding, channel scanning, dual-radio monitoring, hit logs, RADAR and HEAT views |
+| **MAP** | Offline maps, aircraft trails, Mesh nodes, ships, APRS, GPX routes, layers, markers and eight palettes. Add and move markers by touch, draw routes and share markers over MeshCore. Pixel field view `[EXPERIMENTAL]` |
+| **COMPASS** | Tilt-compensated heading, true north, transmitter finding, channel scanning, dual-radio monitoring, hit logs, RADAR and HEAT views `[EXPERIMENTAL]` |
 | **GPS** | Position, navigation and GPX track recording |
 | **NOTES** | SD-card Markdown notes with checklists and live GPS, heading and radio information |
 
@@ -173,10 +174,10 @@ Everything runs on the handheld. No separate computer is required for normal ope
 | --- | --- |
 | **MUSIC** | SD-card audio playback, VFD meters, octave bands, spectral analyzer, waterfall and microphone visualization |
 | **FILES** | SD-card file browsing, sorting, `.sub` previews and direct recording playback |
-| **UPDATE** | One-tap signed firmware updates over Wi-Fi |
+| **UPDATE** | One-tap signed firmware updates over Wi-Fi, and C6 Wi-Fi/Bluetooth firmware updates from the SD card |
 | **SET** | Display brightness, themes, fonts, sounds, speech and daylight mode |
 | **RADIOS** | Radio power, antenna selection and Wi-Fi/Bluetooth startup controls |
-| **LINK** | Wi-Fi/Bluetooth scanning, signal graphs and GPS-tagged CSV surveys |
+| **LINK** | Wi-Fi/Bluetooth scanning, signal graphs and SURVEY war driving with WiGLE CSV files |
 | **DIAG** | Memory, radios, sensors, rebuild statistics and diagnostic logs |
 | **TERMINAL** | On-device console with keyboard input |
 
@@ -218,7 +219,7 @@ The [LakeShark web tools](https://terminalbay.com/?m=lakeshark) also generate P2
 - Default target: **568 × 1232 RM69A10 AMOLED, 16 MB flash**.
 - For the HI8561 TFT (540 × 1168), add `boards/t_display_p4_tft.defaults` after `boards/t_display_p4.defaults`.
 - The LCD-4.3 image uses a different board and 32 MB partition layout.
-- LINK requires compatible ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT firmware is not supported.
+- LINK requires compatible ESP-Hosted firmware on the ESP32-C6. Factory ESP-AT firmware is not supported. See [C6 firmware](c6_firmware/README.md).
 - T-Display P4 Flipper control uses Bluetooth.
 
 ---
@@ -274,6 +275,8 @@ The following features are still being developed or require additional live-RF v
 | **P25 Phase II** | Manual and automatic grant following. Bench-tested with public recordings; live RF unverified. Disabled after restart. [Details](docs/P25_PHASE2.md) |
 | **HackRF One** | Experimental SDR support for FM, POCSAG, ACARS, P25, recording and ADS-B. Pagers verified; live P25 unconfirmed. [Status](docs/HACKRF_BRINGUP.md) |
 | **LR2021 I/Q TX** | Custom short waveform transmission with amplitude and phase preserved, including P25 test tones and temperature packets. [Research](docs/LR2021_IQ_TX.md) |
+| **LR2021 I/Q replay** | Records and replays captures at 433 MHz. OOK replay is verified; FSK replay is not yet verified over the air |
+| **C6 firmware update** | Installs C6 firmware from the SD card. Reinstalling the shipped version is verified on hardware. Recovery still needs the UART header. [Details](c6_firmware/README.md) |
 | **LoRa bearing plots** | RSSI grouped by compass heading. Not a validated direction-finding system |
 | **Location scanning** | Mixed P25/FM lists, GPS filtering and CSV/JSON import. [Details](docs/LOCATION_SCAN.md) |
 | **RadioReference adapter** | Requires an approved API key and Premium account. Live authentication not yet verified |

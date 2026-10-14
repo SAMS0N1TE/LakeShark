@@ -124,6 +124,22 @@ const char *ls_compass_cal_problem(const ls_compass_cal_t *c)
 
 bool ls_compass_cal_valid(const ls_compass_cal_t *c) { return !ls_compass_cal_problem(c); }
 
+const char *ls_compass_cal_upgrade(const ls_compass_cal_t *c,
+                                  const ls_compass_cal_t *old, float expected)
+{
+    const char *why = ls_compass_cal_problem(c);
+    if (why) return why;
+    if (c->error > 0.08f) return "fit error above 8%";
+    const bool known = isfinite(expected) && expected > 0;
+    const float ref = known ? expected : old ? old->radius : NAN;
+    if (isfinite(ref) && fabsf(c->radius / ref - 1) > 0.20f)
+        return "radius differs from reference by over 20%";
+    /* An old fit outside the independently known field is not a benchmark. */
+    if (old && (!known || fabsf(old->radius / expected - 1) <= 0.20f) && c->error > old->error)
+        return "larger fit error than saved calibration";
+    return NULL;
+}
+
 /* Gauss-Jordan with partial pivoting on an n x (n+1) row-major system. */
 static bool solve(double *a, int n, double tiny)
 {

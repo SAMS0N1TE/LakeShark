@@ -1,10 +1,14 @@
 #ifndef BLE_LINK_SCAN_H
 #define BLE_LINK_SCAN_H
 #include <stdbool.h>
+#include <stdint.h>
 /* 0.625 ms units: 30 ms / 100 ms. Passive reception requests no scan
  * responses. 70% nominal idle time leaves room for connection events; NimBLE
  * arbitrates collisions. This is a conservative unmeasured duty budget, not
  * a guarantee of link throughput or RF coverage on the P4. */
+/* NimBLE fast head discovery defaults: 30ms / 30ms. */
+#define BLE_LINK_HEAD_INTERVAL 48
+#define BLE_LINK_HEAD_WINDOW 48
 #define BLE_LINK_OBSERVER_INTERVAL 160
 #define BLE_LINK_OBSERVER_WINDOW 48
 typedef enum { BLE_SCAN_OFF, BLE_SCAN_HEAD, BLE_SCAN_OBSERVER } ble_scan_mode_t;
@@ -21,5 +25,9 @@ static inline ble_scan_action_t ble_scan_action(ble_scan_mode_t want,
     if (want == BLE_SCAN_OFF) return active ? BLE_SCAN_STOP : BLE_SCAN_KEEP;
     if (!active) return BLE_SCAN_START;
     return want == current ? BLE_SCAN_KEEP : BLE_SCAN_RESTART;
+}
+/* LE Read Local Supported Features, bits 11 (Coded) and 12 (extended). */
+static inline bool ble_scan_long_range(uint64_t features, bool compiled, bool rejected) {
+    return compiled && !rejected && (features & 0x1800u)==0x1800u;
 }
 #endif

@@ -48,6 +48,9 @@ typedef struct {
     /* Set by the panel when the back target was the one pressed. A caller
        building a table leaves it alone. */
     bool            cycle_back;
+    uint8_t         min_rows : 4; /* optional overall key height, including border */
+    uint8_t         max_columns : 3; /* optional panel column limit */
+    uint8_t         danger : 1;   /* destructive confirmation: red key face */
 } ls_quick_t;
 
 /* Draw the panel into `area`: one row per control. */

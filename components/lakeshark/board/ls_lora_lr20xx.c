@@ -2073,7 +2073,7 @@ static esp_err_t program_lora_once(void)
        what decides the settings, so once after it covers both. */
     if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
     if (err == ESP_OK)
-        err = step_lr(lr20xx_lora_set_packet(c->preamble, 255, false, c->crc_on, c->invert_iq),
+        err = step_lr(lr20xx_lora_set_packet(c->preamble, c->implicit_rx_bytes?c->implicit_rx_bytes:255, c->implicit_rx_bytes!=0, c->crc_on, c->invert_iq),
                       "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_lora_set_syncword(c->sync_word), "SetLoraSyncword");
     if (err == ESP_OK && c->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
@@ -2138,7 +2138,7 @@ static esp_err_t arm_lora_rx(void)
 {
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
     if (err == ESP_OK)
-        err = step_lr(lr20xx_lora_set_packet(lr.cfg.preamble, 255, false, lr.cfg.crc_on,
+        err = step_lr(lr20xx_lora_set_packet(lr.cfg.preamble, lr.cfg.implicit_rx_bytes?lr.cfg.implicit_rx_bytes:255, lr.cfg.implicit_rx_bytes!=0, lr.cfg.crc_on,
                                              lr.cfg.invert_iq), "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_clear_rx_fifo(), "ClearRxFifo");
     if (err == ESP_OK) err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
@@ -2220,6 +2220,7 @@ static esp_err_t load_tx_fifo(const uint8_t *data, size_t len)
 
 static esp_err_t lr_send(const uint8_t *data, size_t len)
 {
+    if(lr.cfg.implicit_rx_bytes)return ESP_ERR_INVALID_STATE;
     if (!lr.cfg_valid || lr.fsk_active) return ESP_ERR_INVALID_STATE;
     if (!data || len == 0) return ESP_ERR_INVALID_ARG;
     if (len > 255) return ESP_ERR_INVALID_SIZE;
@@ -2335,6 +2336,33 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
    whether it was receiving when it measured, so no GetStatus goes first.
    Half the frames of asking twice, which is what sets how fast a burst can
    be timed. */
+/* Semtech lr20xx_system_types.h: SYNC_WORD_HEADER_VALID is bit 6.
+ * https://github.com/Lora-net/SWL2001/blob/master/lbm_lib/smtc_modem_core/radio_drivers/lr20xx_driver/inc/lr20xx_system_types.h */
+static int lr_activity(float *dbm)
+{
+    if(!lr.cfg_valid || !lr.rx_mode || lr.fsk_active || lr.scanning ||
+       s_exp_active || lr20xx_modes_active() || lr.tx_busy)return -1;
+    lr20xx_status_t st;
+    if(lr20xx_get_status(&st)!=ESP_OK || !lr20xx_stat_plausible(st.stat) || take_reset(st.stat))return -1;
+    if(st.irq&(LR20XX_IRQ_ERROR|LR20XX_IRQ_CMD_ERROR))return -1;
+    int flags=((st.irq&LR20XX_IRQ_PREAMBLE_DETECTED)?LS_LORA_PREAMBLE:0)|
+              ((st.irq&(1u<<6))?LS_LORA_HEADER:0);
+    uint32_t end=LR20XX_IRQ_RX_DONE|LR20XX_IRQ_TIMEOUT|LR20XX_IRQ_CRC_ERROR|
+                 LR20XX_IRQ_LORA_HDR_ERROR|LR20XX_IRQ_LEN_ERROR;
+    if(st.irq&end)flags|=LS_LORA_END;
+    if((st.irq&LR20XX_IRQ_RX_DONE) && !(st.irq&(LR20XX_IRQ_CRC_ERROR|LR20XX_IRQ_LORA_HDR_ERROR))) {
+        flags|=LS_LORA_HEADER;
+        lr20xx_lora_pkt_status_t ps;
+        if(lr20xx_get_lora_packet_status(&ps)!=ESP_OK)return -1;
+        if(dbm)*dbm=ps.rssi_dbm;
+    } else if((flags&3) && lr20xx_get_rssi_inst(dbm)!=ESP_OK)return -1;
+    if(lr20xx_clear_irq(st.irq)!=ESP_OK)return -1;
+    if((st.irq&end) || LR20XX_STAT_MODE(st.stat)!=LR20XX_MODE_RX) {
+        if(lr20xx_clear_rx_fifo()!=ESP_OK || lr_receive()!=ESP_OK)return -1;
+    }
+    return flags;
+}
+
 static esp_err_t lr_rssi_inst(float *dbm)
 {
     float v = 0;
@@ -4021,6 +4049,7 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
     .send = lr_send,
     .send_done = lr_send_done,
     .poll = lr_poll,
+    .activity = lr_activity,
     .rssi_inst = lr_rssi_inst,
     .airtime_ms = lr_airtime_ms,
     .fsk_begin = lr_fsk_begin,

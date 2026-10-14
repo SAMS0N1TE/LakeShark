@@ -113,6 +113,10 @@ struct ls_opt_ctx_s {
        Inherited by submenus. Zero preserves per-frame refresh for other apps. */
     unsigned refresh_ms;
     bool covers_screen;
+    /* Optional adaptive instrument header, inherited by submenus. */
+    void (*draw_header)(tui_surface *, tui_rect);
+    /* Optional picker context art, inherited by submenus. */
+    void (*preview)(tui_surface *, tui_rect);
 };
 
 /* A table's rows, for a context's initializer: LS_OPT_ROWS(OPT_NFM). */

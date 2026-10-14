@@ -11,7 +11,8 @@ static uint64_t first;
 static uint32_t confirmed_hz;
 const ls_lora_cfg_t *ls_lora_cfg(void) { return &cfg; }
 void ls_lora_cfg_default(ls_lora_cfg_t *out) { *out = cfg; }
-uint32_t ls_lora_caps(void) { return 0; }
+static uint32_t test_caps;
+uint32_t ls_lora_caps(void) { return test_caps; }
 ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_LR20XX; }
 bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return false; }
@@ -25,6 +26,7 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *c)
     }
     cfg = *c; return ESP_OK;
 }
+esp_err_t lr20xx_set_agc_gain(uint8_t gain) { LS_EQ_INT(gain,0); return ESP_OK; }
 esp_err_t ls_lora_receive(void) { return fail_receive ? ESP_FAIL : ESP_OK; }
 esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *arg, lr20xx_stream_result_t *out)
 {
@@ -162,4 +164,13 @@ LS_CASE(lr_fm_gap_never_bridges_discriminator_history)
     lr_wf_stats st; lr_wf_stop_stats(&st);
     LS_EQ_UINT(0, consumed); LS_EQ_UINT(1, reset_seen);
     LS_EQ_UINT(321, st.lost_pairs); LS_EQ_UINT(1, st.gaps);
+}
+
+LS_CASE(lriq_subghz_lf_receive_above_tx_band)
+{
+    fresh();test_caps=LS_LORA_CAP_BAND_1G5_2G5;
+    LS_EQ_INT(ESP_OK,lr_wf_start(990000000));run_owner();
+    LS_EQ_UINT(990000000,confirmed_hz);lr_wf_stop();
+    LS_EQ_INT(ESP_ERR_INVALID_ARG,lr_wf_start(1000000000));
+    test_caps=0;
 }

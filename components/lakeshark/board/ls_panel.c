@@ -124,11 +124,16 @@ void ls_panel_fb_present_rows(int y0, int y1)
 /* The refresh count is the one number that says the scan is running
    at all: a panel showing a frozen picture and a panel whose DMA has stopped
    look the same from the outside. */
+uint32_t ls_panel_refresh_count(void)
+{
+    return __atomic_load_n(&s_refresh_count, __ATOMIC_ACQUIRE);
+}
+
 void ls_panel_diagnostics(void)
 {
-    const uint32_t a = __atomic_load_n(&s_refresh_count, __ATOMIC_ACQUIRE);
+    const uint32_t a = ls_panel_refresh_count();
     vTaskDelay(pdMS_TO_TICKS(1000));
-    const uint32_t b = __atomic_load_n(&s_refresh_count, __ATOMIC_ACQUIRE);
+    const uint32_t b = ls_panel_refresh_count();
     printf("panel: %lu refreshes, %lu in the last second, framebuffer %s\n",
            (unsigned long)b, (unsigned long)(b - a),
            s_frames[s_back] ? "ready" : "missing");
@@ -468,6 +473,7 @@ esp_err_t ls_panel_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_panel_set_brightness(unsigned percent) { (void)percent; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_panel_blank(unsigned fade_ms) { (void)fade_ms; return ESP_ERR_NOT_SUPPORTED; }
 void ls_panel_diagnostics(void) {}
+uint32_t ls_panel_refresh_count(void) { return 0; }
 bool ls_panel_fb(ls_panel_fb_t *out) { (void)out; return false; }
 void ls_panel_fb_present(void) {}
 void ls_panel_fb_present_rows(int y0, int y1) { (void)y0; (void)y1; }

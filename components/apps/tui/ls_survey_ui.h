@@ -1,3 +1,4 @@
+/* Touch-first SURVEY dashboard and its shared layered options tree. */
 #ifndef LS_SURVEY_UI_H
 #define LS_SURVEY_UI_H
 #include "ls_tui_screen.h"

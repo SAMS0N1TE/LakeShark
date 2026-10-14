@@ -155,6 +155,25 @@ static void respond_rssi(const uint8_t *tx,uint8_t *rx,size_t n,void *ctx)
     uint8_t op=tx[0];respond(tx,rx,n,ctx);
     if(op==0x15 && n==3 && rx){rx[1]=rssi_status;rx[2]=200;}
 }
+static uint16_t activity_irq;
+static void respond_activity(const uint8_t *tx,uint8_t *rx,size_t n,void *ctx) {
+    uint8_t op=n?tx[0]:0;respond_rssi(tx,rx,n,ctx);
+    if(op==0x12 && n==4 && rx) {rx[2]=activity_irq>>8;rx[3]=activity_irq;}
+    if(op==0x02)activity_irq=0;
+}
+LS_CASE(detector_activity_sx1262_irq_and_no_transmit) {
+    bring_up(0x22,0x14,0x24);ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);cfg.implicit_rx_bytes=8;cfg.crc_on=false;
+    LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);LS_EQ_INT(ls_lora_receive(),ESP_OK);
+    uint8_t payload=0;LS_EQ_INT(ls_lora_send(&payload,1),ESP_ERR_INVALID_STATE);
+    rssi_status=0x54;ls_shim_spi_on_transfer(respond_activity,&s_part);
+    activity_irq=4|16;float dbm=0;
+    LS_EQ_INT(ls_lora_activity(&dbm),LS_LORA_PREAMBLE|LS_LORA_HEADER);
+    LS_NEAR(dbm,-100,.01);LS_EQ_INT(activity_irq,0);LS_CHECK(!ls_lora_is_transmitting());
+    LS_EQ_INT(ls_lora_activity(&dbm),0);
+    activity_irq=2;LS_EQ_INT(ls_lora_activity(&dbm),LS_LORA_END|LS_LORA_HEADER);LS_CHECK(ls_lora_is_receiving());
+    activity_irq=4;rssi_status=0xff;LS_EQ_INT(ls_lora_activity(&dbm),-1);
+}
+
 LS_CASE(short_radio_frames_use_inline_dma_and_failures_preserve_the_reply)
 {
     bring_up(0x22, 0x14, 0x24);

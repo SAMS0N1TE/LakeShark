@@ -150,3 +150,9 @@ config LV_USE_LIBJPEG_TURBO
 config LV_USE_LZ4
     bool "LVGL 9 LZ4 decoder (unused, LVGL 8.4)"
     default n
+
+config LS_EXAMPLE_APP
+    bool "Show native framework example app"
+    default n
+    help
+        Build and register the small shared-widget tap counter example.

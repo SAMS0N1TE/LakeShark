@@ -14,6 +14,8 @@ extern "C" {
 
 /* Opening the page starts a check when nothing is under way. */
 void ls_update_view_enter(void);
+/* Context-specific chrome hint, including the embedded C6 confirmation. */
+const char *ls_update_view_hint(void);
 void ls_update_view_draw(tui_surface *sf, tui_rect area);
 /* ENTER steps the update; every other key is left to the router. */
 bool ls_update_view_key(ls_tk_t k, char ch);

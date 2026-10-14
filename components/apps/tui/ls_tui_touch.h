@@ -20,6 +20,13 @@ void ls_tui_touch_set_source(ls_tui_touch_src_fn fn);
 void ls_tui_touch_stats(uint32_t *reads, uint32_t *taps,
                         int *last_col, int *last_row);
 
+/* One finished touch: where it went down and came up in panel px, the cell
+   it went down on (-1 off the grid), and whether it counted as a tap. */
+typedef struct { int x0, y0, x1, y1, col, row; bool tap; } ls_tui_touch_event_t;
+
+/* Copies up to max of the most recent touches, oldest first; returns how many. */
+int ls_tui_touch_history(ls_tui_touch_event_t *out, int max);
+
 /* True when a completed tap landed on a cell. Non-blocking; call once a
    frame. A press alone reports nothing - only a press and release on the
    same cell counts. */

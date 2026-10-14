@@ -16,7 +16,7 @@ endif()
 
 if(CONFIG_LAKESHARK_HEADLESS)
     idf_component_register(
-        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
+        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c ls_c6_update.c ls_c6_core.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
         INCLUDE_DIRS .
         PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted
                       esp_http_client app_update esp_app_format mbedtls nvs_flash ${LS_BLE_REQ})
@@ -77,3 +77,8 @@ if(CONFIG_LV_MEM_CUSTOM)
 endif()
 
 spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)
+
+if(CONFIG_LS_BLE_HEAD)
+    target_sources(${COMPONENT_LIB} PRIVATE ble_link_legacy.c)
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=ble_hs_hci_cmd_tx" "-Wl,--wrap=ble_gap_rx_adv_report")
+endif()

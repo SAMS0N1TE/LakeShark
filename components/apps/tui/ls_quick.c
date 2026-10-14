@@ -339,6 +339,13 @@ static void draw_cap(tui_surface *sf, tui_rect area, int x, int y,
             tui_put_char(sf, area, x + c, y + r, LS_TUI_SHADE_25, field);
 
     const int n = (int)strlen(word);
+    const char *space=strchr(word,' ');
+    if(n>w && space && h>=3) {
+        char first[32];snprintf(first,sizeof(first),"%.*s",(int)(space-word),word);
+        tui_put_str(sf,area,x+(w-(int)strlen(first))/2,y+(h-3)/2,first,text);
+        tui_put_str(sf,area,x+(w-(int)strlen(space+1))/2,y+(h-3)/2+2,space+1,text);
+        return;
+    }
     const int tx = x + (w - n) / 2;
     const int ty = y + (h - 1) / 2;
 
@@ -350,7 +357,7 @@ static void draw_cap(tui_surface *sf, tui_rect area, int x, int y,
 
 static const char *cap_word(const ls_quick_t *it, uint8_t *out_attr,
                             uint8_t on_at, uint8_t off_at, uint8_t plain,
-                            int face_w)
+                            int face_w,int face_h)
 {
     if (it->kind == LS_QUICK_TOGGLE) {
         const char *st = ls_quick_state(it);
@@ -365,7 +372,24 @@ static const char *cap_word(const ls_quick_t *it, uint8_t *out_attr,
 
     if (it->label && *it->label && (int)strlen(it->label) + 2 <= face_w)
         return it->label;
+    const char *space=it->label ? strchr(it->label,' ') : NULL;
+    if(it->min_rows && space && face_h>=3 && space-it->label<=face_w && (int)strlen(space+1)<=face_w)
+        return it->label;
     return "GO";
+}
+
+static int panel_min(const ls_quick_t *items,int n,bool wide)
+{
+    int h=box_min(wide);
+    for(int i=0;i<n;i++) if(items[i].min_rows>h) h=items[i].min_rows;
+    return h;
+}
+static int panel_columns(const ls_quick_t *items,int n,int width,bool wide)
+{
+    int across=width/ONE_W,limit=wide ? 6 : ACROSS_MAX;
+    for(int i=0;i<n;i++) if(items[i].max_columns && items[i].max_columns<limit) limit=items[i].max_columns;
+    if(across<1) across=1;
+    return across>limit ? limit : across;
 }
 
 int ls_quick_rows(const ls_quick_t *items, int n, int width, bool wide)
@@ -375,11 +399,9 @@ int ls_quick_rows(const ls_quick_t *items, int n, int width, bool wide)
 
     /* The same walk the draw does. */
 
-    int across = width / ONE_W;
-    if (across < 1) across = 1;
-    if (across > (wide?6:ACROSS_MAX)) across = wide?6:ACROSS_MAX;
+    int across=panel_columns(items,n,width,wide);
 
-    const int bmin = box_min(wide);
+    const int bmin = panel_min(items,n,wide);
 
     /* In the compact strip a two-direction control does NOT own its
        row. It does in portrait, where 48 columns will not hold a label, a
@@ -417,7 +439,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
 {
     if (!sf || !items || n <= 0) return 0;
     if (n > MAX_ITEMS) n = MAX_ITEMS;
-    if (area.h < box_min(wide) || area.w < ONE_W) return 0;
+    if (area.h < panel_min(items,n,wide) || area.w < ONE_W) return 0;
 
     hit_reset();
 
@@ -429,12 +451,11 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
     const uint8_t on   = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t off  = TUI_ATTR(TUI_RED, TUI_BLACK);
 
-    int across = area.w / ONE_W;
-    if (across < 1) across = 1;
-    if (across > (wide?6:ACROSS_MAX)) across = wide?6:ACROSS_MAX;
+    int across=panel_columns(items,n,area.w,wide);
 
     const int groups = group_count(items, n, across, wide);
-    const int bmin = box_min(wide), bmax = box_max(wide);
+    const int bmin = panel_min(items,n,wide);
+    const int bmax = box_max(wide)>bmin ? box_max(wide) : bmin;
     int bh = groups ? (area.h / groups) : bmin;
     if (bh < bmin) bh = bmin;
     if (bh > bmax) bh = bmax;
@@ -540,7 +561,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
                                         have ? on : dim,
                                         have ? off : dim,
                                         have ? lab : dim,
-                                        w - 2);
+                                        w - 2,bh - 2);
 
             /* A toggle's state is the big thing on the key, so repeating it
                in the border would be the same number twice on one control -
@@ -559,11 +580,12 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
                 have ? val : dim);
 
             const bool k_lit = (s_flash_target == i * 2 + 1) && s_flash_ttl > 0;
-            const uint8_t field = !have ? dim
+            if (items[i].danger) cap_at = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED);
+            const uint8_t field = items[i].danger ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED) : !have ? dim
                                 : (items[i].kind == LS_QUICK_TOGGLE)
                                   ? cap_at : edge;
             draw_cap(sf, area, x + 1, y + 1, w - 2, bh - 2, word,
-                     field, k_lit ? lit : cap_at);
+                     field, k_lit && !items[i].danger ? lit : cap_at);
 
             hit_add(i * 2 + 1, x, y, hx1, y + bh - 1 + gap);
             if(ls_tui_keyboard_mode() && items[i].key){char badge[]={'[',items[i].key,']',0};tui_put_str(sf,area,x+w-5,y+bh-1,badge,have?lab:dim);}

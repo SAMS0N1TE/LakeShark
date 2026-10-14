@@ -3,23 +3,22 @@
 #include "ls_tui_ui.h"
 #include "ls_options.h"
 #include "ls_motion.h"
-#include "ls_compass_art.h"
+#include "ls_radio_panel.h"
+#include "ls_glyph.h"
 #include "esp_attr.h"
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
 #define CYAN TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)
 static ls_survey_options_t s_options = {true, true, true, 10, 10};
-static ls_survey_view_t s_view;
-static ls_survey_entry_t s_detail;
+static EXT_RAM_BSS_ATTR ls_survey_view_t s_view;
+static ls_fresh_t s_reception;
+static EXT_RAM_BSS_ATTR ls_survey_entry_t s_detail;
 static unsigned s_pick;
 static int s_sort, s_rows = 1, s_top = 3, s_pitch = 3;
-static bool s_details, s_activity;
-static uint32_t s_activity_revision;
+static bool s_details;
 static tui_rect s_list;
-static EXT_RAM_BSS_ATTR ls_dot_t s_dots[160 * 120];
 
 static const char *why(const ls_opt_t *o)
 {
@@ -40,6 +39,8 @@ static void set_num(const ls_opt_t *o, double v)
 {
     if (o->arg == 3) s_options.interval_s = (unsigned)v; else s_options.keep = (unsigned)v;
 }
+static void options_preview(tui_surface *sf, tui_rect a);
+
 static const ls_opt_t RADIOS[] = {
     {.label="SCAN WI-FI", .kind=LS_OPT_TOGGLE, .arg=0, .get=get, .set=set, .why_not=why},
     {.label="LISTEN BLE", .kind=LS_OPT_TOGGLE, .arg=1, .get=get, .set=set, .why_not=why},
@@ -47,7 +48,7 @@ static const ls_opt_t RADIOS[] = {
      .lo=3, .hi=120, .step=1, .unit="seconds", .why_not=why},
 };
 static const ls_opt_t RECORDING[] = {
-    {.label="ONLY WITH GPS FIX", .kind=LS_OPT_TOGGLE, .arg=2, .get=get, .set=set, .why_not=why},
+    {.label="ONLY GPS FIX", .kind=LS_OPT_TOGGLE, .arg=2, .get=get, .set=set, .why_not=why},
     {.label="KEEP SESSIONS", .kind=LS_OPT_LEVEL, .arg=4, .num=num, .set_num=set_num,
      .lo=1, .hi=50, .step=1, .unit="sessions", .why_not=why},
 };
@@ -57,11 +58,18 @@ static const ls_opt_t OPTIONS[] = {
     {.label="RADIOS", .kind=LS_OPT_MENU, .sub=&CTX_RADIOS},
     {.label="RECORDING", .kind=LS_OPT_MENU, .sub=&CTX_RECORDING},
 };
-static const ls_opt_ctx_t CTX = {.name="SURVEY", .job=-1, .radio=LS_RSEL_NONE, LS_OPT_ROWS(OPTIONS)};
+static const ls_opt_ctx_t CTX = {.name="SURVEY", .back_to_screen=true, .preview=options_preview, .job=-1, .radio=LS_RSEL_NONE, LS_OPT_ROWS(OPTIONS)};
 
 static void text(tui_surface *sf, tui_rect a, int row, const char *s, uint8_t ink)
 {
     ls_safe_line(sf, a, a.y + row, s, ink);
+}
+
+/* Inside a panel box: row 0 and row h-1 are its frame. */
+static bool fits(tui_rect a, int row) { return row >= 1 && row <= a.h - 2; }
+static void inner(tui_surface *sf, tui_rect a, int row, const char *s, uint8_t ink)
+{
+    if (fits(a, row)) text(sf, a, row, s, ink);
 }
 
 static void display_name(char out[33], const char *name)
@@ -71,47 +79,122 @@ static void display_name(char out[33], const char *name)
         if ((unsigned char)out[i] < 32 || (unsigned char)out[i] > 126) out[i] = '?';
 }
 
-static void sweep(tui_surface *sf, tui_rect a)
+/* Small fixed emblem: antenna above a road, shared block glyphs, no bitmap. */
+static void emblem(tui_surface *sf, tui_rect a, bool hot)
 {
-    ls_panel_box(sf, a, "PASSIVE / ACTIVITY", TUI_GREEN);
-    tui_rect pic = tui_rect_make(a.x + 1, a.y + 2, a.w - 2, a.h - 5);
-    if (pic.w < 4 || pic.h < 2 || pic.w * 2 * pic.h * 3 > 160 * 120) return;
-    int cw = 10, ch = 17;
-    ls_tui_geometry(NULL, NULL, &cw, &ch);
-    if (cw < 1) cw = 10;
-    if (ch < 1) ch = 17;
-    float radius = fminf(pic.w * cw, pic.h * ch) * 0.46f;
-    float phase = (s_view.activity_revision % 72) * 0.08726646f;
-    int w = pic.w * 2, h = pic.h * 3;
-    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-        float dx = ((x + 0.5f) * cw / 2 - pic.w * cw / 2.0f) / radius;
-        float dy = (pic.h * ch / 2.0f - (y + 0.5f) * ch / 3) / radius;
-        float r = sqrtf(dx * dx + dy * dy), angle = atan2f(dx, dy);
-        float off = fmodf(phase - angle + 12.566371f, 6.283185f);
-        float width = fmaxf(cw / 2.0f, ch / 3.0f) / radius;
-        ls_dot_t *d = &s_dots[y * w + x];
-        *d = (ls_dot_t){0};
-        if (r > 1 + width) continue;
-        if (fabsf(r - 1) < width * 0.6f) *d = (ls_dot_t){TUI_GREEN, true};
-        else if ((fabsf(r - 0.33f) < width * 0.4f || fabsf(r - 0.67f) < width * 0.4f) && (x + y) % 2)
-            *d = (ls_dot_t){TUI_CYAN, true};
-        else if (s_activity && r < 1 && off < 0.07f)
-            *d = (ls_dot_t){TUI_GREEN | TUI_BRIGHT, true};
-        else if (s_activity && r < 1 && off < 0.65f && (x + 2 * y) % 4 == 0)
-            *d = (ls_dot_t){TUI_GREEN, true};
+    for (int y = 0; y < 5; y++) for (int x = 0; x < 11; x++) {
+        bool mast = x == 5 && y < 4;
+        bool wave = y < 3 && (x == 3-y || x == 7+y);
+        bool road = y >= 3 && (x == 7-y || x == 3+y);
+        if (mast || wave || road)
+            tui_put_char(sf, a, a.x+x, a.y+y, LS_TUI_BLOCK_FULL,
+                TUI_ATTR(mast ? TUI_YELLOW | TUI_BRIGHT : road ? TUI_MAGENTA :
+                         hot ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN, TUI_BLACK));
     }
-    ls_dots_blit(sf, pic, s_dots, w);
-    text(sf, a, a.h - 2, s_activity ? "Observation / no bearings" : "WAIT / no bearings", LS_ATTR_DIM);
+}
+
+static void heading(tui_surface *sf, tui_rect a)
+{
+    const bool wide = ls_tui_is_wide();
+    char value[24], line[100];
+    bool hot = ls_fresh(&s_reception, s_view.activity_revision, 600) >= 128;
+    ls_radio_bezel(sf, a, s_view.busy ? "SURVEY / SAVING" : s_view.running ?
+        "SURVEY / LIVE" : s_view.path[0] ? "SURVEY / SAVED" : "SURVEY / READY");
+    emblem(sf, tui_rect_make(a.x+2,a.y+1,11,5), hot);
+    snprintf(value,sizeof(value),"%u",s_view.wifi+s_view.ble);
+    int n = (int)strlen(value);
+    if (n <= 7) for (int i=0;i<n;i++)
+        ls_glyph_draw(sf,tui_rect_make(a.x+15+i*4,a.y+1,3,5),value[i],WHITE);
+    else tui_put_str(sf,a,a.x+15,a.y+2,value,WHITE);
+    tui_put_str(sf,a,wide?a.x+49:a.x+15,a.y+(wide?4:6),"OBSERVATIONS / session",LS_ATTR_DIM);
+    tui_rect rail = wide ? tui_rect_make(a.x+49,a.y+1,a.w-51,5) :
+                          tui_rect_make(a.x+1,a.y+7,a.w-2,2);
+    int x=rail.x;
+    x=ls_radio_chip(sf,rail,x,rail.y,s_view.running?"REC":"IDLE",s_view.running,TUI_RED);
+    x=ls_radio_chip(sf,rail,x,rail.y,"RX",hot,TUI_CYAN);
+    x=ls_radio_chip(sf,rail,x,rail.y,s_view.gps_fresh?"GPS FIX":"GPS WAIT",true,s_view.gps_fresh?TUI_GREEN:TUI_YELLOW);
+    ls_radio_chip(sf,rail,x,rail.y,s_view.utc_valid?"UTC OK":"UTC WAIT",true,s_view.utc_valid?TUI_GREEN:TUI_YELLOW);
+    snprintf(line,sizeof(line),"+%u/min  %02u:%02u:%02u  %u rows",s_view.new_minute,
+        s_view.elapsed_s/3600,s_view.elapsed_s/60%60,s_view.elapsed_s%60,s_view.rows);
+    text(sf,rail,wide?2:1,line,WHITE);
+    if(wide) text(sf,rail,4,s_view.status[0]?s_view.status:"S START / O OPTIONS",LS_ATTR_DIM);
+}
+
+static void options_preview(tui_surface *sf, tui_rect a)
+{
+    char line[64];
+    ls_panel_box(sf,a,"SURVEY / RECORDING PLAN",TUI_CYAN);
+    emblem(sf,tui_rect_make(a.x+2,a.y+2,11,5),false);
+    tui_put_str(sf,a,a.x+15,a.y+2,"PASSIVE",WHITE);
+    tui_put_str(sf,a,a.x+15,a.y+4,"Wi-Fi + BLE",CYAN);
+    text(sf,a,8,s_options.only_fix?"GPS fix required for rows":"Rows allowed without GPS",TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
+    snprintf(line,sizeof(line),"Wi-Fi %s / BLE %s",s_options.wifi?"ON":"OFF",s_options.ble?"ON":"OFF");
+    text(sf,a,10,line,WHITE);
+    snprintf(line,sizeof(line),"Scan every %us / keep %u sessions",s_options.interval_s,s_options.keep);
+    text(sf,a,12,line,TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK));
+    text(sf,a,14,"Tap < > to step / value to type",LS_ATTR_DIM);
+    text(sf,a,16,"BACK / Esc returns to survey",LS_ATTR_DIM);
+    if(a.h>20) {
+        text(sf,a,18,"START records observations to CSV",CYAN);
+        text(sf,a,20,"STOP flushes the session to SD",TUI_ATTR(TUI_YELLOW,TUI_BLACK));
+    }
+}
+
+static void mix_row(tui_surface *sf,tui_rect a,int y,const char *label,
+                    unsigned value,unsigned total,uint8_t hue)
+{
+    char line[40];
+    if(!fits(a,y)) return;
+    snprintf(line,sizeof(line),"%-5s %5u",label,value);
+    text(sf,a,y,line,TUI_ATTR(hue|TUI_BRIGHT,TUI_BLACK));
+    int width=a.w-17;
+    ls_meter_ascii(sf,a,a.x+15,a.y+y,width,total?(float)value/total:0,hue);
+}
+
+static void stats(tui_surface *sf, tui_rect a)
+{
+    char line[100];
+    bool tall=a.h>=20;
+    ls_panel_box(sf,a,"RADIO MIX / 0..100%",TUI_CYAN);
+    snprintf(line,sizeof(line),"Wi-Fi %u +%u/min | BLE %u +%u/min",s_view.wifi,s_view.wifi_minute,s_view.ble,s_view.ble_minute);
+    text(sf,a,1,line,WHITE);
+    int y=2;
+    if(tall) {
+        text(sf,a,y++,"NEW / MINUTE     Wi-Fi + BLE",LS_ATTR_DIM);
+        mix_row(sf,a,y++,"Wi-Fi",s_view.wifi_minute,s_view.new_minute,TUI_CYAN);
+        mix_row(sf,a,y++,"BLE",s_view.ble_minute,s_view.new_minute,TUI_MAGENTA);
+        text(sf,a,y++,"AUTHENTICATION / Wi-Fi share",LS_ATTR_DIM);
+    }
+    mix_row(sf,a,y++,"OPEN",s_view.security[0],s_view.wifi,TUI_RED);
+    mix_row(sf,a,y++,"WEP",s_view.security[1],s_view.wifi,TUI_YELLOW);
+    mix_row(sf,a,y++,"WPA",s_view.security[2],s_view.wifi,TUI_MAGENTA);
+    mix_row(sf,a,y++,"WPA2",s_view.security[3],s_view.wifi,TUI_CYAN);
+    mix_row(sf,a,y++,"WPA3",s_view.security[4],s_view.wifi,TUI_GREEN);
+    if(tall) text(sf,a,y++,"TOP CHANNELS / relative to busiest",LS_ATTR_DIM);
+    for(int i=0;i<3;i++) {
+        char label[12];
+        if(s_view.top_count[i]) snprintf(label,sizeof(label),"CH %u",s_view.top_channel[i]);
+        else snprintf(label,sizeof(label),"CH --");
+        mix_row(sf,a,y++,label,s_view.top_count[i],s_view.top_count[0],TUI_GREEN);
+    }
+    if(tall) {
+        snprintf(line,sizeof(line),"SD %s%llu MiB free / %u rows",s_view.sd_known?"":"? ",
+            (unsigned long long)(s_view.free_bytes/(1024*1024)),s_view.rows);
+        inner(sf,a,y+1,line,WHITE);
+        snprintf(line,sizeof(line),"Cache %u / evicted %u",s_view.cached,s_view.dropped);
+        inner(sf,a,y+2,line,LS_ATTR_DIM);
+        inner(sf,a,y+3,"Totals recount evicted addresses",LS_ATTR_DIM);
+    }
 }
 
 static void action(int i)
 {
     ls_survey_view(&s_view);
-    if (i == 0) { if (ls_survey_run(!s_view.running, &s_options)) { s_details = false; s_pick = 0; } }
+    if (i == 0 && !s_view.busy) { if (ls_survey_run(!s_view.running, &s_options)) { s_details = false; s_pick = 0; } }
     if (i == 1) { s_sort = (s_sort + 1) % 3; s_pick = 0; s_details = false; }
     if (i == 2) ls_opt_open(&CTX);
     if (i == 4 || i == 5) {
-        unsigned count = s_view.wifi + s_view.ble;
+        unsigned count = s_view.cached;
         if (count) s_pick = (unsigned)(((int)s_pick + (i == 4 ? -s_rows : s_rows) + (int)count * s_rows) % (int)count);
         s_details = false;
     }
@@ -124,23 +207,23 @@ static void action(int i)
 void ls_survey_draw(tui_surface *sf, tui_rect a)
 {
     ls_survey_view(&s_view);
-    s_activity = s_view.running && s_view.activity_revision != s_activity_revision;
-    s_activity_revision = s_view.activity_revision;
     char line[160], name[33];
-    const unsigned count = s_view.wifi + s_view.ble;
+    const unsigned count = s_view.cached;
     if (s_pick >= count) s_pick = 0;
-    ls_panel_box(sf, tui_rect_make(a.x, a.y, a.w, 5), s_view.running ? "SURVEY / WALK" : s_view.path[0] ? "SURVEY / SESSION SUMMARY" : "SURVEY / READY", TUI_CYAN);
-    snprintf(line, sizeof(line), "%c Wi-Fi %u  BLE %u  New/min %u", s_activity ? "+*"[s_view.activity_revision % 2] : '.', s_view.wifi, s_view.ble, s_view.new_minute);
-    text(sf, a, 1, line, WHITE);
-    snprintf(line, sizeof(line), "%us  %u/%u  Drop %u  GPS %s", s_view.elapsed_s, count, LS_SURVEY_CAP, s_view.dropped, s_view.gps_fresh ? "FRESH" : "WAIT");
-    text(sf, a, 2, line, CYAN);
-    text(sf, a, 3, s_view.status[0] ? s_view.status : "START a passive walk / OPTIONS sets recording", LS_ATTR_DIM);
+    int head_h = ls_tui_is_wide() ? 7 : 10;
+    heading(sf, tui_rect_make(a.x,a.y,a.w,head_h));
     int bar_h = ls_tui_is_wide() ? 3 : 6;
-    tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, a.h - 5 - bar_h - 2);
+    tui_rect body = tui_rect_make(a.x, a.y + head_h, a.w, a.h - head_h - bar_h - 3);
     tui_rect art;
-    ls_tui_split(body, &art, &s_list);
-    if (s_details) s_list = body;
-    else sweep(sf, art);
+    if(ls_tui_is_wide()) {
+        art=tui_rect_make(body.x,body.y,body.w/2,body.h);
+        s_list=tui_rect_make(body.x+art.w,body.y,body.w-art.w,body.h);
+    } else {
+        int h=body.h>=30?21:body.h/2;
+        art=tui_rect_make(body.x,body.y,body.w,h);
+        s_list=tui_rect_make(body.x,body.y+h,body.w,body.h-h);
+    }
+    stats(sf, art);
     ls_panel_box(sf, s_list, s_details ? "OBSERVATION / BEST SIGNAL" : "SEEN / SELECT FOR DETAILS", TUI_CYAN);
     if (s_details) {
         display_name(name, s_detail.name);
@@ -156,14 +239,22 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
         if (s_detail.positioned) snprintf(line, sizeof(line), "Best: %.6f, %.6f", s_detail.lat, s_detail.lon);
         else snprintf(line, sizeof(line), "Best signal has no fresh GPS position");
         text(sf, s_list, 5, line, WHITE);
-        if (s_detail.kind == LS_SURVEY_BLE) text(sf, s_list, 6, "Random BLE addresses rotate", LS_ATTR_DIM);
+        snprintf(line,sizeof(line),"%u sightings / strongest recorded signal",s_detail.samples);
+        text(sf,s_list,6,line,LS_ATTR_DIM);
+        ls_meter_ascii(sf,s_list,s_list.x+2,s_list.y+8,s_list.w-12,
+            (s_detail.rssi+100)/80.0f,TUI_GREEN);
+        text(sf,s_list,9,"-100 / -60 / -20 dBm",LS_ATTR_DIM);
+        if(s_list.h>15) {
+            text(sf,s_list,12,"SIGNAL / -100 to -20 dBm",CYAN);
+            text(sf,s_list,14,"Position belongs to the best signal",WHITE);
+            text(sf,s_list,13,s_detail.kind==LS_SURVEY_BLE?"Random BLE addresses rotate":"BSSID identifies this access point",LS_ATTR_DIM);
+        }
     } else {
         static const char *SORT[] = {"STRONGEST", "NEWEST", "NAME"};
-        /* A short pane (landscape) packs two-line rows from the row under the
-           header, so the height it has goes to the list. */
+        /* Every observation has a filled, three-row touch target. */
         const bool tight = s_list.h < 14;
         s_top = tight ? 2 : 3;
-        s_pitch = tight ? 2 : 3;
+        s_pitch = 3;
         s_rows = (s_list.h - s_top - 1) / s_pitch;
         if (s_rows < 1) s_rows = 1;
         unsigned start = s_pick / s_rows * s_rows;
@@ -171,12 +262,22 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
         if (end > count) end = count;
         snprintf(line, sizeof(line), "Sort %s  %u-%u / %u", SORT[s_sort], count ? start + 1 : 0, end, count);
         text(sf, s_list, 1, line, LS_ATTR_DIM);
-        if (!count) text(sf, s_list, s_top, "No observations recorded", WHITE);
+        if (!count) {
+            inner(sf,s_list,s_top,"READY TO EXPLORE",CYAN);
+            inner(sf,s_list,s_top+2,"S START / passive Wi-Fi + BLE",WHITE);
+            inner(sf,s_list,s_top+4,"GPS stamps the strongest sighting",LS_ATTR_DIM);
+            inner(sf,s_list,s_top+5,"O OPTIONS / choose radios + logging",LS_ATTR_DIM);
+            if(fits(s_list,s_top+11)) {
+                text(sf,s_list,s_top+7,"1  Check GPS FIX and UTC lamps",TUI_ATTR(TUI_GREEN,TUI_BLACK));
+                text(sf,s_list,s_top+9,"2  START / new addresses count up",CYAN);
+                text(sf,s_list,s_top+11,"3  STOP / flush and save session",TUI_ATTR(TUI_MAGENTA,TUI_BLACK));
+            }
+        }
         for (int i = 0; i < s_rows; i++) {
             ls_survey_entry_t e;
             if (!ls_survey_at(start + i, s_sort, &e)) break;
             tui_rect row = tui_rect_make(s_list.x + 1, s_list.y + s_top + i * s_pitch, s_list.w - 2, s_pitch);
-            if (start + i == s_pick) ls_fill_dither(sf, row, LS_DITHER_LIGHT, TUI_CYAN);
+            ls_fill_dither(sf, row, start+i==s_pick ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, e.kind==LS_SURVEY_WIFI?TUI_CYAN:TUI_MAGENTA);
             display_name(name, e.name);
             snprintf(line, sizeof(line), "%c %s %.32s", start + i == s_pick ? '>' : ' ', e.kind == LS_SURVEY_WIFI ? "W" : "B", name[0] ? name : "(unnamed)");
             text(sf, row, 0, line, WHITE);
@@ -185,10 +286,21 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
             text(sf, row, 1, line, CYAN);
         }
     }
-    text(sf, a, a.h - bar_h - 2, s_view.running ? "Passive only / random BLE addresses rotate" : s_view.path, LS_ATTR_DIM);
-    text(sf, a, a.h - bar_h - 1, "[ PREV   ] NEXT   ENTER detail", LS_ATTR_DIM);
+    const char *filename = strrchr(s_view.path, '/');
+    snprintf(line, sizeof(line), "File: %s", s_view.path[0] ?
+        (filename ? filename + 1 : s_view.path) : "waiting for GPS UTC");
+    text(sf, a, a.h - bar_h - 3, line, LS_ATTR_DIM);
+    snprintf(line,sizeof(line),"SD %s%llu MiB free | %u rows | %u evicted",s_view.sd_known?"":"? ",
+        (unsigned long long)(s_view.free_bytes/(1024*1024)),s_view.rows,s_view.dropped);
+    text(sf,a,a.h-bar_h-2,line,WHITE);
+    /* Portrait has no rail row for the status, so a refusal or result takes
+       the key hint's place; landscape shows it in the heading. */
+    if (!ls_tui_is_wide() && s_view.status[0])
+        text(sf, a, a.h - bar_h - 1, s_view.status, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    else
+        text(sf, a, a.h - bar_h - 1, "S run  R sort  O options  D detail  [ ] page", LS_ATTR_DIM);
     ls_btn_t buttons[] = {
-        {s_view.running ? "STOP" : "START", NULL, 's', s_view.running, s_view.busy, false},
+        {s_view.busy ? "SAVING" : s_view.running ? "STOP" : "START", NULL, 's', s_view.running, s_view.busy, false},
         {"SORT", NULL, 'r', false, false, false},
         {"OPTIONS", NULL, 'o', false, false, false},
         {s_details ? "BACK" : "DETAIL", NULL, 'd', s_details, !count, false},
@@ -204,7 +316,7 @@ bool ls_survey_key(ls_tk_t k, char ch)
     if (k == LS_TK_CHAR && ch && strchr("sS", ch) && s_view.busy) return true;
     if (k == LS_TK_ENTER) { action(3); return true; }
     if (k == LS_TK_UP || k == LS_TK_DOWN || ch == '[' || ch == ']') {
-        unsigned count = s_view.wifi + s_view.ble;
+        unsigned count = s_view.cached;
         int step = k == LS_TK_UP ? -1 : k == LS_TK_DOWN ? 1 : ch == '[' ? -s_rows : s_rows;
         if (count) s_pick = (unsigned)(((int)s_pick + step + (int)count * s_rows) % (int)count);
         s_details = false;
@@ -222,7 +334,7 @@ bool ls_survey_touch(int x, int y)
 {
     int b = ls_btn_hit(x, y);
     if (b >= 0) { action(b); return true; }
-    if (!s_details && x >= s_list.x && x < s_list.x + s_list.w && y >= s_list.y + s_top && y < s_list.y + s_list.h - 1) {
+    if (!s_details && x >= s_list.x && x < s_list.x + s_list.w && y >= s_list.y + s_top && y < s_list.y + s_top + s_rows * s_pitch) {
         unsigned rank = s_pick / s_rows * s_rows + (y - s_list.y - s_top) / s_pitch;
         if (ls_survey_at(rank, s_sort, &s_detail)) { s_pick = rank; s_details = true; }
     }

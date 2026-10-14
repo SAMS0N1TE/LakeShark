@@ -198,6 +198,14 @@ bool rec_watch_enable(bool on);
 /* LR2021 READ: false slices OOK from its I/Q stream, true uses the FSK
    packet receiver with the rate and sync LEARN measured. */
 bool rec_watch_lr_fsk(void);
+bool rec_watch_iq_record(uint32_t hz);
+bool rec_watch_iq_dump(const char *path);
+bool rec_watch_iq_info(const char *path);
+bool rec_watch_iq_replay(const char *path,int dbm,uint32_t rate);
+bool rec_watch_iq_test(uint32_t hz,int dbm,uint32_t rate);
+bool rec_watch_iq_test_fsk(uint32_t hz,int dbm,uint32_t rate);
+void rec_watch_iq_stop(void);
+bool rec_watch_iq_status(char *out,size_t len);
 bool rec_watch_set_lr_fsk(bool fsk);
 bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);
