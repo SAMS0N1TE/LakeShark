@@ -285,7 +285,7 @@ The following features are still being developed or require additional live-RF v
 
 ## Build from source
 
-LakeShark builds with **ESP-IDF 5.5.4** plus six small fixes in [`bench/patches/`](bench/patches). Apply them once to your ESP-IDF checkout:
+LakeShark builds with **ESP-IDF 5.5.4** plus six small fixes in `bench/patches/`. Apply them once to your ESP-IDF checkout:
 
 ```powershell
 pwsh -File bench/patch-idf.ps1 -IdfPath /path/to/esp-idf -Apply
