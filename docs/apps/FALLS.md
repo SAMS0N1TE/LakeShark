@@ -7,7 +7,7 @@ A waterfall over the receiver you choose: what the band looked like over the las
 | HOME group | RADIO |
 | Radio | RTL-SDR, HackRF or the LoRa chip for a spectrum; other radios show their readings |
 
-<img src="../screenshots/tdp4/motion/falls-flipper.gif" width="300" alt="FALLS showing a waterfall at 433.92 MHz">
+<img src="../screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="300" alt="FALLS showing a live waterfall">
 
 ## What it does
 

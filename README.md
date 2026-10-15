@@ -118,7 +118,7 @@ Touchscreen operation, GPS, motion sensing and an optional detachable MIX-RF key
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
 <img src="docs/screenshots/tdp4/motion/sweep.gif" width="32%" alt="SWEEP finding nearby trackers" />
-<img src="docs/screenshots/tdp4/motion/falls-flipper.gif" width="32%" alt="FALLS with Flipper bursts" />
+<img src="docs/screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="32%" alt="FALLS with HackRF signals" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-lr2021-hackrf-ook-decode-20261014.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
 <img src="docs/screenshots/tdp4/motion/fm-noaa.gif" width="32%" alt="FM on NOAA weather" />
