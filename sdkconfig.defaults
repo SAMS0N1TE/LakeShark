@@ -98,3 +98,7 @@ CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
 CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY=y
 CONFIG_BT_NIMBLE_EXT_ADV=y
 CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
+
+# Nothing here accepts a TLS connection: OTA, map tiles and the site are all
+# clients. Client-only drops the server handshake and the server tickets.
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y

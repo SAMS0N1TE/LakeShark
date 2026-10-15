@@ -110,6 +110,11 @@ struct mode_s_msg
     int dr;
     int um;
     int identity;
+    /* Aircraft status (DF17/18 type code 28, subtype 1): the emergency state
+       (0 none, 1 general, 2 medical, 3 minimum fuel, 4 no communications,
+       5 unlawful interference, 6 downed aircraft, 7 reserved) and the Mode A
+       code it carries. */
+    int emergency_ok, emergency_state, status_identity;
 
     int altitude, unit;
 };

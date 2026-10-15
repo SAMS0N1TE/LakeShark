@@ -25,6 +25,20 @@ static std::recursive_mutex mesh_test_mutex;
 
 extern "C" UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t) { return 8192; }
 
+#ifdef _WIN32
+#include <process.h>
+/* mingw's tmpfile() writes to C:\ and fails without admin rights */
+static FILE *host_tmpfile(void)
+{
+    static unsigned n;
+    char path[300];
+    const char *dir = getenv("TEMP");
+    snprintf(path, sizeof(path), "%s/lsmesh%d_%u.tmp", dir ? dir : ".", _getpid(), n++);
+    return fopen(path, "w+bD");
+}
+#define tmpfile host_tmpfile
+#endif
+
 LS_CASE(two_queued_packets_have_independent_delivery)
 {
     int a = note_msg("first", true, 0, NULL);

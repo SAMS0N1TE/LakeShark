@@ -59,7 +59,7 @@ const ls_app_doc_t ls_doc_falls = {
 
 const ls_app_doc_t ls_doc_cell = {
     .purpose = "Compare cellular downlink power with a learned site baseline. "
-               "LTE search reports PCI; HIGH RATE separately checks MIB. "
+               "LTE search lists cells with PCI, power and MIB; HIGH RATE separately checks MIB. "
                "Network identity and SIB are not decoded; RF changes do not "
                "identify a simulator.",
     .records = LS_APP_RECORDS_AUTOMATIC,
@@ -311,10 +311,11 @@ const ls_app_doc_t ls_doc_sweep = {
 };
 
 const ls_app_doc_t ls_doc_detector = {
-    .purpose="Background BLE Remote ID and SWEEP category detection. Wi-Fi uses cached scans only; RID layouts are validated, identities are unverified.",
+    .purpose="Background BLE Remote ID and SWEEP category detection, plus aircraft rules (emergency squawks, watch lists, range, altitude, category) read from the ADS-B table another app fills; it starts no receiver. Wi-Fi uses cached scans only; RID layouts are validated, identities are unverified.",
     .records=LS_APP_RECORDS_AUTOMATIC,
-    .record_note="Optional SD JSONL metadata, off by default: per-boot pseudonyms, rules and sink outcomes. No raw MAC or location. SWEEP recording is separate.",
-    .gps=LS_APP_GPS_UNUSED,
+    .record_note="Optional SD JSONL metadata, off by default: per-boot pseudonyms, rules and sink outcomes. No raw MAC or location. Aircraft events add only the public ICAO address, callsign, squawk and barometric altitude. SWEEP recording is separate.",
+    .gps=LS_APP_GPS_NAVIGATES,
+    .gps_note="Only the aircraft distance rule (off by default) reads a fresh fix, in memory, to test range. No position is stored or logged.",
 };
 
 const ls_app_doc_row_t ls_app_docs_all[] = {

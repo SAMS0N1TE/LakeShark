@@ -28,6 +28,7 @@ typedef struct {
     peak_t peaks[PEAKS],seeds[PEAKS];int count;
     int counts[504],pairs[504],last[504],half_last[504];
     int frame_start;
+    lte_sync_set_t set;
 } workspace_t;
 static cx mul(cx a,cx b){return (cx){a.r*b.r-a.i*b.i,a.r*b.i+a.i*b.r};}
 static cx conjx(cx a){return (cx){a.r,-a.i};}
@@ -100,21 +101,42 @@ static void extract(const uint8_t *iq,int pos,int fo,cx *out,const cx *tw)
     }
     fft(out,128,false,tw);
 }
+/* Remember a cell that has three consistent SSS observations. Later events
+ * for the same PCI carry more pairs, so they replace; a full table drops the
+ * weakest. */
+static void remember(workspace_t *w,const lte_sync_result_t *r,int frame_start)
+{
+    lte_sync_set_t *s=&w->set;
+    int slot=-1;
+    for(int i=0;i<s->count;i++) if(s->cell[i].r.pci==r->pci){slot=i;break;}
+    if(slot<0) {
+        if(s->count<LTE_SYNC_MAX_CELLS) slot=s->count++;
+        else {
+            slot=0;
+            for(int i=1;i<s->count;i++) if(s->cell[i].r.pairs<s->cell[slot].r.pairs) slot=i;
+            if(s->cell[slot].r.pairs>r->pairs) return;
+        }
+    }
+    s->cell[slot].r=*r;s->cell[slot].frame_start=frame_start;
+}
 size_t lte_sync_workspace_size(void){return sizeof(workspace_t);}
 int lte_sync_frame_start(const void *memory)
 {
     return memory?((const workspace_t *)memory)->frame_start:-1;
 }
-bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
-                   lte_sync_result_t *out,lte_sync_yield_fn yield,void *arg)
+static bool find(const uint8_t *iq,size_t samples,void *memory,lte_sync_result_t *out,
+                 lte_sync_set_t *set,lte_sync_yield_fn yield,void *arg,int fo_centre,int fo_span)
 {
     if(memory)((workspace_t *)memory)->frame_start=-1;
+    if(set)set->count=0;
     if(!out)return false;
     memset(out,0,sizeof(*out));out->pci=-1;
-    if(!iq || !memory || samples<28800 || samples>153600)return false;
+    if(!iq || !memory || samples<28800 || samples>153600 || fo_span<0 || fo_span>40000 ||
+       fo_centre<-40000 || fo_centre>40000)return false;
     workspace_t *w=memory;memset(w,0,sizeof(*w));w->frame_start=-1;sequences(w);
     /* Overlap-save matched filtering, 128-sample useful OFDM symbol.
-     * Search +/-40 kHz oscillator error in 5 kHz steps around the carrier. */
+     * Search the oscillator error in 5 kHz steps: +/-40 kHz when it is not
+     * known, a narrow window around the expected offset once it is. */
     /* One full half-frame plus boundary margin locates timing candidates.
      * Check their repetitions against the remaining IQ, rather than doing
      * every expensive frequency search again for each identical occasion. */
@@ -139,7 +161,7 @@ bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
         fft(input,N,false,w->tw);
         if(yield && yield(arg))return false;
     }
-    for(int j=0;j<3;j++)for(int fo=-40000;fo<=40000;fo+=5000) {
+    for(int j=0;j<3;j++)for(int fo=fo_centre-fo_span;fo<=fo_centre+fo_span;fo+=5000) {
         memset(w->ref,0,sizeof(w->ref));
         for(int n=0;n<128;n++)w->ref[127-n]=conjx(mul(w->td[j][n],cis(TAU*fo*n/1920000)));
         fft(w->ref,N,false,w->tw);
@@ -199,13 +221,37 @@ bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
             int dt=pos_best-last[pci],n=(dt+4800)/9600;
             if(counts[pci] && n>0 && abs(dt-n*9600)<=5+n*2 && (half^half_last[pci])==(n&1))pairs[pci]++;
             counts[pci]++;last[pci]=pos_best;half_last[pci]=half;
-            if(pairs[pci]>=2 && pairs[pci]>=out->pairs) {
-                *out=(lte_sync_result_t){pci,counts[pci],pairs[pci],fo_best,p.score,best};
-                w->frame_start=(pos_best-832-half*9600)%19200;
-                if(w->frame_start<0)w->frame_start+=19200;
+            if(pairs[pci]>=2) {
+                lte_sync_result_t r={pci,counts[pci],pairs[pci],fo_best,p.score,best};
+                int frame=(pos_best-832-half*9600)%19200;
+                if(frame<0)frame+=19200;
+                remember(w,&r,frame);
+                if(pairs[pci]>=out->pairs){*out=r;w->frame_start=frame;}
             }
         }
         if(yield && yield(arg)){memset(out,0,sizeof(*out));out->pci=-1;w->frame_start=-1;return false;}
     }
+    if(set) {
+        *set=w->set;
+        /* Strongest first: most repeated pairs, then the better SSS match. */
+        for(int i=1;i<set->count;i++) {
+            lte_sync_cell_t c=set->cell[i];int k=i;
+            while(k && (set->cell[k-1].r.pairs<c.r.pairs ||
+                        (set->cell[k-1].r.pairs==c.r.pairs && set->cell[k-1].r.sss_score<c.r.sss_score))) {set->cell[k]=set->cell[k-1];k--;}
+            set->cell[k]=c;
+        }
+    }
     return out->pci>=0;
+}
+bool lte_sync_find(const uint8_t *iq,size_t samples,void *memory,
+                   lte_sync_result_t *out,lte_sync_yield_fn yield,void *arg)
+{
+    return find(iq,samples,memory,out,NULL,yield,arg,0,40000);
+}
+bool lte_sync_find_cells(const uint8_t *iq,size_t samples,void *memory,lte_sync_set_t *set,
+                         lte_sync_yield_fn yield,void *arg,int fo_centre,int fo_span)
+{
+    lte_sync_result_t best;
+    if(!set)return false;
+    return find(iq,samples,memory,&best,set,yield,arg,fo_centre,fo_span);
 }

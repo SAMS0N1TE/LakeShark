@@ -10,6 +10,9 @@ bool ls_catch_key(ls_tk_t,char);
 void ls_catch_toggle(void);
 void ls_catch_save_selected(void);
 void ls_catch_stop(void);
+void ls_catch_enter(void);                 /* load the saved channel windows */
+void ls_catch_watch_cycle(void);           /* WATCH key: ALL <-> CHOSEN */
+const char *ls_catch_watch_label(bool *on);
 bool ls_catch_running(void);
 const ls_opt_ctx_t *ls_catch_options(void);
 #endif

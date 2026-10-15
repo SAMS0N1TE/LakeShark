@@ -33,14 +33,25 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
 uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t wait)
 {
     (void)clear; (void)wait;
-    LS_CHECK(s_notifications > 0);
+    if (s_notifications == 0) {
+        LS_CHECK(s_notifications > 0);
+        longjmp(s_yield, 1);   /* an idle worker would spin the test forever */
+    }
     s_notifications = 0;
     return 1;
 }
 void vTaskDelete(TaskHandle_t task)
 { (void)task; s_deletes++; longjmp(s_yield, 1); }
 FILE *fopencookie(void *cookie, const char *mode, cookie_io_functions_t io)
-{ (void)cookie; (void)mode; (void)io; return s_fail_cookie ? NULL : tmpfile(); }
+{
+    (void)cookie; (void)mode; (void)io;
+#ifdef _WIN32
+    /* mingw's tmpfile() writes to C:\ and fails without admin rights */
+    return s_fail_cookie ? NULL : fopen("NUL", "w");
+#else
+    return s_fail_cookie ? NULL : tmpfile();
+#endif
+}
 esp_err_t esp_console_run(const char *line, int *rc)
 {
     s_calls++;

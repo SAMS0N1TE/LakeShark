@@ -193,8 +193,13 @@
    LilyGO reports the T-LR2021 v0.3 TCXO supply is always on; v1 has no
    TCXO power pin. This driver defaults to TCXO and LDO for sensitivity;
    both clock and regulator modes are runtime settings. It transmits on the LF
-   path only, below 1 GHz: LilyGO's example warns that an HF power above 12
-   damages the 2.4 GHz front-end module, and the driver never writes one. */
+   path only, below 1 GHz: LilyGO (T-Display-P4 issue 33) gives the board
+   limits as 22 dBm sub-GHz and 5 dBm at 2.4 GHz, above which the 2.4 GHz
+   front end may be damaged, and the driver never writes an HF power.
+   Two module builds share this pinout (schematics LR2021_433_V0.3 and
+   LR2021_868_915_V1.0): the 433 one picks LF or HF with an MXD8721 switch on
+   DIO8/DIO10, the 868/915 one uses a passive diplexer. Their LF matching is
+   tuned for their own band, so receive away from it is weaker. */
 #define LS_BOARD_LORA_MAY_BE_LR20XX 1
 
 /* LR2021 DIO that carries the interrupt to expander IO17. The driver maps it

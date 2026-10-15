@@ -563,14 +563,16 @@ LS_CASE(the_status_rows_words_start_where_the_corner_padding_ends)
     ls_tui_status_set_clock("14:32Z");
     ls_tui_router_draw(&g_sf);
 
-    const uint8_t bar = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    /* The caps carry the bar's colour, not black: a black cap is blitted black
+       and shows as a box at each end until the end paint covers it. */
+    const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
     for (int x = 0; x < 3; x++) {
         const tui_cell *l = &g_back[x], *r = &g_back[s_cols - 1 - x];
         LS_CHECK_MSG(l->ch == ' ' && r->ch == ' ',
                      "corner cell %d of the status row carries '%c' / '%c'",
                      x, l->ch, r->ch);
         LS_CHECK_MSG(l->attr == bar && r->attr == bar,
-                     "the bar extended into corner cell %d", x);
+                     "corner cell %d of the status row is not bar coloured", x);
     }
     char row[160];
     status_row(row, sizeof(row));
@@ -633,8 +635,8 @@ LS_CASE(the_hint_row_keeps_its_words_off_the_bottom_corners)
                      "corner cell %d of the hint row carries '%c' / '%c'",
                      x, last[x].ch, last[s_cols - 1 - x].ch);
     for(int x=0;x<3;x++) {
-        LS_EQ_INT(last[x].attr,TUI_ATTR(TUI_WHITE,TUI_BLACK));
-        LS_EQ_INT(last[s_cols-1-x].attr,TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        LS_EQ_INT(last[x].attr,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK|TUI_BRIGHT));
+        LS_EQ_INT(last[s_cols-1-x].attr,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK|TUI_BRIGHT));
     }
     LS_CHECK_MSG(last[3].ch == 'H',
                  "the hint does not start where the padding ends");

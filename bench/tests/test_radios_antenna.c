@@ -17,23 +17,83 @@ static void radio_up(fk_kind_t kind)
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
 }
 
-LS_CASE(external_route_requires_acknowledgment_for_lora_and_fsk)
+/* A route chosen at boot or by an app (compass calibration) transmits the
+   same as one chosen in RADIOS: no hidden acknowledgment to lock TX out. */
+LS_CASE(external_route_never_blocks_transmit)
 {
     for (int kind = FK_LR; kind <= FK_SX_STATUS; ++kind) {
         radio_up((fk_kind_t)kind);
         LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
-        LS_CHECK(!ls_board_hw_antenna_tx_allowed());
-        uint8_t data = 1;
-        int frames = fk.nframes;
-        LS_EQ_INT(ls_lora_send(&data, 1), ESP_ERR_INVALID_STATE);
-        LS_EQ_INT(ls_lora_fsk_send(&data, 1), ESP_ERR_INVALID_STATE);
-        LS_EQ_INT(fk.nframes, frames);
-        LS_EQ_INT(ls_board_hw_antenna_confirm_external(), ESP_OK);
+        LS_CHECK(ls_board_hw_antenna_is_external());
         LS_CHECK(ls_board_hw_antenna_tx_allowed());
-        LS_EQ_INT(ls_board_hw_antenna_external(false), ESP_OK);
-        LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
-        LS_CHECK(!ls_board_hw_antenna_tx_allowed());
+        uint8_t data = 1;
+        LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+        LS_CHECK(ls_lora_is_transmitting());
     }
+}
+
+/* The last level written to the antenna switch since `from`, or -1. */
+static int vctl_since(int from)
+{
+    int level = -1;
+    for (int i = from; i < fk_xl_log_n; i++)
+        if (fk_xl_log[i].pin == LS_BOARD_XL_RF_SW_VCTL) level = fk_xl_log[i].level;
+    return level;
+}
+
+/* MMCX1 receive-only (the default): the transmit goes out the internal
+   antenna (VCTL high) and MMCX1 (low) is back once the part reports it
+   done. The operator's choice reads MMCX1 throughout. */
+LS_CASE(receive_only_mmcx1_moves_transmit_to_internal_and_back)
+{
+    radio_up(FK_LR);
+    ls_board_hw_antenna_set_mmcx_tx(false);
+    LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
+    int mark = fk_xl_log_n;
+    uint8_t data = 1;
+    LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+    LS_EQ_INT(vctl_since(mark), 1);
+    LS_CHECK(ls_board_hw_antenna_is_external());
+    mark = fk_xl_log_n;
+    LS_CHECK(!ls_lora_send_done());
+    LS_EQ_INT(vctl_since(mark), -1);
+    fk.irq |= LR20XX_IRQ_TX_DONE;
+    LS_CHECK(ls_lora_send_done());
+    LS_EQ_INT(vctl_since(mark), 0);
+    LS_CHECK(ls_board_hw_antenna_is_external());
+
+    /* A refused start puts the route straight back. */
+    mark = fk_xl_log_n;
+    LS_EQ_INT(ls_lora_send(&data, 0), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(vctl_since(mark), 0);
+
+    /* A failed switch write means no transmit at all. */
+    const int frames = fk.nframes;
+    fk_xl_error = ESP_FAIL;
+    LS_CHECK(ls_lora_send(&data, 1) != ESP_OK);
+    fk_xl_error = ESP_OK;
+    LS_EQ_INT(fk.nframes, frames);
+    LS_CHECK(!ls_lora_is_transmitting());
+}
+
+LS_CASE(mmcx1_rx_tx_and_internal_route_leave_the_switch_alone)
+{
+    radio_up(FK_LR);
+    uint8_t data = 1;
+    ls_board_hw_antenna_set_mmcx_tx(true);
+    LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
+    int mark = fk_xl_log_n;
+    LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+    LS_EQ_INT(vctl_since(mark), -1);
+    fk.irq |= LR20XX_IRQ_TX_DONE;
+    LS_CHECK(ls_lora_send_done());
+    ls_board_hw_antenna_set_mmcx_tx(false);
+    LS_EQ_INT(ls_board_hw_antenna_external(false), ESP_OK);
+    mark = fk_xl_log_n;
+    LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+    LS_EQ_INT(vctl_since(mark), -1);
+    fk.irq |= LR20XX_IRQ_TX_DONE;
+    LS_CHECK(ls_lora_send_done());
 }
 
 LS_CASE(transmitting_socket_refuses_route_changes)

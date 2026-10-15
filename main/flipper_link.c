@@ -46,6 +46,9 @@
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid.h"
 #include "tui/ls_field.h"
+#include "tui/ls_radio_select.h"
+#include "tui/ls_detector.h"
+#include "tui/ls_detector_air.h"
 #include "freertos/semphr.h"
 
 static const char *TAG = "fl_link";
@@ -157,12 +160,42 @@ static rh_state_t sdr_health_state(void)
                ? health.state : RH_ABSENT;
 }
 
-static ls_telemetry_common_t telemetry_common(void)
+/* The job the active mode does with a radio, for the RADIO picker's tables.
+   FM covers its pager and ACARS sub-modes, which have their own lists. */
+static ls_rsel_job_t receiver_job(host_mode_t mode, int fm_submode)
+{
+    switch (mode) {
+    case HOST_MODE_ADSB: return LS_RSEL_ADSB;
+    case HOST_MODE_REC:  return LS_RSEL_REC;
+    case HOST_MODE_FM:
+        if (fm_submode == FM_MODE_POCSAG || fm_submode == FM_MODE_FLEX) return LS_RSEL_PAGER;
+        if (fm_submode == FM_MODE_ACARS) return LS_RSEL_ACARS;
+        return LS_RSEL_FM;
+    default:             return LS_RSEL_P25;
+    }
+}
+
+static ls_telemetry_common_t telemetry_common(host_mode_t mode, int fm_submode)
 {
     uint32_t fi = 0, fd = 0, fp = 0;
     if (s_host.heap_stats) s_host.heap_stats(&fi, &fd, &fp);
 
+    /* The radio the mode runs on is the picker's answer, the one the TUI's
+       RADIO button shows. Its reason is why that radio cannot be used: what
+       it cannot do first, then what is not fitted. */
+    const ls_rsel_job_t job = receiver_job(mode, fm_submode);
+    const ls_rsel_radio_t rx = ls_rsel_effective(job);
+    const char *why = NULL;
+    if (rx == LS_RSEL_NONE) {
+        why = "No receiver for this mode";
+    } else {
+        why = ls_rsel_cant(job, rx);
+        if (!why) why = ls_rsel_absent(rx);
+    }
+
     return (ls_telemetry_common_t){
+        .rx_name = ls_rsel_name(rx),
+        .rx_why = why,
         .volume = audio_volume_get(),
         .muted = audio_is_muted() ? 1 : 0,
         .tts_volume = speech_volume_get(),
@@ -187,14 +220,341 @@ int flipper_link_eq_snapshot(char *buf, size_t len)
                      eq.punch, eq.loud, audio_eq_gr_db10());
     if (n < 0) return 0;
     if ((size_t)n >= len) n = (int)len - 1;
+
+    /* DETECTOR rides this line so a head learns of an alert in a pocket
+       without asking: the match counter moves, the head then fetches it.
+       Sent whenever DETECTOR can be read, stopped as well as running: a head
+       told "running" that then hears nothing when it is stopped keeps showing
+       it as on. A busy lock just skips one tick. */
+    ls_detector_status_t det;
+    size_t det_n = 0;
+    if (ls_detector_snapshot(&det, NULL, 0, &det_n)) {
+        char tail[48];
+        int t = snprintf(tail, sizeof(tail), " dtm=%lu dth=%u dtr=%d\n",
+                         (unsigned long)det.matches, det.recent, det.running ? 1 : 0);
+        if (t > 0 && (size_t)n + (size_t)t < len) {
+            memcpy(buf + n - 1, tail, (size_t)t + 1);   /* over the old newline */
+            n += t - 1;
+        }
+    }
     return n;
+}
+
+/* One lock for the big PSRAM scratch buffers the head's list verbs share
+   (mesh messages, detector events). Any transport may ask at any time. */
+static StaticSemaphore_t s_big_lock_mem;
+static SemaphoreHandle_t s_big_lock;
+static unsigned s_big_once;
+static void big_lock(bool take)
+{
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&s_big_once, &expected, 1, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        s_big_lock = xSemaphoreCreateMutexStatic(&s_big_lock_mem);
+        __atomic_store_n(&s_big_once, 2, __ATOMIC_RELEASE);
+    } else {
+        while (__atomic_load_n(&s_big_once, __ATOMIC_ACQUIRE) != 2) vTaskDelay(1);
+    }
+    if (take) xSemaphoreTake(s_big_lock, portMAX_DELAY);
+    else xSemaphoreGive(s_big_lock);
+}
+
+/* Free text for the last field of a row: no control characters, bounded.
+   Spaces stay, because the head reads the rest of the line. */
+static void wire_text(char *dst, size_t cap, const char *src)
+{
+    size_t i = 0;
+    if (!src) src = "";
+    for (; i + 1 < cap && src[i]; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[i] = (c < 32 || c == 127) ? ' ' : (char)c;
+    }
+    dst[i] = '\0';
+    if (!i) { dst[0] = '-'; dst[1] = '\0'; }
+}
+
+/* ---- MESH for the head ------------------------------------------------
+   MESH            +OK run=.. tx=..            the old one-line summary
+   MESH S          %M s run= st= tx= rx= bad= sent= rssi= snr= pr= ms= nm= id=
+   MESH P <rank>   %M p <rank> <total> <id> <type> <rssi> <age_s> <name...>
+   MESH M <k>      %M m <k> <total> <dir> <state> <age_s> <scope> <text...>   k=0 newest
+   MESH M <k> C <chan>   the same, only that channel's messages (scope c<chan>)
+   MESH M <k> D <id>     the same, only direct messages with that node (scope d<id>)
+   MESH C <n>      %M c <n> <slots> <used> <active> <msgs> <lastid> <name...>
+   MESH TX <0|1>   arm or disarm transmit; +OK mesh tx=<state it is now in>
+   MESH SEND <text>        the active channel; refused while transmit is disarmed
+   MESH SENDC <chan> <text>  one channel's slot
+   MESH DM <id> <text>       a direct message to the node with that 16 hex id
+   Free text is the rest of the line as typed. Arming transmit is the head's
+   to ask for, behind its own confirmation; nothing here changes power or limits. */
+#define MESH_LINK_TEXT 100
+static const char *mesh_state_word(const ls_mesh_stats_t *st)
+{
+    if (!st->running) return "OFFLINE";
+    if (st->held) return "RADIO_HELD";
+    if (st->on_air) return "ON_AIR";
+    if (st->rx_fault || !st->receiving) return "RX_FAULT";
+    if (st->tx_enabled) return "ARMED";
+    return "LISTENING";
+}
+
+static void mesh_summary_reply(char *reply, size_t reply_len)
+{
+    ls_mesh_stats_t ms;
+    memset(&ms, 0, sizeof(ms));
+    ls_mesh_get_stats(&ms);
+    char name[LS_MESH_NAME_MAX + 4];
+    snprintf(name, sizeof(name), "%s", ls_mesh_name());
+    sanitize(name);
+    snprintf(reply, reply_len,
+             "%%M s run=%d st=%s tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
+             "pr=%d ms=%lu ch=%d nm=%s id=%s\n",
+             ms.running ? 1 : 0, mesh_state_word(&ms), ms.tx_enabled ? 1 : 0,
+             (unsigned long)ms.rx_packets, (unsigned long)ms.rx_bad,
+             (unsigned long)ms.tx_packets, (double)ms.last_rssi, (double)ms.last_snr,
+             ls_mesh_peers(NULL, 0), (unsigned long)ls_mesh_msg_seq(),
+             ls_mesh_channel_active(), name[0] ? name : "-", ms.self_id[0] ? ms.self_id : "-");
+}
+
+static void mesh_peer_reply(int rank, char *reply, size_t reply_len)
+{
+    const int total = ls_mesh_peers(NULL, 0);
+    ls_mesh_peer_t p;
+    if (rank < 0 || rank >= total || !ls_mesh_peer_at(rank, &p)) {
+        snprintf(reply, reply_len, "%%M p %d %d - 0 0 -1 -\n", rank, total);
+        return;
+    }
+    const uint32_t now = ls_mesh_now();
+    const int age = p.last_heard ? (int)(now > p.last_heard ? now - p.last_heard : 0) : -1;
+    char name[LS_MESH_PEER_NAME + 1];
+    wire_text(name, sizeof(name), p.name);
+    snprintf(reply, reply_len, "%%M p %d %d %s %u %d %d %s\n", rank, total,
+             p.id[0] ? p.id : "-", (unsigned)p.type, (int)p.rssi, age, name);
+}
+
+/* Which messages a MESH M row walks: everything, one channel's, or one node's
+   direct messages. */
+typedef struct {
+    char kind;          /* 'a' all, 'c' channel, 'd' direct */
+    int chan;
+    char id[17];
+} mesh_scope_t;
+
+static bool mesh_in_scope(const mesh_scope_t *sc, const ls_mesh_msg_t *m)
+{
+    if (sc->kind == 'c') return !m->direct && (int)m->chan == sc->chan;
+    if (sc->kind == 'd') return m->direct && !strcasecmp(m->peer, sc->id);
+    return true;
+}
+
+/* The message ring is big; one copy in PSRAM, under big_lock. */
+static EXT_RAM_BSS_ATTR ls_mesh_msg_t s_mesh_msgs[LS_MESH_MAX_MSGS];
+
+static void mesh_msg_reply(int k, const mesh_scope_t *sc, char *reply, size_t reply_len)
+{
+    char scope[24];
+    if (sc->kind == 'c') snprintf(scope, sizeof(scope), "c%d", sc->chan);
+    else if (sc->kind == 'd') snprintf(scope, sizeof(scope), "d%s", sc->id);
+    else snprintf(scope, sizeof(scope), "a");
+
+    big_lock(true);
+    const int have = ls_mesh_messages(s_mesh_msgs, LS_MESH_MAX_MSGS);   /* oldest first */
+    int total = 0;
+    for (int i = 0; i < have; i++) if (mesh_in_scope(sc, &s_mesh_msgs[i])) total++;
+    const ls_mesh_msg_t *m = NULL;
+    if (k >= 0 && k < total) {
+        int want = k;                           /* k-th newest among the matches */
+        for (int i = have - 1; i >= 0; i--) {
+            if (!mesh_in_scope(sc, &s_mesh_msgs[i])) continue;
+            if (want-- == 0) { m = &s_mesh_msgs[i]; break; }
+        }
+    }
+    if (!m) {
+        snprintf(reply, reply_len, "%%M m %d %d - 0 -1 %s -\n", k, total, scope);
+    } else {
+        const uint32_t now = ls_mesh_now();
+        const int age = m->t ? (int)(now > m->t ? now - m->t : 0) : -1;
+        char text[MESH_LINK_TEXT + 1];
+        wire_text(text, sizeof(text), m->text);
+        snprintf(reply, reply_len, "%%M m %d %d %s%s %d %d %s %s\n", k, total,
+                 m->mine ? "o" : "i", m->direct ? "d" : "", (int)m->state, age, scope, text);
+    }
+    big_lock(false);
+}
+
+/* One channel slot: whether it has a key, whether sends go there by default,
+   how many messages the ring holds for it and the id of the newest, which is
+   what the head compares to know there is something it has not shown. */
+static void mesh_chan_reply(int idx, char *reply, size_t reply_len)
+{
+    static EXT_RAM_BSS_ATTR ls_mesh_chan_t chans[LS_MESH_MAX_CHANNELS];
+    big_lock(true);
+    const int n = ls_mesh_channels(chans, LS_MESH_MAX_CHANNELS);
+    if (idx < 0 || idx >= n) {
+        snprintf(reply, reply_len, "%%M c %d %d 0 0 0 0 -\n", idx, n);
+    } else {
+        const int have = ls_mesh_messages(s_mesh_msgs, LS_MESH_MAX_MSGS);
+        int count = 0;
+        uint32_t last = 0;
+        for (int i = 0; i < have; i++) {
+            if (s_mesh_msgs[i].direct || (int)s_mesh_msgs[i].chan != idx) continue;
+            count++;
+            last = s_mesh_msgs[i].id;           /* oldest first: the last is the newest */
+        }
+        char name[LS_MESH_CHAN_NAME + 1];
+        wire_text(name, sizeof(name), chans[idx].name);
+        const bool used = chans[idx].fixed || chans[idx].psk[0];
+        snprintf(reply, reply_len, "%%M c %d %d %d %d %d %lu %s\n", idx, n, used ? 1 : 0,
+                 idx == ls_mesh_channel_active() ? 1 : 0, count, (unsigned long)last,
+                 used ? name : "-");
+    }
+    big_lock(false);
+}
+
+static bool mesh_hex_id(const char *s)
+{
+    if (!s || strlen(s) != 16) return false;
+    for (; *s; s++) if (!isxdigit((unsigned char)*s)) return false;
+    return true;
+}
+
+static void handle_mesh(int argc, char **argv, char *reply, size_t reply_len)
+{
+    const char *sub = argc > 1 ? argv[1] : NULL;
+    int32_t n = 0;
+    if (!sub) {
+        ls_mesh_stats_t ms;
+        memset(&ms, 0, sizeof(ms));
+        ls_mesh_get_stats(&ms);
+        snprintf(reply, reply_len,
+                 "+OK run=%d tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
+                 "air=%lu budget=%lu peers=%d id=%s\n",
+                 ms.running ? 1 : 0, ms.tx_enabled ? 1 : 0,
+                 (unsigned long)ms.rx_packets, (unsigned long)ms.rx_bad,
+                 (unsigned long)ms.tx_packets,
+                 (double)ms.last_rssi, (double)ms.last_snr,
+                 (unsigned long)ms.airtime_ms, (unsigned long)ms.tx_budget_ms,
+                 ls_mesh_peers(NULL, 0),
+                 ms.self_id[0] ? ms.self_id : "-");
+    } else if (!strcasecmp(sub, "S") && argc == 2) {
+        mesh_summary_reply(reply, reply_len);
+    } else if (!strcasecmp(sub, "P") && argc == 3 && parse_i32(argv[2], &n)) {
+        mesh_peer_reply((int)n, reply, reply_len);
+    } else if (!strcasecmp(sub, "M") && argc >= 3 && parse_i32(argv[2], &n)) {
+        mesh_scope_t sc = { 'a', 0, "" };
+        int32_t chan = 0;
+        if (argc == 5 && !strcasecmp(argv[3], "C") && parse_i32(argv[4], &chan) &&
+            chan >= 0 && chan < LS_MESH_MAX_CHANNELS) {
+            sc.kind = 'c';
+            sc.chan = (int)chan;
+        } else if (argc == 5 && !strcasecmp(argv[3], "D") && mesh_hex_id(argv[4])) {
+            sc.kind = 'd';
+            for (int i = 0; i < 16; i++) sc.id[i] = (char)toupper((unsigned char)argv[4][i]);
+            sc.id[16] = '\0';
+        } else if (argc != 3) {
+            snprintf(reply, reply_len, "-ERR mesh m <k> [c <chan>|d <id>]\n");
+            return;
+        }
+        mesh_msg_reply((int)n, &sc, reply, reply_len);
+    } else if (!strcasecmp(sub, "C") && argc == 3 && parse_i32(argv[2], &n)) {
+        mesh_chan_reply((int)n, reply, reply_len);
+    } else if (!strcasecmp(sub, "TX") && argc == 3 &&
+               (!strcmp(argv[2], "0") || !strcmp(argv[2], "1"))) {
+        /* The same switch the board's MESH screen throws, and no other radio
+           setting: power and limits are left as they are. Armed or not is
+           read back, so the reply is what the radio now is, not what was asked. */
+        if (!ls_mesh_running()) {
+            snprintf(reply, reply_len, "-ERR mesh not running\n");
+        } else {
+            ls_mesh_set_tx(argv[2][0] == '1');
+            snprintf(reply, reply_len, "+OK mesh tx=%d\n", ls_mesh_tx_enabled() ? 1 : 0);
+        }
+    } else if (!strcasecmp(sub, "SEND") || !strcasecmp(sub, "SENDC") || !strcasecmp(sub, "DM")) {
+        /* Reached only when handle_line found no text to send. */
+        snprintf(reply, reply_len, "-ERR mesh text\n");
+    } else {
+        snprintf(reply, reply_len,
+                 "-ERR mesh [s|p <n>|m <n> [c <chan>|d <id>]|c <n>|tx <0|1>|send <text>|sendc <chan> <text>|dm <id> <text>]\n");
+    }
+}
+
+/* ---- DETECTOR for the head ---------------------------------------------
+   DET | DET S     %A s run= rules= hits= sup= drop= hist= adsb=
+   DET <k>         %A a <k> <total> <age_s> <alarm> <source> <text...>  k=0 newest
+   DET RUN <0|1>   start or stop it, then the status
+   The match counter also rides the eq line (dtm=, dth=, dtr=). */
+#define DET_LINK_EVENTS 6
+static void det_status_reply(char *reply, size_t reply_len, const ls_detector_status_t *st)
+{
+    char adsb[sizeof(st->adsb)];
+    snprintf(adsb, sizeof(adsb), "%s", st->adsb[0] ? st->adsb : "OFF");
+    sanitize(adsb);
+    snprintf(reply, reply_len,
+             "%%A s run=%d rules=%u hits=%lu sup=%lu drop=%lu hist=%u adsb=%s\n",
+             st->running ? 1 : 0, st->rules, (unsigned long)st->matches,
+             (unsigned long)st->suppressed, (unsigned long)st->dropped, st->recent, adsb);
+}
+
+static void handle_det(int argc, char **argv, char *reply, size_t reply_len)
+{
+    static EXT_RAM_BSS_ATTR ls_detector_event_t events[DET_LINK_EVENTS];
+    const char *sub = argc > 1 ? argv[1] : NULL;
+    int32_t k = 0;
+    if (sub && !strcasecmp(sub, "RUN")) {
+        if (argc != 3 || (strcmp(argv[2], "0") && strcmp(argv[2], "1"))) {
+            snprintf(reply, reply_len, "-ERR det run <0|1>\n");
+            return;
+        }
+        ls_detector_start(argv[2][0] == '1');
+        sub = NULL;
+    }
+    const bool row = sub && !strcasecmp(sub, "S") ? false : sub != NULL;
+    if (row && (argc != 2 || !parse_i32(sub, &k) || k < 0)) {
+        snprintf(reply, reply_len, "-ERR det [s|<n>|run <0|1>]\n");
+        return;
+    }
+    ls_detector_status_t st;
+    size_t n = 0;
+    big_lock(true);
+    const bool ok = ls_detector_snapshot(&st, row ? events : NULL, row ? DET_LINK_EVENTS : 0, &n);
+    if (!ok) {
+        big_lock(false);
+        snprintf(reply, reply_len, "-ERR det busy\n");
+        return;
+    }
+    if (!row) {
+        det_status_reply(reply, reply_len, &st);
+    } else if ((size_t)k >= n) {
+        snprintf(reply, reply_len, "%%A a %ld %u -1 0 - -\n", (long)k, (unsigned)n);
+    } else {
+        const ls_detector_event_t *e = &events[k];       /* newest first */
+        char text[MESH_LINK_TEXT + 1], src[20];
+        bool alarm = false;
+        if (e->test) {
+            snprintf(text, sizeof(text), "Operator test");
+        } else if (e->source == DET_ADSB) {
+            char air[48];
+            ls_detector_air_event_text(e, air, sizeof(air));
+            wire_text(text, sizeof(text), air);
+            alarm = ls_detector_air_alarm(e->squawk, e->emergency);
+        } else {
+            wire_text(text, sizeof(text), e->reason);
+        }
+        snprintf(src, sizeof(src), "%s", e->test ? "test" : ls_detector_source(e->source));
+        sanitize(src);
+        const int64_t now = esp_timer_get_time();
+        const int age = e->at > 0 && now >= e->at ? (int)((now - e->at) / 1000000) : -1;
+        snprintf(reply, reply_len, "%%A a %ld %u %d %d %s %s\n", (long)k, (unsigned)n,
+                 age, alarm ? 1 : 0, src, text);
+    }
+    big_lock(false);
 }
 
 static int build_telemetry_fm(char *buf, size_t len)
 {
     lakeshark_fm_tel_t t;
     lakeshark_fm_telemetry(&t);
-    ls_telemetry_common_t common = telemetry_common();
+    ls_telemetry_common_t common = telemetry_common(HOST_MODE_FM, t.submode);
     return ls_telemetry_build_fm(buf, len, &t, &common);
 }
 
@@ -204,7 +564,7 @@ static int build_telemetry_adsb(char *buf, size_t len)
 {
     lakeshark_adsb_tel_t t;
     lakeshark_adsb_telemetry(&t);
-    ls_telemetry_common_t common = telemetry_common();
+    ls_telemetry_common_t common = telemetry_common(HOST_MODE_ADSB, 0);
     return ls_telemetry_build_adsb(buf, len, &t, &common);
 }
 
@@ -213,7 +573,7 @@ static int build_telemetry_p25(char *buf, size_t len)
     lakeshark_p25_tel_t t;
     lakeshark_p25_telemetry(&t);
     const char *mode = (s_host.current_mode_name ? s_host.current_mode_name() : "P25");
-    ls_telemetry_common_t common = telemetry_common();
+    ls_telemetry_common_t common = telemetry_common(HOST_MODE_P25, 0);
     return ls_telemetry_build_p25(buf, len, &t, mode, lakeshark_p25_mode_name(),
                                   &common);
 }
@@ -223,7 +583,7 @@ static int build_telemetry_rec(char *buf, size_t len)
 {
     rec_status_t s;
     rec_get_status(&s);
-    ls_telemetry_common_t common = telemetry_common();
+    ls_telemetry_common_t common = telemetry_common(HOST_MODE_REC, 0);
     return ls_telemetry_build_rec(buf, len, &s, &common);
 }
 
@@ -682,9 +1042,109 @@ static void aux_reply(char *reply,size_t len) {
     xSemaphoreGive(s_aux_lock);
 }
 
+/* MESH SEND, SENDC and DM carry free text: the rest of the line as typed, not
+   the seven words the tokenizer keeps.
+
+       MESH SEND <text>
+       MESH SENDC <chan> <text>
+       MESH DM <id> <text>
+
+   Returns the text and sets *kind and arg (the channel or the node id); NULL
+   when the line is none of these or has nothing to send. */
+typedef enum { MESH_TXT_SEND, MESH_TXT_SENDC, MESH_TXT_DM } mesh_txt_kind_t;
+
+static const char *mesh_text_cmd(const char *line, mesh_txt_kind_t *kind, char *arg, size_t argcap)
+{
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "MESH", 4) || (p[4] != ' ' && p[4] != '\t')) return NULL;
+    p += 4;
+    while (*p == ' ' || *p == '\t') p++;
+    char verb[8];
+    size_t v = 0;
+    while (*p && *p != ' ' && *p != '\t') {
+        if (v + 1 < sizeof(verb)) verb[v] = *p;
+        v++;
+        p++;
+    }
+    if (v >= sizeof(verb)) return NULL;
+    verb[v] = '\0';
+    if (!strcasecmp(verb, "SEND")) *kind = MESH_TXT_SEND;
+    else if (!strcasecmp(verb, "SENDC")) *kind = MESH_TXT_SENDC;
+    else if (!strcasecmp(verb, "DM")) *kind = MESH_TXT_DM;
+    else return NULL;
+    while (*p == ' ' || *p == '\t') p++;
+    arg[0] = '\0';
+    if (*kind != MESH_TXT_SEND) {
+        size_t n = 0;
+        while (*p && *p != ' ' && *p != '\t') {
+            if (n + 1 >= argcap) return NULL;
+            arg[n++] = *p++;
+        }
+        arg[n] = '\0';
+        if (!n) return NULL;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    return *p ? p : NULL;
+}
+
+static void mesh_send_err(esp_err_t e, char *reply, size_t reply_len)
+{
+    if (e == ESP_OK) snprintf(reply, reply_len, "+OK mesh sent\n");
+    else if (e == ESP_ERR_NOT_ALLOWED) snprintf(reply, reply_len, "-ERR mesh tx disarmed\n");
+    else if (e == ESP_ERR_INVALID_STATE) snprintf(reply, reply_len, "-ERR mesh not running\n");
+    else if (e == ESP_ERR_NOT_FOUND) snprintf(reply, reply_len, "-ERR mesh no such node\n");
+    else if (e == ESP_ERR_INVALID_SIZE || e == ESP_ERR_INVALID_ARG)
+        snprintf(reply, reply_len, "-ERR mesh text\n");
+    else snprintf(reply, reply_len, "-ERR mesh send\n");
+}
+
+static void mesh_send_reply(mesh_txt_kind_t kind, const char *arg, const char *raw,
+                            char *reply, size_t reply_len)
+{
+    char text[MESH_LINK_TEXT + 1];
+    size_t n = strlen(raw);
+    while (n && (raw[n - 1] == ' ' || raw[n - 1] == '\t')) n--;
+    if (!n) { snprintf(reply, reply_len, "-ERR mesh text\n"); return; }
+    if (n >= sizeof(text)) { snprintf(reply, reply_len, "-ERR mesh text too long\n"); return; }
+    memcpy(text, raw, n);
+    text[n] = '\0';
+
+    if (kind == MESH_TXT_SENDC) {
+        int32_t chan = 0;
+        static EXT_RAM_BSS_ATTR ls_mesh_chan_t chans[LS_MESH_MAX_CHANNELS];
+        bool usable = false;
+        if (parse_i32(arg, &chan) && chan >= 0 && chan < LS_MESH_MAX_CHANNELS) {
+            big_lock(true);
+            ls_mesh_channels(chans, LS_MESH_MAX_CHANNELS);
+            usable = chans[chan].fixed || chans[chan].psk[0];
+            big_lock(false);
+        }
+        if (!usable) { snprintf(reply, reply_len, "-ERR mesh channel\n"); return; }
+        mesh_send_err(ls_mesh_send_text_on((int)chan, text), reply, reply_len);
+    } else if (kind == MESH_TXT_DM) {
+        if (!mesh_hex_id(arg)) { snprintf(reply, reply_len, "-ERR mesh no such node\n"); return; }
+        char id[17];
+        for (int i = 0; i < 16; i++) id[i] = (char)toupper((unsigned char)arg[i]);
+        id[16] = '\0';
+        mesh_send_err(ls_mesh_send_dm_id(id, text), reply, reply_len);
+    } else {
+        mesh_send_err(ls_mesh_send_text(text), reply, reply_len);
+    }
+}
+
 static void handle_line(char *line, char *reply, size_t reply_len)
 {
     reply[0] = '\0';
+
+    mesh_txt_kind_t mesh_kind;
+    char mesh_arg[24];
+    const char *mesh_text = mesh_text_cmd(line, &mesh_kind, mesh_arg, sizeof(mesh_arg));
+    if (mesh_text) {
+        ls_trail(LS_TRAIL_LINK, "MESH");
+        mesh_send_reply(mesh_kind, mesh_arg, mesh_text, reply, reply_len);
+        return;
+    }
 
     char *argv[8];
     int argc = tokenize(line, argv, 8);
@@ -1181,20 +1641,10 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         snprintf(reply, reply_len, "+OK test=%s\n", snd_test_name(w));
 
     } else if (!strcmp(cmd, "MESH")) {
-        ls_mesh_stats_t ms;
-        memset(&ms, 0, sizeof(ms));
-        ls_mesh_get_stats(&ms);
+        handle_mesh(argc, argv, reply, reply_len);
 
-        snprintf(reply, reply_len,
-                 "+OK run=%d tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
-                 "air=%lu budget=%lu peers=%d id=%s\n",
-                 ms.running ? 1 : 0, ms.tx_enabled ? 1 : 0,
-                 (unsigned long)ms.rx_packets, (unsigned long)ms.rx_bad,
-                 (unsigned long)ms.tx_packets,
-                 (double)ms.last_rssi, (double)ms.last_snr,
-                 (unsigned long)ms.airtime_ms, (unsigned long)ms.tx_budget_ms,
-                 ls_mesh_peers(NULL, 0),
-                 ms.self_id[0] ? ms.self_id : "-");
+    } else if (!strcmp(cmd, "DET")) {
+        handle_det(argc, argv, reply, reply_len);
 
     } else if (!strcmp(cmd, "GPS")) {
         ls_gps_state_t g;

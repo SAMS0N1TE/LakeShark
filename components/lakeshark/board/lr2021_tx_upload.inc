@@ -231,11 +231,15 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
     if (!ls_lora_hw_try_lock()) {
         REFUSE(ESP_ERR_INVALID_STATE, "radio lock busy");
     }
-    if (!ls_board_hw_antenna_tx_allowed()) {
+    /* Off a receive-only MMCX1 before anything touches the part; back when
+       the playback ends, or here on a refusal unless another transmit
+       still needs the internal route. */
+    if (ls_board_hw_antenna_tx_begin() != ESP_OK) {
         ls_lora_hw_unlock();
-        REFUSE(ESP_ERR_INVALID_STATE, "MMCX1 antenna unconfirmed; use ant ext confirm");
+        REFUSE(ESP_ERR_INVALID_STATE, "antenna switch to internal failed");
     }
     if (lrtx_cancelled(cancel_generation)) {
+        if (!lr.tx_busy) ls_board_hw_antenna_tx_end();
         ls_lora_hw_unlock();
         REFUSE(ESP_ERR_INVALID_STATE, "cancelled before radio setup");
     }
@@ -282,6 +286,7 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
         else if (marker == 0x600DB002u) { err=ESP_ERR_INVALID_STATE; why="ROM patch marker present"; }
     }
     if (why) {
+        if (!lr.tx_busy) ls_board_hw_antenna_tx_end();
         ls_lora_hw_unlock();
         if (reason) *reason=why;
         printf("lrtx-send: %s\n",why);
@@ -416,6 +421,7 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
         if (err == ESP_OK && error_read != ESP_OK) err = error_read;
         if (err == ESP_OK && errors) err = ESP_FAIL;
         s_recovered = false;
+        ls_board_hw_antenna_tx_end();
         recovery = recover_locked("TX playback complete");
         if (recovery == ESP_OK) {
             lr.rearm = false;

@@ -341,7 +341,7 @@ float ls_compass_steady_sample(ls_compass_steady_t *s, float heading, float pitc
         s->observe_s = 0; s->observed = true; s->check_heading = heading;
     }
     const float w = 1 - expf(-dt / 0.75f);
-    float movement = 0, an = 0;
+    float movement = 0, now_move = 0, an = 0;
     bool quiet = true;
     for (int i = 0; i < 3; i++) {
         const float dm = m[i] - s->mean_m[i], da = a[i] - s->mean_a[i];
@@ -349,14 +349,17 @@ float ls_compass_steady_sample(ls_compass_steady_t *s, float heading, float pitc
         s->var_a[i] = (1-w) * (s->var_a[i] + w*da*da);
         s->mean_m[i] += w*dm; s->mean_a[i] += w*da;
         movement += (s->mean_m[i]-s->anchor_m[i]) * (s->mean_m[i]-s->anchor_m[i]);
+        now_move += (m[i]-s->anchor_m[i]) * (m[i]-s->anchor_m[i]);
         an += a[i]*a[i];
         quiet &= s->var_m[i] < 2.25f && s->var_a[i] < (s->stationary ? 0.01f : 0.0064f);
     }
-    quiet &= an > 0.81f && an < 1.21f && movement < 9.0f;
+    /* The mean lags the vector by its 0.75 s window, most of a turn's
+       start; the sample itself is the early sign. */
+    quiet &= an > 0.81f && an < 1.21f && movement < 9.0f && now_move < LS_COMPASS_MOVE_UT2;
     s->motion_s = quiet ? 0 : s->motion_s + dt;
     /* Entry/exit hysteresis: a brief acceleration spike is not a turn.
        An accumulated magnetic displacement releases immediately. */
-    const bool hold = s->stationary && s->motion_s < 0.3f && movement < 9.0f;
+    const bool hold = s->stationary && s->motion_s < 0.3f && movement < 9.0f && now_move < LS_COMPASS_MOVE_UT2;
     if (!quiet && !hold) {
         s->observe_s = 0;
         memcpy(s->anchor_m, s->mean_m, sizeof(s->anchor_m));

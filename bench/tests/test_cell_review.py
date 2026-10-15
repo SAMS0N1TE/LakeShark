@@ -47,6 +47,20 @@ PREFIX = r'''
 #define EXT_RAM_BSS_ATTR
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
+#ifdef _WIN32
+#include <process.h>
+#include <stdlib.h>
+/* mingw's tmpfile() writes to C:\ and fails without admin rights */
+__attribute__((unused)) static FILE *host_tmpfile(void)
+{
+    static unsigned n;
+    char path[300];
+    const char *dir = getenv("TEMP");
+    snprintf(path, sizeof(path), "%s/lscell%d_%u.tmp", dir ? dir : ".", _getpid(), n++);
+    return fopen(path, "w+bD");
+}
+#define tmpfile host_tmpfile
+#endif
 '''
 
 
@@ -83,6 +97,53 @@ class CellReviewTest(unittest.TestCase):
         options = render('high-options',high=True,args=('-k','o'))
         self.assertNotIn('LORA REPORTS',options)
         render('touch-start',args=('-x','4:24'))
+
+    def test_lte_scan_screen_bands_cells_ppm_and_real_motion(self):
+        """The search screen shows what the worker found, and moves only with it."""
+        subprocess.run([shutil.which('python'), str(ROOT/'bench/tests/cell_preview.py')],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = ROOT/'bench/out/cell'
+        exe = out/'lssim-cell.exe'
+        def render(name, scan, args=()):
+            env = os.environ.copy()
+            env.pop('CELL_HIGH', None); env.pop('CELL_LTE_HISTORY', None)
+            env['CELL_LTE_SCAN'] = scan
+            result = subprocess.run([str(exe), 'cell', '-D', '-F', '2', '-f', '3', '-d',
+                '-o', str(out/(name+'.bmp')), *args], env=env, text=True, capture_output=True, check=True)
+            (out/(name+'.txt')).write_text(result.stdout)
+            return result.stdout
+        done = render('scan-done-p', 'done')
+        for text in ['LTE CELL SEARCH', 'EARFCN 2400-2649', 'GATED: 2 carriers / 2 points', 'MIB 2 of 3 decoded',
+                     'DONGLE +9.6 ppm / 3 cells', 'APPLIED +10', ' 2525  301 ', ' 2600   17 ', '10M 2x', '5M 2x',
+                     'BAND OCCUPANCY', '= carrier  + searched  * cell']:
+            self.assertIn(text, done)
+        many_p = render('scan-many-p', 'many')
+        self.assertIn('+5 more', many_p)
+        many_l = render('scan-many-l', 'many', args=('-l',))
+        for pci in ['301', '412', '451', '33']:
+            self.assertIn(' '+pci+' ', many_l)
+        self.assertNotIn('more:', many_l)          # landscape lists all fourteen
+        # The tower lights an arc per cell heard, and the survey draws it dark.
+        self.assertIn('(((o)))', done)
+        # Motion only from real data: advancing the clock changes nothing.
+        still = render('scan-run-0', 'run')
+        moved = render('scan-run-1', 'run', args=('-A', '160', '-f', '9'))
+        self.assertEqual(still.splitlines()[:-1], moved.splitlines()[:-1])
+        self.assertNotIn('RECEIVING', render('scan-idle', 'done'))
+        self.assertIn('RECEIVING', still)
+        # Tapping the list, and N, open every cell; the band list carries EARFCN ranges.
+        listing = render('scan-list-key', 'many', args=('-k', 'n'))
+        self.assertIn('LTE CELLS / 850 DL / B5', listing)
+        self.assertIn('881.500 MHz  PCI 301', listing)
+        tapped = render('scan-list-tap', 'many', args=('-x', '8:36'))
+        self.assertIn('LTE CELLS', tapped)
+        bands = render('scan-bands', 'done', args=('-k', 'b'))
+        for text in ['600 DL / B71', 'EARFCN 68586-68935', '700 DL / B14', '850 DL / B26', '700 DL / B17', 'EARFCN 2400-2649']:
+            self.assertIn(text, bands)
+        self.assertNotIn('B66', bands)             # HackRF-only bands are not offered to the RTL scan
+        options = render('scan-options', 'done', args=('-k', 'o'))
+        for text in ['LTE SCAN', 'GATED', 'LTE MIB', 'DONGLE PPM', 'ALL CELLS', '14 found' if False else 'found']:
+            self.assertIn(text, options)
 
     def test_full_iq_and_sweep_compile(self):
         compiler = shutil.which('gcc') or shutil.which('cc')

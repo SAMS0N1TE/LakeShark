@@ -1,6 +1,7 @@
 #ifndef REC_CATCH_H
 #define REC_CATCH_H
 #include "rec_catch_core.h"
+#include "rec_catch_chan.h"
 #include "radio_endpoint.h"
 #include "../../../apps/tui/experiments/lr433_dec.h"
 #ifdef __cplusplus
@@ -20,6 +21,7 @@ typedef struct {
     bool running, stopping;
     uint32_t center, detections, captures, decoded, dropped, handoffs, max_latency_us;
     uint32_t blocks, block_drops, detector_drops, fft_frames;
+    uint32_t ignored;               /* bursts outside every chosen window */
     uint64_t usb_drop_bytes, active_us, elapsed_us;
     uint64_t processed_bytes, lost_samples, deficit_samples;
     uint64_t last_block_us, block_period_us, block_gap_us, max_block_gap_us;

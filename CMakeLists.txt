@@ -47,7 +47,7 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.14.0")
+set(LS_PRODUCT_VERSION "2.15.0")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 ls_identity_query(PROJECT_VER "${CMAKE_CURRENT_LIST_DIR}" "${LS_PRODUCT_VERSION}")
 string(REGEX REPLACE "-rc[0-9]+$" "" LS_PROJECT_VERSION "${LS_PRODUCT_VERSION}")
@@ -93,3 +93,19 @@ add_custom_target(ls_refresh_build_identity
     VERBATIM)
 add_dependencies(__idf_esp_app_format ls_refresh_build_identity)
 target_compile_options(__idf_esp_app_format PRIVATE -include "${_ls_identity_header}")
+
+# Cold ESP-IDF libraries build for size. The project default is -O2
+# (CONFIG_COMPILER_OPTIMIZATION_PERF) for the radio, audio and render paths;
+# none of these sit in a timing-critical loop, and -Os gives the same
+# behaviour in less flash. The options come after the global -O2, so they win.
+# Placement attributes (IRAM_ATTR and friends) are not touched by -Os.
+set(LS_SIZE_OPT_COMPONENTS
+    bt lwip esp_netif esp_http_client esp_http_server tcp_transport esp-tls
+    console nvs_flash espcoredump spiffs json http_parser
+    espressif__esp_hosted)
+foreach(ls_cold_comp IN LISTS LS_SIZE_OPT_COMPONENTS)
+    idf_component_get_property(ls_cold_lib ${ls_cold_comp} COMPONENT_LIB)
+    if(ls_cold_lib)
+        target_compile_options(${ls_cold_lib} PRIVATE -Os)
+    endif()
+endforeach()

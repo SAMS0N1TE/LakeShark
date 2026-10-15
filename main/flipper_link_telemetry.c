@@ -19,7 +19,7 @@
 
 /* Room kept for append_sys - uptime, heap, stall, health, board - so the
    budget above is not spent on aircraft and then overrun by the suffix. */
-#define TEL_SUFFIX_RESERVE 80
+#define TEL_SUFFIX_RESERVE 100
 
 static void sanitize(char *s)
 {
@@ -53,6 +53,26 @@ static int append_sys(char *buf, size_t len, int n, const ls_telemetry_common_t 
                      common->rhs_state ? common->rhs_state : "-");
     if (w < 0 || (size_t)(n + w) >= len - 1) return n;
     n += w;
+
+    /* Which receiver the active mode runs on, and the board's own reason
+       when there is none. The head used to infer "no SDR" from rtl=0, which
+       is wrong for a mode on the LoRa chip or a HackRF. */
+    if (common->rx_name) {
+        char rx[LS_TEL_RX_NAME_MAX + 1];
+        copy_text(rx, sizeof(rx), common->rx_name[0] ? common->rx_name : "-");
+        sanitize(rx);
+        w = snprintf(buf + n, len - (size_t)n, " ra=%s", rx);
+        if (w < 0 || (size_t)(n + w) >= len - 1) return n;
+        n += w;
+        if (common->rx_why && common->rx_why[0]) {
+            char why[LS_TEL_RX_WHY_MAX + 1];
+            copy_text(why, sizeof(why), common->rx_why);
+            sanitize(why);
+            w = snprintf(buf + n, len - (size_t)n, " rw=%s", why);
+            if (w < 0 || (size_t)(n + w) >= len - 1) return n;
+            n += w;
+        }
+    }
 
     /* Board identity as its own field so two boards on the same head
        are distinguishable in the app.  Central helper - the format cannot

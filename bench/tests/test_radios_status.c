@@ -37,12 +37,19 @@ int ls_app_count(void) { return 0; }
 const ls_app_t *ls_app_at(int i) { return NULL; }
 void ls_app_open(int i) { }
 bool ls_board_hw_antenna_is_external(void) { return external; }
-bool ls_board_hw_antenna_tx_allowed(void) { return !external || acknowledged; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 esp_err_t ls_board_hw_antenna_external(bool ext)
 { if (switch_error) return switch_error; ++switches; external = ext; acknowledged = false; return ESP_OK; }
 esp_err_t ls_board_hw_antenna_confirm_external(void)
 { if (switch_error) return switch_error; ++switches; external = acknowledged = true; return ESP_OK; }
 void settings_set_antenna_external(bool ext) { ++saved; }
+void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
+bool settings_get_antenna_mmcx_tx(void) { return false; }
 bool settings_get_antenna_remember(void) { return remembered; }
 void settings_set_antenna_remember(bool v) { remembered = v; }
 int ls_motion_phase(int steps, int ms) { return 0; }
@@ -107,30 +114,22 @@ LS_CASE(cc1101_replay_is_visible_without_receive)
     LS_EQ_INT(cc_read(), RS_ON);
 }
 
-LS_CASE(antenna_confirmation_defaults_to_cancel_and_reports_switch_failure)
+LS_CASE(antenna_switches_in_one_tap_and_reports_refusal)
 {
-    remembered = false; external = acknowledged = false; switches = saved = 0; switch_error = ESP_OK;
-    ant_set(true);
-    LS_CHECK(s_ant_confirm);
-    LS_EQ_INT(switches, 0);
-    key(LS_TK_ENTER, 0);
-    LS_EQ_INT(switches, 0);
-    ant_set(true); key(LS_TK_DOWN, 0); key(LS_TK_ENTER, 0);
-    LS_CHECK(external && acknowledged);
-    LS_EQ_INT(saved, 1);
-    ant_set(false);
-    switch_error = ESP_ERR_INVALID_STATE;
-    ant_set(true); key(LS_TK_DOWN, 0); key(LS_TK_ENTER, 0);
-    LS_CHECK(!external && s_error);
-    LS_EQ_INT(saved, 2);
-    switch_error = ESP_OK;
-    ls_board_hw_antenna_external(true);
-    LS_CHECK(!acknowledged);
+    external = acknowledged = false; switches = saved = 0; switch_error = ESP_OK;
     int ant = 0;
     while (ROWS[ant].set != ant_set) ++ant;
     toggle(ant);
-    LS_CHECK(s_ant_confirm);
-    leave(); LS_CHECK(!s_ant_confirm);
+    LS_CHECK(external && !s_error);
+    LS_EQ_INT(switches, 1); LS_EQ_INT(saved, 1);
+    LS_CHECK(!strcmp(ant_action(), "USE INTERNAL"));
+    toggle(ant);
+    LS_CHECK(!external); LS_EQ_INT(saved, 2);
+    switch_error = ESP_ERR_INVALID_STATE;
+    toggle(ant);
+    LS_CHECK(!external && s_error && strstr(s_error, "transmit"));
+    LS_EQ_INT(saved, 2);
+    switch_error = ESP_OK;
 }
 
 LS_CASE(lora_stop_failure_keeps_the_radio_on_and_reports_error)
@@ -141,50 +140,6 @@ LS_CASE(lora_stop_failure_keeps_the_radio_on_and_reports_error)
     stop_error = ESP_OK; mesh_set(false);
     LS_EQ_INT(mesh_read(), RS_OFF);
     LS_CHECK(!s_error);
-}
-
-LS_CASE(antenna_warning_and_touch_confirmation_are_rendered)
-{
-    tui_cell back[40 * 24], front[40 * 24];
-    tui_surface sf;
-    tui_surface_setup(&sf, back, front, 40, 24);
-    tui_frame_begin(&sf);
-    external = acknowledged = false; switch_error = ESP_OK;
-    ant_set(true);
-    touch(3, 14); /* Confirmation is unavailable until the warning is drawn. */
-    LS_CHECK(!external);
-    draw(&sf, tui_surface_rect(&sf));
-    const char *warning = "can damage the radio.";
-    const int wx = 2 + (36 - (int)strlen(warning)) / 2;
-    for (int i = 0; warning[i]; ++i)
-        LS_EQ_INT(back[6 * 40 + wx + i].ch, warning[i]);
-    LS_CHECK(s_ant_no.h >= 3 && s_ant_yes.h >= 3 && s_ant_toggle.h >= 3);
-    touch(s_ant_toggle.x, s_ant_toggle.y);
-    LS_CHECK(s_ant_remember && !remembered);
-    touch(s_ant_no.x, s_ant_no.y);
-    LS_CHECK(!external && !s_ant_confirm && !remembered);
-    ant_set(true); draw(&sf, tui_surface_rect(&sf));
-    LS_CHECK(!s_ant_remember);
-    touch(s_ant_yes.x, s_ant_yes.y);
-    LS_CHECK(external && acknowledged && !s_ant_confirm && !remembered);
-}
-
-LS_CASE(remember_requires_successful_accept_and_warning_can_be_restored)
-{
-    remembered = false; external = acknowledged = false; switch_error = ESP_OK;
-    ant_set(true); key(LS_TK_TAB, 0); key(LS_TK_TAB, 0); key(LS_TK_ENTER, 0);
-    LS_CHECK(s_ant_remember && !remembered);
-    key(LS_TK_ESC, 0); LS_CHECK(!remembered && !external);
-    ant_set(true); LS_CHECK(!s_ant_remember);
-    s_ant_remember = true; switch_error = ESP_FAIL; ant_confirm(true);
-    LS_CHECK(!remembered);
-    switch_error = ESP_OK; ant_set(true); s_ant_remember = true; ant_confirm(true);
-    LS_CHECK(remembered && acknowledged);
-    ant_set(false); unsigned before = switches; ant_set(true);
-    LS_CHECK(!s_ant_confirm && acknowledged); LS_EQ_INT(switches, before + 1);
-    warning_set(NULL, 1); LS_EQ_INT(warning_get(NULL), 1);
-    ant_set(false); ant_set(true); LS_CHECK(s_ant_confirm);
-    ant_confirm(false);
 }
 
 LS_CASE(socket_owner_activity_and_named_refusal)
@@ -224,7 +179,6 @@ LS_CASE(large_font_pages_follow_keys_and_touch_maps_real_rows)
 {
     static tui_cell back[79 * 46], front[79 * 46];
     tui_surface sf;
-    s_ant_confirm = false;
     for (int view = 0; view < 2; view++) {
         wide = view != 0;
         tui_surface_setup(&sf, back, front, wide ? 79 : 34, wide ? 20 : 46);
@@ -244,8 +198,7 @@ LS_CASE(large_font_pages_follow_keys_and_touch_maps_real_rows)
         LS_EQ_INT(s_hit_row[0], s_page_first);
         touch(s_hit[0].x, s_hit[0].y);
         LS_EQ_INT(s_sel, s_hit_row[0]);
-        s_ant_confirm = false;
-    }
+        }
     wide = false;
 }
 

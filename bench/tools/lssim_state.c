@@ -57,6 +57,8 @@ bool settings_get_antenna_remember(void) { return s_ant_remember; }
 void settings_set_antenna_remember(bool v) { s_ant_remember = v; }
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
+void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
+bool settings_get_antenna_mmcx_tx(void) { return false; }
 static bool s_ble_boot = true, s_wifi_boot = true;
 bool settings_get_ble_at_boot(void)  { return s_ble_boot; }
 void settings_set_ble_at_boot(bool v)  { s_ble_boot = v; }
@@ -343,10 +345,14 @@ bool ls_gps_running(void) { return s_gps_running; }
 /* The antenna select, for the simulator. Internal until switched,
    which is what the board comes up as. */
 static bool s_ant_ext_hw;
-static bool s_ant_confirmed_hw;
-esp_err_t ls_board_hw_antenna_external(bool ext) { s_ant_ext_hw = ext; s_ant_confirmed_hw = false; return ESP_OK; }
-esp_err_t ls_board_hw_antenna_confirm_external(void) { s_ant_ext_hw = s_ant_confirmed_hw = true; return ESP_OK; }
-bool ls_board_hw_antenna_tx_allowed(void) { return !s_ant_ext_hw || s_ant_confirmed_hw; }
+esp_err_t ls_board_hw_antenna_external(bool ext) { s_ant_ext_hw = ext; return ESP_OK; }
+esp_err_t ls_board_hw_antenna_confirm_external(void) { s_ant_ext_hw = true; return ESP_OK; }
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 bool ls_board_hw_antenna_is_external(void) { return s_ant_ext_hw; }
 
 esp_err_t ls_gps_start(void)

@@ -415,6 +415,34 @@ LS_CASE(learned_spurs_leave_no_list_rows)
     chip=LS_LORA_CHIP_LR20XX;
 }
 
+/* WATCH CHOSEN: a burst outside every window is only counted. It gets no row,
+   no repeat tracking, no pending handoff and no socket lease. */
+LS_CASE(chosen_channels_ignore_outside_bursts)
+{
+    if(!s_lock)s_lock=xSemaphoreCreateMutex();
+    memset(&s_status,0,sizeof(s_status));memset(s_result,0,sizeof(s_result));
+    memset(&s_sources,0,sizeof(s_sources));
+    s_head=0;s_has_pending=false;s_status.center=915000000;chip=LS_LORA_CHIP_LR20XX;
+    catch_watch_host_reboot();
+    catch_watch_t w={.mode=CATCH_WATCH_CHOSEN};
+    assert(catch_watch_add(&w,915600000,100000)==0 && catch_watch_set(&w));
+    int attempts=lease_attempts;
+    catch_burst_t b={.id=1,.frequency=915210000,.rtl_dbfs=-30,.start_us=100000,.stop_us=147000};
+    detection(&b,true,NULL);detection(&b,false,NULL);
+    assert(!s_status.count && !s_status.detections && s_status.ignored==1);
+    assert(!s_has_pending && lease_attempts==attempts);
+    b.id=2;b.frequency=915650000;b.start_us=200000;b.stop_us=247000;           /* inside the window */
+    detection(&b,true,NULL);detection(&b,false,NULL);
+    assert(s_status.count==1 && s_status.detections==1 && s_status.ignored==1);
+    w.mode=CATCH_WATCH_ALL;assert(catch_watch_set(&w));                         /* ALL lets everything in */
+    b.id=3;b.frequency=915210000;b.start_us=400000;b.stop_us=447000;
+    detection(&b,true,NULL);
+    assert(s_status.count==2 && s_status.detections==2 && s_status.ignored==1);
+    catch_watch_host_reboot();
+    puts("CHOSEN channels: outside bursts counted, never listed or handed off");
+    chip=LS_LORA_CHIP_LR20XX;
+}
+
 #endif
 
 LS_CASE(console_diagnostics_snapshot)

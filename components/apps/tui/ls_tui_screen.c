@@ -383,7 +383,11 @@ static void draw_status(tui_surface *sf, int cols)
 {
     const uint8_t bar = TUI_ATTR(TUI_BLACK, TUI_CYAN);
     tui_rect all = tui_surface_rect(sf);
-    tui_fill(sf, tui_rect_make(0, 0, cols, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    /* The whole row in the bar's colour, end caps included. The caps are
+       outside the corner arc, so nothing shows them, but a cell drawn black
+       is blitted black: on a full redraw that is long before paint_bar_ends
+       runs, and the glass scans out black boxes at both ends until it does. */
+    tui_fill(sf, tui_rect_make(0, 0, cols, 1), ' ', bar);
 
     int x0, x1, batt_x;
     const ls_tui_status_layout_t l = status_place(cols, &x0, &x1, &batt_x);
@@ -598,7 +602,7 @@ static void draw_hints(tui_surface *sf, int cols, int row)
     const uint8_t bg  = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, (TUI_BLACK | TUI_BRIGHT));
     const uint8_t key = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, (TUI_BLACK | TUI_BRIGHT));
     const int pad = ls_tui_corner_pad(row);
-    tui_fill(sf, tui_rect_make(0, row, cols, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_fill(sf, tui_rect_make(0, row, cols, 1), ' ', bg); /* caps too: see draw_status */
     tui_fill(sf, tui_rect_make(pad, row, cols-2*pad, 1), ' ', bg);
 
     const ls_tui_screen_t *s = s_screens[s_current];

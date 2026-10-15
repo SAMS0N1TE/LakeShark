@@ -161,6 +161,8 @@ bool settings_get_antenna_remember(void) { return s_ant_remember; }
 void settings_set_antenna_remember(bool v) { s_ant_remember = v; }
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
+void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
+bool settings_get_antenna_mmcx_tx(void) { return false; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
@@ -180,6 +182,11 @@ bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d;
 esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
 esp_err_t ls_board_hw_antenna_confirm_external(void) { return ESP_OK; }
 bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 bool ls_board_hw_antenna_is_external(void) { return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
 bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }
@@ -1160,6 +1167,50 @@ LS_CASE(switch_frames_keep_the_entire_status_band_painted)
     ls_tui_status_set_clock("");
     ls_shim_gauge(NULL);
     ls_tui_set_font_index(saved_font);
+    ls_tui_set_corner_radius(saved_corner);
+}
+
+LS_CASE(bar_end_caps_are_drawn_in_the_bar_colour_not_black)
+{
+    /* A black cap is blitted black, and on a full redraw that happens many
+       milliseconds before paint_bar_ends covers it, so the glass shows black
+       boxes at both ends of the status row while moving through the UI.
+       Checked in the grid, because the finished frame is already right. */
+    const ls_gauge_t battery = {.present=true, .percent=95, .millivolts=4145};
+    ls_shim_gauge(&battery);
+    register_once();
+    int saved_corner = ls_tui_corner_radius();
+    ls_tui_set_corner_radius(72);
+    for (int wide = 0; wide < 2; wide++) {
+        LS_CHECK(ls_tui_begin(wide ? 1232 : 568, wide ? 568 : 1232));
+        ls_tui_status_set_clock("02:07Z");
+        for (int d = 0; d < 4; d++) {
+            ls_tui_screen_show(d);
+            frame(1);
+            tui_surface *sf = ls_tui_surface();
+            const int pad = ls_tui_corner_pad(0);
+            LS_CHECK(pad > 0);
+            int black = 0;
+            for (int x = 0; x < sf->w; x++) {
+                if (x >= pad && x < sf->w - pad) continue;
+                if (TUI_ATTR_BG(sf->back[x].attr) != TUI_CYAN) black++;
+            }
+            LS_CHECK_MSG(black == 0, "%s screen %d: %d end-cap cells of the status row are not bar coloured",
+                         wide ? "landscape" : "portrait", d, black);
+            if (wide) {
+                const int row = sf->h - 1, hp = ls_tui_corner_pad(row);
+                int off = 0;
+                for (int x = 0; x < sf->w; x++) {
+                    if (x >= hp && x < sf->w - hp) continue;
+                    if (TUI_ATTR_BG(sf->back[(size_t)row * sf->w + x].attr) != (TUI_BLACK | TUI_BRIGHT)) off++;
+                }
+                LS_CHECK_MSG(off == 0, "landscape screen %d: %d hint end-cap cells are not bar coloured", d, off);
+            }
+        }
+        ls_tui_end();
+    }
+    ls_tui_status_set_clock("");
+    ls_shim_gauge(NULL);
     ls_tui_set_corner_radius(saved_corner);
 }
 

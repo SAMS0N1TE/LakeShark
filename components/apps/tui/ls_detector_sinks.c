@@ -1,4 +1,5 @@
 #include "ls_detector.h"
+#include "ls_detector_air.h"
 #include "ls_notify.h"
 #include "ls_sweep_app.h"
 #include "esp_attr.h"
@@ -49,10 +50,15 @@ uint8_t ls_detector_deliver(const ls_detector_event_t *e,uint8_t sinks) {
         if(banner_count<4) {
             ls_notice_t *n=&banners[(banner_head+banner_count++)%4];memset(n,0,sizeof(*n));
             strcpy(n->title,"DETECTOR");const char *category=e->test?"TEST":e->source==DET_LORA?"LoRa activity":e->source==DET_RID?"REMOTE ID":e->category<SW_CATS?ls_sweep_category(e->category):"ACTIVITY";
-            if(e->coalesced)snprintf(n->body,sizeof(n->body),"%s +%u grouped",category,(unsigned)e->coalesced);
+            char air[64]="";
+            if(e->source==DET_ADSB) {category="AIRCRAFT";ls_detector_air_event_text(e,air,sizeof(air));}
+            if(e->source==DET_ADSB && e->coalesced)snprintf(n->body,sizeof(n->body),"%s %.48s +%u grouped",category,air,(unsigned)e->coalesced);
+            else if(e->source==DET_ADSB)snprintf(n->body,sizeof(n->body),"%s %.48s / %.60s",category,air,e->reason);
+            else if(e->coalesced)snprintf(n->body,sizeof(n->body),"%s +%u grouped",category,(unsigned)e->coalesced);
             else snprintf(n->body,sizeof(n->body),"%s / %s",category,e->test?"sink test":e->reason);
             static const uint8_t colors[]={TUI_YELLOW,TUI_MAGENTA,TUI_CYAN,TUI_GREEN,TUI_RED};
-            n->hue=n->accent=e->category<5?colors[e->category]:TUI_CYAN;n->screen=-1;n->quiet=true;n->steady=true;
+            n->hue=n->accent=e->source==DET_ADSB?(ls_detector_air_alarm(e->squawk,e->emergency)?TUI_RED:TUI_BLUE|TUI_BRIGHT):e->category<5?colors[e->category]:TUI_CYAN;
+            n->screen=-1;n->quiet=true;n->steady=true;
             accepted|=DET_BANNER;
         }
         release();
@@ -88,10 +94,18 @@ bool ls_detector_write(const ls_detector_event_t *e,uint64_t boot) {
     if(!directory(LS_DETECTOR_DIR) || !directory(LS_DETECTOR_DIR "/events"))return false;
     time_t utc=time(NULL);char utc_text[32]="null";
     if(utc>=1704067200)snprintf(utc_text,sizeof(utc_text),"%" PRId64,(int64_t)utc);
-    char signal[16]="null";if(e->source)snprintf(signal,sizeof(signal),"%d",e->rssi);
+    char signal[16]="null";if(e->source && e->source!=DET_ADSB)snprintf(signal,sizeof(signal),"%d",e->rssi);
+    char air[200]="";
+    if(e->source==DET_ADSB) {
+        /* Broadcast identifiers only. Position, range and the receiver fix are never logged. */
+        char alt[16]="null";if(e->altitude_ft!=INT32_MIN)snprintf(alt,sizeof(alt),"%d",(int)e->altitude_ft);
+        int bit=ls_detector_air_category_bit(e->emitter_tc,e->emitter_ca);
+        snprintf(air,sizeof(air),"\"icao\":\"%06X\",\"callsign\":\"%s\",\"squawk\":%u,\"emergency_state\":%u,\"altitude_baro_ft\":%s,\"adsb_category\":%s%s%s,",
+            (unsigned)e->icao,e->callsign,(unsigned)e->squawk,(unsigned)e->emergency,alt,bit<0?"null":"\"",bit<0?"":ls_detector_air_category_name((unsigned)bit),bit<0?"":"\"");
+    }
     int n=snprintf(line,sizeof(line),
-        "{\"version\":1,\"revision\":%u,\"boot\":\"%016" PRIx64 "\",\"sequence\":%u,\"uptime_us\":%" PRId64 ",\"utc\":%s,\"source\":\"%s\",\"rule_ids\":[%s],\"entity\":\"%016" PRIx64 "\",\"category\":\"%s\",\"rssi\":%s,\"validated_message\":%s,\"signal_units\":\"dBm\",\"band\":%u,\"rate_guess_hz\":%u,\"hits_per_min\":%u,\"gps_valid\":false,\"test\":%s,\"selected\":%u,\"allowed\":%u,\"accepted\":%u,\"failed\":%u,\"coalesced\":%u,\"dropped\":%u,\"suppressed\":%u}\n",
-        (unsigned)e->revision,boot,(unsigned)e->sequence,e->at,utc_text,e->test?"test":ls_detector_source(e->source),e->rule_ids,e->entity,ls_sweep_category(e->category),signal,e->validated?"true":"false",e->band,e->rate_guess,(unsigned)e->hits_per_min,e->test?"true":"false",e->selected,e->allowed,e->delivered,e->failed,(unsigned)e->coalesced,(unsigned)e->dropped,(unsigned)e->suppressed);
+        "{\"version\":1,\"revision\":%u,\"boot\":\"%016" PRIx64 "\",\"sequence\":%u,\"uptime_us\":%" PRId64 ",\"utc\":%s,\"source\":\"%s\",\"rule_ids\":[%s],\"entity\":\"%016" PRIx64 "\",\"category\":\"%s\",\"rssi\":%s,\"validated_message\":%s,\"signal_units\":\"dBm\",\"band\":%u,\"rate_guess_hz\":%u,\"hits_per_min\":%u,%s\"gps_valid\":false,\"test\":%s,\"selected\":%u,\"allowed\":%u,\"accepted\":%u,\"failed\":%u,\"coalesced\":%u,\"dropped\":%u,\"suppressed\":%u}\n",
+        (unsigned)e->revision,boot,(unsigned)e->sequence,e->at,utc_text,e->test?"test":ls_detector_source(e->source),e->rule_ids,e->entity,ls_sweep_category(e->category),signal,e->validated?"true":"false",e->band,e->rate_guess,(unsigned)e->hits_per_min,air,e->test?"true":"false",e->selected,e->allowed,e->delivered,e->failed,(unsigned)e->coalesced,(unsigned)e->dropped,(unsigned)e->suppressed);
     if(n<0 || (size_t)n>=sizeof(line) || (unsigned)n>LS_DETECTOR_ROTATE)return false;
     if(batch_failed)return false;
     char name[192];path(name,sizeof(name),0);struct stat st;bool rollover=false;

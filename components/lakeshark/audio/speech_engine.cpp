@@ -133,7 +133,18 @@ struct Effect {
         }
         bass += 0.075f * (x - bass);
         x = (x + 0.7f * bass) * 0.8f;
-        if (v == SPEECH_VOICE_GLITCH) {
+        /* The same 3:1 press, then make-up gain. Most of these voices' energy
+           is below what the board speaker plays, so at matched RMS they sound
+           3 dB (DARK) and 7 dB (GLITCH) quieter than FEMALE. Measured through
+           a 350 Hz high pass: FEMALE -21.5, DARK -21.5, GLITCH -23.0 dBFS,
+           GLITCH peaks at -1.8 dBFS. Raising GLITCH further clips. */
+        const bool glitch = v == SPEECH_VOICE_GLITCH;
+        const float knee = glitch ? 0.13f : 0.22f;
+        const float a = std::fabs(x);
+        env = a > env ? a : env * 0.999f;
+        if (env > knee) x *= std::pow(knee / env, 2.0f / 3.0f);
+        x *= glitch ? 4.0f : 2.4f;
+        if (glitch) {
             if (n % 2 == 0) held = std::round(x * 63.0f) / 63.0f;
             x = held * ((n % 448) < 224 ? 1.0f : 0.72f);
         } else {

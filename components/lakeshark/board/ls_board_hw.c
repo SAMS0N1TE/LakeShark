@@ -107,48 +107,103 @@ bool ls_board_hw_ready(void)
 }
 
 /* See the header. One pin, and the level convention is the vendor's:
-   1 is the internal antenna, 0 is external through MMCX1. */
+   1 is the internal antenna, 0 is external through MMCX1. The route is the
+   operator's choice and is never a reason to refuse a transmit: a choice
+   restored at boot, or made by an app, counts the same as one made in RADIOS. */
 #ifdef LS_BOARD_XL_RF_SW_VCTL
 static bool s_ant_external;
-static bool s_ant_confirmed;
+/* MMCX1 also transmits; and a transmit moved to internal is not back yet. */
+static bool s_mmcx_tx, s_tx_moved;
+static uint32_t s_tx_moves, s_tx_returns;
 #endif
 
-static esp_err_t antenna_select(bool external, bool confirmed)
+static esp_err_t antenna_select(bool external)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
+    esp_err_t err;
 #if LS_HAS_LORA_LR20XX_PROBE
-    if (lr20xx_stream_source2_active()) return ESP_ERR_INVALID_STATE;
+    /* An I/Q capture owns the SPI mutex for its whole session and only
+       receives, so waiting for the lock would hang the caller and there is
+       no transmit to protect. The switch is on the expander's I2C bus. */
+    if (lr20xx_stream_source2_active()) {
+        err = ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, !external);
+        if (err == ESP_OK) s_ant_external = external;
+        return err;
+    }
 #endif
     /* The socket lock excludes a transmit start between the idle check and
        the switch write. A busy transmitter keeps its existing route. */
     ANT_LOCK();
-    const esp_err_t err = !ANT_IDLE() ? ESP_ERR_INVALID_STATE :
+    err = !ANT_IDLE() ? ESP_ERR_INVALID_STATE :
         ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, !external);
-    if (err == ESP_OK) {
-        s_ant_external = external;
-        s_ant_confirmed = external && confirmed;
-    }
+    if (err == ESP_OK) { s_ant_external = external; s_tx_moved = false; }
     ANT_UNLOCK();
     return err;
 #else
     (void)external;
-    (void)confirmed;
     return ESP_ERR_NOT_SUPPORTED;
 #endif
 }
 
 esp_err_t ls_board_hw_antenna_external(bool external)
-{ return antenna_select(external, false); }
+{ return antenna_select(external); }
 
 esp_err_t ls_board_hw_antenna_confirm_external(void)
-{ return antenna_select(true, true); }
+{ return antenna_select(true); }
 
-bool ls_board_hw_antenna_tx_allowed(void)
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+
+void ls_board_hw_antenna_set_mmcx_tx(bool tx)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
-    return !s_ant_external || s_ant_confirmed;
+    s_mmcx_tx = tx;
 #else
-    return true;
+    (void)tx;
+#endif
+}
+
+bool ls_board_hw_antenna_mmcx_tx(void)
+{
+#ifdef LS_BOARD_XL_RF_SW_VCTL
+    return s_mmcx_tx;
+#else
+    return false;
+#endif
+}
+
+/* Callers hold the LoRa socket lock, the same one antenna_select takes, so
+   a route change cannot land between these and the transmit. */
+void ls_board_hw_antenna_tx_counts(uint32_t *moved, uint32_t *returned)
+{
+#ifdef LS_BOARD_XL_RF_SW_VCTL
+    if (moved) *moved = s_tx_moves;
+    if (returned) *returned = s_tx_returns;
+#else
+    if (moved) *moved = 0;
+    if (returned) *returned = 0;
+#endif
+}
+
+esp_err_t ls_board_hw_antenna_tx_begin(void)
+{
+#ifdef LS_BOARD_XL_RF_SW_VCTL
+    if (!s_ant_external || s_mmcx_tx || s_tx_moved) return ESP_OK;
+    const esp_err_t err = ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, true);
+    if (err == ESP_OK) { s_tx_moved = true; s_tx_moves++; }
+    else ESP_LOGW(TAG, "antenna: could not move a transmit off MMCX1, not sent");
+    return err;
+#else
+    return ESP_OK;
+#endif
+}
+
+void ls_board_hw_antenna_tx_end(void)
+{
+#ifdef LS_BOARD_XL_RF_SW_VCTL
+    if (s_tx_moved && ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, !s_ant_external) == ESP_OK) {
+        s_tx_moved = false;
+        s_tx_returns++;
+    }
 #endif
 }
 

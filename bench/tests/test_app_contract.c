@@ -126,9 +126,9 @@ LS_CASE(everything_that_keeps_an_observation_carries_a_position)
             continue;
         }
         /* DETECTOR's optional metadata log deliberately excludes location
-           and does not consume GPS, independently of the journal. */
+           and reads GPS only for the aircraft range rule, in memory. */
         if (!strcmp(r->id,"detector")) {
-            LS_CHECK(r->doc->gps == LS_APP_GPS_UNUSED);
+            LS_CHECK(r->doc->gps == LS_APP_GPS_NAVIGATES); /* the off-by-default aircraft range rule */
             LS_CHECK(strstr(r->doc->record_note,"No raw MAC or location") != NULL);
             continue;
         }

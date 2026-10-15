@@ -54,4 +54,50 @@ touch_back = render("touch-back", "-x", "%d:%d,%d:%d" % (cell_of(home, "CATCH") 
 assert "Waiting for real bursts" not in touch_back
 radio = render("radio", "-k", "6r")
 assert "RTL-SDR" in radio
-print("PASS CATCH tab portrait, landscape, track context, touch, tabs, RADIO and layered OPTIONS")
+
+# Channel selection: WATCH key, slice strip, CHANNELS list, presets, touch.
+ADD_ONLY = "@down,@down,@right,@enter,@enter"          # OPTIONS > Channels > Add preset > 433.92
+ADD_433 = ADD_ONLY + ",@esc,@esc"
+for wide in (False, True):
+    mode = ["-l"] if wide else []
+    sfx = "-wide" if wide else ""
+    idle = render("watch-all" + sfx, *mode, "-k", "6")
+    assert "WATCH ALL" in idle and "432.72" in idle and "435.12" in idle and "H watch" in idle
+    opts = render("watch-options" + sfx, *mode, "-k", "6o")
+    assert "Watch" in opts and "Channels" in opts and "Only 433.92" in opts and "0 of 8" in opts
+    chan = render("watch-channels" + sfx, *mode, "-k", "6o", "-x", "@down,@down,@right")
+    assert "CATCH > CHANNELS" in chan and "Add preset" in chan and "Add frequency" in chan
+    assert "Edit channel" in chan and "No channels yet" in chan
+    picker = render("watch-preset" + sfx, *mode, "-k", "6o", "-x", "@down,@down,@right,@enter")
+    # Only presets inside the 433.92 slice are offered.
+    assert "ADD PRESET" in picker and "433.92 MHz" in picker and "315.00" not in picker and "915.00" not in picker
+    added = render("watch-added" + sfx, *mode, "-k", "6o", "-x", "@down,@down,@right,@enter,@enter")
+    assert "Edit channel" in added and "No channels yet" not in added
+    on = render("watch-chosen" + sfx, *mode, "-k", "6o", "-x", ADD_433)
+    assert "WATCH CHOSEN 1  ignored 0" in on and "[" in on and "]" in on and "CHOSEN 1" in on
+    assert "Waiting for bursts in chosen channels" in on
+    only = render("watch-only" + sfx, *mode, "-k", "6o", "-x", "@down,@down,@down,@enter,@esc")
+    assert "WATCH CHOSEN 1" in only
+    key = render("watch-key" + sfx, *mode, "-k", "6h")
+    assert "CHOSEN is empty: watching ALL" in key        # no channel yet: visible note, falls back to ALL
+    key2 = render("watch-key2" + sfx, *mode, "-k", "6hh")
+    assert "WATCH ALL" in key2
+    pick = render("watch-edit-pick" + sfx, *mode, "-k", "6o", "-x", ADD_ONLY + ",@down,@down,@enter")
+    assert "EDIT CHANNEL" in pick and "433.920 MHz" in pick and "+/-100 kHz" in pick
+    keypad = render("watch-width-pad" + sfx, *mode, "-k", "6o", "-x", ADD_ONLY + ",@down,@down,@enter,@enter")
+    assert "Width, 0 removes" in keypad and "200" in keypad
+    narrow = render("watch-narrow" + sfx, *mode, "-k", "6o", "-x", ADD_ONLY + ",@down,@down,@enter,@enter,+50,@enter,@enter")
+    assert "EDIT CHANNEL" in narrow and "+/-25 kHz" in narrow
+    gone = render("watch-remove" + sfx, *mode, "-k", "6o", "-x", ADD_ONLY + ",@down,@down,@enter,@enter,+0,@enter")
+    assert "CATCH > CHANNELS" in gone and "No channels yet" in gone
+
+home = render("watch-home")
+col, row = cell_of(home, "CATCH")
+page = render("watch-page", "-x", "%d:%d" % (col, row))
+wcol, wrow = cell_of(page, "WATCH", last=False)               # the bar key
+tapped = render("watch-tap", "-x", "%d:%d,%d:%d" % (col, row, wcol, wrow))
+assert "CHOSEN is empty: watching ALL" in tapped
+scol, srow = cell_of(page, "WATCH ALL")                        # the slice strip: opens CHANNELS
+strip = render("watch-strip", "-x", "%d:%d,%d:%d" % (col, row, scol, srow + 2))
+assert "CHANNELS OPTIONS" in strip and "Add preset" in strip
+print("PASS CATCH tab portrait, landscape, track context, touch, tabs, RADIO, layered OPTIONS and channel selection")

@@ -1523,6 +1523,8 @@ static void action(char c)
         if(host_files)host_files();
     } else if(c=='x') {
         ls_catch_toggle();
+    } else if(c=='h') {
+        ls_catch_watch_cycle();
     } else if(c=='E') {
         ls_catch_save_selected();
     } else if(c=='s') {
@@ -1557,7 +1559,7 @@ static void go(sg_page_t p)
 
 static void enter(void)
 {
-    button_focus=-1;button_slot=0;rec_watch_start();ls_field_start();ls_field_watch(true);
+    button_focus=-1;button_slot=0;rec_watch_start();ls_field_start();ls_field_watch(true);ls_catch_enter();
     /* The capture source is the truth for READ's RADIO button. */
     ls_rsel_track(LS_RSEL_SUBGHZ_READ,source_radio);
     feedback[0]=0;page=PG_READ;
@@ -1932,10 +1934,13 @@ static void draw_raw(tui_surface *sf,tui_rect a)
 static void draw_catch(tui_surface *sf,tui_rect a)
 {
     const bool running=ls_catch_running();
+    bool watch_on=false;
+    const char *watch_label=ls_catch_watch_label(&watch_on);
     ls_btn_t btn[]={
         {"CATCH",running?"STOP":"START",'x',running,false},
+        {"WATCH",watch_label,'h',watch_on,false},
         {"RAW","SAVE",'E',false,false}};
-    page_bar(sf,&a,btn,2);
+    page_bar(sf,&a,btn,3);
     ls_catch_body_draw(sf,a);
 }
 
@@ -2121,7 +2126,7 @@ static void draw(tui_surface *sf,tui_rect a)
         "P play  +/- power  ESC saved",
         "ENTER arm/stop  R radio  1-6 pages",
         "L listen  A apply  O options  1-6 pages",
-        "X start/stop  E save  1-6 pages"};
+        "X start/stop  H watch  E save  O options  1-6 pages"};
     snprintf(hint_text,sizeof(hint_text),"%s",HINT[page]);
     /* The pages, along the bottom where the thumb is - FM's tabs. */
     {

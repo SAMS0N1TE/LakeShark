@@ -36,11 +36,11 @@ LakeShark pushes the LR2021 beyond conventional LoRa, using its raw signal path 
 
 ---
 
-**NEW IN v2.14**
+**NEW IN v2.15**
 
-DETECTOR alerts · Wi-Fi war driving · Map sharing over MeshCore · LR2021 I/Q replay
+DETECTOR aircraft alerts · LTE cell monitor · One-tap antenna · Steadier screens
 
-[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.14.0) &nbsp;•&nbsp;
+[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.15.0) &nbsp;•&nbsp;
 [All releases](https://github.com/SAMS0N1TE/LakeShark/releases)
 
 </div>

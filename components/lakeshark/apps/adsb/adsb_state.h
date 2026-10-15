@@ -122,6 +122,16 @@ int                    adsb_state_trail(int slot, adsb_trail_pt_t *out, int max)
    way it is read out (7700). */
 void                   adsb_state_set_squawk(adsb_aircraft_t *a, int code);
 int                    adsb_state_squawk(int slot);
+/* The same, and when it was last heard agreeing (esp_timer, 0 if never). */
+int                    adsb_state_squawk_at(int slot, int64_t *ts_us);
+
+/* The emergency state of an aircraft-status message (type code 28), accepted
+   once two reports agree: 0 none, 1 general, 2 medical, 3 minimum fuel,
+   4 no communications, 5 unlawful interference, 6 downed aircraft. The
+   timestamp is when it was last heard agreeing, so a consumer can ignore a
+   state the aircraft stopped sending. */
+void                   adsb_state_set_emergency(adsb_aircraft_t *a, int state);
+int                    adsb_state_emergency(int slot, int64_t *ts_us);
 
 void                   adsb_select_set_icao(uint32_t icao);
 uint32_t               adsb_select_get_icao(void);

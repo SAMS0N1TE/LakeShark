@@ -418,7 +418,8 @@ static float bench_heading(const bench_t *b, double yaw)
    scr_compass runs it. */
 static float bench_frame(bench_t *b, ls_compass_steady_t *s, double t, double yaw, double rate)
 {
-    if (t >= b->next - 1e-6) {
+    const bool fresh = t >= b->next - 1e-6;
+    if (fresh) {
         b->next += 0.1;
         ls_imu_sample_t m = pose_in(b->field, yaw, 0, 0, b->offset);
         const float n = b->noise;
@@ -438,7 +439,10 @@ static float bench_frame(bench_t *b, ls_compass_steady_t *s, double t, double ya
         b->sample.gx = b->g[0]; b->sample.gy = b->g[1]; b->sample.gz = b->g[2];
     }
     if (b->loop_only) return ls_compass_steady_step(s, b->heading, 0, 0, ls_compass_yaw_rate(b->g, b->a), 0.04f);
-    return ls_compass_steady_sample(s, b->heading, 0, 0, &b->sample, 0.04f);
+    /* scr_compass steps the fusion once per fresh sample, by the time since
+       the last one, and shows s->heading until the next. */
+    if (fresh) return ls_compass_steady_sample(s, b->heading, 0, 0, &b->sample, 0.1f);
+    return s->started ? s->heading : b->heading;
 }
 
 /* A turn of `deg` over `secs` from t0, as a hand makes one: from rest to
@@ -456,38 +460,57 @@ static double turn_at(double t, double t0, double secs, double deg, double *rate
 /* On USB the charge current puts a fixed offset on the magnetometer. Half
    the horizontal field's worth bends the magnetic heading by up to 30
    degrees, a different way at every heading, so through a flat turn it
-   swings tens of degrees away from the turn the gyro follows truly. Out 90
-   and back at 60 deg/s, from 24 headings, the first turn 0.6 s after the
-   dial opens (the gyro's 4.9 deg/s not yet learnt), at both pulls: no frame
-   moves the dial more than 5 degrees beyond what the board turned. */
-LS_CASE(a_flat_turn_through_a_bent_field_never_jumps)
+   swings tens of degrees away from the turn the gyro follows truly.
+
+   Out 90 and back at 60 deg/s from 24 headings, the first turn 0.6 s after
+   the dial opens, at both pulls. This once asked the dial to stay within 5
+   degrees of the board. COMPASS: still means still (c03025e9) took that
+   promise away on purpose: the gyro is used only after 2 s of observed rest
+   and is revoked when it parts from the magnetometer by more than 6 degrees
+   over 2 s (COMPASS_ACCURACY.md), and in a field this bent it does, so the
+   dial follows the magnetometer. What the fusion still owes is that it adds
+   no motion of its own: the dial never turns the wrong way, never steps
+   farther in one update than the bent magnetometer itself stepped in that
+   run, and ends each turn on the magnetometer. */
+LS_CASE(a_flat_turn_through_a_bent_field_follows_the_magnetometer)
 {
     const float usb[3] = { 7.75f, 0, 0 };
-    float worst = 0, worst_tau = 0;
-    int worst_from = 0;
-    double worst_t = 0;
+    float over = -90, back = 0, settle = 0;
+    int over_from = 0, over_k = 0;
     for (int k = 0; k < 2; k++)
         for (int from = 0; from < 360; from += 15) {
             bench_t b = bench(DIP67, usb);
             ls_compass_steady_t s;
             memset(&s, 0, sizeof(s));
             s.mag_tau_s = k ? 8.0f : LS_COMPASS_FUSE_TAU_S;
-            double was = NAN;
-            float shown = NAN;
+            float shown = NAN, mag = NAN, dial_step = 0, mag_step = 0;
             for (int i = 0; i < 390; i++) {                   /* 15.6 s */
                 const double t = i * 0.04;
                 double r1, r2;
                 const double yaw = from + turn_at(t, 0.6, 1.5, 90, &r1) + turn_at(t, 8.1, 1.5, -90, &r2);
+                const double due = b.next;
                 const float h = bench_frame(&b, &s, t, yaw, r1 + r2);
-                if (isfinite(shown)) {
-                    const float excess = (float)fabs(wrap180(h - shown) - wrap180(yaw - was));
-                    if (excess > worst) { worst = excess; worst_tau = s.mag_tau_s; worst_from = from; worst_t = t; }
+                if ((t > 5.9 && t < 6.0) || t > 15.5) {       /* turns done for 3.8 s */
+                    const float off = (float)fabs(wrap180(h - b.heading));
+                    if (off > settle) settle = off;
                 }
-                shown = h; was = yaw;
+                if (b.next == due) continue;                  /* the dial moves with each fresh sample */
+                if (isfinite(shown)) {
+                    const float d = (float)wrap180(h - shown);
+                    const float way = r1 + r2 > 0 ? 1.0f : r1 + r2 < 0 ? -1.0f : 0.0f;
+                    if (fabsf(d) > dial_step) dial_step = fabsf(d);
+                    const float dm = fabsf((float)wrap180(b.heading - mag));
+                    if (dm > mag_step) mag_step = dm;
+                    if (way != 0 && -way * d > back) back = -way * d;
+                }
+                shown = h; mag = b.heading;
             }
+            if (dial_step - mag_step > over) { over = dial_step - mag_step; over_from = from; over_k = k; }
         }
-    LS_CHECK_MSG(worst <= 5.0f, "the dial moved %.1f deg more than the board in one frame (from %d, pull %.0f s, at %.2f s)",
-                 worst, worst_from, worst_tau, worst_t);
+    LS_CHECK_MSG(over <= 1.0f, "the dial stepped %.1f deg past the magnetometer's largest step (from %d, pull %d)",
+                 over, over_from, over_k);
+    LS_CHECK_MSG(back <= 1.0f, "the dial turned %.1f deg against the turn", back);
+    LS_CHECK_MSG(settle <= 3.0f, "the dial rested %.1f deg from the magnetometer", settle);
 }
 
 /* Lying still on USB with the MAG lamp lit (the magnetometer pulls over

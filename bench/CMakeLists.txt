@@ -830,6 +830,7 @@ add_executable(lssim
     tools/lssim_detector.c
     ${FW}/components/apps/tui/ls_detector.c
     ${FW}/components/apps/tui/ls_detector_sinks.c
+    ${FW}/components/apps/tui/ls_detector_air.c
     ${FW}/components/apps/tui/ls_detector_ui.c
     tools/lssim_wireless.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
@@ -1243,6 +1244,15 @@ ls_add_test(test_adsb_df18
     ${APP}/adsb/adsb_decode.c
     ${APP}/adsb/adsb_state.c)
 target_include_directories(test_adsb_df18 PRIVATE
+    ${APP}/adsb
+    ${FW}/components/lakeshark/audio
+    ${FW}/bench/shims)
+
+ls_add_test(test_adsb_status
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_adsb_status PRIVATE
     ${APP}/adsb
     ${FW}/components/lakeshark/audio
     ${FW}/bench/shims)
@@ -1666,6 +1676,8 @@ ls_add_test(test_ls_search_core ${FW}/components/lakeshark/dsp/ls_search_core.c 
 target_include_directories(test_ls_search_core PRIVATE ${FW}/components/lakeshark/dsp)
 ls_add_test(test_cell_core ${APP}/cell/cell_core.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
 target_include_directories(test_cell_core PRIVATE ${APP}/cell ${FW}/components/lakeshark/dsp)
+ls_add_test(test_cell_scan ${APP}/cell/cell_core.c)
+target_include_directories(test_cell_scan PRIVATE ${APP}/cell)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_cell_review COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_review.py")
     add_test(NAME test_cell_worker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_worker.py")
@@ -1682,6 +1694,10 @@ ls_add_test(test_lte_resample ${APP}/cell/lte_resample.c)
 target_include_directories(test_lte_resample PRIVATE ${APP}/cell)
 ls_add_test(test_lte_mib ${APP}/cell/lte_mib.c)
 target_include_directories(test_lte_mib PRIVATE ${APP}/cell)
+ls_add_test(test_lte_cells)
+target_include_directories(test_lte_cells PRIVATE ${APP}/cell)
+ls_add_test(test_lte_crs)
+target_include_directories(test_lte_crs PRIVATE ${APP}/cell)
 ls_add_test(test_lte_sync_full ${APP}/cell/lte_sync.c)
 target_include_directories(test_lte_sync_full PRIVATE ${APP}/cell)
 target_compile_definitions(test_lte_sync_full PRIVATE LTE_SYNC_SEARCH_SAMPLES=57600)
@@ -1753,6 +1769,9 @@ ls_add_test(test_radio_health_report
 # stall that cannot come, and the root-port cycle keeps the order IDF 5.4.3
 # needs if it is not to abort.
 ls_add_test(test_radio_control_fault
+    ${FW}/components/lakeshark/radio/radio_endpoint.c
+    ${FW}/components/lakeshark/radio/radio_health.c)
+ls_add_test(test_radio_ppm
     ${FW}/components/lakeshark/radio/radio_endpoint.c
     ${FW}/components/lakeshark/radio/radio_health.c)
 ls_add_test(test_usb_port_cycle
@@ -2532,7 +2551,7 @@ ls_add_test(test_rec_catch_core ${APP}/rec/rec_catch_core.c ${APP}/subghz/subghz
     ${FW}/components/lakeshark/radio/ls_sub_fsk.c)
 add_test(NAME test_rec_catch_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rec_catch_ui.py $<TARGET_FILE:lssim>)
-ls_add_test(test_rec_catch_runtime ${APP}/rec/rec_catch_core.c
+ls_add_test(test_rec_catch_runtime ${APP}/rec/rec_catch_core.c ${APP}/rec/rec_catch_chan.c
     ${APP}/subghz/subghz_file.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c)
 target_include_directories(test_rec_catch_runtime PRIVATE ${FW}/components/lakeshark)
@@ -2544,6 +2563,7 @@ foreach(_target IN LISTS _catch_targets)
     if("${_sources}" MATCHES "scr_rec\\.c")
         target_sources(${_target} PRIVATE
             ${FW}/components/apps/tui/ls_catch_ui.c
+            ${FW}/components/lakeshark/apps/rec/rec_catch_chan.c
             ${FW}/bench/shims/rec_catch_unavailable.c)
     endif()
 endforeach()
@@ -2553,6 +2573,7 @@ ls_add_test(test_uat ${UAT_CORE} ${APP}/adsb/adsb_state.c)
 add_executable(uat_replay uat_replay.c ${UAT_CORE} ${APP}/adsb/adsb_state.c)
 target_link_libraries(uat_replay m)
 
+ls_add_test(test_rec_catch_chan ${APP}/rec/rec_catch_chan.c ${APP}/rec/rec_catch_core.c)
 ls_add_test(test_rec_catch_budget ${APP}/rec/rec_catch_core.c)
 
 ls_add_test(test_rec_catch_fsk ${APP}/rec/rec_catch_core.c)
@@ -2661,11 +2682,13 @@ ls_add_test(test_detector
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_detector.c
     ${FW}/components/apps/tui/ls_detector_sinks.c
+    ${FW}/components/apps/tui/ls_detector_air.c
+    ${APP}/adsb/adsb_state.c
     ${FW}/components/apps/tui/ls_detector_ui.c
     ${FW}/components/apps/tui/ls_notify.c
     ${FW}/components/apps/tui/ls_sweep.c
     ${FW}/components/apps/tui/ls_rid.c)
-target_include_directories(test_detector PRIVATE ${LS_TUI_APP_INCLUDES})
+target_include_directories(test_detector PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 target_compile_definitions(test_detector PRIVATE
     LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-test"
     LS_DETECTOR_ROTATE=4096
@@ -2683,13 +2706,30 @@ endif()
 
 ls_add_test(test_detector_runtime
     ${FW}/components/apps/tui/ls_detector.c
+    ${FW}/components/apps/tui/ls_detector_air.c
+    ${APP}/adsb/adsb_state.c
     ${FW}/components/apps/tui/ls_sweep.c
     ${FW}/components/apps/tui/ls_rid.c
     ${FW}/main/ls_sweep_runtime.c)
-target_include_directories(test_detector_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
+target_include_directories(test_detector_runtime PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 target_compile_definitions(test_detector_runtime PRIVATE
     LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-runtime"
     LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-sweep-runtime")
+
+# DETECTOR aircraft rules: the real decoder fills the shared table, no receiver.
+ls_add_test(test_detector_air
+    ${FW}/components/apps/tui/ls_detector.c
+    ${FW}/components/apps/tui/ls_detector_air.c
+    ${FW}/components/apps/tui/ls_sweep.c
+    ${FW}/components/apps/tui/ls_rid.c
+    ${APP}/adsb/mode-s.c
+    ${APP}/adsb/adsb_decode.c
+    ${APP}/adsb/adsb_state.c)
+target_include_directories(test_detector_air PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${APP}/adsb ${FW}/components/lakeshark/audio)
+target_compile_definitions(test_detector_air PRIVATE
+    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-air"
+    LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-air-sweep")
 
 ls_add_test(test_ble_range ${FW}/main/ble_link_legacy.c)
 target_include_directories(test_ble_range PRIVATE ${FW}/main)

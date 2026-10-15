@@ -67,8 +67,7 @@ static void emit(const cell_status_t *s,char kind,bool force)
     cell_report_record_t record={.pci=-1,.lat_e5=INT32_MIN,.lon_e5=INT32_MIN,
         .band=s->band,.kind=kind,.changed=s->compared?s->changed:0};
     if(kind=='L' && s->lte_count) {
-        unsigned i=s->lte_count-1;
-        record.pci=s->cell[i].pci;record.frequency_khz=s->cell[i].hz/1000;record.flags|=32;
+        record.pci=s->last.pci;record.frequency_khz=s->last.hz/1000;record.flags|=32;
     }
     portENTER_CRITICAL(&lock);
     bool novel_lte=kind=='L' && (record.frequency_khz!=last_lte_hz || record.pci!=last_lte_pci);

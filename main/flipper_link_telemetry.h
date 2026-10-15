@@ -28,7 +28,16 @@ typedef struct {
     uint32_t free_dma;
     int      sdr_stall_s;
     const char *rhs_state;
+    /* The receiver the active mode is using, as the RADIO picker names it
+       ("RTL-SDR", "HackRF", "LR2021", "SX1262"), and why it cannot be used
+       now when it cannot. NULL name: the board does not know, no field. */
+    const char *rx_name;
+    const char *rx_why;
 } ls_telemetry_common_t;
+
+/* Longest receiver name and reason sent, in characters. */
+#define LS_TEL_RX_NAME_MAX 18
+#define LS_TEL_RX_WHY_MAX  47
 
 int ls_telemetry_build_fm(char *buf, size_t len,
                           const lakeshark_fm_tel_t *t,

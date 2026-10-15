@@ -27,11 +27,15 @@ bool ls_mesh_radio_wanted(void) { return lease; }
 bool ls_mesh_radio_bg(void) { return background_owner; }
 bool ls_field_owned(void) { return field_owner; }
 bool ls_board_hw_antenna_is_external(void) { return !antenna_allowed; }
-bool ls_board_hw_antenna_tx_allowed(void)
+bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+static bool antenna_moved;
+esp_err_t ls_board_hw_antenna_tx_begin(void)
 {
     LS_CHECK(ls_lora_hw_locked_by_me());antenna_checks++;
-    return antenna_allowed;
+    if (antenna_allowed) antenna_moved = true;
+    return antenna_allowed ? ESP_OK : ESP_FAIL;
 }
+void ls_board_hw_antenna_tx_end(void) { LS_CHECK(ls_lora_hw_locked_by_me()); antenna_moved = false; }
 bool ls_mesh_radio_held(void) { return lease && (!mesh_listening || mesh_paused) && ls_lora_send_done(); }
 bool ls_mesh_radio_hold(bool on)
 {
@@ -226,7 +230,7 @@ static void runtime_fresh(void)
 static void runtime_cleanup(void)
 { unlink(replay_path);unlink("test-lriq-runtime.json"); }
 
-LS_CASE(lriq_antenna_gate_precedes_radio_setup_and_rec_reports_refusal)
+LS_CASE(lriq_antenna_route_failure_precedes_radio_setup_and_rec_reports_refusal)
 {
     runtime_fresh();antenna_allowed=false;
     const uint8_t wave[]={20,0};int frames=fk.nframes;
@@ -234,10 +238,11 @@ LS_CASE(lriq_antenna_gate_precedes_radio_setup_and_rec_reports_refusal)
     LS_EQ_UINT(antenna_checks,1);LS_EQ_INT(fk.nframes,frames);
     LS_CHECK(!ls_lora_hw_locked_by_me());
     char result[112];iq_replay(replay_path,0,result,sizeof(result));
-    LS_CHECK(!strcmp(result,"Replay: MMCX1 antenna unconfirmed; use ant ext confirm"));
+    LS_CHECK(!strcmp(result,"Replay: antenna switch to internal failed"));
     LS_EQ_UINT(antenna_checks,2);LS_EQ_UINT(fk.tx_starts,0);LS_CHECK(!lease);
     antenna_allowed=true;iq_replay(replay_path,0,result,sizeof(result));
     LS_CHECK(strstr(result,"Sent LR2021 I/Q once"));LS_EQ_UINT(fk.tx_starts,1);
+    LS_CHECK(!antenna_moved);
     LS_CHECK(!lease);LS_CHECK(!ls_lora_hw_locked_by_me());runtime_cleanup();
 }
 
@@ -301,7 +306,7 @@ LS_CASE(lriq_mesh_auto_listen_rx_replay_restores_rx_and_keeps_gates)
        even with a valid lease and a running, TX-disarmed mesh receiver. */
     antenna_allowed=false;
     iq_replay(replay_path,-9,result,sizeof(result));
-    LS_CHECK(strstr(result,"MMCX1 antenna unconfirmed"));
+    LS_CHECK(strstr(result,"antenna switch to internal failed"));
     LS_EQ_UINT(fk.tx_starts,0);LS_CHECK(ls_lora_is_receiving());
     LS_CHECK(!lease && !mesh_paused);
     antenna_allowed=true;
@@ -387,7 +392,7 @@ LS_CASE(lriq_diagnostics_info_and_shared_tx_gates)
     LS_CHECK(strstr(short_result,"OOK pulses="));LS_CHECK(strstr(short_result,"widths="));LS_CHECK(strstr(short_result,"bits="));
     s_iq_mode=2;s_iq_hz=433920000;s_iq_dbm=-9;
     antenna_allowed=false;iq_diagnostic(result,sizeof(result));
-    LS_CHECK(strstr(result,"antenna unconfirmed"));LS_EQ_UINT(fk.tx_starts,0);
+    LS_CHECK(strstr(result,"antenna switch to internal failed"));LS_EQ_UINT(fk.tx_starts,0);
     antenna_allowed=true;stream_active=true;iq_diagnostic(result,sizeof(result));
     LS_CHECK(strstr(result,"radio busy"));LS_EQ_UINT(fk.tx_starts,0);
     stream_active=false;s_iq_hz=406050000;iq_diagnostic(result,sizeof(result));

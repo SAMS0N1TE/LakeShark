@@ -1,5 +1,20 @@
 # LakeShark release notes
 
+## 2.15.0
+
+- DETECTOR watches aircraft: rules over the ADS-B table, with emergency squawks and emergency status on by default. The AIRCRAFT view lists what matched.
+- ADS-B decodes emergency status and marks squawk and emergency in the aircraft table.
+- DETECTOR notices use the standard banner, and long notices scroll instead of being cut off.
+- CELL (experimental): LTE band table, a cell table with power and MIB, and dongle clock correction from the cells it finds.
+- CATCH watches only the channels you choose.
+- ANTENNA: one tap selects MMCX1. MMCX1 is receive-only by default; transmit stays on the internal antenna.
+- MAP: drag to pan, and a followed target stays on screen. Saved mark names show in landscape with the touch keys up.
+- SPEECH: more even voice loudness on the board speaker.
+- Flipper link: the head is told which receiver each mode uses, and can read MeshCore channels, direct messages and DETECTOR alerts, send messages and arm transmit.
+- MeshCore: malformed encrypted packets are rejected instead of overrunning a buffer (upstream fix).
+- The title bar no longer shows black boxes at its ends while switching screens.
+- A UI that stops drawing is reported, and the board restarts with a core dump instead of staying frozen.
+
 ## 2.14.0
 
 - DETECTOR: a new app that watches BLE Remote ID and SWEEP in the background and raises a notice when a rule matches. Built-in rules are used when the card has no rules file. The optional log on the card is off by default and stores no MAC addresses or locations.

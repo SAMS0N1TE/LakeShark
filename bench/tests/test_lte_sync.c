@@ -44,6 +44,16 @@ LS_CASE(independent_recorded_cell_requires_three_consistent_observations)
     LS_EQ_INT(r.pci,301);LS_CHECK(r.hits>=3 && r.pairs>=2);
     LS_CHECK(lte_sync_frame_start(ws)>7000 && lte_sync_frame_start(ws)<9000);
     LS_CHECK(r.cfo_hz>12000 && r.cfo_hz<16500);
+    /* The several-cell search gives the same cell, and the same timing. */
+    lte_sync_set_t set;
+    int frame=lte_sync_frame_start(ws);
+    LS_CHECK(lte_sync_find_cells(iq,28800,ws,&set,NULL,NULL,0,40000));
+    LS_CHECK(set.count>=1);LS_EQ_INT(set.cell[0].r.pci,301);LS_EQ_INT(set.cell[0].frame_start,frame);
+    LS_CHECK(set.cell[0].r.cfo_hz>12000 && set.cell[0].r.cfo_hz<16500);
+    /* A window around the known offset is enough; one that misses it is not. */
+    LS_CHECK(lte_sync_find_cells(iq,28800,ws,&set,NULL,NULL,15000,5000));
+    LS_EQ_INT(set.cell[0].r.pci,301);
+    LS_CHECK(!lte_sync_find_cells(iq,28800,ws,&set,NULL,NULL,-30000,5000));LS_EQ_INT(set.count,0);
     LS_CHECK(!lte_sync_find(iq,28800,ws,&r,stop_at,&calls));LS_EQ_INT(r.pci,-1);
     LS_EQ_INT(lte_sync_frame_start(ws),-1);
     /* PSS alone and two surviving SSS observations must not publish a PCI. */

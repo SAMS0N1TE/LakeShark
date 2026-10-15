@@ -56,9 +56,11 @@ orientation or nearby obstructions can still change RF levels at one location.
 Use the same RTL receiver and physical antenna for baseline and monitoring;
 changing the dongle or antenna requires learning a new baseline.
 
-Supported presets are 869-894 MHz (B5 / GSM850), 925-960 MHz (B8 / E-GSM900),
-729-746 MHz (B12), 746-756 MHz (B13) and 791-821 MHz (B20). These are downlink
-frequency windows, not assertions about which radio technology is present.
+Supported presets are the downlink windows of B5 (869-894 MHz, also GSM850),
+B8 (925-960, also E-GSM900), B12, B13, B14, B17, B20, B26 and B71. These are
+downlink frequency windows, not assertions about which radio technology is
+present. B2, B4, B25 and B66 are in the band table (for EARFCN labels) but
+above the RTL-SDR tuner, so the picker does not offer them.
 
 Published values: `cell.busy`, `cell.changed_bins`, `cell.frequency` (MHz).
 Actions: `cell.start` and `cell.stop`, both requiring tuning capability.
@@ -165,11 +167,58 @@ not a globally unique network/cell identity. P4 does not decode PLMN/TAC/ECI.
 TDD, extended CP, GSM and 5G NR are not supported by this search.
 
 The worker uses 30 ms captures, rejects incomplete or reported-loss captures,
-and releases the USB stream between frequencies. A negative search takes
-about 1.4 seconds per tune on the P4; the 237-frequency B5 pass takes roughly
-seven minutes including tuning and transfer overhead. Only the latest eight
-cells are shown. Detections are journaled at `/sdcard/cell/lte.jsonl`, rotating
-at 1 MB to `lte.previous.jsonl`.
+and stops the USB stream between frequencies. Detections are journaled at
+`/sdcard/cell/lte.jsonl`, rotating at 1 MB to `lte.previous.jsonl`.
+
+### Band table, occupancy gating (2026-10-15)
+
+The band table is the TS 36.101 FDD downlink table (E-UTRA band, N_offs-DL),
+so every cell row shows its EARFCN (`F_DL = F_low + 0.1 MHz * (N - N_offs)`),
+and the band picker shows each band's EARFCN range.
+
+LTE is gated by default (OPTIONS > LTE SCAN: GATED). The search first sweeps
+the band with the 25 kHz energy pass at 1.92 MS/s (about 37 tunes for B5
+instead of 447 at 256 kS/s). Bins held 5 dB above the pass's fifth-percentile
+floor, at least 0.8 MHz wide, become plateaus. A plateau close to 1.08, 2.7,
+4.5, 9, 13.5 or 18 MHz yields its midpoint on the 100 kHz raster (and the
+neighbour when the midpoint is near a raster boundary); other widths, such as
+merged carriers, yield the points half a standard width from each edge. Only
+those raster points get the PSS/SSS search. OPTIONS > LTE SCAN: FULL tries
+every raster point as before. A cell weaker than about 5 dB over the floor in
+a 25 kHz bin can be missed by the gate and found by FULL; a band with no
+plateau reports that and suggests FULL. The occupancy trace, the plateaus,
+the points searched and the cells found are drawn on the band chart (braille
+dots, with `=` occupied, `+` searched, `*` cell).
+
+### Dongle clock from the cells
+
+An eNodeB carrier is within about 0.05 ppm of nominal, so the carrier offset
+measured on a synchronised cell is the dongle's own crystal. Each cell gives
+`ppm = applied - 1e6 * cfo / carrier` (positive: the dongle runs fast), one
+observation per carrier and PCI. The median over them is shown as
+`DONGLE +9.6 ppm / 3 cells / +-0.4`. Until a cell is heard the PSS search
+covers +-40 kHz (17 templates per root); afterwards it covers +-5 kHz around
+the expected offset (3 templates). When two observations agree within
+2.5 ppm the tuner correction is set to the rounded median through the radio
+endpoint (`rtlsdr_set_freq_correction`), for every app, until the dongle is
+replugged. The first capture after a correction searches the whole range and
+must land within 3 ppm of the estimate; otherwise the correction is taken
+back. OPTIONS > DONGLE PPM clears it. The sign of the correction on a real
+dongle is therefore checked by the receiver itself, not assumed.
+
+### Cells, power and MIB on the RTL path
+
+Several cells on one carrier (sectors with different N_ID(2) or timing) are
+all reported, and up to 32 rows are kept (the screen lists the strongest that
+fit; tap the list, press N or use OPTIONS > ALL CELLS for every row). Each row
+has an RSRP-like level: the mean power of the port 0 reference signals in the
+central six resource blocks, dB relative to a full-scale complex tone per
+resource element, at the fixed 29.7 dB gain. It compares cells heard with one
+antenna; it is not dBm. When the PSS/SSS search finds cells, the search
+captures 80 ms once per carrier and runs the existing PBCH decoder on each
+(MIB: bandwidth, antenna ports, SFN) with no HackRF restart. OPTIONS > LTE MIB
+turns this off. The journal gains `earfcn`, `rsrp_dbfs` and `ppm` on
+`LTE_SYNC` lines, and `LTE_MIB` lines.
 
 A public recorded signal was independently decoded by LTE-Cell-Scanner's C++
 CellSearch as PCI 301, 100 resource blocks, normal CP, two antenna ports. The

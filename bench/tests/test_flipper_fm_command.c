@@ -34,6 +34,9 @@ static int s_freq_sets;
 static int s_p25_mode;
 static int s_p25_sets;
 static int s_p25_cycles;
+static ls_telemetry_common_t s_seen;
+static int s_fm_sub_seen;
+static int s_fm_tel_submode;
 
 static void trace(char c)
 {
@@ -267,7 +270,7 @@ void lakeshark_fm_set_squelch(int v) { (void)v; }
 int lakeshark_fm_squelch_get(void) { return 0; }
 void lakeshark_fm_scan_restart(void) {}
 void lakeshark_fm_tune_to_peak(void) {}
-void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out) { memset(out, 0, sizeof(*out)); }
+void lakeshark_fm_telemetry(lakeshark_fm_tel_t *out) { memset(out, 0, sizeof(*out)); out->submode = s_fm_tel_submode; }
 
 void lakeshark_p25_tune(int delta_hz) { (void)delta_hz; }
 void lakeshark_p25_set_freq(uint32_t hz) { (void)hz; }
@@ -380,17 +383,17 @@ ble_link_state_t ble_link_state(void) { return BLE_LINK_OFF; }
 
 int ls_telemetry_build_fm(char *buf, size_t len, const lakeshark_fm_tel_t *t,
                           const ls_telemetry_common_t *common)
-{ (void)buf; (void)len; (void)t; (void)common; return 0; }
+{ (void)buf; (void)len; (void)t; s_seen = *common; s_fm_sub_seen = t->submode; return 0; }
 int ls_telemetry_build_adsb(char *buf, size_t len, const lakeshark_adsb_tel_t *t,
                             const ls_telemetry_common_t *common)
-{ (void)buf; (void)len; (void)t; (void)common; return 0; }
+{ (void)buf; (void)len; (void)t; s_seen = *common; return 0; }
 int ls_telemetry_build_p25(char *buf, size_t len, const lakeshark_p25_tel_t *t,
                            const char *mode, const char *demod,
                            const ls_telemetry_common_t *common)
-{ (void)buf; (void)len; (void)t; (void)mode; (void)demod; (void)common; return 0; }
+{ (void)buf; (void)len; (void)t; (void)mode; (void)demod; s_seen = *common; return 0; }
 int ls_telemetry_build_rec(char *buf, size_t len, const rec_status_t *status,
                            const ls_telemetry_common_t *common)
-{ (void)buf; (void)len; (void)status; (void)common; return 0; }
+{ (void)buf; (void)len; (void)status; s_seen = *common; return 0; }
 int ls_version_line(char *out, size_t len)
 { if (len) out[0] = '\0'; return 0; }
 
@@ -790,4 +793,533 @@ LS_CASE(gps_reply_rejects_stale_and_stopped_fixes)
     g_gps.last_fix_us=10000000;g_gps_on=false;
     LS_CHECK(reply_has("GPS","fix=0"));LS_CHECK(reply_has("GPS","alive=0"));
     ls_shim_time_set(old);
+}
+
+/* ------------------------------------- receiver identity, MESH and DET */
+
+#include "tui/ls_radio_select.h"
+#include "tui/ls_detector.h"
+#include "tui/ls_detector_air.h"
+
+/* What the RADIO picker answers, as a fixture. */
+static ls_rsel_radio_t s_rx_radio = LS_RSEL_SDR_RTL;
+static const char *s_rx_cant, *s_rx_absent;
+static ls_rsel_job_t s_rx_job_seen;
+ls_rsel_radio_t ls_rsel_effective(ls_rsel_job_t job) { s_rx_job_seen = job; return s_rx_radio; }
+const char *ls_rsel_name(ls_rsel_radio_t r)
+{
+    static const char *const n[] = { "RTL-SDR", "HackRF", "LR2021" };
+    return r < 3 ? n[r] : "none";
+}
+const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r) { (void)job; (void)r; return s_rx_cant; }
+const char *ls_rsel_absent(ls_rsel_radio_t r) { (void)r; return s_rx_absent; }
+
+static void ask_telemetry(const char *mode)
+{
+    char buf[600];
+    s_host_mode = mode;
+    flipper_link_set_host(&TEST_HOST);
+    flipper_link_snapshot(buf, sizeof(buf));
+}
+
+LS_CASE(telemetry_names_the_receiver_the_mode_really_uses)
+{
+    s_rx_cant = s_rx_absent = NULL;
+    s_rx_radio = LS_RSEL_LORA;
+    ask_telemetry("P25");
+    LS_EQ_INT(LS_RSEL_P25, s_rx_job_seen);
+    LS_EQ_STR("LR2021", s_seen.rx_name);
+    LS_CHECK_MSG(s_seen.rx_why == NULL,
+                 "a P25 mode on the LR2021 was given a reason to complain");
+
+    s_rx_radio = LS_RSEL_SDR_HACKRF;
+    ask_telemetry("ADSB");
+    LS_EQ_INT(LS_RSEL_ADSB, s_rx_job_seen);
+    LS_EQ_STR("HackRF", s_seen.rx_name);
+    LS_CHECK(s_seen.rx_why == NULL);
+
+    s_rx_radio = LS_RSEL_SDR_RTL;
+    s_rx_absent = "Plug an RTL-SDR into the USB-A port";
+    ask_telemetry("REC");
+    LS_EQ_INT(LS_RSEL_REC, s_rx_job_seen);
+    LS_EQ_STR("Plug an RTL-SDR into the USB-A port", s_seen.rx_why);
+
+    /* What a radio cannot do outranks what is not plugged in. */
+    s_rx_cant = "LR tunes 150-960 MHz; no broadcast FM / 2 m";
+    ask_telemetry("FM");
+    LS_EQ_INT(LS_RSEL_FM, s_rx_job_seen);
+    LS_EQ_STR("LR tunes 150-960 MHz; no broadcast FM / 2 m", s_seen.rx_why);
+
+    s_fm_tel_submode = FM_MODE_POCSAG;
+    ask_telemetry("FM");
+    LS_EQ_INT(LS_RSEL_PAGER, s_rx_job_seen);
+    s_fm_tel_submode = FM_MODE_ACARS;
+    ask_telemetry("FM");
+    LS_EQ_INT(LS_RSEL_ACARS, s_rx_job_seen);
+    s_fm_tel_submode = FM_MODE_LISTEN;
+
+    s_rx_radio = LS_RSEL_NONE;
+    ask_telemetry("P25");
+    LS_CHECK(s_seen.rx_why != NULL);
+    s_rx_radio = LS_RSEL_SDR_RTL;
+    s_rx_cant = s_rx_absent = NULL;
+    s_host_mode = "P25";
+}
+
+/* ---- MESH ---- */
+static char s_mesh_name[24] = "LakeShark";
+static uint32_t s_mesh_seq = 7, s_mesh_clock = 1000;
+static ls_mesh_peer_t s_peers[3];
+static int s_peer_n;
+static ls_mesh_msg_t s_msgs[5];
+static int s_msg_n;
+static esp_err_t s_send_result = ESP_OK;
+static char s_sent[128];
+
+const char *ls_mesh_name(void) { return s_mesh_name; }
+uint32_t ls_mesh_msg_seq(void) { return s_mesh_seq; }
+uint32_t ls_mesh_now(void) { return s_mesh_clock; }
+bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
+{
+    if (rank < 0 || rank >= s_peer_n) return false;
+    *out = s_peers[rank];
+    return true;
+}
+int ls_mesh_messages(ls_mesh_msg_t *out, int max)
+{
+    int n = s_msg_n < max ? s_msg_n : max;
+    for (int i = 0; i < n; i++) out[i] = s_msgs[i];
+    return n;
+}
+esp_err_t ls_mesh_send_text(const char *text)
+{
+    snprintf(s_sent, sizeof(s_sent), "%s", text);
+    return s_send_result;
+}
+static int s_sent_chan = -1;
+static char s_sent_id[20];
+static ls_mesh_chan_t s_chans[LS_MESH_MAX_CHANNELS];
+static int s_chan_active;
+static bool s_tx_refuses;
+int ls_mesh_channels(ls_mesh_chan_t *out, int max)
+{
+    int n = max < LS_MESH_MAX_CHANNELS ? max : LS_MESH_MAX_CHANNELS;
+    for (int i = 0; i < n; i++) {
+        out[i] = s_chans[i];
+        out[i].fixed = (i == 0);
+        if (i == 0) snprintf(out[i].name, sizeof(out[i].name), "Public");
+    }
+    return n;
+}
+int ls_mesh_channel_active(void) { return s_chan_active; }
+esp_err_t ls_mesh_send_text_on(int chan, const char *text)
+{
+    s_sent_chan = chan;
+    snprintf(s_sent, sizeof(s_sent), "%s", text);
+    return s_send_result;
+}
+esp_err_t ls_mesh_send_dm_id(const char *id, const char *text)
+{
+    snprintf(s_sent_id, sizeof(s_sent_id), "%s", id);
+    snprintf(s_sent, sizeof(s_sent), "%s", text);
+    return s_send_result;
+}
+bool ls_mesh_running(void) { return g_mesh.running; }
+void ls_mesh_set_tx(bool on) { if (!s_tx_refuses) g_mesh.tx_enabled = on; }
+bool ls_mesh_tx_enabled(void) { return g_mesh.tx_enabled; }
+
+static void ask(const char *line, char *reply, size_t cap)
+{
+    reply[0] = 0;
+    flipper_link_inject(line, reply, cap);
+}
+
+static bool one_line(const char *s)
+{
+    size_t n = strlen(s);
+    return n > 0 && s[n - 1] == '\n' && strchr(s, '\n') == s + n - 1;
+}
+
+LS_CASE(the_head_reads_the_mesh_summary_as_key_values)
+{
+    char r[384];
+    memset(&g_mesh, 0, sizeof(g_mesh));
+    g_mesh_peers = 2;
+    ask("MESH S", r, sizeof(r));
+    LS_CHECK_MSG(!strncmp(r, "%M s ", 5), r);
+    LS_CHECK(strstr(r, "run=0") && strstr(r, "st=OFFLINE"));
+    g_mesh.running = true; g_mesh.receiving = true;
+    g_mesh.rx_packets = 42; g_mesh.last_rssi = -91.0f;
+    snprintf(g_mesh.self_id, sizeof(g_mesh.self_id), "A1B2C3D4E5F60718");
+    ask("MESH S", r, sizeof(r));
+    LS_CHECK(strstr(r, "st=LISTENING") && strstr(r, "rx=42") && strstr(r, "pr=2"));
+    LS_CHECK(strstr(r, "ms=7") && strstr(r, "ch=0") && strstr(r, "nm=LakeShark") && strstr(r, "id=A1B2C3D4E5F60718"));
+    LS_CHECK_MSG(strstr(r, "tx=0"), "the armed flag must be 0 while disarmed");
+    g_mesh.tx_enabled = true;
+    ask("MESH S", r, sizeof(r));
+    LS_CHECK(strstr(r, "st=ARMED") && strstr(r, "tx=1"));
+    g_mesh.on_air = true;
+    ask("MESH S", r, sizeof(r));
+    LS_CHECK(strstr(r, "st=ON_AIR"));
+    /* The old one-line verb is unchanged. */
+    ask("MESH", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "+OK run=1 tx=1 rx=42", 20));
+    ask("MESH BOGUS", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    memset(&g_mesh, 0, sizeof(g_mesh));
+    g_mesh_peers = 0;
+}
+
+LS_CASE(the_head_pages_through_mesh_nodes_one_row_a_request)
+{
+    char r[384];
+    memset(s_peers, 0, sizeof(s_peers));
+    snprintf(s_peers[0].id, sizeof(s_peers[0].id), "00112233AABBCCDD");
+    snprintf(s_peers[0].name, sizeof(s_peers[0].name), "Ridge Repeater");
+    s_peers[0].type = 2; s_peers[0].rssi = -101.4f; s_peers[0].last_heard = 940;
+    snprintf(s_peers[1].id, sizeof(s_peers[1].id), "99887766FFEEDDCC");
+    s_peers[1].type = 1;                        /* never heard, no name */
+    s_peer_n = 2; g_mesh_peers = 2;
+    ask("MESH P 0", r, sizeof(r));
+    LS_EQ_STR("%M p 0 2 00112233AABBCCDD 2 -101 60 Ridge Repeater\n", r);
+    ask("MESH P 1", r, sizeof(r));
+    LS_EQ_STR("%M p 1 2 99887766FFEEDDCC 1 0 -1 -\n", r);
+    /* Past the end is an empty row that still carries the total. */
+    ask("MESH P 2", r, sizeof(r));
+    LS_EQ_STR("%M p 2 2 - 0 0 -1 -\n", r);
+    ask("MESH P x", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    s_peer_n = 0; g_mesh_peers = 0;
+}
+
+LS_CASE(the_head_reads_mesh_messages_newest_first)
+{
+    char r[384];
+    memset(s_msgs, 0, sizeof(s_msgs));
+    snprintf(s_msgs[0].text, sizeof(s_msgs[0].text), "Ann: first");
+    s_msgs[0].t = 900;
+    snprintf(s_msgs[1].text, sizeof(s_msgs[1].text), "LakeShark: on my way");
+    s_msgs[1].mine = true; s_msgs[1].state = LS_MSG_HEARD; s_msgs[1].t = 990;
+    snprintf(s_msgs[2].text, sizeof(s_msgs[2].text), "Bo: dm\tonly");
+    s_msgs[2].direct = true; s_msgs[2].t = 1000;
+    s_msg_n = 3;
+    ask("MESH M 0", r, sizeof(r));
+    LS_EQ_STR("%M m 0 3 id 0 0 a Bo: dm only\n", r);      /* control char flattened */
+    ask("MESH M 1", r, sizeof(r));
+    LS_EQ_STR("%M m 1 3 o 3 10 a LakeShark: on my way\n", r);
+    ask("MESH M 2", r, sizeof(r));
+    LS_EQ_STR("%M m 2 3 i 0 100 a Ann: first\n", r);
+    ask("MESH M 3", r, sizeof(r));
+    LS_EQ_STR("%M m 3 3 - 0 -1 a -\n", r);
+    /* A message at the ring's limit still fits one reply and one line. */
+    memset(s_msgs[0].text, 'x', sizeof(s_msgs[0].text) - 1);
+    s_msgs[0].text[sizeof(s_msgs[0].text) - 1] = 0;
+    s_msg_n = 1;
+    ask("MESH M 0", r, sizeof(r));
+    LS_CHECK(strlen(r) < 160 && one_line(r));
+    s_msg_n = 0;
+}
+
+LS_CASE(the_head_sends_a_canned_mesh_message_only_when_the_board_allows)
+{
+    char r[96];
+    s_sent[0] = 0; s_send_result = ESP_OK;
+    ask("MESH SEND On my way", r, sizeof(r));
+    LS_EQ_STR("+OK mesh sent\n", r);
+    LS_EQ_STR("On my way", s_sent);
+    s_send_result = ESP_ERR_NOT_ALLOWED;
+    ask("MESH SEND OK", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh tx disarmed\n", r);
+    s_send_result = ESP_ERR_INVALID_STATE;
+    ask("MESH SEND OK", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh not running\n", r);
+    s_send_result = ESP_OK; s_sent[0] = 0;
+    /* Free text is the rest of the line, not the tokenizer's seven words. */
+    ask("mesh send Heading to the north lot, back by 5:30 ok?  ", r, sizeof(r));
+    LS_EQ_STR("+OK mesh sent\n", r);
+    LS_EQ_STR("Heading to the north lot, back by 5:30 ok?", s_sent);
+    s_sent[0] = 0;
+    char longer[160];
+    memset(longer, 'x', sizeof(longer));
+    memcpy(longer, "MESH SEND ", 10);
+    longer[sizeof(longer) - 1] = 0;
+    ask(longer, r, sizeof(r));
+    LS_EQ_STR("-ERR mesh text too long\n", r);
+    LS_CHECK(!s_sent[0]);
+    ask("MESH SEND", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4) && !s_sent[0]);
+    ask("MESH SEND   ", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4) && !s_sent[0]);
+    ask("MESHY SEND hi", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4) && !s_sent[0]);
+}
+
+/* ---- DETECTOR ---- */
+static ls_detector_status_t s_det;
+static ls_detector_event_t s_det_events[3];
+static size_t s_det_n;
+static bool s_det_busy, s_det_started;
+
+bool ls_detector_snapshot(ls_detector_status_t *out, ls_detector_event_t *events,
+                          size_t cap, size_t *n)
+{
+    if (s_det_busy) return false;
+    *out = s_det;
+    *n = s_det_n < cap ? s_det_n : cap;
+    if (events) for (size_t i = 0; i < *n; i++) events[i] = s_det_events[i];
+    return true;
+}
+void ls_detector_start(bool on) { s_det_started = on; s_det.running = on; }
+const char *ls_detector_source(unsigned s) { return s == DET_ADSB ? "adsb" : "rid.ble"; }
+void ls_detector_air_event_text(const ls_detector_event_t *e, char *out, size_t cap)
+{ snprintf(out, cap, "%s sq%04u", e->callsign, e->squawk); }
+bool ls_detector_air_alarm(unsigned squawk, unsigned emergency)
+{ return emergency || squawk == 7700; }
+
+LS_CASE(the_head_reads_detector_status_and_alerts)
+{
+    char r[384];
+    memset(&s_det, 0, sizeof(s_det));
+    memset(s_det_events, 0, sizeof(s_det_events));
+    s_det.running = true; s_det.rules = 9; s_det.matches = 2; s_det.recent = 2;
+    snprintf(s_det.adsb, sizeof(s_det.adsb), "RTL 1090");
+    s_det_n = 2; s_det_busy = false;
+    ask("DET", r, sizeof(r));
+    LS_EQ_STR("%A s run=1 rules=9 hits=2 sup=0 drop=0 hist=2 adsb=RTL_1090\n", r);
+    ask("DET S", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "%A s run=1", 10));
+
+    ls_shim_time_set(100 * 1000000LL);
+    s_det_events[0].source = DET_ADSB; s_det_events[0].squawk = 7700;
+    snprintf(s_det_events[0].callsign, sizeof(s_det_events[0].callsign), "UAL123");
+    s_det_events[0].at = 90 * 1000000LL;
+    s_det_events[1].source = DET_RID; s_det_events[1].at = 40 * 1000000LL;
+    snprintf(s_det_events[1].reason, sizeof(s_det_events[1].reason), "remote-id");
+    ask("DET 0", r, sizeof(r));
+    LS_EQ_STR("%A a 0 2 10 1 adsb UAL123 sq7700\n", r);
+    ask("DET 1", r, sizeof(r));
+    LS_EQ_STR("%A a 1 2 60 0 rid.ble remote-id\n", r);
+    ask("DET 2", r, sizeof(r));
+    LS_EQ_STR("%A a 2 2 -1 0 - -\n", r);
+    s_det_busy = true;
+    ask("DET 0", r, sizeof(r));
+    LS_CHECK_MSG(!strncmp(r, "-ERR det busy", 13), "a busy detector must not read as no alerts");
+    s_det_busy = false;
+    ask("DET -1", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    ask("DET RUN 0", r, sizeof(r));
+    LS_CHECK(!s_det_started && strstr(r, "run=0"));
+    ask("DET RUN 1", r, sizeof(r));
+    LS_CHECK(s_det_started && strstr(r, "run=1"));
+    ask("DET RUN 2", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+}
+
+LS_CASE(the_eq_line_always_carries_the_detector_state_and_stop_is_seen)
+{
+    char line[96];
+    memset(&s_det, 0, sizeof(s_det));
+    s_det_busy = false;
+    flipper_link_eq_snapshot(line, sizeof(line));
+    LS_CHECK_MSG(strstr(line, "dtm=0 dth=0 dtr=0"),
+                 "a stopped detector must say it is stopped, or the head keeps showing it on");
+    s_det.running = true; s_det.matches = 4294967295u; s_det.recent = 24;
+    int n = flipper_link_eq_snapshot(line, sizeof(line));
+    LS_CHECK(strstr(line, "dtm=4294967295 dth=24 dtr=1") != NULL);
+    LS_CHECK(n == (int)strlen(line) && one_line(line));
+    LS_CHECK(strncmp(line, "& eq=", 5) == 0);
+    s_det_busy = true;
+    flipper_link_eq_snapshot(line, sizeof(line));
+    LS_CHECK_MSG(strstr(line, "eq=") && !strstr(line, "dtm="), "a busy lock must only skip the tail");
+    s_det_busy = false;
+}
+
+/* ---- channels, direct messages and the transmit switch ---- */
+
+static void seed_conversations(void)
+{
+    memset(s_msgs, 0, sizeof(s_msgs));
+    /* oldest first, as the ring keeps them */
+    snprintf(s_msgs[0].text, sizeof(s_msgs[0].text), "Ann: public one");
+    s_msgs[0].t = 900;  s_msgs[0].chan = 0; s_msgs[0].id = 11;
+    snprintf(s_msgs[1].text, sizeof(s_msgs[1].text), "Zed: crew channel");
+    s_msgs[1].t = 920;  s_msgs[1].chan = 1; s_msgs[1].id = 12;
+    snprintf(s_msgs[2].text, sizeof(s_msgs[2].text), "Bo: hello you");
+    s_msgs[2].t = 950;  s_msgs[2].direct = true; s_msgs[2].id = 13;
+    snprintf(s_msgs[2].peer, sizeof(s_msgs[2].peer), "99887766FFEEDDCC");
+    snprintf(s_msgs[3].text, sizeof(s_msgs[3].text), "LakeShark: reply to Bo");
+    s_msgs[3].t = 960;  s_msgs[3].direct = true; s_msgs[3].mine = true; s_msgs[3].id = 14;
+    s_msgs[3].state = LS_MSG_SENT;
+    snprintf(s_msgs[3].peer, sizeof(s_msgs[3].peer), "99887766FFEEDDCC");
+    snprintf(s_msgs[4].text, sizeof(s_msgs[4].text), "Ann: public two");
+    s_msgs[4].t = 990;  s_msgs[4].chan = 0; s_msgs[4].id = 15;
+    s_msg_n = 5;
+}
+
+LS_CASE(the_head_lists_channels_with_their_newest_message_id)
+{
+    char r[200];
+    memset(s_chans, 0, sizeof(s_chans));
+    snprintf(s_chans[1].name, sizeof(s_chans[1].name), "Crew Net");
+    snprintf(s_chans[1].psk, sizeof(s_chans[1].psk), "AAAAAAAAAAAAAAAAAAAAAA==");
+    s_chan_active = 1;
+    seed_conversations();
+    ask("MESH C 0", r, sizeof(r));
+    LS_EQ_STR("%M c 0 4 1 0 2 15 Public\n", r);         /* two messages, newest id 15 */
+    ask("MESH C 1", r, sizeof(r));
+    LS_EQ_STR("%M c 1 4 1 1 1 12 Crew Net\n", r);
+    ask("MESH C 2", r, sizeof(r));
+    LS_EQ_STR("%M c 2 4 0 0 0 0 -\n", r);               /* no key: not usable */
+    ask("MESH C 9", r, sizeof(r));
+    LS_EQ_STR("%M c 9 4 0 0 0 0 -\n", r);
+    ask("MESH C x", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    s_chan_active = 0; s_msg_n = 0;
+}
+
+LS_CASE(the_head_reads_one_conversation_at_a_time)
+{
+    char r[384];
+    seed_conversations();
+    /* a channel: only its messages, newest first, total counted inside it */
+    ask("MESH M 0 C 0", r, sizeof(r));
+    LS_EQ_STR("%M m 0 2 i 0 10 c0 Ann: public two\n", r);
+    ask("MESH M 1 C 0", r, sizeof(r));
+    LS_EQ_STR("%M m 1 2 i 0 100 c0 Ann: public one\n", r);
+    ask("MESH M 0 C 1", r, sizeof(r));
+    LS_EQ_STR("%M m 0 1 i 0 80 c1 Zed: crew channel\n", r);
+    ask("MESH M 0 C 3", r, sizeof(r));
+    LS_EQ_STR("%M m 0 0 - 0 -1 c3 -\n", r);
+    /* a node: only the direct messages with it, and the direct flag */
+    ask("MESH M 0 D 99887766ffeeddcc", r, sizeof(r));     /* the id is case-blind */
+    LS_EQ_STR("%M m 0 2 od 2 40 d99887766FFEEDDCC LakeShark: reply to Bo\n", r);
+    ask("MESH M 1 D 99887766FFEEDDCC", r, sizeof(r));
+    LS_EQ_STR("%M m 1 2 id 0 50 d99887766FFEEDDCC Bo: hello you\n", r);
+    ask("MESH M 0 D 0000000000000000", r, sizeof(r));
+    LS_EQ_STR("%M m 0 0 - 0 -1 d0000000000000000 -\n", r);
+    /* everything, unchanged but for its scope */
+    ask("MESH M 0", r, sizeof(r));
+    LS_EQ_STR("%M m 0 5 i 0 10 a Ann: public two\n", r);
+    ask("MESH M 0 D nothex", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    ask("MESH M 0 C 9", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    ask("MESH M 0 X 1", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    s_msg_n = 0;
+}
+
+LS_CASE(the_head_sends_on_a_channel_or_to_a_node_with_free_text)
+{
+    char r[96];
+    memset(s_chans, 0, sizeof(s_chans));
+    snprintf(s_chans[1].psk, sizeof(s_chans[1].psk), "AAAAAAAAAAAAAAAAAAAAAA==");
+    s_send_result = ESP_OK; s_sent[0] = 0; s_sent_chan = -1; s_sent_id[0] = 0;
+
+    ask("MESH SENDC 1 Meet at the north lot, 5:30 sharp!  ", r, sizeof(r));
+    LS_EQ_STR("+OK mesh sent\n", r);
+    LS_EQ_INT(1, s_sent_chan);
+    LS_EQ_STR("Meet at the north lot, 5:30 sharp!", s_sent);
+    ask("mesh sendc 0 Case Kept", r, sizeof(r));
+    LS_EQ_STR("+OK mesh sent\n", r);
+    LS_EQ_INT(0, s_sent_chan);
+    LS_EQ_STR("Case Kept", s_sent);
+
+    s_sent[0] = 0; s_sent_chan = -1;
+    ask("MESH SENDC 2 nobody listens here", r, sizeof(r));   /* slot without a key */
+    LS_EQ_STR("-ERR mesh channel\n", r);
+    ask("MESH SENDC 7 nobody listens here", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh channel\n", r);
+    ask("MESH SENDC x hi", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh channel\n", r);
+    LS_CHECK(!s_sent[0] && s_sent_chan == -1);
+    ask("MESH SENDC 1", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+
+    ask("MESH DM 99887766ffeeddcc see you at six, ok?", r, sizeof(r));
+    LS_EQ_STR("+OK mesh sent\n", r);
+    LS_EQ_STR("99887766FFEEDDCC", s_sent_id);              /* the id as the board keeps it */
+    LS_EQ_STR("see you at six, ok?", s_sent);
+    s_sent[0] = 0;
+    ask("MESH DM 9988 too short an id", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh no such node\n", r);
+    ask("MESH DM zz887766FFEEDDCC not hex", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh no such node\n", r);
+    LS_CHECK(!s_sent[0]);
+    ask("MESH DM 99887766FFEEDDCC", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+
+    /* the board's own refusals reach the head as they are */
+    s_send_result = ESP_ERR_NOT_FOUND;
+    ask("MESH DM 99887766FFEEDDCC hi", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh no such node\n", r);
+    s_send_result = ESP_ERR_NOT_ALLOWED;
+    ask("MESH DM 99887766FFEEDDCC hi", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh tx disarmed\n", r);
+    ask("MESH SENDC 1 hi", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh tx disarmed\n", r);
+    s_send_result = ESP_OK;
+
+    /* too long is refused whole, on every route */
+    char longer[200];
+    memset(longer, 'x', sizeof(longer));
+    longer[sizeof(longer) - 1] = 0;
+    memcpy(longer, "MESH DM 99887766FFEEDDCC ", 25);
+    s_sent[0] = 0;
+    ask(longer, r, sizeof(r));
+    LS_EQ_STR("-ERR mesh text too long\n", r);
+    memcpy(longer, "MESH SENDC 1 ", 13);
+    ask(longer, r, sizeof(r));
+    LS_EQ_STR("-ERR mesh text too long\n", r);
+    LS_CHECK(!s_sent[0]);
+}
+
+LS_CASE(the_head_arms_and_disarms_transmit_and_is_told_what_happened)
+{
+    char r[96];
+    memset(&g_mesh, 0, sizeof(g_mesh));
+    s_tx_refuses = false;
+    ask("MESH TX 1", r, sizeof(r));
+    LS_EQ_STR("-ERR mesh not running\n", r);              /* nothing to arm */
+    LS_CHECK(!g_mesh.tx_enabled);
+
+    g_mesh.running = true;
+    ask("MESH TX 1", r, sizeof(r));
+    LS_EQ_STR("+OK mesh tx=1\n", r);
+    LS_CHECK(g_mesh.tx_enabled);
+    ask("MESH TX 0", r, sizeof(r));
+    LS_EQ_STR("+OK mesh tx=0\n", r);
+    LS_CHECK(!g_mesh.tx_enabled);
+
+    /* The reply is the state read back, so a switch that did not take says so. */
+    s_tx_refuses = true;
+    ask("MESH TX 1", r, sizeof(r));
+    LS_EQ_STR("+OK mesh tx=0\n", r);
+    s_tx_refuses = false;
+
+    ask("MESH TX 2", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    ask("MESH TX", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    ask("MESH TX 1 1", r, sizeof(r));
+    LS_CHECK(!strncmp(r, "-ERR", 4));
+    LS_CHECK(!g_mesh.tx_enabled);
+    memset(&g_mesh, 0, sizeof(g_mesh));
+}
+
+LS_CASE(a_detector_stopped_from_the_console_is_seen_on_the_next_eq_line)
+{
+    char line[96];
+    memset(&s_det, 0, sizeof(s_det));
+    s_det_busy = false;
+    s_det.running = true; s_det.matches = 0;
+    flipper_link_eq_snapshot(line, sizeof(line));
+    LS_CHECK(strstr(line, "dtr=1"));
+    ls_detector_start(false);                              /* what `detector stop` does */
+    flipper_link_eq_snapshot(line, sizeof(line));
+    LS_CHECK_MSG(strstr(line, "dtr=0"), "the stop was not reported to the head");
+    /* and DET S says the same thing */
+    char r[160];
+    ask("DET S", r, sizeof(r));
+    LS_CHECK(strstr(r, "run=0"));
 }

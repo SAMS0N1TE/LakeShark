@@ -58,6 +58,11 @@ bool settings_set_lr_dcdc(bool dcdc) { fk_lr_dcdc = dcdc; return true; }
 #ifndef LS_TEST_REAL_BOARD_HW
 bool ls_board_hw_antenna_is_external(void) { return fk_ant_external; }
 bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 #endif
 bool ls_xl9535_ready(void) { return true; }
 esp_err_t ls_xl9535_set_dir(int pin, bool output) { (void)pin; (void)output; return ESP_OK; }

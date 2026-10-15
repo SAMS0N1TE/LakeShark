@@ -189,6 +189,34 @@ static bool decode(workspace_t *w,int quarter,int ports,lte_mib_result_t *out)
     return true;
 }
 size_t lte_mib_workspace_size(void){return sizeof(workspace_t);}
+bool lte_mib_crs_power(const uint8_t *iq,size_t samples,int pci,int frame_start,
+                       int cfo_hz,void *memory,float *dbfs)
+{
+    if(!dbfs)return false;
+    *dbfs=-200.f;
+    if(!iq || !memory || samples<28800 || samples>153600 || pci<0 || pci>503 ||
+       frame_start<0 || frame_start>=19200 || cfo_hz<-50000 || cfo_hz>50000)return false;
+    workspace_t *w=memory;memset(w,0,sizeof(*w));initialize(w,pci);
+    double sum=0;int count=0;
+    for(int frame=0;frame<8;frame++) {
+        int start=frame_start+19200*frame;
+        if((size_t)(start+1644)>samples)break;
+        for(int t=0;t<2;t++) {
+            int l=t?4:0,shift=(pci+(t?3:0))%6;
+            transform(w,iq,start+968+137*l,cfo_hz,w->grid[l]);
+            for(int m=0;m<12;m++){cx x=w->grid[l][6*m+shift];sum+=x.r*x.r+x.i*x.i;}
+            count+=12;
+        }
+    }
+    if(!count)return false;
+    /* The transform is not normalised: a full-scale tone (127.5 counts) on
+     * one subcarrier reads 128 * 127.5. */
+    const double full=128.0*127.5;
+    double mean=sum/count/(full*full);
+    if(!(mean>0) || !isfinite(mean))return false;
+    *dbfs=(float)(10.0*log10(mean));
+    return true;
+}
 static bool find(const uint8_t *iq,size_t samples,int pci,int frame_start,
                  int cfo_hz,void *memory,lte_mib_result_t *out,lte_sync_yield_fn yield,void *arg,bool confirm)
 {

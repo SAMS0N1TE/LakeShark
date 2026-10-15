@@ -1323,6 +1323,12 @@ int main(int argc, char **argv)
         snprintf(n.body, sizeof(n.body), "%s", notice);
         n.hue = TUI_CYAN;
         n.screen = -1;
+        if (getenv("LSSIM_NOTICE_DETECTOR")) {
+            /* The DETECTOR sink's notice, as ls_detector_sinks.c posts it. */
+            snprintf(n.title, sizeof(n.title), "%s", "DETECTOR");
+            n.hue = n.accent = TUI_BLUE | TUI_BRIGHT;
+            n.quiet = n.steady = true;
+        }
         ls_notify_post(&n);
         /* The banner's own frames, not one.
 

@@ -28,6 +28,14 @@ bool lte_mib_find(const uint8_t *iq, size_t samples, int pci, int frame_start,
 bool lte_mib_confirm(const uint8_t *iq, size_t samples, int pci, int frame_start,
                      int cfo_hz, void *workspace, lte_mib_result_t *out,
                      lte_sync_yield_fn yield, void *arg);
+/* RSRP-like level: mean power of the port 0 cell reference signals in the
+ * central six resource blocks (slot 1, symbols 0 and 4) over every whole
+ * frame in the capture, per resource element, in dB relative to a full-scale
+ * complex tone. Uncalibrated and at the receiver's gain: use it to compare
+ * cells heard with one setup, not as dBm. Needs the PCI and frame boundary
+ * from lte_sync. False when the capture holds no whole frame. */
+bool lte_mib_crs_power(const uint8_t *iq, size_t samples, int pci, int frame_start,
+                       int cfo_hz, void *workspace, float *dbfs);
 #ifdef __cplusplus
 }
 #endif

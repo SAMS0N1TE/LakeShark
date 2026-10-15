@@ -27,6 +27,11 @@ bool ls_xl9535_ready(void) { return true; }
 /* Linked in for the LR20xx backend's antenna choice; an SX1262 never asks. */
 bool ls_board_hw_antenna_is_external(void) { return false; }
 bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 
 /* Direction, which the driver sets once for DIO1 so a later change to the
    board bring-up cannot turn the radio's interrupt line into an output. The

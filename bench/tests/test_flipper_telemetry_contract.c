@@ -405,3 +405,55 @@ LS_CASE(fm_telemetry_reports_every_command_name_without_enum_drift) {
     t.submode=255;ls_telemetry_build_fm(buf,sizeof(buf),&t,&common);
     LS_CHECK(parse_key_value(buf,"fm",value,sizeof(value)));LS_EQ_STR(value,"unknown");
 }
+
+LS_CASE(every_frame_names_the_receiver_and_only_complains_with_a_reason)
+{
+    lakeshark_fm_tel_t fm = {0};
+    lakeshark_p25_tel_t p25 = {0};
+    lakeshark_adsb_tel_t ad = {0};
+    rec_status_t rec = {0};
+    char frame[576], v[64];
+
+    ls_telemetry_common_t ok = {.rhs_state = "OK", .rx_name = "LR2021"};
+    LS_CHECK(ls_telemetry_build_p25(frame, sizeof(frame), &p25, "P25", "C4FM", &ok) > 0);
+    LS_CHECK(parse_key_value(frame, "ra", v, sizeof(v)));
+    LS_EQ_STR("LR2021", v);
+    LS_CHECK_MSG(!parse_key_value(frame, "rw", v, sizeof(v)),
+                 "a receiver that works must not carry a reason");
+    LS_CHECK_MSG(parse_key_value(frame, "up", v, sizeof(v)), "sys fields lost");
+
+    ls_telemetry_common_t bad = {.rhs_state = "OK", .rx_name = "1090 LR + 978 RTL",
+        .rx_why = "Plug an RTL-SDR into the USB-A port"};
+    LS_CHECK(ls_telemetry_build_adsb(frame, sizeof(frame), &ad, &bad) > 0);
+    LS_CHECK(parse_key_value(frame, "ra", v, sizeof(v)));
+    LS_EQ_STR("1090_LR_+_978_RTL", v);          /* spaces cross as underscores */
+    LS_CHECK(parse_key_value(frame, "rw", v, sizeof(v)));
+    LS_EQ_STR("Plug_an_RTL-SDR_into_the_USB-A_port", v);
+
+    LS_CHECK(ls_telemetry_build_rec(frame, sizeof(frame), &rec, &bad) > 0);
+    LS_CHECK(parse_key_value(frame, "ra", v, sizeof(v)));
+
+    /* No receiver information (an older caller): no field at all. */
+    ls_telemetry_common_t none = {.rhs_state = "OK"};
+    LS_CHECK(ls_telemetry_build_p25(frame, sizeof(frame), &p25, "P25", "C4FM", &none) > 0);
+    LS_CHECK(!parse_key_value(frame, "ra", v, sizeof(v)));
+
+    /* The longest FM frame there is, with the longest reason: every field
+       still fits the 576 byte buffer, and the system tail is not dropped. */
+    fm.freq_hz = 4294967295u; fm.effective_freq_hz = 1ull << 40;
+    fm.gain_tenths = fm.effective_gain_tenths = -1130; fm.iq_bytes_sec = 4294967295u;
+    fm.scan_start_hz = fm.scan_stop_hz = fm.scan_peak_hz = 4294967295u;
+    fm.scan_sweeps = 4294967295u; fm.pocsag_pages = fm.pocsag_frames = 4294967295u;
+    fm.pocsag_last_addr = 4294967295u; fm.pocsag_last_type = 'A';
+    memset(fm.pocsag_last_text, 'z', sizeof(fm.pocsag_last_text) - 1);
+    ls_telemetry_common_t big = {.volume = 100, .uptime_s = 4294967295u,
+        .free_internal = 4294967295u, .free_dma = 4294967295u, .sdr_stall_s = 99999,
+        .rhs_state = "settling", .rx_name = "1090 LR + 978 RTL",
+        .rx_why = "LR tunes 150-960 MHz; no broadcast FM / 2 m and then some more words"};
+    char wide[576];
+    int n = ls_telemetry_build_fm(wide, sizeof(wide), &fm, &big);
+    LS_CHECK(n > 0 && n < (int)sizeof(wide) - 2);
+    LS_CHECK_MSG(parse_key_value(wide, "rhs", v, sizeof(v)), "rhs dropped at max length");
+    LS_CHECK_MSG(parse_key_value(wide, "rw", v, sizeof(v)), "reason dropped at max length");
+    LS_CHECK_MSG(strlen(v) == LS_TEL_RX_WHY_MAX, "reason is not capped at the wire limit");
+}

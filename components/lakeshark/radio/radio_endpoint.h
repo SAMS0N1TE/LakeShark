@@ -166,6 +166,8 @@ typedef struct {
      * by the endpoint service. It is only called while the endpoint is idle. */
     ls_radio_err_t (*recover)(void *driver_ctx);
     ls_radio_err_t (*iq_get_health)(void *driver_ctx, ls_radio_iq_health_t *out);
+    /* Optional: tell the tuner its reference runs ppm fast (positive) or slow. */
+    ls_radio_err_t (*iq_set_ppm)(void *driver_ctx, int ppm);
 } ls_radio_driver_ops_t;
 
 typedef struct {
@@ -250,6 +252,12 @@ ls_radio_err_t ls_radio_iq_set_gain(ls_radio_session_t *session,
                                     ls_radio_gain_mode_t mode,
                                     int tenths_db,
                                     int *actual_tenths_db);
+/* Correct the tuner for a reference crystal that runs ppm fast (positive) or
+ * slow, as measured against something of known frequency. Not while
+ * streaming; the tuner is retuned to its current centre. UNSUPPORTED where the
+ * endpoint cannot. The correction outlasts the session, until the device is
+ * replugged. */
+ls_radio_err_t ls_radio_iq_set_ppm(ls_radio_session_t *session, int ppm);
 ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session);
 ls_radio_err_t ls_radio_iq_read(ls_radio_session_t *session, void *dst,
                                 size_t bytes, uint32_t timeout_ms,

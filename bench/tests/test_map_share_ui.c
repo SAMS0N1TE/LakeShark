@@ -148,3 +148,38 @@ LS_CASE(context_bar_tracks_selection_draw_and_received_states) {
     LS_CHECK(!button("SEND"));command("w");LS_CHECK(button("SEND"));LS_CHECK(!button("SAVE"));
     reset();
 }
+
+static bool finger;
+static int finger_sc,finger_sr,finger_c,finger_r,panned_x,panned_y;
+bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r) {
+    if(!finger) return false;
+    *sc=finger_sc;*sr=finger_sr;*c=finger_c;*r=finger_r;return true;
+}
+void ls_map_pan(int dx,int dy) { panned_x+=dx;panned_y+=dy; }
+void ls_tui_geometry(int *cols,int *rows,int *cw,int *ch) {
+    if(cols) *cols=52;
+    if(rows) *rows=67;
+    if(cw) *cw=10;
+    if(ch) *ch=17;
+}
+LS_CASE(map_drag_pans_with_the_finger_and_never_selects) {
+    reset();s_map_cells=(tui_rect){0,10,52,36};panned_x=panned_y=0;
+    finger=true;finger_sc=20;finger_sr=20;finger_c=21;finger_r=21;
+    drag_pan();LS_CHECK(!s_dragging);LS_EQ_INT(panned_x,0);      /* a wobble is still a tap */
+    finger_c=24;finger_r=22;drag_pan();LS_CHECK(s_dragging);
+    LS_EQ_INT(panned_x,-4*SUB_X);LS_EQ_INT(panned_y,-2*sub_y()); /* the map follows the finger */
+    finger_c=23;drag_pan();LS_EQ_INT(panned_x,-3*SUB_X);
+    finger=false;LS_CHECK(s_dragging);                           /* the release is swallowed */
+    drag_pan();LS_CHECK(!s_dragging);
+    finger=true;finger_sc=finger_c=5;finger_sr=finger_r=5;      /* above the map: not a drag */
+    finger_c=15;drag_pan();LS_CHECK(!s_dragging);finger=false;drag_pan();
+    reset();
+}
+LS_CASE(target_steps_around_a_symbol_and_hides_under_one) {
+    reset();const tui_rect body={2,3,52,60};
+    s_ntaken=0;box_take_air(24,24,29,1,0);target_cells=cross_count=0;
+    centre_reticle(NULL,body);LS_EQ_INT(target_cells,14);LS_EQ_INT(cross_count,1);
+    s_ntaken=0;box_take_air(25,27,30,1,0);target_cells=cross_count=0;
+    centre_reticle(NULL,body);LS_EQ_INT(target_cells,0);LS_EQ_INT(cross_count,0);
+    s_ntaken=0;
+}

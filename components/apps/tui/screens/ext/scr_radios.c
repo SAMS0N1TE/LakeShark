@@ -61,15 +61,13 @@ typedef struct {
 
 static const char *s_error;
 static char s_error_text[80];
-static bool s_ant_confirm, s_ant_remember;
-static int s_ant_focus;
-static tui_rect s_ant_yes, s_ant_no, s_ant_toggle, s_options_hit;
-static void ant_confirm(bool accept);
+static tui_rect s_options_hit;
 
-static int warning_get(const ls_opt_t *o)
-{ (void)o; return !settings_get_antenna_remember(); }
-static void warning_set(const ls_opt_t *o, int v)
-{ (void)o; settings_set_antenna_remember(!v); }
+static int mmcx_use_get(const ls_opt_t *o)
+{ (void)o; return ls_board_hw_antenna_mmcx_tx(); }
+static void mmcx_use_set(const ls_opt_t *o, int v)
+{ (void)o; ls_board_hw_antenna_set_mmcx_tx(v != 0); settings_set_antenna_mmcx_tx(v != 0); }
+static const char *const MMCX_USE_NAMES[] = { "RX ONLY", "RX+TX" };
 static void options_back(const ls_opt_t *o)
 { (void)o; ls_opt_close(); }
 #if LS_HAS_C6
@@ -78,10 +76,12 @@ static void ble_boot_set(const ls_opt_t *o, int v) { (void)o; settings_set_ble_a
 static int wifi_boot_get(const ls_opt_t *o) { (void)o; return settings_get_wifi_at_boot(); }
 static void wifi_boot_set(const ls_opt_t *o, int v) { (void)o; settings_set_wifi_at_boot(v != 0); }
 #endif
+#if LS_HAS_C6
 static const char *const WARNING_NAMES[] = { "OFF", "ON" };
+#endif
 static const ls_opt_t RADIO_OPTIONS[] = {
-    { .label = "ANT WARNING", .kind = LS_OPT_TOGGLE,
-      .names = WARNING_NAMES, .get = warning_get, .set = warning_set },
+    { .label = "MMCX1 USE", .kind = LS_OPT_TOGGLE,
+      .names = MMCX_USE_NAMES, .get = mmcx_use_get, .set = mmcx_use_set },
 #if LS_HAS_C6
     { .label = "BLE AT BOOT", .kind = LS_OPT_TOGGLE,
       .names = WARNING_NAMES, .get = ble_boot_get, .set = ble_boot_set },
@@ -194,7 +194,7 @@ static void mesh_set(bool on)
     ls_mesh_socket_t s;
     ls_mesh_socket_get(&s);
     if (s.held) {
-        snprintf(s_error_text, sizeof(s_error_text), "LORA held by %s", s.owner);
+        snprintf(s_error_text, sizeof(s_error_text), "LORA in use by %s: stop it there", s.owner);
         s_error = s_error_text;
         return;
     }
@@ -219,27 +219,22 @@ static radio_state_t ant_read(void)
 {
     return ls_board_hw_antenna_is_external() ? RS_ON : RS_OFF;
 }
+/* One tap, no dialog. MMCX1 receives; whether it transmits too is the
+   MMCX1 USE option, and the box's second line says which. */
 static void ant_set(bool external)
 {
-    if (external) {
-        s_ant_remember = false; s_ant_focus = 0;
-        if (settings_get_antenna_remember()) { ant_confirm(true); return; }
-        s_ant_confirm = true;
-        s_ant_yes = s_ant_no = s_ant_toggle = tui_rect_make(0, 0, 0, 0);
-        return;
-    }
-    const esp_err_t err = ls_board_hw_antenna_external(false);
-    s_error = err == ESP_OK ? NULL : "Antenna busy / switch failed";
-    if (err == ESP_OK) settings_set_antenna_external(false);
+    const esp_err_t err = ls_board_hw_antenna_external(external);
+    s_error = err == ESP_OK ? NULL : "Antenna: transmit in progress, try again";
+    if (err == ESP_OK) settings_set_antenna_external(external);
 }
 static const char *ant_state(void)
 {
-    return ls_board_hw_antenna_is_external() ? "MMCX1" : "internal";
+    if (!ls_board_hw_antenna_is_external()) return "internal";
+    return ls_board_hw_antenna_mmcx_tx() ? "MMCX1 rx+tx" : "MMCX1 rx";
 }
 static const char *ant_action(void)
 {
-    return ls_board_hw_antenna_is_external() ?
-        (ls_board_hw_antenna_tx_allowed() ? "USE INTERNAL" : "CONFIRM MMCX1") : "USE MMCX1";
+    return ls_board_hw_antenna_is_external() ? "USE INTERNAL" : "USE MMCX1";
 }
 
 #if LS_HAS_C6
@@ -267,7 +262,7 @@ static const radio_row_t ROWS[] = {
 #endif
     { "GPS",  "keeps a receiver fed to hold a fix",
       gps_read, gps_set, gps_state },
-    { "ANTENNA", "internal, or external through MMCX1",
+    { "ANTENNA", "internal, or MMCX1 for receive",
       ant_read, ant_set, ant_state, ant_action, true },
 #if LS_HAS_C6
     { "BLE",  "Live C6 / runtime controls in LINK",
@@ -381,6 +376,11 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
         detail = true;
     }
 #endif
+    if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external()) {
+        snprintf(what, sizeof(what), "%s", ls_board_hw_antenna_mmcx_tx() ?
+                 "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna");
+        detail = true;
+    }
     if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
         ls_radio_endpoint_info_t info;
         if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
@@ -391,6 +391,7 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     }
     if (bh >= 6 || detail) {
         if (!detail) snprintf(what, sizeof(what), "%.*s", a.w - 4, ROWS[i].what);
+        else if (a.w - 4 >= 0 && a.w - 4 < (int)sizeof(what)) what[a.w - 4] = '\0';
         tui_put_str(sf, a, a.x + 2, y, what, dim);
         y++;
     }
@@ -483,40 +484,6 @@ static void draw(tui_surface *sf, tui_rect area)
     s_options_hit = tui_rect_make(area.x + 2, area.y + area.h - 4, area.w - 4, 3);
     const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
     ls_btn_bar_raised(sf, s_options_hit, &opt, 1, s_sel == N_ROWS ? 0 : -1);
-    if (s_ant_confirm) {
-        /* The radios stay behind the centered modal. */
-        const int w = area.w > 54 ? 54 : area.w - 4;
-        const int h = area.h >= 23 ? 21 : area.h - 2;
-        tui_rect box = tui_rect_make(area.x + (area.w - w) / 2,
-                                    area.y + (area.h - h) / 2, w, h);
-        tui_fill(sf, box, ' ', A(TUI_WHITE, TUI_BLACK));
-        const uint8_t hue = TUI_YELLOW | TUI_BRIGHT;
-        ls_panel_box(sf, box, "MMCX1 ANTENNA", hue);
-        const uint8_t warn = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-        const char *art[] = { "  ) | (  ",
-                              "    |    ", "   /_\\   " };
-        if (h >= 21) for (int i = 0; i < 3; i++)
-            tui_put_str(sf, box, box.x + (w - 9) / 2, box.y + 1 + i, art[i], warn);
-        const char *lines[] = { "TX without an antenna", "can damage the radio.",
-                                "Attach a suitable antenna." };
-        for (int i = 0; i < 3; i++)
-            tui_put_str(sf, box, box.x + (w - (int)strlen(lines[i])) / 2,
-                        box.y + (h >= 21 ? 4 : 1) + i, lines[i], i < 2 ? warn : dim);
-        ls_btn_t buttons[] = {
-            { .label = "CANCEL" }, { .label = "ANTENNA ATTACHED" },
-            { .label = "DON'T ASK AGAIN", .value = s_ant_remember ? "ON" : "OFF",
-              .on = s_ant_remember },
-        };
-        tui_rect *hits[] = { &s_ant_no, &s_ant_yes, &s_ant_toggle };
-        for (int i = 0; i < 3; i++) {
-            tui_rect bar = tui_rect_make(box.x + 2, box.y + (h >= 21 ? 8 : h - 10) + i * (h >= 21 ? 4 : 3), w - 4, h >= 21 ? 4 : 3);
-            ls_btn_bar_transport(sf, bar, &buttons[i], 1, s_ant_focus == i ? 0 : -1);
-            int x, y, bw, bh;
-            *hits[i] = tui_rect_make(0, 0, 0, 0);
-            if (ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 0, &x, &y, &bw, &bh))
-                *hits[i] = tui_rect_make(x, y, bw, bh);
-        }
-    }
 
 }
 
@@ -528,33 +495,18 @@ static void toggle(int i)
     if (!ROWS[i].set) return;
     if (ROWS[i].read() == RS_ABSENT && ROWS[i].set != open_link) return;
     s_error = NULL;
-    if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external() &&
-        !ls_board_hw_antenna_tx_allowed()) { ant_set(true); return; }
     ROWS[i].set(ROWS[i].read() == RS_OFF);
-}
-
-static void ant_confirm(bool accept)
-{
-    s_ant_confirm = false;
-    if (!accept) return;
-    const esp_err_t err = ls_board_hw_antenna_confirm_external();
-    s_error = err == ESP_OK ? NULL : "Antenna busy / switch failed";
-    if (err == ESP_OK) {
-        settings_set_antenna_external(true);
-        if (s_ant_remember) settings_set_antenna_remember(true);
-    }
 }
 
 static void enter(void)
 {
-    s_ant_confirm = false; s_error = NULL; s_page_first = 0; s_sel = 0;
+    s_error = NULL; s_page_first = 0; s_sel = 0;
 #if LS_HAS_C6
     ls_wireless_observe(true);
 #endif
 }
 static void leave(void)
 {
-    s_ant_confirm = false;
 #if LS_HAS_C6
     ls_wireless_observe(false);
 #endif
@@ -563,17 +515,6 @@ static void leave(void)
 static bool key(ls_tk_t k, char ch)
 {
     (void)ch;
-    if (s_ant_confirm) {
-        if (k == LS_TK_UP || k == LS_TK_LEFT) s_ant_focus = (s_ant_focus + 2) % 3;
-        else if (k == LS_TK_DOWN || k == LS_TK_RIGHT || k == LS_TK_TAB)
-            s_ant_focus = (s_ant_focus + 1) % 3;
-        else if (k == LS_TK_ENTER) {
-            if (s_ant_focus == 2) s_ant_remember = !s_ant_remember;
-            else ant_confirm(s_ant_focus == 1);
-        }
-        else if (k == LS_TK_ESC) ant_confirm(false);
-        return true;
-    }
     if (k == LS_TK_CHAR && (ch == LS_OPT_KEY || ch == 'O')) {
         options_open(); return true;
     }
@@ -591,18 +532,6 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
-    if (s_ant_confirm) {
-        const tui_rect r = s_ant_yes;
-        if (col >= r.x && col < r.x + r.w && row >= r.y && row < r.y + r.h)
-            ant_confirm(true);
-        else if (col >= s_ant_no.x && col < s_ant_no.x + s_ant_no.w &&
-                 row >= s_ant_no.y && row < s_ant_no.y + s_ant_no.h)
-            ant_confirm(false);
-        else if (col >= s_ant_toggle.x && col < s_ant_toggle.x + s_ant_toggle.w &&
-                 row >= s_ant_toggle.y && row < s_ant_toggle.y + s_ant_toggle.h)
-            s_ant_remember = !s_ant_remember;
-        return true;
-    }
     if (col >= s_options_hit.x && col < s_options_hit.x + s_options_hit.w &&
         row >= s_options_hit.y && row < s_options_hit.y + s_options_hit.h) {
         options_open(); return true;

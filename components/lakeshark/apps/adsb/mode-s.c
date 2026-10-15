@@ -266,6 +266,18 @@ int brute_force_ap(mode_s_t *self, unsigned char *msg, struct mode_s_msg *mm)
     return 0;
 }
 
+/* The Mode A code from the 13-bit identity field, whose top bits sit in the
+   low five bits of `hi` and the rest in `lo`: octal digits written as a
+   decimal number, the way a code is read out (7700). */
+static int mode_a_code(unsigned char hi, unsigned char lo)
+{
+    int a = ((lo & 0x80) >> 5) | ((hi & 0x02) >> 0) | ((hi & 0x08) >> 3);
+    int b = ((lo & 0x02) << 1) | ((lo & 0x08) >> 2) | ((lo & 0x20) >> 5);
+    int c = ((hi & 0x01) << 2) | ((hi & 0x04) >> 1) | ((hi & 0x10) >> 4);
+    int d = ((lo & 0x01) << 2) | ((lo & 0x04) >> 1) | ((lo & 0x10) >> 4);
+    return a * 1000 + b * 100 + c * 10 + d;
+}
+
 int decode_ac13_field(unsigned char *msg, int *unit)
 {
     int m_bit = msg[3] & (1 << 6);
@@ -421,22 +433,16 @@ void mode_s_decode(mode_s_t *self, struct mode_s_msg *mm, unsigned char *msg)
     mm->um = ((msg[1] & 7) << 3) |
              msg[2] >> 5;
 
-    {
-        int a, b, c, d;
+    mm->identity = mode_a_code(msg[2], msg[3]);
 
-        a = ((msg[3] & 0x80) >> 5) |
-            ((msg[2] & 0x02) >> 0) |
-            ((msg[2] & 0x08) >> 3);
-        b = ((msg[3] & 0x02) << 1) |
-            ((msg[3] & 0x08) >> 2) |
-            ((msg[3] & 0x20) >> 5);
-        c = ((msg[2] & 0x01) << 2) |
-            ((msg[2] & 0x04) >> 1) |
-            ((msg[2] & 0x10) >> 4);
-        d = ((msg[3] & 0x01) << 2) |
-            ((msg[3] & 0x04) >> 1) |
-            ((msg[3] & 0x10) >> 4);
-        mm->identity = a * 1000 + b * 100 + c * 10 + d;
+    /* Aircraft status (type code 28, subtype 1): the emergency state in the
+       three bits after the subtype, then the Mode A code in the same 13-bit
+       layout an identity reply has. */
+    if (mm->me_ok && mm->metype == 28 && mm->mesub == 1)
+    {
+        mm->emergency_ok = 1;
+        mm->emergency_state = msg[5] >> 5;
+        mm->status_identity = mode_a_code(msg[5], msg[6]);
     }
 
     /* DF11, DF17 and DF18 carry the address in the clear, with plain parity;

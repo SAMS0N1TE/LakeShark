@@ -1228,7 +1228,7 @@ void ls_ctl_register_commands(void)
         { .command = "search", .help = "Repeating wideband search on the RTL: what keeps showing up",
           .hint = "[start [lo_MHz hi_MHz] | stop | clear | dump]", .func = &ls_search_command },
         { .command = "catch", .help = "RTL burst spotting with LR2021 repeat decode",
-          .hint = "start <MHz>|stop|list|stats|peaks", .func = &rec_catch_command },
+          .hint = "start <MHz>|stop|list|stats|peaks|watch", .func = &rec_catch_command },
         /**/
         { .command = "date", .help = "Print the wall-clock time (or uptime marker if unsynced)",
           .func = &cmd_date },

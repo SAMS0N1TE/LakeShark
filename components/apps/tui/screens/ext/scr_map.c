@@ -39,6 +39,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_quick.h"
 #include "../../ls_theme.h"
 #include "../../ls_tui.h"
+#include "../../ls_tui_touch.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_stroke.h"
 #include "carto/style.h"
@@ -1501,22 +1502,50 @@ static void ping_ring(int cx, int cy, uint8_t attr, int period_ms)
     ls_ink_ellipse(cx, cy, rx, ry, attr, 1, step < 2 ? -2 : -3);
 }
 
-/* Corner brackets closing in on a target: wide and fast at the moment of
-   selection, then a steady frame. */
-static void lock_brackets(int cx, int cy, uint8_t attr, int64_t now)
+static int floor_div(int a, int b) { return a >= 0 ? a / b : -((b - 1 - a) / b); }
+
+/* Corner brackets closing in on a target of radius r dots: wide and fast at
+   the moment of selection, then a steady frame. A cell has one colour and
+   one glyph, so a bracket dot in a symbol's cell repainted and reshaped that
+   symbol. The brackets settle in the cells just outside the target's own,
+   and are drawn after every symbol, skipping any cell one holds. */
+static struct { bool on; int x0, y0, x1, y1; uint8_t attr; } s_brackets;
+
+static void lock_brackets(int cx, int cy, int r, uint8_t attr, int64_t now)
 {
     double t = (double)(now - s_lock_us) / 700000.0;
     if (t < 0) t = 0;
     if (t > 1) t = 1;
     const double ease = 1.0 - (1.0 - t) * (1.0 - t);
-    const int rx = (int)lround(5 + 12 * (1.0 - ease));
-    const int ry = (int)lround(5 + 12 * (1.0 - ease));
+    const int grow = (int)lround(12 * (1.0 - ease));
+    s_brackets.x0 = 2 * floor_div(cx - r, 2) - 1 - grow;
+    s_brackets.x1 = 2 * floor_div(cx + r, 2) + 2 + grow;
+    s_brackets.y0 = 3 * floor_div(cy - r, 3) - 1 - grow;
+    s_brackets.y1 = 3 * floor_div(cy + r, 3) + 3 + grow;
+    s_brackets.attr = attr;
+    s_brackets.on = true;
+}
+
+static void bracket_dot(int x, int y)
+{
+    const int p = x < 0 || y < 0 ? 0 : ls_ink_cell_prio(x / 2, y / 3);
+    if (x < 0 || y < 0 || (p >= 5 && p < 9)) return;
+    ls_ink_dot(x, y, s_brackets.attr, 9);
+}
+
+static void brackets_canvas(void)
+{
+    if (!s_brackets.on) return;
+    s_brackets.on = false;
     const int arm = 3;
     for (int sx = -1; sx <= 1; sx += 2)
         for (int sy = -1; sy <= 1; sy += 2) {
-            const int x = cx + sx * rx, y = cy + sy * ry;
-            ls_ink_line(x, y, x - sx * arm, y, attr, 9, 0);
-            ls_ink_line(x, y, x, y - sy * arm, attr, 9, 0);
+            const int x = sx < 0 ? s_brackets.x0 : s_brackets.x1;
+            const int y = sy < 0 ? s_brackets.y0 : s_brackets.y1;
+            for (int k = 0; k <= arm; k++) {
+                bracket_dot(x - sx * k, y);
+                if (k) bracket_dot(x, y - sy * k);
+            }
         }
 }
 
@@ -1733,7 +1762,7 @@ static void air_canvas(tui_rect a, int pw, int ph, int64_t now)
             air_symbol(v->dx, v->dy, sym_for(ac), ac->heading, TUI_ATTR(hue, TUI_BLACK),
                        adsb_state_key(ac) == sel ? 8 : 7, v->compact ? 0.75 : 1.0);
             claim_dots(v->dx, v->dy, v->compact ? 2 : 4, a.w, a.h);
-            if (adsb_state_key(ac) == sel) lock_brackets(v->dx, v->dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
+            if (adsb_state_key(ac) == sel) lock_brackets(v->dx, v->dy, 5, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
             hit_add(a.x + v->dx / 2, a.y + v->dy / 3, HIT_AIR, adsb_state_key(ac), v->lat, v->lon);
         }
     }
@@ -1760,7 +1789,7 @@ static void air_block_lines(const adsb_aircraft_t *ac, const air_view_t *v, char
    few cells further out. spot[i][2] is how far the label's nearest cell is
    from the symbol, a cell being 10 and a row 17, and the list is sorted so
    the nearest comes first. */
-#define LABEL_SPOTS_MAX 64
+#define LABEL_SPOTS_MAX 72
 static int label_spots(int cx, int cy, int gap, int w, int rows, int a_w, int spot[][3])
 {
     int n = 0;
@@ -1783,14 +1812,32 @@ static int label_spots(int cx, int cy, int gap, int w, int rows, int a_w, int sp
             n++;
         }
     }
+    /* Last resort, so a name that fits today does not move: above and below
+       with the name hung off either side of the symbol, for a pane short of
+       rows where the centred spot above or below is crowded. */
+    const int primary = n;
+    int hang_l = cx - w + 1, hang_r = cx;
+    if (hang_l + w > a_w) hang_l = a_w - w;
+    if (hang_r + w > a_w) hang_r = a_w - w;
+    if (hang_l < 0) hang_l = 0;
+    if (hang_r < 0) hang_r = 0;
+    for (int k = 0; k < 5 && n + 4 <= LABEL_SPOTS_MAX; k++) {
+        const int g = gap - 1 + k;
+        const int ys[2] = { cy - g - (rows - 1), cy + g };
+        for (int j = 0; j < 2; j++) {
+            cand[n][0] = hang_l; cand[n][1] = ys[j]; n++;
+            cand[n][0] = hang_r; cand[n][1] = ys[j]; n++;
+        }
+    }
     int m = 0;
     for (int i = 0; i < n; i++) {
         const int x0 = cand[i][0], y0 = cand[i][1];
+        const int from = i < primary ? 0 : primary;
         const int dxn = x0 > cx ? x0 - cx : (x0 + w - 1 < cx ? cx - (x0 + w - 1) : 0);
         const int dyn = y0 > cy ? y0 - cy : (y0 + rows - 1 < cy ? cy - (y0 + rows - 1) : 0);
         const int cost = 10 * dxn + 17 * dyn;
         int j = m++;
-        while (j > 0 && spot[j - 1][2] > cost) {
+        while (j > from && spot[j - 1][2] > cost) {
             spot[j][0] = spot[j - 1][0]; spot[j][1] = spot[j - 1][1]; spot[j][2] = spot[j - 1][2];
             j--;
         }
@@ -2150,7 +2197,7 @@ static void nodes_canvas(tui_rect a, int pw, int ph)
         s_node_compact[i] = compact;
         node_symbol(dx, dy, p->type, TUI_ATTR(hue, TUI_BLACK), selected ? 8 : 6, compact ? 0.75 : 1.0);
         claim_dots(dx, dy, compact ? 2 : 3, a.w, a.h);
-        if (selected) lock_brackets(dx, dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), esp_timer_get_time());
+        if (selected) lock_brackets(dx, dy, 3, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), esp_timer_get_time());
         hit_add(a.x + dx / 2, a.y + dy / 3, HIT_NODE, (uint32_t)i, p->lat_e6 / 1e6, p->lon_e6 / 1e6);
     }
 }
@@ -2411,7 +2458,7 @@ static void marks_canvas(tui_rect a, int pw, int ph, int64_t now)
                 hit_add(a.x + dx / 2, a.y + dy / 3, HIT_LINE, (uint32_t)i, s->lat[s->n - 1], s->lon[s->n - 1]);
                 arrival_outline(s->id,dx,dy,now);
                 if (s_sel == SEL_LINE && s_sel_index == i)
-                    lock_brackets(dx, dy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
+                    lock_brackets(dx, dy, 2, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
             }
         }
     }
@@ -2432,7 +2479,7 @@ static void marks_canvas(tui_rect a, int pw, int ph, int64_t now)
         claim_dots(cdx, cdy, 3, a.w, a.h);
         arrival_outline(m->id,cdx,cdy,now);
         const bool sel = s_sel == SEL_MARK && s_sel_index == i;
-        if (sel && (now / 250000) % 2 == 0) lock_brackets(cdx, cdy, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
+        if (sel && (now / 250000) % 2 == 0) lock_brackets(cdx, cdy, 3, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), now);
         hit_add(a.x + dx / 2, a.y + dy / 3, HIT_MARK, (uint32_t)i, m->lat, m->lon);
     }
     /* The compass's GO TO target, so the map and the compass agree. */
@@ -3588,6 +3635,7 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
     edges_collect(pw, ph);
     if (s_nedges > 1) s_nedges = 1;      /* the selection only: the pane is small */
     edges_canvas(area, pw, ph);
+    brackets_canvas();
     ls_ink_flush(sf, tui_rect_make(0, -1, 0, 0));
     claim_ink(area);
     receiver_text(sf, area, pw, ph);
@@ -3673,11 +3721,24 @@ static void check_selection(void)
     else if (s_sel == SEL_LINE && !ls_sketch_at(s_sel_index)) select_none();
 }
 
+/* A cell a symbol or a name holds this frame, in body cells. */
+static bool cell_taken(int x, int y)
+{
+    for (int i = 0; i < s_ntaken; i++)
+        if (s_taken[i].y == y && x >= s_taken[i].x0 && x <= s_taken[i].x1) return true;
+    return false;
+}
+
 static void centre_reticle(tui_surface *sf, tui_rect body)
 {
     const int x=body.x+body.w/2,y=body.y+body.h/2;
-    /* Opaque backing keeps the target legible over every basemap/theme. */
+    /* Opaque backing keeps the target legible over every basemap/theme.
+       It steps around symbols and names: a followed or GO TO target sits
+       right here, and painting over it hid the thing being followed. A
+       symbol on the centre is the target itself, so then none is drawn. */
+    if(cell_taken(x-body.x,y-body.y)) return;
     for(int dy=-1;dy<=1;dy++) for(int dx=-2;dx<=2;dx++)
+        if(!cell_taken(x+dx-body.x,y+dy-body.y))
         tui_put_char(sf,body,x+dx,y+dy,
             dy==0 ? (dx==0 ? '+' : '-') : (dx==0 ? '|' : ' '),
             dx==0 && dy==0 ? TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT) :
@@ -3736,6 +3797,29 @@ static void route_canvas(int pw,int ph)
     }
 }
 
+/* A finger dragged on the map carries the map with it. Once it has moved a
+   couple of cells it is a drag, never a tap: the release that ends it
+   selects nothing, however close to a marker it went down. */
+static void pan(int dx, int dy);
+static bool s_dragging;
+static int s_drag_col, s_drag_row;
+
+static void drag_pan(void)
+{
+    int sc, sr, c, r;
+    if (!ls_tui_touch_held(&sc, &sr, &c, &r)) { s_dragging = false; return; }
+    if (!s_dragging) {
+        if (!in_rect(s_map_cells, sc, sr) || (abs(c - sc) < 2 && abs(r - sr) < 2)) return;
+        s_dragging = true;
+        s_drag_col = sc;
+        s_drag_row = sr;
+    }
+    if (c == s_drag_col && r == s_drag_row) return;
+    pan((s_drag_col - c) * SUB_X, (s_drag_row - r) * sub_y());
+    s_drag_col = c;
+    s_drag_row = r;
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     static const char *previous_save;
@@ -3743,6 +3827,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if(save_status && (save_status!=previous_save || strstr(save_status,"NOT SAVED"))) say(save_status);
     previous_save=save_status;
     if(ls_place_search_active()) { ls_place_search_draw(sf,area);return; }
+    drag_pan();
     const int64_t now = esp_timer_get_time();
     refresh_receiver(now);
     ls_map_follow_fix(s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
@@ -3853,6 +3938,7 @@ static void draw(tui_surface *sf, tui_rect area)
                 TUI_ATTR(TUI_BLACK, TUI_CYAN));
 
     s_nhits = 0;
+    s_ntaken = 0;
     if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");
@@ -3889,6 +3975,7 @@ static void draw(tui_surface *sf, tui_rect area)
         air_canvas(body, pw, ph, now);
         edges_collect(pw, ph);
         edges_canvas(body, pw, ph);
+        brackets_canvas();
         ls_ink_flush(sf, s_card_rect);
         claim_ink(body);
 
@@ -4127,9 +4214,11 @@ static int nearest_hit(int col, int row)
     if (ch < 1) ch = 17;
     int best = -1;
     long best_d = 0;
-    /* About a fingertip and a half either way: six cells across. A tap
-       on a label or a shape is distance zero and always wins. */
-    const long reach = (long)(6 * cw) * (long)(6 * cw);
+    /* About a fingertip: the symbol drawn round the hit cell and a little
+       air. Six cells across swallowed most of the map, so a tap meant to
+       recentre selected whatever was nearby. A tap on a label or a shape is
+       distance zero and always wins. */
+    const long reach = (long)(7 * cw / 2) * (long)(7 * cw / 2);
     for (int i = 0; i < s_nhits; i++) {
         const hit_t *h = &s_hits[i];
         const long gx = col < h->x ? h->x - col : col > h->x1 ? col - h->x1 : 0;
@@ -4170,6 +4259,7 @@ static void select_hit(const hit_t *h)
 static bool touch(int col, int row)
 {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
+    if (s_dragging) { s_dragging = false; return true; }
     if (in_rect(s_controls_hit, col, row)) return key(LS_TK_CHAR, 'x');
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {

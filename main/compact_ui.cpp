@@ -74,6 +74,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_userapp.h"
 #include "ls_touch.h"
 #include "esp_timer.h"
+#include "soc/soc.h"
 #include "esp_cpu.h"
 #include "esp_log.h"
 #include "esp_console.h"
@@ -849,6 +850,8 @@ static uint32_t s_loop_avg_us;
 static uint32_t s_ph_input_us, s_ph_imu_us, s_ph_draw_us, s_ph_present_us,
                 s_ph_sleep_us;
 static uint32_t s_ph_core_frames[2];
+static uint32_t s_tui_beat;      /* one per session loop pass; the stall check reads it */
+static bool s_tui_stall_test;    /* 'tui stalltest' */
 
 static inline uint32_t ph_avg(uint32_t avg, int64_t dt)
 {
@@ -1423,6 +1426,12 @@ static bool tui_session(void)
         ls_ui_perf_frame(&s_perf, ph_draw, ph_sleep);
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
         s_ph_core_frames[esp_cpu_get_core_id() ? 1 : 0]++;
+        __atomic_add_fetch(&s_tui_beat, 1, __ATOMIC_RELAXED);
+        /* 'tui stalltest': park this loop for good, to prove the stall check. */
+        if (__atomic_load_n(&s_tui_stall_test, __ATOMIC_ACQUIRE)) {
+            ESP_LOGW("tui", "stall test: the UI loop stops here");
+            for (;;) vTaskDelay(portMAX_DELAY);
+        }
 
         /* A shorter sleep while a picture is still arriving. */
 
@@ -1548,8 +1557,70 @@ static int perf_cmd(int argc, char **argv)
     return 0;
 }
 
+/* A UI that stops drawing used to freeze the board with nothing recorded: the
+ * task watchdog does not watch ls_tui, and a reset wipes the live state. The
+ * session loop runs every frame even at idle, so no progress for 15 s while a
+ * session is up is a stall. It is reported then, into the last words a panic
+ * record keeps, and at 60 s the run ends in a panic, which saves that record,
+ * the trail and a core dump with ls_tui's stack. The check never touches flash:
+ * a stall inside a flash or cache operation must not hang the timer task too.
+ * 60 s is far past any legitimate pause in the loop. */
+#define TUI_STALL_WARN_S  15
+#define TUI_STALL_ABORT_S 60
+static void tui_stall_check(void *arg)
+{
+    (void)arg;
+    static uint32_t last;
+    static int still;
+    const uint32_t beat = __atomic_load_n(&s_tui_beat, __ATOMIC_RELAXED);
+    if (!s_tui_task || s_tui_stop || beat != last) {
+        last = beat;
+        still = 0;
+        return;
+    }
+    if (++still == TUI_STALL_WARN_S || still == TUI_STALL_ABORT_S) {
+        static const char *const STATE[] = { "running", "ready", "blocked", "suspended", "deleted", "invalid" };
+        const eTaskState st = s_tui_worker ? eTaskGetState(s_tui_worker) : eInvalid;
+        ESP_LOGE("tui", "UI stalled: no frame for %d s on %s; ls_tui %s",
+                 still, ls_tui_screen_name(ls_tui_screen_current()),
+                 STATE[st <= eInvalid ? st : eInvalid]);
+        /* Where it is parked, for addr2line against the archived ELF. A
+         * switched-out task's saved frame starts at its top of stack (the
+         * TCB's first word): mepc, then ra. Code addresses further up the
+         * stack are its callers. The core dump decoder does not unwind
+         * tasks other than the one that aborts, so this line is the record. */
+        if (s_tui_worker && st != eRunning) {
+            const uint32_t *top = *(uint32_t *const *)s_tui_worker;
+            const uint32_t *end = (const uint32_t *)((const uint8_t *)s_tui_stack + sizeof(s_tui_stack));
+            if (top >= (const uint32_t *)s_tui_stack && top + 2 <= end) {
+                char at[160];
+                int n = snprintf(at, sizeof(at), "ls_tui at pc=0x%08lx ra=0x%08lx callers",
+                                 (unsigned long)top[0], (unsigned long)top[1]);
+                int found = 0;
+                /* Flash code only: internal RAM is executable on the P4 too,
+                 * so a wider test reads data words as callers. */
+                for (const uint32_t *p = top + 2; p < end && found < 8 && n < (int)sizeof(at) - 12; p++)
+                    if (*p >= SOC_IROM_LOW && *p < SOC_IROM_HIGH) {
+                        n += snprintf(at + n, sizeof(at) - n, " 0x%08lx", (unsigned long)*p);
+                        found++;
+                    }
+                ESP_LOGE("tui", "%s", at);
+            }
+        }
+        if (still == TUI_STALL_ABORT_S) abort();
+    }
+}
+
 static bool tui_start_session(void)
 {
+    static esp_timer_handle_t stall_timer;
+    if (!stall_timer) {
+        const esp_timer_create_args_t a = { .callback = tui_stall_check, .arg = nullptr,
+                                            .dispatch_method = ESP_TIMER_TASK, .name = "tui_stall",
+                                            .skip_unhandled_events = true };
+        if (esp_timer_create(&a, &stall_timer) == ESP_OK)
+            esp_timer_start_periodic(stall_timer, 1000000);
+    }
     if (s_tui_task) return true;
 
     /* Taking the screen ends the shell's transition fence. */
@@ -1983,6 +2054,12 @@ static int tui_cmd(int argc, char **argv)
                set_us ? (long long)(bytes / set_us) : 0LL, (long long)rd_us, (long long)wb_us);
         (void)sum;
         ls_tui_invalidate();
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "stalltest")) {
+        printf("tui stalltest: the UI stops drawing; the stall check reports at %d s and ends the run at %d s\n",
+               TUI_STALL_WARN_S, TUI_STALL_ABORT_S);
+        __atomic_store_n(&s_tui_stall_test, true, __ATOMIC_RELEASE);
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "touch")) {
@@ -3277,7 +3354,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
+        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t perf={.command="perf",

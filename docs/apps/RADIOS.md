@@ -46,13 +46,16 @@ names that app.
 | O | OPTIONS | Open OPTIONS |
 | Esc | | Back to HOME |
 
-Choosing USE MMCX1 opens a warning: TX without an antenna can damage the
-radio. Pick ANTENNA ATTACHED to switch, or CANCEL. DON'T ASK AGAIN skips the
-warning next time.
+USE MMCX1 switches in one tap and is remembered across reboots. MMCX1 is
+for receive unless MMCX1 USE says otherwise: each LoRa transmit goes out the
+internal antenna and the switch comes back to MMCX1 when it ends.
 
 OPTIONS holds:
 
-- **ANT WARNING**: ON shows the MMCX1 warning every time. OFF skips it.
+- **MMCX1 USE**: RX ONLY (default) keeps transmits on the internal antenna.
+  RX+TX transmits on MMCX1 too; only choose it with an antenna for the
+  transmit band on MMCX1, since TX into an open or mismatched port can damage
+  the radio. Console: `ant txuse rx|rxtx`.
 - **BLE AT BOOT**: start Bluetooth on the Wi-Fi and Bluetooth co-processor at
   boot.
 - **WI-FI AT BOOT**: start Wi-Fi at boot.

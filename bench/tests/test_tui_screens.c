@@ -125,6 +125,8 @@ bool settings_get_antenna_remember(void) { return s_ant_remember; }
 void settings_set_antenna_remember(bool v) { s_ant_remember = v; }
 bool settings_get_antenna_external(void) { return s_ant_ext; }
 void settings_set_antenna_external(bool v) { s_ant_ext = v; }
+void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
+bool settings_get_antenna_mmcx_tx(void) { return false; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
@@ -144,6 +146,11 @@ bool settings_get_df_offset(int s, int m, float *d) { (void)s; (void)m; (void)d;
 esp_err_t ls_board_hw_antenna_external(bool ext) { (void)ext; return ESP_OK; }
 esp_err_t ls_board_hw_antenna_confirm_external(void) { return ESP_OK; }
 bool ls_board_hw_antenna_tx_allowed(void) { return true; }
+esp_err_t ls_board_hw_antenna_tx_begin(void) { return ESP_OK; }
+void ls_board_hw_antenna_tx_end(void) { }
+static bool s_stub_mmcx_tx;
+void ls_board_hw_antenna_set_mmcx_tx(bool tx) { s_stub_mmcx_tx = tx; }
+bool ls_board_hw_antenna_mmcx_tx(void) { return s_stub_mmcx_tx; }
 bool ls_board_hw_antenna_is_external(void) { return false; }
 void settings_set_df_offset(int s, int m, float d) { (void)s; (void)m; (void)d; }
 bool settings_get_df_pattern(int s, int8_t p[36], uint16_t *c) { (void)s; (void)p; (void)c; return false; }

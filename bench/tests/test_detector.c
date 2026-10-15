@@ -8,6 +8,9 @@
 #include "ls_radio_panel.h"
 #include "ls_haptic.h"
 #include "esp_timer.h"
+#include "ls_gps.h"
+#include "apps/adsb/adsb_app.h"
+#include "apps/adsb/adsb_state.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,6 +27,10 @@ void ls_radio_digits_draw(tui_surface *sf,tui_rect r,int row,const char *t,uint8
 void ls_radio_bargraph(tui_surface *sf,tui_rect r,int x,int y,int w,int rows,float f,float peak) {(void)sf;(void)r;(void)x;(void)y;(void)w;(void)rows;(void)f;(void)peak;}
 
 void ls_sweep_wake(void) {}
+/* The UI and rule tests here run with no ADS-B receiver and no GPS. */
+static adsb_source_t air_source=ADSB_SRC_NONE;
+adsb_source_t adsb_active_source(void) {return air_source;}
+void ls_gps_get(ls_gps_state_t *out) {memset(out,0,sizeof(*out));}
 void ls_sweep_transport_stats(ls_sweep_transport_stats_t *s) {memset(s,0,sizeof(*s));}
 bool ls_tui_cutout(tui_rect *r) {*r=tui_rect_make(0,0,0,0);return false;}
 bool ls_tui_keyboard_mode(void) {return false;}
@@ -278,14 +285,14 @@ LS_CASE(detector_ui_touch_results_and_idle_stability) {
         tui_rect area=tui_surface_rect(&sf);
         ls_scr_detector.enter();tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
         /* Every control is a filled key at least three cells high. */
-        int cols=orientation?6:3,cy=h-(orientation?4:8);
+        int cols=orientation?7:4,cy=h-(orientation?4:8);
         LS_CHECK(ls_scr_detector.touch(w/(2*cols),cy+1));
         LS_CHECK(!ls_detector_running());
         LS_CHECK(ls_scr_detector.touch(w/(2*cols),cy+1));
         LS_CHECK(ls_detector_running());
         LS_CHECK(ls_scr_detector.touch(2*w/cols+w/(2*cols),cy+1));
         LS_CHECK(opened_options && opened_options->radio==LS_RSEL_NONE && opened_options->draw_header);
-        int testx=(5%cols)*w/cols+w/(2*cols),testy=cy+(5/cols)*4+1;
+        int testx=(6%cols)*w/cols+w/(2*cols),testy=cy+(6/cols)*4+1;
         LS_CHECK(ls_scr_detector.touch(testx,testy));
         ls_detector_tick();clock_us+=300000;ls_shim_time_set(clock_us);
         tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
@@ -319,8 +326,80 @@ LS_CASE(detector_snapshot_and_steady_banner) {
     for(int i=0;i<20;i++)ls_notify_poll(0);
     tui_frame_begin(&sf);ls_notify_draw(&sf,tui_surface_rect(&sf));
     LS_CHECK(!memcmp(ui_saved,ui_back,52*64*sizeof(tui_cell)));
-    LS_CHECK(ui_has(&sf,"ESC / X"));
-    LS_CHECK(ls_notify_touch(44,3) && !ls_notify_showing());
+    LS_CHECK(ui_has(&sf,"[X]") && !ui_has(&sf,"ESC / X") && !ui_has(&sf,"Tap to inspect"));
+    LS_CHECK(ls_notify_touch(47,2) && !ls_notify_showing());
+}
+
+static void notice_row(const tui_surface *sf,int y,int x,int n,char *out) {
+    for(int i=0;i<n;i++)out[i]=(char)sf->back[y*sf->w+x+i].ch;
+    out[n]=0;
+}
+static void notice_steady(const char *body) {
+    ls_notice_t n={.title="DETECTOR",.accent=TUI_BLUE|TUI_BRIGHT,.steady=true,.quiet=true,.screen=-1};
+    snprintf(n.body,sizeof(n.body),"%s",body);
+    ls_notify_clear();ls_notify_post_quiet(&n);
+}
+
+/* A steady notice is the house banner: accent box, title bar with [X], 4 rows. */
+LS_CASE(steady_notice_draws_the_standard_title_row) {
+    begin(one);notice_steady("TEST / sink test");
+    tui_surface sf;tui_surface_setup(&sf,ui_back,ui_front,52,64);
+    tui_frame_begin(&sf);tui_fill(&sf,tui_surface_rect(&sf),'.',0);
+    ls_notify_draw(&sf,tui_rect_make(0,1,52,60));
+    char t[64];
+    const uint8_t bar=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLUE|TUI_BRIGHT);
+    notice_row(&sf,2,2,8,t);LS_CHECK(!strcmp(t,"DETECTOR"));
+    notice_row(&sf,2,47,3,t);LS_CHECK(!strcmp(t,"[X]"));
+    for(int x=1;x<51;x++)LS_CHECK(sf.back[2*52+x].attr==bar);
+    notice_row(&sf,3,2,16,t);LS_CHECK(!strcmp(t,"TEST / sink test"));
+    LS_CHECK(sf.back[1*52+1].attr==TUI_ATTR(TUI_BLUE|TUI_BRIGHT,TUI_BLACK));
+    LS_CHECK(sf.back[5*52+10].ch=='.');   /* four rows, not five */
+    LS_CHECK(!ui_has(&sf,"ESC / X") && !ui_has(&sf,"Tap to inspect"));
+    ls_notify_clear();
+}
+
+/* A body wider than the line scrolls, to its end, instead of being clipped. */
+LS_CASE(steady_notice_scrolls_a_long_body_to_its_end) {
+    begin(one);
+    char body[LS_NOTIFY_BODY];
+    for(int i=0;i<110;i++)body[i]=(char)('a'+i%26);
+    body[110]=0;
+    notice_steady(body);
+    tui_surface sf;tui_surface_setup(&sf,ui_back,ui_front,52,64);
+    tui_rect area=tui_rect_make(0,1,52,60);
+    char t[64],w[64];
+    tui_frame_begin(&sf);ls_notify_draw(&sf,area);
+    notice_row(&sf,3,2,48,t);LS_CHECK(!strncmp(t,body,48));
+    for(int i=0;i<100;i++)ls_notify_poll(0);
+    tui_frame_begin(&sf);ls_notify_draw(&sf,area);
+    notice_row(&sf,3,2,48,t);LS_CHECK(!strncmp(t,body+13,48));
+    for(int i=0;i<160;i++)ls_notify_poll(0);
+    LS_CHECK(ls_notify_showing());        /* up long enough to be read to the end */
+    tui_frame_begin(&sf);ls_notify_draw(&sf,area);
+    notice_row(&sf,3,2,48,t);snprintf(w,sizeof(w),"%.48s",body+62);LS_CHECK(!strcmp(t,w));
+    ls_notify_clear();
+}
+
+/* Nothing is drawn in the rounded corners, whatever area the router hands in. */
+LS_CASE(steady_notice_stays_inside_the_corner_safe_span) {
+    begin(one);
+    notice_steady("AIRCRAFT N123AB B738 FL035 4.2km NE 1850ft squawk 7700 / altitude_baro_ft_below 2000 within 10 km");
+    tui_surface sf;tui_surface_setup(&sf,ui_back,ui_front,52,64);
+    tui_rect areas[2]={tui_rect_make(0,1,52,60),tui_rect_make(-4,1,60,60)};
+    for(int a=0;a<2;a++)for(int pad=0;pad<=5;pad+=5) {
+        corner_pad=pad;
+        tui_frame_begin(&sf);tui_fill(&sf,tui_surface_rect(&sf),'.',0);
+        ls_notify_draw(&sf,areas[a]);
+        for(int y=0;y<64;y++)for(int x=0;x<52;x++) {
+            const bool inside=x>=pad && x<52-pad;
+            if(!inside)LS_CHECK(sf.back[y*52+x].ch=='.');
+        }
+        LS_CHECK(ui_has(&sf,"[X]"));
+        for(int y=0;y<64;y++)for(int x=0;x<52;x++)
+            if(y<1 || y>4)LS_CHECK(sf.back[y*52+x].ch=='.');
+    }
+    corner_pad=0;
+    ls_notify_clear();
 }
 
 /* The shared label helper must retain the physical inset and row clipping. */
@@ -343,4 +422,86 @@ LS_CASE(detector_shared_line_clipping) {
     ls_safe_line(&sf,tui_rect_make(0,1,2,3),2,"ignored",0);
     LS_CHECK(!memcmp(front,back,sizeof(back)));
     corner_pad=0;
+}
+
+/* Aircraft: OPTIONS thresholds and the AIRCRAFT view, through the real callbacks. */
+LS_CASE(detector_aircraft_options_edit_only_thresholds_a_rule_has) {
+    const char *json="{\"version\":1,\"defaults\":{\"enabled\":true},\"rules\":["
+        "{\"id\":\"tag\",\"sources\":[\"sweep.ble\"],\"match\":{\"category_in\":[\"TRACKER\"]},\"sinks\":[\"banner\"]},"
+        "{\"id\":\"near\",\"sources\":[\"adsb\"],\"match\":{\"distance_km_within\":10},\"sinks\":[\"banner\"]},"
+        "{\"id\":\"low\",\"sources\":[\"adsb\"],\"match\":{\"altitude_baro_ft_below\":1500},\"sinks\":[\"banner\"]}]}";
+    begin(json);LS_CHECK(ls_scr_detector.key(LS_TK_CHAR,'o'));
+    const ls_opt_ctx_t *src=opened_options->opt[0].sub,*r=opened_options->opt[1].sub;
+    LS_CHECK(src->n==5 && src->opt[4].get && !strcmp(src->opt[4].label,"ADS-B aircraft (table only)"));
+    src->opt[4].set(&src->opt[4],0);LS_CHECK(!(status().sources&DET_ADSB));
+    src->opt[4].set(&src->opt[4],1);LS_CHECK(status().sources&DET_ADSB);
+    LS_CHECK(r->n==11 && r->opt[9].why_not && r->opt[10].why_not);
+    LS_CHECK(r->opt[9].why_not(&r->opt[9]) && r->opt[10].why_not(&r->opt[10])); /* rule 1: a SWEEP rule */
+    r->opt[0].set_num(&r->opt[0],2);
+    LS_CHECK(!r->opt[9].why_not(&r->opt[9]) && r->opt[10].why_not(&r->opt[10]));
+    r->opt[9].set_num(&r->opt[9],25);
+    ls_detector_rule_t rule;LS_CHECK(ls_detector_rule(1,&rule) && rule.air_km==25 && rule.air_mask==DET_AIR_KM);
+    LS_CHECK(r->opt[9].num(&r->opt[9])==25);
+    r->opt[0].set_num(&r->opt[0],3);
+    r->opt[10].set_num(&r->opt[10],900);
+    LS_CHECK(ls_detector_rule(2,&rule) && rule.air_alt_below_ft==900);
+    /* A rule cannot gain a predicate it was not loaded with. */
+    r->opt[9].set_num(&r->opt[9],5);
+    LS_CHECK(ls_detector_rule(2,&rule) && rule.air_km==0 && !(rule.air_mask&DET_AIR_KM));
+    r->opt[0].set_num(&r->opt[0],1);
+}
+LS_CASE(detector_aircraft_view_is_touch_reachable_and_reads_the_table) {
+    begin(one);
+    for(int orientation=0;orientation<2;orientation++) {
+        int w=orientation?115:52,h=orientation?27:64;
+        tui_surface sf;tui_surface_setup(&sf,ui_back,ui_front,w,h);
+        tui_rect area=tui_surface_rect(&sf);
+        air_source=ADSB_SRC_NONE;
+        ls_scr_detector.enter();tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
+        int cols=orientation?7:4,cy=h-(orientation?4:8);
+        /* The AIRCRAFT key is a filled key at least 8 x 3 cells. */
+        LS_CHECK(ls_scr_detector.touch(3*w/cols+w/(2*cols),cy+1));
+        clock_us+=300000;ls_shim_time_set(clock_us);
+        tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
+        LS_CHECK(ui_has(&sf,"AIRCRAFT WATCH") && ui_has(&sf,"SOURCE OFF") && ui_has(&sf,"claims no radio"));
+        /* With a receiver running the fresh table shows, with the squawk. */
+        adsb_state_init();air_source=ADSB_SRC_IQ;
+        adsb_aircraft_t *a=adsb_state_find_or_create(0xABC123);LS_CHECK(a!=NULL);
+        if(a) {
+            snprintf(a->callsign,sizeof(a->callsign),"UAL123");a->last_seen_us=clock_us;a->sources=1;a->emitter_tc=4;a->emitter_ca=5;
+            a->altitude=12000;a->altitude_valid=true;a->altitude_ts_us=clock_us;
+            adsb_state_set_squawk(a,7700);adsb_state_set_squawk(a,7700);
+        }
+        clock_us+=300000;ls_shim_time_set(clock_us);
+        tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
+        LS_CHECK(ui_has(&sf,"UAL123") && ui_has(&sf,"sq7700") && ui_has(&sf,"heavy") && ui_has(&sf,"12000ft"));
+        /* A tap on the row opens the inspector; BACK returns. */
+        LS_CHECK(ls_scr_detector.key(LS_TK_CHAR,'d'));
+        clock_us+=300000;ls_shim_time_set(clock_us);
+        tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
+        LS_CHECK(ui_has(&sf,"TABLE DETAIL") && ui_has(&sf,"EMERGENCY CODE") && ui_has(&sf,"barometric"));
+        LS_CHECK(ls_scr_detector.key(LS_TK_ESC,0));
+        LS_CHECK(ls_scr_detector.touch(3*w/cols+w/(2*cols),cy+1)); /* back to MATCHES */
+        clock_us+=300000;ls_shim_time_set(clock_us);
+        tui_frame_begin(&sf);ls_scr_detector.draw(&sf,area);
+        LS_CHECK(ui_has(&sf,"RECENT MATCHES"));
+        air_source=ADSB_SRC_NONE;
+    }
+}
+LS_CASE(detector_writer_logs_aircraft_broadcast_identifiers_never_position) {
+    ls_detector_event_t e={.at=123,.entity=0xabcdef,.source=DET_ADSB,.category=255,.selected=DET_SD,.delivered=DET_SD,
+        .icao=0xABC123,.emitter_tc=4,.emitter_ca=7,.squawk=7700,.emergency=1,.altitude_ft=3500,.distance_x10_km=56};
+    strcpy(e.callsign,"UAL123");strcpy(e.rule_ids,"\"air-emergency-squawk\"");
+    LS_CHECK(ls_detector_write(&e,0x1234));
+    FILE *f=fopen(LS_DETECTOR_DIR "/events/detector-0.jsonl","rb");LS_CHECK(f!=NULL);if(!f)return;
+    static char buf[8192];size_t n=fread(buf,1,sizeof(buf)-1,f);fclose(f);buf[n]=0;
+    const char *line=strrchr(buf,'\n');if(line && line[1]==0) {buf[n-1]=0;line=strrchr(buf,'\n');}
+    line=line?line+1:buf;
+    LS_CHECK(strstr(line,"\"source\":\"adsb\"") && strstr(line,"\"icao\":\"ABC123\"") && strstr(line,"\"callsign\":\"UAL123\""));
+    LS_CHECK(strstr(line,"\"squawk\":7700") && strstr(line,"\"emergency_state\":1") && strstr(line,"\"altitude_baro_ft\":3500"));
+    LS_CHECK(strstr(line,"\"adsb_category\":\"rotorcraft\"") && strstr(line,"\"rssi\":null") && strstr(line,"\"gps_valid\":false"));
+    /* Where the receiver or the aircraft is never leaves the device. */
+    LS_CHECK(!strstr(line,"\"lat") && !strstr(line,"\"lon") && !strstr(line,"distance") && !strstr(line,"position"));
+    e.altitude_ft=INT32_MIN;e.emitter_tc=0;
+    LS_CHECK(ls_detector_write(&e,0x1234));
 }

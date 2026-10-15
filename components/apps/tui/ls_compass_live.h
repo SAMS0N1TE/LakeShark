@@ -118,6 +118,7 @@ float ls_compass_steady_step(ls_compass_steady_t *s, float heading, float pitch,
 #define LS_COMPASS_REST_S      2.0f
 #define LS_COMPASS_STEADY_G    0.03f
 #define LS_COMPASS_GYRO_FS_DPS 250.0f
+#define LS_COMPASS_MOVE_UT2    49.0f   /* a fresh sample 7 uT off the rest anchor is movement */
 #define LS_COMPASS_SAT_HOLD_S  1.0f
 float ls_compass_steady_imu(ls_compass_steady_t *s, float heading, float pitch, float roll,
                             const float g[3], const float a[3], float dt);

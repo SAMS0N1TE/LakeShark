@@ -24,6 +24,10 @@ static int               s_probes;
 
 static ls_notice_t s_now;
 static int         s_ttl;
+/* Frames this banner was posted for: SHOW_FRAMES, or longer for a steady one
+   whose body has to scroll. s_line is the body width the last draw had. */
+static int         s_life = SHOW_FRAMES;
+static int         s_line = 40;
 static int         s_unread;
 /* The screen the unread MESSAGES came from. A system notice (accent) replaces
    s_now for its few seconds but is not a message: it neither counts nor moves this. */
@@ -61,7 +65,8 @@ static void post(const ls_notice_t *n, bool alert)
 {
     if (!n) return;
     s_now = *n;
-    s_ttl = SHOW_FRAMES;
+    s_life = (n->steady && (int)strlen(n->body) > s_line) ? 2 * SHOW_FRAMES : SHOW_FRAMES;
+    s_ttl = s_life;
     if (!n->accent) {
         if (s_unread < 999) s_unread++;
         s_unread_screen = n->screen;
@@ -164,37 +169,42 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
     s_close = tui_rect_make(0, -1, 0, 0);
     if (s_ttl <= 0 || area.w < 20 || area.h < 5) return;
 
-    if(s_now.steady) {
-        /* One event, one stationary card. No scrolling or perimeter chase. */
-        tui_rect r=tui_rect_make(area.x,area.y,area.w,5);
-        s_rect=r;
-        uint8_t hue=s_now.accent?s_now.accent:TUI_CYAN;
-        tui_fill(sf,r,' ',A(TUI_WHITE,TUI_BLACK));
-        ls_panel_box(sf,r,NULL,hue);
-        s_close=tui_rect_make(r.x+r.w-9,r.y+1,8,3);
-        tui_fill(sf,s_close,' ',A(TUI_BLACK,hue|TUI_BRIGHT));
-        tui_put_str(sf,s_close,s_close.x+1,s_close.y+1,"ESC / X",A(TUI_BLACK,hue|TUI_BRIGHT));
-        tui_rect body=tui_rect_make(r.x+1,r.y+1,r.w-11,3);
-        tui_fill(sf,body,' ',A(TUI_WHITE,TUI_BLUE));
-        tui_put_str(sf,body,body.x+1,body.y,s_now.title,A(TUI_YELLOW|TUI_BRIGHT,TUI_BLUE));
-        tui_put_str(sf,body,body.x+1,body.y+1,s_now.body,A(TUI_WHITE|TUI_BRIGHT,TUI_BLUE));
-        tui_put_str(sf,body,body.x+1,body.y+2,"Tap to inspect",A(TUI_CYAN|TUI_BRIGHT,TUI_BLUE));
-        return;
-    }
     /* Four rows at the TOP of the screen's area, under the chrome: that is
        where every device anyone has held puts one, and the bottom of this
        interface is where the controls are. Small, and made to stand out by
-       moving: a light runs round its red edge for as long as it is up. */
+       moving: a light runs round its red edge for as long as it is up.
+
+       A steady notice (an event, not a message) is this same banner without
+       the decoration: full height from the first frame, no pulse, no light.
+       Its body still scrolls, because that is reading, not decoration. */
     const int full = 4;
+    const bool still = s_now.steady;
 
-    const int age = SHOW_FRAMES - s_ttl;
+    const int age = s_life - s_ttl;
     int h = full;
-    if (age < SLIDE_FRAMES)   h = 1 + age;
-    if (s_ttl < SLIDE_FRAMES) h = s_ttl;
-    if (h > full) h = full;
-    if (h < 1) h = 1;
+    if (!still) {
+        if (age < SLIDE_FRAMES)   h = 1 + age;
+        if (s_ttl < SLIDE_FRAMES) h = s_ttl;
+        if (h > full) h = full;
+        if (h < 1) h = 1;
+    }
 
-    tui_rect r = tui_rect_make(area.x, area.y, area.w, h);
+    /* The rounded glass takes the corners of the rows the box covers, so the
+       whole box stands off them, as the rest of the chrome does. */
+    int pad = 0;
+    for (int y = area.y; y < area.y + full; y++) {
+        const int p = ls_tui_corner_pad(y);
+        if (p > pad) pad = p;
+    }
+    int x0 = area.x, x1 = area.x + area.w;
+    if (sf) {
+        const int cols = tui_surface_rect(sf).w;
+        if (x0 < pad) x0 = pad;
+        if (x1 > cols - pad) x1 = cols - pad;
+    }
+    if (x1 - x0 < 20) return;
+
+    tui_rect r = tui_rect_make(x0, area.y, x1 - x0, h);
     s_rect = r;
 
     /* Messages are red; a system notice (UPDATE) brings its own colour. */
@@ -216,7 +226,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         }
 
         /* The bar pulses red and white for its first two seconds. */
-        const bool pulse = age < FLASH_FRAMES * 2 && ((age / 5) & 1);
+        const bool pulse = !still && age < FLASH_FRAMES * 2 && ((age / 5) & 1);
         const uint8_t bar = pulse ? A(hue, TUI_WHITE | TUI_BRIGHT)
                                   : A(TUI_WHITE | TUI_BRIGHT, hue);
         tui_fill(sf, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, 1), ' ', bar);
@@ -226,6 +236,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         /* A message longer than the line scrolls through it, pausing at
            each end so both are readable. */
         const int width = r.w - 4;
+        s_line = width;
         const int len = (int)strlen(msg);
         int off = 0;
         if (len > width) {
@@ -243,7 +254,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         const uint8_t tail = s_now.accent ? (uint8_t)(hue | TUI_BRIGHT) : (uint8_t)(TUI_YELLOW | TUI_BRIGHT);
         const int perim = 2 * (r.w - 1) + 2 * (r.h - 1);
         const int head_at = (age * 3) % perim;
-        for (int k = 0; k < 16; k++) {
+        for (int k = 0; k < 16 && !still; k++) {
             int x, y;
             char ch;
             edge_at(r, (head_at - k + perim) % perim, &x, &y, &ch);

@@ -18,6 +18,10 @@ typedef struct {
     uint32_t        icao;
     volatile int    head, n;
     int             squawk, squawk_pending;
+    /* When each was last heard agreeing, for consumers that must not act on
+       an old one. The emergency state is the aircraft-status message's. */
+    int64_t         squawk_ts_us, emergency_ts_us;
+    uint8_t         emergency, emergency_pending;
 } adsb_extra_t;
 EXT_RAM_BSS_ATTR static adsb_extra_t s_extra[ADSB_MAX_TRACKED];
 
@@ -34,6 +38,8 @@ static void extra_reset(int slot, uint32_t icao)
     e->head = 0;
     e->icao = icao;
     e->squawk = e->squawk_pending = 0;
+    e->squawk_ts_us = e->emergency_ts_us = 0;
+    e->emergency = e->emergency_pending = 0;
 }
 
 void adsb_state_init(void)
@@ -306,9 +312,56 @@ void adsb_state_set_squawk(adsb_aircraft_t *a, int code)
     if (slot < 0 || code < 0 || code > 7777) return;
     adsb_extra_t *e = &s_extra[slot];
     if (e->icao != a->icao) extra_reset(slot, a->icao);
-    if (code == e->squawk) { e->squawk_pending = 0; return; }
-    if (code == e->squawk_pending) { e->squawk = code; e->squawk_pending = 0; }
+    if (code == e->squawk) {
+        e->squawk_pending = 0;
+        if (code) e->squawk_ts_us = esp_timer_get_time();
+        return;
+    }
+    if (code == e->squawk_pending) {
+        e->squawk = code;
+        e->squawk_pending = 0;
+        e->squawk_ts_us = esp_timer_get_time();
+    }
     else e->squawk_pending = code;
+}
+
+void adsb_state_set_emergency(adsb_aircraft_t *a, int state)
+{
+    const int slot = a ? slot_of(a) : -1;
+    if (slot < 0 || state < 0 || state > 6) return;   /* 7 is reserved */
+    adsb_extra_t *e = &s_extra[slot];
+    if (e->icao != a->icao) extra_reset(slot, a->icao);
+    if (state == e->emergency) {
+        e->emergency_pending = 0;
+        if (state) e->emergency_ts_us = esp_timer_get_time();
+        return;
+    }
+    /* Two agreeing reports, as for the Mode A code; the pending state is
+       held plus one so that zero can mean none. */
+    if (state + 1 == e->emergency_pending) {
+        e->emergency = (uint8_t)state;
+        e->emergency_pending = 0;
+        e->emergency_ts_us = esp_timer_get_time();
+    }
+    else e->emergency_pending = (uint8_t)(state + 1);
+}
+
+int adsb_state_emergency(int slot, int64_t *ts_us)
+{
+    if (ts_us) *ts_us = 0;
+    if (slot < 0 || slot >= ADSB_MAX_TRACKED) return 0;
+    if (!s_aircraft[slot].active || s_extra[slot].icao != s_aircraft[slot].icao) return 0;
+    if (ts_us) *ts_us = s_extra[slot].emergency_ts_us;
+    return s_extra[slot].emergency;
+}
+
+int adsb_state_squawk_at(int slot, int64_t *ts_us)
+{
+    if (ts_us) *ts_us = 0;
+    if (slot < 0 || slot >= ADSB_MAX_TRACKED) return 0;
+    if (!s_aircraft[slot].active || s_extra[slot].icao != s_aircraft[slot].icao) return 0;
+    if (ts_us) *ts_us = s_extra[slot].squawk_ts_us;
+    return s_extra[slot].squawk;
 }
 
 int adsb_state_squawk(int slot)

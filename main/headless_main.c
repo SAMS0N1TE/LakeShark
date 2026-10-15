@@ -2202,17 +2202,22 @@ static int cmd_ant(int argc, char **argv)
     printf("ant: this board has no antenna switch\n");
     return 1;
 #else
-    if (argc > 1) {
+    if (argc == 3 && !strcmp(argv[1], "txuse")) {
+        bool tx;
+        if      (!strcmp(argv[2], "rx"))   tx = false;
+        else if (!strcmp(argv[2], "rxtx")) tx = true;
+        else { puts("usage: ant txuse rx|rxtx"); return 1; }
+        ls_board_hw_antenna_set_mmcx_tx(tx);
+        settings_set_antenna_mmcx_tx(tx);
+    } else if (argc > 1) {
         bool ext;
         if      (!strcmp(argv[1], "ext") || !strcmp(argv[1], "mmcx1")) ext = true;
         else if (!strcmp(argv[1], "int") || !strcmp(argv[1], "internal")) ext = false;
-        else { printf("usage: ant [int|ext [confirm]]\n"); return 1; }
-
+        else { puts("usage: ant [int|ext|txuse rx|rxtx]"); return 1; }
         if (argc > 3 || (argc == 3 && (!ext || strcmp(argv[2], "confirm")))) {
-            puts("usage: ant [int|ext [confirm]]"); return 1;
+            puts("usage: ant [int|ext|txuse rx|rxtx]"); return 1;
         }
-        const esp_err_t e = ext && argc == 3 ? ls_board_hw_antenna_confirm_external()
-                                                       : ls_board_hw_antenna_external(ext);
+        const esp_err_t e = ls_board_hw_antenna_external(ext);
         if (e != ESP_OK) {
             printf("ant: switch refused: %s\n", esp_err_to_name(e));
             return 1;
@@ -2221,12 +2226,17 @@ static int cmd_ant(int argc, char **argv)
     }
 
     const bool ext = ls_board_hw_antenna_is_external();
+    const bool mmcx_tx = ls_board_hw_antenna_mmcx_tx();
     printf("ant: %s\n", ext ? "EXTERNAL - MMCX1" : "internal");
-    printf("ant: stored, so it comes back this way after a reboot\n");
-    if (ext) printf("ant: TX %s; ant ext confirm acknowledges an attached antenna\n",
-                    ls_board_hw_antenna_tx_allowed() ? "confirmed" : "unconfirmed");
-    if (ext)
-        printf("ant: MMCX1 must have an antenna on it before transmitting - "
+    printf("ant: MMCX1 use %s\n", mmcx_tx ? "RX+TX - transmits go out MMCX1"
+                                           : "RX ONLY - transmits go out the internal antenna");
+    uint32_t moved = 0, returned = 0;
+    ls_board_hw_antenna_tx_counts(&moved, &returned);
+    printf("ant: since boot %lu transmits moved to internal, %lu returns to MMCX1\n",
+           (unsigned long)moved, (unsigned long)returned);
+    printf("ant: both stored, so they come back this way after a reboot\n");
+    if (ext && mmcx_tx)
+        printf("ant: MMCX1 must have an antenna for the transmit band on it - "
                "the vendor warns that transmitting into an open port may "
                "damage the RF front end. MMCX2 is not connected.\n");
     return 0;
@@ -3346,6 +3356,7 @@ void app_main(void)
 #if LS_HAS_RF_SWITCH
     /* Normally already done above; this catches a refusal there and a
        preference the early read could not see. Never writes the setting. */
+    ls_board_hw_antenna_set_mmcx_tx(settings_get_antenna_mmcx_tx());
     apply_stored_antenna(settings_get_antenna_external());
 #endif
 

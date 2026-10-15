@@ -33,7 +33,7 @@ typedef struct {
     uint8_t accent;
     bool quiet;                    /* banner only, such as a routine test */
     bool haptic_only;              /* vibrate without speaker output */
-    bool steady;                   /* event banner: no decorative motion; 3x8 dismiss */
+    bool steady;                   /* event banner: no decorative motion (slide, pulse, light); stays up longer if its body scrolls */
     bool notify_visible;           /* alert even while its source is open */
 } ls_notice_t;
 

@@ -105,6 +105,67 @@
         "banner",
         "sd"
       ]
+    },
+    {
+      "id": "air-emergency-squawk",
+      "enabled": true,
+      "rule_cooldown_s": 0,
+      "sources": ["adsb"],
+      "match": {
+        "squawk_in": ["7500", "7600", "7700"]
+      },
+      "sinks": ["vibrate", "banner"]
+    },
+    {
+      "id": "air-emergency-status",
+      "enabled": true,
+      "rule_cooldown_s": 0,
+      "sources": ["adsb"],
+      "match": {
+        "emergency_status": true
+      },
+      "sinks": ["vibrate", "banner"]
+    },
+    {
+      "id": "air-callsign-watch",
+      "sources": ["adsb"],
+      "match": {
+        "callsign_prefix_in": []
+      },
+      "sinks": ["banner"]
+    },
+    {
+      "id": "air-icao-watch",
+      "sources": ["adsb"],
+      "match": {
+        "icao_in": [],
+        "icao_ranges": []
+      },
+      "sinks": ["banner"]
+    },
+    {
+      "id": "air-nearby",
+      "sources": ["adsb"],
+      "match": {
+        "distance_km_within": 10
+      },
+      "sinks": ["banner"]
+    },
+    {
+      "id": "air-low",
+      "sources": ["adsb"],
+      "match": {
+        "altitude_baro_ft_below": 1500
+      },
+      "sinks": ["banner"]
+    },
+    {
+      "id": "air-category",
+      "sources": ["adsb"],
+      "match": {
+        "adsb_category_in": ["rotorcraft"]
+      },
+      "sinks": ["banner"]
     }
   ]
 }

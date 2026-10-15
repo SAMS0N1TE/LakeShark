@@ -857,6 +857,17 @@ void settings_set_antenna_external(bool external)
     sput_u8("ant_ext", external ? 1 : 0);
 }
 
+bool settings_get_antenna_mmcx_tx(void)
+{
+    if (!s_nvs_ok) return false;
+    uint8_t v = 0;
+    return nvs_get_u8(s_nvs, "ant_mmcx_tx", &v) == ESP_OK && v != 0;
+}
+void settings_set_antenna_mmcx_tx(bool tx)
+{
+    if (s_nvs_ok) sput_u8("ant_mmcx_tx", tx ? 1 : 0);
+}
+
 bool settings_get_antenna_remember(void)
 {
     if (!s_nvs_ok) return false;

@@ -53,7 +53,7 @@ bool ls_tui_keyboard_mode(void) { return ls_keypad_present(); }
 
 /* adsb_source_t is an enum whose ADSB_SRC_NONE is 0; the header is not on
    every stub user's include path. */
-adsb_source_t adsb_active_source(void) { return 0; }
+adsb_source_t adsb_active_source(void) { return getenv("LSSIM_ADSB") ? ADSB_SRC_IQ : ADSB_SRC_NONE; }
 void adsb_uat_use_picker(void) { }
 void adsb_uat_stats(uat_stats_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 

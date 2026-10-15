@@ -9,7 +9,11 @@ extern "C" {
 #define LS_DETECTOR_RULES 64
 #define LS_DETECTOR_BYTES 32768
 #define LS_DETECTOR_HISTORY 24
-enum { DET_RID=1, DET_BLE=2, DET_WIFI=4, DET_LORA=8 };
+enum { DET_RID=1, DET_BLE=2, DET_WIFI=4, DET_LORA=8, DET_ADSB=16 };
+/* Aircraft predicates a rule can carry (ls_detector_rule_t.air_mask). */
+enum { DET_AIR_SQUAWK=1, DET_AIR_CALL=2, DET_AIR_ICAO=4, DET_AIR_CAT=8, DET_AIR_KM=16, DET_AIR_ALT=32, DET_AIR_EMERG=64 };
+#define LS_DETECTOR_AIR_LIST 8
+#define LS_DETECTOR_AIR_NO_DISTANCE 0xFFFFu
 enum { DET_BANNER=1, DET_VIBRATE=2, DET_SD=4 };
 typedef struct {
     char id[32];
@@ -19,6 +23,15 @@ typedef struct {
     uint32_t min_hits_per_min;
     bool has_min_rssi;
     bool enabled, validated, has_validated;
+    /* Aircraft predicates, ANDed; air_mask says which are set (an empty watch
+     * list is set and matches nothing). Only rules whose sole source is adsb
+     * carry them. */
+    uint8_t air_mask, air_squawks, air_calls, air_icaos;
+    uint16_t air_cats, air_km;
+    int32_t air_alt_below_ft; /* barometric, as the aircraft reports it */
+    uint16_t air_squawk[LS_DETECTOR_AIR_LIST];
+    char air_call[LS_DETECTOR_AIR_LIST][9];
+    uint32_t air_icao_lo[LS_DETECTOR_AIR_LIST], air_icao_hi[LS_DETECTOR_AIR_LIST];
 } ls_detector_rule_t;
 typedef struct {
     uint64_t entity, rules;
@@ -29,6 +42,14 @@ typedef struct {
     uint16_t band, rate_guess;
     uint32_t hits_per_min;
     bool test, validated;
+    /* Aircraft events (source adsb). Unknown altitude is INT32_MIN, unknown
+     * distance LS_DETECTOR_AIR_NO_DISTANCE; neither position nor distance is
+     * ever logged. */
+    uint32_t icao;
+    uint8_t qualifier, emitter_tc, emitter_ca, emergency;
+    uint16_t squawk, distance_x10_km;
+    int32_t altitude_ft;
+    char callsign[9];
     char reason[96];
     char rule_ids[2177]; /* JSON string list, IDs validated to [A-Za-z0-9_-]. */
 } ls_detector_event_t;
@@ -38,6 +59,7 @@ typedef struct {
     unsigned rules, queued, recent;
     uint32_t revision, observations, dropped, suppressed, matches;
     char error[96], lora[32];
+    char adsb[20];            /* receiver another app runs, or "OFF"; DETECTOR never starts one */
 } ls_detector_status_t;
 void ls_detector_init(void);
 bool ls_detector_running(void);

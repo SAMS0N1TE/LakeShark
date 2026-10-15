@@ -131,6 +131,12 @@ static void detection(const catch_burst_t *b,bool start,void *ctx)
 {
     (void)ctx;
     if(b->spur)return;
+    /* Outside every chosen window: counted and dropped here, so no row, no
+       repeat tracking and no LR2021 jump. */
+    if(!catch_watch_passes(b->frequency)) {
+        if(start) {lock();s_status.ignored++;unlock();}
+        return;
+    }
     /* Chip inspection is independent of the result lock and repeat policy. */
     bool has_stream=ls_lora_chip()==LS_LORA_CHIP_LR20XX;
     lock();
@@ -476,6 +482,7 @@ static void lr_worker(void *arg)
 ls_radio_err_t rec_catch_start(uint32_t center)
 {
     if(center<25200000u || center>1764800000u) return LS_RADIO_ERR_INVALID;
+    catch_watch_load();
     bool expected=false;
     if(!__atomic_compare_exchange_n(&s_starting,&expected,true,false,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return LS_RADIO_ERR_BUSY;
     ls_radio_err_t err=LS_RADIO_OK;
@@ -607,6 +614,7 @@ int rec_catch_command(int argc,char **argv)
         printf("floor median %.1f dBFS threshold median %.1f dBFS (per-bin +%.1f dB); warm %u ms duration %u..%u ms; quiet %u blocks after %u ms, positive timeout %u ms\n",
             (double)st->floor_dbfs,(double)st->threshold_dbfs,(double)CATCH_MARGIN_DB,
             CATCH_WARM_US/1000,CATCH_MIN_US/1000,CATCH_MAX_US/1000,CATCH_QUIET_BLOCKS,CATCH_MERGE_US/1000,CATCH_OBSERVATION_US/1000);
+        printf("ignored (outside chosen windows) %lu\n",(unsigned long)st->ignored);
         printf("handoff warm %u ms repeat tolerance 15000 Hz; DC/image guard %u bins (%.3f kHz)\n",
             CATCH_HANDOFF_WARM_US/1000,CATCH_DC_BINS,(double)CATCH_DC_BINS*CATCH_RATE/CATCH_BINS/1000);
         printf("RTL actual centre %lu Hz rate %lu sps gain %s %.1f dB IQ RMS %.5f clips %llu (sampled)\n",
@@ -661,5 +669,20 @@ int rec_catch_command(int argc,char **argv)
         }
         heap_caps_free(st);return 0;
     }
-    puts("catch start <MHz> | stop | list | stats | peaks | spurs | trace <0..300 seconds>");return 1;
+    if(argc>=2 && !strcmp(argv[1],"watch")) {
+        catch_watch_load();catch_watch_t w;catch_watch_get(&w);
+        bool ok=true;
+        if(argc==3 && !strcmp(argv[2],"clear"))memset(w.chan,0,sizeof(w.chan));
+        else if(argc==3 && (!strcmp(argv[2],"all") || !strcmp(argv[2],"chosen")))w.mode=argv[2][0]=='c';
+        else if(argc>=4 && !strcmp(argv[2],"add"))
+            ok=catch_watch_add(&w,(uint32_t)(atof(argv[3])*1e6+0.5),argc>4?(uint32_t)(atof(argv[4])*1e3+0.5):CATCH_CHAN_WIDTH)>=0;
+        else ok=argc==2;
+        if(ok && argc>2)ok=catch_watch_set(&w);
+        if(!ok){puts("catch watch [all|chosen|add <MHz> [kHz]|clear]");return 1;}
+        const char *note=catch_watch_note(&w);
+        printf("watch %s%s%s\n",w.mode?"CHOSEN":"ALL",note?": ":"",note?note:"");
+        for(int i=0;i<CATCH_CHAN_MAX;i++)if(w.chan[i].centre)printf("  %d: %lu Hz +/- %lu\n",i+1,(unsigned long)w.chan[i].centre,(unsigned long)w.chan[i].width/2);
+        return 0;
+    }
+    puts("catch start <MHz> | stop | list | stats | peaks | spurs | watch | trace <0..300 seconds>");return 1;
 }

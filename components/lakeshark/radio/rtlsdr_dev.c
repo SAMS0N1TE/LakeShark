@@ -192,6 +192,15 @@ static ls_radio_err_t rtl_iq_retune(void *ctx, uint64_t center_hz, bool fast,
     return *actual_hz != 0 ? LS_RADIO_OK : LS_RADIO_ERR_IO;
 }
 
+static ls_radio_err_t rtl_iq_set_ppm(void *ctx, int ppm)
+{
+    rtlsdr_dev_t *dev = (rtlsdr_dev_t *)ctx;
+    if (!dev) return LS_RADIO_ERR_INVALID;
+    int error = rtlsdr_set_freq_correction(dev, ppm);
+    if (error == -2) error = 0;   /* already in force */
+    return rtl_error(error);
+}
+
 static ls_radio_err_t rtl_iq_stop(void *ctx)
 {
     (void)ctx;
@@ -224,6 +233,7 @@ static const ls_radio_driver_ops_t s_rtl_ops = {
     .iq_stop = rtl_iq_stop,
     .cancel_read = rtl_cancel_read,
     .recover = rtl_recover,
+    .iq_set_ppm = rtl_iq_set_ppm,
 };
 
 static ls_radio_err_t rtl_register_endpoint(rtlsdr_dev_t *dev)

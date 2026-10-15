@@ -84,6 +84,10 @@ bool settings_get_antenna_external(void);
 bool settings_get_antenna_remember(void);
 void settings_set_antenna_remember(bool remember);
 void settings_set_antenna_external(bool external);
+/* Whether MMCX1 also transmits. False (the default): MMCX1 receives and a
+   transmit goes out the internal antenna. */
+bool settings_get_antenna_mmcx_tx(void);
+void settings_set_antenna_mmcx_tx(bool tx);
 /* Same value, readable before settings_init(). */
 bool settings_peek_antenna_external(void);
 /* P25 on the LR2021: its receive gain, 0 the chip's AGC, 1..13 a fixed step. */

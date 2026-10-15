@@ -4,6 +4,7 @@
 #define LS_BOARD_HW_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -33,9 +34,22 @@ int ls_board_hw_c6_state(void);
 /* Which antenna the SKY13453 is pointing at. */
 
 esp_err_t ls_board_hw_antenna_external(bool external);
-/* Acknowledgment lasts only until the route changes or the board reboots. */
+/* Same as ls_board_hw_antenna_external(true); kept for older callers. */
 esp_err_t ls_board_hw_antenna_confirm_external(void);
+/* Always true: the route never blocks a transmit. Kept for older callers. */
 bool ls_board_hw_antenna_tx_allowed(void);
+
+/* MMCX1 for receive only (false, the default) or for transmit too. With
+   MMCX1 selected and receive only, the LoRa driver brackets each transmit
+   with tx_begin (switch to internal; an error means do not transmit) and
+   tx_end (back to MMCX1 once the part reports it done), under its lock.
+   ls_board_hw_antenna_is_external keeps saying the operator's choice. */
+void ls_board_hw_antenna_set_mmcx_tx(bool tx);
+bool ls_board_hw_antenna_mmcx_tx(void);
+esp_err_t ls_board_hw_antenna_tx_begin(void);
+void ls_board_hw_antenna_tx_end(void);
+/* Since boot: transmits moved to internal, and returns to MMCX1. */
+void ls_board_hw_antenna_tx_counts(uint32_t *moved, uint32_t *returned);
 
 /* True when MMCX1 is selected. False for the internal antenna, and false on
    a board that has no switch - which is correct, since such a board's signal

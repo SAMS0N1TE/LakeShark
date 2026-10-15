@@ -297,6 +297,10 @@ void adsb_decode_on_message(struct mode_s_msg *mm)
         else if (mm->metype >= 9 && mm->metype <= 18)  a->mt_df17_pos++;
         else if (mm->metype >= 19 && mm->metype <= 22) a->mt_df17_vel++;
         else                                            a->mt_other++;
+        if (mm->emergency_ok) {
+            adsb_state_set_emergency(a, mm->emergency_state);
+            if (mm->status_identity) adsb_state_set_squawk(a, mm->status_identity);
+        }
     } else if (mm->msgtype == 4 || mm->msgtype == 5 ||
                mm->msgtype == 20 || mm->msgtype == 21) {
         a->mt_surv++;

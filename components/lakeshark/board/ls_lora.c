@@ -325,15 +325,31 @@ esp_err_t IRAM_ATTR ls_lora_hw_transmit(spi_transaction_t *t)
     return err;
 }
 
-/* Run `expr` with the lock held and return its value. */
+/* Run `expr` with the lock held and return its value. A transmit that was
+   moved off a receive-only MMCX1 goes back first, so receive re-arms there. */
+static void tx_route_settle(void);
 #define LOCKED_RET(type, expr)                                                \
-    do { ls_lora_hw_lock(); type r_ = (expr); ls_lora_hw_unlock(); return r_; } while (0)
+    do { ls_lora_hw_lock(); tx_route_settle(); type r_ = (expr);              \
+         ls_lora_hw_unlock(); return r_; } while (0)
+
+/* A transmit: the route first, then the part. A refused start puts the
+   route straight back. */
+#define TX_ROUTED(expr)                                                       \
+    do { ls_lora_hw_lock(); tx_route_settle();                                \
+         esp_err_t r_ = ls_board_hw_antenna_tx_begin();                       \
+         if (r_ == ESP_OK) { r_ = (expr); if (r_ != ESP_OK) tx_route_settle(); } \
+         ls_lora_hw_unlock(); return r_; } while (0)
 
 /* Until a part has answered, calls go to the SX126x backend exactly as they
    did when that was the only code in this file; a part that identifies as
    something else rebinds, and ls_lora_stop() unbinds. */
 static const ls_lora_ops_t *s_ops = &ls_lora_sx126x_ops;
 static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
+
+static void tx_route_settle(void)
+{
+    if (!s_ops->is_transmitting || !s_ops->is_transmitting()) ls_board_hw_antenna_tx_end();
+}
 
 /* Reserve one aligned internal DMA buffer before probing. 259 bytes
    carries opcode + offset + a full 255-byte payload in one transaction;
@@ -723,12 +739,13 @@ bool ls_lora_is_transmitting(void)
     return s_present && s_ops->is_transmitting && s_ops->is_transmitting();
 }
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
-{ LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->send(data, len) : ESP_ERR_INVALID_STATE); }
+{ TX_ROUTED(s_ops->send(data, len)); }
 /* Polls the part's IRQ word and clears it, so it is a bus sequence. */
 bool ls_lora_send_done(void)
 {
     if (!ls_lora_hw_try_lock()) return false;
     const bool done = s_ops->send_done();
+    if (done) tx_route_settle();
     ls_lora_hw_unlock();
     return done;
 }
@@ -746,10 +763,12 @@ esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
-{ LOCKED_RET(esp_err_t, ls_board_hw_antenna_tx_allowed() ? s_ops->fsk_send(data, len) : ESP_ERR_INVALID_STATE); }
+{ TX_ROUTED(s_ops->fsk_send(data, len)); }
 esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
-{ LOCKED_RET(esp_err_t, !s_ops->ook_send ? ESP_ERR_NOT_SUPPORTED :
-             ls_board_hw_antenna_tx_allowed() ? s_ops->ook_send(chips, len, chip_bps) : ESP_ERR_INVALID_STATE); }
+{
+    if (!s_ops->ook_send) return ESP_ERR_NOT_SUPPORTED;
+    TX_ROUTED(s_ops->ook_send(chips, len, chip_bps));
+}
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
 bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
