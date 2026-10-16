@@ -369,6 +369,11 @@ bool rtl_adapter_port_reset_possible(void)
     return usb_host_root_port_has_device();
 }
 
+int rtl_adapter_port_attached(void)
+{
+    return usb_host_root_port_attached();
+}
+
 static void rtlsdr_setup_task(void *arg)
 {
     setup_arg_t *setup = (setup_arg_t *)arg;

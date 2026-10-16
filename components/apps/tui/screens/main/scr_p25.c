@@ -876,7 +876,10 @@ static const ls_quick_t QUICK_LR[] = {
       .key = '+', .key_down = '-' },
 };
 
-static bool lr_receiver(void) { return P25.lora_rx; }
+/* The receiver P25 is set to use, not whether it is streaming this moment:
+   the LR session drops lora_rx while it starts or restarts, and keying the
+   deck on that swapped VOLUME for VOLUME + GAIN and back. */
+static bool lr_receiver(void) { return ps_lr_receiver(); }
 static const ls_quick_t *quick(void) { return lr_receiver() ? QUICK_LR : QUICK; }
 static int quick_count(void) { return lr_receiver() ? 2 : N_QUICK; }
 

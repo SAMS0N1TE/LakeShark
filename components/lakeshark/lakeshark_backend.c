@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 
 #include "app_registry.h"
+#include "ls_board.h"
 #include "settings.h"
 #include "cell_performance.h"
 /**/
@@ -109,6 +110,7 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
+#if LS_HAS_USB_SDR
     esp_err_t usb_error = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, false);
     if (usb_error != ESP_OK) ESP_LOGE(TAG, "USB unavailable: %s", esp_err_to_name(usb_error));
     BaseType_t ok = usb_error == ESP_OK
@@ -117,6 +119,7 @@ void lakeshark_backend_start(void)
     if (ok != pdTRUE) {
         ESP_LOGE(TAG, "failed to start class_driver_task");
     }
+#endif
 
     if (!cell_performance_active() && audio_out_init() == ESP_OK) {
         audio_events_init();

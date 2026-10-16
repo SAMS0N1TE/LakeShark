@@ -4,6 +4,7 @@
 #include "ls_cc_capture.h"
 #include "ls_nfc_suite.h"
 #include "ls_board.h"
+#include "ls_lora_port.h"
 #include "ls_keypad.h"
 #include "ls_spi.h"
 #include "esp_timer.h"
@@ -563,6 +564,11 @@ static void worker(void *arg)
 }
 bool ls_mixrf_start(void)
 {
+    /* The keyboard's radios share its header pins with a LoRa module there. */
+    if (ls_lora_port_blocks_keyboard()) {
+        status_text("Off: the LoRa radio on the header uses these pins ('lora port')");
+        return false;
+    }
     portENTER_CRITICAL(&lock);
     if(started){if(!tx_active && !ls_nfc_suite_busy() && !state.receive_requested && !state.scan_requested && !want_nfc && !want_card && !state.scanning && !state.nfc_watching && !state.card_scanning){reprobe=true;state.busy=true;}portEXIT_CRITICAL(&lock);return true;}
     started=true;state.busy=true;state.rssi=NAN;

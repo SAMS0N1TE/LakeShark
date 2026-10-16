@@ -394,6 +394,9 @@ int ls_telemetry_build_p25(char *buf, size_t len, const lakeshark_p25_tel_t *t,
 int ls_telemetry_build_rec(char *buf, size_t len, const rec_status_t *status,
                            const ls_telemetry_common_t *common)
 { (void)buf; (void)len; (void)status; s_seen = *common; return 0; }
+int ls_telemetry_set_mode(char *buf, size_t len, const char *md)
+{ (void)buf; (void)len; (void)md; return -1; }
+bool lakeshark_radio_running(void) { return true; }
 int ls_version_line(char *out, size_t len)
 { if (len) out[0] = '\0'; return 0; }
 

@@ -57,6 +57,12 @@ int ls_telemetry_build_rec(char *buf, size_t len,
                            const rec_status_t *s,
                            const ls_telemetry_common_t *common);
 
+/* The md= value of a built line, replaced in place: "PARKED" while the TUI
+   has the receiver parked, so a head shows no mode as live. A head reads an
+   md it does not know as no mode. Returns the new length, or -1 when the
+   line has no md= or the result would not fit. */
+int ls_telemetry_set_mode(char *buf, size_t len, const char *md);
+
 #ifdef __cplusplus
 }
 #endif

@@ -113,6 +113,7 @@ LS_CASE(the_keyboard_radios_count_as_there_until_the_board_is_probed)
 {
     fresh(true, false, 1);
     s_board.mixrf_unknown = true;
+    s_board.mixrf_seen = true;
     ls_rsel_forget();
     LS_CHECK(ls_rsel_absent(LS_RSEL_CC1101) == NULL);
     LS_CHECK(ls_rsel_absent(LS_RSEL_NFC) == NULL);
@@ -316,6 +317,23 @@ static ls_rsel_radio_t s_chosen;
 static int s_done_calls;
 static void on_done(ls_rsel_radio_t r) { s_chosen = r; s_done_calls++; }
 
+/* The row a radio sits on: its number, less the radios before it that the
+   list leaves out because they have not been plugged in (dongles) or the
+   keyboard board has not been on (CC1101, nRF24, NFC). */
+static int row_for(ls_rsel_radio_t radio)
+{
+    int row = (int)radio;
+    for (int r = 0; r < (int)radio; r++) {
+        bool hidden = false;
+        if (r == LS_RSEL_SDR_RTL) hidden = !s_board.present[r] && !s_board.sdr_seen[0];
+        if (r == LS_RSEL_SDR_HACKRF) hidden = !s_board.present[r] && !s_board.sdr_seen[1];
+        if (r == LS_RSEL_CC1101 || r == LS_RSEL_NRF24 || r == LS_RSEL_NFC)
+            hidden = !s_board.present[r] && !s_board.mixrf_seen;
+        if (hidden) row--;
+    }
+    return row;
+}
+
 static void choose(int index)
 {
     for (int i = 0; i < 20; i++) ls_picker_key(LS_TK_UP, 0);
@@ -332,11 +350,11 @@ LS_CASE(the_picker_lists_every_radio_with_its_state)
     draw_picker();
     LS_CHECK(strstr(g_text[0], "RADIO") != NULL);
     LS_CHECK(row_says("RTL-SDR", "selected"));
-    LS_CHECK(row_says("HackRF", "Plug a HackRF"));
+    /* A HackRF that was never plugged in is not offered. */
+    LS_CHECK(row_of("HackRF") < 0);
     LS_CHECK(row_says("SX1262", "No Mode S"));
     /* In enum order, so every app's list reads the same. */
-    LS_CHECK(row_of("RTL-SDR") < row_of("HackRF"));
-    LS_CHECK(row_of("HackRF") < row_of("SX1262"));
+    LS_CHECK(row_of("RTL-SDR") < row_of("SX1262"));
     ls_picker_close();
 }
 
@@ -345,7 +363,7 @@ LS_CASE(choosing_a_radio_that_cannot_keeps_the_list_and_the_choice)
     fresh(true, false, 1);
     s_done_calls = 0;
     ls_rsel_open(LS_RSEL_ADSB, on_done);
-    choose(LS_RSEL_LORA);
+    choose(row_for(LS_RSEL_LORA));
     LS_EQ_INT(s_done_calls, 0);
     LS_CHECK(ls_picker_active());
     LS_EQ_INT(ls_rsel_saved(LS_RSEL_ADSB), LS_RSEL_NONE);
@@ -370,8 +388,8 @@ LS_CASE(the_lr2021_is_ready_for_ads_b_in_the_same_list)
     ls_rsel_open(LS_RSEL_ADSB, on_done);
     draw_picker();
     LS_CHECK(row_says("LR2021", "selected"));
-    LS_CHECK(row_says("RTL-SDR", "Plug an RTL-SDR"));
-    choose(LS_RSEL_LORA);
+    LS_CHECK(row_of("RTL-SDR") < 0);
+    choose(row_for(LS_RSEL_LORA));
     LS_EQ_INT(s_done_calls, 1);
     LS_EQ_INT(ls_rsel_saved(LS_RSEL_ADSB), LS_RSEL_LORA);
 }
@@ -383,7 +401,7 @@ LS_CASE(dual_aircraft_picker_requires_both_rtl_and_lr2021)
     ls_rsel_open(LS_RSEL_ADSB, on_done);
     draw_picker();
     LS_CHECK(row_of("1090 LR + 978 RTL") >= 0);
-    choose(LS_RSEL_ADSB_DUAL);
+    choose(row_for(LS_RSEL_ADSB_DUAL));
     LS_EQ_INT(ls_rsel_saved(LS_RSEL_ADSB), LS_RSEL_ADSB_DUAL);
     fresh(true, false, 1);
     LS_CHECK(ls_rsel_absent(LS_RSEL_ADSB_DUAL) != NULL);
@@ -404,11 +422,218 @@ LS_CASE(lr_fm_picker_range_modes_and_no_dongle)
     ls_rsel_set(LS_RSEL_FM, LS_RSEL_LORA);
     LS_EQ_INT(ls_rsel_resolved(LS_RSEL_FM), LS_RSEL_LORA);
     ls_rsel_fm_context(144000000, true);
-    LS_CHECK(strstr(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA), "150-960") != NULL);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) == NULL);   /* 2 m: inside 104-2740 */
+    ls_rsel_fm_context(91000000, true);
+    const char *why = ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA);
+    LS_CHECK(why && strstr(why, "104-2740") != NULL);
     LS_EQ_INT(ls_rsel_resolved(LS_RSEL_FM), LS_RSEL_SDR_RTL);
     ls_rsel_fm_context(91000000, false);
     LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) != NULL);
     ls_rsel_fm_context(162550000, false);
     LS_CHECK(ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) != NULL);
     ls_rsel_fm_context(154785000, true);
+}
+
+/* ----------------------------------------------- dongles nobody plugged -- */
+
+LS_CASE(an_lr2021_board_with_no_dongle_lists_no_dongle)
+{
+    fresh(false, false, 2);
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_of("RTL-SDR") < 0);
+    LS_CHECK(row_of("HackRF") < 0);
+    LS_CHECK(row_says("LR2021", "selected"));
+    /* What else the board has still says why it cannot. */
+    /* The keyboard board's radios are not listed either, with it not on. */
+    LS_CHECK(row_of("CC1101") < 0);
+    LS_CHECK(row_of("nRF24") < 0);
+    LS_CHECK(row_of("NFC") < 0);
+    LS_CHECK(row_of("GPS") >= 0);
+    LS_CHECK(row_of("Wi-Fi") >= 0);
+    LS_CHECK(row_of("Bluetooth") >= 0);
+    LS_CHECK(row_of("split") >= 0);
+    /* The first row is the LR2021, and it is what a tap picks. */
+    s_done_calls = 0;
+    choose(0);
+    LS_EQ_INT(s_done_calls, 1);
+    LS_EQ_INT(s_chosen, LS_RSEL_LORA);
+}
+
+LS_CASE(a_plugged_dongle_is_listed_and_a_tap_picks_it)
+{
+    fresh(true, true, 2);
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_says("RTL-SDR", "selected"));
+    LS_CHECK(row_says("HackRF", "ready"));
+    ls_picker_close();
+    /* Only the HackRF: the RTL-SDR row goes, the HackRF is the first row. */
+    fresh(false, true, 2);
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_of("RTL-SDR") < 0);
+    LS_CHECK(row_says("HackRF", "selected"));
+    s_done_calls = 0;
+    choose(0);
+    LS_EQ_INT(s_chosen, LS_RSEL_SDR_HACKRF);
+    LS_EQ_INT(ls_rsel_saved(LS_RSEL_P25), LS_RSEL_SDR_HACKRF);
+}
+
+LS_CASE(a_dongle_that_dropped_off_stays_listed_while_it_reconnects)
+{
+    fresh(false, false, 2);
+    s_board.sdr_seen[0] = true;
+    ls_rsel_forget();
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_says("RTL-SDR", "Plug an RTL-SDR"));
+    LS_CHECK(row_of("HackRF") < 0);
+    ls_picker_close();
+    /* Back on the bus: listed as ready. */
+    s_board.present[LS_RSEL_SDR_RTL] = true;
+    ls_rsel_forget();
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_says("RTL-SDR", "selected"));
+    ls_picker_close();
+}
+
+LS_CASE(a_saved_absent_dongle_falls_back_without_a_write)
+{
+    fresh(true, false, 2);
+    ls_rsel_set(LS_RSEL_P25, LS_RSEL_SDR_RTL);
+    LS_EQ_INT(s_writes, 1);
+    /* Rebooted with no dongle plugged in. */
+    board(false, false, 2);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
+    LS_EQ_INT(ls_rsel_resolved(LS_RSEL_P25), LS_RSEL_LORA);
+    ls_rsel_open(LS_RSEL_P25, on_done);
+    draw_picker();
+    LS_CHECK(row_of("RTL-SDR") < 0);
+    LS_CHECK(row_says("LR2021", "selected"));
+    ls_picker_close();
+    LS_EQ_INT(s_writes, 1);
+    LS_EQ_INT(ls_rsel_saved(LS_RSEL_P25), LS_RSEL_SDR_RTL);
+    /* The dongle comes back and is the choice again. */
+    board(true, false, 2);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_SDR_RTL);
+}
+
+LS_CASE(a_job_only_a_dongle_can_do_keeps_the_dongle_rows)
+{
+    /* ACARS has no receiver on an SX1262 board: the dongle row saying what
+       to plug in is the one sentence that helps. */
+    fresh(false, false, 1);
+    ls_rsel_open(LS_RSEL_ACARS, on_done);
+    draw_picker();
+    LS_CHECK(row_says("RTL-SDR", "Plug an RTL-SDR"));
+    LS_CHECK(row_says("HackRF", "Plug a HackRF"));
+    ls_picker_close();
+    /* The LR2021 tunes the ACARS band itself since its range was measured. */
+    fresh(false, false, 2);
+    LS_CHECK(ls_rsel_cant(LS_RSEL_ACARS, LS_RSEL_LORA) == NULL);
+}
+
+LS_CASE(the_fixed_radio_picker_hides_absent_dongles_too)
+{
+    fresh(false, false, 2);
+    ls_rsel_open_fixed(LS_RSEL_LORA, on_done);
+    draw_picker();
+    LS_CHECK(row_of("RTL-SDR") < 0);
+    LS_CHECK(row_of("HackRF") < 0);
+    LS_CHECK(row_says("LR2021", "protocol radio"));
+    s_done_calls = 0;
+    choose(0);
+    LS_EQ_INT(s_done_calls, 1);
+    LS_EQ_INT(s_chosen, LS_RSEL_LORA);
+    /* With a dongle in, it is listed and refused as before. */
+    fresh(true, false, 2);
+    ls_rsel_open_fixed(LS_RSEL_LORA, on_done);
+    draw_picker();
+    LS_CHECK(row_says("RTL-SDR", "not used by this protocol"));
+    ls_picker_close();
+}
+
+/* ------------------------------------------ the keyboard board's radios -- */
+
+LS_CASE(the_keyboard_board_radios_appear_when_it_is_attached)
+{
+    fresh(false, false, 2);
+    ls_rsel_open(LS_RSEL_REC, on_done);
+    draw_picker();
+    LS_CHECK(row_of("CC1101") < 0 && row_of("nRF24") < 0 && row_of("NFC") < 0);
+    ls_picker_close();
+    /* The keyboard goes on: not probed yet, so all three are there. */
+    s_board.mixrf_seen = true;
+    s_board.mixrf_unknown = true;
+    ls_rsel_forget();
+    ls_rsel_open(LS_RSEL_REC, on_done);
+    draw_picker();
+    LS_CHECK(row_of("CC1101") >= 0 && row_of("nRF24") >= 0 && row_of("NFC") >= 0);
+    ls_picker_close();
+    /* Probed: the parts that answered are ready, the rest say why. */
+    s_board.mixrf_unknown = false;
+    s_board.present[LS_RSEL_CC1101] = true;
+    ls_rsel_forget();
+    ls_rsel_open(LS_RSEL_REC, on_done);
+    draw_picker();
+    LS_CHECK(row_says("CC1101", "selected"));
+    LS_CHECK(row_says("nRF24", "Needs the T-MixRF"));
+    ls_picker_close();
+}
+
+LS_CASE(a_keyboard_that_was_attached_keeps_its_rows_while_it_comes_back)
+{
+    fresh(false, false, 2);
+    s_board.mixrf_seen = true;
+    ls_rsel_forget();
+    ls_rsel_open(LS_RSEL_REC, on_done);
+    draw_picker();
+    LS_CHECK(row_says("CC1101", "Needs the T-MixRF"));
+    ls_picker_close();
+}
+
+LS_CASE(a_saved_mixrf_radio_with_no_keyboard_falls_back_without_a_write)
+{
+    fresh(false, false, 2);
+    s_board.mixrf_seen = true;
+    s_board.present[LS_RSEL_CC1101] = true;
+    ls_rsel_forget();
+    ls_rsel_set(LS_RSEL_SUBGHZ_READ, LS_RSEL_CC1101);
+    LS_EQ_INT(s_writes, 1);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_SUBGHZ_READ), LS_RSEL_CC1101);
+    /* Rebooted without the keyboard. */
+    board(false, false, 2);
+    s_board.mixrf_unknown = true;
+    ls_rsel_forget();
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_SUBGHZ_READ), LS_RSEL_LORA);
+    ls_rsel_open(LS_RSEL_SUBGHZ_READ, on_done);
+    draw_picker();
+    LS_CHECK(row_of("CC1101") < 0);
+    LS_CHECK(row_says("LR2021", "selected"));
+    ls_picker_close();
+    LS_EQ_INT(s_writes, 1);
+    LS_EQ_INT(ls_rsel_saved(LS_RSEL_SUBGHZ_READ), LS_RSEL_CC1101);
+}
+
+LS_CASE(the_mixrf_job_keeps_its_rows_and_their_reason_with_no_keyboard)
+{
+    fresh(false, false, 2);
+    ls_rsel_open(LS_RSEL_MIXRF, on_done);
+    draw_picker();
+    LS_CHECK(row_says("CC1101", "Needs the T-MixRF"));
+    LS_CHECK(row_says("nRF24", "Needs the T-MixRF"));
+    LS_CHECK(row_says("NFC", "Needs the T-MixRF"));
+    ls_picker_close();
+}
+
+LS_CASE(wifi_bluetooth_gps_and_split_stay_whatever_the_keyboard_does)
+{
+    fresh(false, false, 2);
+    ls_rsel_open(LS_RSEL_REC, on_done);
+    draw_picker();
+    LS_CHECK(row_of("Wi-Fi") >= 0 && row_of("Bluetooth") >= 0);
+    LS_CHECK(row_of("GPS") >= 0 && row_of("split") >= 0);
+    ls_picker_close();
 }

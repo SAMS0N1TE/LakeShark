@@ -262,3 +262,18 @@ int ls_telemetry_build_rec(char *buf, size_t len,
     n = append_sys(buf, len, n, common);
     return n;
 }
+
+int ls_telemetry_set_mode(char *buf, size_t len, const char *md)
+{
+    if (!buf || !md || !len) return -1;
+    char *at = strstr(buf, " md=");
+    if (!at) return -1;
+    char *val = at + 4;
+    char *end = val + strcspn(val, " \r\n");
+    const size_t old = (size_t)(end - val), now = strlen(md);
+    const size_t total = strlen(buf);
+    if (total - old + now + 1 > len) return -1;
+    memmove(val + now, end, strlen(end) + 1);
+    memcpy(val, md, now);
+    return (int)(total - old + now);
+}

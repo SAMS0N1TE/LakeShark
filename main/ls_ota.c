@@ -39,6 +39,7 @@
    minutes later. A newer verified build lights a dot on HOME and raises one
    UPDATE pop-up per build; installing stays a tap on the UPDATE page. */
 
+#include "sdkconfig.h"
 #include "ls_ota.h"
 #include "ls_c6_update.h"
 #include "ls_ota_key.h"
@@ -78,10 +79,21 @@
 
 static const char *TAG = "ota";
 
-#define DEFAULT_URL   "https://" LS_OTA_HOST_PRIMARY "/tdp4/stable.txt"
-/* The default until 2026-10: a board that saved it keeps the default, not the URL. */
-#define OLD_DEFAULT_URL "https://" LS_OTA_HOST_FALLBACK "/tdp4/stable.txt"
+/* LakeShark LR has its own manifests and board name, so neither edition is
+   ever offered the other's image. A URL saved by the other edition is moved
+   to this edition's folder, channel kept (url_load). */
+#if CONFIG_LS_LR2021_ONLY
+#define OTA_DIR       "/tdp4lr/"
+#define OTA_DIR_OTHER "/tdp4/"
+#define BOARD_NAME    "T-Display-P4-LR"
+#else
+#define OTA_DIR       "/tdp4/"
+#define OTA_DIR_OTHER "/tdp4lr/"
 #define BOARD_NAME    "T-Display-P4"
+#endif
+#define DEFAULT_URL   "https://" LS_OTA_HOST_PRIMARY OTA_DIR "stable.txt"
+/* The default until 2026-10: a board that saved it keeps the default, not the URL. */
+#define OLD_DEFAULT_URL "https://" LS_OTA_HOST_FALLBACK OTA_DIR "stable.txt"
 #define VALID_AFTER_S 20
 #define RECHECK_S     3         /* how often a trial that is not healthy yet looks again */
 #define DOWNLOAD_MAX_S 900      /* the whole image, 15 min */
@@ -151,9 +163,16 @@ static esp_err_t url_load(void *ctx)
     char buf[sizeof(s_url)];
     size_t n = sizeof(buf);
     if (nvs_open("ls_ota", NVS_READONLY, &h) != ESP_OK) return ESP_OK;
-    if (nvs_get_str(h, "url", buf, &n) == ESP_OK && !strncmp(buf, "https://", 8)
-        && strcmp(buf, OLD_DEFAULT_URL))
-        snprintf(s_url, sizeof(s_url), "%s", buf);
+    if (nvs_get_str(h, "url", buf, &n) == ESP_OK && !strncmp(buf, "https://", 8)) {
+        char *other = strstr(buf, OTA_DIR_OTHER);
+        if (other) {
+            char moved[sizeof(s_url)];
+            snprintf(moved, sizeof(moved), "%.*s%s%s", (int)(other - buf), buf, OTA_DIR,
+                     other + strlen(OTA_DIR_OTHER));
+            snprintf(buf, sizeof(buf), "%s", moved);
+        }
+        if (strcmp(buf, OLD_DEFAULT_URL)) snprintf(s_url, sizeof(s_url), "%s", buf);
+    }
     n = sizeof(s_announced);
     if (nvs_get_str(h, "seen", s_announced, &n) != ESP_OK) s_announced[0] = 0;
     nvs_close(h);

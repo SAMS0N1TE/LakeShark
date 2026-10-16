@@ -100,6 +100,10 @@ bool settings_get_lr_tcxo(void);
 bool settings_set_lr_tcxo(bool tcxo);
 bool settings_get_lr_dcdc(void);
 bool settings_set_lr_dcdc(bool dcdc);
+/* Where the LoRa radio is wired (ls_lora_port.c packs it): false when
+   nothing was ever saved. */
+bool settings_get_lora_port(uint64_t *a, uint64_t *b);
+bool settings_set_lora_port(uint64_t a, uint64_t b);
 void settings_set_p25_lr_gain(int step);
 
 bool settings_get_alert_ring(void);

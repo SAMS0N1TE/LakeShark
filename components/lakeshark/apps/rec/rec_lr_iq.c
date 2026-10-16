@@ -455,7 +455,7 @@ size_t rec_lr_iq_convert(const uint8_t *iq,size_t bytes,uint8_t *out,size_t cap,
 
 bool rec_lr_iq_save(const char *path,uint32_t hz,const uint8_t *iq,size_t bytes)
 {
-    if(!path || !iq || hz<150000000u || hz>999999999u || !bytes || bytes%4 || bytes>REC_LR_IQ_BYTES)return false;
+    if(!path || !iq || hz<104000000u || hz>2740000000u || !bytes || bytes%4 || bytes>REC_LR_IQ_BYTES)return false;
     FILE *f=rec_file_open_new(path);
     if(!f)return false;
     bool ok=fprintf(f,"Filetype: LakeShark SubGhz IQ File\nVersion: 1\nFrequency: %lu\nProtocol: LR2021_IQ\nSampleRate: 125000\nSamples: %lu\n",
@@ -496,7 +496,7 @@ bool rec_lr_iq_load(const char *path,uint32_t *hz,uint8_t *iq,size_t cap,size_t 
     char line[160];uint32_t freq=0,count=0;
     bool ok=fgets(line,sizeof(line),f) && !strcmp(line,"Filetype: LakeShark SubGhz IQ File\n") &&
         fgets(line,sizeof(line),f) && !strcmp(line,"Version: 1\n") &&
-        fgets(line,sizeof(line),f) && number(line,"Frequency: ",&freq) && freq>=150000000u && freq<=999999999u &&
+        fgets(line,sizeof(line),f) && number(line,"Frequency: ",&freq) && freq>=104000000u && freq<=2740000000u &&
         fgets(line,sizeof(line),f) && !strcmp(line,"Protocol: LR2021_IQ\n") &&
         fgets(line,sizeof(line),f) && !strcmp(line,"SampleRate: 125000\n") &&
         fgets(line,sizeof(line),f) && number(line,"Samples: ",&count) && count && count<=REC_LR_IQ_SAMPLES && count*4<=cap;

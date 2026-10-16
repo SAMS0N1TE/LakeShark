@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 
+#include "usb_boot_retry.h"
 #include "usb_port_cycle.h"
 
 #ifdef __cplusplus
@@ -20,6 +21,9 @@ void class_driver_client_deregister(void);
    usb_port_cycle.c for the order it keeps and the race it cannot close. The
    caller must already have closed every handle it holds on the device. */
 bool usb_host_root_port_has_device(void);
+/* usb_port_attach_t: whether anything is plugged into the root port, whether
+   or not it enumerated. UNKNOWN when it cannot be told. */
+int usb_host_root_port_attached(void);
 usb_port_cycle_result_t usb_host_root_port_cycle(void);
 
 #ifdef __cplusplus

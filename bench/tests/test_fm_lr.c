@@ -71,11 +71,17 @@ LS_CASE(lr_gap_reset_matches_fresh_receiver)
 }
 LS_CASE(lr_range_and_modes)
 {
-    LS_CHECK(!fm_lr_supported(149999999,FM_MODE_LISTEN));
-    LS_CHECK(!fm_lr_supported(144000000,FM_MODE_LISTEN));
+    /* The LR2021's measured receive range, 104-2740 MHz. */
+    LS_CHECK(!fm_lr_supported(103999999,FM_MODE_LISTEN));
+    LS_CHECK(!fm_lr_supported(91000000,FM_MODE_LISTEN));
     LS_CHECK(!fm_lr_supported(91000000,FM_MODE_WFM));
-    LS_CHECK(!fm_lr_supported(162550000,FM_MODE_POCSAG));
-    LS_CHECK(!fm_lr_supported(960000001,FM_MODE_LISTEN));
-    LS_CHECK(fm_lr_supported(150000000,FM_MODE_LISTEN));
-    LS_CHECK(fm_lr_supported(960000000,FM_MODE_LISTEN));
+    LS_CHECK(fm_lr_supported(152600000,FM_MODE_POCSAG));   /* pagers ride the I/Q too */
+    LS_CHECK(fm_lr_supported(131550000,FM_MODE_ACARS));
+    LS_CHECK(fm_lr_supported(127500000,FM_MODE_AM));
+    LS_CHECK(!fm_lr_supported(162550000,FM_MODE_AIS));      /* AIS needs SDR-rate I/Q */
+    LS_CHECK(!fm_lr_supported(2740000001u,FM_MODE_LISTEN));
+    LS_CHECK(fm_lr_supported(104000000,FM_MODE_LISTEN));
+    LS_CHECK(fm_lr_supported(144000000,FM_MODE_LISTEN));
+    LS_CHECK(fm_lr_supported(1200000000,FM_MODE_LISTEN));
+    LS_CHECK(fm_lr_supported(2740000000u,FM_MODE_LISTEN));
 }

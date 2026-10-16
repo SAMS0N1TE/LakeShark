@@ -4,6 +4,7 @@
 #include "rec_unique_name.h"
 #include "ls_time.h"
 #include "ls_lora_lr20xx.h"
+#include "fsk_packet.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -21,6 +22,36 @@ static char s_iq_result[256];
 static uint32_t s_iq_hz,s_iq_rate=REC_LR_IQ_TX_RATE;
 static int s_iq_mode,s_iq_dbm; /* 0 record, 1 info, 2 test, 3 replay, 4 dump, 5 FSK test */
 static char s_iq_path[160];
+/* Packet decode of the last capture: edges and packets live off the stack. */
+#define IQ_PKT_EDGES 4096
+static EXT_RAM_BSS_ATTR int32_t s_iq_pkt_edges[IQ_PKT_EDGES];
+static EXT_RAM_BSS_ATTR fsk_pkt_t s_iq_pkts[4];
+static char s_iq_packet[64];
+
+bool rec_watch_iq_packet(char *out,size_t len)
+{
+    portENTER_CRITICAL(&s_lock);
+    const bool have=s_iq_packet[0]!=0;
+    if(out && len)snprintf(out,len,"%s",s_iq_packet);
+    portEXIT_CRITICAL(&s_lock);
+    return have;
+}
+
+/* `lead` then "2-FSK 2400 bd sync D391x2 4 B .. CRC 9435 ok" after `out`,
+   or nothing when no packet is in the samples. Returns how many were found. */
+static int iq_packets(const uint8_t *iq,size_t bytes,const char *lead,char *out,size_t len)
+{
+    const size_t n=fsk_pkt_iq16_edges((const int16_t *)iq,bytes/4,REC_LR_IQ_RATE,s_iq_pkt_edges,IQ_PKT_EDGES,NULL);
+    const int found=n?fsk_pkt_from_edges(s_iq_pkt_edges,n,s_iq_pkts,4):0;
+    for(int i=0;i<found;i++) {
+        size_t used=strlen(out);
+        if(used+3>=len)break;
+        snprintf(out+used,len-used,"%s",i?" | ":lead);
+        used=strlen(out);
+        fsk_pkt_describe(&s_iq_pkts[i],out+used,len-used);
+    }
+    return found;
+}
 
 bool rec_watch_iq_status(char *out,size_t len)
 {
@@ -33,7 +64,7 @@ bool rec_watch_iq_status(char *out,size_t len)
 
 static bool iq_request(int mode,const char *path,uint32_t hz,int dbm,uint32_t rate)
 {
-    if(mode!=1 && mode!=3 && mode!=4 && (hz<150000000u || hz>999999999u || ls_lora_chip()!=LS_LORA_CHIP_LR20XX))return false;
+    if(mode!=1 && mode!=3 && mode!=4 && (!ls_lora_rx_range_ok(ls_lora_caps(),hz,hz) || ls_lora_chip()!=LS_LORA_CHIP_LR20XX))return false;
     if(path && strlen(path)>=sizeof(s_iq_path))return false;
     if(!rec_watch_start())return false;
     portENTER_CRITICAL(&s_lock);
@@ -147,6 +178,11 @@ static void iq_record(uint32_t hz,char *result,size_t len)
     bool ok=rec_lr_iq_save(path,hz,s_iq_data,s_iq_used);
     if(ok && rec_sidecar_write(rec_dir(),base,&sc)) {unlink(path);ok=false;}
     snprintf(result,len,ok?"Saved %s (I/Q, %lu us)":"I/Q save failed: %s (%lu us)",path,(unsigned long)sc.span_us);
+    char brief[64]="";
+    if(iq_packets(s_iq_data,s_iq_used,"; ",result,len)>0)fsk_pkt_describe_short(&s_iq_pkts[0],brief,sizeof(brief));
+    portENTER_CRITICAL(&s_lock);
+    snprintf(s_iq_packet,sizeof(s_iq_packet),"%s",brief);
+    portEXIT_CRITICAL(&s_lock);
 }
 
 static void iq_send(uint32_t hz,int dbm,size_t bytes,uint32_t rate,char *result,size_t len)
@@ -238,4 +274,8 @@ static void iq_diagnostic(char *result,size_t len)
         stats.pulses,stats.short_us,stats.long_us,stats.bits[0]?stats.bits:"-",
         (unsigned long)stats.samples,REC_LR_IQ_RATE,(unsigned long)hz,stats.peak,stats.median,
         (double)stats.above/stats.samples);
+    const size_t used=strlen(result);
+    if(used+16<len) {
+        if(!iq_packets(s_iq_data,bytes,"\npacket: ",result,len))snprintf(result+used,len-used,"\npacket: none");
+    }
 }

@@ -485,5 +485,16 @@ LS_CASE(sx1262_refuses_the_lr20xx_sync_rssi_request)
 /* LR backend is linked even when this fake identifies an SX1262. */
 bool settings_get_lr_tcxo(void) { return true; }
 bool settings_get_lr_dcdc(void) { return false; }
+/* Where the LoRa radio is wired (ls_lora_port.c): nothing saved unless a test saves it. */
+static uint64_t fk_port_a, fk_port_b;
+static bool fk_port_have;
+bool settings_get_lora_port(uint64_t *a, uint64_t *b)
+{
+    if (!fk_port_have) return false;
+    *a = fk_port_a;
+    *b = fk_port_b;
+    return true;
+}
+bool settings_set_lora_port(uint64_t a, uint64_t b) { fk_port_a = a; fk_port_b = b; fk_port_have = true; return true; }
 bool settings_set_lr_tcxo(bool value) { (void)value; return true; }
 bool settings_set_lr_dcdc(bool value) { (void)value; return true; }

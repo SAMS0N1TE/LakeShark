@@ -415,6 +415,7 @@ target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_
 ls_add_test(test_radios_antenna
     ${FW}/components/lakeshark/board/ls_board_hw.c
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -520,6 +521,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/ls_note_blocks.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_diag.c
@@ -908,6 +910,7 @@ add_executable(lssim
     ${FW}/components/lakeshark/core/ls_safe_mode.c
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_gps.c
@@ -1115,6 +1118,7 @@ target_link_libraries(test_tui_render_cost lvgl)
 
 ls_add_test(test_lora_sx1262
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1125,6 +1129,7 @@ target_compile_definitions(test_lora_sx1262 PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4
 
 ls_add_test(test_lr20xx_proto
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1135,6 +1140,7 @@ target_compile_definitions(test_lr20xx_proto PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P
 
 ls_add_test(test_lr20xx_clock
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1145,6 +1151,7 @@ target_compile_definitions(test_lr20xx_clock PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P
 
 ls_add_test(test_lora_concurrency
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1155,6 +1162,7 @@ target_compile_definitions(test_lora_concurrency PRIVATE CONFIG_LS_BOARD_T_DISPL
 
 ls_add_test(test_lora_chip_detect
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1162,6 +1170,23 @@ target_include_directories(test_lora_chip_detect PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 target_compile_definitions(test_lora_chip_detect PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+# Where the LoRa radio is wired: the port itself, then the driver with a
+# module on the header (issue 11).
+ls_add_test(test_lora_port ${FW}/components/lakeshark/board/ls_lora_port.c)
+target_include_directories(test_lora_port PRIVATE
+    ${FW}/components/lakeshark/board ${FW}/components/lakeshark/core ${FW}/bench/shims)
+target_compile_definitions(test_lora_port PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+ls_add_test(test_lora_port_driver
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lora_port_driver PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lora_port_driver PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
 ls_add_test(test_lora_scan
     ${FW}/components/lakeshark/board/ls_lora.c
@@ -1304,6 +1329,7 @@ ls_add_test(test_tui_render_dump
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
@@ -1399,8 +1425,10 @@ ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
 ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c
     ${APP}/rec/rec_ook_packet.c ${APP}/rec/rec_sidecar.c ${APP}/subghz/subghz_file.c
+    ${FW}/components/lakeshark/dsp/fsk_packet.c
     ${APP}/rec/rec_unique_name.c
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/lakeshark/board/ls_lora_sx126x.c
     ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
@@ -1411,6 +1439,9 @@ ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
     ${FW}/components/lakeshark/radio/ls_sub_fsk.c
     ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_rec_fsk PRIVATE ${FW}/components/lakeshark/radio)
+# 2-FSK packets (preamble, sync, CRC) from LR2021 I/Q and from REC's slicer.
+ls_add_test(test_fsk_packet ${FW}/components/lakeshark/dsp/fsk_packet.c ${APP}/rec/rec_fsk.c)
+target_include_directories(test_fsk_packet PRIVATE ${FW}/components/lakeshark/dsp)
 # The export writes a 2-FSK preset for a demodulated capture, so it needs
 # the CC1101 register arithmetic that builds one.
 ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c ${APP}/rec/rec_ook24.c
@@ -1776,6 +1807,10 @@ ls_add_test(test_radio_ppm
     ${FW}/components/lakeshark/radio/radio_health.c)
 ls_add_test(test_usb_port_cycle
     ${FW}/components/lakeshark/radio/usb_port_cycle.c)
+# boot recovery cycles the port for a device that is attached and silent,
+# and leaves an empty port alone.
+ls_add_test(test_usb_boot_retry
+    ${FW}/components/lakeshark/radio/usb_boot_retry.c)
 # FM's radio open bounded for io, lifted by an endpoint change.
 ls_add_test(test_radio_open_retry
     ${FW}/components/lakeshark/radio/radio_open_retry.c)
@@ -2772,3 +2807,14 @@ if(LS_EXAMPLE_APP)
         $<TARGET_FILE:lssim> ${CMAKE_CURRENT_BINARY_DIR}/example-renders
         ${CMAKE_C_COMPILER} ${CMAKE_CXX_COMPILER} ${CMAKE_NM})
 endif()
+
+# ACARS through each receive chain: AM envelope from RTL and LR2021 I/Q.
+ls_add_test(test_acars_am_chain
+    ${FW}/bench/fixtures/acars_gen.c
+    ${APP}/acars/acars.c ${APP}/acars/acars_msk.c ${APP}/acars/acars_resample.c
+    ${APP}/fm/fm_dsp.c ${APP}/fm/fm_lr_dsp.c)
+target_include_directories(test_acars_am_chain PRIVATE
+    ${FW}/bench/fixtures ${APP}/acars ${APP}/fm ${FW}/components/lakeshark)
+ls_add_test(test_acars ${FW}/bench/fixtures/acars_gen.c
+    ${APP}/acars/acars.c ${APP}/acars/acars_msk.c)
+target_include_directories(test_acars PRIVATE ${FW}/bench/fixtures ${APP}/acars)

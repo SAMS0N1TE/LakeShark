@@ -26,6 +26,7 @@
 #include "ls_board_hw.h"
 #include "ls_xl9535.h"
 #include "settings.h"
+#include "ls_lora_port.h"
 
 #if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
     defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
@@ -323,7 +324,7 @@ esp_err_t lr20xx_set_rf_frequency(uint32_t hz)
                            (uint8_t)(hz >> 8), (uint8_t)hz };
     /* Forgotten before the frame goes out, so a frame that fails cannot leave
        a transmit armed for a frequency the part may now be on. */
-    if (hz >= LR20XX_TX_FREQ_LIMIT_HZ) s_pa_lf = false;
+    if (hz >= LR20XX_TX_FREQ_LIMIT_HZ || hz < LR20XX_TX_FREQ_MIN_HZ) s_pa_lf = false;
     s_rf_hz = 0;
     const esp_err_t err = lr20xx_write(LR20XX_OP_SET_RF_FREQUENCY, a, sizeof(a));
     if (err == ESP_OK) s_rf_hz = hz;
@@ -495,7 +496,8 @@ static esp_err_t initialize_locked(void)
     if (err == ESP_OK) err = lr20xx_check_last_ok();
     if (err == ESP_OK && s_tcxo) {
         const uint32_t ticks = LR20XX_TCXO_DELAY_TICKS;
-        const uint8_t a[5] = { LR20XX_TCXO_3_3V, (uint8_t)(ticks >> 24),
+        /* the port's supply: 3.3 V for the board's module */
+        const uint8_t a[5] = { ls_lora_port()->tcxo_code, (uint8_t)(ticks >> 24),
                               (uint8_t)(ticks >> 16), (uint8_t)(ticks >> 8), (uint8_t)ticks };
         err = lr20xx_write(LR20XX_OP_SET_TCXO_MODE, a, sizeof(a));
         if (err == ESP_OK) err = lr20xx_wait_ready(1200);
@@ -748,32 +750,29 @@ lr20xx_rx_bw_t lr20xx_ook_rx_bw_nearest(uint32_t hz)
 static esp_err_t configure_dios_mask(uint32_t irq_mask)
 {
     esp_err_t err = ESP_OK;
-#ifdef LS_BOARD_LR20XX_RFSW_TABLE
-    static const struct { uint8_t dio, config; } rfsw[] = { LS_BOARD_LR20XX_RFSW_TABLE };
-    /* Nothing transmits on the HF path, so a table that routes Tx HF to the
-       antenna is a board header error, refused before a single frame goes
-       out. Tx LF is the transmit state this driver uses. */
-    for (size_t i = 0; i < sizeof(rfsw) / sizeof(rfsw[0]); i++)
-        if (rfsw[i].config & LR20XX_RFSW_TX_HF) {
-            ESP_LOGE(TAG, "RF switch table sets the HF transmit state on DIO%u", (unsigned)rfsw[i].dio);
+    /* The port's table: the board's own (LS_BOARD_LR20XX_RFSW_TABLE), or a
+       header module's. Nothing transmits on the HF path, so a table that
+       routes Tx HF to the antenna is refused before a single frame goes out.
+       Tx LF is the transmit state this driver uses. */
+    const ls_lora_port_t *port = ls_lora_port();
+    for (int i = 0; i < port->rfsw_n; i++)
+        if (port->rfsw[i].config & LR20XX_RFSW_TX_HF) {
+            ESP_LOGE(TAG, "RF switch table sets the HF transmit state on DIO%u", (unsigned)port->rfsw[i].dio);
             return ESP_ERR_INVALID_ARG;
         }
-    for (size_t i = 0; i < sizeof(rfsw) / sizeof(rfsw[0]) && err == ESP_OK; i++) {
-        err = lr20xx_set_dio_function(rfsw[i].dio, LR20XX_DIO_FUNC_RF_SWITCH, LR20XX_DIO_PULL_AUTO);
+    for (int i = 0; i < port->rfsw_n && err == ESP_OK; i++) {
+        err = lr20xx_set_dio_function(port->rfsw[i].dio, LR20XX_DIO_FUNC_RF_SWITCH, LR20XX_DIO_PULL_AUTO);
         if (err == ESP_OK) err = lr20xx_check_last_ok();
-        if (err == ESP_OK) err = lr20xx_set_dio_rf_switch(rfsw[i].dio, rfsw[i].config);
+        if (err == ESP_OK) err = lr20xx_set_dio_rf_switch(port->rfsw[i].dio, port->rfsw[i].config);
         if (err == ESP_OK) err = lr20xx_check_last_ok();
     }
-#endif
-#ifdef LS_BOARD_LR20XX_IRQ_DIO
-    if (err == ESP_OK)
-        err = lr20xx_set_dio_function(LS_BOARD_LR20XX_IRQ_DIO, LR20XX_DIO_FUNC_IRQ, LR20XX_DIO_PULL_NONE);
-    if (err == ESP_OK) err = lr20xx_check_last_ok();
-    if (err == ESP_OK) err = lr20xx_set_dio_irq(LS_BOARD_LR20XX_IRQ_DIO, irq_mask);
-    if (err == ESP_OK) err = lr20xx_check_last_ok();
-#else
-    (void)irq_mask;
-#endif
+    if (port->irq_dio >= 0) {
+        if (err == ESP_OK)
+            err = lr20xx_set_dio_function((uint8_t)port->irq_dio, LR20XX_DIO_FUNC_IRQ, LR20XX_DIO_PULL_NONE);
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+        if (err == ESP_OK) err = lr20xx_set_dio_irq((uint8_t)port->irq_dio, irq_mask);
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+    }
     return err;
 }
 
@@ -1216,7 +1215,7 @@ lr20xx_pa_lf_t lr20xx_pa_lf_for_dbm(int dbm)
 
 bool lr20xx_tx_allowed(void)
 {
-    return s_rf_hz >= LR20XX_FREQ_MIN_HZ && s_rf_hz < LR20XX_TX_FREQ_LIMIT_HZ;
+    return s_rf_hz >= LR20XX_TX_FREQ_MIN_HZ && s_rf_hz < LR20XX_TX_FREQ_LIMIT_HZ;
 }
 
 static esp_err_t set_pa_lf_locked(int dbm)
@@ -1853,7 +1852,7 @@ static uint32_t lr_caps(void)
     uint32_t c = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST |
                  LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_RX_WIDE |
                  LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_FSK_DETECT;
-    if (s_info.lr2021) c |= LS_LORA_CAP_BAND_1G5_2G5;
+    if (s_info.lr2021) c |= LS_LORA_CAP_BAND_1G5_2G5 | LS_LORA_CAP_RX_EXT;
     return c;
 }
 
@@ -2076,7 +2075,7 @@ static esp_err_t program_lora_once(void)
         err = step_lr(lr20xx_lora_set_packet(c->preamble, c->implicit_rx_bytes?c->implicit_rx_bytes:255, c->implicit_rx_bytes!=0, c->crc_on, c->invert_iq),
                       "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_lora_set_syncword(c->sync_word), "SetLoraSyncword");
-    if (err == ESP_OK && c->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
+    if (err == ESP_OK && c->freq_hz >= LR20XX_TX_FREQ_MIN_HZ && c->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
         err = lr20xx_set_pa_lf(c->power_dbm);
     if (err == ESP_OK) lr.programmed = true;
     else (void)lr20xx_set_standby(false);
@@ -2226,7 +2225,7 @@ static esp_err_t lr_send(const uint8_t *data, size_t len)
     if (len > 255) return ESP_ERR_INVALID_SIZE;
     if (lr.tx_busy || lr.scanning || s_exp_active || lr20xx_modes_active()) return ESP_ERR_INVALID_STATE;
     if (!ls_lora_hw_pkt()) return ESP_ERR_INVALID_STATE;
-    if (lr.cfg.freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (lr.cfg.freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.cfg.freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = ESP_OK;
     if (!lr.programmed && (err = program_lora()) != ESP_OK) { lr.rearm = true; return err; }
@@ -2469,7 +2468,7 @@ static esp_err_t fsk_program_once(void)
         err = step_lr(lr20xx_gfsk_set_syncword(cfg->sync_word, lr.fsk_sync_bits), "SetGfskSyncword");
     /* Above 960 MHz the session only listens: the PA is not programmed, so
        lr20xx_set_tx refuses whatever is asked of it there. */
-    if (err == ESP_OK && cfg->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
+    if (err == ESP_OK && cfg->freq_hz >= LR20XX_TX_FREQ_MIN_HZ && cfg->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
         err = lr20xx_set_pa_lf(cfg->power_dbm);
     /* The chip's AGC, unless a step is asked for. Nothing is sent for the AGC
        unless an earlier session left a step in the part: 0 is the AGC. */
@@ -2656,7 +2655,7 @@ static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)
     if (!data || len == 0)          return ESP_ERR_INVALID_ARG;
     if (len > 255)                  return ESP_ERR_INVALID_SIZE;
     if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
-    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.fsk_freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
     if (err != ESP_OK) return err;
@@ -2687,7 +2686,7 @@ static esp_err_t lr_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps
     if (chip_bps < LR20XX_OOK_BITRATE_MIN || chip_bps > LR20XX_FSK_BITRATE_MAX)
         return ESP_ERR_INVALID_ARG;
     if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
-    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.fsk_freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
     if (err != ESP_OK) return err;
@@ -2996,6 +2995,23 @@ static esp_err_t exp_arm(void)
 }
 static esp_err_t exp_program_once(void)
 {
+    if (s_exp_engine == LR20XX_ENGINE_BLE) {
+        /* Advertising channels 37, 38, 39 sit at 2402, 2426, 2480 MHz. Whitening
+           seeds with the channel index (bit 6 set), bit reversed: 0x53 for 37. */
+        const unsigned ch = s_exp_channel;
+        const uint32_t hz = ch == 37 ? 2402000000u : ch == 38 ? 2426000000u : 2480000000u;
+        unsigned seed = 0x40u | ch, whit = 0;
+        for (unsigned i = 0; i < 7; i++) whit |= ((seed >> i) & 1u) << (6 - i);
+        esp_err_t err = setup_radio(LR20XX_PKT_TYPE_BLE, hz);
+        const uint8_t mod[2] = { (uint8_t)s_exp_preset, 0xFF };
+        if (err == ESP_OK) err = step_ok(lr20xx_write(LR20XX_OP_SET_BLE_MOD, mod, 2), "BLE modulation");
+        const uint8_t chp[9] = { 0x00, (uint8_t)whit, 0x55, 0x55, 0x55, 0x8E, 0x89, 0xBE, 0xD6 };
+        if (err == ESP_OK) err = step_ok(lr20xx_write(LR20XX_OP_SET_BLE_CHANNEL, chp, 9), "BLE channel");
+        if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
+        if (err == ESP_OK) err = exp_arm();
+        if (err != ESP_OK) (void)lr20xx_set_standby(false);
+        return err;
+    }
     const bool lora = s_exp_engine == LR20XX_ENGINE_LORAMON;
     const uint32_t hz = lora ? (s_exp_preset ? 906875000u : 910525000u) :
                         s_exp_engine == LR20XX_ENGINE_ZWAVE ? 908420000u :
@@ -3043,6 +3059,9 @@ static esp_err_t exp_program(void)
 }
 esp_err_t lr20xx_exp_begin(lr20xx_engine_t engine, unsigned preset, unsigned channel, unsigned fec)
 {
+    if (engine == LR20XX_ENGINE_BLE) {
+        if (preset > 3 || channel < 37 || channel > 39) return ESP_ERR_INVALID_ARG;
+    } else
     if (engine > LR20XX_ENGINE_WISUN || preset > 2 || channel > (engine == LR20XX_ENGINE_WISUN && preset == 2 ? 41u : 128u) || fec > 3) return ESP_ERR_INVALID_ARG;
     ls_lora_hw_lock();
     /* Not an LR2021 (an SX126x socket, or an LR2012/LR2022 without the engines): not a state, a fact. */
@@ -3088,6 +3107,15 @@ static int exp_poll_locked(uint8_t *buf, size_t size, lr20xx_engine_packet_t *ou
         if (err == ESP_OK) {
             out->length = p.length; out->rssi_dbm = p.rssi_dbm; out->snr_db = p.snr_db;
             out->cr = p.cr; out->detector = p.detector; out->fei_hz = p.fei_hz;
+        }
+    } else if (s_exp_engine == LR20XX_ENGINE_BLE) {
+        uint8_t d[6] = {0};
+        err = lr20xx_read(LR20XX_OP_GET_BLE_STATUS, NULL, 0, d, sizeof d);
+        if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+        if (err == ESP_OK) {
+            out->length = (uint16_t)((d[0] << 8) | d[1]);
+            out->rssi_dbm = -(float)(((unsigned)d[2] << 1) | (d[4] >> 2 & 1u)) / 2.0f;
+            out->snr_db = (float)d[5] / 4.0f;   /* LQI, 0.25 dB steps */
         }
     } else err = lr20xx_engine_status(s_exp_engine == LR20XX_ENGINE_WISUN, out);
     int n = -1;
@@ -3577,6 +3605,87 @@ static void IRAM_ATTR iq_wake(void *arg)
     if (woken) esp_timer_isr_dispatch_need_yield();
 }
 
+/* Gain on the raw I/Q stream. The chip AGC matches the top step on weak
+   signals but costs about 20 dB of SNR on strong ones (measured), so by
+   default the host picks a fixed step: start at 13 with boost 7, the best
+   weak-signal setting, drop one step when samples near clipping, and climb
+   back after a quiet spell. LS_IQ_GAIN_CHIP keeps the chip AGC; 1..13 pins
+   a step. One setting for every I/Q consumer. */
+#define LS_IQ_GAIN_AUTO   (-1)
+#define LS_IQ_GAIN_CHIP   0
+#define IQAGC_CLIP        26000      /* about -2 dBFS: step down          */
+#define IQAGC_QUIET       5800       /* about -15 dBFS: room to step up   */
+#define IQAGC_DOWN_US     20000
+#define IQAGC_UP_US       300000
+static int s_iq_gain_mode = LS_IQ_GAIN_AUTO;
+static struct {
+    int mode;                /* this session's: LS_IQ_GAIN_AUTO, _CHIP or a step */
+    int gain;                /* step in force, 0 = chip AGC */
+    int peak;                /* largest |sample| since the last decision */
+    int64_t since_us;        /* when the current quiet window started */
+    int64_t last_change_us;
+    uint32_t ups, downs, write_errors;
+} s_iqagc;
+
+static int IRAM_ATTR iqagc_peak(const uint8_t *d, size_t n, int peak)
+{
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        int v = (int16_t)(d[i] | (d[i + 1] << 8));
+        if (v < 0) v = -v;
+        if (v > peak) peak = v;
+    }
+    return peak;
+}
+
+static void iqagc_set_locked(int gain)
+{
+    const uint8_t g = (uint8_t)gain;
+    if (write_locked(LR20XX_OP_SET_AGC_GAIN, &g, 1) == ESP_OK) s_iqagc.gain = gain;
+    else s_iqagc.write_errors++;
+}
+
+/* Stream start, under the lock: put the chosen gain in force. */
+static esp_err_t iqagc_begin_locked(uint32_t hz, int mode)
+{
+    memset(&s_iqagc, 0, sizeof(s_iqagc));
+    s_iqagc.mode = mode;
+    const int gain = mode == LS_IQ_GAIN_AUTO ? 13 : mode;
+    const lr20xx_rx_path_t path = lr20xx_path_for_hz(hz);
+    const uint8_t rp[2] = { (uint8_t)path, (uint8_t)(gain >= 12 ? 7 : (path == LR20XX_PATH_HF ? 4 : 0)) };
+    esp_err_t err = write_locked(LR20XX_OP_SET_RX_PATH, rp, 2);
+    const uint8_t g = (uint8_t)gain;
+    if (err == ESP_OK) err = write_locked(LR20XX_OP_SET_AGC_GAIN, &g, 1);
+    if (err == ESP_OK) s_iqagc.gain = gain;
+    s_iqagc.since_us = s_iqagc.last_change_us = esp_timer_get_time();
+    return err;
+}
+
+/* After a drain: one step at most, down fast, up slowly. */
+static void IRAM_ATTR iqagc_after_drain(int64_t now)
+{
+    if (s_iqagc.mode != LS_IQ_GAIN_AUTO || !s_iqagc.gain) return;
+    if (s_iqagc.peak >= IQAGC_CLIP) {
+        if (s_iqagc.gain > 1 && now - s_iqagc.last_change_us >= IQAGC_DOWN_US) {
+            iqagc_set_locked(s_iqagc.gain - 1);
+            s_iqagc.downs++;
+            s_iqagc.last_change_us = now;
+        }
+        s_iqagc.peak = 0;
+        s_iqagc.since_us = now;
+        return;
+    }
+    if (s_iqagc.peak >= IQAGC_QUIET) { s_iqagc.since_us = now; s_iqagc.peak = 0; return; }
+    if (now - s_iqagc.since_us >= IQAGC_UP_US) {
+        if (s_iqagc.gain < 13) {
+            iqagc_set_locked(s_iqagc.gain + 1);
+            s_iqagc.ups++;
+            s_iqagc.last_change_us = now;
+        }
+        s_iqagc.since_us = now;
+        s_iqagc.peak = 0;
+    }
+}
+
 static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, lr20xx_iq_sink_t sink,
         void *context, lr20xx_stream_result_t *out, bool checked, bool live,
         unsigned capacity, uint8_t *data, uint8_t *pending, size_t *tail_bytes,
@@ -3611,6 +3720,7 @@ static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, lr20xx_iq_sink_t
             if (err == ESP_OK) {
                 const uint64_t first_pair = out->bytes / 4;
                 out->bytes += n;
+                s_iqagc.peak = iqagc_peak(data, n, s_iqagc.peak);
                 if (checked) {
                     memcpy(pending + pending_bytes, data, n); pending_bytes += n;
                     if (pending_bytes >= 1024) {
@@ -3630,6 +3740,7 @@ static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, lr20xx_iq_sink_t
             }
             remaining -= n;
         }
+        if (err == ESP_OK) iqagc_after_drain(esp_timer_get_time());
         const int64_t drain_us = esp_timer_get_time() - now;
         const uint32_t spi_bytes = ls_lora_hw_spi_bytes() - spi_start;
         if (drain_us > out->max_drain_us) {
@@ -3677,6 +3788,45 @@ static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, lr20xx_iq_sink_t
 }
 
 /* Mode 1 directs raw source samples into the ordinary RX FIFO. */
+/* `lora lrprobe`: one receive-only I/Q session at any frequency, bandwidth,
+   gain, boost and input, outside the app gates. The session's own recovery
+   puts the configured LoRa receive back afterwards. Never transmits: the PA
+   is forgotten before tuning and no Tx command is sent. */
+static struct {
+    bool active;
+    uint32_t hz, bw_hz;
+    uint8_t bw_code, gain, boost;
+    lr20xx_rx_path_t path;
+    uint16_t errors_tuned;
+    esp_err_t tune_err;
+} s_probe;
+
+static esp_err_t probe_program_locked(void)
+{
+    s_pa_lf = false;
+    uint16_t errors = 0;
+    esp_err_t err = lr20xx_clear_errors();
+    const uint16_t w = lr20xx_calib_fe_word(s_probe.hz, s_probe.path);
+    if (err == ESP_OK && w) {
+        const uint16_t words[3] = { w, 0, 0 };
+        err = lr20xx_calib_fe(words);
+        if (err == ESP_OK) err = lr20xx_wait_ready(200);
+    }
+    if (err == ESP_OK) {
+        const uint32_t hz = s_probe.hz;
+        const uint8_t a[4] = { (uint8_t)(hz >> 24), (uint8_t)(hz >> 16), (uint8_t)(hz >> 8), (uint8_t)hz };
+        s_rf_hz = 0;
+        err = lr20xx_write(LR20XX_OP_SET_RF_FREQUENCY, a, sizeof(a));
+        if (err == ESP_OK) s_rf_hz = hz;
+    }
+    if (err == ESP_OK) err = lr20xx_set_rx_path(s_probe.path, s_probe.boost);
+    if (err == ESP_OK) err = lr20xx_lora_set_modulation(7, s_probe.bw_code, 1, false);
+    if (err == ESP_OK && s_probe.gain <= 13) err = lr20xx_set_agc_gain(s_probe.gain);
+    if (lr20xx_get_errors(&errors) == ESP_OK) s_probe.errors_tuned = errors;
+    s_probe.tune_err = err;
+    return err;
+}
+
 static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
                                void *context, lr20xx_stream_result_t *out, bool checked, bool live)
 {
@@ -3712,7 +3862,7 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
     esp_err_t err = s_bound && s_info.lr2021 && s_info.fw_major == 1 &&
         s_info.fw_minor == 24 && lr.cfg_valid && !lr.tx_busy && !lr.scanning &&
         !lr.fsk_active && !ms.active && !s_exp_active ? ESP_OK : ESP_ERR_INVALID_STATE;
-    if (err == ESP_OK && lr.cfg.bw_hz != 31250) err = ESP_ERR_NOT_SUPPORTED;
+    if (err == ESP_OK && lr.cfg.bw_hz != 31250 && !s_probe.active) err = ESP_ERR_NOT_SUPPORTED;
     const bool rx = lr.rx_mode || lr.rearm;
     uint32_t magic = 0;
     if (err == ESP_OK) err = lr20xx_read_reg32(0x800FF8u, &magic);
@@ -3723,6 +3873,13 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
     const bool touched = err == ESP_OK;
     if (err == ESP_OK) err = ls_lora_hw_capture_fast(true);
     if (err == ESP_OK) err = step_ok(lr20xx_set_standby(false), "IQ stream standby");
+    if (err == ESP_OK && s_probe.active) err = probe_program_locked();
+    /* Probes pin their own gain unless they ask for the host's (14). */
+    memset(&s_iqagc, 0, sizeof(s_iqagc));
+    if (err == ESP_OK && !s_probe.active)
+        err = step_ok(iqagc_begin_locked(lr.cfg.freq_hz, s_iq_gain_mode), "IQ gain");
+    else if (err == ESP_OK && s_probe.gain == 14)
+        err = step_ok(iqagc_begin_locked(s_probe.hz, LS_IQ_GAIN_AUTO), "IQ gain");
     const uint8_t args[] = {0xFF, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 1};
     if (err == ESP_OK) err = step_ok(lr20xx_write(0x0290, args, sizeof(args)), "IQ stream configuration");
     /* CalibFE and SRAM capture must not run during this locked session.
@@ -3771,7 +3928,8 @@ static esp_err_t stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
         }
     }
     out->capture_error = err;
-    out->sample_rate_hz = 125000; /* source2 at BW31.25k; nominal, not ppm-calibrated */
+    /* source2 at 4x the LoRa bandwidth; nominal, not ppm-calibrated */
+    out->sample_rate_hz = s_probe.active ? 4u * s_probe.bw_hz : 125000;
     ls_lora_hw_unlock();
     if (wake_timer) {
         (void)esp_timer_stop(wake_timer);
@@ -3928,6 +4086,237 @@ static int capture_fifo_probe_command(int argc, char **argv)
     return err == ESP_OK ? 0 : 1;
 }
 
+/* In-place radix-2 FFT of n (a power of two) complex floats, re/im interleaved. */
+static void probe_fft(float *x, unsigned n)
+{
+    for (unsigned i = 1, j = 0; i < n; i++) {
+        unsigned bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            float t = x[2*i]; x[2*i] = x[2*j]; x[2*j] = t;
+            t = x[2*i+1]; x[2*i+1] = x[2*j+1]; x[2*j+1] = t;
+        }
+    }
+    for (unsigned len = 2; len <= n; len <<= 1) {
+        const float a = -2.0f * (float)M_PI / (float)len;
+        for (unsigned k = 0; k < len / 2; k++) {
+            const float wr = cosf(a * (float)k), wi = sinf(a * (float)k);
+            for (unsigned i = k; i < n; i += len) {
+                const unsigned j = i + len / 2;
+                const float tr = x[2*j] * wr - x[2*j+1] * wi;
+                const float ti = x[2*j] * wi + x[2*j+1] * wr;
+                x[2*j] = x[2*i] - tr; x[2*j+1] = x[2*i+1] - ti;
+                x[2*i] += tr; x[2*i+1] += ti;
+            }
+        }
+    }
+}
+
+static int probe_cmp_float(const void *a, const void *b)
+{
+    const float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* Averaged 1024-bin spectrum of iq16le pairs: DC, RMS, floor (median bin)
+   and the three strongest tones away from DC. One line, for host sweeps. */
+static void probe_report(const uint8_t *data, size_t bytes, uint32_t rate)
+{
+    enum { N = 1024 };
+    const size_t pairs = bytes / 4;
+    float *buf = malloc(sizeof(float) * (2 * N + N + N));
+    if (!buf || pairs < N) { puts("lrprobe: too few samples for analysis"); free(buf); return; }
+    float *pw = buf + 2 * N, *sorted = pw + N;
+    memset(pw, 0, sizeof(float) * N);
+    double si = 0, sq = 0, ss = 0;
+    for (size_t p = 0; p < pairs; p++) {
+        const int16_t i = (int16_t)(data[4*p] | (data[4*p+1] << 8));
+        const int16_t q = (int16_t)(data[4*p+2] | (data[4*p+3] << 8));
+        si += i; sq += q; ss += (double)i * i + (double)q * q;
+    }
+    const float mi = (float)(si / pairs), mq = (float)(sq / pairs);
+    const unsigned segs = (unsigned)(pairs / N);
+    for (unsigned s = 0; s < segs; s++) {
+        const uint8_t *d = data + (size_t)s * N * 4;
+        for (unsigned k = 0; k < N; k++) {
+            const float w = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * (float)k / (float)N);
+            buf[2*k]   = ((float)(int16_t)(d[4*k]   | (d[4*k+1] << 8)) - mi) * w;
+            buf[2*k+1] = ((float)(int16_t)(d[4*k+2] | (d[4*k+3] << 8)) - mq) * w;
+        }
+        probe_fft(buf, N);
+        for (unsigned k = 0; k < N; k++) pw[k] += buf[2*k] * buf[2*k] + buf[2*k+1] * buf[2*k+1];
+    }
+    memcpy(sorted, pw, sizeof(float) * N);
+    qsort(sorted, N, sizeof(float), probe_cmp_float);
+    const float floor_p = sorted[N / 2] > 0 ? sorted[N / 2] : 1e-9f;
+    const double rms = sqrt(ss / pairs);
+    printf("lrprobe-spec: rate=%lu segs=%u dc=%.1f,%.1f rms=%.1f (%.1f dBFS) floor=%.1f dB",
+           (unsigned long)rate, segs, (double)mi, (double)mq, rms,
+           20.0 * log10(rms / 32768.0 + 1e-12), 10.0 * log10((double)floor_p));
+    unsigned taken[3] = {0};
+    for (unsigned t = 0; t < 3; t++) {
+        unsigned best = 0; float bp = -1;
+        for (unsigned k = 0; k < N; k++) {
+            if (k < 3 || k > N - 3) continue;            /* DC and its leakage */
+            bool near = false;
+            for (unsigned u = 0; u < t; u++) {
+                const int d = (int)k - (int)taken[u];
+                if (d > -4 && d < 4) near = true;
+            }
+            if (!near && pw[k] > bp) { bp = pw[k]; best = k; }
+        }
+        taken[t] = best;
+        const long off = (long)(best < N / 2 ? best : (long)best - N) * (long)rate / N;
+        printf(" pk%u=%+ldHz:%+.1f", t + 1, off, 10.0 * log10((double)(bp > 0 ? bp : 1e-9f) / floor_p));
+    }
+    printf("\n");
+    free(buf);
+}
+
+static int lrprobe_command(int argc, char **argv)
+{
+    uint32_t khz = 0, bw = 31250, gain = 0, ms = 40;
+    int boost = -1;
+    lr20xx_rx_path_t path = 0;
+    bool auto_path = true, hex = false;
+    bool ok = argc >= 3 && probe_number(argv[2], 3800000, &khz) && khz >= 30000;
+    if (ok && argc > 3) ok = probe_number(argv[3], 250000, &bw) &&
+        (bw == 31250 || bw == 62500 || bw == 125000 || bw == 250000);
+    if (ok && argc > 4) ok = probe_number(argv[4], 14, &gain);   /* 14: host auto */
+    if (ok && argc > 5) { char *e; long b = strtol(argv[5], &e, 10); ok = *argv[5] && !*e && b >= -1 && b <= 7; boost = (int)b; }
+    if (ok && argc > 6) {
+        if (!strcmp(argv[6], "lf")) { path = LR20XX_PATH_LF; auto_path = false; }
+        else if (!strcmp(argv[6], "hf")) { path = LR20XX_PATH_HF; auto_path = false; }
+        else ok = !strcmp(argv[6], "auto");
+    }
+    if (ok && argc > 7) ok = probe_number(argv[7], 250, &ms) && ms;
+    if (ok && argc > 8) { hex = !strcmp(argv[8], "hex"); ok = hex; }
+    if (!ok || argc > 9) {
+        puts("usage: lora lrprobe <kHz 30000..3800000> [bw 31250|62500|125000|250000] [gain 0..13, 14 auto]"
+             " [boost -1..7] [lf|hf|auto] [ms 1..250] [hex]   (receive only)");
+        return 1;
+    }
+    const uint32_t hz = khz * 1000u;
+    if (auto_path) path = lr20xx_path_for_hz(hz);
+    const lr20xx_lora_bw_t b = lr20xx_lora_bw_nearest(bw);
+    const uint32_t rate = 4u * bw;
+    size_t capacity = (size_t)ms * rate / 1000u * 4u;
+    if (capacity > 96u * 1024u) capacity = 96u * 1024u;
+#ifdef ESP_PLATFORM
+    uint8_t *data = heap_caps_malloc(capacity, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+    uint8_t *data = NULL;
+#endif
+    const bool internal = data != NULL;
+    if (!data) data = malloc(capacity);
+    if (!data) { puts("lrprobe: no capture memory"); return 1; }
+
+    ls_lora_hw_lock();
+    s_probe = (__typeof__(s_probe)){ .active = true, .hz = hz, .bw_hz = bw, .bw_code = b.code,
+        .gain = (uint8_t)gain, .path = path,
+        .boost = (uint8_t)(boost >= 0 ? boost : (path == LR20XX_PATH_HF ? 4 : 0)) };
+    ls_lora_hw_unlock();
+    iq_collect_t collected = {data, 0, capacity};
+    lr20xx_stream_result_t result;
+#ifdef ESP_PLATFORM
+    const UBaseType_t priority = uxTaskPriorityGet(NULL);
+    if (priority < 18) vTaskPrioritySet(NULL, 18);
+#endif
+    const esp_err_t err = lr20xx_stream_source2(ms, iq_collect, &collected, &result);
+#ifdef ESP_PLATFORM
+    vTaskPrioritySet(NULL, priority);
+#endif
+    ls_lora_hw_lock();
+    const uint16_t errors = s_probe.errors_tuned;
+    const esp_err_t tune_err = s_probe.tune_err;
+    s_probe.active = false;
+    ls_lora_hw_unlock();
+
+    char names[96];
+    err_names(errors, names, sizeof names);
+    printf("lrprobe: f=%lu kHz path=%s bw=%lu rate=%lu gain=%lu boost=%u tune=%s errors=0x%04X%s%s "
+           "bytes=%u buf=%s max_level=%lu polls=%lu elapsed_us=%lld flags=0x%02X result=%s recovery=%s\n",
+           (unsigned long)khz, path == LR20XX_PATH_HF ? "HF" : "LF", (unsigned long)bw, (unsigned long)rate,
+           (unsigned long)gain, (unsigned)(boost >= 0 ? boost : (path == LR20XX_PATH_HF ? 4 : 0)),
+           esp_err_to_name(tune_err), errors, names[0] ? " " : "", names,
+           (unsigned)collected.bytes, internal ? "int" : "psram",
+           (unsigned long)result.max_fifo_level, (unsigned long)result.polls, (long long)result.elapsed_us,
+           result.fifo_flags, esp_err_to_name(result.capture_error), esp_err_to_name(result.recovery_error));
+    if (gain == 14)
+        printf("lrprobe-agc: final=%d ups=%lu downs=%lu write_errors=%lu\n", s_iqagc.gain,
+               (unsigned long)s_iqagc.ups, (unsigned long)s_iqagc.downs, (unsigned long)s_iqagc.write_errors);
+    if (collected.bytes) probe_report(data, collected.bytes, rate);
+    if (hex) {
+        for (size_t i = 0; i < collected.bytes; i += 64) {
+            char line[129];
+            const size_t n = collected.bytes - i < 64 ? collected.bytes - i : 64;
+            for (size_t j = 0; j < n; j++) snprintf(line + 2 * j, 3, "%02X", data[i + j]);
+            printf("lrprobe-hex: %06u %s\n", (unsigned)i, line);
+        }
+        puts("lrprobe-hex: end");
+    }
+    free(data);
+    return err == ESP_OK ? 0 : 1;
+}
+
+/* `lora lrble <37|38|39> [seconds] [1m|2m|s2|s8]`: receive-only BLE
+   advertising on the LR2021's 2.4 GHz input. One line per advert. */
+static int lrble_command(int argc, char **argv)
+{
+    uint32_t ch = 37, secs = 10, preset = 0;
+    bool ok = argc >= 3 && probe_number(argv[2], 39, &ch) && ch >= 37;
+    if (ok && argc > 3) ok = probe_number(argv[3], 600, &secs) && secs;
+    if (ok && argc > 4) {
+        static const char *const names[] = {"1m", "2m", "s2", "s8"};
+        ok = false;
+        for (uint32_t i = 0; i < 4; i++) if (!strcmp(argv[4], names[i])) { preset = i; ok = true; }
+    }
+    if (!ok || argc > 5) { puts("usage: lora lrble <37|38|39> [seconds 1..600] [1m|2m|s2|s8]"); return 1; }
+    esp_err_t err = lr20xx_exp_begin(LR20XX_ENGINE_BLE, preset, ch, 0);
+    if (err != ESP_OK) { printf("lrble: start %s\n", esp_err_to_name(err)); return 1; }
+    static uint8_t frame[260];
+    static uint8_t seen[64][6];
+    unsigned nseen = 0, good = 0, bad = 0;
+    const int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
+    static const char *const types[] = {"ADV_IND", "DIRECT", "NONCONN", "SCAN_REQ", "SCAN_RSP",
+                                        "CONN_REQ", "SCAN_IND", "EXT_ADV"};
+    while (esp_timer_get_time() < end) {
+        lr20xx_engine_packet_t p;
+        const int n = lr20xx_exp_poll(frame, sizeof frame, &p);
+        if (n < 0) { bad++; vTaskDelay(1); continue; }
+        if (n < 8) { vTaskDelay(1); continue; }
+        good++;
+        const unsigned type = frame[0] & 0x0F, len = frame[1];
+        const uint8_t *adv = frame + 2;
+        bool known = false;
+        for (unsigned i = 0; i < nseen; i++) if (!memcmp(seen[i], adv, 6)) known = true;
+        if (!known && nseen < 64) memcpy(seen[nseen++], adv, 6);
+        char name[32] = "";
+        for (unsigned o = 8; o + 1 < (unsigned)n && o < 2u + len; ) {
+            const unsigned l = frame[o], t = frame[o + 1];
+            if (!l || o + 1 + l > (unsigned)n) break;
+            if ((t == 0x08 || t == 0x09) && l > 1) {
+                const unsigned k = l - 1 < sizeof name - 1 ? l - 1 : sizeof name - 1;
+                for (unsigned j = 0; j < k; j++) {
+                    const char c = (char)frame[o + 2 + j];
+                    name[j] = c >= 32 && c < 127 ? c : '.';
+                }
+                name[k] = 0;
+            }
+            o += 1 + l;
+        }
+        printf("lrble: ch%lu %-8s %02X:%02X:%02X:%02X:%02X:%02X%s len=%u rssi=%.1f lqi=%.2f%s%s\n",
+               (unsigned long)ch, type < 8 ? types[type] : "?", adv[5], adv[4], adv[3], adv[2], adv[1], adv[0],
+               frame[0] & 0x40 ? "r" : "p", len, (double)p.rssi_dbm, (double)p.snr_db,
+               name[0] ? " name=" : "", name);
+    }
+    err = lr20xx_exp_end();
+    printf("lrble: done ch%lu %lus adverts=%u devices=%u errors=%u end=%s\n", (unsigned long)ch,
+           (unsigned long)secs, good, nseen, bad, esp_err_to_name(err));
+    return 0;
+}
+
 #include "lr2021_tx_upload.inc"
 
 int lr20xx_clock_command(int argc, char **argv)
@@ -3947,6 +4336,26 @@ int lr20xx_clock_command(int argc, char **argv)
         return 0;
     }
     if (argc > 1 && !strcmp(argv[1], "lrfifo")) return capture_fifo_probe_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrprobe")) return lrprobe_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrble")) return lrble_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrgain")) {
+        if (argc == 3) {
+            uint32_t g = 0;
+            if (!strcmp(argv[2], "auto")) s_iq_gain_mode = LS_IQ_GAIN_AUTO;
+            else if (!strcmp(argv[2], "chip")) s_iq_gain_mode = LS_IQ_GAIN_CHIP;
+            else if (probe_number(argv[2], 13, &g) && g) s_iq_gain_mode = (int)g;
+            else { puts("usage: lora lrgain [auto|chip|1..13]"); return 1; }
+        } else if (argc != 2) { puts("usage: lora lrgain [auto|chip|1..13]"); return 1; }
+        const int m = s_iq_gain_mode;
+        char mode[12];
+        if (m == LS_IQ_GAIN_AUTO) snprintf(mode, sizeof mode, "auto");
+        else if (m == LS_IQ_GAIN_CHIP) snprintf(mode, sizeof mode, "chip");
+        else snprintf(mode, sizeof mode, "fixed %d", m);
+        printf("lrgain: mode=%s (next I/Q session) | last session: step=%d ups=%lu downs=%lu write_errors=%lu\n",
+               mode, s_iqagc.gain, (unsigned long)s_iqagc.ups, (unsigned long)s_iqagc.downs,
+               (unsigned long)s_iqagc.write_errors);
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "lrfifo-check")) return checked_fifo_probe_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrmem")) return memory_probe_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrproof")) return pram_proof_command(argc);

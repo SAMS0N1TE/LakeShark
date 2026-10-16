@@ -240,4 +240,16 @@
 #define LS_USE_DISPLAY       0
 #endif
 
+/* LakeShark LR (CONFIG_LS_LR2021_ONLY): LR2021 boards only. No USB host or
+   dongle drivers, no SX1262 driver, and no apps that need a dongle. */
+#if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
+#define LS_LR_EDITION        1
+#define LS_HAS_USB_SDR       0
+#define LS_HAS_SX126X        0
+#else
+#define LS_LR_EDITION        0
+#define LS_HAS_USB_SDR       1
+#define LS_HAS_SX126X        1
+#endif
+
 #endif

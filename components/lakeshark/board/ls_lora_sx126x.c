@@ -6,6 +6,7 @@
 #include "ls_lora_priv.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -33,8 +34,6 @@ static const char *TAG = "ls_lora";
 #if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
     defined(LS_BOARD_XL_RADIO_RST)
 
-#define CS_PIN    ((gpio_num_t)LS_BOARD_LORA_CS_GPIO)
-#define BUSY_PIN  ((gpio_num_t)LS_BOARD_LORA_BUSY_GPIO)
 
 /* SX1262 opcodes, datasheet table 11-1. */
 #define OP_GET_STATUS       0xC0
@@ -365,9 +364,13 @@ static esp_err_t configure_lora(const ls_lora_cfg_t *cfg)
     return ESP_OK;
 }
 
+/* Set while `lora sxprobe` owns the synthesiser; s_cfg_valid is false for
+   the same span, which already turns away receive, send and sweep. */
+static bool s_probe_active;
+
 static esp_err_t sx_configure(const ls_lora_cfg_t *cfg)
 {
-    if (s_fsk_active) return ESP_ERR_INVALID_STATE;
+    if (s_fsk_active || s_probe_active) return ESP_ERR_INVALID_STATE;
     return configure_lora(cfg);
 }
 
@@ -587,7 +590,7 @@ static esp_err_t sx_fsk_begin(const ls_fsk_cfg_t *cfg)
         (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
         cfg->power_dbm < -9 || cfg->power_dbm > 22)
         return ESP_ERR_INVALID_ARG;
-    if (s_fsk_active || s_scanning || s_tx_busy) return ESP_ERR_INVALID_STATE;
+    if (s_fsk_active || s_scanning || s_tx_busy || s_probe_active) return ESP_ERR_INVALID_STATE;
 
     s_fsk_saved_valid = s_cfg_valid;
     s_fsk_saved_rx = s_rx_mode;
@@ -982,7 +985,7 @@ static void sx_diagnostics(void)
     sx_read_reg(0x0740, sync, sizeof(sync));
     printf("lora: status=0x%02X mode=%u cmd=%u syncword=0x%02X%02X busy=%d\n",
            st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7),
-           sync[0], sync[1], gpio_get_level(BUSY_PIN));
+           sync[0], sync[1], ls_lora_hw_busy_level());
     printf("lora: DIO1 is expander IO17 - polled over I2C, ~10 ms floor. "
            "Receive is fine; anything with a turnaround deadline is not.\n");
 }
@@ -998,6 +1001,256 @@ static void sx_stop(void)
     s_cfg_valid = s_fsk_active = s_scanning = false;
     s_rx_mode = s_rearm = s_tx_busy = false;
     s_scan_saved_valid = false;
+}
+
+/* ------------------------------------------------------------- sxprobe -- */
+
+/* `lora sxprobe`: how far the synthesiser, the image calibration and the
+   receiver go, one tune at a time. Each step is CalibrateImage (optional),
+   SetRfFrequency, SetRx continuous in GFSK at a narrow filter, then
+   GetDeviceErrors, GetStatus and a run of GetRssiInst reads. Receive only:
+   no SetTx is sent anywhere below, the PA and TX power are whatever the
+   normal configuration path set, and the LoRa configuration that was in force
+   is put back at the end. s_cfg_valid stays false for the span, so every
+   other caller is turned away rather than interleaved. */
+
+#define OP_GET_DEV_ERRORS   0x17
+#define OP_CLR_DEV_ERRORS   0x07
+#define SXPROBE_MAX_POINTS  2001
+#define SXPROBE_MAX_READS   64
+#define SXPROBE_READ_GAP_US 200
+
+typedef struct {
+    uint32_t khz;
+    uint32_t us;
+    uint16_t err_cal, err_rx, rsum;
+    uint8_t  st_cal, st_rx, reads, rmin, rmax;  /* raw RSSI: dBm = -raw/2 */
+} sxprobe_row_t;
+
+static esp_err_t sx_dev_errors(uint16_t *errors, uint8_t *status)
+{
+    uint8_t r[3] = { 0, 0, 0 };
+    esp_err_t err = cmd(OP_GET_DEV_ERRORS, NULL, 0, r, sizeof(r));
+    if (err == ESP_OK) {
+        if (status) *status = r[0];
+        if (errors) *errors = (uint16_t)((r[1] << 8) | r[2]);
+    }
+    return err;
+}
+
+static void sx_clear_dev_errors(void)
+{
+    const uint8_t z[2] = { 0, 0 };
+    cmd(OP_CLR_DEV_ERRORS, z, sizeof(z), NULL, 0);
+}
+
+static void sxprobe_step(uint32_t khz, bool cal, unsigned reads, uint32_t settle_us,
+                         sxprobe_row_t *row)
+{
+    const int64_t t0 = esp_timer_get_time();
+    memset(row, 0, sizeof(*row));
+    row->khz = khz;
+    row->rmin = 255;
+    uint8_t b;
+    ls_lora_hw_lock();
+    if (cal) {
+        /* CalibrateImage takes 4 MHz units in one byte each, so 1020 MHz is
+           the highest band it can be asked for; above that it is clamped and
+           the row says what the part made of it. */
+        b = STANDBY_RC;
+        cmd(OP_SET_STANDBY, &b, 1, NULL, 0);
+        sx_clear_dev_errors();
+        uint32_t mhz = khz / 1000u, f1 = mhz / 4u, f2 = (mhz + 3u) / 4u;
+        if (f2 <= f1) f2 = f1 + 1u;
+        if (f1 > 254u) f1 = 254u;
+        if (f2 > 255u) f2 = 255u;
+        const uint8_t ci[2] = { (uint8_t)f1, (uint8_t)f2 };
+        cmd(OP_CAL_IMAGE, ci, sizeof(ci), NULL, 0);
+        ls_lora_hw_wait_not_busy(100);
+        sx_dev_errors(&row->err_cal, &row->st_cal);
+    }
+    b = STANDBY_XOSC;
+    cmd(OP_SET_STANDBY, &b, 1, NULL, 0);
+    sx_clear_dev_errors();
+    bool ok = scan_tune(khz * 1000u) == ESP_OK;
+    const uint8_t rx[3] = { 0xFF, 0xFF, 0xFF };
+    if (ok) ok = cmd(OP_SET_RX, rx, sizeof(rx), NULL, 0) == ESP_OK;
+    if (ok) esp_rom_delay_us(settle_us);
+    sx_status(&row->st_rx);
+    sx_dev_errors(&row->err_rx, NULL);
+    for (unsigned i = 0; ok && i < reads; i++) {
+        uint8_t r[3] = { OP_GET_RSSI_INST, 0, 0 };
+        if (xfer(r, r, sizeof(r)) == ESP_OK && rssi_status_valid(r[1])) {
+            row->reads++;
+            row->rsum = (uint16_t)(row->rsum + r[2]);
+            if (r[2] < row->rmin) row->rmin = r[2];
+            if (r[2] > row->rmax) row->rmax = r[2];
+        }
+        esp_rom_delay_us(SXPROBE_READ_GAP_US);
+    }
+    ls_lora_hw_unlock();
+    row->us = (uint32_t)(esp_timer_get_time() - t0);
+}
+
+static bool sxprobe_number(const char *s, uint32_t max, uint32_t *out)
+{
+    if (!s || !*s) return false;
+    char *end = NULL;
+    const unsigned long v = strtoul(s, &end, 0);
+    if (*end || v > max) return false;
+    *out = (uint32_t)v;
+    return true;
+}
+
+int ls_lora_sx126x_probe_command(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "sxprobe")) return -1;
+    uint32_t start = 0, stop = 0, step = 25, bw = 4800, reads = 8, settle = 2000;
+    uint8_t bw_code_v = 0, gain = 0x96;
+    int cal_mode = 1;  /* 0 none, 1 once, 2 each */
+    bool ok = argc >= 3 && sxprobe_number(argv[2], 4095000, &start) && start >= 1000;
+    stop = start;
+    if (ok && argc > 3) ok = sxprobe_number(argv[3], 4095000, &stop) && stop >= start;
+    if (ok && argc > 4) ok = sxprobe_number(argv[4], 1000000, &step) && step;
+    if (ok && argc > 5) {
+        uint32_t v = 0;
+        ok = sxprobe_number(argv[5], 467000, &v);
+        if (ok && !strncmp(argv[5], "0x", 2)) { ok = v <= 0xFF; bw_code_v = (uint8_t)v; bw = 0; }
+        else if (ok) { bw = v; bw_code_v = fsk_bw_code(v); ok = bw_code_v != 0; }
+    } else {
+        bw_code_v = fsk_bw_code(bw);
+    }
+    if (ok && argc > 6) {
+        uint32_t v = 0;
+        if (!strcmp(argv[6], "boost")) gain = 0x96;
+        else if (!strcmp(argv[6], "save")) gain = 0x94;
+        else if ((ok = sxprobe_number(argv[6], 0xFF, &v))) gain = (uint8_t)v;
+    }
+    if (ok && argc > 7) ok = sxprobe_number(argv[7], SXPROBE_MAX_READS, &reads) && reads;
+    if (ok && argc > 8) ok = sxprobe_number(argv[8], 20000, &settle);
+    if (ok && argc > 9) {
+        if (!strcmp(argv[9], "none")) cal_mode = 0;
+        else if (!strcmp(argv[9], "once")) cal_mode = 1;
+        else if (!strcmp(argv[9], "each")) cal_mode = 2;
+        else ok = false;
+    }
+    const uint32_t points = ok ? (stop - start) / step + 1u : 0;
+    if (!ok || argc > 10 || points > SXPROBE_MAX_POINTS) {
+        puts("usage: lora sxprobe <start_kHz 1000..4095000> [stop_kHz] [step_kHz] "
+             "[bw Hz from the FSK table, or 0xNN raw code] [boost|save|0xNN rx gain] "
+             "[reads 1..64] [settle_us 0..20000] [none|once|each image cal]   "
+             "(receive only, at most 2001 points)");
+        return 1;
+    }
+    /* After `mesh stop` the part has been forgotten; bring it back the way
+       configure_lora would, and never send SX126x opcodes to anything else. */
+    if (!ls_lora_present()) (void)ls_lora_start();
+    if (!ls_lora_present() || ls_lora_chip() != LS_LORA_CHIP_SX126X) {
+        puts("sxprobe: no SX126x answering");
+        return 1;
+    }
+    sxprobe_row_t *rows = heap_caps_malloc(points * sizeof(*rows), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rows) rows = malloc(points * sizeof(*rows));
+    if (!rows) { puts("sxprobe: no memory"); return 1; }
+
+    ls_lora_hw_lock();
+    if (s_fsk_active || s_scanning || s_tx_busy || s_probe_active) {
+        ls_lora_hw_unlock();
+        free(rows);
+        puts("sxprobe: the radio is busy (FSK session, sweep or transmit) - stop it first");
+        return 1;
+    }
+    const bool had_cfg = s_cfg_valid, was_rx = s_rx_mode || s_rearm;
+    const ls_lora_cfg_t saved = s_cfg;
+
+    /* The normal bring-up (TCXO, regulator, Calibrate, PA settings exactly as
+       the LoRa path sets them) at the first tune, then over to GFSK. */
+    ls_lora_cfg_t setup;
+    ls_lora_cfg_default(&setup);
+    setup.freq_hz = start * 1000u;
+    uint32_t cal_lo = (start / 1000u / 4u) * 4u;
+    if (cal_lo > 1016u) cal_lo = 1016u;
+    setup.cal_min_mhz = (uint16_t)cal_lo;
+    setup.cal_max_mhz = (uint16_t)(cal_lo + 4u);
+    esp_err_t err = configure_lora(&setup);
+    s_cfg_valid = false;
+    s_rx_mode = s_rearm = false;
+    s_probe_active = true;
+    uint8_t st_mod = 0, gain_rb = 0;
+    if (err == ESP_OK) {
+        uint8_t type = 0;
+        err = cmd(OP_SET_PKT_TYPE, &type, 1, NULL, 0);
+    }
+    if (err == ESP_OK) {
+        uint32_t brate = bw ? bw / 4u : 4800u, fdev = bw ? bw / 8u : 2400u;
+        if (brate < 600u) brate = 600u;
+        if (fdev < 600u) fdev = 600u;
+        const uint32_t br = (1024000000u + brate / 2u) / brate;
+        const uint32_t dev = (uint32_t)(((uint64_t)fdev << 25) / 32000000u);
+        uint8_t mod[] = { OP_SET_MOD_PARAMS, (uint8_t)(br >> 16), (uint8_t)(br >> 8),
+                          (uint8_t)br, 0, bw_code_v,
+                          (uint8_t)(dev >> 16), (uint8_t)(dev >> 8), (uint8_t)dev };
+        err = xfer(mod, NULL, sizeof(mod));
+        sx_status(&st_mod);
+    }
+    if (err == ESP_OK) {
+        uint8_t pkt[] = { OP_SET_PKT_PARAMS, 0, 32, 0x04, 32, 0, 0, 16, 1, 0 };
+        err = xfer(pkt, NULL, sizeof(pkt));
+    }
+    for (int i = 0; err == ESP_OK && i < 4; i++)
+        err = write_reg((uint16_t)(0x06C0 + i), (uint8_t)(0x5A + 0x11 * i));
+    if (err == ESP_OK) err = write_reg(REG_RX_GAIN, gain);
+    if (err == ESP_OK) sx_read_reg(REG_RX_GAIN, &gain_rb, 1);
+    ls_lora_hw_unlock();
+
+    const int64_t t0 = esp_timer_get_time();
+    uint32_t done = 0;
+    for (; err == ESP_OK && done < points; done++) {
+        const bool cal = cal_mode == 2 || (cal_mode == 1 && done == 0);
+        sxprobe_step(start + done * step, cal, reads, settle, &rows[done]);
+        if ((done & 15u) == 15u) vTaskDelay(1);
+    }
+    const int64_t elapsed = esp_timer_get_time() - t0;
+
+    ls_lora_hw_lock();
+    uint8_t gain_end = 0;
+    sx_read_reg(REG_RX_GAIN, &gain_end, 1);
+    uint8_t b = STANDBY_RC;
+    cmd(OP_SET_STANDBY, &b, 1, NULL, 0);
+    s_probe_active = false;
+    esp_err_t restore = ESP_OK;
+    if (had_cfg) {
+        restore = configure_lora(&saved);
+        if (restore == ESP_OK && was_rx) restore = sx_receive();
+    } else {
+        s_cfg_valid = false;
+    }
+    ls_lora_hw_unlock();
+
+    printf("sxprobe: start=%lu stop=%lu step=%lu kHz bw=%lu code=0x%02X gain=0x%02X "
+           "readback=0x%02X/0x%02X reads=%lu settle_us=%lu cal=%s modst=0x%02X setup=%s "
+           "points=%lu elapsed_ms=%lld\n",
+           (unsigned long)start, (unsigned long)stop, (unsigned long)step, (unsigned long)bw,
+           bw_code_v, gain, gain_rb, gain_end, (unsigned long)reads, (unsigned long)settle,
+           cal_mode == 0 ? "none" : cal_mode == 1 ? "once" : "each", st_mod,
+           esp_err_to_name(err), (unsigned long)done, (long long)(elapsed / 1000));
+    puts("sxp,khz,err_cal,err_rx,st_cal,st_rx,n,avg_dbm,max_dbm,min_dbm,us");
+    for (uint32_t i = 0; i < done; i++) {
+        const sxprobe_row_t *r = &rows[i];
+        if (r->reads)
+            printf("sxp,%lu,%04X,%04X,%02X,%02X,%u,%.1f,%.1f,%.1f,%lu\n",
+                   (unsigned long)r->khz, r->err_cal, r->err_rx, r->st_cal, r->st_rx,
+                   r->reads, -(float)r->rsum / (2.0f * r->reads), -(float)r->rmin / 2.0f,
+                   -(float)r->rmax / 2.0f, (unsigned long)r->us);
+        else
+            printf("sxp,%lu,%04X,%04X,%02X,%02X,0,,,,%lu\n",
+                   (unsigned long)r->khz, r->err_cal, r->err_rx, r->st_cal, r->st_rx,
+                   (unsigned long)r->us);
+    }
+    printf("sxprobe: end restore=%s rx=%s\n", esp_err_to_name(restore),
+           had_cfg ? (was_rx ? "resumed" : "standby") : "none configured");
+    free(rows);
+    return restore == ESP_OK && err == ESP_OK ? 0 : 1;
 }
 
 const ls_lora_ops_t ls_lora_sx126x_ops = {
@@ -1035,6 +1288,11 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
 
 #else  /* board declares no LoRa: nothing to bind */
 
-typedef int ls_lora_sx126x_not_fitted_t;
+int ls_lora_sx126x_probe_command(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "sxprobe")) return -1;
+    puts("sxprobe: this board has no SX126x");
+    return 1;
+}
 
 #endif

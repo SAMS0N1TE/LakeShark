@@ -16,6 +16,7 @@
 #include "ls_spi.h"
 #include "ls_mixrf.h"
 #include "ls_lora.h"
+#include "ls_lora_port.h"
 #include "ls_lora_lr20xx.h"
 #include "adsb_app.h"
 #include "tui/ls_field.h"
@@ -955,8 +956,10 @@ static bool tui_session(void)
               LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb, &ls_doc_adsb },
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
+#if !LS_LR_EDITION
             { "cell", "CELL WATCH", "cell survey", LS_ICON_TOWER, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
+#endif
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_mesh, tui_live_mesh, &ls_doc_mesh },
 
@@ -1064,7 +1067,9 @@ static bool tui_session(void)
             printf("tui: user app rejected - %s\n", ls_userapp_last_error());
         /* The first registered screen is already current, so screen_show(0)
          * intentionally skips its enter hook. A focused session starts it here. */
+#if !LS_LR_EDITION
         if(cell_performance_active() && ls_scr_cell.enter)ls_scr_cell.enter();
+#endif
     }
 
     ls_tui_invalidate();
@@ -2385,8 +2390,12 @@ static int labs_cmd(int argc, char **argv)
 
 static int lora_cmd(int argc, char **argv)
 {
+    /* Where the radio is wired: settings only, so it goes before anything
+       that wants the radio itself. */
+    if (argc >= 2 && !strcmp(argv[1], "port")) return ls_lora_port_command(argc, argv);
 #if LS_HAS_LORA_LR20XX_PROBE
-    if (lr20xx_stream_source2_active()) {
+    /* lrgain only reads or sets the next session's mode: safe beside live IQ. */
+    if (lr20xx_stream_source2_active() && !(argc >= 2 && !strcmp(argv[1], "lrgain"))) {
         puts("lora: live IQ owns the radio; switch away from LR2021 in RADIO first");
         return 1;
     }
@@ -2394,6 +2403,10 @@ static int lora_cmd(int argc, char **argv)
     if (lr_clock >= 0) return lr_clock;
 #endif
     if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
+    if (argc > 1 && !strcmp(argv[1], "sxprobe")) {
+        if (ls_mesh_running()) { puts("lora: MeshCore owns the radio - 'mesh stop' first"); return 1; }
+        return ls_lora_sx126x_probe_command(argc, argv);
+    }
     if (argc > 1 && (!strcmp(argv[1], "pocsag") || !strcmp(argv[1], "fsk")))
         return sx1262_receive_command(argc, argv);
     /* Takes and releases the radio itself, the same way the receive commands
@@ -3375,7 +3388,8 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     esp_console_cmd_register(&gps);
     static const esp_console_cmd_t lora={.command="lora",
         .help="SX1262: status, config, rx, tx, scan, pocsag, fsk, fsktx, "
-              "fskls, fskplay, fsksave",
+              "fskls, fskplay, fsksave; 'lora port' says where the radio is wired "
+              "(onboard socket or a module on the header)",
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
     static const esp_console_cmd_t adsbc={.command="adsb",

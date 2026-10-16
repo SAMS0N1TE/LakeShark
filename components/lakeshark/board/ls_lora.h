@@ -36,6 +36,7 @@ typedef enum {
 #define LS_LORA_CAP_RX_WIDE     (1u << 7)  /* sweeps and FSK listening past 960 MHz    */
 #define LS_LORA_CAP_FSK_STREAM  (1u << 8)  /* ls_fsk_cfg_t.stream and its reads        */
 #define LS_LORA_CAP_FSK_DETECT  (1u << 9)  /* ls_fsk_cfg_t.preamble_detect_bits        */
+#define LS_LORA_CAP_RX_EXT      (1u << 10) /* LR2021: measured receive 104-2740 MHz    */
 
 /* Where a receive-only sweep or an FSK listener may sit. Without
    LS_LORA_CAP_RX_WIDE that is 150-960 MHz, the range every sweep has always
@@ -51,16 +52,34 @@ typedef enum {
 #define LS_LORA_RX_HF_MIN_HZ    1500000000u
 #define LS_LORA_RX_HF_MAX_HZ    2500000000u
 
+/* The LR2021's measured receive range, past the datasheet bands: a signal
+   tracks a retune continuously from 104 to 2740 MHz. Below about 100 MHz the
+   image calibration fails; above about 2750 MHz the synthesiser does not
+   lock. The LF input serves everything below 1500 MHz (it beats the HF input
+   from 960 to 1440 MHz), the HF input the rest. Receive only. */
+#define LS_LORA_RX_EXT_MIN_HZ   104000000u
+#define LS_LORA_RX_EXT_LF_MAX_HZ 1499999999u
+#define LS_LORA_RX_EXT_MAX_HZ   2740000000u
+
+static inline uint32_t ls_lora_rx_min_hz(uint32_t caps)
+{ return (caps & LS_LORA_CAP_RX_EXT) ? LS_LORA_RX_EXT_MIN_HZ : LS_LORA_RX_MIN_HZ; }
+static inline uint32_t ls_lora_rx_lf_max_hz(uint32_t caps)
+{
+    return (caps & LS_LORA_CAP_RX_EXT) ? LS_LORA_RX_EXT_LF_MAX_HZ :
+           (caps & LS_LORA_CAP_RX_WIDE) ? LS_LORA_RX_LF_MAX_HZ : LS_LORA_RX_NARROW_MAX_HZ;
+}
+static inline uint32_t ls_lora_rx_hf_max_hz(uint32_t caps)
+{ return (caps & LS_LORA_CAP_RX_EXT) ? LS_LORA_RX_EXT_MAX_HZ : LS_LORA_RX_HF_MAX_HZ; }
+
 /* Whether [min_hz, max_hz] is a range the radio with capabilities `caps`
    can sweep or listen across, as above. min_hz == max_hz asks about one
    frequency. Pure. */
 static inline bool ls_lora_rx_range_ok(uint32_t caps, uint32_t min_hz, uint32_t max_hz)
 {
-    if (max_hz < min_hz || min_hz < LS_LORA_RX_MIN_HZ) return false;
-    if (!(caps & LS_LORA_CAP_RX_WIDE)) return max_hz <= LS_LORA_RX_NARROW_MAX_HZ;
-    if (max_hz <= LS_LORA_RX_LF_MAX_HZ) return true;
-    return (caps & LS_LORA_CAP_BAND_1G5_2G5) &&
-           min_hz >= LS_LORA_RX_HF_MIN_HZ && max_hz <= LS_LORA_RX_HF_MAX_HZ;
+    if (max_hz < min_hz || min_hz < ls_lora_rx_min_hz(caps)) return false;
+    if (max_hz <= ls_lora_rx_lf_max_hz(caps)) return true;
+    return (caps & LS_LORA_CAP_RX_WIDE) && (caps & LS_LORA_CAP_BAND_1G5_2G5) &&
+           min_hz >= LS_LORA_RX_HF_MIN_HZ && max_hz <= ls_lora_rx_hf_max_hz(caps);
 }
 
 /* LoRa packet configuration: sub-GHz LF receive, plus two
@@ -68,6 +87,8 @@ static inline bool ls_lora_rx_range_ok(uint32_t caps, uint32_t min_hz, uint32_t 
    backend independently refuses HF; this check grants no transmit access. */
 static inline bool ls_lora_packet_rx_hz_ok(uint32_t caps, uint32_t hz)
 {
+    if (caps & LS_LORA_CAP_RX_EXT)
+        return hz >= LS_LORA_RX_EXT_MIN_HZ && hz <= LS_LORA_RX_EXT_MAX_HZ;
     if (hz >= LS_LORA_RX_MIN_HZ && hz <= LS_LORA_RX_NARROW_MAX_HZ) return true;
     if ((caps & LS_LORA_CAP_BAND_1G5_2G5) && hz>LS_LORA_RX_NARROW_MAX_HZ && hz<1000000000u) return true;
     return (caps & LS_LORA_CAP_BAND_1G5_2G5) &&
@@ -473,6 +494,12 @@ void ls_lora_diagnostics(void);
    pair a successful begin with end; do not hold across waits or output. */
 bool ls_lora_diagnostic_try_begin(void);
 void ls_lora_diagnostic_try_end(void);
+
+/* `lora sxprobe`: receive-only SX126x tuning and RSSI survey at any
+   frequency the synthesiser register can express, outside the app gates.
+   Never transmits and puts the configured LoRa receive back afterwards.
+   Returns -1 when argv is not an sxprobe command, else a console status. */
+int ls_lora_sx126x_probe_command(int argc, char **argv);
 
 #ifdef __cplusplus
 }

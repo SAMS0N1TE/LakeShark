@@ -262,13 +262,9 @@ int exp_survey_plan(uint32_t lo_hz, uint32_t hi_hz, uint32_t caps,
 {
     exp_span_t reach[2];
     int nr = 0;
-    if (!(caps & LS_LORA_CAP_RX_WIDE)) {
-        reach[nr++] = (exp_span_t){ LS_LORA_RX_MIN_HZ, LS_LORA_RX_NARROW_MAX_HZ };
-    } else {
-        reach[nr++] = (exp_span_t){ LS_LORA_RX_MIN_HZ, LS_LORA_RX_LF_MAX_HZ };
-        if (caps & LS_LORA_CAP_BAND_1G5_2G5)
-            reach[nr++] = (exp_span_t){ LS_LORA_RX_HF_MIN_HZ, LS_LORA_RX_HF_MAX_HZ };
-    }
+    reach[nr++] = (exp_span_t){ ls_lora_rx_min_hz(caps), ls_lora_rx_lf_max_hz(caps) };
+    if ((caps & LS_LORA_CAP_RX_WIDE) && (caps & LS_LORA_CAP_BAND_1G5_2G5))
+        reach[nr++] = (exp_span_t){ LS_LORA_RX_HF_MIN_HZ, ls_lora_rx_hf_max_hz(caps) };
     if (max_chunk_hz < 1000000u) max_chunk_hz = 1000000u;
     int n = 0;
     for (int r = 0; r < nr && n < max; r++) {

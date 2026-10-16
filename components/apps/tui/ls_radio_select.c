@@ -42,6 +42,11 @@ void ls_rsel_forget(void) { s_hw_have = false; }
 
 static bool radio_ok(ls_rsel_radio_t r) { return r >= 0 && r < LS_RSEL_RADIOS; }
 static bool job_ok(ls_rsel_job_t j) { return j >= 0 && j < LS_RSEL_JOBS; }
+/* The three radios that live on the T-MixRF keyboard board. */
+static bool is_mixrf(ls_rsel_radio_t r)
+{
+    return r == LS_RSEL_CC1101 || r == LS_RSEL_NRF24 || r == LS_RSEL_NFC;
+}
 
 /* ------------------------------------------------------------- names -- */
 
@@ -75,9 +80,10 @@ const char *ls_rsel_absent(ls_rsel_radio_t r)
     }
     if (h->present[r]) return NULL;
     /* The keyboard board is probed when something first asks for one of
-       its radios, so before that answer they count as there: choosing one
-       is what starts the probe, and the app says what it found. */
-    if ((r == LS_RSEL_CC1101 || r == LS_RSEL_NRF24 || r == LS_RSEL_NFC) && h->mixrf_unknown) return NULL;
+       its radios, so once it is on they count as there before that answer:
+       choosing one is what starts the probe, and the app says what it found.
+       With no keyboard there is nothing to probe. */
+    if (is_mixrf(r) && h->mixrf_unknown && h->mixrf_seen) return NULL;
     switch (r) {
     case LS_RSEL_SDR_RTL:    return "Plug an RTL-SDR into the USB-A port";
     case LS_RSEL_SDR_HACKRF: return "Plug a HackRF into the USB-A port";
@@ -131,9 +137,11 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
     case LS_RSEL_FM:
         if (is_sdr(r)) return NULL;
         if (r == LS_RSEL_LORA) {
-            if (s_fm_hz < 150000000u || s_fm_hz > 960000000u)
-                return "LR tunes 150-960 MHz; no broadcast FM / 2 m";
-            if (!s_fm_nfm) return "LR IQ supports NFM only (12.5 / 25 kHz)";
+            if (hw()->lora_lr20xx
+                    ? (s_fm_hz < LS_LORA_RX_EXT_MIN_HZ || s_fm_hz > LS_LORA_RX_EXT_MAX_HZ)
+                    : (s_fm_hz < LS_LORA_RX_MIN_HZ || s_fm_hz > LS_LORA_RX_NARROW_MAX_HZ))
+                return hw()->lora_lr20xx ? "LR tunes 104-2740 MHz" : "LoRa tunes 150-960 MHz";
+            if (!s_fm_nfm) return "LR IQ carries NFM, AM, APRS, SAME and ACARS";
             return hw()->lora_lr20xx ? NULL : "NFM IQ needs LR2021";
         }
         return kind ? kind : "No IQ stream to demodulate audio";
@@ -145,6 +153,8 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
         return kind ? kind : "No pager decoder for this radio";
     case LS_RSEL_ACARS:
         if (is_sdr(r)) return NULL;
+        /* The LR2021 tunes the 129-137 MHz ACARS band since its range was measured. */
+        if (r == LS_RSEL_LORA && hw()->lora_lr20xx) return NULL;
         return kind ? kind : "No AM receiver for 131 MHz";
     case LS_RSEL_P25:
         /* Only the LR2021 has the continuous raw IQ source used for P25. */
@@ -208,6 +218,29 @@ static const char *why_not(ls_rsel_job_t job, ls_rsel_radio_t r)
 static bool usable(ls_rsel_job_t job, ls_rsel_radio_t r)
 {
     return radio_ok(r) && !why_not(job, r);
+}
+
+/* The two dongles are listed only once there has been one, and the three
+   keyboard-board radios only once the keyboard board has been on. A board
+   that never has them should not be offered rows that can only say "plug
+   one in". One that was here this boot and has dropped off stays, with its
+   reason, while it comes back. */
+static bool unlisted(ls_rsel_radio_t r)
+{
+    const ls_rsel_hw_t *h = hw();
+    if (is_sdr(r)) return !h->present[r] && !h->sdr_seen[r == LS_RSEL_SDR_HACKRF];
+    if (is_mixrf(r)) return !h->present[r] && !h->mixrf_seen;
+    return false;
+}
+
+/* Whether any radio at all can do the job now. When none can - ACARS and
+   CELL are the SDRs' alone, MIX-RF the keyboard board's - the absent rows
+   are the only sentence that helps, so they stay. */
+static bool job_has_radio(ls_rsel_job_t job)
+{
+    for (int i = 0; i < LS_RSEL_RADIOS; i++)
+        if (i != LS_RSEL_ADSB_DUAL && usable(job, (ls_rsel_radio_t)i)) return true;
+    return false;
 }
 
 /* ------------------------------------------------------------ defaults -- */
@@ -317,19 +350,22 @@ static const ls_rsel_extra_t *s_extra;
 static int s_extra_n;
 static void (*s_extra_done)(int);
 static int s_visible_radios;
+/* The radio on each picker row. Absent dongles are not listed, so a row
+   is no longer its radio's number. */
+static uint8_t s_row_radio[LS_RSEL_RADIOS];
 
 static void fill(ls_rsel_job_t job)
 {
     const ls_rsel_radio_t now = ls_rsel_effective(job);
-    s_visible_radios = LS_RSEL_ADSB_DUAL;
+    const bool hide_absent = job_has_radio(job);
+    s_visible_radios = 0;
     for (int i = 0; i < LS_RSEL_RADIOS; i++) {
         const ls_rsel_radio_t r = (ls_rsel_radio_t)i;
-        if (r == LS_RSEL_ADSB_DUAL) {
-            if (job != LS_RSEL_ADSB || ls_rsel_absent(r)) continue;
-            s_visible_radios++;
-        }
+        if (r == LS_RSEL_ADSB_DUAL && (job != LS_RSEL_ADSB || ls_rsel_absent(r))) continue;
+        if (hide_absent && unlisted(r)) continue;
         const char *why = why_not(job, r);
-        ls_picker_add(ls_rsel_name(r), why ? why : r == now ? "selected" : "ready");
+        if (!ls_picker_add(ls_rsel_name(r), why ? why : r == now ? "selected" : "ready")) break;
+        s_row_radio[s_visible_radios++] = (uint8_t)r;
     }
 }
 
@@ -342,7 +378,7 @@ static void picked(int index)
         return;
     }
     if (index < 0 || index >= s_visible_radios) return;
-    const ls_rsel_radio_t r = (ls_rsel_radio_t)index;
+    const ls_rsel_radio_t r = (ls_rsel_radio_t)s_row_radio[index];
     const char *why = why_not(job, r);
     if (why) {
         /* The list stays up, with the reason above it: the choice is
@@ -379,26 +415,34 @@ void ls_rsel_open_with(ls_rsel_job_t job, void (*done)(ls_rsel_radio_t chosen),
 
 static ls_rsel_radio_t s_fixed_radio;
 static void (*s_fixed_done)(ls_rsel_radio_t);
+static uint8_t s_fixed_row[LS_RSEL_RADIOS];
+static int s_fixed_n;
 static void fixed_picked(int index)
 {
-    if (index == (int)s_fixed_radio && !ls_rsel_absent(s_fixed_radio)) {
+    const int radio = index >= 0 && index < s_fixed_n ? s_fixed_row[index] : -1;
+    if (radio == (int)s_fixed_radio && !ls_rsel_absent(s_fixed_radio)) {
         if (s_fixed_done) s_fixed_done(s_fixed_radio);
         return;
     }
     ls_rsel_open_fixed(s_fixed_radio, s_fixed_done);
     ls_picker_select(index);
-    ls_picker_note(index == (int)s_fixed_radio ? ls_rsel_absent(s_fixed_radio) : "This app uses the protocol radio");
+    ls_picker_note(radio == (int)s_fixed_radio ? ls_rsel_absent(s_fixed_radio) : "This app uses the protocol radio");
 }
 void ls_rsel_open_fixed(ls_rsel_radio_t radio, void (*done)(ls_rsel_radio_t))
 {
     if (radio >= LS_RSEL_RADIOS) return;
     s_fixed_radio = radio; s_fixed_done = done;
     ls_picker_open("RADIO", fixed_picked);
+    s_fixed_n = 0;
+    int at = 0;
     for (int i = 0; i < LS_RSEL_RADIOS; i++) {
         if (i == LS_RSEL_ADSB_DUAL) continue;
+        if (i != (int)radio && unlisted((ls_rsel_radio_t)i)) continue;
         const char *why = ls_rsel_absent((ls_rsel_radio_t)i);
-        ls_picker_add(ls_rsel_name((ls_rsel_radio_t)i), why ? why :
-            i == (int)radio ? "protocol radio" : "not used by this protocol");
+        if (!ls_picker_add(ls_rsel_name((ls_rsel_radio_t)i), why ? why :
+            i == (int)radio ? "protocol radio" : "not used by this protocol")) break;
+        if (i == (int)radio) at = s_fixed_n;
+        s_fixed_row[s_fixed_n++] = (uint8_t)i;
     }
-    ls_picker_select((int)radio);
+    ls_picker_select(at);
 }

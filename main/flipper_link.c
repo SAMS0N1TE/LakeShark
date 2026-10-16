@@ -597,6 +597,12 @@ static int build_telemetry(char *buf, size_t len)
     default:             n = build_telemetry_p25(buf, len);  break;
     }
     if (n < 0) return n;
+    /* The saved mode is not a running receiver: while the TUI has the radio
+       parked the head must not show that mode as live. */
+    if (!lakeshark_radio_running()) {
+        const int m = ls_telemetry_set_mode(buf, len, "PARKED");
+        if (m >= 0) n = m;
+    }
 
     if ((size_t)n >= len - 2) n = (int)len - 2;
 

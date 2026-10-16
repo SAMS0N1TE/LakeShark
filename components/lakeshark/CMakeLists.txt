@@ -13,6 +13,17 @@ endif()
 # their learned classifiers and assembly model do not belong in firmware.
 list(FILTER LS_SRCS EXCLUDE REGEX "/apps/p25/p25_os4_(decode|lut|nn|nn_model|nn_pie)\\.(c|S)$")
 
+# LakeShark LR: no USB host, dongle drivers, SX1262 or dongle-only apps.
+# lr_only_stubs.c answers for them with "not present".
+if(CONFIG_LS_LR2021_ONLY)
+    list(FILTER LS_SRCS EXCLUDE REGEX "/radio/(librtlsdr|rtlsdr_dev|tuner_[a-z0-9]+|hackrf_dev|hackrf_radio|esp_libusb|usb_host|usb_boot_retry|usb_port_cycle)\.c$")
+    list(FILTER LS_SRCS EXCLUDE REGEX "/board/ls_lora_sx126x\.c$")
+    list(FILTER LS_SRCS EXCLUDE REGEX "/apps/cell/")
+    list(FILTER LS_SRCS EXCLUDE REGEX "/apps/rec/rec_catch[a-z_]*\.c$")
+else()
+    list(FILTER LS_SRCS EXCLUDE REGEX "/lr_only_stubs\.c$")
+endif()
+
 file(GLOB LS_APP_DIR_CANDIDATES ${CMAKE_CURRENT_SOURCE_DIR}/apps/*)
 set(LS_APP_INCLUDES "")
 foreach(d ${LS_APP_DIR_CANDIDATES})

@@ -1,5 +1,20 @@
 # LakeShark release notes
 
+## 2.16.0
+
+- LR2021: every LR app receives from 104 to 2740 MHz, well past the chip's datasheet bands. Transmit stays at 150 MHz and up.
+- LR2021: pagers (POCSAG and FLEX), APRS, SAME weather alerts, ACARS and AM airband from its own I/Q, with no SDR.
+- LR2021 I/Q gain follows the signal (`lora lrgain auto`, the default): 9 to 18 dB more signal to noise than the chip's AGC on medium and strong signals.
+- REC decodes 2-FSK packets from every I/Q capture and every FSK capture: rate, sync word, payload and a CRC check, with nothing set in advance.
+- LR433 adds 433 PKT and 915 PKT sessions for CC1101, RFM69 and Si443x style packets, and OFFSET for a transmitter that sits off its band's usual frequency.
+- ACARS on an RTL-SDR reads the AM envelope through a proper channel filter: 18 of 18 test bursts decode, up from 3.
+- LoRa on the feature header (experimental): an external LR2021 module with its own chip select, BUSY, reset, interrupt DIO, TCXO supply and RF switch table, set with `lora port` and switched in Settings > Device > LoRa radio. Header pins the keyboard uses turn the keyboard off while it is in use.
+- LakeShark LR (experimental): a build for LR2021 boards only, without USB host, RTL-SDR, HackRF or SX1262 support, which frees about 250 KB of flash and 34 KB of internal RAM. Install it over USB; it does not update over Wi-Fi yet.
+- RADIO lists a dongle once it has been plugged in this boot, and the keyboard's radios once the keyboard has been on.
+- An empty USB port is left alone at boot: no power cycling and no replug warning.
+- Flipper link: while the receiver is parked the head shows no mode as live.
+- Console: `lora lrprobe`, `lora lrble` and `lora sxprobe`, receive-only probes of the LR2021 and SX1262 at any frequency. `rec arm` says when there is no SDR to record from.
+
 ## 2.15.0
 
 - DETECTOR watches aircraft: rules over the ADS-B table, with emergency squawks and emergency status on by default. The AIRCRAFT view lists what matched.

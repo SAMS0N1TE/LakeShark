@@ -5,7 +5,12 @@
    board knows, in the same order, each saying whether it is the one in use,
    ready, or why not. A radio that is missing or cannot do the job stays in
    the list with its reason rather than being left out, and choosing it
-   changes nothing.
+   changes nothing. The two USB dongles are the exception: an RTL-SDR or a
+   HackRF that has not been plugged in this boot is not listed, so a board
+   without one shows only what it has. One that was, and has dropped off
+   the bus, stays with its reason while it comes back. So do the CC1101,
+   nRF24 and NFC, which ride on the T-MixRF keyboard board: not listed until
+   it has been attached this boot.
 
    The choice is per job (radio_choice.h) and survives a reboot. What runs is
    the saved radio when it is fitted and can do the job, otherwise the first
@@ -93,7 +98,9 @@ typedef struct {
     bool lora_lr20xx;            /* the socket holds an LR20xx part */
     const char *lora_name;       /* ls_lora_chip_name()             */
     char sdr_owner[2][16];       /* who holds the RTL-SDR, the HackRF; "" for nobody */
+    bool sdr_seen[2];            /* the RTL-SDR, the HackRF was plugged in at some point this boot */
     bool mixrf_unknown;          /* the keyboard board not probed yet, or probing */
+    bool mixrf_seen;             /* the keyboard board is on, or was at some point this boot */
 } ls_rsel_hw_t;
 void ls_rsel_hw(ls_rsel_hw_t *out);
 void ls_rsel_hw_restart(void);

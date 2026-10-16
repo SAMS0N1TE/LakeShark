@@ -305,6 +305,57 @@ int fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
     return out;
 }
 
+/* Windowed-sinc low-pass, 10 kHz at FM_RTL_RATE, unity gain. */
+static float s_env_taps[FM_ENV_TAPS];
+static void env_taps_init(void)
+{
+    if (s_env_taps[FM_ENV_TAPS / 2] != 0.0f) return;
+    const float fc = 10000.0f / (float)FM_RTL_RATE;
+    float sum = 0.0f;
+    for (int k = 0; k < FM_ENV_TAPS; ++k) {
+        const float n = (float)k - (FM_ENV_TAPS - 1) * 0.5f;
+        const float v = n != 0.0f ? sinf(2.0f * 3.14159265f * fc * n) / (3.14159265f * n)
+                                  : 2.0f * fc;
+        s_env_taps[k] = v * (0.54f - 0.46f * cosf(2.0f * 3.14159265f * k / (FM_ENV_TAPS - 1)));
+        sum += s_env_taps[k];
+    }
+    for (int k = 0; k < FM_ENV_TAPS; ++k) s_env_taps[k] /= sum;
+}
+
+int fm_demod_env(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                 float *out_env, int max)
+{
+    env_taps_init();
+    s->iq_block_peak = 0.0f;
+    const int decim = FM_RTL_RATE / FM_DEMOD_RATE;
+    int out = 0, ipeak = 0;
+    for (int p = 0; p + 1 < iq_len && out < max; p += 2) {
+        const int vi = (int)iq[p] - 127, vq = (int)iq[p + 1] - 127;
+        const int a = vi < 0 ? -vi : vi;
+        if (a > ipeak) ipeak = a;
+        s->env_i[s->env_pos] = (float)vi;
+        s->env_q[s->env_pos] = (float)vq;
+        s->env_pos = (s->env_pos + 1) % FM_ENV_TAPS;
+        if (++s->env_dec < decim) continue;
+        s->env_dec = 0;
+        float re = 0.0f, im = 0.0f;
+        int j = s->env_pos;
+        for (int k = 0; k < FM_ENV_TAPS; ++k) {
+            re += s_env_taps[k] * s->env_i[j];
+            im += s_env_taps[k] * s->env_q[j];
+            if (++j == FM_ENV_TAPS) j = 0;
+        }
+        const float magnitude = sqrtf(re * re + im * im);
+        if (s->am_dc <= 0.0f) s->am_dc = magnitude;
+        s->am_dc += 0.002f * (magnitude - s->am_dc);
+        out_env[out++] = (magnitude - s->am_dc) / (s->am_dc + 1e-3f);
+    }
+    const float now = (float)ipeak / 127.0f;
+    s->iq_block_peak = now;
+    if (now > s->iq_peak) s->iq_peak = now > 1.0f ? 1.0f : now;
+    return out;
+}
+
 int fm_demod_am(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                 int16_t *pcm16k, int max)
 {

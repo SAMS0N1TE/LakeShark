@@ -209,7 +209,7 @@ LS_CASE(lriq_file_rejects_corrupt_headers_hex_and_extra_samples)
         LS_CHECK(!rec_lr_iq_load(path,&hz,copy,sizeof(copy),&bytes));LS_EQ_UINT(bytes,0);
     }
     unlink(path);
-    LS_CHECK(!rec_lr_iq_save(path,1500000000,iq,4));
+    LS_CHECK(!rec_lr_iq_save(path,3000000000u,iq,4));
     LS_CHECK(!rec_lr_iq_save(path,433920000,iq,REC_LR_IQ_BYTES+4));
 }
 static const char *replay_path="test-lriq-runtime.sub";

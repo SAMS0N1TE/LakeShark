@@ -1,0 +1,93 @@
+/* Where the LoRa radio is wired: the board's own socket, or a module on the
+   feature (expansion) header.
+
+   A header module shares the radio SPI bus that already reaches the header
+   (the keyboard's MixRF radios use it too) and brings its own chip select,
+   BUSY and reset lines, and for an LR20xx its own RF switch wiring, interrupt
+   DIO and TCXO voltage. The choice is saved and taken at the next boot; until
+   anything is saved the board's own values are used, so nothing changes for
+   a board left alone.
+
+   Header pins that the keyboard expansion also uses turn the keyboard and the
+   MixRF radios off while header mode is in force: one connector cannot carry
+   both. */
+
+#ifndef LS_LORA_PORT_H
+#define LS_LORA_PORT_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define LS_LORA_PORT_RFSW_MAX 7     /* LR20xx DIO5..DIO11 */
+#define LS_LORA_PORT_RST_BOARD (-2) /* the board's own (expander) reset line */
+#define LS_LORA_PORT_NONE (-1)
+
+typedef struct {
+    bool header;            /* false: the board's socket                       */
+    int8_t cs, busy;        /* GPIOs                                           */
+    int8_t rst;             /* GPIO, or LS_LORA_PORT_RST_BOARD                 */
+    int8_t irq_gpio;        /* GPIO wired to the interrupt DIO, or NONE (the
+                               driver polls the IRQ word over SPI either way)  */
+    int8_t irq_dio;         /* LR20xx DIO that carries the interrupt, or NONE  */
+    uint8_t tcxo_code;      /* SetTcxoMode supply code, 0 1.6 V .. 7 3.3 V     */
+    uint8_t rfsw_n;
+    struct { uint8_t dio, config; } rfsw[LS_LORA_PORT_RFSW_MAX];
+} ls_lora_port_t;
+
+/* The board's own socket, as its variant header describes it. */
+void ls_lora_port_board(ls_lora_port_t *out);
+
+/* What this boot uses: the saved choice when one was saved and is valid,
+   the board's socket otherwise. Read once and kept. */
+const ls_lora_port_t *ls_lora_port(void);
+bool ls_lora_port_is_header(void);
+
+/* The saved choice and saving one. A saved onboard choice keeps the header
+   pins last given (header false) so switching back needs no retyping; it
+   uses the board's own lines. False, with the board's port, when nothing
+   valid is saved. */
+bool ls_lora_port_saved(ls_lora_port_t *out);
+/* Flip the saved choice between onboard and header, keeping the pins. */
+bool ls_lora_port_toggle(char *why, size_t n);
+bool ls_lora_port_save(const ls_lora_port_t *p, char *why, size_t n);
+
+/* GPIOs of `p` that the keyboard expansion also uses, as a mask; 0 when the
+   keyboard can stay. Only a header port counts. */
+uint64_t ls_lora_port_keyboard_pins(const ls_lora_port_t *p);
+/* True when this boot's port takes pins the keyboard needs; the keypad and
+   MixRF starts refuse and say why. */
+bool ls_lora_port_blocks_keyboard(void);
+
+/* Pins exist, differ from each other and from what the board itself uses,
+   and the RF switch table never routes high-band transmit. */
+bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n);
+
+/* "header cs=33 busy=32 rst=26 irq=31 dio=9 tcxo=1.8 rfsw=5:02,6:08" (any
+   order, after a base) or "onboard". Words start from `base`. */
+bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
+                        ls_lora_port_t *out, char *why, size_t n);
+
+/* One line for the console and the settings page. */
+void ls_lora_port_describe(const ls_lora_port_t *p, char *out, size_t n);
+
+/* Two words for NVS, and back. Unpack refuses a version it does not know. */
+void ls_lora_port_pack(const ls_lora_port_t *p, uint64_t *a, uint64_t *b);
+bool ls_lora_port_unpack(uint64_t a, uint64_t b, ls_lora_port_t *out);
+
+/* TCXO supply in tenths of a volt for a SetTcxoMode code, and back (-1). */
+int ls_lora_port_tcxo_dv(uint8_t code);
+int ls_lora_port_tcxo_code(int dv);
+
+/* `lora port ...` */
+int ls_lora_port_command(int argc, char **argv);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LS_LORA_PORT_H */

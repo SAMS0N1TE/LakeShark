@@ -48,6 +48,8 @@ static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
+static uint64_t     s_lr_port_a, s_lr_port_b;
+static bool         s_lr_port_have;
 static uint64_t s_location;
 static uint64_t s_last_fix;   /* COMPASS declination without a live fix */
 static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -346,6 +348,8 @@ bool settings_init(void)
     if (nvs_get_u8(s_nvs, "lr_dcdc", &lr_dcdc) != ESP_OK || lr_dcdc > 1) lr_dcdc = 0;
     __atomic_store_n(&s_lr_tcxo, lr_tcxo != 0, __ATOMIC_RELEASE);
     __atomic_store_n(&s_lr_dcdc, lr_dcdc != 0, __ATOMIC_RELEASE);
+    s_lr_port_have = nvs_get_u64(s_nvs, "lr_port", &s_lr_port_a) == ESP_OK &&
+                     nvs_get_u64(s_nvs, "lr_rfsw", &s_lr_port_b) == ESP_OK;
 
     uint8_t auto_rotate = 1;
     if(nvs_get_u8(s_nvs,"autorot",&auto_rotate)==ESP_OK)
@@ -936,6 +940,44 @@ bool settings_set_lr_dcdc(bool dcdc)
 {
     if (!sput_u8("lr_dcdc", dcdc ? 1u : 0u)) return false;
     __atomic_store_n(&s_lr_dcdc, dcdc, __ATOMIC_RELEASE);
+    return true;
+}
+/* Before settings_init() - the keypad's bring-up asks whether the header
+   is the radio's - the two words come straight from NVS, on a DRAM stack. */
+typedef struct { uint64_t a, b; } port_peek_t;
+static esp_err_t port_peek_job(void *ctx)
+{
+    port_peek_t *p = (port_peek_t *)ctx;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
+    if (err != ESP_OK) return err;
+    err = (nvs_get_u64)(h, "lr_port", &p->a);
+    if (err == ESP_OK) err = (nvs_get_u64)(h, "lr_rfsw", &p->b);
+    nvs_close(h);
+    return err;
+}
+
+bool settings_get_lora_port(uint64_t *a, uint64_t *b)
+{
+    if (!s_nvs_ok) {
+        port_peek_t p = { 0, 0 };
+        if (ls_nvs_run(port_peek_job, &p, 0) != ESP_OK) return false;
+        *a = p.a;
+        *b = p.b;
+        return true;
+    }
+    if (!s_lr_port_have) return false;
+    *a = s_lr_port_a;
+    *b = s_lr_port_b;
+    return true;
+}
+bool settings_set_lora_port(uint64_t a, uint64_t b)
+{
+    /* the table first: a port word never points at a table not yet written */
+    if (!sput_u64("lr_rfsw", b) || !sput_u64("lr_port", a)) return false;
+    s_lr_port_a = a;
+    s_lr_port_b = b;
+    s_lr_port_have = true;
     return true;
 }
 

@@ -17,6 +17,7 @@ typedef struct {
 
 #define GPIO_MODE_INPUT       1
 #define GPIO_MODE_OUTPUT      2
+#define GPIO_MODE_INPUT_OUTPUT 3   /* IDF: input and output, so an output reads back */
 #define GPIO_PULLUP_DISABLE   0
 #define GPIO_PULLUP_ENABLE    1
 #define GPIO_PULLDOWN_DISABLE 0

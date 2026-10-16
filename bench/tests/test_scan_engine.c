@@ -249,20 +249,20 @@ static void run(int which, int ms)
         mock_sdr_owned = which == 18;
         mock_sdr_present = mock_sdr_owned;
         if (which == 18) mock_saved_radio = LS_RSEL_SDR_RTL;
-        channels[0].freq_hz = 144000000;
+        channels[0].freq_hz = 88000000;
         channels[1].freq_hz = 162550000;
         channels[2].freq_hz = 450000000;
-        if (which == 16) channels[1].freq_hz = 961000000;
+        if (which == 16) channels[1].freq_hz = 2800000000u;
         if (which == 16) channels[2].freq_hz = 100000000;
         if (which == 19) {
             channels[1].freq_hz = 1550000000;
-            channels[2].freq_hz = 1200000000;
+            channels[2].freq_hz = 3000000000u;
         }
     }
     if (which == 21) {
         mock_lr_radio = mock_sdr_present = mock_sdr_lora_range = true;
         mock_saved_radio = LS_RSEL_SDR_RTL;
-        channels[0].freq_hz = 144000000;
+        channels[0].freq_hz = 88000000;
         channels[1].freq_hz = 162550000;
         channels[2].freq_hz = 450000000;
     }
@@ -278,8 +278,8 @@ static void run(int which, int ms)
            reject these frequencies before the app falls through to SDR open. */
         mock_lr_radio = mock_sdr_present = mock_endpoint_metadata_unknown = true;
         mock_saved_radio = LS_RSEL_LORA;
-        channels[0].freq_hz = 140000000u;
-        channels[1].freq_hz = 961000000u;
+        channels[0].freq_hz = 90000000u;     /* outside the LR2021's 104-2740 MHz */
+        channels[1].freq_hz = 2900000000u;
         channels[2].freq_hz = 100000000u;
     }
     s_fg_mode = -1;
@@ -375,7 +375,7 @@ LS_CASE(lr_scan_skips_first_unsupported_frequency_and_wraps_supported_list)
     LS_EQ_INT(tuned[1], 450000000);
     LS_EQ_INT(tuned[2], 162550000);
     for (int i = 0; i < tune_count && i < 32; ++i)
-        LS_CHECK(tuned[i] != 144000000);
+        LS_CHECK(tuned[i] != 88000000);
     LS_CHECK(scan_engine_active());
 }
 
@@ -386,7 +386,7 @@ LS_CASE(lr_scan_mixed_list_continues_after_unsupported_entry)
     LS_EQ_INT(tuned[0], 162550000);
     LS_CHECK(tuned[1] == 450000000 || tuned[1] == 162550000);
     for (int i = 0; i < tune_count && i < 32; ++i)
-        LS_CHECK(tuned[i] != 144000000);
+        LS_CHECK(tuned[i] != 88000000);
 }
 
 LS_CASE(lr_scan_all_unsupported_idles_with_reason_and_no_tunes)
@@ -406,7 +406,7 @@ LS_CASE(sdr_scan_does_not_apply_lr_frequency_restrictions)
        not reject the channel. */
     run(18, 350);
     LS_CHECK(tune_count > 0);
-    LS_EQ_INT(tuned[0], 144000000);
+    LS_EQ_INT(tuned[0], 88000000);
 }
 
 LS_CASE(sdr_scan_skips_channels_outside_its_advertised_ranges)
@@ -415,7 +415,7 @@ LS_CASE(sdr_scan_skips_channels_outside_its_advertised_ranges)
     LS_CHECK(tune_count >= 2);
     LS_EQ_INT(tuned[0], 162550000);
     for (int i = 0; i < tune_count && i < 32; ++i)
-        LS_CHECK(tuned[i] != 144000000);
+        LS_CHECK(tuned[i] != 88000000);
 }
 
 LS_CASE(channel_capability_snapshot_reads_registry_once_per_list_pass)
@@ -454,8 +454,8 @@ LS_CASE(lr_p25_scan_uses_the_noncontiguous_receiver_ranges)
     LS_CHECK(tune_count > 0);
     LS_EQ_INT(tuned[0], 1550000000);
     for (int i = 0; i < tune_count && i < 32; ++i) {
-        LS_CHECK(tuned[i] != 144000000);
-        LS_CHECK(tuned[i] != 1200000000);
+        LS_CHECK(tuned[i] != 88000000);
+        LS_CHECK(tuned[i] != 3000000000u);
     }
 }
 
@@ -464,7 +464,7 @@ LS_CASE(switching_to_band_source_rebuilds_after_lr_channel_filtering)
     run(20, 650);
     LS_CHECK(tune_count >= 2);
     LS_EQ_INT(scan_engine_get_source(), SCAN_SRC_BAND);
-    LS_CHECK(tuned[0] != 144000000);
+    LS_CHECK(tuned[0] != 88000000);
 }
 
 LS_CASE(explicit_unsupported_tune_skips_only_that_channel_for_the_session)

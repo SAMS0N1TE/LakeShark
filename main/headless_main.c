@@ -42,6 +42,7 @@
 #include "bsp_board_extra.h"
 #include "lakeshark_backend.h"
 #include "fm_state.h"
+#include "acars_app.h"
 #include "fm_mode_label.h"
 #include "audio_out.h"
 #include "tone.h"
@@ -58,6 +59,7 @@
 /**/
 #include "radio_health.h"
 #include "rtlsdr_dev.h"
+#include "usb_boot_retry.h"
 /* rtlsdr_stream_* live here; esp_libusb.h is private to the radio component. */
 #include "rtl-sdr.h"
 /**/
@@ -378,12 +380,19 @@ static void settings_task(void *arg)
                 healthy_ms = 0;
                 if (!absent_told && absent_ms >= SDR_ABSENT_POWER_S * 1000) {
                     absent_ms = 0;
-                    /* A root-port reset acts on a device that is
+                    /* Nothing plugged in is not a missing dongle: no
+                       warning, no cycle, and no "told" latch, so a device
+                       that attaches later and stays silent is still said
+                       (USB-BOOT-ENUM). Look again in another interval.
+
+                       Otherwise: a root-port reset acts on a device that is
                        enumerated and not answering. It cannot bring back one
                        that is absent, and on a port holding some other device
                        it would reset that instead, so a board without a VBUS
                        switch only says so here. */
-                    if (!LS_HAS_VBUS_CTRL) {
+                    if (!usb_absent_notice_wanted(rtl_adapter_port_attached())) {
+                        /* quiet */
+                    } else if (!LS_HAS_VBUS_CTRL) {
                         ESP_LOGW(TAG, "SDR not enumerated for %d s - replug the "
                                       "dongle", SDR_ABSENT_POWER_S);
                         absent_told = true;
@@ -618,6 +627,15 @@ static int cmd_status(int argc, char **argv)
     if (FM.mode == FM_MODE_POCSAG)
         printf("pocsag: frames=%lu pages=%lu errors=%lu\n", (unsigned long)FM.pocsag_frames,
                (unsigned long)FM.pocsag_pages, (unsigned long)FM.pocsag_cw_errs);
+    if (FM.mode == FM_MODE_ACARS) {
+        const acars_state_t *as = acars_app_state();
+        printf("acars: msgs=%lu bad_crc=%lu synced=%lu\n", (unsigned long)as->n_delivered,
+               (unsigned long)as->n_bad_crc, (unsigned long)as->n_synced);
+    }
+    if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM)
+        printf("listen: lr=%d iq=%d%% audio=%d%% squelch=%s noise=%d\n", (int)FM.lr_iq_active,
+               (int)(FM.iq_level * 100.0f), (int)(FM.audio_level * 100.0f),
+               FM.squelch_open ? "open" : "shut", (int)(FM.noise * 1000.0f));
     /**/
     {
         char rh[160];
@@ -1439,6 +1457,7 @@ static int cmd_rec(int argc, char **argv)
                s.mod == REC_MOD_FSK ? "fsk" : "ook", s.autosave ? "on" : "off",
                s.cap_mod == REC_MOD_FSK ? "fsk" : "ook", s.cap_freq_hz / 1e6,
                (unsigned long)s.cap_dev_hz, (unsigned long)s.cap_bitrate);
+        if (s.cap_packet[0]) printf("    packet: %s\n", s.cap_packet);
         /**/
         /* Free-space line so the operator can see the volume filling
            up from the console without a separate command.  UINT64_MAX
@@ -1465,10 +1484,32 @@ static int cmd_rec(int argc, char **argv)
     }
 
     if (!strcmp(argv[1], "arm")) {
+#if !LS_HAS_USB_SDR
+        /* This recorder times edges from an SDR; LakeShark LR has none, and
+           armed it would wait on nothing. */
+        printf("rec arm records from an SDR and LakeShark LR has none: "
+               "'rec iq arm %.4f' records the LR2021's I/Q\n", rec_get_freq() / 1e6);
+        return 1;
+#else
         /**/ /**/
         if (!rec_active()) select_mode(3);
         rec_arm_request();
         printf("armed at %.4f MHz - transmit now\n", rec_get_freq() / 1e6);
+        /* Say so when no SDR comes up, instead of sitting armed on nothing. */
+        rec_hub_status_t hub = {0};
+        for (int i = 0; i < 15; i++) {
+            rec_get_hub_status(&hub);
+            if (hub.receiver_streaming) break;
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (!hub.receiver_streaming) {
+            rec_status_t st;
+            rec_get_status(&st);
+            printf("no SDR is streaming (%s): plug in an RTL-SDR or HackRF%s\n",
+                   ls_radio_err_name(st.receiver_error),
+                   ls_lora_chip() == LS_LORA_CHIP_LR20XX ? ", or 'rec iq arm <MHz>' for the LR2021" : "");
+        }
+#endif
     } else if (!strcmp(argv[1], "stop")) {
         rec_disarm();
         printf("disarmed\n");

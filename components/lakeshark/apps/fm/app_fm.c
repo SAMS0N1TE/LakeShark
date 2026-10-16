@@ -573,7 +573,58 @@ static void fm_lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spa
         fm_lr_reset_chain();
         return;
     }
-    int nd = fm_lr_demod(&s_lr_dsp, &s_dsp, data, bytes, demod, 84);
+    const int mode = FM.mode;
+    if (mode == FM_MODE_AM) {
+        /* AM voice: envelope, levelled, gated on carrier level like the SDR path. */
+        int na = fm_lr_demod_am(&s_lr_dsp, &s_dsp, data, bytes, pcm, 44);
+        FM.iq_level = s_dsp.iq_peak;
+        FM.squelch_open = (FM.iq_level * 1000.0f) >= (float)FM.squelch_tenths;
+        float ss = 0.0f;
+        for (int i = 0; i < na; ++i) ss += (float)pcm[i] * pcm[i];
+        FM.audio_level = na > 0 ? sqrtf(ss / na) / 8000.0f : 0.0f;
+        if (FM.squelch_tenths > 0 && FM.squelch_open && na > 0)
+            call_archive_audio(CALL_FM, FM.freq_hz, 0, 0, true, pcm, (unsigned)na);
+        call_archive_gate(CALL_FM, FM.freq_hz, FM.squelch_open && FM.squelch_tenths > 0);
+        if (na > 0 && FM.squelch_open && scan_engine_audio_open()) {
+            uint32_t before = audio_drops_get();
+            audio_write_mono(pcm, na);
+            FM.lr_audio_drops += audio_drops_get() - before;
+        }
+        ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
+        ls_iq_control_note_tune_result(&s_radio_control, s_lr_hz, LS_RADIO_OK, s_lr_hz);
+        return;
+    }
+    /* ACARS is MSK audio on an AM carrier: the envelope, not the discriminator. */
+    int nd = mode == FM_MODE_ACARS ? fm_lr_demod_env(&s_lr_dsp, &s_dsp, data, bytes, demod, 84)
+                                   : fm_lr_demod(&s_lr_dsp, &s_dsp, data, bytes, demod, 84);
+    if (mode == FM_MODE_APRS || mode == FM_MODE_SAME || mode == FM_MODE_ACARS ||
+        mode == FM_MODE_POCSAG || mode == FM_MODE_FLEX) {
+        /* The data decoders read the discriminator exactly as on the SDR path. */
+        FM.iq_level = s_dsp.iq_block_peak;
+        float ss = 0.0f;
+        for (int i = 0; i < nd; i++) ss += demod[i] * demod[i];
+        FM.audio_level = nd > 0 ? sqrtf(ss / nd) : 0.0f;
+        if (mode == FM_MODE_POCSAG) {
+            poc_dispatch(demod, nd);
+        } else if (mode == FM_MODE_FLEX) {
+            flex_dispatch(demod, nd);
+        } else if (mode == FM_MODE_ACARS) {
+            if (fm_lifecycle_acars_enter()) {
+                float apcm[60];
+                acars_ctx_t *acars = s_acars;
+                int na = acars_rs_5to3(&s_acars_rs, demod, nd, apcm, 60);
+                if (acars && na > 0) acars_process(acars, apcm, na);
+                fm_lifecycle_acars_leave();
+            }
+        } else {
+            int na = fm_demod_to_audio(&s_dsp, demod, nd, pcm, 44);
+            if (mode == FM_MODE_APRS && s_aprs) aprs_process(s_aprs, pcm, na);
+            if (mode == FM_MODE_SAME && s_same) same_process(s_same, pcm, na);
+        }
+        ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
+        ls_iq_control_note_tune_result(&s_radio_control, s_lr_hz, LS_RADIO_OK, s_lr_hz);
+        return;
+    }
     int gate = FM.squelch_tenths == 0 ? 1 : FM.squelch_tenths >= 100 ? 0 :
         fm_nfm_squelch(&s_dsp, FM.squelch_tenths, nd);
     gate = fm_tone_receive(&s_tone, demod, nd, gate, FM.tone_required);
@@ -608,15 +659,18 @@ static void fm_lr_stop(void)
 }
 static bool fm_lr_wanted(void)
 {
+    const ls_rsel_job_t job = fm_radio_job();
     return fm_lr_supported(FM.freq_hz, FM.mode) &&
         ls_lora_chip() == LS_LORA_CHIP_LR20XX &&
-        (ls_rsel_saved(LS_RSEL_FM) == LS_RSEL_LORA ||
-         !ls_rsel_sdr_endpoint(LS_RSEL_FM));
+        (ls_rsel_saved(job) == LS_RSEL_LORA || !ls_rsel_sdr_endpoint(job));
 }
 static void fm_lr_step(void)
 {
     if (s_session) { ls_radio_iq_stop(s_session); ls_radio_release(s_session); s_session = NULL; }
-    uint32_t channel = FM.lr_channel_hz == 12500 ? 12500 : 25000;
+    /* Data modes take the wide filter: a 1200 baud pager at 4.5 kHz deviation
+       is about 11 kHz wide, right at the 12.5 kHz filter's edge. */
+    uint32_t channel = (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM) &&
+                       FM.lr_channel_hz == 12500 ? 12500 : 25000;
     if (s_lr_session) {
         lr_wf_stats st; lr_wf_get_stats(&st);
         FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
@@ -872,7 +926,11 @@ static void fm_rx_run_once(void)
                 FM.audio_level = sqrtf(ss / na) / 8000.0f;
             }
         } else {
-            int nd = fm_demod_iq(&s_dsp, iq, FM_IQ_BLOCK_BYTES, demod, 1100);
+            /* ACARS is MSK audio on an AM carrier: the envelope, not the
+               discriminator, carries its tones. */
+            int nd = FM.mode == FM_MODE_ACARS
+                ? fm_demod_env(&s_dsp, iq, FM_IQ_BLOCK_BYTES, demod, 1100)
+                : fm_demod_iq(&s_dsp, iq, FM_IQ_BLOCK_BYTES, demod, 1100);
             FM.iq_level = s_dsp.iq_peak;
 
             float ss = 0.0f;

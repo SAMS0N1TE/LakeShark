@@ -126,8 +126,7 @@ esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
     if (session && session->hz != hz) lr_wf_stop();
     if (session) return atomic_load_explicit(&session->done, memory_order_acquire)
                          ? session->error : ESP_OK;
-    if (hz < 150000000u || hz >= 1000000000u ||
-        !ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz)) return ESP_ERR_INVALID_ARG;
+    if (!ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz)) return ESP_ERR_INVALID_ARG;
     if (ls_lora_chip() != LS_LORA_CHIP_LR20XX) return ESP_ERR_NOT_SUPPORTED;
     if (lr20xx_stream_source2_active() || ls_lora_fsk_active() || ls_lora_scanning())
         return ESP_ERR_INVALID_STATE;
@@ -138,7 +137,7 @@ esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
     s->hz = hz; s->consume = consume; s->ctx = ctx;
     atomic_init(&s->lost_pairs, 0); atomic_init(&s->gaps, 0);
     if (!lr2021_iq_queue_init(&s->queue) ||
-        xTaskCreatePinnedToCore(owner, "wf_iq", 4096, s, 10, NULL, 1) != pdPASS) {
+        xTaskCreatePinnedToCore(owner, "wf_iq", 6144, s, 10, NULL, 1) != pdPASS) {
         heap_caps_free(s); return ESP_ERR_NO_MEM;
     }
     session = s;

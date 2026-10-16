@@ -16,6 +16,28 @@ void audio_write_mono(const int16_t *p, int n)
     for (int i=0;i<n;i++) { int a=abs(p[i]); if(a>peak)peak=a; }
 }
 bool scan_engine_audio_open(void) { return true; }
+/* fm_lr_consume also feeds the decoders on the LR path. This test is about
+   the listening chain, so those answer and do nothing. */
+void call_archive_audio(call_input_t k, uint32_t hz, uint32_t a, uint32_t b, bool c, const int16_t *p, unsigned n)
+{ (void)k; (void)hz; (void)a; (void)b; (void)c; (void)p; (void)n; }
+void call_archive_gate(call_input_t k, uint32_t hz, bool open) { (void)k; (void)hz; (void)open; }
+bool fm_lifecycle_acars_enter(void) { return false; }
+void fm_lifecycle_acars_leave(void) {}
+int acars_rs_5to3(acars_rs_t *r, const float *in, int n_in, float *out, int cap)
+{ (void)r; (void)in; (void)n_in; (void)out; (void)cap; return 0; }
+void pocsag_process(pocsag_ctx_t *c, const float *d, int n) { (void)c; (void)d; (void)n; }
+bool pocsag_synced(const pocsag_ctx_t *c) { (void)c; return false; }
+uint32_t pocsag_n_frames(const pocsag_ctx_t *c) { (void)c; return 0; }
+uint32_t pocsag_n_pages(const pocsag_ctx_t *c) { (void)c; return 0; }
+uint32_t pocsag_n_cwerr(const pocsag_ctx_t *c) { (void)c; return 0; }
+uint32_t pocsag_n_addr(const pocsag_ctx_t *c) { (void)c; return 0; }
+uint32_t pocsag_n_msg(const pocsag_ctx_t *c) { (void)c; return 0; }
+void flex_process(flex_ctx_t *c, const float *d, int n) { (void)c; (void)d; (void)n; }
+bool flex_synced(const flex_ctx_t *c) { (void)c; return false; }
+uint32_t flex_n_frames(const flex_ctx_t *c) { (void)c; return 0; }
+uint32_t flex_n_pages(const flex_ctx_t *c) { (void)c; return 0; }
+uint32_t flex_n_cwerr(const flex_ctx_t *c) { (void)c; return 0; }
+int flex_near_min(const flex_ctx_t *c) { (void)c; return 0; }
 LS_CASE(lr_callback_gap_backpressure_and_audio_cap)
 {
     memset(&FM,0,sizeof(FM)); s_lr_channel=25000; s_lr_hz=162550000;

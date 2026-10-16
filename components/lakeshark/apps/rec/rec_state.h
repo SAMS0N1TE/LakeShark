@@ -89,6 +89,7 @@ typedef struct {
     uint32_t    cap_dev_hz;    /* FSK deviation, 0 for OOK */
     uint32_t    cap_bitrate;   /* FSK bit rate, 0 for OOK */
     bool        autosave;
+    char        cap_packet[96]; /* FSK packet decoded from the capture, or "" */
 } rec_status_t;
 
 /* Lightweight read-only state for always-on presentation consumers. Unlike

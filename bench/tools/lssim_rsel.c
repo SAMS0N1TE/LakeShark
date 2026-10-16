@@ -63,6 +63,7 @@ void ls_rsel_hw(ls_rsel_hw_t *out)
     out->present[LS_RSEL_NRF24] = m.nrf;
     out->present[LS_RSEL_NFC] = m.nfc;
     out->mixrf_unknown = !m.ready || m.busy;
+    out->mixrf_seen = m.keyboard || m.cc || m.nrf || m.nfc;
 }
 
 void ls_rsel_hw_restart(void) { lssim_rsel_restarts++; }

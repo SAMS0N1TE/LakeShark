@@ -9,6 +9,7 @@
 #include "../../ls_tui_ui.h"
 #include "core/settings.h"
 #include "ls_keypad.h"
+#include "ls_lora_port.h"
 /* Brightness and auto-dim go through display_ctl, which applies as
    well as stores. */
 #include "core/display_ctl.h"
@@ -217,6 +218,26 @@ static void update_next(void)
 static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_update_check() ? "Daily" : "Off"); }
 static void updchk_next(void) { settings_set_update_check(!settings_get_update_check()); }
 
+/* Where the LoRa radio is wired: the board's socket or a module on the
+   header ('lora port' sets the header pins). A change waits for a reboot,
+   and the header takes the keyboard's pins when its wiring needs them. */
+static void loraport_show(char *b, size_t n)
+{
+    ls_lora_port_t next, board;
+    ls_lora_port_saved(&next);
+    ls_lora_port_board(&board);
+    const ls_lora_port_t *now = ls_lora_port();
+    const char *what = !next.header ? "onboard" : next.cs == board.cs ? "header, socket pins" : "header";
+    if (next.header != now->header) snprintf(b, n, "%s, reboot to apply", what);
+    else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ", keyboard off" : "");
+}
+static void loraport_next(void)
+{
+    /* the row shows the result: a refused save leaves it as it was */
+    char why[96];
+    (void)ls_lora_port_toggle(why, sizeof(why));
+}
+
 static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
 static void lock_next(void) { ls_tui_set_locked(true); }
 
@@ -303,6 +324,7 @@ static const item_t DEVICE_ITEMS[] = {
     { "BACK",           back_show,     back_next, NULL },
     { "Keyboard light", keylight_show, keylight_next, NULL },
     { "Keyboard dim",   keydim_show,   keydim_next, NULL },
+    { "LoRa radio",     loraport_show, loraport_next, NULL },
     { "USB autoreboot", usb_show,      usb_next, NULL },
     { "Update",         update_show,   update_next, NULL },
     { "Check for updates", updchk_show, updchk_next, NULL },

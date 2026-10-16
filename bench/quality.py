@@ -1028,50 +1028,20 @@ class SpeechLevelWiringTests(unittest.TestCase):
         self.assertNotIn('ring_send_locked(', write)
 
 class UsbBootRecoveryTests(unittest.TestCase):
-    def test_production_retry_is_bounded_and_preserves_registered_devices(self):
-        import shutil
-        source=(ROOT/'components/lakeshark/radio/usb_host.c').read_text()
-        body=source.split('/* USB_BOOT_RETRY_BEGIN: also compiled by the consolidated host tests. */',1)[1].split('/* USB_BOOT_RETRY_END */',1)[0]
-        code=r"""
-#include <assert.h>
-#include <stdbool.h>
-#include <stdint.h>
-typedef int esp_err_t;
-#define ESP_OK 0
-#define ESP_LOGW(...) ((void)0)
-static int calls, fail;
-static bool actions[16];
-static esp_err_t usb_host_lib_set_root_port_power(bool on) {
- actions[calls++]=on;return fail;
-}
-"""+body+r"""
-int main(void) {
- usb_boot_retry_t r={.next_us=10000000};
- usb_boot_retry_tick(&r,9999999,0);assert(!calls);
- usb_boot_retry_tick(&r,10000000,-1);assert(!calls);
- for(int i=0;i<3;i++) {
-  usb_boot_retry_tick(&r,r.next_us,0);assert(r.off);
-  assert(calls==2*i+1 && !actions[calls-1]);
-  usb_boot_retry_tick(&r,r.next_us-1,0);assert(calls==2*i+1);
-  usb_boot_retry_tick(&r,r.next_us,0);assert(!r.off && actions[calls-1]);
- }
- usb_boot_retry_tick(&r,r.next_us,0);assert(r.done && calls==6);
- calls=0;r=(usb_boot_retry_t){0};
- usb_boot_retry_tick(&r,0,1);assert(r.done && !calls);
- usb_boot_retry_tick(&r,100000000,0);assert(!calls);
- calls=0;r=(usb_boot_retry_t){0};fail=1;
- for(int i=0;i<4;i++)usb_boot_retry_tick(&r,r.next_us,0);
- assert(r.done && calls==3 && !r.off);
- calls=0;r=(usb_boot_retry_t){0};fail=0;
- usb_boot_retry_tick(&r,0,0);fail=1;
- usb_boot_retry_tick(&r,r.next_us,0);assert(r.done && calls==2);
- return 0;
-}
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            c=Path(tmp)/'retry.c';exe=Path(tmp)/'retry.exe';c.write_text(code)
-            subprocess.run([shutil.which('gcc') or 'gcc','-std=c11','-Wall','-Wextra','-Werror',str(c),'-o',str(exe)],check=True)
-            subprocess.run([str(exe)],check=True)
+    def test_production_retry_is_the_one_the_host_tests_compile(self):
+        # The behaviour is held by bench/tests/test_usb_boot_retry.c, which
+        # compiles usb_boot_retry.c itself. This holds the wiring: the class
+        # driver runs that file, hands it the root port's own attach status,
+        # and only the port reading empty may skip the cycle.
+        host=(ROOT/'components/lakeshark/radio/usb_host.c').read_text()
+        retry=(ROOT/'components/lakeshark/radio/usb_boot_retry.c').read_text()
+        self.assertIn('usb_boot_retry_tick(&boot_retry',host)
+        self.assertIn('usb_host_root_port_attached()',host)
+        self.assertNotIn('USB_BOOT_RETRY_BEGIN',host)
+        self.assertEqual(retry.count('attached == USB_PORT_ATTACH_NONE'),1)
+        self.assertIn('attempts>=3',retry)
+        # the port is never powered off before the empty-port decision
+        self.assertLess(retry.index('attached == USB_PORT_ATTACH_NONE'),retry.index('set_power(false)'))
 
 
 class TaskWithCapsTests(unittest.TestCase):

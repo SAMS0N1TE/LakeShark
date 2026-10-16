@@ -1,3 +1,5 @@
+#include "fm_lr_dsp.h"
+#include "ls_lora.h"
 #include "../../ls_calls.h"
 /* FM screen: VFO on one page, decoded pages on another.
 
@@ -120,9 +122,12 @@ static void lora_pager_stop(bool give_back)
 static void lora_pager_sync(void)
 {
     if (s_pager_leaving && FM.mode != FM_MODE_POCSAG) s_pager_leaving = false;
+    /* The LR2021 pages through its I/Q stream (app_fm.c); this FSK route is
+       for the SX1262. */
     const bool want = FM.mode == FM_MODE_POCSAG && !s_pager_leaving &&
+                      ls_lora_chip() != LS_LORA_CHIP_LR20XX &&
                       ls_rsel_resolved(LS_RSEL_PAGER) == LS_RSEL_LORA &&
-                      FM.freq_hz >= 150000000u && FM.freq_hz <= 959000000u;
+                      ls_lora_rx_range_ok(ls_lora_caps(), FM.freq_hz, FM.freq_hz);
     if (want && !s_lora_pager) {
         if (!ls_field_start()) return;
         ls_field_snapshot(&s_field);
@@ -186,7 +191,7 @@ static void radio_chosen(ls_rsel_radio_t radio)
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
 
-static void open_radio(void) { ls_rsel_fm_context(FM.freq_hz, FM.mode == FM_MODE_LISTEN); ls_rsel_open(fm_job(), radio_chosen); }
+static void open_radio(void) { ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode)); ls_rsel_open(fm_job(), radio_chosen); }
 
 static int mode_page(fm_mode_t mode)
 {
@@ -2614,7 +2619,7 @@ static void draw_spectrum_page(tui_surface *sf, tui_rect body)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
-    ls_rsel_fm_context(FM.freq_hz, FM.mode == FM_MODE_LISTEN);
+    ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
     if (ls_calls_active()) {
         snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
@@ -2632,8 +2637,8 @@ static void draw(tui_surface *sf, tui_rect area)
         (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps,
         (unsigned long)FM.lr_audio_drops);
     if (ls_rsel_saved(LS_RSEL_FM) == LS_RSEL_LORA &&
-        (FM.freq_hz < 150000000u || FM.freq_hz > 960000000u))
-        snprintf(s_hint, sizeof(s_hint), "LR2021: 150-960 MHz only; broadcast FM and 144-148 MHz out of range");
+        !ls_lora_rx_range_ok(ls_lora_caps(), FM.freq_hz, FM.freq_hz))
+        snprintf(s_hint, sizeof(s_hint), "LR2021: 104-2740 MHz; below 104 MHz needs an SDR");
     if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {

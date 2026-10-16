@@ -84,6 +84,23 @@ static void picker_row(int row)
     for (int i = 0; i < row; i++) ls_picker_key(LS_TK_DOWN, 0);
 }
 
+/* Move it to a radio's row. A dongle that was never plugged in has no row,
+   so a radio's row is its number less the ones before it that are left out. */
+static void picker_radio(int radio)
+{
+    ls_rsel_hw_t hw;
+    ls_rsel_hw(&hw);
+    int row = radio;
+    for (int r = 0; r < radio; r++) {
+        if (r == LS_RSEL_SDR_RTL || r == LS_RSEL_SDR_HACKRF) {
+            if (!hw.present[r] && !hw.sdr_seen[r == LS_RSEL_SDR_HACKRF]) row--;
+        } else if (r == LS_RSEL_CC1101 || r == LS_RSEL_NRF24 || r == LS_RSEL_NFC) {
+            if (!hw.present[r] && !hw.mixrf_seen) row--;
+        }
+    }
+    picker_row(row);
+}
+
 /* ---------------------------------------------------------------- fakes -- */
 bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 { (void)rank; (void)out; return false; }
@@ -741,7 +758,7 @@ LS_CASE(fm_pocsag_moves_to_the_lora_chip_when_radio_puts_the_pager_there)
     LS_CHECK(find_text("RTL-SDR", &x, &y));
     LS_CHECK(ls_scr_fm.key(LS_TK_CHAR, 'r'));
     LS_CHECK(ls_picker_active());
-    picker_row(LS_RSEL_LORA);
+    picker_radio(LS_RSEL_LORA);
     LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
     LS_CHECK(!ls_picker_active());
     LS_EQ_INT(ls_rsel_saved(LS_RSEL_PAGER), LS_RSEL_LORA);
@@ -1828,7 +1845,7 @@ LS_CASE(rec_gps_source_delegates_without_claiming_an_sdr)
     /* U opens the list too. */
     LS_CHECK(ls_scr_rec.key(LS_TK_CHAR,'u'));
     LS_CHECK(ls_picker_active());
-    picker_row(LS_RSEL_GPS);
+    picker_radio(LS_RSEL_GPS);
     ls_picker_key(LS_TK_ENTER,0);
     rec_gps_draws=rec_gps_keys=0;
     fresh();draw_pane(&ls_scr_rec,PANES[1]);
@@ -4449,7 +4466,7 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
     ls_scr_rec.key(LS_TK_CHAR,'r');
     LS_CHECK(ls_picker_active());
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);   /* not until it is chosen */
-    picker_row(LS_RSEL_CC1101);
+    picker_radio(LS_RSEL_CC1101);
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_CC1101);
     LS_EQ_INT(rec_get_freq(),433920000);
@@ -4470,7 +4487,7 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
        three that can transmit, which is what makes replay possible at all. */
     ls_scr_rec.key(LS_TK_CHAR,'r');
     LS_CHECK(ls_picker_active());
-    picker_row(LS_RSEL_LORA);
+    picker_radio(LS_RSEL_LORA);
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_SX1262);
     fresh();ls_scr_rec.draw(&g_sf,pane);
@@ -4481,7 +4498,7 @@ LS_CASE(rec_and_subghz_share_sources_and_preserve_rtl_frequency)
        RTL retuned to 433. */
     ls_scr_rec.key(LS_TK_CHAR,'r');
     LS_CHECK(ls_picker_active());
-    picker_row(LS_RSEL_SDR_RTL);
+    picker_radio(LS_RSEL_SDR_RTL);
     LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     LS_EQ_INT(rec_watch_source(),REC_SOURCE_RTL);
     LS_EQ_INT(rec_get_freq(),152600000);
@@ -4503,7 +4520,7 @@ LS_CASE(rec_all_metadata_sources_select_and_record_without_sdr_claim)
         ls_field_record(false);
         ls_scr_rec.enter(); ls_scr_rec.key(LS_TK_CHAR,'u');
         LS_CHECK(ls_picker_active());
-        picker_row(radios[i]);
+        picker_radio(radios[i]);
         ls_picker_key(LS_TK_ENTER,0);
         ls_field_state_t state; ls_field_snapshot(&state);
         LS_EQ_INT(state.sample.source,sources[i]);
@@ -4535,7 +4552,7 @@ LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_sourc
         ls_scr_falls.enter();
         /* R and V both open the list. */
         LS_CHECK(ls_scr_falls.key(LS_TK_CHAR,i&1?'r':'v'));
-        picker_row(radios[i]);
+        picker_radio(radios[i]);
         ls_picker_key(LS_TK_ENTER,0);
         ls_field_sample_t sample;ls_field_sample_snapshot(&sample);
         LS_EQ_INT(sample.source,fields[i]);
@@ -4585,7 +4602,7 @@ LS_CASE(falls_all_radio_data_views_release_spectrum_and_preserve_recording_sourc
     ls_scr_falls.leave();
     ls_field_source(LS_FIELD_CC1101);ls_field_record(true);
     ls_scr_falls.enter();ls_scr_falls.key(LS_TK_CHAR,'v');
-    picker_row(LS_RSEL_NRF24);
+    picker_radio(LS_RSEL_NRF24);
     ls_picker_key(LS_TK_ENTER,0);
     ls_field_sample_snapshot(&sample);
     LS_EQ_INT(sample.source,LS_FIELD_CC1101);
@@ -4708,6 +4725,17 @@ LS_CASE(home_portrait_pager_has_large_touch_targets_and_no_function_labels)
 
 static bool keyboard_light=true;
 bool settings_get_keyboard_light(void) { return keyboard_light; }
+/* Where the LoRa radio is wired (ls_lora_port.c): nothing saved unless a test saves it. */
+static uint64_t fk_port_a, fk_port_b;
+static bool fk_port_have;
+bool settings_get_lora_port(uint64_t *a, uint64_t *b)
+{
+    if (!fk_port_have) return false;
+    *a = fk_port_a;
+    *b = fk_port_b;
+    return true;
+}
+bool settings_set_lora_port(uint64_t a, uint64_t b) { fk_port_a = a; fk_port_b = b; fk_port_have = true; return true; }
 void settings_set_keyboard_light(bool on) { keyboard_light=on; }
 int ls_keypad_backlight(bool on) { (void)on; return 0; }
 

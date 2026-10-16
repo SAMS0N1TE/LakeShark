@@ -11,10 +11,16 @@
    same), its readings, the level it came in at, how often and how long ago.
    A burst that keyed the receiver and decoded as nothing is counted against
    the session that caught it, so a transmitter none of the decoders knows is
-   still seen. Receive only: nothing here transmits or replays. */
+   still seen. On an LR2021 the PKT sessions stream I/Q instead, keep each
+   burst and decode it as a CC1101 or SX1231 style 2-FSK packet: preamble,
+   sync word and a CRC that checks (fsk_packet.c), at any rate the preamble
+   gives. OFFSET moves every session off its catalogue frequency, for a
+   transmitter that is not quite where its band says. Receive only:
+   nothing here transmits or replays. */
 #include "../ls_experiments.h"
 #include "lr433_dec.h"
 #include "lr433_history.h"
+#include "fsk_packet.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -26,12 +32,20 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "ls_lora.h"
+#ifdef ESP_PLATFORM
+#include "lr_wf_session.h"
+#include "ls_mesh.h"
+#include <stdatomic.h>
+#endif
 
 extern const ls_experiment_t exp_lr433;
 
 /* ----------------------------------------------------------------- plan -- */
 
 typedef enum { BAND_315, BAND_433, BAND_915, BAND_ERT } band_t;
+
+/* Not an lr433_in_t: the LR2021's I/Q, sliced and decoded here. */
+#define KIND_IQ 9
 
 typedef struct {
     const char *tag;       /* short name, in the PLAN line                    */
@@ -78,6 +92,10 @@ static const plan_t PLAN[] = {
       915000000u, 68966, 250000, 35000, 0x0F0F, 16, 0x0F0F, 16, 112 },
     { "ert", "ERT", "Itron meters: SCM, SCM+, IDM", BAND_ERT, LR433_IN_ERT,
       912600000u, 32768, 2222222, 0, 0x2999, 14, 0x2665, 14, 252 },
+    { "433p", "433 PKT", "FSK packets: CC1101, RFM69, Si443x", BAND_433, KIND_IQ,
+      433920000u, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { "915p", "915 PKT", "FSK packets: CC1101, RFM69, Si443x", BAND_915, KIND_IQ,
+      915000000u, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 #define N_PLAN ((int)(sizeof(PLAN) / sizeof(PLAN[0])))
 
@@ -104,6 +122,15 @@ static volatile int s_dwell_s = 10;
 /* The OOK sessions' gain: the fixed top step, as the Mode S session runs it
    on air, or the part's AGC. */
 static volatile int s_agc;
+/* Every session tunes this far off its catalogue frequency. */
+static volatile int32_t s_offset_hz;
+#define OFFSET_MAX_KHZ 2000
+
+static uint32_t tuned_hz(const plan_t *p) { return (uint32_t)((int64_t)p->freq_hz + s_offset_hz); }
+
+/* The PKT sessions need the LR2021's I/Q stream; its extended receive
+   range is what marks the part. */
+static bool iq_capable(uint32_t caps) { return (caps & LS_LORA_CAP_RX_EXT) != 0; }
 
 #define DWELL_MIN 2
 #define DWELL_MAX 600
@@ -113,6 +140,9 @@ static volatile int s_agc;
 
 #define MAX_DEVS 32
 
+/* A device row for a decoded FSK packet: not one of rtl_433's protocols. */
+#define PROTO_PACKET LR433_P_COUNT
+
 typedef struct {
     bool used;
     uint8_t proto;
@@ -121,6 +151,7 @@ typedef struct {
     char id[16];
     float kpa, temp_c, humidity, rssi;
     int64_t consumption;
+    char packet[16];      /* PROTO_PACKET: rate and CRC state */
     uint32_t count;
     int64_t last_us;
 } heard_t;
@@ -235,14 +266,177 @@ static void take(int i, const uint8_t *buf, int n, float rssi, int64_t now)
     portEXIT_CRITICAL(&s_lock);
 }
 
+/* ---------------------------------------------------------- I/Q session -- */
+
+#define IQ_RATE 125000u
+#define IQ_PAIRS 32768u        /* 262 ms */
+#define IQ_PRE 1250u           /* 10 ms kept from before the trigger */
+#define IQ_EDGES 4096
+
+#ifdef ESP_PLATFORM
+static EXT_RAM_BSS_ATTR int16_t s_iq[2 * IQ_PAIRS];
+static EXT_RAM_BSS_ATTR int32_t s_iq_edges[IQ_EDGES];
+static EXT_RAM_BSS_ATTR fsk_pkt_t s_pkts[4];
+
+/* A packet the PKT session decoded: its payload is its ID. Under no lock. */
+static void take_packet(int i, const fsk_pkt_t *pk, float rssi, int64_t now)
+{
+    lr433_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.proto = PROTO_PACKET;
+    m.channel = -1;
+    m.battery_ok = -1;
+    m.kpa = m.temp_c = m.humidity = m.rain_mm = m.wind_ms = NAN;
+    m.consumption = -1;
+    size_t h = 0;
+    for (int k = 0; k < pk->len && h + 2 < sizeof(m.id); k++) h += (size_t)snprintf(m.id + h, sizeof(m.id) - h, "%02X", pk->data[k]);
+    portENTER_CRITICAL(&s_lock);
+    s_view.caps[i]++;
+    s_view.decoded[i]++;
+    note_msg(&s_view, &m, rssi, i, now);
+    for (int k = 0; k < MAX_DEVS; k++) {
+        heard_t *d = &s_view.devs[k];
+        if (d->used && d->proto == PROTO_PACKET && !strcmp(d->id, m.id))
+            snprintf(d->packet, sizeof(d->packet), "%lu %s", (unsigned long)(pk->baud_std ? pk->baud_std : pk->baud),
+                     pk->crc_kind == FSK_CRC_NONE ? "noCRC" : "CRC ok");
+    }
+    portEXIT_CRITICAL(&s_lock);
+}
+
+/* A burst that keyed the PKT trigger and held no packet. */
+static void take_nothing(int i, float rssi, int64_t now)
+{
+    portENTER_CRITICAL(&s_lock);
+    s_view.caps[i]++;
+    unk_t *u = &s_view.unk[i];
+    if (!u->bursts || isnan(u->max) || rssi > u->max) u->max = rssi;
+    u->last = rssi;
+    u->last_us = now;
+    u->bursts++;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+/* The consumer runs on the stream's own task: it finds a burst 10 dB over
+   the quietest millisecond of its first 20, keeps 10 ms before it, and
+   stops 30 ms after the burst ends or when the buffer is full. */
+static EXT_RAM_BSS_ATTR int16_t s_iq_ring[2 * IQ_PRE];
+static atomic_bool s_iq_full;
+static size_t s_iq_used, s_ring_at, s_ring_n;
+static unsigned s_warm, s_rise, s_quiet;
+static double s_floor, s_power;
+static bool s_trig, s_iq_on, s_held;
+
+static void iq_reset(void)
+{
+    s_iq_used = s_ring_at = s_ring_n = 0;
+    s_warm = s_rise = s_quiet = 0;
+    s_floor = s_power = 0;
+    s_trig = false;
+    atomic_store(&s_iq_full, false);
+}
+
+static void iq_consume(void *ctx, const uint8_t *data, size_t bytes, bool spare)
+{
+    (void)ctx; (void)spare;
+    if (!data || atomic_load(&s_iq_full)) return;
+    for (size_t at = 0; at + 3 < bytes; at += 4) {
+        const int16_t i = (int16_t)(data[at] | data[at + 1] << 8);
+        const int16_t q = (int16_t)(data[at + 2] | data[at + 3] << 8);
+        s_power += (double)i * i + (double)q * q;
+        s_warm++;
+        if (!s_trig) {
+            s_iq_ring[2 * s_ring_at] = i;
+            s_iq_ring[2 * s_ring_at + 1] = q;
+            s_ring_at = (s_ring_at + 1) % IQ_PRE;
+            if (s_ring_n < IQ_PRE) s_ring_n++;
+        } else if (s_iq_used < IQ_PAIRS) {
+            s_iq[2 * s_iq_used] = i;
+            s_iq[2 * s_iq_used + 1] = q;
+            s_iq_used++;
+        }
+        if (s_warm % 125) continue;          /* 1 ms windows */
+        const double w = s_power / 125;
+        s_power = 0;
+        if (s_warm <= 2500) {
+            if (s_warm == 125 || w < s_floor) s_floor = w;
+            continue;
+        }
+        const double fl = s_floor > 1 ? s_floor : 1;
+        if (!s_trig) {
+            s_rise = w >= 10 * fl ? s_rise + 1 : 0;
+            if (s_rise < 3) continue;
+            s_trig = true;
+            for (size_t k = 0; k < s_ring_n; k++) {
+                const size_t r = (s_ring_at + IQ_PRE - s_ring_n + k) % IQ_PRE;
+                s_iq[2 * s_iq_used] = s_iq_ring[2 * r];
+                s_iq[2 * s_iq_used + 1] = s_iq_ring[2 * r + 1];
+                s_iq_used++;
+            }
+            continue;
+        }
+        s_quiet = w < 3 * fl ? s_quiet + 1 : 0;
+        if (s_quiet >= 30 || s_iq_used >= IQ_PAIRS) { atomic_store(&s_iq_full, true); return; }
+    }
+}
+
+static esp_err_t iq_begin(const plan_t *p)
+{
+    if (!s_held) {
+        const int64_t until = esp_timer_get_time() + 1000000;
+        while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < until) vTaskDelay(1);
+        if (!ls_mesh_radio_held()) { ls_mesh_radio_hold(false); return ESP_ERR_INVALID_STATE; }
+        s_held = true;
+    }
+    iq_reset();
+    const esp_err_t err = lr_wf_start_consumer(tuned_hz(p), iq_consume, NULL);
+    s_iq_on = err == ESP_OK;
+    if (!s_iq_on) { ls_mesh_radio_hold(false); s_held = false; }
+    return err;
+}
+
+static void iq_end(void)
+{
+    if (s_iq_on) {
+        lr_wf_stats st;
+        lr_wf_stop_stats(&st);
+        s_iq_on = false;
+    }
+    if (s_held) { ls_mesh_radio_hold(false); s_held = false; }
+}
+
+/* A finished burst: decode it, file it, listen again. */
+static void iq_poll(int i, int64_t now)
+{
+    if (!s_iq_on || !atomic_load(&s_iq_full)) return;
+    lr_wf_stats st;
+    lr_wf_stop_stats(&st);
+    s_iq_on = false;
+    const size_t pairs = s_iq_used;
+    fsk_pkt_rf_t rf;
+    const size_t ne = fsk_pkt_iq16_edges(s_iq, pairs, IQ_RATE, s_iq_edges, IQ_EDGES, &rf);
+    const int k = ne ? fsk_pkt_from_edges(s_iq_edges, ne, s_pkts, 4) : 0;
+    /* uncalibrated: the level over the floor, not dBm */
+    const float level = rf.snr_db > 0 ? rf.snr_db : NAN;
+    if (k > 0) for (int j = 0; j < k; j++) take_packet(i, &s_pkts[j], level, now);
+    else take_nothing(i, level, now);
+    iq_reset();
+    s_iq_on = lr_wf_start_consumer(tuned_hz(&PLAN[i]), iq_consume, NULL) == ESP_OK;
+}
+#else
+static esp_err_t iq_begin(const plan_t *p) { (void)p; return ESP_ERR_NOT_SUPPORTED; }
+static void iq_end(void) {}
+static void iq_poll(int i, int64_t now) { (void)i; (void)now; }
+#endif
+
 /* ------------------------------------------------------------- sessions -- */
 
 static esp_err_t session_begin(int i)
 {
     const plan_t *p = &PLAN[i];
+    if (p->kind == KIND_IQ) return iq_begin(p);
     if (p->kind == LR433_IN_FSK) {
         const ls_fsk_cfg_t cfg = {
-            .freq_hz = p->freq_hz,
+            .freq_hz = tuned_hz(p),
             .bitrate = p->rate,
             .deviation_hz = p->dev_hz,
             .bandwidth_hz = ls_lora_fsk_bw_snap(p->bw_hz),
@@ -253,7 +447,7 @@ static esp_err_t session_begin(int i)
         return ls_lora_fsk_begin(&cfg);
     }
     const ls_ook_cfg_t cfg = {
-        .freq_hz = p->freq_hz,
+        .freq_hz = tuned_hz(p),
         .bitrate = p->rate,
         .bandwidth_hz = p->bw_hz,
         .pattern = p->sync,
@@ -269,7 +463,8 @@ static esp_err_t session_begin(int i)
 static void session_end(int i)
 {
     if (i < 0) return;
-    if (PLAN[i].kind == LR433_IN_FSK) ls_lora_fsk_end();
+    if (PLAN[i].kind == KIND_IQ) iq_end();
+    else if (PLAN[i].kind == LR433_IN_FSK) ls_lora_fsk_end();
     else ls_lora_ook_end();
 }
 
@@ -310,7 +505,8 @@ static bool lr433_start(char *why, size_t n)
     const int sel = s_sel;
     s_n_on = 0;
     for (int i = 0; i < N_PLAN; i++) {
-        const bool can = PLAN[i].kind == LR433_IN_FSK ? (caps & LS_LORA_CAP_FSK) != 0
+        const bool can = PLAN[i].kind == KIND_IQ      ? iq_capable(caps)
+                       : PLAN[i].kind == LR433_IN_FSK ? (caps & LS_LORA_CAP_FSK) != 0
                                                       : (caps & LS_LORA_CAP_MODES_RX) != 0;
         s_on[i] = can && sel_has(sel, &PLAN[i]);
         if (s_on[i]) s_n_on++;
@@ -355,9 +551,13 @@ static void lr433_poll(void)
         return;
     }
     float rssi = NAN;
-    const int n = PLAN[s_cur].kind == LR433_IN_FSK ? ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi)
-                                                   : ls_lora_ook_poll(s_buf, sizeof(s_buf), &rssi);
-    if (n > 0) take(s_cur, s_buf, n, rssi <= -199.0f ? NAN : rssi, now);
+    if (PLAN[s_cur].kind == KIND_IQ) {
+        iq_poll(s_cur, now);
+    } else {
+        const int n = PLAN[s_cur].kind == LR433_IN_FSK ? ls_lora_fsk_poll(s_buf, sizeof(s_buf), &rssi)
+                                                       : ls_lora_ook_poll(s_buf, sizeof(s_buf), &rssi);
+        if (n > 0) take(s_cur, s_buf, n, rssi <= -199.0f ? NAN : rssi, now);
+    }
     /* The dwell is read live, so a change from OPTIONS counts from now. */
     const int64_t end = s_dwell_end;
     if (s_n_on > 1 && now >= end) {
@@ -394,6 +594,7 @@ static void fmt_reading(char *out, size_t n, const heard_t *d, bool metric)
 {
     char t[12];
     out[0] = 0;
+    if (d->proto == PROTO_PACKET) { snprintf(out, n, "%s", d->packet); return; }
     switch (lr433_proto_class(d->proto)) {
     case LR433_TPMS: {
         lr433_msg_t key = { .proto = d->proto, .channel = d->channel };
@@ -488,7 +689,7 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
                 const int64_t rem = since + (int64_t)s_dwell_s * 1000000 - now;
                 snprintf(left, sizeof(left), " %lds", (long)(rem > 0 ? (rem + 999999) / 1000000 : 0));
             }
-            snprintf(out[n++], LS_EXP_LINE, "NOW  %-8s %.3f MHz%s", PLAN[cur].name, PLAN[cur].freq_hz / 1e6, left);
+            snprintf(out[n++], LS_EXP_LINE, "NOW  %-8s %.4f MHz%s", PLAN[cur].name, tuned_hz(&PLAN[cur]) / 1e6, left);
         } else {
             snprintf(out[n++], LS_EXP_LINE, "NOW  -- %.40s", fail[0] ? fail : "not listening");
         }
@@ -529,8 +730,11 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
         fmt_reading(rd, sizeof(rd), &d, metric);
         fmt_ago(ago, sizeof(ago), now - d.last_us);
         if (isnan(d.rssi)) snprintf(lvl, sizeof(lvl), "--");
+        /* a packet's level is dB over the floor (I/Q is uncalibrated) */
+        else if (d.proto == PROTO_PACKET) snprintf(lvl, sizeof(lvl), "+%.0f", (double)d.rssi);
         else snprintf(lvl, sizeof(lvl), "%.0f", (double)d.rssi);
-        snprintf(out[n++], LS_EXP_LINE, "%-9.9s %-9.9s %-15.15s %4.4s %3lu %3.3s", lr433_proto_label(d.proto),
+        snprintf(out[n++], LS_EXP_LINE, "%-9.9s %-9.9s %-15.15s %4.4s %3lu %3.3s",
+                 d.proto == PROTO_PACKET ? "FSK-PKT" : lr433_proto_label(d.proto),
                  id, rd, lvl, (unsigned long)(d.count > 999 ? 999 : d.count), ago);
     }
     if (unk_lines && n < max) snprintf(out[n++], LS_EXP_LINE, "KEYED, NOT DECODED");
@@ -558,19 +762,32 @@ static bool lr433_configure(int argc, char **argv, char *why, size_t n)
     for (int i = 0; i < SEL_COUNT; i++)
         if (!strcmp(argv[0], SEL_ARGS[i])) sel = i;
     int dwell = s_dwell_s;
-    bool ok = sel >= 0 && argc <= 2;
-    if (ok && argc == 2) {
+    int32_t offset = s_offset_hz;
+    bool ok = sel >= 0 && argc <= 3;
+    if (ok && argc >= 2) {
         char *end = NULL;
         const long v = strtol(argv[1], &end, 10);
         ok = end != argv[1] && !*end && v >= DWELL_MIN && v <= DWELL_MAX;
         dwell = (int)v;
     }
+    /* A centre in MHz: the offset from the first of the band's entries. */
+    if (ok && argc == 3) {
+        char *end = NULL;
+        const double mhz = strtod(argv[2], &end);
+        ok = end != argv[2] && !*end && sel != SEL_ALL;
+        const plan_t *first = NULL;
+        for (int i = 0; ok && i < N_PLAN && !first; i++) if (sel_has(sel, &PLAN[i])) first = &PLAN[i];
+        const double off = ok && first ? mhz * 1e6 - first->freq_hz : 1e12;
+        ok = ok && off >= -OFFSET_MAX_KHZ * 1000.0 && off <= OFFSET_MAX_KHZ * 1000.0;
+        offset = (int32_t)llround(off);
+    }
     if (!ok) {
-        snprintf(why, n, "all|315|433|915|ert [dwell %d-%d s]", DWELL_MIN, DWELL_MAX);
+        snprintf(why, n, "all|315|433|915|ert [dwell %d-%d s] [centre MHz]", DWELL_MIN, DWELL_MAX);
         return false;
     }
     s_sel = sel;
     s_dwell_s = dwell;
+    s_offset_hz = offset;
     return true;
 }
 
@@ -617,6 +834,22 @@ static void o_clear(const ls_opt_t *o)
 }
 static void o_show_clear(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "devices and counts"); }
 
+static double o_offset(const ls_opt_t *o) { (void)o; return s_offset_hz / 1000.0; }
+static void o_set_offset(const ls_opt_t *o, double v)
+{
+    (void)o;
+    if (v < -OFFSET_MAX_KHZ) v = -OFFSET_MAX_KHZ;
+    if (v > OFFSET_MAX_KHZ) v = OFFSET_MAX_KHZ;
+    s_offset_hz = (int32_t)llround(v * 1000.0);
+    if (ls_exp_running() == &exp_lr433) ls_exp_start(&exp_lr433);
+}
+static void o_show_offset(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    if (!s_offset_hz) snprintf(out, n, "none");
+    else snprintf(out, n, "%+.1f kHz", s_offset_hz / 1000.0);
+}
+
 static const ls_opt_t OPTS[] = {
     { .label = "BANDS", .kind = LS_OPT_CYCLE, .names = SEL_NAMES, .n = SEL_COUNT, .get = o_get_sel, .set = o_set_sel },
     { .label = "DWELL", .kind = LS_OPT_NUMBER, .num = o_dwell, .set_num = o_set_dwell, .lo = DWELL_MIN,
@@ -625,6 +858,9 @@ static const ls_opt_t OPTS[] = {
     { .label = "OOK GAIN", .kind = LS_OPT_CYCLE, .names = GAIN_NAMES, .n = 2, .get = o_get_gain, .set = o_set_gain },
     { .label = "HISTORY", .kind = LS_OPT_MENU, .sub = &lr433_history_ctx },
     { .label = "CLEAR", .kind = LS_OPT_ACTION, .act = o_clear, .show = o_show_clear },
+    /* last, so the rows before keep their places */
+    { .label = "OFFSET", .kind = LS_OPT_NUMBER, .num = o_offset, .set_num = o_set_offset,
+      .lo = -OFFSET_MAX_KHZ, .hi = OFFSET_MAX_KHZ, .unit = "kHz off each band's frequency", .show = o_show_offset },
 };
 
 const ls_experiment_t exp_lr433 = {

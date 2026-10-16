@@ -44,6 +44,16 @@ menu "LakeShark"
             bool "TFT, HI8561 540x1168, HI8561 touch, PT4103 backlight"
     endchoice
 
+    config LS_LR2021_ONLY
+        bool "LakeShark LR: LR2021 boards only, no USB dongles or SX1262"
+        depends on LS_BOARD_T_DISPLAY_P4
+        default n
+        help
+            Builds the LR edition for the T-Display-P4 LR2021 variant. Leaves
+            out the USB host stack, the RTL-SDR and HackRF drivers, the SX1262
+            driver and the apps that need a dongle (CELL, CATCH, ACARS), and
+            spends the memory on the LR2021. The image refuses SX1262 boards.
+
     config LS_SD_MAX_FREQ_KHZ
         int "SD card maximum clock (kHz)"
         range 20000 40000

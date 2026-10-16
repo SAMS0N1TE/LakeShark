@@ -457,3 +457,21 @@ LS_CASE(every_frame_names_the_receiver_and_only_complains_with_a_reason)
     LS_CHECK_MSG(parse_key_value(wide, "rw", v, sizeof(v)), "reason dropped at max length");
     LS_CHECK_MSG(strlen(v) == LS_TEL_RX_WHY_MAX, "reason is not capped at the wire limit");
 }
+
+/* While the TUI has the receiver parked the head is told md=PARKED, which
+   it reads as no mode, so no mode shows as live (2.15.0: "P25 live"). */
+LS_CASE(a_parked_receiver_reports_no_mode)
+{
+    char buf[160] = "$ f=154785000 dm=0 dmn=C4FM g=260 md=P25 ft=LDU1 e=-";
+    const int n = ls_telemetry_set_mode(buf, sizeof buf, "PARKED");
+    LS_EQ_STR(buf, "$ f=154785000 dm=0 dmn=C4FM g=260 md=PARKED ft=LDU1 e=-");
+    LS_EQ_INT(n, (int)strlen(buf));
+    char tail[64] = "$ f=1090000000 rtl=1 md=ADSB";
+    LS_CHECK(ls_telemetry_set_mode(tail, sizeof tail, "PARKED") > 0);
+    LS_EQ_STR(tail, "$ f=1090000000 rtl=1 md=PARKED");
+    char small[24] = "$ g=1 md=FM e=x";
+    LS_EQ_INT(ls_telemetry_set_mode(small, 16, "PARKED"), -1);   /* would not fit */
+    LS_EQ_STR(small, "$ g=1 md=FM e=x");
+    char none[32] = "$ f=1 g=2";
+    LS_EQ_INT(ls_telemetry_set_mode(none, sizeof none, "PARKED"), -1);
+}

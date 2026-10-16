@@ -195,17 +195,27 @@ static const wf_band_t LORA_BANDS[] = {
     { "Iridium",    1616000000u, 1626500000u },
     { "2.4G ISM",   2400000000u, 2483500000u },
     { "HF input",   1500000000u, 2500000000u },
+    /* Past the datasheet: the LR2021's measured reach (LS_LORA_CAP_RX_EXT).
+       Appended, so the bands above keep their places. */
+    { "airband",     108000000u, 137000000u },
+    { "FM top",      104000000u, 108000000u },
+    { "L band",     1100000000u, 1499000000u },
+    { "LF reach",    104000000u, 1499000000u },
+    { "2.5-2.7G",   2500000000u, 2740000000u },
+    { "HF reach",   1500000000u, 2740000000u },
 };
 #define LORA_BAND_ALL ((int)(sizeof(LORA_BANDS) / sizeof(LORA_BANDS[0])))
 #define LORA_BAND_SX  6
 #define LORA_BAND_LF  8
+#define LORA_BAND_HF  12
 
 /* How many of LORA_BANDS the radio fitted can sweep. */
 static int lora_band_n(void)
 {
     const uint32_t caps = ls_lora_caps();
     if (!(caps & LS_LORA_CAP_RX_WIDE)) return LORA_BAND_SX;
-    return (caps & LS_LORA_CAP_BAND_1G5_2G5) ? LORA_BAND_ALL : LORA_BAND_LF;
+    if (!(caps & LS_LORA_CAP_BAND_1G5_2G5)) return LORA_BAND_LF;
+    return (caps & LS_LORA_CAP_RX_EXT) ? LORA_BAND_ALL : LORA_BAND_HF;
 }
 #define LORA_BAND_N lora_band_n()
 
@@ -687,8 +697,8 @@ static bool pump_lora_iq(uint32_t hz)
     }
     if ((P25.lr_iq_active || FM.lr_iq_active) && !s_lr_owned)
         return idle(LS_WF_IDLE_WAITING, "Waiting for LR IQ");
-    if (hz < 150000000u || hz > 960000000u) {
-        lora_stop(); return idle(LS_WF_IDLE_FAILED, "LR tunes 150-960 MHz");
+    if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) {
+        lora_stop(); return idle(LS_WF_IDLE_FAILED, "LR tunes 104-2740 MHz");
     }
     if (s_want == LS_WF_SRC_FM && FM.mode == FM_MODE_LISTEN && lr_only() && !s_lr_owned)
         return idle(LS_WF_IDLE_WAITING, "Waiting for FM LR IQ");
@@ -720,8 +730,8 @@ static bool pump_lora(void)
     if (iq != s_lr_mode) { lora_stop(); ls_wf_claim(LS_WF_OWNER_NONE, NULL); }
     if (iq) return pump_lora_iq(hz);
     s_lr_mode = false; lr_spec_enable(false);
-    if (hw.lora_lr20xx && (s_lora_min_hz < 150000000u || s_lora_max_hz > 960000000u))
-        return idle(LS_WF_IDLE_FAILED, "LR tunes 150-960 MHz");
+    if (hw.lora_lr20xx && !ls_lora_rx_range_ok(ls_lora_caps(), s_lora_min_hz, s_lora_max_hz))
+        return idle(LS_WF_IDLE_FAILED, "LR sweeps 104-1500 or 1500-2740 MHz");
     if (!lora_hold()) return false;
     if (ls_lora_scan_begin(s_lora_min_hz, s_lora_max_hz) != ESP_OK)
         return idle(ls_lora_scanning() ? LS_WF_IDLE_BUSY : LS_WF_IDLE_FAILED,
@@ -828,7 +838,7 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
     if(owner==LS_WF_OWNER_LORA) {
         if (s_lr_mode) {
             /* Decoder-owned sessions keep their own tuner; never hand them to Labs. */
-            if (hz < 150000000u || hz > 960000000u) return false;
+            if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) return false;
             if (FM.lr_iq_active && s_want == LS_WF_SRC_FM)
                 return lakeshark_fm_set_freq(hz);
             if (!s_lr_owned) return false;

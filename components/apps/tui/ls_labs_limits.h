@@ -44,9 +44,9 @@ static inline bool ls_labs_span(uint32_t caps, uint32_t hz,
     uint32_t *lo, uint32_t *hi)
 {
     if (*lo) return *hi > *lo && ls_lora_rx_range_ok(caps, *lo, *hi);
-    const uint32_t min = hz >= LS_LORA_RX_HF_MIN_HZ ? LS_LORA_RX_HF_MIN_HZ : LS_LORA_RX_MIN_HZ;
-    const uint32_t max = hz >= LS_LORA_RX_HF_MIN_HZ ? LS_LORA_RX_HF_MAX_HZ :
-        (caps & LS_LORA_CAP_RX_WIDE) ? LS_LORA_RX_LF_MAX_HZ : LS_LORA_RX_NARROW_MAX_HZ;
+    const uint32_t min = hz >= LS_LORA_RX_HF_MIN_HZ ? LS_LORA_RX_HF_MIN_HZ : ls_lora_rx_min_hz(caps);
+    const uint32_t max = hz >= LS_LORA_RX_HF_MIN_HZ ? ls_lora_rx_hf_max_hz(caps) :
+        ls_lora_rx_lf_max_hz(caps);
     if (!ls_lora_rx_range_ok(caps, hz, hz)) return false;
     *lo = hz < min + 1000000u ? min : hz - 1000000u;
     *hi = *lo + 2000000u;

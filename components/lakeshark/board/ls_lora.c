@@ -31,6 +31,7 @@
 #include "ls_board.h"
 #include "ls_spi.h"
 #include "ls_xl9535.h"
+#include "ls_lora_port.h"
 
 #if LS_HAS_LORA_LR20XX_PROBE
 #include "ls_lora_lr20xx.h"
@@ -163,8 +164,14 @@ uint32_t ls_lora_scan_bin_hz(uint32_t min_hz, uint32_t max_hz, int n, int i)
 #if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
     defined(LS_BOARD_XL_RADIO_RST)
 
-#define CS_PIN    ((gpio_num_t)LS_BOARD_LORA_CS_GPIO)
-#define BUSY_PIN  ((gpio_num_t)LS_BOARD_LORA_BUSY_GPIO)
+/* The lines this boot drives: the board's socket, or a module on the
+   header (ls_lora_port.c), set at the first start. Reset is a GPIO for a
+   header module and the board's expander line otherwise. */
+static int s_cs_pin = LS_BOARD_LORA_CS_GPIO;
+static int s_busy_pin = LS_BOARD_LORA_BUSY_GPIO;
+static int s_rst_gpio = -1;
+#define CS_PIN    ((gpio_num_t)s_cs_pin)
+#define BUSY_PIN  ((gpio_num_t)s_busy_pin)
 
 static const char *TAG = "ls_lora";
 
@@ -343,7 +350,13 @@ static void tx_route_settle(void);
 /* Until a part has answered, calls go to the SX126x backend exactly as they
    did when that was the only code in this file; a part that identifies as
    something else rebinds, and ls_lora_stop() unbinds. */
-static const ls_lora_ops_t *s_ops = &ls_lora_sx126x_ops;
+#if LS_HAS_SX126X
+#define LS_LORA_OPS_UNBOUND (&ls_lora_sx126x_ops)
+#else
+/* LakeShark LR has no SX126x backend; the LR20xx one refuses until bound. */
+#define LS_LORA_OPS_UNBOUND (&ls_lora_lr20xx_ops)
+#endif
+static const ls_lora_ops_t *s_ops = LS_LORA_OPS_UNBOUND;
 static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
 
 static void tx_route_settle(void)
@@ -426,8 +439,15 @@ bool IRAM_ATTR ls_lora_hw_wait_not_busy(int timeout_ms)
 
 /* The reset pin as the expander reads it back, not as we last wrote it:
    "high", "low", or why it could not be read. */
+static esp_err_t rst_out(bool level)
+{
+    if (s_rst_gpio >= 0) return gpio_set_level((gpio_num_t)s_rst_gpio, level ? 1 : 0);
+    return ls_xl9535_out(LS_BOARD_XL_RADIO_RST, level);
+}
+
 static const char *rst_readback(void)
 {
+    if (s_rst_gpio >= 0) return gpio_get_level((gpio_num_t)s_rst_gpio) ? "high" : "low";
     bool level = false;
     const esp_err_t err = ls_xl9535_get(LS_BOARD_XL_RADIO_RST, &level);
     if (err != ESP_OK) return esp_err_to_name(err);
@@ -462,9 +482,9 @@ static esp_err_t reset_part_locked(unsigned settle_ms)
     /* LS-1240: reset is an expander pin; when I2C0 fails (LS-1239) the
        part is never reset and the error below blamed MISO. Keep going, but
        report it. */
-    const esp_err_t rst_lo = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
+    const esp_err_t rst_lo = rst_out(false);
     vTaskDelay(pdMS_TO_TICKS(2));
-    const esp_err_t rst_hi = ls_xl9535_out(LS_BOARD_XL_RADIO_RST, true);
+    const esp_err_t rst_hi = rst_out(true);
     if (rst_lo != ESP_OK || rst_hi != ESP_OK) {
         ESP_LOGE(TAG, "reset not pulsed: expander %s, drive low %s, release %s"
                  " - the part is in whatever state the last boot left it",
@@ -529,6 +549,11 @@ static esp_err_t identify_locked(bool last)
     }
 #endif
 
+#if !LS_HAS_SX126X
+    ESP_LOGE(TAG, "LakeShark LR runs on LR2021 boards only, and no LR2021 answered."
+                  " An SX1262 board needs the standard LakeShark build.");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     uint8_t st = 0;
     const esp_err_t err = ls_lora_sx126x_probe(&st);
     if (err != ESP_OK) return err;
@@ -562,6 +587,7 @@ static esp_err_t identify_locked(bool last)
     ESP_LOGI(TAG, "SX1262 up: status 0x%02X (mode %u, cmd %u)",
              st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7));
     return ESP_OK;
+#endif
 }
 
 static esp_err_t start_locked(void)
@@ -572,6 +598,56 @@ static esp_err_t start_locked(void)
 
     esp_err_t err = ls_spi_bus(LS_SPI_RADIO);
     if (err != ESP_OK) return err;
+
+    /* Which lines: read once, the first time, and kept for the boot (the
+       SPI device below is registered once, on this chip select). */
+    if (!s_dev) {
+        const ls_lora_port_t *port = ls_lora_port();
+        s_cs_pin = port->cs;
+        s_busy_pin = port->busy;
+        s_rst_gpio = port->header && port->rst >= 0 ? port->rst : -1;
+        if (s_rst_gpio >= 0) {
+            gpio_config_t rst = {
+                .pin_bit_mask = 1ULL << s_rst_gpio,
+                .mode = GPIO_MODE_INPUT_OUTPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&rst);
+            gpio_set_level((gpio_num_t)s_rst_gpio, 0);   /* held until the pulse below */
+        }
+        if (port->header && s_cs_pin != LS_BOARD_LORA_CS_GPIO) {
+            /* The socket's part stays in the reset ls_board_hw put it in, and
+               its select is held high so it never answers on the shared bus. */
+            gpio_config_t socket_cs = {
+                .pin_bit_mask = 1ULL << LS_BOARD_LORA_CS_GPIO,
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&socket_cs);
+            gpio_set_level((gpio_num_t)LS_BOARD_LORA_CS_GPIO, 1);
+        }
+        if (port->header && port->irq_gpio >= 0) {
+            /* The driver polls the interrupt word over SPI; the line is only
+               kept an input so nothing here drives the module's DIO. */
+            gpio_config_t irq = {
+                .pin_bit_mask = 1ULL << port->irq_gpio,
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&irq);
+        }
+        if (port->header) {
+            char line[160];
+            ls_lora_port_describe(port, line, sizeof(line));
+            ESP_LOGW(TAG, "radio on the header: %s", line);
+        }
+    }
 
     gpio_config_t busy = {
         .pin_bit_mask = 1ULL << BUSY_PIN,
@@ -591,7 +667,7 @@ static esp_err_t start_locked(void)
        per host and four parts share this one, so a stop/start cycle would
        quietly consume the budget the other radios need. */
     if (!s_dev) {
-        err = ls_spi_device(LS_SPI_RADIO, LS_BOARD_LORA_CS_GPIO, 0,
+        err = ls_spi_device(LS_SPI_RADIO, s_cs_pin, 0,
                             2 * 1000 * 1000, 1, &s_dev);
         if (err != ESP_OK) return err;
     }
@@ -604,7 +680,7 @@ static esp_err_t start_locked(void)
        an input, but ls_board_hw touches this expander and a later change
        there should not silently turn the radio's interrupt line into an
        output. */
-    ls_xl9535_set_dir(LS_BOARD_XL_RADIO_DIO1, false);
+    if (s_rst_gpio < 0) ls_xl9535_set_dir(LS_BOARD_XL_RADIO_DIO1, false);
 
     /* A part that does not identify straight after a reset is reset again and
        given longer: the first frames of a part still starting come back as
@@ -642,8 +718,7 @@ bool ls_lora_present(void) { return s_present && (s_ops->caps() & LS_LORA_CAP_LO
 esp_err_t ls_lora_park(void)
 {
     ls_lora_hw_lock();
-    esp_err_t err = !s_ops->send_done() ? ESP_ERR_INVALID_STATE :
-        ls_xl9535_out(LS_BOARD_XL_RADIO_RST, false);
+    esp_err_t err = !s_ops->send_done() ? ESP_ERR_INVALID_STATE : rst_out(false);
     if (err == ESP_OK) ls_lora_stop();
     ls_lora_hw_unlock();
     return err;
@@ -661,7 +736,7 @@ void ls_lora_stop(void)
     s_scan_owner = NULL;
     s_present = false;
     s_chip = LS_LORA_CHIP_NONE;
-    s_ops = &ls_lora_sx126x_ops;
+    s_ops = LS_LORA_OPS_UNBOUND;
     ls_lora_hw_unlock();
 }
 
@@ -958,9 +1033,13 @@ void ls_lora_diagnostics(void)
         esp_err_t err = ls_lora_start();
         printf("lora: start %s\n", esp_err_to_name(err));
         if (err != ESP_OK) {
-            printf("lora: cs=%d busy=%d rst=expander reset held? check the "
-                   "3V3 rail and that ls_board_hw ran\n",
-                   (int)CS_PIN, (int)BUSY_PIN);
+            if (s_rst_gpio >= 0)
+                printf("lora: header module cs=%d busy=%d rst=%d did not answer: check its "
+                       "power, the wiring and 'lora port'\n", (int)CS_PIN, (int)BUSY_PIN, s_rst_gpio);
+            else
+                printf("lora: cs=%d busy=%d rst=expander reset held? check the "
+                       "3V3 rail and that ls_board_hw ran\n",
+                       (int)CS_PIN, (int)BUSY_PIN);
             return;
         }
     }

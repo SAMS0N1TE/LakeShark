@@ -22,6 +22,7 @@
 #include "radio_endpoint.h"
 #include "rec_state.h"
 #include "rec_fsk.h"
+#include "fsk_packet.h"
 #include "rec_watch.h"
 #include "ls_lora.h"
 #include "ls_sub_fsk.h"
@@ -121,6 +122,10 @@ static EXT_RAM_BSS_ATTR rec_fsk_t s_fsk;   /* only the rx task touches it */
 static bool     s_carrier = false;
 static int      s_cap_mod = REC_MOD_OOK;
 static uint32_t s_cap_freq_hz = 0, s_cap_dev_hz = 0, s_cap_bitrate = 0;
+/* The packet in the last FSK capture: preamble, sync and a CRC that checks,
+   decoded from the edges (fsk_packet.c). Written by the rx task only. */
+static char     s_cap_packet[96] = "";
+static EXT_RAM_BSS_ATTR fsk_pkt_t s_cap_pkts[2];
 
 /* LS-1242: every live capture is written to the card as it completes, so
    the head's FILES list shows what was just recorded. */
@@ -196,6 +201,12 @@ static void rec_finish(int reason)
     s_cap_bitrate = s_mod == REC_MOD_FSK
                     ? rec_fsk_bitrate(s_edge, s_edges, s_min_pulse_us) : 0;
     if (s_cap_bitrate) s_baud_est = s_cap_bitrate;
+    s_cap_packet[0] = 0;
+    if (s_mod == REC_MOD_FSK && s_edge && s_edges > 0 &&
+        fsk_pkt_from_edges(s_edge, (size_t)s_edges, s_cap_pkts, 2) > 0) {
+        fsk_pkt_describe(&s_cap_pkts[0], s_cap_packet, sizeof(s_cap_packet));
+        ESP_LOGI(TAG, "packet: %s", s_cap_packet);
+    }
 
     s_phase = REC_DONE;
     s_captures++;
@@ -783,6 +794,7 @@ void rec_get_status(rec_status_t *out)
     out->cap_dev_hz   = s_cap_dev_hz;
     out->cap_bitrate  = s_cap_bitrate;
     out->autosave     = s_autosave;
+    strlcpy(out->cap_packet, s_cap_packet, sizeof(out->cap_packet));
 }
 
 void rec_set_mod(int mod)

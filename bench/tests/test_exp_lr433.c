@@ -346,7 +346,7 @@ LS_CASE(lr433_is_built_in_as_a_trying_experiment_with_its_options)
     LS_EQ_STR(e->name, "LR433");
     LS_EQ_INT(e->maturity, LS_EXP_TRYING);
     LS_CHECK(e->configure != NULL);
-    LS_EQ_INT(e->n_opts, 6);
+    LS_EQ_INT(e->n_opts, 7);
     LS_CHECK(strlen(e->sub) <= 41);           /* what the list shows of it */
 }
 
@@ -406,7 +406,7 @@ LS_CASE(an_unowned_tyre_keeps_identity_without_readings)
     char l[24][LS_EXP_LINE];
     int n = read_lines(e, l, 24);
     dump(l, n);
-    LS_CHECK(has_line(l, n, "NOW  315 OOK", "315.000 MHz"));
+    LS_CHECK(has_line(l, n, "NOW  315 OOK", "315.0000 MHz"));
     LS_CHECK(has_line(l, n, "PLAN [315o] 315f 315p", NULL));
     LS_CHECK(has_line(l, n, "HEARD 1 bursts, 1 decoded, 1 device", NULL));
     LS_CHECK(has_line(l, n, "Schr-EG53", "2FC871"));
@@ -582,4 +582,43 @@ LS_CASE(main_and_history_share_units_and_options)
     LS_EQ_INT(history->opt[2].get(&history->opt[2]),0);
     history->opt[2].set(&history->opt[2],1);
     LS_EQ_INT(units->get(units),0); LS_CHECK(lr433_history_fahrenheit());
+}
+
+LS_CASE(a_centre_moves_every_session_and_the_lr2021_adds_packet_sessions)
+{
+    const ls_experiment_t *e = lr433();
+    clean(e);
+    LS_CHECK(run_console("exp lr433 start all 5 433.2") != 0);       /* no band to centre */
+    LS_CHECK(run_console("exp lr433 start 433 5 436.5") != 0);       /* past 2 MHz */
+    LS_EQ_INT(run_console("exp lr433 start 433 5 433.1985"), 0);
+    LS_EQ_UINT(s_ocfg.freq_hz, 433198500u);
+    char l[24][LS_EXP_LINE];
+    int n = read_lines(e, l, 24);
+    dump(l, n);
+    LS_CHECK(has_line(l, n, "NOW  433 OOK  433.1985 MHz", NULL));
+    LS_CHECK(has_line(l, n, "PLAN [433o] 433f", NULL));
+    LS_CHECK(!has_line(l, n, "433p", NULL));                          /* no I/Q on this chip */
+    LS_EQ_INT(run_console("exp lr433 stop"), 0);
+
+    /* With the LR2021's range the PKT session joins; off the board it
+       cannot stream and is marked. */
+    s_caps |= LS_LORA_CAP_RX_EXT;
+    LS_EQ_INT(run_console("exp lr433 start 433 2 433.92"), 0);
+    ls_shim_time_advance(2 * 1000000LL);
+    ls_exp_service();                      /* 433 FSK */
+    ls_shim_time_advance(2 * 1000000LL);
+    ls_exp_service();                      /* 433 PKT refused: back to OOK */
+    n = read_lines(e, l, 24);
+    dump(l, n);
+    LS_CHECK(has_line(l, n, "433p!", NULL));
+    const ls_opt_t *off = &e->opts[e->n_opts - 1];
+    LS_EQ_STR(off->label, "OFFSET");
+    char shown[32];
+    off->show(off, shown, sizeof shown);
+    LS_EQ_STR(shown, "none");
+    off->set_num(off, -721.5);
+    off->show(off, shown, sizeof shown);
+    LS_EQ_STR(shown, "-721.5 kHz");
+    LS_EQ_INT(run_console("exp lr433 stop"), 0);
+    off->set_num(off, 0);
 }

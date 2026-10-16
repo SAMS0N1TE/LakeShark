@@ -870,8 +870,10 @@ void ls_rec_tools_enter(void){if(!lr_raw())ls_tui_radio_want("REC");on_enter();}
 void ls_rec_tools_draw(tui_surface *sf,tui_rect a)
 {
     if(!lr_raw()){draw(sf,a);return;}
-    char result[112],freq[64];bool busy=rec_watch_iq_status(result,sizeof(result));
+    char result[112],freq[64],packet[64];bool busy=rec_watch_iq_status(result,sizeof(result));
     snprintf(freq,sizeof(freq),"%.4f MHz / IQ16LE / 125 kS/s / AGC",rec_get_freq()/1e6);
+    /* a decoded packet says more than the file name it was saved under */
+    if(!busy && !iq_notice[0] && rec_watch_iq_packet(packet+4,sizeof(packet)-4)) {memcpy(packet,"FSK ",4);snprintf(result,sizeof(result),"%s",packet);}
     ls_panel_notice(sf,a,"LR2021 RAW I/Q",freq,iq_notice[0]?iq_notice:result[0]?result:"ARM: waits for signal, saves up to 262 ms to SD");
     draw_button(sf,tui_rect_make(a.x,a.y+a.h-REC_BTN_H,a.w,REC_BTN_H),busy);
 }

@@ -3,6 +3,7 @@
    directory for which files here are third-party and which are ours. */
 
 #include "usb_host.h"
+#include "usb_boot_retry.h"
 #include "rtl_adapter_private.h"
 #include "hackrf_adapter_private.h"
 #include "event_bus.h"
@@ -11,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "hal/usb_dwc_ll.h"
 #include <string.h>
 
 static const char *TAG = "usb_host";
@@ -53,60 +55,15 @@ typedef struct {
     } constant;
 } class_driver_t;
 
-/* USB_BOOT_RETRY_BEGIN: also compiled by the consolidated host tests. */
-typedef struct {
-    int64_t next_us;
-    unsigned attempts;
-    bool off, done;
-} usb_boot_retry_t;
-
-static void usb_boot_retry_tick(usb_boot_retry_t *retry, int64_t now, int devices)
-{
-    if(retry->done) return;
-    /* A successful attach permanently ends boot recovery. Never disturb a
-       working receiver, hub or any other registered USB peripheral.
-
-       SAY SO WHEN IT HAPPENS. A ten-reset series recovered nine times;
-       the tenth failed CHECK_SHORT_DEV_DESC at 4541 ms - the exact
-       failure this incident records - and then no retry ever ran. The
-       suspect is this line: a device that FAILED enumeration may still
-       be counted by usb_host_lib_info, in which case devices > 0 is
-       true, recovery concludes something attached and disables itself
-       permanently, in precisely the case it exists for.
-
-       It was: after "Root port reset failed" and CHECK_SHORT_DEV_DESC
-       FAILED the library still reported one device and recovery stood
-       down with no dongle attached. The caller now passes the devices that
-       actually reached this client, which a failed enumeration never does. */
-    if(devices > 0 && !retry->off) {
-        ESP_LOGW(TAG,"USB boot recovery stood down: %d device(s) "
-                     "enumerated at %lld ms",devices,
-                     (long long)(now/1000));
-        retry->done=true;
-        return;
-    }
-    if(devices < 0 || now < retry->next_us) return;
-    if(retry->off) {
-        esp_err_t err=usb_host_lib_set_root_port_power(true);
-        retry->off=false;
-        retry->next_us=now+5000000;
-        if(err != ESP_OK) retry->done=true;
-        ESP_LOGW(TAG,"USB boot retry %u: host port on: %s",retry->attempts,esp_err_to_name(err));
-        return;
-    }
-    if(retry->attempts>=3) { retry->done=true; return; }
-    retry->attempts++;
-    esp_err_t err=usb_host_lib_set_root_port_power(false);
-    retry->off=err==ESP_OK;
-    retry->next_us=now+(retry->off?300000:5000000);
-    ESP_LOGW(TAG,"USB boot retry %u: no enumerated devices, host port off: %s",retry->attempts,esp_err_to_name(err));
-}
-/* USB_BOOT_RETRY_END */
 
 static class_driver_t *s_driver_obj;
 /* Devices that reached this client. A device that fails enumeration is
    still counted by usb_host_lib_info, but never arrives here. */
 static volatile int s_client_devices;
+/* The root port is unpowered by us (boot recovery, a port cycle). Its
+   connect status reads empty then whatever is plugged in. */
+static volatile bool s_root_port_off;
+static esp_err_t root_port_set_power(bool on);
 
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
 {
@@ -277,8 +234,14 @@ void class_driver_task(void *arg)
     usb_boot_retry_t boot_retry={.next_us=esp_timer_get_time()+10000000};
 
     while (1) {
-        if(!boot_retry.done)
-            usb_boot_retry_tick(&boot_retry,esp_timer_get_time(),s_client_devices);
+        if(!boot_retry.done) {
+            const int64_t now=esp_timer_get_time();
+            /* The port is only read once the retry is due to act on it. */
+            const int attached=now>=boot_retry.next_us && !boot_retry.off
+                ? usb_host_root_port_attached() : USB_PORT_ATTACH_UNKNOWN;
+            usb_boot_retry_tick(&boot_retry,now,s_client_devices,attached,
+                                root_port_set_power);
+        }
         if (obj.mux_protected.flags.unhandled_devices) {
             xSemaphoreTake(obj.constant.mux_lock, portMAX_DELAY);
             for (uint8_t i = 0; i < DEV_MAX_COUNT; i++)
@@ -315,7 +278,9 @@ void class_driver_client_deregister(void)
 
 static esp_err_t root_port_set_power(bool on)
 {
-    return usb_host_lib_set_root_port_power(on);
+    const esp_err_t err = usb_host_lib_set_root_port_power(on);
+    if (err == ESP_OK) s_root_port_off = !on;
+    return err;
 }
 
 static int root_port_device_count(void)
@@ -329,6 +294,24 @@ static void root_port_delay_ms(uint32_t ms)
 {
     TickType_t ticks = pdMS_TO_TICKS(ms);
     vTaskDelay(ticks ? ticks : 1);
+}
+
+/* Whether anything is plugged into the root port, enumerated or not. The
+   host library cannot say: a device that fails before it is registered
+   (a failed port reset) is not in usb_host_lib_info, and one that fails
+   later still is. The controller's own port status (HPRT.PRTCONNSTS, the
+   bit the IDF HCD raises its connection event from) is set by the plug
+   alone. Read only: no write-1-to-clear bit is touched. HS controller,
+   because the IDF host runs on port 0 and the lib is installed with the
+   default peripheral map. UNKNOWN until the client exists (the host is
+   installed) and while we hold the port unpowered, when it reads empty
+   whatever is plugged in. */
+int usb_host_root_port_attached(void)
+{
+    if (!s_driver_obj || s_root_port_off) return USB_PORT_ATTACH_UNKNOWN;
+    if (root_port_device_count() > 0) return USB_PORT_ATTACH_PRESENT;
+    return usb_dwc_ll_hprt_get_conn_status(USB_DWC_LL_GET_HW(0))
+        ? USB_PORT_ATTACH_PRESENT : USB_PORT_ATTACH_NONE;
 }
 
 bool usb_host_root_port_has_device(void)

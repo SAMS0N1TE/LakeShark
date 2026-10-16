@@ -587,6 +587,17 @@ int ls_shim_log_enabled = 0;
 
 static bool keyboard_light=true;
 bool settings_get_keyboard_light(void) { return keyboard_light; }
+/* Where the LoRa radio is wired (ls_lora_port.c): nothing saved unless a test saves it. */
+static uint64_t fk_port_a, fk_port_b;
+static bool fk_port_have;
+bool settings_get_lora_port(uint64_t *a, uint64_t *b)
+{
+    if (!fk_port_have) return false;
+    *a = fk_port_a;
+    *b = fk_port_b;
+    return true;
+}
+bool settings_set_lora_port(uint64_t a, uint64_t b) { fk_port_a = a; fk_port_b = b; fk_port_have = true; return true; }
 void settings_set_keyboard_light(bool on) { keyboard_light=on; }
 int ls_keypad_backlight(bool on) { (void)on; return 0; }
 

@@ -94,7 +94,9 @@ static const struct { const char *name; double mhz; } LABS_BANDS[] = {
    Spans, not points: the sweep can cover more than the LoRa packet bands;
    only the sweep moves, and these ranges grant no transmit permission. */
 static const struct { const char *name; uint32_t lo, hi; } LABS_SPANS[] = {
+    { "airband",   108000000u,  137000000u },
     { "aviation",  960000000u, 1100000000u },
+    { "L band",   1100000000u, 1499000000u },
     { "GPS L1",   1570000000u, 1581000000u },
     { "Iridium",  1616000000u, 1626500000u },
     { "2.4G ISM", 2400000000u, 2483500000u },

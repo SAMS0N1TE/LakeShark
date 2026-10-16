@@ -36,7 +36,20 @@ static bool p25_lr_iq_wanted(void)
 }
 static void p25_lr_iq_run(void)
 {
-    if (ls_mesh_radio_wanted() || !ls_mesh_radio_hold_bg(true)) {
+    /* The mesh task pauses itself only after it is told: a first answer of
+       no is the handshake, not another owner. Give it the time the other
+       holders give before saying the chip is in use elsewhere. */
+    bool held = false;
+    const int64_t hold_until = esp_timer_get_time() + 500000;
+    while (!ls_mesh_radio_wanted() && p25_lr_iq_wanted() &&
+           !(held = ls_mesh_radio_hold_bg(true)) && esp_timer_get_time() < hold_until)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    if (!held && !ls_mesh_radio_wanted() && !p25_lr_iq_wanted()) {
+        ls_mesh_radio_hold_bg(false);   /* leaving, not refused */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+    if (!held) {
         P25.lora_wait = true;
         ls_iq_control_receiver_lost(&s_radio_control, LS_RADIO_ERR_BUSY);
         vTaskDelay(pdMS_TO_TICKS(200));

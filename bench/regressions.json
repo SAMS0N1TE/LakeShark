@@ -241,6 +241,8 @@
       "expected": "A failed first USB descriptor request must have bounded boot recovery without requiring physical replug. Never reset a root port after any USB device has registered. Preserve RTL/HackRF and other USB peripherals; no recurring retry storm.",
       "paths": [
         "components/lakeshark/radio/usb_host.c",
+        "components/lakeshark/radio/usb_boot_retry.c",
+        "bench/tests/test_usb_boot_retry.c",
         "bench/quality.py"
       ],
       "checks": [

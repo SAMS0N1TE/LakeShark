@@ -1,0 +1,4 @@
+# T-Display-P4, LR2021 variant: the LakeShark LR edition.
+# Layer on top of the AMOLED profile, which carries everything else:
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_lr2021.defaults"
+CONFIG_LS_LR2021_ONLY=y

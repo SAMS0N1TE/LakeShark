@@ -1,3 +1,4 @@
+#include "ls_board.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_scan_look.h"
 #include "../../ls_tui_ui.h"
@@ -2077,15 +2078,22 @@ static const ls_opt_ctx_t *subghz_options(void)
 }
 /* ------------------------------------------------------------------ draw */
 
+/* CATCH needs an RTL-SDR to spot bursts: no tab in LakeShark LR. */
+#if LS_LR_EDITION
+#define N_TABS 5
+static const char *const TAB_NAME[N_TABS]={"READ","SCAN","SAVED","RAW","LEARN"};
+static const sg_page_t TAB_PAGE[N_TABS]={PG_READ,PG_ANALYZE,PG_SAVED,PG_RAW,PG_LEARN};
+#else
 #define N_TABS 6
 static const char *const TAB_NAME[N_TABS]={"READ","SCAN","SAVED","RAW","LEARN","CATCH"};
 static const sg_page_t TAB_PAGE[N_TABS]={PG_READ,PG_ANALYZE,PG_SAVED,PG_RAW,PG_LEARN,PG_CATCH};
+#endif
 
 /* REC opens a loaded file in the player, or CATCH, from outside. */
 void ls_scr_subghz_show(int which)
 {
     if(which==0)go(PG_PLAYER);
-    else if(which==1)go(PG_CATCH);
+    else if(which==1)go(LS_LR_EDITION ? PG_READ : PG_CATCH);
     else if(which==2)go(PG_RAW);
     else go(PG_SAVED);
 }
@@ -2159,7 +2167,7 @@ static void draw(tui_surface *sf,tui_rect a)
     tab[0].on=tab[0].on || s.enabled;
     tab[1].on=tab[1].on || rec_watch_scan_busy();
     tab[4].on=tab[4].on || rec_watch_learn_busy();
-    tab[5].on=tab[5].on || ls_catch_running();
+    if(N_TABS>5)tab[N_TABS-1].on=tab[N_TABS-1].on || ls_catch_running();
     if(tabs.h>0)ls_btn_bar_rows_slot(sf,tabs,tab,N_TABS,-1,LS_BTN_SLOT_QUICK,tabs.h>=8?2:1);
 }
 

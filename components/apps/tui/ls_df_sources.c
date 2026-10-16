@@ -231,8 +231,8 @@ const char *ls_dfs_conflict(int slot, ls_dfs_t src)
 bool ls_dfs_in_range(ls_dfs_t src, uint32_t hz)
 {
     switch (src) {
-    case LS_DFS_LORA:   return hz >= 150000000u && hz <= 960000000u;
-    case LS_DFS_BAND:   return hz >= 150000000u && hz <= 960000000u;
+    case LS_DFS_LORA:   return ls_lora_rx_range_ok(ls_lora_caps(), hz, hz);
+    case LS_DFS_BAND:   return ls_lora_rx_range_ok(ls_lora_caps(), hz, hz);
     case LS_DFS_RTL:    return hz >= 24000000u + SDR_OFFSET && hz <= 1766000000u;
     case LS_DFS_HACKRF: return hz >= 1000000u + SDR_OFFSET && hz <= UINT32_MAX;
     case LS_DFS_CC1101: return (hz >= 300000000u && hz <= 348000000u) || (hz >= 387000000u && hz <= 464000000u) ||

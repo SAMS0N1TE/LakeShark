@@ -55,6 +55,17 @@ bool settings_get_lr_tcxo(void) { return fk_lr_tcxo; }
 bool settings_set_lr_tcxo(bool tcxo) { fk_lr_tcxo = tcxo; return true; }
 bool settings_get_lr_dcdc(void) { return fk_lr_dcdc; }
 bool settings_set_lr_dcdc(bool dcdc) { fk_lr_dcdc = dcdc; return true; }
+/* Where the LoRa radio is wired (ls_lora_port.c): nothing saved unless a test saves it. */
+static uint64_t fk_port_a, fk_port_b;
+static bool fk_port_have;
+bool settings_get_lora_port(uint64_t *a, uint64_t *b)
+{
+    if (!fk_port_have) return false;
+    *a = fk_port_a;
+    *b = fk_port_b;
+    return true;
+}
+bool settings_set_lora_port(uint64_t a, uint64_t b) { fk_port_a = a; fk_port_b = b; fk_port_have = true; return true; }
 #ifndef LS_TEST_REAL_BOARD_HW
 bool ls_board_hw_antenna_is_external(void) { return fk_ant_external; }
 bool ls_board_hw_antenna_tx_allowed(void) { return true; }
@@ -81,7 +92,18 @@ static unsigned fk_busy_step_us = 200;
 static void fk_capture_advance(void);
 
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
-esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) { (void)pin; (void)level; return ESP_OK; }
+/* GPIO writes, in order, and a reset line that is a GPIO (a module on the
+   header) reaching the part the way the expander's does. */
+typedef struct { int pin; int level; } fk_gpio_write_t;
+static fk_gpio_write_t fk_gpio_log[64];
+static int fk_gpio_log_n;
+static int fk_rst_gpio = -1;
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
+{
+    if (fk_gpio_log_n < 64) { fk_gpio_log[fk_gpio_log_n].pin = (int)pin; fk_gpio_log[fk_gpio_log_n].level = (int)level; fk_gpio_log_n++; }
+    if ((int)pin == fk_rst_gpio) fk_reset_pin(level != 0);
+    return ESP_OK;
+}
 int gpio_get_level(gpio_num_t pin)
 {
     (void)pin;

@@ -62,3 +62,80 @@ int fm_lr_demod(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
     if (count) fm->demod_noise = sqrtf(s->noise_power)*s->noise_scale;
     return count;
 }
+
+int fm_lr_demod_env(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
+                    size_t bytes, float *out32k, int capacity)
+{
+    int count = 0; float peak = 0;
+    for (size_t b=0; b+3<bytes; b+=4) {
+        float re = (int16_t)((unsigned)iq[b] | ((unsigned)iq[b+1]<<8));
+        float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
+        float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
+        if (level > peak) peak = level;
+        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
+        s->pos = (s->pos+1)%FM_LR_TAPS;
+        if (++s->decim < 4) continue;
+        s->decim = 0; re = im = 0;
+        unsigned j = s->pos;
+        for (int k=0; k<FM_LR_TAPS; ++k) {
+            if (!j) j = FM_LR_TAPS;
+            --j; re += s->taps[k]*s->i[j]; im += s->taps[k]*s->q[j];
+        }
+        const float mag = sqrtf(re*re + im*im);
+        if (s->am_dc <= 0.0f) s->am_dc = mag;
+        s->am_dc += 0.002f*(mag - s->am_dc);
+        const float d = (mag - s->am_dc)/(s->am_dc + 1e-6f);
+        while (s->phase < 128) {
+            if (count < capacity)
+                out32k[count++] = s->prev_d + (d - s->prev_d)*(float)s->phase/128.0f;
+            s->phase += 125;
+        }
+        s->phase -= 128; s->prev_d = d;
+    }
+    fm->iq_block_peak = peak;
+    fm->iq_peak = peak;
+    return count;
+}
+
+int fm_lr_demod_am(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
+                   size_t bytes, int16_t *pcm16k, int capacity)
+{
+    int count = 0; float peak = 0;
+    for (size_t b=0; b+3<bytes; b+=4) {
+        float re = (int16_t)((unsigned)iq[b] | ((unsigned)iq[b+1]<<8));
+        float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
+        float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
+        if (level > peak) peak = level;
+        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
+        s->pos = (s->pos+1)%FM_LR_TAPS;
+        if (++s->decim < 4) continue;
+        s->decim = 0; re = im = 0;
+        unsigned j = s->pos;
+        for (int k=0; k<FM_LR_TAPS; ++k) {
+            if (!j) j = FM_LR_TAPS;
+            --j; re += s->taps[k]*s->i[j]; im += s->taps[k]*s->q[j];
+        }
+        /* Envelope over the carrier level: 100% modulation reads about 10000. */
+        const float mag = sqrtf(re*re + im*im);
+        if (s->am_dc <= 0.0f) s->am_dc = mag;
+        s->am_dc += 0.002f*(mag - s->am_dc);
+        const float d = (mag - s->am_dc) * (10000.0f/(s->am_dc*32768.0f + 1.0f)) * 32768.0f;
+        /* 31.25k -> 32k as in fm_lr_demod, then pairs to 16k. */
+        while (s->phase < 128) {
+            const float v = s->prev_d + (d - s->prev_d)*(float)s->phase/128.0f;
+            s->am_acc += v;
+            if (++s->am_n == 2) {
+                float x = s->am_acc*0.5f;
+                s->am_acc = 0; s->am_n = 0;
+                if (x > 32767) x = 32767;
+                if (x < -32768) x = -32768;
+                if (count < capacity) pcm16k[count++] = (int16_t)x;
+            }
+            s->phase += 125;
+        }
+        s->phase -= 128; s->prev_d = d;
+    }
+    fm->iq_block_peak = peak;
+    fm->iq_peak = peak;
+    return count;
+}

@@ -348,7 +348,11 @@ static bool hole_gap(int row, int n, int *g0, int *g1)
     return true;
 }
 
+#if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
+static const char BRAND[] = "LAKESHARK LR";
+#else
 static const char BRAND[] = "LAKESHARK";
+#endif
 
 /* Where everything on the status row goes. */
 static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,

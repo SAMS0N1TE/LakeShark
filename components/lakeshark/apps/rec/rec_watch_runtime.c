@@ -617,7 +617,7 @@ static void lr_ook_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare
 static bool lr_ook_wanted(void)
 {
     const uint32_t hz=rec_get_freq();
-    return !s_lr_fsk && ls_lora_chip()==LS_LORA_CHIP_LR20XX && hz>=150000000u && hz<=960000000u;
+    return !s_lr_fsk && ls_lora_chip()==LS_LORA_CHIP_LR20XX && ls_lora_rx_range_ok(ls_lora_caps(),hz,hz);
 }
 static bool lr_ook_session(bool on)
 {

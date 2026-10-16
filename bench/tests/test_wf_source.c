@@ -736,6 +736,17 @@ LS_CASE(lora_bands_past_960_mhz_are_offered_only_to_a_part_that_sweeps_there)
     ls_wf_source_lora_band(1000000000u, 1600000000u);
     ls_wf_source_lora_band_get(&lo, &hi);
     LS_EQ_UINT(1616000000u, lo);
+
+    /* The measured reach adds its bands after the others, which keep their
+       places: airband below 150 MHz and the 1.1-1.5 GHz stretch. */
+    g_caps = LS_LORA_CAP_RX_WIDE | LS_LORA_CAP_BAND_1G5_2G5 | LS_LORA_CAP_RX_EXT;
+    LS_EQ_INT(18, ls_wf_preset_count(LS_WF_SRC_LORA));
+    LS_EQ_STR("Iridium", ls_wf_preset_label(LS_WF_SRC_LORA, 9));
+    LS_EQ_STR("airband", ls_wf_preset_label(LS_WF_SRC_LORA, 12));
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_LORA, 12));
+    ls_wf_source_lora_band_get(&lo, &hi);
+    LS_EQ_UINT(108000000u, lo);
+    LS_EQ_UINT(137000000u, hi);
 }
 
 LS_CASE(p25_retunes_and_span_changes_restart_history)

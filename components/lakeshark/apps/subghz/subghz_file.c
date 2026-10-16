@@ -302,5 +302,5 @@ bool subghz_file_is_iq(const subghz_file_t *f)
 {
     return f && f->filetype_ok && !f->invalid && !strcmp(f->protocol,"LR2021_IQ") &&
         !f->edges_total && f->iq_rate==125000 && f->iq_samples && f->iq_samples<=32767 &&
-        f->iq_bytes==f->iq_samples*4u && f->freq_hz>=150000000u && f->freq_hz<=999999999u;
+        f->iq_bytes==f->iq_samples*4u && f->freq_hz>=104000000u && f->freq_hz<=2740000000u;
 }

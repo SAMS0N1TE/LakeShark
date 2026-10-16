@@ -10,6 +10,15 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
+#if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
+#define LS_EDITION_NAME "LakeShark LR"
+#else
+#define LS_EDITION_NAME "LakeShark"
+#endif
 
 bool ls_version_is_dirty(const char *version)
 {
@@ -46,7 +55,7 @@ int ls_version_format(char *out, size_t len, const ls_version_info_t *v)
     const char *dirty = ls_version_is_dirty(v->version) ? "  [DIRTY]" : "";
 
     int n = snprintf(out, len,
-                     "LakeShark %s%s  board=%s  built %s %s  IDF %s",
+                     LS_EDITION_NAME " %s%s  board=%s  built %s %s  IDF %s",
                      ver, dirty, bd, date, tm, idf);
     if (n < 0) { out[0] = '\0'; return 0; }
     if ((size_t)n >= len) n = (int)len - 1;
@@ -64,6 +73,7 @@ int ls_version_format(char *out, size_t len, const ls_version_info_t *v)
 #include "esp_idf_version.h"
 
 #include "ls_board.h"
+
 
 void ls_version_get(ls_version_info_t *v)
 {

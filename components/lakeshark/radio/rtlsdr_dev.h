@@ -23,6 +23,8 @@ void rtlsdr_dev_teardown(void);
 usb_port_cycle_result_t rtl_adapter_port_reset(void);
 /* Whether the host holds an enumerated device for that reset to act on. */
 bool rtl_adapter_port_reset_possible(void);
+/* usb_port_attach_t: whether anything is plugged into the root port. */
+int rtl_adapter_port_attached(void);
 
 #ifdef __cplusplus
 }

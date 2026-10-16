@@ -134,9 +134,9 @@ LS_CASE(set_rf_frequency_is_a_32_bit_value_in_hertz)
     LS_EQ_INT(lr20xx_set_rf_frequency(868100000u), ESP_OK);
     FK_FRAME(1, 0x02, 0x00, 0x33, 0xBE, 0x27, 0xA0);
 
-    /* Outside the 150-2500 MHz synthesiser nothing is sent. */
-    LS_EQ_INT(lr20xx_set_rf_frequency(149999999u), ESP_ERR_INVALID_ARG);
-    LS_EQ_INT(lr20xx_set_rf_frequency(2500000001u), ESP_ERR_INVALID_ARG);
+    /* Outside the measured 104-2740 MHz synthesiser range nothing is sent. */
+    LS_EQ_INT(lr20xx_set_rf_frequency(103999999u), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(lr20xx_set_rf_frequency(2740000001u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(fk.nframes, 2);
 }
 
@@ -1774,16 +1774,24 @@ LS_CASE(nothing_transmits_at_or_above_1_ghz_and_the_hf_pa_is_never_touched)
 {
     session_up();
     ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
-    cfg.freq_hz = 2300000000u; /* gap between the supported HF packet bands */
+    cfg.freq_hz = 3000000000u; /* past where the synthesiser locks */
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_NOT_SUPPORTED);
-    cfg.freq_hz = 1000000000u;
-    LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_NOT_SUPPORTED);
-    cfg.freq_hz = 1090000000u;
-    LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_NOT_SUPPORTED);
+    cfg.freq_hz = 100000000u;  /* below where image calibration works */
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(fk.nframes, 0);                              /* refused before a frame */
     LS_CHECK(ls_lora_cfg() == NULL);
     const uint8_t msg[2] = { 1, 2 };
     LS_EQ_INT(ls_lora_send(msg, 2), ESP_ERR_INVALID_STATE);
+
+    /* The measured receive reach configures, and never transmits: under
+       150 MHz, at 1 GHz and in the aviation band, and on the HF input. */
+    static const uint32_t rx_only[] = { 120000000u, 1000000000u, 1090000000u, 2300000000u };
+    for (unsigned i = 0; i < sizeof(rx_only) / sizeof(rx_only[0]); i++) {
+        cfg.freq_hz = rx_only[i];
+        LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+        LS_EQ_INT(ls_lora_send(msg, 2), ESP_ERR_NOT_SUPPORTED);
+        LS_CHECK(!lr20xx_tx_allowed());
+    }
 
     /* Below the limit is the LF path, and transmits. */
     cfg.freq_hz = 433920000u;
@@ -1978,8 +1986,8 @@ LS_CASE(an_fsk_session_refuses_what_the_sx126x_backend_refuses_and_holds_the_par
 {
     lora_up(NULL);
     ls_fsk_cfg_t f;
-    f = FSK_868; f.freq_hz = 1100000001u;     LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
-    f = FSK_868; f.freq_hz = 149999999u;      LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    f = FSK_868; f.freq_hz = 2740000001u;     LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
+    f = FSK_868; f.freq_hz = 103999999u;      LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
     f = FSK_868; f.bitrate = 499;             LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
     f = FSK_868; f.bandwidth_hz = 9000;       LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);  /* 2400 + 9600 */
     f = FSK_868; f.bandwidth_hz = 4000000;    LS_EQ_INT(ls_lora_fsk_begin(&f), ESP_ERR_INVALID_ARG);
@@ -2117,11 +2125,11 @@ LS_CASE(a_sweep_refuses_what_the_sx126x_backend_refuses)
     lora_up(NULL);
     LS_EQ_INT(ls_lora_scan_begin(928000000u, 902000000u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(ls_lora_scan_begin(100000000u, 200000000u), ESP_ERR_INVALID_ARG);
-    LS_EQ_INT(ls_lora_scan_begin(902000000u, 1100000001u), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_scan_begin(902000000u, 1500000001u), ESP_ERR_INVALID_ARG);
     /* One input or the other, never across the gap between them. */
     LS_EQ_INT(ls_lora_scan_begin(1000000000u, 1600000000u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(ls_lora_scan_begin(1499999999u, 1600000000u), ESP_ERR_INVALID_ARG);
-    LS_EQ_INT(ls_lora_scan_begin(2400000000u, 2500000001u), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_scan_begin(2400000000u, 2740000001u), ESP_ERR_INVALID_ARG);
     const uint8_t msg[2] = { 1, 2 };
     LS_EQ_INT(ls_lora_send(msg, 2), ESP_OK);
     LS_EQ_INT(ls_lora_scan_begin(902000000u, 928000000u), ESP_ERR_INVALID_STATE);  /* mid-transmit */
@@ -2290,7 +2298,7 @@ LS_CASE(an_fsk_listener_on_the_hf_input_hops_in_place_and_never_transmits)
 
     /* Not to the other input, and not past either end. */
     LS_EQ_INT(ls_lora_fsk_retune(915000000u), ESP_ERR_INVALID_ARG);
-    LS_EQ_INT(ls_lora_fsk_retune(2500000001u), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_fsk_retune(2740000001u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(ls_lora_fsk_retune(1300000000u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(ls_lora_fsk_send(frame, sizeof(frame)), ESP_ERR_NOT_SUPPORTED);
     LS_EQ_INT(ls_lora_fsk_end(), ESP_OK);
@@ -2489,8 +2497,8 @@ LS_CASE(an_ook_session_refuses_what_the_engine_cannot_do_and_sends_nothing)
         c.field = value;                                                        \
         LS_CHECK_MSG(ls_lora_ook_begin(&c) == ESP_ERR_INVALID_ARG, #field " = " #value " taken"); \
     } while (0)
-    REFUSED(freq_hz, 149000000u);
-    REFUSED(freq_hz, 1213000001u);
+    REFUSED(freq_hz, 103000000u);
+    REFUSED(freq_hz, 1500000000u);
     REFUSED(bitrate, 599);
     REFUSED(bitrate, 2000001);
     REFUSED(bandwidth_hz, 0);
@@ -3453,7 +3461,8 @@ LS_CASE(lr2021_hf_lora_and_fsk_receive_but_every_transmit_layer_refuses)
 
 LS_CASE(hf_lora_band_gaps_and_other_lr_chips_remain_refused)
 {
-    const uint32_t bad[] = {1000000000u, 1899999999u, 2200000001u, 2399999999u, 2500000001u};
+    /* The LR2021 receives continuously 104-2740 MHz; only outside that. */
+    const uint32_t bad[] = {3000000000u, 2740000001u, 2900000000u};
     session_up();
     ls_lora_cfg_t c; ls_lora_cfg_default(&c);
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {

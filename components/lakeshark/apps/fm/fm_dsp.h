@@ -52,6 +52,12 @@ typedef struct {
     bool    squelch_is_open;
     int     squelch_release_samples;
     float   am_dc;
+    /* fm_demod_env's own channel filter: the 256k -> 32k binomial chain the
+       other paths use droops unevenly around an off-tune carrier, which bends
+       ACARS's AM envelope enough to break frames. */
+#define FM_ENV_TAPS 64
+    float   env_i[FM_ENV_TAPS], env_q[FM_ENV_TAPS];
+    int     env_pos, env_dec;
 } fm_dsp_t;
 
 void fm_dsp_init(fm_dsp_t *s);
@@ -66,6 +72,11 @@ int  fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
 int  fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                    int16_t *pcm16k, int max);
 
+/* The AM envelope at FM_DEMOD_RATE as a float, carrier removed and divided
+   by it (100% modulation swings +-1). ACARS's MSK tones ride an AM carrier,
+   so this, not the discriminator, is what its decoder reads. */
+int fm_demod_env(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                 float *out, int max);
 int fm_demod_am(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                 int16_t *pcm16k, int max);
 

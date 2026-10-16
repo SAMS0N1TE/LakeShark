@@ -206,6 +206,9 @@ bool rec_watch_iq_test(uint32_t hz,int dbm,uint32_t rate);
 bool rec_watch_iq_test_fsk(uint32_t hz,int dbm,uint32_t rate);
 void rec_watch_iq_stop(void);
 bool rec_watch_iq_status(char *out,size_t len);
+/* The packet in the last I/Q recording, short enough for a panel line;
+   false (and "") when it had none. */
+bool rec_watch_iq_packet(char *out,size_t len);
 bool rec_watch_set_lr_fsk(bool fsk);
 bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);

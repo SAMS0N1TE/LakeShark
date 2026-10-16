@@ -15,6 +15,12 @@ if(NOT CONFIG_LS_BOARD_T_DISPLAY_P4)
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/scr_tiles.c$")
 endif()
 
+if(CONFIG_LS_LR2021_ONLY)
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/(scr_cell|ls_catch_ui)\.c$")
+else()
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_catch_stub\.c$")
+endif()
+
 idf_component_register(
     SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
     INCLUDE_DIRS ${APPS_DIR}

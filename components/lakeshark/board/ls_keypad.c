@@ -3,6 +3,7 @@
 #include "ls_keymap.h"
 
 #include "ls_board.h"
+#include "ls_lora_port.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_log.h"
@@ -184,6 +185,12 @@ esp_err_t ls_keypad_start(void)
        link can ask whether the keyboard owns the 2x8 header, and again from
        the UI. A second probe would be harmless but pointless. */
     if (s_present) return ESP_OK;
+    /* One header, one use: a LoRa module wired there takes pins the
+       keyboard needs, and driving both would fight over them. */
+    if (ls_lora_port_blocks_keyboard()) {
+        ESP_LOGW(TAG, "keyboard off: the LoRa radio on the header uses its pins ('lora port' to change)");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     bus_init_pins();
     if (!probe()) {
         s_present = false;
