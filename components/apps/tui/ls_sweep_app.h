@@ -103,6 +103,8 @@ void ls_sweep_settings_load(void);
 void ls_sweep_start(bool on);
 bool ls_sweep_pending(void);
 void ls_sweep_runtime_status(bool running, const char *status);
+/* status.running without the lock: safe from any task, never waits. */
+bool ls_sweep_running(void);
 void ls_sweep_status(ls_sweep_status_t *out, int64_t now);
 void ls_sweep_ble(const uint8_t mac[6], uint8_t type, int rssi, const uint8_t *ad, size_t len, int64_t now);
 void ls_sweep_wifi(const uint8_t mac[6], const char *ssid, int rssi, int64_t now);

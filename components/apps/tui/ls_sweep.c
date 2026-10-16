@@ -387,7 +387,11 @@ void ls_sweep_start(bool on) {
     ls_sweep_wake();
 }
 bool ls_sweep_pending(void) {lock();bool b=status.requested || status.running || reload_requested || detector();unlock();return b;}
-void ls_sweep_runtime_status(bool on,const char *s) {lock();status.running=on;if(s) snprintf(status.status,sizeof(status.status),"%s",s);unlock();}
+/* Published outside the lock for the HOME lamp and the update check, which
+   poll it from the UI and esp_timer tasks and must never wait on the mutex. */
+static bool running_pub;
+bool ls_sweep_running(void) {return __atomic_load_n(&running_pub,__ATOMIC_ACQUIRE);}
+void ls_sweep_runtime_status(bool on,const char *s) {__atomic_store_n(&running_pub,on,__ATOMIC_RELEASE);lock();status.running=on;if(s) snprintf(status.status,sizeof(status.status),"%s",s);unlock();}
 static void recover(int64_t now) {
     if(storm && now>=flood_until) {
         storm=false;tracker_beeps=0;memset(recent,0,sizeof(recent));

@@ -77,6 +77,9 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "esp_timer.h"
 #include "soc/soc.h"
 #include "esp_cpu.h"
+#include "esp_rom_sys.h"
+#include "esp_memory_utils.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_console.h"
 #include "freertos/FreeRTOS.h"
@@ -337,12 +340,9 @@ static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
    lights whenever the stack is running - which is exactly what "live" means
    for a node that spends most of its time listening. */
 static bool tui_live_mesh(void)  { return tui_live_from("mesh.up"); }
-static bool tui_live_sweep(void)
-{
-    ls_sweep_status_t status;
-    ls_sweep_status(&status, esp_timer_get_time());
-    return status.running;
-}
+/* Lock-free: HOME draws this on the UI task and the update check polls it on
+   the esp_timer task, and the sweep mutex is held across SD reads. */
+static bool tui_live_sweep(void) { return ls_sweep_running(); }
 /* Lit when there is a fix, not when the receiver is merely talking: the tile is a glance and a fix is the thing worth glancing at. */
 
 static bool tui_live_gps(void)   { return tui_live_from("gps.on"); }
@@ -1565,66 +1565,105 @@ static int perf_cmd(int argc, char **argv)
 /* A UI that stops drawing used to freeze the board with nothing recorded: the
  * task watchdog does not watch ls_tui, and a reset wipes the live state. The
  * session loop runs every frame even at idle, so no progress for 15 s while a
- * session is up is a stall. It is reported then, into the last words a panic
- * record keeps, and at 60 s the run ends in a panic, which saves that record,
- * the trail and a core dump with ls_tui's stack. The check never touches flash:
- * a stall inside a flash or cache operation must not hang the timer task too.
- * 60 s is far past any legitimate pause in the loop. */
+ * session is up is a stall. It is reported then, and at 60 s the run ends in a
+ * panic, which saves the crumb record, the trail and a core dump.
+ *
+ * The check runs on its own task, not the esp_timer task: anything on the
+ * timer task that waits (an app's live lamp, an NVS call) used to take the
+ * check down with it, and the board froze with no record at all. It also
+ * watches the timer task itself through a one-second beat. Reports go out
+ * with esp_rom_printf, which takes no lock, so a task stuck holding the
+ * console or log lock cannot silence them. 60 s is far past any legitimate
+ * pause in the loop. */
 #define TUI_STALL_WARN_S  15
 #define TUI_STALL_ABORT_S 60
-static void tui_stall_check(void *arg)
+static uint32_t s_timer_beat;
+static void tui_timer_beat(void *arg)
 {
     (void)arg;
-    static uint32_t last;
-    static int still;
-    const uint32_t beat = __atomic_load_n(&s_tui_beat, __ATOMIC_RELAXED);
-    if (!s_tui_task || s_tui_stop || beat != last) {
-        last = beat;
-        still = 0;
-        return;
-    }
-    if (++still == TUI_STALL_WARN_S || still == TUI_STALL_ABORT_S) {
-        static const char *const STATE[] = { "running", "ready", "blocked", "suspended", "deleted", "invalid" };
-        const eTaskState st = s_tui_worker ? eTaskGetState(s_tui_worker) : eInvalid;
-        ESP_LOGE("tui", "UI stalled: no frame for %d s on %s; ls_tui %s",
-                 still, ls_tui_screen_name(ls_tui_screen_current()),
-                 STATE[st <= eInvalid ? st : eInvalid]);
-        /* Where it is parked, for addr2line against the archived ELF. A
-         * switched-out task's saved frame starts at its top of stack (the
-         * TCB's first word): mepc, then ra. Code addresses further up the
-         * stack are its callers. The core dump decoder does not unwind
-         * tasks other than the one that aborts, so this line is the record. */
-        if (s_tui_worker && st != eRunning) {
-            const uint32_t *top = *(uint32_t *const *)s_tui_worker;
-            const uint32_t *end = (const uint32_t *)((const uint8_t *)s_tui_stack + sizeof(s_tui_stack));
-            if (top >= (const uint32_t *)s_tui_stack && top + 2 <= end) {
-                char at[160];
-                int n = snprintf(at, sizeof(at), "ls_tui at pc=0x%08lx ra=0x%08lx callers",
-                                 (unsigned long)top[0], (unsigned long)top[1]);
-                int found = 0;
-                /* Flash code only: internal RAM is executable on the P4 too,
-                 * so a wider test reads data words as callers. */
-                for (const uint32_t *p = top + 2; p < end && found < 8 && n < (int)sizeof(at) - 12; p++)
-                    if (*p >= SOC_IROM_LOW && *p < SOC_IROM_HIGH) {
-                        n += snprintf(at + n, sizeof(at) - n, " 0x%08lx", (unsigned long)*p);
-                        found++;
-                    }
-                ESP_LOGE("tui", "%s", at);
-            }
+    __atomic_add_fetch(&s_timer_beat, 1, __ATOMIC_RELAXED);
+}
+
+/* Where a switched-out task is parked, for addr2line against the archived
+ * ELF: its saved frame starts at its top of stack (the TCB's first word),
+ * mepc then ra; flash code addresses further up are its callers. Flash code
+ * only: internal RAM is executable on the P4 too, so a wider test reads data
+ * words as callers. */
+static void tui_stall_where(const char *name, char state, const uint32_t *top, const uint32_t *end)
+{
+    if (!(esp_ptr_internal(top) || esp_ptr_external_ram(top)) || top + 2 > end) return;
+    char at[200];
+    int n = snprintf(at, sizeof(at), "stall: %-16s %c pc=0x%08lx ra=0x%08lx callers", name, state,
+                     (unsigned long)top[0], (unsigned long)top[1]);
+    int found = 0;
+    for (const uint32_t *p = top + 2; p < end && found < 8 && n < (int)sizeof(at) - 12; p++)
+        if (*p >= SOC_IROM_LOW && *p < SOC_IROM_HIGH) {
+            n += snprintf(at + n, sizeof(at) - n, " 0x%08lx", (unsigned long)*p);
+            found++;
         }
-        if (still == TUI_STALL_ABORT_S) abort();
+    esp_rom_printf("%s\n", at);
+}
+
+/* Every task that is waiting, with where it waits: a stall is one task
+ * waiting on another, and the other is usually the answer. */
+static EXT_RAM_BSS_ATTR TaskStatus_t s_stall_tasks[64];
+static void tui_stall_dump(void)
+{
+    const UBaseType_t n = uxTaskGetSystemState(s_stall_tasks, 64, nullptr);
+    for (UBaseType_t i = 0; i < n; i++) {
+        const TaskStatus_t *t = &s_stall_tasks[i];
+        if (t->eCurrentState != eBlocked && t->eCurrentState != eSuspended) continue;
+        const uint32_t *top = *(uint32_t *const *)t->xHandle;
+        tui_stall_where(t->pcTaskName, t->eCurrentState == eBlocked ? 'B' : 'S', top, top + 96);
+    }
+}
+
+static void tui_stall_task(void *arg)
+{
+    (void)arg;
+    uint32_t last_ui = 0, last_timer = 0;
+    int ui_still = 0, timer_still = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const uint32_t beat = __atomic_load_n(&s_tui_beat, __ATOMIC_RELAXED);
+        if (!s_tui_task || s_tui_stop || beat != last_ui) { last_ui = beat; ui_still = 0; }
+        else ui_still++;
+        const uint32_t tb = __atomic_load_n(&s_timer_beat, __ATOMIC_RELAXED);
+        if (tb != last_timer) { last_timer = tb; timer_still = 0; }
+        else timer_still++;
+        const bool ui_due = ui_still == TUI_STALL_WARN_S || ui_still == TUI_STALL_ABORT_S;
+        const bool timer_due = timer_still == TUI_STALL_WARN_S || timer_still == TUI_STALL_ABORT_S;
+        if (!ui_due && !timer_due) continue;
+        if (ui_due) {
+            static const char *const STATE[] = { "running", "ready", "blocked", "suspended", "deleted", "invalid" };
+            const eTaskState st = s_tui_worker ? eTaskGetState(s_tui_worker) : eInvalid;
+            esp_rom_printf("E tui: UI stalled: no frame for %d s on %s; ls_tui %s\n",
+                           ui_still, ls_tui_screen_name(ls_tui_screen_current()),
+                           STATE[st <= eInvalid ? st : eInvalid]);
+        }
+        if (timer_due)
+            esp_rom_printf("E tui: esp_timer stalled: no timer callback for %d s\n", timer_still);
+        tui_stall_dump();
+        if (ui_still >= TUI_STALL_ABORT_S || timer_still >= TUI_STALL_ABORT_S) abort();
     }
 }
 
 static bool tui_start_session(void)
 {
-    static esp_timer_handle_t stall_timer;
-    if (!stall_timer) {
-        const esp_timer_create_args_t a = { .callback = tui_stall_check, .arg = nullptr,
-                                            .dispatch_method = ESP_TIMER_TASK, .name = "tui_stall",
+    static esp_timer_handle_t beat_timer;
+    static TaskHandle_t stall_task;
+    if (!beat_timer) {
+        const esp_timer_create_args_t a = { .callback = tui_timer_beat, .arg = nullptr,
+                                            .dispatch_method = ESP_TIMER_TASK, .name = "tui_beat",
                                             .skip_unhandled_events = true };
-        if (esp_timer_create(&a, &stall_timer) == ESP_OK)
-            esp_timer_start_periodic(stall_timer, 1000000);
+        if (esp_timer_create(&a, &beat_timer) == ESP_OK)
+            esp_timer_start_periodic(beat_timer, 1000000);
+    }
+    if (!stall_task) {
+        static DRAM_ATTR StackType_t stack[3072 / sizeof(StackType_t)];
+        static StaticTask_t tcb;
+        stall_task = xTaskCreateStaticPinnedToCore(tui_stall_task, "tui_stall", sizeof(stack),
+                                                   nullptr, configMAX_PRIORITIES - 2, stack, &tcb, tskNO_AFFINITY);
     }
     if (s_tui_task) return true;
 

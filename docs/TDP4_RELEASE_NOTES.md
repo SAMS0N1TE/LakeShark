@@ -1,5 +1,10 @@
 # LakeShark release notes
 
+## 2.16.1
+
+- A stalled screen recovers by itself: the board records which task held it and restarts within a minute.
+- HOME stays responsive while SWEEP reads its rules from the SD card.
+
 ## 2.16.0
 
 - LR2021: every LR app receives from 104 to 2740 MHz, well past the chip's datasheet bands. Transmit stays at 150 MHz and up.
