@@ -56,6 +56,20 @@ void ls_lora_port_board(ls_lora_port_t *out)
 #endif
 }
 
+#ifdef LS_BOARD_LORA_CON1_CS
+/* The board's module on the CON1 header: the socket's switch table,
+   interrupt DIO and TCXO, the header's lines. */
+static void con1_port(ls_lora_port_t *out)
+{
+    ls_lora_port_board(out);
+    out->header = true;
+    out->cs = LS_BOARD_LORA_CON1_CS;
+    out->busy = LS_BOARD_LORA_CON1_BUSY;
+    out->rst = LS_BOARD_LORA_CON1_RST;
+    out->irq_gpio = LS_BOARD_LORA_CON1_IRQ;
+}
+#endif
+
 /* GPIOs the board itself drives, which a header radio cannot have. The
    radio bus (SCLK/MOSI/MISO) is shared with the header module, not taken by
    it, and stays listed: a chip select cannot be one of those lines. */
@@ -193,6 +207,10 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
     *out = *base;
     out->header = true;
     for (int i = 1; i < argc; i++) {
+#ifdef LS_BOARD_LORA_CON1_CS
+        /* words after it still change any of its values */
+        if (!strcmp(argv[i], "con1")) { con1_port(out); continue; }
+#endif
         char key[8];
         const char *eq = strchr(argv[i], '=');
         if (!eq || eq == argv[i] || (size_t)(eq - argv[i]) >= sizeof(key)) { snprintf(why, n, "'%s': want key=value", argv[i]); return false; }
@@ -320,12 +338,43 @@ bool ls_lora_port_save(const ls_lora_port_t *p, char *why, size_t n)
     return true;
 }
 
+bool ls_lora_port_on_socket(const ls_lora_port_t *p)
+{
+    ls_lora_port_t board;
+    ls_lora_port_board(&board);
+    return p->cs == board.cs;
+}
+
 bool ls_lora_port_toggle(char *why, size_t n)
 {
     ls_lora_port_t p;
     ls_lora_port_saved(&p);
     p.header = !p.header;
+    /* With no module pins saved, header mode would drive the socket's own
+       lines: the onboard radio under another name, which is what a header
+       module's owner saw instead of their module (issue 11). */
+    if (p.header && ls_lora_port_on_socket(&p)) {
+#ifdef LS_BOARD_LORA_CON1_CS
+        /* the board's own module on its CON1 header, the usual way one is
+           wired, so the Settings row alone sets it up */
+        con1_port(&p);
+#else
+        snprintf(why, n, "no header pins saved: 'lora port header cs=N busy=N rst=N' first");
+        return false;
+#endif
+    }
     return ls_lora_port_save(&p, why, n);
+}
+
+bool ls_lora_port_is_con1(const ls_lora_port_t *p)
+{
+#ifdef LS_BOARD_LORA_CON1_CS
+    return p->cs == LS_BOARD_LORA_CON1_CS && p->busy == LS_BOARD_LORA_CON1_BUSY &&
+           p->rst == LS_BOARD_LORA_CON1_RST;
+#else
+    (void)p;
+    return false;
+#endif
 }
 
 static ls_lora_port_t s_port;
@@ -369,6 +418,12 @@ static void print_keyboard(const ls_lora_port_t *p)
            __builtin_popcountll(kb) > 1 ? "are" : "is");
 }
 
+static void print_socket_note(void)
+{
+    puts("lora port: cs and busy are the onboard socket's own lines, so this is the onboard radio; "
+         "give a header module's pins with 'lora port header cs=N busy=N rst=N'");
+}
+
 int ls_lora_port_command(int argc, char **argv)
 {
     /* argv[0] "lora", argv[1] "port" */
@@ -383,14 +438,15 @@ int ls_lora_port_command(int argc, char **argv)
         if (!eff.header) ls_lora_port_board(&eff);
         ls_lora_port_describe(&eff, line, sizeof(line));
         printf("lora port: next boot %s%s\n", line, saved ? "" : " (nothing saved)");
-        if (saved && !next.header) {
+        if (eff.header && ls_lora_port_on_socket(&eff)) print_socket_note();
+        if (saved && !next.header && !ls_lora_port_on_socket(&next)) {
             ls_lora_port_t h = next;
             h.header = true;
             ls_lora_port_describe(&h, line, sizeof(line));
             printf("lora port: header pins kept: %s\n", line);
         }
         print_keyboard(now);
-        puts("usage: lora port onboard | header [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
+        puts("usage: lora port onboard | header [con1] [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
              "tcxo=1.6..3.3 rfsw=DIO:hex,...]");
         return 0;
     }
@@ -418,6 +474,7 @@ int ls_lora_port_command(int argc, char **argv)
     }
     ls_lora_port_describe(&want, line, sizeof(line));
     printf("lora port: saved %s - reboot to use it\n", line);
+    if (ls_lora_port_on_socket(&want)) print_socket_note();
     print_keyboard(&want);
     return 0;
 }

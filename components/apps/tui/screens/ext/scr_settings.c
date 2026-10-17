@@ -219,16 +219,20 @@ static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_u
 static void updchk_next(void) { settings_set_update_check(!settings_get_update_check()); }
 
 /* Where the LoRa radio is wired: the board's socket or a module on the
-   header ('lora port' sets the header pins). A change waits for a reboot,
-   and the header takes the keyboard's pins when its wiring needs them. */
+   header. With nothing else saved the header is the board's CON1 module;
+   'lora port' sets other pins. A change waits for a reboot, and the header
+   takes the keyboard's pins when its wiring needs them. */
 static void loraport_show(char *b, size_t n)
 {
-    ls_lora_port_t next, board;
+    ls_lora_port_t next;
     ls_lora_port_saved(&next);
-    ls_lora_port_board(&board);
     const ls_lora_port_t *now = ls_lora_port();
-    const char *what = !next.header ? "onboard" : next.cs == board.cs ? "header, socket pins" : "header";
-    if (next.header != now->header) snprintf(b, n, "%s, reboot to apply", what);
+    const char *what = !next.header ? "onboard"
+                     : ls_lora_port_is_con1(&next) ? "header CON1"
+                     : ls_lora_port_on_socket(&next) ? "header, socket pins" : "header, own pins";
+    const bool moved = next.header != now->header ||
+                       (next.header && (next.cs != now->cs || next.busy != now->busy || next.rst != now->rst));
+    if (moved) snprintf(b, n, "%s, reboot to apply", what);
     else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ", keyboard off" : "");
 }
 static void loraport_next(void)

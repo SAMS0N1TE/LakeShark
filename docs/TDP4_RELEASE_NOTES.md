@@ -1,5 +1,12 @@
 # LakeShark release notes
 
+## 2.16.2
+
+- LoRa on the feature header: Settings > Device > LoRa radio now switches to an LR2021 module on the CON1 header, with no console needed.
+- `lora port header con1` sets the CON1 wiring in one word: chip select IO36, BUSY IO33, reset IO27, interrupt IO25 on DIO11, and the onboard module's RF switch table and TCXO.
+- The LoRa radio setting always picks real header pins, so a header module is used instead of the onboard radio. The boot log and `lora port` show which pins are in use.
+- LakeShark LR gives a slow-starting LR2021 several tries before giving up, and its message names the pins it tried.
+
 ## 2.16.1
 
 - A stalled screen recovers by itself: the board records which task held it and restarts within a minute.

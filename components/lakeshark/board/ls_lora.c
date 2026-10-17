@@ -550,8 +550,19 @@ static esp_err_t identify_locked(bool last)
 #endif
 
 #if !LS_HAS_SX126X
-    ESP_LOGE(TAG, "LakeShark LR runs on LR2021 boards only, and no LR2021 answered."
-                  " An SX1262 board needs the standard LakeShark build.");
+    /* Not found until the last look, as in the standard build: a module
+       still starting (a header module's TCXO, say) answers a later reset. */
+    if (!last) {
+        ESP_LOGW(TAG, "no LR2021 answered GetVersion (BUSY %d, RST reads %s)",
+                 gpio_get_level(BUSY_PIN), rst_readback());
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (s_rst_gpio >= 0)
+        ESP_LOGE(TAG, "no LR2021 answered on the header (cs=%d busy=%d rst=%d): check its power, the wiring"
+                      " and 'lora port'", s_cs_pin, s_busy_pin, s_rst_gpio);
+    else
+        ESP_LOGE(TAG, "LakeShark LR runs on LR2021 boards only, and no LR2021 answered on cs=%d busy=%d."
+                      " An SX1262 board needs the standard LakeShark build.", s_cs_pin, s_busy_pin);
     return ESP_ERR_NOT_SUPPORTED;
 #else
     uint8_t st = 0;
@@ -646,6 +657,9 @@ static esp_err_t start_locked(void)
             char line[160];
             ls_lora_port_describe(port, line, sizeof(line));
             ESP_LOGW(TAG, "radio on the header: %s", line);
+            if (ls_lora_port_on_socket(port))
+                ESP_LOGW(TAG, "header mode is on the onboard socket's own lines, so this is the onboard "
+                              "radio: set a module's pins with 'lora port header cs=N busy=N rst=N'");
         }
     }
 

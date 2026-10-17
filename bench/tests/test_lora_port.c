@@ -171,6 +171,98 @@ LS_CASE(the_toggle_keeps_the_header_pins_and_nothing_saved_means_the_socket)
     LS_EQ_INT(q.rst, 26);
 }
 
+LS_CASE(the_toggle_never_makes_a_header_port_out_of_the_socket)
+{
+    /* Issue 11: Settings > LoRa radio pressed with no module pins saved gave
+       "header cs=24 busy=6 rst=board", the onboard radio under another name.
+       Now it is the board's module on CON1. */
+    s_have = false;
+    char why[112] = "";
+    LS_CHECK_MSG(ls_lora_port_toggle(why, sizeof why), "%s", why);
+    ls_lora_port_t q;
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(q.header);
+    LS_CHECK(ls_lora_port_is_con1(&q));
+    LS_CHECK(!ls_lora_port_on_socket(&q));
+    LS_EQ_INT(q.irq_gpio, 25);
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));          /* and back */
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(!q.header);
+
+    /* the same from a saved onboard choice that never had module pins */
+    s_have = false;
+    char a0[] = "lora", a1[] = "port", a2[] = "onboard";
+    char *argv[] = { a0, a1, a2 };
+    LS_EQ_INT(ls_lora_port_command(3, argv), 0);
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(ls_lora_port_is_con1(&q));
+
+    /* back from a socket header port is still allowed */
+    LS_CHECK(parse("header cs=24 busy=6 rst=board", &q, why, sizeof why));
+    LS_CHECK(ls_lora_port_on_socket(&q));
+    LS_CHECK(ls_lora_port_save(&q, why, sizeof why));
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(!q.header);
+}
+
+LS_CASE(the_reporters_header_module_line)
+{
+    /* the LR2021 module on CON1 in issue 11 */
+    s_have = false;
+    char a0[] = "lora", a1[] = "port", a2[] = "header", a3[] = "cs=36", a4[] = "busy=33", a5[] = "rst=27",
+         a6[] = "irq=25", a7[] = "dio=11", a8[] = "tcxo=1.8", a9[] = "rfsw=6:08,8:06,10:08";
+    char *argv[] = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 };
+    LS_EQ_INT(ls_lora_port_command(10, argv), 0);
+    ls_lora_port_t q;
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(q.header);
+    LS_CHECK(!ls_lora_port_on_socket(&q));
+    LS_EQ_INT(q.cs, 36);
+    LS_EQ_INT(q.busy, 33);
+    LS_EQ_INT(q.rst, 27);
+    LS_EQ_INT(q.irq_gpio, 25);
+    LS_EQ_INT(q.irq_dio, 11);
+    LS_EQ_INT(ls_lora_port_tcxo_dv(q.tcxo_code), 18);
+    LS_EQ_INT(q.rfsw_n, 3);
+    LS_EQ_UINT(q.rfsw[1].dio, 8);
+    LS_EQ_UINT(q.rfsw[1].config, 0x06);
+    /* CS, GDO0 and the NFC select are MixRF lines: the keyboard goes off */
+    LS_EQ_UINT(ls_lora_port_keyboard_pins(&q), (1ull << 36) | (1ull << 27) | (1ull << 25));
+    /* and the Settings toggle goes off and on again without losing them */
+    char why[112];
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(q.header);
+    LS_EQ_INT(q.cs, 36);
+}
+
+LS_CASE(con1_is_the_module_on_the_2x8_header)
+{
+    ls_lora_port_t p, board;
+    char why[112];
+    ls_lora_port_board(&board);
+    LS_CHECK_MSG(parse("header con1", &p, why, sizeof why), "%s", why);
+    LS_CHECK(p.header);
+    LS_EQ_INT(p.cs, 36);
+    LS_EQ_INT(p.busy, 33);
+    LS_EQ_INT(p.rst, 27);
+    LS_EQ_INT(p.irq_gpio, 25);
+    LS_EQ_INT(p.irq_dio, board.irq_dio);
+    LS_EQ_INT(p.tcxo_code, board.tcxo_code);
+    LS_EQ_INT(p.rfsw_n, board.rfsw_n);
+    for (int i = 0; i < p.rfsw_n; i++) {
+        LS_EQ_UINT(p.rfsw[i].dio, board.rfsw[i].dio);
+        LS_EQ_UINT(p.rfsw[i].config, board.rfsw[i].config);
+    }
+    /* later words still change it */
+    LS_CHECK_MSG(parse("header con1 tcxo=1.8", &p, why, sizeof why), "%s", why);
+    LS_EQ_INT(ls_lora_port_tcxo_dv(p.tcxo_code), 18);
+    LS_EQ_INT(p.cs, 36);
+}
+
 LS_CASE(the_console_saves_for_the_next_boot)
 {
     s_have = false;

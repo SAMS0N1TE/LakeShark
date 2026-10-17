@@ -52,8 +52,15 @@ bool ls_lora_port_is_header(void);
    uses the board's own lines. False, with the board's port, when nothing
    valid is saved. */
 bool ls_lora_port_saved(ls_lora_port_t *out);
-/* Flip the saved choice between onboard and header, keeping the pins. */
+/* Flip the saved choice between onboard and header, keeping the pins. With
+   no header pins of its own saved, header means the board's CON1 module
+   where the board has one; elsewhere it refuses. */
 bool ls_lora_port_toggle(char *why, size_t n);
+/* True when `p` has the board's CON1 module lines ('lora port header con1'). */
+bool ls_lora_port_is_con1(const ls_lora_port_t *p);
+/* True when `p` selects the board's own socket (its chip select), header
+   flag or not: header mode on those lines is still the onboard radio. */
+bool ls_lora_port_on_socket(const ls_lora_port_t *p);
 bool ls_lora_port_save(const ls_lora_port_t *p, char *why, size_t n);
 
 /* GPIOs of `p` that the keyboard expansion also uses, as a mask; 0 when the

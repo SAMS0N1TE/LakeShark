@@ -217,6 +217,14 @@
 /* VCTL level that selects RF1, the antenna the factory firmware defaults to. */
 #define LS_BOARD_LR20XX_RF1_VCTL_LEVEL true
 
+/* LilyGO's LR2021 module wired to the CON1 2x8 header ('lora port header
+   con1'): select IO36, BUSY IO33, reset IO27, interrupt DIO11 on IO25. It is
+   the socket's module, so the RF switch table and TCXO are the socket's. */
+#define LS_BOARD_LORA_CON1_CS    36
+#define LS_BOARD_LORA_CON1_BUSY  33
+#define LS_BOARD_LORA_CON1_RST   27
+#define LS_BOARD_LORA_CON1_IRQ   25
+
 #define LS_BOARD_GPS_UART_NUM    2
 #define LS_BOARD_GPS_RX_GPIO     22
 #define LS_BOARD_GPS_TX_GPIO     23
