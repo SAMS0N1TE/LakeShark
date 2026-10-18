@@ -60,14 +60,22 @@ for tft in (False, True):
             down = next(r for r in re.finditer(r'={8,}', cells[y + 1]) if r.start() >= x)
             bottom = next(yy for yy in range(y + 3, y + 8)
                           if cells[yy][down.start():down.end()] == down.group())
-            # All title characters; corners and center of the unchanged bar.
-            taps = [(cx, y) for cx in range(vx, vx + len(value.group()))]
-            taps += [(cx, cy) for cx in (x + 2, down.start() - 3)
-                     for cy in (y + 1, bottom)]
-            for cx, cy in taps:
+            # Every title character opens exact entry.
+            for cx, cy in [(cx, y) for cx in range(vx, vx + len(value.group()))]:
                 exact, _ = render('exact-' + label.split()[0] + f'-{cx}-{cy}-' + suffix,
                                   wide, '-x', f'{cx}:{cy}')
                 assert 'CANCEL' in exact and 'OK' in exact, (suffix, label, cx, cy)
+            # The bar is a slider: its corners never open the editor, and its
+            # right end sets a different value than its left end.
+            ends = {}
+            for cx in (x + 2, down.start() - 3):
+                for cy in (y + 1, bottom):
+                    slid, slid_cells = render('slide-' + label.split()[0] + f'-{cx}-{cy}-' + suffix,
+                                              wide, '-x', f'{cx}:{cy}')
+                    assert 'CANCEL' not in slid, (suffix, label, cx, cy)
+                    ends[cx] = slid_cells[y][vx:vx + 8]
+            if label != 'GAIN dB' or 'N/A' not in value.group():
+                assert ends[x + 2] != ends[down.start() - 3], (suffix, label, ends)
             key_runs = [r for r in re.finditer(r'={8,}', cells[y + 1]) if r.start() >= x]
             up = key_runs[1]
             expected = {'VOLUME': ('70%', '80%'), 'GAIN dB': ('26.0', '30.0'),

@@ -1862,9 +1862,21 @@ int ls_radio_vfo_card_hit(tui_rect down, tui_rect up, tui_rect value,
 {
     if (tui_rect_contains(down, col, row)) return LS_RADIO_PART_DOWN;
     if (tui_rect_contains(up, col, row)) return LS_RADIO_PART_UP;
-    if (tui_rect_contains(value, col, row) || tui_rect_contains(bar, col, row))
-        return LS_RADIO_PART_VALUE;
+    if (tui_rect_contains(bar, col, row)) return LS_RADIO_PART_BAR;
+    if (tui_rect_contains(value, col, row)) return LS_RADIO_PART_VALUE;
     return -1;
+}
+
+/* A tap on the bar is a slider: the segment pressed and everything left of it
+   lit. Segments are drawn every second column from bar.x (see the draw). */
+float ls_radio_vfo_card_bar_frac(tui_rect bar, int col)
+{
+    const int segs = bar.w / 2;
+    if (segs < 1) return 0.0f;
+    int s = (col - bar.x) / 2;
+    if (s < 0) s = 0;
+    if (s >= segs) s = segs - 1;
+    return (float)(s + 1) / (float)segs;
 }
 
 /* FM/P25 VFO cards share the same title, travel and filled +/- keys. */
@@ -1946,4 +1958,108 @@ bool ls_radio_scan_key(int c)
     else if (c == 'K') scan_engine_skip();
     else return false;
     return true;
+}
+
+void ls_radio_tune_step_label(uint32_t hz, char *out, size_t n)
+{
+    snprintf(out, n, hz >= 1000000u ? "%gM" : "%gk",
+             hz / (hz >= 1000000u ? 1000000.0 : 1000.0));
+}
+
+uint32_t ls_radio_tune_step_next(uint32_t hz)
+{
+    /* The seven receiver raster choices. */
+    uint32_t next = hz == 5000 ? 6250 : hz == 6250 ? 10000 :
+        hz == 10000 ? 12500 : hz == 12500 ? 25000 :
+        hz == 25000 ? 100000 : hz == 100000 ? 1000000 : 5000;
+    return next;
+}
+
+void ls_radio_tune_draw(ls_radio_tune_t *t, tui_surface *sf, tui_rect area)
+{
+    char step[24];
+    ls_radio_tune_step_label(t->step(), step, sizeof(step));
+    const char *cap[5] = {step, "<<", "<", ">", ">>"};
+    const bool active = scan_engine_active();
+    const bool held = active && (scan_engine_manual_hold() || scan_engine_audio_open());
+    if (active) {
+        cap[1] = "NEXT"; cap[2] = "SKIP";
+        cap[3] = scan_engine_manual_hold() ? "RESUME" : "HOLD";
+        cap[4] = "STOP";
+    }
+    const bool portrait = !ls_tui_is_wide();
+    if (active) {
+        char title[64];
+        snprintf(title, sizeof(title), "SCAN  %s%lu.%04lu", held ? "HELD " : "",
+                 (unsigned long)(t->frequency() / 1000000),
+                 (unsigned long)((t->frequency() % 1000000) / 100));
+        if (portrait) tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        else tui_put_str(sf, area, area.x + 1, area.y, title,
+                         TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    } else if (portrait) {
+        char title[64];
+        snprintf(title, sizeof(title), "TUNE  STEP %s  / STEP ,/. SEEK", step);
+        tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    } else {
+        tui_put_str(sf, area, area.x + 1, area.y, "TUNE  / STEP  ,/. SEEK  <|--+--|>",
+                    TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    }
+    const int inset = portrait ? 1 : 0;
+    const int width = area.w - 2 * inset;
+    const int dir = scan_engine_seek_direction();
+    for (int i = 0; i < 5; ++i) {
+        int x0 = area.x + inset + width * i / 5;
+        int x1 = area.x + inset + width * (i + 1) / 5;
+        t->keys[i] = tui_rect_make(x0, area.y + 1, x1 - x0 - 1, portrait ? 5 : 3);
+        ls_freq_key_draw(sf, t->keys[i], cap[i], 0,
+                         i == 0 ? TUI_YELLOW : TUI_CYAN,
+                         active ? (i == 3 && held) : (i == 1 && dir < 0) || (i == 4 && dir > 0));
+        if (portrait && i == 0)
+            tui_put_str(sf, t->keys[i], x0 + 2, area.y + 2, "STEP",
+                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+}
+
+/* One TUNE card for receiver VFOs. Callbacks keep receiver policy local. */
+static bool tune_action(ls_radio_tune_t *t, int i)
+{
+    if (scan_engine_active() && i > 0) {
+        static const char key[5] = {0, 'N', 'K', 'H', 'X'};
+        return ls_radio_scan_key(key[i]);
+    }
+    if (i == 0) t->cycle();
+    else if (i == 1 || i == 4) t->seek(i == 1 ? -1 : 1);
+    else return t->tune(i == 2 ? -1 : 1);
+    return true;
+}
+
+int ls_radio_tune_hit(const ls_radio_tune_t *t, int col, int row)
+{
+    for (int i = 0; i < 5; ++i)
+        if (tui_rect_contains(t->keys[i], col, row)) return i;
+    return -1;
+}
+
+bool ls_radio_tune_touch(ls_radio_tune_t *t, int col, int row)
+{
+    int i = ls_radio_tune_hit(t, col, row);
+    if (i < 0) return false;
+    (void)tune_action(t, i);
+    return true;
+}
+
+bool ls_radio_tune_key(ls_radio_tune_t *t, ls_tk_t k, char ch)
+{
+    if (k == LS_TK_CHAR && scan_engine_active()) {
+        int c = ch >= 'a' && ch <= 'z' ? ch - 'a' + 'A' : ch;
+        if (ls_radio_scan_key(c)) return true;
+    }
+    if (k == LS_TK_CHAR && (ch == ',' || ch == '.')) {
+        t->seek(ch == ',' ? -1 : 1); return true;
+    }
+    if (k == LS_TK_CHAR && ch == '/') { t->cycle(); return true; }
+    if (k == LS_TK_LEFT || k == LS_TK_RIGHT) {
+        scan_engine_stop(); return t->tune(k == LS_TK_LEFT ? -1 : 1);
+    }
+    return false;
 }

@@ -201,3 +201,7 @@ uint32_t settings_get_fm_step(void) { return fm_step; }
 void settings_set_fm_step(uint32_t hz) { fm_step=hz; }
 
 bool scan_engine_audio_open(void) { return !active || hold; }
+
+static uint32_t p25_step;
+uint32_t settings_get_p25_step(void) { return p25_step; }
+void settings_set_p25_step(uint32_t hz) { p25_step=hz; }

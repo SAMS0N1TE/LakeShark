@@ -846,7 +846,7 @@ static bool v_deck_volume(ls_val_t *v)
     return true;
 }
 
-LS_CASE(the_p25_deck_bar_and_full_title_value_open_exact_entry)
+LS_CASE(the_p25_deck_bar_is_a_slider_and_the_title_value_opens_exact_entry)
 {
     no_traffic();
     P25.lora_rx = false;
@@ -857,16 +857,32 @@ LS_CASE(the_p25_deck_bar_and_full_title_value_open_exact_entry)
         ls_numpad_close();
         draw_decode_now(panes[posture]);
         for (int card = 0; card < 2; ++card) {
-            for (int part = LS_RADIO_PART_VALUE; part <= LS_RADIO_PART_BAR; ++part) {
-                int x, y, w, h;
-                LS_CHECK(ls_scr_p25_control_rect(card, part, &x, &y, &w, &h));
-                for (int cy = y; cy < y + h; ++cy)
-                    for (int cx = x; cx < x + w; ++cx) {
-                        LS_CHECK(ls_scr_p25.touch(cx, cy));
-                        LS_CHECK_MSG(ls_numpad_active(), "card %d part %d cell %d,%d", card, part, cx, cy);
-                        ls_numpad_close();
-                    }
-            }
+            int x, y, w, h;
+            LS_CHECK(ls_scr_p25_control_rect(card, LS_RADIO_PART_VALUE, &x, &y, &w, &h));
+            for (int cy = y; cy < y + h; ++cy)
+                for (int cx = x; cx < x + w; ++cx) {
+                    LS_CHECK(ls_scr_p25.touch(cx, cy));
+                    LS_CHECK_MSG(ls_numpad_active(), "card %d value cell %d,%d", card, cx, cy);
+                    ls_numpad_close();
+                }
+            /* The bar never opens the editor: it is a slider. */
+            LS_CHECK(ls_scr_p25_control_rect(card, LS_RADIO_PART_BAR, &x, &y, &w, &h));
+            for (int cy = y; cy < y + h; ++cy)
+                for (int cx = x; cx < x + w; ++cx) {
+                    s_deck_vol = -1;
+                    LS_CHECK(ls_scr_p25.touch(cx, cy));
+                    LS_CHECK_MSG(!ls_numpad_active(), "card %d bar cell %d,%d opened an editor", card, cx, cy);
+                    if (card == 0) LS_CHECK_MSG(s_deck_vol >= 0, "volume bar cell %d,%d set nothing", cx, cy);
+                }
+        }
+        /* Left end of the volume bar is quiet, right end is full. */
+        {
+            int x, y, w, h;
+            LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_BAR, &x, &y, &w, &h));
+            s_deck_vol = -1; LS_CHECK(ls_scr_p25.touch(x + w - 1, y));
+            LS_EQ_INT(s_deck_vol, 100);
+            s_deck_vol = -1; LS_CHECK(ls_scr_p25.touch(x, y));
+            LS_CHECK(s_deck_vol >= 0 && s_deck_vol <= 15);
         }
         for (int part = LS_RADIO_PART_DOWN; part <= LS_RADIO_PART_UP; ++part) {
             int x, y, w, h;
@@ -1628,7 +1644,7 @@ LS_CASE(shared_vfo_full_value_and_every_bar_cell_are_exact_targets)
             LS_EQ_INT(c.value_rect.h, 1);
             LS_CHECK(rect_has(c.value_rect, values[v]));
             const tui_rect targets[] = {c.value_rect, c.bar, c.down, c.up};
-            const int expected[] = {LS_RADIO_PART_VALUE, LS_RADIO_PART_VALUE,
+            const int expected[] = {LS_RADIO_PART_VALUE, LS_RADIO_PART_BAR,
                                     LS_RADIO_PART_DOWN, LS_RADIO_PART_UP};
             for (int t = 0; t < 4; ++t)
                 for (int y = targets[t].y; y < targets[t].y + targets[t].h; ++y)
@@ -1642,4 +1658,170 @@ LS_CASE(shared_vfo_full_value_and_every_bar_cell_are_exact_targets)
                                            c.up.x, c.up.y), LS_RADIO_PART_UP);
             LS_EQ_INT(escaped(box), 0);
         }
+}
+
+/* Cached chip identity for the shared VFO receive-range guard. */
+ls_lora_chip_t ls_lora_chip(void) { return P25.lr_iq_active ? LS_LORA_CHIP_LR20XX : LS_LORA_CHIP_SX126X; }
+#include "settings.h"
+#include "scan_engine.h"
+#include <math.h>
+static unsigned tune_next_calls, tune_skip_calls, tune_hold_calls, tune_stop_calls;
+void __real_scan_engine_next(void);
+void __real_scan_engine_skip(void);
+void __real_scan_engine_hold(bool);
+void __real_scan_engine_stop(void);
+void __wrap_scan_engine_next(void) { tune_next_calls++; __real_scan_engine_next(); }
+void __wrap_scan_engine_skip(void) { tune_skip_calls++; __real_scan_engine_skip(); }
+void __wrap_scan_engine_hold(bool on) { tune_hold_calls++; __real_scan_engine_hold(on); }
+void __wrap_scan_engine_stop(void) { tune_stop_calls++; __real_scan_engine_stop(); }
+
+LS_CASE(p25_tune_every_painted_key_cell_dispatches_idle_and_scan_actions)
+{
+    const tui_rect panes[] = {{0, 6, 52, 64}, {0, 6, 52, 61},
+                              {0, 2, 118, 28}, {0, 2, 115, 27}};
+    ls_action_register("p25.freq", "f", LS_CAP_TUNE, a_deck_freq, "test raster");
+    for (unsigned p = 0; p < sizeof(panes)/sizeof(panes[0]); ++p) {
+        no_traffic(); P25.lora_rx = P25.lr_iq_active = false;
+        scan_engine_stop(); settings_set_p25_step(0);
+        draw_decode_now(panes[p]);
+        const int title = rect_row_of(panes[p], "TUNE  ");
+        LS_CHECK(title >= 0);
+        if (title < 0) continue;
+        tui_rect keys[5]; int nk = 0;
+        for (int x = panes[p].x; x < panes[p].x + panes[p].w && nk < 5;) {
+            if (g_back[(title+1)*W+x].ch != '=') { x++; continue; }
+            int start = x;
+            while (x < panes[p].x + panes[p].w && g_back[(title+1)*W+x].ch == '=') x++;
+            keys[nk++] = tui_rect_make(start, title+1, x-start, p < 2 ? 5 : 3);
+        }
+        LS_EQ_INT(nk, 5);
+        if (nk != 5) continue;
+        for (int active = 0; active < 2; ++active)
+            for (int key = 0; key < 5; ++key) {
+                LS_CHECK(keys[key].w >= 8 && keys[key].h >= 3);
+                for (int y = keys[key].y; y < keys[key].y + keys[key].h; ++y)
+                    for (int x = keys[key].x; x < keys[key].x + keys[key].w; ++x) {
+                        scan_engine_stop();
+                        settings_set_p25_step(12500); s_tune_freq_hz = 150000000;
+                        if (active) scan_engine_start();
+                        tune_next_calls = tune_skip_calls = tune_hold_calls = tune_stop_calls = 0;
+                        s_tuned_mhz = -1;
+                        LS_CHECK(ls_scr_p25.touch(x, y));
+                        if (key == 0) LS_EQ_UINT(settings_get_p25_step(), 25000);
+                        else if (active) {
+                            LS_EQ_UINT(tune_next_calls, key == 1);
+                            LS_EQ_UINT(tune_skip_calls, key == 2);
+                            LS_EQ_UINT(tune_hold_calls, key == 3);
+                            LS_EQ_UINT(tune_stop_calls, key == 4);
+                            if (key == 3) LS_CHECK(scan_engine_manual_hold());
+                            if (key == 4) LS_CHECK(!scan_engine_active());
+                        } else if (key == 1 || key == 4) {
+                            LS_CHECK(scan_engine_active());
+                            LS_EQ_INT(scan_engine_seek_direction(), key == 1 ? -1 : 1);
+                        } else LS_CHECK(fabs(s_tuned_mhz - (key == 2 ? 149.9875 : 150.0125)) < 0.00002);
+                    }
+            }
+    }
+    scan_engine_stop(); settings_set_p25_step(0);
+}
+
+LS_CASE(p25_tune_keyboard_raster_cycle_scan_controls_and_lr_clamp)
+{
+    ls_action_register("p25.freq", "f", LS_CAP_TUNE, a_deck_freq, "test raster");
+    no_traffic(); P25.lora_rx = P25.lr_iq_active = false;
+    const tui_rect pane = {0, 6, 52, 64};
+    draw_decode_now(pane); scan_engine_stop(); settings_set_p25_step(0);
+    const uint32_t choices[] = {25000,100000,1000000,5000,6250,10000,12500};
+    for (unsigned i = 0; i < 7; ++i) {
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, '/'));
+        LS_EQ_UINT(settings_get_p25_step(), choices[i]);
+    }
+    s_tune_freq_hz = 150000000;
+    LS_CHECK(ls_scr_p25.key(LS_TK_LEFT, 0));
+    LS_CHECK(fabs(s_tuned_mhz - 149.9875) < 0.00002);
+    LS_CHECK(ls_scr_p25.key(LS_TK_RIGHT, 0));
+    LS_CHECK(fabs(s_tuned_mhz - 150.0125) < 0.00002);
+    for (int d = 0; d < 2; ++d) {
+        scan_engine_stop();
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, d ? '.' : ','));
+        LS_CHECK(scan_engine_active());
+        LS_EQ_INT(scan_engine_seek_direction(), d ? 1 : -1);
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'H')); LS_CHECK(scan_engine_manual_hold());
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'H')); LS_CHECK(!scan_engine_manual_hold());
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'K'));
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'N'));
+        LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, 'X')); LS_CHECK(!scan_engine_active());
+    }
+    P25.lora_rx = P25.lr_iq_active = true; s_tune_freq_hz = 104000000;
+    LS_CHECK(ls_scr_p25.key(LS_TK_LEFT, 0)); LS_CHECK(fabs(s_tuned_mhz - 104.0) < 0.00002);
+    P25.lora_rx = P25.lr_iq_active = false; s_tune_freq_hz = 24000000;
+    LS_CHECK(ls_scr_p25.key(LS_TK_LEFT, 0)); LS_CHECK(fabs(s_tuned_mhz - 24.0) < 0.00002);
+    s_tune_freq_hz = 1766000000;
+    LS_CHECK(ls_scr_p25.key(LS_TK_RIGHT, 0)); LS_CHECK(fabs(s_tuned_mhz - 1766.0) < 0.00002);
+    settings_set_p25_step(0);
+}
+
+/* Real display panes: card and TUNE thumb geometry, on both receive paths. */
+LS_CASE(p25_vfo_cards_match_fm_height_on_all_four_panes_and_both_radios)
+{
+    const tui_rect panes[] = {{0, 6, 52, 64}, {0, 6, 52, 61},
+                              {0, 2, 118, 28}, {0, 2, 115, 27}};
+    for (int radio = 0; radio < 2; ++radio)
+        for (int p = 0; p < 4; ++p)
+            for (int scanning = 0; scanning < 2; ++scanning) {
+                no_traffic(); P25.lora_rx = P25.lr_iq_active = radio != 0;
+                scan_engine_stop();
+                if (scanning) scan_engine_start();
+                draw_decode_now(panes[p]);
+                const int height = p == 2 ? 9 : 8;
+                for (int card = 0; card < (radio ? 1 : 2); ++card) {
+                    const int parts[] = {LS_RADIO_PART_DOWN, LS_RADIO_PART_UP,
+                                         LS_RADIO_PART_BAR};
+                    for (int part = 0; part < 3; ++part) {
+                        int x, y, w, h;
+                        LS_CHECK(ls_scr_p25_control_rect(card, parts[part], &x, &y, &w, &h));
+                        LS_CHECK(w >= (part == 2 ? 1 : 8) && h >= 3);
+                        LS_EQ_INT(h, height - 3);
+                        LS_CHECK(x >= panes[p].x && y >= panes[p].y &&
+                                 x + w <= panes[p].x + panes[p].w &&
+                                 y + h <= panes[p].y + panes[p].h);
+                    }
+                }
+                const int title = rect_row_of(panes[p], scanning ? "SCAN  " : "TUNE  ");
+                LS_CHECK(title >= 0);
+                if (title < 0) continue;
+                int keys = 0;
+                for (int x = panes[p].x; x < panes[p].x + panes[p].w;) {
+                    if (g_back[(title + 1) * W + x].ch != '=') { x++; continue; }
+                    int start = x;
+                    while (x < panes[p].x + panes[p].w &&
+                           g_back[(title + 1) * W + x].ch == '=') x++;
+                    LS_CHECK(x - start >= 8);
+                    const int h = p < 2 ? 5 : 3;
+                    for (int col = start; col < x; ++col)
+                        LS_EQ_INT(g_back[(title + h) * W + col].ch, '=');
+                    keys++;
+                }
+                LS_EQ_INT(keys, 5);
+            }
+    scan_engine_stop(); P25.lora_rx = P25.lr_iq_active = false;
+}
+
+LS_CASE(p25_portrait_full_activity_keeps_all_receiver_health_fields)
+{
+    const tui_rect panes[] = {{0, 6, 52, 64}, {0, 6, 52, 61}};
+    for (int radio = 0; radio < 2; ++radio)
+        for (int p = 0; p < 2; ++p) {
+            no_traffic(); P25.lora_rx = P25.lr_iq_active = radio != 0;
+            scan_engine_stop();
+            for (int i = 0; i < 4; ++i)
+                LS_CHECK(p25_tg_observed_record(TUNED_HZ, 0x293, 1000 + i,
+                         P25_TG_SEEN_LCW, 1000 + i));
+            draw_decode_now(panes[p]);
+            const char *fields[] = {"ACTIVITY", "TALKGROUP", "RECEIVER HEALTH",
+                                    "BCH OK", "AUDIO drops", "DECODE 0.0", "VOLUME"};
+            for (unsigned i = 0; i < sizeof(fields)/sizeof(fields[0]); ++i)
+                LS_CHECK(rect_has(panes[p], fields[i]));
+        }
+    no_traffic(); P25.lora_rx = P25.lr_iq_active = false;
 }

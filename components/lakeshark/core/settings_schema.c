@@ -71,3 +71,8 @@ bool settings_fm_step_valid(uint32_t hz)
     return hz == 0 || hz == 5000 || hz == 6250 || hz == 10000 ||
            hz == 12500 || hz == 25000 || hz == 100000 || hz == 1000000;
 }
+
+bool settings_p25_step_valid(uint32_t hz)
+{
+    return settings_fm_step_valid(hz);
+}

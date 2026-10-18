@@ -39,6 +39,7 @@ settings_schema_action_t settings_schema_decide(
 
 /* Version 1 FM step preference: zero keeps the per-mode default. */
 bool settings_fm_step_valid(uint32_t hz);
+bool settings_p25_step_valid(uint32_t hz);
 bool settings_gain_valid(const char *app_name, int gain);
 
 const char *settings_schema_action_name(settings_schema_action_t a);

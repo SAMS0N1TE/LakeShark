@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.16.4
+
+- FM and P25: tapping a volume, gain or squelch bar sets the value where you tap again, instead of opening a number pad. Tap the number for exact entry.
+- P25 scanner: the volume bar sets the volume.
+- P25: the TUNE card from FM. Step up and down, seek to the next P25 signal with << >>, and NEXT, SKIP, HOLD and STOP while scanning. P25 keeps its own step.
+
 ## 2.16.3
 
 - FM: a TUNE card on the main screen steps up and down by the saved step, and << >> seek to the next signal from the current frequency (keys `,` and `.`).

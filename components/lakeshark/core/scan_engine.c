@@ -639,7 +639,8 @@ static bool seek_finish(unsigned generation)
 
 bool scan_engine_seek(uint32_t from, uint32_t step, int dir, uint32_t lo, uint32_t hi)
 {
-    if (!s_task_ready || selected_mode() != SCAN_MODE_NFM ||
+    const int mode = selected_mode();
+    if (!s_task_ready || (mode != SCAN_MODE_NFM && mode != SCAN_MODE_P25) ||
         (dir != -1 && dir != 1) || step < 100 || lo < 1000000 ||
         hi < lo || from < lo || from > hi) return false;
     scan_engine_stop();
@@ -649,7 +650,11 @@ bool scan_engine_seek(uint32_t from, uint32_t step, int dir, uint32_t lo, uint32
     s_seek_pos = (from - s_seek_lo) / step;
     s_seek_left = s_seek_count;
     __atomic_add_fetch(&s_seek_generation, 1, __ATOMIC_ACQ_REL);
-    lakeshark_fm_frequency_lock(false);
+    if (mode == SCAN_MODE_P25) {
+        p25_p2_enable(false);
+        (void)p25_program_survey_cancel_now(P25_SURVEY_CANCEL_MANUAL_TUNE);
+        p25_return_to_control();
+    } else lakeshark_fm_frequency_lock(false);
     s_seek_dir = dir;
     s_enabled = true;
     return true;
@@ -1248,8 +1253,8 @@ static void scan_task(void *arg)
             s_cur = -1;
             if (!s_enabled || generation != s_seek_generation || !scan_foreground()) continue;
             if (advance_requested(idx) || manual) continue;
-            if ((signal_present(c->mode, pwi, carrier) || !s_seek_left) &&
-                seek_finish(seek_generation))
+            if (((c->mode == SCAN_MODE_P25 ? carrier : signal_present(c->mode, pwi, carrier)) || !s_seek_left) &&
+                seek_finish(seek_generation) && c->mode == SCAN_MODE_NFM)
                 (void)lakeshark_fm_set_freq(FM.freq_hz);
             continue;
         }

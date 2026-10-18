@@ -1338,6 +1338,7 @@ target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ex
 target_sources(test_tui_render_dump PRIVATE tools/lssim_field.c)
 target_sources(test_tui_p25_screen PRIVATE tools/lssim_field.c)
 target_sources(test_tui_render_cost PRIVATE tools/lssim_field.c)
+target_sources(test_tui_render_cost PRIVATE shims/ls_lora_chip_weak.c)
 target_include_directories(test_tui_render_dump PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -2824,3 +2825,14 @@ target_sources(lssim PRIVATE ${APP}/fm/fm_dsp.c)
 
 add_test(NAME test_fm_vfo_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fm_vfo_ui.py $<TARGET_FILE:lssim>)
+
+# Count shared scan dispatch without replacing the scanner fixture's behavior.
+foreach(tune_action next skip hold stop)
+    target_link_options(test_tui_p25_screen PRIVATE "-Wl,--wrap=scan_engine_${tune_action}")
+endforeach()
+add_test(NAME test_p25_vfo_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_p25_vfo_ui.py $<TARGET_FILE:lssim>)
+
+# EXT_RAM_BSS_ATTR is zeroed at boot on the board; an initializer there is silently lost.
+add_test(NAME test_ext_ram_bss_no_init COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ext_ram_bss_no_init.py ${FW})

@@ -128,3 +128,13 @@ LS_CASE(fm_step_v1_accepts_the_requested_rasters_and_mode_default)
     LS_EQ_INT(settings_schema_decide(SETTINGS_SCHEMA_READ_OK,6,
         SETTINGS_SCHEMA_VERSION,SETTINGS_SCHEMA_MIN_ADDITIVE),SETTINGS_SCHEMA_ACTION_MIGRATE);
 }
+
+LS_CASE(p25_step_v1_uses_the_shared_rasters_and_rejects_invalid_values)
+{
+    const uint32_t values[] = {0,5000,6250,10000,12500,25000,100000,1000000};
+    for (unsigned i = 0; i < sizeof(values)/sizeof(values[0]); ++i)
+        LS_CHECK(settings_p25_step_valid(values[i]));
+    LS_CHECK(!settings_p25_step_valid(1));
+    LS_CHECK(!settings_p25_step_valid(7500));
+    LS_CHECK(!settings_p25_step_valid(UINT32_MAX));
+}

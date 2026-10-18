@@ -101,10 +101,12 @@ void ls_radio_card_draw(tui_surface *sf, tui_rect box, ls_radio_card_t *card);
 bool ls_radio_scan_key(int key);
 /* VFO style: value in title, travel and >=3x8 +/- keys below. */
 void ls_radio_vfo_card_draw(tui_surface *sf, tui_rect box, ls_radio_card_t *card);
-/* VFO only: bar or full title value opens exact entry; +/- take priority.
-   Returns LS_RADIO_PART_DOWN/UP/VALUE, or -1 for a miss. */
+/* VFO only: +/- step, the bar is a slider (BAR), the title value opens exact
+   entry (VALUE). Returns LS_RADIO_PART_DOWN/UP/BAR/VALUE, or -1 for a miss. */
 int ls_radio_vfo_card_hit(tui_rect down, tui_rect up, tui_rect value,
                          tui_rect bar, int col, int row);
+/* The fill a tap at `col` on a VFO card's bar asks for, 0..1. */
+float ls_radio_vfo_card_bar_frac(tui_rect bar, int col);
 
 #define LS_RADIO_CARD_GATE (-1)
 /* DOWN and UP step; BAR is the travel, which sets the value at the column
@@ -163,5 +165,21 @@ void ls_radio_glass_meter(ls_radio_glass_t *, tui_surface *, tui_rect,
                           int x, int y, int w, int rows, float signal,
                           bool available, bool open, bool gate_row,
                           float threshold, const char *gate_label);
+
+/* Shared VFO TUNE/SCAN card: fixed hit storage belongs in PSRAM. */
+typedef struct {
+    uint32_t (*step)(void);
+    uint32_t (*frequency)(void);
+    void (*cycle)(void);
+    bool (*tune)(int direction);
+    void (*seek)(int direction);
+    tui_rect keys[5];
+} ls_radio_tune_t;
+void ls_radio_tune_draw(ls_radio_tune_t *, tui_surface *, tui_rect);
+int ls_radio_tune_hit(const ls_radio_tune_t *, int col, int row);
+bool ls_radio_tune_touch(ls_radio_tune_t *, int col, int row);
+bool ls_radio_tune_key(ls_radio_tune_t *, ls_tk_t, char);
+uint32_t ls_radio_tune_step_next(uint32_t hz);
+void ls_radio_tune_step_label(uint32_t hz, char *out, size_t n);
 
 #endif

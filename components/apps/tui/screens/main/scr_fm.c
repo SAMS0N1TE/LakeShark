@@ -42,7 +42,7 @@
 #include "../../ls_wf_source.h"
 
 static bool s_details;
-static EXT_RAM_BSS_ATTR char s_hint[96] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
+static char s_hint[96] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
 static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 static uint32_t s_standby = 152600000;
@@ -278,9 +278,7 @@ static uint32_t tune_step_hz(void)
 
 static void tune_step_label(char *out, size_t n)
 {
-    const uint32_t hz = tune_step_hz();
-    snprintf(out, n, hz >= 1000000u ? "%gM" : "%gk",
-             hz / (hz >= 1000000u ? 1000000.0 : 1000.0));
+    ls_radio_tune_step_label(tune_step_hz(), out, n);
 }
 
 static bool tune_step(int direction)
@@ -306,12 +304,7 @@ static bool tune_step(int direction)
 
 static void cycle_tune_step(void)
 {
-    uint32_t hz = tune_step_hz();
-    /* The seven receiver raster choices. */
-    uint32_t next = hz == 5000 ? 6250 : hz == 6250 ? 10000 :
-        hz == 10000 ? 12500 : hz == 12500 ? 25000 :
-        hz == 25000 ? 100000 : hz == 100000 ? 1000000 : 5000;
-    settings_set_fm_step(next);
+    settings_set_fm_step(ls_radio_tune_step_next(tune_step_hz()));
 }
 
 static void seek_tune(int direction)
@@ -1989,51 +1982,12 @@ static void draw_keypad(tui_surface *sf, tui_rect area)
                      s_freq_key, s_freq_action);
 }
 
-static EXT_RAM_BSS_ATTR tui_rect s_tune_keys[5];
-static void draw_tune_card(tui_surface *sf, tui_rect area)
-{
-    char step[24];
-    tune_step_label(step, sizeof(step));
-    const char *cap[5] = {step, "<<", "<", ">", ">>"};
-    const bool active = scan_engine_active();
-    const bool held = active && (scan_engine_manual_hold() || scan_engine_audio_open());
-    if (active) {
-        cap[1] = "NEXT"; cap[2] = "SKIP";
-        cap[3] = scan_engine_manual_hold() ? "RESUME" : "HOLD";
-        cap[4] = "STOP";
-    }
-    const bool portrait = !ls_tui_is_wide();
-    if (active) {
-        char title[64];
-        snprintf(title, sizeof(title), "SCAN  %s%lu.%04lu", held ? "HELD " : "",
-                 (unsigned long)(FM.freq_hz / 1000000),
-                 (unsigned long)((FM.freq_hz % 1000000) / 100));
-        if (portrait) tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-        else tui_put_str(sf, area, area.x + 1, area.y, title,
-                         TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    } else if (portrait) {
-        char title[64];
-        snprintf(title, sizeof(title), "TUNE  STEP %s  / STEP ,/. SEEK", step);
-        tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    } else {
-        tui_put_str(sf, area, area.x + 1, area.y, "TUNE  / STEP  ,/. SEEK  <|--+--|>",
-                    TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    }
-    const int inset = portrait ? 1 : 0;
-    const int width = area.w - 2 * inset;
-    const int dir = scan_engine_seek_direction();
-    for (int i = 0; i < 5; ++i) {
-        int x0 = area.x + inset + width * i / 5;
-        int x1 = area.x + inset + width * (i + 1) / 5;
-        s_tune_keys[i] = tui_rect_make(x0, area.y + 1, x1 - x0 - 1, portrait ? 5 : 3);
-        ls_freq_key_draw(sf, s_tune_keys[i], cap[i], 0,
-                         i == 0 ? TUI_YELLOW : TUI_CYAN,
-                         active ? (i == 3 && held) : (i == 1 && dir < 0) || (i == 4 && dir > 0));
-        if (portrait && i == 0)
-            tui_put_str(sf, s_tune_keys[i], x0 + 2, area.y + 2, "STEP",
-                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-    }
-}
+static uint32_t tune_frequency(void) { return FM.freq_hz; }
+/* Not EXT_RAM_BSS_ATTR: that section is zeroed at boot and drops the callbacks. */
+static ls_radio_tune_t s_tune = {
+    .step = tune_step_hz, .frequency = tune_frequency, .cycle = cycle_tune_step,
+    .tune = tune_step, .seek = seek_tune,
+};
 
 static void draw_quick_controls(tui_surface *sf, tui_rect area)
 {
@@ -2044,12 +1998,12 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     memset(s_step_up, 0, sizeof(s_step_up));
     memset(s_step_value, 0, sizeof(s_step_value));
     memset(s_step_bar, 0, sizeof(s_step_bar));
-    memset(s_tune_keys, 0, sizeof(s_tune_keys));
+    memset(s_tune.keys, 0, sizeof(s_tune.keys));
     if (s_freq_keyboard) { draw_keypad(sf, area); return; }
     /* Five-row keys leave three filled rows between their rules. Shorten
        the lower cards' bar travel to pay for the portrait TUNE enclosure. */
     const int tune_h = ls_tui_is_wide() ? 4 : 7;
-    draw_tune_card(sf, tui_rect_make(area.x, area.y, area.w, tune_h));
+    ls_radio_tune_draw(&s_tune, sf, tui_rect_make(area.x, area.y, area.w, tune_h));
     area.y += tune_h + 1; area.h -= tune_h + 1;
     memset(s_freq_key, 0, sizeof(s_freq_key));
     memset(s_freq_action, 0, sizeof(s_freq_action));
@@ -2117,16 +2071,7 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
 
 static bool step_touch(int col, int row)
 {
-    for (int i = 0; i < 5; ++i) {
-        if (!tui_rect_contains(s_tune_keys[i], col, row)) continue;
-        if (scan_engine_active() && i > 0) {
-            static const char key[5] = {0, 'N', 'K', 'H', 'X'};
-            ls_radio_scan_key(key[i]);
-        } else if (i == 0) cycle_tune_step();
-        else if (i == 1 || i == 4) seek_tune(i == 1 ? -1 : 1);
-        else tune_step(i == 2 ? -1 : 1);
-        return true;
-    }
+    if (ls_radio_tune_touch(&s_tune, col, row)) return true;
     for (int i = 0; i < N_STEP; i++) {
         const tui_rect b = s_step_box[i];
         if (b.h <= 0 || row < b.y || row >= b.y + b.h ||
@@ -2148,6 +2093,13 @@ static bool step_touch(int col, int row)
         if (part == LS_RADIO_PART_UP) {
             ls_quick_fire(&QUICK[i + 1], ls_quick_grant_builtin());
             s_step_flash = i; s_step_flash_up = true; s_step_flash_ttl = STEP_FLASH_FRAMES;
+            return true;
+        }
+        if (part == LS_RADIO_PART_BAR) {
+            const float f = ls_radio_vfo_card_bar_frac(s_step_bar[i], col);
+            if (i == 0) set_volume(f * 100.0);
+            else if (i == 1) set_gain(f * 49.6);
+            else set_squelch(f * 100.0);
             return true;
         }
         if (part == LS_RADIO_PART_VALUE) {
@@ -2533,20 +2485,7 @@ static bool key_in(ls_tk_t k, char ch)
     if (s_page == 2 &&
         (k==LS_TK_LEFT || k==LS_TK_RIGHT || (k==LS_TK_CHAR && ch==' ')))
         return ls_wf_key(k,ch);
-    if (s_page == 0 && k == LS_TK_CHAR && scan_engine_active()) {
-        int c = ch >= 'a' && ch <= 'z' ? ch - 'a' + 'A' : ch;
-        if (ls_radio_scan_key(c)) return true;
-    }
-    if (s_page == 0 && k == LS_TK_CHAR && (ch == ',' || ch == '.')) {
-        seek_tune(ch == ',' ? -1 : 1); return true;
-    }
-    if (s_page == 0 && k == LS_TK_CHAR && ch == '/') {
-        cycle_tune_step(); return true;
-    }
-    if (s_page == 0 && (k == LS_TK_LEFT || k == LS_TK_RIGHT)) {
-        scan_engine_stop();
-        return tune_step(k == LS_TK_LEFT ? -1 : 1);
-    }
+    if (s_page == 0 && ls_radio_tune_key(&s_tune, k, ch)) return true;
     if (s_page == 2 && k == LS_TK_CHAR && (ch == 'm' || ch == 'M'))
         return ls_wf_key(k, ch);
     if (k == LS_TK_CHAR) {

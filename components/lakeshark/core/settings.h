@@ -14,6 +14,9 @@ extern "C" {
 
 bool     settings_init(void);
 /* FM VFO step in Hz; zero follows the current mode. RAM read, deferred write. */
+/* Version 1 P25 raster; zero selects the 12.5 kHz default. */
+uint32_t settings_get_p25_step(void);
+void settings_set_p25_step(uint32_t hz);
 uint32_t settings_get_fm_step(void);
 void settings_set_fm_step(uint32_t hz);
 

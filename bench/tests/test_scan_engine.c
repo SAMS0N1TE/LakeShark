@@ -893,3 +893,40 @@ LS_CASE(old_seek_completion_preserves_a_new_seek_and_its_direction)
     LS_CHECK(!seek_locked);
     scan_engine_stop(); nfm_reset();
 }
+
+/* Exercise the real P25 seek worker with the same tune acknowledgement fake
+   as channel scanning. A strong unsynchronized carrier must be passed. */
+static void run_p25_seek(int direction, bool sync)
+{
+    nfm_reset(); run(0, 1); scan_engine_stop();
+    foreground.name = "P25"; s_task_ready = true;
+    tune_count = phase = scenario = 0;
+    P25.dsd_has_sync = sync;
+    p25_rx_power = sync ? 0.0f : 1.0f;
+    s_pass.measure_us = 0;
+    LS_CHECK(scan_engine_seek(150000000, 12500, direction, 150000000, 150025000));
+    LS_CHECK(scan_engine_active());
+    LS_EQ_INT(selected_mode(), SCAN_MODE_P25);
+    ls_shim_time_set(0); deadline = 1500000;
+    if (!setjmp(done)) scan_task(NULL);
+    LS_CHECK(!scan_engine_active());
+    LS_EQ_INT(scan_engine_seek_direction(), 0);
+    LS_EQ_INT(s_fg_mode, SCAN_MODE_P25);
+}
+LS_CASE(p25_seek_stops_on_sync_in_both_directions_even_below_power_threshold)
+{
+    for (int direction = -1; direction <= 1; direction += 2) {
+        run_p25_seek(direction, true);
+        LS_EQ_INT(tune_count, 1);
+        LS_EQ_UINT(tuned[0], direction < 0 ? 150025000 : 150012500);
+        LS_CHECK(s_pass.measure_us >= (SETTLE_MS + MEASURE_MS) * 1000);
+    }
+    scan_engine_stop(); foreground.name = "FM"; nfm_reset();
+}
+LS_CASE(p25_seek_passes_a_strong_carrier_without_sync_and_completes_one_lap)
+{
+    run_p25_seek(1, false);
+    LS_EQ_INT(tune_count, 3);
+    LS_EQ_UINT(tuned[0], 150012500); LS_EQ_UINT(tuned[2], 150000000);
+    scan_engine_stop(); foreground.name = "FM"; nfm_reset();
+}

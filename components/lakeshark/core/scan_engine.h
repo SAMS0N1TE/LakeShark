@@ -12,7 +12,8 @@ extern "C" {
 
 void scan_engine_init(void);
 bool scan_engine_audio_open(void);
-/* One lap from the current carrier, using the scan worker's squelch window.
+/* One lap from the current carrier: NFM squelch or P25 sync, using the
+   scan worker's existing per-mode settle/measure window.
    dir is -1 or +1. A stop cancels and locks the current carrier. */
 bool scan_engine_seek(uint32_t from_hz, uint32_t step_hz, int dir,
                       uint32_t lo_hz, uint32_t hi_hz);

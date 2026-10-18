@@ -5,6 +5,7 @@
 #include "../../ls_radio_panel.h"
 #include "audio/audio_out.h"
 #include "scan_engine.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -190,6 +191,9 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     tui_box(sf, r, "RECEIVER HEALTH / TOTALS", TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const int step = r.h >= 11 ? 2 : 1;
+    /* Pair counters in short landscape panes; keep the activity width. */
+    const bool compact = r.h == 5 && r.w >= 50;
+    int sync_end, bch_end;
     char line[80];
     uint8_t first = ink;
     if (P25.lr_iq_active)
@@ -208,15 +212,19 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     tui_put_str(sf, r, r.x + 2, r.y + 1, line, first);
     snprintf(line, sizeof(line), "SYNC %d   VOICE %d", P25.dsd_sync_count, P25.dsd_voice_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step, line, ink);
+    sync_end = 4 + (int)strlen(line);
     snprintf(line, sizeof(line), "BCH OK %d   FAIL %d", P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
-    tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 2, line, ink);
+    tui_put_str(sf, r, r.x + 2, r.y + (compact ? 3 : 1 + step * 2), line, ink);
+    bch_end = 4 + (int)strlen(line);
     snprintf(line, sizeof(line), "%s errors %lu  AUDIO drops %lu",
              P25.lora_rx || P25.lora_wait ? "Read" : "USB",
              (unsigned long)P25.read_errors_total, (unsigned long)P25.audio_drops);
-    tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 3, line, ink);
-    if (r.h >= 7) {
+    tui_put_str(sf, r, r.x + (compact ? bch_end : 2),
+                r.y + (compact ? 3 : 1 + step * 3), line, ink);
+    if (r.h >= 7 || compact) {
         snprintf(line, sizeof(line), "DECODE %.1f ms / block", (double)P25.dsd_decode_ms);
-        tui_put_str(sf, r, r.x + 2, r.y + 1 + step * 4, line, LS_ATTR_DIM);
+        tui_put_str(sf, r, r.x + (compact ? sync_end : 2),
+                    r.y + (compact ? 2 : 1 + step * 4), line, LS_ATTR_DIM);
     }
 }
 
@@ -329,6 +337,8 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
     #undef ROW_OK
 }
 
+static void tune_draw(tui_surface *sf, tui_rect area);
+
 static void draw_decode(tui_surface *sf, tui_rect area)
 {
     /* One read, at the top. See the header note. */
@@ -373,8 +383,20 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     const bool wide = area.w >= 60;
     /* The same stacked glass as FM, with a side column for digital decode.
        Leave the existing history/health windows the rest of the pane. */
-    const int dial_want = wide ? (area.h >= 15 || s_keypad ? 11 : 10)
-                              : s_keypad && area.w >= 51 ? 11 : area.h >= 25 ? 14 : 8;
+    const int join = wide && !s_keypad && area.h <= 18 ? 1 : 0;
+    const int tune_rows = !wide && !s_keypad && area.w >= 47 && area.h >= 35 ? 8 : 0;
+    int dial_want = wide ? (area.h >= 15 || s_keypad ? 11 : 10)
+                         : s_keypad && area.w >= 51 ? 11 : area.h >= 25 ? 14 : 8;
+    /* Pay for TUNE with empty glass/trace rows; retain decode, activity and
+       every health counter. The short landscape glass uses compact figures. */
+    if (!s_keypad) {
+        if (tune_rows && dial_want > 12) dial_want = 12;
+        int spare = wide ? area.h - (area.w >= 104 ? 5 : 7) + join : area.h - tune_rows - MERGED_ROWS - 7 - fits;
+        /* A full activity history may shorten its visible tail, never
+           evict health or the receiver readouts to keep empty glass rows. */
+        if (spare < 7) spare = 7;
+        if (dial_want > spare) dial_want = spare;
+    }
     const int top_h = area.h < dial_want ? area.h : dial_want;
     tui_rect dial = tui_rect_make(area.x, area.y,
                                   wide ? area.w * 11 / 20 : area.w, top_h);
@@ -383,6 +405,10 @@ static void draw_decode(tui_surface *sf, tui_rect area)
                         area.w - dial.w - 1, top_h)
         : tui_rect_make(area.x, area.y + top_h, area.w,
                         area.h > top_h ? area.h - top_h : 0);
+    if (tune_rows) {
+        tune_draw(sf, tui_rect_make(detail.x, detail.y, detail.w, 7));
+        detail.y += tune_rows; detail.h -= tune_rows;
+    }
     tui_rect activity = tui_rect_make(0, 0, 0, 0);
 
     ls_iq_control_status_t st;
@@ -459,9 +485,11 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     if (mbox.h >= 3)
         draw_merged(sf, mbox, nac, tg, src, mod, sync, level, voice, &st);
     if (wide) {
-        int ah = area.h - top_h;
-        if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h, area.w, ah);
-        if (ah >= 7 && area.w >= 92) {
+        /* Share a frame rule; health pairs counters before activity or
+           receiver rows are squeezed further. All six decode lines stay. */
+        int ah = area.h - top_h + join;
+        if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h - join, area.w, ah);
+        if ((ah >= 7 && area.w >= 92) || (ah >= 5 && area.w >= 104)) {
             activity.w = area.w / 2;
             draw_receiver_health(sf, tui_rect_make(activity.x + activity.w + 1,
                 activity.y, area.w - activity.w - 1, ah));
@@ -470,7 +498,7 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         const int ah = detail.h - mbox.h;
         if (ah >= 3) {
             activity = tui_rect_make(area.x, mbox.y + mbox.h, area.w, ah);
-            if (ah >= fits + 7) {
+            if (ah >= fits + 7 || (tune_rows && ah >= 10)) {
                 activity.h = ah - 7;
                 draw_receiver_health(sf, tui_rect_make(area.x,
                     activity.y + activity.h, area.w, 7));
@@ -971,9 +999,55 @@ static void deck_fill(void)
     }
 }
 
+static uint32_t tune_step_hz(void)
+{
+    uint32_t hz = settings_get_p25_step();
+    return hz ? hz : 12500;
+}
+static uint32_t tune_frequency(void) { return s_tune_freq_hz; }
+static void cycle_tune_step(void)
+{
+    settings_set_p25_step(ls_radio_tune_step_next(tune_step_hz()));
+}
+static uint32_t tune_low(void)
+{
+    return lr_receiver() && ls_lora_chip() == LS_LORA_CHIP_LR20XX
+           ? 104000000u : 24000000u;
+}
+static bool tune_step(int direction)
+{
+    scan_engine_stop();
+    int64_t hz = (int64_t)s_tune_freq_hz + direction * (int64_t)tune_step_hz();
+    if (hz < tune_low()) hz = tune_low();
+    if (hz > 1766000000) hz = 1766000000;
+    ls_args_t a = {.n = 1}; ls_val_t out;
+    a.v[0].kind = LS_VAL_FLOAT; a.v[0].f = (float)(hz / 1e6);
+    return ls_action_call("p25.freq", &a, &out, ls_quick_grant_builtin()) == LS_ACT_OK;
+}
+static void seek_tune(int direction)
+{
+    if (scan_engine_seek_direction()) { scan_engine_stop(); return; }
+    (void)scan_engine_seek(s_tune_freq_hz, tune_step_hz(), direction,
+                           tune_low(), 1766000000u);
+}
+/* Not EXT_RAM_BSS_ATTR: that section is zeroed at boot and drops the callbacks. */
+static ls_radio_tune_t s_tune = {
+    .step = tune_step_hz, .frequency = tune_frequency, .cycle = cycle_tune_step,
+    .tune = tune_step, .seek = seek_tune,
+};
+
+static void tune_draw(tui_surface *sf, tui_rect area)
+{
+    ls_radio_tune_draw(&s_tune, sf, area);
+}
+
 static void deck_draw(tui_surface *sf, tui_rect area)
 {
     s_deck_n = 0;
+    if (ls_tui_is_wide() && area.h >= 10) {
+        tune_draw(sf, tui_rect_make(area.x, area.y, area.w, 4));
+        area.y += 4; area.h -= 4;
+    }
     if (area.h < 6 || area.w < 28) return;
     if (s_deck_flash_ttl > 0 && --s_deck_flash_ttl == 0) s_deck_flash = -1;
     deck_fill();
@@ -983,7 +1057,9 @@ static void deck_draw(tui_surface *sf, tui_rect area)
     const int n_cards = lr_receiver() ? 1 : P25_N_CARD;
     const int cols = area.w >= 56 && n_cards > 1 ? 2 : 1;
     const int rows = (n_cards + cols - 1) / cols;
-    int card_h = (area.h - (rows - 1)) / rows;
+    const int gap = area.h >= rows * 8 + rows - 1 ? 1 : 0;
+    int card_h = (area.h - gap * (rows - 1)) / rows;
+    if (!ls_tui_is_wide() && card_h > 8) card_h = 8;
     if (card_h > 9) card_h = 9;
     if (card_h < 6) return;
     /* Anchor the deck to the health box, including a single LR card. */
@@ -993,7 +1069,7 @@ static void deck_draw(tui_surface *sf, tui_rect area)
     const int cw = w0 / cols;
     for (int i = 0; i < n_cards; i++) {
         const tui_rect box = tui_rect_make(x0 + (i % cols) * cw,
-                                           y0 + (i / cols) * (card_h + 1),
+                                           y0 + (i / cols) * (card_h + gap),
                                            cols > 1 ? cw - 1 : w0, card_h);
         ls_radio_vfo_card_draw(sf, box, &s_deck[i]);
         s_deck_n = i + 1;
@@ -1115,6 +1191,12 @@ static bool deck_touch(int col, int row)
             s_deck_flash_ttl = P25_FLASH_FRAMES;
             return true;
         }
+        if (part == LS_RADIO_PART_BAR) {
+            const float f = ls_radio_vfo_card_bar_frac(c->bar, col);
+            if (i == P25_CARD_VOL) volume_apply(f * 100.0);
+            else gain_apply(f * 50.0);
+            return true;
+        }
         if (i == P25_CARD_VOL)
             ls_numpad_open("VOLUME", "0 to 100", audio_volume_get(), volume_apply);
         else
@@ -1124,9 +1206,14 @@ static bool deck_touch(int col, int row)
     return false;
 }
 
+static void panel_set_volume_pct(int pct) { volume_apply((double)pct); }
+
 static void radio_view(void)
 {
     memset(&s_view,0,sizeof(s_view));
+    /* The scanner deck's VOLUME travel sets through this; without it the
+       bar drew as a slider and a tap did nothing. */
+    s_view.set_volume_pct=panel_set_volume_pct;
     s_view.frequency=s_tune_freq_hz;
     s_view.mode="P25";
     s_view.power=P25.iq_level;
@@ -1153,12 +1240,7 @@ static void radio_action(char c)
     if(c=='W') {set_page(1);return;}
     if(c=='M'||c=='D') {set_page(0);return;}
     if(c=='[' || c==']') {
-        int64_t hz = (int64_t)s_tune_freq_hz + (c=='[' ? -12500 : 12500);
-        if(hz<24000000) hz=24000000;
-        if(hz>1766000000) hz=1766000000;
-        ls_args_t a={.n=1}; ls_val_t out;
-        a.v[0].kind=LS_VAL_FLOAT; a.v[0].f=(float)(hz/1e6);
-        ls_action_call("p25.freq",&a,&out,ls_quick_grant_builtin());
+        (void)tune_step(c == '[' ? -1 : 1);
         return;
     }
     if(c=='T') scan_engine_stop();
@@ -1179,7 +1261,8 @@ static void draw(tui_surface *sf, tui_rect area)
     snprintf(s_hint, sizeof(s_hint), "%s",
              s_keypad && s_page == PV_VFO ? "0-9 . type  ENTER tune  BACKSPACE delete  ESC controls"
              : s_page == PV_WATERFALL ? "LEFT/RIGHT select  SPACE tune  1 VFO  3 scanner  R radio"
-             : "LEFT/RIGHT tune  T keyboard  1/2/3 views  +/- volume  R radio  O options");
+             : scan_engine_active() ? "N next K skip H hold/resume X stop / STEP T keyboard O options"
+             : "LEFT/RIGHT step ,/. seek / STEP T keyboard 1/2/3 views R radio O options");
     s_blink++;
     const bool wide = ls_tui_is_wide();
 
@@ -1197,6 +1280,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (!(s_page == PV_VFO)) s_keypad = false;
 
     s_ctl_rect = s_quick_rect = s_kbd_btn = tui_rect_make(0, -1, 0, 0);
+    memset(s_tune.keys, 0, sizeof(s_tune.keys));
     tui_rect body;
     int ntabs = N_VIEWS;
     if (wide) {
@@ -1207,11 +1291,11 @@ static void draw(tui_surface *sf, tui_rect area)
         ntabs = N_VIEWS + N_CTLS;
         const tui_rect probe = tui_rect_make(area.x, area.y, area.w, 3);
         const bool fits = ls_btn_compact_fits(probe, tabs, ntabs);
-        const int bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 ? 3 : 4;
+        const int bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 || s_page == PV_VFO ? 3 : 4;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
         if (s_page == PV_VFO && area.w >= 56) {
-            int deck_h = s_keypad ? body.h - 11 : 6;
+            int deck_h = s_keypad ? body.h - 11 : body.h >= 25 ? 13 : body.h >= 24 ? 12 : 10;
             if (body.h - deck_h < 10) deck_h = 0;
             if (deck_h >= 5) {
                 s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
@@ -1237,11 +1321,12 @@ static void draw(tui_surface *sf, tui_rect area)
         body = tui_rect_make(area.x, area.y + ctl_h, area.w,
                              area.h - ctl_h - tabs_h);
         if (s_page == PV_VFO) {
-            /* Two cards of nine rows and the row between them. The decode
-               keeps the rest; entry keeps the glass plus all merged decode rows. */
-            int deck_h = s_keypad ? body.h - (body.h >= 40 ? 19 : 12) : 19;
+            /* Match FM's eight-row portrait cards. Spend the activity
+               slack first, then the separating blank row on shorter panes. */
+            int deck_h = s_keypad ? body.h - (body.h >= 40 ? 19 : 12)
+                                 : lr_receiver() ? 8 : body.h >= 54 ? 17 : 16;
             if (!s_keypad && body.h - deck_h < 21) deck_h = body.h - 19;
-            if (deck_h >= 13) {
+            if (deck_h >= 8) {
                 s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
                                              body.w, deck_h);
                 body.h -= deck_h;
@@ -1343,6 +1428,7 @@ static bool key(ls_tk_t k, char ch)
     /* 'n' for note. LABS and SUB-GHZ both keep an observation on 'j', but 'j'
        is gain-down on this screen and moving it would break a binding that is
        in the hint line and in muscle memory. */
+    if (s_page == PV_VFO && ls_radio_tune_key(&s_tune, k, ch)) return true;
     if(k==LS_TK_CHAR && ch=='n') { mark_observation(); return true; }
     /* T is still TUNE, and on a page that has room for it that now means the
        keyboard in place of the controls rather than a window over the decode.
@@ -1413,6 +1499,7 @@ static bool touch(int col, int row)
         else if (i == N_VIEWS + PC_OPTIONS) open_options();
         return true;
     }
+    if (s_page == PV_VFO && !s_keypad && ls_radio_tune_touch(&s_tune, col, row)) return true;
     if (s_quick_rect.h > 0 && tui_rect_contains(s_quick_rect, col, row)) {
         if (s_keypad) {
             entry_char(ls_freq_pad_hit(s_key, s_key_act, col, row));

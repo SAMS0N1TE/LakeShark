@@ -45,6 +45,7 @@ static int s_boot_sound = 1;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
+static uint32_t s_p25_step;
 static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
@@ -313,6 +314,14 @@ void settings_set_fm_step(uint32_t hz)
     (void)sput_u32("fm_step_v1", hz);
 }
 
+uint32_t settings_get_p25_step(void) { return __atomic_load_n(&s_p25_step, __ATOMIC_ACQUIRE); }
+void settings_set_p25_step(uint32_t hz)
+{
+    if (!settings_p25_step_valid(hz)) return;
+    __atomic_store_n(&s_p25_step, hz, __ATOMIC_RELEASE);
+    (void)sput_u32("p25_step_v1", hz);
+}
+
 bool settings_init(void)
 {
     __atomic_store_n(&s_boot_sound,1,__ATOMIC_RELEASE);
@@ -322,6 +331,7 @@ bool settings_init(void)
     s_map_layers_valid=false;
     s_wf_display=UINT32_MAX;
     s_fm_step=0;
+    s_p25_step=0;
     s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
@@ -354,6 +364,8 @@ bool settings_init(void)
     nvs_get_u32(s_nvs, "wf_display", &s_wf_display);
     nvs_get_u32(s_nvs, "fm_step_v1", &s_fm_step);
     if (!settings_fm_step_valid(s_fm_step)) s_fm_step=0;
+    nvs_get_u32(s_nvs, "p25_step_v1", &s_p25_step);
+    if (!settings_p25_step_valid(s_p25_step)) s_p25_step=0;
     s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
