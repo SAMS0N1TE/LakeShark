@@ -124,6 +124,9 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/aviation_decode.c
     ${APP}/adsb/uat_weather.c
     ${FW}/components/apps/tui/experiments/exp_uat.c
+    ${FW}/components/apps/tui/experiments/uat_stream_rx.c
+    ${FW}/components/apps/tui/experiments/uat_settings.c
+    ${APP}/adsb/uat_hard.c
     ${APP}/adsb/uat_decode.c
     ${FW}/components/apps/tui/experiments/exp_carrier.c
     ${FW}/components/apps/tui/experiments/exp_rs41.c
@@ -2836,3 +2839,26 @@ add_test(NAME test_p25_vfo_ui COMMAND ${Python3_EXECUTABLE}
 # EXT_RAM_BSS_ATTR is zeroed at boot on the board; an initializer there is silently lost.
 add_test(NAME test_ext_ram_bss_no_init COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ext_ram_bss_no_init.py ${FW})
+
+# Sampled hard-bit UAT experiment: synthetic CPFSK and seam-preserving ring.
+ls_add_test(test_uat_hard ${APP}/adsb/uat_hard.c ${APP}/adsb/uat_decode.c)
+
+target_sources(test_exp_uat PRIVATE
+    ${FW}/components/apps/tui/experiments/uat_stream_rx.c
+    ${FW}/components/apps/tui/experiments/uat_settings.c
+    ${APP}/adsb/uat_hard.c fixtures/uat_packet_link_fake.c)
+ls_add_test(test_uat_runtime ${APP}/adsb/uat_hard.c ${APP}/adsb/uat_decode.c
+    ${FW}/components/apps/tui/experiments/uat_stream_rx.c
+    ${FW}/components/apps/tui/experiments/uat_settings.c
+    ${FW}/components/apps/tui/experiments/exp_uat.c
+    ${FW}/components/apps/tui/ls_experiments.c)
+target_include_directories(test_uat_runtime PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui/experiments)
+ls_add_test(test_uat_workers ${APP}/adsb/uat_hard.c ${APP}/adsb/uat_decode.c
+    ${FW}/components/apps/tui/experiments/uat_stream_rx.c)
+target_include_directories(test_uat_workers PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui/experiments)
+target_compile_definitions(test_uat_workers PRIVATE ESP_PLATFORM=1)
+add_test(NAME test_uat_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_uat_ui.py $<TARGET_FILE:lssim>
+    ${CMAKE_CURRENT_BINARY_DIR}/uat-renders)

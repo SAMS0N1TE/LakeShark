@@ -7,6 +7,7 @@
 #include "ls_lora.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 const char *ls_exp_hw_radio_busy(void) { return NULL; }
 bool ls_exp_hw_radio_take(void) { return true; }
@@ -24,7 +25,7 @@ static unsigned s_reads;
 
 uint32_t ls_lora_caps(void)
 {
-    return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_FSK_STREAM;
+    return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_FSK_STREAM | (getenv("LSSIM_UAT") ? LS_LORA_CAP_RX_WIDE : 0);
 }
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz) { return hz; }
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg) { (void)cfg; s_fsk = true; return ESP_OK; }

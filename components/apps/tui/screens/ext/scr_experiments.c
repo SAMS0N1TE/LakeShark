@@ -77,6 +77,14 @@ static bool is_lr433(const ls_experiment_t *e) { return e && !strcmp(e->id, "lr4
 
 static const ls_experiment_t *opened(void) { return s_open >= 0 ? ls_exp_at(s_open) : NULL; }
 
+static void uat_options_header(tui_surface *sf, tui_rect r)
+{
+    tui_put_str(sf,r,r.x+1,r.y+1,"    __|__    UAT 978",TUI_ATTR(TUI_CYAN | TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,r,r.x+1,r.y+2," --o--+--o-- RX ONLY",TUI_ATTR(TUI_YELLOW | TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,r,r.x+1,r.y+4,"978 MHz / LF INPUT",TUI_ATTR(TUI_GREEN | TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,r,r.x+1,r.y+5,"< > choose / ESC close",LS_ATTR_DIM);
+}
+
 static const ls_opt_ctx_t *options(const ls_experiment_t *e)
 {
     /* Under OPTIONS on the button: the console name, which is short, in
@@ -89,6 +97,10 @@ static const ls_opt_ctx_t *options(const ls_experiment_t *e)
     tag[i] = 0;
     s_ctx = (ls_opt_ctx_t){ .name = e->name, .job = e->no_radio ? -1 : LS_RSEL_EXPERIMENT,
                             .radio = LS_RSEL_NONE, .opt = e->opts, .n = e->n_opts, .tag = tag };
+    if (!strcmp(e->id,"uat")) {
+        s_ctx.draw_header = uat_options_header;
+        s_ctx.back_to_screen = true; s_ctx.menu_arrows = true;
+    }
     return &s_ctx;
 }
 
@@ -621,6 +633,40 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
     ls_safe_line(sf,a,a.y+a.h-1,s_feedback[0] ? s_feedback : detail ? "G recover in COMPASS / ESC list" : "ENTER detail / ESC back",LS_ATTR_DIM);
 }
 
+/* UAT's instrument keeps the complete readout in either posture. The wing
+   emblem is static; only the measured byte-rate meter changes. */
+static void draw_uat(tui_surface *sf, tui_rect in, const ls_experiment_t *e, bool running)
+{
+    const uint8_t cyan = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t green = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t yellow = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    tui_put_str(sf, in, in.x, in.y, "   __|__    UAT 978", cyan);
+    tui_put_str(sf, in, in.x, in.y+1, "--o--+--o-- RECEIVE ONLY", yellow);
+    int rows = ls_exp_read_lines(e, s_live, LIVE_MAX);
+    bool stream = rows && strstr(s_live[0], "STREAM");
+    unsigned achieved = 0, expected = 0;
+    if (stream && rows > 2) (void)sscanf(s_live[2], "BYTE/s %u / %u expected", &achieved, &expected);
+    float fraction = running && expected ? (float)achieved / expected : 0;
+    int meter_x = in.w >= 76 ? in.x + in.w/2 : in.x;
+    int meter_y = in.w >= 76 ? in.y : in.y+2;
+    tui_put_str(sf, in, meter_x, meter_y, "BYTE FLOW / measured", green);
+    ls_meter_ascii(sf, in, meter_x, meter_y+1, in.w >= 76 ? in.w/2-2 : in.w, fraction, TUI_GREEN);
+    int top = in.y + (in.w >= 76 ? 3 : 5);
+    bool columns = in.w >= 76;
+    int half = (rows+1)/2;
+    for (int i = 0; i < rows; ++i) {
+        int x = in.x + (columns && i >= half ? in.w/2 : 0);
+        int y = top + (columns ? i%half : i);
+        uint8_t ink = i == 4 || i == 5 ? yellow : i >= 9 ? green : cyan;
+        tui_rect clip = tui_rect_make(x, top, columns ? in.w/2-1 : in.w, in.y+in.h-top-1);
+        tui_put_str(sf, clip, x, y, s_live[i], ink);
+    }
+    char state[80];
+    if (running) snprintf(state, sizeof(state), "RX ACTIVE / S stop  O options");
+    else ls_exp_state_line(e, state, sizeof(state));
+    tui_put_str(sf, in, in.x, in.y+in.h-1, state, running ? green : LS_ATTR_DIM);
+}
+
 static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
 {
     if (s_history && is_rs41(e)) { draw_sondes(sf,a); return; }
@@ -647,9 +693,14 @@ static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
     char title[48];
     snprintf(title, sizeof(title), "%s / %s", e->name, ls_exp_maturity_name(e->maturity));
     ls_panel_box(sf, body, title, TUI_CYAN);
-    ls_motion_busy(sf, body, running);
+    if (strcmp(e->id, "uat")) ls_motion_busy(sf, body, running);
     tui_rect in = tui_rect_make(body.x + 2, body.y + 1, body.w - 4, body.h - 2);
     if (in.w < 4 || in.h < 2) return;
+    if (!strcmp(e->id, "uat")) {
+        draw_uat(sf, in, e, running);
+        ls_safe_line(sf, a, a.y+a.h-1, s_feedback[0] ? s_feedback : "S run/stop R radio O options N note B back", LS_ATTR_DIM);
+        return;
+    }
 
     int y = in.y;
     const int last = in.y + in.h - 1;    /* the status line's row */
@@ -705,7 +756,7 @@ static void draw(tui_surface *sf, tui_rect a)
 {
     s_page_sel = NULL;
     const ls_experiment_t *e = opened();
-    snprintf(s_hint, sizeof(s_hint), "%s", e ? "S start/stop  R radio  O options  N note  ESC back"
+    snprintf(s_hint, sizeof(s_hint), "%s", e && !strcmp(e->id,"uat") ? "S run/stop R radio O options N note B back" : e ? "S start/stop  R radio  O options  N note  ESC back"
                                              : "ENTER open  X stop  N note  ESC home");
     if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  ESC back") : "ENTER detail  O options  N name  G graph  ESC back");
     if (a.w < 24 || a.h < 12) {

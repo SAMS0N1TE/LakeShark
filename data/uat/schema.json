@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LakeShark UAT experiment settings v1 (/sdcard/uat/settings.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode", "sample_rate"],
+  "properties": {
+    "version": {"const": 1},
+    "mode": {"enum": ["PACKET", "STREAM"]},
+    "sample_rate": {"enum": [2000000, 1500000, 1250000, 1041667]}
+  }
+}

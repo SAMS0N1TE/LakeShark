@@ -1202,6 +1202,15 @@ int main(int argc, char **argv)
     if (route_path && !ls_route_live_load(route_path,false)) {
         fprintf(stderr,"lssim: cannot load route %s\n",route_path);return 1;
     }
+    if (getenv("LSSIM_UAT") && !strcmp(want,"experiments")) {
+        extern const ls_experiment_t exp_uat;
+        ls_exp_register_builtin();
+        char why[96], *args[] = {"stream"};
+        if (strcmp(getenv("LSSIM_UAT"), "packet")) exp_uat.configure(1,args,why,sizeof(why));
+        ls_exp_start(&exp_uat); ls_exp_service();
+        /* The ordinary fake lacks RX_WIDE; a render can still open its
+           selected experiment without claiming an active radio. */
+    }
     if (getenv("LSSIM_RS41")) {
         extern void lssim_seed_rs41(void);
         lssim_seed_rs41();

@@ -344,6 +344,16 @@ int ls_exp_console(int argc, char **argv)
         print_state(e);
         return 0;
     }
+    if (!strcmp(e->id, "uat") && e->configure &&
+        (!strcmp(argv[2], "stream") || !strcmp(argv[2], "packet"))) {
+        char why[96] = "";
+        if (!e->configure(argc - 2, argv + 2, why, sizeof(why))) {
+            printf("exp: uat: %s\n", why); return 1;
+        }
+        ls_exp_start(e);
+        bool settled = ls_exp_settle(3000); print_state(e);
+        return settled && ls_exp_running() == e ? 0 : 1;
+    }
     if (!strcmp(argv[2], "start")) {
         if (argc > 3) {
             if (!e->configure) { printf("exp: %s takes no arguments\n", e->id); return 1; }
