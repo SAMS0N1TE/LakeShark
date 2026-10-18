@@ -84,6 +84,7 @@ static volatile ls_gps_link_t s_link;
 static volatile int     s_baud = LS_BOARD_GPS_BAUD;
 static bool             s_configured;  /* constellations and rate sent       */
 static bool             s_raised;      /* moved up from 9600 this boot       */
+static volatile bool    s_reset_req;   /* factory reset asked for            */
 
 /* ---- parsing ---------------------------------------------------------- */
 
@@ -526,6 +527,8 @@ static bool link_act(ls_gps_do_t act)
         ESP_LOGI(TAG, "module heard at %d, rate saved", LS_BOARD_GPS_BAUD);
         return false;
     case LS_GPS_DO_CONFIGURE:
+        send_cmd(LS_GPS_CMD_NMEA);
+        vTaskDelay(pdMS_TO_TICKS(100));
         send_cmd(LS_GPS_CMD_GNSS);
         vTaskDelay(pdMS_TO_TICKS(100));
         send_cmd(LS_GPS_CMD_RATE_1HZ);
@@ -593,6 +596,21 @@ static void gps_task(void *arg)
 
         /* Commands go out with the lock released: a step can take a few
            hundred milliseconds and ls_gps_get must not wait on it. */
+        if (s_reset_req) {
+            s_reset_req = false;
+            ESP_LOGW(TAG, "factory reset, then the boot bring-up again");
+            send_cmd(LS_GPS_CMD_FACTORY);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            s_configured = false;
+            s_raised = false;
+            s_link = LS_GPS_LINK_PROBE;
+            set_baud(LS_BOARD_GPS_BAUD);
+            fill = 0;
+            overrun = false;
+            since = esp_timer_get_time();
+            seen = s_parser.st.sentences;
+            continue;
+        }
         ls_gps_link_t link = s_link;
         const ls_gps_do_t act = ls_gps_link_step(&link,
                                                  s_parser.st.sentences != seen,
@@ -1007,6 +1025,13 @@ void ls_gps_print_raw(void)
     for (int i = 0; i < n; i++) printf("gps: %s\n", copy[i]);
 }
 
+bool ls_gps_factory_reset(void)
+{
+    if (!ls_gps_running() && ls_gps_start() != ESP_OK) return false;
+    s_reset_req = true;
+    return true;
+}
+
 #else  /* board declares no GPS */
 
 bool ls_gps_running(void) { return false; }
@@ -1016,5 +1041,6 @@ void ls_gps_get(ls_gps_state_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 void ls_gps_diagnostics(void) { printf("gps: board declares none\n"); }
 void ls_gps_print_sky(void) { printf("gps: board declares none\n"); }
 void ls_gps_print_raw(void) { printf("gps: board declares none\n"); }
+bool ls_gps_factory_reset(void) { return false; }
 
 #endif

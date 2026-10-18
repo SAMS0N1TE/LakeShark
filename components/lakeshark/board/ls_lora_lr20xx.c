@@ -443,6 +443,10 @@ esp_err_t lr20xx_tune_rx(uint32_t hz, int boost)
 esp_err_t lr20xx_set_dio_function(uint8_t dio, uint8_t func, uint8_t pull)
 {
     if (dio < 5 || dio > 11 || func > 0xF || pull > 3) return ESP_ERR_INVALID_ARG;
+    /* DIO5 takes only the pull-up in sleep: any other value fails the command,
+       and the whole radio setup with it. The older T-LR2021 V0.2 switches on
+       DIO5 (issue 11). */
+    if (dio == 5) pull = LR20XX_DIO_PULL_UP;
     const uint8_t a[2] = { dio, (uint8_t)((func << 4) | pull) };
     return lr20xx_write(LR20XX_OP_SET_DIO_FUNCTION, a, sizeof(a));
 }

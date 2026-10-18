@@ -170,7 +170,7 @@ int ls_radio_chip(tui_surface *sf, tui_rect box, int x, int y, const char *text,
 }
 
 /* One lit filament of a bargraph, full cell height. */
-static void filament(tui_surface *sf, tui_rect box, int x, int y, int rows, uint8_t hue)
+void ls_radio_filament(tui_surface *sf, tui_rect box, int x, int y, int rows, uint8_t hue)
 {
     for (int r = 0; r < rows; ++r)
         tui_put_char(sf, box, x, y + r, LS_TUI_TRACE(8), TUI_ATTR(hue, TUI_BLACK));
@@ -220,7 +220,7 @@ static void meter(tui_surface *sf, tui_rect box, int x0, int y, int w,
                                                   : (TUI_GREEN | TUI_BRIGHT))
                              : LS_FAINT_FG;
             if (!on && s == hold && hold > lit) hue = TUI_WHITE | TUI_BRIGHT;
-            filament(sf, box, bx + s * 2, y, 1, hue);
+            ls_radio_filament(sf, box, bx + s * 2, y, 1, hue);
         }
         char pct[8];
         snprintf(pct, sizeof(pct), "%3d%%", (int)(sig * 100.0f + 0.5f));
@@ -300,7 +300,7 @@ static void card_fill(card_t *c, int id, const ls_radio_view_t *v)
 void ls_radio_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
 {
     c->down = c->up = c->value_rect = c->bar = tui_rect_make(0, -1, 0, 0);
-    if (b.w < 20 || b.h < 5) return;
+    if (b.w < 20 || b.h < 5 || (c->thumb_keys && (b.w < 28 || b.h < 6))) return;
     const uint8_t h = c->live ? c->hue : LS_FAINT_FG;
     const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
     const uint8_t face = TUI_ATTR(c->live ? (h | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
@@ -318,7 +318,7 @@ void ls_radio_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
     const int inner_y = label_y + 1;
     const int inner_h = b.h - 3;
     const int right = b.x + b.w - 2;
-    const int key_w = b.w >= 30 ? 6 : 5;
+    const int key_w = c->thumb_keys ? 8 : b.w >= 30 ? 6 : 5;
 
     c->up   = tui_rect_make(right - key_w + 1, inner_y, key_w, inner_h);
     c->down = tui_rect_make(right - 2 * key_w, inner_y, key_w, inner_h);
@@ -336,17 +336,32 @@ void ls_radio_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
     const int field_x = b.x + 2 + (int)strlen(c->label) + 1;
     tui_put_str(sf, b, field_x, label_y, field,
                 c->live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
-    c->value_rect = c->live
-        ? tui_rect_make(field_x, label_y, right - field_x + 1, 1)
-        : tui_rect_make(0, -1, 0, 0);
+    int bar_x = b.x + 2;
+    if (c->thumb_keys) {
+        /* Exact entry has its own filled thumb key; its travel never overlaps. */
+        c->value_rect = c->live
+            ? tui_rect_make(b.x + 2, inner_y, 8, inner_h)
+            : tui_rect_make(0, -1, 0, 0);
+        tui_rect edit = tui_rect_make(b.x + 2, inner_y, 8, inner_h);
+        ls_fill_dither(sf, edit, c->live ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, h);
+        for (int x = 0; x < edit.w; ++x) {
+            tui_put_char(sf, b, edit.x + x, edit.y, '=', edge);
+            tui_put_char(sf, b, edit.x + x, edit.y + edit.h - 1, '=', edge);
+        }
+        tui_put_str(sf, edit, edit.x + 1, edit.y + edit.h / 2, field, face);
 
-    const int bar_x = b.x + 2;
+        bar_x = edit.x + edit.w + 2;
+    } else {
+        c->value_rect = c->live
+            ? tui_rect_make(field_x, label_y, right - field_x + 1, 1)
+            : tui_rect_make(0, -1, 0, 0);
+    }
     const int bar_w = c->down.x - 2 - bar_x;
     const int segs = bar_w / 2;
     if (segs >= 2) {
         const int lit = (int)(c->frac * (float)segs + 0.5f);
         for (int s = 0; s < segs; ++s)
-            filament(sf, b, bar_x + s * 2, inner_y, inner_h,
+            ls_radio_filament(sf, b, bar_x + s * 2, inner_y, inner_h,
                      c->live && s < lit ? (h | TUI_BRIGHT) : LS_FAINT_FG);
         if (c->live && c->settable)
             c->bar = tui_rect_make(bar_x, inner_y, segs * 2 - 1, inner_h);
@@ -404,7 +419,7 @@ void ls_radio_bargraph(tui_surface *sf, tui_rect box, int x, int y, int w,
                                               : (TUI_GREEN | TUI_BRIGHT))
                          : LS_FAINT_FG;
         if (!on && s == hold && hold > lit) hue = TUI_WHITE | TUI_BRIGHT;
-        filament(sf, box, x + s * 2, y, rows, hue);
+        ls_radio_filament(sf, box, x + s * 2, y, rows, hue);
     }
 }
 
@@ -1235,18 +1250,7 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             p->scan_choice = true;
             p->focus = -1;
         }
-    } else if (c == 'X')
-        scan_engine_stop();
-    else if (c == 'H') {
-        if (scan_engine_manual_hold())
-            scan_engine_next();
-        else
-            scan_engine_hold(true);
-    } else if (c == 'N')
-        scan_engine_next();
-    else if (c == 'K')
-        scan_engine_skip();
-    else
+    } else if (!ls_radio_scan_key(c))
         return c;
     return 0;
 }
@@ -1478,5 +1482,468 @@ bool ls_freq_entry_hz(const char *entry, uint32_t *out)
     const uint64_t hz = whole * 1000000u + frac;
     if (hz < 24000000u || hz > 1766000000u) return false;
     *out = (uint32_t)hz;
+    return true;
+}
+
+/* Shared receiver LCD; state belongs to the calling screen. */
+uint32_t ls_radio_glass_tick(ls_radio_glass_t *g, uint32_t hz)
+{
+    if (hz != g->dial_target) {
+        g->dial_target = hz;
+        g->dial_frames = 10;
+        if (g->dial_hz == 0) g->dial_hz = hz;
+    }
+    if (g->dial_frames > 0) {
+        g->dial_frames--;
+        const int64_t gap = (int64_t)g->dial_target - (int64_t)g->dial_hz;
+        g->dial_hz = (uint32_t)((int64_t)g->dial_hz + gap / 3);
+        if (g->dial_frames == 0) g->dial_hz = g->dial_target;
+    } else {
+        g->dial_hz = g->dial_target;
+    }
+    return g->dial_hz ? g->dial_hz : hz;
+}
+
+#define LCD_FIG_W 4
+#define LCD_FIG_H 5
+static const char *const LCD_FIG[11][LCD_FIG_H] = {
+    {"XXXX","X..X","X..X","X..X","XXXX"},   /* 0 */
+    {"..XX","..XX","..XX","..XX","..XX"},   /* 1 */
+    {"XXXX","...X","XXXX","X...","XXXX"},   /* 2 */
+    {"XXXX","...X","XXXX","...X","XXXX"},   /* 3 */
+    {"X..X","X..X","XXXX","...X","...X"},   /* 4 */
+    {"XXXX","X...","XXXX","...X","XXXX"},   /* 5 */
+    {"XXXX","X...","XXXX","X..X","XXXX"},   /* 6 */
+    {"XXXX","...X","...X","...X","...X"},   /* 7 */
+    {"XXXX","X..X","XXXX","X..X","XXXX"},   /* 8 */
+    {"XXXX","X..X","XXXX","...X","XXXX"},   /* 9 */
+    {"....","....","XXXX","....","...."},   /* - */
+};
+
+static int lcd_fig(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    return c == '-' ? 10 : -1;
+}
+
+static int lcd_char_w(char c, int xs)
+{
+    if (c == '.') return 2 * xs;
+    return lcd_fig(c) >= 0 ? LCD_FIG_W * xs : 0;
+}
+
+/* The field a string of figures needs, one blank column between them. */
+static int lcd_text_w(const char *s, int xs)
+{
+    int w = 0;
+    for (const char *p = s; *p; ++p) {
+        const int cw = lcd_char_w(*p, xs);
+        if (cw) w += cw + 1;
+    }
+    return w > 0 ? w - 1 : 0;
+}
+
+static void lcd_char(tui_surface *sf, tui_rect box, int x, int y, char c,
+                     int xs, uint8_t attr, char ink)
+{
+    if (c == '.') {
+        for (int i = 0; i < 2 * xs; ++i)
+            tui_put_char(sf, box, x + i, y + LCD_FIG_H - 1, ink, attr);
+        return;
+    }
+    const int f = lcd_fig(c);
+    if (f < 0) return;
+    for (int r = 0; r < LCD_FIG_H; ++r)
+        for (int c2 = 0; c2 < LCD_FIG_W; ++c2)
+            if (LCD_FIG[f][r][c2] == 'X')
+                for (int k = 0; k < xs; ++k)
+                    tui_put_char(sf, box, x + c2 * xs + k, y + r, ink, attr);
+}
+
+/* `now` is what the dial is showing and `settled` where it is going, so a
+   digit still moving is drawn in the moving colour and the retune is visible
+   as the thing it is. `pad` is the unlit remainder - every segment of the
+   figures not yet typed, faintly, which is what an LCD looks like with half
+   a frequency entered and is how you can see how many are left. */
+#define LCD_PAD "8888.8888"
+
+static void lcd_number(tui_surface *sf, tui_rect box, int x, int y,
+                       const char *now, const char *settled, int xs,
+                       uint8_t lit, uint8_t moving, const char *pad)
+{
+    const uint8_t ghost = TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK);
+    int cx = x, n = 0;
+    const int settled_n = settled ? (int)strlen(settled) : 0;
+    for (const char *p = now; *p; ++p) {
+        const int cw = lcd_char_w(*p, xs);
+        if (!cw) continue;
+        const bool diff = n < settled_n && settled[n] != *p;
+        lcd_char(sf, box, cx, y, *p, xs, diff ? moving : lit, LS_TUI_SHADE_FULL);
+        cx += cw + 1;
+        n++;
+    }
+    if (!pad) return;
+    /* Six decimals can type past the ghost: stop at its end, never read beyond. */
+    const int pad_n = (int)strlen(pad);
+    for (int i = n; i < pad_n; ++i) {
+        const int cw = lcd_char_w(pad[i], xs);
+        if (!cw) continue;
+        lcd_char(sf, box, cx, y, pad[i], xs, ghost, LS_TUI_SHADE_25);
+        cx += cw + 1;
+    }
+}
+
+/* An annunciator: a lit field with a word on it, exactly as dense as the
+   buttons on the bar above, because it is the same vocabulary. */
+int ls_radio_glass_chip(tui_surface *sf, tui_rect box, int x, int y,
+                    const char *text, bool on, uint8_t hue)
+{
+    const int n = (int)strlen(text);
+    tui_rect chip = tui_rect_make(x, y, n + 2, 1);
+    ls_fill_dither(sf, chip, on ? LS_DITHER_HEAVY : LS_DITHER_LIGHT,
+                   on ? hue : (TUI_BLACK | TUI_BRIGHT));
+    tui_put_str(sf, box, x + 1, y, text,
+                TUI_ATTR(on ? (TUI_WHITE | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK));
+    return x + n + 3;
+}
+
+/* THE ACTIVITY TRACE.
+
+   The reference radio prints a little band picture inside its glass. This is
+   the honest version of it: not a second spectrum - that is what the SPECTRUM
+   page is for, and this page asks the receiver for nothing extra - but the
+   last hundred frames of the same quieting measurement the meter and the
+   squelch already read, scrolling right to left. */
+#define GLASS_TRACE_N LS_RADIO_TRACE_N
+
+void ls_radio_glass_sample(ls_radio_glass_t *g, float signal)
+{
+    if (!(signal >= 0.0f)) signal = 0.0f;
+    if (signal > 1.0f) signal = 1.0f;
+    g->trace[g->trace_head] = (uint8_t)(signal * 255.0f);
+    g->trace_head = (g->trace_head + 1) % LS_RADIO_TRACE_N;
+    if (g->trace_n < LS_RADIO_TRACE_N) g->trace_n++;
+}
+
+/* LINES, NOT SLABS.
+
+   Filling these cells solid turned the history into one coloured rectangle:
+   a hundred readings all touching each other read as a block, not as a hundred
+   readings. LS_TUI_TRACE is the house primitive for exactly this - a two pixel
+   line standing in the middle of the cell, eighths of a cell tall - so each
+   sample is its own lit filament with the cell's other eight pixels left
+   black on either side. That is what a vacuum display's bargraph looks like,
+   and it is the same ramp of colour it always was. */
+void ls_radio_glass_trace(const ls_radio_glass_t *g, tui_surface *sf, tui_rect box,
+                          int x0, int y, int w, int h, float threshold)
+{
+    if (w <= 0 || h <= 0) return;
+    const int gate = (int)(threshold * 8 * h);
+    for (int i = 0; i < w; ++i) {
+        const int idx = g->trace_n - w + i;
+        const int v = (idx >= 0 && idx < g->trace_n) ? g->trace[(g->trace_head - g->trace_n + idx + LS_RADIO_TRACE_N) % LS_RADIO_TRACE_N] : 0;
+        const int q = v * h * 8 / 255;    /* eighths of a cell, up the column */
+        for (int r = 0; r < h; ++r) {
+            const int base = (h - 1 - r) * 8;
+            const int fill = q - base;
+            if (fill < 1) continue;
+            const uint8_t hue = q < gate     ? TUI_CYAN
+                              : base >= 6 * h ? (TUI_RED | TUI_BRIGHT)
+                              : base >= 3 * h ? (TUI_YELLOW | TUI_BRIGHT)
+                                              : (TUI_GREEN | TUI_BRIGHT);
+            tui_put_char(sf, box, x0 + i, y + r,
+                         LS_TUI_TRACE(fill > 8 ? 8 : fill),
+                         TUI_ATTR(hue, TUI_BLACK));
+        }
+    }
+}
+
+/* The meter: one filament a segment, the unlit ones left standing in grey so
+   the scale is readable with no signal on it at all. Peak hold and the
+   squelch gate are the ones from the old panel and mean the same things. */
+void ls_radio_glass_meter(ls_radio_glass_t *g, tui_surface *sf, tui_rect box,
+                          int x0, int y, int w, int rows, float sig,
+                          bool available, bool open, bool gate_row, float threshold,
+                          const char *gate_label)
+{
+    /* Only this row band routes around the camera; the glass stays put. */
+    tui_rect hole;
+    if (ls_tui_cutout(&hole) && hole.y < y + rows + (gate_row ? 1 : 0) &&
+        hole.y + hole.h > y) {
+        if (hole.x > x0 && hole.x < x0 + w) w = hole.x - x0 - 1;
+        else if (hole.x <= x0 && hole.x + hole.w > x0) {
+            const int shift = hole.x + hole.w + 1 - x0;
+            x0 += shift; w -= shift;
+        }
+    }
+    const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    tui_put_str(sf, box, x0, y, "SIG", lab);
+    const int bx = x0 + 4;
+    const int bw = w - 10;
+    if (bw < 6) return;
+    if (!available) {
+        tui_put_str(sf, box, bx, y, "--", LS_ATTR_DIM);
+        return;
+    }
+    if (!(sig >= 0.0f)) sig = 0.0f;
+    if (sig > 1.0f) sig = 1.0f;
+    if (sig >= g->hold) g->hold = sig;
+    else                   g->hold -= (g->hold - sig) * 0.06f;
+
+    const int segs = bw / 2;
+    if (segs < 2) return;
+    const int lit  = (int)(sig * (float)segs + 0.5f);
+    const int hold = (int)(g->hold * (float)segs);
+    for (int s = 0; s < segs; ++s) {
+        const bool on = s < lit;
+        uint8_t hue = on ? (s >= segs * 3 / 4 ? (TUI_RED | TUI_BRIGHT)
+                          : s >= segs / 2     ? (TUI_YELLOW | TUI_BRIGHT)
+                                              : (TUI_GREEN | TUI_BRIGHT))
+                         : (TUI_BLACK | TUI_BRIGHT);
+        if (!on && s == hold && hold > lit) hue = TUI_WHITE | TUI_BRIGHT;
+        ls_radio_filament(sf, box, bx + s * 2, y, rows, hue);
+    }
+    char pct[6];
+    snprintf(pct, sizeof(pct), "%3d%%", (int)(sig * 100.0f + 0.5f));
+    tui_put_str(sf, box, bx + segs * 2 + 1, y + rows / 2, pct,
+                TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    if (!gate_row) return;
+
+    int gate = (int)(threshold * (float)segs);
+    if (gate < 0) gate = 0;
+    if (gate >= segs) gate = segs - 1;
+    tui_put_str(sf, box, x0, y + rows, gate_label ? gate_label : "SQL",
+                TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
+    tui_put_char(sf, box, bx + gate * 2, y + rows, '^',
+                 TUI_ATTR(open ? (TUI_GREEN | TUI_BRIGHT) : (TUI_CYAN | TUI_BRIGHT),
+                          TUI_BLACK));
+}
+
+int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
+                             int y, uint32_t hz, const char *entry,
+                             uint32_t blink, bool wide)
+{
+    const int x0 = r.x + 2, iw = r.w - 4, last = r.y + r.h - 2;
+    const uint8_t val = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    char now[24], end[24];
+    const uint32_t shown = ls_radio_glass_tick(g, hz);
+    snprintf(end, sizeof(end), "%u.%04u", (unsigned)(hz / 1000000u),
+             (unsigned)((hz % 1000000u) / 100u));
+    snprintf(now, sizeof(now), "%u.%04u", (unsigned)(shown / 1000000u),
+             (unsigned)((shown % 1000000u) / 100u));
+
+    const char *figures = entry != NULL ? entry : now;
+    const char *against = entry != NULL ? NULL : end;
+    const char *pad = entry != NULL ? LCD_PAD : NULL;
+    const char *field = pad ? pad : now;
+
+    /* Landscape keeps a column for the readouts; portrait gives the whole
+       width to the figures and puts the readouts under them. */
+    const int fig_w = wide ? (iw * 2) / 3 : iw;
+    int xs = 2;
+    while (xs > 1 && lcd_text_w(field, xs) + 5 > fig_w) xs--;
+    const bool big = last - y >= LCD_FIG_H &&
+                     lcd_text_w(field, 1) + 5 <= fig_w;
+
+    if (big) {
+        const int w = lcd_text_w(field, xs);
+        const int fx = wide ? x0 : x0 + (fig_w - w - 4) / 2;
+        y++;
+        lcd_number(sf, r, fx, y, figures, against, xs, val,
+                   TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), pad);
+        /* The caret sits under the next figure, blinking, so a half-typed
+           frequency says where the next press lands. */
+        if (entry != NULL && ((blink / 8) & 1)) {
+            const int cx = fx + lcd_text_w(entry, xs) +
+                           (entry[0] ? 1 : 0);
+            if (cx + LCD_FIG_W * xs <= fx + w)
+                for (int i = 0; i < LCD_FIG_W * xs; ++i)
+                    tui_put_char(sf, r, cx + i, y + LCD_FIG_H - 1,
+                                 LS_TUI_SHADE_75, key);
+        }
+        tui_put_str(sf, r, fx + w + 2, y + LCD_FIG_H - 2, "MHz", key);
+        y += LCD_FIG_H;
+    } else if (entry != NULL) {
+        /* Too few rows for the figures - a split landscape pane - but the
+           glass still has to be where the typing shows up, or the entry is
+           only in the echo beside the keys. */
+        char line[24];
+        snprintf(line, sizeof(line), "%s%s", entry,
+                 ((blink / 8) & 1) ? "|" : "_");
+        tui_put_str(sf, r, x0, y, "ENT", key);
+        tui_put_str(sf, r, x0 + 4, y, line, val);
+        y++;
+    } else {
+        /* The compact readout advances exactly as FM's old draw_dial did. */
+        const uint32_t compact = ls_radio_glass_tick(g, hz);
+        char line[24], settled[24];
+        snprintf(line, sizeof(line), "%u.%04u MHz", (unsigned)(compact / 1000000u),
+                 (unsigned)((compact % 1000000u) / 100u));
+        snprintf(settled, sizeof(settled), "%u.%04u MHz", (unsigned)(hz / 1000000u),
+                 (unsigned)((hz % 1000000u) / 100u));
+        const int fx = wide ? x0 : r.x + (r.w - (int)strlen(line)) / 2;
+        for (int i = 0; line[i]; ++i)
+            tui_put_char(sf, r, fx + i, y, line[i],
+                         settled[i] && settled[i] != line[i] ?
+                         TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK) : val);
+        y++;
+    }
+
+    return y;
+}
+
+void ls_radio_glass_wipe(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
+                         int first_y, int y, int mode)
+{
+    const int last = r.y + r.h - 2;
+    const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    if (!g->mode_known || g->mode != mode) {
+        if (g->mode_known) g->wipe_frames = 12;
+        g->mode = mode;
+        g->mode_known = true;
+    }
+    if (g->wipe_frames > 0) {
+        const int col = (12 - g->wipe_frames) * (r.w - 2) / 12;
+        for (int i = first_y; i < y && i <= last; ++i)
+            tui_put_char(sf, r, r.x + 1 + col, i, LS_TUI_SHADE_50, key);
+        g->wipe_frames--;
+    }
+
+}
+
+void ls_radio_glass_bezel(tui_surface *sf, tui_rect r, const char *title)
+{
+    char cap[32];
+    snprintf(cap, sizeof(cap), " %s ", title ? title : "");
+    ls_radio_bezel(sf, r, NULL);
+    if (title && r.w > (int)strlen(title) + 8)
+        tui_put_str(sf, r, r.x + 3, r.y, cap,
+                    TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+}
+
+void ls_radio_glass_rail(tui_surface *sf, tui_rect r, int x0, int y, int iw,
+                         const ls_radio_chip_t *left, int left_n,
+                         const ls_radio_chip_t *right, int right_n)
+{
+    int x = x0;
+    for (int i = 0; i < left_n; ++i) {
+        if (!left[i].text) continue;
+        if (i && x + (int)strlen(left[i].text) + 3 >= x0 + iw) break;
+        x = ls_radio_glass_chip(sf, r, x, y, left[i].text, left[i].on, left[i].hue);
+    }
+    int width = 0;
+    for (int i = 0; i < right_n; ++i) width += (int)strlen(right[i].text) + 3;
+    int rx = x0 + iw - width + 1;
+    if (rx <= x + 1) return;
+    for (int i = 0; i < right_n; ++i)
+        rx = ls_radio_glass_chip(sf, r, rx, y, right[i].text, right[i].on, right[i].hue);
+}
+
+/* One layout supplies both the unchanged paint and its touch rectangles. */
+static void vfo_card_geometry(tui_rect b, ls_radio_card_t *c, char edit[20])
+{
+    const int right = b.x + b.w - 2;
+    const int inner_y = b.y + 2, inner_h = b.h - 3, key_w = 8;
+    snprintf(edit, 20, "[%s]", c->value);
+    c->up = tui_rect_make(right - key_w + 1, inner_y, key_w, inner_h);
+    c->down = tui_rect_make(right - 2 * key_w, inner_y, key_w, inner_h);
+    int value_w = (int)strlen(edit);
+    if (value_w > b.w - 12) value_w = b.w - 12;
+    c->value_rect = tui_rect_make(b.x + 12, b.y + 1, value_w, 1);
+    const int bar_x = b.x + 2, bar_w = c->down.x - 2 - bar_x;
+    c->bar = bar_w / 2 >= 2 ? tui_rect_make(bar_x, inner_y, bar_w, inner_h)
+                           : tui_rect_make(0, -1, 0, 0);
+}
+
+/* +/- always win; both the displayed value and bar open exact entry. */
+int ls_radio_vfo_card_hit(tui_rect down, tui_rect up, tui_rect value,
+                         tui_rect bar, int col, int row)
+{
+    if (tui_rect_contains(down, col, row)) return LS_RADIO_PART_DOWN;
+    if (tui_rect_contains(up, col, row)) return LS_RADIO_PART_UP;
+    if (tui_rect_contains(value, col, row) || tui_rect_contains(bar, col, row))
+        return LS_RADIO_PART_VALUE;
+    return -1;
+}
+
+/* FM/P25 VFO cards share the same title, travel and filled +/- keys. */
+void ls_radio_vfo_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
+{
+    c->down = c->up = c->value_rect = c->bar = tui_rect_make(0, -1, 0, 0);
+    const uint8_t h = c->live ? c->hue : (TUI_BLACK | TUI_BRIGHT);
+    const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
+    const uint8_t face = TUI_ATTR(c->live ? (h | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
+    if (b.w < 24 || b.h < 5) return;
+
+    /* The card's own outline, then the field inside it. */
+    for (int x = 0; x < b.w; ++x) {
+        tui_put_char(sf, b, b.x + x, b.y, '=', edge);
+        tui_put_char(sf, b, b.x + x, b.y + b.h - 1, '=', edge);
+    }
+    for (int y = 1; y < b.h - 1; ++y) {
+        tui_put_char(sf, b, b.x, b.y + y, '|', edge);
+        tui_put_char(sf, b, b.x + b.w - 1, b.y + y, '|', edge);
+    }
+
+    const int label_y = b.y + 1;
+    const int inner_y = label_y + 1;
+    const int inner_h = b.h - 3;
+    const int right = b.x + b.w - 2;
+
+    char edit[20];
+    vfo_card_geometry(b, c, edit);
+    tui_put_str(sf, b, b.x + 2, label_y, c->label, face);
+    tui_put_str(sf, b, c->value_rect.x, c->value_rect.y, edit,
+                c->live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    if (ls_tui_keyboard_mode() && b.w >= 30 && c->key_up) {
+        char badge[6] = { '[', c->key_down, '/', c->key_up, ']', 0 };
+        tui_put_str(sf, b, right - 5, label_y, badge, edge);
+    }
+    /* Filaments retain HEAD geometry; the whole bar is an entry target. */
+    const int bar_x = c->bar.x;
+    const int bar_w = c->bar.w;
+    const int segs = bar_w / 2;
+    if (segs >= 2) {
+        float frac = c->frac;
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        const int lit = (int)(frac * (float)segs + 0.5f);
+        for (int s = 0; s < segs; ++s)
+            ls_radio_filament(sf, b, bar_x + s * 2, inner_y, inner_h,
+                    c->live && s < lit ? (h | TUI_BRIGHT) : (TUI_BLACK | TUI_BRIGHT));
+    }
+
+    if (!c->live) c->bar = tui_rect_make(0, -1, 0, 0);
+
+    /* The keys: a lit field, a rule top and bottom, and the sign in the
+       middle. No '+' corners, so the only plus on the card is the one a
+       thumb is meant to press. */
+    for (int k = 0; k < 2; ++k) {
+        const tui_rect key = k ? c->up : c->down;
+        const bool flash = c->live && (k ? c->flash_up : c->flash_down);
+        ls_fill_dither(sf, key, flash ? LS_DITHER_HEAVY : c->live ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT,
+                       flash ? (TUI_WHITE | TUI_BRIGHT) : c->live ? h : (TUI_BLACK | TUI_BRIGHT));
+        for (int x = 0; x < key.w; ++x) {
+            tui_put_char(sf, b, key.x + x, key.y, '=', edge);
+            tui_put_char(sf, b, key.x + x, key.y + key.h - 1, '=', edge);
+        }
+        const char sign[2] = { k ? '+' : '-', 0 };
+        tui_put_str(sf, b, key.x + (key.w - 1) / 2, key.y + (key.h - 1) / 2,
+                    sign, TUI_ATTR(flash ? TUI_BLACK : c->live ? (TUI_WHITE | TUI_BRIGHT) : LS_DIM_FG,
+                                   flash ? (TUI_WHITE | TUI_BRIGHT) : TUI_BLACK));
+    }
+}
+
+/* Scanner and VFO dispatch the same scan actions. Resume advances, as before. */
+bool ls_radio_scan_key(int c)
+{
+    if (c == 'X') scan_engine_stop();
+    else if (c == 'H') {
+        if (scan_engine_manual_hold()) scan_engine_next();
+        else scan_engine_hold(true);
+    } else if (c == 'N') scan_engine_next();
+    else if (c == 'K') scan_engine_skip();
+    else return false;
     return true;
 }

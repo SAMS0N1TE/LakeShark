@@ -819,6 +819,31 @@ static void lora_stop(void)
 
 extern bool ls_scr_labs_tune_marker(uint32_t hz);
 
+static bool tune_refused(const char *reason)
+{
+    ls_wf_tune_reason(reason);
+    return false;
+}
+
+static bool fm_marker(uint32_t hz)
+{
+    ls_iq_control_status_t status; fm_get_receiver_status(&status);
+    if (!fm_running() || !status.receiver_streaming)
+        return tune_refused("receiver not running");
+    scan_engine_stop();
+    /* A pixel is a few hundred Hz; land on a channel raster instead. 1.25 kHz
+       holds 6.25, 7.5 and 12.5 kHz channel plans (US VHF sits on 7.5 kHz
+       offsets, so rounding to the 12.5 kHz step would miss real channels). */
+    const uint32_t grid = FM.mode == FM_MODE_WFM ? 50000u : 1250u;
+    hz = (uint32_t)(((uint64_t)hz + grid / 2) / grid * grid);
+    const bool locked = lakeshark_fm_frequency_locked();
+    lakeshark_fm_frequency_lock(false);
+    bool ok = lakeshark_fm_set_freq(hz);
+    if (FM.mode == FM_MODE_SCAN && ok) ls_wf_fm_sweep(false);
+    lakeshark_fm_frequency_lock(ok || locked);
+    return ok || tune_refused("receiver refused tune");
+}
+
 static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 {
     if(owner==LS_WF_OWNER_P25) {
@@ -827,22 +852,19 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
         scan_engine_stop();lakeshark_p25_set_freq(hz);return true;
     }
     if(owner==LS_WF_OWNER_FM) {
-        ls_iq_control_status_t status;fm_get_receiver_status(&status);
-        if(!fm_running()||!status.receiver_streaming||hz<24000000||hz>1766000000)return false;
-        if (lakeshark_fm_frequency_locked() && hz != lakeshark_fm_frequency_lock_hz()) return false;
-        if (!lakeshark_fm_set_freq(hz)) return false;
-        scan_engine_stop();
-        if(FM.mode==FM_MODE_SCAN)ls_wf_fm_sweep(false);
-        return true;
+        if(hz<24000000||hz>1766000000)
+            return tune_refused("outside 24-1766 MHz");
+        return fm_marker(hz);
     }
     if(owner==LS_WF_OWNER_LORA) {
         if (s_lr_mode) {
             /* Decoder-owned sessions keep their own tuner; never hand them to Labs. */
-            if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz)) return false;
+            if (!ls_lora_rx_range_ok(ls_lora_caps(), hz, hz))
+                return tune_refused(hz < 104000000u ? "below LR2021 range (104 MHz)" : "outside LR2021 range");
             if (FM.lr_iq_active && s_want == LS_WF_SRC_FM)
-                return lakeshark_fm_set_freq(hz);
+                return fm_marker(hz);
             if (!s_lr_owned) return false;
-            if (s_want == LS_WF_SRC_FM) return lakeshark_fm_set_freq(hz);
+            if (s_want == LS_WF_SRC_FM) return fm_marker(hz);
             if (s_want == LS_WF_SRC_P25) lakeshark_p25_set_freq(hz);
             else s_view_hz = hz;
             return true;

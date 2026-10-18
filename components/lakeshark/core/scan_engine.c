@@ -50,12 +50,23 @@ static const char *TAG = "scaneng";
 /* The NFM squelch re-arms on every retune: 64 ms of settling, then 64 ms of
    quiet before it may open. The window has to outlast that, so it is the same
    for a scan step and a priority sample. */
-#define NFM_SETTLE_MS    100
-#define NFM_MEASURE_MS   100
+#define NFM_SETTLE_MS    80
+/* 100 ms of measuring sat right on the squelch's 128 ms settle+qualify after
+   retune latency and stale buffered IQ, so a real carrier often opened just
+   after the window closed and the scan stepped past it. */
+#define NFM_MEASURE_MS   220
 /* Tone-qualified memories need a full detector window after carrier opens. */
 #define NFM_TONE_MEASURE_MS 650
 
 static volatile bool s_enabled = false;
+static volatile int s_seek_dir;
+static uint32_t s_seek_lo, s_seek_step, s_seek_count, s_seek_pos, s_seek_left;
+static volatile unsigned s_seek_generation;
+/* Only the worker writes this snapshot; cancellation invalidates every wait. */
+static unsigned s_work_generation;
+
+int scan_engine_seek_direction(void) { return s_seek_dir; }
+
 /* Set across the autosquelch sweep, which tunes as fast as a scan does. */
 static volatile bool s_autosq_busy = false;
 static bool s_mixed, s_location, s_handoff;
@@ -114,7 +125,11 @@ static int           s_thresh  = DEFAULT_THRESH;
 static volatile int s_advance = 0; /* Channel index plus operation: 1 next, 2 session skip. */
 static volatile int s_hold_candidate = -1;
 static volatile int s_candidate = -1;
-static uint64_t s_session_skip[(SCAN_MAX_CHANNELS + 63) / 64];
+/* The band iterator already caps its raster at 100000 positions. Share the
+   session bitmap with stored channels; source/start changes reset it. */
+#define SCAN_MAX_BAND_STEPS 100000
+#define SCAN_SESSION_SLOTS (SCAN_MAX_BAND_STEPS > SCAN_MAX_CHANNELS ? SCAN_MAX_BAND_STEPS : SCAN_MAX_CHANNELS)
+static EXT_RAM_BSS_ATTR uint64_t s_session_skip[(SCAN_SESSION_SLOTS + 63) / 64];
 static EXT_RAM_BSS_ATTR int s_order[SCAN_MAX_CHANNELS];
 static int           s_order_n = 0;
 static int           s_order_pos = 0;
@@ -136,8 +151,8 @@ static volatile uint32_t s_journal_releases, s_journal_receiver_errors;
 static int64_t s_journal_summary_due, s_journal_last_error;
 static bool s_journal_receiver_gap;
 
-static bool sess_skipped(int idx) { return idx >= 0 && idx < SCAN_MAX_CHANNELS && ((s_session_skip[idx / 64] >> (idx % 64)) & 1ULL); }
-static void sess_skip(int idx)    { if (idx >= 0 && idx < SCAN_MAX_CHANNELS) s_session_skip[idx / 64] |= (1ULL << (idx % 64)); }
+static bool sess_skipped(int idx) { return idx >= 0 && idx < SCAN_SESSION_SLOTS && ((s_session_skip[idx / 64] >> (idx % 64)) & 1ULL); }
+static void sess_skip(int idx)    { if (idx >= 0 && idx < SCAN_SESSION_SLOTS) s_session_skip[idx / 64] |= (1ULL << (idx % 64)); }
 
 /**/
 /* The scanner scans the mode the foreground app can actually demodulate. It
@@ -164,7 +179,7 @@ static int foreground_mode(void)
 /* Mode the current sweep is built for; -1 when no scannable app is up. */
 static int s_fg_mode = -1;
 
-static bool scan_foreground(void) { return foreground_mode() == s_fg_mode && s_fg_mode >= 0; }
+static bool scan_foreground(void) { return s_work_generation == s_seek_generation && foreground_mode() == s_fg_mode && s_fg_mode >= 0; }
 
 /* Reject only frequencies the selected receiver's decoder path cannot use.
    An SDR lease held by the app is authoritative; during an unleased handoff,
@@ -337,7 +352,9 @@ static bool channel_radio_supported(const scan_channel_t *c)
                                      c->freq_hz);
     if (sdr == SCAN_SDR_SUPPORTS || sdr == SCAN_SDR_UNKNOWN) return true;
     if (sdr == SCAN_SDR_REJECTS) return false;
-    if (saved != LS_RSEL_LORA || snap->lora_chip != LS_LORA_CHIP_LR20XX)
+    /* FM also falls back to LR when no SDR is resolved, even with no saved
+       picker choice. P25 keeps its existing selection rules. */
+    if ((p25 && saved != LS_RSEL_LORA) || snap->lora_chip != LS_LORA_CHIP_LR20XX)
         return true;
 
     if (c->mode == SCAN_MODE_NFM)
@@ -576,14 +593,13 @@ static int band_steps(void)
     if (s_band_step == 0 || s_band_stop <= s_band_start) return 0;
     uint32_t span = s_band_stop - s_band_start;
     uint32_t n    = span / s_band_step + 1;
-    if (n > 100000UL) n = 100000UL;      /* sanity, not a real limit */
+    if (n > SCAN_MAX_BAND_STEPS) n = SCAN_MAX_BAND_STEPS;      /* sanity, not a real limit */
     return (int)n;
 }
 
-/* Build the synthetic channel for grid position i. */
-static const scan_channel_t *band_channel(int i)
+/* Both band scans and seeks use the same synthetic channel. */
+static const scan_channel_t *frequency_channel(uint32_t hz)
 {
-    uint32_t hz = s_band_start + (uint32_t)i * s_band_step;
     memset(&s_band_ch, 0, sizeof(s_band_ch));
     s_band_ch.freq_hz = hz;
     /* Follows the foreground demodulator, same rule as . A band scan
@@ -595,6 +611,48 @@ static const scan_channel_t *band_channel(int i)
              (unsigned long)(hz / 1000000UL),
              (unsigned long)((hz % 1000000UL) / 100UL));
     return &s_band_ch;
+}
+
+static const scan_channel_t *band_channel(int i)
+{
+    return frequency_channel(s_band_start + (uint32_t)i * s_band_step);
+}
+
+/* Preserve the current frequency's raster, including off-grid manual entries. */
+/* The worker ends the seek it was running, and only that one: if the UI
+   cancelled and started another seek since `generation` was read, the
+   exchange fails and the new seek keeps going. */
+static bool seek_finish(unsigned generation)
+{
+    unsigned expected = generation;
+    if (!__atomic_compare_exchange_n(&s_seek_generation, &expected, generation + 1,
+                                     false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return false;
+    s_seek_dir = 0;
+    s_enabled = false;
+    s_cur = -1;
+    s_started = false;
+    s_advance = 0;
+    lakeshark_fm_frequency_lock(true);
+    return true;
+}
+
+bool scan_engine_seek(uint32_t from, uint32_t step, int dir, uint32_t lo, uint32_t hi)
+{
+    if (!s_task_ready || selected_mode() != SCAN_MODE_NFM ||
+        (dir != -1 && dir != 1) || step < 100 || lo < 1000000 ||
+        hi < lo || from < lo || from > hi) return false;
+    scan_engine_stop();
+    s_seek_lo = from - ((from - lo) / step) * step;
+    s_seek_step = step;
+    s_seek_count = (hi - s_seek_lo) / step + 1;
+    s_seek_pos = (from - s_seek_lo) / step;
+    s_seek_left = s_seek_count;
+    __atomic_add_fetch(&s_seek_generation, 1, __ATOMIC_ACQ_REL);
+    lakeshark_fm_frequency_lock(false);
+    s_seek_dir = dir;
+    s_enabled = true;
+    return true;
 }
 
 void scan_engine_set_source(scan_src_t src)
@@ -872,7 +930,8 @@ static void rebuild_order(void)
 
 /**/
 /* One measurement window: the peak level seen, and whether the carrier
-   detector (NFM squelch, P25 sync) was up on the last poll. */
+   detector (NFM squelch, P25 sync) was up on any poll. Only the last poll
+   used to count, so a gate that opened mid-window and dropped was missed. */
 static int measure_peak(int settle_ms, int win_ms, int mode, bool *carrier)
 {
     vTaskDelay(pdMS_TO_TICKS(settle_ms));
@@ -886,7 +945,7 @@ static int measure_peak(int settle_ms, int win_ms, int mode, bool *carrier)
         if (!(s_enabled || s_autosq_busy) || !scan_foreground()) break;
         int p = rx_power_pct(mode);
         if (p > pk) pk = p;
-        up = carrier_held(mode);
+        up = up || carrier_held(mode);
         vTaskDelay(pdMS_TO_TICKS(POWER_POLL_MS));
     }
     if (carrier) *carrier = up;
@@ -935,7 +994,7 @@ static bool advance_requested(int idx)
 {
     int request = __atomic_exchange_n(&s_advance, 0, __ATOMIC_ACQ_REL);
     if (!request || (request >> 2) != idx + 1) return false;
-    if ((request & 3) == 2 && s_src == SCAN_SRC_CHANNELS) {
+    if ((request & 3) == 2 && !s_seek_dir) {
         sess_skip(idx);
         s_order_pos = 0;
     }
@@ -974,6 +1033,7 @@ static void scan_task(void *arg)
            it here or a cold calibration measures against a stale -1. */
         if (s_autosq_req) {
             s_autosq_req = false;
+            s_work_generation = s_seek_generation;
             s_fg_mode = foreground_mode();
             do_autosquelch();
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -987,11 +1047,14 @@ static void scan_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(120));
             continue;
         }
+        const unsigned generation = s_seek_generation;
+        s_work_generation = generation;
         journal_maybe_summary();
         /**/
-        update_location();
+        if (!s_seek_dir) update_location();
         const int fg = foreground_mode();
         if (fg < 0) {
+            if (s_seek_dir) scan_engine_stop();
             s_cur     = -1;
             s_fg_mode = -1;
             s_hold_candidate = -1;
@@ -1016,7 +1079,7 @@ static void scan_task(void *arg)
         /* Report absence/contention before issuing another optimistic tune.
            Empty/disabled lists are checked first so their actionable reason
            is not hidden by an unrelated receiver condition. */
-        if (candidate_count() == 0) {
+        if (!s_seek_dir && candidate_count() == 0) {
             s_cur = -1;
             s_candidate = -1;
             s_hold_candidate = -1;
@@ -1036,6 +1099,7 @@ static void scan_task(void *arg)
             }
             s_cur = s_candidate = -1;
             s_hold_candidate = -1;
+            if (s_seek_dir) scan_engine_stop();
             vTaskDelay(pdMS_TO_TICKS(150));
             continue;
         }
@@ -1046,9 +1110,17 @@ static void scan_task(void *arg)
 
         int idx;
         const scan_channel_t *c;
+        const unsigned seek_generation = s_seek_generation;
+        const bool seeking = s_seek_dir != 0;
+        if (seeking && !s_seek_left) { (void)seek_finish(seek_generation); continue; }
 
         /**/
-        if (s_src == SCAN_SRC_BAND) {
+        if (seeking) {
+            s_seek_pos = (s_seek_pos + s_seek_count + s_seek_dir) % s_seek_count;
+            --s_seek_left;
+            idx = (int)s_seek_pos;
+            c = frequency_channel(s_seek_lo + s_seek_pos * s_seek_step);
+        } else if (s_src == SCAN_SRC_BAND) {
             int n = band_steps();
             if (n <= 0) {
                 s_cur = -1;
@@ -1063,6 +1135,10 @@ static void scan_task(void *arg)
             if (s_band_pos == 0) { s_pk_max = s_pk_acc; s_pk_acc = 0; pass_boundary(); }
             idx = s_band_pos;
             s_band_pos = (s_band_pos + 1) % n;
+            if (sess_skipped(idx)) {
+                vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
+                continue;
+            }
             c = band_channel(idx);
         } else {
             /**/
@@ -1092,7 +1168,12 @@ static void scan_task(void *arg)
         }
         /**/
         /**/
-        if (!c || (s_src == SCAN_SRC_CHANNELS && !channel_eligible(c)) ||
+        /* Band/seek have no stored-channel eligibility pass. A live LR FM
+           consumer must never be retuned below its receive range; SDR band
+           and seek retain their existing driver validation path. */
+        if (!c || (c->mode == SCAN_MODE_NFM && FM.lr_iq_active &&
+                   !fm_lr_supported(c->freq_hz, FM_MODE_LISTEN)) ||
+            (!seeking && s_src == SCAN_SRC_CHANNELS && !channel_eligible(c)) ||
             (c->mode != s_fg_mode && !select_decoder(c->mode))) {
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
@@ -1105,11 +1186,14 @@ static void scan_task(void *arg)
         s_scan_error = LS_RADIO_OK;
         int64_t mark = esp_timer_get_time();
         s_pass.steps++;
+        if (!s_enabled || generation != s_seek_generation) continue;
         tune_to(c);
         ls_radio_err_t tune_error = LS_RADIO_OK;
         const bool tuned = wait_for_tune(c->freq_hz, c->mode, &tune_error);
         s_pass.tune_us += esp_timer_get_time() - mark;
+        if (generation != s_seek_generation) continue;
         if (!tuned) {
+            if (seeking) { scan_engine_stop(); continue; }
             if (s_enabled && scan_foreground()) {
                 if (tune_error == LS_RADIO_ERR_UNSUPPORTED &&
                     s_src == SCAN_SRC_CHANNELS) {
@@ -1144,10 +1228,31 @@ static void scan_task(void *arg)
                                c->mode, &carrier);
         s_pass.measure_us += esp_timer_get_time() - mark;
         if (pwi > s_pk_acc) s_pk_acc = pwi;
-        if (!s_enabled || !scan_foreground()) continue;
+        if (!s_enabled || generation != s_seek_generation || !scan_foreground()) continue;
 
         /**/
         if (advance_requested(idx)) continue;
+        if (seeking) {
+            if (seek_generation != s_seek_generation || !s_seek_dir) continue;
+            /* Manual HOLD is a worker wait, never a UI wait. A seek visits
+               each raster position once, so SKIP needs no separate lockout. */
+            const bool manual = scan_engine_manual_hold();
+            if (manual) s_cur = idx;
+            while (s_enabled && generation == s_seek_generation && scan_foreground() &&
+                   scan_engine_manual_hold() && !s_advance) {
+                ls_iq_control_status_t held_receiver;
+                receiver_status_for(c->mode, &held_receiver);
+                if (!held_receiver.receiver_streaming) { scan_engine_stop(); break; }
+                vTaskDelay(pdMS_TO_TICKS(30));
+            }
+            s_cur = -1;
+            if (!s_enabled || generation != s_seek_generation || !scan_foreground()) continue;
+            if (advance_requested(idx) || manual) continue;
+            if ((signal_present(c->mode, pwi, carrier) || !s_seek_left) &&
+                seek_finish(seek_generation))
+                (void)lakeshark_fm_set_freq(FM.freq_hz);
+            continue;
+        }
         if (!scan_engine_manual_hold() && !signal_present(c->mode, pwi, carrier)) {
             snprintf(s_status, sizeof(s_status), "SCAN %-9s p=%02d", c->name, pwi);
             continue;
@@ -1273,6 +1378,7 @@ void scan_engine_init(void)
 
 void scan_engine_start(void)
 {
+    if (s_seek_dir) scan_engine_stop();
     /* scan may be started from the panel or the console.  Cancel at
      * this common boundary so its direct P25 tune_to() calls cannot race a
      * profile control survey, regardless of who pressed start. */
@@ -1314,6 +1420,13 @@ void scan_engine_start(void)
 
 void scan_engine_stop(void)
 {
+    const bool seeking = s_seek_dir != 0;
+    s_seek_dir = 0;
+    __atomic_add_fetch(&s_seek_generation, 1, __ATOMIC_ACQ_REL);
+    if (seeking) {
+        s_enabled = false;
+        lakeshark_fm_frequency_lock(true);
+    }
     if (s_enabled) {
         if (s_cur >= 0) {
             const scan_channel_t *c = s_src == SCAN_SRC_CHANNELS ?
@@ -1422,7 +1535,11 @@ static void feedback_input(scan_feedback_input_t *input)
     input->switching = app_switch_in_progress();
     input->parked = app_parked();
     input->foreground_supported = mode >= 0;
-    input->receiver_present = lakeshark_iq_receiver_ready();
+    /* LR owns a waveform consumer rather than an ls_radio IQ session.
+       Its FM worker supplies the same tune acknowledgements and squelch;
+       USB receiver discovery must not classify that live receiver as absent. */
+    input->receiver_present = lakeshark_iq_receiver_ready() ||
+                              (mode == SCAN_MODE_NFM && FM.lr_iq_active);
     input->started = s_started;
     input->holding = s_cur >= 0;
     input->candidates = mode >= 0 && mode == s_fg_mode

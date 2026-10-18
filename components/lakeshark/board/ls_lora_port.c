@@ -6,6 +6,10 @@
 
 #include "ls_board.h"
 #include "settings.h"
+#ifdef ESP_PLATFORM
+#include "ls_nvs_safe.h"
+#include "nvs.h"
+#endif
 
 #define PORT_VERSION 1
 #define GPIO_MAX 54                 /* ESP32-P4 GPIO0..GPIO54 */
@@ -59,7 +63,21 @@ void ls_lora_port_board(ls_lora_port_t *out)
 #ifdef LS_BOARD_LORA_CON1_CS
 /* The board's module on the CON1 header: the socket's switch table,
    interrupt DIO and TCXO, the header's lines. */
-static void con1_port(ls_lora_port_t *out)
+static void con1_table(ls_lora_port_t *out, bool v02)
+{
+    static const struct { uint8_t dio, config; } v02_rfsw[] = { LS_BOARD_LORA_CON1_V02_RFSW_TABLE };
+    ls_lora_port_t board;
+    ls_lora_port_board(&board);                 /* the V0.3 / V1.0 table */
+    out->rfsw_n = 0;
+    for (size_t i = 0; i < LS_LORA_PORT_RFSW_MAX; i++) {
+        if (v02 ? i >= sizeof(v02_rfsw) / sizeof(v02_rfsw[0]) : i >= board.rfsw_n) break;
+        out->rfsw[i].dio = v02 ? v02_rfsw[i].dio : board.rfsw[i].dio;
+        out->rfsw[i].config = v02 ? v02_rfsw[i].config : board.rfsw[i].config;
+        out->rfsw_n = (uint8_t)(i + 1);
+    }
+}
+
+static void con1_port(ls_lora_port_t *out, bool v02)
 {
     ls_lora_port_board(out);
     out->header = true;
@@ -67,6 +85,7 @@ static void con1_port(ls_lora_port_t *out)
     out->busy = LS_BOARD_LORA_CON1_BUSY;
     out->rst = LS_BOARD_LORA_CON1_RST;
     out->irq_gpio = LS_BOARD_LORA_CON1_IRQ;
+    con1_table(out, v02);
 }
 #endif
 
@@ -208,8 +227,10 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
     out->header = true;
     for (int i = 1; i < argc; i++) {
 #ifdef LS_BOARD_LORA_CON1_CS
-        /* words after it still change any of its values */
-        if (!strcmp(argv[i], "con1")) { con1_port(out); continue; }
+        /* the module presets; words after one still change any of its values.
+           v02 is the older T-LR2021 V0.2, con1 the V0.3 and V1.0 in the board. */
+        if (!strcmp(argv[i], "con1")) { con1_port(out, false); continue; }
+        if (!strcmp(argv[i], "v02")) { con1_port(out, true); continue; }
 #endif
         char key[8];
         const char *eq = strchr(argv[i], '=');
@@ -281,6 +302,17 @@ void ls_lora_port_describe(const ls_lora_port_t *p, char *out, size_t n)
 
 /* --------------------------------------------------------------- storage -- */
 
+/* A 16-bit fold of the table word, kept in the port word: the two are saved
+   as two NVS values, and one written without the other (a failed write, a
+   reset between them) must read as nothing saved, not as a port with
+   another port's table. Never zero when written, so a word from before the
+   check existed (zero there) is still accepted. */
+static uint16_t table_check(uint64_t b)
+{
+    const uint16_t c = (uint16_t)(b ^ (b >> 16) ^ (b >> 32) ^ (b >> 48));
+    return c ? c : 1;
+}
+
 void ls_lora_port_pack(const ls_lora_port_t *p, uint64_t *a, uint64_t *b)
 {
     uint64_t x = PORT_VERSION;
@@ -295,6 +327,7 @@ void ls_lora_port_pack(const ls_lora_port_t *p, uint64_t *a, uint64_t *b)
     uint64_t y = 0;
     for (int i = 0; i < p->rfsw_n && i < LS_LORA_PORT_RFSW_MAX; i++)
         y |= (uint64_t)((p->rfsw[i].dio & 0x0F) | (p->rfsw[i].config & 0x1F) << 4) << (9 * i);
+    x |= (uint64_t)table_check(y) << 47;
     *a = x;
     *b = y;
 }
@@ -302,6 +335,8 @@ void ls_lora_port_pack(const ls_lora_port_t *p, uint64_t *a, uint64_t *b)
 bool ls_lora_port_unpack(uint64_t a, uint64_t b, ls_lora_port_t *out)
 {
     if ((a & 0xFF) != PORT_VERSION) return false;
+    const uint16_t check = (uint16_t)((a >> 47) & 0xFFFF);
+    if (check && check != table_check(b)) return false;
     memset(out, 0, sizeof(*out));
     out->header = (a >> 8) & 1;
     out->cs = (int8_t)((a >> 9) & 0x7F);
@@ -357,13 +392,84 @@ bool ls_lora_port_toggle(char *why, size_t n)
 #ifdef LS_BOARD_LORA_CON1_CS
         /* the board's own module on its CON1 header, the usual way one is
            wired, so the Settings row alone sets it up */
-        con1_port(&p);
+        con1_port(&p, false);
 #else
         snprintf(why, n, "no header pins saved: 'lora port header cs=N busy=N rst=N' first");
         return false;
 #endif
     }
     return ls_lora_port_save(&p, why, n);
+}
+
+#ifdef LS_BOARD_LORA_CON1_CS
+static bool con1_table_is(const ls_lora_port_t *p, bool v02)
+{
+    if (!ls_lora_port_is_con1(p)) return false;
+    ls_lora_port_t v;
+    con1_port(&v, v02);
+    if (v.rfsw_n != p->rfsw_n) return false;
+    for (int i = 0; i < v.rfsw_n; i++)
+        if (v.rfsw[i].dio != p->rfsw[i].dio || v.rfsw[i].config != p->rfsw[i].config) return false;
+    return true;
+}
+#endif
+
+bool ls_lora_port_is_v02(const ls_lora_port_t *p)
+{
+#ifdef LS_BOARD_LORA_CON1_CS
+    return con1_table_is(p, true);
+#else
+    (void)p;
+    return false;
+#endif
+}
+
+bool ls_lora_port_is_v03(const ls_lora_port_t *p)
+{
+#ifdef LS_BOARD_LORA_CON1_CS
+    return con1_table_is(p, false);
+#else
+    (void)p;
+    return false;
+#endif
+}
+
+bool ls_lora_port_same(const ls_lora_port_t *a, const ls_lora_port_t *b)
+{
+    if (a->header != b->header) return false;
+    if (!a->header) return true;                 /* onboard: the board's own, whatever pins are kept */
+    if (a->cs != b->cs || a->busy != b->busy || a->rst != b->rst || a->irq_gpio != b->irq_gpio ||
+        a->irq_dio != b->irq_dio || a->tcxo_code != b->tcxo_code || a->rfsw_n != b->rfsw_n)
+        return false;
+    for (int i = 0; i < a->rfsw_n; i++)
+        if (a->rfsw[i].dio != b->rfsw[i].dio || a->rfsw[i].config != b->rfsw[i].config) return false;
+    return true;
+}
+
+bool ls_lora_port_next_module(char *why, size_t n)
+{
+#ifdef LS_BOARD_LORA_CON1_CS
+    ls_lora_port_t p;
+    ls_lora_port_saved(&p);
+    if (ls_lora_port_on_socket(&p)) {
+        /* nothing of the module saved yet: its pins and the V0.2 table, with
+           the radio choice left as it is */
+        const bool header = p.header;
+        con1_port(&p, true);
+        p.header = header;
+        return ls_lora_port_save(&p, why, n);
+    }
+    if (!ls_lora_port_is_v02(&p) && !ls_lora_port_is_v03(&p)) {
+        /* custom pins or a custom table: never overwritten from here */
+        snprintf(why, n, "custom settings: change them with 'lora port header ...'");
+        return false;
+    }
+    con1_table(&p, !ls_lora_port_is_v02(&p));
+    return ls_lora_port_save(&p, why, n);
+#else
+    snprintf(why, n, "no header module preset on this board");
+    return false;
+#endif
 }
 
 bool ls_lora_port_is_con1(const ls_lora_port_t *p)
@@ -418,10 +524,35 @@ static void print_keyboard(const ls_lora_port_t *p)
            __builtin_popcountll(kb) > 1 ? "are" : "is");
 }
 
+#ifdef ESP_PLATFORM
+static esp_err_t nvs_stats_job(void *ctx) { return nvs_get_stats(NULL, (nvs_stats_t *)ctx); }
+#endif
+
+/* How full the settings store is: a full one refuses new values. */
+static void print_nvs(void)
+{
+#ifdef ESP_PLATFORM
+    nvs_stats_t st;
+    memset(&st, 0, sizeof(st));
+    if (ls_nvs_run(nvs_stats_job, &st, 0) == ESP_OK)
+        printf("lora port: settings store %u of %u entries used, %u free\n",
+               (unsigned)st.used_entries, (unsigned)st.total_entries, (unsigned)st.free_entries);
+#endif
+}
+
 static void print_socket_note(void)
 {
     puts("lora port: cs and busy are the onboard socket's own lines, so this is the onboard radio; "
          "give a header module's pins with 'lora port header cs=N busy=N rst=N'");
+}
+
+/* Every T-LR2021 design feeds its TCXO from VCC, always on, so SetTcxoMode's
+   voltage changes nothing there (SoftRF author, T-Display-P4 issue 20). It
+   still matters for a module whose TCXO runs from the chip's VTCXO pin. */
+static void print_tcxo_note(const ls_lora_port_t *p)
+{
+    if (p->header && ls_lora_port_is_con1(p))
+        puts("lora port: tcxo has no effect on LilyGO's T-LR2021 modules, their TCXO is always powered");
 }
 
 int ls_lora_port_command(int argc, char **argv)
@@ -439,6 +570,7 @@ int ls_lora_port_command(int argc, char **argv)
         ls_lora_port_describe(&eff, line, sizeof(line));
         printf("lora port: next boot %s%s\n", line, saved ? "" : " (nothing saved)");
         if (eff.header && ls_lora_port_on_socket(&eff)) print_socket_note();
+        print_tcxo_note(&eff);
         if (saved && !next.header && !ls_lora_port_on_socket(&next)) {
             ls_lora_port_t h = next;
             h.header = true;
@@ -446,7 +578,8 @@ int ls_lora_port_command(int argc, char **argv)
             printf("lora port: header pins kept: %s\n", line);
         }
         print_keyboard(now);
-        puts("usage: lora port onboard | header [con1] [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
+        print_nvs();
+        puts("usage: lora port onboard | header [con1|v02] [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
              "tcxo=1.6..3.3 rfsw=DIO:hex,...]");
         return 0;
     }
@@ -475,6 +608,7 @@ int ls_lora_port_command(int argc, char **argv)
     ls_lora_port_describe(&want, line, sizeof(line));
     printf("lora port: saved %s - reboot to use it\n", line);
     if (ls_lora_port_on_socket(&want)) print_socket_note();
+    print_tcxo_note(&want);
     print_keyboard(&want);
     return 0;
 }

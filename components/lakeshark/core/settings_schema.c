@@ -65,3 +65,9 @@ bool settings_gain_valid(const char *app_name, int gain)
 {
     return gain >= 0 && gain <= (app_name && strcmp(app_name, "ADS-B") == 0 ? 1130 : 600);
 }
+
+bool settings_fm_step_valid(uint32_t hz)
+{
+    return hz == 0 || hz == 5000 || hz == 6250 || hz == 10000 ||
+           hz == 12500 || hz == 25000 || hz == 100000 || hz == 1000000;
+}

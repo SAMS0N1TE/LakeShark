@@ -13,6 +13,9 @@ extern "C" {
 #define MAX_FAVOURITES 8
 
 bool     settings_init(void);
+/* FM VFO step in Hz; zero follows the current mode. RAM read, deferred write. */
+uint32_t settings_get_fm_step(void);
+void settings_set_fm_step(uint32_t hz);
 
 uint32_t settings_get_freq(const app_t *a);
 void     settings_set_freq(const app_t *a, uint32_t hz);

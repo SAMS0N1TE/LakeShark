@@ -71,4 +71,12 @@ LS_CASE(a_header_lr2021_resets_on_its_gpio_and_takes_its_own_wiring)
     LS_CHECK(find_frame(LR20XX_OP_SET_DIO_RFSW, 6) >= 0);
     LS_CHECK(find_frame(LR20XX_OP_SET_DIO_FUNCTION, 11) < 0);       /* the board's IRQ DIO */
     LS_CHECK(find_frame(LR20XX_OP_SET_DIO_RFSW, 8) < 0);            /* the board's LF switch */
+
+    /* DIO5 as an RF switch (the older V0.2 module): the chip fails SetDioFunction
+       there unless the sleep pull is the pull-up, and the setup fails with it */
+    const int d5 = find_frame(LR20XX_OP_SET_DIO_FUNCTION, 5);
+    LS_CHECK(d5 >= 0);
+    if (d5 >= 0) LS_EQ_UINT(fk.frames[d5].b[3], (LR20XX_DIO_FUNC_RF_SWITCH << 4) | LR20XX_DIO_PULL_UP);
+    LS_EQ_UINT(fk.dio_func[5], (LR20XX_DIO_FUNC_RF_SWITCH << 4) | LR20XX_DIO_PULL_UP);
+    LS_EQ_UINT(fk.dio_func[6], (LR20XX_DIO_FUNC_RF_SWITCH << 4) | LR20XX_DIO_PULL_AUTO);
 }

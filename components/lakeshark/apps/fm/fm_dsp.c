@@ -233,19 +233,28 @@ int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
    broadcast 280..593, dead air 809..973. The gate sits between them.
 
    threshold_pct keeps its direction, higher is more squelch: 0 opens on
-   anything, 100 never opens, and the default 30 puts the gate at 0.70. */
+   anything, 100 never opens, and the default 30 puts the gate at 0.70.
+
+   The low end used to run straight down to a 0.99 gate at 1%, which hiss
+   at high gain still exceeds, so 1% did not let noise through as it does on
+   every other receiver, and 0 still asked for noise under 1.0. Now 0 is open,
+   and 1..30 ease from a 1.25 gate (above any hiss measured) to the same 0.70
+   at 30, so saved settings from 30 up behave as before. */
 int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples)
 {
     const int qualify = FM_DEMOD_RATE * 64 / 1000;
     if (samples <= 0) return 0;
+    if (threshold_pct <= 0) {                 /* open: no gate, no qualify */
+        s->squelch_is_open = true;
+        s->squelch_samples = 0;
+        return 1;
+    }
     if (s->squelch_settle_samples > 0) {
         s->squelch_settle_samples -= samples;
         s->squelch_samples = 0;
         return 0;
     }
-    if (threshold_pct < 0)   threshold_pct = 0;
-    if (threshold_pct > 100) threshold_pct = 100;
-    const float gate = (float)(100 - threshold_pct) * 0.010f;
+    const float gate = fm_nfm_squelch_gate(threshold_pct);
 
     /* Two thresholds and a release timer, which is what stops the chop.
        Closing on the same number it opens on means a single noisy block

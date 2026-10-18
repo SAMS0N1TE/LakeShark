@@ -969,6 +969,9 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
     b[11] = (ls_btn_t){ "ZOOM", v[11], 'z', false, false };
 }
 
+static const char *s_tune_reason;
+void ls_wf_tune_reason(const char *reason) { s_tune_reason = reason; }
+
 static void act(int i)
 {
     cfg_load();
@@ -988,8 +991,10 @@ static void act(int i)
     case 10: {
         uint32_t hz=ls_wf_marker_hz();
         if(!hz||!s_tuner)break;
+        s_tune_reason = NULL;
         bool ok=s_tuner(s_owner,hz);
         snprintf(s_tune_note,sizeof(s_tune_note),ok?"Tune requested: %.3f MHz":"Tune unavailable: %.3f MHz",hz/1e6);
+        if (!ok && s_tune_reason) snprintf(s_tune_note,sizeof(s_tune_note),"%s",s_tune_reason);
         s_tune_note_until=esp_timer_get_time()+2500000;
         if(ok){s_cfg.paused=false;s_marker=s_plot_rect.w/2;}
         break;

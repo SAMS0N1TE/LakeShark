@@ -263,6 +263,139 @@ LS_CASE(con1_is_the_module_on_the_2x8_header)
     LS_EQ_INT(p.cs, 36);
 }
 
+LS_CASE(v02_is_the_older_module_on_the_same_header)
+{
+    ls_lora_port_t p;
+    char why[112];
+    LS_CHECK_MSG(parse("header v02", &p, why, sizeof why), "%s", why);
+    LS_CHECK(p.header);
+    LS_CHECK(ls_lora_port_is_con1(&p));
+    LS_CHECK(ls_lora_port_is_v02(&p));
+    LS_EQ_INT(p.cs, 36);
+    LS_EQ_INT(p.irq_gpio, 25);
+    LS_EQ_INT(p.rfsw_n, 2);
+    LS_EQ_UINT(p.rfsw[0].dio, 5);
+    LS_EQ_UINT(p.rfsw[0].config, 0x08);
+    LS_EQ_UINT(p.rfsw[1].dio, 6);
+    LS_EQ_UINT(p.rfsw[1].config, 0x06);
+    char line[160];
+    ls_lora_port_describe(&p, line, sizeof line);
+    LS_EQ_STR(line, "header cs=36 busy=33 rst=27 irq=25 dio=11 tcxo=3.3 rfsw=5:08,6:06");
+
+    /* con1 is the V0.3 table, and the same line typed by hand is v02 too */
+    LS_CHECK(parse("header con1", &p, why, sizeof why));
+    LS_CHECK(!ls_lora_port_is_v02(&p));
+    LS_CHECK(parse("header con1 rfsw=5:08,6:06", &p, why, sizeof why));
+    LS_CHECK(ls_lora_port_is_v02(&p));
+    /* anything after a preset still overrides it */
+    LS_CHECK(parse("header v02 tcxo=1.8 irq=none", &p, why, sizeof why));
+    LS_EQ_INT(ls_lora_port_tcxo_dv(p.tcxo_code), 18);
+    LS_EQ_INT(p.irq_gpio, LS_LORA_PORT_NONE);
+    LS_CHECK(ls_lora_port_is_v02(&p));
+}
+
+LS_CASE(the_settings_row_swaps_the_module_and_leaves_custom_pins_alone)
+{
+    s_have = false;
+    char why[112];
+    ls_lora_port_t q;
+
+    /* nothing saved: the pins and V0.2 table are kept, the radio stays onboard */
+    LS_CHECK_MSG(ls_lora_port_next_module(why, sizeof why), "%s", why);
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(!q.header);
+    LS_CHECK(ls_lora_port_is_v02(&q));
+    /* the radio row then goes to the header with that table */
+    LS_CHECK(ls_lora_port_toggle(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(q.header);
+    LS_CHECK(ls_lora_port_is_v02(&q));
+    /* and the module row flips it back and forth */
+    LS_CHECK(ls_lora_port_next_module(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(q.header);
+    LS_CHECK(ls_lora_port_is_con1(&q) && !ls_lora_port_is_v02(&q));
+    LS_CHECK(ls_lora_port_next_module(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_CHECK(ls_lora_port_is_v02(&q));
+
+    /* a changed TCXO survives the swap */
+    LS_CHECK(parse("header v02 tcxo=1.8", &q, why, sizeof why));
+    LS_CHECK(ls_lora_port_save(&q, why, sizeof why));
+    LS_CHECK(ls_lora_port_next_module(why, sizeof why));
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_EQ_INT(ls_lora_port_tcxo_dv(q.tcxo_code), 18);
+    LS_CHECK(!ls_lora_port_is_v02(&q));
+
+    /* custom pins are never overwritten from the row */
+    LS_CHECK(parse("header cs=33 busy=32 rst=26 rfsw=5:08,6:06", &q, why, sizeof why));
+    LS_CHECK(ls_lora_port_save(&q, why, sizeof why));
+    LS_CHECK(!ls_lora_port_next_module(why, sizeof why));
+    LS_CHECK_MSG(strstr(why, "custom settings") != NULL, "%s", why);
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_EQ_INT(q.cs, 33);
+    LS_EQ_INT(q.busy, 32);
+}
+
+LS_CASE(a_port_word_without_its_table_reads_as_nothing_saved)
+{
+    ls_lora_port_t p, q, board;
+    char why[112];
+    ls_lora_port_board(&board);
+    LS_CHECK(parse("header v02", &p, why, sizeof why));
+    uint64_t a, b;
+    ls_lora_port_pack(&p, &a, &b);
+    LS_CHECK(ls_lora_port_unpack(a, b, &q));
+    /* the table write failed: the port word is new, the table word old */
+    LS_CHECK(parse("header con1", &p, why, sizeof why));
+    uint64_t a_old, b_old;
+    ls_lora_port_pack(&p, &a_old, &b_old);
+    LS_CHECK(!ls_lora_port_unpack(a, b_old, &q));
+    LS_CHECK(!ls_lora_port_unpack(a_old, b, &q));
+    LS_CHECK(ls_lora_port_unpack(a_old, b_old, &q));
+    /* a word written before the check existed has zero there and is kept */
+    LS_CHECK(ls_lora_port_unpack(a & ~(0xFFFFull << 47), b, &q));
+    LS_CHECK(ls_lora_port_is_v02(&q));
+    /* so the saved port falls back to the board's, not to a mixed one */
+    s_a = a; s_b = b_old; s_have = true;
+    LS_CHECK(!ls_lora_port_saved(&q));
+    LS_CHECK(!q.header);
+}
+
+LS_CASE(a_custom_table_is_never_replaced_by_the_module_row)
+{
+    s_have = false;
+    ls_lora_port_t q;
+    char why[112];
+    LS_CHECK(parse("header con1 rfsw=5:08,7:02", &q, why, sizeof why));
+    LS_CHECK(ls_lora_port_is_con1(&q));
+    LS_CHECK(!ls_lora_port_is_v02(&q) && !ls_lora_port_is_v03(&q));
+    LS_CHECK(ls_lora_port_save(&q, why, sizeof why));
+    LS_CHECK(!ls_lora_port_next_module(why, sizeof why));
+    LS_CHECK_MSG(strstr(why, "custom settings") != NULL, "%s", why);
+    LS_CHECK(ls_lora_port_saved(&q));
+    LS_EQ_INT(q.rfsw_n, 2);
+    LS_EQ_UINT(q.rfsw[1].dio, 7);
+}
+
+LS_CASE(same_means_the_same_boot)
+{
+    ls_lora_port_t a, b, board;
+    char why[112];
+    ls_lora_port_board(&board);
+    LS_CHECK(parse("header con1", &a, why, sizeof why));
+    LS_CHECK(parse("header con1", &b, why, sizeof why));
+    LS_CHECK(ls_lora_port_same(&a, &b));
+    LS_CHECK(parse("header v02", &b, why, sizeof why));
+    LS_CHECK(!ls_lora_port_same(&a, &b));                    /* only the table differs */
+    LS_CHECK(parse("header con1 tcxo=1.8", &b, why, sizeof why));
+    LS_CHECK(!ls_lora_port_same(&a, &b));
+    LS_CHECK(!ls_lora_port_same(&a, &board));                /* header against onboard */
+    ls_lora_port_t kept = a;
+    kept.header = false;
+    LS_CHECK(ls_lora_port_same(&kept, &board));              /* onboard ignores the kept pins */
+}
+
 LS_CASE(the_console_saves_for_the_next_boot)
 {
     s_have = false;

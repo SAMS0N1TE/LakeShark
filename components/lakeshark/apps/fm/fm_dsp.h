@@ -62,6 +62,15 @@ typedef struct {
 
 void fm_dsp_init(fm_dsp_t *s);
 int fm_nfm_squelch(fm_dsp_t *s, int threshold_pct, int samples);
+/* The demod-noise level a squelch setting opens below (0 = always open).
+   Inline so screens can draw the gate mark without linking the DSP. */
+static inline float fm_nfm_squelch_gate(int threshold_pct)
+{
+    if (threshold_pct <= 0)  return 99.0f;
+    if (threshold_pct > 100) threshold_pct = 100;
+    if (threshold_pct <= 30) return 1.25f - 0.55f * (float)threshold_pct / 30.0f;
+    return (float)(100 - threshold_pct) * 0.010f;
+}
 
 int  fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                  float *demod_out, int max);

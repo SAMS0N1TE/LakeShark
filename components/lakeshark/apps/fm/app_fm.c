@@ -646,17 +646,29 @@ static void fm_lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spa
     ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
     ls_iq_control_note_tune_result(&s_radio_control, s_lr_hz, LS_RADIO_OK, s_lr_hz);
 }
-static void fm_lr_stop(void)
+/* A retune keeps the mesh lease and the LR ownership flag: handing the radio
+   back to MeshCore between captures made the next hold_bg(true) fail until the
+   mesh task acknowledged, so every scanner step reported BUSY. */
+static bool s_lr_lease;   /* this task is a background holder of the mesh radio */
+static void fm_lr_release(void)
 {
-    if (!s_lr_session) return;
-    lr_wf_stats st;
-    lr_wf_stop_stats(&st);
-    FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
-    FM.lr_gaps = s_lr_gaps + st.gaps;
-    s_lr_session = FM.lr_iq_active = false;
-    ls_mesh_radio_hold_bg(false);
-    fm_receiver_lost(LS_RADIO_ERR_STOPPED);
+    FM.lr_iq_active = false;
+    if (s_lr_lease) { ls_mesh_radio_hold_bg(false); s_lr_lease = false; }
 }
+static void fm_lr_stop_capture(bool retune)
+{
+    if (s_lr_session) {
+        lr_wf_stats st;
+        lr_wf_stop_stats(&st);
+        FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
+        FM.lr_gaps = s_lr_gaps + st.gaps;
+        s_lr_session = false;
+        fm_receiver_lost(LS_RADIO_ERR_STOPPED);
+    }
+    /* Teardown releases a lease kept across a retune even with no capture. */
+    if (!retune) fm_lr_release();
+}
+static void fm_lr_stop(void) { fm_lr_stop_capture(false); }
 static bool fm_lr_wanted(void)
 {
     const ls_rsel_job_t job = fm_radio_job();
@@ -676,12 +688,20 @@ static void fm_lr_step(void)
         FM.lr_lost_pairs = s_lr_lost + st.lost_pairs;
         FM.lr_gaps = s_lr_gaps + st.gaps;
         if (st.done || s_lr_hz != FM.freq_hz || s_lr_channel != channel || ls_mesh_radio_wanted()) {
-            fm_lr_stop();
+            fm_lr_stop_capture(!st.done && !ls_mesh_radio_wanted());
             if (st.done) { FM.read_errors++; vTaskDelay(pdMS_TO_TICKS(100)); }
         }
     }
     if (!s_lr_session) {
-        if (ls_mesh_radio_wanted() || !ls_mesh_radio_hold_bg(true)) {
+        /* A foreground owner wants the radio: give back a lease kept across a
+           retune, or the owner waits on it forever. A refused hold_bg stays
+           registered so the mesh task can hand over; retry next step. */
+        if (ls_mesh_radio_wanted()) {
+            fm_lr_release();
+            fm_receiver_lost(LS_RADIO_ERR_BUSY); vTaskDelay(pdMS_TO_TICKS(100)); return;
+        }
+        s_lr_lease = true;
+        if (!ls_mesh_radio_hold_bg(true)) {
             fm_receiver_lost(LS_RADIO_ERR_BUSY); vTaskDelay(pdMS_TO_TICKS(100)); return;
         }
         s_lr_hz = FM.freq_hz; s_lr_channel = channel;
@@ -692,7 +712,7 @@ static void fm_lr_step(void)
         /* Mark ownership before launch so the waterfall never creates a second capture. */
         FM.lr_iq_active = true;
         if (lr_wf_start_consumer(s_lr_hz, fm_lr_consume, NULL) != ESP_OK) {
-            FM.lr_iq_active = false; ls_mesh_radio_hold_bg(false);
+            fm_lr_release();
             fm_receiver_lost(LS_RADIO_ERR_BUSY); vTaskDelay(pdMS_TO_TICKS(100)); return;
         }
         s_lr_session = true;
@@ -1371,10 +1391,14 @@ void lakeshark_fm_frequency_lock(bool on)
     s_frequency_locked = on;
     if (on) {
         /* During a sweep FM.freq_hz is the transient tuner position.  The
-           scan range centre is the only stable carrier to capture there. */
-        s_frequency_lock_hz = FM.mode == FM_MODE_SCAN && FM.scan_stop_hz > FM.scan_start_hz
-            ? FM.scan_start_hz + (FM.scan_stop_hz - FM.scan_start_hz) / 2
-            : FM.freq_hz;
+           scan range centre is the stable carrier unless a manual tune has
+           already queued the return to listening. Capture that explicit tune
+           even while the RX worker is still applying the mode handoff. */
+        s_frequency_lock_hz = FM.mode == FM_MODE_SCAN && s_scan_tune_hz
+            ? s_scan_tune_hz
+            : FM.mode == FM_MODE_SCAN && FM.scan_stop_hz > FM.scan_start_hz
+              ? FM.scan_start_hz + (FM.scan_stop_hz - FM.scan_start_hz) / 2
+              : FM.freq_hz;
     }
 }
 

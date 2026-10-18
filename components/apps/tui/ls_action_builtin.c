@@ -353,6 +353,7 @@ static void tuned_p25(double mhz)
 
 static void tuned_fm(double mhz)
 {
+    scan_engine_stop();
     ls_args_t a = { .n = 1 };
     a.v[0].kind = LS_VAL_FLOAT;
     a.v[0].f = (float)mhz;

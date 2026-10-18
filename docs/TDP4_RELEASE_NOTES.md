@@ -1,5 +1,21 @@
 # LakeShark release notes
 
+## 2.16.3
+
+- FM: a TUNE card on the main screen steps up and down by the saved step, and << >> seek to the next signal from the current frequency (keys `,` and `.`).
+- FM: while a scan or seek runs, the TUNE card shows NEXT, SKIP, HOLD and STOP. SKIP passes a channel for the rest of the session.
+- FM on the LR2021: band scan, channel scan and seek now stop on signals.
+- Squelch: 0% is fully open and low settings let noise through, like other receivers. 30% and up behave as before.
+- Scanner: listens longer on each channel, so short transmissions are caught.
+- Waterfall: TUNE MARK works while the frequency is locked, and the lock moves to the new frequency. Marks land on a 1.25 kHz grid, and a refused mark says why.
+- P25 uses the FM display: big digits, typed entry over ghost digits, signal trace and peak hold, with the same volume and gain cards.
+- GPS: the L76K's NMEA sentences are set at startup, so satellites show even after other firmware changed them. `gps reset` and GPS > OPTIONS > Reset receiver to factory restore the module.
+- LR2021 on the header: the older T-LR2021 V0.2 module now works. Its RF switch on DIO5 no longer stops the radio from starting.
+- `lora port header v02` sets the CON1 pins and the V0.2 switch table in one word.
+- Settings > Device > LoRa module switches between the V0.3/V1.0 and V0.2 modules.
+- The LoRa port is saved and read back before the board says it is saved. `lora port` shows how full the settings store is.
+- `lora port` notes that the TCXO voltage has no effect on LilyGO's T-LR2021 modules.
+
 ## 2.16.2
 
 - LoRa on the feature header: Settings > Device > LoRa radio now switches to an LR2021 module on the CON1 header, with no console needed.

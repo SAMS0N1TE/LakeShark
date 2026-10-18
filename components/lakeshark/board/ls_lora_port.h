@@ -58,6 +58,17 @@ bool ls_lora_port_saved(ls_lora_port_t *out);
 bool ls_lora_port_toggle(char *why, size_t n);
 /* True when `p` has the board's CON1 module lines ('lora port header con1'). */
 bool ls_lora_port_is_con1(const ls_lora_port_t *p);
+/* ... and the older T-LR2021 V0.2 switch table ('lora port header v02'). */
+bool ls_lora_port_is_v02(const ls_lora_port_t *p);
+/* ... and the V0.3 / V1.0 table ('lora port header con1'). CON1 pins with
+   neither table is a custom table. */
+bool ls_lora_port_is_v03(const ls_lora_port_t *p);
+/* True when both would drive the radio the same way at a boot: the same
+   choice and, for a header port, the same pins, interrupt, TCXO and table. */
+bool ls_lora_port_same(const ls_lora_port_t *a, const ls_lora_port_t *b);
+/* Swap the saved CON1 module's switch table between V0.3/V1.0 and V0.2.
+   Refuses, and changes nothing, when the saved pins are custom. */
+bool ls_lora_port_next_module(char *why, size_t n);
 /* True when `p` selects the board's own socket (its chip select), header
    flag or not: header mode on those lines is still the onboard radio. */
 bool ls_lora_port_on_socket(const ls_lora_port_t *p);

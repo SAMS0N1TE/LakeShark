@@ -795,7 +795,7 @@ LS_CASE(the_merged_decode_page_has_the_large_dial_and_receive_history)
     /* Under the control row, as FM's VFO puts its own. */
     for (int y = PORTRAIT.y; y < PORTRAIT.y + 14; ++y)
         for (int x = PORTRAIT.x; x < PORTRAIT.x + PORTRAIT.w; ++x)
-            if (g_back[y * W + x].ch == LS_TUI_BLOCK_FULL) blocks++;
+            if (g_back[y * W + x].ch == LS_TUI_SHADE_FULL) blocks++;
     LS_CHECK_MSG(blocks >= 20, "merged decode dial used only %d large blocks", blocks);
 }
 
@@ -846,45 +846,40 @@ static bool v_deck_volume(ls_val_t *v)
     return true;
 }
 
-LS_CASE(the_p25_deck_travel_sets_volume_and_the_number_types)
+LS_CASE(the_p25_deck_bar_and_full_title_value_open_exact_entry)
 {
     no_traffic();
     P25.lora_rx = false;
     ls_action_register("audio.volume", "i", LS_CAP_TUNE, a_deck_volume, "test volume");
     ls_value_publish("sys.volume", "percent", v_deck_volume);
-    draw_decode_now(PORTRAIT);
-    ls_numpad_close();
-
-    int bx, by, bw, bh, vx, vy, vw, vh;
-    LS_CHECK_MSG(ls_scr_p25_control_rect(0, LS_RADIO_PART_BAR, &bx, &by, &bw, &bh),
-                 "the P25 volume card has no travel");
-    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_VALUE, &vx, &vy, &vw, &vh));
-    LS_EQ_INT(vh, 1);
-    LS_CHECK_MSG(by > vy, "the travel sits on the number's row");
-
-    s_deck_vol = -1;
-    LS_CHECK(ls_scr_p25.touch(bx, by + bh / 2));
-    LS_EQ_INT((int)s_deck_vol, 0);
-    LS_CHECK_MSG(!ls_numpad_active(), "the travel opened the keypad");
-    LS_CHECK(ls_scr_p25.touch(bx + bw - 1, by + bh / 2));
-    LS_EQ_INT((int)s_deck_vol, 100);
-    LS_CHECK(ls_scr_p25.touch(bx + (bw - 1) / 2, by + bh / 2));
-    LS_CHECK_MSG(s_deck_vol > 10 && s_deck_vol < 90,
-                 "the middle of the travel gave %d", (int)s_deck_vol);
-    LS_CHECK(!ls_numpad_active());
-
-    LS_CHECK(ls_scr_p25.touch(vx + vw / 2, vy));
-    LS_CHECK_MSG(ls_numpad_active(), "the P25 volume number did not open exact entry");
-    ls_numpad_close();
-
-    /* The keys step through the quick control, which is the same path the
-       keyboard's + and - take. */
-    int kx, ky, kw, kh;
-    s_deck_vol = -1;
-    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_UP, &kx, &ky, &kw, &kh));
-    LS_CHECK(ls_scr_p25.touch(kx + kw / 2, ky + kh / 2));
-    LS_CHECK_MSG(s_deck_vol >= 0, "the volume key reached no action");
-    LS_CHECK(!ls_numpad_active());
+    const tui_rect panes[] = {PORTRAIT, {1, 2, 113, 24}};
+    for (int posture = 0; posture < 2; ++posture) {
+        ls_numpad_close();
+        draw_decode_now(panes[posture]);
+        for (int card = 0; card < 2; ++card) {
+            for (int part = LS_RADIO_PART_VALUE; part <= LS_RADIO_PART_BAR; ++part) {
+                int x, y, w, h;
+                LS_CHECK(ls_scr_p25_control_rect(card, part, &x, &y, &w, &h));
+                for (int cy = y; cy < y + h; ++cy)
+                    for (int cx = x; cx < x + w; ++cx) {
+                        LS_CHECK(ls_scr_p25.touch(cx, cy));
+                        LS_CHECK_MSG(ls_numpad_active(), "card %d part %d cell %d,%d", card, part, cx, cy);
+                        ls_numpad_close();
+                    }
+            }
+        }
+        for (int part = LS_RADIO_PART_DOWN; part <= LS_RADIO_PART_UP; ++part) {
+            int x, y, w, h;
+            LS_CHECK(ls_scr_p25_control_rect(0, part, &x, &y, &w, &h));
+            for (int cy = y; cy < y + h; ++cy)
+                for (int cx = x; cx < x + w; ++cx) {
+                    s_deck_vol = -1;
+                    LS_CHECK(ls_scr_p25.touch(cx, cy));
+                    LS_EQ_INT(s_deck_vol, part == LS_RADIO_PART_UP ? 45 : 35);
+                    LS_CHECK(!ls_numpad_active());
+                }
+        }
+    }
 }
 
 /* TUNE IS STILL ON THE SCREEN, AND IT TYPES IN PLACE.
@@ -1460,3 +1455,191 @@ LS_CASE(p25_enter_leave_has_zero_allocation_budget)
 
 void ls_tui_last_cost(uint32_t *us, int *cells)
 { if (us) *us = 0; if (cells) *cells = 0; }
+
+LS_CASE(shared_glass_retunes_settle_and_do_not_restart_on_idle_frames)
+{
+    ls_radio_glass_t a = {0}, b = {0};
+    LS_EQ_UINT(ls_radio_glass_tick(&a, 851000000), 851000000);
+    for (int i = 0; i < 20; ++i) ls_radio_glass_tick(&a, 851000000);
+    LS_EQ_INT(a.dial_frames, 0);
+    uint32_t first = ls_radio_glass_tick(&a, 852000000);
+    LS_CHECK(first > 851000000 && first < 852000000);
+    LS_EQ_UINT(ls_radio_glass_tick(&b, 154000000), 154000000);
+    for (int i = 0; i < 10; ++i) ls_radio_glass_tick(&a, 852000000);
+    LS_EQ_UINT(a.dial_hz, 852000000);
+    LS_EQ_INT(a.dial_frames, 0);
+    LS_EQ_UINT(b.dial_hz, 154000000);
+    LS_CHECK(ls_radio_glass_tick(&a, 850000000) < 852000000);
+}
+
+LS_CASE(shared_glass_entry_has_ghosts_and_caret_and_does_not_retune)
+{
+    ls_radio_glass_t g = {0};
+    const tui_rect r = {1, 2, 62, 14};
+    fresh();
+    ls_radio_glass_bezel(&g_sf, r, "ENTER FREQUENCY");
+    ls_radio_glass_frequency(&g, &g_sf, r, r.y + 2, 851000000, "154.", 0, false);
+    LS_CHECK(rect_has(r, "ENTER FREQUENCY"));
+    int ghosts = 0, carets = 0;
+    for (int y = r.y; y < r.y + r.h; ++y)
+        for (int x = r.x; x < r.x + r.w; ++x) {
+            ghosts += g_back[y * W + x].ch == LS_TUI_SHADE_25;
+            carets += g_back[y * W + x].ch == LS_TUI_SHADE_75;
+        }
+    LS_CHECK(ghosts > 20);
+    LS_EQ_INT(carets, 0);
+    fresh();
+    ls_radio_glass_frequency(&g, &g_sf, r, r.y + 2, 851000000, "154.", 8, false);
+    carets = 0;
+    for (int y = r.y; y < r.y + r.h; ++y)
+        for (int x = r.x; x < r.x + r.w; ++x)
+            carets += g_back[y * W + x].ch == LS_TUI_SHADE_75;
+    LS_CHECK(carets >= 4);
+    LS_EQ_UINT(g.dial_target, 851000000);
+    LS_EQ_INT(escaped(r), 0);
+}
+
+LS_CASE(shared_glass_trace_wraps_and_meter_holds_without_a_sql_gate)
+{
+    ls_radio_glass_t g = {0};
+    for (int i = 0; i < LS_RADIO_TRACE_N + 17; ++i)
+        ls_radio_glass_sample(&g, i & 1 ? 0.5f : 1.0f);
+    LS_EQ_INT(g.trace_n, LS_RADIO_TRACE_N);
+    const tui_rect r = {1, 2, 62, 14};
+    fresh();
+    ls_radio_glass_trace(&g, &g_sf, r, 3, 4, 50, 3, 0.0f);
+    ls_radio_glass_meter(&g, &g_sf, r, 3, 10, 54, 1, 0.8f, true, false, false, 0, NULL);
+    LS_NEAR(g.hold, 0.8f, 0.001f);
+    ls_radio_glass_meter(&g, &g_sf, r, 3, 10, 54, 1, 0.2f, true, false, false, 0, NULL);
+    LS_CHECK(g.hold > 0.7f && g.hold < 0.8f);
+    LS_CHECK(!rect_has(r, "SQL"));
+    LS_EQ_INT(escaped(r), 0);
+}
+
+LS_CASE(shared_glass_mode_wipe_starts_only_on_a_mode_change_and_stops)
+{
+    ls_radio_glass_t g = {0};
+    const tui_rect r = {1, 2, 62, 14};
+    fresh();
+    ls_radio_glass_wipe(&g, &g_sf, r, 4, 10, 0);
+    LS_EQ_INT(g.wipe_frames, 0);
+    ls_radio_glass_wipe(&g, &g_sf, r, 4, 10, 1);
+    LS_EQ_INT(g.wipe_frames, 11);
+    for (int i = 0; i < 20; ++i) ls_radio_glass_wipe(&g, &g_sf, r, 4, 10, 1);
+    LS_EQ_INT(g.wipe_frames, 0);
+    ls_radio_glass_wipe(&g, &g_sf, r, 4, 10, 0);
+    LS_EQ_INT(g.wipe_frames, 11);
+    LS_EQ_INT(escaped(r), 0);
+}
+
+LS_CASE(p25_lr_volume_follows_health_without_a_value_box)
+{
+    no_traffic();
+    P25.lora_rx = true;
+    P25.lr_iq_active = true;
+    const tui_rect pane = {1, 2, 50, 68};
+    draw_decode_now(pane);
+    const int title = rect_row_of(pane, "VOLUME");
+    const int health = rect_row_of(pane, "RECEIVER HEALTH");
+    LS_CHECK(health >= 0 && title == health + 8);
+    int x, y, w, h;
+    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_VALUE, &x, &y, &w, &h));
+    LS_EQ_INT(y, title);
+    LS_EQ_INT(h, 1);
+    LS_CHECK(!ls_scr_p25_control_rect(1, LS_RADIO_PART_UP, &x, &y, &w, &h));
+    LS_CHECK(ls_scr_p25_control_rect(0, LS_RADIO_PART_BAR, &x, &y, &w, &h));
+    LS_CHECK(w >= 20);
+    LS_CHECK(!rect_has(pane, "GAIN ["));
+}
+
+LS_CASE(p25_glass_and_thumb_keys_work_in_portrait_and_landscape)
+{
+    const tui_rect panes[] = {{1, 2, 54, 65}, {1, 2, 115, 27}};
+    for (int posture = 0; posture < 2; ++posture) {
+        no_traffic();
+        P25.lora_rx = false;
+        draw_decode_now(panes[posture]);
+        for (int card = 0; card < 2; ++card) {
+            for (int part = LS_RADIO_PART_DOWN; part <= LS_RADIO_PART_VALUE; ++part) {
+                int x, y, w, h;
+                LS_CHECK(ls_scr_p25_control_rect(card, part, &x, &y, &w, &h));
+                LS_CHECK(w >= (part == LS_RADIO_PART_VALUE ? 3 : 8) &&
+                         h >= (part == LS_RADIO_PART_VALUE ? 1 : 3));
+            }
+        }
+        LS_CHECK(press_text(panes[posture], "KEYBOARD"));
+        redraw(panes[posture]);
+        for (const char *p = "154."; *p; ++p) LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, *p));
+        redraw(panes[posture]);
+        LS_CHECK(rect_has(panes[posture], "ENTER FREQUENCY"));
+        LS_CHECK(rect_has(panes[posture], "UNIT"));
+        LS_CHECK(rect_has(panes[posture], "MOD"));
+        LS_CHECK(rect_has(panes[posture], "AUDIO"));
+        const int top = rect_row_of(panes[posture], "ENTER FREQUENCY");
+        const int bottom = rect_row_of(panes[posture], "FREQUENCY / MHz");
+        int ghosts = 0;
+        for (int y = top; y < bottom; ++y)
+            for (int x = panes[posture].x; x < panes[posture].x + panes[posture].w; ++x)
+                ghosts += g_back[y * W + x].ch == LS_TUI_SHADE_25;
+        LS_CHECK_MSG(ghosts > 20, "posture %d has no ghost digits in glass", posture);
+        for (const char *p = "785000"; *p; ++p) LS_CHECK(ls_scr_p25.key(LS_TK_CHAR, *p));
+        redraw(panes[posture]);
+        LS_CHECK(rect_has(panes[posture], "154.785000"));
+        LS_EQ_UINT(s_tune_freq_hz, TUNED_HZ);
+        LS_CHECK(ls_scr_p25.key(LS_TK_ESC, 0));
+    }
+}
+
+LS_CASE(shared_fm_p25_lcd_ten_character_entry_has_only_its_drawn_digits)
+{
+    /* MinGW has no ASan runtime: count the actual glyph cells instead.
+       1,5,4,7,8,5,0,0,0 contain 10+14+10+8+16+14+14+14+14
+       lit cells, plus two for the decimal point, at horizontal scale one.
+       Exclude the fourth glyph row, which also carries the MHz caption. */
+    const tui_rect r = {1, 2, 62, 14};
+    ls_radio_glass_t g = {0};
+    fresh();
+    ls_radio_glass_frequency(&g, &g_sf, r, r.y + 2, 851000000,
+                             "154.785000", 0, false);
+    int lit = 0, ghosts = 0;
+    for (int y = r.y; y < r.y + r.h; ++y)
+        for (int x = r.x; x < r.x + r.w; ++x) {
+            lit += y != r.y + 6 && g_back[y * W + x].ch == LS_TUI_SHADE_FULL;
+            ghosts += g_back[y * W + x].ch == LS_TUI_SHADE_25;
+        }
+    LS_EQ_INT(lit, 102);
+    LS_EQ_INT(ghosts, 0);
+    LS_EQ_INT(escaped(r), 0);
+}
+
+LS_CASE(shared_vfo_full_value_and_every_bar_cell_are_exact_targets)
+{
+    const int widths[] = {24, 28, 32, 34, 50, 54, 62};
+    const char *values[] = {"100%", "28.0", "-49.6", "12%"};
+    for (unsigned w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w)
+        for (unsigned v = 0; v < sizeof(values) / sizeof(values[0]); ++v) {
+            const tui_rect box = {1, 2, widths[w], 6};
+            ls_radio_card_t c = {.label = "VOLUME", .value = values[v],
+                                 .live = true, .hue = TUI_CYAN, .frac = 0.5f};
+            fresh(); ls_radio_vfo_card_draw(&g_sf, box, &c);
+            LS_EQ_INT(c.value_rect.x, box.x + 12);
+            LS_EQ_INT(c.value_rect.y, box.y + 1);
+            LS_EQ_INT(c.value_rect.w, strlen(values[v]) + 2);
+            LS_EQ_INT(c.value_rect.h, 1);
+            LS_CHECK(rect_has(c.value_rect, values[v]));
+            const tui_rect targets[] = {c.value_rect, c.bar, c.down, c.up};
+            const int expected[] = {LS_RADIO_PART_VALUE, LS_RADIO_PART_VALUE,
+                                    LS_RADIO_PART_DOWN, LS_RADIO_PART_UP};
+            for (int t = 0; t < 4; ++t)
+                for (int y = targets[t].y; y < targets[t].y + targets[t].h; ++y)
+                    for (int x = targets[t].x; x < targets[t].x + targets[t].w; ++x)
+                        LS_EQ_INT(ls_radio_vfo_card_hit(c.down, c.up, c.value_rect,
+                                                       c.bar, x, y), expected[t]);
+            /* Explicit overlapping-target regression: step keys win. */
+            LS_EQ_INT(ls_radio_vfo_card_hit(c.down, c.up, c.value_rect, box,
+                                           c.down.x, c.down.y), LS_RADIO_PART_DOWN);
+            LS_EQ_INT(ls_radio_vfo_card_hit(c.down, c.up, c.value_rect, box,
+                                           c.up.x, c.up.y), LS_RADIO_PART_UP);
+            LS_EQ_INT(escaped(box), 0);
+        }
+}

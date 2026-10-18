@@ -629,27 +629,25 @@ LS_CASE(marker_tune_stops_fm_sweep_and_uses_mark_frequency)
     LS_CHECK(!test_tuner(LS_WF_OWNER_USER,154785000));
 }
 
-LS_CASE(a_locked_receiver_refuses_a_marker_tune)
+static const char *tune_reason;
+void ls_wf_tune_reason(const char *reason) { tune_reason=reason; }
+LS_CASE(locked_marker_is_a_manual_tune_across_fm_bands)
 {
-    /* LOCK has to mean it everywhere, not only on the path that happened to
-       check. Tapping the waterfall is a tune like any other, so a locked
-       receiver stays where it is and the marker reports that it did not move
-       rather than claiming a frequency change that never happened. */
-    fresh();g_fm_streaming=true;
-    FM.mode=FM_MODE_LISTEN;FM.freq_hz=33940000;
-    ls_wf_source_select(LS_WF_SRC_FM);ls_wf_source_pump();
-    LS_CHECK(test_tuner!=NULL);
-
-    lakeshark_fm_frequency_lock(true);
-    LS_CHECK_MSG(!test_tuner(LS_WF_OWNER_FM,91000000),
-                 "a locked receiver accepted a marker tune");
-    LS_EQ_INT(FM.freq_hz,33940000);
-    LS_EQ_INT(lakeshark_fm_frequency_lock_hz(),33940000);
-
-    /* And unlocking hands the frequency back. */
-    lakeshark_fm_frequency_lock(false);
-    LS_CHECK(test_tuner(LS_WF_OWNER_FM,91000000));
-    LS_EQ_INT(FM.freq_hz,91000000);
+    fresh(); g_fm_streaming=true; FM.mode=FM_MODE_LISTEN;
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump();
+    uint32_t frequencies[]={33940000,91000000,154785000,433920000};
+    for (int i=0;i<4;++i) {
+        lakeshark_fm_frequency_lock(true);
+        LS_CHECK(test_tuner(LS_WF_OWNER_FM,frequencies[i]));
+        LS_EQ_UINT(FM.freq_hz,frequencies[i]);
+        LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),frequencies[i]);
+    }
+    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,23000000));
+    LS_EQ_STR(tune_reason,"outside 24-1766 MHz");
+    g_fm_streaming=false;
+    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,91000000));
+    LS_EQ_STR(tune_reason,"receiver not running");
+    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),433920000);
 }
 
 static int g_labs_handoffs;
@@ -682,14 +680,14 @@ LS_CASE(reselecting_fm_preserves_a_running_sweep)
     LS_CHECK(ls_wf_source_start(LS_WF_SRC_FM));
     LS_EQ_INT(FM_MODE_SCAN, FM.mode); LS_EQ_INT(-1, g_fm_mode_asked);
 }
-LS_CASE(refused_locked_marker_preserves_sweep_and_scanner)
+LS_CASE(locked_marker_leaves_sweep_and_stops_scanner)
 {
-    fresh(); fm_sweeping_with_one_carrier(); FM.freq_hz = 155000000;
+    fresh(); fm_sweeping_with_one_carrier(); FM.freq_hz=155000000;
     lakeshark_fm_frequency_lock(true); ls_wf_source_pump();
-    int clears = g_claims_none;
-    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,156000000));
-    LS_EQ_INT(FM_MODE_SCAN, FM.mode); LS_EQ_INT(0, g_scan_stops);
-    LS_EQ_INT(clears, g_claims_none); LS_EQ_UINT(155000000, FM.freq_hz);
+    LS_CHECK(test_tuner(LS_WF_OWNER_FM,156000000));
+    LS_EQ_INT(FM_MODE_LISTEN,FM.mode); LS_CHECK(g_scan_stops>0);
+    LS_EQ_UINT(156000000,FM.freq_hz);
+    LS_EQ_UINT(156000000,lakeshark_fm_frequency_lock_hz());
 }
 LS_CASE(a_waiting_waterfall_cannot_end_another_owners_scan)
 {
@@ -1020,4 +1018,17 @@ LS_CASE(decoder_switches_have_no_allocations_or_radio_commands)
         LS_EQ_UINT(switch_budget_end(), 0);
         LS_EQ_UINT(g_radio_calls, calls);
     }
+}
+
+LS_CASE(lr_fm_marker_reports_range_and_relocks_manual_tune)
+{
+    fresh(); g_lr=true; g_fm_radio=LS_RSEL_LORA; g_fm_streaming=true;
+    FM.mode=FM_MODE_LISTEN; FM.freq_hz=152600000; FM.lr_iq_active=true;
+    lr_spec_begin(FM.freq_hz);
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump();
+    lakeshark_fm_frequency_lock(true);
+    LS_CHECK(!test_tuner(LS_WF_OWNER_LORA,91000000));
+    LS_EQ_STR(tune_reason,"below LR2021 range (104 MHz)");
+    LS_CHECK(test_tuner(LS_WF_OWNER_LORA,433920000));
+    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),433920000);
 }

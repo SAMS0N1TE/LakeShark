@@ -596,6 +596,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     case 0x0111: fk.errors = 0; break;
     case 0x0112:                       /* DIO functions only in Standby RC (5.1.1) */
         if (fk.mode != 1 || t[2] < 5 || t[2] > 11) { fk.cmd_status = 0; fk.bad_mode++; break; }
+        if (t[2] == 5 && (t[3] & 0xF) != 2) { fk.cmd_status = 1; break; }   /* DIO5: pull-up only, as on the chip */
         fk.dio_func[t[2]] = t[3];
         break;
     case 0x0113:

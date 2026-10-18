@@ -64,3 +64,15 @@ LS_CASE(lr_callback_gap_backpressure_and_audio_cap)
     LS_CHECK(!s_dsp.f_deemph && !s_dsp.noise_hp);
     LS_CHECK(!FM.squelch_open);
 }
+
+LS_CASE(manual_marker_lock_survives_an_asynchronous_sweep_exit)
+{
+    FM.mode=FM_MODE_SCAN; FM.scan_start_hz=150000000; FM.scan_stop_hz=162000000;
+    FM.freq_hz=154785000; s_scan_tune_hz=154785000;
+    lakeshark_fm_frequency_lock(true);
+    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),154785000);
+    s_scan_tune_hz=0; FM.freq_hz=150012500;
+    lakeshark_fm_frequency_lock(true);
+    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),156000000);
+    lakeshark_fm_frequency_lock(false); FM.mode=FM_MODE_LISTEN;
+}

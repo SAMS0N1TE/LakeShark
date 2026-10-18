@@ -2818,3 +2818,9 @@ target_include_directories(test_acars_am_chain PRIVATE
 ls_add_test(test_acars ${FW}/bench/fixtures/acars_gen.c
     ${APP}/acars/acars.c ${APP}/acars/acars_msk.c)
 target_include_directories(test_acars PRIVATE ${FW}/bench/fixtures ${APP}/acars)
+
+# FM glass displays the real DSP squelch threshold, including on the host.
+target_sources(lssim PRIVATE ${APP}/fm/fm_dsp.c)
+
+add_test(NAME test_fm_vfo_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fm_vfo_ui.py $<TARGET_FILE:lssim>)

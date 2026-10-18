@@ -1,5 +1,6 @@
 #ifndef LS_RADIO_PANEL_H
 #define LS_RADIO_PANEL_H
+/* Shared receiver glass, frequency entry and touch control deck. */
 #include "ls_tui_ui.h"
 #include "iq_app_control.h"
 
@@ -75,7 +76,8 @@ void ls_radio_bargraph(tui_surface *sf, tui_rect box, int x, int y, int w,
                        int rows, float frac, float peak);
 
 /* One control: its label and bracketed number on the header row, the travel
-   under it, and the two keys at the right end. The caller fills everything
+   under it, and the two keys at the right end. thumb_keys gives exact entry
+   its own filled key beside the travel, with all three keys at least 3x8. The caller fills everything
    above `down` and reads the four rects back out.
 
    THE TRAVEL AND THE NUMBER ARE DIFFERENT TARGETS. `bar` sets the value at
@@ -89,14 +91,24 @@ typedef struct {
     uint8_t     hue;
     bool        live;        /* false: drawn unavailable, no target at all  */
     bool        settable;    /* false: steps only, no travel to press       */
+    bool        thumb_keys;  /* filled >=3x8 exact-entry and +/- keys */
+    char        key_down, key_up; /* optional VFO header shortcut badge */
     bool        flash_down, flash_up;   /* key lit by a tap, caller's timer */
     tui_rect    down, up, value_rect, bar;   /* out */
 } ls_radio_card_t;
 void ls_radio_card_draw(tui_surface *sf, tui_rect box, ls_radio_card_t *card);
+/* Shared N/K/H/X scanner actions; true when handled. */
+bool ls_radio_scan_key(int key);
+/* VFO style: value in title, travel and >=3x8 +/- keys below. */
+void ls_radio_vfo_card_draw(tui_surface *sf, tui_rect box, ls_radio_card_t *card);
+/* VFO only: bar or full title value opens exact entry; +/- take priority.
+   Returns LS_RADIO_PART_DOWN/UP/VALUE, or -1 for a miss. */
+int ls_radio_vfo_card_hit(tui_rect down, tui_rect up, tui_rect value,
+                         tui_rect bar, int col, int row);
 
 #define LS_RADIO_CARD_GATE (-1)
 /* DOWN and UP step; BAR is the travel, which sets the value at the column
-   pressed; VALUE is the bracketed number in the card's header, which is the
+   pressed; VALUE is the bracketed number (a filled key with thumb_keys), the
    only thing that opens exact entry. BAR and VALUE never overlap - a slider
    that also types is a slider you cannot trust. */
 enum { LS_RADIO_PART_DOWN = 0, LS_RADIO_PART_UP, LS_RADIO_PART_VALUE,
@@ -117,4 +129,39 @@ char ls_freq_pad_hit(const tui_rect keys[12], const tui_rect actions[3],
 void ls_freq_entry_add(char *entry, size_t cap, char c);
 void ls_freq_entry_delete(char *entry);
 bool ls_freq_entry_hz(const char *entry, uint32_t *out);
+void ls_radio_filament(tui_surface *, tui_rect, int x, int y, int rows, uint8_t hue);
+
+/* Receiver glass: fixed per-screen state, no acquisition or allocation.
+   Put instances in PSRAM; motion only follows a frequency or mode change. */
+#define LS_RADIO_TRACE_N 112
+typedef struct {
+    uint32_t dial_hz, dial_target;
+    int dial_frames, wipe_frames, mode;
+    bool mode_known;
+    uint8_t trace[LS_RADIO_TRACE_N];
+    int trace_head, trace_n;
+    float hold;
+} ls_radio_glass_t;
+uint32_t ls_radio_glass_tick(ls_radio_glass_t *, uint32_t hz);
+void ls_radio_glass_bezel(tui_surface *, tui_rect, const char *title);
+int ls_radio_glass_chip(tui_surface *, tui_rect, int x, int y,
+                        const char *text, bool on, uint8_t hue);
+typedef struct { const char *text; bool on; uint8_t hue; } ls_radio_chip_t;
+/* Left chips fold from x; optional right chips retain fixed positions. */
+void ls_radio_glass_rail(tui_surface *, tui_rect, int x, int y, int width,
+                         const ls_radio_chip_t *left, int left_n,
+                         const ls_radio_chip_t *right, int right_n);
+/* Starts below the chip rail; returns the first row below the figures. */
+int ls_radio_glass_frequency(ls_radio_glass_t *, tui_surface *, tui_rect,
+                             int y, uint32_t hz, const char *entry,
+                             uint32_t blink, bool wide);
+void ls_radio_glass_wipe(ls_radio_glass_t *, tui_surface *, tui_rect, int first_y, int end_y, int mode);
+void ls_radio_glass_sample(ls_radio_glass_t *, float signal);
+void ls_radio_glass_trace(const ls_radio_glass_t *, tui_surface *, tui_rect,
+                          int x, int y, int w, int h, float threshold);
+void ls_radio_glass_meter(ls_radio_glass_t *, tui_surface *, tui_rect,
+                          int x, int y, int w, int rows, float signal,
+                          bool available, bool open, bool gate_row,
+                          float threshold, const char *gate_label);
+
 #endif

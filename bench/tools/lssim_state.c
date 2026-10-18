@@ -341,6 +341,7 @@ float ls_imu_heading(void) { return 119.0f; }
    simulator's GPS screen is drawn with a fix. */
 static bool s_gps_running = true;
 bool ls_gps_running(void) { return s_gps_running; }
+bool ls_gps_factory_reset(void) { return s_gps_running; }
 
 /* The antenna select, for the simulator. Internal until switched,
    which is what the board comes up as. */

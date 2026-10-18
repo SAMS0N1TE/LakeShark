@@ -230,9 +230,11 @@ static void loraport_show(char *b, size_t n)
     const char *what = !next.header ? "onboard"
                      : ls_lora_port_is_con1(&next) ? "header CON1"
                      : ls_lora_port_on_socket(&next) ? "header, socket pins" : "header, own pins";
-    const bool moved = next.header != now->header ||
-                       (next.header && (next.cs != now->cs || next.busy != now->busy || next.rst != now->rst));
-    if (moved) snprintf(b, n, "%s, reboot to apply", what);
+    /* the whole saved port against what this boot runs: a changed table or
+       TCXO waits for a reboot just as a changed pin does */
+    ls_lora_port_t shown = next;
+    if (!shown.header) ls_lora_port_board(&shown);
+    if (!ls_lora_port_same(&shown, now)) snprintf(b, n, "%s, reboot to apply", what);
     else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ", keyboard off" : "");
 }
 static void loraport_next(void)
@@ -240,6 +242,27 @@ static void loraport_next(void)
     /* the row shows the result: a refused save leaves it as it was */
     char why[96];
     (void)ls_lora_port_toggle(why, sizeof(why));
+}
+
+/* Which T-LR2021 the header module is: the V0.3 and V1.0 switch table or the
+   older V0.2 one. Custom pins from 'lora port' are shown and never changed
+   from here. */
+static void loramod_show(char *b, size_t n)
+{
+    ls_lora_port_t next;
+    ls_lora_port_saved(&next);
+    const char *what = ls_lora_port_on_socket(&next) || ls_lora_port_is_v03(&next) ? "V0.3 / V1.0"
+                     : ls_lora_port_is_v02(&next) ? "V0.2" : "custom (lora port)";
+    /* only a header port is running a table; onboard keeps it for later */
+    ls_lora_port_t shown = next;
+    if (!shown.header) ls_lora_port_board(&shown);
+    if (!ls_lora_port_same(&shown, ls_lora_port())) snprintf(b, n, "%s, reboot to apply", what);
+    else snprintf(b, n, "%s", what);
+}
+static void loramod_next(void)
+{
+    char why[96];
+    (void)ls_lora_port_next_module(why, sizeof(why));
 }
 
 static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
@@ -329,6 +352,7 @@ static const item_t DEVICE_ITEMS[] = {
     { "Keyboard light", keylight_show, keylight_next, NULL },
     { "Keyboard dim",   keydim_show,   keydim_next, NULL },
     { "LoRa radio",     loraport_show, loraport_next, NULL },
+    { "LoRa module",    loramod_show,  loramod_next, NULL },
     { "USB autoreboot", usb_show,      usb_next, NULL },
     { "Update",         update_show,   update_next, NULL },
     { "Check for updates", updchk_show, updchk_next, NULL },

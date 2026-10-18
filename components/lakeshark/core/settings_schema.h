@@ -15,7 +15,7 @@ extern "C" {
    bumps it - the point is that the version stamp says "this build wrote
    this".  Bump SETTINGS_SCHEMA_MIN_ADDITIVE only when the oldest version this
    build can still read from without wiping crosses a breaking cutover. */
-#define SETTINGS_SCHEMA_VERSION       6U
+#define SETTINGS_SCHEMA_VERSION       7U
 #define SETTINGS_SCHEMA_MIN_ADDITIVE  1U
 
 typedef enum {
@@ -37,6 +37,8 @@ settings_schema_action_t settings_schema_decide(
     uint32_t current,
     uint32_t min_additive);
 
+/* Version 1 FM step preference: zero keeps the per-mode default. */
+bool settings_fm_step_valid(uint32_t hz);
 bool settings_gain_valid(const char *app_name, int gain);
 
 const char *settings_schema_action_name(settings_schema_action_t a);

@@ -3045,6 +3045,12 @@ static int gps_cmd(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "baud")) { ls_gps_scan_baud(); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "sky"))  { ls_gps_print_sky(); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "raw"))  { ls_gps_print_raw(); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "reset")) {
+        if (!ls_gps_factory_reset()) { printf("gps: no receiver to reset\n"); return 1; }
+        printf("gps: factory reset sent; the module is set up again in a few seconds "
+               "(check with 'gps' and 'gps raw')\n");
+        return 0;
+    }
     ls_gps_diagnostics();
     return 0;
 }
@@ -3422,7 +3428,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=nullptr,.func=mixrf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mixrf);
     static const esp_console_cmd_t gps={.command="gps",
-        .help="GPS: report fix, sentence health, tracked satellites, C/N0 and antenna. 'gps sky' lists each satellite, 'gps raw' prints the last lines as received, 'gps baud' listens at each rate and dumps the wire",
+        .help="GPS: report fix, sentence health, tracked satellites, C/N0 and antenna. 'gps sky' lists each satellite, 'gps raw' prints the last lines as received, 'gps baud' listens at each rate and dumps the wire, 'gps reset' puts the receiver back to factory settings and sets it up again",
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
     static const esp_console_cmd_t lora={.command="lora",

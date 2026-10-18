@@ -105,6 +105,7 @@ extern "C" {
 #define LR20XX_DIO_FUNC_IRQ        0x1
 #define LR20XX_DIO_FUNC_RF_SWITCH  0x2
 #define LR20XX_DIO_PULL_NONE       0x0
+#define LR20XX_DIO_PULL_UP         0x2
 #define LR20XX_DIO_PULL_AUTO       0x3   /* keeps the standby level in sleep */
 
 /* SetDioRfSwitchConfig (6.8.2) bits: the DIO is high in that chip mode. The

@@ -105,6 +105,22 @@ static void rule_set(const ls_opt_t *o,double v)
     ls_track_get_rule(&move,&gap);
     ls_track_set_rule(o->arg?move:(float)v,o->arg?(uint32_t)v:gap);
 }
+static char s_reset_result[48];
+static void reset_action(const ls_opt_t *o)
+{
+    (void)o;
+    snprintf(s_reset_result,sizeof(s_reset_result),"%s",ls_gps_factory_reset()
+             ?"Sent; set up again in a few seconds":"No receiver to reset");
+}
+static void reset_show(const ls_opt_t *o,char *out,size_t n)
+{
+    (void)o;
+    snprintf(out,n,"%s",s_reset_result[0]?s_reset_result:"Factory settings, then setup");
+}
+static const ls_opt_t RESET_OPT[] = {
+    {.label="YES, reset the GPS receiver",.kind=LS_OPT_ACTION,.act=reset_action,.show=reset_show},
+};
+static const ls_opt_ctx_t RESET_CTX={.name="CONFIRM RESET",.job=-1,.radio=LS_RSEL_NONE,.menu_arrows=true,LS_OPT_ROWS(RESET_OPT)};
 static const ls_opt_t CLEAR_OPT[] = {
     {.label="YES, clear saved track",.kind=LS_OPT_ACTION,.arg=1,.act=storage_action,.why_not=storage_blocked,.show=storage_show},
 };
@@ -115,6 +131,7 @@ static const ls_opt_t GPS_OPT[] = {
     {.label="Maximum gap",.kind=LS_OPT_LEVEL,.arg=1,.num=rule_value,.set_num=rule_set,.lo=0,.hi=3600,.step=1,.unit="seconds; 0 disables"},
     {.label="Clear saved track",.kind=LS_OPT_MENU,.sub=&CLEAR_CTX,.why_not=storage_blocked},
     {.label="Stop recording / cancel resume",.kind=LS_OPT_ACTION,.arg=2,.act=storage_action,.why_not=storage_busy,.show=storage_show},
+    {.label="Reset receiver to factory",.kind=LS_OPT_MENU,.sub=&RESET_CTX},
 };
 static const ls_opt_ctx_t GPS_CTX={.name="GPS",.job=-1,.radio=LS_RSEL_NONE,.menu_arrows=true,LS_OPT_ROWS(GPS_OPT)};
 

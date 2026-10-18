@@ -2274,7 +2274,9 @@ LS_CASE(fm_vfo_steppers_and_keyboard_toggle_answer_touch_in_both_postures)
         LS_CHECK(ls_scr_fm.touch(plus_x, plus_y));
         LS_EQ_INT(2, s_sql_calls);
         LS_CHECK_MSG(s_sql_seen > 40.0f, "plus asked for %.1f", (double)s_sql_seen);
-        LS_CHECK(ls_scr_fm.touch(x + (int)strlen("SQUELCH") + 2, y));
+        /* Hit the painted value, not the spacing before its aligned column. */
+        LS_CHECK(find_text("[40%]", &x, &y));
+        LS_CHECK(ls_scr_fm.touch(x, y));
         LS_CHECK(ls_numpad_active());
         ls_numpad_close();
 
@@ -2300,7 +2302,7 @@ static ls_act_status_t fm_test_volume_action(const ls_args_t *args, ls_val_t *ou
     return LS_ACT_OK;
 }
 
-LS_CASE(fm_vfo_volume_slider_is_a_one_tap_edit_and_paint_is_read_only)
+LS_CASE(fm_vfo_volume_bar_opens_exact_entry_and_paint_is_read_only)
 {
     LS_CHECK(ls_action_register("audio.volume", "i", LS_CAP_TUNE,
                                 fm_test_volume_action, "test volume"));
@@ -2313,20 +2315,27 @@ LS_CASE(fm_vfo_volume_slider_is_a_one_tap_edit_and_paint_is_read_only)
         int label_x, label_y, x, y;
         LS_CHECK(find_text("VOLUME", &label_x, &label_y));
         LS_CHECK(find_text("[25%]", &x, &y));
-        /* The bar starts below the label; one tap commits the proportional
-           position exactly once. Later paints must only render that value. */
+        /* The shared VFO card now opens exact entry from its whole bar.
+           Opening and painting must not apply; accepting applies once. */
         LS_CHECK(ls_scr_fm.touch(label_x + 4, label_y + 1));
+        LS_CHECK(ls_numpad_active());
+        LS_EQ_INT(s_audio_vol_calls, 0);
+        LS_EQ_INT(audio_volume_get(), 25);
+        LS_CHECK(ls_numpad_key(LS_TK_CHAR, '6'));
+        LS_CHECK(ls_numpad_key(LS_TK_CHAR, '0'));
+        LS_CHECK(ls_numpad_key(LS_TK_ENTER, 0));
+        LS_CHECK(!ls_numpad_active());
         LS_EQ_INT(s_audio_vol_calls, 1);
         const int tapped_volume = audio_volume_get();
-        LS_CHECK_MSG(tapped_volume != 25, "slider tap left volume at %d", tapped_volume);
+        LS_CHECK_MSG(tapped_volume != 25, "exact entry left volume at %d", tapped_volume);
         for (int frame = 0; frame < 3; ++frame) {
             fresh(); draw_pane(&ls_scr_fm, pane);
             LS_EQ_INT(s_audio_vol_calls, 1);
             LS_EQ_INT(audio_volume_get(), tapped_volume);
         }
 
-        /* The bracketed value, rather than the bar, is the explicit-entry
-           target. It remains available after the slider has changed it. */
+        /* The bracketed value opens the same editor as the bar. Cancelling
+           that editor leaves the previously accepted volume alone. */
         LS_CHECK(find_text("VOLUME", &label_x, &label_y));
         LS_CHECK(ls_scr_fm.touch(label_x + 11, label_y));
         LS_CHECK(ls_numpad_active());

@@ -44,6 +44,7 @@ static bool         s_update_check = true;
 static int s_boot_sound = 1;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
+static uint32_t s_fm_step;
 static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
@@ -304,6 +305,14 @@ static void settings_apply_schema(void)
 
 static void settings_drop_sam_voice_keys(void);
 
+uint32_t settings_get_fm_step(void) { return __atomic_load_n(&s_fm_step, __ATOMIC_ACQUIRE); }
+void settings_set_fm_step(uint32_t hz)
+{
+    if (!settings_fm_step_valid(hz)) return;
+    __atomic_store_n(&s_fm_step, hz, __ATOMIC_RELEASE);
+    (void)sput_u32("fm_step_v1", hz);
+}
+
 bool settings_init(void)
 {
     __atomic_store_n(&s_boot_sound,1,__ATOMIC_RELEASE);
@@ -312,6 +321,7 @@ bool settings_init(void)
     s_audio_muted=false;
     s_map_layers_valid=false;
     s_wf_display=UINT32_MAX;
+    s_fm_step=0;
     s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
@@ -342,6 +352,8 @@ bool settings_init(void)
     /**/  settings_apply_schema();
     settings_drop_sam_voice_keys();
     nvs_get_u32(s_nvs, "wf_display", &s_wf_display);
+    nvs_get_u32(s_nvs, "fm_step_v1", &s_fm_step);
+    if (!settings_fm_step_valid(s_fm_step)) s_fm_step=0;
     s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
@@ -971,10 +983,34 @@ bool settings_get_lora_port(uint64_t *a, uint64_t *b)
     *b = s_lr_port_b;
     return true;
 }
+/* Written through and committed before this returns, so the console can say
+   so when NVS refuses it. The queued path reports success the
+   moment the write is queued and only logs a failure afterwards, which left
+   a header module's switch table silently unsaved (issue 11). */
+static bool sput_u64_now(const char *key, uint64_t v)
+{
+    if (!s_nvs_ok) return false;
+    set_write_t w;
+    memset(&w, 0, sizeof(w));
+    strlcpy(w.key, key, sizeof(w.key));
+    w.type = SV_U64;
+    w.v.u64 = v;
+    const esp_err_t err = ls_nvs_run(write_now_job, &w, 0);
+    if (err != ESP_OK) ESP_LOGE(TAG, "'%s' not saved: %s", key, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
 bool settings_set_lora_port(uint64_t a, uint64_t b)
 {
     /* the table first: a port word never points at a table not yet written */
-    if (!sput_u64("lr_rfsw", b) || !sput_u64("lr_port", a)) return false;
+    if (!sput_u64_now("lr_rfsw", b) || !sput_u64_now("lr_port", a)) return false;
+    /* read both back from flash: a value NVS took but did not keep is
+       reported here, not found missing at the next boot */
+    port_peek_t back = { 0, 0 };
+    if (ls_nvs_run(port_peek_job, &back, 0) != ESP_OK || back.a != a || back.b != b) {
+        ESP_LOGE(TAG, "LoRa port written but not read back from NVS");
+        return false;
+    }
     s_lr_port_a = a;
     s_lr_port_b = b;
     s_lr_port_have = true;

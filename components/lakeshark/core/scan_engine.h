@@ -12,6 +12,11 @@ extern "C" {
 
 void scan_engine_init(void);
 bool scan_engine_audio_open(void);
+/* One lap from the current carrier, using the scan worker's squelch window.
+   dir is -1 or +1. A stop cancels and locks the current carrier. */
+bool scan_engine_seek(uint32_t from_hz, uint32_t step_hz, int dir,
+                      uint32_t lo_hz, uint32_t hi_hz);
+int scan_engine_seek_direction(void);
 void scan_engine_start(void);
 void scan_engine_stop(void);
 bool scan_engine_active(void);
@@ -27,6 +32,8 @@ void scan_engine_receiver_status(ls_iq_control_status_t *out);
    This, not scan_engine_active(), is what a retune fast-path should test. */
 bool scan_engine_sweeping(void);
 
+/* NEXT releases a manual hold. SKIP also locks out this session position
+   (a seek visits each position only once). HOLD works during seek too. */
 void scan_engine_skip(void);
 void scan_engine_next(void);
 void scan_engine_hold(bool hold);

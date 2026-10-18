@@ -190,8 +190,10 @@
    LilyGO lilygo_device_driver src/device/t_display_p4/v1/driver.cpp,
    InitLr2021, selects TCXO 3.3 V with 32768 ticks before calibration and
    DCDC. The module therefore supports DCDC with its SIMO inductor fitted.
-   LilyGO reports the T-LR2021 v0.3 TCXO supply is always on; v1 has no
-   TCXO power pin. This driver defaults to TCXO and LDO for sensitivity;
+   Every T-LR2021 design (V0.2, V0.3, V1.0) feeds its TCXO from VCC, always
+   on, so the SetTcxoMode voltage has no effect on these modules (SoftRF's
+   author, T-Display-P4 issue 20); a V1.0 board draws 1-2 mA asleep for it,
+   fixed in the V2.0 board. This driver defaults to TCXO and LDO for sensitivity;
    both clock and regulator modes are runtime settings. It transmits on the LF
    path only, below 1 GHz: LilyGO (T-Display-P4 issue 33) gives the board
    limits as 22 dBm sub-GHz and 5 dBm at 2.4 GHz, above which the 2.4 GHz
@@ -224,6 +226,11 @@
 #define LS_BOARD_LORA_CON1_BUSY  33
 #define LS_BOARD_LORA_CON1_RST   27
 #define LS_BOARD_LORA_CON1_IRQ   25
+
+/* The older T-LR2021 V0.2 module has two switch DIOs: DIO5 high for Rx HF
+   (it is also high for Tx HF there, which the driver never enters, so only
+   the Rx HF bit is set), DIO6 high for Rx LF and Tx LF. */
+#define LS_BOARD_LORA_CON1_V02_RFSW_TABLE { 5, 0x08 }, { 6, 0x06 }
 
 #define LS_BOARD_GPS_UART_NUM    2
 #define LS_BOARD_GPS_RX_GPIO     22

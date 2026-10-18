@@ -219,6 +219,12 @@ ls_gps_do_t ls_gps_link_step(ls_gps_link_t *link, bool framed,
 #define LS_GPS_CMD_RATE_1HZ  "$PCAS02,1000*2E\r\n"  /* one fix a second   */
 #define LS_GPS_CMD_115200    "$PCAS01,5*19\r\n"
 #define LS_GPS_CMD_SAVE      "$PCAS00*01\r\n"
+/* GGA, GSA, GSV, RMC. Another firmware can save a mask without GSV/GSA, and
+   the satellite table is built from those two. */
+#define LS_GPS_CMD_NMEA      "$PCAS03,1,0,1,1,1,0,0,0,0,0,,,0,0*02\r\n"
+/* Cold start with the factory configuration: drops any saved mask, rate,
+   constellations and baud (the module comes back at 9600). */
+#define LS_GPS_CMD_FACTORY   "$PCAS10,3*1F\r\n"
 
 /* Snapshot of the current state.  Cheap; safe from any task. */
 void ls_gps_get(ls_gps_state_t *out);
@@ -235,6 +241,11 @@ void ls_gps_print_raw(void);
 /* Listen at each plausible rate and print what the wire carries.  For the
    case the counters cannot separate: bytes arriving that never frame. */
 void ls_gps_scan_baud(void);
+
+/* Put the receiver back to its factory configuration, then bring it up the
+   way boot does (find the rate, raise it, save, configure). Starts the reader
+   if needed. False when the board has no GPS or the reader cannot start. */
+bool ls_gps_factory_reset(void);
 
 #ifdef __cplusplus
 }

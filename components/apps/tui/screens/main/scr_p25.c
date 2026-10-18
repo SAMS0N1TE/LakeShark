@@ -48,6 +48,10 @@ static int s_page;   /* 0 decode, 1 signal, 2 scanner */
    of the call - a live conversation and its own five-second-old tail end
    looked identical. */
 static uint32_t s_blink;
+EXT_RAM_BSS_ATTR static ls_radio_glass_t s_glass;
+static bool s_keypad;
+static bool s_entry_bad;
+static char s_entry[16];
 
 static void field(tui_surface *sf, tui_rect a, int row, const char *label,
                   const char *value, uint8_t lattr, uint8_t vattr)
@@ -367,10 +371,13 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     const int held = (s_tg_have && s_tg.count) ? (int)s_tg.count : 0;
     const int fits = held ? 3 + held : 3;
     const bool wide = area.w >= 60;
-    const int dial_want = wide && area.h >= 18 ? 10 : 8;
+    /* The same stacked glass as FM, with a side column for digital decode.
+       Leave the existing history/health windows the rest of the pane. */
+    const int dial_want = wide ? (area.h >= 15 || s_keypad ? 11 : 10)
+                              : s_keypad && area.w >= 51 ? 11 : area.h >= 25 ? 14 : 8;
     const int top_h = area.h < dial_want ? area.h : dial_want;
     tui_rect dial = tui_rect_make(area.x, area.y,
-                                  wide ? area.w * 9 / 20 : area.w, top_h);
+                                  wide ? area.w * 11 / 20 : area.w, top_h);
     tui_rect detail = wide
         ? tui_rect_make(dial.x + dial.w + 1, area.y,
                         area.w - dial.w - 1, top_h)
@@ -380,42 +387,37 @@ static void draw_decode(tui_surface *sf, tui_rect area)
 
     ls_iq_control_status_t st;
     p25_get_receiver_status(&st);
-    const uint32_t shown = st.effective_center_known
-                         ? (uint32_t)st.effective_center_hz : freq;
     /* THE GLASS. The scanner's bezel and its rail of lit annunciators, so the
        two pages of one radio read as one instrument. The title keeps its
        words - they are what a test and a thumb both look for. */
-    ls_radio_bezel(sf, dial, p25_p2_enabled() ? "P25 II EXP / RECEIVER"
-                                              : "P25 / RECEIVER");
+    ls_radio_glass_bezel(sf, dial, s_keypad ? "ENTER FREQUENCY"
+                               : p25_p2_enabled() ? "P25 II EXP / RECEIVER"
+                                                  : "P25 / RECEIVER");
     char buf[64];
     if (dial.h >= 7) {
-        int cx = dial.x + 1;
-        cx = ls_radio_chip(sf, dial, cx, dial.y + 1,
-                           p25_p2_enabled() ? "P2" : "P1", true,
-                           p25_p2_enabled() ? TUI_MAGENTA : TUI_BLUE);
-        cx = ls_radio_chip(sf, dial, cx, dial.y + 1, sync ? "SYNC" : "NO SYNC", sync,
-                           TUI_GREEN);
+        ls_radio_chip_t chips[5];
+        int n = 0;
+        chips[n++] = (ls_radio_chip_t){ p25_p2_enabled() ? "P2" : "P1", true,
+                                      p25_p2_enabled() ? TUI_MAGENTA : TUI_BLUE };
+        chips[n++] = (ls_radio_chip_t){ sync ? "SYNC" : "NO SYNC", sync, TUI_GREEN };
         if (P25.p25_enc_muted)
-            cx = ls_radio_chip(sf, dial, cx, dial.y + 1, "ENC", true, TUI_RED);
+            chips[n++] = (ls_radio_chip_t){ "ENC", true, TUI_RED };
         if (scan_engine_active())
-            cx = ls_radio_chip(sf, dial, cx, dial.y + 1,
-                               scan_engine_manual_hold() ? "HOLD" : "SCAN", true,
-                               TUI_YELLOW);
+            chips[n++] = (ls_radio_chip_t){ scan_engine_manual_hold() ? "HOLD" : "SCAN",
+                                          true, TUI_YELLOW };
         if (P25.split_enabled)
-            cx = ls_radio_chip(sf, dial, cx, dial.y + 1, "TRUNK", P25.split_active,
-                               TUI_CYAN);
-        (void)cx;
+            chips[n++] = (ls_radio_chip_t){ "TRUNK", P25.split_active, TUI_CYAN };
+        ls_radio_glass_rail(sf, dial, dial.x + 1, dial.y + 1, dial.w - 2,
+                            chips, n, NULL, 0);
     }
-    if (dial.h >= 8) {
-        ls_radio_frequency_draw(sf, dial, 2, shown, value);
-        if (dial.h >= 9)
-            tui_put_str(sf, dial, dial.x + 2, dial.y + 7, "MHz", label);
-    } else {
-        snprintf(buf, sizeof(buf), "%u.%04u MHz", (unsigned)(shown / 1000000u),
-                 (unsigned)((shown % 1000000u) / 100u));
-        field(sf, dial, 1, "FREQ", buf, label, value);
-    }
-    if (dial.h >= 10) {
+    /* Animate requested retunes, never receiver centre-estimate jitter. */
+    tui_rect figures = dial;
+    figures.h -= 2; /* reserve receiver line and meter below the figures */
+    int below = ls_radio_glass_frequency(&s_glass, sf, figures, dial.y + 2,
+                                         freq, s_keypad ? s_entry : NULL,
+                                         s_blink, false);
+    ls_radio_glass_wipe(&s_glass, sf, dial, dial.y + 2, below, p25_p2_enabled() ? 2 : 0);
+    if (below <= dial.y + dial.h - 2) {
         if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
         else if (P25.lr_iq_active)
             snprintf(buf, sizeof(buf), "EXPERIMENTAL I/Q / CAPTURE GAPS");
@@ -425,16 +427,35 @@ static void draw_decode(tui_surface *sf, tui_rect area)
             snprintf(buf, sizeof(buf), "%s IN USE ELSEWHERE", ls_rsel_name(LS_RSEL_LORA));
         else snprintf(buf, sizeof(buf), "%s", st.receiver_streaming
                       ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER");
-        tui_put_str(sf, dial, dial.x + 2, dial.y + 8, buf,
+        if (s_keypad) {
+            const uint32_t rx = st.effective_center_known ? (uint32_t)st.effective_center_hz : freq;
+            snprintf(buf, sizeof(buf), "RX %u.%04u MHz", (unsigned)(rx / 1000000u),
+                     (unsigned)((rx % 1000000u) / 100u));
+        }
+        tui_put_str(sf, dial, dial.x + 2, below++, buf,
                     scan_engine_active() ? value : idle);
     }
+
+    const float signal = level < 0.0f ? 0.0f : level > 1.0f ? 1.0f : level;
+    ls_radio_glass_sample(&s_glass, st.receiver_streaming ? signal : 0.0f);
+    const int meter_y = dial.y + dial.h - 2;
+    const int trace_h = meter_y - below - 1;
+    if (trace_h >= 2) {
+        tui_put_str(sf, dial, dial.x + 2, below, "ACT", label);
+        ls_radio_glass_trace(&s_glass, sf, dial, dial.x + 6, below,
+                             dial.w - 10, trace_h, 0.0f);
+    }
+    if (below <= meter_y)
+        ls_radio_glass_meter(&s_glass, sf, dial, dial.x + 2, meter_y,
+                             dial.w - 4, 1, signal, st.receiver_streaming,
+                             sync, false, 0.0f, NULL);
 
     /* One window for what is decoded and how well it is received. It was
        two boxes in portrait (DECODE, SIGNAL) and a spectrum page behind a
        tab; the numbers a thumb watches sit together now. */
     tui_rect mbox = wide ? detail
         : tui_rect_make(detail.x, detail.y, detail.w,
-                        detail.h < MERGED_ROWS ? detail.h : MERGED_ROWS);
+                        detail.h < MERGED_ROWS ? detail.h : !s_keypad && area.h < 25 ? MERGED_ROWS - 1 : MERGED_ROWS);
     if (mbox.h >= 3)
         draw_merged(sf, mbox, nac, tg, src, mod, sync, level, voice, &st);
     if (wide) {
@@ -953,20 +974,20 @@ static void deck_fill(void)
 static void deck_draw(tui_surface *sf, tui_rect area)
 {
     s_deck_n = 0;
-    if (area.h < 5 || area.w < 20) return;
+    if (area.h < 6 || area.w < 28) return;
     if (s_deck_flash_ttl > 0 && --s_deck_flash_ttl == 0) s_deck_flash = -1;
     deck_fill();
     /* FM's step cards: stacked and as tall as the pane allows, up to the nine
-       rows that give the keys a thumb's height, centred so nothing is left
-       hanging under them. Landscape puts the two side by side. */
+       rows that give the keys a thumb's height, immediately below the
+       receiver content. Landscape puts the two side by side. */
     const int n_cards = lr_receiver() ? 1 : P25_N_CARD;
     const int cols = area.w >= 56 && n_cards > 1 ? 2 : 1;
     const int rows = (n_cards + cols - 1) / cols;
     int card_h = (area.h - (rows - 1)) / rows;
     if (card_h > 9) card_h = 9;
-    if (card_h < 5) return;
-    const int group_h = rows * card_h + (rows - 1);
-    const int y0 = area.y + (area.h - group_h) / 2;
+    if (card_h < 6) return;
+    /* Anchor the deck to the health box, including a single LR card. */
+    const int y0 = area.y;
     const int x0 = cols > 1 ? area.x : area.x + 1;
     const int w0 = cols > 1 ? area.w : area.w - 2;
     const int cw = w0 / cols;
@@ -974,7 +995,7 @@ static void deck_draw(tui_surface *sf, tui_rect area)
         const tui_rect box = tui_rect_make(x0 + (i % cols) * cw,
                                            y0 + (i / cols) * (card_h + 1),
                                            cols > 1 ? cw - 1 : w0, card_h);
-        ls_radio_card_draw(sf, box, &s_deck[i]);
+        ls_radio_vfo_card_draw(sf, box, &s_deck[i]);
         s_deck_n = i + 1;
     }
 }
@@ -986,9 +1007,6 @@ static void deck_draw(tui_surface *sf, tui_rect area)
    The keypad is FM's own (ls_freq_pad_draw), taking the deck's place the way
    the VFO's does, with the KEYBOARD / CONTROLS toggle in the bottom right
    corner. Fixed storage: drawing or editing it allocates nothing. */
-static bool s_keypad;
-static bool s_entry_bad;
-static char s_entry[16];
 static tui_rect s_key[12], s_key_act[3];
 static tui_rect s_kbd_btn;
 
@@ -1076,25 +1094,16 @@ bool ls_scr_p25_pad_rect(char c, int *x, int *y)
     return false;
 }
 
-/* One write per tap, in the control's own range, and the travel never types. */
+/* Step keys retain priority; bar and title value share exact entry. */
 static bool deck_touch(int col, int row)
 {
     for (int i = 0; i < s_deck_n; i++) {
         const ls_radio_card_t *c = &s_deck[i];
-        const bool down = c->down.h > 0 && tui_rect_contains(c->down, col, row);
-        const bool up   = c->up.h > 0 && tui_rect_contains(c->up, col, row);
-        const bool bar  = c->bar.h > 0 && tui_rect_contains(c->bar, col, row);
-        const bool val  = c->value_rect.h > 0 && tui_rect_contains(c->value_rect, col, row);
-        if (!down && !up && !bar && !val) continue;
-        if (bar) {
-            const int span = c->bar.w > 1 ? c->bar.w - 1 : 1;
-            int pos = col - c->bar.x;
-            if (pos < 0) pos = 0;
-            if (pos > span) pos = span;
-            if (i == P25_CARD_VOL) volume_apply(pos * 100.0 / span);
-            else gain_apply(pos * 50.0 / span);
-            return true;
-        }
+        const int part = ls_radio_vfo_card_hit(c->down, c->up, c->value_rect,
+                                               c->bar, col, row);
+        if (part < 0) continue;
+        const bool down = part == LS_RADIO_PART_DOWN;
+        const bool up = part == LS_RADIO_PART_UP;
         if (down || up) {
             /* The keys are the quick controls' own, so a thumb and the
                keyboard move one value by one step. */
@@ -1202,8 +1211,8 @@ static void draw(tui_surface *sf, tui_rect area)
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
         if (s_page == PV_VFO && area.w >= 56) {
-            int deck_h = s_keypad ? body.h - 8 : 5;
-            if (body.h - deck_h < 8) deck_h = 0;
+            int deck_h = s_keypad ? body.h - 11 : 6;
+            if (body.h - deck_h < 10) deck_h = 0;
             if (deck_h >= 5) {
                 s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
                                              body.w, deck_h);
@@ -1229,10 +1238,10 @@ static void draw(tui_surface *sf, tui_rect area)
                              area.h - ctl_h - tabs_h);
         if (s_page == PV_VFO) {
             /* Two cards of nine rows and the row between them. The decode
-               keeps the rest; the keypad takes all but FM's fourteen. */
-            int deck_h = s_keypad ? body.h - (body.h >= 40 ? 14 : 12) : 19;
-            if (!s_keypad && body.h - deck_h < 21) deck_h = body.h - 21;
-            if (deck_h >= 11) {
+               keeps the rest; entry keeps the glass plus all merged decode rows. */
+            int deck_h = s_keypad ? body.h - (body.h >= 40 ? 19 : 12) : 19;
+            if (!s_keypad && body.h - deck_h < 21) deck_h = body.h - 19;
+            if (deck_h >= 13) {
                 s_quick_rect = tui_rect_make(body.x, body.y + body.h - deck_h,
                                              body.w, deck_h);
                 body.h -= deck_h;

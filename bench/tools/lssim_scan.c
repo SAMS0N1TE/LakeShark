@@ -112,7 +112,7 @@ void scan_engine_skip(void)
 }
 void scan_engine_hold(bool h)
 {
-    hold = active && candidate >= 0 && h;
+    hold = active && h;
 }
 bool scan_engine_manual_hold(void)
 {
@@ -191,3 +191,13 @@ void scan_engine_autosquelch(int margin)
     autosq_floor = 12;
 }
 int scan_engine_autosquelch_floor(void) { return autosq_floor; }
+
+static int seek_dir;
+bool scan_engine_seek(uint32_t from, uint32_t step_hz, int dir, uint32_t low, uint32_t high)
+{ (void)from; (void)step_hz; (void)low; (void)high; seek_dir=dir; active=true; return true; }
+int scan_engine_seek_direction(void) { return active ? seek_dir : 0; }
+static uint32_t fm_step;
+uint32_t settings_get_fm_step(void) { return fm_step; }
+void settings_set_fm_step(uint32_t hz) { fm_step=hz; }
+
+bool scan_engine_audio_open(void) { return !active || hold; }

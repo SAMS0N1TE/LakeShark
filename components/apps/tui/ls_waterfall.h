@@ -136,6 +136,8 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label);
 ls_wf_owner_t ls_wf_owner(void);
 typedef bool (*ls_wf_tune_fn)(ls_wf_owner_t owner, uint32_t hz);
 void ls_wf_set_tuner(ls_wf_tune_fn tuner);
+/* A tuner may supply a short refusal reason during its callback. */
+void ls_wf_tune_reason(const char *reason);
 
 /* Push one spectrum row, values normalised 0..1 against feed->floor_db and
    feed->top_db. Refused, and counted as dropped, when the caller is not the
