@@ -79,23 +79,22 @@ Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
 
 <p align="center">
 <img src="docs/screenshots/tdp4/home-20261014.png" width="32%" alt="HOME" />
-<img src="docs/screenshots/tdp4/motion/p25-decode.gif" width="32%" alt="P25 decoding a call" />
+<img src="docs/screenshots/tdp4/motion/p25-call-20261022.gif" width="32%" alt="P25 decoding a call" />
 <img src="docs/screenshots/tdp4/motion/music-scan-20261014.gif" width="32%" alt="MUSIC analyzer and waterfall" />
-<img src="docs/screenshots/tdp4/motion/music-waterfall-20261022.gif" width="32%" alt="MUSIC waterfall drawing a picture hidden in a WAV" />
+<img src="docs/screenshots/tdp4/motion/music-waterfall-smooth-20261022.gif" width="32%" alt="MUSIC waterfall drawing a picture hidden in a WAV" />
 <img src="docs/screenshots/tdp4/motion/boot-splash-20261022.gif" width="32%" alt="Boot globe and progress line" />
 <img src="docs/screenshots/tdp4/motion/update.gif" width="32%" alt="UPDATE over WiFi" />
 <img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/motion/sweep.gif" width="32%" alt="SWEEP finding nearby trackers" />
 <img src="docs/screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="32%" alt="FALLS with HackRF signals" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-lr2021-hackrf-ook-decode-20261014.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
 <img src="docs/screenshots/tdp4/motion/fm-noaa.gif" width="32%" alt="FM on NOAA weather" />
+<img src="docs/screenshots/tdp4/motion/music-bands-20261022.gif" width="32%" alt="MUSIC 2/3 octave bands" />
 <img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
 <img src="docs/screenshots/tdp4/gallery-20261007/experiments-port.png" width="32%" alt="EXPERIMENTS" />
 <img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
-<img src="docs/screenshots/tdp4/motion/music-bands-20261022.gif" width="32%" alt="MUSIC 2/3 octave bands" />
 </p>
 
 ## Applications
