@@ -1,7 +1,7 @@
 <div align="center">
 
-![lakeshark_banner](https://github.com/user-attachments/assets/34b12b2c-fd64-4fdc-850c-e9c93d7aede7#gh-light-mode-only)
-![lakeshark_banner_dark](https://github.com/user-attachments/assets/657f79dc-afd4-4943-89b3-d9b215a7cb09#gh-dark-mode-only)
+![lakeshark_banner](assets/lakeshark-banner-light.png#gh-light-mode-only)
+![lakeshark_banner_dark](assets/lakeshark-banner-dark.png#gh-dark-mode-only)
 
 ### A handheld SDR. Powered by a LoRa chip, RTLSDR, and HackRF.
 
@@ -98,7 +98,7 @@ LakeShark runs on both the **LR2021** and **SX1262** T-Display P4 variants. The 
 <h2 align="center">}<((((-- Meet the LakeShark</h2>
 
 <p align="center">
-  <img width="100%" alt="LakeShark on the LILYGO T-Display P4" src="https://github.com/user-attachments/assets/bdd8069b-3c1a-4dd6-a821-1526e724c950" />
+  <img width="100%" alt="LakeShark on the LILYGO T-Display P4" src="assets/lakeshark-tdp4.jpg" />
 </p>
 
 <div align="center">
@@ -207,7 +207,7 @@ The [LakeShark web tools](https://terminalbay.com/?m=lakeshark) also generate P2
 
 <div align="center">
 
-<img width="500" alt="LakeShark with MIX-RF keyboard" src="https://github.com/user-attachments/assets/dd1bd6fd-4d65-4800-b7c7-abdfebe80094" />
+<img width="500" alt="LakeShark with MIX-RF keyboard" src="assets/lakeshark-tdp4-mixrf.jpg" />
 
 [Browser installer](https://terminalbay.com/?m=lakeshark&board=tdp4) &nbsp;•&nbsp;
 [First flash guide](https://terminalbay.com/?m=wiki#tdp4/TDP4_FIRST_FLASH)
@@ -249,7 +249,7 @@ The [LakeShark-Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) conn
 
 **[Flipper setup guide and screenshots →](https://terminalbay.com/?m=wiki#flipper/Home)**
 
-<img width="700" alt="LakeShark Flipper bench setup" src="https://github.com/user-attachments/assets/3bef1680-aa7d-4df0-a0ab-5b6280b804c1" />
+<img width="700" alt="LakeShark Flipper bench setup" src="assets/lakeshark-flipper-bench.jpg" />
 
 </div>
 
